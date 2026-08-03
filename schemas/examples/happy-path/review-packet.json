@@ -1,0 +1,26 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "ReviewPacket",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "reviewRound": 1,
+  "specDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "baseSha": "1111111111111111111111111111111111111111",
+  "snapshotDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "diffDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "verificationDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "artifactManifestDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "workerResultDigests": [
+    "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+  ],
+  "evidenceDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "inputs": {
+    "taskSpec": "task-spec.json",
+    "patch": "observed.patch",
+    "verificationReport": "verification-report.json",
+    "artifactManifest": "artifact-manifest.json",
+    "workerResults": ["attempts/attempt-01/worker-result.json"]
+  },
+  "previousBlockingFindings": [],
+  "generatedAt": "2026-08-03T10:08:21Z"
+}

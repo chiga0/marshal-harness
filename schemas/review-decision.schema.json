@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/review-decision.schema.json",
+  "title": "Marshal ReviewDecision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "taskId",
+    "runId",
+    "reviewRound",
+    "reviewer",
+    "specDigest",
+    "reviewPacketDigest",
+    "verificationDigest",
+    "artifactManifestDigest",
+    "evidenceDigest",
+    "verdict",
+    "summary",
+    "blockingFindings",
+    "nonBlockingFindings",
+    "publicationRecommendation",
+    "mergeRecommendation",
+    "decidedAt"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "ReviewDecision" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "reviewRound": { "type": "integer", "minimum": 1 },
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "type": "string", "enum": ["lead-agent", "human"] },
+        "id": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "specDigest": { "$ref": "#/$defs/digest" },
+    "reviewPacketDigest": { "$ref": "#/$defs/digest" },
+    "verificationDigest": { "$ref": "#/$defs/digest" },
+    "artifactManifestDigest": { "$ref": "#/$defs/digest" },
+    "evidenceDigest": { "$ref": "#/$defs/digest" },
+    "verdict": {
+      "type": "string",
+      "enum": ["accept", "rework", "reject", "blocked", "no_change"]
+    },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 12000 },
+    "blockingFindings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "nonBlockingFindings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "publicationRecommendation": {
+      "type": "string",
+      "enum": ["publish", "do-not-publish", "not-applicable"]
+    },
+    "mergeRecommendation": {
+      "type": "string",
+      "enum": ["do-not-merge", "eligible-after-policy", "not-applicable"]
+    },
+    "blockerOwner": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "decidedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "title", "description"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "requiredOutcome": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "file": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "line": { "type": "integer", "minimum": 1 },
+        "gateId": { "$ref": "#/$defs/id" },
+        "artifactId": { "$ref": "#/$defs/id" }
+      }
+    }
+  }
+}

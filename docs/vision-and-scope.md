@@ -1,0 +1,130 @@
+# 愿景与范围
+
+## 愿景
+
+Marshal 让 Coding Agent 的工作像一套工程交付流程，而不是无结构的终端对话。主 Agent 可以委派实现，同时保留对范围、审查、证据和最终交付决策的控制。
+
+当更换 Worker Provider 不会改变任务含义、验收标准和发布所需证据时，Marshal 才算实现目标。
+
+## 问题定义
+
+本地 Coding Agent 在五个关键方面存在差异：
+
+1. 调用方式和会话协议不同。
+2. 权限控制不同，而且可能依赖交互确认。
+3. 输出事件和错误语义不同。
+4. Agent 可能错误总结自己的变更或测试结果。
+5. 长任务可能留下部分状态，临时脚本难以可靠检查或恢复。
+
+Harness 必须统一这些差异，同时不能假装所有 Worker 具有相同能力。
+
+## 目标
+
+### G1：契约优先的委派
+
+每个任务都有不可变、带版本的 TaskSpec，包含目标、范围、验收标准、必需交付物、预算、Worker 策略和发布策略。
+
+### G2：Provider 无关的 Worker
+
+Provider 特有逻辑仅存在于 Adapter 内部，核心生命周期不得根据 Provider 名称分叉。
+
+### G3：证据优先于声明
+
+Marshal 独立观察 Git 状态、执行验证命令、计算交付物摘要并记录退出码。Worker 摘要可以作为上下文，但不能独立满足门禁。
+
+### G4：职责分离
+
+Worker 负责实现，主 Agent 负责审查，Marshal 负责验证和发布。发布凭据与 merge 权限位于 Worker 信任边界之外。
+
+### G5：可恢复执行
+
+进程崩溃或机器重启后，操作者可以确定最后一个持久状态，检查 worktree，并明确选择恢复、重试、拒绝或中止，而不是猜测。
+
+### G6：可审计结果
+
+每个终态 Run 都有 Outcome Bundle，包含冻结的 TaskSpec、标准化事件、真实 diff、VerificationReport、ReviewDecision 和 ArtifactManifest。
+
+## MVP 范围
+
+MVP 包含：
+
+- macOS 与 Linux 本地执行；
+- 需要发布时具有 remote 的本地 Git 仓库；
+- 通过结构化文件和 CLI 命令对接主 Agent，同时支持 Codex CLI 与 Codex Desktop 作为交互界面；
+- Qwen Code、OpenCode、Pi 的 one-shot Adapter；
+- worktree 创建与清理；
+- 文件范围、dirty tree、交付物和验收命令门禁；
+- Review 与有上限的 Rework；
+- 通过独立 Publisher 创建 GitHub Draft PR；
+- 追加式 JSONL 事件日志与原子状态快照；
+- 中断后的检查与显式恢复命令。
+
+## MVP 明确不做
+
+- 把 Worker 输出当作可信证据。
+- 让多个写 Worker 共享同一 worktree。
+- 默认自动 merge。
+- 第一条纵向链路支持 GitLab 发布。
+- 托管式多租户控制平面。
+- 对恶意仓库或恶意构建脚本提供强隔离承诺。
+- 在没有评测数据时自动选择“最佳”Worker。
+- Web UI、远程队列、分布式 Worker 或集群调度。
+- 取代仓库 CI 的最终集成信号。
+- 在没有 Adapter 契约时支持任意交互式 Agent。
+
+## 用户
+
+### 主要用户
+
+使用 Codex CLI、Codex Desktop 或手机端 Remote 监督 Codex 主 Agent，并把具体实现委派给本地 Coding Agent 的工程师。
+
+### 次要用户
+
+- 在隔离 CI Runner 上执行相同流程的团队；
+- 为其他 CLI 或协议编写 Adapter 的开发者；
+- 审查某次 Run 为什么被接受或拒绝的 Reviewer。
+
+## 决策权
+
+| 决策 | 负责人 | 必需证据 |
+| --- | --- | --- |
+| 任务目标与范围 | 主 Agent / 维护者 | TaskSpec |
+| Worker 选择 | 主 Agent或配置化 Router | CapabilitySnapshot 与策略 |
+| 代码实现 | Worker | Worktree diff |
+| 验证通过或失败 | Harness | 真实命令与交付物结果 |
+| 语义接受、返工或拒绝 | 主 Agent | Diff 与 VerificationReport |
+| 发布 PR/MR | Harness Publisher | Accept 决策与发布策略 |
+| Merge | 仓库策略 / 维护者 | Accept 决策、CI 和所需审批 |
+
+## 信任边界
+
+首版面向开发者自有仓库和本地可信 Worker 二进制。它通过 worktree 隔离、环境过滤、工具策略和显式门禁降低误操作风险，但不宣称普通宿主机子进程能够隔离恶意代码。
+
+不可信仓库、不可信依赖或多用户执行必须使用容器、VM 或同等可强制执行的沙箱，才能成为受支持的安全配置。
+
+## 成功指标
+
+初始指标关注可验证运行，而不是模型质量宣传：
+
+- 100% 的 Run 具有冻结基线和 Outcome Bundle。
+- 100% 的 Accepted Run 具有通过的独立 VerificationReport。
+- 强制安全配置下，0 个 Worker 进程获得 Publisher 凭据。
+- 0 个 Accepted Run 包含越界路径。
+- 无需阅读原始终端记录即可判断中断 Run 的状态。
+- 相同任务身份的重复发布具有幂等性。
+
+积累足够数据后，可按 Adapter 和任务类型统计首轮通过率、返工次数、验证失败率、成本、耗时和回滚率。
+
+## 交付阶段
+
+### 阶段 1：纵向链路
+
+实现一个 Adapter、worktree 隔离、冻结输入、独立验证、主 Agent 决策导入、Outcome Bundle 和 GitHub Draft PR。
+
+### 阶段 2：Worker 对齐
+
+补齐其他 Adapter、安全的会话恢复、能力探测、恢复机制和 Adapter 一致性测试。
+
+### 阶段 3：加固与路由
+
+增加可强制执行的容器配置、CI 回调、GitLab Publisher、评测数据、策略路由、遥测和可选服务接口。

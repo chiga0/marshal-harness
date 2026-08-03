@@ -1,0 +1,7 @@
+# Marshal 本地运行状态、临时 worktree、日志和证据
+.marshal/
+
+# 本地构建与测试产物
+/bin/
+/dist/
+/coverage.out

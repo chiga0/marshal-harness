@@ -1,0 +1,28 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "PolicySnapshot",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "sources": [
+    {
+      "scope": "builtin",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "required": true
+    }
+  ],
+  "effective": {
+    "minimumExecutionProfile": "workspace-write",
+    "requireEnforcedNetworkPolicy": false,
+    "networkPolicy": "unenforced",
+    "allowFallbackWorkers": true,
+    "allowWorkerSubagents": false,
+    "allowPublication": true,
+    "allowMerge": false,
+    "allowGateWaivers": false,
+    "allowedAdapters": ["qwen", "opencode", "pi"],
+    "environmentAllowlist": ["PATH", "LANG", "TMPDIR"],
+    "retentionDays": 30
+  },
+  "policyDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "generatedAt": "2026-08-03T10:00:01Z"
+}

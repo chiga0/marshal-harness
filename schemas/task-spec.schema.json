@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/task-spec.schema.json",
+  "title": "Marshal TaskSpec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "repository",
+    "work",
+    "scope",
+    "acceptance",
+    "deliverables",
+    "worker",
+    "budgets",
+    "publication"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "Task" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "repository": { "$ref": "#/$defs/repository" },
+    "work": { "$ref": "#/$defs/work" },
+    "scope": { "$ref": "#/$defs/scope" },
+    "acceptance": { "$ref": "#/$defs/acceptance" },
+    "deliverables": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/deliverable" }
+    },
+    "worker": { "$ref": "#/$defs/worker" },
+    "budgets": { "$ref": "#/$defs/budgets" },
+    "publication": { "$ref": "#/$defs/publication" },
+    "extensions": {
+      "type": "object",
+      "description": "使用 Namespace 隔离的实验性扩展数据。",
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$"
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "^[A-Za-z]:[\\\\/]" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "\\\\" },
+          { "pattern": "\\u0000" }
+        ]
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "labels": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+          "additionalProperties": { "type": "string", "maxLength": 256 }
+        }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "baseRef", "remote"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "baseRef": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "remote": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "expectedRemoteUrl": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objective"],
+      "properties": {
+        "objective": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "context": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 8000 }
+        },
+        "nonGoals": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 4000 }
+        },
+        "constraints": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 4000 }
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowPaths"],
+      "properties": {
+        "allowPaths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/relativePath" }
+        },
+        "denyPaths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/relativePath" }
+        },
+        "allowSubmodules": { "type": "boolean", "default": false },
+        "maxChangedFiles": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "maxDiffBytes": { "type": "integer", "minimum": 1, "maximum": 1000000000 }
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commands", "allowNoChange"],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/command" }
+        },
+        "allowNoChange": { "type": "boolean" }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "argv", "cwd", "timeoutSeconds", "required"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": { "type": "string", "maxLength": 32768 }
+        },
+        "cwd": { "$ref": "#/$defs/relativePath" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "required": { "type": "boolean" },
+        "baselinePolicy": {
+          "type": "string",
+          "enum": ["none", "on-failure", "always"],
+          "default": "none"
+        },
+        "maxLogBytes": { "type": "integer", "minimum": 1024, "maximum": 1000000000 }
+      }
+    },
+    "deliverable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "required"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "code",
+            "test",
+            "documentation",
+            "report",
+            "binary",
+            "publication",
+            "diagnostic",
+            "other"
+          ]
+        },
+        "required": { "type": "boolean" },
+        "pathGlob": { "$ref": "#/$defs/relativePath" },
+        "mediaType": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "minimumCount": { "type": "integer", "minimum": 1, "default": 1 },
+        "description": { "type": "string", "maxLength": 2000 }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "preferredAdapter",
+        "fallbackAdapters",
+        "executionProfile",
+        "sessionPolicy"
+      ],
+      "properties": {
+        "preferredAdapter": { "$ref": "#/$defs/identifier" },
+        "fallbackAdapters": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "executionProfile": {
+          "type": "string",
+          "enum": ["read-only", "workspace-write", "hardened"]
+        },
+        "sessionPolicy": {
+          "type": "string",
+          "enum": ["ephemeral", "persist", "resume"]
+        },
+        "model": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "reasoning": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runTimeoutSeconds",
+        "attemptTimeoutSeconds",
+        "maxAttempts",
+        "maxOperationalRetries",
+        "maxReworkRounds",
+        "maxOutputBytes"
+      ],
+      "properties": {
+        "runTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 604800 },
+        "attemptTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+        "maxAttempts": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "maxOperationalRetries": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "maxReworkRounds": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "maxOutputBytes": { "type": "integer", "minimum": 1024, "maximum": 10000000000 }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "provider",
+        "mode",
+        "remote",
+        "baseBranch",
+        "mergePolicy"
+      ],
+      "properties": {
+        "required": { "type": "boolean" },
+        "provider": { "type": "string", "enum": ["github", "gitlab", "none"] },
+        "mode": { "type": "string", "enum": ["draft", "ready", "none"] },
+        "remote": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "baseBranch": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "mergePolicy": { "type": "string", "enum": ["never", "manual", "policy"] },
+        "requiredChecks": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+        }
+      }
+    }
+  }
+}

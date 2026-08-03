@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/run-event.schema.json",
+  "title": "Marshal RunEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "eventId",
+    "runId",
+    "sequence",
+    "type",
+    "timestamp",
+    "payload"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "RunEvent" },
+    "eventId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "attemptId": { "$ref": "#/$defs/id" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "type": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 160,
+      "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+$"
+    },
+    "stateFrom": { "$ref": "#/$defs/state" },
+    "stateTo": { "$ref": "#/$defs/state" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "type": "string", "enum": ["system", "lead-agent", "worker", "human", "publisher"] },
+        "id": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "payload": { "type": "object", "additionalProperties": true }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "CREATED",
+        "PLANNED",
+        "READY",
+        "RUNNING",
+        "RETRY_PENDING",
+        "VERIFYING",
+        "REVIEW_PENDING",
+        "REWORK_REQUESTED",
+        "PUBLISHING",
+        "PUBLISHED",
+        "CI_PENDING",
+        "ACCEPTED",
+        "REJECTED",
+        "BLOCKED",
+        "ABORTED",
+        "NO_CHANGE"
+      ]
+    }
+  }
+}

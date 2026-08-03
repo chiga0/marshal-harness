@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/policy-snapshot.schema.json",
+  "title": "Marshal PolicySnapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "taskId",
+    "runId",
+    "sources",
+    "effective",
+    "policyDigest",
+    "generatedAt"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "PolicySnapshot" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scope", "digest", "required"],
+        "properties": {
+          "scope": { "type": "string", "enum": ["builtin", "user", "repository", "task", "cli"] },
+          "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "digest": { "$ref": "#/$defs/digest" },
+          "required": { "type": "boolean" }
+        }
+      }
+    },
+    "effective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimumExecutionProfile",
+        "requireEnforcedNetworkPolicy",
+        "networkPolicy",
+        "allowFallbackWorkers",
+        "allowWorkerSubagents",
+        "allowPublication",
+        "allowMerge",
+        "allowGateWaivers",
+        "allowedAdapters",
+        "environmentAllowlist",
+        "retentionDays"
+      ],
+      "properties": {
+        "minimumExecutionProfile": {
+          "type": "string",
+          "enum": ["read-only", "workspace-write", "hardened"]
+        },
+        "requireEnforcedNetworkPolicy": { "type": "boolean" },
+        "networkPolicy": {
+          "type": "string",
+          "enum": ["denied", "restricted", "allowed", "unenforced"]
+        },
+        "allowFallbackWorkers": { "type": "boolean" },
+        "allowWorkerSubagents": { "type": "boolean" },
+        "allowPublication": { "type": "boolean" },
+        "allowMerge": { "type": "boolean" },
+        "allowGateWaivers": { "type": "boolean" },
+        "allowedAdapters": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "environmentAllowlist": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "retentionDays": { "type": "integer", "minimum": 1, "maximum": 3650 }
+      }
+    },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "generatedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

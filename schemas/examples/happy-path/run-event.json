@@ -1,0 +1,18 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "RunEvent",
+  "eventId": "evt-0003",
+  "runId": "run-01",
+  "sequence": 3,
+  "type": "state.transitioned",
+  "stateFrom": "PLANNED",
+  "stateTo": "READY",
+  "timestamp": "2026-08-03T10:00:02Z",
+  "actor": {
+    "type": "system",
+    "id": "marshal"
+  },
+  "payload": {
+    "baseSha": "1111111111111111111111111111111111111111"
+  }
+}

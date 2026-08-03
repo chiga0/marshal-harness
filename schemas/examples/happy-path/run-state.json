@@ -1,0 +1,19 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "RunState",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "state": "READY",
+  "sequence": 3,
+  "specDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "policyDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "capabilityDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "baseSha": "1111111111111111111111111111111111111111",
+  "worktreePath": "/tmp/marshal/worktrees/ENG-123",
+  "reviewRound": 0,
+  "attemptsUsed": 0,
+  "operationalRetriesUsed": 0,
+  "reworkRoundsUsed": 0,
+  "createdAt": "2026-08-03T09:59:59Z",
+  "updatedAt": "2026-08-03T10:00:02Z"
+}

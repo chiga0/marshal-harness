@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/artifact-manifest.schema.json",
+  "title": "Marshal ArtifactManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "taskId",
+    "runId",
+    "artifacts",
+    "generatedAt"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "ArtifactManifest" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifact" }
+    },
+    "generatedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "^[A-Za-z]:[\\\\/]" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "\\\\" },
+          { "pattern": "\\u0000" }
+        ]
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "producer",
+        "required",
+        "status",
+        "createdAt",
+        "redacted",
+        "truncated",
+        "relatedGates"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "mediaType": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "producer": {
+          "type": "string",
+          "enum": ["worker", "verifier", "reviewer", "publisher", "system"]
+        },
+        "required": { "type": "boolean" },
+        "status": {
+          "type": "string",
+          "enum": ["expected", "observed", "validated", "missing", "invalid"]
+        },
+        "pathRoot": { "type": "string", "enum": ["run", "repository"] },
+        "relativePath": { "$ref": "#/$defs/relativePath" },
+        "uri": { "type": "string", "format": "uri" },
+        "externalId": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "byteSize": { "type": "integer", "minimum": 0 },
+        "digest": { "$ref": "#/$defs/digest" },
+        "attemptId": { "$ref": "#/$defs/id" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "redacted": { "type": "boolean" },
+        "truncated": { "type": "boolean" },
+        "relatedGates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "description": { "type": "string", "maxLength": 4000 }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": { "enum": ["expected", "missing"] }
+          },
+          "not": {
+            "anyOf": [
+              { "required": ["relativePath"] },
+              { "required": ["uri"] }
+            ]
+          }
+        },
+        {
+          "required": ["pathRoot", "relativePath", "byteSize", "digest"],
+          "properties": {
+            "status": { "enum": ["observed", "validated", "invalid"] }
+          },
+          "not": { "required": ["uri"] }
+        },
+        {
+          "required": ["uri"],
+          "properties": {
+            "status": { "enum": ["observed", "validated", "invalid"] }
+          },
+          "not": { "required": ["relativePath"] }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,247 @@
+# 架构设计
+
+## 背景
+
+Marshal 是包裹在 Coding Agent 进程之外的本地控制平面。它把带版本的 TaskSpec 转换为有边界的 Worker Attempt，独立观察仓库结果，请主 Agent 做出语义决策，并按条件发布已接受的变更。
+
+```mermaid
+flowchart LR
+    User["维护者"] --> Lead["主 Agent"]
+    Lead --> Spec["冻结的 TaskSpec"]
+    Spec --> Core["Marshal Core"]
+    Core --> Git["Worktree Manager"]
+    Core --> Adapter["Worker Adapter"]
+    Adapter --> Worker["Qwen / OpenCode / Pi"]
+    Worker --> Git
+    Git --> Verify["独立 Verifier"]
+    Verify --> Review["主 Agent Review"]
+    Review -->|返工| Adapter
+    Review -->|接受| Publisher["Publisher"]
+    Publisher --> Forge["GitHub / GitLab"]
+    Forge --> CI["仓库 CI"]
+    CI --> Decision["最终验收记录"]
+    Core --> Store["Run Store 与审计日志"]
+```
+
+## 架构风格
+
+MVP 采用 CLI-first 模块化单体。能在同一进程内完成的组件保持同进程，Worker 和验证命令作为子进程执行。领域边界必须清晰，以便未来的 Daemon、MCP Server 或远程调度器复用同一个 Core，而不是重新定义生命周期。
+
+建议实现基线为 Go，具体版本在实施获批后锁定。Core、CLI 与内置 Adapter 编译为单一可执行文件；JSON Schema 继续定义与语言无关的持久化外部记录，Go 内部类型必须由 Schema 生成，或由契约测试阻止漂移。选型理由与边界见 [ADR 0005](adr/0005-go-runtime.md)。
+
+## 组件
+
+### 命令接口
+
+预期命令组：
+
+```text
+marshal version
+marshal doctor
+marshal contract validate
+marshal task plan
+marshal task run
+marshal task status
+marshal task verify
+marshal task review
+marshal task rework
+marshal task publish
+marshal task accept
+marshal task abort
+```
+
+命令仅作为 Application Service 的薄入口，生命周期规则不得写进参数解析器。
+
+### Task Service
+
+职责：
+
+- 校验并冻结 TaskSpec；
+- 解析仓库并锁定 base SHA；
+- 执行生命周期转换守卫；
+- 强制执行返工、重试和时间预算；
+- 协调 Adapter、Verifier、Reviewer 和 Publisher Port；
+- 生成终态 Outcome 记录。
+
+### Run Store
+
+MVP 使用：
+
+- 追加式 `events.jsonl` 记录时间线；
+- 原子替换的 `state.json` 提供快速查询；
+- 按契约命名的不可变输入和报告文件；
+- ArtifactManifest 中的内容摘要。
+
+每个受管仓库的运行状态默认位于其主仓库根目录下的 `.marshal/`，并由 `marshal init` 加入本地 Git 排除规则。Run 日志、临时文件、linked worktree、凭据引用和 transcript 均不得进入业务仓库的提交。只在 CI、只读文件系统或其他特殊环境中，才通过 `MARSHAL_STATE_DIR` 显式覆盖默认位置；覆盖目录仍须绑定唯一仓库身份，禁止不同仓库共享可写 Run 目录。
+
+未来可以使用嵌入式数据库替换快照索引，但 JSONL 仍是可移植审计格式。
+
+### Git Workspace Manager
+
+职责：
+
+- 确认控制目录是 Git 仓库；
+- 解析并记录仓库身份、remote、base ref 与 base SHA；
+- 每个任务创建独立 branch 和 linked worktree；
+- 获取任务 worktree 的独占写 Lease；
+- Worker 启动前记录仓库状态；
+- 计算真实 diff 与变更路径；
+- 未归档变更存在时禁止清理 worktree；
+- 只在语义接受后执行 commit；
+- 提供幂等 branch 与发布身份。
+
+独立任务只有在不同 worktree 中才可并发写入。`worktree add/remove`、建 branch 等仓库元数据操作使用短时仓库级锁。一个任务 worktree 同时最多有一个写进程。
+
+### Adapter Registry
+
+Registry 通过稳定 ID 查找 Adapter，并探测已安装二进制。Probe 记录二进制路径、版本、结构化输出、会话能力、权限能力和已知不兼容项。
+
+Registry 不得静默替换二进制或版本。Fallback Worker 必须来自 TaskSpec 中的显式顺序策略，或新的主 Agent 决策。
+
+### Worker Runner
+
+Runner 以如下条件启动 Adapter：
+
+- 使用显式可执行文件路径；
+- 直接传递 argv，不经过 Shell；
+- worktree 作为 cwd；
+- 使用过滤后的环境；
+- 标准化 stdin 输入；
+- 分别捕获 stdout 与 stderr；
+- 支持 wall-clock 取消；
+- 能终止整个进程树；
+- 产生标准化事件和最终 WorkerResult。
+
+Worker 消息中的“已完成”不能决定生命周期。必须同时记录进程结果、可解析协议输出和真实仓库快照。
+
+### 独立 Verifier
+
+Verifier 位于 Worker 会话之外并生成 VerificationReport，检查：
+
+- 基线祖先关系与 worktree 完整性；
+- dirty 与 untracked 文件；
+- allow/deny 路径规则；
+- 空 diff 或异常大 diff；
+- 必需交付物与摘要；
+- 验收命令的退出状态、耗时和有界日志；
+- 可选的基线对照，用于识别预先存在的失败。
+
+### Lead Agent / Review Bridge
+
+Core 只依赖与界面无关的 `LeadAgentBridge`，不直接依赖 Codex CLI 的进程模型。MVP 的 File-based Review Bridge 可由 Codex CLI 或 Codex Desktop 驱动；详细模式见[主 Agent 接入界面](lead-agent-surfaces.md)。它导出有边界的 ReviewPacket，包含：
+
+- 冻结的 TaskSpec；
+- base 与当前快照身份；
+- 真实 diff 或 patch 引用；
+- VerificationReport；
+- ArtifactManifest；
+- Worker 摘要和声明的风险；
+- 返工轮次中的历史阻塞问题。
+
+它导入通过 Schema 校验的 ReviewDecision。完整 Worker transcript 保留用于审计，但默认不注入主 Agent 上下文。
+
+### Publisher
+
+Publisher 是唯一允许获得 Forge 凭据的组件。它负责：
+
+- 校验最新 Accept 决策与报告摘要；
+- 从已接受的 worktree 状态创建 commit；
+- Push 幂等任务 branch；
+- 每个任务只创建或更新一个 Draft PR/MR；
+- 将 PR/MR URL 与远程 ID 写入 ArtifactManifest；
+- 除非独立 Merge Policy 满足，否则绝不 merge。
+
+GitHub 是首个 Provider，GitLab 后续通过同一 Port 接入。
+
+## 事实优先级
+
+输入发生冲突时，按以下顺序判定：
+
+1. 真实进程退出状态、Git 和文件系统状态；
+2. 冻结的 TaskSpec 与有效 PolicySnapshot；
+3. 独立 VerificationReport；
+4. 主 Agent 的 ReviewDecision；
+5. Worker 声明与自然语言摘要。
+
+ReviewDecision 可以判断变更是否合适，但不能把失败的强制验证命令变成通过。覆盖门禁必须产生新的显式 Policy Decision Record，绝不隐式处理。
+
+## 身份与不可变性
+
+Marshal 区分：
+
+- `taskId`：调用者选择的稳定意图身份；
+- `runId`：该任务的一次完整生命周期执行；
+- `attemptId`：Run 内的一次 Worker 调用；
+- `baseSha`：不可变的仓库起点；
+- `specDigest`：规范化 TaskSpec 的 SHA-256；
+- `evidenceDigest`：被 Review 的验证与交付物输入摘要。
+
+修改目标、范围、必需交付物、base SHA 或强制验收命令会创建新 Run。Rework Attempt 可以修改代码和 Worker Session，但不能修改冻结的验收契约。
+
+## 持久化布局
+
+每个 Git 仓库具有独立的运行态目录。默认布局为：
+
+```text
+<repository-root>/
+├── .git/
+├── .gitignore                 # 可选：提交团队共享的 /.marshal/ 规则
+├── marshal.yaml               # 可选：可提交的仓库策略
+├── <tracked-source-files>
+└── .marshal/                  # 本地运行态，默认忽略且禁止提交
+    ├── repo.json
+    ├── local.yaml             # 本机覆盖配置，不提交
+    ├── locks/
+    ├── cache/
+    ├── worktrees/<task-id>/   # 每个任务一个真实 linked Git worktree
+    └── runs/<run-id>/
+        ├── state.json
+        ├── events.jsonl
+        ├── task-spec.json
+        ├── policy-snapshot.json
+        ├── capability-snapshot.json
+        ├── attempts/<attempt-id>/
+        │   ├── request.json
+        │   ├── stdout.jsonl
+        │   ├── stderr.log
+        │   └── worker-result.json
+        ├── observed.patch
+        ├── verification-report.json
+        ├── review-packet.json
+        ├── review-decision.json
+        ├── artifact-manifest.json
+        └── outcome.md
+```
+
+`.marshal/worktrees/<task-id>/` 虽然位于同一仓库目录树下，但它不是主 Checkout 中的普通子目录，而是由 `git worktree add` 创建、拥有独立工作目录与 index 的 linked worktree。Milestone 2 必须在所有受支持平台验证嵌套 linked worktree 的创建、发现、锁定和清理行为；验证失败时，允许改用同级的本地 Marshal 数据根，但不能退化为共享主 Checkout。仓库与 worktree 身份比较必须先做 `realpath` 等价的规范化，不能直接比较可能含 macOS `/var` 与 `/private/var` 别名的字符串路径。
+
+默认的 `marshal init` 将 `/.marshal/` 写入 `.git/info/exclude`，从而不修改业务仓库的受跟踪文件。需要团队级一致规则时，维护者可使用 `marshal init --tracked-ignore` 将同一规则写入 `.gitignore` 并提交。Verifier 和 Publisher 必须双重检查 `.marshal/` 内容没有进入待提交 Diff、Commit Tree 或 Artifact 的 Repository-relative Source Path。
+
+写入时先生成同目录临时文件，再原子 rename。事件带有 Run 内单调递增 sequence，用于检测截断日志和重复写入。
+
+## 幂等性
+
+- 状态转换携带预期前置状态，拒绝陈旧写入。
+- Attempt ID 唯一且不复用。
+- VerificationReport 标识精确的 worktree snapshot、diff 和 specDigest。
+- ReviewDecision 标识它所审查的 ReviewPacket 与 evidenceDigest。
+- Branch 名来自 taskId；远程发布记录保存 Forge 的不可变 PR/MR ID。
+- 重试 `publish` 时更新或返回现有 PR/MR，不创建第二个。
+
+## 配置层级
+
+优先级从低到高：
+
+1. 内置安全默认值；
+2. 用户级配置；
+3. 可提交的仓库 `marshal.yaml` 与本地忽略的 `.marshal/local.yaml`；
+4. TaskSpec 设置；
+5. 策略允许的显式 CLI Override。
+
+进入 `READY` 前冻结合并后的配置和策略。除非仓库策略明确允许覆盖，TaskSpec 不得放宽安全 deny 规则。
+
+## 可扩展性
+
+Worker Adapter、Verification Executor、Review Bridge、Artifact Collector、Publisher 和 Event Sink 使用稳定 Port。Adapter 内部可以使用 one-shot CLI、JSON-RPC、ACP 或 SDK，但必须满足相同核心契约和一致性测试。
+
+第三方 Plugin 默认不得在 Marshal 进程内执行。初始扩展模型采用子进程或独立安装包，并要求显式信任。

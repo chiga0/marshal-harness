@@ -1,0 +1,83 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "Task",
+  "metadata": {
+    "id": "ENG-123",
+    "title": "防止重复刷新 Token"
+  },
+  "repository": {
+    "path": "/tmp/auth-service",
+    "baseRef": "main",
+    "remote": "origin",
+    "expectedRemoteUrl": "git@github.com:example/auth-service.git"
+  },
+  "work": {
+    "objective": "并发调用者共享同一个进行中的 Token Refresh。",
+    "context": ["该问题可在 auth 单元测试中复现。"],
+    "nonGoals": ["不修改公开认证 API。"],
+    "constraints": ["不新增 Runtime Dependency。"]
+  },
+  "scope": {
+    "allowPaths": ["src/auth/**", "test/auth/**"],
+    "denyPaths": ["src/auth/generated/**"],
+    "allowSubmodules": false,
+    "maxChangedFiles": 12,
+    "maxDiffBytes": 50000
+  },
+  "acceptance": {
+    "commands": [
+      {
+        "id": "auth-tests",
+        "argv": ["npm", "test", "--", "auth"],
+        "cwd": ".",
+        "timeoutSeconds": 300,
+        "required": true,
+        "baselinePolicy": "on-failure",
+        "maxLogBytes": 1000000
+      }
+    ],
+    "allowNoChange": false
+  },
+  "deliverables": [
+    {
+      "id": "implementation",
+      "kind": "code",
+      "required": true,
+      "pathGlob": "src/auth/**"
+    },
+    {
+      "id": "regression-test",
+      "kind": "test",
+      "required": true,
+      "pathGlob": "test/auth/**"
+    },
+    {
+      "id": "pull-request",
+      "kind": "publication",
+      "required": true
+    }
+  ],
+  "worker": {
+    "preferredAdapter": "qwen",
+    "fallbackAdapters": ["opencode", "pi"],
+    "executionProfile": "workspace-write",
+    "sessionPolicy": "persist"
+  },
+  "budgets": {
+    "runTimeoutSeconds": 3600,
+    "attemptTimeoutSeconds": 1200,
+    "maxAttempts": 4,
+    "maxOperationalRetries": 1,
+    "maxReworkRounds": 2,
+    "maxOutputBytes": 20000000
+  },
+  "publication": {
+    "required": true,
+    "provider": "github",
+    "mode": "draft",
+    "remote": "origin",
+    "baseBranch": "main",
+    "mergePolicy": "never",
+    "requiredChecks": ["test"]
+  }
+}

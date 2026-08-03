@@ -1,0 +1,24 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "ReviewDecision",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "reviewRound": 1,
+  "reviewer": {
+    "type": "lead-agent",
+    "id": "codex",
+    "model": "configured-by-runtime"
+  },
+  "specDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "reviewPacketDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "verificationDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "artifactManifestDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "evidenceDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "verdict": "accept",
+  "summary": "真实变更满足目标，且全部 Required Gate 通过。",
+  "blockingFindings": [],
+  "nonBlockingFindings": [],
+  "publicationRecommendation": "publish",
+  "mergeRecommendation": "eligible-after-policy",
+  "decidedAt": "2026-08-03T10:10:00Z"
+}

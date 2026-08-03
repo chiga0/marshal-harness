@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/worker-result.schema.json",
+  "title": "Marshal WorkerResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "taskId",
+    "runId",
+    "attemptId",
+    "adapter",
+    "status",
+    "summary",
+    "declaredChangedFiles",
+    "declaredArtifacts",
+    "declaredCommands",
+    "declaredRisks",
+    "startedAt",
+    "completedAt"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "WorkerResult" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "attemptId": { "$ref": "#/$defs/id" },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "executable", "version"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "executable": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "resumable"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "resumable": { "type": "boolean" }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "blocked", "failed", "cancelled"]
+    },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 12000 },
+    "declaredChangedFiles": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/relativePath" }
+    },
+    "declaredArtifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "kind": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "path": { "$ref": "#/$defs/relativePath" },
+          "uri": { "type": "string", "format": "uri" },
+          "description": { "type": "string", "maxLength": 2000 }
+        },
+        "oneOf": [
+          {
+            "required": ["path"],
+            "not": { "required": ["uri"] }
+          },
+          {
+            "required": ["uri"],
+            "not": { "required": ["path"] }
+          }
+        ]
+      }
+    },
+    "declaredCommands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["commandId", "status"],
+        "properties": {
+          "commandId": { "$ref": "#/$defs/id" },
+          "status": {
+            "type": "string",
+            "enum": ["passed", "failed", "not-run", "unknown"]
+          },
+          "summary": { "type": "string", "maxLength": 4000 }
+        }
+      }
+    },
+    "declaredRisks": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 4000 }
+    },
+    "blocker": { "type": "string", "minLength": 1, "maxLength": 8000 },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "inputTokens": { "type": "integer", "minimum": 0 },
+        "outputTokens": { "type": "integer", "minimum": 0 },
+        "cachedInputTokens": { "type": "integer", "minimum": 0 },
+        "cost": { "type": "number", "minimum": 0 },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }
+      }
+    },
+    "outputTruncated": { "type": "boolean", "default": false },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "^[A-Za-z]:[\\\\/]" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "\\\\" },
+          { "pattern": "\\u0000" }
+        ]
+      }
+    }
+  }
+}

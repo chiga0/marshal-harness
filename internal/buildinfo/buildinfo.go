@@ -1,0 +1,33 @@
+// Package buildinfo exposes immutable build metadata injected with linker
+// flags. Development builds use explicit sentinel values.
+package buildinfo
+
+import "runtime"
+
+var (
+	version   = "dev"
+	commit    = "unknown"
+	buildDate = "unknown"
+)
+
+// Info describes the running marshal binary.
+type Info struct {
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	BuildDate string `json:"buildDate"`
+	GoVersion string `json:"goVersion"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+}
+
+// Current returns this binary's build information.
+func Current() Info {
+	return Info{
+		Version:   version,
+		Commit:    commit,
+		BuildDate: buildDate,
+		GoVersion: runtime.Version(),
+		OS:        runtime.GOOS,
+		Arch:      runtime.GOARCH,
+	}
+}

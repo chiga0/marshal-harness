@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/worker-request.schema.json",
+  "title": "Marshal WorkerRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "taskId",
+    "runId",
+    "attemptId",
+    "attemptNumber",
+    "specDigest",
+    "policyDigest",
+    "capabilityDigest",
+    "baseSha",
+    "worktreePath",
+    "taskSpecPath",
+    "promptPath",
+    "resultPath",
+    "adapterId",
+    "executionProfile",
+    "sessionPolicy",
+    "attemptTimeoutSeconds",
+    "maxOutputBytes",
+    "reviewFindings"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "WorkerRequest" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "attemptId": { "$ref": "#/$defs/id" },
+    "attemptNumber": { "type": "integer", "minimum": 1 },
+    "previousAttemptId": { "$ref": "#/$defs/id" },
+    "specDigest": { "$ref": "#/$defs/digest" },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "capabilityDigest": { "$ref": "#/$defs/digest" },
+    "baseSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "worktreePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "taskSpecPath": { "$ref": "#/$defs/relativePath" },
+    "promptPath": { "$ref": "#/$defs/relativePath" },
+    "resultPath": { "$ref": "#/$defs/relativePath" },
+    "adapterId": { "$ref": "#/$defs/id" },
+    "executionProfile": {
+      "type": "string",
+      "enum": ["read-only", "workspace-write", "hardened"]
+    },
+    "sessionPolicy": {
+      "type": "string",
+      "enum": ["ephemeral", "persist", "resume"]
+    },
+    "sessionId": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "attemptTimeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 },
+    "maxOutputBytes": { "type": "integer", "minimum": 1024, "maximum": 10000000000 },
+    "reviewFindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "description", "requiredOutcome"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+          "description": { "type": "string", "minLength": 1, "maxLength": 8000 },
+          "requiredOutcome": { "type": "string", "minLength": 1, "maxLength": 4000 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "^[A-Za-z]:[\\\\/]" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "\\\\" },
+          { "pattern": "\\u0000" }
+        ]
+      }
+    }
+  }
+}

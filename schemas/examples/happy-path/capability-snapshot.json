@@ -1,0 +1,22 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "CapabilitySnapshot",
+  "adapterId": "qwen",
+  "adapterVersion": "0.1.0",
+  "executable": "/usr/local/bin/qwen",
+  "executableDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "binaryVersion": "0.21.3",
+  "probeStatus": "supported",
+  "capabilities": {
+    "structuredOutput": ["jsonl"],
+    "nonInteractiveEdit": true,
+    "sessionPolicies": ["ephemeral", "persist", "resume"],
+    "modelSelection": true,
+    "executionProfiles": ["workspace-write"],
+    "nativeBudgets": ["wall-time", "turns"],
+    "processTreeCancellation": true,
+    "notes": ["workspace-write 不提供恶意代码隔离。"]
+  },
+  "probeErrors": [],
+  "probedAt": "2026-08-03T10:00:00Z"
+}

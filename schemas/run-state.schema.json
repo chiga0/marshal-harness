@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/run-state.schema.json",
+  "title": "Marshal RunState",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "taskId",
+    "runId",
+    "state",
+    "sequence",
+    "reviewRound",
+    "attemptsUsed",
+    "operationalRetriesUsed",
+    "reworkRoundsUsed",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "RunState" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "state": { "$ref": "#/$defs/state" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "specDigest": { "$ref": "#/$defs/digest" },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "capabilityDigest": { "$ref": "#/$defs/digest" },
+    "baseSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "worktreePath": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "currentAttemptId": { "$ref": "#/$defs/id" },
+    "reviewRound": { "type": "integer", "minimum": 0 },
+    "attemptsUsed": { "type": "integer", "minimum": 0 },
+    "operationalRetriesUsed": { "type": "integer", "minimum": 0 },
+    "reworkRoundsUsed": { "type": "integer", "minimum": 0 },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "repository", "headBranch", "baseBranch"],
+      "properties": {
+        "provider": { "type": "string", "enum": ["github", "gitlab"] },
+        "repository": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "headBranch": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "baseBranch": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "externalId": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "uri": { "type": "string", "format": "uri" },
+        "headSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" }
+      }
+    },
+    "terminalReason": { "type": "string", "minLength": 1, "maxLength": 8000 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "state": {
+      "type": "string",
+      "enum": [
+        "CREATED",
+        "PLANNED",
+        "READY",
+        "RUNNING",
+        "RETRY_PENDING",
+        "VERIFYING",
+        "REVIEW_PENDING",
+        "REWORK_REQUESTED",
+        "PUBLISHING",
+        "PUBLISHED",
+        "CI_PENDING",
+        "ACCEPTED",
+        "REJECTED",
+        "BLOCKED",
+        "ABORTED",
+        "NO_CHANGE"
+      ]
+    }
+  }
+}

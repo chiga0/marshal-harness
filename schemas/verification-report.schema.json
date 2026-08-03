@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/verification-report.schema.json",
+  "title": "Marshal VerificationReport",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "taskId",
+    "runId",
+    "specDigest",
+    "baseSha",
+    "observed",
+    "status",
+    "gates",
+    "startedAt",
+    "completedAt"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "VerificationReport" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "specDigest": { "$ref": "#/$defs/digest" },
+    "baseSha": { "$ref": "#/$defs/gitSha" },
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshotDigest",
+        "diffDigest",
+        "changedFiles",
+        "changedFileCount",
+        "diffBytes",
+        "hasUntrackedFiles"
+      ],
+      "properties": {
+        "snapshotDigest": { "$ref": "#/$defs/digest" },
+        "gitTreeSha": { "$ref": "#/$defs/gitSha" },
+        "diffDigest": { "$ref": "#/$defs/digest" },
+        "changedFiles": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/relativePath" }
+        },
+        "changedFileCount": { "type": "integer", "minimum": 0 },
+        "diffBytes": { "type": "integer", "minimum": 0 },
+        "hasUntrackedFiles": { "type": "boolean" }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "error", "cancelled"]
+    },
+    "gates": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/gate" }
+    },
+    "summary": { "type": "string", "maxLength": 12000 },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40,64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "^[A-Za-z]:[\\\\/]" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "\\\\" },
+          { "pattern": "\\u0000" }
+        ]
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "required", "status", "summary", "evidence"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "category": {
+          "type": "string",
+          "enum": ["repository", "scope", "diff", "artifact", "command", "policy", "other"]
+        },
+        "required": { "type": "boolean" },
+        "status": {
+          "type": "string",
+          "enum": ["pass", "fail", "error", "skipped", "cancelled"]
+        },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "evidence": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 4096 }
+        },
+        "command": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["argv", "cwd", "durationMilliseconds", "truncated"],
+          "properties": {
+            "argv": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "maxLength": 32768 }
+            },
+            "cwd": { "$ref": "#/$defs/relativePath" },
+            "exitCode": { "type": ["integer", "null"] },
+            "signal": { "type": ["string", "null"], "maxLength": 64 },
+            "durationMilliseconds": { "type": "integer", "minimum": 0 },
+            "truncated": { "type": "boolean" },
+            "baselineStatus": {
+              "type": "string",
+              "enum": ["not-run", "pass", "fail", "error"]
+            }
+          }
+        }
+      }
+    }
+  }
+}

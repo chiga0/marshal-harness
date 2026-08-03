@@ -1,0 +1,47 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "VerificationReport",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "specDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "baseSha": "1111111111111111111111111111111111111111",
+  "observed": {
+    "snapshotDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "diffDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "changedFiles": ["src/auth/refresh.ts", "test/auth/refresh.test.ts"],
+    "changedFileCount": 2,
+    "diffBytes": 2400,
+    "hasUntrackedFiles": false
+  },
+  "status": "pass",
+  "gates": [
+    {
+      "id": "scope:paths",
+      "category": "scope",
+      "required": true,
+      "status": "pass",
+      "summary": "所有真实变更路径均在允许范围内。",
+      "evidence": ["artifact://observed.patch"]
+    },
+    {
+      "id": "command:auth-tests",
+      "category": "command",
+      "required": true,
+      "status": "pass",
+      "summary": "退出码为 0。",
+      "evidence": ["artifact://logs/auth-tests.stdout"],
+      "command": {
+        "argv": ["npm", "test", "--", "auth"],
+        "cwd": ".",
+        "exitCode": 0,
+        "signal": null,
+        "durationMilliseconds": 18200,
+        "truncated": false,
+        "baselineStatus": "not-run"
+      }
+    }
+  ],
+  "summary": "全部强制 Gate 通过。",
+  "startedAt": "2026-08-03T10:08:01Z",
+  "completedAt": "2026-08-03T10:08:20Z"
+}

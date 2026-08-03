@@ -1,0 +1,37 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "WorkerResult",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "attemptId": "attempt-01",
+  "adapter": {
+    "id": "qwen",
+    "executable": "/usr/local/bin/qwen",
+    "version": "0.21.3"
+  },
+  "session": {
+    "id": "session-01",
+    "resumable": true
+  },
+  "status": "completed",
+  "summary": "增加了进行中请求共享和并发回归测试。",
+  "declaredChangedFiles": ["src/auth/refresh.ts", "test/auth/refresh.test.ts"],
+  "declaredArtifacts": [
+    {
+      "id": "regression-test",
+      "kind": "test",
+      "path": "test/auth/refresh.test.ts"
+    }
+  ],
+  "declaredCommands": [
+    {
+      "commandId": "auth-tests",
+      "status": "passed",
+      "summary": "Worker 观察到测试通过；Marshal 将独立重跑。"
+    }
+  ],
+  "declaredRisks": ["该变更依赖刷新失败后的 finally 清理。"],
+  "outputTruncated": false,
+  "startedAt": "2026-08-03T10:00:03Z",
+  "completedAt": "2026-08-03T10:08:00Z"
+}

@@ -1,0 +1,22 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "WorkerRequest",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "attemptId": "attempt-01",
+  "attemptNumber": 1,
+  "specDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "policyDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "capabilityDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "baseSha": "1111111111111111111111111111111111111111",
+  "worktreePath": "/tmp/marshal/worktrees/ENG-123",
+  "taskSpecPath": "task-spec.json",
+  "promptPath": "attempts/attempt-01/prompt.md",
+  "resultPath": "attempts/attempt-01/worker-result.json",
+  "adapterId": "qwen",
+  "executionProfile": "workspace-write",
+  "sessionPolicy": "persist",
+  "attemptTimeoutSeconds": 1200,
+  "maxOutputBytes": 20000000,
+  "reviewFindings": []
+}

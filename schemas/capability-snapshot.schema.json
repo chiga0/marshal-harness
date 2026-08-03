@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/capability-snapshot.schema.json",
+  "title": "Marshal CapabilitySnapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "adapterId",
+    "adapterVersion",
+    "executable",
+    "binaryVersion",
+    "capabilities",
+    "probeStatus",
+    "probedAt"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "CapabilitySnapshot" },
+    "adapterId": { "$ref": "#/$defs/id" },
+    "adapterVersion": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "executable": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "executableDigest": { "$ref": "#/$defs/digest" },
+    "binaryVersion": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "probeStatus": { "type": "string", "enum": ["supported", "experimental", "unsupported"] },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "structuredOutput",
+        "nonInteractiveEdit",
+        "sessionPolicies",
+        "modelSelection",
+        "executionProfiles",
+        "nativeBudgets"
+      ],
+      "properties": {
+        "structuredOutput": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["text", "json", "jsonl", "rpc", "acp"] }
+        },
+        "nonInteractiveEdit": { "type": "boolean" },
+        "sessionPolicies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["ephemeral", "persist", "resume"] }
+        },
+        "modelSelection": { "type": "boolean" },
+        "executionProfiles": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["read-only", "workspace-write", "hardened"] }
+        },
+        "nativeBudgets": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["wall-time", "turns", "tool-calls", "tokens", "output-bytes"]
+          }
+        },
+        "processTreeCancellation": { "type": "boolean" },
+        "notes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 4000 }
+        }
+      }
+    },
+    "probeErrors": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 4000 }
+    },
+    "probedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "ArtifactManifest",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "artifacts": [
+    {
+      "id": "observed.patch",
+      "kind": "patch",
+      "mediaType": "text/x-diff",
+      "producer": "verifier",
+      "required": true,
+      "status": "validated",
+      "pathRoot": "run",
+      "relativePath": "observed.patch",
+      "byteSize": 2400,
+      "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "createdAt": "2026-08-03T10:08:02Z",
+      "redacted": false,
+      "truncated": false,
+      "relatedGates": ["scope:paths"]
+    },
+    {
+      "id": "pull-request",
+      "kind": "publication",
+      "producer": "publisher",
+      "required": true,
+      "status": "expected",
+      "createdAt": "2026-08-03T10:08:20Z",
+      "redacted": false,
+      "truncated": false,
+      "relatedGates": []
+    }
+  ],
+  "generatedAt": "2026-08-03T10:08:20Z"
+}
