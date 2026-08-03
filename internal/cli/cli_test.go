@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/runstore"
 	marshalSchemas "github.com/chiga0/marshal-harness/schemas"
 )
 
@@ -28,7 +32,7 @@ func TestDoctorReportsCompiledContracts(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode doctor output: %v", err)
 	}
-	if report.Status != "ok" || report.ContractSchemas != 11 || report.WorkerAdapters != 0 || report.Milestone != "0" {
+	if report.Status != "ok" || report.ContractSchemas != 11 || report.WorkerAdapters != 0 || report.Milestone != "1" {
 		t.Fatalf("doctor report = %+v", report)
 	}
 }
@@ -99,6 +103,9 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	})
 
 	for _, command := range taskCommands {
+		if command == "status" {
+			continue
+		}
 		var stdout, stderr bytes.Buffer
 		exitCode := Run([]string{"task", command}, strings.NewReader(""), &stdout, &stderr)
 		if exitCode != ExitUnavailable {
@@ -107,5 +114,46 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(temporaryDirectory, ".marshal")); !os.IsNotExist(err) {
 		t.Fatalf("task skeleton created .marshal: %v", err)
+	}
+}
+
+func TestInitAndTaskStatusEndToEnd(t *testing.T) {
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := t.TempDir()
+	command := exec.Command("git", "-C", repository, "init", "-q")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, output)
+	}
+	if err := os.Chdir(repository); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"init", "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
+	}
+	store := runstore.New(filepath.Join(repository, ".marshal"))
+	lease, err := store.Acquire("run:fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := domain.NewRunState("task:fixture", "run:fixture", time.Unix(1, 0))
+	if err := store.WriteSnapshot(lease, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"task", "status", "--run", "run:fixture", "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("status exit = %d, stderr = %s", exit, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"state": "CREATED"`) {
+		t.Fatalf("status output = %s", stdout.String())
 	}
 }

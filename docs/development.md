@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-仓库处于 Milestone 0：只实现 Go 工具链、契约验证、模块边界和无副作用 CLI 骨架。真实 Worker、`.marshal/` 状态写入、Git worktree 和 Publisher 尚未启用。
+仓库已完成 Milestone 1：具备 Go 工具链、契约验证、生命周期、Run Store、`.marshal/` 初始化、只读状态查询和 Fake Adapter。Git worktree、真实 Worker 与 Publisher 尚未启用。
 
 ## Go 基线
 
@@ -57,7 +57,7 @@ marshal contract validate [--schema NAME] <PATH|->
 marshal task <COMMAND>
 ```
 
-`version`、`doctor` 和 `contract validate` 是只读命令。`task` 子命令目前只验证命令名并返回 `ExitUnavailable=3`，不会创建 `.marshal/`、启动 Worker 或执行发布。
+`version`、`doctor`、`contract validate` 和 `task status` 是只读命令。`marshal init` 会创建仓库绑定的状态目录，并把默认 `/.marshal/` 写入 `.git/info/exclude`；其他 `task` 子命令仍返回 `ExitUnavailable=3`，不会启动 Worker 或执行发布。
 
 示例：
 

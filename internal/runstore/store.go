@@ -1,0 +1,305 @@
+package runstore
+
+import (
+	"bufio"
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"time"
+
+	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/gofrs/flock"
+)
+
+var (
+	ErrConflict      = errors.New("run store conflict")
+	ErrLeaseHeld     = errors.New("run lease already held")
+	ErrTruncatedTail = errors.New("journal has a truncated final record")
+)
+
+type Store struct{ root string }
+
+type Lease struct {
+	lock  *flock.Flock
+	path  string
+	runID string
+}
+
+var processStartedAt = time.Now().UTC()
+var eventTypePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$`)
+
+func New(root string) *Store { return &Store{root: root} }
+
+func (s *Store) runDir(runID string) (string, error) {
+	if err := domain.ValidateID(runID); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.root, "runs", runID), nil
+}
+
+func (s *Store) Acquire(runID string) (*Lease, error) {
+	directory, err := s.runDir(runID)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return nil, fmt.Errorf("create run directory: %w", err)
+	}
+	path := filepath.Join(directory, "lease.lock")
+	lock := flock.New(path)
+	locked, err := lock.TryLock()
+	if err != nil {
+		return nil, fmt.Errorf("acquire run lease: %w", err)
+	}
+	if !locked {
+		return nil, ErrLeaseHeld
+	}
+	var tokenBytes [16]byte
+	if _, err := rand.Read(tokenBytes[:]); err != nil {
+		_ = lock.Unlock()
+		return nil, fmt.Errorf("generate lease token: %w", err)
+	}
+	now := time.Now().UTC()
+	record, err := json.MarshalIndent(struct {
+		Token            string    `json:"token"`
+		PID              int       `json:"pid"`
+		ProcessStartedAt time.Time `json:"processStartedAt"`
+		AcquiredAt       time.Time `json:"acquiredAt"`
+		HeartbeatAt      time.Time `json:"heartbeatAt"`
+	}{hex.EncodeToString(tokenBytes[:]), os.Getpid(), processStartedAt, now, now}, "", "  ")
+	if err != nil {
+		_ = lock.Unlock()
+		return nil, err
+	}
+	record = append(record, '\n')
+	if err := os.WriteFile(path+".owner", record, 0o600); err != nil {
+		_ = lock.Unlock()
+		return nil, fmt.Errorf("write lease owner: %w", err)
+	}
+	return &Lease{lock: lock, path: path, runID: runID}, nil
+}
+
+func (l *Lease) Release() error {
+	if l == nil || l.lock == nil {
+		return nil
+	}
+	err := l.lock.Unlock()
+	l.lock = nil
+	return err
+}
+
+func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uint64) error {
+	if lease == nil || lease.lock == nil || !lease.lock.Locked() {
+		return errors.New("append requires held run lease")
+	}
+	if lease.runID != event.RunID {
+		return fmt.Errorf("%w: lease belongs to run %s", ErrConflict, lease.runID)
+	}
+	directory, err := s.runDir(event.RunID)
+	if err != nil {
+		return err
+	}
+	events, _, readErr := s.ReadEvents(event.RunID)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return readErr
+	}
+	actual := uint64(len(events))
+	if actual != expectedSequence || event.Sequence != expectedSequence+1 {
+		return fmt.Errorf("%w: expected sequence %d, journal is %d, event is %d", ErrConflict, expectedSequence, actual, event.Sequence)
+	}
+	for _, existing := range events {
+		if existing.EventID == event.EventID {
+			return fmt.Errorf("%w: duplicate event ID %s", ErrConflict, event.EventID)
+		}
+	}
+	currentState := domain.StateCreated
+	if len(events) > 0 {
+		currentState = events[len(events)-1].StateTo
+	}
+	if err := lifecycle.ValidateTransition(currentState, event.RunID, expectedSequence, event); err != nil {
+		return err
+	}
+	if event.EventID == "" || event.Payload == nil || event.Kind != domain.KindRunEvent || event.APIVersion != domain.APIVersionV1Alpha1 {
+		return fmt.Errorf("%w: incomplete run event", ErrConflict)
+	}
+	if err := domain.ValidateID(event.EventID); err != nil {
+		return fmt.Errorf("%w: %v", ErrConflict, err)
+	}
+	if !eventTypePattern.MatchString(event.Type) {
+		return fmt.Errorf("%w: invalid event type %q", ErrConflict, event.Type)
+	}
+	if event.AttemptID != "" {
+		if err := domain.ValidateID(event.AttemptID); err != nil {
+			return fmt.Errorf("%w: %v", ErrConflict, err)
+		}
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("encode event: %w", err)
+	}
+	file, err := os.OpenFile(filepath.Join(directory, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open event journal: %w", err)
+	}
+	defer file.Close()
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("append event: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync event journal: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) ReadEvents(runID string) ([]domain.RunEvent, bool, error) {
+	directory, err := s.runDir(runID)
+	if err != nil {
+		return nil, false, err
+	}
+	data, err := os.ReadFile(filepath.Join(directory, "events.jsonl"))
+	if err != nil {
+		return nil, false, err
+	}
+	truncated := len(data) > 0 && data[len(data)-1] != '\n'
+	reader := bufio.NewReader(bytes.NewReader(data))
+	var events []domain.RunEvent
+	seen := map[string]bool{}
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		complete := len(line) > 0 && line[len(line)-1] == '\n'
+		if len(bytes.TrimSpace(line)) > 0 && complete {
+			var event domain.RunEvent
+			if err := json.Unmarshal(bytes.TrimSpace(line), &event); err != nil {
+				return nil, truncated, fmt.Errorf("decode journal record %d: %w", len(events)+1, err)
+			}
+			if event.Sequence != uint64(len(events)+1) || seen[event.EventID] {
+				return nil, truncated, fmt.Errorf("%w: invalid sequence or duplicate event at record %d", ErrConflict, len(events)+1)
+			}
+			seen[event.EventID] = true
+			events = append(events, event)
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return nil, truncated, readErr
+		}
+	}
+	if truncated {
+		return events, true, ErrTruncatedTail
+	}
+	return events, false, nil
+}
+
+func (s *Store) WriteSnapshot(lease *Lease, state domain.RunState) error {
+	if lease == nil || lease.lock == nil || !lease.lock.Locked() {
+		return errors.New("snapshot write requires held run lease")
+	}
+	if lease.runID != state.RunID {
+		return fmt.Errorf("%w: lease belongs to run %s", ErrConflict, lease.runID)
+	}
+	if state.Kind != domain.KindRunState || state.APIVersion != domain.APIVersionV1Alpha1 {
+		return fmt.Errorf("%w: incomplete run state", ErrConflict)
+	}
+	if err := domain.ValidateID(state.TaskID); err != nil {
+		return err
+	}
+	directory, err := s.runDir(state.RunID)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(directory, ".state-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(append(data, '\n')); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryName, filepath.Join(directory, "state.json")); err != nil {
+		return err
+	}
+	dir, err := os.Open(directory)
+	if err == nil {
+		err = dir.Sync()
+		_ = dir.Close()
+	}
+	return err
+}
+
+func (s *Store) ReadSnapshot(runID string) (domain.RunState, error) {
+	directory, err := s.runDir(runID)
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	data, err := os.ReadFile(filepath.Join(directory, "state.json"))
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	var state domain.RunState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return state, err
+	}
+	return state, nil
+}
+
+func (s *Store) Inspect(runID string) (domain.RunState, error) {
+	state, err := s.ReadSnapshot(runID)
+	if err != nil {
+		return state, err
+	}
+	events, _, journalErr := s.ReadEvents(runID)
+	if errors.Is(journalErr, os.ErrNotExist) && state.Sequence == 0 {
+		return state, nil
+	}
+	if journalErr != nil && !errors.Is(journalErr, ErrTruncatedTail) {
+		return state, journalErr
+	}
+	if uint64(len(events)) != state.Sequence {
+		return state, fmt.Errorf("%w: snapshot sequence %d differs from journal sequence %d", ErrConflict, state.Sequence, len(events))
+	}
+	if len(events) > 0 && events[len(events)-1].StateTo != state.State {
+		return state, fmt.Errorf("%w: snapshot state %s differs from journal state %s", ErrConflict, state.State, events[len(events)-1].StateTo)
+	}
+	return state, nil
+}
+
+func (s *Store) Rebuild(initial domain.RunState) (domain.RunState, error) {
+	events, _, err := s.ReadEvents(initial.RunID)
+	if err != nil && !errors.Is(err, ErrTruncatedTail) {
+		return initial, err
+	}
+	state := initial
+	for _, event := range events {
+		state, err = lifecycle.Replay(state, event)
+		if err != nil {
+			return initial, err
+		}
+	}
+	return state, nil
+}

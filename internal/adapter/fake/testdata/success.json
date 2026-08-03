@@ -1,0 +1,5 @@
+{
+  "capability": {"apiVersion":"marshal.dev/v1alpha1","kind":"CapabilitySnapshot","adapterId":"fake","adapterVersion":"1.0.0","executable":"fixture","executableDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","probedAt":"2026-08-03T00:00:00Z","features":{"structuredOutput":true,"sessionResume":false,"nonInteractiveEdit":true,"cancellation":true}},
+  "events": [{"type":"worker.started"},{"type":"worker.completed"}],
+  "result": {"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"task:fixture","runId":"run:fixture","attemptId":"attempt:fixture","adapterId":"fake","status":"completed","startedAt":"2026-08-03T00:00:00Z","finishedAt":"2026-08-03T00:00:01Z","exitCode":0,"summary":"fixture completed","changedPaths":["README.md"]}
+}

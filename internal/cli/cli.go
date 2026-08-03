@@ -14,6 +14,8 @@ import (
 	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
 	"github.com/chiga0/marshal-harness/internal/contract"
+	"github.com/chiga0/marshal-harness/internal/repository"
+	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
 // Process exit codes are stable CLI contract.
@@ -38,8 +40,8 @@ var taskCommands = []string{
 	"abort",
 }
 
-// Run executes one CLI invocation. Milestone 0 commands are read-only and do
-// not launch Workers, create state directories, or publish changes.
+// Run executes one CLI invocation without granting Worker or Publisher
+// capabilities to the CLI boundary itself.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		writeUsage(stderr)
@@ -54,10 +56,12 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runVersion(args[1:], stdout, stderr)
 	case "doctor":
 		return runDoctor(args[1:], stdout, stderr)
+	case "init":
+		return runInit(args[1:], stdout, stderr)
 	case "contract":
 		return runContract(args[1:], stdin, stdout, stderr)
 	case "task":
-		return runTask(args[1:], stderr)
+		return runTask(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "未知命令 %q。\n", args[0])
 		writeUsage(stderr)
@@ -115,7 +119,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		Build:           buildinfo.Current(),
 		ContractSchemas: application.ContractCount(),
 		WorkerAdapters:  application.AdapterCount(),
-		Milestone:       "0",
+		Milestone:       "1",
 	}
 	if *jsonOutput {
 		if err := writeJSON(stdout, report); err != nil {
@@ -124,7 +128,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 		return ExitOK
 	}
-	fmt.Fprintf(stdout, "状态：%s\nSchema：%d 份已编译\nWorker Adapter：%d（Milestone 0 预期值）\n", report.Status, report.ContractSchemas, report.WorkerAdapters)
+	fmt.Fprintf(stdout, "状态：%s\nSchema：%d 份已编译\n已注册 Worker Adapter：%d\n", report.Status, report.ContractSchemas, report.WorkerAdapters)
 	return ExitOK
 }
 
@@ -177,13 +181,84 @@ func runContract(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-func runTask(args []string, stderr io.Writer) int {
-	if len(args) != 1 || !slices.Contains(taskCommands, args[0]) {
+func runInit(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("init", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		return ExitUsage
+	}
+	state, err := repository.Discover(".")
+	if err != nil {
+		fmt.Fprintf(stderr, "初始化失败：%v\n", err)
+		return ExitFailure
+	}
+	if err := state.Init(); err != nil {
+		fmt.Fprintf(stderr, "初始化失败：%v\n", err)
+		return ExitFailure
+	}
+	result := struct {
+		RepositoryRoot string `json:"repositoryRoot"`
+		StateRoot      string `json:"stateRoot"`
+	}{state.RepositoryRoot, state.StateRoot}
+	if *jsonOutput {
+		if err := writeJSON(stdout, result); err != nil {
+			fmt.Fprintf(stderr, "输出初始化结果失败：%v\n", err)
+			return ExitFailure
+		}
+	} else {
+		fmt.Fprintf(stdout, "已初始化 Marshal 状态目录：%s\n", state.StateRoot)
+	}
+	return ExitOK
+}
+
+func runTask(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || !slices.Contains(taskCommands, args[0]) {
 		fmt.Fprintf(stderr, "用法：marshal task <%s>\n", strings.Join(taskCommands, "|"))
 		return ExitUsage
 	}
-	fmt.Fprintf(stderr, "marshal task %s 尚未在 Milestone 0 实现；未执行任何 Worker、状态写入或发布副作用。\n", args[0])
+	if args[0] == "status" {
+		return runTaskStatus(args[1:], stdout, stderr)
+	}
+	if len(args) != 1 {
+		return ExitUsage
+	}
+	fmt.Fprintf(stderr, "marshal task %s 尚未实现；未执行任何 Worker、状态写入或发布副作用。\n", args[0])
 	return ExitUnavailable
+}
+
+func runTaskStatus(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task status", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	runID := flags.String("run", "", "Run ID")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
+		fmt.Fprintln(stderr, "用法：marshal task status --run RUN_ID [--json]")
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil {
+		fmt.Fprintf(stderr, "读取状态失败：%v\n", err)
+		return ExitFailure
+	}
+	if err := location.ValidateIdentity(); err != nil {
+		fmt.Fprintf(stderr, "读取状态失败：%v\n", err)
+		return ExitFailure
+	}
+	state, err := runstore.New(location.StateRoot).Inspect(*runID)
+	if err != nil {
+		fmt.Fprintf(stderr, "读取状态失败：%v\n", err)
+		return ExitFailure
+	}
+	if *jsonOutput {
+		if err := writeJSON(stdout, state); err != nil {
+			fmt.Fprintf(stderr, "输出状态失败：%v\n", err)
+			return ExitFailure
+		}
+	} else {
+		fmt.Fprintf(stdout, "Run：%s\n状态：%s\nSequence：%d\n更新时间：%s\n", state.RunID, state.State, state.Sequence, state.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"))
+	}
+	return ExitOK
 }
 
 func readInput(name string, stdin io.Reader) ([]byte, error) {
@@ -224,8 +299,10 @@ func writeUsage(output io.Writer) {
 用法：
   marshal version [--json]
   marshal doctor [--json]
+  marshal init [--json]
   marshal contract validate [--schema NAME] <PATH|->
+  marshal task status --run RUN_ID [--json]
   marshal task <COMMAND>
 
-Milestone 0 只提供只读 CLI 骨架和契约验证；task 命令不会执行副作用。`)
+Milestone 1 提供状态目录初始化和只读 Run Inspection；其余 task 命令尚不可用。`)
 }
