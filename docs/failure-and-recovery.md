@@ -125,6 +125,8 @@ Cleanup 提供 Preview 与显式确认，校验精确 Target，拒绝宽泛或�
 - Outcome Bundle 使用独立 Retention Policy。
 - Tombstone 记录已删除本地资源及其可恢复性。
 
+M6 的首个 Cleanup Apply 只移除 Git 已注册且再次验证为 clean 的 managed worktree。本地 task branch、`state.json`、Journal、Outcome、Publication Record 与 `result.md` 永久不在该 Target Set 中。删除前追加 `planned` tombstone，删除后追加 `completed`；若进程在两者之间崩溃，重试只能在目标已经缺失且存在唯一 `planned` 记录时补写 `completed`，其他缺失路径一律按身份不明阻断。
+
 ## Recovery 验收测试
 
 实施必须模拟以下崩溃点：

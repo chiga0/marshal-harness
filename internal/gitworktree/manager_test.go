@@ -1,6 +1,7 @@
 package gitworktree
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -89,6 +90,46 @@ func TestDifferentTasksCanHaveIndependentWorktrees(t *testing.T) {
 			_ = gitCommand(t, repository, "branch", "-D", worktree.Branch)
 		})
 	}
+}
+
+func TestRemoveCleanRejectsDirtyAndRetainsBranch(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	manager, _ := Open(repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+
+	dirty, err := manager.Create(stateRoot, "task:dirty", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirty.Path, "unarchived.txt"), []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := dirty.RemoveClean(); !errors.Is(err, ErrDirtyWorktree) {
+		t.Fatalf("RemoveClean(dirty) = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dirty.Path, "unarchived.txt")); err != nil {
+		t.Fatalf("dirty file was removed: %v", err)
+	}
+	_ = dirty.Release()
+	_ = gitCommand(t, repository, "worktree", "remove", "--force", dirty.Path)
+	_ = gitCommand(t, repository, "branch", "-D", dirty.Branch)
+
+	clean, err := manager.Create(stateRoot, "task:clean", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, branch := clean.Path, clean.Branch
+	if err := clean.RemoveClean(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clean worktree still exists: %v", err)
+	}
+	if output := gitCommand(t, repository, "show-ref", "--verify", "refs/heads/"+branch); strings.TrimSpace(output) == "" {
+		t.Fatal("cleanup unexpectedly removed the local branch")
+	}
+	_ = gitCommand(t, repository, "branch", "-D", branch)
 }
 
 func initializeMarshalState(t *testing.T, root string) {

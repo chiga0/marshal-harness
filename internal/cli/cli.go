@@ -17,6 +17,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	cleanupservice "github.com/chiga0/marshal-harness/internal/cleanup"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	controlplane "github.com/chiga0/marshal-harness/internal/control"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -54,6 +55,7 @@ var taskCommands = []string{
 	"publish",
 	"accept",
 	"abort",
+	"cleanup",
 }
 
 // Run executes one CLI invocation without granting Worker or Publisher
@@ -399,11 +401,68 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if args[0] == "review" {
 		return runTaskReview(ctx, args[1:], stdout, stderr)
 	}
+	if args[0] == "cleanup" {
+		return runTaskCleanup(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) != 1 {
 		return ExitUsage
 	}
 	fmt.Fprintf(stderr, "marshal task %s 尚未实现；未执行任何 Worker、状态写入或发布副作用。\n", args[0])
 	return ExitUnavailable
+}
+
+func runTaskCleanup(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task cleanup", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	runID := flags.String("run", "", "Run ID")
+	apply := flags.Bool("apply", false, "执行预览中的本地清理")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
+		fmt.Fprintln(stderr, "用法：marshal task cleanup --run RUN_ID [--apply] [--json]")
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil {
+		fmt.Fprintf(stderr, "清理失败：%v\n", err)
+		return ExitFailure
+	}
+	if err := location.ValidateIdentity(); err != nil {
+		fmt.Fprintf(stderr, "清理失败：%v\n", err)
+		return ExitFailure
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		fmt.Fprintln(stderr, "清理失败：Contract Validator 初始化失败。")
+		return ExitFailure
+	}
+	result, err := cleanupservice.Execute(ctx, cleanupservice.Input{
+		StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID,
+		Apply: *apply, Now: time.Now().UTC(), Validator: validator,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "清理失败：%v\n", err)
+		return ExitFailure
+	}
+	if *jsonOutput {
+		if err := writeJSON(stdout, result); err != nil {
+			fmt.Fprintf(stderr, "输出清理结果失败：%v\n", err)
+			return ExitFailure
+		}
+		return ExitOK
+	}
+	if len(result.Targets) == 0 {
+		fmt.Fprintf(stdout, "Run %s 没有待清理的本地目标。\n", result.RunID)
+		return ExitOK
+	}
+	if result.Applied {
+		fmt.Fprintf(stdout, "Run %s 清理完成：\n", result.RunID)
+	} else {
+		fmt.Fprintf(stdout, "Run %s 清理预览（未执行；使用 --apply 执行）：\n", result.RunID)
+	}
+	for _, target := range result.Targets {
+		fmt.Fprintf(stdout, "- %s：%s（%s）\n", target.Kind, target.Path, target.Action)
+	}
+	return ExitOK
 }
 
 func runTaskPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {

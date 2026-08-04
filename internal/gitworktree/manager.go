@@ -20,13 +20,16 @@ type Repository struct {
 }
 
 type Worktree struct {
-	Path     string
-	Branch   string
-	BaseSHA  string
-	repo     Repository
-	repoLock *flock.Flock
-	taskLock *flock.Flock
+	Path      string
+	Branch    string
+	BaseSHA   string
+	repo      Repository
+	stateRoot string
+	repoLock  *flock.Flock
+	taskLock  *flock.Flock
 }
+
+var ErrDirtyWorktree = errors.New("managed worktree has unarchived changes")
 
 type Detached struct {
 	Path      string
@@ -134,7 +137,7 @@ func (r Repository) Create(stateRoot, taskID, baseSHA string) (*Worktree, error)
 		_ = taskLock.Unlock()
 		return nil, err
 	}
-	worktree := &Worktree{Path: worktreePath, Branch: branch, BaseSHA: baseSHA, repo: r, taskLock: taskLock}
+	worktree := &Worktree{Path: worktreePath, Branch: branch, BaseSHA: baseSHA, repo: r, stateRoot: stateRoot, taskLock: taskLock}
 	if err := worktree.Validate(); err != nil {
 		_ = worktree.Release()
 		return nil, err
@@ -174,7 +177,7 @@ func (r Repository) Acquire(stateRoot, taskID, worktreePath, baseSHA string) (*W
 		_ = repositoryLock.Unlock()
 		return nil, fmt.Errorf("acquire task lock: %w", lockError(err))
 	}
-	worktree := &Worktree{Path: actual, Branch: "marshal/" + safeName(taskID), BaseSHA: baseSHA, repo: r, taskLock: taskLock}
+	worktree := &Worktree{Path: actual, Branch: "marshal/" + safeName(taskID), BaseSHA: baseSHA, repo: r, stateRoot: stateRoot, taskLock: taskLock}
 	if err := worktree.Validate(); err != nil {
 		_ = taskLock.Unlock()
 		_ = repositoryLock.Unlock()
@@ -276,8 +279,10 @@ func (w *Worktree) Release() error {
 		return nil
 	}
 	var result error
-	if err := gitRun(w.repo.Root, "worktree", "unlock", w.Path); err != nil {
-		result = errors.Join(result, err)
+	if w.Path != "" {
+		if err := gitRun(w.repo.Root, "worktree", "unlock", w.Path); err != nil {
+			result = errors.Join(result, err)
+		}
 	}
 	if w.taskLock != nil {
 		result = errors.Join(result, w.taskLock.Unlock())
@@ -288,6 +293,50 @@ func (w *Worktree) Release() error {
 		w.repoLock = nil
 	}
 	return result
+}
+
+// Clean reports whether the managed worktree has no tracked, staged or
+// untracked changes. Git output is bounded by the caller's filesystem rather
+// than interpreted as paths, so cleanup never follows status entries.
+func (w *Worktree) Clean() (bool, error) {
+	if w == nil || w.Path == "" {
+		return false, errors.New("managed worktree is unavailable")
+	}
+	if err := w.Validate(); err != nil {
+		return false, err
+	}
+	output, err := gitOutput(w.Path, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return false, err
+	}
+	return output == "", nil
+}
+
+// RemoveClean removes one exact, registered managed worktree. Dirty content is
+// never forced away, the task and repository locks remain held throughout,
+// and the local branch is deliberately retained.
+func (w *Worktree) RemoveClean() error {
+	clean, err := w.Clean()
+	if err != nil {
+		return err
+	}
+	if !clean {
+		return ErrDirtyWorktree
+	}
+	repositoryLock, err := acquireRepositoryLock(w.stateRoot)
+	if err != nil {
+		return err
+	}
+	defer repositoryLock.Unlock()
+	if err := gitRun(w.repo.Root, "worktree", "unlock", w.Path); err != nil {
+		return err
+	}
+	if err := gitRun(w.repo.Root, "worktree", "remove", w.Path); err != nil {
+		_ = gitRun(w.repo.Root, "worktree", "lock", "--reason", "managed by Marshal", w.Path)
+		return err
+	}
+	w.Path = ""
+	return w.Release()
 }
 
 func safeName(value string) string {

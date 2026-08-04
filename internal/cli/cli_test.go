@@ -337,7 +337,7 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	})
 
 	for _, command := range taskCommands {
-		if command == "plan" || command == "approve" || command == "run" || command == "status" || command == "verify" || command == "review" || command == "publish" || command == "accept" {
+		if command == "plan" || command == "approve" || command == "run" || command == "status" || command == "verify" || command == "review" || command == "publish" || command == "accept" || command == "cleanup" {
 			continue
 		}
 		var stdout, stderr bytes.Buffer
@@ -348,6 +348,15 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(temporaryDirectory, ".marshal")); !os.IsNotExist(err) {
 		t.Fatalf("task skeleton created .marshal: %v", err)
+	}
+}
+
+func TestTaskCleanupRequiresRunAndHasNoImplicitApply(t *testing.T) {
+	for _, args := range [][]string{{"task", "cleanup"}, {"task", "cleanup", "--apply"}, {"task", "cleanup", "--run", "run-1", "extra"}} {
+		var stdout, stderr bytes.Buffer
+		if exit := Run(args, strings.NewReader(""), &stdout, &stderr); exit != ExitUsage {
+			t.Fatalf("Run(%v) exit=%d stderr=%s", args, exit, stderr.String())
+		}
 	}
 }
 

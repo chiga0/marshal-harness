@@ -21,6 +21,7 @@ GitHub remote 已绑定为 `github.com/chiga0/marshal-harness`，与 Module Path
 ```text
 cmd/marshal/        CLI 进程入口
 internal/cli/       参数解析与退出码
+internal/cleanup/   Cleanup Preview、Guard、Crash-safe Tombstone 与显式 Apply
 internal/app/       Application Service 与依赖装配
 internal/domain/    Provider-neutral Domain Type
 internal/contract/  Schema 编译与 Semantic Validator
@@ -62,15 +63,18 @@ marshal doctor [--json]
 marshal contract validate [--schema NAME] <PATH|->
 marshal init [--json]
 marshal task status --run RUN_ID [--json]
+marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
+marshal task approve --run RUN_ID --gate plan|publish [--json]
 marshal task run --run RUN_ID [--json]
 marshal task verify --run RUN_ID [--json]
 marshal task review --run RUN_ID [--decision PATH] [--json]
 marshal task publish --run RUN_ID [--json]
 marshal task accept --run RUN_ID [--json]
+marshal task cleanup --run RUN_ID [--apply] [--json]
 marshal task <COMMAND>
 ```
 
-`version`、`doctor`、`contract validate` 和 `task status` 是只读命令。`marshal init` 创建仓库绑定的状态目录并写入 Git exclude。`task run` 使用显式 `MARSHAL_OPENCODE_PATH` 启动首个真实 Worker；`verify`、`review`、`publish`、`accept` 分别执行独立证据门禁。发布命令要求 absolute `MARSHAL_GH_PATH` 与独立 `MARSHAL_GH_CONFIG_DIR`。
+`version`、`doctor`、`contract validate`、`task status` 和不带 `--apply` 的 `task cleanup` 是只读命令。`marshal init` 创建仓库绑定的状态目录并写入 Git exclude。`task run` 使用冻结选择的 Worker Adapter；`verify`、`review`、`publish`、`accept` 分别执行独立证据门禁。发布命令要求 absolute `MARSHAL_GH_PATH` 与独立 `MARSHAL_GH_CONFIG_DIR`。Cleanup 默认只列出精确 managed worktree；只有显式 `--apply` 才执行，并拒绝 Active Lease、非终态 Run、缺失 Outcome、活跃 TerminalSession、dirty/symlink/身份不明目标。它不删除 Run 证据、本地 branch、远端 branch 或 PR。
 
 示例：
 
