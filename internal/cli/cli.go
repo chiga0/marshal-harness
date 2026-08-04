@@ -74,7 +74,7 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	case "version":
 		return runVersion(args[1:], stdout, stderr)
 	case "doctor":
-		return runDoctor(args[1:], stdout, stderr)
+		return runDoctor(ctx, args[1:], stdout, stderr)
 	case "init":
 		return runInit(args[1:], stdout, stderr)
 	case "contract":
@@ -111,7 +111,18 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-func runDoctor(args []string, stdout, stderr io.Writer) int {
+type doctorWorker struct {
+	AdapterID           string `json:"adapterId"`
+	EnvironmentVariable string `json:"environmentVariable"`
+	Configured          bool   `json:"configured"`
+	Registered          bool   `json:"registered"`
+	Outcome             string `json:"outcome"`
+	Compatibility       string `json:"compatibility"`
+	AdapterVersion      string `json:"adapterVersion,omitempty"`
+	BinaryVersion       string `json:"binaryVersion,omitempty"`
+}
+
+func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
@@ -124,21 +135,29 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 	application, err := app.New()
 	if err != nil {
-		fmt.Fprintf(stderr, "doctor 失败：%v\n", err)
+		fmt.Fprintln(stderr, "doctor 失败：应用初始化失败。")
 		return ExitFailure
 	}
+	runtime, err := app.NewWorkerRuntime(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, "doctor 失败：Worker Runtime 初始化失败。")
+		return ExitFailure
+	}
+	workers := doctorWorkers(ctx, runtime)
 	report := struct {
 		Status          string         `json:"status"`
 		Build           buildinfo.Info `json:"build"`
 		ContractSchemas int            `json:"contractSchemas"`
 		WorkerAdapters  int            `json:"workerAdapters"`
 		Milestone       string         `json:"milestone"`
+		Workers         []doctorWorker `json:"workers"`
 	}{
 		Status:          "ok",
 		Build:           buildinfo.Current(),
 		ContractSchemas: application.ContractCount(),
-		WorkerAdapters:  application.AdapterCount(),
-		Milestone:       "5",
+		WorkerAdapters:  len(runtime.Registry().IDs()),
+		Milestone:       "6",
+		Workers:         workers,
 	}
 	if *jsonOutput {
 		if err := writeJSON(stdout, report); err != nil {
@@ -148,7 +167,64 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return ExitOK
 	}
 	fmt.Fprintf(stdout, "状态：%s\nSchema：%d 份已编译\n已注册 Worker Adapter：%d\n", report.Status, report.ContractSchemas, report.WorkerAdapters)
+	for _, worker := range report.Workers {
+		fmt.Fprintf(stdout, "Worker %s：%s / %s", worker.AdapterID, worker.Outcome, worker.Compatibility)
+		if worker.BinaryVersion != "" {
+			fmt.Fprintf(stdout, " (%s)", worker.BinaryVersion)
+		}
+		fmt.Fprintln(stdout)
+	}
 	return ExitOK
+}
+
+func doctorWorkers(ctx context.Context, runtime *app.WorkerRuntime) []doctorWorker {
+	configurations := runtime.Configurations()
+	workers := make([]doctorWorker, 0, len(configurations))
+	for _, configuration := range configurations {
+		result := doctorWorker{
+			AdapterID:           configuration.AdapterID,
+			EnvironmentVariable: configuration.EnvironmentVariable,
+			Configured:          configuration.Configured,
+			Registered:          configuration.Registered,
+			Outcome:             configuration.Outcome,
+			Compatibility:       "not-probed",
+		}
+		if !configuration.Registered || ctx.Err() != nil {
+			workers = append(workers, result)
+			continue
+		}
+		result.Compatibility = "probe-failed"
+		worker, err := runtime.Registry().Resolve(configuration.AdapterID)
+		if err != nil {
+			workers = append(workers, result)
+			continue
+		}
+		snapshot, err := worker.Probe(ctx)
+		if err != nil {
+			workers = append(workers, result)
+			continue
+		}
+		if snapshot.Kind != domain.KindCapabilitySnapshot || runtime.Validator().Validate(domain.KindCapabilitySnapshot, snapshot.Data) != nil {
+			workers = append(workers, result)
+			continue
+		}
+		var identity struct {
+			AdapterID      string `json:"adapterId"`
+			AdapterVersion string `json:"adapterVersion"`
+			BinaryVersion  string `json:"binaryVersion"`
+			ProbeStatus    string `json:"probeStatus"`
+		}
+		if json.Unmarshal(snapshot.Data, &identity) != nil || identity.AdapterID != configuration.AdapterID ||
+			(identity.ProbeStatus != "supported" && identity.ProbeStatus != "unsupported") {
+			workers = append(workers, result)
+			continue
+		}
+		result.Compatibility = identity.ProbeStatus
+		result.AdapterVersion = identity.AdapterVersion
+		result.BinaryVersion = identity.BinaryVersion
+		workers = append(workers, result)
+	}
+	return workers
 }
 
 func runContract(args []string, stdin io.Reader, stdout, stderr io.Writer) int {

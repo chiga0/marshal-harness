@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
@@ -20,7 +22,9 @@ import (
 )
 
 func TestDoctorReportsCompiledContracts(t *testing.T) {
-	t.Parallel()
+	t.Setenv("MARSHAL_OPENCODE_PATH", "")
+	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_PI_PATH", "")
 
 	var stdout, stderr bytes.Buffer
 	exitCode := Run([]string{"doctor", "--json"}, strings.NewReader(""), &stdout, &stderr)
@@ -32,12 +36,96 @@ func TestDoctorReportsCompiledContracts(t *testing.T) {
 		ContractSchemas int    `json:"contractSchemas"`
 		WorkerAdapters  int    `json:"workerAdapters"`
 		Milestone       string `json:"milestone"`
+		Workers         []struct {
+			AdapterID     string `json:"adapterId"`
+			Outcome       string `json:"outcome"`
+			Compatibility string `json:"compatibility"`
+		} `json:"workers"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode doctor output: %v", err)
 	}
-	if report.Status != "ok" || report.ContractSchemas != 15 || report.WorkerAdapters != 0 || report.Milestone != "5" {
+	if report.Status != "ok" || report.ContractSchemas != 15 || report.WorkerAdapters != 0 || report.Milestone != "6" || len(report.Workers) != 3 {
 		t.Fatalf("doctor report = %+v", report)
+	}
+	for index, adapterID := range []string{"opencode", "qwen", "pi"} {
+		if report.Workers[index].AdapterID != adapterID || report.Workers[index].Outcome != app.WorkerOutcomeNotConfigured || report.Workers[index].Compatibility != "not-probed" {
+			t.Fatalf("doctor worker %d = %+v", index, report.Workers[index])
+		}
+	}
+}
+
+func TestDoctorReportsCompatibilityWithoutLocalDetails(t *testing.T) {
+	for _, test := range []struct {
+		name, version, compatibility string
+		exit                         int
+	}{
+		{name: "supported", version: "1.18.12", compatibility: "supported", exit: 0},
+		{name: "unsupported", version: "1.19.0", compatibility: "unsupported", exit: 0},
+		{name: "probe failure", version: "top-secret-version", compatibility: "probe-failed", exit: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			executable := filepath.Join(t.TempDir(), "secret-opencode-location")
+			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '%s'\nexit %d\n", test.version, test.exit)
+			if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("MARSHAL_OPENCODE_PATH", executable)
+			t.Setenv("MARSHAL_QWEN_PATH", "")
+			t.Setenv("MARSHAL_PI_PATH", "")
+
+			var stdout, stderr bytes.Buffer
+			exitCode := Run([]string{"doctor", "--json"}, strings.NewReader(""), &stdout, &stderr)
+			if exitCode != ExitOK {
+				t.Fatalf("doctor exit = %d, stderr = %s", exitCode, stderr.String())
+			}
+			var report struct {
+				Workers []doctorWorker `json:"workers"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Workers) != 3 || report.Workers[0].AdapterID != "opencode" || report.Workers[0].Compatibility != test.compatibility {
+				t.Fatalf("workers = %+v", report.Workers)
+			}
+			output := stdout.String() + stderr.String()
+			if strings.Contains(output, executable) || strings.Contains(output, "secret-opencode-location") || strings.Contains(output, "top-secret-version") {
+				t.Fatalf("doctor leaked local detail: %s", output)
+			}
+			if test.compatibility != "probe-failed" && report.Workers[0].BinaryVersion != test.version {
+				t.Fatalf("binary version = %q, want %q", report.Workers[0].BinaryVersion, test.version)
+			}
+		})
+	}
+}
+
+func TestDoctorCanceledContextDoesNotProbeWorkers(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "probed")
+	executable := filepath.Join(t.TempDir(), "opencode")
+	script := "#!/bin/sh\n: > \"" + marker + "\"\nprintf '1.18.12\\n'\n"
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MARSHAL_OPENCODE_PATH", executable)
+	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_PI_PATH", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	if exit := RunContext(ctx, []string{"doctor", "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("doctor exit = %d, stderr = %s", exit, stderr.String())
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("doctor probed after cancellation: %v", err)
+	}
+	var report struct {
+		Workers []doctorWorker `json:"workers"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Workers) != 3 || report.Workers[0].Compatibility != "not-probed" {
+		t.Fatalf("workers = %+v", report.Workers)
 	}
 }
 
