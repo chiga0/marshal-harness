@@ -41,6 +41,8 @@ Request 包含冻结的任务与 Run Identity、worktree 与 base SHA、TaskSpec
 
 Prompt 由带版本 Template 渲染并保存到 Attempt。Adapter 可以增加 Provider 专属格式，但不能删除约束。
 
+原生 TUI 仍由同一 Adapter 生成冻结的 executable、argv、allowlisted environment、Provider Budget 与 `CompletionGate`，不能调用 Provider 默认配置作为隐式策略。PTY Backend 只消费 `TerminalLaunchSpec`，不根据 Adapter ID 拼命令。缺少可信自动 completion/idle 信号时，Adapter 只能声明受监督 PTY，不得把 WorkerResult 文件或屏幕文本单独当作完成协议。启动边界见 [ADR 0011](adr/0011-sealed-native-tui-transport.md)。
+
 ## Normalized Event
 
 每个 Event 包含 `sequence`、`timestamp`、`runId`、`attemptId`、`adapter` 和 `kind`。初始 Event Kind：

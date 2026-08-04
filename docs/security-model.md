@@ -93,6 +93,8 @@ Prompt 禁令必须尽可能由 Process/Tool Policy 强制。Provider 无法满�
 
 Marshal 从 Allowlist 构造环境，而不是继承环境后只删除几个已知变量。只提供执行所需的 Path、Locale、Temporary Storage、批准 Toolchain 和显式非 Secret 配置。
 
+原生 PTY 同样不得继承 Desktop、cmux 或 login shell 的 ambient environment。Marshal使用 owner-only 的一次性 `LaunchEnvelope` 把精确环境交给受信任 launcher；可见 argv 只包含信封路径，launcher 在 `exec` Worker 前删除信封。环境值不得进入 screen、Journal 或普通日志。该机制降低意外泄露，但不隔离同 UID 恶意宿主进程；强隔离仍要求 `hardened` Profile。
+
 Secret 仅在需要它的授权组件内 Just-in-time 解析。Publisher Credential 不得写入 TaskSpec、Event、Prompt 或 Outcome File。
 
 ## 临时文件与权限

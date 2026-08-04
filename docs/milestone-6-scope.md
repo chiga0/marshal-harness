@@ -62,6 +62,7 @@
 - Observer 作为独立模块，通过稳定 Port 与 Worker Adapter、Core 生命周期解耦；Backend 采用 Probe 与能力协商，不按操作系统或终端名称在 Core 中分叉；
 - M6 实现默认 `captured-process`、只读 Observer 与首个 `cmux-pty` TerminalSession；本地可视模式在独立 workspace/surface 中运行真实 Agent TUI，由 Marshal通过 Session Handle 注入冻结 Prompt、观察、取消和恢复；
 - TerminalSession 不取得 Publisher 凭据，不把屏幕文本当作完成协议；WorkerResult、Git Snapshot、Verification 与 Review 仍是权威门禁；
+- 原生 PTY 使用 Adapter 冻结的 `TerminalLaunchSpec` 与 owner-only 一次性 `LaunchEnvelope`，不继承 Desktop/cmux ambient environment，不把环境值放入可见 argv；缺少自动 `CompletionGate` 时只允许显式受监督模式；
 - cmux Probe 区分 `not-installed`、`installed`、`reachable`、`authorized` 与 `ready`，支持 `PATH` 和 macOS App Bundle CLI 发现；未安装、未授权或运行失败时安全降级到 `captured`；
 - 为后续 `iterm2`、`ghostty`、`terminal`、`tmux` Backend 保留相同接口，本阶段不承诺实现；
 - 任何交互式终端接管必须生成 `manual-intervention` Diagnostic，并使该 Attempt 的自动执行证据失效，之后必须重新执行独立 Verification；
@@ -71,7 +72,7 @@
 
 - Unit/Contract：三 Adapter Probe、Parser、Permission、Session、选择/Fallback、Approval/Intervention、Observer 与 TerminalSession 探测/降级、Doctor/Repair 与 Cleanup Guard；
 - Integration：三个 Fake executable 通过同一 Conformance Suite；Journal/Snapshot、Publication、CI Deadline 与 Cleanup Crash Fixture 可恢复或安全阻断；
-- Live Adapter E2E：本机真实 OpenCode、Qwen Code、Pi 各自在临时仓库受管 worktree 完成最小修改，Marshal 独立 Verification 通过；
+- Live Adapter E2E：本机真实 OpenCode、Qwen Code、Pi 各自在临时 Git 仓库完成最小修改；三者 captured Adapter 基线已通过，完整 Marshal 独立 Verification 仍由 Full MVP E2E 覆盖；
 - Full MVP E2E：至少一个真实 Worker 从冻结 TaskSpec 出发，经过真实 Adapter、Verification、Codex ReviewDecision、受控 Commit、真实 GitHub Draft PR、PR CI 与 Outcome Export；不 merge；
 - Security：三个 Worker 环境均无 Publisher Credential；Cleanup 不越界；Doctor/日志不泄露 Agent/GitHub 认证内容；
 - `make ci`、三个本地 Agent 的交叉审计、提交推送与远端 CI 全绿后，才能标记 Local MVP `USABLE`。

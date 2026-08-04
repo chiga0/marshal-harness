@@ -122,6 +122,8 @@ Core 依赖彼此独立的 `Observer` 与 `TerminalSession` Port，不依赖 cmu
 
 人工控制通过独立 Control Plane 进入，不直接修改冻结输入。`ApprovalRecord` 绑定精确 Plan/Publish 证据；`InterventionRecord` 分类 clarification、implementation-correction、scope-change、manual-pty 与 Session 控制。范围内 Steering 可以继续当前 Attempt；冻结边界变化必须新 Run；direct PTY 接管使当前 Attempt 的自动归因失效并要求重新 Verification/Review。详见 [ADR 0010](adr/0010-controlled-autonomy-and-intervention.md)。
 
+原生 TUI 不能使用 Provider 默认命令或 terminal ambient environment。Adapter 产生冻结的 `TerminalLaunchSpec`；Marshal通过 owner-only、一次性的 `LaunchEnvelope` 向可信 launcher 传递精确 argv、cwd 与 allowlisted environment，并在 `exec` Worker 前删除信封。PTY 成功还需要 Adapter 可验证的 `CompletionGate`；缺少自动 lifecycle/idle 证据时只允许受监督模式，不能用屏幕或单独出现的 WorkerResult 判定自动完成。详见 [ADR 0011](adr/0011-sealed-native-tui-transport.md)。
+
 ### 独立 Verifier
 
 Verifier 位于 Worker 会话之外并生成 VerificationReport，检查：

@@ -1,6 +1,6 @@
 # 架构决策记录
 
-本目录记录对实现有实质约束的决策。ADR 0001–0005 由维护者于 2026-08-03 接受，ADR 0006–0008 于 2026-08-04 随真实 Adapter、受控发布与可观察性设计实施接受。
+本目录记录对实现有实质约束的决策。ADR 0001–0005 由维护者于 2026-08-03 接受；ADR 0006–0010 于 2026-08-04 随真实 Adapter、受控发布、可观察性与受控自治设计实施接受；ADR 0011 于 2026-08-05 根据真实三 Worker 委派证据接受。
 
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
@@ -14,3 +14,4 @@
 | [0008](0008-pluggable-observer-backends.md) | 可插拔 Observer Backend，cmux 作为首个可视化实现 | 已接受（Accepted） |
 | [0009](0009-terminal-session-execution.md) | 原生 PTY Terminal Session 执行传输 | 已接受（Accepted） |
 | [0010](0010-controlled-autonomy-and-intervention.md) | 受控自治、审批 Gate 与人工介入 | 已接受（Accepted） |
+| [0011](0011-sealed-native-tui-transport.md) | 密封启动与可判定的原生 TUI 传输 | 已接受（Accepted） |

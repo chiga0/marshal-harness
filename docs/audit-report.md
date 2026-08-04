@@ -4,7 +4,7 @@
 - 范围：当前文档与 `v1alpha1` Schema 描述的 Local CLI MVP
 - 结论：**`APPROVED_FOR_IMPLEMENTATION`**
 - 未关闭 Blocking Finding：无
-- 门禁状态：维护者已于 2026-08-03 接受 ADR 0001–0005 与 Local MVP Scope
+- 门禁状态：维护者已接受 ADR 0001–0011 与 Local MVP Scope
 
 ## 执行结论
 
@@ -34,7 +34,7 @@
 - Security Threat、Assurance Profile 与 Credential Separation；
 - Interruption、Crash Consistency、Reconciliation 与 Cleanup；
 - Implementation Milestone 与 Exit Criteria；
-- ADR 0001–0005。
+- ADR 0001–0011。
 
 ## 自动检查
 
@@ -69,6 +69,7 @@ Schema 只承担结构校验。[`schemas/README.md`](../schemas/README.md) 中�
 | A-011 | P1 | Worker 控制文件放入 Worktree 会污染业务 Diff，开放整个 Run Store 又会破坏冻结证据 | 新增 ADR 0006，使用 Attempt-scoped `controlRoot/input|output` |
 | A-012 | P1 | Worker 可破坏 linked worktree 的 `.git` 身份，使嵌套目录向上误认主仓库 | `Open` 解析真实 `--show-toplevel`，Worker 后再次验证 Root/CommonDir，失败进入 `BLOCKED` |
 | A-013 | P2 | 把 cmux 直接写入 Worker 执行路径会耦合 Provider、平台与 UI，并可能削弱进程和证据控制 | 新增 ADR 0008：独立 Observer Port，cmux 仅作为首个只读可视化 Backend，失败降级到 `captured` |
+| A-014 | P1 | 直接在 cmux 启动默认 Agent TUI 会继承 ambient environment、绕过 Adapter 工具/子 Agent预算，并且没有可靠完成边界 | 新增 ADR 0011：Adapter 冻结 TUI launch，使用一次性密封启动信封；缺少可信 CompletionGate 时只允许受监督 PTY |
 
 没有未解决的 P0、P1 或 P2 架构问题。
 
@@ -126,6 +127,9 @@ Cross-record Freshness、ID Uniqueness、Budget Relationship、Path Canonicaliza
 6. [ADR 0006：Attempt 控制根与业务 Worktree 分离](adr/0006-attempt-control-root.md)
 7. [ADR 0007：先记录意图的受控发布与远端对账](adr/0007-intent-first-publication.md)
 8. [ADR 0008：可插拔 Observer Backend](adr/0008-pluggable-observer-backends.md)
+9. [ADR 0009：原生 PTY Terminal Session 执行传输](adr/0009-terminal-session-execution.md)
+10. [ADR 0010：受控自治、审批 Gate 与人工介入](adr/0010-controlled-autonomy-and-intervention.md)
+11. [ADR 0011：密封启动与可判定的原生 TUI 传输](adr/0011-sealed-native-tui-transport.md)
 
 删除 ADR 0002–0004 中任何一个都会使本批准失效，并要求重新进行安全与生命周期审计。
 
