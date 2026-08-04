@@ -12,3 +12,4 @@
 | [0006](0006-attempt-control-root.md) | Attempt 控制根与业务 Worktree 分离 | 已接受（Accepted） |
 | [0007](0007-intent-first-publication.md) | 先记录意图的受控发布与远端对账 | 已接受（Accepted） |
 | [0008](0008-pluggable-observer-backends.md) | 可插拔 Observer Backend，cmux 作为首个可视化实现 | 已接受（Accepted） |
+| [0009](0009-terminal-session-execution.md) | 原生 PTY Terminal Session 执行传输 | 已接受（Accepted） |

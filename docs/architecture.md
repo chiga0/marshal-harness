@@ -118,7 +118,7 @@ Worker 消息中的“已完成”不能决定生命周期。必须同时记录�
 
 Observer 是与 Worker Adapter、生命周期和证据持久化解耦的可选呈现模块。默认 `captured` Backend 仅保留 Marshal 捕获的有界日志；可视化 Backend 把脱敏日志、Attempt 状态、进度与通知镜像到外部终端。
 
-Core 只依赖 `Observer` Port 与能力集合，不依赖 cmux、iTerm2、Ghostty 或系统终端。M6 首先实现 cmux Backend，后续 Backend 通过相同 Probe、Attach、Update、Detach 契约接入。任何 Backend 不可用或未授权时降级到 `captured`，不得影响 Worker 进程所有权和权威证据。详细边界见 [ADR 0008](adr/0008-pluggable-observer-backends.md)。
+Core 依赖彼此独立的 `Observer` 与 `TerminalSession` Port，不依赖 cmux、iTerm2、Ghostty 或系统终端。Observer 只显示捕获内容；TerminalSession 承载真实 Agent PTY/TUI。任何 PTY Backend 不可用、未授权或能力不足时降级到 `captured-process`。两种模式都不能用屏幕文本替代 WorkerResult、Git Snapshot、Verification 与 Review。详细边界见 [ADR 0008](adr/0008-pluggable-observer-backends.md) 与 [ADR 0009](adr/0009-terminal-session-execution.md)。
 
 ### 独立 Verifier
 
