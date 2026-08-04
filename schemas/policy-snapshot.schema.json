@@ -77,6 +77,34 @@
         "retentionDays": { "type": "integer", "minimum": 1, "maximum": 3650 }
       }
     },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "autonomyProfile",
+        "requiredApprovals",
+        "allowMediatedSteering",
+        "directPtyPolicy",
+        "maxSteeringRounds"
+      ],
+      "properties": {
+        "autonomyProfile": {
+          "type": "string",
+          "enum": ["supervised", "balanced", "autonomous"]
+        },
+        "requiredApprovals": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["plan", "publish"] }
+        },
+        "allowMediatedSteering": { "type": "boolean" },
+        "directPtyPolicy": {
+          "type": "string",
+          "enum": ["deny", "record-and-reverify"]
+        },
+        "maxSteeringRounds": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
     "policyDigest": { "$ref": "#/$defs/digest" },
     "generatedAt": { "type": "string", "format": "date-time" }
   },

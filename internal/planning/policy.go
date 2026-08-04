@@ -32,6 +32,16 @@ const (
 	ErrPolicyPreferredEmpty = "validate policy: task preferredAdapter is empty"
 	ErrPolicyNoAdapters     = "validate policy: allowedAdapters is empty"
 	ErrPolicyNoCandidates   = "validate policy: no explicit task adapter candidate is allowed"
+	ErrPolicyControlGates   = "validate policy: approval gates conflict with autonomy profile"
+	ErrPolicySteering       = "validate policy: mediated steering conflicts with steering round budget"
+)
+
+const (
+	AutonomySupervised         = "supervised"
+	AutonomyBalanced           = "balanced"
+	AutonomyAutonomous         = "autonomous"
+	DirectPTYDeny              = "deny"
+	DirectPTYRecordAndReverify = "record-and-reverify"
 )
 
 // executionProfileRank orders profiles by the guarantees they require:
@@ -46,17 +56,23 @@ var executionProfileRank = map[string]int{
 // one run. Adapter candidates preserve the TaskSpec declaration order and
 // never include adapters the TaskSpec did not declare.
 type EffectivePolicy struct {
-	TaskID               string
-	RunID                string
-	ExecutionProfile     string
-	AllowedAdapters      []string
-	AllowFallbackWorkers bool
-	EnvironmentAllowlist []string
-	RetentionDays        int
-	AllowPublication     bool
-	NetworkPolicy        string
-	PreferredAdapter     string
-	FallbackAdapters     []string
+	TaskID                string
+	RunID                 string
+	ExecutionProfile      string
+	AllowedAdapters       []string
+	AllowFallbackWorkers  bool
+	EnvironmentAllowlist  []string
+	RetentionDays         int
+	AllowPublication      bool
+	NetworkPolicy         string
+	PreferredAdapter      string
+	FallbackAdapters      []string
+	AutonomyProfile       string
+	RequiredApprovals     []string
+	AllowMediatedSteering bool
+	DirectPTYPolicy       string
+	MaxSteeringRounds     uint
+	LegacyControl         bool
 }
 
 // SelectionRequest builds the exact adapter.SelectionRequest for the Selector:
@@ -87,6 +103,13 @@ type policySnapshot struct {
 		EnvironmentAllowlist    []string `json:"environmentAllowlist"`
 		RetentionDays           int      `json:"retentionDays"`
 	} `json:"effective"`
+	Control *struct {
+		AutonomyProfile       string   `json:"autonomyProfile"`
+		RequiredApprovals     []string `json:"requiredApprovals"`
+		AllowMediatedSteering bool     `json:"allowMediatedSteering"`
+		DirectPTYPolicy       string   `json:"directPtyPolicy"`
+		MaxSteeringRounds     uint     `json:"maxSteeringRounds"`
+	} `json:"control,omitempty"`
 }
 
 // ValidatePolicy validates a PolicySnapshot against its schema and the frozen
@@ -150,6 +173,24 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 		AllowPublication:     snapshot.Effective.AllowPublication,
 		NetworkPolicy:        snapshot.Effective.NetworkPolicy,
 	}
+	if snapshot.Control == nil {
+		effective.AutonomyProfile = AutonomySupervised
+		effective.RequiredApprovals = []string{ApprovalGatePlan, ApprovalGatePublish}
+		effective.DirectPTYPolicy = DirectPTYDeny
+		effective.LegacyControl = true
+	} else {
+		effective.AutonomyProfile = snapshot.Control.AutonomyProfile
+		effective.RequiredApprovals = slices.Clone(snapshot.Control.RequiredApprovals)
+		effective.AllowMediatedSteering = snapshot.Control.AllowMediatedSteering
+		effective.DirectPTYPolicy = snapshot.Control.DirectPTYPolicy
+		effective.MaxSteeringRounds = snapshot.Control.MaxSteeringRounds
+		if !validApprovalGates(effective.AutonomyProfile, effective.RequiredApprovals) {
+			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyControlGates)
+		}
+		if effective.AllowMediatedSteering != (effective.MaxSteeringRounds > 0) {
+			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicySteering)
+		}
+	}
 	if len(effective.AllowedAdapters) == 0 {
 		return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyNoAdapters)
 	}
@@ -186,4 +227,19 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 	effective.PreferredAdapter = candidates[0]
 	effective.FallbackAdapters = candidates[1:]
 	return effective, nil
+}
+
+const (
+	ApprovalGatePlan    = "plan"
+	ApprovalGatePublish = "publish"
+)
+
+func validApprovalGates(profile string, gates []string) bool {
+	if profile == AutonomyAutonomous {
+		return len(gates) == 0
+	}
+	if profile != AutonomySupervised && profile != AutonomyBalanced || len(gates) != 2 {
+		return false
+	}
+	return slices.Contains(gates, ApprovalGatePlan) && slices.Contains(gates, ApprovalGatePublish)
 }

@@ -32,8 +32,17 @@ type fixtureSnapshot struct {
 	RunID        string           `json:"runId"`
 	Sources      []map[string]any `json:"sources"`
 	Effective    fixtureEffective `json:"effective"`
+	Control      *fixtureControl  `json:"control,omitempty"`
 	PolicyDigest string           `json:"policyDigest"`
 	GeneratedAt  string           `json:"generatedAt"`
+}
+
+type fixtureControl struct {
+	AutonomyProfile       string   `json:"autonomyProfile"`
+	RequiredApprovals     []string `json:"requiredApprovals"`
+	AllowMediatedSteering bool     `json:"allowMediatedSteering"`
+	DirectPTYPolicy       string   `json:"directPtyPolicy"`
+	MaxSteeringRounds     uint     `json:"maxSteeringRounds"`
 }
 
 func defaultFixture() fixtureSnapshot {
@@ -59,6 +68,13 @@ func defaultFixture() fixtureSnapshot {
 			AllowedAdapters:              []string{"adapter-a", "adapter-b", "adapter-c"},
 			EnvironmentAllowlist:         []string{"PATH", "LANG"},
 			RetentionDays:                30,
+		},
+		Control: &fixtureControl{
+			AutonomyProfile:       AutonomyBalanced,
+			RequiredApprovals:     []string{ApprovalGatePlan, ApprovalGatePublish},
+			AllowMediatedSteering: true,
+			DirectPTYPolicy:       DirectPTYRecordAndReverify,
+			MaxSteeringRounds:     4,
 		},
 		PolicyDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 		GeneratedAt:  "2026-08-03T10:00:01Z",
@@ -167,6 +183,87 @@ func TestValidatePolicyIdentity(t *testing.T) {
 	t.Run("run id mismatch", func(t *testing.T) {
 		assertPolicyError(t, mustMarshal(t, defaultFixture()), defaultTask(), "run-other", validator, ErrPolicyRunMismatch)
 	})
+}
+
+func TestValidatePolicyControl(t *testing.T) {
+	validator := newValidator(t)
+
+	t.Run("balanced profile", func(t *testing.T) {
+		policy, err := ValidatePolicy(mustMarshal(t, defaultFixture()), defaultTask(), "run-1", validator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if policy.LegacyControl || policy.AutonomyProfile != AutonomyBalanced ||
+			!slices.Equal(policy.RequiredApprovals, []string{ApprovalGatePlan, ApprovalGatePublish}) ||
+			!policy.AllowMediatedSteering || policy.DirectPTYPolicy != DirectPTYRecordAndReverify || policy.MaxSteeringRounds != 4 {
+			t.Fatalf("control policy = %+v", policy)
+		}
+	})
+
+	t.Run("missing control is legacy supervised", func(t *testing.T) {
+		fixture := defaultFixture()
+		fixture.Control = nil
+		policy, err := ValidatePolicy(mustMarshal(t, fixture), defaultTask(), "run-1", validator)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !policy.LegacyControl || policy.AutonomyProfile != AutonomySupervised || policy.AllowMediatedSteering ||
+			policy.DirectPTYPolicy != DirectPTYDeny || policy.MaxSteeringRounds != 0 ||
+			!slices.Equal(policy.RequiredApprovals, []string{ApprovalGatePlan, ApprovalGatePublish}) {
+			t.Fatalf("legacy control policy = %+v", policy)
+		}
+		policy.RequiredApprovals[0] = "mutated"
+		again, err := ValidatePolicy(mustMarshal(t, fixture), defaultTask(), "run-1", validator)
+		if err != nil || again.RequiredApprovals[0] != ApprovalGatePlan {
+			t.Fatalf("legacy approval slice was not isolated: %+v, %v", again.RequiredApprovals, err)
+		}
+	})
+
+	for _, test := range []struct {
+		name    string
+		mutate  func(*fixtureControl)
+		wantErr string
+	}{
+		{"balanced missing publish", func(control *fixtureControl) { control.RequiredApprovals = []string{ApprovalGatePlan} }, ErrPolicyControlGates},
+		{"supervised missing plan", func(control *fixtureControl) {
+			control.AutonomyProfile = AutonomySupervised
+			control.RequiredApprovals = []string{ApprovalGatePublish}
+		}, ErrPolicyControlGates},
+		{"autonomous has approval", func(control *fixtureControl) {
+			control.AutonomyProfile = AutonomyAutonomous
+		}, ErrPolicyControlGates},
+		{"steering disabled with budget", func(control *fixtureControl) { control.AllowMediatedSteering = false }, ErrPolicySteering},
+		{"steering enabled without budget", func(control *fixtureControl) { control.MaxSteeringRounds = 0 }, ErrPolicySteering},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := defaultFixture()
+			test.mutate(fixture.Control)
+			assertPolicyError(t, mustMarshal(t, fixture), defaultTask(), "run-1", validator, test.wantErr)
+		})
+	}
+
+	t.Run("autonomous without approvals", func(t *testing.T) {
+		fixture := defaultFixture()
+		fixture.Control.AutonomyProfile = AutonomyAutonomous
+		fixture.Control.RequiredApprovals = []string{}
+		if _, err := ValidatePolicy(mustMarshal(t, fixture), defaultTask(), "run-1", validator); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*fixtureControl)
+	}{
+		{"unknown autonomy profile", func(control *fixtureControl) { control.AutonomyProfile = "unbounded" }},
+		{"unknown direct PTY policy", func(control *fixtureControl) { control.DirectPTYPolicy = "unrecorded" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := defaultFixture()
+			test.mutate(fixture.Control)
+			assertPolicyError(t, mustMarshal(t, fixture), defaultTask(), "run-1", validator, ErrPolicySchemaInvalid)
+		})
+	}
 }
 
 func TestValidatePolicyProfile(t *testing.T) {

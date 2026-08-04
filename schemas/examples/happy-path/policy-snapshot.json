@@ -23,6 +23,13 @@
     "environmentAllowlist": ["PATH", "LANG", "TMPDIR"],
     "retentionDays": 30
   },
+  "control": {
+    "autonomyProfile": "balanced",
+    "requiredApprovals": ["plan", "publish"],
+    "allowMediatedSteering": true,
+    "directPtyPolicy": "record-and-reverify",
+    "maxSteeringRounds": 4
+  },
   "policyDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "generatedAt": "2026-08-03T10:00:01Z"
 }
