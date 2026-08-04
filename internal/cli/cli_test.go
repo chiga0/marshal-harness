@@ -129,6 +129,112 @@ func TestDoctorCanceledContextDoesNotProbeWorkers(t *testing.T) {
 	}
 }
 
+func TestDoctorRejectsInvalidRunBeforeWorkerProbe(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "probed")
+	executable := filepath.Join(t.TempDir(), "opencode")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n: > \""+marker+"\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MARSHAL_OPENCODE_PATH", executable)
+	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_PI_PATH", "")
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"doctor", "--run", "../escape", "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitUsage {
+		t.Fatalf("doctor exit = %d, stderr = %s", exit, stderr.String())
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("invalid request probed worker: %v", err)
+	}
+}
+
+func TestDoctorRunReconcilesEvidenceAndBlocksCorruption(t *testing.T) {
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot := t.TempDir()
+	repositoryRoot, err = filepath.EvalSymlinks(repositoryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repositoryRoot, "init", "-q", "-b", "main")
+	runGit(t, repositoryRoot, "config", "user.email", "marshal@example.invalid")
+	runGit(t, repositoryRoot, "config", "user.name", "Marshal Test")
+	if err := os.WriteFile(filepath.Join(repositoryRoot, "README.md"), []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repositoryRoot, "add", "README.md")
+	runGit(t, repositoryRoot, "commit", "-q", "-m", "fixture")
+	const remoteURL = "https://example.invalid/marshal-doctor-run.git"
+	runGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	if err := os.Chdir(repositoryRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"init"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
+	}
+	executable := filepath.Join(t.TempDir(), "opencode")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf '1.18.12\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MARSHAL_OPENCODE_PATH", executable)
+	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_PI_PATH", "")
+	const (
+		taskID = "doctor-run-task"
+		runID  = "doctor-run-01"
+	)
+	taskPath := filepath.Join(t.TempDir(), "task.json")
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	writeCLIFixture(t, taskPath, cliPlanningTask(t, repositoryRoot, taskID, remoteURL))
+	writeCLIFixture(t, policyPath, cliPlanningPolicy(t, taskID, runID))
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("plan exit = %d, stderr = %s", exit, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"doctor", "--run", runID, "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("doctor exit = %d, stdout = %s, stderr = %s", exit, stdout.String(), stderr.String())
+	}
+	var healthy doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &healthy); err != nil {
+		t.Fatal(err)
+	}
+	if healthy.Status != "ok" || healthy.Run == nil || healthy.Run.Status != "ok" || len(healthy.Run.Findings) != 0 {
+		t.Fatalf("healthy report = %+v", healthy)
+	}
+
+	capabilityPath := filepath.Join(repositoryRoot, ".marshal", "runs", runID, "capability-snapshot.json")
+	if err := os.WriteFile(capabilityPath, []byte(`{"secret":"must-not-leak"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"doctor", "--run", runID, "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitFailure {
+		t.Fatalf("corrupt doctor exit = %d, stderr = %s", exit, stderr.String())
+	}
+	var corrupt doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &corrupt); err != nil {
+		t.Fatal(err)
+	}
+	if corrupt.Status != "blocked" || corrupt.Run == nil {
+		t.Fatalf("corrupt report = %+v", corrupt)
+	}
+	found := false
+	for _, finding := range corrupt.Run.Findings {
+		found = found || finding.Code == "capability-snapshot-invalid"
+	}
+	if !found || strings.Contains(stdout.String()+stderr.String(), "must-not-leak") || strings.Contains(stdout.String()+stderr.String(), capabilityPath) {
+		t.Fatalf("unsafe corrupt report: %s%s", stdout.String(), stderr.String())
+	}
+}
+
 func TestContractValidateFromStandardInput(t *testing.T) {
 	t.Parallel()
 

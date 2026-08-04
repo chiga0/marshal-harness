@@ -25,6 +25,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/publication"
 	githubpublisher "github.com/chiga0/marshal-harness/internal/publisher/github"
+	"github.com/chiga0/marshal-harness/internal/reconciliation"
 	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
@@ -122,16 +123,33 @@ type doctorWorker struct {
 	BinaryVersion       string `json:"binaryVersion,omitempty"`
 }
 
+type doctorReport struct {
+	Status          string                 `json:"status"`
+	Build           buildinfo.Info         `json:"build"`
+	ContractSchemas int                    `json:"contractSchemas"`
+	WorkerAdapters  int                    `json:"workerAdapters"`
+	Milestone       string                 `json:"milestone"`
+	Workers         []doctorWorker         `json:"workers"`
+	Run             *reconciliation.Report `json:"run,omitempty"`
+}
+
 func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	runID := flags.String("run", "", "核验指定 Run 的本地证据")
 	if err := flags.Parse(args); err != nil {
 		return ExitUsage
 	}
 	if flags.NArg() != 0 {
 		fmt.Fprintln(stderr, "doctor 不接受位置参数。")
 		return ExitUsage
+	}
+	if *runID != "" {
+		if err := domain.ValidateID(*runID); err != nil {
+			fmt.Fprintln(stderr, "doctor 失败：Run ID 无效。")
+			return ExitUsage
+		}
 	}
 	application, err := app.New()
 	if err != nil {
@@ -144,14 +162,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return ExitFailure
 	}
 	workers := doctorWorkers(ctx, runtime)
-	report := struct {
-		Status          string         `json:"status"`
-		Build           buildinfo.Info `json:"build"`
-		ContractSchemas int            `json:"contractSchemas"`
-		WorkerAdapters  int            `json:"workerAdapters"`
-		Milestone       string         `json:"milestone"`
-		Workers         []doctorWorker `json:"workers"`
-	}{
+	report := doctorReport{
 		Status:          "ok",
 		Build:           buildinfo.Current(),
 		ContractSchemas: application.ContractCount(),
@@ -159,12 +170,32 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		Milestone:       "6",
 		Workers:         workers,
 	}
+	if *runID != "" {
+		location, err := repository.Discover(".")
+		if err != nil || location.ValidateIdentity() != nil {
+			fmt.Fprintln(stderr, "doctor 失败：无法验证仓库身份。")
+			return ExitFailure
+		}
+		runReport, err := reconciliation.Inspect(ctx, reconciliation.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Validator: runtime.Validator()})
+		if err != nil {
+			fmt.Fprintln(stderr, "doctor 失败：无法核验本地 Run 证据。")
+			return ExitFailure
+		}
+		report.Run = &runReport
+		if runReport.Status != "ok" {
+			report.Status = runReport.Status
+		}
+	}
+	exitCode := ExitOK
+	if report.Run != nil && report.Run.Status == "blocked" {
+		exitCode = ExitFailure
+	}
 	if *jsonOutput {
 		if err := writeJSON(stdout, report); err != nil {
 			fmt.Fprintf(stderr, "输出 doctor 报告失败：%v\n", err)
 			return ExitFailure
 		}
-		return ExitOK
+		return exitCode
 	}
 	fmt.Fprintf(stdout, "状态：%s\nSchema：%d 份已编译\n已注册 Worker Adapter：%d\n", report.Status, report.ContractSchemas, report.WorkerAdapters)
 	for _, worker := range report.Workers {
@@ -174,7 +205,13 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		}
 		fmt.Fprintln(stdout)
 	}
-	return ExitOK
+	if report.Run != nil {
+		fmt.Fprintf(stdout, "Run %s：%s（Snapshot %d / Journal %d）\n", report.Run.RunID, report.Run.Status, report.Run.SnapshotSequence, report.Run.JournalSequence)
+		for _, finding := range report.Run.Findings {
+			fmt.Fprintf(stdout, "诊断：%s / %s / repairable=%t\n", finding.Code, finding.Severity, finding.Repairable)
+		}
+	}
+	return exitCode
 }
 
 func doctorWorkers(ctx context.Context, runtime *app.WorkerRuntime) []doctorWorker {
@@ -1039,7 +1076,7 @@ func writeUsage(output io.Writer) {
 
 用法：
   marshal version [--json]
-  marshal doctor [--json]
+  marshal doctor [--run RUN_ID] [--json]
   marshal init [--json]
   marshal contract validate [--schema NAME] <PATH|->
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
