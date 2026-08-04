@@ -1,0 +1,17 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "InterventionRecord",
+  "recordId": "intervention-01",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "controlSequence": 2,
+  "stateSequence": 8,
+  "attemptId": "attempt-01",
+  "category": "clarification",
+  "source": { "type": "human", "id": "operator-01" },
+  "effect": "continue",
+  "instruction": "Run the acceptance commands from the repository root without changing the working directory.",
+  "instructionDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "steeringRound": 1,
+  "createdAt": "2026-08-04T10:10:00Z"
+}

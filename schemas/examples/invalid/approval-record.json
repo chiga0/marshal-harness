@@ -1,0 +1,20 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "ApprovalRecord",
+  "recordId": "approval-invalid-01",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "controlSequence": 1,
+  "gate": "plan",
+  "source": { "type": "human", "id": "operator-01" },
+  "binding": {
+    "stateSequence": 2,
+    "specDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "policyDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "capabilityDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "baseSha": "0123456789abcdef0123456789abcdef01234567",
+    "reviewRound": 1
+  },
+  "outcome": "approved",
+  "createdAt": "2026-08-04T10:20:00Z"
+}

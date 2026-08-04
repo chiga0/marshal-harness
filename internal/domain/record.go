@@ -34,6 +34,8 @@ const (
 	KindPublicationIntent  Kind = "PublicationIntent"
 	KindPublicationRecord  Kind = "PublicationRecord"
 	KindRemoteCheckRecord  Kind = "RemoteCheckRecord"
+	KindApprovalRecord     Kind = "ApprovalRecord"
+	KindInterventionRecord Kind = "InterventionRecord"
 )
 
 var kinds = []Kind{
@@ -52,6 +54,8 @@ var kinds = []Kind{
 	KindPublicationIntent,
 	KindPublicationRecord,
 	KindRemoteCheckRecord,
+	KindApprovalRecord,
+	KindInterventionRecord,
 }
 
 // Kinds returns all durable record kinds in stable order.

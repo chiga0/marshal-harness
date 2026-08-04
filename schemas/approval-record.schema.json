@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/approval-record.schema.json",
+  "title": "Marshal ApprovalRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "recordId",
+    "taskId",
+    "runId",
+    "controlSequence",
+    "gate",
+    "source",
+    "binding",
+    "outcome",
+    "createdAt"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "ApprovalRecord" },
+    "recordId": { "$ref": "#/$defs/id" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "controlSequence": { "type": "integer", "minimum": 1 },
+    "gate": { "type": "string", "enum": ["plan", "publish"] },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "const": "human" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stateSequence", "specDigest", "policyDigest", "capabilityDigest", "baseSha"],
+      "properties": {
+        "stateSequence": { "type": "integer", "minimum": 0 },
+        "specDigest": { "$ref": "#/$defs/digest" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "capabilityDigest": { "$ref": "#/$defs/digest" },
+        "baseSha": { "$ref": "#/$defs/sha" },
+        "reviewRound": { "type": "integer", "minimum": 1 },
+        "decisionDigest": { "$ref": "#/$defs/digest" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "outcome": { "const": "approved" },
+    "createdAt": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "gate": { "const": "plan" } },
+        "required": ["gate"]
+      },
+      "then": {
+        "properties": {
+          "binding": {
+            "not": {
+              "anyOf": [
+                { "required": ["reviewRound"] },
+                { "required": ["decisionDigest"] },
+                { "required": ["evidenceDigest"] }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "gate": { "const": "publish" } },
+        "required": ["gate"]
+      },
+      "then": {
+        "properties": {
+          "binding": { "required": ["reviewRound", "decisionDigest", "evidenceDigest"] }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/intervention-record.schema.json",
+  "title": "Marshal InterventionRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "recordId",
+    "taskId",
+    "runId",
+    "controlSequence",
+    "stateSequence",
+    "category",
+    "source",
+    "effect",
+    "createdAt"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "InterventionRecord" },
+    "recordId": { "$ref": "#/$defs/id" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "controlSequence": { "type": "integer", "minimum": 1 },
+    "stateSequence": { "type": "integer", "minimum": 0 },
+    "attemptId": { "$ref": "#/$defs/id" },
+    "category": {
+      "type": "string",
+      "enum": [
+        "clarification",
+        "implementation-correction",
+        "scope-change",
+        "manual-pty",
+        "pause",
+        "resume",
+        "abort"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "type": "string", "enum": ["human", "lead-agent", "terminal-hook"] },
+        "id": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "effect": {
+      "type": "string",
+      "enum": [
+        "continue",
+        "new-run-required",
+        "required-reverification",
+        "paused",
+        "resumed",
+        "abort-requested"
+      ]
+    },
+    "instruction": { "type": "string", "minLength": 1, "maxLength": 32768 },
+    "instructionDigest": { "$ref": "#/$defs/digest" },
+    "steeringRound": { "type": "integer", "minimum": 1 },
+    "createdAt": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "category": { "enum": ["clarification", "implementation-correction"] } },
+        "required": ["category"]
+      },
+      "then": {
+        "required": ["attemptId", "instruction", "instructionDigest", "steeringRound"],
+        "properties": { "effect": { "const": "continue" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "category": { "const": "scope-change" } },
+        "required": ["category"]
+      },
+      "then": {
+        "required": ["instruction", "instructionDigest"],
+        "properties": { "effect": { "const": "new-run-required" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "category": { "const": "manual-pty" } },
+        "required": ["category"]
+      },
+      "then": {
+        "required": ["attemptId"],
+        "properties": { "effect": { "const": "required-reverification" } },
+        "not": {
+          "anyOf": [
+            { "required": ["instruction"] },
+            { "required": ["instructionDigest"] },
+            { "required": ["steeringRound"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "category": { "const": "pause" } },
+        "required": ["category"]
+      },
+      "then": {
+        "required": ["attemptId"],
+        "properties": { "effect": { "const": "paused" } },
+        "not": {
+          "anyOf": [
+            { "required": ["instruction"] },
+            { "required": ["instructionDigest"] },
+            { "required": ["steeringRound"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "category": { "const": "resume" } },
+        "required": ["category"]
+      },
+      "then": {
+        "required": ["attemptId"],
+        "properties": { "effect": { "const": "resumed" } },
+        "not": {
+          "anyOf": [
+            { "required": ["instruction"] },
+            { "required": ["instructionDigest"] },
+            { "required": ["steeringRound"] }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "category": { "const": "abort" } },
+        "required": ["category"]
+      },
+      "then": {
+        "properties": { "effect": { "const": "abort-requested" } },
+        "not": {
+          "anyOf": [
+            { "required": ["instruction"] },
+            { "required": ["instructionDigest"] },
+            { "required": ["steeringRound"] }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

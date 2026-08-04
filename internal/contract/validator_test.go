@@ -72,6 +72,92 @@ func TestExplicitKindRejectsMismatchedRecord(t *testing.T) {
 	}
 }
 
+func TestControlContractConditionalFields(t *testing.T) {
+	t.Parallel()
+
+	validator := mustValidator(t)
+	tests := []struct {
+		name    string
+		fixture string
+		kind    domain.Kind
+		mutate  func(map[string]any)
+		valid   bool
+	}{
+		{
+			name:    "plan approval forbids publish evidence",
+			fixture: "examples/happy-path/approval-record.json", kind: domain.KindApprovalRecord,
+			mutate: func(document map[string]any) { document["gate"] = "plan" },
+		},
+		{
+			name:    "publish approval requires review round",
+			fixture: "examples/happy-path/approval-record.json", kind: domain.KindApprovalRecord,
+			mutate: func(document map[string]any) { delete(document["binding"].(map[string]any), "reviewRound") },
+		},
+		{
+			name:    "minimal plan approval",
+			fixture: "examples/happy-path/approval-record.json", kind: domain.KindApprovalRecord, valid: true,
+			mutate: func(document map[string]any) {
+				document["gate"] = "plan"
+				binding := document["binding"].(map[string]any)
+				delete(binding, "reviewRound")
+				delete(binding, "decisionDigest")
+				delete(binding, "evidenceDigest")
+			},
+		},
+		{
+			name:    "clarification requires steering round",
+			fixture: "examples/happy-path/intervention-record.json", kind: domain.KindInterventionRecord,
+			mutate: func(document map[string]any) { delete(document, "steeringRound") },
+		},
+		{
+			name:    "manual PTY forbids instruction digest",
+			fixture: "examples/happy-path/intervention-record.json", kind: domain.KindInterventionRecord,
+			mutate: func(document map[string]any) {
+				document["category"] = "manual-pty"
+				document["effect"] = "required-reverification"
+				delete(document, "instruction")
+				delete(document, "steeringRound")
+			},
+		},
+		{
+			name:    "pause forbids orphan steering round",
+			fixture: "examples/happy-path/intervention-record.json", kind: domain.KindInterventionRecord,
+			mutate: func(document map[string]any) {
+				document["category"] = "pause"
+				document["effect"] = "paused"
+				delete(document, "instruction")
+				delete(document, "instructionDigest")
+			},
+		},
+		{
+			name:    "minimal resume intervention",
+			fixture: "examples/happy-path/intervention-record.json", kind: domain.KindInterventionRecord, valid: true,
+			mutate: func(document map[string]any) {
+				document["category"] = "resume"
+				document["effect"] = "resumed"
+				delete(document, "instruction")
+				delete(document, "instructionDigest")
+				delete(document, "steeringRound")
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			data := mutateFixture(t, test.fixture, test.mutate)
+			err := validator.Validate(test.kind, data)
+			if test.valid && err != nil {
+				t.Fatalf("Validate() error = %v, want valid record", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("Validate() unexpectedly accepted invalid conditional fields")
+			}
+		})
+	}
+}
+
 func TestRelativePathSchemaRejectsBackslash(t *testing.T) {
 	t.Parallel()
 

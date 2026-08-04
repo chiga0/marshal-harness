@@ -1,0 +1,15 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "InterventionRecord",
+  "recordId": "intervention-invalid-01",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "controlSequence": 3,
+  "stateSequence": 8,
+  "attemptId": "attempt-01",
+  "category": "pause",
+  "source": { "type": "lead-agent", "id": "codex" },
+  "effect": "paused",
+  "instructionDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "createdAt": "2026-08-04T10:30:00Z"
+}
