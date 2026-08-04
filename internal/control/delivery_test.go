@@ -34,8 +34,14 @@ func (s *fakeTerminalSession) Send(_ context.Context, _ port.TerminalInputSource
 }
 func (*fakeTerminalSession) ReadScreen(context.Context, int) (string, error) { return "", nil }
 func (*fakeTerminalSession) InterruptStep(context.Context) error             { return nil }
-func (*fakeTerminalSession) Pause(context.Context) error                     { return nil }
-func (*fakeTerminalSession) Resume(context.Context) error                    { return nil }
+func (s *fakeTerminalSession) Pause(context.Context) error {
+	s.state = port.TerminalPaused
+	return nil
+}
+func (s *fakeTerminalSession) Resume(context.Context) error {
+	s.state = port.TerminalRunning
+	return nil
+}
 func (s *fakeTerminalSession) Terminate(context.Context, time.Duration) error {
 	if s.terminateErr != nil {
 		return s.terminateErr
@@ -107,6 +113,37 @@ func TestApplyScopeChangeTerminatesBoundSession(t *testing.T) {
 	state, err := runstore.New(fixture.root).Inspect(fixture.runID)
 	if err != nil || state.State != domain.StateAborted || state.TerminalReason == "" {
 		t.Fatalf("scope-changed state=%+v error=%v", state, err)
+	}
+}
+
+func TestApplyPauseResumeAndAbort(t *testing.T) {
+	t.Parallel()
+	fixture := newApprovalFixture(t, nil, false)
+	advanceFixtureToRunning(t, fixture)
+	session := boundFakeSession(fixture.runID)
+
+	pause := fixture.interventionInput(domain.InterventionCategoryPause, "")
+	pauseRecord, err := ApplyIntervention(context.Background(), session, pause, time.Second)
+	if err != nil || session.state != port.TerminalPaused || pauseRecord.Effect != domain.InterventionEffectPaused {
+		t.Fatalf("pause session=%+v record=%+v error=%v", session, pauseRecord, err)
+	}
+	resume := fixture.interventionInput(domain.InterventionCategoryResume, "")
+	resumeRecord, err := ApplyIntervention(context.Background(), session, resume, time.Second)
+	if err != nil || session.state != port.TerminalRunning || resumeRecord.Effect != domain.InterventionEffectResumed {
+		t.Fatalf("resume session=%+v record=%+v error=%v", session, resumeRecord, err)
+	}
+	abort := fixture.interventionInput(domain.InterventionCategoryAbort, "")
+	abortRecord, err := ApplyIntervention(context.Background(), session, abort, time.Second)
+	if err != nil || !session.terminated || abortRecord.Effect != domain.InterventionEffectAbortRequested {
+		t.Fatalf("abort session=%+v record=%+v error=%v", session, abortRecord, err)
+	}
+	state, err := runstore.New(fixture.root).Inspect(fixture.runID)
+	if err != nil || state.State != domain.StateAborted {
+		t.Fatalf("aborted state=%+v error=%v", state, err)
+	}
+	records, err := runstore.New(fixture.root).ReadControlRecords(fixture.runID, fixture.validator)
+	if err != nil || len(records) != 3 {
+		t.Fatalf("control records=%+v error=%v", records, err)
 	}
 }
 

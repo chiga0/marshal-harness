@@ -70,6 +70,29 @@ func ApplyIntervention(ctx context.Context, session port.TerminalSession, input 
 	case domain.InterventionCategoryManualPTY:
 		// The terminal hook reports an input that already happened. Policy
 		// validation above marks the Attempt for mandatory reverification.
+	case domain.InterventionCategoryPause:
+		if err := requireBoundSession(session, input.RunID, input.AttemptID, port.TerminalRunning); err != nil {
+			return domain.InterventionRecord{}, err
+		}
+		if err := session.Pause(ctx); err != nil {
+			return domain.InterventionRecord{}, errors.Join(ErrTerminalDelivery, err)
+		}
+	case domain.InterventionCategoryResume:
+		if err := requireBoundSession(session, input.RunID, input.AttemptID, port.TerminalPaused); err != nil {
+			return domain.InterventionRecord{}, err
+		}
+		if err := session.Resume(ctx); err != nil {
+			return domain.InterventionRecord{}, errors.Join(ErrTerminalDelivery, err)
+		}
+	case domain.InterventionCategoryAbort:
+		if record.AttemptID != "" {
+			if err := requireBoundSession(session, input.RunID, input.AttemptID, port.TerminalRunning, port.TerminalPaused); err != nil {
+				return domain.InterventionRecord{}, err
+			}
+			if err := session.Terminate(ctx, terminateGrace); err != nil {
+				return domain.InterventionRecord{}, errors.Join(ErrTerminalDelivery, err)
+			}
+		}
 	default:
 		return domain.InterventionRecord{}, ErrInvalidControlInput
 	}
@@ -77,15 +100,15 @@ func ApplyIntervention(ctx context.Context, session port.TerminalSession, input 
 	if err := store.AppendIntervention(lease, input.Validator, record); err != nil {
 		return domain.InterventionRecord{}, err
 	}
-	if input.Category == domain.InterventionCategoryScopeChange {
-		if err := abortScopeChangedRun(store, lease, input); err != nil {
+	if input.Category == domain.InterventionCategoryScopeChange || input.Category == domain.InterventionCategoryAbort {
+		if err := abortControlledRun(store, lease, input); err != nil {
 			return record, err
 		}
 	}
 	return record, nil
 }
 
-func abortScopeChangedRun(store *runstore.Store, lease *runstore.Lease, input InterventionInput) error {
+func abortControlledRun(store *runstore.Store, lease *runstore.Lease, input InterventionInput) error {
 	state, err := store.Inspect(input.RunID)
 	if err != nil {
 		return err
@@ -94,6 +117,10 @@ func abortScopeChangedRun(store *runstore.Store, lease *runstore.Lease, input In
 	if err != nil {
 		return err
 	}
+	eventType, reason := "control.abort-completed", "run aborted by an authorized control request"
+	if input.Category == domain.InterventionCategoryScopeChange {
+		eventType, reason = "control.scope-change-aborted", "scope change requires a new run"
+	}
 	event := domain.RunEvent{
 		APIVersion: domain.APIVersionV1Alpha1,
 		Kind:       domain.KindRunEvent,
@@ -101,13 +128,13 @@ func abortScopeChangedRun(store *runstore.Store, lease *runstore.Lease, input In
 		RunID:      state.RunID,
 		AttemptID:  state.CurrentAttemptID,
 		Sequence:   state.Sequence + 1,
-		Type:       "control.scope-change-aborted",
+		Type:       eventType,
 		StateFrom:  state.State,
 		StateTo:    domain.StateAborted,
 		Timestamp:  input.Now.UTC(),
 		Actor:      &domain.Actor{Type: "system", ID: "marshal-control-plane"},
 		Payload: map[string]any{
-			"terminalReason": "scope change requires a new run",
+			"terminalReason": reason,
 		},
 	}
 	next, err := lifecycle.Reduce(state, event, lifecycle.Guard{

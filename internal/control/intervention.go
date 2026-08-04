@@ -124,6 +124,27 @@ func prepareIntervention(store *runstore.Store, input InterventionInput) (domain
 		}
 		record.AttemptID = input.AttemptID
 		record.Effect = domain.InterventionEffectRequiredReverification
+	case domain.InterventionCategoryPause, domain.InterventionCategoryResume:
+		if context.state.State != domain.StateRunning || input.AttemptID == "" || input.AttemptID != context.state.CurrentAttemptID {
+			return domain.InterventionRecord{}, ErrInterventionUnavailable
+		}
+		record.AttemptID = input.AttemptID
+		if input.Category == domain.InterventionCategoryPause {
+			record.Effect = domain.InterventionEffectPaused
+		} else {
+			record.Effect = domain.InterventionEffectResumed
+		}
+	case domain.InterventionCategoryAbort:
+		if context.state.State.Terminal() {
+			return domain.InterventionRecord{}, ErrInterventionUnavailable
+		}
+		if context.state.State == domain.StateRunning {
+			if input.AttemptID == "" || input.AttemptID != context.state.CurrentAttemptID {
+				return domain.InterventionRecord{}, ErrInterventionUnavailable
+			}
+			record.AttemptID = input.AttemptID
+		}
+		record.Effect = domain.InterventionEffectAbortRequested
 	default:
 		return domain.InterventionRecord{}, ErrInvalidControlInput
 	}
@@ -156,6 +177,10 @@ func validateInterventionInput(input InterventionInput) error {
 		}
 	case domain.InterventionCategoryManualPTY:
 		if hasInstruction || input.SourceType == domain.ControlSourceTypeLeadAgent {
+			return ErrInvalidControlInput
+		}
+	case domain.InterventionCategoryPause, domain.InterventionCategoryResume, domain.InterventionCategoryAbort:
+		if hasInstruction || input.SourceType == domain.ControlSourceTypeTerminalHook {
 			return ErrInvalidControlInput
 		}
 	default:
