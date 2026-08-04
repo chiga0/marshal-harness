@@ -22,6 +22,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/repository"
+	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/verification"
 )
@@ -133,7 +134,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		Build:           buildinfo.Current(),
 		ContractSchemas: application.ContractCount(),
 		WorkerAdapters:  application.AdapterCount(),
-		Milestone:       "2",
+		Milestone:       "3",
 	}
 	if *jsonOutput {
 		if err := writeJSON(stdout, report); err != nil {
@@ -236,6 +237,9 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if args[0] == "verify" {
 		return runTaskVerify(ctx, args[1:], stdout, stderr)
+	}
+	if args[0] == "review" {
+		return runTaskReview(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) != 1 {
 		return ExitUsage
@@ -352,12 +356,22 @@ func runTaskVerify(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "验证失败：摘要报告：%v\n", err)
 		return ExitFailure
 	}
+	manifestData, err := json.Marshal(result.Manifest)
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：编码 ArtifactManifest：%v\n", err)
+		return ExitFailure
+	}
+	manifestDigest, err := canonical.DigestJSON(manifestData)
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：摘要 ArtifactManifest：%v\n", err)
+		return ExitFailure
+	}
 	eventID, err := domain.NewID("event")
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：生成事件 ID：%v\n", err)
 		return ExitFailure
 	}
-	event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: eventID, RunID: state.RunID, Sequence: state.Sequence + 1, Type: "verification.completed", StateFrom: state.State, StateTo: domain.StateReviewPending, Timestamp: result.Report.CompletedAt, Actor: &domain.Actor{Type: "system", ID: "marshal-verifier"}, Payload: map[string]any{"reportDigest": reportDigest, "status": result.Report.Status}}
+	event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: eventID, RunID: state.RunID, Sequence: state.Sequence + 1, Type: "verification.completed", StateFrom: state.State, StateTo: domain.StateReviewPending, Timestamp: result.Report.CompletedAt, Actor: &domain.Actor{Type: "system", ID: "marshal-verifier"}, Payload: map[string]any{"reportDigest": reportDigest, "artifactManifestDigest": manifestDigest, "status": result.Report.Status}}
 	nextState, err := lifecycle.Reduce(state, event, lifecycle.Guard{LeaseHeld: true, EvidenceCurrent: true, ReportComplete: true})
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：生命周期转换：%v\n", err)
@@ -399,6 +413,242 @@ func commandsNeedBaseline(commands []verification.CommandSpec) bool {
 		}
 	}
 	return false
+}
+
+func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task review", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	runID := flags.String("run", "", "Run ID")
+	decisionPath := flags.String("decision", "", "ReviewDecision JSON 路径")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
+		fmt.Fprintln(stderr, "用法：marshal task review --run RUN_ID [--decision PATH] [--json]")
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	if err := location.ValidateIdentity(); err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	store := runstore.New(location.StateRoot)
+	lease, err := store.Acquire(*runID)
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	defer lease.Release()
+	state, err := store.Inspect(*runID)
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	if state.State != domain.StateReviewPending {
+		fmt.Fprintf(stderr, "审查失败：Run 状态为 %s，要求 REVIEW_PENDING。\n", state.State)
+		return ExitFailure
+	}
+	runDirectory := filepath.Join(location.StateRoot, "runs", *runID)
+	taskData, err := readInput(filepath.Join(runDirectory, "task-spec.json"), strings.NewReader(""))
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：读取冻结 TaskSpec：%v\n", err)
+		return ExitFailure
+	}
+	taskDigest, err := canonical.DigestJSON(taskData)
+	if err != nil || taskDigest != state.SpecDigest {
+		fmt.Fprintln(stderr, "审查失败：TaskSpec 摘要与冻结 Run 不一致。")
+		return ExitFailure
+	}
+	application, err := app.New()
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	task, err := application.ParseTaskSpec(taskData)
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	if task.Metadata.ID != state.TaskID {
+		fmt.Fprintln(stderr, "审查失败：TaskSpec 与 Run 身份不一致。")
+		return ExitFailure
+	}
+	verificationData, err := readInput(filepath.Join(runDirectory, "verification-report.json"), strings.NewReader(""))
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：读取 VerificationReport：%v\n", err)
+		return ExitFailure
+	}
+	if err := application.ValidateContract(domain.KindVerificationReport, verificationData); err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	var report verification.Report
+	if err := json.Unmarshal(verificationData, &report); err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	manifestData, err := readInput(filepath.Join(runDirectory, "artifact-manifest.json"), strings.NewReader(""))
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：读取 ArtifactManifest：%v\n", err)
+		return ExitFailure
+	}
+	if err := application.ValidateContract(domain.KindArtifactManifest, manifestData); err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	var manifest verification.ArtifactManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	frozenReportDigest, frozenManifestDigest, err := frozenVerificationDigests(store, state.RunID)
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	currentReportDigest, err := canonical.DigestJSON(verificationData)
+	if err != nil || currentReportDigest != frozenReportDigest {
+		fmt.Fprintln(stderr, "审查失败：VerificationReport 与 verification.completed 冻结摘要不一致。")
+		return ExitFailure
+	}
+	currentManifestDigest, err := canonical.DigestJSON(manifestData)
+	if err != nil || currentManifestDigest != frozenManifestDigest {
+		fmt.Fprintln(stderr, "审查失败：ArtifactManifest 与 verification.completed 冻结摘要不一致。")
+		return ExitFailure
+	}
+	repositoryIdentity, err := gitworktree.Open(location.RepositoryRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	worktreeLease, err := repositoryIdentity.Acquire(location.StateRoot, state.TaskID, state.WorktreePath, state.BaseSHA)
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	defer worktreeLease.Release()
+	observation, err := verification.ObserveContext(ctx, state.WorktreePath, state.BaseSHA, patchCaptureLimit(task.Scope.MaxDiffBytes))
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：重新观察 Worktree：%v\n", err)
+		return ExitFailure
+	}
+	if err := review.ValidateCurrentObservation(report, observation); err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	if *decisionPath == "" {
+		builder := review.PacketBuilder{RunDirectory: runDirectory, Validator: validator}
+		packet, packetDigest, err := builder.Build(review.PacketBuildInput{Task: task, TaskData: taskData, Report: report, ReportData: verificationData, Manifest: manifest, ManifestData: manifestData, TaskID: state.TaskID, RunID: state.RunID, SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, ReviewRound: state.ReviewRound, AttemptsUsed: state.AttemptsUsed})
+		if err != nil {
+			fmt.Fprintf(stderr, "审查失败：生成 ReviewPacket：%v\n", err)
+			return ExitFailure
+		}
+		if *jsonOutput {
+			if err := writeJSON(stdout, struct {
+				Status        string               `json:"status"`
+				PacketDigest  string               `json:"packetDigest"`
+				Packet        *domain.ReviewPacket `json:"packet"`
+				PromptVersion string               `json:"promptVersion"`
+			}{"generated", packetDigest, packet, review.PromptVersion}); err != nil {
+				fmt.Fprintf(stderr, "输出 ReviewPacket 失败：%v\n", err)
+				return ExitFailure
+			}
+		} else {
+			fmt.Fprintf(stdout, "已生成 ReviewPacket：%s\n摘要：%s\n审查轮次：%d\n", filepath.Join(runDirectory, "review-packet.json"), packetDigest, state.ReviewRound)
+		}
+		return ExitOK
+	}
+	importer := review.DecisionImporter{RunDirectory: runDirectory, Validator: validator}
+	result, err := importer.Import(review.DecisionInput{Path: *decisionPath, Task: task, TaskID: state.TaskID, RunID: state.RunID, SpecDigest: state.SpecDigest, ReviewRound: state.ReviewRound, AttemptsUsed: state.AttemptsUsed, ReworkRoundsUsed: state.ReworkRoundsUsed, Report: report, Manifest: manifest})
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：导入 Decision：%v\n", err)
+		return ExitFailure
+	}
+	eventID, err := domain.NewID("event")
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	timestamp := time.Now().UTC()
+	eventType := "review." + strings.ReplaceAll(result.Decision.Verdict, "_", "-")
+	if result.Decision.Verdict == "rework" && result.TargetState == domain.StateRejected {
+		eventType = "review.rework-budget-exhausted"
+	}
+	payload := map[string]any{"verdict": result.Decision.Verdict, "decisionDigest": result.DecisionDigest, "evidenceDigest": result.Decision.EvidenceDigest}
+	if result.TargetState.Terminal() {
+		reason := result.Decision.Summary
+		if result.BudgetExhausted && result.Decision.Verdict == "rework" {
+			reason = "Rework/Attempt 预算耗尽：" + reason
+		}
+		payload["terminalReason"] = reason
+	}
+	event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: eventID, RunID: state.RunID, Sequence: state.Sequence + 1, Type: eventType, StateFrom: state.State, StateTo: result.TargetState, Timestamp: timestamp, Actor: &domain.Actor{Type: "system", ID: "marshal-review"}, Payload: payload}
+	guard := lifecycle.Guard{LeaseHeld: true, EvidenceCurrent: true, RequiredGatesPass: report.Status == "pass", DecisionCurrent: true, NoChangeAllowed: task.Acceptance.AllowNoChange, BudgetAvailable: !result.BudgetExhausted}
+	nextState, err := lifecycle.Reduce(state, event, guard)
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：生命周期转换：%v\n", err)
+		return ExitFailure
+	}
+	outcome := review.TerminalOutcome(state.TaskID, state.RunID, result.TargetState, result, timestamp)
+	prepared, err := review.PrepareRecords(runDirectory, result, outcome)
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：准备持久化记录：%v\n", err)
+		return ExitFailure
+	}
+	if err := store.Append(lease, event, state.Sequence); err != nil {
+		prepared.Abort()
+		fmt.Fprintf(stderr, "审查失败：记录事件：%v\n", err)
+		return ExitFailure
+	}
+	if err := prepared.Commit(); err != nil {
+		fmt.Fprintf(stderr, "审查失败：提交审查记录：%v\n", err)
+		return ExitFailure
+	}
+	if err := store.WriteSnapshot(lease, nextState); err != nil {
+		fmt.Fprintf(stderr, "审查失败：写入状态快照：%v；Journal 与审查记录已保留，需执行恢复检查。\n", err)
+		return ExitFailure
+	}
+	if *jsonOutput {
+		if err := writeJSON(stdout, struct {
+			Status         string       `json:"status"`
+			Verdict        string       `json:"verdict"`
+			TargetState    domain.State `json:"targetState"`
+			DecisionDigest string       `json:"decisionDigest"`
+		}{"applied", result.Decision.Verdict, result.TargetState, result.DecisionDigest}); err != nil {
+			fmt.Fprintf(stderr, "输出决策结果失败：%v\n", err)
+			return ExitFailure
+		}
+	} else {
+		fmt.Fprintf(stdout, "Decision 已应用。\n结论：%s\n状态：REVIEW_PENDING → %s\n", result.Decision.Verdict, result.TargetState)
+	}
+	return ExitOK
+}
+
+func frozenVerificationDigests(store *runstore.Store, runID string) (string, string, error) {
+	events, _, err := store.ReadEvents(runID)
+	if err != nil {
+		return "", "", fmt.Errorf("读取验证事件：%w", err)
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type != "verification.completed" {
+			continue
+		}
+		reportDigest, reportOK := event.Payload["reportDigest"].(string)
+		manifestDigest, manifestOK := event.Payload["artifactManifestDigest"].(string)
+		if !reportOK || reportDigest == "" || !manifestOK || manifestDigest == "" {
+			return "", "", errors.New("verification.completed 缺少冻结的验证产物摘要")
+		}
+		return reportDigest, manifestDigest, nil
+	}
+	return "", "", errors.New("未找到 verification.completed 事件")
 }
 
 func runTaskStatus(args []string, stdout, stderr io.Writer) int {
@@ -477,7 +727,8 @@ func writeUsage(output io.Writer) {
   marshal contract validate [--schema NAME] <PATH|->
   marshal task status --run RUN_ID [--json]
   marshal task verify --run RUN_ID [--json]
+  marshal task review --run RUN_ID [--decision PATH] [--json]
   marshal task <COMMAND>
 
-Milestone 2 提供状态目录初始化、只读 Run Inspection 与独立 Verification；其余 task 命令尚不可用。`)
+Milestone 3 提供状态目录初始化、只读 Run Inspection、独立 Verification、File-based Review Bridge 与 Outcome；其余 task 命令尚不可用。`)
 }

@@ -5,10 +5,18 @@ type TaskSpec struct {
 	Kind         Kind              `json:"kind"`
 	Metadata     TaskMetadata      `json:"metadata"`
 	Repository   TaskRepository    `json:"repository"`
+	Work         TaskWork          `json:"work"`
 	Scope        TaskScope         `json:"scope"`
 	Acceptance   TaskAcceptance    `json:"acceptance"`
 	Deliverables []TaskDeliverable `json:"deliverables"`
 	Budgets      TaskBudgets       `json:"budgets"`
+	Publication  TaskPublication   `json:"publication"`
+}
+
+type TaskWork struct {
+	Objective   string   `json:"objective"`
+	Constraints []string `json:"constraints"`
+	NonGoals    []string `json:"nonGoals"`
 }
 
 type TaskMetadata struct {
@@ -56,6 +64,20 @@ type TaskDeliverable struct {
 }
 
 type TaskBudgets struct {
-	RunTimeoutSeconds int64 `json:"runTimeoutSeconds"`
-	MaxOutputBytes    int64 `json:"maxOutputBytes"`
+	RunTimeoutSeconds     int64 `json:"runTimeoutSeconds"`
+	AttemptTimeoutSeconds int64 `json:"attemptTimeoutSeconds"`
+	MaxAttempts           int   `json:"maxAttempts"`
+	MaxOperationalRetries int   `json:"maxOperationalRetries"`
+	MaxReworkRounds       int   `json:"maxReworkRounds"`
+	MaxOutputBytes        int64 `json:"maxOutputBytes"`
+}
+
+type TaskPublication struct {
+	Required       bool     `json:"required"`
+	Provider       string   `json:"provider"`
+	Mode           string   `json:"mode"`
+	Remote         string   `json:"remote"`
+	BaseBranch     string   `json:"baseBranch"`
+	MergePolicy    string   `json:"mergePolicy"`
+	RequiredChecks []string `json:"requiredChecks"`
 }

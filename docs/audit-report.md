@@ -1,6 +1,6 @@
 # 设计审计报告
 
-- 审计日期：2026-08-03
+- 审计日期：2026-08-04
 - 范围：当前文档与 `v1alpha1` Schema 描述的 Local CLI MVP
 - 结论：**`APPROVED_FOR_IMPLEMENTATION`**
 - 未关闭 Blocking Finding：无
@@ -40,9 +40,9 @@
 
 | 检查 | 结果 |
 | --- | --- |
-| JSON Parsing | 11 份 Schema 与 11 份 Happy-path Record 通过 |
-| Draft 2020-12 Metaschema | 11 份 Schema 通过 `check-jsonschema` |
-| Happy-path Validation | 11 份 Record 全部通过对应 Schema |
+| JSON Parsing | 12 份 Schema 与 12 份 Happy-path Record 通过 |
+| Draft 2020-12 Metaschema | 12 份 Schema 通过内置 Draft 2020-12 编译器 |
+| Happy-path Validation | 12 份 Record 全部通过对应 Schema |
 | Local `$ref` 与 Regex | 104 项 `$ref` 与 53 项 Regex 通过 |
 | Lifecycle/Schema State Alignment | 16 个 State 全部一致 |
 | Markdown Local Link | 通过 |
@@ -68,6 +68,8 @@ Schema 只承担结构校验。[`schemas/README.md`](../schemas/README.md) 中�
 | A-010 | P2 | macOS 的 `/var` 与 `/private/var` 别名会让有效 worktree 的字符串路径比较失败 | Repository/Worktree Identity 必须使用规范化真实路径，并加入平台 Fixture |
 
 没有未解决的 P0、P1 或 P2 架构问题。
+
+Milestone 3 的实现审计曾发现 Verdict E2E 覆盖与 `.pending` 崩溃残留两个缺口，均已在本地复审前关闭；独立复审结论为 `APPROVE`，远端 CI 门禁仍待执行。详情见 [Milestone 3 OpenCode 独立审查](reviews/milestone-3-opencode-review.md)。
 
 ## 红队场景
 

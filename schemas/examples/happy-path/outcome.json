@@ -1,0 +1,15 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "Outcome",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "terminalState": "ACCEPTED",
+  "verdict": "accept",
+  "finalReviewRound": 1,
+  "finalReviewDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "finalEvidenceDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "summary": "变更已通过审查。",
+  "findingCount": 0,
+  "retentionPolicy": "default",
+  "generatedAt": "2026-08-04T00:00:00Z"
+}

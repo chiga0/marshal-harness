@@ -57,7 +57,7 @@
     },
     "previousBlockingFindings": {
       "type": "array",
-      "items": { "$ref": "#/$defs/id" }
+      "items": { "$ref": "#/$defs/previousFinding" }
     },
     "generatedAt": { "type": "string", "format": "date-time" }
   },
@@ -69,6 +69,41 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
     },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "title", "description"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "requiredOutcome": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "file": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "line": { "type": "integer", "minimum": 1 },
+        "gateId": { "$ref": "#/$defs/id" },
+        "artifactId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "previousFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "title", "description", "evidenceDigest", "snapshotDigest", "verificationDigest"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "requiredOutcome": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "file": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "line": { "type": "integer", "minimum": 1 },
+        "gateId": { "$ref": "#/$defs/id" },
+        "artifactId": { "$ref": "#/$defs/id" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" },
+        "snapshotDigest": { "$ref": "#/$defs/digest" },
+        "verificationDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
     "relativePath": {
       "type": "string",
       "minLength": 1,

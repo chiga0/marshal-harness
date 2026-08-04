@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/outcome.schema.json",
+  "title": "Marshal Outcome",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "taskId", "runId", "terminalState", "verdict", "finalReviewRound", "finalReviewDigest", "finalEvidenceDigest", "summary", "findingCount", "retentionPolicy", "generatedAt"],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "Outcome" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "terminalState": { "enum": ["ACCEPTED", "REJECTED", "BLOCKED", "ABORTED", "NO_CHANGE"] },
+    "verdict": { "enum": ["accept", "rework", "reject", "blocked", "no_change", "abort"] },
+    "finalReviewRound": { "type": "integer", "minimum": 1 },
+    "finalReviewDigest": { "$ref": "#/$defs/digest" },
+    "finalEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 12000 },
+    "findingCount": { "type": "integer", "minimum": 0 },
+    "retentionPolicy": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "generatedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

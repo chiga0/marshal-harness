@@ -119,6 +119,11 @@ func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain
 	if event.StateTo == domain.StateReviewPending {
 		next.ReviewRound++
 	}
+	if event.StateTo.Terminal() {
+		if reason, ok := event.Payload["terminalReason"].(string); ok {
+			next.TerminalReason = reason
+		}
+	}
 	return next, nil
 }
 
@@ -155,6 +160,11 @@ func Replay(current domain.RunState, event domain.RunEvent) (domain.RunState, er
 	}
 	if event.StateTo == domain.StateReviewPending {
 		next.ReviewRound++
+	}
+	if event.StateTo.Terminal() {
+		if reason, ok := event.Payload["terminalReason"].(string); ok {
+			next.TerminalReason = reason
+		}
 	}
 	return next, nil
 }

@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-仓库已完成 Milestone 2：具备 Go 工具链、契约验证、生命周期、Run Store、`.marshal/` 初始化、隔离 Git worktree、独立 Verification、交付物摘要与证据报告。真实 Worker 与 Publisher 尚未启用。
+仓库已完成 Milestone 3：除 Go 工具链、契约验证、生命周期、Run Store、隔离 Git worktree 与独立 Verification 外，已具备 File-based Review Bridge、证据绑定 ReviewDecision、Rework/终态 Guard、Outcome 与轻量 Codex Skill。真实 Worker 与 Publisher 尚未启用。
 
 ## Go 基线
 
@@ -28,7 +28,9 @@ internal/port/      Worker、Verifier、Lead Agent、Publisher Port
 internal/adapter/   Adapter Registry；当前不含真实 Provider
 internal/gitworktree/ Repository Identity、linked worktree 与锁
 internal/verification/ 独立 Diff、Scope、Command 与 Artifact 验证
+internal/review/   ReviewPacket、Decision Guard、Outcome 与崩溃安全记录
 schemas/            JSON Schema、Fixture 与 Embedded FS
+.agents/skills/marshal/ Codex CLI/Desktop 共用的轻量 Skill
 ```
 
 Core Domain 与 Contract Package 不得导入 Provider-specific Package。CLI 只作为 Application Service 的薄入口。
@@ -59,10 +61,11 @@ marshal contract validate [--schema NAME] <PATH|->
 marshal init [--json]
 marshal task status --run RUN_ID [--json]
 marshal task verify --run RUN_ID [--json]
+marshal task review --run RUN_ID [--decision PATH] [--json]
 marshal task <COMMAND>
 ```
 
-`version`、`doctor`、`contract validate` 和 `task status` 是只读命令。`marshal init` 会创建仓库绑定的状态目录，并把默认 `/.marshal/` 写入 `.git/info/exclude`。`task verify` 只在持有 Run/Task Lease 时独立观察受管 worktree、执行有界验收命令并生成 VerificationReport 与 ArtifactManifest；它不会启动 Worker 或执行发布。其余尚未实现的 `task` 子命令返回 `ExitUnavailable=3`。
+`version`、`doctor`、`contract validate` 和 `task status` 是只读命令。`marshal init` 会创建仓库绑定的状态目录，并把默认 `/.marshal/` 写入 `.git/info/exclude`。`task verify` 独立观察受管 worktree、执行有界验收命令并冻结 VerificationReport 与 ArtifactManifest。`task review` 导出 ReviewPacket，或导入与当前证据完整绑定的 ReviewDecision；无效输入不改变状态。两者都不会启动 Worker 或执行发布。其余尚未实现的 `task` 子命令返回 `ExitUnavailable=3`。
 
 示例：
 
@@ -75,7 +78,7 @@ go run ./cmd/marshal contract validate --schema task-spec schemas/examples/happy
 
 JSON Schema 是持久化记录的权威结构定义。Go 侧只定义 Core 实际需要的强类型枚举与不透明 `Record`，避免维护第二套完整镜像结构；测试强制检查：
 
-- 11 份 Schema 全部可以编译；
+- 12 份 Schema 全部可以编译；
 - 每份 Happy-path Fixture 通过；
 - 每份 Invalid Fixture 失败；
 - Format Assertion 已启用；

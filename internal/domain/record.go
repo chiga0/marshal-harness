@@ -30,6 +30,7 @@ const (
 	KindArtifactManifest   Kind = "ArtifactManifest"
 	KindReviewPacket       Kind = "ReviewPacket"
 	KindReviewDecision     Kind = "ReviewDecision"
+	KindOutcome            Kind = "Outcome"
 )
 
 var kinds = []Kind{
@@ -44,6 +45,7 @@ var kinds = []Kind{
 	KindArtifactManifest,
 	KindReviewPacket,
 	KindReviewDecision,
+	KindOutcome,
 }
 
 // Kinds returns all durable record kinds in stable order.

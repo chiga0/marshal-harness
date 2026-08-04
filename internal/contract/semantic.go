@@ -198,9 +198,6 @@ func validateReviewDecision(data []byte) ([]Violation, error) {
 	if (decision.Verdict == "accept" || decision.Verdict == "no_change") && len(decision.BlockingFindings) > 0 {
 		violations = append(violations, violation("/blockingFindings", "accepted-with-blocking-findings", "accept and no_change decisions cannot retain blocking findings"))
 	}
-	if decision.Verdict == "rework" && len(decision.BlockingFindings) == 0 {
-		violations = append(violations, violation("/blockingFindings", "rework-without-blocking-finding", "rework requires at least one blocking finding"))
-	}
 	if decision.Verdict == "blocked" && decision.BlockerOwner == "" {
 		violations = append(violations, violation("/blockerOwner", "blocked-without-owner", "blocked decisions require blockerOwner"))
 	}

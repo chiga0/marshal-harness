@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-本仓库已于 2026-08-03 通过实施门禁，ADR 0001–0005 已接受，Milestone 0 已通过，下一阶段为 Milestone 1。必须按 `docs/implementation-plan.md` 顺序实施；当前 Milestone 的退出条件满足前，不得提前执行真实 Worker 或 Publication 副作用。
+本仓库已于 2026-08-03 通过实施门禁，ADR 0001–0005 已接受。Milestone 0–2 已通过；Milestone 3 已完成本地实现与独立审计，正在等待提交、推送与远端 CI，Milestone 4 尚未开始。必须按 `docs/implementation-plan.md` 顺序实施；当前 Milestone 的退出条件满足前，不得提前执行后续阶段副作用。
 
 ## 修改设计前必读
 

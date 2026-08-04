@@ -36,7 +36,7 @@ func TestDoctorReportsCompiledContracts(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode doctor output: %v", err)
 	}
-	if report.Status != "ok" || report.ContractSchemas != 11 || report.WorkerAdapters != 0 || report.Milestone != "2" {
+	if report.Status != "ok" || report.ContractSchemas != 12 || report.WorkerAdapters != 0 || report.Milestone != "3" {
 		t.Fatalf("doctor report = %+v", report)
 	}
 }
@@ -116,7 +116,7 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	})
 
 	for _, command := range taskCommands {
-		if command == "status" || command == "verify" {
+		if command == "status" || command == "verify" || command == "review" {
 			continue
 		}
 		var stdout, stderr bytes.Buffer
