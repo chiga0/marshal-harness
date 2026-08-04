@@ -1,0 +1,292 @@
+package app
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+)
+
+// writeExecutable creates a regular executable file and returns its absolute
+// path. Concrete adapter New only requires an absolute, clean, executable
+// regular file; it never runs the binary, so no real provider is needed.
+func writeExecutable(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// staticEnv builds a getenv backed by a fixed map; absent keys return "".
+func staticEnv(values map[string]string) func(string) string {
+	return func(key string) string { return values[key] }
+}
+
+func configurationByID(t *testing.T, runtime *WorkerRuntime, id string) WorkerConfiguration {
+	t.Helper()
+	for _, configuration := range runtime.Configurations() {
+		if configuration.AdapterID == id {
+			return configuration
+		}
+	}
+	t.Fatalf("configuration for adapter %q not found", id)
+	return WorkerConfiguration{}
+}
+
+func TestNewWorkerRuntimeNilGetenvFailsClosed(t *testing.T) {
+	t.Parallel()
+	runtime, err := NewWorkerRuntime(nil)
+	if err == nil {
+		t.Fatal("expected error for nil getenv, got nil")
+	}
+	if runtime != nil {
+		t.Fatalf("expected nil runtime, got %v", runtime)
+	}
+}
+
+func TestNewWorkerRuntimeAllUnconfigured(t *testing.T) {
+	t.Parallel()
+	runtime, err := NewWorkerRuntime(staticEnv(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configurations := runtime.Configurations()
+	if len(configurations) != 3 {
+		t.Fatalf("expected 3 configurations, got %d", len(configurations))
+	}
+	wantOrder := []string{"opencode", "qwen", "pi"}
+	for index, want := range wantOrder {
+		if configurations[index].AdapterID != want {
+			t.Fatalf("configurations[%d].AdapterID = %q, want %q", index, configurations[index].AdapterID, want)
+		}
+	}
+	for _, configuration := range configurations {
+		if configuration.Outcome != WorkerOutcomeNotConfigured {
+			t.Errorf("adapter %q outcome = %q, want %q", configuration.AdapterID, configuration.Outcome, WorkerOutcomeNotConfigured)
+		}
+		if configuration.Configured {
+			t.Errorf("adapter %q should not be configured", configuration.AdapterID)
+		}
+		if configuration.Registered {
+			t.Errorf("adapter %q should not be registered", configuration.AdapterID)
+		}
+	}
+	if ids := runtime.Registry().IDs(); len(ids) != 0 {
+		t.Fatalf("expected empty registry, got %v", ids)
+	}
+}
+
+func TestNewWorkerRuntimeRegistersAllThree(t *testing.T) {
+	t.Parallel()
+	env := map[string]string{
+		"MARSHAL_OPENCODE_PATH": writeExecutable(t, "opencode"),
+		"MARSHAL_QWEN_PATH":     writeExecutable(t, "qwen"),
+		"MARSHAL_PI_PATH":       writeExecutable(t, "pi"),
+	}
+	runtime, err := NewWorkerRuntime(staticEnv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configurations := runtime.Configurations()
+	if len(configurations) != 3 {
+		t.Fatalf("expected 3 configurations, got %d", len(configurations))
+	}
+	wantOrder := []string{"opencode", "qwen", "pi"}
+	for index, want := range wantOrder {
+		if configurations[index].AdapterID != want {
+			t.Fatalf("configurations[%d].AdapterID = %q, want %q", index, configurations[index].AdapterID, want)
+		}
+		configuration := configurations[index]
+		if !configuration.Configured || !configuration.Registered {
+			t.Errorf("adapter %q configured=%v registered=%v, want both true", want, configuration.Configured, configuration.Registered)
+		}
+		if configuration.Outcome != WorkerOutcomeRegistered {
+			t.Errorf("adapter %q outcome = %q, want %q", want, configuration.Outcome, WorkerOutcomeRegistered)
+		}
+	}
+	// Registry.IDs returns sorted IDs; verify membership and count.
+	ids := runtime.Registry().IDs()
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 registered adapters, got %v", ids)
+	}
+	wantIDs := map[string]bool{"opencode": true, "qwen": true, "pi": true}
+	for _, id := range ids {
+		if !wantIDs[id] {
+			t.Errorf("unexpected registered adapter %q", id)
+		}
+	}
+	for _, want := range wantOrder {
+		if _, err := runtime.Registry().Resolve(want); err != nil {
+			t.Errorf("resolve %q: %v", want, err)
+		}
+	}
+}
+
+func TestNewWorkerRuntimeInvalidPathDoesNotLeakAndOthersRegister(t *testing.T) {
+	t.Parallel()
+	invalidPath := "/nonexistent/marshal-leak-check/opencode-binary"
+	env := map[string]string{
+		"MARSHAL_OPENCODE_PATH": invalidPath,
+		"MARSHAL_QWEN_PATH":     writeExecutable(t, "qwen"),
+		"MARSHAL_PI_PATH":       writeExecutable(t, "pi"),
+	}
+	runtime, err := NewWorkerRuntime(staticEnv(env))
+	if err != nil {
+		t.Fatalf("invalid single adapter must not abort runtime: %v", err)
+	}
+	opencodeConfig := configurationByID(t, runtime, "opencode")
+	if opencodeConfig.Outcome != WorkerOutcomeInvalidConfiguration {
+		t.Fatalf("opencode outcome = %q, want %q", opencodeConfig.Outcome, WorkerOutcomeInvalidConfiguration)
+	}
+	if !opencodeConfig.Configured || opencodeConfig.Registered {
+		t.Fatalf("opencode configured=%v registered=%v, want configured=true registered=false", opencodeConfig.Configured, opencodeConfig.Registered)
+	}
+	// No structured configuration field may echo the invalid path.
+	for _, configuration := range runtime.Configurations() {
+		value := reflect.ValueOf(configuration)
+		for field := 0; field < value.NumField(); field++ {
+			if fieldValue, ok := value.Field(field).Interface().(string); ok && fieldValue == invalidPath {
+				t.Fatalf("invalid path leaked in configuration field %s", value.Type().Field(field).Name)
+			}
+		}
+	}
+	// The other adapters must still be registered.
+	for _, id := range []string{"qwen", "pi"} {
+		configuration := configurationByID(t, runtime, id)
+		if !configuration.Registered || configuration.Outcome != WorkerOutcomeRegistered {
+			t.Errorf("adapter %q registered=%v outcome=%q, want registered with %q", id, configuration.Registered, configuration.Outcome, WorkerOutcomeRegistered)
+		}
+		if _, err := runtime.Registry().Resolve(id); err != nil {
+			t.Errorf("resolve %q: %v", id, err)
+		}
+	}
+	if _, err := runtime.Registry().Resolve("opencode"); err == nil {
+		t.Error("opencode must not be resolvable after invalid configuration")
+	}
+}
+
+func TestNewWorkerRuntimeRelativePathIsInvalid(t *testing.T) {
+	t.Parallel()
+	env := map[string]string{
+		"MARSHAL_PI_PATH": "bin/pi",
+	}
+	runtime, err := NewWorkerRuntime(staticEnv(env))
+	if err != nil {
+		t.Fatalf("relative adapter path must not abort runtime: %v", err)
+	}
+	configuration := configurationByID(t, runtime, "pi")
+	if configuration.Outcome != WorkerOutcomeInvalidConfiguration {
+		t.Fatalf("pi outcome = %q, want %q", configuration.Outcome, WorkerOutcomeInvalidConfiguration)
+	}
+	if configuration.Registered {
+		t.Error("relative path must not be registered")
+	}
+	if _, err := runtime.Registry().Resolve("pi"); err == nil {
+		t.Error("pi must not be resolvable for a relative path")
+	}
+}
+
+func TestNewWorkerRuntimePaddedExecutableIsInvalidAndNotLeaked(t *testing.T) {
+	t.Parallel()
+	realPath := writeExecutable(t, "pi")
+	// A real absolute executable padded with whitespace, plus whitespace-only
+	// values: all are non-empty, so all stay configured and must be rejected
+	// by concrete New as-is. None may be trimmed into a valid path.
+	paddedValues := []string{
+		" " + realPath,
+		realPath + " ",
+		"\t" + realPath,
+		realPath + "\n",
+		"   ",
+		"\t",
+	}
+	for _, padded := range paddedValues {
+		runtime, err := NewWorkerRuntime(staticEnv(map[string]string{
+			"MARSHAL_PI_PATH": padded,
+		}))
+		if err != nil {
+			t.Fatalf("padded adapter value must not abort runtime: %v", err)
+		}
+		configuration := configurationByID(t, runtime, "pi")
+		if !configuration.Configured {
+			t.Errorf("non-empty padded value must keep configured=true")
+		}
+		if configuration.Registered {
+			t.Errorf("padded value must not be registered")
+		}
+		if configuration.Outcome != WorkerOutcomeInvalidConfiguration {
+			t.Errorf("pi outcome = %q, want %q", configuration.Outcome, WorkerOutcomeInvalidConfiguration)
+		}
+		if _, resolveErr := runtime.Registry().Resolve("pi"); resolveErr == nil {
+			t.Errorf("pi must not be resolvable for a padded value")
+		}
+		// No structured configuration field may echo the raw padded value.
+		for _, other := range runtime.Configurations() {
+			value := reflect.ValueOf(other)
+			for field := 0; field < value.NumField(); field++ {
+				if fieldValue, ok := value.Field(field).Interface().(string); ok && fieldValue == padded {
+					t.Fatalf("raw padded value leaked in configuration field %s", value.Type().Field(field).Name)
+				}
+			}
+		}
+	}
+}
+
+func TestConfigurationsCloneIsImmutable(t *testing.T) {
+	t.Parallel()
+	env := map[string]string{
+		"MARSHAL_QWEN_PATH": writeExecutable(t, "qwen"),
+	}
+	runtime, err := NewWorkerRuntime(staticEnv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := runtime.Configurations()
+	// Mutate the returned clone: tamper with every field.
+	for index := range first {
+		first[index].Outcome = "tampered"
+		first[index].Registered = !first[index].Registered
+		first[index].Configured = !first[index].Configured
+		first[index].AdapterID = "tampered"
+		first[index].EnvironmentVariable = "tampered"
+	}
+	second := runtime.Configurations()
+	qwenConfig := configurationByID(t, runtime, "qwen")
+	if qwenConfig.Outcome != WorkerOutcomeRegistered || !qwenConfig.Registered {
+		t.Fatalf("internal state was mutated through the clone: %+v", qwenConfig)
+	}
+	if reflect.DeepEqual(first, second) {
+		t.Fatal("expected fresh clone to differ from the tampered slice")
+	}
+	// The clone must preserve frozen order and outcomes.
+	wantOrder := []string{"opencode", "qwen", "pi"}
+	for index, want := range wantOrder {
+		if second[index].AdapterID != want {
+			t.Fatalf("second[%d].AdapterID = %q, want %q", index, second[index].AdapterID, want)
+		}
+	}
+}
+
+func TestSelectorIsConstructed(t *testing.T) {
+	t.Parallel()
+	env := map[string]string{
+		"MARSHAL_PI_PATH": writeExecutable(t, "pi"),
+	}
+	runtime, err := NewWorkerRuntime(staticEnv(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Real Probes are version-gated and must not be faked here; only verify
+	// that the Selector is bound and non-nil.
+	if runtime.Selector() == nil {
+		t.Fatal("expected non-nil Selector")
+	}
+	if runtime.Validator() == nil {
+		t.Fatal("expected non-nil Validator")
+	}
+	if runtime.Registry() == nil {
+		t.Fatal("expected non-nil Registry")
+	}
+}

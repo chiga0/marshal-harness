@@ -1,8 +1,9 @@
-// Package opencode implements the bounded OpenCode Worker adapter.
-package opencode
+// Package qwen implements the bounded Qwen Code Worker adapter.
+package qwen
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -23,21 +26,73 @@ import (
 )
 
 const (
-	adapterID       = "opencode"
+	adapterID       = "qwen"
 	adapterVersion  = "0.1.0"
-	supportedBinary = "1.18.12"
+	supportedBinary = "0.21.5"
 	maxPromptBytes  = 256 << 10
 	maxResultBytes  = 4 << 20
 	stderrLimit     = 64 << 10
+
+	budgetToolCalls    = 200
+	budgetSessionTurns = 60
 )
 
+// excludedTools blocks every shell, sub-agent, sub-session, web/network and
+// computer-use capability. Qwen Code's safe-mode alone does not remove these
+// tools, so Marshal excludes them by name on every attempt.
+var excludedTools = []string{
+	"shell",
+	"run_shell_command",
+	"agent",
+	"sub_agent",
+	"create_sub_session",
+	"web_fetch",
+	"web_search",
+	"computer_use__bring_to_front",
+	"computer_use__check_for_update",
+	"computer_use__check_permissions",
+	"computer_use__click",
+	"computer_use__double_click",
+	"computer_use__drag",
+	"computer_use__end_session",
+	"computer_use__get_accessibility_tree",
+	"computer_use__get_agent_cursor_state",
+	"computer_use__get_config",
+	"computer_use__get_cursor_position",
+	"computer_use__get_recording_state",
+	"computer_use__get_screen_size",
+	"computer_use__get_window_state",
+	"computer_use__hotkey",
+	"computer_use__kill_app",
+	"computer_use__launch_app",
+	"computer_use__list_apps",
+	"computer_use__list_windows",
+	"computer_use__move_cursor",
+	"computer_use__page",
+	"computer_use__press_key",
+	"computer_use__replay_trajectory",
+	"computer_use__right_click",
+	"computer_use__scroll",
+	"computer_use__set_agent_cursor_enabled",
+	"computer_use__set_agent_cursor_motion",
+	"computer_use__set_agent_cursor_style",
+	"computer_use__set_config",
+	"computer_use__set_value",
+	"computer_use__start_recording",
+	"computer_use__start_session",
+	"computer_use__stop_recording",
+	"computer_use__type_text",
+	"computer_use__zoom",
+}
+
 var (
-	ErrUnsupportedVersion = errors.New("unsupported opencode version")
-	ErrOutputLimit        = errors.New("opencode output limit exceeded")
-	ErrProtocol           = errors.New("invalid opencode protocol")
-	ErrPermissionDenied   = errors.New("opencode permission denied")
-	ErrProcessFailed      = errors.New("opencode process failed")
+	ErrUnsupportedVersion = errors.New("unsupported qwen version")
+	ErrOutputLimit        = errors.New("qwen output limit exceeded")
+	ErrProtocol           = errors.New("invalid qwen protocol")
+	ErrProcessFailed      = errors.New("qwen process failed")
 )
+
+var versionPattern = regexp.MustCompile(`\d+\.\d+\.\d+`)
 
 type Adapter struct {
 	executable string
@@ -52,18 +107,18 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 		return nil, errors.New("contract validator is required")
 	}
 	if !filepath.IsAbs(executable) || filepath.Clean(executable) != executable {
-		return nil, errors.New("opencode executable must be an absolute clean path")
+		return nil, errors.New("qwen executable must be an absolute clean path")
 	}
 	realPath, err := filepath.EvalSymlinks(executable)
 	if err != nil {
-		return nil, fmt.Errorf("resolve opencode executable: %w", err)
+		return nil, fmt.Errorf("resolve qwen executable: %w", err)
 	}
 	info, err := os.Stat(realPath)
 	if err != nil {
-		return nil, fmt.Errorf("stat opencode executable: %w", err)
+		return nil, fmt.Errorf("stat qwen executable: %w", err)
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return nil, errors.New("opencode executable must be an executable regular file")
+		return nil, errors.New("qwen executable must be an executable regular file")
 	}
 	return &Adapter{executable: realPath, validator: validator, now: time.Now}, nil
 }
@@ -79,7 +134,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	probeErrors := []string{}
 	if identity.version != supportedBinary {
 		status = "unsupported"
-		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 OpenCode %s，实际为 %s", supportedBinary, identity.version))
+		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Qwen Code %s，实际为 %s", supportedBinary, identity.version))
 	}
 	snapshot := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
@@ -89,9 +144,14 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"capabilities": map[string]any{
 			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
 			"sessionPolicies": []string{"ephemeral", "persist", "resume"}, "modelSelection": true,
-			"executionProfiles": []string{"workspace-write"}, "nativeBudgets": []string{},
+			"executionProfiles":       []string{"workspace-write"},
+			"nativeBudgets":           []string{"wall-time", "tool-calls", "turns"},
 			"processTreeCancellation": true,
-			"notes":                   []string{"由 Marshal 实施 wall-time 与 output-bytes 上限。", "workspace-write Local Profile 不构成恶意代码隔离。"},
+			"notes": []string{
+				"由 Marshal 实施 wall-time 与 output-bytes 上限。",
+				"safe-mode + auto-edit + exclude-tools 不构成恶意代码隔离。",
+				"shell、sub-agent、sub-session、web/network 与 computer-use 工具被按名排除。",
+			},
 		},
 		"probeErrors": probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
@@ -110,7 +170,7 @@ type executableIdentity struct{ path, digest, version string }
 func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
 	info, err := os.Stat(a.executable)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return executableIdentity{}, errors.New("configured opencode executable is unavailable")
+		return executableIdentity{}, errors.New("configured qwen executable is unavailable")
 	}
 	digest, err := digestFile(a.executable)
 	if err != nil {
@@ -123,11 +183,11 @@ func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
 		if ctx.Err() != nil {
 			return executableIdentity{}, ctx.Err()
 		}
-		return executableIdentity{}, fmt.Errorf("probe opencode version: %w", err)
+		return executableIdentity{}, fmt.Errorf("probe qwen version: %w", err)
 	}
-	version := strings.TrimSpace(string(output))
+	version := versionPattern.FindString(string(output))
 	if version == "" {
-		return executableIdentity{}, errors.New("opencode returned an empty version")
+		return executableIdentity{}, fmt.Errorf("qwen returned an unrecognized version: %q", strings.TrimSpace(string(output)))
 	}
 	return executableIdentity{a.executable, digest, version}, nil
 }
@@ -177,7 +237,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, err
 	}
 	if request.AdapterID != adapterID || request.ExecutionProfile != "workspace-write" {
-		return domain.Record{}, errors.New("WorkerRequest does not match the opencode workspace-write adapter")
+		return domain.Record{}, errors.New("WorkerRequest does not match the qwen workspace-write adapter")
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(request.AttemptTimeoutSeconds)*time.Second)
 	defer cancel()
@@ -211,18 +271,17 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, fmt.Errorf("resolve result: %w", err)
 	}
+	if request.SessionPolicy == "resume" && strings.TrimSpace(request.SessionID) == "" {
+		return domain.Record{}, errors.New("resume session policy requires a sessionId")
+	}
 	model := readModel(controlRoot, request.TaskSpecPath)
-	args := buildArgs(request.SessionPolicy, request.SessionID, model, string(prompt))
-	config, err := permissionConfig(controlRoot)
+	args, err := buildArgs(request.SessionPolicy, request.SessionID, model, request.AttemptTimeoutSeconds, string(prompt))
 	if err != nil {
 		return domain.Record{}, err
 	}
 	command := exec.Command(a.executable, args...)
 	command.Dir = worktree
-	command.Env = workerEnvironment(worktree, config)
-	if err := validateResolvedConfig(runCtx, a.executable, command.Env, controlRoot); err != nil {
-		return domain.Record{}, err
-	}
+	command.Env = workerEnvironment(worktree)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
@@ -234,13 +293,15 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	started := a.now().UTC()
 	if err := command.Start(); err != nil {
-		return domain.Record{}, fmt.Errorf("start opencode: %w", err)
+		return domain.Record{}, fmt.Errorf("start qwen: %w", err)
 	}
 	var killOnce sync.Once
 	kill := func() { killOnce.Do(func() { terminateGroup(command) }) }
 	stdoutDone := make(chan captureResult, 1)
 	stderrDone := make(chan streamCapture, 1)
-	go func() { stdoutDone <- captureJSONL(stdout, int64(request.MaxOutputBytes), kill) }()
+	go func() {
+		stdoutDone <- captureStreamJSONL(stdout, worktree, int64(request.MaxOutputBytes), kill, identity.version)
+	}()
 	go func() { stderrDone <- captureStream(stderr, stderrLimit) }()
 	processFinished := make(chan struct{})
 	go func() {
@@ -255,11 +316,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	waitErr := command.Wait()
 	close(processFinished)
 	completed := a.now().UTC()
-	transcriptPath := filepath.Join(filepath.Dir(resultPath), "opencode-transcript.jsonl")
+	transcriptPath := filepath.Join(filepath.Dir(resultPath), "qwen-transcript.jsonl")
 	if err := atomicWrite(transcriptPath, capture.raw); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript: %w", err)
 	}
-	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "opencode-stderr.log"), stderrCapture.data); err != nil {
+	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "qwen-stderr.log"), stderrCapture.data); err != nil {
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
 	exitCode, signal := processOutcome(command)
@@ -267,14 +328,14 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		"sessionId": capture.sessionID, "eventCount": capture.eventCount,
 		"toolCalls": capture.toolCalls, "inputTokens": capture.inputTokens,
 		"outputTokens": capture.outputTokens, "capturedBytes": len(capture.raw),
-		"outputTruncated": capture.limitExceeded, "permissionDenied": capture.permissionDenied,
-		"exitCode": exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
+		"outputTruncated": capture.limitExceeded,
+		"exitCode":        exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
 		"contextError": contextError(runCtx),
 	}, "", "  ")
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "opencode-transcript-meta.json"), append(metadata, '\n')); err != nil {
+	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "qwen-transcript-meta.json"), append(metadata, '\n')); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript metadata: %w", err)
 	}
 	if runCtx.Err() != nil {
@@ -289,11 +350,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if waitErr != nil {
 		return domain.Record{}, processFailureError(command)
 	}
-	if capture.permissionDenied {
-		return domain.Record{}, ErrPermissionDenied
-	}
 	if capture.sessionID == "" {
-		return domain.Record{}, fmt.Errorf("%w: sessionID is missing", ErrProtocol)
+		return domain.Record{}, fmt.Errorf("%w: session_id is missing", ErrProtocol)
+	}
+	if request.SessionPolicy == "resume" && capture.sessionID != request.SessionID {
+		return domain.Record{}, fmt.Errorf("%w: resumed session does not match requested session", ErrProtocol)
 	}
 	declared, err := readDeclaredResult(resultPath, int64(maxResultBytes), a.validator)
 	if err != nil {
@@ -372,26 +433,36 @@ func readDeclaredResult(path string, limit int64, validator *contract.Validator)
 }
 
 type captureResult struct {
-	raw              []byte
-	sessionID        string
-	eventCount       int
-	toolCalls        int
-	inputTokens      int
-	outputTokens     int
-	permissionDenied bool
-	limitExceeded    bool
-	err              error
+	raw           []byte
+	sessionID     string
+	eventCount    int
+	toolCalls     int
+	inputTokens   int
+	outputTokens  int
+	limitExceeded bool
+	err           error
 }
 
-func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
+// captureStreamJSONL enforces the measured Qwen Code 0.21.5 stream-json
+// contract: the first non-empty event must be system/init bound to this
+// worktree, and the last non-empty event must be result/success.
+func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit func(), binaryVersion string) captureResult {
 	capacity := 64 << 10
 	if limit < int64(capacity) {
 		capacity = int(limit)
 	}
 	result := captureResult{raw: make([]byte, 0, capacity)}
 	buffered := bufio.NewReaderSize(reader, 64<<10)
+	fail := func(err error) {
+		if result.err == nil {
+			result.err = err
+		}
+		onLimit()
+	}
 	var consumed int64
 	var line []byte
+	resultSubtype := ""
+	sawResult := false
 	for {
 		fragment, err := buffered.ReadSlice('\n')
 		if len(fragment) > 0 {
@@ -407,50 +478,75 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 			}
 			complete := !errors.Is(err, bufio.ErrBufferFull)
 			if complete && len(line) > 0 && !result.limitExceeded {
-				result.raw = append(result.raw, line...)
-				var event struct {
-					Type      string `json:"type"`
-					SessionID string `json:"sessionID"`
-					Part      struct {
-						Type   string `json:"type"`
-						Text   string `json:"text"`
-						Tool   string `json:"tool"`
-						Tokens struct {
-							Input  int `json:"input"`
-							Output int `json:"output"`
-						} `json:"tokens"`
-						State struct {
-							Status string `json:"status"`
-							Error  string `json:"error"`
-						} `json:"state"`
-					} `json:"part"`
+				trimmed := bytes.TrimSpace(line)
+				line = nil
+				if len(trimmed) == 0 {
+					continue
 				}
-				if decodeErr := json.Unmarshal(bytesTrimSpace(line), &event); decodeErr != nil {
-					result.err = fmt.Errorf("%w: malformed JSONL: %v", ErrProtocol, decodeErr)
-					onLimit()
+				result.raw = append(result.raw, append(trimmed, '\n')...)
+				var event struct {
+					Type            string `json:"type"`
+					Subtype         string `json:"subtype"`
+					SessionID       string `json:"session_id"`
+					Cwd             string `json:"cwd"`
+					QwenCodeVersion string `json:"qwen_code_version"`
+					ToolName        string `json:"tool_name"`
+					Usage           struct {
+						InputTokens  int `json:"input_tokens"`
+						OutputTokens int `json:"output_tokens"`
+					} `json:"usage"`
+					Stats struct {
+						InputTokens  int `json:"input_tokens"`
+						OutputTokens int `json:"output_tokens"`
+					} `json:"stats"`
+				}
+				if decodeErr := json.Unmarshal(trimmed, &event); decodeErr != nil {
+					fail(fmt.Errorf("%w: malformed JSONL: %v", ErrProtocol, decodeErr))
 				} else {
 					result.eventCount++
-					if result.sessionID == "" {
-						result.sessionID = event.SessionID
+					if sawResult {
+						fail(fmt.Errorf("%w: trailing event after result: %s/%s", ErrProtocol, event.Type, event.Subtype))
+						continue
 					}
-					if event.Part.Type == "tool" || event.Part.Tool != "" {
+					if result.eventCount == 1 {
+						if event.Type != "system" || event.Subtype != "init" {
+							fail(fmt.Errorf("%w: first event must be system/init, got %s/%s", ErrProtocol, event.Type, event.Subtype))
+						} else if event.SessionID == "" || event.Cwd == "" || event.QwenCodeVersion == "" {
+							fail(fmt.Errorf("%w: init event is missing session_id, cwd or qwen_code_version", ErrProtocol))
+						} else if initVersion := versionPattern.FindString(event.QwenCodeVersion); initVersion != binaryVersion {
+							fail(fmt.Errorf("%w: init qwen_code_version %s does not match binary %s", ErrProtocol, event.QwenCodeVersion, binaryVersion))
+						} else if filepath.Clean(event.Cwd) != worktree {
+							fail(fmt.Errorf("%w: init cwd %q does not match worktree %q", ErrProtocol, event.Cwd, worktree))
+						} else {
+							result.sessionID = event.SessionID
+						}
+					}
+					if event.Type == "tool" || event.ToolName != "" {
 						result.toolCalls++
 					}
-					if event.Part.Tokens.Input > 0 || event.Part.Tokens.Output > 0 {
-						result.inputTokens = event.Part.Tokens.Input
-						result.outputTokens = event.Part.Tokens.Output
-					}
-					lower := strings.ToLower(event.Part.State.Error)
-					if event.Part.State.Status == "error" && strings.Contains(lower, "permission") && (strings.Contains(lower, "denied") || strings.Contains(lower, "prevents") || strings.Contains(lower, "rule")) {
-						result.permissionDenied = true
+					if event.Type == "result" {
+						sawResult = true
+						resultSubtype = event.Subtype
+						if event.Usage.InputTokens > 0 || event.Usage.OutputTokens > 0 {
+							result.inputTokens, result.outputTokens = event.Usage.InputTokens, event.Usage.OutputTokens
+						}
+						if event.Stats.InputTokens > 0 || event.Stats.OutputTokens > 0 {
+							result.inputTokens, result.outputTokens = event.Stats.InputTokens, event.Stats.OutputTokens
+						}
 					}
 				}
-				line = nil
 			}
 		}
 		if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
 			if !errors.Is(err, io.EOF) && result.err == nil {
 				result.err = err
+			}
+			if result.err == nil && !result.limitExceeded {
+				if !sawResult {
+					result.err = fmt.Errorf("%w: stream ended without a result event", ErrProtocol)
+				} else if resultSubtype != "success" {
+					result.err = fmt.Errorf("%w: result subtype is %s, expected success", ErrProtocol, resultSubtype)
+				}
 			}
 			return result
 		}
@@ -489,101 +585,35 @@ func captureStream(reader io.Reader, limit int64) streamCapture {
 	}
 }
 
-func buildArgs(policy, sessionID, model, prompt string) []string {
-	args := []string{"run", "--pure", "--format", "json", "--title", "Marshal Worker"}
-	if policy == "resume" {
-		args = append(args, "--session", sessionID)
+func buildArgs(policy, sessionID, model string, wallTimeSeconds int, prompt string) ([]string, error) {
+	args := []string{
+		"--safe-mode",
+		"--approval-mode", "auto-edit",
+		"--output-format", "stream-json",
+		"--max-wall-time", strconv.Itoa(wallTimeSeconds),
+		"--max-tool-calls", strconv.Itoa(budgetToolCalls),
+		"--max-session-turns", strconv.Itoa(budgetSessionTurns),
+		"--exclude-tools", strings.Join(excludedTools, ","),
+	}
+	switch policy {
+	case "ephemeral":
+		args = append(args, "--chat-recording=false")
+	case "persist":
+		args = append(args, "--chat-recording=true")
+	case "resume":
+		args = append(args, "--chat-recording=true", "--resume", sessionID)
+	default:
+		return nil, fmt.Errorf("unsupported session policy %q", policy)
 	}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
-	return append(args, prompt)
+	return append(args, "-p", prompt), nil
 }
 
-func permissionConfig(controlRoot string) (string, error) {
-	inputRoot := filepath.ToSlash(filepath.Join(controlRoot, "input")) + "/**"
-	outputRoot := filepath.ToSlash(filepath.Join(controlRoot, "output")) + "/**"
-	bash := map[string]string{"*": "allow", "/usr/bin/curl *": "deny", "/usr/bin/ssh *": "deny", "bash *": "deny", "curl *": "deny", "env *": "deny", "gh *": "deny", "git commit *": "deny", "git push *": "deny", "git tag *": "deny", "glab *": "deny", "nc *": "deny", "nohup *": "deny", "scp *": "deny", "sh *": "deny", "ssh *": "deny", "sudo *": "deny", "wget *": "deny", "xargs *": "deny"}
-	permission := map[string]any{
-		"*": "deny", "bash": bash,
-		"edit":               map[string]string{"*": "allow", inputRoot: "deny", outputRoot: "allow"},
-		"external_directory": map[string]string{"*": "deny", inputRoot: "allow", outputRoot: "allow"},
-		"glob":               "allow", "grep": "allow", "list": "allow", "lsp": "allow", "question": "deny", "read": "allow", "skill": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny",
-	}
-	config := map[string]any{"autoupdate": false, "permission": permission, "share": "disabled", "agent": map[string]any{"build": map[string]any{"permission": permission}}}
-	data, err := json.Marshal(config)
-	return string(data), err
-}
-
-func validateResolvedConfig(ctx context.Context, executable string, environment []string, controlRoot string) error {
-	command := exec.CommandContext(ctx, executable, "debug", "config", "--pure")
-	command.Env = environment
-	output, err := command.Output()
-	if err != nil {
-		return fmt.Errorf("probe resolved opencode config: %w", err)
-	}
-	if len(output) > 1<<20 {
-		return errors.New("resolved opencode config exceeds byte limit")
-	}
-	var config struct {
-		Autoupdate bool           `json:"autoupdate"`
-		Share      string         `json:"share"`
-		Permission map[string]any `json:"permission"`
-		Agent      map[string]struct {
-			Permission map[string]any `json:"permission"`
-		} `json:"agent"`
-	}
-	if err := json.Unmarshal(output, &config); err != nil {
-		return fmt.Errorf("decode resolved opencode config: %w", err)
-	}
-	if config.Autoupdate || config.Share != "disabled" {
-		return errors.New("resolved opencode config enables autoupdate or sharing")
-	}
-	if err := validatePermissionMap(config.Permission, controlRoot); err != nil {
-		return fmt.Errorf("unsafe resolved global permission: %w", err)
-	}
-	build, ok := config.Agent["build"]
-	if !ok {
-		return errors.New("resolved opencode config has no build agent override")
-	}
-	if err := validatePermissionMap(build.Permission, controlRoot); err != nil {
-		return fmt.Errorf("unsafe resolved build permission: %w", err)
-	}
-	return nil
-}
-
-func validatePermissionMap(permission map[string]any, controlRoot string) error {
-	if permission["*"] != "deny" {
-		return errors.New("global wildcard is not denied")
-	}
-	for _, name := range []string{"question", "skill", "task", "webfetch", "websearch"} {
-		if permission[name] != "deny" {
-			return fmt.Errorf("%s is not denied", name)
-		}
-	}
-	external, ok := permission["external_directory"].(map[string]any)
-	if !ok || external["*"] != "deny" || external[filepath.ToSlash(filepath.Join(controlRoot, "input"))+"/**"] != "allow" || external[filepath.ToSlash(filepath.Join(controlRoot, "output"))+"/**"] != "allow" {
-		return errors.New("attempt-scoped external directory rules are missing")
-	}
-	edit, ok := permission["edit"].(map[string]any)
-	if !ok || edit[filepath.ToSlash(filepath.Join(controlRoot, "input"))+"/**"] != "deny" {
-		return errors.New("control input is not read-only")
-	}
-	bash, ok := permission["bash"].(map[string]any)
-	if !ok {
-		return errors.New("bash rules are missing")
-	}
-	for _, pattern := range []string{"/usr/bin/curl *", "/usr/bin/ssh *", "bash *", "curl *", "env *", "gh *", "git commit *", "git push *", "git tag *", "glab *", "nc *", "nohup *", "scp *", "sh *", "ssh *", "sudo *", "wget *", "xargs *"} {
-		if bash[pattern] != "deny" {
-			return fmt.Errorf("bash pattern %q is not denied", pattern)
-		}
-	}
-	return nil
-}
-
-// processFailureError reports a failed opencode process using only fixed
+// processFailureError reports a failed qwen process using only fixed
 // classification and exit/signal information. Provider stderr is persisted
-// separately as a bounded evidence file (opencode-stderr.log) but is never
+// separately as a bounded evidence file (qwen-stderr.log) but is never
 // concatenated into the returned error, so tokens, secrets, or user content
 // cannot reach Events, CLI output, or Outcome.
 func processFailureError(command *exec.Cmd) error {
@@ -612,16 +642,16 @@ func contextError(ctx context.Context) string {
 	return ""
 }
 
-func workerEnvironment(worktree, config string) []string {
+func workerEnvironment(worktree string) []string {
 	allowed := map[string]bool{"HOME": true, "LANG": true, "LC_ALL": true, "LC_CTYPE": true, "LOGNAME": true, "PATH": true, "SHELL": true, "TEMP": true, "TERM": true, "TMP": true, "TMPDIR": true, "USER": true, "XDG_CACHE_HOME": true, "XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true}
-	environment := make([]string, 0, len(allowed)+8)
+	environment := make([]string, 0, len(allowed)+6)
 	for _, entry := range os.Environ() {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok && allowed[key] {
 			environment = append(environment, entry)
 		}
 	}
-	environment = append(environment, "CI=1", "GH_PROMPT_DISABLED=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "OPENCODE_CONFIG_CONTENT="+config, "PWD="+worktree)
+	environment = append(environment, "CI=1", "GH_PROMPT_DISABLED=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "PWD="+worktree)
 	return environment
 }
 
@@ -636,8 +666,8 @@ func probeEnvironment() []string {
 	return result
 }
 
-func readModel(worktree, relative string) string {
-	path, err := existingPathWithin(worktree, relative)
+func readModel(controlRoot, relative string) string {
+	path, err := existingPathWithin(controlRoot, relative)
 	if err != nil {
 		return ""
 	}
@@ -714,7 +744,7 @@ func atomicWrite(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".opencode-*.tmp")
+	file, err := os.CreateTemp(filepath.Dir(path), ".qwen-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -757,5 +787,3 @@ func terminateGroup(command *exec.Cmd) {
 		_ = command.Process.Kill()
 	}
 }
-
-func bytesTrimSpace(data []byte) []byte { return []byte(strings.TrimSpace(string(data))) }

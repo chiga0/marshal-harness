@@ -114,6 +114,12 @@ Runner 以如下条件启动 Adapter：
 
 Worker 消息中的“已完成”不能决定生命周期。必须同时记录进程结果、可解析协议输出和真实仓库快照。
 
+### Observer
+
+Observer 是与 Worker Adapter、生命周期和证据持久化解耦的可选呈现模块。默认 `captured` Backend 仅保留 Marshal 捕获的有界日志；可视化 Backend 把脱敏日志、Attempt 状态、进度与通知镜像到外部终端。
+
+Core 只依赖 `Observer` Port 与能力集合，不依赖 cmux、iTerm2、Ghostty 或系统终端。M6 首先实现 cmux Backend，后续 Backend 通过相同 Probe、Attach、Update、Detach 契约接入。任何 Backend 不可用或未授权时降级到 `captured`，不得影响 Worker 进程所有权和权威证据。详细边界见 [ADR 0008](adr/0008-pluggable-observer-backends.md)。
+
 ### 独立 Verifier
 
 Verifier 位于 Worker 会话之外并生成 VerificationReport，检查：
@@ -246,6 +252,6 @@ Attempt 控制根与业务 Worktree 的信任边界见 [ADR 0006](adr/0006-attem
 
 ## 可扩展性
 
-Worker Adapter、Verification Executor、Review Bridge、Artifact Collector、Publisher 和 Event Sink 使用稳定 Port。Adapter 内部可以使用 one-shot CLI、JSON-RPC、ACP 或 SDK，但必须满足相同核心契约和一致性测试。
+Worker Adapter、Observer、Verification Executor、Review Bridge、Artifact Collector、Publisher 和 Event Sink 使用稳定 Port。Adapter 内部可以使用 one-shot CLI、JSON-RPC、ACP 或 SDK，但必须满足相同核心契约和一致性测试。
 
 第三方 Plugin 默认不得在 Marshal 进程内执行。初始扩展模型采用子进程或独立安装包，并要求显式信任。

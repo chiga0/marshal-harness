@@ -139,12 +139,71 @@ func TestRunRejectsWorkerResultIdentityAndAttemptBudget(t *testing.T) {
 	})
 }
 
+func TestRunSelectsFallbackAdapterFromFrozenCapability(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{preferredAdapter: "missing", fallbackAdapters: []string{"fixture"}, capabilityAdapterID: "fixture"})
+	result, err := Run(context.Background(), fixture.input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State.State != domain.StateVerifying {
+		t.Fatalf("state = %+v", result.State)
+	}
+	requestData, err := os.ReadFile(filepath.Join(fixture.runDir, "attempts", result.AttemptID, "worker-request.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		AdapterID string `json:"adapterId"`
+	}
+	if err := json.Unmarshal(requestData, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.AdapterID != "fixture" {
+		t.Fatalf("worker-request adapterId = %q", request.AdapterID)
+	}
+	promptData, err := os.ReadFile(filepath.Join(fixture.runDir, "attempts", result.AttemptID, "control", "input", "prompt.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(promptData), "adapter.id=fixture") {
+		t.Fatalf("prompt does not require the selected adapter:\n%s", promptData)
+	}
+	if strings.Contains(string(promptData), "adapter.id=missing") {
+		t.Fatalf("prompt still requires the preferred adapter:\n%s", promptData)
+	}
+}
+
+func TestRunFailsClosedWhenFrozenCapabilityAdapterDiffers(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "other"})
+	result, err := Run(context.Background(), fixture.input)
+	if err == nil {
+		t.Fatalf("mismatched frozen capability was accepted: %+v", result)
+	}
+	if strings.Contains(err.Error(), "notes") || strings.Contains(err.Error(), "probeErrors") {
+		t.Fatalf("error leaks provider free text: %v", err)
+	}
+	if entries, statErr := os.ReadDir(filepath.Join(fixture.runDir, "attempts")); statErr == nil && len(entries) > 0 {
+		t.Fatalf("worker was started despite capability mismatch: %v", entries)
+	}
+}
+
 type executionFixture struct {
 	input              Input
 	repository, runDir string
 }
 
+type executionFixtureOptions struct {
+	preferredAdapter    string
+	fallbackAdapters    []string
+	capabilityAdapterID string
+}
+
 func newExecutionFixture(t *testing.T, fail bool) executionFixture {
+	t.Helper()
+	return newExecutionFixtureWithOptions(t, fail, executionFixtureOptions{preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture"})
+}
+
+func newExecutionFixtureWithOptions(t *testing.T, fail bool, options executionFixtureOptions) executionFixture {
 	t.Helper()
 	repository := t.TempDir()
 	git(t, repository, "init", "-q")
@@ -183,7 +242,7 @@ func newExecutionFixture(t *testing.T, fail bool) executionFixture {
 		t.Fatal(err)
 	}
 	capability := mustJSON(t, map[string]any{
-		"apiVersion": "marshal.dev/v1alpha1", "kind": "CapabilitySnapshot", "adapterId": "fixture", "adapterVersion": "0.1.0", "executable": "/fixture", "executableDigest": "sha256:" + strings.Repeat("a", 64), "binaryVersion": "1", "probeStatus": "supported",
+		"apiVersion": "marshal.dev/v1alpha1", "kind": "CapabilitySnapshot", "adapterId": options.capabilityAdapterID, "adapterVersion": "0.1.0", "executable": "/fixture", "executableDigest": "sha256:" + strings.Repeat("a", 64), "binaryVersion": "1", "probeStatus": "supported",
 		"capabilities": map[string]any{"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true, "sessionPolicies": []string{"ephemeral"}, "modelSelection": false, "executionProfiles": []string{"workspace-write"}, "nativeBudgets": []string{}, "processTreeCancellation": true, "notes": []string{}}, "probeErrors": []string{}, "probedAt": "2026-08-04T00:00:00Z",
 	})
 	policy := mustJSON(t, map[string]any{
@@ -197,7 +256,7 @@ func newExecutionFixture(t *testing.T, fail bool) executionFixture {
 		"repository": map[string]any{"path": repository, "baseRef": "HEAD", "remote": "origin"}, "work": map[string]any{"objective": "write change.txt", "constraints": []string{}, "nonGoals": []string{}},
 		"scope":      map[string]any{"allowPaths": []string{"change.txt"}, "denyPaths": []string{}, "allowSubmodules": false, "maxChangedFiles": 2, "maxDiffBytes": 10000},
 		"acceptance": map[string]any{"commands": []any{}, "allowNoChange": false}, "deliverables": []any{map[string]any{"id": "code", "kind": "code", "required": true, "pathGlob": "change.txt"}},
-		"worker":      map[string]any{"preferredAdapter": "fixture", "fallbackAdapters": []string{}, "executionProfile": "workspace-write", "sessionPolicy": "ephemeral"},
+		"worker":      map[string]any{"preferredAdapter": options.preferredAdapter, "fallbackAdapters": options.fallbackAdapters, "executionProfile": "workspace-write", "sessionPolicy": "ephemeral"},
 		"budgets":     map[string]any{"runTimeoutSeconds": 60, "attemptTimeoutSeconds": 10, "maxAttempts": 2, "maxOperationalRetries": 1, "maxReworkRounds": 0, "maxOutputBytes": 100000},
 		"publication": map[string]any{"required": false, "provider": "none", "mode": "none", "remote": "origin", "baseBranch": "main", "mergePolicy": "never", "requiredChecks": []string{}},
 	})

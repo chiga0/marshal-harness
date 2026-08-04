@@ -1,8 +1,9 @@
-// Package opencode implements the bounded OpenCode Worker adapter.
-package opencode
+// Package pi implements the bounded Pi Worker adapter.
+package pi
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,20 +24,27 @@ import (
 )
 
 const (
-	adapterID       = "opencode"
+	adapterID       = "pi"
 	adapterVersion  = "0.1.0"
-	supportedBinary = "1.18.12"
-	maxPromptBytes  = 256 << 10
-	maxResultBytes  = 4 << 20
-	stderrLimit     = 64 << 10
+	supportedBinary = "0.83.0"
+	// supportedSessionVersion is the exact pi session event protocol version
+	// Marshal accepts. Any other header version is a protocol violation.
+	supportedSessionVersion = 3
+	maxPromptBytes          = 256 << 10
+	maxResultBytes          = 4 << 20
+	stderrLimit             = 64 << 10
 )
 
+// workerTools is the frozen tool allowlist. bash is never granted and the
+// list never grows implicitly: Marshal passes it via direct argv only.
+const workerTools = "read,grep,find,ls,write,edit"
+
 var (
-	ErrUnsupportedVersion = errors.New("unsupported opencode version")
-	ErrOutputLimit        = errors.New("opencode output limit exceeded")
-	ErrProtocol           = errors.New("invalid opencode protocol")
-	ErrPermissionDenied   = errors.New("opencode permission denied")
-	ErrProcessFailed      = errors.New("opencode process failed")
+	ErrUnsupportedVersion       = errors.New("unsupported pi version")
+	ErrOutputLimit              = errors.New("pi output limit exceeded")
+	ErrProtocol                 = errors.New("invalid pi protocol")
+	ErrUnsupportedSessionPolicy = errors.New("unsupported session policy")
+	ErrProcessFailed            = errors.New("pi process failed")
 )
 
 type Adapter struct {
@@ -52,18 +60,18 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 		return nil, errors.New("contract validator is required")
 	}
 	if !filepath.IsAbs(executable) || filepath.Clean(executable) != executable {
-		return nil, errors.New("opencode executable must be an absolute clean path")
+		return nil, errors.New("pi executable must be an absolute clean path")
 	}
 	realPath, err := filepath.EvalSymlinks(executable)
 	if err != nil {
-		return nil, fmt.Errorf("resolve opencode executable: %w", err)
+		return nil, fmt.Errorf("resolve pi executable: %w", err)
 	}
 	info, err := os.Stat(realPath)
 	if err != nil {
-		return nil, fmt.Errorf("stat opencode executable: %w", err)
+		return nil, fmt.Errorf("stat pi executable: %w", err)
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return nil, errors.New("opencode executable must be an executable regular file")
+		return nil, errors.New("pi executable must be an executable regular file")
 	}
 	return &Adapter{executable: realPath, validator: validator, now: time.Now}, nil
 }
@@ -79,7 +87,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	probeErrors := []string{}
 	if identity.version != supportedBinary {
 		status = "unsupported"
-		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 OpenCode %s，实际为 %s", supportedBinary, identity.version))
+		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Pi %s，实际为 %s", supportedBinary, identity.version))
 	}
 	snapshot := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
@@ -88,10 +96,14 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"binaryVersion": identity.version, "probeStatus": status,
 		"capabilities": map[string]any{
 			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
-			"sessionPolicies": []string{"ephemeral", "persist", "resume"}, "modelSelection": true,
+			"sessionPolicies": []string{"ephemeral"}, "modelSelection": true,
 			"executionProfiles": []string{"workspace-write"}, "nativeBudgets": []string{},
 			"processTreeCancellation": true,
-			"notes":                   []string{"由 Marshal 实施 wall-time 与 output-bytes 上限。", "workspace-write Local Profile 不构成恶意代码隔离。"},
+			"notes": []string{
+				"由 Marshal 实施 wall-time 与 output-bytes 上限。",
+				"工具白名单固定为 " + workerTools + "，永不授予 bash。",
+				"Pi 非交互模式不是恶意代码隔离边界。",
+			},
 		},
 		"probeErrors": probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
@@ -107,10 +119,12 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 
 type executableIdentity struct{ path, digest, version string }
 
+// inspect pins the executable identity through realpath and SHA256 and
+// verifies the exact binary version before Marshal trusts the adapter.
 func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
 	info, err := os.Stat(a.executable)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return executableIdentity{}, errors.New("configured opencode executable is unavailable")
+		return executableIdentity{}, errors.New("configured pi executable is unavailable")
 	}
 	digest, err := digestFile(a.executable)
 	if err != nil {
@@ -123,11 +137,11 @@ func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
 		if ctx.Err() != nil {
 			return executableIdentity{}, ctx.Err()
 		}
-		return executableIdentity{}, fmt.Errorf("probe opencode version: %w", err)
+		return executableIdentity{}, fmt.Errorf("probe pi version: %w", err)
 	}
 	version := strings.TrimSpace(string(output))
 	if version == "" {
-		return executableIdentity{}, errors.New("opencode returned an empty version")
+		return executableIdentity{}, errors.New("pi returned an empty version")
 	}
 	return executableIdentity{a.executable, digest, version}, nil
 }
@@ -177,7 +191,14 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, err
 	}
 	if request.AdapterID != adapterID || request.ExecutionProfile != "workspace-write" {
-		return domain.Record{}, errors.New("WorkerRequest does not match the opencode workspace-write adapter")
+		return domain.Record{}, errors.New("WorkerRequest does not match the pi workspace-write adapter")
+	}
+	// Fail-closed: persist would write into the user's default pi session
+	// directory (outside the managed state boundary) and WorkerRequest has
+	// no managed sessionDir/mapping, so cross-attempt resume cannot be done
+	// safely. Both are permanent, unsupported errors; never launch a process.
+	if request.SessionPolicy != "ephemeral" {
+		return domain.Record{}, fmt.Errorf("%w: %q is permanently unsupported; only ephemeral sessions are managed by Marshal", ErrUnsupportedSessionPolicy, request.SessionPolicy)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(request.AttemptTimeoutSeconds)*time.Second)
 	defer cancel()
@@ -212,17 +233,10 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("resolve result: %w", err)
 	}
 	model := readModel(controlRoot, request.TaskSpecPath)
-	args := buildArgs(request.SessionPolicy, request.SessionID, model, string(prompt))
-	config, err := permissionConfig(controlRoot)
-	if err != nil {
-		return domain.Record{}, err
-	}
+	args := buildArgs(model, string(prompt))
 	command := exec.Command(a.executable, args...)
 	command.Dir = worktree
-	command.Env = workerEnvironment(worktree, config)
-	if err := validateResolvedConfig(runCtx, a.executable, command.Env, controlRoot); err != nil {
-		return domain.Record{}, err
-	}
+	command.Env = workerEnvironment(worktree)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
@@ -234,13 +248,13 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	started := a.now().UTC()
 	if err := command.Start(); err != nil {
-		return domain.Record{}, fmt.Errorf("start opencode: %w", err)
+		return domain.Record{}, fmt.Errorf("start pi: %w", err)
 	}
 	var killOnce sync.Once
 	kill := func() { killOnce.Do(func() { terminateGroup(command) }) }
 	stdoutDone := make(chan captureResult, 1)
 	stderrDone := make(chan streamCapture, 1)
-	go func() { stdoutDone <- captureJSONL(stdout, int64(request.MaxOutputBytes), kill) }()
+	go func() { stdoutDone <- captureJSONL(stdout, worktree, int64(request.MaxOutputBytes), kill) }()
 	go func() { stderrDone <- captureStream(stderr, stderrLimit) }()
 	processFinished := make(chan struct{})
 	go func() {
@@ -255,26 +269,27 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	waitErr := command.Wait()
 	close(processFinished)
 	completed := a.now().UTC()
-	transcriptPath := filepath.Join(filepath.Dir(resultPath), "opencode-transcript.jsonl")
+	transcriptPath := filepath.Join(filepath.Dir(resultPath), "pi-transcript.jsonl")
 	if err := atomicWrite(transcriptPath, capture.raw); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript: %w", err)
 	}
-	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "opencode-stderr.log"), stderrCapture.data); err != nil {
+	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "pi-stderr.log"), stderrCapture.data); err != nil {
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
 	exitCode, signal := processOutcome(command)
 	metadata, err := json.MarshalIndent(map[string]any{
 		"sessionId": capture.sessionID, "eventCount": capture.eventCount,
 		"toolCalls": capture.toolCalls, "inputTokens": capture.inputTokens,
-		"outputTokens": capture.outputTokens, "capturedBytes": len(capture.raw),
-		"outputTruncated": capture.limitExceeded, "permissionDenied": capture.permissionDenied,
-		"exitCode": exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
+		"outputTokens": capture.outputTokens, "cachedInputTokens": capture.cachedInputTokens,
+		"cost": capture.cost, "capturedBytes": len(capture.raw),
+		"outputTruncated": capture.limitExceeded,
+		"exitCode":        exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
 		"contextError": contextError(runCtx),
 	}, "", "  ")
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "opencode-transcript-meta.json"), append(metadata, '\n')); err != nil {
+	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "pi-transcript-meta.json"), append(metadata, '\n')); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript metadata: %w", err)
 	}
 	if runCtx.Err() != nil {
@@ -289,11 +304,8 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if waitErr != nil {
 		return domain.Record{}, processFailureError(command)
 	}
-	if capture.permissionDenied {
-		return domain.Record{}, ErrPermissionDenied
-	}
 	if capture.sessionID == "" {
-		return domain.Record{}, fmt.Errorf("%w: sessionID is missing", ErrProtocol)
+		return domain.Record{}, fmt.Errorf("%w: session id is missing", ErrProtocol)
 	}
 	declared, err := readDeclaredResult(resultPath, int64(maxResultBytes), a.validator)
 	if err != nil {
@@ -306,10 +318,19 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, errors.New("WorkerResult session does not match transcript")
 	}
 	declared.Adapter.Executable, declared.Adapter.Version = identity.path, identity.version
-	declared.Session = &declaredSession{ID: capture.sessionID, Resumable: request.SessionPolicy != "ephemeral"}
+	declared.Session = &declaredSession{ID: capture.sessionID, Resumable: false}
 	declared.StartedAt, declared.CompletedAt = started, completed
 	if model != "" {
 		declared.Adapter.Model = model
+	}
+	if capture.inputTokens > 0 || capture.outputTokens > 0 || capture.cost > 0 {
+		usage := map[string]any{"inputTokens": capture.inputTokens, "outputTokens": capture.outputTokens, "cachedInputTokens": capture.cachedInputTokens}
+		if capture.cost > 0 {
+			usage["cost"], usage["currency"] = capture.cost, "USD"
+		}
+		if usageData, err := json.Marshal(usage); err == nil {
+			declared.Usage = usageData
+		}
 	}
 	data, err := json.Marshal(declared)
 	if err != nil {
@@ -372,18 +393,48 @@ func readDeclaredResult(path string, limit int64, validator *contract.Validator)
 }
 
 type captureResult struct {
-	raw              []byte
-	sessionID        string
-	eventCount       int
-	toolCalls        int
-	inputTokens      int
-	outputTokens     int
-	permissionDenied bool
-	limitExceeded    bool
-	err              error
+	raw               []byte
+	sessionID         string
+	eventCount        int
+	toolCalls         int
+	inputTokens       int
+	outputTokens      int
+	cachedInputTokens int
+	cost              float64
+	limitExceeded     bool
+	err               error
 }
 
-func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
+// piEvent covers only the fields Marshal validates. Unknown fields are
+// ignored on purpose; protocol decisions rely solely on type, version, id,
+// cwd, and the terminal agent_end event.
+type piEvent struct {
+	Type     string `json:"type"`
+	Version  *int   `json:"version"`
+	ID       string `json:"id"`
+	Cwd      string `json:"cwd"`
+	ToolName string `json:"toolName"`
+	Messages []struct {
+		Role  string `json:"role"`
+		Usage *struct {
+			Input      int     `json:"input"`
+			Output     int     `json:"output"`
+			CacheRead  int     `json:"cacheRead"`
+			CacheWrite int     `json:"cacheWrite"`
+			Cost       float64 `json:"cost"`
+		} `json:"usage"`
+	} `json:"messages"`
+}
+
+// captureJSONL enforces the strict pi session protocol:
+//   - the first event must be the session header with version exactly 3 and
+//     cwd equal to the resolved attempt worktree;
+//   - every line must decode as JSON;
+//   - the last event must be agent_end.
+//
+// Output is bounded; exceeding the limit or detecting a protocol violation
+// kills the process group immediately.
+func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()) captureResult {
 	capacity := 64 << 10
 	if limit < int64(capacity) {
 		capacity = int(limit)
@@ -392,6 +443,13 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 	buffered := bufio.NewReaderSize(reader, 64<<10)
 	var consumed int64
 	var line []byte
+	lastType := ""
+	fail := func(reason error) {
+		if result.err == nil {
+			result.err = reason
+		}
+		onLimit()
+	}
 	for {
 		fragment, err := buffered.ReadSlice('\n')
 		if len(fragment) > 0 {
@@ -407,50 +465,55 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 			}
 			complete := !errors.Is(err, bufio.ErrBufferFull)
 			if complete && len(line) > 0 && !result.limitExceeded {
-				result.raw = append(result.raw, line...)
-				var event struct {
-					Type      string `json:"type"`
-					SessionID string `json:"sessionID"`
-					Part      struct {
-						Type   string `json:"type"`
-						Text   string `json:"text"`
-						Tool   string `json:"tool"`
-						Tokens struct {
-							Input  int `json:"input"`
-							Output int `json:"output"`
-						} `json:"tokens"`
-						State struct {
-							Status string `json:"status"`
-							Error  string `json:"error"`
-						} `json:"state"`
-					} `json:"part"`
-				}
-				if decodeErr := json.Unmarshal(bytesTrimSpace(line), &event); decodeErr != nil {
-					result.err = fmt.Errorf("%w: malformed JSONL: %v", ErrProtocol, decodeErr)
-					onLimit()
-				} else {
-					result.eventCount++
-					if result.sessionID == "" {
-						result.sessionID = event.SessionID
-					}
-					if event.Part.Type == "tool" || event.Part.Tool != "" {
-						result.toolCalls++
-					}
-					if event.Part.Tokens.Input > 0 || event.Part.Tokens.Output > 0 {
-						result.inputTokens = event.Part.Tokens.Input
-						result.outputTokens = event.Part.Tokens.Output
-					}
-					lower := strings.ToLower(event.Part.State.Error)
-					if event.Part.State.Status == "error" && strings.Contains(lower, "permission") && (strings.Contains(lower, "denied") || strings.Contains(lower, "prevents") || strings.Contains(lower, "rule")) {
-						result.permissionDenied = true
-					}
-				}
+				trimmed := bytes.TrimSpace(line)
 				line = nil
+				if len(trimmed) == 0 {
+					continue
+				}
+				result.raw = append(result.raw, append(trimmed, '\n')...)
+				var event piEvent
+				if decodeErr := json.Unmarshal(trimmed, &event); decodeErr != nil {
+					fail(fmt.Errorf("%w: malformed JSONL: %v", ErrProtocol, decodeErr))
+					continue
+				}
+				result.eventCount++
+				switch {
+				case result.eventCount == 1:
+					if event.Type != "session" {
+						fail(fmt.Errorf("%w: first event must be the session header, got %q", ErrProtocol, event.Type))
+						continue
+					}
+					if event.Version == nil || *event.Version != supportedSessionVersion {
+						fail(fmt.Errorf("%w: session header version must be %d", ErrProtocol, supportedSessionVersion))
+						continue
+					}
+					if filepath.Clean(event.Cwd) != worktree {
+						fail(fmt.Errorf("%w: session cwd %q does not match worktree %q", ErrProtocol, event.Cwd, worktree))
+						continue
+					}
+					result.sessionID = event.ID
+				case event.Type == "tool_execution_start":
+					result.toolCalls++
+				case event.Type == "agent_end":
+					for _, message := range event.Messages {
+						if message.Role != "assistant" || message.Usage == nil {
+							continue
+						}
+						result.inputTokens += message.Usage.Input
+						result.outputTokens += message.Usage.Output
+						result.cachedInputTokens += message.Usage.CacheRead
+						result.cost += message.Usage.Cost
+					}
+				}
+				lastType = event.Type
 			}
 		}
 		if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
 			if !errors.Is(err, io.EOF) && result.err == nil {
 				result.err = err
+			}
+			if result.err == nil && !result.limitExceeded && lastType != "agent_end" {
+				result.err = fmt.Errorf("%w: stream ended without agent_end (last event %q)", ErrProtocol, lastType)
 			}
 			return result
 		}
@@ -489,101 +552,30 @@ func captureStream(reader io.Reader, limit int64) streamCapture {
 	}
 }
 
-func buildArgs(policy, sessionID, model, prompt string) []string {
-	args := []string{"run", "--pure", "--format", "json", "--title", "Marshal Worker"}
-	if policy == "resume" {
-		args = append(args, "--session", sessionID)
-	}
+// hardeningFlags is the frozen, ordered hardening surface. Every flag is
+// listed exactly once here; buildArgs copies it verbatim so no hardening
+// flag can ever appear twice in the argv Marshal hands to pi.
+var hardeningFlags = []string{
+	"--mode", "json", "--print", "--no-approve",
+	"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
+	"--tools", workerTools,
+	"--no-session",
+}
+
+// buildArgs produces the exact hardened argv. Sessions are always disabled:
+// Marshal only supports ephemeral attempts. The prompt is always the final
+// positional argument; Marshal never invokes pi through a shell.
+func buildArgs(model, prompt string) []string {
+	args := append([]string{}, hardeningFlags...)
 	if model != "" {
 		args = append(args, "--model", model)
 	}
 	return append(args, prompt)
 }
 
-func permissionConfig(controlRoot string) (string, error) {
-	inputRoot := filepath.ToSlash(filepath.Join(controlRoot, "input")) + "/**"
-	outputRoot := filepath.ToSlash(filepath.Join(controlRoot, "output")) + "/**"
-	bash := map[string]string{"*": "allow", "/usr/bin/curl *": "deny", "/usr/bin/ssh *": "deny", "bash *": "deny", "curl *": "deny", "env *": "deny", "gh *": "deny", "git commit *": "deny", "git push *": "deny", "git tag *": "deny", "glab *": "deny", "nc *": "deny", "nohup *": "deny", "scp *": "deny", "sh *": "deny", "ssh *": "deny", "sudo *": "deny", "wget *": "deny", "xargs *": "deny"}
-	permission := map[string]any{
-		"*": "deny", "bash": bash,
-		"edit":               map[string]string{"*": "allow", inputRoot: "deny", outputRoot: "allow"},
-		"external_directory": map[string]string{"*": "deny", inputRoot: "allow", outputRoot: "allow"},
-		"glob":               "allow", "grep": "allow", "list": "allow", "lsp": "allow", "question": "deny", "read": "allow", "skill": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny",
-	}
-	config := map[string]any{"autoupdate": false, "permission": permission, "share": "disabled", "agent": map[string]any{"build": map[string]any{"permission": permission}}}
-	data, err := json.Marshal(config)
-	return string(data), err
-}
-
-func validateResolvedConfig(ctx context.Context, executable string, environment []string, controlRoot string) error {
-	command := exec.CommandContext(ctx, executable, "debug", "config", "--pure")
-	command.Env = environment
-	output, err := command.Output()
-	if err != nil {
-		return fmt.Errorf("probe resolved opencode config: %w", err)
-	}
-	if len(output) > 1<<20 {
-		return errors.New("resolved opencode config exceeds byte limit")
-	}
-	var config struct {
-		Autoupdate bool           `json:"autoupdate"`
-		Share      string         `json:"share"`
-		Permission map[string]any `json:"permission"`
-		Agent      map[string]struct {
-			Permission map[string]any `json:"permission"`
-		} `json:"agent"`
-	}
-	if err := json.Unmarshal(output, &config); err != nil {
-		return fmt.Errorf("decode resolved opencode config: %w", err)
-	}
-	if config.Autoupdate || config.Share != "disabled" {
-		return errors.New("resolved opencode config enables autoupdate or sharing")
-	}
-	if err := validatePermissionMap(config.Permission, controlRoot); err != nil {
-		return fmt.Errorf("unsafe resolved global permission: %w", err)
-	}
-	build, ok := config.Agent["build"]
-	if !ok {
-		return errors.New("resolved opencode config has no build agent override")
-	}
-	if err := validatePermissionMap(build.Permission, controlRoot); err != nil {
-		return fmt.Errorf("unsafe resolved build permission: %w", err)
-	}
-	return nil
-}
-
-func validatePermissionMap(permission map[string]any, controlRoot string) error {
-	if permission["*"] != "deny" {
-		return errors.New("global wildcard is not denied")
-	}
-	for _, name := range []string{"question", "skill", "task", "webfetch", "websearch"} {
-		if permission[name] != "deny" {
-			return fmt.Errorf("%s is not denied", name)
-		}
-	}
-	external, ok := permission["external_directory"].(map[string]any)
-	if !ok || external["*"] != "deny" || external[filepath.ToSlash(filepath.Join(controlRoot, "input"))+"/**"] != "allow" || external[filepath.ToSlash(filepath.Join(controlRoot, "output"))+"/**"] != "allow" {
-		return errors.New("attempt-scoped external directory rules are missing")
-	}
-	edit, ok := permission["edit"].(map[string]any)
-	if !ok || edit[filepath.ToSlash(filepath.Join(controlRoot, "input"))+"/**"] != "deny" {
-		return errors.New("control input is not read-only")
-	}
-	bash, ok := permission["bash"].(map[string]any)
-	if !ok {
-		return errors.New("bash rules are missing")
-	}
-	for _, pattern := range []string{"/usr/bin/curl *", "/usr/bin/ssh *", "bash *", "curl *", "env *", "gh *", "git commit *", "git push *", "git tag *", "glab *", "nc *", "nohup *", "scp *", "sh *", "ssh *", "sudo *", "wget *", "xargs *"} {
-		if bash[pattern] != "deny" {
-			return fmt.Errorf("bash pattern %q is not denied", pattern)
-		}
-	}
-	return nil
-}
-
-// processFailureError reports a failed opencode process using only fixed
+// processFailureError reports a failed pi process using only fixed
 // classification and exit/signal information. Provider stderr is persisted
-// separately as a bounded evidence file (opencode-stderr.log) but is never
+// separately as a bounded evidence file (pi-stderr.log) but is never
 // concatenated into the returned error, so tokens, secrets, or user content
 // cannot reach Events, CLI output, or Outcome.
 func processFailureError(command *exec.Cmd) error {
@@ -612,16 +604,20 @@ func contextError(ctx context.Context) string {
 	return ""
 }
 
-func workerEnvironment(worktree, config string) []string {
+// workerEnvironment strips every inherited variable outside a benign
+// allowlist. GitHub, cloud, SSH, and model-provider credentials never reach
+// the worker process; model authentication comes only from Pi's own
+// configuration under HOME.
+func workerEnvironment(worktree string) []string {
 	allowed := map[string]bool{"HOME": true, "LANG": true, "LC_ALL": true, "LC_CTYPE": true, "LOGNAME": true, "PATH": true, "SHELL": true, "TEMP": true, "TERM": true, "TMP": true, "TMPDIR": true, "USER": true, "XDG_CACHE_HOME": true, "XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true}
-	environment := make([]string, 0, len(allowed)+8)
+	environment := make([]string, 0, len(allowed)+6)
 	for _, entry := range os.Environ() {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok && allowed[key] {
 			environment = append(environment, entry)
 		}
 	}
-	environment = append(environment, "CI=1", "GH_PROMPT_DISABLED=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "OPENCODE_CONFIG_CONTENT="+config, "PWD="+worktree)
+	environment = append(environment, "CI=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -oBatchMode=yes", "PWD="+worktree)
 	return environment
 }
 
@@ -636,8 +632,8 @@ func probeEnvironment() []string {
 	return result
 }
 
-func readModel(worktree, relative string) string {
-	path, err := existingPathWithin(worktree, relative)
+func readModel(controlRoot, relative string) string {
+	path, err := existingPathWithin(controlRoot, relative)
 	if err != nil {
 		return ""
 	}
@@ -660,7 +656,7 @@ func lexicalPathWithin(root, relative string) (string, error) {
 	path := filepath.Join(root, relative)
 	rel, err := filepath.Rel(root, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errors.New("path escapes worktree")
+		return "", errors.New("path escapes control root")
 	}
 	return path, nil
 }
@@ -676,7 +672,7 @@ func existingPathWithin(root, relative string) (string, error) {
 	}
 	rel, err := filepath.Rel(root, real)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errors.New("symlink escapes worktree")
+		return "", errors.New("symlink escapes control root")
 	}
 	return real, nil
 }
@@ -714,7 +710,7 @@ func atomicWrite(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".opencode-*.tmp")
+	file, err := os.CreateTemp(filepath.Dir(path), ".pi-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -757,5 +753,3 @@ func terminateGroup(command *exec.Cmd) {
 		_ = command.Process.Kill()
 	}
 }
-
-func bytesTrimSpace(data []byte) []byte { return []byte(strings.TrimSpace(string(data))) }

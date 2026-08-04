@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -65,8 +66,8 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if err := json.Unmarshal(taskData, &task); err != nil {
 		return Result{}, err
 	}
-	if task.Metadata.ID != state.TaskID || task.Worker.PreferredAdapter != input.Adapter.ID() {
-		return Result{}, errors.New("task, run, and selected adapter identity do not match")
+	if task.Metadata.ID != state.TaskID {
+		return Result{}, errors.New("task and run identity do not match")
 	}
 	taskRepository, err := filepath.EvalSymlinks(task.Repository.Path)
 	if err != nil || taskRepository != input.RepositoryRoot {
@@ -101,14 +102,18 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if digest, digestErr := canonical.DigestJSON(capabilityData); digestErr != nil || digest != state.CapabilityDigest {
 		return Result{}, errors.New("CapabilitySnapshot digest does not match frozen run")
 	}
+	selectedAdapterID, err := adapter.ValidateCapability(domain.Record{Kind: domain.KindCapabilitySnapshot, Data: capabilityData}, task)
+	if err != nil {
+		return Result{}, err
+	}
+	if selectedAdapterID != input.Adapter.ID() {
+		return Result{}, errors.New("frozen capability snapshot does not match the selected adapter")
+	}
 	currentCapability, err := input.Adapter.Probe(ctx)
 	if err != nil {
 		return Result{}, err
 	}
 	if err := sameCapabilityIdentity(capabilityData, currentCapability.Data); err != nil {
-		return Result{}, err
-	}
-	if err := capabilitySupports(capabilityData, task); err != nil {
 		return Result{}, err
 	}
 	if uint(state.AttemptsUsed) >= uint(task.Budgets.MaxAttempts) {
@@ -143,7 +148,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if err := atomicWrite(filepath.Join(controlRoot, "input", "task-spec.json"), taskData, 0o400); err != nil {
 		return Result{}, err
 	}
-	prompt := renderPrompt(task, state, attemptID, controlRoot, reviewFindings)
+	prompt := renderPrompt(task, state, attemptID, controlRoot, selectedAdapterID, reviewFindings)
 	if err := atomicWrite(filepath.Join(controlRoot, "input", "prompt.md"), []byte(prompt), 0o400); err != nil {
 		return Result{}, err
 	}
@@ -153,7 +158,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		"specDigest": state.SpecDigest, "policyDigest": state.PolicyDigest, "capabilityDigest": state.CapabilityDigest,
 		"baseSha": state.BaseSHA, "worktreePath": state.WorktreePath, "controlRoot": controlRoot,
 		"taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
-		"adapterId": input.Adapter.ID(), "executionProfile": task.Worker.ExecutionProfile, "sessionPolicy": task.Worker.SessionPolicy,
+		"adapterId": selectedAdapterID, "executionProfile": task.Worker.ExecutionProfile, "sessionPolicy": task.Worker.SessionPolicy,
 		"attemptTimeoutSeconds": task.Budgets.AttemptTimeoutSeconds, "maxOutputBytes": task.Budgets.MaxOutputBytes,
 		"reviewFindings": reviewFindings,
 	}
@@ -169,7 +174,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 
 	started := time.Now().UTC()
-	startEvent, next, err := transition(state, attemptID, "worker.started", domain.StateRunning, started, map[string]any{"adapterId": input.Adapter.ID()}, lifecycle.Guard{LeaseHeld: true, BudgetAvailable: true})
+	startEvent, next, err := transition(state, attemptID, "worker.started", domain.StateRunning, started, map[string]any{"adapterId": selectedAdapterID}, lifecycle.Guard{LeaseHeld: true, BudgetAvailable: true})
 	if err != nil {
 		return Result{}, err
 	}
@@ -203,7 +208,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 			ID string `json:"id"`
 		} `json:"adapter"`
 	}
-	if err := json.Unmarshal(workerResult.Data, &resultIdentity); err != nil || resultIdentity.TaskID != state.TaskID || resultIdentity.RunID != state.RunID || resultIdentity.AttemptID != attemptID || resultIdentity.Adapter.ID != input.Adapter.ID() {
+	if err := json.Unmarshal(workerResult.Data, &resultIdentity); err != nil || resultIdentity.TaskID != state.TaskID || resultIdentity.RunID != state.RunID || resultIdentity.AttemptID != attemptID || resultIdentity.Adapter.ID != selectedAdapterID {
 		protocolErr := errors.New("WorkerResult identity does not match the active attempt")
 		failedState, persistErr := recordFailure(store, lease, next, attemptID, task, protocolErr)
 		if persistErr != nil {
@@ -304,34 +309,6 @@ func sameCapabilityIdentity(frozen, current []byte) error {
 	return nil
 }
 
-func capabilitySupports(data []byte, task domain.TaskSpec) error {
-	var snapshot struct {
-		Capabilities struct {
-			SessionPolicies   []string `json:"sessionPolicies"`
-			ExecutionProfiles []string `json:"executionProfiles"`
-			ModelSelection    bool     `json:"modelSelection"`
-		} `json:"capabilities"`
-	}
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return err
-	}
-	contains := func(values []string, wanted string) bool {
-		for _, value := range values {
-			if value == wanted {
-				return true
-			}
-		}
-		return false
-	}
-	if !contains(snapshot.Capabilities.SessionPolicies, task.Worker.SessionPolicy) || !contains(snapshot.Capabilities.ExecutionProfiles, task.Worker.ExecutionProfile) {
-		return errors.New("frozen adapter capability does not satisfy the Worker profile or session policy")
-	}
-	if task.Worker.Model != "" && !snapshot.Capabilities.ModelSelection {
-		return errors.New("frozen adapter capability cannot select the requested model")
-	}
-	return nil
-}
-
 func transition(state domain.RunState, attemptID, eventType string, target domain.State, at time.Time, payload map[string]any, guard lifecycle.Guard) (domain.RunEvent, domain.RunState, error) {
 	eventID, err := domain.NewID("event")
 	if err != nil {
@@ -361,7 +338,7 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, state domain.Ru
 	return next, nil
 }
 
-func renderPrompt(task domain.TaskSpec, state domain.RunState, attemptID, controlRoot string, findings []map[string]string) string {
+func renderPrompt(task domain.TaskSpec, state domain.RunState, attemptID, controlRoot, adapterID string, findings []map[string]string) string {
 	findingsData, _ := json.MarshalIndent(findings, "", "  ")
 	return fmt.Sprintf(`# Marshal Worker 任务
 
@@ -376,7 +353,7 @@ TaskSpec：%s
 
 完成后必须将符合 WorkerResult JSON Schema 的 JSON 写入：%s
 其中 taskId=%s、runId=%s、attemptId=%s、adapter.id=%s。时间字段可先填写合法 RFC3339 时间；Marshal 会以实际观测值覆盖不可信的运行元数据。
-`, task.Work.Objective, findingsData, filepath.Join(controlRoot, "input", "task-spec.json"), state.WorktreePath, filepath.Join(controlRoot, "output", "worker-result.json"), state.TaskID, state.RunID, attemptID, task.Worker.PreferredAdapter)
+`, task.Work.Objective, findingsData, filepath.Join(controlRoot, "input", "task-spec.json"), state.WorktreePath, filepath.Join(controlRoot, "output", "worker-result.json"), state.TaskID, state.RunID, attemptID, adapterID)
 }
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {

@@ -1,6 +1,6 @@
 # 架构决策记录
 
-本目录记录对实现有实质约束的决策。ADR 0001–0005 由维护者于 2026-08-03 接受，ADR 0006–0007 于 2026-08-04 随真实 Adapter 与受控发布实施接受。
+本目录记录对实现有实质约束的决策。ADR 0001–0005 由维护者于 2026-08-03 接受，ADR 0006–0008 于 2026-08-04 随真实 Adapter、受控发布与可观察性设计实施接受。
 
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
@@ -11,3 +11,4 @@
 | [0005](0005-go-runtime.md) | Go 作为 Core Runtime | 已接受（Accepted） |
 | [0006](0006-attempt-control-root.md) | Attempt 控制根与业务 Worktree 分离 | 已接受（Accepted） |
 | [0007](0007-intent-first-publication.md) | 先记录意图的受控发布与远端对账 | 已接受（Accepted） |
+| [0008](0008-pluggable-observer-backends.md) | 可插拔 Observer Backend，cmux 作为首个可视化实现 | 已接受（Accepted） |

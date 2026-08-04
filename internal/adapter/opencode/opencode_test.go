@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -203,17 +205,114 @@ func TestRunEnforcesOutputCapPermissionAndCancellation(t *testing.T) {
 		}
 	})
 	t.Run("cancel-process-group", func(t *testing.T) {
-		fixture := newRunFixture(t, "1.18.12", `printf '%s\n' '{"type":"step_start","sessionID":"session-1","part":{}}'; sleep 20 & wait`)
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
-		started := time.Now()
-		if _, err := fixture.adapter.Run(ctx, fixture.request); !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("error = %v", err)
+		handshake := t.TempDir()
+		pidFile := filepath.Join(handshake, "child.pid")
+		readyFile := filepath.Join(handshake, "ready")
+		body := "sleep 60 &\nchild=$!\nprintf '%s' \"$child\" > " + shellQuote(pidFile+".tmp") + " && mv " + shellQuote(pidFile+".tmp") + " " + shellQuote(pidFile) + "\n: > " + shellQuote(readyFile+".tmp") + " && mv " + shellQuote(readyFile+".tmp") + " " + shellQuote(readyFile) + "\nwait"
+		fixture := newRunFixture(t, "1.18.12", body)
+		var raw map[string]any
+		if err := json.Unmarshal(fixture.request.Data, &raw); err != nil {
+			t.Fatal(err)
 		}
-		if time.Since(started) > 3*time.Second {
-			t.Fatal("cancellation did not terminate the process group promptly")
+		raw["attemptTimeoutSeconds"] = 15
+		requestData, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		errCh := make(chan error, 1)
+		go func() {
+			_, runErr := fixture.adapter.Run(ctx, domain.Record{Kind: domain.KindWorkerRequest, Data: requestData})
+			errCh <- runErr
+		}()
+		waitForFile(t, readyFile, 5*time.Second)
+		pidData, err := os.ReadFile(pidFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+		if err != nil {
+			t.Fatalf("pid file = %q: %v", pidData, err)
+		}
+		cancel()
+		select {
+		case runErr := <-errCh:
+			if !errors.Is(runErr, context.Canceled) {
+				t.Fatalf("error = %v", runErr)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Run did not return promptly after cancellation")
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("background child %d survived process-group cancellation", pid)
+			}
+			time.Sleep(5 * time.Millisecond)
 		}
 	})
+}
+
+func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
+	secrets := []string{"sk-ant-api03-super-secret-token", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret-payload", "user private content: password=hunter2"}
+	body := `printf '%s\n' '{"type":"step_start","sessionID":"session-1","part":{"type":"step-start"}}'`
+	for _, secret := range secrets {
+		body += "\nprintf '%s\\n' " + shellQuote(secret) + " >&2"
+	}
+	body += "\nexit 7"
+	fixture := newRunFixture(t, "1.18.12", body)
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if !errors.Is(err, ErrProcessFailed) {
+		t.Fatalf("error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "exit=7") {
+		t.Fatalf("error must carry the exit code: %v", err)
+	}
+	if strings.Contains(err.Error(), "stderr") {
+		t.Fatalf("error references stderr contents: %v", err)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("provider stderr leaked into error: %v", err)
+		}
+	}
+	evidence, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "opencode-stderr.log"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	metadata, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "opencode-transcript-meta.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, secret := range secrets {
+		if !strings.Contains(string(evidence), secret) {
+			t.Fatalf("bounded stderr evidence file lost %q", secret)
+		}
+		if strings.Contains(string(metadata), secret) {
+			t.Fatalf("metadata leaked stderr content %q", secret)
+		}
+	}
+	if !strings.Contains(string(metadata), `"stderrBytes"`) || !strings.Contains(string(metadata), `"exitCode": 7`) {
+		t.Fatalf("metadata lost bounded stderr/process accounting: %s", metadata)
+	}
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("file %s was not produced within %s", path, timeout)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 type runFixture struct {
