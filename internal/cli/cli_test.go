@@ -21,6 +21,29 @@ import (
 	marshalSchemas "github.com/chiga0/marshal-harness/schemas"
 )
 
+func TestInternalLaunchIsHiddenAndFailClosed(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"__launch"}, strings.NewReader(""), &stdout, &stderr); exit != ExitUsage {
+		t.Fatalf("missing path exit = %d", exit)
+	}
+	stderr.Reset()
+	secretPath := "/private/secret/launch.json"
+	if exit := Run([]string{"__launch", secretPath}, strings.NewReader(""), &stdout, &stderr); exit != ExitFailure {
+		t.Fatalf("invalid envelope exit = %d", exit)
+	}
+	if strings.Contains(stderr.String(), secretPath) || strings.Contains(stderr.String(), "private/secret") {
+		t.Fatalf("internal launch leaked path: %s", stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"help"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("help exit = %d", exit)
+	}
+	if strings.Contains(stdout.String(), "__launch") {
+		t.Fatal("internal launch appeared in public help")
+	}
+}
+
 func TestDoctorReportsCompiledContracts(t *testing.T) {
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", "")

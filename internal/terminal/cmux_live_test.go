@@ -42,19 +42,33 @@ func TestLiveCMUXTerminalSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcherExecutable := filepath.Join(t.TempDir(), "marshal")
+	build := exec.Command("go", "build", "-o", launcherExecutable, "./cmd/marshal")
+	build.Dir = repositoryRoot
+	if output, buildErr := build.CombinedOutput(); buildErr != nil {
+		t.Fatalf("build trusted launcher: %v: %s", buildErr, output)
+	}
+	now := time.Now().UTC()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	session, err := backend.Start(ctx, StartRequest{
-		StateRoot:        t.TempDir(),
-		RunID:            "live-cmux",
-		AttemptID:        "attempt-01",
-		WorkingDirectory: t.TempDir(),
-		Executable:       helperExecutable,
-		Arguments:        []string{"-test.run=^TestCMUXProcessRootHelper$"},
-		Title:            "Marshal live TerminalSession test",
-		Description:      "Safe local PTY lifecycle validation; no model is invoked",
-		InitialPrompt:    "INITIAL_PROBE",
-		Now:              time.Now(),
+		StateRoot:          t.TempDir(),
+		RunID:              "live-cmux",
+		AttemptID:          "attempt-01",
+		WorkingDirectory:   t.TempDir(),
+		LauncherExecutable: launcherExecutable,
+		Executable:         helperExecutable,
+		Arguments:          []string{"-test.run=^TestCMUXProcessRootHelper$"},
+		Environment:        []string{"PATH=/usr/bin:/bin"},
+		Title:              "Marshal live TerminalSession test",
+		Description:        "Safe local PTY lifecycle validation; no model is invoked",
+		InitialPrompt:      "INITIAL_PROBE",
+		Now:                now,
+		ExpiresAt:          now.Add(30 * time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)

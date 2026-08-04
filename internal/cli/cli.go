@@ -23,6 +23,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/execution"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
+	"github.com/chiga0/marshal-harness/internal/launcher"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/publication"
@@ -86,11 +87,27 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return runContract(args[1:], stdin, stdout, stderr)
 	case "task":
 		return runTask(ctx, args[1:], stdout, stderr)
+	case "__launch":
+		return runInternalLaunch(args[1:], stderr)
 	default:
 		fmt.Fprintf(stderr, "未知命令 %q。\n", args[0])
 		writeUsage(stderr)
 		return ExitUsage
 	}
+}
+
+func runInternalLaunch(args []string, stderr io.Writer) int {
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "内部启动调用无效。")
+		return ExitUsage
+	}
+	if err := launcher.ExecutePath(args[0], time.Now().UTC()); err != nil {
+		// Detailed errors may contain local paths. Terminal output remains terse;
+		// the Attempt keeps the authoritative diagnostic.
+		fmt.Fprintln(stderr, "内部 Worker 启动失败。")
+		return ExitFailure
+	}
+	return ExitOK
 }
 
 func runVersion(args []string, stdout, stderr io.Writer) int {

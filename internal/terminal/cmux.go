@@ -21,6 +21,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/launcher"
 )
 
 const (
@@ -118,7 +119,25 @@ func (b *CMUXBackend) Start(ctx context.Context, request StartRequest) (Session,
 		return nil, err
 	}
 	defer os.Remove(pidPath)
-	command, err := shellCommandWithPID(append([]string{request.Executable}, request.Arguments...), pidPath)
+	launcherSum, err := executableDigest(request.LauncherExecutable)
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	reference, err := launcher.Seal(request.StateRoot, launcher.SealRequest{
+		RunID: request.RunID, AttemptID: request.AttemptID, Executable: request.Executable,
+		Arguments: request.Arguments, WorkingDirectory: request.WorkingDirectory,
+		Environment: request.Environment, Now: request.Now, ExpiresAt: request.ExpiresAt,
+	})
+	if err != nil {
+		return nil, ErrInvalidRequest
+	}
+	envelopePending := true
+	defer func() {
+		if envelopePending {
+			_ = os.Remove(reference.Path)
+		}
+	}()
+	command, err := shellCommandWithPID([]string{request.LauncherExecutable, "__launch", reference.Path}, pidPath)
 	if err != nil {
 		return nil, err
 	}
@@ -145,6 +164,11 @@ func (b *CMUXBackend) Start(ctx context.Context, request StartRequest) (Session,
 		_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
 		return nil, err
 	}
+	if err := b.waitEnvelopeConsumed(ctx, reference.Path); err != nil {
+		_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
+		return nil, err
+	}
+	envelopePending = false
 	pgid := 0
 	if b.processes.Supported() {
 		pgid, err = b.processes.GroupID(pid)
@@ -159,6 +183,7 @@ func (b *CMUXBackend) Start(ctx context.Context, request StartRequest) (Session,
 		capabilities: slices.Clone(probe.Capabilities), recordPath: recordPath,
 		record: sessionRecord{BackendID: b.ID(), WorkspaceRef: workspace, RunID: request.RunID, AttemptID: request.AttemptID,
 			PID: pid, ProcessGroupID: pgid, Executable: request.Executable, ExecutableDigest: executableSum,
+			LauncherExecutable: request.LauncherExecutable, LauncherExecutableDigest: launcherSum, LaunchEnvelopeDigest: reference.Digest,
 			State: StateRunning, CreatedAt: request.Now.UTC(), UpdatedAt: request.Now.UTC()},
 	}
 	if err := session.persist(); err != nil {
@@ -172,6 +197,29 @@ func (b *CMUXBackend) Start(ctx context.Context, request StartRequest) (Session,
 		return nil, err
 	}
 	return session, nil
+}
+
+func (b *CMUXBackend) waitEnvelopeConsumed(ctx context.Context, path string) error {
+	deadline := time.NewTimer(b.startLimit)
+	defer deadline.Stop()
+	ticker := time.NewTicker(b.startDelay)
+	defer ticker.Stop()
+	for {
+		_, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("%w: trusted launcher did not consume envelope", ErrUnavailable)
+		case <-ticker.C:
+		}
+	}
 }
 
 func (b *CMUXBackend) waitCommandVisible(ctx context.Context, workspace string) error {
@@ -234,17 +282,20 @@ func (b *CMUXBackend) waitPID(ctx context.Context, path string) (int, error) {
 }
 
 type sessionRecord struct {
-	BackendID        string    `json:"backendId"`
-	WorkspaceRef     string    `json:"workspaceRef"`
-	RunID            string    `json:"runId"`
-	AttemptID        string    `json:"attemptId"`
-	PID              int       `json:"pid"`
-	ProcessGroupID   int       `json:"processGroupId,omitempty"`
-	Executable       string    `json:"executable"`
-	ExecutableDigest string    `json:"executableDigest"`
-	State            State     `json:"state"`
-	CreatedAt        time.Time `json:"createdAt"`
-	UpdatedAt        time.Time `json:"updatedAt"`
+	BackendID                string    `json:"backendId"`
+	WorkspaceRef             string    `json:"workspaceRef"`
+	RunID                    string    `json:"runId"`
+	AttemptID                string    `json:"attemptId"`
+	PID                      int       `json:"pid"`
+	ProcessGroupID           int       `json:"processGroupId,omitempty"`
+	Executable               string    `json:"executable"`
+	ExecutableDigest         string    `json:"executableDigest"`
+	LauncherExecutable       string    `json:"launcherExecutable"`
+	LauncherExecutableDigest string    `json:"launcherExecutableDigest"`
+	LaunchEnvelopeDigest     string    `json:"launchEnvelopeDigest"`
+	State                    State     `json:"state"`
+	CreatedAt                time.Time `json:"createdAt"`
+	UpdatedAt                time.Time `json:"updatedAt"`
 }
 
 type inputRecord struct {
@@ -469,9 +520,10 @@ func secureDirectory(path string) error {
 }
 
 func validateStartRequest(request StartRequest) error {
-	if strings.TrimSpace(request.StateRoot) == "" || domain.ValidateID(request.RunID) != nil || domain.ValidateID(request.AttemptID) != nil ||
+	if !filepath.IsAbs(request.StateRoot) || request.StateRoot != filepath.Clean(request.StateRoot) || domain.ValidateID(request.RunID) != nil || domain.ValidateID(request.AttemptID) != nil ||
 		!filepath.IsAbs(request.WorkingDirectory) || request.WorkingDirectory != filepath.Clean(request.WorkingDirectory) ||
-		!filepath.IsAbs(request.Executable) || request.Executable != filepath.Clean(request.Executable) || request.Title == "" || request.Now.IsZero() ||
+		!filepath.IsAbs(request.LauncherExecutable) || request.LauncherExecutable != filepath.Clean(request.LauncherExecutable) ||
+		!filepath.IsAbs(request.Executable) || request.Executable != filepath.Clean(request.Executable) || request.Title == "" || request.Now.IsZero() || !request.ExpiresAt.After(request.Now) ||
 		strings.TrimSpace(request.InitialPrompt) == "" || len(request.InitialPrompt) > 1<<20 {
 		return ErrInvalidRequest
 	}

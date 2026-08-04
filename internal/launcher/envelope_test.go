@@ -41,6 +41,21 @@ func TestSealConsumeOneUseEnvelope(t *testing.T) {
 	}
 }
 
+func TestConsumePathDerivesExactReference(t *testing.T) {
+	fixture := newFixture(t)
+	reference, err := Seal(fixture.stateRoot, fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(filepath.Base(reference.Path), strings.TrimPrefix(reference.Digest, "sha256:")) {
+		t.Fatalf("path %q does not bind digest %q", reference.Path, reference.Digest)
+	}
+	envelope, err := ConsumePath(reference.Path, fixture.request.Now.Add(time.Second))
+	if err != nil || envelope.RunID != fixture.request.RunID || envelope.AttemptID != fixture.request.AttemptID {
+		t.Fatalf("envelope=%+v err=%v", envelope, err)
+	}
+}
+
 func TestSealRejectsUnsafeInputs(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -247,4 +262,14 @@ func writeAndDigest(t *testing.T, path string, data []byte, reference *Reference
 	}
 	digest := sha256.Sum256(data)
 	reference.Digest = "sha256:" + hex.EncodeToString(digest[:])
+	base := filepath.Base(path)
+	separator := strings.LastIndex(base, "-")
+	if separator < 0 {
+		t.Fatalf("invalid sealed envelope name %q", base)
+	}
+	target := filepath.Join(filepath.Dir(path), base[:separator+1]+hex.EncodeToString(digest[:])+".json")
+	if err := os.Rename(path, target); err != nil {
+		t.Fatal(err)
+	}
+	reference.Path = target
 }

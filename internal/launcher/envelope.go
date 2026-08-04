@@ -26,6 +26,7 @@ const (
 
 var (
 	environmentKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	envelopeNamePattern   = regexp.MustCompile(`^\.launch-[A-Za-z0-9]+-([0-9a-f]{64})\.json$`)
 	forbiddenEnvironment  = map[string]bool{
 		"GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_CONFIG_DIR": true, "MARSHAL_GH_CONFIG_DIR": true, "MARSHAL_GH_PATH": true, "GIT_ASKPASS": true, "SSH_AUTH_SOCK": true,
 		"AWS_ACCESS_KEY_ID": true, "AWS_SECRET_ACCESS_KEY": true, "AWS_SESSION_TOKEN": true, "AWS_SECURITY_TOKEN": true,
@@ -142,7 +143,8 @@ func Seal(stateRoot string, request SealRequest) (Reference, error) {
 	if err := temporary.Close(); err != nil {
 		return Reference{}, err
 	}
-	target := strings.TrimSuffix(temporaryPath, ".tmp") + ".json"
+	digest := digestBytes(data)
+	target := strings.TrimSuffix(temporaryPath, ".tmp") + "-" + strings.TrimPrefix(digest, "sha256:") + ".json"
 	// Link publishes the fully synced inode atomically and refuses to replace
 	// an attacker-created target. A same-directory rename would overwrite an
 	// existing path on Unix.
@@ -157,7 +159,35 @@ func Seal(stateRoot string, request SealRequest) (Reference, error) {
 		_ = os.Remove(target)
 		return Reference{}, err
 	}
-	return Reference{Path: target, Digest: digestBytes(data)}, nil
+	return Reference{Path: target, Digest: digest}, nil
+}
+
+// ConsumePath derives every non-secret reference field from the exact sealed
+// path. This keeps the visible terminal command limited to the trusted
+// launcher and one envelope path.
+func ConsumePath(path string, now time.Time) (Envelope, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return Envelope{}, errors.New("launch envelope path must be clean and absolute")
+	}
+	match := envelopeNamePattern.FindStringSubmatch(filepath.Base(path))
+	if match == nil {
+		return Envelope{}, errors.New("launch envelope filename does not bind a digest")
+	}
+	runtimeDirectory := filepath.Dir(path)
+	if filepath.Base(runtimeDirectory) != "runtime" {
+		return Envelope{}, errors.New("launch envelope is not in a runtime directory")
+	}
+	attemptDirectory := filepath.Dir(runtimeDirectory)
+	attemptsDirectory := filepath.Dir(attemptDirectory)
+	runDirectory := filepath.Dir(attemptsDirectory)
+	runsDirectory := filepath.Dir(runDirectory)
+	if filepath.Base(attemptsDirectory) != "attempts" || filepath.Base(runsDirectory) != "runs" {
+		return Envelope{}, errors.New("launch envelope path has an invalid run hierarchy")
+	}
+	return Consume(filepath.Dir(runsDirectory), ConsumeRequest{
+		RunID: filepath.Base(runDirectory), AttemptID: filepath.Base(attemptDirectory),
+		Path: path, ExpectedDigest: "sha256:" + match[1], Now: now,
+	})
 }
 
 // Consume verifies and removes the exact envelope before returning its launch
@@ -178,8 +208,12 @@ func Consume(stateRoot string, request ConsumeRequest) (Envelope, error) {
 	if err := exactDirectory(runtimeDirectory, true); err != nil {
 		return Envelope{}, fmt.Errorf("runtime directory: %w", err)
 	}
-	if !filepath.IsAbs(request.Path) || filepath.Clean(request.Path) != request.Path || filepath.Dir(request.Path) != runtimeDirectory || !strings.HasPrefix(filepath.Base(request.Path), ".launch-") || !strings.HasSuffix(request.Path, ".json") {
+	nameMatch := envelopeNamePattern.FindStringSubmatch(filepath.Base(request.Path))
+	if !filepath.IsAbs(request.Path) || filepath.Clean(request.Path) != request.Path || filepath.Dir(request.Path) != runtimeDirectory || nameMatch == nil {
 		return Envelope{}, errors.New("launch envelope path is outside the exact attempt runtime")
+	}
+	if request.ExpectedDigest != "sha256:"+nameMatch[1] {
+		return Envelope{}, errors.New("launch envelope reference digest mismatch")
 	}
 	before, err := os.Lstat(request.Path)
 	if err != nil {

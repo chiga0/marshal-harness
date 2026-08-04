@@ -15,9 +15,10 @@ import (
 )
 
 type fakeRunner struct {
-	mu       sync.Mutex
-	commands [][]string
-	failSend bool
+	mu             sync.Mutex
+	commands       [][]string
+	failSend       bool
+	retainEnvelope bool
 }
 
 func (r *fakeRunner) Run(_ context.Context, arguments ...string) (string, error) {
@@ -37,6 +38,10 @@ func (r *fakeRunner) Run(_ context.Context, arguments ...string) (string, error)
 					match := regexp.MustCompile(`> '([^']+)' && fg`).FindStringSubmatch(arguments[index+1])
 					if match != nil {
 						_ = os.WriteFile(match[1], []byte("4242\n"), 0o600)
+					}
+					envelope := regexp.MustCompile(`'__launch' '([^']+\.json)'`).FindStringSubmatch(arguments[index+1])
+					if envelope != nil && !r.retainEnvelope {
+						_ = os.Remove(envelope[1])
 					}
 				}
 			}
@@ -88,11 +93,15 @@ func (p *fakeProcesses) Terminate(_ context.Context, pid int, _ time.Duration) e
 func TestCMUXSessionLifecycleAndProvenance(t *testing.T) {
 	t.Parallel()
 	backend, runner, processes, executable := newFakeCMUX(t)
+	launcherExecutable := filepath.Join(filepath.Dir(executable), "marshal")
+	if err := os.WriteFile(launcherExecutable, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	root := t.TempDir()
 	session, err := backend.Start(context.Background(), StartRequest{
 		StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(),
-		Executable: executable, Arguments: []string{"--model", "safe value"}, Title: "Marshal Run", Description: "Native PTY",
-		InitialPrompt: "frozen prompt with $() and `backticks`", Now: time.Unix(10, 0).UTC(),
+		LauncherExecutable: launcherExecutable, Executable: executable, Arguments: []string{"--model", "safe value"}, Environment: []string{"SAFE=value"}, Title: "Marshal Run", Description: "Native PTY",
+		InitialPrompt: "frozen prompt with $() and `backticks`", Now: time.Unix(10, 0).UTC(), ExpiresAt: time.Unix(70, 0).UTC(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +144,7 @@ func TestCMUXSessionLifecycleAndProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	var record sessionRecord
-	if json.Unmarshal(recordData, &record) != nil || record.State != StateTerminated || record.PID != 4242 || record.ProcessGroupID != 4242 {
+	if json.Unmarshal(recordData, &record) != nil || record.State != StateTerminated || record.PID != 4242 || record.ProcessGroupID != 4242 || record.LauncherExecutable != launcherExecutable || record.LaunchEnvelopeDigest == "" {
 		t.Fatalf("session record = %+v", record)
 	}
 	inputData, err := os.ReadFile(filepath.Join(root, "runs", "run-01", "attempts", "attempt-01", "terminal-inputs.jsonl"))
@@ -152,13 +161,22 @@ func TestCMUXSessionLifecycleAndProvenance(t *testing.T) {
 	if len(runner.commands) == 0 {
 		t.Fatal("cmux runner was not invoked")
 	}
+	visible := ""
+	for _, command := range runner.commands {
+		if len(command) > 1 && command[0] == "workspace" && command[1] == "create" {
+			visible = strings.Join(command, " ")
+		}
+	}
+	if visible == "" || !strings.Contains(visible, launcherExecutable) || strings.Contains(visible, executable) || strings.Contains(visible, "safe value") || strings.Contains(visible, "SAFE=value") {
+		t.Fatalf("visible cmux launch leaked Worker details: %s", visible)
+	}
 }
 
 func TestCMUXSendFailureLeavesPlannedProvenance(t *testing.T) {
 	t.Parallel()
 	backend, runner, _, executable := newFakeCMUX(t)
 	root := t.TempDir()
-	session, err := backend.Start(context.Background(), StartRequest{StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(), Executable: executable, Title: "Run", InitialPrompt: "initial", Now: time.Unix(1, 0)})
+	session, err := backend.Start(context.Background(), StartRequest{StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(), LauncherExecutable: executable, Executable: executable, Title: "Run", InitialPrompt: "initial", Now: time.Unix(1, 0), ExpiresAt: time.Unix(61, 0)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,6 +222,25 @@ func TestCMUXProbeDoesNotClaimUnsupportedProcessControl(t *testing.T) {
 	}
 }
 
+func TestCMUXRequiresLauncherEnvelopeConsumption(t *testing.T) {
+	backend, runner, _, executable := newFakeCMUX(t)
+	runner.retainEnvelope = true
+	backend.startLimit = 10 * time.Millisecond
+	root := t.TempDir()
+	_, err := backend.Start(context.Background(), StartRequest{
+		StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(),
+		LauncherExecutable: executable, Executable: executable, Title: "Run", InitialPrompt: "initial",
+		Now: time.Unix(1, 0), ExpiresAt: time.Unix(61, 0),
+	})
+	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "consume envelope") {
+		t.Fatalf("Start() = %v", err)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(root, "runs", "run-01", "attempts", "attempt-01", "runtime", ".launch-*.json"))
+	if globErr != nil || len(matches) != 0 {
+		t.Fatalf("failed launch retained envelopes: %v, %v", matches, globErr)
+	}
+}
+
 func TestCMUXInputJournalRejectsSymlink(t *testing.T) {
 	t.Parallel()
 	backend, _, _, executable := newFakeCMUX(t)
@@ -219,7 +256,7 @@ func TestCMUXInputJournalRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(directory, "terminal-inputs.jsonl")); err != nil {
 		t.Fatal(err)
 	}
-	_, err := backend.Start(context.Background(), StartRequest{StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(), Executable: executable, Title: "Run", InitialPrompt: "initial", Now: time.Unix(1, 0)})
+	_, err := backend.Start(context.Background(), StartRequest{StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(), LauncherExecutable: executable, Executable: executable, Title: "Run", InitialPrompt: "initial", Now: time.Unix(1, 0), ExpiresAt: time.Unix(61, 0)})
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("Start() with symlinked journal = %v", err)
 	}

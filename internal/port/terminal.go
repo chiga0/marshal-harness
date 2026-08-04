@@ -34,16 +34,19 @@ type TerminalProbeResult struct {
 }
 
 type TerminalStartRequest struct {
-	StateRoot        string
-	RunID            string
-	AttemptID        string
-	WorkingDirectory string
-	Executable       string
-	Arguments        []string
-	Title            string
-	Description      string
-	InitialPrompt    string
-	Now              time.Time
+	StateRoot          string
+	RunID              string
+	AttemptID          string
+	WorkingDirectory   string
+	LauncherExecutable string
+	Executable         string
+	Arguments          []string
+	Environment        []string
+	Title              string
+	Description        string
+	InitialPrompt      string
+	Now                time.Time
+	ExpiresAt          time.Time
 }
 
 type TerminalInputSource string
