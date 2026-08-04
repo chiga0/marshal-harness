@@ -26,6 +26,7 @@ type Publisher struct {
 	ghPath, gitPath, configDir, repositoryRoot string
 	validator                                  *contract.Validator
 	now                                        func() time.Time
+	reconcileDelay                             time.Duration
 }
 
 func New(ghPath, configDir, repositoryRoot string, validator *contract.Validator) (*Publisher, error) {
@@ -70,7 +71,7 @@ func New(ghPath, configDir, repositoryRoot string, validator *contract.Validator
 	if info, err = os.Stat(realGit); err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("git must be an executable regular file")
 	}
-	return &Publisher{ghPath: realGH, gitPath: realGit, configDir: realConfig, repositoryRoot: realRepository, validator: validator, now: time.Now}, nil
+	return &Publisher{ghPath: realGH, gitPath: realGit, configDir: realConfig, repositoryRoot: realRepository, validator: validator, now: time.Now, reconcileDelay: 300 * time.Millisecond}, nil
 }
 
 func (p *Publisher) Publish(ctx context.Context, record domain.Record) (domain.Record, error) {
@@ -328,20 +329,38 @@ func (p *Publisher) reconcilePR(ctx context.Context, intent domain.PublicationIn
 	}
 	defer os.Remove(bodyPath)
 	_, createErr := p.gh(ctx, "pr", "create", "--repo", intent.Repository, "--draft", "--no-maintainer-edit", "--base", intent.BaseBranch, "--head", intent.HeadBranch, "--title", title(intent), "--body-file", bodyPath)
-	prs, listErr := p.listPRs(ctx, intent)
-	if listErr != nil || len(prs) != 1 || !strings.Contains(prs[0].Body, intent.Marker) {
-		return pullRequest{}, fmt.Errorf("ambiguous PR creation: %w", errors.Join(createErr, listErr))
+	var listErr error
+	for attempt := 0; attempt < 10; attempt++ {
+		prs, listErr = p.listPRs(ctx, intent)
+		if listErr == nil && len(prs) == 1 && strings.Contains(prs[0].Body, intent.Marker) {
+			return p.viewPR(ctx, intent.Repository, strconv.Itoa(prs[0].Number))
+		}
+		if listErr == nil && len(prs) > 1 {
+			return pullRequest{}, port.Permanent(errors.New("multiple PRs appeared while reconciling creation"))
+		}
+		if attempt < 9 && p.reconcileDelay > 0 {
+			timer := time.NewTimer(p.reconcileDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return pullRequest{}, ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
-	return p.viewPR(ctx, intent.Repository, strconv.Itoa(prs[0].Number))
+	cause := errors.Join(createErr, listErr)
+	if cause == nil {
+		cause = errors.New("created PR was not observable before the reconciliation deadline")
+	}
+	return pullRequest{}, fmt.Errorf("ambiguous PR creation: %w", cause)
 }
 
 func (p *Publisher) listPRs(ctx context.Context, intent domain.PublicationIntent) ([]pullRequest, error) {
 	var result []pullRequest
-	owner, _, err := parseGitHubRepository(intent.RemoteURL)
-	if err != nil {
+	if _, _, err := parseGitHubRepository(intent.RemoteURL); err != nil {
 		return nil, err
 	}
-	err = p.ghJSON(ctx, &result, "pr", "list", "--repo", intent.Repository, "--state", "all", "--head", owner+":"+intent.HeadBranch, "--limit", "100", "--json", "id,number,url,isDraft,state,headRefName,headRefOid,headRepositoryOwner,isCrossRepository,baseRefName,body")
+	err := p.ghJSON(ctx, &result, "pr", "list", "--repo", intent.Repository, "--state", "all", "--head", intent.HeadBranch, "--limit", "100", "--json", "id,number,url,isDraft,state,headRefName,headRefOid,headRepositoryOwner,isCrossRepository,baseRefName,body")
 	return result, err
 }
 

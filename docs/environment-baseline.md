@@ -1,6 +1,6 @@
 # 本地环境基线
 
-- 观察日期：2026-08-03
+- 观察日期：2026-08-04
 - 用途：仅用于实施规划；Runtime Probe 才具有权威性。
 
 文档审计观察到以下本地工具：
@@ -10,10 +10,10 @@
 | Codex CLI | `0.145.0` | 可以进行 Non-interactive Lead/Review Integration |
 | Codex Desktop | 当前工作环境可用 | 可通过项目集成终端运行 Marshal，并作为交互式 Lead/Review 界面 |
 | ChatGPT 手机端 Remote | 依赖账号开放与 Desktop 配对 | 可远程继续 Desktop 上的 Codex 任务、批准操作并检查输出；执行仍发生在开发机 |
-| `qwen` | `0.21.3` | Qwen Adapter 候选 Executable |
+| `qwen` | `0.21.5`，已配置 | M6 Qwen Code Adapter 候选 Executable |
 | `qwen-code` | `0.15.3` | 独立旧入口，不能作为隐式 Fallback |
-| OpenCode | `1.17.0` | 候选 JSON one-shot，后续可接 ACP/Server |
-| Pi | `0.83.0` | 候选 JSON one-shot，后续可接 RPC |
+| OpenCode | `1.18.12`，已配置 | M4 已验收 Worker；M6 继续共享 Conformance |
+| Pi | `0.83.0`，已配置 | M6 Pi Adapter 候选 Executable |
 | Git | `2.50.1` | 支持 Worktree |
 | GitHub CLI | `2.90.0`，已认证 | 可以进行 GitHub Publisher Spike |
 | GitLab CLI | 未安装 | GitLab Publishing 延后 |

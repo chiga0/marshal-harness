@@ -32,25 +32,37 @@ func TestLiveDraftPR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseSHA := liveGit(t, "rev-parse", "HEAD")
 	stamp := time.Now().UTC()
 	suffix := fmt.Sprintf("%x", stamp.UnixNano())
+	if fixed := os.Getenv("MARSHAL_LIVE_GITHUB_FIXED_SUFFIX"); fixed != "" {
+		suffix = fixed
+	}
 	taskID, runID := "m5-live", "run-"+suffix
 	headBranch := "marshal/" + taskID + "-" + suffix
-
-	index := filepath.Join(t.TempDir(), "index")
-	gitEnv := append(os.Environ(), "GIT_INDEX_FILE="+index, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null")
-	liveGitEnv(t, gitEnv, nil, "read-tree", baseSHA)
-	content := []byte("# Marshal M5 GitHub E2E\n\n此文件由显式 live test 生成，用于验证真实 Draft PR 的创建与幂等对账。\n")
-	blob := liveGitEnv(t, gitEnv, content, "hash-object", "-w", "--stdin")
-	path := "docs/e2e/" + runID + ".md"
-	liveGitEnv(t, gitEnv, nil, "update-index", "--add", "--cacheinfo", "100644,"+blob+","+path)
-	tree := liveGitEnv(t, gitEnv, nil, "write-tree")
-	commitEnv := append(gitEnv,
-		"GIT_AUTHOR_NAME=Marshal Publisher", "GIT_AUTHOR_EMAIL=marshal@localhost",
-		"GIT_COMMITTER_NAME=Marshal Publisher", "GIT_COMMITTER_EMAIL=marshal@localhost",
-	)
-	commitSHA := liveGitEnv(t, commitEnv, []byte("test: marshal M5 real Draft PR\n"), "commit-tree", tree, "-p", baseSHA)
+	baseSHA := liveGit(t, "rev-parse", "HEAD")
+	commitSHA := ""
+	if os.Getenv("MARSHAL_LIVE_GITHUB_FIXED_SUFFIX") != "" {
+		fields := strings.Fields(liveGit(t, "ls-remote", "--heads", "origin", "refs/heads/"+headBranch))
+		if len(fields) != 2 {
+			t.Fatalf("fixed live branch %s does not exist", headBranch)
+		}
+		commitSHA = fields[0]
+		baseSHA = liveGit(t, "rev-parse", commitSHA+"^")
+	} else {
+		index := filepath.Join(t.TempDir(), "index")
+		gitEnv := append(os.Environ(), "GIT_INDEX_FILE="+index, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0=/dev/null")
+		liveGitEnv(t, gitEnv, nil, "read-tree", baseSHA)
+		content := []byte("# Marshal M5 GitHub E2E\n\n此文件由显式 live test 生成，用于验证真实 Draft PR 的创建与幂等对账。\n")
+		blob := liveGitEnv(t, gitEnv, content, "hash-object", "-w", "--stdin")
+		path := "docs/e2e/" + runID + ".md"
+		liveGitEnv(t, gitEnv, nil, "update-index", "--add", "--cacheinfo", "100644,"+blob+","+path)
+		tree := liveGitEnv(t, gitEnv, nil, "write-tree")
+		commitEnv := append(gitEnv,
+			"GIT_AUTHOR_NAME=Marshal Publisher", "GIT_AUTHOR_EMAIL=marshal@localhost",
+			"GIT_COMMITTER_NAME=Marshal Publisher", "GIT_COMMITTER_EMAIL=marshal@localhost",
+		)
+		commitSHA = liveGitEnv(t, commitEnv, []byte("test: marshal M5 real Draft PR\n"), "commit-tree", tree, "-p", baseSHA)
+	}
 
 	validator, err := contract.NewValidator()
 	if err != nil {

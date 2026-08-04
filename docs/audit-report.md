@@ -73,6 +73,8 @@ Schema 只承担结构校验。[`schemas/README.md`](../schemas/README.md) 中�
 
 Milestone 3 的实现审计曾发现 Verdict E2E 覆盖与 `.pending` 崩溃残留两个缺口，均已在复审前关闭；独立复审结论为 `APPROVE`，GitHub Actions run `30874552479` 的 Linux、macOS 与 Secret Scan 全部通过。详情见 [Milestone 3 OpenCode 独立审查](reviews/milestone-3-opencode-review.md)。Milestone 4 的真实 OpenCode Adapter 也已完成独立审计与远端 CI 验收，详见 [Milestone 4 独立审查](reviews/milestone-4-opencode-review.md)。
 
+Milestone 5 的独立审计首轮阻止了 CI 返工发布死锁、`skipping` 误通过与 Record 崩溃覆盖；最终复审无 P0/P1，主 Agent 又关闭了 Journal/Snapshot Publication 重放、Remote `insteadOf` 重定向、首次受控 Commit 竞态和标题上限问题。主分支 CI `30889069165` 与真实 [Draft PR #1](https://github.com/chiga0/marshal-harness/pull/1) 的 CI `30889190854` 全绿，Publisher 两次复用同一 PR 且未 merge。详见 [Milestone 5 独立审计](reviews/milestone-5-opencode-review.md)。
+
 ## 红队场景
 
 | 场景 | 控制措施 | 结果 |

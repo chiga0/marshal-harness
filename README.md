@@ -2,7 +2,7 @@
 
 Marshal 是一个面向 Coding Agent 的证据门禁式编排框架。主 Agent 负责规划与审查，可替换的 Worker Agent 负责实现，确定性的 Harness 负责验证、留痕和发布。
 
-> 项目状态：ADR 0001–0007 已接受；Milestone 0–4 已通过，Milestone 5 正在进行最终验收。
+> 项目状态：ADR 0001–0007 已接受；Milestone 0–5 已通过，当前进入 Milestone 6。
 
 ## 为什么需要 Marshal
 
@@ -70,6 +70,7 @@ REVIEW_PENDING -> PUBLISHING -> PUBLISHED -> CI_PENDING -> ACCEPTED
 - [Milestone 2 验收报告](docs/milestone-2-report.md)
 - [Milestone 3 验收报告](docs/milestone-3-report.md)
 - [Milestone 4 验收报告](docs/milestone-4-report.md)
+- [Milestone 5 验收报告](docs/milestone-5-report.md)
 - [Roadmap 状态](docs/roadmap-status.md)
 - [本地环境基线](docs/environment-baseline.md)
 - [设计审计报告](docs/audit-report.md)
@@ -97,4 +98,4 @@ REVIEW_PENDING -> PUBLISHING -> PUBLISHED -> CI_PENDING -> ACCEPTED
 
 ## 实施门禁
 
-文档审计结论为 `APPROVED_FOR_IMPLEMENTATION`，维护者已接受 ADR 0001–0007 和 Local MVP 范围。Milestone 0–4 已通过；File-based Review Bridge、Codex Skill、首个 OpenCode Worker 路径与 GitHub Draft Publisher 已实现，M5 尚需通过独立复审、真实 Draft PR 与远端 CI 门禁。
+文档审计结论为 `APPROVED_FOR_IMPLEMENTATION`，维护者已接受 ADR 0001–0007 和 Local MVP 范围。Milestone 0–5 已通过；File-based Review Bridge、Codex Skill、OpenCode Worker 路径与 GitHub Draft Publisher 已通过真实 E2E。当前进入其余 Adapter、Recovery、Cleanup 与完整 MVP E2E 加固。

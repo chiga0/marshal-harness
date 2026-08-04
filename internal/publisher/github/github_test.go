@@ -186,6 +186,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	publisher.now = func() time.Time { return fixedTime }
+	publisher.reconcileDelay = 0
 	h := &harness{t: t, stateDir: stateDir, configDir: configDir, repoRoot: repoRoot, publisher: publisher, validator: validator}
 	h.writeState("repo.json", `{"node_id":"`+testRepositoryID+`","full_name":"`+testRepository+`","html_url":"https://github.com/`+testRepository+`"}`)
 	h.writeState("user.json", `{"login":"`+testActor+`"}`)
