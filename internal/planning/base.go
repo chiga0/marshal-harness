@@ -3,9 +3,7 @@ package planning
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,10 +31,13 @@ var baseResolveTimeout = 10 * time.Second
 const maxBaseOutput = 256
 
 // ResolveBase resolves ref to a single commit object ID inside the repository
-// at repositoryRoot. It invokes git directly via argv (never through a shell),
-// with a restricted environment and a bounded timeout and output buffer. It is
-// fail-closed: anything other than a single 40–64 character lowercase
-// hexadecimal object ID on stdout is rejected.
+// at repositoryRoot. It invokes git directly via argv (never through a
+// shell), with a restricted environment and a bounded timeout and output
+// buffer. The command runs in its own process group and the entire group is
+// terminated when the timeout expires, so grandchildren holding the output
+// pipe cannot keep the invocation alive. It is fail-closed: anything other
+// than a single 40–64 character lowercase hexadecimal object ID on stdout is
+// rejected.
 func ResolveBase(ctx context.Context, repositoryRoot, ref string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -51,15 +52,15 @@ func ResolveBase(ctx context.Context, repositoryRoot, ref string) (string, error
 	ctx, cancel := context.WithTimeout(ctx, baseResolveTimeout)
 	defer cancel()
 
-	command := exec.CommandContext(ctx, "git",
-		"-C", repositoryRoot,
-		"rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
-	command.Env = baseGitEnvironment()
 	stdout := &limitedWriter{limit: maxBaseOutput}
-	command.Stdout = stdout
-	command.Stderr = io.Discard
-
-	runErr := command.Run()
+	runErr := runDirectCommand(ctx,
+		[]string{
+			"git",
+			"-C", repositoryRoot,
+			"rev-parse", "--verify", "--end-of-options", ref + "^{commit}",
+		},
+		baseGitEnvironment(),
+		stdout)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", ctxErr
 	}

@@ -520,7 +520,10 @@ func TestCMUXProbeExecFailureNotMisreported(t *testing.T) {
 }
 
 func TestCMUXProbeTimeout(t *testing.T) {
-	fake := writeFakeCMUX(t, t.TempDir(), "cmux", "#!/bin/sh\nsleep 5\n")
+	// Use shell builtins only: isolatedCMUXBackend intentionally empties PATH,
+	// so an external sleep would exit 127 on Linux instead of exercising the
+	// timeout path.
+	fake := writeFakeCMUX(t, t.TempDir(), "cmux", "#!/bin/sh\nwhile :; do :; done\n")
 	b := isolatedCMUXBackend(t, fake)
 	b.timeout = 100 * time.Millisecond
 	start := time.Now()

@@ -505,6 +505,10 @@ func (b *CMUXBackend) runCapabilities(parent context.Context, path string) (Prob
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "capabilities", "--json")
+	cmd.Env = cmuxEnv()
+	// Bound Wait even if a failed control CLI leaves descendants holding the
+	// capture pipes open after CommandContext terminates the direct process.
+	cmd.WaitDelay = b.timeout
 	stdout := &limitedBuffer{limit: b.maxStdout}
 	cmd.Stdout = stdout
 	// stderr is consumed by a bounded discarder: its content is never

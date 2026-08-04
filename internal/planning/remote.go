@@ -3,8 +3,6 @@ package planning
 import (
 	"context"
 	"errors"
-	"io"
-	"os/exec"
 	"strings"
 	"time"
 )
@@ -35,8 +33,11 @@ const maxRemoteOutput = 4096
 // ResolveRemote resolves the configured URL of remote inside the repository
 // at repositoryRoot. It invokes git directly via argv (never through a
 // shell), with a restricted environment and a bounded timeout and output
-// buffer. It is fail-closed: anything other than a single non-empty line,
-// with at most one trailing newline, is rejected.
+// buffer. The command runs in its own process group and the entire group is
+// terminated when the timeout expires, so grandchildren holding the output
+// pipe cannot keep the invocation alive. It is fail-closed: anything other
+// than a single non-empty line, with at most one trailing newline, is
+// rejected.
 func ResolveRemote(ctx context.Context, repositoryRoot, remote string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -51,15 +52,15 @@ func ResolveRemote(ctx context.Context, repositoryRoot, remote string) (string, 
 	ctx, cancel := context.WithTimeout(ctx, remoteResolveTimeout)
 	defer cancel()
 
-	command := exec.CommandContext(ctx, "git",
-		"-C", repositoryRoot,
-		"remote", "get-url", remote)
-	command.Env = baseGitEnvironment()
 	stdout := &limitedWriter{limit: maxRemoteOutput}
-	command.Stdout = stdout
-	command.Stderr = io.Discard
-
-	runErr := command.Run()
+	runErr := runDirectCommand(ctx,
+		[]string{
+			"git",
+			"-C", repositoryRoot,
+			"remote", "get-url", remote,
+		},
+		baseGitEnvironment(),
+		stdout)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", ctxErr
 	}
