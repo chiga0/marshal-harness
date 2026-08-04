@@ -1,7 +1,7 @@
 # Milestone 3 验收报告
 
 - 验收日期：2026-08-04
-- 状态：**`READY_FOR_REMOTE_CI`**
+- 状态：**`PASSED`**
 - 范围：ReviewPacket、ReviewDecision、Rework Guard、Outcome、Codex Skill
 - 真实 Worker/Publication Side Effect：未启用
 
@@ -28,4 +28,4 @@
 - Review Unit/Integration：摘要确定性、Patch 篡改/超限、WorkerResult、发布策略、预算、No-change、Finding、新旧证据与孤儿 pending 恢复均通过；
 - Skill：官方 `skill-creator` 生成 `agents/openai.yaml`，`quick_validate.py` 返回 `Skill is valid!`。
 
-独立 OpenCode 首轮审计结论为 `BLOCKED`，指出 Verdict E2E 覆盖与崩溃残留恢复缺口；整改后代码复审结论为 `APPROVE`，P0/P1/P2 代码问题全部关闭。待提交推送且远端 CI 绿色后，本报告才能更新为 `PASSED`。详见 [Milestone 3 OpenCode 独立审查](reviews/milestone-3-opencode-review.md)。
+独立 OpenCode 首轮审计结论为 `BLOCKED`，指出 Verdict E2E 覆盖与崩溃残留恢复缺口；整改后代码复审结论为 `APPROVE`，P0/P1/P2 代码问题全部关闭。提交 `ef95607` 的 GitHub Actions run `30874552479` 已在 Linux、macOS 与 Secret Scan 全部通过。详见 [Milestone 3 OpenCode 独立审查](reviews/milestone-3-opencode-review.md)。

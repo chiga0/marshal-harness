@@ -26,4 +26,4 @@
 
 同一 OpenCode 会话逐项复查整改，并实际运行 `make ci`、去缓存全量 Race Test、五 Verdict CLI E2E、验证后篡改 E2E、孤儿 pending 回归测试、官方 `quick_validate.py`、`git diff --check` 与 `gofmt -l`。全部通过，`govulncheck` 报告无已知漏洞。
 
-复审确认首轮 P1/P2 代码问题全部关闭，最终结论为 `APPROVE`。提交前文档保持 `READY_FOR_REMOTE_CI`；只有推送后的 GitHub Actions 绿色，才可把 M3 更新为 `PASSED` 并进入 M4。
+复审确认首轮 P1/P2 代码问题全部关闭，最终结论为 `APPROVE`。提交 `ef95607` 推送后的 GitHub Actions run `30874552479` 已绿色，M3 可以更新为 `PASSED` 并进入 M4。

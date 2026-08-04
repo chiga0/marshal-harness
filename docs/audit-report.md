@@ -69,7 +69,7 @@ Schema 只承担结构校验。[`schemas/README.md`](../schemas/README.md) 中�
 
 没有未解决的 P0、P1 或 P2 架构问题。
 
-Milestone 3 的实现审计曾发现 Verdict E2E 覆盖与 `.pending` 崩溃残留两个缺口，均已在本地复审前关闭；独立复审结论为 `APPROVE`，远端 CI 门禁仍待执行。详情见 [Milestone 3 OpenCode 独立审查](reviews/milestone-3-opencode-review.md)。
+Milestone 3 的实现审计曾发现 Verdict E2E 覆盖与 `.pending` 崩溃残留两个缺口，均已在复审前关闭；独立复审结论为 `APPROVE`，GitHub Actions run `30874552479` 的 Linux、macOS 与 Secret Scan 全部通过。详情见 [Milestone 3 OpenCode 独立审查](reviews/milestone-3-opencode-review.md)。
 
 ## 红队场景
 

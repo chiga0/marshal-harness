@@ -4,7 +4,7 @@
 
 本文只是实施计划，不代表已授权实施。只有维护者接受 ADR 与审计结论后，才开始运行时代码开发。
 
-当前状态：维护者已授权实施；Milestone 0–2 已通过，Milestone 3 已完成本地实现与独立审计，等待提交、推送及远端 CI；Milestone 4 尚未开始。验收证据见 [Roadmap 状态](roadmap-status.md)。
+当前状态：维护者已授权实施；Milestone 0–3 已通过，当前进入 Milestone 4。验收证据见 [Roadmap 状态](roadmap-status.md)。
 
 ## 交付策略
 
