@@ -22,7 +22,7 @@ func TestNewRequiresExactExecutableAndValidator(t *testing.T) {
 	if _, err := New("opencode", validator); err == nil {
 		t.Fatal("relative executable accepted")
 	}
-	executable := fakeExecutable(t, "1.18.12", "exit 0")
+	executable := fakeExecutable(t, supportedBinary, "exit 0")
 	if _, err := New(executable, nil); err == nil {
 		t.Fatal("nil validator accepted")
 	}
@@ -80,7 +80,7 @@ func containsArgument(arguments []string, target string) bool {
 }
 
 func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
-	for _, test := range []struct{ version, status string }{{"1.18.12", "supported"}, {"1.19.0", "unsupported"}} {
+	for _, test := range []struct{ version, status string }{{supportedBinary, "supported"}, {"1.19.0", "unsupported"}} {
 		t.Run(test.version, func(t *testing.T) {
 			adapter, err := New(fakeExecutable(t, test.version, "exit 0"), newValidator(t))
 			if err != nil {
@@ -162,7 +162,7 @@ func TestBuildArgsNeverUsesShellAndBindsSessionModelPrompt(t *testing.T) {
 }
 
 func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
-	fixture := newRunFixture(t, "1.18.12", `printf '%s\n' '{"type":"step_start","sessionID":"session-1","part":{"type":"step-start"}}' '{"type":"text","sessionID":"session-1","part":{"type":"text","text":"done"}}'`)
+	fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"step_start","sessionID":"session-1","part":{"type":"step-start"}}' '{"type":"text","sessionID":"session-1","part":{"type":"text","text":"done"}}'`)
 	record, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatal(err)
@@ -203,13 +203,13 @@ func TestRunRejectsUnsupportedVersionBeforeWorkerLaunch(t *testing.T) {
 
 func TestRunRejectsMalformedJSONLAndIdentityMismatch(t *testing.T) {
 	t.Run("malformed", func(t *testing.T) {
-		fixture := newRunFixture(t, "1.18.12", `printf '%s\n' 'not-json'`)
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' 'not-json'`)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("identity", func(t *testing.T) {
-		fixture := newRunFixture(t, "1.18.12", `printf '%s\n' '{"type":"step_start","sessionID":"session-1","part":{}}'`)
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"step_start","sessionID":"session-1","part":{}}'`)
 		data := validDeclaredResult(fixture.executable)
 		data["taskId"] = "OTHER"
 		writeJSON(t, filepath.Join(fixture.controlRoot, "output", "worker-result.json"), data)
@@ -222,13 +222,13 @@ func TestRunRejectsMalformedJSONLAndIdentityMismatch(t *testing.T) {
 func TestRunEnforcesOutputCapPermissionAndCancellation(t *testing.T) {
 	t.Run("output-cap", func(t *testing.T) {
 		large := strings.Repeat("x", 1800)
-		fixture := newRunFixture(t, "1.18.12", `printf '%s\n' '{"type":"text","sessionID":"session-1","part":{"type":"text","text":"`+large+`"}}'`)
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"text","sessionID":"session-1","part":{"type":"text","text":"`+large+`"}}'`)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrOutputLimit) {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("unterminated-output-cap", func(t *testing.T) {
-		fixture := newRunFixture(t, "1.18.12", `yes x | tr -d '\n'`)
+		fixture := newRunFixture(t, supportedBinary, `yes x | tr -d '\n'`)
 		started := time.Now()
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrOutputLimit) {
 			t.Fatalf("error = %v", err)
@@ -238,13 +238,13 @@ func TestRunEnforcesOutputCapPermissionAndCancellation(t *testing.T) {
 		}
 	})
 	t.Run("permission", func(t *testing.T) {
-		fixture := newRunFixture(t, "1.18.12", `printf '%s\n' '{"type":"error","sessionID":"session-1","part":{"state":{"status":"error","error":"permission denied"}}}'`)
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"error","sessionID":"session-1","part":{"state":{"status":"error","error":"permission denied"}}}'`)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("permission-words-in-text", func(t *testing.T) {
-		fixture := newRunFixture(t, "1.18.12", `printf '%s\n' '{"type":"text","sessionID":"session-1","part":{"type":"text","text":"permission denied is documentation text"}}'`)
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"text","sessionID":"session-1","part":{"type":"text","text":"permission denied is documentation text"}}'`)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
 			t.Fatalf("text caused false permission denial: %v", err)
 		}
@@ -254,7 +254,7 @@ func TestRunEnforcesOutputCapPermissionAndCancellation(t *testing.T) {
 		pidFile := filepath.Join(handshake, "child.pid")
 		readyFile := filepath.Join(handshake, "ready")
 		body := "sleep 60 &\nchild=$!\nprintf '%s' \"$child\" > " + shellQuote(pidFile+".tmp") + " && mv " + shellQuote(pidFile+".tmp") + " " + shellQuote(pidFile) + "\n: > " + shellQuote(readyFile+".tmp") + " && mv " + shellQuote(readyFile+".tmp") + " " + shellQuote(readyFile) + "\nwait"
-		fixture := newRunFixture(t, "1.18.12", body)
+		fixture := newRunFixture(t, supportedBinary, body)
 		var raw map[string]any
 		if err := json.Unmarshal(fixture.request.Data, &raw); err != nil {
 			t.Fatal(err)
@@ -309,7 +309,7 @@ func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
 		body += "\nprintf '%s\\n' " + shellQuote(secret) + " >&2"
 	}
 	body += "\nexit 7"
-	fixture := newRunFixture(t, "1.18.12", body)
+	fixture := newRunFixture(t, supportedBinary, body)
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if !errors.Is(err, ErrProcessFailed) {
 		t.Fatalf("error = %v", err)

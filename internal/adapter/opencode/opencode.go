@@ -26,7 +26,7 @@ import (
 const (
 	adapterID       = "opencode"
 	adapterVersion  = "0.1.0"
-	supportedBinary = "1.18.12"
+	supportedBinary = "1.18.13"
 	maxPromptBytes  = 256 << 10
 	maxResultBytes  = 4 << 20
 	stderrLimit     = 64 << 10

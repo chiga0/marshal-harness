@@ -10,7 +10,7 @@
 
 ## 目标
 
-在不改变 M0–M5 证据门禁与 Publisher 权限边界的前提下，完成本机已配置的 OpenCode `1.18.12`、Qwen Code `0.21.5`、Pi `0.83.0` 三个真实 Worker Adapter，补齐运行态 Reconciliation、CI 停滞诊断、Archive/Cleanup Preview、Compatibility Matrix 与 Operator 文档，并以完整真实 Worker→Verification→Review→GitHub Draft PR→CI Outcome E2E 达到 Local MVP 可用状态。
+在不改变 M0–M5 证据门禁与 Publisher 权限边界的前提下，完成本机已配置的 OpenCode `1.18.13`（从 M4 的 `1.18.12` 重新验收）、Qwen Code `0.21.5`、Pi `0.83.0` 三个真实 Worker Adapter，补齐运行态 Reconciliation、CI 停滞诊断、Archive/Cleanup Preview、Compatibility Matrix 与 Operator 文档，并以完整真实 Worker→Verification→Review→GitHub Draft PR→CI Outcome E2E 达到 Local MVP 可用状态。
 
 ## Adapter 契约
 

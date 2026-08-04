@@ -13,7 +13,7 @@
 - `ephemeral` 不保存 Session；只有 Provider 明确返回 Session ID 且 Adapter 已验证 Session 能力时，才允许 `persist`/`resume`。
 - Local Profile 只能降低误操作风险，不构成针对恶意仓库或恶意代码的安全沙箱。
 
-## OpenCode 1.18.12
+## OpenCode 1.18.13
 
 - 使用 `run --pure --format json`；Session、Model 与 Prompt 均通过独立 argv 传入。
 - 使用受管 `OPENCODE_CONFIG_CONTENT` 冻结权限，并在启动前读取 resolved config 进行 fail-closed 校验。

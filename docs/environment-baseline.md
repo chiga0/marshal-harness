@@ -12,7 +12,7 @@
 | ChatGPT 手机端 Remote | 依赖账号开放与 Desktop 配对 | 可远程继续 Desktop 上的 Codex 任务、批准操作并检查输出；执行仍发生在开发机 |
 | `qwen` | `0.21.5`，已配置 | M6 Qwen Code Adapter 候选 Executable |
 | `qwen-code` | `0.15.3` | 独立旧入口，不能作为隐式 Fallback |
-| OpenCode | `1.18.12`，已配置 | M4 已验收 Worker；M6 继续共享 Conformance |
+| OpenCode | `1.18.13`，已配置 | M4 的 `1.18.12` 基线已于 M6 因本机版本漂移重新执行 Conformance 与 Live E2E |
 | Pi | `0.83.0`，已配置 | M6 Pi Adapter 候选 Executable |
 | Git | `2.50.1` | 支持 Worktree |
 | GitHub CLI | `2.90.0`，已认证 | 可以进行 GitHub Publisher Spike |

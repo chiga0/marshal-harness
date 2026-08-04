@@ -83,7 +83,7 @@ func TestDoctorReportsCompatibilityWithoutLocalDetails(t *testing.T) {
 		name, version, compatibility string
 		exit                         int
 	}{
-		{name: "supported", version: "1.18.12", compatibility: "supported", exit: 0},
+		{name: "supported", version: "1.18.13", compatibility: "supported", exit: 0},
 		{name: "unsupported", version: "1.19.0", compatibility: "unsupported", exit: 0},
 		{name: "probe failure", version: "top-secret-version", compatibility: "probe-failed", exit: 1},
 	} {
@@ -125,7 +125,7 @@ func TestDoctorReportsCompatibilityWithoutLocalDetails(t *testing.T) {
 func TestDoctorCanceledContextDoesNotProbeWorkers(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "probed")
 	executable := filepath.Join(t.TempDir(), "opencode")
-	script := "#!/bin/sh\n: > \"" + marker + "\"\nprintf '1.18.12\\n'\n"
+	script := "#!/bin/sh\n: > \"" + marker + "\"\nprintf '1.18.13\\n'\n"
 	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestDoctorRunReconcilesEvidenceAndBlocksCorruption(t *testing.T) {
 		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
 	}
 	executable := filepath.Join(t.TempDir(), "opencode")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf '1.18.12\\n'\n"), 0o700); err != nil {
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf '1.18.13\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("MARSHAL_OPENCODE_PATH", executable)
@@ -431,7 +431,7 @@ func TestTaskPlanEndToEndFreezesSelectedAdapter(t *testing.T) {
 	}
 
 	executable := filepath.Join(t.TempDir(), "opencode")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '1.18.12\\n'; exit 0; fi\nexit 1\n"), 0o700); err != nil {
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '1.18.13\\n'; exit 0; fi\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("MARSHAL_OPENCODE_PATH", executable)

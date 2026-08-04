@@ -97,7 +97,7 @@ Adapter 必须显式解析 `qwen`。不得静默回退到独立安装的 `qwen-c
 
 MVP 使用 one-shot `run`。只有 Core Lifecycle 和 Cancellation 通过一致性测试后，才考虑 ACP/Server。
 
-M4 冻结并实测 OpenCode `1.18.12`：CLI 通过 `MARSHAL_OPENCODE_PATH` 接受唯一绝对 executable，Probe 冻结 realpath、SHA-256 与精确版本；运行使用 `--pure --format json`、环境 allowlist 和 fail-closed `permission`。未知版本在 Worker 启动前失败。Local Profile 不宣称抵抗同 UID 恶意进程。
+M4 冻结并实测 OpenCode `1.18.12`，M6 在本机自动更新到 `1.18.13` 后先 fail-closed，再以完整 Conformance 与 Live E2E 重新验收并更新精确 pin。CLI 通过 `MARSHAL_OPENCODE_PATH` 接受唯一绝对 executable，Probe 冻结 realpath、SHA-256 与精确版本；运行使用 `--pure --format json`、环境 allowlist 和 fail-closed `permission`。未知版本在 Worker 启动前失败。Local Profile 不宣称抵抗同 UID 恶意进程。
 
 参考：[OpenCode CLI](https://opencode.ai/docs/cli/)与[权限](https://opencode.ai/docs/permissions)。
 
