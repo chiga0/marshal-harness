@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chiga0/marshal-harness/internal/adapter/opencode"
 	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -435,6 +434,10 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "用法：marshal task run --run RUN_ID [--json]")
 		return ExitUsage
 	}
+	if err := domain.ValidateID(*runID); err != nil {
+		fmt.Fprintln(stderr, "运行失败：Run ID 无效。")
+		return ExitUsage
+	}
 	location, err := repository.Discover(".")
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败：%v\n", err)
@@ -444,22 +447,33 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "运行失败：%v\n", err)
 		return ExitFailure
 	}
-	executable := os.Getenv("MARSHAL_OPENCODE_PATH")
-	if executable == "" {
-		fmt.Fprintln(stderr, "运行失败：必须通过 MARSHAL_OPENCODE_PATH 配置 OpenCode 1.18.12 的绝对路径。")
+	runtime, err := app.NewWorkerRuntime(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, "运行失败：Worker Runtime 初始化失败。")
+		return ExitFailure
+	}
+	snapshotData, err := os.ReadFile(filepath.Join(location.StateRoot, "runs", *runID, "capability-snapshot.json"))
+	if err != nil {
+		fmt.Fprintln(stderr, "运行失败：读取冻结 CapabilitySnapshot 失败。")
+		return ExitFailure
+	}
+	if err := runtime.Validator().Validate(domain.KindCapabilitySnapshot, snapshotData); err != nil {
+		fmt.Fprintln(stderr, "运行失败：冻结 CapabilitySnapshot 无效。")
+		return ExitFailure
+	}
+	var frozenAdapter struct {
+		AdapterID string `json:"adapterId"`
+	}
+	if err := json.Unmarshal(snapshotData, &frozenAdapter); err != nil || frozenAdapter.AdapterID == "" {
+		fmt.Fprintln(stderr, "运行失败：冻结 CapabilitySnapshot 缺少 Adapter 身份。")
+		return ExitFailure
+	}
+	worker, err := runtime.Registry().Resolve(frozenAdapter.AdapterID)
+	if err != nil {
+		fmt.Fprintln(stderr, "运行失败：冻结 Worker Adapter 当前未配置或不可用。")
 		return ExitUnavailable
 	}
-	validator, err := contract.NewValidator()
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：%v\n", err)
-		return ExitFailure
-	}
-	worker, err := opencode.New(executable, validator)
-	if err != nil {
-		fmt.Fprintf(stderr, "运行失败：%v\n", err)
-		return ExitFailure
-	}
-	result, err := execution.Run(ctx, execution.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Adapter: worker, Validator: validator})
+	result, err := execution.Run(ctx, execution.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Adapter: worker, Validator: runtime.Validator()})
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败（Attempt %s，状态 %s）：%v\n", result.AttemptID, result.State.State, err)
 		return ExitFailure

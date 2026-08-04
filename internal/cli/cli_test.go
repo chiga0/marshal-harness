@@ -221,7 +221,157 @@ func TestTaskPlanEndToEndFreezesSelectedAdapter(t *testing.T) {
 	}
 }
 
+func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot := t.TempDir()
+	runGit(t, repositoryRoot, "init", "-q", "-b", "main")
+	runGit(t, repositoryRoot, "config", "user.email", "marshal@example.invalid")
+	runGit(t, repositoryRoot, "config", "user.name", "Marshal Test")
+	if err := os.WriteFile(filepath.Join(repositoryRoot, "README.md"), []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repositoryRoot, "add", "README.md")
+	runGit(t, repositoryRoot, "commit", "-q", "-m", "fixture")
+	const remoteURL = "https://example.invalid/marshal-cli-run.git"
+	runGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	if err := os.Chdir(repositoryRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"init"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
+	}
+	marker := filepath.Join(t.TempDir(), "pi-started")
+	executable := filepath.Join(t.TempDir(), "pi")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf '0.83.0\\n'; exit 0; fi\n" +
+		": > \"" + marker + "\"\n" +
+		"exit 1\n"
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MARSHAL_OPENCODE_PATH", "")
+	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_PI_PATH", executable)
+
+	const (
+		taskID = "cli-run-fallback-task"
+		runID  = "cli-run-fallback-run"
+	)
+	taskPath := filepath.Join(t.TempDir(), "task.json")
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	writeCLIFixture(t, taskPath, cliPlanningTaskWithWorkers(t, repositoryRoot, taskID, remoteURL, "opencode", []any{"pi"}))
+	writeCLIFixture(t, policyPath, cliPlanningPolicyWithWorkers(t, taskID, runID, true, []any{"opencode", "pi"}))
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("task plan exit = %d, stderr = %s", exit, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	exit := Run([]string{"task", "run", "--run", runID}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitFailure {
+		t.Fatalf("task run exit = %d, want worker failure %d; stderr = %s", exit, ExitFailure, stderr.String())
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("frozen Pi adapter was not started: %v; stderr = %s", err, stderr.String())
+	}
+	capability, err := os.ReadFile(filepath.Join(repositoryRoot, ".marshal", "runs", runID, "capability-snapshot.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identity struct {
+		AdapterID string `json:"adapterId"`
+	}
+	if err := json.Unmarshal(capability, &identity); err != nil || identity.AdapterID != "pi" {
+		t.Fatalf("frozen capability adapter = %q, err = %v", identity.AdapterID, err)
+	}
+}
+
+func TestTaskRunRejectsUnsafeOrUnavailableFrozenIdentityBeforeWorkerStart(t *testing.T) {
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot := t.TempDir()
+	runGit(t, repositoryRoot, "init", "-q")
+	if err := os.Chdir(repositoryRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"init"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
+	}
+	t.Setenv("MARSHAL_OPENCODE_PATH", "")
+	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_PI_PATH", "")
+
+	t.Run("invalid run id", func(t *testing.T) {
+		stdout.Reset()
+		stderr.Reset()
+		exit := Run([]string{"task", "run", "--run", "../../escape"}, strings.NewReader(""), &stdout, &stderr)
+		if exit != ExitUsage || !strings.Contains(stderr.String(), "Run ID 无效") {
+			t.Fatalf("exit = %d, stderr = %q", exit, stderr.String())
+		}
+		if _, err := os.Stat(filepath.Join(repositoryRoot, "escape")); !os.IsNotExist(err) {
+			t.Fatalf("invalid Run ID created an escaped path: %v", err)
+		}
+	})
+
+	t.Run("missing snapshot", func(t *testing.T) {
+		stdout.Reset()
+		stderr.Reset()
+		exit := Run([]string{"task", "run", "--run", "missing-run"}, strings.NewReader(""), &stdout, &stderr)
+		if exit != ExitFailure || stderr.String() != "运行失败：读取冻结 CapabilitySnapshot 失败。\n" {
+			t.Fatalf("exit = %d, stderr = %q", exit, stderr.String())
+		}
+	})
+
+	t.Run("malformed snapshot", func(t *testing.T) {
+		runDir := filepath.Join(repositoryRoot, ".marshal", "runs", "malformed-run")
+		if err := os.MkdirAll(runDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(runDir, "capability-snapshot.json"), []byte(`{"secret":"must-not-leak"`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stdout.Reset()
+		stderr.Reset()
+		exit := Run([]string{"task", "run", "--run", "malformed-run"}, strings.NewReader(""), &stdout, &stderr)
+		if exit != ExitFailure || stderr.String() != "运行失败：冻结 CapabilitySnapshot 无效。\n" || strings.Contains(stderr.String(), "must-not-leak") {
+			t.Fatalf("exit = %d, stderr = %q", exit, stderr.String())
+		}
+	})
+
+	t.Run("unregistered frozen adapter", func(t *testing.T) {
+		runDir := filepath.Join(repositoryRoot, ".marshal", "runs", "unregistered-run")
+		if err := os.MkdirAll(runDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		capability := readCLIFixture(t, "examples/happy-path/capability-snapshot.json")
+		capability["adapterId"] = "pi"
+		writeCLIFixture(t, filepath.Join(runDir, "capability-snapshot.json"), capability)
+		stdout.Reset()
+		stderr.Reset()
+		exit := Run([]string{"task", "run", "--run", "unregistered-run"}, strings.NewReader(""), &stdout, &stderr)
+		if exit != ExitUnavailable || stderr.String() != "运行失败：冻结 Worker Adapter 当前未配置或不可用。\n" {
+			t.Fatalf("exit = %d, stderr = %q", exit, stderr.String())
+		}
+	})
+}
+
 func cliPlanningTask(t *testing.T, repositoryRoot, taskID, remoteURL string) map[string]any {
+	return cliPlanningTaskWithWorkers(t, repositoryRoot, taskID, remoteURL, "opencode", []any{})
+}
+
+func cliPlanningTaskWithWorkers(t *testing.T, repositoryRoot, taskID, remoteURL, preferred string, fallbacks []any) map[string]any {
 	t.Helper()
 	fixture := readCLIFixture(t, "examples/happy-path/task-spec.json")
 	fixture["metadata"].(map[string]any)["id"] = taskID
@@ -231,8 +381,8 @@ func cliPlanningTask(t *testing.T, repositoryRoot, taskID, remoteURL string) map
 	repository["remote"] = "origin"
 	repository["expectedRemoteUrl"] = remoteURL
 	worker := fixture["worker"].(map[string]any)
-	worker["preferredAdapter"] = "opencode"
-	worker["fallbackAdapters"] = []any{}
+	worker["preferredAdapter"] = preferred
+	worker["fallbackAdapters"] = fallbacks
 	worker["executionProfile"] = "workspace-write"
 	worker["sessionPolicy"] = "ephemeral"
 	fixture["deliverables"] = []any{map[string]any{"id": "implementation", "kind": "code", "required": true, "pathGlob": "README.md"}}
@@ -248,15 +398,19 @@ func cliPlanningTask(t *testing.T, repositoryRoot, taskID, remoteURL string) map
 }
 
 func cliPlanningPolicy(t *testing.T, taskID, runID string) map[string]any {
+	return cliPlanningPolicyWithWorkers(t, taskID, runID, false, []any{"opencode"})
+}
+
+func cliPlanningPolicyWithWorkers(t *testing.T, taskID, runID string, allowFallback bool, allowed []any) map[string]any {
 	t.Helper()
 	fixture := readCLIFixture(t, "examples/happy-path/policy-snapshot.json")
 	fixture["taskId"] = taskID
 	fixture["runId"] = runID
 	effective := fixture["effective"].(map[string]any)
-	effective["allowFallbackWorkers"] = false
+	effective["allowFallbackWorkers"] = allowFallback
 	effective["allowPublication"] = false
 	effective["allowMerge"] = false
-	effective["allowedAdapters"] = []any{"opencode"}
+	effective["allowedAdapters"] = allowed
 	return fixture
 }
 
