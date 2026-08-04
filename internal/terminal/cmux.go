@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -38,8 +39,8 @@ type commandRunner interface {
 type processController interface {
 	Supported() bool
 	GroupID(int) (int, error)
-	Pause(int) error
-	Resume(int) error
+	Pause(int) ([]int, error)
+	Resume(int, []int) error
 	Terminate(context.Context, int, time.Duration) error
 }
 
@@ -131,6 +132,10 @@ func (b *CMUXBackend) Start(ctx context.Context, request StartRequest) (Session,
 		return nil, ErrUnavailable
 	}
 	workspace := match[1]
+	if err := b.waitCommandVisible(ctx, workspace); err != nil {
+		_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
+		return nil, err
+	}
 	if _, err := b.runner.Run(ctx, "send-key", "--workspace", workspace, "enter"); err != nil {
 		_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
 		return nil, ErrUnavailable
@@ -157,7 +162,7 @@ func (b *CMUXBackend) Start(ctx context.Context, request StartRequest) (Session,
 			State: StateRunning, CreatedAt: request.Now.UTC(), UpdatedAt: request.Now.UTC()},
 	}
 	if err := session.persist(); err != nil {
-		_ = b.processes.Terminate(context.Background(), pgid, time.Second)
+		_ = b.processes.Terminate(context.Background(), pid, time.Second)
 		_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
 		return nil, err
 	}
@@ -167,6 +172,26 @@ func (b *CMUXBackend) Start(ctx context.Context, request StartRequest) (Session,
 		return nil, err
 	}
 	return session, nil
+}
+
+func (b *CMUXBackend) waitCommandVisible(ctx context.Context, workspace string) error {
+	deadline := time.NewTimer(b.startLimit)
+	defer deadline.Stop()
+	ticker := time.NewTicker(b.startDelay)
+	defer ticker.Stop()
+	for {
+		output, err := b.runner.Run(ctx, "read-screen", "--workspace", workspace, "--lines", "100")
+		if err == nil && strings.Contains(output, "MARSHAL_LAUNCH_READY") {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("%w: cmux start command did not become visible", ErrUnavailable)
+		case <-ticker.C:
+		}
+	}
 }
 
 func (b *CMUXBackend) verify() error {
@@ -202,7 +227,7 @@ func (b *CMUXBackend) waitPID(ctx context.Context, path string) (int, error) {
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		case <-deadline.C:
-			return 0, ErrUnavailable
+			return 0, fmt.Errorf("%w: terminal PID handshake timed out", ErrUnavailable)
 		case <-ticker.C:
 		}
 	}
@@ -240,6 +265,7 @@ type cmuxSession struct {
 	record       sessionRecord
 	inputCount   uint64
 	state        State
+	pausedGroups []int
 	mu           sync.Mutex
 }
 
@@ -312,9 +338,11 @@ func (s *cmuxSession) Pause(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.backend.processes.Pause(s.pgid); err != nil {
+	groups, err := s.backend.processes.Pause(s.pid)
+	if err != nil {
 		return err
 	}
+	s.pausedGroups = groups
 	return s.setState(StatePaused, time.Now().UTC())
 }
 
@@ -330,9 +358,10 @@ func (s *cmuxSession) Resume(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.backend.processes.Resume(s.pgid); err != nil {
+	if err := s.backend.processes.Resume(s.pid, s.pausedGroups); err != nil {
 		return err
 	}
+	s.pausedGroups = nil
 	return s.setState(StateRunning, time.Now().UTC())
 }
 
@@ -345,7 +374,7 @@ func (s *cmuxSession) Terminate(ctx context.Context, grace time.Duration) error 
 	if !s.backend.processes.Supported() {
 		return ErrUnsupported
 	}
-	if err := s.backend.processes.Terminate(ctx, s.pgid, grace); err != nil {
+	if err := s.backend.processes.Terminate(ctx, s.pid, grace); err != nil {
 		return err
 	}
 	return s.setState(StateTerminated, time.Now().UTC())
@@ -477,7 +506,10 @@ func shellCommandWithPID(arguments []string, pidPath string) (string, error) {
 		return "", ErrInvalidRequest
 	}
 	quotedPath := "'" + strings.ReplaceAll(pidPath, "'", `'"'"'`) + "'"
-	return "printf '%s\\n' \"$$\" > " + quotedPath + " && " + command, nil
+	// The terminal login shell may share a PGID with root-owned /usr/bin/login
+	// on macOS. A monitored background job receives its own PGID; fg then gives
+	// it the real PTY while Marshal retains a signalable worker-owned group.
+	return ": MARSHAL_LAUNCH_READY; set -m; (" + command + ") & marshal_pid=$!; printf '%s\\n' \"$marshal_pid\" > " + quotedPath + " && fg", nil
 }
 
 func preparePIDHandshake(directory string) (string, error) {

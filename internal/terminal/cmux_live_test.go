@@ -4,11 +4,14 @@ package terminal
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -35,6 +38,10 @@ func TestLiveCMUXTerminalSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	helperExecutable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	session, err := backend.Start(ctx, StartRequest{
@@ -42,7 +49,8 @@ func TestLiveCMUXTerminalSession(t *testing.T) {
 		RunID:            "live-cmux",
 		AttemptID:        "attempt-01",
 		WorkingDirectory: t.TempDir(),
-		Executable:       "/bin/cat",
+		Executable:       helperExecutable,
+		Arguments:        []string{"-test.run=^TestCMUXProcessRootHelper$"},
 		Title:            "Marshal live TerminalSession test",
 		Description:      "Safe local PTY lifecycle validation; no model is invoked",
 		InitialPrompt:    "INITIAL_PROBE",
@@ -57,7 +65,12 @@ func TestLiveCMUXTerminalSession(t *testing.T) {
 		_, _ = backend.runner.Run(context.Background(), "workspace", "close", native.workspace)
 	}()
 
+	waitForScreen(t, ctx, session, "MARSHAL_HELPER_READY")
 	waitForScreen(t, ctx, session, "INITIAL_PROBE")
+	waitForDescendantGroups(t, native.pid, 2)
+	if groups, rootGroup, found, err := processGroups(native.pid); err == nil {
+		t.Logf("live process groups=%v rootGroup=%d found=%t", groups, rootGroup, found)
+	}
 	if err := session.Pause(ctx); err != nil || session.State() != StatePaused {
 		t.Fatalf("Pause() state=%s error=%v", session.State(), err)
 	}
@@ -65,6 +78,7 @@ func TestLiveCMUXTerminalSession(t *testing.T) {
 	if err != nil || !strings.HasPrefix(strings.TrimSpace(string(state)), "T") {
 		t.Fatalf("paused process state = %q, %v", state, err)
 	}
+	assertDescendantsStopped(t, native.pid)
 	if err := session.Resume(ctx); err != nil || session.State() != StateRunning {
 		t.Fatalf("Resume() state=%s error=%v", session.State(), err)
 	}
@@ -74,6 +88,73 @@ func TestLiveCMUXTerminalSession(t *testing.T) {
 	waitForScreen(t, ctx, session, "SECOND_PROBE")
 	if err := session.Terminate(ctx, time.Second); err != nil || session.State() != StateTerminated {
 		t.Fatalf("Terminate() state=%s error=%v", session.State(), err)
+	}
+}
+
+func TestCMUXProcessRootHelper(t *testing.T) {
+	if flag.Lookup("test.run").Value.String() != "^TestCMUXProcessRootHelper$" {
+		t.Skip("cmux subprocess helper")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command(executable, "-test.run=^TestCMUXProcessLeafHelper$")
+	child.Stdout, child.Stderr = os.Stdout, os.Stderr
+	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("MARSHAL_HELPER_READY")
+	if err := child.Wait(); err != nil {
+		os.Exit(0)
+	}
+}
+
+func TestCMUXProcessLeafHelper(t *testing.T) {
+	if flag.Lookup("test.run").Value.String() != "^TestCMUXProcessLeafHelper$" {
+		t.Skip("cmux subprocess helper")
+	}
+	for {
+		time.Sleep(time.Second)
+	}
+}
+
+func waitForDescendantGroups(t *testing.T, root, minimum int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		groups, _, found, err := processGroups(root)
+		if err == nil && found && len(groups) >= minimum {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("process %d did not create %d process groups", root, minimum)
+}
+
+func assertDescendantsStopped(t *testing.T, root int) {
+	t.Helper()
+	entries, err := processTable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	descendants := map[int]bool{root: true}
+	for changed := true; changed; {
+		changed = false
+		for _, entry := range entries {
+			if descendants[entry.parent] && !descendants[entry.pid] {
+				descendants[entry.pid], changed = true, true
+			}
+		}
+	}
+	if len(descendants) < 2 {
+		t.Fatalf("descendant process tree = %v", descendants)
+	}
+	for _, entry := range entries {
+		if descendants[entry.pid] && !strings.HasPrefix(entry.state, "T") {
+			t.Fatalf("descendant %d state=%s is not stopped", entry.pid, entry.state)
+		}
 	}
 }
 

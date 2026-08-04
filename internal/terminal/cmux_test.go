@@ -34,7 +34,7 @@ func (r *fakeRunner) Run(_ context.Context, arguments ...string) (string, error)
 		if len(arguments) > 1 && arguments[1] == "create" {
 			for index, argument := range arguments {
 				if argument == "--command" && index+1 < len(arguments) {
-					match := regexp.MustCompile(`> '([^']+)' && exec`).FindStringSubmatch(arguments[index+1])
+					match := regexp.MustCompile(`> '([^']+)' && fg`).FindStringSubmatch(arguments[index+1])
 					if match != nil {
 						_ = os.WriteFile(match[1], []byte("4242\n"), 0o600)
 					}
@@ -51,7 +51,7 @@ func (r *fakeRunner) Run(_ context.Context, arguments ...string) (string, error)
 	case "send-key":
 		return "OK", nil
 	case "read-screen":
-		return "native TUI output", nil
+		return "MARSHAL_LAUNCH_READY\nnative TUI output", nil
 	default:
 		return "", ErrUnavailable
 	}
@@ -72,10 +72,16 @@ func (p *fakeProcesses) GroupID(pid int) (int, error) {
 	}
 	return 4242, nil
 }
-func (p *fakeProcesses) Pause(pgid int) error  { p.paused = pgid == 4242; return nil }
-func (p *fakeProcesses) Resume(pgid int) error { p.resumed = pgid == 4242; return nil }
-func (p *fakeProcesses) Terminate(_ context.Context, pgid int, _ time.Duration) error {
-	p.terminated = pgid == 4242
+func (p *fakeProcesses) Pause(pid int) ([]int, error) {
+	p.paused = pid == 4242
+	return []int{4242}, nil
+}
+func (p *fakeProcesses) Resume(pid int, groups []int) error {
+	p.resumed = pid == 4242 && slices.Equal(groups, []int{4242})
+	return nil
+}
+func (p *fakeProcesses) Terminate(_ context.Context, pid int, _ time.Duration) error {
+	p.terminated = pid == 4242
 	return nil
 }
 
@@ -99,7 +105,7 @@ func TestCMUXSessionLifecycleAndProvenance(t *testing.T) {
 		t.Fatalf("capabilities = %v", capabilities)
 	}
 	screen, err := session.ReadScreen(context.Background(), 100)
-	if err != nil || screen != "native TUI output" {
+	if err != nil || !strings.Contains(screen, "native TUI output") {
 		t.Fatalf("ReadScreen() = %q, %v", screen, err)
 	}
 	if err := session.InterruptStep(context.Background()); err != nil {

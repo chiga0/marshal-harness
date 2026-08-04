@@ -75,6 +75,8 @@ cmux Backend 使用真实 terminal surface，而不是 `tail -F`：
 5. 将 workspace/surface/session 标识写入 Attempt 观察记录；
 6. 完成后保留 workspace 供操作者审阅，Cleanup 只在显式策略下关闭。
 
+进程控制不能只记录 Agent 根 PGID。真实 OpenCode 工具执行已经证明，Agent 会为 `go test` 等子进程创建新的 PGID；只暂停根组会让工具继续运行。cmux Backend 因此先让 Worker 脱离可能由 root-owned login 进程领组的终端 PGID，再冻结根组、枚举完整后代进程树并控制所有已发现 PGID。Pause 保存该 PGID 集供 Resume 使用；Terminate 对同一集合执行 STOP → TERM → CONT → 有界 KILL。无法完成进程树枚举或精确发信号时必须报错，不得宣称成功暂停。
+
 安装全局 hooks 会修改用户的 Agent 配置，因此 Marshal只负责 Probe 与给出精确安装命令，不静默安装。
 
 ## 影响

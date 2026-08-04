@@ -92,7 +92,7 @@ TerminalSession 必须区分：
 - `terminate-session`：有界终止整个 PTY Process Group；
 - `resume-session`：从已记录 Session ID 恢复。
 
-单次 `Ctrl-C` 不能被当作可靠 Pause。本项目的真实 OpenCode PTY 原型已经证明：`Ctrl-C` 可能只打断当前步骤，Agent随后继续并写文件。因此 Backend 必须通过能力探测实现精确语义；无法证明 `pause-turn` 时，使用进程组 `SIGSTOP/SIGCONT`（受支持平台）或安全终止 Session，不伪报已暂停。
+单次 `Ctrl-C` 不能被当作可靠 Pause。本项目的真实 OpenCode PTY 原型已经证明：`Ctrl-C` 可能只打断当前步骤，Agent随后继续并写文件；工具进程还可能创建独立 PGID。因此 Backend 必须通过能力探测实现精确语义；无法证明 `pause-turn` 时，使用完整后代进程树的 `SIGSTOP/SIGCONT`（受支持平台）或安全终止 Session，不伪报已暂停。
 
 ## 持久化
 
