@@ -2,20 +2,28 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
+	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/gitworktree"
+	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/verification"
 )
 
 // Process exit codes are stable CLI contract.
@@ -43,6 +51,12 @@ var taskCommands = []string{
 // Run executes one CLI invocation without granting Worker or Publisher
 // capabilities to the CLI boundary itself.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return RunContext(context.Background(), args, stdin, stdout, stderr)
+}
+
+// RunContext executes one CLI invocation and propagates cancellation into
+// verifier process groups.
+func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		writeUsage(stderr)
 		return ExitUsage
@@ -61,7 +75,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "contract":
 		return runContract(args[1:], stdin, stdout, stderr)
 	case "task":
-		return runTask(args[1:], stdout, stderr)
+		return runTask(ctx, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "未知命令 %q。\n", args[0])
 		writeUsage(stderr)
@@ -119,7 +133,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		Build:           buildinfo.Current(),
 		ContractSchemas: application.ContractCount(),
 		WorkerAdapters:  application.AdapterCount(),
-		Milestone:       "1",
+		Milestone:       "2",
 	}
 	if *jsonOutput {
 		if err := writeJSON(stdout, report); err != nil {
@@ -212,7 +226,7 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-func runTask(args []string, stdout, stderr io.Writer) int {
+func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || !slices.Contains(taskCommands, args[0]) {
 		fmt.Fprintf(stderr, "用法：marshal task <%s>\n", strings.Join(taskCommands, "|"))
 		return ExitUsage
@@ -220,11 +234,171 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 	if args[0] == "status" {
 		return runTaskStatus(args[1:], stdout, stderr)
 	}
+	if args[0] == "verify" {
+		return runTaskVerify(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) != 1 {
 		return ExitUsage
 	}
 	fmt.Fprintf(stderr, "marshal task %s 尚未实现；未执行任何 Worker、状态写入或发布副作用。\n", args[0])
 	return ExitUnavailable
+}
+
+func runTaskVerify(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task verify", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	runID := flags.String("run", "", "Run ID")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
+		fmt.Fprintln(stderr, "用法：marshal task verify --run RUN_ID [--json]")
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：%v\n", err)
+		return ExitFailure
+	}
+	if err := location.ValidateIdentity(); err != nil {
+		fmt.Fprintf(stderr, "验证失败：%v\n", err)
+		return ExitFailure
+	}
+	store := runstore.New(location.StateRoot)
+	lease, err := store.Acquire(*runID)
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：%v\n", err)
+		return ExitFailure
+	}
+	defer lease.Release()
+	state, err := store.Inspect(*runID)
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：%v\n", err)
+		return ExitFailure
+	}
+	if state.State != domain.StateVerifying {
+		fmt.Fprintf(stderr, "验证失败：Run 状态为 %s，要求 VERIFYING。\n", state.State)
+		return ExitFailure
+	}
+	runDirectory := filepath.Join(location.StateRoot, "runs", *runID)
+	taskData, err := readInput(filepath.Join(runDirectory, "task-spec.json"), strings.NewReader(""))
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：读取冻结 TaskSpec：%v\n", err)
+		return ExitFailure
+	}
+	digest, err := canonical.DigestJSON(taskData)
+	if err != nil || digest != state.SpecDigest {
+		fmt.Fprintf(stderr, "验证失败：TaskSpec 摘要与冻结 Run 不一致。\n")
+		return ExitFailure
+	}
+	application, err := app.New()
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：%v\n", err)
+		return ExitFailure
+	}
+	task, err := application.ParseTaskSpec(taskData)
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：%v\n", err)
+		return ExitFailure
+	}
+	if task.Metadata.ID != state.TaskID || state.WorktreePath == "" || state.BaseSHA == "" {
+		fmt.Fprintln(stderr, "验证失败：Run 缺少匹配的 Task、Worktree 或 Base 身份。")
+		return ExitFailure
+	}
+	taskRepositoryPath, err := filepath.Abs(task.Repository.Path)
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：TaskSpec Repository 路径无效：%v\n", err)
+		return ExitFailure
+	}
+	taskRepository, err := filepath.EvalSymlinks(taskRepositoryPath)
+	if err != nil || taskRepository != location.RepositoryRoot {
+		fmt.Fprintln(stderr, "验证失败：TaskSpec Repository 与当前仓库身份不一致。")
+		return ExitFailure
+	}
+	repositoryIdentity, err := gitworktree.Open(location.RepositoryRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：%v\n", err)
+		return ExitFailure
+	}
+	scope, deliverables, commands := verification.PolicyFromTask(task)
+	worktreeLease, err := repositoryIdentity.Acquire(location.StateRoot, state.TaskID, state.WorktreePath, state.BaseSHA)
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：%v\n", err)
+		return ExitFailure
+	}
+	defer worktreeLease.Release()
+	baselinePath := ""
+	if commandsNeedBaseline(commands) {
+		baseline, baselineErr := repositoryIdentity.CreateDetached(location.StateRoot, filepath.Join(runDirectory, "baseline-worktree"), state.BaseSHA)
+		if baselineErr != nil {
+			fmt.Fprintf(stderr, "验证失败：创建 Baseline Worktree：%v\n", baselineErr)
+			return ExitFailure
+		}
+		defer baseline.Remove()
+		baselinePath = baseline.Path
+	}
+	verificationContext, cancelVerification := context.WithTimeout(ctx, time.Duration(task.Budgets.RunTimeoutSeconds)*time.Second)
+	defer cancelVerification()
+	result, err := verification.New().Verify(verificationContext, verification.Input{TaskID: state.TaskID, RunID: state.RunID, SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, Worktree: state.WorktreePath, ExpectedCommonDir: repositoryIdentity.CommonDir, RunDirectory: runDirectory, Scope: scope, Deliverables: deliverables, Commands: commands, BaselinePath: baselinePath, PatchCaptureBytes: patchCaptureLimit(scope.MaxDiffBytes)})
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：%v\n", err)
+		return ExitFailure
+	}
+	reportData, err := json.Marshal(result.Report)
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：编码报告：%v\n", err)
+		return ExitFailure
+	}
+	reportDigest, err := canonical.DigestJSON(reportData)
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：摘要报告：%v\n", err)
+		return ExitFailure
+	}
+	eventID, err := domain.NewID("event")
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：生成事件 ID：%v\n", err)
+		return ExitFailure
+	}
+	event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: eventID, RunID: state.RunID, Sequence: state.Sequence + 1, Type: "verification.completed", StateFrom: state.State, StateTo: domain.StateReviewPending, Timestamp: result.Report.CompletedAt, Actor: &domain.Actor{Type: "system", ID: "marshal-verifier"}, Payload: map[string]any{"reportDigest": reportDigest, "status": result.Report.Status}}
+	nextState, err := lifecycle.Reduce(state, event, lifecycle.Guard{LeaseHeld: true, EvidenceCurrent: true, ReportComplete: true})
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：生命周期转换：%v\n", err)
+		return ExitFailure
+	}
+	if err := store.Append(lease, event, state.Sequence); err != nil {
+		fmt.Fprintf(stderr, "验证失败：记录事件：%v\n", err)
+		return ExitFailure
+	}
+	if err := store.WriteSnapshot(lease, nextState); err != nil {
+		fmt.Fprintf(stderr, "验证失败：写入状态快照：%v\n", err)
+		return ExitFailure
+	}
+	if *jsonOutput {
+		if err := writeJSON(stdout, result.Report); err != nil {
+			fmt.Fprintf(stderr, "输出验证报告失败：%v\n", err)
+			return ExitFailure
+		}
+	} else {
+		fmt.Fprintf(stdout, "Run：%s\nVerification：%s\nGate：%d\n", state.RunID, result.Report.Status, len(result.Report.Gates))
+	}
+	if result.Report.Status != "pass" {
+		return ExitFailure
+	}
+	return ExitOK
+}
+
+func patchCaptureLimit(maxDiffBytes int64) int64 {
+	if maxDiffBytes <= 0 {
+		return 64 << 20
+	}
+	return maxDiffBytes + 1
+}
+
+func commandsNeedBaseline(commands []verification.CommandSpec) bool {
+	for _, command := range commands {
+		if command.BaselinePolicy == "always" || command.BaselinePolicy == "on-failure" {
+			return true
+		}
+	}
+	return false
 }
 
 func runTaskStatus(args []string, stdout, stderr io.Writer) int {
@@ -302,7 +476,8 @@ func writeUsage(output io.Writer) {
   marshal init [--json]
   marshal contract validate [--schema NAME] <PATH|->
   marshal task status --run RUN_ID [--json]
+  marshal task verify --run RUN_ID [--json]
   marshal task <COMMAND>
 
-Milestone 1 提供状态目录初始化和只读 Run Inspection；其余 task 命令尚不可用。`)
+Milestone 2 提供状态目录初始化、只读 Run Inspection 与独立 Verification；其余 task 命令尚不可用。`)
 }

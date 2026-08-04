@@ -114,7 +114,7 @@
         "command": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["argv", "cwd", "durationMilliseconds", "truncated"],
+          "required": ["argv", "cwd", "executable", "startedAt", "completedAt", "durationMilliseconds", "truncated"],
           "properties": {
             "argv": {
               "type": "array",
@@ -122,6 +122,9 @@
               "items": { "type": "string", "maxLength": 32768 }
             },
             "cwd": { "$ref": "#/$defs/relativePath" },
+            "executable": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "startedAt": { "type": "string", "format": "date-time" },
+            "completedAt": { "type": "string", "format": "date-time" },
             "exitCode": { "type": ["integer", "null"] },
             "signal": { "type": ["string", "null"], "maxLength": 64 },
             "durationMilliseconds": { "type": "integer", "minimum": 0 },

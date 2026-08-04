@@ -1,13 +1,13 @@
 # Roadmap 状态
 
-更新时间：2026-08-03
+更新时间：2026-08-04
 
 | Milestone | 状态 | 证据 |
 | --- | --- | --- |
 | 0：Toolchain 与 Contract | `PASSED` | [验收报告](milestone-0-report.md) |
 | 1：State Machine 与 Run Store | `PASSED` | [验收报告](milestone-1-report.md) |
-| 2：Git Worktree 与独立 Verification | `NEXT` | 尚未开始 |
-| 3：Review 与 Rework Loop | `PENDING` | 尚未开始 |
+| 2：Git Worktree 与独立 Verification | `PASSED` | [验收报告](milestone-2-report.md) |
+| 3：Review 与 Rework Loop | `NEXT` | 等待范围冻结 |
 | 4：首个真实 Worker Adapter | `PENDING` | 尚未开始 |
 | 5：GitHub Draft Publisher | `PENDING` | 尚未开始 |
 | 6：其余 Adapter 与 Recovery 加固 | `PENDING` | 尚未开始 |

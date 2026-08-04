@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-仓库已完成 Milestone 1：具备 Go 工具链、契约验证、生命周期、Run Store、`.marshal/` 初始化、只读状态查询和 Fake Adapter。Git worktree、真实 Worker 与 Publisher 尚未启用。
+仓库已完成 Milestone 2：具备 Go 工具链、契约验证、生命周期、Run Store、`.marshal/` 初始化、隔离 Git worktree、独立 Verification、交付物摘要与证据报告。真实 Worker 与 Publisher 尚未启用。
 
 ## Go 基线
 
@@ -14,7 +14,7 @@
 - 静态检查：`go vet` 与固定版本的 `staticcheck`；
 - 交付形式：单一 `marshal` 可执行文件。
 
-当前 Git 仓库尚无 remote，Module Path 根据本机已认证 GitHub 用户与仓库目录推导。首次发布前必须与最终 remote 校验；若不一致，在出现外部消费者前统一迁移。
+GitHub remote 已绑定为 `github.com/chiga0/marshal-harness`，与 Module Path 一致。
 
 ## Package 边界
 
@@ -26,6 +26,8 @@ internal/domain/    Provider-neutral Domain Type
 internal/contract/  Schema 编译与 Semantic Validator
 internal/port/      Worker、Verifier、Lead Agent、Publisher Port
 internal/adapter/   Adapter Registry；当前不含真实 Provider
+internal/gitworktree/ Repository Identity、linked worktree 与锁
+internal/verification/ 独立 Diff、Scope、Command 与 Artifact 验证
 schemas/            JSON Schema、Fixture 与 Embedded FS
 ```
 
@@ -54,10 +56,13 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 marshal version [--json]
 marshal doctor [--json]
 marshal contract validate [--schema NAME] <PATH|->
+marshal init [--json]
+marshal task status --run RUN_ID [--json]
+marshal task verify --run RUN_ID [--json]
 marshal task <COMMAND>
 ```
 
-`version`、`doctor`、`contract validate` 和 `task status` 是只读命令。`marshal init` 会创建仓库绑定的状态目录，并把默认 `/.marshal/` 写入 `.git/info/exclude`；其他 `task` 子命令仍返回 `ExitUnavailable=3`，不会启动 Worker 或执行发布。
+`version`、`doctor`、`contract validate` 和 `task status` 是只读命令。`marshal init` 会创建仓库绑定的状态目录，并把默认 `/.marshal/` 写入 `.git/info/exclude`。`task verify` 只在持有 Run/Task Lease 时独立观察受管 worktree、执行有界验收命令并生成 VerificationReport 与 ArtifactManifest；它不会启动 Worker 或执行发布。其余尚未实现的 `task` 子命令返回 `ExitUnavailable=3`。
 
 示例：
 

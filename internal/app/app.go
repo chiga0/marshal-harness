@@ -3,6 +3,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/chiga0/marshal-harness/internal/adapter"
@@ -37,6 +38,17 @@ func (a *App) ValidateContract(kind domain.Kind, data []byte) error {
 // ValidateDocument detects and validates a document's kind.
 func (a *App) ValidateDocument(data []byte) (domain.Record, error) {
 	return a.contracts.ValidateDocument(data)
+}
+
+func (a *App) ParseTaskSpec(data []byte) (domain.TaskSpec, error) {
+	if err := a.contracts.Validate(domain.KindTask, data); err != nil {
+		return domain.TaskSpec{}, err
+	}
+	var task domain.TaskSpec
+	if err := json.Unmarshal(data, &task); err != nil {
+		return domain.TaskSpec{}, fmt.Errorf("decode TaskSpec: %w", err)
+	}
+	return task, nil
 }
 
 // ContractCount reports how many durable record schemas are compiled.

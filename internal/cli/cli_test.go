@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/gitworktree"
+	marshalRepository "github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	marshalSchemas "github.com/chiga0/marshal-harness/schemas"
 )
@@ -32,7 +36,7 @@ func TestDoctorReportsCompiledContracts(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode doctor output: %v", err)
 	}
-	if report.Status != "ok" || report.ContractSchemas != 11 || report.WorkerAdapters != 0 || report.Milestone != "1" {
+	if report.Status != "ok" || report.ContractSchemas != 11 || report.WorkerAdapters != 0 || report.Milestone != "2" {
 		t.Fatalf("doctor report = %+v", report)
 	}
 }
@@ -87,6 +91,15 @@ func TestReadBoundedRejectsOversizedInput(t *testing.T) {
 	}
 }
 
+func TestPatchCaptureLimitUsesSafeDefault(t *testing.T) {
+	if got := patchCaptureLimit(0); got != 64<<20 {
+		t.Fatalf("default patch capture limit = %d", got)
+	}
+	if got := patchCaptureLimit(99); got != 100 {
+		t.Fatalf("bounded patch capture limit = %d", got)
+	}
+}
+
 func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	originalDirectory, err := os.Getwd()
 	if err != nil {
@@ -103,7 +116,7 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	})
 
 	for _, command := range taskCommands {
-		if command == "status" {
+		if command == "status" || command == "verify" {
 			continue
 		}
 		var stdout, stderr bytes.Buffer
@@ -156,4 +169,120 @@ func TestInitAndTaskStatusEndToEnd(t *testing.T) {
 	if !strings.Contains(stdout.String(), `"state": "CREATED"`) {
 		t.Fatalf("status output = %s", stdout.String())
 	}
+}
+
+func TestTaskVerifyEndToEnd(t *testing.T) {
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := t.TempDir()
+	runGitCLI(t, repository, "init", "-q")
+	runGitCLI(t, repository, "config", "user.name", "Marshal Test")
+	runGitCLI(t, repository, "config", "user.email", "marshal@example.invalid")
+	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitCLI(t, repository, "add", "README.md")
+	runGitCLI(t, repository, "commit", "-q", "-m", "base")
+	base := strings.TrimSpace(runGitCLI(t, repository, "rev-parse", "HEAD"))
+	location, err := marshalRepository.Discover(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := location.Init(); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := gitworktree.Open(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree, err := manager.Create(location.StateRoot, "TASK-1", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worktree.Release(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("git", "-C", repository, "worktree", "remove", "--force", worktree.Path).Run()
+		_ = exec.Command("git", "-C", repository, "branch", "-D", worktree.Branch).Run()
+	})
+	if err := os.MkdirAll(filepath.Join(worktree.Path, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree.Path, "src", "code.go"), []byte("package src\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	taskData := []byte(fmt.Sprintf(`{
+  "apiVersion":"marshal.dev/v1alpha1","kind":"Task",
+  "metadata":{"id":"TASK-1","title":"CLI verification fixture"},
+  "repository":{"path":%q,"baseRef":"%s","remote":"origin"},
+  "work":{"objective":"Verify an isolated fixture change."},
+  "scope":{"allowPaths":["src/**"],"denyPaths":[],"allowSubmodules":false,"maxChangedFiles":5,"maxDiffBytes":100000},
+  "acceptance":{"commands":[{"id":"source-exists","argv":["sh","-c","test -f src/code.go"],"cwd":".","timeoutSeconds":5,"required":true,"baselinePolicy":"none","maxLogBytes":4096}],"allowNoChange":false},
+  "deliverables":[{"id":"source","kind":"code","required":true,"pathGlob":"src/*.go","minimumCount":1},{"id":"pull-request","kind":"publication","required":true}],
+  "worker":{"preferredAdapter":"fake","fallbackAdapters":[],"executionProfile":"workspace-write","sessionPolicy":"ephemeral"},
+  "budgets":{"runTimeoutSeconds":60,"attemptTimeoutSeconds":30,"maxAttempts":1,"maxOperationalRetries":0,"maxReworkRounds":0,"maxOutputBytes":100000},
+  "publication":{"required":true,"provider":"github","mode":"draft","remote":"origin","baseBranch":"main","mergePolicy":"never","requiredChecks":[]}
+}`, repository, base))
+	digest, err := canonical.DigestJSON(taskData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := runstore.New(location.StateRoot)
+	lease, err := store.Acquire("run:verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := domain.NewRunState("TASK-1", "run:verify", time.Now())
+	transitions := [][2]domain.State{{domain.StateCreated, domain.StatePlanned}, {domain.StatePlanned, domain.StateReady}, {domain.StateReady, domain.StateRunning}, {domain.StateRunning, domain.StateVerifying}}
+	for index, transition := range transitions {
+		event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: fmt.Sprintf("event:%d", index+1), RunID: "run:verify", Sequence: uint64(index + 1), Type: "run.transition", StateFrom: transition[0], StateTo: transition[1], Timestamp: time.Now().UTC(), Payload: map[string]any{}}
+		if transition[1] == domain.StateRunning {
+			event.AttemptID = "attempt:1"
+		}
+		if err := store.Append(lease, event, uint64(index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state.State, state.Sequence, state.SpecDigest, state.BaseSHA, state.WorktreePath = domain.StateVerifying, uint64(len(transitions)), digest, base, worktree.Path
+	if err := store.WriteSnapshot(lease, state); err != nil {
+		t.Fatal(err)
+	}
+	runDirectory := filepath.Join(location.StateRoot, "runs", "run:verify")
+	if err := os.WriteFile(filepath.Join(runDirectory, "task-spec.json"), taskData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repository); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"task", "verify", "--run", "run:verify", "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("verify exit = %d, stderr = %s", exit, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"status": "pass"`) {
+		t.Fatalf("verify output = %s", stdout.String())
+	}
+	verifiedState, err := store.Inspect("run:verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifiedState.State != domain.StateReviewPending || verifiedState.Sequence != 5 {
+		t.Fatalf("verified state = %+v", verifiedState)
+	}
+}
+
+func runGitCLI(t *testing.T, directory string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", directory}, args...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, output)
+	}
+	return string(output)
 }

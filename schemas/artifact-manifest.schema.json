@@ -106,7 +106,14 @@
         {
           "required": ["pathRoot", "relativePath", "byteSize", "digest"],
           "properties": {
-            "status": { "enum": ["observed", "validated", "invalid"] }
+            "status": { "enum": ["observed", "validated"] }
+          },
+          "not": { "required": ["uri"] }
+        },
+        {
+          "required": ["pathRoot", "relativePath"],
+          "properties": {
+            "status": { "const": "invalid" }
           },
           "not": { "required": ["uri"] }
         },
