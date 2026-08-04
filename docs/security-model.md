@@ -117,8 +117,10 @@ Secret 仅在需要它的授权组件内 Just-in-time 解析。Publisher Credent
 
 - ReviewDecision 必须携带 Evidence Identity。
 - Publisher 在副作用前重新计算 Snapshot 与 Evidence。
+- 受控 Commit 对普通文件使用 raw blob，对符号链接使用 link target；观察与发布均屏蔽仓库 local filter、ambient hook、credential helper 以及 system/global Git config。
 - 强制 Gate 失败时，没有 Policy-valid Waiver 就不能 Accept。
 - Publisher 记录认证后的 Forge Identity，但不暴露 Token。
+- Publisher 只接受无 Force Push 的新分支创建或经 `previousHeadSha` 证明的返工 fast-forward；CI 必须绑定同一 Repository、Draft PR 与 Head SHA。
 - 实际 Merge 不属于 MVP 权限。
 
 ## 安全就绪等级

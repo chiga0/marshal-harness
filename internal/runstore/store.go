@@ -280,8 +280,14 @@ func (s *Store) Inspect(runID string) (domain.RunState, error) {
 	if journalErr != nil && !errors.Is(journalErr, ErrTruncatedTail) {
 		return state, journalErr
 	}
-	if uint64(len(events)) != state.Sequence {
-		return state, fmt.Errorf("%w: snapshot sequence %d differs from journal sequence %d", ErrConflict, state.Sequence, len(events))
+	if uint64(len(events)) < state.Sequence {
+		return state, fmt.Errorf("%w: snapshot sequence %d is ahead of journal sequence %d", ErrConflict, state.Sequence, len(events))
+	}
+	for index := state.Sequence; index < uint64(len(events)); index++ {
+		state, err = lifecycle.Replay(state, events[index])
+		if err != nil {
+			return state, fmt.Errorf("%w: replay journal tail: %v", ErrConflict, err)
+		}
 	}
 	if len(events) > 0 && events[len(events)-1].StateTo != state.State {
 		return state, fmt.Errorf("%w: snapshot state %s differs from journal state %s", ErrConflict, state.State, events[len(events)-1].StateTo)

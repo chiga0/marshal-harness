@@ -101,6 +101,8 @@ Marshal 绝不自动 Reset Partial Change。新 Worker 必须被告知它继承�
 
 Ambiguous Timeout 后先查询 Remote，不能假设失败并创建重复 PR/MR。Remote Branch 含 Unexpected Commit 时必须 Block，默认不 Force Push。
 
+`publication-record.json` 已持久化但对应 Journal Event 尚未追加时，重试必须先核对 Intent、Repository、PR 与 Head 的完整身份；一致时复用记录并补齐事件，不一致时停止副作用。CI 返工创建新的发布世代，旧世代产物归档到 Run 内的 `publications/`，新提交仅允许从上一 Head fast-forward。
+
 ## CI Recovery
 
 CI Polling 保存 Cursor/Last Observation 并通过有界 Backoff 恢复。Check Identity 包含 Repository、Head SHA 与 Provider Check ID，其他 SHA 的结果视为陈旧。

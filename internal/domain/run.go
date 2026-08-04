@@ -5,25 +5,36 @@ import (
 )
 
 type RunState struct {
-	APIVersion             APIVersion `json:"apiVersion"`
-	Kind                   Kind       `json:"kind"`
-	TaskID                 string     `json:"taskId"`
-	RunID                  string     `json:"runId"`
-	State                  State      `json:"state"`
-	Sequence               uint64     `json:"sequence"`
-	SpecDigest             string     `json:"specDigest,omitempty"`
-	PolicyDigest           string     `json:"policyDigest,omitempty"`
-	CapabilityDigest       string     `json:"capabilityDigest,omitempty"`
-	BaseSHA                string     `json:"baseSha,omitempty"`
-	WorktreePath           string     `json:"worktreePath,omitempty"`
-	CurrentAttemptID       string     `json:"currentAttemptId,omitempty"`
-	ReviewRound            uint       `json:"reviewRound"`
-	AttemptsUsed           uint       `json:"attemptsUsed"`
-	OperationalRetriesUsed uint       `json:"operationalRetriesUsed"`
-	ReworkRoundsUsed       uint       `json:"reworkRoundsUsed"`
-	TerminalReason         string     `json:"terminalReason,omitempty"`
-	CreatedAt              time.Time  `json:"createdAt"`
-	UpdatedAt              time.Time  `json:"updatedAt"`
+	APIVersion             APIVersion      `json:"apiVersion"`
+	Kind                   Kind            `json:"kind"`
+	TaskID                 string          `json:"taskId"`
+	RunID                  string          `json:"runId"`
+	State                  State           `json:"state"`
+	Sequence               uint64          `json:"sequence"`
+	SpecDigest             string          `json:"specDigest,omitempty"`
+	PolicyDigest           string          `json:"policyDigest,omitempty"`
+	CapabilityDigest       string          `json:"capabilityDigest,omitempty"`
+	BaseSHA                string          `json:"baseSha,omitempty"`
+	WorktreePath           string          `json:"worktreePath,omitempty"`
+	Publication            *RunPublication `json:"publication,omitempty"`
+	CurrentAttemptID       string          `json:"currentAttemptId,omitempty"`
+	ReviewRound            uint            `json:"reviewRound"`
+	AttemptsUsed           uint            `json:"attemptsUsed"`
+	OperationalRetriesUsed uint            `json:"operationalRetriesUsed"`
+	ReworkRoundsUsed       uint            `json:"reworkRoundsUsed"`
+	TerminalReason         string          `json:"terminalReason,omitempty"`
+	CreatedAt              time.Time       `json:"createdAt"`
+	UpdatedAt              time.Time       `json:"updatedAt"`
+}
+
+type RunPublication struct {
+	Provider   string `json:"provider"`
+	Repository string `json:"repository"`
+	HeadBranch string `json:"headBranch"`
+	BaseBranch string `json:"baseBranch"`
+	ExternalID string `json:"externalId,omitempty"`
+	URI        string `json:"uri,omitempty"`
+	HeadSHA    string `json:"headSha,omitempty"`
 }
 
 type RunEvent struct {

@@ -106,17 +106,19 @@ Commit 记录：
 
 ## Branch Identity
 
-默认逻辑 Branch：
+默认逻辑 Branch 由经过清洗的 taskId 与 runId 摘要确定：
 
 ```text
-marshal/<task-id>-<slug>
+marshal/<task-id>-<run-id-hash>
 ```
 
-Slug 仅用于可读性，taskId 才是权威身份。若 Remote Branch 已存在，只有 Publication Metadata 证明它属于同一任务时才能更新，否则 Block。默认禁止 Force Push。
+taskId 只用于可读前缀，taskId/runId 与持久化 Publication Identity 才是权威身份。若 Remote Branch 已存在，只有它等于当前世代 Head，或返工时等于 `previousHeadSha` 且新 Commit 可 fast-forward 时才能更新，否则 Block。默认禁止 Force Push。
 
 ## PR/MR 幂等性
 
 首次发布保存 Provider、Repository ID、PR/MR ID、Head Branch、Base Branch 与 URL。后续发布使用不可变 Provider ID。
+
+CI 代码失败后的返工不会新建 PR。Marshal 将上一发布世代归档，新 Commit 以前一 Head 为父提交并 fast-forward 同一分支；`reviewRound`、`previousHeadSha` 与每世代 Intent/Record 保留完整审计链。
 
 本地状态缺失时，Publisher 可以搜索 PR/MR Body 中的机器标记：
 
@@ -150,7 +152,7 @@ Marshal 更新 PR/MR Body 时，必须保留被明确分隔的用户自定义内
 
 ## CI Tracking
 
-Required Check 来自 Policy 或 TaskSpec。只有 Check 的 Repository Identity 与 Published Head SHA 均匹配时才能接受。Polling 使用有界 Backoff 并可恢复；未来可增加 Webhook，而不改变 Core Check Record。
+Required Check 来自 Policy 或 TaskSpec。只有 Check 的 Repository Identity 与 Published Head SHA 均匹配时才能接受。Required Check 只有显式 `pass` 才满足；`pending`、`skipping`、缺失或取消都不能误判为绿色。每次查询 Checks 后还要重新确认 PR 仍为相同 Draft、Branch 与 Head。Polling 单次调用有界且可恢复；未来可增加 Webhook，而不改变 Core Check Record。
 
 ## Merge Policy
 

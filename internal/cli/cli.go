@@ -23,6 +23,8 @@ import (
 	"github.com/chiga0/marshal-harness/internal/execution"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/chiga0/marshal-harness/internal/publication"
+	githubpublisher "github.com/chiga0/marshal-harness/internal/publisher/github"
 	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
@@ -136,7 +138,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		Build:           buildinfo.Current(),
 		ContractSchemas: application.ContractCount(),
 		WorkerAdapters:  application.AdapterCount(),
-		Milestone:       "3",
+		Milestone:       "5",
 	}
 	if *jsonOutput {
 		if err := writeJSON(stdout, report); err != nil {
@@ -243,6 +245,12 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if args[0] == "run" {
 		return runTaskWorker(ctx, args[1:], stdout, stderr)
 	}
+	if args[0] == "publish" {
+		return runTaskPublish(ctx, args[1:], stdout, stderr)
+	}
+	if args[0] == "accept" {
+		return runTaskAccept(ctx, args[1:], stdout, stderr)
+	}
 	if args[0] == "review" {
 		return runTaskReview(ctx, args[1:], stdout, stderr)
 	}
@@ -251,6 +259,103 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "marshal task %s 尚未实现；未执行任何 Worker、状态写入或发布副作用。\n", args[0])
 	return ExitUnavailable
+}
+
+func publisherFromEnvironment(location repository.State) (*githubpublisher.Publisher, *contract.Validator, error) {
+	ghPath, configDir := os.Getenv("MARSHAL_GH_PATH"), os.Getenv("MARSHAL_GH_CONFIG_DIR")
+	if ghPath == "" || configDir == "" {
+		return nil, nil, errors.New("必须配置 absolute MARSHAL_GH_PATH 与 MARSHAL_GH_CONFIG_DIR")
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		return nil, nil, err
+	}
+	publisher, err := githubpublisher.New(ghPath, configDir, location.RepositoryRoot, validator)
+	return publisher, validator, err
+}
+
+func runTaskPublish(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task publish", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	runID := flags.String("run", "", "Run ID")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
+		fmt.Fprintln(stderr, "用法：marshal task publish --run RUN_ID [--json]")
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil {
+		fmt.Fprintf(stderr, "发布失败：%v\n", err)
+		return ExitFailure
+	}
+	if err := location.ValidateIdentity(); err != nil {
+		fmt.Fprintf(stderr, "发布失败：%v\n", err)
+		return ExitFailure
+	}
+	publisher, validator, err := publisherFromEnvironment(location)
+	if err != nil {
+		fmt.Fprintf(stderr, "发布不可用：%v\n", err)
+		return ExitUnavailable
+	}
+	result, err := publication.Publish(ctx, publication.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Publisher: publisher, Validator: validator})
+	if err != nil {
+		fmt.Fprintf(stderr, "发布失败（状态 %s）：%v\n", result.State.State, err)
+		return ExitFailure
+	}
+	if *jsonOutput {
+		if err := writeJSON(stdout, result); err != nil {
+			fmt.Fprintf(stderr, "输出发布结果失败：%v\n", err)
+			return ExitFailure
+		}
+	} else {
+		fmt.Fprintf(stdout, "Run：%s\n状态：%s\nDraft PR：%s\n", *runID, result.State.State, result.Publication.Request.URL)
+	}
+	return ExitOK
+}
+
+func runTaskAccept(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task accept", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	runID := flags.String("run", "", "Run ID")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
+		fmt.Fprintln(stderr, "用法：marshal task accept --run RUN_ID [--json]")
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil {
+		fmt.Fprintf(stderr, "CI 验收失败：%v\n", err)
+		return ExitFailure
+	}
+	if err := location.ValidateIdentity(); err != nil {
+		fmt.Fprintf(stderr, "CI 验收失败：%v\n", err)
+		return ExitFailure
+	}
+	publisher, validator, err := publisherFromEnvironment(location)
+	if err != nil {
+		fmt.Fprintf(stderr, "CI 验收不可用：%v\n", err)
+		return ExitUnavailable
+	}
+	result, err := publication.ObserveChecks(ctx, publication.CheckInput{StateRoot: location.StateRoot, RunID: *runID, Observer: publisher, Validator: validator})
+	if err != nil {
+		fmt.Fprintf(stderr, "CI 验收失败（状态 %s）：%v\n", result.State.State, err)
+		return ExitFailure
+	}
+	if *jsonOutput {
+		if err := writeJSON(stdout, result); err != nil {
+			fmt.Fprintf(stderr, "输出 CI 结果失败：%v\n", err)
+			return ExitFailure
+		}
+	} else {
+		fmt.Fprintf(stdout, "Run：%s\n状态：%s\nRemote Checks：%s\n", *runID, result.State.State, result.Checks.Status)
+	}
+	if result.State.State == domain.StateCIPending {
+		return ExitUnavailable
+	}
+	if result.State.State != domain.StateAccepted {
+		return ExitFailure
+	}
+	return ExitOK
 }
 
 func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -783,7 +888,9 @@ func writeUsage(output io.Writer) {
   marshal task run --run RUN_ID [--json]
   marshal task verify --run RUN_ID [--json]
   marshal task review --run RUN_ID [--decision PATH] [--json]
+  marshal task publish --run RUN_ID [--json]
+  marshal task accept --run RUN_ID [--json]
   marshal task <COMMAND>
 
-Milestone 4 增加首个 OpenCode Worker 执行路径；它只产生 Attempt 与真实快照，仍必须单独执行 verify、review 与后续发布门禁。`)
+OpenCode Worker 只产生 Attempt 与真实快照；verify、review、publish 与 accept 是彼此独立的证据门禁。发布命令还要求 absolute MARSHAL_GH_PATH 与 MARSHAL_GH_CONFIG_DIR。`)
 }

@@ -1,0 +1,39 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "PublicationRecord",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "provider": "github",
+  "repository": {
+    "id": "R_kgDOExample",
+    "nameWithOwner": "example-org/example-repo",
+    "url": "https://github.com/example-org/example-repo"
+  },
+  "remote": "origin",
+  "baseBranch": "main",
+  "headBranch": "marshal/ENG-123-a1b2c3d4e5f6",
+  "reviewRound": 1,
+  "baseSha": "0123456789abcdef0123456789abcdef01234567",
+  "headSha": "2222222222222222222222222222222222222222",
+  "commitSha": "2222222222222222222222222222222222222222",
+  "snapshotDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "diffDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "specDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "policyDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "evidenceDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "verificationDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "reviewDecisionDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "marker": "<!-- marshal task=ENG-123 run=run-01 -->",
+  "mode": "draft",
+  "mergePolicy": "never",
+  "request": {
+    "id": "PR_kwDOExample",
+    "number": 42,
+    "url": "https://github.com/example-org/example-repo/pull/42",
+    "draft": true,
+    "state": "OPEN"
+  },
+  "actor": "octocat",
+  "publishedAt": "2026-08-04T05:01:00Z",
+  "updatedAt": "2026-08-04T05:01:00Z"
+}

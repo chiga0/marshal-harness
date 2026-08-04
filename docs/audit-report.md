@@ -71,7 +71,7 @@ Schema 只承担结构校验。[`schemas/README.md`](../schemas/README.md) 中�
 
 没有未解决的 P0、P1 或 P2 架构问题。
 
-Milestone 3 的实现审计曾发现 Verdict E2E 覆盖与 `.pending` 崩溃残留两个缺口，均已在复审前关闭；独立复审结论为 `APPROVE`，GitHub Actions run `30874552479` 的 Linux、macOS 与 Secret Scan 全部通过。详情见 [Milestone 3 OpenCode 独立审查](reviews/milestone-3-opencode-review.md)。
+Milestone 3 的实现审计曾发现 Verdict E2E 覆盖与 `.pending` 崩溃残留两个缺口，均已在复审前关闭；独立复审结论为 `APPROVE`，GitHub Actions run `30874552479` 的 Linux、macOS 与 Secret Scan 全部通过。详情见 [Milestone 3 OpenCode 独立审查](reviews/milestone-3-opencode-review.md)。Milestone 4 的真实 OpenCode Adapter 也已完成独立审计与远端 CI 验收，详见 [Milestone 4 独立审查](reviews/milestone-4-opencode-review.md)。
 
 ## 红队场景
 
@@ -121,6 +121,7 @@ Cross-record Freshness、ID Uniqueness、Budget Relationship、Path Canonicaliza
 4. [ADR 0004：独立验证](adr/0004-independent-verification.md)
 5. [ADR 0005：Go 作为 Core Runtime](adr/0005-go-runtime.md)
 6. [ADR 0006：Attempt 控制根与业务 Worktree 分离](adr/0006-attempt-control-root.md)
+7. [ADR 0007：先记录意图的受控发布与远端对账](adr/0007-intent-first-publication.md)
 
 删除 ADR 0002–0004 中任何一个都会使本批准失效，并要求重新进行安全与生命周期审计。
 

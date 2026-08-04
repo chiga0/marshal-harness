@@ -35,9 +35,10 @@ type TaskMetadata struct {
 }
 
 type TaskRepository struct {
-	Path    string `json:"path"`
-	BaseRef string `json:"baseRef"`
-	Remote  string `json:"remote"`
+	Path              string `json:"path"`
+	BaseRef           string `json:"baseRef"`
+	Remote            string `json:"remote"`
+	ExpectedRemoteURL string `json:"expectedRemoteUrl,omitempty"`
 }
 
 type TaskScope struct {

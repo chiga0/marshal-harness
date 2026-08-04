@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/remote-check-record.schema.json",
+  "title": "Marshal RemoteCheckRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "taskId", "runId", "provider", "repositoryId", "requestId", "headSha", "status", "checks", "observedAt"],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "RemoteCheckRecord" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "provider": { "const": "github" },
+    "repositoryId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "requestId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "headSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "status": { "type": "string", "enum": ["pending", "pass", "fail", "external-failure"] },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["name", "required", "status"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "required": { "type": "boolean" },
+          "status": { "type": "string", "enum": ["pending", "pass", "fail", "missing", "skipping", "cancel"] },
+          "url": { "type": "string", "format": "uri", "maxLength": 2048 }
+        }
+      }
+    },
+    "observedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": { "id": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" } }
+}

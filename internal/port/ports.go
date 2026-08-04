@@ -30,3 +30,7 @@ type LeadAgentBridge interface {
 type Publisher interface {
 	Publish(context.Context, domain.Record) (domain.Record, error)
 }
+
+type RemoteCheckObserver interface {
+	ObserveChecks(context.Context, domain.Record, []string) (domain.Record, error)
+}

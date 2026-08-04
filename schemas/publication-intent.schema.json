@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/publication-intent.schema.json",
+  "title": "Marshal PublicationIntent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "taskId",
+    "runId",
+    "provider",
+    "repository",
+    "remote",
+    "remoteUrl",
+    "baseBranch",
+    "headBranch",
+    "reviewRound",
+    "baseSha",
+    "commitSha",
+    "snapshotDigest",
+    "diffDigest",
+    "specDigest",
+    "policyDigest",
+    "evidenceDigest",
+    "verificationDigest",
+    "reviewDecisionDigest",
+    "marker",
+    "mode",
+    "mergePolicy",
+    "createdAt"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "PublicationIntent" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "provider": { "type": "string", "enum": ["github"] },
+    "repository": { "$ref": "#/$defs/repository" },
+    "remote": { "$ref": "#/$defs/id" },
+    "remoteUrl": { "type": "string", "minLength": 1, "maxLength": 1024 },
+    "baseBranch": { "$ref": "#/$defs/branch" },
+    "headBranch": { "$ref": "#/$defs/headBranch" },
+    "reviewRound": { "type": "integer", "minimum": 1 },
+    "baseSha": { "$ref": "#/$defs/sha" },
+    "previousHeadSha": { "$ref": "#/$defs/sha" },
+    "commitSha": { "$ref": "#/$defs/sha" },
+    "snapshotDigest": { "$ref": "#/$defs/digest" },
+    "diffDigest": { "$ref": "#/$defs/digest" },
+    "specDigest": { "$ref": "#/$defs/digest" },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "evidenceDigest": { "$ref": "#/$defs/digest" },
+    "verificationDigest": { "$ref": "#/$defs/digest" },
+    "reviewDecisionDigest": { "$ref": "#/$defs/digest" },
+    "marker": { "$ref": "#/$defs/marker" },
+    "mode": { "type": "string", "enum": ["draft"] },
+    "mergePolicy": { "type": "string", "enum": ["never"] },
+    "attemptId": { "$ref": "#/$defs/id" },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 12000 },
+    "createdAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "maxLength": 512
+    },
+    "branch": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "headBranch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^marshal/[A-Za-z0-9][A-Za-z0-9._:-]*-[0-9a-f]{4,64}$"
+    },
+    "marker": {
+      "type": "string",
+      "pattern": "^<!-- marshal task=[A-Za-z0-9][A-Za-z0-9._:=-]* run=[A-Za-z0-9][A-Za-z0-9._:=-]* -->$"
+    }
+  }
+}

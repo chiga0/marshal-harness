@@ -27,7 +27,7 @@ JSON Schema 草案位于 [`../schemas/`](../schemas/)。当前版本为 `v1alpha
 - `path`：调用者提供、由 Marshal 规范化的仓库路径。
 - `baseRef`：待解析的 branch、tag 或 revision。
 - `remote`：发布 remote，通常为 `origin`。
-- `expectedRemoteUrl`：可选守卫，防止发布到错误仓库。
+- `expectedRemoteUrl`：不发布时可选；要求发布时必须冻结，用于阻止仓库 Local Git Config、`url.*.insteadOf` 或 Remote 漂移把 Push 重定向到其他仓库。
 
 进入 `READY` 前只解析一次 `baseRef`，完整 `baseSha` 写入 Run Metadata。可移动的 branch 名不具权威性，解析后的 SHA 才是事实。
 

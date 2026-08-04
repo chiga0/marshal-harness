@@ -1,0 +1,20 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "RemoteCheckRecord",
+  "taskId": "ENG-123",
+  "runId": "run-01",
+  "provider": "github",
+  "repositoryId": "R_kgDOExample",
+  "requestId": "PR_kwDOExample",
+  "headSha": "2222222222222222222222222222222222222222",
+  "status": "pass",
+  "checks": [
+    {
+      "name": "test",
+      "required": true,
+      "status": "pass",
+      "url": "https://github.com/example-org/example-repo/actions/runs/1"
+    }
+  ],
+  "observedAt": "2026-08-04T05:03:00Z"
+}

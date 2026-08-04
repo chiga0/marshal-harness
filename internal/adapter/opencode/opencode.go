@@ -119,6 +119,9 @@ func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
 	command.Env = probeEnvironment()
 	output, err := command.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return executableIdentity{}, ctx.Err()
+		}
 		return executableIdentity{}, fmt.Errorf("probe opencode version: %w", err)
 	}
 	version := strings.TrimSpace(string(output))

@@ -13,7 +13,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -177,11 +179,15 @@ func validateRelativePath(path string) error {
 
 func gitDiffUntracked(ctx context.Context, root, path string, writer io.Writer) error {
 	command := exec.CommandContext(ctx, "git", "-C", root, "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--", "/dev/null", path)
-	command.Env = verifierEnvironment(nil)
+	environment, err := verifierGitEnvironment(ctx, root)
+	if err != nil {
+		return err
+	}
+	command.Env = environment
 	command.Stdout = writer
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
-	err := command.Run()
+	err = command.Run()
 	var exitErr *exec.ExitError
 	if err == nil || (errors.As(err, &exitErr) && exitErr.ExitCode() == 1) {
 		return nil
@@ -199,7 +205,11 @@ func gitBytesContext(ctx context.Context, root string, args ...string) ([]byte, 
 
 func gitToWriterContext(ctx context.Context, root string, writer io.Writer, args ...string) error {
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
-	command.Env = verifierEnvironment(nil)
+	environment, err := verifierGitEnvironment(ctx, root)
+	if err != nil {
+		return err
+	}
+	command.Env = environment
 	command.Stdout = writer
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
@@ -207,6 +217,57 @@ func gitToWriterContext(ctx context.Context, root string, writer io.Writer, args
 		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+var filterConfigKey = regexp.MustCompile(`^filter\.(.+)\.(?:clean|smudge|process|required)$`)
+
+// verifierGitEnvironment neutralizes repository-local filter drivers. Git
+// diff otherwise runs a Worker-controlled clean/process command while merely
+// observing the accepted worktree. The raw file digests remain authoritative.
+func verifierGitEnvironment(ctx context.Context, root string) ([]string, error) {
+	base := verifierEnvironment(nil)
+	command := exec.CommandContext(ctx, "git", "-C", root, "config", "--local", "--null", "--name-only", "--get-regexp", `^filter\..*\.(clean|smudge|process|required)$`)
+	command.Env = base
+	output, err := command.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !(errors.As(err, &exitErr) && exitErr.ExitCode() == 1) {
+			return nil, fmt.Errorf("inspect repository filter config: %w", err)
+		}
+	}
+	drivers := map[string]bool{}
+	for _, line := range bytes.Split(output, []byte{0}) {
+		matches := filterConfigKey.FindStringSubmatch(string(line))
+		if len(matches) == 2 {
+			drivers[matches[1]] = true
+		}
+	}
+	names := make([]string, 0, len(drivers))
+	for name := range drivers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	count := 1 + len(names)*4
+	base = replaceEnvironment(base, "GIT_CONFIG_COUNT", strconv.Itoa(count))
+	index := 1
+	for _, name := range names {
+		for _, item := range [][2]string{{"clean", "cat"}, {"smudge", "cat"}, {"process", ""}, {"required", "false"}} {
+			base = append(base, fmt.Sprintf("GIT_CONFIG_KEY_%d=filter.%s.%s", index, name, item[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", index, item[1]))
+			index++
+		}
+	}
+	return base, nil
+}
+
+func replaceEnvironment(environment []string, key, value string) []string {
+	prefix := key + "="
+	for index, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			environment[index] = prefix + value
+			return environment
+		}
+	}
+	return append(environment, prefix+value)
 }
 
 func digestFile(path string) (string, error) {

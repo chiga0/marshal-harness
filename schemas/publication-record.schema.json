@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/publication-record.schema.json",
+  "title": "Marshal PublicationRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "taskId", "runId", "provider", "repository", "remote", "baseBranch", "headBranch", "reviewRound", "baseSha", "headSha", "commitSha", "snapshotDigest", "diffDigest", "specDigest", "policyDigest", "evidenceDigest", "verificationDigest", "reviewDecisionDigest", "marker", "mode", "mergePolicy", "request", "actor", "publishedAt", "updatedAt"],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "PublicationRecord" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "provider": { "const": "github" },
+    "repository": {
+      "type": "object", "additionalProperties": false, "required": ["id", "nameWithOwner", "url"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "nameWithOwner": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", "maxLength": 256 },
+        "url": { "type": "string", "format": "uri", "maxLength": 2048 }
+      }
+    },
+    "remote": { "$ref": "#/$defs/id" },
+    "baseBranch": { "$ref": "#/$defs/ref" },
+    "headBranch": { "$ref": "#/$defs/ref" },
+    "reviewRound": { "type": "integer", "minimum": 1 },
+    "baseSha": { "$ref": "#/$defs/sha" },
+    "previousHeadSha": { "$ref": "#/$defs/sha" },
+    "headSha": { "$ref": "#/$defs/sha" },
+    "commitSha": { "$ref": "#/$defs/sha" },
+    "snapshotDigest": { "$ref": "#/$defs/digest" },
+    "diffDigest": { "$ref": "#/$defs/digest" },
+    "specDigest": { "$ref": "#/$defs/digest" },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "evidenceDigest": { "$ref": "#/$defs/digest" },
+    "verificationDigest": { "$ref": "#/$defs/digest" },
+    "reviewDecisionDigest": { "$ref": "#/$defs/digest" },
+    "marker": { "type": "string", "minLength": 1, "maxLength": 400 },
+    "mode": { "const": "draft" },
+    "mergePolicy": { "const": "never" },
+    "request": {
+      "type": "object", "additionalProperties": false, "required": ["id", "number", "url", "draft", "state"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "number": { "type": "integer", "minimum": 1 },
+        "url": { "type": "string", "format": "uri", "maxLength": 2048 },
+        "draft": { "const": true },
+        "state": { "type": "string", "enum": ["OPEN", "CLOSED"] }
+      }
+    },
+    "actor": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "publishedAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+    "ref": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$" },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

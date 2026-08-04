@@ -148,6 +148,18 @@ func Replay(current domain.RunState, event domain.RunEvent) (domain.RunState, er
 	}
 	next := current
 	next.State, next.Sequence, next.UpdatedAt = event.StateTo, event.Sequence, event.Timestamp.UTC()
+	if event.Type == "publication.completed" {
+		publication := &domain.RunPublication{
+			Provider: payloadString(event.Payload, "provider"), Repository: payloadString(event.Payload, "repository"),
+			HeadBranch: payloadString(event.Payload, "headBranch"), BaseBranch: payloadString(event.Payload, "baseBranch"),
+			ExternalID: payloadString(event.Payload, "externalId"), URI: payloadString(event.Payload, "uri"),
+			HeadSHA: payloadString(event.Payload, "headSha"),
+		}
+		if publication.Provider == "" || publication.Repository == "" || publication.HeadBranch == "" || publication.BaseBranch == "" || publication.ExternalID == "" || publication.URI == "" || publication.HeadSHA == "" {
+			return current, fmt.Errorf("%w: publication.completed lacks replay identity", ErrInvalidTransition)
+		}
+		next.Publication = publication
+	}
 	if event.StateTo == domain.StateRunning {
 		next.AttemptsUsed++
 		next.CurrentAttemptID = event.AttemptID
@@ -167,4 +179,9 @@ func Replay(current domain.RunState, event domain.RunEvent) (domain.RunState, er
 		}
 	}
 	return next, nil
+}
+
+func payloadString(payload map[string]any, key string) string {
+	value, _ := payload[key].(string)
+	return value
 }

@@ -21,6 +21,37 @@ type PreparedRecords struct {
 	finalMarkdown   string
 }
 
+// PrepareOutcome stages an immutable terminal Outcome without rewriting the
+// already committed ReviewDecision and ReviewPacket for the review round.
+func PrepareOutcome(runDirectory string, outcome OutcomeData) (*PreparedRecords, error) {
+	records := &PreparedRecords{}
+	jsonData, markdown, err := renderOutcome(outcome)
+	if err != nil {
+		return nil, err
+	}
+	records.pendingOutcome, records.finalOutcome = filepath.Join(runDirectory, "outcome.json.pending"), filepath.Join(runDirectory, "outcome.json")
+	records.pendingMarkdown, records.finalMarkdown = filepath.Join(runDirectory, "outcome.md.pending"), filepath.Join(runDirectory, "outcome.md")
+	for _, pair := range [][2]string{{records.finalOutcome, records.pendingOutcome}, {records.finalMarkdown, records.pendingMarkdown}} {
+		if _, err := os.Lstat(pair[0]); err == nil {
+			return nil, fmt.Errorf("terminal outcome already exists: %s", pair[0])
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+		if err := os.Remove(pair[1]); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("remove orphan outcome %s: %w", pair[1], err)
+		}
+	}
+	if err := atomicWrite(records.pendingOutcome, jsonData, false); err != nil {
+		records.Abort()
+		return nil, err
+	}
+	if err := atomicWrite(records.pendingMarkdown, []byte(markdown), false); err != nil {
+		records.Abort()
+		return nil, err
+	}
+	return records, nil
+}
+
 func PrepareRecords(runDirectory string, result DecisionResult, outcome *OutcomeData) (*PreparedRecords, error) {
 	records := &PreparedRecords{}
 	decisionDir := filepath.Join(runDirectory, "decisions")
