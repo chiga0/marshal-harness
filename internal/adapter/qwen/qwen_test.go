@@ -16,6 +16,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/port"
 )
 
 func TestNewRequiresExactExecutableAndValidator(t *testing.T) {
@@ -110,6 +111,48 @@ func TestNewRequiresExactExecutableAndValidator(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPrepareTerminalFreezesNativeTUIWithoutPromptOrCapturedMode(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "publisher-secret")
+	fixture := newRunFixture(t, supportedBinary, "exit 0")
+	spec, err := fixture.adapter.PrepareTerminal(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinedArgs := strings.Join(spec.Arguments, "\x00")
+	joinedEnv := strings.Join(spec.Environment, "\n")
+	if spec.AdapterID != adapterID || spec.BinaryVersion != supportedBinary || spec.Executable != fixture.executable || !strings.HasPrefix(spec.ExecutableDigest, "sha256:") || spec.WorkingDirectory != fixture.worktree {
+		t.Fatalf("identity = %+v", spec)
+	}
+	if spec.InitialPrompt != "完成 fixture" || spec.CompletionGate != port.TerminalCompletionSupervisedConfirmation {
+		t.Fatalf("prompt/gate = %q %q", spec.InitialPrompt, spec.CompletionGate)
+	}
+	for _, forbidden := range []string{"--output-format", "stream-json", "-p", "完成 fixture"} {
+		if containsArgument(spec.Arguments, forbidden) {
+			t.Fatalf("native argv contains captured argument %q: %#v", forbidden, spec.Arguments)
+		}
+	}
+	for _, required := range []string{"--safe-mode", "--approval-mode", "--max-wall-time", "--max-tool-calls", "--max-session-turns", "--exclude-tools", "--chat-recording=false"} {
+		if !strings.Contains(joinedArgs, required) {
+			t.Fatalf("native argv lacks %q: %#v", required, spec.Arguments)
+		}
+	}
+	if strings.Contains(joinedEnv, "GITHUB_TOKEN") || strings.Contains(joinedEnv, "publisher-secret") {
+		t.Fatalf("publisher credential leaked: %s", joinedEnv)
+	}
+	if strings.Contains(joinedEnv, "CI=1") || !strings.Contains(joinedEnv, "TERM=xterm-256color") || !strings.Contains(joinedEnv, "COLORTERM=truecolor") {
+		t.Fatalf("native TUI environment is not interactive: %s", joinedEnv)
+	}
+}
+
+func containsArgument(arguments []string, target string) bool {
+	for _, argument := range arguments {
+		if argument == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {

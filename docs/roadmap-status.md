@@ -10,6 +10,6 @@
 | 3：Review 与 Rework Loop | `PASSED` | [验收报告](milestone-3-report.md) |
 | 4：首个真实 Worker Adapter | `PASSED` | [验收报告](milestone-4-report.md)；GitHub Actions `30879438415` |
 | 5：GitHub Draft Publisher | `PASSED` | [验收报告](milestone-5-report.md)；主分支 CI `30889069165`；[真实 Draft PR #1](https://github.com/chiga0/marshal-harness/pull/1) 与 PR CI `30889190854` |
-| 6：其余 Adapter 与 Recovery 加固 | `IN_PROGRESS` | [冻结范围](milestone-6-scope.md)；三 Adapter captured 模式与真实 Live E2E、Planning、Approval/Intervention、CI Deadline、Reconciliation、Cleanup Guard 与 cmux TerminalSession 基础已完成；原生 TUI 的密封启动/CompletionGate、Operator Runbook 与完整 MVP E2E 尚待完成 |
+| 6：其余 Adapter 与 Recovery 加固 | `IN_PROGRESS` | [冻结范围](milestone-6-scope.md)；三 Adapter captured 模式与真实 Live E2E、Planning、Approval/Intervention、CI Deadline、Reconciliation、Cleanup Guard、cmux TerminalSession 基础、密封 launcher、Provider-neutral `TerminalLaunchSpec` 与三 Adapter 原生 TUI 冻结规格已完成；受监督 cmux Pilot、Operator Runbook 与完整 MVP E2E 尚待完成 |
 
 每个 Milestone 都执行范围冻结、实现、单元/集成/E2E 测试、独立审计、提交推送和远端 CI 绿色验收。任何 P0/P1 审计问题或 CI 失败都会阻止进入下一阶段。

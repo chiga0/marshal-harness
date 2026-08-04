@@ -43,6 +43,8 @@ Prompt 由带版本 Template 渲染并保存到 Attempt。Adapter 可以增加 P
 
 原生 TUI 仍由同一 Adapter 生成冻结的 executable、argv、allowlisted environment、Provider Budget 与 `CompletionGate`，不能调用 Provider 默认配置作为隐式策略。PTY Backend 只消费 `TerminalLaunchSpec`，不根据 Adapter ID 拼命令。缺少可信自动 completion/idle 信号时，Adapter 只能声明受监督 PTY，不得把 WorkerResult 文件或屏幕文本单独当作完成协议。启动边界见 [ADR 0011](adr/0011-sealed-native-tui-transport.md)。
 
+当前 Qwen、OpenCode 与 Pi Adapter 均实现 `PrepareTerminal`：先校验 WorkerRequest、精确二进制版本与 realpath/digest，再返回原生 TUI argv、完整替换式环境、worktree、独立初始 Prompt 和 `supervised-confirmation` 门禁。原生环境移除 captured 专用的 `CI=1`，显式冻结 `TERM=xterm-256color` 与 `COLORTERM=truecolor`，不依赖 Desktop/cmux ambient environment。Qwen 保留 safe-mode、工具排除和原生 wall/tool/turn/session 预算；OpenCode 保留 `--pure` 与经过 `debug config` 反向验证的权限配置；Pi 保留无 bash 工具白名单、关闭扩展/Skill/上下文和 ephemeral session。三者均移除 captured 模式的 JSON/print/位置 Prompt 参数，且目前不接入默认 `task run`。
+
 ## Normalized Event
 
 每个 Event 包含 `sequence`、`timestamp`、`runId`、`attemptId`、`adapter` 和 `kind`。初始 Event Kind：

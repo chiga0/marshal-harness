@@ -23,6 +23,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/port"
 )
 
 const (
@@ -100,6 +101,8 @@ type Adapter struct {
 	now        func() time.Time
 }
 
+var _ port.TerminalLaunchAdapter = (*Adapter)(nil)
+
 // New requires an exact absolute executable path. Marshal never resolves a
 // provider executable by a similar name or by an implicit fallback.
 func New(executable string, validator *contract.Validator) (*Adapter, error) {
@@ -124,6 +127,64 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 }
 
 func (a *Adapter) ID() string { return adapterID }
+
+// PrepareTerminal freezes a native Qwen TUI launch. It preserves the same
+// permission and native budget flags as Run, but removes structured-output and
+// print-prompt flags so the prompt can be delivered through the audited PTY.
+func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (port.TerminalLaunchSpec, error) {
+	if record.Kind != domain.KindWorkerRequest {
+		return port.TerminalLaunchSpec{}, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
+	}
+	request, err := decodeRequest(record.Data, a.validator)
+	if err != nil {
+		return port.TerminalLaunchSpec{}, err
+	}
+	if request.AdapterID != adapterID || request.ExecutionProfile != "workspace-write" {
+		return port.TerminalLaunchSpec{}, errors.New("WorkerRequest does not match the qwen workspace-write adapter")
+	}
+	identity, err := a.inspect(ctx)
+	if err != nil {
+		return port.TerminalLaunchSpec{}, err
+	}
+	if identity.version != supportedBinary {
+		return port.TerminalLaunchSpec{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
+	}
+	worktree, controlRoot, prompt, err := resolveTerminalInput(request)
+	if err != nil {
+		return port.TerminalLaunchSpec{}, err
+	}
+	model := readModel(controlRoot, request.TaskSpecPath)
+	args, err := buildTerminalArgs(request.SessionPolicy, request.SessionID, model, request.AttemptTimeoutSeconds)
+	if err != nil {
+		return port.TerminalLaunchSpec{}, err
+	}
+	return port.TerminalLaunchSpec{
+		AdapterID: adapterID, AdapterVersion: adapterVersion, BinaryVersion: identity.version,
+		Executable: identity.path, ExecutableDigest: identity.digest, WorkingDirectory: worktree,
+		Arguments: args, Environment: terminalWorkerEnvironment(worktree), InitialPrompt: string(prompt),
+		CompletionGate: port.TerminalCompletionSupervisedConfirmation,
+	}, nil
+}
+
+func resolveTerminalInput(request workerRequest) (string, string, []byte, error) {
+	worktree, err := filepath.EvalSymlinks(request.WorktreePath)
+	if err != nil || !filepath.IsAbs(worktree) {
+		return "", "", nil, errors.New("worktree must be an existing absolute directory")
+	}
+	controlRoot, err := filepath.EvalSymlinks(request.ControlRoot)
+	if err != nil || !filepath.IsAbs(controlRoot) {
+		return "", "", nil, errors.New("control root must be an existing absolute directory")
+	}
+	promptPath, err := existingPathWithin(controlRoot, request.PromptPath)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("resolve prompt: %w", err)
+	}
+	prompt, err := readBounded(promptPath, maxPromptBytes)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("read prompt: %w", err)
+	}
+	return worktree, controlRoot, prompt, nil
+}
 
 func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	identity, err := a.inspect(ctx)
@@ -595,12 +656,35 @@ func buildArgs(policy, sessionID, model string, wallTimeSeconds int, prompt stri
 		"--max-session-turns", strconv.Itoa(budgetSessionTurns),
 		"--exclude-tools", strings.Join(excludedTools, ","),
 	}
+	args, err := appendSessionAndModel(args, policy, sessionID, model)
+	if err != nil {
+		return nil, err
+	}
+	return append(args, "-p", prompt), nil
+}
+
+func buildTerminalArgs(policy, sessionID, model string, wallTimeSeconds int) ([]string, error) {
+	args := []string{
+		"--safe-mode",
+		"--approval-mode", "auto-edit",
+		"--max-wall-time", strconv.Itoa(wallTimeSeconds),
+		"--max-tool-calls", strconv.Itoa(budgetToolCalls),
+		"--max-session-turns", strconv.Itoa(budgetSessionTurns),
+		"--exclude-tools", strings.Join(excludedTools, ","),
+	}
+	return appendSessionAndModel(args, policy, sessionID, model)
+}
+
+func appendSessionAndModel(args []string, policy, sessionID, model string) ([]string, error) {
 	switch policy {
 	case "ephemeral":
 		args = append(args, "--chat-recording=false")
 	case "persist":
 		args = append(args, "--chat-recording=true")
 	case "resume":
+		if strings.TrimSpace(sessionID) == "" {
+			return nil, errors.New("resume session policy requires a sessionId")
+		}
 		args = append(args, "--chat-recording=true", "--resume", sessionID)
 	default:
 		return nil, fmt.Errorf("unsupported session policy %q", policy)
@@ -608,7 +692,7 @@ func buildArgs(policy, sessionID, model string, wallTimeSeconds int, prompt stri
 	if model != "" {
 		args = append(args, "--model", model)
 	}
-	return append(args, "-p", prompt), nil
+	return args, nil
 }
 
 // processFailureError reports a failed qwen process using only fixed
@@ -653,6 +737,21 @@ func workerEnvironment(worktree string) []string {
 	}
 	environment = append(environment, "CI=1", "GH_PROMPT_DISABLED=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "PWD="+worktree)
 	return environment
+}
+
+func terminalWorkerEnvironment(worktree string) []string {
+	return nativeTTYEnvironment(workerEnvironment(worktree))
+}
+
+func nativeTTYEnvironment(environment []string) []string {
+	result := make([]string, 0, len(environment)+2)
+	for _, entry := range environment {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != "CI" && key != "TERM" && key != "COLORTERM" {
+			result = append(result, entry)
+		}
+	}
+	return append(result, "TERM=xterm-256color", "COLORTERM=truecolor")
 }
 
 func probeEnvironment() []string {
