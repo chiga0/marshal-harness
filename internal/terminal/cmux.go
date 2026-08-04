@@ -246,6 +246,9 @@ type cmuxSession struct {
 func (s *cmuxSession) ID() string {
 	return "cmux:" + s.record.RunID + ":" + s.record.AttemptID + ":" + s.workspace
 }
+func (s *cmuxSession) Identity() SessionIdentity {
+	return SessionIdentity{RunID: s.record.RunID, AttemptID: s.record.AttemptID}
+}
 func (s *cmuxSession) State() State               { s.mu.Lock(); defer s.mu.Unlock(); return s.state }
 func (s *cmuxSession) Capabilities() []Capability { return slices.Clone(s.capabilities) }
 

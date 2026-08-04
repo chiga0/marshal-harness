@@ -52,6 +52,20 @@ func RecordIntervention(input InterventionInput) (domain.InterventionRecord, err
 		return domain.InterventionRecord{}, err
 	}
 	defer lease.Release()
+	record, err := prepareIntervention(store, input)
+	if err != nil {
+		return domain.InterventionRecord{}, err
+	}
+	if err := store.AppendIntervention(lease, input.Validator, record); err != nil {
+		return domain.InterventionRecord{}, err
+	}
+	return record, nil
+}
+
+// prepareIntervention validates the current Run, Attempt, Policy and control
+// journal while the caller holds the Run lease. It does not perform delivery
+// or persistence, allowing the coordinator to bind both to the same snapshot.
+func prepareIntervention(store *runstore.Store, input InterventionInput) (domain.InterventionRecord, error) {
 	context, err := loadApprovalContext(store, ApprovalInput{StateRoot: input.StateRoot, RunID: input.RunID, Validator: input.Validator})
 	if err != nil {
 		return domain.InterventionRecord{}, err
@@ -118,9 +132,6 @@ func RecordIntervention(input InterventionInput) (domain.InterventionRecord, err
 		return domain.InterventionRecord{}, err
 	}
 	record.RecordID = recordID
-	if err := store.AppendIntervention(lease, input.Validator, record); err != nil {
-		return domain.InterventionRecord{}, err
-	}
 	return record, nil
 }
 

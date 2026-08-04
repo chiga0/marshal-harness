@@ -54,8 +54,14 @@ const (
 	TerminalHumanSteering TerminalInputSource = "human-steering"
 )
 
+type TerminalSessionIdentity struct {
+	RunID     string
+	AttemptID string
+}
+
 type TerminalSession interface {
 	ID() string
+	Identity() TerminalSessionIdentity
 	State() TerminalState
 	Capabilities() []TerminalCapability
 	Send(context.Context, TerminalInputSource, string, time.Time) error

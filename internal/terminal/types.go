@@ -39,6 +39,7 @@ var (
 type ProbeResult = port.TerminalProbeResult
 type StartRequest = port.TerminalStartRequest
 type InputSource = port.TerminalInputSource
+type SessionIdentity = port.TerminalSessionIdentity
 
 const (
 	InputSourceFrozenPrompt  = port.TerminalFrozenPrompt
