@@ -18,6 +18,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
+	controlplane "github.com/chiga0/marshal-harness/internal/control"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/execution"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
@@ -44,6 +45,7 @@ const (
 
 var taskCommands = []string{
 	"plan",
+	"approve",
 	"run",
 	"status",
 	"verify",
@@ -379,6 +381,9 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if args[0] == "status" {
 		return runTaskStatus(args[1:], stdout, stderr)
 	}
+	if args[0] == "approve" {
+		return runTaskApprove(args[1:], stdout, stderr)
+	}
 	if args[0] == "verify" {
 		return runTaskVerify(ctx, args[1:], stdout, stderr)
 	}
@@ -465,6 +470,49 @@ func runTaskPlan(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	return ExitOK
 }
 
+func runTaskApprove(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task approve", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	runID := flags.String("run", "", "Run ID")
+	gate := flags.String("gate", "", "审批 Gate：plan 或 publish")
+	actor := flags.String("actor", "local-operator", "审批人 ID")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" || *gate == "" {
+		fmt.Fprintln(stderr, "用法：marshal task approve --run RUN_ID --gate plan|publish [--actor ID] [--json]")
+		return ExitUsage
+	}
+	if err := domain.ValidateID(*runID); err != nil || (*gate != domain.ApprovalGatePlan && *gate != domain.ApprovalGatePublish) {
+		fmt.Fprintln(stderr, "审批失败：Run ID 或 Gate 无效。")
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil || location.ValidateIdentity() != nil {
+		fmt.Fprintln(stderr, "审批失败：无法验证仓库身份。")
+		return ExitFailure
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		fmt.Fprintln(stderr, "审批失败：契约初始化失败。")
+		return ExitFailure
+	}
+	record, err := controlplane.Approve(controlplane.ApprovalInput{
+		StateRoot: location.StateRoot, RunID: *runID, Gate: *gate, SourceID: *actor, Now: time.Now().UTC(), Validator: validator,
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, "审批失败：当前 Gate 不可批准或 Run 证据无效。")
+		return ExitFailure
+	}
+	if *jsonOutput {
+		if err := writeJSON(stdout, record); err != nil {
+			fmt.Fprintln(stderr, "输出审批结果失败。")
+			return ExitFailure
+		}
+	} else {
+		fmt.Fprintf(stdout, "Run：%s\nGate：%s\nApproval：%s\n", *runID, *gate, record.RecordID)
+	}
+	return ExitOK
+}
+
 func publisherFromEnvironment(location repository.State) (*githubpublisher.Publisher, *contract.Validator, error) {
 	ghPath, configDir := os.Getenv("MARSHAL_GH_PATH"), os.Getenv("MARSHAL_GH_CONFIG_DIR")
 	if ghPath == "" || configDir == "" {
@@ -494,6 +542,11 @@ func runTaskPublish(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	if err := location.ValidateIdentity(); err != nil {
 		fmt.Fprintf(stderr, "发布失败：%v\n", err)
+		return ExitFailure
+	}
+	approvalValidator, err := contract.NewValidator()
+	if err != nil || controlplane.Require(controlplane.ApprovalInput{StateRoot: location.StateRoot, RunID: *runID, Gate: domain.ApprovalGatePublish, Validator: approvalValidator}) != nil {
+		fmt.Fprintln(stderr, "发布失败：缺少当前有效的 publish 审批。")
 		return ExitFailure
 	}
 	publisher, validator, err := publisherFromEnvironment(location)
@@ -609,6 +662,17 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		fmt.Fprintln(stderr, "运行失败：冻结 Worker Adapter 当前未配置或不可用。")
 		return ExitUnavailable
+	}
+	state, err := runstore.New(location.StateRoot).Inspect(*runID)
+	if err != nil {
+		fmt.Fprintln(stderr, "运行失败：无法核验当前 Run 状态。")
+		return ExitFailure
+	}
+	if state.State == domain.StateReady {
+		if err := controlplane.Require(controlplane.ApprovalInput{StateRoot: location.StateRoot, RunID: *runID, Gate: domain.ApprovalGatePlan, Validator: runtime.Validator()}); err != nil {
+			fmt.Fprintln(stderr, "运行失败：缺少当前有效的 plan 审批。")
+			return ExitFailure
+		}
 	}
 	result, err := execution.Run(ctx, execution.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Adapter: worker, Validator: runtime.Validator()})
 	if err != nil {
@@ -1104,6 +1168,7 @@ func writeUsage(output io.Writer) {
   marshal init [--json]
   marshal contract validate [--schema NAME] <PATH|->
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
+  marshal task approve --run RUN_ID --gate plan|publish [--actor ID] [--json]
   marshal task status --run RUN_ID [--json]
   marshal task run --run RUN_ID [--json]
   marshal task verify --run RUN_ID [--json]

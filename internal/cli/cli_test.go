@@ -337,7 +337,7 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	})
 
 	for _, command := range taskCommands {
-		if command == "plan" || command == "run" || command == "status" || command == "verify" || command == "review" || command == "publish" || command == "accept" {
+		if command == "plan" || command == "approve" || command == "run" || command == "status" || command == "verify" || command == "review" || command == "publish" || command == "accept" {
 			continue
 		}
 		var stdout, stderr bytes.Buffer
@@ -492,6 +492,19 @@ func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
 	stderr.Reset()
 	if exit := Run([]string{"task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
 		t.Fatalf("task plan exit = %d, stderr = %s", exit, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"task", "run", "--run", runID}, strings.NewReader(""), &stdout, &stderr); exit != ExitFailure || !strings.Contains(stderr.String(), "plan 审批") {
+		t.Fatalf("unapproved task run exit = %d, stderr = %s", exit, stderr.String())
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("unapproved task run started Worker: %v", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"task", "approve", "--run", runID, "--gate", "plan", "--actor", "cli-test"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("task approve exit = %d, stderr = %s", exit, stderr.String())
 	}
 
 	stdout.Reset()
