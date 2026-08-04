@@ -11,9 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -417,20 +419,120 @@ type piEvent struct {
 	Messages []struct {
 		Role  string `json:"role"`
 		Usage *struct {
-			Input      int     `json:"input"`
-			Output     int     `json:"output"`
-			CacheRead  int     `json:"cacheRead"`
-			CacheWrite int     `json:"cacheWrite"`
-			Cost       float64 `json:"cost"`
+			Input      int       `json:"input"`
+			Output     int       `json:"output"`
+			CacheRead  int       `json:"cacheRead"`
+			CacheWrite int       `json:"cacheWrite"`
+			Cost       usageCost `json:"cost"`
 		} `json:"usage"`
 	} `json:"messages"`
 }
+
+// usageCost accepts the two cost encodings emitted by the pinned Pi protocol:
+// a legacy number, or a structured cost breakdown. It intentionally rejects
+// every other JSON shape so accounting evidence cannot be silently discarded.
+type usageCost struct{ value float64 }
+
+func (c *usageCost) UnmarshalJSON(data []byte) error {
+	value, err := decodeUsageCost(data)
+	if err != nil {
+		return err
+	}
+	c.value = value
+	return nil
+}
+
+func decodeUsageCost(data []byte) (float64, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil {
+		return 0, fmt.Errorf("decode usage cost: %w", err)
+	}
+	switch value := token.(type) {
+	case json.Number:
+		return finiteNonNegativeCost(value)
+	case json.Delim:
+		if value != '{' {
+			return 0, errors.New("usage cost must be a number or object")
+		}
+		return decodeUsageCostObject(decoder)
+	default:
+		return 0, errors.New("usage cost must be a number or object")
+	}
+}
+
+func decodeUsageCostObject(decoder *json.Decoder) (float64, error) {
+	seen := map[string]bool{}
+	var total, components float64
+	var hasTotal bool
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return 0, fmt.Errorf("decode usage cost key: %w", err)
+		}
+		key, ok := keyToken.(string)
+		if !ok || seen[key] {
+			return 0, errors.New("usage cost object contains an ambiguous field")
+		}
+		seen[key] = true
+		switch key {
+		case "input", "output", "cacheRead", "cacheWrite", "total":
+		default:
+			return 0, fmt.Errorf("usage cost object contains unknown field %q", key)
+		}
+		valueToken, err := decoder.Token()
+		if err != nil {
+			return 0, fmt.Errorf("decode usage cost field %q: %w", key, err)
+		}
+		number, ok := valueToken.(json.Number)
+		if !ok {
+			return 0, fmt.Errorf("usage cost field %q must be a number", key)
+		}
+		amount, err := finiteNonNegativeCost(number)
+		if err != nil {
+			return 0, fmt.Errorf("usage cost field %q: %w", key, err)
+		}
+		if key == "total" {
+			total, hasTotal = amount, true
+		} else {
+			components += amount
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return 0, fmt.Errorf("close usage cost object: %w", err)
+	}
+	if len(seen) == 0 {
+		return 0, errors.New("usage cost object must not be empty")
+	}
+	if !isFinite(components) {
+		return 0, errors.New("usage cost component sum is not finite")
+	}
+	if hasTotal {
+		// Pi defines total as authoritative. Components are only summed when
+		// total is absent, avoiding false protocol failures from provider-side
+		// rounding while still validating every supplied component.
+		return total, nil
+	}
+	return components, nil
+}
+
+func finiteNonNegativeCost(number json.Number) (float64, error) {
+	value, err := strconv.ParseFloat(number.String(), 64)
+	if err != nil || !isFinite(value) || value < 0 {
+		return 0, errors.New("usage cost must be finite and non-negative")
+	}
+	return value, nil
+}
+
+func isFinite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
 
 // captureJSONL enforces the strict pi session protocol:
 //   - the first event must be the session header with version exactly 3 and
 //     cwd equal to the resolved attempt worktree;
 //   - every line must decode as JSON;
-//   - the last event must be agent_end.
+//   - termination is exactly one agent_end, optionally followed by exactly one
+//     agent_settled event; no other event may follow agent_end.
 //
 // Output is bounded; exceeding the limit or detecting a protocol violation
 // kills the process group immediately.
@@ -444,6 +546,8 @@ func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()
 	var consumed int64
 	var line []byte
 	lastType := ""
+	sawAgentEnd := false
+	sawAgentSettled := false
 	fail := func(reason error) {
 		if result.err == nil {
 			result.err = reason
@@ -492,9 +596,22 @@ func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()
 						continue
 					}
 					result.sessionID = event.ID
+				case sawAgentSettled:
+					fail(fmt.Errorf("%w: event %q follows terminal agent_settled", ErrProtocol, event.Type))
+					continue
+				case sawAgentEnd:
+					if event.Type != "agent_settled" {
+						fail(fmt.Errorf("%w: event %q follows terminal agent_end", ErrProtocol, event.Type))
+						continue
+					}
+					sawAgentSettled = true
+				case event.Type == "agent_settled":
+					fail(fmt.Errorf("%w: agent_settled appeared before agent_end", ErrProtocol))
+					continue
 				case event.Type == "tool_execution_start":
 					result.toolCalls++
 				case event.Type == "agent_end":
+					sawAgentEnd = true
 					for _, message := range event.Messages {
 						if message.Role != "assistant" || message.Usage == nil {
 							continue
@@ -502,7 +619,12 @@ func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()
 						result.inputTokens += message.Usage.Input
 						result.outputTokens += message.Usage.Output
 						result.cachedInputTokens += message.Usage.CacheRead
-						result.cost += message.Usage.Cost
+						nextCost := result.cost + message.Usage.Cost.value
+						if !isFinite(nextCost) {
+							fail(fmt.Errorf("%w: usage cost sum is not finite", ErrProtocol))
+							continue
+						}
+						result.cost = nextCost
 					}
 				}
 				lastType = event.Type
@@ -512,7 +634,7 @@ func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()
 			if !errors.Is(err, io.EOF) && result.err == nil {
 				result.err = err
 			}
-			if result.err == nil && !result.limitExceeded && lastType != "agent_end" {
+			if result.err == nil && !result.limitExceeded && !sawAgentEnd {
 				result.err = fmt.Errorf("%w: stream ended without agent_end (last event %q)", ErrProtocol, lastType)
 			}
 			return result

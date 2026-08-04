@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -207,6 +208,68 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 	}
 }
 
+func TestDecodeUsageCost(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    float64
+		wantErr bool
+	}{
+		{name: "legacy number", input: `0.0021`, want: 0.0021},
+		{name: "structured total", input: `{"input":0.001,"output":0.0011,"cacheRead":0,"cacheWrite":0,"total":0.0021}`, want: 0.0021},
+		{name: "structured components", input: `{"input":0.001,"output":0.0011}`, want: 0.0021},
+		{name: "string", input: `"0.1"`, wantErr: true},
+		{name: "boolean", input: `true`, wantErr: true},
+		{name: "array", input: `[0.1]`, wantErr: true},
+		{name: "null", input: `null`, wantErr: true},
+		{name: "negative", input: `-0.1`, wantErr: true},
+		{name: "overflow", input: `1e999`, wantErr: true},
+		{name: "unknown field", input: `{"other":0}`, wantErr: true},
+		{name: "empty object", input: `{}`, wantErr: true},
+		{name: "duplicate field", input: `{"input":0,"input":0}`, wantErr: true},
+		{name: "total is authoritative", input: `{"input":0.1,"total":0.2}`, want: 0.2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := decodeUsageCost([]byte(test.input))
+			if (err != nil) != test.wantErr {
+				t.Fatalf("decodeUsageCost(%s) error = %v", test.input, err)
+			}
+			if !test.wantErr && math.Abs(got-test.want) > 1e-12 {
+				t.Fatalf("decodeUsageCost(%s) = %v, want %v", test.input, got, test.want)
+			}
+		})
+	}
+}
+
+func TestRunAcceptsStructuredUsageCost(t *testing.T) {
+	body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[{"role":"assistant","usage":{"input":10,"output":5,"cacheRead":2,"cost":{"input":0.001,"output":0.0011,"cacheRead":0,"cacheWrite":0,"total":0.0021}}}]}'`
+	fixture := newRunFixture(t, "0.83.0", body)
+	record, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result declaredResult
+	if err := json.Unmarshal(record.Data, &result); err != nil {
+		t.Fatal(err)
+	}
+	var usage map[string]any
+	if err := json.Unmarshal(result.Usage, &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage["cost"] != float64(0.0021) || usage["currency"] != "USD" {
+		t.Fatalf("usage = %v", usage)
+	}
+}
+
+func TestRunRejectsInvalidUsageCostAsProtocolViolation(t *testing.T) {
+	body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[{"role":"assistant","usage":{"cost":{"unknown":1}}}]}'`
+	fixture := newRunFixture(t, "0.83.0", body)
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("error = %v, want ErrProtocol", err)
+	}
+}
+
 func TestRunRejectsPersistAndResumeBeforeWorkerLaunch(t *testing.T) {
 	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
 	for _, policy := range []string{"persist", "resume"} {
@@ -269,6 +332,27 @@ func TestRunRejectsProtocolViolations(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
+	t.Run("agent-settled-after-agent-end", func(t *testing.T) {
+		fixture := newRunFixture(t, "0.83.0", sessionHeader("session-1")+"\n"+agentEnd+"\n"+`printf '%s\n' '{"type":"agent_settled"}'`)
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+			t.Fatalf("error = %v", err)
+		}
+	})
+	for _, test := range []struct {
+		name   string
+		events string
+	}{
+		{name: "settled-before-end", events: `printf '%s\n' '{"type":"agent_settled"}' '{"type":"agent_end","messages":[]}'`},
+		{name: "event-after-end", events: `printf '%s\n' '{"type":"agent_end","messages":[]}' '{"type":"turn_start"}'`},
+		{name: "duplicate-settled", events: `printf '%s\n' '{"type":"agent_end","messages":[]}' '{"type":"agent_settled"}' '{"type":"agent_settled"}'`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunFixture(t, "0.83.0", sessionHeader("session-1")+"\n"+test.events)
+			if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) {
+				t.Fatalf("error = %v, want ErrProtocol", err)
+			}
+		})
+	}
 	t.Run("empty-stream", func(t *testing.T) {
 		fixture := newRunFixture(t, "0.83.0", "exit 0")
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) {
