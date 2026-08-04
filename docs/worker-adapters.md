@@ -45,6 +45,8 @@ Prompt 由带版本 Template 渲染并保存到 Attempt。Adapter 可以增加 P
 
 当前 Qwen、OpenCode 与 Pi Adapter 均实现 `PrepareTerminal`：先校验 WorkerRequest、精确二进制版本与 realpath/digest，再返回原生 TUI argv、完整替换式环境、worktree、独立初始 Prompt 和 `supervised-confirmation` 门禁。原生环境移除 captured 专用的 `CI=1`，显式冻结 `TERM=xterm-256color` 与 `COLORTERM=truecolor`，不依赖 Desktop/cmux ambient environment。Qwen 保留 safe-mode、工具排除和原生 wall/tool/turn/session 预算；OpenCode 保留 `--pure` 与经过 `debug config` 反向验证的权限配置；Pi 保留无 bash 工具白名单、关闭扩展/Skill/上下文和 ephemeral session。三者均移除 captured 模式的 JSON/print/位置 Prompt 参数，且目前不接入默认 `task run`。
 
+`terminal.StartPrepared` 是 Adapter 与 PTY Backend 之间唯一的 provider-neutral 映射：它校验 Adapter identity 与 completion gate，复制 argv/environment，并把 Adapter 冻结的 executable digest 传入密封 launcher。Backend 与 `LaunchEnvelope.Seal` 都会重新计算并比对该 digest，防止在 Adapter probe 与启动之间替换 Worker 二进制。该映射仍是显式受监督 Pilot API，不会改变默认 captured transport。
+
 ## Normalized Event
 
 每个 Event 包含 `sequence`、`timestamp`、`runId`、`attemptId`、`adapter` 和 `kind`。初始 Event Kind：

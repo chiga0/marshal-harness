@@ -55,12 +55,13 @@ type Envelope struct {
 }
 
 type SealRequest struct {
-	RunID, AttemptID string
-	Executable       string
-	Arguments        []string
-	WorkingDirectory string
-	Environment      []string
-	Now, ExpiresAt   time.Time
+	RunID, AttemptID         string
+	Executable               string
+	ExpectedExecutableDigest string
+	Arguments                []string
+	WorkingDirectory         string
+	Environment              []string
+	Now, ExpiresAt           time.Time
 }
 
 type Reference struct {
@@ -97,6 +98,9 @@ func Seal(stateRoot string, request SealRequest) (Reference, error) {
 	executable, err := executableIdentity(request.Executable)
 	if err != nil {
 		return Reference{}, err
+	}
+	if request.ExpectedExecutableDigest == "" || executable.Digest != request.ExpectedExecutableDigest {
+		return Reference{}, errors.New("executable digest does not match frozen identity")
 	}
 	workingDirectory, err := canonicalDirectory(request.WorkingDirectory)
 	if err != nil {

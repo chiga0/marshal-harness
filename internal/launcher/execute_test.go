@@ -26,6 +26,11 @@ func TestExecutePathUsesExactLaunchAndDeletesEnvelope(t *testing.T) {
 	if err := os.WriteFile(fixture.executable, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	identity, err := executableIdentity(fixture.executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.request.ExpectedExecutableDigest = identity.Digest
 	now := time.Now().UTC()
 	fixture.request.Now = now
 	fixture.request.ExpiresAt = now.Add(time.Minute)

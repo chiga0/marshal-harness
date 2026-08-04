@@ -40,13 +40,16 @@ type TerminalStartRequest struct {
 	WorkingDirectory   string
 	LauncherExecutable string
 	Executable         string
-	Arguments          []string
-	Environment        []string
-	Title              string
-	Description        string
-	InitialPrompt      string
-	Now                time.Time
-	ExpiresAt          time.Time
+	// ExpectedExecutableDigest is frozen by the Adapter before the PTY
+	// backend seals the launch. The backend must reject identity drift.
+	ExpectedExecutableDigest string
+	Arguments                []string
+	Environment              []string
+	Title                    string
+	Description              string
+	InitialPrompt            string
+	Now                      time.Time
+	ExpiresAt                time.Time
 }
 
 type TerminalInputSource string

@@ -30,6 +30,8 @@ const (
 type TerminalLaunchSpec struct {
 	AdapterID        string
 	AdapterVersion   string
+	RunID            string
+	AttemptID        string
 	BinaryVersion    string
 	Executable       string
 	ExecutableDigest string

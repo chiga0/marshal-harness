@@ -100,7 +100,7 @@ func TestCMUXSessionLifecycleAndProvenance(t *testing.T) {
 	root := t.TempDir()
 	session, err := backend.Start(context.Background(), StartRequest{
 		StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(),
-		LauncherExecutable: launcherExecutable, Executable: executable, Arguments: []string{"--model", "safe value"}, Environment: []string{"SAFE=value"}, Title: "Marshal Run", Description: "Native PTY",
+		LauncherExecutable: launcherExecutable, Executable: executable, ExpectedExecutableDigest: frozenDigest(t, executable), Arguments: []string{"--model", "safe value"}, Environment: []string{"SAFE=value"}, Title: "Marshal Run", Description: "Native PTY",
 		InitialPrompt: "frozen prompt with $() and `backticks`", Now: time.Unix(10, 0).UTC(), ExpiresAt: time.Unix(70, 0).UTC(),
 	})
 	if err != nil {
@@ -176,7 +176,7 @@ func TestCMUXSendFailureLeavesPlannedProvenance(t *testing.T) {
 	t.Parallel()
 	backend, runner, _, executable := newFakeCMUX(t)
 	root := t.TempDir()
-	session, err := backend.Start(context.Background(), StartRequest{StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(), LauncherExecutable: executable, Executable: executable, Title: "Run", InitialPrompt: "initial", Now: time.Unix(1, 0), ExpiresAt: time.Unix(61, 0)})
+	session, err := backend.Start(context.Background(), StartRequest{StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(), LauncherExecutable: executable, Executable: executable, ExpectedExecutableDigest: frozenDigest(t, executable), Title: "Run", InitialPrompt: "initial", Now: time.Unix(1, 0), ExpiresAt: time.Unix(61, 0)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestCMUXRequiresLauncherEnvelopeConsumption(t *testing.T) {
 	root := t.TempDir()
 	_, err := backend.Start(context.Background(), StartRequest{
 		StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(),
-		LauncherExecutable: executable, Executable: executable, Title: "Run", InitialPrompt: "initial",
+		LauncherExecutable: executable, Executable: executable, ExpectedExecutableDigest: frozenDigest(t, executable), Title: "Run", InitialPrompt: "initial",
 		Now: time.Unix(1, 0), ExpiresAt: time.Unix(61, 0),
 	})
 	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "consume envelope") {
@@ -238,6 +238,27 @@ func TestCMUXRequiresLauncherEnvelopeConsumption(t *testing.T) {
 	matches, globErr := filepath.Glob(filepath.Join(root, "runs", "run-01", "attempts", "attempt-01", "runtime", ".launch-*.json"))
 	if globErr != nil || len(matches) != 0 {
 		t.Fatalf("failed launch retained envelopes: %v, %v", matches, globErr)
+	}
+}
+
+func TestCMUXRejectsExecutableIdentityDriftBeforeWorkspaceCreation(t *testing.T) {
+	backend, runner, _, executable := newFakeCMUX(t)
+	root := t.TempDir()
+	_, err := backend.Start(context.Background(), StartRequest{
+		StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(),
+		LauncherExecutable: executable, Executable: executable,
+		ExpectedExecutableDigest: "sha256:" + strings.Repeat("0", 64),
+		Title:                    "Run", InitialPrompt: "initial", Now: time.Unix(1, 0), ExpiresAt: time.Unix(61, 0),
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Start() with drifted executable = %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	for _, call := range runner.commands {
+		if len(call) >= 2 && call[0] == "workspace" && call[1] == "create" {
+			t.Fatalf("workspace created after identity drift: %v", runner.commands)
+		}
 	}
 }
 
@@ -256,7 +277,7 @@ func TestCMUXInputJournalRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(directory, "terminal-inputs.jsonl")); err != nil {
 		t.Fatal(err)
 	}
-	_, err := backend.Start(context.Background(), StartRequest{StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(), LauncherExecutable: executable, Executable: executable, Title: "Run", InitialPrompt: "initial", Now: time.Unix(1, 0), ExpiresAt: time.Unix(61, 0)})
+	_, err := backend.Start(context.Background(), StartRequest{StateRoot: root, RunID: "run-01", AttemptID: "attempt-01", WorkingDirectory: t.TempDir(), LauncherExecutable: executable, Executable: executable, ExpectedExecutableDigest: frozenDigest(t, executable), Title: "Run", InitialPrompt: "initial", Now: time.Unix(1, 0), ExpiresAt: time.Unix(61, 0)})
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("Start() with symlinked journal = %v", err)
 	}
@@ -283,4 +304,13 @@ func newFakeCMUX(t *testing.T) (*CMUXBackend, *fakeRunner, *fakeProcesses, strin
 	runner, processes := &fakeRunner{}, &fakeProcesses{}
 	backend.runner, backend.processes, backend.startDelay, backend.startLimit = runner, processes, time.Millisecond, time.Second
 	return backend, runner, processes, executable
+}
+
+func frozenDigest(t *testing.T, path string) string {
+	t.Helper()
+	digest, err := executableDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
 }

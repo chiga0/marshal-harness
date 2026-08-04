@@ -63,6 +63,8 @@ func TestSealRejectsUnsafeInputs(t *testing.T) {
 	}{
 		{name: "expired", configure: func(f *testFixture) { f.request.ExpiresAt = f.request.Now }},
 		{name: "relative executable", configure: func(f *testFixture) { f.request.Executable = "worker" }},
+		{name: "missing frozen digest", configure: func(f *testFixture) { f.request.ExpectedExecutableDigest = "" }},
+		{name: "wrong frozen digest", configure: func(f *testFixture) { f.request.ExpectedExecutableDigest = "sha256:" + strings.Repeat("0", 64) }},
 		{name: "missing cwd", configure: func(f *testFixture) { f.request.WorkingDirectory = filepath.Join(f.stateRoot, "missing") }},
 		{name: "duplicate env", configure: func(f *testFixture) { f.request.Environment = []string{"PATH=/bin", "PATH=/usr/bin"} }},
 		{name: "invalid env", configure: func(f *testFixture) { f.request.Environment = []string{"BAD"} }},
@@ -243,7 +245,11 @@ func newFixture(t *testing.T) testFixture {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
-	request := SealRequest{RunID: runID, AttemptID: attemptID, Executable: executable, Arguments: []string{"--safe", "值"}, WorkingDirectory: worktree, Environment: []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8"}, Now: now, ExpiresAt: now.Add(time.Minute)}
+	identity, err := executableIdentity(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := SealRequest{RunID: runID, AttemptID: attemptID, Executable: executable, ExpectedExecutableDigest: identity.Digest, Arguments: []string{"--safe", "值"}, WorkingDirectory: worktree, Environment: []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8"}, Now: now, ExpiresAt: now.Add(time.Minute)}
 	return testFixture{stateRoot, worktree, executable, request}
 }
 

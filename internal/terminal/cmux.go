@@ -113,6 +113,9 @@ func (b *CMUXBackend) Start(ctx context.Context, request StartRequest) (Session,
 	if err != nil {
 		return nil, ErrInvalidRequest
 	}
+	if executableSum != request.ExpectedExecutableDigest {
+		return nil, ErrInvalidRequest
+	}
 	attemptDirectory := filepath.Join(request.StateRoot, "runs", request.RunID, "attempts", request.AttemptID)
 	pidPath, err := preparePIDHandshake(attemptDirectory)
 	if err != nil {
@@ -125,7 +128,8 @@ func (b *CMUXBackend) Start(ctx context.Context, request StartRequest) (Session,
 	}
 	reference, err := launcher.Seal(request.StateRoot, launcher.SealRequest{
 		RunID: request.RunID, AttemptID: request.AttemptID, Executable: request.Executable,
-		Arguments: request.Arguments, WorkingDirectory: request.WorkingDirectory,
+		ExpectedExecutableDigest: request.ExpectedExecutableDigest,
+		Arguments:                request.Arguments, WorkingDirectory: request.WorkingDirectory,
 		Environment: request.Environment, Now: request.Now, ExpiresAt: request.ExpiresAt,
 	})
 	if err != nil {

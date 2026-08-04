@@ -56,19 +56,20 @@ func TestLiveCMUXTerminalSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	session, err := backend.Start(ctx, StartRequest{
-		StateRoot:          t.TempDir(),
-		RunID:              "live-cmux",
-		AttemptID:          "attempt-01",
-		WorkingDirectory:   t.TempDir(),
-		LauncherExecutable: launcherExecutable,
-		Executable:         helperExecutable,
-		Arguments:          []string{"-test.run=^TestCMUXProcessRootHelper$"},
-		Environment:        []string{"PATH=/usr/bin:/bin"},
-		Title:              "Marshal live TerminalSession test",
-		Description:        "Safe local PTY lifecycle validation; no model is invoked",
-		InitialPrompt:      "INITIAL_PROBE",
-		Now:                now,
-		ExpiresAt:          now.Add(30 * time.Second),
+		StateRoot:                t.TempDir(),
+		RunID:                    "live-cmux",
+		AttemptID:                "attempt-01",
+		WorkingDirectory:         t.TempDir(),
+		LauncherExecutable:       launcherExecutable,
+		Executable:               helperExecutable,
+		ExpectedExecutableDigest: frozenDigest(t, helperExecutable),
+		Arguments:                []string{"-test.run=^TestCMUXProcessRootHelper$"},
+		Environment:              []string{"PATH=/usr/bin:/bin"},
+		Title:                    "Marshal live TerminalSession test",
+		Description:              "Safe local PTY lifecycle validation; no model is invoked",
+		InitialPrompt:            "INITIAL_PROBE",
+		Now:                      now,
+		ExpiresAt:                now.Add(30 * time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)

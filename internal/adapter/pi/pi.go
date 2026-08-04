@@ -112,7 +112,7 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 		return port.TerminalLaunchSpec{}, err
 	}
 	return port.TerminalLaunchSpec{
-		AdapterID: adapterID, AdapterVersion: adapterVersion, BinaryVersion: identity.version,
+		AdapterID: adapterID, AdapterVersion: adapterVersion, RunID: request.RunID, AttemptID: request.AttemptID, BinaryVersion: identity.version,
 		Executable: identity.path, ExecutableDigest: identity.digest, WorkingDirectory: worktree,
 		Arguments:   buildTerminalArgs(readModel(controlRoot, request.TaskSpecPath)),
 		Environment: terminalWorkerEnvironment(worktree), InitialPrompt: string(prompt),
