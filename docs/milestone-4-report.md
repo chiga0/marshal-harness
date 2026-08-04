@@ -1,7 +1,7 @@
 # Milestone 4 验收报告
 
 - 验收日期：2026-08-04
-- 状态：**`LOCAL_PASSED_REMOTE_PENDING`**
+- 状态：**`PASSED`**
 - 范围：首个真实 OpenCode Worker Adapter、Attempt Runner、`marshal task run`
 - Publication Side Effect：未启用
 
@@ -31,4 +31,4 @@
 - 进程崩溃后长期 `RUNNING` 的 Reconciliation、Session Resume、其余 Adapter 与 Hardened Profile 属于 M6；
 - GitHub 凭据与发布幂等性尚未实现，任何 Worker 路径都不具备 Publisher 能力。
 
-远端 CI 绿色后，本报告与 Roadmap 状态会更新为 `PASSED`。
+提交 `8aac63d` 的 GitHub Actions run `30879438415` 已在 Linux、macOS 与 Secret Scan 全部通过，M4 正式验收完成。

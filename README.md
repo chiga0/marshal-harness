@@ -2,7 +2,7 @@
 
 Marshal 是一个面向 Coding Agent 的证据门禁式编排框架。主 Agent 负责规划与审查，可替换的 Worker Agent 负责实现，确定性的 Harness 负责验证、留痕和发布。
 
-> 项目状态：ADR 0001–0006 已接受；Milestone 0–3 已通过，Milestone 4 正在验收。
+> 项目状态：ADR 0001–0006 已接受；Milestone 0–4 已通过，下一阶段为 Milestone 5。
 
 ## 为什么需要 Marshal
 
@@ -96,4 +96,4 @@ REVIEW_PENDING -> PUBLISHING -> PUBLISHED -> CI_PENDING -> ACCEPTED
 
 ## 实施门禁
 
-文档审计结论为 `APPROVED_FOR_IMPLEMENTATION`，维护者已接受 ADR 0001–0006 和 Local MVP 范围。Milestone 0–3 已通过；File-based Review Bridge 与 Codex Skill 已可用。Milestone 4 的 OpenCode Worker 路径正在验收，Publication 副作用仍未启用。
+文档审计结论为 `APPROVED_FOR_IMPLEMENTATION`，维护者已接受 ADR 0001–0006 和 Local MVP 范围。Milestone 0–4 已通过；File-based Review Bridge、Codex Skill 与首个 OpenCode Worker 路径已可用。Publication 副作用仍未启用。
