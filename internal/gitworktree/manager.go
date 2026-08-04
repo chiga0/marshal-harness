@@ -45,6 +45,14 @@ func OpenContext(ctx context.Context, root string) (Repository, error) {
 	if err != nil {
 		return Repository{}, fmt.Errorf("canonicalize repository: %w", err)
 	}
+	topLevel, err := gitOutputContext(ctx, canonicalRoot, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return Repository{}, err
+	}
+	canonicalRoot, err = canonical(topLevel)
+	if err != nil {
+		return Repository{}, fmt.Errorf("canonicalize repository top level: %w", err)
+	}
 	common, err := gitOutputContext(ctx, canonicalRoot, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return Repository{}, err
@@ -250,15 +258,15 @@ func (w *Worktree) Validate() error {
 	if err != nil {
 		return err
 	}
-	if opened.CommonDir != w.repo.CommonDir {
-		return errors.New("worktree belongs to a different Git common directory")
-	}
 	canonicalPath, err := canonical(w.Path)
 	if err != nil {
 		return err
 	}
 	if canonicalPath == w.repo.Root {
 		return errors.New("task worktree resolved to the main checkout")
+	}
+	if opened.Root != canonicalPath || opened.CommonDir != w.repo.CommonDir {
+		return errors.New("worktree root or Git common directory identity mismatch")
 	}
 	return nil
 }

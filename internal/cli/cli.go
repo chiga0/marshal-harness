@@ -14,11 +14,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter/opencode"
 	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/execution"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/repository"
@@ -238,6 +240,9 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if args[0] == "verify" {
 		return runTaskVerify(ctx, args[1:], stdout, stderr)
 	}
+	if args[0] == "run" {
+		return runTaskWorker(ctx, args[1:], stdout, stderr)
+	}
 	if args[0] == "review" {
 		return runTaskReview(ctx, args[1:], stdout, stderr)
 	}
@@ -246,6 +251,55 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "marshal task %s 尚未实现；未执行任何 Worker、状态写入或发布副作用。\n", args[0])
 	return ExitUnavailable
+}
+
+func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task run", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	runID := flags.String("run", "", "Run ID")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
+		fmt.Fprintln(stderr, "用法：marshal task run --run RUN_ID [--json]")
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil {
+		fmt.Fprintf(stderr, "运行失败：%v\n", err)
+		return ExitFailure
+	}
+	if err := location.ValidateIdentity(); err != nil {
+		fmt.Fprintf(stderr, "运行失败：%v\n", err)
+		return ExitFailure
+	}
+	executable := os.Getenv("MARSHAL_OPENCODE_PATH")
+	if executable == "" {
+		fmt.Fprintln(stderr, "运行失败：必须通过 MARSHAL_OPENCODE_PATH 配置 OpenCode 1.18.12 的绝对路径。")
+		return ExitUnavailable
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		fmt.Fprintf(stderr, "运行失败：%v\n", err)
+		return ExitFailure
+	}
+	worker, err := opencode.New(executable, validator)
+	if err != nil {
+		fmt.Fprintf(stderr, "运行失败：%v\n", err)
+		return ExitFailure
+	}
+	result, err := execution.Run(ctx, execution.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Adapter: worker, Validator: validator})
+	if err != nil {
+		fmt.Fprintf(stderr, "运行失败（Attempt %s，状态 %s）：%v\n", result.AttemptID, result.State.State, err)
+		return ExitFailure
+	}
+	if *jsonOutput {
+		if err := writeJSON(stdout, result); err != nil {
+			fmt.Fprintf(stderr, "输出运行结果失败：%v\n", err)
+			return ExitFailure
+		}
+	} else {
+		fmt.Fprintf(stdout, "Run：%s\nAttempt：%s\n状态：%s\n", *runID, result.AttemptID, result.State.State)
+	}
+	return ExitOK
 }
 
 func runTaskVerify(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -726,9 +780,10 @@ func writeUsage(output io.Writer) {
   marshal init [--json]
   marshal contract validate [--schema NAME] <PATH|->
   marshal task status --run RUN_ID [--json]
+  marshal task run --run RUN_ID [--json]
   marshal task verify --run RUN_ID [--json]
   marshal task review --run RUN_ID [--decision PATH] [--json]
   marshal task <COMMAND>
 
-Milestone 3 提供状态目录初始化、只读 Run Inspection、独立 Verification、File-based Review Bridge 与 Outcome；其余 task 命令尚不可用。`)
+Milestone 4 增加首个 OpenCode Worker 执行路径；它只产生 Attempt 与真实快照，仍必须单独执行 verify、review 与后续发布门禁。`)
 }

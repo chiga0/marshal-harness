@@ -9,8 +9,18 @@ type TaskSpec struct {
 	Scope        TaskScope         `json:"scope"`
 	Acceptance   TaskAcceptance    `json:"acceptance"`
 	Deliverables []TaskDeliverable `json:"deliverables"`
+	Worker       TaskWorker        `json:"worker"`
 	Budgets      TaskBudgets       `json:"budgets"`
 	Publication  TaskPublication   `json:"publication"`
+}
+
+type TaskWorker struct {
+	PreferredAdapter string   `json:"preferredAdapter"`
+	FallbackAdapters []string `json:"fallbackAdapters"`
+	ExecutionProfile string   `json:"executionProfile"`
+	SessionPolicy    string   `json:"sessionPolicy"`
+	Model            string   `json:"model,omitempty"`
+	Reasoning        string   `json:"reasoning,omitempty"`
 }
 
 type TaskWork struct {

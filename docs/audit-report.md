@@ -66,6 +66,8 @@ Schema 只承担结构校验。[`schemas/README.md`](../schemas/README.md) 中�
 | A-008 | P2 | CLI-first 容易被误解为主 Agent 只能使用 Codex CLI | 增加与界面无关的 `LeadAgentBridge`，明确支持 Codex Desktop 与手机端 Remote |
 | A-009 | P2 | TypeScript/Node 默认选型与本地进程编排、单二进制分发目标不完全匹配 | 新增 ADR 0005，选择 Go 并保留语言无关契约 |
 | A-010 | P2 | macOS 的 `/var` 与 `/private/var` 别名会让有效 worktree 的字符串路径比较失败 | Repository/Worktree Identity 必须使用规范化真实路径，并加入平台 Fixture |
+| A-011 | P1 | Worker 控制文件放入 Worktree 会污染业务 Diff，开放整个 Run Store 又会破坏冻结证据 | 新增 ADR 0006，使用 Attempt-scoped `controlRoot/input|output` |
+| A-012 | P1 | Worker 可破坏 linked worktree 的 `.git` 身份，使嵌套目录向上误认主仓库 | `Open` 解析真实 `--show-toplevel`，Worker 后再次验证 Root/CommonDir，失败进入 `BLOCKED` |
 
 没有未解决的 P0、P1 或 P2 架构问题。
 
@@ -118,6 +120,7 @@ Cross-record Freshness、ID Uniqueness、Budget Relationship、Path Canonicaliza
 3. [ADR 0003：Worker 与 Publisher 分权](adr/0003-separate-worker-and-publisher.md)
 4. [ADR 0004：独立验证](adr/0004-independent-verification.md)
 5. [ADR 0005：Go 作为 Core Runtime](adr/0005-go-runtime.md)
+6. [ADR 0006：Attempt 控制根与业务 Worktree 分离](adr/0006-attempt-control-root.md)
 
 删除 ADR 0002–0004 中任何一个都会使本批准失效，并要求重新进行安全与生命周期审计。
 

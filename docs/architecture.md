@@ -201,10 +201,12 @@ Marshal 区分：
         ├── policy-snapshot.json
         ├── capability-snapshot.json
         ├── attempts/<attempt-id>/
-        │   ├── request.json
-        │   ├── stdout.jsonl
-        │   ├── stderr.log
-        │   └── worker-result.json
+        │   ├── worker-request.json
+        │   ├── worker-result.json
+        │   ├── worktree-snapshot.json
+        │   └── control/
+        │       ├── input/       # 冻结 TaskSpec 与 Prompt，Adapter 策略只读
+        │       └── output/      # 声明结果与有界 Transcript
         ├── observed.patch
         ├── verification-report.json
         ├── review-packet.json
@@ -212,6 +214,8 @@ Marshal 区分：
         ├── artifact-manifest.json
         └── outcome.md
 ```
+
+Attempt 控制根与业务 Worktree 的信任边界见 [ADR 0006](adr/0006-attempt-control-root.md)。Worker 只获得当前 `control/input` 与 `control/output` 的外部目录权限，不能访问整个 Run Store。
 
 `.marshal/worktrees/<task-id>/` 虽然位于同一仓库目录树下，但它不是主 Checkout 中的普通子目录，而是由 `git worktree add` 创建、拥有独立工作目录与 index 的 linked worktree。Milestone 2 必须在所有受支持平台验证嵌套 linked worktree 的创建、发现、锁定和清理行为；验证失败时，允许改用同级的本地 Marshal 数据根，但不能退化为共享主 Checkout。仓库与 worktree 身份比较必须先做 `realpath` 等价的规范化，不能直接比较可能含 macOS `/var` 与 `/private/var` 别名的字符串路径。
 

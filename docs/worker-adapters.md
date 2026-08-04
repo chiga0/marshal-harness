@@ -37,7 +37,7 @@ Probe Result 是事实，不能根据文档 URL 猜测。已安装二进制缺�
 
 ## WorkerRequest
 
-Request 包含冻结的任务与 Run Identity、worktree 与 base SHA、TaskSpec/Policy/Capability Digest、Attempt Budget、Review Finding、Session Policy 和最终 WorkerResult Path。
+Request 包含冻结的任务与 Run Identity、worktree 与 base SHA、TaskSpec/Policy/Capability Digest、Attempt Budget、Review Finding、Session Policy、独立 `controlRoot` 和最终 WorkerResult Path。控制根只开放当前 Attempt 的只读 `input/` 与可写 `output/`，不能开放整个 `.marshal`。详见 [ADR 0006](adr/0006-attempt-control-root.md)。
 
 Prompt 由带版本 Template 渲染并保存到 Attempt。Adapter 可以增加 Provider 专属格式，但不能删除约束。
 
@@ -88,6 +88,8 @@ Adapter 必须显式解析 `qwen`。不得静默回退到独立安装的 `qwen-c
 预期能力：`opencode run`、Raw JSON Event、显式 cwd、Agent/Model Selector、Session Continuation、Permission Configuration，以及后续 ACP/Headless Server。
 
 MVP 使用 one-shot `run`。只有 Core Lifecycle 和 Cancellation 通过一致性测试后，才考虑 ACP/Server。
+
+M4 冻结并实测 OpenCode `1.18.12`：CLI 通过 `MARSHAL_OPENCODE_PATH` 接受唯一绝对 executable，Probe 冻结 realpath、SHA-256 与精确版本；运行使用 `--pure --format json`、环境 allowlist 和 fail-closed `permission`。未知版本在 Worker 启动前失败。Local Profile 不宣称抵抗同 UID 恶意进程。
 
 参考：[OpenCode CLI](https://opencode.ai/docs/cli/)与[权限](https://opencode.ai/docs/permissions)。
 

@@ -116,7 +116,7 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	})
 
 	for _, command := range taskCommands {
-		if command == "status" || command == "verify" || command == "review" {
+		if command == "run" || command == "status" || command == "verify" || command == "review" {
 			continue
 		}
 		var stdout, stderr bytes.Buffer

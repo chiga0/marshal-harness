@@ -8,7 +8,7 @@
 | 1：State Machine 与 Run Store | `PASSED` | [验收报告](milestone-1-report.md) |
 | 2：Git Worktree 与独立 Verification | `PASSED` | [验收报告](milestone-2-report.md) |
 | 3：Review 与 Rework Loop | `PASSED` | [验收报告](milestone-3-report.md) |
-| 4：首个真实 Worker Adapter | `NEXT` | 等待范围冻结与本地 Agent 能力 Spike |
+| 4：首个真实 Worker Adapter | `IN_PROGRESS` | OpenCode 已选定；Adapter、Attempt 控制根与 `task run` 正在验收 |
 | 5：GitHub Draft Publisher | `PENDING` | 尚未开始 |
 | 6：其余 Adapter 与 Recovery 加固 | `PENDING` | 尚未开始 |
 
