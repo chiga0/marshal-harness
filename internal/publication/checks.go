@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
@@ -17,10 +18,13 @@ import (
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
+var errCIDeadlineExceeded = errors.New("ci-deadline-exceeded")
+
 type CheckInput struct {
 	StateRoot, RunID string
 	Observer         port.RemoteCheckObserver
 	Validator        *contract.Validator
+	Now              time.Time
 }
 
 type CheckResult struct {
@@ -59,6 +63,16 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 	var task domain.TaskSpec
 	if err := json.Unmarshal(taskData, &task); err != nil {
 		return CheckResult{}, err
+	}
+	now := input.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	if deadline := state.CreatedAt.Add(time.Duration(task.Budgets.RunTimeoutSeconds) * time.Second); now.Compare(deadline) >= 0 {
+		result, blockedErr := block(store, lease, state, runDir, errCIDeadlineExceeded)
+		return CheckResult{State: result.State}, blockedErr
 	}
 	publicationData, err := os.ReadFile(filepath.Join(runDir, "publication-record.json"))
 	if err != nil {

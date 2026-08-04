@@ -564,8 +564,13 @@ func (f *publicationFixture) publish(t *testing.T, publisher port.Publisher) (Re
 
 func (f *publicationFixture) observe(t *testing.T, observer port.RemoteCheckObserver) (CheckResult, error) {
 	t.Helper()
+	return f.observeAt(t, observer, time.Time{})
+}
+
+func (f *publicationFixture) observeAt(t *testing.T, observer port.RemoteCheckObserver, now time.Time) (CheckResult, error) {
+	t.Helper()
 	return ObserveChecks(context.Background(), CheckInput{
-		StateRoot: f.stateRoot, RunID: f.runID, Observer: observer, Validator: f.validator,
+		StateRoot: f.stateRoot, RunID: f.runID, Observer: observer, Validator: f.validator, Now: now,
 	})
 }
 
@@ -1446,5 +1451,133 @@ func TestObserveChecksExternalFailureBlocksRun(t *testing.T) {
 	state := fixture.inspect(t)
 	if state.State != domain.StateBlocked || state.TerminalReason == "" {
 		t.Fatalf("state = %+v", state)
+	}
+}
+
+func fixtureRunDeadline(t *testing.T, fixture *publicationFixture) time.Time {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(fixture.runDirectory, "task-spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var task domain.TaskSpec
+	if err := json.Unmarshal(data, &task); err != nil {
+		t.Fatal(err)
+	}
+	return fixture.inspect(t).CreatedAt.Add(time.Duration(task.Budgets.RunTimeoutSeconds) * time.Second)
+}
+
+func assertCIDeadlineBlocked(t *testing.T, fixture *publicationFixture, result CheckResult, observeErr error, observer *fakeObserver) {
+	t.Helper()
+	if observeErr == nil {
+		t.Fatal("expected frozen run deadline to block remote check observation")
+	}
+	if observeErr.Error() != "ci-deadline-exceeded" {
+		t.Fatalf("error = %q, want fixed code ci-deadline-exceeded", observeErr.Error())
+	}
+	if result.State.State != domain.StateBlocked {
+		t.Fatalf("result state = %s, want BLOCKED", result.State.State)
+	}
+	if observer.calls != 0 {
+		t.Fatalf("observer calls after run deadline = %d, want 0", observer.calls)
+	}
+	state := fixture.inspect(t)
+	if state.State != domain.StateBlocked || state.TerminalReason == "" {
+		t.Fatalf("snapshot state = %+v", state)
+	}
+	events, _, err := fixture.store.ReadEvents(fixture.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	if last.Type != "publication.blocked" {
+		t.Fatalf("journal tail event = %s, want publication.blocked", last.Type)
+	}
+	if code, _ := last.Payload["error"].(string); code != "ci-deadline-exceeded" {
+		t.Fatalf("blocked event payload = %+v, want fixed code ci-deadline-exceeded", last.Payload)
+	}
+	fixture.assertBlockedOutcome(t)
+}
+
+func blockedEventCount(events []domain.RunEvent) int {
+	count := 0
+	for _, event := range events {
+		if event.Type == "publication.blocked" {
+			count++
+		}
+	}
+	return count
+}
+
+func TestObserveChecksKeepsCIPendingBeforeRunDeadline(t *testing.T) {
+	fixture := publishToCIPending(t, fixtureOptions{maxReworkRounds: 1})
+	before := fixture.inspect(t)
+	deadline := fixtureRunDeadline(t, fixture)
+	observer := &fakeObserver{status: "pending"}
+	result, err := fixture.observeAt(t, observer, deadline.Add(-time.Second))
+	if err != nil {
+		t.Fatalf("observe before run deadline failed: %v", err)
+	}
+	if result.State.State != domain.StateCIPending || result.Checks.Status != "pending" {
+		t.Fatalf("result = %+v", result)
+	}
+	after := fixture.inspect(t)
+	if after.State != domain.StateCIPending || after.Sequence != before.Sequence {
+		t.Fatalf("observation before run deadline advanced the run: %+v", after)
+	}
+	if observer.calls != 1 {
+		t.Fatalf("observer calls = %d, want 1 before run deadline", observer.calls)
+	}
+}
+
+func TestObserveChecksBlocksAtOrAfterRunDeadline(t *testing.T) {
+	t.Run("exactly at deadline", func(t *testing.T) {
+		fixture := publishToCIPending(t, fixtureOptions{maxReworkRounds: 1})
+		deadline := fixtureRunDeadline(t, fixture)
+		observer := &fakeObserver{status: "pending"}
+		result, err := fixture.observeAt(t, observer, deadline.In(time.FixedZone("CST", 8*3600)))
+		assertCIDeadlineBlocked(t, fixture, result, err, observer)
+	})
+	t.Run("after deadline", func(t *testing.T) {
+		fixture := publishToCIPending(t, fixtureOptions{maxReworkRounds: 1})
+		deadline := fixtureRunDeadline(t, fixture)
+		observer := &fakeObserver{status: "pending"}
+		result, err := fixture.observeAt(t, observer, deadline.Add(30*time.Minute))
+		assertCIDeadlineBlocked(t, fixture, result, err, observer)
+	})
+}
+
+func TestObserveChecksRunDeadlineBlockIsNotAppendedTwice(t *testing.T) {
+	fixture := publishToCIPending(t, fixtureOptions{maxReworkRounds: 1})
+	deadline := fixtureRunDeadline(t, fixture)
+	observer := &fakeObserver{status: "pending"}
+	result, err := fixture.observeAt(t, observer, deadline)
+	assertCIDeadlineBlocked(t, fixture, result, err, observer)
+	events, _, err := fixture.store.ReadEvents(fixture.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := blockedEventCount(events)
+	if first != 1 {
+		t.Fatalf("blocked events after deadline block = %d, want 1", first)
+	}
+	if _, err := fixture.observeAt(t, observer, deadline.Add(time.Hour)); err == nil {
+		t.Fatal("expected observation of an already blocked run to fail")
+	}
+	if _, err := fixture.observeAt(t, observer, deadline.Add(2*time.Hour)); err == nil {
+		t.Fatal("expected repeated observation of an already blocked run to fail")
+	}
+	events, _, err = fixture.store.ReadEvents(fixture.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := blockedEventCount(events); got != first {
+		t.Fatalf("repeated observations appended %d block events, want 0", got-first)
+	}
+	if state := fixture.inspect(t); state.State != domain.StateBlocked {
+		t.Fatalf("state = %s, want BLOCKED", state.State)
+	}
+	if observer.calls != 0 {
+		t.Fatalf("observer calls = %d, want 0", observer.calls)
 	}
 }
