@@ -15,10 +15,11 @@ import (
 )
 
 type fakeRunner struct {
-	mu             sync.Mutex
-	commands       [][]string
-	failSend       bool
-	retainEnvelope bool
+	mu                sync.Mutex
+	commands          [][]string
+	failSend          bool
+	failWorkspaceList bool
+	retainEnvelope    bool
 }
 
 func (r *fakeRunner) Run(_ context.Context, arguments ...string) (string, error) {
@@ -32,6 +33,9 @@ func (r *fakeRunner) Run(_ context.Context, arguments ...string) (string, error)
 	case "capabilities":
 		return `{"methods":["workspace.create","surface.send_text","surface.send_key","surface.read_text","system.top","workspace.close"]}`, nil
 	case "workspace":
+		if len(arguments) > 1 && arguments[1] == "list" && r.failWorkspaceList {
+			return "", ErrUnavailable
+		}
 		if len(arguments) > 1 && arguments[1] == "create" {
 			for index, argument := range arguments {
 				if argument == "--command" && index+1 < len(arguments) {
@@ -219,6 +223,15 @@ func TestCMUXProbeDoesNotClaimUnsupportedProcessControl(t *testing.T) {
 	}
 	if slices.Contains(probe.Capabilities, CapabilityPauseResume) || slices.Contains(probe.Capabilities, CapabilityTerminate) {
 		t.Fatalf("unsupported process capabilities claimed: %v", probe.Capabilities)
+	}
+}
+
+func TestCMUXProbeRejectsUnresponsiveWorkspaceRPC(t *testing.T) {
+	backend, runner, _, _ := newFakeCMUX(t)
+	runner.failWorkspaceList = true
+	probe, err := backend.Probe(context.Background())
+	if !errors.Is(err, ErrUnavailable) || probe.Available || probe.Diagnostic != "workspace-rpc-unavailable" {
+		t.Fatalf("Probe() = %+v, %v", probe, err)
 	}
 }
 

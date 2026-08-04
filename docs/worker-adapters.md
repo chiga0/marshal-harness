@@ -47,6 +47,8 @@ Prompt 由带版本 Template 渲染并保存到 Attempt。Adapter 可以增加 P
 
 `terminal.StartPrepared` 是 Adapter 与 PTY Backend 之间唯一的 provider-neutral 映射：它校验 Adapter identity 与 completion gate，复制 argv/environment，并把 Adapter 冻结的 executable digest 传入密封 launcher。Backend 与 `LaunchEnvelope.Seal` 都会重新计算并比对该 digest，防止在 Adapter probe 与启动之间替换 Worker 二进制。该映射仍是显式受监督 Pilot API，不会改变默认 captured transport。
 
+cmux Probe 除 capability discovery 外，还执行 3 秒上限的只读 `workspace list --json` 健康检查。若 socket 能响应 capability 但 workspace RPC actor 卡死，Probe 返回 `workspace-rpc-unavailable`，不得创建 Pilot workspace，也不得自动重启 cmux 或关闭用户已有 workspace。
+
 ## Normalized Event
 
 每个 Event 包含 `sequence`、`timestamp`、`runId`、`attemptId`、`adapter` 和 `kind`。初始 Event Kind：

@@ -1,0 +1,111 @@
+# Operator Runbook
+
+本文档面向使用 Codex Desktop、Codex CLI 或手机端 Remote 监督 Marshal 的操作者。它描述当前 Local MVP 已实现的安全操作路径，也明确尚未开放的功能。
+
+## 1. 选择运行方式
+
+- 日常任务使用默认 `captured-process`。它具有确定性的 stdout/stderr、退出码、WorkerResult 和自动 deadline，适用于无人值守阶段与 CI。
+- 需要观察真实 Agent TUI 或中途纠偏时，使用 `interactive-pty` 受监督 Pilot。当前仅提供 Go API `terminal.StartPrepared` 与 cmux Backend，尚未接入公开 `marshal task run` CLI。
+- PTY Backend 不可用时安全降级到新的 captured Attempt；已经启动的 Attempt 不得在两种 transport 之间切换。
+- 无论 transport 如何，Worker 都不能 push、发布、merge，也不能豁免 Verification、Review 或 Approval。
+
+Codex Desktop 与 Codex CLI 都可以作为 Lead。手机端 Remote 只是在同一台开发机上监督 Codex Desktop 任务，不会把 Worker 移到手机执行。
+
+## 2. 标准任务循环
+
+在目标 Git 仓库执行：
+
+```bash
+marshal init
+marshal doctor
+marshal task plan --task TASK.json --policy POLICY.json --run RUN_ID
+marshal task approve --run RUN_ID --gate plan --actor USER_ID
+marshal task run --run RUN_ID
+marshal task verify --run RUN_ID
+marshal task review --run RUN_ID --decision REVIEW.json
+marshal task approve --run RUN_ID --gate publish --actor USER_ID
+marshal task publish --run RUN_ID
+marshal task accept --run RUN_ID
+```
+
+每一步都应先检查退出码；自动化调用建议同时使用 `--json`。`review` 要审查真实 diff 与独立验证证据，不能只复述 Worker 的总结。`publish` 只创建或更新 Draft PR；Marshal不自动 merge。
+
+## 3. 观察与介入决策
+
+操作者发现方向可能错误时，按影响从小到大选择：
+
+1. **只观察**：读取 screen 或状态，不向 Worker 输入；不改变证据来源。
+2. **Lead Steering**：通过 Marshal Control Plane 发送不改变冻结 Scope/Acceptance/Policy 的澄清，生成 `InterventionRecord`。
+3. **Interrupt Step**：终止当前模型/工具步骤，不等于暂停整个进程树。
+4. **Pause/Resume**：冻结或恢复 Agent 及已发现的所有后代进程组；无法精确枚举时必须失败。
+5. **Terminate**：停止当前 Attempt，保留现场证据，再决定 rework、abort 或新 Run。
+6. **直接在 PTY 输入**：只用于紧急人工接管；Attempt 标记 mixed provenance，之后必须重新生成 Git Snapshot、Verification 与 Review。
+
+改变 Scope、Acceptance、Budget、Policy、Capability 或 base SHA 时，不发送 Steering，必须终止当前 Attempt 并创建新 Run。
+
+## 4. “本轮结束”与“代码通过”
+
+当前三种原生 TUI Adapter 的 `CompletionGate` 都是 `supervised-confirmation`。操作者确认只表示“不再向本轮 TUI 等待更多输出”，不代表：
+
+- WorkerResult 可信；
+- 代码正确；
+- 验证通过；
+- Review 接受；
+- 可以发布或 merge。
+
+结束 PTY 后仍需 identity 匹配的 WorkerResult、重新观察 Git Snapshot、独立 Verification、Lead Review 和相应 Approval。屏幕上的“完成”、终端空闲或文件静默期都不能替代这些门禁。
+
+## 5. cmux 准备与诊断
+
+本机优先使用：
+
+```bash
+/Applications/cmux.app/Contents/Resources/bin/cmux ping
+/Applications/cmux.app/Contents/Resources/bin/cmux capabilities --json
+/Applications/cmux.app/Contents/Resources/bin/cmux workspace list --json
+```
+
+不要在日志、TaskSpec 或命令历史中打印 `CMUX_SOCKET_PASSWORD`。Marshal不会修改 cmux 全局设置，也不会自行保存 socket password。
+
+状态判定：
+
+| Diagnostic | 含义 | 处置 |
+| --- | --- | --- |
+| `binary-replaced` | Probe 后 cmux executable identity 变化 | 停止使用，重新选择并 Probe 精确路径 |
+| `probe-failed` | socket、授权或 capability RPC 不可用 | 检查 cmux 是否运行及 socket password 配置 |
+| `missing-required-method` | 当前 cmux 缺少必要 RPC | 使用 captured；不要猜测兼容 |
+| `workspace-rpc-unavailable` | capability 可用，但只读 workspace RPC 在 3 秒内无响应 | 使用 captured；保存诊断；由用户自行决定是否重启 cmux |
+| `trusted launcher did not consume envelope` | workspace 已创建但 launcher 未消费一次性信封 | 终止 Pilot，检查 workspace/terminal 启动链，不复用信封 |
+
+Marshal不得自动重启 cmux、关闭用户已有 workspace 或杀死无法证明归属的 login process group。若用户选择重启 cmux，应先保存正在使用的终端工作，再重新运行 Probe；不要把“重启后可用”写成自动恢复假设。
+
+安全的 helper Live E2E（会创建并清理一个可见测试 workspace，不调用模型）：
+
+```bash
+MARSHAL_LIVE_CMUX=1 \
+MARSHAL_CMUX_PATH=/Applications/cmux.app/Contents/Resources/bin/cmux \
+go test ./internal/terminal -run '^TestLiveCMUXTerminalSession$' -v -count=1
+```
+
+只有 helper E2E 全部通过后，才允许尝试真实 Agent TUI Pilot。
+
+## 6. 中断恢复与清理
+
+```bash
+marshal doctor --run RUN_ID --json
+marshal task status --run RUN_ID --json
+marshal task cleanup --run RUN_ID
+```
+
+`doctor` 默认只读。仅当权威 Journal/Record 能唯一证明修复结果时使用 `--repair`；不确定状态进入 quarantine/`BLOCKED`。`cleanup` 默认只预览，活动 lease、非终态 Run、dirty worktree 或路径身份异常都会阻止删除。不要用手工递归删除代替 Cleanup Guard。
+
+## 7. 发布和远端处置
+
+- Publisher 凭据只在 publish 阶段注入，不能进入 Worker/TUI 环境。
+- Push 后等待远端 CI 明确成功；missing、skipping 或超时不是成功。
+- Draft PR 由人工决定后续处置。当前 Marshal不执行 Ready for Review、merge、release、deploy、删除远端分支。
+- 远端与本地 head/PR identity 不一致时停止发布并运行 `doctor --run`，不得覆盖猜测。
+
+## 8. 当前已知本机状态
+
+2026-08-05 的本机实测中，cmux `ping` 与 `capabilities` 可用，但 `workspace list --json` 无响应；安全 helper Pilot 因此以 `workspace-rpc-unavailable` 在约 3 秒内 fail-closed。该状态不影响默认 captured 模式，也不证明 Adapter 或密封 launcher 失败。恢复真实 Pilot 需要用户先处理 cmux workspace RPC 状态。

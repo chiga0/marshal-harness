@@ -63,6 +63,7 @@ REVIEW_PENDING -> PUBLISHING -> PUBLISHED -> CI_PENDING -> ACCEPTED
 - [交付物与发布](docs/artifact-and-publishing.md)
 - [安全模型](docs/security-model.md)
 - [故障与恢复](docs/failure-and-recovery.md)
+- [Operator Runbook](docs/operator-runbook.md)
 - [实施计划](docs/implementation-plan.md)
 - [开发指南](docs/development.md)
 - [Milestone 0 验收报告](docs/milestone-0-report.md)
@@ -98,4 +99,4 @@ REVIEW_PENDING -> PUBLISHING -> PUBLISHED -> CI_PENDING -> ACCEPTED
 
 ## 实施门禁
 
-文档审计结论为 `APPROVED_FOR_IMPLEMENTATION`，维护者已接受 ADR 0001–0011 和 Local MVP 范围。Milestone 0–5 已通过；File-based Review Bridge、Codex Skill、三 Worker Adapter 路径与 GitHub Draft Publisher 已通过各自真实 E2E。当前进入原生 TUI Transport、Operator Runbook 与完整 MVP E2E 加固。
+文档审计结论为 `APPROVED_FOR_IMPLEMENTATION`，维护者已接受 ADR 0001–0011 和 Local MVP 范围。Milestone 0–5 已通过；File-based Review Bridge、Codex Skill、三 Worker Adapter 路径与 GitHub Draft Publisher 已通过各自真实 E2E。原生 TUI Transport 基础与 Operator Runbook 已完成，当前继续真实受监督 cmux Pilot 与完整 MVP E2E 加固。

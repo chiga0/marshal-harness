@@ -28,6 +28,7 @@ const (
 	CMUXBackendID       = "cmux-pty"
 	defaultCommandLimit = 1 << 20
 	defaultStartTimeout = 10 * time.Second
+	defaultProbeTimeout = 3 * time.Second
 	inputJournalLimit   = 32 << 20
 )
 
@@ -90,6 +91,14 @@ func (b *CMUXBackend) Probe(ctx context.Context) (ProbeResult, error) {
 		if !slices.Contains(response.Methods, method) {
 			return ProbeResult{BackendID: b.ID(), Diagnostic: "missing-required-method"}, nil
 		}
+	}
+	// capabilities can remain responsive while the workspace RPC actor is
+	// wedged. A bounded read-only list call prevents Marshal from claiming the
+	// backend is available and then creating a half-started Pilot workspace.
+	probeCtx, cancel := context.WithTimeout(ctx, defaultProbeTimeout)
+	defer cancel()
+	if _, err := b.runner.Run(probeCtx, "workspace", "list", "--json"); err != nil {
+		return ProbeResult{BackendID: b.ID(), Diagnostic: "workspace-rpc-unavailable"}, ErrUnavailable
 	}
 	capabilities := []Capability{CapabilitySessionCreate, CapabilityPromptSend, CapabilityScreenRead, CapabilityInterruptStep}
 	if b.processes.Supported() {

@@ -38,6 +38,10 @@ func TestLiveCMUXTerminalSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	probe, err := backend.Probe(context.Background())
+	if err != nil || !probe.Available {
+		t.Fatalf("cmux probe unavailable: diagnostic=%s error=%v", probe.Diagnostic, err)
+	}
 	helperExecutable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
