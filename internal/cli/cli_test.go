@@ -116,7 +116,7 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	})
 
 	for _, command := range taskCommands {
-		if command == "run" || command == "status" || command == "verify" || command == "review" || command == "publish" || command == "accept" {
+		if command == "plan" || command == "run" || command == "status" || command == "verify" || command == "review" || command == "publish" || command == "accept" {
 			continue
 		}
 		var stdout, stderr bytes.Buffer
@@ -127,6 +127,168 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(temporaryDirectory, ".marshal")); !os.IsNotExist(err) {
 		t.Fatalf("task skeleton created .marshal: %v", err)
+	}
+}
+
+func TestTaskPlanRequiresAllNamedArguments(t *testing.T) {
+	for name, args := range map[string][]string{
+		"none":           {"task", "plan"},
+		"missing task":   {"task", "plan", "--policy", "policy.json", "--run", "run-1"},
+		"missing policy": {"task", "plan", "--task", "task.json", "--run", "run-1"},
+		"missing run":    {"task", "plan", "--task", "task.json", "--policy", "policy.json"},
+		"positional":     {"task", "plan", "--task", "task.json", "--policy", "policy.json", "--run", "run-1", "extra"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			exitCode := Run(args, strings.NewReader(""), &stdout, &stderr)
+			if exitCode != ExitUsage {
+				t.Fatalf("Run(%v) exit = %d, want %d; stderr=%s", args, exitCode, ExitUsage, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), "marshal task plan --task PATH --policy PATH --run RUN_ID") {
+				t.Fatalf("usage missing from stderr: %q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestTaskPlanEndToEndFreezesSelectedAdapter(t *testing.T) {
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot := t.TempDir()
+	runGit(t, repositoryRoot, "init", "-q", "-b", "main")
+	runGit(t, repositoryRoot, "config", "user.email", "marshal@example.invalid")
+	runGit(t, repositoryRoot, "config", "user.name", "Marshal Test")
+	if err := os.WriteFile(filepath.Join(repositoryRoot, "README.md"), []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repositoryRoot, "add", "README.md")
+	runGit(t, repositoryRoot, "commit", "-q", "-m", "fixture")
+	const remoteURL = "https://example.invalid/marshal-cli-plan.git"
+	runGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+
+	if err := os.Chdir(repositoryRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"init"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
+	}
+
+	executable := filepath.Join(t.TempDir(), "opencode")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '1.18.12\\n'; exit 0; fi\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MARSHAL_OPENCODE_PATH", executable)
+	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_PI_PATH", "")
+
+	const (
+		taskID = "cli-plan-task"
+		runID  = "cli-plan-run"
+	)
+	taskPath := filepath.Join(t.TempDir(), "task.json")
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	writeCLIFixture(t, taskPath, cliPlanningTask(t, repositoryRoot, taskID, remoteURL))
+	writeCLIFixture(t, policyPath, cliPlanningPolicy(t, taskID, runID))
+
+	stdout.Reset()
+	stderr.Reset()
+	exit := Run([]string{"task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID, "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitOK {
+		t.Fatalf("task plan exit = %d, stderr = %s", exit, stderr.String())
+	}
+	var result struct {
+		State domain.RunState `json:"state"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode planning result: %v", err)
+	}
+	if result.State.State != domain.StateReady || result.State.RunID != runID || result.State.TaskID != taskID {
+		t.Fatalf("planning state = %+v", result.State)
+	}
+	capability, err := os.ReadFile(filepath.Join(repositoryRoot, ".marshal", "runs", runID, "capability-snapshot.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identity struct {
+		AdapterID string `json:"adapterId"`
+	}
+	if err := json.Unmarshal(capability, &identity); err != nil || identity.AdapterID != "opencode" {
+		t.Fatalf("frozen capability adapter = %q, err = %v", identity.AdapterID, err)
+	}
+}
+
+func cliPlanningTask(t *testing.T, repositoryRoot, taskID, remoteURL string) map[string]any {
+	t.Helper()
+	fixture := readCLIFixture(t, "examples/happy-path/task-spec.json")
+	fixture["metadata"].(map[string]any)["id"] = taskID
+	repository := fixture["repository"].(map[string]any)
+	repository["path"] = repositoryRoot
+	repository["baseRef"] = "HEAD"
+	repository["remote"] = "origin"
+	repository["expectedRemoteUrl"] = remoteURL
+	worker := fixture["worker"].(map[string]any)
+	worker["preferredAdapter"] = "opencode"
+	worker["fallbackAdapters"] = []any{}
+	worker["executionProfile"] = "workspace-write"
+	worker["sessionPolicy"] = "ephemeral"
+	fixture["deliverables"] = []any{map[string]any{"id": "implementation", "kind": "code", "required": true, "pathGlob": "README.md"}}
+	publication := fixture["publication"].(map[string]any)
+	publication["required"] = false
+	publication["provider"] = "none"
+	publication["mode"] = "none"
+	publication["remote"] = "origin"
+	publication["baseBranch"] = "main"
+	publication["mergePolicy"] = "never"
+	publication["requiredChecks"] = []any{}
+	return fixture
+}
+
+func cliPlanningPolicy(t *testing.T, taskID, runID string) map[string]any {
+	t.Helper()
+	fixture := readCLIFixture(t, "examples/happy-path/policy-snapshot.json")
+	fixture["taskId"] = taskID
+	fixture["runId"] = runID
+	effective := fixture["effective"].(map[string]any)
+	effective["allowFallbackWorkers"] = false
+	effective["allowPublication"] = false
+	effective["allowMerge"] = false
+	effective["allowedAdapters"] = []any{"opencode"}
+	return fixture
+}
+
+func readCLIFixture(t *testing.T, name string) map[string]any {
+	t.Helper()
+	data, err := marshalSchemas.FS.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture map[string]any
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	return fixture
+}
+
+func writeCLIFixture(t *testing.T, path string, value any) {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", root}, args...)...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, output)
 	}
 }
 

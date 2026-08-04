@@ -23,6 +23,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/execution"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/publication"
 	githubpublisher "github.com/chiga0/marshal-harness/internal/publisher/github"
 	"github.com/chiga0/marshal-harness/internal/repository"
@@ -236,6 +237,9 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "用法：marshal task <%s>\n", strings.Join(taskCommands, "|"))
 		return ExitUsage
 	}
+	if args[0] == "plan" {
+		return runTaskPlan(ctx, args[1:], stdout, stderr)
+	}
 	if args[0] == "status" {
 		return runTaskStatus(args[1:], stdout, stderr)
 	}
@@ -259,6 +263,70 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "marshal task %s 尚未实现；未执行任何 Worker、状态写入或发布副作用。\n", args[0])
 	return ExitUnavailable
+}
+
+func runTaskPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task plan", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	taskPath := flags.String("task", "", "TaskSpec 路径")
+	policyPath := flags.String("policy", "", "PolicySnapshot 路径")
+	runID := flags.String("run", "", "Run ID")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *taskPath == "" || *policyPath == "" || *runID == "" {
+		fmt.Fprintln(stderr, "用法：marshal task plan --task PATH --policy PATH --run RUN_ID [--json]")
+		return ExitUsage
+	}
+
+	location, err := repository.Discover(".")
+	if err != nil {
+		fmt.Fprintf(stderr, "规划失败：%v\n", err)
+		return ExitFailure
+	}
+	if err := location.ValidateIdentity(); err != nil {
+		fmt.Fprintf(stderr, "规划失败：%v\n", err)
+		return ExitFailure
+	}
+	taskData, err := readInput(*taskPath, strings.NewReader(""))
+	if err != nil {
+		fmt.Fprintf(stderr, "规划失败：读取 TaskSpec：%v\n", err)
+		return ExitFailure
+	}
+	policyData, err := readInput(*policyPath, strings.NewReader(""))
+	if err != nil {
+		fmt.Fprintf(stderr, "规划失败：读取 PolicySnapshot：%v\n", err)
+		return ExitFailure
+	}
+	runtime, err := app.NewWorkerRuntime(os.Getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, "规划失败：Worker Runtime 初始化失败。")
+		return ExitFailure
+	}
+	result, err := planning.Plan(ctx, planning.Input{
+		StateRoot:      location.StateRoot,
+		RepositoryRoot: location.RepositoryRoot,
+		RunID:          *runID,
+		TaskSpec:       taskData,
+		PolicySnapshot: policyData,
+		Selector:       runtime.Selector(),
+		Validator:      runtime.Validator(),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "规划失败：%v\n", err)
+		return ExitFailure
+	}
+	if result.Adapter == nil || result.State.State != domain.StateReady {
+		fmt.Fprintln(stderr, "规划失败：未生成 READY Run 或未冻结 Worker Adapter。")
+		return ExitFailure
+	}
+	if *jsonOutput {
+		if err := writeJSON(stdout, result); err != nil {
+			fmt.Fprintf(stderr, "输出规划结果失败：%v\n", err)
+			return ExitFailure
+		}
+	} else {
+		fmt.Fprintf(stdout, "Run：%s\nWorker Adapter：%s\n状态：%s\n", *runID, result.Adapter.ID(), result.State.State)
+	}
+	return ExitOK
 }
 
 func publisherFromEnvironment(location repository.State) (*githubpublisher.Publisher, *contract.Validator, error) {
@@ -884,6 +952,7 @@ func writeUsage(output io.Writer) {
   marshal doctor [--json]
   marshal init [--json]
   marshal contract validate [--schema NAME] <PATH|->
+  marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
   marshal task status --run RUN_ID [--json]
   marshal task run --run RUN_ID [--json]
   marshal task verify --run RUN_ID [--json]
@@ -892,5 +961,5 @@ func writeUsage(output io.Writer) {
   marshal task accept --run RUN_ID [--json]
   marshal task <COMMAND>
 
-OpenCode Worker 只产生 Attempt 与真实快照；verify、review、publish 与 accept 是彼此独立的证据门禁。发布命令还要求 absolute MARSHAL_GH_PATH 与 MARSHAL_GH_CONFIG_DIR。`)
+OpenCode、Qwen Code 与 Pi Worker 只产生 Attempt 与真实快照；verify、review、publish 与 accept 是彼此独立的证据门禁。发布命令还要求 absolute MARSHAL_GH_PATH 与 MARSHAL_GH_CONFIG_DIR。`)
 }
