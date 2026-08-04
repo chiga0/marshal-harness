@@ -120,6 +120,8 @@ Observer 是与 Worker Adapter、生命周期和证据持久化解耦的可选�
 
 Core 依赖彼此独立的 `Observer` 与 `TerminalSession` Port，不依赖 cmux、iTerm2、Ghostty 或系统终端。Observer 只显示捕获内容；TerminalSession 承载真实 Agent PTY/TUI。任何 PTY Backend 不可用、未授权或能力不足时降级到 `captured-process`。两种模式都不能用屏幕文本替代 WorkerResult、Git Snapshot、Verification 与 Review。详细边界见 [ADR 0008](adr/0008-pluggable-observer-backends.md) 与 [ADR 0009](adr/0009-terminal-session-execution.md)。
 
+人工控制通过独立 Control Plane 进入，不直接修改冻结输入。`ApprovalRecord` 绑定精确 Plan/Publish 证据；`InterventionRecord` 分类 clarification、implementation-correction、scope-change、manual-pty 与 Session 控制。范围内 Steering 可以继续当前 Attempt；冻结边界变化必须新 Run；direct PTY 接管使当前 Attempt 的自动归因失效并要求重新 Verification/Review。详见 [ADR 0010](adr/0010-controlled-autonomy-and-intervention.md)。
+
 ### 独立 Verifier
 
 Verifier 位于 Worker 会话之外并生成 VerificationReport，检查：

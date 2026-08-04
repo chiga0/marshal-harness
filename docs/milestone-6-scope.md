@@ -6,6 +6,8 @@
 
 范围修订：2026-08-04 根据真实 cmux 原型增加原生 PTY `TerminalSession`；只读 Observer 保留为降级模式，详见 ADR 0009。
 
+控制修订：2026-08-04 增加 `balanced` 受控自治、Plan/Publish Approval、Marshal-mediated Steering、manual PTY taint 与精确 Pause/Resume，详见 ADR 0010。
+
 ## 目标
 
 在不改变 M0–M5 证据门禁与 Publisher 权限边界的前提下，完成本机已配置的 OpenCode `1.18.12`、Qwen Code `0.21.5`、Pi `0.83.0` 三个真实 Worker Adapter，补齐运行态 Reconciliation、CI 停滞诊断、Archive/Cleanup Preview、Compatibility Matrix 与 Operator 文档，并以完整真实 Worker→Verification→Review→GitHub Draft PR→CI Outcome E2E 达到 Local MVP 可用状态。
@@ -27,6 +29,15 @@
 - 每次实际选择、Probe、Fallback 原因与版本进入 CapabilitySnapshot/Attempt Event；
 - OpenCode 保持已验收行为；Qwen Code 与 Pi 不得通过复制测试假装兼容，必须各有 Fake executable 和真实 Live E2E；
 - `marshal doctor` 报告三 Adapter 的配置、版本与兼容状态，不泄露认证路径或内容。
+
+## 受控自治与人工介入
+
+- 新建 Policy 默认 `balanced`：Plan 与 Publish 需要绑定精确冻结证据的用户 Approval；
+- 用户正常通过 Marshal发送 clarification/correction，生成 append-only InterventionRecord 后再进入 Worker Session；
+- Scope、Acceptance、Budget、Policy、Capability 或 Base 变化必须新 Run，不修改原冻结输入；
+- direct PTY 输入记录为 `manual-pty`，当前 Attempt 标记 mixed provenance，强制重新 Snapshot、Verification 与 Review；
+- TerminalSession 区分 interrupt-step、pause-turn、terminate-session 与 resume-session；单次 Ctrl-C 不得伪报为暂停；
+- `supervised`、`balanced`、`autonomous` 只改变人类 Gate，不放宽 Scope、Verification、Review、Draft-only 与 Never-merge。
 
 ## Reconciliation 与 CI 停滞
 
@@ -58,7 +69,7 @@
 
 ## 测试与退出条件
 
-- Unit/Contract：三 Adapter Probe、Parser、Permission、Session、选择/Fallback、Observer 与 TerminalSession 探测/降级、Doctor/Repair 与 Cleanup Guard；
+- Unit/Contract：三 Adapter Probe、Parser、Permission、Session、选择/Fallback、Approval/Intervention、Observer 与 TerminalSession 探测/降级、Doctor/Repair 与 Cleanup Guard；
 - Integration：三个 Fake executable 通过同一 Conformance Suite；Journal/Snapshot、Publication、CI Deadline 与 Cleanup Crash Fixture 可恢复或安全阻断；
 - Live Adapter E2E：本机真实 OpenCode、Qwen Code、Pi 各自在临时仓库受管 worktree 完成最小修改，Marshal 独立 Verification 通过；
 - Full MVP E2E：至少一个真实 Worker 从冻结 TaskSpec 出发，经过真实 Adapter、Verification、Codex ReviewDecision、受控 Commit、真实 GitHub Draft PR、PR CI 与 Outcome Export；不 merge；

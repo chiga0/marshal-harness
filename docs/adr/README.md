@@ -13,3 +13,4 @@
 | [0007](0007-intent-first-publication.md) | 先记录意图的受控发布与远端对账 | 已接受（Accepted） |
 | [0008](0008-pluggable-observer-backends.md) | 可插拔 Observer Backend，cmux 作为首个可视化实现 | 已接受（Accepted） |
 | [0009](0009-terminal-session-execution.md) | 原生 PTY Terminal Session 执行传输 | 已接受（Accepted） |
+| [0010](0010-controlled-autonomy-and-intervention.md) | 受控自治、审批 Gate 与人工介入 | 已接受（Accepted） |
