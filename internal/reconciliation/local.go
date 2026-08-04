@@ -11,6 +11,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
@@ -110,7 +111,7 @@ func Inspect(ctx context.Context, input Input) (Report, error) {
 			}
 			for _, event := range events {
 				data, marshalErr := json.Marshal(event)
-				if marshalErr != nil || input.Validator.Validate(domain.KindRunEvent, data) != nil || event.RunID != input.RunID {
+				if marshalErr != nil || input.Validator.Validate(domain.KindRunEvent, data) != nil || event.RunID != input.RunID || (event.Type == lifecycle.RepairAuditEventType && !validRepairAudit(event)) {
 					journalValid = false
 					add("journal-invalid", "error", false)
 					break

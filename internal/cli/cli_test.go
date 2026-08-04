@@ -211,6 +211,10 @@ func TestDoctorRunReconcilesEvidenceAndBlocksCorruption(t *testing.T) {
 	}
 
 	capabilityPath := filepath.Join(repositoryRoot, ".marshal", "runs", runID, "capability-snapshot.json")
+	capabilityData, err := os.ReadFile(capabilityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(capabilityPath, []byte(`{"secret":"must-not-leak"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -232,6 +236,29 @@ func TestDoctorRunReconcilesEvidenceAndBlocksCorruption(t *testing.T) {
 	}
 	if !found || strings.Contains(stdout.String()+stderr.String(), "must-not-leak") || strings.Contains(stdout.String()+stderr.String(), capabilityPath) {
 		t.Fatalf("unsafe corrupt report: %s%s", stdout.String(), stderr.String())
+	}
+
+	if err := os.WriteFile(capabilityPath, capabilityData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(repositoryRoot, ".marshal", "runs", runID, "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"secret":"damaged-state"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"doctor", "--run", runID, "--repair", "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("repair exit = %d, stdout = %s, stderr = %s", exit, stdout.String(), stderr.String())
+	}
+	var repaired doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &repaired); err != nil {
+		t.Fatal(err)
+	}
+	if repaired.Status != "ok" || repaired.Run == nil || repaired.Run.Status != "ok" || repaired.Repair == nil || repaired.Repair.Outcome != "applied" || repaired.Repair.EventID == "" {
+		t.Fatalf("repair report = %+v", repaired)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), "damaged-state") || strings.Contains(stdout.String()+stderr.String(), statePath) {
+		t.Fatalf("repair leaked damaged state: %s%s", stdout.String(), stderr.String())
 	}
 }
 

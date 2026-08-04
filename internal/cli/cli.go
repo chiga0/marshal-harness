@@ -124,13 +124,14 @@ type doctorWorker struct {
 }
 
 type doctorReport struct {
-	Status          string                 `json:"status"`
-	Build           buildinfo.Info         `json:"build"`
-	ContractSchemas int                    `json:"contractSchemas"`
-	WorkerAdapters  int                    `json:"workerAdapters"`
-	Milestone       string                 `json:"milestone"`
-	Workers         []doctorWorker         `json:"workers"`
-	Run             *reconciliation.Report `json:"run,omitempty"`
+	Status          string                       `json:"status"`
+	Build           buildinfo.Info               `json:"build"`
+	ContractSchemas int                          `json:"contractSchemas"`
+	WorkerAdapters  int                          `json:"workerAdapters"`
+	Milestone       string                       `json:"milestone"`
+	Workers         []doctorWorker               `json:"workers"`
+	Run             *reconciliation.Report       `json:"run,omitempty"`
+	Repair          *reconciliation.RepairResult `json:"repair,omitempty"`
 }
 
 func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -138,6 +139,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	flags.SetOutput(stderr)
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
 	runID := flags.String("run", "", "核验指定 Run 的本地证据")
+	repair := flags.Bool("repair", false, "显式修复可证明的本地 Snapshot")
 	if err := flags.Parse(args); err != nil {
 		return ExitUsage
 	}
@@ -150,6 +152,10 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			fmt.Fprintln(stderr, "doctor 失败：Run ID 无效。")
 			return ExitUsage
 		}
+	}
+	if *repair && *runID == "" {
+		fmt.Fprintln(stderr, "doctor --repair 必须同时指定 --run RUN_ID。")
+		return ExitUsage
 	}
 	application, err := app.New()
 	if err != nil {
@@ -176,14 +182,25 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			fmt.Fprintln(stderr, "doctor 失败：无法验证仓库身份。")
 			return ExitFailure
 		}
-		runReport, err := reconciliation.Inspect(ctx, reconciliation.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Validator: runtime.Validator()})
-		if err != nil {
-			fmt.Fprintln(stderr, "doctor 失败：无法核验本地 Run 证据。")
-			return ExitFailure
+		input := reconciliation.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Validator: runtime.Validator()}
+		if *repair {
+			repairResult, err := reconciliation.Repair(ctx, input, time.Now().UTC())
+			if err != nil {
+				fmt.Fprintln(stderr, "doctor 失败：本地 Run 修复未完成。")
+				return ExitFailure
+			}
+			report.Repair = &repairResult
+			report.Run = &repairResult.Report
+		} else {
+			runReport, err := reconciliation.Inspect(ctx, input)
+			if err != nil {
+				fmt.Fprintln(stderr, "doctor 失败：无法核验本地 Run 证据。")
+				return ExitFailure
+			}
+			report.Run = &runReport
 		}
-		report.Run = &runReport
-		if runReport.Status != "ok" {
-			report.Status = runReport.Status
+		if report.Run.Status != "ok" {
+			report.Status = report.Run.Status
 		}
 	}
 	exitCode := ExitOK
@@ -210,6 +227,13 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		for _, finding := range report.Run.Findings {
 			fmt.Fprintf(stdout, "诊断：%s / %s / repairable=%t\n", finding.Code, finding.Severity, finding.Repairable)
 		}
+	}
+	if report.Repair != nil {
+		fmt.Fprintf(stdout, "修复：%s", report.Repair.Outcome)
+		if report.Repair.EventID != "" {
+			fmt.Fprintf(stdout, "（Event %s）", report.Repair.EventID)
+		}
+		fmt.Fprintln(stdout)
 	}
 	return exitCode
 }
@@ -1076,7 +1100,7 @@ func writeUsage(output io.Writer) {
 
 用法：
   marshal version [--json]
-  marshal doctor [--run RUN_ID] [--json]
+  marshal doctor [--run RUN_ID] [--repair] [--json]
   marshal init [--json]
   marshal contract validate [--schema NAME] <PATH|->
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]

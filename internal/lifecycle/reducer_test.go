@@ -94,6 +94,109 @@ func TestCountersMatchReplay(t *testing.T) {
 	}
 }
 
+func TestRepairAuditEvent(t *testing.T) {
+	t.Parallel()
+	baseEvent := func(state domain.RunState) domain.RunEvent {
+		return domain.RunEvent{
+			RunID:     state.RunID,
+			Sequence:  state.Sequence + 1,
+			Type:      RepairAuditEventType,
+			StateFrom: state.State,
+			StateTo:   state.State,
+			Timestamp: time.Unix(9, 0),
+		}
+	}
+	t.Run("validate", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			current domain.State
+			mutate  func(*domain.RunEvent)
+			wantErr bool
+		}{
+			{"non-terminal success", domain.StateRunning, nil, false},
+			{"terminal success", domain.StateAccepted, nil, false},
+			{"wrong type rejected", domain.StateRunning, func(e *domain.RunEvent) { e.Type = "snapshot.repaired" }, true},
+			{"empty type rejected", domain.StateRunning, func(e *domain.RunEvent) { e.Type = "" }, true},
+			{"wrong run id rejected", domain.StateRunning, func(e *domain.RunEvent) { e.RunID = "run:other" }, true},
+			{"same sequence rejected", domain.StateRunning, func(e *domain.RunEvent) { e.Sequence-- }, true},
+			{"skipped sequence rejected", domain.StateRunning, func(e *domain.RunEvent) { e.Sequence++ }, true},
+			{"wrong from rejected", domain.StateRunning, func(e *domain.RunEvent) { e.StateFrom = domain.StateVerifying }, true},
+			{"wrong to rejected", domain.StateRunning, func(e *domain.RunEvent) { e.StateTo = domain.StateVerifying }, true},
+			{"terminal normal transition rejected", domain.StateAccepted, func(e *domain.RunEvent) {
+				e.Type = "state.changed"
+				e.StateTo = domain.StateCreated
+			}, true},
+			{"non-audit self transition rejected", domain.StateRunning, func(e *domain.RunEvent) {
+				e.Type = "state.changed"
+			}, true},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				state := domain.NewRunState("task:1", "run:1", time.Unix(1, 0))
+				state.State = test.current
+				event := baseEvent(state)
+				if test.mutate != nil {
+					test.mutate(&event)
+				}
+				err := ValidateTransition(state.State, state.RunID, state.Sequence, event)
+				if test.wantErr && !errors.Is(err, ErrInvalidTransition) {
+					t.Fatalf("want rejection, got err = %v", err)
+				}
+				if !test.wantErr && err != nil {
+					t.Fatalf("repair audit event rejected: %v", err)
+				}
+			})
+		}
+	})
+	t.Run("replay only advances sequence and updated at", func(t *testing.T) {
+		for _, current := range []domain.State{domain.StateRunning, domain.StateAccepted} {
+			current := current
+			t.Run(string(current), func(t *testing.T) {
+				state := domain.NewRunState("task:1", "run:1", time.Unix(1, 0))
+				state.State = current
+				state.Sequence = 7
+				state.Publication = &domain.RunPublication{Provider: "github", Repository: "org/repo", HeadBranch: "main", BaseBranch: "main", ExternalID: "pub:1", URI: "https://example.com", HeadSHA: "sha"}
+				state.CurrentAttemptID = "attempt:1"
+				state.ReviewRound, state.AttemptsUsed, state.OperationalRetriesUsed, state.ReworkRoundsUsed = 1, 2, 3, 4
+				state.TerminalReason = "done"
+				event := baseEvent(state)
+				replayed, err := Replay(state, event)
+				if err != nil {
+					t.Fatalf("replay rejected: %v", err)
+				}
+				if replayed.Sequence != state.Sequence+1 {
+					t.Fatalf("sequence = %d, want %d", replayed.Sequence, state.Sequence+1)
+				}
+				if !replayed.UpdatedAt.Equal(time.Unix(9, 0).UTC()) {
+					t.Fatalf("updatedAt = %v", replayed.UpdatedAt)
+				}
+				replayed.Sequence, replayed.UpdatedAt = state.Sequence, state.UpdatedAt
+				if replayed != state {
+					t.Fatalf("replay mutated business fields: %+v vs %+v", replayed, state)
+				}
+			})
+		}
+	})
+	t.Run("reduce requires lease and preserves business fields", func(t *testing.T) {
+		state := domain.NewRunState("task:1", "run:1", time.Unix(1, 0))
+		state.State = domain.StateAccepted
+		state.Sequence = 7
+		state.TerminalReason = "original"
+		event := baseEvent(state)
+		event.Payload = map[string]any{"terminalReason": "must-not-replace"}
+		if _, err := Reduce(state, event, Guard{}); !errors.Is(err, ErrInvalidTransition) {
+			t.Fatalf("repair without lease error = %v", err)
+		}
+		next, err := Reduce(state, event, Guard{LeaseHeld: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next.TerminalReason != state.TerminalReason || next.State != state.State || next.Sequence != event.Sequence {
+			t.Fatalf("repair reduce mutated business state: %+v", next)
+		}
+	})
+}
+
 func allGuards() Guard {
 	return Guard{LeaseHeld: true, DraftValid: true, BaseResolved: true, PolicyAllowed: true, AdapterProbed: true, InputsFrozen: true, WorkerProtocolComplete: true, SnapshotRecorded: true, EvidenceCurrent: true, ReportComplete: true, RequiredGatesPass: true, DecisionCurrent: true, NoChangeAllowed: true, RemoteChecksRequired: true, PublicationCurrent: true, BudgetAvailable: true, AbortAuthorized: true, ChildrenStopped: true, EvidenceFlushed: true}
 }

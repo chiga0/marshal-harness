@@ -9,6 +9,10 @@ import (
 
 var ErrInvalidTransition = errors.New("invalid lifecycle transition")
 
+// RepairAuditEventType is the only event type allowed as a same-state audit
+// event, including on terminal runs. It never changes business fields.
+const RepairAuditEventType = "reconciliation.snapshot-repaired"
+
 var allowed = map[domain.State]map[domain.State]bool{
 	domain.StateCreated:         {domain.StatePlanned: true},
 	domain.StatePlanned:         {domain.StateReady: true},
@@ -48,6 +52,12 @@ type Guard struct {
 func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain.RunState, error) {
 	if err := ValidateTransition(current.State, current.RunID, current.Sequence, event); err != nil {
 		return current, err
+	}
+	if event.Type == RepairAuditEventType {
+		if !guard.LeaseHeld {
+			return current, fmt.Errorf("%w: run lease is not held", ErrInvalidTransition)
+		}
+		return Replay(current, event)
 	}
 	if !guard.LeaseHeld {
 		return current, fmt.Errorf("%w: run lease is not held", ErrInvalidTransition)
@@ -130,6 +140,12 @@ func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain
 // ValidateTransition checks durable structural invariants without re-evaluating
 // ephemeral runtime guards. It is safe for journal replay.
 func ValidateTransition(current domain.State, runID string, sequence uint64, event domain.RunEvent) error {
+	if event.Type == RepairAuditEventType {
+		if event.RunID != runID || event.Sequence != sequence+1 || event.StateFrom != current || event.StateTo != current {
+			return fmt.Errorf("%w: repair audit event identity, sequence or state does not match current state", ErrInvalidTransition)
+		}
+		return nil
+	}
 	if current.Terminal() {
 		return fmt.Errorf("%w: terminal state %s", ErrInvalidTransition, current)
 	}
@@ -145,6 +161,12 @@ func ValidateTransition(current domain.State, runID string, sequence uint64, eve
 func Replay(current domain.RunState, event domain.RunEvent) (domain.RunState, error) {
 	if err := ValidateTransition(current.State, current.RunID, current.Sequence, event); err != nil {
 		return current, err
+	}
+	if event.Type == RepairAuditEventType {
+		next := current
+		next.Sequence = event.Sequence
+		next.UpdatedAt = event.Timestamp.UTC()
+		return next, nil
 	}
 	next := current
 	next.State, next.Sequence, next.UpdatedAt = event.StateTo, event.Sequence, event.Timestamp.UTC()
