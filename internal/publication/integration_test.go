@@ -447,7 +447,7 @@ func newPublicationFixture(t *testing.T, opts fixtureOptions) *publicationFixtur
 	writeRun("artifact-manifest.json", manifestData)
 	writeRun("observed.patch", observation.Patch)
 	writeRun("review-packet.json", packetData)
-	writeRun("review-decision.json", decisionData)
+	writeRun(filepath.Join("decisions", fmt.Sprintf("decision-%03d.json", decision.ReviewRound)), decisionData)
 	writeRun(filepath.Join("attempts", "attempt:1", "worker-result.json"), workerData)
 	store := runstore.New(location.StateRoot)
 	lease, err := store.Acquire(runID)
@@ -1069,7 +1069,7 @@ func TestPublishBlocksWhenPersistedIntentCommitIsTampered(t *testing.T) {
 
 func TestPublishBlocksWhenDecisionDiffersFromFrozenJournal(t *testing.T) {
 	fixture := newPublicationFixture(t, fixtureOptions{maxReworkRounds: 1})
-	path := filepath.Join(fixture.runDirectory, "review-decision.json")
+	path := filepath.Join(fixture.runDirectory, "decisions", fmt.Sprintf("decision-%03d.json", fixture.inspect(t).ReviewRound))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1099,6 +1099,24 @@ func TestPublishBlocksWhenDecisionDiffersFromFrozenJournal(t *testing.T) {
 	}
 	if fixture.inspect(t).State != domain.StateBlocked {
 		t.Fatal("run did not block after decision replacement")
+	}
+}
+
+func TestPublishReadsRoundBoundDecisionWithoutLegacyFile(t *testing.T) {
+	fixture := newPublicationFixture(t, fixtureOptions{maxReworkRounds: 1})
+	state := fixture.inspect(t)
+	if _, err := os.Stat(filepath.Join(fixture.runDirectory, "review-decision.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy review-decision.json should not exist, stat error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDirectory, "decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound))); err != nil {
+		t.Fatalf("round-bound decision missing: %v", err)
+	}
+	result, err := fixture.publish(t, newFakePublisher(fakePublishOK))
+	if err != nil {
+		t.Fatalf("evidence re-validation failed without legacy review-decision.json: %v", err)
+	}
+	if result.State.State != domain.StateCIPending {
+		t.Fatalf("state = %s, want CI_PENDING", result.State.State)
 	}
 }
 
@@ -1160,7 +1178,7 @@ func advanceReworkToPublishing(t *testing.T, fixture *publicationFixture) {
 			t.Fatalf("rework %s invalid: %v", kind, err)
 		}
 	}
-	for name, data := range map[string][]byte{"verification-report.json": reportData, "artifact-manifest.json": manifestData, "review-packet.json": packetData, "review-decision.json": decisionData, "observed.patch": observation.Patch, filepath.Join("attempts", "attempt:2", "worker-result.json"): workerData} {
+	for name, data := range map[string][]byte{"verification-report.json": reportData, "artifact-manifest.json": manifestData, "review-packet.json": packetData, filepath.Join("decisions", fmt.Sprintf("decision-%03d.json", decision.ReviewRound)): decisionData, "observed.patch": observation.Patch, filepath.Join("attempts", "attempt:2", "worker-result.json"): workerData} {
 		path := filepath.Join(fixture.runDirectory, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
@@ -1303,11 +1321,17 @@ func TestObserveChecksPassAcceptsRun(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(fixture.runDirectory, "outcome.md")); err != nil {
 		t.Fatalf("human-readable outcome missing: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(fixture.runDirectory, "review-decision.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy review-decision.json should not exist, stat error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDirectory, "decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound))); err != nil {
+		t.Fatalf("round-bound decision missing: %v", err)
+	}
 }
 
 func TestObserveChecksBlocksWhenDecisionChangedAfterPublication(t *testing.T) {
 	fixture := publishToCIPending(t, fixtureOptions{maxReworkRounds: 1})
-	path := filepath.Join(fixture.runDirectory, "review-decision.json")
+	path := filepath.Join(fixture.runDirectory, "decisions", fmt.Sprintf("decision-%03d.json", fixture.inspect(t).ReviewRound))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

@@ -327,7 +327,7 @@ func loadEvidence(runDir string, state domain.RunState, validator *contract.Vali
 	if err != nil {
 		return evidenceSet{}, err
 	}
-	decisionData, err := read("review-decision.json", domain.KindReviewDecision)
+	decisionData, err := read(filepath.Join("decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound)), domain.KindReviewDecision)
 	if err != nil {
 		return evidenceSet{}, err
 	}
@@ -740,7 +740,7 @@ func mustPublicationRecord(value domain.PublicationRecord) domain.Record {
 }
 
 func prepareOutcome(runDir string, validator *contract.Validator, state domain.RunState, summary, expectedDecisionDigest, expectedEvidenceDigest string) (*review.PreparedRecords, error) {
-	decisionData, err := os.ReadFile(filepath.Join(runDir, "review-decision.json"))
+	decisionData, err := os.ReadFile(filepath.Join(runDir, "decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound)))
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,6 +138,68 @@ func TestRunRejectsWorkerResultIdentityAndAttemptBudget(t *testing.T) {
 			t.Fatalf("err=%v", err)
 		}
 	})
+}
+
+func TestLoadReviewFindingsReadsRoundBoundDecision(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	store := runstore.New(fixture.input.StateRoot)
+	lease, err := store.Acquire(fixture.input.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Inspect(fixture.input.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.State, state.ReviewRound, state.AttemptsUsed = domain.StateReworkRequested, 2, 1
+	if err := store.WriteSnapshot(lease, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	decision := domain.ReviewDecision{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindReviewDecision,
+		TaskID: state.TaskID, RunID: state.RunID, ReviewRound: state.ReviewRound,
+		Reviewer:               domain.Reviewer{Type: "lead-agent", ID: "execution-test"},
+		SpecDigest:             state.SpecDigest,
+		ReviewPacketDigest:     "sha256:" + strings.Repeat("1", 64),
+		VerificationDigest:     "sha256:" + strings.Repeat("2", 64),
+		ArtifactManifestDigest: "sha256:" + strings.Repeat("3", 64),
+		EvidenceDigest:         "sha256:" + strings.Repeat("4", 64),
+		Verdict:                "rework", Summary: "rework required",
+		BlockingFindings:          []domain.Finding{{ID: "finding-1", Severity: "P1", Title: "gate failed", Description: "verification gate failed", RequiredOutcome: "fix the failing gate"}},
+		NonBlockingFindings:       []domain.Finding{},
+		PublicationRecommendation: "do-not-publish", MergeRecommendation: "do-not-merge",
+		DecidedAt: time.Unix(2, 0).UTC(),
+	}
+	decisionData, err := json.Marshal(decision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.input.Validator.Validate(domain.KindReviewDecision, decisionData); err != nil {
+		t.Fatal(err)
+	}
+	decisionPath := filepath.Join(fixture.runDir, "decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound))
+	if err := os.MkdirAll(filepath.Dir(decisionPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(decisionPath, decisionData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "review-decision.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy review-decision.json should not exist, stat error = %v", err)
+	}
+	findings, err := loadReviewFindings(fixture.runDir, state, fixture.input.Validator)
+	if err != nil {
+		t.Fatalf("loadReviewFindings failed without legacy review-decision.json: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("findings = %+v", findings)
+	}
+	if findings[0]["id"] != "finding-1" || findings[0]["severity"] != "P1" || findings[0]["description"] != "verification gate failed" || findings[0]["requiredOutcome"] != "fix the failing gate" {
+		t.Fatalf("finding = %+v", findings[0])
+	}
 }
 
 func TestRunSelectsFallbackAdapterFromFrozenCapability(t *testing.T) {

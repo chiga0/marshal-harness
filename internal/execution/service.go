@@ -255,7 +255,7 @@ func loadReviewFindings(runDir string, state domain.RunState, validator *contrac
 	if state.State != domain.StateReworkRequested {
 		return []map[string]string{}, nil
 	}
-	data, err := os.ReadFile(filepath.Join(runDir, "review-decision.json"))
+	data, err := os.ReadFile(filepath.Join(runDir, "decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound)))
 	if err != nil {
 		return nil, fmt.Errorf("read rework ReviewDecision: %w", err)
 	}
