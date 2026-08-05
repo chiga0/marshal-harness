@@ -20,7 +20,8 @@ description: 使用 Marshal Harness 编排 Coding Agent、执行证据门禁审�
 ## 工作流
 
 1. 在 Git 仓库执行 `marshal init`；运行状态位于被忽略的 `.marshal/`。
-2. 用 `marshal task status --run RUN_ID --json` 读取状态。3. Run 到达 `REVIEW_PENDING` 后执行：
+2. 用 `marshal task status --run RUN_ID --json` 读取状态。
+3. Run 到达 `REVIEW_PENDING` 后执行：
 
    ```bash
    marshal task review --run RUN_ID --json
