@@ -53,3 +53,4 @@ Decision 必须绑定 `taskId`、`runId`、`reviewRound`、`specDigest`、`revie
 - TaskSpec 的 `work.context` 必须自包含（Worker 看不到对话历史）；acceptance 命令按任务裁剪；constraints 中固定“若某操作被 permission 拒绝，不得重试该路径，改用允许路径内的等价输入”。
 - pi 的大任务建议 `maxOutputBytes >= 16000000`（转录本近似二次方增长）；opencode 大 context 会尝试读取被拒绝的外部临时文件，属正常 fail-closed，不是故障。
 - 更完整的实操经验见 Marshal 仓库 `docs/operator-runbook.md` 第 9 节；遇到问题先采集 `task status --json`、`doctor --run --json` 与 `events.jsonl` 末尾三项只读证据。
+- L 级复杂任务或探索型问题可用多 Agent fan-out（调研队/评审团）：模式、分级与汇总纪律见 `docs/operator-runbook.md` 第 10 节；评审 Worker 是材料不是结论，ReviewDecision 责任始终在 Lead。

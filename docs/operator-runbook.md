@@ -175,3 +175,44 @@ tail -5 .marshal/runs/RUN_ID/events.jsonl        # 最近的生命周期事件
 ```
 
 Attempt 级 Worker transcript、stderr、VerificationReport、ReviewPacket 与 PublicationRecord 均已自动存档在对应 run 目录，无需手工复现现场。上报时附一句“我在做什么、期望什么、实际发生什么”。
+
+## 10. 多 Agent Fan-out 协作模式（v0.1）
+
+Fan-out 的价值不在“更快写代码”，而在“更多视角做决策”与“把主 Agent 注意力花在更少、更好的决策点上”。业界（orchestrator-workers、角色 fan-out、debate/jury）已验证并行化模式，但均无 Marshal 的证据门禁；本节定义在 Marshal 信任模型内可用的两种 fan-out 形态与纪律。
+
+### 10.1 任务分级（先决条件）
+
+- **S 级**（琐碎改动）：不走 Marshal 或最简流程；
+- **M 级**（常规开发）：标准流程 + 裁剪 acceptance；
+- **L 级**（复杂/高风险/探索型）：标准流程 + 本节 fan-out 模式。
+
+分级由 Lead 在起草 TaskSpec 时判定；fan-out 成本随 N 线性增长，只对 L 级或探索型问题使用。
+
+### 10.2 调研队（Sectioning）
+
+探索型问题拆为 N 个独立调研 Run：
+
+- 每个调研 Run 为 `publication: none`，deliverable 是调研报告（documentation），共享同一份问题简报，各自带不同的评估视角（如：信任模型优先 / 效率优先 / 可操作性优先）；
+- acceptance 裁剪为轻量命令（产物存在性与基本完整性即可），质量由 Lead review 判定；
+- 各 Run 的产物路径必须互斥；报告写入各自 worktree，ACCEPTED 后由 Lead 直接读取；
+- **网络限制**：Marshal Worker 无网络权限（设计使然）。需要外部信息的调研在 harness 外的联网会话完成，或等待后续“调研权限画像”（read-only + 显式网络放行）设计落地。
+
+### 10.3 评审团（Voting/Jury）
+
+verify 通过后、写 ReviewDecision 前：
+
+1. 派发 2–3 个评审 Worker：不同 Adapter、不同视角 prompt（安全 / 契约一致性 / 测试充分性…），输入同一份 ReviewPacket，每个产出结构化 findings（稳定 ID + 严重级 + 证据引用）；
+2. Lead 汇总：合并同类、裁决冲突、抽查关键断言；
+3. Lead 写最终 ReviewDecision，全部摘要绑定机制不变。
+
+红线：评审 Worker 的意见是材料不是结论；决策责任与证据绑定始终在 Lead。
+
+### 10.4 汇总纪律
+
+Lead 的汇总必须产出三份清单并可回溯：**共识**（多 Agent 独立得出的一致结论）、**分歧**（冲突点与 Lead 的裁决理由）、**采纳结论及其证据**（每条结论必须能指回具体 Run 的证据）。没有证据支撑的“综合意见”不得进入结论。
+
+### 10.5 成本与适用边界
+
+- 并行 worker 只对可证明互斥的工作域有效；耦合开发的集成成本会吃掉并行收益；
+- 人的审批/注意力是硬瓶颈，fan-out 度不得超过 Lead 能有效审查的上限；
+- 小任务禁用 fan-out：协议成本无法摊薄。
