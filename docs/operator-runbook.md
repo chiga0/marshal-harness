@@ -139,7 +139,7 @@ export MARSHAL_GH_CONFIG_DIR=<含 hosts.yml 的独立目录，目录 0700、文�
 
 ### 9.2 Skill 分发
 
-`.agents/skills/marshal/` 目录是 Lead Agent 的 Skill（SKILL.md 与 Codex 界面元数据）。包含该目录的仓库中 pi/Codex 会自动发现；在其他仓库使用 Marshal 时，把该目录复制到目标仓库，或让 Lead Agent 先读取 SKILL.md 的绝对路径再操作。Skill 只描述工作流与强制边界，不替代本文档。
+`.agents/skills/marshal/` 目录是 Lead Agent 的 Skill（SKILL.md 与 Codex 界面元数据）。包含该目录的仓库中 pi/Codex 会自动发现；在其他仓库使用时任选其一：把目录复制到目标仓库；把该目录软链接到 `~/.agents/skills/marshal`（pi 全局发现位置，单一来源随仓库演进，已验证 pi 扫描器跟随符号链接并按 realpath 去重）；或让 Lead Agent 先读取 SKILL.md 的绝对路径再操作。Skill 只描述工作流与强制边界，不替代本文档。
 
 ### 9.3 长命令脱离运行
 

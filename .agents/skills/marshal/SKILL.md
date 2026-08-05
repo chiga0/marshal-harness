@@ -1,6 +1,6 @@
 ---
 name: marshal
-description: 使用 Marshal Harness 编排 Coding Agent、执行证据门禁审查与 Rework/发布流程。用户明确要求“使用 Marshal”，或希望 Codex 作为主 Agent 驱动本地 Coding Agent、验收代码、管理 CI/PR、持续完成开发闭环时使用。
+description: 使用 Marshal Harness 编排 Coding Agent、执行证据门禁审查与 Rework/发布流程。用户明确要求“使用 Marshal”，或希望由主 Agent（pi、Codex 等编码 Agent）驱动本地 Coding Agent、验收代码、管理 CI/PR、持续完成开发闭环时使用。
 ---
 
 # Marshal Harness
