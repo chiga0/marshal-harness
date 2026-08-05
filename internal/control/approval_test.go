@@ -111,12 +111,39 @@ func TestPublishApprovalBindsReviewEvidence(t *testing.T) {
 	if err := Require(input); err != nil {
 		t.Fatal(err)
 	}
-	decisionPath := filepath.Join(fixture.runDir, "review-decision.json")
+	decisionPath := filepath.Join(fixture.runDir, "decisions", "decision-001.json")
 	decision := readObject(t, decisionPath)
 	decision["summary"] = "新的、仍然有效但未经审批的 Review 摘要。"
 	writeObject(t, decisionPath, decision)
 	if err := Require(input); !errors.Is(err, ErrApprovalStale) {
 		t.Fatalf("Require() after decision rotation = %v", err)
+	}
+}
+
+func TestPublishApprovalReadsRoundBoundDecisionFile(t *testing.T) {
+	t.Parallel()
+	fixture := newApprovalFixture(t, nil, true)
+	decisionPath := filepath.Join(fixture.runDir, "decisions", "decision-001.json")
+	decisionData, err := os.ReadFile(decisionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := decodeObject(t, decisionData)
+	if decision["reviewRound"] != float64(1) || decision["verdict"] != "accept" ||
+		decision["publicationRecommendation"] != "publish" || decision["specDigest"] != mustDigest(t, readSchemaFixture(t, "examples/happy-path/task-spec.json")) {
+		t.Fatalf("fixture decision = %+v", decision)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "review-decision.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy review-decision.json should not exist, stat error = %v", err)
+	}
+	expectedDigest := mustDigest(t, decisionData)
+	record, err := Approve(fixture.input(domain.ApprovalGatePublish))
+	if err != nil {
+		t.Fatalf("Approve() with round-bound decision = %v", err)
+	}
+	if record.Binding.ReviewRound != 1 || record.Binding.DecisionDigest != expectedDigest ||
+		record.Binding.EvidenceDigest == "" || record.Gate != domain.ApprovalGatePublish {
+		t.Fatalf("publish binding = %+v", record.Binding)
 	}
 }
 
@@ -253,7 +280,11 @@ func newApprovalFixture(t *testing.T, mutatePolicy func(map[string]any), publish
 		decision := decodeObject(t, readSchemaFixture(t, "examples/happy-path/review-decision.json"))
 		decision["taskId"], decision["runId"], decision["reviewRound"] = taskID, runID, float64(1)
 		decision["specDigest"] = state.SpecDigest
-		writeObject(t, filepath.Join(runDir, "review-decision.json"), decision)
+		decisionDir := filepath.Join(runDir, "decisions")
+		if err := os.MkdirAll(decisionDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeObject(t, filepath.Join(decisionDir, "decision-001.json"), decision)
 	}
 	return approvalFixture{root: root, runDir: runDir, runID: runID, taskID: taskID, validator: validator}
 }

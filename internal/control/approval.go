@@ -205,7 +205,8 @@ func currentBinding(input ApprovalInput, context approvalContext) (domain.Approv
 		if context.state.State != domain.StatePublishing {
 			return domain.ApprovalBinding{}, ErrInvalidApprovalState
 		}
-		decisionData, err := readContract(context.runDir, "review-decision.json")
+		decisionData, err := readContract(context.runDir,
+			filepath.Join("decisions", fmt.Sprintf("decision-%03d.json", context.state.ReviewRound)))
 		if err != nil || input.Validator.Validate(domain.KindReviewDecision, decisionData) != nil {
 			return domain.ApprovalBinding{}, ErrInvalidControlInput
 		}
