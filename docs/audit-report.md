@@ -115,6 +115,14 @@ CLI Flag 与 Event Shape 会随版本变化。Implementation 不得把 Environme
 
 Cross-record Freshness、ID Uniqueness、Budget Relationship、Path Canonicalization、Accept/No-change Guard 与 Publication Consistency 不能全部由 JSON Schema 安全表达，已列为强制 Semantic Validator 与 Exit Criteria。
 
+## 实施阶段关闭的问题
+
+| ID | 级别 | 发现方式 | 问题 | 关闭 |
+| --- | --- | --- | --- | --- |
+| I-001 | P1 | 2026-08-05 真实 Full MVP E2E（Run `m6-mvp-e2e-20260805` / `m6-mvp-e2e-r2-20260805`） | ADR 0010 引入的 balanced publish Approval Gate 与发布重校验、Outcome、Rework 读取仍使用 legacy `review-decision.json`，而 Review 事务持久化为 `decisions/decision-%03d.json`，导致发布审批与发布恒失败 | 两个独立 Marshal Run（`m6-approval-fix-r3-20260805`、`m6-decision-paths-20260805`，均 `ACCEPTED`）修复为轮次绑定读取，语义校验不变；提交 `4538f9f`、`9589b25`；修复后真实 E2E Run `m6-mvp-e2e-r3-20260805` 全链路 `ACCEPTED` |
+
+两次失败均以 `BLOCKED` fail-closed，未产生远端副作用；信任边界、持久化契约与发布权限未被改变，因此不新增 ADR，仅记录关闭证据。
+
 ## ADR 建议
 
 以下 ADR 共同构成当前 Local MVP 的架构与安全基线，建议一起接受：
