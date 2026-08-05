@@ -176,9 +176,9 @@ tail -5 .marshal/runs/RUN_ID/events.jsonl        # 最近的生命周期事件
 
 Attempt 级 Worker transcript、stderr、VerificationReport、ReviewPacket 与 PublicationRecord 均已自动存档在对应 run 目录，无需手工复现现场。上报时附一句“我在做什么、期望什么、实际发生什么”。
 
-## 10. 多 Agent Fan-out 协作模式（v0.1）
+## 10. 多 Agent Fan-out 协作模式（v0.2）
 
-Fan-out 的价值不在“更快写代码”，而在“更多视角做决策”与“把主 Agent 注意力花在更少、更好的决策点上”。业界（orchestrator-workers、角色 fan-out、debate/jury）已验证并行化模式，但均无 Marshal 的证据门禁；本节定义在 Marshal 信任模型内可用的两种 fan-out 形态与纪律。
+Fan-out 的价值不在“更快写代码”，而在“更多视角做决策”与“把主 Agent 注意力花在更少、更好的决策点上”。业界（orchestrator-workers、角色 fan-out、debate/jury）已验证并行化模式，但均无 Marshal 的证据门禁；本节定义在 Marshal 信任模型内可用的 fan-out 形态与纪律。v0.2 依据 [fan-out 汇总决策](research/fanout-consolidation.md) 更新：补充评审团操作约定、findings 裁决纪律、跨仓库任务平面与度量要求。
 
 ### 10.1 任务分级（先决条件）
 
@@ -195,24 +195,41 @@ Fan-out 的价值不在“更快写代码”，而在“更多视角做决策”
 - 每个调研 Run 为 `publication: none`，deliverable 是调研报告（documentation），共享同一份问题简报，各自带不同的评估视角（如：信任模型优先 / 效率优先 / 可操作性优先）；
 - acceptance 裁剪为轻量命令（产物存在性与基本完整性即可），质量由 Lead review 判定；
 - 各 Run 的产物路径必须互斥；报告写入各自 worktree，ACCEPTED 后由 Lead 直接读取；
+- **只读纪律**：当前尚无 read-only 执行画像（设计中），调研/评审 Worker 的 TaskSpec scope 必须收紧到仅允许报告/评审产物文件（`allowPaths` 单文件、`maxChangedFiles: 1`），并在 constraints 中禁止修改其他内容；
 - **网络限制**：Marshal Worker 无网络权限（设计使然）。需要外部信息的调研在 harness 外的联网会话完成，或等待后续“调研权限画像”（read-only + 显式网络放行）设计落地。
 
 ### 10.3 评审团（Voting/Jury）
 
 verify 通过后、写 ReviewDecision 前：
 
-1. 派发 2–3 个评审 Worker：不同 Adapter、不同视角 prompt（安全 / 契约一致性 / 测试充分性…），输入同一份 ReviewPacket，每个产出结构化 findings（稳定 ID + 严重级 + 证据引用）；
-2. Lead 汇总：合并同类、裁决冲突、抽查关键断言；
-3. Lead 写最终 ReviewDecision，全部摘要绑定机制不变。
+1. 派发 2–4 个评审 Worker：优先不同 Adapter，输入同一份 ReviewPacket；视角建议从 correctness（TaskSpec 一致与边界条件）、security（输入边界、凭据、注入）、test adequacy（覆盖、遗漏路径、flaky 风险）、maintainability（接口、复杂度、回滚风险）中选择，每个 Worker 只持一个视角；
+2. 评审产物为结构化 findings，每条包含：稳定 ID、视角角色、论断、严重级（P0–P3）、位置（文件/行）、证据引用、置信度、处置建议；去重按“产物 + 位置 + 证据身份”，不按自然语言相似度；
+3. Lead 汇总：逐条处置（accepted / rejected_with_reason / duplicate / needs_new_verification / human_escalation），裁决冲突，抽查关键断言；
+4. Lead 写最终 ReviewDecision，全部摘要绑定机制不变。
 
-红线：评审 Worker 的意见是材料不是结论；决策责任与证据绑定始终在 Lead。
+裁决规则：确定性门禁失败是硬否决（accept 不能绕过 Required Failed Gate）；P0/P1 finding 默认 blocking，Lead 若否决必须在 Decision 中写明 dissent 理由；不得以多数观点淹没少数但关键的 finding，裁决以可复现证据为准。
+
+红线：评审 Worker 的意见是材料不是结论；决策责任与证据绑定始终在 Lead。评审 Worker 遵守 10.2 的只读纪律。
 
 ### 10.4 汇总纪律
 
-Lead 的汇总必须产出三份清单并可回溯：**共识**（多 Agent 独立得出的一致结论）、**分歧**（冲突点与 Lead 的裁决理由）、**采纳结论及其证据**（每条结论必须能指回具体 Run 的证据）。没有证据支撑的“综合意见”不得进入结论。
+Lead 的汇总必须产出三份清单并可回溯：**共识**（多 Agent 独立得出的一致结论）、**分歧**（冲突点与 Lead 的裁决理由）、**采纳结论及其证据**（每条结论必须能指回具体 Run 的证据）。没有证据支撑的“综合意见”不得进入结论。findings 的逐条处置记录与 dissent 理由同样属于汇总产物，不得省略。
 
-### 10.5 成本与适用边界
+### 10.5 跨仓库任务平面（Multi-repo 并行）
 
-- 并行 worker 只对可证明互斥的工作域有效；耦合开发的集成成本会吃掉并行收益；
+适用于跨多个代码仓库的大型任务。仓库边界是天然的 ownership 契约，写集合按仓库隔离，这是当前可落地的第一种任务级并行形态，不需要 Core 改动（Marshal 状态本来就按仓库独立）：
+
+1. **契约先行**：拆解前先冻结跨仓接口契约（API/Schema/版本约定），计算其摘要，写入每个子 TaskSpec 的 `work.context`；契约变更 = 重新拆解，子任务不得自行漂移契约；
+2. **每仓一个 Run**：各仓库独立 `marshal init` 与状态目录，各自走完整生命周期与门禁；每个子 TaskSpec 的 context 记录任务族 ID、兄弟任务（仓库 + task-id + run-id）与契约摘要，保证可追溯；
+3. **独立门禁不可省**：每个子 Run 各自 verify/review，不得因“只是其中一个仓库”而降级；
+4. **集成阶段**：全部子 Run `ACCEPTED` 后，在指定仓库（或专门的集成仓库）创建集成任务，其 acceptance 运行跨仓集成验证（指向兄弟分支/本地路径）；各子分支的证据不能证明集成结果，集成必须重新全量验证；
+5. **审批预算**：N 个子 Run = N 组审批；Lead 按操作者注意力上限控制并行度。
+
+禁止：子 Worker 直接修改兄弟仓库；跳过集成验证直接合并兄弟分支。
+
+### 10.6 成本、适用边界与度量
+
+- 并行 worker 只对可证明互斥的工作域有效；耦合开发的集成成本会吃掉并行收益；跨仓库并行优先于仓库内拆解（仓库边界免费提供了 ownership 划分）；
 - 人的审批/注意力是硬瓶颈，fan-out 度不得超过 Lead 能有效审查的上限；
-- 小任务禁用 fan-out：协议成本无法摊薄。
+- 小任务禁用 fan-out：协议成本无法摊薄；
+- **度量纪律**：每次 fan-out 必须记录：任务族 ID、agent 数、墙钟时间（并行 vs 串行估计）、token/工具成本、冲突数、findings 数与处置分布、人工分钟数。没有度量记录，不得扩大 fan-out 使用面。

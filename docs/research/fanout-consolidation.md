@@ -35,8 +35,10 @@
    证据：E1（Cognition clean-context reviewer、Codex 按视角并行 review 示例、PoLL 异构降偏差、漏洞检测 F1 71.4→77.2 初步证据）；E2（阶段 3 Jury）；I1（里程碑级交叉审计已实践）。
 2. **第二优先：调研队（调研与计划平面）**——大任务/模糊需求在编码前派只读 Explorer（调用链/数据模型/测试面视角），产出结构化 ResearchFinding，Lead 结构化合并后冻结 TaskSpec。
    证据：E1（Anthropic Research 系统 +90.2%、Codex read-heavy 优先建议）；E2（阶段 1）。
-3. **第三优先（有前置条件）：任务级并行**——仅当子任务 ownership 清晰、跨边依赖低、依赖分析支持时才启用；每个子任务独立 worktree/冻结子 TaskSpec/独立 commit，集成由单一 Integrator 执行并**重新全量验证**。
-   证据：E1（Co-Coder 依赖感知切分正收益的前提是强耦合部分在同一 Worker 内；集成后各分支证据不能证明集成结果）；I3（单写入者不变量）。
+3. **第三优先（拆分两种形态）：任务级并行**。
+   - **3a 跨仓库并行（现在采纳，Lead 层约定即可，零 Core 改动）**：大型跨仓库任务按仓库拆解，每仓库一个独立 Run，各自独立 worktree/生命周期/证据；仓库边界是天然的 ownership 契约，写集合天然隔离。前置条件是跨仓接口契约先行冻结（摘要写入各子 TaskSpec），集成阶段全量重验。
+   - **3b 仓库内拆解并行（继续暂缓）**：同一仓库内把大任务拆给多个 Worker，硬前置是依赖分析能力（dependency graph）；Co-Coder 证据表明只有在强耦合部分被划入同一 Worker、弱耦合边并行时才有正收益。
+   证据：E1（Co-Coder 依赖感知切分的前提；集成后各分支证据不能证明集成结果；Cognition 写入集中原则）；I3（单写入者不变量在跨仓库场景按仓库自然满足）；操作者提出的跨仓库大型任务场景（仓库边界 = 免费的内聚/ownership 划分）。
 4. **评审 Worker 的最小权限**：fan-out 的调研/评审角色应为只读能力画像（无编辑工具、无仓库写权限），当前三 Adapter 只有 workspace-write 画像，需要新增 read-only 执行画像支撑。
    证据：E1（前置条件"读写 capability manifest"、Codex 可配置 read-only reviewer）；E2（Explorer 剥离写入工具）；I2（试点中调研 Worker 持有不必要的写权限）。
 5. **Findings Schema 与裁决纪律**：评审 Worker 输出统一 finding 结构（稳定 ID/角色/论断/严重级/位置/证据引用/置信度/处置建议）；去重按"产物+位置+证据身份"，不按语言相似度；最终 Decision 保留 accepted_finding_ids 与 unresolved_dissent。
@@ -64,20 +66,22 @@
 | 幂等与崩溃恢复 | ✅ 已有（M1/M5 验证；发布 marker 幂等已实战） |
 | 读写 capability manifest | ❌ 缺：只有 workspace-write，无 read-only 画像（采纳项 4） |
 | Fan-in policy engine | ⚠️ 部分：Review Bridge 文件契约可承载，缺 findings 汇总约定（采纳项 5） |
-| Repository dependency graph | ❌ 缺：任务级并行（采纳项 3）的硬前置 |
+| Repository dependency graph | ❌ 缺：仓库内拆解并行（采纳项 3b）的硬前置；跨仓库并行（3a）不需要，仓库边界即 ownership |
 | 基准任务集与度量 | ⚠️ 起步：试点开始积累（采纳项 6） |
 
 ## 六、试点实测附录（I2）
 
 | 事件 | 数据 |
 | --- | --- |
-| 并行 3 Worker（opencode/qwen/pi，900s 预算） | 2× `context deadline exceeded` + 1× pi 输出超限（16MB）；全部 fail-closed，零远端副作用 |
-| 串行重跑（1800s 预算，机器高负载日） | opencode 仍超时 BLOCKED；qwen/pi 结果待补 |
-| 结论 | 本机当前条件（多会话共存 + provider 配额）下重生成任务并行不可行；fan-out 决策必须以度量数据为准，不得凭直觉扩大并发 |
+| 轮次 1：并行 3 Worker（opencode/qwen/pi，900s 预算） | 2× `context deadline exceeded` + 1× pi 输出超限（16MB）；全部 fail-closed，零远端副作用 |
+| 轮次 2：串行重跑（1800s 预算，pi 32MB，机器高负载日） | opencode/qwen 仍 `context deadline exceeded`（>30 分钟）；pi 32MB 仍输出超限 |
+| 交付物 | 0/3 份提案完成；本汇总因此仅基于 E1/E2/I1 与试点失败数据 |
+| 结论 | 本机当前条件（多会话共存 + provider 配额）下，读密集+长文生成类任务无论串并行都不可靠；fan-out 决策必须以度量数据为准；pi 的转录本二次方增长对读密集型任务是硬约束，优先级提升到“需要解决” |
 
 ## 七、下一步
 
-1. Runbook §10 升级到 v0.2：并入采纳项 1/2/5/6 的操作约定（评审团视角清单、finding 结构、裁决与否决规则、度量字段）；
+1. Runbook §10 升级到 v0.2：并入采纳项 1/2/5/6 的操作约定（评审团视角清单、finding 结构、裁决与否决规则、度量字段）与采纳项 3a 的跨仓库协作约定；
 2. 首个评审团实战：下一个 M 级以上真实代码任务执行"verify 后评审团"流程，采集 findings 质量数据；
 3. read-only 执行画像设计提案（Worker 能力清单、Adapter 支持面）——涉及权限契约，按仓库规则需要 ADR 讨论后再动代码；
-4. 暂缓：任务级并行（等依赖分析能力）与 Core 级 fan-out 机制（等评审团实战数据）。
+4. 跨仓库任务族实战：下一个真实的多仓库任务按 §10.6 约定执行，验证契约冻结与集成重验流程；
+5. 暂缓：仓库内拆解并行（等依赖分析能力）与 Core 级 fan-out 机制（等评审团实战数据）。
