@@ -20,8 +20,7 @@ description: 使用 Marshal Harness 编排 Coding Agent、执行证据门禁审�
 ## 工作流
 
 1. 在 Git 仓库执行 `marshal init`；运行状态位于被忽略的 `.marshal/`。
-2. 用 `marshal task status --run RUN_ID --json` 读取状态。
-3. Run 到达 `REVIEW_PENDING` 后执行：
+2. 用 `marshal task status --run RUN_ID --json` 读取状态。3. Run 到达 `REVIEW_PENDING` 后执行：
 
    ```bash
    marshal task review --run RUN_ID --json
@@ -45,3 +44,11 @@ description: 使用 Marshal Harness 编排 Coding Agent、执行证据门禁审�
 ## 审查输出
 
 Decision 必须绑定 `taskId`、`runId`、`reviewRound`、`specDigest`、`reviewPacketDigest`、`verificationDigest`、`artifactManifestDigest` 与 `evidenceDigest`。Blocking Finding 使用稳定 ID，包含严重级别、问题描述和可验证的 required outcome；不要接受 Worker 的自我声明代替独立证据。
+
+## 操作要点
+
+- Worker Adapter 通过 `MARSHAL_OPENCODE_PATH`、`MARSHAL_QWEN_PATH`、`MARSHAL_PI_PATH` 的绝对路径配置；发布需要绝对 `MARSHAL_GH_PATH` 与独立 `MARSHAL_GH_CONFIG_DIR`。
+- `task run`、`task verify`、`task publish` 是长耗时命令，使用 `nohup ... > log 2>&1 < /dev/null & disown` 脱离运行；被意外中断后先用 `marshal doctor --run RUN_ID --json` 对账，再幂等重跑同一命令。
+- TaskSpec 的 `work.context` 必须自包含（Worker 看不到对话历史）；acceptance 命令按任务裁剪；constraints 中固定“若某操作被 permission 拒绝，不得重试该路径，改用允许路径内的等价输入”。
+- pi 的大任务建议 `maxOutputBytes >= 16000000`（转录本近似二次方增长）；opencode 大 context 会尝试读取被拒绝的外部临时文件，属正常 fail-closed，不是故障。
+- 更完整的实操经验见 Marshal 仓库 `docs/operator-runbook.md` 第 9 节；遇到问题先采集 `task status --json`、`doctor --run --json` 与 `events.jsonl` 末尾三项只读证据。

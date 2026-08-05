@@ -1,6 +1,6 @@
 # Operator Runbook
 
-本文档面向使用 Codex Desktop、Codex CLI 或手机端 Remote 监督 Marshal 的操作者。它描述当前 Local MVP 已实现的安全操作路径，也明确尚未开放的功能。
+本文档面向操作者与 Lead Agent（pi、Codex Desktop/CLI 或其他编码 Agent），描述当前 Local MVP 已实现的安全操作路径，也明确尚未开放的功能。首次在真实任务中使用 Marshal 前，先读[第 9 节：日常使用最佳实践](#9-日常使用最佳实践)。
 
 ## 1. 选择运行方式
 
@@ -117,3 +117,61 @@ marshal task cleanup --run RUN_ID
 已知原生 TUI 问题（受监督模式限制）：Qwen TUI 在 `send` 多行文本后立即接收 Enter 时，Enter 会被粘贴处理吞掉；操作者必须等待粘贴 settle（本机实测约 10 秒）后再单独发送 Enter。OpenCode 与 Pi 的原生 TUI Pilot 尚未执行，不得假设行为相同。
 
 默认 captured 模式不受上述问题影响。Marshal 仍不会自动重启 cmux、不关闭非本次创建的 workspace、不杀死无法证明归属的 login process group。
+
+## 9. 日常使用最佳实践
+
+2026-08-05 真实 M6 验收与 Full MVP E2E 沉淀的实操经验。首次在新仓库使用 Marshal 时建议通读。
+
+### 9.1 一次性环境准备
+
+Worker Adapter 配置变量只接受绝对路径，不搜索 `PATH`、不回退近似名称；建议固化到 shell 配置：
+
+```bash
+export MARSHAL_OPENCODE_PATH=<opencode 绝对路径>
+export MARSHAL_QWEN_PATH=<qwen 绝对路径>
+export MARSHAL_PI_PATH=<pi 绝对路径>
+# 仅发布需要：gh 绝对路径与独立凭据目录，不复用 ambient ~/.config/gh
+export MARSHAL_GH_PATH=<gh 绝对路径>
+export MARSHAL_GH_CONFIG_DIR=<含 hosts.yml 的独立目录，目录 0700、文件 0600>
+```
+
+配置后用 `marshal doctor --json` 确认对应 Adapter `outcome=registered`、`compatibility=supported`；未知版本会被拒绝。目标仓库先执行 `marshal init`，运行状态写入被 Git 排除的 `.marshal/`。
+
+### 9.2 Skill 分发
+
+`.agents/skills/marshal/` 目录是 Lead Agent 的 Skill（SKILL.md 与 Codex 界面元数据）。包含该目录的仓库中 pi/Codex 会自动发现；在其他仓库使用 Marshal 时，把该目录复制到目标仓库，或让 Lead Agent 先读取 SKILL.md 的绝对路径再操作。Skill 只描述工作流与强制边界，不替代本文档。
+
+### 9.3 长命令脱离运行
+
+`task run`、`task verify`、`task publish` 可能耗时数分钟至数十分钟。在脚本或 Agent 会话中运行时使用脱离形式，避免进程被终端或会话清理回收：
+
+```bash
+nohup marshal task run --run RUN_ID --json > run.log 2>&1 < /dev/null & disown
+```
+
+进程被意外回收是安全的：Journal 与 Snapshot 支持幂等续跑。先用 `marshal doctor --run RUN_ID --json` 确认状态一致，再重新执行同一命令即可。
+
+### 9.4 TaskSpec 编写
+
+- `work.context` 必须自包含：Worker 看不到对话历史，关键内容、精确路径与边界约束都写入 context；逐字复制类任务写明“逐字写入，不得增删改写”；
+- acceptance 命令按任务裁剪：全量 `make check` 在本仓库约 15 分钟，小任务挂一到两个精准命令即可；
+- 写明路径纪律：captured Worker 对业务 worktree 与 control 目录之外的路径有强制 permission 限制，constraints 中应固定“若某个操作被 permission 拒绝，不得重试该路径，改用允许路径内的等价输入”，否则模型的探索行为会让 Attempt 以 permission denied fail-closed；
+- TaskSpec 是进入 Review Packet 与远端 PR 的冻结产物，不得写入凭据、token 或敏感本机路径。
+
+### 9.5 Adapter 预算建议
+
+- **pi**：`message_update` 事件携带累积全量消息，转录本近似二次方增长；大任务建议 `maxOutputBytes >= 16000000`，否则会很快触发 `pi output limit exceeded`；
+- **opencode**：较大 TaskSpec context 会被写入 `$TMPDIR/opencode/work-context.txt` 并引导模型读取；该路径被外部路径策略正确拒绝，不影响任务完成（模型可改读 control/input/task-spec.json），不要把这类拒绝当作故障；
+- **qwen**：captured 模式无特殊预算要求；原生 TUI 受监督模式注意第 8 节的 Enter 粘贴竞态。
+
+### 9.6 问题上报三件套
+
+遇到问题时先采集三项只读信息：
+
+```bash
+marshal task status --run RUN_ID --json          # 当前状态与身份
+marshal doctor --run RUN_ID --json               # 只读对账诊断
+tail -5 .marshal/runs/RUN_ID/events.jsonl        # 最近的生命周期事件
+```
+
+Attempt 级 Worker transcript、stderr、VerificationReport、ReviewPacket 与 PublicationRecord 均已自动存档在对应 run 目录，无需手工复现现场。上报时附一句“我在做什么、期望什么、实际发生什么”。
