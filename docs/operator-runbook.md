@@ -108,4 +108,12 @@ marshal task cleanup --run RUN_ID
 
 ## 8. 当前已知本机状态
 
-2026-08-05 的本机实测中，cmux `ping` 与 `capabilities` 可用，但 `workspace list --json` 无响应；安全 helper Pilot 因此以 `workspace-rpc-unavailable` 在约 3 秒内 fail-closed。该状态不影响默认 captured 模式，也不证明 Adapter 或密封 launcher 失败。恢复真实 Pilot 需要用户先处理 cmux workspace RPC 状态。
+2026-08-05 上午本机 cmux `workspace list --json` 曾无响应，安全 helper Pilot 以 `workspace-rpc-unavailable` 在约 3 秒内 fail-closed；同日 cmux 重启后该 RPC 恢复。恢复后的实测证据：
+
+- `TestLiveCMUXTerminalSession` helper E2E 通过：进程组创建、Pause/Resume、Terminate 全部验证；
+- 真实受监督 Pilot 通过：Qwen Code `0.21.5` TUI 经 `terminal.StartPrepared`、密封 `LaunchEnvelope` 与 digest-bound 映射在 cmux workspace 启动，完成屏幕观察、任务产物精确校验、Pause/Resume、InterruptStep 与 Terminate，workspace 干净关闭；
+- 该 Pilot 的提示词提交动作为 manual-pty 介入（原因见下），Attempt 按混合 provenance 处置；这不影响 Pilot 证据本身，但任何据此产生的代码改动仍必须重新经过独立 Verification 与 Review。
+
+已知原生 TUI 问题（受监督模式限制）：Qwen TUI 在 `send` 多行文本后立即接收 Enter 时，Enter 会被粘贴处理吞掉；操作者必须等待粘贴 settle（本机实测约 10 秒）后再单独发送 Enter。OpenCode 与 Pi 的原生 TUI Pilot 尚未执行，不得假设行为相同。
+
+默认 captured 模式不受上述问题影响。Marshal 仍不会自动重启 cmux、不关闭非本次创建的 workspace、不杀死无法证明归属的 login process group。
