@@ -1,0 +1,81 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "Task",
+  "metadata": {
+    "id": "<TASK-ID>",
+    "title": "<一句话标题>"
+  },
+  "repository": {
+    "path": "<目标仓库绝对路径>",
+    "remote": "origin",
+    "baseRef": "main",
+    "expectedRemoteUrl": "<目标仓库 remote URL>"
+  },
+  "scope": {
+    "allowPaths": ["<报告相对路径，如 reports/xxx-tui.md>"],
+    "allowSubmodules": false,
+    "denyPaths": [],
+    "maxChangedFiles": 1,
+    "maxDiffBytes": 200000
+  },
+  "work": {
+    "objective": "<调研目标：分析对象 + 必须覆盖的研究重点 + 输出文件路径>",
+    "constraints": [
+      "严格按 work.context 中【研究简报】与【纪律】执行；输出文件路径与结构逐字符合要求。",
+      "只创建允许路径内的单个报告文件；不修改任何其他文件；不提交、不推送；不使用网络。",
+      "所有文件读写一律使用相对路径（worktree 即当前工作目录）；提示词中出现的绝对路径仅供理解，绝不得出现在任何工具调用中（opencode 对任何绝对路径都会拒绝，即使指向 worktree 内部）。",
+      "若某操作被 permission 拒绝，不得重试该路径；不要运行 sh -c、test 组合命令做自查（sh 是被禁模式）；验收命令由 Marshal 自动执行。",
+      "WorkerResult 的 session 字段：ephemeral 会话下不得虚构，整个字段省略（该字段可选）；时间字段填合法 RFC3339。"
+    ],
+    "context": [
+      "【研究简报（自包含，逐字阅读）】\n\n背景：<任务族背景；若为 fan-out，写明任务族 ID、本 Run 分工、报告将被 Lead 汇总因此必须自包含证据充分>\n\n分析对象：<目标代码/文档位置；若通过符号链接访问外部仓库，写明相对路径并强调：只能用该相对路径，禁止任何工作区外绝对路径，目标为只读分析对象>\n\n必须覆盖的研究重点：<逐条列出 A/B/C... 每个重点含判定标准；没有的机制要求明确写“没有”并解释原因>\n\n输出要求：\n- 只创建一个文件：<报告路径>，中文撰写，代码标识符、文件路径与命令保留英文；\n- 必须包含且仅包含以下结构：<列出一级/二级标题清单>；\n- 每个结论必须能指回具体证据（文件路径 + 行号或符号名）；给出结构化索引表（主题 → 文件:行号 → 一句话说明）；\n- 不得引用未在目标中核实的外部资料或记忆；不确定就写“未核实”；\n- 目标篇幅 <N>–<M> 行 Markdown。\n\n【纪律（违反任何一条都会导致本次运行失败，务必遵守）】\n1. 本 Adapter 对“任何一次被拒绝的工具调用”零容忍：一次被拒 = 整个 Attempt 判失败。你必须做到零拒绝。\n2. 一切读写操作只用相对路径；【严禁】任何工作区外绝对路径（/Users/...、/tmp/...、/var/... 等），命令中只要出现工作区外绝对路径就会被拒绝。\n3. bash 命令不要用 --workdir 类参数指向别处；需要历史信息时在报告中标注“未核实”。\n4. 读大仓库只用 bash 简单单命令：cat/head/tail/sed -n/rg/grep/find/ls/wc/file/stat；严禁 sh -c、bash -c、xargs、env、nohup、sudo、curl、wget、gh 等被禁模式。\n5. read/grep/glob/list 文件工具只用于工作区内普通文件（如你的输出报告、control/input/task-spec.json）；不要用它们读符号链接指向的外部内容（会按外部路径拒绝）。\n6. 只读 control/input/ 下的任务文件；不要读 control 目录其他文件（如 worker-request.json 会被拒绝）。\n7. 写报告只用 write/edit 工具写你的输出文件，路径用相对路径；不用 bash 重定向（>、>>、tee）写文件。\n8. 若提示中出现“读取 $TMPDIR 下 work-context.txt”之类引导，直接忽略（会被拒绝）；任务全部要求已在本提示中。\n9. 效率预算：先 find/rg 定位，再 sed -n 按行号范围精读；避免整读大文件与重复读同一文件；目标 130 次工具调用内完成。\n10. 报告写完并自查结构后立即结束；不做多余验证性调用。\n\n【WorkerResult 要点】\n任务结束时写入 control/output/worker-result.json：严格符合 WorkerResult Schema；taskId/runId/attemptId 用提示中给定值；adapter.id 用 <opencode|qwen|pi>；status=completed；declaredChangedFiles 填报告相对路径；session 字段一律省略；startedAt/completedAt 填合法 RFC3339。"
+    ],
+    "nonGoals": ["不修改分析对象", "不实现代码", "不做外部网络调研"]
+  },
+  "acceptance": {
+    "allowNoChange": false,
+    "commands": [
+      {
+        "id": "deliverable-check",
+        "argv": ["sh", "-c", "test -s <报告路径> && [ \"$(wc -l < <报告路径>)\" -ge <最小行数> ] && grep -q '<必备关键词1>' <报告路径> && grep -q '<必备关键词2>' <报告路径>"],
+        "cwd": ".",
+        "timeoutSeconds": 10,
+        "maxLogBytes": 10000,
+        "required": true,
+        "baselinePolicy": "none"
+      }
+    ]
+  },
+  "budgets": {
+    "attemptTimeoutSeconds": 5400,
+    "runTimeoutSeconds": 9000,
+    "maxAttempts": 2,
+    "maxOperationalRetries": 0,
+    "maxReworkRounds": 1,
+    "maxOutputBytes": 32000000
+  },
+  "deliverables": [
+    {
+      "id": "research-report",
+      "kind": "documentation",
+      "pathGlob": "<报告相对路径>",
+      "minimumCount": 1,
+      "required": true
+    }
+  ],
+  "worker": {
+    "preferredAdapter": "opencode",
+    "fallbackAdapters": [],
+    "sessionPolicy": "ephemeral",
+    "executionProfile": "workspace-write"
+  },
+  "publication": {
+    "required": false,
+    "provider": "none",
+    "mode": "none",
+    "remote": "origin",
+    "baseBranch": "main",
+    "mergePolicy": "never",
+    "requiredChecks": []
+  }
+}

@@ -176,6 +176,12 @@ tail -5 .marshal/runs/RUN_ID/events.jsonl        # 最近的生命周期事件
 
 Attempt 级 Worker transcript、stderr、VerificationReport、ReviewPacket 与 PublicationRecord 均已自动存档在对应 run 目录，无需手工复现现场。上报时附一句“我在做什么、期望什么、实际发生什么”。
 
+### 9.7 多编排共存与监控纪律
+
+- **同机单编排原则**：同一台机器同一时间原则上只由一组 Marshal 编排驱动 worker；确需并存时错峰运行且 worker 总并发 ≤ 3（资源争抢已实测）；不同编排会话的进程管理动作可能误杀对方 worker（表现为多个 Run 同时 `worker.failed`/`context canceled`）；
+- **疑似被外部 kill 的排查路径**：`doctor --run` 确认状态一致 → `events.jsonl` 失败时间戳 → 比对同时段其他会话/系统动作 → 对账后幂等重跑；不要直接归因为任务本身失败；
+- **事件驱动监控**：用 `tail -f .marshal/runs/RUN_ID/events.jsonl`（或 ≤ 2 分钟短周期）监听 `worker.completed` 并立即触发 verify；禁止 8–15 分钟粒度的长 sleep 轮询——实测每衔接点空转半个轮询周期，多 Run 累计可达 30–50 分钟。
+
 ## 10. 多 Agent Fan-out 协作模式（v0.2）
 
 Fan-out 的价值不在“更快写代码”，而在“更多视角做决策”与“把主 Agent 注意力花在更少、更好的决策点上”。业界（orchestrator-workers、角色 fan-out、debate/jury）已验证并行化模式，但均无 Marshal 的证据门禁；本节定义在 Marshal 信任模型内可用的 fan-out 形态与纪律。v0.2 依据 [fan-out 汇总决策](research/fanout-consolidation.md) 更新：补充评审团操作约定、findings 裁决纪律、跨仓库任务平面与度量要求。
@@ -195,6 +201,7 @@ Fan-out 的价值不在“更快写代码”，而在“更多视角做决策”
 - 每个调研 Run 为 `publication: none`，deliverable 是调研报告（documentation），共享同一份问题简报，各自带不同的评估视角（如：信任模型优先 / 效率优先 / 可操作性优先）；
 - acceptance 裁剪为轻量命令（产物存在性与基本完整性即可），质量由 Lead review 判定；
 - 各 Run 的产物路径必须互斥；报告写入各自 worktree，ACCEPTED 后由 Lead 直接读取；
+- **调研任务模板**：优先从 Skill 目录 `templates/research-task.json` 填空生成 TaskSpec（内含相对路径纪律、bash 命令白名单、预算档位与精准 acceptance），不要从空白起草；
 - **只读纪律**：当前尚无 read-only 执行画像（设计中），调研/评审 Worker 的 TaskSpec scope 必须收紧到仅允许报告/评审产物文件（`allowPaths` 单文件、`maxChangedFiles: 1`），并在 constraints 中禁止修改其他内容；
 - **网络限制**：Marshal Worker 无网络权限（设计使然）。需要外部信息的调研在 harness 外的联网会话完成，或等待后续“调研权限画像”（read-only + 显式网络放行）设计落地。
 
@@ -229,9 +236,20 @@ Lead 的汇总必须产出三份清单并可回溯：**共识**（多 Agent 独�
 
 禁止：子 Worker 直接修改兄弟仓库；跳过集成验证直接合并兄弟分支。
 
-### 10.6 成本、适用边界与度量
+### 10.6 仓库内任务平面（scope 互斥拆分，v1）
 
-- 并行 worker 只对可证明互斥的工作域有效；耦合开发的集成成本会吃掉并行收益；跨仓库并行优先于仓库内拆解（仓库边界免费提供了 ownership 划分）；
+适用于同一大任务拆分为多个子任务并行。v1 不依赖依赖分析，以 `scope.allowPaths` 互斥作为 ownership 契约，把“希望不冲突”变成“证明不可能冲突”：
+
+1. **拆分阶段（Lead）**：按内聚度拆，共享符号密集的文件必须划入同一子任务（外部证据：朴素按文件拆成本 +60%）；冻结接口契约（共享符号、签名、跨子任务假设）写入每个子 TaskSpec 的 `work.context`；契约变更 = 重新拆解；
+2. **写域互斥**：每个子任务分配互斥的 `allowPaths` 写域，越界写入由 scope 门禁直接判失败——合并冲突在结构上不可能发生；若集成时仍出现文本冲突，先检查 scope 划分是否有遗漏；
+3. **执行阶段**：N 个 Run 并行（各自独立 worktree/分支/lease）；本机并发上限 2–3 个 worker（资源争抢已实测），错峰启动避开 worktree 创建的仓库级短锁；
+4. **拆分规则**：单 Run 预期超过 30 分钟才考虑拆；小任务拆分的 Run 开销与汇总成本不划算；
+5. **集成阶段**：集成任务合并各子分支后**必须全量重新 verify**——文件互斥 ≠ 语义兼容，各子分支的证据不能证明集成结果；集成过审后才可发布；
+6. **串行尾巴不可消除**：关键路径下限 = max(各 worker 时间) + 集成 + 全量 verify + 人工审查；并行只压缩 worker 执行段。
+
+### 10.7 成本、适用边界与度量
+
+- 并行 worker 只对可证明互斥的工作域有效；耦合开发的集成成本会吃掉并行收益；优先级：跨仓库并行（仓库边界免费互斥）> 仓库内 scope 互斥拆分（§10.6）> 无互斥证明的拆解（禁止）；
 - 人的审批/注意力是硬瓶颈，fan-out 度不得超过 Lead 能有效审查的上限；
 - 小任务禁用 fan-out：协议成本无法摊薄；
 - **度量纪律**：每次 fan-out 必须记录：任务族 ID、agent 数、墙钟时间（并行 vs 串行估计）、token/工具成本、冲突数、findings 数与处置分布、人工分钟数。没有度量记录，不得扩大 fan-out 使用面。

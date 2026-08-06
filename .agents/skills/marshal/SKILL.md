@@ -53,4 +53,4 @@ Decision 必须绑定 `taskId`、`runId`、`reviewRound`、`specDigest`、`revie
 - TaskSpec 的 `work.context` 必须自包含（Worker 看不到对话历史）；acceptance 命令按任务裁剪；constraints 中固定“若某操作被 permission 拒绝，不得重试该路径，改用允许路径内的等价输入”。
 - pi 的大任务建议 `maxOutputBytes >= 16000000`（转录本近似二次方增长）；pi 有时会写空 `session.id` 导致 WorkerResult 被拒，调研类任务建议在 TaskSpec 内嵌 WorkerResult 逐字模板；opencode Worker 的一切读写操作必须相对路径（绝对路径即使指向 worktree 内部也会被拒）；派发 fan-out 前先勘查目标仓库已有产出。详见 Runbook §9.5 与 §10.4。
 - 更完整的实操经验见 Marshal 仓库 `docs/operator-runbook.md` 第 9 节；遇到问题先采集 `task status --json`、`doctor --run --json` 与 `events.jsonl` 末尾三项只读证据。
-- L 级复杂任务或探索型问题可用多 Agent fan-out（调研队/评审团/跨仓库并行）：模式、分级、裁决规则与汇总纪律见 `docs/operator-runbook.md` 第 10 节；评审 Worker 是材料不是结论，ReviewDecision 责任始终在 Lead。
+- L 级复杂任务或探索型问题可用多 Agent fan-out（调研队/评审团/跨仓库并行/仓库内 scope 互斥拆分）：模式、分级、裁决规则与汇总纪律见 `docs/operator-runbook.md` 第 9、10 节；调研任务优先从本 Skill `templates/research-task.json` 填空生成 TaskSpec；评审 Worker 是材料不是结论，ReviewDecision 责任始终在 Lead。

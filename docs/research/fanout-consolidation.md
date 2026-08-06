@@ -80,6 +80,8 @@
 
 ## 七、下一步
 
+> 补记（2026-08-06）：tui-research 流程审计（32 Run/28 次失败全量归因）与操作者提议共同推动——采纳项 3 的仓库内拆解已由“等依赖分析”升级为 **scope 互斥拆分 v1**（以 `scope.allowPaths` 互斥作为 ownership 契约，合并冲突结构性不可能），见 Runbook §10.6；跨仓库形态见 §10.5。另沉淀调研任务模板（Skill `templates/research-task.json`）与多编排共存纪律（Runbook §9.7）。
+
 1. Runbook §10 升级到 v0.2：并入采纳项 1/2/5/6 的操作约定（评审团视角清单、finding 结构、裁决与否决规则、度量字段）与采纳项 3a 的跨仓库协作约定；
 2. 首个评审团实战：下一个 M 级以上真实代码任务执行"verify 后评审团"流程，采集 findings 质量数据；
 3. read-only 执行画像设计提案（Worker 能力清单、Adapter 支持面）——涉及权限契约，按仓库规则需要 ADR 讨论后再动代码；
