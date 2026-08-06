@@ -160,8 +160,8 @@ nohup marshal task run --run RUN_ID --json > run.log 2>&1 < /dev/null & disown
 
 ### 9.5 Adapter 预算建议
 
-- **pi**：`message_update` 事件携带累积全量消息，转录本近似二次方增长；大任务建议 `maxOutputBytes >= 16000000`，否则会很快触发 `pi output limit exceeded`；
-- **opencode**：较大 TaskSpec context 会被写入 `$TMPDIR/opencode/work-context.txt` 并引导模型读取；该路径被外部路径策略正确拒绝，不影响任务完成（模型可改读 control/input/task-spec.json），不要把这类拒绝当作故障；
+- **pi**：`message_update` 事件携带累积全量消息，转录本近似二次方增长；大任务建议 `maxOutputBytes >= 16000000`，否则会很快触发 `pi output limit exceeded`。另：pi 有时会在 WorkerResult 里写空 `session.id`（ephemeral 会话下 Worker 无从得知）导致 schema 拒绝；在 TaskSpec context 中内嵌 WorkerResult 逐字模板（字段清单 + 占位说明）可规避；
+- **opencode**：较大 TaskSpec context 会被写入 `$TMPDIR/opencode/work-context.txt` 并引导模型读取；该路径被外部路径策略正确拒绝，不影响任务完成（模型可改读 control/input/task-spec.json），不要把这类拒绝当作故障。**绝对路径零容忍**：opencode 对任何绝对路径的工具调用都会拒绝——即使路径在 worktree 内部；而 Worker 会模仿 Marshal prompt 中出现的绝对路径。因此读密集/调研类任务的 constraints 必须强制“所有读写操作一律相对路径，提示词中的绝对路径仅供理解”；读符号链接外部源码用 `sources/<repo>/...` 相对路径 + bash 简单命令；
 - **qwen**：captured 模式无特殊预算要求；原生 TUI 受监督模式注意第 8 节的 Enter 粘贴竞态。
 
 ### 9.6 问题上报三件套
@@ -212,6 +212,8 @@ verify 通过后、写 ReviewDecision 前：
 红线：评审 Worker 的意见是材料不是结论；决策责任与证据绑定始终在 Lead。评审 Worker 遵守 10.2 的只读纪律。
 
 ### 10.4 汇总纪律
+
+**派发前勘查**：Lead 派发任何 fan-out 前必须先检查目标仓库已有产出（`reports/`、`git log`、`.marshal/runs` 状态），确认工作未被其他会话完成或进行中，避免重复劳动。
 
 Lead 的汇总必须产出三份清单并可回溯：**共识**（多 Agent 独立得出的一致结论）、**分歧**（冲突点与 Lead 的裁决理由）、**采纳结论及其证据**（每条结论必须能指回具体 Run 的证据）。没有证据支撑的“综合意见”不得进入结论。findings 的逐条处置记录与 dissent 理由同样属于汇总产物，不得省略。
 
