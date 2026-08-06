@@ -269,7 +269,7 @@ func TestMarshalSkillHasExplicitAndImplicitTriggers(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(data)
-	for _, expected := range []string{"明确要求“使用 Marshal”", "Codex 作为主 Agent", "marshal task review", "不要绕过 Core"} {
+	for _, expected := range []string{"明确要求“使用 Marshal”", "主 Agent（pi、Codex 等编码 Agent）", "marshal task review", "不要绕过 Core"} {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("skill misses trigger or boundary %q", expected)
 		}
