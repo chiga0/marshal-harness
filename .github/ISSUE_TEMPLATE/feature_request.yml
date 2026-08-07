@@ -1,0 +1,22 @@
+name: 功能建议 / Feature Request
+description: 提出新功能或设计变更 / Propose a feature or design change
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题与动机 / Problem & motivation
+      description: 你在什么真实场景下遇到什么限制？请尽量附实测数据
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案 / Proposed approach
+      description: 若涉及信任边界、持久化契约、生命周期或发布权限，请说明是否需要 ADR
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: 不变量自查 / Invariants check
+      options:
+        - label: 我已阅读 AGENTS.md 的不可破坏不变量，方案不违反其中任何一条
+          required: true

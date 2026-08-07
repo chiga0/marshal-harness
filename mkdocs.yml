@@ -1,0 +1,90 @@
+site_name: Marshal Harness
+site_description: 证据门禁式 Coding Agent 编排器 / Evidence-gated orchestration for coding agents
+site_url: https://chiga0.github.io/marshal-harness/
+repo_url: https://github.com/chiga0/marshal-harness
+edit_uri: edit/main/docs/
+docs_dir: docs
+theme:
+  name: material
+  language: zh
+  palette:
+    - scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: 切换暗色
+    - scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: 切换亮色
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - content.code.copy
+plugins:
+  - search:
+      lang:
+        - en
+        - zh
+markdown_extensions:
+  - toc:
+      permalink: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - admonition
+nav:
+  - 概览:
+      - 项目简介: README.md
+      - 愿景与范围: vision-and-scope.md
+      - 路线图状态: roadmap-status.md
+      - 审计报告: audit-report.md
+  - 快速开始:
+      - 开发指南: development.md
+      - 环境基线: environment-baseline.md
+      - 操作手册: operator-runbook.md
+      - 主 Agent 技能: marshal-skill.md
+  - 核心设计:
+      - 架构设计: architecture.md
+      - 任务生命周期: task-lifecycle.md
+      - 安全模型: security-model.md
+      - 任务契约: task-contract.md
+      - 验证与审查: verification-and-review.md
+      - 产物与发布: artifact-and-publishing.md
+      - 失败与恢复: failure-and-recovery.md
+      - 主 Agent 接入界面: lead-agent-surfaces.md
+  - Worker Adapter:
+      - Adapter 设计: worker-adapters.md
+      - 选型 Spike: worker-adapter-spike.md
+  - 实施与验收:
+      - 实施计划: implementation-plan.md
+      - Milestone 0: milestone-0-report.md
+      - Milestone 1: milestone-1-report.md
+      - Milestone 2: milestone-2-report.md
+      - Milestone 3: milestone-3-report.md
+      - Milestone 4: milestone-4-report.md
+      - Milestone 5: milestone-5-report.md
+      - Milestone 6: milestone-6-report.md
+  - 架构决策记录:
+      - ADR 索引: adr/README.md
+      - 0001 CLI-first 模块化单体: adr/0001-cli-first-modular-monolith.md
+      - 0002 Worktree 隔离: adr/0002-worktree-isolation.md
+      - 0003 Worker 与 Publisher 分权: adr/0003-separate-worker-and-publisher.md
+      - 0004 独立验证: adr/0004-independent-verification.md
+      - 0005 Go Runtime: adr/0005-go-runtime.md
+      - 0006 Attempt 控制根: adr/0006-attempt-control-root.md
+      - 0007 意图先行发布: adr/0007-intent-first-publication.md
+      - 0008 可插拔 Observer: adr/0008-pluggable-observer-backends.md
+      - 0009 Terminal Session: adr/0009-terminal-session-execution.md
+      - 0010 受控自治: adr/0010-controlled-autonomy-and-intervention.md
+      - 0011 密封 TUI 传输: adr/0011-sealed-native-tui-transport.md
+      - 0012 显式 abort: adr/0012-explicit-abort.md
+      - 0013 拒绝分级: adr/0013-graded-permission-denials.md
+      - 0014 Read-only 画像: adr/0014-read-only-execution-profile.md
+  - 研究与审计:
+      - Fan-out 汇总决策: research/fanout-consolidation.md
+      - A/B 实验设计: research/abtest-marshal-vs-single-agent.md

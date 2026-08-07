@@ -1,0 +1,26 @@
+name: Bug 报告 / Bug Report
+description: 报告可复现的问题 / Report a reproducible problem
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      description: marshal version --json 的输出或 commit SHA
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      description: 最小命令序列与输入文件（TaskSpec/Policy 可贴摘要）
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望与实际 / Expected vs actual
+    validations: { required: true }
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据 / Evidence（可选但强烈推荐）
+      description: marshal task status --json、doctor --run --json、events.jsonl 末尾

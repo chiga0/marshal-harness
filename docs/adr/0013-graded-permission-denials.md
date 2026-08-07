@@ -1,6 +1,6 @@
 # ADR 0013：Permission 拒绝分级（预期内 vs 致命）
 
-- 状态：提案（Proposed）
+- 状态：已接受（Accepted，2026-08-07 维护者接受，进入实施）
 - 日期：2026-08-07
 - 决策来源：tui-research 流程审计（28 次失败中 8 次为 permission fail-closed）、data-agent-cli 与 marshal-harness hardening 实测
 
