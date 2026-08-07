@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-仓库已完成 Milestone 0–5：具备契约、生命周期、Run Store、隔离 worktree、独立 Verification、Review/Rework、Outcome、OpenCode Worker 与 GitHub Draft Publisher。当前进入 Qwen Code/Pi Adapter、Recovery/Cleanup 与完整 MVP E2E。
+仓库已完成 Milestone 0–6，Local MVP 标记 `USABLE`（见 [roadmap-status.md](roadmap-status.md)）。版本与发布语义见根目录 [CHANGELOG.md](../CHANGELOG.md)；阶段推进以 tag 为准。
 
 ## Go 基线
 
@@ -11,8 +11,9 @@
 - Toolchain：Go `1.26.5`；
 - JSON Schema：Draft 2020-12；
 - Glob：`doublestar/v4`，`**` 表示跨目录递归；
-- 静态检查：`go vet` 与固定版本的 `staticcheck`；
-- 交付形式：单一 `marshal` 可执行文件。
+- 静态检查：`go vet` 与固定版本的 `staticcheck`（经 `go.mod` 的 `tool` 指令固定，Go 1.24+ 特性；请勿自行 `go install` 其他版本，以免结果不一致）；
+- 交付形式：单一 `marshal` 可执行文件；
+- 工具链：Go 低于 `go.mod` 要求时 toolchain 自动下载需要网络；受限环境请预先安装匹配版本。
 
 GitHub remote 已绑定为 `github.com/chiga0/marshal-harness`，与 Module Path 一致。
 
@@ -51,7 +52,7 @@ make vuln
 make ci
 ```
 
-`make check` 执行 Format Check、Vet、Staticcheck、Race Test 与 Build；`make ci` 在此基础上执行 `govulncheck`。构建结果默认位于 `bin/marshal`，该目录被 Git 忽略。
+`make check` 执行 Format Check、Vet、Staticcheck、Race Test 与 Build；`make ci` 在此基础上执行 `govulncheck`。**全量 `make check` 在本仓库约 15 分钟**（race 全量测试为主）；日常可先跑 `go test ./internal/<包>/...` 快速反馈。构建结果默认位于 `bin/marshal`，该目录被 Git 忽略。
 
 GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，并使用独立 Job 执行 Secret Scan。外部 Action 固定到完整 Commit SHA，工作流默认只有 `contents: read` 权限。
 
@@ -59,17 +60,18 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 
 ```bash
 marshal version [--json]
-marshal doctor [--json]
+marshal doctor [--run RUN_ID] [--repair] [--json]
 marshal contract validate [--schema NAME] <PATH|->
 marshal init [--json]
 marshal task status --run RUN_ID [--json]
 marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
-marshal task approve --run RUN_ID --gate plan|publish [--json]
-marshal task run --run RUN_ID [--json]
+marshal task approve --run RUN_ID --gate plan|publish [--actor ID] [--json]
+marshal task run --run RUN_ID [--through-verify] [--json]
 marshal task verify --run RUN_ID [--json]
 marshal task review --run RUN_ID [--decision PATH] [--json]
 marshal task publish --run RUN_ID [--json]
 marshal task accept --run RUN_ID [--json]
+marshal task abort --run RUN_ID --actor ID --reason TEXT [--json]
 marshal task cleanup --run RUN_ID [--apply] [--json]
 marshal task <COMMAND>
 ```
@@ -83,11 +85,28 @@ go run ./cmd/marshal doctor --json
 go run ./cmd/marshal contract validate --schema task-spec schemas/examples/happy-path/task-spec.json
 ```
 
+## 环境变量参考
+
+| 变量 | 用途 | 性质 |
+| --- | --- | --- |
+| `MARSHAL_STATE_DIR` | 覆盖默认 `.marshal/` 状态目录（绝对路径；仓库内则必须等于默认目录） | 运行配置 |
+| `MARSHAL_OPENCODE_PATH` | OpenCode Worker 可执行文件绝对路径 | Adapter 注册 |
+| `MARSHAL_QWEN_PATH` | Qwen Code Worker 可执行文件绝对路径 | Adapter 注册 |
+| `MARSHAL_PI_PATH` | Pi Worker 可执行文件绝对路径 | Adapter 注册 |
+| `MARSHAL_GH_PATH` | Publisher 的 `gh` 可执行文件绝对路径 | 发布凭据边界 |
+| `MARSHAL_GH_CONFIG_DIR` | Publisher 独立凭据目录（不复用 ambient 配置） | 发布凭据边界 |
+| `MARSHAL_CMUX_PATH` | cmux 可执行文件路径（受监督 Pilot） | 可选后端 |
+| `MARSHAL_LIVE_CMUX` | 启用 cmux Live E2E | 测试开关 |
+| `MARSHAL_LIVE_GITHUB` / `MARSHAL_LIVE_GITHUB_FIXED_SUFFIX` | 启用 GitHub Publisher Live 测试（后者固定 branch/PR 后缀以便幂等重跑） | 测试开关 |
+| `MARSHAL_LIVE_OPENCODE_PATH` / `MARSHAL_LIVE_QWEN_PATH` / `MARSHAL_LIVE_PI_PATH` | 启用对应 Adapter 的 Live E2E | 测试开关 |
+
+所有 `*_PATH` 变量只接受绝对路径；未设置时 `marshal doctor` 显示 `not-configured`（不会搜索 PATH 或猜近似名）。Live 测试默认跳过，CI 不依赖任何 Live 开关。
+
 ## 契约策略
 
 JSON Schema 是持久化记录的权威结构定义。Go 侧只定义 Core 实际需要的强类型枚举与不透明 `Record`，避免维护第二套完整镜像结构；测试强制检查：
 
-- 15 份 Schema 全部可以编译；
+- 17 份 Schema 全部可以编译；
 - 每份 Happy-path Fixture 通过；
 - 每份 Invalid Fixture 失败；
 - Format Assertion 已启用；
