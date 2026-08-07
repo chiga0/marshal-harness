@@ -99,6 +99,13 @@ marshal task cleanup --run RUN_ID
 
 `doctor` 默认只读。仅当权威 Journal/Record 能唯一证明修复结果时使用 `--repair`；不确定状态进入 quarantine/`BLOCKED`。`cleanup` 默认只预览，活动 lease、非终态 Run、dirty worktree 或路径身份异常都会阻止删除。不要用手工递归删除代替 Cleanup Guard。
 
+**状态卫生规范**（防止 `.marshal/` 与业务仓库膨胀）：
+
+- Lead 编排产物（TaskSpec 输入、驱动日志、Decision 草稿）一律放 `.marshal/` 下（如 `.marshal/tasks/`、`.marshal/logs/`），不得提交进业务仓库；注意 `.gitignore` 对已跟踪文件无效，误提交后必须 `git rm --cached` 解除跟踪；
+- 证据保留：终态 Run 的 Journal/Outcome/Record 按 Policy 的 `retentionDays`（默认 30 天）保留，期间不得删除；`retentionDays` 当前为声明式、代码未强制执行，执行落地前以本规范人工遵守；
+- 死 Run（RETRY_PENDING/被放弃的 BLOCKED）先经 `task abort`（开发中）转终态，再 `cleanup` 回收 worktree 与临时缓存；证据按上一条保留；
+- 旧版 TaskSpec/草稿等活性已失的文件，定期归档到 `.marshal/archive/` 或删除，不留在工作面上。
+
 ## 7. 发布和远端处置
 
 - Publisher 凭据只在 publish 阶段注入，不能进入 Worker/TUI 环境。
