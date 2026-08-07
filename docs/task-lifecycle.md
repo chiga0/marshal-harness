@@ -31,7 +31,7 @@ Retry 表示基础设施或 Provider 执行失败，因此创建新 Attempt。Re
 | `ACCEPTED` | 所有必需门禁与语义 Review 通过 | 最终决策及所需发布/CI 证据 |
 | `REJECTED` | 工作不合适且不再继续 | Reject 决策或 Rework 预算耗尽 |
 | `BLOCKED` | 需要外部输入或能力 | 具体 Blocker Record |
-| `ABORTED` | 授权操作者停止 Run | Abort 原因与保存的证据 |
+| `ABORTED` | 授权操作者停止 Run（保留状态） | Abort 原因与保存的证据；v1 实现以 `BLOCKED` + `terminalReason=aborted-by-operator` 表达（ADR 0012） |
 | `NO_CHANGE` | Review 确认无需仓库变更 | No-change 决策与诊断证据 |
 
 `ACCEPTED`、`REJECTED`、`BLOCKED`、`ABORTED`、`NO_CHANGE` 是 Run 终态。解决 Blocker 或改变终态决策必须创建关联到旧 Run 的新 Run。
@@ -62,7 +62,7 @@ Retry 表示基础设施或 Provider 执行失败，因此创建新 Attempt。Re
 | `CI_PENDING` | `ACCEPTED` | 当前发布 head SHA 的必需检查通过 |
 | `CI_PENDING` | `REWORK_REQUESTED` | 检查失败、预算尚存且可通过代码修复 |
 | `CI_PENDING` | `BLOCKED` | 失败来自外部或需要维护者操作 |
-| 任意非终态 | `ABORTED` | 授权中止，子进程停止且证据已刷新 |
+| `RETRY_PENDING` | `BLOCKED` | 显式 abort（`run.aborted`，ADR 0012）：human actor、LeaseHeld、写终态 Outcome；v1 不启用 `ABORTED` 状态 |
 
 意外进程退出不会自动创造转换。Recovery 必须先比较 Journal、Snapshot、Process Lease 与 worktree 状态，再选择合法转换。
 

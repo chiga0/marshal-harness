@@ -4,7 +4,7 @@
 
 本文只是实施计划，不代表已授权实施。只有维护者接受 ADR 与审计结论后，才开始运行时代码开发。
 
-当前状态：维护者已授权实施；Milestone 0–5 已通过，当前进入 Milestone 6。验收证据见 [Roadmap 状态](roadmap-status.md)。
+当前状态：维护者已授权实施；Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`（2026-08-07）。验收证据见 [Roadmap 状态](roadmap-status.md)。
 
 ## 交付策略
 

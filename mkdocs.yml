@@ -39,9 +39,10 @@ markdown_extensions:
   - admonition
 nav:
   - 概览:
-      - 项目简介: README.md
+      - 项目首页: index.md
       - 愿景与范围: vision-and-scope.md
       - 路线图状态: roadmap-status.md
+      - 兼容性矩阵: compatibility-matrix.md
       - 审计报告: audit-report.md
   - 快速开始:
       - 开发指南: development.md
@@ -89,3 +90,6 @@ nav:
       - Fan-out 汇总决策: research/fanout-consolidation.md
       - A/B 实验设计: research/abtest-marshal-vs-single-agent.md
       - herdr 对照调研: research/herdr-comparison.md
+      - 开源审计·上手: research/oss-audit-onboarding.md
+      - 开源审计·社区: research/oss-audit-community.md
+      - 开源审计·文档: research/oss-audit-docs2.md
