@@ -13,12 +13,22 @@ var ErrInvalidTransition = errors.New("invalid lifecycle transition")
 // event, including on terminal runs. It never changes business fields.
 const RepairAuditEventType = "reconciliation.snapshot-repaired"
 
+// AbortEventType is the explicit operator abort event recorded by
+// `marshal task abort`. The lifecycle only allows it to express the
+// RETRY_PENDING -> BLOCKED transition.
+const AbortEventType = "run.aborted"
+
+// AbortTerminalReason is the fixed terminalReason bound to explicit operator
+// aborts. The operator-provided reason is stored as a separate payload field
+// and never inside the terminalReason value.
+const AbortTerminalReason = "aborted-by-operator"
+
 var allowed = map[domain.State]map[domain.State]bool{
 	domain.StateCreated:         {domain.StatePlanned: true},
 	domain.StatePlanned:         {domain.StateReady: true},
 	domain.StateReady:           {domain.StateRunning: true},
 	domain.StateRunning:         {domain.StateVerifying: true, domain.StateRetryPending: true, domain.StateBlocked: true},
-	domain.StateRetryPending:    {domain.StateRunning: true},
+	domain.StateRetryPending:    {domain.StateRunning: true, domain.StateBlocked: true},
 	domain.StateVerifying:       {domain.StateReviewPending: true},
 	domain.StateReviewPending:   {domain.StateReworkRequested: true, domain.StateRejected: true, domain.StateBlocked: true, domain.StateNoChange: true, domain.StatePublishing: true, domain.StateAccepted: true},
 	domain.StateReworkRequested: {domain.StateRunning: true},

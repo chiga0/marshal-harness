@@ -1,6 +1,6 @@
 # 架构决策记录
 
-本目录记录对实现有实质约束的决策。ADR 0001–0005 由维护者于 2026-08-03 接受；ADR 0006–0010 于 2026-08-04 随真实 Adapter、受控发布、可观察性与受控自治设计实施接受；ADR 0011 于 2026-08-05 根据真实三 Worker 委派证据接受。
+本目录记录对实现有实质约束的决策。ADR 0001–0005 由维护者于 2026-08-03 接受；ADR 0006–0010 于 2026-08-04 随真实 Adapter、受控发布、可观察性与受控自治设计实施接受；ADR 0011 于 2026-08-05 根据真实三 Worker 委派证据接受；ADR 0012 于 2026-08-07 随显式 abort 生命周期扩展接受。
 
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
@@ -15,6 +15,6 @@
 | [0009](0009-terminal-session-execution.md) | 原生 PTY Terminal Session 执行传输 | 已接受（Accepted） |
 | [0010](0010-controlled-autonomy-and-intervention.md) | 受控自治、审批 Gate 与人工介入 | 已接受（Accepted） |
 | [0011](0011-sealed-native-tui-transport.md) | 密封启动与可判定的原生 TUI 传输 | 已接受（Accepted） |
-| [0012](0012-explicit-abort.md) | 废弃 Run 的显式 abort | 提案（Proposed，随 hardening 实施） |
+| [0012](0012-explicit-abort.md) | 废弃 Run 的显式 abort | 已接受（Accepted） |
 | [0013](0013-graded-permission-denials.md) | Permission 拒绝分级（预期内 vs 致命） | 提案（Proposed） |
 | [0014](0014-read-only-execution-profile.md) | Read-only 执行画像（调研/评审最小权限） | 提案（Proposed） |
