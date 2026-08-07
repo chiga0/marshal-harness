@@ -8,6 +8,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gofrs/flock"
 
 	marshalRepository "github.com/chiga0/marshal-harness/internal/repository"
 )
@@ -130,6 +133,122 @@ func TestRemoveCleanRejectsDirtyAndRetainsBranch(t *testing.T) {
 		t.Fatal("cleanup unexpectedly removed the local branch")
 	}
 	_ = gitCommand(t, repository, "branch", "-D", branch)
+}
+
+func TestCreateRetriesShortLivedRepositoryLock(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, err := Open(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, release := holdRepositoryLock(t, stateRoot)
+	go func() {
+		time.Sleep(900 * time.Millisecond)
+		_ = holder.Unlock()
+	}()
+	started := time.Now()
+	worktree, err := manager.Create(stateRoot, "task:retry", base)
+	if err != nil {
+		t.Fatalf("Create gave up on short-lived repository lock contention: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 500*time.Millisecond {
+		t.Fatalf("Create returned in %s without backing off for the repository lock", elapsed)
+	}
+	release()
+	_ = worktree.Release()
+	_ = gitCommand(t, repository, "worktree", "remove", "--force", worktree.Path)
+	_ = gitCommand(t, repository, "branch", "-D", worktree.Branch)
+}
+
+func TestCreateFailsWhenRepositoryLockOutlivesRetryWindow(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, err := Open(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold := repositoryLockRetryWindow() + 500*time.Millisecond
+	holder, release := holdRepositoryLock(t, stateRoot)
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-time.After(hold):
+		case <-stop:
+		}
+		_ = holder.Unlock()
+	}()
+	started := time.Now()
+	_, err = manager.Create(stateRoot, "task:window", base)
+	elapsed := time.Since(started)
+	close(stop)
+	if err == nil {
+		t.Fatal("Create succeeded while the repository lock stayed held beyond the retry window")
+	}
+	if !strings.Contains(err.Error(), "repository lock") {
+		t.Fatalf("error = %v, want repository lock failure", err)
+	}
+	if elapsed < repositoryLockRetryWindow()-200*time.Millisecond || elapsed > hold+time.Second {
+		t.Fatalf("Create backed off for %s, want roughly the %s retry window", elapsed, repositoryLockRetryWindow())
+	}
+	if _, statErr := os.Lstat(filepath.Join(stateRoot, "worktrees", "task-window")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed Create left a worktree behind: %v", statErr)
+	}
+	release()
+}
+
+func TestCreateDoesNotRetryTaskLock(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, err := Open(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := manager.Create(stateRoot, "task:one", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = first.Release()
+		_ = gitCommand(t, repository, "worktree", "remove", "--force", first.Path)
+		_ = gitCommand(t, repository, "branch", "-D", first.Branch)
+	}()
+	started := time.Now()
+	second, err := manager.Create(stateRoot, "task:one", base)
+	elapsed := time.Since(started)
+	if err == nil {
+		_ = second.Release()
+		t.Fatal("second writer for the same task acquired a worktree")
+	}
+	if !strings.Contains(err.Error(), "task lock") {
+		t.Fatalf("error = %v, want task lock failure", err)
+	}
+	if elapsed >= repositoryLockBackoff {
+		t.Fatalf("task lock contention backed off for %s, want immediate failure", elapsed)
+	}
+}
+
+func repositoryLockRetryWindow() time.Duration {
+	return time.Duration(repositoryLockRetries) * repositoryLockBackoff
+}
+
+func holdRepositoryLock(t *testing.T, stateRoot string) (*flock.Flock, func()) {
+	t.Helper()
+	locks := filepath.Join(stateRoot, "locks")
+	if err := os.MkdirAll(locks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	holder := flock.New(filepath.Join(locks, "repository.lock"))
+	locked, err := holder.TryLock()
+	if err != nil || !locked {
+		t.Fatalf("fixture could not take repository lock: %v", err)
+	}
+	release := func() { _ = holder.Unlock() }
+	t.Cleanup(release)
+	return holder, release
 }
 
 func initializeMarshalState(t *testing.T, root string) {

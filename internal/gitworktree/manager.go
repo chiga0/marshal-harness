@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/gofrs/flock"
@@ -38,6 +39,10 @@ type Detached struct {
 }
 
 var branchUnsafe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
+const repositoryLockRetries = 5
+
+var repositoryLockBackoff = 800 * time.Millisecond
 
 func Open(root string) (Repository, error) {
 	return OpenContext(context.Background(), root)
@@ -101,8 +106,8 @@ func (r Repository) Create(stateRoot, taskID, baseSHA string) (*Worktree, error)
 	}
 	repositoryLock := flock.New(filepath.Join(locks, "repository.lock"))
 	taskLock := flock.New(filepath.Join(locks, "task-"+safeName(taskID)+".lock"))
-	if locked, err := repositoryLock.TryLock(); err != nil || !locked {
-		return nil, fmt.Errorf("acquire repository lock: %w", lockError(err))
+	if err := lockRepositoryWithRetry(repositoryLock); err != nil {
+		return nil, fmt.Errorf("acquire repository lock: %w", err)
 	}
 	if locked, err := taskLock.TryLock(); err != nil || !locked {
 		_ = repositoryLock.Unlock()
@@ -242,6 +247,22 @@ func (d *Detached) Remove() error {
 	err := gitRun(d.repo.Root, "worktree", "remove", "--force", d.Path)
 	d.Path = ""
 	return err
+}
+
+func lockRepositoryWithRetry(lock *flock.Flock) error {
+	for attempt := 0; ; attempt++ {
+		locked, err := lock.TryLock()
+		if err != nil {
+			return err
+		}
+		if locked {
+			return nil
+		}
+		if attempt >= repositoryLockRetries {
+			return errors.New("already locked")
+		}
+		time.Sleep(repositoryLockBackoff)
+	}
 }
 
 func acquireRepositoryLock(stateRoot string) (*flock.Flock, error) {

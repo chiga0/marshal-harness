@@ -360,7 +360,7 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	})
 
 	for _, command := range taskCommands {
-		if command == "plan" || command == "approve" || command == "run" || command == "status" || command == "verify" || command == "review" || command == "publish" || command == "accept" || command == "cleanup" || command == "abort" {
+		if command == "plan" || command == "approve" || command == "run" || command == "status" || command == "verify" || command == "review" || command == "publish" || command == "accept" || command == "cleanup" {
 			continue
 		}
 		var stdout, stderr bytes.Buffer
@@ -856,6 +856,196 @@ func TestTaskVerifyEndToEnd(t *testing.T) {
 	}
 	if verifiedState.State != domain.StateReviewPending || verifiedState.Sequence != 5 {
 		t.Fatalf("verified state = %+v", verifiedState)
+	}
+}
+
+type autoFlowSetup struct {
+	repositoryRoot, remoteURL string
+}
+
+func newAutoFlowSetup(t *testing.T) autoFlowSetup {
+	t.Helper()
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot := t.TempDir()
+	repositoryRoot, err = filepath.EvalSymlinks(repositoryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repositoryRoot, "init", "-q", "-b", "main")
+	runGit(t, repositoryRoot, "config", "user.email", "marshal@example.invalid")
+	runGit(t, repositoryRoot, "config", "user.name", "Marshal Test")
+	if err := os.WriteFile(filepath.Join(repositoryRoot, "README.md"), []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repositoryRoot, "add", "README.md")
+	runGit(t, repositoryRoot, "commit", "-q", "-m", "fixture")
+	const remoteURL = "https://example.invalid/marshal-autoflow.git"
+	runGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	if err := os.Chdir(repositoryRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"init"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
+	}
+	t.Setenv("MARSHAL_OPENCODE_PATH", autoFlowWorkerExecutable(t))
+	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_PI_PATH", "")
+	return autoFlowSetup{repositoryRoot: repositoryRoot, remoteURL: remoteURL}
+}
+
+func (s autoFlowSetup) planAndApprove(t *testing.T, taskID, runID string, acceptancePasses bool) {
+	t.Helper()
+	task := cliPlanningTask(t, s.repositoryRoot, taskID, s.remoteURL)
+	task["scope"] = map[string]any{"allowPaths": []string{"src/auth/**"}, "denyPaths": []string{}, "allowSubmodules": false, "maxChangedFiles": 5, "maxDiffBytes": 100000}
+	checkTarget := "src/auth/worker-change.txt"
+	if !acceptancePasses {
+		checkTarget = "src/auth/missing-file.txt"
+	}
+	task["acceptance"] = map[string]any{
+		"allowNoChange": false,
+		"commands": []any{map[string]any{
+			"id": "change-check", "argv": []string{"sh", "-c", "test -f " + checkTarget}, "cwd": ".",
+			"timeoutSeconds": 5, "required": true, "baselinePolicy": "none", "maxLogBytes": 4096,
+		}},
+	}
+	task["deliverables"] = []any{map[string]any{"id": "implementation", "kind": "code", "required": true, "pathGlob": "src/auth/**", "minimumCount": 1}}
+	taskPath := filepath.Join(t.TempDir(), "task.json")
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	writeCLIFixture(t, taskPath, task)
+	writeCLIFixture(t, policyPath, cliPlanningPolicy(t, taskID, runID))
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("task plan exit = %d, stderr = %s", exit, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"task", "approve", "--run", runID, "--gate", "plan", "--actor", "autoflow-test"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("task approve exit = %d, stderr = %s", exit, stderr.String())
+	}
+}
+
+func autoFlowWorkerExecutable(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "opencode")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ]; then printf '1.18.13\n'; exit 0; fi
+if [ "$1" = "debug" ] && [ "$2" = "config" ]; then printf '%s\n' "$OPENCODE_CONFIG_CONTENT"; exit 0; fi
+if [ "$1" = "run" ]; then
+  for last; do :; done
+  result_path=$(printf '%s\n' "$last" | sed -n 's/.*写入：\([^[:space:]]*\).*/\1/p')
+  task_id=$(printf '%s\n' "$last" | sed -n 's/.*taskId=\(.*\)、runId=.*/\1/p')
+  run_id=$(printf '%s\n' "$last" | sed -n 's/.*runId=\(.*\)、attemptId=.*/\1/p')
+  attempt_id=$(printf '%s\n' "$last" | sed -n 's/.*attemptId=\(.*\)、adapter\.id=.*/\1/p')
+  mkdir -p src/auth
+  printf 'fixture change\n' > src/auth/worker-change.txt
+  cat > "$result_path" <<EOF
+{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"$task_id","runId":"$run_id","attemptId":"$attempt_id","adapter":{"id":"opencode","executable":"/fixture/opencode","version":"fixture"},"status":"completed","summary":"fixture change","declaredChangedFiles":["src/auth/worker-change.txt"],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"2026-08-07T00:00:00Z","completedAt":"2026-08-07T00:00:01Z"}
+EOF
+  printf '%s\n' '{"type":"step_start","sessionID":"session-autoflow","part":{"type":"step-start"}}'
+  printf '%s\n' '{"type":"text","sessionID":"session-autoflow","part":{"type":"text","text":"done"}}'
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestTaskRunThroughVerifyReachesReviewPending(t *testing.T) {
+	setup := newAutoFlowSetup(t)
+	const taskID, runID = "autoflow-task-pass", "autoflow-run-pass"
+	setup.planAndApprove(t, taskID, runID, true)
+	var stdout, stderr bytes.Buffer
+	exit := Run([]string{"task", "run", "--run", runID, "--through-verify", "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitOK {
+		t.Fatalf("task run --through-verify exit = %d, stderr = %s", exit, stderr.String())
+	}
+	var combined struct {
+		State        domain.RunState `json:"state"`
+		AttemptID    string          `json:"attemptId"`
+		Verification struct {
+			Status string `json:"status"`
+		} `json:"verification"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &combined); err != nil {
+		t.Fatalf("decode run output: %v\n%s", err, stdout.String())
+	}
+	if combined.State.State != domain.StateReviewPending || combined.AttemptID == "" || combined.Verification.Status != "pass" {
+		t.Fatalf("combined result = %+v\n%s", combined, stdout.String())
+	}
+	store := runstore.New(filepath.Join(setup.repositoryRoot, ".marshal"))
+	state, err := store.Inspect(runID)
+	if err != nil || state.State != domain.StateReviewPending {
+		t.Fatalf("stored state = %+v, err = %v", state, err)
+	}
+	events, _, err := store.ReadEvents(runID)
+	if err != nil || len(events) == 0 || events[len(events)-1].Type != "verification.completed" {
+		t.Fatalf("journal tail = %+v, err = %v", events, err)
+	}
+}
+
+func TestTaskRunWithoutThroughVerifyStopsAtVerifying(t *testing.T) {
+	setup := newAutoFlowSetup(t)
+	const taskID, runID = "autoflow-task-plain", "autoflow-run-plain"
+	setup.planAndApprove(t, taskID, runID, true)
+	var stdout, stderr bytes.Buffer
+	exit := Run([]string{"task", "run", "--run", runID, "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitOK {
+		t.Fatalf("task run exit = %d, stderr = %s", exit, stderr.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		t.Fatalf("decode run output: %v\n%s", err, stdout.String())
+	}
+	if _, exists := raw["verification"]; exists {
+		t.Fatalf("run without --through-verify must not embed verification: %s", stdout.String())
+	}
+	var result struct {
+		State domain.RunState `json:"state"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.State.State != domain.StateVerifying {
+		t.Fatalf("state = %+v", result.State)
+	}
+	reportPath := filepath.Join(setup.repositoryRoot, ".marshal", "runs", runID, "verification-report.json")
+	if _, err := os.Stat(reportPath); !os.IsNotExist(err) {
+		t.Fatalf("verify ran without the flag: %v", err)
+	}
+}
+
+func TestTaskRunThroughVerifyDoesNotMaskFailedVerification(t *testing.T) {
+	setup := newAutoFlowSetup(t)
+	const taskID, runID = "autoflow-task-fail", "autoflow-run-fail"
+	setup.planAndApprove(t, taskID, runID, false)
+	var stdout, stderr bytes.Buffer
+	exit := Run([]string{"task", "run", "--run", runID, "--through-verify", "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitFailure {
+		t.Fatalf("task run --through-verify exit = %d, want %d; stderr = %s", exit, ExitFailure, stderr.String())
+	}
+	var combined struct {
+		State        domain.RunState `json:"state"`
+		Verification struct {
+			Status string `json:"status"`
+		} `json:"verification"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &combined); err != nil {
+		t.Fatalf("decode run output: %v\n%s", err, stdout.String())
+	}
+	if combined.State.State != domain.StateReviewPending || combined.Verification.Status != "fail" {
+		t.Fatalf("combined result = %+v\n%s", combined, stdout.String())
+	}
+	state, err := runstore.New(filepath.Join(setup.repositoryRoot, ".marshal")).Inspect(runID)
+	if err != nil || state.State != domain.StateReviewPending {
+		t.Fatalf("stored state = %+v, err = %v", state, err)
 	}
 }
 

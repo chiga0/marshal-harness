@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -421,9 +422,6 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if args[0] == "cleanup" {
 		return runTaskCleanup(ctx, args[1:], stdout, stderr)
 	}
-	if args[0] == "abort" {
-		return runTaskAbort(args[1:], stdout, stderr)
-	}
 	if len(args) != 1 {
 		return ExitUsage
 	}
@@ -483,174 +481,6 @@ func runTaskCleanup(ctx context.Context, args []string, stdout, stderr io.Writer
 		fmt.Fprintf(stdout, "- %s：%s（%s）\n", target.Kind, target.Path, target.Action)
 	}
 	return ExitOK
-}
-
-func runTaskAbort(args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet("task abort", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	runID := flags.String("run", "", "Run ID")
-	actor := flags.String("actor", "", "终止操作者 ID")
-	reason := flags.String("reason", "", "终止原因")
-	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" || strings.TrimSpace(*actor) == "" || strings.TrimSpace(*reason) == "" {
-		fmt.Fprintln(stderr, "用法：marshal task abort --run RUN_ID --actor ID --reason TEXT [--json]")
-		return ExitUsage
-	}
-	abortActor := strings.TrimSpace(*actor)
-	abortReason := strings.TrimSpace(*reason)
-	if domain.ValidateID(*runID) != nil || len(abortActor) > 512 || len(abortReason) > 12000 {
-		fmt.Fprintln(stderr, "终止失败：Run ID、操作者或原因无效。")
-		return ExitUsage
-	}
-	location, err := repository.Discover(".")
-	if err != nil || location.ValidateIdentity() != nil {
-		fmt.Fprintln(stderr, "终止失败：无法验证仓库身份。")
-		return ExitFailure
-	}
-	store := runstore.New(location.StateRoot)
-	lease, err := store.Acquire(*runID)
-	if err != nil {
-		fmt.Fprintf(stderr, "终止失败：%v\n", err)
-		return ExitFailure
-	}
-	defer lease.Release()
-	state, err := store.Inspect(*runID)
-	if err != nil {
-		fmt.Fprintf(stderr, "终止失败：%v\n", err)
-		return ExitFailure
-	}
-	if state.State != domain.StateRetryPending {
-		if state.State.Terminal() {
-			fmt.Fprintf(stderr, "终止失败：Run 已处于终态 %s，不能再次终止。\n", state.State)
-		} else {
-			fmt.Fprintf(stderr, "终止失败：仅允许从 RETRY_PENDING 显式终止。\n")
-		}
-		return ExitFailure
-	}
-	eventID, err := domain.NewID("event")
-	if err != nil {
-		fmt.Fprintf(stderr, "终止失败：生成事件 ID：%v\n", err)
-		return ExitFailure
-	}
-	timestamp := time.Now().UTC()
-	payload := map[string]any{"terminalReason": lifecycle.AbortTerminalReason, "reason": abortReason}
-	event := domain.RunEvent{
-		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: eventID, RunID: state.RunID,
-		AttemptID: state.CurrentAttemptID, Sequence: state.Sequence + 1, Type: lifecycle.AbortEventType,
-		StateFrom: state.State, StateTo: domain.StateBlocked, Timestamp: timestamp,
-		Actor: &domain.Actor{Type: domain.ControlSourceTypeHuman, ID: abortActor}, Payload: payload,
-	}
-	nextState, err := lifecycle.Reduce(state, event, lifecycle.Guard{LeaseHeld: true})
-	if err != nil {
-		fmt.Fprintf(stderr, "终止失败：生命周期转换：%v\n", err)
-		return ExitFailure
-	}
-	payloadData, err := json.Marshal(payload)
-	if err != nil {
-		fmt.Fprintf(stderr, "终止失败：编码终止证据：%v\n", err)
-		return ExitFailure
-	}
-	abortDigest, err := canonical.DigestJSON(payloadData)
-	if err != nil {
-		fmt.Fprintf(stderr, "终止失败：摘要终止证据：%v\n", err)
-		return ExitFailure
-	}
-	runDirectory := filepath.Join(location.StateRoot, "runs", *runID)
-	prepared, err := review.PrepareOutcome(runDirectory, review.OutcomeData{
-		TaskID: state.TaskID, RunID: state.RunID, TerminalState: domain.StateBlocked, Verdict: "abort",
-		FinalReviewRound: max(1, state.ReviewRound), FinalReviewDigest: abortDigest, FinalEvidenceDigest: abortDigest,
-		Summary: abortReason, FindingCount: 0, GeneratedAt: timestamp,
-	})
-	if err != nil {
-		fmt.Fprintf(stderr, "终止失败：准备终态 Outcome：%v\n", err)
-		return ExitFailure
-	}
-	if err := stageAbortResult(runDirectory, state, abortActor, abortReason, timestamp); err != nil {
-		prepared.Abort()
-		fmt.Fprintf(stderr, "终止失败：准备终止记录：%v\n", err)
-		return ExitFailure
-	}
-	if err := store.Append(lease, event, state.Sequence); err != nil {
-		prepared.Abort()
-		removeAbortResult(runDirectory)
-		fmt.Fprintf(stderr, "终止失败：记录事件：%v\n", err)
-		return ExitFailure
-	}
-	if err := commitAbortResult(runDirectory); err != nil {
-		fmt.Fprintf(stderr, "终止失败：提交终止记录：%v\nJournal 事件已保留，需执行恢复检查。\n", err)
-		return ExitFailure
-	}
-	if err := prepared.Commit(); err != nil {
-		fmt.Fprintf(stderr, "终止失败：提交终态 Outcome：%v\nJournal 与终止记录已保留，需执行恢复检查。\n", err)
-		return ExitFailure
-	}
-	if err := store.WriteSnapshot(lease, nextState); err != nil {
-		fmt.Fprintf(stderr, "终止失败：写入状态快照：%v\nJournal 与终态 Outcome 已保留，需执行恢复检查。\n", err)
-		return ExitFailure
-	}
-	if *jsonOutput {
-		if err := writeJSON(stdout, struct {
-			Status         string       `json:"status"`
-			RunID          string       `json:"runId"`
-			State          domain.State `json:"state"`
-			TerminalReason string       `json:"terminalReason"`
-			Actor          string       `json:"actor"`
-			Sequence       uint64       `json:"sequence"`
-		}{"aborted", state.RunID, nextState.State, lifecycle.AbortTerminalReason, abortActor, nextState.Sequence}); err != nil {
-			fmt.Fprintf(stderr, "输出终止结果失败：%v\n", err)
-			return ExitFailure
-		}
-		return ExitOK
-	}
-	fmt.Fprintf(stdout, "Run：%s\n状态：RETRY_PENDING → BLOCKED\n终态原因：%s\n操作者：%s\n", state.RunID, lifecycle.AbortTerminalReason, abortActor)
-	return ExitOK
-}
-
-func stageAbortResult(runDirectory string, state domain.RunState, actor, reason string, now time.Time) error {
-	if _, err := os.Lstat(filepath.Join(runDirectory, "result.md")); err == nil {
-		return errors.New("terminal result.md already exists")
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	pending := filepath.Join(runDirectory, "result.md.pending")
-	if err := os.Remove(pending); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	content := fmt.Sprintf("# Run 终止记录\n\n- 任务 ID：%s\n- Run ID：%s\n- 终态：BLOCKED\n- 终态原因：%s\n- 操作者：%s\n- 终止原因：%s\n- 生成时间：%s\n", state.TaskID, state.RunID, lifecycle.AbortTerminalReason, actor, reason, now.UTC().Format(time.RFC3339))
-	file, err := os.OpenFile(pending, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	_, writeErr := file.WriteString(content)
-	syncErr := file.Sync()
-	closeErr := file.Close()
-	if writeErr == nil {
-		writeErr = syncErr
-	}
-	if writeErr == nil {
-		writeErr = closeErr
-	}
-	if writeErr != nil {
-		os.Remove(pending)
-	}
-	return writeErr
-}
-
-func commitAbortResult(runDirectory string) error {
-	if err := os.Rename(filepath.Join(runDirectory, "result.md.pending"), filepath.Join(runDirectory, "result.md")); err != nil {
-		return err
-	}
-	directory, err := os.Open(runDirectory)
-	if err != nil {
-		return err
-	}
-	err = directory.Sync()
-	_ = directory.Close()
-	return err
-}
-
-func removeAbortResult(runDirectory string) {
-	_ = os.Remove(filepath.Join(runDirectory, "result.md.pending"))
 }
 
 func runTaskPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -866,9 +696,10 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	flags := flag.NewFlagSet("task run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	runID := flags.String("run", "", "Run ID")
+	throughVerify := flags.Bool("through-verify", false, "Worker 成功转入 VERIFYING 后，在同一调用内继续执行独立 verify")
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
-		fmt.Fprintln(stderr, "用法：marshal task run --run RUN_ID [--json]")
+		fmt.Fprintln(stderr, "用法：marshal task run --run RUN_ID [--through-verify] [--json]")
 		return ExitUsage
 	}
 	if err := domain.ValidateID(*runID); err != nil {
@@ -926,6 +757,9 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "运行失败（Attempt %s，状态 %s）：%v\n", result.AttemptID, result.State.State, err)
 		return ExitFailure
 	}
+	if *throughVerify && result.State.State == domain.StateVerifying {
+		return runThroughVerify(ctx, location.StateRoot, *runID, *jsonOutput, result, stdout, stderr)
+	}
 	if *jsonOutput {
 		if err := writeJSON(stdout, result); err != nil {
 			fmt.Fprintf(stderr, "输出运行结果失败：%v\n", err)
@@ -937,6 +771,31 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return ExitOK
 }
 
+func runThroughVerify(ctx context.Context, stateRoot, runID string, jsonOutput bool, result execution.Result, stdout, stderr io.Writer) int {
+	var verifyOutput bytes.Buffer
+	verifyExit := executeVerify(ctx, runID, jsonOutput, &verifyOutput, stderr)
+	if refreshed, err := runstore.New(stateRoot).Inspect(runID); err == nil {
+		result.State = refreshed
+	}
+	if jsonOutput {
+		combined := struct {
+			execution.Result
+			Verification json.RawMessage `json:"verification,omitempty"`
+		}{result, bytes.TrimSpace(verifyOutput.Bytes())}
+		if err := writeJSON(stdout, combined); err != nil {
+			fmt.Fprintf(stderr, "输出运行结果失败：%v\n", err)
+			return ExitFailure
+		}
+		return verifyExit
+	}
+	fmt.Fprintf(stdout, "Run：%s\nAttempt：%s\n状态：%s\n", runID, result.AttemptID, result.State.State)
+	if _, err := io.Copy(stdout, &verifyOutput); err != nil {
+		fmt.Fprintf(stderr, "输出验证结果失败：%v\n", err)
+		return ExitFailure
+	}
+	return verifyExit
+}
+
 func runTaskVerify(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("task verify", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -946,6 +805,10 @@ func runTaskVerify(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "用法：marshal task verify --run RUN_ID [--json]")
 		return ExitUsage
 	}
+	return executeVerify(ctx, *runID, *jsonOutput, stdout, stderr)
+}
+
+func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, stderr io.Writer) int {
 	location, err := repository.Discover(".")
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：%v\n", err)
@@ -956,13 +819,13 @@ func runTaskVerify(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return ExitFailure
 	}
 	store := runstore.New(location.StateRoot)
-	lease, err := store.Acquire(*runID)
+	lease, err := store.Acquire(runID)
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：%v\n", err)
 		return ExitFailure
 	}
 	defer lease.Release()
-	state, err := store.Inspect(*runID)
+	state, err := store.Inspect(runID)
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：%v\n", err)
 		return ExitFailure
@@ -971,7 +834,7 @@ func runTaskVerify(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "验证失败：Run 状态为 %s，要求 VERIFYING。\n", state.State)
 		return ExitFailure
 	}
-	runDirectory := filepath.Join(location.StateRoot, "runs", *runID)
+	runDirectory := filepath.Join(location.StateRoot, "runs", runID)
 	taskData, err := readInput(filepath.Join(runDirectory, "task-spec.json"), strings.NewReader(""))
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：读取冻结 TaskSpec：%v\n", err)
@@ -1074,7 +937,7 @@ func runTaskVerify(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "验证失败：写入状态快照：%v\n", err)
 		return ExitFailure
 	}
-	if *jsonOutput {
+	if jsonOutput {
 		if err := writeJSON(stdout, result.Report); err != nil {
 			fmt.Fprintf(stderr, "输出验证报告失败：%v\n", err)
 			return ExitFailure
@@ -1417,12 +1280,11 @@ func writeUsage(output io.Writer) {
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
   marshal task approve --run RUN_ID --gate plan|publish [--actor ID] [--json]
   marshal task status --run RUN_ID [--json]
-  marshal task run --run RUN_ID [--json]
+  marshal task run --run RUN_ID [--through-verify] [--json]
   marshal task verify --run RUN_ID [--json]
   marshal task review --run RUN_ID [--decision PATH] [--json]
   marshal task publish --run RUN_ID [--json]
   marshal task accept --run RUN_ID [--json]
-  marshal task abort --run RUN_ID --actor ID --reason TEXT [--json]
   marshal task <COMMAND>
 
 OpenCode、Qwen Code 与 Pi Worker 只产生 Attempt 与真实快照；verify、review、publish 与 accept 是彼此独立的证据门禁。发布命令还要求 absolute MARSHAL_GH_PATH 与 MARSHAL_GH_CONFIG_DIR。`)
