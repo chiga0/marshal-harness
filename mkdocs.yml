@@ -88,3 +88,4 @@ nav:
   - 研究与审计:
       - Fan-out 汇总决策: research/fanout-consolidation.md
       - A/B 实验设计: research/abtest-marshal-vs-single-agent.md
+      - herdr 对照调研: research/herdr-comparison.md
