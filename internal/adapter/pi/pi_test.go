@@ -1,6 +1,7 @@
 package pi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -252,6 +253,134 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 		if count := countOccurrences(argv, flag); count != 1 {
 			t.Fatalf("observed argv: hardening flag %s must appear exactly once, got %d: %#v", flag, count, argv)
 		}
+	}
+}
+
+func TestReadDeclaredResultNormalizesInvalidOptionalSession(t *testing.T) {
+	validator := newValidator(t)
+	fixturePath := filepath.Join(t.TempDir(), "pi-binary")
+	declared := func(mutate func(map[string]any)) declaredResult {
+		t.Helper()
+		data := validDeclaredResult(fixturePath)
+		mutate(data)
+		path := filepath.Join(t.TempDir(), "worker-result.json")
+		writeJSON(t, path, data)
+		result, err := readDeclaredResult(path, 1<<20, validator)
+		if err != nil {
+			t.Fatalf("readDeclaredResult error = %v", err)
+		}
+		return result
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "empty session id", mutate: func(data map[string]any) { data["session"] = map[string]any{"id": "", "resumable": false} }},
+		{name: "missing session id", mutate: func(data map[string]any) { data["session"] = map[string]any{"resumable": false} }},
+		{name: "missing resumable", mutate: func(data map[string]any) { data["session"] = map[string]any{"id": "session-1"} }},
+		{name: "resumable wrong type", mutate: func(data map[string]any) { data["session"] = map[string]any{"id": "session-1", "resumable": "yes"} }},
+		{name: "resumable null", mutate: func(data map[string]any) { data["session"] = map[string]any{"id": "session-1", "resumable": nil} }},
+		{name: "session not an object", mutate: func(data map[string]any) { data["session"] = "session-1" }},
+		{name: "session null", mutate: func(data map[string]any) { data["session"] = nil }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := declared(test.mutate)
+			if result.Session != nil {
+				t.Fatalf("invalid optional session must be dropped: %+v", result.Session)
+			}
+			if result.TaskID != "TASK-1" || result.Status != "completed" || result.Adapter.ID != adapterID {
+				t.Fatalf("remaining fields must stay intact: %+v", result)
+			}
+		})
+	}
+	t.Run("valid session preserved", func(t *testing.T) {
+		result := declared(func(data map[string]any) { data["session"] = map[string]any{"id": "session-9", "resumable": true} })
+		if result.Session == nil || result.Session.ID != "session-9" || !result.Session.Resumable {
+			t.Fatalf("valid session must be preserved: %+v", result.Session)
+		}
+	})
+	t.Run("no session field unaffected", func(t *testing.T) {
+		result := declared(func(data map[string]any) { delete(data, "session") })
+		if result.Session != nil {
+			t.Fatalf("session = %+v", result.Session)
+		}
+	})
+}
+
+func TestReadDeclaredResultStillFailsClosedForEverythingElse(t *testing.T) {
+	validator := newValidator(t)
+	t.Run("non-JSON input", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "worker-result.json")
+		if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readDeclaredResult(path, 1<<20, validator); err == nil || !strings.Contains(err.Error(), "validate WorkerResult declaration") {
+			t.Fatalf("non-JSON input must fail validation exactly as before: %v", err)
+		}
+	})
+	for _, test := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "non-string session id", mutate: func(data map[string]any) { data["session"] = map[string]any{"id": 5, "resumable": false} }},
+		{name: "session extra field", mutate: func(data map[string]any) {
+			data["session"] = map[string]any{"id": "session-1", "resumable": false, "extra": true}
+		}},
+		{name: "missing required taskId", mutate: func(data map[string]any) { delete(data, "taskId") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := validDeclaredResult(filepath.Join(t.TempDir(), "pi-binary"))
+			test.mutate(data)
+			path := filepath.Join(t.TempDir(), "worker-result.json")
+			writeJSON(t, path, data)
+			if _, err := readDeclaredResult(path, 1<<20, validator); err == nil {
+				t.Fatal("normalization must not loosen any other validation")
+			}
+		})
+	}
+}
+
+func TestNormalizeDeclaredWorkerResultPreservesUnaffectedInput(t *testing.T) {
+	for _, name := range []string{"valid session", "no session field", "non-JSON input"} {
+		t.Run(name, func(t *testing.T) {
+			var raw []byte
+			switch name {
+			case "non-JSON input":
+				raw = []byte("not json")
+			default:
+				source := validDeclaredResult("/usr/local/bin/pi")
+				if name == "no session field" {
+					delete(source, "session")
+				}
+				data, err := json.Marshal(source)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw = data
+			}
+			if normalized := NormalizeDeclaredWorkerResult(raw); !bytes.Equal(normalized, raw) {
+				t.Fatalf("input must pass through byte-identical, got %s", normalized)
+			}
+		})
+	}
+}
+
+func TestRunAcceptsDeclaredResultWithEmptySessionID(t *testing.T) {
+	agentEnd := `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
+	fixture := newRunFixture(t, "0.83.0", sessionHeader("session-1")+"\n"+agentEnd)
+	data := validDeclaredResult(fixture.executable)
+	data["session"] = map[string]any{"id": "", "resumable": false}
+	writeJSON(t, filepath.Join(fixture.controlRoot, "output", "worker-result.json"), data)
+	record, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("declared WorkerResult with an empty optional session id must be accepted: %v", err)
+	}
+	var result declaredResult
+	if err := json.Unmarshal(record.Data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Session == nil || result.Session.ID != "session-1" || result.Session.Resumable {
+		t.Fatalf("observed session must replace the dropped declaration: %+v", result.Session)
 	}
 }
 

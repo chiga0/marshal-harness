@@ -340,7 +340,7 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, state domain.Ru
 
 func renderPrompt(task domain.TaskSpec, state domain.RunState, attemptID, controlRoot, adapterID string, findings []map[string]string) string {
 	findingsData, _ := json.MarshalIndent(findings, "", "  ")
-	return fmt.Sprintf(`# Marshal Worker 任务
+	prompt := fmt.Sprintf(`# Marshal Worker 任务
 
 你是受 Marshal 控制的 Coding Worker。只完成 TaskSpec 指定的实现、测试和文档，不提交、不推送、不发布，也不要修改 .marshal。
 
@@ -354,7 +354,40 @@ TaskSpec：%s
 完成后必须将符合 WorkerResult JSON Schema 的 JSON 写入：%s
 其中 taskId=%s、runId=%s、attemptId=%s、adapter.id=%s。时间字段可先填写合法 RFC3339 时间；Marshal 会以实际观测值覆盖不可信的运行元数据。
 `, task.Work.Objective, findingsData, filepath.Join(controlRoot, "input", "task-spec.json"), state.WorktreePath, filepath.Join(controlRoot, "output", "worker-result.json"), state.TaskID, state.RunID, attemptID, adapterID)
+	return prompt + workerResultTemplateSection
 }
+
+const workerResultTemplateSection = `
+## WorkerResult 输出模板
+
+完成后写入的 worker-result.json 必须逐字采用以下 JSON 模板的结构：字段名、apiVersion 与 kind 不得改动，尖括号占位符替换为实际值。
+
+` + "```json\n" + `{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "WorkerResult",
+  "taskId": "<taskId：使用上文给定的 taskId>",
+  "runId": "<runId：使用上文给定的 runId>",
+  "attemptId": "<attemptId：使用上文给定的 attemptId>",
+  "adapter": {
+    "id": "<adapter.id：使用上文给定的 adapter.id>",
+    "executable": "<adapter 可执行文件路径>",
+    "version": "<adapter 版本号>"
+  },
+  "status": "<status：completed、blocked、failed、cancelled 之一>",
+  "summary": "<本次尝试的简要总结>",
+  "declaredChangedFiles": ["<本次实际修改的仓库相对路径，无修改时为空数组>"],
+  "declaredArtifacts": [],
+  "declaredCommands": [],
+  "declaredRisks": [],
+  "startedAt": "<startedAt：RFC3339 时间>",
+  "completedAt": "<completedAt：RFC3339 时间>"
+}
+` + "```\n\n" + `模板填写规则：
+
+1. session 为可选字段：ephemeral 会话一律省略整个 session 字段，不得虚构，也不得填写空字符串。
+2. declaredChangedFiles、declaredArtifacts、declaredCommands、declaredRisks 可为空数组，但必须存在，不得省略整个字段。
+3. startedAt、completedAt 填合法 RFC3339 时间；Marshal 会以实际观测值覆盖不可信的运行元数据。
+`
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

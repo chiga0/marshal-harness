@@ -439,11 +439,61 @@ type declaredSession struct {
 	Resumable bool   `json:"resumable"`
 }
 
+// NormalizeDeclaredWorkerResult drops the optional session field from a
+// declared WorkerResult when the declared session is unusable: the value is
+// not a JSON object, the id is missing or an empty string, or the resumable
+// flag is missing or not a boolean. Marshal overwrites session metadata with
+// observed values afterwards, so an invalid optional field must not
+// fail-closed the entire attempt. Inputs that cannot be parsed as a JSON
+// object are returned unchanged so schema validation fails exactly as before,
+// and every remaining field is preserved byte-for-byte.
+func NormalizeDeclaredWorkerResult(data []byte) []byte {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+		return data
+	}
+	session, present := fields["session"]
+	if !present || declaredSessionValid(session) {
+		return data
+	}
+	delete(fields, "session")
+	normalized, err := json.Marshal(fields)
+	if err != nil {
+		return data
+	}
+	return normalized
+}
+
+func declaredSessionValid(session json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(session, &fields); err != nil || fields == nil {
+		return false
+	}
+	idRaw, present := fields["id"]
+	if !present {
+		return false
+	}
+	var id string
+	if err := json.Unmarshal(idRaw, &id); err == nil && id == "" {
+		return false
+	}
+	resumableRaw, present := fields["resumable"]
+	if !present {
+		return false
+	}
+	var resumable *bool
+	if err := json.Unmarshal(resumableRaw, &resumable); err != nil || resumable == nil {
+		return false
+	}
+	return true
+}
+
 func readDeclaredResult(path string, limit int64, validator *contract.Validator) (declaredResult, error) {
 	data, err := readBounded(path, limit)
 	if err != nil {
 		return declaredResult{}, fmt.Errorf("read WorkerResult declaration: %w", err)
 	}
+	data = NormalizeDeclaredWorkerResult(data)
 	if err := validator.Validate(domain.KindWorkerResult, data); err != nil {
 		return declaredResult{}, fmt.Errorf("validate WorkerResult declaration: %w", err)
 	}

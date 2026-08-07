@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter/pi"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
@@ -428,6 +429,7 @@ func readDeclaredResult(path string, limit int64, validator *contract.Validator)
 	if err != nil {
 		return declaredResult{}, fmt.Errorf("read WorkerResult declaration: %w", err)
 	}
+	data = pi.NormalizeDeclaredWorkerResult(data)
 	if err := validator.Validate(domain.KindWorkerResult, data); err != nil {
 		return declaredResult{}, fmt.Errorf("validate WorkerResult declaration: %w", err)
 	}
