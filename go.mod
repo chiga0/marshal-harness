@@ -9,7 +9,7 @@ require (
 	github.com/dlclark/regexp2 v1.11.0
 	github.com/gofrs/flock v0.13.0
 	github.com/gowebpki/jcs v1.0.1
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 )
 
 require (
