@@ -1,8 +1,57 @@
 # Marshal
 
+[![CI](https://github.com/chiga0/marshal-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/chiga0/marshal-harness/actions/workflows/ci.yml)
+[![Pages](https://img.shields.io/badge/docs-GitHub_Pages-blue)](https://chiga0.github.io/marshal-harness/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Marshal 是一个面向 Coding Agent 的证据门禁式编排框架。主 Agent 负责规划与审查，可替换的 Worker Agent 负责实现，确定性的 Harness 负责验证、留痕和发布。
 
-> 项目状态：ADR 0001–0011 已接受；Milestone 0–5 已通过，当前进入 Milestone 6。
+> 项目状态：Milestone 0–6 全部通过，Local MVP 已标记 `USABLE`（见 [docs/roadmap-status.md](docs/roadmap-status.md)）。文档站：[chiga0.github.io/marshal-harness](https://chiga0.github.io/marshal-harness/)。采用 [MIT](LICENSE) 许可。
+
+## 快速开始
+
+前置：Go 版本以 `go.mod` 为准；macOS 或 Linux。可选：安装要委派的 Coding Agent（OpenCode / Qwen Code / Pi）并配置其环境变量（见 [docs/operator-runbook.md](docs/operator-runbook.md) §9.1）。
+
+```bash
+make build          # 产出 ./bin/marshal
+bin/marshal init    # 在任意 Git 仓库初始化本地状态（.marshal/，Git 忽略）
+bin/marshal doctor --json   # 只读诊断，无副作用
+
+# 标准任务循环（完整说明见操作手册）
+bin/marshal task plan   --task TASK.json --policy POLICY.json --run RUN_ID
+bin/marshal task approve --run RUN_ID --gate plan --actor 你的ID
+bin/marshal task run     --run RUN_ID
+bin/marshal task verify  --run RUN_ID
+bin/marshal task review  --run RUN_ID                 # 导出 ReviewPacket
+bin/marshal task review  --run RUN_ID --decision D.json
+bin/marshal task publish --run RUN_ID                # 需要独立 GH 凭据 profile
+bin/marshal task accept  --run RUN_ID
+```
+
+贡献请读 [CONTRIBUTING.md](CONTRIBUTING.md)；行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)；安全上报见 [SECURITY.md](SECURITY.md)。
+
+## 定位
+
+**Marshal 不让 Agent 更聪明，而是让 Agent 的工作可验证、可审计、可安全委派。**
+
+它是包裹在 Coding Agent 进程之外的本地控制平面。与能力编排框架（LangGraph/CrewAI/AutoGen，解决“如何安排 Agent 干活”）不同，Marshal 解决“**谁有资格证明什么**”：Worker 可以声明结果，但只有独立验证、证据绑定的审查与受控发布才能改变仓库状态。与云端单 Agent 产品（Codex/Devin 的自主模式）不同，Marshal 完全本地、凭据分权、默认只发 Draft PR、永不自动 merge。
+
+## 适用场景
+
+- **把真实开发任务委派给 Coding Agent，但要求证据**：冻结任务契约、锁定基线、独立验证、摘要绑定的审查，任何一环失败都 fail-closed；
+- **无人值守跑任务**：崩溃可恢复、预算有界、失败留证据不产生虚假 PR；
+- **需要审计与问责的多 Agent 协作**：谁批准了什么、基于哪份证据，全部 append-only 留痕；
+- **AI 代码进入仓库前的门禁**：Draft PR + 远端 CI 绑定 + 人工 merge，适合对 AI 产出持谨慎态度的团队；
+- **想换 Worker 不换流程**：同一生命周期接入 OpenCode / Qwen Code / Pi，Adapter 能力 Probe 冻结版本与权限。
+
+## 不建议使用的场景
+
+- **一次性问答或交互式结对**：直接用 Agent 本身，协议开销不值得；
+- **琐碎小改动**：无门禁或最简流程即可（见操作手册的任务分级）；
+- **期望全自动交付/自动 merge**：Marshal 默认且永远只到 Draft PR，merge 是人的决定；
+- **运行不可信或恶意代码**：Local Profile 不是沙箱，不宣称抵抗同 UID 恶意进程；需要时用容器/VM（Hardened Profile 在延后路线）；
+- **多用户服务、远程调度、Web UI**：当前是本地单用户 CLI，这些在延后路线；
+- **期望框架提升 Agent 的代码质量**：Marshal 门禁证据，不提升模型能力；质量仍取决于你选的 Worker 与任务契约写得好不好。
 
 ## 为什么需要 Marshal
 
@@ -25,7 +74,7 @@ Marshal 将权限明确分成三类：
 2. **Worker Agent**：在隔离的 Git worktree 中修改和测试代码。它可以声明结果，但声明不能作为验证证据。
 3. **Harness**：管理状态转换、锁、独立命令执行、交付物检查、审计记录和发布凭据。
 
-默认主 Agent 为 Codex，可从 Codex CLI 或 Codex Desktop 进入；ChatGPT 手机端 Remote 可以远程监督运行在开发机 Desktop 上的同一任务。首批 Worker Adapter 面向 Qwen Code、OpenCode 和 Pi，但核心领域模型不依赖任何单一 Agent 或交互界面。
+默认主 Agent 可以是 pi、Codex CLI/Desktop 等任意编码 Agent（见 [docs/lead-agent-surfaces.md](docs/lead-agent-surfaces.md)）；仓库内 `.agents/skills/marshal/` 的 Skill 会被支持它的 Agent 自动加载。ChatGPT 手机端 Remote 可以远程监督运行在开发机 Desktop 上的同一任务。首批 Worker Adapter 面向 Qwen Code、OpenCode 和 Pi，但核心领域模型不依赖任何单一 Agent 或交互界面。
 
 ## 核心不变量
 

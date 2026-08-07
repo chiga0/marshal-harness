@@ -1,0 +1,10 @@
+# 所有文件的最终审查责任
+* @chiga0
+
+# 信任边界相关：变更需要 ADR 与维护者显式审查
+/internal/lifecycle/ @chiga0
+/internal/publication/ @chiga0
+/internal/publisher/ @chiga0
+/internal/adapter/ @chiga0
+/schemas/ @chiga0
+/docs/adr/ @chiga0

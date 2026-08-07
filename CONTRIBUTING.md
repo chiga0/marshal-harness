@@ -45,4 +45,4 @@
 
 ## 许可证
 
-本项目采用 Apache-2.0（见 [LICENSE](LICENSE)）。你的贡献将按同一许可证发布。
+本项目采用 MIT 许可（见 [LICENSE](LICENSE)）。你的贡献将按同一许可证发布。
