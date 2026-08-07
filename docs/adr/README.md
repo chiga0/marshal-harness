@@ -15,3 +15,6 @@
 | [0009](0009-terminal-session-execution.md) | 原生 PTY Terminal Session 执行传输 | 已接受（Accepted） |
 | [0010](0010-controlled-autonomy-and-intervention.md) | 受控自治、审批 Gate 与人工介入 | 已接受（Accepted） |
 | [0011](0011-sealed-native-tui-transport.md) | 密封启动与可判定的原生 TUI 传输 | 已接受（Accepted） |
+| [0012](0012-explicit-abort.md) | 废弃 Run 的显式 abort | 提案（Proposed，随 hardening 实施） |
+| [0013](0013-graded-permission-denials.md) | Permission 拒绝分级（预期内 vs 致命） | 提案（Proposed） |
+| [0014](0014-read-only-execution-profile.md) | Read-only 执行画像（调研/评审最小权限） | 提案（Proposed） |
