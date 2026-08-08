@@ -62,6 +62,7 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 marshal version [--json]
 marshal doctor [--run RUN_ID] [--repair] [--print-env] [--json]
 marshal contract validate [--schema NAME] <PATH|->
+marshal contract schema [--all [--out DIR]] [--schema NAME] [--json]
 marshal init [--json]
 marshal task status --run RUN_ID [--json]
 marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
@@ -76,14 +77,25 @@ marshal task cleanup --run RUN_ID [--apply] [--json]
 marshal task <COMMAND>
 ```
 
-`version`、`doctor`、`contract validate`、`task status` 和不带 `--apply` 的 `task cleanup` 是只读命令。`marshal init` 创建仓库绑定的状态目录并写入 Git exclude。`task run` 使用冻结选择的 Worker Adapter；`verify`、`review`、`publish`、`accept` 分别执行独立证据门禁。发布命令要求 absolute `MARSHAL_GH_PATH` 与独立 `MARSHAL_GH_CONFIG_DIR`。Cleanup 默认只列出精确 managed worktree；只有显式 `--apply` 才执行，并拒绝 Active Lease、非终态 Run、缺失 Outcome、活跃 TerminalSession、dirty/symlink/身份不明目标。它不删除 Run 证据、本地 branch、远端 branch 或 PR。
+`version`、`doctor`、`contract validate`、`task status` 和不带 `--apply` 的 `task cleanup` 是只读命令；`contract schema` 除 `--all --out DIR` 外也是只读命令，该形态仅向用户显式指定的目录写入导出文件，不触碰仓库状态。`marshal init` 创建仓库绑定的状态目录并写入 Git exclude。`task run` 使用冻结选择的 Worker Adapter；`verify`、`review`、`publish`、`accept` 分别执行独立证据门禁。发布命令要求 absolute `MARSHAL_GH_PATH` 与独立 `MARSHAL_GH_CONFIG_DIR`。Cleanup 默认只列出精确 managed worktree；只有显式 `--apply` 才执行，并拒绝 Active Lease、非终态 Run、缺失 Outcome、活跃 TerminalSession、dirty/symlink/身份不明目标。它不删除 Run 证据、本地 branch、远端 branch 或 PR。
 
 示例：
 
 ```bash
 go run ./cmd/marshal doctor --json
 go run ./cmd/marshal contract validate --schema task-spec schemas/examples/happy-path/task-spec.json
+go run ./cmd/marshal contract schema
+go run ./cmd/marshal contract schema --all --out /tmp/marshal-schemas
 ```
+
+## 契约自描述
+
+`marshal contract schema` 从二进制内嵌的 Schema 目录（`schemas/` Embedded FS）导出契约自描述，供 Agent 与外部工具零先验消费，导出字节与内嵌内容逐字节一致：
+
+- 无参数：逐行输出全部 Schema 名与版本（如 `task-spec v1alpha1`）；`--json` 输出同内容的 JSON 数组；
+- `--schema NAME`：将单个命名 Schema 原样输出到 stdout，`NAME` 与 `contract validate --schema` 共用同一套 kebab-case 名称；
+- `--all`：将完整目录（每个 Schema 的 `name`、`kind`、`version`、`$id`、文件字节 SHA256 与 examples 清单）以 JSON 输出到 stdout；
+- `--all --out DIR`：在 `DIR` 写出 `<name>.schema.json`（0644）、`examples/happy-path/<name>.json`、`examples/invalid/<name>.json` 与 `catalog.json` 目录清单，全部与内嵌字节一致；重复导出幂等覆盖。
 
 ## 环境变量参考
 

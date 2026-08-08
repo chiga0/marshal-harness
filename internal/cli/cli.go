@@ -340,14 +340,27 @@ func doctorDiscovery(ctx context.Context) []app.Discovery {
 }
 
 func runContract(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "validate" {
-		fmt.Fprintln(stderr, "用法：marshal contract validate [--schema NAME] <PATH|->")
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "用法：marshal contract <validate|schema>")
 		return ExitUsage
 	}
+	switch args[0] {
+	case "validate":
+		return runContractValidate(args[1:], stdin, stdout, stderr)
+	case "schema":
+		return runContractSchema(args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "未知 contract 子命令 %q。\n", args[0])
+		fmt.Fprintln(stderr, "用法：marshal contract <validate|schema>")
+		return ExitUsage
+	}
+}
+
+func runContractValidate(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("contract validate", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	schemaName := flags.String("schema", "", "显式 Schema 名称；省略时从 kind 检测")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := flags.Parse(args); err != nil {
 		return ExitUsage
 	}
 	if flags.NArg() != 1 {
@@ -386,6 +399,128 @@ func runContract(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "有效：%s\n", validatedKind)
 	return ExitOK
+}
+
+func runContractSchema(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("contract schema", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	schemaName := flags.String("schema", "", "仅导出指定名称的单个 Schema")
+	all := flags.Bool("all", false, "导出全部内嵌 Schema 与示例清单")
+	out := flags.String("out", "", "与 --all 配合，将文件集写入指定目录")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出 Schema 名称与版本列表")
+	if err := flags.Parse(args); err != nil {
+		return ExitUsage
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "contract schema 不接受位置参数。")
+		return ExitUsage
+	}
+	if *out != "" && !*all {
+		fmt.Fprintln(stderr, "--out 只能与 --all 一起使用。")
+		return ExitUsage
+	}
+	if *schemaName != "" && (*all || *jsonOutput || *out != "") {
+		fmt.Fprintln(stderr, "--schema 不能与 --all、--json 或 --out 一起使用。")
+		return ExitUsage
+	}
+	if *jsonOutput && *all {
+		fmt.Fprintln(stderr, "--all 已输出 JSON，无需 --json。")
+		return ExitUsage
+	}
+
+	if *schemaName != "" {
+		descriptor, err := contract.DescriptorByName(*schemaName)
+		if err != nil {
+			fmt.Fprintf(stderr, "%v\n", err)
+			return ExitUsage
+		}
+		data, err := contract.SchemaDocument(descriptor.Name)
+		if err != nil {
+			fmt.Fprintf(stderr, "读取 Schema 失败：%v\n", err)
+			return ExitFailure
+		}
+		if _, err := stdout.Write(data); err != nil {
+			fmt.Fprintf(stderr, "输出 Schema 失败：%v\n", err)
+			return ExitFailure
+		}
+		return ExitOK
+	}
+
+	catalog, err := contract.ExportCatalog()
+	if err != nil {
+		fmt.Fprintf(stderr, "导出契约目录失败：%v\n", err)
+		return ExitFailure
+	}
+	if *all {
+		if *out == "" {
+			if err := writeJSON(stdout, catalog); err != nil {
+				fmt.Fprintf(stderr, "输出契约目录失败：%v\n", err)
+				return ExitFailure
+			}
+			return ExitOK
+		}
+		if err := exportCatalogFiles(catalog, *out); err != nil {
+			fmt.Fprintf(stderr, "导出契约目录失败：%v\n", err)
+			return ExitFailure
+		}
+		fmt.Fprintf(stdout, "已导出 %d 个 Schema 至 %s\n", len(catalog.Schemas), *out)
+		return ExitOK
+	}
+
+	if *jsonOutput {
+		entries := make([]struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}, 0, len(catalog.Schemas))
+		for _, schema := range catalog.Schemas {
+			entries = append(entries, struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			}{Name: schema.Name, Version: schema.Version})
+		}
+		if err := writeJSON(stdout, entries); err != nil {
+			fmt.Fprintf(stderr, "输出 Schema 列表失败：%v\n", err)
+			return ExitFailure
+		}
+		return ExitOK
+	}
+	for _, schema := range catalog.Schemas {
+		fmt.Fprintf(stdout, "%s %s\n", schema.Name, schema.Version)
+	}
+	return ExitOK
+}
+
+func exportCatalogFiles(catalog contract.Catalog, directory string) error {
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return err
+	}
+	for _, schema := range catalog.Schemas {
+		data, err := contract.SchemaDocument(schema.Name)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(directory, schema.SchemaFile), data, 0o644); err != nil {
+			return err
+		}
+		for _, example := range schema.Examples {
+			fixture, err := contract.ExampleDocument(example.Path)
+			if err != nil {
+				return err
+			}
+			target := filepath.Join(directory, filepath.FromSlash(example.Path))
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(target, fixture, 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	catalogData, err := json.MarshalIndent(catalog, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode catalog: %w", err)
+	}
+	return os.WriteFile(filepath.Join(directory, "catalog.json"), append(catalogData, '\n'), 0o644)
 }
 
 func runInit(args []string, stdout, stderr io.Writer) int {
@@ -1477,6 +1612,7 @@ func writeUsage(output io.Writer) {
   marshal doctor [--run RUN_ID] [--repair] [--print-env] [--json]
   marshal init [--json]
   marshal contract validate [--schema NAME] <PATH|->
+  marshal contract schema [--all [--out DIR]] [--schema NAME] [--json]
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
   marshal task approve --run RUN_ID --gate plan|publish [--actor ID] [--json]
   marshal task status --run RUN_ID [--json]
