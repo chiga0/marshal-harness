@@ -18,6 +18,6 @@
 - publish Approval 与发布重校验读取 legacy `review-decision.json` 导致恒失败（轮次绑定修复）；
 - Skill 触发一致性测试与泛化描述对齐。
 
-## [0.1.0] - 待发布
+## [0.1.0] - 2026-08-08
 
 Local MVP：Milestone 0–6 全通过。证据门禁式生命周期（plan→run→verify→review→publish→accept）、三 Worker Adapter（OpenCode 1.18.13 / Qwen Code 0.21.5 / Pi 0.83.0）、GitHub Draft Publisher、受监督 cmux TerminalSession、崩溃恢复与发布幂等。
