@@ -596,14 +596,45 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return ExitUnavailable
 }
 
+const cleanupUsage = "用法：marshal task cleanup --run RUN_ID [--export-patch --actor ID] [--apply] [--json]\n" +
+	"       marshal task cleanup --expired [--apply --actor ID] [--json]"
+
 func runTaskCleanup(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("task cleanup", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	runID := flags.String("run", "", "Run ID")
 	apply := flags.Bool("apply", false, "执行预览中的本地清理")
+	exportPatch := flags.Bool("export-patch", false, "将 dirty 托管 Worktree 的未归档变更导出到 .marshal/archive")
+	expired := flags.Bool("expired", false, "按 retentionDays 列出并清理已过期的终态 Run")
+	actor := flags.String("actor", "", "操作者 ID")
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
-		fmt.Fprintln(stderr, "用法：marshal task cleanup --run RUN_ID [--apply] [--json]")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, cleanupUsage)
+		return ExitUsage
+	}
+	trimmedActor := strings.TrimSpace(*actor)
+	if *expired {
+		if *runID != "" || *exportPatch || (*apply && trimmedActor == "") {
+			fmt.Fprintln(stderr, cleanupUsage)
+			return ExitUsage
+		}
+		location, err := repository.Discover(".")
+		if err != nil || location.ValidateIdentity() != nil {
+			fmt.Fprintln(stderr, "清理失败：无法验证仓库身份。")
+			return ExitFailure
+		}
+		result, err := cleanupservice.ExecuteExpired(ctx, cleanupservice.ExpiredInput{
+			StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot,
+			Apply: *apply, Actor: trimmedActor, Now: time.Now().UTC(),
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "清理失败：%v\n", err)
+			return ExitFailure
+		}
+		return writeExpiredResult(result, *apply, *jsonOutput, stdout, stderr)
+	}
+	if *runID == "" || (*exportPatch && *apply) || (*exportPatch && trimmedActor == "") {
+		fmt.Fprintln(stderr, cleanupUsage)
 		return ExitUsage
 	}
 	location, err := repository.Discover(".")
@@ -622,7 +653,7 @@ func runTaskCleanup(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	result, err := cleanupservice.Execute(ctx, cleanupservice.Input{
 		StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID,
-		Apply: *apply, Now: time.Now().UTC(), Validator: validator,
+		Apply: *apply, ExportPatch: *exportPatch, Actor: trimmedActor, Now: time.Now().UTC(), Validator: validator,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "清理失败：%v\n", err)
@@ -633,6 +664,11 @@ func runTaskCleanup(ctx context.Context, args []string, stdout, stderr io.Writer
 			fmt.Fprintf(stderr, "输出清理结果失败：%v\n", err)
 			return ExitFailure
 		}
+		return ExitOK
+	}
+	if result.Exported {
+		fmt.Fprintf(stdout, "Run %s 的未归档变更已导出：%s\n摘要：%s\n后续可执行 marshal task cleanup --run %s --apply。\n",
+			result.RunID, result.ArchivePath, result.ArchiveDigest, result.RunID)
 		return ExitOK
 	}
 	if len(result.Targets) == 0 {
@@ -646,6 +682,39 @@ func runTaskCleanup(ctx context.Context, args []string, stdout, stderr io.Writer
 	}
 	for _, target := range result.Targets {
 		fmt.Fprintf(stdout, "- %s：%s（%s）\n", target.Kind, target.Path, target.Action)
+	}
+	return ExitOK
+}
+
+func writeExpiredResult(result cleanupservice.ExpiredResult, apply, jsonOutput bool, stdout, stderr io.Writer) int {
+	if jsonOutput {
+		if err := writeJSON(stdout, result); err != nil {
+			fmt.Fprintf(stderr, "输出清理结果失败：%v\n", err)
+			return ExitFailure
+		}
+	} else if len(result.Runs) == 0 {
+		fmt.Fprintln(stdout, "没有已过期的终态 Run。")
+	} else {
+		if apply {
+			fmt.Fprintln(stdout, "过期 Run 清理完成：")
+		} else {
+			fmt.Fprintln(stdout, "过期 Run 预览（未执行；使用 --apply 执行）：")
+		}
+		for _, run := range result.Runs {
+			fmt.Fprintf(stdout, "- %s：%s / retentionDays=%d / updatedAt=%s / outcome=%s\n",
+				run.RunID, run.State, run.RetentionDays, run.UpdatedAt.Format(time.RFC3339), run.Outcome)
+			for _, target := range run.Targets {
+				fmt.Fprintf(stdout, "  - %s：%s（%s）\n", target.Kind, target.Path, target.Action)
+			}
+		}
+	}
+	if !apply {
+		return ExitOK
+	}
+	for _, run := range result.Runs {
+		if run.Outcome != cleanupservice.OutcomeRemoved && run.Outcome != cleanupservice.OutcomeRemovedWorktreeKept {
+			return ExitFailure
+		}
 	}
 	return ExitOK
 }

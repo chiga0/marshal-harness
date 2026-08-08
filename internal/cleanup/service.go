@@ -15,6 +15,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/verification"
 )
 
 var (
@@ -23,11 +24,15 @@ var (
 	ErrActiveSession  = errors.New("cleanup refuses an active terminal session")
 	ErrDirtyWorktree  = errors.New("cleanup refuses an unarchived dirty worktree")
 	ErrTargetIdentity = errors.New("cleanup target identity is not provable")
+	ErrExportClean    = errors.New("cleanup export requires unarchived worktree changes")
+	ErrPatchTooLarge  = errors.New("worktree patch exceeds the archive limit")
 )
 
 type Input struct {
 	StateRoot, RepositoryRoot, RunID string
 	Apply                            bool
+	ExportPatch                      bool
+	Actor                            string
 	Now                              time.Time
 	Validator                        *contract.Validator
 }
@@ -39,9 +44,12 @@ type Target struct {
 }
 
 type Result struct {
-	RunID   string   `json:"runId"`
-	Applied bool     `json:"applied"`
-	Targets []Target `json:"targets"`
+	RunID         string   `json:"runId"`
+	Applied       bool     `json:"applied"`
+	Exported      bool     `json:"exported,omitempty"`
+	ArchivePath   string   `json:"archivePath,omitempty"`
+	ArchiveDigest string   `json:"archiveDigest,omitempty"`
+	Targets       []Target `json:"targets"`
 }
 
 type tombstone struct {
@@ -61,6 +69,13 @@ func Execute(ctx context.Context, input Input) (Result, error) {
 	}
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
+	}
+	if input.ExportPatch {
+		actor := strings.TrimSpace(input.Actor)
+		if actor == "" || len(actor) > 512 {
+			return Result{}, ErrActorRequired
+		}
+		input.Actor = actor
 	}
 	store := runstore.New(input.StateRoot)
 	lease, err := store.Acquire(input.RunID)
@@ -119,7 +134,10 @@ func Execute(ctx context.Context, input Input) (Result, error) {
 		return Result{}, err
 	}
 	if !clean {
-		return Result{}, ErrDirtyWorktree
+		return finishDirtyWorktree(ctx, input, state, runDir, worktree, target, planned)
+	}
+	if input.ExportPatch {
+		return Result{}, ErrExportClean
 	}
 	result := Result{RunID: state.RunID, Applied: input.Apply, Targets: []Target{target}}
 	if !input.Apply {
@@ -141,6 +159,84 @@ func Execute(ctx context.Context, input Input) (Result, error) {
 		return Result{}, err
 	}
 	return result, nil
+}
+
+// finishDirtyWorktree resolves one dirty managed worktree. Export archives the
+// exact current diff and records the operator; removal afterwards is gated on
+// that record and re-fails closed when the diff has drifted since export.
+func finishDirtyWorktree(ctx context.Context, input Input, state domain.RunState, runDir string, worktree *gitworktree.Worktree, target Target, planned map[string]bool) (Result, error) {
+	if input.ExportPatch {
+		return exportDirtyWorktree(ctx, input, state)
+	}
+	record, err := readArchiveRecord(input.StateRoot, state.RunID, archivePatchKind)
+	if err != nil || record.TaskID != state.TaskID {
+		return Result{}, ErrDirtyWorktree
+	}
+	observation, err := observeWorktree(ctx, state)
+	if err != nil {
+		return Result{}, err
+	}
+	if observation.DiffDigest != record.Digest {
+		return Result{}, ErrDirtyWorktree
+	}
+	target.Action = "git-worktree-remove-archived"
+	result := Result{RunID: state.RunID, Applied: input.Apply, Targets: []Target{target}}
+	if !input.Apply {
+		return result, nil
+	}
+	now := cleanupTime(input.Now)
+	if !planned[target.Path] {
+		if err := appendTombstone(runDir, tombstone{RunID: state.RunID, TaskID: state.TaskID, Kind: target.Kind, Path: target.Path, Phase: "planned", CreatedAt: now}); err != nil {
+			return Result{}, err
+		}
+	}
+	if err := worktree.RemoveArchived(); err != nil {
+		return Result{}, err
+	}
+	if err := appendTombstone(runDir, tombstone{RunID: state.RunID, TaskID: state.TaskID, Kind: target.Kind, Path: target.Path, Phase: "completed", CreatedAt: now}); err != nil {
+		return Result{}, err
+	}
+	return result, nil
+}
+
+// exportDirtyWorktree persists the exact current diff of the dirty worktree
+// as an owner-only patch plus the archive record that later authorizes
+// removal. It never modifies the worktree or its index.
+func exportDirtyWorktree(ctx context.Context, input Input, state domain.RunState) (Result, error) {
+	observation, err := observeWorktree(ctx, state)
+	if err != nil {
+		return Result{}, err
+	}
+	if observation.DiffBytes == 0 && observation.ChangedFileCount == 0 {
+		return Result{}, ErrExportClean
+	}
+	record := ArchiveRecord{
+		RunID: state.RunID, TaskID: state.TaskID, Kind: archivePatchKind, Digest: observation.DiffDigest,
+		ExportedAt: cleanupTime(input.Now), Actor: input.Actor,
+	}
+	patchPath, err := writePatchArchive(input.StateRoot, record, observation.Patch)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{RunID: state.RunID, Exported: true, ArchivePath: patchPath, ArchiveDigest: observation.DiffDigest, Targets: []Target{}}, nil
+}
+
+// observeWorktree captures the deterministic diff of a managed worktree
+// against its locked baseline, including untracked files, without touching
+// the worktree. Oversized diffs fail closed instead of exporting partial
+// evidence.
+func observeWorktree(ctx context.Context, state domain.RunState) (verification.Observation, error) {
+	if state.WorktreePath == "" || state.BaseSHA == "" {
+		return verification.Observation{}, ErrTargetIdentity
+	}
+	observation, err := verification.ObserveContext(ctx, state.WorktreePath, state.BaseSHA, maxArchivePatchBytes)
+	if err != nil {
+		return verification.Observation{}, err
+	}
+	if observation.DiffTruncated {
+		return verification.Observation{}, ErrPatchTooLarge
+	}
+	return observation, nil
 }
 
 func validateOutcome(runDir string, state domain.RunState, validator *contract.Validator) error {

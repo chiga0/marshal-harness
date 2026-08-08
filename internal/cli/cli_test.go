@@ -375,7 +375,17 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 }
 
 func TestTaskCleanupRequiresRunAndHasNoImplicitApply(t *testing.T) {
-	for _, args := range [][]string{{"task", "cleanup"}, {"task", "cleanup", "--apply"}, {"task", "cleanup", "--run", "run-1", "extra"}} {
+	for _, args := range [][]string{
+		{"task", "cleanup"},
+		{"task", "cleanup", "--apply"},
+		{"task", "cleanup", "--run", "run-1", "extra"},
+		{"task", "cleanup", "--expired", "--run", "run-1"},
+		{"task", "cleanup", "--expired", "--export-patch"},
+		{"task", "cleanup", "--expired", "--apply"},
+		{"task", "cleanup", "--expired", "--apply", "--actor", "  "},
+		{"task", "cleanup", "--run", "run-1", "--export-patch"},
+		{"task", "cleanup", "--run", "run-1", "--export-patch", "--apply", "--actor", "op:1"},
+	} {
 		var stdout, stderr bytes.Buffer
 		if exit := Run(args, strings.NewReader(""), &stdout, &stderr); exit != ExitUsage {
 			t.Fatalf("Run(%v) exit=%d stderr=%s", args, exit, stderr.String())

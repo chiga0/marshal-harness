@@ -360,6 +360,59 @@ func (w *Worktree) RemoveClean() error {
 	return w.Release()
 }
 
+// RemoveArchived removes one exact, registered managed worktree whose
+// unarchived changes the caller already exported and digest-verified against
+// an archive record. The removal is still identity-bound and locked; the local
+// branch is deliberately retained.
+func (w *Worktree) RemoveArchived() error {
+	if w == nil || w.Path == "" {
+		return errors.New("managed worktree is unavailable")
+	}
+	if err := w.Validate(); err != nil {
+		return err
+	}
+	repositoryLock, err := acquireRepositoryLock(w.stateRoot)
+	if err != nil {
+		return err
+	}
+	defer repositoryLock.Unlock()
+	if err := gitRun(w.repo.Root, "worktree", "unlock", w.Path); err != nil {
+		return err
+	}
+	if err := gitRun(w.repo.Root, "worktree", "remove", "--force", w.Path); err != nil {
+		_ = gitRun(w.repo.Root, "worktree", "lock", "--reason", "managed by Marshal", w.Path)
+		return err
+	}
+	w.Path = ""
+	return w.Release()
+}
+
+// CleanSnapshot reports whether the registered worktree at path is clean right
+// now, without acquiring Marshal locks. It is an advisory preview snapshot for
+// cleanup previews only; any removal must re-prove identity and cleanliness
+// under the real locks.
+func (r Repository) CleanSnapshot(path string) (bool, error) {
+	canonicalPath, err := canonical(path)
+	if err != nil {
+		return false, err
+	}
+	if canonicalPath == r.Root {
+		return false, errors.New("task worktree resolved to the main checkout")
+	}
+	opened, err := Open(canonicalPath)
+	if err != nil {
+		return false, err
+	}
+	if opened.Root != canonicalPath || opened.CommonDir != r.CommonDir {
+		return false, errors.New("worktree root or Git common directory identity mismatch")
+	}
+	output, err := gitOutput(canonicalPath, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return false, err
+	}
+	return output == "", nil
+}
+
 func safeName(value string) string {
 	value = branchUnsafe.ReplaceAllString(value, "-")
 	value = strings.Trim(value, "-.")

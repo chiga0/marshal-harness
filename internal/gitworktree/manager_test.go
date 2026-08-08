@@ -135,6 +135,68 @@ func TestRemoveCleanRejectsDirtyAndRetainsBranch(t *testing.T) {
 	_ = gitCommand(t, repository, "branch", "-D", branch)
 }
 
+func TestRemoveArchivedForcesDirtyWorktreeAndRetainsBranch(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	manager, _ := Open(repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	worktree, err := manager.Create(stateRoot, "task:archived", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, branch := worktree.Path, worktree.Branch
+	if err := os.WriteFile(filepath.Join(path, "unarchived.txt"), []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := worktree.RemoveClean(); !errors.Is(err, ErrDirtyWorktree) {
+		t.Fatalf("RemoveClean(dirty) = %v", err)
+	}
+	if err := worktree.RemoveArchived(); err != nil {
+		t.Fatalf("RemoveArchived = %v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("archived worktree still exists: %v", err)
+	}
+	if output := gitCommand(t, repository, "show-ref", "--verify", "refs/heads/"+branch); strings.TrimSpace(output) == "" {
+		t.Fatal("archived removal unexpectedly removed the local branch")
+	}
+	_ = gitCommand(t, repository, "branch", "-D", branch)
+}
+
+func TestCleanSnapshotIsAdvisoryAndReadOnly(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	manager, _ := Open(repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	worktree, err := manager.Create(stateRoot, "task:snapshot", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := worktree.Path
+	t.Cleanup(func() {
+		_ = worktree.Release()
+		_ = gitCommand(t, repository, "worktree", "remove", "--force", path)
+		_ = gitCommand(t, repository, "branch", "-D", worktree.Branch)
+	})
+	clean, err := manager.CleanSnapshot(path)
+	if err != nil || !clean {
+		t.Fatalf("CleanSnapshot(clean) = %v, %v", clean, err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "unarchived.txt"), []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clean, err = manager.CleanSnapshot(path)
+	if err != nil || clean {
+		t.Fatalf("CleanSnapshot(dirty) = %v, %v", clean, err)
+	}
+	if _, err := manager.CleanSnapshot(repository); err == nil {
+		t.Fatal("CleanSnapshot accepted the main checkout")
+	}
+	if _, err := manager.CleanSnapshot(filepath.Join(stateRoot, "worktrees", "task:missing")); err == nil {
+		t.Fatal("CleanSnapshot accepted an unregistered path")
+	}
+}
+
 func TestCreateRetriesShortLivedRepositoryLock(t *testing.T) {
 	repository, base := fixtureRepository(t)
 	initializeMarshalState(t, repository)
