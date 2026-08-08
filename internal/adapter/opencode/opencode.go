@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/adapter/pi"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -371,11 +372,14 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
 	exitCode, signal := processOutcome(command)
+	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: worktree, ControlRoot: controlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
+	fatalDenials := denials.CountFatal(denialRecords)
 	metadata, err := json.MarshalIndent(map[string]any{
 		"sessionId": capture.sessionID, "eventCount": capture.eventCount,
 		"toolCalls": capture.toolCalls, "inputTokens": capture.inputTokens,
 		"outputTokens": capture.outputTokens, "capturedBytes": len(capture.raw),
-		"outputTruncated": capture.limitExceeded, "permissionDenied": capture.permissionDenied,
+		"outputTruncated": capture.limitExceeded, "permissionDenied": fatalDenials > 0,
+		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials,
 		"exitCode": exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
 		"contextError": contextError(runCtx),
 	}, "", "  ")
@@ -384,6 +388,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "opencode-transcript-meta.json"), append(metadata, '\n')); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript metadata: %w", err)
+	}
+	if err := denials.AppendLog(filepath.Join(filepath.Dir(resultPath), denials.LogFileName), denialRecords); err != nil {
+		return domain.Record{}, fmt.Errorf("write denial log: %w", err)
 	}
 	if runCtx.Err() != nil {
 		return domain.Record{}, runCtx.Err()
@@ -397,7 +404,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if waitErr != nil {
 		return domain.Record{}, processFailureError(command)
 	}
-	if capture.permissionDenied {
+	if fatalDenials > 0 {
 		return domain.Record{}, ErrPermissionDenied
 	}
 	if capture.sessionID == "" {
@@ -481,15 +488,15 @@ func readDeclaredResult(path string, limit int64, validator *contract.Validator)
 }
 
 type captureResult struct {
-	raw              []byte
-	sessionID        string
-	eventCount       int
-	toolCalls        int
-	inputTokens      int
-	outputTokens     int
-	permissionDenied bool
-	limitExceeded    bool
-	err              error
+	raw           []byte
+	sessionID     string
+	eventCount    int
+	toolCalls     int
+	inputTokens   int
+	outputTokens  int
+	denials       []denials.RawDenial
+	limitExceeded bool
+	err           error
 }
 
 func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
@@ -529,8 +536,9 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 							Output int `json:"output"`
 						} `json:"tokens"`
 						State struct {
-							Status string `json:"status"`
-							Error  string `json:"error"`
+							Status string          `json:"status"`
+							Error  string          `json:"error"`
+							Input  json.RawMessage `json:"input"`
 						} `json:"state"`
 					} `json:"part"`
 				}
@@ -549,9 +557,8 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 						result.inputTokens = event.Part.Tokens.Input
 						result.outputTokens = event.Part.Tokens.Output
 					}
-					lower := strings.ToLower(event.Part.State.Error)
-					if event.Part.State.Status == "error" && strings.Contains(lower, "permission") && (strings.Contains(lower, "denied") || strings.Contains(lower, "prevents") || strings.Contains(lower, "rule")) {
-						result.permissionDenied = true
+					if event.Part.State.Status == "error" && denials.IsPermissionError(event.Part.State.Error) {
+						result.denials = append(result.denials, denials.RawDenial{Tool: event.Part.Tool, Input: event.Part.State.Input})
 					}
 				}
 				line = nil

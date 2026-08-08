@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/adapter/pi"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -91,6 +92,7 @@ var (
 	ErrUnsupportedVersion = errors.New("unsupported qwen version")
 	ErrOutputLimit        = errors.New("qwen output limit exceeded")
 	ErrProtocol           = errors.New("invalid qwen protocol")
+	ErrPermissionDenied   = errors.New("qwen permission denied")
 	ErrProcessFailed      = errors.New("qwen process failed")
 )
 
@@ -426,12 +428,15 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
 	exitCode, signal := processOutcome(command)
+	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: worktree, ControlRoot: controlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
+	fatalDenials := denials.CountFatal(denialRecords)
 	metadata, err := json.MarshalIndent(map[string]any{
 		"sessionId": capture.sessionID, "eventCount": capture.eventCount,
 		"toolCalls": capture.toolCalls, "inputTokens": capture.inputTokens,
 		"outputTokens": capture.outputTokens, "capturedBytes": len(capture.raw),
-		"outputTruncated": capture.limitExceeded,
-		"exitCode":        exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
+		"outputTruncated": capture.limitExceeded, "permissionDenied": fatalDenials > 0,
+		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials,
+		"exitCode": exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
 		"contextError": contextError(runCtx),
 	}, "", "  ")
 	if err != nil {
@@ -439,6 +444,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "qwen-transcript-meta.json"), append(metadata, '\n')); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript metadata: %w", err)
+	}
+	if err := denials.AppendLog(filepath.Join(filepath.Dir(resultPath), denials.LogFileName), denialRecords); err != nil {
+		return domain.Record{}, fmt.Errorf("write denial log: %w", err)
 	}
 	if runCtx.Err() != nil {
 		return domain.Record{}, runCtx.Err()
@@ -451,6 +459,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if waitErr != nil {
 		return domain.Record{}, processFailureError(command)
+	}
+	if fatalDenials > 0 {
+		return domain.Record{}, ErrPermissionDenied
 	}
 	if capture.sessionID == "" {
 		return domain.Record{}, fmt.Errorf("%w: session_id is missing", ErrProtocol)
@@ -542,6 +553,7 @@ type captureResult struct {
 	toolCalls     int
 	inputTokens   int
 	outputTokens  int
+	denials       []denials.RawDenial
 	limitExceeded bool
 	err           error
 }
@@ -588,12 +600,15 @@ func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit 
 				}
 				result.raw = append(result.raw, append(trimmed, '\n')...)
 				var event struct {
-					Type            string `json:"type"`
-					Subtype         string `json:"subtype"`
-					SessionID       string `json:"session_id"`
-					Cwd             string `json:"cwd"`
-					QwenCodeVersion string `json:"qwen_code_version"`
-					ToolName        string `json:"tool_name"`
+					Type            string          `json:"type"`
+					Subtype         string          `json:"subtype"`
+					SessionID       string          `json:"session_id"`
+					Cwd             string          `json:"cwd"`
+					QwenCodeVersion string          `json:"qwen_code_version"`
+					ToolName        string          `json:"tool_name"`
+					Args            json.RawMessage `json:"args"`
+					IsError         *bool           `json:"is_error"`
+					Error           string          `json:"error"`
 					Usage           struct {
 						InputTokens  int `json:"input_tokens"`
 						OutputTokens int `json:"output_tokens"`
@@ -626,6 +641,13 @@ func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit 
 					}
 					if event.Type == "tool" || event.ToolName != "" {
 						result.toolCalls++
+					}
+					// Denial grading is fail-closed: only an explicit
+					// permission marker turns a tool error into a denial
+					// event, and anything the classifier cannot prove benign
+					// stays FATAL.
+					if event.IsError != nil && *event.IsError && denials.IsPermissionError(event.Error) {
+						result.denials = append(result.denials, denials.RawDenial{Tool: event.ToolName, Input: event.Args})
 					}
 					if event.Type == "result" {
 						sawResult = true
