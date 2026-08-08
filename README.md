@@ -8,6 +8,28 @@ Marshal 是一个面向 Coding Agent 的证据门禁式编排框架。主 Agent 
 
 > 项目状态：Milestone 0–6 全部通过，Local MVP 已标记 `USABLE`（见 [docs/roadmap-status.md](docs/roadmap-status.md)）。文档站：[chiga0.github.io/marshal-harness](https://chiga0.github.io/marshal-harness/)。采用 [MIT](LICENSE) 许可。
 
+## 安装
+
+两种路径均不请求 sudo，脚本不执行任何特权操作。
+
+**一行安装脚本**——存在 `v*` tag 的 GitHub release 且含本平台匹配资产时，下载预编译二进制并按 `SHA256SUMS` 校验；否则自动源码构建（要求 Go 版本满足 `go.mod`），并安装到 `~/.local/bin`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chiga0/marshal-harness/main/scripts/install.sh | bash
+```
+
+仓库 checkout 内也可直接运行 `bash scripts/install.sh`（此时优先用本地源码构建）。支持环境变量覆盖：`MARSHAL_INSTALL_DIR`（安装目录）、`MARSHAL_REPO`、`MARSHAL_TAG`（固定 release tag）、`MARSHAL_FORCE_SOURCE=1`（强制源码构建）。
+
+**手动源码构建**——没有 release 资产的平台或需要自行编译时使用：
+
+```bash
+git clone https://github.com/chiga0/marshal-harness.git
+cd marshal-harness
+make build        # 产出 ./bin/marshal
+```
+
+release 资产命名约定与脚本手工验证步骤见[开发指南](docs/development.md)的「安装」小节；安装完成后的下一步见下方快速开始（`marshal init` / `marshal doctor`）。
+
 ## 快速开始
 
 前置：Go 版本以 `go.mod` 为准；macOS 或 Linux。可选：安装要委派的 Coding Agent（OpenCode / Qwen Code / Pi）并配置其环境变量（见 [docs/operator-runbook.md](docs/operator-runbook.md) §9.1）。

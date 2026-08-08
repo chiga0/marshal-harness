@@ -56,6 +56,33 @@ make ci
 
 GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，并使用独立 Job 执行 Secret Scan。外部 Action 固定到完整 Commit SHA，工作流默认只有 `contents: read` 权限。
 
+## 安装
+
+面向用户的两条安装路径（一行脚本与源码构建）见 [README](../README.md) 的「安装」小节，对应脚本为 [`scripts/install.sh`](../scripts/install.sh)：
+
+- 检测平台（`darwin|linux` × `amd64|arm64`）；
+- 存在 `v*` tag 的 GitHub release 且含平台匹配资产时，用 `curl -fsSL` 下载预编译二进制；release 附带 `SHA256SUMS` 时强制校验 sha256（校验失败即中止），未附带时告警跳过；
+- 否则回退源码构建 `go build -trimpath ./cmd/marshal`（Go 版本须满足 `go.mod` 的 `go` 指令）；无本地 checkout 时先浅克隆 `https://github.com/chiga0/marshal-harness.git`（release tag 已知时克隆该 tag）；
+- 安装到 `~/.local/bin`（默认），全程不请求 sudo，完成后输出下一步指引（`marshal init` / `marshal doctor`）。
+
+环境变量：`MARSHAL_INSTALL_DIR`（安装目录）、`MARSHAL_REPO`（默认 `chiga0/marshal-harness`）、`MARSHAL_TAG`（固定 release tag，跳过 latest release 查询）、`MARSHAL_FORCE_SOURCE=1`（跳过 release 直接源码构建）。
+
+### Release 资产命名约定
+
+`scripts/install.sh` 依赖的 release 资产约定（后续 release 工具链必须遵守）：
+
+- `marshal_<version>_<os>_<arch>`：预编译二进制。`version` 为去掉 `v` 前缀的 release tag，`os`/`arch` 取 Go 风格 `darwin|linux` × `amd64|arm64`（如 `marshal_0.1.0_darwin_arm64`）；
+- `SHA256SUMS`：全部资产的校验清单，`sha256sum` 格式（`<hash>  <文件名>`）。
+
+### 手工验证
+
+安装脚本暂未纳入 `make check`（shellcheck 不是本仓库的冻结依赖）。修改 `scripts/install.sh` 后按以下步骤手工验证：
+
+1. 干净 checkout 内运行 `bash scripts/install.sh`（本地源码构建路径）；
+2. `MARSHAL_INSTALL_DIR=<空目录> bash scripts/install.sh` 验证自定义安装目录；
+3. `MARSHAL_FORCE_SOURCE=1 bash scripts/install.sh` 验证强制源码构建路径；
+4. 安装后运行 `marshal version` 与 `marshal doctor --json` 确认二进制可用。
+
 ## 当前 CLI
 
 ```bash
