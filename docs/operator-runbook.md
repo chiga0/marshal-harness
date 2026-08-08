@@ -260,3 +260,17 @@ Lead 的汇总必须产出三份清单并可回溯：**共识**（多 Agent 独�
 - 人的审批/注意力是硬瓶颈，fan-out 度不得超过 Lead 能有效审查的上限；
 - 小任务禁用 fan-out：协议成本无法摊薄；
 - **度量纪律**：每次 fan-out 必须记录：任务族 ID、agent 数、墙钟时间（并行 vs 串行估计）、token/工具成本、冲突数、findings 数与处置分布、人工分钟数。没有度量记录，不得扩大 fan-out 使用面。
+
+### 9.7 心跳 watchdog：后台任务的可见性（防"挂了毫无感知"）
+
+后台 `task run` 期间 Lead 与操作者都可能失去可见性（opencode 长 attempt 很少发事件，`events.jsonl`
+长时间不增长是**正常**的，不能据此判死）。必须用**进程存活**判定：
+
+```bash
+nohup scripts/marshal-watch.sh 600 > /tmp/marshal-watch.log 2>&1 < /dev/null & disown
+```
+
+- 每 10 分钟（可调）轮询所有 Run：终态/待审态直接标注；`RUNNING` 且 `task run`/opencode 进程存活 → `RUNNING(active)`；无活进程 → `DEAD?`（立即 `doctor --run` 对账并重跑）。
+- 输出 tee 到 `/tmp/marshal-watch.log` 并 `osascript` 系统通知，轮间也有感知。
+- Lead 每轮交互也应主动汇报各 Run 状态（watchdog 是轮间兜底，Lead 汇报是轮内）。
+- 不要用"事件年龄"判死（opencode 单 attempt 可能 20-40min 无事件）；判死唯一依据是进程存活 + `doctor`。
