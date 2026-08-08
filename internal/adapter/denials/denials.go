@@ -109,6 +109,9 @@ func (c Classifier) Classify(event Event) Decision {
 		return Decision{Grade: Fatal, Kind: kind, Reason: "写类拒绝一律 FATAL"}
 	}
 	if kind == KindExecute {
+		if readOnlyExecute(event.Target) {
+			return Decision{Grade: Benign, Kind: kind, Reason: "只读内省/自验证命令，ADR-0013 修订"}
+		}
 		return Decision{Grade: Fatal, Kind: kind, Reason: "执行类拒绝一律 FATAL"}
 	}
 	if kind == KindUnknown {
@@ -128,6 +131,47 @@ func (c Classifier) Classify(event Event) Decision {
 		return Decision{Grade: Benign, Kind: kind, Reason: "读操作 realpath 落在受管 worktree 内"}
 	}
 	return Decision{Grade: Fatal, Kind: kind, Reason: "读拒绝不落入 BENIGN 候选清单"}
+}
+
+// readOnlyExecute reports whether a denied execute-class command is a known
+// read-only introspection or self-verification form that must not terminate
+// the attempt (ADR-0013 amendment). Matching is token-precise, never prefix
+// matching, so `git tag -l` is benign while `git tag foo` stays FATAL and
+// `bash -n x` is benign while `bash x` / `sh -c` stay FATAL.
+func readOnlyExecute(command string) bool {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "ls", "cat", "head", "tail", "wc", "find", "grep", "rg", "file", "stat", "which", "pwd", "echo", "date":
+		return true
+	case "git":
+		if len(fields) < 2 {
+			return false
+		}
+		switch fields[1] {
+		case "log", "status", "diff", "show", "ls-files", "remote", "branch":
+			return true
+		case "tag":
+			return len(fields) >= 3 && (fields[2] == "-l" || fields[2] == "--list")
+		}
+		return false
+	case "go":
+		if len(fields) < 2 {
+			return false
+		}
+		switch fields[1] {
+		case "test", "build", "vet", "fmt", "run", "mod", "list":
+			return true
+		}
+		return false
+	case "bash", "sh":
+		return len(fields) >= 2 && fields[1] == "-n"
+	case "gofmt":
+		return true
+	}
+	return false
 }
 
 // resolveOrLexical returns the realpath of path when it resolves, otherwise

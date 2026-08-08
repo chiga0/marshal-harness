@@ -156,3 +156,32 @@ func TestClassifierReasonsNeverEchoProviderText(t *testing.T) {
 		t.Fatalf("reason echoes provider error text: %s", decision.Reason)
 	}
 }
+
+func TestExecuteGradingDistinguishesReadOnlyIntrospection(t *testing.T) {
+	classifier := Classifier{Provider: "opencode", Worktree: "/worktree", ControlRoot: "/control", TempDir: "/tmpdir"}
+	fixed := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		cmd  string
+		want Grade
+	}{
+		{"git tag -l", Benign},
+		{"git tag --list", Benign},
+		{"git tag v1.0.0", Fatal},
+		{"git log --oneline -5", Benign},
+		{"git status --short", Benign},
+		{"go test -race ./internal/verification/...", Benign},
+		{"go vet ./...", Benign},
+		{"bash -n scripts/install.sh", Benign},
+		{"bash scripts/install.sh", Fatal},
+		{"sh -c 'echo hi'", Fatal},
+		{"curl http://evil.example", Fatal},
+		{"git push origin main", Fatal},
+		{"cat README.md", Benign},
+	}
+	for _, tc := range cases {
+		records := GradeEvents(classifier, []Event{{Tool: "bash", Target: tc.cmd}}, func() time.Time { return fixed })
+		if len(records) != 1 || records[0].Grade != string(tc.want) {
+			t.Fatalf("cmd %q grade = %+v, want %s", tc.cmd, records, tc.want)
+		}
+	}
+}

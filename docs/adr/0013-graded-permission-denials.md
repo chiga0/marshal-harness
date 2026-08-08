@@ -48,3 +48,7 @@ TaskSpec 可声明额外 `expectedDenialPatterns`，但仅允许从内置 BENIGN
 - 维持零容忍 + TaskSpec 纪律（现状）：脆弱、Lead 依赖，已被三轮实测证伪；
 - TaskSpec 自由重分级：违反安全 deny 不可放宽原则，否决；
 - 用模型判断分级：不可审计、不可复现，否决。
+
+## 修订 2026-08-08：执行类只读内省命令判 BENIGN
+
+实战（实现批多轮 BLOCKED）证明执行类一刀切 FATAL 会误杀 Worker 的合法只读内省与自验证（`git tag -l` 被 `git tag *` 前缀 deny 命中、`go test`/`bash -n` 自校验被拦），导致"工作完成、收尾绊倒"。修订：`readOnlyExecute` 以**精确 token 解析**（非前缀匹配）将已知只读内省/自验证命令判 BENIGN（`git tag -l/--list`、`git log/status/diff/show/ls-files/remote/branch`、`go test/build/vet/fmt/run/mod/list`、`bash -n`、`gofmt`、读类二进制），其余执行类（`git tag <name>`、`git push/commit`、`bash <script>`、`sh -c`、`curl/wget` 等）保持 FATAL。该修订只放宽只读内省，不放宽任何破坏性命令；配套测试 `TestExecuteGradingDistinguishesReadOnlyIntrospection` 锁定边界。
