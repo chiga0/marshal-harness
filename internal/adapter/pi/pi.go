@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
@@ -46,6 +47,7 @@ var (
 	ErrUnsupportedVersion       = errors.New("unsupported pi version")
 	ErrOutputLimit              = errors.New("pi output limit exceeded")
 	ErrProtocol                 = errors.New("invalid pi protocol")
+	ErrPermissionDenied         = errors.New("pi permission denied")
 	ErrUnsupportedSessionPolicy = errors.New("unsupported session policy")
 	ErrProcessFailed            = errors.New("pi process failed")
 )
@@ -339,13 +341,16 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
 	exitCode, signal := processOutcome(command)
+	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: worktree, ControlRoot: controlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
+	fatalDenials := denials.CountFatal(denialRecords)
 	metadata, err := json.MarshalIndent(map[string]any{
 		"sessionId": capture.sessionID, "eventCount": capture.eventCount,
 		"toolCalls": capture.toolCalls, "inputTokens": capture.inputTokens,
 		"outputTokens": capture.outputTokens, "cachedInputTokens": capture.cachedInputTokens,
 		"cost": capture.cost, "capturedBytes": len(capture.raw),
-		"outputTruncated": capture.limitExceeded,
-		"exitCode":        exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
+		"outputTruncated": capture.limitExceeded, "permissionDenied": fatalDenials > 0,
+		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials,
+		"exitCode": exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
 		"contextError": contextError(runCtx),
 	}, "", "  ")
 	if err != nil {
@@ -353,6 +358,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "pi-transcript-meta.json"), append(metadata, '\n')); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript metadata: %w", err)
+	}
+	if err := denials.AppendLog(filepath.Join(filepath.Dir(resultPath), denials.LogFileName), denialRecords); err != nil {
+		return domain.Record{}, fmt.Errorf("write denial log: %w", err)
 	}
 	if runCtx.Err() != nil {
 		return domain.Record{}, runCtx.Err()
@@ -365,6 +373,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if waitErr != nil {
 		return domain.Record{}, processFailureError(command)
+	}
+	if fatalDenials > 0 {
+		return domain.Record{}, ErrPermissionDenied
 	}
 	if capture.sessionID == "" {
 		return domain.Record{}, fmt.Errorf("%w: session id is missing", ErrProtocol)
@@ -513,6 +524,7 @@ type captureResult struct {
 	outputTokens      int
 	cachedInputTokens int
 	cost              float64
+	denials           []denials.RawDenial
 	limitExceeded     bool
 	err               error
 }
@@ -521,12 +533,16 @@ type captureResult struct {
 // ignored on purpose; protocol decisions rely solely on type, version, id,
 // cwd, and the terminal agent_end event.
 type piEvent struct {
-	Type     string `json:"type"`
-	Version  *int   `json:"version"`
-	ID       string `json:"id"`
-	Cwd      string `json:"cwd"`
-	ToolName string `json:"toolName"`
-	Messages []struct {
+	Type       string          `json:"type"`
+	Version    *int            `json:"version"`
+	ID         string          `json:"id"`
+	Cwd        string          `json:"cwd"`
+	ToolName   string          `json:"toolName"`
+	ToolCallID string          `json:"toolCallId"`
+	Args       json.RawMessage `json:"args"`
+	IsError    *bool           `json:"isError"`
+	Error      string          `json:"error"`
+	Messages   []struct {
 		Role  string `json:"role"`
 		Usage *struct {
 			Input      int       `json:"input"`
@@ -658,6 +674,7 @@ func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()
 	lastType := ""
 	sawAgentEnd := false
 	sawAgentSettled := false
+	pending := map[string]json.RawMessage{}
 	fail := func(reason error) {
 		if result.err == nil {
 			result.err = reason
@@ -720,6 +737,25 @@ func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()
 					continue
 				case event.Type == "tool_execution_start":
 					result.toolCalls++
+					if event.ToolCallID != "" && len(pending) < 4096 {
+						pending[event.ToolCallID] = event.Args
+					}
+				case event.Type == "tool_execution_end":
+					tool, args := event.ToolName, event.Args
+					if event.ToolCallID != "" {
+						if startArgs, ok := pending[event.ToolCallID]; ok {
+							delete(pending, event.ToolCallID)
+							if len(args) == 0 {
+								args = startArgs
+							}
+						}
+					}
+					// Denial grading is fail-closed: only an explicit permission
+					// marker turns a tool error into a denial event, and anything
+					// the classifier cannot prove benign stays FATAL.
+					if event.IsError != nil && *event.IsError && denials.IsPermissionError(event.Error) {
+						result.denials = append(result.denials, denials.RawDenial{Tool: tool, Input: args})
+					}
 				case event.Type == "agent_end":
 					sawAgentEnd = true
 					for _, message := range event.Messages {

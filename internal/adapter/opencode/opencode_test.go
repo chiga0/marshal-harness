@@ -302,6 +302,145 @@ func TestRunEnforcesOutputCapPermissionAndCancellation(t *testing.T) {
 	})
 }
 
+func TestRunGradesBenignDenialRecordsEvidenceAndContinues(t *testing.T) {
+	events := `printf '%s\n'` +
+		` '{"type":"error","sessionID":"session-1","part":{"tool":"read","state":{"status":"error","error":"permission denied","input":{"filePath":"'"$PWD"'/source.go"}}}}'` +
+		` '{"type":"error","sessionID":"session-1","part":{"tool":"read","state":{"status":"error","error":"permission prevents reading bootstrap","input":{"filePath":"'"$TMPDIR"'/opencode/work-context.txt"}}}}'` +
+		` '{"type":"text","sessionID":"session-1","part":{"type":"text","text":"done"}}'`
+	fixture := newRunFixture(t, supportedBinary, events)
+	if err := os.WriteFile(filepath.Join(fixture.worktree, "source.go"), []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("benign denials must not terminate the attempt: %v", err)
+	}
+	if err := fixture.validator.Validate(domain.KindWorkerResult, record.Data); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(fixture.controlRoot, "output", "denials.jsonl")
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("denial log missing: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("denial log permissions = %v, want 0600", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("denial log line invalid: %v: %s", err, line)
+		}
+		records = append(records, record)
+	}
+	if len(records) != 2 {
+		t.Fatalf("denial records = %+v", records)
+	}
+	for _, key := range []string{"seq", "tool", "kind", "path-or-cmd", "grade", "reason", "at"} {
+		if _, present := records[0][key]; !present {
+			t.Fatalf("denial record misses key %q: %+v", key, records[0])
+		}
+	}
+	worktreeReal, err := filepath.EvalSymlinks(fixture.worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records[0]["tool"] != "read" || records[0]["kind"] != "read" || records[0]["grade"] != "BENIGN" || records[0]["path-or-cmd"] != filepath.Join(worktreeReal, "source.go") {
+		t.Fatalf("worktree benign record = %+v", records[0])
+	}
+	if records[1]["grade"] != "BENIGN" || !strings.HasSuffix(records[1]["path-or-cmd"].(string), filepath.Join("opencode", "work-context.txt")) {
+		t.Fatalf("bootstrap benign record = %+v", records[1])
+	}
+	metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "opencode-transcript-meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(metadata), `"permissionDenied": false`) || !strings.Contains(string(metadata), `"denialsBenign": 2`) || !strings.Contains(string(metadata), `"denialsFatal": 0`) {
+		t.Fatalf("metadata lost denial grading: %s", metadata)
+	}
+}
+
+func TestRunGradesFatalDenialsFailClosedAndPersistEvidence(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("execute-denial", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"error","sessionID":"session-1","part":{"tool":"bash","state":{"status":"error","error":"permission denied by rule","input":{"command":"curl http://evil.example"}}}}'`)
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
+			t.Fatalf("error = %v", err)
+		}
+		assertFatalDenialLog(t, fixture.controlRoot, "bash", "execute", "curl http://evil.example")
+		metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "opencode-transcript-meta.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(metadata), `"permissionDenied": true`) || !strings.Contains(string(metadata), `"denialsFatal": 1`) {
+			t.Fatalf("metadata lost fatal denial state: %s", metadata)
+		}
+	})
+	t.Run("write-denial", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"error","sessionID":"session-1","part":{"tool":"edit","state":{"status":"error","error":"permission denied","input":{"filePath":"'"$PWD"'/source.go"}}}}'`)
+		worktreeReal, err := filepath.EvalSymlinks(fixture.worktree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
+			t.Fatalf("error = %v", err)
+		}
+		assertFatalDenialLog(t, fixture.controlRoot, "edit", "write", filepath.Join(worktreeReal, "source.go"))
+	})
+	t.Run("symlink-escape-read", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"error","sessionID":"session-1","part":{"tool":"read","state":{"status":"error","error":"permission denied","input":{"filePath":"'"$PWD"'/escape.txt"}}}}'`)
+		if err := os.Symlink(outside, filepath.Join(fixture.worktree, "escape.txt")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
+			t.Fatalf("symlink escape read must grade FATAL: %v", err)
+		}
+	})
+	t.Run("outside-read", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"error","sessionID":"session-1","part":{"tool":"read","state":{"status":"error","error":"permission denied","input":{"filePath":"/etc/hosts"}}}}'`)
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
+			t.Fatalf("outside read must grade FATAL: %v", err)
+		}
+	})
+	t.Run("input-read-denial", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, "exit 0")
+		body := `printf '%s\n' '{"type":"error","sessionID":"session-1","part":{"tool":"read","state":{"status":"error","error":"permission denied","input":{"filePath":"` + filepath.Join(fixture.controlRoot, "input", "task-spec.json") + `"}}}}'`
+		if err := os.WriteFile(fixture.executable, []byte(fakeScript(supportedBinary, body)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
+			t.Fatalf("control/input read denial must grade FATAL: %v", err)
+		}
+	})
+}
+
+func assertFatalDenialLog(t *testing.T, controlRoot, tool, kind, target string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(controlRoot, "output", "denials.jsonl"))
+	if err != nil {
+		t.Fatalf("denial log missing: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("denial log = %s", data)
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["tool"] != tool || record["kind"] != kind || record["grade"] != "FATAL" || record["path-or-cmd"] != target || record["seq"] != float64(1) {
+		t.Fatalf("fatal denial record = %+v", record)
+	}
+}
+
 func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
 	secrets := []string{"sk-ant-api03-super-secret-token", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret-payload", "user private content: password=hunter2"}
 	body := `printf '%s\n' '{"type":"step_start","sessionID":"session-1","part":{"type":"step-start"}}'`
@@ -409,11 +548,14 @@ func validDeclaredResult(executable string) map[string]any {
 func fakeExecutable(t *testing.T, version, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "opencode")
-	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '" + version + "'; exit 0; fi\nif [ \"$1\" = \"debug\" ] && [ \"$2\" = \"config\" ]; then printf '%s\\n' \"$OPENCODE_CONFIG_CONTENT\"; exit 0; fi\n" + body + "\n"
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(path, []byte(fakeScript(version, body)), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func fakeScript(version, body string) string {
+	return "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '" + version + "'; exit 0; fi\nif [ \"$1\" = \"debug\" ] && [ \"$2\" = \"config\" ]; then printf '%s\\n' \"$OPENCODE_CONFIG_CONTENT\"; exit 0; fi\n" + body + "\n"
 }
 
 func newValidator(t *testing.T) *contract.Validator {

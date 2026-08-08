@@ -36,6 +36,10 @@ type Input struct {
 type Result struct {
 	Report   Report
 	Manifest ArtifactManifest
+
+	denialsBenign  int
+	denialsFatal   int
+	denialsPresent bool
 }
 
 type Verifier struct {
@@ -74,6 +78,15 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 	artifacts, artifactGates := CollectArtifacts(input.Worktree, input.Deliverables, started)
 	result.Manifest.Artifacts = append(result.Manifest.Artifacts, artifacts...)
 	result.Report.Gates = append(result.Report.Gates, artifactGates...)
+	denialAssessment, err := assessDenialSummary(input.RunDirectory, started)
+	if err != nil {
+		return result, err
+	}
+	result.Report.Gates = append(result.Report.Gates, denialAssessment.Gate)
+	if denialAssessment.Artifact != nil {
+		result.Manifest.Artifacts = append(result.Manifest.Artifacts, *denialAssessment.Artifact)
+	}
+	result.denialsBenign, result.denialsFatal, result.denialsPresent = denialAssessment.Benign, denialAssessment.Fatal, denialAssessment.Present
 	runner := Runner{Environment: input.Environment}
 	for _, spec := range input.Commands {
 		if ctx.Err() != nil {
@@ -122,6 +135,9 @@ func (v *Verifier) finish(input Input, result Result) (Result, error) {
 	result.Manifest.GeneratedAt = result.Report.CompletedAt
 	result.Report.Status = overallStatus(result.Report.Gates)
 	result.Report.Summary = fmt.Sprintf("Verification %s：%d 个 Gate", result.Report.Status, len(result.Report.Gates))
+	if result.denialsPresent {
+		result.Report.Summary += fmt.Sprintf("；permission 拒绝分级 benign=%d、fatal=%d", result.denialsBenign, result.denialsFatal)
+	}
 	reportData, err := json.MarshalIndent(result.Report, "", "  ")
 	if err != nil {
 		return result, err

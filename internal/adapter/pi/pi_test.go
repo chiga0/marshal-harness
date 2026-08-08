@@ -677,6 +677,111 @@ func killKnownProcessGroup(readyPath string) {
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
+func TestRunGradesPermissionDenialsFromToolErrors(t *testing.T) {
+	t.Run("benign read continues and records evidence", func(t *testing.T) {
+		body := sessionHeader("session-1") + "\n" + `printf '%s\n'` +
+			` '{"type":"agent_start"}'` +
+			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{"path":"'"$PWD"'/source.go"}}'` +
+			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","isError":true,"error":"permission denied"}'` +
+			` '{"type":"agent_end","messages":[]}'`
+		fixture := newRunFixture(t, "0.83.0", body)
+		if err := os.WriteFile(filepath.Join(fixture.worktree, "source.go"), []byte("package x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+			t.Fatalf("benign denial must not terminate the attempt: %v", err)
+		}
+		worktreeReal, err := filepath.EvalSymlinks(fixture.worktree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertDenialLog(t, fixture.controlRoot, map[string]any{"seq": float64(1), "tool": "read", "kind": "read", "grade": "BENIGN", "path-or-cmd": filepath.Join(worktreeReal, "source.go")})
+		metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "pi-transcript-meta.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(metadata), `"permissionDenied": false`) || !strings.Contains(string(metadata), `"denialsBenign": 1`) {
+			t.Fatalf("metadata lost denial grading: %s", metadata)
+		}
+	})
+	t.Run("fatal read closes attempt and records evidence", func(t *testing.T) {
+		outside := filepath.Join(t.TempDir(), "secret.txt")
+		if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		body := sessionHeader("session-1") + "\n" + `printf '%s\n'` +
+			` '{"type":"agent_start"}'` +
+			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{"path":"` + outside + `"}}'` +
+			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","isError":true,"error":"permission rule prevents reading this path"}'` +
+			` '{"type":"agent_end","messages":[]}'`
+		fixture := newRunFixture(t, "0.83.0", body)
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
+			t.Fatalf("error = %v", err)
+		}
+		assertDenialLog(t, fixture.controlRoot, map[string]any{"seq": float64(1), "tool": "read", "kind": "read", "grade": "FATAL", "path-or-cmd": outside})
+		metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "pi-transcript-meta.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(metadata), `"permissionDenied": true`) || !strings.Contains(string(metadata), `"denialsFatal": 1`) {
+			t.Fatalf("metadata lost fatal denial state: %s", metadata)
+		}
+	})
+	t.Run("write error always fatal", func(t *testing.T) {
+		body := sessionHeader("session-1") + "\n" + `printf '%s\n'` +
+			` '{"type":"agent_start"}'` +
+			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"write","args":{"path":"'"$PWD"'/target.txt"}}'` +
+			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"write","isError":true,"error":"permission denied"}'` +
+			` '{"type":"agent_end","messages":[]}'`
+		fixture := newRunFixture(t, "0.83.0", body)
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
+			t.Fatalf("write denial must grade FATAL: %v", err)
+		}
+	})
+	t.Run("non-permission tool error is not a denial", func(t *testing.T) {
+		body := sessionHeader("session-1") + "\n" + `printf '%s\n'` +
+			` '{"type":"agent_start"}'` +
+			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{"path":"'"$PWD"'/missing.go"}}'` +
+			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","isError":true,"error":"file not found"}'` +
+			` '{"type":"agent_end","messages":[]}'`
+		fixture := newRunFixture(t, "0.83.0", body)
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+			t.Fatalf("ordinary tool error must stay a provider concern: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(fixture.controlRoot, "output", "denials.jsonl")); !os.IsNotExist(err) {
+			t.Fatalf("unexpected denial log: %v", err)
+		}
+	})
+}
+
+func assertDenialLog(t *testing.T, controlRoot string, want map[string]any) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(controlRoot, "output", "denials.jsonl"))
+	if err != nil {
+		t.Fatalf("denial log missing: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("denial log = %s", data)
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range want {
+		if record[key] != value {
+			t.Fatalf("denial record %s = %v, want %v (record %+v)", key, record[key], value, record)
+		}
+	}
+	if _, present := record["at"]; !present {
+		t.Fatalf("denial record missing at: %+v", record)
+	}
+	info, err := os.Stat(filepath.Join(controlRoot, "output", "denials.jsonl"))
+	if err == nil && info.Mode().Perm() != 0o600 {
+		t.Fatalf("denial log permissions = %v, want 0600", info.Mode().Perm())
+	}
+}
+
 type runFixture struct {
 	adapter                           *Adapter
 	validator                         *contract.Validator
