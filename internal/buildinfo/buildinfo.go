@@ -4,6 +4,10 @@ package buildinfo
 
 import "runtime"
 
+// Milestone is the highest implementation milestone reached by this source
+// tree. It is the single source of truth reported by `marshal doctor`.
+const Milestone = "6"
+
 var (
 	version   = "dev"
 	commit    = "unknown"

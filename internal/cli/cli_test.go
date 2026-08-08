@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/app"
+	"github.com/chiga0/marshal-harness/internal/buildinfo"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
@@ -68,7 +69,7 @@ func TestDoctorReportsCompiledContracts(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode doctor output: %v", err)
 	}
-	if report.Status != "ok" || report.ContractSchemas != 17 || report.WorkerAdapters != 0 || report.Milestone != "6" || len(report.Workers) != 3 {
+	if report.Status != "ok" || report.ContractSchemas != 17 || report.WorkerAdapters != 0 || report.Milestone != buildinfo.Milestone || len(report.Workers) != 3 {
 		t.Fatalf("doctor report = %+v", report)
 	}
 	for index, adapterID := range []string{"opencode", "qwen", "pi"} {

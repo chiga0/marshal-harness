@@ -28,6 +28,14 @@ plugins:
       lang:
         - en
         - zh
+extra:
+  alternate:
+    - name: 中文
+      link: https://chiga0.github.io/marshal-harness/
+      lang: zh
+    - name: English
+      link: https://chiga0.github.io/marshal-harness/en/
+      lang: en
 markdown_extensions:
   - toc:
       permalink: true
@@ -93,3 +101,10 @@ nav:
       - 开源审计·上手: research/oss-audit-onboarding.md
       - 开源审计·社区: research/oss-audit-community.md
       - 开源审计·文档: research/oss-audit-docs2.md
+  - English:
+      - Home: en/index.md
+      - Quick Start: en/quick-start.md
+      - Architecture: en/architecture.md
+      - Task Lifecycle: en/task-lifecycle.md
+      - Security Model: en/security-model.md
+      - ADR Index: en/adr/README.md

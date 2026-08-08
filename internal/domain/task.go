@@ -1,5 +1,7 @@
 package domain
 
+// TaskSpec is the immutable, authoritative description of one Marshal Task:
+// what to do, under which scope, budgets and acceptance criteria.
 type TaskSpec struct {
 	APIVersion   APIVersion        `json:"apiVersion"`
 	Kind         Kind              `json:"kind"`
@@ -14,6 +16,7 @@ type TaskSpec struct {
 	Publication  TaskPublication   `json:"publication"`
 }
 
+// TaskWorker selects the Worker Adapter configuration for executing the Task.
 type TaskWorker struct {
 	PreferredAdapter string   `json:"preferredAdapter"`
 	FallbackAdapters []string `json:"fallbackAdapters"`
@@ -23,17 +26,22 @@ type TaskWorker struct {
 	Reasoning        string   `json:"reasoning,omitempty"`
 }
 
+// TaskWork describes the actual work content: objective, constraints and
+// explicit non-goals.
 type TaskWork struct {
 	Objective   string   `json:"objective"`
 	Constraints []string `json:"constraints"`
 	NonGoals    []string `json:"nonGoals"`
 }
 
+// TaskMetadata carries the Task's identity and human-readable title.
 type TaskMetadata struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 }
 
+// TaskRepository identifies the target repository, its locked base ref and
+// the expected remote used to verify repository identity.
 type TaskRepository struct {
 	Path              string `json:"path"`
 	BaseRef           string `json:"baseRef"`
@@ -41,6 +49,8 @@ type TaskRepository struct {
 	ExpectedRemoteURL string `json:"expectedRemoteUrl,omitempty"`
 }
 
+// TaskScope bounds where and how much the Worker may change: allowed and
+// denied paths, and limits on changed files and diff size.
 type TaskScope struct {
 	AllowPaths      []string `json:"allowPaths"`
 	DenyPaths       []string `json:"denyPaths"`
@@ -49,11 +59,15 @@ type TaskScope struct {
 	MaxDiffBytes    int64    `json:"maxDiffBytes"`
 }
 
+// TaskAcceptance defines the acceptance commands executed by the Verifier
+// and whether a no-change Run is allowed.
 type TaskAcceptance struct {
 	Commands      []TaskCommand `json:"commands"`
 	AllowNoChange bool          `json:"allowNoChange"`
 }
 
+// TaskCommand is one acceptance command with timeout, baseline policy and
+// log capture limits.
 type TaskCommand struct {
 	ID             string   `json:"id"`
 	Argv           []string `json:"argv"`
@@ -64,6 +78,7 @@ type TaskCommand struct {
 	MaxLogBytes    int64    `json:"maxLogBytes"`
 }
 
+// TaskDeliverable declares one expected output produced by the Task.
 type TaskDeliverable struct {
 	ID           string `json:"id"`
 	Kind         string `json:"kind"`
@@ -74,6 +89,7 @@ type TaskDeliverable struct {
 	Description  string `json:"description"`
 }
 
+// TaskBudgets caps the time, attempts, retries and output a Task may consume.
 type TaskBudgets struct {
 	RunTimeoutSeconds     int64 `json:"runTimeoutSeconds"`
 	AttemptTimeoutSeconds int64 `json:"attemptTimeoutSeconds"`
@@ -83,6 +99,8 @@ type TaskBudgets struct {
 	MaxOutputBytes        int64 `json:"maxOutputBytes"`
 }
 
+// TaskPublication describes how and where the Run's result may be
+// published; mergePolicy "never" keeps merge disabled by default.
 type TaskPublication struct {
 	Required       bool     `json:"required"`
 	Provider       string   `json:"provider"`

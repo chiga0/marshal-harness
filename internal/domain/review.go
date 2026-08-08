@@ -2,6 +2,8 @@ package domain
 
 import "time"
 
+// ReviewPacket bundles the exact evidence a Reviewer evaluates for one
+// Review Round. Its digests bind the ReviewDecision to that evidence.
 type ReviewPacket struct {
 	APIVersion               APIVersion        `json:"apiVersion"`
 	Kind                     Kind              `json:"kind"`
@@ -21,6 +23,7 @@ type ReviewPacket struct {
 	GeneratedAt              time.Time         `json:"generatedAt"`
 }
 
+// PacketInputs holds the raw input documents referenced by a ReviewPacket.
 type PacketInputs struct {
 	TaskSpec           string   `json:"taskSpec"`
 	Patch              string   `json:"patch"`
@@ -29,6 +32,8 @@ type PacketInputs struct {
 	WorkerResults      []string `json:"workerResults"`
 }
 
+// ReviewDecision is a Reviewer's binding verdict for one Review Round. It
+// must be bound to the exact evidence digests of the reviewed ReviewPacket.
 type ReviewDecision struct {
 	APIVersion                APIVersion `json:"apiVersion"`
 	Kind                      Kind       `json:"kind"`
@@ -51,12 +56,15 @@ type ReviewDecision struct {
 	DecidedAt                 time.Time  `json:"decidedAt"`
 }
 
+// Reviewer identifies who produced a ReviewDecision.
 type Reviewer struct {
 	Type  string `json:"type"`
 	ID    string `json:"id"`
 	Model string `json:"model,omitempty"`
 }
 
+// Finding is a single review finding with severity and traceability back to
+// a file, gate or artifact.
 type Finding struct {
 	ID              string `json:"id"`
 	Severity        string `json:"severity"`
@@ -69,6 +77,8 @@ type Finding struct {
 	ArtifactID      string `json:"artifactId,omitempty"`
 }
 
+// PreviousFinding is a blocking finding from an earlier Review Round,
+// extended with the evidence digests required to detect stale fixes.
 type PreviousFinding struct {
 	Finding
 	EvidenceDigest     string `json:"evidenceDigest"`
@@ -76,6 +86,8 @@ type PreviousFinding struct {
 	VerificationDigest string `json:"verificationDigest"`
 }
 
+// OutcomeBundle is the final, tamper-evident evidence record preserved for
+// a Run that reached a terminal state, including blocked or failed Runs.
 type OutcomeBundle struct {
 	APIVersion          APIVersion `json:"apiVersion"`
 	Kind                Kind       `json:"kind"`

@@ -205,7 +205,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		Build:           buildinfo.Current(),
 		ContractSchemas: application.ContractCount(),
 		WorkerAdapters:  len(runtime.Registry().IDs()),
-		Milestone:       "6",
+		Milestone:       buildinfo.Milestone,
 		Workers:         workers,
 		Discovery:       doctorDiscovery(ctx),
 	}
