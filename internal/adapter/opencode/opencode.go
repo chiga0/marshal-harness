@@ -85,8 +85,8 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
-	if request.AdapterID != adapterID || request.ExecutionProfile != "workspace-write" {
-		return port.TerminalLaunchSpec{}, errors.New("WorkerRequest does not match the opencode workspace-write adapter")
+	if request.AdapterID != adapterID || (request.ExecutionProfile != "workspace-write" && request.ExecutionProfile != "read-only") {
+		return port.TerminalLaunchSpec{}, errors.New("WorkerRequest does not match the opencode adapter execution profile")
 	}
 	if err := validateSession(request.SessionPolicy, request.SessionID); err != nil {
 		return port.TerminalLaunchSpec{}, err
@@ -102,12 +102,16 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
-	config, err := permissionConfig(controlRoot)
+	readOnly, err := optionalReadOnlyScope(request.ExecutionProfile, controlRoot, request.TaskSpecPath)
+	if err != nil {
+		return port.TerminalLaunchSpec{}, err
+	}
+	config, err := permissionConfigFor(request.ExecutionProfile, worktree, controlRoot, readOnly)
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
 	environment := terminalWorkerEnvironment(worktree, config)
-	if err := validateResolvedConfig(ctx, a.executable, environment, controlRoot); err != nil {
+	if err := validateResolvedConfig(ctx, a.executable, environment, controlRoot, worktree, request.ExecutionProfile, readOnly); err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
 	return port.TerminalLaunchSpec{
@@ -158,9 +162,9 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"capabilities": map[string]any{
 			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
 			"sessionPolicies": []string{"ephemeral", "persist", "resume"}, "modelSelection": true,
-			"executionProfiles": []string{"workspace-write"}, "nativeBudgets": []string{},
+			"executionProfiles": []string{"workspace-write", "read-only"}, "nativeBudgets": []string{},
 			"processTreeCancellation": true,
-			"notes":                   []string{"由 Marshal 实施 wall-time 与 output-bytes 上限。", "workspace-write Local Profile 不构成恶意代码隔离。"},
+			"notes":                   []string{"由 Marshal 实施 wall-time 与 output-bytes 上限。", "workspace-write Local Profile 不构成恶意代码隔离。", "read-only 画像仅允许 allowPaths 内 edit、readRoots 读取与只读命令白名单，同样不构成恶意代码隔离。"},
 		},
 		"probeErrors": probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
@@ -285,8 +289,8 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if request.AdapterID != adapterID || request.ExecutionProfile != "workspace-write" {
-		return domain.Record{}, errors.New("WorkerRequest does not match the opencode workspace-write adapter")
+	if request.AdapterID != adapterID || (request.ExecutionProfile != "workspace-write" && request.ExecutionProfile != "read-only") {
+		return domain.Record{}, errors.New("WorkerRequest does not match the opencode adapter execution profile")
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(request.AttemptTimeoutSeconds)*time.Second)
 	defer cancel()
@@ -322,14 +326,18 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	model := readModel(controlRoot, request.TaskSpecPath)
 	args := buildArgs(request.SessionPolicy, request.SessionID, model, string(prompt))
-	config, err := permissionConfig(controlRoot)
+	readOnly, err := optionalReadOnlyScope(request.ExecutionProfile, controlRoot, request.TaskSpecPath)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	config, err := permissionConfigFor(request.ExecutionProfile, worktree, controlRoot, readOnly)
 	if err != nil {
 		return domain.Record{}, err
 	}
 	command := exec.Command(a.executable, args...)
 	command.Dir = worktree
 	command.Env = workerEnvironment(worktree, config)
-	if err := validateResolvedConfig(runCtx, a.executable, command.Env, controlRoot); err != nil {
+	if err := validateResolvedConfig(runCtx, a.executable, command.Env, controlRoot, worktree, request.ExecutionProfile, readOnly); err != nil {
 		return domain.Record{}, err
 	}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -656,7 +664,94 @@ func permissionConfig(controlRoot string) (string, error) {
 	return string(data), err
 }
 
-func validateResolvedConfig(ctx context.Context, executable string, environment []string, controlRoot string) error {
+// readOnlyBashAllowlist is the fixed read-only command whitelist of the
+// read-only profile (ADR 0014): plain read commands only, never shell
+// combinators, redirection writes, networking, or package management. The
+// surrounding "*":"deny" makes every other command fail closed; pattern
+// matching cannot inspect arguments, so this is a least-privilege grant, not
+// a sandbox boundary.
+var readOnlyBashAllowlist = []string{"cat", "file", "find", "grep", "head", "ls", "rg", "sed -n", "stat", "tail", "wc"}
+
+// permissionConfigFor selects the profile-specific permission configuration:
+// workspace-write keeps the existing fail-closed development grant, and
+// read-only builds the ADR 0014 mapping (edit locked to artifact allowPaths,
+// bash locked to the read-only whitelist, readRoots read-permitted).
+func permissionConfigFor(profile, worktree, controlRoot string, scope readOnlyScope) (string, error) {
+	if profile == "read-only" {
+		return readOnlyPermissionConfig(worktree, controlRoot, scope)
+	}
+	return permissionConfig(controlRoot)
+}
+
+// readOnlyPermissionConfig builds the read-only profile (ADR 0014): edit is
+// only allowed inside control/output and the TaskSpec artifact allowPaths,
+// bash is restricted to the read-only whitelist, network tools stay denied,
+// and readRoots are read-permitted through external_directory.
+func readOnlyPermissionConfig(worktree, controlRoot string, scope readOnlyScope) (string, error) {
+	inputRoot := filepath.ToSlash(filepath.Join(controlRoot, "input")) + "/**"
+	outputRoot := filepath.ToSlash(filepath.Join(controlRoot, "output")) + "/**"
+	edit := map[string]string{"*": "deny", inputRoot: "deny", outputRoot: "allow"}
+	for _, allowPath := range scope.allowPaths {
+		edit[filepath.ToSlash(filepath.Join(worktree, allowPath))] = "allow"
+	}
+	bash := map[string]string{"*": "deny"}
+	for _, command := range readOnlyBashAllowlist {
+		bash[command+" *"] = "allow"
+	}
+	external := map[string]string{"*": "deny", inputRoot: "allow", outputRoot: "allow"}
+	for _, entry := range readOnlyExternalEntries(worktree, scope.readRoots) {
+		external[entry] = "allow"
+	}
+	permission := map[string]any{
+		"*": "deny", "bash": bash, "edit": edit, "external_directory": external,
+		"glob": "allow", "grep": "allow", "list": "allow", "lsp": "allow", "question": "deny", "read": "allow", "skill": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny",
+	}
+	config := map[string]any{"autoupdate": false, "permission": permission, "share": "disabled", "agent": map[string]any{"build": map[string]any{"permission": permission}}}
+	data, err := json.Marshal(config)
+	return string(data), err
+}
+
+// readOnlyExternalEntries resolves readRoots that point outside the worktree
+// (for example repository symlinks such as sources/<repo>/) into
+// external_directory grants. OpenCode's PermissionActionConfig accepts only
+// allow/deny (verified against the pinned binary; a "read" action is
+// rejected), so the grant is "allow"; the net effect stays read-only because
+// edit and bash remain locked out of those paths. Patterns that cannot be
+// resolved statically grant nothing, and any provider denial they cause is
+// graded FATAL fail-closed under ADR 0013.
+func readOnlyExternalEntries(worktree string, readRoots []string) []string {
+	worktreeReal, worktreeErr := filepath.EvalSymlinks(worktree)
+	base := worktree
+	if worktreeErr == nil {
+		base = worktreeReal
+	}
+	seen := map[string]bool{}
+	var entries []string
+	for _, root := range readRoots {
+		candidate := filepath.Join(worktree, filepath.FromSlash(strings.TrimSuffix(root, "/")))
+		real, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			continue
+		}
+		if rel, relErr := filepath.Rel(base, real); relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		entry := filepath.ToSlash(real) + "/**"
+		if !seen[entry] {
+			seen[entry] = true
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+func validateResolvedConfig(ctx context.Context, executable string, environment []string, controlRoot, worktree, profile string, readOnly readOnlyScope) error {
+	check := func(permission map[string]any) error {
+		if profile == "read-only" {
+			return validateReadOnlyPermissionMap(permission, controlRoot, worktree, readOnly)
+		}
+		return validatePermissionMap(permission, controlRoot)
+	}
 	command := exec.CommandContext(ctx, executable, "debug", "config", "--pure")
 	command.Env = environment
 	output, err := command.Output()
@@ -680,15 +775,56 @@ func validateResolvedConfig(ctx context.Context, executable string, environment 
 	if config.Autoupdate || config.Share != "disabled" {
 		return errors.New("resolved opencode config enables autoupdate or sharing")
 	}
-	if err := validatePermissionMap(config.Permission, controlRoot); err != nil {
+	if err := check(config.Permission); err != nil {
 		return fmt.Errorf("unsafe resolved global permission: %w", err)
 	}
 	build, ok := config.Agent["build"]
 	if !ok {
 		return errors.New("resolved opencode config has no build agent override")
 	}
-	if err := validatePermissionMap(build.Permission, controlRoot); err != nil {
+	if err := check(build.Permission); err != nil {
 		return fmt.Errorf("unsafe resolved build permission: %w", err)
+	}
+	return nil
+}
+
+func validateReadOnlyPermissionMap(permission map[string]any, controlRoot, worktree string, scope readOnlyScope) error {
+	if permission["*"] != "deny" {
+		return errors.New("global wildcard is not denied")
+	}
+	for _, name := range []string{"question", "skill", "task", "webfetch", "websearch"} {
+		if permission[name] != "deny" {
+			return fmt.Errorf("%s is not denied", name)
+		}
+	}
+	inputRoot := filepath.ToSlash(filepath.Join(controlRoot, "input")) + "/**"
+	outputRoot := filepath.ToSlash(filepath.Join(controlRoot, "output")) + "/**"
+	external, ok := permission["external_directory"].(map[string]any)
+	if !ok || external["*"] != "deny" || external[inputRoot] != "allow" || external[outputRoot] != "allow" {
+		return errors.New("attempt-scoped external directory rules are missing")
+	}
+	for _, entry := range readOnlyExternalEntries(worktree, scope.readRoots) {
+		if external[entry] != "allow" {
+			return fmt.Errorf("readRoot external directory rule %q is missing", entry)
+		}
+	}
+	edit, ok := permission["edit"].(map[string]any)
+	if !ok || edit["*"] != "deny" || edit[inputRoot] != "deny" || edit[outputRoot] != "allow" {
+		return errors.New("read-only edit rules are missing")
+	}
+	for _, allowPath := range scope.allowPaths {
+		if edit[filepath.ToSlash(filepath.Join(worktree, allowPath))] != "allow" {
+			return errors.New("read-only edit rules are missing")
+		}
+	}
+	bash, ok := permission["bash"].(map[string]any)
+	if !ok || bash["*"] != "deny" {
+		return errors.New("bash rules are missing")
+	}
+	for _, command := range readOnlyBashAllowlist {
+		if bash[command+" *"] != "allow" {
+			return fmt.Errorf("bash command %q is not allowlisted", command)
+		}
 	}
 	return nil
 }
@@ -810,6 +946,55 @@ func readModel(worktree, relative string) string {
 		return ""
 	}
 	return task.Worker.Model
+}
+
+// readOnlyScope carries the TaskSpec path declarations the read-only profile
+// needs: artifact allowPaths (the only write domain) and readRoots (extra
+// read domain, possibly symlinked outside the worktree).
+type readOnlyScope struct {
+	allowPaths []string
+	readRoots  []string
+}
+
+// optionalReadOnlyScope loads and validates the read-only scope only for the
+// read-only profile; every other profile receives an empty scope and keeps
+// its existing configuration untouched.
+func optionalReadOnlyScope(profile, controlRoot, taskSpecPath string) (readOnlyScope, error) {
+	if profile != "read-only" {
+		return readOnlyScope{}, nil
+	}
+	return readReadOnlyScope(controlRoot, taskSpecPath)
+}
+
+func readReadOnlyScope(controlRoot, taskSpecPath string) (readOnlyScope, error) {
+	path, err := existingPathWithin(controlRoot, taskSpecPath)
+	if err != nil {
+		return readOnlyScope{}, fmt.Errorf("resolve TaskSpec: %w", err)
+	}
+	data, err := readBounded(path, maxPromptBytes)
+	if err != nil {
+		return readOnlyScope{}, fmt.Errorf("read TaskSpec: %w", err)
+	}
+	var spec struct {
+		Scope struct {
+			AllowPaths []string `json:"allowPaths"`
+		} `json:"scope"`
+		Worker struct {
+			ReadRoots []string `json:"readRoots"`
+		} `json:"worker"`
+	}
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return readOnlyScope{}, errors.New("read-only scope: malformed TaskSpec")
+	}
+	if len(spec.Scope.AllowPaths) == 0 {
+		return readOnlyScope{}, errors.New("read-only scope: TaskSpec declares no artifact allowPaths")
+	}
+	for _, pattern := range append(append([]string{}, spec.Scope.AllowPaths...), spec.Worker.ReadRoots...) {
+		if pattern == "" || strings.HasPrefix(pattern, "/") || strings.Contains(pattern, "\\") || pattern == ".." || strings.HasPrefix(pattern, "../") || strings.Contains(pattern, "/../") || strings.HasSuffix(pattern, "/..") {
+			return readOnlyScope{}, errors.New("read-only scope: TaskSpec declares an unsafe path pattern")
+		}
+	}
+	return readOnlyScope{allowPaths: spec.Scope.AllowPaths, readRoots: spec.Worker.ReadRoots}, nil
 }
 
 func lexicalPathWithin(root, relative string) (string, error) {

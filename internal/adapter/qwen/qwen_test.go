@@ -257,7 +257,7 @@ func TestBuildArgsLocksHardeningFlagsAndNeverGrantsYolo(t *testing.T) {
 		{"resume-exact-session-with-model", "resume", "session-9", "provider/model", full("--chat-recording=true", "--resume", "session-9", "--model", "provider/model")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			args, err := buildArgs(test.policy, test.sessionID, test.model, 42, "完成任务")
+			args, err := buildArgs("workspace-write", test.policy, test.sessionID, test.model, 42, "完成任务")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -274,9 +274,21 @@ func TestBuildArgsLocksHardeningFlagsAndNeverGrantsYolo(t *testing.T) {
 			}
 		})
 	}
+	t.Run("read-only-excludes-write-tools", func(t *testing.T) {
+		args, err := buildArgs("read-only", "ephemeral", "", "", 42, "完成任务")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := append([]string{}, locked...)
+		want[len(want)-1] = strings.Join(readOnlyExcludedTools, ",")
+		want = append(want, "--chat-recording=false", "-p", "完成任务")
+		if !slices.Equal(args, want) {
+			t.Fatalf("read-only args = %#v, want %#v", args, want)
+		}
+	})
 	t.Run("unknown-policy-fails-closed", func(t *testing.T) {
 		for _, policy := range []string{"", "weird", "EPHEMERAL", "continue", "resume-latest"} {
-			if _, err := buildArgs(policy, "session-9", "", 42, "完成任务"); err == nil || !strings.Contains(err.Error(), "session policy") {
+			if _, err := buildArgs("workspace-write", policy, "session-9", "", 42, "完成任务"); err == nil || !strings.Contains(err.Error(), "session policy") {
 				t.Fatalf("policy %q err = %v, want unsupported session policy", policy, err)
 			}
 		}
@@ -299,6 +311,20 @@ func TestExcludedToolsDenyShellAgentWebAndEveryComputerUse(t *testing.T) {
 	}
 	if !slices.Equal(excludedTools, want) {
 		t.Fatalf("excludedTools drifted from the locked deny list:\n got %#v\nwant %#v", excludedTools, want)
+	}
+}
+
+func TestReadOnlyExcludedToolsAddWriteClassExceptArtifactWriter(t *testing.T) {
+	want := append([]string{}, excludedTools...)
+	want = append(want, "apply_patch", "edit", "insert", "multiedit", "notebook_edit", "patch", "replace", "save_file", "save_memory", "write", "write_todos")
+	if !slices.Equal(readOnlyExcludedTools, want) {
+		t.Fatalf("readOnlyExcludedTools drifted:\n got %#v\nwant %#v", readOnlyExcludedTools, want)
+	}
+	if slices.Contains(readOnlyExcludedTools, "write_file") {
+		t.Fatal("write_file must stay granted so read-only workers can produce artifacts")
+	}
+	if excludedToolsFor("read-only") == nil || excludedToolsFor("workspace-write") == nil || len(excludedToolsFor("read-only")) <= len(excludedToolsFor("workspace-write")) {
+		t.Fatal("profile exclusion selection is wrong")
 	}
 }
 
@@ -581,7 +607,7 @@ func TestRunRejectsMismatchedRequestBeforeLaunch(t *testing.T) {
 		{
 			name: "profile-mismatch",
 			apply: func(t *testing.T) domain.Record {
-				return fixture.requestWith(map[string]any{"executionProfile": "read-only"})
+				return fixture.requestWith(map[string]any{"executionProfile": "hardened"})
 			},
 			message: "does not match",
 		},

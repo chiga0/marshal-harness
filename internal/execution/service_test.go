@@ -250,6 +250,74 @@ func TestRunFailsClosedWhenFrozenCapabilityAdapterDiffers(t *testing.T) {
 	}
 }
 
+func TestRunSupportsReadOnlyExecutionProfile(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture", executionProfile: "read-only", readOnlyCapability: true})
+	result, err := Run(context.Background(), fixture.input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State.State != domain.StateVerifying {
+		t.Fatalf("state = %+v", result.State)
+	}
+	requestData, err := os.ReadFile(filepath.Join(fixture.runDir, "attempts", result.AttemptID, "worker-request.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		ExecutionProfile string `json:"executionProfile"`
+	}
+	if err := json.Unmarshal(requestData, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.ExecutionProfile != "read-only" {
+		t.Fatalf("worker-request executionProfile = %q", request.ExecutionProfile)
+	}
+}
+
+func TestRunRejectsUnsupportedExecutionProfilesFailClosed(t *testing.T) {
+	t.Run("hardened", func(t *testing.T) {
+		fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture", executionProfile: "hardened"})
+		if _, err := Run(context.Background(), fixture.input); err == nil || !strings.Contains(err.Error(), "execution profiles are supported") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("capability-misses-read-only", func(t *testing.T) {
+		fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture", executionProfile: "read-only"})
+		if _, err := Run(context.Background(), fixture.input); err == nil || !strings.Contains(err.Error(), "execution profile not supported") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+func TestReworkKeepsOriginalExecutionProfile(t *testing.T) {
+	writePreviousAttempt := func(t *testing.T, fixture executionFixture, profile string) {
+		t.Helper()
+		attemptDir := filepath.Join(fixture.runDir, "attempts", "attempt:prev")
+		if err := os.MkdirAll(attemptDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		request := mustJSON(t, map[string]any{"attemptNumber": 1, "executionProfile": profile})
+		if err := os.WriteFile(filepath.Join(attemptDir, "worker-request.json"), request, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("profile-change-rejected", func(t *testing.T) {
+		fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture", executionProfile: "read-only", readOnlyCapability: true})
+		writePreviousAttempt(t, fixture, "workspace-write")
+		if _, err := Run(context.Background(), fixture.input); err == nil || !strings.Contains(err.Error(), "execution profile") {
+			t.Fatalf("escalated rework profile accepted: %v", err)
+		}
+	})
+	t.Run("same-profile-accepted", func(t *testing.T) {
+		fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture", executionProfile: "read-only", readOnlyCapability: true})
+		writePreviousAttempt(t, fixture, "read-only")
+		result, err := Run(context.Background(), fixture.input)
+		if err != nil || result.State.State != domain.StateVerifying {
+			t.Fatalf("state = %+v err = %v", result.State, err)
+		}
+	})
+}
+
 type executionFixture struct {
 	input              Input
 	repository, runDir string
@@ -259,6 +327,8 @@ type executionFixtureOptions struct {
 	preferredAdapter    string
 	fallbackAdapters    []string
 	capabilityAdapterID string
+	executionProfile    string
+	readOnlyCapability  bool
 }
 
 func newExecutionFixture(t *testing.T, fail bool) executionFixture {
@@ -304,9 +374,17 @@ func newExecutionFixtureWithOptions(t *testing.T, fail bool, options executionFi
 	if err != nil {
 		t.Fatal(err)
 	}
+	executionProfile := options.executionProfile
+	if executionProfile == "" {
+		executionProfile = "workspace-write"
+	}
+	profiles := []string{"workspace-write"}
+	if options.readOnlyCapability {
+		profiles = append(profiles, "read-only")
+	}
 	capability := mustJSON(t, map[string]any{
 		"apiVersion": "marshal.dev/v1alpha1", "kind": "CapabilitySnapshot", "adapterId": options.capabilityAdapterID, "adapterVersion": "0.1.0", "executable": "/fixture", "executableDigest": "sha256:" + strings.Repeat("a", 64), "binaryVersion": "1", "probeStatus": "supported",
-		"capabilities": map[string]any{"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true, "sessionPolicies": []string{"ephemeral"}, "modelSelection": false, "executionProfiles": []string{"workspace-write"}, "nativeBudgets": []string{}, "processTreeCancellation": true, "notes": []string{}}, "probeErrors": []string{}, "probedAt": "2026-08-04T00:00:00Z",
+		"capabilities": map[string]any{"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true, "sessionPolicies": []string{"ephemeral"}, "modelSelection": false, "executionProfiles": profiles, "nativeBudgets": []string{}, "processTreeCancellation": true, "notes": []string{}}, "probeErrors": []string{}, "probedAt": "2026-08-04T00:00:00Z",
 	})
 	policy := mustJSON(t, map[string]any{
 		"apiVersion": "marshal.dev/v1alpha1", "kind": "PolicySnapshot", "taskId": "TASK-1", "runId": "run-1",
@@ -319,7 +397,7 @@ func newExecutionFixtureWithOptions(t *testing.T, fail bool, options executionFi
 		"repository": map[string]any{"path": repository, "baseRef": "HEAD", "remote": "origin"}, "work": map[string]any{"objective": "write change.txt", "constraints": []string{}, "nonGoals": []string{}},
 		"scope":      map[string]any{"allowPaths": []string{"change.txt"}, "denyPaths": []string{}, "allowSubmodules": false, "maxChangedFiles": 2, "maxDiffBytes": 10000},
 		"acceptance": map[string]any{"commands": []any{}, "allowNoChange": false}, "deliverables": []any{map[string]any{"id": "code", "kind": "code", "required": true, "pathGlob": "change.txt"}},
-		"worker":      map[string]any{"preferredAdapter": options.preferredAdapter, "fallbackAdapters": options.fallbackAdapters, "executionProfile": "workspace-write", "sessionPolicy": "ephemeral"},
+		"worker":      map[string]any{"preferredAdapter": options.preferredAdapter, "fallbackAdapters": options.fallbackAdapters, "executionProfile": executionProfile, "sessionPolicy": "ephemeral"},
 		"budgets":     map[string]any{"runTimeoutSeconds": 60, "attemptTimeoutSeconds": 10, "maxAttempts": 2, "maxOperationalRetries": 1, "maxReworkRounds": 0, "maxOutputBytes": 100000},
 		"publication": map[string]any{"required": false, "provider": "none", "mode": "none", "remote": "origin", "baseBranch": "main", "mergePolicy": "never", "requiredChecks": []string{}},
 	})

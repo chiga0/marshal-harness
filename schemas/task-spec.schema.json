@@ -211,12 +211,26 @@
           "type": "string",
           "enum": ["read-only", "workspace-write", "hardened"]
         },
+        "readRoots": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/relativePath" },
+          "maxItems": 64,
+          "description": "read-only 画像的附加只读域（仓库内相对路径模式，含符号链接目标）。仅当 executionProfile 为 read-only 时允许声明。"
+        },
         "sessionPolicy": {
           "type": "string",
           "enum": ["ephemeral", "persist", "resume"]
         },
         "model": { "type": "string", "minLength": 1, "maxLength": 512 },
         "reasoning": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "dependentSchemas": {
+        "readRoots": {
+          "properties": {
+            "executionProfile": { "const": "read-only" }
+          }
+        }
       }
     },
     "budgets": {

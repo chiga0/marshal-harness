@@ -88,6 +88,28 @@ var excludedTools = []string{
 	"computer_use__zoom",
 }
 
+// readOnlyExcludedTools extends excludedTools with every write-class tool
+// except write_file (ADR 0014). The read-only profile forbids editing source
+// and running commands; write_file stays granted so the worker can still
+// produce its deliverables, and the artifact-path boundary is enforced by
+// Marshal's scope gate because Qwen Code has no path-scoped write permission.
+var readOnlyExcludedTools = func() []string {
+	tools := make([]string, 0, len(excludedTools)+11)
+	tools = append(tools, excludedTools...)
+	return append(tools,
+		"apply_patch", "edit", "insert", "multiedit", "notebook_edit",
+		"patch", "replace", "save_file", "save_memory", "write", "write_todos",
+	)
+}()
+
+// excludedToolsFor selects the tool exclusion list for an execution profile.
+func excludedToolsFor(profile string) []string {
+	if profile == "read-only" {
+		return readOnlyExcludedTools
+	}
+	return excludedTools
+}
+
 var (
 	ErrUnsupportedVersion = errors.New("unsupported qwen version")
 	ErrOutputLimit        = errors.New("qwen output limit exceeded")
@@ -142,8 +164,8 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
-	if request.AdapterID != adapterID || request.ExecutionProfile != "workspace-write" {
-		return port.TerminalLaunchSpec{}, errors.New("WorkerRequest does not match the qwen workspace-write adapter")
+	if request.AdapterID != adapterID || (request.ExecutionProfile != "workspace-write" && request.ExecutionProfile != "read-only") {
+		return port.TerminalLaunchSpec{}, errors.New("WorkerRequest does not match the qwen adapter execution profile")
 	}
 	identity, err := a.inspect(ctx)
 	if err != nil {
@@ -157,7 +179,7 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 		return port.TerminalLaunchSpec{}, err
 	}
 	model := readModel(controlRoot, request.TaskSpecPath)
-	args, err := buildTerminalArgs(request.SessionPolicy, request.SessionID, model, request.AttemptTimeoutSeconds)
+	args, err := buildTerminalArgs(request.ExecutionProfile, request.SessionPolicy, request.SessionID, model, request.AttemptTimeoutSeconds)
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
@@ -208,13 +230,14 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"capabilities": map[string]any{
 			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
 			"sessionPolicies": []string{"ephemeral", "persist", "resume"}, "modelSelection": true,
-			"executionProfiles":       []string{"workspace-write"},
+			"executionProfiles":       []string{"workspace-write", "read-only"},
 			"nativeBudgets":           []string{"wall-time", "tool-calls", "turns"},
 			"processTreeCancellation": true,
 			"notes": []string{
-				"由 Marshal 实施 wall-time 与 output-bytes 上限。",
+				"由 Marshal 实施 wall-time 与输出字节数上限。",
 				"safe-mode + auto-edit + exclude-tools 不构成恶意代码隔离。",
 				"shell、sub-agent、sub-session、web/network 与 computer-use 工具被按名排除。",
+				"read-only 画像额外排除源码编辑类工具，写域由 Marshal scope 门禁兜底。",
 			},
 		},
 		"probeErrors": probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
@@ -340,8 +363,8 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if request.AdapterID != adapterID || request.ExecutionProfile != "workspace-write" {
-		return domain.Record{}, errors.New("WorkerRequest does not match the qwen workspace-write adapter")
+	if request.AdapterID != adapterID || (request.ExecutionProfile != "workspace-write" && request.ExecutionProfile != "read-only") {
+		return domain.Record{}, errors.New("WorkerRequest does not match the qwen adapter execution profile")
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(request.AttemptTimeoutSeconds)*time.Second)
 	defer cancel()
@@ -379,7 +402,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, errors.New("resume session policy requires a sessionId")
 	}
 	model := readModel(controlRoot, request.TaskSpecPath)
-	args, err := buildArgs(request.SessionPolicy, request.SessionID, model, request.AttemptTimeoutSeconds, string(prompt))
+	args, err := buildArgs(request.ExecutionProfile, request.SessionPolicy, request.SessionID, model, request.AttemptTimeoutSeconds, string(prompt))
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -710,7 +733,7 @@ func captureStream(reader io.Reader, limit int64) streamCapture {
 	}
 }
 
-func buildArgs(policy, sessionID, model string, wallTimeSeconds int, prompt string) ([]string, error) {
+func buildArgs(profile, policy, sessionID, model string, wallTimeSeconds int, prompt string) ([]string, error) {
 	args := []string{
 		"--safe-mode",
 		"--approval-mode", "auto-edit",
@@ -718,7 +741,7 @@ func buildArgs(policy, sessionID, model string, wallTimeSeconds int, prompt stri
 		"--max-wall-time", strconv.Itoa(wallTimeSeconds),
 		"--max-tool-calls", strconv.Itoa(budgetToolCalls),
 		"--max-session-turns", strconv.Itoa(budgetSessionTurns),
-		"--exclude-tools", strings.Join(excludedTools, ","),
+		"--exclude-tools", strings.Join(excludedToolsFor(profile), ","),
 	}
 	args, err := appendSessionAndModel(args, policy, sessionID, model)
 	if err != nil {
@@ -727,14 +750,14 @@ func buildArgs(policy, sessionID, model string, wallTimeSeconds int, prompt stri
 	return append(args, "-p", prompt), nil
 }
 
-func buildTerminalArgs(policy, sessionID, model string, wallTimeSeconds int) ([]string, error) {
+func buildTerminalArgs(profile, policy, sessionID, model string, wallTimeSeconds int) ([]string, error) {
 	args := []string{
 		"--safe-mode",
 		"--approval-mode", "auto-edit",
 		"--max-wall-time", strconv.Itoa(wallTimeSeconds),
 		"--max-tool-calls", strconv.Itoa(budgetToolCalls),
 		"--max-session-turns", strconv.Itoa(budgetSessionTurns),
-		"--exclude-tools", strings.Join(excludedTools, ","),
+		"--exclude-tools", strings.Join(excludedToolsFor(profile), ","),
 	}
 	return appendSessionAndModel(args, policy, sessionID, model)
 }

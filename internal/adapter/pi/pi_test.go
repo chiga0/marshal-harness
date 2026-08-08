@@ -123,7 +123,7 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 func TestBuildArgsLocksHardeningFlagsAndNeverGrantsBash(t *testing.T) {
 	hardening := []string{"--mode", "json", "--print", "--no-approve", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--tools", workerTools}
 	for _, model := range []string{"", "provider/model"} {
-		args := buildArgs(model, "完成任务")
+		args := buildArgs("workspace-write", model, "完成任务")
 		want := append(append([]string{}, hardening...), "--no-session")
 		if model != "" {
 			want = append(want, "--model", model)
@@ -144,6 +144,15 @@ func TestBuildArgsLocksHardeningFlagsAndNeverGrantsBash(t *testing.T) {
 			}
 		}
 	}
+	t.Run("read-only-grants-read-grep-find-ls-edit-only", func(t *testing.T) {
+		args := buildArgs("read-only", "", "完成任务")
+		if !containsSequence(args, "--tools", readOnlyTools) {
+			t.Fatalf("read-only args must grant exactly %q: %#v", readOnlyTools, args)
+		}
+		if contains(args, "bash") || containsSequence(args, "--tools", workerTools) {
+			t.Fatalf("read-only args leaked write tools: %#v", args)
+		}
+	})
 }
 
 func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
@@ -253,6 +262,28 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 		if count := countOccurrences(argv, flag); count != 1 {
 			t.Fatalf("observed argv: hardening flag %s must appear exactly once, got %d: %#v", flag, count, argv)
 		}
+	}
+}
+
+func TestRunReadOnlyProfileGrantsReadOnlyToolAllowlist(t *testing.T) {
+	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
+	fixture := newRunFixture(t, "0.83.0", successBody)
+	if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "read-only"})); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(fixture.argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if !containsSequence(argv, "--tools", readOnlyTools) {
+		t.Fatalf("read-only attempt did not lock the tool allowlist to %q: %#v", readOnlyTools, argv)
+	}
+	if containsSequence(argv, "--tools", workerTools) || contains(argv, "bash") {
+		t.Fatalf("read-only attempt leaked write tools: %#v", argv)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "hardened"})); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("hardened profile accepted: %v", err)
 	}
 }
 

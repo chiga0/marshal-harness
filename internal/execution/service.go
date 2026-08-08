@@ -73,8 +73,8 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if err != nil || taskRepository != input.RepositoryRoot {
 		return Result{}, errors.New("TaskSpec repository does not match the active repository")
 	}
-	if task.Worker.ExecutionProfile != "workspace-write" {
-		return Result{}, errors.New("M4 only supports workspace-write execution profile")
+	if task.Worker.ExecutionProfile != "workspace-write" && task.Worker.ExecutionProfile != "read-only" {
+		return Result{}, errors.New("only workspace-write and read-only execution profiles are supported")
 	}
 	if task.Worker.SessionPolicy == "resume" {
 		return Result{}, errors.New("session resume is not supported before M6")
@@ -121,6 +121,9 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	reviewFindings, err := loadReviewFindings(runDir, state, input.Validator)
 	if err != nil {
+		return Result{}, err
+	}
+	if err := assertProfileNotEscalated(runDir, task.Worker.ExecutionProfile); err != nil {
 		return Result{}, err
 	}
 	repository, err := gitworktree.Open(input.RepositoryRoot)
@@ -278,6 +281,55 @@ func loadReviewFindings(runDir string, state domain.RunState, validator *contrac
 		findings = append(findings, map[string]string{"id": finding.ID, "severity": finding.Severity, "description": finding.Description, "requiredOutcome": required})
 	}
 	return findings, nil
+}
+
+// assertProfileNotEscalated implements the ADR 0014 invariant that an
+// execution profile can never be escalated within one Run: a new attempt
+// (rework or retry) must carry the exact profile the previous attempts
+// already used. The generated WorkerRequest inherits the frozen TaskSpec
+// profile, so any divergence means tampered attempt evidence and the Run
+// fails closed instead of launching a worker under a wider profile.
+func assertProfileNotEscalated(runDir, requestedProfile string) error {
+	attemptsRoot := filepath.Join(runDir, "attempts")
+	entries, err := os.ReadDir(attemptsRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read previous attempts: %w", err)
+	}
+	latestNumber, latestProfile := 0, ""
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		number, profile := attemptIdentity(filepath.Join(attemptsRoot, entry.Name()))
+		if number > latestNumber {
+			latestNumber, latestProfile = number, profile
+		}
+	}
+	if latestNumber == 0 || latestProfile == "" {
+		return nil
+	}
+	if latestProfile != requestedProfile {
+		return errors.New("rework cannot change the execution profile of a run")
+	}
+	return nil
+}
+
+func attemptIdentity(attemptDir string) (int, string) {
+	data, err := os.ReadFile(filepath.Join(attemptDir, "worker-request.json"))
+	if err != nil {
+		return 0, ""
+	}
+	var request struct {
+		AttemptNumber    int    `json:"attemptNumber"`
+		ExecutionProfile string `json:"executionProfile"`
+	}
+	if json.Unmarshal(data, &request) != nil {
+		return 0, ""
+	}
+	return request.AttemptNumber, request.ExecutionProfile
 }
 
 func blockAfterWorker(store *runstore.Store, lease *runstore.Lease, state domain.RunState, attemptID string, cause error) (Result, error) {

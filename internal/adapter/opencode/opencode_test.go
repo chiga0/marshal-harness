@@ -153,6 +153,114 @@ func TestResolvedPermissionValidationRejectsWildcardAndMissingIndirectDenies(t *
 	}
 }
 
+func TestReadOnlyPermissionConfigLocksEditBashAndReadRoots(t *testing.T) {
+	worktree := t.TempDir()
+	controlRoot := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "repo"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(worktree, "sources")); err != nil {
+		t.Fatal(err)
+	}
+	scope := readOnlyScope{allowPaths: []string{"reports/**", "findings.md"}, readRoots: []string{"sources/repo/"}}
+	config, err := readOnlyPermissionConfig(worktree, controlRoot, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Permission map[string]any `json:"permission"`
+	}
+	if err := json.Unmarshal([]byte(config), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateReadOnlyPermissionMap(raw.Permission, controlRoot, worktree, scope); err != nil {
+		t.Fatalf("fresh read-only config rejected: %v", err)
+	}
+	edit := raw.Permission["edit"].(map[string]any)
+	if edit[filepath.ToSlash(filepath.Join(worktree, "reports/**"))] != "allow" || edit[filepath.ToSlash(filepath.Join(worktree, "findings.md"))] != "allow" || edit["*"] != "deny" {
+		t.Fatalf("edit is not locked to allowPaths: %v", edit)
+	}
+	if edit[filepath.ToSlash(filepath.Join(worktree, "internal/x.go"))] != nil && edit[filepath.ToSlash(filepath.Join(worktree, "internal/x.go"))] != "deny" {
+		t.Fatalf("source edit granted: %v", edit)
+	}
+	bash := raw.Permission["bash"].(map[string]any)
+	if bash["*"] != "deny" || bash["cat *"] != "allow" || bash["sed -n *"] != "allow" || bash["git push *"] != nil {
+		t.Fatalf("bash is not the read-only whitelist: %v", bash)
+	}
+	for _, tool := range []string{"task", "webfetch", "websearch", "question", "skill"} {
+		if raw.Permission[tool] != "deny" {
+			t.Fatalf("%s is not denied in read-only config", tool)
+		}
+	}
+	outsideReal, err := filepath.EvalSymlinks(filepath.Join(outside, "repo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := raw.Permission["external_directory"].(map[string]any)
+	if external[filepath.ToSlash(outsideReal)+"/**"] != "allow" {
+		t.Fatalf("readRoot symlink target is not read-permitted: %v", external)
+	}
+	// Mutations must fail the resolved-config validation.
+	merged, err := json.Marshal(map[string]any{"autoupdate": false, "share": "disabled", "permission": raw.Permission, "agent": map[string]any{"build": map[string]any{"permission": raw.Permission}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := fakeExecutable(t, supportedBinary, "printf '%s\\n' "+shellQuote(string(merged)))
+	environment := workerEnvironment(worktree, string(merged))
+	if err := validateResolvedConfig(context.Background(), fake, environment, controlRoot, worktree, "read-only", scope); err != nil {
+		t.Fatalf("valid resolved config rejected: %v", err)
+	}
+	bash["*"] = "allow"
+	mergedUnsafe, err := json.Marshal(map[string]any{"autoupdate": false, "share": "disabled", "permission": raw.Permission, "agent": map[string]any{"build": map[string]any{"permission": raw.Permission}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeUnsafe := fakeExecutable(t, supportedBinary, "printf '%s\\n' "+shellQuote(string(mergedUnsafe)))
+	if err := validateResolvedConfig(context.Background(), fakeUnsafe, workerEnvironment(worktree, string(mergedUnsafe)), controlRoot, worktree, "read-only", scope); err == nil {
+		t.Fatal("bash wildcard grant accepted in read-only validation")
+	}
+}
+
+func TestRunReadOnlyProfileAppliesScopedConfigAndRejectsUnsafeScope(t *testing.T) {
+	t.Run("happy", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"step_start","sessionID":"session-1","part":{"type":"step-start"}}' '{"type":"text","sessionID":"session-1","part":{"type":"text","text":"done"}}'`)
+		writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{
+			"worker": map[string]any{"model": "provider/model", "readRoots": []string{"docs/**"}},
+			"scope":  map[string]any{"allowPaths": []string{"reports/**"}},
+		})
+		if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "read-only"})); err != nil {
+			t.Fatalf("read-only attempt rejected: %v", err)
+		}
+	})
+	t.Run("missing-allowPaths", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, "exit 0")
+		writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{
+			"worker": map[string]any{"model": "provider/model"},
+			"scope":  map[string]any{"allowPaths": []string{}},
+		})
+		if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "read-only"})); err == nil || !strings.Contains(err.Error(), "allowPaths") {
+			t.Fatalf("err = %v, want missing allowPaths", err)
+		}
+	})
+	t.Run("unsafe-pattern", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, "exit 0")
+		writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{
+			"worker": map[string]any{"model": "provider/model", "readRoots": []string{"../outside"}},
+			"scope":  map[string]any{"allowPaths": []string{"reports/**"}},
+		})
+		if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "read-only"})); err == nil || !strings.Contains(err.Error(), "unsafe path pattern") {
+			t.Fatalf("err = %v, want unsafe path pattern", err)
+		}
+	})
+	t.Run("hardened-profile-rejected", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, "exit 0")
+		if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "hardened"})); err == nil || !strings.Contains(err.Error(), "does not match") {
+			t.Fatalf("err = %v, want profile mismatch", err)
+		}
+	})
+}
+
 func TestBuildArgsNeverUsesShellAndBindsSessionModelPrompt(t *testing.T) {
 	args := buildArgs("resume", "session-1", "provider/model", "完成任务")
 	want := []string{"run", "--pure", "--format", "json", "--title", "Marshal Worker", "--session", "session-1", "--model", "provider/model", "完成任务"}
@@ -533,6 +641,25 @@ func newRunFixture(t *testing.T, version, body string) runFixture {
 	}
 	requestBytes, _ := json.Marshal(requestData)
 	return runFixture{adapter, validator, adapter.executable, worktree, controlRoot, domain.Record{Kind: domain.KindWorkerRequest, Data: requestBytes}}
+}
+
+func (f runFixture) requestWith(overrides map[string]any) domain.Record {
+	data := map[string]any{}
+	var source map[string]any
+	if err := json.Unmarshal(f.request.Data, &source); err != nil {
+		panic(err)
+	}
+	for key, value := range source {
+		data[key] = value
+	}
+	for key, value := range overrides {
+		data[key] = value
+	}
+	requestBytes, err := json.Marshal(data)
+	if err != nil {
+		panic(err)
+	}
+	return domain.Record{Kind: domain.KindWorkerRequest, Data: requestBytes}
 }
 
 func validDeclaredResult(executable string) map[string]any {

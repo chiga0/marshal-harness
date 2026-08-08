@@ -43,6 +43,20 @@ const (
 // list never grows implicitly: Marshal passes it via direct argv only.
 const workerTools = "read,grep,find,ls,write,edit"
 
+// readOnlyTools is the frozen read-only tool allowlist (ADR 0014): the read
+// tools plus edit, whose write targets are confined to artifact paths by
+// Marshal's scope gate because Pi has no path-scoped tool permission. bash is
+// removed from the workspace-write list and never granted here either.
+const readOnlyTools = "read,grep,find,ls,edit"
+
+// toolsForProfile selects the frozen tool allowlist for an execution profile.
+func toolsForProfile(profile string) string {
+	if profile == "read-only" {
+		return readOnlyTools
+	}
+	return workerTools
+}
+
 var (
 	ErrUnsupportedVersion       = errors.New("unsupported pi version")
 	ErrOutputLimit              = errors.New("pi output limit exceeded")
@@ -96,8 +110,8 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
-	if request.AdapterID != adapterID || request.ExecutionProfile != "workspace-write" {
-		return port.TerminalLaunchSpec{}, errors.New("WorkerRequest does not match the pi workspace-write adapter")
+	if request.AdapterID != adapterID || (request.ExecutionProfile != "workspace-write" && request.ExecutionProfile != "read-only") {
+		return port.TerminalLaunchSpec{}, errors.New("WorkerRequest does not match the pi adapter execution profile")
 	}
 	if request.SessionPolicy != "ephemeral" {
 		return port.TerminalLaunchSpec{}, fmt.Errorf("%w: %q is permanently unsupported; only ephemeral sessions are managed by Marshal", ErrUnsupportedSessionPolicy, request.SessionPolicy)
@@ -116,7 +130,7 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	return port.TerminalLaunchSpec{
 		AdapterID: adapterID, AdapterVersion: adapterVersion, RunID: request.RunID, AttemptID: request.AttemptID, BinaryVersion: identity.version,
 		Executable: identity.path, ExecutableDigest: identity.digest, WorkingDirectory: worktree,
-		Arguments:   buildTerminalArgs(readModel(controlRoot, request.TaskSpecPath)),
+		Arguments:   buildTerminalArgs(request.ExecutionProfile, readModel(controlRoot, request.TaskSpecPath)),
 		Environment: terminalWorkerEnvironment(worktree), InitialPrompt: string(prompt),
 		CompletionGate: port.TerminalCompletionSupervisedConfirmation,
 	}, nil
@@ -161,11 +175,11 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"capabilities": map[string]any{
 			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
 			"sessionPolicies": []string{"ephemeral"}, "modelSelection": true,
-			"executionProfiles": []string{"workspace-write"}, "nativeBudgets": []string{},
+			"executionProfiles": []string{"workspace-write", "read-only"}, "nativeBudgets": []string{},
 			"processTreeCancellation": true,
 			"notes": []string{
 				"由 Marshal 实施 wall-time 与 output-bytes 上限。",
-				"工具白名单固定为 " + workerTools + "，永不授予 bash。",
+				"workspace-write 工具白名单固定为 " + workerTools + "，read-only 白名单固定为 " + readOnlyTools + "，永不授予 bash。",
 				"Pi 非交互模式不是恶意代码隔离边界。",
 			},
 		},
@@ -294,8 +308,8 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if request.AdapterID != adapterID || request.ExecutionProfile != "workspace-write" {
-		return domain.Record{}, errors.New("WorkerRequest does not match the pi workspace-write adapter")
+	if request.AdapterID != adapterID || (request.ExecutionProfile != "workspace-write" && request.ExecutionProfile != "read-only") {
+		return domain.Record{}, errors.New("WorkerRequest does not match the pi adapter execution profile")
 	}
 	// Fail-closed: persist would write into the user's default pi session
 	// directory (outside the managed state boundary) and WorkerRequest has
@@ -337,7 +351,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("resolve result: %w", err)
 	}
 	model := readModel(controlRoot, request.TaskSpecPath)
-	args := buildArgs(model, string(prompt))
+	args := buildArgs(request.ExecutionProfile, model, string(prompt))
 	command := exec.Command(a.executable, args...)
 	command.Dir = worktree
 	command.Env = workerEnvironment(worktree)
@@ -860,31 +874,33 @@ func captureStream(reader io.Reader, limit int64) streamCapture {
 	}
 }
 
-// hardeningFlags is the frozen, ordered hardening surface. Every flag is
-// listed exactly once here; buildArgs copies it verbatim so no hardening
-// flag can ever appear twice in the argv Marshal hands to pi.
-var hardeningFlags = []string{
-	"--mode", "json", "--print", "--no-approve",
-	"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
-	"--tools", workerTools,
-	"--no-session",
+// hardeningFlags returns the frozen, ordered hardening surface for a profile.
+// Every flag is listed exactly once; buildArgs copies it verbatim so no
+// hardening flag can ever appear twice in the argv Marshal hands to pi.
+func hardeningFlags(profile string) []string {
+	return []string{
+		"--mode", "json", "--print", "--no-approve",
+		"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
+		"--tools", toolsForProfile(profile),
+		"--no-session",
+	}
 }
 
 // buildArgs produces the exact hardened argv. Sessions are always disabled:
 // Marshal only supports ephemeral attempts. The prompt is always the final
 // positional argument; Marshal never invokes pi through a shell.
-func buildArgs(model, prompt string) []string {
-	args := append([]string{}, hardeningFlags...)
+func buildArgs(profile, model, prompt string) []string {
+	args := append([]string{}, hardeningFlags(profile)...)
 	if model != "" {
 		args = append(args, "--model", model)
 	}
 	return append(args, prompt)
 }
 
-func buildTerminalArgs(model string) []string {
+func buildTerminalArgs(profile, model string) []string {
 	args := []string{
 		"--no-approve", "--no-extensions", "--no-skills", "--no-prompt-templates",
-		"--no-themes", "--no-context-files", "--tools", workerTools, "--no-session",
+		"--no-themes", "--no-context-files", "--tools", toolsForProfile(profile), "--no-session",
 	}
 	if model != "" {
 		args = append(args, "--model", model)
