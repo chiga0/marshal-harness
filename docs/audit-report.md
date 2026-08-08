@@ -124,6 +124,7 @@ Cross-record Freshness、ID Uniqueness、Budget Relationship、Path Canonicaliza
 两次失败均以 `BLOCKED` fail-closed，未产生远端副作用；信任边界、持久化契约与发布权限未被改变，因此不新增 ADR，仅记录关闭证据。
 
 | I-002 | P2 | 2026-08-07 hardening 批次合入 | 维护者以 worktree 拷贝合入 dx 任务时，其 cli.go 基线早于 abort 合入，覆盖了 `task abort` 实现，cli 测试失败 | 手工合回 abort dispatch 与辅助函数，骨架测试更新；提交 `f8d4e74`；教训：跨基线 worktree 合入必须先比对基线差异（已记入维护者流程） |
+| I-003 | P1 | 2026-08-08 实现批合入 | 同类事故二次：ENV-DX 合入以旧基线 worktree 拷贝覆盖 opencode/pi/qwen 非测试文件，丢失 ADR 0013 分级接线，main 处于“测试在、实现缺”且零容忍回潮，三个后续 Run 因此 BLOCKED | 提交 `8d37e5d` 恢复接线；强制流程升级：跨基线合入后必须跑受影响全包测试（不仅是目标包）；该事故同时证明分级引擎缺失时失败模式与 I-002 同构 |
 
 **hardening 批次关闭记录（2026-08-07）**：六项张力中四项已实现并合入——WorkerResult 归一化（`328ea03`）、prompt 内嵌模板（同）、显式 abort + 终态 Outcome（ADR 0012，`08c8462`）、`--through-verify` 与仓库锁重试（`76fdf40`）；均经独立 Marshal Run 的 Verification 与 Review ACCEPTED。ADR 0013（拒绝分级）与 0014（read-only 画像）保持提案状态待维护者接受。tui-research 22 个死 Run 已用新 abort 转终态并回收 7 个干净 worktree；15 个 dirty worktree 待归档机制（cleanup v1 对 dirty 硬拒绝、无归档授权路径，记为下一缺口）。
 
