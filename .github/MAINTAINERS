@@ -1,0 +1,6 @@
+chiga0
+# Marshal 维护者清单。
+# 格式：每行一个维护者账号；以 # 开头的行为注释，空行忽略。
+# 维护者须同时满足 AGENTS.md『维护者工作流（maintainer-only）』的三项验证条件：
+# 列名于本文件、remote 指向 canonical 仓库、账号在 canonical 仓库拥有写权限。
+# canonical 仓库：https://github.com/chiga0/marshal-harness.git

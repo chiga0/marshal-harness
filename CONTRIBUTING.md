@@ -6,6 +6,14 @@
 
 参与即表示你同意遵守 [行为准则](CODE_OF_CONDUCT.md)。
 
+## 治理
+
+本仓库采用 universal / maintainer-only / external-contributor 三层治理，规则权威在 [AGENTS.md](AGENTS.md)：
+
+- 所有参与者必须遵守 universal 规则（不可破坏的不变量与门禁）；
+- 维护者以三条件验证：列名于 [.github/MAINTAINERS](.github/MAINTAINERS)、remote 指向 canonical 仓库、账号有写权限（见 AGENTS.md『维护者工作流（maintainer-only）』）；
+- 外部贡献者一律 fork + PR，遵守 AGENTS.md『外部贡献者护栏（external-contributor）』。
+
 ## 开发环境
 
 - Go 版本以 `go.mod` 为准（`go mod download` 后无需额外依赖）；
