@@ -1,0 +1,3694 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="证据门禁式 Coding Agent 编排器 / Evidence-gated orchestration for coding agents">
+      
+      
+      
+        <link rel="canonical" href="https://chiga0.github.io/marshal-harness/research/deep-research-report/">
+      
+      
+      
+      
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/" hreflang="zh">
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/en/" hreflang="en">
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>多 Agent 编排架构深度调研：面向 Marshal Harness 的证据门禁式外部扫描 - Marshal Harness</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#agent-marshal-harness" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="../.." title="Marshal Harness" class="md-header__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Marshal Harness
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              多 Agent 编排架构深度调研：面向 Marshal Harness 的证据门禁式外部扫描
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换暗色"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换亮色"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/en/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Marshal Harness" class="md-nav__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Marshal Harness
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    概览
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    概览
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    项目首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../vision-and-scope/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    愿景与范围
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../roadmap-status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    路线图状态
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../compatibility-matrix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    兼容性矩阵
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../audit-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    审计报告
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    快速开始
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开发指南
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../environment-baseline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    环境基线
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator-runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    操作手册
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../marshal-skill/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    主 Agent 技能
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    核心设计
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    核心设计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../task-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    任务生命周期
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../security-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安全模型
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../task-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    任务契约
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../verification-and-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    验证与审查
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../artifact-and-publishing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    产物与发布
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../failure-and-recovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    失败与恢复
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../lead-agent-surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    主 Agent 接入界面
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worker Adapter
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Worker Adapter
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../worker-adapters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapter 设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../worker-adapter-spike/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    选型 Spike
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    实施与验收
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    实施与验收
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../implementation-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    实施计划
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-0-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 0
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-1-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 1
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-2-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-3-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-4-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 4
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-5-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 5
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-6-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 6
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构决策记录
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    架构决策记录
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR 索引
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0001-cli-first-modular-monolith/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 CLI-first 模块化单体
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0002-worktree-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0002 Worktree 隔离
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0003-separate-worker-and-publisher/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0003 Worker 与 Publisher 分权
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0004-independent-verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0004 独立验证
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0005-go-runtime/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0005 Go Runtime
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0006-attempt-control-root/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0006 Attempt 控制根
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0007-intent-first-publication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0007 意图先行发布
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0008-pluggable-observer-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0008 可插拔 Observer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0009-terminal-session-execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0009 Terminal Session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0010-controlled-autonomy-and-intervention/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0010 受控自治
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0011-sealed-native-tui-transport/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0011 密封 TUI 传输
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0012-explicit-abort/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0012 显式 abort
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0013-graded-permission-denials/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0013 拒绝分级
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0014-read-only-execution-profile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0014 Read-only 画像
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    研究与审计
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    研究与审计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fanout-consolidation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Fan-out 汇总决策
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../abtest-marshal-vs-single-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    A/B 实验设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../herdr-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    herdr 对照调研
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../oss-audit-onboarding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开源审计·上手
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../oss-audit-community/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开源审计·社区
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../oss-audit-docs2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开源审计·文档
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    English
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    English
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/task-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Task Lifecycle
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/security-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/adr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR Index
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        执行摘要与核心判断
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        架构格局与代表系统
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="架构格局与代表系统">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#langgraph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LangGraph
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#crewai" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CrewAI
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#autogenag2-microsoft-agent-framework" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AutoGen、AG2 与 Microsoft Agent Framework
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openai-agents-sdk-responses-multi-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OpenAI Agents SDK 与 Responses Multi-agent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#anthropic-researchclaude-code-subagents-agent-teams" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Anthropic Research、Claude Code Subagents 与 Agent Teams
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#openai-codex-symphony" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OpenAI Codex 与 Symphony
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#devin-managed-devins" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Devin 与 Managed Devins
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#google-adk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Google ADK 与其他工作流框架
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#temporal-durable-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Temporal 与 durable execution
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        并行化的实证边界
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="并行化的实证边界">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        可量化证据
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        哪些任务通常正收益
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        哪些任务通常负收益
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        多视角评审、审计与结果汇总
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="多视角评审、审计与结果汇总">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#jury-debate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        通用 jury 与 debate 证据
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        代码审查与安全审计证据
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lead" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lead 应如何汇总
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#durable-execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        信任、验证与 durable execution 的空白
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="信任、验证与 durable execution 的空白">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#trust-orchestration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trust orchestration 扫描结论
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        各类系统覆盖了什么
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#marshal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        对 Marshal 最关键的设计区分
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#durable-execution_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Durable execution 应怎样接入
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#marshal-fan-out" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        面向 Marshal 的 fan-out 方案与成本分级
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="面向 Marshal 的 fan-out 方案与成本分级">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_10" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        推荐拓扑
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="推荐拓扑">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        调研与计划平面
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        补丁评审平面
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_13" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        任务执行平面
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        前置条件
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_15" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        协议分级
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_16" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        主要风险与缓解
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#marshal_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        外部方案与 Marshal 模型对照
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="agent-marshal-harness">多 Agent 编排架构深度调研：面向 Marshal Harness 的证据门禁式外部扫描<a class="headerlink" href="#agent-marshal-harness" title="Permanent link">&para;</a></h1>
+<h2 id="_1">执行摘要与核心判断<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
+<p>截至 <strong>2026 年 8 月 5 日</strong>，多 Agent 系统已从早期的自由对话式“agent society”逐步收敛到几种较务实的工程形态：<strong>Orchestrator–Worker fan-out/fan-in、显式状态图、独立 workspace、任务控制平面，以及依托 Temporal/Durable Task 的可恢复执行</strong>。LangGraph、CrewAI、AutoGen/AG2、OpenAI Agents SDK 等主要解决“如何安排 Agent”；Claude Code、Codex、Devin 更进一步解决“如何让多个 Coding Agent 在隔离环境中工作”；Temporal 与 Microsoft Durable Extension 则解决“如何让长流程在崩溃、重启和重试后继续”。但这些系统通常没有把<strong>谁有资格证明什么、决策必须绑定哪份证据、什么凭据可以执行发布动作</strong>建模为一等公民。citeturn1search1turn13view4turn0search11turn12search23turn11search1</p>
+<p>本次扫描得到的最重要结论是：</p>
+<p><strong>第一，多 Agent 的收益主要来自可分解性，而不是 Agent 数量本身。</strong> Anthropic 的内部 Research eval 中，Opus 4 Lead 加 Sonnet 4 Subagents 相比单 Opus 4 提升 90.2%，复杂调研的时间最多缩短 90%；但其多 Agent 系统约消耗普通 Chat 的 15 倍 token，并明确指出大多数高依赖 Coding 任务不适合当前多 Agent 协作。citeturn14view0</p>
+<p><strong>第二，Coding fan-out 的关键不是按文件平均切分，而是按依赖内聚度切分。</strong> 2026 年 Co-Coder 预印本在 28 个 repository-level 任务上报告：依赖感知切分可同时提升 pass rate、降低墙钟时间和成本；而朴素 file-based parallel 在一个基准中成本增加 60%，质量只提高 3.2 个百分点，Claude Code Agent Teams 虽然最快，却低于串行基线质量。该研究样本较小、集中于 Python repository benchmark，仍需独立复现，但它为 Marshal 的“单 worktree 单写入者”和任务依赖分析提供了直接支持。citeturn14view1turn15view1turn15view2</p>
+<p><strong>第三，目前生产实践最稳定的形态是“并行贡献 intelligence，写入保持 single-threaded”。</strong> Cognition 对 Devin 多 Agent 实践的总结是：unstructured swarm 多数没有实际采用价值，实用形态更接近 “map-reduce-and-manage”；干净上下文的 Reviewer、专项调查 Agent 和 Manager 能提供额外信息，但写入和最终决策应保持集中。OpenAI Codex 的当前文档同样建议先把 subagents 用于 exploration、tests、triage、summarization，对并行 write-heavy workflow 保持谨慎。citeturn15view3turn15view4turn15view5</p>
+<p><strong>第四，多评审者确有潜力改善判断，但代码缺陷发现的强证据仍有限。</strong> PoLL 在六个数据集上发现异构小模型 jury 优于单个大 Judge，且成本低七倍以上；2026 年一个漏洞检测研究在 262 个 Juliet 样本上将 F1 从单专家的 71.4% 提升至 77.2%，独立 adversarial verifier 使 precision 提高 10.3 个百分点。但前者是通用 LLM evaluation，后者是 workshop preprint 和合成式安全数据，不能直接等价为真实 PR review 的缺陷发现率。citeturn15view9turn15view10turn15view11</p>
+<p><strong>第五，Marshal 不宜首先建设“多个 Worker 协同修改同一任务”。</strong> 最值得引入的顺序是：</p>
+<ol>
+<li><strong>只读调研队</strong>：并行探索代码、依赖、历史缺陷和测试面；</li>
+<li><strong>补丁冻结后的独立评审团</strong>：从 correctness、security、test adequacy、maintainability 等不同角度审查同一不可变 patch；</li>
+<li><strong>真正独立 TaskSpec 之间的任务级并行</strong>：每个任务独占 worktree 和写入者；</li>
+<li><strong>证据驱动的确定性 fan-in</strong>：Lead 只能合并 finding，不能凭语言共识替代 Verification，也不能自行产生发布授权。</li>
+</ol>
+<p>换言之，Marshal 应采用 <strong>fan-out intelligence, serialize mutation, independently verify, deterministically adjudicate</strong>，而不是复刻自由通信式 Agent Team。</p>
+<h2 id="_2">架构格局与代表系统<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<p>主流系统可以归纳为六种编排模式：</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>代表系统</th>
+<th>核心特点</th>
+<th>主要风险</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>State graph</td>
+<td>LangGraph、Google ADK Graph Workflow</td>
+<td>状态、节点、边和并发路径显式化</td>
+<td>图能表达流程，但不自动表达信任资格</td>
+</tr>
+<tr>
+<td>Conversational team</td>
+<td>AutoGen/AG2、CrewAI Crew、Group Chat</td>
+<td>Agent 通过消息、角色和选择器协作</td>
+<td>上下文膨胀、重复工作、隐式状态</td>
+</tr>
+<tr>
+<td>Manager-as-tools</td>
+<td>OpenAI Agents SDK、Anthropic Research</td>
+<td>Lead 将 Worker 当作工具调用并汇总</td>
+<td>Lead 成为信息和信任集中点</td>
+</tr>
+<tr>
+<td>Handoff/swarm</td>
+<td>OpenAI Handoffs、AG2 Swarm、Claude Agent Teams</td>
+<td>控制权在 Agent 间转移或共享任务列表</td>
+<td>责任归属与最终权威容易模糊</td>
+</tr>
+<tr>
+<td>Workspace/task parallelism</td>
+<td>Codex、Devin、Symphony</td>
+<td>每个任务或 Agent 使用隔离 workspace/VM</td>
+<td>集成冲突、并发 PR 和人工审阅瓶颈</td>
+</tr>
+<tr>
+<td>Durable workflow</td>
+<td>Temporal、Microsoft Durable Extension、LangGraph persistence</td>
+<td>Event history、checkpoint、retry、resume</td>
+<td>可恢复不等于可验证或防篡改</td>
+</tr>
+</tbody>
+</table>
+<h3 id="langgraph">LangGraph<a class="headerlink" href="#langgraph" title="Permanent link">&para;</a></h3>
+<p>LangGraph 的核心是显式 <code>StateGraph</code>：节点读取和更新共享 state，边定义控制流，同一 super-step 内的多个节点可并行执行。它采用 Pregel 风格执行模型，并通过 checkpointer 在每个 super-step 保存 checkpoint，从而支持 thread-scoped persistence、time travel、human-in-the-loop 和从最后成功步骤恢复。citeturn1search1turn1search3turn13view6</p>
+<p>中间产物通常进入 graph state，或由 subgraph 返回父图；subgraph 可配置为 per-invocation、per-thread 或 stateless。若不配置 checkpoint，则 subgraph 不具备相同的崩溃恢复能力。Interrupt 机制要求开发者注意副作用位置，并明确建议在可能重放的操作中使用幂等设计。citeturn1search0turn1search4</p>
+<p>适合场景是：流程边界清晰、需要分支/并行、人工审批以及长任务恢复的 Agent workflow。局限是它提供的是<strong>状态和执行控制原语</strong>，而不是安全策略：公开文档未显示其原生强制“作者不能成为权威 Reviewer”、Reviewer 决策必须绑定 evidence digest，或 Worker 与 Publisher 使用不同 credential class。上述约束需由应用状态机、节点身份和外部授权层自行实现；截至本次扫描，完整内建支持<strong>未能验证</strong>。</p>
+<h3 id="crewai">CrewAI<a class="headerlink" href="#crewai" title="Permanent link">&para;</a></h3>
+<p>CrewAI 将 <strong>Flow</strong> 定位为结构化、事件驱动的流程控制层，将 <strong>Crew</strong> 定位为执行某项工作的 Agent 团队。官方生产建议是 Flow-first：用 Pydantic state 管理结构化状态，显式传递上下文，用 structured output 和 task guardrail 限制输出；<code>@persist</code> 可保存流程状态，以便崩溃或 human-in-the-loop 后恢复。Crew 支持 sequential、hierarchical 等 process，也可通过异步任务实现并行。citeturn0search7turn0search12turn13view4turn10search3turn10search15</p>
+<p>其交接单位主要是 task output、Pydantic object 和 Flow state，适合业务自动化、角色明确的研究/内容/运营流程。Guardrail 可以检查输出格式或内容，但通常由当前流程中的函数或 Agent 执行，并不自动建立独立信任域。因此 CrewAI 可以实现 Marshal 的部分流程，但“Reviewer 独立性”和“证据绑定授权”仍然是应用层策略，而非框架不变量。</p>
+<h3 id="autogenag2-microsoft-agent-framework">AutoGen、AG2 与 Microsoft Agent Framework<a class="headerlink" href="#autogenag2-microsoft-agent-framework" title="Permanent link">&para;</a></h3>
+<p>AutoGen 的 AgentChat 提供 RoundRobinGroupChat、SelectorGroupChat、MagenticOneGroupChat 和 Swarm 等 team preset。团队通常共享 message context，由固定轮询、模型选择器或 handoff 决定下一发言者；官方文档也提醒多 Agent team 需要更多 scaffolding，能够由单 Agent 解决时应优先单 Agent。citeturn0search11</p>
+<p>AG2 延续并扩展了 GroupChat、nested chat、context variables 和 workflow control。GroupChat Manager 可以使用 auto、round-robin、random、manual 或自定义 speaker selection，并支持 start/resume；nested chat 常通过 summary 将子对话结果传回主会话。citeturn10search25turn10search12turn10search19turn10search0turn10search22</p>
+<p>这类架构适合 brainstorm、debate、专家路由和 conversational workflow，但中间状态高度依赖消息历史和 summary。即使支持序列化或恢复，对外部副作用的一致性、精确 artifact identity 和 credential boundary 仍需应用自行管理。</p>
+<p>微软在 2026 年推进 <strong>Microsoft Agent Framework</strong>，将其描述为 AutoGen 与 Semantic Kernel 的后继统一框架，提供 sequential、concurrent、handoff、group chat 和 magentic orchestration。其 Durable Extension 将 Agent session 和 workflow checkpoint 持久化到底层 Durable Task infrastructure，支持跨 host 恢复、长期暂停和确定性 workflow replay。citeturn5search5turn5search10turn14view7</p>
+<p>相较 AutoGen，Microsoft Agent Framework 在 durable state 方面更接近 Marshal 需要，但它仍然主要保证“流程能够继续”，并不天然保证“继续后的决策仍绑定原 patch、原证据和原授权主体”。</p>
+<h3 id="openai-agents-sdk-responses-multi-agent">OpenAI Agents SDK 与 Responses Multi-agent<a class="headerlink" href="#openai-agents-sdk-responses-multi-agent" title="Permanent link">&para;</a></h3>
+<p>OpenAI Agents SDK 支持两类主要编排方式：</p>
+<ul>
+<li><strong>Manager-as-tools</strong>：中央 Agent 将专业 Agent 作为工具调用，最终答案仍由 Manager 控制；</li>
+<li><strong>Handoffs</strong>：当前 Agent 将会话和控制权交给另一个 Agent。</li>
+</ul>
+<p>官方同时支持 code-driven orchestration，例如通过 <code>asyncio</code> 并行调用 Agent。OpenAI 文档指出，代码编排通常在速度、成本和行为上更可预测，而完全由 LLM 决定 orchestration 更灵活但更不确定。citeturn0search6turn12search23</p>
+<p>SDK 的 Sessions 保存对话记忆，Tracing 记录模型生成、tool call、handoff 和 guardrail，序列化的 <code>RunState</code> 可支持 human approval 后 resume。需要注意的是，input/output guardrail 默认只覆盖 run 的初始输入和最终输出；在 handoff chain 中，中间 Agent 未必经过相同 guardrail，除非逐个使用 tool guardrail 或额外检查。citeturn12search2turn12search0turn12search13turn12search1turn12search21</p>
+<p>2026 年的 Responses Multi-agent beta 提供 root agent 创建并发 subagent、发消息、追问、等待和中断等 hosted action。官方建议其用于可独立、边界明确的工作，不适合严格顺序链和共享可变状态；默认并发数为 3。一个对 Marshal 很重要的细节是：同一 multi-agent request tree 中的 Agent 默认可访问 request 配置的模型和工具，因此它并不自动提供 Worker/Reviewer/Publisher 级别的 credential isolation。citeturn6view2</p>
+<h3 id="anthropic-researchclaude-code-subagents-agent-teams">Anthropic Research、Claude Code Subagents 与 Agent Teams<a class="headerlink" href="#anthropic-researchclaude-code-subagents-agent-teams" title="Permanent link">&para;</a></h3>
+<p>Anthropic 的 Research 系统是典型的 Orchestrator–Worker：LeadResearcher 制定计划并保存至 Memory，创建多个有独立 context window 的 Subagents 并行搜索，Subagents 返回压缩后的 findings，Lead 合成结果，最后由单独的 CitationAgent 将报告主张映射到来源位置。Anthropic 还建议对大 artifact 采用外部文件系统交接，让 Subagent 保存产物并只返回引用，以减少“传话游戏”和 token 复制。citeturn14view0</p>
+<p>该架构特别适合开放式、breadth-first 调研、跨大量来源搜索和上下文压缩。局限包括 token 消耗高、Lead 同步等待造成 straggler bottleneck、Subagent 之间无法实时协调，以及共享上下文或依赖密集任务表现不佳。CitationAgent 提供的是<strong>引用归属检查</strong>，并不等价于独立 Verification authority：它可以确认“报告引用了什么”，但不能证明“Worker 的代码通过了可信测试”。</p>
+<p>Claude Code 的 <strong>subagents</strong> 使用独立 context，可拥有特定 system prompt、模型、工具和权限，并向主 Agent 返回 summary；这使只读 Explorer、Security Reviewer 或 Test Reviewer 可以配置成比 Worker 更小的权限集合。citeturn13view1</p>
+<p>Claude Code <strong>agent teams</strong> 则是多个独立 Claude Code session，共享 task list，并可相互直接通信。官方将其定位于 competing hypotheses、并行 code review 和相对独立的 feature pieces，同时明确说明其 token 成本更高且仍属实验性功能。citeturn13view0</p>
+<p>这些权限配置为 Marshal 提供了可借鉴的 capability separation 原语，但尚未看到官方机制可以证明 Reviewer 与 Worker 没有共享底层 credential，或把 ReviewDecision 强制绑定到特定 commit/evidence digest；完整满足 Marshal 信任模型的能力<strong>未能验证</strong>。</p>
+<h3 id="openai-codex-symphony">OpenAI Codex 与 Symphony<a class="headerlink" href="#openai-codex-symphony" title="Permanent link">&para;</a></h3>
+<p>Codex 的云任务将每项工作放入独立 sandbox，允许多个任务并行运行、执行测试并形成 PR；Codex app 使用独立 thread 和内建 worktree，让不同 Agent 在隔离 copy 上修改，用户最后检查 diff。citeturn3search0turn3search3turn3search1</p>
+<p>当前 Codex subagent 文档建议从 read-heavy exploration、tests、triage 和 summarization 开始；并行 write-heavy workflow 会产生冲突和协调开销。Subagents 消耗额外 token，可以为不同角色选择不同 model/reasoning effort，也可将专项 Agent 配置为 read-only，但 child 默认可能继承 parent 的 sandbox 和 approval mode，因此权限隔离需要显式配置而不能假设存在。citeturn15view5</p>
+<p>Symphony 将 issue tracker 转化为 Agent control plane：每个开放任务映射到独立 Agent/workspace，任务状态驱动调度，系统可以设置最大并发、重试和 backoff。OpenAI 报告部分内部团队在最初三周出现 landed PR 数增长 500%，但这是生产案例观察，不是对照实验，不能推出单任务质量提高 500%，也没有公开相应 token、rework 或 defect escape 数据。citeturn15view7turn15view8</p>
+<p>Symphony 与 Marshal 的共同点是把任务状态机置于 Agent 之上，而不是让 Agent 对话成为唯一状态。但 Symphony 主要以 issue 和 workspace 为编排单位；公开规范中尚未看到 Marshal 式 evidence-bound review authority 与 Worker/Publisher credential split。</p>
+<h3 id="devin-managed-devins">Devin 与 Managed Devins<a class="headerlink" href="#devin-managed-devins" title="Permanent link">&para;</a></h3>
+<p>Devin 的 Managed Devins 使用 Coordinator 拆分任务，子 Devin 在独立 VM 中执行，Coordinator 监控状态、处理冲突并汇总。子 session 可以有独立 ACU 限额，并可分别产生 PR；早期 MultiDevin 也采用 Manager 加多个 Worker、合并成功分支的方式。citeturn13view3turn4search3turn4search10</p>
+<p>Cognition 在 2026 年对实践的总结比产品能力本身更值得关注：平行写入 swarm 的实际采用有限，效果更好的模式是 Manager 分解、子 Agent 提供调查或评审结果、写入保持 single-threaded。其识别的核心开放问题不是 Agent 数量，而是 context transfer、升级条件、跨 Agent 发现传播和责任碎片化。citeturn15view3turn15view4</p>
+<p>Devin 的 VM 隔离是强执行隔离，但 VM 隔离本身不能建立“谁可签署验收”的组织信任边界；是否有不可篡改证据 ledger、Reviewer/Publisher 独立身份和 digest-bound approval，公开资料中<strong>未能验证</strong>。</p>
+<h3 id="google-adk">Google ADK 与其他工作流框架<a class="headerlink" href="#google-adk" title="Permanent link">&para;</a></h3>
+<p>Google ADK 2.0 在 2026 年引入 graph workflow、dynamic workflow 和 collaborative workflow；其 <code>ParallelAgent</code> 可并发执行独立子 Agent，结果通常通过 shared session state 或 <code>output_key</code> 交接。citeturn10search13turn10search9turn10search5turn10search32</p>
+<p>ADK 的设计与 LangGraph 类似，适合确定性流程和 Agent 分支混合，但 shared session state 仍是协作状态，不是证据授权模型。MetaGPT、ChatDev、Magentic-One 等系统对角色分工和软件组织模拟有研究影响，但在 2026 年工程实践中，越来越多平台转向显式 workflow、isolated workspace 与 durable state，而不是仅依赖角色对话。Co-Coder 的 related-work 分析也把通信开销和任务切分视为当前多 Agent Coding 的主要瓶颈。citeturn14view1</p>
+<h3 id="temporal-durable-execution">Temporal 与 durable execution<a class="headerlink" href="#temporal-durable-execution" title="Permanent link">&para;</a></h3>
+<p>Temporal Workflow 通过持久化 Event History 和 deterministic replay，使进程、机器或网络故障后能够重建 workflow state；外部副作用由 Activity 执行，Activity 通常具有 at-least-once 语义，因此应使用 idempotency key 或其他幂等设计。Temporal 已发布与 OpenAI Agents SDK 的集成，用于持久执行 Agent、重试 rate limit 和网络错误。citeturn11search1turn11search4turn11search0turn11search5turn5search1</p>
+<p>这正是 Agent 框架普遍较弱、而 Marshal 特别需要的部分：</p>
+<ul>
+<li>Agent 推理可以重试；</li>
+<li>工具副作用必须建模为 Activity；</li>
+<li>workflow crash 后从 event history 恢复；</li>
+<li>等待远端 CI 时不占用持续计算资源；</li>
+<li>publish、comment、merge 等操作用业务 idempotency key 去重。</li>
+</ul>
+<p>但必须区分三种属性：</p>
+<table>
+<thead>
+<tr>
+<th>属性</th>
+<th>Temporal 等 durable engine</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>可恢复</td>
+<td>强：通过 history、checkpoint、replay</td>
+</tr>
+<tr>
+<td>可审计</td>
+<td>中到强：可看到事件和状态变迁</td>
+</tr>
+<tr>
+<td>防篡改、密码学可验证</td>
+<td>公开文档未声明 event history 是 append-only cryptographically tamper-evident ledger，<strong>未能验证</strong></td>
+</tr>
+</tbody>
+</table>
+<p>因此，Temporal 可以成为 Marshal 的执行 substrate，但不能替代 Marshal 自己的 evidence hash、签名/身份、credential separation 和 decision policy。</p>
+<h2 id="_3">并行化的实证边界<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<h3 id="_4">可量化证据<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>来源与时间</th>
+<th>场景</th>
+<th>对比结果</th>
+<th>墙钟时间</th>
+<th>成本</th>
+<th>证据限制</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Anthropic Research，2025-06-13</td>
+<td>开放式多来源调研</td>
+<td>Opus 4 Lead + Sonnet 4 Subagents 比单 Opus 4 高 90.2%</td>
+<td>复杂调研最多缩短 90%</td>
+<td>Multi-agent 约为普通 Chat 的 15× token</td>
+<td>内部 eval；非 Coding；未公开完整题集与统计分布 citeturn14view0</td>
+</tr>
+<tr>
+<td>Co-Coder，2026-05-31</td>
+<td>28 个 repository-level Coding 任务，DevEval</td>
+<td>pass rate 56.8% → 68.1%</td>
+<td>800s → 442s，约 1.81×</td>
+<td>$0.25 → $0.18，下降 28%</td>
+<td>arXiv v1；样本小；主要为 Python citeturn15view1</td>
+</tr>
+<tr>
+<td>Co-Coder，2026-05-31</td>
+<td>CodeProjectEval</td>
+<td>pass rate 20.1% → 34.1%</td>
+<td>2756s → 1315s，约 2.10×</td>
+<td>$1.03 → $0.67，下降 35%</td>
+<td>同上，需独立复现 citeturn15view2</td>
+</tr>
+<tr>
+<td>File-based Parallel，同一研究</td>
+<td>朴素按文件并行</td>
+<td>DevEval 仅 56.8% → 57.7%；CodeProjectEval 20.1% → 23.3%</td>
+<td>有一定加速或几乎不变</td>
+<td>分别增加 44% 和 60%</td>
+<td>显示错误切分可抵消并行收益 citeturn15view1turn15view2</td>
+</tr>
+<tr>
+<td>Claude Code Agent Teams，同一研究</td>
+<td>自协调并行 Coding</td>
+<td>DevEval 54.1% &lt; 串行 56.8%；CodeProjectEval 16.3% &lt; 20.1%</td>
+<td>两组中都明显更快</td>
+<td>更低</td>
+<td>只测试特定版本、prompt 和 benchmark，不能泛化到全部 Claude Code 使用方式 citeturn15view1turn15view2</td>
+</tr>
+<tr>
+<td>Symphony，2026</td>
+<td>Issue-level 并行 Coding</td>
+<td>某些团队 landed PR 数三周内增长 500%</td>
+<td>未公开</td>
+<td>未公开</td>
+<td>内部案例；不是控制实验；质量和返工数据未披露 citeturn15view7</td>
+</tr>
+</tbody>
+</table>
+<p>Co-Coder 最值得关注的不是某个绝对数字，而是其机制：它通过 static analysis 建立 repository dependency graph，将共享 symbol 密集的文件放在同一 partition，隔离 structural hub，并使用 dependency-aware scheduler。研究显示，朴素并行容易产生不一致 interface 和重复生成，而 cohesion-aware partition 能减少跨 Agent context transfer。citeturn14view1turn15view2</p>
+<p>不过，该论文称“在依赖最密集的项目上收益最大”不能被简单解释为“耦合越高越应该多 Agent”。其前提是系统能够识别强耦合部分并把它们<strong>放在同一个 Worker 内</strong>，只将 partition 之间的弱耦合部分并行化；若把高度耦合文件分给不同 Agent，实验恰恰显示结果更差。citeturn15view1turn15view2</p>
+<h3 id="_5">哪些任务通常正收益<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>任务特征</th>
+<th>原因</th>
+<th>适合的 fan-out</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>多方向探索、资料检索</td>
+<td>搜索空间可独立覆盖，结果可压缩后合并</td>
+<td>Research squad、Explorer agents</td>
+</tr>
+<tr>
+<td>独立假设验证</td>
+<td>每个 Agent 可用不同路径寻找反例，减少单一路径依赖</td>
+<td>Competing-hypothesis reviewers</td>
+</tr>
+<tr>
+<td>代码审查与安全扫描</td>
+<td>多数为 read-heavy，不需要同时改变代码</td>
+<td>Correctness、Security、Test jury</td>
+</tr>
+<tr>
+<td>测试执行与故障归因</td>
+<td>测试 shard 可独立运行，结果可结构化合并</td>
+<td>Test fan-out</td>
+</tr>
+<tr>
+<td>低耦合模块或不同 repository</td>
+<td>workspace 和接口边界明确</td>
+<td>Task-level parallel workers</td>
+</tr>
+<tr>
+<td>大上下文压缩</td>
+<td>每个 Agent 读取一部分 corpus，返回 distilled artifact</td>
+<td>Map-reduce research</td>
+</tr>
+</tbody>
+</table>
+<p>Anthropic 明确把 breadth-first、跨大量信息源和多工具任务视为 multi-agent 的优势场景；Codex 当前文档建议优先 parallelize exploration、tests、triage 和 summarization；Cognition 则强调 clean-context Reviewer 和 intelligence helpers。citeturn14view0turn15view5turn15view4</p>
+<h3 id="_6">哪些任务通常负收益<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>任务特征</th>
+<th>主要失败方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>多 Agent 同时编辑同一 worktree 或同一核心模块</td>
+<td>覆盖修改、冲突、接口漂移、状态不可归因</td>
+</tr>
+<tr>
+<td>高频交互才能确定接口</td>
+<td>communication token 和等待时间超过有效工作</td>
+</tr>
+<tr>
+<td>单一短小局部修复</td>
+<td>启动、传递上下文、汇总和评审成本超过编码本身</td>
+</tr>
+<tr>
+<td>必须共享完整隐含上下文</td>
+<td>Subagent summary 丢失细节，Lead 出现“information bottleneck”</td>
+</tr>
+<tr>
+<td>严格顺序迁移或单一外部副作用链</td>
+<td>并发无缩短 critical path，反而增加恢复复杂度</td>
+</tr>
+<tr>
+<td>模糊拆分、无 ownership contract</td>
+<td>重复调查、遗漏范围、不同 Agent 对目标理解不一致</td>
+</tr>
+<tr>
+<td>写入和最终判断由同一 Agent 群体循环完成</td>
+<td>容易形成自洽但未独立验证的共识</td>
+</tr>
+</tbody>
+</table>
+<p>Anthropic 的早期系统曾为简单查询启动约 50 个 Subagent，产生重复搜索和无边界消耗，因此后来为任务复杂度设置明确 scaling rules；其建议简单事实只用一个 Agent，普通比较使用 2–4 个，复杂研究才使用更多。citeturn14view0</p>
+<p>这也解释了 Marshal 在小任务上观察到“协调协议成本超过收益”：这不是实现异常，而是当前多 Agent 系统的普遍经济边界。并行只有在可并行工作量大于 decomposition、context transfer、fan-in、冲突处理和额外验证成本时才有意义。</p>
+<h2 id="_7">多视角评审、审计与结果汇总<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h2>
+<h3 id="jury-debate">通用 jury 与 debate 证据<a class="headerlink" href="#jury-debate" title="Permanent link">&para;</a></h3>
+<p>2024 年的 <strong>Replacing Judges with Juries / PoLL</strong> 使用来自不同 model family 的多个较小 evaluator 代替单一大 Judge。在三个 Judge 场景、六个数据集上，PoLL 优于单个大型 Judge，减少 intra-model bias，并降低七倍以上成本。关键不是简单复制同一模型，而是利用<strong>异构性</strong>降低相关错误。citeturn15view9</p>
+<p><strong>ChatEval</strong> 在文本生成评估中让多个角色通过 debate 形成评价，报告其在两个 benchmark 上相比单 Evaluator 有更好的准确性和人类相关性。该证据支持多视角评估，但目标是自然语言质量，不是代码执行正确性。citeturn9search1turn9search21</p>
+<p><strong>More Agents Is All You Need</strong> 表明对同一问题独立采样并多数投票，可随 Agent 数量增加提升若干推理任务表现，且困难任务的收益更明显。不过这种方法要求答案能够归一化并投票；代码评审中的 finding 通常不是互斥选项，因此不能直接套用 majority vote。citeturn9search3turn9search15</p>
+<h3 id="_8">代码审查与安全审计证据<a class="headerlink" href="#_8" title="Permanent link">&para;</a></h3>
+<p>2026 年 <strong>Strategic Heterogeneous Multi-Agent Architecture for Cost-Effective Code Vulnerability Detection</strong> 使用三个 cloud expert 加本地 adversarial verifier，在 262 个 NIST Juliet 样本、14 类 CWE 上取得 F1 77.2%，高于单 expert 的 71.4%；Verifier 将 precision 提高 10.3 个百分点，并通过并行执行实现 3× 加速。论文为 AAMAS 2026 Software Engineering Workshop 接收的 preprint，因此比纯未审稿稿件更强，但数据仍以 Juliet 样本为主，无法直接代表真实 repository PR。citeturn15view10turn15view11</p>
+<p>2024 年 <strong>CodeAgent: Autonomous Communicative Agents for Code Review</strong> 使用多个角色处理 commit-message inconsistency、vulnerability、style 和 revision，并加入 supervisory QA-checker。其摘要宣称取得 state-of-the-art 结果，但本次可访问资料未提供足以复核“相对单 Reviewer 的统一缺陷发现率提升”数据，因此具体 uplift <strong>未能验证</strong>。citeturn7academia30</p>
+<p>2025 年一项面向工业 C++ 的 defect-focused automated code review 研究宣称，通过多角色 LLM、program slicing 和过滤，在历史 fault-report merge request 上达到标准 LLM 的约两倍表现和早期 baseline 的约十倍。但公开摘要不足以确认统一 recall、precision、false-positive 和样本选择细节，且涉及内部数据；具体缺陷率改善应视为初步证据，完整复核<strong>未能验证</strong>。citeturn7academia32</p>
+<p>所以，可以得出较窄的结论：</p>
+<blockquote>
+<p>异构、多视角、带独立过滤者的审查，较单一 Judge 更可能发现互补问题并减少偏差；但目前没有足够公开、跨 repository、跨语言、生产级的控制实验，可以证明任意多 Agent code review 都会稳定提高真实缺陷发现率。</p>
+</blockquote>
+<h3 id="lead">Lead 应如何汇总<a class="headerlink" href="#lead" title="Permanent link">&para;</a></h3>
+<p>业内常见的 fan-in 方法包括：</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>适用场景</th>
+<th>主要问题</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Majority vote</td>
+<td>单一正确答案、分类、是否通过某项规则</td>
+<td>少数但关键的安全 finding 可能被多数淹没</td>
+</tr>
+<tr>
+<td>Weighted vote</td>
+<td>Reviewer 历史可靠性可测、任务类型稳定</td>
+<td>权重可能过拟合旧 benchmark</td>
+</tr>
+<tr>
+<td>Judge synthesis</td>
+<td>开放式研究、多个报告合成</td>
+<td>Judge 可能删掉自己不理解的证据</td>
+</tr>
+<tr>
+<td>Structured merge</td>
+<td>Code review、审计、测试 findings</td>
+<td>需要统一 schema 和去重规则</td>
+</tr>
+<tr>
+<td>Adversarial verification</td>
+<td>安全、合规、高风险变更</td>
+<td>成本和 latency 较高</td>
+</tr>
+<tr>
+<td>Escalation to human</td>
+<td>冲突无法由客观证据解决</td>
+<td>吞吐下降，但可保留责任主体</td>
+</tr>
+</tbody>
+</table>
+<p>对 Marshal，<strong>不建议用一个 Lead 读完自然语言报告后“综合判断”</strong>。Lead 应当执行受限的 adjudication，而不是自由生成 verdict。建议所有 Reviewer 输出同一 <code>Finding</code> schema：</p>
+<div class="highlight"><pre><span></span><code>finding_id
+reviewer_role
+scope
+claim
+category
+severity
+affected_artifact
+location
+reproduction_or_check
+evidence_refs
+evidence_digest
+confidence
+recommended_disposition
+</code></pre></div>
+<p>Fan-in 首先按 <code>affected_artifact + location + evidence identity</code> 去重，而不是按自然语言相似度去重。每个 finding 应产生独立处置：</p>
+<div class="highlight"><pre><span></span><code>accepted
+rejected_with_reason
+superseded
+duplicate
+needs_new_verification
+human_escalation
+</code></pre></div>
+<p>最终 <code>ReviewDecision</code> 应保存：</p>
+<div class="highlight"><pre><span></span><code>task_spec_hash
+base_commit_sha
+candidate_commit_sha
+patch_digest
+verification_bundle_digest
+review_findings_digest
+accepted_finding_ids
+unresolved_dissent
+policy_version
+decision_actor
+decision_credential_class
+timestamp
+</code></pre></div>
+<p>这种模式可避免“平均数的平庸”：安全 Reviewer 的一个高置信严重 finding 不会因为另外两个 Reviewer 没看到而被 2:1 否决。PoLL 支持使用异构 Reviewer 减少相关偏差，Cognition 支持 clean-context Reviewer，Anthropic 则证明结构化 artifact 和轻量引用优于反复通过 Lead 转述；将这些原则组合成 evidence-first merge 是面向 Marshal 的工程推断。citeturn15view9turn15view4turn14view0</p>
+<h2 id="durable-execution">信任、验证与 durable execution 的空白<a class="headerlink" href="#durable-execution" title="Permanent link">&para;</a></h2>
+<h3 id="trust-orchestration">Trust orchestration 扫描结论<a class="headerlink" href="#trust-orchestration" title="Permanent link">&para;</a></h3>
+<p>在本次检查的官方文档与公开论文中，<strong>未发现一个通用多 Agent 框架把以下六项同时作为原生、强制、不可绕过的不变量</strong>：</p>
+<ol>
+<li>Worker 不能为自己的产物提供权威验证；</li>
+<li>ReviewDecision 必须绑定精确 TaskSpec、commit、patch 和 evidence digest；</li>
+<li>Reviewer、Worker、Publisher 使用相互隔离的 credential class；</li>
+<li>Worker 无权修改或替换 Verification evidence；</li>
+<li>日志具有密码学防篡改或外部 append-only 保证；</li>
+<li>crash/retry 后所有外部副作用保持幂等，且授权不漂移。</li>
+</ol>
+<p>因此，“主流框架主要处理 orchestration，而非 trust orchestration”这一判断基本成立。这里的“未发现”限定于截至 2026-08-05 的公开文档；私有企业内部系统可能实现了类似约束，但公开信息不足，<strong>未能验证</strong>。</p>
+<h3 id="_9">各类系统覆盖了什么<a class="headerlink" href="#_9" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>信任或可靠性要求</th>
+<th>已有部分能力</th>
+<th>尚缺部分</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>禁止 Worker 自证</td>
+<td>可通过独立 Agent role、clean context、独立 session 实现</td>
+<td>多数框架不校验 Reviewer 与 Worker 是否为同一 authority</td>
+</tr>
+<tr>
+<td>Evidence binding</td>
+<td>Anthropic CitationAgent、structured outputs、traces、test artifacts</td>
+<td>通常未强制 verdict 引用特定不可变 evidence digest</td>
+</tr>
+<tr>
+<td>Credential isolation</td>
+<td>Claude/Codex 可限制 tool/sandbox；Devin 独立 VM</td>
+<td>Publisher credential 独立、不可由 Worker 继承通常不是默认规则</td>
+</tr>
+<tr>
+<td>Artifact isolation</td>
+<td>Codex worktree、Devin VM、独立 cloud sandbox</td>
+<td>多 workspace 最终集成仍可能由同一 Agent 兼任作者和裁决者</td>
+</tr>
+<tr>
+<td>Crash recovery</td>
+<td>Temporal、LangGraph checkpoint、CrewAI persist、Microsoft Durable</td>
+<td>恢复后 artifact/version/authorization 是否一致需应用自行验证</td>
+</tr>
+<tr>
+<td>Idempotency</td>
+<td>Temporal 明确要求 Activity 幂等</td>
+<td>多数 Agent SDK 只做 retry，不自动保证 GitHub/CI 操作 exactly-once</td>
+</tr>
+<tr>
+<td>Audit trail</td>
+<td>OpenAI tracing、Temporal Event History、LangGraph checkpoint</td>
+<td>密码学 tamper evidence、WORM storage 和外部签名普遍未声明</td>
+</tr>
+<tr>
+<td>Fail-closed</td>
+<td>可通过 graph branch、guardrail、policy node 实现</td>
+<td>很多默认 demo 在异常时重试、继续或让 Agent自行决定，非强制 fail-closed</td>
+</tr>
+</tbody>
+</table>
+<p>OpenAI Tracing 可以记录 handoff、tool call 和 guardrail，但 tracing 是 observability，不等于 authorization ledger。LangGraph checkpoint 可以证明 graph 曾处于某个 state，但若 state 中的 evidence reference 可由 Worker 写入，checkpoint 并不能证明证据来自独立 Verifier。Temporal Event History 能可靠恢复执行，却不会自动检查某个 Activity 的业务操作者是否越权。citeturn12search1turn13view6turn11search1</p>
+<h3 id="marshal">对 Marshal 最关键的设计区分<a class="headerlink" href="#marshal" title="Permanent link">&para;</a></h3>
+<p>Marshal 应把以下实体严格分开：</p>
+<table>
+<thead>
+<tr>
+<th>实体</th>
+<th>作用</th>
+<th>允许写入</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WorkerOutput</td>
+<td>候选代码和作者声明</td>
+<td>Worker workspace、candidate branch</td>
+</tr>
+<tr>
+<td>VerificationEvidence</td>
+<td>从冻结候选版本重新生成的测试/扫描结果</td>
+<td>仅 Verifier evidence store</td>
+</tr>
+<tr>
+<td>ReviewFinding</td>
+<td>Reviewer 对候选和证据的解释</td>
+<td>Review namespace</td>
+</tr>
+<tr>
+<td>ReviewDecision</td>
+<td>根据 policy 采纳或拒绝 findings</td>
+<td>Decision authority</td>
+</tr>
+<tr>
+<td>PublicationRecord</td>
+<td>Draft PR、远端 CI 和发布操作</td>
+<td>Publisher authority</td>
+</tr>
+<tr>
+<td>Outcome</td>
+<td>最终外部状态与验收结果</td>
+<td>Outcome controller</td>
+</tr>
+</tbody>
+</table>
+<p>尤其不能把 <code>Worker says tests passed</code> 当作 VerificationEvidence。即使 Worker 提供了日志，也只能视为 WorkerOutput 的一部分；权威 Verifier 应从不可变 <code>candidate_commit_sha</code> 和可信 toolchain/environment 重新运行命令，再生成自己的 evidence manifest。</p>
+<h3 id="durable-execution_1">Durable execution 应怎样接入<a class="headerlink" href="#durable-execution_1" title="Permanent link">&para;</a></h3>
+<p>Marshal 的 crash recovery 可以采用 Temporal 风格的分层：</p>
+<ul>
+<li><strong>Workflow state</strong> 只保存确定性引用和状态转换；</li>
+<li><strong>非确定性推理</strong>作为 Activity 执行并持久化结果；</li>
+<li><strong>Git、GitHub、CI、filesystem side effect</strong> 均使用显式 idempotency key；</li>
+<li><strong>Agent attempt</strong> 与逻辑 task 分离，一个 task 可以有多个 attempt；</li>
+<li><strong>恢复时重新验证 lease、commit SHA、policy version 和 credential class</strong>；</li>
+<li><strong>任何 digest 不匹配都转为 quarantined/blocked，而不是自动继续</strong>。</li>
+</ul>
+<p>例如发布 Draft PR 的 idempotency key 可以是：</p>
+<div class="highlight"><pre><span></span><code>repository_id
+task_spec_hash
+candidate_commit_sha
+publication_policy_version
+</code></pre></div>
+<p>若 crash 后重试，Publisher 应先查询是否已存在匹配 marker 的 PR，而不是直接再创建一个。Temporal 对 Activity 重试和幂等性的要求直接支持这种设计，但 digest、policy 和 authority 检查仍应由 Marshal 实现。citeturn11search0turn11search5turn11search20</p>
+<h2 id="marshal-fan-out">面向 Marshal 的 fan-out 方案与成本分级<a class="headerlink" href="#marshal-fan-out" title="Permanent link">&para;</a></h2>
+<h3 id="_10">推荐拓扑<a class="headerlink" href="#_10" title="Permanent link">&para;</a></h3>
+<p>最适合 Marshal 的不是单一 fan-out，而是三个受不同信任边界约束的 fan-out plane。</p>
+<h4 id="_11">调研与计划平面<a class="headerlink" href="#_11" title="Permanent link">&para;</a></h4>
+<p>多个只读 Agent 并行执行：</p>
+<ul>
+<li>repository map；</li>
+<li>dependency analysis；</li>
+<li>历史 issue/commit 检索；</li>
+<li>test surface 识别；</li>
+<li>security/privacy impact 扫描；</li>
+<li>implementation alternatives；</li>
+<li>TaskSpec ambiguity challenge。</li>
+</ul>
+<p>它们不得拥有 worktree 写权限，不得修改冻结 TaskSpec，只输出 <code>ResearchFinding</code>。Lead 根据 findings 形成建议；TaskSpec 的重新冻结必须由 CLI policy authority 显式执行。</p>
+<p>该形态最接近 Anthropic Research，并符合 Codex 对 read-heavy parallelism 的建议。citeturn14view0turn15view5</p>
+<h4 id="_12">补丁评审平面<a class="headerlink" href="#_12" title="Permanent link">&para;</a></h4>
+<p>Worker 完成后先冻结候选：</p>
+<div class="highlight"><pre><span></span><code>base_sha
+candidate_sha
+patch_digest
+workspace_manifest
+</code></pre></div>
+<p>然后启动 2–4 个 clean-context、read-only Reviewer，例如：</p>
+<table>
+<thead>
+<tr>
+<th>Reviewer</th>
+<th>关注范围</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Correctness Reviewer</td>
+<td>TaskSpec 一致性、边界条件、状态转换</td>
+</tr>
+<tr>
+<td>Test Reviewer</td>
+<td>测试覆盖、遗漏路径、flaky 风险</td>
+</tr>
+<tr>
+<td>Security Reviewer</td>
+<td>输入边界、secret、权限、供应链与注入</td>
+</tr>
+<tr>
+<td>Maintainability Reviewer</td>
+<td>接口、复杂度、迁移和回滚风险</td>
+</tr>
+</tbody>
+</table>
+<p>Reviewer 不应共用 Worker 的对话历史，只读取冻结 TaskSpec、不可变 diff、必要 repository context 和由 Verifier 生成的 evidence。Cognition 的实践认为 clean-context reviewer 能发现作者上下文盲区，Codex 也直接给出了按 security、test gaps、maintainability 并行 review 的示例。citeturn15view4turn15view5</p>
+<h4 id="_13">任务执行平面<a class="headerlink" href="#_13" title="Permanent link">&para;</a></h4>
+<p>只有在拆分后每个 TaskSpec 具有清晰 ownership 和低跨边依赖时，才启动多个写入 Worker。每个 Worker 必须：</p>
+<ul>
+<li>使用独立 worktree；</li>
+<li>独占自己的写集合；</li>
+<li>针对一个冻结子 TaskSpec；</li>
+<li>输出独立 commit；</li>
+<li>不能直接合并其他 Worker 的 branch；</li>
+<li>不能拥有 Publisher credential。</li>
+</ul>
+<p>跨任务集成由单一 Integrator 或确定性 merge stage 执行，并在合并后重新运行 Verification；此前各分支证据不能直接证明集成结果。该设计既遵循 Marshal 现有“每个 worktree 最多一个写入者”，也符合 Co-Coder 的依赖感知切分证据和 Cognition 的 single-threaded writes 经验。citeturn15view2turn15view4</p>
+<h3 id="_14">前置条件<a class="headerlink" href="#_14" title="Permanent link">&para;</a></h3>
+<p>引入 fan-out 前，建议完成以下基础设施：</p>
+<table>
+<thead>
+<tr>
+<th>前置条件</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TaskSpec 可哈希、不可变、版本化</td>
+<td>所有 Agent 必须围绕相同目标工作</td>
+</tr>
+<tr>
+<td>Repository dependency graph</td>
+<td>判断哪些工作可以安全并行</td>
+</tr>
+<tr>
+<td>读写 capability manifest</td>
+<td>防止 Reviewer 或 Explorer 获得写权限</td>
+</tr>
+<tr>
+<td>Artifact store 与 content-addressing</td>
+<td>避免通过 conversation 传递大产物和丢失精度</td>
+</tr>
+<tr>
+<td>Evidence schema</td>
+<td>让不同 Verifier 的结果可合并、可摘要、可绑定</td>
+</tr>
+<tr>
+<td>Attempt、lease、heartbeat 模型</td>
+<td>支持 crash recovery 和防止双写</td>
+</tr>
+<tr>
+<td>Model/tool/prompt provenance</td>
+<td>能解释不同 attempt 为何产生不同结果</td>
+</tr>
+<tr>
+<td>Fan-in policy engine</td>
+<td>防止 Lead 用自由文本绕过 gate</td>
+</tr>
+<tr>
+<td>基准任务集</td>
+<td>比较串行与 fan-out 的质量、时间和成本</td>
+</tr>
+<tr>
+<td>预算与终止条件</td>
+<td>防止 Agent 数量、tool call 和 token 失控</td>
+</tr>
+</tbody>
+</table>
+<p>Anthropic 的经验表明，若 Lead 没有明确目标、边界、output format 和 effort budget，Subagents 会重复工作或遗漏范围；其生产系统为不同复杂度设置显式 Agent 数和 tool-call 预算。citeturn14view0</p>
+<h3 id="_15">协议分级<a class="headerlink" href="#_15" title="Permanent link">&para;</a></h3>
+<p>业界已经出现“从单 Agent 开始、按任务复杂度增加 Agent 和模型强度”的实践：Anthropic 使用明确的复杂度/Agent 数规则，AutoGen 文档建议能用单 Agent 时不使用 team，Codex 允许按角色选择更低成本模型和 reasoning effort。citeturn14view0turn0search11turn15view5</p>
+<p>但截至本次调研，未发现一个跨厂商、成熟标准化的“Coding task risk tier → 固定 multi-agent protocol”规范；所谓成熟统一实践<strong>未能验证</strong>。Marshal 可以建立自己的分级：</p>
+<table>
+<thead>
+<tr>
+<th>协议级别</th>
+<th>触发条件</th>
+<th>Worker</th>
+<th>Review/Verification</th>
+<th style="text-align: right;">建议并发</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Lean</td>
+<td>小改动、低风险、局部且可确定测试</td>
+<td>单 Worker</td>
+<td>确定性 Verification；必要时单 Reviewer</td>
+<td style="text-align: right;">1</td>
+</tr>
+<tr>
+<td>Guarded</td>
+<td>中等改动、单模块、有清晰测试</td>
+<td>单 Worker</td>
+<td>独立 Verifier + 1 个 clean-context Reviewer</td>
+<td style="text-align: right;">1–2</td>
+</tr>
+<tr>
+<td>Jury</td>
+<td>安全、认证、数据、并发、迁移等高风险变更</td>
+<td>单 Worker</td>
+<td>独立 Verifier + 2–4 个异构 Reviewer</td>
+<td style="text-align: right;">2–4 read-only</td>
+</tr>
+<tr>
+<td>Parallel-read</td>
+<td>repository 大、需要广泛探索或测试 triage</td>
+<td>单 Worker</td>
+<td>多 Explorer/Test Agent，最终单 Writer</td>
+<td style="text-align: right;">2–5 read-only</td>
+</tr>
+<tr>
+<td>Partitioned</td>
+<td>可证明低耦合的多个子任务</td>
+<td>每 TaskSpec 单 Worker</td>
+<td>分支级验证 + 集成后全量重验</td>
+<td style="text-align: right;">受 dependency graph 限制</td>
+</tr>
+<tr>
+<td>Critical</td>
+<td>发布、权限、secret、基础设施或不可逆迁移</td>
+<td>单 Writer/Integrator</td>
+<td>Jury + deterministic gate + human approval</td>
+<td style="text-align: right;">有界</td>
+</tr>
+</tbody>
+</table>
+<p>是否升级协议可由五个维度评分：</p>
+<div class="highlight"><pre><span></span><code>risk
+decomposability
+cross_partition_coupling
+verification_observability
+economic_value_of_latency
+</code></pre></div>
+<p>一个实用决策原则是：</p>
+<div class="highlight"><pre><span></span><code>预期质量收益
++ 墙钟时间价值
+&gt;
+额外模型与工具成本
++ 协调成本
++ 集成失败风险
++ 人工审阅负担
+</code></pre></div>
+<p>不需要真的把所有项精确货币化，但必须在每次 fan-out 后记录：</p>
+<div class="highlight"><pre><span></span><code>single_agent_baseline_estimate
+agent_count
+wall_clock
+model_tokens
+tool_cost
+verification_cost
+merge_conflicts
+review_findings
+escaped_defects
+human_minutes
+</code></pre></div>
+<p>否则系统只能看到“Agent 同时在工作”，无法判断多 Agent 是否真正提高了经济效率。</p>
+<h3 id="_16">主要风险与缓解<a class="headerlink" href="#_16" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>风险</th>
+<th>表现</th>
+<th>缓解</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Correlated failure</td>
+<td>多 Reviewer 使用同一模型、相同 prompt，集体漏报</td>
+<td>使用不同 role、prompt、model family 和工具</td>
+</tr>
+<tr>
+<td>Evidence poisoning</td>
+<td>Worker 提交伪造日志或诱导 Reviewer</td>
+<td>Verifier 从冻结 checkout 重新生成证据</td>
+</tr>
+<tr>
+<td>Lead capture</td>
+<td>Lead 删掉或弱化不利 finding</td>
+<td>Findings append-only；处置逐项记录；保留 dissent</td>
+</tr>
+<tr>
+<td>Context dilution</td>
+<td>Lead 被大量低质量 summary 淹没</td>
+<td>结构化 schema、scope partition、artifact references</td>
+</tr>
+<tr>
+<td>Integration invalidation</td>
+<td>各 branch 各自通过，但合并失败</td>
+<td>集成后重新生成完整 evidence bundle</td>
+</tr>
+<tr>
+<td>Token runaway</td>
+<td>Lead 过度创建 Subagent 或无限追问</td>
+<td>并发上限、token/tool budget、deadline 和 stopping rule</td>
+</tr>
+<tr>
+<td>Credential inheritance</td>
+<td>Child 继承 Parent 的写入/发布权限</td>
+<td>Capability 默认 deny；每角色显式最小权限</td>
+</tr>
+<tr>
+<td>Retry double effect</td>
+<td>crash 后重复发 PR、评论、标签或部署</td>
+<td>幂等 key、查询后写入、outbox/transaction pattern</td>
+</tr>
+<tr>
+<td>Jury complacency</td>
+<td>多数一致被误认为事实</td>
+<td>以可复现证据裁决，不以人数替代证明</td>
+</tr>
+<tr>
+<td>Human attention saturation</td>
+<td>PR 数量增长快于审阅能力</td>
+<td>Work-in-progress limit、风险优先级和 review queue</td>
+</tr>
+</tbody>
+</table>
+<h2 id="marshal_1">外部方案与 Marshal 模型对照<a class="headerlink" href="#marshal_1" title="Permanent link">&para;</a></h2>
+<p>表中“部分”表示框架提供实现原语，但未强制满足 Marshal 的信任不变量；“未能验证”表示公开资料中没有确认该能力，而不是断言厂商内部绝对不存在。</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>编排单位</th>
+<th>状态持久化</th>
+<th>证据机制</th>
+<th>信任边界</th>
+<th>失败处理</th>
+<th>成本模型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>LangGraph</strong></td>
+<td>Node、edge、subgraph、shared state</td>
+<td>Checkpoint per super-step；thread persistence；resume/time travel</td>
+<td>State、trace、checkpoint；可保存 evidence reference，但不强制真实性</td>
+<td>Role/credential independence 需应用实现；禁止 Worker 自证未内建</td>
+<td>Checkpoint recovery；interrupt；副作用要求开发者幂等</td>
+<td>Agent/node/tool call 驱动；框架不自动做风险分级 citeturn1search1turn13view6turn1search4</td>
+</tr>
+<tr>
+<td><strong>CrewAI</strong></td>
+<td>Flow、Crew、Task、Agent</td>
+<td>Flow state；<code>@persist</code>；HITL resume</td>
+<td>Structured output、guardrail、task result</td>
+<td>Guardrail 不等于独立 Verifier；credential split 需外部实现</td>
+<td>Persist/restart；具体副作用幂等由应用负责</td>
+<td>支持按 Flow/Crew 选择重量，但无统一风险协议 citeturn13view4turn10search3</td>
+</tr>
+<tr>
+<td><strong>AutoGen / AG2</strong></td>
+<td>Message、GroupChat、Swarm、nested chat</td>
+<td>对话历史、component serialization、resume</td>
+<td>Message log、summary、tool result</td>
+<td>Agent role 是逻辑角色，非强制 authority boundary</td>
+<td>可 resume；durable side-effect 语义相对弱</td>
+<td>Agent 轮次和对话长度易膨胀；官方建议能单 Agent 则单 Agent citeturn0search11turn10search25</td>
+</tr>
+<tr>
+<td><strong>Microsoft Agent Framework + Durable</strong></td>
+<td>Agent、workflow、concurrent/handoff/group chat</td>
+<td>Durable Task checkpoint、session persistence、跨 host 恢复</td>
+<td>Workflow history、checkpoint</td>
+<td>独立验证与 evidence digest binding 仍需应用 policy</td>
+<td>强 durable execution、暂停、replay 和恢复</td>
+<td>可配置并发和 workflow；无公开统一 risk tier citeturn5search5turn14view7</td>
+</tr>
+<tr>
+<td><strong>OpenAI Agents SDK</strong></td>
+<td>Agent、tool、handoff、Run</td>
+<td>Session、RunState serialization</td>
+<td>Tracing、guardrail、tool result</td>
+<td>中间 handoff 默认不全受首尾 guardrail；credential split 非默认</td>
+<td>Pause/resume；与 Temporal 集成后可增强 durability</td>
+<td>Code orchestration 更可预测；LLM orchestration 更灵活但成本不确定 citeturn12search23turn12search0turn12search1</td>
+</tr>
+<tr>
+<td><strong>OpenAI Responses Multi-agent</strong></td>
+<td>Root、subagent、hosted action</td>
+<td>Hosted run/session state</td>
+<td>Agent messages、tool results、trace</td>
+<td>Request tree 默认共享配置工具，不等价于隔离 Worker/Publisher credential</td>
+<td>支持 wait、interrupt 等；业务幂等仍需实现</td>
+<td>默认并发 3；适合独立 bounded work citeturn6view2</td>
+</tr>
+<tr>
+<td><strong>Anthropic Research</strong></td>
+<td>LeadResearcher、Subagent、CitationAgent</td>
+<td>Memory、checkpoint、外部 artifacts</td>
+<td>CitationAgent 做主张—来源映射；artifact reference</td>
+<td>Citation authority 不等于代码 Verification authority</td>
+<td>Retry、regular checkpoint、resume；同步 fan-in 有 straggler 问题</td>
+<td>明确按复杂度配置 Agent 数；multi-agent 约 15× Chat token citeturn14view0</td>
+</tr>
+<tr>
+<td><strong>Claude Code Subagents / Teams</strong></td>
+<td>Subagent session、team member、shared task list</td>
+<td>Session/context；团队任务状态</td>
+<td>Summary、message、代码和测试产物</td>
+<td>可限制 tools/permissions，但完整 authority separation 未能验证</td>
+<td>独立 session 可隔离故障；精确幂等语义未公开</td>
+<td>可按角色选模型；官方提示团队 token 成本较高 citeturn13view0turn13view1</td>
+</tr>
+<tr>
+<td><strong>OpenAI Codex</strong></td>
+<td>Task、thread、subagent、worktree</td>
+<td>Hosted task/session、workspace</td>
+<td>Diff、test output、thread trace</td>
+<td>Worktree/sandbox 隔离较强；child 权限可能继承 parent，需显式限制</td>
+<td>任务隔离、retry；外部发布幂等需 orchestrator 实现</td>
+<td>建议 read-heavy fan-out；可按 Agent 选择低成本模型/effort citeturn3search3turn15view5</td>
+</tr>
+<tr>
+<td><strong>Symphony</strong></td>
+<td>Issue、Agent、workspace、PR</td>
+<td>Issue tracker 作为 control plane；运行状态和 retry</td>
+<td>PR、workspace result、task state</td>
+<td>人工 review 是主要外部边界；证据门禁未内建</td>
+<td>Retry/backoff、任务重派和并发控制</td>
+<td>Issue-level throughput；报告部分团队 PR +500%，缺少 per-task cost 数据 citeturn15view7turn15view8</td>
+</tr>
+<tr>
+<td><strong>Devin / Managed Devins</strong></td>
+<td>Coordinator、child session、独立 VM</td>
+<td>Managed session state</td>
+<td>Child output、branch、PR、Coordinator summary</td>
+<td>VM 隔离强于纯对话 Agent；Reviewer/Publisher authority 分离未能验证</td>
+<td>Managed restart/monitoring；业务幂等细节未公开</td>
+<td>ACU budget、child session limits；并行写入仍受协调限制 citeturn13view3turn4search10turn15view4</td>
+</tr>
+<tr>
+<td><strong>Google ADK</strong></td>
+<td>Graph node、ParallelAgent、session</td>
+<td>Session state、graph workflow state</td>
+<td><code>output_key</code>、shared state、tool artifact</td>
+<td>Shared state 不建立独立 evidence authority</td>
+<td>Workflow-level error handling；durability 取决于部署和后端</td>
+<td>可确定性并行；统一风险分级未能验证 citeturn10search13turn10search9</td>
+</tr>
+<tr>
+<td><strong>Temporal</strong></td>
+<td>Workflow、Activity、Signal、Event</td>
+<td>Durable Event History、deterministic replay</td>
+<td>Event History 是执行记录，不自动成为业务证据</td>
+<td>Worker/Reviewer/Publisher credential 可由 Activity worker 隔离，但需应用配置</td>
+<td>本组最强；retry、resume、timer；Activity 应幂等</td>
+<td>按 workflow/activity/resource 付出基础设施成本；不决定 Agent 数 citeturn11search1turn11search0turn5search1</td>
+</tr>
+<tr>
+<td><strong>Marshal Harness 目标模型</strong></td>
+<td>Frozen TaskSpec、单写入 Worker、独立 Verification、ReviewDecision、Publisher、Outcome</td>
+<td>CLI/state machine 为唯一权威；每阶段持久化；crash 后幂等恢复</td>
+<td>EvidenceBundle 与 ReviewDecision 绑定精确 digest；集成后重新验证</td>
+<td>Worker 不得自证；每 worktree 单写入者；Worker、Verifier、Reviewer、Publisher 分权</td>
+<td>默认 fail-closed；lease、attempt、idempotency key、远端 CI observation</td>
+<td>按任务风险和可分解性升级：串行 → read fan-out → jury → 独立 TaskSpec 并行</td>
+</tr>
+</tbody>
+</table>
+<p>综合比较，Marshal 当前不是在重复发明另一个 Agent conversation framework，而是在填补主流框架尚未系统覆盖的层次：<strong>把 Agent orchestration 转化为可审计、可恢复、证据约束且权限分离的 software delivery protocol</strong>。</p>
+<p>最稳妥的演进路线是保留现有串行闭环作为可信基线，在其外围增加只读 fan-out；随后增加 patch 冻结后的独立 Reviewer jury；最后才对经过依赖分析、拥有明确 ownership 的 TaskSpec 做任务级并行。不要让 Lead 的语言综合成为新的隐式权威，也不要为了获得“多 Agent”标签而放松单写入者、独立验证、证据绑定和 credential separation。现有实证与生产经验均表明，Marshal 最可能获得净收益的路径不是“更多 Agent 一起写”，而是<strong>更多独立视角发现信息，由更少、更受约束的主体执行写入和授权</strong>。</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.suggest", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,2732 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="证据门禁式 Coding Agent 编排器 / Evidence-gated orchestration for coding agents">
+      
+      
+      
+        <link rel="canonical" href="https://chiga0.github.io/marshal-harness/reviews/milestone-4-opencode-review/">
+      
+      
+      
+      
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/" hreflang="zh">
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/en/" hreflang="en">
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Milestone 4 OpenCode 独立审查 - Marshal Harness</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#milestone-4-opencode" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="../.." title="Marshal Harness" class="md-header__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Marshal Harness
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Milestone 4 OpenCode 独立审查
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换暗色"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换亮色"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/en/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Marshal Harness" class="md-nav__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Marshal Harness
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    概览
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    概览
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    项目首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../vision-and-scope/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    愿景与范围
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../roadmap-status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    路线图状态
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../compatibility-matrix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    兼容性矩阵
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../audit-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    审计报告
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    快速开始
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开发指南
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../environment-baseline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    环境基线
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator-runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    操作手册
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../marshal-skill/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    主 Agent 技能
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    核心设计
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    核心设计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../task-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    任务生命周期
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../security-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安全模型
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../task-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    任务契约
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../verification-and-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    验证与审查
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../artifact-and-publishing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    产物与发布
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../failure-and-recovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    失败与恢复
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../lead-agent-surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    主 Agent 接入界面
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worker Adapter
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Worker Adapter
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../worker-adapters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapter 设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../worker-adapter-spike/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    选型 Spike
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    实施与验收
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    实施与验收
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../implementation-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    实施计划
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-0-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 0
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-1-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 1
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-2-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-3-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-4-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 4
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-5-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 5
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-6-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 6
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构决策记录
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    架构决策记录
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR 索引
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0001-cli-first-modular-monolith/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 CLI-first 模块化单体
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0002-worktree-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0002 Worktree 隔离
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0003-separate-worker-and-publisher/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0003 Worker 与 Publisher 分权
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0004-independent-verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0004 独立验证
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0005-go-runtime/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0005 Go Runtime
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0006-attempt-control-root/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0006 Attempt 控制根
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0007-intent-first-publication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0007 意图先行发布
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0008-pluggable-observer-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0008 可插拔 Observer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0009-terminal-session-execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0009 Terminal Session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0010-controlled-autonomy-and-intervention/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0010 受控自治
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0011-sealed-native-tui-transport/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0011 密封 TUI 传输
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0012-explicit-abort/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0012 显式 abort
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0013-graded-permission-denials/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0013 拒绝分级
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0014-read-only-execution-profile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0014 Read-only 画像
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    研究与审计
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    研究与审计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../research/fanout-consolidation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Fan-out 汇总决策
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../research/abtest-marshal-vs-single-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    A/B 实验设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../research/herdr-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    herdr 对照调研
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../research/oss-audit-onboarding/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开源审计·上手
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../research/oss-audit-community/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开源审计·社区
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../research/oss-audit-docs2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开源审计·文档
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    English
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    English
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/task-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Task Lifecycle
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/security-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/adr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR Index
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#verdict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verdict
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#p0-findings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P0 Findings
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#p1-findings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P1 Findings
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="P1 Findings">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#p1-1-workerstarted-adapter-run-running" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P1-1 worker.started 之后的非 Adapter 失败不落盘失败事件，Run 永久滞留 RUNNING
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#p2-findings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P2 Findings
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="P2 Findings">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#p2-1-bash-deny-resolved-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P2-1 bash deny 表可被间接调用平凡绕过，resolved config 校验不完整
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p2-2-permissiondenied-transcript" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P2-2 permissionDenied 依赖对非受信 transcript 文本的子串启发式
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p2-3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P2-3 输出预算截断按「完整行」生效，无换行大行绕过预算
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p2-4-exitsignalstderr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P2-4 关键运行证据缺失：exit/signal、stderr 与截断标志未持久化
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p2-5-service_testgo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P2-5 service_test.go 未覆盖关键守卫分支
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p2-6-attempt-worktree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P2-6 重试可能继承上一次失败 attempt 的脏 worktree（待核实）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#p3-findings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P3 Findings
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="P3 Findings">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#p3-1-attempt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P3-1 版本探测不受 attempt 预算约束且输出无上界
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p3-2-token" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P3-2 token 统计为「最后事件覆盖」语义
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p3-3-stderr-payload" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P3-3 大体积非受信 stderr 进入错误串与事件 payload
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p3-4-servicego-atomicwrite-fsync-attempt" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P3-4 service.go 的 atomicWrite 缺少目录 fsync，崩溃可留孤儿 attempt 目录
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p3-5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P3-5 细节问题
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        残余风险
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        复验要求
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        整改与复审
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="milestone-4-opencode">Milestone 4 OpenCode 独立审查<a class="headerlink" href="#milestone-4-opencode" title="Permanent link">&para;</a></h1>
+<ul>
+<li>日期：2026-08-04</li>
+<li>Reviewer：opencode CLI（模型 <code>qwen3.8-max</code>）</li>
+<li>模式：只读静态审查；未运行任何命令或测试，未修改任何代码</li>
+<li>审计对象：<code>internal/adapter/opencode/opencode.go</code>、<code>internal/execution/service.go</code>、<code>internal/execution/service_test.go</code> 三个文件</li>
+<li>口径说明：结论只基于上述三个文件的代码；<code>docs/milestone-4-scope.md</code> 与 <code>docs/reviews/</code> 既有报告仅用于对齐验收口径与文档格式。受只读范围限制，涉及 <code>gitworktree</code>、<code>runstore</code>、<code>lifecycle</code>、<code>verification</code>、<code>contract</code> 各包内部行为的判断均标注「待核实」。</li>
+</ul>
+<h2 id="verdict">Verdict<a class="headerlink" href="#verdict" title="Permanent link">&para;</a></h2>
+<p><strong><code>BLOCKED</code></strong>（首轮结论）</p>
+<p>存在 1 项 P1：<code>worker.started</code> 事件落盘之后的非 Adapter 失败路径不记录任何失败事件，Run 会永久滞留在 <code>RUNNING</code>。该问题与「失败或阻塞任务必须保存证据」的不变量冲突，且可由瞬时 IO 错误或 Worker 侧输入稳定触发，必须修复并复验后才能宣告 M4 通过。另有 6 项 P2、5 项 P3 与若干残余风险，见下文。</p>
+<p>主链路总体是正确的：Worker 声明只是 declaration，身份、executable、version、session、时间字段由 Adapter 覆盖并经双重 Schema 验证（<code>opencode.go:288-314</code>、<code>service.go:186-205</code>）；验证证据来自独立的 <code>verification.ObserveContext</code>（<code>service.go:209-211</code>）；进程组隔离、环境 allowlist、控制面文件先于 <code>RUNNING</code> 落盘等设计均符合冻结范围。</p>
+<h2 id="p0-findings">P0 Findings<a class="headerlink" href="#p0-findings" title="Permanent link">&para;</a></h2>
+<p>无。未发现 Worker 可直接伪造验证证据、越过身份绑定、或在 M4 范围内触发 commit/push/发布副作用的路径。</p>
+<h2 id="p1-findings">P1 Findings<a class="headerlink" href="#p1-findings" title="Permanent link">&para;</a></h2>
+<h3 id="p1-1-workerstarted-adapter-run-running">P1-1 <code>worker.started</code> 之后的非 Adapter 失败不落盘失败事件，Run 永久滞留 <code>RUNNING</code><a class="headerlink" href="#p1-1-workerstarted-adapter-run-running" title="Permanent link">&para;</a></h3>
+<ul>
+<li>位置：<code>service.go:206</code>、<code>service.go:209-211</code>、<code>service.go:217-230</code>；<code>recordFailure</code> 自身失败 path <code>service.go:296-305</code>；触发点之一 <code>opencode.go:280</code></li>
+<li>现状：<code>worker.started</code> 落盘（<code>service.go:172-177</code>）后，Adapter 运行错误与协议错误都会走 <code>recordFailure</code>（<code>service.go:180</code>、<code>service.go:187-192</code>、<code>service.go:200-204</code>），但协议成功之后的所有错误——写 <code>worker-result.json</code>（<code>service.go:206</code>）、<code>verification.ObserveContext</code>（<code>service.go:209</code>）、写 <code>worktree-snapshot.json</code>（<code>service.go:217</code>）、<code>worker.completed</code> 的 transition/Append/WriteSnapshot（<code>service.go:221-230</code>）——均直接 <code>return Result{}, err</code>，不写 <code>worker.failed</code>、不进入任何终态。</li>
+<li>后果：RunState 停在 <code>RUNNING</code>，下次执行被 <code>service.go:50-52</code> 的起始状态检查拒绝；M4 明确不含 reconciliation，Run 永久卡死，且没有保存任何失败证据。</li>
+<li>次级触发（Worker 可主动构造）：<code>recordFailure</code> 将 <code>cause.Error()</code> 原样放入 RunEvent payload（<code>service.go:296</code>），而 <code>opencode.go:280</code> 将子进程 stderr（上界 64 KB）原样拼进错误串。子进程以非零退出码加非法 UTF-8 stderr 失败时，事件 JSON 序列化失败 → <code>recordFailure</code> 失败 → 同样滞留 <code>RUNNING</code>。</li>
+<li>整改建议：协议成功后的任何失败都必须写终态失败事件并进入 <code>BLOCKED</code>（worktree 已被改动，重试不安全，不应再进 <code>RETRY_PENDING</code>）；对进入事件/错误文本的非受信字节做 UTF-8 净化与长度约束。</li>
+</ul>
+<h2 id="p2-findings">P2 Findings<a class="headerlink" href="#p2-findings" title="Permanent link">&para;</a></h2>
+<h3 id="p2-1-bash-deny-resolved-config">P2-1 bash deny 表可被间接调用平凡绕过，resolved config 校验不完整<a class="headerlink" href="#p2-1-bash-deny-resolved-config" title="Permanent link">&para;</a></h3>
+<ul>
+<li>位置：<code>opencode.go:478-488</code>（deny 表生成）、<code>opencode.go:522-546</code>（resolved 校验）</li>
+<li>现状：bash 规则为 <code>"*": "allow"</code> 加固定黑名单。黑名单按命令串前缀匹配，<code>sh -c 'git push ...'</code>、<code>env curl ...</code>、<code>xargs curl</code>、绝对路径 <code>/usr/bin/curl</code> 等间接形式均不命中。<code>validatePermissionMap</code> 只断言 10 个固定 pattern 仍是 <code>"deny"</code>，未断言顶层通配 <code>"*"</code> 仍为 <code>"deny"</code>，也未校验 <code>autoupdate</code>、<code>share</code> 在合并后的取值。</li>
+<li>影响：该机制满足「显式发布命令被 deny」的字面要求，但不能阻止有意规避；文档与测试结论不得将其表述为发布控制边界或沙箱（与「普通宿主机子进程不是沙箱」的不变量一致）。</li>
+<li>整改建议：至少补充 <code>sh *</code>、<code>bash *</code>、<code>env *</code>、<code>sudo *</code>、<code>xargs *</code>、<code>nohup *</code> 的 deny 并纳入 resolved 校验；显式断言顶层 <code>"*": "deny"</code>；在 <code>notes</code> 中明确该表是启发式护栏。</li>
+</ul>
+<h3 id="p2-2-permissiondenied-transcript">P2-2 <code>permissionDenied</code> 依赖对非受信 transcript 文本的子串启发式<a class="headerlink" href="#p2-2-permissiondenied-transcript" title="Permanent link">&para;</a></h3>
+<ul>
+<li>位置：<code>opencode.go:421-424</code>（判定）、<code>opencode.go:282-284</code>（据此返回 <code>ErrPermissionDenied</code>）</li>
+<li>现象：对整行小写文本做 <code>permission</code> + <code>denied/deny</code> 子串匹配。Worker 会话内容（含 TaskSpec prompt 回声、代码讨论）中出现该字样即触发误报，使一次退出码为 0 的成功 attempt 失败；反过来结构化事件中的拒绝也可能漏报。</li>
+<li>整改建议：改用已解析事件的结构化字段（<code>part.state.status</code> / <code>part.state.error</code>，解析结构已在 <code>opencode.go:400-403</code> 中声明但未使用）判定。</li>
+</ul>
+<h3 id="p2-3">P2-3 输出预算截断按「完整行」生效，无换行大行绕过预算<a class="headerlink" href="#p2-3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>位置：<code>opencode.go:381-386</code>（<code>bufio.ReadBytes('\n')</code> 先缓冲整行再核对 <code>consumed &gt; limit</code>）、<code>opencode.go:239</code></li>
+<li>现象：子进程输出一条无换行的超大行时，内存随行长无界增长，且进程组 kill（<code>opencode.go:236</code>、<code>opencode.go:384-386</code>）延迟到该行结束才触发，「输出超过预算立即取消」的实际时机被推迟。</li>
+<li>整改建议：按块读取并在块边界上判断预算，或对单行长度单独设上限。</li>
+</ul>
+<h3 id="p2-4-exitsignalstderr">P2-4 关键运行证据缺失：exit/signal、stderr 与截断标志未持久化<a class="headerlink" href="#p2-4-exitsignalstderr" title="Permanent link">&para;</a></h3>
+<ul>
+<li>位置：<code>opencode.go:258-263</code>（meta 只含 session/event/tool/token/bytes/truncated/permissionDenied）、<code>opencode.go:240</code>（<code>captureStream</code> 的截断标志被 <code>_</code> 丢弃）、<code>opencode.go:270-272</code>（超时路径在检查 <code>waitErr</code> 前返回，stderr 彻底丢失）</li>
+<li>现象：冻结范围要求保存 exit/signal、usage 与首尾截断信息；当前 transcript-meta 不含退出码/信号，stderr 既不落盘也不记录截断状态，超时 attempt 无法事后区分 kill 原因。</li>
+<li>整改建议：将 exit code/signal、stderr（有界）与两路流的截断标志写入 meta 或独立证据文件。</li>
+</ul>
+<h3 id="p2-5-service_testgo">P2-5 <code>service_test.go</code> 未覆盖关键守卫分支<a class="headerlink" href="#p2-5-service_testgo" title="Permanent link">&para;</a></h3>
+<ul>
+<li>位置：<code>service_test.go:51-80</code> 仅有成功与重试两个用例；未覆盖 <code>service.go:50-52</code>（非法起始状态拒绝）、<code>service.go:114-116</code>（预算耗尽 → <code>BLOCKED</code>）、<code>service.go:186-205</code>（协议无效/身份不匹配的 WorkerResult 拒绝）</li>
+<li>现象：这些分支正是「声明不作为证据」的门禁，但没有回归测试保护；<code>worker.started</code>/<code>worker.completed</code> 事件序列本身也未被断言。</li>
+<li>整改建议：补表驱动测试覆盖上述分支，并断言 RunEvent 序列与终态。</li>
+</ul>
+<h3 id="p2-6-attempt-worktree">P2-6 重试可能继承上一次失败 attempt 的脏 worktree（待核实）<a class="headerlink" href="#p2-6-attempt-worktree" title="Permanent link">&para;</a></h3>
+<ul>
+<li>位置：<code>service.go:114-125</code>（预算检查与 <code>gitworktree.Acquire</code> 之间无任何 worktree 清理/重置）</li>
+<li>现象：attempt 1 已写入文件但 Adapter 失败进入 <code>RETRY_PENDING</code> 后，attempt 2 在同一 worktree 上开始；若 <code>gitworktree.Acquire</code> 不校验或重置相对 <code>BaseSHA</code> 的工作区洁净度，重试将叠加在残留改动之上，最终 snapshot 混合多个 attempt 的产物。受只读范围限制无法核实 <code>gitworktree</code> 行为。</li>
+<li>整改建议：在 service 层显式要求干净基线，或提供 <code>Acquire</code> 语义的测试证据。</li>
+</ul>
+<h2 id="p3-findings">P3 Findings<a class="headerlink" href="#p3-findings" title="Permanent link">&para;</a></h2>
+<h3 id="p3-1-attempt">P3-1 版本探测不受 attempt 预算约束且输出无上界<a class="headerlink" href="#p3-1-attempt" title="Permanent link">&para;</a></h3>
+<ul>
+<li>位置：<code>opencode.go:118-121</code>（<code>inspect</code> 使用外层 ctx 与 <code>command.Output()</code>）</li>
+<li>现象：<code>Run</code> 的 attempt 超时在 <code>opencode.go:214</code> 才派生，<code>--version</code> 探测不受其约束；<code>Output()</code> 对输出不做限长。另每次 <code>Run</code> 对整个二进制重算 SHA-256（<code>opencode.go:114</code>）增加开销。</li>
+</ul>
+<h3 id="p3-2-token">P3-2 token 统计为「最后事件覆盖」语义<a class="headerlink" href="#p3-2-token" title="Permanent link">&para;</a></h3>
+<ul>
+<li>位置：<code>opencode.go:417-420</code></li>
+<li>现象：多 part 事件流下 usage 会被低估。若 usage 仅用于观测可接受，需在 meta 中注明语义。</li>
+</ul>
+<h3 id="p3-3-stderr-payload">P3-3 大体积非受信 stderr 进入错误串与事件 payload<a class="headerlink" href="#p3-3-stderr-payload" title="Permanent link">&para;</a></h3>
+<ul>
+<li>位置：<code>opencode.go:280</code>、<code>service.go:296</code></li>
+<li>现象：最多 64 KB 的子进程 stderr 会进入 RunEvent，事件膨胀；编码问题已在 P1-1 中升级处理，此处指体积与净化本身。</li>
+</ul>
+<h3 id="p3-4-servicego-atomicwrite-fsync-attempt">P3-4 <code>service.go</code> 的 <code>atomicWrite</code> 缺少目录 fsync，崩溃可留孤儿 attempt 目录<a class="headerlink" href="#p3-4-servicego-atomicwrite-fsync-attempt" title="Permanent link">&para;</a></h3>
+<ul>
+<li>位置：<code>service.go:163-177</code>、<code>service.go:324-347</code>（对照 <code>opencode.go:646-680</code> 的 fsync 实现）</li>
+<li>现象：worker-request 落盘与 <code>RUNNING</code> 事件之间崩溃会留下无状态引用的孤儿目录；目录项持久性弱于 adapter 侧实现。孤儿目录本身无害，但应有 recovery 口径。</li>
+</ul>
+<h3 id="p3-5">P3-5 细节问题<a class="headerlink" href="#p3-5" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>opencode.go:596</code>：错误信息 <code>"path escapes worktree"</code> 实际检查的是 control root，边界表述错误。</li>
+<li><code>service.go:194-197</code>：<code>resultIdentity</code> 匿名 struct 无 JSON tag，依赖大小写不敏感匹配，建议显式 tag 防止字段改名后静默失效。</li>
+<li><code>opencode.go:377</code>：<code>min(int(limit), 64&lt;&lt;10)</code> 在 32 位平台上 <code>int64→int</code> 溢出可得负容量 panic。</li>
+</ul>
+<h2 id="_1">残余风险<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>同 UID 边界</strong>：Worker 与 Marshal 同用户运行，<code>0400</code>/<code>0700</code> 文件模式与控制面目录隔离不构成安全边界；Worker 可读 HOME 下的 Provider 凭据（如 <code>~/.config/gh</code>）并将内容写入 worktree diff。M5 引入发布路径之前必须有凭据隔离措施（独立用户/容器/限制凭据作用域），否则形成外带通道。</li>
+<li><strong>Blocklist 不是沙箱</strong>：与不变量一致，宿主进程的 bash 黑名单无法穷尽网络与发布行为，文档与测试表述必须保持「启发式护栏」定位。</li>
+<li><strong>TOCTOU</strong>：executable digest 与执行之间、控制面文件校验与读取之间的替换窗口是本架构固有，依赖宿主文件系统信任。</li>
+<li><strong>崩溃恢复缺口</strong>：M4 范围内无 reconciliation/cleanup；<code>RUNNING</code> 快照滞留、脏 worktree、孤儿 attempt 目录都要求 M5 给出显式恢复设计（P1-1 只解决非崩溃错误路径）。</li>
+<li><strong>worktree 内 Git 局部配置</strong>：Worker 可向 worktree 写入 <code>.git/config</code>、hooks 等，可能在后续 Publisher 阶段执行的 git 命令中被触发，M5+ 发布前必须处理。</li>
+<li><strong>取消时延</strong>：子孙进程持有 stdout pipe 时 <code>command.Wait()</code>（<code>opencode.go:251</code>）阻塞至 attempt 超时，取消有界但非即时。</li>
+<li><strong>版本精确匹配脆弱性</strong>：<code>--version</code> 输出格式或版本漂移会导致 fail-closed 的 <code>unsupported</code>，属运维风险而非安全风险。</li>
+</ol>
+<h2 id="_2">复验要求<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<ul>
+<li>P1-1 必须修复并补充「协议成功后观测/持久化失败进入 <code>BLOCKED</code> 且保留失败事件」的回归测试后复审。</li>
+<li>P2 各项可逐项修复或显式接受为残余风险并写入文档；其中 P2-1、P2-5 建议在本轮内完成。</li>
+<li>复审需重新阅读三个目标文件的最新版本，并核对新增测试是否覆盖本报告列出的分支。</li>
+</ul>
+<h2 id="_3">整改与复审<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<p>复审日期：2026-08-04</p>
+<p>复审结论：<strong><code>APPROVE</code></strong>。</p>
+<p>首轮 P1 已关闭：协议完成后的 WorkerResult 持久化、Worktree 身份复核、Git 观察和 Snapshot 持久化错误现在记录 <code>worker.evidence-failed</code> 并进入 <code>BLOCKED</code>；新增回归测试会破坏 linked worktree 的 <code>.git</code> 身份，验证不能向上误认嵌套主仓库。同时，<code>gitworktree.Open</code> 改为使用真实 <code>--show-toplevel</code>，补上了该测试暴露的潜在身份缺口。</p>
+<p>本轮同时关闭或降低了 P2-1 至 P2-5：</p>
+<ul>
+<li>resolved config 额外校验全局 deny、<code>share=disabled</code> 和 <code>autoupdate=false</code>，并增加常见间接 shell 入口的 deny；它仍只被描述为启发式护栏；</li>
+<li>permission denial 改为只读取结构化 <code>part.state.status/error</code>，避免普通文本误报；</li>
+<li>JSONL 改为 64 KiB 分片读取，累计字节一超限即杀进程组；无换行无限流已有时延断言；</li>
+<li>transcript metadata 增加 exit code、signal、stderr 字节/截断和 context error，并保存有界 stderr；</li>
+<li>新增后置证据失败、Worktree 身份破坏、全局 permission wildcard、permission 文本误报和无换行超限测试；完整 Race 与真实 OpenCode E2E 均通过。</li>
+</ul>
+<p>P2-6 被接受为明确语义：Operational Retry 在同一任务 Worktree 上继续已有部分变更，Attempt 证据按轮分离；它不是自动回滚。Worker 完成但证据无法可靠保存时不会重试，而是 <code>BLOCKED</code>。</p>
+<p>复审 Agent 基于上述已验证事实给出 <code>Verdict: APPROVE</code>，并保留三个非阻塞风险：M4 尚无崩溃后 <code>RUNNING</code> 心跳恢复；<code>BLOCKED</code> 需要主 Agent/维护者处理；Local Permission 依赖 Provider 正确报告且不构成宿主机沙箱。这些均进入 M6 Recovery/Hardened 范围，不阻止 M4。</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.suggest", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

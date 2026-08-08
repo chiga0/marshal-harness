@@ -1,0 +1,2924 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="证据门禁式 Coding Agent 编排器 / Evidence-gated orchestration for coding agents">
+      
+      
+      
+        <link rel="canonical" href="https://chiga0.github.io/marshal-harness/research/oss-audit-onboarding/">
+      
+      
+        <link rel="prev" href="../herdr-comparison/">
+      
+      
+        <link rel="next" href="../oss-audit-community/">
+      
+      
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/" hreflang="zh">
+        
+          <link rel="alternate" href="https://chiga0.github.io/marshal-harness/en/" hreflang="en">
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>开源审计·上手 - Marshal Harness</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#clone-pr" class="md-skip">
+          跳转至
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="../.." title="Marshal Harness" class="md-header__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Marshal Harness
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              开源审计·上手
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换暗色"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换暗色" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换亮色"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换亮色" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+      <div class="md-header__option">
+  <div class="md-select">
+    
+    <button class="md-header__button md-icon" aria-label="选择当前语言">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m12.87 15.07-2.54-2.51.03-.03A17.5 17.5 0 0 0 14.07 6H17V4h-7V2H8v2H1v2h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2zm-2.62 7 1.62-4.33L19.12 17z"/></svg>
+    </button>
+    <div class="md-select__inner">
+      <ul class="md-select__list">
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/" hreflang="zh" class="md-select__link">
+              中文
+            </a>
+          </li>
+        
+          <li class="md-select__item">
+            <a href="https://chiga0.github.io/marshal-harness/en/" hreflang="en" class="md-select__link">
+              English
+            </a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+</div>
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="搜索" placeholder="搜索" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="查找">
+        
+        <button type="reset" class="md-search__icon md-icon" title="清空当前内容" aria-label="清空当前内容" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            正在初始化搜索引擎
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Marshal Harness" class="md-nav__button md-logo" aria-label="Marshal Harness" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Marshal Harness
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/chiga0/marshal-harness" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    概览
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    概览
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    项目首页
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../vision-and-scope/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    愿景与范围
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../roadmap-status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    路线图状态
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../compatibility-matrix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    兼容性矩阵
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../audit-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    审计报告
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    快速开始
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开发指南
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../environment-baseline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    环境基线
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator-runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    操作手册
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../marshal-skill/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    主 Agent 技能
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    核心设计
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    核心设计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../task-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    任务生命周期
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../security-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    安全模型
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../task-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    任务契约
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../verification-and-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    验证与审查
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../artifact-and-publishing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    产物与发布
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../failure-and-recovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    失败与恢复
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../lead-agent-surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    主 Agent 接入界面
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worker Adapter
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Worker Adapter
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../worker-adapters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapter 设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../worker-adapter-spike/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    选型 Spike
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    实施与验收
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    实施与验收
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../implementation-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    实施计划
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-0-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 0
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-1-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 1
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-2-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-3-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 3
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-4-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 4
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-5-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 5
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../milestone-6-report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Milestone 6
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    架构决策记录
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    架构决策记录
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR 索引
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0001-cli-first-modular-monolith/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0001 CLI-first 模块化单体
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0002-worktree-isolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0002 Worktree 隔离
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0003-separate-worker-and-publisher/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0003 Worker 与 Publisher 分权
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0004-independent-verification/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0004 独立验证
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0005-go-runtime/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0005 Go Runtime
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0006-attempt-control-root/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0006 Attempt 控制根
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0007-intent-first-publication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0007 意图先行发布
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0008-pluggable-observer-backends/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0008 可插拔 Observer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0009-terminal-session-execution/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0009 Terminal Session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0010-controlled-autonomy-and-intervention/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0010 受控自治
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0011-sealed-native-tui-transport/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0011 密封 TUI 传输
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0012-explicit-abort/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0012 显式 abort
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0013-graded-permission-denials/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0013 拒绝分级
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../adr/0014-read-only-execution-profile/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    0014 Read-only 画像
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    研究与审计
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    研究与审计
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fanout-consolidation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Fan-out 汇总决策
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../abtest-marshal-vs-single-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    A/B 实验设计
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../herdr-comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    herdr 对照调研
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开源审计·上手
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开源审计·上手
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        摘要
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        发现
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="发现">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        走查模拟：当前首次贡献者的真实路径
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P0（阻断外部贡献）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P1（显著拖慢上手）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P2（中等摩擦与隐性知识）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P3（体验打磨）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#marshal_" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        隐性知识清单：全部 MARSHAL_* 环境变量盘点
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        正面发现（保持）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        修复建议清单
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        未核实项
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../oss-audit-community/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开源审计·社区
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../oss-audit-docs2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开源审计·文档
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    English
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    English
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/task-lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Task Lifecycle
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/security-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../en/adr/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    ADR Index
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        摘要
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        发现
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="发现">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        走查模拟：当前首次贡献者的真实路径
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P0（阻断外部贡献）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P1（显著拖慢上手）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P2（中等摩擦与隐性知识）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#p3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        P3（体验打磨）
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#marshal_" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        隐性知识清单：全部 MARSHAL_* 环境变量盘点
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        正面发现（保持）
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        修复建议清单
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        未核实项
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="clone-pr">开源反向审计：首次贡献者上手体验（从 clone 到第一个 PR）<a class="headerlink" href="#clone-pr" title="Permanent link">&para;</a></h1>
+<ul>
+<li>审计日期：2026-08-07</li>
+<li>审计视角：首次贡献者（无内部知识、无维护者会话历史）</li>
+<li>审计方式：只读分析本仓库全部文档、Schema 与代码；离线真实执行了 <code>go run ./cmd/marshal version --json</code>、裸命令 usage 输出与 <code>marshal doctor --json</code>（均 <code>GOPROXY=off</code>，模块缓存命中，退出码 0），未使用网络、未修改审计目标以外的任何文件。</li>
+</ul>
+<h2 id="_1">摘要<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
+<p>仓库的内部工程质量很高：状态机、契约 Schema、退出码都有文档与测试背书；非测试代码约 16.9k 行，测试约 17.7k 行（测试:代码 ≈ 1.05），130 个 Go 文件。CI 固定 Action SHA、权限最小化、带独立 Secret Scan job（<code>.github/workflows/ci.yml:9-10,27,30,58</code>）。但作为开源项目，"从零 clone 到第一个 PR"的路径目前断在三个地方：</p>
+<ol>
+<li><strong>法律入口缺失</strong>：仓库根目录没有 <code>LICENSE</code> 文件。默认版权保留下，外部贡献者既无权使用也无权提交代码，任何 PR 流程都无从谈起。</li>
+<li><strong>5 分钟快速开始缺失</strong>：<code>README.md:1-102</code> 没有任何一条可执行命令，也没有前置依赖、Go 版本或构建说明；首次贡献者必须自行发现两层之外的 <code>docs/development.md:41-52</code> 才知道 <code>make build</code> 的存在。</li>
+<li><strong>贡献流程没有单一入口</strong>：无 <code>CONTRIBUTING.md</code>；分支/测试/提交规范/CI 预期分散在 <code>docs/development.md</code>、<code>docs/operator-runbook.md</code>、<code>AGENTS.md</code>（后者实际面向 AI Agent）与 CI 配置中，且部分 CLI 文档已落后于代码。</li>
+</ol>
+<p><strong>走查结论</strong>：一名具备 Go 经验的首次贡献者，按当前仓库公开信息，从 clone 到跑通第一条只读命令需要自行完成"发现 development.md → 拼出 make build → 猜测 doctor 是首命令"三步无引导探索；从跑通到理解"如何提交一个合规 PR"则没有单一入口。若按本报告清单修复，该路径可压缩为"5 分钟跑通 + 一份贡献指南"。</p>
+<p><strong>结论</strong>：核心代码与门禁体系已达到可接待贡献者的质量，但接待入口（LICENSE、快速开始、贡献指南）尚未修建。</p>
+<h2 id="_2">发现<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<p>按优先级排列。每条给出证据位置（<code>文件:行号</code> 均可直接核对）与影响分析。</p>
+<h3 id="_3">走查模拟：当前首次贡献者的真实路径<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h3>
+<p>记录本次反演路径，作为后续修复的对照基线：</p>
+<ol>
+<li>clone 后打开 <code>README.md</code>：读到动机、模式、不变量、生命周期与 23 条文档链接（<code>README.md:54-78</code>），无一条命令。第 1–5 分钟无进展。</li>
+<li>凭经验打开 <code>Makefile</code>：确认 <code>build</code>/<code>test</code>/<code>check</code> 目标存在（<code>Makefile:26-37</code>），但无 Go 版本线索、无"先跑什么"的顺序提示。</li>
+<li>打开 <code>go.mod:3-5</code>：得知需要 <code>go 1.26.0</code>（toolchain <code>1.26.5</code>）；若本机 Go 较旧，是否自动下载、失败怎么办，无文档说明。</li>
+<li>找到 <code>docs/development.md:41-52</code>：得到 make 命令清单；<code>:58-84</code> 给出 CLI 用法与两条 <code>go run</code> 示例命令——这是全仓库唯一"可直接复制的首命令"，但已位于第二层文档。</li>
+<li>执行示例命令成功（本次实测 <code>version --json</code> 与 <code>doctor --json</code> 离线可用），此时才知道三个 Worker Adapter 都未配置（<code>doctor</code> 输出 <code>workerAdapters: 0</code>）。</li>
+<li>想跑一个真实任务：需要读 <code>docs/operator-runbook.md:18-29</code> 的标准循环，再去 <code>:136-143</code> 配置 5 个环境变量——入口分散在 260 行长文档的不同小节。</li>
+<li>想提 PR：找不到 CONTRIBUTING、CODEOWNERS、PR 模板；<code>make check</code> 全量约 15 分钟的预期也没有写在开发指南里。</li>
+</ol>
+<h3 id="p0">P0（阻断外部贡献）<a class="headerlink" href="#p0" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>F1 无 LICENSE 文件</strong></li>
+<li>证据：仓库根目录只有 <code>AGENTS.md</code>、<code>Makefile</code>、<code>README.md</code>、<code>go.mod</code>、<code>go.sum</code>、<code>cmd/</code>、<code>docs/</code>、<code>internal/</code>、<code>schemas/</code>、<code>.github/</code>、<code>.gitignore</code>，无 <code>LICENSE</code>/<code>COPYING</code>。</li>
+<li>影响：开源项目在无许可证声明时默认"保留所有权利"。外部贡献者无法合法 fork、修改或提交；对严肃的开源采用而言这是硬性阻断，优先级高于一切文档打磨。</li>
+<li>
+<p>备注：Go 依赖经 <code>go.mod</code> 声明了各自许可证（间接依赖），但本仓库自身授权未声明。</p>
+</li>
+<li>
+<p><strong>F2 README 无快速开始，全文零命令</strong></p>
+</li>
+<li>证据：<code>README.md:1-102</code> 含动机（<code>:7-18</code>）、运行模式（<code>:20-28</code>）、不变量（<code>:30-39</code>）、生命周期图（<code>:41-52</code>）、文档导航（<code>:54-78</code>）、MVP 计划与实施门禁（<code>:82-102</code>），但没有任何安装/构建/运行命令，也没有前置依赖与 Go 版本说明。</li>
+<li>影响：5 分钟上手不成立。首次贡献者必须离开 README 才能知道"这个项目能跑起来"。对比之下 <code>docs/development.md:82-84</code> 已有两条可直接上提的示例命令。</li>
+<li>影响范围：README 是克隆后唯一默认阅读入口，其缺失会放大其后所有文档的可达性问题。</li>
+</ul>
+<h3 id="p1">P1（显著拖慢上手）<a class="headerlink" href="#p1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>F3 无 CONTRIBUTING.md，贡献流程散落多处</strong></li>
+<li>证据：首次贡献者需要回答的每个问题目前都无单一答案来源：本地命令与质量门禁在 <code>docs/development.md:41-56</code>；TaskSpec 纪律与实操经验在 <code>docs/operator-runbook.md:161-166</code>；CI 实际执行内容见 <code>.github/workflows/ci.yml</code>（Linux/macOS 双平台 <code>make check</code> + <code>make vuln</code> + Gitleaks）；根目录 <code>AGENTS.md</code> 面向 Marshal 自托管的 AI Agent 场景。</li>
+<li>影响："分支怎么建？测试跑到什么程度？提交信息什么格式？CI 会检查什么？审查看什么？"五个基本问题都没有入口。<code>AGENTS.md</code> 的存在还会让人类贡献者误入 Agent 协作约定。</li>
+<li>
+<p>备注：仓库自身用 Marshal 流程产出变更（Draft PR、merge 默认禁用，见 <code>README.md:95-98</code> 与 ADR 0007），外部贡献者是否走同一路径，文档未回答。</p>
+</li>
+<li>
+<p><strong>F4 CLI 文档与代码不同步</strong></p>
+</li>
+<li>证据：以 <code>internal/cli/cli.go:1443-1462</code> 的 usage 文本为真源，<code>docs/development.md:58-75</code> 缺失 <code>doctor</code> 的 <code>--run RUN_ID</code>/<code>--repair</code>、<code>task approve</code> 的 <code>--actor ID</code>、<code>task run</code> 的 <code>--through-verify</code>；<code>task abort</code> 完全未列入（已实现：<code>internal/cli/cli.go:490-504</code>，ADR 0012，提交 <code>08c8462</code>）。</li>
+<li>
+<p>影响：文档不再是可信真源。首次贡献者若以 development.md 为准，会漏掉崩溃恢复所需的 <code>doctor --run --repair</code> 与显式终止死 Run 的 <code>task abort</code>。</p>
+</li>
+<li>
+<p><strong>F5 Schema 数量表述过时</strong></p>
+</li>
+<li>证据：<code>docs/development.md:90</code> 称"15 份 Schema 全部可以编译"；<code>ls schemas/*.schema.json</code> 实为 17 份；<code>marshal doctor --json</code> 实测输出 <code>contractSchemas: 17</code>。</li>
+<li>
+<p>影响：数字型断言过时是"文档腐烂"的典型信号，会连带削弱读者对 development.md 其余内容的信任。</p>
+</li>
+<li>
+<p><strong>F6 Operator Runbook 称 <code>task abort</code> "开发中"</strong></p>
+</li>
+<li>证据：<code>docs/operator-runbook.md:106</code> 写"先经 <code>task abort</code>（开发中）转终态"；实现已在 <code>internal/cli/cli.go:490-504</code>（仅允许从 <code>RETRY_PENDING</code> 显式终止）。</li>
+<li>影响：照抄 runbook 的贡献者会放弃使用已存在的命令，转而手工 <code>git worktree remove</code> 之类危险操作——而 runbook 第 100 行恰恰警告不要用手工删除。</li>
+</ul>
+<h3 id="p2">P2（中等摩擦与隐性知识）<a class="headerlink" href="#p2" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>F7 Go 版本要求只在两层文档里</strong></li>
+<li>证据：<code>go.mod:3-5</code>（<code>go 1.26.0</code>、<code>toolchain go1.26.5</code>）与 <code>docs/development.md:9-15</code>；README 未提。</li>
+<li>
+<p>影响：Go 1.26 是较新版本。旧 Go 的 toolchain 自动下载需要网络，受限环境首次构建直接失败；新人拿到的是工具链报错而非项目引导。</p>
+</li>
+<li>
+<p><strong>F8 usage 帮助遗漏两个写相关子命令</strong></p>
+</li>
+<li>证据：<code>internal/cli/cli.go:1443-1462</code> 列出 plan/approve/status/run/verify/review/publish/accept，随后以泛化的 <code>marshal task &lt;COMMAND&gt;</code> 收尾（<code>:1459</code>）；<code>task cleanup</code>（<code>internal/cli/cli.go:436-443</code>）与 <code>task abort</code>（<code>:490-504</code>）不在清单中。</li>
+<li>
+<p>影响：cleanup 是安全回收 worktree 的唯一推荐路径，abort 是死 Run 的唯一出口；两者都是新人迟早需要、却最不可能自行发现的命令。</p>
+</li>
+<li>
+<p><strong>F9 Live 测试环境变量只有内部人知道</strong></p>
+</li>
+<li>证据（均为代码中唯一出处，<code>docs/</code> 全库 grep 无命中）：<code>MARSHAL_LIVE_GITHUB</code> 与 <code>MARSHAL_LIVE_GITHUB_FIXED_SUFFIX</code>（<code>internal/publisher/github/live_test.go:22-44</code>）、<code>MARSHAL_LIVE_OPENCODE_PATH</code>（<code>internal/adapter/opencode/live_test.go:19</code>）、<code>MARSHAL_LIVE_QWEN_PATH</code>（<code>internal/adapter/qwen/live_test.go:19</code>）、<code>MARSHAL_LIVE_PI_PATH</code>（<code>internal/adapter/pi/live_test.go:20</code>）。只有 <code>MARSHAL_LIVE_CMUX</code>/<code>MARSHAL_CMUX_PATH</code> 出现在 <code>docs/operator-runbook.md:85-86</code>。</li>
+<li>
+<p>影响：贡献者无法复现 Live E2E；同时可能误以为"PR 里没跑 live 测试 = CI 不完整"，实际上这些测试按设计默认跳过。</p>
+</li>
+<li>
+<p><strong>F10 全量门禁耗时预期未写入开发指南</strong></p>
+</li>
+<li>证据："全量 <code>make check</code> 在本仓库约 15 分钟"只在 <code>docs/operator-runbook.md:164</code>；<code>docs/development.md</code> 未提示。</li>
+<li>
+<p>影响：首次贡献者跑 <code>make check</code> 要么误判卡死而中断，要么反复怀疑环境。一句"约 15 分钟，可先跑 <code>make test</code>"即可消除。</p>
+</li>
+<li>
+<p><strong>F11 doctor 输出与阶段表述手工维护</strong></p>
+</li>
+<li>证据：<code>internal/cli/cli.go:198</code> 硬编码 <code>Milestone: "6"</code>；README（<code>README.md:5</code>）、<code>docs/development.md:5</code> 各自手工声明阶段。</li>
+<li>影响：三处目前恰好一致，但无测试约束；阶段推进时若漏改会给新人矛盾信号。</li>
+</ul>
+<h3 id="p3">P3（体验打磨）<a class="headerlink" href="#p3" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>F12 领域类型缺 doc 注释，godoc 友好度低</strong></li>
+<li>证据：<code>internal/domain/identity.go:10-24</code>、<code>internal/domain/review.go:5-84</code>、<code>internal/domain/run.go:7-60</code>、<code>internal/domain/task.go:3-37</code> 的导出类型/函数基本无 doc 注释；包级注释较好（如 <code>internal/cli/cli.go:1</code>）。</li>
+<li>
+<p>影响：<code>internal/</code> 不对外导出，godoc 的对外价值有限；但 domain 是理解生命周期与证据模型的核心层，新人缺少原地注解时需反复跳转 <code>docs/task-lifecycle.md</code>。</p>
+</li>
+<li>
+<p><strong>F13 无 Issue/PR 模板与 community profile</strong></p>
+</li>
+<li>证据：<code>.github/</code> 下仅 <code>workflows/</code>；无 <code>ISSUE_TEMPLATE/</code>、<code>PULL_REQUEST_TEMPLATE.md</code>、<code>CODEOWNERS</code>。</li>
+<li>
+<p>影响：Issue/PR 无格式引导；审查责任对贡献者不可见。</p>
+</li>
+<li>
+<p><strong>F14 工具链新特性未解释</strong></p>
+</li>
+<li>证据：<code>Makefile:23-24,32-33</code> 的 <code>go tool staticcheck</code>/<code>go tool govulncheck</code> 依赖 <code>go.mod:28-30</code> 的 <code>tool</code> 指令（Go 1.24+ 特性）；<code>docs/development.md:14</code> 只写了 staticcheck 名字。</li>
+<li>影响：按旧习惯 <code>go install honnef.co/go/tools/...</code> 的贡献者会得到与仓库固定版本不一致的 linter 结果，误报/漏报都难以归因。</li>
+</ul>
+<h3 id="marshal_">隐性知识清单：全部 MARSHAL_* 环境变量盘点<a class="headerlink" href="#marshal_" title="Permanent link">&para;</a></h3>
+<p>首次贡献者迟早会撞上的环境变量如下。文档覆盖率 4/11，未覆盖的 7 个全部属于"只有读代码才知道"：</p>
+<table>
+<thead>
+<tr>
+<th>变量</th>
+<th>代码出处</th>
+<th>用途</th>
+<th>文档覆盖</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MARSHAL_STATE_DIR</code></td>
+<td><code>internal/repository/state.go:29-44</code></td>
+<td>覆盖默认 <code>.marshal/</code> 状态目录（必须绝对路径；仓库内则必须等于默认目录）</td>
+<td>有：<code>docs/architecture.md:75</code>、<code>docs/failure-and-recovery.md:7</code></td>
+</tr>
+<tr>
+<td><code>MARSHAL_OPENCODE_PATH</code></td>
+<td><code>internal/app/workers.go:44</code></td>
+<td>OpenCode Worker 可执行文件绝对路径</td>
+<td>有：<code>docs/operator-runbook.md:137</code>、<code>docs/worker-adapters.md:100</code></td>
+</tr>
+<tr>
+<td><code>MARSHAL_QWEN_PATH</code></td>
+<td><code>internal/app/workers.go:51</code></td>
+<td>Qwen Code Worker 可执行文件绝对路径</td>
+<td>有：<code>docs/operator-runbook.md:138</code></td>
+</tr>
+<tr>
+<td><code>MARSHAL_PI_PATH</code></td>
+<td><code>internal/app/workers.go:58</code></td>
+<td>Pi Worker 可执行文件绝对路径</td>
+<td>有：<code>docs/operator-runbook.md:139</code></td>
+</tr>
+<tr>
+<td><code>MARSHAL_GH_PATH</code></td>
+<td><code>internal/cli/cli.go:765</code></td>
+<td>Publisher 的 <code>gh</code> 可执行文件绝对路径</td>
+<td>有：<code>docs/operator-runbook.md:141</code></td>
+</tr>
+<tr>
+<td><code>MARSHAL_GH_CONFIG_DIR</code></td>
+<td><code>internal/cli/cli.go:765</code></td>
+<td>Publisher 独立凭据目录（不复用 ambient 配置）</td>
+<td>有：<code>docs/operator-runbook.md:142</code></td>
+</tr>
+<tr>
+<td><code>MARSHAL_CMUX_PATH</code></td>
+<td><code>internal/terminal/cmux_live_test.go:25</code></td>
+<td>cmux 可执行文件路径（受监督 Pilot）</td>
+<td>有：<code>docs/operator-runbook.md:86</code></td>
+</tr>
+<tr>
+<td><code>MARSHAL_LIVE_CMUX</code></td>
+<td><code>internal/terminal/cmux_live_test.go:22</code></td>
+<td>启用 cmux Live E2E</td>
+<td>有：<code>docs/operator-runbook.md:85</code></td>
+</tr>
+<tr>
+<td><code>MARSHAL_LIVE_GITHUB</code> / <code>_FIXED_SUFFIX</code></td>
+<td><code>internal/publisher/github/live_test.go:22-44</code></td>
+<td>启用 GitHub Publisher Live 测试</td>
+<td>无</td>
+</tr>
+<tr>
+<td><code>MARSHAL_LIVE_OPENCODE_PATH</code></td>
+<td><code>internal/adapter/opencode/live_test.go:19</code></td>
+<td>启用 OpenCode Live E2E</td>
+<td>无</td>
+</tr>
+<tr>
+<td><code>MARSHAL_LIVE_QWEN_PATH</code></td>
+<td><code>internal/adapter/qwen/live_test.go:19</code></td>
+<td>启用 Qwen Live E2E</td>
+<td>无</td>
+</tr>
+<tr>
+<td><code>MARSHAL_LIVE_PI_PATH</code></td>
+<td><code>internal/adapter/pi/live_test.go:20</code></td>
+<td>启用 Pi Live E2E</td>
+<td>无</td>
+</tr>
+</tbody>
+</table>
+<p>注：另有若干仅测试内部使用的开关（<code>MARSHAL_PROCESS_TREE_HELPER</code>、<code>MARSHAL_LAUNCH_HELPER</code> 等，见 <code>internal/terminal/process_supported_test.go:18-61</code>、<code>internal/launcher/execute_test.go:13</code>），属于再执行辅助进程的实现细节，不构成贡献者需要知道的契约，未计入上表。</p>
+<h3 id="_4">正面发现（保持）<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>N1 包边界文档清晰</strong>：<code>docs/development.md:19-37</code> 一张表讲清每个 internal 包职责；入口 <code>cmd/marshal/main.go:12-16</code> 是 16 行薄壳；新人 30 秒内能定位代码层级。</li>
+<li><strong>N2 契约即测试</strong>：17 份 Schema 各带 happy-path 与 invalid fixture（<code>schemas/examples/happy-path/</code>、<code>schemas/examples/invalid/</code>），"改 Schema = 改 fixture + 过测试"的贡献路径明确。</li>
+<li><strong>N3 退出码是稳定契约</strong>：<code>internal/cli/cli.go:39-47</code> 明确声明 ExitOK/ExitFailure/ExitUsage/ExitUnavailable，脚本化集成门槛低。</li>
+<li><strong>N4 离线可构建</strong>：<code>GOPROXY=off</code> 下（模块缓存命中）<code>go run ./cmd/marshal version --json</code> 与 <code>doctor --json</code> 均成功返回结构化 JSON、退出码 0，构建路径无隐藏步骤。</li>
+<li><strong>N5 Operator Runbook 第 9 节</strong>：<code>docs/operator-runbook.md:128-190</code> 的环境准备、长命令脱离、问题上报三件套是高质量实操内容，问题只是入口太深。</li>
+</ul>
+<h2 id="_5">修复建议清单<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<p>按优先级排序，均可独立成为一个小任务；每条附可执行的验收方式。</p>
+<ol>
+<li><strong>（P0）新增 LICENSE</strong>。由维护者选定许可证（建议 MIT/Apache-2.0 二选一并以 ADR 记录决策），添加 <code>LICENSE</code> 文件与 README 授权段落。注意这是法律决策不能由贡献者代为拍板；过渡期可在 README 声明贡献授权立场。验收：<code>test -s LICENSE &amp;&amp; head -1 LICENSE</code>。</li>
+<li><strong>（P0）README 增加"快速开始"章节</strong>。前置依赖（Go ≥1.26.0 或依赖 toolchain 自动下载、支持 worktree 的 Git）；步骤 <code>git clone</code> → <code>make build</code> → <code>./bin/marshal doctor --json</code> → <code>./bin/marshal contract validate --schema task-spec schemas/examples/happy-path/task-spec.json</code>（后两条 <code>docs/development.md:82-84</code> 已有先例，直接上提）；链接 <code>docs/operator-runbook.md</code> 第 9 节与未来的 CONTRIBUTING。验收：按 README 步骤在干净 worktree 逐条执行成功。</li>
+<li><strong>（P1）新增 CONTRIBUTING.md</strong>。单一入口汇总：分支与发布策略（Draft PR、merge 默认禁用，引用 <code>README.md:95-98</code> 与 ADR 0007）、提交前 <code>make check</code>（注明约 15 分钟，可先 <code>make test</code>）、CI 预期（quality 双平台 + secrets 两 job）、审查标准（证据门禁，引用 <code>docs/verification-and-review.md</code>）、<code>AGENTS.md</code> 面向 AI Agent 的定位说明。验收：新贡献者仅凭 README + CONTRIBUTING 完成"构建→测试→提 PR→读懂 CI 结果"闭环。</li>
+<li><strong>（P1）同步 CLI 文档与代码</strong>。以 <code>internal/cli/cli.go:1443-1462</code> 为真源更新 <code>docs/development.md:58-75</code>（补 <code>doctor --run/--repair</code>、<code>approve --actor</code>、<code>run --through-verify</code>、<code>task abort</code>）；<code>:90</code> 的"15 份 Schema"改为 17；修正 <code>docs/operator-runbook.md:106</code> 的"（开发中）"。验收：文档与 usage 文本逐行一致；<code>ls schemas/*.schema.json | wc -l</code> 与文档数字一致。</li>
+<li><strong>（P2）补测试分层文档</strong>。在 <code>docs/development.md</code> 或新 TESTING 小节说明：<code>go test ./...</code> 默认不含 Live E2E；Live 需要 <code>MARSHAL_LIVE_GITHUB</code>、<code>MARSHAL_LIVE_OPENCODE_PATH</code>、<code>MARSHAL_LIVE_QWEN_PATH</code>、<code>MARSHAL_LIVE_PI_PATH</code>、<code>MARSHAL_LIVE_CMUX</code> 等显式开关（逐一标注代码出处）；Live 测试不进 PR 门禁。验收：grep 全部 live 变量，文档覆盖率 100%。</li>
+<li><strong>（P2）补齐 usage 命令清单</strong>。在 <code>internal/cli/cli.go:1443-1462</code> 列出 <code>task abort</code> 与 <code>task cleanup</code>，并在 <code>internal/cli/cli_test.go</code> 增加断言。验收：<code>marshal help</code> 输出覆盖全部用户可见子命令。</li>
+<li><strong>（P3）为 <code>internal/domain</code> 导出类型补 doc 注释</strong>。优先 <code>identity.go</code>、<code>state.go</code>、<code>run.go</code>、<code>review.go</code> 中与生命周期/证据相关的类型；措辞与 <code>docs/task-lifecycle.md</code> 术语一致。验收：<code>make check</code> 通过；状态名与文档一致。</li>
+<li><strong>（P3）补最小 community profile</strong>：Issue 模板（bug/文档/新功能）、PR 模板（勾选 <code>make check</code> 与影响面）、<code>CODEOWNERS</code>。验收：新建 Issue/PR 时模板自动加载。</li>
+</ol>
+<h2 id="_6">未核实项<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>完整测试套件未实跑</strong>：<code>make check</code>/<code>make test</code> 未执行（全量约 15 分钟，见 <code>docs/operator-runbook.md:164</code>；审计受时间与网络约束）。仅离线验证了编译路径与两个只读命令，不能据此声称"clone 后测试必绿"。</li>
+<li><strong>远端仓库与 CI 状态未核实</strong>：受"不使用网络"约束，<code>https://github.com/chiga0/marshal-harness</code> 的可访问性、分支保护设置、是否已有外部 Issue/PR 均未确认。</li>
+<li><strong>新机器首次构建时长未实测</strong>：F7 中 toolchain 自动下载与 <code>go mod download</code> 在干净机器上的耗时与失败形态未实测（需要网络）。"5 分钟跑通"是基于缺失步骤的推断，不是实测值。</li>
+<li><strong>许可证选择</strong>：F1/建议 1 涉及的许可证类型是维护者决策，本报告不代为判断；<code>go.mod:1</code> 的公开 module path 不构成授权暗示。</li>
+<li><strong>完整任务循环未端到端实跑</strong>：plan→run→publish 循环需要配置 Worker Adapter 可执行文件与 GitHub 凭据（<code>docs/operator-runbook.md:136-143</code>）；本审计不配置真实凭据，该路径仅按文档与代码静态核对。</li>
+<li><strong><code>--through-verify</code> 完整语义</strong>：usage（<code>internal/cli/cli.go:1454</code>）与提交 <code>76fdf40</code> 提及，但行为边界未逐行核对，本报告仅将其作为文档同步项引用。</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "search.suggest", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "\u5df2\u590d\u5236", "clipboard.copy": "\u590d\u5236", "search.result.more.one": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.more.other": "\u5728\u8be5\u9875\u4e0a\u8fd8\u6709 # \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.none": "\u6ca1\u6709\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.one": "\u627e\u5230 1 \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.other": "# \u4e2a\u7b26\u5408\u6761\u4ef6\u7684\u7ed3\u679c", "search.result.placeholder": "\u952e\u5165\u4ee5\u5f00\u59cb\u641c\u7d22", "search.result.term.missing": "\u7f3a\u5c11", "select.version": "\u9009\u62e9\u5f53\u524d\u7248\u672c"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
