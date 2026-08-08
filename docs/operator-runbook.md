@@ -131,7 +131,7 @@ marshal task cleanup --run RUN_ID
 
 ### 9.1 一次性环境准备
 
-Worker Adapter 配置变量只接受绝对路径，不搜索 `PATH`、不回退近似名称；建议固化到 shell 配置：
+Worker Adapter 配置变量只接受绝对路径，注册本身不搜索 `PATH`、不回退近似名称；建议固化到 shell 配置。新环境不确定绝对路径时，先用 `marshal doctor --json` 的 discovery 段或 `marshal doctor --print-env` 获取建议式发现并粘贴注册（discovery 只建议、不自动注册），详见开发指南[部署到新环境](development.md#部署到新环境)：
 
 ```bash
 export MARSHAL_OPENCODE_PATH=<opencode 绝对路径>

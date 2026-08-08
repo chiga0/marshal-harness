@@ -60,7 +60,7 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 
 ```bash
 marshal version [--json]
-marshal doctor [--run RUN_ID] [--repair] [--json]
+marshal doctor [--run RUN_ID] [--repair] [--print-env] [--json]
 marshal contract validate [--schema NAME] <PATH|->
 marshal init [--json]
 marshal task status --run RUN_ID [--json]
@@ -99,8 +99,55 @@ go run ./cmd/marshal contract validate --schema task-spec schemas/examples/happy
 | `MARSHAL_LIVE_CMUX` | 启用 cmux Live E2E | 测试开关 |
 | `MARSHAL_LIVE_GITHUB` / `MARSHAL_LIVE_GITHUB_FIXED_SUFFIX` | 启用 GitHub Publisher Live 测试（后者固定 branch/PR 后缀以便幂等重跑） | 测试开关 |
 | `MARSHAL_LIVE_OPENCODE_PATH` / `MARSHAL_LIVE_QWEN_PATH` / `MARSHAL_LIVE_PI_PATH` | 启用对应 Adapter 的 Live E2E | 测试开关 |
+| `MARSHAL_DISCOVERY_KNOWN_LOCATIONS` | 覆盖 doctor 建议式发现的已知安装位置列表；`-` 表示禁用，仅保留 PATH 扫描 | 测试开关 |
 
-所有 `*_PATH` 变量只接受绝对路径；未设置时 `marshal doctor` 显示 `not-configured`（不会搜索 PATH 或猜近似名）。Live 测试默认跳过，CI 不依赖任何 Live 开关。
+所有 `*_PATH` 变量只接受绝对路径；注册本身不搜索 PATH、不猜近似名（未设置时 `marshal doctor` 的 workers 段显示 `not-configured`）。`marshal doctor` 的 discovery 段额外提供建议式发现，仅作建议、绝不自动注册（见下文[部署到新环境](#部署到新环境)）。Live 测试默认跳过，CI 不依赖任何 Live 开关。
+
+## 部署到新环境
+
+新环境部署的目标是把“读文档自己猜”变成“doctor 给建议、用户一行注册”。核心原则：**discovery advisory，registration explicit**——doctor 只发现并建议，注册仍须显式环境变量；这保持了“Registry 不得静默替换二进制或版本”的不变量。
+
+doctor 扫描 PATH 目录与常见安装位置（`~/.local/bin`、`/opt/homebrew/bin`、`~/.opencode/bin`、fnm/node 全局 bin、`npm root -g`），匹配已知二进制名 `opencode`、`qwen`、`qwen-code`、`pi`。它不递归全盘、不猜近似名；对每个候选只执行 `<bin> --version` 读取版本并计算 realpath 与 SHA256，任何执行失败静默跳过。已配置环境变量的 Adapter 不参与发现。
+
+### doctor 解读
+
+```bash
+marshal doctor --json
+```
+
+报告新增 `discovery` 数组，每个未注册 Adapter 一项：
+
+- `adapterId` / `environmentVariable`：对应 Adapter 与注册变量；
+- `candidates`：每个候选含 `path`（发现位置）、`realpath`（符号链接解析后的绝对路径）、`sha256`、`version`、`source`（`path` 或 `known-location`）；
+- `suggestedEnv`：建议写入注册变量的 realpath，供用户粘贴。
+
+`discovery` 结果只出现在 doctor 输出，不进入 CapabilitySnapshot，也不改变 plan 的 fail-closed 语义：未注册的 Adapter 依旧不可用。
+
+### 建议行粘贴
+
+```bash
+marshal doctor --print-env
+```
+
+该标志直接打印建议的 `export` 行，例如：
+
+```bash
+export MARSHAL_QWEN_PATH=/Users/me/.local/bin/qwen
+```
+
+将其粘贴到 shell 配置（或当前会话）即完成注册。doctor 不会写环境变量、不写 shell profile、不自动注册 Adapter。
+
+### 验证 registered
+
+粘贴导出后重新运行：
+
+```bash
+marshal doctor --json
+```
+
+确认对应 Adapter 的 `workers` 条目 `outcome=registered`、`compatibility=supported`；此时该 Adapter 不再出现在 `discovery` 段。若 `compatibility=unsupported`，说明二进制版本与冻结的 supported 版本不符，doctor 会如实报告但不会因此放行。
+
+本节与 Operator Runbook §9.1“一次性环境准备”交叉引用：§9.1 给出五个环境变量的固化方法，本节给出如何用 doctor 发现正确的绝对路径。
 
 ## 契约策略
 

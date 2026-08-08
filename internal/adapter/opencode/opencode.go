@@ -18,7 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/adapter/pi"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -185,20 +184,60 @@ func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
 	if err != nil {
 		return executableIdentity{}, err
 	}
-	command := exec.CommandContext(ctx, a.executable, "--version")
+	version, err := readBinaryVersion(ctx, a.executable)
+	if err != nil {
+		return executableIdentity{}, err
+	}
+	return executableIdentity{a.executable, digest, version}, nil
+}
+
+// readBinaryVersion runs `<executable> --version` inside the sanitized probe
+// environment and parses the version string reported by the binary.
+func readBinaryVersion(ctx context.Context, executable string) (string, error) {
+	command := exec.CommandContext(ctx, executable, "--version")
 	command.Env = probeEnvironment()
 	output, err := command.Output()
 	if err != nil {
 		if ctx.Err() != nil {
-			return executableIdentity{}, ctx.Err()
+			return "", ctx.Err()
 		}
-		return executableIdentity{}, fmt.Errorf("probe opencode version: %w", err)
+		return "", fmt.Errorf("probe opencode version: %w", err)
 	}
 	version := strings.TrimSpace(string(output))
 	if version == "" {
-		return executableIdentity{}, errors.New("opencode returned an empty version")
+		return "", errors.New("opencode returned an empty version")
 	}
-	return executableIdentity{a.executable, digest, version}, nil
+	return version, nil
+}
+
+// identifyTimeout bounds every advisory Identify call so doctor discovery can
+// never hang on an unresponsive candidate binary.
+const identifyTimeout = 10 * time.Second
+
+// Identify pins the version and SHA256 digest of an absolute candidate
+// executable, reusing the probe's sanitized environment and version parsing.
+// It is advisory identity collection shared by doctor discovery and future
+// tooling; it never registers the adapter, writes files, or touches Marshal
+// state.
+func Identify(executable string) (version, digest string, err error) {
+	if !filepath.IsAbs(executable) || filepath.Clean(executable) != executable {
+		return "", "", errors.New("opencode candidate must be an absolute clean path")
+	}
+	info, err := os.Stat(executable)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", "", errors.New("opencode candidate is not an executable regular file")
+	}
+	digest, err = digestFile(executable)
+	if err != nil {
+		return "", "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), identifyTimeout)
+	defer cancel()
+	version, err = readBinaryVersion(ctx, executable)
+	if err != nil {
+		return "", "", err
+	}
+	return version, digest, nil
 }
 
 type workerRequest struct {
@@ -332,14 +371,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
 	exitCode, signal := processOutcome(command)
-	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: worktree, ControlRoot: controlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
-	fatalDenials := denials.CountFatal(denialRecords)
 	metadata, err := json.MarshalIndent(map[string]any{
 		"sessionId": capture.sessionID, "eventCount": capture.eventCount,
 		"toolCalls": capture.toolCalls, "inputTokens": capture.inputTokens,
 		"outputTokens": capture.outputTokens, "capturedBytes": len(capture.raw),
-		"outputTruncated": capture.limitExceeded, "permissionDenied": fatalDenials > 0,
-		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials,
+		"outputTruncated": capture.limitExceeded, "permissionDenied": capture.permissionDenied,
 		"exitCode": exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
 		"contextError": contextError(runCtx),
 	}, "", "  ")
@@ -348,9 +384,6 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "opencode-transcript-meta.json"), append(metadata, '\n')); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript metadata: %w", err)
-	}
-	if err := denials.AppendLog(filepath.Join(filepath.Dir(resultPath), denials.LogFileName), denialRecords); err != nil {
-		return domain.Record{}, fmt.Errorf("write denial log: %w", err)
 	}
 	if runCtx.Err() != nil {
 		return domain.Record{}, runCtx.Err()
@@ -364,7 +397,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if waitErr != nil {
 		return domain.Record{}, processFailureError(command)
 	}
-	if fatalDenials > 0 {
+	if capture.permissionDenied {
 		return domain.Record{}, ErrPermissionDenied
 	}
 	if capture.sessionID == "" {
@@ -448,15 +481,15 @@ func readDeclaredResult(path string, limit int64, validator *contract.Validator)
 }
 
 type captureResult struct {
-	raw           []byte
-	sessionID     string
-	eventCount    int
-	toolCalls     int
-	inputTokens   int
-	outputTokens  int
-	denials       []denials.RawDenial
-	limitExceeded bool
-	err           error
+	raw              []byte
+	sessionID        string
+	eventCount       int
+	toolCalls        int
+	inputTokens      int
+	outputTokens     int
+	permissionDenied bool
+	limitExceeded    bool
+	err              error
 }
 
 func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
@@ -496,9 +529,8 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 							Output int `json:"output"`
 						} `json:"tokens"`
 						State struct {
-							Status string          `json:"status"`
-							Error  string          `json:"error"`
-							Input  json.RawMessage `json:"input"`
+							Status string `json:"status"`
+							Error  string `json:"error"`
 						} `json:"state"`
 					} `json:"part"`
 				}
@@ -517,8 +549,9 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 						result.inputTokens = event.Part.Tokens.Input
 						result.outputTokens = event.Part.Tokens.Output
 					}
-					if event.Part.State.Status == "error" && denials.IsPermissionError(event.Part.State.Error) {
-						result.denials = append(result.denials, denials.RawDenial{Tool: event.Part.Tool, Input: event.Part.State.Input})
+					lower := strings.ToLower(event.Part.State.Error)
+					if event.Part.State.Status == "error" && strings.Contains(lower, "permission") && (strings.Contains(lower, "denied") || strings.Contains(lower, "prevents") || strings.Contains(lower, "rule")) {
+						result.permissionDenied = true
 					}
 				}
 				line = nil

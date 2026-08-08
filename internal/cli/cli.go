@@ -152,6 +152,7 @@ type doctorReport struct {
 	WorkerAdapters  int                          `json:"workerAdapters"`
 	Milestone       string                       `json:"milestone"`
 	Workers         []doctorWorker               `json:"workers"`
+	Discovery       []app.Discovery              `json:"discovery"`
 	Run             *reconciliation.Report       `json:"run,omitempty"`
 	Repair          *reconciliation.RepairResult `json:"repair,omitempty"`
 }
@@ -162,6 +163,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
 	runID := flags.String("run", "", "核验指定 Run 的本地证据")
 	repair := flags.Bool("repair", false, "显式修复可证明的本地 Snapshot")
+	printEnv := flags.Bool("print-env", false, "仅打印建议式发现的 export 行，供用户粘贴")
 	if err := flags.Parse(args); err != nil {
 		return ExitUsage
 	}
@@ -178,6 +180,14 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if *repair && *runID == "" {
 		fmt.Fprintln(stderr, "doctor --repair 必须同时指定 --run RUN_ID。")
 		return ExitUsage
+	}
+	if *printEnv {
+		for _, entry := range doctorDiscovery(ctx) {
+			if entry.SuggestedEnv != "" {
+				fmt.Fprintf(stdout, "export %s=%s\n", entry.EnvironmentVariable, entry.SuggestedEnv)
+			}
+		}
+		return ExitOK
 	}
 	application, err := app.New()
 	if err != nil {
@@ -197,6 +207,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		WorkerAdapters:  len(runtime.Registry().IDs()),
 		Milestone:       "6",
 		Workers:         workers,
+		Discovery:       doctorDiscovery(ctx),
 	}
 	if *runID != "" {
 		location, err := repository.Discover(".")
@@ -243,6 +254,12 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			fmt.Fprintf(stdout, " (%s)", worker.BinaryVersion)
 		}
 		fmt.Fprintln(stdout)
+	}
+	for _, entry := range report.Discovery {
+		if entry.SuggestedEnv == "" {
+			continue
+		}
+		fmt.Fprintf(stdout, "建议注册 %s：export %s=%s（发现仅提供建议，不会自动注册）\n", entry.AdapterID, entry.EnvironmentVariable, entry.SuggestedEnv)
 	}
 	if report.Run != nil {
 		fmt.Fprintf(stdout, "Run %s：%s（Snapshot %d / Journal %d）\n", report.Run.RunID, report.Run.Status, report.Run.SnapshotSequence, report.Run.JournalSequence)
@@ -308,6 +325,18 @@ func doctorWorkers(ctx context.Context, runtime *app.WorkerRuntime) []doctorWork
 		workers = append(workers, result)
 	}
 	return workers
+}
+
+// doctorDiscovery returns the advisory discovery outcome for adapters whose
+// environment variable is unset. Discovery never registers anything; a nil
+// result is normalized so doctor JSON always carries a structured discovery
+// field.
+func doctorDiscovery(ctx context.Context) []app.Discovery {
+	discovery := app.DiscoverWorkers(ctx, os.Getenv)
+	if discovery == nil {
+		discovery = []app.Discovery{}
+	}
+	return discovery
 }
 
 func runContract(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -1445,7 +1474,7 @@ func writeUsage(output io.Writer) {
 
 用法：
   marshal version [--json]
-  marshal doctor [--run RUN_ID] [--repair] [--json]
+  marshal doctor [--run RUN_ID] [--repair] [--print-env] [--json]
   marshal init [--json]
   marshal contract validate [--schema NAME] <PATH|->
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]

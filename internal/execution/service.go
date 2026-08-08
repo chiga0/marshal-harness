@@ -385,7 +385,7 @@ const workerResultTemplateSection = `
 ` + "```\n\n" + `模板填写规则：
 
 1. session 为可选字段：ephemeral 会话一律省略整个 session 字段，不得虚构，也不得填写空字符串。
-2. declaredChangedFiles、declaredArtifacts、declaredCommands、declaredRisks 可为空数组，但必须存在，不得省略整个字段。
+2. declaredChangedFiles、declaredArtifacts、declaredCommands、declaredRisks 可为空数组，但必须存在，不得省略整个字段；数组元素必须是对象（declaredCommands 元素形如 {"commandId": "<id>", "status": "passed|failed|not-run|unknown", "summary": "<可选摘要>"}，declaredArtifacts 元素形如 {"id": "<id>", "kind": "<kind>", "path": "<相对路径>"}），绝不允许放字符串；无内容可申报时一律留空数组。
 3. startedAt、completedAt 填合法 RFC3339 时间；Marshal 会以实际观测值覆盖不可信的运行元数据。
 `
 
