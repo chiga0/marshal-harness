@@ -1,84 +1,105 @@
-# herdr 与 Marshal 对照调研：两个正交层的互补分析
+# herdr 与 Marshal 对照调研（v2 · 源码级）
 
-- 调研日期：2026-08-08
-- 对照对象：[herdr](https://github.com/herdrdev/herdr)（本机克隆，v0.8.0，79 个 release tag）与 Marshal Harness（main）
-- 方法：只读分析 herdr 的 README/AGENTS.md/文档站源码/src 结构/release 历史，与 Marshal 的架构文档、ADR、实现逐项对照
+- 初版：2026-08-08；v2 深挖：2026-08-08
+- 对照对象：[herdr](https://github.com/herdrdev/herdr)（本机克隆 v0.8.0，79 tags，Rust）与 Marshal Harness（Go）
+- 方法：v2 基于 herdr 源码逐模块分析（`src/detect/`、`src/terminal/state.rs`、`src/handoff_runtime.rs`、`src/api/`、`src/integration/`、`src/persist/`、`src/agent_resume.rs`），行号级引用
 
 ## 0. TL;DR
 
-**herdr 与 Marshal 不是竞品，是同一问题栈的两个正交层。**
+**herdr 是"无脑的神经系统"**：它拥有 Agent 的终端、感知 Agent 的状态、提供 agent 原生的控制与喊话原语，但**不做任务编排、不做证据裁决、不做发布治理**。"大脑"是外置的——人、一个自愿当监督者的 agent、或 Marshal 这样的外部编排系统。
 
-- herdr 回答："Agent 在哪里活、现在在干嘛、卡住了没、掉线了怎么回来"——**终端与会话层**（runtime your coding agents live on）；
-- Marshal 回答："Agent 的工作凭什么算数、谁批准、怎么安全落地"——**证据与治理层**（evidence-gated orchestration）。
+**Marshal 是"大脑+司法系统"**：有显式 Lead 槽位与强制门禁，但没有身体（终端 UX/持久化）。
 
-herdr 的 `blocked/working/idle` 是**注意力调度**信号（该去看哪个 pane）；Marshal 的 `REVIEW_PENDING/BLOCKED/ACCEPTED` 是**证据裁决**状态（能否改变仓库）。前者不做发布治理，后者不做终端持久化——**把 herdr 当 Marshal 的 TerminalSession 后端、把 Marshal 当 herdr 之上的治理层，是两者最自然的组合**。
+两者组合 = herdr 当身体与神经，Marshal 当大脑与司法。
 
-## 1. 定位与心智模型
+## 1. herdr 内部机制（源码级）
+
+### 1.1 Agent 状态感知：双通道（hooks 注入 + 屏幕规则引擎）
+
+**通道一：向 Agent 自己的配置注入 hooks**（高保真信号）。`src/integration/claude_settings.rs` 用 jsonc AST 编辑 Claude 的 settings，`ensure_command_hook` 注入事件钩子：`PostToolUse → working`、`PostToolUseFailure → working`、`SubagentStop → working`、`PermissionRequest → blocked`、`SessionStart → …`。即 **Agent 在关键生命周期点主动上报状态**——"卡住等批准"不是猜的，是 Agent 自己说的。集成目标覆盖 16+ Agent（`integration/registry.rs`：pi/claude/codex/copilot/devin/droid/kimi/opencode/kilo/grok/…）。
+
+**通道二：manifest 规则引擎**（兜底+无 hook 时的主信号）。`src/detect/manifests/*.toml` 每 Agent 一份规则集，如 amp.toml：
+
+```toml
+[[rules]]
+id = "approval_footer"
+state = "blocked"          # blocked/working/idle
+priority = 300             # 优先级仲裁
+region = "whole_recent"    # osc_title / whole_recent / bottom_non_empty_lines(N)
+visible_blocker = true
+any = [{ contains = ["waiting for approval"] }, …]
+```
+
+输入为 `DetectionInput{screen, osc_title, osc_progress}`（`detect/manifest.rs`）——屏幕快照 + OSC 标题/进度转义序列。manifest 三来源：bundled / remote（可远程更新、带版本与缓存）/ local override，`DetectionExplain` 提供完整可解释性（matched_rule、evaluated_rules、fallback_reason）。
+
+**结论**：herdr 的 blocked/working/idle 是**注意力信号**（"该去看谁"），由 hooks（精确）+ 屏幕规则（广覆盖）融合而成，可解释、可远程更新规则——这是它"never hunt for the stuck one"的内核。
+
+### 1.2 终端运行时与 handoff：handoff ≠ agent 间移交
+
+`src/handoff_runtime.rs`（46 行）揭示：**handoff 是 herdr 服务器自身替换时的状态转移**——把 PTY `master_fd`、child_pid、尺寸、键盘协议、输入状态、初始历史 ANSI 序列化传给新服务器进程，"PTY、进程、agent 身份"存活，"in-flight requests、waits、subscriptions、client sockets、pane-to-pane messages"故意不保留（客户端重连重试）。这是"合盖/重启/升级后 Agent 继续跑"的机制，**不是任务移交**。
+
+持久化在 `src/persist/`（snapshot/restore/io/plugin_registry）；**Agent 会话恢复**在 `src/agent_resume.rs`：持久化 `AgentSessionRef{Id|Path}`，恢复时按 Agent 生成 resume argv（`claude --resume <id>`、`codex resume <id>`、`copilot --resume=…`），并有注入消毒测试（`--resume=abc; rm -rf /` 用例）——**恢复命令是 herdr 拼的，所以它把这里当安全边界**。
+
+### 1.3 控制面与通信：socket API = agent 原生原语
+
+`src/api/`（server/schema/subscriptions/wait/event_hub）：CLI 与 socket 同面。能力清单：workspace/tab/pane 的增删查改、`read`、`send input`、`prompt`、`wait_for_output`（regex/substring + timeout，`wait.rs`，`AGENT_PROMPT_EFFECT_TIMEOUT_MS=5s`）、事件订阅。
+
+**跨 Agent 通信 = 向对方 pane 注入终端文本 + 等对方输出/状态**（"prompt each other"、"wait until another agent is genuinely blocked"）。这是**喊话级通信**：无消息结构、无任务语义、无送达证明、无证据绑定。
+
+### 1.4 herdr 没有的东西（源码确认）
+
+无任务契约/TaskSpec、无生命周期状态机（只有 pane/agent 状态）、无验证/审查/发布组件（grep 无 evidence/verification 语义层）、无调度器（workspace/pane 由人或 agent 按需创建）、无凭据分权（pane 内 Agent 持环境既有凭据）。
+
+## 2. 谁是"大脑"？跨 Agent 通信何时需要？
+
+herdr **故意无脑**。通信原语的存在正是为了让任何想当大脑者接入：
+
+1. **人（默认）**：状态视图 + 手动 prompt；
+2. **监督者 agent（supervisor 模式）**：一个普通 agent 住在 pane 里，用 `wait-blocked` 醒来 → `read` 看屏 → `prompt` 回答被卡住的 worker → 睡去。**典型场景：worker 等批准/澄清，无人值守时由监督者代答**——把"卡到人来"变成"卡到监督者来"；
+3. **外部编排系统（Marshal 槽位）**：用 spawn/prompt/wait/subscribe 当手脚，自带策略与门禁。
+
+跨 Agent 通信的三个真实用例：**应答 blocked**（最高频）、**对等 handoff/流水线**（coder 写完喊 reviewer）、**监督循环**。但两个 agent 可以喊话喊出互信共识然后发布垃圾——herdr 不拦，因为它没有司法。
+
+## 3. 对照表（v2 深化）
 
 | 维度 | herdr | Marshal |
 | --- | --- | --- |
-| 一句话 | 编码 Agent 的常驻终端运行时 | 编码 Agent 的证据门禁式控制平面 |
-| 隐喻 | 身体与神经：Agent 住在里面，状态可见、可回魂 | 流程与审计：什么被允许、什么被证明 |
-| 与 Agent 的关系 | 拥有 Agent 的**终端**，不包装不替换（claude/codex/cursor/opencode/grok 皆可） | 通过 **Adapter** 规范化 Agent 的权限/协议/产物，Worker 可替换 |
-| 核心承诺 | always running、卡住可见、ssh 可回附 | 冻结契约、独立验证、摘要绑定审查、draft-only 发布、永不 merge |
+| 层 | 终端/会话/注意力 | 任务/证据/治理 |
+| 状态 | pane/agent 5 态（hooks+规则引擎，可解释） | Run 16 态（守卫转换，证据驱动） |
+| "卡住"语义 | 注意力信号：该去看/去答 | 司法信号：该返工/该阻断/该等人 |
+| 通信 | 终端喊话（prompt/wait-blocked） | 冻结契约 + Steering 记录 + digest 绑定 |
+| 持久化 | PTY fd 转移 + snapshot + resume argv | Journal 重放 + 原子 Snapshot + Lease |
+| 安全边界 | resume argv 注入消毒（点状） | 凭据分权/单写者/权限归一化（面状） |
+| 大脑 | 外置（人/agent/编排系统） | 显式 Lead 槽位 + Core 强制门禁 |
+| 扩展 | 插件市场 + 远程 manifest 更新 | Port/Adapter + 一致性测试 |
+| OSS | 79 tags/brew/多语言站/sponsors | 0.1.0 待发/Pages 中文站 |
 
-## 2. 实现对照
+## 4. 集成设计（深化）
 
-| 维度 | herdr | Marshal |
+**Marshal Lead 住在 herdr 里**的原语映射（ADR 0009 后端边界的 herdr 实例化）：
+
+| Marshal 需要 | herdr 提供 | 权威归属 |
 | --- | --- | --- |
-| 语言/形态 | Rust 单二进制；**常驻后台 server** + TUI 客户端 | Go 单二进制；**CLI 一次性调用**（无守护进程，ADR 0001） |
-| 状态模型 | pane 级 5 态（working/blocked/done/idle/unknown），屏幕 manifest + 集成上报 | Run 级 16 态生命周期 + 转换守卫；事实优先级五层（进程/Git/FS > 冻结输入 > Verification > Review > Worker 自述） |
-| 持久化/恢复 | server 状态持久化，重启/断网/合盖后会话回魂；命名 session；ssh reattach | append-only Journal + 原子 Snapshot + Lease；崩溃后重放恢复；发布幂等 |
-| Agent 接口 | socket API + CLI 同面（`herdr api schema` 自描述 JSON Schema）；agent 间可互 prompt、可 wait-until-blocked | CLI + Skill 驱动 Lead；Worker 经 Adapter 的 argv/权限/预算规范化；密封 LaunchEnvelope（ADR 0011） |
-| 信任模型 | 人在环里实时观察；无证据门禁、无发布治理 | Worker 不得自证；凭据分权；fail-closed；审计留痕 |
-| 扩展 | 插件市场（marketplace）、集成安装 | Port/Adapter 一致性测试；第三方默认不进进程 |
-| UX | 键盘+鼠标双一等、分屏、插件 | CLI + 文档 + Skill；受监督 PTY（cmux 后端） |
-| OSS 成熟度 | 79 tags、brew/mise/install.sh、版本化文档站（en/ja/…）、sponsors、X 运营 | 0.1.0 待发布；Pages 初版（中文）；社区文件刚齐 |
+| 启动 Worker TUI | `pane run` + 密封 LaunchEnvelope 在 pane 内 exec | Marshal（信封一次性、owner-only） |
+| 观察 | `pane read` / 订阅 | 仅观察，不裁决 |
+| 注入 prompt/steering | `prompt`（=Send） | Marshal 记录 InterventionRecord |
+| 完成辅助信号 | `wait blocked/idle` + hooks 上报 | **辅助**；权威仍是 WorkerResult+Snapshot+Verification（ADR 0011） |
+| 崩溃/重启存活 | handoff fd 转移 + resume argv | herdr 管会话，Marshal 管 Run 证据 |
 
-## 3. 各自优势（诚实版）
+收益：受监督模式获得 ssh 远程与重启回魂；`wait-blocked` 消灭轮询空转（实测 30–50min/批）。**权威不争夺**：herdr 的状态是注意力，Marshal 的状态是裁决。
 
-### herdr 强于
+## 5. 差距清单与行动（更新）
 
-1. **安装与分发**：`curl install.sh` / brew / mise / 二进制 release，79 个 tag 的发布纪律；
-2. **会话持久化与远程**：合盖/断网/重启不丢 Agent，ssh 回附——Marshal 的 captured/PTY 模式都没有这层；
-3. **注意力产品化**：blocked/working/idle 一眼可见，"never hunt for the stuck one" 直接命中多 Agent 监督痛点；
-4. **agent-native 自描述 API**：`api schema` 导出完整 JSON Schema，Agent 零先验即可驱动；
-5. **社区与治理文档**：AGENTS.md 分层（universal / maintainer-only / external-contributor guardrail），维护者身份需可验证（MAINTAINERS + remote + write 权限三条件）；
-6. **多语言文档站**与版本化文档（docs/next、preview、versions）。
-
-### Marshal 强于
-
-1. **证据门禁**：冻结 TaskSpec、独立 Verification、digest 绑定 Review、CI 绑定 accept——herdr 完全没有这层，Agent 在 herdr 里"说完成了"就是完成了；
-2. **信任边界物理化**：单写者 worktree、control root 分离、Worker/Publisher 凭据隔离、权限归一化；herdr 的 pane 里 Agent 持有什么凭据由环境决定；
-3. **失败语义**：fail-closed、Outcome 证据、崩溃恢复与发布幂等均有实测；herdr 的恢复是会话级，不是任务证据级；
-4. **可审计性**：append-only Journal + 审批/介入记录绑定摘要；herdr 是实时观察，事后审计弱；
-5. **发布治理**：draft-only、幂等 PR、永不 merge；herdr 不管发布。
-
-## 4. 互补与集成点（核心结论）
-
-1. **herdr 作为 Marshal 的 TerminalSession 后端**（ADR 0008/0009 可插拔边界的自然延伸）：
-   - herdr socket API 的 `pane run / read / send input / wait on state / subscribe events` 与 Marshal cmux 后端所需原语同构，且额外提供 ssh 远程与重启回魂；
-   - 密封 LaunchEnvelope 可在 herdr pane 内执行；herdr 的 `blocked/working` 作为 CompletionGate 的**辅助**信号（按 ADR 0011，仍非权威证据）；
-   - 收益：受监督模式从"本机 cmux"扩展到"任意终端 + 远程"。
-2. **wait-until-blocked 解决 Marshal 的轮询空转**：Lead Agent 住在 herdr 里，用事件订阅替代 sleep 轮询——我们实测的 30–50 分钟衔接空转直接归零。
-3. **权威不争夺**：herdr 不做发布/裁决，Marshal 不做终端/持久化——集成时 Marshal 仍是状态与策略唯一权威，herdr 是呈现与传输层，与 cmux 同地位。
-4. **反向互补（可供 herdr 借鉴）**：证据门禁、冻结契约、凭据分权、draft-only 发布——herdr 用户若要把 Agent 产出安全落地仓库，正缺 Marshal 这层。
-
-## 5. 差距清单与行动（向 herdr 学）
-
-| # | 差距 | 行动 | 优先级 |
+| # | 差距 | 行动 | 状态 |
 | --- | --- | --- | --- |
-| 1 | 发布纪律（79 tags vs 0） | 合入当前实现批后打 `v0.1.0`，CHANGELOG 同步；此后每个 milestone 收口打 tag | 高 |
-| 2 | 安装体验 | 提供 `install.sh` 或 brew formula（Go 单二进制友好） | 中 |
-| 3 | API 自描述 | `marshal contract schema --all` 导出全部 Schema（部分已有 validate；补导出） | 中 |
-| 4 | 分层治理 AGENTS.md | 借鉴 maintainer 可验证 + external-contributor guardrail 两层 | 中 |
-| 5 | 多语言文档 | 中文优先不变，README 已有英文定位句；Pages 增加英文导航为下一步 | 低 |
-| 6 | 会话持久化 | 不追（定位不同）；经集成点 1 由 herdr 提供 | — |
+| 1 | 发布纪律 | 合入实现批后打 v0.1.0 | 进行中 |
+| 2 | 安装体验 | install.sh | Marshal Run 执行中 |
+| 3 | API 自描述 | `contract schema --all` | Marshal Run 执行中 |
+| 4 | 分层治理 | AGENTS.md 三层 + MAINTAINERS | Marshal Run 执行中 |
+| 5 | 多语言文档 | Pages 英文导航 | 待排 |
+| 6 | 会话持久化 | 不追；集成点由 herdr 提供 | 决策已定 |
+| 7 | 新 | herdr 的"规则远程更新"思路可借鉴于 Adapter 能力清单的版本化 | 记录 |
 
 ## 6. 结论
 
-"实现和定位一样"是表层印象（都管多个 coding agent）；深挖后是**会话层 vs 治理层**的分工。 Marshal 的下一步不是复刻 herdr 的终端能力，而是：
-
-1. 守住治理层独特性（证据门禁、信任边界）；
-2. 把 herdr 纳入 TerminalSession 后端候选（设计提案，扩展 ADR 0008/0009 的后端清单）；
-3. 在发布纪律、安装体验、自描述 API、分层治理四项上对齐优秀开源基线。
+v1 说"正交两层"；v2 源码级确认：**herdr 把"感知+控制"做成了可解释、可远程演进的基础设施（manifest 规则引擎 + hooks 注入 + fd 级 handoff），把"决策"完全让渡；Marshal 把"决策+证明"做成强制门禁，把"身体"让渡**。二者组合是目前可见的最完整形态：**herdr 神经 + Marshal 司法**。
