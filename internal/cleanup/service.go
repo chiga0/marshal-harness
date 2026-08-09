@@ -466,7 +466,21 @@ func RecordLegacyOutcome(ctx context.Context, input Input) (Result, error) {
 	if err := prepared.Commit(); err != nil {
 		return Result{}, err
 	}
+	if err := writeLegacyResult(runDir, state, actor); err != nil {
+		return Result{}, err
+	}
 	return Result{RunID: state.RunID, Applied: false, Targets: []Target{}}, nil
+}
+
+// writeLegacyResult writes the terminal result markdown that validateOutcome
+// expects, only when absent, so a migrated Run is fully retained.
+func writeLegacyResult(runDir string, state domain.RunState, actor string) error {
+	path := filepath.Join(runDir, "result.md")
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	}
+	content := fmt.Sprintf("# Run 终止记录（遗留迁移）\n\n- 任务 ID：%s\n- Run ID：%s\n- 终态：%s\n- 操作者：%s\n", state.TaskID, state.RunID, state.State, actor)
+	return os.WriteFile(path, []byte(content), 0o600)
 }
 
 // evidenceDigestFor returns a schema-valid digest anchored to the run's retained

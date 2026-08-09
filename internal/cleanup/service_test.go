@@ -262,6 +262,9 @@ func TestRecordLegacyOutcomeReconstructsThenAllowsCleanup(t *testing.T) {
 	if err := os.Remove(filepath.Join(fixture.runDir, "outcome.json")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(filepath.Join(fixture.runDir, "result.md")); err != nil {
+		t.Fatal(err)
+	}
 	// Without an outcome, cleanup must refuse.
 	if _, err := Execute(context.Background(), fixture.input(true)); !errors.Is(err, ErrOutcomeMissing) {
 		t.Fatalf("cleanup without outcome err = %v, want ErrOutcomeMissing", err)
