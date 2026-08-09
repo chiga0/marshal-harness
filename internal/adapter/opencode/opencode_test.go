@@ -413,7 +413,7 @@ func TestRunEnforcesOutputCapPermissionAndCancellation(t *testing.T) {
 func TestRunGradesBenignDenialRecordsEvidenceAndContinues(t *testing.T) {
 	events := `printf '%s\n'` +
 		` '{"type":"error","sessionID":"session-1","part":{"tool":"read","state":{"status":"error","error":"permission denied","input":{"filePath":"'"$PWD"'/source.go"}}}}'` +
-		` '{"type":"error","sessionID":"session-1","part":{"tool":"read","state":{"status":"error","error":"permission prevents reading bootstrap","input":{"filePath":"'"$TMPDIR"'/opencode/work-context.txt"}}}}'` +
+		` '{"type":"error","sessionID":"session-1","part":{"tool":"read","state":{"status":"error","error":"permission prevents reading bootstrap","input":{"filePath":"` + os.TempDir() + `/opencode/work-context.txt"}}}}'` +
 		` '{"type":"text","sessionID":"session-1","part":{"type":"text","text":"done"}}'`
 	fixture := newRunFixture(t, supportedBinary, events)
 	if err := os.WriteFile(filepath.Join(fixture.worktree, "source.go"), []byte("package x\n"), 0o600); err != nil {
