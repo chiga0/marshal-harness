@@ -3,24 +3,26 @@ package terminal
 // POC（实验分支 exp/herdr-terminal-backend，不进主干）。
 //
 // HerdrBackend 是 ADR 0008/0009 可插拔 TerminalSession 边界的第二个真实后端
-// 原型：把 herdr（终端运行时，herdr.dev）作为 Marshal 的 PTY 后端。它与 cmux
-// 后端同构：Probe 探测 herdr CLI 与 socket 可达性；Start 通过密封
-// LaunchEnvelope 在 herdr workspace/pane 内执行可信 launcher；Send/ReadScreen/
-// Interrupt 走 herdr CLI；Pause/Resume/Terminate 走进程组控制器。
+// 原型：把 herdr（终端运行时，herdr.dev，本机 0.8.0）作为 Marshal 的 PTY 后端。
+// 命令面以 herdr 0.8.0 真实 CLI 校准：
 //
-// 设计要点（详见 docs/research/herdr-backend-poc.md）：
-//   - herdr 只提供"身体/神经"（终端、注意力、喊话通信），不提供任务/证据/治理；
-//     Marshal 仍是状态与策略唯一权威，herdr 的 blocked/working 信号仅作辅助。
-//   - 与 cmux 一致：屏幕文本不替代 WorkerResult/Git Snapshot/Verification/Review。
-//   - 不继承 herdr/terminal ambient environment；环境值不进可见 argv。
+//	workspace create --cwd --label   -> result.workspace.workspace_id + result.root_pane.pane_id
+//	pane run <pane> <cmd>            -> 在 pane 内执行密封 launcher
+//	pane read <pane>                 -> 读屏
+//	pane send-text / send-keys       -> 注入文本/按键
+//	workspace close <id>             -> 关闭
+//	agent list / workspace get       -> agent_status（blocked/working/idle）辅助信号
 //
-// 该文件是 POC：命令面以 herdr CLI 为准（workspace/pane/agent 子命令），
-// 测试在无 MARSHAL_HERDR_PATH 或 herdr 缺席时跳过。
+// 信任边界与 cmux 一致、未放宽：密封 LaunchEnvelope 一次性、owner-only；环境值不进
+// 可见 argv；ExpectedExecutableDigest 漂移即拒绝；屏幕文本不替代 WorkerResult/
+// Git Snapshot/Verification/Review；herdr agent_status 仅作 CompletionGate 辅助
+// 信号（见 docs/research/herdr-adr-supplement.md），不具权威性。
 
 import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -53,7 +55,7 @@ func NewHerdrBackend(path string) (*HerdrBackend, error) {
 		return nil, ErrUnavailable
 	}
 	backend := &HerdrBackend{path: path, sum: sum, processes: defaultProcessController(), startDelay: 50 * time.Millisecond, startLimit: defaultStartTimeout}
-	backend.runner = &execCommandRunner{backend: &CMUXBackend{path: path, sum: sum}, limit: defaultCommandLimit}
+	backend.runner = &herdrRunner{path: path, sum: sum, limit: defaultCommandLimit}
 	return backend, nil
 }
 
@@ -67,12 +69,13 @@ func (b *HerdrBackend) verify() error {
 	return nil
 }
 
-// Probe checks the herdr binary identity and that its control surface answers.
+// Probe checks herdr binary identity and that its control surface answers.
 func (b *HerdrBackend) Probe(ctx context.Context) (port.TerminalProbeResult, error) {
 	if err := b.verify(); err != nil {
 		return port.TerminalProbeResult{BackendID: b.ID(), Diagnostic: "binary-replaced"}, err
 	}
-	if _, err := b.runner.Run(ctx, "workspace", "list", "--json"); err != nil {
+	output, err := b.runner.Run(ctx, "workspace", "list")
+	if err != nil || !strings.Contains(output, "workspace_list") {
 		return port.TerminalProbeResult{BackendID: b.ID(), Diagnostic: "herdr-control-unavailable"}, ErrUnavailable
 	}
 	caps := []port.TerminalCapability{
@@ -85,8 +88,54 @@ func (b *HerdrBackend) Probe(ctx context.Context) (port.TerminalProbeResult, err
 	return port.TerminalProbeResult{BackendID: b.ID(), Available: true, Capabilities: caps}, nil
 }
 
-// Start creates a herdr workspace running the sealed launcher, then delivers the
-// frozen initial prompt. Mirrors the cmux start handshake.
+// AuxiliaryStatus returns herdr's attention signal for a workspace
+// (blocked/working/idle/unknown). It is advisory only (ADR supplement).
+func (b *HerdrBackend) AuxiliaryStatus(ctx context.Context, workspace string) (string, error) {
+	output, err := b.runner.Run(ctx, "workspace", "get", workspace)
+	if err != nil {
+		return "", ErrUnavailable
+	}
+	var parsed struct {
+		Result struct {
+			Workspace struct {
+				AgentStatus string `json:"agent_status"`
+			} `json:"workspace"`
+		} `json:"result"`
+	}
+	if json.Unmarshal([]byte(output), &parsed) != nil {
+		return "", ErrUnavailable
+	}
+	return parsed.Result.Workspace.AgentStatus, nil
+}
+
+type herdrCreateResult struct {
+	Workspace string
+	Pane      string
+}
+
+func (b *HerdrBackend) createWorkspace(ctx context.Context, request port.TerminalStartRequest) (herdrCreateResult, error) {
+	output, err := b.runner.Run(ctx, "workspace", "create", "--cwd", request.WorkingDirectory, "--label", request.Title)
+	if err != nil {
+		return herdrCreateResult{}, ErrUnavailable
+	}
+	var parsed struct {
+		Result struct {
+			Workspace struct {
+				WorkspaceID string `json:"workspace_id"`
+			} `json:"workspace"`
+			RootPane struct {
+				PaneID string `json:"pane_id"`
+			} `json:"root_pane"`
+		} `json:"result"`
+	}
+	if json.Unmarshal([]byte(output), &parsed) != nil || parsed.Result.Workspace.WorkspaceID == "" || parsed.Result.RootPane.PaneID == "" {
+		return herdrCreateResult{}, ErrUnavailable
+	}
+	return herdrCreateResult{Workspace: parsed.Result.Workspace.WorkspaceID, Pane: parsed.Result.RootPane.PaneID}, nil
+}
+
+// Start creates a herdr workspace, runs the sealed launcher in its root pane,
+// then delivers the frozen initial prompt. Mirrors the cmux start handshake.
 func (b *HerdrBackend) Start(ctx context.Context, request port.TerminalStartRequest) (port.TerminalSession, error) {
 	if err := validateStartRequest(request); err != nil {
 		return nil, err
@@ -124,35 +173,35 @@ func (b *HerdrBackend) Start(ctx context.Context, request port.TerminalStartRequ
 			_ = os.Remove(reference.Path)
 		}
 	}()
+	created, err := b.createWorkspace(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	closeWS := func() { _, _ = b.runner.Run(context.Background(), "workspace", "close", created.Workspace) }
 	command, err := shellCommandWithPID([]string{request.LauncherExecutable, "__launch", reference.Path}, pidPath)
 	if err != nil {
+		closeWS()
 		return nil, err
 	}
-	output, err := b.runner.Run(ctx, "workspace", "create", "--name", request.Title, "--description", request.Description,
-		"--cwd", request.WorkingDirectory, "--command", command, "--focus", "false")
-	if err != nil {
-		return nil, ErrUnavailable
-	}
-	match := workspacePattern.FindStringSubmatch(strings.TrimSpace(output))
-	if match == nil {
-		return nil, ErrUnavailable
-	}
-	workspace := match[1]
-	if err := b.waitCommandVisible(ctx, workspace); err != nil {
-		_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
+	if _, err := b.runner.Run(ctx, "pane", "send-text", created.Pane, command); err != nil {
+		closeWS()
 		return nil, err
 	}
-	if _, err := b.runner.Run(ctx, "send-key", "--workspace", workspace, "enter"); err != nil {
-		_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
-		return nil, ErrUnavailable
+	if _, err := b.runner.Run(ctx, "pane", "send-keys", created.Pane, "enter"); err != nil {
+		closeWS()
+		return nil, err
+	}
+	if err := b.waitCommandVisible(ctx, created.Pane); err != nil {
+		closeWS()
+		return nil, err
 	}
 	pid, err := b.waitPID(ctx, pidPath)
 	if err != nil {
-		_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
+		closeWS()
 		return nil, err
 	}
 	if err := b.waitEnvelopeConsumed(ctx, reference.Path); err != nil {
-		_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
+		closeWS()
 		return nil, err
 	}
 	envelopePending = false
@@ -160,39 +209,39 @@ func (b *HerdrBackend) Start(ctx context.Context, request port.TerminalStartRequ
 	if b.processes.Supported() {
 		pgid, err = b.processes.GroupID(pid)
 		if err != nil {
-			_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
+			closeWS()
 			return nil, err
 		}
 	}
 	recordPath := filepath.Join(attemptDirectory, "terminal-session.json")
 	session := &herdrSession{
-		backend: b, workspace: workspace, pid: pid, pgid: pgid, state: StateRunning,
+		backend: b, workspace: created.Workspace, pane: created.Pane, pid: pid, pgid: pgid, state: StateRunning,
 		capabilities: probe.Capabilities, recordPath: recordPath,
-		record: sessionRecord{BackendID: b.ID(), WorkspaceRef: workspace, RunID: request.RunID, AttemptID: request.AttemptID,
+		record: sessionRecord{BackendID: b.ID(), WorkspaceRef: created.Workspace, RunID: request.RunID, AttemptID: request.AttemptID,
 			PID: pid, ProcessGroupID: pgid, Executable: request.Executable, ExecutableDigest: executableSum,
 			LauncherExecutable: request.LauncherExecutable, LauncherExecutableDigest: launcherSum, LaunchEnvelopeDigest: reference.Digest,
 			State: StateRunning, CreatedAt: request.Now.UTC(), UpdatedAt: request.Now.UTC()},
 	}
 	if err := session.persist(); err != nil {
 		_ = b.processes.Terminate(context.Background(), pid, time.Second)
-		_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
+		closeWS()
 		return nil, err
 	}
 	if err := session.Send(ctx, InputSourceFrozenPrompt, request.InitialPrompt, request.Now); err != nil {
 		_ = session.Terminate(context.Background(), time.Second)
-		_, _ = b.runner.Run(context.Background(), "workspace", "close", workspace)
+		closeWS()
 		return nil, err
 	}
 	return session, nil
 }
 
-func (b *HerdrBackend) waitCommandVisible(ctx context.Context, workspace string) error {
+func (b *HerdrBackend) waitCommandVisible(ctx context.Context, pane string) error {
 	deadline := time.NewTimer(b.startLimit)
 	defer deadline.Stop()
 	ticker := time.NewTicker(b.startDelay)
 	defer ticker.Stop()
 	for {
-		output, err := b.runner.Run(ctx, "read-screen", "--workspace", workspace, "--lines", "100")
+		output, err := b.runner.Run(ctx, "pane", "read", pane)
 		if err == nil && strings.Contains(output, "MARSHAL_LAUNCH_READY") {
 			return nil
 		}
@@ -248,10 +297,11 @@ func (b *HerdrBackend) waitPID(ctx context.Context, path string) (int, error) {
 	}
 }
 
-// herdrSession implements port.TerminalSession on top of a herdr workspace.
+// herdrSession implements port.TerminalSession on a herdr workspace/pane.
 type herdrSession struct {
 	backend      *HerdrBackend
 	workspace    string
+	pane         string
 	pid          int
 	pgid         int
 	capabilities []port.TerminalCapability
@@ -283,10 +333,10 @@ func (s *herdrSession) Send(ctx context.Context, source port.TerminalInputSource
 	if err := s.appendInput(inputRecord{Sequence: s.inputCount, Source: source, Digest: digestText(text), Phase: "planned", SentAt: now.UTC()}); err != nil {
 		return err
 	}
-	if _, err := s.backend.runner.Run(ctx, "send", "--workspace", s.workspace, text); err != nil {
+	if _, err := s.backend.runner.Run(ctx, "pane", "send-text", s.pane, text); err != nil {
 		return ErrUnavailable
 	}
-	if _, err := s.backend.runner.Run(ctx, "send-key", "--workspace", s.workspace, "enter"); err != nil {
+	if _, err := s.backend.runner.Run(ctx, "pane", "send-keys", s.pane, "enter"); err != nil {
 		return ErrUnavailable
 	}
 	return s.appendInput(inputRecord{Sequence: s.inputCount, Source: source, Digest: digestText(text), Phase: "delivered", SentAt: now.UTC()})
@@ -296,14 +346,14 @@ func (s *herdrSession) ReadScreen(ctx context.Context, lines int) (string, error
 	if lines < 1 || lines > 10000 {
 		return "", ErrInvalidRequest
 	}
-	return s.backend.runner.Run(ctx, "read-screen", "--workspace", s.workspace, "--lines", itoa(lines))
+	return s.backend.runner.Run(ctx, "pane", "read", s.pane)
 }
 
 func (s *herdrSession) InterruptStep(ctx context.Context) error {
 	if s.state != StateRunning {
 		return ErrSessionState
 	}
-	if _, err := s.backend.runner.Run(ctx, "send-key", "--workspace", s.workspace, "escape"); err != nil {
+	if _, err := s.backend.runner.Run(ctx, "pane", "send-keys", s.pane, "escape"); err != nil {
 		return ErrUnavailable
 	}
 	return nil
@@ -364,8 +414,40 @@ func (s *herdrSession) persist() error {
 }
 
 func (s *herdrSession) appendInput(record inputRecord) error {
-	// Reuse the cmux session input journal format (terminal-inputs.jsonl).
 	return appendInputJournal(filepath.Dir(s.recordPath), record)
+}
+
+// herdrRunner shells to the pinned herdr binary with a bounded output buffer.
+type herdrRunner struct {
+	path  string
+	sum   string
+	limit int
+}
+
+func (r *herdrRunner) Run(ctx context.Context, arguments ...string) (string, error) {
+	sum, err := executableDigest(r.path)
+	if err != nil || sum != r.sum {
+		return "", ErrUnavailable
+	}
+	return runCommand(ctx, r.path, r.limit, arguments...)
+}
+
+// runCommand executes a command with bounded stdout, shared with cmux runner.
+func runCommand(ctx context.Context, path string, limit int, arguments ...string) (string, error) {
+	return execBounded(ctx, path, limit, arguments...)
+}
+
+// execBounded runs path with arguments, capturing bounded stdout. It mirrors
+// the cmux execCommandRunner behavior without depending on a backend instance.
+func execBounded(ctx context.Context, path string, limit int, arguments ...string) (string, error) {
+	command := exec.CommandContext(ctx, path, arguments...)
+	command.Env = terminalEnvironment()
+	stdout, stderr := &boundedBuffer{limit: limit}, &boundedBuffer{limit: 4 << 10}
+	command.Stdout, command.Stderr = stdout, stderr
+	if err := command.Run(); err != nil || stdout.overflow {
+		return "", ErrUnavailable
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // parsePIDFile validates the PID handshake file written by the sealed launcher.
@@ -381,11 +463,7 @@ func parsePIDFile(path string, data []byte) (int, error) {
 	return pid, nil
 }
 
-// digestText returns the canonical digest of an input string for provenance.
 func digestText(text string) string { return canonical.DigestBytes([]byte(text)) }
-
-// itoa is a small strconv wrapper to keep call sites terse.
-func itoa(n int) string { return strconv.Itoa(n) }
 
 // appendInputJournal appends one provenance record to terminal-inputs.jsonl.
 func appendInputJournal(directory string, record inputRecord) error {
