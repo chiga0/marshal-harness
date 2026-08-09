@@ -449,27 +449,38 @@ func RecordLegacyOutcome(ctx context.Context, input Input) (Result, error) {
 		return Result{}, ErrNonTerminal
 	}
 	runDir := filepath.Join(input.StateRoot, "runs", input.RunID)
-	if err := validateOutcome(runDir, state, input.Validator); err == nil {
+	outcomePath := filepath.Join(runDir, "outcome.json")
+	hasOutcome := regularFile(outcomePath)
+	hasResult := regularFile(filepath.Join(runDir, "result.md"))
+	if hasOutcome && hasResult {
 		return Result{}, ErrOutcomeExists
 	}
-	evidence := evidenceDigestFor(runDir, state)
-	prepared, err := review.PrepareOutcome(runDir, review.OutcomeData{
-		TaskID: state.TaskID, RunID: state.RunID, TerminalState: state.State,
-		Verdict: legacyVerdict(state.State), FinalReviewRound: max(1, state.ReviewRound),
-		FinalReviewDigest: evidence, FinalEvidenceDigest: evidence,
-		Summary:      fmt.Sprintf("reconstructed legacy terminal outcome (migration by %s): %s", actor, state.State),
-		FindingCount: 0, GeneratedAt: cleanupTime(input.Now),
-	})
-	if err != nil {
-		return Result{}, err
-	}
-	if err := prepared.Commit(); err != nil {
-		return Result{}, err
+	if !hasOutcome {
+		evidence := evidenceDigestFor(runDir, state)
+		prepared, err := review.PrepareOutcome(runDir, review.OutcomeData{
+			TaskID: state.TaskID, RunID: state.RunID, TerminalState: state.State,
+			Verdict: legacyVerdict(state.State), FinalReviewRound: max(1, state.ReviewRound),
+			FinalReviewDigest: evidence, FinalEvidenceDigest: evidence,
+			Summary:      fmt.Sprintf("reconstructed legacy terminal outcome (migration by %s): %s", actor, state.State),
+			FindingCount: 0, GeneratedAt: cleanupTime(input.Now),
+		})
+		if err != nil {
+			return Result{}, err
+		}
+		if err := prepared.Commit(); err != nil {
+			return Result{}, err
+		}
 	}
 	if err := writeLegacyResult(runDir, state, actor); err != nil {
 		return Result{}, err
 	}
 	return Result{RunID: state.RunID, Applied: false, Targets: []Target{}}, nil
+}
+
+// regularFile reports whether path exists as a regular non-symlink file.
+func regularFile(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0
 }
 
 // writeLegacyResult writes the terminal result markdown that validateOutcome
