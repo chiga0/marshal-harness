@@ -11,9 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
+	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/verification"
 )
@@ -26,6 +28,7 @@ var (
 	ErrTargetIdentity = errors.New("cleanup target identity is not provable")
 	ErrExportClean    = errors.New("cleanup export requires unarchived worktree changes")
 	ErrPatchTooLarge  = errors.New("worktree patch exceeds the archive limit")
+	ErrOutcomeExists  = errors.New("cleanup record-outcome refuses to overwrite an existing valid outcome")
 )
 
 type Input struct {
@@ -396,4 +399,87 @@ func readTombstones(runDir string, state domain.RunState) (map[string]bool, map[
 		}
 	}
 	return completed, planned, nil
+}
+
+// legacyVerdict maps a terminal state to the Outcome verdict enum.
+func legacyVerdict(s domain.State) string {
+	switch s {
+	case domain.StateAccepted:
+		return "accept"
+	case domain.StateRejected:
+		return "reject"
+	case domain.StateNoChange:
+		return "no_change"
+	case domain.StateAborted:
+		return "abort"
+	default:
+		return "blocked"
+	}
+}
+
+// RecordLegacyOutcome reconstructs a faithful terminal Outcome for a terminal
+// Run that predates outcome-writing, so cleanup can then proceed. It requires a
+// terminal state and an actor, and never overwrites an existing valid outcome
+// (review.PrepareOutcome refuses when outcome.json already exists). Evidence
+// digests are taken from the run's verification report when present, else from
+// the state snapshot, so the reconstructed Outcome stays schema-valid and
+// traceable to the run's retained evidence.
+func RecordLegacyOutcome(ctx context.Context, input Input) (Result, error) {
+	if ctx == nil || input.Validator == nil || input.StateRoot == "" || domain.ValidateID(input.RunID) != nil {
+		return Result{}, ErrTargetIdentity
+	}
+	actor := strings.TrimSpace(input.Actor)
+	if actor == "" || len(actor) > 512 {
+		return Result{}, ErrActorRequired
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	store := runstore.New(input.StateRoot)
+	lease, err := store.Acquire(input.RunID)
+	if err != nil {
+		return Result{}, err
+	}
+	defer lease.Release()
+	state, err := store.Inspect(input.RunID)
+	if err != nil {
+		return Result{}, err
+	}
+	if !state.State.Terminal() {
+		return Result{}, ErrNonTerminal
+	}
+	runDir := filepath.Join(input.StateRoot, "runs", input.RunID)
+	if err := validateOutcome(runDir, state, input.Validator); err == nil {
+		return Result{}, ErrOutcomeExists
+	}
+	evidence := evidenceDigestFor(runDir, state)
+	prepared, err := review.PrepareOutcome(runDir, review.OutcomeData{
+		TaskID: state.TaskID, RunID: state.RunID, TerminalState: state.State,
+		Verdict: legacyVerdict(state.State), FinalReviewRound: max(1, state.ReviewRound),
+		FinalReviewDigest: evidence, FinalEvidenceDigest: evidence,
+		Summary:      fmt.Sprintf("reconstructed legacy terminal outcome (migration by %s): %s", actor, state.State),
+		FindingCount: 0, GeneratedAt: cleanupTime(input.Now),
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	if err := prepared.Commit(); err != nil {
+		return Result{}, err
+	}
+	return Result{RunID: state.RunID, Applied: false, Targets: []Target{}}, nil
+}
+
+// evidenceDigestFor returns a schema-valid digest anchored to the run's retained
+// evidence: the verification report when present, else the state snapshot.
+func evidenceDigestFor(runDir string, state domain.RunState) string {
+	for _, candidate := range []string{
+		filepath.Join(runDir, "verification-report.json"),
+		filepath.Join(runDir, "state.json"),
+	} {
+		if data, err := os.ReadFile(candidate); err == nil {
+			return canonical.DigestBytes(data)
+		}
+	}
+	data, _ := json.Marshal(state)
+	return canonical.DigestBytes(data)
 }

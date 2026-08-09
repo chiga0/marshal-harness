@@ -256,3 +256,45 @@ func gitFixtureCommand(t testing.TB, directory string, args ...string) string {
 	}
 	return string(output)
 }
+
+func TestRecordLegacyOutcomeReconstructsThenAllowsCleanup(t *testing.T) {
+	fixture := newCleanupFixture(t, domain.StateBlocked)
+	if err := os.Remove(filepath.Join(fixture.runDir, "outcome.json")); err != nil {
+		t.Fatal(err)
+	}
+	// Without an outcome, cleanup must refuse.
+	if _, err := Execute(context.Background(), fixture.input(true)); !errors.Is(err, ErrOutcomeMissing) {
+		t.Fatalf("cleanup without outcome err = %v, want ErrOutcomeMissing", err)
+	}
+	in := fixture.input(false)
+	in.Actor = "op:1"
+	if _, err := RecordLegacyOutcome(context.Background(), in); err != nil {
+		t.Fatalf("RecordLegacyOutcome = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(fixture.runDir, "outcome.json"))
+	if err != nil {
+		t.Fatalf("reconstructed outcome missing: %v", err)
+	}
+	if err := fixture.validator.Validate(domain.KindOutcome, data); err != nil {
+		t.Fatalf("reconstructed outcome invalid: %v", err)
+	}
+	// A second record must refuse to overwrite.
+	if _, err := RecordLegacyOutcome(context.Background(), in); !errors.Is(err, ErrOutcomeExists) {
+		t.Fatalf("second record err = %v, want ErrOutcomeExists", err)
+	}
+	// Now cleanup can proceed (worktree is clean).
+	if _, err := Execute(context.Background(), fixture.input(true)); err != nil {
+		t.Fatalf("cleanup after migration = %v", err)
+	}
+}
+
+func TestRecordLegacyOutcomeRequiresActorAndTerminal(t *testing.T) {
+	fixture := newCleanupFixture(t, domain.StateBlocked)
+	if err := os.Remove(filepath.Join(fixture.runDir, "outcome.json")); err != nil {
+		t.Fatal(err)
+	}
+	noActor := fixture.input(false)
+	if _, err := RecordLegacyOutcome(context.Background(), noActor); !errors.Is(err, ErrActorRequired) {
+		t.Fatalf("no actor err = %v, want ErrActorRequired", err)
+	}
+}

@@ -597,6 +597,7 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 const cleanupUsage = "用法：marshal task cleanup --run RUN_ID [--export-patch --actor ID] [--apply] [--json]\n" +
+	"       marshal task cleanup --run RUN_ID --record-outcome --actor ID [--json]\n" +
 	"       marshal task cleanup --expired [--apply --actor ID] [--json]"
 
 func runTaskCleanup(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -606,6 +607,7 @@ func runTaskCleanup(ctx context.Context, args []string, stdout, stderr io.Writer
 	apply := flags.Bool("apply", false, "执行预览中的本地清理")
 	exportPatch := flags.Bool("export-patch", false, "将 dirty 托管 Worktree 的未归档变更导出到 .marshal/archive")
 	expired := flags.Bool("expired", false, "按 retentionDays 列出并清理已过期的终态 Run")
+	recordOutcome := flags.Bool("record-outcome", false, "为缺 Outcome 的终态 Run 重建终态 Outcome（遗留迁移）")
 	actor := flags.String("actor", "", "操作者 ID")
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
@@ -633,7 +635,7 @@ func runTaskCleanup(ctx context.Context, args []string, stdout, stderr io.Writer
 		}
 		return writeExpiredResult(result, *apply, *jsonOutput, stdout, stderr)
 	}
-	if *runID == "" || (*exportPatch && *apply) || (*exportPatch && trimmedActor == "") {
+	if *runID == "" || (*exportPatch && *apply) || (*exportPatch && trimmedActor == "") || (*recordOutcome && (*apply || *exportPatch || *expired)) {
 		fmt.Fprintln(stderr, cleanupUsage)
 		return ExitUsage
 	}
@@ -650,6 +652,21 @@ func runTaskCleanup(ctx context.Context, args []string, stdout, stderr io.Writer
 	if err != nil {
 		fmt.Fprintln(stderr, "清理失败：Contract Validator 初始化失败。")
 		return ExitFailure
+	}
+	if *recordOutcome {
+		result, err := cleanupservice.RecordLegacyOutcome(ctx, cleanupservice.Input{
+			StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID,
+			Actor: trimmedActor, Now: time.Now().UTC(), Validator: validator,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "记录遗留 Outcome 失败：%v\n", err)
+			return ExitFailure
+		}
+		if err := writeJSON(stdout, result); err != nil {
+			fmt.Fprintf(stderr, "输出结果失败：%v\n", err)
+			return ExitFailure
+		}
+		return ExitOK
 	}
 	result, err := cleanupservice.Execute(ctx, cleanupservice.Input{
 		StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID,
