@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,7 @@ import (
 	cleanupservice "github.com/chiga0/marshal-harness/internal/cleanup"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	controlplane "github.com/chiga0/marshal-harness/internal/control"
+	"github.com/chiga0/marshal-harness/internal/dashboard"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/execution"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
@@ -86,6 +88,8 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return runInit(args[1:], stdout, stderr)
 	case "contract":
 		return runContract(args[1:], stdin, stdout, stderr)
+	case "serve":
+		return runServe(args[1:], stdout, stderr)
 	case "task":
 		return runTask(ctx, args[1:], stdout, stderr)
 	case "__launch":
@@ -1710,4 +1714,30 @@ func writeUsage(output io.Writer) {
   marshal task <COMMAND>
 
 OpenCode、Qwen Code 与 Pi Worker 只产生 Attempt 与真实快照；verify、review、publish 与 accept 是彼此独立的证据门禁。发布命令还要求 absolute MARSHAL_GH_PATH 与 MARSHAL_GH_CONFIG_DIR。`)
+}
+
+// runServe starts the read-only dashboard (experimental). It exposes no control
+// endpoints; approve/publish remain in CLI/Skill. Binds loopback by default.
+func runServe(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	addr := flags.String("addr", "127.0.0.1:7717", "监听地址（默认仅 loopback）")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "用法：marshal serve [--addr HOST:PORT]")
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil || location.ValidateIdentity() != nil {
+		fmt.Fprintln(stderr, "serve 失败：无法验证仓库身份。")
+		return ExitFailure
+	}
+	if host, _, err := net.SplitHostPort(*addr); err == nil && host != "" && host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		fmt.Fprintf(stderr, "警告：监听非 loopback 地址 %s；dashboard 为只读但请自行加认证/反向代理。\n", *addr)
+	}
+	fmt.Fprintf(stdout, "Marshal dashboard (read-only) listening on %s\n", *addr)
+	if err := dashboard.Serve(dashboard.Options{StateRoot: location.StateRoot, Addr: *addr}); err != nil {
+		fmt.Fprintf(stderr, "serve 失败：%v\n", err)
+		return ExitFailure
+	}
+	return ExitOK
 }
