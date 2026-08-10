@@ -463,6 +463,20 @@ func readTokens(runDir string) (in, out int64) {
 			continue
 		}
 		outDir := filepath.Join(runDir, "attempts", entry.Name(), "control", "output")
+		// PTY best-effort: worker-result may carry usage when the agent reports it.
+		if wr, err := os.ReadFile(filepath.Join(outDir, "worker-result.json")); err == nil {
+			var parsed struct {
+				Usage struct {
+					Input  int64 `json:"input"`
+					Output int64 `json:"output"`
+				} `json:"usage"`
+			}
+			if json.Unmarshal(wr, &parsed) == nil && (parsed.Usage.Input > 0 || parsed.Usage.Output > 0) {
+				in += parsed.Usage.Input
+				out += parsed.Usage.Output
+				continue
+			}
+		}
 		metas, err := os.ReadDir(outDir)
 		if err != nil {
 			continue
@@ -577,7 +591,7 @@ const indexHTML = `<!doctype html>
  .ok{background:#12261e;color:#3fb950}.err{background:#2a1215;color:#f85149}.warn{background:#2a2113;color:#d29922}.info{background:#121d2a;color:#58a6ff}.mut{background:#1c2128;color:#8b949e}
  .runrow{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0;cursor:pointer;background:var(--panel)} .runrow:hover{border-color:var(--accent)}
  .cols{display:flex;gap:20px;flex-wrap:wrap} .col-main{flex:3;min-width:320px} .col-side{flex:1;min-width:280px}
- svg{max-width:100%} .node text{fill:var(--text);font-size:11px} .edge{stroke:#444c56;stroke-width:1.5;fill:none;marker-end:url(#ar)}
+ .dagwrap{position:relative;overflow:hidden;border:1px solid var(--border);border-radius:8px;background:var(--bg)} .dagwrap svg{transform-origin:0 0} .dagctl{position:absolute;right:8px;top:8px;z-index:2} .dagctl a{cursor:pointer;margin-left:6px;border:1px solid var(--border);border-radius:4px;padding:2px 7px;color:var(--muted);background:var(--panel)} svg{max-width:none} .node text{fill:var(--text);font-size:11px} .edge{stroke:#444c56;stroke-width:1.5;fill:none;marker-end:url(#ar)}
  .kv{font-size:13px;margin:4px 0} .kv b{color:var(--muted);font-weight:500}
  .ev{border-left:3px solid var(--border);padding:4px 10px;margin:6px 0;font-size:13px;border-radius:3px;background:var(--bg)} .ev small{color:var(--muted);display:block}
 </style></head><body>
@@ -595,6 +609,13 @@ var TASKS=null;var SEARCH="";
 function toggleTheme(){var b=document.body;b.dataset.theme=b.dataset.theme==="light"?"":"light";document.getElementById("theme").textContent=b.dataset.theme==="light"?"暗色":"亮色"}
 function nav(h){location.hash=h?"#/"+h:"#/"}
 function bindNav(){document.querySelectorAll("[data-nav]").forEach(function(el){el.onclick=function(){nav(el.getAttribute("data-nav"))}})}
+var Z={s:1,x:0,y:0};
+function applyZ(){var svg=document.querySelector("#dagwrap svg");if(svg)svg.style.transform="translate("+Z.x+"px,"+Z.y+"px) scale("+Z.s+")"}
+function bindDag(){var w=document.getElementById("dagwrap");if(!w)return;Z={s:1,x:0,y:0};applyZ();
+ w.querySelectorAll("[data-z]").forEach(function(b){b.onclick=function(e){e.stopPropagation();var m=b.getAttribute("data-z");if(m==="in")Z.s*=1.2;else if(m==="out")Z.s/=1.2;else{Z={s:1,x:0,y:0}}applyZ()}});
+ w.onwheel=function(e){e.preventDefault();Z.s*=e.deltaY<0?1.1:0.9;applyZ()};
+ var drag=null;w.onmousedown=function(e){drag={x:e.clientX-Z.x,y:e.clientY-Z.y}};w.onmousemove=function(e){if(drag){Z.x=e.clientX-drag.x;Z.y=e.clientY-drag.y;applyZ()}};w.onmouseup=function(){drag=null};
+ w.querySelectorAll("[data-att]").forEach(function(n){n.onclick=function(e){e.stopPropagation();var a=n.getAttribute("data-att");var el=document.querySelectorAll("#atts .kv")[a];if(el)el.scrollIntoView({block:"center"})}})}
 function route(){
   var h=location.hash.replace(/^#\/?/,"");
   document.getElementById("nav-tasks").className=h?"":"on";
@@ -641,15 +662,15 @@ async function showRun(run,embedded){
    '<div class="kv"><b>耗时</b> Worker '+(d.workerDurationSec||0)+'s · 全程 '+(d.totalDurationSec||0)+'s</div>'+
    '<div class="kv"><b>Token</b> 入 '+(d.inputTokens||0)+' 出 '+(d.outputTokens||0)+'</div>'+
    '<div class="kv"><b>Artifact</b> '+((d.artifacts&&d.artifacts.length)?d.artifacts.length+' 项':"无")+'</div>'+
-   '<div class="sec">Worker 尝试</div>'+((d.attempts||[]).map(function(a){return '<div class="kv">· '+a.id+(a.workerStatus?"（"+a.workerStatus+"）":"")+'</div>'}).join("")||'<div class="kv">无</div>')+'</div></div>';
+   '<div class="sec">Worker 尝试</div><div id="atts">'+((d.attempts||[]).map(function(a){return '<div class="kv">· '+a.id+(a.workerStatus?"（"+a.workerStatus+"）":"")+'</div>'}).join("")||'<div class="kv">无</div>')+'</div></div>';bindDag();
   if(embedded){document.getElementById("runbox").innerHTML=h;bindNav()}else{document.getElementById("crumb").innerHTML='<a data-nav="">任务</a> / <a data-nav="task/'+encodeURIComponent(d.title||d.taskId)+'">'+esc(d.title||d.taskId)+'</a> / '+run;document.getElementById("main").innerHTML=h;bindNav()}
 }
 function node(x,y,label,color){return '<g class="node"><rect x="'+x+'" y="'+y+'" width="120" height="34" fill="'+color+'22" stroke="'+color+'"/><text x="'+(x+60)+'" y="'+(y+21)+'" text-anchor="middle">'+label+'</text></g>'}
 function dag(d){
   var stages=[["Leader/Plan","info"]];
-  (d.attempts||[]).forEach(function(a,i){var c=a.workerStatus==="completed"?"ok":(a.workerStatus?"err":"info");stages.push(["Worker"+(i+1),c])});
+  (d.attempts||[]).forEach(function(a,i){var c=a.workerStatus==="completed"?"ok":(a.workerStatus?"err":"info");stages.push(["Worker"+(i+1),c,i])});
   stages.push(["验证",d.verification==="pass"?"ok":(d.verification?"err":"mut")]);stages.push(["审查",d.hasReview?"ok":"mut"]);stages.push(["发布",d.hasPublication?"ok":"mut"]);stages.push(["结局",d.hasOutcome?"ok":"mut"]);
-  var x=10,parts=[],edges=[];stages.forEach(function(sg,i){var c=COL[sg[1]];parts.push(node(x,10,sg[0],c));if(i>0)edges.push('<path class="edge" d="M'+(x-10)+' 27 L'+x+' 27"/>');x+=140});
+  var x=10,parts=[],edges=[];stages.forEach(function(sg,i){var c=COL[sg[1]];var att=(sg.length>2&&sg[2]!==undefined)?' data-att="'+sg[2]+'"':'';parts.push('<g class="node"'+att+'><rect x="'+x+'" y="10" width="120" height="34" fill="'+c+'22" stroke="'+c+'"/><text x="'+(x+60)+'" y="31" text-anchor="middle">'+sg[0]+'</text></g>');if(i>0)edges.push('<path class="edge" d="M'+(x-10)+' 27 L'+x+' 27"/>');x+=140});
   return '<svg width="'+x+'" height="60"><defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="#444c56"/></marker></defs>'+edges.join("")+parts.join("")+'</svg>';
 }
 legend();route();document.getElementById("q").addEventListener("input",function(e){SEARCH=e.target.value.toLowerCase().trim();if(!location.hash||location.hash==="#/"||location.hash==="#")renderTasks()});
