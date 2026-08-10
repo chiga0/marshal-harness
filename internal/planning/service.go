@@ -216,8 +216,10 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		}
 	}()
 
-	// 10. Create the managed linked worktree locked at the base SHA.
-	worktree, err = repository.Create(input.StateRoot, task.Metadata.ID, baseSHA)
+	// 10. Create the managed linked worktree locked at the base SHA, keyed by
+	// (taskId, runId) so a retried taskId plans onto a fresh worktree instead
+	// of colliding with the previous run's directory and branch.
+	worktree, err = repository.CreateForRun(input.StateRoot, task.Metadata.ID, input.RunID, baseSHA)
 	if err != nil {
 		return Result{}, fmt.Errorf("planning: create worktree: %w", err)
 	}

@@ -48,6 +48,52 @@ func TestCleanupPreviewAndApplyRetainEvidenceAndBranch(t *testing.T) {
 	}
 }
 
+func TestCleanupRemovesEachRunWorktreeOfSameTaskIndependently(t *testing.T) {
+	fixture := newCleanupFixture(t, domain.StateAccepted)
+	const retryRunID = "run-cleanup-retry"
+	manager, err := gitworktree.Open(fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := manager.CreateForRun(fixture.stateRoot, fixture.taskID, retryRunID, fixture.baseSHA)
+	if err != nil {
+		t.Fatalf("retry run of the same task could not create its own worktree: %v", err)
+	}
+	retryPath, retryBranch := retry.Path, retry.Branch
+	if err := retry.Release(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = gitFixtureCommand(nil, fixture.repository, "worktree", "remove", "--force", retryPath)
+		_ = gitFixtureCommand(nil, fixture.repository, "branch", "-D", retryBranch)
+	})
+	if want := fixture.taskID + "-" + retryRunID; filepath.Base(retryPath) != want {
+		t.Fatalf("retry worktree name = %q, want %q", filepath.Base(retryPath), want)
+	}
+	writeCleanupRunState(t, fixture.stateRoot, fixture.taskID, retryRunID, domain.StateAccepted, fixture.baseSHA, retryPath)
+
+	first, err := Execute(context.Background(), fixture.input(true))
+	if err != nil || !first.Applied {
+		t.Fatalf("first run cleanup=%+v error=%v", first, err)
+	}
+	if _, err := os.Lstat(fixture.worktreePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("first run worktree still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(retryPath, "README.md")); err != nil {
+		t.Fatalf("retry worktree was touched by the first run's cleanup: %v", err)
+	}
+
+	retryInput := fixture.input(true)
+	retryInput.RunID = retryRunID
+	second, err := Execute(context.Background(), retryInput)
+	if err != nil || !second.Applied {
+		t.Fatalf("retry run cleanup=%+v error=%v", second, err)
+	}
+	if _, err := os.Lstat(retryPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retry worktree still exists: %v", err)
+	}
+}
+
 func TestCleanupGuardsPreserveWorktree(t *testing.T) {
 	t.Run("dirty", func(t *testing.T) {
 		fixture := newCleanupFixture(t, domain.StateBlocked)
@@ -195,15 +241,29 @@ func newCleanupFixture(t *testing.T, terminal domain.State) cleanupFixture {
 		t.Fatal(err)
 	}
 	validator, _ := contract.NewValidator()
-	state := domain.NewRunState("task-cleanup", "run-cleanup", time.Unix(100, 0).UTC())
-	state.State, state.BaseSHA, state.WorktreePath = terminal, base, path
-	store := runstore.New(location.StateRoot)
-	lease, _ := store.Acquire(state.RunID)
+	state := writeCleanupRunState(t, location.StateRoot, "task-cleanup", "run-cleanup", terminal, base, path)
+	fixture := cleanupFixture{repository: repository, stateRoot: location.StateRoot, runDir: filepath.Join(location.StateRoot, "runs", state.RunID), worktreePath: path, branch: branch, baseSHA: base, taskID: state.TaskID, runID: state.RunID, validator: validator}
+	t.Cleanup(func() {
+		_ = gitFixtureCommand(nil, repository, "worktree", "remove", "--force", path)
+		_ = gitFixtureCommand(nil, repository, "branch", "-D", branch)
+	})
+	return fixture
+}
+
+func writeCleanupRunState(t *testing.T, stateRoot, taskID, runID string, terminal domain.State, baseSHA, worktreePath string) domain.RunState {
+	t.Helper()
+	state := domain.NewRunState(taskID, runID, time.Unix(100, 0).UTC())
+	state.State, state.BaseSHA, state.WorktreePath = terminal, baseSHA, worktreePath
+	store := runstore.New(stateRoot)
+	lease, err := store.Acquire(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.WriteSnapshot(lease, state); err != nil {
 		t.Fatal(err)
 	}
 	_ = lease.Release()
-	runDir := filepath.Join(location.StateRoot, "runs", state.RunID)
+	runDir := filepath.Join(stateRoot, "runs", runID)
 	outcome := domain.OutcomeBundle{
 		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindOutcome, TaskID: state.TaskID, RunID: state.RunID,
 		TerminalState: terminal, Verdict: verdictFor(terminal), FinalReviewRound: 1,
@@ -218,12 +278,7 @@ func newCleanupFixture(t *testing.T, terminal domain.State) cleanupFixture {
 	if err := os.WriteFile(filepath.Join(runDir, "result.md"), []byte("# Result\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fixture := cleanupFixture{repository: repository, stateRoot: location.StateRoot, runDir: runDir, worktreePath: path, branch: branch, baseSHA: base, taskID: state.TaskID, runID: state.RunID, validator: validator}
-	t.Cleanup(func() {
-		_ = gitFixtureCommand(nil, repository, "worktree", "remove", "--force", path)
-		_ = gitFixtureCommand(nil, repository, "branch", "-D", branch)
-	})
-	return fixture
+	return state
 }
 
 func (f cleanupFixture) input(apply bool) Input {

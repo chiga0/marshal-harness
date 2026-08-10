@@ -40,6 +40,11 @@ type Detached struct {
 
 var branchUnsafe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
+// maxManagedNameLength bounds every managed worktree directory, lock file and
+// branch component derived from (taskId, runId), so pathological ID pairs fail
+// closed instead of exceeding filesystem name limits.
+const maxManagedNameLength = 200
+
 const repositoryLockRetries = 5
 
 var repositoryLockBackoff = 800 * time.Millisecond
@@ -90,8 +95,29 @@ func (r Repository) ResolveBaseContext(ctx context.Context, ref string) (string,
 	return sha, nil
 }
 
+// Create creates the legacy task-keyed managed worktree. It is retained for
+// callers that predate per-run keying; new Runs must use CreateForRun so the
+// same taskId can be retried under a fresh runId.
 func (r Repository) Create(stateRoot, taskID, baseSHA string) (*Worktree, error) {
+	return r.CreateForRun(stateRoot, taskID, "", baseSHA)
+}
+
+// CreateForRun creates the managed worktree keyed by (taskId, runId): the
+// directory, branch and single-writer lock all use the run-scoped name
+// <task>-<run>, so independent Runs of one task never collide and each
+// worktree still admits at most one writer at a time. An empty runID keeps
+// the legacy task-only naming.
+func (r Repository) CreateForRun(stateRoot, taskID, runID, baseSHA string) (*Worktree, error) {
 	if err := domain.ValidateID(taskID); err != nil {
+		return nil, err
+	}
+	if runID != "" {
+		if err := domain.ValidateID(runID); err != nil {
+			return nil, fmt.Errorf("invalid run ID: %w", err)
+		}
+	}
+	name, err := managedName(taskID, runID)
+	if err != nil {
 		return nil, err
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{40,64}$`).MatchString(baseSHA) {
@@ -105,7 +131,7 @@ func (r Repository) Create(stateRoot, taskID, baseSHA string) (*Worktree, error)
 		return nil, err
 	}
 	repositoryLock := flock.New(filepath.Join(locks, "repository.lock"))
-	taskLock := flock.New(filepath.Join(locks, "task-"+safeName(taskID)+".lock"))
+	taskLock := flock.New(filepath.Join(locks, "task-"+name+".lock"))
 	if err := lockRepositoryWithRetry(repositoryLock); err != nil {
 		return nil, fmt.Errorf("acquire repository lock: %w", err)
 	}
@@ -113,8 +139,8 @@ func (r Repository) Create(stateRoot, taskID, baseSHA string) (*Worktree, error)
 		_ = repositoryLock.Unlock()
 		return nil, fmt.Errorf("acquire task lock: %w", lockError(err))
 	}
-	worktreePath := filepath.Join(stateRoot, "worktrees", safeName(taskID))
-	branch := "marshal/" + safeName(taskID)
+	worktreePath := filepath.Join(stateRoot, "worktrees", name)
+	branch := "marshal/" + name
 	if _, err := os.Lstat(worktreePath); !errors.Is(err, os.ErrNotExist) {
 		_ = taskLock.Unlock()
 		_ = repositoryLock.Unlock()
@@ -150,11 +176,20 @@ func (r Repository) Create(stateRoot, taskID, baseSHA string) (*Worktree, error)
 	return worktree, nil
 }
 
+// Acquire takes the single-writer lease on one managed worktree of the task.
+// The target name is resolved from the requested path, so it binds both the
+// legacy task-keyed name and the run-scoped <task>-<run> name to the exact
+// directory, its lock file and its branch, preserving the one-writer invariant
+// for Runs planned before and after per-run keying.
 func (r Repository) Acquire(stateRoot, taskID, worktreePath, baseSHA string) (*Worktree, error) {
 	if err := domain.ValidateID(taskID); err != nil {
 		return nil, err
 	}
-	expected, err := filepath.Abs(filepath.Join(stateRoot, "worktrees", safeName(taskID)))
+	name := filepath.Base(worktreePath)
+	if !managedNameForTask(taskID, name) {
+		return nil, fmt.Errorf("worktree path %q is not a managed worktree of task %q", worktreePath, taskID)
+	}
+	expected, err := filepath.Abs(filepath.Join(stateRoot, "worktrees", name))
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +209,7 @@ func (r Repository) Acquire(stateRoot, taskID, worktreePath, baseSHA string) (*W
 		return nil, err
 	}
 	repositoryLock := flock.New(filepath.Join(locks, "repository.lock"))
-	taskLock := flock.New(filepath.Join(locks, "task-"+safeName(taskID)+".lock"))
+	taskLock := flock.New(filepath.Join(locks, "task-"+name+".lock"))
 	if locked, err := repositoryLock.TryLock(); err != nil || !locked {
 		return nil, fmt.Errorf("acquire repository lock: %w", lockError(err))
 	}
@@ -182,7 +217,7 @@ func (r Repository) Acquire(stateRoot, taskID, worktreePath, baseSHA string) (*W
 		_ = repositoryLock.Unlock()
 		return nil, fmt.Errorf("acquire task lock: %w", lockError(err))
 	}
-	worktree := &Worktree{Path: actual, Branch: "marshal/" + safeName(taskID), BaseSHA: baseSHA, repo: r, stateRoot: stateRoot, taskLock: taskLock}
+	worktree := &Worktree{Path: actual, Branch: "marshal/" + name, BaseSHA: baseSHA, repo: r, stateRoot: stateRoot, taskLock: taskLock}
 	if err := worktree.Validate(); err != nil {
 		_ = taskLock.Unlock()
 		_ = repositoryLock.Unlock()
@@ -411,6 +446,31 @@ func (r Repository) CleanSnapshot(path string) (bool, error) {
 		return false, err
 	}
 	return output == "", nil
+}
+
+// managedName composes the managed worktree name for a task: the legacy
+// task-only name when runID is empty, otherwise the run-scoped <task>-<run>
+// name that keeps retries of one taskId on independent worktrees.
+func managedName(taskID, runID string) (string, error) {
+	task := safeName(taskID)
+	if runID == "" {
+		return task, nil
+	}
+	name := task + "-" + safeName(runID)
+	if len(name) > maxManagedNameLength {
+		return "", fmt.Errorf("managed worktree name for task %q exceeds %d characters", taskID, maxManagedNameLength)
+	}
+	return name, nil
+}
+
+// managedNameForTask reports whether name is a managed worktree name of the
+// task: the legacy task-only name or the run-scoped <task>-<run> form.
+func managedNameForTask(taskID, name string) bool {
+	task := safeName(taskID)
+	if name == task {
+		return true
+	}
+	return strings.HasPrefix(name, task+"-") && len(name) > len(task)+1
 }
 
 func safeName(value string) string {

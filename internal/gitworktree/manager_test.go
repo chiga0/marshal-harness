@@ -95,6 +95,127 @@ func TestDifferentTasksCanHaveIndependentWorktrees(t *testing.T) {
 	}
 }
 
+func TestSameTaskDifferentRunsGetIndependentWorktrees(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, _ := Open(repository)
+	first, err := manager.CreateForRun(stateRoot, "task:per-run", "run-one", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.CreateForRun(stateRoot, "task:per-run", "run-two", base)
+	if err != nil {
+		t.Fatalf("second run of the same task could not create its own worktree: %v", err)
+	}
+	for _, worktree := range []*Worktree{first, second} {
+		worktree := worktree
+		t.Cleanup(func() {
+			_ = worktree.Release()
+			_ = gitCommand(t, repository, "worktree", "remove", "--force", worktree.Path)
+			_ = gitCommand(t, repository, "branch", "-D", worktree.Branch)
+		})
+	}
+	if first.Path == second.Path || first.Branch == second.Branch {
+		t.Fatalf("runs share identity: %s/%s vs %s/%s", first.Path, first.Branch, second.Path, second.Branch)
+	}
+	if want := filepath.Join(stateRoot, "worktrees", "task-per-run-run-one"); first.Path != want {
+		t.Fatalf("first worktree path = %q, want %q", first.Path, want)
+	}
+	if want := "marshal/task-per-run-run-two"; second.Branch != want {
+		t.Fatalf("second branch = %q, want %q", second.Branch, want)
+	}
+	if _, err := os.Stat(filepath.Join(second.Path, "README.md")); err != nil {
+		t.Fatalf("second worktree is not a checkout: %v", err)
+	}
+}
+
+func TestRunScopedWorktreeAdmitsOneWriterPerRun(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, _ := Open(repository)
+	first, err := manager.CreateForRun(stateRoot, "task:locked", "run-one", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = first.Release()
+		_ = gitCommand(t, repository, "worktree", "remove", "--force", first.Path)
+		_ = gitCommand(t, repository, "branch", "-D", first.Branch)
+	}()
+	if _, err := manager.CreateForRun(stateRoot, "task:locked", "run-one", base); err == nil {
+		t.Fatal("second writer for the same (task, run) acquired a worktree")
+	}
+	if _, err := manager.Acquire(stateRoot, "task:locked", first.Path, base); err == nil {
+		t.Fatal("acquire admitted a second writer for the same run-scoped worktree")
+	}
+	second, err := manager.CreateForRun(stateRoot, "task:locked", "run-two", base)
+	if err != nil {
+		t.Fatalf("run-scoped lock leaked across runs of the same task: %v", err)
+	}
+	_ = second.Release()
+	_ = gitCommand(t, repository, "worktree", "remove", "--force", second.Path)
+	_ = gitCommand(t, repository, "branch", "-D", second.Branch)
+}
+
+func TestAcquireResolvesLegacyAndRunScopedNames(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, _ := Open(repository)
+	legacy, err := manager.Create(stateRoot, "task:acquire", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Release(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = legacy.Release()
+		_ = gitCommand(t, repository, "worktree", "remove", "--force", legacy.Path)
+		_ = gitCommand(t, repository, "branch", "-D", legacy.Branch)
+	})
+	reacquired, err := manager.Acquire(stateRoot, "task:acquire", legacy.Path, base)
+	if err != nil {
+		t.Fatalf("legacy task-keyed worktree did not resolve: %v", err)
+	}
+	if reacquired.Branch != "marshal/task-acquire" {
+		t.Fatalf("legacy branch = %q, want %q", reacquired.Branch, "marshal/task-acquire")
+	}
+	if err := reacquired.Release(); err != nil {
+		t.Fatal(err)
+	}
+	runScoped, err := manager.CreateForRun(stateRoot, "task:acquire", "run-x", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runScoped.Release(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = runScoped.Release()
+		_ = gitCommand(t, repository, "worktree", "remove", "--force", runScoped.Path)
+		_ = gitCommand(t, repository, "branch", "-D", runScoped.Branch)
+	})
+	reacquired, err = manager.Acquire(stateRoot, "task:acquire", runScoped.Path, base)
+	if err != nil {
+		t.Fatalf("run-scoped worktree did not resolve for its task: %v", err)
+	}
+	if reacquired.Branch != "marshal/task-acquire-run-x" {
+		t.Fatalf("run-scoped branch = %q, want %q", reacquired.Branch, "marshal/task-acquire-run-x")
+	}
+	if err := reacquired.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Acquire(stateRoot, "task:stranger", runScoped.Path, base); err == nil {
+		t.Fatal("acquire resolved a run-scoped worktree for the wrong task")
+	}
+	if _, err := manager.Acquire(stateRoot, "task:acquire", legacy.Path+"-missing", base); err == nil {
+		t.Fatal("acquire resolved a worktree path that does not exist")
+	}
+}
+
 func TestRemoveCleanRejectsDirtyAndRetainsBranch(t *testing.T) {
 	repository, base := fixtureRepository(t)
 	initializeMarshalState(t, repository)

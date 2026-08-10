@@ -87,6 +87,9 @@ func TestPlanHappyPathPersistsAndReleasesLocks(t *testing.T) {
 	if result.State.BaseSHA != baseSHA || result.State.WorktreePath == "" {
 		t.Fatalf("base/worktree = %q/%q, want %q/non-empty", result.State.BaseSHA, result.State.WorktreePath, baseSHA)
 	}
+	if want := filepath.Join(stateRoot, "worktrees", taskID+"-"+runID); result.State.WorktreePath != want {
+		t.Fatalf("worktree path = %q, want run-scoped %q", result.State.WorktreePath, want)
+	}
 
 	store := runstore.New(stateRoot)
 	events, truncated, err := store.ReadEvents(runID)
@@ -293,7 +296,7 @@ func TestPlanPreJournalFailureRemovesCreatedWorktree(t *testing.T) {
 		t.Fatal("Plan() returned nil error")
 	}
 	assertPlanningNoRunSideEffects(t, stateRoot, taskID, runID)
-	command := exec.Command("git", "-C", repositoryRoot, "show-ref", "--verify", "--quiet", "refs/heads/marshal/"+taskID)
+	command := exec.Command("git", "-C", repositoryRoot, "show-ref", "--verify", "--quiet", "refs/heads/marshal/"+taskID+"-"+runID)
 	if command.Run() == nil {
 		t.Fatal("pre-journal cleanup left the task branch")
 	}
@@ -466,6 +469,7 @@ func assertPlanningNoRunSideEffects(t *testing.T, stateRoot, taskID, runID strin
 	t.Helper()
 	for _, path := range []string{
 		filepath.Join(stateRoot, "worktrees", taskID),
+		filepath.Join(stateRoot, "worktrees", taskID+"-"+runID),
 		filepath.Join(stateRoot, "runs", runID, "events.jsonl"),
 		filepath.Join(stateRoot, "runs", runID, "state.json"),
 		filepath.Join(stateRoot, "runs", runID, "task-spec.json"),
