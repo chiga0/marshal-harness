@@ -1,4 +1,6 @@
 import { useMemo } from "react";
+import { stateMeta } from "@/lib/api";
+const toneOf = (s: string) => stateMeta(s).tone;
 import { ReactFlow, Controls, Background, BackgroundVariant, Position, type Node, type Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { RunDetail } from "@/lib/api";
@@ -9,10 +11,13 @@ export function Dag({ run, onAtt }: { run: RunDetail; onAtt: (i: number) => void
   const { nodes, edges } = useMemo(() => {
     const stages: { label: string; color: string; att?: number }[] = [{ label: "Leader/Plan", color: TONE.info }];
     (run.attempts ?? []).forEach((a, i) => stages.push({ label: `Worker${i + 1}`, color: a.workerStatus === "completed" ? TONE.ok : a.workerStatus ? TONE.err : TONE.info, att: i }));
+    const ev = (run.events ?? []).map((e) => e.type);
+    const reviewTone = ev.includes("review.accept") ? TONE.ok : ev.includes("review.reject") ? TONE.err : run.hasReview ? TONE.warn : TONE.mut;
+    const outcomeTone = { ok: TONE.ok, err: TONE.err, warn: TONE.warn, info: TONE.info, mut: TONE.mut }[toneOf(run.state)];
     stages.push({ label: "验证", color: run.verification === "pass" ? TONE.ok : run.verification ? TONE.err : TONE.mut });
-    stages.push({ label: "审查", color: run.hasReview ? TONE.ok : TONE.mut });
+    stages.push({ label: "审查", color: reviewTone });
     stages.push({ label: "发布", color: run.hasPublication ? TONE.ok : TONE.mut });
-    stages.push({ label: "结局", color: run.hasOutcome ? TONE.ok : TONE.mut });
+    stages.push({ label: "结局", color: outcomeTone });
     const nodes: Node[] = stages.map((s, i) => ({
       id: String(i), position: { x: i * 170, y: 60 }, data: { label: s.label, att: s.att },
       sourcePosition: Position.Right, targetPosition: Position.Left,
