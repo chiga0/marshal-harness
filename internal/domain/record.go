@@ -19,23 +19,24 @@ const (
 type Kind string
 
 const (
-	KindTask               Kind = "Task"
-	KindCapabilitySnapshot Kind = "CapabilitySnapshot"
-	KindPolicySnapshot     Kind = "PolicySnapshot"
-	KindRunEvent           Kind = "RunEvent"
-	KindRunState           Kind = "RunState"
-	KindWorkerRequest      Kind = "WorkerRequest"
-	KindWorkerResult       Kind = "WorkerResult"
-	KindVerificationReport Kind = "VerificationReport"
-	KindArtifactManifest   Kind = "ArtifactManifest"
-	KindReviewPacket       Kind = "ReviewPacket"
-	KindReviewDecision     Kind = "ReviewDecision"
-	KindOutcome            Kind = "Outcome"
-	KindPublicationIntent  Kind = "PublicationIntent"
-	KindPublicationRecord  Kind = "PublicationRecord"
-	KindRemoteCheckRecord  Kind = "RemoteCheckRecord"
-	KindApprovalRecord     Kind = "ApprovalRecord"
-	KindInterventionRecord Kind = "InterventionRecord"
+	KindTask                Kind = "Task"
+	KindCapabilitySnapshot  Kind = "CapabilitySnapshot"
+	KindPolicySnapshot      Kind = "PolicySnapshot"
+	KindRunEvent            Kind = "RunEvent"
+	KindRunState            Kind = "RunState"
+	KindWorkerRequest       Kind = "WorkerRequest"
+	KindWorkerResult        Kind = "WorkerResult"
+	KindVerificationReport  Kind = "VerificationReport"
+	KindArtifactManifest    Kind = "ArtifactManifest"
+	KindReviewPacket        Kind = "ReviewPacket"
+	KindReviewDecision      Kind = "ReviewDecision"
+	KindOutcome             Kind = "Outcome"
+	KindPublicationIntent   Kind = "PublicationIntent"
+	KindPublicationRecord   Kind = "PublicationRecord"
+	KindRemoteCheckRecord   Kind = "RemoteCheckRecord"
+	KindApprovalRecord      Kind = "ApprovalRecord"
+	KindInterventionRecord  Kind = "InterventionRecord"
+	KindSandboxRequirements Kind = "SandboxRequirements"
 )
 
 var kinds = []Kind{
@@ -56,6 +57,7 @@ var kinds = []Kind{
 	KindRemoteCheckRecord,
 	KindApprovalRecord,
 	KindInterventionRecord,
+	KindSandboxRequirements,
 }
 
 // Kinds returns all durable record kinds in stable order.

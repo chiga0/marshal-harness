@@ -32,6 +32,7 @@ var descriptors = []Descriptor{
 	{Name: "review-packet", Kind: domain.KindReviewPacket},
 	{Name: "run-event", Kind: domain.KindRunEvent},
 	{Name: "run-state", Kind: domain.KindRunState},
+	{Name: "sandbox-requirements", Kind: domain.KindSandboxRequirements},
 	{Name: "task-spec", Kind: domain.KindTask},
 	{Name: "verification-report", Kind: domain.KindVerificationReport},
 	{Name: "worker-request", Kind: domain.KindWorkerRequest},
