@@ -3,8 +3,11 @@ package opencode
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,6 +44,7 @@ var (
 	ErrProtocol           = errors.New("invalid opencode protocol")
 	ErrPermissionDenied   = errors.New("opencode permission denied")
 	ErrProcessFailed      = errors.New("opencode process failed")
+	ErrIntegrity          = errors.New("prepared attempt integrity violated")
 )
 
 type Adapter struct {
@@ -91,12 +96,12 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	if err := validateSession(request.SessionPolicy, request.SessionID); err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
-	identity, err := a.inspect(ctx)
+	identity, err := a.ResolveExecutableIdentity(ctx)
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
-	if identity.version != supportedBinary {
-		return port.TerminalLaunchSpec{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
+	if identity.Version != supportedBinary {
+		return port.TerminalLaunchSpec{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.Version)
 	}
 	worktree, controlRoot, prompt, err := resolveTerminalInput(request)
 	if err != nil {
@@ -115,8 +120,8 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 		return port.TerminalLaunchSpec{}, err
 	}
 	return port.TerminalLaunchSpec{
-		AdapterID: adapterID, AdapterVersion: adapterVersion, RunID: request.RunID, AttemptID: request.AttemptID, BinaryVersion: identity.version,
-		Executable: identity.path, ExecutableDigest: identity.digest, WorkingDirectory: worktree,
+		AdapterID: adapterID, AdapterVersion: adapterVersion, RunID: request.RunID, AttemptID: request.AttemptID, BinaryVersion: identity.Version,
+		Executable: identity.Path, ExecutableDigest: identity.Digest, WorkingDirectory: worktree,
 		Arguments:   buildTerminalArgs(request.SessionPolicy, request.SessionID, readModel(controlRoot, request.TaskSpecPath)),
 		Environment: environment, InitialPrompt: string(prompt),
 		CompletionGate: port.TerminalCompletionSupervisedConfirmation,
@@ -144,21 +149,21 @@ func resolveTerminalInput(request workerRequest) (string, string, []byte, error)
 }
 
 func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
-	identity, err := a.inspect(ctx)
+	identity, err := a.ResolveExecutableIdentity(ctx)
 	if err != nil {
 		return domain.Record{}, err
 	}
 	status := "supported"
 	probeErrors := []string{}
-	if identity.version != supportedBinary {
+	if identity.Version != supportedBinary {
 		status = "unsupported"
-		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 OpenCode %s，实际为 %s", supportedBinary, identity.version))
+		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 OpenCode %s，实际为 %s", supportedBinary, identity.Version))
 	}
 	snapshot := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
-		"executable": identity.path, "executableDigest": identity.digest,
-		"binaryVersion": identity.version, "probeStatus": status,
+		"executable": identity.Path, "executableDigest": identity.Digest,
+		"binaryVersion": identity.Version, "probeStatus": status,
 		"capabilities": map[string]any{
 			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
 			"sessionPolicies": []string{"ephemeral", "persist", "resume"}, "modelSelection": true,
@@ -178,22 +183,33 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	return domain.Record{Kind: domain.KindCapabilitySnapshot, Data: data}, nil
 }
 
-type executableIdentity struct{ path, digest, version string }
+// ExecutableIdentity pins the exact provider binary for an attempt: resolved
+// real path, content digest, and version. PrepareAttempt binds it so execution
+// is gated on the pinned binary and decode normalizes evidence against it.
+type ExecutableIdentity struct {
+	Path    string
+	Digest  string
+	Version string
+}
 
-func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
+// ResolveExecutableIdentity pins the real path, SHA256 digest and version of
+// the configured executable, probing the version inside the sanitized probe
+// environment. It is the adapter's capability step: PrepareAttempt consumes
+// its result but never launches a process itself.
+func (a *Adapter) ResolveExecutableIdentity(ctx context.Context) (ExecutableIdentity, error) {
 	info, err := os.Stat(a.executable)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return executableIdentity{}, errors.New("configured opencode executable is unavailable")
+		return ExecutableIdentity{}, errors.New("configured opencode executable is unavailable")
 	}
 	digest, err := digestFile(a.executable)
 	if err != nil {
-		return executableIdentity{}, err
+		return ExecutableIdentity{}, err
 	}
 	version, err := readBinaryVersion(ctx, a.executable)
 	if err != nil {
-		return executableIdentity{}, err
+		return ExecutableIdentity{}, err
 	}
-	return executableIdentity{a.executable, digest, version}, nil
+	return ExecutableIdentity{Path: a.executable, Digest: digest, Version: version}, nil
 }
 
 // readBinaryVersion runs `<executable> --version` inside the sanitized probe
@@ -279,8 +295,10 @@ func decodeRequest(data []byte, validator *contract.Validator) (workerRequest, e
 	return workerRequest(raw), nil
 }
 
-// Run executes one non-interactive attempt. Provider/process/protocol failures
-// are returned as errors so Core can apply the operational retry budget.
+// Run executes one non-interactive attempt as the composition
+// PrepareAttempt -> local exec compatibility helper -> DecodeAttempt.
+// Provider/process/protocol failures are returned as errors so Core can apply
+// the operational retry budget.
 func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record, error) {
 	if record.Kind != domain.KindWorkerRequest {
 		return domain.Record{}, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
@@ -294,70 +312,335 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(request.AttemptTimeoutSeconds)*time.Second)
 	defer cancel()
-	identity, err := a.inspect(runCtx)
+	identity, err := a.ResolveExecutableIdentity(runCtx)
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if identity.version != supportedBinary {
-		return domain.Record{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
+	prepared, err := a.prepareAttempt(identity, request)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	observation, err := a.runLocalAttempt(runCtx, prepared)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	return a.DecodeAttempt(prepared, observation)
+}
+
+// PreparedAttempt is the frozen construction of one attempt: everything a
+// bounded executor needs to launch the Agent process (argv, working
+// directory, fully filtered environment, timeout and output caps) and
+// everything DecodeAttempt needs to interpret the observation afterwards. It
+// carries no execution state, and constructing it launches no process. The
+// exported fields are frozen at construction: PrepareAttempt binds the
+// unexported integrity digest to every security-relevant field, and both the
+// local exec compatibility helper and DecodeAttempt recompute and enforce it
+// before launching a process or writing any file, so post-prepare mutation
+// fails closed. The digest cannot be forged outside this package because the
+// field is unexported.
+type PreparedAttempt struct {
+	TaskID           string
+	RunID            string
+	AttemptID        string
+	ExecutionProfile string
+	SessionPolicy    string
+	Model            string
+
+	Identity ExecutableIdentity
+
+	Arguments        []string
+	WorkingDirectory string
+	Environment      []string
+	Timeout          time.Duration
+	OutputLimit      int64
+
+	ControlRoot     string
+	TaskSpecRelPath string
+	PromptRelPath   string
+	ResultRelPath   string
+	ResultPath      string
+
+	readOnlyScope readOnlyScope
+	integrity     string
+}
+
+// integrityDigest binds every security-relevant field of the prepared
+// attempt into one length-prefixed SHA256 digest: task/request identity,
+// pinned executable identity, argv, environment, caps, and all control-root
+// paths. The encoding is collision-free even for values containing arbitrary
+// bytes.
+func (p *PreparedAttempt) integrityDigest() string {
+	hash := sha256.New()
+	field := func(value string) {
+		_ = binary.Write(hash, binary.BigEndian, uint32(len(value)))
+		_, _ = io.WriteString(hash, value)
+	}
+	count := func(value int) {
+		_ = binary.Write(hash, binary.BigEndian, uint32(value))
+	}
+	field("marshal.dev/opencode/prepared-attempt/v1")
+	field(p.TaskID)
+	field(p.RunID)
+	field(p.AttemptID)
+	field(p.ExecutionProfile)
+	field(p.SessionPolicy)
+	field(p.Model)
+	field(p.Identity.Path)
+	field(p.Identity.Digest)
+	field(p.Identity.Version)
+	field(strconv.FormatInt(int64(p.Timeout), 10))
+	field(strconv.FormatInt(p.OutputLimit, 10))
+	count(len(p.Arguments))
+	for _, argument := range p.Arguments {
+		field(argument)
+	}
+	field(p.WorkingDirectory)
+	count(len(p.Environment))
+	for _, entry := range p.Environment {
+		field(entry)
+	}
+	field(p.ControlRoot)
+	field(p.TaskSpecRelPath)
+	field(p.PromptRelPath)
+	field(p.ResultRelPath)
+	field(p.ResultPath)
+	count(len(p.readOnlyScope.allowPaths))
+	for _, entry := range p.readOnlyScope.allowPaths {
+		field(entry)
+	}
+	count(len(p.readOnlyScope.readRoots))
+	for _, entry := range p.readOnlyScope.readRoots {
+		field(entry)
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
+}
+
+// verifyIntegrity fails closed when the prepared attempt was constructed
+// outside PrepareAttempt (missing digest) or mutated after preparation
+// (digest mismatch).
+func (p *PreparedAttempt) verifyIntegrity() error {
+	if p.integrity == "" {
+		return fmt.Errorf("%w: integrity digest is missing", ErrIntegrity)
+	}
+	if subtle.ConstantTimeCompare([]byte(p.integrity), []byte(p.integrityDigest())) != 1 {
+		return fmt.Errorf("%w: prepared attempt was modified after PrepareAttempt", ErrIntegrity)
+	}
+	return nil
+}
+
+// evidenceDirectory re-confirms that the frozen result path and the evidence
+// directory derived from it remain inside the frozen control root before
+// DecodeAttempt writes anything. Existing directories are additionally
+// resolved through symlinks so re-linking after preparation cannot redirect
+// evidence outside the control root.
+func (p *PreparedAttempt) evidenceDirectory() (string, error) {
+	if err := containedWithin(p.ControlRoot, p.ResultPath); err != nil {
+		return "", fmt.Errorf("prepared attempt result path: %w", err)
+	}
+	dir := filepath.Dir(p.ResultPath)
+	if err := containedWithin(p.ControlRoot, dir); err != nil {
+		return "", fmt.Errorf("prepared attempt evidence directory: %w", err)
+	}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		if err := containedWithin(p.ControlRoot, real); err != nil {
+			return "", fmt.Errorf("prepared attempt evidence directory: %w", err)
+		}
+	}
+	return dir, nil
+}
+
+func containedWithin(root, path string) error {
+	if root == "" || !filepath.IsAbs(root) || path == "" || !filepath.IsAbs(path) {
+		return errors.New("escapes the control root")
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("escapes the control root")
+	}
+	return nil
+}
+
+// observationBounds independently validates the frozen caps and observed
+// byte lengths. A provider's self-reported truncation flags are never
+// trusted: the actual lengths decide. Caps must be valid positive values; a
+// non-positive output cap fails closed before any diagnostic may be written.
+func (p *PreparedAttempt) observationBounds(stdoutLength, stderrLength int) error {
+	if p.OutputLimit <= 0 {
+		return fmt.Errorf("%w: prepared output limit must be a positive value", ErrOutputLimit)
+	}
+	if int64(stdoutLength) > p.OutputLimit {
+		return fmt.Errorf("%w: observed stdout %d bytes exceeds prepared output limit %d", ErrOutputLimit, stdoutLength, p.OutputLimit)
+	}
+	if int64(stderrLength) > stderrLimit {
+		return fmt.Errorf("%w: observed stderr %d bytes exceeds stderr limit %d", ErrOutputLimit, stderrLength, stderrLimit)
+	}
+	return nil
+}
+
+// cloneStrings breaks slice aliasing so a PreparedAttempt never shares
+// backing arrays with the values it was constructed from.
+func cloneStrings(values []string) []string {
+	return append([]string{}, values...)
+}
+
+// PrepareAttempt renders a frozen WorkerRequest into a PreparedAttempt. It is
+// a pure construction step: it validates the frozen request, resolves the
+// control-plane paths, binds the pre-resolved executable identity, and seals
+// every security-relevant field behind the unexported integrity digest, but
+// it never launches a process. The identity must already be resolved through
+// ResolveExecutableIdentity.
+func (a *Adapter) PrepareAttempt(identity ExecutableIdentity, record domain.Record) (*PreparedAttempt, error) {
+	if record.Kind != domain.KindWorkerRequest {
+		return nil, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
+	}
+	request, err := decodeRequest(record.Data, a.validator)
+	if err != nil {
+		return nil, err
+	}
+	return a.prepareAttempt(identity, request)
+}
+
+func (a *Adapter) prepareAttempt(identity ExecutableIdentity, request workerRequest) (*PreparedAttempt, error) {
+	if request.AdapterID != adapterID || (request.ExecutionProfile != "workspace-write" && request.ExecutionProfile != "read-only") {
+		return nil, errors.New("WorkerRequest does not match the opencode adapter execution profile")
+	}
+	if err := validateExecutableIdentity(identity, a.executable); err != nil {
+		return nil, err
 	}
 	worktree, err := filepath.EvalSymlinks(request.WorktreePath)
 	if err != nil {
-		return domain.Record{}, fmt.Errorf("resolve worktree: %w", err)
+		return nil, fmt.Errorf("resolve worktree: %w", err)
 	}
 	if !filepath.IsAbs(worktree) {
-		return domain.Record{}, errors.New("worktree path must be absolute")
+		return nil, errors.New("worktree path must be absolute")
 	}
 	controlRoot, err := filepath.EvalSymlinks(request.ControlRoot)
 	if err != nil || !filepath.IsAbs(controlRoot) {
-		return domain.Record{}, errors.New("control root must be an existing absolute directory")
+		return nil, errors.New("control root must be an existing absolute directory")
 	}
 	promptPath, err := existingPathWithin(controlRoot, request.PromptPath)
 	if err != nil {
-		return domain.Record{}, fmt.Errorf("resolve prompt: %w", err)
+		return nil, fmt.Errorf("resolve prompt: %w", err)
 	}
 	prompt, err := readBounded(promptPath, maxPromptBytes)
 	if err != nil {
-		return domain.Record{}, fmt.Errorf("read prompt: %w", err)
+		return nil, fmt.Errorf("read prompt: %w", err)
 	}
 	resultPath, err := lexicalPathWithin(controlRoot, request.ResultPath)
 	if err != nil {
-		return domain.Record{}, fmt.Errorf("resolve result: %w", err)
+		return nil, fmt.Errorf("resolve result: %w", err)
 	}
 	model := readModel(controlRoot, request.TaskSpecPath)
-	args := buildArgs(request.SessionPolicy, request.SessionID, model, string(prompt))
 	readOnly, err := optionalReadOnlyScope(request.ExecutionProfile, controlRoot, request.TaskSpecPath)
 	if err != nil {
-		return domain.Record{}, err
+		return nil, err
 	}
 	config, err := permissionConfigFor(request.ExecutionProfile, worktree, controlRoot, readOnly)
 	if err != nil {
-		return domain.Record{}, err
+		return nil, err
 	}
-	command := exec.Command(a.executable, args...)
-	command.Dir = worktree
-	command.Env = workerEnvironment(worktree, config)
-	if err := validateResolvedConfig(runCtx, a.executable, command.Env, controlRoot, worktree, request.ExecutionProfile, readOnly); err != nil {
-		return domain.Record{}, err
+	prepared := &PreparedAttempt{
+		TaskID:           request.TaskID,
+		RunID:            request.RunID,
+		AttemptID:        request.AttemptID,
+		ExecutionProfile: request.ExecutionProfile,
+		SessionPolicy:    request.SessionPolicy,
+		Model:            model,
+		Identity:         identity,
+		Arguments:        cloneStrings(buildArgs(request.SessionPolicy, request.SessionID, model, string(prompt))),
+		WorkingDirectory: worktree,
+		Environment:      cloneStrings(workerEnvironment(worktree, config)),
+		Timeout:          time.Duration(request.AttemptTimeoutSeconds) * time.Second,
+		OutputLimit:      int64(request.MaxOutputBytes),
+		ControlRoot:      controlRoot,
+		TaskSpecRelPath:  request.TaskSpecPath,
+		PromptRelPath:    request.PromptPath,
+		ResultRelPath:    request.ResultPath,
+		ResultPath:       resultPath,
+		readOnlyScope:    readOnly,
 	}
+	prepared.integrity = prepared.integrityDigest()
+	return prepared, nil
+}
+
+// validateExecutableIdentity binds the capability-probed identity to the
+// adapter: it must be complete, resolved against exactly the configured
+// executable, and pinned to the supported version. The version gate is a pure
+// data check here, so an unsupported binary never reaches any executor.
+func validateExecutableIdentity(identity ExecutableIdentity, executable string) error {
+	if identity.Path == "" || identity.Digest == "" || identity.Version == "" {
+		return errors.New("executable identity is incomplete")
+	}
+	if identity.Path != executable {
+		return errors.New("executable identity does not match the configured opencode executable")
+	}
+	if identity.Version != supportedBinary {
+		return fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.Version)
+	}
+	return nil
+}
+
+// ExecutionObservation is the bounded outcome of executing a PreparedAttempt:
+// already-capped stdout JSONL, bounded stderr, exit/signal status,
+// cancellation state and attempt wall-clock bounds. Today the local exec
+// compatibility helper produces it; a SandboxProvider Exec will produce the
+// same shape from staged sandbox output.
+type ExecutionObservation struct {
+	StdoutRaw       []byte
+	OutputTruncated bool
+	Stderr          []byte
+	StderrTruncated bool
+	ExitCode        int
+	Signal          string
+	ProcessFailed   bool
+	ContextErr      error
+	StartedAt       time.Time
+	CompletedAt     time.Time
+}
+
+// runLocalAttempt is the local exec compatibility helper: it executes a
+// PreparedAttempt as a supervised host child process and returns the bounded
+// observation consumed by DecodeAttempt. It owns local process semantics only
+// (process group, cancellation/timeout kill, bounded capture, resolved-config
+// enforcement) and never interprets the Agent protocol payload. A
+// SandboxProvider Exec replaces this helper without touching
+// PrepareAttempt/DecodeAttempt. Before launching anything it enforces the
+// prepared attempt's integrity digest and control-root containment, so a
+// post-prepare mutation never reaches an executor.
+func (a *Adapter) runLocalAttempt(runCtx context.Context, prepared *PreparedAttempt) (ExecutionObservation, error) {
+	if prepared == nil {
+		return ExecutionObservation{}, errors.New("prepared attempt is required")
+	}
+	if err := prepared.verifyIntegrity(); err != nil {
+		return ExecutionObservation{}, err
+	}
+	if _, err := prepared.evidenceDirectory(); err != nil {
+		return ExecutionObservation{}, err
+	}
+	if err := validateResolvedConfig(runCtx, a.executable, prepared.Environment, prepared.ControlRoot, prepared.WorkingDirectory, prepared.ExecutionProfile, prepared.readOnlyScope); err != nil {
+		return ExecutionObservation{}, err
+	}
+	command := exec.Command(a.executable, prepared.Arguments...)
+	command.Dir = prepared.WorkingDirectory
+	command.Env = prepared.Environment
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
-		return domain.Record{}, err
+		return ExecutionObservation{}, err
 	}
 	stderr, err := command.StderrPipe()
 	if err != nil {
-		return domain.Record{}, err
+		return ExecutionObservation{}, err
 	}
 	started := a.now().UTC()
 	if err := command.Start(); err != nil {
-		return domain.Record{}, fmt.Errorf("start opencode: %w", err)
+		return ExecutionObservation{}, fmt.Errorf("start opencode: %w", err)
 	}
 	var killOnce sync.Once
 	kill := func() { killOnce.Do(func() { terminateGroup(command) }) }
 	stdoutDone := make(chan captureResult, 1)
 	stderrDone := make(chan streamCapture, 1)
-	go func() { stdoutDone <- captureJSONL(stdout, int64(request.MaxOutputBytes), kill) }()
+	go func() { stdoutDone <- captureJSONL(stdout, prepared.OutputLimit, kill) }()
 	go func() { stderrDone <- captureStream(stderr, stderrLimit) }()
 	processFinished := make(chan struct{})
 	go func() {
@@ -371,46 +654,99 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	stderrCapture := <-stderrDone
 	waitErr := command.Wait()
 	close(processFinished)
-	completed := a.now().UTC()
-	transcriptPath := filepath.Join(filepath.Dir(resultPath), "opencode-transcript.jsonl")
-	if err := atomicWrite(transcriptPath, capture.raw); err != nil {
+	exitCode, signal := processOutcome(command)
+	return ExecutionObservation{
+		StdoutRaw:       capture.raw,
+		OutputTruncated: capture.limitExceeded,
+		Stderr:          stderrCapture.data,
+		StderrTruncated: stderrCapture.truncated,
+		ExitCode:        exitCode,
+		Signal:          signal,
+		ProcessFailed:   waitErr != nil,
+		ContextErr:      runCtx.Err(),
+		StartedAt:       started,
+		CompletedAt:     a.now().UTC(),
+	}, nil
+}
+
+// DecodeAttempt interprets an ExecutionObservation against the
+// PreparedAttempt: it persists the bounded evidence (transcript, stderr,
+// transcript metadata, denial log), fails closed on cancellation, output
+// truncation, protocol violations, process failure, fatal denials and
+// identity/session drift, and normalizes the staged declared WorkerResult
+// against the pinned identity and captured session. It never launches a
+// process, runs commands, or produces verification, review, or publication
+// facts. Before any file write it re-verifies the prepared attempt's
+// integrity digest, re-confirms the evidence directory stays inside the
+// frozen control root, and independently re-enforces the frozen output caps
+// against the observed byte lengths, never trusting provider-reported
+// truncation flags.
+func (a *Adapter) DecodeAttempt(prepared *PreparedAttempt, observation ExecutionObservation) (domain.Record, error) {
+	if prepared == nil {
+		return domain.Record{}, errors.New("prepared attempt is required")
+	}
+	if err := prepared.verifyIntegrity(); err != nil {
+		return domain.Record{}, err
+	}
+	evidenceDir, err := prepared.evidenceDirectory()
+	if err != nil {
+		return domain.Record{}, err
+	}
+	boundsErr := prepared.observationBounds(len(observation.StdoutRaw), len(observation.Stderr))
+	if boundsErr != nil && prepared.OutputLimit <= 0 {
+		return domain.Record{}, boundsErr
+	}
+	stdout := observation.StdoutRaw
+	stdoutViolated := int64(len(stdout)) > prepared.OutputLimit
+	if stdoutViolated {
+		stdout = stdout[:prepared.OutputLimit]
+	}
+	stderr := observation.Stderr
+	stderrViolated := int64(len(stderr)) > stderrLimit
+	if stderrViolated {
+		stderr = stderr[:stderrLimit]
+	}
+	capture := decodeTranscript(stdout)
+	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: prepared.WorkingDirectory, ControlRoot: prepared.ControlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
+	fatalDenials := denials.CountFatal(denialRecords)
+	if err := atomicWrite(filepath.Join(evidenceDir, "opencode-transcript.jsonl"), stdout); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript: %w", err)
 	}
-	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "opencode-stderr.log"), stderrCapture.data); err != nil {
+	if err := atomicWrite(filepath.Join(evidenceDir, "opencode-stderr.log"), stderr); err != nil {
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
-	exitCode, signal := processOutcome(command)
-	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: worktree, ControlRoot: controlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
-	fatalDenials := denials.CountFatal(denialRecords)
 	metadata, err := json.MarshalIndent(map[string]any{
 		"sessionId": capture.sessionID, "eventCount": capture.eventCount,
 		"toolCalls": capture.toolCalls, "inputTokens": capture.inputTokens,
-		"outputTokens": capture.outputTokens, "capturedBytes": len(capture.raw),
-		"outputTruncated": capture.limitExceeded, "permissionDenied": fatalDenials > 0,
+		"outputTokens": capture.outputTokens, "capturedBytes": len(observation.StdoutRaw),
+		"outputTruncated": observation.OutputTruncated || stdoutViolated, "permissionDenied": fatalDenials > 0,
 		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials,
-		"exitCode": exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
-		"contextError": contextError(runCtx),
+		"exitCode": observation.ExitCode, "signal": observation.Signal, "stderrBytes": len(observation.Stderr), "stderrTruncated": observation.StderrTruncated || stderrViolated,
+		"contextError": contextErrorOf(observation.ContextErr),
 	}, "", "  ")
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "opencode-transcript-meta.json"), append(metadata, '\n')); err != nil {
+	if err := atomicWrite(filepath.Join(evidenceDir, "opencode-transcript-meta.json"), append(metadata, '\n')); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript metadata: %w", err)
 	}
-	if err := denials.AppendLog(filepath.Join(filepath.Dir(resultPath), denials.LogFileName), denialRecords); err != nil {
+	if err := denials.AppendLog(filepath.Join(evidenceDir, denials.LogFileName), denialRecords); err != nil {
 		return domain.Record{}, fmt.Errorf("write denial log: %w", err)
 	}
-	if runCtx.Err() != nil {
-		return domain.Record{}, runCtx.Err()
+	if observation.ContextErr != nil {
+		return domain.Record{}, observation.ContextErr
 	}
-	if capture.limitExceeded {
+	if boundsErr != nil {
+		return domain.Record{}, boundsErr
+	}
+	if observation.OutputTruncated {
 		return domain.Record{}, ErrOutputLimit
 	}
 	if capture.err != nil {
 		return domain.Record{}, capture.err
 	}
-	if waitErr != nil {
-		return domain.Record{}, processFailureError(command)
+	if observation.ProcessFailed {
+		return domain.Record{}, processFailureError(observation.ExitCode, observation.Signal)
 	}
 	if fatalDenials > 0 {
 		return domain.Record{}, ErrPermissionDenied
@@ -418,21 +754,21 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if capture.sessionID == "" {
 		return domain.Record{}, fmt.Errorf("%w: sessionID is missing", ErrProtocol)
 	}
-	declared, err := readDeclaredResult(resultPath, int64(maxResultBytes), a.validator)
+	declared, err := readDeclaredResult(prepared.ResultPath, int64(maxResultBytes), a.validator)
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if declared.TaskID != request.TaskID || declared.RunID != request.RunID || declared.AttemptID != request.AttemptID || declared.Adapter.ID != adapterID {
+	if declared.TaskID != prepared.TaskID || declared.RunID != prepared.RunID || declared.AttemptID != prepared.AttemptID || declared.Adapter.ID != adapterID {
 		return domain.Record{}, errors.New("WorkerResult identity does not match WorkerRequest")
 	}
 	if declared.Session != nil && declared.Session.ID != "" && declared.Session.ID != capture.sessionID {
 		return domain.Record{}, errors.New("WorkerResult session does not match transcript")
 	}
-	declared.Adapter.Executable, declared.Adapter.Version = identity.path, identity.version
-	declared.Session = &declaredSession{ID: capture.sessionID, Resumable: request.SessionPolicy != "ephemeral"}
-	declared.StartedAt, declared.CompletedAt = started, completed
-	if model != "" {
-		declared.Adapter.Model = model
+	declared.Adapter.Executable, declared.Adapter.Version = prepared.Identity.Path, prepared.Identity.Version
+	declared.Session = &declaredSession{ID: capture.sessionID, Resumable: prepared.SessionPolicy != "ephemeral"}
+	declared.StartedAt, declared.CompletedAt = observation.StartedAt, observation.CompletedAt
+	if prepared.Model != "" {
+		declared.Adapter.Model = prepared.Model
 	}
 	data, err := json.Marshal(declared)
 	if err != nil {
@@ -441,7 +777,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := a.validator.Validate(domain.KindWorkerResult, data); err != nil {
 		return domain.Record{}, fmt.Errorf("validate normalized WorkerResult: %w", err)
 	}
-	if err := atomicWrite(resultPath, append(data, '\n')); err != nil {
+	if err := atomicWrite(prepared.ResultPath, append(data, '\n')); err != nil {
 		return domain.Record{}, fmt.Errorf("write normalized WorkerResult: %w", err)
 	}
 	return domain.Record{Kind: domain.KindWorkerResult, Data: data}, nil
@@ -532,42 +868,9 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 			complete := !errors.Is(err, bufio.ErrBufferFull)
 			if complete && len(line) > 0 && !result.limitExceeded {
 				result.raw = append(result.raw, line...)
-				var event struct {
-					Type      string `json:"type"`
-					SessionID string `json:"sessionID"`
-					Part      struct {
-						Type   string `json:"type"`
-						Text   string `json:"text"`
-						Tool   string `json:"tool"`
-						Tokens struct {
-							Input  int `json:"input"`
-							Output int `json:"output"`
-						} `json:"tokens"`
-						State struct {
-							Status string          `json:"status"`
-							Error  string          `json:"error"`
-							Input  json.RawMessage `json:"input"`
-						} `json:"state"`
-					} `json:"part"`
-				}
-				if decodeErr := json.Unmarshal(bytesTrimSpace(line), &event); decodeErr != nil {
-					result.err = fmt.Errorf("%w: malformed JSONL: %v", ErrProtocol, decodeErr)
+				if decodeErr := result.decodeEventLine(line); decodeErr != nil {
+					result.err = decodeErr
 					onLimit()
-				} else {
-					result.eventCount++
-					if result.sessionID == "" {
-						result.sessionID = event.SessionID
-					}
-					if event.Part.Type == "tool" || event.Part.Tool != "" {
-						result.toolCalls++
-					}
-					if event.Part.Tokens.Input > 0 || event.Part.Tokens.Output > 0 {
-						result.inputTokens = event.Part.Tokens.Input
-						result.outputTokens = event.Part.Tokens.Output
-					}
-					if event.Part.State.Status == "error" && denials.IsPermissionError(event.Part.State.Error) {
-						result.denials = append(result.denials, denials.RawDenial{Tool: event.Part.Tool, Input: event.Part.State.Input})
-					}
 				}
 				line = nil
 			}
@@ -579,6 +882,66 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 			return result
 		}
 	}
+}
+
+// decodeTranscript parses an already-bounded JSONL transcript into the capture
+// aggregate. It is pure decoding: truncation, cancellation and process status
+// arrive via the ExecutionObservation and are applied by DecodeAttempt.
+func decodeTranscript(raw []byte) captureResult {
+	result := captureResult{raw: raw}
+	reader := bufio.NewReader(bytes.NewReader(raw))
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			if decodeErr := result.decodeEventLine(line); decodeErr != nil {
+				result.err = decodeErr
+			}
+		}
+		if err != nil {
+			return result
+		}
+	}
+}
+
+// decodeEventLine folds one JSONL event line into the capture aggregate and
+// returns a protocol error for malformed lines; callers decide how to fail.
+func (result *captureResult) decodeEventLine(line []byte) error {
+	var event struct {
+		Type      string `json:"type"`
+		SessionID string `json:"sessionID"`
+		Part      struct {
+			Type   string `json:"type"`
+			Text   string `json:"text"`
+			Tool   string `json:"tool"`
+			Tokens struct {
+				Input  int `json:"input"`
+				Output int `json:"output"`
+			} `json:"tokens"`
+			State struct {
+				Status string          `json:"status"`
+				Error  string          `json:"error"`
+				Input  json.RawMessage `json:"input"`
+			} `json:"state"`
+		} `json:"part"`
+	}
+	if decodeErr := json.Unmarshal(bytesTrimSpace(line), &event); decodeErr != nil {
+		return fmt.Errorf("%w: malformed JSONL: %v", ErrProtocol, decodeErr)
+	}
+	result.eventCount++
+	if result.sessionID == "" {
+		result.sessionID = event.SessionID
+	}
+	if event.Part.Type == "tool" || event.Part.Tool != "" {
+		result.toolCalls++
+	}
+	if event.Part.Tokens.Input > 0 || event.Part.Tokens.Output > 0 {
+		result.inputTokens = event.Part.Tokens.Input
+		result.outputTokens = event.Part.Tokens.Output
+	}
+	if event.Part.State.Status == "error" && denials.IsPermissionError(event.Part.State.Error) {
+		result.denials = append(result.denials, denials.RawDenial{Tool: event.Part.Tool, Input: event.Part.State.Input})
+	}
+	return nil
 }
 
 type streamCapture struct {
@@ -863,8 +1226,7 @@ func validatePermissionMap(permission map[string]any, controlRoot string) error 
 // separately as a bounded evidence file (opencode-stderr.log) but is never
 // concatenated into the returned error, so tokens, secrets, or user content
 // cannot reach Events, CLI output, or Outcome.
-func processFailureError(command *exec.Cmd) error {
-	exitCode, signal := processOutcome(command)
+func processFailureError(exitCode int, signal string) error {
 	if signal != "" {
 		return fmt.Errorf("%w: exit=%d signal=%s", ErrProcessFailed, exitCode, signal)
 	}
@@ -882,8 +1244,8 @@ func processOutcome(command *exec.Cmd) (int, string) {
 	return exitCode, ""
 }
 
-func contextError(ctx context.Context) string {
-	if err := ctx.Err(); err != nil {
+func contextErrorOf(err error) string {
+	if err != nil {
 		return err.Error()
 	}
 	return ""
