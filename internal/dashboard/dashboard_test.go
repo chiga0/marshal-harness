@@ -101,7 +101,7 @@ func TestHandlerReadOnlyAndEndpoints(t *testing.T) {
 	// index
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Marshal Dashboard") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Marshal 控制台") {
 		t.Fatalf("index code=%d", rec.Code)
 	}
 	// runs list
