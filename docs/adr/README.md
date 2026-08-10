@@ -18,3 +18,4 @@
 | [0012](0012-explicit-abort.md) | 废弃 Run 的显式 abort | 已接受（Accepted） |
 | [0013](0013-graded-permission-denials.md) | Permission 拒绝分级（预期内 vs 致命） | 已接受（Accepted） |
 | [0014](0014-read-only-execution-profile.md) | Read-only 执行画像（调研/评审最小权限） | 已接受（Accepted） |
+| [0015](0015-production-deployment.md) | 生产部署：常驻服务、远程访问与 Dashboard 认证 | 提案（Proposed） |
