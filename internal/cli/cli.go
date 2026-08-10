@@ -60,6 +60,7 @@ var taskCommands = []string{
 	"accept",
 	"abort",
 	"cleanup",
+	"migrate-outcomes",
 }
 
 // Run executes one CLI invocation without granting Worker or Publisher
@@ -88,7 +89,7 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return runInit(args[1:], stdout, stderr)
 	case "contract":
 		return runContract(args[1:], stdin, stdout, stderr)
-	case "serve":
+	case "serve", "web":
 		return runServe(args[1:], stdout, stderr)
 	case "task":
 		return runTask(ctx, args[1:], stdout, stderr)
@@ -592,6 +593,9 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if args[0] == "abort" {
 		return runTaskAbort(args[1:], stdout, stderr)
+	}
+	if args[0] == "migrate-outcomes" {
+		return runTaskMigrateOutcomes(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) != 1 {
 		return ExitUsage
@@ -1718,6 +1722,48 @@ OpenCode、Qwen Code 与 Pi Worker 只产生 Attempt 与真实快照；verify、
 
 // runServe starts the read-only dashboard (experimental). It exposes no control
 // endpoints; approve/publish remain in CLI/Skill. Binds loopback by default.
+// runTaskMigrateOutcomes reconstructs terminal Outcomes for legacy terminal Runs
+// that predate outcome-writing, so cleanup can then proceed. It never overwrites
+// an existing valid outcome (RecordLegacyOutcome refuses).
+func runTaskMigrateOutcomes(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task migrate-outcomes", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	actor := flags.String("actor", "", "操作者 ID")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || strings.TrimSpace(*actor) == "" {
+		fmt.Fprintln(stderr, "用法：marshal task migrate-outcomes --actor ID")
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil || location.ValidateIdentity() != nil {
+		fmt.Fprintln(stderr, "迁移失败：无法验证仓库身份。")
+		return ExitFailure
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		return ExitFailure
+	}
+	runsDir := filepath.Join(location.StateRoot, "runs")
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "迁移失败：%v\n", err)
+		return ExitFailure
+	}
+	migrated := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := cleanupservice.RecordLegacyOutcome(ctx, cleanupservice.Input{
+			StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot,
+			RunID: entry.Name(), Actor: strings.TrimSpace(*actor), Now: time.Now().UTC(), Validator: validator,
+		}); err == nil {
+			migrated++
+		}
+	}
+	fmt.Fprintf(stdout, "已为 %d 个遗留终态 Run 补记 Outcome。\n", migrated)
+	return ExitOK
+}
+
 // stringSlice is a repeatable --root flag value.
 type stringSlice []string
 
