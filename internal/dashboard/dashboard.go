@@ -560,6 +560,8 @@ const indexHTML = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Marshal 控制台</title>
 <style>
  :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff}
+ body[data-theme=light]{--bg:#ffffff;--panel:#f6f8fa;--border:#d0d7de;--text:#1f2328;--muted:#57606a;--accent:#0969da}
+ body[data-theme=light] .ok{background:#dafbe1;color:#1a7f37}body[data-theme=light] .err{background:#ffebe9;color:#cf222e}body[data-theme=light] .warn{background:#fff8c5;color:#9a6700}body[data-theme=light] .info{background:#ddf4ff;color:#0969da}body[data-theme=light] .mut{background:#eaeef2;color:#57606a}body[data-theme=light] .ev{background:#fff}
  *{box-sizing:border-box} body{font-family:-apple-system,"PingFang SC",Segoe UI,sans-serif;background:var(--bg);color:var(--text);margin:0}
  nav{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:16px;padding:12px 24px;background:var(--panel);border-bottom:1px solid var(--border)}
  nav .brand{font-weight:700;font-size:16px} nav a{color:var(--muted);text-decoration:none;font-size:14px;cursor:pointer} nav a.on{color:var(--text)} nav .sp{flex:1} nav .ro{color:var(--muted);font-size:12px;border:1px solid var(--border);padding:2px 8px;border-radius:10px}
@@ -579,7 +581,7 @@ const indexHTML = `<!doctype html>
  .kv{font-size:13px;margin:4px 0} .kv b{color:var(--muted);font-weight:500}
  .ev{border-left:3px solid var(--border);padding:4px 10px;margin:6px 0;font-size:13px;border-radius:3px;background:var(--bg)} .ev small{color:var(--muted);display:block}
 </style></head><body>
-<nav><span class="brand">Marshal 控制台</span><a id="nav-tasks" onclick="nav('')">任务</a><span class="sp"></span><span class="ro">只读 · 控制在 CLI/Skill</span></nav>
+<nav><span class="brand">Marshal 控制台</span><a id="nav-tasks" onclick="nav('')">任务</a><input id="q" placeholder="检索任务/Run…" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:13px"><span class="sp"></span><a id="theme" onclick="toggleTheme()">亮色</a><span class="ro">只读 · 控制在 CLI/Skill</span></nav>
 <main><div class="crumb" id="crumb"></div><div class="legend" id="legend"></div><div id="main"></div></main>
 <script>
 var STATE={ACCEPTED:["已接受·成功","ok"],REJECTED:["已拒绝","err"],BLOCKED:["阻塞·需人工","err"],RUNNING:["执行中","info"],VERIFYING:["独立验证中","info"],REVIEW_PENDING:["待审查","warn"],REWORK_REQUESTED:["返工中","warn"],PUBLISHING:["发布中","info"],PUBLISHED:["已发布","info"],CI_PENDING:["等待CI","warn"],READY:["就绪","info"],PLANNED:["规划中","info"],ABORTED:["已中止","mut"],NO_CHANGE:["无变更","mut"]};
@@ -589,7 +591,8 @@ function st(s){return STATE[s]||[s,"mut"]} function col(s){return COL[st(s)[1]]}
 function rel(t){var d=(Date.now()-new Date(t).getTime())/1000;if(d<60)return"刚刚";if(d<3600)return Math.floor(d/60)+"分钟前";if(d<86400)return Math.floor(d/3600)+"小时前";return Math.floor(d/86400)+"天前"}
 function esc(x){return String(x).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;")}
 function legend(){document.getElementById("legend").innerHTML=Object.keys(STATE).map(function(k){return '<span><b style="background:'+COL[STATE[k][1]]+'"></b>'+STATE[k][0]+'</span>'}).join("")}
-var TASKS=null;
+var TASKS=null;var SEARCH="";
+function toggleTheme(){var b=document.body;b.dataset.theme=b.dataset.theme==="light"?"":"light";document.getElementById("theme").textContent=b.dataset.theme==="light"?"暗色":"亮色"}
 function nav(h){location.hash=h?"#/"+h:"#/"}
 function bindNav(){document.querySelectorAll("[data-nav]").forEach(function(el){el.onclick=function(){nav(el.getAttribute("data-nav"))}})}
 function route(){
@@ -602,7 +605,7 @@ function route(){
 window.addEventListener("hashchange",route);
 async function loadTasks(){TASKS=TASKS||await (await fetch("/api/tasks")).json();renderTasks()}
 function logical(){
-  var logic={};TASKS.tasks.forEach(function(t){var ws=t.workspace||"(当前仓库)";var key=ws+"|"+(t.title||t.taskId);
+  var logic={};TASKS.tasks.forEach(function(t){if(SEARCH&&((t.title||"").toLowerCase().indexOf(SEARCH)<0&&t.taskId.toLowerCase().indexOf(SEARCH)<0&&t.runId.toLowerCase().indexOf(SEARCH)<0))return;var ws=t.workspace||"(当前仓库)";var key=ws+"|"+(t.title||t.taskId);
     var g=logic[key]=logic[key]||{ws:ws,title:t.title||t.taskId,taskId:t.taskId,runCount:0,accepted:0,blocked:0,running:0,latestUpdate:t.latestUpdate,latestState:t.latestState};
     g.runCount+=t.runCount;g.accepted+=t.accepted;g.blocked+=t.blocked;g.running+=t.running;
     if(new Date(t.latestUpdate)>new Date(g.latestUpdate)){g.latestUpdate=t.latestUpdate;g.latestState=t.latestState}});
@@ -649,7 +652,7 @@ function dag(d){
   var x=10,parts=[],edges=[];stages.forEach(function(sg,i){var c=COL[sg[1]];parts.push(node(x,10,sg[0],c));if(i>0)edges.push('<path class="edge" d="M'+(x-10)+' 27 L'+x+' 27"/>');x+=140});
   return '<svg width="'+x+'" height="60"><defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="#444c56"/></marker></defs>'+edges.join("")+parts.join("")+'</svg>';
 }
-legend();route();
+legend();route();document.getElementById("q").addEventListener("input",function(e){SEARCH=e.target.value.toLowerCase().trim();if(!location.hash||location.hash==="#/"||location.hash==="#")renderTasks()});
 var es=new EventSource("/api/stream");
 es.addEventListener("snapshot",function(e){if(!location.hash||location.hash==="#/"||location.hash==="#")loadTasks()});
 </script></body></html>`
