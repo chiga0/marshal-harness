@@ -44,6 +44,23 @@ type EventLite struct {
 	At       string `json:"at"`
 }
 
+// AttemptInfo is one Worker Attempt's projection for the DAG detail view.
+type AttemptInfo struct {
+	ID           string `json:"id"`
+	WorkerStatus string `json:"workerStatus,omitempty"`
+}
+
+// RunDetail is the enriched per-run projection (Attempt/Review/Publish/Outcome).
+type RunDetail struct {
+	RunSummary
+	Events         []EventLite   `json:"events"`
+	Attempts       []AttemptInfo `json:"attempts"`
+	Verification   string        `json:"verification,omitempty"`
+	HasReview      bool          `json:"hasReview"`
+	HasPublication bool          `json:"hasPublication"`
+	HasOutcome     bool          `json:"hasOutcome"`
+}
+
 // ListRuns reads every run's state.json under stateRoot/runs (read-only).
 func ListRuns(stateRoot string) ([]RunSummary, error) {
 	runsDir := filepath.Join(stateRoot, "runs")
@@ -130,7 +147,7 @@ func NewHandler(opts Options) http.Handler {
 			http.Error(w, "read-only", http.StatusMethodNotAllowed)
 			return
 		}
-		runs, err := ListRuns(opts.StateRoot)
+		runs, err := ListRunsCached(opts.StateRoot)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -143,17 +160,12 @@ func NewHandler(opts Options) http.Handler {
 			return
 		}
 		runID := strings.TrimPrefix(r.URL.Path, "/api/runs/")
-		events, err := ReadEvents(opts.StateRoot, runID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		state, err := readState(filepath.Join(opts.StateRoot, "runs", runID, "state.json"))
+		detail, err := ReadRunDetail(opts.StateRoot, runID)
 		if err != nil {
 			http.Error(w, "run not found", http.StatusNotFound)
 			return
 		}
-		writeJSON(w, map[string]any{"state": state, "events": events})
+		writeJSON(w, detail)
 	})
 	mux.HandleFunc("/api/stream", func(w http.ResponseWriter, r *http.Request) {
 		stream(w, r, opts.StateRoot)
@@ -197,7 +209,7 @@ func stream(w http.ResponseWriter, r *http.Request, stateRoot string) {
 			return
 		case <-time.After(time.Second):
 		}
-		runs, err := ListRuns(stateRoot)
+		runs, err := ListRunsCached(stateRoot)
 		if err != nil {
 			return
 		}
@@ -208,6 +220,97 @@ func stream(w http.ResponseWriter, r *http.Request, stateRoot string) {
 			flusher.Flush()
 		}
 	}
+}
+
+// ReadRunDetail returns the enriched per-run projection for the DAG detail view.
+func ReadRunDetail(stateRoot, runID string) (RunDetail, error) {
+	runDir := filepath.Join(stateRoot, "runs", runID)
+	state, err := readState(filepath.Join(runDir, "state.json"))
+	if err != nil {
+		return RunDetail{}, err
+	}
+	events, _ := ReadEvents(stateRoot, runID)
+	detail := RunDetail{
+		RunSummary: RunSummary{RunID: state.RunID, TaskID: state.TaskID, State: string(state.State),
+			Sequence: state.Sequence, ReviewRound: state.ReviewRound, AttemptsUsed: state.AttemptsUsed,
+			CurrentAtt: state.CurrentAttemptID, Terminal: state.TerminalReason, UpdatedAt: state.UpdatedAt},
+		Events:         events,
+		HasReview:      fileExists(filepath.Join(runDir, "review-packet.json")) || dirHasEntries(filepath.Join(runDir, "decisions")),
+		HasPublication: fileExists(filepath.Join(runDir, "publication-record.json")),
+		HasOutcome:     fileExists(filepath.Join(runDir, "outcome.json")),
+	}
+	if v, err := readVerification(filepath.Join(runDir, "verification-report.json")); err == nil {
+		detail.Verification = v
+	}
+	if entries, err := os.ReadDir(filepath.Join(runDir, "attempts")); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			info := AttemptInfo{ID: entry.Name()}
+			if wr, err := os.ReadFile(filepath.Join(runDir, "attempts", entry.Name(), "worker-result.json")); err == nil {
+				var parsed struct {
+					Status string `json:"status"`
+				}
+				if json.Unmarshal(wr, &parsed) == nil {
+					info.WorkerStatus = parsed.Status
+				}
+			}
+			detail.Attempts = append(detail.Attempts, info)
+		}
+	}
+	return detail, nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
+func dirHasEntries(path string) bool {
+	entries, err := os.ReadDir(path)
+	return err == nil && len(entries) > 0
+}
+
+func readVerification(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", err
+	}
+	return parsed.Status, nil
+}
+
+// runsCache memoizes ListRuns keyed by the runs dir mtime, so the SSE loop does
+// not re-read every state.json each tick (production scale path: SQLite index).
+type runsCache struct {
+	modTime time.Time
+	runs    []RunSummary
+}
+
+var cache runsCache
+
+// ListRunsCached returns ListRuns with mtime-based invalidation.
+func ListRunsCached(stateRoot string) ([]RunSummary, error) {
+	runsDir := filepath.Join(stateRoot, "runs")
+	info, err := os.Stat(runsDir)
+	if err != nil {
+		return ListRuns(stateRoot)
+	}
+	if info.ModTime() == cache.modTime && cache.runs != nil {
+		return cache.runs, nil
+	}
+	runs, err := ListRuns(stateRoot)
+	if err != nil {
+		return nil, err
+	}
+	cache = runsCache{modTime: info.ModTime(), runs: runs}
+	return runs, nil
 }
 
 const indexHTML = `<!doctype html>
@@ -240,7 +343,7 @@ function render(runs){
 }
 async function showEvents(run){
   const d=await (await fetch('/api/runs/'+run)).json();
-  alert(run+'\\n'+(d.events||[]).map(e=>e.sequence+' '+e.type+' '+e.from+'->'+e.to).join('\\n'));
+  alert(run+'\\n'+['review:'+(d.hasReview?'y':'n'),'publish:'+(d.hasPublication?'y':'n'),'outcome:'+(d.hasOutcome?'y':'n'),'verify:'+(d.verification||'-')].join(' ')+'\\n'+(d.attempts||[]).map(a=>' attempt '+a.id+(a.workerStatus?' ['+a.workerStatus+']':'')).join('\\n')+'\\n'+(d.events||[]).map(e=>e.sequence+' '+e.type+' '+e.from+'->'+e.to).join('\\n'));
 }
 async function load(){const d=await (await fetch('/api/runs')).json();render(d.runs||[]);}
 load();

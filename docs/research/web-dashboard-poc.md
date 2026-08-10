@@ -32,5 +32,25 @@ marshal serve --addr 127.0.0.1:7717   # 实验分支
 
 ## 验证
 
-- `go test ./internal/dashboard/` 通过（ListRuns/ReadEvents/只读端点/SSE）；
+- `go test ./internal/dashboard/` 通过（ListRuns/ReadEvents/ReadRunDetail/只读端点/SSE）；
 - 真实数据：本机 47 个 Run 可被 `/api/runs` 投影（handler 层验证）。
+
+## 常驻启动（生产打磨，不碰信任边界）
+
+`marshal serve` 是一次性前台进程；生产可用 launchd（macOS）/systemd（Linux）托管：
+
+macOS `~/Library/LaunchAgents/dev.marshal.dashboard.plist`（示例）：
+
+```xml
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.marshal.dashboard</string>
+  <key>ProgramArguments</key><array>
+    <string>/path/to/marshal</string><string>serve</string><string>--addr</string><string>127.0.0.1:7717</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>/path/to/repo</string>
+</dict></plist>
+```
+
+d 以 `KeepAlive` 保证崩溃自启；仍仅 loopback，认证/TLS 由反向代理承担（需 ADR 时再做）。

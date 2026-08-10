@@ -62,6 +62,37 @@ func TestReadEventsParsesLines(t *testing.T) {
 	}
 }
 
+func TestReadRunDetailEnriches(t *testing.T) {
+	root := t.TempDir()
+	writeRun(t, root, "run-a", "TASK-A", "ACCEPTED")
+	runDir := filepath.Join(root, "runs", "run-a")
+	// attempts + outcome + publication + verification
+	attDir := filepath.Join(runDir, "attempts", "attempt-01")
+	if err := os.MkdirAll(attDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(attDir, "worker-result.json"), []byte(`{"status":"completed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"outcome.json": `{}` , "publication-record.json": `{}`, "verification-report.json": `{"status":"pass"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(runDir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	detail, err := ReadRunDetail(root, "run-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Attempts) != 1 || detail.Attempts[0].WorkerStatus != "completed" {
+		t.Fatalf("attempts = %+v", detail.Attempts)
+	}
+	if !detail.HasOutcome || !detail.HasPublication || detail.Verification != "pass" {
+		t.Fatalf("detail flags = %+v", detail)
+	}
+}
+
 func TestHandlerReadOnlyAndEndpoints(t *testing.T) {
 	root := t.TempDir()
 	writeRun(t, root, "run-a", "TASK-A", "RUNNING")
