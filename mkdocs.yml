@@ -102,6 +102,7 @@ nav:
       - 开源审计·上手: research/oss-audit-onboarding.md
       - 开源审计·社区: research/oss-audit-community.md
       - 开源审计·文档: research/oss-audit-docs2.md
+      - 云端长程 Agent 能力审计: research/cloud-agent-readiness-2026.md
   - English:
       - Home: en/index.md
       - Quick Start: en/quick-start.md
