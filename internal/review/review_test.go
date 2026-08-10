@@ -1,7 +1,9 @@
 package review
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -295,4 +297,258 @@ func writeDecision(t *testing.T, directory string, decision domain.ReviewDecisio
 		t.Fatal(err)
 	}
 	return path
+}
+
+func terminalRejectResult(t *testing.T, fixture reviewFixture) DecisionResult {
+	t.Helper()
+	packet, packetDigest := fixture.build(t, 1)
+	decision := validDecision(fixture, packet, packetDigest, "reject")
+	path := writeDecision(t, fixture.directory, decision)
+	result, err := (&DecisionImporter{RunDirectory: fixture.directory, Validator: fixture.validator}).Import(DecisionInput{Path: path, Task: fixture.task, TaskID: "ENG-123", RunID: "run-01", SpecDigest: fixture.specDigest, ReviewRound: 1, AttemptsUsed: 1, Report: fixture.report, Manifest: fixture.manifest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TargetState != domain.StateRejected {
+		t.Fatalf("target state = %s", result.TargetState)
+	}
+	return result
+}
+
+func terminalOutcome(fixture reviewFixture, result DecisionResult) *OutcomeData {
+	return TerminalOutcome("ENG-123", "run-01", result.TargetState, result, time.Date(2026, 8, 4, 0, 3, 0, 0, time.UTC))
+}
+
+func transactionPendingPaths(directory string) []string {
+	return []string{
+		filepath.Join(directory, "decisions", "decision-001.json.pending"),
+		filepath.Join(directory, "review-packets", "packet-001.json.pending"),
+		filepath.Join(directory, "outcome.json.pending"),
+		filepath.Join(directory, "outcome.md.pending"),
+		filepath.Join(directory, "result.md.pending"),
+	}
+}
+
+func transactionFinalPaths(directory string) []string {
+	return []string{
+		filepath.Join(directory, "decisions", "decision-001.json"),
+		filepath.Join(directory, "review-packets", "packet-001.json"),
+		filepath.Join(directory, "outcome.json"),
+		filepath.Join(directory, "outcome.md"),
+		filepath.Join(directory, "result.md"),
+	}
+}
+
+func assertAbsent(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, path := range paths {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("path %s still present: %v", path, err)
+		}
+	}
+}
+
+func TestPrepareOutcomeDoesNotProduceResultRecord(t *testing.T) {
+	fixture := newReviewFixture(t)
+	result := terminalRejectResult(t, fixture)
+	outcome := terminalOutcome(fixture, result)
+	if outcome == nil {
+		t.Fatal("expected terminal outcome data")
+	}
+	records, err := PrepareOutcome(fixture.directory, *outcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := records.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"outcome.json", "outcome.md"} {
+		info, err := os.Stat(filepath.Join(fixture.directory, name))
+		if err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("outcome record %s missing: %v", name, err)
+		}
+	}
+	assertAbsent(t, filepath.Join(fixture.directory, "result.md"), filepath.Join(fixture.directory, "result.md.pending"))
+}
+
+func TestPrepareRecordsTerminalProducesIndependentResultRecord(t *testing.T) {
+	fixture := newReviewFixture(t)
+	result := terminalRejectResult(t, fixture)
+	outcome := terminalOutcome(fixture, result)
+	records, err := PrepareRecords(fixture.directory, result, outcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := records.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range transactionFinalPaths(fixture.directory) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatalf("final %s missing: %v", path, err)
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("final %s is not a regular file: %v", path, info.Mode())
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("final %s mode = %v, want owner-only 0600", path, info.Mode())
+		}
+	}
+	assertAbsent(t, transactionPendingPaths(fixture.directory)...)
+	outcomeMarkdown, err := os.ReadFile(filepath.Join(fixture.directory, "outcome.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultMarkdown, err := os.ReadFile(filepath.Join(fixture.directory, "result.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(outcomeMarkdown, resultMarkdown) {
+		t.Fatalf("result.md bytes diverge from outcome.md")
+	}
+	markdownInfo, err := os.Stat(filepath.Join(fixture.directory, "outcome.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultInfo, err := os.Stat(filepath.Join(fixture.directory, "result.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(markdownInfo, resultInfo) {
+		t.Fatal("result.md shares an inode with outcome.md")
+	}
+}
+
+func TestPrepareRecordsWithoutOutcomeProducesNoResultRecord(t *testing.T) {
+	fixture := newReviewFixture(t)
+	result := terminalRejectResult(t, fixture)
+	records, err := PrepareRecords(fixture.directory, result, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records.pendingResult != "" || records.finalResult != "" {
+		t.Fatalf("outcome==nil prepared a result pair: %+v", records)
+	}
+	if err := records.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	assertAbsent(t, filepath.Join(fixture.directory, "result.md"), filepath.Join(fixture.directory, "result.md.pending"), filepath.Join(fixture.directory, "outcome.json"), filepath.Join(fixture.directory, "outcome.md"))
+	for _, path := range []string{filepath.Join(fixture.directory, "decisions", "decision-001.json"), filepath.Join(fixture.directory, "review-packets", "packet-001.json")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("final %s missing: %v", path, err)
+		}
+	}
+}
+
+func TestPrepareRecordsPreflightFailsClosedForEveryExistingFinal(t *testing.T) {
+	relativeFinals := []string{"decisions/decision-001.json", "review-packets/packet-001.json", "outcome.json", "outcome.md", "result.md"}
+	for _, relative := range relativeFinals {
+		for _, form := range []string{"regular", "directory", "symlink", "hardlink"} {
+			t.Run(relative+"/"+form, func(t *testing.T) {
+				fixture := newReviewFixture(t)
+				result := terminalRejectResult(t, fixture)
+				outcome := terminalOutcome(fixture, result)
+				finalPath := filepath.Join(fixture.directory, relative)
+				if err := os.MkdirAll(filepath.Dir(finalPath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				outsideTarget := filepath.Join(t.TempDir(), "outside-target")
+				if err := os.WriteFile(outsideTarget, []byte("sentinel\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				switch form {
+				case "regular":
+					if err := os.WriteFile(finalPath, []byte("sentinel\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				case "directory":
+					if err := os.Mkdir(finalPath, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				case "symlink":
+					if err := os.Symlink(outsideTarget, finalPath); err != nil {
+						t.Fatal(err)
+					}
+				case "hardlink":
+					if err := os.Link(outsideTarget, finalPath); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := PrepareRecords(fixture.directory, result, outcome); err == nil {
+					t.Fatalf("prepare accepted existing %s final %s", form, relative)
+				}
+				if data, err := os.ReadFile(outsideTarget); err != nil || string(data) != "sentinel\n" {
+					t.Fatalf("outside target modified: %v %q", err, data)
+				}
+				info, err := os.Lstat(finalPath)
+				if err != nil {
+					t.Fatalf("existing final %s removed by failed prepare: %v", relative, err)
+				}
+				if form == "symlink" && info.Mode()&os.ModeSymlink == 0 {
+					t.Fatalf("final %s replaced during failed prepare", relative)
+				}
+				assertAbsent(t, transactionPendingPaths(fixture.directory)...)
+			})
+		}
+	}
+}
+
+func TestCommitRefusesToReplaceFinalAppearingAfterPrepare(t *testing.T) {
+	fixture := newReviewFixture(t)
+	result := terminalRejectResult(t, fixture)
+	outcome := terminalOutcome(fixture, result)
+	records, err := PrepareRecords(fixture.directory, result, outcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer records.Abort()
+	finalResult := filepath.Join(fixture.directory, "result.md")
+	if err := os.WriteFile(finalResult, []byte("sentinel\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := records.Commit(); err == nil {
+		t.Fatal("commit overwrote a final that appeared after prepare")
+	}
+	if data, err := os.ReadFile(finalResult); err != nil || string(data) != "sentinel\n" {
+		t.Fatalf("sentinel clobbered by commit: %v %q", err, data)
+	}
+	if _, err := os.Lstat(filepath.Join(fixture.directory, "result.md.pending")); err != nil {
+		t.Fatalf("pending result.md lost after failed commit: %v", err)
+	}
+}
+
+func TestPrepareRecordsAbortCleansPendingAfterEveryWriterFailure(t *testing.T) {
+	for failAt := 0; failAt < len(transactionPendingPaths("")); failAt++ {
+		fixture := newReviewFixture(t)
+		result := terminalRejectResult(t, fixture)
+		outcome := terminalOutcome(fixture, result)
+		calls := 0
+		writer := func(path string, data []byte) error {
+			if calls == failAt {
+				return errors.New("injected writer failure")
+			}
+			calls++
+			return atomicWrite(path, data, false)
+		}
+		if _, err := prepareRecordsWithWriter(fixture.directory, result, outcome, writer); err == nil {
+			t.Fatalf("writer failure at step %d accepted", failAt)
+		}
+		assertAbsent(t, append(transactionPendingPaths(fixture.directory), transactionFinalPaths(fixture.directory)...)...)
+	}
+}
+
+func TestPrepareRecordsAbortRemovesAllPending(t *testing.T) {
+	fixture := newReviewFixture(t)
+	result := terminalRejectResult(t, fixture)
+	outcome := terminalOutcome(fixture, result)
+	records, err := PrepareRecords(fixture.directory, result, outcome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range transactionPendingPaths(fixture.directory) {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("pending %s not staged: %v", path, err)
+		}
+	}
+	records.Abort()
+	assertAbsent(t, append(transactionPendingPaths(fixture.directory), transactionFinalPaths(fixture.directory)...)...)
 }
