@@ -1718,12 +1718,23 @@ OpenCode、Qwen Code 与 Pi Worker 只产生 Attempt 与真实快照；verify、
 
 // runServe starts the read-only dashboard (experimental). It exposes no control
 // endpoints; approve/publish remain in CLI/Skill. Binds loopback by default.
+// stringSlice is a repeatable --root flag value.
+type stringSlice []string
+
+func (s *stringSlice) String() string { return strings.Join(*s, ",") }
+func (s *stringSlice) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
 func runServe(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	addr := flags.String("addr", "127.0.0.1:7717", "监听地址（默认仅 loopback）")
+	var roots stringSlice
+	flags.Var(&roots, "root", "额外聚合的仓库状态根（可重复，用于 Workspace 分组）")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "用法：marshal serve [--addr HOST:PORT]")
+		fmt.Fprintln(stderr, "用法：marshal serve [--addr HOST:PORT] [--root REPO ...]")
 		return ExitUsage
 	}
 	location, err := repository.Discover(".")
@@ -1735,7 +1746,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "警告：监听非 loopback 地址 %s；dashboard 为只读但请自行加认证/反向代理。\n", *addr)
 	}
 	fmt.Fprintf(stdout, "Marshal dashboard (read-only) listening on %s\n", *addr)
-	if err := dashboard.Serve(dashboard.Options{StateRoot: location.StateRoot, Addr: *addr}); err != nil {
+	if err := dashboard.Serve(dashboard.Options{StateRoot: location.StateRoot, Addr: *addr, Roots: roots}); err != nil {
 		fmt.Fprintf(stderr, "serve 失败：%v\n", err)
 		return ExitFailure
 	}

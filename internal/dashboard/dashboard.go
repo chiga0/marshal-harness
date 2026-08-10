@@ -27,6 +27,7 @@ type RunSummary struct {
 	RunID        string    `json:"runId"`
 	TaskID       string    `json:"taskId"`
 	Title        string    `json:"title,omitempty"`
+	Workspace    string    `json:"workspace,omitempty"`
 	State        string    `json:"state"`
 	Sequence     uint64    `json:"sequence"`
 	ReviewRound  uint      `json:"reviewRound"`
@@ -54,18 +55,29 @@ type AttemptInfo struct {
 // RunDetail is the enriched per-run projection (Attempt/Review/Publish/Outcome).
 type RunDetail struct {
 	RunSummary
-	Events         []EventLite   `json:"events"`
-	Attempts       []AttemptInfo `json:"attempts"`
-	Verification   string        `json:"verification,omitempty"`
-	HasReview      bool          `json:"hasReview"`
-	HasPublication bool          `json:"hasPublication"`
-	HasOutcome     bool          `json:"hasOutcome"`
+	Events             []EventLite   `json:"events"`
+	Attempts           []AttemptInfo `json:"attempts"`
+	Verification       string        `json:"verification,omitempty"`
+	GatesPassed        int           `json:"gatesPassed"`
+	GatesTotal         int           `json:"gatesTotal"`
+	GatesFailed        []string      `json:"gatesFailed,omitempty"`
+	Artifacts          []string      `json:"artifacts,omitempty"`
+	OperationalRetries uint          `json:"operationalRetries"`
+	ReworkRounds       uint          `json:"reworkRounds"`
+	WorkerDurationSec  int64         `json:"workerDurationSec"`
+	TotalDurationSec   int64         `json:"totalDurationSec"`
+	InputTokens        int64         `json:"inputTokens"`
+	OutputTokens       int64         `json:"outputTokens"`
+	HasReview          bool          `json:"hasReview"`
+	HasPublication     bool          `json:"hasPublication"`
+	HasOutcome         bool          `json:"hasOutcome"`
 }
 
 // TaskSummary aggregates a Task's runs for the top-level (level-1) view.
 type TaskSummary struct {
 	TaskID       string    `json:"taskId"`
 	Title        string    `json:"title,omitempty"`
+	Workspace    string    `json:"workspace,omitempty"`
 	LatestState  string    `json:"latestState"`
 	RunCount     int       `json:"runCount"`
 	Accepted     int       `json:"accepted"`
@@ -186,7 +198,31 @@ func readState(path string) (domain.RunState, error) {
 // Options configures the read-only server.
 type Options struct {
 	StateRoot string
-	Addr      string // default 127.0.0.1:7717
+	Addr      string   // default 127.0.0.1:7717
+	Roots     []string // additional repository state roots to aggregate (workspace grouping)
+}
+
+func (o Options) roots() []string {
+	roots := []string{o.StateRoot}
+	for _, r := range o.Roots {
+		if r != o.StateRoot && r != "" {
+			roots = append(roots, r)
+		}
+	}
+	return roots
+}
+
+func workspaceLabel(root string) string {
+	return filepath.Base(filepath.Dir(root)) + "/" + filepath.Base(root)
+}
+
+func (o Options) findRunRoot(runID string) string {
+	for _, root := range o.roots() {
+		if _, err := os.Stat(filepath.Join(root, "runs", runID, "state.json")); err == nil {
+			return root
+		}
+	}
+	return o.StateRoot
 }
 
 // NewHandler returns a read-only http.Handler serving the dashboard.
@@ -198,24 +234,38 @@ func NewHandler(opts Options) http.Handler {
 			http.Error(w, "read-only", http.StatusMethodNotAllowed)
 			return
 		}
-		tasks, err := ListTasks(opts.StateRoot)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		var all []TaskSummary
+		for _, root := range opts.roots() {
+			rs, err := ListTasks(root)
+			if err != nil {
+				continue
+			}
+			for i := range rs {
+				rs[i].Workspace = workspaceLabel(root)
+			}
+			all = append(all, rs...)
 		}
-		writeJSON(w, map[string]any{"tasks": tasks})
+		sort.Slice(all, func(i, j int) bool { return all[i].LatestUpdate.After(all[j].LatestUpdate) })
+		writeJSON(w, map[string]any{"tasks": all})
 	})
 	mux.HandleFunc("/api/runs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "read-only", http.StatusMethodNotAllowed)
 			return
 		}
-		runs, err := ListRunsCached(opts.StateRoot)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		var all []RunSummary
+		for _, root := range opts.roots() {
+			rs, err := ListRunsCached(root)
+			if err != nil {
+				continue
+			}
+			for i := range rs {
+				rs[i].Workspace = workspaceLabel(root)
+			}
+			all = append(all, rs...)
 		}
-		writeJSON(w, map[string]any{"runs": runs})
+		sort.Slice(all, func(i, j int) bool { return all[i].UpdatedAt.After(all[j].UpdatedAt) })
+		writeJSON(w, map[string]any{"runs": all})
 	})
 	mux.HandleFunc("/api/runs/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -223,11 +273,13 @@ func NewHandler(opts Options) http.Handler {
 			return
 		}
 		runID := strings.TrimPrefix(r.URL.Path, "/api/runs/")
-		detail, err := ReadRunDetail(opts.StateRoot, runID)
+		root := opts.findRunRoot(runID)
+		detail, err := ReadRunDetail(root, runID)
 		if err != nil {
 			http.Error(w, "run not found", http.StatusNotFound)
 			return
 		}
+		detail.Workspace = workspaceLabel(root)
 		writeJSON(w, detail)
 	})
 	mux.HandleFunc("/api/stream", func(w http.ResponseWriter, r *http.Request) {
@@ -322,7 +374,118 @@ func ReadRunDetail(stateRoot, runID string) (RunDetail, error) {
 			detail.Attempts = append(detail.Attempts, info)
 		}
 	}
+	detail.OperationalRetries = state.OperationalRetriesUsed
+	detail.ReworkRounds = state.ReworkRoundsUsed
+	detail.Artifacts = readArtifacts(filepath.Join(runDir, "artifact-manifest.json"))
+	detail.GatesPassed, detail.GatesTotal, detail.GatesFailed = readGates(filepath.Join(runDir, "verification-report.json"))
+	detail.WorkerDurationSec, detail.TotalDurationSec = durations(state, events)
+	detail.InputTokens, detail.OutputTokens = readTokens(runDir)
 	return detail, nil
+}
+
+func readArtifacts(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var parsed struct {
+		Artifacts []struct {
+			ID string `json:"id"`
+		} `json:"artifacts"`
+	}
+	if json.Unmarshal(data, &parsed) != nil {
+		return nil
+	}
+	var out []string
+	for _, a := range parsed.Artifacts {
+		out = append(out, a.ID)
+	}
+	return out
+}
+
+func readGates(path string) (passed, total int, failed []string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, nil
+	}
+	var parsed struct {
+		Gates []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"gates"`
+	}
+	if json.Unmarshal(data, &parsed) != nil {
+		return 0, 0, nil
+	}
+	for _, g := range parsed.Gates {
+		total++
+		if g.Status == "pass" {
+			passed++
+		} else {
+			failed = append(failed, g.ID)
+		}
+	}
+	return passed, total, failed
+}
+
+// durations returns total worker seconds (sum of attempts) and total run seconds.
+func durations(state domain.RunState, events []EventLite) (workerSec, totalSec int64) {
+	if !state.CreatedAt.IsZero() && !state.UpdatedAt.IsZero() {
+		totalSec = int64(state.UpdatedAt.Sub(state.CreatedAt).Seconds())
+	}
+	var started, completed time.Time
+	for _, e := range events {
+		t, err := time.Parse(time.RFC3339, e.At)
+		if err != nil {
+			continue
+		}
+		if e.Type == "worker.started" && started.IsZero() {
+			started = t
+		}
+		if e.Type == "worker.completed" {
+			completed = t
+		}
+	}
+	if !started.IsZero() && !completed.IsZero() {
+		workerSec = int64(completed.Sub(started).Seconds())
+	}
+	return workerSec, totalSec
+}
+
+// readTokens sums input/output tokens across attempts' transcript metadata.
+func readTokens(runDir string) (in, out int64) {
+	entries, err := os.ReadDir(filepath.Join(runDir, "attempts"))
+	if err != nil {
+		return 0, 0
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		outDir := filepath.Join(runDir, "attempts", entry.Name(), "control", "output")
+		metas, err := os.ReadDir(outDir)
+		if err != nil {
+			continue
+		}
+		for _, m := range metas {
+			if !strings.HasSuffix(m.Name(), "transcript-meta.json") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(outDir, m.Name()))
+			if err != nil {
+				continue
+			}
+			var parsed struct {
+				InputTokens  int64 `json:"inputTokens"`
+				OutputTokens int64 `json:"outputTokens"`
+			}
+			if json.Unmarshal(data, &parsed) == nil {
+				in += parsed.InputTokens
+				out += parsed.OutputTokens
+			}
+		}
+	}
+	return in, out
 }
 
 func fileExists(path string) bool {
@@ -430,11 +593,14 @@ function legend(){document.getElementById("legend").innerHTML=Object.keys(STATE)
 var TASKS=null;
 async function loadTasks(){TASKS=await (await fetch("/api/tasks")).json();renderTasks()}
 function renderTasks(){
-  document.getElementById("crumb").innerHTML="任务列表（"+TASKS.tasks.length+"）· 按最近活跃倒排";
-  document.getElementById("main").innerHTML='<div class="grid">'+TASKS.tasks.map(function(t){var s=st(t.latestState);
-    return '<div class="card" data-task="'+t.taskId+'"><h3>'+(t.title||t.taskId)+'</h3><span class="badge '+s[1]+'">'+s[0]+'</span>'+
-    '<div class="meta">'+rel(t.latestUpdate)+' · '+t.runCount+' 个 Run · 成功 '+t.accepted+' / 阻塞 '+t.blocked+' / 进行 '+t.running+'</div>'+
-    '<div class="rid">'+t.taskId+'</div></div>'}).join("")+'</div>';
+  var by={};TASKS.tasks.forEach(function(t){var ws=t.workspace||"(当前仓库)";(by[ws]=by[ws]||[]).push(t)});
+  var html="";Object.keys(by).forEach(function(ws){
+    html+='<div class="sec">Workspace · '+ws+'（'+by[ws].length+' 任务）</div><div class="grid">'+by[ws].map(function(t){var s=st(t.latestState);
+      return '<div class="card" data-task="'+t.taskId+'"><h3>'+(t.title||t.taskId)+'</h3><span class="badge '+s[1]+'">'+s[0]+'</span>'+
+      '<div class="meta">'+rel(t.latestUpdate)+' · '+t.runCount+' 个 Run · 成功 '+t.accepted+' / 阻塞 '+t.blocked+' / 进行 '+t.running+'</div>'+
+      '<div class="rid">'+t.taskId+'</div></div>'}).join("")+'</div>'});
+  document.getElementById("crumb").innerHTML="任务列表（"+TASKS.tasks.length+"）· 按 Workspace 分组 · 组内按最近活跃倒排";
+  document.getElementById("main").innerHTML=html;
   document.querySelectorAll(".card").forEach(function(el){el.onclick=function(){openTask(el.dataset.task)}});
 }
 async function openTask(taskId){
@@ -453,7 +619,11 @@ async function openRun(run){
   document.getElementById("dagbox").innerHTML='<div class="sec">流程 DAG（Leader → Worker → 门禁）</div>'+dag(d);
   var s=st(d.state);
   var h='<div class="sec">Run 详情</div><div class="kv"><b>状态</b> '+s[0]+'</div>'+
-   '<div class="kv"><b>验证</b> '+(d.verification||"未运行")+' · <b>审查</b> '+(d.hasReview?"已进行":"未")+' · <b>发布</b> '+(d.hasPublication?"已":"未")+' · <b>结局</b> '+(d.hasOutcome?"已记录":"无")+'</div>';
+   '<div class="kv"><b>验证</b> '+(d.verification||"未运行")+'（门禁 '+d.gatesPassed+'/'+d.gatesTotal+((d.gatesFailed&&d.gatesFailed.length)?'，失败: '+d.gatesFailed.join(","):'')+'） · <b>审查</b> '+(d.hasReview?"已进行":"未")+' · <b>发布</b> '+(d.hasPublication?"已":"未")+' · <b>结局</b> '+(d.hasOutcome?"已记录":"无")+'</div>'+
+ '<div class="kv"><b>重试/返工</b> 操作重试 '+d.operationalRetries+' · 返工 '+d.reworkRounds+' · 尝试 '+d.attemptsUsed+'</div>'+
+ '<div class="kv"><b>耗时</b> Worker '+(d.workerDurationSec||0)+'s · 全程 '+(d.totalDurationSec||0)+'s</div>'+
+ '<div class="kv"><b>Token</b> 入 '+(d.inputTokens||0)+' · 出 '+(d.outputTokens||0)+'</div>'+
+ '<div class="kv"><b>产出 Artifact</b> '+((d.artifacts&&d.artifacts.length)?d.artifacts.join("、"):"无")+'</div>';
   if(d.attempts&&d.attempts.length)h+='<div class="sec">Worker 尝试（Attempt）</div>'+d.attempts.map(function(a){return '<div class="kv">· '+a.id+(a.workerStatus?"（"+a.workerStatus+"）":"")+'</div>'}).join("");
   h+='<div class="sec">事件时间线</div>'+(d.events||[]).map(function(e){return '<div class="ev">'+(EVENT[e.type]||e.type)+'<small>'+e.from+' → '+e.to+' · '+(e.at||"")+'</small></div>'}).join("");
   document.getElementById("detail").innerHTML=h;
