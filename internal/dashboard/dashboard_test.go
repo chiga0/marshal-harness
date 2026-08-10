@@ -75,7 +75,7 @@ func TestReadRunDetailEnriches(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, content := range map[string]string{
-		"outcome.json": `{}` , "publication-record.json": `{}`, "verification-report.json": `{"status":"pass"}`,
+		"outcome.json": `{}`, "publication-record.json": `{}`, "verification-report.json": `{"status":"pass"}`,
 	} {
 		if err := os.WriteFile(filepath.Join(runDir, name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)

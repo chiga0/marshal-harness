@@ -62,6 +62,56 @@ type RunDetail struct {
 	HasOutcome     bool          `json:"hasOutcome"`
 }
 
+// TaskSummary aggregates a Task's runs for the top-level (level-1) view.
+type TaskSummary struct {
+	TaskID       string    `json:"taskId"`
+	Title        string    `json:"title,omitempty"`
+	LatestState  string    `json:"latestState"`
+	RunCount     int       `json:"runCount"`
+	Accepted     int       `json:"accepted"`
+	Blocked      int       `json:"blocked"`
+	Running      int       `json:"running"`
+	LatestUpdate time.Time `json:"latestUpdate"`
+}
+
+// ListTasks groups runs by task and aggregates, sorted by most recent activity.
+func ListTasks(stateRoot string) ([]TaskSummary, error) {
+	runs, err := ListRuns(stateRoot)
+	if err != nil {
+		return nil, err
+	}
+	by := map[string]*TaskSummary{}
+	for _, r := range runs {
+		t, ok := by[r.TaskID]
+		if !ok {
+			t = &TaskSummary{TaskID: r.TaskID, Title: r.Title}
+			by[r.TaskID] = t
+		}
+		t.RunCount++
+		switch r.State {
+		case "ACCEPTED":
+			t.Accepted++
+		case "BLOCKED", "REJECTED":
+			t.Blocked++
+		case "RUNNING", "VERIFYING", "REVIEW_PENDING", "PUBLISHING", "CI_PENDING":
+			t.Running++
+		}
+		if r.UpdatedAt.After(t.LatestUpdate) {
+			t.LatestUpdate = r.UpdatedAt
+			t.LatestState = r.State
+		}
+		if t.Title == "" && r.Title != "" {
+			t.Title = r.Title
+		}
+	}
+	out := make([]TaskSummary, 0, len(by))
+	for _, t := range by {
+		out = append(out, *t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LatestUpdate.After(out[j].LatestUpdate) })
+	return out, nil
+}
+
 // ListRuns reads every run's state.json under stateRoot/runs (read-only).
 func ListRuns(stateRoot string) ([]RunSummary, error) {
 	runsDir := filepath.Join(stateRoot, "runs")
@@ -87,7 +137,7 @@ func ListRuns(stateRoot string) ([]RunSummary, error) {
 			CurrentAtt: state.CurrentAttemptID, Terminal: state.TerminalReason, UpdatedAt: state.UpdatedAt,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.Before(out[j].UpdatedAt) })
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
 	return out, nil
 }
 
@@ -143,6 +193,18 @@ type Options struct {
 func NewHandler(opts Options) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleIndex)
+	mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "read-only", http.StatusMethodNotAllowed)
+			return
+		}
+		tasks, err := ListTasks(opts.StateRoot)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]any{"tasks": tasks})
+	})
 	mux.HandleFunc("/api/runs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "read-only", http.StatusMethodNotAllowed)
@@ -336,66 +398,80 @@ const indexHTML = `<!doctype html>
 <style>
  :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e}
  *{box-sizing:border-box} body{font-family:-apple-system,"PingFang SC",Segoe UI,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:24px}
- header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+ header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
  h1{font-size:20px;margin:0} .sub{color:var(--muted);font-size:13px}
- .legend{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 18px;font-size:12px;color:var(--muted)}
+ .crumb{margin:8px 0;font-size:13px;color:var(--muted)} .crumb a{color:#58a6ff;cursor:pointer}
+ .legend{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 16px;font-size:12px;color:var(--muted)}
  .legend b{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
  .grid{display:flex;flex-wrap:wrap;gap:14px}
- .card{border:1px solid var(--border);border-radius:10px;padding:14px;width:300px;background:var(--panel);cursor:pointer;transition:border-color .15s}
- .card:hover{border-color:#58a6ff}
- .card h3{margin:0 0 6px;font-size:15px} .card .rid{color:var(--muted);font-size:11px;font-family:ui-monospace,Menlo,monospace}
- .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600;margin:6px 0}
- .meta{color:var(--muted);font-size:12px}
+ .card{border:1px solid var(--border);border-radius:10px;padding:14px;width:320px;background:var(--panel);cursor:pointer}
+ .card:hover{border-color:#58a6ff} .card h3{margin:0 0 6px;font-size:15px}
+ .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600;margin:4px 0}
+ .meta{color:var(--muted);font-size:12px} .rid{color:var(--muted);font-size:11px;font-family:ui-monospace,Menlo,monospace}
  .ok{background:#12261e;color:#3fb950}.err{background:#2a1215;color:#f85149}.warn{background:#2a2113;color:#d29922}.info{background:#121d2a;color:#58a6ff}.mut{background:#1c2128;color:#8b949e}
- #drawer{position:fixed;top:0;right:0;bottom:0;width:440px;max-width:92vw;background:var(--panel);border-left:1px solid var(--border);padding:20px;overflow-y:auto;transform:translateX(100%);transition:transform .2s}
- #drawer.open{transform:none}
- #drawer h2{font-size:16px;margin:0 0 4px} #drawer .close{float:right;cursor:pointer;color:var(--muted)}
+ .runrow{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0;cursor:pointer;background:var(--panel)}
+ .runrow:hover{border-color:#58a6ff}
+ svg{max-width:100%} .node rect{rx:6} .node text{fill:var(--text);font-size:11px} .edge{stroke:#444c56;stroke-width:1.5;fill:none;marker-end:url(#ar)}
  .sec{margin:16px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
- .ev{border-left:3px solid var(--border);padding:4px 10px;margin:6px 0;font-size:13px;border-radius:3px;background:#0d1117}
- .ev small{color:var(--muted);display:block}
  .kv{font-size:13px;margin:4px 0} .kv b{color:var(--muted);font-weight:500}
+ .ev{border-left:3px solid var(--border);padding:4px 10px;margin:6px 0;font-size:13px;border-radius:3px;background:#0d1117} .ev small{color:var(--muted);display:block}
 </style></head><body>
-<header><h1>Marshal 控制台</h1><span class="sub">只读 · 实时任务编排概览（控制请在 CLI/Skill 操作）</span></header>
+<header><h1>Marshal 控制台</h1><span class="sub">只读 · 任务编排概览（控制请在 CLI/Skill）</span></header>
+<div class="crumb" id="crumb"></div>
 <div class="legend" id="legend"></div>
-<div class="grid" id="grid"></div>
-<div id="drawer"><span class="close" onclick="closeDrawer()">✕ 关闭</span><div id="dbody"></div></div>
+<div id="main"></div>
 <script>
-var STATE={ACCEPTED:["已接受 · 成功","ok"],REJECTED:["已拒绝","err"],BLOCKED:["阻塞 · 需人工","err"],RUNNING:["执行中","info"],VERIFYING:["独立验证中","info"],REVIEW_PENDING:["待审查","warn"],REWORK_REQUESTED:["返工中","warn"],PUBLISHING:["发布中","info"],PUBLISHED:["已发布","info"],CI_PENDING:["等待 CI","warn"],READY:["就绪待执行","info"],PLANNED:["规划中","info"],ABORTED:["已中止","mut"],NO_CHANGE:["无变更","mut"]};
-var EVENT={ "planning.spec-accepted":"任务规格已冻结","planning.inputs-frozen":"输入已冻结","worker.started":"Worker 启动","worker.completed":"Worker 完成","worker.failed":"Worker 失败","verification.completed":"独立验证完成","review.accept":"审查接受","review.rework":"审查要求返工","review.reject":"审查拒绝","publication.completed":"发布完成","publication.checks-requested":"请求 CI 检查","publication.checks-passed":"CI 检查通过","run.aborted":"人工中止"};
-function st(s){return STATE[s]||[s,"mut"]}
+var STATE={ACCEPTED:["已接受·成功","ok"],REJECTED:["已拒绝","err"],BLOCKED:["阻塞·需人工","err"],RUNNING:["执行中","info"],VERIFYING:["独立验证中","info"],REVIEW_PENDING:["待审查","warn"],REWORK_REQUESTED:["返工中","warn"],PUBLISHING:["发布中","info"],PUBLISHED:["已发布","info"],CI_PENDING:["等待CI","warn"],READY:["就绪","info"],PLANNED:["规划中","info"],ABORTED:["已中止","mut"],NO_CHANGE:["无变更","mut"]};
+var EVENT={"planning.spec-accepted":"任务规格冻结","planning.inputs-frozen":"输入冻结","worker.started":"Worker 启动","worker.completed":"Worker 完成","worker.failed":"Worker 失败","verification.completed":"独立验证完成","review.accept":"审查接受","review.rework":"要求返工","publication.completed":"发布完成","run.aborted":"人工中止"};
+var COL={ok:"#3fb950",err:"#f85149",warn:"#d29922",info:"#58a6ff",mut:"#8b949e"};
+function st(s){return STATE[s]||[s,"mut"]} function col(s){return col2(st(s)[1])} function col2(c){return COL[c]}
 function rel(t){var d=(Date.now()-new Date(t).getTime())/1000;if(d<60)return"刚刚";if(d<3600)return Math.floor(d/60)+"分钟前";if(d<86400)return Math.floor(d/3600)+"小时前";return Math.floor(d/86400)+"天前"}
-function legend(){document.getElementById("legend").innerHTML=Object.keys(STATE).map(function(k){var c=st(k)[1];var col={ok:"#3fb950",err:"#f85149",warn:"#d29922",info:"#58a6ff",mut:"#8b949e"}[c];return '<span><b style="background:'+col+'"></b>'+STATE[k][0]+'</span>'}).join("")}
-function render(runs){
-  var by={};runs.forEach(function(r){(by[r.taskId]=by[r.taskId]||[]).push(r)});
-  document.getElementById("grid").innerHTML=Object.keys(by).map(function(t){
-    var cards=by[t].map(function(r){var s=st(r.state);
-      return '<div class="card" data-run="'+r.runId+'"><h3>'+(r.title||r.taskId)+'</h3>'+
-        '<span class="badge '+s[1]+'">'+s[0]+'</span>'+
-        '<div class="meta">'+rel(r.updatedAt)+' · 尝试 '+r.attemptsUsed+' · 审查轮 '+r.reviewRound+'</div>'+
-        '<div class="rid">'+r.runId+'</div></div>'}).join("");
-    return cards}).join("");
-  document.querySelectorAll(".card").forEach(function(el){el.onclick=function(){openDrawer(el.dataset.run)}});
+function legend(){document.getElementById("legend").innerHTML=Object.keys(STATE).map(function(k){return '<span><b style="background:'+col(k)+'"></b>'+STATE[k][0]+'</span>'}).join("")}
+var TASKS=null;
+async function loadTasks(){TASKS=await (await fetch("/api/tasks")).json();renderTasks()}
+function renderTasks(){
+  document.getElementById("crumb").innerHTML="任务列表（"+TASKS.tasks.length+"）· 按最近活跃倒排";
+  document.getElementById("main").innerHTML='<div class="grid">'+TASKS.tasks.map(function(t){var s=st(t.latestState);
+    return '<div class="card" data-task="'+t.taskId+'"><h3>'+(t.title||t.taskId)+'</h3><span class="badge '+s[1]+'">'+s[0]+'</span>'+
+    '<div class="meta">'+rel(t.latestUpdate)+' · '+t.runCount+' 个 Run · 成功 '+t.accepted+' / 阻塞 '+t.blocked+' / 进行 '+t.running+'</div>'+
+    '<div class="rid">'+t.taskId+'</div></div>'}).join("")+'</div>';
+  document.querySelectorAll(".card").forEach(function(el){el.onclick=function(){openTask(el.dataset.task)}});
 }
-async function openDrawer(run){
+async function openTask(taskId){
+  var runs=(await (await fetch("/api/runs")).json()).runs.filter(function(r){return r.taskId===taskId});
+  runs.sort(function(a,b){return new Date(b.updatedAt)-new Date(a.updatedAt)});
+  var t=TASKS.tasks.find(function(x){return x.taskId===taskId});
+  document.getElementById("crumb").innerHTML='<a onclick="loadTasks()">任务列表</a> / '+(t&&t.title||taskId)+' · Run 按时间倒排';
+  document.getElementById("main").innerHTML=runs.map(function(r){var s=st(r.state);
+    return '<div class="runrow" data-run="'+r.runId+'"><span class="badge '+s[1]+'">'+s[0]+'</span> <b>'+r.runId+'</b> <span class="meta">'+rel(r.updatedAt)+' · 尝试 '+r.attemptsUsed+' · 轮 '+r.reviewRound+'</span></div>'}).join("")+
+    '<div id="dagbox"></div><div id="detail"></div>';
+  document.querySelectorAll(".runrow").forEach(function(el){el.onclick=function(){openRun(el.dataset.run)}});
+  if(runs.length)openRun(runs[0].runId);
+}
+async function openRun(run){
   var d=await (await fetch("/api/runs/"+run)).json();
+  document.getElementById("dagbox").innerHTML='<div class="sec">流程 DAG（Leader → Worker → 门禁）</div>'+dag(d);
   var s=st(d.state);
-  var h='<h2>'+(d.title||d.taskId)+'</h2><span class="badge '+s[1]+'">'+s[0]+'</span>'+
-   '<div class="kv"><b>Run</b> '+d.runId+'</div>'+
-   '<div class="kv"><b>更新</b> '+rel(d.updatedAt)+'</div>'+
-   (d.terminal?'<div class="kv"><b>终止原因</b> '+d.terminal+'</div>':'');
-  h+='<div class="sec">门禁进度</div>'+
-   '<div class="kv">独立验证：'+(d.verification||"未运行")+'</div>'+
-   '<div class="kv">审查：'+(d.hasReview?"已进行":"未进行")+' · 发布：'+(d.hasPublication?"已发布":"未发布")+' · 结局：'+(d.hasOutcome?"已记录":"无")+'</div>';
-  if(d.attempts&&d.attempts.length){h+='<div class="sec">Worker 尝试</div>'+d.attempts.map(function(a){return '<div class="kv">· '+a.id+(a.workerStatus?"（"+a.workerStatus+"）":"")+'</div>'}).join("")}
-  h+='<div class="sec">事件时间线</div>'+(d.events||[]).map(function(e){return '<div class="ev">'+(EVENT[e.type]||e.type)+' <small>'+e.from+' → '+e.to+' · '+ (e.at||"")+'</small></div>'}).join("");
-  document.getElementById("dbody").innerHTML=h;
-  document.getElementById("drawer").classList.add("open");
+  var h='<div class="sec">Run 详情</div><div class="kv"><b>状态</b> '+s[0]+'</div>'+
+   '<div class="kv"><b>验证</b> '+(d.verification||"未运行")+' · <b>审查</b> '+(d.hasReview?"已进行":"未")+' · <b>发布</b> '+(d.hasPublication?"已":"未")+' · <b>结局</b> '+(d.hasOutcome?"已记录":"无")+'</div>';
+  if(d.attempts&&d.attempts.length)h+='<div class="sec">Worker 尝试（Attempt）</div>'+d.attempts.map(function(a){return '<div class="kv">· '+a.id+(a.workerStatus?"（"+a.workerStatus+"）":"")+'</div>'}).join("");
+  h+='<div class="sec">事件时间线</div>'+(d.events||[]).map(function(e){return '<div class="ev">'+(EVENT[e.type]||e.type)+'<small>'+e.from+' → '+e.to+' · '+(e.at||"")+'</small></div>'}).join("");
+  document.getElementById("detail").innerHTML=h;
 }
-function closeDrawer(){document.getElementById("drawer").classList.remove("open")}
-async function load(){var d=await (await fetch("/api/runs")).json();render(d.runs||[])}
-legend();load();
+function node(x,y,label,color){return '<g class="node"><rect x="'+x+'" y="'+y+'" width="120" height="34" fill="'+color+'22" stroke="'+color+'"/><text x="'+(x+60)+'" y="'+(y+21)+'" text-anchor="middle">'+label+'</text></g>'}
+function dag(d){
+  var stages=[["Leader/Plan","info"]];
+  (d.attempts||[]).forEach(function(a,i){var c=a.workerStatus==="completed"?"ok":(a.workerStatus?"err":"info");stages.push(["Worker"+(i+1),c]);});
+  stages.push(["验证", d.verification==="pass"?"ok":(d.verification?"err":"mut")]);
+  stages.push(["审查", d.hasReview?"ok":"mut"]); stages.push(["发布", d.hasPublication?"ok":"mut"]); stages.push(["结局", d.hasOutcome?"ok":"mut"]);
+  var x=10,parts=[],edges=[];
+  stages.forEach(function(sg,i){var c=col2(sg[1]);parts.push(node(x,10,sg[0],c));if(i>0)edges.push('<path class="edge" d="M'+(x-10)+' 27 L'+x+' 27"/>');x+=140});
+  return '<svg width="'+(x)+'" height="60"><defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="#444c56"/></marker></defs>'+edges.join("")+parts.join("")+'</svg>';
+}
+legend();loadTasks();
 var es=new EventSource("/api/stream");
-es.addEventListener("snapshot",function(e){render(JSON.parse(e.data).runs||[])});
+es.addEventListener("snapshot",function(e){if(document.getElementById("crumb").textContent.indexOf("任务列表")===0)renderFromRuns(JSON.parse(e.data).runs)});
+function renderFromRuns(runs){/* refresh task list from snapshot */loadTasks()}
 </script></body></html>`
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {
