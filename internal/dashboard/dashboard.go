@@ -591,6 +591,7 @@ function esc(x){return String(x).replace(/&/g,"&amp;").replace(/"/g,"&quot;").re
 function legend(){document.getElementById("legend").innerHTML=Object.keys(STATE).map(function(k){return '<span><b style="background:'+COL[STATE[k][1]]+'"></b>'+STATE[k][0]+'</span>'}).join("")}
 var TASKS=null;
 function nav(h){location.hash=h?"#/"+h:"#/"}
+function bindNav(){document.querySelectorAll("[data-nav]").forEach(function(el){el.onclick=function(){nav(el.getAttribute("data-nav"))}})}
 function route(){
   var h=location.hash.replace(/^#\/?/,"");
   document.getElementById("nav-tasks").className=h?"":"on";
@@ -610,18 +611,18 @@ function renderTasks(){
   var logic=logical(),by={};Object.keys(logic).forEach(function(k){var g=logic[k];(by[g.ws]=by[g.ws]||[]).push(g)});
   var html="";Object.keys(by).forEach(function(ws){by[ws].sort(function(a,b){return new Date(b.latestUpdate)-new Date(a.latestUpdate)});
     html+='<div class="sec">Workspace · '+ws+'（'+by[ws].length+' 逻辑任务）</div><div class="grid">'+by[ws].map(function(g){var s=st(g.latestState);
-      return '<div class="card" onclick="nav(\\'task/'+encodeURIComponent(g.title)+'\\')"><h3>'+esc(g.title)+'</h3><span class="badge '+s[1]+'">'+s[0]+'</span>'+
+      return '<div class="card" data-nav="task/'+encodeURIComponent(g.title)+'"><h3>'+esc(g.title)+'</h3><span class="badge '+s[1]+'">'+s[0]+'</span>'+
       '<div class="meta">'+rel(g.latestUpdate)+' · '+g.runCount+' Run · 成 '+g.accepted+' / 阻 '+g.blocked+' / 行 '+g.running+'</div>'+
       '<div class="rid">'+esc(g.taskId)+(g.runCount>1?' 等 '+g.runCount+' 次':'')+'</div></div>'}).join("")+'</div>'});
   document.getElementById("crumb").innerHTML="任务列表（"+Object.keys(logic).length+" 逻辑任务）";
-  document.getElementById("main").innerHTML=html;
+  document.getElementById("main").innerHTML=html;bindNav();
 }
 async function showTask(title){
   var runs=(await (await fetch("/api/runs")).json()).runs.filter(function(r){return r.title===title||r.taskId===title});
   runs.sort(function(a,b){return new Date(b.updatedAt)-new Date(a.updatedAt)});
-  document.getElementById("crumb").innerHTML='<a onclick="nav(\\'\\')">任务</a> / '+esc(title);
+  document.getElementById("crumb").innerHTML='<a data-nav="">任务</a> / '+esc(title);
   document.getElementById("main").innerHTML='<div class="sec">Run（倒排）</div>'+runs.map(function(r){var s=st(r.state);
-    return '<div class="runrow" onclick="nav(\\'run/'+r.runId+'\\')"><span class="badge '+s[1]+'">'+s[0]+'</span> <b>'+r.runId+'</b> <span class="meta">'+rel(r.updatedAt)+' · 尝试 '+r.attemptsUsed+' · 轮 '+r.reviewRound+'</span></div>'}).join("")+'<div id="runbox"></div>';
+    return '<div class="runrow" data-nav="run/'+r.runId+'"><span class="badge '+s[1]+'">'+s[0]+'</span> <b>'+r.runId+'</b> <span class="meta">'+rel(r.updatedAt)+' · 尝试 '+r.attemptsUsed+' · 轮 '+r.reviewRound+'</span></div>'}).join("")+'<div id="runbox"></div>';bindNav();
   if(runs.length)showRun(runs[0].runId,true);
 }
 async function showRun(run,embedded){
@@ -638,7 +639,7 @@ async function showRun(run,embedded){
    '<div class="kv"><b>Token</b> 入 '+(d.inputTokens||0)+' 出 '+(d.outputTokens||0)+'</div>'+
    '<div class="kv"><b>Artifact</b> '+((d.artifacts&&d.artifacts.length)?d.artifacts.length+' 项':"无")+'</div>'+
    '<div class="sec">Worker 尝试</div>'+((d.attempts||[]).map(function(a){return '<div class="kv">· '+a.id+(a.workerStatus?"（"+a.workerStatus+"）":"")+'</div>'}).join("")||'<div class="kv">无</div>')+'</div></div>';
-  if(embedded){document.getElementById("runbox").innerHTML=h}else{document.getElementById("crumb").innerHTML='<a onclick="nav(\\'\\')">任务</a> / <a onclick="nav(\\'task/'+encodeURIComponent(d.title||d.taskId)+'\\')">'+esc(d.title||d.taskId)+'</a> / '+run;document.getElementById("main").innerHTML=h}
+  if(embedded){document.getElementById("runbox").innerHTML=h;bindNav()}else{document.getElementById("crumb").innerHTML='<a data-nav="">任务</a> / <a data-nav="task/'+encodeURIComponent(d.title||d.taskId)+'">'+esc(d.title||d.taskId)+'</a> / '+run;document.getElementById("main").innerHTML=h;bindNav()}
 }
 function node(x,y,label,color){return '<g class="node"><rect x="'+x+'" y="'+y+'" width="120" height="34" fill="'+color+'22" stroke="'+color+'"/><text x="'+(x+60)+'" y="'+(y+21)+'" text-anchor="middle">'+label+'</text></g>'}
 function dag(d){
