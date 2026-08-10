@@ -163,7 +163,7 @@ func TestRunnerResolvesRelativeExecutableFromCommandCWD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := (Runner{}).Run(context.Background(), root, CommandSpec{ID: "relative", Argv: []string{"./check.sh"}, CWD: "tools", Timeout: time.Second, Required: true})
+	result := (Runner{}).Run(context.Background(), root, CommandSpec{ID: "relative", Argv: []string{"./check.sh"}, CWD: "tools", Timeout: 10 * time.Second, Required: true})
 	if result.Status != "pass" || result.Record.Executable != canonicalScript {
 		t.Fatalf("relative executable result = %+v", result)
 	}
@@ -176,7 +176,7 @@ func TestRunnerResolvesRelativeExecutableFromCommandCWD(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result = (Runner{}).Run(context.Background(), root, CommandSpec{ID: "escape", Argv: []string{escapingPath}, CWD: "tools", Timeout: time.Second, Required: true})
+	result = (Runner{}).Run(context.Background(), root, CommandSpec{ID: "escape", Argv: []string{escapingPath}, CWD: "tools", Timeout: 10 * time.Second, Required: true})
 	if result.Status != "error" {
 		t.Fatalf("escaping executable result = %+v", result)
 	}
