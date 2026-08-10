@@ -66,4 +66,4 @@ Decision 必须绑定 `taskId`、`runId`、`reviewRound`、`specDigest`、`revie
 - **遗留清理**：`marshal task migrate-outcomes --actor ID` 为遗留终态 Run 补记 Outcome（不覆盖已有），再 `cleanup --apply`/`--export-patch` 清理。
 - **发布**：`make check` 全绿后打 SemVer tag + `gh release create`，CHANGELOG 遵循 Keep a Changelog；首个正式版 v0.1.0。
 - **工程高标准**：不降要求——新命令必须有测试；`make check`（format/vet/staticcheck/race/build）必须绿；关注覆盖率（lifecycle 76%/cleanup 73%/cli 53%/dashboard 53% 为基线）；负载敏感测试用宽松超时去 flake，不削弱断言。
-- **重试同 taskId**（规划中）：worktree 现按 taskId 建，重试同 taskId 需改 worktree 策略（ADR 级）；视图层已用标题折叠重试。
+- **重试同 taskId**（已落地 v0.1.0+）：worktree 按 (taskId,runId) 键控（CreateForRun），同 task 可重试、单写者不变量保持；视图层亦用标题折叠重试。
