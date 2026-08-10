@@ -9,9 +9,10 @@
 package dashboard
 
 import (
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -23,11 +24,8 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
 
-//go:embed webdist/dag.js
-var dagJS []byte
-
-//go:embed webdist/dag.css
-var dagCSS []byte
+//go:embed all:webdist
+var webFS embed.FS
 
 // RunSummary is the read-only projection of one Run shown in the dashboard.
 type RunSummary struct {
@@ -235,15 +233,10 @@ func (o Options) findRunRoot(runID string) string {
 // NewHandler returns a read-only http.Handler serving the dashboard.
 func NewHandler(opts Options) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/dag.js", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/javascript")
-		_, _ = w.Write(dagJS)
-	})
-	mux.HandleFunc("/dag.css", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/css")
-		_, _ = w.Write(dagCSS)
-	})
-	mux.HandleFunc("/", handleIndex)
+	sub, err := fs.Sub(webFS, "webdist")
+	if err == nil {
+		mux.Handle("/", http.FileServer(http.FS(sub)))
+	}
 	mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "read-only", http.StatusMethodNotAllowed)
@@ -583,123 +576,4 @@ func ListRunsCached(stateRoot string) ([]RunSummary, error) {
 	}
 	cache = runsCache{modTime: info.ModTime(), runs: runs}
 	return runs, nil
-}
-
-const indexHTML = `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Marshal 控制台</title><link rel="stylesheet" href="/dag.css">
-<style>
- :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff}
- body[data-theme=light]{--bg:#ffffff;--panel:#f6f8fa;--border:#d0d7de;--text:#1f2328;--muted:#57606a;--accent:#0969da}
- body[data-theme=light] .ok{background:#dafbe1;color:#1a7f37}body[data-theme=light] .err{background:#ffebe9;color:#cf222e}body[data-theme=light] .warn{background:#fff8c5;color:#9a6700}body[data-theme=light] .info{background:#ddf4ff;color:#0969da}body[data-theme=light] .mut{background:#eaeef2;color:#57606a}body[data-theme=light] .ev{background:#fff}
- *{box-sizing:border-box} body{font-family:-apple-system,"PingFang SC",Segoe UI,sans-serif;background:var(--bg);color:var(--text);margin:0}
- nav{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:16px;padding:12px 24px;background:var(--panel);border-bottom:1px solid var(--border)}
- nav .brand{font-weight:700;font-size:16px} nav a{color:var(--muted);text-decoration:none;font-size:14px;cursor:pointer} nav a.on{color:var(--text)} nav .sp{flex:1} nav .ro{color:var(--muted);font-size:12px;border:1px solid var(--border);padding:2px 8px;border-radius:10px}
- main{padding:20px 24px}
- .crumb{margin:4px 0 10px;font-size:13px;color:var(--muted)} .crumb a{color:var(--accent);cursor:pointer}
- .legend{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 16px;font-size:12px;color:var(--muted)} .legend b{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}
- .sec{margin:16px 0 8px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
- .grid{display:flex;flex-wrap:wrap;gap:14px}
- .card{border:1px solid var(--border);border-radius:10px;padding:14px;width:320px;background:var(--panel);cursor:pointer}
- .card:hover{border-color:var(--accent)} .card h3{margin:0 0 6px;font-size:15px}
- .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600;margin:4px 0}
- .meta{color:var(--muted);font-size:12px} .rid{color:var(--muted);font-size:11px;font-family:ui-monospace,Menlo,monospace}
- .ok{background:#12261e;color:#3fb950}.err{background:#2a1215;color:#f85149}.warn{background:#2a2113;color:#d29922}.info{background:#121d2a;color:#58a6ff}.mut{background:#1c2128;color:#8b949e}
- .runrow{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0;cursor:pointer;background:var(--panel)} .runrow:hover{border-color:var(--accent)}
- .cols{display:flex;gap:20px;flex-wrap:wrap} .col-main{flex:3;min-width:320px} .col-side{flex:1;min-width:280px}
- .dagwrap{position:relative;overflow:hidden;border:1px solid var(--border);border-radius:8px;background:var(--bg)} .dagwrap svg{transform-origin:0 0} .dagctl{position:absolute;right:8px;top:8px;z-index:2} .dagctl a{cursor:pointer;margin-left:6px;border:1px solid var(--border);border-radius:4px;padding:2px 7px;color:var(--muted);background:var(--panel)} svg{max-width:none} .node text{fill:var(--text);font-size:11px} .edge{stroke:#444c56;stroke-width:1.5;fill:none;marker-end:url(#ar)}
- .kv{font-size:13px;margin:4px 0} .kv b{color:var(--muted);font-weight:500}
- .ev{border-left:3px solid var(--border);padding:4px 10px;margin:6px 0;font-size:13px;border-radius:3px;background:var(--bg)} .ev small{color:var(--muted);display:block}
-</style></head><body>
-<nav><span class="brand">Marshal 控制台</span><a id="nav-tasks" onclick="nav('')">任务</a><input id="q" placeholder="检索任务/Run…" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:13px"><span class="sp"></span><a id="theme" onclick="toggleTheme()">亮色</a><span class="ro">只读 · 控制在 CLI/Skill</span></nav>
-<main><div class="crumb" id="crumb"></div><div class="legend" id="legend"></div><div id="main"></div></main>
-<script src="/dag.js"></script>
-<script>
-var STATE={ACCEPTED:["已接受·成功","ok"],REJECTED:["已拒绝","err"],BLOCKED:["阻塞·需人工","err"],RUNNING:["执行中","info"],VERIFYING:["独立验证中","info"],REVIEW_PENDING:["待审查","warn"],REWORK_REQUESTED:["返工中","warn"],PUBLISHING:["发布中","info"],PUBLISHED:["已发布","info"],CI_PENDING:["等待CI","warn"],READY:["就绪","info"],PLANNED:["规划中","info"],ABORTED:["已中止","mut"],NO_CHANGE:["无变更","mut"]};
-var EVENT={"planning.spec-accepted":"任务规格冻结","planning.inputs-frozen":"输入冻结","worker.started":"Worker 启动","worker.completed":"Worker 完成","worker.failed":"Worker 失败","verification.completed":"独立验证完成","review.accept":"审查接受","review.rework":"要求返工","publication.completed":"发布完成","run.aborted":"人工中止"};
-var COL={ok:"#3fb950",err:"#f85149",warn:"#d29922",info:"#58a6ff",mut:"#8b949e"};
-function st(s){return STATE[s]||[s,"mut"]} function col(s){return COL[st(s)[1]]}
-function rel(t){var d=(Date.now()-new Date(t).getTime())/1000;if(d<60)return"刚刚";if(d<3600)return Math.floor(d/60)+"分钟前";if(d<86400)return Math.floor(d/3600)+"小时前";return Math.floor(d/86400)+"天前"}
-function esc(x){return String(x).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;")}
-function legend(){document.getElementById("legend").innerHTML=Object.keys(STATE).map(function(k){return '<span><b style="background:'+COL[STATE[k][1]]+'"></b>'+STATE[k][0]+'</span>'}).join("")}
-var TASKS=null;var SEARCH="";
-function toggleTheme(){var b=document.body;b.dataset.theme=b.dataset.theme==="light"?"":"light";document.getElementById("theme").textContent=b.dataset.theme==="light"?"暗色":"亮色"}
-function nav(h){location.hash=h?"#/"+h:"#/"}
-function bindNav(){document.querySelectorAll("[data-nav]").forEach(function(el){el.onclick=function(){nav(el.getAttribute("data-nav"))}})}
-var Z={s:1,x:0,y:0};
-function applyZ(){var svg=document.querySelector("#dagwrap svg");if(svg)svg.style.transform="translate("+Z.x+"px,"+Z.y+"px) scale("+Z.s+")"}
-function mountDAG(d){var el=document.getElementById("dagroot");if(!el)return;el.innerHTML=dag(d)}
-function bindDag(){var w=document.getElementById("dagwrap");if(!w)return;Z={s:1,x:0,y:0};applyZ();
- w.querySelectorAll("[data-z]").forEach(function(b){b.onclick=function(e){e.stopPropagation();var m=b.getAttribute("data-z");if(m==="in")Z.s*=1.2;else if(m==="out")Z.s/=1.2;else{Z={s:1,x:0,y:0}}applyZ()}});
- w.onwheel=function(e){e.preventDefault();Z.s*=e.deltaY<0?1.1:0.9;applyZ()};
- var drag=null;w.onmousedown=function(e){drag={x:e.clientX-Z.x,y:e.clientY-Z.y}};w.onmousemove=function(e){if(drag){Z.x=e.clientX-drag.x;Z.y=e.clientY-drag.y;applyZ()}};w.onmouseup=function(){drag=null};
- w.querySelectorAll("[data-att]").forEach(function(n){n.onclick=function(e){e.stopPropagation();var a=n.getAttribute("data-att");var el=document.querySelectorAll("#atts .kv")[a];if(el)el.scrollIntoView({block:"center"})}})}
-function route(){
-  var h=location.hash.replace(/^#\/?/,"");
-  document.getElementById("nav-tasks").className=h?"":"on";
-  if(h.indexOf("task/")===0)return showTask(decodeURIComponent(h.slice(5)));
-  if(h.indexOf("run/")===0)return showRun(decodeURIComponent(h.slice(4)));
-  loadTasks();
-}
-window.addEventListener("hashchange",route);
-async function loadTasks(){TASKS=TASKS||await (await fetch("/api/tasks")).json();renderTasks()}
-function logical(){
-  var logic={};TASKS.tasks.forEach(function(t){if(SEARCH&&((t.title||"").toLowerCase().indexOf(SEARCH)<0&&t.taskId.toLowerCase().indexOf(SEARCH)<0&&t.runId.toLowerCase().indexOf(SEARCH)<0))return;var ws=t.workspace||"(当前仓库)";var key=ws+"|"+(t.title||t.taskId);
-    var g=logic[key]=logic[key]||{ws:ws,title:t.title||t.taskId,taskId:t.taskId,runCount:0,accepted:0,blocked:0,running:0,latestUpdate:t.latestUpdate,latestState:t.latestState};
-    g.runCount+=t.runCount;g.accepted+=t.accepted;g.blocked+=t.blocked;g.running+=t.running;
-    if(new Date(t.latestUpdate)>new Date(g.latestUpdate)){g.latestUpdate=t.latestUpdate;g.latestState=t.latestState}});
-  return logic}
-function renderTasks(){
-  var logic=logical(),by={};Object.keys(logic).forEach(function(k){var g=logic[k];(by[g.ws]=by[g.ws]||[]).push(g)});
-  var html="";Object.keys(by).forEach(function(ws){by[ws].sort(function(a,b){return new Date(b.latestUpdate)-new Date(a.latestUpdate)});
-    html+='<div class="sec">Workspace · '+ws+'（'+by[ws].length+' 逻辑任务）</div><div class="grid">'+by[ws].map(function(g){var s=st(g.latestState);
-      return '<div class="card" data-nav="task/'+encodeURIComponent(g.title)+'"><h3>'+esc(g.title)+'</h3><span class="badge '+s[1]+'">'+s[0]+'</span>'+
-      '<div class="meta">'+rel(g.latestUpdate)+' · '+g.runCount+' Run · 成 '+g.accepted+' / 阻 '+g.blocked+' / 行 '+g.running+'</div>'+
-      '<div class="rid">'+esc(g.taskId)+(g.runCount>1?' 等 '+g.runCount+' 次':'')+'</div></div>'}).join("")+'</div>'});
-  document.getElementById("crumb").innerHTML="任务列表（"+Object.keys(logic).length+" 逻辑任务）";
-  document.getElementById("main").innerHTML=html;bindNav();
-}
-async function showTask(title){
-  var runs=(await (await fetch("/api/runs")).json()).runs.filter(function(r){return r.title===title||r.taskId===title});
-  runs.sort(function(a,b){return new Date(b.updatedAt)-new Date(a.updatedAt)});
-  document.getElementById("crumb").innerHTML='<a data-nav="">任务</a> / '+esc(title);
-  document.getElementById("main").innerHTML='<div class="sec">Run（倒排）</div>'+runs.map(function(r){var s=st(r.state);
-    return '<div class="runrow" data-nav="run/'+r.runId+'"><span class="badge '+s[1]+'">'+s[0]+'</span> <b>'+r.runId+'</b> <span class="meta">'+rel(r.updatedAt)+' · 尝试 '+r.attemptsUsed+' · 轮 '+r.reviewRound+'</span></div>'}).join("")+'<div id="runbox"></div>';bindNav();
-  if(runs.length)showRun(runs[0].runId,true);
-}
-async function showRun(run,embedded){
-  var d=await (await fetch("/api/runs/"+run)).json();
-  var s=st(d.state);
-  var h='<div class="cols"><div class="col-main"><div class="sec">流程 DAG（React Flow：缩放/平移/minimap/点节点看 attempt）</div><div id="dagroot" style="height:240px;border:1px solid var(--border);border-radius:8px;overflow:hidden"></div>'+
-   '<div class="sec">事件时间线</div>'+(d.events||[]).map(function(e){return '<div class="ev">'+(EVENT[e.type]||e.type)+'<small>'+e.from+' → '+e.to+' · '+(e.at||"")+'</small></div>'}).join("")+'</div>'+
-   '<div class="col-side"><div class="sec">Run 详情</div><div class="kv"><b>状态</b> <span class="badge '+s[1]+'">'+s[0]+'</span></div>'+
-   '<div class="kv"><b>Workspace</b> '+esc(d.workspace||"")+'</div>'+
-   '<div class="kv"><b>验证</b> '+(d.verification||"未运行")+'（'+d.gatesPassed+'/'+d.gatesTotal+(d.gatesFailed&&d.gatesFailed.length?' 失败:'+d.gatesFailed.join(","):'')+'）</div>'+
-   '<div class="kv"><b>审查/发布/结局</b> '+(d.hasReview?"已":"未")+' / '+(d.hasPublication?"已":"未")+' / '+(d.hasOutcome?"已":"无")+'</div>'+
-   '<div class="kv"><b>重试/返工</b> '+d.operationalRetries+' / '+d.reworkRounds+' · 尝试 '+d.attemptsUsed+'</div>'+
-   '<div class="kv"><b>耗时</b> Worker '+(d.workerDurationSec||0)+'s · 全程 '+(d.totalDurationSec||0)+'s</div>'+
-   '<div class="kv"><b>Token</b> 入 '+(d.inputTokens||0)+' 出 '+(d.outputTokens||0)+'</div>'+
-   '<div class="kv"><b>Artifact</b> '+((d.artifacts&&d.artifacts.length)?d.artifacts.length+' 项':"无")+'</div>'+
-   '<div class="sec">Worker 尝试</div><div id="atts">'+((d.attempts||[]).map(function(a){return '<div class="kv">· '+a.id+(a.workerStatus?"（"+a.workerStatus+"）":"")+'</div>'}).join("")||'<div class="kv">无</div>')+'</div></div>';bindDag();
-  if(embedded){document.getElementById("runbox").innerHTML=h;bindNav()}else{document.getElementById("crumb").innerHTML='<a data-nav="">任务</a> / <a data-nav="task/'+encodeURIComponent(d.title||d.taskId)+'">'+esc(d.title||d.taskId)+'</a> / '+run;document.getElementById("main").innerHTML=h;bindNav()}
-}
-function node(x,y,label,color){return '<g class="node"><rect x="'+x+'" y="'+y+'" width="120" height="34" fill="'+color+'22" stroke="'+color+'"/><text x="'+(x+60)+'" y="'+(y+21)+'" text-anchor="middle">'+label+'</text></g>'}
-function dag(d){
-  var stages=[["Leader/Plan","info"]];
-  (d.attempts||[]).forEach(function(a,i){var c=a.workerStatus==="completed"?"ok":(a.workerStatus?"err":"info");stages.push(["Worker"+(i+1),c,i])});
-  stages.push(["验证",d.verification==="pass"?"ok":(d.verification?"err":"mut")]);stages.push(["审查",d.hasReview?"ok":"mut"]);stages.push(["发布",d.hasPublication?"ok":"mut"]);stages.push(["结局",d.hasOutcome?"ok":"mut"]);
-  var x=10,parts=[],edges=[];stages.forEach(function(sg,i){var c=COL[sg[1]];var att=(sg.length>2&&sg[2]!==undefined)?' data-att="'+sg[2]+'"':'';parts.push('<g class="node"'+att+'><rect x="'+x+'" y="10" width="120" height="34" fill="'+c+'22" stroke="'+c+'"/><text x="'+(x+60)+'" y="31" text-anchor="middle">'+sg[0]+'</text></g>');if(i>0)edges.push('<path class="edge" d="M'+(x-10)+' 27 L'+x+' 27"/>');x+=140});
-  return '<svg width="'+x+'" height="60"><defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L10,5L0,10z" fill="#444c56"/></marker></defs>'+edges.join("")+parts.join("")+'</svg>';
-}
-legend();route();document.getElementById("q").addEventListener("input",function(e){SEARCH=e.target.value.toLowerCase().trim();if(!location.hash||location.hash==="#/"||location.hash==="#")renderTasks()});
-var es=new EventSource("/api/stream");
-es.addEventListener("snapshot",function(e){if(!location.hash||location.hash==="#/"||location.hash==="#")loadTasks()});
-</script></body></html>`
-
-func handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(indexHTML))
 }
