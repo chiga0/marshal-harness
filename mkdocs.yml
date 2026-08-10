@@ -59,6 +59,7 @@ nav:
       - 主 Agent 技能: marshal-skill.md
   - 核心设计:
       - 架构设计: architecture.md
+      - Runtime 架构（M7–M12）: runtime-architecture.md
       - 任务生命周期: task-lifecycle.md
       - 安全模型: security-model.md
       - 任务契约: task-contract.md
@@ -94,6 +95,8 @@ nav:
       - 0012 显式 abort: adr/0012-explicit-abort.md
       - 0013 拒绝分级: adr/0013-graded-permission-denials.md
       - 0014 Read-only 画像: adr/0014-read-only-execution-profile.md
+      - 0015 生产部署（已被取代）: adr/0015-production-deployment.md
+      - 0016 耐久 Runtime 与 Sandbox Provider: adr/0016-durable-runtime-and-sandbox-provider.md
   - 研究与审计:
       - Fan-out 汇总决策: research/fanout-consolidation.md
       - A/B 实验设计: research/abtest-marshal-vs-single-agent.md

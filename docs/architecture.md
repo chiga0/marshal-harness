@@ -25,7 +25,7 @@ flowchart LR
 
 ## 架构风格
 
-MVP 采用 CLI-first 模块化单体。能在同一进程内完成的组件保持同进程，Worker 和验证命令作为子进程执行。领域边界必须清晰，以便未来的 Daemon、MCP Server 或远程调度器复用同一个 Core，而不是重新定义生命周期。
+MVP 采用 CLI-first 模块化单体。能在同一进程内完成的组件保持同进程，Worker 和验证命令作为子进程执行。领域边界必须清晰，以便未来的 Daemon、MCP Server 或远程调度器复用同一个 Core，而不是重新定义生命周期。长期形态已由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结为长寿命 Runtime/Control Plane；目标组件分层见 [Runtime 架构](runtime-architecture.md)。
 
 建议实现基线为 Go，具体版本在实施获批后锁定。Core、CLI 与内置 Adapter 编译为单一可执行文件；JSON Schema 继续定义与语言无关的持久化外部记录，Go 内部类型必须由 Schema 生成，或由契约测试阻止漂移。选型理由与边界见 [ADR 0005](adr/0005-go-runtime.md)。
 
@@ -259,3 +259,15 @@ Attempt 控制根与业务 Worktree 的信任边界见 [ADR 0006](adr/0006-attem
 Worker Adapter、Observer、Verification Executor、Review Bridge、Artifact Collector、Publisher 和 Event Sink 使用稳定 Port。Adapter 内部可以使用 one-shot CLI、JSON-RPC、ACP 或 SDK，但必须满足相同核心契约和一致性测试。
 
 第三方 Plugin 默认不得在 Marshal 进程内执行。初始扩展模型采用子进程或独立安装包，并要求显式信任。
+
+## 面向耐久 Runtime 的演进（ADR 0016）
+
+ADR 0016 将长期目标重置为长寿命 Runtime/Control Plane，并冻结以下分层（详见 [Runtime 架构](runtime-architecture.md)）：
+
+- `AgentAdapter` 只负责 Agent 协议的 prepare/decode/capability，不含执行环境语义；
+- 新增 `SandboxProvider` Port，负责 Probe/Provision/Stage/Exec/Inspect/Signal/Checkpoint/Restore/Terminate/Reconcile；Run 只冻结最低 SandboxRequirements，实际 Provider 在 Attempt 分配时绑定；
+- 权威状态（versioned event/state）保持在 Marshal，耐久调度经可替换的 `DurableOrchestrator` Port 外包（生产参考实现为 Temporal），外部引擎不构成第二个业务权威；
+- 恢复基于持久事件账本：DispatchLease 携带 generation/fencingToken/expiresAt/heartbeatAt，陈旧执行句柄被 fencing 拒绝；
+- Cloudflare Sandbox 仅作为首个可替换远程 Provider；Core 不依赖任何 Provider 专有概念。
+
+本节的落地属于 M7–M12；Local MVP 组件与行为在此之前保持不变。

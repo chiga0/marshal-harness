@@ -59,6 +59,8 @@ TaskSpec 中的 Network Intent 只有在 Process Sandbox 能真正过滤网络�
 
 Repository Policy 选择最低 Profile。Adapter 不能满足时必须在 `READY` 前失败。
 
+自 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 起，Profile 声明绑定到 SandboxProvider conformance：只有 conformance 证明 mount/network/resource/credential 要求均被强制执行时，Provider 才允许声明 `hardened`；证据不足时降级为较低 assurance 并 fail closed，不得为简化 Adapter 而静默放宽。
+
 ## 威胁与缓解
 
 | 威胁 | 缓解措施 | 剩余风险 |
@@ -138,6 +140,19 @@ Secret 仅在需要它的授权组件内 Just-in-time 解析。Publisher Credent
 ### Multi-user / Hostile-code Service
 
 不在当前范围。必须先完成专门 Threat Model 与 Hardened Isolation Review，不能把 Local MVP 宣传成满足此等级。
+
+## Runtime 阶段的安全边界（ADR 0016）
+
+[ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结耐久 Runtime 后，以下边界随 M8–M12 实施生效：
+
+- 可丢弃执行体：Sandbox、Agent 与 Runtime 进程均可丢弃；权威事件、证据与副作用记录必须在其外部耐久保存，恢复结论只能凭持久事件账本得出；
+- 凭据不进入执行环境：环境构造规则同样适用于远程 Sandbox；SandboxAllocation 只保存 provider-neutral 的 opaque locator 与 receipt，Provider 内部凭据不得进入 TaskSpec、事件、Prompt 或日志；
+- Warm reuse 不是默认：默认每 Attempt 独立 ephemeral sandbox；复用仅限相同 tenant/repository/trust-domain 且有可证明的 sanitization；
+- 提交入口边界：M8/M9 的提交入口默认只绑定 loopback 或受信任本地边界；远程入口在生产可用前必须具备 TLS、调用者身份认证、按 repository/project 的授权与审计记录（M11 退出门禁验收）；幂等身份为 `(scope, idempotencyKey, requestDigest)`，同 scope+key 而 digest 不同必须冲突 fail closed，不得归并进错误 Run；
+- 权威写入接纳：Attempt 回报与 Artifact/Checkpoint/Candidate/Evidence 接纳必须携带 attemptId、generation、fencingToken 并在权威写入边界以 expectedSequence/CAS 校验；陈旧 token 内容只能隔离留存为诊断材料，不得进入当前 Evidence/Review/Publication；
+- Cloudflare Sandbox 是可选托管 Provider：容器闲置、故障或重启会丢失文件、进程与 session，R2 backup 只是恢复优化，不是权威状态；只有 conformance 证明隔离要求被强制才允许声明 `hardened`；Provider 失败不在 Attempt 内回退——失败的 Allocation/Attempt 先终止并对账，仅新 Attempt 可分配满足同一冻结要求与 assurance 下限的兼容 Provider，无兼容 Provider 时 fail closed；
+- 多节点部署的身份分离：既覆盖 Worker、Verifier/Marshal、Publisher 彼此独立的 workload identity 与写入域（Worker 不得写权威证据或发布记录），也覆盖操作者与 API 入口身份；两类身份不得混用；
+- 普通宿主进程不宣称恶意代码隔离的规则在 Runtime 形态下继续有效。
 
 ## 实施安全验收条件
 

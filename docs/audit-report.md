@@ -1,10 +1,10 @@
 # 设计审计报告
 
-- 审计日期：2026-08-04
+- 审计日期：2026-08-04（2026-08-10 增补 Runtime 架构重置记录）
 - 范围：当前文档与 `v1alpha1` Schema 描述的 Local CLI MVP
 - 结论：**`APPROVED_FOR_IMPLEMENTATION`**
 - 未关闭 Blocking Finding：无
-- 门禁状态：维护者已接受 ADR 0001–0011 与 Local MVP Scope
+- 门禁状态：维护者已接受 ADR 0001–0011、ADR 0012–0014 与 ADR 0016（2026-08-10，含 M7–M12 路线）及 Local MVP Scope
 
 ## 执行结论
 
@@ -128,6 +128,37 @@ Cross-record Freshness、ID Uniqueness、Budget Relationship、Path Canonicaliza
 
 **hardening 批次关闭记录（2026-08-07）**：六项张力中四项已实现并合入——WorkerResult 归一化（`328ea03`）、prompt 内嵌模板（同）、显式 abort + 终态 Outcome（ADR 0012，`08c8462`）、`--through-verify` 与仓库锁重试（`76fdf40`）；均经独立 Marshal Run 的 Verification 与 Review ACCEPTED。ADR 0013（拒绝分级）与 0014（read-only 画像）保持提案状态待维护者接受。tui-research 22 个死 Run 已用新 abort 转终态并回收 7 个干净 worktree；15 个 dirty worktree 待归档机制（cleanup v1 对 dirty 硬拒绝、无归档授权路径，记为下一缺口）。
 
+## 2026-08-10 架构重置：已关闭的架构问题与新打开的实施风险
+
+维护者于 2026-08-10 接受 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)，把长期目标从“本地单次 CLI 编排”重置为长寿命 Runtime/Control Plane。本节记录该重置关闭的架构问题（含首批文档评审识别的四个 P1 缺口，R-A5–R-A8）与新打开的实施风险；目标架构见 [Runtime 架构](runtime-architecture.md)。
+
+已关闭的架构问题：
+
+| ID | 级别 | 问题 | 关闭 |
+| --- | --- | --- | --- |
+| R-A1 | P1 | 长期目标停留在“本地单次 CLI 编排”，远程队列与分布式调度笼统延后，长期形态无冻结路线 | ADR 0016 冻结目标与 M7–M12 唯一平台路线，实施计划、愿景、Roadmap 与治理文档口径同步 |
+| R-A2 | P1 | ADR 0015 的常驻形态、耐久调度与远程执行边界未闭合，且提案长期悬置 | ADR 0015 标记 Superseded before acceptance，生产部署边界由 ADR 0016 承接 |
+| R-A3 | P1 | 执行环境语义混在 Worker 编排内，Provider 不可替换、`hardened` 声明无准入标准 | 冻结 `AgentAdapter`（prepare/decode/capability）与 `SandboxProvider`（Probe/Provision/Stage/Exec/Inspect/Signal/Checkpoint/Restore/Terminate/Reconcile）分层；`hardened` 以 conformance 证明 mount/network/resource/credential 强制为准入条件 |
+| R-A4 | P1 | 权威状态与调度边界未定义，存在“双权威”与自研 workflow engine 风险 | 冻结 `DurableOrchestrator` Port：Marshal versioned event/state 为业务权威，外部引擎（生产参考 Temporal）只承担 dispatch/timer/signal/retry，Activity 以 `commandId` + `expectedSequence` CAS 追加 Marshal 事件 |
+| R-A5 | P1 | 提交入口（POST TaskSubmission）未界定网络暴露、调用者认证/授权与 repository/project 作用域；幂等归并可能把不同冻结输入的错误请求合并进既有 Run | ADR 0016、Runtime 架构、安全模型与实施计划冻结提交入口边界：M8/M9 默认仅 loopback/受信任本地边界；远程入口生产可用前必须 TLS、调用者身份、按 repository/project 授权与审计（M11 退出门禁验收）；幂等身份为 `(scope, idempotencyKey, requestDigest)`，同 scope+key+digest 返回既有 submission/run，同 scope+key 不同 digest 冲突 fail closed，不创建或归并错误 Run |
+| R-A6 | P1 | 失联旧 Attempt 可能晚到上传 checkpoint/candidate/日志/证据引用，若接纳不校验 generation/fencingToken 会污染新 Attempt 的权威证据 | 所有 Attempt 回报与 Artifact/Checkpoint/Candidate/Evidence 接纳必须携带 attemptId/generation/fencingToken，并在权威写入边界以 expectedSequence/CAS 校验；陈旧 token 内容隔离留存为诊断材料，不进入当前 Evidence/Review/Publication；外部副作用继续经 SideEffectIntent/Receipt + reconcile 幂等；相应故障注入列入 M9 退出门禁 |
+| R-A7 | P1 | Cloudflare 段落同时写 fail closed 与回退自托管 Provider，可能被实现为同一 Attempt 内透明降级，甚至从 hardened 降到 workspace-write，与 Run 冻结的最低 SandboxRequirements 冲突 | 统一为：失败的 Allocation/Attempt 先终止并对账；调度器仅可为新 Attempt 选择满足同一冻结 SandboxRequirements 与 assurance 下限的兼容 Provider；无兼容 Provider 时 Run 保持 BLOCKED（fail closed），绝不静默降低 profile 或复用旧 handle；ADR 0016、Runtime 架构、M10 退出门禁与本审计风险措辞已同步 |
+| R-A8 | P1 | Project/Goal 被列为必须持久化的核心对象，但 M8–M12 无任何 Milestone 实现它，复杂任务编排被笼统推到 M12 之后，M7–M12 完成后只能运行彼此独立的 Task | 实施计划与 Roadmap 新增 M13 Goal orchestration 阶段（持久 Project/Goal、可审计计划与重规划、跨 Run 记忆/Artifact 引用、预算与终止条件、独立质量评估、人工干预与恢复，含 Goal、非目标、退出门禁与 dogfooding）；M7 只冻结对象语义、M13 实现 Goal 控制器，避免虚假完成声明 |
+
+新打开的实施风险（不构成 Blocking Finding，由各 Milestone 退出门禁关闭）：
+
+| ID | 风险 | 缓解与关闭条件 |
+| --- | --- | --- |
+| R-001 | 外部耐久引擎依赖与语义锁定 | Port 隔离 + 生命周期一致性测试；替换 Orchestrator 前一致性测试先行（M9） |
+| R-002 | Cloudflare Sandbox SDK 处于 1.0 preview/Beta 且托管平台不可自部署 | live opt-in + fail-closed：探测失败或漂移时终止当前 Allocation/Attempt 并对账，新 Attempt 仅可分配满足同一冻结 SandboxRequirements 与 assurance 下限的兼容 Provider；无兼容 Provider 时 Run 保持 BLOCKED，不静默降级、不复用旧 handle；同一 conformance/E2E 通过后才可替换（M10） |
+| R-003 | 恢复误判导致双写或丢证据 | DispatchLease generation/fencingToken + 故障注入测试集；kill -9 后 60 秒 Inspect/Reconcile 口径（M9） |
+| R-004 | Warm reuse 引入跨任务污染 | 默认每 Attempt 独立 ephemeral sandbox；复用需相同 tenant/repository/trust-domain 且可证明 sanitization（M8 起） |
+| R-005 | 事件账本膨胀拖慢恢复 | Continue-As-New 式换代与分段归档设计在 M9/M11 落地并测试 |
+| R-006 | 过度承诺（把早期 PoC 宣传成多租户服务） | 文档口径绑定安全就绪等级；多租户保持评估项，威胁模型评审通过后才讨论 |
+| R-007 | 多节点写入分离被绕过 | Worker/Verifier/Publisher 独立 workload identity 与写入域；越权 Fixture 必须失败（M11） |
+| R-008 | 提交入口越界暴露或缺乏授权（未认证/跨 scope 提交进入调度） | M8/M9 仅绑定 loopback/受信任本地边界；远程入口必须 TLS + 调用者身份 + 按 repository/project 授权 + 审计，M11 退出门禁验收；幂等身份冲突语义防止错误归并（M9） |
+| R-009 | Goal 编排自主失控、超预算运行或静默放弃 | 预算与终止条件强制并在触发时保存 Outcome；计划/重规划全部事件化可回放；独立质量评估不得自证；人工可随时干预（M13） |
+
 ## ADR 建议
 
 以下 ADR 共同构成当前 Local MVP 的架构与安全基线，建议一起接受：
@@ -145,6 +176,8 @@ Cross-record Freshness、ID Uniqueness、Budget Relationship、Path Canonicaliza
 11. [ADR 0011：密封启动与可判定的原生 TUI 传输](adr/0011-sealed-native-tui-transport.md)
 
 删除 ADR 0002–0004 中任何一个都会使本批准失效，并要求重新进行安全与生命周期审计。
+
+[ADR 0016：耐久 Runtime 与可插拔 Sandbox Provider](adr/0016-durable-runtime-and-sandbox-provider.md) 已于 2026-08-10 被维护者接受（其决策来源为当日维护者对长期目标的明确修正与批准），并将 ADR 0015 置于 Superseded before acceptance；ADR 0016 冻结的不变量集合与上表 Local MVP 不变量一致，放宽任何一条同样要求重新审计。
 
 ## 实施门禁
 

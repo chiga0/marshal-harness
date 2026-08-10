@@ -1,6 +1,6 @@
 # 架构决策记录
 
-本目录记录对实现有实质约束的决策。ADR 0001–0005 由维护者于 2026-08-03 接受；ADR 0006–0010 于 2026-08-04 随真实 Adapter、受控发布、可观察性与受控自治设计实施接受；ADR 0011 于 2026-08-05 根据真实三 Worker 委派证据接受；ADR 0012 于 2026-08-07 随显式 abort 生命周期扩展接受。
+本目录记录对实现有实质约束的决策。ADR 0001–0005 由维护者于 2026-08-03 接受；ADR 0006–0010 于 2026-08-04 随真实 Adapter、受控发布、可观察性与受控自治设计实施接受；ADR 0011 于 2026-08-05 根据真实三 Worker 委派证据接受；ADR 0012–0014 于 2026-08-07 随显式 abort、拒绝分级与 read-only 画像接受。2026-08-10 维护者重置长期目标并接受 ADR 0016，ADR 0015 未接受即被 ADR 0016 取代（Superseded before acceptance）。
 
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
@@ -18,4 +18,5 @@
 | [0012](0012-explicit-abort.md) | 废弃 Run 的显式 abort | 已接受（Accepted） |
 | [0013](0013-graded-permission-denials.md) | Permission 拒绝分级（预期内 vs 致命） | 已接受（Accepted） |
 | [0014](0014-read-only-execution-profile.md) | Read-only 执行画像（调研/评审最小权限） | 已接受（Accepted） |
-| [0015](0015-production-deployment.md) | 生产部署：常驻服务、远程访问与 Dashboard 认证 | 提案（Proposed） |
+| [0015](0015-production-deployment.md) | 生产部署：常驻服务、远程访问与 Dashboard 认证 | 未接受即被取代（Superseded before acceptance，由 0016 承接） |
+| [0016](0016-durable-runtime-and-sandbox-provider.md) | 耐久 Runtime 与可插拔 Sandbox Provider | 已接受（Accepted，2026-08-10） |

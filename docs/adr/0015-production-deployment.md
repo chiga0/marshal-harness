@@ -1,8 +1,12 @@
 # ADR 0015：生产部署——常驻服务、远程访问与 Dashboard 认证
 
-- 状态：提案（Proposed）
+- 状态：未接受即被取代（Superseded before acceptance，2026-08-10 由 [ADR 0016](0016-durable-runtime-and-sandbox-provider.md) 取代其生产部署边界）
 - 日期：2026-08-10
 - 关联：ADR 0001（CLI-first/daemon 延后）、ADR 0003（分权）、ADR 0008（Observer）、[方向调研](../research/marshal-future-directions.md) §1/§2、[dashboard POC](../research/web-dashboard-poc.md)
+
+## 取代说明
+
+本提案从未被接受。维护者于 2026-08-10 重置长期目标后，其生产部署边界由 [ADR 0016](0016-durable-runtime-and-sandbox-provider.md) 承接：常驻形态、提交入口、远程执行与凭证边界在耐久 Runtime 架构中统一定义。本 ADR 中“只读观察先行”的路径不再构成独立前置里程碑，观察能力实现为 Runtime 事件流的只读投影。本文保留仅作决策历史，不再作为实施依据。
 
 ## 背景
 
