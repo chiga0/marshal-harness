@@ -5,3 +5,5 @@
 /bin/
 /dist/
 /coverage.out
+.marshal/
+web/node_modules/

@@ -1,0 +1,8 @@
+{
+  "name": "marshal-dashboard-dag",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": { "build": "esbuild src/dag.jsx --bundle --minify --format=iife --global-name=MarshalDAG --outfile=dist/dag.js --loader:.js=jsx --define:process.env.NODE_ENV=\"'production'\"" },
+  "dependencies": { "react": "^18.3.1", "react-dom": "^18.3.1", "@xyflow/react": "^12.3.0" },
+  "devDependencies": { "esbuild": "^0.23.0" }
+}

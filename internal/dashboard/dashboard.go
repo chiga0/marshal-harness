@@ -9,6 +9,7 @@
 package dashboard
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -21,6 +22,12 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
+
+//go:embed webdist/dag.js
+var dagJS []byte
+
+//go:embed webdist/dag.css
+var dagCSS []byte
 
 // RunSummary is the read-only projection of one Run shown in the dashboard.
 type RunSummary struct {
@@ -228,6 +235,14 @@ func (o Options) findRunRoot(runID string) string {
 // NewHandler returns a read-only http.Handler serving the dashboard.
 func NewHandler(opts Options) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/dag.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		_, _ = w.Write(dagJS)
+	})
+	mux.HandleFunc("/dag.css", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css")
+		_, _ = w.Write(dagCSS)
+	})
 	mux.HandleFunc("/", handleIndex)
 	mux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -571,7 +586,7 @@ func ListRunsCached(stateRoot string) ([]RunSummary, error) {
 }
 
 const indexHTML = `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Marshal 控制台</title>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Marshal 控制台</title><link rel="stylesheet" href="/dag.css">
 <style>
  :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;--accent:#58a6ff}
  body[data-theme=light]{--bg:#ffffff;--panel:#f6f8fa;--border:#d0d7de;--text:#1f2328;--muted:#57606a;--accent:#0969da}
@@ -597,6 +612,7 @@ const indexHTML = `<!doctype html>
 </style></head><body>
 <nav><span class="brand">Marshal 控制台</span><a id="nav-tasks" onclick="nav('')">任务</a><input id="q" placeholder="检索任务/Run…" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:4px 8px;font-size:13px"><span class="sp"></span><a id="theme" onclick="toggleTheme()">亮色</a><span class="ro">只读 · 控制在 CLI/Skill</span></nav>
 <main><div class="crumb" id="crumb"></div><div class="legend" id="legend"></div><div id="main"></div></main>
+<script src="/dag.js"></script>
 <script>
 var STATE={ACCEPTED:["已接受·成功","ok"],REJECTED:["已拒绝","err"],BLOCKED:["阻塞·需人工","err"],RUNNING:["执行中","info"],VERIFYING:["独立验证中","info"],REVIEW_PENDING:["待审查","warn"],REWORK_REQUESTED:["返工中","warn"],PUBLISHING:["发布中","info"],PUBLISHED:["已发布","info"],CI_PENDING:["等待CI","warn"],READY:["就绪","info"],PLANNED:["规划中","info"],ABORTED:["已中止","mut"],NO_CHANGE:["无变更","mut"]};
 var EVENT={"planning.spec-accepted":"任务规格冻结","planning.inputs-frozen":"输入冻结","worker.started":"Worker 启动","worker.completed":"Worker 完成","worker.failed":"Worker 失败","verification.completed":"独立验证完成","review.accept":"审查接受","review.rework":"要求返工","publication.completed":"发布完成","run.aborted":"人工中止"};
@@ -611,6 +627,7 @@ function nav(h){location.hash=h?"#/"+h:"#/"}
 function bindNav(){document.querySelectorAll("[data-nav]").forEach(function(el){el.onclick=function(){nav(el.getAttribute("data-nav"))}})}
 var Z={s:1,x:0,y:0};
 function applyZ(){var svg=document.querySelector("#dagwrap svg");if(svg)svg.style.transform="translate("+Z.x+"px,"+Z.y+"px) scale("+Z.s+")"}
+function mountDAG(d){var el=document.getElementById("dagroot");if(!el)return;var cols={ok:"#3fb950",err:"#f85149",warn:"#d29922",info:"#58a6ff",mut:"#8b949e"};var st=[["Leader/Plan","info"]];(d.attempts||[]).forEach(function(a,i){st.push(["Worker"+(i+1), a.workerStatus==="completed"?"ok":(a.workerStatus?"err":"info"), i])});st.push(["验证",d.verification==="pass"?"ok":(d.verification?"err":"mut")]);st.push(["审查",d.hasReview?"ok":"mut"]);st.push(["发布",d.hasPublication?"ok":"mut"]);st.push(["结局",d.hasOutcome?"ok":"mut"]);var data={stages:st.map(function(x,i){return{id:String(i),label:x[0],color:cols[x[1]],att:(x.length>2?x[2]:undefined)}}),edges:st.slice(1).map(function(_,i){return{from:i,to:i+1}})};window.__marshalAtt=function(att){var el=document.querySelectorAll("#atts .kv")[att];if(el)el.scrollIntoView({block:"center"})};if(window.MarshalDAG&&window.MarshalDAG.mount){window.MarshalDAG.mount(el,data)}else{el.innerHTML=dag(d)}}
 function bindDag(){var w=document.getElementById("dagwrap");if(!w)return;Z={s:1,x:0,y:0};applyZ();
  w.querySelectorAll("[data-z]").forEach(function(b){b.onclick=function(e){e.stopPropagation();var m=b.getAttribute("data-z");if(m==="in")Z.s*=1.2;else if(m==="out")Z.s/=1.2;else{Z={s:1,x:0,y:0}}applyZ()}});
  w.onwheel=function(e){e.preventDefault();Z.s*=e.deltaY<0?1.1:0.9;applyZ()};
@@ -652,7 +669,7 @@ async function showTask(title){
 async function showRun(run,embedded){
   var d=await (await fetch("/api/runs/"+run)).json();
   var s=st(d.state);
-  var h='<div class="cols"><div class="col-main"><div class="sec">流程 DAG（Leader → Worker → 门禁）</div>'+dag(d)+
+  var h='<div class="cols"><div class="col-main"><div class="sec">流程 DAG（React Flow：缩放/平移/minimap/点节点看 attempt）</div><div id="dagroot" style="height:240px;border:1px solid var(--border);border-radius:8px;overflow:hidden"></div>'+
    '<div class="sec">事件时间线</div>'+(d.events||[]).map(function(e){return '<div class="ev">'+(EVENT[e.type]||e.type)+'<small>'+e.from+' → '+e.to+' · '+(e.at||"")+'</small></div>'}).join("")+'</div>'+
    '<div class="col-side"><div class="sec">Run 详情</div><div class="kv"><b>状态</b> <span class="badge '+s[1]+'">'+s[0]+'</span></div>'+
    '<div class="kv"><b>Workspace</b> '+esc(d.workspace||"")+'</div>'+
