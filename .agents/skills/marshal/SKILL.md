@@ -58,3 +58,12 @@ Decision 必须绑定 `taskId`、`runId`、`reviewRound`、`specDigest`、`revie
 - pi 的大任务建议 `maxOutputBytes >= 16000000`（转录本近似二次方增长）；pi 有时会写空 `session.id` 导致 WorkerResult 被拒，调研类任务建议在 TaskSpec 内嵌 WorkerResult 逐字模板；opencode Worker 的一切读写操作必须相对路径（绝对路径即使指向 worktree 内部也会被拒）；派发 fan-out 前先勘查目标仓库已有产出。详见 Runbook §9.5 与 §10.4。
 - 更完整的实操经验见 Marshal 仓库 `docs/operator-runbook.md` 第 9 节；遇到问题先采集 `task status --json`、`doctor --run --json` 与 `events.jsonl` 末尾三项只读证据。
 - L 级复杂任务或探索型问题可用多 Agent fan-out（调研队/评审团/跨仓库并行/仓库内 scope 互斥拆分）：模式、分级、裁决规则与汇总纪律见 `docs/operator-runbook.md` 第 9、10 节；调研任务优先从本 Skill `templates/research-task.json` 填空生成 TaskSpec；评审 Worker 是材料不是结论，ReviewDecision 责任始终在 Lead。
+
+## 运维 / 发布 / 工程规范（v0.1.0 起）
+
+- **本仓库一切需求/任务必须经 Marshal 完成**：plan→approve→run→verify→review→(publish)，禁止绕过 Core 直接改代码/推送；过程中发现问题自行修复并回写本 Skill。
+- **Web 控制台 opt-in**：`marshal web`/`marshal serve` 仅显式启动才运行（不占内存）；只读，控制在 CLI/Skill。多 Workspace 用 `--root <repo>/.marshal` 聚合。
+- **遗留清理**：`marshal task migrate-outcomes --actor ID` 为遗留终态 Run 补记 Outcome（不覆盖已有），再 `cleanup --apply`/`--export-patch` 清理。
+- **发布**：`make check` 全绿后打 SemVer tag + `gh release create`，CHANGELOG 遵循 Keep a Changelog；首个正式版 v0.1.0。
+- **工程高标准**：不降要求——新命令必须有测试；`make check`（format/vet/staticcheck/race/build）必须绿；关注覆盖率（lifecycle 76%/cleanup 73%/cli 53%/dashboard 53% 为基线）；负载敏感测试用宽松超时去 flake，不削弱断言。
+- **重试同 taskId**（规划中）：worktree 现按 taskId 建，重试同 taskId 需改 worktree 策略（ADR 级）；视图层已用标题折叠重试。
