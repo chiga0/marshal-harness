@@ -1,6 +1,6 @@
 # 架构决策记录
 
-本目录记录对实现有实质约束的决策。ADR 0001–0005 由维护者于 2026-08-03 接受；ADR 0006–0010 于 2026-08-04 随真实 Adapter、受控发布、可观察性与受控自治设计实施接受；ADR 0011 于 2026-08-05 根据真实三 Worker 委派证据接受；ADR 0012–0014 于 2026-08-07 随显式 abort、拒绝分级与 read-only 画像接受。2026-08-10 维护者重置长期目标并接受 ADR 0016，ADR 0015 未接受即被 ADR 0016 取代（Superseded before acceptance）。
+本目录记录对实现有实质约束的决策。ADR 0001–0005 由维护者于 2026-08-03 接受；ADR 0006–0010 于 2026-08-04 随真实 Adapter、受控发布、可观察性与受控自治设计实施接受；ADR 0011 于 2026-08-05 根据真实三 Worker 委派证据接受；ADR 0012–0014 于 2026-08-07 随显式 abort、拒绝分级与 read-only 画像接受。2026-08-10 维护者重置长期目标并接受 ADR 0016，ADR 0015 未接受即被 ADR 0016 取代（Superseded before acceptance）。同日，基于首次 Sandbox SPI dogfood 的 reject 证据与 Round 2 独立评审，维护者在全部 P1 通过 Round 2 独立验证与 ReviewDecision accept 后接受 ADR 0017（Accepted）：冻结 provider-neutral Sandbox 安全契约，并对 ADR 0016 的 §4/§5/§6/§7/§9 做澄清或部分取代。ADR 0017 的接受只关闭设计歧义，不提前升级 M8 实现或 conformance 状态。
 
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
@@ -20,3 +20,4 @@
 | [0014](0014-read-only-execution-profile.md) | Read-only 执行画像（调研/评审最小权限） | 已接受（Accepted） |
 | [0015](0015-production-deployment.md) | 生产部署：常驻服务、远程访问与 Dashboard 认证 | 未接受即被取代（Superseded before acceptance，由 0016 承接） |
 | [0016](0016-durable-runtime-and-sandbox-provider.md) | 耐久 Runtime 与可插拔 Sandbox Provider | 已接受（Accepted，2026-08-10） |
+| [0017](0017-provider-neutral-sandbox-contract.md) | Provider-neutral Sandbox 安全契约（二维权限/隔离、Conformance 证据拓扑、内容寻址、身份 fencing、无双写 Restore、DispatchLease 唯一状态机、DurableExecutionEngine 权威边界与 M9 wire contract） | 已接受（Accepted，2026-08-10；接受只关闭设计歧义，不提前升级 M8 实现/conformance 状态） |

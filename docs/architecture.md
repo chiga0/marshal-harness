@@ -260,14 +260,23 @@ Worker Adapter、Observer、Verification Executor、Review Bridge、Artifact Col
 
 第三方 Plugin 默认不得在 Marshal 进程内执行。初始扩展模型采用子进程或独立安装包，并要求显式信任。
 
-## 面向耐久 Runtime 的演进（ADR 0016）
+## 面向耐久 Runtime 的演进（ADR 0016 与 ADR 0017）
 
 ADR 0016 将长期目标重置为长寿命 Runtime/Control Plane，并冻结以下分层（详见 [Runtime 架构](runtime-architecture.md)）：
 
 - `AgentAdapter` 只负责 Agent 协议的 prepare/decode/capability，不含执行环境语义；
 - 新增 `SandboxProvider` Port，负责 Probe/Provision/Stage/Exec/Inspect/Signal/Checkpoint/Restore/Terminate/Reconcile；Run 只冻结最低 SandboxRequirements，实际 Provider 在 Attempt 分配时绑定；
-- 权威状态（versioned event/state）保持在 Marshal，耐久调度经可替换的 `DurableOrchestrator` Port 外包（生产参考实现为 Temporal），外部引擎不构成第二个业务权威；
+- 权威状态（versioned event/state）保持在 Marshal，耐久调度经可替换的 `DurableExecutionEngine` Port 外包（ADR 0017 统一命名；生产参考 backend 为 Temporal，embedded/单机为 Local Engine）。Core lifecycle policy/controller 独占 Attempt 创建、retry eligibility/业务预算、rework 与终态裁决；backend 只承担相同 commandId 的 at-least-once delivery、timer、signal 与 crash recovery，其 delivery/activity retry 不创建新 Attempt、不消费业务重试预算，外部引擎不构成第二个业务权威；
 - 恢复基于持久事件账本：DispatchLease 携带 generation/fencingToken/expiresAt/heartbeatAt，陈旧执行句柄被 fencing 拒绝；
 - Cloudflare Sandbox 仅作为首个可替换远程 Provider；Core 不依赖任何 Provider 专有概念。
 
-本节的落地属于 M7–M12；Local MVP 组件与行为在此之前保持不变。
+[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10；接受只关闭设计歧义，不提前升级 M8 实现/conformance 状态）在此基础上冻结 provider-neutral Sandbox 安全契约：
+
+- 执行契约以 `AccessMode × AssuranceLevel` 二维正交模型表达，旧 `executionProfile` 按固定映射兼容解析；
+- `hardened` 必须绑定密封 `ConformanceEvidence`：probe workload 作为敌对测试负载运行在被测 Provider 创建、身份精确绑定的 target allocation 内，probe 定义/challenge/调度/out-of-band 观察/裁决/签发由 Control Plane 与独立 Conformance Verifier 控制，Provider 的 completed/receipt 不能自签通过；Local 普通宿主进程永不 hardened，Cloudflare 无豁免；
+- Stage 必须携带或引用真实 content-addressed bytes，Provider 消费前后重算 sha256，禁止只回显声明 digest；
+- Sandbox workloadRole 封闭枚举仅 `worker`/`verifier`；control-plane、publisher 等是不同语义 Port 上受 AuthZ 约束的认证 principal，Publisher 永不成为 Sandbox workload；每个操作携带 task/run/attempt/workloadRole/allocation/generation/token 完整身份元组，远程请求另绑定 principal/portKind/providerType/audience/scope；普通 replay 先过当前 lease fencing；Restore 默认 replacement allocation，无双写；
+- DispatchLease 是 Push/Pull 共用的唯一状态机，只改变连接发起方，capability matching/ack/heartbeat/deadline/generation/fencing 与陈旧结果隔离完全等价；
+- Provider 接入必须先经版本化 Provider Protocol 认证注册；生产终态为 C/S + Control Plane/Execution Plane 分离，同时保留单二进制 embedded/local 模式；CLI/Web/GitHub App/CI 一律是 Public API client；M9 首版 wire contract 为 versioned HTTP/JSON + OpenAPI（SSE eventId/cursor 断线续传 + 轮询 fallback），M11 扩展 AuthN/AuthZ，M12 交付多语言 SDK 与多拓扑 conformance。
+
+本节的落地属于 M7–M12（分工修订：M8 为 embedded/local 纵切，marshal-server 与 Public API 属于 M9）；Local MVP 组件与行为在此之前保持不变。

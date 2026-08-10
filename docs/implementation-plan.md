@@ -2,7 +2,7 @@
 
 ## 门禁
 
-本文 Local MVP 部分（Milestone 0–6）已由维护者授权实施；M7–M13 部分于 2026-08-10 随 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 接受而授权（M7–M12 为耐久 Runtime 平台阶段，M13 为 Goal 编排阶段）。本文只是实施计划：信任边界、持久化契约、生命周期或发布权限的改变仍必须先新增或替代 ADR。
+本文 Local MVP 部分（Milestone 0–6）已由维护者授权实施；M7–M13 部分于 2026-08-10 随 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 接受而授权（M7–M12 为耐久 Runtime 平台阶段，M13 为 Goal 编排阶段）。M8–M13 的分工措辞随 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10）修订：M8–M13 一律按其第 12 节的分工与 provider-neutral Sandbox 安全契约执行。**ADR 0017 的接受只关闭设计歧义**：M8 实现与 conformance 状态不因此提前，首次 Sandbox SPI dogfood 的既有成果按未接纳探索证据对待，各 Milestone 状态以 [Roadmap 状态](roadmap-status.md) 为准。本文只是实施计划：信任边界、持久化契约、生命周期或发布权限的改变仍必须先新增或替代 ADR。
 
 当前状态：Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`（2026-08-07），验收证据见 [Roadmap 状态](roadmap-status.md)；M7–M12 目标架构见 [Runtime 架构](runtime-architecture.md)。
 
@@ -156,11 +156,11 @@
 
 ## Milestone 7–13：耐久 Runtime、可插拔 Sandbox Provider 与 Goal 编排
 
-M7–M12 是基于 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 的唯一耐久 Runtime 平台路线，M13 实现 ADR 0016 冻结的 Project/Goal 语义；目标架构见 [Runtime 架构](runtime-architecture.md)。每个 Milestone 必须先通过 Local MVP 全量回归，且不得提前引入后续阶段的外部副作用。
+M7–M12 是基于 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 的唯一耐久 Runtime 平台路线，M13 实现 ADR 0016 冻结的 Project/Goal 语义；目标架构见 [Runtime 架构](runtime-architecture.md)。[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10）澄清并部分取代 ADR 0016 的 §4/§5/§6/§7/§9，冻结 provider-neutral Sandbox 安全契约与修订后的 M8–M13 分工，接受后即为本路线的执行口径（接受只关闭设计歧义，不提前升级任何 Milestone 的实现状态）。每个 Milestone 必须先通过 Local MVP 全量回归，且不得提前引入后续阶段的外部副作用。
 
 ### Milestone 7：架构与契约
 
-Goal：冻结耐久 Runtime 与可插拔 Sandbox Provider 的架构与契约——ADR 0016、本架构文档、核心对象模型（TaskSubmission/DispatchLease/EnvironmentSpec/SandboxAllocation/CheckpointRecord/SideEffectIntent 等，含 Project/Goal 的对象语义）与 Port 契约（`AgentAdapter` prepare/decode/capability；`SandboxProvider` Probe/Provision/Stage/Exec/Inspect/Signal/Checkpoint/Restore/Terminate/Reconcile；`DurableOrchestrator` Port）。M7 只冻结 Project/Goal 的对象语义，不实现 Goal 控制器（见 Milestone 13）。
+Goal：冻结耐久 Runtime 与可插拔 Sandbox Provider 的架构与契约——ADR 0016 与 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)、本架构文档、核心对象模型（TaskSubmission/DispatchLease/EnvironmentSpec/SandboxAllocation/CheckpointRecord/SideEffectIntent 等，含 Project/Goal 的对象语义）与 Port 契约（`AgentAdapter` prepare/decode/capability；`SandboxProvider` Probe/Provision/Stage/Exec/Inspect/Signal/Checkpoint/Restore/Terminate/Reconcile；`DurableExecutionEngine` Port，ADR 0017 §9 统一命名）。M7 只冻结 Project/Goal 的对象语义，不实现 Goal 控制器（见 Milestone 13）。
 
 非目标：不实现 Runtime、数据库、Temporal、SandboxProvider、Cloudflare 客户端或 Goal 控制器；不更改 Local MVP 行为。
 
@@ -172,30 +172,38 @@ Goal：冻结耐久 Runtime 与可插拔 Sandbox Provider 的架构与契约—�
 
 Dogfooding：本 Milestone 产出本身作为一次完整 Marshal Task 经 Local MVP 闭环（Frozen TaskSpec → 独立 Verification → Review → Draft PR）交付，验证文档类任务的证据链。
 
-### Milestone 8：Sandbox SPI、Fake/Local conformance 与常驻单节点纵切
+### Milestone 8：Sandbox SPI、Fake/Local conformance 与 embedded/local 纵切
 
-Goal：实现 SandboxProvider SPI 与首个 conformance 套件（Fake 与 Local Provider 通过同一套件）；交付常驻单节点 Runtime 的首个纵向切片：幂等 `POST` TaskSubmission → 冻结 Run → durable `READY` → scheduler claim + fencing → Local SandboxProvider → AgentAdapter → checkpoint/log/evidence → 独立 verifier sandbox → `REVIEW_PENDING`/`ACCEPTED`（暂不自动 publish）。
+Goal：实现 SandboxProvider SPI 与首个 conformance 套件（Fake 与 Local Provider 通过同一套件），并同步落地 ADR 0017 冻结的 provider-neutral 契约：`AccessMode × AssuranceLevel` 二维要求与旧 `executionProfile` 兼容映射、`ConformanceEvidence` 签发链（按 §2 证据拓扑：probe 定义/challenge/artifact digest/调度/out-of-band 观察/裁决/签发由 Control Plane 与独立 Conformance Verifier 控制，probe workload 作为敌对测试负载运行在被测 Provider 创建、身份精确绑定的 target allocation 内，Provider 的 completed/receipt 不能自签通过）、内容寻址 Stage（inline/ArtifactStore locator、消费前后重算 sha256、篡改 fixture）、workloadRole/principal 拆分与完整身份元组、replay key 校验、replacement allocation Restore 故障注入。纵切交付 **embedded/local 形态**：单二进制 embedded 模式 in-process 跑通幂等提交（loopback/受信任本地边界）→ 冻结 Run → durable `READY` → scheduler claim + fencing → Local SandboxProvider → AgentAdapter → checkpoint/log/evidence → 独立 Verifier sandbox（业务验证 workload，与 conformance probe 拓扑不同）→ `REVIEW_PENDING`/`ACCEPTED`（暂不自动 publish）。`marshal-server` 与 Public API 属于 M9，不在本 Milestone。
 
-非目标：不接入任何远程 Provider；不引入多节点；不改变既有 CLI 生命周期的外部行为。
+非目标：不实现 `marshal-server` 与 TaskSubmission/Run Public API；不接入任何远程 Provider；不引入多节点；不改变既有 CLI 生命周期的外部行为。
 
 退出门禁：
 
-- Fake 与 Local Provider 通过同一 conformance/E2E；
-- 纵切全链路通过，且 Worker/Verifier/Publisher 分权、Worker 不自证、单写入者不变量在 Runtime 形态下有测试证明；
+- Fake 与 Local Provider 通过同一 conformance/E2E；Local Provider 永不声明 `hardened`，请求 hardened 时 fail closed 或改由持有效 `ConformanceEvidence` 的 Provider 承接；
+- conformance 证据拓扑：probe workload 运行在被测 Provider 创建、身份精确绑定的 target allocation 内；probe 定义/challenge/nonce、probe artifact digest、调度、out-of-band 观察、裁决与证据签发由 Control Plane 与独立 Conformance Verifier 控制；“Provider 凭自身 completed/receipt 自签通过”的 fixture 必须失败；
+- 二维要求校验：旧 `executionProfile` 三个取值按映射表确定性解析；AssuranceLevel 无法满足时 Run 保持 `BLOCKED`，无静默降级；AccessMode 升级请求被拒绝；
+- Stage 内容寻址：篡改 bytes fixture 让回显型实现失败；inline 超限对象被拒绝并要求 locator；
+- 身份 fencing：workloadRole 封闭枚举仅 `worker`/`verifier`，Publisher 作为 Sandbox workload、Provider 借通用 role 跨 Port 取得能力的 fixture 全部失败；身份元组缺失/不匹配的操作被拒绝；陈旧 generation/fencingToken 的 replay 被隔离为诊断材料；Restore 响应丢失、并发 Restore 与恢复后陈旧 handle 写入的故障注入全部被拒绝，无双写；
+- 纵切全链路通过，且 Worker/Verifier/Publisher 分权、Worker 不自证、单写入者不变量在 embedded 形态下有测试证明；
 - 提交入口默认只绑定 loopback 或受信任本地边界；未经授权的提交与跨 scope 提交被拒绝并记录审计；
 - 能力不足时 fail closed 的 Fixture 通过；
 - Local MVP CLI 回归零回退。
 
-Dogfooding：用常驻单节点 Runtime 承接本仓库真实的文档/修复类任务，替代一次性 CLI 编排，统计重复提交的幂等归并与失败证据留存。
+Dogfooding：用 embedded/local 形态承接本仓库真实的文档/修复类任务，替代一次性 CLI 编排，统计重复提交的幂等归并与失败证据留存。
 
-### Milestone 9：Durable Runtime
+### Milestone 9：marshal-server、Public API 与 Durable Runtime
 
-Goal：完成耐久 Runtime 主体——submit API（幂等 TaskSubmission，幂等身份为 `(scope, idempotencyKey, requestDigest)`，入口仅绑定 loopback 或受信任本地边界）、inbox/outbox、dispatcher、DispatchLease heartbeat/fencing、kill/restart recovery；`DurableOrchestrator` Port 接入外部耐久引擎（生产参考 Temporal，单机开发允许 dev server + SQLite/local blob adapter）。
+Goal：交付常驻服务形态与耐久 Runtime 主体——`marshal-server`（C/S 形态的 Marshal Control Plane 进程）；TaskSubmission/Run Public API 采用 versioned HTTP/JSON + OpenAPI（覆盖 Task create/get/cancel、Run approval/status、events/evidence；幂等 TaskSubmission，幂等身份为 `(scope, idempotencyKey, requestDigest)`；入口默认仅绑定 loopback 或受信任本地边界），事件基线采用支持 `eventId`/cursor 断线续传的 SSE（轮询 fallback；WebSocket/gRPC 推迟）；embedded 兼容（同一 Core 可在 in-process/service 之间切换，行为一致）；embedded CLI 经 in-process adapter 调同一 Public application Port，不直写 store，server client 经 HTTP transport；Push/Pull DispatchLease 按同一唯一状态机实现（只改变连接发起方：Push 由 `marshal-server` 调用 Provider endpoint，Pull 由 Provider runner 以 outbound-only long polling 或 streaming 领取）；两种拓扑都必须绑定认证 Provider registration、CapabilitySnapshot/ConformanceEvidence digest 与 task/run/attempt/allocation、generation/fencingToken，都具备 capability matching、offer/claim-or-delivery ack deadline、heartbeat、expiry、cancel、reconcile、generation bump 与陈旧结果隔离；Push 同样先 capability match，超时/响应丢失不得产生第二个 active allocation；禁止匿名 Pull；Provider remote transport 同样为 versioned HTTP/JSON；提供最小、scope-bound、可撤销的 Provider/workload 注册身份（即使入口仅 loopback/trusted boundary）；inbox/outbox、dispatcher、heartbeat/fencing、kill/restart recovery；`DurableExecutionEngine` Port 接入 backend（生产参考 Temporal，embedded/单机为 Local Engine；backend 只承担相同 commandId 的 at-least-once delivery、timer wakeup、signal transport 与 crash recovery，不拥有 lifecycle/retry/rework 业务语义，delivery/activity retry 不创建 Attempt、不消费业务重试预算；单机开发允许 dev server + SQLite/local blob adapter）。CLI、Web、GitHub App、CI 一律按 Public API client 对待，不得绕过 Public API 直接读写业务状态。
 
-非目标：不接入 Cloudflare；不做多节点 HA；不自研 workflow engine；不开放远程提交入口。
+非目标：不接入 Cloudflare；不做多节点 HA；不自研 workflow engine；不开放远程提交入口；不把 Core 开放成任意插件 HTTP Server（插件表面只有版本化 Provider Protocol）。
 
 退出门禁：
 
+- M8 的 embedded/local 纵切用例在 `marshal-server` + Public API 形态下原样通过，embedded 模式同时保持兼容；embedded CLI 经 in-process adapter 调同一 Public application Port，无第二条写路径；
+- Versioned HTTP/JSON + OpenAPI 的 TaskSubmission/Run Public API（Task create/get/cancel、Run approval/status、events/evidence）可用；SSE 支持 `eventId`/cursor 断线续传且轮询 fallback 可用；
+- Push/Pull 两拓扑等价 conformance 与故障注入通过：同一用例在两种拓扑下满足 capability matching、ack/heartbeat/deadline/generation/fencing 与陈旧结果隔离；匿名 Pull、能力不匹配的 Push offer/claim 被拒绝并记录；offer/claim ack 超时、响应丢失、heartbeat 中断与并发竞争均不产生第二个 active allocation；
+- 最小、scope-bound、可撤销的 Provider/workload 注册身份可用：未注册或已撤销身份的请求被拒绝并记录；
 - 在 `RUNNING`/`VERIFYING` 期间 kill -9 Runtime 后，可在 60 秒内完成 Inspect/Reconcile；旧 execution handle 上报被 fencing 拒绝；无双写、无丢证据；
 - 幂等提交语义：同 scope+key+digest 返回既有 submission/run 且不重复副作用；同 scope+key 而 digest 不同返回冲突（fail closed），不创建、不归并错误 Run，并写入审计记录；
 - 权威写入接纳边界故障注入：失联旧 Attempt 携带陈旧 `generation`/`fencingToken` 晚到上传 checkpoint/candidate/日志/证据引用时，被 expectedSequence/CAS 拒绝并隔离为诊断材料，不进入当前 Attempt 的 Evidence/Review/Publication；旧 execution handle 的外部副作用回放经 SideEffectIntent/Receipt + reconcile 对账，不产生重复副作用；
@@ -214,7 +222,7 @@ Goal：实现 CloudflareSandboxProvider——官方 Bridge 的 Go 客户端（�
 退出门禁：
 
 - 仅替换 Provider 后，M8/M9 的同一 conformance/E2E 全部通过（TaskSpec 与用例不变）；
-- 只有 conformance 证明 mount/network/resource/credential 要求均被强制时才允许声明 `hardened`，否则只按实际验证到的较低 assurance 等级声明，不放宽声明；
+- 只有持有独立签发的有效 `ConformanceEvidence`（mount/network/resource/credential 逐维结果全部 `passed`）时才允许声明 `hardened`，否则只按实际验证到的较低 assurance 等级声明，不放宽声明；Cloudflare 与 Local 走同一证据准入，无豁免；
 - Provider 失败语义故障注入通过：Cloudflare 探测失败、行为漂移或容器丢失状态时，当前 Allocation/Attempt 先终止并对账（fail closed）；调度器仅为新 Attempt 选择满足同一冻结 `SandboxRequirements` 与 assurance 下限的兼容 Provider；无兼容 Provider 时 Run 保持 `BLOCKED`，不静默降低 profile、不复用旧 execution handle、不在同一 Attempt 内透明降级；
 - Bridge SDK 处于 1.0 preview/Beta 的风险被显式记录并以上述 fail closed 语义控制；
 - Provider 凭据不进入 TaskSpec、事件、Prompt、日志或 Worker 可见环境。
@@ -223,30 +231,31 @@ Dogfooding：将 M8/M9 的 dogfooding 任务集原样切换到 CloudflareSandbox
 
 ### Milestone 11：生产级存储、多节点 HA 与身份分离
 
-Goal：生产参考部署落地——Temporal self-host + PostgreSQL + S3/MinIO；多节点 HA；身份分离同时覆盖 Worker/Verifier/Publisher 的 workload identity 与写入域分离（candidate/evidence/publication 分域）以及操作者/API 提交入口身份；生产远程提交入口（TLS、调用者身份认证、按 repository/project 授权、审计）；远程管道的 secret scan 与日志脱敏。
+Goal：生产参考部署落地——Temporal self-host + PostgreSQL + S3/MinIO；多节点 HA；在 M9 已交付的最小 scope-bound 注册身份基础上，扩展生产级 AuthN/AuthZ——身份分离同时覆盖 Worker/Verifier/Publisher 的 workload identity 与写入域分离（candidate/evidence/publication 分域），以及操作者/API 提交入口身份（区分人操作者与 API 调用者，多节点与多用户）；生产远程提交入口（TLS、调用者身份认证、按 repository/project 授权、审计）；远程管道的 secret scan 与日志脱敏。
 
 非目标：不承诺多租户服务化；不引入 auto-merge。
 
 退出门禁：
 
 - 多节点故障转移后无静默状态漂移，恢复仍满足 M9 的 fencing/60 秒口径；
-- 生产远程入口验收：TLS 传输、调用者身份认证、按 repository/project 的授权与提交/授权决策审计全部启用；未认证、越权与跨 scope 的提交请求全部被拒绝并记录；
+- 生产远程入口验收：TLS 传输、调用者身份认证（人操作者与 API 调用者区分）、按 repository/project 的授权与提交/授权决策审计全部启用；未认证、越权、跨 scope 提交与跨 Port 能力请求全部被拒绝并记录；
 - Worker 环境获取 Publisher 凭据的探测次数为 0；重试无重复副作用；
 - 日志抽样无敏感值；写入域越权 Fixture 全部失败；
 - 升级外部组件（Orchestrator/数据库/对象存储）不破坏生命周期一致性测试。
 
 Dogfooding：Marshal 自身的发布、审计与长跑任务在生产形态存储上运行，产出可归因的预算与恢复统计。
 
-### Milestone 12：开源部署、插件 SDK 与长稳验证
+### Milestone 12：开源部署、版本化 Provider SDK/协议、多语言 SDK 与长稳验证
 
-Goal：开源部署形态与文档；第三方 SandboxProvider/AgentAdapter 插件 SDK（子进程或独立安装包、显式信任、同一 conformance 准入）；全局并发与调度公平性；长稳演练：72h soak 通过后再进行 7d soak/chaos。
+Goal：开源部署形态与文档；基于 M9 已冻结的 versioned HTTP/JSON + OpenAPI wire contract 交付多语言 SDK 与 OpenAPI 资产（wire contract 与事件流已在 M9 首次冻结，M12 是其 SDK/文档化，不是首次定义）；版本化 Provider SDK/协议必须覆盖六类 Provider：Agent、Sandbox、Verification workload executor、SCM/Publisher transport、Artifact、Secret（子进程或独立安装包、显式信任、认证注册、同一 conformance 准入）；多拓扑 conformance（embedded、单节点 server、Push、Pull runner 跑同一 conformance 套件，含 Push/Pull DispatchLease 等价性）；全局并发与调度公平性；长稳演练：72h soak 通过后再进行 7d soak/chaos。
 
-非目标：不承诺多租户 SaaS；不引入 auto-merge；不承诺绝对安全或绝对质量。
+非目标：不承诺多租户 SaaS；不引入 auto-merge；不承诺绝对安全或绝对质量；不让 Verification/SCM/Publisher Provider 获得裁决权。
 
 退出门禁：
 
 - 外部贡献者仅凭开源文档可完成自托管部署；
-- 插件经同一 conformance 门禁准入，`hardened` 声明规则与 M8–M10 一致；
+- 六类 Provider 均经认证注册产生 CapabilitySnapshot（冻结 protocolVersion、providerType、providerName、providerVersion、capabilities、conformanceEvidenceRef、scope 与撤销/失效语义）；未知或不兼容 protocolVersion fail closed；
+- 插件经同一 conformance 门禁准入，`hardened` 声明规则与 M8–M10 一致；Verification/SCM/Publisher Provider 只能执行或传输，决定 gate/ReviewDecision 与发布权限的 Fixture 全部失败，最终裁决仍在 Core；
 - 72h 与 7d soak/chaos 期间无静默状态漂移，升级演练可回滚；
 - 并发与公平性指标可度量并绑定事件账本。
 
@@ -256,7 +265,7 @@ Dogfooding：Marshal 自身仓库的 issue 分诊与文档任务经开源部署�
 
 M7–M12 完成后，平台可靠运行的是彼此独立的 Task；复杂需求目标由 M13 承接。M13 不扩大 M7–M12 的既定平台范围，只实现 ADR 0016 冻结的 Project/Goal 对象语义。
 
-Goal：实现 Goal 控制器，使长周期目标可承载复杂需求——持久 Project/Goal 对象；可审计的计划与重规划（计划的生成、变更与拒绝都是事件账本上的可回放事实）；跨 Run 记忆与 Artifact 引用（一律以内容摘要绑定）；预算与终止条件（预算耗尽、终止条件达成或判定不收敛时，Goal 必须终止并保存 Outcome）；独立质量评估（评估由不产出该成果的 Run 承担，不得自证）；人工干预与恢复（操作者可随时暂停、修正、中止 Goal，Goal 状态在 Runtime 中断后可恢复续行）。
+Goal：实现 Goal API 与 Goal 控制器，使长周期目标可承载复杂需求——持久 Project/Goal 对象；可审计的计划与重规划（计划的生成、变更与拒绝都是事件账本上的可回放事实）；跨 Run 记忆与 Artifact 引用（一律以内容摘要绑定）；预算与终止条件（预算耗尽、终止条件达成或判定不收敛时，Goal 必须终止并保存 Outcome）；独立质量评估（评估由不产出该成果的 Run 承担，不得自证）；人工干预与恢复（操作者可随时暂停、修正、中止 Goal，Goal 状态在 Runtime 中断后可恢复续行）。
 
 非目标：不承诺多租户 SaaS；不引入 auto-merge；不允许超出预算与终止条件的无限自主执行；不改变 M7–M12 冻结的平台能力与生命周期语义。
 
@@ -269,11 +278,11 @@ Goal：实现 Goal 控制器，使长周期目标可承载复杂需求——持�
 
 Dogfooding：用一个复杂 Goal 驱动本仓库自身的多步骤改进（文档 + 代码 + 审计链），在人工监督下端到端交付，并与人工分解对照评估计划与重规划质量。
 
-### 首个纵向切片与 Provider 替换的统一验收口径
+### 纵向切片与 Provider 替换的统一验收口径（ADR 0017 修订）
 
-1. 幂等 `POST` TaskSubmission → 冻结 Run → durable `READY` → scheduler claim + fencing → Local SandboxProvider → AgentAdapter → checkpoint/log/evidence → 独立 verifier sandbox → `REVIEW_PENDING`/`ACCEPTED`（暂不自动 publish）；
-2. 在 `RUNNING`/`VERIFYING` 期间 kill -9 Runtime：60 秒内 Inspect/Reconcile，旧 execution handle 被 fencing 拒绝，无双写、无丢证据；
-3. 之后仅替换为 CloudflareSandboxProvider 跑同一 conformance/E2E，用例不变。
+1. **M8 embedded/local 纵切**：单二进制 embedded 模式 in-process 跑通幂等提交（loopback/受信任本地边界）→ 冻结 Run → durable `READY` → scheduler claim + fencing → Local SandboxProvider → AgentAdapter → checkpoint/log/evidence → 独立 Verifier sandbox（业务验证 workload，conformance probe 另按 §2 拓扑运行在被测 Provider 的 target allocation 内）→ `REVIEW_PENDING`/`ACCEPTED`（暂不自动 publish）；SPI 同时实现二维要求、内容寻址 Stage、workloadRole/principal 身份 fencing 与 replacement allocation Restore；
+2. **M9 服务化**：同一套用例切换为 `marshal-server` + TaskSubmission/Run Public API（versioned HTTP/JSON + OpenAPI、SSE 断线续传）重跑，embedded 模式保持兼容；Push/Pull DispatchLease 按同一唯一状态机满足 capability matching、ack/heartbeat/deadline/generation/fencing 且两拓扑等价；在 `RUNNING`/`VERIFYING` 期间 kill -9 Runtime：60 秒内 Inspect/Reconcile，旧 execution handle 被 fencing 拒绝，无双写、无丢证据；
+3. **M10 Provider 替换**：仅替换为 CloudflareSandboxProvider 跑同一 conformance/E2E，用例不变；`hardened` 声明必须持有有效 ConformanceEvidence。
 
 ### 与云端能力审计阶段的对应
 
@@ -296,7 +305,7 @@ Dogfooding：用一个复杂 Goal 驱动本仓库自身的多步骤改进（文�
 - 任何 Automatic Merge Policy；
 - 多租户服务化（属于评估项，威胁模型评审通过后才讨论）。
 
-原“Hardened Container/VM Profile”由 M8/M10 的 conformance 与 `hardened` 声明规则承接；原“增加 SQLite/Index”不再是路线项（单机开发沿用文件账本，生产存储演进见 M9/M11）。
+原“Hardened Container/VM Profile”由 M8/M10 的 conformance、独立签发的 `ConformanceEvidence` 与 `hardened` 声明规则承接（ADR 0017）；原“增加 SQLite/Index”不再是路线项（单机开发沿用文件账本，生产存储演进见 M9/M11）。
 
 ## MVP 可用定义
 

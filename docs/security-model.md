@@ -4,7 +4,7 @@
 
 Marshal 编排能够编辑文件并执行仓库代码的进程，这天然具有高影响。MVP 面向单个开发者、可信 Worker Binary 和开发者可控仓库。它提供严格的审计与工作流控制，但只有在可强制执行的 Sandbox Profile 中才提供宿主隔离。
 
-安全声明必须绑定到有效 Execution Profile 并记录在 Outcome Bundle。仅仅告诉模型“安全操作”，不能把 Run 描述成已沙箱化。
+安全声明必须绑定到有效的执行契约并记录在 Outcome Bundle。自 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10）起，执行契约以二维组合 `AccessMode × AssuranceLevel` 表达（旧 `executionProfile` 为其兼容面）。仅仅告诉模型“安全操作”，不能把 Run 描述成已沙箱化。
 
 ## 保护资产
 
@@ -49,7 +49,9 @@ Worker 使用构造出来的环境，不接收 Publisher Token、`SSH_AUTH_SOCK`
 
 TaskSpec 中的 Network Intent 只有在 Process Sandbox 能真正过滤网络时才算被执行。无法强制时必须记录为 `unenforced`，Repository Policy 可以拒绝 Run。
 
-## Execution Profile
+## Execution Profile 与二维权限/隔离模型
+
+Local MVP 的单一 Execution Profile 保留为兼容面：
 
 | Profile | 用途 | 可声明的保证 |
 | --- | --- | --- |
@@ -57,9 +59,19 @@ TaskSpec 中的 Network Intent 只有在 Process Sandbox 能真正过滤网络�
 | `workspace-write` | 可信本地 Coding | 独立 Worktree、过滤环境和工作流 Gate；不隔离恶意代码 |
 | `hardened` | 不可信代码或无人值守 | Container/VM/OS Sandbox 强制 Mount、Network、Resource 与 Credential Isolation |
 
-Repository Policy 选择最低 Profile。Adapter 不能满足时必须在 `READY` 前失败。
+Repository Policy 选择最低要求。Adapter 不能满足时必须在 `READY` 前失败。
 
-自 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 起，Profile 声明绑定到 SandboxProvider conformance：只有 conformance 证明 mount/network/resource/credential 要求均被强制执行时，Provider 才允许声明 `hardened`；证据不足时降级为较低 assurance 并 fail closed，不得为简化 Adapter 而静默放宽。
+自 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10）起，Runtime 阶段以两个正交维度取代单一 Profile 的内部表示：
+
+| 维度 | 取值 | 回答的问题 |
+| --- | --- | --- |
+| `AccessMode`（权限） | `read-only` / `workspace-write` | 能做什么 |
+| `AssuranceLevel`（隔离） | `workspace-write` / `hardened` | 强制有多可信 |
+
+- 四种组合均合法，包括 `read-only × hardened`（不可信代码评审）；旧 Profile 按固定映射解析：`read-only` → `read-only × workspace-write`、`workspace-write` → `workspace-write × workspace-write`、`hardened` → `workspace-write × hardened`；历史持久记录不重写；
+- `hardened` 必须绑定密封 `ConformanceEvidence`（provider identity/version、suite/probe artifact digest、mount/network/resource/credential 逐维结果、`evidenceDigest`、有效期/撤销语义）；Provider 自报 Enforcement 不能获得 `hardened`。证据拓扑（ADR 0017 §2）：probe 定义/challenge/nonce/artifact digest/调度/out-of-band 观察/裁决/签发由 Control Plane 与独立 Conformance Verifier 控制；probe workload 作为敌对测试负载运行在被测 Provider 创建、身份精确绑定的 target allocation 内（这样才能测到被测 Provider 自身的强制能力）；Provider 的 completed/receipt 只是裁决输入，不能自签通过。该拓扑不同于业务独立验证（业务 Verifier 运行在独立于 Worker 的 sandbox），不可混用；
+- Local 普通宿主进程 Provider 永不 `hardened`；Cloudflare 与第三方 Provider 一律通过相同证据准入，无豁免；证据过期或被撤销时，Provider 回落到最高 `workspace-write` AssuranceLevel；
+- AssuranceLevel 无法满足时 fail closed，Run 保持 `BLOCKED`，绝不静默降级；降级只能是操作者显式创建新 Run 的决策并记录于 Outcome；AccessMode 在 Run 内不可升级；不得为简化 Adapter 而静默放宽门禁。
 
 ## 威胁与缓解
 
@@ -141,18 +153,25 @@ Secret 仅在需要它的授权组件内 Just-in-time 解析。Publisher Credent
 
 不在当前范围。必须先完成专门 Threat Model 与 Hardened Isolation Review，不能把 Local MVP 宣传成满足此等级。
 
-## Runtime 阶段的安全边界（ADR 0016）
+## Runtime 阶段的安全边界（ADR 0016 与 ADR 0017）
 
-[ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结耐久 Runtime 后，以下边界随 M8–M12 实施生效：
+[ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结耐久 Runtime、[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10）冻结 provider-neutral Sandbox 安全契约后，以下边界随 M8–M12 实施生效：
 
 - 可丢弃执行体：Sandbox、Agent 与 Runtime 进程均可丢弃；权威事件、证据与副作用记录必须在其外部耐久保存，恢复结论只能凭持久事件账本得出；
 - 凭据不进入执行环境：环境构造规则同样适用于远程 Sandbox；SandboxAllocation 只保存 provider-neutral 的 opaque locator 与 receipt，Provider 内部凭据不得进入 TaskSpec、事件、Prompt 或日志；
 - Warm reuse 不是默认：默认每 Attempt 独立 ephemeral sandbox；复用仅限相同 tenant/repository/trust-domain 且有可证明的 sanitization；
 - 提交入口边界：M8/M9 的提交入口默认只绑定 loopback 或受信任本地边界；远程入口在生产可用前必须具备 TLS、调用者身份认证、按 repository/project 的授权与审计记录（M11 退出门禁验收）；幂等身份为 `(scope, idempotencyKey, requestDigest)`，同 scope+key 而 digest 不同必须冲突 fail closed，不得归并进错误 Run；
 - 权威写入接纳：Attempt 回报与 Artifact/Checkpoint/Candidate/Evidence 接纳必须携带 attemptId、generation、fencingToken 并在权威写入边界以 expectedSequence/CAS 校验；陈旧 token 内容只能隔离留存为诊断材料，不得进入当前 Evidence/Review/Publication；
-- Cloudflare Sandbox 是可选托管 Provider：容器闲置、故障或重启会丢失文件、进程与 session，R2 backup 只是恢复优化，不是权威状态；只有 conformance 证明隔离要求被强制才允许声明 `hardened`；Provider 失败不在 Attempt 内回退——失败的 Allocation/Attempt 先终止并对账，仅新 Attempt 可分配满足同一冻结要求与 assurance 下限的兼容 Provider，无兼容 Provider 时 fail closed；
+- Cloudflare Sandbox 是可选托管 Provider：容器闲置、故障或重启会丢失文件、进程与 session，R2 backup 只是恢复优化，不是权威状态；`hardened` 必须持有独立签发的有效 `ConformanceEvidence`；Provider 失败不在 Attempt 内回退——失败的 Allocation/Attempt 先终止并对账，仅新 Attempt 可分配满足同一冻结要求与 assurance 下限的兼容 Provider，无兼容 Provider 时 fail closed；
 - 多节点部署的身份分离：既覆盖 Worker、Verifier/Marshal、Publisher 彼此独立的 workload identity 与写入域（Worker 不得写权威证据或发布记录），也覆盖操作者与 API 入口身份；两类身份不得混用；
-- 普通宿主进程不宣称恶意代码隔离的规则在 Runtime 形态下继续有效。
+- workloadRole 与 principal 拆分（ADR 0017 §4）：Sandbox `workloadRole` 是封闭枚举，只允许 `worker`/`verifier`（conformance probe 以 `workloadRole=verifier` 在被测 Provider 的 target allocation 内运行为例外场景，见证据拓扑）；`control-plane`、`publisher`、operator、API caller 是不同语义 Port 上受 AuthZ 约束的认证 principal/actor，不是 workloadRole；**Publisher 永不成为 Sandbox workload**；远程请求身份额外绑定 `principal`/`portKind`/`providerType`/`audience`/`scope`，Provider 不得借通用 role 取得跨 Port 能力，跨 Port 能力请求 fail closed；
+- 普通宿主进程不宣称恶意代码隔离的规则在 Runtime 形态下继续有效；
+- Stage 内容寻址（ADR 0017）：每个冻结输入携带或引用真实 content-addressed bytes（inline 小对象或 ArtifactStore locator），Provider 消费前后重算 sha256，禁止只回显声明 digest；篡改 bytes 的 conformance fixture 必须让回显型 Provider 失败；
+- 操作身份与重放（ADR 0017 §4）：每个 Sandbox SPI 操作与远程副作用携带 task/run/attempt/workloadRole/allocation/generation/fencingToken/commandId 完整身份元组（workloadRole 仅 worker/verifier）；远程请求另绑定 principal/portKind/providerType/audience/scope；普通 replay 先过当前 lease fencing；Restore 的 lost-response reconciliation 与普通 replay 分离，不重发同一 generation 的 Restore；不得以 HTTP 方法的表面幂等替代业务 fencing；
+- Restore 无双写（ADR 0017）：默认 replacement allocation——旧进程树终止并失效后，以控制面单写者 CAS 激活新 generation；in-place 恢复后旧进程不得继续写；
+- 规范化（ADR 0017）：digest/replay key/requestDigest/evidenceDigest 统一 RFC 8785 JCS；协议对象解析拒绝重复 JSON member；
+- Secret/Artifact Provider（ADR 0017）：只交付有界引用或 workload-scoped 短期能力，secret 明文不得写入 TaskSpec、事件、Prompt、日志或 WorkerResult；
+- Provider 观测边界（ADR 0017）：Provider 不得自行宣布 ReviewDecision 或 safe-to-publish；Verification Provider 只能执行独立验证 workload，不得决定 gate/ReviewDecision。
 
 ## 实施安全验收条件
 
