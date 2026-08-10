@@ -592,21 +592,31 @@ function rel(t){var d=(Date.now()-new Date(t).getTime())/1000;if(d<60)return"刚
 function legend(){document.getElementById("legend").innerHTML=Object.keys(STATE).map(function(k){return '<span><b style="background:'+col(k)+'"></b>'+STATE[k][0]+'</span>'}).join("")}
 var TASKS=null;
 async function loadTasks(){TASKS=await (await fetch("/api/tasks")).json();renderTasks()}
+function esc(x){return String(x).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;")}
 function renderTasks(){
-  var by={};TASKS.tasks.forEach(function(t){var ws=t.workspace||"(当前仓库)";(by[ws]=by[ws]||[]).push(t)});
+  var logic={};
+  TASKS.tasks.forEach(function(t){
+    var ws=t.workspace||"(当前仓库)";
+    var key=ws+"|"+(t.title||t.taskId);
+    var g=logic[key]=logic[key]||{ws:ws,title:t.title||t.taskId,taskId:t.taskId,runCount:0,accepted:0,blocked:0,running:0,latestUpdate:t.latestUpdate,latestState:t.latestState};
+    g.runCount+=t.runCount;g.accepted+=t.accepted;g.blocked+=t.blocked;g.running+=t.running;
+    if(new Date(t.latestUpdate)>new Date(g.latestUpdate)){g.latestUpdate=t.latestUpdate;g.latestState=t.latestState}
+  });
+  var by={};Object.keys(logic).forEach(function(k){var g=logic[k];(by[g.ws]=by[g.ws]||[]).push(g)});
   var html="";Object.keys(by).forEach(function(ws){
-    html+='<div class="sec">Workspace · '+ws+'（'+by[ws].length+' 任务）</div><div class="grid">'+by[ws].map(function(t){var s=st(t.latestState);
-      return '<div class="card" data-task="'+t.taskId+'"><h3>'+(t.title||t.taskId)+'</h3><span class="badge '+s[1]+'">'+s[0]+'</span>'+
-      '<div class="meta">'+rel(t.latestUpdate)+' · '+t.runCount+' 个 Run · 成功 '+t.accepted+' / 阻塞 '+t.blocked+' / 进行 '+t.running+'</div>'+
-      '<div class="rid">'+t.taskId+'</div></div>'}).join("")+'</div>'});
-  document.getElementById("crumb").innerHTML="任务列表（"+TASKS.tasks.length+"）· 按 Workspace 分组 · 组内按最近活跃倒排";
+    by[ws].sort(function(a,b){return new Date(b.latestUpdate)-new Date(a.latestUpdate)});
+    html+='<div class="sec">Workspace · '+ws+'（'+by[ws].length+' 个逻辑任务）</div><div class="grid">'+by[ws].map(function(g){var s=st(g.latestState);
+      return '<div class="card" data-title="'+esc(g.title)+'"><h3>'+g.title+'</h3><span class="badge '+s[1]+'">'+s[0]+'</span>'+
+      '<div class="meta">'+rel(g.latestUpdate)+' · '+g.runCount+' 个 Run · 成功 '+g.accepted+' / 阻塞 '+g.blocked+' / 进行 '+g.running+'</div>'+
+      '<div class="rid">'+esc(g.taskId)+(g.runCount>1?' 等 '+g.runCount+' 次尝试':'')+'</div></div>'}).join("")+'</div>'});
+  document.getElementById("crumb").innerHTML="任务列表（"+Object.keys(logic).length+" 个逻辑任务）· 按 Workspace 分组 · 倒排";
   document.getElementById("main").innerHTML=html;
-  document.querySelectorAll(".card").forEach(function(el){el.onclick=function(){openTask(el.dataset.task)}});
+  document.querySelectorAll(".card").forEach(function(el){el.onclick=function(){openTask(el.dataset.title)}});
 }
-async function openTask(taskId){
-  var runs=(await (await fetch("/api/runs")).json()).runs.filter(function(r){return r.taskId===taskId});
+async function openTask(taskId){ /* taskId here is the logical title */
+  var runs=(await (await fetch("/api/runs")).json()).runs.filter(function(r){return r.title===taskId||r.taskId===taskId});
   runs.sort(function(a,b){return new Date(b.updatedAt)-new Date(a.updatedAt)});
-  var t=TASKS.tasks.find(function(x){return x.taskId===taskId});
+  var t=TASKS.tasks.find(function(x){return x.title===taskId||x.taskId===taskId});
   document.getElementById("crumb").innerHTML='<a onclick="loadTasks()">任务列表</a> / '+(t&&t.title||taskId)+' · Run 按时间倒排';
   document.getElementById("main").innerHTML=runs.map(function(r){var s=st(r.state);
     return '<div class="runrow" data-run="'+r.runId+'"><span class="badge '+s[1]+'">'+s[0]+'</span> <b>'+r.runId+'</b> <span class="meta">'+rel(r.updatedAt)+' · 尝试 '+r.attemptsUsed+' · 轮 '+r.reviewRound+'</span></div>'}).join("")+
