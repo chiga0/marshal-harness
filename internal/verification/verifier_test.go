@@ -366,6 +366,49 @@ func TestRunnerBoundsLogs(t *testing.T) {
 	}
 }
 
+func TestCommandSummaryFormatsExitCodeValue(t *testing.T) {
+	for _, code := range []int{0, 1, 127, -1} {
+		exitCode := code
+		summary := commandSummary(CommandResult{Status: "fail", Record: CommandRecord{ExitCode: &exitCode}})
+		if summary != "命令状态 fail，退出码 "+strconv.Itoa(code) {
+			t.Fatalf("exit code %d summary = %q", code, summary)
+		}
+		if strings.Contains(summary, "0x") {
+			t.Fatalf("exit code %d summary leaks pointer form: %q", code, summary)
+		}
+	}
+	passSummary := commandSummary(CommandResult{Status: "pass", Record: CommandRecord{DurationMilliseconds: 42}})
+	if passSummary != "命令通过，耗时 42ms" {
+		t.Fatalf("pass summary changed: %q", passSummary)
+	}
+}
+
+func TestCommandSummaryFormatsSignalWithoutExitCode(t *testing.T) {
+	for _, name := range []string{"SIGKILL", "SIGTERM"} {
+		signal := name
+		summary := commandSummary(CommandResult{Status: "fail", Record: CommandRecord{Signal: &signal}})
+		if summary != "命令状态 fail，signal "+name {
+			t.Fatalf("signal %s summary = %q", name, summary)
+		}
+		if strings.Contains(summary, "0x") {
+			t.Fatalf("signal %s summary leaks pointer form: %q", name, summary)
+		}
+	}
+}
+
+func TestCommandSummaryHandlesMissingProcessOutcome(t *testing.T) {
+	emptySignal := ""
+	for _, record := range []CommandRecord{{ExitCode: nil, Signal: nil}, {ExitCode: nil, Signal: &emptySignal}} {
+		summary := commandSummary(CommandResult{Status: "error", Record: record})
+		if summary != "命令状态 error，退出结果不可用" {
+			t.Fatalf("missing process outcome summary = %q", summary)
+		}
+		if strings.Contains(summary, "0x") || strings.Contains(summary, "<nil>") {
+			t.Fatalf("missing process outcome summary leaks Go internals: %q", summary)
+		}
+	}
+}
+
 type verificationFixture struct {
 	t            *testing.T
 	repository   string
