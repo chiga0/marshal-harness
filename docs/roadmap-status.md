@@ -18,7 +18,7 @@ M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider，[ADR 0016](
 
 | Milestone | 状态 | 证据 |
 | --- | --- | --- |
-| 7：架构与契约 | `IN_PROGRESS` | [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 已接受；[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md) 已接受（2026-08-10，接受只关闭设计歧义）；[ADR 0018](adr/0018-control-plane-and-provider-ports.md) 已接受（2026-08-11，接受只冻结设计，不升级 M8–M13 实现/conformance 状态）；[Runtime 架构](runtime-architecture.md) 同步 |
+| 7：架构与契约 | `PASSED`（2026-08-11，只表示设计与契约阶段通过） | [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 已接受；[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md) 已接受（2026-08-10，接受只关闭设计歧义）；[ADR 0018](adr/0018-control-plane-and-provider-ports.md) 已接受（2026-08-11，接受只冻结设计）；[Runtime 架构](runtime-architecture.md) 同步；Marshal Run `m7-control-provider-boundary-adr-r15-20260811` 完成 M7 最终架构稿并 `ACCEPTED`（reviewRound=2，32/32 required Gates 通过，独立审查无 P0/P1）；[Draft PR #13](https://github.com/chiga0/marshal-harness/pull/13) 通过 Quality (ubuntu-latest)、Quality (macos-latest)、Secret scan 与 GitGuardian 检查（GitHub Actions CI run `31449333738`），2026-08-11 由维护者手工合入 main（merge commit `4b2f3248f24ec2a67642ec77822fe6bb59730df7`） |
 | 8：Sandbox SPI/Fake/Local conformance + embedded/local 纵切 | `PLANNED` | 见[实施计划](implementation-plan.md) |
 | 9：marshal-server、Public API 与 Durable Runtime | `PLANNED` | 见[实施计划](implementation-plan.md) |
 | 10：Cloudflare Provider（remote transport） | `PLANNED` | 见[实施计划](implementation-plan.md) |
@@ -71,6 +71,6 @@ M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider，[ADR 0016](
 
 ADR 0017 中以下历史 universal 口径就地标注**已被 ADR 0018 取代**，不再作为实施依据：所有远程副作用统一绑定完整 Task/Run/Attempt/allocation/lease 身份（现仅 dispatch-bound Port）；所有 Attempt/Artifact 接纳统一 fencing（现按 Port 分流）；所有远程请求统一额外绑定 providerType（现 public-api 禁止 providerType）；六类 Provider 注册产生 legacy CapabilitySnapshot（现为 ProviderRegistration + 不可变 ProviderCapabilitySnapshot，legacy 快照仅经 fail-closed mapper 转换）。
 
-实现状态不因文档冻结或 ADR 接受而提前升级：ADR 0017 的接受只关闭设计歧义、ADR 0018 的接受只冻结设计，均只冻结设计不升级 M8–M13 实现/conformance 状态；上表各 Milestone 状态保持原值（M7 `IN_PROGRESS`，M8–M13 `PLANNED`）；首次 Sandbox SPI dogfood Run 的既有实现成果按**未接纳探索证据**对待，不计为 M8 实现进度；M8 须按修订后的契约（含 ADR 0018 §7 顺序硬门禁）以新任务启动，并通过其退出门禁后才可标记完成。
+实现状态不因文档冻结或 ADR 接受而提前升级：ADR 0017 的接受只关闭设计歧义、ADR 0018 的接受只冻结设计，均只冻结设计不升级 M8–M13 实现/conformance 状态；上表各 Milestone 状态为：M7 于 2026-08-11 通过退出门禁后更新为已通过（只表示设计与契约阶段通过，不表示后续实现或 conformance 完成），M8–M13 保持 `PLANNED`；首次 Sandbox SPI dogfood Run 的既有实现成果按**未接纳探索证据**对待，不计为 M8 实现进度；M8 须按修订后的契约（含 ADR 0018 §7 顺序硬门禁）以新任务启动，并通过其退出门禁后才可标记完成。
 
 每个 Milestone 都执行范围冻结、实现、单元/集成/E2E 测试、独立审计、提交推送和远端 CI 绿色验收。任何 P0/P1 审计问题或 CI 失败都会阻止进入下一阶段。M7–M13 还要求每个 Milestone 先通过 Local MVP 全量回归。M7 只冻结 Project/Goal 对象语义，M13 才实现 Goal 控制器；M7–M12 完成声明不涵盖复杂需求目标。
