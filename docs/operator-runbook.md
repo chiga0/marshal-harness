@@ -185,7 +185,8 @@ Attempt 级 Worker transcript、stderr、VerificationReport、ReviewPacket 与 P
 
 ### 9.7 多编排共存与监控纪律
 
-- **同机单编排原则**：同一台机器同一时间原则上只由一组 Marshal 编排驱动 worker；确需并存时错峰运行且 worker 总并发 ≤ 3（资源争抢已实测）；不同编排会话的进程管理动作可能误杀对方 worker（表现为多个 Run 同时 `worker.failed`/`context canceled`）；
+- **capacity-based 并发（不设 magic number）**：同机允许多组 Marshal 编排并存，取消"原则上单编排"假设与任何固定数字的并发上限。当前 Marshal main 尚无并发/公平性 Policy 字段、Provider capacity contract、自动 admission queue 与 backpressure 控制器，因此并发仅由 Lead 以人工 admission 决定，决策输入限于可实际取得者：写域互斥（独立 worktree 且互斥的 `scope.allowPaths`，见 §10.6）、可实际取得的宿主 CPU/内存/I/O 余量（load average、可用内存、磁盘 I/O）、Provider/API 明示的限制与 rate limit、实际观察到的背压（backpressure：超时率上升、事件延迟增长、整波变慢；资源争抢已实测会把分钟级任务放大到整波超时 fail-closed）。可取得的信号缺失时不得虚构，一律默认减少新派发或排队；资源紧张时排队新派发或降低并发（降载），容量恢复后再回升；用户显式给定的并发策略优先级最高，覆盖 Lead 推断。自动 queue/backpressure/升降载与可配置 Policy 字段是 M12 尚未实现的路线项，不得写成当前已可配置/已可自动化的行为；并发决策依据与降载动作按 §10.7 度量纪律人工记录，保证事后可回溯；
+- **进程所有权隔离**：每个编排只允许对归属自己的进程树执行 pause/resume/terminate；不同编排会话的进程管理动作可能误杀对方 worker（表现为多个 Run 同时 `worker.failed`/`context canceled`），禁止对其他编排或无法证明归属的进程做 blanket kill；
 - **疑似被外部 kill 的排查路径**：`doctor --run` 确认状态一致 → `events.jsonl` 失败时间戳 → 比对同时段其他会话/系统动作 → 对账后幂等重跑；不要直接归因为任务本身失败；
 - **事件驱动监控**：用 `tail -f .marshal/runs/RUN_ID/events.jsonl`（或 ≤ 2 分钟短周期）监听 `worker.completed` 并立即触发 verify；禁止 8–15 分钟粒度的长 sleep 轮询——实测每衔接点空转半个轮询周期，多 Run 累计可达 30–50 分钟。
 
@@ -249,7 +250,7 @@ Lead 的汇总必须产出三份清单并可回溯：**共识**（多 Agent 独�
 
 1. **拆分阶段（Lead）**：按内聚度拆，共享符号密集的文件必须划入同一子任务（外部证据：朴素按文件拆成本 +60%）；冻结接口契约（共享符号、签名、跨子任务假设）写入每个子 TaskSpec 的 `work.context`；契约变更 = 重新拆解；
 2. **写域互斥**：每个子任务分配互斥的 `allowPaths` 写域，越界写入由 scope 门禁直接判失败——合并冲突在结构上不可能发生；若集成时仍出现文本冲突，先检查 scope 划分是否有遗漏；
-3. **执行阶段**：N 个 Run 并行（各自独立 worktree/分支/lease）；本机并发上限 2–3 个 worker（资源争抢已实测），错峰启动避开 worktree 创建的仓库级短锁；
+3. **执行阶段**：N 个 Run 并行（各自独立 worktree/分支/lease）；写域互斥已由 `scope.allowPaths` 结构性保证，实际同时并行的 Run 数由 Lead 按 §9.7 的 capacity-based 纪律人工 admission——依据可实际取得的宿主 CPU/内存/I/O 余量、Provider/API 明示限制与观察到的背压动态增减，资源紧张或容量信号缺失时排队派发而不是硬撑；错峰启动避开 worktree 创建的仓库级短锁；
 4. **拆分规则**：单 Run 预期超过 30 分钟才考虑拆；小任务拆分的 Run 开销与汇总成本不划算；
 5. **集成阶段**：集成任务合并各子分支后**必须全量重新 verify**——文件互斥 ≠ 语义兼容，各子分支的证据不能证明集成结果；集成过审后才可发布；
 6. **串行尾巴不可消除**：关键路径下限 = max(各 worker 时间) + 集成 + 全量 verify + 人工审查；并行只压缩 worker 执行段。
@@ -259,7 +260,8 @@ Lead 的汇总必须产出三份清单并可回溯：**共识**（多 Agent 独�
 - 并行 worker 只对可证明互斥的工作域有效；耦合开发的集成成本会吃掉并行收益；优先级：跨仓库并行（仓库边界免费互斥）> 仓库内 scope 互斥拆分（§10.6）> 无互斥证明的拆解（禁止）；
 - 人的审批/注意力是硬瓶颈，fan-out 度不得超过 Lead 能有效审查的上限；
 - 小任务禁用 fan-out：协议成本无法摊薄；
-- **度量纪律**：每次 fan-out 必须记录：任务族 ID、agent 数、墙钟时间（并行 vs 串行估计）、token/工具成本、冲突数、findings 数与处置分布、人工分钟数。没有度量记录，不得扩大 fan-out 使用面。
+- **度量纪律**：每次 fan-out 必须记录：任务族 ID、agent 数、墙钟时间（并行 vs 串行估计）、token/工具成本、冲突数、findings 数与处置分布、人工分钟数。没有度量记录，不得扩大 fan-out 使用面；
+- **并发 admission 记录**：每次并发决策（首次 fan-out、加派、排队、降载、回升）都必须随 fan-out 度量人工记录，至少包含：**策略来源**——用户显式并发策略（最高优先）还是 Lead 推断，还是因信号缺失而默认保守；**决策时并发数**与本次动作对象（taskId/runId/attemptId）；**容量样本与观察**——可实际取得的宿主 CPU（load average）/可用内存/磁盘 I/O 读数、Provider/API 明示的 rate limit 与容量限制观察、背压观察（超时率、事件延迟），取得不到的项如实标注"未取得"，不得虚构；**动作与时间**——排队/降载/回升动作及发生时间（RFC3339）；**编排与进程所有权标识**——归属编排会话及进程归属判据，确保降载/回升只触碰本编排进程。M12 的自动 admission queue 与 backpressure 控制器尚未实现，当前这些人工记录是并发决策可回溯的唯一手段；没有 admission 记录，不得扩大并发度。
 
 ### 9.7 心跳 watchdog：后台任务的可见性（防"挂了毫无感知"）
 
