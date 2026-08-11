@@ -1,68 +1,44 @@
-# 核心概念
+# Marshal 是什么
 
-本页提供理解 Marshal 所需的最小模型。协议字段和完整不变量以[Runtime 架构](runtime-architecture.md)及[参考索引](reference.md)中的规范文档为准。
+Marshal 位于用户、Agent 和执行环境之间，负责安排任务、检查结果、控制权限并保存过程。可以把它理解成 Agent 软件工程的“任务控制台”。
 
-## 产品定义与交付状态
+## 它与 Coding Agent 有什么不同
 
-Marshal 的产品定义是长寿命、可自托管的确定性 Control Plane，而不是 Local MVP 工具集。它持续接收 Goal/Task，将工作限制在有界 Run/Attempt 中，并以耐久账本、typed execution、可插拔 Provider 和确定性 Evidence 门禁维持安全、质量与可恢复性。
+Coding Agent 擅长阅读代码、修改文件和解决具体问题。Marshal 不替代这些能力，而是负责 Agent 通常不擅长长期承担的工作：
 
-Local MVP 只是最先交付的 embedded/local 形态。产品定义与实现进度必须分别阅读：
+- 保存任务和执行状态；
+- 限制一次执行可以做什么；
+- 在失败或重启后恢复；
+- 独立检查 Agent 的结果；
+- 决定结果是否可以进入下一阶段；
+- 记录谁在什么时候做了什么。
 
-| 层次 | 状态 | 含义 |
-| --- | --- | --- |
-| Local MVP（M0–M6） | `USABLE` | 本地 CLI、独立 worktree、真实验证、Review/Rework、GitHub Draft PR、恢复与审计 |
-| Runtime 架构（M7） | `PASSED` | 长寿命 Control Plane、Provider 边界与 Goal 方向已经完成设计 |
-| Runtime 实现（M8–M12） | `PLANNED` | Sandbox SPI、`marshal-server`、Cloudflare Provider、HA、SDK 与长稳验证尚未实现 |
-| Goal 编排（M13） | `PLANNED` | 有界 DAG、计划接纳、重规划、预算与人工暂停尚未实现 |
+Agent 负责“完成工作”，Marshal 负责“让工作过程可靠”。
 
-不要因为当前实现仍是 CLI 就缩窄 Marshal 的产品定义，也不要把目标架构误当成已经交付的能力。实时状态以 [Roadmap](roadmap-status.md) 为准。
+## 长期运行是什么意思
 
-## Control Plane 与 Executor
+长期运行指的是 Marshal Runtime 可以持续在线，今天、明天或几个月后继续接受新任务。它不要求单个任务或 Agent 会话运行几个月。
 
-Marshal Core 是确定性 Control Plane，也是唯一业务权威。它负责生命周期、Policy、预算、租约、fencing、Evidence 接纳、ReviewDecision 和发布授权。
+复杂目标会被拆成多个有限任务。每次执行都有明确范围、时间和资源限制；某次执行失败时，可以保存现场、重新安排或等待人工处理，而不会让整个系统失去状态。
 
-LLM、人、Provider 和 durable backend 都不是第二个 Supervisor。它们只能提交 proposal、Candidate、Evidence、Assessment 或 Receipt，Core 校验后才决定是否写入权威账本。
+## 为什么需要独立检查
 
-Plan、Implement、Verify、Review 和 Publish 可以共享调度、heartbeat、cancel、日志与 Artifact 基座，但不共享一个通用 Executor 协议。每类 Port 仍有独立的 Schema、身份、权限、凭据和 conformance。
+Agent 可能错误理解需求，也可能误报测试结果。因此“Agent 说完成了”只代表它结束了一次工作，不代表任务已经成功。
 
-## 一次任务的对象层次
+Marshal 会在 Agent 结束后独立观察真实改动并重新运行验收步骤。只有检查结果和审查意见都满足要求，结果才会被接受或进入发布阶段。
 
-```text
-Project / Goal       长周期目标；由多个有界 Run 推进（M13）
-└── TaskSubmission   幂等提交入口
-    └── Task / Run   冻结 spec、base、Policy 与最低环境要求
-        └── Attempt  一次短命、可丢弃的执行
-            └── Allocation / Lease 具体执行环境与 fencing 身份
-```
+## 为什么执行与发布要分开
 
-Run 是有界工作单元，不应持续数月。长期稳定性来自可恢复的 Runtime、事件账本和多个短 Attempt，而不是永生进程或永生 Sandbox。
+能够修改代码的 Agent 不应该天然拥有推送、发布或合并权限。Marshal 把执行环境和发布权限分开：Agent 先产生候选结果，独立检查通过后，再由受控的发布组件执行必要操作。
 
-## 四种不能混淆的输出
+这可以减少误操作、提示词注入和凭据泄露造成的影响。
 
-| 输出 | 谁产生 | 能否独立改变状态 |
-| --- | --- | --- |
-| Candidate | Implement Worker | 不能，只是候选成果 |
-| Evidence | 独立 Verifier | 不能自行作 ReviewDecision，但可满足事实门禁 |
-| Assessment | Reviewer / 主 Agent | 不能，Core 必须绑定当前 Evidence 后接纳 |
-| Receipt | Publication/SideEffect Provider | 不能，Core 必须对账后接纳 |
+## Sandbox 可以替换吗
 
-因此，Worker 不能为自己的代码或测试提供权威证明，Provider 的 `completed` 也不等于任务完成。
+可以。Marshal 的目标是允许本地进程、Docker、Kubernetes 或 Cloudflare Sandbox 等不同执行环境接入。更换执行环境不应该改变任务含义和验收标准。
 
-## 安全与质量不变量
+Cloudflare Sandbox 是计划中的首个远程实现，不是系统的强制依赖。当前发布版本仍主要使用本地执行方式。
 
-- 写任务锁定 base SHA，并使用独立 worktree。
-- 同一任务 worktree 同时最多一个写入者。
-- Worker 与 Verifier 使用不同 principal 和 allocation。
-- Publisher 位于独立 Publication 信任域，Worker 不获得发布凭据。
-- ReviewDecision 精确绑定当前 Evidence。
-- 陈旧 generation、Evidence 或远端 head 均 fail closed。
-- 失败和阻塞同样保存 Outcome，不创建虚假 PR。
-- Local 普通宿主进程不是恶意代码 Sandbox。
-- Merge 默认禁用。
+## 适合与不适合
 
-## 下一步阅读
-
-- 想使用当前版本：阅读[快速开始](getting-started.md)和[操作手册](operator-runbook.md)。
-- 想理解完整系统：先读[整体架构](architecture.md)，再深入[Runtime 架构](runtime-architecture.md)。
-- 想贡献代码：阅读[开发指南](development.md)。
-- 想查协议、生命周期或历史决策：使用[参考索引](reference.md)。
+Marshal 适合需要长期运行、恢复、权限隔离、独立验证或审计记录的软件工程任务。对于一次性问答、简单代码提示或无需验证的小改动，直接使用 Coding Agent 通常更轻便。

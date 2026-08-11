@@ -1,17 +1,17 @@
 # 快速开始
 
-本页只覆盖当前已经可用的 Local MVP。C/S Runtime、远程 Sandbox 和 Goal 控制器仍在 Roadmap 中，不属于当前安装后的默认能力。
+本页帮助你安装当前本地版本，并确认 Marshal 和 Coding Agent 可以正常工作。当前版本支持 macOS 与 Linux。
 
 ## 1. 安装
 
-要求 macOS 或 Linux，Go 版本以仓库 `go.mod` 为准。
+使用安装脚本：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/chiga0/marshal-harness/main/scripts/install.sh | bash
 marshal version
 ```
 
-也可以从源码构建：
+或者从源码构建：
 
 ```bash
 git clone https://github.com/chiga0/marshal-harness.git
@@ -19,7 +19,9 @@ cd marshal-harness
 make build
 ```
 
-## 2. 初始化仓库
+源码构建后的命令位于 `bin/marshal`。
+
+## 2. 初始化目标仓库
 
 进入准备交给 Coding Agent 的 Git 仓库：
 
@@ -28,17 +30,17 @@ marshal init
 marshal doctor --json
 ```
 
-Marshal 默认把运行状态、日志、缓存和任务 worktree 放在被 Git 忽略的 `.marshal/` 中，不修改主 checkout。
+Marshal 会把任务状态、日志、缓存和独立工作区放在被 Git 忽略的 `.marshal/` 中，不会直接修改你的主 checkout。
 
-## 3. 配置 Worker
+## 3. 连接 Coding Agent
 
-Worker 必须使用显式的可执行文件绝对路径。先让 `doctor` 给出只读建议：
+当前支持 OpenCode、Qwen Code 和 Pi。先让 Marshal 检查本机环境并给出配置建议：
 
 ```bash
 marshal doctor --print-env
 ```
 
-按输出设置一个或多个 Adapter，例如：
+按照输出设置要使用的 Agent 路径，例如：
 
 ```bash
 export MARSHAL_OPENCODE_PATH=/absolute/path/to/opencode
@@ -46,44 +48,40 @@ export MARSHAL_QWEN_PATH=/absolute/path/to/qwen
 export MARSHAL_PI_PATH=/absolute/path/to/pi
 ```
 
-再次运行 `marshal doctor --json`，确认目标 Adapter 为 `registered` 且 `supported`。
+你不需要同时安装三个 Agent。再次运行 `marshal doctor --json`，确认所选 Agent 已注册且版本受支持。
 
-## 4. 执行一个任务
+## 4. 准备任务
 
-准备符合 [TaskSpec 契约](task-contract.md)的 `TASK.json` 和 `POLICY.json`：
+当前 CLI 使用两个 JSON 文件：
 
-```bash
-marshal task plan --task TASK.json --policy POLICY.json --run RUN_ID
-marshal task approve --run RUN_ID --gate plan --actor USER_ID
-marshal task run --run RUN_ID
-marshal task verify --run RUN_ID
-marshal task review --run RUN_ID
-```
+- `TASK.json`：要完成什么、允许修改哪些文件、怎样判断完成；
+- `POLICY.json`：执行次数、时间、发布方式等限制。
 
-`review` 首次调用会导出 ReviewPacket。生成结构化 ReviewDecision 后导入：
+可以从仓库中的[有效示例](https://github.com/chiga0/marshal-harness/tree/main/schemas/examples/happy-path)开始修改。不要把密码、Token 或其他敏感信息写入任务文件。
+
+## 5. 运行任务
 
 ```bash
-marshal task review --run RUN_ID --decision REVIEW.json
+marshal task plan --task TASK.json --policy POLICY.json --run my-first-run
+marshal task approve --run my-first-run --gate plan --actor YOUR_ID
+marshal task run --run my-first-run
+marshal task verify --run my-first-run
+marshal task review --run my-first-run
 ```
 
-需要发布 Draft PR 时，先按[操作手册](operator-runbook.md)配置独立 GitHub Publisher 凭据，再执行：
+执行结束不等于任务通过。`verify` 会独立检查真实改动和测试，`review` 会准备供人或 Lead Agent 审查的材料。
+
+需要发布 Draft PR 时，再完成审查决定和发布授权。完整命令见[日常使用](usage.md)。
+
+## 6. 查看和排错
 
 ```bash
-marshal task approve --run RUN_ID --gate publish --actor USER_ID
-marshal task publish --run RUN_ID
-marshal task accept --run RUN_ID
+marshal task status --run my-first-run --json
+marshal doctor --run my-first-run --json
 ```
 
-Marshal 不自动 merge。
+发生中断时先运行这两个只读命令，不要手工删除 `.marshal/` 或任务工作区。更多恢复和清理方法见[日常使用](usage.md)。
 
-## 5. 出错时
+## 当前限制
 
-先做只读检查，不手工删除 `.marshal/` 或任务 worktree：
-
-```bash
-marshal task status --run RUN_ID --json
-marshal doctor --run RUN_ID --json
-marshal task cleanup --run RUN_ID
-```
-
-更完整的恢复、介入和发布操作见[操作手册](operator-runbook.md)。想先理解系统为什么这样工作，继续阅读[核心概念](concepts.md)。
+这个安装得到的是本地单用户版本，不包含常驻 `marshal-server`、远程 Sandbox、Web UI 或复杂 Goal 编排。最新进展见[当前可用能力](current-status.md)。

@@ -4,24 +4,33 @@ site_url: https://chiga0.github.io/marshal-harness/
 repo_url: https://github.com/chiga0/marshal-harness
 edit_uri: edit/main/docs/
 docs_dir: docs
-not_in_nav: |
+exclude_docs: |
   adr/*.md
   en/*.md
   en/adr/*.md
   research/*.md
   reviews/*.md
   archive.md
+  architecture.md
   artifact-and-publishing.md
   audit-report.md
   compatibility-matrix.md
+  development.md
   environment-baseline.md
   failure-and-recovery.md
+  implementation-plan.md
   lead-agent-surfaces.md
   milestone-*.md
+  operator-runbook.md
+  reference.md
+  roadmap-status.md
+  runtime-architecture.md
+  security-model.md
   task-contract.md
   task-lifecycle.md
   verification-and-review.md
   vision-and-scope.md
+  worker-adapters.md
   worker-adapter-spike.md
 theme:
   name: material
@@ -67,19 +76,12 @@ markdown_extensions:
 nav:
   - 开始:
       - 首页: index.md
+      - Marshal 是什么: concepts.md
+      - 当前可用能力: current-status.md
       - 快速开始: getting-started.md
-      - 当前能力与 Roadmap: roadmap-status.md
-  - 理解 Marshal:
-      - 核心概念: concepts.md
-      - 整体架构: architecture.md
-      - Runtime 架构: runtime-architecture.md
-      - 安全模型: security-model.md
   - 使用 Marshal:
-      - 操作手册: operator-runbook.md
-      - Codex Skill: marshal-skill.md
-  - 构建与扩展:
-      - 开发指南: development.md
-      - Worker Adapter: worker-adapters.md
-      - 实施计划: implementation-plan.md
-  - 更多资料:
-      - 参考索引: reference.md
+      - 日常使用: usage.md
+      - 在 Codex 中使用: marshal-skill.md
+  - 了解设计:
+      - 工作原理: how-it-works.md
+      - 安全与隐私: security.md

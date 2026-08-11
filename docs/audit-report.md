@@ -386,3 +386,17 @@ ADR 0019 首稿的最终独立复核另发现并关闭五项 P1：按 Port 接�
 - 保留历史 Milestone、ADR 与审计原文的时点表述，不重写历史证据。
 
 本次只修正文档叙事，没有改变 ADR 已冻结的信任边界、持久化契约、生命周期或发布权限，因此不触发新 ADR。后续首页不得再以 Local MVP 能力清单替代产品定位，也不得把 `PLANNED` 能力写成已经交付。
+
+## 用户文档与工程规范分层复核（2026-08-11）
+
+打开并关闭可读性问题 `DOCS-AUDIENCE-1`：Pages 虽已缩减导航，但仍直接发布并索引 Runtime 架构、安全模型、ADR、Schema 术语与实现门禁。普通用户必须理解内部对象名、Digest、Lease、fencing 与 ADR 修订链才能阅读截图所示页面，信息架构仍以开发者而非用户任务为中心。
+
+关闭措施：
+
+- Pages 只构建 8 个用户页面：首页、产品说明、当前能力、快速开始、日常使用、Codex 使用、工作原理、安全与隐私；
+- Runtime/整体工程架构、ADR、Schema、审计、研究、Milestone、开发指南、实施计划与详细 Operator Runbook 继续由 Git 版本控制，但通过 `exclude_docs` 排除在 Pages HTML 和搜索索引之外；
+- 用户页面不再出现 authorityNamespaceId、securityDomainId、ProviderCapabilitySnapshot、fencingToken、协议族或 ADR 修订链等实现术语；
+- README 同步改为用户入口，只保留价值、当前能力、最小流程、安全边界和贡献入口；
+- 当前能力页负责区分已交付与在建能力，避免简化表达演变成虚假功能承诺。
+
+本次只改变发布信息架构与面向用户的解释层，工程规范内容及其权威顺序保持不变，不改变信任边界、持久化契约、生命周期或发布权限，不触发新 ADR。

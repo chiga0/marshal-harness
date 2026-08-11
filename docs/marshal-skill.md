@@ -1,38 +1,53 @@
 # 在 Codex 中使用 Marshal
 
-Marshal 的轻量 Skill 位于 `.agents/skills/marshal/`，Codex CLI 与 Codex Desktop 使用同一套文件契约。Desktop 任务也可以由手机端 Remote 监督，不需要为 Desktop 单独实现 Harness。
+Marshal 仓库包含一个 Codex Skill，帮助 Codex 按正确顺序提交任务、调用 Coding Agent、检查结果并处理发布。你不需要记住内部状态或文件名称。
 
-## 触发方式
+## 怎样开始
 
-显式触发时可以说：
+在包含 Marshal Skill 的环境中，可以直接告诉 Codex：
 
 ```text
 请使用 Marshal 完成这个任务：修复……，完成后独立验证并审查。
 ```
 
-安装或加载 Skill 的环境也可以使用 `$marshal`。当用户没有点名 Marshal，但明确要求 Codex 作为主 Agent 驱动本地 Coding Agent、执行测试、审查、CI 与 PR 闭环时，Skill 的描述允许隐式触发。
+也可以显式使用 `$marshal`。Codex 会先确认任务范围和验收方式，再通过 Marshal 执行，而不是直接绕过控制流程修改状态或发布代码。
 
-## M3 文件桥接
+## Codex 会做什么
 
-Run 到达 `REVIEW_PENDING` 后：
+一次典型任务中，Codex 会：
 
-```bash
-marshal task review --run RUN_ID --json
-```
+1. 把你的需求整理成有边界的任务；
+2. 检查本地环境和可用 Coding Agent；
+3. 启动执行并持续观察进度；
+4. 在 Agent 结束后运行独立验证；
+5. 根据真实代码差异和验证结果进行审查；
+6. 需要修改时发起有限返工；
+7. 获得授权后创建 Draft PR；
+8. 汇总成功、失败或阻塞原因。
 
-Codex 读取 `.marshal/runs/<run-id>/review-packet.json` 和其中引用的证据，生成 Schema-valid ReviewDecision，再执行：
+## 哪些决定仍属于你
 
-```bash
-marshal task review --run RUN_ID --decision REVIEW_DECISION.json --json
-```
+Codex 可以帮助准备任务和审查建议，但以下事项不应被静默跳过：
 
-Skill 不能直接改 `.marshal/` 状态、启动 Worker、push、创建 PR 或调用 Publisher。M4 开始后，真实 Worker 也必须通过 Marshal Adapter 启动；M5 的远端发布同样只能通过 Publisher 边界完成。
+- 明显扩大任务范围；
+- 修改验收标准或安全策略；
+- 使用新的高权限凭据；
+- 发布到与预期不同的仓库或分支；
+- 合并 PR；
+- 在状态不确定时假定任务成功。
 
-## 终态结果
+## 手机端监督
 
-`ACCEPTED`、`REJECTED`、`BLOCKED` 与 `NO_CHANGE` 会生成：
+如果 Codex Desktop 运行在开发机上，可以通过手机端 Remote 查看和指导同一个任务。实际 Coding Agent、代码和 Marshal 状态仍位于开发机，不会转移到手机执行。
 
-- `outcome.json`：机器可读、绑定最终 Decision 与 Evidence；
-- `outcome.md`：中文验收摘要。
+## 如何判断完成
 
-`REWORK_REQUESTED` 不是终态，不生成 Outcome；它保存本轮 Decision 和 ReviewPacket，下一轮必须携带未关闭 Blocking Finding。
+不要只看 Agent 或 Codex 的自然语言总结。一个任务至少应有：
+
+- 实际代码差异；
+- 独立验证结果；
+- 明确的审查结论；
+- 成功、失败或阻塞的最终记录；
+- 如果要求发布，对应的 Draft PR 和远端检查结果。
+
+任何一项缺失，都应先检查任务状态，而不是继续合并或发布。
