@@ -130,50 +130,18 @@ REVIEW_PENDING -> PUBLISHING -> PUBLISHED -> CI_PENDING -> ACCEPTED
 
 ## 文档导航
 
-- [愿景与范围](docs/vision-and-scope.md)
-- [架构设计](docs/architecture.md)
-- [主 Agent 接入界面](docs/lead-agent-surfaces.md)
-- [任务生命周期](docs/task-lifecycle.md)
-- [任务契约](docs/task-contract.md)
-- [Worker Adapter](docs/worker-adapters.md)
-- [验证与审查](docs/verification-and-review.md)
-- [交付物与发布](docs/artifact-and-publishing.md)
-- [安全模型](docs/security-model.md)
-- [故障与恢复](docs/failure-and-recovery.md)
-- [Operator Runbook](docs/operator-runbook.md)
-- [实施计划](docs/implementation-plan.md)
-- [开发指南](docs/development.md)
-- [Milestone 0 验收报告](docs/milestone-0-report.md)
-- [Milestone 1 验收报告](docs/milestone-1-report.md)
-- [Milestone 2 验收报告](docs/milestone-2-report.md)
-- [Milestone 3 验收报告](docs/milestone-3-report.md)
-- [Milestone 4 验收报告](docs/milestone-4-report.md)
-- [Milestone 5 验收报告](docs/milestone-5-report.md)
-- [Roadmap 状态](docs/roadmap-status.md)
-- [本地环境基线](docs/environment-baseline.md)
-- [设计审计报告](docs/audit-report.md)
-- [架构决策记录](docs/adr/README.md)
+- [文档首页](https://chiga0.github.io/marshal-harness/)：按使用目标选择阅读路径。
+- [快速开始](docs/getting-started.md)：安装并完成第一个 Local MVP 任务。
+- [核心概念](docs/concepts.md)：用最小模型理解 Marshal。
+- [整体架构](docs/architecture.md)：当前 Local MVP 与目标 C/S Runtime 的完整系统视图。
+- [Runtime 架构](docs/runtime-architecture.md)：M7–M13 的规范设计入口。
+- [Roadmap 状态](docs/roadmap-status.md)：区分已实现与计划能力。
+- [参考索引](docs/reference.md)：协议、生命周期、安全、ADR、审计和历史资料。
 
 机器可读契约草案位于 [`schemas/`](schemas/)。
 
-## MVP 计划
+## 当前建设阶段
 
-首个版本的 Marshal Core 是本地 CLI-first、Go 实现的模块化单体；CLI-first 不限制主 Agent 的交互界面。MVP 支持：
+Local MVP（M0–M6）已经 `USABLE`，包括本地 CLI、三类 Worker Adapter、独立 Verification、Review/Rework、GitHub Draft PR、Outcome 与恢复工具。M7 架构设计已经通过。
 
-- 每次调用处理一个仓库；
-- 每个仓库使用默认忽略的 `.marshal/` 保存本地运行态和任务 worktree；
-- 多个相互隔离的任务 worktree；
-- 每个任务 worktree 同时只有一个写入者；
-- Qwen Code、OpenCode 和 Pi 的 one-shot Adapter；
-- 标准化 JSONL 事件；
-- 独立的 Git 范围与命令验证；
-- 有上限的 Review/Rework 循环；
-- Outcome Bundle；
-- GitHub Draft PR 发布；
-- 中断后的安全检查与恢复。
-
-强恶意代码隔离、分布式调度、Web 控制台、自动 Agent 排名和无人值守 merge 不属于 MVP 承诺。
-
-## 实施门禁
-
-文档审计结论为 `APPROVED_FOR_IMPLEMENTATION`，维护者已接受 ADR 0001–0011 和 Local MVP 范围。Milestone 0–5 已通过；File-based Review Bridge、Codex Skill、三 Worker Adapter 路径与 GitHub Draft Publisher 已通过各自真实 E2E。原生 TUI Transport 基础与 Operator Runbook 已完成，当前继续真实受监督 cmux Pilot 与完整 MVP E2E 加固。
+长寿命 C/S Runtime、远程 Sandbox、生产 HA 和 Goal orchestration 位于 M8–M13，仍为 `PLANNED`。不要根据目标架构推断这些功能已经实现；以 [Roadmap 状态](docs/roadmap-status.md)为准。

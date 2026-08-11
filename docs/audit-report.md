@@ -55,7 +55,7 @@
 | Nested linked worktree Probe | macOS Git `2.50.1` 可在 `.marshal/worktrees/` 创建并识别独立 worktree |
 | 全文件 Whitespace/Conflict Marker | 通过 |
 
-Schema 只承担结构校验。[`schemas/README.md`](../schemas/README.md) 中列出的 Semantic Validator 是 Milestone 0 强制要求。
+Schema 只承担结构校验。[`schemas/README.md`](https://github.com/chiga0/marshal-harness/blob/main/schemas/README.md) 中列出的 Semantic Validator 是 Milestone 0 强制要求。
 
 ## 审计中已关闭的问题
 
@@ -358,3 +358,17 @@ Milestone 7（架构与契约）于 2026-08-11 通过退出门禁，Roadmap 状�
 设计 Finding 已由 ADR 0019 关闭，但实现风险保持开放并明确映射到 M8–M13；不得把本次文档接受描述为功能已实现。M7 保持 `PASSED`，M8–M13 保持 `PLANNED`，Local MVP `USABLE` 不变。
 
 ADR 0019 首稿的最终独立复核另发现并关闭五项 P1：按 Port 接纳被错误泛化为 universal generation 校验；Core 内部 SideEffect 记录可能被误作跨 Port wire Schema；Goal pause 未闭合 active Run 处置；budget reservation 缺 settle/release/expire/reconcile；M8 共享执行基座措辞可能绕过 ADR 0018 §7 顺序。修订后分别冻结：dispatch-bound 才校验 lease generation/fencing；各 Port receipt 经版本化 fail-closed mapper 进入内部 authority record；`drain-active|cancel-active` 不直接改 Run state；append-only reservation 状态机；任何 claim/lease activation 仍位于 ADR 0018 §7 硬顺序最后一步。复核后无未关闭 P0/P1。
+
+## Docs v2 信息架构审计（2026-08-11）
+
+打开并关闭文档可发现性问题 `DOCS-IA-1`：旧 Pages 主导航同时暴露规范、实现细节、19 份 ADR、Milestone 报告、研究与英文摘要，新读者无法判断正确入口，也容易把历史材料当成当前承诺。
+
+关闭措施：
+
+- 主导航收敛为“开始 → 理解 Marshal → 使用 Marshal → 构建与扩展 → 更多资料”，只展示 13 个高频当前页面；
+- 新增快速开始、核心概念、参考索引和历史档案四个分层入口，并把旧总体架构重写为当前 + 目标的最新整体架构；
+- ADR、审计、研究、Milestone Scope/报告/Review、兼容性矩阵和英文摘要默认隐藏，但保留稳定 URL、搜索与审计可追溯性；
+- 规范冲突顺序明确为 Accepted ADR → Runtime/lifecycle/security/Schema → 专项契约 → 实施/Roadmap → 指南 → 历史；
+- 删除门槛收紧为“完全重复、空白且无审计价值”。本轮没有文件满足安全删除条件，因此不以 Git 历史替代仍被引用的审计材料。
+
+该整理不改变信任边界、持久化契约、生命周期或发布权限，不触发新 ADR。

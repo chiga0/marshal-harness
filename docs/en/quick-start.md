@@ -4,7 +4,7 @@
 
 ## Current stage
 
-The repository has completed Milestones 0–6 and the Local MVP is marked `USABLE` (see [roadmap-status.md](../roadmap-status.md)). Version and release semantics are described in [CHANGELOG.md](../../CHANGELOG.md) at the repository root; stage progression is defined by tags.
+The repository has completed Milestones 0–6 and the Local MVP is marked `USABLE` (see [roadmap-status.md](../roadmap-status.md)). Version and release semantics are described in [CHANGELOG.md](https://github.com/chiga0/marshal-harness/blob/main/CHANGELOG.md); stage progression is defined by tags.
 
 ## Go baseline
 
@@ -60,7 +60,7 @@ GitHub Actions runs the same quality gates and vulnerability scan on Linux and m
 
 ## Installation
 
-The two user-facing installation paths (one-line script and source build) are described in the README's "Installation" section; the corresponding script is [`scripts/install.sh`](../../scripts/install.sh):
+The two user-facing installation paths (one-line script and source build) are described in the README's "Installation" section; the corresponding script is [`scripts/install.sh`](https://github.com/chiga0/marshal-harness/blob/main/scripts/install.sh):
 
 - detects the platform (`darwin|linux` × `amd64|arm64`);
 - when a GitHub release with a `v*` tag exists and contains a matching platform asset, downloads the prebuilt binary with `curl -fsSL`; if the release ships `SHA256SUMS`, sha256 verification is enforced (abort on mismatch); otherwise it warns and skips verification;

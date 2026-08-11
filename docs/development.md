@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-仓库已完成 Milestone 0–6，Local MVP 标记 `USABLE`（见 [roadmap-status.md](roadmap-status.md)）。版本与发布语义见根目录 [CHANGELOG.md](../CHANGELOG.md)；阶段推进以 tag 为准。
+仓库已完成 Milestone 0–6，Local MVP 标记 `USABLE`（见 [roadmap-status.md](roadmap-status.md)）。版本与发布语义见仓库根目录的 [CHANGELOG.md](https://github.com/chiga0/marshal-harness/blob/main/CHANGELOG.md)；阶段推进以 tag 为准。
 
 ## Go 基线
 
@@ -58,7 +58,7 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 
 ## 安装
 
-面向用户的两条安装路径（一行脚本与源码构建）见 [README](../README.md) 的「安装」小节，对应脚本为 [`scripts/install.sh`](../scripts/install.sh)：
+面向用户的两条安装路径（一行脚本与源码构建）见 [README](https://github.com/chiga0/marshal-harness#安装)，对应脚本为 [`scripts/install.sh`](https://github.com/chiga0/marshal-harness/blob/main/scripts/install.sh)：
 
 - 检测平台（`darwin|linux` × `amd64|arm64`）；
 - 存在 `v*` tag 的 GitHub release 且含平台匹配资产时，用 `curl -fsSL` 下载预编译二进制；release 附带 `SHA256SUMS` 时强制校验 sha256（校验失败即中止），未附带时告警跳过；
@@ -140,7 +140,7 @@ go run ./cmd/marshal contract schema --all --out /tmp/marshal-schemas
 | `MARSHAL_LIVE_OPENCODE_PATH` / `MARSHAL_LIVE_QWEN_PATH` / `MARSHAL_LIVE_PI_PATH` | 启用对应 Adapter 的 Live E2E | 测试开关 |
 | `MARSHAL_DISCOVERY_KNOWN_LOCATIONS` | 覆盖 doctor 建议式发现的已知安装位置列表；`-` 表示禁用，仅保留 PATH 扫描 | 测试开关 |
 
-所有 `*_PATH` 变量只接受绝对路径；注册本身不搜索 PATH、不猜近似名（未设置时 `marshal doctor` 的 workers 段显示 `not-configured`）。`marshal doctor` 的 discovery 段额外提供建议式发现，仅作建议、绝不自动注册（见下文[部署到新环境](#部署到新环境)）。Live 测试默认跳过，CI 不依赖任何 Live 开关。
+所有 `*_PATH` 变量只接受绝对路径；注册本身不搜索 PATH、不猜近似名（未设置时 `marshal doctor` 的 workers 段显示 `not-configured`）。`marshal doctor` 的 discovery 段额外提供建议式发现，仅作建议、绝不自动注册；具体流程见下文“部署到新环境”。Live 测试默认跳过，CI 不依赖任何 Live 开关。
 
 ## 部署到新环境
 

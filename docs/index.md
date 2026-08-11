@@ -16,18 +16,20 @@
 - **受控发布**：凭据分权、Draft-only、幂等、永不自动 merge；
 - **失败语义**：fail-closed、Outcome 证据、崩溃恢复。
 
-## 快速开始
+## 从这里开始
 
-见 [项目简介（README）](https://github.com/chiga0/marshal-harness#快速开始) 与 [开发指南](development.md)。操作者全流程见 [操作手册](operator-runbook.md)。
+| 你的目标 | 阅读路径 |
+| --- | --- |
+| 第一次使用 | [快速开始](getting-started.md) → [操作手册](operator-runbook.md) |
+| 理解项目 | [核心概念](concepts.md) → [整体架构](architecture.md) → [Runtime 架构](runtime-architecture.md) |
+| 查看完成度 | [Roadmap 状态](roadmap-status.md) |
+| 参与开发 | [开发指南](development.md) → [实施计划](implementation-plan.md) |
+| 查字段、状态或历史决策 | [参考索引](reference.md) |
 
-## 阅读路线
-
-1. [愿景与范围](vision-and-scope.md) → [架构设计](architecture.md) → [任务生命周期](task-lifecycle.md)；
-2. [安全模型](security-model.md) → [验证与审查](verification-and-review.md) → [产物与发布](artifact-and-publishing.md)；
-3. [Runtime 架构](runtime-architecture.md) → [ADR 索引](adr/README.md)（0001–0019）；
-4. [验收报告](roadmap-status.md)（Milestone 0–13 分层状态）；
-5. [研究与审计](research/herdr-comparison.md)（herdr 对照、fan-out 决策、A/B 设计）。
+主导航只展示高频、当前相关的内容。ADR、审计、研究、Milestone 报告和兼容性细节默认隐藏，统一通过[参考索引](reference.md)访问。
 
 ## 定位边界
 
-Marshal 不让 Agent 更聪明，而是让 Agent 的工作**可验证、可审计、可安全委派**。确定性 Core 是唯一 Supervisor；LLM、Provider 与 durable backend 只提交 proposal、evidence、assessment 或 receipt。Local Profile 不是恶意代码沙箱，系统不提供自动 merge。适用与不适用场景见 README。
+Marshal 不让 Agent 更聪明，而是让 Agent 的工作**可验证、可审计、可安全委派**。确定性 Core 是唯一 Supervisor；LLM、Provider 与 durable backend 只提交 proposal、Evidence、Assessment 或 Receipt。Local Profile 不是恶意代码沙箱，系统不提供自动 merge。
+
+当前可直接使用的是 Local MVP。`marshal-server`、远程 Sandbox、HA 与 Goal orchestration 均属于 M8–M13 的目标能力，尚未实现。

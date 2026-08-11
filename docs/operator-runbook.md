@@ -1,6 +1,6 @@
 # Operator Runbook
 
-本文档面向操作者与 Lead Agent（pi、Codex Desktop/CLI 或其他编码 Agent），描述当前 Local MVP 已实现的安全操作路径，也明确尚未开放的功能。首次在真实任务中使用 Marshal 前，先读[第 9 节：日常使用最佳实践](#9-日常使用最佳实践)。
+本文档面向操作者与 Lead Agent（pi、Codex Desktop/CLI 或其他编码 Agent），描述当前 Local MVP 已实现的安全操作路径，也明确尚未开放的功能。首次在真实任务中使用 Marshal 前，建议先读下文第 9 节“日常使用最佳实践”。
 
 ## 1. 选择运行方式
 
@@ -113,17 +113,14 @@ marshal task cleanup --run RUN_ID
 - Draft PR 由人工决定后续处置。当前 Marshal不执行 Ready for Review、merge、release、deploy、删除远端分支。
 - 远端与本地 head/PR identity 不一致时停止发布并运行 `doctor --run`，不得覆盖猜测。
 
-## 8. 当前已知本机状态
+## 8. 已知限制
 
-2026-08-05 上午本机 cmux `workspace list --json` 曾无响应，安全 helper Pilot 以 `workspace-rpc-unavailable` 在约 3 秒内 fail-closed；同日 cmux 重启后该 RPC 恢复。恢复后的实测证据：
+- `interactive-pty` 仍是受监督 Pilot，不属于默认公开 CLI 路径；日常和无人值守任务使用 `captured-process`。
+- Qwen TUI 在 `send` 多行文本后立即接收 Enter 时，Enter 可能被粘贴处理吞掉；需要等待粘贴 settle 后单独发送 Enter。OpenCode 与 Pi 尚无等价 Pilot 证据，不得推断行为相同。
+- cmux RPC 不可用或超时时必须 fail closed 并改用新的 captured Attempt；Marshal 不自动重启 cmux、不关闭用户已有 workspace、不杀死无法证明归属的进程组。
+- TUI 屏幕、终端空闲或人工确认不能替代 WorkerResult、Git Snapshot、Verification 和 Review。
 
-- `TestLiveCMUXTerminalSession` helper E2E 通过：进程组创建、Pause/Resume、Terminate 全部验证；
-- 真实受监督 Pilot 通过：Qwen Code `0.21.5` TUI 经 `terminal.StartPrepared`、密封 `LaunchEnvelope` 与 digest-bound 映射在 cmux workspace 启动，完成屏幕观察、任务产物精确校验、Pause/Resume、InterruptStep 与 Terminate，workspace 干净关闭；
-- 该 Pilot 的提示词提交动作为 manual-pty 介入（原因见下），Attempt 按混合 provenance 处置；这不影响 Pilot 证据本身，但任何据此产生的代码改动仍必须重新经过独立 Verification 与 Review。
-
-已知原生 TUI 问题（受监督模式限制）：Qwen TUI 在 `send` 多行文本后立即接收 Enter 时，Enter 会被粘贴处理吞掉；操作者必须等待粘贴 settle（本机实测约 10 秒）后再单独发送 Enter。OpenCode 与 Pi 的原生 TUI Pilot 尚未执行，不得假设行为相同。
-
-默认 captured 模式不受上述问题影响。Marshal 仍不会自动重启 cmux、不关闭非本次创建的 workspace、不杀死无法证明归属的 login process group。
+具体 Pilot 证据保存在[历史档案](archive.md)的 Milestone 报告与独立 Review 中，不在操作手册维护机器时间线。
 
 ## 9. 日常使用最佳实践
 
@@ -131,7 +128,7 @@ marshal task cleanup --run RUN_ID
 
 ### 9.1 一次性环境准备
 
-Worker Adapter 配置变量只接受绝对路径，注册本身不搜索 `PATH`、不回退近似名称；建议固化到 shell 配置。新环境不确定绝对路径时，先用 `marshal doctor --json` 的 discovery 段或 `marshal doctor --print-env` 获取建议式发现并粘贴注册（discovery 只建议、不自动注册），详见开发指南[部署到新环境](development.md#部署到新环境)：
+Worker Adapter 配置变量只接受绝对路径，注册本身不搜索 `PATH`、不回退近似名称；建议固化到 shell 配置。新环境不确定绝对路径时，先用 `marshal doctor --json` 的 discovery 段或 `marshal doctor --print-env` 获取建议式发现并粘贴注册（discovery 只建议、不自动注册）；补充说明见[开发指南](development.md)的“部署到新环境”：
 
 ```bash
 export MARSHAL_OPENCODE_PATH=<opencode 绝对路径>

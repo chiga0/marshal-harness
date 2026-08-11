@@ -9,7 +9,7 @@ Marshal 使用四层独立契约：
 3. **VerificationReport / ArtifactManifest**：独立观察到的证据。
 4. **ReviewPacket / ReviewDecision**：有边界的语义审查输入，以及绑定到该输入的决策。
 
-JSON Schema 草案位于 [`../schemas/`](../schemas/)。当前版本为 `v1alpha1`：在文档阶段和首条纵向链路期间允许不兼容调整，但所有持久化记录都必须携带版本。
+JSON Schema 位于仓库的 [`schemas/`](https://github.com/chiga0/marshal-harness/tree/main/schemas)。当前版本为 `v1alpha1`：在文档阶段和首条纵向链路期间允许不兼容调整，但所有持久化记录都必须携带版本。
 
 ## TaskSpec
 
