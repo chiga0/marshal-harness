@@ -1,6 +1,6 @@
 # Operator Runbook
 
-本文档面向操作者与 Lead Agent（pi、Codex Desktop/CLI 或其他编码 Agent），描述当前 Local MVP 已实现的安全操作路径，也明确尚未开放的功能。首次在真实任务中使用 Marshal 前，建议先读下文第 9 节“日常使用最佳实践”。
+本文档面向操作者与 Lead Agent（pi、Codex Desktop/CLI 或其他编码 Agent），只描述当前 embedded/local 发行版已经实现的安全操作路径，并明确尚未开放的功能。它是当前版本的操作说明，不定义 Marshal 的终态产品边界；整体方向见[整体架构](architecture.md)。首次在真实任务中使用 Marshal 前，建议先读下文第 9 节“日常使用最佳实践”。
 
 ## 1. 选择运行方式
 

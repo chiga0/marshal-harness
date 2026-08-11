@@ -2,7 +2,9 @@
 
 ## 安全定位
 
-Marshal 编排能够编辑文件并执行仓库代码的进程，这天然具有高影响。MVP 面向单个开发者、可信 Worker Binary 和开发者可控仓库。它提供严格的审计与工作流控制，但只有在可强制执行的 Sandbox Profile 中才提供宿主隔离。
+Marshal 是长期运行并持续调度 Agent 工作负载的确定性 Control Plane。它编排能够编辑文件、执行仓库代码和触发外部副作用的进程，因此安全边界必须覆盖权威状态、Provider 身份、执行隔离、Evidence 接纳、凭据与 SideEffect，而不能只依赖 Prompt 或 Worker 自我约束。
+
+当前 Local MVP 面向单个开发者、可信 Worker Binary 和开发者可控仓库。它已经提供严格的审计与工作流控制，但只有在可强制执行的 Sandbox Profile 中才提供宿主隔离；Runtime 阶段的完整边界随 M8–M13 逐步实现。
 
 安全声明必须绑定到有效的执行契约并记录在 Outcome Bundle。自 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10）起，执行契约以二维组合 `AccessMode × AssuranceLevel` 表达（旧 `executionProfile` 为其兼容面）。仅仅告诉模型“安全操作”，不能把 Run 描述成已沙箱化。
 

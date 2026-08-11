@@ -18,8 +18,8 @@
 ## 核心规范
 
 - [愿景与范围](vision-and-scope.md)：产品目标、非目标与成功标准。
-- [总体架构](architecture.md)：Local MVP 组件和目标 Runtime 的关系。
-- [Runtime 架构](runtime-architecture.md)：M7–M13 的主设计文档。
+- [总体架构](architecture.md)：Marshal 终态产品架构及当前交付映射。
+- [Runtime 架构](runtime-architecture.md)：确定性 Control Plane 的规范设计；M7–M13 是其交付路线。
 - [任务生命周期](task-lifecycle.md)：Run 状态、转换和预算。
 - [安全模型](security-model.md)：信任边界、威胁与验收要求。
 
@@ -50,7 +50,7 @@ Milestone Scope、验收报告、独立 Review、研究和过期方案不进入�
 ## 文档维护规则
 
 - 每个主题只保留一个规范入口，其他页面链接过去而不复制整段定义。
-- 首页和快速开始只描述当前已实现能力；目标能力必须显式标记 `PLANNED`。
+- 首页先定义终态产品，再独立标注当前交付状态；快速开始只描述已实现能力，未交付能力必须显式标记 `PLANNED`。
 - ADR、审计证据和验收报告不删除，只退出主导航。
 - 完全重复、空白或没有审计价值的页面才允许删除。
 - 新增页面默认隐藏；只有它服务于高频阅读路径时才加入 `mkdocs.yml`。

@@ -1,5 +1,5 @@
 site_name: Marshal Harness
-site_description: 证据门禁式 Coding Agent 编排器 / Evidence-gated orchestration for coding agents
+site_description: 面向 Agent 软件工程的长寿命确定性 Control Plane / Durable deterministic control plane for agentic software engineering
 site_url: https://chiga0.github.io/marshal-harness/
 repo_url: https://github.com/chiga0/marshal-harness
 edit_uri: edit/main/docs/

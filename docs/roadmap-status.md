@@ -2,6 +2,8 @@
 
 更新时间：2026-08-11
 
+本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
+
 | Milestone | 状态 | 证据 |
 | --- | --- | --- |
 | 0：Toolchain 与 Contract | `PASSED` | [验收报告](milestone-0-report.md) |
@@ -12,7 +14,7 @@
 | 5：GitHub Draft Publisher | `PASSED` | [验收报告](milestone-5-report.md)；主分支 CI `30889069165`；[真实 Draft PR #1](https://github.com/chiga0/marshal-harness/pull/1) 与 PR CI `30889190854` |
 | 6：其余 Adapter 与 Recovery 加固 | `PASSED` | [验收报告](milestone-6-report.md)；真实受监督 cmux Pilot 通过；Full MVP E2E Run `m6-mvp-e2e-r3-20260805` `ACCEPTED`，[Draft PR #2](https://github.com/chiga0/marshal-harness/pull/2) 与 PR CI `30974239712` 全绿 |
 
-Local MVP 定义达成：标记 `USABLE`。
+embedded/local 先行实现的 Local MVP 定义达成：标记 `USABLE`。
 
 M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal orchestration）。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 是 M7 通过后的已接受设计增补：它不回滚 M7，也不提前完成 M8–M13；确定性 Supervisor、Typed Execution、通用副作用对账/补偿与 Goal admission 均仍待实现：
 

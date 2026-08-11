@@ -1,20 +1,22 @@
 # Marshal Harness
 
-**证据门禁式 Coding Agent 编排器。** 当前 Local MVP 对 Coding Agent 的 Candidate 做独立验证、审查接纳与受控发布；目标 Runtime 是长寿命、可自托管的确定性 Control Plane，持续调度有界 typed workload。
+**面向 Agent 驱动软件工程的长寿命、可自托管、确定性 Control Plane。** Marshal 持续接收 Goal 与 Task，把复杂需求接纳为有界的 typed workload，调度可替换 Agent 与 Sandbox Provider，并通过耐久状态、独立 Evidence、最小权限和受控 SideEffect，使执行可恢复、可审计、可验证。
 
 [![CI](https://github.com/chiga0/marshal-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/chiga0/marshal-harness/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/chiga0/marshal-harness/blob/main/LICENSE)
 
-> 状态：Milestone 0–6 全部通过，Local MVP `USABLE`；M7 设计与契约通过，M8–M13 仍为 `PLANNED`。详见 [路线图状态](roadmap-status.md)。
+> 当前交付：Milestone 0–6 的 embedded/local 先行实现（Local MVP）已 `USABLE`；M7 终态设计与契约通过，M8–M13 仍为 `PLANNED`。Local MVP 是当前成熟度，不是产品定位。详见[路线图状态](roadmap-status.md)。
 
 ## 它解决什么
 
-不同 Coding Agent 的 CLI、事件格式、权限模型与会话语义各不相同。Marshal 为它们提供统一的：
+复杂 Agent 工作负载不仅要“能执行”，还必须在长期运行、故障恢复和跨 Provider 调度时保持权威状态一致。Marshal 提供统一的：
 
-- **任务契约**：冻结的 TaskSpec、锁定基线、独立 worktree；
+- **耐久控制**：常驻 Control Plane、append-only authority ledger、可重建投影与幂等提交；
+- **有界编排**：Goal proposal 经确定性接纳后物化为有限 Task/Run/Attempt，预算与并发可控；
+- **可插拔执行**：Agent、Sandbox、Verification、Publication、Artifact 与 Secret 通过各自版本化 Port 接入；
 - **证据门禁**：独立 Verification、摘要绑定的 ReviewDecision、CI 绑定的验收；
-- **受控发布**：凭据分权、Draft-only、幂等、永不自动 merge；
-- **失败语义**：fail-closed、Outcome 证据、崩溃恢复。
+- **安全副作用**：最小权限、凭据分域、intent/receipt/reconcile、默认禁止自动 merge；
+- **恢复与审计**：lease、heartbeat、fencing、Outcome 与可回放历史。
 
 ## 从这里开始
 
@@ -30,6 +32,6 @@
 
 ## 定位边界
 
-Marshal 不让 Agent 更聪明，而是让 Agent 的工作**可验证、可审计、可安全委派**。确定性 Core 是唯一 Supervisor；LLM、Provider 与 durable backend 只提交 proposal、Evidence、Assessment 或 Receipt。Local Profile 不是恶意代码沙箱，系统不提供自动 merge。
+Marshal 不让 Agent 更聪明，也不让 LLM 充当系统权威。确定性 Core 是唯一 Supervisor；LLM、Provider 与 durable backend 只提交 proposal、Candidate、Evidence、Assessment 或 Receipt。Local Profile 不是恶意代码沙箱，Merge 默认禁用。
 
-当前可直接使用的是 Local MVP。`marshal-server`、远程 Sandbox、HA 与 Goal orchestration 均属于 M8–M13 的目标能力，尚未实现。
+当前可直接使用的是 embedded/local 先行实现，用于本地 Coding Task 的证据门禁与受控发布。`marshal-server`、远程 Sandbox、HA 与 Goal orchestration 均属于 M8–M13 的目标能力，尚未实现。

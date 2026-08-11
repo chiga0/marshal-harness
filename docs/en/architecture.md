@@ -2,9 +2,11 @@
 
 > English · 中文原文见 [架构设计](../architecture.md)
 
+> This page is a Local MVP compatibility summary. The current product architecture is the Chinese canonical [Overall Architecture](../architecture.md), which defines Marshal as a durable deterministic Control Plane and maps the embedded/local implementation onto that target.
+
 ## Background
 
-Marshal is a local control plane wrapped around Coding Agent processes. It converts a versioned TaskSpec into bounded Worker Attempts, independently observes repository outcomes, asks the Lead Agent for semantic decisions, and conditionally publishes accepted changes.
+The currently delivered embedded/local implementation wraps Coding Agent processes with a deterministic evidence gate. It converts a versioned TaskSpec into bounded Worker Attempts, independently observes repository outcomes, accepts a scoped semantic assessment, and conditionally publishes accepted changes. This local topology is a precursor and compatibility mode, not Marshal's final product boundary.
 
 ```mermaid
 flowchart LR

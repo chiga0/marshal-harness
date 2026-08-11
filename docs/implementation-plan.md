@@ -1,5 +1,7 @@
 # 实施计划
 
+本计划用于把当前 embedded/local 先行实现逐步收敛到[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Milestone 是交付顺序，不是产品定位。
+
 ## 门禁
 
 本文 Local MVP 部分（Milestone 0–6）已由维护者授权实施；M7–M13 部分于 2026-08-10 随 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 接受而授权（M7–M12 为耐久 Runtime 平台阶段，M13 为 Goal 编排阶段）。M8–M13 还必须遵守 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)、[ADR 0018](adr/0018-control-plane-and-provider-ports.md) 与 [ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)：确定性 Core 是唯一 Supervisor；Typed Execution 不形成通用 Provider 协议；副作用采用 append-only 对账/补偿；Goal plan 先 proposal、后 deterministic admission。ADR 的接受只冻结设计，不提前升级实现与 conformance 状态。本文只是实施计划：信任边界、持久化契约、生命周期或发布权限的改变仍必须先新增或替代 ADR。

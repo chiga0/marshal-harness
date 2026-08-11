@@ -2,16 +2,16 @@
 
 > English · 中文原文见 [项目首页](../index.md)
 
-**Evidence-gated orchestration for coding agents.** The Lead Agent plans and reviews, swappable Worker Agents implement, and a deterministic Harness verifies, records evidence, and publishes under strict gates.
+**A durable, self-hostable, deterministic control plane for agentic software engineering.** Marshal continuously accepts Goals and Tasks, admits complex work as bounded typed workloads, dispatches replaceable Agent and Sandbox providers, and keeps execution recoverable, auditable, and verifiable through durable state, independent Evidence, least privilege, and controlled SideEffects.
 
 [![CI](https://github.com/chiga0/marshal-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/chiga0/marshal-harness/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/chiga0/marshal-harness/blob/main/LICENSE)
 
-> Status: Milestones 0–6 all passed; the Local MVP is marked `USABLE`. See [Roadmap Status](../roadmap-status.md).
+> Current delivery: the embedded/local precursor (Milestones 0–6, Local MVP) is `USABLE`; M7 architecture and contracts passed, while M8–M13 remain `PLANNED`. Local MVP describes maturity, not the product boundary. See [Roadmap Status](../roadmap-status.md).
 
 ## What problem it solves
 
-Coding Agents differ in CLI, event format, permission model, and session semantics. Marshal provides all of them with a common foundation:
+Long-running agent workloads need durable authority, bounded orchestration, provider-neutral execution, independent evidence, controlled side effects, and deterministic recovery. The current local release proves the Coding Task evidence chain; the server runtime, remote sandbox, HA, and Goal controller are not yet delivered.
 
 - **Task contract**: frozen TaskSpec, locked baseline, dedicated worktree;
 - **Evidence gates**: independent Verification, digest-bound ReviewDecision, CI-bound acceptance;
@@ -32,4 +32,4 @@ See the [README](https://github.com/chiga0/marshal-harness) and the [Quick Start
 
 ## Boundaries
 
-Marshal does not make agents smarter; it makes their work **verifiable, auditable, and safely delegable**. It is not a terminal runtime (see the [herdr comparison](../research/herdr-comparison.md), 中文), not a malicious-code sandbox, and provides no automatic merge. See the README for what it is and is not suited for.
+Marshal does not make agents smarter and does not make an LLM the system authority. Its deterministic Core is the sole supervisor and authority. The local profile is not a malicious-code sandbox, and merge is disabled by default. See the README for current delivery boundaries.

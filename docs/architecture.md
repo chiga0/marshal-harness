@@ -1,8 +1,8 @@
 # 整体架构
 
-> 规范状态：当前整体架构，更新于 2026-08-11；依据已接受的 [ADR 0016–0019](adr/README.md)。当前实现与计划状态以 [Roadmap](roadmap-status.md) 为准。
+> 规范状态：Marshal 终态整体架构，更新于 2026-08-11；依据已接受的 [ADR 0016–0019](adr/README.md)。当前实现与计划状态以 [Roadmap](roadmap-status.md) 为准。
 
-本文是 Marshal 当前实现与目标 Runtime 的整体架构入口。它回答系统由哪些部分组成、权威在哪里、Executor 如何协作，以及本地形态如何演进为 C/S。字段级契约与故障语义见 [Runtime 架构](runtime-architecture.md)。
+本文定义 Marshal 的整体产品架构：系统由哪些部分组成、权威在哪里、Executor 如何协作，以及 embedded/local 与 C/S 如何共享同一业务语义。Local MVP 仅在“当前交付映射”中说明，不定义系统边界。字段级契约与故障语义见 [Runtime 架构](runtime-architecture.md)。
 
 ## 架构目标
 
@@ -16,7 +16,7 @@ Marshal 的目标不是让一个 Agent 或进程连续运行数月，而是提�
 - 安全与质量来自确定性门禁、独立 Evidence、最小权限和可重放状态，而不是 Agent 自我声明；
 - Cloudflare Sandbox、Temporal、OpenHands、ACP 或 A2A 都只能是可替换集成，不成为 Core 定义。
 
-## 当前状态
+## 当前交付映射
 
 | 能力层 | 状态 | 说明 |
 | --- | --- | --- |
@@ -25,7 +25,7 @@ Marshal 的目标不是让一个 Agent 或进程连续运行数月，而是提�
 | Runtime 平台（M8–M12） | `PLANNED` | Sandbox SPI、`marshal-server`、远程 Provider、HA、SDK 与 soak 尚未实现 |
 | Goal orchestration（M13） | `PLANNED` | Goal DAG、Planner admission、跨 Run Evidence、预算和人工暂停尚未实现 |
 
-本文同时画出当前和目标，但不会把 `PLANNED` 能力描述成已交付。实时状态以 [Roadmap](roadmap-status.md) 为准。
+上表只把已交付代码映射到终态架构，不以当前实现反向定义产品。本文不会把 `PLANNED` 能力描述成已交付；实时状态以 [Roadmap](roadmap-status.md) 为准。
 
 ## 系统上下文
 

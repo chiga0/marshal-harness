@@ -4,9 +4,9 @@
 [![Pages](https://img.shields.io/badge/docs-GitHub_Pages-blue)](https://chiga0.github.io/marshal-harness/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Marshal 是一个面向 Coding Agent 的证据门禁式编排框架。当前 Local MVP 由主 Agent 提交规划与审查意见、可替换 Worker Agent 实现，确定性的 Harness 负责接纳、验证、留痕和受控发布；目标形态是长寿命的确定性 Control Plane，持续调度有界的 typed workload。
+Marshal 是面向 Agent 驱动软件工程的**长寿命、可自托管、确定性 Control Plane**。它持续接收 Goal 与 Task，把复杂需求接纳为有界的 typed workload，调度可替换的 Agent 与 Sandbox Provider，并通过耐久状态、独立 Evidence、最小权限和受控 SideEffect，使执行可恢复、可审计、可验证。
 
-> 项目状态：Milestone 0–6 全部通过，Local MVP 已标记 `USABLE`（见 [docs/roadmap-status.md](docs/roadmap-status.md)）。文档站：[chiga0.github.io/marshal-harness](https://chiga0.github.io/marshal-harness/)。采用 [MIT](LICENSE) 许可。
+> 当前交付：Milestone 0–6 全部通过，embedded/local 先行实现（Local MVP）已标记 `USABLE`（见 [docs/roadmap-status.md](docs/roadmap-status.md)）。它是终态架构的可用基线，不是 Marshal 的产品边界。文档站：[chiga0.github.io/marshal-harness](https://chiga0.github.io/marshal-harness/)。采用 [MIT](LICENSE) 许可。
 
 > Runtime 状态：M7 设计与契约已通过；M8–M13 仍为 `PLANNED`。C/S 服务、远程 Sandbox、通用 SideEffect 对账与 Goal 控制器是已冻结的目标，不是当前已实现能力。
 
@@ -56,17 +56,22 @@ bin/marshal task accept  --run RUN_ID
 
 ## 定位
 
-**Marshal 不让 Agent 更聪明，而是让 Agent 的工作可验证、可审计、可安全委派。**
+**Marshal 不替代 Agent，也不靠另一个 LLM 充当全局权威；它为 Agent 工作负载提供可长期运行的确定性控制面。**
 
-当前实现是包裹在 Coding Agent 进程之外的本地控制平面；目标 Runtime 是可自托管的 C/S Control Plane。Marshal 解决“**谁有资格证明什么，以及哪些输入有资格改变权威状态**”：LLM、Provider 与 durable backend 只能提交 proposal、claim、evidence、assessment 或 receipt，只有确定性 Core 能接纳它们并写入权威账本。Local MVP 完全本地、凭据分权、默认只发 Draft PR、永不自动 merge。
+Marshal 解决“**谁有资格证明什么，以及哪些输入有资格改变权威状态**”：LLM、Provider 与 durable backend 只能提交 proposal、claim、Evidence、Assessment 或 Receipt，只有确定性 Core 能接纳它们并写入权威账本。生产终态采用常驻 C/S Runtime；embedded/local 模式长期保留，并与服务端共享同一生命周期、Policy 和接纳规则。
 
-## 适用场景
+当前可下载版本实现了本地 Coding Task 的完整证据链：凭据分权、独立 Verification、受控 Draft PR 和显式恢复。`marshal-server`、远程 Sandbox、HA 与 Goal controller 尚未交付，具体边界以 [Roadmap 状态](docs/roadmap-status.md)为准。
 
-- **把真实开发任务委派给 Coding Agent，但要求证据**：冻结任务契约、锁定基线、独立验证、摘要绑定的审查，任何一环失败都 fail-closed；
-- **无人值守跑任务**：崩溃可恢复、预算有界、失败留证据不产生虚假 PR；
-- **需要审计与问责的多 Agent 协作**：谁批准了什么、基于哪份证据，全部 append-only 留痕；
+## Marshal 面向的场景
+
+- **持续接收复杂软件工程需求**：由长寿命 Runtime 接纳 Goal/Task，再分发为有界 Run/Attempt，而不是让单任务或单 Agent 永生；
+- **把真实开发任务委派给 Agent，但要求证据**：冻结任务契约、锁定基线、独立验证、摘要绑定的审查，任何一环失败都 fail-closed；
+- **无人值守且可恢复地执行**：进程、机器或 Provider 故障后能够对账和恢复，预算有界，失败保留 Outcome；
+- **需要审计与问责的多 Agent 协作**：谁提交、执行、验证、接纳或授权了什么，全部通过权威账本留痕；
 - **AI 代码进入仓库前的门禁**：Draft PR + 远端 CI 绑定 + 人工 merge，适合对 AI 产出持谨慎态度的团队；
-- **想换 Worker 不换流程**：同一生命周期接入 OpenCode / Qwen Code / Pi，Adapter 能力 Probe 冻结版本与权限。
+- **替换 Agent、Sandbox 或基础设施而不改任务语义**：Provider 通过版本化 Port 与 conformance 契约接入，不成为 Core 定义。
+
+其中本地 Coding Task 证据链已经可用；常驻服务、远程 Provider 和复杂 Goal 编排按 M8–M13 逐步交付。
 
 ## 不建议使用的场景
 
@@ -74,7 +79,7 @@ bin/marshal task accept  --run RUN_ID
 - **琐碎小改动**：无门禁或最简流程即可（见操作手册的任务分级）；
 - **期望全自动交付/自动 merge**：Marshal 默认且永远只到 Draft PR，merge 是人的决定；
 - **运行不可信或恶意代码**：Local Profile 不是沙箱，不宣称抵抗同 UID 恶意进程；需要时用容器/VM（Hardened Profile 在延后路线）；
-- **现在就需要成熟的多用户服务、远程调度或 Web UI**：当前是本地单用户 CLI；C/S Runtime 与远程调度位于 M8–M12，尚未实现；
+- **现在就需要成熟的多用户服务、远程调度或 Web UI**：当前发行版仍是本地单用户 CLI；这些产品目标位于 M8–M12，尚未实现；
 - **期望框架提升 Agent 的代码质量**：Marshal 门禁证据，不提升模型能力；质量仍取决于你选的 Worker 与任务契约写得好不好。
 
 ## 为什么需要 Marshal
@@ -92,7 +97,7 @@ Marshal 为不同 Worker 提供统一的任务契约、生命周期、证据模�
 
 ## 运行模式
 
-当前 Local MVP 的角色映射是：
+当前 embedded/local 实现中的角色映射是：
 
 1. **主 Agent / Lead**：提交计划与验收标准，基于真实 diff 与证据生成 Review assessment；它不直接写权威状态。
 2. **Worker Agent**：在独立 Git worktree 中产出 Candidate。它可以声明结果，但声明不能作为验证 Evidence。
@@ -100,7 +105,7 @@ Marshal 为不同 Worker 提供统一的任务契约、生命周期、证据模�
 4. **Marshal Core**：确定性 Supervisor/Control Plane，管理状态、策略、预算、租约、证据接纳与 ReviewDecision 物化，是唯一业务权威。
 5. **Publisher**：位于独立 Publication 信任域，按 Core 的精确授权执行 Draft 发布并返回 Receipt；它没有审查权，Worker 也没有发布凭据。
 
-目标 Runtime 可把 Plan、Implement、Verify、Review 与 Publish 视为 typed execution，但不会把它们压成一个通用 Executor RPC。它们可以共享 queue、lease、heartbeat、cancel、日志和 Artifact 基座，仍须保持各自的 Schema、principal、credential、接纳规则与 protocol family。`Candidate != Evidence != Assessment != Publication Receipt`。
+在终态架构中，Plan、Implement、Verify、Review 与 Publish 属于 typed execution，但不会被压成一个通用 Executor RPC。它们可以共享 queue、lease、heartbeat、cancel、日志和 Artifact 基座，仍须保持各自的 Schema、principal、credential、接纳规则与 protocol family。`Candidate != Evidence != Assessment != Publication Receipt`。
 
 默认主 Agent 可以是 pi、Codex CLI/Desktop 等任意编码 Agent（见 [docs/lead-agent-surfaces.md](docs/lead-agent-surfaces.md)）；仓库内 `.agents/skills/marshal/` 的 Skill 会被支持它的 Agent 自动加载。ChatGPT 手机端 Remote 可以远程监督运行在开发机 Desktop 上的同一任务。首批 Worker Adapter 面向 Qwen Code、OpenCode 和 Pi，但核心领域模型不依赖任何单一 Agent 或交互界面。
 
@@ -131,9 +136,9 @@ REVIEW_PENDING -> PUBLISHING -> PUBLISHED -> CI_PENDING -> ACCEPTED
 ## 文档导航
 
 - [文档首页](https://chiga0.github.io/marshal-harness/)：按使用目标选择阅读路径。
-- [快速开始](docs/getting-started.md)：安装并完成第一个 Local MVP 任务。
+- [快速开始](docs/getting-started.md)：安装当前版本并完成第一个本地任务。
 - [核心概念](docs/concepts.md)：用最小模型理解 Marshal。
-- [整体架构](docs/architecture.md)：当前 Local MVP 与目标 C/S Runtime 的完整系统视图。
+- [整体架构](docs/architecture.md)：Marshal 终态产品架构及当前实现映射。
 - [Runtime 架构](docs/runtime-architecture.md)：M7–M13 的规范设计入口。
 - [Roadmap 状态](docs/roadmap-status.md)：区分已实现与计划能力。
 - [参考索引](docs/reference.md)：协议、生命周期、安全、ADR、审计和历史资料。
@@ -142,6 +147,6 @@ REVIEW_PENDING -> PUBLISHING -> PUBLISHED -> CI_PENDING -> ACCEPTED
 
 ## 当前建设阶段
 
-Local MVP（M0–M6）已经 `USABLE`，包括本地 CLI、三类 Worker Adapter、独立 Verification、Review/Rework、GitHub Draft PR、Outcome 与恢复工具。M7 架构设计已经通过。
+终态产品方向已经由 ADR 0016–0019 冻结。Local MVP（M0–M6）是当前可用的 embedded/local 先行实现，包括本地 CLI、三类 Worker Adapter、独立 Verification、Review/Rework、GitHub Draft PR、Outcome 与恢复工具；M7 架构设计已经通过。
 
 长寿命 C/S Runtime、远程 Sandbox、生产 HA 和 Goal orchestration 位于 M8–M13，仍为 `PLANNED`。不要根据目标架构推断这些功能已经实现；以 [Roadmap 状态](docs/roadmap-status.md)为准。

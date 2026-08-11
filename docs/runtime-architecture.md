@@ -1,17 +1,17 @@
-# Runtime 架构（M7–M13 目标架构）
+# Runtime 架构（规范目标）
 
 - 依据：[ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（已接受，2026-08-10）；[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10；接受只关闭设计歧义，不提前升级 M8 实现/conformance 状态）冻结 provider-neutral Sandbox 安全契约：二维权限/隔离模型、ConformanceEvidence 证据拓扑、内容寻址 Stage、workloadRole/principal 身份 fencing 与无双写 Restore、DispatchLease 唯一状态机、DurableExecutionEngine 权威边界与 M9 wire contract，并澄清/部分取代 ADR 0016 的 §4/§5/§6/§7/§9；[ADR 0018](adr/0018-control-plane-and-provider-ports.md)（已接受，2026-08-11；接受只冻结设计，不升级 M8–M13 实现/conformance 状态）冻结 Marshal C/S Control Plane、按信任域分隔的 Provider Port、耐久注册/能力快照与在途 lease 撤销，澄清/部分取代 ADR 0017 §4/§6/§7/§8/§10/§12，显式取代 ADR 0016 §6 经 ADR 0017 承接的 universal 接纳口径，并冻结权威/actor 双键空间（authorityNamespaceId=(tenantNamespace, controlPlaneId, authorityScopeId) 拥有全部 Control Plane 权威对象——submission/Task/Run/Attempt/ledger/DispatchLease/Allocation/ReviewDecision/Evidence graph/Outcome/SideEffectIntent/Receipt reconcile/typed edge/idempotency/outbox/audit/SSE；controlPlaneId 是 HA/灾备中保持稳定的逻辑权威身份，不是进程实例；ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence 也是 authority ledger 事实，仅携带 actor securityDomainId/provenance/eligibility；Artifact/Checkpoint/Candidate/Evidence bytes 的接纳关系归 authority ledger；securityDomainId=(tenantNamespace, trustDomainKind, isolationDomainId) 只标识 Provider actor）、三条 Core 独占签发的 Core-only typed cross-domain edge（DispatchResultCapability/MaterialAccessGrant/PublicationAuthorization，默认拒绝；issuer/source/target（每条 edge 的 issuer 为 Core，issuer 不等于业务流的 sourceActor；sourceActor/targetActor/targetAudience 按 edge 类型绑定）/operation/expiry/digest/revocation/replay/current-ledger recheck 与各自专属绑定，派生 token/handle 不得成为第二权威）、Provider attestation 全链绑定、远程 transport 安全基线（首次 enable 即强制 TLS）、原子 fencing 写入汇、SSE 恢复与再授权、DurableExecutionEngine 单一权威 seam、按 Port 的 versioned protocol family、Push/Pull outcome/invariant equivalence 与失效处置分级（security-critical 立即处置；planned upgrade stop-new + bounded drain）（ADR 0018 §3/§10–§16）
 - 补充依据：[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)（已接受，2026-08-11）冻结确定性 Supervisor、Typed Execution 的非通用协议边界、Goal 计划接纳、Evidence 依赖适用性与 append-only 补偿语义。
-- 定位：本文是 M7–M13 的冻结目标架构。Local MVP（Milestone 0–6，`USABLE`）行为不变；本文新增对象与契约随 M8–M13 逐步落地，落地前不构成实现承诺。
+- 定位：本文是 Marshal 的冻结 Runtime 规范，也是产品实现应持续收敛的目标；M7–M13 是交付这套架构的路线，不是架构本身的有效期。Local MVP（Milestone 0–6，`USABLE`）行为不变；本文新增对象与契约随 M8–M13 逐步落地，落地前不构成已实现能力。
 - 术语约定：中文叙述，协议字段、状态名、CLI 命令与代码标识保留英文，且与 `docs/task-lifecycle.md`、`schemas/` 保持一致。
 
-## 目标重述
+## 产品目标
 
-Marshal 的长期目标是：**长寿命 Runtime/Control Plane 持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。
+Marshal 是：**长寿命 Runtime/Control Plane，持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。
 
 - 不是让单个 Task 运行数月：长周期目标由 Project/Goal 驱动一系列有界短 Attempt；M7 只冻结 Project/Goal 的存在性、权威归属与多 Run 原则，完整计划接纳与控制器语义由 ADR 0019 冻结并在 M13 实现；
 - Cloudflare Sandbox 仅作为首个可替换远程 Provider，不是 Core 必选依赖；
-- 本地 CLI 单次编排保留为首个入口形态与开发模式。
+- embedded/local 模式长期保留为部署形态与开发模式，但不构成产品边界。
 
 ## 组件分层
 

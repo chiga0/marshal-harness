@@ -2,15 +2,19 @@
 
 ## 愿景
 
-Marshal 让 Coding Agent 的工作像一套工程交付流程，而不是无结构的终端对话。主 Agent 可以委派实现，同时保留对范围、审查、证据和最终交付决策的控制。
+Marshal 是面向 Agent 驱动软件工程的长寿命、可自托管、确定性 Control Plane。它持续接收 Goal 与 Task，把复杂需求接纳为有界的 typed workload，调度可替换的 Agent 与 Sandbox Provider，并让环境、状态、Evidence 与 SideEffect 在进程或 Provider 故障后仍可恢复、可审计、可验证。
 
-当更换 Worker Provider 不会改变任务含义、验收标准和发布所需证据时，Marshal 才算实现目标。
+Marshal 让 Agent 工作成为受控工程执行，而不是无结构的终端对话。LLM 可以规划、实现和评估，但不能成为第二业务权威；只有确定性 Core 能接纳输入、推进生命周期并授权副作用。
+
+当 Runtime 可以长期稳定接收新任务，且更换 Agent、Sandbox 或 durable backend 不会改变任务含义、验收标准和发布所需证据时，Marshal 才算实现目标。
 
 长期目标已由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（2026-08-10 接受）正式重置：从“本地单次 CLI 编排”升级为**长寿命 Runtime/Control Plane 持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。执行沙箱可插拔，Cloudflare Sandbox 仅作为首个可替换远程 Provider。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 进一步冻结：Supervisor 是确定性 Core，不是 LLM；LLM 只执行 typed semantic workload；Goal plan 必须先 proposal、后由 Core 确定性接纳。目标架构与路线见 [Runtime 架构](runtime-architecture.md) 与 [实施计划](implementation-plan.md) M7–M13。
 
 ## 问题定义
 
-本地 Coding Agent 在五个关键方面存在差异：
+Agent 驱动的软件工程系统面临两类相互关联的问题。
+
+第一类是执行差异：
 
 1. 调用方式和会话协议不同。
 2. 权限控制不同，而且可能依赖交互确认。
@@ -18,7 +22,9 @@ Marshal 让 Coding Agent 的工作像一套工程交付流程，而不是无结�
 4. Agent 可能错误总结自己的变更或测试结果。
 5. 长任务可能留下部分状态，临时脚本难以可靠检查或恢复。
 
-Harness 必须统一这些差异，同时不能假装所有 Worker 具有相同能力。
+第二类是 Runtime 问题：Control Plane 必须长期接收新任务，在 Agent、Sandbox、进程或机器故障后恢复，避免重复副作用和陈旧写入，并在复杂 Goal 的多次计划与执行之间维持累计预算、Evidence 适用性和完整审计链。
+
+Marshal 必须统一这些问题，同时不能假装所有 Provider 具有相同能力，也不能让调度 backend 或 LLM 成为第二业务权威。
 
 ## 目标
 
@@ -46,15 +52,17 @@ Implement 产出 Candidate，Verify 产出 Evidence，Review 产出 Assessment�
 
 每个终态 Run 都有 Outcome Bundle，包含冻结的 TaskSpec、标准化事件、真实 diff、VerificationReport、ReviewDecision 和 ArtifactManifest。
 
-### G7：耐久 Runtime 与可插拔沙箱（长期）
+### G7：耐久 Runtime 与可插拔沙箱
 
 Runtime 长期稳定运行，持续接受新 Task 并分发；Sandbox、Agent 与 Runtime 进程可丢弃，权威事件、证据与副作用记录在其外部耐久保存；执行环境通过统一 SandboxProvider 契约接入，替换 Provider 不改变任务含义与验收标准。该目标的分层、恢复/fencing/checkpoint 语义与实施路线由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结。
 
-### G8：确定性控制与有界复杂任务（长期）
+### G8：确定性控制与有界复杂任务
 
 Marshal Core 是唯一 Supervisor 与权威状态机；Plan/Implement/Verify/Review/Publish 作为 typed execution 共享基础调度机制，但不共享权限或通用协议。复杂 Goal 的计划、重规划、预算预留、证据适用性和人工暂停/恢复必须可回放且有界，Planner 不能直接创建权威 Run 或执行副作用。
 
-## MVP 范围
+## 当前交付基线：Local MVP
+
+Local MVP 是终态 Control Plane 的先行实现与回归基线，不是产品范围定义。它先在 embedded/local 拓扑证明 Coding Task 的生命周期、Evidence、权限和发布不变量。
 
 MVP 包含：
 
@@ -69,7 +77,9 @@ MVP 包含：
 - 追加式 JSONL 事件日志与原子状态快照；
 - 中断后的检查与显式恢复命令。
 
-## MVP 明确不做
+## 当前交付基线的边界
+
+以下既包含终态不变量（例如不信任 Worker 自证、默认不自动 merge），也包含由后续 Milestone 交付的能力。它们都不能从 Local MVP 的 `USABLE` 状态中推断出来：
 
 - 把 Worker 输出当作可信证据。
 - 让多个写 Worker 共享同一 worktree。
@@ -78,7 +88,7 @@ MVP 包含：
 - 托管式多租户控制平面。
 - 对恶意仓库或恶意构建脚本提供强隔离承诺。
 - 在没有评测数据时自动选择“最佳”Worker。
-- Web UI、远程队列、分布式 Worker 或集群调度（不属于 MVP；耐久排队与分发已纳入 M7–M12 路线，见[实施计划](implementation-plan.md)）。
+- Web UI、远程队列、分布式 Worker 或集群调度（不属于当前交付基线；耐久排队与分发已纳入 M7–M12 路线，见[实施计划](implementation-plan.md)）。
 - 取代仓库 CI 的最终集成信号。
 - 在没有 Adapter 契约时支持任意交互式 Agent。
 
@@ -86,10 +96,12 @@ MVP 包含：
 
 ### 主要用户
 
-使用 Codex CLI、Codex Desktop 或手机端 Remote 监督 Codex 主 Agent，并把具体实现委派给本地 Coding Agent 的工程师。
+- 自托管常驻 Runtime、持续提交软件工程 Goal/Task 的个人与团队；
+- 需要在可替换 Agent/Sandbox 上执行，同时保留证据、权限边界和恢复能力的平台开发者与维护者。
 
 ### 次要用户
 
+- 当前通过 Codex CLI、Codex Desktop 或手机端 Remote 监督本地任务的工程师；
 - 在隔离 CI Runner 上执行相同流程的团队；
 - 为其他 CLI 或协议编写 Adapter 的开发者；
 - 审查某次 Run 为什么被接受或拒绝的 Reviewer。

@@ -2,7 +2,11 @@
 
 本页提供理解 Marshal 所需的最小模型。协议字段和完整不变量以[Runtime 架构](runtime-architecture.md)及[参考索引](reference.md)中的规范文档为准。
 
-## 当前能力与目标能力
+## 产品定义与交付状态
+
+Marshal 的产品定义是长寿命、可自托管的确定性 Control Plane，而不是 Local MVP 工具集。它持续接收 Goal/Task，将工作限制在有界 Run/Attempt 中，并以耐久账本、typed execution、可插拔 Provider 和确定性 Evidence 门禁维持安全、质量与可恢复性。
+
+Local MVP 只是最先交付的 embedded/local 形态。产品定义与实现进度必须分别阅读：
 
 | 层次 | 状态 | 含义 |
 | --- | --- | --- |
@@ -11,7 +15,7 @@
 | Runtime 实现（M8–M12） | `PLANNED` | Sandbox SPI、`marshal-server`、Cloudflare Provider、HA、SDK 与长稳验证尚未实现 |
 | Goal 编排（M13） | `PLANNED` | 有界 DAG、计划接纳、重规划、预算与人工暂停尚未实现 |
 
-不要把目标架构当成当前产品能力。实时状态以 [Roadmap](roadmap-status.md) 为准。
+不要因为当前实现仍是 CLI 就缩窄 Marshal 的产品定义，也不要把目标架构误当成已经交付的能力。实时状态以 [Roadmap](roadmap-status.md) 为准。
 
 ## Control Plane 与 Executor
 

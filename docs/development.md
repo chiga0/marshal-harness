@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-仓库已完成 Milestone 0–6，Local MVP 标记 `USABLE`（见 [roadmap-status.md](roadmap-status.md)）。版本与发布语义见仓库根目录的 [CHANGELOG.md](https://github.com/chiga0/marshal-harness/blob/main/CHANGELOG.md)；阶段推进以 tag 为准。
+Marshal 的产品目标是[整体架构](architecture.md)定义的长寿命确定性 Control Plane；当前仓库已完成 Milestone 0–6，embedded/local 先行实现（Local MVP）标记 `USABLE`（见 [roadmap-status.md](roadmap-status.md)）。版本与发布语义见仓库根目录的 [CHANGELOG.md](https://github.com/chiga0/marshal-harness/blob/main/CHANGELOG.md)；阶段推进以 tag 为准。
 
 ## Go 基线
 
