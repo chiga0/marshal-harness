@@ -24,7 +24,7 @@ func TestNewRequiresExactExecutableAndValidator(t *testing.T) {
 	if _, err := New("pi", validator); err == nil {
 		t.Fatal("relative executable accepted")
 	}
-	executable := fakeExecutable(t, "0.83.0", "", "exit 0")
+	executable := fakeExecutable(t, "0.84.1", "", "exit 0")
 	if _, err := New(executable, nil); err == nil {
 		t.Fatal("nil validator accepted")
 	}
@@ -95,9 +95,16 @@ func containsArgument(arguments []string, target string) bool {
 }
 
 func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
-	for _, test := range []struct{ version, status string }{{"0.83.0", "supported"}, {"0.84.0", "unsupported"}} {
+	for _, test := range []struct{ version, status string }{
+		{"0.84.1", "supported"},
+		{"0.83.0", "unsupported"},
+		{"0.84.0", "unsupported"},
+		{"0.85.0", "unsupported"},
+		{"unknown", "unsupported"},
+	} {
 		t.Run(test.version, func(t *testing.T) {
-			adapter, err := New(fakeExecutable(t, test.version, "", "exit 0"), newValidator(t))
+			marker := filepath.Join(t.TempDir(), "launched")
+			adapter, err := New(fakeExecutable(t, test.version, "", "touch "+shellQuote(marker)), newValidator(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -115,6 +122,9 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 			executable, _ := raw["executable"].(string)
 			if status != test.status || version != test.version || !strings.HasPrefix(digest, "sha256:") || !filepath.IsAbs(executable) {
 				t.Fatalf("snapshot = %s/%s/%s/%s", status, version, digest, executable)
+			}
+			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+				t.Fatalf("probe must never launch a worker process: marker stat = %v", statErr)
 			}
 		})
 	}
@@ -162,7 +172,7 @@ func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
 		body += "\nprintf '%s\\n' " + shellQuote(secret) + " >&2"
 	}
 	body += "\nexit 7"
-	fixture := newRunFixture(t, "0.83.0", body)
+	fixture := newRunFixture(t, supportedBinary, body)
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if !errors.Is(err, ErrProcessFailed) {
 		t.Fatalf("error = %v", err)
@@ -214,7 +224,7 @@ func TestWorkerEnvironmentIsolatesCredentials(t *testing.T) {
 
 func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"turn_start"}' '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{}}' '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","result":{},"isError":false}' '{"type":"agent_end","messages":[{"role":"user"},{"role":"assistant","usage":{"input":120,"output":40,"cacheRead":7,"cost":0.0021}}]}'`
-	fixture := newRunFixture(t, "0.83.0", successBody)
+	fixture := newRunFixture(t, supportedBinary, successBody)
 	record, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatal(err)
@@ -267,7 +277,7 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 
 func TestRunReadOnlyProfileGrantsReadOnlyToolAllowlist(t *testing.T) {
 	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
-	fixture := newRunFixture(t, "0.83.0", successBody)
+	fixture := newRunFixture(t, supportedBinary, successBody)
 	if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "read-only"})); err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +408,7 @@ func TestNormalizeDeclaredWorkerResultPreservesUnaffectedInput(t *testing.T) {
 
 func TestRunAcceptsDeclaredResultWithEmptySessionID(t *testing.T) {
 	agentEnd := `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
-	fixture := newRunFixture(t, "0.83.0", sessionHeader("session-1")+"\n"+agentEnd)
+	fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+agentEnd)
 	data := validDeclaredResult(fixture.executable)
 	data["session"] = map[string]any{"id": "", "resumable": false}
 	writeJSON(t, filepath.Join(fixture.controlRoot, "output", "worker-result.json"), data)
@@ -451,7 +461,7 @@ func TestDecodeUsageCost(t *testing.T) {
 
 func TestRunAcceptsStructuredUsageCost(t *testing.T) {
 	body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[{"role":"assistant","usage":{"input":10,"output":5,"cacheRead":2,"cost":{"input":0.001,"output":0.0011,"cacheRead":0,"cacheWrite":0,"total":0.0021}}}]}'`
-	fixture := newRunFixture(t, "0.83.0", body)
+	fixture := newRunFixture(t, supportedBinary, body)
 	record, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatal(err)
@@ -471,7 +481,7 @@ func TestRunAcceptsStructuredUsageCost(t *testing.T) {
 
 func TestRunRejectsInvalidUsageCostAsProtocolViolation(t *testing.T) {
 	body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[{"role":"assistant","usage":{"cost":{"unknown":1}}}]}'`
-	fixture := newRunFixture(t, "0.83.0", body)
+	fixture := newRunFixture(t, supportedBinary, body)
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("error = %v, want ErrProtocol", err)
 	}
@@ -481,7 +491,7 @@ func TestRunRejectsPersistAndResumeBeforeWorkerLaunch(t *testing.T) {
 	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
 	for _, policy := range []string{"persist", "resume"} {
 		t.Run(policy, func(t *testing.T) {
-			fixture := newRunFixture(t, "0.83.0", successBody)
+			fixture := newRunFixture(t, supportedBinary, successBody)
 			overrides := map[string]any{"sessionPolicy": policy}
 			if policy == "resume" {
 				overrides["sessionId"] = "session-1"
@@ -497,50 +507,58 @@ func TestRunRejectsPersistAndResumeBeforeWorkerLaunch(t *testing.T) {
 }
 
 func TestRunRejectsUnsupportedVersionBeforeWorkerLaunch(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "launched")
-	fixture := newRunFixture(t, "0.84.0", "touch "+shellQuote(marker))
-	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrUnsupportedVersion) {
-		t.Fatalf("error = %v", err)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatal("unsupported worker process was launched")
+	for _, version := range []string{"0.83.0", "0.84.0", "0.85.0", "unknown"} {
+		t.Run(version, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "launched")
+			fixture := newRunFixture(t, version, "touch "+shellQuote(marker))
+			_, err := fixture.adapter.Run(context.Background(), fixture.request)
+			if !errors.Is(err, ErrUnsupportedVersion) {
+				t.Fatalf("error = %v, want ErrUnsupportedVersion", err)
+			}
+			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+				t.Fatalf("unsupported worker process was launched: marker stat = %v", statErr)
+			}
+			if _, statErr := os.Stat(fixture.argsPath); !os.IsNotExist(statErr) {
+				t.Fatalf("unsupported worker process recorded argv: %v", statErr)
+			}
+		})
 	}
 }
 
 func TestRunRejectsProtocolViolations(t *testing.T) {
 	agentEnd := `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
 	t.Run("wrong-session-version", func(t *testing.T) {
-		fixture := newRunFixture(t, "0.83.0", `printf '%s\n' '{"type":"session","version":2,"id":"session-1","cwd":"'"$PWD"'"}'`+"\n"+agentEnd)
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"session","version":2,"id":"session-1","cwd":"'"$PWD"'"}'`+"\n"+agentEnd)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "version") {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("wrong-cwd", func(t *testing.T) {
-		fixture := newRunFixture(t, "0.83.0", `printf '%s\n' '{"type":"session","version":3,"id":"session-1","cwd":"/elsewhere"}'`+"\n"+agentEnd)
+		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"session","version":3,"id":"session-1","cwd":"/elsewhere"}'`+"\n"+agentEnd)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "cwd") {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("missing-header", func(t *testing.T) {
-		fixture := newRunFixture(t, "0.83.0", agentEnd)
+		fixture := newRunFixture(t, supportedBinary, agentEnd)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "session header") {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("malformed-jsonl", func(t *testing.T) {
-		fixture := newRunFixture(t, "0.83.0", sessionHeader("session-1")+"\n"+`printf '%s\n' 'not-json'`)
+		fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+`printf '%s\n' 'not-json'`)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "malformed") {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("missing-agent-end", func(t *testing.T) {
-		fixture := newRunFixture(t, "0.83.0", sessionHeader("session-1")+"\n"+`printf '%s\n' '{"type":"agent_start"}'`)
+		fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+`printf '%s\n' '{"type":"agent_start"}'`)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "agent_end") {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("agent-settled-after-agent-end", func(t *testing.T) {
-		fixture := newRunFixture(t, "0.83.0", sessionHeader("session-1")+"\n"+agentEnd+"\n"+`printf '%s\n' '{"type":"agent_settled"}'`)
+		fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+agentEnd+"\n"+`printf '%s\n' '{"type":"agent_settled"}'`)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
 			t.Fatalf("error = %v", err)
 		}
@@ -554,27 +572,27 @@ func TestRunRejectsProtocolViolations(t *testing.T) {
 		{name: "duplicate-settled", events: `printf '%s\n' '{"type":"agent_end","messages":[]}' '{"type":"agent_settled"}' '{"type":"agent_settled"}'`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := newRunFixture(t, "0.83.0", sessionHeader("session-1")+"\n"+test.events)
+			fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+test.events)
 			if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) {
 				t.Fatalf("error = %v, want ErrProtocol", err)
 			}
 		})
 	}
 	t.Run("empty-stream", func(t *testing.T) {
-		fixture := newRunFixture(t, "0.83.0", "exit 0")
+		fixture := newRunFixture(t, supportedBinary, "exit 0")
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("non-zero-exit", func(t *testing.T) {
-		fixture := newRunFixture(t, "0.83.0", sessionHeader("session-1")+"\n"+agentEnd+"\nexit 3")
+		fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+agentEnd+"\nexit 3")
 		_, err := fixture.adapter.Run(context.Background(), fixture.request)
 		if !errors.Is(err, ErrProcessFailed) || !strings.Contains(err.Error(), "exit=3") {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("identity-mismatch", func(t *testing.T) {
-		fixture := newRunFixture(t, "0.83.0", sessionHeader("session-1")+"\n"+agentEnd)
+		fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+agentEnd)
 		data := validDeclaredResult(fixture.executable)
 		data["taskId"] = "OTHER"
 		writeJSON(t, filepath.Join(fixture.controlRoot, "output", "worker-result.json"), data)
@@ -583,7 +601,7 @@ func TestRunRejectsProtocolViolations(t *testing.T) {
 		}
 	})
 	t.Run("declared-session-mismatch", func(t *testing.T) {
-		fixture := newRunFixture(t, "0.83.0", sessionHeader("session-1")+"\n"+agentEnd)
+		fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+agentEnd)
 		data := validDeclaredResult(fixture.executable)
 		data["session"] = map[string]any{"id": "claimed-other", "resumable": false}
 		writeJSON(t, filepath.Join(fixture.controlRoot, "output", "worker-result.json"), data)
@@ -593,17 +611,82 @@ func TestRunRejectsProtocolViolations(t *testing.T) {
 	})
 }
 
+// TestCaptureJSONLAcceptsPi0841NormalizedMessageUpdate pins the real Pi 0.84.1
+// normalized message_update wire: the event keeps assistantMessageEvent whose
+// text_delta carries exactly type, contentIndex and the incremental delta.
+// There is no messageId, no partial, and no top-level cumulative message
+// snapshot. Marshal never rewrites provider transcript lines, so the capture
+// result must equal the compact LF JSONL input byte-for-byte.
+func TestCaptureJSONLAcceptsPi0841NormalizedMessageUpdate(t *testing.T) {
+	firstDelta := `{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"Hello"}}`
+	secondDelta := `{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":" world"}}`
+	events := []string{
+		`{"type":"session","version":3,"id":"session-1","timestamp":"2026-08-10T00:00:00.000Z","cwd":"/worktree"}`,
+		`{"type":"agent_start"}`,
+		firstDelta,
+		secondDelta,
+		`{"type":"agent_end","messages":[]}`,
+	}
+	var stream strings.Builder
+	for _, event := range events {
+		stream.WriteString(event)
+		stream.WriteString("\n")
+	}
+	for _, event := range []string{firstDelta, secondDelta} {
+		var wire map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(event), &wire); err != nil {
+			t.Fatal(err)
+		}
+		if len(wire) != 2 || wire["type"] == nil || wire["assistantMessageEvent"] == nil {
+			t.Fatalf("message_update must carry exactly type + assistantMessageEvent, got %s", event)
+		}
+		if string(wire["type"]) != `"message_update"` {
+			t.Fatalf("event type = %s, want message_update", wire["type"])
+		}
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(wire["assistantMessageEvent"], &nested); err != nil {
+			t.Fatal(err)
+		}
+		if len(nested) != 3 || nested["type"] == nil || nested["contentIndex"] == nil || nested["delta"] == nil {
+			t.Fatalf("text_delta must carry exactly type/contentIndex/delta, got %s", event)
+		}
+		if string(nested["type"]) != `"text_delta"` || string(nested["contentIndex"]) != "0" {
+			t.Fatalf("text_delta wire = %s", event)
+		}
+	}
+	result := captureJSONL(strings.NewReader(stream.String()), "/worktree", 1<<20, func() {})
+	if result.err != nil {
+		t.Fatalf("capture error = %v", result.err)
+	}
+	if result.sessionID != "session-1" || result.eventCount != len(events) {
+		t.Fatalf("session = %q eventCount = %d, want session-1/%d", result.sessionID, result.eventCount, len(events))
+	}
+	if !bytes.Equal(result.raw, []byte(stream.String())) {
+		t.Fatalf("capture must preserve the compact JSONL verbatim:\ninput  = %q\nresult = %q", stream.String(), result.raw)
+	}
+	for _, fragment := range []string{`"assistantMessageEvent"`, `"type":"text_delta"`, `"contentIndex":0`, `"delta":"Hello"`, `"delta":" world"`} {
+		if !bytes.Contains(result.raw, []byte(fragment)) {
+			t.Fatalf("captured transcript lost %s", fragment)
+		}
+	}
+	for _, banned := range []string{"messageId", "partial", `"message":`} {
+		if bytes.Contains(result.raw, []byte(banned)) {
+			t.Fatalf("captured transcript invented forbidden field %q", banned)
+		}
+	}
+}
+
 func TestRunEnforcesOutputCapAndCancellation(t *testing.T) {
 	t.Run("output-cap", func(t *testing.T) {
 		large := strings.Repeat("x", 1800)
-		body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"text_delta","delta":"` + large + `"}}' '{"type":"agent_end","messages":[]}'`
-		fixture := newRunFixture(t, "0.83.0", body)
+		body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"` + large + `"}}' '{"type":"agent_end","messages":[]}'`
+		fixture := newRunFixture(t, supportedBinary, body)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrOutputLimit) {
 			t.Fatalf("error = %v", err)
 		}
 	})
 	t.Run("unterminated-output-cap", func(t *testing.T) {
-		fixture := newRunFixture(t, "0.83.0", `yes x | tr -d '\n'`)
+		fixture := newRunFixture(t, supportedBinary, `yes x | tr -d '\n'`)
 		started := time.Now()
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrOutputLimit) {
 			t.Fatalf("error = %v", err)
@@ -620,7 +703,7 @@ func TestRunEnforcesOutputCapAndCancellation(t *testing.T) {
 			"printf '%s' \"$child\" > " + shellQuote(readyPath+".tmp") + "\n" +
 			"mv " + shellQuote(readyPath+".tmp") + " " + shellQuote(readyPath) + "\n" +
 			"wait"
-		fixture := newRunFixture(t, "0.83.0", body)
+		fixture := newRunFixture(t, supportedBinary, body)
 		t.Cleanup(func() { killKnownProcessGroup(readyPath) })
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -715,7 +798,7 @@ func TestRunGradesPermissionDenialsFromToolErrors(t *testing.T) {
 			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{"path":"'"$PWD"'/source.go"}}'` +
 			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","isError":true,"error":"permission denied"}'` +
 			` '{"type":"agent_end","messages":[]}'`
-		fixture := newRunFixture(t, "0.83.0", body)
+		fixture := newRunFixture(t, supportedBinary, body)
 		if err := os.WriteFile(filepath.Join(fixture.worktree, "source.go"), []byte("package x\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -745,7 +828,7 @@ func TestRunGradesPermissionDenialsFromToolErrors(t *testing.T) {
 			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{"path":"` + outside + `"}}'` +
 			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","isError":true,"error":"permission rule prevents reading this path"}'` +
 			` '{"type":"agent_end","messages":[]}'`
-		fixture := newRunFixture(t, "0.83.0", body)
+		fixture := newRunFixture(t, supportedBinary, body)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
 			t.Fatalf("error = %v", err)
 		}
@@ -764,7 +847,7 @@ func TestRunGradesPermissionDenialsFromToolErrors(t *testing.T) {
 			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"write","args":{"path":"'"$PWD"'/target.txt"}}'` +
 			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"write","isError":true,"error":"permission denied"}'` +
 			` '{"type":"agent_end","messages":[]}'`
-		fixture := newRunFixture(t, "0.83.0", body)
+		fixture := newRunFixture(t, supportedBinary, body)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
 			t.Fatalf("write denial must grade FATAL: %v", err)
 		}
@@ -775,7 +858,7 @@ func TestRunGradesPermissionDenialsFromToolErrors(t *testing.T) {
 			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{"path":"'"$PWD"'/missing.go"}}'` +
 			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","isError":true,"error":"file not found"}'` +
 			` '{"type":"agent_end","messages":[]}'`
-		fixture := newRunFixture(t, "0.83.0", body)
+		fixture := newRunFixture(t, supportedBinary, body)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
 			t.Fatalf("ordinary tool error must stay a provider concern: %v", err)
 		}
