@@ -513,7 +513,7 @@ func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "pi-started")
 	executable := filepath.Join(t.TempDir(), "pi")
 	script := "#!/bin/sh\n" +
-		"if [ \"$1\" = \"--version\" ]; then printf '0.83.0\\n'; exit 0; fi\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf '0.84.1\\n'; exit 0; fi\n" +
 		": > \"" + marker + "\"\n" +
 		"exit 1\n"
 	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {

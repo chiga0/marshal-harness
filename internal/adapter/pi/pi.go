@@ -29,8 +29,8 @@ import (
 
 const (
 	adapterID       = "pi"
-	adapterVersion  = "0.1.0"
-	supportedBinary = "0.83.0"
+	adapterVersion  = "0.2.0"
+	supportedBinary = "0.84.1"
 	// supportedSessionVersion is the exact pi session event protocol version
 	// Marshal accepts. Any other header version is a protocol violation.
 	supportedSessionVersion = 3
