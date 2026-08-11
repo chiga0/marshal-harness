@@ -1,10 +1,15 @@
 # 设计审计报告
 
-- 审计日期：2026-08-04
-- 范围：当前文档与 `v1alpha1` Schema 描述的 Local CLI MVP
-- 结论：**`APPROVED_FOR_IMPLEMENTATION`**
-- 未关闭 Blocking Finding：无
-- 门禁状态：维护者已接受 ADR 0001–0011 与 Local MVP Scope
+- 审计日期：2026-08-04（2026-08-10 增补 Runtime 架构重置记录、首次 Sandbox SPI dogfood reject 增补记录与 Round 2 关闭记录；2026-08-11 增补 Control Plane 与 Provider Port 边界冻结记录，含 Round 4 独立评审八项 P1 关闭记录、Round 5 复核四项残留关闭记录、Round 6 复核两项残留——Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge——关闭记录与 Round 7 复核三项残留——双键空间残留清除（权威对象 authorityNamespaceId 独占拥有、registration/snapshot/evidence authority ledger 事实、接纳关系归 authority ledger、controlPlaneId 逻辑权威身份）、Core-only typed edge 生命周期细化（issuer/source/target/operation/expiry/digest/revocation/replay/current-ledger recheck，issuer 恒为 Core 且不等于业务流 sourceActor、sourceActor/targetActor 按 edge 类型绑定，派生 token/handle 不得成为第二权威）、Public API 幂等/SSE/对象 key 修正为 authorityNamespaceId——关闭记录与 Round 8 复核一项残留——typed edge 跨域例外与适用范围（三类 typed edge 明确为 Provider actor 跨信任域访问默认拒绝的唯一 allowlist 例外，Public API/SSE 与 Core 内部权威引用无需 Provider typed edge）——与 Round 9 复核两项残留——跨域 fail closed 表述精确化（删除会无条件拒绝 MaterialAccessGrant 等合法 typed edge 的宽泛表述）、非 edge Port 与同域不自动授权（provider-registration/control 经 transport identity/该 Port AuthN/AuthZ/registration protocol 由 Core 写 authority ledger；securityDomainId 相同只是 provenance/partition 条件，不构成授权）——关闭记录）
+- 范围：当前文档与 `v1alpha1` Schema 描述的 Local CLI MVP（Runtime/Sandbox 契约部分为分层状态，见下）
+- 结论（分层）：
+  - Local MVP（Milestone 0–6）：**`APPROVED_FOR_IMPLEMENTATION`** / `USABLE`，行为与门禁不变；
+  - Runtime/Sandbox 契约（M7–M13）：在 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md) 接受前为 **`BLOCKED`**（首次 Sandbox SPI dogfood reject 与 Round 2 评审暴露的合同级歧义）；2026-08-10 全部 P1 经 Round 2 独立验证与 ReviewDecision accept，维护者接受 ADR 0017，设计歧义关闭；2026-08-11 维护者接受 [ADR 0018](adr/0018-control-plane-and-provider-ports.md)，冻结 Marshal C/S Control Plane、按信任域分隔的 Provider Port、耐久注册/能力快照与在途 lease 撤销，澄清/部分取代 ADR 0017 §4/§6/§7/§8/§10/§12 并显式取代 ADR 0016 §6 经 ADR 0017 承接的 universal 接纳口径，并随 Round 4 独立评审八项 P1（远程 transport 基线、securityDomainId 键空间、attestation 全链绑定、原子 fencing sink、SSE 恢复与再授权、engine 单一 seam、Port protocol family、legacy snapshot 残留）全部关闭增补 §10–§16，随 Round 6 复核两项残留（Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge）全部关闭修订 §3/§10，随 Round 7 复核三项残留（双键空间残留清除、Core-only typed edge 生命周期细化、Public API 幂等/SSE/对象 key 修正为 authorityNamespaceId）全部关闭修订 §3/§4/§5/§7/§10/§13，随 Round 8 复核一项残留（typed edge 跨域例外与适用范围）全部关闭修订 §3/§10，随 Round 9 复核两项残留（ADR0018-UNQUALIFIED-CROSS-DOMAIN-RESIDUE、ADR0018-NONEDGE-PORT-AND-SAME-DOMAIN-AUTHZ）全部关闭修订 §2/§3/§5/§7/§10（接受只冻结设计，不升级 M8–M13 实现/conformance 状态）。
+- 未关闭 Blocking Finding：无（S-A1–S-A7、Round 2 六项歧义、Round 3 C-A1–C-A6、Round 4–9 独立评审与复核各轮 P1/残留的关闭记录见下文增补节）
+- 门禁状态（分层）：
+  - 维护者已接受 ADR 0001–0011、ADR 0012–0014 与 ADR 0016（2026-08-10，含 M7–M12 路线）及 Local MVP Scope；
+  - ADR 0017（provider-neutral Sandbox 安全契约）已接受（2026-08-10）；**接受只关闭设计歧义**：不得把 M8 实现或 conformance 状态提前标为完成，M7 保持 `IN_PROGRESS`、M8–M13 保持 `PLANNED`，首次 Sandbox SPI dogfood 的既有实现成果按未接纳探索证据对待（见 [Roadmap 状态](roadmap-status.md)）；
+  - ADR 0018（Marshal C/S Control Plane、按信任域分隔的 Provider Port、耐久注册/能力快照与在途 lease 撤销）已接受（2026-08-11）；**接受只冻结设计**：不升级 M8–M13 实现或 conformance 状态，M7 保持 `IN_PROGRESS`、M8–M13 保持 `PLANNED`；ADR 0017 的历史 universal 口径（统一 lease 身份/统一 fencing/统一 providerType/legacy CapabilitySnapshot 注册产物）在现行规范入口就地标注已被 ADR 0018 取代；Round 4 独立评审八项 P1 已随 ADR 0018 §10–§16 关闭，Round 5 复核四项残留（复合安全域、Port protocol family、Push/Pull 不变量等价、计划升级 bounded drain）已随 ADR 0018 §2/§6/§7/§10/§16 修订关闭，Round 6 复核两项残留（Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge）已随 ADR 0018 §3/§10 修订关闭，Round 7 复核三项残留（双键空间残留清除、Core-only typed edge 生命周期细化、Public API 幂等/SSE/对象 key 修正为 authorityNamespaceId）已随 ADR 0018 §3/§4/§5/§7/§10/§13 修订关闭，Round 8 复核一项残留（typed edge 跨域例外与适用范围）已随 ADR 0018 §3/§10 修订关闭，Round 9 复核两项残留（跨域 fail closed 表述精确化、非 edge Port 与同域不自动授权）已随 ADR 0018 §2/§3/§5/§7/§10 修订关闭，远程 transport 安全基线自各远程能力首次 enable 起生效（M11 不补基线）
 
 ## 执行结论
 
@@ -128,6 +133,164 @@ Cross-record Freshness、ID Uniqueness、Budget Relationship、Path Canonicaliza
 
 **hardening 批次关闭记录（2026-08-07）**：六项张力中四项已实现并合入——WorkerResult 归一化（`328ea03`）、prompt 内嵌模板（同）、显式 abort + 终态 Outcome（ADR 0012，`08c8462`）、`--through-verify` 与仓库锁重试（`76fdf40`）；均经独立 Marshal Run 的 Verification 与 Review ACCEPTED。ADR 0013（拒绝分级）与 0014（read-only 画像）保持提案状态待维护者接受。tui-research 22 个死 Run 已用新 abort 转终态并回收 7 个干净 worktree；15 个 dirty worktree 待归档机制（cleanup v1 对 dirty 硬拒绝、无归档授权路径，记为下一缺口）。
 
+## 2026-08-10 架构重置：已关闭的架构问题与新打开的实施风险
+
+维护者于 2026-08-10 接受 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)，把长期目标从“本地单次 CLI 编排”重置为长寿命 Runtime/Control Plane。本节记录该重置关闭的架构问题（含首批文档评审识别的四个 P1 缺口，R-A5–R-A8）与新打开的实施风险；目标架构见 [Runtime 架构](runtime-architecture.md)。
+
+已关闭的架构问题：
+
+| ID | 级别 | 问题 | 关闭 |
+| --- | --- | --- | --- |
+| R-A1 | P1 | 长期目标停留在“本地单次 CLI 编排”，远程队列与分布式调度笼统延后，长期形态无冻结路线 | ADR 0016 冻结目标与 M7–M12 唯一平台路线，实施计划、愿景、Roadmap 与治理文档口径同步 |
+| R-A2 | P1 | ADR 0015 的常驻形态、耐久调度与远程执行边界未闭合，且提案长期悬置 | ADR 0015 标记 Superseded before acceptance，生产部署边界由 ADR 0016 承接 |
+| R-A3 | P1 | 执行环境语义混在 Worker 编排内，Provider 不可替换、`hardened` 声明无准入标准 | 冻结 `AgentAdapter`（prepare/decode/capability）与 `SandboxProvider`（Probe/Provision/Stage/Exec/Inspect/Signal/Checkpoint/Restore/Terminate/Reconcile）分层；`hardened` 以 conformance 证明 mount/network/resource/credential 强制为准入条件 |
+| R-A4 | P1 | 权威状态与调度边界未定义，存在“双权威”与自研 workflow engine 风险 | 冻结耐久执行引擎 Port：Marshal versioned event/state 为业务权威，外部引擎（生产参考 Temporal）只承担传输保证，Activity 以 `commandId` + `expectedSequence` CAS 追加 Marshal 事件。该 Port 由 ADR 0017 §9 统一更名 `DurableExecutionEngine` 并冻结权威边界（Attempt 创建/retry 预算/rework/终态裁决只在 Core，delivery/activity retry 不创建 Attempt、不消费业务预算） |
+| R-A5 | P1 | 提交入口（POST TaskSubmission）未界定网络暴露、调用者认证/授权与 repository/project 作用域；幂等归并可能把不同冻结输入的错误请求合并进既有 Run | ADR 0016、Runtime 架构、安全模型与实施计划冻结提交入口边界：M8/M9 默认仅 loopback/受信任本地边界；远程入口生产可用前必须 TLS、调用者身份、按 repository/project 授权与审计（M11 退出门禁验收）；幂等身份为 `(scope, idempotencyKey, requestDigest)`，同 scope+key+digest 返回既有 submission/run，同 scope+key 不同 digest 冲突 fail closed，不创建或归并错误 Run |
+| R-A6 | P1 | 失联旧 Attempt 可能晚到上传 checkpoint/candidate/日志/证据引用，若接纳不校验 generation/fencingToken 会污染新 Attempt 的权威证据 | 所有 Attempt 回报与 Artifact/Checkpoint/Candidate/Evidence 接纳必须携带 attemptId/generation/fencingToken，并在权威写入边界以 expectedSequence/CAS 校验；陈旧 token 内容隔离留存为诊断材料，不进入当前 Evidence/Review/Publication；外部副作用继续经 SideEffectIntent/Receipt + reconcile 幂等；相应故障注入列入 M9 退出门禁 |
+| R-A7 | P1 | Cloudflare 段落同时写 fail closed 与回退自托管 Provider，可能被实现为同一 Attempt 内透明降级，甚至从 hardened 降到 workspace-write，与 Run 冻结的最低 SandboxRequirements 冲突 | 统一为：失败的 Allocation/Attempt 先终止并对账；调度器仅可为新 Attempt 选择满足同一冻结 SandboxRequirements 与 assurance 下限的兼容 Provider；无兼容 Provider 时 Run 保持 BLOCKED（fail closed），绝不静默降低 profile 或复用旧 handle；ADR 0016、Runtime 架构、M10 退出门禁与本审计风险措辞已同步 |
+| R-A8 | P1 | Project/Goal 被列为必须持久化的核心对象，但 M8–M12 无任何 Milestone 实现它，复杂任务编排被笼统推到 M12 之后，M7–M12 完成后只能运行彼此独立的 Task | 实施计划与 Roadmap 新增 M13 Goal orchestration 阶段（持久 Project/Goal、可审计计划与重规划、跨 Run 记忆/Artifact 引用、预算与终止条件、独立质量评估、人工干预与恢复，含 Goal、非目标、退出门禁与 dogfooding）；M7 只冻结对象语义、M13 实现 Goal 控制器，避免虚假完成声明 |
+
+新打开的实施风险（不构成 Blocking Finding，由各 Milestone 退出门禁关闭）：
+
+| ID | 风险 | 缓解与关闭条件 |
+| --- | --- | --- |
+| R-001 | 外部耐久引擎依赖与语义锁定 | Port 隔离 + 生命周期一致性测试；替换 Orchestrator 前一致性测试先行（M9） |
+| R-002 | Cloudflare Sandbox SDK 处于 1.0 preview/Beta 且托管平台不可自部署 | live opt-in + fail-closed：探测失败或漂移时终止当前 Allocation/Attempt 并对账，新 Attempt 仅可分配满足同一冻结 SandboxRequirements 与 assurance 下限的兼容 Provider；无兼容 Provider 时 Run 保持 BLOCKED，不静默降级、不复用旧 handle；同一 conformance/E2E 通过后才可替换（M10） |
+| R-003 | 恢复误判导致双写或丢证据 | DispatchLease generation/fencingToken + 故障注入测试集；kill -9 后 60 秒 Inspect/Reconcile 口径（M9） |
+| R-004 | Warm reuse 引入跨任务污染 | 默认每 Attempt 独立 ephemeral sandbox；复用需相同 tenant/repository/trust-domain 且可证明 sanitization（M8 起） |
+| R-005 | 事件账本膨胀拖慢恢复 | Continue-As-New 式换代与分段归档设计在 M9/M11 落地并测试 |
+| R-006 | 过度承诺（把早期 PoC 宣传成多租户服务） | 文档口径绑定安全就绪等级；多租户保持评估项，威胁模型评审通过后才讨论 |
+| R-007 | 多节点写入分离被绕过 | Worker/Verifier/Publisher 独立 workload identity 与写入域；越权 Fixture 必须失败（M11） |
+| R-008 | 提交入口越界暴露或缺乏授权（未认证/跨 scope 提交进入调度） | M8/M9 仅绑定 loopback/受信任本地边界；远程入口必须 TLS + 调用者身份 + 按 repository/project 授权 + 审计，M11 退出门禁验收；幂等身份冲突语义防止错误归并（M9） |
+| R-009 | Goal 编排自主失控、超预算运行或静默放弃 | 预算与终止条件强制并在触发时保存 Outcome；计划/重规划全部事件化可回放；独立质量评估不得自证；人工可随时干预（M13） |
+
+## 首次 Sandbox SPI dogfood reject 增补（2026-08-10）
+
+M8 的首次 Sandbox SPI 纵切 dogfood Run 以 reject 结束。阻塞证据（已完整内嵌于返工 TaskSpec，不再读取任何 `.marshal` Run/outcome/decision 文件）表明 ADR 0016 冻结的契约仍留有可歧义点，Local 与 Cloudflare 两个可替换实现无法按同一语义收敛。以下问题在该次 reject 中打开，由 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md) 冻结统一契约；该次 dogfood Run 的既有实现成果按**未接纳探索证据**对待，不计为 M8 实现进度。
+
+已打开的问题（随 ADR 0017 于 2026-08-10 经 Round 2 独立验证与 ReviewDecision accept 后接受而关闭）：
+
+| ID | 级别 | 问题 | 冻结位置（ADR 0017，已接受） |
+| --- | --- | --- | --- |
+| S-A1 | P1 | 单一 `executionProfile` 把权限与隔离保证级别压在同一维度，无法表达 read-only+hardened 等正交组合 | §1 `AccessMode × AssuranceLevel` 二维正交模型：兼容映射表、拒绝/降级规则、持久记录迁移 |
+| S-A2 | P1 | `hardened` 可来自 Provider 自报 Enforcement，无独立签发、可密封、可撤销的证据形态 | §2 `ConformanceEvidence`：身份绑定、suite/probe artifact digest、逐维结果、evidenceDigest、有效期/撤销语义；证据拓扑见 S-B1；Local 永不 hardened，Cloudflare 无豁免 |
+| S-A3 | P1 | Stage 允许只回显声明 digest，Provider 不对真实 bytes 重算 sha256，内容寻址名存实亡 | §3 inline（≤1 MiB/对象、≤16 MiB/请求）与 ArtifactStore locator 的 provider-neutral 选择；消费前后重算 sha256；篡改 fixture 必须让回显型实现失败 |
+| S-A4 | P1 | 操作身份未完整绑定 task/run/attempt/role/allocation/generation/token，重放可不经过当前 lease fencing；Restore 丢响应对账与普通 replay 未分离 | §4 workloadRole/principal 拆分 + 完整身份元组 + canonical replay key；普通 replay 先过 lease fencing；Restore lost-response reconciliation 独立成路径 |
+| S-A5 | P1 | Restore 的 in-place 恢复未定义双写语义，旧进程树可能在恢复后继续写 | §5 默认 replacement allocation：旧进程树终止并失效后以控制面单写者 CAS 激活新 generation；故障注入验收 |
+| S-A6 | P1 | M8 常驻单节点纵切与 M9 形态未切分：提交入口、调度租约、Public API 与 Provider 版本化注册的形状未冻结；Provider 观测完成可能被误当成 ReviewDecision/safe-to-publish 宣布 | §6 版本化 Provider Protocol 与认证注册（CapabilitySnapshot 冻结字段、未知版本 fail closed、观测边界）；§7 DispatchLease 唯一状态机；§9 DurableExecutionEngine 权威边界；§10 C/S + embedded 形态与 wire contract；§12 M8 改为 embedded/local 纵切、M9 冻结 marshal-server 与 Public API |
+| S-A7 | P2 | 规范化未统一声明复用仓库既有 JCS，遇重复 JSON member 的行为未定义 | §11 统一 RFC 8785 JCS；重复 JSON member 一律拒绝 |
+
+Round 2 独立评审进一步打开并关闭的歧义（全部 P1；随 ADR 0017 接受于 2026-08-10 关闭）：
+
+| ID | 级别 | 问题 | 关闭位置（ADR 0017） |
+| --- | --- | --- | --- |
+| S-B1 | P1 | 首轮文本要求证据采集 workload 运行在独立于被测 Provider 的 Verifier sandbox——只能测到 Verifier sandbox，测不到被测 Provider 的 mount/network/resource/credential 强制能力，且错误套用了业务成果独立验证拓扑 | §2 证据拓扑冻结：probe 定义、challenge/nonce、probe artifact digest、调度、out-of-band 观察、裁决与 ConformanceEvidence 签发由 Control Plane 与独立 Conformance Verifier 控制；probe workload 作为敌对测试负载运行在被测 Provider 创建、身份精确绑定的 target allocation 内；Provider 的 completed/receipt 只是输入，不能自签通过；M8 fixture 与各文档同义表述已同步修正 |
+| S-B2 | P1 | 审计报告顶层 APPROVED 与增补节开放 P1 矛盾，可能让人或自动化提前把 M8+ 视为已获批准 | 本报告改为分层门禁：Local MVP M0–M6 保持 APPROVED/USABLE；Runtime/Sandbox 契约在 ADR 0017 接受前 BLOCKED；接受只关闭设计歧义，M8/conformance 状态不提前，Roadmap 保持 M7 IN_PROGRESS、M8–M13 PLANNED，dogfood 实现按未接纳探索证据对待（见报告头部与“实施门禁”节） |
+| S-B3 | P1 | DurableOrchestrator/DurableExecutionEngine/backend retry 三套措辞并存，外部引擎可能被当成第二个 Attempt/retry 权威 | §9 统一 Port 名 DurableExecutionEngine；Temporal/Local Engine 仅是 backend；Core lifecycle policy/controller 独占 Attempt 创建、retry eligibility/预算、rework 与终态裁决；backend 只做相同 commandId 的 at-least-once delivery、timer、signal、crash recovery；delivery/activity retry 不创建 Attempt、不消费业务预算；Runtime/总体架构与实施计划已同步 |
+| S-B4 | P1 | 只为 Pull 列出 capability matching、ack、heartbeat、deadline、generation 与 fencing，Push 可能退化为 fire-and-forget | §7 冻结 Push/Pull 共用的唯一 DispatchLease 状态机，只改变连接发起方；两者都绑定认证 registration、CapabilitySnapshot/ConformanceEvidence digest、task/run/attempt/allocation、generation/fencingToken，都具备 ack deadline、heartbeat、expiry、cancel、reconcile、generation bump 与陈旧结果隔离；Push 同样先 capability match，超时/响应丢失不产生第二个 active allocation；M9 增加两拓扑等价 conformance 与故障注入口径 |
+| S-B5 | P1 | role 枚举扩成 worker/verifier/publisher/control-plane，冲突 Publisher 独立信任域不变量，把调用主体与 workload 身份混成可扩权枚举 | §4 拆分 workloadRole 与认证 principal：workloadRole 封闭枚举仅 worker/verifier；control-plane/publisher/operator/API caller 是不同语义 Port 上受 AuthZ 约束的 principal；Publisher 永不成为 Sandbox workload；远程请求另绑定 principal/portKind/providerType/audience/scope，Provider 不得借通用 role 取得跨 Port 能力；身份元组、fencing、Secret/Artifact 与安全模型表述已同步 |
+| S-B6 | P1 | HTTP/JSON + OpenAPI 推迟到 M12、M9 首版 wire contract 与可恢复事件流未冻结；M9 禁止匿名 Pull 但注册身份来源与 AuthN/AuthZ 分工未定义 | §10/§12：M9 首版 Public API 采用 versioned HTTP/JSON + OpenAPI（Task create/get/cancel、Run approval/status、events/evidence），事件基线 SSE 支持 eventId/cursor 断线续传 + 轮询 fallback，WebSocket/gRPC 推迟；Provider remote transport 同样 versioned HTTP/JSON（Push 由 server 调 Provider endpoint，Pull runner 以 outbound-only long polling/streaming 领取同一 DispatchLease）；M9 提供最小 scope-bound 可撤销注册身份（入口可仅 loopback/trusted boundary），M11 扩展生产远程入口与 operator/API caller/多节点多用户 AuthN/AuthZ；M12 交付多语言 SDK、部署文档与多拓扑 conformance（不是首次定义 wire contract）；embedded CLI 经 in-process adapter 调同一 Public application Port，不直写 store |
+
+后续实现的可执行小步（M8 内按序推进，每步先有 fixture 与失败判据）：
+
+| 步骤 | 交付 | 完成判据 |
+| --- | --- | --- |
+| 1 | 二维要求 Schema 与映射校验器 | 旧 `executionProfile` 三取值确定性映射；AccessMode 升级与静默降级 fixture 全部失败 |
+| 2 | ConformanceEvidence 签发链与校验 | 按 §2 证据拓扑执行：probe 定义/challenge/nonce、probe artifact digest、调度、out-of-band 观察、裁决与签发由 Control Plane 与独立 Conformance Verifier 控制；probe workload 作为敌对测试负载运行在被测 Provider 创建、身份精确绑定的 target allocation 内；被测 Provider 的 completed/receipt 只作输入，自签通过的 fixture 必须失败；逐维结果、有效期与撤销 fixture 全部按语义判定 |
+| 3 | 内容寻址 Stage（inline/locator、大小上限、消费前后重算） | 篡改 bytes fixture 拒绝回显型实现；inline 超限被拒；digest 不一致上报 `StageInputMismatch` 并 fail closed |
+| 4 | workloadRole/principal 拆分与身份元组、replay key 校验器 | workloadRole 封闭枚举仅 worker/verifier；Publisher 作为 Sandbox workload、借通用 role 跨 Port 取得能力的 fixture 全部失败；缺元组操作被拒；陈旧 lease replay 隔离为诊断材料；当前 lease replay 幂等归并 |
+| 5 | replacement allocation Restore 与故障注入 | 响应丢失、并发 Restore、恢复后陈旧 handle 写入全部被拒；同一 Run/Attempt 单活跃 Allocation 断言通过 |
+| 6 | Fake/Local Provider conformance 套件与 embedded/local 纵切 E2E | 两 Provider 通过同一套件（probe 按 §2 拓扑运行在各自 target allocation 内）；纵切全链路通过；Local 永不声明 hardened |
+| 7 | Local MVP 全量回归 | 零回退 |
+
+新增实施风险（不构成 Blocking Finding）：
+
+| ID | 风险 | 缓解与关闭条件 |
+| --- | --- | --- |
+| R-010 | ADR 0017 尚在提案状态：提前启动 M8 实现或对外宣称 hardened 承诺会形成无法兑现的债务 | 已于 2026-08-10 随 ADR 0017 接受关闭；接受只关闭设计歧义，M8 实现须按修订后的实施计划重新启动，不做任何 hardened 对外承诺 |
+| R-011 | 把 ADR 0017 接受误读为 M8 实现或 conformance 已完成，提前升级实施状态 | 实施状态分层记录：M7 保持 `IN_PROGRESS`、M8–M13 保持 `PLANNED`；首次 Sandbox SPI dogfood 成果按未接纳探索证据对待；conformance 通过以 M8/M10 退出门禁为准（Roadmap 状态与实施门禁同步） |
+
+## Control Plane 与 Provider Port 边界冻结增补（2026-08-11）
+
+维护者于 2026-08-11 在本任务全部 Gate 通过、独立 ReviewDecision accept 且无 P0/P1（含 Round 4 独立评审八项 P1、Round 5 复核四项残留与 Round 6 复核两项残留全部关闭）后接受 [ADR 0018](adr/0018-control-plane-and-provider-ports.md)，冻结 Marshal C/S Control Plane、按信任域分隔的 Provider Port、耐久注册/能力快照与在途 lease 撤销。该 ADR 澄清/部分取代 ADR 0017 §4/§6/§7/§8/§10/§12，并显式取代 ADR 0016 §6 经 ADR 0017 承接的 universal 接纳口径；Round 4 独立评审暴露的八项 P1（远程 transport 基线、securityDomainId 键空间、attestation 全链绑定、原子 fencing sink、SSE 恢复与再授权、engine 单一 seam、Port protocol family、legacy snapshot 残留）随 ADR 0018 §10–§16 一并关闭；Round 5 复核暴露的四项残留（复合安全域、Port protocol family 边界、Push/Pull 不变量等价、计划升级 bounded drain）随 ADR 0018 §2/§6/§7/§10/§16 修订关闭；Round 6 复核暴露的两项残留（Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge）随 ADR 0018 §3/§10 修订关闭：authorityNamespaceId=(tenantNamespace, controlPlaneId, authorityScopeId) 拥有 Control Plane 权威对象、只允许 Core 写入，securityDomainId=(tenantNamespace, trustDomainKind, isolationDomainId) 只标识 Provider actor，跨信任域访问收敛为 Core 独占签发的 DispatchResultCapability/MaterialAccessGrant/PublicationAuthorization 三条 typed cross-domain edge 且默认拒绝（default deny），三条 edge 的 issuer 恒为 Core，issuer 不等于业务流的 sourceActor（DispatchResultCapability 的 sourceActor=Execution workload、targetAudience=Core result-ingress；MaterialAccessGrant 的 sourceActor=Data/Capability Provider、targetActor=Execution workload；PublicationAuthorization 的 issuer/sourceAuthority=Core、targetActor=Publication Provider）；已通过独立评审的远程 transport、attestation、原子 fencing sink、SSE、DurableExecutionEngine seam 与 legacy snapshot 修订完整保留，不回退；Runtime 架构、总体架构、安全模型、实施计划、Roadmap 与 ADR index 已同步。Round 8 复核进一步暴露并关闭一项残留（typed edge 跨域例外与适用范围）：三类 Core-authorized typed edge 明确为 Provider actor 跨 trust domain 访问默认拒绝规则的唯一 allowlist 例外，每次使用必须精确匹配 source/target securityDomainId 与该 edge 的全部对象、操作与时效绑定；Public API/SSE 使用各自的 AuthN/AuthZ、scope 约束与 re-AuthZ，Core 内部权威对象引用保留在 authority ledger，均不需要 Provider typed edge；会无条件拒绝 MaterialAccessGrant 等合法跨域访问、或把任何权威引用都强制经过 typed edge 的宽泛表述在 Round 8 当时并未全部清除（本轮更正该提前宣称）；Round 9 复核定位 ADR 0018 与 Runtime 架构、总体架构、安全模型、实施计划、Roadmap 状态的全部残留后，本轮已随 ADR 0018 §2/§3/§5/§7/§10 修订及 Runtime 架构、总体架构、安全模型、Roadmap 状态与本报告的同步清除。接受只冻结设计，不升级 M8–M13 实现/conformance 状态；M7 保持 `IN_PROGRESS`、M8–M13 保持 `PLANNED`。
+
+已关闭的设计问题（随 ADR 0018 接受关闭）：
+
+| ID | 级别 | 问题 | 冻结位置（ADR 0018） |
+| --- | --- | --- | --- |
+| C-A1 | P1 | 六类 Provider 未分信任域：低权限 Agent/Sandbox/Verification workload executor 与高权限 SCM/Publisher transport、凭据型 Artifact/Secret 共用一套 credential/AuthZ/审计/conformance profile，存在跨域提权面 | §2 三信任域（Execution / Publication / Data-Capability）+ §3 按 Port 分流的 required/forbidden 矩阵；域间不共享 credential、AuthZ、审计或 conformance profile；Publisher 永不成为 Sandbox workload |
+| C-A2 | P1 | ADR 0016 §6 经 ADR 0017 §4 承接的 universal 接纳句无法区分 public-api 与注册/控制面——二者本应反向拒绝 workload lease 字段，universal 句却要求统一附加 providerType/lease 身份 | §3 身份按 Port 冻结、不设 universal envelope；public-api 禁止 providerType 并拒绝 workloadRole/allocationId/generation/fencingToken/DispatchLease；provider-registration/control 拒绝 workload lease；只有 dispatch-bound Port 绑定完整 lease 身份；§9 对照表显式取代 ADR 0016 §6 universal 口径 |
+| C-A3 | P1 | Provider 注册无幂等身份与持久化约束：注册可 memory-only、CapabilitySnapshot 可变、legacy v1alpha1 快照映射未冻结，可能被静默补齐 scope/evidence | §5 ProviderRegistration 与不可变 ProviderCapabilitySnapshot；registrationId canonical 绑定 (principal, providerType, providerName, providerVersion, protocolVersion, scope) + idempotencyKey/requestDigest；同 key 不同 digest conflict；revoked/expired 不因普通 replay 复活；三类 expiry 独立；legacy mapper fail-closed 并记录 sourceCapabilitySnapshotDigest；禁止 memory-only registration |
+| C-A4 | P1 | registration/快照/证据失效后 DispatchLease 命运未冻结，可能被实现为原地续租或静默降级 | §6 lease 只消费持久快照（registrationId/providerCapabilitySnapshotDigest/conformanceEvidenceDigests），引用/digest 永不改写只供审计；每次 heartbeat、接纳、reconcile 按当前 ledger 重判资格；revoke/expire/incompatible/supersede 使 active lease 立即失去资格（cancel/expiry + generation bump/fencing，终止对账，晚到结果隔离）；继续执行只能新 Attempt + 新 lease 重新 match |
+| C-A5 | P1 | registry/queue/SSE 与事件账本的权威关系未冻结，cursor 压缩/过期/gap 后恢复不可判定；DurableExecutionEngine 的 Port 归属未明确 | §4 append-only event ledger 是唯一权威，snapshot/queue/SSE/registry/索引是可重建投影；SSE cursor 过期、gap 或压缩返回可判定 resync；DurableExecutionEngine 是 Core 的内部 Port |
+| C-A6 | P1 | M8 注册/快照/撤销实施顺序未冻结，可能先 enable DispatchLease match 后补校验 | §7 M8 硬门禁顺序：negative fixtures/event contract → Schema → legacy mapper → durable embedded registration + ledger recovery → validation → 最后 enable DispatchLease match；前置缺失 claim/match fail closed；fixture 覆盖跨 scope/protocol、same key/different digest、revoked replay、restart/rebuild、substitution、claim 后失效的 Push/Pull |
+| C-A7 | P1 | securityDomainId 同时承载 Control Plane 权威对象归属与 Provider actor 隔离，权威侧与 actor 侧键空间混同，事件账本、lifecycle 状态、ReviewDecision 与发布决定缺乏独立于 Provider 信任域的权威侧命名空间身份 | §10 冻结双键空间：authorityNamespaceId=(tenantNamespace, controlPlaneId, authorityScopeId) 拥有 Control Plane 权威对象（事件账本、lifecycle 状态、ReviewDecision、发布决定、idempotency/replay 权威记录、SSE cursor 权威序列），只允许 Core 写入；securityDomainId=(tenantNamespace, trustDomainKind, isolationDomainId) 只标识 Provider actor；authorityNamespaceId 不是 Provider 的 trustDomainKind 维度，Provider 不得写入或宣称权威对象；两键空间按职责分别进入持久主键/引用键空间；Provider actor 跨信任域访问默认拒绝，唯一 allowlist 例外是三条 Core 签发的 typed edge，未经对应 edge 授权或任一绑定不符一律 fail closed；Public API/SSE 与 Core 内部权威对象引用分别经各自 AuthN/AuthZ 与 authority ledger，不需要 Provider typed edge |
+| C-A8 | P1 | 跨信任域请求（结果接纳、物料访问、发布授权）缺乏 typed edge，可能被实现为直接跨域传递 handle/credential 或隐式信任，默认拒绝不可机械证明 | §3 冻结三条 Core 独占签发的 typed cross-domain edge：DispatchResultCapability、MaterialAccessGrant、PublicationAuthorization，其余默认拒绝（default deny）；Core 是唯一签发者与唯一重新授权者；每条 edge 是 authority-scope-bound 权威记录，绑定 authority scope、issuer/source/target（issuer 为 Core，sourceActor/targetActor 按 edge 类型绑定）、attempt/allocation、expiry 与 digest；edge 不承载 raw credential/raw secret handle，不替代 ConformanceEvidence；Provider actor 跨 trustDomainKind 访问未经对应 edge 授权或任一绑定不符一律 fail closed；Provider 之间不得互相签发、转授或延展 edge |
+
+新增实施风险（不构成 Blocking Finding，由各 Milestone 退出门禁关闭）：
+
+| ID | 风险 | 缓解与关闭条件 |
+| --- | --- | --- |
+| R-012 | legacy v1alpha1 CapabilitySnapshot 被直接当作 Runtime 注册产物复用，绕过 mapper fail-closed 或静默补齐 scope/evidence | 显式版本化 mapper + sourceCapabilitySnapshotDigest 记录；缺失信息 fail closed（M8 退出门禁 fixture） |
+| R-013 | registration/snapshot/evidence 失效后在途 lease 未被撤销，陈旧结果混入当前 Evidence/Review/Publication | 失效事件即时撤销 + generation bump/fencing + 晚到结果隔离；恢复 reconcile 按当前 ledger 重判资格（M8/M9 退出门禁故障注入） |
+| R-014 | registry/SSE 被实现为第二个业务权威，cursor gap 静默续推导致客户端状态漂移 | registry/queue/SSE 仅作为账本投影；cursor 过期/gap/压缩返回可判定 resync（M9 退出门禁） |
+| R-015 | 远程注册/Push/Pull 在 M9/M10 启用时先于传输身份上线，形成 credential/lease 可被窃听或重放的窗口 | ADR 0018 §12 transport 安全基线自首次 enable 生效：TLS 强制、mTLS/不可转移 workload identity、双向身份与 audience/scope 校验、rotation/revocation 与 replay protection；M9/M10 退出门禁明文 transport fixture 必须失败（M11 不补基线） |
+| R-016 | securityDomainId 未进入持久主键/键空间，跨域 credential/AuthZ/audit/conformance 隔离不可机械证明 | ADR 0018 §10 现在冻结 securityDomainId 并进入全部键空间，未经三条 typed edge 中对应 active edge 授权或绑定不精确匹配的跨域引用 fail closed（三条 typed edge 是默认拒绝规则的唯一 allowlist 例外）；M8 Schema 落地时按 default 域接入，不等 M11 迁移；跨域引用 fixture 列入 M8/M9 退出门禁 |
+| R-017 | backend workflow state 演化为第二调度权威，或双写窗口导致 command 与 ledger 分歧 | ADR 0018 §15 单一权威 seam（outbox/ledger-derived journal 二选一）+ commandId 从权威事实派生；backend 自决 lifecycle/retry/rework 的 fixture 必须失败（M9 退出门禁） |
+| R-018 | SSE 被用作写通道（承载 ACK、lease heartbeat 或 command），投影获得写语义 | ADR 0018 §14 冻结 SSE 只读投影；承载 ACK/lease heartbeat/command 的 fixture 必须失败（M9 退出门禁） |
+
+Round 4 独立评审进一步打开并关闭的 P1（全部 P1；随 ADR 0018 增补 §10–§16 于 2026-08-11 接受关闭）：
+
+| ID | 级别 | 问题 | 关闭口径（ADR 0018） |
+| --- | --- | --- | --- |
+| ADR0018-REMOTE-TRANSPORT-BASELINE | P1 | ADR 0018 与 Runtime/M9 已启用远程注册和 Push/Pull，但 TLS 与调用者身份只作为 M11 远程入口门禁，远程 Provider credential/lease 可能先于传输身份上线 | §12 冻结：任何非 loopback/in-process transport 从首次 enable 起强制 TLS；workload-to-workload 优先 mTLS 或等价不可转移 workload identity；双向校验 server/provider 身份与 audience/scope，短期 credential rotation/revocation 与 replay protection；M11 只扩展 HA/多用户策略，不能补首次安全基线；同步 runtime/architecture/security/implementation-plan/roadmap 口径 |
+| ADR0018-SECURITY-DOMAIN-KEYSPACE | P1 | registration/submission/lease/artifact/secret/cache/audit 缺乏机械安全域边界，无法证明域间 credential/AuthZ/audit/conformance 隔离 | §10 现在冻结 securityDomainId（单租户可固定 default，tenant 只作组成或前缀），经 Round 7 修订收敛为：actor 侧 securityDomainId 进入 registration/snapshot/evidence 携带项、lease/allocation actor 绑定、artifact/secret handle、cache、replay key 与 audit event 的引用字段，submission/run lifecycle、SSE cursor/sequence、idempotency 权威键等归权威侧 authorityNamespaceId；未经三条 typed edge 中对应 active edge 授权或绑定不精确匹配的跨域引用 fail closed；不等 M11 迁移持久主键 |
+| ADR0018-PROVIDER-ATTESTATION-BINDING | P1 | attestation 仅绑定 principal/name/version/scope，相同软件版本可替换实例、配置或签发密钥后继续复用 hardened evidence | §11 冻结：ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence/lease claim 全链绑定 securityDomainId、稳定 providerInstanceId、effective configDigest、trust root（含 key id/rotation）；任一变化产生新 immutable snapshot/evidence 并触发 eligibility 重判；Worker/Verifier 不同 principal 与不同 allocation；高保证策略可要求 provider/host/failure-domain diversity；M8 补 substitution/config/key-rotation fixture（§7） |
+| ADR0018-ATOMIC-FENCING-SINK | P1 | expectedSequence/CAS 只是抽象请求规则，ledger transition、当前 lease generation 与 Evidence/Artifact 引用未保证同一原子校验；旧 generation 可能先覆盖对象 key 再被 ledger 拒绝 | §13 冻结：权威 ledger sink 使用 atomic compare-and-append/transaction；Artifact/Evidence/Checkpoint/Candidate bytes 的接纳关系归 authority ledger，使用 authorityNamespaceId+run+attempt+allocation+generation scoped immutable key（actor securityDomainId 只作为 provenance 记录）、digest-verified put-if-absent；陈旧/冲突 bytes 只进 quarantine namespace；M8/M9 补 lost-response、concurrent-write、old-generation overwrite fixture |
+| ADR0018-SSE-RECOVERY-AUTHZ | P1 | SSE 只有 eventId/cursor/resync，未冻结 scope/sequence、交付与去重、压缩恢复、背压或长连接重新授权 | §14 冻结：cursor 身份 authorityNamespaceId+scope+ledgerSequence（权威账本的权威侧身份；订阅方另绑定自身 securityDomainId 授权）、scope 内单调 sequence、at-least-once + eventId/sequence 去重、expiry/gap/compaction 的 deterministic resync 起点与 snapshot digest、heartbeat 与有界 backpressure、周期性与敏感变更即时 re-Authorization；SSE 是只读投影，不承载 ACK、lease heartbeat 或 command；参数值留 M9 Schema |
+| ADR0018-DURABLE-ENGINE-SEAM | P1 | backend 虽声明非权威，但未关闭 ledger 已提交而 command 未投递（或反向）的双写窗口，Temporal/Local Engine 仍可能形成第二调度权威 | §15 冻结单一权威 seam：同事务 outbox 或 ledger-derived Core command journal 二选一；commandId 从权威事实稳定派生；backend 只消费/回报，workflow/activity state 不得成为业务权威；M9 backend profile 与升级 fixture 覆盖 workflow versioning/build ID、Continue-As-New、payload 外置/上限、activity heartbeat/cancel/retry |
+| ADR0018-PORT-PROTOCOL-FAMILY | P1 | 现行入口仍可被理解为六类 Provider 共用 operation schema、audience 和 conformance，Publication/Secret 可能借通用 Provider 能力进入 Execution 语境 | §16 冻结 versioned protocol family：每个 Port 独立 audience、AuthZ scope、request/response schema、error/idempotency/revocation 与 conformance profile；只共享 transport、JCS 与最小 base auth primitives；禁止跨 Port token/schema/operation；embedded/Push/Pull 仅是同一 Port 内 adapter；实施计划与 Roadmap 已同步 |
+| ADR0018-LEGACY-CAPABILITY-RESIDUE | P1 | Push capability match 与两拓扑绑定仍写 legacy CapabilitySnapshot/ConformanceEvidence digest，随后才要求 ProviderCapabilitySnapshot，与持久快照口径冲突 | 已直接改为比对/绑定持久 ProviderCapabilitySnapshot（providerCapabilitySnapshotDigest）+ conformanceEvidenceDigests 封闭集合（Runtime 架构 DispatchLease/Push 两拓扑、实施计划 M9 两拓扑绑定）；legacy CapabilitySnapshot 仅保留在 fail-closed mapper 来源语境（AgentAdapter probe 快照） |
+
+Round 5 复核进一步打开并关闭的四项残留（全部 P1；随 ADR 0018 §2/§6/§7/§10/§16 修订于 2026-08-11 接受关闭）：
+
+| ID | 级别 | 问题 | 关闭口径（ADR 0018） |
+| --- | --- | --- | --- |
+| ADR0018-COMPOSITE-SECURITY-DOMAIN | P1 | securityDomainId 仍是全系统单一标识（单租户固定 default），与其同时宣称的 Execution/Publication/Data-Capability 三信任域隔离冲突，域间隔离不可机械证明 | §10 改为复合 security namespace `(tenantNamespace, trustDomainKind, isolationDomainId)`：tenantNamespace 单租户可固定 default（tenant 只能作为该组成）；trustDomainKind 封闭枚举 execution/publication/data-capability；isolationDomainId 标识同 kind 内隔离边界；submission/run、registration/snapshot/evidence、lease/allocation、SSE cursor/sequence、artifact/secret handle、cache、idempotency/replay key 与 audit event 全部携带复合边界；未经三条 typed edge 中对应 active edge 授权或绑定不精确匹配的跨域引用与跨 trustDomainKind 引用 fail closed（三条 typed edge 是默认拒绝规则的唯一 allowlist 例外）；Runtime/总体架构/安全模型/实施计划/Roadmap 的单一 default 表述已同步清除 |
+| ADR0018-PORT-PROTOCOL-FAMILY-BOUNDARY | P1 | 六类 Provider 仍被写成同一语义 Port、共享同一 conformance 套件，与按 Port 的 versioned protocol family 冲突 | §2/§16 澄清：六类 Provider 彼此是不同 Port、不同 protocol family，不共享 family/audience/schema/profile/suite/token/operation；对每个具体 Port/protocol family，embedded/in-process、Push HTTP、Pull outbound runner 才是该族的 transport adapter，运行该族统一的 conformance suite；runtime/plan/roadmap 中相反残留已清除 |
+| ADR0018-PUSH-PULL-INVARIANT-EQUIVALENCE | P1 | Push/Pull 被写成“只改变连接发起方、其余语义完全等价”，不允许拓扑特定 transition/timing，conformance 比较口径不可执行 | §16 只冻结 outcome/invariant equivalence：唯一 claim、eligibility、fencing、deadline（ack/heartbeat/expiry）、无双活与晚到隔离；允许 topology-specific 的 offer/poll/claim/ack transition 与 timing；两拓扑 conformance 比较 normalized business trace 与业务不变量，不比较逐步 wire trace；runtime/architecture/plan/roadmap 的完全等价措辞已清除 |
+| ADR0018-UPGRADE-DRAIN-SPLIT | P1 | 撤销与不兼容升级未分级：security-critical 场景可能保留 drain 窗口，普通升级可能被立即 kill、复活旧注册或改写旧 lease digest | §6/§7 分级冻结：security-critical revoke（credential compromise、protocol violation）立即 cancel + generation bump + kill，不留 drain 窗口；planned/ordinary incompatible upgrade 使用新 registration/新 snapshot，旧实例 stop-new + bounded drain，drain deadline 到期再 fence；事件机器可读原因码与审计记录分开；普通升级不得复活旧注册或改写旧 lease digest；M8/M9 补对应故障注入/退出门禁 |
+
+Round 6 复核进一步打开并关闭的两项残留（全部 P1；随 ADR 0018 §3/§10 修订于 2026-08-11 接受关闭）：
+
+| ID | 级别 | 问题 | 关闭口径（ADR 0018） |
+| --- | --- | --- | --- |
+| ADR0018-AUTHORITY-NAMESPACE-SEPARATION | P1 | securityDomainId 同时承载 Control Plane 权威对象归属与 Provider actor 隔离，权威侧与 actor 侧键空间混同，事件账本、lifecycle 状态、ReviewDecision 与发布决定缺乏独立于 Provider 信任域的权威侧命名空间身份 | §10 冻结双键空间：authorityNamespaceId=(tenantNamespace, controlPlaneId, authorityScopeId) 拥有 Control Plane 权威对象（事件账本、lifecycle 状态、ReviewDecision、发布决定、idempotency/replay 权威记录、SSE cursor 权威序列），只允许 Core 写入；securityDomainId=(tenantNamespace, trustDomainKind, isolationDomainId) 只标识 Provider actor；authorityNamespaceId 不是 Provider 的 trustDomainKind 维度，不属于 Provider actor 侧任何信任域，Provider 不得写入或宣称权威对象；SSE cursor 身份改为 authorityNamespaceId+scope+ledgerSequence（订阅方另绑定自身 securityDomainId 授权）；DispatchLease 双绑定两键空间；M8 Schema 落地时 Local MVP 记录按复合边界视图接入，不改写历史数据；Runtime/总体架构/安全模型/实施计划/Roadmap 已同步 |
+| ADR0018-TYPED-CROSS-DOMAIN-EDGES | P1 | 跨信任域请求（结果接纳、物料访问、发布授权）缺乏 typed edge，可能被实现为直接跨域传递 handle/credential 或隐式信任，默认拒绝不可机械证明 | §3 冻结三条 Core 独占签发的 typed cross-domain edge——DispatchResultCapability（Execution 信任域结果/heartbeat/receipt 接纳）、MaterialAccessGrant（Data/Capability 信任域 scoped 访问短期能力）、PublicationAuthorization（Publication 信任域绑定 SideEffectIntent/ReviewDecision/evidence digest 的发布授权）——其余默认拒绝（default deny）；Core 是唯一签发者与唯一重新授权者；edge 是 Core 在 authorityNamespaceId 内签发的 authority-scope-bound 权威记录，绑定 authority scope、issuer/source/target（issuer 为 Core，sourceActor/targetActor 按 edge 类型绑定）、attempt/allocation、expiry 与 digest；edge 不承载 raw credential/raw secret handle，不替代 ConformanceEvidence；Provider actor 跨 trustDomainKind 访问未经对应 edge 授权或任一绑定不符一律 fail closed；M8 补伪造签发者/过期/撤销/raw handle/跨域 negative fixture |
+
+ADR 0018 的接受不改变 Local MVP 的 `APPROVED_FOR_IMPLEMENTATION` / `USABLE` 结论，也不放宽任何既有不变量：Worker 不自证、单写入者、Worker/Verifier/Publisher 分权、ReviewDecision 证据绑定、fail-closed、Draft-only 与 merge never 均保持有效。
+
+Round 7 复核进一步打开并关闭的三项残留（全部 P1；随 ADR 0018 §3/§4/§5/§7/§10/§13 修订于 2026-08-11 关闭；接受只冻结设计，不升级 M8–M13 实现/conformance 状态）：
+
+| ID | 级别 | 问题 | 关闭口径（ADR 0018） |
+| --- | --- | --- | --- |
+| ADR0018-AUTHORITY-OBJECT-OWNERSHIP | P1 | 双键空间残留：仍存留“每个 Port 的请求一律携带 actor 安全域身份”的 universal 表述，submission/run 被归入 actor 侧记录，权威对象清单未收敛为 authorityNamespaceId 独占拥有，controlPlaneId 被写成具体进程实例，ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence 与 Artifact/Evidence/Checkpoint/Candidate bytes 接纳关系的权威归属未冻结 | §3/§4/§5/§10/§13 修订关闭：删除上述 universal 携带表述，Port 请求按矩阵规则绑定 actor securityDomainId；submission/Task/Run/Attempt/ledger/DispatchLease/Allocation/ReviewDecision/Evidence graph/Outcome/SideEffectIntent/Receipt reconcile/typed edge/idempotency/outbox/audit/SSE cursor 序列等权威对象一律由 authorityNamespaceId 拥有、只允许 Core 写入；ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence 也是 authority ledger 事实，仅携带 actor securityDomainId、provenance 与 eligibility，registrationId 幂等绑定中的 securityDomainId 为所携带的 actor 身份；Artifact/Checkpoint/Candidate/Evidence bytes 的接纳关系归 authority ledger；controlPlaneId 冻结为 HA/灾备中保持稳定的逻辑权威身份，不是进程实例；Runtime/总体架构/安全模型/实施计划/Roadmap 的残留表述已同步清除 |
+| ADR0018-TYPED-EDGE-LIFECYCLE | P1 | 三条 typed edge 只绑定 authority scope、source/target、attempt/allocation、expiry 与 digest：operation 无封闭枚举、revocation/replay 语义缺失、每次使用无 current-ledger recheck、派生 token/handle 可能被缓存或离线校验成第二权威 | §3/§7 修订关闭：三条 edge 明确为 Core-only，冻结 issuer/source/target/operation/expiry/digest/revocation/replay/current-ledger recheck 七项生命周期要素与各自专属绑定（lease/generation、物料对象 key/content digest 封闭集合、SideEffectIntent/ReviewDecision/evidence digest）；issuer 恒为 Core 且不等于业务流的 sourceActor，sourceActor/targetActor 按 edge 类型绑定，target 是 securityDomainId 标识的 Provider actor，缺失任一要素 fail closed；每次使用都按当前 authority ledger 复核；edge 派生的 token/handle 只是指向 edge 权威记录的单向引用，自身不承载授权语义，派生 token/handle 不得成为第二权威；§7 补 Core-only typed edge fixture（伪造签发者/过期/撤销/operation 不符、绕过 recheck 使用派生 token/handle、raw handle/credential、以 edge 替代 ConformanceEvidence 必须失败） |
+| ADR0018-PUBLICAPI-AUTHORITY-KEY | P1 | Public API 提交幂等身份的描述仍以 actor securityDomainId 为键空间组成，submission 幂等与对象 key 键空间未按权威对象归属收敛 | §3/§10/§13/§14 修订关闭：Public API 幂等提交身份为 `(authorityNamespaceId, scope, idempotencyKey, requestDigest)`（submission 与幂等权威记录由 authorityNamespaceId 拥有）；SSE cursor 身份维持 authorityNamespaceId+scope+ledgerSequence（各文档残留的按 actor securityDomainId 键控的 cursor 身份表述已修正）；Artifact/Evidence/Checkpoint/Candidate 对象 key 为 authorityNamespaceId+run+attempt+allocation+generation scoped，actor securityDomainId 只作为 provenance 记录；Runtime/总体架构/安全模型/实施计划/Roadmap 幂等表述已同步修正 |
+
+Round 8 复核进一步打开并关闭的一项残留（P1；随 ADR 0018 §3/§10 修订于 2026-08-11 关闭；接受只冻结设计，不升级 M8–M13 实现/conformance 状态）：
+
+| ID | 级别 | 问题 | 关闭口径（ADR 0018） |
+| --- | --- | --- | --- |
+| ADR0018-TYPED-EDGE-EXCEPTION-SCOPE | P1 | typed edge 适用范围残留两类宽泛表述：一类把跨 trustDomainKind 的访问写成无条件拒绝，可被解读为拒绝 MaterialAccessGrant 等合法跨域访问；另一类把权威对象的引用写成必须统一经过 typed edge，可被解读为 Public API/SSE 客户端访问与 Core 内部权威引用也必须持有 Provider typed edge | §3/§10 修订关闭：三类 Core-authorized typed edge 明确为 Provider actor 跨 trust domain 访问默认拒绝（default deny）规则的唯一 allowlist 例外，不是对跨域 raw handle/raw credential 或任意引用的豁免；每次使用必须精确匹配 source/target securityDomainId 与该 edge 绑定的全部对象、operation、Attempt/Allocation、generation、expiry/deadline、digest 和当前 authority ledger 状态，任一绑定不符 fail closed；Public API/SSE 是 Client 到 Control Plane 的入口，使用各自的 AuthN/AuthZ、scope 约束与 re-AuthZ，不需要 Provider typed edge；Core 内部权威对象引用（ledger 事件间引用、cursor、证据关系、outbox/ledger 引用）保留在 authority ledger 内，不需要 Provider typed edge；§7 补对应 negative/positive fixture；当时宣称“Runtime 架构、总体架构、安全模型、Roadmap 状态与本报告的残留宽泛表述已同步清除”与实际不符——ADR 0018 与 Runtime 架构、总体架构、安全模型、实施计划、Roadmap 状态仍残留无条件 fail closed 表述——该残留由 Round 9 复核（ADR0018-UNQUALIFIED-CROSS-DOMAIN-RESIDUE）定位并随本轮修订实际清除 |
+
+Round 9 复核进一步打开并关闭的两项残留（全部 P1；随 ADR 0018 §2/§3/§5/§7/§10 修订于 2026-08-11 关闭；接受只冻结设计，不升级 M8–M13 实现/conformance 状态；本轮同时更正 Round 8 记录中在清除实际完成前提前宣称宽泛表述“已同步清除”的表述）：
+
+| ID | 级别 | 问题 | 关闭口径（ADR 0018 及各文档） |
+| --- | --- | --- | --- |
+| ADR0018-UNQUALIFIED-CROSS-DOMAIN-RESIDUE | P1 | ADR 0018 与 Runtime 架构、总体架构、安全模型、实施计划、Roadmap 状态仍把跨域能力、securityDomainId 或 trustDomainKind 引用写成无条件 fail closed，与 MaterialAccessGrant 等三类合法 allowlist edge 冲突；本报告 Round 8 记录提前宣称该类宽泛表述已全部清除 | 逐处改为：仅未经三条 Core-only typed edge 中对应 active edge 授权，或 source/target securityDomainId、edge type、对象、operation、Attempt/Allocation、generation、expiry/deadline、digest、当前 authority ledger 状态任一不精确匹配的 Provider actor 跨域访问 fail closed；三条 typed edge 是默认拒绝规则的唯一 allowlist 例外，Public API/SSE 使用各自 AuthN/AuthZ 与 re-AuthZ、Core 内部权威引用保留在 authority ledger，均不需要 Provider typed edge；M8/M9 fixture 明确区分三类合法 positive 与无 edge、错 edge、错绑定 negative；本报告的提前清除宣称已更正 |
+| ADR0018-NONEDGE-PORT-AND-SAME-DOMAIN-AUTHZ | P1 | provider-registration/control 的非 edge 授权路径未冻结；securityDomainId 相同只是 provenance/partition 条件的事实未冻结，可能被实现成同域 bearer grant | ADR 0018 §3/§10 冻结：provider-registration/control 不持有三类业务 typed edge，必须通过 transport identity、该 Port 的 AuthN/AuthZ、scope/protocol validation 与 registration protocol，由 Core 决定并把获准事实写入 authority ledger；securityDomainId 相同不构成授权，同域请求仍须逐项匹配具体 Port 的 principal/registrationId/providerInstanceId/scope/attempt/allocation/generation/operation 门禁；§7 与实施计划/Roadmap 补对应 positive/negative fixture，Runtime 架构、总体架构、安全模型同步 |
+
 ## ADR 建议
 
 以下 ADR 共同构成当前 Local MVP 的架构与安全基线，建议一起接受：
@@ -146,11 +309,22 @@ Cross-record Freshness、ID Uniqueness、Budget Relationship、Path Canonicaliza
 
 删除 ADR 0002–0004 中任何一个都会使本批准失效，并要求重新进行安全与生命周期审计。
 
-## 实施门禁
+[ADR 0016：耐久 Runtime 与可插拔 Sandbox Provider](adr/0016-durable-runtime-and-sandbox-provider.md) 已于 2026-08-10 被维护者接受（其决策来源为当日维护者对长期目标的明确修正与批准），并将 ADR 0015 置于 Superseded before acceptance；ADR 0016 冻结的不变量集合与上表 Local MVP 不变量一致，放宽任何一条同样要求重新审计。
+
+[ADR 0017：Provider-neutral Sandbox 安全契约](adr/0017-provider-neutral-sandbox-contract.md) 已于 2026-08-10 在全部 P1 通过 Round 2 独立验证与 ReviewDecision accept 后被维护者接受；它澄清/部分取代 ADR 0016 的 §4/§5/§6/§7/§9，关闭首次 Sandbox SPI dogfood reject 暴露的合同级缺口（S-A1–S-A7）与 Round 2 六项歧义（S-B1–S-B6）。接受只关闭设计歧义，不构成对 M8 实现或 conformance 完成的声明；相应实现仍须逐项通过 Milestone 退出门禁。
+
+[ADR 0018：Marshal C/S Control Plane 与按信任域分隔的 Provider Port](adr/0018-control-plane-and-provider-ports.md) 已于 2026-08-11 在本任务全部 Gate 通过、独立 ReviewDecision accept 且无 P0/P1（含 Round 4 独立评审八项 P1、Round 5 复核四项残留与 Round 6 复核两项残留全部关闭）后被维护者接受；它澄清/部分取代 ADR 0017 的 §4/§6/§7/§8/§10/§12，并显式取代 ADR 0016 §6 经 ADR 0017 承接的 universal 接纳口径，关闭本轮设计评审暴露的 C-A1–C-A8、Round 4 独立评审的八项 P1（见“Control Plane 与 Provider Port 边界冻结增补”节）、Round 5 复核的四项残留（复合安全域、Port protocol family 边界、Push/Pull 不变量等价、计划升级 bounded drain）与 Round 6 复核的两项残留（Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge）与 Round 7 复核的三项残留（双键空间残留清除、Core-only typed edge 生命周期细化、Public API 幂等/SSE/对象 key 修正为 authorityNamespaceId）与 Round 8 复核的一项残留（typed edge 跨域例外与适用范围，见“Control Plane 与 Provider Port 边界冻结增补”节）与 Round 9 复核的两项残留（跨域 fail closed 表述精确化、非 edge Port 与同域不自动授权，见“Control Plane 与 Provider Port 边界冻结增补”节）。接受只冻结设计，不升级 M8–M13 实现或 conformance 状态；M7 保持 `IN_PROGRESS`、M8–M13 保持 `PLANNED`，实施须按修订后的实施计划与 M8 顺序硬门禁逐项通过退出门禁；各远程能力首次 enable 必须满足 ADR 0018 §12 transport 安全基线，M11 不补首次基线。
+
+## 实施门禁（分层）
 
 文档审计和维护者接受均已完成。实施必须：
 
 1. 从 Milestone 0 开始，不提前执行 Worker 或 Publication Side Effect；
 2. 每个 Milestone 满足 Exit Criteria 后才能进入下一阶段。
 
-因此最终结论为 **`APPROVED_FOR_IMPLEMENTATION`**，实施门禁已开启。
+分层结论：
+
+- **Local MVP（Milestone 0–6）**：**`APPROVED_FOR_IMPLEMENTATION`** / `USABLE`，该范围实施门禁已开启且保持不变；
+- **Runtime/Sandbox 契约（M7–M13）**：ADR 0017 接受前为 `BLOCKED`；2026-08-10 接受后设计歧义关闭，实现可按修订后的[实施计划](implementation-plan.md)推进，但任何 Milestone 的完成与 conformance 通过仍须以对应退出门禁与独立证据为准，不得因 ADR 接受而提前声明；2026-08-11 ADR 0018 接受后，Control Plane 与 Provider Port 边界口径连同权威/actor 双键空间（authorityNamespaceId=(tenantNamespace, controlPlaneId, authorityScopeId) 拥有 Control Plane 权威对象；securityDomainId=(tenantNamespace, trustDomainKind, isolationDomainId) 只标识 Provider actor）、三条 Core 独占签发的 typed cross-domain edge（DispatchResultCapability/MaterialAccessGrant/PublicationAuthorization，默认拒绝）、attestation 全链绑定、原子 fencing 写入汇、SSE 恢复与再授权、engine 单一权威 seam、按 Port protocol family、Push/Pull outcome/invariant equivalence 与失效处置分级一并冻结；Round 7 复核三项残留随 ADR 0018 §3/§4/§5/§7/§10/§13 修订关闭——权威对象清单收敛为 authorityNamespaceId 独占拥有（ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence 为 authority ledger 事实仅携带 actor securityDomainId/provenance/eligibility，Artifact/Checkpoint/Candidate/Evidence bytes 接纳关系归 authority ledger，controlPlaneId 为 HA/灾备中保持稳定的逻辑权威身份而非进程实例）、三条 Core-only typed edge 冻结 issuer/source/target（issuer 恒为 Core 且不等于业务流 sourceActor；sourceActor/targetActor/targetAudience 按 edge 类型绑定）/operation/expiry/digest/revocation/replay/current-ledger recheck 与专属绑定（派生 token/handle 不得成为第二权威）、Public API 幂等/SSE cursor/对象 key 使用 authorityNamespaceId；Round 8 复核一项残留随 ADR 0018 §3/§10 修订关闭——三类 Core-authorized typed edge 是 Provider actor 跨 trust domain 访问默认拒绝规则的唯一 allowlist 例外（每次使用精确匹配 source/target securityDomainId 与全部对象、操作、时效绑定），Public API/SSE 使用各自 AuthN/AuthZ 与 re-AuthZ、Core 内部权威引用保留在 authority ledger，均无需 Provider typed edge；Round 9 复核两项残留随 ADR 0018 §2/§3/§5/§7/§10 修订关闭——删除会无条件拒绝 MaterialAccessGrant 等合法 typed edge、或把任何权威引用都强制经过 typed edge 的宽泛表述（跨域 fail closed 一律限定为未经对应 active typed edge 授权或绑定不精确匹配），provider-registration/control 不持有三类业务 typed edge（经 transport identity、该 Port AuthN/AuthZ、scope/protocol validation 与 registration protocol，由 Core 写 authority ledger），securityDomainId 相同只是 provenance/partition 条件、不构成授权，M8/M9 补三类 edge positive 与无 edge/错 edge/错绑定 negative fixture；实施仍按 M8 顺序硬门禁（negative fixtures → Schema → mapper → ledger recovery → validation → 最后 enable DispatchLease match）推进；任何非 loopback/in-process 远程能力首次 enable 必须满足 ADR 0018 §12 transport 安全基线，M11 不补首次基线。
+
+因此本报告不存在未关闭 Blocking Finding；`APPROVED_FOR_IMPLEMENTATION` 结论适用于 Local MVP 范围，Runtime/Sandbox 部分按上述分层状态执行。

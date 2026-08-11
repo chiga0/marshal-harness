@@ -6,6 +6,8 @@ Marshal 让 Coding Agent 的工作像一套工程交付流程，而不是无结�
 
 当更换 Worker Provider 不会改变任务含义、验收标准和发布所需证据时，Marshal 才算实现目标。
 
+长期目标已由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（2026-08-10 接受）正式重置：从“本地单次 CLI 编排”升级为**长寿命 Runtime/Control Plane 持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。执行沙箱可插拔，Cloudflare Sandbox 仅作为首个可替换远程 Provider。目标架构与路线见 [Runtime 架构](runtime-architecture.md) 与 [实施计划](implementation-plan.md) M7–M13（M7–M12 平台阶段与 M13 Goal 编排）。
+
 ## 问题定义
 
 本地 Coding Agent 在五个关键方面存在差异：
@@ -44,6 +46,10 @@ Worker 负责实现，主 Agent 负责审查，Marshal 负责验证和发布。�
 
 每个终态 Run 都有 Outcome Bundle，包含冻结的 TaskSpec、标准化事件、真实 diff、VerificationReport、ReviewDecision 和 ArtifactManifest。
 
+### G7：耐久 Runtime 与可插拔沙箱（长期）
+
+Runtime 长期稳定运行，持续接受新 Task 并分发；Sandbox、Agent 与 Runtime 进程可丢弃，权威事件、证据与副作用记录在其外部耐久保存；执行环境通过统一 SandboxProvider 契约接入，替换 Provider 不改变任务含义与验收标准。该目标的分层、恢复/fencing/checkpoint 语义与实施路线由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结。
+
 ## MVP 范围
 
 MVP 包含：
@@ -68,7 +74,7 @@ MVP 包含：
 - 托管式多租户控制平面。
 - 对恶意仓库或恶意构建脚本提供强隔离承诺。
 - 在没有评测数据时自动选择“最佳”Worker。
-- Web UI、远程队列、分布式 Worker 或集群调度。
+- Web UI、远程队列、分布式 Worker 或集群调度（不属于 MVP；耐久排队与分发已纳入 M7–M12 路线，见[实施计划](implementation-plan.md)）。
 - 取代仓库 CI 的最终集成信号。
 - 在没有 Adapter 契约时支持任意交互式 Agent。
 
@@ -128,3 +134,7 @@ MVP 包含：
 ### 阶段 3：加固与路由
 
 增加可强制执行的容器配置、CI 回调、GitLab Publisher、评测数据、策略路由、遥测和可选服务接口。
+
+### 阶段 4：耐久 Runtime 与可插拔沙箱（M7–M13）
+
+由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结：常驻 Runtime/Control Plane、SandboxProvider 契约与 conformance、耐久调度与恢复/fencing、Cloudflare 远程 Provider 接入、生产级存储与多节点 HA、开源部署与长稳验证（M7–M12 平台阶段）；复杂需求目标由 M13 Goal orchestration 承接——持久 Project/Goal、可审计计划与重规划、跨 Run 记忆、预算与终止条件、独立质量评估与人工干预（M7 只冻结对象语义，M13 实现 Goal 控制器）。细节见 [Runtime 架构](runtime-architecture.md) 与 [实施计划](implementation-plan.md)。多租户服务化仍属于评估项，不是本阶段承诺。

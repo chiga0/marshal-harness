@@ -10,7 +10,7 @@
 
 ## 当前阶段
 
-本仓库已于 2026-08-03 通过实施门禁，ADR 0001–0011 已接受；2026-08-07 增补接受 ADR 0012–0014。Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`。后续变更仍须按门禁流程：信任边界/持久化契约/生命周期/发布权限的改变必须新增或替代 ADR。
+本仓库已于 2026-08-03 通过实施门禁，ADR 0001–0011 已接受；2026-08-07 增补接受 ADR 0012–0014；2026-08-10 接受 ADR 0016，把长期目标重置为长寿命 Runtime/Control Plane，并冻结 AgentAdapter 与 SandboxProvider 分层及 M7–M13 路线（M7–M12 为耐久 Runtime 平台阶段，M13 为 Goal 编排；见 `docs/runtime-architecture.md` 与 `docs/implementation-plan.md`），ADR 0015 未接受即被 ADR 0016 取代。Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`。后续变更仍须按门禁流程：信任边界/持久化契约/生命周期/发布权限的改变必须新增或替代 ADR。
 
 ## 修改设计前必读
 
@@ -21,7 +21,8 @@
 3. `docs/architecture.md`
 4. `docs/task-lifecycle.md`
 5. `docs/security-model.md`
-6. `docs/adr/` 中相关 ADR
+6. `docs/runtime-architecture.md`（M7–M12 目标架构）
+7. `docs/adr/` 中相关 ADR
 
 ## 不可破坏的不变量（universal）
 
