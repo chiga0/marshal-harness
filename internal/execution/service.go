@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -114,6 +115,14 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if selectedAdapterID != input.Adapter.ID() {
 		return Result{}, errors.New("frozen capability snapshot does not match the selected adapter")
 	}
+	// The admission guard runs before Probe and any attempt side effect.
+	reviewFindings, err := loadReviewFindings(store, runDir, state, input.Validator)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := assertProfileNotEscalated(runDir, task.Worker.ExecutionProfile); err != nil {
+		return Result{}, err
+	}
 	currentCapability, err := input.Adapter.Probe(ctx)
 	if err != nil {
 		return Result{}, err
@@ -123,13 +132,6 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	if uint(state.AttemptsUsed) >= uint(task.Budgets.MaxAttempts) {
 		return Result{}, errors.New("attempt budget exhausted")
-	}
-	reviewFindings, err := loadReviewFindings(runDir, state, input.Validator)
-	if err != nil {
-		return Result{}, err
-	}
-	if err := assertProfileNotEscalated(runDir, task.Worker.ExecutionProfile); err != nil {
-		return Result{}, err
 	}
 	repository, err := gitworktree.Open(input.RepositoryRoot)
 	if err != nil {
@@ -262,24 +264,331 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	return Result{State: finalState, AttemptID: attemptID, WorkerResult: workerResult.Data}, nil
 }
 
-func loadReviewFindings(runDir string, state domain.RunState, validator *contract.Validator) ([]map[string]string, error) {
-	if state.State != domain.StateReworkRequested {
+// loadReviewFindings is the admission guard for the rework recovery lineage:
+// raw-record schema validation, full replay from CREATED/sequence=0, snapshot
+// cross-check and adjacent lineage resolution, all fail-closed before Probe.
+func loadReviewFindings(store *runstore.Store, runDir string, state domain.RunState, validator *contract.Validator) ([]map[string]string, error) {
+	journal, err := verifyRunJournal(store, runDir, state, validator)
+	if err != nil {
+		return nil, err
+	}
+	if state.State == domain.StateReady {
 		return []map[string]string{}, nil
 	}
-	data, err := os.ReadFile(filepath.Join(runDir, "decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound)))
+	return resolveRetryLineage(runDir, state, journal, validator)
+}
+
+type verifiedJournal struct {
+	events     []domain.RunEvent
+	roundAfter []uint
+	replayed   domain.RunState
+}
+
+func verifyRunJournal(store *runstore.Store, runDir string, state domain.RunState, validator *contract.Validator) (verifiedJournal, error) {
+	authoritative, truncated, err := store.ReadEvents(state.RunID)
 	if err != nil {
-		return nil, fmt.Errorf("read rework ReviewDecision: %w", err)
+		return verifiedJournal{}, fmt.Errorf("read authoritative run journal: %w", err)
+	}
+	if truncated {
+		return verifiedJournal{}, errors.New("run journal has a truncated tail")
+	}
+	rawData, err := os.ReadFile(filepath.Join(runDir, "events.jsonl"))
+	if err != nil {
+		return verifiedJournal{}, fmt.Errorf("read raw run journal: %w", err)
+	}
+	var rawLines []string
+	if len(rawData) > 0 {
+		if rawData[len(rawData)-1] != '\n' {
+			return verifiedJournal{}, errors.New("run journal has a truncated tail")
+		}
+		rawLines = strings.Split(string(rawData[:len(rawData)-1]), "\n")
+	}
+	if len(rawLines) != len(authoritative) {
+		return verifiedJournal{}, errors.New("raw run journal record count does not match the authoritative journal")
+	}
+	if len(rawLines) == 0 {
+		return verifiedJournal{}, errors.New("run journal is empty: the planning event authority is missing")
+	}
+	journal := verifiedJournal{events: make([]domain.RunEvent, 0, len(authoritative)), roundAfter: make([]uint, len(authoritative))}
+	for index, rawLine := range rawLines {
+		if strings.TrimSpace(rawLine) == "" {
+			return verifiedJournal{}, fmt.Errorf("raw run journal record %d is empty", index+1)
+		}
+		rawBytes := []byte(rawLine)
+		if err := validator.Validate(domain.KindRunEvent, rawBytes); err != nil {
+			return verifiedJournal{}, fmt.Errorf("raw run journal record %d fails the RunEvent contract: %w", index+1, err)
+		}
+		var rawEvent domain.RunEvent
+		if err := json.Unmarshal(rawBytes, &rawEvent); err != nil {
+			return verifiedJournal{}, fmt.Errorf("decode raw run journal record %d: %w", index+1, err)
+		}
+		if err := sameRunEventSemantics(authoritative[index], rawEvent); err != nil {
+			return verifiedJournal{}, fmt.Errorf("raw run journal record %d %w", index+1, err)
+		}
+		if rawEvent.Type == lifecycle.RepairAuditEventType {
+			if err := validateRepairAudit(rawEvent); err != nil {
+				return verifiedJournal{}, err
+			}
+		}
+		if index == 0 {
+			if rawEvent.Sequence != 1 || rawEvent.StateFrom != domain.StateCreated || rawEvent.StateTo != domain.StatePlanned {
+				return verifiedJournal{}, errors.New("run journal must begin with the sequence=1 planning transition CREATED->PLANNED")
+			}
+			// Planning froze the initial snapshot and the sequence=1
+			// planning event with the same instant, so the first fully
+			// cross-bound journal event is the only recoverable CreatedAt
+			// authority; the snapshot can never certify its own CreatedAt.
+			journal.replayed = domain.NewRunState(state.TaskID, state.RunID, rawEvent.Timestamp)
+		}
+		next, err := lifecycle.Replay(journal.replayed, rawEvent)
+		if err != nil {
+			return verifiedJournal{}, fmt.Errorf("replay run journal record %d: %w", index+1, err)
+		}
+		journal.replayed = next
+		journal.roundAfter[index] = next.ReviewRound
+		journal.events = append(journal.events, rawEvent)
+	}
+	if err := requireSnapshotMatchesReplay(state, journal.replayed); err != nil {
+		return verifiedJournal{}, err
+	}
+	return journal, nil
+}
+
+func sameRunEventSemantics(authoritative, raw domain.RunEvent) error {
+	if authoritative.APIVersion != raw.APIVersion || authoritative.Kind != raw.Kind ||
+		authoritative.EventID != raw.EventID || authoritative.RunID != raw.RunID ||
+		authoritative.AttemptID != raw.AttemptID || authoritative.Sequence != raw.Sequence ||
+		authoritative.Type != raw.Type || authoritative.StateFrom != raw.StateFrom ||
+		authoritative.StateTo != raw.StateTo {
+		return errors.New("does not match the authoritative journal record")
+	}
+	if !authoritative.Timestamp.Equal(raw.Timestamp) {
+		return errors.New("timestamp does not match the authoritative journal record")
+	}
+	if !sameActor(authoritative.Actor, raw.Actor) {
+		return errors.New("actor does not match the authoritative journal record")
+	}
+	if !reflect.DeepEqual(authoritative.Payload, raw.Payload) {
+		return errors.New("payload does not match the authoritative journal record")
+	}
+	return nil
+}
+
+func sameActor(left, right *domain.Actor) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.Type == right.Type && left.ID == right.ID
+}
+
+func samePublication(left, right *domain.RunPublication) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
+}
+
+// requireSnapshotMatchesReplay fails closed on any replay/snapshot divergence.
+func requireSnapshotMatchesReplay(snapshot, replayed domain.RunState) error {
+	if snapshot.APIVersion != replayed.APIVersion || snapshot.Kind != replayed.Kind ||
+		snapshot.TaskID != replayed.TaskID || snapshot.RunID != replayed.RunID ||
+		snapshot.State != replayed.State || snapshot.Sequence != replayed.Sequence ||
+		snapshot.ReviewRound != replayed.ReviewRound || snapshot.AttemptsUsed != replayed.AttemptsUsed ||
+		snapshot.OperationalRetriesUsed != replayed.OperationalRetriesUsed ||
+		snapshot.ReworkRoundsUsed != replayed.ReworkRoundsUsed ||
+		snapshot.CurrentAttemptID != replayed.CurrentAttemptID ||
+		snapshot.TerminalReason != replayed.TerminalReason {
+		return errors.New("run snapshot differs from the full journal replay")
+	}
+	if !snapshot.CreatedAt.Equal(replayed.CreatedAt) {
+		return errors.New("run snapshot createdAt differs from the full journal replay")
+	}
+	if !snapshot.UpdatedAt.Equal(replayed.UpdatedAt) {
+		return errors.New("run snapshot updatedAt differs from the full journal replay")
+	}
+	if !samePublication(snapshot.Publication, replayed.Publication) {
+		return errors.New("run snapshot publication differs from the full journal replay")
+	}
+	return nil
+}
+
+// validateRepairAudit admits only the exact reconciliation.snapshot-repaired
+// audit; a forged repair fails closed and is never skipped in the lineage.
+func validateRepairAudit(event domain.RunEvent) error {
+	if event.StateFrom != event.StateTo {
+		return errors.New("repair audit event must not change the run state")
+	}
+	if event.AttemptID != "" {
+		return errors.New("repair audit event must not carry an attempt id")
+	}
+	if !actorIs(event.Actor, "system", "marshal-reconciliation") {
+		return errors.New("repair audit event actor must be system/marshal-reconciliation")
+	}
+	if repairKind, ok := event.Payload["repairKind"].(string); !ok || repairKind != "snapshot-rebuild" {
+		return errors.New("repair audit event repairKind must be snapshot-rebuild")
+	}
+	if source, ok := event.Payload["sourceJournalSequence"].(float64); !ok || source < 0 || source != float64(event.Sequence-1) {
+		return errors.New("repair audit event sourceJournalSequence must equal the previous journal sequence")
+	}
+	return nil
+}
+
+func actorIs(actor *domain.Actor, actorType, actorID string) bool {
+	return actor != nil && actor.Type == actorType && actor.ID == actorID
+}
+
+func isCanonicalSHA256(value string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(value, prefix) || len(value) != len(prefix)+64 {
+		return false
+	}
+	for _, r := range value[len(prefix):] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveRetryLineage walks adjacent non-repair business events backwards:
+// matching worker.started/worker.failed pairs with unique attempt ids per
+// segment, until the READY origin (no findings) or the rework origin. It
+// never searches globally by attempt id and never skips business events.
+func resolveRetryLineage(runDir string, state domain.RunState, journal verifiedJournal, validator *contract.Validator) ([]map[string]string, error) {
+	type indexedEvent struct {
+		index int
+		event domain.RunEvent
+	}
+	business := make([]indexedEvent, 0, len(journal.events))
+	for index, event := range journal.events {
+		if event.Type == lifecycle.RepairAuditEventType {
+			continue
+		}
+		business = append(business, indexedEvent{index: index, event: event})
+	}
+	if len(business) == 0 {
+		return nil, errors.New("retry lineage: journal has no business events")
+	}
+	if state.State == domain.StateReworkRequested {
+		return resolveReworkOrigin(runDir, state, journal, business[len(business)-1].index, validator)
+	}
+	seenAttempts := map[string]bool{}
+	for position := len(business) - 1; ; {
+		failed := business[position].event
+		if failed.Type != "worker.failed" || failed.StateFrom != domain.StateRunning || failed.StateTo != domain.StateRetryPending ||
+			!actorIs(failed.Actor, "system", "marshal-worker-runner") || failed.AttemptID == "" {
+			return nil, errors.New("retry lineage: expected worker.failed RUNNING->RETRY_PENDING recorded by system/marshal-worker-runner")
+		}
+		if position == len(business)-1 && failed.AttemptID != journal.replayed.CurrentAttemptID {
+			return nil, errors.New("retry lineage: the final worker.failed does not belong to the current attempt")
+		}
+		if seenAttempts[failed.AttemptID] {
+			return nil, fmt.Errorf("retry lineage: attempt id %s is reused across retry segments", failed.AttemptID)
+		}
+		seenAttempts[failed.AttemptID] = true
+		startPosition := position - 1
+		if startPosition < 0 {
+			return nil, errors.New("retry lineage: worker.failed has no adjacent worker.started")
+		}
+		started := business[startPosition].event
+		if started.Type != "worker.started" || started.StateTo != domain.StateRunning ||
+			!actorIs(started.Actor, "system", "marshal-worker-runner") || started.AttemptID == "" || started.AttemptID != failed.AttemptID {
+			return nil, errors.New("retry lineage: the adjacent worker.started is missing, duplicated or has a mismatched attempt id")
+		}
+		switch started.StateFrom {
+		case domain.StateReady:
+			return []map[string]string{}, nil
+		case domain.StateReworkRequested:
+			if startPosition == 0 {
+				return nil, errors.New("retry lineage: worker.started from REWORK_REQUESTED has no adjacent origin event")
+			}
+			return resolveReworkOrigin(runDir, state, journal, business[startPosition-1].index, validator)
+		case domain.StateRetryPending:
+			position = startPosition - 1
+			if position < 0 {
+				return nil, errors.New("retry lineage: worker.started from RETRY_PENDING has no preceding worker.failed")
+			}
+		default:
+			return nil, fmt.Errorf("retry lineage: worker.started from unexpected state %s", started.StateFrom)
+		}
+	}
+}
+
+// resolveReworkOrigin binds the REWORK_REQUESTED origin to its exact
+// producer: the round-bound Decision for review origins, or empty findings
+// for CI origins without reading any Decision.
+func resolveReworkOrigin(runDir string, state domain.RunState, journal verifiedJournal, originIndex int, validator *contract.Validator) ([]map[string]string, error) {
+	origin := journal.events[originIndex]
+	switch origin.Type {
+	case "review.rework":
+		if origin.StateFrom != domain.StateReviewPending || origin.StateTo != domain.StateReworkRequested ||
+			origin.AttemptID != "" || !actorIs(origin.Actor, "system", "marshal-review") {
+			return nil, errors.New("review lineage: review.rework must transition REVIEW_PENDING->REWORK_REQUESTED via system/marshal-review without an attempt id")
+		}
+		if verdict, ok := origin.Payload["verdict"].(string); !ok || verdict != "rework" {
+			return nil, errors.New("review lineage: review.rework payload verdict must be rework")
+		}
+		decisionDigest, ok := origin.Payload["decisionDigest"].(string)
+		if !ok || !isCanonicalSHA256(decisionDigest) {
+			return nil, errors.New("review lineage: review.rework payload decisionDigest is missing or invalid")
+		}
+		evidenceDigest, ok := origin.Payload["evidenceDigest"].(string)
+		if !ok || !isCanonicalSHA256(evidenceDigest) {
+			return nil, errors.New("review lineage: review.rework payload evidenceDigest is missing or invalid")
+		}
+		round := journal.roundAfter[originIndex]
+		if round < 1 {
+			return nil, errors.New("review lineage: review.rework origin has no replay-derived review round")
+		}
+		decision, err := loadRoundBoundDecision(runDir, state, round, decisionDigest, validator)
+		if err != nil {
+			return nil, err
+		}
+		if decision.EvidenceDigest != evidenceDigest {
+			return nil, errors.New("review lineage: review.rework evidenceDigest does not match the round-bound ReviewDecision")
+		}
+		return projectBlockingFindings(decision), nil
+	case "publication.checks-failed":
+		if origin.StateFrom != domain.StateCIPending || origin.StateTo != domain.StateReworkRequested ||
+			origin.AttemptID != "" || !actorIs(origin.Actor, "publisher", "marshal-github-publisher") {
+			return nil, errors.New("ci lineage: publication.checks-failed must transition CI_PENDING->REWORK_REQUESTED via publisher/marshal-github-publisher without an attempt id")
+		}
+		headSHA, ok := origin.Payload["headSha"].(string)
+		if !ok || headSHA == "" {
+			return nil, errors.New("ci lineage: publication.checks-failed payload headSha is missing")
+		}
+		if journal.replayed.Publication == nil || journal.replayed.Publication.HeadSHA != headSHA {
+			return nil, errors.New("ci lineage: publication.checks-failed headSha does not match the frozen publication")
+		}
+		return []map[string]string{}, nil
+	default:
+		return nil, fmt.Errorf("retry lineage: unknown or conflicting rework origin event %q", origin.Type)
+	}
+}
+
+func loadRoundBoundDecision(runDir string, state domain.RunState, round uint, decisionDigest string, validator *contract.Validator) (domain.ReviewDecision, error) {
+	data, err := os.ReadFile(filepath.Join(runDir, "decisions", fmt.Sprintf("decision-%03d.json", round)))
+	if err != nil {
+		return domain.ReviewDecision{}, fmt.Errorf("read round-bound ReviewDecision: %w", err)
 	}
 	if err := validator.Validate(domain.KindReviewDecision, data); err != nil {
-		return nil, err
+		return domain.ReviewDecision{}, fmt.Errorf("round-bound ReviewDecision contract: %w", err)
+	}
+	if digest, digestErr := canonical.DigestJSON(data); digestErr != nil || digest != decisionDigest {
+		return domain.ReviewDecision{}, errors.New("round-bound ReviewDecision canonical digest does not match the journal decisionDigest")
 	}
 	var decision domain.ReviewDecision
 	if err := json.Unmarshal(data, &decision); err != nil {
-		return nil, err
+		return domain.ReviewDecision{}, err
 	}
-	if decision.TaskID != state.TaskID || decision.RunID != state.RunID || decision.SpecDigest != state.SpecDigest {
-		return nil, errors.New("rework ReviewDecision identity does not match the frozen run")
+	if decision.TaskID != state.TaskID || decision.RunID != state.RunID || decision.SpecDigest != state.SpecDigest ||
+		decision.ReviewRound != round || decision.Verdict != "rework" {
+		return domain.ReviewDecision{}, errors.New("round-bound ReviewDecision identity, spec digest, round or verdict does not match the review lineage")
 	}
+	return decision, nil
+}
+
+func projectBlockingFindings(decision domain.ReviewDecision) []map[string]string {
 	findings := make([]map[string]string, 0, len(decision.BlockingFindings))
 	for _, finding := range decision.BlockingFindings {
 		required := finding.RequiredOutcome
@@ -288,7 +597,7 @@ func loadReviewFindings(runDir string, state domain.RunState, validator *contrac
 		}
 		findings = append(findings, map[string]string{"id": finding.ID, "severity": finding.Severity, "description": finding.Description, "requiredOutcome": required})
 	}
-	return findings, nil
+	return findings
 }
 
 // assertProfileNotEscalated implements the ADR 0014 invariant that an
