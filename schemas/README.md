@@ -18,6 +18,7 @@
 - [`remote-check-record.schema.json`](remote-check-record.schema.json)
 - [`approval-record.schema.json`](approval-record.schema.json)
 - [`intervention-record.schema.json`](intervention-record.schema.json)
+- [`sandbox-requirements.schema.json`](sandbox-requirements.schema.json)
 
 Schema Validation 是必要条件，但还不充分。Implementation 必须增加以下 Semantic Validation：
 
@@ -42,3 +43,5 @@ Schema 是已接受但仍处于 `v1alpha1` 的契约。Implementation 必须为�
 Publication 记录（PublicationIntent、PublicationRecord、RemoteCheckRecord）只包含发布世代、Provider/Repository/PR 身份、Branch、SHA、Digest 与 Marker；不得包含 Token、GH Config Dir 或绝对本地 Worktree Path。
 
 Control 记录（ApprovalRecord、InterventionRecord）是 Run Lease 保护下的追加式授权与介入证据。Approval 必须绑定当时的冻结输入或发布证据；Intervention 的分类决定是否可在当前 Attempt 继续、必须重新验证或必须创建新 Run。Worker 无权创建这两类记录。
+
+SandboxRequirements 按 ADR 0017 冻结 Run 的二维沙箱要求：`accessMode`（权限维度，封闭枚举 `read-only`/`workspace-write`）与 `minimumAssuranceLevel`（隔离维度，封闭枚举 `workspace-write`/`hardened`），四种正交组合全部合法。旧 `executionProfile` 只存在确定性单向映射：`read-only` → `read-only` × `workspace-write`、`workspace-write` → `workspace-write` × `workspace-write`、`hardened` → `workspace-write` × `hardened`；不存在反向映射，`read-only` × `hardened` 没有旧 `executionProfile` 表达。本契约切片只冻结 Schema 与 catalog 注册，不改变 TaskSpec、WorkerRequest、PolicySnapshot、CapabilitySnapshot、Outcome 或 Local CLI/Adapter 行为，也不回写历史持久记录。

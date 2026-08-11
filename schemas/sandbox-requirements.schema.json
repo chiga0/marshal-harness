@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/sandbox-requirements.schema.json",
+  "title": "Marshal SandboxRequirements",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "accessMode",
+    "minimumAssuranceLevel"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "SandboxRequirements" },
+    "accessMode": {
+      "type": "string",
+      "enum": ["read-only", "workspace-write"]
+    },
+    "minimumAssuranceLevel": {
+      "type": "string",
+      "enum": ["workspace-write", "hardened"]
+    }
+  }
+}

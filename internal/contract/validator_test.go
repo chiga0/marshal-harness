@@ -259,6 +259,56 @@ func TestRunStateConstantsMatchSchema(t *testing.T) {
 	}
 }
 
+func TestSandboxRequirementsSchema(t *testing.T) {
+	t.Parallel()
+
+	setMode := func(value string) func(map[string]any) {
+		return func(document map[string]any) { document["accessMode"] = value }
+	}
+	setLevel := func(value string) func(map[string]any) {
+		return func(document map[string]any) { document["minimumAssuranceLevel"] = value }
+	}
+	setModeAndLevel := func(mode, level string) func(map[string]any) {
+		return func(document map[string]any) {
+			document["accessMode"] = mode
+			document["minimumAssuranceLevel"] = level
+		}
+	}
+
+	validator := mustValidator(t)
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		valid  bool
+	}{
+		{name: "workspace-write over workspace-write enforcement", valid: true, mutate: func(map[string]any) {}},
+		{name: "read-only over workspace-write enforcement", valid: true, mutate: setMode("read-only")},
+		{name: "read-only over hardened enforcement", valid: true, mutate: setModeAndLevel("read-only", "hardened")},
+		{name: "workspace-write over hardened enforcement", valid: true, mutate: setLevel("hardened")},
+		{name: "missing accessMode", mutate: func(document map[string]any) { delete(document, "accessMode") }},
+		{name: "missing minimumAssuranceLevel", mutate: func(document map[string]any) { delete(document, "minimumAssuranceLevel") }},
+		{name: "unknown accessMode", mutate: setMode("sandboxed")},
+		{name: "unknown minimumAssuranceLevel", mutate: setLevel("ultra")},
+		{name: "case-mangled accessMode", mutate: setMode("Read-Only")},
+		{name: "case-mangled minimumAssuranceLevel", mutate: setLevel("Hardened")},
+		{name: "additional property", mutate: func(document map[string]any) { document["provider"] = "local" }},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			data := mutateFixture(t, "examples/happy-path/sandbox-requirements.json", test.mutate)
+			err := validator.Validate(domain.KindSandboxRequirements, data)
+			if test.valid && err != nil {
+				t.Fatalf("Validate() error = %v, want valid sandbox requirements", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("Validate() unexpectedly accepted invalid sandbox requirements")
+			}
+		})
+	}
+}
+
 func mustValidator(t *testing.T) *Validator {
 	t.Helper()
 	validator, err := NewValidator()

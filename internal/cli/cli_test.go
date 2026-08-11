@@ -69,7 +69,7 @@ func TestDoctorReportsCompiledContracts(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode doctor output: %v", err)
 	}
-	if report.Status != "ok" || report.ContractSchemas != 17 || report.WorkerAdapters != 0 || report.Milestone != buildinfo.Milestone || len(report.Workers) != 3 {
+	if report.Status != "ok" || report.ContractSchemas != 18 || report.WorkerAdapters != 0 || report.Milestone != buildinfo.Milestone || len(report.Workers) != 3 {
 		t.Fatalf("doctor report = %+v", report)
 	}
 	for index, adapterID := range []string{"opencode", "qwen", "pi"} {
