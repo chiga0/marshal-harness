@@ -219,9 +219,46 @@ func TestTaskReviewEndToEndRejectsStaleWorktreeAndPersistsTerminalOutcome(t *tes
 	if terminalState.State != domain.StateRejected || terminalState.Sequence != 6 {
 		t.Fatalf("terminal state = %+v", terminalState)
 	}
-	for _, path := range []string{"decisions/decision-001.json", "review-packets/packet-001.json", "outcome.json", "outcome.md"} {
+	for _, path := range []string{"decisions/decision-001.json", "review-packets/packet-001.json", "outcome.json", "outcome.md", "result.md"} {
 		if _, err := os.Stat(filepath.Join(runDirectory, path)); err != nil {
 			t.Fatalf("missing durable review artifact %s: %v", path, err)
 		}
+	}
+	resultMarkdown, err := os.ReadFile(filepath.Join(runDirectory, "result.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcomeMarkdown, err := os.ReadFile(filepath.Join(runDirectory, "outcome.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(resultMarkdown, outcomeMarkdown) {
+		t.Fatalf("result.md bytes diverge from outcome.md")
+	}
+
+	if err := os.RemoveAll(filepath.Join(worktree.Path, "src")); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"task", "cleanup", "--run", "run:review", "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("cleanup preview exit = %d, stderr = %s", exit, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("cleanup preview stderr = %q", stderr.String())
+	}
+	var preview struct {
+		RunID   string `json:"runId"`
+		Applied bool   `json:"applied"`
+		Targets []struct {
+			Kind string `json:"kind"`
+			Path string `json:"path"`
+		} `json:"targets"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.RunID != "run:review" || preview.Applied || len(preview.Targets) != 1 || preview.Targets[0].Kind != "managed-worktree" || preview.Targets[0].Path != worktree.Path {
+		t.Fatalf("cleanup preview = %+v", preview)
 	}
 }
