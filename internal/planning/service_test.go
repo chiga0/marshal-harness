@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -299,6 +300,156 @@ func TestPlanPreJournalFailureRemovesCreatedWorktree(t *testing.T) {
 	command := exec.Command("git", "-C", repositoryRoot, "show-ref", "--verify", "--quiet", "refs/heads/marshal/"+taskID+"-"+runID)
 	if command.Run() == nil {
 		t.Fatal("pre-journal cleanup left the task branch")
+	}
+}
+
+func TestPlanRejectsInvalidAcceptanceSyntaxBeforeSideEffects(t *testing.T) {
+	repositoryRoot, _ := planningGitFixture(t)
+	const (
+		taskID    = "task-plan-preflight"
+		runID     = "run-plan-preflight"
+		adapterID = "adapter-plan"
+		remoteURL = "https://example.invalid/preflight.git"
+	)
+	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	taskData := planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL)
+	var task map[string]any
+	if err := json.Unmarshal(taskData, &task); err != nil {
+		t.Fatal(err)
+	}
+	task["acceptance"].(map[string]any)["commands"] = []any{map[string]any{
+		"id":             "broken-inline",
+		"argv":           []any{"python3", "-c", "def broken(:"},
+		"cwd":            ".",
+		"timeoutSeconds": 30,
+		"required":       true,
+		"baselinePolicy": "on-failure",
+		"maxLogBytes":    100000,
+	}}
+	taskData = mustMarshal(t, task)
+
+	checker := &preflightFakeChecker{finding: &SyntaxFinding{Kind: "SyntaxError", Line: 1, Column: 11}}
+	worker := &planningTestWorker{
+		id:         adapterID,
+		capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)},
+	}
+	stateRoot := filepath.Join(repositoryRoot, ".marshal")
+
+	result, err := Plan(context.Background(), Input{
+		StateRoot:           stateRoot,
+		RepositoryRoot:      repositoryRoot,
+		RunID:               runID,
+		TaskSpec:            taskData,
+		PolicySnapshot:      planningPolicyFixture(t, taskID, runID, adapterID),
+		Selector:            planningSelector(t, worker),
+		Validator:           newValidator(t),
+		PythonSyntaxChecker: checker,
+	})
+	var syntaxErr *PreflightSyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Fatalf("Plan() error = %v, want *PreflightSyntaxError", err)
+	}
+	if syntaxErr.CommandID != "broken-inline" || syntaxErr.ArgvIndex != 2 {
+		t.Fatalf("syntax error = %#v, want command broken-inline argv[2]", syntaxErr)
+	}
+	if len(checker.calls) != 1 || checker.calls[0].interpreter != "python3" || checker.calls[0].source != "def broken(:" {
+		t.Fatalf("checker calls = %#v, want exactly one check of the inline script", checker.calls)
+	}
+	if len(result.SelectionAttempts) != 0 {
+		t.Fatalf("selection attempts = %#v, want none before the preflight", result.SelectionAttempts)
+	}
+	assertPlanningNoRunSideEffects(t, stateRoot, taskID, runID)
+	command := exec.Command("git", "-C", repositoryRoot, "show-ref", "--verify", "--quiet", "refs/heads/marshal/"+taskID+"-"+runID)
+	if command.Run() == nil {
+		t.Fatal("preflight rejection left the task branch")
+	}
+}
+
+// TestPlanValidatesPolicyBeforePreflightSpawn proves that an invalid or
+// identity-mismatched PolicySnapshot is rejected before the syntax preflight,
+// so a prohibited policy can never trigger a host interpreter spawn: the
+// recording checker must observe zero calls, SelectionAttempts stay empty,
+// and no stateRoot or repository side effect appears.
+func TestPlanValidatesPolicyBeforePreflightSpawn(t *testing.T) {
+	requireGit(t)
+	repositoryRoot, _ := planningGitFixture(t)
+	const (
+		taskID    = "task-plan-policy-gate"
+		runID     = "run-plan-policy-gate"
+		adapterID = "adapter-plan"
+		remoteURL = "https://example.invalid/policy-gate.git"
+	)
+	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	taskData := planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL)
+	var task map[string]any
+	if err := json.Unmarshal(taskData, &task); err != nil {
+		t.Fatal(err)
+	}
+	task["acceptance"].(map[string]any)["commands"] = []any{map[string]any{
+		"id":             "inline-python",
+		"argv":           []any{"python3", "-c", "x = 1"},
+		"cwd":            ".",
+		"timeoutSeconds": 30,
+		"required":       true,
+		"baselinePolicy": "on-failure",
+		"maxLogBytes":    100000,
+	}}
+	taskData = mustMarshal(t, task)
+
+	policyData := planningPolicyFixture(t, taskID, runID, adapterID)
+	var policy map[string]any
+	if err := json.Unmarshal(policyData, &policy); err != nil {
+		t.Fatal(err)
+	}
+	invalidPolicies := map[string]func(map[string]any){
+		"wrong run identity": func(policy map[string]any) {
+			policy["runId"] = "run-other"
+		},
+		"wrong task identity": func(policy map[string]any) {
+			policy["taskId"] = "task-other"
+		},
+		"merge granted": func(policy map[string]any) {
+			policy["effective"].(map[string]any)["allowMerge"] = true
+		},
+	}
+	for name, mutate := range invalidPolicies {
+		t.Run(name, func(t *testing.T) {
+			var candidate map[string]any
+			if err := json.Unmarshal(policyData, &candidate); err != nil {
+				t.Fatal(err)
+			}
+			mutate(candidate)
+			checker := &preflightFakeChecker{}
+			worker := &planningTestWorker{
+				id:         adapterID,
+				capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)},
+			}
+			stateRoot := filepath.Join(repositoryRoot, ".marshal")
+			result, err := Plan(context.Background(), Input{
+				StateRoot:           stateRoot,
+				RepositoryRoot:      repositoryRoot,
+				RunID:               runID,
+				TaskSpec:            taskData,
+				PolicySnapshot:      mustMarshal(t, candidate),
+				Selector:            planningSelector(t, worker),
+				Validator:           newValidator(t),
+				PythonSyntaxChecker: checker,
+			})
+			if err == nil {
+				t.Fatal("Plan() returned nil error")
+			}
+			if len(checker.calls) != 0 {
+				t.Fatalf("checker calls = %#v, want no interpreter check before the policy gate", checker.calls)
+			}
+			if len(result.SelectionAttempts) != 0 {
+				t.Fatalf("selection attempts = %#v, want none", result.SelectionAttempts)
+			}
+			assertPlanningNoRunSideEffects(t, stateRoot, taskID, runID)
+			command := exec.Command("git", "-C", repositoryRoot, "show-ref", "--verify", "--quiet", "refs/heads/marshal/"+taskID+"-"+runID)
+			if command.Run() == nil {
+				t.Fatal("policy rejection left the task branch")
+			}
+		})
 	}
 }
 
