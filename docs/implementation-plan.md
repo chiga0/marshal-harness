@@ -4,7 +4,7 @@
 
 本文 Local MVP 部分（Milestone 0–6）已由维护者授权实施；M7–M13 部分于 2026-08-10 随 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 接受而授权（M7–M12 为耐久 Runtime 平台阶段，M13 为 Goal 编排阶段）。M8–M13 的分工措辞随 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10）修订：M8–M13 一律按其第 12 节的分工与 provider-neutral Sandbox 安全契约执行；Control Plane 与 Provider Port 边界随 [ADR 0018](adr/0018-control-plane-and-provider-ports.md)（已接受，2026-08-11）再修订：ADR 0018 澄清/部分取代 ADR 0017 §4/§6/§7/§8/§10/§12，显式取代 ADR 0016 §6 经 ADR 0017 承接的 universal 接纳口径（M8 增加注册/快照/撤销顺序硬门禁，M9 lease 绑定 ProviderRegistration/providerCapabilitySnapshotDigest/conformanceEvidenceDigests，M12 注册产物为 ProviderRegistration + ProviderCapabilitySnapshot）。**ADR 0017/0018 的接受只关闭设计歧义/冻结设计**：M8 实现与 conformance 状态不因此提前，首次 Sandbox SPI dogfood 的既有成果按未接纳探索证据对待，各 Milestone 状态以 [Roadmap 状态](roadmap-status.md) 为准。本文只是实施计划：信任边界、持久化契约、生命周期或发布权限的改变仍必须先新增或替代 ADR。
 
-当前状态：Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`（2026-08-07），验收证据见 [Roadmap 状态](roadmap-status.md)；M7–M12 目标架构见 [Runtime 架构](runtime-architecture.md)。
+当前状态：Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`（2026-08-07）；M7（架构与契约）已于 2026-08-11 通过退出门禁（ADR 0016/0017/0018 已接受、文档口径一致、Local MVP 回归与本仓库 CI 全绿；证据：Marshal Run `m7-control-provider-boundary-adr-r15-20260811` `ACCEPTED`，[Draft PR #13](https://github.com/chiga0/marshal-harness/pull/13) 与 GitHub Actions CI run `31449333738` 全绿）；M8–M13 保持 `PLANNED`，实现与 conformance 状态不提前升级；验收证据见 [Roadmap 状态](roadmap-status.md)，M7–M12 目标架构见 [Runtime 架构](runtime-architecture.md)。
 
 ## 交付策略
 
