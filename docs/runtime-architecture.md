@@ -1,14 +1,15 @@
-# Runtime 架构（M7–M12 目标架构）
+# Runtime 架构（M7–M13 目标架构）
 
 - 依据：[ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（已接受，2026-08-10）；[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10；接受只关闭设计歧义，不提前升级 M8 实现/conformance 状态）冻结 provider-neutral Sandbox 安全契约：二维权限/隔离模型、ConformanceEvidence 证据拓扑、内容寻址 Stage、workloadRole/principal 身份 fencing 与无双写 Restore、DispatchLease 唯一状态机、DurableExecutionEngine 权威边界与 M9 wire contract，并澄清/部分取代 ADR 0016 的 §4/§5/§6/§7/§9；[ADR 0018](adr/0018-control-plane-and-provider-ports.md)（已接受，2026-08-11；接受只冻结设计，不升级 M8–M13 实现/conformance 状态）冻结 Marshal C/S Control Plane、按信任域分隔的 Provider Port、耐久注册/能力快照与在途 lease 撤销，澄清/部分取代 ADR 0017 §4/§6/§7/§8/§10/§12，显式取代 ADR 0016 §6 经 ADR 0017 承接的 universal 接纳口径，并冻结权威/actor 双键空间（authorityNamespaceId=(tenantNamespace, controlPlaneId, authorityScopeId) 拥有全部 Control Plane 权威对象——submission/Task/Run/Attempt/ledger/DispatchLease/Allocation/ReviewDecision/Evidence graph/Outcome/SideEffectIntent/Receipt reconcile/typed edge/idempotency/outbox/audit/SSE；controlPlaneId 是 HA/灾备中保持稳定的逻辑权威身份，不是进程实例；ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence 也是 authority ledger 事实，仅携带 actor securityDomainId/provenance/eligibility；Artifact/Checkpoint/Candidate/Evidence bytes 的接纳关系归 authority ledger；securityDomainId=(tenantNamespace, trustDomainKind, isolationDomainId) 只标识 Provider actor）、三条 Core 独占签发的 Core-only typed cross-domain edge（DispatchResultCapability/MaterialAccessGrant/PublicationAuthorization，默认拒绝；issuer/source/target（每条 edge 的 issuer 为 Core，issuer 不等于业务流的 sourceActor；sourceActor/targetActor/targetAudience 按 edge 类型绑定）/operation/expiry/digest/revocation/replay/current-ledger recheck 与各自专属绑定，派生 token/handle 不得成为第二权威）、Provider attestation 全链绑定、远程 transport 安全基线（首次 enable 即强制 TLS）、原子 fencing 写入汇、SSE 恢复与再授权、DurableExecutionEngine 单一权威 seam、按 Port 的 versioned protocol family、Push/Pull outcome/invariant equivalence 与失效处置分级（security-critical 立即处置；planned upgrade stop-new + bounded drain）（ADR 0018 §3/§10–§16）
-- 定位：本文是 M7–M12 的冻结目标架构，并冻结 M13 继续实现的 Project/Goal 对象语义。Local MVP（Milestone 0–6，`USABLE`）行为不变；本文新增的对象与契约随 M8–M12 实施逐步落地 Schema 与契约测试，落地前不构成实现承诺。
+- 补充依据：[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)（已接受，2026-08-11）冻结确定性 Supervisor、Typed Execution 的非通用协议边界、Goal 计划接纳、Evidence 依赖适用性与 append-only 补偿语义。
+- 定位：本文是 M7–M13 的冻结目标架构。Local MVP（Milestone 0–6，`USABLE`）行为不变；本文新增对象与契约随 M8–M13 逐步落地，落地前不构成实现承诺。
 - 术语约定：中文叙述，协议字段、状态名、CLI 命令与代码标识保留英文，且与 `docs/task-lifecycle.md`、`schemas/` 保持一致。
 
 ## 目标重述
 
 Marshal 的长期目标是：**长寿命 Runtime/Control Plane 持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。
 
-- 不是让单个 Task 运行数月：长周期目标由 Project/Goal 驱动一系列有界短 Attempt；Project/Goal 的对象语义在 M7 冻结，Goal 控制器在 M13 实现（见[实施计划](implementation-plan.md)）；
+- 不是让单个 Task 运行数月：长周期目标由 Project/Goal 驱动一系列有界短 Attempt；M7 只冻结 Project/Goal 的存在性、权威归属与多 Run 原则，完整计划接纳与控制器语义由 ADR 0019 冻结并在 M13 实现；
 - Cloudflare Sandbox 仅作为首个可替换远程 Provider，不是 Core 必选依赖；
 - 本地 CLI 单次编排保留为首个入口形态与开发模式。
 
@@ -16,7 +17,7 @@ Marshal 的长期目标是：**长寿命 Runtime/Control Plane 持续接收、�
 
 ```mermaid
 flowchart TB
-    Lead["主 Agent / 操作者"] --> Submit["提交入口：幂等 TaskSubmission"]
+    Lead["人 / API / Lead Agent"] --> Submit["Task / Goal proposal"]
     Submit --> CP["Marshal Control Plane：生命周期守卫 / 证据权威 / 发布裁决"]
     CP --> DO["DurableExecutionEngine Port（可替换）"]
     DO --> Orch["DurableExecutionEngine backend（生产参考：Temporal）：at-least-once delivery / timer / signal / crash recovery"]
@@ -28,6 +29,8 @@ flowchart TB
     CP --> Store[("对象存储：candidate / evidence / publication 分域写入")]
     Pub["Publisher：分权、draft-only"] --> Forge["GitHub / GitLab"]
     CP --> Pub
+    CP --> Sem["Typed semantic work：Plan / Review proposal"]
+    Sem --> CP
 ```
 
 职责划分：
@@ -38,11 +41,17 @@ flowchart TB
 - **Queue**：权威状态的只读投影，用于观测与调度提示，不是第二个业务权威；
 - **Provider 信任域**（ADR 0018 §2）：Agent/Sandbox/Verification workload executor 属低权限 Execution 信任域（trust domain）；SCM/Publisher transport 属独立高权限 Publication 信任域（trust domain），Publisher 永不成为 Sandbox workload；Artifact/Secret 属 Data/Capability 信任域（trust domain）；域之间不共享 credential、AuthZ、审计或 conformance profile；三类域由 securityDomainId 复合三元组的 `trustDomainKind`（execution|publication|data-capability）机械标识；Provider actor 跨 trust domain 访问默认拒绝（default deny），唯一 allowlist 例外是三条 Core-only typed edge，未经对应 active edge 授权或绑定不精确匹配的跨 trustDomainKind 引用一律 fail closed；securityDomainId 只标识 Provider actor，Control Plane 权威对象归属 `authorityNamespaceId`（ADR 0018 §10）。
 
+### Typed execution 与中间通信
+
+Plan、Implement、Verify、Review、Publish 是调度层的 typed work 分类，不是一个 universal Provider protocol。它们可以复用 command/lease/heartbeat/cancel/deadline/event/log/artifact/checkpoint 基座，但每个 Port 仍有独立 Schema、principal、audience、credential、接纳规则与 conformance。现有 Sandbox `workloadRole` 不扩张，仍为 `worker|verifier`。
+
+Executor 的 phase、heartbeat、progress、log 与 checkpoint 用于观测、取消和恢复，不宣布业务完成。Core 只依据精确绑定的 Candidate、Evidence、Assessment、Receipt 与当前 Policy 物化权威转换。Provider 或 backend 报告 completed 不能直接产生 `ACCEPTED`、ReviewDecision 或 safe-to-publish。
+
 ## 核心对象与身份层次
 
 | 对象 | 语义 | 关键约束 |
 | --- | --- | --- |
-| `Project`/`Goal` | 长周期目标 | 驱动多个 Run；跨 Run 记忆必须可回放；M7 只冻结对象语义，Goal 控制器在 M13 实现 |
+| `Project`/`Goal` | 长周期目标 | 驱动多个 Run；M7 只冻结存在性、权威归属与多 Run 原则；完整 revision/admission/budget/control 语义由 ADR 0019 与 M13 承接 |
 | `TaskSubmission` | 提交入口记录 | 权威对象，由 `authorityNamespaceId` 拥有（ADR 0018 §10）；绑定唯一 `(authorityNamespaceId, repository, project)` scope（authorityNamespaceId=(tenantNamespace, controlPlaneId, authorityScopeId)，controlPlaneId 是 HA/灾备中保持稳定的逻辑权威身份、不是进程实例，单实例部署 controlPlaneId 可固定 `default`，ADR 0018 §10）；携带 `idempotencyKey` 与 `requestDigest`（冻结输入的规范化摘要）；仅 authorityNamespaceId+scope+key+digest 全部相同才幂等归并（返回既有 submission/run），同 key 而 digest 不同必须冲突 fail closed（见“提交入口与幂等边界”） |
 | `Task`/`Run` | 冻结工作单元 | 冻结 spec/base/policy 与最低 `SandboxRequirements`（二维要求 `accessMode` + `minimumAssuranceLevel`，见“二维权限/隔离模型”）；修改冻结项创建新 Run |
 | `Attempt` | 短命执行 | 有界、可丢弃；新 Attempt 不复用旧 ID |
@@ -50,7 +59,7 @@ flowchart TB
 | `EnvironmentSpec` | 环境定义 | 以 digest 固定镜像/工具链/mount/network/resource/credential 要求 |
 | `SandboxAllocation` | 分配记录 | 只保存 provider-neutral opaque locator 与 receipt |
 | `CheckpointRecord`/`WorkspaceRef`/`ArtifactRef` | 状态与产物引用 | 一律内容摘要绑定；Checkpoint 可验证、可重放或明确拒绝 |
-| `SideEffectIntent`/`Receipt` | 外部副作用账本 | 覆盖全部副作用；先意图、后执行、重试先对账、歧义 fail closed |
+| `SideEffectIntent`/`SideEffectReceipt`/`ReconcileRecord` | Core 内部副作用权威记录 | append-only；不是 Provider wire Schema；各 Port receipt 经版本化 fail-closed mapper 规范化；M8 冻结 Schema 并启用首批 operation，M9 扩展覆盖面；当前仅有发布专用闭环与本地 cleanup tombstone |
 | `ProviderRegistration` | Provider 耐久注册 | authority ledger 事实，由 authorityNamespaceId 拥有、只允许 Core 写入，仅携带 actor securityDomainId、provenance 与 eligibility；`registrationId` canonical 幂等绑定 `(securityDomainId, principal, providerType, providerName, providerVersion, protocolVersion, scope)`（securityDomainId 为所携带的 actor 身份）与 `idempotencyKey`/`requestDigest`；create/status/revoke/expire 是 authority ledger 事实；禁止 memory-only registration；全链绑定 providerInstanceId/configDigest/trust root（ADR 0018 §5/§10/§11） |
 | `ProviderCapabilitySnapshot` | Provider 能力快照 | 不可变；capture/supersede 是 ledger 事实；DispatchLease 只消费持久快照；providerInstanceId、effective configDigest 或 trust root 任一变化产生新 immutable 快照/ConformanceEvidence 并触发 eligibility 重判（ADR 0018 §5/§6/§11） |
 
@@ -226,6 +235,39 @@ Checkpoint 语义：
 - 稳定环境不等于复用永生 sandbox：默认每 Attempt 独立 ephemeral sandbox；稳定性来自 `EnvironmentSpecDigest`、pinned image/toolchain、内容寻址 artifact/cache 与可验证 checkpoint；
 - Warm reuse 仅限相同 `securityDomainId`（相同 tenant/repository/trust-domain），且必须有可证明的 sanitization；不满足时一律新建环境。
 
+## 外部副作用、对账与补偿（ADR 0019）
+
+权威历史不可 rollback。外部资源操作在 Core authority ledger 内规范化为 append-only 的 `SideEffectIntent → SideEffectReceipt → ReconcileRecord`；这些不是跨 Port wire Schema。各 Port 先按自己的 identity/AuthZ/fencing/operation 规则验证 receipt/observation，再经版本化 fail-closed mapper 写入并保留 sourcePort/sourceReceiptDigest/sourceProtocolVersion。`ambiguous` 必须先观察真实外部状态，再由 Core 依据当前 lifecycle 选择复用同一 command、安排 cleanup/compensation 或追加 blocker；不能假定任意状态都可直接进入 `BLOCKED`。
+
+- `purpose=forward|cleanup|compensation`；补偿绑定被补偿 effect 与 receipt digest；
+- `dispositionClass=ephemeral-cleanup|compensatable|irreversible`；
+- 自动 cleanup/compensation 只处理 Policy 明确授权、target identity 精确可证的资源；远端对象默认保留；
+- Core/authority ledger 接纳内部规范化 Receipt；Provider Receipt 本身不构成权威事实，也不能替代所属 Port 的接纳门禁；
+- M8 先覆盖 Sandbox/Stage/本地 cleanup，M9 建立通用 authority-scoped ledger，M10 覆盖 Cloudflare 资源全生命周期，M11/M12 完成 HA owner 与按 Port conformance。
+
+## Goal orchestration（M13）
+
+```mermaid
+flowchart LR
+    Source["人 / Planner / API"] --> Proposal["GoalPlanProposal"]
+    Proposal --> Admit["Core deterministic admission"]
+    Admit -->|"reject + reason"| Audit[("authority ledger")]
+    Admit -->|"atomic accept"| Plan["AcceptedGoalPlanRevision"]
+    Plan --> DAG["有界 Goal DAG"]
+    DAG --> Runs["既有 TaskSubmission / Run"]
+    Runs --> Evidence["Candidate / Evidence / Outcome"]
+    Evidence --> Replan["新 proposal / revision"]
+    Replan --> Admit
+```
+
+Planner 无论由 LLM、人或代码实现，都只生成 proposal。Core 依次校验 Schema/revision CAS、scope、node/edge 完整性、allowlist、完整 effective graph 的 cycle/depth/fan-out、整个 Goal 的预算 availability/estimate 与可选 plan approval；全部通过后，在同一事务原子写 accepted plan revision、live reservation 与 materialization outbox。拒绝、stale approval、CAS conflict 或 outbox 失败不会产生 Run、副作用或 live reservation。
+
+至少累计约束 `maxNodes`、`maxDepth`、`maxFanOut`、`maxConcurrentNodes`、`maxPlanRevisions`、`maxTotalRuns`、`maxTotalAttempts`、`maxWallTime`、`maxCompute`、`maxTokens`/成本与 `maxArtifactBytes`。预算采用 append-only `reserved → committed → settled|released|expired` 状态机，绑定 reservation/node/revision/command/idempotency identity；estimate 与 actual 差额、pause/abort/supersede/超时和 lost-response 都经 CAS/reconcile，重复 settle/release 或 `actual > reserved` 不得超卖。已完成/运行节点不可改义；pending 节点只能 append-only supersede；重规划不能改写冻结 Run。
+
+Evidence bytes 保持不可变，其当前适用性由 `EvidenceDependencySet` 派生：subject/base/environment/Policy/Verifier capability/upstream Artifact/有效期中任一依赖变化，只使依赖它的 gate 与后继节点失去 eligibility，并以新事件记录，不做全局或原地失效。
+
+Goal 可以进入 `PAUSED`，`pauseReason` 为 `awaiting-input|operator|policy|budget-approval`。`drain-active` 只停止新 dispatch，让 active lease 运行至 deadline；`cancel-active` 原子记录 cancel intent/`canceling` lease 后立即 generation bump 或撤销 eligibility，先 fence 再 Signal/kill，晚到输入 quarantine，然后 Inspect/Reconcile、执行合法 Run 转换并写 Outcome，最后释放资源；持久 `canceling/reconciling` + deadline 覆盖中间恢复。Goal pause 绝不直接改 Run state；resume 是带 expectedSequence 的权威事件，必须重新校验预算、Evidence、Provider eligibility 与 Policy。
+
 ## Cloudflare Sandbox：首个可替换远程 Provider 的边界
 
 以下事实仅取自 Cloudflare 官方公开文档；未经官方记载的能力一律视为未验证。
@@ -251,7 +293,7 @@ Checkpoint 语义：
 
 ## 保留的 Local MVP 不变量
 
-Worker 不自证；Run 冻结 spec/base/policy/最低环境要求；单 workspace/attempt 写入者；Worker/Verifier/Publisher 分权；ReviewDecision 精确绑定 evidence；失败保存 Outcome；副作用 intent-first + receipt + reconcile；能力不足 fail closed；普通宿主进程不宣称恶意代码隔离；Merge 默认禁用；`.marshal/` 不进入业务提交。
+Worker 不自证；Run 冻结 spec/base/policy/最低环境要求；单 workspace/attempt 写入者；Worker/Verifier/Publisher 分权；ReviewDecision 精确绑定 evidence；失败保存 Outcome；副作用 intent-first + receipt + reconcile，补偿不回滚历史；能力不足 fail closed；普通宿主进程不宣称恶意代码隔离；Merge 默认禁用；`.marshal/` 不进入业务提交。
 
 ## 文档关系
 

@@ -6,7 +6,7 @@ Marshal 让 Coding Agent 的工作像一套工程交付流程，而不是无结�
 
 当更换 Worker Provider 不会改变任务含义、验收标准和发布所需证据时，Marshal 才算实现目标。
 
-长期目标已由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（2026-08-10 接受）正式重置：从“本地单次 CLI 编排”升级为**长寿命 Runtime/Control Plane 持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。执行沙箱可插拔，Cloudflare Sandbox 仅作为首个可替换远程 Provider。目标架构与路线见 [Runtime 架构](runtime-architecture.md) 与 [实施计划](implementation-plan.md) M7–M13（M7–M12 平台阶段与 M13 Goal 编排）。
+长期目标已由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（2026-08-10 接受）正式重置：从“本地单次 CLI 编排”升级为**长寿命 Runtime/Control Plane 持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。执行沙箱可插拔，Cloudflare Sandbox 仅作为首个可替换远程 Provider。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 进一步冻结：Supervisor 是确定性 Core，不是 LLM；LLM 只执行 typed semantic workload；Goal plan 必须先 proposal、后由 Core 确定性接纳。目标架构与路线见 [Runtime 架构](runtime-architecture.md) 与 [实施计划](implementation-plan.md) M7–M13。
 
 ## 问题定义
 
@@ -34,9 +34,9 @@ Provider 特有逻辑仅存在于 Adapter 内部，核心生命周期不得根�
 
 Marshal 独立观察 Git 状态、执行验证命令、计算交付物摘要并记录退出码。Worker 摘要可以作为上下文，但不能独立满足门禁。
 
-### G4：职责分离
+### G4：职责与权威分离
 
-Worker 负责实现，主 Agent 负责审查，Marshal 负责验证和发布。发布凭据与 merge 权限位于 Worker 信任边界之外。
+Implement 产出 Candidate，Verify 产出 Evidence，Review 产出 Assessment，Publication 产出 Receipt；Marshal Core 校验并物化权威事实。发布凭据与 merge 权限位于 Worker 信任边界之外，任何执行者都不能凭自己的“完成”声明越过 Core gate。
 
 ### G5：可恢复执行
 
@@ -49,6 +49,10 @@ Worker 负责实现，主 Agent 负责审查，Marshal 负责验证和发布。�
 ### G7：耐久 Runtime 与可插拔沙箱（长期）
 
 Runtime 长期稳定运行，持续接受新 Task 并分发；Sandbox、Agent 与 Runtime 进程可丢弃，权威事件、证据与副作用记录在其外部耐久保存；执行环境通过统一 SandboxProvider 契约接入，替换 Provider 不改变任务含义与验收标准。该目标的分层、恢复/fencing/checkpoint 语义与实施路线由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结。
+
+### G8：确定性控制与有界复杂任务（长期）
+
+Marshal Core 是唯一 Supervisor 与权威状态机；Plan/Implement/Verify/Review/Publish 作为 typed execution 共享基础调度机制，但不共享权限或通用协议。复杂 Goal 的计划、重规划、预算预留、证据适用性和人工暂停/恢复必须可回放且有界，Planner 不能直接创建权威 Run 或执行副作用。
 
 ## MVP 范围
 
@@ -98,8 +102,9 @@ MVP 包含：
 | Worker 选择 | 主 Agent或配置化 Router | CapabilitySnapshot 与策略 |
 | 代码实现 | Worker | Worktree diff |
 | 验证通过或失败 | Harness | 真实命令与交付物结果 |
-| 语义接受、返工或拒绝 | 主 Agent | Diff 与 VerificationReport |
-| 发布 PR/MR | Harness Publisher | Accept 决策与发布策略 |
+| 语义评估提案 | 主 Agent / Review Executor | Candidate、Diff 与 VerificationReport |
+| 物化 ReviewDecision | Marshal Core | 当前 Evidence、Assessment、Policy 与 sequence 校验 |
+| 发布 PR/MR | Harness Publisher（执行）/ Marshal Core（授权与接纳） | ReviewDecision、Evidence、SideEffectIntent/Receipt 与发布策略 |
 | Merge | 仓库策略 / 维护者 | Accept 决策、CI 和所需审批 |
 
 ## 信任边界
@@ -119,7 +124,7 @@ MVP 包含：
 - 无需阅读原始终端记录即可判断中断 Run 的状态。
 - 相同任务身份的重复发布具有幂等性。
 
-积累足够数据后，可按 Adapter 和任务类型统计首轮通过率、返工次数、验证失败率、成本、耗时和回滚率。
+积累足够数据后，可按 Adapter 和任务类型统计首轮通过率、返工次数、验证失败率、成本、耗时、对账与补偿率。补偿不是回滚：历史副作用与补偿结果都必须保留。
 
 ## 交付阶段
 
@@ -137,4 +142,4 @@ MVP 包含：
 
 ### 阶段 4：耐久 Runtime 与可插拔沙箱（M7–M13）
 
-由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结：常驻 Runtime/Control Plane、SandboxProvider 契约与 conformance、耐久调度与恢复/fencing、Cloudflare 远程 Provider 接入、生产级存储与多节点 HA、开源部署与长稳验证（M7–M12 平台阶段）；复杂需求目标由 M13 Goal orchestration 承接——持久 Project/Goal、可审计计划与重规划、跨 Run 记忆、预算与终止条件、独立质量评估与人工干预（M7 只冻结对象语义，M13 实现 Goal 控制器）。细节见 [Runtime 架构](runtime-architecture.md) 与 [实施计划](implementation-plan.md)。多租户服务化仍属于评估项，不是本阶段承诺。
+由 ADR 0016–0019 冻结：常驻确定性 Runtime/Control Plane、SandboxProvider 契约与 conformance、耐久调度与恢复/fencing、Cloudflare 远程 Provider、通用副作用对账与补偿、生产存储/HA、开源部署与长稳验证（M7–M12）；M13 承接复杂 Goal，并按“proposal → deterministic admission → accepted plan → 有界 Run DAG”实现计划、重规划、累计预算、依赖驱动 Evidence 适用性与 Goal `PAUSED` 人工控制。M7 只冻结 Project/Goal 的存在性和权威归属，完整控制器语义由 ADR 0019 与 M13 承接。多租户服务化仍属于评估项。

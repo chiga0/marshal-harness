@@ -4,9 +4,11 @@
 [![Pages](https://img.shields.io/badge/docs-GitHub_Pages-blue)](https://chiga0.github.io/marshal-harness/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Marshal 是一个面向 Coding Agent 的证据门禁式编排框架。主 Agent 负责规划与审查，可替换的 Worker Agent 负责实现，确定性的 Harness 负责验证、留痕和发布。
+Marshal 是一个面向 Coding Agent 的证据门禁式编排框架。当前 Local MVP 由主 Agent 提交规划与审查意见、可替换 Worker Agent 实现，确定性的 Harness 负责接纳、验证、留痕和受控发布；目标形态是长寿命的确定性 Control Plane，持续调度有界的 typed workload。
 
 > 项目状态：Milestone 0–6 全部通过，Local MVP 已标记 `USABLE`（见 [docs/roadmap-status.md](docs/roadmap-status.md)）。文档站：[chiga0.github.io/marshal-harness](https://chiga0.github.io/marshal-harness/)。采用 [MIT](LICENSE) 许可。
+
+> Runtime 状态：M7 设计与契约已通过；M8–M13 仍为 `PLANNED`。C/S 服务、远程 Sandbox、通用 SideEffect 对账与 Goal 控制器是已冻结的目标，不是当前已实现能力。
 
 ## 安装
 
@@ -56,7 +58,7 @@ bin/marshal task accept  --run RUN_ID
 
 **Marshal 不让 Agent 更聪明，而是让 Agent 的工作可验证、可审计、可安全委派。**
 
-它是包裹在 Coding Agent 进程之外的本地控制平面。与能力编排框架（LangGraph/CrewAI/AutoGen，解决“如何安排 Agent 干活”）不同，Marshal 解决“**谁有资格证明什么**”：Worker 可以声明结果，但只有独立验证、证据绑定的审查与受控发布才能改变仓库状态。与云端单 Agent 产品（Codex/Devin 的自主模式）不同，Marshal 完全本地、凭据分权、默认只发 Draft PR、永不自动 merge。
+当前实现是包裹在 Coding Agent 进程之外的本地控制平面；目标 Runtime 是可自托管的 C/S Control Plane。Marshal 解决“**谁有资格证明什么，以及哪些输入有资格改变权威状态**”：LLM、Provider 与 durable backend 只能提交 proposal、claim、evidence、assessment 或 receipt，只有确定性 Core 能接纳它们并写入权威账本。Local MVP 完全本地、凭据分权、默认只发 Draft PR、永不自动 merge。
 
 ## 适用场景
 
@@ -72,7 +74,7 @@ bin/marshal task accept  --run RUN_ID
 - **琐碎小改动**：无门禁或最简流程即可（见操作手册的任务分级）；
 - **期望全自动交付/自动 merge**：Marshal 默认且永远只到 Draft PR，merge 是人的决定；
 - **运行不可信或恶意代码**：Local Profile 不是沙箱，不宣称抵抗同 UID 恶意进程；需要时用容器/VM（Hardened Profile 在延后路线）；
-- **多用户服务、远程调度、Web UI**：当前是本地单用户 CLI，这些在延后路线；
+- **现在就需要成熟的多用户服务、远程调度或 Web UI**：当前是本地单用户 CLI；C/S Runtime 与远程调度位于 M8–M12，尚未实现；
 - **期望框架提升 Agent 的代码质量**：Marshal 门禁证据，不提升模型能力；质量仍取决于你选的 Worker 与任务契约写得好不好。
 
 ## 为什么需要 Marshal
@@ -90,11 +92,15 @@ Marshal 为不同 Worker 提供统一的任务契约、生命周期、证据模�
 
 ## 运行模式
 
-Marshal 将权限明确分成三类：
+当前 Local MVP 的角色映射是：
 
-1. **主 Agent**：制定方案和验收标准，审查真实 diff 与证据，做出语义决策。
-2. **Worker Agent**：在隔离的 Git worktree 中修改和测试代码。它可以声明结果，但声明不能作为验证证据。
-3. **Harness**：管理状态转换、锁、独立命令执行、交付物检查、审计记录和发布凭据。
+1. **主 Agent / Lead**：提交计划与验收标准，基于真实 diff 与证据生成 Review assessment；它不直接写权威状态。
+2. **Worker Agent**：在独立 Git worktree 中产出 Candidate。它可以声明结果，但声明不能作为验证 Evidence。
+3. **Verifier**：在 Worker 会话之外生成 Evidence；它不能为 Worker 自证，也不能自行作 ReviewDecision。
+4. **Marshal Core**：确定性 Supervisor/Control Plane，管理状态、策略、预算、租约、证据接纳与 ReviewDecision 物化，是唯一业务权威。
+5. **Publisher**：位于独立 Publication 信任域，按 Core 的精确授权执行 Draft 发布并返回 Receipt；它没有审查权，Worker 也没有发布凭据。
+
+目标 Runtime 可把 Plan、Implement、Verify、Review 与 Publish 视为 typed execution，但不会把它们压成一个通用 Executor RPC。它们可以共享 queue、lease、heartbeat、cancel、日志和 Artifact 基座，仍须保持各自的 Schema、principal、credential、接纳规则与 protocol family。`Candidate != Evidence != Assessment != Publication Receipt`。
 
 默认主 Agent 可以是 pi、Codex CLI/Desktop 等任意编码 Agent（见 [docs/lead-agent-surfaces.md](docs/lead-agent-surfaces.md)）；仓库内 `.agents/skills/marshal/` 的 Skill 会被支持它的 Agent 自动加载。ChatGPT 手机端 Remote 可以远程监督运行在开发机 Desktop 上的同一任务。首批 Worker Adapter 面向 Qwen Code、OpenCode 和 Pi，但核心领域模型不依赖任何单一 Agent 或交互界面。
 

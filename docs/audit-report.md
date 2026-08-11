@@ -340,3 +340,21 @@ Milestone 7（架构与契约）于 2026-08-11 通过退出门禁，Roadmap 状�
 本次关闭只记录设计与契约阶段通过：M8–M13 保持 `PLANNED`；Runtime 实现、Sandbox SPI conformance、`marshal-server`/Public API、Cloudflare Provider 与 Goal 编排均未实现，本节不对其中任何一项作出完成声明。
 
 本报告前文“M7 保持 `IN_PROGRESS`”的记录为 ADR 0017/0018 接受时点的状态；自 2026-08-11 起 M7 状态为 `PASSED`。本节不引入新的 Blocking Finding，不改变 Local MVP `APPROVED_FOR_IMPLEMENTATION` / `USABLE` 结论。
+
+## 确定性控制面、补偿与 Goal Roadmap 增补审计（2026-08-11）
+
+维护者要求以局外人视角重新审计“稳定 Runtime 持续接收和分发复杂任务”的终态。三路独立只读审计分别检查 Typed Execution、SideEffect/Compensation 与 M13 Goal 编排，结论是：ADR 0016–0018 的 Durable Control Plane 与 Provider 分层方向正确，无需改成 LLM Supervisor 或自由 P2P；但以下合同级缺口必须在实施前关闭。维护者据此接受 [ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)。
+
+| ID | 原级别 | 问题 | ADR 0019 关闭口径 | 实现状态 |
+| --- | --- | --- | --- | --- |
+| D-A1 PLAN-AUTHORITY | P1 | Planner/主 Agent 可能被实现为直接创建 Run、写状态的第二 Supervisor | Supervisor 明确定义为确定性 Core；Planner 只提交 proposal，Core deterministic admission 后才 materialize | M13 `PLANNED` |
+| D-A2 TYPED-RESULTS | P1 | Candidate/Evidence/Assessment/Receipt 可能被通用 Executor 结果混同 | 四类输出独立接纳；共享执行基座但按 Port 隔离 Schema/principal/credential/conformance | M8–M12 `PLANNED` |
+| D-A3 GRAPH-BOUNDS | P1 | Goal DAG 缺累计规模、跨 revision cycle、预算 reservation 与重规划不变量 | 冻结 effective graph 校验、整个 Goal 累计 guardrail、先 reserve 后 dispatch、immutable revision | M13 `PLANNED` |
+| D-A4 EVIDENCE-ELIGIBILITY | P1 | 跨 Run/上游 Artifact 改变后的 Evidence 适用性无法判定 | Evidence 不可变；以 dependency set 与追加 eligibility event 做局部失效 | M13 `PLANNED` |
+| D-A5 HUMAN-RESUME | P1 | Run `BLOCKED` 已是终态，却缺少跨日人工等待语义 | 不改 Run 生命周期；Goal `PAUSED`/resume 负责等待并重新校验/fence | M13 `PLANNED` |
+| D-A6 COMPENSATION | P1 | 通用 SideEffect 只在设计中，失败易被误称为 rollback | append-only intent/receipt/reconcile；补偿是新副作用，按 disposition class 与 Policy 控制 | M8–M12 `PLANNED` |
+| D-A7 ORPHAN-CLEANUP | P1 | expired cleanup 删除 Run 目录后再移除 worktree，崩溃可能留下无法从 runs 枚举恢复的 orphan | M8/M9 建 authority-scoped cleanup ledger 与 orphan reconcile fixture | M8/M9 `PLANNED` |
+
+设计 Finding 已由 ADR 0019 关闭，但实现风险保持开放并明确映射到 M8–M13；不得把本次文档接受描述为功能已实现。M7 保持 `PASSED`，M8–M13 保持 `PLANNED`，Local MVP `USABLE` 不变。
+
+ADR 0019 首稿的最终独立复核另发现并关闭五项 P1：按 Port 接纳被错误泛化为 universal generation 校验；Core 内部 SideEffect 记录可能被误作跨 Port wire Schema；Goal pause 未闭合 active Run 处置；budget reservation 缺 settle/release/expire/reconcile；M8 共享执行基座措辞可能绕过 ADR 0018 §7 顺序。修订后分别冻结：dispatch-bound 才校验 lease generation/fencing；各 Port receipt 经版本化 fail-closed mapper 进入内部 authority record；`drain-active|cancel-active` 不直接改 Run state；append-only reservation 状态机；任何 claim/lease activation 仍位于 ADR 0018 §7 硬顺序最后一步。复核后无未关闭 P0/P1。

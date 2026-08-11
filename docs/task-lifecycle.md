@@ -36,6 +36,8 @@ Retry 表示基础设施或 Provider 执行失败，因此创建新 Attempt。Re
 
 `ACCEPTED`、`REJECTED`、`BLOCKED`、`ABORTED`、`NO_CHANGE` 是 Run 终态。解决 Blocker 或改变终态决策必须创建关联到旧 Run 的新 Run。
 
+M13 的长周期人工等待不改变本表：根据 [ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)，等待输入、策略或预算审批由 Goal `PAUSED` 承担；Run 不新增 `WAITING_HUMAN_APPROVAL`。Goal resume 可以创建关联的新 Run，但不能复活或改写已终态 Run。
+
 ## 转换表
 
 | From | To | 守卫条件 |

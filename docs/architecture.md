@@ -2,7 +2,7 @@
 
 ## 背景
 
-Marshal 是包裹在 Coding Agent 进程之外的本地控制平面。它把带版本的 TaskSpec 转换为有边界的 Worker Attempt，独立观察仓库结果，请主 Agent 做出语义决策，并按条件发布已接受的变更。
+当前 Local MVP 是包裹在 Coding Agent 进程之外的本地控制平面。它把带版本的 TaskSpec 转换为有边界的 Worker Attempt，独立观察仓库结果，接纳主 Agent 的语义评估，并按条件发布已接受的变更。目标 Runtime 是同一 Core 的长寿命 C/S 形态；下文明确区分“当前已实现”与“M8–M13 目标”。
 
 ```mermaid
 flowchart LR
@@ -28,6 +28,31 @@ flowchart LR
 MVP 采用 CLI-first 模块化单体。能在同一进程内完成的组件保持同进程，Worker 和验证命令作为子进程执行。领域边界必须清晰，以便未来的 Daemon、MCP Server 或远程调度器复用同一个 Core，而不是重新定义生命周期。长期形态已由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结为长寿命 Runtime/Control Plane；目标组件分层见 [Runtime 架构](runtime-architecture.md)。
 
 建议实现基线为 Go，具体版本在实施获批后锁定。Core、CLI 与内置 Adapter 编译为单一可执行文件；JSON Schema 继续定义与语言无关的持久化外部记录，Go 内部类型必须由 Schema 生成，或由契约测试阻止漂移。选型理由与边界见 [ADR 0005](adr/0005-go-runtime.md)。
+
+## 确定性 Control Plane 与 Typed Execution（目标 Runtime）
+
+[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 将 Supervisor 明确定义为 Marshal Core/Control Plane，而不是维护全局上下文的 LLM。Core 独占 lifecycle、ledger、Policy、预算、lease/fencing、Evidence 接纳、ReviewDecision 物化与 PublicationAuthorization；Planner、Agent、Verifier、Reviewer、Publisher 和 durable backend 都只能提供输入或传输。
+
+```mermaid
+flowchart LR
+    Client["人 / API / Lead Agent"] --> Proposal["Task / Plan / Review proposal"]
+    Proposal --> Core["确定性 Marshal Core\n唯一业务权威"]
+    Core --> Plan["Plan workload"]
+    Core --> Impl["Implement workload"]
+    Core --> Verify["Verify workload"]
+    Core --> Review["Review workload"]
+    Core --> Publish["Publication effect"]
+    Plan -->|"GoalPlanProposal"| Core
+    Impl -->|"Candidate"| Core
+    Verify -->|"Evidence"| Core
+    Review -->|"Assessment"| Core
+    Publish -->|"Receipt"| Core
+    Core --> Ledger[("authority ledger")]
+```
+
+这些 typed workload 可以共享 queue、lease、heartbeat、cancel、deadline、日志、Artifact 与 checkpoint 的内部执行基座，但不能共享无类型 `/execute`、universal envelope、Schema、credential、token 或 conformance suite。现有 Sandbox `workloadRole` 仍只允许 `worker|verifier`；Planning/Review 当前经 Public application Port 或 Review Bridge 提交 proposal，远程化须另行 ADR；Publisher 始终位于独立 Publication 信任域。
+
+四类核心返回值不可混同：Candidate 是候选成果，Evidence 是独立事实输入，Assessment 是语义判断提案，Publication/SideEffect Receipt 是外部效果观察。它们只有在 Core 对当前 generation、sequence、digest、Policy 与 eligibility 完成原子校验后，才可能成为权威账本事实。
 
 ## 组件
 
@@ -60,7 +85,7 @@ marshal task abort
 - 解析仓库并锁定 base SHA；
 - 执行生命周期转换守卫；
 - 强制执行返工、重试和时间预算；
-- 协调 Adapter、Verifier、Reviewer 和 Publisher Port；
+- 协调 Adapter、Verifier、Review Bridge 与 Publisher Port，并按类型接纳 Candidate、Evidence、Assessment 与 Receipt；
 - 生成终态 Outcome 记录。
 
 ### Run Store
@@ -256,7 +281,7 @@ Attempt 控制根与业务 Worktree 的信任边界见 [ADR 0006](adr/0006-attem
 
 ## 可扩展性
 
-Worker Adapter、Observer、Verification Executor、Review Bridge、Artifact Collector、Publisher 和 Event Sink 使用稳定 Port。Adapter 内部可以使用 one-shot CLI、JSON-RPC、ACP 或 SDK，但必须满足相同核心契约和一致性测试。
+Worker Adapter、Observer、Verification Executor、Review Bridge、Artifact Collector、Publisher 和 Event Sink 使用稳定 Port。Adapter 内部可以使用 one-shot CLI、JSON-RPC、ACP 或 SDK，但必须满足所属 Port 的核心契约和一致性测试；ACP 只可能是某个 Port 的 transport，不是 Marshal 内部权威协议。
 
 第三方 Plugin 默认不得在 Marshal 进程内执行。初始扩展模型采用子进程或独立安装包，并要求显式信任。
 

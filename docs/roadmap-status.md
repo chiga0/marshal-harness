@@ -14,17 +14,17 @@
 
 Local MVP 定义达成：标记 `USABLE`。
 
-M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider，[ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结；M13：Goal orchestration，承接 ADR 0016 冻结的 Project/Goal 对象语义）：
+M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal orchestration）。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 是 M7 通过后的已接受设计增补：它不回滚 M7，也不提前完成 M8–M13；确定性 Supervisor、Typed Execution、通用副作用对账/补偿与 Goal admission 均仍待实现：
 
 | Milestone | 状态 | 证据 |
 | --- | --- | --- |
 | 7：架构与契约 | `PASSED`（2026-08-11，只表示设计与契约阶段通过） | [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 已接受；[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md) 已接受（2026-08-10，接受只关闭设计歧义）；[ADR 0018](adr/0018-control-plane-and-provider-ports.md) 已接受（2026-08-11，接受只冻结设计）；[Runtime 架构](runtime-architecture.md) 同步；Marshal Run `m7-control-provider-boundary-adr-r15-20260811` 完成 M7 最终架构稿并 `ACCEPTED`（reviewRound=2，32/32 required Gates 通过，独立审查无 P0/P1）；[Draft PR #13](https://github.com/chiga0/marshal-harness/pull/13) 通过 Quality (ubuntu-latest)、Quality (macos-latest)、Secret scan 与 GitGuardian 检查（GitHub Actions CI run `31449333738`），2026-08-11 由维护者手工合入 main（merge commit `4b2f3248f24ec2a67642ec77822fe6bb59730df7`） |
-| 8：Sandbox SPI/Fake/Local conformance + embedded/local 纵切 | `PLANNED` | 见[实施计划](implementation-plan.md) |
-| 9：marshal-server、Public API 与 Durable Runtime | `PLANNED` | 见[实施计划](implementation-plan.md) |
-| 10：Cloudflare Provider（remote transport） | `PLANNED` | 见[实施计划](implementation-plan.md) |
-| 11：生产级存储、多节点 HA 与身份分离 | `PLANNED` | 见[实施计划](implementation-plan.md) |
-| 12：开源部署、版本化 Provider SDK/协议、多语言 SDK 与长稳验证（基于 M9 冻结的 wire contract） | `PLANNED` | 见[实施计划](implementation-plan.md) |
-| 13：Goal orchestration（Goal API/控制器、持久 Project/Goal、计划/重规划、预算与终止、独立评估、人工干预） | `PLANNED` | 见[实施计划](implementation-plan.md) |
+| 8：Sandbox SPI/Fake/Local conformance + embedded/local 纵切 | `PLANNED` | 共享执行基座；Sandbox/Stage/cleanup intent/receipt/reconcile；见[实施计划](implementation-plan.md) |
+| 9：marshal-server、Public API 与 Durable Runtime | `PLANNED` | 通用 SideEffect ledger、观察/权威事件分层与 crash reconcile；见[实施计划](implementation-plan.md) |
+| 10：Cloudflare Provider（remote transport） | `PLANNED` | Cloudflare 资源全生命周期对账与 leak scan；见[实施计划](implementation-plan.md) |
+| 11：生产级存储、多节点 HA 与身份分离 | `PLANNED` | HA effect/compensation 单 owner、fencing 与审批审计；见[实施计划](implementation-plan.md) |
+| 12：开源部署、版本化 Provider SDK/协议、多语言 SDK 与长稳验证 | `PLANNED` | 按 Port effect conformance；ACP/A2A/OpenHands 仅为可选生态扩展；见[实施计划](implementation-plan.md) |
+| 13：Goal orchestration | `PLANNED` | M13.0 契约 → M13.1 plan admission → M13.2 DAG/replan/evidence → M13.3 pause/resume/soak；当前无 Goal Schema/控制器实现；见[实施计划](implementation-plan.md) |
 
 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10；全部 P1 经 Round 2 独立验证与 ReviewDecision accept 后由维护者接受）基于首次 Sandbox SPI dogfood 的 reject 证据冻结 provider-neutral Sandbox 安全契约，并修订 M8–M13 分工：
 
@@ -73,4 +73,4 @@ ADR 0017 中以下历史 universal 口径就地标注**已被 ADR 0018 取代**�
 
 实现状态不因文档冻结或 ADR 接受而提前升级：ADR 0017 的接受只关闭设计歧义、ADR 0018 的接受只冻结设计，均只冻结设计不升级 M8–M13 实现/conformance 状态；上表各 Milestone 状态为：M7 于 2026-08-11 通过退出门禁后更新为已通过（只表示设计与契约阶段通过，不表示后续实现或 conformance 完成），M8–M13 保持 `PLANNED`；首次 Sandbox SPI dogfood Run 的既有实现成果按**未接纳探索证据**对待，不计为 M8 实现进度；M8 须按修订后的契约（含 ADR 0018 §7 顺序硬门禁）以新任务启动，并通过其退出门禁后才可标记完成。
 
-每个 Milestone 都执行范围冻结、实现、单元/集成/E2E 测试、独立审计、提交推送和远端 CI 绿色验收。任何 P0/P1 审计问题或 CI 失败都会阻止进入下一阶段。M7–M13 还要求每个 Milestone 先通过 Local MVP 全量回归。M7 只冻结 Project/Goal 对象语义，M13 才实现 Goal 控制器；M7–M12 完成声明不涵盖复杂需求目标。
+每个 Milestone 都执行范围冻结、实现、单元/集成/E2E 测试、独立审计、提交推送和远端 CI 绿色验收。任何 P0/P1 审计问题或 CI 失败都会阻止进入下一阶段。M7–M13 还要求每个 Milestone 先通过 Local MVP 全量回归。M7 只冻结 Project/Goal 的存在性、authority ownership 与多 Run 原则；M13 才实现 ADR 0019 的完整 Goal 控制器，M7–M12 完成声明不涵盖复杂需求目标。

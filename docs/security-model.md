@@ -153,9 +153,9 @@ Secret 仅在需要它的授权组件内 Just-in-time 解析。Publisher Credent
 
 不在当前范围。必须先完成专门 Threat Model 与 Hardened Isolation Review，不能把 Local MVP 宣传成满足此等级。
 
-## Runtime 阶段的安全边界（ADR 0016、ADR 0017 与 ADR 0018）
+## Runtime 阶段的安全边界（ADR 0016–0019）
 
-[ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结耐久 Runtime、[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10）冻结 provider-neutral Sandbox 安全契约、[ADR 0018](adr/0018-control-plane-and-provider-ports.md)（已接受，2026-08-11；接受只冻结设计，不升级 M8–M13 实现/conformance 状态）冻结 Marshal C/S Control Plane 与按信任域分隔的 Provider Port，并冻结权威/actor 双键空间（authorityNamespaceId=(tenantNamespace, controlPlaneId, authorityScopeId) 拥有全部 Control Plane 权威对象——submission/Task/Run/Attempt/ledger/DispatchLease/Allocation/ReviewDecision/Evidence graph/Outcome/SideEffectIntent/Receipt reconcile/typed edge/idempotency/outbox/audit/SSE；controlPlaneId 是 HA/灾备中保持稳定的逻辑权威身份，不是进程实例；ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence 也是 authority ledger 事实，仅携带 actor securityDomainId/provenance/eligibility；Artifact/Checkpoint/Candidate/Evidence bytes 的接纳关系归 authority ledger；securityDomainId=(tenantNamespace, trustDomainKind, isolationDomainId) 只标识 Provider actor）、三条 Core 独占签发的 Core-only typed cross-domain edge（DispatchResultCapability/MaterialAccessGrant/PublicationAuthorization，默认拒绝；issuer/source/target（每条 edge 的 issuer 为 Core，issuer 不等于业务流的 sourceActor；sourceActor/targetActor/targetAudience 按 edge 类型绑定）/operation/expiry/digest/revocation/replay/current-ledger recheck 与各自专属绑定，派生 token/handle 不得成为第二权威）、Provider attestation 全链绑定、远程 transport 安全基线（首次 enable 即强制 TLS）、原子 fencing 写入汇、SSE 恢复与再授权、DurableExecutionEngine 单一权威 seam、按 Port 的 versioned protocol family、Push/Pull outcome/invariant equivalence 与失效处置分级（§3/§10–§16）后，以下边界随 M8–M12 实施生效：
+[ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 冻结耐久 Runtime，[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md) 冻结 Sandbox 安全契约，[ADR 0018](adr/0018-control-plane-and-provider-ports.md) 冻结 C/S Control Plane、按信任域分隔的 Provider Port、权威/actor 双键空间与 typed cross-domain edge；[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 进一步冻结确定性 Supervisor、Typed Execution 接纳边界、Goal admission、Evidence 依赖适用性与 append-only 补偿。以下边界随 M8–M13 实施生效：
 
 - 可丢弃执行体：Sandbox、Agent 与 Runtime 进程均可丢弃；权威事件、证据与副作用记录必须在其外部耐久保存，恢复结论只能凭持久事件账本得出；
 - 凭据不进入执行环境：环境构造规则同样适用于远程 Sandbox；SandboxAllocation 只保存 provider-neutral 的 opaque locator 与 receipt，Provider 内部凭据不得进入 TaskSpec、事件、Prompt 或日志；
@@ -186,6 +186,11 @@ Secret 仅在需要它的授权组件内 Just-in-time 解析。Publisher Credent
 - 规范化（ADR 0017）：digest/replay key/requestDigest/evidenceDigest 统一 RFC 8785 JCS；协议对象解析拒绝重复 JSON member；
 - Secret/Artifact Provider（ADR 0017）：只交付有界引用或 workload-scoped 短期能力，secret 明文不得写入 TaskSpec、事件、Prompt、日志或 WorkerResult；
 - Provider 观测边界（ADR 0017）：Provider 不得自行宣布 ReviewDecision 或 safe-to-publish；Verification Provider 只能执行独立验证 workload，不得决定 gate/ReviewDecision。
+- Planner 越权与任务爆炸（ADR 0019）：Planner 输出是不可信 `GoalPlanProposal`，不能直接写 ledger、创建 Run 或执行 side effect；Core 必须校验 scope/allowlist、完整 effective DAG、跨 revision cycle 与整个 Goal 的累计节点、并发、Attempt、wall time、compute、token/成本和 Artifact 预算，并在 dispatch 前原子 reservation；
+- Prompt injection 不能扩权：仓库内容、上游 Artifact、Agent transcript 与 Review 文本都不是 Policy 或授权；它们不能改变 repository/scope、executor kind、side-effect class、credential、budget 或 gate；
+- Evidence 适用性：Evidence bytes 不可变，当前 eligibility 从 subject/base/environment/Policy/Verifier capability/upstream Artifact/有效期依赖派生；依赖变化追加 ineligibility/supersession event，强制 gate 失败不能被 LLM Assessment 覆盖；
+- 副作用与补偿：失败不回滚 authority ledger；cleanup/compensation 是新副作用并重新走 intent/receipt/reconcile。自动执行只限精确 target identity 与冻结 Policy 明确授权；ambiguous、不可逆、高权限或身份冲突均 fail closed；
+- Goal 人工控制：Goal `PAUSED` 停止新 dispatch，resume 以 expectedSequence 写 ledger 并重新校验预算、Evidence、Provider eligibility 与 Policy；暂停期间按 Policy 释放 lease/sandbox，取消 active workload 必须 generation bump/fence。Run 不新增无限等待状态。
 
 ## 实施安全验收条件
 
