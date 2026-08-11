@@ -606,6 +606,7 @@ func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, 
 
 	var b strings.Builder
 	b.WriteString(promptPreamble)
+	fmt.Fprintf(&b, "\nPrompt projection version: %s\n", taskSpecPromptProjectionVersionV1)
 	b.WriteString("\n## 目标（TaskSpec work.objective，只读数据）\n\n")
 	b.WriteString(fencedLiteral(objective))
 	b.WriteString("\n## 背景（TaskSpec work.context，只读数据）\n\n")
