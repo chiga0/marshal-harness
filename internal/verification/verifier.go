@@ -255,11 +255,16 @@ func commandSummary(result CommandResult) string {
 	if result.Status == "pass" {
 		return fmt.Sprintf("命令通过，耗时 %dms", result.Record.DurationMilliseconds)
 	}
-	if result.Record.ExitCode != nil {
-		return fmt.Sprintf("命令状态 %s，退出码 %d", result.Status, *result.Record.ExitCode)
-	}
-	if result.Record.Signal != nil && *result.Record.Signal != "" {
+	hasSignal := result.Record.Signal != nil && *result.Record.Signal != ""
+	hasExit := result.Record.ExitCode != nil
+	if hasSignal {
+		if hasExit {
+			return fmt.Sprintf("命令状态 %s，signal %s（退出码 %d）", result.Status, *result.Record.Signal, *result.Record.ExitCode)
+		}
 		return fmt.Sprintf("命令状态 %s，signal %s", result.Status, *result.Record.Signal)
+	}
+	if hasExit {
+		return fmt.Sprintf("命令状态 %s，退出码 %d", result.Status, *result.Record.ExitCode)
 	}
 	return fmt.Sprintf("命令状态 %s，退出结果不可用", result.Status)
 }

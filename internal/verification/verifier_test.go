@@ -366,6 +366,37 @@ func TestRunnerBoundsLogs(t *testing.T) {
 	}
 }
 
+func TestRunnerCapturesSignaledCommand(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("real signal capture is Unix-specific")
+	}
+	result := (Runner{}).Run(context.Background(), t.TempDir(), CommandSpec{ID: "signal-term", Argv: []string{"sh", "-c", "kill -TERM $$"}, CWD: ".", Timeout: 5 * time.Second, Required: true, MaxLogBytes: 4096})
+	if result.Status != "fail" {
+		t.Fatalf("command status = %q, want fail", result.Status)
+	}
+	if result.Record.ExitCode == nil {
+		t.Fatal("ExitCode is nil; runner must record ProcessState.ExitCode for signaled processes")
+	}
+	if *result.Record.ExitCode != -1 {
+		t.Fatalf("ExitCode = %d, want -1", *result.Record.ExitCode)
+	}
+	wantSignal := syscall.SIGTERM.String()
+	if result.Record.Signal == nil {
+		t.Fatal("Signal is nil; runner must record WaitStatus.Signal().String() for signaled processes")
+	}
+	if got := *result.Record.Signal; got != wantSignal {
+		t.Fatalf("Signal = %q, want %q", got, wantSignal)
+	}
+	summary := commandSummary(result)
+	if !strings.Contains(summary, wantSignal) {
+		t.Fatalf("summary %q does not contain real signal %q", summary, wantSignal)
+	}
+	exitCodePart := "退出码 " + strconv.Itoa(*result.Record.ExitCode)
+	if !strings.Contains(summary, exitCodePart) {
+		t.Fatalf("summary %q does not contain %q", summary, exitCodePart)
+	}
+}
+
 func TestCommandSummaryFormatsExitCodeValue(t *testing.T) {
 	for _, code := range []int{0, 1, 127, -1} {
 		exitCode := code
@@ -377,9 +408,42 @@ func TestCommandSummaryFormatsExitCodeValue(t *testing.T) {
 			t.Fatalf("exit code %d summary leaks pointer form: %q", code, summary)
 		}
 	}
+	// An empty signal with a non-nil exit code must fall back to the exit-only summary.
+	emptySignal := ""
+	for _, code := range []int{0, 1, -1} {
+		exitCode := code
+		summary := commandSummary(CommandResult{Status: "fail", Record: CommandRecord{ExitCode: &exitCode, Signal: &emptySignal}})
+		if want := "命令状态 fail，退出码 " + strconv.Itoa(code); summary != want {
+			t.Fatalf("empty signal exit code %d summary = %q, want %q", code, summary, want)
+		}
+	}
 	passSummary := commandSummary(CommandResult{Status: "pass", Record: CommandRecord{DurationMilliseconds: 42}})
 	if passSummary != "命令通过，耗时 42ms" {
 		t.Fatalf("pass summary changed: %q", passSummary)
+	}
+}
+
+func TestCommandSummaryFormatsSignalWithExitCode(t *testing.T) {
+	cases := []struct {
+		status   string
+		signal   string
+		exitCode int
+	}{
+		{"fail", "terminated", -1},
+		{"fail", "killed", -1},
+		{"error", "aborted", -1},
+	}
+	for _, tc := range cases {
+		signal := tc.signal
+		exitCode := tc.exitCode
+		summary := commandSummary(CommandResult{Status: tc.status, Record: CommandRecord{ExitCode: &exitCode, Signal: &signal}})
+		want := "命令状态 " + tc.status + "，signal " + tc.signal + "（退出码 " + strconv.Itoa(tc.exitCode) + "）"
+		if summary != want {
+			t.Fatalf("signal %s exit code %d summary = %q, want %q", tc.signal, tc.exitCode, summary, want)
+		}
+		if strings.Contains(summary, "0x") {
+			t.Fatalf("signal %s summary leaks pointer form: %q", tc.signal, summary)
+		}
 	}
 }
 
