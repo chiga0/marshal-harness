@@ -1,0 +1,14 @@
+# Marshal Harness gitleaks config (gitleaks 8.x / gitleaks-action)
+#
+# 除下方顶层 allowlist 外，一切保持 gitleaks 默认规则集：
+# 不使用 stopwords、不排除任何规则 ID、不修改默认规则。
+#
+# 该 allowlist 仅覆盖匹配 .*_test\.go$ 的测试文件路径（即 *_test.go）；
+# 非测试代码不享受此放行，规则强度与默认规则集完全一致。
+# 注意：在测试文件中提交真实凭据仍属违规，由 review 门禁负责。
+
+title = "Marshal Harness gitleaks config"
+
+[allowlist]
+description = "测试文件（*_test.go）中的 fixture 是公开的假凭据/假摘要字面量，不是真实 secret；非测试代码不享受此放行。"
+paths = ['.*_test\.go$']
