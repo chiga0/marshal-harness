@@ -387,18 +387,73 @@ func frozenEvidence(store *runstore.Store, runID string) (frozenPublicationEvide
 	return result, nil
 }
 
+const controlledCommitAttempts = 3
+
+var controlledCommitRetryDelay = 250 * time.Millisecond
+
+var controlledCommitObjectID = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+
+// errControlledCommitInput marks deterministic controlled-commit failures
+// (malformed or missing input objects) that a retry cannot repair.
+var errControlledCommitInput = errors.New("controlled commit input rejected")
+
 func controlledCommit(ctx context.Context, worktree, runDir, baseSHA, parentSHA, title string, state domain.RunState, decision domain.ReviewDecision, observation verification.Observation) (string, error) {
-	index, err := os.CreateTemp(filepath.Join(runDir), ".publication-index-*")
+	if !controlledCommitObjectID.MatchString(baseSHA) {
+		return "", fmt.Errorf("%w: base %q is not a full object id", errControlledCommitInput, baseSHA)
+	}
+	if !controlledCommitObjectID.MatchString(parentSHA) {
+		return "", fmt.Errorf("%w: parent %q is not a full object id", errControlledCommitInput, parentSHA)
+	}
+	if err := requireStoredCommit(ctx, worktree, baseSHA, "base"); err != nil {
+		return "", err
+	}
+	if err := requireStoredCommit(ctx, worktree, parentSHA, "parent"); err != nil {
+		return "", err
+	}
+	var lastErr error
+	for attempt := 0; attempt < controlledCommitAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(time.Duration(attempt) * controlledCommitRetryDelay):
+			}
+		}
+		commit, err := createControlledCommit(ctx, worktree, runDir, baseSHA, parentSHA, title, state, decision, observation)
+		if err == nil {
+			return commit, nil
+		}
+		if errors.Is(err, errControlledCommitInput) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", err
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
+func createControlledCommit(ctx context.Context, worktree, runDir, baseSHA, parentSHA, title string, state domain.RunState, decision domain.ReviewDecision, observation verification.Observation) (string, error) {
+	index, err := os.CreateTemp(runDir, ".publication-index-*")
 	if err != nil {
 		return "", err
 	}
 	indexPath := index.Name()
-	_ = index.Close()
-	_ = os.Remove(indexPath)
 	defer os.Remove(indexPath)
+	defer os.Remove(indexPath + ".lock")
+	if err := index.Close(); err != nil {
+		return "", fmt.Errorf("close temporary controlled index: %w", err)
+	}
+	if err := os.Remove(indexPath); err != nil {
+		return "", fmt.Errorf("reset temporary controlled index %s: %w", filepath.Base(indexPath), err)
+	}
+	if _, err := os.Lstat(indexPath); !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("temporary controlled index %s survived reset", filepath.Base(indexPath))
+	}
 	environment := controlledGitEnvironment(indexPath, decision.DecidedAt)
 	if _, err := gitOutput(ctx, worktree, environment, "read-tree", baseSHA); err != nil {
 		return "", err
+	}
+	if _, err := os.Lstat(indexPath); err != nil {
+		return "", fmt.Errorf("git read-tree did not create the controlled index %s: %w", filepath.Base(indexPath), err)
 	}
 	if err := stageRawChanges(ctx, worktree, environment, observation.ChangedFiles); err != nil {
 		return "", err
@@ -414,17 +469,46 @@ func controlledCommit(ctx context.Context, worktree, runDir, baseSHA, parentSHA,
 	if err != nil {
 		return "", err
 	}
+	tree = strings.TrimSpace(tree)
+	if !controlledCommitObjectID.MatchString(tree) {
+		return "", fmt.Errorf("%w: git write-tree returned %q instead of a tree object id", errControlledCommitInput, safeText([]byte(tree)))
+	}
+	if err := requireStoredObject(ctx, worktree, tree, "tree"); err != nil {
+		return "", err
+	}
 	subject := sanitizeSubject(title)
 	message := fmt.Sprintf("%s\n\nMarshal-Task: %s\nMarshal-Run: %s\nMarshal-Spec-Digest: %s\nMarshal-Evidence-Digest: %s\nMarshal-Snapshot-Digest: %s\n", subject, state.TaskID, state.RunID, state.SpecDigest, decision.EvidenceDigest, observation.SnapshotDigest)
-	commit, err := gitInput(ctx, worktree, environment, message, "commit-tree", strings.TrimSpace(tree), "-p", parentSHA)
+	// commit-tree stdout carries exactly one commit object id; stderr may
+	// carry hook, warning or advice noise and must never be mixed into it.
+	stdout, stderr, err := gitExec(ctx, worktree, environment, &message, "commit-tree", tree, "-p", parentSHA)
 	if err != nil {
 		return "", err
 	}
-	commit = strings.TrimSpace(commit)
-	if !regexp.MustCompile(`^[0-9a-f]{40,64}$`).MatchString(commit) {
-		return "", errors.New("git commit-tree returned invalid SHA")
+	commit := strings.TrimSpace(stdout)
+	if !controlledCommitObjectID.MatchString(commit) {
+		return "", fmt.Errorf("%w: git commit-tree stdout %q is not a commit object id (stderr: %q)", errControlledCommitInput, safeText([]byte(commit)), safeText([]byte(stderr)))
+	}
+	if err := requireStoredObject(ctx, worktree, commit, "commit"); err != nil {
+		return "", err
 	}
 	return commit, nil
+}
+
+// requireStoredCommit proves that objectID resolves to a commit in the shared
+// object store behind the worktree, so a missing base or parent fails with an
+// explicit diagnosis instead of an opaque downstream rejection.
+func requireStoredCommit(ctx context.Context, worktree, objectID, role string) error {
+	if _, err := gitOutput(ctx, worktree, nil, "cat-file", "-e", objectID+"^{commit}"); err != nil {
+		return fmt.Errorf("%w: %s object %s is missing from the repository object store", errControlledCommitInput, role, objectID)
+	}
+	return nil
+}
+
+func requireStoredObject(ctx context.Context, worktree, objectID, kind string) error {
+	if _, err := gitOutput(ctx, worktree, nil, "cat-file", "-e", objectID); err != nil {
+		return fmt.Errorf("%w: %s object %s is missing from the repository object store", errControlledCommitInput, kind, objectID)
+	}
+	return nil
 }
 
 func stageRawChanges(ctx context.Context, worktree string, environment, paths []string) error {
@@ -538,28 +622,26 @@ func baseGitEnvironment() []string {
 }
 
 func gitOutput(ctx context.Context, directory string, environment []string, args ...string) (string, error) {
-	data, err := gitBytes(ctx, directory, environment, args...)
-	return string(data), err
+	stdout, _, err := gitExec(ctx, directory, environment, nil, args...)
+	return stdout, err
 }
 func gitInput(ctx context.Context, directory string, environment []string, input string, args ...string) (string, error) {
-	gitPath, err := exec.LookPath("git")
-	if err != nil {
-		return "", err
-	}
-	command := exec.CommandContext(ctx, gitPath, args...)
-	command.Dir = directory
-	command.Env = environment
-	command.Stdin = strings.NewReader(input)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", args[0], err, safeText(output))
-	}
-	return string(output), nil
+	stdout, _, err := gitExec(ctx, directory, environment, &input, args...)
+	return stdout, err
 }
 func gitBytes(ctx context.Context, directory string, environment []string, args ...string) ([]byte, error) {
+	stdout, _, err := gitExec(ctx, directory, environment, nil, args...)
+	return []byte(stdout), err
+}
+
+// gitExec runs git with stdout and stderr kept strictly apart: stdout is the
+// only source of command data (object ids, index listings), while stderr only
+// ever surfaces inside error diagnostics. This prevents hook, warning or
+// advice noise from polluting SHA extraction.
+func gitExec(ctx context.Context, directory string, environment []string, input *string, args ...string) (string, string, error) {
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
-		return nil, err
+		return "", "", err
 	}
 	command := exec.CommandContext(ctx, gitPath, args...)
 	command.Dir = directory
@@ -567,11 +649,20 @@ func gitBytes(ctx context.Context, directory string, environment []string, args 
 		environment = baseGitEnvironment()
 	}
 	command.Env = environment
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, safeText(output))
+	if input != nil {
+		command.Stdin = strings.NewReader(*input)
 	}
-	return output, nil
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if runErr := command.Run(); runErr != nil {
+		details := safeText(stderr.Bytes())
+		if details == "" {
+			details = safeText(stdout.Bytes())
+		}
+		return "", "", fmt.Errorf("git %s: %w: %s", args[0], runErr, details)
+	}
+	return stdout.String(), stderr.String(), nil
 }
 
 func existingIntent(path string, validator *contract.Validator) (domain.PublicationIntent, error) {
