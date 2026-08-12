@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/provider-capability-snapshot.schema.json",
+  "title": "Marshal ProviderCapabilitySnapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "providerCapabilitySnapshotDigest",
+    "registrationId",
+    "protocolVersion",
+    "providerType",
+    "providerName",
+    "providerVersion",
+    "capabilities",
+    "conformanceEvidenceDigests",
+    "scope",
+    "snapshotState",
+    "createdAt",
+    "attestation"
+  ],
+  "properties": {
+    "providerCapabilitySnapshotDigest": { "$ref": "#/$defs/digest" },
+    "registrationId": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "protocolVersion": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "providerType": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "providerName": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "providerVersion": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "capabilities": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "type": "string", "minLength": 1, "maxLength": 512 },
+      "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 4096 }
+    },
+    "conformanceEvidenceDigests": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/digest" }
+    },
+    "scope": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "snapshotState": {
+      "type": "string",
+      "enum": ["active", "expired", "superseded"]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "attestation": { "$ref": "#/$defs/attestation" }
+  },
+  "$defs": {
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "providerInstanceId",
+        "configDigest",
+        "trustRootKeyId",
+        "trustRootAlgorithm"
+      ],
+      "properties": {
+        "providerInstanceId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "configDigest": { "$ref": "#/$defs/digest" },
+        "trustRootKeyId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "trustRootAlgorithm": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

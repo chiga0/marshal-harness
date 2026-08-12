@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/provider-registration.schema.json",
+  "title": "Marshal ProviderRegistration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "registrationId",
+    "authorityNamespaceId",
+    "securityDomainId",
+    "principal",
+    "providerType",
+    "providerName",
+    "providerVersion",
+    "protocolVersion",
+    "scope",
+    "idempotencyKey",
+    "requestDigest",
+    "attestation",
+    "lifecycleState",
+    "createdAt",
+    "registrationDigest"
+  ],
+  "properties": {
+    "registrationId": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "authorityNamespaceId": { "$ref": "#/$defs/authorityNamespaceId" },
+    "securityDomainId": { "$ref": "#/$defs/securityDomainId" },
+    "principal": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "providerType": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "providerName": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "providerVersion": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "protocolVersion": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "scope": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "requestDigest": { "$ref": "#/$defs/digest" },
+    "attestation": { "$ref": "#/$defs/attestation" },
+    "lifecycleState": {
+      "type": "string",
+      "enum": ["create", "active", "revoked", "expired"]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "registrationDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "authorityNamespaceId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenantNamespace", "controlPlaneId", "authorityScopeId"],
+      "properties": {
+        "tenantNamespace": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "controlPlaneId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "authorityScopeId": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "securityDomainId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenantNamespace", "trustDomainKind", "isolationDomainId"],
+      "properties": {
+        "tenantNamespace": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "trustDomainKind": {
+          "type": "string",
+          "enum": ["execution", "publication", "data-capability"]
+        },
+        "isolationDomainId": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "providerInstanceId",
+        "configDigest",
+        "trustRootKeyId",
+        "trustRootAlgorithm"
+      ],
+      "properties": {
+        "providerInstanceId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "configDigest": { "$ref": "#/$defs/digest" },
+        "trustRootKeyId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "trustRootAlgorithm": { "type": "string", "minLength": 1, "maxLength": 128 }
+      }
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/conformance-evidence.schema.json",
+  "title": "Marshal ConformanceEvidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evidenceDigest",
+    "authorityNamespaceId",
+    "securityDomainId",
+    "providerInstanceId",
+    "configDigest",
+    "trustRootKeyId",
+    "suiteName",
+    "probeArtifactDigest",
+    "dimensionResults",
+    "evidenceState",
+    "providerSelfSigned",
+    "signedAt",
+    "validUntil"
+  ],
+  "properties": {
+    "evidenceDigest": { "$ref": "#/$defs/digest" },
+    "authorityNamespaceId": { "$ref": "#/$defs/authorityNamespaceId" },
+    "securityDomainId": { "$ref": "#/$defs/securityDomainId" },
+    "providerInstanceId": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "configDigest": { "$ref": "#/$defs/digest" },
+    "trustRootKeyId": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "suiteName": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "probeArtifactDigest": { "$ref": "#/$defs/digest" },
+    "dimensionResults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mount", "network", "resource", "credential"],
+      "properties": {
+        "mount": { "$ref": "#/$defs/dimensionResult" },
+        "network": { "$ref": "#/$defs/dimensionResult" },
+        "resource": { "$ref": "#/$defs/dimensionResult" },
+        "credential": { "$ref": "#/$defs/dimensionResult" }
+      }
+    },
+    "evidenceState": {
+      "type": "string",
+      "enum": ["valid", "revoked", "expired"]
+    },
+    "providerSelfSigned": { "type": "boolean", "const": false },
+    "signedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "validUntil": {
+      "type": "string",
+      "anyOf": [
+        { "const": "" },
+        {
+          "format": "date-time",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "authorityNamespaceId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenantNamespace", "controlPlaneId", "authorityScopeId"],
+      "properties": {
+        "tenantNamespace": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "controlPlaneId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "authorityScopeId": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "securityDomainId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tenantNamespace", "trustDomainKind", "isolationDomainId"],
+      "properties": {
+        "tenantNamespace": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "trustDomainKind": {
+          "type": "string",
+          "enum": ["execution", "publication", "data-capability"]
+        },
+        "isolationDomainId": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "dimensionResult": {
+      "type": "string",
+      "enum": ["passed", "failed", "skipped"]
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}
