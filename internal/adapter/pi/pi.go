@@ -64,6 +64,7 @@ var (
 	ErrPermissionDenied         = errors.New("pi permission denied")
 	ErrUnsupportedSessionPolicy = errors.New("unsupported session policy")
 	ErrProcessFailed            = errors.New("pi process failed")
+	ErrProviderFailed           = errors.New("pi provider reported a terminal failure")
 )
 
 type Adapter struct {
@@ -425,11 +426,18 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if capture.err != nil {
 		return domain.Record{}, capture.err
 	}
+	// Fatal permission denial stays authoritative over a concurrent provider
+	// or nonzero process failure, and every provider/process terminal failure
+	// is returned before Marshal reads any pre-written, stale, or partial
+	// WorkerResult.
+	if fatalDenials > 0 {
+		return domain.Record{}, ErrPermissionDenied
+	}
 	if waitErr != nil {
 		return domain.Record{}, processFailureError(command)
 	}
-	if fatalDenials > 0 {
-		return domain.Record{}, ErrPermissionDenied
+	if capture.providerFailed {
+		return domain.Record{}, ErrProviderFailed
 	}
 	if capture.sessionID == "" {
 		return domain.Record{}, fmt.Errorf("%w: session id is missing", ErrProtocol)
@@ -580,32 +588,45 @@ type captureResult struct {
 	cost              float64
 	denials           []denials.RawDenial
 	limitExceeded     bool
+	providerFailed    bool
 	err               error
 }
 
 // piEvent covers only the fields Marshal validates. Unknown fields are
 // ignored on purpose; protocol decisions rely solely on type, version, id,
-// cwd, and the terminal agent_end event.
+// cwd, the explicit agent_end willRetry flag, and the auto_retry attempt
+// bookkeeping. Free-text fields such as delayMs or errorMessage are never
+// decoded here: they only survive inside the raw transcript evidence and
+// never reach authorization, budgets, or diagnostics.
 type piEvent struct {
-	Type       string          `json:"type"`
-	Version    *int            `json:"version"`
-	ID         string          `json:"id"`
-	Cwd        string          `json:"cwd"`
-	ToolName   string          `json:"toolName"`
-	ToolCallID string          `json:"toolCallId"`
-	Args       json.RawMessage `json:"args"`
-	IsError    *bool           `json:"isError"`
-	Error      string          `json:"error"`
-	Messages   []struct {
-		Role  string `json:"role"`
-		Usage *struct {
-			Input      int       `json:"input"`
-			Output     int       `json:"output"`
-			CacheRead  int       `json:"cacheRead"`
-			CacheWrite int       `json:"cacheWrite"`
-			Cost       usageCost `json:"cost"`
-		} `json:"usage"`
-	} `json:"messages"`
+	Type        string          `json:"type"`
+	Version     *int            `json:"version"`
+	ID          string          `json:"id"`
+	Cwd         string          `json:"cwd"`
+	ToolName    string          `json:"toolName"`
+	ToolCallID  string          `json:"toolCallId"`
+	Args        json.RawMessage `json:"args"`
+	IsError     *bool           `json:"isError"`
+	Error       string          `json:"error"`
+	WillRetry   *bool           `json:"willRetry"`
+	Attempt     *int            `json:"attempt"`
+	MaxAttempts *int            `json:"maxAttempts"`
+	Success     *bool           `json:"success"`
+	Messages    []piMessage     `json:"messages"`
+}
+
+type piMessage struct {
+	Role       string   `json:"role"`
+	StopReason *string  `json:"stopReason"`
+	Usage      *piUsage `json:"usage"`
+}
+
+type piUsage struct {
+	Input      int       `json:"input"`
+	Output     int       `json:"output"`
+	CacheRead  int       `json:"cacheRead"`
+	CacheWrite int       `json:"cacheWrite"`
+	Cost       usageCost `json:"cost"`
 }
 
 // usageCost accepts the two cost encodings emitted by the pinned Pi protocol:
@@ -707,135 +728,419 @@ func finiteNonNegativeCost(number json.Number) (float64, error) {
 
 func isFinite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
 
-// captureJSONL enforces the strict pi session protocol:
+// captureState is one node of the explicit closed state machine that
+// authorizes every Pi session event during capture. Each event kind is
+// authorized in exactly one state; unknown, duplicate, or out-of-order
+// events, and any event observed after a terminal or closed state, fail
+// closed with ErrProtocol.
+type captureState int
+
+const (
+	stateActive captureState = iota
+	stateAwaitingAutoRetryStart
+	stateRetryActive
+	stateAwaitingFinalAgentEnd
+	stateAwaitingRetryFailureEnd
+	stateTerminalAgentEnd
+	stateTerminalSettled
+	stateRetryFailed
+)
+
+func (s captureState) String() string {
+	switch s {
+	case stateActive:
+		return "active"
+	case stateAwaitingAutoRetryStart:
+		return "awaiting-auto-retry-start"
+	case stateRetryActive:
+		return "retry-active"
+	case stateAwaitingFinalAgentEnd:
+		return "awaiting-final-agent-end"
+	case stateAwaitingRetryFailureEnd:
+		return "awaiting-retry-failure-end"
+	case stateTerminalAgentEnd:
+		return "terminal-agent-end"
+	case stateTerminalSettled:
+		return "terminal-settled"
+	case stateRetryFailed:
+		return "retry-failed"
+	default:
+		return "unspecified"
+	}
+}
+
+// closed reports whether EOF completes the stream successfully in this state.
+func (s captureState) closed() bool {
+	switch s {
+	case stateTerminalAgentEnd, stateTerminalSettled, stateRetryFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// agentFailureStopReasons are the final-invocation stop reasons that turn a
+// syntactically complete stream into a stable Provider failure.
+var agentFailureStopReasons = map[string]bool{"error": true, "aborted": true, "length": true}
+
+// addUsageCount rejects negative usage counters first and accumulates with an
+// explicit overflow decision instead of wrapping.
+func addUsageCount(current, delta int) (int, error) {
+	if delta < 0 {
+		return 0, fmt.Errorf("%w: usage counters must be non-negative", ErrProtocol)
+	}
+	sum := int64(current) + int64(delta)
+	if sum > math.MaxInt {
+		return 0, fmt.Errorf("%w: usage counter sum overflows", ErrProtocol)
+	}
+	return int(sum), nil
+}
+
+// finalAssistantStopReason reports the explicit stopReason of the last
+// assistant message. explicit is false when there is no assistant message or
+// when the last assistant message carries no stopReason at all.
+func finalAssistantStopReason(messages []piMessage) (string, bool) {
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].Role != "assistant" {
+			continue
+		}
+		if messages[index].StopReason == nil {
+			return "", false
+		}
+		return *messages[index].StopReason, true
+	}
+	return "", false
+}
+
+// eofClosureError classifies a stream that ends before reaching a closed
+// state, using only stable reason codes.
+func eofClosureError(state captureState) error {
+	switch state {
+	case stateAwaitingAutoRetryStart:
+		return fmt.Errorf("%w: stream ended before auto_retry_start", ErrProtocol)
+	case stateAwaitingFinalAgentEnd:
+		return fmt.Errorf("%w: stream ended before the final agent_end", ErrProtocol)
+	case stateAwaitingRetryFailureEnd:
+		return fmt.Errorf("%w: stream ended before the auto_retry_end failure closure", ErrProtocol)
+	default:
+		return fmt.Errorf("%w: stream ended without terminal agent_end in state %s", ErrProtocol, state)
+	}
+}
+
+// captureJSONL enforces the strict pi session protocol through an explicit
+// closed state machine:
 //   - the first event must be the session header with version exactly 3 and
 //     cwd equal to the resolved attempt worktree;
-//   - every line must decode as JSON;
-//   - termination is exactly one agent_end, optionally followed by exactly one
-//     agent_settled event; no other event may follow agent_end.
+//   - every event must arrive as a complete LF-terminated JSON fragment; each
+//     fragment is appended to the raw evidence byte-for-byte in input order,
+//     whitespace around valid JSON is accepted and preserved exactly, and a
+//     blank fragment is not an event and fails closed;
+//   - every agent_end carries an explicit willRetry flag. willRetry=true is
+//     only valid when the last assistant message stopped with stopReason
+//     error, and the next event must be the matching auto_retry_start with a
+//     strictly ordered, constant attempt budget. A successful closure requires
+//     auto_retry_end(success=true) followed by exactly one final
+//     agent_end(willRetry=false); a failed final invocation inside an active
+//     retry must be followed by the matching auto_retry_end(success=false);
+//   - termination is the complete closed stream (terminal agent_end, complete
+//     retry-failed closure, then at most one agent_settled); any further
+//     event or any non-LF tail fails closed, admits no later byte, and
+//     terminates the process group exactly once.
 //
-// Output is bounded; exceeding the limit or detecting a protocol violation
-// kills the process group immediately.
+// Output is bounded; exceeding the limit keeps raw exactly equal to the first
+// limit input bytes and terminates exactly once without fabricating a
+// protocol success.
 func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()) captureResult {
 	capacity := 64 << 10
 	if limit < int64(capacity) {
 		capacity = int(limit)
 	}
+	if capacity < 0 {
+		capacity = 0
+	}
 	result := captureResult{raw: make([]byte, 0, capacity)}
 	buffered := bufio.NewReaderSize(reader, 64<<10)
-	var consumed int64
+	var received int64
 	var line []byte
-	lastType := ""
-	sawAgentEnd := false
-	sawAgentSettled := false
+	state := stateActive
+	retryAttempt := 0
+	retryMaxAttempts := 0
 	pending := map[string]json.RawMessage{}
+	terminated := false
+	terminate := func() {
+		if !terminated {
+			terminated = true
+			onLimit()
+		}
+	}
 	fail := func(reason error) {
 		if result.err == nil {
 			result.err = reason
+			terminate()
 		}
-		onLimit()
+	}
+	unauthorized := func() {
+		fail(fmt.Errorf("%w: event is not authorized in state %s", ErrProtocol, state))
+	}
+	accumulateUsage := func(messages []piMessage) bool {
+		for _, message := range messages {
+			if message.Role != "assistant" || message.Usage == nil {
+				continue
+			}
+			input, err := addUsageCount(result.inputTokens, message.Usage.Input)
+			if err != nil {
+				fail(err)
+				return false
+			}
+			output, err := addUsageCount(result.outputTokens, message.Usage.Output)
+			if err != nil {
+				fail(err)
+				return false
+			}
+			cacheRead, err := addUsageCount(result.cachedInputTokens, message.Usage.CacheRead)
+			if err != nil {
+				fail(err)
+				return false
+			}
+			nextCost := result.cost + message.Usage.Cost.value
+			if !isFinite(nextCost) {
+				fail(fmt.Errorf("%w: usage cost sum is not finite", ErrProtocol))
+				return false
+			}
+			result.inputTokens, result.outputTokens, result.cachedInputTokens = input, output, cacheRead
+			result.cost = nextCost
+		}
+		return true
+	}
+	acceptAgentEnd := func(event *piEvent) {
+		if event.WillRetry == nil {
+			fail(fmt.Errorf("%w: agent_end must carry an explicit willRetry flag", ErrProtocol))
+			return
+		}
+		if !accumulateUsage(event.Messages) {
+			return
+		}
+		stopReason, explicit := finalAssistantStopReason(event.Messages)
+		if *event.WillRetry {
+			if !explicit || stopReason != "error" {
+				fail(fmt.Errorf("%w: retryable agent_end requires a final assistant message with stopReason error", ErrProtocol))
+				return
+			}
+			switch state {
+			case stateActive:
+				state = stateAwaitingAutoRetryStart
+			case stateRetryActive:
+				if retryAttempt >= retryMaxAttempts {
+					fail(fmt.Errorf("%w: retry budget is exhausted before agent_end willRetry=true", ErrProtocol))
+					return
+				}
+				state = stateAwaitingAutoRetryStart
+			default:
+				unauthorized()
+			}
+			return
+		}
+		failingStop := explicit && agentFailureStopReasons[stopReason]
+		switch state {
+		case stateActive, stateAwaitingFinalAgentEnd:
+			state = stateTerminalAgentEnd
+			if failingStop {
+				result.providerFailed = true
+			}
+		case stateRetryActive:
+			if !failingStop {
+				fail(fmt.Errorf("%w: retry-active success closure requires a matching auto_retry_end first", ErrProtocol))
+				return
+			}
+			result.providerFailed = true
+			state = stateAwaitingRetryFailureEnd
+		default:
+			unauthorized()
+		}
+	}
+	acceptAutoRetryStart := func(event *piEvent) {
+		if event.Attempt == nil || event.MaxAttempts == nil {
+			fail(fmt.Errorf("%w: auto_retry_start requires explicit attempt and maxAttempts", ErrProtocol))
+			return
+		}
+		attempt, maxAttempts := *event.Attempt, *event.MaxAttempts
+		if attempt < 1 {
+			fail(fmt.Errorf("%w: auto_retry_start attempt must be at least 1", ErrProtocol))
+			return
+		}
+		if maxAttempts < 1 || maxAttempts > 3 {
+			fail(fmt.Errorf("%w: auto_retry_start maxAttempts must stay within 1..3", ErrProtocol))
+			return
+		}
+		if attempt > maxAttempts {
+			fail(fmt.Errorf("%w: auto_retry_start attempt exceeds maxAttempts", ErrProtocol))
+			return
+		}
+		if retryMaxAttempts != 0 && maxAttempts != retryMaxAttempts {
+			fail(fmt.Errorf("%w: auto_retry_start maxAttempts changed mid-chain", ErrProtocol))
+			return
+		}
+		if attempt != retryAttempt+1 {
+			fail(fmt.Errorf("%w: auto_retry_start attempt must increment by exactly one", ErrProtocol))
+			return
+		}
+		retryAttempt, retryMaxAttempts = attempt, maxAttempts
+		state = stateRetryActive
+	}
+	acceptAutoRetryEnd := func(event *piEvent) {
+		if event.Success == nil || event.Attempt == nil {
+			fail(fmt.Errorf("%w: auto_retry_end requires explicit success and attempt", ErrProtocol))
+			return
+		}
+		if *event.Attempt != retryAttempt {
+			fail(fmt.Errorf("%w: auto_retry_end attempt does not match the current attempt", ErrProtocol))
+			return
+		}
+		if *event.Success {
+			if state != stateRetryActive {
+				unauthorized()
+				return
+			}
+			state = stateAwaitingFinalAgentEnd
+			return
+		}
+		if state != stateAwaitingRetryFailureEnd {
+			unauthorized()
+			return
+		}
+		state = stateRetryFailed
+	}
+	handle := func(fragment []byte) {
+		trimmed := bytes.TrimSpace(fragment)
+		if len(trimmed) == 0 {
+			fail(fmt.Errorf("%w: blank JSONL fragment is not an event", ErrProtocol))
+			return
+		}
+		var event piEvent
+		if json.Unmarshal(trimmed, &event) != nil {
+			fail(fmt.Errorf("%w: malformed JSONL fragment", ErrProtocol))
+			return
+		}
+		result.eventCount++
+		if result.eventCount == 1 {
+			if event.Type != "session" {
+				fail(fmt.Errorf("%w: first event must be the session header", ErrProtocol))
+				return
+			}
+			if event.Version == nil || *event.Version != supportedSessionVersion {
+				fail(fmt.Errorf("%w: session header version must be %d", ErrProtocol, supportedSessionVersion))
+				return
+			}
+			if filepath.Clean(event.Cwd) != worktree {
+				fail(fmt.Errorf("%w: session cwd does not match worktree", ErrProtocol))
+				return
+			}
+			result.sessionID = event.ID
+			return
+		}
+		switch state {
+		case stateActive, stateRetryActive:
+			switch event.Type {
+			case "agent_end":
+				acceptAgentEnd(&event)
+			case "auto_retry_end":
+				if state != stateRetryActive {
+					unauthorized()
+					return
+				}
+				acceptAutoRetryEnd(&event)
+			case "tool_execution_start":
+				result.toolCalls++
+				if event.ToolCallID != "" && len(pending) < 4096 {
+					pending[event.ToolCallID] = event.Args
+				}
+			case "tool_execution_end":
+				tool, args := event.ToolName, event.Args
+				if event.ToolCallID != "" {
+					if startArgs, ok := pending[event.ToolCallID]; ok {
+						delete(pending, event.ToolCallID)
+						if len(args) == 0 {
+							args = startArgs
+						}
+					}
+				}
+				// Denial grading is fail-closed: only an explicit permission
+				// marker turns a tool error into a denial event, and anything
+				// the classifier cannot prove benign stays FATAL.
+				if event.IsError != nil && *event.IsError && denials.IsPermissionError(event.Error) {
+					result.denials = append(result.denials, denials.RawDenial{Tool: tool, Input: args})
+				}
+			case "session", "agent_settled", "auto_retry_start":
+				unauthorized()
+			default:
+				// Ordinary supported agent work events stay in the current state.
+			}
+		case stateAwaitingAutoRetryStart:
+			if event.Type != "auto_retry_start" {
+				unauthorized()
+				return
+			}
+			acceptAutoRetryStart(&event)
+		case stateAwaitingFinalAgentEnd:
+			if event.Type != "agent_end" {
+				unauthorized()
+				return
+			}
+			acceptAgentEnd(&event)
+		case stateAwaitingRetryFailureEnd:
+			if event.Type != "auto_retry_end" {
+				unauthorized()
+				return
+			}
+			acceptAutoRetryEnd(&event)
+		case stateTerminalAgentEnd, stateRetryFailed:
+			if event.Type != "agent_settled" {
+				unauthorized()
+				return
+			}
+			state = stateTerminalSettled
+		case stateTerminalSettled:
+			unauthorized()
+		}
 	}
 	for {
 		fragment, err := buffered.ReadSlice('\n')
-		if len(fragment) > 0 {
-			consumed += int64(len(fragment))
-			if consumed > limit {
-				if !result.limitExceeded {
-					result.limitExceeded = true
-					onLimit()
-				}
+		if len(fragment) > 0 && result.err == nil && !result.limitExceeded {
+			room := limit - received
+			switch {
+			case int64(len(fragment)) > room:
+				result.limitExceeded = true
+				terminate()
+				result.raw = append(result.raw, line...)
 				line = nil
-			} else if !result.limitExceeded {
+				if remaining := limit - int64(len(result.raw)); remaining > 0 {
+					result.raw = append(result.raw, fragment[:remaining]...)
+				}
+				received = limit
+			case err == nil:
+				received += int64(len(fragment))
 				line = append(line, fragment...)
-			}
-			complete := !errors.Is(err, bufio.ErrBufferFull)
-			if complete && len(line) > 0 && !result.limitExceeded {
-				trimmed := bytes.TrimSpace(line)
-				line = nil
-				if len(trimmed) == 0 {
-					continue
-				}
-				result.raw = append(result.raw, append(trimmed, '\n')...)
-				var event piEvent
-				if decodeErr := json.Unmarshal(trimmed, &event); decodeErr != nil {
-					fail(fmt.Errorf("%w: malformed JSONL: %v", ErrProtocol, decodeErr))
-					continue
-				}
-				result.eventCount++
-				switch {
-				case result.eventCount == 1:
-					if event.Type != "session" {
-						fail(fmt.Errorf("%w: first event must be the session header, got %q", ErrProtocol, event.Type))
-						continue
-					}
-					if event.Version == nil || *event.Version != supportedSessionVersion {
-						fail(fmt.Errorf("%w: session header version must be %d", ErrProtocol, supportedSessionVersion))
-						continue
-					}
-					if filepath.Clean(event.Cwd) != worktree {
-						fail(fmt.Errorf("%w: session cwd %q does not match worktree %q", ErrProtocol, event.Cwd, worktree))
-						continue
-					}
-					result.sessionID = event.ID
-				case sawAgentSettled:
-					fail(fmt.Errorf("%w: event %q follows terminal agent_settled", ErrProtocol, event.Type))
-					continue
-				case sawAgentEnd:
-					if event.Type != "agent_settled" {
-						fail(fmt.Errorf("%w: event %q follows terminal agent_end", ErrProtocol, event.Type))
-						continue
-					}
-					sawAgentSettled = true
-				case event.Type == "agent_settled":
-					fail(fmt.Errorf("%w: agent_settled appeared before agent_end", ErrProtocol))
-					continue
-				case event.Type == "tool_execution_start":
-					result.toolCalls++
-					if event.ToolCallID != "" && len(pending) < 4096 {
-						pending[event.ToolCallID] = event.Args
-					}
-				case event.Type == "tool_execution_end":
-					tool, args := event.ToolName, event.Args
-					if event.ToolCallID != "" {
-						if startArgs, ok := pending[event.ToolCallID]; ok {
-							delete(pending, event.ToolCallID)
-							if len(args) == 0 {
-								args = startArgs
-							}
-						}
-					}
-					// Denial grading is fail-closed: only an explicit permission
-					// marker turns a tool error into a denial event, and anything
-					// the classifier cannot prove benign stays FATAL.
-					if event.IsError != nil && *event.IsError && denials.IsPermissionError(event.Error) {
-						result.denials = append(result.denials, denials.RawDenial{Tool: tool, Input: args})
-					}
-				case event.Type == "agent_end":
-					sawAgentEnd = true
-					for _, message := range event.Messages {
-						if message.Role != "assistant" || message.Usage == nil {
-							continue
-						}
-						result.inputTokens += message.Usage.Input
-						result.outputTokens += message.Usage.Output
-						result.cachedInputTokens += message.Usage.CacheRead
-						nextCost := result.cost + message.Usage.Cost.value
-						if !isFinite(nextCost) {
-							fail(fmt.Errorf("%w: usage cost sum is not finite", ErrProtocol))
-							continue
-						}
-						result.cost = nextCost
-					}
-				}
-				lastType = event.Type
+				result.raw = append(result.raw, line...)
+				handle(line)
+				line = line[:0]
+			case errors.Is(err, bufio.ErrBufferFull):
+				received += int64(len(fragment))
+				line = append(line, fragment...)
+			default:
+				fail(fmt.Errorf("%w: final fragment is not LF-terminated", ErrProtocol))
 			}
 		}
 		if err != nil && !errors.Is(err, bufio.ErrBufferFull) {
-			if !errors.Is(err, io.EOF) && result.err == nil {
-				result.err = err
-			}
-			if result.err == nil && !result.limitExceeded && !sawAgentEnd {
-				result.err = fmt.Errorf("%w: stream ended without agent_end (last event %q)", ErrProtocol, lastType)
+			if result.err == nil && !result.limitExceeded {
+				switch {
+				case !errors.Is(err, io.EOF):
+					result.err = err
+					terminate()
+				case len(line) > 0:
+					fail(fmt.Errorf("%w: final fragment is not LF-terminated", ErrProtocol))
+				case !state.closed():
+					fail(eofClosureError(state))
+				}
 			}
 			return result
 		}

@@ -3,13 +3,17 @@ package pi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -167,7 +171,7 @@ func TestBuildArgsLocksHardeningFlagsAndNeverGrantsBash(t *testing.T) {
 
 func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
 	secrets := []string{"sk-ant-api03-super-secret-token", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret-payload", "user private content: password=hunter2"}
-	body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
+	body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[],"willRetry":false}'`
 	for _, secret := range secrets {
 		body += "\nprintf '%s\\n' " + shellQuote(secret) + " >&2"
 	}
@@ -223,7 +227,7 @@ func TestWorkerEnvironmentIsolatesCredentials(t *testing.T) {
 }
 
 func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
-	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"turn_start"}' '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{}}' '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","result":{},"isError":false}' '{"type":"agent_end","messages":[{"role":"user"},{"role":"assistant","usage":{"input":120,"output":40,"cacheRead":7,"cost":0.0021}}]}'`
+	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"turn_start"}' '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{}}' '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","result":{},"isError":false}' '{"type":"agent_end","messages":[{"role":"user"},{"role":"assistant","usage":{"input":120,"output":40,"cacheRead":7,"cost":0.0021}}],"willRetry":false}'`
 	fixture := newRunFixture(t, supportedBinary, successBody)
 	record, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if err != nil {
@@ -276,7 +280,7 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 }
 
 func TestRunReadOnlyProfileGrantsReadOnlyToolAllowlist(t *testing.T) {
-	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
+	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[],"willRetry":false}'`
 	fixture := newRunFixture(t, supportedBinary, successBody)
 	if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "read-only"})); err != nil {
 		t.Fatal(err)
@@ -407,7 +411,7 @@ func TestNormalizeDeclaredWorkerResultPreservesUnaffectedInput(t *testing.T) {
 }
 
 func TestRunAcceptsDeclaredResultWithEmptySessionID(t *testing.T) {
-	agentEnd := `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
+	agentEnd := `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[],"willRetry":false}'`
 	fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+agentEnd)
 	data := validDeclaredResult(fixture.executable)
 	data["session"] = map[string]any{"id": "", "resumable": false}
@@ -460,7 +464,7 @@ func TestDecodeUsageCost(t *testing.T) {
 }
 
 func TestRunAcceptsStructuredUsageCost(t *testing.T) {
-	body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[{"role":"assistant","usage":{"input":10,"output":5,"cacheRead":2,"cost":{"input":0.001,"output":0.0011,"cacheRead":0,"cacheWrite":0,"total":0.0021}}}]}'`
+	body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[{"role":"assistant","usage":{"input":10,"output":5,"cacheRead":2,"cost":{"input":0.001,"output":0.0011,"cacheRead":0,"cacheWrite":0,"total":0.0021}}}],"willRetry":false}'`
 	fixture := newRunFixture(t, supportedBinary, body)
 	record, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if err != nil {
@@ -480,7 +484,7 @@ func TestRunAcceptsStructuredUsageCost(t *testing.T) {
 }
 
 func TestRunRejectsInvalidUsageCostAsProtocolViolation(t *testing.T) {
-	body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[{"role":"assistant","usage":{"cost":{"unknown":1}}}]}'`
+	body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[{"role":"assistant","usage":{"cost":{"unknown":1}}}],"willRetry":false}'`
 	fixture := newRunFixture(t, supportedBinary, body)
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) {
 		t.Fatalf("error = %v, want ErrProtocol", err)
@@ -488,7 +492,7 @@ func TestRunRejectsInvalidUsageCostAsProtocolViolation(t *testing.T) {
 }
 
 func TestRunRejectsPersistAndResumeBeforeWorkerLaunch(t *testing.T) {
-	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
+	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[],"willRetry":false}'`
 	for _, policy := range []string{"persist", "resume"} {
 		t.Run(policy, func(t *testing.T) {
 			fixture := newRunFixture(t, supportedBinary, successBody)
@@ -526,7 +530,7 @@ func TestRunRejectsUnsupportedVersionBeforeWorkerLaunch(t *testing.T) {
 }
 
 func TestRunRejectsProtocolViolations(t *testing.T) {
-	agentEnd := `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[]}'`
+	agentEnd := `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[],"willRetry":false}'`
 	t.Run("wrong-session-version", func(t *testing.T) {
 		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"session","version":2,"id":"session-1","cwd":"'"$PWD"'"}'`+"\n"+agentEnd)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "version") {
@@ -567,9 +571,9 @@ func TestRunRejectsProtocolViolations(t *testing.T) {
 		name   string
 		events string
 	}{
-		{name: "settled-before-end", events: `printf '%s\n' '{"type":"agent_settled"}' '{"type":"agent_end","messages":[]}'`},
-		{name: "event-after-end", events: `printf '%s\n' '{"type":"agent_end","messages":[]}' '{"type":"turn_start"}'`},
-		{name: "duplicate-settled", events: `printf '%s\n' '{"type":"agent_end","messages":[]}' '{"type":"agent_settled"}' '{"type":"agent_settled"}'`},
+		{name: "settled-before-end", events: `printf '%s\n' '{"type":"agent_settled"}' '{"type":"agent_end","messages":[],"willRetry":false}'`},
+		{name: "event-after-end", events: `printf '%s\n' '{"type":"agent_end","messages":[],"willRetry":false}' '{"type":"turn_start"}'`},
+		{name: "duplicate-settled", events: `printf '%s\n' '{"type":"agent_end","messages":[],"willRetry":false}' '{"type":"agent_settled"}' '{"type":"agent_settled"}'`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+test.events)
@@ -611,6 +615,145 @@ func TestRunRejectsProtocolViolations(t *testing.T) {
 	})
 }
 
+// TestRunAcceptsAutoRetryChainAndAccumulatesUsageAcrossAttempts is the Issue
+// #32 regression: agent_end(willRetry=true) is a retryable checkpoint, not a
+// terminal event. The full auto_retry chain must reach the normalized
+// WorkerResult with usage accumulated exactly once per invocation.
+func TestRunAcceptsAutoRetryChainAndAccumulatesUsageAcrossAttempts(t *testing.T) {
+	body := sessionHeader("session-1") + "\n" + `printf '%s\n'` +
+		` '{"type":"agent_start"}'` +
+		` '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","usage":{"input":10,"output":1,"cacheRead":1,"cost":0.001}}],"willRetry":true}'` +
+		` '{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":10,"errorMessage":"transient"}'` +
+		` '{"type":"agent_start"}'` +
+		` '{"type":"auto_retry_end","success":true,"attempt":1}'` +
+		` '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","usage":{"input":20,"output":2,"cacheRead":2,"cost":0.002}}],"willRetry":false}'`
+	fixture := newRunFixture(t, supportedBinary, body)
+	record, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"maxOutputBytes": 4096}))
+	if err != nil {
+		t.Fatalf("auto-retry chain must succeed: %v", err)
+	}
+	var result declaredResult
+	if err := json.Unmarshal(record.Data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Session == nil || result.Session.ID != "session-1" || result.Adapter.ID != adapterID {
+		t.Fatalf("normalized result = %+v", result)
+	}
+	var usage map[string]any
+	if err := json.Unmarshal(result.Usage, &usage); err != nil {
+		t.Fatalf("usage missing: %v", err)
+	}
+	if usage["inputTokens"] != float64(30) || usage["outputTokens"] != float64(3) || usage["cachedInputTokens"] != float64(3) {
+		t.Fatalf("usage = %v", usage)
+	}
+	metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "pi-transcript-meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(metadata), `"eventCount": 7`) {
+		t.Fatalf("metadata = %s", metadata)
+	}
+	transcript, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "pi-transcript.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(transcript, []byte(`"auto_retry_start"`)) || !bytes.Contains(transcript, []byte(`"auto_retry_end"`)) || !bytes.Contains(transcript, []byte(`"willRetry":true`)) {
+		t.Fatalf("transcript lost the retry chain: %s", transcript)
+	}
+	if bytes.Contains(metadata, []byte("transient")) {
+		t.Fatalf("metadata echoed retry free text: %s", metadata)
+	}
+}
+
+// TestRunReturnsStableProviderFailureBeforeReadingWorkerResult locks the
+// Provider-failure semantics: a failed final invocation closes the stream
+// legally but must return a stable error before Marshal reads any pre-written
+// WorkerResult, and never echoes provider free text.
+func TestRunReturnsStableProviderFailureBeforeReadingWorkerResult(t *testing.T) {
+	const sentinel = "RETRY-FREE-TEXT-SENTINEL"
+	retryFailureBody := sessionHeader("session-1") + "\n" + `printf '%s\n'` +
+		` '{"type":"agent_start"}'` +
+		` '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","usage":{"input":5,"output":1,"cacheRead":0,"cost":0}}],"willRetry":true}'` +
+		` '{"type":"auto_retry_start","attempt":1,"maxAttempts":2,"delayMs":1,"errorMessage":"` + sentinel + `"}'` +
+		` '{"type":"agent_start"}'` +
+		` '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","usage":{"input":6,"output":2,"cacheRead":1,"cost":0}}],"willRetry":false}'` +
+		` '{"type":"auto_retry_end","success":false,"attempt":1}'` +
+		` '{"type":"agent_settled"}'`
+	directFailureBody := sessionHeader("session-1") + "\n" + `printf '%s\n'` +
+		` '{"type":"agent_start"}'` +
+		` '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"` + sentinel + `"}}'` +
+		` '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted","usage":{"input":1,"output":1,"cacheRead":0,"cost":0}}],"willRetry":false}'`
+	for _, test := range []struct{ name, body string }{
+		{name: "retry-failure-closure", body: retryFailureBody},
+		{name: "direct-failed-final-call", body: directFailureBody},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunFixture(t, supportedBinary, test.body)
+			// An invalid pre-written WorkerResult proves Marshal never reads it
+			// on the provider-failure path: reading it would surface a
+			// validation error instead of the stable provider failure.
+			if err := os.WriteFile(filepath.Join(fixture.controlRoot, "output", "worker-result.json"), []byte("not-json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"maxOutputBytes": 4096}))
+			if !errors.Is(err, ErrProviderFailed) {
+				t.Fatalf("error = %v, want ErrProviderFailed", err)
+			}
+			if strings.Contains(err.Error(), sentinel) {
+				t.Fatalf("provider free text leaked into error: %v", err)
+			}
+			transcript, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "pi-transcript.jsonl"))
+			if readErr != nil || !bytes.Contains(transcript, []byte(sentinel)) {
+				t.Fatalf("raw transcript must keep the sentinel evidence: %v", readErr)
+			}
+			metadata, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "pi-transcript-meta.json"))
+			if readErr != nil || bytes.Contains(metadata, []byte(sentinel)) {
+				t.Fatalf("metadata must not echo provider free text: %s", metadata)
+			}
+		})
+	}
+}
+
+// TestRunProtocolFailureNeverEchoesUnknownEventsOrFreeText pins the
+// raw/diagnostics separation: unknown event types and retry free text stay in
+// the raw transcript evidence but never reach returned errors or metadata.
+func TestRunProtocolFailureNeverEchoesUnknownEventsOrFreeText(t *testing.T) {
+	const typeSentinel = "SECRET-TYPE-SENTINEL"
+	const retrySentinel = "SECRET-RETRY-SENTINEL"
+	body := sessionHeader("session-1") + "\n" + `printf '%s\n'` +
+		` '{"type":"agent_start"}'` +
+		` '{"type":"agent_end","messages":[],"willRetry":false}'` +
+		` '{"type":"` + typeSentinel + `","errorMessage":"` + retrySentinel + `"}'`
+	fixture := newRunFixture(t, supportedBinary, body)
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("error = %v, want ErrProtocol", err)
+	}
+	for _, leaked := range []string{typeSentinel, retrySentinel} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("diagnostics leaked %q: %v", leaked, err)
+		}
+	}
+	transcript, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "pi-transcript.jsonl"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, kept := range []string{typeSentinel, retrySentinel} {
+		if !bytes.Contains(transcript, []byte(kept)) {
+			t.Fatalf("raw transcript lost sentinel evidence %q", kept)
+		}
+	}
+	metadata, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "pi-transcript-meta.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, banned := range []string{typeSentinel, retrySentinel} {
+		if bytes.Contains(metadata, []byte(banned)) {
+			t.Fatalf("metadata echoed %q", banned)
+		}
+	}
+}
+
 // TestCaptureJSONLAcceptsPi0841NormalizedMessageUpdate pins the real Pi 0.84.1
 // normalized message_update wire: the event keeps assistantMessageEvent whose
 // text_delta carries exactly type, contentIndex and the incremental delta.
@@ -625,7 +768,7 @@ func TestCaptureJSONLAcceptsPi0841NormalizedMessageUpdate(t *testing.T) {
 		`{"type":"agent_start"}`,
 		firstDelta,
 		secondDelta,
-		`{"type":"agent_end","messages":[]}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
 	}
 	var stream strings.Builder
 	for _, event := range events {
@@ -676,10 +819,396 @@ func TestCaptureJSONLAcceptsPi0841NormalizedMessageUpdate(t *testing.T) {
 	}
 }
 
+// retryFixtureLines is the deterministic 10-event auto-retry fixture frozen by
+// the TaskSpec. The expected byte length and digest are pinned independently
+// below and are never derived from these literals at runtime.
+var retryFixtureLines = []string{
+	`{"type":"session","version":3,"id":"retry-fixed","timestamp":"2026-08-12T00:00:00.000Z","cwd":"/workspace"}`,
+	`{"type":"agent_start"}`,
+	`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","usage":{"input":101,"output":11,"cacheRead":3,"cost":0.001}}],"willRetry":true}`,
+	`{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":100,"errorMessage":"transient-a"}`,
+	`{"type":"agent_start"}`,
+	`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","usage":{"input":202,"output":22,"cacheRead":5,"cost":0.002}}],"willRetry":true}`,
+	`{"type":"auto_retry_start","attempt":2,"maxAttempts":3,"delayMs":200,"errorMessage":"transient-b"}`,
+	`{"type":"agent_start"}`,
+	`{"type":"auto_retry_end","success":true,"attempt":2}`,
+	`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","usage":{"input":303,"output":33,"cacheRead":7,"cost":0.004}}],"willRetry":false}`,
+}
+
+const retryFixtureDigest = "020219497a259716606045b172a3add3fed392b0b65b25557f227f498759628a"
+
+func TestCaptureJSONLAutoRetryDeterministicFixture(t *testing.T) {
+	input := strings.Join(retryFixtureLines, "\n") + "\n"
+	terminations := 0
+	result := captureJSONL(strings.NewReader(input), "/workspace", 1<<20, func() { terminations++ })
+	if result.err != nil {
+		t.Fatalf("capture error = %v", result.err)
+	}
+	if result.limitExceeded || result.providerFailed {
+		t.Fatalf("unexpected limit/provider flags: limitExceeded=%v providerFailed=%v", result.limitExceeded, result.providerFailed)
+	}
+	if result.sessionID != "retry-fixed" || result.eventCount != 10 {
+		t.Fatalf("session = %q eventCount = %d, want retry-fixed/10", result.sessionID, result.eventCount)
+	}
+	if len(result.raw) != 890 {
+		t.Fatalf("raw length = %d, want 890", len(result.raw))
+	}
+	if !bytes.Equal(result.raw, []byte(input)) {
+		t.Fatalf("raw must preserve every LF-terminated fragment byte-for-byte")
+	}
+	if result.inputTokens != 606 || result.outputTokens != 66 || result.cachedInputTokens != 15 {
+		t.Fatalf("usage = %d/%d/%d, want 606/66/15", result.inputTokens, result.outputTokens, result.cachedInputTokens)
+	}
+	if math.Abs(result.cost-0.007) > 1e-12 {
+		t.Fatalf("cost = %v, want 0.007", result.cost)
+	}
+	sum := sha256.Sum256(result.raw)
+	if hex.EncodeToString(sum[:]) != retryFixtureDigest {
+		t.Fatalf("digest = %s, want %s", hex.EncodeToString(sum[:]), retryFixtureDigest)
+	}
+	if terminations != 0 {
+		t.Fatalf("terminations = %d, want 0", terminations)
+	}
+}
+
+func captureSessionHeader(sessionID string) string {
+	return `{"type":"session","version":3,"id":"` + sessionID + `","timestamp":"2026-08-12T00:00:00.000Z","cwd":"/worktree"}`
+}
+
+func jsonLines(events ...string) string {
+	var builder strings.Builder
+	for _, event := range events {
+		builder.WriteString(event)
+		builder.WriteString("\n")
+	}
+	return builder.String()
+}
+
+func TestCaptureJSONLAutoRetryChainSuccessClosure(t *testing.T) {
+	for _, settled := range []bool{false, true} {
+		name := "terminal-eof"
+		if settled {
+			name = "agent-settled"
+		}
+		t.Run(name, func(t *testing.T) {
+			events := []string{
+				captureSessionHeader("session-1"),
+				`{"type":"agent_start"}`,
+				`{"type":"turn_start"}`,
+				`{"type":"agent_end","messages":[{"role":"user"}],"willRetry":false}`,
+			}
+			if settled {
+				events = append(events, `{"type":"agent_settled"}`)
+			}
+			terminations := 0
+			result := captureJSONL(strings.NewReader(jsonLines(events...)), "/worktree", 1<<20, func() { terminations++ })
+			if result.err != nil {
+				t.Fatalf("capture error = %v", result.err)
+			}
+			if result.providerFailed || result.limitExceeded {
+				t.Fatalf("providerFailed=%v limitExceeded=%v", result.providerFailed, result.limitExceeded)
+			}
+			if terminations != 0 {
+				t.Fatalf("terminations = %d, want 0", terminations)
+			}
+		})
+	}
+}
+
+func TestCaptureJSONLAutoRetryFailureClosureAndProviderFailure(t *testing.T) {
+	for _, stopReason := range []string{"error", "aborted", "length"} {
+		t.Run(stopReason, func(t *testing.T) {
+			input := jsonLines(
+				captureSessionHeader("session-1"),
+				`{"type":"agent_start"}`,
+				`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","usage":{"input":1,"output":1,"cacheRead":0,"cost":0}}],"willRetry":true}`,
+				`{"type":"auto_retry_start","attempt":1,"maxAttempts":2,"delayMs":5,"errorMessage":"transient"}`,
+				`{"type":"agent_start"}`,
+				`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"`+stopReason+`","usage":{"input":2,"output":1,"cacheRead":0,"cost":0}}],"willRetry":false}`,
+				`{"type":"auto_retry_end","success":false,"attempt":1}`,
+				`{"type":"agent_settled"}`,
+			)
+			result := captureJSONL(strings.NewReader(input), "/worktree", 1<<20, func() {})
+			if result.err != nil {
+				t.Fatalf("capture error = %v", result.err)
+			}
+			if !result.providerFailed {
+				t.Fatal("providerFailed must be set for the failed final invocation")
+			}
+			if result.inputTokens != 3 || result.outputTokens != 2 || result.cachedInputTokens != 0 {
+				t.Fatalf("usage = %d/%d/%d, want 3/2/0", result.inputTokens, result.outputTokens, result.cachedInputTokens)
+			}
+		})
+	}
+}
+
+func TestCaptureJSONLAutoRetryProtocolViolations(t *testing.T) {
+	header := captureSessionHeader("session-1")
+	retryableEnd := `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","usage":{"input":1,"output":1,"cacheRead":0,"cost":0}}],"willRetry":true}`
+	finalEnd := `{"type":"agent_end","messages":[],"willRetry":false}`
+	start1 := `{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":1,"errorMessage":"transient"}`
+	endSuccess1 := `{"type":"auto_retry_end","success":true,"attempt":1}`
+	for _, test := range []struct {
+		name   string
+		events []string
+	}{
+		{name: "start-without-retryable-end", events: []string{header, start1}},
+		{name: "agent-start-instead-of-start", events: []string{header, retryableEnd, `{"type":"agent_start"}`}},
+		{name: "eof-awaiting-start", events: []string{header, retryableEnd}},
+		{name: "eof-awaiting-final-end", events: []string{header, retryableEnd, start1, endSuccess1}},
+		{name: "eof-awaiting-failure-end", events: []string{header, retryableEnd, start1, `{"type":"agent_start"}`, `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error"}],"willRetry":false}`}},
+		{name: "eof-retry-active", events: []string{header, retryableEnd, start1}},
+		{name: "start-missing-fields", events: []string{header, retryableEnd, `{"type":"auto_retry_start"}`}},
+		{name: "attempt-zero", events: []string{header, retryableEnd, `{"type":"auto_retry_start","attempt":0,"maxAttempts":3}`}},
+		{name: "attempt-negative", events: []string{header, retryableEnd, `{"type":"auto_retry_start","attempt":-1,"maxAttempts":3}`}},
+		{name: "maxAttempts-zero", events: []string{header, retryableEnd, `{"type":"auto_retry_start","attempt":1,"maxAttempts":0}`}},
+		{name: "maxAttempts-too-large", events: []string{header, retryableEnd, `{"type":"auto_retry_start","attempt":1,"maxAttempts":4}`}},
+		{name: "attempt-exceeds-maxAttempts", events: []string{header, retryableEnd, `{"type":"auto_retry_start","attempt":3,"maxAttempts":2}`}},
+		{name: "attempt-skips", events: []string{header, retryableEnd, `{"type":"auto_retry_start","attempt":2,"maxAttempts":3}`}},
+		{name: "attempt-repeats", events: []string{header, retryableEnd, start1, retryableEnd, `{"type":"auto_retry_start","attempt":1,"maxAttempts":3}`}},
+		{name: "maxAttempts-changed", events: []string{header, retryableEnd, start1, retryableEnd, `{"type":"auto_retry_start","attempt":2,"maxAttempts":2}`}},
+		{name: "budget-exhausted", events: []string{header, retryableEnd, `{"type":"auto_retry_start","attempt":1,"maxAttempts":1}`, `{"type":"agent_start"}`, retryableEnd}},
+		{name: "duplicate-start", events: []string{header, retryableEnd, start1, `{"type":"auto_retry_start","attempt":2,"maxAttempts":3}`}},
+		{name: "retryable-end-without-error-stop", events: []string{header, `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"length"}],"willRetry":true}`}},
+		{name: "retryable-end-without-assistant", events: []string{header, `{"type":"agent_end","messages":[{"role":"user"}],"willRetry":true}`}},
+		{name: "retryable-end-without-stopReason", events: []string{header, `{"type":"agent_end","messages":[{"role":"assistant"}],"willRetry":true}`}},
+		{name: "agent-end-missing-willRetry", events: []string{header, `{"type":"agent_end","messages":[]}`}},
+		{name: "retry-active-success-without-retry-end", events: []string{header, retryableEnd, start1, `{"type":"agent_start"}`, `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}],"willRetry":false}`}},
+		{name: "retry-end-success-in-active", events: []string{header, `{"type":"agent_start"}`, endSuccess1}},
+		{name: "retry-end-failure-in-retry-active", events: []string{header, retryableEnd, start1, `{"type":"agent_start"}`, `{"type":"auto_retry_end","success":false,"attempt":1}`}},
+		{name: "retry-end-attempt-mismatch", events: []string{header, retryableEnd, start1, `{"type":"agent_start"}`, `{"type":"auto_retry_end","success":true,"attempt":2}`}},
+		{name: "retry-end-missing-success", events: []string{header, retryableEnd, start1, `{"type":"agent_start"}`, `{"type":"auto_retry_end","attempt":1}`}},
+		{name: "retry-end-missing-attempt", events: []string{header, retryableEnd, start1, `{"type":"agent_start"}`, `{"type":"auto_retry_end","success":true}`}},
+		{name: "work-event-awaiting-final-end", events: []string{header, retryableEnd, start1, endSuccess1, `{"type":"turn_start"}`}},
+		{name: "retryable-end-awaiting-final-end", events: []string{header, retryableEnd, start1, endSuccess1, retryableEnd}},
+		{name: "event-after-terminal", events: []string{header, finalEnd, `{"type":"turn_start"}`}},
+		{name: "retry-control-after-terminal", events: []string{header, finalEnd, start1}},
+		{name: "work-after-retry-failed", events: []string{header, retryableEnd, start1, `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error"}],"willRetry":false}`, `{"type":"auto_retry_end","success":false,"attempt":1}`, `{"type":"agent_start"}`}},
+		{name: "duplicate-settled", events: []string{header, finalEnd, `{"type":"agent_settled"}`, `{"type":"agent_settled"}`}},
+		{name: "settled-after-retryable-end", events: []string{header, retryableEnd, `{"type":"agent_settled"}`}},
+		{name: "settled-in-retry-active", events: []string{header, retryableEnd, start1, `{"type":"agent_settled"}`}},
+		{name: "second-session-header", events: []string{header, header}},
+		{name: "blank-fragment", events: []string{header, ``}},
+		{name: "whitespace-only-fragment", events: []string{header, "   "}},
+		{name: "partial-json", events: []string{header, `{"type":"agent_start"`}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			terminations := 0
+			result := captureJSONL(strings.NewReader(jsonLines(test.events...)), "/worktree", 1<<20, func() { terminations++ })
+			if !errors.Is(result.err, ErrProtocol) {
+				t.Fatalf("error = %v, want ErrProtocol", result.err)
+			}
+			if terminations != 1 {
+				t.Fatalf("terminations = %d, want exactly 1", terminations)
+			}
+		})
+	}
+}
+
+func TestCaptureJSONLStopsAcceptingBytesAfterProtocolFailure(t *testing.T) {
+	poison := `{"type":"agent_end","messages":[],"willRetry":true}`
+	input := jsonLines(
+		captureSessionHeader("session-1"),
+		poison,
+		`{"type":"agent_start"}`,
+		`{"type":"auto_retry_start","attempt":1,"maxAttempts":3}`,
+	)
+	terminations := 0
+	result := captureJSONL(strings.NewReader(input), "/worktree", 1<<20, func() { terminations++ })
+	if !errors.Is(result.err, ErrProtocol) {
+		t.Fatalf("error = %v, want ErrProtocol", result.err)
+	}
+	if terminations != 1 {
+		t.Fatalf("terminations = %d, want exactly 1", terminations)
+	}
+	if bytes.Contains(result.raw, []byte("auto_retry_start")) {
+		t.Fatalf("bytes after the protocol failure were admitted into raw: %s", result.raw)
+	}
+	if !bytes.Contains(result.raw, []byte(poison)) {
+		t.Fatalf("the failing fragment itself must remain as evidence: %s", result.raw)
+	}
+	if result.eventCount != 2 {
+		t.Fatalf("eventCount = %d, want 2", result.eventCount)
+	}
+}
+
+func TestCaptureJSONLRejectsUnknownEventEchoInDiagnostics(t *testing.T) {
+	input := jsonLines(
+		captureSessionHeader("session-1"),
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"zz-mystery-event","payload":"SECRET-TYPE-SENTINEL"}`,
+	)
+	result := captureJSONL(strings.NewReader(input), "/worktree", 1<<20, func() {})
+	if !errors.Is(result.err, ErrProtocol) {
+		t.Fatalf("error = %v, want ErrProtocol", result.err)
+	}
+	for _, banned := range []string{"zz-mystery-event", "SECRET-TYPE-SENTINEL"} {
+		if strings.Contains(result.err.Error(), banned) {
+			t.Fatalf("unknown event text leaked into diagnostics: %v", result.err)
+		}
+	}
+	if !bytes.Contains(result.raw, []byte("SECRET-TYPE-SENTINEL")) {
+		t.Fatalf("raw transcript lost the sentinel evidence: %s", result.raw)
+	}
+}
+
+func TestCaptureJSONLRejectsNonLFTailAndKeepsRawPrefix(t *testing.T) {
+	success := jsonLines(
+		captureSessionHeader("session-1"),
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+	)
+	terminations := 0
+	result := captureJSONL(strings.NewReader(success+"trailing-garbage"), "/worktree", 1<<20, func() { terminations++ })
+	if !errors.Is(result.err, ErrProtocol) {
+		t.Fatalf("error = %v, want ErrProtocol", result.err)
+	}
+	if !bytes.Equal(result.raw, []byte(success)) {
+		t.Fatalf("raw must keep only the complete LF-terminated prefix:\nraw = %q", result.raw)
+	}
+	if terminations != 1 {
+		t.Fatalf("terminations = %d, want exactly 1", terminations)
+	}
+}
+
+func TestCaptureJSONLAcceptsWhitespacePaddedFragmentsByteForByte(t *testing.T) {
+	input := "  " + captureSessionHeader("session-1") + "  \n\t" + `{"type":"agent_start"}` + " \n" + `{"type":"agent_end","messages":[],"willRetry":false}` + "\n"
+	result := captureJSONL(strings.NewReader(input), "/worktree", 1<<20, func() {})
+	if result.err != nil {
+		t.Fatalf("capture error = %v", result.err)
+	}
+	if !bytes.Equal(result.raw, []byte(input)) {
+		t.Fatalf("raw must preserve whitespace-padded fragments byte-for-byte:\nraw = %q", result.raw)
+	}
+	if result.eventCount != 3 {
+		t.Fatalf("eventCount = %d, want 3", result.eventCount)
+	}
+}
+
+func TestCaptureJSONLRejectsNegativeUsageCounters(t *testing.T) {
+	header := captureSessionHeader("session-1")
+	for _, test := range []struct{ name, agentEnd string }{
+		{name: "negative-input", agentEnd: `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","usage":{"input":-1,"output":1,"cacheRead":0,"cost":0}}],"willRetry":false}`},
+		{name: "negative-output", agentEnd: `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","usage":{"input":1,"output":-1,"cacheRead":0,"cost":0}}],"willRetry":false}`},
+		{name: "negative-cacheRead", agentEnd: `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","usage":{"input":1,"output":1,"cacheRead":-1,"cost":0}}],"willRetry":false}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := captureJSONL(strings.NewReader(jsonLines(header, test.agentEnd)), "/worktree", 1<<20, func() {})
+			if !errors.Is(result.err, ErrProtocol) {
+				t.Fatalf("error = %v, want ErrProtocol", result.err)
+			}
+		})
+	}
+}
+
+type chunkReader struct {
+	data []byte
+	step int
+}
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	take := r.step
+	if take > len(r.data) {
+		take = len(r.data)
+	}
+	if take > len(p) {
+		take = len(p)
+	}
+	copy(p, r.data[:take])
+	r.data = r.data[take:]
+	return take, nil
+}
+
+func TestCaptureJSONLOutputLimitRawEqualsInputPrefix(t *testing.T) {
+	input := jsonLines(
+		captureSessionHeader("session-1"),
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+	)
+	total := int64(len(input))
+	for _, test := range []struct {
+		name       string
+		limit      int64
+		exceeded   bool
+		rawLength  int64
+		terminates int
+	}{
+		{name: "limit-1", limit: total - 1, exceeded: true, rawLength: total - 1, terminates: 1},
+		{name: "limit", limit: total, exceeded: false, rawLength: total, terminates: 0},
+		{name: "limit+1", limit: total + 1, exceeded: false, rawLength: total, terminates: 0},
+	} {
+		for _, step := range []int{1, 4096, 64 << 10} {
+			t.Run(test.name+"/chunk-"+strconv.Itoa(step), func(t *testing.T) {
+				terminations := 0
+				result := captureJSONL(&chunkReader{data: []byte(input), step: step}, "/worktree", test.limit, func() { terminations++ })
+				if result.limitExceeded != test.exceeded {
+					t.Fatalf("limitExceeded = %v, want %v", result.limitExceeded, test.exceeded)
+				}
+				if int64(len(result.raw)) != test.rawLength || !bytes.Equal(result.raw, []byte(input[:test.rawLength])) {
+					t.Fatalf("raw must equal the first %d input bytes", test.rawLength)
+				}
+				if terminations != test.terminates {
+					t.Fatalf("terminations = %d, want %d", terminations, test.terminates)
+				}
+				if test.exceeded && result.err != nil {
+					t.Fatalf("limitExceeded must not fabricate a protocol failure: %v", result.err)
+				}
+				if !test.exceeded && result.err != nil {
+					t.Fatalf("unexpected capture error: %v", result.err)
+				}
+			})
+		}
+	}
+}
+
+func TestCaptureJSONLOutputLimitAcrossErrBufferFullFragments(t *testing.T) {
+	large := strings.Repeat("x", 200_000)
+	input := jsonLines(
+		captureSessionHeader("session-1"),
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"`+large+`"}}`,
+		`{"type":"agent_end","messages":[],"willRetry":false}`,
+	)
+	const limit = int64(100_000)
+	terminations := 0
+	result := captureJSONL(&chunkReader{data: []byte(input), step: 64 << 10}, "/worktree", limit, func() { terminations++ })
+	if !result.limitExceeded {
+		t.Fatal("limitExceeded must be set")
+	}
+	if int64(len(result.raw)) != limit || !bytes.Equal(result.raw, []byte(input[:limit])) {
+		t.Fatalf("raw must equal the first %d input bytes across ErrBufferFull fragments", limit)
+	}
+	if terminations != 1 {
+		t.Fatalf("terminations = %d, want exactly 1", terminations)
+	}
+	if result.err != nil {
+		t.Fatalf("no protocol failure may be fabricated: %v", result.err)
+	}
+}
+
+func TestCaptureJSONLConcurrentCapturesStayIsolated(t *testing.T) {
+	input := strings.Join(retryFixtureLines, "\n") + "\n"
+	var group sync.WaitGroup
+	for routine := 0; routine < 32; routine++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			result := captureJSONL(strings.NewReader(input), "/workspace", 1<<20, func() {})
+			if result.err != nil || result.eventCount != 10 || len(result.raw) != 890 {
+				t.Errorf("concurrent capture = err %v eventCount %d raw %d", result.err, result.eventCount, len(result.raw))
+			}
+		}()
+	}
+	group.Wait()
+}
+
 func TestRunEnforcesOutputCapAndCancellation(t *testing.T) {
 	t.Run("output-cap", func(t *testing.T) {
 		large := strings.Repeat("x", 1800)
-		body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"` + large + `"}}' '{"type":"agent_end","messages":[]}'`
+		body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"` + large + `"}}' '{"type":"agent_end","messages":[],"willRetry":false}'`
 		fixture := newRunFixture(t, supportedBinary, body)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrOutputLimit) {
 			t.Fatalf("error = %v", err)
@@ -797,7 +1326,7 @@ func TestRunGradesPermissionDenialsFromToolErrors(t *testing.T) {
 			` '{"type":"agent_start"}'` +
 			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{"path":"'"$PWD"'/source.go"}}'` +
 			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","isError":true,"error":"permission denied"}'` +
-			` '{"type":"agent_end","messages":[]}'`
+			` '{"type":"agent_end","messages":[],"willRetry":false}'`
 		fixture := newRunFixture(t, supportedBinary, body)
 		if err := os.WriteFile(filepath.Join(fixture.worktree, "source.go"), []byte("package x\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -827,7 +1356,7 @@ func TestRunGradesPermissionDenialsFromToolErrors(t *testing.T) {
 			` '{"type":"agent_start"}'` +
 			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{"path":"` + outside + `"}}'` +
 			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","isError":true,"error":"permission rule prevents reading this path"}'` +
-			` '{"type":"agent_end","messages":[]}'`
+			` '{"type":"agent_end","messages":[],"willRetry":false}'`
 		fixture := newRunFixture(t, supportedBinary, body)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
 			t.Fatalf("error = %v", err)
@@ -846,7 +1375,7 @@ func TestRunGradesPermissionDenialsFromToolErrors(t *testing.T) {
 			` '{"type":"agent_start"}'` +
 			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"write","args":{"path":"'"$PWD"'/target.txt"}}'` +
 			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"write","isError":true,"error":"permission denied"}'` +
-			` '{"type":"agent_end","messages":[]}'`
+			` '{"type":"agent_end","messages":[],"willRetry":false}'`
 		fixture := newRunFixture(t, supportedBinary, body)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
 			t.Fatalf("write denial must grade FATAL: %v", err)
@@ -857,7 +1386,7 @@ func TestRunGradesPermissionDenialsFromToolErrors(t *testing.T) {
 			` '{"type":"agent_start"}'` +
 			` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{"path":"'"$PWD"'/missing.go"}}'` +
 			` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","isError":true,"error":"file not found"}'` +
-			` '{"type":"agent_end","messages":[]}'`
+			` '{"type":"agent_end","messages":[],"willRetry":false}'`
 		fixture := newRunFixture(t, supportedBinary, body)
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
 			t.Fatalf("ordinary tool error must stay a provider concern: %v", err)
