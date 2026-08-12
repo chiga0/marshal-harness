@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/side-effect-receipt.schema.json",
+  "title": "Marshal SideEffectReceipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "authorityNamespaceId",
+    "intentDigest",
+    "disposition",
+    "providerResourceIdentity",
+    "observedDigest",
+    "actorProvenance",
+    "reconcileIdentity"
+  ],
+  "properties": {
+    "authorityNamespaceId": { "$ref": "#/$defs/authorityNamespaceId" },
+    "intentDigest": { "$ref": "#/$defs/digest" },
+    "disposition": {
+      "type": "string",
+      "enum": [
+        "applied",
+        "not_applied",
+        "ambiguous",
+        "conflict"
+      ]
+    },
+    "providerResourceIdentity": { "type": "string", "minLength": 1 },
+    "observedDigest": { "$ref": "#/$defs/digest" },
+    "actorProvenance": { "$ref": "#/$defs/actorProvenance" },
+    "reconcileIdentity": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "authorityNamespaceId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenantNamespace",
+        "controlPlaneId",
+        "authorityScopeId"
+      ],
+      "properties": {
+        "tenantNamespace": { "type": "string", "minLength": 1 },
+        "controlPlaneId": { "type": "string", "minLength": 1 },
+        "authorityScopeId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "actorProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "securityDomainId"
+      ],
+      "properties": {
+        "securityDomainId": { "$ref": "#/$defs/securityDomainId" }
+      }
+    },
+    "securityDomainId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenantNamespace",
+        "trustDomainKind",
+        "isolationDomainId"
+      ],
+      "properties": {
+        "tenantNamespace": { "type": "string", "minLength": 1 },
+        "trustDomainKind": {
+          "type": "string",
+          "enum": [
+            "execution",
+            "publication",
+            "data-capability"
+          ]
+        },
+        "isolationDomainId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:.+$"
+    }
+  }
+}
