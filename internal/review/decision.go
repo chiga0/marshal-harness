@@ -44,15 +44,15 @@ func (d *DecisionImporter) Import(input DecisionInput) (DecisionResult, error) {
 	if d.Validator == nil {
 		return DecisionResult{}, errors.New("contract validator is required")
 	}
-	decisionData, err := readBounded(input.Path, packetByteLimit)
+	submittedData, err := readBounded(input.Path, packetByteLimit)
 	if err != nil {
 		return DecisionResult{}, fmt.Errorf("read review decision: %w", err)
 	}
-	if err := d.Validator.Validate(domain.KindReviewDecision, decisionData); err != nil {
+	if err := d.Validator.Validate(domain.KindReviewDecision, submittedData); err != nil {
 		return DecisionResult{}, fmt.Errorf("validate review decision: %w", err)
 	}
 	var decision domain.ReviewDecision
-	if err := json.Unmarshal(decisionData, &decision); err != nil {
+	if err := json.Unmarshal(submittedData, &decision); err != nil {
 		return DecisionResult{}, err
 	}
 	packetData, err := readBounded(filepath.Join(d.RunDirectory, "review-packet.json"), packetByteLimit)
@@ -87,11 +87,33 @@ func (d *DecisionImporter) Import(input DecisionInput) (DecisionResult, error) {
 	if err != nil {
 		return DecisionResult{}, err
 	}
+	// DecisionDigest must bind to the exact bytes persisted for this round,
+	// not to the reviewer-submitted spelling: Go re-marshals time.Time values
+	// and normalizes RFC 3339 spellings such as "...T11:10:00.000000Z" to
+	// "...T11:10:00Z", so digesting the submitted bytes could diverge from a
+	// recomputation over the stored record. Digest the canonical record bytes
+	// instead; they still expose any content tampering because every decision
+	// field participates in the canonicalization.
+	decisionData, err := renderDecisionRecord(decision)
+	if err != nil {
+		return DecisionResult{}, err
+	}
 	decisionDigest, err := canonical.DigestJSON(decisionData)
 	if err != nil {
 		return DecisionResult{}, err
 	}
 	return DecisionResult{Decision: decision, DecisionData: decisionData, DecisionDigest: decisionDigest, Packet: packet, PacketData: packetData, TargetState: target, BudgetExhausted: budgetExhausted}, nil
+}
+
+// renderDecisionRecord renders the canonical decision record bytes exactly as
+// the review transaction persists them, so DecisionDigest and the stored
+// decision record are always computed from the same bytes.
+func renderDecisionRecord(decision domain.ReviewDecision) ([]byte, error) {
+	data, err := json.MarshalIndent(decision, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
 }
 
 func validateVerdict(input DecisionInput, decision domain.ReviewDecision, packet domain.ReviewPacket) error {

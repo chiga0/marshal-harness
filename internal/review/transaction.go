@@ -1,7 +1,6 @@
 package review
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -111,12 +110,11 @@ func prepareRecordsWithWriter(runDirectory string, result DecisionResult, outcom
 			return nil, fmt.Errorf("remove orphan %s %s: %w", pair.recordKind, pair.pending, err)
 		}
 	}
-	decisionData, err := json.MarshalIndent(result.Decision, "", "  ")
-	if err != nil {
-		records.Abort()
-		return nil, err
-	}
-	if err := writer(records.pendingDecision, append(decisionData, '\n')); err != nil {
+	// Persist exactly the bytes DecisionImporter digested. Re-marshaling the
+	// struct here could normalize RFC 3339 decidedAt spellings (fractional
+	// seconds in particular) and desynchronize the stored record from the
+	// journal decisionDigest that rework and publication lineage verify.
+	if err := writer(records.pendingDecision, result.DecisionData); err != nil {
 		records.Abort()
 		return nil, err
 	}
