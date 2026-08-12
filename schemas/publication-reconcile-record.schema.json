@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/publication-reconcile-record.schema.json",
+  "title": "Marshal PublicationReconcileRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "reconcileId",
+    "authorityNamespaceId",
+    "runId",
+    "scmMergeReceiptId",
+    "reconcileType",
+    "observedState",
+    "decidedState",
+    "evidenceDigests",
+    "reconcileReason",
+    "reconciledBy",
+    "reconciledAt",
+    "reconcileRecordDigest"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "PublicationReconcileRecord" },
+    "reconcileId": { "$ref": "#/$defs/id" },
+    "authorityNamespaceId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "scmMergeReceiptId": { "$ref": "#/$defs/id" },
+    "reconcileType": { "type": "string", "enum": ["accept-after-merge"] },
+    "observedState": { "type": "string", "enum": ["BLOCKED"] },
+    "decidedState": { "type": "string", "enum": ["ACCEPTED"] },
+    "evidenceDigests": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/digest" }
+    },
+    "reconcileReason": { "$ref": "#/$defs/reasonCode" },
+    "reconciledBy": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "reconciledAt": { "type": "string", "format": "date-time" },
+    "reconcileRecordDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "reasonCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z][A-Za-z0-9]*([._-][A-Za-z0-9]+)*$"
+    }
+  }
+}
