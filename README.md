@@ -80,6 +80,17 @@ marshal task review --run RUN_ID
 
 执行结束不等于任务通过。`verify` 会独立检查改动，`review` 会准备真实代码差异和检查结果。发布 Draft PR 的完整流程见[日常使用](https://chiga0.github.io/marshal-harness/usage/)。
 
+## 发布与合入的临时顺序（Issue #25 修复合入前）
+
+当前 `marshal task accept` 要求 PR 处于 OPEN/Draft；若先 merge 再 accept，Run 会被永久置为 `BLOCKED`（见公开 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) 与 [PR #24](https://github.com/chiga0/marshal-harness/pull/24)）。在协议修复合入前，请严格按以下唯一临时顺序操作：
+
+1. `marshal task publish` —— 只创建或更新 Draft PR；
+2. 等待冻结 TaskSpec.requiredChecks 全部明确成功；
+3. 在 PR 仍为 OPEN 时运行 `marshal task accept` 并确认 Run=ACCEPTED；
+4. 由维护者在 Marshal 之外 merge，之后可按仓库策略删除 head branch。
+
+Marshal 不自动 merge，也不获得 merge 权限。已误入 `BLOCKED` 的 Run 只做只读检查与证据保留，等待后续 typed reconciliation；详细操作见[操作手册](docs/operator-runbook.md)。
+
 ## 安全边界
 
 当前本地版本可以隔离任务工作区、过滤环境变量并分离发布凭据，但普通本地子进程不是恶意代码沙箱。不要使用本地模式运行不可信仓库、依赖或构建脚本；这类任务应使用容器、虚拟机或经过验证的远程 Sandbox。

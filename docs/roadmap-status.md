@@ -16,6 +16,15 @@
 
 embedded/local 先行实现的 Local MVP 定义达成：标记 `USABLE`。
 
+## 已知阻塞与临时护栏：Issue #25 发布合并后 reconcile
+
+公开 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) 与 [PR #24](https://github.com/chiga0/marshal-harness/pull/24) 暴露：当全部 required checks 成功且 PR 已合并进入 main 后，现有 `marshal task accept` 仍要求 PR 处于 OPEN/Draft，会把 Run 永久置为 `BLOCKED`。这是 Local MVP 发布流程的已知阻塞，**尚未在代码或 Schema 层面修复**，当前只有临时 operational 护栏（见 [Operator Runbook](operator-runbook.md)）：
+
+- 临时顺序：`publish` → 等待 required checks 全绿 → `accept`（PR 仍 OPEN 时）→ 维护者在 Marshal 外 merge；
+- 已误入 terminal `BLOCKED` 的 Run：只读 `doctor` 检查与证据保留，等待后续 typed reconciliation，禁止手改状态或伪装修复。
+
+恢复机制（不可变 `SCMMergeReceipt` 与 append-only `PublicationReconcileRecord`）待规划中的 ADR 0026 定义与实现；在此之前，相关 Run 保持 `BLOCKED` 终态。本阻塞不改变 M0–M6 已通过状态与 Local MVP `USABLE` 结论，相关审计 finding `PUBLICATION-MERGED-HEAD-RECONCILE-P1`（状态 `OPEN`，P1）见[设计审计报告](audit-report.md)。
+
 M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal orchestration）。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 是 M7 通过后的已接受设计增补：它不回滚 M7，也不提前完成 M8–M13；确定性 Supervisor、Typed Execution、通用副作用对账/补偿与 Goal admission 均仍待实现：
 
 | Milestone | 状态 | 证据 |
