@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/scm-merge-receipt.schema.json",
+  "title": "Marshal SCMMergeReceipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "receiptId",
+    "authorityNamespaceId",
+    "runId",
+    "publicationRecordId",
+    "repositoryRef",
+    "prNumber",
+    "headOid",
+    "baseOid",
+    "mergeCommitSha",
+    "mergedAt",
+    "mergedBy",
+    "mergeMethod",
+    "capturedAt",
+    "receiptDigest"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "SCMMergeReceipt" },
+    "receiptId": { "$ref": "#/$defs/id" },
+    "authorityNamespaceId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "publicationRecordId": { "$ref": "#/$defs/id" },
+    "repositoryRef": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "prNumber": { "type": "integer", "minimum": 1 },
+    "headOid": { "$ref": "#/$defs/sha" },
+    "baseOid": { "$ref": "#/$defs/sha" },
+    "mergeCommitSha": { "$ref": "#/$defs/sha" },
+    "mergedAt": { "type": "string", "format": "date-time" },
+    "mergedBy": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "mergeMethod": { "type": "string", "enum": ["merge", "squash", "rebase"] },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "receiptDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40,64}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
