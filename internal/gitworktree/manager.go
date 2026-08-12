@@ -180,7 +180,9 @@ func (r Repository) CreateForRun(stateRoot, taskID, runID, baseSHA string) (*Wor
 // The target name is resolved from the requested path, so it binds both the
 // legacy task-keyed name and the run-scoped <task>-<run> name to the exact
 // directory, its lock file and its branch, preserving the one-writer invariant
-// for Runs planned before and after per-run keying.
+// for Runs planned before and after per-run keying. The repository metadata
+// lock backs off within the bounded retry window, while the task lock still
+// fails fast so a second writer is rejected immediately.
 func (r Repository) Acquire(stateRoot, taskID, worktreePath, baseSHA string) (*Worktree, error) {
 	if err := domain.ValidateID(taskID); err != nil {
 		return nil, err
@@ -210,8 +212,8 @@ func (r Repository) Acquire(stateRoot, taskID, worktreePath, baseSHA string) (*W
 	}
 	repositoryLock := flock.New(filepath.Join(locks, "repository.lock"))
 	taskLock := flock.New(filepath.Join(locks, "task-"+name+".lock"))
-	if locked, err := repositoryLock.TryLock(); err != nil || !locked {
-		return nil, fmt.Errorf("acquire repository lock: %w", lockError(err))
+	if err := lockRepositoryWithRetry(repositoryLock); err != nil {
+		return nil, fmt.Errorf("acquire repository lock: %w", err)
 	}
 	if locked, err := taskLock.TryLock(); err != nil || !locked {
 		_ = repositoryLock.Unlock()
@@ -284,6 +286,11 @@ func (d *Detached) Remove() error {
 	return err
 }
 
+// lockRepositoryWithRetry takes the shared repository metadata lock, retrying
+// with a bounded backoff so short-lived contention between concurrent Run
+// phase handoffs and cleanup recovers automatically. Once the retry window is
+// exhausted it reports "already locked". Task locks must never use this
+// helper: a second writer on one worktree has to fail fast.
 func lockRepositoryWithRetry(lock *flock.Flock) error {
 	for attempt := 0; ; attempt++ {
 		locked, err := lock.TryLock()
@@ -300,14 +307,18 @@ func lockRepositoryWithRetry(lock *flock.Flock) error {
 	}
 }
 
+// acquireRepositoryLock takes the shared repository metadata lock for the
+// callers outside CreateForRun (detached worktrees, cleanup), retrying within
+// the same bounded backoff window so short-lived contention recovers instead
+// of surfacing an "already locked" error.
 func acquireRepositoryLock(stateRoot string) (*flock.Flock, error) {
 	locks := filepath.Join(stateRoot, "locks")
 	if err := os.MkdirAll(locks, 0o700); err != nil {
 		return nil, err
 	}
 	repositoryLock := flock.New(filepath.Join(locks, "repository.lock"))
-	if locked, err := repositoryLock.TryLock(); err != nil || !locked {
-		return nil, fmt.Errorf("acquire repository lock: %w", lockError(err))
+	if err := lockRepositoryWithRetry(repositoryLock); err != nil {
+		return nil, fmt.Errorf("acquire repository lock: %w", err)
 	}
 	return repositoryLock, nil
 }
