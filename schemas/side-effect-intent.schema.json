@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/side-effect-intent.schema.json",
+  "title": "Marshal SideEffectIntent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "authorityNamespaceId",
+    "effectId",
+    "ownerIdentity",
+    "port",
+    "operation",
+    "targetRef",
+    "targetDigest",
+    "requestDigest",
+    "commandId",
+    "idempotencyKey",
+    "policyDigest",
+    "authorizationDigest",
+    "purpose",
+    "dispositionClass",
+    "deadline"
+  ],
+  "properties": {
+    "authorityNamespaceId": { "$ref": "#/$defs/authorityNamespaceId" },
+    "effectId": { "type": "string", "minLength": 1 },
+    "ownerIdentity": { "type": "string", "minLength": 1 },
+    "port": { "type": "string", "minLength": 1 },
+    "operation": { "type": "string", "minLength": 1 },
+    "targetRef": { "type": "string", "minLength": 1 },
+    "targetDigest": { "$ref": "#/$defs/digest" },
+    "requestDigest": { "$ref": "#/$defs/digest" },
+    "commandId": { "type": "string", "minLength": 1 },
+    "idempotencyKey": { "type": "string", "minLength": 1 },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "authorizationDigest": { "$ref": "#/$defs/digest" },
+    "purpose": { "type": "string", "minLength": 1 },
+    "dispositionClass": {
+      "type": "string",
+      "enum": [
+        "sandbox-provision",
+        "sandbox-stage",
+        "sandbox-terminate",
+        "local-cleanup"
+      ]
+    },
+    "deadline": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "authorityNamespaceId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenantNamespace",
+        "controlPlaneId",
+        "authorityScopeId"
+      ],
+      "properties": {
+        "tenantNamespace": { "type": "string", "minLength": 1 },
+        "controlPlaneId": { "type": "string", "minLength": 1 },
+        "authorityScopeId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:.+$"
+    }
+  }
+}

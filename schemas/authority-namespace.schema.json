@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/authority-namespace.schema.json",
+  "title": "Marshal AuthorityNamespaceId",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenantNamespace",
+    "controlPlaneId",
+    "authorityScopeId"
+  ],
+  "properties": {
+    "tenantNamespace": { "type": "string", "minLength": 1 },
+    "controlPlaneId": { "type": "string", "minLength": 1 },
+    "authorityScopeId": { "type": "string", "minLength": 1 }
+  }
+}

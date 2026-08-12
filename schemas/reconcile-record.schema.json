@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/reconcile-record.schema.json",
+  "title": "Marshal ReconcileRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "authorityNamespaceId",
+    "observation",
+    "decision",
+    "intentDigest",
+    "receiptDigest"
+  ],
+  "properties": {
+    "authorityNamespaceId": { "$ref": "#/$defs/authorityNamespaceId" },
+    "observation": {
+      "type": "string",
+      "enum": [
+        "absent",
+        "applied",
+        "partially_applied",
+        "conflict",
+        "unknown"
+      ]
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "accept",
+        "retry",
+        "cleanup",
+        "compensate",
+        "block"
+      ]
+    },
+    "intentDigest": { "$ref": "#/$defs/digest" },
+    "receiptDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "authorityNamespaceId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenantNamespace",
+        "controlPlaneId",
+        "authorityScopeId"
+      ],
+      "properties": {
+        "tenantNamespace": { "type": "string", "minLength": 1 },
+        "controlPlaneId": { "type": "string", "minLength": 1 },
+        "authorityScopeId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:.+$"
+    }
+  }
+}
