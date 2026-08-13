@@ -19,24 +19,29 @@ const (
 type Kind string
 
 const (
-	KindTask                Kind = "Task"
-	KindCapabilitySnapshot  Kind = "CapabilitySnapshot"
-	KindPolicySnapshot      Kind = "PolicySnapshot"
-	KindRunEvent            Kind = "RunEvent"
-	KindRunState            Kind = "RunState"
-	KindWorkerRequest       Kind = "WorkerRequest"
-	KindWorkerResult        Kind = "WorkerResult"
-	KindVerificationReport  Kind = "VerificationReport"
-	KindArtifactManifest    Kind = "ArtifactManifest"
-	KindReviewPacket        Kind = "ReviewPacket"
-	KindReviewDecision      Kind = "ReviewDecision"
-	KindOutcome             Kind = "Outcome"
-	KindPublicationIntent   Kind = "PublicationIntent"
-	KindPublicationRecord   Kind = "PublicationRecord"
-	KindRemoteCheckRecord   Kind = "RemoteCheckRecord"
-	KindApprovalRecord      Kind = "ApprovalRecord"
-	KindInterventionRecord  Kind = "InterventionRecord"
-	KindSandboxRequirements Kind = "SandboxRequirements"
+	KindTask               Kind = "Task"
+	KindCapabilitySnapshot Kind = "CapabilitySnapshot"
+	KindPolicySnapshot     Kind = "PolicySnapshot"
+	KindRunEvent           Kind = "RunEvent"
+	KindRunState           Kind = "RunState"
+	KindWorkerRequest      Kind = "WorkerRequest"
+	KindWorkerResult       Kind = "WorkerResult"
+	KindVerificationReport Kind = "VerificationReport"
+	KindArtifactManifest   Kind = "ArtifactManifest"
+	KindReviewPacket       Kind = "ReviewPacket"
+	KindReviewDecision     Kind = "ReviewDecision"
+	KindOutcome            Kind = "Outcome"
+	KindPublicationIntent  Kind = "PublicationIntent"
+	KindPublicationRecord  Kind = "PublicationRecord"
+	KindRemoteCheckRecord  Kind = "RemoteCheckRecord"
+	// KindSCMMergeReceipt and KindPublicationReconcileRecord are the ADR 0026
+	// authority-ledger records that carry the immutable merge fact and the
+	// append-only accept-after-merge reconciliation of a merged publication.
+	KindSCMMergeReceipt            Kind = "SCMMergeReceipt"
+	KindPublicationReconcileRecord Kind = "PublicationReconcileRecord"
+	KindApprovalRecord             Kind = "ApprovalRecord"
+	KindInterventionRecord         Kind = "InterventionRecord"
+	KindSandboxRequirements        Kind = "SandboxRequirements"
 )
 
 var kinds = []Kind{
@@ -55,6 +60,8 @@ var kinds = []Kind{
 	KindPublicationIntent,
 	KindPublicationRecord,
 	KindRemoteCheckRecord,
+	KindSCMMergeReceipt,
+	KindPublicationReconcileRecord,
 	KindApprovalRecord,
 	KindInterventionRecord,
 	KindSandboxRequirements,

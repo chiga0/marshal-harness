@@ -1,15 +1,15 @@
 # Operator Runbook
 
-> **Issue #25 临时发布与合入顺序（协议修复合入前必须遵守）**
+> **Issue #25 已修复：正式发布与合入顺序见 §7.1 / §7.2（旧临时护栏已废止）**
 >
-> 在 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) 协议修复合入前，每次发布必须严格按以下唯一临时顺序执行，不得调换步骤或在合入后再 accept：
+> [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) 与 [PR #24](https://github.com/chiga0/marshal-harness/pull/24) 暴露的「全部 required checks 成功且 PR 已合并后，`marshal task accept` 把 Run 永久置为 `BLOCKED`」已由 [ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) 实现修复并合入。推荐顺序不变：
 >
 > 1. 运行 `marshal task publish`，只创建或更新 Draft PR，不触发合入；
 > 2. 等待冻结 TaskSpec 的 required checks 全部明确成功（`missing`、`skipping` 或超时一律不视为成功）；
-> 3. 在 PR 仍为 OPEN、远端 PR/head identity 未改变时运行 `marshal task accept`，并确认 Run 进入 `ACCEPTED` 且 Outcome 存在；
+> 3. 运行 `marshal task accept`，确认 Run 进入 `ACCEPTED` 且 Outcome 存在；PR 已被维护者先行合并且 merged head checks 全绿时，accept 会内联识别并同样进入 `ACCEPTED`；
 > 4. accept 成功后，由维护者在 Marshal 之外按仓库策略 merge，并可按仓库策略 delete head（删除 head branch）。
 >
-> Marshal 本身没有 merge 权限。顺序不可调换：先 merge 再 accept 会让 accept 因 PR 已非 OPEN 而把 Run 永久置为 `BLOCKED`。已误入 `BLOCKED` 的 Run 只能只读检查、保留证据并等待后续 typed reconciliation，禁止手改状态或伪装修复；临时顺序的详细步骤与边界见 §7.1，已误入 `BLOCKED` 的完整处置见 §7.2。
+> Marshal 本身没有 merge 权限（merge-never）。发布后因先 merge 后 accept 误入 terminal `BLOCKED` 的 Run，在 PR 已合并且 merged head 的 required checks 全绿时，用正式补偿命令 `marshal task reconcile` 迁移到 `ACCEPTED`（§7.2）；不满足条件时命令会 fail closed。禁止手改状态、伪造证据或绕过 required checks 与 ReviewDecision；正式顺序的详细步骤与边界见 §7.1。
 
 本文档面向操作者与 Lead Agent（pi、Codex Desktop/CLI 或其他编码 Agent），只描述当前 embedded/local 发行版已经实现的安全操作路径，并明确尚未开放的功能。它是当前版本的操作说明，不定义 Marshal 的终态产品边界；整体方向见[整体架构](architecture.md)。首次在真实任务中使用 Marshal 前，建议先读下文第 9 节“日常使用最佳实践”。
 
@@ -124,40 +124,40 @@ marshal task cleanup --run RUN_ID
 - Draft PR 由人工决定后续处置。当前 Marshal不执行 Ready for Review、merge、release、deploy、删除远端分支。
 - 远端与本地 head/PR identity 不一致时停止发布并运行 `doctor --run`，不得覆盖猜测。
 
-### 7.1 临时发布与合入顺序（Issue #25 修复合入前适用）
+### 7.1 正式发布与合入顺序（ADR 0026 实现合入后适用）
 
-公开 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) 与 [PR #24](https://github.com/chiga0/marshal-harness/pull/24) 暴露：当全部 required checks 成功且 PR 已合并进入 main 后，现有 `marshal task accept` 仍要求 PR 处于 OPEN/Draft，会把 Run 永久置为 `BLOCKED`。在该协议修复合入前，操作者必须严格按以下唯一临时顺序执行，不得调换步骤或在 merge 后再 accept：
+公开 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) 与 [PR #24](https://github.com/chiga0/marshal-harness/pull/24) 暴露的「全部 required checks 成功且 PR 已合并后，`marshal task accept` 把 Run 永久置为 `BLOCKED`」已由 [ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) 的实现修复：活路径 accept 内联识别已合并的绿色 PR，补偿路径 `marshal task reconcile` 把发布后的 `BLOCKED` 安全迁移到 `ACCEPTED`。推荐顺序仍为：
 
 1. **publish**：运行 `marshal task publish --run RUN_ID`，只创建或更新 Draft PR，不触发合入；
 2. **等待 required checks 全绿**：冻结 TaskSpec.requiredChecks 中声明的全部检查必须明确成功；`missing`、`skipping` 或超时一律不视为成功；
-3. **accept（PR 仍为 OPEN 时）**：在 PR 尚为 OPEN、远端 PR/head identity 未改变的前提下运行 `marshal task accept --run RUN_ID`，并确认 Run 进入 `ACCEPTED` 且 Outcome 存在；此步必须在维护者 merge 之前完成；
-4. **维护者在 Marshal 外 merge**：accept 成功后，由维护者在 Marshal 之外按仓库策略合入 PR；merge 完成后可按仓库策略 delete head（删除 head branch）。
+3. **accept**：运行 `marshal task accept --run RUN_ID`。PR 尚为 OPEN 时按原 checks 观察路径进入 `ACCEPTED`；若维护者已先行 merge 且 merged head 的 required checks 全绿，accept 会内联采集不可变 `SCMMergeReceipt` 并经同一 checks-passed 路径进入 `ACCEPTED`（不写 PublicationReconcileRecord）；
+4. **维护者在 Marshal 外 merge**：accept 成功后，由维护者在 Marshal 之外按仓库策略合入 PR；merge 完成后可按仓库策略 delete head（删除 head branch）。head branch 删除不是权威 head SHA 丢失：GitHub PR 节点在 merge 后仍保留原 head OID、base OID 与 merge commit。
 
-关键边界：
+关键边界不变：Marshal 不获得 merge 权限（merge-never），`publish` 与 reconcile 都只观察不操作 PR；merge 与删除 head branch 由维护者在 Marshal 外完成。
 
-- 顺序不可调换：不得先 merge 再 accept，否则 accept 会因 PR 已非 OPEN 而把 Run 置为 `BLOCKED`；
-- Marshal 不获得 merge 权限：`publish` 只创建/更新 Draft PR，merge 与删除 head branch 由维护者在 Marshal 外完成；
-- head branch 删除不是权威 head SHA 丢失：GitHub PR 节点在 merge 后仍保留原 head OID、base OID 与 merge commit。
+### 7.2 已合并后误入 BLOCKED 的 Run：task reconcile 补偿命令
 
-本节是临时 operational 护栏，不解决代码或 Schema；协议修复方向见 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25)，已误入 `BLOCKED` 的 Run 处置见下节。
+若 Run 在发布后因先 merge 后 accept（或其他发布安全门）进入 terminal `BLOCKED`，在 PR 已被合并且 merged head 的 required checks 全绿时，用正式补偿命令迁移：
 
-### 7.2 已合并后误入 BLOCKED 的 Run：只读检查与证据保留
+```sh
+marshal task reconcile --run RUN_ID --actor OPERATOR_ID [--json]
+```
 
-若 Run 已因先 merge 后 accept 而进入 terminal `BLOCKED`，操作者只能做只读检查与证据保留，并等待后续 typed reconciliation，禁止任何形式的手改或伪装修复。
+命令语义（ADR 0026 冻结顺序）：
 
-**允许的操作：**
+- 仅当 Run 恰为发布后的 `BLOCKED` 时执行；其他状态拒绝，重复调用幂等归并；
+- current-ledger recheck 复核冻结证据：ReviewDecision accept 且无 blocking findings、冻结 PublicationRecord digest 一致——不绕过 required checks 与 ReviewDecision；
+- 采集不可变 `SCMMergeReceipt`（head/base OID 与冻结 PublicationRecord 对账，不符 fail closed）并复验 merged head 的 required checks 全绿；
+- 写 append-only `PublicationReconcileRecord`，追加 `publication.reconciled` 事件（actor `system/marshal-reconciliation`），旧 BLOCKED Outcome 只归档不删除，写入新的 ACCEPTED Outcome；
+- 任一前置缺失、OID 对账不符、digest 重算不符或幂等身份冲突，一律 fail closed，Run 保持 `BLOCKED`。
 
-- 运行 `marshal doctor --run RUN_ID --json` 做只读对账检查；
-- 保留全部证据：`publication-intent.json`、`publication-record.json`、`remote-check-record`、Outcome 与 events（`events.jsonl`）以及远端 PR 节点（GitHub 在 merge 后仍保留原 head OID、base OID 与 merge commit）。
-
-**禁止的操作：**
+**仍然禁止的操作：**
 
 - 不得运行 `marshal task cleanup` 删除证据；
 - 不得手工修改 `.marshal/runs`、`events.jsonl`、`state.json`、`outcome.json` 等任何状态/事件/结果文件；
 - 不得用 `marshal doctor --repair` 改变业务终态——`--repair` 只修复权威 Journal 能唯一证明的 snapshot 损坏，**不能把 `BLOCKED` 改成 `ACCEPTED`**；
-- 不得重复运行 `marshal task accept` 猜测结果，也不得通过新建同 branch、伪造 OPEN PR 或覆盖远端 head 制造新副作用来“修复”。
-
-当前没有安全的 legacy merged-PR reconcile 命令。Run 的恢复必须等待规划中的 ADR 0026 定义的不可变 `SCMMergeReceipt` 与 append-only `PublicationReconcileRecord`；在此之前保持 `BLOCKED` 终态并完整保留证据。
+- 不得通过新建同 branch、伪造 OPEN PR 或覆盖远端 head 制造新副作用来“修复”；
+- PR 未合并的 `BLOCKED` 不适用 reconcile（命令会拒绝）：先解决阻塞原因或在维护者 merge 后重试；无冻结 PublicationRecord 的发布前 `BLOCKED`（如 PUBLISHING 阶段失败）也不适用，只能创建新 Run。
 
 ## 8. 已知限制
 

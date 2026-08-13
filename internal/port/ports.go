@@ -3,9 +3,15 @@ package port
 
 import (
 	"context"
+	"errors"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
+
+// ErrPRNotMerged is the sentinel merge observers return when the published
+// PR node is not merged. Callers must treat it as "fall back to the ordinary
+// check observation flow", never as a failure that mutates the run.
+var ErrPRNotMerged = errors.New("pr-not-merged")
 
 // WorkerAdapter edits a task worktree but cannot verify or publish its own
 // result authoritatively.
@@ -68,4 +74,11 @@ type Publisher interface {
 
 type RemoteCheckObserver interface {
 	ObserveChecks(context.Context, domain.Record, []string) (domain.Record, error)
+}
+
+// MergeReceiptObserver observes the immutable merge fact of a published PR
+// and returns an ADR 0026 SCMMergeReceipt. It is strictly observational: it
+// must never merge, edit, close or otherwise mutate the remote PR.
+type MergeReceiptObserver interface {
+	ObserveMergeReceipt(context.Context, domain.Record) (domain.Record, error)
 }

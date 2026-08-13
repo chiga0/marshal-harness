@@ -23,8 +23,14 @@ var errCIDeadlineExceeded = errors.New("ci-deadline-exceeded")
 type CheckInput struct {
 	StateRoot, RunID string
 	Observer         port.RemoteCheckObserver
-	Validator        *contract.Validator
-	Now              time.Time
+	// MergeObserver is optional. When set, ObserveChecks identifies a PR that
+	// a maintainer merged outside Marshal (ADR 0026 path A): the immutable
+	// SCMMergeReceipt is captured and persisted, and an all-green merged head
+	// is accepted through the ordinary checks-passed transition. Path A never
+	// writes a PublicationReconcileRecord.
+	MergeObserver port.MergeReceiptObserver
+	Validator     *contract.Validator
+	Now           time.Time
 }
 
 type CheckResult struct {
@@ -108,6 +114,28 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 	}
 	if state.Publication == nil || state.Publication.HeadSHA != published.HeadSHA || state.Publication.ExternalID != published.Request.ID || published.TaskID != state.TaskID || published.RunID != state.RunID {
 		return CheckResult{}, errors.New("RunState publication identity mismatch")
+	}
+	// ADR 0026 path A: after the state gate and the local deadline check
+	// (which stay first and are never exempted), identify a PR that has been
+	// MERGED with its immutable merge facts intact and persist the
+	// SCMMergeReceipt before check observation. An unmerged PR keeps the
+	// original checks observation flow unchanged.
+	if input.MergeObserver != nil {
+		receiptRecord, mergeErr := input.MergeObserver.ObserveMergeReceipt(ctx, domain.Record{Kind: domain.KindPublicationRecord, Data: publicationData})
+		if mergeErr != nil {
+			if !errors.Is(mergeErr, port.ErrPRNotMerged) {
+				if port.IsPermanent(mergeErr) {
+					result, blockedErr := block(store, lease, state, runDir, mergeErr)
+					return CheckResult{State: result.State}, blockedErr
+				}
+				return CheckResult{State: state}, mergeErr
+			}
+		} else {
+			if _, persistErr := persistMergeReceipt(runDir, input.Validator, receiptRecord, state.RunID, published, publicationDigest); persistErr != nil {
+				result, blockedErr := block(store, lease, state, runDir, persistErr)
+				return CheckResult{State: result.State}, blockedErr
+			}
+		}
 	}
 	observedRecord, err := input.Observer.ObserveChecks(ctx, domain.Record{Kind: domain.KindPublicationRecord, Data: publicationData}, task.Publication.RequiredChecks)
 	if err != nil {

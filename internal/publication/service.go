@@ -327,33 +327,60 @@ func loadEvidence(runDir string, state domain.RunState, validator *contract.Vali
 	if err != nil {
 		return evidenceSet{}, err
 	}
-	decisionData, err := read(filepath.Join("decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound)), domain.KindReviewDecision)
+	_, decision, decisionDigest, err := authorizePublicationDecision(runDir, state, validator, frozen)
 	if err != nil {
 		return evidenceSet{}, err
 	}
 	var packet domain.ReviewPacket
 	_ = json.Unmarshal(packetData, &packet)
-	var decision domain.ReviewDecision
-	if err := json.Unmarshal(decisionData, &decision); err != nil {
-		return evidenceSet{}, err
-	}
 	reportDigest, _ := canonical.DigestJSON(reportData)
 	manifestDigest, _ := canonical.DigestJSON(manifestData)
 	packetDigest, _ := canonical.DigestJSON(packetData)
-	decisionDigest, _ := canonical.DigestJSON(decisionData)
-	if reportDigest != frozen.reportDigest || manifestDigest != frozen.manifestDigest || decisionDigest != frozen.decisionDigest || decision.EvidenceDigest != frozen.evidenceDigest {
+	if reportDigest != frozen.reportDigest || manifestDigest != frozen.manifestDigest {
 		return evidenceSet{}, errors.New("publication evidence differs from frozen lifecycle event")
 	}
 	if packet.TaskID != state.TaskID || packet.RunID != state.RunID || packet.ReviewRound != state.ReviewRound || packet.SpecDigest != state.SpecDigest || packet.BaseSHA != state.BaseSHA || packet.SnapshotDigest != report.Observed.SnapshotDigest || packet.DiffDigest != report.Observed.DiffDigest {
 		return evidenceSet{}, errors.New("ReviewPacket does not bind the verified snapshot")
 	}
-	if decision.TaskID != state.TaskID || decision.RunID != state.RunID || decision.SpecDigest != state.SpecDigest || decision.Verdict != "accept" || decision.PublicationRecommendation != "publish" || decision.MergeRecommendation != "do-not-merge" || len(decision.BlockingFindings) != 0 {
-		return evidenceSet{}, errors.New("ReviewDecision does not authorize publication")
-	}
 	if decision.VerificationDigest != reportDigest || decision.ArtifactManifestDigest != manifestDigest || decision.ReviewPacketDigest != packetDigest || decision.EvidenceDigest != packet.EvidenceDigest {
 		return evidenceSet{}, errors.New("review evidence digest binding mismatch")
 	}
 	return evidenceSet{task: task, report: report, decision: decision, decisionDigest: decisionDigest}, nil
+}
+
+// authorizePublicationDecision verifies the current review round's
+// ReviewDecision against the frozen lifecycle evidence: the round-bound file
+// must be schema-valid, its canonical digest must equal the frozen
+// review.accept decisionDigest, its evidence digest must equal the frozen
+// evidenceDigest, and the verdict must authorize publication with no
+// blocking findings. It is shared by the live publication gate and the ADR
+// 0026 reconcile current-ledger recheck so neither path can drift.
+func authorizePublicationDecision(runDir string, state domain.RunState, validator *contract.Validator, frozen frozenPublicationEvidence) ([]byte, domain.ReviewDecision, string, error) {
+	decisionData, err := os.ReadFile(filepath.Join(runDir, "decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound)))
+	if err != nil {
+		return nil, domain.ReviewDecision{}, "", err
+	}
+	if err := validator.Validate(domain.KindReviewDecision, decisionData); err != nil {
+		return nil, domain.ReviewDecision{}, "", err
+	}
+	decisionDigest, err := canonical.DigestJSON(decisionData)
+	if err != nil {
+		return nil, domain.ReviewDecision{}, "", err
+	}
+	if decisionDigest != frozen.decisionDigest {
+		return nil, domain.ReviewDecision{}, "", errors.New("publication evidence differs from frozen lifecycle event")
+	}
+	var decision domain.ReviewDecision
+	if err := json.Unmarshal(decisionData, &decision); err != nil {
+		return nil, domain.ReviewDecision{}, "", err
+	}
+	if decision.EvidenceDigest != frozen.evidenceDigest {
+		return nil, domain.ReviewDecision{}, "", errors.New("publication evidence differs from frozen lifecycle event")
+	}
+	if decision.TaskID != state.TaskID || decision.RunID != state.RunID || decision.SpecDigest != state.SpecDigest || decision.Verdict != "accept" || decision.PublicationRecommendation != "publish" || decision.MergeRecommendation != "do-not-merge" || len(decision.BlockingFindings) != 0 {
+		return nil, domain.ReviewDecision{}, "", errors.New("ReviewDecision does not authorize publication")
+	}
+	return decisionData, decision, decisionDigest, nil
 }
 
 type frozenPublicationEvidence struct {
@@ -764,7 +791,11 @@ func existingPublicationRecord(path string, validator *contract.Validator) (doma
 	return record, err
 }
 
-func loadCurrentPublication(runDir string, state domain.RunState, validator *contract.Validator, store *runstore.Store) (*domain.PublicationRecord, error) {
+// currentPublicationData resolves and reads the current PublicationRecord
+// bytes for a run: the live publication-record.json, or the unique archived
+// generation matching the snapshot head SHA. Shared by loadCurrentPublication
+// and the ADR 0026 reconcile current-ledger recheck.
+func currentPublicationData(runDir string, state domain.RunState) ([]byte, error) {
 	path := filepath.Join(runDir, "publication-record.json")
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) && state.Publication != nil && regexp.MustCompile(`^[0-9a-f]{40,64}$`).MatchString(state.Publication.HeadSHA) {
@@ -775,9 +806,13 @@ func loadCurrentPublication(runDir string, state domain.RunState, validator *con
 		if len(matches) != 1 {
 			return nil, fmt.Errorf("cannot reconcile archived PublicationRecord: found %d candidates", len(matches))
 		}
-		path = matches[0]
-		data, err = os.ReadFile(path)
+		data, err = os.ReadFile(matches[0])
 	}
+	return data, err
+}
+
+func loadCurrentPublication(runDir string, state domain.RunState, validator *contract.Validator, store *runstore.Store) (*domain.PublicationRecord, error) {
+	data, err := currentPublicationData(runDir, state)
 	if err != nil {
 		return nil, err
 	}

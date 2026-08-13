@@ -16,14 +16,15 @@
 
 embedded/local 先行实现的 Local MVP 定义达成：标记 `USABLE`。
 
-## 已知阻塞与临时护栏：Issue #25 发布合并后 reconcile
+## 已知阻塞与进展：Issue #25 已关闭，Issue #30 部分满足
 
-公开 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) 与 [PR #24](https://github.com/chiga0/marshal-harness/pull/24) 暴露：当全部 required checks 成功且 PR 已合并进入 main 后，现有 `marshal task accept` 仍要求 PR 处于 OPEN/Draft，会把 Run 永久置为 `BLOCKED`。这是 Local MVP 发布流程的已知阻塞，**尚未在代码或 Schema 层面修复**，当前只有临时 operational 护栏（见 [Operator Runbook](operator-runbook.md)）：
+公开 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) 与 [PR #24](https://github.com/chiga0/marshal-harness/pull/24) 暴露的「全部 required checks 成功且 PR 已合并后，`marshal task accept` 把 Run 永久置为 terminal `BLOCKED`」**已修复并关闭**：
 
-- 临时顺序：`publish` → 等待 required checks 全绿 → `accept`（PR 仍 OPEN 时）→ 维护者在 Marshal 外 merge；
-- 已误入 terminal `BLOCKED` 的 Run：只读 `doctor` 检查与证据保留，等待后续 typed reconciliation，禁止手改状态或伪装修复。
+- 活路径：`marshal task accept` 内联识别已合并且 required checks 全绿的 PR，采集不可变 `SCMMergeReceipt` 后经现行 checks-passed 路径进入 `ACCEPTED`；未合并 PR 仍走原 checks 观察流程；
+- 补偿路径：`marshal task reconcile` 按 [ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) 冻结顺序，以 `SCMMergeReceipt` + append-only `PublicationReconcileRecord` + current-ledger recheck 共同门禁，把发布后的 terminal `BLOCKED` 安全迁移 `ACCEPTED`（`publication.reconciled` 事件是唯一命名终态例外，仅限 accept-after-merge）；全程 append-only、幂等、fail closed，不绕过 required checks 与 ReviewDecision，merge-never 不变；
+- 正式操作顺序与补偿命令见 [Operator Runbook §7](operator-runbook.md)，旧临时护栏已废止；审计 finding `PUBLICATION-MERGED-HEAD-RECONCILE-P1` 随实现合入关闭（P1 → `CLOSED`），见[设计审计报告](audit-report.md)。ADR 0026 接受只冻结契约（PR #49），不升级 M8–M13 实现状态；本修复是 Local MVP 发布流程的实现层关闭，不改变 M0–M6 已通过状态与 Local MVP `USABLE` 结论。
 
-恢复机制（不可变 `SCMMergeReceipt` 与 append-only `PublicationReconcileRecord`）已由 [ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) 于 2026-08-12 接受并合入（PR #49），冻结 `SCMMergeReceipt` 与 `PublicationReconcileRecord` 契约；typed reconciliation 实现仍待后续任务，在此之前临时护栏不变，相关 Run 保持 `BLOCKED` 终态。本阻塞不改变 M0–M6 已通过状态与 Local MVP `USABLE` 结论，相关审计 finding `PUBLICATION-MERGED-HEAD-RECONCILE-P1`（状态保持 `OPEN` 至实现合入，P1）见[设计审计报告](audit-report.md)。
+公开 [Issue #30](https://github.com/chiga0/marshal-harness/issues/30)（CI deadline 观察语义）保持 `OPEN`：期望 4（发布时冻结独立 ciDeadline 的方向）已由 [ADR 0028](adr/0028-ci-deadline-phased-observation.md)（Proposed）的方案 B 一并冻结；期望 1-3（deadline 后仍读远端事实、按可信完成时间裁决、超时 fail closed）与期望 5（新 deadline 契约）依赖 ADR 0028 接受与实现，留待后续任务；当前本地 deadline 检查在 `marshal task accept` 中保持在前且不豁免。
 
 M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal orchestration）。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 是 M7 通过后的已接受设计增补：它不回滚 M7，也不提前完成 M8–M13；确定性 Supervisor、Typed Execution、通用副作用对账/补偿与 Goal admission 均仍待实现。
 
@@ -47,7 +48,7 @@ M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal 
 | 12：开源部署、版本化 Provider SDK/协议、多语言 SDK 与长稳验证 | `PLANNED` | 按 Port effect conformance；ACP/A2A/OpenHands 仅为可选生态扩展；见[实施计划](implementation-plan.md) |
 | 13：Goal orchestration | `PLANNED` | M13.0 契约 → M13.1 plan admission → M13.2 DAG/replan/evidence → M13.3 pause/resume/soak；当前无 Goal Schema/控制器实现；见[实施计划](implementation-plan.md) |
 
-[ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md)（已接受，2026-08-12；维护者合入 PR #49）冻结已合并 PR 的权威 reconcile 契约（`SCMMergeReceipt` 与 `PublicationReconcileRecord`），接受只冻结契约，typed reconciliation 实现仍待后续任务，不升级 M8–M13 实现状态。
+[ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md)（已接受，2026-08-12；维护者合入 PR #49）冻结已合并 PR 的权威 reconcile 契约（`SCMMergeReceipt` 与 `PublicationReconcileRecord`）；accept-after-merge typed reconciliation 实现（accept 内联 MERGED 识别 + `marshal task reconcile` 补偿命令 + lifecycle 唯一终态例外）已于 2026-08-13 合入，关闭 Issue #25 与审计 finding `PUBLICATION-MERGED-HEAD-RECONCILE-P1`；该实现是 Local MVP 发布流程修复，不升级 M8–M13 实现状态。
 
 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10；全部 P1 经 Round 2 独立验证与 ReviewDecision accept 后由维护者接受）基于首次 Sandbox SPI dogfood 的 reject 证据冻结 provider-neutral Sandbox 安全契约，并修订 M8–M13 分工：
 

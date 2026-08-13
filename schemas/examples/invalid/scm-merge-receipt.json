@@ -1,0 +1,18 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "SCMMergeReceipt",
+  "receiptId": "receipt-0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+  "authorityNamespaceId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runId": "run-01",
+  "publicationRecordId": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "repositoryRef": "example-org/example-repo",
+  "prNumber": 0,
+  "headOid": "2222222222222222222222222222222222222222",
+  "baseOid": "0123456789abcdef0123456789abcdef01234567",
+  "mergeCommitSha": "4444444444444444444444444444444444444444",
+  "mergedAt": "not-a-date-time",
+  "mergedBy": "maintainer",
+  "mergeMethod": "unknown",
+  "capturedAt": "2026-08-12T10:05:00Z",
+  "receiptDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+}

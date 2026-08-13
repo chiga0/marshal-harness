@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/authority"
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
@@ -27,6 +30,9 @@ const (
 	testPRURL        = "https://github.com/example-org/example-repo/pull/7"
 	testRepositoryID = "R_repository0001"
 	testActor        = "marshal-bot"
+	testMergeSHA     = "4444444444444444444444444444444444444444"
+	testHeadTree     = "5555555555555555555555555555555555555555"
+	testOtherTree    = "6666666666666666666666666666666666666666"
 )
 
 var fixedTime = time.Date(2026, 8, 4, 12, 30, 0, 0, time.UTC)
@@ -87,6 +93,14 @@ printf '%s\n' "$*" >> "$STATE/gh.log"
 case "$1" in
 api)
 	case "$2" in
+	repos/*/commits/*)
+		sha="${2##*/}"
+		if [ -f "$STATE/commit-$sha.json" ]; then
+			cat "$STATE/commit-$sha.json"
+			exit 0
+		fi
+		exit 1
+		;;
 	repos/*) cat "$STATE/repo.json" ;;
 	user) cat "$STATE/user.json" ;;
 	*) exit 1 ;;
@@ -110,7 +124,15 @@ pr)
 		exit 0
 		;;
 	view)
-		cat "$STATE/pr.json"
+		count=0
+		if [ -f "$STATE/view-count" ]; then count="$(cat "$STATE/view-count")"; fi
+		count=$((count + 1))
+		printf '%s' "$count" > "$STATE/view-count"
+		if [ "$count" -ge 2 ] && [ -f "$STATE/pr-changed.json" ]; then
+			cat "$STATE/pr-changed.json"
+		else
+			cat "$STATE/pr.json"
+		fi
 		exit 0
 		;;
 	edit)
@@ -167,6 +189,17 @@ func newHarness(t *testing.T) *harness {
 			t.Fatal(err)
 		}
 	}
+	// Publisher.New normalizes repositoryRoot through filepath.EvalSymlinks.
+	// Normalize the harness root identically so every derivation site (and
+	// the expectations below) sees one single repository identity even on
+	// platforms where the temp directory traverses symlinks (macOS /var ->
+	// /private/var); otherwise the authority namespace digest would differ
+	// between harness expectation and implementation on the same machine.
+	evaluatedRepoRoot, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoRoot = evaluatedRepoRoot
 	writeScript := func(name, script string) string {
 		path := filepath.Join(binDir, name)
 		if err := os.WriteFile(path, []byte(strings.ReplaceAll(script, "@STATE@", stateDir)), 0o755); err != nil {
@@ -953,6 +986,299 @@ func publicationData(t *testing.T, h *harness, published domain.PublicationRecor
 		t.Fatal(err)
 	}
 	return data
+}
+
+func (h *harness) seedMergedPR(intent domain.PublicationIntent, mutate func(map[string]any)) {
+	h.t.Helper()
+	h.seedPR(intent, func(pr map[string]any) {
+		pr["state"] = "MERGED"
+		pr["isDraft"] = false
+		pr["mergedAt"] = "2026-08-12T10:00:00Z"
+		pr["mergedBy"] = map[string]any{"login": "maintainer"}
+		pr["mergeCommit"] = map[string]any{"oid": testMergeSHA}
+		pr["baseRefOid"] = testBaseSHA
+		if mutate != nil {
+			mutate(pr)
+		}
+	})
+}
+
+func commitNodeJSON(t *testing.T, tree string, parents ...string) string {
+	t.Helper()
+	type parentRef struct {
+		SHA string `json:"sha"`
+	}
+	type node struct {
+		Parents []parentRef `json:"parents"`
+		Tree    struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	value := node{}
+	value.Tree.SHA = tree
+	for _, parent := range parents {
+		value.Parents = append(value.Parents, parentRef{SHA: parent})
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func mergedPublication(t *testing.T, h *harness, intent domain.PublicationIntent) []byte {
+	t.Helper()
+	publication := domain.PublicationRecord{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindPublicationRecord,
+		TaskID: intent.TaskID, RunID: intent.RunID, Provider: intent.Provider,
+		Repository: domain.PublicationRepository{ID: testRepositoryID, NameWithOwner: intent.Repository, URL: "https://github.com/" + intent.Repository},
+		Remote:     intent.Remote, BaseBranch: intent.BaseBranch, HeadBranch: intent.HeadBranch, ReviewRound: intent.ReviewRound,
+		BaseSHA: intent.BaseSHA, PreviousHeadSHA: intent.PreviousHeadSHA, HeadSHA: intent.CommitSHA, CommitSHA: intent.CommitSHA,
+		SnapshotDigest: intent.SnapshotDigest, DiffDigest: intent.DiffDigest,
+		SpecDigest: intent.SpecDigest, PolicyDigest: intent.PolicyDigest,
+		EvidenceDigest: intent.EvidenceDigest, VerificationDigest: intent.VerificationDigest,
+		ReviewDecisionDigest: intent.ReviewDecisionDigest,
+		Marker:               intent.Marker, Mode: intent.Mode, MergePolicy: intent.MergePolicy,
+		Request: domain.PullRequestRecord{ID: testPRID, Number: 7, URL: testPRURL, Draft: true, State: "OPEN"},
+		Actor:   testActor, PublishedAt: fixedTime, UpdatedAt: fixedTime,
+	}
+	data, err := json.Marshal(publication)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.validator.Validate(domain.KindPublicationRecord, data); err != nil {
+		t.Fatalf("test publication record failed schema validation: %v", err)
+	}
+	return data
+}
+
+func TestObserveMergeReceiptCapturesImmutableMergeFact(t *testing.T) {
+	h := newHarness(t)
+	intent := testIntent()
+	h.seedMergedPR(intent, nil)
+	h.writeState("commit-"+testMergeSHA+".json", commitNodeJSON(t, testOtherTree, testBaseSHA, testCommitSHA))
+	publicationData := mergedPublication(t, h, intent)
+
+	record, err := h.publisher.ObserveMergeReceipt(context.Background(), domain.Record{Kind: domain.KindPublicationRecord, Data: publicationData})
+	if err != nil {
+		t.Fatalf("ObserveMergeReceipt: %v", err)
+	}
+	if record.Kind != domain.KindSCMMergeReceipt {
+		t.Fatalf("record kind = %s", record.Kind)
+	}
+	var receipt domain.SCMMergeReceipt
+	if err := json.Unmarshal(record.Data, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	publicationDigest, err := canonical.DigestJSON(publicationData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The authority namespace expectation uses the identical frozen local
+	// derivation as the implementation (tenantNamespace=local,
+	// controlPlaneId=default, authorityScopeId=repository identity). The
+	// scope is the symlink-normalized repository root: that is the exact
+	// repository identity Publisher.New resolved and derives from, so the
+	// expectation stays deterministic for a given repository instead of
+	// drifting with unresolved temp-directory spellings.
+	if h.publisher.repositoryRoot != h.repoRoot {
+		t.Fatalf("harness repository root %q differs from publisher identity %q", h.repoRoot, h.publisher.repositoryRoot)
+	}
+	expectedNamespace, err := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: h.repoRoot}.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.AuthorityNamespaceID != expectedNamespace {
+		t.Fatalf("authorityNamespaceId = %q, want %q", receipt.AuthorityNamespaceID, expectedNamespace)
+	}
+	if receipt.PublicationRecordID != publicationDigest {
+		t.Fatalf("publicationRecordId = %q, want frozen publication digest %q", receipt.PublicationRecordID, publicationDigest)
+	}
+	if receipt.ReceiptID != MergeReceiptID("run-01", publicationDigest, testMergeSHA) || receipt.ReceiptID == "" {
+		t.Fatalf("receiptId = %q", receipt.ReceiptID)
+	}
+	if receipt.RunID != "run-01" || receipt.RepositoryRef != testRepository || receipt.PRNumber != 7 {
+		t.Fatalf("receipt binding = %+v", receipt)
+	}
+	if receipt.HeadOid != testCommitSHA || receipt.BaseOid != testBaseSHA || receipt.MergeCommitSha != testMergeSHA {
+		t.Fatalf("receipt OIDs = %+v", receipt)
+	}
+	if receipt.MergedBy != "maintainer" || receipt.MergeMethod != domain.MergeMethodMerge {
+		t.Fatalf("receipt merge facts = %+v", receipt)
+	}
+	if !receipt.MergedAt.Equal(time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)) || !receipt.CapturedAt.Equal(fixedTime) {
+		t.Fatalf("receipt timestamps = %+v", receipt)
+	}
+	recomputed, err := receipt.Digest()
+	if err != nil || receipt.ReceiptDigest != recomputed {
+		t.Fatalf("receiptDigest = %q, recomputed %q (err=%v)", receipt.ReceiptDigest, recomputed, err)
+	}
+	if err := receipt.Validate(); err != nil {
+		t.Fatalf("receipt semantic validation failed: %v", err)
+	}
+	if h.countCommands("gh", "pr view ") != 2 {
+		t.Fatalf("expected the dual-cut identity recheck: %v", h.commandLines("gh"))
+	}
+	if h.countCommands("gh", "api repos/"+testRepository+"/commits/"+testMergeSHA) != 1 {
+		t.Fatalf("expected merge commit observation: %v", h.commandLines("gh"))
+	}
+	if h.commandLines("git") != nil {
+		t.Fatalf("merge receipt capture must not run git: %v", h.commandLines("git"))
+	}
+	h.assertNoSecrets("SCMMergeReceipt", string(record.Data))
+}
+
+func TestObserveMergeReceiptClassifiesMergeMethod(t *testing.T) {
+	run := func(t *testing.T, mergeCommit, headCommit string) (string, error) {
+		t.Helper()
+		h := newHarness(t)
+		intent := testIntent()
+		h.seedMergedPR(intent, nil)
+		if mergeCommit != "" {
+			h.writeState("commit-"+testMergeSHA+".json", mergeCommit)
+		}
+		if headCommit != "" {
+			h.writeState("commit-"+testCommitSHA+".json", headCommit)
+		}
+		record, err := h.publisher.ObserveMergeReceipt(context.Background(), domain.Record{Kind: domain.KindPublicationRecord, Data: mergedPublication(t, h, intent)})
+		if err != nil {
+			return "", err
+		}
+		var receipt domain.SCMMergeReceipt
+		if err := json.Unmarshal(record.Data, &receipt); err != nil {
+			t.Fatal(err)
+		}
+		// Classification must have been derived exclusively from the injected
+		// fake gh api responses (hermetic; no real network or credentials).
+		if h.countCommands("gh", "api repos/"+testRepository+"/commits/") == 0 {
+			t.Fatalf("classification did not use the injected gh api path: %v", h.commandLines("gh"))
+		}
+		return receipt.MergeMethod, nil
+	}
+
+	t.Run("two parents classify as merge", func(t *testing.T) {
+		method, err := run(t, commitNodeJSON(t, testOtherTree, testBaseSHA, testCommitSHA), "")
+		if err != nil || method != domain.MergeMethodMerge {
+			t.Fatalf("method = %q, err = %v", method, err)
+		}
+	})
+	t.Run("single parent with head tree classifies as squash", func(t *testing.T) {
+		method, err := run(t, commitNodeJSON(t, testHeadTree, testBaseSHA), commitNodeJSON(t, testHeadTree, testCommitSHA))
+		if err != nil || method != domain.MergeMethodSquash {
+			t.Fatalf("method = %q, err = %v", method, err)
+		}
+	})
+	t.Run("single parent with different tree classifies as rebase", func(t *testing.T) {
+		method, err := run(t, commitNodeJSON(t, testOtherTree, testBaseSHA), commitNodeJSON(t, testHeadTree, testCommitSHA))
+		if err != nil || method != domain.MergeMethodRebase {
+			t.Fatalf("method = %q, err = %v", method, err)
+		}
+	})
+	t.Run("zero parents fail closed", func(t *testing.T) {
+		_, err := run(t, commitNodeJSON(t, testOtherTree), "")
+		if err == nil || !port.IsPermanent(err) || !strings.Contains(err.Error(), "cannot be determined") {
+			t.Fatalf("expected fail-closed classification error, got %v", err)
+		}
+	})
+	t.Run("missing merge commit fact fails retryably", func(t *testing.T) {
+		_, err := run(t, "", "")
+		if err == nil || port.IsPermanent(err) {
+			t.Fatalf("expected retryable failure for absent merge commit observation, got %v", err)
+		}
+	})
+}
+
+func TestObserveMergeReceiptRejectsUnsafeFacts(t *testing.T) {
+	t.Run("unmerged PR returns the not-merged sentinel", func(t *testing.T) {
+		h := newHarness(t)
+		intent := testIntent()
+		h.seedPR(intent, nil)
+		_, err := h.publisher.ObserveMergeReceipt(context.Background(), domain.Record{Kind: domain.KindPublicationRecord, Data: mergedPublication(t, h, intent)})
+		if !errors.Is(err, port.ErrPRNotMerged) {
+			t.Fatalf("err = %v, want port.ErrPRNotMerged", err)
+		}
+	})
+	t.Run("foreign head is rejected permanently", func(t *testing.T) {
+		h := newHarness(t)
+		intent := testIntent()
+		h.seedMergedPR(intent, func(pr map[string]any) { pr["headRefOid"] = testForeignSHA })
+		_, err := h.publisher.ObserveMergeReceipt(context.Background(), domain.Record{Kind: domain.KindPublicationRecord, Data: mergedPublication(t, h, intent)})
+		if err == nil || !port.IsPermanent(err) || !strings.Contains(err.Error(), "identity") {
+			t.Fatalf("expected permanent identity rejection, got %v", err)
+		}
+	})
+	t.Run("merged node without merge facts fails closed", func(t *testing.T) {
+		h := newHarness(t)
+		intent := testIntent()
+		h.seedMergedPR(intent, func(pr map[string]any) { pr["mergeCommit"] = nil })
+		_, err := h.publisher.ObserveMergeReceipt(context.Background(), domain.Record{Kind: domain.KindPublicationRecord, Data: mergedPublication(t, h, intent)})
+		if err == nil || !port.IsPermanent(err) || !strings.Contains(err.Error(), "immutable merge facts") {
+			t.Fatalf("expected fail-closed missing facts, got %v", err)
+		}
+	})
+	t.Run("identity change during the observation window conflicts", func(t *testing.T) {
+		h := newHarness(t)
+		intent := testIntent()
+		h.seedMergedPR(intent, nil)
+		h.writeState("commit-"+testMergeSHA+".json", commitNodeJSON(t, testOtherTree, testBaseSHA, testCommitSHA))
+		changed := map[string]any{
+			"id": "PR_kw9999999999", "number": 7, "url": testPRURL, "isDraft": false, "state": "MERGED",
+			"headRefName": intent.HeadBranch, "headRefOid": intent.CommitSHA,
+			"headRepositoryOwner": map[string]any{"login": "example-org"}, "isCrossRepository": false,
+			"baseRefName": intent.BaseBranch, "baseRefOid": testBaseSHA,
+			"mergedAt": "2026-08-12T10:00:00Z", "mergedBy": map[string]any{"login": "maintainer"},
+			"mergeCommit": map[string]any{"oid": testMergeSHA}, "body": renderBody(intent),
+		}
+		data, err := json.Marshal(changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.writeState("pr-changed.json", string(data))
+		_, err = h.publisher.ObserveMergeReceipt(context.Background(), domain.Record{Kind: domain.KindPublicationRecord, Data: mergedPublication(t, h, intent)})
+		if err == nil || !port.IsPermanent(err) || !strings.Contains(err.Error(), "changed while merge receipt was observed") {
+			t.Fatalf("expected permanent observation-window conflict, got %v", err)
+		}
+	})
+	t.Run("wrong record kind is rejected", func(t *testing.T) {
+		h := newHarness(t)
+		if _, err := h.publisher.ObserveMergeReceipt(context.Background(), domain.Record{Kind: domain.KindPublicationIntent, Data: []byte("{}")}); err == nil {
+			t.Fatal("expected kind rejection")
+		}
+	})
+}
+
+func TestObserveChecksAcceptsMergedPRHead(t *testing.T) {
+	h := newHarness(t)
+	intent := testIntent()
+	h.seedMergedPR(intent, nil)
+	h.writeState("checks.json", checkRowsJSON(t, checkRow("build", "pass"), checkRow("lint", "pass")))
+	publicationData := mergedPublication(t, h, intent)
+
+	record, err := h.publisher.ObserveChecks(context.Background(), domain.Record{Kind: domain.KindPublicationRecord, Data: publicationData}, []string{"build", "lint"})
+	if err != nil {
+		t.Fatalf("ObserveChecks on a merged PR must not fail closed on identity: %v", err)
+	}
+	var observation domain.RemoteCheckRecord
+	if err := json.Unmarshal(record.Data, &observation); err != nil {
+		t.Fatal(err)
+	}
+	if observation.Status != "pass" || observation.HeadSHA != testCommitSHA {
+		t.Fatalf("observation = %+v", observation)
+	}
+}
+
+func TestObserveMergeReceiptErrorsDoNotLeakSecrets(t *testing.T) {
+	h := newHarness(t)
+	h.setPublisherSecrets()
+	intent := testIntent()
+	h.seedMergedPR(intent, nil)
+	// No commit fixture: the classification call fails and the error surface
+	// must stay free of credentials, config dirs and local paths.
+	_, err := h.publisher.ObserveMergeReceipt(context.Background(), domain.Record{Kind: domain.KindPublicationRecord, Data: mergedPublication(t, h, intent)})
+	if err == nil {
+		t.Fatal("expected classification failure")
+	}
+	h.assertNoSecrets("merge receipt error", err.Error())
 }
 
 func TestPublisherChildEnvironmentIsControlled(t *testing.T) {

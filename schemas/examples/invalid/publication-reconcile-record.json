@@ -1,0 +1,19 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "PublicationReconcileRecord",
+  "reconcileId": "reconcile-1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b",
+  "authorityNamespaceId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "runId": "run-01",
+  "scmMergeReceiptId": "receipt-0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+  "reconcileType": "accept-after-merge",
+  "observedState": "ACCEPTED",
+  "decidedState": "ACCEPTED",
+  "evidenceDigests": [
+    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  ],
+  "reconcileReason": "not a reason code",
+  "reconciledBy": "maintainer",
+  "reconciledAt": "2026-08-12T11:00:00Z",
+  "reconcileRecordDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+}

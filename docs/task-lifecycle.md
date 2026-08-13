@@ -36,6 +36,8 @@ Retry 表示基础设施或 Provider 执行失败，因此创建新 Attempt。Re
 
 `ACCEPTED`、`REJECTED`、`BLOCKED`、`ABORTED`、`NO_CHANGE` 是 Run 终态。解决 Blocker 或改变终态决策必须创建关联到旧 Run 的新 Run。
 
+终态不可复活存在唯一命名例外（[ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) typed reconciliation）：发布后误入 `BLOCKED` 的 Run，在 PR 已被合并且 merged head 的 required checks 全绿时，可经 `marshal task reconcile` 以不可变 `SCMMergeReceipt` + append-only `PublicationReconcileRecord` + current-ledger recheck 共同门禁，安全迁移 `BLOCKED → ACCEPTED`（事件 `publication.reconciled`，actor `system/marshal-reconciliation`）。该例外仅限 accept-after-merge：不开放其他终态、其他状态组合或其他 reconcile 类型，不绕过 required checks 与 ReviewDecision，也不改写既有 PublicationRecord 或 ReviewDecision。
+
 M13 的长周期人工等待不改变本表：根据 [ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)，等待输入、策略或预算审批由 Goal `PAUSED` 承担；Run 不新增 `WAITING_HUMAN_APPROVAL`。Goal resume 可以创建关联的新 Run，但不能复活或改写已终态 Run。
 
 ## 转换表
@@ -65,6 +67,7 @@ M13 的长周期人工等待不改变本表：根据 [ADR 0019](adr/0019-determi
 | `CI_PENDING` | `REWORK_REQUESTED` | 检查失败、预算尚存且可通过代码修复 |
 | `CI_PENDING` | `BLOCKED` | 失败来自外部或需要维护者操作 |
 | `RETRY_PENDING` | `BLOCKED` | 显式 abort（`run.aborted`，ADR 0012）：human actor、LeaseHeld、写终态 Outcome；v1 不启用 `ABORTED` 状态 |
+| `BLOCKED` | `ACCEPTED` | ADR 0026 typed reconciliation（`publication.reconciled`，唯一终态例外）：仅 accept-after-merge；Run Lease、`ReconcileAuthorized`（SCMMergeReceipt、PublicationReconcileRecord 与 current-ledger recheck 全部校验通过）、EvidenceCurrent、PublicationCurrent、DecisionCurrent；merged head 的 required checks 全绿由新物化的 RemoteCheckRecord 证明；旧 BLOCKED Outcome 只归档不删除 |
 
 意外进程退出不会自动创造转换。Recovery 必须先比较 Journal、Snapshot、Process Lease 与 worktree 状态，再选择合法转换。
 

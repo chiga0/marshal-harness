@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/authority"
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
@@ -248,6 +250,198 @@ func (p *Publisher) ObserveChecks(ctx context.Context, record domain.Record, req
 	return domain.Record{Kind: domain.KindRemoteCheckRecord, Data: data}, nil
 }
 
+// ActorLogin observes the authenticated maintainer login. It is a read-only
+// identity observation used to attribute compensating reconciliation.
+func (p *Publisher) ActorLogin(ctx context.Context) (string, error) {
+	return p.actor(ctx)
+}
+
+var commitObjectIDPattern = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+
+// ObserveMergeReceipt captures the ADR 0026 immutable merge fact of a merged
+// publication. It is strictly observational (merge-never): it never merges,
+// edits, closes or otherwise mutates the remote PR. When the PR node is not
+// merged it returns port.ErrPRNotMerged so callers fall back to the ordinary
+// check observation flow. Errors and the returned record never carry GH
+// config dirs, tokens or absolute local paths.
+func (p *Publisher) ObserveMergeReceipt(ctx context.Context, record domain.Record) (domain.Record, error) {
+	if record.Kind != domain.KindPublicationRecord {
+		return domain.Record{}, errors.New("expected PublicationRecord")
+	}
+	if err := p.validator.Validate(domain.KindPublicationRecord, record.Data); err != nil {
+		return domain.Record{}, err
+	}
+	var publication domain.PublicationRecord
+	if err := json.Unmarshal(record.Data, &publication); err != nil {
+		return domain.Record{}, err
+	}
+	number := strconv.Itoa(publication.Request.Number)
+	pr, err := p.viewPR(ctx, publication.Repository.NameWithOwner, number)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	if !prMatchesPublication(pr, publication) {
+		return domain.Record{}, port.Permanent(errors.New("remote PR head or identity changed"))
+	}
+	if pr.State != "MERGED" {
+		return domain.Record{}, port.ErrPRNotMerged
+	}
+	if pr.MergeCommit.OID == "" || pr.MergedAt == "" || pr.MergedBy.Login == "" || pr.BaseRefOID == "" {
+		return domain.Record{}, port.Permanent(errors.New("merged PR node lacks immutable merge facts"))
+	}
+	if !commitObjectIDPattern.MatchString(pr.MergeCommit.OID) || !commitObjectIDPattern.MatchString(pr.HeadRefOID) {
+		return domain.Record{}, port.Permanent(errors.New("merged PR node reports malformed object ids"))
+	}
+	mergedAt, err := time.Parse(time.RFC3339, pr.MergedAt)
+	if err != nil {
+		return domain.Record{}, port.Permanent(errors.New("merged PR node reports malformed mergedAt"))
+	}
+	method, err := p.classifyMergeMethod(ctx, publication.Repository.NameWithOwner, pr.MergeCommit.OID, publication.HeadSHA)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	// Collection discipline: identity recheck after the merge-method
+	// observation mirrors the dual-cut pattern used around check observation.
+	recheck, err := p.viewPR(ctx, publication.Repository.NameWithOwner, number)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	if !prMatchesPublication(recheck, publication) || recheck.State != "MERGED" ||
+		recheck.MergeCommit.OID != pr.MergeCommit.OID || recheck.HeadRefOID != pr.HeadRefOID ||
+		recheck.BaseRefOID != pr.BaseRefOID || recheck.MergedAt != pr.MergedAt {
+		return domain.Record{}, port.Permanent(errors.New("remote PR changed while merge receipt was observed"))
+	}
+	publicationDigest, err := canonical.DigestJSON(record.Data)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	authorityNamespaceID, err := localAuthorityNamespaceID(p.repositoryRoot)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	// prNumber is taken from the frozen PublicationRecord, never from the
+	// remote echo; repositoryRef is the frozen publication repository identity.
+	receipt := domain.SCMMergeReceipt{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindSCMMergeReceipt,
+		ReceiptID:            MergeReceiptID(publication.RunID, publicationDigest, pr.MergeCommit.OID),
+		AuthorityNamespaceID: authorityNamespaceID,
+		RunID:                publication.RunID,
+		PublicationRecordID:  publicationDigest,
+		RepositoryRef:        publication.Repository.NameWithOwner,
+		PRNumber:             publication.Request.Number,
+		HeadOid:              pr.HeadRefOID,
+		BaseOid:              pr.BaseRefOID,
+		MergeCommitSha:       pr.MergeCommit.OID,
+		MergedAt:             mergedAt.UTC(),
+		MergedBy:             pr.MergedBy.Login,
+		MergeMethod:          method,
+		CapturedAt:           p.now().UTC(),
+	}
+	digest, err := receipt.Digest()
+	if err != nil {
+		return domain.Record{}, err
+	}
+	receipt.ReceiptDigest = digest
+	data, err := json.Marshal(receipt)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	if err := p.validator.Validate(domain.KindSCMMergeReceipt, data); err != nil {
+		return domain.Record{}, err
+	}
+	return domain.Record{Kind: domain.KindSCMMergeReceipt, Data: data}, nil
+}
+
+// MergeReceiptID derives the deterministic content-bound receipt identity:
+// "receipt-" + sha256 over the canonical form of (runId,
+// publicationRecordId, mergeCommitSha). Repeated capture of the same merge
+// fact therefore merges idempotently.
+func MergeReceiptID(runID, publicationRecordID, mergeCommitSHA string) string {
+	document, err := json.Marshal(map[string]string{
+		"mergeCommitSha":      mergeCommitSHA,
+		"publicationRecordId": publicationRecordID,
+		"runId":               runID,
+	})
+	if err != nil {
+		return ""
+	}
+	digest, err := canonical.DigestJSON(document)
+	if err != nil {
+		return ""
+	}
+	return "receipt-" + strings.TrimPrefix(digest, "sha256:")
+}
+
+// localAuthorityNamespaceID derives the frozen local authority namespace
+// (ADR 0026): tenantNamespace=local, controlPlaneId=default,
+// authorityScopeId=repository identity. repositoryRoot equals the
+// RepositoryIdentity recorded in repo.json for this repository (the CLI
+// enforces the binding), so both capture sites derive the identical digest.
+func localAuthorityNamespaceID(repositoryRoot string) (string, error) {
+	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: repositoryRoot}
+	return namespace.Digest()
+}
+
+// classifyMergeMethod deterministically derives the merge method from the
+// merge commit's parents and tree (the GitHub API does not expose it
+// directly). Two parents means a merge commit; a single parent whose tree
+// equals the PR head tree means squash; a single parent with a different tree
+// means rebase. Anything else fails closed: the closed enumeration admits no
+// unknown value.
+func (p *Publisher) classifyMergeMethod(ctx context.Context, repository, mergeCommitSHA, headSHA string) (string, error) {
+	for _, objectID := range []string{mergeCommitSHA, headSHA} {
+		if !commitObjectIDPattern.MatchString(objectID) {
+			return "", port.Permanent(errors.New("merge method classification received a malformed object id"))
+		}
+	}
+	mergeCommit, err := p.commitNode(ctx, repository, mergeCommitSHA)
+	if err != nil {
+		return "", err
+	}
+	switch len(mergeCommit.Parents) {
+	case 2:
+		return domain.MergeMethodMerge, nil
+	case 1:
+		headCommit, err := p.commitNode(ctx, repository, headSHA)
+		if err != nil {
+			return "", err
+		}
+		if mergeCommit.Tree == "" || headCommit.Tree == "" {
+			return "", port.Permanent(errors.New("merge method classification lacks commit tree identity"))
+		}
+		if mergeCommit.Tree == headCommit.Tree {
+			return domain.MergeMethodSquash, nil
+		}
+		return domain.MergeMethodRebase, nil
+	default:
+		return "", port.Permanent(errors.New("merge method cannot be determined from merge commit parents"))
+	}
+}
+
+type commitNode struct {
+	Parents []string
+	Tree    string
+}
+
+func (p *Publisher) commitNode(ctx context.Context, repository, sha string) (commitNode, error) {
+	var raw struct {
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := p.ghJSON(ctx, &raw, "api", "repos/"+repository+"/commits/"+sha); err != nil {
+		return commitNode{}, err
+	}
+	node := commitNode{Tree: raw.Tree.SHA}
+	for _, parent := range raw.Parents {
+		node.Parents = append(node.Parents, parent.SHA)
+	}
+	return node, nil
+}
+
 type repositoryRecord struct{ ID, NameWithOwner, URL string }
 
 func (p *Publisher) repository(ctx context.Context, name string) (repositoryRecord, error) {
@@ -286,12 +480,20 @@ type pullRequest struct {
 	HeadRefName         string `json:"headRefName"`
 	HeadRefOID          string `json:"headRefOid"`
 	BaseRefName         string `json:"baseRefName"`
+	BaseRefOID          string `json:"baseRefOid"`
+	MergedAt            string `json:"mergedAt"`
 	Number              int    `json:"number"`
 	IsDraft             bool   `json:"isDraft"`
 	IsCrossRepository   bool   `json:"isCrossRepository"`
 	HeadRepositoryOwner struct {
 		Login string `json:"login"`
 	} `json:"headRepositoryOwner"`
+	MergedBy struct {
+		Login string `json:"login"`
+	} `json:"mergedBy"`
+	MergeCommit struct {
+		OID string `json:"oid"`
+	} `json:"mergeCommit"`
 }
 
 func (p *Publisher) reconcilePR(ctx context.Context, intent domain.PublicationIntent, body string) (pullRequest, error) {
@@ -360,13 +562,18 @@ func (p *Publisher) listPRs(ctx context.Context, intent domain.PublicationIntent
 	if _, _, err := parseGitHubRepository(intent.RemoteURL); err != nil {
 		return nil, err
 	}
-	err := p.ghJSON(ctx, &result, "pr", "list", "--repo", intent.Repository, "--state", "all", "--head", intent.HeadBranch, "--limit", "100", "--json", "id,number,url,isDraft,state,headRefName,headRefOid,headRepositoryOwner,isCrossRepository,baseRefName,body")
+	err := p.ghJSON(ctx, &result, "pr", "list", "--repo", intent.Repository, "--state", "all", "--head", intent.HeadBranch, "--limit", "100", "--json", prViewFields)
 	return result, err
 }
 
+// prViewFields is the frozen gh pr view/list --json field set; it carries the
+// ADR 0026 merge facts (mergedAt, mergedBy, mergeCommit) and baseRefOid in
+// addition to the publication identity fields.
+const prViewFields = "id,number,url,isDraft,state,headRefName,headRefOid,headRepositoryOwner,isCrossRepository,baseRefName,baseRefOid,mergedAt,mergedBy,mergeCommit,body"
+
 func (p *Publisher) viewPR(ctx context.Context, repository, number string) (pullRequest, error) {
 	var result pullRequest
-	err := p.ghJSON(ctx, &result, "pr", "view", number, "--repo", repository, "--json", "id,number,url,isDraft,state,headRefName,headRefOid,headRepositoryOwner,isCrossRepository,baseRefName,body")
+	err := p.ghJSON(ctx, &result, "pr", "view", number, "--repo", repository, "--json", prViewFields)
 	return result, err
 }
 
@@ -377,9 +584,15 @@ func prBelongsToIntent(pr pullRequest, intent domain.PublicationIntent) bool {
 
 func prMatchesPublication(pr pullRequest, publication domain.PublicationRecord) bool {
 	owner, _, ok := strings.Cut(publication.Repository.NameWithOwner, "/")
-	return ok && pr.ID == publication.Request.ID && pr.IsDraft && pr.State == "OPEN" && !pr.IsCrossRepository &&
-		pr.HeadRepositoryOwner.Login == owner && pr.HeadRefName == publication.HeadBranch && pr.HeadRefOID == publication.HeadSHA &&
-		pr.BaseRefName == publication.BaseBranch && strings.Contains(pr.Body, publication.Marker)
+	if !ok || pr.ID != publication.Request.ID || pr.IsCrossRepository ||
+		pr.HeadRepositoryOwner.Login != owner || pr.HeadRefName != publication.HeadBranch || pr.HeadRefOID != publication.HeadSHA ||
+		pr.BaseRefName != publication.BaseBranch || !strings.Contains(pr.Body, publication.Marker) {
+		return false
+	}
+	// Issue #25: before merge the PR must be OPEN/Draft; after a maintainer
+	// merges outside Marshal the PR node is MERGED and keeps the authoritative
+	// head/base OIDs and merge commit. Both states bind the same identity.
+	return (pr.IsDraft && pr.State == "OPEN") || pr.State == "MERGED"
 }
 
 func (p *Publisher) remoteHead(ctx context.Context, askpass, remoteURL, branch string) (string, error) {
