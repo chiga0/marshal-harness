@@ -27,3 +27,4 @@
 | [0019](0019-deterministic-control-plane-typed-execution-and-goal-admission.md) | 确定性 Control Plane、Typed Execution 的按 Port 边界、Goal proposal/admission/DAG guardrail、Evidence 依赖适用性与 append-only SideEffect 补偿 | 已接受（Accepted，2026-08-11；M7 后设计增补，不升级 M8–M13 实现状态） |
 | [0026](0026-scm-merge-receipt-and-publication-reconcile.md) | SCMMergeReceipt 与 PublicationReconcileRecord | 已接受（Accepted，2026-08-12） |
 | [0027](0027-candidate-record-and-verification-write-scope.md) | Candidate 一等不可变记录与 Verification 写作用域（声明式确定性归一化产出新 Candidate、原始产物永久留档、写作用域机械断言、gate required 为定义属性） | 已接受（Accepted，2026-08-13） |
+| [0029](0029-pre-attempt-abort.md) | 无 Attempt Run 的显式 abort 出口（PLANNED/READY 且无 Attempt 记录/无 publication intent/无 SideEffect/无已发布分支 → ABORTED，补充 ADR 0012 而非替代） | 提案中（Proposed） |
