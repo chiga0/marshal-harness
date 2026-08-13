@@ -75,6 +75,25 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 	result.Manifest.Artifacts = append(result.Manifest.Artifacts, Artifact{ID: "evidence:observed-patch", Kind: "patch", MediaType: "text/x-diff", Producer: "verifier", Required: true, Status: "validated", PathRoot: "run", RelativePath: "observed.patch", ByteSize: int64(len(observation.Patch)), Digest: canonical.DigestBytes(observation.Patch), CreatedAt: started, Truncated: observation.DiffTruncated, RelatedGates: []string{"diff:observe", "scope:changed-paths"}})
 	result.Report.Gates = append(result.Report.Gates, Gate{ID: "diff:observe", Category: "diff", Required: true, Status: "pass", Summary: fmt.Sprintf("观察到 %d 个变更，%d 字节", observation.ChangedFileCount, observation.DiffBytes), Evidence: []string{"artifact://evidence:observed-patch"}})
 	result.Report.Gates = append(result.Report.Gates, EvaluateScope(observation, input.Scope))
+	normalized, formatErr := normalizeFormat(ctx, input.Worktree, observation.ChangedFiles, input.Scope.AllowPaths)
+	if formatErr != nil {
+		result.Report.Gates = append(result.Report.Gates, Gate{ID: "format:normalize", Category: "other", Required: true, Status: "fail", Summary: "gofmt 归一化失败：" + formatErr.Error(), Evidence: []string{}})
+		return v.finish(input, result)
+	}
+	if len(normalized) > 0 {
+		updated, observeErr := ObserveContext(ctx, input.Worktree, input.BaseSHA, input.PatchCaptureBytes)
+		if observeErr != nil {
+			result.Report.Gates = append(result.Report.Gates, Gate{ID: "format:normalize", Category: "other", Required: true, Status: "fail", Summary: "归一化后无法重新观察 worktree：" + observeErr.Error(), Evidence: []string{}})
+			return v.finish(input, result)
+		}
+		observation = updated
+		result.Report.Observed = updated
+		if err := atomicWrite(patchPath, observation.Patch); err != nil {
+			return result, err
+		}
+		refreshObservedPatchArtifact(&result.Manifest, observation)
+	}
+	result.Report.Gates = append(result.Report.Gates, formatNormalizeGate(normalized))
 	artifacts, artifactGates := CollectArtifacts(input.Worktree, input.Deliverables, started)
 	result.Manifest.Artifacts = append(result.Manifest.Artifacts, artifacts...)
 	result.Report.Gates = append(result.Report.Gates, artifactGates...)
