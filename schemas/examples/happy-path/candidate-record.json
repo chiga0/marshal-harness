@@ -1,0 +1,14 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "Candidate",
+  "taskId": "task-01",
+  "runId": "run-01",
+  "attemptId": "attempt-01",
+  "authorityNamespaceId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "baseSha": "0123456789abcdef0123456789abcdef01234567",
+  "contentDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "producerKind": "worker",
+  "producer": "worker",
+  "createdAt": "2026-08-13T09:00:00Z",
+  "candidateDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+}

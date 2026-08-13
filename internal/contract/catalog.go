@@ -21,6 +21,7 @@ type Descriptor struct {
 var descriptors = []Descriptor{
 	{Name: "approval-record", Kind: domain.KindApprovalRecord},
 	{Name: "artifact-manifest", Kind: domain.KindArtifactManifest},
+	{Name: "candidate-record", Kind: domain.KindCandidate},
 	{Name: "capability-snapshot", Kind: domain.KindCapabilitySnapshot},
 	{Name: "intervention-record", Kind: domain.KindInterventionRecord},
 	{Name: "outcome", Kind: domain.KindOutcome},
