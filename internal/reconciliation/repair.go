@@ -1,15 +1,18 @@
 package reconciliation
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -138,7 +141,8 @@ func staleOnly(report Report) bool {
 }
 
 func repairEvents(ctx context.Context, input Input, store *runstore.Store) ([]domain.RunEvent, bool, error) {
-	if _, status, err := readEvidence(ctx, filepath.Join(input.StateRoot, "runs", input.RunID, "events.jsonl")); err != nil {
+	journalData, status, err := readEvidence(ctx, filepath.Join(input.StateRoot, "runs", input.RunID, "events.jsonl"))
+	if err != nil {
 		return nil, false, err
 	} else if status != fileOK {
 		return nil, false, nil
@@ -147,16 +151,53 @@ func repairEvents(ctx context.Context, input Input, store *runstore.Store) ([]do
 	if err != nil || truncated || len(events) == 0 {
 		return nil, false, nil
 	}
-	for _, event := range events {
+	rawLines := splitJournalLines(journalData)
+	if len(rawLines) != len(events) {
+		return nil, false, nil
+	}
+	for index, event := range events {
 		if err := ctx.Err(); err != nil {
 			return nil, false, err
+		}
+		if !admitCanonicalJournalLine(rawLines[index]) {
+			return nil, false, nil
 		}
 		data, err := json.Marshal(event)
 		if err != nil || input.Validator.Validate(domain.KindRunEvent, data) != nil || event.RunID != input.RunID || (event.Type == lifecycle.RepairAuditEventType && !validRepairAudit(event)) {
 			return nil, false, nil
 		}
+		if event.Type == lifecycle.RepairAuditEventType && !validRepairAuditLiteral(event, rawLines[index]) {
+			return nil, false, nil
+		}
 	}
 	return events, true, nil
+}
+
+// splitJournalLines returns the non-empty journal lines of raw data; it
+// yields nil when the trailing newline is missing so the caller refuses the
+// ambiguous evidence instead of guessing line boundaries.
+func splitJournalLines(data []byte) [][]byte {
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		return nil
+	}
+	var lines [][]byte
+	for _, line := range bytes.Split(data[:len(data)-1], []byte("\n")) {
+		if len(bytes.TrimSpace(line)) > 0 {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// admitCanonicalJournalLine applies the same strict canonical admission the
+// execution gate uses: invalid UTF-8, recursive duplicate object members, a
+// trailing second JSON value and any other parse failure refuse the repair.
+func admitCanonicalJournalLine(line []byte) bool {
+	if !utf8.Valid(line) {
+		return false
+	}
+	_, err := canonical.JSON(line)
+	return err == nil
 }
 
 func rebuildSnapshot(ctx context.Context, input Input, events []domain.RunEvent) (domain.RunState, bool, error) {
@@ -259,6 +300,20 @@ func payloadString(payload map[string]any, key string) string {
 	return value
 }
 
+// canonicalRepairSequencePattern freezes the only admitted
+// sourceJournalSequence notation: a canonical unsigned decimal integer —
+// digits only, no sign, no decimal point, no exponent and no superfluous
+// leading zeros ("0" itself is canonical, "04" is not). JSON number
+// notations such as 2.0, 1e0 or -1 are rejected even though they decode to
+// the same float64 value, and oversized literals that would lose precision
+// are rejected by the bounded ParseUint.
+var canonicalRepairSequencePattern = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
+
+// validRepairAudit validates the parsed audit event. sourceJournalSequence
+// arrives as float64 from the journal decoder, so only non-negative integral
+// values that round-trip without precision loss can match; notation-level
+// canonical strictness is enforced by validRepairAuditLiteral against the
+// raw journal bytes.
 func validRepairAudit(event domain.RunEvent) bool {
 	if event.Actor == nil || event.Actor.Type != "system" || event.Actor.ID != "marshal-reconciliation" || payloadString(event.Payload, "repairKind") != "snapshot-rebuild" {
 		return false
@@ -270,17 +325,50 @@ func validRepairAudit(event domain.RunEvent) bool {
 	want := event.Sequence - 1
 	switch number := value.(type) {
 	case float64:
-		return number >= 0 && number == float64(want)
+		if number < 0 || number != math.Trunc(number) || number >= 1<<63 {
+			return false
+		}
+		return uint64(number) == want
 	case json.Number:
-		parsed, err := strconv.ParseUint(string(number), 10, 64)
+		if !canonicalRepairSequencePattern.MatchString(number.String()) {
+			return false
+		}
+		parsed, err := strconv.ParseUint(number.String(), 10, 64)
 		return err == nil && parsed == want
-	case uint64:
-		return number == want
-	case int:
-		return number >= 0 && uint64(number) == want
 	default:
 		return false
 	}
+}
+
+// rawNumberLiteral recovers the verbatim JSON literal of a numeric payload
+// member from the raw event line; the parsed float64 payload cannot express
+// the original notation.
+func rawNumberLiteral(rawLine []byte, key string) (string, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(rawLine))
+	decoder.UseNumber()
+	var wrapper struct {
+		Payload map[string]any `json:"payload"`
+	}
+	if err := decoder.Decode(&wrapper); err != nil {
+		return "", false
+	}
+	number, ok := wrapper.Payload[key].(json.Number)
+	if !ok {
+		return "", false
+	}
+	return number.String(), true
+}
+
+// validRepairAuditLiteral enforces the canonical unsigned decimal integer
+// notation of sourceJournalSequence on the raw journal bytes and binds its
+// exact value to the previous journal sequence.
+func validRepairAuditLiteral(event domain.RunEvent, rawLine []byte) bool {
+	literal, ok := rawNumberLiteral(rawLine, "sourceJournalSequence")
+	if !ok || !canonicalRepairSequencePattern.MatchString(literal) {
+		return false
+	}
+	value, err := strconv.ParseUint(literal, 10, 64)
+	return err == nil && event.Sequence > 0 && value == event.Sequence-1
 }
 
 func snapshotDamaged(report Report) bool {

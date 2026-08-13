@@ -21,6 +21,32 @@ import (
 	marshalSchemas "github.com/chiga0/marshal-harness/schemas"
 )
 
+// TestTaskReviewRejectsForgedVerificationCompletedActor proves that review
+// never consumes a verification.completed event whose producer actor is
+// omitted or forged: frozenVerificationDigests fails closed before any packet
+// or decision is accepted, leaving the run in REVIEW_PENDING.
+func TestTaskReviewRejectsForgedVerificationCompletedActor(t *testing.T) {
+	for name, actor := range map[string]*domain.Actor{
+		"omitted": nil,
+		"forged":  {Type: "system", ID: "marshal-worker-runner"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newReviewVerdictFixtureWithVerifier(t, false, actor)
+			var stdout, stderr bytes.Buffer
+			if exit := Run([]string{"task", "review", "--run", fixture.runID, "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitFailure || !strings.Contains(stderr.String(), "system/marshal-verifier") {
+				t.Fatalf("forged verification.completed actor accepted: exit=%d stderr=%s", exit, stderr.String())
+			}
+			state, err := fixture.store.Inspect(fixture.runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.State != domain.StateReviewPending || state.Sequence != 5 {
+				t.Fatalf("forged verification actor changed the run: %+v", state)
+			}
+		})
+	}
+}
+
 func TestTaskReviewAllVerdictsEndToEnd(t *testing.T) {
 	tests := []struct {
 		verdict      string
@@ -119,7 +145,17 @@ type reviewVerdictFixture struct {
 	store        *runstore.Store
 }
 
+func verifierActor() *domain.Actor { return &domain.Actor{Type: "system", ID: "marshal-verifier"} }
+
 func newReviewVerdictFixture(t *testing.T, noChange bool) reviewVerdictFixture {
+	t.Helper()
+	return newReviewVerdictFixtureWithVerifier(t, noChange, verifierActor())
+}
+
+// newReviewVerdictFixtureWithVerifier builds the same fixture but records the
+// verification.completed transition with the supplied producer actor, so
+// forged or omitted verifier actors can be exercised end to end.
+func newReviewVerdictFixtureWithVerifier(t *testing.T, noChange bool, verifier *domain.Actor) reviewVerdictFixture {
 	t.Helper()
 	originalDirectory, err := os.Getwd()
 	if err != nil {
@@ -234,6 +270,7 @@ func newReviewVerdictFixture(t *testing.T, noChange bool) reviewVerdictFixture {
 		}
 		if transition[1] == domain.StateReviewPending {
 			event.Type = "verification.completed"
+			event.Actor = verifier
 		}
 		if err := store.Append(lease, event, uint64(index)); err != nil {
 			t.Fatal(err)

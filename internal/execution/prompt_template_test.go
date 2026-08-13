@@ -553,6 +553,7 @@ func TestRenderPromptProjectsWorkerDevelopmentCommandBoundary(t *testing.T) {
 
 func TestRunFailsClosedBeforeAttemptWhenPromptProjectionUnsafe(t *testing.T) {
 	fixture := newExecutionFixture(t, false)
+	originalSpecDigest := inspectState(t, fixture).SpecDigest
 	taskPath := filepath.Join(fixture.runDir, "task-spec.json")
 	taskData, err := os.ReadFile(taskPath)
 	if err != nil {
@@ -587,6 +588,11 @@ func TestRunFailsClosedBeforeAttemptWhenPromptProjectionUnsafe(t *testing.T) {
 	if err := os.WriteFile(taskPath, newTask, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Issue #36 admission binds the planning authority events to the frozen
+	// spec digest before prompt projection runs; rebind the journal to the
+	// tampered digest so the rejection point stays in the prompt projection
+	// layer under test.
+	rebindJournalSpecDigest(t, fixture, originalSpecDigest, digest)
 
 	if _, err := Run(context.Background(), fixture.input); err == nil || !strings.Contains(err.Error(), "prompt projection") {
 		t.Fatalf("unsafe objective must fail closed before the attempt starts, got err=%v", err)
@@ -605,6 +611,7 @@ func TestRunFailsClosedBeforeAttemptWhenPromptProjectionUnsafe(t *testing.T) {
 
 func TestRunFailsClosedBeforeAttemptWhenTaskSpecHasRawInvalidUTF8(t *testing.T) {
 	fixture := newExecutionFixture(t, false)
+	originalSpecDigest := inspectState(t, fixture).SpecDigest
 	taskPath := filepath.Join(fixture.runDir, "task-spec.json")
 	taskData, err := os.ReadFile(taskPath)
 	if err != nil {
@@ -652,6 +659,11 @@ func TestRunFailsClosedBeforeAttemptWhenTaskSpecHasRawInvalidUTF8(t *testing.T) 
 	if err := os.WriteFile(taskPath, rawTask, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Issue #36 admission binds the planning authority events to the frozen
+	// spec digest before prompt projection runs. The tampered TaskSpec still
+	// yields a computable canonical digest, so the journal can be rebound and
+	// the rejection point stays in the prompt projection layer under test.
+	rebindJournalSpecDigest(t, fixture, originalSpecDigest, digest)
 
 	if _, err := Run(context.Background(), fixture.input); err == nil || !strings.Contains(err.Error(), "prompt projection") || !strings.Contains(err.Error(), "not valid UTF-8") {
 		t.Fatalf("raw invalid UTF-8 TaskSpec must fail closed in prompt projection, got err=%v", err)
@@ -665,6 +677,29 @@ func TestRunFailsClosedBeforeAttemptWhenTaskSpecHasRawInvalidUTF8(t *testing.T) 
 	}
 	if finalState.State != domain.StateReady {
 		t.Fatalf("run left the ready state despite fail-closed projection: %s", finalState.State)
+	}
+}
+
+// rebindJournalSpecDigest rewrites the frozen planning authority events so
+// their specDigest payloads match a deliberately tampered TaskSpec. Issue #36
+// admission binds planning.spec-accepted and planning.inputs-frozen to the
+// run snapshot spec digest before prompt projection runs, so tests that
+// tamper with the frozen TaskSpec must rebind the journal digest to keep the
+// rejection point at the layer under test instead of the earlier planning
+// authority gate. The run snapshot must already carry the tampered digest.
+func rebindJournalSpecDigest(t *testing.T, fixture executionFixture, from, to string) {
+	t.Helper()
+	path := filepath.Join(fixture.runDir, "events.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), from) {
+		t.Fatalf("run journal does not carry the original spec digest %s", from)
+	}
+	rebound := bytes.ReplaceAll(data, []byte(from), []byte(to))
+	if err := os.WriteFile(path, rebound, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
