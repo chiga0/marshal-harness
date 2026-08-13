@@ -42,7 +42,7 @@ const (
 
 // supportedBinaries is the closed set of Qwen Code versions this adapter
 // supports; any version outside the set fails closed.
-var supportedBinaries = []string{"0.21.5", "0.21.10"}
+var supportedBinaries = []string{"0.21.5", "0.21.10", "0.21.11"}
 
 // isSupportedBinary reports whether the probed version belongs to the
 // supported set.

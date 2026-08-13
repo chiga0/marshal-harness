@@ -166,6 +166,7 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 	}{
 		{"0.21.5", "supported", false},
 		{"0.21.10", "supported", false},
+		{"0.21.11", "supported", false},
 		{"0.21.4", "unsupported", true},
 		{"9.9.9", "unsupported", true},
 	} {
