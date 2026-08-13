@@ -31,6 +31,7 @@ type Input struct {
 	Environment         []string
 	PatchCaptureBytes   int64
 	WorkerDeclaredPaths []string // diagnostic only; never authorizes scope
+	ToolAllowlist       []string // frozen worker.tools declaration; empty keeps the tool-audit gate skipped
 }
 
 type Result struct {
@@ -106,6 +107,8 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 		result.Manifest.Artifacts = append(result.Manifest.Artifacts, *denialAssessment.Artifact)
 	}
 	result.denialsBenign, result.denialsFatal, result.denialsPresent = denialAssessment.Benign, denialAssessment.Fatal, denialAssessment.Present
+	auditAttemptDir, _, _ := latestAttemptDirectory(filepath.Join(input.RunDirectory, "attempts"))
+	result.Report.Gates = append(result.Report.Gates, assessToolAudit(input, auditAttemptDir))
 	allowlistAssessment, err := assessToolAllowlist(input.RunDirectory, input.SpecDigest, started)
 	if err != nil {
 		return result, err
