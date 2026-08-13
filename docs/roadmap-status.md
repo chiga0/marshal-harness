@@ -18,11 +18,11 @@ embedded/local 先行实现的 Local MVP 定义达成：标记 `USABLE`。
 
 ## 已知阻塞与进展：Issue #25 已关闭，Issue #30 部分满足
 
-公开 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) 与 [PR #24](https://github.com/chiga0/marshal-harness/pull/24) 暴露的「全部 required checks 成功且 PR 已合并后，`marshal task accept` 把 Run 永久置为 terminal `BLOCKED`」**已修复并关闭**：
+公开 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) 与 [PR #24](https://github.com/chiga0/marshal-harness/pull/24) 暴露的「全部 required checks 成功且 PR 已合并后，`marshal task accept` 把 Run 永久置为 terminal `BLOCKED`」**已修复并关闭**（typed reconciliation 实现已合入：[PR #106](https://github.com/chiga0/marshal-harness/pull/106)，[ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md)）：
 
 - 活路径：`marshal task accept` 内联识别已合并且 required checks 全绿的 PR，采集不可变 `SCMMergeReceipt` 后经现行 checks-passed 路径进入 `ACCEPTED`；未合并 PR 仍走原 checks 观察流程；
-- 补偿路径：`marshal task reconcile` 按 [ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) 冻结顺序，以 `SCMMergeReceipt` + append-only `PublicationReconcileRecord` + current-ledger recheck 共同门禁，把发布后的 terminal `BLOCKED` 安全迁移 `ACCEPTED`（`publication.reconciled` 事件是唯一命名终态例外，仅限 accept-after-merge）；全程 append-only、幂等、fail closed，不绕过 required checks 与 ReviewDecision，merge-never 不变；
-- 正式操作顺序与补偿命令见 [Operator Runbook §7](operator-runbook.md)，旧临时护栏已废止；审计 finding `PUBLICATION-MERGED-HEAD-RECONCILE-P1` 随实现合入关闭（P1 → `CLOSED`），见[设计审计报告](audit-report.md)。ADR 0026 接受只冻结契约（PR #49），不升级 M8–M13 实现状态；本修复是 Local MVP 发布流程的实现层关闭，不改变 M0–M6 已通过状态与 Local MVP `USABLE` 结论。
+- 补偿路径：`marshal task reconcile` 按 [ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) 冻结顺序，以 `SCMMergeReceipt` + append-only `PublicationReconcileRecord` + current-ledger recheck 共同门禁，把发布后的 terminal `BLOCKED` 安全迁移 `ACCEPTED`（`publication.reconciled` 事件是唯一命名终态例外，仅限 accept-after-merge），是发布合并后 Run 的权威恢复路径；全程 append-only、幂等、fail closed，不绕过 required checks 与 ReviewDecision，merge-never 不变；误入 terminal `BLOCKED` 的历史 Run 现可经 `marshal task reconcile` 对账恢复；
+- 正式操作顺序与补偿命令见 [Operator Runbook §7](operator-runbook.md)，旧临时护栏已由 typed reconciliation 取代并废止；审计 finding `PUBLICATION-MERGED-HEAD-RECONCILE-P1` 随实现合入关闭（P1 → `CLOSED`），见[设计审计报告](audit-report.md)。ADR 0026 接受只冻结契约（PR #49），不升级 M8–M13 实现状态；本修复是 Local MVP 发布流程的实现层关闭，不改变 M0–M6 已通过状态与 Local MVP `USABLE` 结论。
 
 公开 [Issue #30](https://github.com/chiga0/marshal-harness/issues/30)（CI deadline 观察语义）保持 `OPEN`：期望 4（发布时冻结独立 ciDeadline 的方向）已由 [ADR 0028](adr/0028-ci-deadline-phased-observation.md)（Proposed）的方案 B 一并冻结；期望 1-3（deadline 后仍读远端事实、按可信完成时间裁决、超时 fail closed）与期望 5（新 deadline 契约）依赖 ADR 0028 接受与实现，留待后续任务；当前本地 deadline 检查在 `marshal task accept` 中保持在前且不豁免。
 
