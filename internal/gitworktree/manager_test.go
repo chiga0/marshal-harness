@@ -414,6 +414,223 @@ func TestCreateDoesNotRetryTaskLock(t *testing.T) {
 	}
 }
 
+func TestAcquireRetriesShortLivedRepositoryLock(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, err := Open(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortenRepositoryLockBackoff(t)
+	worktree, err := manager.CreateForRun(stateRoot, "task:acquire-retry", "run-one", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worktree.Release(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = worktree.Release()
+		_ = gitCommand(t, repository, "worktree", "remove", "--force", worktree.Path)
+		_ = gitCommand(t, repository, "branch", "-D", worktree.Branch)
+	})
+	holder, release := holdRepositoryLock(t, stateRoot)
+	go func() {
+		time.Sleep(3 * repositoryLockBackoff)
+		_ = holder.Unlock()
+	}()
+	started := time.Now()
+	reacquired, err := manager.Acquire(stateRoot, "task:acquire-retry", worktree.Path, base)
+	if err != nil {
+		t.Fatalf("Acquire gave up on short-lived repository lock contention: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < repositoryLockBackoff {
+		t.Fatalf("Acquire returned in %s without backing off for the repository lock", elapsed)
+	}
+	release()
+	_ = reacquired.Release()
+}
+
+func TestAcquireOutlivedRepositoryLockDoesNotLeakTaskLock(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, err := Open(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortenRepositoryLockBackoff(t)
+	worktree, err := manager.CreateForRun(stateRoot, "task:window", "run-one", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worktree.Release(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = worktree.Release()
+		_ = gitCommand(t, repository, "worktree", "remove", "--force", worktree.Path)
+		_ = gitCommand(t, repository, "branch", "-D", worktree.Branch)
+	})
+	_, release := holdRepositoryLock(t, stateRoot)
+	started := time.Now()
+	_, err = manager.Acquire(stateRoot, "task:window", worktree.Path, base)
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("Acquire succeeded while the repository lock stayed held beyond the retry window")
+	}
+	if !strings.Contains(err.Error(), "repository lock") {
+		t.Fatalf("error = %v, want repository lock failure", err)
+	}
+	if elapsed < repositoryLockRetryWindow()-100*time.Millisecond || elapsed > repositoryLockRetryWindow()+2*time.Second {
+		t.Fatalf("Acquire backed off for %s, want roughly the %s retry window", elapsed, repositoryLockRetryWindow())
+	}
+	release()
+	reacquired, err := manager.Acquire(stateRoot, "task:window", worktree.Path, base)
+	if err != nil {
+		t.Fatalf("Acquire after the repository lock was released failed, task lock leaked: %v", err)
+	}
+	_ = reacquired.Release()
+}
+
+func TestAcquireDoesNotRetryTaskLock(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, err := Open(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortenRepositoryLockBackoff(t)
+	first, err := manager.CreateForRun(stateRoot, "task:single-writer", "run-one", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = first.Release()
+		_ = gitCommand(t, repository, "worktree", "remove", "--force", first.Path)
+		_ = gitCommand(t, repository, "branch", "-D", first.Branch)
+	}()
+	started := time.Now()
+	second, err := manager.Acquire(stateRoot, "task:single-writer", first.Path, base)
+	elapsed := time.Since(started)
+	if err == nil {
+		_ = second.Release()
+		t.Fatal("second writer for the same worktree acquired a lease")
+	}
+	if !strings.Contains(err.Error(), "task lock") {
+		t.Fatalf("error = %v, want task lock failure", err)
+	}
+	if elapsed >= repositoryLockBackoff {
+		t.Fatalf("task lock contention backed off for %s, want immediate failure", elapsed)
+	}
+}
+
+func TestConcurrentAcquireOfDistinctRunWorktrees(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, err := Open(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortenRepositoryLockBackoff(t)
+	var worktrees []*Worktree
+	for _, runID := range []string{"run-one", "run-two"} {
+		worktree, err := manager.CreateForRun(stateRoot, "task:concurrent", runID, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := worktree.Release(); err != nil {
+			t.Fatal(err)
+		}
+		worktrees = append(worktrees, worktree)
+		t.Cleanup(func() {
+			_ = worktree.Release()
+			_ = gitCommand(t, repository, "worktree", "remove", "--force", worktree.Path)
+			_ = gitCommand(t, repository, "branch", "-D", worktree.Branch)
+		})
+	}
+	type acquisition struct {
+		worktree *Worktree
+		err      error
+	}
+	results := make(chan acquisition, len(worktrees))
+	for _, worktree := range worktrees {
+		worktree := worktree
+		go func() {
+			acquired, err := manager.Acquire(stateRoot, "task:concurrent", worktree.Path, base)
+			results <- acquisition{worktree: acquired, err: err}
+		}()
+	}
+	for range worktrees {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent Acquire of a distinct run worktree failed: %v", result.err)
+		}
+		acquired := result.worktree
+		t.Cleanup(func() { _ = acquired.Release() })
+	}
+}
+
+func TestRemovalRetriesShortLivedRepositoryLock(t *testing.T) {
+	repository, base := fixtureRepository(t)
+	initializeMarshalState(t, repository)
+	stateRoot := filepath.Join(repository, ".marshal")
+	manager, err := Open(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shortenRepositoryLockBackoff(t)
+
+	cleanWorktree, err := manager.Create(stateRoot, "task:remove-clean", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, release := holdRepositoryLock(t, stateRoot)
+	go func() {
+		time.Sleep(3 * repositoryLockBackoff)
+		_ = holder.Unlock()
+	}()
+	started := time.Now()
+	if err := cleanWorktree.RemoveClean(); err != nil {
+		t.Fatalf("RemoveClean gave up on short-lived repository lock contention: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < repositoryLockBackoff {
+		t.Fatalf("RemoveClean returned in %s without backing off for the repository lock", elapsed)
+	}
+	release()
+
+	archivedWorktree, err := manager.Create(stateRoot, "task:remove-archived", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(archivedWorktree.Path, "unarchived.txt"), []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	holder, release = holdRepositoryLock(t, stateRoot)
+	go func() {
+		time.Sleep(3 * repositoryLockBackoff)
+		_ = holder.Unlock()
+	}()
+	started = time.Now()
+	if err := archivedWorktree.RemoveArchived(); err != nil {
+		t.Fatalf("RemoveArchived gave up on short-lived repository lock contention: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < repositoryLockBackoff {
+		t.Fatalf("RemoveArchived returned in %s without backing off for the repository lock", elapsed)
+	}
+	release()
+}
+
+func shortenRepositoryLockBackoff(t *testing.T) {
+	t.Helper()
+	previous := repositoryLockBackoff
+	repositoryLockBackoff = 50 * time.Millisecond
+	t.Cleanup(func() { repositoryLockBackoff = previous })
+}
+
 func repositoryLockRetryWindow() time.Duration {
 	return time.Duration(repositoryLockRetries) * repositoryLockBackoff
 }
