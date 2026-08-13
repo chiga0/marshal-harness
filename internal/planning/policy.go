@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/adapter"
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
@@ -25,6 +27,9 @@ const (
 	ErrPolicyMalformed      = "validate policy: malformed snapshot"
 	ErrPolicyTaskMismatch   = "validate policy: taskId does not match the frozen task"
 	ErrPolicyRunMismatch    = "validate policy: runId does not match the frozen run"
+	ErrPolicyGeneratedAt    = "validate policy: generatedAt is not a valid RFC 3339 timestamp"
+	ErrPolicyDigestMismatch = "validate policy: policyDigest does not match the detached snapshot digest"
+	ErrPolicySourceDigest   = "validate policy: sources digest is not a valid sha256 digest"
 	ErrPolicyProfileUnknown = "validate policy: unknown execution profile"
 	ErrPolicyProfile        = "validate policy: task execution profile is below the policy minimum"
 	ErrPolicyPublication    = "validate policy: publication is required but not allowed"
@@ -91,9 +96,12 @@ func (p EffectivePolicy) SelectionRequest() adapter.SelectionRequest {
 // decoded strictly after schema validation, which already rejects unknown
 // properties and enforces every field's shape.
 type policySnapshot struct {
-	TaskID    string `json:"taskId"`
-	RunID     string `json:"runId"`
-	Effective struct {
+	TaskID       string         `json:"taskId"`
+	RunID        string         `json:"runId"`
+	Sources      []policySource `json:"sources"`
+	PolicyDigest string         `json:"policyDigest"`
+	GeneratedAt  string         `json:"generatedAt"`
+	Effective    struct {
 		MinimumExecutionProfile string   `json:"minimumExecutionProfile"`
 		NetworkPolicy           string   `json:"networkPolicy"`
 		AllowFallbackWorkers    bool     `json:"allowFallbackWorkers"`
@@ -112,12 +120,27 @@ type policySnapshot struct {
 	} `json:"control,omitempty"`
 }
 
+// policySource mirrors one sources entry of the PolicySnapshot. Phase 1 only
+// checks that each digest is a well-formed sha256 digest; comparing the
+// digests against repository policy source content is phase-2 scope.
+type policySource struct {
+	Scope    string `json:"scope"`
+	Path     string `json:"path"`
+	Digest   string `json:"digest"`
+	Required bool   `json:"required"`
+}
+
 // ValidatePolicy validates a PolicySnapshot against its schema and the frozen
 // TaskSpec for one run, and returns the effective policy. It is pure: it
 // performs no Git operations, no probing, and no file or state writes.
 //
 // The gate is fail-closed:
 //   - taskId and runId must match the frozen task and run exactly;
+//   - generatedAt must parse as RFC 3339;
+//   - the embedded policyDigest must equal the detached digest of the
+//     snapshot: the document canonicalized with its policyDigest field
+//     blanked and then digested; placeholders and tampered values fail;
+//   - every sources entry digest must be a well-formed sha256 digest;
 //   - the task execution profile must not be below minimumExecutionProfile;
 //   - a task that requires publication needs allowPublication;
 //   - automatic merge is never permitted in the Local MVP: neither a
@@ -142,6 +165,18 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 	}
 	if snapshot.RunID != runID {
 		return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyRunMismatch)
+	}
+	if _, err := time.Parse(time.RFC3339, snapshot.GeneratedAt); err != nil {
+		return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyGeneratedAt)
+	}
+	detached, err := detachedPolicyDigest(data)
+	if err != nil || detached != snapshot.PolicyDigest {
+		return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyDigestMismatch)
+	}
+	for _, source := range snapshot.Sources {
+		if !validSHA256Digest(source.Digest) {
+			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicySourceDigest)
+		}
 	}
 	minimumRank, ok := executionProfileRank[snapshot.Effective.MinimumExecutionProfile]
 	if !ok {
@@ -242,4 +277,45 @@ func validApprovalGates(profile string, gates []string) bool {
 		return false
 	}
 	return slices.Contains(gates, ApprovalGatePlan) && slices.Contains(gates, ApprovalGatePublish)
+}
+
+// detachedPolicyDigest computes the integrity digest of a PolicySnapshot
+// document with its embedded policyDigest field detached: the document is
+// decoded as a generic map, the policyDigest value is blanked to the empty
+// string, the map is re-encoded, canonicalized with canonical.JSON, and the
+// canonical bytes are digested with canonical.DigestBytes. An intact
+// snapshot carries exactly this digest in its policyDigest field; any
+// placeholder or tampered value fails the comparison. Fail-closed: any
+// decode, canonicalization, or digest failure surfaces as an error.
+func detachedPolicyDigest(data []byte) (string, error) {
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		return "", err
+	}
+	document["policyDigest"] = ""
+	raw, err := json.Marshal(document)
+	if err != nil {
+		return "", err
+	}
+	canonicalized, err := canonical.JSON(raw)
+	if err != nil {
+		return "", err
+	}
+	return canonical.DigestBytes(canonicalized), nil
+}
+
+// validSHA256Digest reports whether value is exactly "sha256:" followed by
+// 64 lowercase hexadecimal characters.
+func validSHA256Digest(value string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(value, prefix) || len(value) != len(prefix)+64 {
+		return false
+	}
+	for i := len(prefix); i < len(value); i++ {
+		c := value[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }

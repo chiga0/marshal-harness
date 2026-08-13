@@ -238,6 +238,7 @@ func newApprovalFixture(t *testing.T, mutatePolicy func(map[string]any), publish
 	if mutatePolicy != nil {
 		mutatePolicy(policy)
 	}
+	stampPolicyDigest(t, policy)
 	policyData := encodeObject(t, policy)
 	capabilityData := readSchemaFixture(t, "examples/happy-path/capability-snapshot.json")
 	for name, data := range map[string][]byte{
@@ -357,4 +358,20 @@ func mustDigest(t *testing.T, data []byte) string {
 		t.Fatal(err)
 	}
 	return digest
+}
+
+// stampPolicyDigest recomputes the detached policyDigest of a policy
+// document exactly the way the production planning gate verifies it: blank
+// the policyDigest field, marshal the document, canonicalize it with
+// canonical.JSON and digest it with canonical.DigestBytes. Fixtures that
+// construct or mutate a PolicySnapshot must seal it at test runtime instead
+// of hardcoding a placeholder digest.
+func stampPolicyDigest(t *testing.T, policy map[string]any) {
+	t.Helper()
+	policy["policyDigest"] = ""
+	digest, err := canonical.DigestJSON(encodeObject(t, policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy["policyDigest"] = digest
 }

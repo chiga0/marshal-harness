@@ -46,7 +46,7 @@ func TestPlanHappyPathPersistsAndReleasesLocks(t *testing.T) {
 	)
 	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
 
-	taskData := planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL)
+	taskData := planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA)
 	policyData := planningPolicyFixture(t, taskID, runID, adapterID)
 	capabilityData := planningCapabilityFixture(t, adapterID)
 	worker := &planningTestWorker{
@@ -135,7 +135,7 @@ func TestPlanHappyPathPersistsAndReleasesLocks(t *testing.T) {
 }
 
 func TestPlanUsesExplicitFallbackIdentity(t *testing.T) {
-	repositoryRoot, _ := planningGitFixture(t)
+	repositoryRoot, baseSHA := planningGitFixture(t)
 	const (
 		taskID      = "task-plan-fallback"
 		runID       = "run-plan-fallback"
@@ -144,7 +144,7 @@ func TestPlanUsesExplicitFallbackIdentity(t *testing.T) {
 		remoteURL   = "https://example.invalid/fallback.git"
 	)
 	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
-	taskData := planningTaskFixture(t, repositoryRoot, taskID, preferredID, remoteURL)
+	taskData := planningTaskFixture(t, repositoryRoot, taskID, preferredID, remoteURL, baseSHA)
 	var task map[string]any
 	if err := json.Unmarshal(taskData, &task); err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestPlanUsesExplicitFallbackIdentity(t *testing.T) {
 	effective := policy["effective"].(map[string]any)
 	effective["allowFallbackWorkers"] = true
 	effective["allowedAdapters"] = []any{preferredID, fallbackID}
-	policyData = mustMarshal(t, policy)
+	policyData = sealPolicyDocument(t, policy)
 	capabilityData := planningCapabilityFixture(t, fallbackID)
 	worker := &planningTestWorker{id: fallbackID, capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: capabilityData}}
 	selector := planningSelector(t, worker)
@@ -201,7 +201,7 @@ func TestPlanUsesExplicitFallbackIdentity(t *testing.T) {
 }
 
 func TestPlanRemoteMismatchDoesNotLeakOrCreateSideEffects(t *testing.T) {
-	repositoryRoot, _ := planningGitFixture(t)
+	repositoryRoot, baseSHA := planningGitFixture(t)
 	const (
 		taskID      = "task-plan-remote-mismatch"
 		runID       = "run-plan-remote-mismatch"
@@ -218,7 +218,7 @@ func TestPlanRemoteMismatchDoesNotLeakOrCreateSideEffects(t *testing.T) {
 		StateRoot:      filepath.Join(repositoryRoot, ".marshal"),
 		RepositoryRoot: repositoryRoot,
 		RunID:          runID,
-		TaskSpec:       planningTaskFixture(t, repositoryRoot, taskID, adapterID, expectedURL),
+		TaskSpec:       planningTaskFixture(t, repositoryRoot, taskID, adapterID, expectedURL, baseSHA),
 		PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
 		Selector:       selector,
 		Validator:      newValidator(t),
@@ -237,7 +237,7 @@ func TestPlanRemoteMismatchDoesNotLeakOrCreateSideEffects(t *testing.T) {
 }
 
 func TestPlanCapabilityIdentityMismatchPrecedesSideEffects(t *testing.T) {
-	repositoryRoot, _ := planningGitFixture(t)
+	repositoryRoot, baseSHA := planningGitFixture(t)
 	const (
 		taskID    = "task-plan-capability-mismatch"
 		runID     = "run-plan-capability-mismatch"
@@ -257,7 +257,7 @@ func TestPlanCapabilityIdentityMismatchPrecedesSideEffects(t *testing.T) {
 		StateRoot:      filepath.Join(repositoryRoot, ".marshal"),
 		RepositoryRoot: repositoryRoot,
 		RunID:          runID,
-		TaskSpec:       planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL),
+		TaskSpec:       planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA),
 		PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
 		Selector:       planningSelectorForWorker(t, worker),
 		Validator:      newValidator(t),
@@ -269,7 +269,7 @@ func TestPlanCapabilityIdentityMismatchPrecedesSideEffects(t *testing.T) {
 }
 
 func TestPlanPreJournalFailureRemovesCreatedWorktree(t *testing.T) {
-	repositoryRoot, _ := planningGitFixture(t)
+	repositoryRoot, baseSHA := planningGitFixture(t)
 	const (
 		taskID    = "task-plan-cleanup"
 		runID     = "run-plan-cleanup"
@@ -288,7 +288,7 @@ func TestPlanPreJournalFailureRemovesCreatedWorktree(t *testing.T) {
 		StateRoot:      stateRoot,
 		RepositoryRoot: repositoryRoot,
 		RunID:          runID,
-		TaskSpec:       planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL),
+		TaskSpec:       planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA),
 		PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
 		Selector:       planningSelector(t, worker),
 		Validator:      newValidator(t),
@@ -304,7 +304,7 @@ func TestPlanPreJournalFailureRemovesCreatedWorktree(t *testing.T) {
 }
 
 func TestPlanRejectsInvalidAcceptanceSyntaxBeforeSideEffects(t *testing.T) {
-	repositoryRoot, _ := planningGitFixture(t)
+	repositoryRoot, baseSHA := planningGitFixture(t)
 	const (
 		taskID    = "task-plan-preflight"
 		runID     = "run-plan-preflight"
@@ -312,7 +312,7 @@ func TestPlanRejectsInvalidAcceptanceSyntaxBeforeSideEffects(t *testing.T) {
 		remoteURL = "https://example.invalid/preflight.git"
 	)
 	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
-	taskData := planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL)
+	taskData := planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA)
 	var task map[string]any
 	if err := json.Unmarshal(taskData, &task); err != nil {
 		t.Fatal(err)
@@ -372,7 +372,7 @@ func TestPlanRejectsInvalidAcceptanceSyntaxBeforeSideEffects(t *testing.T) {
 // and no stateRoot or repository side effect appears.
 func TestPlanValidatesPolicyBeforePreflightSpawn(t *testing.T) {
 	requireGit(t)
-	repositoryRoot, _ := planningGitFixture(t)
+	repositoryRoot, baseSHA := planningGitFixture(t)
 	const (
 		taskID    = "task-plan-policy-gate"
 		runID     = "run-plan-policy-gate"
@@ -380,7 +380,7 @@ func TestPlanValidatesPolicyBeforePreflightSpawn(t *testing.T) {
 		remoteURL = "https://example.invalid/policy-gate.git"
 	)
 	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
-	taskData := planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL)
+	taskData := planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA)
 	var task map[string]any
 	if err := json.Unmarshal(taskData, &task); err != nil {
 		t.Fatal(err)
@@ -430,7 +430,7 @@ func TestPlanValidatesPolicyBeforePreflightSpawn(t *testing.T) {
 				RepositoryRoot:      repositoryRoot,
 				RunID:               runID,
 				TaskSpec:            taskData,
-				PolicySnapshot:      mustMarshal(t, candidate),
+				PolicySnapshot:      sealPolicyDocument(t, candidate),
 				Selector:            planningSelector(t, worker),
 				Validator:           newValidator(t),
 				PythonSyntaxChecker: checker,
@@ -450,6 +450,92 @@ func TestPlanValidatesPolicyBeforePreflightSpawn(t *testing.T) {
 				t.Fatal("policy rejection left the task branch")
 			}
 		})
+	}
+}
+
+// TestPlanPolicyDigestFailureHasNoSideEffects proves that a policy whose
+// embedded policyDigest does not match the detached recomputation is
+// rejected before any repository or stateRoot side effect.
+func TestPlanPolicyDigestFailureHasNoSideEffects(t *testing.T) {
+	repositoryRoot, baseSHA := planningGitFixture(t)
+	const (
+		taskID    = "task-plan-digest-gate"
+		runID     = "run-plan-digest-gate"
+		adapterID = "adapter-plan"
+		remoteURL = "https://example.invalid/digest-gate.git"
+	)
+	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	policyData := planningPolicyFixture(t, taskID, runID, adapterID)
+	var policy map[string]any
+	if err := json.Unmarshal(policyData, &policy); err != nil {
+		t.Fatal(err)
+	}
+	// Mutate without resealing: the embedded policyDigest is now stale.
+	policy["effective"].(map[string]any)["retentionDays"] = float64(31)
+	worker := &planningTestWorker{
+		id:         adapterID,
+		capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)},
+	}
+	stateRoot := filepath.Join(repositoryRoot, ".marshal")
+	_, err := Plan(context.Background(), Input{
+		StateRoot:      stateRoot,
+		RepositoryRoot: repositoryRoot,
+		RunID:          runID,
+		TaskSpec:       planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA),
+		PolicySnapshot: mustMarshal(t, policy),
+		Selector:       planningSelector(t, worker),
+		Validator:      newValidator(t),
+	})
+	if err == nil || err.Error() != ErrPolicyDigestMismatch {
+		t.Fatalf("Plan() error = %v, want %q", err, ErrPolicyDigestMismatch)
+	}
+	assertPlanningNoRunSideEffects(t, stateRoot, taskID, runID)
+	command := exec.Command("git", "-C", repositoryRoot, "show-ref", "--verify", "--quiet", "refs/heads/marshal/"+taskID+"-"+runID)
+	if command.Run() == nil {
+		t.Fatal("policy digest rejection left the task branch")
+	}
+}
+
+// TestPlanFloatingBaseRefFailureHasNoSideEffects proves that a TaskSpec with
+// a floating baseRef is rejected by the immutable-SHA gate before any
+// worktree, journal, or frozen artifact side effect.
+func TestPlanFloatingBaseRefFailureHasNoSideEffects(t *testing.T) {
+	repositoryRoot, baseSHA := planningGitFixture(t)
+	const (
+		taskID    = "task-plan-base-gate"
+		runID     = "run-plan-base-gate"
+		adapterID = "adapter-plan"
+		remoteURL = "https://example.invalid/base-gate.git"
+	)
+	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	taskData := planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA)
+	var task map[string]any
+	if err := json.Unmarshal(taskData, &task); err != nil {
+		t.Fatal(err)
+	}
+	task["repository"].(map[string]any)["baseRef"] = "main"
+	taskData = mustMarshal(t, task)
+	worker := &planningTestWorker{
+		id:         adapterID,
+		capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)},
+	}
+	stateRoot := filepath.Join(repositoryRoot, ".marshal")
+	_, err := Plan(context.Background(), Input{
+		StateRoot:      stateRoot,
+		RepositoryRoot: repositoryRoot,
+		RunID:          runID,
+		TaskSpec:       taskData,
+		PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
+		Selector:       planningSelector(t, worker),
+		Validator:      newValidator(t),
+	})
+	if err == nil || err.Error() != "planning: "+ErrBaseRefNotImmutable {
+		t.Fatalf("Plan() error = %v, want %q", err, "planning: "+ErrBaseRefNotImmutable)
+	}
+	assertPlanningNoRunSideEffects(t, stateRoot, taskID, runID)
+	command := exec.Command("git", "-C", repositoryRoot, "show-ref", "--verify", "--quiet", "refs/heads/marshal/"+taskID+"-"+runID)
+	if command.Run() == nil {
+		t.Fatal("floating baseRef rejection left the task branch")
 	}
 }
 
@@ -508,14 +594,14 @@ func planningGitOutput(t *testing.T, root string, arguments ...string) string {
 	return string(bytes.TrimSpace(output))
 }
 
-func planningTaskFixture(t *testing.T, repositoryRoot, taskID, adapterID, remoteURL string) []byte {
+func planningTaskFixture(t *testing.T, repositoryRoot, taskID, adapterID, remoteURL, baseSHA string) []byte {
 	t.Helper()
 	fixture := planningFixtureMap(t, "task-spec.json")
 	fixture["metadata"].(map[string]any)["id"] = taskID
 	fixture["metadata"].(map[string]any)["title"] = "Planning happy path"
 	repository := fixture["repository"].(map[string]any)
 	repository["path"] = repositoryRoot
-	repository["baseRef"] = "HEAD"
+	repository["baseRef"] = baseSHA
 	repository["remote"] = "origin"
 	repository["expectedRemoteUrl"] = remoteURL
 	worker := fixture["worker"].(map[string]any)
@@ -547,7 +633,7 @@ func planningPolicyFixture(t *testing.T, taskID, runID, adapterID string) []byte
 	effective["allowPublication"] = false
 	effective["allowMerge"] = false
 	effective["allowedAdapters"] = []any{adapterID}
-	return mustMarshal(t, fixture)
+	return sealPolicyDocument(t, fixture)
 }
 
 func planningCapabilityFixture(t *testing.T, adapterID string) []byte {

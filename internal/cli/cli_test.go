@@ -654,7 +654,7 @@ func cliPlanningTaskWithWorkers(t *testing.T, repositoryRoot, taskID, remoteURL,
 	fixture["metadata"].(map[string]any)["id"] = taskID
 	repository := fixture["repository"].(map[string]any)
 	repository["path"] = repositoryRoot
-	repository["baseRef"] = "HEAD"
+	repository["baseRef"] = strings.TrimSpace(runGitCLI(t, repositoryRoot, "rev-parse", "HEAD"))
 	repository["remote"] = "origin"
 	repository["expectedRemoteUrl"] = remoteURL
 	worker := fixture["worker"].(map[string]any)
@@ -688,7 +688,27 @@ func cliPlanningPolicyWithWorkers(t *testing.T, taskID, runID string, allowFallb
 	effective["allowPublication"] = false
 	effective["allowMerge"] = false
 	effective["allowedAdapters"] = allowed
+	cliStampPolicyDigest(t, fixture)
 	return fixture
+}
+
+// cliStampPolicyDigest recomputes the detached policyDigest of a mutated
+// policy document exactly the way the production planning gate verifies it:
+// blank the policyDigest field, marshal the document, canonicalize it with
+// canonical.JSON and digest it with canonical.DigestBytes. Fixtures must
+// seal the document at test runtime instead of carrying a stale digest.
+func cliStampPolicyDigest(t *testing.T, policy map[string]any) {
+	t.Helper()
+	policy["policyDigest"] = ""
+	data, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := canonical.DigestJSON(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy["policyDigest"] = digest
 }
 
 func readCLIFixture(t *testing.T, name string) map[string]any {
