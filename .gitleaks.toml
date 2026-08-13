@@ -1,0 +1,17 @@
+# Marshal Harness gitleaks 配置（gitleaks 8.x 语法）。
+#
+# 本文件只做一件事：为 *_test.go 测试文件添加路径级 allowlist。
+# 测试 fixture 大量使用公开的假凭据/假摘要字面量（假 sha256 digest、
+# registrationId、idempotencyKey、trustRootKeyId 等），属已知误报源。
+#
+# 注意：该 allowlist 仅覆盖 *_test.go 路径；在测试文件中提交真实凭据
+# 仍属违规，由 review 门禁负责。
+#
+# 除此之外不使用 stopwords、不排除任何规则 ID、不修改默认规则集，
+# 非测试代码保持 gitleaks 默认规则集的完整强度。
+
+title = "Marshal Harness gitleaks config"
+
+[allowlist]
+description = "测试文件中的 fixture 是公开的假凭据/假摘要字面量，不是真实 secret；非测试代码不享受此放行"
+paths = ['.*_test\.go$']
