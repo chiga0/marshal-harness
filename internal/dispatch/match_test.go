@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/provider"
@@ -221,6 +222,7 @@ func testClaimRequest(registration provider.ProviderRegistration, snapshot provi
 		Snapshot:             snapshot,
 		Evidences:            evidences,
 		Requirements:         requirements,
+		TargetActor:          testResultIngressTarget(),
 		TaskId:               "task-" + suffix,
 		RunId:                "run-" + suffix,
 		AttemptId:            "attempt-" + suffix,
@@ -238,9 +240,49 @@ func evidenceDigestsOf(evidences []provider.ConformanceEvidence) []string {
 	return digests
 }
 
+// claimEdgeLeaseResolver is the permissive dispatch-ledger resolver of the
+// claim fixtures; the resolver fail-closed matrix is covered by the
+// authority runtime fixture tests.
+type claimEdgeLeaseResolver struct{}
+
+func (claimEdgeLeaseResolver) LeaseActive(string, int64, string) (bool, error) { return true, nil }
+
+// claimEdgeTargetResolver is the permissive target eligibility resolver of
+// the claim fixtures.
+type claimEdgeTargetResolver struct{}
+
+func (claimEdgeTargetResolver) TargetEligible(authority.SecurityDomainId) (bool, error) {
+	return true, nil
+}
+
+// newClaimEdgeRuntime builds the Core edge runtime of the claim fixtures
+// under the test authority namespace with permissive resolvers bound.
+func newClaimEdgeRuntime(t *testing.T) *authority.EdgeRuntime {
+	t.Helper()
+	runtime, err := authority.NewEdgeRuntime(testAuthorityNamespace())
+	if err != nil {
+		t.Fatalf("NewEdgeRuntime: %v", err)
+	}
+	runtime.BindLeaseResolver(claimEdgeLeaseResolver{})
+	runtime.BindTargetEligibilityResolver(claimEdgeTargetResolver{})
+	return runtime
+}
+
+// testResultIngressTarget is the result-ingress securityDomainId the claim
+// fixtures bind as the targetActor of the issued capability; the
+// (execution, data-capability) pair belongs to the closed typed-edge matrix.
+func testResultIngressTarget() authority.SecurityDomainId {
+	return authority.SecurityDomainId{
+		TenantNamespace:   "default",
+		TrustDomainKind:   authority.TrustDomainKindDataCapability,
+		IsolationDomainId: "isolation-result-ingress",
+	}
+}
+
 // eligibleFixture assembles a durable store holding one accepted
 // registration, an all-passed evidence set and an aligned snapshot declaring
-// the closed evidence digest set, plus a Matcher bound to the store.
+// the closed evidence digest set, plus a Matcher bound to the store and a
+// Core edge runtime.
 func eligibleFixture(t *testing.T) (*provider.RegistrationStore, *Matcher, provider.ProviderRegistration, provider.ProviderCapabilitySnapshot, []provider.ConformanceEvidence) {
 	t.Helper()
 	store, err := provider.NewRegistrationStore(t.TempDir())
@@ -253,7 +295,26 @@ func eligibleFixture(t *testing.T) (*provider.RegistrationStore, *Matcher, provi
 	}
 	evidence := testEvidence(registration, nil)
 	snapshot := testSnapshot(registration, nil, []string{evidence.EvidenceDigest}, nil)
-	return store, NewMatcher(store), registration, snapshot, []provider.ConformanceEvidence{evidence}
+	return store, NewMatcherWithEdgeRuntime(store, newClaimEdgeRuntime(t)), registration, snapshot, []provider.ConformanceEvidence{evidence}
+}
+
+// eligibleEdgeFixture is eligibleFixture plus direct access to the Core
+// edge runtime, for the issuance-wiring fixtures that recheck or revoke the
+// issued edge.
+func eligibleEdgeFixture(t *testing.T) (*Matcher, *authority.EdgeRuntime, provider.ProviderRegistration, provider.ProviderCapabilitySnapshot, []provider.ConformanceEvidence) {
+	t.Helper()
+	store, err := provider.NewRegistrationStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRegistrationStore: %v", err)
+	}
+	registration := testRegistration("1")
+	if _, err := store.Put(registration); err != nil {
+		t.Fatalf("Put rejected the baseline registration: %v", err)
+	}
+	evidence := testEvidence(registration, nil)
+	snapshot := testSnapshot(registration, nil, []string{evidence.EvidenceDigest}, nil)
+	runtime := newClaimEdgeRuntime(t)
+	return NewMatcherWithEdgeRuntime(store, runtime), runtime, registration, snapshot, []provider.ConformanceEvidence{evidence}
 }
 
 // TestMatcherClaimPositiveBaseline freezes the positive baseline: a fully
@@ -324,7 +385,7 @@ func TestMatcherClaimRejectsUnboundStore(t *testing.T) {
 	for name, matcher := range map[string]*Matcher{
 		"nil matcher":      nil,
 		"nil store":        NewMatcher(nil),
-		"zero-value store": NewMatcher(&provider.RegistrationStore{}),
+		"zero-value store": NewMatcherWithEdgeRuntime(&provider.RegistrationStore{}, newClaimEdgeRuntime(t)),
 	} {
 		if _, err := matcher.Claim(request, dispatchTestNow); err == nil {
 			t.Fatalf("Claim succeeded with %s", name)
@@ -356,7 +417,7 @@ func TestMatcherClaimRejectsNonActiveLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistrationStore: %v", err)
 	}
-	matcher := NewMatcher(store)
+	matcher := NewMatcherWithEdgeRuntime(store, newClaimEdgeRuntime(t))
 
 	pending := testRegistration("pending")
 	pending.LifecycleState = provider.LifecycleStateCreate
@@ -1033,7 +1094,7 @@ func TestMatcherRestartRecovery(t *testing.T) {
 	evidences := []provider.ConformanceEvidence{evidence}
 	request := testClaimRequest(registration, snapshot, evidences, hardenedRequirements(), "1")
 
-	firstMatcher := NewMatcher(store)
+	firstMatcher := NewMatcherWithEdgeRuntime(store, newClaimEdgeRuntime(t))
 	firstLease, err := firstMatcher.Claim(request, dispatchTestNow)
 	if err != nil {
 		t.Fatalf("Claim before the restart failed: %v", err)
@@ -1043,7 +1104,7 @@ func TestMatcherRestartRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistrationStore failed to reopen the ledger directory: %v", err)
 	}
-	secondMatcher := NewMatcher(reopened)
+	secondMatcher := NewMatcherWithEdgeRuntime(reopened, newClaimEdgeRuntime(t))
 
 	recoveredLease, err := secondMatcher.Claim(request, dispatchTestNow)
 	if err != nil {
@@ -1051,6 +1112,17 @@ func TestMatcherRestartRecovery(t *testing.T) {
 	}
 	if recoveredLease.LeaseId != firstLease.LeaseId {
 		t.Fatal("the deterministic derivation must reproduce the identical leaseId after restart")
+	}
+	firstEdge, ok := firstMatcher.IssuedResultCapability(firstLease.LeaseId)
+	if !ok {
+		t.Fatal("the pre-restart claim must have issued a DispatchResultCapability")
+	}
+	recoveredEdge, ok := secondMatcher.IssuedResultCapability(recoveredLease.LeaseId)
+	if !ok {
+		t.Fatal("the recovered claim must have issued a DispatchResultCapability")
+	}
+	if recoveredEdge.EdgeDigest != firstEdge.EdgeDigest {
+		t.Fatal("the deterministic issuance must reproduce the identical edge digest after restart")
 	}
 	if err := recoveredLease.Validate(); err != nil {
 		t.Fatalf("the recovered lease does not validate: %v", err)
@@ -1095,7 +1167,7 @@ func TestMatcherProviderSubstitutionFailsClosed(t *testing.T) {
 		t.Fatal("the substitution must carry a distinct idempotency identity")
 	}
 
-	matcher := NewMatcher(store)
+	matcher := NewMatcherWithEdgeRuntime(store, newClaimEdgeRuntime(t))
 	originalEvidence := testEvidence(original, nil)
 	substituteSnapshot := testSnapshot(original, nil, []string{originalEvidence.EvidenceDigest}, func(s *provider.ProviderCapabilitySnapshot) {
 		s.ProviderName = substitute.ProviderName
@@ -1168,5 +1240,169 @@ func TestMatcherRevalidateRejectsTerminalLease(t *testing.T) {
 	}
 	if err := matcher.Revalidate(expired, snapshot, evidences, hardenedRequirements(), dispatchTestNow); err == nil {
 		t.Fatal("Revalidate accepted an expired lease")
+	}
+}
+
+// recordingRevokeHook records the immediate-effect hook invocations of the
+// security-critical revocation fixtures.
+type recordingRevokeHook struct {
+	calls []string
+}
+
+func (h *recordingRevokeHook) OnSecurityCriticalRevoke(kind authority.EdgeKind, edgeDigest string, at time.Time) error {
+	h.calls = append(h.calls, string(kind)+":"+edgeDigest)
+	return nil
+}
+
+// dispatchResultUseRequestFor assembles the fully aligned use request of
+// the issued edge for the claim-wiring fixtures.
+func dispatchResultUseRequestFor(edge authority.DispatchResultCapability, lease DispatchLease, seed string) authority.DispatchResultUseRequest {
+	return authority.DispatchResultUseRequest{
+		SourceActor:   edge.SourceActor,
+		TargetActor:   edge.TargetActor,
+		Operation:     edge.Operation,
+		AttemptId:     lease.AttemptId,
+		AllocationId:  lease.AllocationId,
+		LeaseId:       lease.LeaseId,
+		Generation:    lease.Generation,
+		FencingToken:  lease.FencingToken,
+		RequestDigest: fixedDigest(seed),
+	}
+}
+
+// TestMatcherClaimRequiresBoundEdgeRuntime freezes the typed-edge
+// precondition: a matcher without the Core edge runtime fails every claim
+// closed before any lease is recorded.
+func TestMatcherClaimRequiresBoundEdgeRuntime(t *testing.T) {
+	store, err := provider.NewRegistrationStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRegistrationStore: %v", err)
+	}
+	registration := testRegistration("1")
+	if _, err := store.Put(registration); err != nil {
+		t.Fatalf("Put rejected the baseline registration: %v", err)
+	}
+	evidence := testEvidence(registration, nil)
+	snapshot := testSnapshot(registration, nil, []string{evidence.EvidenceDigest}, nil)
+	request := testClaimRequest(registration, snapshot, []provider.ConformanceEvidence{evidence}, hardenedRequirements(), "1")
+	if _, err := NewMatcher(store).Claim(request, dispatchTestNow); err == nil {
+		t.Fatal("Claim succeeded without a bound typed-edge runtime")
+	} else if !strings.Contains(err.Error(), "typed-edge runtime") {
+		t.Fatalf("expected the typed-edge runtime precondition, got: %v", err)
+	}
+}
+
+// TestMatcherClaimIssuesDispatchResultCapability freezes the positive
+// issuance wiring: the accepted claim issues the Core capability bound to
+// the lease identity (attempt/allocation/generation/fencingToken),
+// recoverable from the matcher index, and the authority runtime recheck
+// accepts the aligned result use.
+func TestMatcherClaimIssuesDispatchResultCapability(t *testing.T) {
+	matcher, runtime, registration, snapshot, evidences := eligibleEdgeFixture(t)
+	request := testClaimRequest(registration, snapshot, evidences, hardenedRequirements(), "1")
+	lease, err := matcher.Claim(request, dispatchTestNow)
+	if err != nil {
+		t.Fatalf("Claim failed: %v", err)
+	}
+	edge, ok := matcher.IssuedResultCapability(lease.LeaseId)
+	if !ok {
+		t.Fatal("the accepted claim must issue a DispatchResultCapability")
+	}
+	if err := edge.Validate(); err != nil {
+		t.Fatalf("the issued edge does not validate: %v", err)
+	}
+	if !edge.Issuer.Equal(testAuthorityNamespace()) {
+		t.Fatal("the issued edge must carry the Core issuer")
+	}
+	if !edge.SourceActor.Equal(registration.SecurityDomainId) {
+		t.Fatal("the edge sourceActor must be the claimed registration securityDomainId")
+	}
+	if !edge.TargetActor.Equal(request.TargetActor) {
+		t.Fatal("the edge targetActor must be the claimed result-ingress target")
+	}
+	if edge.Operation != authority.DispatchResultOperationAccept {
+		t.Fatalf("the claim issues the result acceptance operation, got %q", string(edge.Operation))
+	}
+	if edge.BoundAttemptId != request.AttemptId || edge.BoundAllocationId != request.AllocationId {
+		t.Fatal("the edge must bind the claimed attempt and allocation")
+	}
+	if edge.Expiry != request.ExpiresAt {
+		t.Fatal("the edge expiry must be bounded by the lease expiry window")
+	}
+	if edge.Generation != 1 || edge.RevocationGeneration != 0 {
+		t.Fatal("the issued edge must start at generation 1 unrevoked")
+	}
+	current, currentLease, ok := runtime.CurrentDispatchResultCapability(edge.EdgeDigest)
+	if !ok || current != edge {
+		t.Fatal("the authority ledger must recover the issued edge")
+	}
+	if currentLease.LeaseId != lease.LeaseId || currentLease.Generation != lease.Generation || currentLease.FencingToken != lease.FencingToken {
+		t.Fatal("the authority ledger must record the exact lease identity of the claim")
+	}
+	if err := runtime.RecheckDispatchResult(edge, dispatchResultUseRequestFor(edge, lease, "result-request-1"), dispatchTestNow); err != nil {
+		t.Fatalf("the current-ledger recheck rejected the aligned result use: %v", err)
+	}
+	if _, ok := matcher.IssuedResultCapability(fixedDigest("lease-unknown")); ok {
+		t.Fatal("an unknown leaseId must not expose an issued capability")
+	}
+}
+
+// TestMatcherClaimRejectsIllegalEdgeTarget freezes the target gate: a
+// targetActor outside the closed typed-edge matrix or an invalid
+// targetActor fails the whole claim closed, and no lease is recorded.
+func TestMatcherClaimRejectsIllegalEdgeTarget(t *testing.T) {
+	t.Run("execution target violates the typed-edge matrix", func(t *testing.T) {
+		_, matcher, registration, snapshot, evidences := eligibleFixture(t)
+		request := testClaimRequest(registration, snapshot, evidences, hardenedRequirements(), "1")
+		request.TargetActor = authority.SecurityDomainId{
+			TenantNamespace:   "default",
+			TrustDomainKind:   authority.TrustDomainKindExecution,
+			IsolationDomainId: "isolation-other",
+		}
+		if _, err := matcher.Claim(request, dispatchTestNow); err == nil {
+			t.Fatal("Claim accepted a targetActor outside the typed-edge matrix")
+		}
+		if _, ok := matcher.IssuedResultCapability("anything"); ok {
+			t.Fatal("a failed claim must not record an issued capability")
+		}
+	})
+	t.Run("invalid target actor", func(t *testing.T) {
+		_, matcher, registration, snapshot, evidences := eligibleFixture(t)
+		request := testClaimRequest(registration, snapshot, evidences, hardenedRequirements(), "1")
+		request.TargetActor = authority.SecurityDomainId{}
+		if _, err := matcher.Claim(request, dispatchTestNow); err == nil {
+			t.Fatal("Claim accepted an invalid targetActor")
+		}
+	})
+}
+
+// TestMatcherClaimEdgeRevocationFailsRecheck freezes the security-critical
+// revocation path of the issued edge: the revocation fact fires the
+// immediate-effect hook and fails every later result use closed.
+func TestMatcherClaimEdgeRevocationFailsRecheck(t *testing.T) {
+	matcher, runtime, registration, snapshot, evidences := eligibleEdgeFixture(t)
+	hook := &recordingRevokeHook{}
+	runtime.BindSecurityCriticalRevokeHook(hook)
+	request := testClaimRequest(registration, snapshot, evidences, hardenedRequirements(), "1")
+	lease, err := matcher.Claim(request, dispatchTestNow)
+	if err != nil {
+		t.Fatalf("Claim failed: %v", err)
+	}
+	edge, ok := matcher.IssuedResultCapability(lease.LeaseId)
+	if !ok {
+		t.Fatal("the accepted claim must issue a DispatchResultCapability")
+	}
+	useRequest := dispatchResultUseRequestFor(edge, lease, "result-request-1")
+	if err := runtime.RecheckDispatchResult(edge, useRequest, dispatchTestNow); err != nil {
+		t.Fatalf("the pre-revocation recheck failed: %v", err)
+	}
+	if _, err := runtime.RevokeDispatchResultCapability(edge.EdgeDigest, authority.EdgeRevocationSecurityCritical, dispatchTestNow); err != nil {
+		t.Fatalf("security-critical revocation failed: %v", err)
+	}
+	if len(hook.calls) != 1 || hook.calls[0] != string(authority.EdgeKindDispatchResultCapability)+":"+edge.EdgeDigest {
+		t.Fatalf("the immediate-effect hook must fire exactly once with the edge identity, got %v", hook.calls)
+	}
+	if err := runtime.RecheckDispatchResult(edge, useRequest, dispatchTestNow); !errors.Is(err, authority.ErrEdgeRevoked) {
+		t.Fatalf("expected ErrEdgeRevoked after the security-critical revocation, got: %v", err)
 	}
 }
