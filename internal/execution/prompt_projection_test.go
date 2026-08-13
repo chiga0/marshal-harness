@@ -60,12 +60,23 @@ var nonLeakOracle = []string{
 	"/acceptance/commands/*/maxLogBytes",
 	"/acceptance/commands/*/required",
 	"/acceptance/commands/*/timeoutSeconds",
+	"/admission/status",
 	"/apiVersion",
+	"/dependsOn/*/baseSha",
+	"/dependsOn/*/kind",
+	"/dependsOn/*/requiredState",
+	"/dependsOn/*/runId",
+	"/dependsOn/*/specDigest",
+	"/dependsOn/*/taskId",
 	"/extensions/*",
 	"/kind",
 	"/metadata/description",
 	"/metadata/labels/*",
 	"/metadata/title",
+	"/preconditions/*/argv/*",
+	"/preconditions/*/cwd",
+	"/preconditions/*/id",
+	"/preconditions/*/timeoutSeconds",
 	"/publication/baseBranch",
 	"/publication/mergePolicy",
 	"/publication/mode",
@@ -516,6 +527,17 @@ func TestRenderPromptProjectionV1VerifierOnlyAndHiddenValuesDoNotLeak(t *testing
 	spec["publication"].(map[string]any)["requiredChecks"] = []string{"nl-check"}
 	spec["extensions"] = map[string]any{"nl.ext": "nl-ext-value"}
 
+	// Issue #23 admission scheduling metadata is hidden: it is consumed by
+	// the planning admission gate and never rendered into the Worker prompt.
+	spec["admission"] = map[string]any{"status": "nl-admission-status"}
+	spec["dependsOn"] = []any{map[string]any{
+		"kind": "nl-dep-kind", "runId": "nl-dep-run", "taskId": "nl-dep-task",
+		"requiredState": "nl-dep-state", "baseSha": "nl-dep-base", "specDigest": "nl-dep-digest",
+	}}
+	spec["preconditions"] = []any{map[string]any{
+		"id": "nl-pre-id", "argv": []string{"nl-pre-argv"}, "cwd": "nl-pre-cwd", "timeoutSeconds": 42,
+	}}
+
 	prompt := renderFixturePrompt(t, spec, nil)
 
 	sentinels := []string{
@@ -527,6 +549,9 @@ func TestRenderPromptProjectionV1VerifierOnlyAndHiddenValuesDoNotLeak(t *testing
 		"nl-expected-url", "nl-preferred", "nl-fallback", "nl-model",
 		"nl-reasoning", "nl-tools-sentinel", "nl-provider", "nl-mode", "nl-pub-remote",
 		"nl-base-branch", "nl-merge-policy", "nl-check", "nl.ext", "nl-ext-value",
+		"nl-admission-status", "nl-dep-kind", "nl-dep-run", "nl-dep-task",
+		"nl-dep-state", "nl-dep-base", "nl-dep-digest",
+		"nl-pre-id", "nl-pre-argv", "nl-pre-cwd",
 	}
 	for _, s := range sentinels {
 		if strings.Contains(prompt, s) {

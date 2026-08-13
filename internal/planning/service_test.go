@@ -761,3 +761,321 @@ func assertPlanningFrozenFile(t *testing.T, path string, source []byte, digest s
 		t.Fatalf("frozen file %s digest = %q, want %q", filepath.Base(path), got, digest)
 	}
 }
+
+// planningMutatedTaskFixture decodes the standard planning task fixture and
+// applies mutate before re-marshaling it, so tests can pin the issue #23
+// admission, dependsOn and preconditions declarations.
+func planningMutatedTaskFixture(t *testing.T, repositoryRoot, taskID, adapterID, remoteURL, baseSHA string, mutate func(map[string]any)) []byte {
+	t.Helper()
+	taskData := planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA)
+	if mutate == nil {
+		return taskData
+	}
+	var task map[string]any
+	if err := json.Unmarshal(taskData, &task); err != nil {
+		t.Fatal(err)
+	}
+	mutate(task)
+	return mustMarshal(t, task)
+}
+
+func assertPlanningNoTaskBranch(t *testing.T, repositoryRoot, taskID, runID string) {
+	t.Helper()
+	command := exec.Command("git", "-C", repositoryRoot, "show-ref", "--verify", "--quiet", "refs/heads/marshal/"+taskID+"-"+runID)
+	if command.Run() == nil {
+		t.Fatal("planning rejection left the task branch")
+	}
+}
+
+func TestPlanRejectsPreparedAdmissionBeforeSideEffects(t *testing.T) {
+	repositoryRoot, baseSHA := planningGitFixture(t)
+	const (
+		taskID    = "task-plan-prepared"
+		runID     = "run-plan-prepared"
+		adapterID = "adapter-plan"
+		remoteURL = "https://example.invalid/prepared.git"
+	)
+	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	taskData := planningMutatedTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA, func(task map[string]any) {
+		task["admission"] = map[string]any{"status": "prepared"}
+	})
+	worker := &planningTestWorker{
+		id:         adapterID,
+		capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)},
+	}
+	stateRoot := filepath.Join(repositoryRoot, ".marshal")
+	_, err := Plan(context.Background(), Input{
+		StateRoot:      stateRoot,
+		RepositoryRoot: repositoryRoot,
+		RunID:          runID,
+		TaskSpec:       taskData,
+		PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
+		Selector:       planningSelector(t, worker),
+		Validator:      newValidator(t),
+	})
+	if err == nil || err.Error() != ErrAdmissionPrepared {
+		t.Fatalf("Plan() error = %v, want fixed sentinel %q", err, ErrAdmissionPrepared)
+	}
+	assertPlanningNoRunSideEffects(t, stateRoot, taskID, runID)
+	assertPlanningNoTaskBranch(t, repositoryRoot, taskID, runID)
+}
+
+func TestPlanRunDependencyGate(t *testing.T) {
+	repositoryRoot, baseSHA := planningGitFixture(t)
+	const (
+		taskID    = "task-plan-rundep"
+		adapterID = "adapter-plan"
+		remoteURL = "https://example.invalid/rundep.git"
+	)
+	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	stateRoot := filepath.Join(repositoryRoot, ".marshal")
+	store := runstore.New(stateRoot)
+	seedAdmissionRun(t, store, "run-dep-accepted", admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest)
+	seedAdmissionRun(t, store, "run-dep-ready", []domain.State{domain.StatePlanned, domain.StateReady}, admissionBaseSHA, admissionSpecDigest)
+	worker := &planningTestWorker{
+		id:         adapterID,
+		capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)},
+	}
+	planWithDependency := func(runID, dependedRunID, requiredState string) (Result, error) {
+		taskData := planningMutatedTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA, func(task map[string]any) {
+			task["dependsOn"] = []any{map[string]any{
+				"kind": "run", "runId": dependedRunID, "requiredState": requiredState,
+			}}
+		})
+		return Plan(context.Background(), Input{
+			StateRoot:      stateRoot,
+			RepositoryRoot: repositoryRoot,
+			RunID:          runID,
+			TaskSpec:       taskData,
+			PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
+			Selector:       planningSelector(t, worker),
+			Validator:      newValidator(t),
+		})
+	}
+
+	// A satisfied dependency (exact ACCEPTED match) lets the plan reach READY;
+	// the happy-path fixture carries no admission fields at all, so the same
+	// run also pins the zero-value backward-compatible behavior end to end.
+	result, err := planWithDependency("run-plan-rundep-ok", "run-dep-accepted", string(domain.StateAccepted))
+	if err != nil {
+		t.Fatalf("Plan(satisfied dependency) = %v, want READY", err)
+	}
+	if result.State.State != domain.StateReady {
+		t.Fatalf("state = %s, want READY", result.State.State)
+	}
+
+	cases := []struct {
+		name          string
+		runID         string
+		dependedRunID string
+		requiredState string
+		wantCategory  string
+		wantRunID     string
+	}{
+		{name: "state mismatch", runID: "run-plan-rundep-mismatch", dependedRunID: "run-dep-ready", requiredState: string(domain.StateAccepted), wantCategory: ErrDependencyStateMismatch, wantRunID: "run-dep-ready"},
+		{name: "missing run", runID: "run-plan-rundep-missing", dependedRunID: "run-missing", requiredState: string(domain.StateAccepted), wantCategory: ErrDependencyRunNotFound, wantRunID: "run-missing"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := planWithDependency(test.runID, test.dependedRunID, test.requiredState)
+			assertDependencyError(t, err, test.wantCategory, test.wantRunID, "")
+			assertPlanningNoRunSideEffects(t, stateRoot, taskID, test.runID)
+			assertPlanningNoTaskBranch(t, repositoryRoot, taskID, test.runID)
+		})
+	}
+}
+
+func TestPlanTaskDependencyResolvesLatestRun(t *testing.T) {
+	repositoryRoot, baseSHA := planningGitFixture(t)
+	const (
+		taskID    = "task-plan-taskdep"
+		adapterID = "adapter-plan"
+		remoteURL = "https://example.invalid/taskdep.git"
+	)
+	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	stateRoot := filepath.Join(repositoryRoot, ".marshal")
+	store := runstore.New(stateRoot)
+	rejectedChain := []domain.State{
+		domain.StatePlanned,
+		domain.StateReady,
+		domain.StateRunning,
+		domain.StateVerifying,
+		domain.StateReviewPending,
+		domain.StateRejected,
+	}
+	// The older run is ACCEPTED but the newest run of the task is REJECTED.
+	seedAdmissionTaskRun(t, store, "run-task-old", taskID, admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest, time.Unix(10, 0).UTC())
+	seedAdmissionTaskRun(t, store, "run-task-new", taskID, rejectedChain, admissionBaseSHA, admissionSpecDigest, time.Unix(20, 0).UTC())
+	worker := &planningTestWorker{
+		id:         adapterID,
+		capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)},
+	}
+	planWithTaskDependency := func(runID string) (Result, error) {
+		taskData := planningMutatedTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA, func(task map[string]any) {
+			task["dependsOn"] = []any{map[string]any{
+				"kind": "task", "taskId": taskID, "requiredState": string(domain.StateAccepted),
+			}}
+		})
+		return Plan(context.Background(), Input{
+			StateRoot:      stateRoot,
+			RepositoryRoot: repositoryRoot,
+			RunID:          runID,
+			TaskSpec:       taskData,
+			PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
+			Selector:       planningSelector(t, worker),
+			Validator:      newValidator(t),
+		})
+	}
+
+	// The latest run is REJECTED, so the ACCEPTED dependency fails closed
+	// naming both the taskId and the resolved latest runId.
+	_, err := planWithTaskDependency("run-plan-taskdep-mismatch")
+	assertTaskDependencyError(t, err, ErrDependencyStateMismatch, taskID, "run-task-new", "state")
+	assertPlanningNoRunSideEffects(t, stateRoot, taskID, "run-plan-taskdep-mismatch")
+	assertPlanningNoTaskBranch(t, repositoryRoot, taskID, "run-plan-taskdep-mismatch")
+
+	// A newer ACCEPTED run satisfies the same declaration.
+	seedAdmissionTaskRun(t, store, "run-task-newest", taskID, admissionAcceptedChain, admissionBaseSHA, admissionSpecDigest, time.Unix(30, 0).UTC())
+	result, err := planWithTaskDependency("run-plan-taskdep-ok")
+	if err != nil {
+		t.Fatalf("Plan(satisfied task dependency) = %v, want READY", err)
+	}
+	if result.State.State != domain.StateReady {
+		t.Fatalf("state = %s, want READY", result.State.State)
+	}
+
+	// A task with no runs at all fails closed before any side effect.
+	taskData := planningMutatedTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA, func(task map[string]any) {
+		task["dependsOn"] = []any{map[string]any{
+			"kind": "task", "taskId": "task-nowhere", "requiredState": string(domain.StateAccepted),
+		}}
+	})
+	_, err = Plan(context.Background(), Input{
+		StateRoot:      stateRoot,
+		RepositoryRoot: repositoryRoot,
+		RunID:          "run-plan-taskdep-nowhere",
+		TaskSpec:       taskData,
+		PolicySnapshot: planningPolicyFixture(t, taskID, "run-plan-taskdep-nowhere", adapterID),
+		Selector:       planningSelector(t, worker),
+		Validator:      newValidator(t),
+	})
+	assertTaskDependencyError(t, err, ErrDependencyTaskNotFound, "task-nowhere", "", "")
+	assertPlanningNoRunSideEffects(t, stateRoot, taskID, "run-plan-taskdep-nowhere")
+}
+
+func TestPlanPreconditionFailureLeavesNoSideEffects(t *testing.T) {
+	requireShell(t)
+	repositoryRoot, baseSHA := planningGitFixture(t)
+	const (
+		taskID    = "task-plan-pre-fail"
+		runID     = "run-plan-pre-fail"
+		adapterID = "adapter-plan"
+		remoteURL = "https://example.invalid/pre-fail.git"
+	)
+	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	taskData := planningMutatedTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA, func(task map[string]any) {
+		task["preconditions"] = []any{map[string]any{
+			"id": "pre-fail", "argv": []any{"sh", "-c", "echo pre-boom; exit 2"},
+		}}
+	})
+	worker := &planningTestWorker{
+		id:         adapterID,
+		capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)},
+	}
+	stateRoot := filepath.Join(repositoryRoot, ".marshal")
+	_, err := Plan(context.Background(), Input{
+		StateRoot:      stateRoot,
+		RepositoryRoot: repositoryRoot,
+		RunID:          runID,
+		TaskSpec:       taskData,
+		PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
+		Selector:       planningSelector(t, worker),
+		Validator:      newValidator(t),
+	})
+	if err == nil {
+		t.Fatal("Plan() = nil error, want precondition rejection")
+	}
+	message := err.Error()
+	for _, token := range []string{ErrPreconditionFailed, "id=pre-fail", "exit=2", `tail="pre-boom"`} {
+		if !strings.Contains(message, token) {
+			t.Fatalf("error %q missing %q", message, token)
+		}
+	}
+	// No partial frozen artifacts, journal, snapshot, worktree, or branch may
+	// survive a precondition failure.
+	assertPlanningNoRunSideEffects(t, stateRoot, taskID, runID)
+	assertPlanningNoTaskBranch(t, repositoryRoot, taskID, runID)
+}
+
+func TestPlanPreconditionsPassWithExplicitExecutableAdmission(t *testing.T) {
+	requireShell(t)
+	repositoryRoot, baseSHA := planningGitFixture(t)
+	const (
+		taskID    = "task-plan-pre-ok"
+		runID     = "run-plan-pre-ok"
+		adapterID = "adapter-plan"
+		remoteURL = "https://example.invalid/pre-ok.git"
+	)
+	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	taskData := planningMutatedTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA, func(task map[string]any) {
+		task["admission"] = map[string]any{"status": "executable"}
+		task["preconditions"] = []any{map[string]any{
+			"id": "pre-ok", "argv": []any{"sh", "-c", "exit 0"},
+		}}
+	})
+	worker := &planningTestWorker{
+		id:         adapterID,
+		capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)},
+	}
+	result, err := Plan(context.Background(), Input{
+		StateRoot:      filepath.Join(repositoryRoot, ".marshal"),
+		RepositoryRoot: repositoryRoot,
+		RunID:          runID,
+		TaskSpec:       taskData,
+		PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
+		Selector:       planningSelector(t, worker),
+		Validator:      newValidator(t),
+	})
+	if err != nil {
+		t.Fatalf("Plan(passing preconditions) = %v, want READY", err)
+	}
+	if result.State.State != domain.StateReady {
+		t.Fatalf("state = %s, want READY", result.State.State)
+	}
+}
+
+func TestPlanPreconditionTimeoutFailsClosedBeforeSideEffects(t *testing.T) {
+	requireShellAndSleep(t)
+	repositoryRoot, baseSHA := planningGitFixture(t)
+	const (
+		taskID    = "task-plan-pre-slow"
+		runID     = "run-plan-pre-slow"
+		adapterID = "adapter-plan"
+		remoteURL = "https://example.invalid/pre-slow.git"
+	)
+	planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	taskData := planningMutatedTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA, func(task map[string]any) {
+		task["preconditions"] = []any{map[string]any{
+			"id": "pre-slow", "argv": []any{"sh", "-c", "sleep 5"}, "timeoutSeconds": 1,
+		}}
+	})
+	worker := &planningTestWorker{
+		id:         adapterID,
+		capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)},
+	}
+	stateRoot := filepath.Join(repositoryRoot, ".marshal")
+	_, err := Plan(context.Background(), Input{
+		StateRoot:      stateRoot,
+		RepositoryRoot: repositoryRoot,
+		RunID:          runID,
+		TaskSpec:       taskData,
+		PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
+		Selector:       planningSelector(t, worker),
+		Validator:      newValidator(t),
+	})
+	if err == nil || !strings.Contains(err.Error(), ErrPreconditionTimeout) || !strings.Contains(err.Error(), "id=pre-slow") {
+		t.Fatalf("Plan() error = %v, want %q naming id=pre-slow", err, ErrPreconditionTimeout)
+	}
+	assertPlanningNoRunSideEffects(t, stateRoot, taskID, runID)
+	assertPlanningNoTaskBranch(t, repositoryRoot, taskID, runID)
+}

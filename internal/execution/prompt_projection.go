@@ -117,6 +117,19 @@ func buildTaskSpecPromptProjectionCatalog() []catalogEntry {
 	c = append(c, catalogEntry{"/publication/baseBranch", hidden})
 	c = append(c, catalogEntry{"/publication/mergePolicy", hidden})
 	c = append(c, catalogEntry{"/publication/requiredChecks/*", hidden})
+	// admission, dependsOn and preconditions are scheduling metadata consumed
+	// by the planning admission gate; they never enter the Worker prompt.
+	c = append(c, catalogEntry{"/admission/status", hidden})
+	c = append(c, catalogEntry{"/dependsOn/*/kind", hidden})
+	c = append(c, catalogEntry{"/dependsOn/*/runId", hidden})
+	c = append(c, catalogEntry{"/dependsOn/*/taskId", hidden})
+	c = append(c, catalogEntry{"/dependsOn/*/requiredState", hidden})
+	c = append(c, catalogEntry{"/dependsOn/*/baseSha", hidden})
+	c = append(c, catalogEntry{"/dependsOn/*/specDigest", hidden})
+	c = append(c, catalogEntry{"/preconditions/*/id", hidden})
+	c = append(c, catalogEntry{"/preconditions/*/argv/*", hidden})
+	c = append(c, catalogEntry{"/preconditions/*/cwd", hidden})
+	c = append(c, catalogEntry{"/preconditions/*/timeoutSeconds", hidden})
 	c = append(c, catalogEntry{"/extensions/*", hidden})
 	return c
 }

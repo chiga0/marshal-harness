@@ -33,6 +33,15 @@
     "worker": { "$ref": "#/$defs/worker" },
     "budgets": { "$ref": "#/$defs/budgets" },
     "publication": { "$ref": "#/$defs/publication" },
+    "admission": { "$ref": "#/$defs/admission" },
+    "dependsOn": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dependency" }
+    },
+    "preconditions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/precondition" }
+    },
     "extensions": {
       "type": "object",
       "description": "使用 Namespace 隔离的实验性扩展数据。",
@@ -285,6 +294,72 @@
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1, "maxLength": 512 }
         }
+      }
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["prepared", "executable"],
+          "description": "prepared 声明仅供规划门禁识别、不进入执行；executable 允许规划执行。admission 整体缺省时按 executable 语义向后兼容。"
+        }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "requiredState"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["run", "task"] },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "requiredState": {
+          "type": "string",
+          "enum": ["ACCEPTED", "REJECTED", "BLOCKED", "ABORTED", "NO_CHANGE"]
+        },
+        "baseSha": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "specDigest": { "type": "string", "minLength": 1, "maxLength": 512 }
+      },
+      "oneOf": [
+        {
+          "properties": { "kind": { "const": "run" } },
+          "required": ["runId"],
+          "not": { "required": ["taskId"] }
+        },
+        {
+          "properties": { "kind": { "const": "task" } },
+          "required": ["taskId"],
+          "not": { "required": ["runId"] }
+        }
+      ]
+    },
+    "precondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "argv"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": { "type": "string", "maxLength": 32768 }
+        },
+        "cwd": { "$ref": "#/$defs/relativePath" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 86400 }
       }
     }
   }

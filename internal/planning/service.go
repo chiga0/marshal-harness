@@ -62,12 +62,14 @@ type Result struct {
 // Plan freezes a new Run. It is fail-closed: any validation, resolution,
 // selection, or persistence failure returns an error and never leaves a false
 // READY. It validates the TaskSpec against its schema, decodes it, and fully
-// validates the PolicySnapshot into the effective policy first; only then does
-// it syntax-preflight the supported inline Python acceptance scripts, before
-// any repository resolution, adapter probe, worktree, run lease, journal, or
-// frozen file side effect. An invalid, identity-mismatched, or prohibited
-// policy can therefore never trigger a host interpreter spawn, and a preflight
-// failure leaves no SelectionAttempts and no stateRoot or repository change.
+// validates the PolicySnapshot into the effective policy first; only then
+// does it enforce the TaskSpec admission gate (admission.status, dependsOn,
+// preconditions) and syntax-preflight the supported inline Python acceptance
+// scripts, before any repository resolution, adapter probe, worktree, run
+// lease, journal, or frozen file side effect. An invalid,
+// identity-mismatched, or prohibited policy can therefore never trigger a
+// precondition or interpreter spawn, and an admission or preflight failure
+// leaves no SelectionAttempts and no stateRoot or repository change.
 // Before the first journal record is written, a later failure releases and
 // removes the worktree and frozen artifacts it created. After the CREATED ->
 // PLANNED record is journaled, a failure releases the worktree handle but
@@ -107,20 +109,33 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 
 	// 2. Validate the PolicySnapshot against its schema and the frozen task,
 	// yielding the effective policy the Selector must honor. This completes
-	// before the syntax preflight, so an invalid, identity-mismatched, or
-	// prohibited policy can never trigger a host interpreter spawn.
+	// before the admission gate and the syntax preflight, so an invalid,
+	// identity-mismatched, or prohibited policy can never trigger a
+	// precondition or host interpreter spawn.
 	effective, err := ValidatePolicy(input.PolicySnapshot, task, input.RunID, input.Validator)
 	if err != nil {
 		return Result{}, err
 	}
 
-	// 3. Syntax-preflight the supported inline Python acceptance scripts. This
-	// runs after TaskSpec schema validation, decode, and full policy
-	// validation, and before any repository resolution, adapter probe,
-	// worktree, run lease, journal, or frozen file side effect. Unknown
-	// interpreters and unsupported forms are skipped for independent
-	// Verification; supported forms that cannot be checked fail closed without
-	// side effects.
+	// 3. TaskSpec admission gate (issue #23): a prepared admission is
+	// rejected fail-closed, every dependsOn entry resolves read-only against
+	// the run store, and every precondition executes as a controlled
+	// subprocess at the repository root. The gate runs after full policy
+	// validation and before the syntax preflight, any repository resolution,
+	// adapter probe, worktree, run lease, journal, or frozen file side
+	// effect, so a prohibited policy can never trigger a precondition spawn
+	// and a failing admission leaves no state behind.
+	if err := AdmitTaskSpec(ctx, input.StateRoot, input.RepositoryRoot, task); err != nil {
+		return Result{}, err
+	}
+
+	// 4. Syntax-preflight the supported inline Python acceptance scripts.
+	// This runs after TaskSpec schema validation, decode, full policy
+	// validation, and the admission gate, and before any repository
+	// resolution, adapter probe, worktree, run lease, journal, or frozen
+	// file side effect. Unknown interpreters and unsupported forms are
+	// skipped for independent Verification; supported forms that cannot be
+	// checked fail closed without side effects.
 	syntaxChecker := input.PythonSyntaxChecker
 	if syntaxChecker == nil {
 		syntaxChecker = execPythonSyntaxChecker{}
@@ -129,7 +144,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{}, err
 	}
 
-	// 4. Canonical repository path must match the TaskSpec repository.
+	// 5. Canonical repository path must match the TaskSpec repository.
 	repository, err := gitworktree.OpenContext(ctx, input.RepositoryRoot)
 	if err != nil {
 		return Result{}, fmt.Errorf("planning: open repository: %w", err)
@@ -142,13 +157,13 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{}, errors.New("planning: TaskSpec repository does not match active repository")
 	}
 
-	// 5. Resolve the base ref to a unique commit SHA.
+	// 6. Resolve the base ref to a unique commit SHA.
 	baseSHA, err := ResolveBase(ctx, repository.Root, task.Repository.BaseRef)
 	if err != nil {
 		return Result{}, fmt.Errorf("planning: %w", err)
 	}
 
-	// 6. Confirm the remote name and, when declared, the exact remote URL.
+	// 7. Confirm the remote name and, when declared, the exact remote URL.
 	// Resolved URLs may carry credentials, so a mismatch is reported as a
 	// fixed error that never echoes either URL.
 	resolvedURL, err := ResolveRemote(ctx, repository.Root, task.Repository.Remote)
@@ -159,7 +174,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{}, errors.New(errRemoteURLMismatch)
 	}
 
-	// 7. Select the adapter strictly from the effective policy's explicit
+	// 8. Select the adapter strictly from the effective policy's explicit
 	// candidate list; when fallback is not allowed it carries none.
 	selection, err := input.Selector.Select(ctx, effective.SelectionRequest())
 	if err != nil {
@@ -169,7 +184,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{SelectionAttempts: selection.Attempts}, errors.New("planning: no adapter was selected")
 	}
 
-	// 8. The selected CapabilitySnapshot must pass the schema again and the
+	// 9. The selected CapabilitySnapshot must pass the schema again and the
 	// provider-neutral capability gate, and its adapterId must exactly match
 	// the selected adapter.
 	if err := input.Validator.Validate(domain.KindCapabilitySnapshot, selection.Capability.Data); err != nil {
@@ -183,7 +198,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{SelectionAttempts: selection.Attempts}, errors.New(errCapabilityAdapterMismatch)
 	}
 
-	// 9. Canonicalize the three frozen artifacts and compute their digests.
+	// 10. Canonicalize the three frozen artifacts and compute their digests.
 	// The policy digest covers the whole frozen policy document, not the
 	// embedded policyDigest field.
 	taskCanonical, err := canonical.JSON(input.TaskSpec)
@@ -202,7 +217,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 	policyDigest := canonical.DigestBytes(policyCanonical)
 	capabilityDigest := canonical.DigestBytes(capabilityCanonical)
 
-	// 10. Acquire the Run lease and refuse to plan over an existing Run.
+	// 11. Acquire the Run lease and refuse to plan over an existing Run.
 	store := runstore.New(input.StateRoot)
 	lease, err := store.Acquire(input.RunID)
 	if err != nil {
@@ -244,7 +259,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		}
 	}()
 
-	// 11. Create the managed linked worktree locked at the base SHA, keyed by
+	// 12. Create the managed linked worktree locked at the base SHA, keyed by
 	// (taskId, runId) so a retried taskId plans onto a fresh worktree instead
 	// of colliding with the previous run's directory and branch.
 	worktree, err = repository.CreateForRun(input.StateRoot, task.Metadata.ID, input.RunID, baseSHA)
@@ -252,7 +267,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{}, fmt.Errorf("planning: create worktree: %w", err)
 	}
 
-	// 12. Freeze the canonical artifacts with owner-only permissions.
+	// 13. Freeze the canonical artifacts with owner-only permissions.
 	if err := atomicWrite(filepath.Join(runDir, "task-spec.json"), taskCanonical); err != nil {
 		return Result{}, fmt.Errorf("planning: freeze TaskSpec: %w", err)
 	}
@@ -263,7 +278,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{}, fmt.Errorf("planning: freeze CapabilitySnapshot: %w", err)
 	}
 
-	// 13. CREATED -> PLANNED under the held lease.
+	// 14. CREATED -> PLANNED under the held lease.
 	state := domain.NewRunState(task.Metadata.ID, input.RunID, now)
 	state.SpecDigest = specDigest
 	state.PolicyDigest = policyDigest
@@ -283,7 +298,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		return Result{}, fmt.Errorf("planning: write planned snapshot: %w", err)
 	}
 
-	// 14. PLANNED -> READY with the resolved baseline and frozen inputs.
+	// 15. PLANNED -> READY with the resolved baseline and frozen inputs.
 	readyPayload := map[string]any{
 		"adapterId":         selection.Adapter.ID(),
 		"baseSha":           baseSHA,
