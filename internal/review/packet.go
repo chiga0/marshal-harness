@@ -42,6 +42,13 @@ type evidenceIdentity struct {
 	ArtifactManifestDigest string                   `json:"artifactManifestDigest"`
 	WorkerResultDigests    []string                 `json:"workerResultDigests"`
 	PreviousFindings       []domain.PreviousFinding `json:"previousBlockingFindings"`
+	// CandidateDigest and WorkerCandidateDigest are the ADR 0027 head and
+	// worker Candidate record identities (§4.2 stage A). Runs verified before
+	// Candidate adoption leave both empty; the omitempty tags then keep them
+	// out of the canonical serialization entirely, so legacy evidenceDigest
+	// recomputation stays byte-identical (§5.1/§7.5).
+	CandidateDigest       string `json:"candidateDigest,omitempty"`
+	WorkerCandidateDigest string `json:"workerCandidateDigest,omitempty"`
 }
 
 func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, string, error) {
@@ -71,6 +78,9 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 	if err := validateObservedPatch(input.Manifest, patchData); err != nil {
 		return nil, "", err
 	}
+	if err := validateCandidateBinding(input.Report, input.Manifest); err != nil {
+		return nil, "", err
+	}
 	workerPaths, workerDigests, err := b.collectWorkerResults(input.TaskID, input.RunID)
 	if err != nil {
 		return nil, "", err
@@ -90,7 +100,7 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 	if err != nil {
 		return nil, "", err
 	}
-	identity := evidenceIdentity{SpecDigest: input.SpecDigest, PatchDigest: canonical.DigestBytes(patchData), VerificationDigest: verificationDigest, ArtifactManifestDigest: manifestDigest, WorkerResultDigests: workerDigests, PreviousFindings: previous}
+	identity := evidenceIdentity{SpecDigest: input.SpecDigest, PatchDigest: canonical.DigestBytes(patchData), VerificationDigest: verificationDigest, ArtifactManifestDigest: manifestDigest, WorkerResultDigests: workerDigests, PreviousFindings: previous, CandidateDigest: input.Report.CandidateDigest, WorkerCandidateDigest: input.Report.WorkerCandidateDigest}
 	identityData, err := json.Marshal(identity)
 	if err != nil {
 		return nil, "", err
@@ -106,6 +116,7 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 		SnapshotDigest: input.Report.Observed.SnapshotDigest, DiffDigest: input.Report.Observed.DiffDigest,
 		VerificationDigest: verificationDigest, ArtifactManifestDigest: manifestDigest,
 		WorkerResultDigests: workerDigests, EvidenceDigest: evidenceDigest,
+		WorkerCandidateDigest: input.Report.WorkerCandidateDigest, CandidateDigest: input.Report.CandidateDigest,
 		Inputs:                   domain.PacketInputs{TaskSpec: "task-spec.json", Patch: "observed.patch", VerificationReport: "verification-report.json", ArtifactManifest: "artifact-manifest.json", WorkerResults: workerPaths},
 		PreviousBlockingFindings: previous, GeneratedAt: input.Report.CompletedAt.UTC(),
 	}
@@ -144,6 +155,34 @@ func validateObservedPatch(manifest verification.ArtifactManifest, patchData []b
 		return nil
 	}
 	return errors.New("artifact manifest does not contain the observed patch")
+}
+
+// validateCandidateBinding enforces the ADR 0027 binding discipline at packet
+// construction: candidate mode is all-or-nothing (the head and worker
+// Candidate identities appear together or not at all), and every candidate
+// binding carried by the artifact manifest must agree field by field with the
+// verification report. Legacy runs without Candidate records pass unchanged;
+// validateObservedPatch above keeps its independent, untouched semantics.
+func validateCandidateBinding(report verification.Report, manifest verification.ArtifactManifest) error {
+	if report.CandidateDigest == "" && report.WorkerCandidateDigest == "" {
+		return nil
+	}
+	if report.CandidateDigest == "" || report.WorkerCandidateDigest == "" {
+		return errors.New("verification report carries a partial candidate binding")
+	}
+	for _, artifact := range manifest.Artifacts {
+		switch artifact.RelativePath {
+		case "observed.patch":
+			if artifact.CandidateDigest != report.CandidateDigest {
+				return errors.New("observed patch artifact does not bind the head candidate")
+			}
+		case "worker.patch":
+			if artifact.CandidateDigest != report.WorkerCandidateDigest {
+				return errors.New("worker patch artifact does not bind the worker candidate")
+			}
+		}
+	}
+	return nil
 }
 
 func (b *PacketBuilder) collectWorkerResults(taskID, runID string) ([]string, []string, error) {
@@ -212,7 +251,7 @@ func (b *PacketBuilder) loadPreviousFindings() ([]domain.PreviousFinding, error)
 	}
 	result := make([]domain.PreviousFinding, 0, len(decision.BlockingFindings))
 	for _, finding := range decision.BlockingFindings {
-		result = append(result, domain.PreviousFinding{Finding: finding, EvidenceDigest: decision.EvidenceDigest, SnapshotDigest: packet.SnapshotDigest, VerificationDigest: packet.VerificationDigest})
+		result = append(result, domain.PreviousFinding{Finding: finding, EvidenceDigest: decision.EvidenceDigest, SnapshotDigest: packet.SnapshotDigest, VerificationDigest: packet.VerificationDigest, CandidateDigest: packet.CandidateDigest})
 	}
 	return result, nil
 }

@@ -119,14 +119,14 @@ func newControlledCommitFixture(t *testing.T) *controlledCommitFixture {
 	}
 }
 
-func (f *controlledCommitFixture) commit(t *testing.T, parentSHA string) (string, error) {
+func (f *controlledCommitFixture) commit(t *testing.T, parentSHA string, candidates candidateBinding) (string, error) {
 	t.Helper()
-	return controlledCommit(context.Background(), f.worktreePath, f.runDir, f.baseSHA, parentSHA, f.title, f.state, f.decision, f.observation)
+	return controlledCommit(context.Background(), f.worktreePath, f.runDir, f.baseSHA, parentSHA, f.title, f.state, f.decision, f.observation, candidates)
 }
 
 func TestControlledCommitProducesValidSHA(t *testing.T) {
 	fixture := newControlledCommitFixture(t)
-	commitSHA, err := fixture.commit(t, fixture.baseSHA)
+	commitSHA, err := fixture.commit(t, fixture.baseSHA, candidateBinding{})
 	if err != nil {
 		t.Fatalf("controlledCommit failed: %v", err)
 	}
@@ -159,12 +159,86 @@ func TestControlledCommitProducesValidSHA(t *testing.T) {
 	if err != nil || len(leftovers) != 0 {
 		t.Fatalf("temporary controlled indexes not cleaned up: %v (err=%v)", leftovers, err)
 	}
+	if strings.Contains(raw, "Marshal-Candidate-Digest") || strings.Contains(raw, "Marshal-Worker-Candidate-Digest") {
+		t.Fatalf("legacy commit message must not carry candidate trailers:\n%s", raw)
+	}
+}
+
+// TestControlledCommitAppendsCandidateTrailers pins the trailer-append rule
+// (design §8 R1): candidate identities are appended as new trailers without
+// disturbing the frozen legacy trailer set.
+func TestControlledCommitAppendsCandidateTrailers(t *testing.T) {
+	fixture := newControlledCommitFixture(t)
+	candidates := candidateBinding{head: "sha256:" + strings.Repeat("a", 64), worker: "sha256:" + strings.Repeat("b", 64)}
+	commitSHA, err := fixture.commit(t, fixture.baseSHA, candidates)
+	if err != nil {
+		t.Fatalf("controlledCommit with candidate binding failed: %v", err)
+	}
+	raw := runFixtureGit(t, fixture.repository, "cat-file", "-p", commitSHA)
+	for _, trailer := range []string{
+		"Marshal-Task: " + fixture.state.TaskID,
+		"Marshal-Run: " + fixture.state.RunID,
+		"Marshal-Spec-Digest: " + fixture.state.SpecDigest,
+		"Marshal-Evidence-Digest: " + fixture.decision.EvidenceDigest,
+		"Marshal-Snapshot-Digest: " + fixture.observation.SnapshotDigest,
+		"Marshal-Candidate-Digest: " + candidates.head,
+		"Marshal-Worker-Candidate-Digest: " + candidates.worker,
+	} {
+		if !strings.Contains(raw, trailer) {
+			t.Fatalf("commit message missing trailer %q:\n%s", trailer, raw)
+		}
+	}
+	if index := strings.Index(raw, "Marshal-Snapshot-Digest"); index >= strings.Index(raw, "Marshal-Candidate-Digest") {
+		t.Fatalf("candidate trailers must be appended after the legacy trailer set:\n%s", raw)
+	}
+	// Determinism: repeating the identical binding reproduces the identical
+	// commit object.
+	again, err := fixture.commit(t, fixture.baseSHA, candidates)
+	if err != nil || again != commitSHA {
+		t.Fatalf("candidate-bound commit is not deterministic: %s vs %s (err=%v)", again, commitSHA, err)
+	}
+}
+
+// TestCandidateBindingForPublication exercises the fail-closed cross-check
+// between the verification report and the review packet.
+func TestCandidateBindingForPublication(t *testing.T) {
+	head := "sha256:" + strings.Repeat("a", 64)
+	worker := "sha256:" + strings.Repeat("b", 64)
+	foreign := "sha256:" + strings.Repeat("c", 64)
+	tests := []struct {
+		name    string
+		report  verification.Report
+		packet  domain.ReviewPacket
+		want    candidateBinding
+		wantErr string
+	}{
+		{name: "legacy evidence keeps empty binding", report: verification.Report{}, packet: domain.ReviewPacket{}, want: candidateBinding{}},
+		{name: "matching candidate binding", report: verification.Report{CandidateDigest: head, WorkerCandidateDigest: worker}, packet: domain.ReviewPacket{CandidateDigest: head, WorkerCandidateDigest: worker}, want: candidateBinding{head: head, worker: worker}},
+		{name: "partial report binding", report: verification.Report{CandidateDigest: head}, packet: domain.ReviewPacket{CandidateDigest: head, WorkerCandidateDigest: worker}, wantErr: "partial candidate binding"},
+		{name: "partial packet binding", report: verification.Report{CandidateDigest: head, WorkerCandidateDigest: worker}, packet: domain.ReviewPacket{CandidateDigest: head}, wantErr: "partial candidate binding"},
+		{name: "divergent head binding", report: verification.Report{CandidateDigest: head, WorkerCandidateDigest: worker}, packet: domain.ReviewPacket{CandidateDigest: foreign, WorkerCandidateDigest: worker}, wantErr: "differs between verification report and review packet"},
+		{name: "divergent worker binding", report: verification.Report{CandidateDigest: head, WorkerCandidateDigest: worker}, packet: domain.ReviewPacket{CandidateDigest: head, WorkerCandidateDigest: foreign}, wantErr: "differs between verification report and review packet"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			binding, err := candidateBindingForPublication(test.report, test.packet)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("err = %v, want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil || binding != test.want {
+				t.Fatalf("binding = %+v, err = %v, want %+v", binding, err, test.want)
+			}
+		})
+	}
 }
 
 func TestControlledCommitRejectsInvalidParent(t *testing.T) {
 	fixture := newControlledCommitFixture(t)
 	t.Run("missing parent object", func(t *testing.T) {
-		_, err := fixture.commit(t, strings.Repeat("9", 40))
+		_, err := fixture.commit(t, strings.Repeat("9", 40), candidateBinding{})
 		if err == nil {
 			t.Fatal("expected a missing parent to be rejected")
 		}
@@ -176,7 +250,7 @@ func TestControlledCommitRejectsInvalidParent(t *testing.T) {
 		}
 	})
 	t.Run("malformed parent id", func(t *testing.T) {
-		_, err := fixture.commit(t, "not-an-object-id")
+		_, err := fixture.commit(t, "not-an-object-id", candidateBinding{})
 		if err == nil {
 			t.Fatal("expected a malformed parent to be rejected")
 		}
@@ -193,7 +267,7 @@ func TestControlledCommitStableUnderRepeat(t *testing.T) {
 	fixture := newControlledCommitFixture(t)
 	first := ""
 	for iteration := 0; iteration < 5; iteration++ {
-		commitSHA, err := fixture.commit(t, fixture.baseSHA)
+		commitSHA, err := fixture.commit(t, fixture.baseSHA, candidateBinding{})
 		if err != nil {
 			t.Fatalf("iteration %d failed: %v", iteration+1, err)
 		}

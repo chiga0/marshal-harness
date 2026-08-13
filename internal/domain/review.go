@@ -5,19 +5,30 @@ import "time"
 // ReviewPacket bundles the exact evidence a Reviewer evaluates for one
 // Review Round. Its digests bind the ReviewDecision to that evidence.
 type ReviewPacket struct {
-	APIVersion               APIVersion        `json:"apiVersion"`
-	Kind                     Kind              `json:"kind"`
-	TaskID                   string            `json:"taskId"`
-	RunID                    string            `json:"runId"`
-	ReviewRound              uint              `json:"reviewRound"`
-	SpecDigest               string            `json:"specDigest"`
-	BaseSHA                  string            `json:"baseSha"`
-	SnapshotDigest           string            `json:"snapshotDigest"`
-	DiffDigest               string            `json:"diffDigest"`
-	VerificationDigest       string            `json:"verificationDigest"`
-	ArtifactManifestDigest   string            `json:"artifactManifestDigest"`
-	WorkerResultDigests      []string          `json:"workerResultDigests"`
-	EvidenceDigest           string            `json:"evidenceDigest"`
+	APIVersion             APIVersion `json:"apiVersion"`
+	Kind                   Kind       `json:"kind"`
+	TaskID                 string     `json:"taskId"`
+	RunID                  string     `json:"runId"`
+	ReviewRound            uint       `json:"reviewRound"`
+	SpecDigest             string     `json:"specDigest"`
+	BaseSHA                string     `json:"baseSha"`
+	SnapshotDigest         string     `json:"snapshotDigest"`
+	DiffDigest             string     `json:"diffDigest"`
+	VerificationDigest     string     `json:"verificationDigest"`
+	ArtifactManifestDigest string     `json:"artifactManifestDigest"`
+	WorkerResultDigests    []string   `json:"workerResultDigests"`
+	EvidenceDigest         string     `json:"evidenceDigest"`
+	// WorkerCandidateDigest is the ADR 0027 worker Candidate record identity
+	// (the chain root recording the Worker's raw observed patch bytes).
+	// Optional: Runs verified before Candidate adoption leave it empty, and
+	// the field is omitted from the wire bytes so archived packets remain
+	// byte-identical.
+	WorkerCandidateDigest string `json:"workerCandidateDigest,omitempty"`
+	// CandidateDigest is the ADR 0027 head Candidate record identity the
+	// packet's evidence binds: the normalizer Candidate when normalization
+	// changed bytes, otherwise the worker Candidate. Optional with the same
+	// legacy omission semantics as WorkerCandidateDigest.
+	CandidateDigest          string            `json:"candidateDigest,omitempty"`
 	Inputs                   PacketInputs      `json:"inputs"`
 	PreviousBlockingFindings []PreviousFinding `json:"previousBlockingFindings"`
 	GeneratedAt              time.Time         `json:"generatedAt"`
@@ -84,6 +95,13 @@ type PreviousFinding struct {
 	EvidenceDigest     string `json:"evidenceDigest"`
 	SnapshotDigest     string `json:"snapshotDigest"`
 	VerificationDigest string `json:"verificationDigest"`
+	// CandidateDigest is the ADR 0027 head Candidate record identity of the
+	// Review Round that raised the finding. Optional: findings raised by
+	// pre-adoption (legacy) rounds leave it empty, which switches the
+	// stale-fix judgement back to the SnapshotDigest+VerificationDigest
+	// comparison. The field is omitted from the wire bytes when empty, so
+	// archived findings keep their exact legacy serialization.
+	CandidateDigest string `json:"candidateDigest,omitempty"`
 }
 
 // OutcomeBundle is the final, tamper-evident evidence record preserved for

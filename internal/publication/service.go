@@ -136,7 +136,7 @@ func Publish(ctx context.Context, input Input) (Result, error) {
 		if previousHeadSHA != "" {
 			parentSHA = previousHeadSHA
 		}
-		commitSHA, commitErr := controlledCommit(ctx, state.WorktreePath, runDir, state.BaseSHA, parentSHA, evidence.task.Metadata.Title, state, evidence.decision, current)
+		commitSHA, commitErr := controlledCommit(ctx, state.WorktreePath, runDir, state.BaseSHA, parentSHA, evidence.task.Metadata.Title, state, evidence.decision, current, evidence.candidates)
 		if commitErr != nil {
 			return block(store, lease, state, runDir, commitErr)
 		}
@@ -168,7 +168,7 @@ func Publish(ctx context.Context, input Input) (Result, error) {
 		if intent.PreviousHeadSHA != "" {
 			parentSHA = intent.PreviousHeadSHA
 		}
-		recomputed, commitErr := controlledCommit(ctx, state.WorktreePath, runDir, state.BaseSHA, parentSHA, evidence.task.Metadata.Title, state, evidence.decision, current)
+		recomputed, commitErr := controlledCommit(ctx, state.WorktreePath, runDir, state.BaseSHA, parentSHA, evidence.task.Metadata.Title, state, evidence.decision, current, evidence.candidates)
 		if commitErr != nil || recomputed != intent.CommitSHA {
 			return block(store, lease, state, runDir, errors.New("persisted PublicationIntent commit does not match accepted snapshot"))
 		}
@@ -205,11 +205,16 @@ func Publish(ctx context.Context, input Input) (Result, error) {
 	}
 	_ = os.Remove(filepath.Join(runDir, "publication-error.json"))
 	recordDigest, _ := canonical.DigestJSON(publicationRecord.Data)
-	event, next, err := transition(state, "publication.completed", domain.StatePublished, map[string]any{
+	completedPayload := map[string]any{
 		"publicationDigest": recordDigest, "provider": published.Provider, "repository": published.Repository.NameWithOwner,
 		"headBranch": published.HeadBranch, "baseBranch": published.BaseBranch, "externalId": published.Request.ID,
 		"headSha": published.HeadSHA, "uri": published.Request.URL,
-	}, lifecycle.Guard{LeaseHeld: true, PublicationCurrent: true})
+	}
+	if evidence.candidates.present() {
+		completedPayload["candidateDigest"] = evidence.candidates.head
+		completedPayload["workerCandidateDigest"] = evidence.candidates.worker
+	}
+	event, next, err := transition(state, "publication.completed", domain.StatePublished, completedPayload, lifecycle.Guard{LeaseHeld: true, PublicationCurrent: true})
 	if err != nil {
 		return Result{}, err
 	}
@@ -259,6 +264,39 @@ type evidenceSet struct {
 	report         verification.Report
 	decision       domain.ReviewDecision
 	decisionDigest string
+	candidates     candidateBinding
+}
+
+// candidateBinding carries the optional ADR 0027 Candidate identities bound
+// to a publication generation. PublicationIntent and PublicationRecord keep
+// their frozen field set (their schemas admit no additional members), so the
+// binding is appended instead of substituted: it travels with the controlled
+// commit trailers and the publication.completed journal payload, while every
+// legacy binding field keeps its exact semantics (§4.2 stage A, §5.1).
+type candidateBinding struct {
+	head   string
+	worker string
+}
+
+func (b candidateBinding) present() bool { return b.head != "" }
+
+// candidateBindingForPublication cross-checks the Candidate identities
+// carried by the verification report and the review packet fail-closed:
+// candidate mode is all-or-nothing, and every present identity must agree
+// field by field across the two records. Legacy evidence without Candidate
+// records yields the empty binding and leaves publication behavior
+// byte-identical to pre-adoption runs.
+func candidateBindingForPublication(report verification.Report, packet domain.ReviewPacket) (candidateBinding, error) {
+	if report.CandidateDigest == "" && report.WorkerCandidateDigest == "" && packet.CandidateDigest == "" && packet.WorkerCandidateDigest == "" {
+		return candidateBinding{}, nil
+	}
+	if report.CandidateDigest == "" || report.WorkerCandidateDigest == "" || packet.CandidateDigest == "" || packet.WorkerCandidateDigest == "" {
+		return candidateBinding{}, errors.New("publication evidence carries a partial candidate binding")
+	}
+	if report.CandidateDigest != packet.CandidateDigest || report.WorkerCandidateDigest != packet.WorkerCandidateDigest {
+		return candidateBinding{}, errors.New("publication candidate binding differs between verification report and review packet")
+	}
+	return candidateBinding{head: report.CandidateDigest, worker: report.WorkerCandidateDigest}, nil
 }
 
 func loadEvidence(runDir string, state domain.RunState, validator *contract.Validator, store *runstore.Store) (evidenceSet, error) {
@@ -345,7 +383,11 @@ func loadEvidence(runDir string, state domain.RunState, validator *contract.Vali
 	if decision.VerificationDigest != reportDigest || decision.ArtifactManifestDigest != manifestDigest || decision.ReviewPacketDigest != packetDigest || decision.EvidenceDigest != packet.EvidenceDigest {
 		return evidenceSet{}, errors.New("review evidence digest binding mismatch")
 	}
-	return evidenceSet{task: task, report: report, decision: decision, decisionDigest: decisionDigest}, nil
+	candidates, err := candidateBindingForPublication(report, packet)
+	if err != nil {
+		return evidenceSet{}, err
+	}
+	return evidenceSet{task: task, report: report, decision: decision, decisionDigest: decisionDigest, candidates: candidates}, nil
 }
 
 // authorizePublicationDecision verifies the current review round's
@@ -435,7 +477,7 @@ var controlledCommitObjectID = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
 // (malformed or missing input objects) that a retry cannot repair.
 var errControlledCommitInput = errors.New("controlled commit input rejected")
 
-func controlledCommit(ctx context.Context, worktree, runDir, baseSHA, parentSHA, title string, state domain.RunState, decision domain.ReviewDecision, observation verification.Observation) (string, error) {
+func controlledCommit(ctx context.Context, worktree, runDir, baseSHA, parentSHA, title string, state domain.RunState, decision domain.ReviewDecision, observation verification.Observation, candidates candidateBinding) (string, error) {
 	if !controlledCommitObjectID.MatchString(baseSHA) {
 		return "", fmt.Errorf("%w: base %q is not a full object id", errControlledCommitInput, baseSHA)
 	}
@@ -457,7 +499,7 @@ func controlledCommit(ctx context.Context, worktree, runDir, baseSHA, parentSHA,
 			case <-time.After(time.Duration(attempt) * controlledCommitRetryDelay):
 			}
 		}
-		commit, err := createControlledCommit(ctx, worktree, runDir, baseSHA, parentSHA, title, state, decision, observation)
+		commit, err := createControlledCommit(ctx, worktree, runDir, baseSHA, parentSHA, title, state, decision, observation, candidates)
 		if err == nil {
 			return commit, nil
 		}
@@ -469,7 +511,7 @@ func controlledCommit(ctx context.Context, worktree, runDir, baseSHA, parentSHA,
 	return "", lastErr
 }
 
-func createControlledCommit(ctx context.Context, worktree, runDir, baseSHA, parentSHA, title string, state domain.RunState, decision domain.ReviewDecision, observation verification.Observation) (string, error) {
+func createControlledCommit(ctx context.Context, worktree, runDir, baseSHA, parentSHA, title string, state domain.RunState, decision domain.ReviewDecision, observation verification.Observation, candidates candidateBinding) (string, error) {
 	index, err := os.CreateTemp(runDir, ".publication-index-*")
 	if err != nil {
 		return "", err
@@ -515,7 +557,14 @@ func createControlledCommit(ctx context.Context, worktree, runDir, baseSHA, pare
 		return "", err
 	}
 	subject := sanitizeSubject(title)
-	message := fmt.Sprintf("%s\n\nMarshal-Task: %s\nMarshal-Run: %s\nMarshal-Spec-Digest: %s\nMarshal-Evidence-Digest: %s\nMarshal-Snapshot-Digest: %s\n", subject, state.TaskID, state.RunID, state.SpecDigest, decision.EvidenceDigest, observation.SnapshotDigest)
+	trailers := fmt.Sprintf("Marshal-Task: %s\nMarshal-Run: %s\nMarshal-Spec-Digest: %s\nMarshal-Evidence-Digest: %s\nMarshal-Snapshot-Digest: %s\n", state.TaskID, state.RunID, state.SpecDigest, decision.EvidenceDigest, observation.SnapshotDigest)
+	if candidates.present() {
+		// Appended trailers only: legacy commits keep their exact message
+		// bytes, and the candidate identities never replace an existing
+		// trailer (design §8 R1).
+		trailers += fmt.Sprintf("Marshal-Candidate-Digest: %s\nMarshal-Worker-Candidate-Digest: %s\n", candidates.head, candidates.worker)
+	}
+	message := fmt.Sprintf("%s\n\n%s", subject, trailers)
 	// commit-tree stdout carries exactly one commit object id; stderr may
 	// carry hook, warning or advice noise and must never be mixed into it.
 	stdout, stderr, err := gitExec(ctx, worktree, environment, &message, "commit-tree", tree, "-p", parentSHA)
