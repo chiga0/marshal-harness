@@ -40,6 +40,8 @@
       "items": { "$ref": "#/$defs/digest" }
     },
     "evidenceDigest": { "$ref": "#/$defs/digest" },
+    "candidateDigest": { "$ref": "#/$defs/digest" },
+    "workerCandidateDigest": { "$ref": "#/$defs/digest" },
     "inputs": {
       "type": "object",
       "additionalProperties": false,
@@ -101,7 +103,8 @@
         "artifactId": { "$ref": "#/$defs/id" },
         "evidenceDigest": { "$ref": "#/$defs/digest" },
         "snapshotDigest": { "$ref": "#/$defs/digest" },
-        "verificationDigest": { "$ref": "#/$defs/digest" }
+        "verificationDigest": { "$ref": "#/$defs/digest" },
+        "candidateDigest": { "$ref": "#/$defs/digest" }
       }
     },
     "relativePath": {
