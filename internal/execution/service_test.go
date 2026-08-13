@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -1766,4 +1767,169 @@ func TestOrphanedRecoveryIsolatesStaleFencingWorkerResult(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(fixture.runDir, "attempts", result.AttemptID, "worker-result.json")); !os.IsNotExist(statErr) {
 		t.Fatalf("stale WorkerResult leaked into the active attempt directory: %v", statErr)
 	}
+}
+
+// stubEdgeLeaseResolver is the controllable dispatch-ledger resolver of the
+// result acceptance gate fixtures.
+type stubEdgeLeaseResolver struct{ active bool }
+
+func (s stubEdgeLeaseResolver) LeaseActive(string, int64, string) (bool, error) { return s.active, nil }
+
+// stubEdgeTargetResolver is the controllable target eligibility resolver of
+// the result acceptance gate fixtures.
+type stubEdgeTargetResolver struct{ eligible bool }
+
+func (s stubEdgeTargetResolver) TargetEligible(authority.SecurityDomainId) (bool, error) {
+	return s.eligible, nil
+}
+
+// edgeRecheckFixture issues one valid dispatch result capability under a
+// fresh Core edge runtime with controllable resolvers.
+func edgeRecheckFixture(t *testing.T) (*authority.EdgeRuntime, authority.DispatchResultCapability, authority.EdgeLeaseBinding) {
+	t.Helper()
+	return edgeRecheckFixtureWithOptions(t, "2026-12-31T00:00:00Z", true)
+}
+
+func edgeRecheckFixtureWithOptions(t *testing.T, expiry string, leaseActive bool) (*authority.EdgeRuntime, authority.DispatchResultCapability, authority.EdgeLeaseBinding) {
+	t.Helper()
+	runtime, err := authority.NewEdgeRuntime(authority.AuthorityNamespaceId{
+		TenantNamespace:  "default",
+		ControlPlaneId:   "default",
+		AuthorityScopeId: "marshal-harness",
+	})
+	if err != nil {
+		t.Fatalf("NewEdgeRuntime: %v", err)
+	}
+	runtime.BindLeaseResolver(stubEdgeLeaseResolver{active: leaseActive})
+	runtime.BindTargetEligibilityResolver(stubEdgeTargetResolver{eligible: true})
+	binding := authority.EdgeLeaseBinding{
+		LeaseId:      "lease-edge-1",
+		AttemptId:    "attempt-edge-1",
+		AllocationId: "allocation-edge-1",
+		Generation:   1,
+		FencingToken: canonical.DigestBytes([]byte("fencing-token-edge-1")),
+	}
+	edge, err := runtime.IssueDispatchResultCapability(authority.DispatchResultIssuance{
+		SourceActor: authority.SecurityDomainId{
+			TenantNamespace:   "default",
+			TrustDomainKind:   authority.TrustDomainKindExecution,
+			IsolationDomainId: "isolation-execution",
+		},
+		TargetActor: authority.SecurityDomainId{
+			TenantNamespace:   "default",
+			TrustDomainKind:   authority.TrustDomainKindDataCapability,
+			IsolationDomainId: "isolation-result-ingress",
+		},
+		Operation:         authority.DispatchResultOperationAccept,
+		BoundAttemptId:    binding.AttemptId,
+		BoundAllocationId: binding.AllocationId,
+		Expiry:            expiry,
+		LeaseBinding:      binding,
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("IssueDispatchResultCapability: %v", err)
+	}
+	return runtime, edge, binding
+}
+
+func containsEdgeAudit(trail []authority.EdgeAuditRecord, action authority.EdgeAuditAction) bool {
+	for _, record := range trail {
+		if record.Action == action {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRunAcceptsResultWhenEdgeRecheckPasses freezes the positive gate
+// wiring: a WorkerResult whose dispatch result capability rechecks against
+// the current authority ledger is accepted and persisted.
+func TestRunAcceptsResultWhenEdgeRecheckPasses(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	runtime, edge, binding := edgeRecheckFixture(t)
+	fixture.input.ResultEdgeRecheck = &ResultEdgeRecheck{Runtime: runtime, Edge: edge, Lease: binding}
+	result, err := Run(context.Background(), fixture.input)
+	if err != nil {
+		t.Fatalf("the aligned edge recheck rejected the accepted result: %v", err)
+	}
+	if result.State.State != domain.StateVerifying {
+		t.Fatalf("state = %+v", result.State)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.runDir, "attempts", result.AttemptID, "worker-result.json")); statErr != nil {
+		t.Fatalf("the accepted result must be persisted: %v", statErr)
+	}
+	if !containsEdgeAudit(runtime.AuditTrail(), authority.EdgeAuditUseAccepted) {
+		t.Fatal("the accepted use must be recorded in the edge audit trail")
+	}
+}
+
+// TestRunRejectsResultWhenEdgeRevoked freezes the fail-closed gate: after a
+// security-critical revocation the result is rejected, never persisted,
+// quarantined as diagnostic material and the rejection is audited.
+func TestRunRejectsResultWhenEdgeRevoked(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	runtime, edge, binding := edgeRecheckFixture(t)
+	if _, err := runtime.RevokeDispatchResultCapability(edge.EdgeDigest, authority.EdgeRevocationSecurityCritical, time.Now().UTC()); err != nil {
+		t.Fatalf("RevokeDispatchResultCapability: %v", err)
+	}
+	fixture.input.ResultEdgeRecheck = &ResultEdgeRecheck{Runtime: runtime, Edge: edge, Lease: binding}
+	result, err := Run(context.Background(), fixture.input)
+	if err == nil {
+		t.Fatal("a revoked dispatch result capability was accepted")
+	}
+	if !strings.Contains(err.Error(), "typed-edge recheck") {
+		t.Fatalf("expected the typed-edge recheck rejection, got: %v", err)
+	}
+	if result.State.State != domain.StateRetryPending {
+		t.Fatalf("state = %+v", result.State)
+	}
+	attemptDir := filepath.Join(fixture.runDir, "attempts", result.AttemptID)
+	if _, statErr := os.Stat(filepath.Join(attemptDir, "worker-result.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("the rejected result must not be persisted: %v", statErr)
+	}
+	quarantined, readErr := os.ReadFile(filepath.Join(attemptDir, "diagnostics", "quarantined-edge-rejected-worker-result.json"))
+	if readErr != nil || len(quarantined) == 0 {
+		t.Fatalf("the rejected result must be quarantined as diagnostic material: %v", readErr)
+	}
+	if !containsEdgeAudit(runtime.AuditTrail(), authority.EdgeAuditUseRejected) {
+		t.Fatal("the rejection must be recorded in the edge audit trail")
+	}
+}
+
+// TestRunRejectsResultWhenEdgeExpiredOrLeaseInactive freezes the remaining
+// fail-closed gate classes: an expired edge and an inactive bound lease
+// reject the result before it is persisted.
+func TestRunRejectsResultWhenEdgeExpiredOrLeaseInactive(t *testing.T) {
+	t.Run("expired edge", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		runtime, edge, binding := edgeRecheckFixtureWithOptions(t, "2020-01-01T00:00:00Z", true)
+		fixture.input.ResultEdgeRecheck = &ResultEdgeRecheck{Runtime: runtime, Edge: edge, Lease: binding}
+		result, err := Run(context.Background(), fixture.input)
+		if err == nil || result.State.State != domain.StateRetryPending {
+			t.Fatalf("an expired edge was accepted: state=%+v err=%v", result.State, err)
+		}
+		if !strings.Contains(err.Error(), "typed-edge recheck") {
+			t.Fatalf("expected the typed-edge recheck rejection, got: %v", err)
+		}
+	})
+	t.Run("inactive bound lease", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		runtime, edge, binding := edgeRecheckFixtureWithOptions(t, "2026-12-31T00:00:00Z", false)
+		fixture.input.ResultEdgeRecheck = &ResultEdgeRecheck{Runtime: runtime, Edge: edge, Lease: binding}
+		result, err := Run(context.Background(), fixture.input)
+		if err == nil || result.State.State != domain.StateRetryPending {
+			t.Fatalf("an inactive bound lease was accepted: state=%+v err=%v", result.State, err)
+		}
+		if !strings.Contains(err.Error(), "typed-edge recheck") {
+			t.Fatalf("expected the typed-edge recheck rejection, got: %v", err)
+		}
+	})
+	t.Run("gate without runtime fails closed", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		_, edge, binding := edgeRecheckFixture(t)
+		fixture.input.ResultEdgeRecheck = &ResultEdgeRecheck{Edge: edge, Lease: binding}
+		if _, err := Run(context.Background(), fixture.input); err == nil {
+			t.Fatal("a gate without a bound runtime was accepted")
+		}
+	})
 }

@@ -22,11 +22,14 @@ const (
 // Matcher adjudicates capability match, claim and current-ledger recheck
 // against the durable gate-4 registration ledger. Push and Pull dispatch
 // topologies are expressed through the identical topology-agnostic
-// Claim/Revalidate semantics; no transport participates.
+// Claim/Revalidate semantics; no transport participates. Every accepted
+// claim issues the Core DispatchResultCapability bound to the claimed lease
+// through the bound authority.EdgeRuntime (ADR 0018 §3/§7).
 type Matcher struct {
-	store *provider.RegistrationStore
+	store       *provider.RegistrationStore
+	edgeRuntime *authority.EdgeRuntime
 
-	// mu guards issuedLeases.
+	// mu guards issuedLeases and issuedResultCapabilities.
 	mu sync.Mutex
 	// issuedLeases is the in-memory unique-claim index keyed by
 	// (runId, attemptId): the single-allocation invariant never reissues the
@@ -34,16 +37,31 @@ type Matcher struct {
 	// lease lost eligibility; continuation requires a new attempt with a new
 	// claim. Persisting this ledger is M9.
 	issuedLeases map[string]string
+	// issuedResultCapabilities indexes the DispatchResultCapability issued
+	// with each accepted claim, keyed by leaseId.
+	issuedResultCapabilities map[string]authority.DispatchResultCapability
 }
 
 // NewMatcher binds a Matcher to store, which must already be bound to a
 // durable ledger directory. A nil or zero-value store keeps the Matcher
-// constructible, but every Claim and Revalidate fails closed.
+// constructible, but every Claim and Revalidate fails closed. A Matcher
+// without a typed-edge runtime also fails every Claim closed: the Core
+// issues a DispatchResultCapability with every accepted claim.
 func NewMatcher(store *provider.RegistrationStore) *Matcher {
 	return &Matcher{
-		store:        store,
-		issuedLeases: map[string]string{},
+		store:                    store,
+		issuedLeases:             map[string]string{},
+		issuedResultCapabilities: map[string]authority.DispatchResultCapability{},
 	}
+}
+
+// NewMatcherWithEdgeRuntime binds a Matcher to store and to the Core
+// authority.EdgeRuntime that issues the DispatchResultCapability attached
+// to every accepted claim (ADR 0018 §7).
+func NewMatcherWithEdgeRuntime(store *provider.RegistrationStore, runtime *authority.EdgeRuntime) *Matcher {
+	matcher := NewMatcher(store)
+	matcher.edgeRuntime = runtime
+	return matcher
 }
 
 // Match adjudicates whether the persisted snapshot and the closed evidence
@@ -74,12 +92,17 @@ func (m *Matcher) Match(registration provider.ProviderRegistration, snapshot pro
 }
 
 // ClaimRequest carries one claim against the durable registration ledger.
+// TargetActor is the result-ingress securityDomainId the Core binds as the
+// targetActor of the DispatchResultCapability issued with the claim; the
+// (stored registration securityDomainId, targetActor) pair must belong to
+// the closed typed-edge matrix.
 type ClaimRequest struct {
 	AuthorityNamespaceId authority.AuthorityNamespaceId      `json:"authorityNamespaceId"`
 	RegistrationId       string                              `json:"registrationId"`
 	Snapshot             provider.ProviderCapabilitySnapshot `json:"snapshot"`
 	Evidences            []provider.ConformanceEvidence      `json:"evidences"`
 	Requirements         domain.SandboxRequirements          `json:"requirements"`
+	TargetActor          authority.SecurityDomainId          `json:"targetActor"`
 	TaskId               string                              `json:"taskId"`
 	RunId                string                              `json:"runId"`
 	AttemptId            string                              `json:"attemptId"`
@@ -90,17 +113,26 @@ type ClaimRequest struct {
 
 // Claim issues one DispatchLease against the durable ledger. Every
 // precondition fails closed in order and the error names the failing stage:
-// the durable store binding, the registration lookup, the active lifecycle
-// and identity alignment of the stored registration, the gate-5 match, the
-// identity tuple and deadline fields, and the unique claim invariant. The
-// issued lease binds the authorityNamespaceId and securityDomainId of the
-// stored registration, copies the registration attestation and the closed
+// the durable store binding, the typed-edge runtime binding, the
+// registration lookup, the active lifecycle and identity alignment of the
+// stored registration, the gate-5 match, the identity tuple and deadline
+// fields, and the unique claim invariant. The issued lease binds the
+// authorityNamespaceId and securityDomainId of the stored registration,
+// copies the registration attestation and the closed
 // conformanceEvidenceDigests set of the snapshot, starts at generation 1 and
 // derives fencingToken and leaseDigest deterministically from the canonical
 // content: no random source and no clock read beyond the injected now.
+// Every accepted claim additionally issues the Core
+// DispatchResultCapability bound to the lease identity
+// (attempt/allocation/generation/fencingToken) with an expiry bounded by
+// the lease expiry window; a failed issuance fails the whole claim closed
+// and no lease is recorded.
 func (m *Matcher) Claim(request ClaimRequest, now time.Time) (DispatchLease, error) {
 	if m == nil || m.store == nil {
 		return DispatchLease{}, fmt.Errorf("dispatch: claim precondition: the registration store is not bound to a durable ledger directory: %w", provider.ErrMemoryOnlyRegistration)
+	}
+	if m.edgeRuntime == nil {
+		return DispatchLease{}, fmt.Errorf("dispatch: claim precondition: the typed-edge runtime is not bound: the Core issues a DispatchResultCapability with every accepted claim")
 	}
 	stored, err := m.store.Get(request.RegistrationId)
 	if err != nil {
@@ -148,6 +180,9 @@ func (m *Matcher) Claim(request ClaimRequest, now time.Time) (DispatchLease, err
 	defer m.mu.Unlock()
 	if m.issuedLeases == nil {
 		m.issuedLeases = map[string]string{}
+	}
+	if m.issuedResultCapabilities == nil {
+		m.issuedResultCapabilities = map[string]authority.DispatchResultCapability{}
 	}
 	claimKey := request.RunId + "\x00" + request.AttemptId
 	if existing, taken := m.issuedLeases[claimKey]; taken {
@@ -198,8 +233,39 @@ func (m *Matcher) Claim(request ClaimRequest, now time.Time) (DispatchLease, err
 	if err := sealLease(&lease); err != nil {
 		return DispatchLease{}, fmt.Errorf("dispatch: claim: %w", err)
 	}
+	edge, err := m.edgeRuntime.IssueDispatchResultCapability(authority.DispatchResultIssuance{
+		SourceActor:       stored.SecurityDomainId,
+		TargetActor:       request.TargetActor,
+		Operation:         authority.DispatchResultOperationAccept,
+		BoundAttemptId:    request.AttemptId,
+		BoundAllocationId: request.AllocationId,
+		Expiry:            request.ExpiresAt,
+		LeaseBinding: authority.EdgeLeaseBinding{
+			LeaseId:      lease.LeaseId,
+			AttemptId:    request.AttemptId,
+			AllocationId: request.AllocationId,
+			Generation:   lease.Generation,
+			FencingToken: lease.FencingToken,
+		},
+	}, now)
+	if err != nil {
+		return DispatchLease{}, fmt.Errorf("dispatch: claim: typed-edge issuance: %w", err)
+	}
 	m.issuedLeases[claimKey] = lease.LeaseId
+	m.issuedResultCapabilities[lease.LeaseId] = edge
 	return lease, nil
+}
+
+// IssuedResultCapability returns the DispatchResultCapability the Core
+// issued with the claim of leaseId, when the claim was accepted.
+func (m *Matcher) IssuedResultCapability(leaseId string) (authority.DispatchResultCapability, bool) {
+	if m == nil {
+		return authority.DispatchResultCapability{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	edge, ok := m.issuedResultCapabilities[leaseId]
+	return edge, ok
 }
 
 // Revalidate is the current-ledger recheck of an in-flight lease: it

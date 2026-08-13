@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/chiga0/marshal-harness/internal/adapter"
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -38,6 +39,59 @@ type Input struct {
 	// journal event must be for a RUNNING run to count as driver-live. Zero
 	// selects defaultOrphanStalenessThreshold.
 	OrphanStalenessThreshold time.Duration
+	// ResultEdgeRecheck wires the M9-b typed-edge gate into result
+	// acceptance: when set, every accepted WorkerResult must recheck its
+	// DispatchResultCapability against the current authority ledger before
+	// the result is persisted; a failed recheck rejects the result fail
+	// closed. A nil gate keeps the embedded/in-process admission path, which
+	// crosses no provider trust domain; remote dispatch topologies bind the
+	// gate.
+	ResultEdgeRecheck *ResultEdgeRecheck
+}
+
+// ResultEdgeRecheck carries the frozen claim-time identity one result
+// acceptance rechecks against the current authority ledger (ADR 0018 §3/§7):
+// the issued DispatchResultCapability and the exact lease binding recorded
+// at issuance. Both are one-way references into the authority ledger; the
+// recheck never trusts them as standalone credentials — every use re-adjudicates
+// edge active, digest aligned, unrevoked/unexpired, target actor eligible
+// and bound attempt/allocation/lease active, and fails closed on any
+// divergence. The caller must bind the capability and lease of the claim
+// that dispatched the accepted attempt.
+type ResultEdgeRecheck struct {
+	Runtime *authority.EdgeRuntime
+	Edge    authority.DispatchResultCapability
+	Lease   authority.EdgeLeaseBinding
+}
+
+// Recheck runs the current-ledger recheck of the dispatch result capability
+// for one accepted WorkerResult. The canonical digest of the result bytes
+// is the operation request digest; together with the edge reference it
+// forms the canonical replay key, so identical accepted results coalesce
+// idempotently.
+func (gate *ResultEdgeRecheck) Recheck(workerResult []byte, now time.Time) error {
+	if gate == nil || gate.Runtime == nil {
+		return errors.New("execution: result edge recheck gate is not bound")
+	}
+	requestDigest, err := canonical.DigestJSON(workerResult)
+	if err != nil {
+		return fmt.Errorf("execution: result edge recheck: request digest: %w", err)
+	}
+	request := authority.DispatchResultUseRequest{
+		SourceActor:   gate.Edge.SourceActor,
+		TargetActor:   gate.Edge.TargetActor,
+		Operation:     gate.Edge.Operation,
+		AttemptId:     gate.Lease.AttemptId,
+		AllocationId:  gate.Lease.AllocationId,
+		LeaseId:       gate.Lease.LeaseId,
+		Generation:    gate.Lease.Generation,
+		FencingToken:  gate.Lease.FencingToken,
+		RequestDigest: requestDigest,
+	}
+	if err := gate.Runtime.RecheckDispatchResult(gate.Edge, request, now); err != nil {
+		return fmt.Errorf("execution: result acceptance rejected by the typed-edge recheck: %w", err)
+	}
+	return nil
 }
 
 type Result struct {
@@ -285,6 +339,23 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		}
 		return Result{State: failedState, AttemptID: attemptID}, protocolErr
 	}
+	// Typed-edge result acceptance gate (M9-b): when a dispatch context is
+	// bound, the accepted WorkerResult rechecks its DispatchResultCapability
+	// against the current authority ledger before the result is persisted.
+	// A failed recheck rejects the result fail closed, quarantines it as
+	// diagnostic material and records the failure.
+	if input.ResultEdgeRecheck != nil {
+		if err := input.ResultEdgeRecheck.Recheck(workerResult.Data, time.Now().UTC()); err != nil {
+			if quarantineErr := quarantineRejectedWorkerResult(runDir, attemptID, workerResult.Data, err); quarantineErr != nil {
+				err = fmt.Errorf("%w; quarantine failed: %v", err, quarantineErr)
+			}
+			failedState, persistErr := recordFailure(store, lease, next, attemptID, task, err)
+			if persistErr != nil {
+				return Result{}, errors.Join(err, persistErr)
+			}
+			return Result{State: failedState, AttemptID: attemptID}, err
+		}
+	}
 	if err := atomicWrite(filepath.Join(attemptDir, "worker-result.json"), append(workerResult.Data, '\n'), 0o600); err != nil {
 		return blockAfterWorker(store, lease, next, attemptID, err)
 	}
@@ -426,6 +497,32 @@ func quarantineOrphanedOutputs(runDir, orphanAttemptID string, staleSince time.T
 		return nil, err
 	}
 	return quarantined, nil
+}
+
+// quarantineRejectedWorkerResult isolates a WorkerResult rejected by the
+// typed-edge recheck as diagnostic material under the attempt's diagnostics
+// directory, so it can never enter the evidence, review or publication
+// chain.
+func quarantineRejectedWorkerResult(runDir, attemptID string, data []byte, cause error) error {
+	diagnosticsDir := filepath.Join(runDir, "attempts", attemptID, "diagnostics")
+	if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
+		return err
+	}
+	if err := atomicWrite(filepath.Join(diagnosticsDir, "quarantined-edge-rejected-worker-result.json"), append(append([]byte{}, data...), '\n'), 0o600); err != nil {
+		return err
+	}
+	record := map[string]any{
+		"reason":     "typed-edge-recheck-rejected",
+		"attemptId":  attemptID,
+		"error":      cause.Error(),
+		"isolatedAt": time.Now().UTC().Format(time.RFC3339),
+		"note":       "the rejected WorkerResult failed the current-ledger typed-edge recheck and is diagnostic material only; it never enters the evidence, review or publication chain",
+	}
+	recordData, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(diagnosticsDir, "orphan-diagnostics.json"), append(recordData, '\n'), 0o600)
 }
 
 // quarantineStaleWorkerResult isolates one late WorkerResult carrying a
