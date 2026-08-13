@@ -483,6 +483,7 @@ func newPublicationFixture(t *testing.T, opts fixtureOptions) *publicationFixtur
 		if transition.eventType == "review.accept" {
 			event.Payload = map[string]any{"verdict": "accept", "decisionDigest": decisionDigest, "evidenceDigest": evidenceDigest}
 		}
+		event.Actor = fixtureAuthorityActor(transition.eventType)
 		if err := store.Append(lease, event, uint64(index)); err != nil {
 			t.Fatal(err)
 		}
@@ -1204,7 +1205,7 @@ func advanceReworkToPublishing(t *testing.T, fixture *publicationFixture) {
 	current := state.State
 	for _, transition := range transitions {
 		sequence := state.Sequence + 1
-		event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: fmt.Sprintf("event:rework:%d", sequence), RunID: fixture.runID, AttemptID: transition.attemptID, Sequence: sequence, Type: transition.eventType, StateFrom: current, StateTo: transition.to, Timestamp: now, Payload: transition.payload}
+		event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: fmt.Sprintf("event:rework:%d", sequence), RunID: fixture.runID, AttemptID: transition.attemptID, Sequence: sequence, Type: transition.eventType, StateFrom: current, StateTo: transition.to, Timestamp: now, Actor: fixtureAuthorityActor(transition.eventType), Payload: transition.payload}
 		if err := fixture.store.Append(lease, event, state.Sequence); err != nil {
 			t.Fatal(err)
 		}
@@ -1348,6 +1349,105 @@ func TestObserveChecksBlocksWhenDecisionChangedAfterPublication(t *testing.T) {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	fixture.assertBlockedOutcome(t)
+}
+
+// fixtureAuthorityActor maps a fixture event type to the exact producer
+// actor admission and publication consumers require; generic fixture
+// transitions carry no actor.
+func fixtureAuthorityActor(eventType string) *domain.Actor {
+	switch eventType {
+	case "worker.started", "worker.completed", "worker.failed":
+		return &domain.Actor{Type: "system", ID: "marshal-worker-runner"}
+	case "verification.completed":
+		return &domain.Actor{Type: "system", ID: "marshal-verifier"}
+	case "review.accept":
+		return &domain.Actor{Type: "system", ID: "marshal-review"}
+	default:
+		return nil
+	}
+}
+
+// mutateJournalActor rewrites the actor bytes of the first journal line with
+// the given event type, replacing old with new. The raw journal is the
+// authoritative source, so the mutation is visible to every consumer.
+func mutateJournalActor(t *testing.T, fixture *publicationFixture, eventType, old, new string) {
+	t.Helper()
+	path := filepath.Join(fixture.runDirectory, "events.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	for index, line := range lines {
+		if !strings.Contains(line, `"type":"`+eventType+`"`) {
+			continue
+		}
+		if !strings.Contains(line, old) {
+			t.Fatalf("journal line for %s does not contain %q", eventType, old)
+		}
+		lines[index] = strings.Replace(line, old, new, 1)
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t.Fatalf("journal has no event with type %q", eventType)
+}
+
+func TestPublishRejectsForgedVerificationCompletedActor(t *testing.T) {
+	for name, mutation := range map[string]struct{ old, new string }{
+		"omitted": {`,"actor":{"type":"system","id":"marshal-verifier"}`, ""},
+		"forged":  {`"id":"marshal-verifier"`, `"id":"marshal-worker-runner"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newPublicationFixture(t, fixtureOptions{maxReworkRounds: 1})
+			mutateJournalActor(t, fixture, "verification.completed", mutation.old, mutation.new)
+			_, err := fixture.publish(t, newFakePublisher(fakePublishOK))
+			if err == nil || !strings.Contains(err.Error(), "system/marshal-verifier") {
+				t.Fatalf("forged verification.completed actor accepted: %v", err)
+			}
+			if state := fixture.inspect(t); state.State != domain.StateBlocked {
+				t.Fatalf("forged verification actor left the run in %s", state.State)
+			}
+		})
+	}
+}
+
+func TestPublishRejectsForgedReviewAcceptActor(t *testing.T) {
+	for name, mutation := range map[string]struct{ old, new string }{
+		"omitted": {`,"actor":{"type":"system","id":"marshal-review"}`, ""},
+		"forged":  {`"id":"marshal-review"`, `"id":"marshal-github-publisher"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newPublicationFixture(t, fixtureOptions{maxReworkRounds: 1})
+			mutateJournalActor(t, fixture, "review.accept", mutation.old, mutation.new)
+			_, err := fixture.publish(t, newFakePublisher(fakePublishOK))
+			if err == nil || !strings.Contains(err.Error(), "system/marshal-review") {
+				t.Fatalf("forged review.accept actor accepted: %v", err)
+			}
+			if state := fixture.inspect(t); state.State != domain.StateBlocked {
+				t.Fatalf("forged review actor left the run in %s", state.State)
+			}
+		})
+	}
+}
+
+func TestObserveChecksRejectsForgedPublicationCompletedActor(t *testing.T) {
+	fixture := publishToCIPending(t, fixtureOptions{maxReworkRounds: 1})
+	before := fixture.inspect(t)
+	mutateJournalActor(t, fixture, "publication.completed", `"id":"marshal-github-publisher"`, `"id":"marshal-forged-publisher"`)
+	observer := &fakeObserver{status: "pass"}
+	_, err := fixture.observe(t, observer)
+	if err == nil || !strings.Contains(err.Error(), "publisher/marshal-github-publisher") {
+		t.Fatalf("forged publication.completed actor accepted: %v", err)
+	}
+	if observer.calls != 0 {
+		t.Fatalf("observer was invoked despite forged publication authority: %d", observer.calls)
+	}
+	after := fixture.inspect(t)
+	if after.State != domain.StateCIPending || after.Sequence != before.Sequence {
+		t.Fatalf("forged publication actor changed the run: %+v", after)
+	}
 }
 
 func TestObserveChecksBlocksWhenPublicationRecordDiffersFromJournal(t *testing.T) {

@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -50,14 +52,29 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		return Result{}, err
 	}
 	defer lease.Release()
+	runDir := filepath.Join(input.StateRoot, "runs", input.RunID)
+	// Raw canonical admission runs before the snapshot Inspect decode, so
+	// unsafe journal bytes fail closed at the canonical admission gate
+	// instead of surfacing as an indirect json decode error.
+	if err := admitRawRunEventLines(runDir); err != nil {
+		return Result{}, err
+	}
 	state, err := store.Inspect(input.RunID)
 	if err != nil {
 		return Result{}, err
 	}
+	// Admission identity binding: the requested RunID, the snapshot RunID and
+	// the run directory that carries state.json must form one identity. The
+	// run directory is derived from input.RunID alone (validated by the lease
+	// acquisition above), so a snapshot forged under another run's directory
+	// name can never authorize this request. Any divergence fails closed
+	// before Probe, Adapter.Run or any attempt side effect.
+	if state.RunID != input.RunID {
+		return Result{}, errors.New("run snapshot identity does not match the requested run")
+	}
 	if state.State != domain.StateReady && state.State != domain.StateRetryPending && state.State != domain.StateReworkRequested {
 		return Result{}, fmt.Errorf("run state %s cannot start a worker attempt", state.State)
 	}
-	runDir := filepath.Join(input.StateRoot, "runs", input.RunID)
 	taskData, err := os.ReadFile(filepath.Join(runDir, "task-spec.json"))
 	if err != nil {
 		return Result{}, fmt.Errorf("read frozen TaskSpec: %w", err)
@@ -116,7 +133,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		return Result{}, errors.New("frozen capability snapshot does not match the selected adapter")
 	}
 	// The admission guard runs before Probe and any attempt side effect.
-	reviewFindings, err := loadReviewFindings(store, runDir, state, input.Validator)
+	reviewFindings, err := loadReviewFindings(store, runDir, state, input.Validator, selectedAdapterID)
 	if err != nil {
 		return Result{}, err
 	}
@@ -267,8 +284,8 @@ func Run(ctx context.Context, input Input) (Result, error) {
 // loadReviewFindings is the admission guard for the rework recovery lineage:
 // raw-record schema validation, full replay from CREATED/sequence=0, snapshot
 // cross-check and adjacent lineage resolution, all fail-closed before Probe.
-func loadReviewFindings(store *runstore.Store, runDir string, state domain.RunState, validator *contract.Validator) ([]map[string]string, error) {
-	journal, err := verifyRunJournal(store, runDir, state, validator)
+func loadReviewFindings(store *runstore.Store, runDir string, state domain.RunState, validator *contract.Validator, adapterID string) ([]map[string]string, error) {
+	journal, err := verifyRunJournal(store, runDir, state, validator, adapterID)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +301,15 @@ type verifiedJournal struct {
 	replayed   domain.RunState
 }
 
-func verifyRunJournal(store *runstore.Store, runDir string, state domain.RunState, validator *contract.Validator) (verifiedJournal, error) {
+func verifyRunJournal(store *runstore.Store, runDir string, state domain.RunState, validator *contract.Validator, adapterID string) (verifiedJournal, error) {
+	if err := admitRawRunEventLines(runDir); err != nil {
+		return verifiedJournal{}, err
+	}
+	rawData, err := os.ReadFile(filepath.Join(runDir, "events.jsonl"))
+	if err != nil {
+		return verifiedJournal{}, fmt.Errorf("read raw run journal: %w", err)
+	}
+	rawLines := strings.Split(string(rawData[:len(rawData)-1]), "\n")
 	authoritative, truncated, err := store.ReadEvents(state.RunID)
 	if err != nil {
 		return verifiedJournal{}, fmt.Errorf("read authoritative run journal: %w", err)
@@ -292,28 +317,11 @@ func verifyRunJournal(store *runstore.Store, runDir string, state domain.RunStat
 	if truncated {
 		return verifiedJournal{}, errors.New("run journal has a truncated tail")
 	}
-	rawData, err := os.ReadFile(filepath.Join(runDir, "events.jsonl"))
-	if err != nil {
-		return verifiedJournal{}, fmt.Errorf("read raw run journal: %w", err)
-	}
-	var rawLines []string
-	if len(rawData) > 0 {
-		if rawData[len(rawData)-1] != '\n' {
-			return verifiedJournal{}, errors.New("run journal has a truncated tail")
-		}
-		rawLines = strings.Split(string(rawData[:len(rawData)-1]), "\n")
-	}
 	if len(rawLines) != len(authoritative) {
 		return verifiedJournal{}, errors.New("raw run journal record count does not match the authoritative journal")
 	}
-	if len(rawLines) == 0 {
-		return verifiedJournal{}, errors.New("run journal is empty: the planning event authority is missing")
-	}
 	journal := verifiedJournal{events: make([]domain.RunEvent, 0, len(authoritative)), roundAfter: make([]uint, len(authoritative))}
 	for index, rawLine := range rawLines {
-		if strings.TrimSpace(rawLine) == "" {
-			return verifiedJournal{}, fmt.Errorf("raw run journal record %d is empty", index+1)
-		}
 		rawBytes := []byte(rawLine)
 		if err := validator.Validate(domain.KindRunEvent, rawBytes); err != nil {
 			return verifiedJournal{}, fmt.Errorf("raw run journal record %d fails the RunEvent contract: %w", index+1, err)
@@ -325,14 +333,20 @@ func verifyRunJournal(store *runstore.Store, runDir string, state domain.RunStat
 		if err := sameRunEventSemantics(authoritative[index], rawEvent); err != nil {
 			return verifiedJournal{}, fmt.Errorf("raw run journal record %d %w", index+1, err)
 		}
+		if err := requireEventAuthority(rawEvent); err != nil {
+			return verifiedJournal{}, fmt.Errorf("raw run journal record %d: %w", index+1, err)
+		}
 		if rawEvent.Type == lifecycle.RepairAuditEventType {
-			if err := validateRepairAudit(rawEvent); err != nil {
+			if err := validateRepairAudit(rawEvent, rawBytes); err != nil {
 				return verifiedJournal{}, err
 			}
 		}
 		if index == 0 {
-			if rawEvent.Sequence != 1 || rawEvent.StateFrom != domain.StateCreated || rawEvent.StateTo != domain.StatePlanned {
-				return verifiedJournal{}, errors.New("run journal must begin with the sequence=1 planning transition CREATED->PLANNED")
+			if rawEvent.Type != "planning.spec-accepted" || rawEvent.Sequence != 1 || rawEvent.StateFrom != domain.StateCreated || rawEvent.StateTo != domain.StatePlanned {
+				return verifiedJournal{}, errors.New("run journal must begin with the sequence=1 planning.spec-accepted transition CREATED->PLANNED")
+			}
+			if payloadString(rawEvent.Payload, "specDigest") != state.SpecDigest {
+				return verifiedJournal{}, errors.New("planning.spec-accepted payload specDigest does not match the frozen run snapshot")
 			}
 			// Planning froze the initial snapshot and the sequence=1
 			// planning event with the same instant, so the first fully
@@ -348,10 +362,142 @@ func verifyRunJournal(store *runstore.Store, runDir string, state domain.RunStat
 		journal.roundAfter[index] = next.ReviewRound
 		journal.events = append(journal.events, rawEvent)
 	}
+	if err := requirePlanningInputsFrozenBinding(journal.events, state, adapterID); err != nil {
+		return verifiedJournal{}, err
+	}
 	if err := requireSnapshotMatchesReplay(state, journal.replayed); err != nil {
 		return verifiedJournal{}, err
 	}
 	return journal, nil
+}
+
+// admitRawRunEventLines is the explicit canonical admission gate for the raw
+// journal file. Every line must survive strict canonical JSON admission
+// before Schema validation or any json.Unmarshal — including the snapshot
+// Inspect decode — so invalid UTF-8, recursive duplicate object members and
+// a trailing second JSON value fail closed at the byte level.
+func admitRawRunEventLines(runDir string) error {
+	rawData, err := os.ReadFile(filepath.Join(runDir, "events.jsonl"))
+	if err != nil {
+		return fmt.Errorf("read raw run journal: %w", err)
+	}
+	if len(rawData) == 0 {
+		return errors.New("run journal is empty: the planning event authority is missing")
+	}
+	if rawData[len(rawData)-1] != '\n' {
+		return errors.New("run journal has a truncated tail")
+	}
+	for index, rawLine := range strings.Split(string(rawData[:len(rawData)-1]), "\n") {
+		if strings.TrimSpace(rawLine) == "" {
+			return fmt.Errorf("raw run journal record %d is empty", index+1)
+		}
+		if err := admitCanonicalRunEvent([]byte(rawLine)); err != nil {
+			return fmt.Errorf("raw run journal record %d: %w", index+1, err)
+		}
+	}
+	return nil
+}
+
+// admitCanonicalRunEvent is the explicit canonical admission step for one raw
+// journal line. It rejects invalid UTF-8 bytes and delegates the remaining
+// structural admission — recursive duplicate object members, a trailing
+// second JSON value, and any other parse failure — to canonical.JSON. The
+// error text always carries the stable "canonical JSON admission" sentinel so
+// the gate can never be mistaken for a later Schema or decode failure.
+func admitCanonicalRunEvent(raw []byte) error {
+	if !utf8.Valid(raw) {
+		return errors.New("canonical JSON admission: raw event bytes are not valid UTF-8")
+	}
+	if _, err := canonical.JSON(raw); err != nil {
+		return fmt.Errorf("canonical JSON admission: %w", err)
+	}
+	return nil
+}
+
+// authorityActorByType is the closed producer-authority table for every
+// lifecycle event type admission replays. Each entry binds one event type to
+// the exact producer actor that is allowed to record it; any other actor —
+// including an omitted one — fails the whole journal before Probe, so forged
+// events can never change reviewRound or the retry/rework lineage.
+var authorityActorByType = map[string]domain.Actor{
+	"planning.spec-accepted":         {Type: "system", ID: "marshal-planning"},
+	"planning.inputs-frozen":         {Type: "system", ID: "marshal-planning"},
+	"worker.started":                 {Type: "system", ID: "marshal-worker-runner"},
+	"worker.completed":               {Type: "system", ID: "marshal-worker-runner"},
+	"worker.failed":                  {Type: "system", ID: "marshal-worker-runner"},
+	"worker.evidence-failed":         {Type: "system", ID: "marshal-worker-runner"},
+	"verification.completed":         {Type: "system", ID: "marshal-verifier"},
+	"review.accept":                  {Type: "system", ID: "marshal-review"},
+	"review.reject":                  {Type: "system", ID: "marshal-review"},
+	"review.blocked":                 {Type: "system", ID: "marshal-review"},
+	"review.rework":                  {Type: "system", ID: "marshal-review"},
+	"review.no-change":               {Type: "system", ID: "marshal-review"},
+	"review.rework-budget-exhausted": {Type: "system", ID: "marshal-review"},
+	"publication.completed":          {Type: "publisher", ID: "marshal-github-publisher"},
+	"publication.checks-requested":   {Type: "publisher", ID: "marshal-github-publisher"},
+	"publication.checks-passed":      {Type: "publisher", ID: "marshal-github-publisher"},
+	"publication.checks-failed":      {Type: "publisher", ID: "marshal-github-publisher"},
+	"publication.accepted":           {Type: "publisher", ID: "marshal-github-publisher"},
+	"publication.blocked":            {Type: "publisher", ID: "marshal-github-publisher"},
+	lifecycle.RepairAuditEventType:   {Type: "system", ID: "marshal-reconciliation"},
+}
+
+// requireEventAuthority fails closed unless the event type is a recognized
+// authority event recorded by its exact producer actor.
+func requireEventAuthority(event domain.RunEvent) error {
+	if event.Type == lifecycle.AbortEventType {
+		if event.Actor == nil || event.Actor.Type != domain.ControlSourceTypeHuman || event.Actor.ID == "" {
+			return errors.New("run journal event run.aborted must be recorded by a human operator actor")
+		}
+		return nil
+	}
+	required, known := authorityActorByType[event.Type]
+	if !known {
+		return fmt.Errorf("run journal event type %q is not a recognized authority event", event.Type)
+	}
+	if event.Actor == nil || event.Actor.Type != required.Type || event.Actor.ID != required.ID {
+		return fmt.Errorf("run journal event %s must be recorded by %s/%s", event.Type, required.Type, required.ID)
+	}
+	return nil
+}
+
+// requirePlanningInputsFrozenBinding binds the run snapshot's five frozen
+// fields (specDigest, policyDigest, capabilityDigest, baseSha, worktreePath)
+// plus the selected adapterId to the single planning.inputs-frozen event
+// recorded by system/marshal-planning. Any omitted or divergent field fails
+// closed before Probe.
+func requirePlanningInputsFrozenBinding(events []domain.RunEvent, state domain.RunState, adapterID string) error {
+	var frozen *domain.RunEvent
+	for index := range events {
+		if events[index].Type != "planning.inputs-frozen" {
+			continue
+		}
+		if frozen != nil {
+			return errors.New("run journal must contain exactly one planning.inputs-frozen event")
+		}
+		frozen = &events[index]
+	}
+	if frozen == nil {
+		return errors.New("run journal must contain exactly one planning.inputs-frozen event")
+	}
+	for _, field := range []struct{ name, value, want string }{
+		{"specDigest", payloadString(frozen.Payload, "specDigest"), state.SpecDigest},
+		{"policyDigest", payloadString(frozen.Payload, "policyDigest"), state.PolicyDigest},
+		{"capabilityDigest", payloadString(frozen.Payload, "capabilityDigest"), state.CapabilityDigest},
+		{"baseSha", payloadString(frozen.Payload, "baseSha"), state.BaseSHA},
+		{"worktreePath", payloadString(frozen.Payload, "worktreePath"), state.WorktreePath},
+		{"adapterId", payloadString(frozen.Payload, "adapterId"), adapterID},
+	} {
+		if field.value != field.want {
+			return fmt.Errorf("planning.inputs-frozen payload field %s does not match the frozen run identity", field.name)
+		}
+	}
+	return nil
+}
+
+func payloadString(payload map[string]any, key string) string {
+	value, _ := payload[key].(string)
+	return value
 }
 
 func sameRunEventSemantics(authoritative, raw domain.RunEvent) error {
@@ -412,9 +558,39 @@ func requireSnapshotMatchesReplay(snapshot, replayed domain.RunState) error {
 	return nil
 }
 
+// canonicalUnsignedDecimalPattern freezes the only admitted notation for
+// sourceJournalSequence: a canonical unsigned decimal integer — digits only,
+// no sign, no decimal point, no exponent and no superfluous leading zeros
+// ("0" itself is canonical, "04" is not). JSON number notations such as 2.0,
+// 1e0 or -1 are rejected even though they decode to the same float64 value,
+// and oversized literals that would lose precision are rejected by the
+// bounded ParseUint below.
+var canonicalUnsignedDecimalPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
+
+// rawPayloadNumberLiteral recovers the verbatim JSON literal of a numeric
+// payload member from the raw event line. Decoding with UseNumber keeps the
+// exact source notation, which the parsed float64 payload cannot express.
+func rawPayloadNumberLiteral(rawLine []byte, key string) (string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(rawLine))
+	decoder.UseNumber()
+	var wrapper struct {
+		Payload map[string]any `json:"payload"`
+	}
+	if err := decoder.Decode(&wrapper); err != nil {
+		return "", fmt.Errorf("decode raw event payload: %w", err)
+	}
+	number, ok := wrapper.Payload[key].(json.Number)
+	if !ok {
+		return "", errors.New("payload member is not a JSON number")
+	}
+	return number.String(), nil
+}
+
 // validateRepairAudit admits only the exact reconciliation.snapshot-repaired
 // audit; a forged repair fails closed and is never skipped in the lineage.
-func validateRepairAudit(event domain.RunEvent) error {
+// sourceJournalSequence is validated against the verbatim raw literal so the
+// canonical notation — not just the decoded numeric value — is enforced.
+func validateRepairAudit(event domain.RunEvent, rawLine []byte) error {
 	if event.StateFrom != event.StateTo {
 		return errors.New("repair audit event must not change the run state")
 	}
@@ -427,7 +603,15 @@ func validateRepairAudit(event domain.RunEvent) error {
 	if repairKind, ok := event.Payload["repairKind"].(string); !ok || repairKind != "snapshot-rebuild" {
 		return errors.New("repair audit event repairKind must be snapshot-rebuild")
 	}
-	if source, ok := event.Payload["sourceJournalSequence"].(float64); !ok || source < 0 || source != float64(event.Sequence-1) {
+	literal, err := rawPayloadNumberLiteral(rawLine, "sourceJournalSequence")
+	if err != nil {
+		return fmt.Errorf("repair audit event sourceJournalSequence: %w", err)
+	}
+	if !canonicalUnsignedDecimalPattern.MatchString(literal) {
+		return errors.New("repair audit event sourceJournalSequence must be a canonical unsigned decimal integer")
+	}
+	source, err := strconv.ParseUint(literal, 10, 64)
+	if err != nil || event.Sequence == 0 || source != event.Sequence-1 {
 		return errors.New("repair audit event sourceJournalSequence must equal the previous journal sequence")
 	}
 	return nil

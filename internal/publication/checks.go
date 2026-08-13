@@ -74,6 +74,15 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 		result, blockedErr := block(store, lease, state, runDir, errCIDeadlineExceeded)
 		return CheckResult{State: result.State}, blockedErr
 	}
+	// Explicit producer-authority admission at the consumption site: the
+	// publication.completed event ObserveChecks consumes must have been
+	// recorded by the exact publisher actor. An omitted or forged actor fails
+	// closed here, before the observer runs and without mutating the run,
+	// independently of the PublicationRecord digest comparison below, so the
+	// two defenses coexist.
+	if err := requirePublicationCompletedAuthority(store, state.RunID); err != nil {
+		return CheckResult{}, err
+	}
 	publicationData, err := os.ReadFile(filepath.Join(runDir, "publication-record.json"))
 	if err != nil {
 		return CheckResult{}, err
@@ -83,7 +92,13 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 	}
 	publicationDigest, _ := canonical.DigestJSON(publicationData)
 	frozenDigest, err := frozenPublicationDigest(store, state.RunID)
-	if err != nil || publicationDigest != frozenDigest {
+	if err != nil {
+		// Journal authority failure, such as a publication.completed event
+		// recorded by a forged or omitted producer actor: fail closed with
+		// the authority error and without mutating the run.
+		return CheckResult{}, err
+	}
+	if publicationDigest != frozenDigest {
 		result, blockedErr := block(store, lease, state, runDir, errors.New("PublicationRecord differs from frozen lifecycle event"))
 		return CheckResult{State: result.State}, blockedErr
 	}
@@ -164,4 +179,27 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 		return CheckResult{}, err
 	}
 	return CheckResult{State: next, Checks: checks}, nil
+}
+
+// requirePublicationCompletedAuthority fails closed unless every
+// publication.completed event in the run journal carries the exact publisher
+// producer actor {type:publisher, id:marshal-github-publisher}. ObserveChecks
+// consumes that event type to anchor the frozen PublicationRecord digest, so
+// the producer authority is verified at this consumption site itself — an
+// omitted or forged actor is rejected with a fixed, assertable error instead
+// of being left to downstream record comparisons.
+func requirePublicationCompletedAuthority(store *runstore.Store, runID string) error {
+	events, _, err := store.ReadEvents(runID)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if event.Type != "publication.completed" {
+			continue
+		}
+		if !actorMatches(event.Actor, "publisher", "marshal-github-publisher") {
+			return errors.New("publication.completed event must be recorded by publisher/marshal-github-publisher")
+		}
+	}
+	return nil
 }

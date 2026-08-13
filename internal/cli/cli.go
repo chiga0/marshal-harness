@@ -1622,6 +1622,12 @@ func frozenVerificationDigests(store *runstore.Store, runID string) (string, str
 		if event.Type != "verification.completed" {
 			continue
 		}
+		// Authority binding: only the exact verifier producer may freeze the
+		// verification evidence digests; an omitted or forged actor fails
+		// closed instead of authorizing review.
+		if event.Actor == nil || event.Actor.Type != "system" || event.Actor.ID != "marshal-verifier" {
+			return "", "", errors.New("verification.completed 事件必须由 system/marshal-verifier 记录")
+		}
 		reportDigest, reportOK := event.Payload["reportDigest"].(string)
 		manifestDigest, manifestOK := event.Payload["artifactManifestDigest"].(string)
 		if !reportOK || reportDigest == "" || !manifestOK || manifestDigest == "" {

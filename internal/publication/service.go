@@ -370,11 +370,22 @@ func frozenEvidence(store *runstore.Store, runID string) (frozenPublicationEvide
 		event := events[index]
 		switch event.Type {
 		case "review.accept":
+			// Authority binding: only the exact review producer may freeze
+			// the decision evidence; an omitted or forged actor can never
+			// authorize publication.
+			if !actorMatches(event.Actor, "system", "marshal-review") {
+				return frozenPublicationEvidence{}, errors.New("review.accept event must be recorded by system/marshal-review")
+			}
 			if result.decisionDigest == "" {
 				result.decisionDigest, _ = event.Payload["decisionDigest"].(string)
 				result.evidenceDigest, _ = event.Payload["evidenceDigest"].(string)
 			}
 		case "verification.completed":
+			// Authority binding: only the exact verifier producer may freeze
+			// the verification evidence digests.
+			if !actorMatches(event.Actor, "system", "marshal-verifier") {
+				return frozenPublicationEvidence{}, errors.New("verification.completed event must be recorded by system/marshal-verifier")
+			}
 			if result.reportDigest == "" {
 				result.reportDigest, _ = event.Payload["reportDigest"].(string)
 				result.manifestDigest, _ = event.Payload["artifactManifestDigest"].(string)
@@ -792,6 +803,12 @@ func frozenPublicationDigest(store *runstore.Store, runID string) (string, error
 	}
 	for index := len(events) - 1; index >= 0; index-- {
 		if events[index].Type == "publication.completed" {
+			// Authority binding: only the exact publisher producer may
+			// freeze the PublicationRecord digest; an omitted or forged
+			// actor fails closed instead of anchoring CI observation.
+			if !actorMatches(events[index].Actor, "publisher", "marshal-github-publisher") {
+				return "", errors.New("publication.completed event must be recorded by publisher/marshal-github-publisher")
+			}
 			digest, _ := events[index].Payload["publicationDigest"].(string)
 			if digest != "" {
 				return digest, nil
@@ -799,6 +816,11 @@ func frozenPublicationDigest(store *runstore.Store, runID string) (string, error
 		}
 	}
 	return "", errors.New("lifecycle journal lacks frozen PublicationRecord digest")
+}
+
+// actorMatches reports whether the event carries the exact producer actor.
+func actorMatches(actor *domain.Actor, actorType, actorID string) bool {
+	return actor != nil && actor.Type == actorType && actor.ID == actorID
 }
 
 func publicationMatchesIntent(published domain.PublicationRecord, intent domain.PublicationIntent) bool {

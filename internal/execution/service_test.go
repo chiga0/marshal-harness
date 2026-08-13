@@ -407,9 +407,38 @@ func newExecutionFixtureWithOptions(t *testing.T, fail bool, options executionFi
 	now := time.Unix(1, 0).UTC()
 	state := domain.NewRunState("TASK-1", runID, now)
 	state.State, state.Sequence, state.SpecDigest, state.PolicyDigest, state.CapabilityDigest, state.BaseSHA, state.WorktreePath = domain.StateReady, 2, specDigest, policyDigest, capDigest, base, worktree.Path
+	// Real planning authority events: admission binds the Run identity and
+	// the five frozen fields to exactly these producer records.
+	planningEvents := []domain.RunEvent{
+		{
+			APIVersion: domain.APIVersionV1Alpha1,
+			Kind:       domain.KindRunEvent,
+			EventID:    "event:1",
+			RunID:      runID,
+			Sequence:   1,
+			Type:       "planning.spec-accepted",
+			StateFrom:  domain.StateCreated,
+			StateTo:    domain.StatePlanned,
+			Timestamp:  now,
+			Actor:      planningActor(),
+			Payload:    map[string]any{"specDigest": specDigest, "executionProfile": executionProfile, "sessionPolicy": "ephemeral"},
+		},
+		{
+			APIVersion: domain.APIVersionV1Alpha1,
+			Kind:       domain.KindRunEvent,
+			EventID:    "event:2",
+			RunID:      runID,
+			Sequence:   2,
+			Type:       "planning.inputs-frozen",
+			StateFrom:  domain.StatePlanned,
+			StateTo:    domain.StateReady,
+			Timestamp:  now,
+			Actor:      planningActor(),
+			Payload:    map[string]any{"adapterId": options.capabilityAdapterID, "baseSha": base, "specDigest": specDigest, "policyDigest": policyDigest, "capabilityDigest": capDigest, "worktreePath": worktree.Path},
+		},
+	}
 	var journal []byte
-	for index, states := range [][2]domain.State{{domain.StateCreated, domain.StatePlanned}, {domain.StatePlanned, domain.StateReady}} {
-		event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:" + string(rune('1'+index)), RunID: runID, Sequence: uint64(index + 1), Type: "fixture.transition", StateFrom: states[0], StateTo: states[1], Timestamp: now, Payload: map[string]any{}}
+	for _, event := range planningEvents {
 		data, err := json.Marshal(event)
 		if err != nil {
 			t.Fatal(err)
@@ -510,7 +539,9 @@ func requireFailsBeforeProbe(t *testing.T, fixture executionFixture, fragments .
 }
 
 func systemActor(id string) *domain.Actor { return &domain.Actor{Type: "system", ID: id} }
+func planningActor() *domain.Actor        { return systemActor("marshal-planning") }
 func workerRunnerActor() *domain.Actor    { return systemActor("marshal-worker-runner") }
+func verifierActor() *domain.Actor        { return systemActor("marshal-verifier") }
 func reviewActor() *domain.Actor          { return systemActor("marshal-review") }
 func publisherActor() *domain.Actor {
 	return &domain.Actor{Type: "publisher", ID: "marshal-github-publisher"}
@@ -530,7 +561,7 @@ func appendVerifiedAttempt(t *testing.T, fixture executionFixture, attemptID str
 	appendRunEvents(t, fixture,
 		step("worker.started", domain.StateRunning, workerRunnerActor(), attemptID, map[string]any{"adapterId": "fixture"}),
 		step("worker.completed", domain.StateVerifying, workerRunnerActor(), attemptID, verificationPayload()),
-		step("verification.completed", domain.StateReviewPending, systemActor("marshal-verification"), "", nil))
+		step("verification.completed", domain.StateReviewPending, verifierActor(), "", nil))
 }
 
 func setupReviewPendingFixture(t *testing.T, attemptID string) executionFixture {
@@ -565,7 +596,13 @@ func inspectState(t *testing.T, fixture executionFixture) domain.RunState {
 
 func directLoad(t *testing.T, fixture executionFixture) ([]map[string]string, error) {
 	t.Helper()
-	return loadReviewFindings(runstore.New(fixture.input.StateRoot), fixture.runDir, inspectState(t, fixture), fixture.input.Validator)
+	var capability struct {
+		AdapterID string `json:"adapterId"`
+	}
+	if err := json.Unmarshal(fixture.input.Adapter.(*fixtureAdapter).capability, &capability); err != nil {
+		t.Fatal(err)
+	}
+	return loadReviewFindings(runstore.New(fixture.input.StateRoot), fixture.runDir, inspectState(t, fixture), fixture.input.Validator, capability.AdapterID)
 }
 
 func writeSnapshotFile(t *testing.T, fixture executionFixture, state domain.RunState) {
@@ -779,7 +816,7 @@ func TestRunReviewReworkOperationalRetryPersistsFindingsAfterRestart(t *testing.
 	if err != nil || first.State.State != domain.StateVerifying {
 		t.Fatalf("first attempt: state=%+v err=%v", first.State, err)
 	}
-	appendRunEvent(t, fixture, "verification.completed", domain.StateReviewPending, systemActor("marshal-verification"), "", map[string]any{})
+	appendRunEvent(t, fixture, "verification.completed", domain.StateReviewPending, verifierActor(), "", map[string]any{})
 	state := inspectState(t, fixture)
 	if state.ReviewRound != 1 {
 		t.Fatalf("reviewRound = %d", state.ReviewRound)
@@ -881,7 +918,7 @@ func TestRunCIFailureReworkAndOperationalRetryDoesNotRequireReworkDecision(t *te
 	if err != nil || first.State.State != domain.StateVerifying {
 		t.Fatalf("first attempt: state=%+v err=%v", first.State, err)
 	}
-	appendRunEvent(t, fixture, "verification.completed", domain.StateReviewPending, systemActor("marshal-verification"), "", map[string]any{})
+	appendRunEvent(t, fixture, "verification.completed", domain.StateReviewPending, verifierActor(), "", map[string]any{})
 	const headSHA = "abcdef0123456789abcdef0123456789abcdef01"
 	appendAcceptPublicationChain(t, fixture, headSHA)
 	appendRunEvent(t, fixture, "publication.checks-failed", domain.StateReworkRequested, publisherActor(), "", map[string]any{"headSha": headSHA})
@@ -960,7 +997,7 @@ func TestLoadReviewFindingsRejectsUnknownOrConflictingLineage(t *testing.T) {
 		payload   map[string]any
 		fragment  string
 	}{
-		"unknown-origin-type":       {"review.custom", reviewActor(), map[string]any{"verdict": "rework", "decisionDigest": validDigest}, "unknown or conflicting rework origin"},
+		"unknown-origin-type":       {"review.custom", reviewActor(), map[string]any{"verdict": "rework", "decisionDigest": validDigest}, "not a recognized authority event"},
 		"conflicting-verdict":       {"review.rework", reviewActor(), map[string]any{"verdict": "accept", "decisionDigest": validDigest}, "verdict must be rework"},
 		"ci-type-from-review-state": {"publication.checks-failed", publisherActor(), map[string]any{"headSha": "deadbeef"}, "ci lineage"},
 	} {
@@ -1239,6 +1276,222 @@ func TestLoadReviewFindingsAcceptsOnlyValidRepairAudit(t *testing.T) {
 		fixture := setupRetryPendingFixture(t, "attempt-repair-6")
 		appendRepair(t, fixture, reconciliationActor(), "", func(payload map[string]any) { payload["sourceJournalSequence"] = float64(0) })
 		requireFailsBeforeProbe(t, fixture, "sourceJournalSequence")
+	})
+	// sourceJournalSequence must be a canonical unsigned decimal integer in
+	// the raw journal bytes: non-canonical notations that decode to the same
+	// or another number all fail closed before Probe.
+	for name, literal := range map[string]string{
+		"fraction":            "4.0",
+		"exponent":            "4e0",
+		"negative":            "-4",
+		"leading-zero-string": `"05"`,
+		"string":              `"4"`,
+		"wrong-value":         "3",
+	} {
+		t.Run("non-canonical-sequence-"+name, func(t *testing.T) {
+			fixture := setupRetryPendingFixture(t, "attempt-repair-notation")
+			appendRepair(t, fixture, reconciliationActor(), "", nil)
+			mutateJournalLineContaining(t, fixture, `"type":"`+lifecycle.RepairAuditEventType+`"`, `"sourceJournalSequence":4`, `"sourceJournalSequence":`+literal)
+			requireFailsBeforeProbe(t, fixture, "sourceJournalSequence")
+		})
+	}
+	t.Run("non-canonical-sequence-leading-zero-number", func(t *testing.T) {
+		// The numeric leading-zero literal 04 is invalid JSON under
+		// RFC 8259, but the JCS number parser behind canonical admission
+		// (strconv.ParseFloat based) accepts it, so the canonical admission
+		// gate lets the raw line through. The strict authoritative journal
+		// decode inside runstore (encoding/json) therefore fail-closes this
+		// input first with a decode journal record error — earlier than both
+		// the execution canonical admission rejection and the repair-layer
+		// sourceJournalSequence notation check. That earlier rejection layer
+		// is the expected fail-closed behavior: the run is refused before
+		// any review findings admission, and every valid JSON non-canonical
+		// notation still reaches the repair-layer sentinel in the notation
+		// table above.
+		fixture := setupRetryPendingFixture(t, "attempt-repair-notation")
+		appendRepair(t, fixture, reconciliationActor(), "", nil)
+		mutateJournalLineContaining(t, fixture, `"type":"`+lifecycle.RepairAuditEventType+`"`, `"sourceJournalSequence":4`, `"sourceJournalSequence":04`)
+		requireFailsBeforeProbe(t, fixture, "decode journal record")
+	})
+}
+
+// mutateRawJournalLines rewrites events.jsonl through a line-level callback,
+// keeping the trailing newline so journal shape is preserved.
+func mutateRawJournalLines(t *testing.T, fixture executionFixture, mutate func(lines []string)) {
+	t.Helper()
+	path := filepath.Join(fixture.runDir, "events.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	mutate(lines)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// mutateJournalLineContaining applies one old->new replacement inside the
+// first journal line that carries marker, so a single event line can be
+// forged without touching the rest of the journal.
+func mutateJournalLineContaining(t *testing.T, fixture executionFixture, marker, old, new string) {
+	t.Helper()
+	mutateRawJournalLines(t, fixture, func(lines []string) {
+		for index, line := range lines {
+			if strings.Contains(line, marker) {
+				if !strings.Contains(line, old) {
+					t.Fatalf("journal line with %q does not contain %q", marker, old)
+				}
+				lines[index] = strings.Replace(line, old, new, 1)
+				return
+			}
+		}
+		t.Fatalf("journal has no line containing %q", marker)
+	})
+}
+
+func TestRunRejectsCrossDirectoryRunIdentityBeforeProbe(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	tampered := inspectState(t, fixture)
+	tampered.RunID = "run-forged-directory"
+	writeSnapshotFile(t, fixture, tampered)
+	requireFailsBeforeProbe(t, fixture, "identity does not match the requested run")
+}
+
+func TestRunRejectsForgedPlanningAuthorityBeforeProbe(t *testing.T) {
+	const specAcceptedType = `"type":"planning.spec-accepted"`
+	const inputsFrozenType = `"type":"planning.inputs-frozen"`
+	const planningActorLiteral = `"actor":{"type":"system","id":"marshal-planning"}`
+	forgedDigest := "sha256:" + strings.Repeat("f", 64)
+
+	t.Run("first-event-type-not-spec-accepted", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		mutateJournalLineContaining(t, fixture, specAcceptedType, specAcceptedType, `"type":"planning.inputs-frozen"`)
+		requireFailsBeforeProbe(t, fixture, "planning.spec-accepted")
+	})
+	t.Run("spec-accepted-actor-omitted", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		mutateJournalLineContaining(t, fixture, specAcceptedType, ","+planningActorLiteral, "")
+		requireFailsBeforeProbe(t, fixture, "system/marshal-planning")
+	})
+	t.Run("spec-accepted-actor-id-forged", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		mutateJournalLineContaining(t, fixture, specAcceptedType, `"id":"marshal-planning"`, `"id":"marshal-planning-forged"`)
+		requireFailsBeforeProbe(t, fixture, "system/marshal-planning")
+	})
+	t.Run("spec-accepted-spec-digest-mismatch", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		state := inspectState(t, fixture)
+		mutateJournalLineContaining(t, fixture, specAcceptedType, `"specDigest":"`+state.SpecDigest+`"`, `"specDigest":"`+forgedDigest+`"`)
+		requireFailsBeforeProbe(t, fixture, "planning.spec-accepted payload specDigest")
+	})
+	t.Run("inputs-frozen-actor-omitted", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		mutateJournalLineContaining(t, fixture, inputsFrozenType, ","+planningActorLiteral, "")
+		requireFailsBeforeProbe(t, fixture, "system/marshal-planning")
+	})
+	t.Run("inputs-frozen-actor-id-forged", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		mutateJournalLineContaining(t, fixture, inputsFrozenType, `"id":"marshal-planning"`, `"id":"marshal-planning-forged"`)
+		requireFailsBeforeProbe(t, fixture, "system/marshal-planning")
+	})
+	t.Run("inputs-frozen-missing", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		mutateJournalLineContaining(t, fixture, inputsFrozenType, inputsFrozenType, `"type":"planning.spec-accepted"`)
+		requireFailsBeforeProbe(t, fixture, "exactly one planning.inputs-frozen")
+	})
+	t.Run("inputs-frozen-field-mismatch", func(t *testing.T) {
+		for field, forged := range map[string]string{
+			"specDigest":       `"specDigest":"` + forgedDigest + `"`,
+			"policyDigest":     `"policyDigest":"` + forgedDigest + `"`,
+			"capabilityDigest": `"capabilityDigest":"` + forgedDigest + `"`,
+			"baseSha":          `"baseSha":"` + strings.Repeat("9", 40) + `"`,
+			"worktreePath":     `"worktreePath":"/forged/worktree/path"`,
+		} {
+			t.Run(field, func(t *testing.T) {
+				fixture := newExecutionFixture(t, false)
+				state := inspectState(t, fixture)
+				original := map[string]string{
+					"specDigest":       `"specDigest":"` + state.SpecDigest + `"`,
+					"policyDigest":     `"policyDigest":"` + state.PolicyDigest + `"`,
+					"capabilityDigest": `"capabilityDigest":"` + state.CapabilityDigest + `"`,
+					"baseSha":          `"baseSha":"` + state.BaseSHA + `"`,
+					"worktreePath":     `"worktreePath":"` + state.WorktreePath + `"`,
+				}[field]
+				mutateJournalLineContaining(t, fixture, inputsFrozenType, original, forged)
+				requireFailsBeforeProbe(t, fixture, "planning.inputs-frozen")
+			})
+		}
+	})
+}
+
+func TestRunRejectsUnsafeRawJournalBytesBeforeProbe(t *testing.T) {
+	t.Run("invalid-utf8", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		mutateRawJournalLines(t, fixture, func(lines []string) {
+			lines[0] = lines[0][:20] + "\xff" + lines[0][20:]
+		})
+		requireFailsBeforeProbe(t, fixture, "canonical JSON admission")
+	})
+	t.Run("nested-duplicate-member", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		state := inspectState(t, fixture)
+		mutateJournalLineContaining(t, fixture, `"type":"planning.inputs-frozen"`,
+			`"worktreePath":"`+state.WorktreePath+`"`,
+			`"worktreePath":"`+state.WorktreePath+`","nested":{"dup":1,"dup":2}`)
+		requireFailsBeforeProbe(t, fixture, "canonical JSON admission")
+	})
+	t.Run("trailing-second-value", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		mutateRawJournalLines(t, fixture, func(lines []string) {
+			lines[0] = lines[0] + `{"trailing":"second-value"}`
+		})
+		requireFailsBeforeProbe(t, fixture, "canonical JSON admission")
+	})
+}
+
+func TestRunRejectsForgedEvidenceAuthorityBeforeProbe(t *testing.T) {
+	t.Run("verification-completed-actor-omitted", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		appendRunEvents(t, fixture,
+			step("worker.started", domain.StateRunning, workerRunnerActor(), "attempt-vauth", map[string]any{"adapterId": "fixture"}),
+			step("worker.completed", domain.StateVerifying, workerRunnerActor(), "attempt-vauth", verificationPayload()),
+			step("verification.completed", domain.StateReviewPending, nil, "", map[string]any{}))
+		// The run state gate only admits REWORK_REQUESTED runs, so a
+		// legitimate round-1 review.rework origin brings the journal back to
+		// an admittable state; admission then reaches the journal authority
+		// check, which must reject the omitted verifier actor itself instead
+		// of the state gate rejecting the fixture first.
+		appendReviewReworkEvent(t, fixture, writeDecisionFile(t, fixture, reworkDecisionFixture(inspectState(t, fixture), 1)))
+		requireFailsBeforeProbe(t, fixture, "system/marshal-verifier")
+	})
+	t.Run("verification-completed-actor-forged", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		appendRunEvents(t, fixture,
+			step("worker.started", domain.StateRunning, workerRunnerActor(), "attempt-vauth-forged", map[string]any{"adapterId": "fixture"}),
+			step("worker.completed", domain.StateVerifying, workerRunnerActor(), "attempt-vauth-forged", verificationPayload()),
+			step("verification.completed", domain.StateReviewPending, workerRunnerActor(), "", map[string]any{}))
+		// Same admission path as the omitted case: the legitimate rework
+		// origin keeps the run admittable so the forged worker-runner actor
+		// is rejected by the verifier authority check itself.
+		appendReviewReworkEvent(t, fixture, writeDecisionFile(t, fixture, reworkDecisionFixture(inspectState(t, fixture), 1)))
+		requireFailsBeforeProbe(t, fixture, "system/marshal-verifier")
+	})
+	t.Run("publication-completed-actor-omitted", func(t *testing.T) {
+		fixture := setupReviewPendingFixture(t, "attempt-pauth")
+		acceptDecision := reworkDecisionFixture(inspectState(t, fixture), 1)
+		acceptDecision.Verdict, acceptDecision.Summary = "accept", "accepted for publication"
+		acceptDecision.BlockingFindings = []domain.Finding{}
+		acceptDecision.PublicationRecommendation = "publish"
+		acceptPayload := reviewReworkPayload(writeDecisionFile(t, fixture, acceptDecision))
+		acceptPayload["verdict"] = "accept"
+		const headSHA = "abcdef0123456789abcdef0123456789abcdef01"
+		appendRunEvents(t, fixture,
+			step("review.accept", domain.StatePublishing, reviewActor(), "", acceptPayload),
+			step("publication.completed", domain.StatePublished, nil, "", publicationPayload(headSHA)),
+			step("publication.checks-requested", domain.StateCIPending, publisherActor(), "", map[string]any{"headSha": headSHA}),
+			step("publication.checks-failed", domain.StateReworkRequested, publisherActor(), "", map[string]any{"headSha": headSHA}))
+		requireFailsBeforeProbe(t, fixture, "publisher/marshal-github-publisher")
 	})
 }
 

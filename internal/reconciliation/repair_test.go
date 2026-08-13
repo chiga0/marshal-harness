@@ -1,6 +1,7 @@
 package reconciliation
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -193,6 +194,43 @@ func TestInspectAndRepairRejectForgedRepairAudit(t *testing.T) {
 	result, err := Repair(context.Background(), fixture.input, time.Unix(30, 0))
 	if err != nil || result.Outcome != "refused" {
 		t.Fatalf("forged audit repair = %+v, err = %v", result, err)
+	}
+}
+
+// TestRepairRefusesNonCanonicalAuditSequenceNotation proves repair only
+// admits sourceJournalSequence as a canonical unsigned decimal integer: a
+// committed audit event rewritten with a non-canonical notation that still
+// decodes to the correct value must be refused.
+func TestRepairRefusesNonCanonicalAuditSequenceNotation(t *testing.T) {
+	fixture := newReadyFixture(t)
+	statePath := filepath.Join(fixture.runDir, "state.json")
+	if err := os.WriteFile(statePath, []byte(`{"broken":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Repair(context.Background(), fixture.input, time.Unix(20, 0))
+	if err != nil || first.Outcome != "applied" {
+		t.Fatalf("first repair = %+v, err = %v", first, err)
+	}
+	path := filepath.Join(fixture.runDir, "events.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"sourceJournalSequence":2`)) {
+		t.Fatalf("committed audit event does not carry the canonical literal: %s", data)
+	}
+	for _, notation := range []string{"2.0", "2e0", "-2", "02"} {
+		forged := bytes.ReplaceAll(data, []byte(`"sourceJournalSequence":2`), []byte(`"sourceJournalSequence":`+notation))
+		if err := os.WriteFile(path, forged, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(statePath, []byte(`{"broken-again":true}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		result, err := Repair(context.Background(), fixture.input, time.Unix(30, 0))
+		if err != nil || result.Outcome != "refused" {
+			t.Fatalf("notation %s accepted: %+v, err = %v", notation, result, err)
+		}
 	}
 }
 
