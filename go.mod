@@ -2,7 +2,7 @@ module github.com/chiga0/marshal-harness
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
