@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-更新时间：2026-08-12
+更新时间：2026-08-13
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
@@ -25,7 +25,17 @@ embedded/local 先行实现的 Local MVP 定义达成：标记 `USABLE`。
 
 恢复机制（不可变 `SCMMergeReceipt` 与 append-only `PublicationReconcileRecord`）已由 [ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) 于 2026-08-12 接受并合入（PR #49），冻结 `SCMMergeReceipt` 与 `PublicationReconcileRecord` 契约；typed reconciliation 实现仍待后续任务，在此之前临时护栏不变，相关 Run 保持 `BLOCKED` 终态。本阻塞不改变 M0–M6 已通过状态与 Local MVP `USABLE` 结论，相关审计 finding `PUBLICATION-MERGED-HEAD-RECONCILE-P1`（状态保持 `OPEN` 至实现合入，P1）见[设计审计报告](audit-report.md)。
 
-M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal orchestration）。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 是 M7 通过后的已接受设计增补：它不回滚 M7，也不提前完成 M8–M13；确定性 Supervisor、Typed Execution、通用副作用对账/补偿与 Goal admission 均仍待实现：
+M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal orchestration）。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 是 M7 通过后的已接受设计增补：它不回滚 M7，也不提前完成 M8–M13；确定性 Supervisor、Typed Execution、通用副作用对账/补偿与 Goal admission 均仍待实现。
+
+### Milestone 状态取值定义
+
+本文档全部 Milestone 状态只允许以下三种取值，其他文档引用 Milestone 状态时必须与本定义一致：
+
+| 状态 | 含义 |
+| --- | --- |
+| `PLANNED` | 范围未冻结或未开始实施。ADR 接受、设计冻结与契约冻结**都不改变**该状态。 |
+| `IN_PROGRESS` | 范围已冻结且已有 gate 落地 main，但该 Milestone 的退出门禁未通过。**不表示实现或 conformance 完成**，也不表示已落地的 gate 已接入执行路径。 |
+| `PASSED` | 已通过该 Milestone 的退出门禁（实现、测试、独立审计、远端 CI 全绿）。对 M7 这类设计/契约阶段 Milestone，`PASSED` 只表示设计与契约阶段通过。 |
 
 | Milestone | 状态 | 证据 |
 | --- | --- | --- |
@@ -84,6 +94,6 @@ M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal 
 
 ADR 0017 中以下历史 universal 口径就地标注**已被 ADR 0018 取代**，不再作为实施依据：所有远程副作用统一绑定完整 Task/Run/Attempt/allocation/lease 身份（现仅 dispatch-bound Port）；所有 Attempt/Artifact 接纳统一 fencing（现按 Port 分流）；所有远程请求统一额外绑定 providerType（现 public-api 禁止 providerType）；六类 Provider 注册产生 legacy CapabilitySnapshot（现为 ProviderRegistration + 不可变 ProviderCapabilitySnapshot，legacy 快照仅经 fail-closed mapper 转换）。
 
-实现状态不因文档冻结或 ADR 接受而提前升级：ADR 0017 的接受只关闭设计歧义、ADR 0018 的接受只冻结设计，均只冻结设计不升级 M8–M13 实现/conformance 状态；上表各 Milestone 状态为：M7 于 2026-08-11 通过退出门禁后更新为已通过（只表示设计与契约阶段通过，不表示后续实现或 conformance 完成），M8–M13 保持 `PLANNED`；首次 Sandbox SPI dogfood Run 的既有实现成果按**未接纳探索证据**对待，不计为 M8 实现进度；M8 须按修订后的契约（含 ADR 0018 §7 顺序硬门禁）以新任务启动，并通过其退出门禁后才可标记完成。
+实现状态不因文档冻结或 ADR 接受而提前升级：ADR 0017 的接受只关闭设计歧义、ADR 0018 的接受只冻结设计，均只冻结设计不升级 M8–M13 实现/conformance 状态；上表各 Milestone 状态为：M7 于 2026-08-11 通过退出门禁后更新为已通过（只表示设计与契约阶段通过，不表示后续实现或 conformance 完成），M8 为 `IN_PROGRESS`（gate-1/2/3/5 已落地 main，退出门禁未通过，已落地部分尚未接入执行路径），M9–M13 保持 `PLANNED`；首次 Sandbox SPI dogfood Run 的既有实现成果按**未接纳探索证据**对待，不计为 M8 实现进度；M8 须按修订后的契约（含 ADR 0018 §7 顺序硬门禁）以新任务启动，并通过其退出门禁后才可标记完成。
 
 每个 Milestone 都执行范围冻结、实现、单元/集成/E2E 测试、独立审计、提交推送和远端 CI 绿色验收。任何 P0/P1 审计问题或 CI 失败都会阻止进入下一阶段。M7–M13 还要求每个 Milestone 先通过 Local MVP 全量回归。M7 只冻结 Project/Goal 的存在性、authority ownership 与多 Run 原则；M13 才实现 ADR 0019 的完整 Goal 控制器，M7–M12 完成声明不涵盖复杂需求目标。
