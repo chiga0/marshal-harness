@@ -42,12 +42,20 @@ func TestAllLifecycleTransitions(t *testing.T) {
 func TestExplicitAbortTransitionSources(t *testing.T) {
 	t.Parallel()
 	abortEvent := func(state domain.RunState, to domain.State) domain.RunEvent {
+		payload := map[string]any{"terminalReason": AbortTerminalReason, "reason": "abandoned by operator"}
+		attemptID := "attempt:1"
+		if to == domain.StateAborted {
+			// The pre-attempt class never carries an attempt identity and
+			// binds the second closed terminalReason member.
+			payload["terminalReason"] = PreAttemptAbortTerminalReason
+			attemptID = ""
+		}
 		event := domain.RunEvent{
 			APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:abort-1",
-			RunID: state.RunID, AttemptID: "attempt:1", Sequence: state.Sequence + 1, Type: AbortEventType,
+			RunID: state.RunID, AttemptID: attemptID, Sequence: state.Sequence + 1, Type: AbortEventType,
 			StateFrom: state.State, StateTo: to, Timestamp: time.Unix(2, 0),
 			Actor:   &domain.Actor{Type: "human", ID: "operator"},
-			Payload: map[string]any{"terminalReason": AbortTerminalReason, "reason": "abandoned by operator"},
+			Payload: payload,
 		}
 		if to == domain.StateRunning {
 			event.Type = "worker.started"
@@ -62,25 +70,46 @@ func TestExplicitAbortTransitionSources(t *testing.T) {
 	}{
 		{"retry pending to blocked", domain.StateRetryPending, domain.StateBlocked, true},
 		{"retry pending to running", domain.StateRetryPending, domain.StateRunning, true},
+		{"planned to aborted", domain.StatePlanned, domain.StateAborted, true},
+		{"ready to aborted", domain.StateReady, domain.StateAborted, true},
 		{"created to blocked rejected", domain.StateCreated, domain.StateBlocked, false},
 		{"planned to blocked rejected", domain.StatePlanned, domain.StateBlocked, false},
 		{"ready to blocked rejected", domain.StateReady, domain.StateBlocked, false},
 		{"verifying to blocked rejected", domain.StateVerifying, domain.StateBlocked, false},
 		{"rework requested to blocked rejected", domain.StateReworkRequested, domain.StateBlocked, false},
+		{"created to aborted rejected", domain.StateCreated, domain.StateAborted, false},
+		{"running to aborted rejected", domain.StateRunning, domain.StateAborted, false},
+		{"retry pending to aborted rejected", domain.StateRetryPending, domain.StateAborted, false},
+		{"verifying to aborted rejected", domain.StateVerifying, domain.StateAborted, false},
+		{"review pending to aborted rejected", domain.StateReviewPending, domain.StateAborted, false},
+		{"rework requested to aborted rejected", domain.StateReworkRequested, domain.StateAborted, false},
+		{"publishing to aborted rejected", domain.StatePublishing, domain.StateAborted, false},
+		{"published to aborted rejected", domain.StatePublished, domain.StateAborted, false},
+		{"ci pending to aborted rejected", domain.StateCIPending, domain.StateAborted, false},
 		{"blocked re-abort rejected", domain.StateBlocked, domain.StateBlocked, false},
+		{"blocked to aborted re-abort rejected", domain.StateBlocked, domain.StateAborted, false},
 		{"accepted re-abort rejected", domain.StateAccepted, domain.StateBlocked, false},
 		{"rejected re-abort rejected", domain.StateRejected, domain.StateBlocked, false},
 		{"aborted re-abort rejected", domain.StateAborted, domain.StateBlocked, false},
+		{"aborted to aborted re-abort rejected", domain.StateAborted, domain.StateAborted, false},
 		{"no change re-abort rejected", domain.StateNoChange, domain.StateBlocked, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			state := domain.NewRunState("task:1", "run:1", time.Unix(1, 0))
 			state.State = test.from
-			state.CurrentAttemptID = "attempt:1"
+			if test.to != domain.StateAborted {
+				state.CurrentAttemptID = "attempt:1"
+			}
 			guard := Guard{LeaseHeld: true}
 			if test.to == domain.StateRunning {
 				guard.BudgetAvailable = true
+			}
+			if test.to == domain.StateAborted {
+				// The CLI proves every ADR 0029 negative fact before setting
+				// this guard; at the reducer level it is an independent
+				// fail-closed obligation, exercised below.
+				guard.AbortAuthorized, guard.ChildrenStopped, guard.EvidenceFlushed, guard.PreAttemptAbsenceProven = true, true, true, true
 			}
 			next, err := Reduce(state, abortEvent(state, test.to), guard)
 			if test.wantOK && err != nil {
@@ -96,11 +125,181 @@ func TestExplicitAbortTransitionSources(t *testing.T) {
 				if test.to == domain.StateBlocked && next.TerminalReason != AbortTerminalReason {
 					t.Fatalf("abort terminalReason = %q", next.TerminalReason)
 				}
+				if test.to == domain.StateAborted && next.TerminalReason != PreAttemptAbortTerminalReason {
+					t.Fatalf("pre-attempt abort terminalReason = %q", next.TerminalReason)
+				}
+				if test.to == domain.StateAborted && (next.CurrentAttemptID != "" || next.AttemptsUsed != 0) {
+					t.Fatalf("pre-attempt abort invented attempt identity: %+v", next)
+				}
 			}
 		})
 	}
 }
 
+func TestPreAttemptAbortGuardsFailClosed(t *testing.T) {
+	t.Parallel()
+	newState := func(current domain.State) domain.RunState {
+		state := domain.NewRunState("task:1", "run:1", time.Unix(1, 0))
+		state.State = current
+		return state
+	}
+	newEvent := func(state domain.RunState) domain.RunEvent {
+		return domain.RunEvent{
+			APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:abort-pre",
+			RunID: state.RunID, AttemptID: "", Sequence: state.Sequence + 1, Type: AbortEventType,
+			StateFrom: state.State, StateTo: domain.StateAborted, Timestamp: time.Unix(2, 0),
+			Actor:   &domain.Actor{Type: "human", ID: "operator"},
+			Payload: map[string]any{"terminalReason": PreAttemptAbortTerminalReason, "reason": "abandoned before any attempt"},
+		}
+	}
+	fullGuard := Guard{LeaseHeld: true, AbortAuthorized: true, ChildrenStopped: true, EvidenceFlushed: true, PreAttemptAbsenceProven: true}
+	for _, current := range []domain.State{domain.StatePlanned, domain.StateReady} {
+		current := current
+		t.Run(string(current), func(t *testing.T) {
+			mutations := []struct {
+				name   string
+				mutate func(*Guard)
+			}{
+				{"missing lease", func(g *Guard) { g.LeaseHeld = false }},
+				{"missing absence proof", func(g *Guard) { g.PreAttemptAbsenceProven = false }},
+				{"missing abort authorization", func(g *Guard) { g.AbortAuthorized = false }},
+				{"missing children-stopped proof", func(g *Guard) { g.ChildrenStopped = false }},
+				{"missing evidence-flushed proof", func(g *Guard) { g.EvidenceFlushed = false }},
+			}
+			for _, mutation := range mutations {
+				mutation := mutation
+				t.Run(mutation.name, func(t *testing.T) {
+					state := newState(current)
+					guard := fullGuard
+					mutation.mutate(&guard)
+					if _, err := Reduce(state, newEvent(state), guard); !errors.Is(err, ErrInvalidTransition) {
+						t.Fatalf("unguarded pre-attempt abort error = %v", err)
+					}
+				})
+			}
+			state := newState(current)
+			next, err := Reduce(state, newEvent(state), fullGuard)
+			if err != nil {
+				t.Fatalf("fully guarded pre-attempt abort rejected: %v", err)
+			}
+			if next.State != domain.StateAborted || next.TerminalReason != PreAttemptAbortTerminalReason {
+				t.Fatalf("pre-attempt abort result = %+v", next)
+			}
+		})
+	}
+}
+
+func TestAbortEventStructuralValidation(t *testing.T) {
+	t.Parallel()
+	baseEvent := func(current domain.State) domain.RunEvent {
+		payload := map[string]any{"terminalReason": AbortTerminalReason, "reason": "abandoned"}
+		attemptID := "attempt:1"
+		stateTo := domain.StateBlocked
+		if current == domain.StatePlanned || current == domain.StateReady {
+			payload["terminalReason"] = PreAttemptAbortTerminalReason
+			attemptID = ""
+			stateTo = domain.StateAborted
+		}
+		return domain.RunEvent{
+			APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:abort-struct",
+			RunID: "run:1", AttemptID: attemptID, Sequence: 1, Type: AbortEventType,
+			StateFrom: current, StateTo: stateTo, Timestamp: time.Unix(2, 0),
+			Actor:   &domain.Actor{Type: "human", ID: "operator"},
+			Payload: payload,
+		}
+	}
+	tests := []struct {
+		name    string
+		current domain.State
+		mutate  func(*domain.RunEvent)
+		wantErr bool
+	}{
+		{"retry pending to blocked allowed", domain.StateRetryPending, nil, false},
+		{"planned to aborted allowed", domain.StatePlanned, nil, false},
+		{"ready to aborted allowed", domain.StateReady, nil, false},
+		{"created source rejected", domain.StateCreated, func(e *domain.RunEvent) { e.StateFrom = domain.StateCreated; e.StateTo = domain.StateAborted }, true},
+		{"running source rejected", domain.StateRunning, func(e *domain.RunEvent) { e.StateFrom = domain.StateRunning; e.StateTo = domain.StateAborted }, true},
+		{"publishing source rejected", domain.StatePublishing, func(e *domain.RunEvent) { e.StateFrom = domain.StatePublishing; e.StateTo = domain.StateAborted }, true},
+		{"published source rejected", domain.StatePublished, func(e *domain.RunEvent) { e.StateFrom = domain.StatePublished; e.StateTo = domain.StateAborted }, true},
+		{"ci pending source rejected", domain.StateCIPending, func(e *domain.RunEvent) { e.StateFrom = domain.StateCIPending; e.StateTo = domain.StateAborted }, true},
+		{"terminal blocked source rejected", domain.StateBlocked, func(e *domain.RunEvent) { e.StateFrom = domain.StateBlocked; e.StateTo = domain.StateAborted }, true},
+		{"pre-attempt target must be aborted", domain.StateReady, func(e *domain.RunEvent) { e.StateTo = domain.StateBlocked }, true},
+		{"retry pending target must be blocked", domain.StateRetryPending, func(e *domain.RunEvent) { e.StateTo = domain.StateAborted; e.AttemptID = "" }, true},
+		{"pre-attempt attempt id rejected", domain.StateReady, func(e *domain.RunEvent) { e.AttemptID = "attempt:1" }, true},
+		{"omitted actor rejected", domain.StateReady, func(e *domain.RunEvent) { e.Actor = nil }, true},
+		{"system actor rejected", domain.StateReady, func(e *domain.RunEvent) { e.Actor = &domain.Actor{Type: "system", ID: "marshal-worker-runner"} }, true},
+		{"blank actor id rejected", domain.StateReady, func(e *domain.RunEvent) { e.Actor = &domain.Actor{Type: "human", ID: "   "} }, true},
+		{"wrong terminal reason rejected", domain.StateReady, func(e *domain.RunEvent) { e.Payload["terminalReason"] = AbortTerminalReason }, true},
+		{"free text terminal reason rejected", domain.StateReady, func(e *domain.RunEvent) { e.Payload["terminalReason"] = "abandoned by alice" }, true},
+		{"missing reason rejected", domain.StateReady, func(e *domain.RunEvent) { delete(e.Payload, "reason") }, true},
+		{"blank reason rejected", domain.StateReady, func(e *domain.RunEvent) { e.Payload["reason"] = "   " }, true},
+		{"extra payload field rejected", domain.StateReady, func(e *domain.RunEvent) { e.Payload["injected"] = "value" }, true},
+		{"wrong run id rejected", domain.StateReady, func(e *domain.RunEvent) { e.RunID = "run:other" }, true},
+		{"same sequence rejected", domain.StateReady, func(e *domain.RunEvent) { e.Sequence-- }, true},
+		{"skipped sequence rejected", domain.StateReady, func(e *domain.RunEvent) { e.Sequence++ }, true},
+		{"wrong from rejected", domain.StateReady, func(e *domain.RunEvent) { e.StateFrom = domain.StatePlanned }, true},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			event := baseEvent(test.current)
+			if test.mutate != nil {
+				test.mutate(&event)
+			}
+			err := ValidateTransition(test.current, "run:1", 0, event)
+			if test.wantErr && !errors.Is(err, ErrInvalidTransition) {
+				t.Fatalf("want rejection, got err = %v", err)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("abort event rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestPreAttemptAbortReduceMatchesReplay(t *testing.T) {
+	t.Parallel()
+	for _, current := range []domain.State{domain.StatePlanned, domain.StateReady} {
+		current := current
+		t.Run(string(current), func(t *testing.T) {
+			state := domain.NewRunState("task:1", "run:1", time.Unix(1, 0))
+			state.State = current
+			state.SpecDigest, state.PolicyDigest, state.CapabilityDigest = "sha256:"+repeatHex("a", 64), "sha256:"+repeatHex("b", 64), "sha256:"+repeatHex("c", 64)
+			state.BaseSHA, state.WorktreePath = repeatHex("d", 40), "/tmp/worktree"
+			event := domain.RunEvent{
+				APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:abort-pre-2",
+				RunID: state.RunID, AttemptID: "", Sequence: state.Sequence + 1, Type: AbortEventType,
+				StateFrom: state.State, StateTo: domain.StateAborted, Timestamp: time.Unix(2, 0),
+				Actor:   &domain.Actor{Type: "human", ID: "operator"},
+				Payload: map[string]any{"terminalReason": PreAttemptAbortTerminalReason, "reason": "abandoned before any attempt"},
+			}
+			reduced, err := Reduce(state, event, Guard{LeaseHeld: true, AbortAuthorized: true, ChildrenStopped: true, EvidenceFlushed: true, PreAttemptAbsenceProven: true})
+			if err != nil {
+				t.Fatalf("pre-attempt abort rejected: %v", err)
+			}
+			replayed, err := Replay(state, event)
+			if err != nil {
+				t.Fatalf("replay rejected pre-attempt abort event: %v", err)
+			}
+			if reduced != replayed {
+				t.Fatalf("pre-attempt abort reduce and replay diverge: %+v vs %+v", reduced, replayed)
+			}
+			if replayed.State != domain.StateAborted || replayed.TerminalReason != PreAttemptAbortTerminalReason {
+				t.Fatalf("replayed pre-attempt abort = %+v", replayed)
+			}
+			if replayed.AttemptsUsed != 0 || replayed.CurrentAttemptID != "" || replayed.OperationalRetriesUsed != 0 || replayed.ReviewRound != 0 || replayed.ReworkRoundsUsed != 0 {
+				t.Fatalf("pre-attempt abort mutated budget counters: %+v", replayed)
+			}
+			if replayed.SpecDigest != state.SpecDigest || replayed.PolicyDigest != state.PolicyDigest || replayed.CapabilityDigest != state.CapabilityDigest || replayed.BaseSHA != state.BaseSHA || replayed.WorktreePath != state.WorktreePath {
+				t.Fatalf("pre-attempt abort rewrote frozen inputs: %+v", replayed)
+			}
+		})
+	}
+}
+
+// TestExplicitAbortRequiresOnlyLeaseGuard keeps the frozen ADR 0012
+// semantics: the RETRY_PENDING exit needs exactly the lease guard and never
+// the pre-attempt absence proof.
 func TestExplicitAbortRequiresOnlyLeaseGuard(t *testing.T) {
 	t.Parallel()
 	state := domain.NewRunState("task:1", "run:1", time.Unix(1, 0))

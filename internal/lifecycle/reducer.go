@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
@@ -14,14 +15,23 @@ var ErrInvalidTransition = errors.New("invalid lifecycle transition")
 const RepairAuditEventType = "reconciliation.snapshot-repaired"
 
 // AbortEventType is the explicit operator abort event recorded by
-// `marshal task abort`. The lifecycle only allows it to express the
-// RETRY_PENDING -> BLOCKED transition.
+// `marshal task abort`. Its source state set is closed: the ADR 0012 exit
+// expresses RETRY_PENDING -> BLOCKED, and the ADR 0029 pre-attempt exit
+// expresses PLANNED/READY -> ABORTED for Runs that never produced an
+// Attempt. Every other source state or target fails closed.
 const AbortEventType = "run.aborted"
 
 // AbortTerminalReason is the fixed terminalReason bound to explicit operator
-// aborts. The operator-provided reason is stored as a separate payload field
-// and never inside the terminalReason value.
+// aborts of RETRY_PENDING Runs. The operator-provided reason is stored as a
+// separate payload field and never inside the terminalReason value.
 const AbortTerminalReason = "aborted-by-operator"
+
+// PreAttemptAbortTerminalReason is the fixed terminalReason bound to the
+// ADR 0029 pre-attempt abort exit (PLANNED/READY Runs with no Attempt
+// records, no publication intent, no SideEffect and no publication fact). It
+// is the second and final member of the closed terminalReason set next to
+// AbortTerminalReason; free operator text never enters either value.
+const PreAttemptAbortTerminalReason = "aborted-before-attempt"
 
 // PublicationReconcileEventType is the ADR 0026 typed reconciliation event.
 // It is the single named exception to terminal-state immutability: it may
@@ -63,6 +73,12 @@ type Guard struct {
 	AbortAuthorized        bool
 	ChildrenStopped        bool
 	EvidenceFlushed        bool
+	// PreAttemptAbsenceProven is set only after the caller affirmatively
+	// proved, against the authoritative storage of the Run, every ADR 0029
+	// negative fact: zero Attempt records, no publication intent, no
+	// SideEffect record and no publication record or published branch. An
+	// unreadable or ambiguous record fails closed instead of setting it.
+	PreAttemptAbsenceProven bool
 	// ReconcileAuthorized is set only when the SCMMergeReceipt, the
 	// PublicationReconcileRecord and the current-ledger recheck have all been
 	// validated for an ADR 0026 typed reconciliation.
@@ -144,6 +160,13 @@ func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain
 	if current.State == domain.StateCIPending && !guard.PublicationCurrent {
 		return current, fmt.Errorf("%w: current publication evidence required", ErrInvalidTransition)
 	}
+	// ADR 0029 pre-attempt exit: the PLANNED/READY abort additionally
+	// requires the caller's affirmative proof that no Attempt, publication
+	// intent, SideEffect or publication fact exists. The proof obligation is
+	// stricter than, and independent of, the generic ABORTED gate below.
+	if event.Type == AbortEventType && (current.State == domain.StatePlanned || current.State == domain.StateReady) && !guard.PreAttemptAbsenceProven {
+		return current, fmt.Errorf("%w: pre-attempt abort requires the proven absence of attempts, publication intent, side effects and publication facts", ErrInvalidTransition)
+	}
 	if event.StateTo == domain.StateAborted && (!guard.AbortAuthorized || !guard.ChildrenStopped || !guard.EvidenceFlushed) {
 		return current, fmt.Errorf("%w: authorized abort with stopped children and flushed evidence required", ErrInvalidTransition)
 	}
@@ -197,6 +220,36 @@ func ValidateTransition(current domain.State, runID string, sequence uint64, eve
 		}
 		return nil
 	}
+	if event.Type == AbortEventType {
+		// Closed source-state set (ADR 0012 + ADR 0029): the explicit abort
+		// event never borrows the generic StateAborted structural exception
+		// that other event types (control-plane interventions) use.
+		switch current {
+		case domain.StateRetryPending:
+			if event.StateTo != domain.StateBlocked {
+				return fmt.Errorf("%w: run.aborted allows RETRY_PENDING -> BLOCKED only", ErrInvalidTransition)
+			}
+		case domain.StatePlanned, domain.StateReady:
+			if event.StateTo != domain.StateAborted {
+				return fmt.Errorf("%w: pre-attempt run.aborted allows PLANNED/READY -> ABORTED only", ErrInvalidTransition)
+			}
+			if event.AttemptID != "" {
+				return fmt.Errorf("%w: pre-attempt run.aborted must not carry an attempt identity", ErrInvalidTransition)
+			}
+		default:
+			return fmt.Errorf("%w: run.aborted source state %s is not eligible", ErrInvalidTransition, current)
+		}
+		if event.Actor == nil || event.Actor.Type != domain.ControlSourceTypeHuman || strings.TrimSpace(event.Actor.ID) == "" {
+			return fmt.Errorf("%w: run.aborted requires a human actor identity", ErrInvalidTransition)
+		}
+		if err := validateAbortPayload(current, event.Payload); err != nil {
+			return err
+		}
+		if event.RunID != runID || event.Sequence != sequence+1 || event.StateFrom != current {
+			return fmt.Errorf("%w: event identity or sequence does not match current state", ErrInvalidTransition)
+		}
+		return nil
+	}
 	if current.Terminal() {
 		return fmt.Errorf("%w: terminal state %s", ErrInvalidTransition, current)
 	}
@@ -205,6 +258,30 @@ func ValidateTransition(current domain.State, runID string, sequence uint64, eve
 	}
 	if event.StateTo != domain.StateAborted && !allowed[current][event.StateTo] {
 		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, current, event.StateTo)
+	}
+	return nil
+}
+
+// validateAbortPayload freezes the run.aborted payload shape: exactly the
+// machine terminalReason bound to the source class plus the operator reason
+// as a separate free-text field. Any other key, a missing value or a
+// terminalReason outside the closed set fails closed, so a journal entry can
+// never carry injected machine fields.
+func validateAbortPayload(current domain.State, payload map[string]any) error {
+	expected := AbortTerminalReason
+	if current == domain.StatePlanned || current == domain.StateReady {
+		expected = PreAttemptAbortTerminalReason
+	}
+	if len(payload) != 2 {
+		return fmt.Errorf("%w: run.aborted payload must carry exactly terminalReason and reason", ErrInvalidTransition)
+	}
+	terminalReason, ok := payload["terminalReason"].(string)
+	if !ok || terminalReason != expected {
+		return fmt.Errorf("%w: run.aborted terminalReason must be %s", ErrInvalidTransition, expected)
+	}
+	reason, ok := payload["reason"].(string)
+	if !ok || strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("%w: run.aborted reason must be a non-empty operator string", ErrInvalidTransition)
 	}
 	return nil
 }

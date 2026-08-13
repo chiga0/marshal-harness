@@ -852,6 +852,28 @@ func writeExpiredResult(result cleanupservice.ExpiredResult, apply, jsonOutput b
 	return ExitOK
 }
 
+// ADR 0029 pre-attempt abort rejection sentinels (closed set, machine
+// readable). The sentinel is the fixed skeleton of every rejection message
+// and of the --json rejection output; operator free text never participates
+// in it. Extending the set requires an ADR revision, never code alone.
+const (
+	abortDeniedAttemptExists         = "abort-denied-attempt-exists"
+	abortDeniedPublicationIntent     = "abort-denied-publication-intent-present"
+	abortDeniedSideEffect            = "abort-denied-side-effect-present"
+	abortDeniedPublicationPresent    = "abort-denied-publication-present"
+	abortDeniedPublicationInProgress = "abort-denied-publication-in-progress"
+	abortDeniedStateNotEligible      = "abort-denied-state-not-eligible"
+)
+
+var abortDeniedGuidance = map[string]string{
+	abortDeniedAttemptExists:         "存在 Attempt 记录；等待状态推进后经 RETRY_PENDING abort 出口处置，或经 intervention 路径处置活跃 Run",
+	abortDeniedPublicationIntent:     "存在发布意图记录；先行处置发布意图（撤销/对账），或人工护栏",
+	abortDeniedSideEffect:            "存在 SideEffect 记录或无法判定的效果事实；经 append-only 副作用对账/补偿处置，或人工护栏",
+	abortDeniedPublicationPresent:    "存在发布记录或已发布分支；经 typed reconciliation 处置，或人工护栏",
+	abortDeniedPublicationInProgress: "发布事务进行中；待发布事务落定后经 reconcile 处置，或人工护栏",
+	abortDeniedStateNotEligible:      "当前状态不允许显式终止；活跃 Run 经 intervention 路径处置",
+}
+
 func runTaskAbort(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("task abort", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -886,14 +908,27 @@ func runTaskAbort(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "终止失败：%v\n", err)
 		return ExitFailure
 	}
-	if state.State != domain.StateRetryPending {
-		if state.State.Terminal() {
-			fmt.Fprintf(stderr, "终止失败：Run 已处于终态 %s，不能再次终止。\n", state.State)
-		} else {
-			fmt.Fprintf(stderr, "终止失败：仅允许从 RETRY_PENDING 显式终止。\n")
-		}
-		return ExitFailure
+	if state.State.Terminal() {
+		return finishTerminalAbortRequest(location, store, lease, state, abortActor, abortReason, *jsonOutput, stdout, stderr)
 	}
+	switch state.State {
+	case domain.StateRetryPending:
+		return abortRetryPendingRun(location, store, lease, state, abortActor, abortReason, *jsonOutput, stdout, stderr)
+	case domain.StatePlanned, domain.StateReady:
+		return abortPreAttemptRun(location, store, lease, state, abortActor, abortReason, *jsonOutput, stdout, stderr)
+	case domain.StatePublishing:
+		return writeAbortDenied(abortDeniedPublicationInProgress, state.State, *jsonOutput, stdout, stderr)
+	case domain.StatePublished, domain.StateCIPending:
+		return writeAbortDenied(abortDeniedPublicationPresent, state.State, *jsonOutput, stdout, stderr)
+	default:
+		return writeAbortDenied(abortDeniedStateNotEligible, state.State, *jsonOutput, stdout, stderr)
+	}
+}
+
+// abortRetryPendingRun is the unchanged ADR 0012 exit: RETRY_PENDING ->
+// BLOCKED with terminalReason aborted-by-operator, preserving the current
+// Attempt identity on the event and every frozen message.
+func abortRetryPendingRun(location repository.State, store *runstore.Store, lease *runstore.Lease, state domain.RunState, abortActor, abortReason string, jsonOutput bool, stdout, stderr io.Writer) int {
 	eventID, err := domain.NewID("event")
 	if err != nil {
 		fmt.Fprintf(stderr, "终止失败：生成事件 ID：%v\n", err)
@@ -922,7 +957,7 @@ func runTaskAbort(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "终止失败：摘要终止证据：%v\n", err)
 		return ExitFailure
 	}
-	runDirectory := filepath.Join(location.StateRoot, "runs", *runID)
+	runDirectory := filepath.Join(location.StateRoot, "runs", state.RunID)
 	prepared, err := review.PrepareOutcome(runDirectory, review.OutcomeData{
 		TaskID: state.TaskID, RunID: state.RunID, TerminalState: domain.StateBlocked, Verdict: "abort",
 		FinalReviewRound: max(1, state.ReviewRound), FinalReviewDigest: abortDigest, FinalEvidenceDigest: abortDigest,
@@ -932,7 +967,7 @@ func runTaskAbort(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "终止失败：准备终态 Outcome：%v\n", err)
 		return ExitFailure
 	}
-	if err := stageAbortResult(runDirectory, state, abortActor, abortReason, timestamp); err != nil {
+	if err := stageAbortResult(runDirectory, state, abortActor, abortReason, timestamp, domain.StateBlocked, lifecycle.AbortTerminalReason); err != nil {
 		prepared.Abort()
 		fmt.Fprintf(stderr, "终止失败：准备终止记录：%v\n", err)
 		return ExitFailure
@@ -955,7 +990,226 @@ func runTaskAbort(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "终止失败：写入状态快照：%v\nJournal 与终态 Outcome 已保留，需执行恢复检查。\n", err)
 		return ExitFailure
 	}
-	if *jsonOutput {
+	return writeAbortSuccess(event, lifecycle.AbortTerminalReason, abortActor, jsonOutput, stdout, stderr)
+}
+
+// abortPreAttemptRun is the ADR 0029 exit: PLANNED/READY Runs that never
+// produced an Attempt terminate to ABORTED with terminalReason
+// aborted-before-attempt. Every negative fact is proven affirmatively
+// against the authoritative storage before any write; any conflict fails
+// closed with byte-for-byte unchanged journal, state, outcome and worktree.
+func abortPreAttemptRun(location repository.State, store *runstore.Store, lease *runstore.Lease, state domain.RunState, abortActor, abortReason string, jsonOutput bool, stdout, stderr io.Writer) int {
+	runDirectory := filepath.Join(location.StateRoot, "runs", state.RunID)
+	events, _, err := store.ReadEvents(state.RunID)
+	if err != nil {
+		fmt.Fprintf(stderr, "终止失败：%v\n", err)
+		return ExitFailure
+	}
+	if uint64(len(events)) != state.Sequence {
+		fmt.Fprintln(stderr, "终止失败：Run 快照与日志不一致，需先执行对账。")
+		return ExitFailure
+	}
+	if sentinel, ok := provePreAttemptAbsence(store, state, runDirectory, events); !ok {
+		return writeAbortDenied(sentinel, state.State, jsonOutput, stdout, stderr)
+	}
+	eventID, err := domain.NewID("event")
+	if err != nil {
+		fmt.Fprintf(stderr, "终止失败：生成事件 ID：%v\n", err)
+		return ExitFailure
+	}
+	timestamp := time.Now().UTC()
+	payload := map[string]any{"terminalReason": lifecycle.PreAttemptAbortTerminalReason, "reason": abortReason}
+	event := domain.RunEvent{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: eventID, RunID: state.RunID,
+		AttemptID: "", Sequence: state.Sequence + 1, Type: lifecycle.AbortEventType,
+		StateFrom: state.State, StateTo: domain.StateAborted, Timestamp: timestamp,
+		Actor: &domain.Actor{Type: domain.ControlSourceTypeHuman, ID: abortActor}, Payload: payload,
+	}
+	nextState, err := lifecycle.Reduce(state, event, lifecycle.Guard{LeaseHeld: true, AbortAuthorized: true, ChildrenStopped: true, EvidenceFlushed: true, PreAttemptAbsenceProven: true})
+	if err != nil {
+		fmt.Fprintf(stderr, "终止失败：生命周期转换：%v\n", err)
+		return ExitFailure
+	}
+	payloadData, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Fprintf(stderr, "终止失败：编码终止证据：%v\n", err)
+		return ExitFailure
+	}
+	abortDigest, err := canonical.DigestJSON(payloadData)
+	if err != nil {
+		fmt.Fprintf(stderr, "终止失败：摘要终止证据：%v\n", err)
+		return ExitFailure
+	}
+	prepared, err := review.PrepareOutcome(runDirectory, review.OutcomeData{
+		TaskID: state.TaskID, RunID: state.RunID, TerminalState: domain.StateAborted, Verdict: "abort",
+		FinalReviewRound: max(1, state.ReviewRound), FinalReviewDigest: abortDigest, FinalEvidenceDigest: abortDigest,
+		Summary: abortReason, FindingCount: 0, GeneratedAt: timestamp,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "终止失败：准备终态 Outcome：%v\n", err)
+		return ExitFailure
+	}
+	if err := stageAbortResult(runDirectory, state, abortActor, abortReason, timestamp, domain.StateAborted, lifecycle.PreAttemptAbortTerminalReason); err != nil {
+		prepared.Abort()
+		fmt.Fprintf(stderr, "终止失败：准备终止记录：%v\n", err)
+		return ExitFailure
+	}
+	if err := store.Append(lease, event, state.Sequence); err != nil {
+		prepared.Abort()
+		removeAbortResult(runDirectory)
+		fmt.Fprintf(stderr, "终止失败：记录事件：%v\n", err)
+		return ExitFailure
+	}
+	if err := commitAbortResult(runDirectory); err != nil {
+		fmt.Fprintf(stderr, "终止失败：提交终止记录：%v\nJournal 事件已保留，需执行恢复检查。\n", err)
+		return ExitFailure
+	}
+	if err := prepared.Commit(); err != nil {
+		fmt.Fprintf(stderr, "终止失败：提交终态 Outcome：%v\nJournal 与终止记录已保留，需执行恢复检查。\n", err)
+		return ExitFailure
+	}
+	if err := store.WriteSnapshot(lease, nextState); err != nil {
+		fmt.Fprintf(stderr, "终止失败：写入状态快照：%v\nJournal 与终态 Outcome 已保留，需执行恢复检查。\n", err)
+		return ExitFailure
+	}
+	return writeAbortSuccess(event, lifecycle.PreAttemptAbortTerminalReason, abortActor, jsonOutput, stdout, stderr)
+}
+
+// finishTerminalAbortRequest decides a repeat abort request against a
+// terminal Run: an identical request (same Run, same abort authority event,
+// same actor/reason/request digest) idempotently returns the existing
+// terminal result and completes any crash-interrupted outcome/result/
+// snapshot writes from the same authority event; a divergent request against
+// an abort-closed Run is a deterministic conflict with zero writes; any
+// other terminal Run keeps the ADR 0012 re-entry rejection.
+func finishTerminalAbortRequest(location repository.State, store *runstore.Store, lease *runstore.Lease, state domain.RunState, abortActor, abortReason string, jsonOutput bool, stdout, stderr io.Writer) int {
+	events, _, err := store.ReadEvents(state.RunID)
+	if err == nil {
+		if authority, ok := terminalAbortAuthority(events, state); ok {
+			if abortRequestMatches(authority, abortActor, abortReason) {
+				return completeIdempotentAbort(location, store, lease, state, authority, jsonOutput, stdout, stderr)
+			}
+			fmt.Fprintf(stderr, "终止失败：Run 已处于终态 %s 且已由终止记录关闭；本次请求与该记录身份不一致，未写入任何事件或 Outcome。\n", state.State)
+			return ExitFailure
+		}
+	}
+	fmt.Fprintf(stderr, "终止失败：Run 已处于终态 %s，不能再次终止。\n", state.State)
+	return ExitFailure
+}
+
+// terminalAbortAuthority locates the run.aborted event that closed the Run,
+// tolerating only same-state repair-audit events after it; any other
+// authority fact after the abort means the terminal state was produced by
+// another exit and the request must not masquerade as an idempotent abort.
+func terminalAbortAuthority(events []domain.RunEvent, state domain.RunState) (domain.RunEvent, bool) {
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type == lifecycle.AbortEventType {
+			return event, event.StateTo == state.State
+		}
+		if event.Type != lifecycle.RepairAuditEventType || event.StateFrom != state.State || event.StateTo != state.State {
+			return domain.RunEvent{}, false
+		}
+	}
+	return domain.RunEvent{}, false
+}
+
+// abortRequestMatches checks the frozen idempotency identity of a repeat
+// request: the same human actor, the same operator reason, and a recorded
+// payload that is exactly {terminalReason, reason} — digest equality proves
+// no extra payload field was recorded, so a forged or extended abort record
+// can never satisfy a repeat request.
+func abortRequestMatches(event domain.RunEvent, actor, reason string) bool {
+	if event.Actor == nil || event.Actor.Type != domain.ControlSourceTypeHuman || event.Actor.ID != actor {
+		return false
+	}
+	terminalReason, _ := event.Payload["terminalReason"].(string)
+	if terminalReason != lifecycle.AbortTerminalReason && terminalReason != lifecycle.PreAttemptAbortTerminalReason {
+		return false
+	}
+	recordedReason, _ := event.Payload["reason"].(string)
+	if recordedReason != reason {
+		return false
+	}
+	recordedData, err := json.Marshal(event.Payload)
+	if err != nil {
+		return false
+	}
+	recordedDigest, err := canonical.DigestJSON(recordedData)
+	if err != nil {
+		return false
+	}
+	requestedData, err := json.Marshal(map[string]any{"terminalReason": terminalReason, "reason": reason})
+	if err != nil {
+		return false
+	}
+	requestedDigest, err := canonical.DigestJSON(requestedData)
+	if err != nil {
+		return false
+	}
+	return recordedDigest == requestedDigest
+}
+
+// completeIdempotentAbort returns the existing terminal result of an
+// identical repeat request and completes outcome/result/snapshot writes that
+// a crash interrupted after the journal append — always from the same
+// authority event, never appending a second abort event, rewriting the first
+// event or forging a new evidence digest. Committed evidence is never
+// rewritten: each artifact is only created when still missing, with the
+// recorded event's timestamp and payload digest.
+func completeIdempotentAbort(location repository.State, store *runstore.Store, lease *runstore.Lease, state domain.RunState, authority domain.RunEvent, jsonOutput bool, stdout, stderr io.Writer) int {
+	runDirectory := filepath.Join(location.StateRoot, "runs", state.RunID)
+	reason, _ := authority.Payload["reason"].(string)
+	terminalReason, _ := authority.Payload["terminalReason"].(string)
+	actorID := authority.Actor.ID
+	if !evidencePresent(filepath.Join(runDirectory, "outcome.json")) {
+		payloadData, err := json.Marshal(authority.Payload)
+		if err != nil {
+			fmt.Fprintf(stderr, "终止失败：编码终止证据：%v\n", err)
+			return ExitFailure
+		}
+		abortDigest, err := canonical.DigestJSON(payloadData)
+		if err != nil {
+			fmt.Fprintf(stderr, "终止失败：摘要终止证据：%v\n", err)
+			return ExitFailure
+		}
+		prepared, err := review.PrepareOutcome(runDirectory, review.OutcomeData{
+			TaskID: state.TaskID, RunID: state.RunID, TerminalState: state.State, Verdict: "abort",
+			FinalReviewRound: max(1, state.ReviewRound), FinalReviewDigest: abortDigest, FinalEvidenceDigest: abortDigest,
+			Summary: reason, FindingCount: 0, GeneratedAt: authority.Timestamp,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "终止失败：准备终态 Outcome：%v\n", err)
+			return ExitFailure
+		}
+		if err := prepared.Commit(); err != nil {
+			fmt.Fprintf(stderr, "终止失败：提交终态 Outcome：%v\n", err)
+			return ExitFailure
+		}
+	}
+	if !evidencePresent(filepath.Join(runDirectory, "result.md")) {
+		if err := stageAbortResult(runDirectory, state, actorID, reason, authority.Timestamp, state.State, terminalReason); err != nil {
+			fmt.Fprintf(stderr, "终止失败：准备终止记录：%v\n", err)
+			return ExitFailure
+		}
+		if err := commitAbortResult(runDirectory); err != nil {
+			fmt.Fprintf(stderr, "终止失败：提交终止记录：%v\n", err)
+			return ExitFailure
+		}
+	}
+	if snapshot, err := store.ReadSnapshot(state.RunID); err != nil || snapshot.Sequence != state.Sequence || snapshot.State != state.State {
+		if err := store.WriteSnapshot(lease, state); err != nil {
+			fmt.Fprintf(stderr, "终止失败：写入状态快照：%v\n", err)
+			return ExitFailure
+		}
+	}
+	return writeAbortSuccess(authority, terminalReason, actorID, jsonOutput, stdout, stderr)
+}
+
+// writeAbortSuccess renders one successful abort result; the text and JSON
+// shapes are shared by both exits and by the idempotent repeat path.
+func writeAbortSuccess(event domain.RunEvent, terminalReason, abortActor string, jsonOutput bool, stdout, stderr io.Writer) int {
+	if jsonOutput {
 		if err := writeJSON(stdout, struct {
 			Status         string       `json:"status"`
 			RunID          string       `json:"runId"`
@@ -963,17 +1217,159 @@ func runTaskAbort(args []string, stdout, stderr io.Writer) int {
 			TerminalReason string       `json:"terminalReason"`
 			Actor          string       `json:"actor"`
 			Sequence       uint64       `json:"sequence"`
-		}{"aborted", state.RunID, nextState.State, lifecycle.AbortTerminalReason, abortActor, nextState.Sequence}); err != nil {
+		}{"aborted", event.RunID, event.StateTo, terminalReason, abortActor, event.Sequence}); err != nil {
 			fmt.Fprintf(stderr, "输出终止结果失败：%v\n", err)
 			return ExitFailure
 		}
 		return ExitOK
 	}
-	fmt.Fprintf(stdout, "Run：%s\n状态：RETRY_PENDING → BLOCKED\n终态原因：%s\n操作者：%s\n", state.RunID, lifecycle.AbortTerminalReason, abortActor)
+	fmt.Fprintf(stdout, "Run：%s\n状态：%s → %s\n终态原因：%s\n操作者：%s\n", event.RunID, event.StateFrom, event.StateTo, terminalReason, abortActor)
 	return ExitOK
 }
 
-func stageAbortResult(runDirectory string, state domain.RunState, actor, reason string, now time.Time) error {
+// writeAbortDenied renders one fixed sentinel rejection: the sentinel is the
+// machine-readable skeleton on stderr and, when requested, on --json stdout;
+// operator free text never participates in either.
+func writeAbortDenied(sentinel string, state domain.State, jsonOutput bool, stdout, stderr io.Writer) int {
+	fmt.Fprintf(stderr, "终止失败：%s：%s。\n", sentinel, abortDeniedGuidance[sentinel])
+	if jsonOutput {
+		if err := writeJSON(stdout, struct {
+			Status   string       `json:"status"`
+			Sentinel string       `json:"sentinel"`
+			State    domain.State `json:"state"`
+		}{"rejected", sentinel, state}); err != nil {
+			fmt.Fprintf(stderr, "输出终止结果失败：%v\n", err)
+		}
+	}
+	return ExitFailure
+}
+
+// provePreAttemptAbsence affirmatively proves every ADR 0029 negative fact
+// against the Run's authoritative storage while the caller holds the Run
+// lease. It follows the frozen decision order — Attempt records, publication
+// intent, SideEffects, publication facts — and returns the fixed denial
+// sentinel of the first condition that fails. Any unreadable or ambiguous
+// record fails closed; absence is never presumed.
+func provePreAttemptAbsence(store *runstore.Store, state domain.RunState, runDirectory string, events []domain.RunEvent) (string, bool) {
+	// Negative condition 2: zero Attempt records — "never produced an
+	// Attempt", not merely "no Attempt currently running".
+	if state.CurrentAttemptID != "" || state.AttemptsUsed != 0 {
+		return abortDeniedAttemptExists, false
+	}
+	for _, event := range events {
+		if event.AttemptID != "" || event.Type == "worker.started" {
+			return abortDeniedAttemptExists, false
+		}
+	}
+	if !attemptTreeProvenAbsent(runDirectory) {
+		return abortDeniedAttemptExists, false
+	}
+	// Negative condition 3: no publication intent record.
+	if evidencePresent(filepath.Join(runDirectory, "publication-intent.json")) ||
+		evidencePresent(filepath.Join(runDirectory, "publication-intent.json.pending")) {
+		return abortDeniedPublicationIntent, false
+	}
+	// Negative condition 4: no SideEffect record and no other effect-bearing
+	// or ambiguous fact.
+	if sideEffectFactPresent(store, state, runDirectory, events) {
+		return abortDeniedSideEffect, false
+	}
+	// Negative condition 5: no PublicationRecord and no published branch.
+	if publicationFactPresent(state, runDirectory) {
+		return abortDeniedPublicationPresent, false
+	}
+	return "", true
+}
+
+// attemptTreeProvenAbsent proves the Run's attempt tree either does not
+// exist or holds zero entries; any unreadable, linked or populated tree
+// fails closed as present.
+func attemptTreeProvenAbsent(runDirectory string) bool {
+	attemptsRoot := filepath.Join(runDirectory, "attempts")
+	info, err := os.Lstat(attemptsRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false
+	}
+	entries, err := os.ReadDir(attemptsRoot)
+	if err != nil {
+		return false
+	}
+	return len(entries) == 0
+}
+
+// sideEffectFactPresent fails closed on any SideEffect-bearing or ambiguous
+// effect fact: execution/verification/review/publication/control authority
+// events that cannot predate the first Attempt, control records that
+// authorize or record effects (publish approvals, interventions), and their
+// transaction artifacts. The Local MVP keeps sandbox allocations in-memory
+// and bound to (runId, attemptId); once zero Attempt records are proven
+// above, no allocation, lease or session can belong to this Run.
+func sideEffectFactPresent(store *runstore.Store, state domain.RunState, runDirectory string, events []domain.RunEvent) bool {
+	for _, event := range events {
+		if event.AttemptID != "" ||
+			strings.HasPrefix(event.Type, "review.") || strings.HasPrefix(event.Type, "publication.") ||
+			strings.HasPrefix(event.Type, "control.") || strings.HasPrefix(event.Type, "worker.") ||
+			event.Type == "verification.completed" {
+			return true
+		}
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		return true
+	}
+	records, err := store.ReadControlRecords(state.RunID, validator)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	for _, record := range records {
+		if record.Intervention != nil {
+			return true
+		}
+		if record.Approval != nil && record.Approval.Gate == domain.ApprovalGatePublish {
+			return true
+		}
+	}
+	for _, name := range []string{"verification-report.json", "artifact-manifest.json", "review-packet.json", "remote-check-record.json"} {
+		if evidencePresent(filepath.Join(runDirectory, name)) {
+			return true
+		}
+	}
+	for _, directory := range []string{"decisions", "review-packets"} {
+		if evidencePresent(filepath.Join(runDirectory, directory)) {
+			return true
+		}
+	}
+	return false
+}
+
+// publicationFactPresent fails closed on any publication record, publication
+// error receipt, archived publication generation or in-snapshot publication
+// identity; all of them evidence a remote fact that must be reconciled, not
+// aborted away.
+func publicationFactPresent(state domain.RunState, runDirectory string) bool {
+	if state.Publication != nil {
+		return true
+	}
+	for _, name := range []string{"publication-record.json", "publication-error.json"} {
+		if evidencePresent(filepath.Join(runDirectory, name)) {
+			return true
+		}
+	}
+	return evidencePresent(filepath.Join(runDirectory, "publications"))
+}
+
+// evidencePresent reports whether any filesystem entry exists at path; an
+// unreadable or ambiguous entry fails closed as present, so absence is only
+// proven by os.ErrNotExist.
+func evidencePresent(path string) bool {
+	_, err := os.Lstat(path)
+	return !errors.Is(err, os.ErrNotExist)
+}
+
+func stageAbortResult(runDirectory string, state domain.RunState, actor, reason string, now time.Time, terminalState domain.State, terminalReason string) error {
 	if _, err := os.Lstat(filepath.Join(runDirectory, "result.md")); err == nil {
 		return errors.New("terminal result.md already exists")
 	} else if !os.IsNotExist(err) {
@@ -983,7 +1379,7 @@ func stageAbortResult(runDirectory string, state domain.RunState, actor, reason 
 	if err := os.Remove(pending); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	content := fmt.Sprintf("# Run 终止记录\n\n- 任务 ID：%s\n- Run ID：%s\n- 终态：BLOCKED\n- 终态原因：%s\n- 操作者：%s\n- 终止原因：%s\n- 生成时间：%s\n", state.TaskID, state.RunID, lifecycle.AbortTerminalReason, actor, reason, now.UTC().Format(time.RFC3339))
+	content := fmt.Sprintf("# Run 终止记录\n\n- 任务 ID：%s\n- Run ID：%s\n- 终态：%s\n- 终态原因：%s\n- 操作者：%s\n- 终止原因：%s\n- 生成时间：%s\n", state.TaskID, state.RunID, terminalState, terminalReason, actor, reason, now.UTC().Format(time.RFC3339))
 	file, err := os.OpenFile(pending, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
