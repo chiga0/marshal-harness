@@ -46,8 +46,11 @@ Verifier 是确定性组件，不调用 LLM。主 Agent 基于有边界、绑定
 - 没有路径匹配 `denyPaths`；
 - Rename 两端都被允许；
 - 文件数与 diff size 未超限；
-- Generated/Vendor Area 满足仓库策略；
-- Unexpected Deletion 与 Executable-bit Change 被显式报告。
+- Generated/Vendor Area 满足仓库策略（由 `allowPaths`/`denyPaths` glob 判定）。
+
+Scope Gate 的判定输入**只有**路径字符串、变更计数、diff 字节数、submodule 与 symlink 逃逸；它不解析 patch 内容。
+
+> **当前未实现（跟踪见 [Issue #86](https://github.com/chiga0/marshal-harness/issues/86)）**：Unexpected Deletion 与 Executable-bit Change 尚未参与 Scope Gate 判定。第 2 节的 Diff 观察确实记录了每个变更的 `status`（含删除 `D`）与 Mode Change，但两者都未被任何 Gate 消费。因此测试文件删除、测试函数删除与新增 skip 类标记（`t.Skip`、`@pytest.mark.skip`、`xfail`、`.only`）**不会被机械拦截**，只要路径落在 `allowPaths` 内且未超文件数与 diff 上限；当前对这类改动的唯一防线是 Reviewer 的语义审查。本节此前声称这两项「被显式报告」，与实现不符，已更正为如实描述，不表示放弃该门禁——是否实现由 Issue #86 决定。
 
 ### 4. Deliverable
 
