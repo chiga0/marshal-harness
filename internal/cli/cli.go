@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/app"
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	cleanupservice "github.com/chiga0/marshal-harness/internal/cleanup"
@@ -1846,6 +1847,25 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 		return ExitFailure
 	}
 	runDirectory := filepath.Join(location.StateRoot, "runs", runID)
+	// ADR 0027 candidate mode is switched on by the Attempt identity bound to
+	// the Run state; the lifecycle reducer always binds it before VERIFYING.
+	// Legacy snapshots that predate the binding keep the pre-ADR-0027 path
+	// (§5 legacy fallback): verification stays available and simply admits no
+	// Candidate records instead of inventing an identity.
+	attemptID := state.CurrentAttemptID
+	authorityNamespaceID := ""
+	if attemptID != "" {
+		if err := domain.ValidateID(attemptID); err != nil {
+			fmt.Fprintf(stderr, "验证失败：Run 当前 Attempt 身份非法：%v\n", err)
+			return ExitFailure
+		}
+		derived, deriveErr := verifyAuthorityNamespaceID(location.RepositoryRoot)
+		if deriveErr != nil {
+			fmt.Fprintf(stderr, "验证失败：推导权威键空间：%v\n", deriveErr)
+			return ExitFailure
+		}
+		authorityNamespaceID = derived
+	}
 	taskData, err := readInput(filepath.Join(runDirectory, "task-spec.json"), strings.NewReader(""))
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：读取冻结 TaskSpec：%v\n", err)
@@ -1904,7 +1924,7 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 	}
 	verificationContext, cancelVerification := context.WithTimeout(ctx, time.Duration(task.Budgets.RunTimeoutSeconds)*time.Second)
 	defer cancelVerification()
-	result, err := verification.New().Verify(verificationContext, verification.Input{TaskID: state.TaskID, RunID: state.RunID, SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, Worktree: state.WorktreePath, ExpectedCommonDir: repositoryIdentity.CommonDir, RunDirectory: runDirectory, Scope: scope, Deliverables: deliverables, Commands: commands, BaselinePath: baselinePath, PatchCaptureBytes: patchCaptureLimit(scope.MaxDiffBytes)})
+	result, err := verification.New().Verify(verificationContext, verification.Input{TaskID: state.TaskID, RunID: state.RunID, AttemptID: attemptID, AuthorityNamespaceID: authorityNamespaceID, SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, Worktree: state.WorktreePath, ExpectedCommonDir: repositoryIdentity.CommonDir, RunDirectory: runDirectory, Scope: scope, Deliverables: deliverables, Commands: commands, BaselinePath: baselinePath, PatchCaptureBytes: patchCaptureLimit(scope.MaxDiffBytes)})
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：%v\n", err)
 		return ExitFailure
@@ -1967,6 +1987,17 @@ func patchCaptureLimit(maxDiffBytes int64) int64 {
 		return 64 << 20
 	}
 	return maxDiffBytes + 1
+}
+
+// verifyAuthorityNamespaceID derives the frozen local authority key space
+// that owns the ADR 0027 Candidate records, identically to ADR 0026:
+// tenantNamespace=local, controlPlaneId=default, authorityScopeId=repository
+// identity. location.RepositoryRoot equals the RepositoryRoot bound into
+// repo.json (ValidateIdentity enforces the binding), so every capture site
+// derives the identical digest.
+func verifyAuthorityNamespaceID(repositoryRoot string) (string, error) {
+	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: repositoryRoot}
+	return namespace.Digest()
 }
 
 func commandsNeedBaseline(commands []verification.CommandSpec) bool {

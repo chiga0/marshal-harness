@@ -81,6 +81,7 @@
         "externalId": { "type": "string", "minLength": 1, "maxLength": 1024 },
         "byteSize": { "type": "integer", "minimum": 0 },
         "digest": { "$ref": "#/$defs/digest" },
+        "candidateDigest": { "$ref": "#/$defs/digest" },
         "attemptId": { "$ref": "#/$defs/id" },
         "createdAt": { "type": "string", "format": "date-time" },
         "redacted": { "type": "boolean" },

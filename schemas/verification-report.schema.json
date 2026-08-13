@@ -49,6 +49,8 @@
         "hasUntrackedFiles": { "type": "boolean" }
       }
     },
+    "workerCandidateDigest": { "$ref": "#/$defs/digest" },
+    "candidateDigest": { "$ref": "#/$defs/digest" },
     "status": {
       "type": "string",
       "enum": ["pass", "fail", "error", "cancelled"]

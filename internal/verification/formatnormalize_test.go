@@ -171,7 +171,7 @@ func TestNormalizeFormatFailsClosed(t *testing.T) {
 }
 
 func TestFormatNormalizeGateEvidenceListsNormalizedFiles(t *testing.T) {
-	gate := formatNormalizeGate([]string{"pkg/a.go", "pkg/b.go"})
+	gate := formatNormalizeGate([]string{"pkg/a.go", "pkg/b.go"}, "")
 	if gate.ID != "format:normalize" || gate.Category != "other" || gate.Status != "pass" || gate.Required {
 		t.Fatalf("gate = %+v", gate)
 	}
@@ -181,11 +181,28 @@ func TestFormatNormalizeGateEvidenceListsNormalizedFiles(t *testing.T) {
 	if len(gate.Evidence) != 2 || gate.Evidence[0] != "normalized:pkg/a.go" || gate.Evidence[1] != "normalized:pkg/b.go" {
 		t.Fatalf("evidence = %+v", gate.Evidence)
 	}
-	empty := formatNormalizeGate(nil)
+	empty := formatNormalizeGate(nil, "")
 	if empty.ID != "format:normalize" || empty.Status != "pass" || empty.Required || len(empty.Evidence) != 0 {
 		t.Fatalf("empty gate = %+v", empty)
 	}
 	if empty.Summary != "无需 gofmt 归一化：所有变更 .go 文件均已合规" {
 		t.Fatalf("empty summary = %q", empty.Summary)
+	}
+}
+
+func TestFormatNormalizeGateEvidenceCarriesCandidateReference(t *testing.T) {
+	candidateDigest := candidateFixtureDigest("c")
+	gate := formatNormalizeGate([]string{"pkg/a.go"}, candidateDigest)
+	if len(gate.Evidence) != 2 || gate.Evidence[0] != "normalized:pkg/a.go" || gate.Evidence[1] != "candidate:"+candidateDigest {
+		t.Fatalf("evidence = %+v", gate.Evidence)
+	}
+	// A no-op normalization still carries the head Candidate (the worker
+	// Candidate in that case), keeping the gate evidence auditable.
+	noop := formatNormalizeGate(nil, candidateDigest)
+	if len(noop.Evidence) != 1 || noop.Evidence[0] != "candidate:"+candidateDigest {
+		t.Fatalf("no-op evidence = %+v", noop.Evidence)
+	}
+	if noop.Status != "pass" || noop.Required {
+		t.Fatalf("no-op gate = %+v", noop)
 	}
 }

@@ -19,6 +19,7 @@ import (
 type Input struct {
 	TaskID              string
 	RunID               string
+	AttemptID           string
 	SpecDigest          string
 	BaseSHA             string
 	Worktree            string
@@ -32,6 +33,12 @@ type Input struct {
 	PatchCaptureBytes   int64
 	WorkerDeclaredPaths []string // diagnostic only; never authorizes scope
 	ToolAllowlist       []string // frozen worker.tools declaration; empty keeps the tool-audit gate skipped
+	// AuthorityNamespaceID is the frozen local authority key space digest
+	// (ADR 0018 §10) owning the Candidate records; injected together with
+	// AttemptID by the orchestration layer. AttemptID switches candidate
+	// mode on (ADR 0027 dual-record chain); an empty AttemptID keeps the
+	// legacy read-compatible path for callers predating ADR 0027.
+	AuthorityNamespaceID string
 }
 
 type Result struct {
@@ -69,13 +76,45 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 		return v.finish(input, result)
 	}
 	result.Report.Observed = observation
+	candidateMode := input.AttemptID != ""
+	workerPatch := observation.Patch
+	workerTruncated := observation.DiffTruncated
+	if candidateMode {
+		// worker.patch keeps the Worker's raw bytes; after this write the
+		// verification flow never touches it again. observed.patch is the
+		// only patch file normalization may replace, and its artifact digest
+		// is written once below instead of rewritten in place (ADR 0027).
+		if err := atomicWrite(filepath.Join(input.RunDirectory, "worker.patch"), workerPatch); err != nil {
+			return result, err
+		}
+	}
 	patchPath := filepath.Join(input.RunDirectory, "observed.patch")
 	if err := atomicWrite(patchPath, observation.Patch); err != nil {
 		return result, err
 	}
-	result.Manifest.Artifacts = append(result.Manifest.Artifacts, Artifact{ID: "evidence:observed-patch", Kind: "patch", MediaType: "text/x-diff", Producer: "verifier", Required: true, Status: "validated", PathRoot: "run", RelativePath: "observed.patch", ByteSize: int64(len(observation.Patch)), Digest: canonical.DigestBytes(observation.Patch), CreatedAt: started, Truncated: observation.DiffTruncated, RelatedGates: []string{"diff:observe", "scope:changed-paths"}})
-	result.Report.Gates = append(result.Report.Gates, Gate{ID: "diff:observe", Category: "diff", Required: true, Status: "pass", Summary: fmt.Sprintf("观察到 %d 个变更，%d 字节", observation.ChangedFileCount, observation.DiffBytes), Evidence: []string{"artifact://evidence:observed-patch"}})
+	if !candidateMode {
+		// Legacy byte-compatibility: the observed-patch artifact keeps its
+		// pre-ADR-0027 manifest position and its presence on every failure
+		// path; candidate mode defers the artifact until the head content is
+		// known so its digest is written exactly once.
+		result.Manifest.Artifacts = append(result.Manifest.Artifacts, Artifact{ID: "evidence:observed-patch", Kind: "patch", MediaType: "text/x-diff", Producer: "verifier", Required: true, Status: "validated", PathRoot: "run", RelativePath: "observed.patch", ByteSize: int64(len(observation.Patch)), Digest: canonical.DigestBytes(observation.Patch), CreatedAt: started, Truncated: observation.DiffTruncated, RelatedGates: []string{"diff:observe", "scope:changed-paths"}})
+	}
+	observeEvidence := []string{"artifact://evidence:observed-patch"}
+	if candidateMode {
+		observeEvidence = append(observeEvidence, "artifact://evidence:worker-patch")
+	}
+	result.Report.Gates = append(result.Report.Gates, Gate{ID: "diff:observe", Category: "diff", Required: true, Status: "pass", Summary: fmt.Sprintf("观察到 %d 个变更，%d 字节", observation.ChangedFileCount, observation.DiffBytes), Evidence: observeEvidence})
 	result.Report.Gates = append(result.Report.Gates, EvaluateScope(observation, input.Scope))
+	store := newLocalCandidateStore(input.RunDirectory)
+	var workerCandidate, headCandidate domain.Candidate
+	if candidateMode {
+		admitted, admitErr := v.admitObservedCandidate(store, input, workerPatch, domain.ProducerKindWorker, candidateProducerWorker, "")
+		if admitErr != nil {
+			result.Report.Gates = append(result.Report.Gates, Gate{ID: "format:normalize", Category: "other", Required: true, Status: "fail", Summary: "Candidate 接纳失败：" + admitErr.Error(), Evidence: []string{}})
+			return v.finish(input, result)
+		}
+		workerCandidate, headCandidate = admitted, admitted
+	}
 	normalized, formatErr := normalizeFormat(ctx, input.Worktree, observation.ChangedFiles, input.Scope.AllowPaths)
 	if formatErr != nil {
 		result.Report.Gates = append(result.Report.Gates, Gate{ID: "format:normalize", Category: "other", Required: true, Status: "fail", Summary: "gofmt 归一化失败：" + formatErr.Error(), Evidence: []string{}})
@@ -92,9 +131,39 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 		if err := atomicWrite(patchPath, observation.Patch); err != nil {
 			return result, err
 		}
-		refreshObservedPatchArtifact(&result.Manifest, observation)
+		if candidateMode {
+			admitted, admitErr := v.admitObservedCandidate(store, input, observation.Patch, domain.ProducerKindNormalizer, candidateProducerNormalizer, workerCandidate.CandidateDigest)
+			if admitErr != nil {
+				result.Report.Gates = append(result.Report.Gates, Gate{ID: "format:normalize", Category: "other", Required: true, Status: "fail", Summary: "Candidate 接纳失败：" + admitErr.Error(), Evidence: []string{}})
+				return v.finish(input, result)
+			}
+			headCandidate = admitted
+		} else {
+			// Legacy byte-compatibility only: finalize the pre-gate artifact
+			// in memory before the manifest is persisted for the first time.
+			// Candidate mode never rewrites an artifact field; its observed
+			// artifact is appended once below with the head content (ADR 0027
+			// forbids in-place digest rewrites).
+			legacyArtifact := &result.Manifest.Artifacts[0]
+			legacyArtifact.ByteSize = int64(len(observation.Patch))
+			legacyArtifact.Digest = canonical.DigestBytes(observation.Patch)
+			legacyArtifact.Truncated = observation.DiffTruncated
+			legacyArtifact.RelatedGates = append(legacyArtifact.RelatedGates, "format:normalize")
+		}
 	}
-	result.Report.Gates = append(result.Report.Gates, formatNormalizeGate(normalized))
+	normalizeGateCandidate := ""
+	if candidateMode {
+		observedRelatedGates := []string{"diff:observe", "scope:changed-paths"}
+		if len(normalized) > 0 {
+			observedRelatedGates = append(observedRelatedGates, "format:normalize")
+		}
+		result.Manifest.Artifacts = append(result.Manifest.Artifacts, Artifact{ID: "evidence:observed-patch", Kind: "patch", MediaType: "text/x-diff", Producer: "verifier", Required: true, Status: "validated", PathRoot: "run", RelativePath: "observed.patch", ByteSize: int64(len(observation.Patch)), Digest: canonical.DigestBytes(observation.Patch), CandidateDigest: headCandidate.CandidateDigest, CreatedAt: started, Truncated: observation.DiffTruncated, RelatedGates: observedRelatedGates})
+		result.Manifest.Artifacts = append(result.Manifest.Artifacts, Artifact{ID: "evidence:worker-patch", Kind: "patch", MediaType: "text/x-diff", Producer: "verifier", Required: true, Status: "validated", PathRoot: "run", RelativePath: "worker.patch", ByteSize: int64(len(workerPatch)), Digest: canonical.DigestBytes(workerPatch), CandidateDigest: workerCandidate.CandidateDigest, CreatedAt: started, Truncated: workerTruncated, RelatedGates: []string{"diff:observe", "scope:changed-paths", "format:normalize"}})
+		result.Report.WorkerCandidateDigest = workerCandidate.CandidateDigest
+		result.Report.CandidateDigest = headCandidate.CandidateDigest
+		normalizeGateCandidate = headCandidate.CandidateDigest
+	}
+	result.Report.Gates = append(result.Report.Gates, formatNormalizeGate(normalized, normalizeGateCandidate))
 	artifacts, artifactGates := CollectArtifacts(input.Worktree, input.Deliverables, started)
 	result.Manifest.Artifacts = append(result.Manifest.Artifacts, artifacts...)
 	result.Report.Gates = append(result.Report.Gates, artifactGates...)
@@ -207,7 +276,47 @@ func validateInput(input Input) error {
 	if input.RunDirectory == "" || input.Worktree == "" {
 		return errors.New("worktree and run directory are required")
 	}
+	// Candidate chain mode (ADR 0027) is switched on by the orchestration
+	// layer injecting the Attempt identity together with the owning authority
+	// namespace. It is all-or-nothing and fails closed on any missing or
+	// malformed piece; an empty AttemptID keeps the legacy path.
+	if input.AttemptID != "" || input.AuthorityNamespaceID != "" {
+		if err := domain.ValidateID(input.AttemptID); err != nil {
+			return fmt.Errorf("candidate mode requires a valid attemptId: %w", err)
+		}
+		if err := domain.ValidateID(input.AuthorityNamespaceID); err != nil {
+			return fmt.Errorf("candidate mode requires a valid authorityNamespaceId: %w", err)
+		}
+		if !candidateBaseShaPattern.MatchString(input.BaseSHA) {
+			return errors.New("candidate mode requires baseSha to be a full SHA object id")
+		}
+	}
 	return nil
+}
+
+// admitObservedCandidate admits the Candidate record for the observed patch
+// bytes of the ADR 0027 dual-record chain. Content identity is authoritative
+// (contentDigest is the content address): when the attempt already holds an
+// admitted record for identical bytes the existing record is reused and no
+// new fact is appended, so repeated Verify runs never inflate the chain.
+// Normalizer reuse additionally requires the predecessor link to agree,
+// keeping every chain hop traceable. Otherwise a fresh record is sealed and
+// admitted through the digest-verified put-if-absent store; any failure is
+// fail-closed.
+func (v *Verifier) admitObservedCandidate(store *localCandidateStore, input Input, patch []byte, producerKind domain.ProducerKind, producer, predecessor string) (domain.Candidate, error) {
+	contentDigest := canonical.DigestBytes(patch)
+	existing, found, err := store.findAdmittedByContent(input.AttemptID, contentDigest)
+	if err != nil {
+		return domain.Candidate{}, err
+	}
+	if found && (predecessor == "" || (existing.ProducerKind == domain.ProducerKindNormalizer && existing.PredecessorCandidateDigest == predecessor)) {
+		return existing, nil
+	}
+	record, err := buildCandidate(input, producerKind, producer, contentDigest, predecessor, v.now())
+	if err != nil {
+		return domain.Candidate{}, err
+	}
+	return store.Admit(record, patch)
 }
 
 func verifyRepository(ctx context.Context, input Input) Gate {

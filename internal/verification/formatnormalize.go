@@ -11,8 +11,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/chiga0/marshal-harness/internal/canonical"
 )
 
 // formatNormalizeTimeout bounds a single gofmt invocation; gofmt is a pure
@@ -136,33 +134,20 @@ func parseGofmtList(output []byte, candidates map[string]bool) []string {
 
 // formatNormalizeGate builds the transparent record of a successful
 // normalization pass: an informational (non-required) pass gate whose
-// evidence lists every normalized file. Failures are instead reported by the
-// caller as a required fail gate, keeping Verify fail-closed.
-func formatNormalizeGate(normalized []string) Gate {
+// evidence lists every normalized file and, in candidate mode, the head
+// Candidate record reference (the normalizer Candidate when normalization
+// changed bytes, otherwise the worker Candidate). Failures are instead
+// reported by the caller as a required fail gate, keeping Verify fail-closed.
+func formatNormalizeGate(normalized []string, candidateDigest string) Gate {
 	gate := Gate{ID: "format:normalize", Category: "other", Required: false, Status: "pass", Summary: "无需 gofmt 归一化：所有变更 .go 文件均已合规", Evidence: []string{}}
-	if len(normalized) == 0 {
-		return gate
+	if len(normalized) > 0 {
+		gate.Summary = fmt.Sprintf("gofmt 归一化 %d 个文件", len(normalized))
+		for _, path := range normalized {
+			gate.Evidence = append(gate.Evidence, "normalized:"+path)
+		}
 	}
-	gate.Summary = fmt.Sprintf("gofmt 归一化 %d 个文件", len(normalized))
-	for _, path := range normalized {
-		gate.Evidence = append(gate.Evidence, "normalized:"+path)
+	if candidateDigest != "" {
+		gate.Evidence = append(gate.Evidence, "candidate:"+candidateDigest)
 	}
 	return gate
-}
-
-// refreshObservedPatchArtifact rebinds the observed-patch evidence artifact
-// to the post-normalization bytes so the report, the manifest and the
-// worktree stay one auditable evidence chain.
-func refreshObservedPatchArtifact(manifest *ArtifactManifest, observation Observation) {
-	for index := range manifest.Artifacts {
-		artifact := &manifest.Artifacts[index]
-		if artifact.ID != "evidence:observed-patch" {
-			continue
-		}
-		artifact.ByteSize = int64(len(observation.Patch))
-		artifact.Digest = canonical.DigestBytes(observation.Patch)
-		artifact.Truncated = observation.DiffTruncated
-		artifact.RelatedGates = append(artifact.RelatedGates, "format:normalize")
-		return
-	}
 }

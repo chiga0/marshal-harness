@@ -54,18 +54,26 @@ type CommandRecord struct {
 }
 
 type Report struct {
-	APIVersion  domain.APIVersion `json:"apiVersion"`
-	Kind        domain.Kind       `json:"kind"`
-	TaskID      string            `json:"taskId"`
-	RunID       string            `json:"runId"`
-	SpecDigest  string            `json:"specDigest"`
-	BaseSHA     string            `json:"baseSha"`
-	Observed    Observation       `json:"observed"`
-	Status      string            `json:"status"`
-	Gates       []Gate            `json:"gates"`
-	Summary     string            `json:"summary,omitempty"`
-	StartedAt   time.Time         `json:"startedAt"`
-	CompletedAt time.Time         `json:"completedAt"`
+	APIVersion domain.APIVersion `json:"apiVersion"`
+	Kind       domain.Kind       `json:"kind"`
+	TaskID     string            `json:"taskId"`
+	RunID      string            `json:"runId"`
+	SpecDigest string            `json:"specDigest"`
+	BaseSHA    string            `json:"baseSha"`
+	Observed   Observation       `json:"observed"`
+	// WorkerCandidateDigest is the ADR 0027 worker Candidate record identity
+	// (chain root of this verification); optional, present only in candidate
+	// mode. Legacy reports omit it byte-for-byte.
+	WorkerCandidateDigest string `json:"workerCandidateDigest,omitempty"`
+	// CandidateDigest is the head Candidate record identity: the normalizer
+	// Candidate when normalization changed bytes, otherwise the worker
+	// Candidate. Optional; observed/report/manifest bindings all point at it.
+	CandidateDigest string    `json:"candidateDigest,omitempty"`
+	Status          string    `json:"status"`
+	Gates           []Gate    `json:"gates"`
+	Summary         string    `json:"summary,omitempty"`
+	StartedAt       time.Time `json:"startedAt"`
+	CompletedAt     time.Time `json:"completedAt"`
 }
 
 type ArtifactManifest struct {
@@ -78,21 +86,24 @@ type ArtifactManifest struct {
 }
 
 type Artifact struct {
-	ID           string    `json:"id"`
-	Kind         string    `json:"kind"`
-	MediaType    string    `json:"mediaType,omitempty"`
-	Producer     string    `json:"producer"`
-	Required     bool      `json:"required"`
-	Status       string    `json:"status"`
-	PathRoot     string    `json:"pathRoot,omitempty"`
-	RelativePath string    `json:"relativePath,omitempty"`
-	ByteSize     int64     `json:"byteSize"`
-	Digest       string    `json:"digest,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
-	Redacted     bool      `json:"redacted"`
-	Truncated    bool      `json:"truncated"`
-	RelatedGates []string  `json:"relatedGates"`
-	Description  string    `json:"description,omitempty"`
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`
+	MediaType    string `json:"mediaType,omitempty"`
+	Producer     string `json:"producer"`
+	Required     bool   `json:"required"`
+	Status       string `json:"status"`
+	PathRoot     string `json:"pathRoot,omitempty"`
+	RelativePath string `json:"relativePath,omitempty"`
+	ByteSize     int64  `json:"byteSize"`
+	Digest       string `json:"digest,omitempty"`
+	// CandidateDigest binds the artifact to the ADR 0027 Candidate record
+	// whose content it carries; optional, present only in candidate mode.
+	CandidateDigest string    `json:"candidateDigest,omitempty"`
+	CreatedAt       time.Time `json:"createdAt"`
+	Redacted        bool      `json:"redacted"`
+	Truncated       bool      `json:"truncated"`
+	RelatedGates    []string  `json:"relatedGates"`
+	Description     string    `json:"description,omitempty"`
 }
 
 type ScopePolicy struct {
