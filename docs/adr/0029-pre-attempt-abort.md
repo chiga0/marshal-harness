@@ -1,6 +1,6 @@
 # ADR 0029：无 Attempt Run 的显式 abort 出口（pre-attempt abort）
 
-- 状态：提案中（Proposed；本 ADR 经维护者 ApprovalRecord 接受后生效，接受人与接受时间另行记录，不改写本文）
+- 状态：已接受（Accepted，2026-08-13 维护者授权 Lead 接受：Issue #39 的运维阻塞与当日多起死 Run 实例证实该出口的必要性；契约按本文冻结，实现须携带 fail-closed 负例测试）
 - 日期：2026-08-13
 - 决策来源：公开 [Issue #39](https://github.com/chiga0/marshal-harness/issues/39)（`task abort` 无法终结 Worker 启动前失败的 READY Run）；当日运维中另观察到 PUBLISHING 卡死与 CI_PENDING 陈旧 Run 长期悬置无法清理——后者仅作为状态卫生问题的证据引用，其处置出口见「明确排除」节，不由本 ADR 提供
 - 关联：[ADR 0007](0007-intent-first-publication.md)、[ADR 0010](0010-controlled-autonomy-and-intervention.md)、[ADR 0012](0012-explicit-abort.md)、[ADR 0019](0019-deterministic-control-plane-typed-execution-and-goal-admission.md)、[ADR 0026](0026-scm-merge-receipt-and-publication-reconcile.md)、[ADR 0028](0028-ci-deadline-phased-observation.md)、[任务生命周期](../task-lifecycle.md)
