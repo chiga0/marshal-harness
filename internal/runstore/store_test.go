@@ -1,6 +1,7 @@
 package runstore
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -209,4 +210,256 @@ func TestLeaseCannotWriteAnotherRun(t *testing.T) {
 
 func transition(id string, sequence uint64, from, to domain.State) domain.RunEvent {
 	return domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: id, RunID: "run:1", Sequence: sequence, Type: "run.transition", StateFrom: from, StateTo: to, Timestamp: time.Unix(int64(sequence+1), 0), Payload: map[string]any{}}
+}
+
+func TestNotifyHookRecordsStateTransitionPayload(t *testing.T) {
+	command, record := writeNotifyRecorder(t)
+	t.Setenv(notifyCommandEnv, command)
+	store := New(t.TempDir())
+	lease, err := store.Acquire("run:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	event := transition("event:1", 1, domain.StateCreated, domain.StatePlanned)
+	event.Payload = map[string]any{"taskId": "task:1"}
+	if err := store.Append(lease, event, 0); err != nil {
+		t.Fatal(err)
+	}
+	payload := decodeNotifyPayload(t, waitForNotifyRecord(t, record))
+	if len(payload) != 6 {
+		t.Fatalf("payload fields = %v, want exactly six fields", payload)
+	}
+	expected := map[string]string{
+		"runId":     "run:1",
+		"taskId":    "task:1",
+		"stateFrom": string(domain.StateCreated),
+		"stateTo":   string(domain.StatePlanned),
+	}
+	for field, want := range expected {
+		if payload[field] != want {
+			t.Fatalf("payload field %s = %v, want %q", field, payload[field], want)
+		}
+	}
+	if payload["eventSequence"] != float64(1) {
+		t.Fatalf("payload field eventSequence = %v, want 1", payload["eventSequence"])
+	}
+	wantTimestamp := event.Timestamp.Format(time.RFC3339Nano)
+	if payload["timestamp"] != wantTimestamp {
+		t.Fatalf("payload field timestamp = %v, want %s", payload["timestamp"], wantTimestamp)
+	}
+}
+
+func TestNotifyHookIdleWhenEnvUnsetOrEmpty(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		unset bool
+	}{
+		{name: "unset", unset: true},
+		{name: "empty"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A recorder is installed, but with the variable unset or empty
+			// Append must not start it and must succeed normally.
+			command, record := writeNotifyRecorder(t)
+			_ = command
+			if tc.unset {
+				unsetNotifyCommand(t)
+			} else {
+				t.Setenv(notifyCommandEnv, tc.value)
+			}
+			store := New(t.TempDir())
+			lease, err := store.Acquire("run:1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Release()
+			if err := store.Append(lease, transition("event:1", 1, domain.StateCreated, domain.StatePlanned), 0); err != nil {
+				t.Fatalf("append without notify command failed: %v", err)
+			}
+			requireNoNotifyRecord(t, record)
+		})
+	}
+}
+
+func TestNotifyHookMissingCommandKeepsAppendSemantics(t *testing.T) {
+	t.Setenv(notifyCommandEnv, filepath.Join(t.TempDir(), "missing-notify-command"))
+	store := New(t.TempDir())
+	lease, err := store.Acquire("run:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if err := store.Append(lease, transition("event:1", 1, domain.StateCreated, domain.StatePlanned), 0); err != nil {
+		t.Fatalf("append with unreachable notify command failed: %v", err)
+	}
+	if err := store.Append(lease, transition("event:2", 2, domain.StatePlanned, domain.StateReady), 1); err != nil {
+		t.Fatalf("follow-up append failed: %v", err)
+	}
+	events, truncated, err := store.ReadEvents("run:1")
+	if err != nil || truncated || len(events) != 2 {
+		t.Fatalf("journal = %d events, truncated = %v, error = %v", len(events), truncated, err)
+	}
+}
+
+func TestNotifyHookSkipsSameStateEvent(t *testing.T) {
+	command, record := writeNotifyRecorder(t)
+	t.Setenv(notifyCommandEnv, command)
+	store := New(t.TempDir())
+	lease, err := store.Acquire("run:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if err := store.Append(lease, transition("event:1", 1, domain.StateCreated, domain.StatePlanned), 0); err != nil {
+		t.Fatal(err)
+	}
+	_ = waitForNotifyRecord(t, record)
+	if err := os.Remove(record); err != nil {
+		t.Fatal(err)
+	}
+	audit := transition("event:2", 2, domain.StatePlanned, domain.StatePlanned)
+	audit.Type = "run.audit"
+	if err := store.Append(lease, audit, 1); err != nil {
+		// The lifecycle may refuse same-state audit events; a failed append
+		// must not notify either way.
+		requireNoNotifyRecord(t, record)
+		return
+	}
+	requireNoNotifyRecord(t, record)
+}
+
+func TestNotifyHookGateHonoursFirstEventAndSameState(t *testing.T) {
+	command, record := writeNotifyRecorder(t)
+	t.Setenv(notifyCommandEnv, command)
+	audit := transition("event:2", 2, domain.StatePlanned, domain.StatePlanned)
+	notifyStateTransition(false, []domain.RunEvent{audit})
+	requireNoNotifyRecord(t, record)
+	first := transition("event:1", 1, domain.StateCreated, domain.StateCreated)
+	first.Payload = map[string]any{"taskId": "task:1"}
+	notifyStateTransition(true, []domain.RunEvent{first})
+	payload := decodeNotifyPayload(t, waitForNotifyRecord(t, record))
+	if payload["stateFrom"] != string(domain.StateCreated) || payload["stateTo"] != string(domain.StateCreated) || payload["eventSequence"] != float64(1) {
+		t.Fatalf("first-event payload = %v", payload)
+	}
+}
+
+func TestNotifyHookReportsOnlyLastTransitionAmongMultipleEvents(t *testing.T) {
+	command, record := writeNotifyRecorder(t)
+	t.Setenv(notifyCommandEnv, command)
+	first := transition("event:1", 1, domain.StateCreated, domain.StatePlanned)
+	second := transition("event:2", 2, domain.StatePlanned, domain.StateReady)
+	second.Payload = map[string]any{"taskId": "task:1"}
+	notifyStateTransition(true, []domain.RunEvent{first, second})
+	payload := decodeNotifyPayload(t, waitForNotifyRecord(t, record))
+	if payload["stateFrom"] != string(domain.StatePlanned) || payload["stateTo"] != string(domain.StateReady) {
+		t.Fatalf("payload = %v, want the last transition planned to ready", payload)
+	}
+	if payload["eventSequence"] != float64(2) || payload["taskId"] != "task:1" {
+		t.Fatalf("payload = %v, want eventSequence 2 and taskId task:1", payload)
+	}
+}
+
+func TestNotifyHookSequentialAppendsReportLatestTransition(t *testing.T) {
+	command, record := writeNotifyRecorder(t)
+	t.Setenv(notifyCommandEnv, command)
+	store := New(t.TempDir())
+	lease, err := store.Acquire("run:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if err := store.Append(lease, transition("event:1", 1, domain.StateCreated, domain.StatePlanned), 0); err != nil {
+		t.Fatal(err)
+	}
+	waitForNotifyStateTo(t, record, string(domain.StatePlanned))
+	if err := store.Append(lease, transition("event:2", 2, domain.StatePlanned, domain.StateReady), 1); err != nil {
+		t.Fatal(err)
+	}
+	payload := waitForNotifyStateTo(t, record, string(domain.StateReady))
+	if payload["stateFrom"] != string(domain.StatePlanned) || payload["eventSequence"] != float64(2) {
+		t.Fatalf("latest payload = %v", payload)
+	}
+}
+
+func writeNotifyRecorder(t *testing.T) (string, string) {
+	t.Helper()
+	directory := t.TempDir()
+	record := filepath.Join(directory, "notify-record.json")
+	command := filepath.Join(directory, "notify-recorder.sh")
+	script := "#!/bin/sh\nprintf '%s' \"$1\" > \"" + record + "\"\n"
+	if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return command, record
+}
+
+func unsetNotifyCommand(t *testing.T) {
+	t.Helper()
+	previous, had := os.LookupEnv(notifyCommandEnv)
+	if err := os.Unsetenv(notifyCommandEnv); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv(notifyCommandEnv, previous)
+		}
+	})
+}
+
+func waitForNotifyRecord(t *testing.T, record string) []byte {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, err := os.ReadFile(record)
+		if err == nil {
+			return data
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read notify record: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("notify record %s was not created in time", record)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForNotifyStateTo(t *testing.T, record, state string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, err := os.ReadFile(record)
+		if err == nil {
+			var payload map[string]any
+			if jsonErr := json.Unmarshal(data, &payload); jsonErr == nil && payload["stateTo"] == state {
+				return payload
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read notify record: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("notify record never reached stateTo %s", state)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func requireNoNotifyRecord(t *testing.T, record string) {
+	t.Helper()
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(record); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("notify record %s unexpectedly present: %v", record, err)
+	}
+}
+
+func decodeNotifyPayload(t *testing.T, data []byte) map[string]any {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("decode notify payload: %v", err)
+	}
+	return payload
 }

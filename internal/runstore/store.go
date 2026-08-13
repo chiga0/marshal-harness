@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"time"
@@ -35,6 +36,10 @@ type Lease struct {
 
 var processStartedAt = time.Now().UTC()
 var eventTypePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$`)
+
+// notifyCommandEnv names the environment variable holding the command
+// invoked to report Run state transitions to external observers (issue #78).
+const notifyCommandEnv = "MARSHAL_NOTIFY_CMD"
 
 func New(root string) *Store { return &Store{root: root} }
 
@@ -156,7 +161,53 @@ func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uin
 	if err := file.Sync(); err != nil {
 		return fmt.Errorf("sync event journal: %w", err)
 	}
+	notifyStateTransition(len(events) == 0, []domain.RunEvent{event})
 	return nil
+}
+
+// notifyStateTransition is a pure observation side-channel off Append: after
+// the journal write succeeds it reports the last state transition among
+// appended events by starting the command named by MARSHAL_NOTIFY_CMD with a
+// JSON payload as its single argument. The call is fire-and-forget by
+// design: the process is started without waiting for it or reading its
+// output, and marshal or start failures are silently dropped (no retry,
+// queue or persistence), so Append's validation order, error semantics,
+// journaled content, lease semantics and return value are never affected.
+// When MARSHAL_NOTIFY_CMD is unset or empty there are no side effects at
+// all: no payload is built and no process is started. firstEvent reports
+// whether appended[0] is the first journal event of the run; the first event
+// of a run counts as a transition even when the state does not change. When
+// several events are appended in one call, only the last state transition
+// is reported (deterministic). The taskId field is taken from the
+// triggering event's payload when present.
+func notifyStateTransition(firstEvent bool, appended []domain.RunEvent) {
+	notifyCommand := os.Getenv(notifyCommandEnv)
+	if notifyCommand == "" {
+		return
+	}
+	var trigger *domain.RunEvent
+	for index := range appended {
+		candidate := &appended[index]
+		if candidate.StateTo != candidate.StateFrom || (firstEvent && index == 0) {
+			trigger = candidate
+		}
+	}
+	if trigger == nil {
+		return
+	}
+	taskID, _ := trigger.Payload["taskId"].(string)
+	payload, err := json.Marshal(map[string]any{
+		"runId":         trigger.RunID,
+		"taskId":        taskID,
+		"stateFrom":     trigger.StateFrom,
+		"stateTo":       trigger.StateTo,
+		"eventSequence": trigger.Sequence,
+		"timestamp":     trigger.Timestamp,
+	})
+	if err != nil {
+		return
+	}
+	_ = exec.Command(notifyCommand, string(payload)).Start()
 }
 
 func (s *Store) ReadEvents(runID string) ([]domain.RunEvent, bool, error) {
