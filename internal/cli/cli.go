@@ -11,9 +11,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/app"
@@ -35,6 +37,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/supervisor"
 	"github.com/chiga0/marshal-harness/internal/verification"
 )
 
@@ -93,6 +96,8 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return runServe(args[1:], stdout, stderr)
 	case "task":
 		return runTask(ctx, args[1:], stdout, stderr)
+	case "supervise":
+		return runSupervise(ctx, args[1:], stdout, stderr)
 	case "__launch":
 		return runInternalLaunch(args[1:], stderr)
 	default:
@@ -557,6 +562,105 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "已初始化 Marshal 状态目录：%s\n", state.StateRoot)
 	}
 	return ExitOK
+}
+
+const superviseUsage = "用法：marshal supervise [--once] [--interval DURATION] [--marshal-binary PATH] [--json]"
+
+// superviseDecision is the stable JSON projection of one supervisor
+// DecisionRecord for supervise CLI output.
+type superviseDecision struct {
+	RunID   string `json:"runId"`
+	State   string `json:"state"`
+	Action  string `json:"action"`
+	Started bool   `json:"started"`
+	Error   string `json:"error,omitempty"`
+}
+
+func runSupervise(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("supervise", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	once := flags.Bool("once", false, "只执行一轮监督决策后退出")
+	interval := flags.Duration("interval", 30*time.Second, "常驻监督轮询间隔（必须为正时长）")
+	marshalBinary := flags.String("marshal-binary", "", "用于派发驱动的 marshal 可执行文件路径（默认当前可执行文件）")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出决策记录")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fmt.Fprintln(stderr, superviseUsage)
+		return ExitUsage
+	}
+	if *interval <= 0 {
+		fmt.Fprintln(stderr, "supervise 失败：--interval 必须为正时长。")
+		fmt.Fprintln(stderr, superviseUsage)
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil || location.ValidateIdentity() != nil {
+		fmt.Fprintln(stderr, "supervise 失败：无法验证仓库身份。")
+		return ExitFailure
+	}
+	binary := *marshalBinary
+	if binary == "" {
+		executable, err := os.Executable()
+		if err != nil {
+			fmt.Fprintln(stderr, "supervise 失败：无法定位当前可执行文件。")
+			return ExitFailure
+		}
+		binary = executable
+	}
+	driver, err := supervisor.New(location.StateRoot, binary)
+	if err != nil {
+		fmt.Fprintf(stderr, "supervise 失败：%v\n", err)
+		return ExitFailure
+	}
+	if *once {
+		return superviseOnce(ctx, driver, *jsonOutput, stdout, stderr)
+	}
+	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	fmt.Fprintf(stdout, "Marshal supervise 常驻运行：interval=%s；SIGINT/SIGTERM 优雅退出。\n", *interval)
+	if err := driver.Loop(signalCtx, *interval); err != nil {
+		fmt.Fprintf(stderr, "supervise 失败：%v\n", err)
+		return ExitFailure
+	}
+	fmt.Fprintln(stdout, "Marshal supervise 已退出。")
+	return ExitOK
+}
+
+// superviseOnce runs a single Supervise round and prints one line per
+// decision (runID/state/action/started). The exit code is ExitOK when every
+// action started cleanly or there was nothing to supervise, and ExitFailure
+// when any decision carries a spawn error.
+func superviseOnce(ctx context.Context, driver *supervisor.Supervisor, jsonOutput bool, stdout, stderr io.Writer) int {
+	records, err := driver.Supervise(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "supervise 失败：%v\n", err)
+		return ExitFailure
+	}
+	exitCode := ExitOK
+	decisions := make([]superviseDecision, 0, len(records))
+	for _, record := range records {
+		if record.Error != "" {
+			exitCode = ExitFailure
+		}
+		decisions = append(decisions, superviseDecision{RunID: record.RunID, State: string(record.State), Action: record.Action.String(), Started: record.Started, Error: record.Error})
+	}
+	if jsonOutput {
+		if err := writeJSON(stdout, decisions); err != nil {
+			fmt.Fprintf(stderr, "输出监督结果失败：%v\n", err)
+			return ExitFailure
+		}
+		return exitCode
+	}
+	if len(decisions) == 0 {
+		fmt.Fprintln(stdout, "无可监督的 Run。")
+		return exitCode
+	}
+	for _, decision := range decisions {
+		fmt.Fprintf(stdout, "Run：%s 状态：%s 动作：%s 已启动：%t\n", decision.RunID, decision.State, decision.Action, decision.Started)
+		if decision.Error != "" {
+			fmt.Fprintf(stdout, "启动错误：%s\n", decision.Error)
+		}
+	}
+	return exitCode
 }
 
 func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -1711,6 +1815,7 @@ func writeUsage(output io.Writer) {
   marshal version [--json]
   marshal doctor [--run RUN_ID] [--repair] [--print-env] [--json]
   marshal init [--json]
+  marshal supervise [--once] [--interval DURATION] [--marshal-binary PATH] [--json]
   marshal contract validate [--schema NAME] <PATH|->
   marshal contract schema [--all [--out DIR]] [--schema NAME] [--json]
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
