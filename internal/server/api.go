@@ -183,7 +183,9 @@ type requestIdentity struct {
 
 // Config assembles one marshal-server Public API surface. Selector,
 // Validator, Now and Getenv are injectable seams; the production defaults
-// mirror the embedded CLI assembly exactly.
+// mirror the embedded CLI assembly exactly. The SSE projection seams
+// (EventWatchInterval, SSEBufferLimit, SSEHeartbeatInterval,
+// SSEReauthzInterval, Authorizer) select frozen defaults when zero/nil.
 type Config struct {
 	StateRoot      string
 	RepositoryRoot string
@@ -197,6 +199,24 @@ type Config struct {
 	// Getenv is the environment lookup for the default Worker runtime; nil
 	// selects os.Getenv.
 	Getenv func(string) string
+	// EventWatchInterval bounds how long a journaled event may remain
+	// unprojected without a notify wake; zero selects the default.
+	EventWatchInterval time.Duration
+	// SSEBufferLimit caps one SSE subscriber's bounded buffer; a slow
+	// subscriber exceeding it is disconnected and guided to resync. Zero
+	// selects the default.
+	SSEBufferLimit int
+	// SSEHeartbeatInterval is the SSE keep-alive comment interval; zero
+	// selects the default.
+	SSEHeartbeatInterval time.Duration
+	// SSEReauthzInterval is the periodic re-Authorization interval of SSE
+	// subscriptions; zero selects the default.
+	SSEReauthzInterval time.Duration
+	// Authorizer decides whether one principal may keep observing the
+	// scope's event projection during periodic and sensitive-change
+	// re-Authorization; nil selects the default namespace/scope
+	// revalidation.
+	Authorizer func(principal string, namespace authority.AuthorityNamespaceId, scope string) error
 }
 
 // Server is the resident Public API surface. It is safe for concurrent use.
@@ -209,6 +229,12 @@ type Server struct {
 	selector       *adapter.Selector
 	store          *runstore.Store
 	idempotency    *Store
+
+	events               *Projection
+	sseBufferLimit       int
+	sseHeartbeatInterval time.Duration
+	sseReauthzInterval   time.Duration
+	authorizer           func(principal string, namespace authority.AuthorityNamespaceId, scope string) error
 }
 
 // New assembles the Public API over one bound repository state root. It fails
@@ -257,16 +283,44 @@ func New(config Config) (*Server, error) {
 	if err := namespace.Validate(); err != nil {
 		return nil, fmt.Errorf("server: authority namespace: %w", err)
 	}
-	return &Server{
-		namespace:      namespace,
-		stateRoot:      config.StateRoot,
-		repositoryRoot: config.RepositoryRoot,
-		now:            now,
-		validator:      validator,
-		selector:       selector,
-		store:          runstore.New(config.StateRoot),
-		idempotency:    NewIdempotencyStore(filepath.Join(config.StateRoot, "idempotency"), now),
-	}, nil
+	store := runstore.New(config.StateRoot)
+	watchInterval := config.EventWatchInterval
+	if watchInterval <= 0 {
+		watchInterval = defaultEventWatchInterval
+	}
+	bufferLimit := config.SSEBufferLimit
+	if bufferLimit <= 0 {
+		bufferLimit = defaultSSEBufferLimit
+	}
+	heartbeat := config.SSEHeartbeatInterval
+	if heartbeat <= 0 {
+		heartbeat = defaultSSEHeartbeatInterval
+	}
+	reauthz := config.SSEReauthzInterval
+	if reauthz <= 0 {
+		reauthz = defaultSSEReauthzInterval
+	}
+	authorizer := config.Authorizer
+	if authorizer == nil {
+		authorizer = defaultAuthorizer
+	}
+	server := &Server{
+		namespace:            namespace,
+		stateRoot:            config.StateRoot,
+		repositoryRoot:       config.RepositoryRoot,
+		now:                  now,
+		validator:            validator,
+		selector:             selector,
+		store:                store,
+		idempotency:          NewIdempotencyStore(filepath.Join(config.StateRoot, "idempotency"), now),
+		events:               newProjection(config.StateRoot, namespace, store, watchInterval),
+		sseBufferLimit:       bufferLimit,
+		sseHeartbeatInterval: heartbeat,
+		sseReauthzInterval:   reauthz,
+		authorizer:           authorizer,
+	}
+	go server.events.watch()
+	return server, nil
 }
 
 // Namespace returns the Core authority key space this server writes under.
@@ -276,7 +330,8 @@ func (s *Server) Namespace() authority.AuthorityNamespaceId { return s.namespace
 func (s *Server) Handler() http.Handler { return s }
 
 // ServeHTTP enforces the public-api identity matrix and routes the versioned
-// endpoints. Every response — success or failure — is JSON.
+// endpoints. Every response — success or failure — is JSON, except one
+// established /events SSE stream, which switches to text/event-stream.
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
@@ -324,6 +379,18 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		s.handleRunStatus(writer, request, identity, segments[1])
+	case len(segments) == 1 && segments[0] == "events":
+		if request.Method != http.MethodGet {
+			methodNotAllowed(writer, identity.RequestID, http.MethodGet)
+			return
+		}
+		s.handleEventsStream(writer, request, identity)
+	case len(segments) == 2 && segments[0] == "events" && segments[1] == "poll":
+		if request.Method != http.MethodGet {
+			methodNotAllowed(writer, identity.RequestID, http.MethodGet)
+			return
+		}
+		s.handleEventsPoll(writer, request, identity)
 	default:
 		writeError(writer, identity.RequestID, apiError(CodeNotFound, "unknown-route", "unknown route"))
 	}

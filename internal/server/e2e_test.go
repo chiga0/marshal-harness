@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,13 +12,17 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
@@ -532,6 +538,8 @@ func TestOpenAPIDocumentFrozen(t *testing.T) {
 		APIPrefix + "/tasks/{taskId}/cancel": http.MethodPost,
 		APIPrefix + "/runs/{runId}/approval": http.MethodPost,
 		APIPrefix + "/runs/{runId}/status":   http.MethodGet,
+		APIPrefix + "/events":                http.MethodGet,
+		APIPrefix + "/events/poll":           http.MethodGet,
 	}
 	if len(document.Paths) != len(expectedPaths) {
 		t.Fatalf("openapi.json freezes %d paths, the server implements %d", len(document.Paths), len(expectedPaths))
@@ -576,6 +584,7 @@ func TestOpenAPIDocumentFrozen(t *testing.T) {
 		"TaskCancelRequest", "TaskCancelPayload", "TaskCancellation",
 		"RunApprovalRequest", "RunApprovalPayload", "ApprovalRecord", "ControlSource", "ApprovalBinding",
 		"RunState", "RunLifecycleState", "RunPublication",
+		"EventProjection", "EventPage", "EventResync",
 	} {
 		if _, ok := components.Schemas[schema]; !ok {
 			t.Fatalf("openapi.json lacks the frozen schema %s", schema)
@@ -678,4 +687,663 @@ func TestOpenAPIDocumentFrozen(t *testing.T) {
 		t.Fatalf("openapi.json freezes %d forbidden headers, the implementation rejects %d",
 			len(documentedHeaders), len(forbiddenHeaders))
 	}
+}
+
+// newSSEServerFixture assembles one server fixture with SSE knobs exposed,
+// closing the projection after the test.
+func newSSEServerFixture(t *testing.T, mutate func(*Config)) *serverFixture {
+	t.Helper()
+	root := fixtureRepository(t)
+	stateRoot := filepath.Join(root, ".marshal")
+	if err := (repository.State{RepositoryRoot: root, StateRoot: stateRoot}).Init(); err != nil {
+		t.Fatalf("bind the fixture repository identity: %v", err)
+	}
+	registry := adapter.NewRegistry()
+	if err := registry.Register(&fixtureAdapter{id: fixtureAdapterID, capability: fixtureCapability(fixtureAdapterID)}); err != nil {
+		t.Fatalf("register the fixture adapter: %v", err)
+	}
+	selector, err := adapter.NewSelector(registry)
+	if err != nil {
+		t.Fatalf("build the fixture selector: %v", err)
+	}
+	config := Config{
+		StateRoot:      stateRoot,
+		RepositoryRoot: root,
+		Selector:       selector,
+		Now:            func() time.Time { return fixtureClock },
+	}
+	if mutate != nil {
+		mutate(&config)
+	}
+	server, err := New(config)
+	if err != nil {
+		t.Fatalf("assemble the server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	return &serverFixture{
+		t:              t,
+		server:         server,
+		repositoryRoot: root,
+		stateRoot:      stateRoot,
+		baseSHA:        fixtureBaseSHA(t, root),
+		scope:          "repo:" + filepath.ToSlash(root),
+	}
+}
+
+// sseStreamFixture serves one SSE fixture on a loopback listener.
+type sseStreamFixture struct {
+	fixture *serverFixture
+	baseURL string
+	server  *http.Server
+}
+
+func newSSELoopbackFixture(t *testing.T, mutate func(*Config)) *sseStreamFixture {
+	t.Helper()
+	fixture := newSSEServerFixture(t, mutate)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind loopback listener: %v", err)
+	}
+	httpServer := &http.Server{Handler: fixture.server.Handler()}
+	go func() { _ = httpServer.Serve(listener) }()
+	t.Cleanup(func() { _ = httpServer.Close() })
+	return &sseStreamFixture{fixture: fixture, baseURL: "http://" + listener.Addr().String(), server: httpServer}
+}
+
+func doSSEHTTP(t *testing.T, client *http.Client, method, url string, headers map[string]string, body []byte) recordedResponse {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	request, err := http.NewRequest(method, url, reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("%s %s: read body: %v", method, url, err)
+	}
+	return recordedResponse{status: response.StatusCode, header: response.Header, body: data}
+}
+
+// sseTestFrame is one parsed SSE frame of the test client.
+type sseTestFrame struct {
+	id    string
+	event string
+	data  []byte
+}
+
+// openSSEStream opens one SSE subscription and returns its frame channel, a
+// channel reporting the stream's terminal error (io.EOF on a clean close)
+// and the cancel function disconnecting the client.
+func openSSEStream(t *testing.T, baseURL, path string, headers map[string]string) (chan sseTestFrame, chan error, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, nil)
+	if err != nil {
+		cancel()
+		t.Fatalf("build SSE request: %v", err)
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	response, err := (&http.Client{}).Do(request)
+	if err != nil {
+		cancel()
+		t.Fatalf("open SSE stream: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		cancel()
+		t.Fatalf("SSE stream status = %d, body: %s", response.StatusCode, data)
+	}
+	if contentType := response.Header.Get("Content-Type"); contentType != "text/event-stream" {
+		_ = response.Body.Close()
+		cancel()
+		t.Fatalf("SSE stream content type = %q, want text/event-stream", contentType)
+	}
+	frames := make(chan sseTestFrame, 128)
+	streamErr := make(chan error, 1)
+	go func() {
+		defer response.Body.Close()
+		reader := bufio.NewReader(response.Body)
+		var frame sseTestFrame
+		haveContent := false
+		for {
+			line, readErr := reader.ReadString('\n')
+			if len(line) > 0 {
+				line = strings.TrimRight(line, "\r\n")
+				switch {
+				case line == "":
+					if haveContent {
+						// Non-blocking hand-off: a test that stops
+						// consuming frames must not prevent the
+						// reader from observing the stream close.
+						select {
+						case frames <- frame:
+						default:
+						}
+						frame = sseTestFrame{}
+						haveContent = false
+					}
+				case strings.HasPrefix(line, ":"):
+					// heartbeat comment: never a data frame
+				default:
+					field, value, _ := strings.Cut(line, ":")
+					value = strings.TrimPrefix(value, " ")
+					switch field {
+					case "id":
+						frame.id = value
+						haveContent = true
+					case "event":
+						frame.event = value
+						haveContent = true
+					case "data":
+						frame.data = append(frame.data, []byte(value)...)
+						haveContent = true
+					}
+				}
+				continue
+			}
+			streamErr <- readErr
+			return
+		}
+	}()
+	return frames, streamErr, cancel
+}
+
+func nextFrame(t *testing.T, frames chan sseTestFrame, streamErr chan error, timeout time.Duration) sseTestFrame {
+	t.Helper()
+	select {
+	case frame := <-frames:
+		return frame
+	case err := <-streamErr:
+		t.Fatalf("the SSE stream closed while waiting for a frame: %v", err)
+		return sseTestFrame{}
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for an SSE frame")
+		return sseTestFrame{}
+	}
+}
+
+func waitStreamClose(t *testing.T, streamErr chan error, timeout time.Duration) {
+	t.Helper()
+	select {
+	case <-streamErr:
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for the SSE stream to close")
+	}
+}
+
+func pollEvents(t *testing.T, stream *sseStreamFixture, cursor string, limit int) EventPage {
+	t.Helper()
+	path := APIPrefix + "/events/poll"
+	query := ""
+	if cursor != "" {
+		query = "cursor=" + cursor
+	}
+	if limit > 0 {
+		if query != "" {
+			query += "&"
+		}
+		query += "limit=" + strconv.Itoa(limit)
+	}
+	if query != "" {
+		path += "?" + query
+	}
+	response := doSSEHTTP(t, &http.Client{Timeout: 30 * time.Second}, http.MethodGet,
+		stream.baseURL+path, stream.fixture.identityHeaders("req-poll"), nil)
+	if response.status != http.StatusOK {
+		t.Fatalf("poll status = %d, body: %s", response.status, response.body)
+	}
+	var page EventPage
+	if err := json.Unmarshal(response.body, &page); err != nil {
+		t.Fatalf("decode EventPage: %v", err)
+	}
+	return page
+}
+
+// TestSSELoopbackSubscribeAndPollConsistency covers the normal subscription
+// path over the wire: the backlog arrives with increasing sequences, the
+// frame id carries the eventId, the SSE data frames are byte-identical to
+// the polling fallback's EventProjection JSON, and a live journal append
+// reaches the open stream with the identical cursor boundary as polling.
+func TestSSELoopbackSubscribeAndPollConsistency(t *testing.T) {
+	stream := newSSELoopbackFixture(t, nil)
+	fixture := stream.fixture
+	journal := appendJournalEvents(t, fixture.stateRoot, "run-sse", 0, 9, 0)
+	fixture.server.events.ScanNow()
+
+	frames, streamErr, cancel := openSSEStream(t, stream.baseURL, APIPrefix+"/events", fixture.identityHeaders("req-sse-consistency"))
+	defer cancel()
+	received := make([]sseTestFrame, 0, 9)
+	for index := 0; index < 9; index++ {
+		received = append(received, nextFrame(t, frames, streamErr, 5*time.Second))
+	}
+
+	page := pollEvents(t, stream, "", 0)
+	if len(page.Events) != len(received) {
+		t.Fatalf("poll count = %d, stream count = %d: the channels diverge", len(page.Events), len(received))
+	}
+	for index, frame := range received {
+		if frame.id != page.Events[index].EventID {
+			t.Fatalf("SSE frame id %q does not carry the eventId %q", frame.id, page.Events[index].EventID)
+		}
+		var projected EventProjection
+		if err := json.Unmarshal(frame.data, &projected); err != nil {
+			t.Fatalf("decode SSE data frame: %v", err)
+		}
+		if projected.Kind != KindEventProjection {
+			t.Fatalf("SSE data frame kind = %q, want %q", projected.Kind, KindEventProjection)
+		}
+		if projected.LedgerSequence != uint64(index+1) {
+			t.Fatalf("SSE ledgerSequence = %d, want %d", projected.LedgerSequence, index+1)
+		}
+		if projected.EventID != journal[index].EventID || projected.Scope != fixture.scope {
+			t.Fatalf("SSE projection lost its identity: %+v", projected)
+		}
+		polledData, err := json.Marshal(page.Events[index])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(frame.data, polledData) {
+			t.Fatalf("SSE frame diverges from the poll projection at ledgerSequence %d:\n SSE: %s\npoll: %s",
+				projected.LedgerSequence, frame.data, polledData)
+		}
+	}
+
+	// A live event appended to the journal reaches the open subscription
+	// and the polling boundary stays identical on both channels.
+	appendJournalEvents(t, fixture.stateRoot, "run-sse", 9, 1, 0)
+	live := nextFrame(t, frames, streamErr, 5*time.Second)
+	var liveProjection EventProjection
+	if err := json.Unmarshal(live.data, &liveProjection); err != nil {
+		t.Fatal(err)
+	}
+	if liveProjection.LedgerSequence != 10 || live.id != liveProjection.EventID {
+		t.Fatalf("live frame = %+v id %q, want ledgerSequence 10 with the matching eventId", liveProjection, live.id)
+	}
+	page = pollEvents(t, stream, "9", 0)
+	if len(page.Events) != 1 || page.Events[0].EventID != live.id {
+		t.Fatalf("poll after cursor 9 = %+v, want exactly the live event", page.Events)
+	}
+}
+
+// TestSSELoopbackResumeFromCursorAndLastEventID covers disconnect/reconnect:
+// the cursor and Last-Event-ID resume with the exclusive boundary, and the
+// eventId-keyed union of every session covers the complete backlog
+// (at-least-once with client-side dedup).
+func TestSSELoopbackResumeFromCursorAndLastEventID(t *testing.T) {
+	stream := newSSELoopbackFixture(t, nil)
+	fixture := stream.fixture
+	journal := appendJournalEvents(t, fixture.stateRoot, "run-sse", 0, 9, 0)
+	fixture.server.events.ScanNow()
+
+	frames, streamErr, cancel := openSSEStream(t, stream.baseURL, APIPrefix+"/events", fixture.identityHeaders("req-sse-resume-1"))
+	seen := map[string]uint64{}
+	for index := 0; index < 4; index++ {
+		frame := nextFrame(t, frames, streamErr, 5*time.Second)
+		seen[frame.id] = uint64(index + 1)
+	}
+	cancel()
+
+	frames, streamErr, cancel = openSSEStream(t, stream.baseURL, APIPrefix+"/events?cursor=4", fixture.identityHeaders("req-sse-resume-2"))
+	for expected := uint64(5); expected <= 9; expected++ {
+		frame := nextFrame(t, frames, streamErr, 5*time.Second)
+		var projected EventProjection
+		if err := json.Unmarshal(frame.data, &projected); err != nil {
+			t.Fatal(err)
+		}
+		if projected.LedgerSequence != expected {
+			t.Fatalf("cursor resume delivered ledgerSequence %d, want %d", projected.LedgerSequence, expected)
+		}
+		seen[frame.id] = expected
+	}
+	cancel()
+
+	headers := fixture.identityHeaders("req-sse-resume-3")
+	headers["Last-Event-ID"] = journal[6].EventID
+	frames, streamErr, cancel = openSSEStream(t, stream.baseURL, APIPrefix+"/events", headers)
+	for expected := uint64(8); expected <= 9; expected++ {
+		frame := nextFrame(t, frames, streamErr, 5*time.Second)
+		seen[frame.id] = expected
+	}
+	cancel()
+
+	if len(seen) != 9 {
+		t.Fatalf("at-least-once resume lost events: %d distinct eventIds, want 9", len(seen))
+	}
+	for _, event := range journal {
+		if _, ok := seen[event.EventID]; !ok {
+			t.Fatalf("the resume lost eventId %s", event.EventID)
+		}
+	}
+}
+
+// TestSSELoopbackExpiredCursorResync covers the deterministic resync path on
+// both channels: a cursor beyond the ledger or an unknown Last-Event-ID
+// never continues silently, and the directive is byte-identical across
+// repeated observations.
+func TestSSELoopbackExpiredCursorResync(t *testing.T) {
+	stream := newSSELoopbackFixture(t, nil)
+	fixture := stream.fixture
+	appendJournalEvents(t, fixture.stateRoot, "run-sse", 0, 3, 0)
+	fixture.server.events.ScanNow()
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	first := doSSEHTTP(t, client, http.MethodGet, stream.baseURL+APIPrefix+"/events?cursor=999",
+		fixture.identityHeaders("req-sse-expired-1"), nil)
+	if first.status != http.StatusConflict {
+		t.Fatalf("expired cursor status = %d, body: %s", first.status, first.body)
+	}
+	var resync EventResync
+	if err := json.Unmarshal(first.body, &resync); err != nil {
+		t.Fatalf("decode EventResync: %v", err)
+	}
+	if resync.Kind != KindEventResync || resync.Reason != resyncReasonCursorExpired || resync.StartSequence != 1 {
+		t.Fatalf("EventResync = %+v, want kind %q reason %q startSequence 1", resync, KindEventResync, resyncReasonCursorExpired)
+	}
+	if !resync.AuthorityNamespaceId.Equal(fixture.server.Namespace()) || resync.Scope != fixture.scope {
+		t.Fatalf("EventResync lost the cursor identity: %+v scope=%q", resync.AuthorityNamespaceId, resync.Scope)
+	}
+	if !strings.HasPrefix(resync.SnapshotDigest, "sha256:") {
+		t.Fatalf("EventResync lacks the snapshot digest: %+v", resync)
+	}
+
+	second := doSSEHTTP(t, client, http.MethodGet, stream.baseURL+APIPrefix+"/events?cursor=999",
+		fixture.identityHeaders("req-sse-expired-2"), nil)
+	if !bytes.Equal(first.body, second.body) {
+		t.Fatalf("the resync directive is not deterministic:\n%s\n%s", first.body, second.body)
+	}
+
+	pollResponse := doSSEHTTP(t, client, http.MethodGet, stream.baseURL+APIPrefix+"/events/poll?cursor=999",
+		fixture.identityHeaders("req-poll-expired"), nil)
+	if pollResponse.status != http.StatusConflict {
+		t.Fatalf("poll expired cursor status = %d, body: %s", pollResponse.status, pollResponse.body)
+	}
+	var pollResync EventResync
+	if err := json.Unmarshal(pollResponse.body, &pollResync); err != nil {
+		t.Fatal(err)
+	}
+	if pollResync != resync {
+		t.Fatalf("the poll resync diverges from the stream resync: %+v != %+v", pollResync, resync)
+	}
+
+	headers := fixture.identityHeaders("req-sse-expired-3")
+	headers["Last-Event-ID"] = "event-unknown"
+	response := doSSEHTTP(t, client, http.MethodGet, stream.baseURL+APIPrefix+"/events", headers, nil)
+	if response.status != http.StatusConflict {
+		t.Fatalf("unknown Last-Event-ID status = %d, body: %s", response.status, response.body)
+	}
+}
+
+// TestSSELoopbackJournalRewriteForcesResync covers the gap/compaction path:
+// a journal that lost projected events forces the deterministic resync with
+// the rebuilt snapshot digest, and fresh subscriptions replay the rebuilt
+// backlog from sequence 1.
+func TestSSELoopbackJournalRewriteForcesResync(t *testing.T) {
+	stream := newSSELoopbackFixture(t, nil)
+	fixture := stream.fixture
+	journal := appendJournalEvents(t, fixture.stateRoot, "run-sse", 0, 9, 0)
+	fixture.server.events.ScanNow()
+	if page := pollEvents(t, stream, "5", 0); len(page.Events) != 4 {
+		t.Fatalf("poll before the rewrite = %d events, want 4", len(page.Events))
+	}
+
+	rewriteJournal(t, fixture.stateRoot, "run-sse", journal[:2])
+	fixture.server.events.ScanNow()
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	response := doSSEHTTP(t, client, http.MethodGet, stream.baseURL+APIPrefix+"/events?cursor=5",
+		fixture.identityHeaders("req-sse-gap"), nil)
+	if response.status != http.StatusConflict {
+		t.Fatalf("gap cursor status = %d, body: %s", response.status, response.body)
+	}
+	var resync EventResync
+	if err := json.Unmarshal(response.body, &resync); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt := pollEvents(t, stream, "", 0)
+	if len(rebuilt.Events) != 2 {
+		t.Fatalf("poll after the rewrite = %d events, want 2", len(rebuilt.Events))
+	}
+	if resync.StartSequence != 1 || resync.SnapshotDigest != rebuilt.SnapshotDigest {
+		t.Fatalf("gap resync = %+v, want startSequence 1 with the rebuilt digest %q", resync, rebuilt.SnapshotDigest)
+	}
+
+	frames, streamErr, cancel := openSSEStream(t, stream.baseURL, APIPrefix+"/events", fixture.identityHeaders("req-sse-gap-replay"))
+	defer cancel()
+	for expected := uint64(1); expected <= 2; expected++ {
+		frame := nextFrame(t, frames, streamErr, 5*time.Second)
+		var projected EventProjection
+		if err := json.Unmarshal(frame.data, &projected); err != nil {
+			t.Fatal(err)
+		}
+		if projected.LedgerSequence != expected {
+			t.Fatalf("rebuilt backlog delivered sequence %d, want %d", projected.LedgerSequence, expected)
+		}
+	}
+}
+
+// TestSSELoopbackSlowSubscriberBackpressure covers the bounded backpressure
+// rule over the wire: a stalled subscriber is disconnected and guided to
+// resync while the event source keeps ingesting without blocking.
+func TestSSELoopbackSlowSubscriberBackpressure(t *testing.T) {
+	stream := newSSELoopbackFixture(t, func(config *Config) {
+		config.SSEBufferLimit = 2
+		config.SSEHeartbeatInterval = 50 * time.Millisecond
+	})
+	fixture := stream.fixture
+	appendJournalEvents(t, fixture.stateRoot, "run-sse", 0, 1, 0)
+	fixture.server.events.ScanNow()
+
+	frames, streamErr, cancel := openSSEStream(t, stream.baseURL, APIPrefix+"/events", fixture.identityHeaders("req-sse-slow"))
+	defer cancel()
+	nextFrame(t, frames, streamErr, 5*time.Second) // the client reads once, then stalls
+
+	// Flood the stalled subscriber; the journal ingest must never block.
+	appendJournalEvents(t, fixture.stateRoot, "run-sse", 1, 400, 2048)
+	sourceStart := time.Now()
+	fixture.server.events.ScanNow()
+	if elapsed := time.Since(sourceStart); elapsed > 2*time.Second {
+		t.Fatalf("the event source blocked for %v on the slow subscriber", elapsed)
+	}
+
+	waitStreamClose(t, streamErr, 10*time.Second)
+
+	// Recovery path: the polling fallback still serves the complete
+	// projection, so the disconnected client can resync deterministically.
+	page := pollEvents(t, stream, "", 1000)
+	if len(page.Events) != 401 {
+		t.Fatalf("poll after backpressure = %d events, want 401", len(page.Events))
+	}
+}
+
+// toggleAuthorizer is a runtime-flippable Authorizer for the fail-closed
+// re-Authorization tests.
+type toggleAuthorizer struct {
+	mu      sync.Mutex
+	allowed bool
+}
+
+func (a *toggleAuthorizer) authorize(principal string, namespace authority.AuthorityNamespaceId, scope string) error {
+	a.mu.Lock()
+	allowed := a.allowed
+	a.mu.Unlock()
+	if !allowed {
+		return errors.New("sse fixture: authorization revoked")
+	}
+	return defaultAuthorizer(principal, namespace, scope)
+}
+
+func (a *toggleAuthorizer) revoke() {
+	a.mu.Lock()
+	a.allowed = false
+	a.mu.Unlock()
+}
+
+// TestSSELoopbackSensitiveChangeReauthorizationFailClosed covers immediate
+// re-Authorization: a sensitive change revalidates every subscription at
+// once and a failed check closes the connection fail closed within 5s,
+// never degraded to full visibility.
+func TestSSELoopbackSensitiveChangeReauthorizationFailClosed(t *testing.T) {
+	gate := &toggleAuthorizer{allowed: true}
+	stream := newSSELoopbackFixture(t, func(config *Config) {
+		config.SSEReauthzInterval = 50 * time.Millisecond
+		config.Authorizer = gate.authorize
+	})
+	fixture := stream.fixture
+	appendJournalEvents(t, fixture.stateRoot, "run-sse", 0, 1, 0)
+	fixture.server.events.ScanNow()
+
+	frames, streamErr, cancel := openSSEStream(t, stream.baseURL, APIPrefix+"/events", fixture.identityHeaders("req-sse-reauth-now"))
+	defer cancel()
+	nextFrame(t, frames, streamErr, 5*time.Second)
+
+	gate.revoke()
+	fixture.server.NotifySensitiveChange()
+	waitStreamClose(t, streamErr, 5*time.Second)
+}
+
+// TestSSELoopbackPeriodicReauthorizationFailClosed covers periodic
+// re-Authorization: without any manual trigger the failed check closes the
+// connection within the 5s bound.
+func TestSSELoopbackPeriodicReauthorizationFailClosed(t *testing.T) {
+	gate := &toggleAuthorizer{allowed: true}
+	stream := newSSELoopbackFixture(t, func(config *Config) {
+		config.SSEReauthzInterval = 50 * time.Millisecond
+		config.Authorizer = gate.authorize
+	})
+	fixture := stream.fixture
+	appendJournalEvents(t, fixture.stateRoot, "run-sse", 0, 1, 0)
+	fixture.server.events.ScanNow()
+
+	frames, streamErr, cancel := openSSEStream(t, stream.baseURL, APIPrefix+"/events", fixture.identityHeaders("req-sse-reauth-periodic"))
+	defer cancel()
+	nextFrame(t, frames, streamErr, 5*time.Second)
+
+	gate.revoke()
+	waitStreamClose(t, streamErr, 5*time.Second)
+}
+
+// TestSSESurfaceReadOnly covers the interface-surface rule: the SSE endpoint
+// is strictly read-only — no business ACK, lease heartbeat or command
+// channel exists in routes, methods or frames.
+func TestSSESurfaceReadOnly(t *testing.T) {
+	stream := newSSELoopbackFixture(t, nil)
+	fixture := stream.fixture
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	response := doSSEHTTP(t, client, http.MethodPost, stream.baseURL+APIPrefix+"/events",
+		withContentType(fixture.identityHeaders("req-sse-surface-post")), []byte("{}"))
+	if response.status != http.StatusMethodNotAllowed || response.header.Get("Allow") != http.MethodGet {
+		t.Fatalf("POST /events status = %d allow=%q, want 405 Allow GET", response.status, response.header.Get("Allow"))
+	}
+	response = doSSEHTTP(t, client, http.MethodPut, stream.baseURL+APIPrefix+"/events/poll",
+		withContentType(fixture.identityHeaders("req-sse-surface-put")), []byte("{}"))
+	if response.status != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT /events/poll status = %d, want 405", response.status)
+	}
+
+	for _, path := range []string{"/events/ack", "/events/command", "/events/lease"} {
+		response = doSSEHTTP(t, client, http.MethodGet, stream.baseURL+APIPrefix+path,
+			fixture.identityHeaders("req-sse-surface-route"), nil)
+		if response.status != http.StatusNotFound {
+			t.Fatalf("GET %s status = %d, want 404", path, response.status)
+		}
+		if body := response.decodeError(t); body.Code != CodeNotFound || body.Reason != "unknown-route" {
+			t.Fatalf("GET %s error = %+v", path, body)
+		}
+	}
+
+	response = doSSEHTTP(t, client, http.MethodGet, stream.baseURL+APIPrefix+"/events",
+		fixture.identityHeaders("req-sse-surface-body"), []byte("{}"))
+	if response.status != http.StatusBadRequest || response.decodeError(t).Reason != "body-not-allowed" {
+		t.Fatalf("GET /events with body status = %d body: %s", response.status, response.body)
+	}
+	response = doSSEHTTP(t, client, http.MethodGet, stream.baseURL+APIPrefix+"/events?bogus=1",
+		fixture.identityHeaders("req-sse-surface-query"), nil)
+	if response.status != http.StatusBadRequest || response.decodeError(t).Reason != "unknown-query:bogus" {
+		t.Fatalf("unknown query status = %d body: %s", response.status, response.body)
+	}
+	response = doSSEHTTP(t, client, http.MethodGet, stream.baseURL+APIPrefix+"/events?cursor=abc",
+		fixture.identityHeaders("req-sse-surface-cursor"), nil)
+	if response.status != http.StatusBadRequest || response.decodeError(t).Reason != "cursor-invalid" {
+		t.Fatalf("malformed cursor status = %d body: %s", response.status, response.body)
+	}
+	response = doSSEHTTP(t, client, http.MethodGet, stream.baseURL+APIPrefix+"/events/poll?limit=0",
+		fixture.identityHeaders("req-sse-surface-limit"), nil)
+	if response.status != http.StatusBadRequest || response.decodeError(t).Reason != "limit-invalid" {
+		t.Fatalf("invalid limit status = %d body: %s", response.status, response.body)
+	}
+
+	// An established stream never carries ACK or command frames: every
+	// data frame is one EventProjection and nothing else.
+	appendJournalEvents(t, fixture.stateRoot, "run-sse", 0, 3, 0)
+	fixture.server.events.ScanNow()
+	frames, streamErr, cancel := openSSEStream(t, stream.baseURL, APIPrefix+"/events", fixture.identityHeaders("req-sse-surface-stream"))
+	defer cancel()
+	for index := 0; index < 3; index++ {
+		frame := nextFrame(t, frames, streamErr, 5*time.Second)
+		var members map[string]json.RawMessage
+		if err := json.Unmarshal(frame.data, &members); err != nil {
+			t.Fatalf("decode SSE frame: %v", err)
+		}
+		for forbidden := range map[string]bool{"ack": true, "command": true, "lease": true, "heartbeat": true} {
+			if _, present := members[forbidden]; present {
+				t.Fatalf("the SSE stream carries a %q channel member: %s", forbidden, frame.data)
+			}
+		}
+		var kind struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(frame.data, &kind); err != nil {
+			t.Fatal(err)
+		}
+		if kind.Kind != KindEventProjection {
+			t.Fatalf("the SSE stream carries a non-projection frame kind %q", kind.Kind)
+		}
+	}
+}
+
+// TestSSENotifyHookAdaptation covers the MARSHAL_NOTIFY_CMD read-only
+// adaptation: with the watcher interval effectively disabled, only the hook
+// payload wake may deliver the journaled event, and invalid payloads are
+// dropped without effect.
+func TestSSENotifyHookAdaptation(t *testing.T) {
+	stream := newSSELoopbackFixture(t, func(config *Config) {
+		config.EventWatchInterval = time.Hour
+	})
+	fixture := stream.fixture
+	appendJournalEvents(t, fixture.stateRoot, "run-sse", 0, 1, 0)
+
+	fixture.server.HandleNotifyHook([]byte("not-json"))
+	time.Sleep(50 * time.Millisecond)
+	if page, resync := fixture.server.events.Poll(0, 10); resync != nil || len(page.Events) != 0 {
+		t.Fatalf("an invalid notify payload ingested %d events", len(page.Events))
+	}
+
+	payload := mustMarshal(t, map[string]any{
+		"runId":         "run-sse",
+		"taskId":        "task-sse",
+		"stateFrom":     "CREATED",
+		"stateTo":       "PLANNED",
+		"eventSequence": 1,
+		"timestamp":     fixtureClock.Format(time.RFC3339),
+	})
+	fixture.server.HandleNotifyHook(payload)
+	waitFor(t, 2*time.Second, func() bool {
+		page, resync := fixture.server.events.Poll(0, 10)
+		return resync == nil && len(page.Events) == 1
+	}, "the notify wake to ingest the journal event")
 }
