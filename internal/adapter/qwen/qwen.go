@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,16 +30,25 @@ import (
 )
 
 const (
-	adapterID       = "qwen"
-	adapterVersion  = "0.1.0"
-	supportedBinary = "0.21.5"
-	maxPromptBytes  = 256 << 10
-	maxResultBytes  = 4 << 20
-	stderrLimit     = 64 << 10
+	adapterID      = "qwen"
+	adapterVersion = "0.1.0"
+	maxPromptBytes = 256 << 10
+	maxResultBytes = 4 << 20
+	stderrLimit    = 64 << 10
 
 	budgetToolCalls    = 200
 	budgetSessionTurns = 60
 )
+
+// supportedBinaries is the closed set of Qwen Code versions this adapter
+// supports; any version outside the set fails closed.
+var supportedBinaries = []string{"0.21.5", "0.21.10"}
+
+// isSupportedBinary reports whether the probed version belongs to the
+// supported set.
+func isSupportedBinary(version string) bool {
+	return slices.Contains(supportedBinaries, version)
+}
 
 // excludedTools blocks every shell, sub-agent, sub-session, web/network and
 // computer-use capability. Qwen Code's safe-mode alone does not remove these
@@ -246,7 +256,7 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
-	if identity.version != supportedBinary {
+	if !isSupportedBinary(identity.version) {
 		return port.TerminalLaunchSpec{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
 	}
 	worktree, controlRoot, prompt, err := resolveTerminalInput(request)
@@ -297,9 +307,9 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	}
 	status := "supported"
 	probeErrors := []string{}
-	if identity.version != supportedBinary {
+	if !isSupportedBinary(identity.version) {
 		status = "unsupported"
-		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Qwen Code %s，实际为 %s", supportedBinary, identity.version))
+		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Qwen Code %s，实际为 %s", strings.Join(supportedBinaries, "、"), identity.version))
 	}
 	snapshot := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
@@ -451,7 +461,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if identity.version != supportedBinary {
+	if !isSupportedBinary(identity.version) {
 		return domain.Record{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
 	}
 	worktree, err := filepath.EvalSymlinks(request.WorktreePath)

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,13 +31,22 @@ import (
 )
 
 const (
-	adapterID       = "opencode"
-	adapterVersion  = "0.1.0"
-	supportedBinary = "1.18.13"
-	maxPromptBytes  = 256 << 10
-	maxResultBytes  = 4 << 20
-	stderrLimit     = 64 << 10
+	adapterID      = "opencode"
+	adapterVersion = "0.1.0"
+	maxPromptBytes = 256 << 10
+	maxResultBytes = 4 << 20
+	stderrLimit    = 64 << 10
 )
+
+// supportedBinaries is the closed set of OpenCode versions this adapter
+// supports; any version outside the set fails closed.
+var supportedBinaries = []string{"1.18.13", "1.18.16"}
+
+// isSupportedBinary reports whether the probed version belongs to the
+// supported set.
+func isSupportedBinary(version string) bool {
+	return slices.Contains(supportedBinaries, version)
+}
 
 var (
 	ErrUnsupportedVersion = errors.New("unsupported opencode version")
@@ -100,7 +110,7 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
-	if identity.Version != supportedBinary {
+	if !isSupportedBinary(identity.Version) {
 		return port.TerminalLaunchSpec{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.Version)
 	}
 	worktree, controlRoot, prompt, err := resolveTerminalInput(request)
@@ -159,9 +169,9 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	}
 	status := "supported"
 	probeErrors := []string{}
-	if identity.Version != supportedBinary {
+	if !isSupportedBinary(identity.Version) {
 		status = "unsupported"
-		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 OpenCode %s，实际为 %s", supportedBinary, identity.Version))
+		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 OpenCode %s，实际为 %s", strings.Join(supportedBinaries, "、"), identity.Version))
 	}
 	snapshot := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
@@ -583,8 +593,9 @@ func (a *Adapter) prepareAttempt(identity ExecutableIdentity, request workerRequ
 
 // validateExecutableIdentity binds the capability-probed identity to the
 // adapter: it must be complete, resolved against exactly the configured
-// executable, and pinned to the supported version. The version gate is a pure
-// data check here, so an unsupported binary never reaches any executor.
+// executable, and pinned to a version inside the supported set. The version
+// gate is a pure data check here, so an unsupported binary never reaches any
+// executor.
 func validateExecutableIdentity(identity ExecutableIdentity, executable string) error {
 	if identity.Path == "" || identity.Digest == "" || identity.Version == "" {
 		return errors.New("executable identity is incomplete")
@@ -592,7 +603,7 @@ func validateExecutableIdentity(identity ExecutableIdentity, executable string) 
 	if identity.Path != executable {
 		return errors.New("executable identity does not match the configured opencode executable")
 	}
-	if identity.Version != supportedBinary {
+	if !isSupportedBinary(identity.Version) {
 		return fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.Version)
 	}
 	return nil

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -72,5 +73,44 @@ func TestLiveQwen(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join(worktree, "hello.txt"))
 	if err != nil || string(content) != "marshal-live-e2e\n" {
 		t.Fatalf("hello.txt=%q err=%v", content, err)
+	}
+}
+
+// TestLiveProbeVersionSupported is the probe-only live gate: it resolves
+// the real host binary through MARSHAL_LIVE_QWEN_PATH first and PATH
+// second, then proves Probe reports it as a supported version inside the
+// supported set without running a full attempt. It stays fully separate
+// from the E2E test above and skips only when no binary can be resolved.
+func TestLiveProbeVersionSupported(t *testing.T) {
+	executable := os.Getenv("MARSHAL_LIVE_QWEN_PATH")
+	if executable == "" {
+		resolved, err := exec.LookPath("qwen")
+		if err != nil {
+			t.Skip("set MARSHAL_LIVE_QWEN_PATH or install qwen on PATH to run the live probe")
+		}
+		executable = resolved
+	}
+	adapter, err := New(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	record, err := adapter.Probe(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(record.Data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	status, _ := raw["probeStatus"].(string)
+	version, _ := raw["binaryVersion"].(string)
+	if status != "supported" || !slices.Contains(supportedBinaries, version) {
+		t.Fatalf("live probe = %s/%s, want a supported version inside %v", status, version, supportedBinaries)
+	}
+	probeErrors, _ := raw["probeErrors"].([]any)
+	if len(probeErrors) != 0 {
+		t.Fatalf("live probeErrors = %v", probeErrors)
 	}
 }

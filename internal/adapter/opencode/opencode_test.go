@@ -17,6 +17,10 @@ import (
 	"github.com/chiga0/marshal-harness/internal/port"
 )
 
+// supportedBinary pins the fixture default to the first member of the
+// supported set; Probe coverage iterates the whole set explicitly.
+var supportedBinary = supportedBinaries[0]
+
 func TestNewRequiresExactExecutableAndValidator(t *testing.T) {
 	validator := newValidator(t)
 	if _, err := New("opencode", validator); err == nil {
@@ -80,7 +84,18 @@ func containsArgument(arguments []string, target string) bool {
 }
 
 func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
-	for _, test := range []struct{ version, status string }{{supportedBinary, "supported"}, {"1.19.0", "unsupported"}} {
+	probeSnapshot := func(t *testing.T, record domain.Record) map[string]any {
+		t.Helper()
+		var raw map[string]any
+		if err := json.Unmarshal(record.Data, &raw); err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	for _, test := range []struct{ version, status string }{
+		{"1.18.13", "supported"}, {"1.18.16", "supported"},
+		{"1.19.0", "unsupported"}, {"9.9.9", "unsupported"},
+	} {
 		t.Run(test.version, func(t *testing.T) {
 			adapter, err := New(fakeExecutable(t, test.version, "exit 0"), newValidator(t))
 			if err != nil {
@@ -90,19 +105,32 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var snapshot struct {
-				Status, Version, Digest, Executable string
+			raw := probeSnapshot(t, record)
+			status, _ := raw["probeStatus"].(string)
+			version, _ := raw["binaryVersion"].(string)
+			digest, _ := raw["executableDigest"].(string)
+			executable, _ := raw["executable"].(string)
+			if status != test.status || version != test.version || !strings.HasPrefix(digest, "sha256:") || !filepath.IsAbs(executable) {
+				t.Fatalf("snapshot = %s/%s/%s/%s", status, version, digest, executable)
 			}
-			var raw map[string]any
-			if err := json.Unmarshal(record.Data, &raw); err != nil {
-				t.Fatal(err)
+			probeErrors, _ := raw["probeErrors"].([]any)
+			if test.status == "supported" {
+				if len(probeErrors) != 0 {
+					t.Fatalf("probeErrors = %v", probeErrors)
+				}
+				return
 			}
-			snapshot.Status, _ = raw["probeStatus"].(string)
-			snapshot.Version, _ = raw["binaryVersion"].(string)
-			snapshot.Digest, _ = raw["executableDigest"].(string)
-			snapshot.Executable, _ = raw["executable"].(string)
-			if snapshot.Status != test.status || snapshot.Version != test.version || !strings.HasPrefix(snapshot.Digest, "sha256:") || !filepath.IsAbs(snapshot.Executable) {
-				t.Fatalf("snapshot = %+v", snapshot)
+			if len(probeErrors) != 1 {
+				t.Fatalf("probeErrors = %v", probeErrors)
+			}
+			message, _ := probeErrors[0].(string)
+			if !strings.Contains(message, test.version) {
+				t.Fatalf("probeErrors must report the actual version: %v", probeErrors)
+			}
+			for _, supported := range supportedBinaries {
+				if !strings.Contains(message, supported) {
+					t.Fatalf("probeErrors must list supported version %s: %v", supported, probeErrors)
+				}
 			}
 		})
 	}
@@ -206,7 +234,7 @@ func TestReadOnlyPermissionConfigLocksEditBashAndReadRoots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fake := fakeExecutable(t, supportedBinary, "printf '%s\\n' "+shellQuote(string(merged)))
+	fake := fakeExecutable(t, supportedBinaries[0], "printf '%s\\n' "+shellQuote(string(merged)))
 	environment := workerEnvironment(worktree, string(merged))
 	if err := validateResolvedConfig(context.Background(), fake, environment, controlRoot, worktree, "read-only", scope, nil); err != nil {
 		t.Fatalf("valid resolved config rejected: %v", err)
@@ -216,7 +244,7 @@ func TestReadOnlyPermissionConfigLocksEditBashAndReadRoots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fakeUnsafe := fakeExecutable(t, supportedBinary, "printf '%s\\n' "+shellQuote(string(mergedUnsafe)))
+	fakeUnsafe := fakeExecutable(t, supportedBinaries[0], "printf '%s\\n' "+shellQuote(string(mergedUnsafe)))
 	if err := validateResolvedConfig(context.Background(), fakeUnsafe, workerEnvironment(worktree, string(mergedUnsafe)), controlRoot, worktree, "read-only", scope, nil); err == nil {
 		t.Fatal("bash wildcard grant accepted in read-only validation")
 	}
@@ -721,7 +749,7 @@ func TestRunGradesFatalDenialsFailClosedAndPersistEvidence(t *testing.T) {
 	t.Run("input-read-denial", func(t *testing.T) {
 		fixture := newRunFixture(t, supportedBinary, "exit 0")
 		body := `printf '%s\n' '{"type":"error","sessionID":"session-1","part":{"tool":"read","state":{"status":"error","error":"permission denied","input":{"filePath":"` + filepath.Join(fixture.controlRoot, "input", "task-spec.json") + `"}}}}'`
-		if err := os.WriteFile(fixture.executable, []byte(fakeScript(supportedBinary, body)), 0o700); err != nil {
+		if err := os.WriteFile(fixture.executable, []byte(fakeScript(supportedBinaries[0], body)), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
