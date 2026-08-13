@@ -130,7 +130,11 @@ func (p *Publisher) Publish(ctx context.Context, record domain.Record) (domain.R
 			}
 		}
 	}
-	body := renderBody(intent)
+	chain, err := p.observeCandidateChain(ctx, askpass, intent.CommitSHA)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	body := renderBody(intent, chain)
 	pr, err := p.reconcilePR(ctx, intent, body)
 	if err != nil {
 		return domain.Record{}, err
@@ -699,8 +703,68 @@ func ParseRepositoryURL(remote string) (string, error) {
 	return owner + "/" + name, nil
 }
 
-func renderBody(intent domain.PublicationIntent) string {
-	return fmt.Sprintf("## 目标\n\n%s\n\n## 验证\n\n- Verification digest: `%s`\n- Evidence digest: `%s`\n- Snapshot digest: `%s`\n\n## 风险与回滚\n\n这是 Draft PR；Marshal 不执行 merge。\n\n## 来源信息\n\n- Task: `%s`\n- Run: `%s`\n- Base: `%s`\n- Head: `%s`\n\n%s\n", intent.Summary, intent.VerificationDigest, intent.EvidenceDigest, intent.SnapshotDigest, intent.TaskID, intent.RunID, intent.BaseSHA, intent.CommitSHA, intent.Marker)
+func renderBody(intent domain.PublicationIntent, chain candidateChain) string {
+	// The Candidate section is appended only when the published commit binds
+	// an ADR 0027 dual-record chain; legacy commits keep byte-identical PR
+	// bodies (design §5.1 zero regression, §8 R1 append-only disclosure).
+	candidateSection := ""
+	if chain.present() {
+		candidateSection = fmt.Sprintf("\n## Candidate 记录链\n\n- Worker Candidate（worker 原始 observed patch）: `%s`\n- Head Candidate（验证采用的链尾，归一化时为 normalizer 记录）: `%s`\n", chain.Worker, chain.Head)
+	}
+	return fmt.Sprintf("## 目标\n\n%s\n\n## 验证\n\n- Verification digest: `%s`\n- Evidence digest: `%s`\n- Snapshot digest: `%s`\n%s\n## 风险与回滚\n\n这是 Draft PR；Marshal 不执行 merge。\n\n## 来源信息\n\n- Task: `%s`\n- Run: `%s`\n- Base: `%s`\n- Head: `%s`\n\n%s\n", intent.Summary, intent.VerificationDigest, intent.EvidenceDigest, intent.SnapshotDigest, candidateSection, intent.TaskID, intent.RunID, intent.BaseSHA, intent.CommitSHA, intent.Marker)
+}
+
+// candidateChain carries the ADR 0027 dual-record chain identities bound to
+// a published commit. PublicationIntent keeps its frozen field set (its
+// schema admits no additional members), so the publisher sources the chain
+// from the Marshal-Candidate-Digest / Marshal-Worker-Candidate-Digest
+// trailers appended by the controlled commit: a read-only observation bound
+// to the exact head SHA being published.
+type candidateChain struct {
+	Worker string
+	Head   string
+}
+
+func (c candidateChain) present() bool { return c.Worker != "" && c.Head != "" }
+
+// candidateTrailerDigestPattern pins the sha256 digest wire form accepted in
+// commit candidate trailers.
+var candidateTrailerDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+const (
+	candidateTrailerHead   = "Marshal-Candidate-Digest: "
+	candidateTrailerWorker = "Marshal-Worker-Candidate-Digest: "
+)
+
+// observeCandidateChain reads the frozen commit message of commitSHA and
+// extracts the candidate chain trailers. Legacy commits without trailers
+// yield the empty chain and a byte-identical PR body; a partial or malformed
+// trailer pair fails closed, because Marshal-authored candidate commits
+// always carry both trailers and nothing else may mint them.
+func (p *Publisher) observeCandidateChain(ctx context.Context, askpass, commitSHA string) (candidateChain, error) {
+	if !commitObjectIDPattern.MatchString(commitSHA) {
+		return candidateChain{}, port.Permanent(errors.New("candidate chain observation received a malformed commit id"))
+	}
+	output, err := p.git(ctx, askpass, "log", "-1", "--format=%B", commitSHA)
+	if err != nil {
+		return candidateChain{}, fmt.Errorf("observe candidate chain: %w", err)
+	}
+	var chain candidateChain
+	for _, line := range strings.Split(string(output), "\n") {
+		switch {
+		case strings.HasPrefix(line, candidateTrailerHead):
+			chain.Head = strings.TrimPrefix(line, candidateTrailerHead)
+		case strings.HasPrefix(line, candidateTrailerWorker):
+			chain.Worker = strings.TrimPrefix(line, candidateTrailerWorker)
+		}
+	}
+	if chain.Head == "" && chain.Worker == "" {
+		return candidateChain{}, nil
+	}
+	if chain.Head == "" || chain.Worker == "" || !candidateTrailerDigestPattern.MatchString(chain.Head) || !candidateTrailerDigestPattern.MatchString(chain.Worker) {
+		return candidateChain{}, port.Permanent(errors.New("commit candidate chain trailers are incomplete or malformed"))
+	}
+	return chain, nil
 }
 
 func pullRequestTitle(summary string) string {

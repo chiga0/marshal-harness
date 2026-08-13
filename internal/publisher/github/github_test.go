@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +38,7 @@ const (
 
 var fixedTime = time.Date(2026, 8, 4, 12, 30, 0, 0, time.UTC)
 
-// fakeGitScript emulates the two git commands the publisher runs. Remote
+// fakeGitScript emulates the git commands the publisher runs. Remote
 // branch state lives in the harness state directory so tests can observe and
 // mutate it between invocations.
 const fakeGitScript = `#!/bin/sh
@@ -76,6 +77,12 @@ push)
 		exit 1
 		;;
 	esac
+	;;
+log)
+	if [ -f "$STATE/commit-message" ]; then
+		cat "$STATE/commit-message"
+	fi
+	exit 0
 	;;
 esac
 printf 'unexpected git invocation\n' >&2
@@ -136,9 +143,19 @@ pr)
 		exit 0
 		;;
 	edit)
+		prev=''
+		for arg in "$@"; do
+			if [ "$prev" = "--body-file" ] && [ -f "$arg" ]; then cp "$arg" "$STATE/pr-body"; fi
+			prev="$arg"
+		done
 		exit 0
 		;;
 	create)
+		prev=''
+		for arg in "$@"; do
+			if [ "$prev" = "--body-file" ] && [ -f "$arg" ]; then cp "$arg" "$STATE/pr-body"; fi
+			prev="$arg"
+		done
 		if [ -f "$STATE/create-fail" ]; then
 			printf 'error: fake pr create failure\n' >&2
 			exit 1
@@ -321,7 +338,7 @@ func (h *harness) seedPR(intent domain.PublicationIntent, mutate func(map[string
 		"headRepositoryOwner": map[string]any{"login": "example-org"},
 		"isCrossRepository":   false,
 		"baseRefName":         intent.BaseBranch,
-		"body":                renderBody(intent),
+		"body":                renderBody(intent, candidateChain{}),
 	}
 	if mutate != nil {
 		mutate(pr)
@@ -581,8 +598,8 @@ func TestPublishReconcilesExistingPRs(t *testing.T) {
 	t.Run("multiple matching PRs block", func(t *testing.T) {
 		h := newHarness(t)
 		intent := testIntent()
-		base := map[string]any{"id": testPRID, "number": 7, "url": testPRURL, "isDraft": true, "state": "OPEN", "headRefName": intent.HeadBranch, "headRefOid": intent.CommitSHA, "headRepositoryOwner": map[string]any{"login": "example-org"}, "baseRefName": intent.BaseBranch, "body": renderBody(intent)}
-		second := map[string]any{"id": "PR_kw0000000002", "number": 8, "url": testPRURL, "isDraft": true, "state": "OPEN", "headRefName": intent.HeadBranch, "headRefOid": intent.CommitSHA, "headRepositoryOwner": map[string]any{"login": "example-org"}, "baseRefName": intent.BaseBranch, "body": renderBody(intent)}
+		base := map[string]any{"id": testPRID, "number": 7, "url": testPRURL, "isDraft": true, "state": "OPEN", "headRefName": intent.HeadBranch, "headRefOid": intent.CommitSHA, "headRepositoryOwner": map[string]any{"login": "example-org"}, "baseRefName": intent.BaseBranch, "body": renderBody(intent, candidateChain{})}
+		second := map[string]any{"id": "PR_kw0000000002", "number": 8, "url": testPRURL, "isDraft": true, "state": "OPEN", "headRefName": intent.HeadBranch, "headRefOid": intent.CommitSHA, "headRepositoryOwner": map[string]any{"login": "example-org"}, "baseRefName": intent.BaseBranch, "body": renderBody(intent, candidateChain{})}
 		data, err := json.Marshal([]map[string]any{base, second})
 		if err != nil {
 			t.Fatal(err)
@@ -1227,7 +1244,7 @@ func TestObserveMergeReceiptRejectsUnsafeFacts(t *testing.T) {
 			"headRepositoryOwner": map[string]any{"login": "example-org"}, "isCrossRepository": false,
 			"baseRefName": intent.BaseBranch, "baseRefOid": testBaseSHA,
 			"mergedAt": "2026-08-12T10:00:00Z", "mergedBy": map[string]any{"login": "maintainer"},
-			"mergeCommit": map[string]any{"oid": testMergeSHA}, "body": renderBody(intent),
+			"mergeCommit": map[string]any{"oid": testMergeSHA}, "body": renderBody(intent, candidateChain{}),
 		}
 		data, err := json.Marshal(changed)
 		if err != nil {
@@ -1369,4 +1386,111 @@ func TestPublisherErrorsDoNotLeakSecrets(t *testing.T) {
 		t.Fatal("expected failure")
 	}
 	h.assertNoSecrets("publish error", err.Error())
+}
+
+// TestRenderBodyCandidateChainSection pins the PR body behavior: legacy
+// intents keep byte-identical bodies, and a bound Candidate chain appends a
+// disclosure section naming the worker→normalizer record chain (design §8
+// R4).
+func TestRenderBodyCandidateChainSection(t *testing.T) {
+	intent := testIntent()
+	legacy := renderBody(intent, candidateChain{})
+	expectedLegacy := fmt.Sprintf("## 目标\n\n%s\n\n## 验证\n\n- Verification digest: `%s`\n- Evidence digest: `%s`\n- Snapshot digest: `%s`\n\n## 风险与回滚\n\n这是 Draft PR；Marshal 不执行 merge。\n\n## 来源信息\n\n- Task: `%s`\n- Run: `%s`\n- Base: `%s`\n- Head: `%s`\n\n%s\n", intent.Summary, intent.VerificationDigest, intent.EvidenceDigest, intent.SnapshotDigest, intent.TaskID, intent.RunID, intent.BaseSHA, intent.CommitSHA, intent.Marker)
+	if legacy != expectedLegacy {
+		t.Fatalf("legacy PR body drifted from the frozen format:\n%q\n---\n%q", legacy, expectedLegacy)
+	}
+	workerCandidate := "sha256:" + strings.Repeat("a", 64)
+	headCandidate := "sha256:" + strings.Repeat("b", 64)
+	body := renderBody(intent, candidateChain{Worker: workerCandidate, Head: headCandidate})
+	if !strings.Contains(body, "## Candidate 记录链") || !strings.Contains(body, workerCandidate) || !strings.Contains(body, headCandidate) {
+		t.Fatalf("candidate PR body misses the chain disclosure:\n%s", body)
+	}
+	if !strings.Contains(body, intent.Marker) || !strings.Contains(body, intent.VerificationDigest) {
+		t.Fatalf("candidate PR body lost frozen bindings:\n%s", body)
+	}
+	snapshotIndex := strings.Index(body, "Snapshot digest")
+	candidateIndex := strings.Index(body, "## Candidate 记录链")
+	riskIndex := strings.Index(body, "## 风险与回滚")
+	if snapshotIndex < 0 || candidateIndex < 0 || riskIndex < 0 || !(snapshotIndex < candidateIndex && candidateIndex < riskIndex) {
+		t.Fatalf("candidate section must sit between verification and rollback sections: %d %d %d", snapshotIndex, candidateIndex, riskIndex)
+	}
+}
+
+// TestPublishDisplaysCandidateChainFromCommitTrailers proves the end-to-end
+// display path: the publisher reads the frozen commit trailers bound to the
+// published head SHA and discloses the Candidate chain in the PR body.
+func TestPublishDisplaysCandidateChainFromCommitTrailers(t *testing.T) {
+	h := newHarness(t)
+	intent := testIntent()
+	h.seedPR(intent, nil)
+	workerCandidate := "sha256:" + strings.Repeat("a", 64)
+	headCandidate := "sha256:" + strings.Repeat("b", 64)
+	h.writeState("commit-message", "Add marshal demo\n\nMarshal-Task: ENG-123\nMarshal-Run: run-01\nMarshal-Spec-Digest: "+intent.SpecDigest+"\nMarshal-Evidence-Digest: "+intent.EvidenceDigest+"\nMarshal-Snapshot-Digest: "+intent.SnapshotDigest+"\nMarshal-Candidate-Digest: "+headCandidate+"\nMarshal-Worker-Candidate-Digest: "+workerCandidate+"\n")
+	record, err := h.publish(intent)
+	if err != nil {
+		t.Fatalf("publish with candidate trailers failed: %v", err)
+	}
+	published := decodePublication(t, record)
+	if published.HeadSHA != intent.CommitSHA {
+		t.Fatalf("publication head = %s", published.HeadSHA)
+	}
+	body := h.readState("pr-body")
+	if !strings.Contains(body, "## Candidate 记录链") || !strings.Contains(body, headCandidate) || !strings.Contains(body, workerCandidate) {
+		t.Fatalf("PR body does not disclose the candidate chain:\n%s", body)
+	}
+	if !strings.Contains(body, intent.Marker) {
+		t.Fatalf("PR body lost the Marshal marker:\n%s", body)
+	}
+	if h.countCommands("git", "log ") != 1 {
+		t.Fatalf("expected one commit-message observation per publish: %v", h.commandLines("git"))
+	}
+}
+
+// TestPublishLegacyCommitKeepsBodyCandidateFree proves the zero-regression
+// direction: a commit without candidate trailers yields the byte-identical
+// legacy PR body.
+func TestPublishLegacyCommitKeepsBodyCandidateFree(t *testing.T) {
+	h := newHarness(t)
+	intent := testIntent()
+	h.seedPR(intent, nil)
+	if _, err := h.publish(intent); err != nil {
+		t.Fatal(err)
+	}
+	body := h.readState("pr-body")
+	if strings.Contains(body, "Candidate") {
+		t.Fatalf("legacy PR body must stay candidate-free:\n%s", body)
+	}
+	if body != renderBody(intent, candidateChain{}) {
+		t.Fatalf("legacy PR body drifted from the frozen format:\n%s", body)
+	}
+}
+
+// TestPublishRejectsPartialCandidateTrailers proves the fail-closed
+// discipline: Marshal-authored candidate commits always carry both trailers,
+// so a partial or malformed pair is tamper evidence and must block
+// publication before any PR side effect.
+func TestPublishRejectsPartialCandidateTrailers(t *testing.T) {
+	headCandidate := "sha256:" + strings.Repeat("b", 64)
+	tests := []struct {
+		name    string
+		message string
+	}{
+		{name: "head trailer only", message: "subject\n\nMarshal-Candidate-Digest: " + headCandidate + "\n"},
+		{name: "worker trailer only", message: "subject\n\nMarshal-Worker-Candidate-Digest: " + headCandidate + "\n"},
+		{name: "malformed head digest", message: "subject\n\nMarshal-Candidate-Digest: not-a-digest\nMarshal-Worker-Candidate-Digest: " + headCandidate + "\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			h := newHarness(t)
+			intent := testIntent()
+			h.writeState("commit-message", test.message)
+			_, err := h.publish(intent)
+			if err == nil || !port.IsPermanent(err) || !strings.Contains(err.Error(), "incomplete or malformed") {
+				t.Fatalf("expected permanent trailer rejection, got: %v", err)
+			}
+			if h.countCommands("gh", "pr ") != 0 {
+				t.Fatalf("no PR side effects allowed after trailer rejection: %v", h.commandLines("gh"))
+			}
+		})
+	}
 }

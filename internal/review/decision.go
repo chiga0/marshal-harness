@@ -156,11 +156,34 @@ func validateVerdict(input DecisionInput, decision domain.ReviewDecision, packet
 		currentIDs[finding.ID] = true
 	}
 	for _, previous := range packet.PreviousBlockingFindings {
-		if !currentIDs[previous.ID] && packet.SnapshotDigest == previous.SnapshotDigest && packet.VerificationDigest == previous.VerificationDigest {
+		if currentIDs[previous.ID] {
+			continue
+		}
+		if !evidenceChangedSince(packet, previous) {
 			return fmt.Errorf("blocking finding %s cannot close without new evidence", previous.ID)
 		}
 	}
 	return nil
+}
+
+// evidenceChangedSince implements the ADR 0027 stale-fix dual path (§4.2
+// stage A, §5.2): when both the current packet and the previous finding
+// carry head Candidate identities, their field-by-field comparison is
+// authoritative — content-addressed Candidates coalesce idempotently, so an
+// unchanged observed patch reproduces the same head candidateDigest across
+// rounds even though ancillary report bytes (and thus verification digests)
+// may differ. When either side lacks a candidateDigest — a legacy round, or
+// a rework sequence crossing the adoption boundary — the judgement falls
+// back to the legacy SnapshotDigest+VerificationDigest comparison, which
+// keeps cross-boundary rounds from being wrongly closed or wrongly blocked.
+// evidenceDigest itself is never used for cross-round equality: the evidence
+// identity member set changed with Candidate adoption, so old and new rounds
+// necessarily diverge there (§8 R6).
+func evidenceChangedSince(packet domain.ReviewPacket, previous domain.PreviousFinding) bool {
+	if packet.CandidateDigest != "" && previous.CandidateDigest != "" {
+		return packet.CandidateDigest != previous.CandidateDigest
+	}
+	return packet.SnapshotDigest != previous.SnapshotDigest || packet.VerificationDigest != previous.VerificationDigest
 }
 
 func targetState(task domain.TaskSpec, decision domain.ReviewDecision, requiredPassed, budgetExhausted bool) (domain.State, error) {
