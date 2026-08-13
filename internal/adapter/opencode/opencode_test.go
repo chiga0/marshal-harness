@@ -208,7 +208,7 @@ func TestReadOnlyPermissionConfigLocksEditBashAndReadRoots(t *testing.T) {
 	}
 	fake := fakeExecutable(t, supportedBinary, "printf '%s\\n' "+shellQuote(string(merged)))
 	environment := workerEnvironment(worktree, string(merged))
-	if err := validateResolvedConfig(context.Background(), fake, environment, controlRoot, worktree, "read-only", scope); err != nil {
+	if err := validateResolvedConfig(context.Background(), fake, environment, controlRoot, worktree, "read-only", scope, nil); err != nil {
 		t.Fatalf("valid resolved config rejected: %v", err)
 	}
 	bash["*"] = "allow"
@@ -217,8 +217,208 @@ func TestReadOnlyPermissionConfigLocksEditBashAndReadRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	fakeUnsafe := fakeExecutable(t, supportedBinary, "printf '%s\\n' "+shellQuote(string(mergedUnsafe)))
-	if err := validateResolvedConfig(context.Background(), fakeUnsafe, workerEnvironment(worktree, string(mergedUnsafe)), controlRoot, worktree, "read-only", scope); err == nil {
+	if err := validateResolvedConfig(context.Background(), fakeUnsafe, workerEnvironment(worktree, string(mergedUnsafe)), controlRoot, worktree, "read-only", scope, nil); err == nil {
 		t.Fatal("bash wildcard grant accepted in read-only validation")
+	}
+}
+
+func TestDeclaredPermissionConfigGrantsOnlyDeclaredTools(t *testing.T) {
+	controlRoot := t.TempDir()
+	config, err := declaredPermissionConfig(controlRoot, []string{"read", "edit", "write"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Permission map[string]any `json:"permission"`
+	}
+	if err := json.Unmarshal([]byte(config), &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, granted := range []string{"read", "edit", "write"} {
+		if granted == "edit" {
+			edit, ok := raw.Permission["edit"].(map[string]any)
+			if !ok || edit["*"] != "allow" || edit[filepath.ToSlash(filepath.Join(controlRoot, "input"))+"/**"] != "deny" {
+				t.Fatalf("declared edit is not granted with control input locked: %v", raw.Permission["edit"])
+			}
+			continue
+		}
+		if raw.Permission[granted] != "allow" {
+			t.Fatalf("declared tool %s is not allowed: %v", granted, raw.Permission[granted])
+		}
+	}
+	for _, denied := range []string{"grep", "glob", "list", "lsp", "bash", "question", "skill", "task", "webfetch", "websearch"} {
+		if raw.Permission[denied] != "deny" {
+			t.Fatalf("undeclared tool %s is not denied: %v", denied, raw.Permission[denied])
+		}
+	}
+	if raw.Permission["*"] != "deny" {
+		t.Fatal("global wildcard is not denied")
+	}
+	if err := validateDeclaredPermissionMap(raw.Permission, controlRoot, []string{"read", "edit", "write"}); err != nil {
+		t.Fatalf("fresh declared config rejected: %v", err)
+	}
+	// Mutations must fail the declared read-back validation.
+	raw.Permission["grep"] = "allow"
+	if err := validateDeclaredPermissionMap(raw.Permission, controlRoot, []string{"read", "edit", "write"}); err == nil {
+		t.Fatal("undeclared grep grant accepted by declared validation")
+	}
+	raw.Permission["grep"] = "deny"
+	raw.Permission["lsp"] = "allow"
+	if err := validateDeclaredPermissionMap(raw.Permission, controlRoot, []string{"read", "edit", "write"}); err == nil {
+		t.Fatal("lsp grant accepted by declared validation")
+	}
+}
+
+func TestDeclaredBashGrantKeepsDangerousCommandDenies(t *testing.T) {
+	controlRoot := t.TempDir()
+	config, err := declaredPermissionConfig(controlRoot, []string{"read", "bash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Permission map[string]any `json:"permission"`
+	}
+	if err := json.Unmarshal([]byte(config), &raw); err != nil {
+		t.Fatal(err)
+	}
+	bash, ok := raw.Permission["bash"].(map[string]any)
+	if !ok || bash["*"] != "allow" {
+		t.Fatalf("declared bash is not granted: %v", raw.Permission["bash"])
+	}
+	for _, pattern := range []string{"git push *", "curl *", "sudo *", "sh *"} {
+		if bash[pattern] != "deny" {
+			t.Fatalf("declared bash lost deny pattern %q: %v", pattern, bash)
+		}
+	}
+	if err := validateDeclaredPermissionMap(raw.Permission, controlRoot, []string{"read", "bash"}); err != nil {
+		t.Fatalf("declared bash config rejected: %v", err)
+	}
+}
+
+func TestDeclaredReadOnlyPermissionConfigConverges(t *testing.T) {
+	worktree := t.TempDir()
+	controlRoot := t.TempDir()
+	scope := readOnlyScope{allowPaths: []string{"reports/**"}, readRoots: nil}
+	config, err := declaredReadOnlyPermissionConfig(worktree, controlRoot, scope, []string{"read", "grep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Permission map[string]any `json:"permission"`
+	}
+	if err := json.Unmarshal([]byte(config), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw.Permission["read"] != "allow" || raw.Permission["grep"] != "allow" {
+		t.Fatalf("declared read/grep not granted: %v", raw.Permission)
+	}
+	for _, denied := range []string{"glob", "list", "lsp", "edit", "write"} {
+		if raw.Permission[denied] != "deny" {
+			t.Fatalf("undeclared %s not denied in declared read-only config: %v", denied, raw.Permission[denied])
+		}
+	}
+	bash := raw.Permission["bash"].(map[string]any)
+	if bash["*"] != "deny" || bash["cat *"] != "deny" || bash["grep *"] != "deny" {
+		t.Fatalf("read-only bash whitelist must be empty without a bash declaration: %v", bash)
+	}
+	if err := validateDeclaredReadOnlyPermissionMap(raw.Permission, controlRoot, worktree, scope, []string{"read", "grep"}); err != nil {
+		t.Fatalf("fresh declared read-only config rejected: %v", err)
+	}
+	// Declaring bash restores the read-only whitelist and nothing else.
+	bashConfig, err := declaredReadOnlyPermissionConfig(worktree, controlRoot, scope, []string{"read", "bash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bashRaw struct {
+		Permission map[string]any `json:"permission"`
+	}
+	if err := json.Unmarshal([]byte(bashConfig), &bashRaw); err != nil {
+		t.Fatal(err)
+	}
+	bashRules := bashRaw.Permission["bash"].(map[string]any)
+	if bashRules["cat *"] != "allow" || bashRules["sed -n *"] != "allow" || bashRules["*"] != "deny" {
+		t.Fatalf("declared bash must restore the read-only whitelist: %v", bashRules)
+	}
+	if err := validateDeclaredReadOnlyPermissionMap(bashRaw.Permission, controlRoot, worktree, scope, []string{"read", "bash"}); err != nil {
+		t.Fatalf("declared read-only bash config rejected: %v", err)
+	}
+}
+
+func TestRunDeclaredToolsEnforcedEndToEndAndReconciled(t *testing.T) {
+	events := `printf '%s\n'` +
+		` '{"type":"tool","sessionID":"session-1","part":{"type":"tool","tool":"read","state":{"status":"completed"}}}'` +
+		` '{"type":"tool","sessionID":"session-1","part":{"type":"tool","tool":"edit","state":{"status":"completed"}}}'` +
+		` '{"type":"tool","sessionID":"session-1","part":{"type":"tool","tool":"write","state":{"status":"completed"}}}'` +
+		` '{"type":"error","sessionID":"session-1","part":{"tool":"read","state":{"status":"error","error":"permission denied","input":{"filePath":"'"$PWD"'/source.go"}}}}'` +
+		` '{"type":"text","sessionID":"session-1","part":{"type":"text","text":"done"}}'`
+	fixture := newRunFixture(t, supportedBinary, events)
+	if err := os.WriteFile(filepath.Join(fixture.worktree, "source.go"), []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{
+		"worker": map[string]any{"model": "provider/model", "tools": []string{"read", "edit", "write"}},
+	})
+	record, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatalf("declared tools attempt rejected: %v", err)
+	}
+	if err := fixture.validator.Validate(domain.KindWorkerResult, record.Data); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "opencode-transcript-meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta struct {
+		ToolNames []string `json:"toolNames"`
+	}
+	if err := json.Unmarshal(metadata, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(meta.ToolNames, ",") != "edit,read,write" {
+		t.Fatalf("toolNames = %v, want exactly [edit read write]; denied calls must not be collected", meta.ToolNames)
+	}
+	// The resolved-config read-back loop already ran inside Run through the
+	// fake executable echoing $OPENCODE_CONFIG_CONTENT; assert the generated
+	// config itself denies every undeclared tool.
+	config, err := declaredPermissionConfig(fixture.controlRoot, []string{"read", "edit", "write"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, denied := range []string{`"grep":"deny"`, `"glob":"deny"`, `"list":"deny"`, `"lsp":"deny"`, `"bash":"deny"`} {
+		if !strings.Contains(config, denied) {
+			t.Fatalf("generated declared config misses %s: %s", denied, config)
+		}
+	}
+}
+
+func TestRunReadOnlyDeclaredToolsEndToEnd(t *testing.T) {
+	fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"step_start","sessionID":"session-1","part":{"type":"step-start"}}' '{"type":"text","sessionID":"session-1","part":{"type":"text","text":"done"}}'`)
+	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{
+		"worker": map[string]any{"model": "provider/model", "readRoots": []string{"docs/**"}, "tools": []string{"read", "grep"}},
+		"scope":  map[string]any{"allowPaths": []string{"reports/**"}},
+	})
+	if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "read-only"})); err != nil {
+		t.Fatalf("declared read-only attempt rejected: %v", err)
+	}
+}
+
+func TestRunRejectsMalformedToolsDeclarationBeforeLaunch(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		tools any
+	}{
+		{name: "outside-vocabulary", tools: []string{"read", "shell"}},
+		{name: "duplicated", tools: []string{"read", "read"}},
+		{name: "wrong-type", tools: "read,edit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunFixture(t, supportedBinary, "exit 0")
+			writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model", "tools": test.tools}})
+			if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "worker tools") {
+				t.Fatalf("err = %v, want fail-closed worker tools rejection", err)
+			}
+		})
 	}
 }
 

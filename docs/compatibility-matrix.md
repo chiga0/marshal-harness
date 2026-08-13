@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-更新时间：2026-08-11。本矩阵由共享 Conformance Suite、Live Probe 与受监督 Pilot 证据生成，只记录已验证事实；未验证组合一律不承诺。
+更新时间：2026-08-12。本矩阵由共享 Conformance Suite、Live Probe 与受监督 Pilot 证据生成，只记录已验证事实；未验证组合一律不承诺。
 
 ## 证据来源
 
@@ -33,6 +33,8 @@ Pi Adapter `0.2.0` 与 Pi `0.84.1` 的升级保持 session protocol 版本精确
 | Session Policy | `ephemeral`/`persist`/`resume` | `ephemeral`/`persist`/`resume` | 仅 `ephemeral` |
 | Model Selection | 支持 | 支持 | 支持 |
 | 原生预算 | Marshal 实施 wall-time 与 output-bytes 上限 | Provider 提供 wall-time、tool-calls（200）与 turns（60），Marshal 叠加上限 | Marshal 实施 wall-time 与 output-bytes 上限 |
+| 声明式工具 Allowlist（`worker.tools`） | 支持：按声明生成最小 permission 配置，`debug config` 回读校验；未声明保持 profile 缺省 | 支持：`--exclude-tools` 反向收敛，声明 `bash` 不解除 shell 排除，对账由 Verification gate 兑底；未声明保持 profile 缺省 | 支持：`--tools` 精确交集，声明 `bash` 启动前 fail closed；未声明保持 profile 缺省 |
+| 工具名单采集与对账 | `toolNames` 写入 transcript-meta，Verification `tool-allowlist` required gate 对账 | 同左 | 同左 |
 | 原生 TUI（受监督 Pilot） | 冻结 `TerminalLaunchSpec` 已就绪，Pilot 未执行 | Pilot 通过（cmux，2026-08-05） | 冻结 `TerminalLaunchSpec` 已就绪，Pilot 未执行 |
 | 自动 CompletionGate | 无，仅 `supervised-confirmation` | 无，仅 `supervised-confirmation` | 无，仅 `supervised-confirmation` |
 
@@ -40,13 +42,14 @@ Pi Adapter `0.2.0` 与 Pi `0.84.1` 的升级保持 session protocol 版本精确
 
 | Adapter | captured 命令形态 | 权限归一化 |
 | --- | --- | --- |
-| opencode | `opencode run --pure --format json` | 环境 allowlist、独立 Temp/Home/Config 与 fail-closed permission 配置 |
-| qwen | `qwen --safe-mode --approval-mode auto-edit --exclude-tools ...` | 按名排除 shell、sub-agent、web/network 与 computer-use 工具；`--safe-mode` 关闭 hooks、extensions、skills、MCP 与 QWEN.md |
-| pi | `pi --mode json --print` 加无 shell 工具 allowlist | `--no-approve`、`--no-extensions`、`--no-skills`、`--no-prompt-templates`、`--no-themes`、`--no-context-files` 等硬化 Flag |
+| opencode | `opencode run --pure --format json` | 环境 allowlist、独立 Temp/Home/Config 与 fail-closed permission 配置；声明 `worker.tools` 时为最小 permission 配置并经 `debug config` 回读校验 |
+| qwen | `qwen --safe-mode --approval-mode auto-edit --exclude-tools ...` | 按名排除 shell、sub-agent、web/network 与 computer-use 工具；`--safe-mode` 关闭 hooks、extensions、skills、MCP 与 QWEN.md；声明 `worker.tools` 时反向排除未声明工具 |
+| pi | `pi --mode json --print` 加无 shell 工具 allowlist | `--no-approve`、`--no-extensions`、`--no-skills`、`--no-prompt-templates`、`--no-themes`、`--no-context-files` 等硬化 Flag；声明 `worker.tools` 时 `--tools` 收敛为声明集与工具面的精确交集 |
 
 ## 已知限制
 
 - Local Profile 不构成恶意代码沙箱；三个 Agent 都在普通宿主机子进程中运行，不宣称抵抗同 UID 恶意进程。
+- 声明式工具 Allowlist 依赖 Provider 遵守自身配置：opencode/pi 由 Provider 调用层拒绝未声明工具，qwen 无法正向穷举时由 transcript 采集与 Verification `tool-allowlist` gate 对账兑底；任一成功越权调用判 required fail。
 - Worker 环境永远不包含 GitHub Publisher 凭据；凭据只在 publish 阶段注入独立子进程。
 - Pi 不支持 `persist`/`resume`；对 Pi 伪造 Session Resume 会在启动前失败。
 - 原生 TUI 模式下屏幕文本不是完成协议；WorkerResult、Git Snapshot、独立 Verification 与 Review 仍是权威门禁。

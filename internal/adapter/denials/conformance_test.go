@@ -3,6 +3,7 @@ package denials
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -67,6 +68,119 @@ func TestCrossAdapterGradingConformance(t *testing.T) {
 				t.Fatalf("providers disagree at sequence position %d: %v vs %v", position, vectors[0], vectors[index])
 			}
 		}
+	}
+}
+
+// TestCrossAdapterAllowlistConformance is the shared tool-allowlist
+// reconciliation suite: the same compliant/violating success sequences must
+// produce bit-identical verdicts under every adapter's collection
+// vocabulary. Collection contributes only successful (non-denial) tool
+// calls; denial events never enter the reconciliation input. Normalization
+// through the frozen tool tables is what makes the verdicts comparable
+// across opencode, pi and qwen vocabularies.
+func TestCrossAdapterAllowlistConformance(t *testing.T) {
+	declared := []string{"read", "edit", "write"}
+	// providerVocabularies maps one abstract tool call to each adapter's raw
+	// transcript tool name.
+	providerVocabularies := map[string]map[string]string{
+		"opencode": {"read": "read", "edit": "edit", "write": "write", "grep": "grep", "bash": "bash"},
+		"pi":       {"read": "read", "edit": "edit", "write": "write", "grep": "grep", "bash": "bash"},
+		"qwen":     {"read": "read_file", "edit": "edit", "write": "write_file", "grep": "grep", "bash": "shell"},
+	}
+	sequence := []struct {
+		tool   string
+		denied bool
+	}{
+		{tool: "read"},
+		{tool: "edit"},
+		{tool: "write"},
+		{tool: "grep", denied: true}, // denied probe never counts as success
+	}
+	violationSequence := []struct {
+		tool   string
+		denied bool
+	}{
+		{tool: "read"},
+		{tool: "grep"}, // successful undeclared call
+	}
+	executeSequence := []struct {
+		tool   string
+		denied bool
+	}{
+		{tool: "bash"}, // successful undeclared execute-class call
+	}
+	reconcile := func(provider string, steps []struct {
+		tool   string
+		denied bool
+	}) ([]string, []string) {
+		vocabulary := providerVocabularies[provider]
+		var collected []string
+		for _, step := range steps {
+			if step.denied {
+				continue
+			}
+			collected = append(collected, vocabulary[step.tool])
+		}
+		return SortedToolNames(collected), AllowlistViolations(collected, declared)
+	}
+	providers := []string{"opencode", "pi", "qwen"}
+	for _, test := range []struct {
+		name  string
+		steps []struct {
+			tool   string
+			denied bool
+		}
+		wantViolations []string
+	}{
+		{name: "compliant", steps: sequence, wantViolations: []string{}},
+		{name: "undeclared-grep", steps: violationSequence, wantViolations: []string{"grep"}},
+		{name: "undeclared-execute", steps: executeSequence, wantViolations: []string{"bash"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var firstProvider string
+			var firstNames, firstViolations []string
+			for _, provider := range providers {
+				names, violations := reconcile(provider, test.steps)
+				if len(violations) != len(test.wantViolations) {
+					t.Fatalf("provider %s violations = %v, want %v", provider, violations, test.wantViolations)
+				}
+				for index := range test.wantViolations {
+					if violations[index] != test.wantViolations[index] {
+						t.Fatalf("provider %s violations = %v, want %v", provider, violations, test.wantViolations)
+					}
+				}
+				if firstProvider == "" {
+					firstProvider, firstNames, firstViolations = provider, names, violations
+					continue
+				}
+				// Bit-identical verdicts across adapters: the normalized
+				// toolNames list and the violation list must match exactly.
+				if strings.Join(names, "\x00") != strings.Join(firstNames, "\x00") || strings.Join(violations, "\x00") != strings.Join(firstViolations, "\x00") {
+					t.Fatalf("providers %s and %s disagree: names %v vs %v, violations %v vs %v", firstProvider, provider, firstNames, names, firstViolations, violations)
+				}
+			}
+		})
+	}
+}
+
+// TestAllowlistNormalizationStaysInsideVocabularyOrOriginal pins the
+// normalization contract: vocabulary words are identity, table members map
+// to their class representative, and off-table names survive unchanged so
+// reconciliation treats them as undeclared.
+func TestAllowlistNormalizationStaysInsideVocabularyOrOriginal(t *testing.T) {
+	for _, test := range []struct{ input, want string }{
+		{"read", "read"}, {"edit", "edit"}, {"write", "write"}, {"grep", "grep"}, {"find", "find"}, {"ls", "ls"}, {"bash", "bash"},
+		{"read_file", "read"}, {"glob", "read"}, {"list_directory", "read"}, {"lsp", "read"},
+		{"write_file", "write"}, {"apply_patch", "write"}, {"replace", "write"},
+		{"shell", "bash"}, {"run_shell_command", "bash"},
+		{"mystery_tool", "mystery_tool"},
+	} {
+		if got := NormalizeToolName(test.input); got != test.want {
+			t.Fatalf("NormalizeToolName(%q) = %q, want %q", test.input, got, test.want)
+		}
+	}
+	if violations := AllowlistViolations([]string{"read_file", "mystery_tool"}, []string{"read"}); strings.Join(violations, ",") != "mystery_tool" {
+		t.Fatalf("violations = %v, want exactly [mystery_tool]", violations)
 	}
 }
 

@@ -24,6 +24,11 @@ type TaskWorker struct {
 	SessionPolicy    string   `json:"sessionPolicy"`
 	Model            string   `json:"model,omitempty"`
 	Reasoning        string   `json:"reasoning,omitempty"`
+	// Tools is the optional declarative tool allowlist (closed vocabulary
+	// read/edit/write/grep/find/ls/bash). Empty means the Adapter keeps its
+	// frozen execution-profile tool surface; when declared, the Adapter
+	// enforces it mechanically at the Provider call layer.
+	Tools []string `json:"tools,omitempty"`
 }
 
 // TaskWork describes the actual work content: objective, constraints and

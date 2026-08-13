@@ -6,6 +6,15 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
 
+// ToolAllowlistFromTask extracts the declared worker.tools allowlist from
+// the frozen TaskSpec. An empty result means the Run keeps its execution
+// profile defaults and the tool-allowlist gate stays skipped. It is the
+// allowlist input the tool-allowlist gate reconciles against; the returned
+// slice never aliases the TaskSpec storage.
+func ToolAllowlistFromTask(task domain.TaskSpec) []string {
+	return append([]string(nil), task.Worker.Tools...)
+}
+
 func PolicyFromTask(task domain.TaskSpec) (ScopePolicy, []Deliverable, []CommandSpec) {
 	scope := ScopePolicy{AllowPaths: append([]string(nil), task.Scope.AllowPaths...), DenyPaths: append([]string(nil), task.Scope.DenyPaths...), AllowSubmodules: task.Scope.AllowSubmodules, MaxChangedFiles: task.Scope.MaxChangedFiles, MaxDiffBytes: task.Scope.MaxDiffBytes}
 	deliverables := make([]Deliverable, 0, len(task.Deliverables))

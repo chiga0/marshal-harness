@@ -61,7 +61,8 @@
     "preferredAdapter": "qwen",
     "fallbackAdapters": ["opencode", "pi"],
     "executionProfile": "workspace-write",
-    "sessionPolicy": "persist"
+    "sessionPolicy": "persist",
+    "tools": ["read", "grep", "find", "ls", "edit", "write"]
   },
   "budgets": {
     "runTimeoutSeconds": 3600,

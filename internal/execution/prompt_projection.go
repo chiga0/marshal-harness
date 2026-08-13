@@ -105,6 +105,11 @@ func buildTaskSpecPromptProjectionCatalog() []catalogEntry {
 	c = append(c, catalogEntry{"/worker/fallbackAdapters/*", hidden})
 	c = append(c, catalogEntry{"/worker/model", hidden})
 	c = append(c, catalogEntry{"/worker/reasoning", hidden})
+	// worker.tools is consumed by the adapter enforcement layer (provider
+	// call-layer allowlists) and the Verification tool-allowlist gate; the
+	// prompt already carries constraints free text, so the declaration is
+	// never rendered into the Worker prompt.
+	c = append(c, catalogEntry{"/worker/tools/*", hidden})
 	c = append(c, catalogEntry{"/publication/required", hidden})
 	c = append(c, catalogEntry{"/publication/provider", hidden})
 	c = append(c, catalogEntry{"/publication/mode", hidden})

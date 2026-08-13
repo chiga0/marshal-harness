@@ -328,6 +328,151 @@ func TestReadOnlyExcludedToolsAddWriteClassExceptArtifactWriter(t *testing.T) {
 	}
 }
 
+func TestConvergedExcludedToolsApplyReverseExclusion(t *testing.T) {
+	t.Run("undeclared-keeps-profile-base", func(t *testing.T) {
+		if !slices.Equal(convergedExcludedTools("workspace-write", nil), excludedTools) {
+			t.Fatal("undeclared workspace-write exclusions drifted from the frozen base")
+		}
+		if !slices.Equal(convergedExcludedTools("read-only", nil), readOnlyExcludedTools) {
+			t.Fatal("undeclared read-only exclusions drifted from the frozen base")
+		}
+	})
+	t.Run("declared-read-edit-excludes-undeclared-write-and-execute", func(t *testing.T) {
+		converged := convergedExcludedTools("workspace-write", []string{"read", "edit"})
+		for _, excluded := range []string{"write", "write_file", "save_memory", "write_todos", "shell", "run_shell_command", "grep", "glob", "ls"} {
+			if !slices.Contains(converged, excluded) {
+				t.Fatalf("undeclared tool %q is not excluded: %#v", excluded, converged)
+			}
+		}
+		for _, granted := range []string{"read_file", "read_many_files", "edit", "replace", "apply_patch"} {
+			if slices.Contains(converged, granted) {
+				t.Fatalf("declared surface tool %q was excluded: %#v", granted, converged)
+			}
+		}
+		// The frozen base stays a prefix: convergence only appends.
+		if !slices.Equal(converged[:len(excludedTools)], excludedTools) {
+			t.Fatal("convergence must keep the frozen exclusion base intact")
+		}
+	})
+	t.Run("declared-bash-stays-excluded", func(t *testing.T) {
+		converged := convergedExcludedTools("workspace-write", []string{"read", "bash"})
+		for _, denied := range []string{"shell", "run_shell_command"} {
+			if !slices.Contains(converged, denied) {
+				t.Fatalf("bash declaration must never un-exclude %q: %#v", denied, converged)
+			}
+		}
+	})
+}
+
+func TestRunDeclaredToolsConvergeExcludeArgv(t *testing.T) {
+	body := strings.Join([]string{initEvent("session-1", supportedBinary), resultEvent("success", 1, 1)}, "\n")
+	fixture := newRunFixture(t, supportedBinary, body)
+	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model", "tools": []string{"read", "edit"}}})
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+		t.Fatal(err)
+	}
+	argv := readArgsLog(t, fixture.argsPath)
+	excluded := strings.Split(excludeArgValue(t, argv), ",")
+	for _, want := range []string{"write", "write_file", "shell", "run_shell_command", "grep", "glob", "ls"} {
+		if !slices.Contains(excluded, want) {
+			t.Fatalf("undeclared tool %q missing from --exclude-tools: %#v", want, excluded)
+		}
+	}
+	for _, granted := range []string{"read_file", "edit"} {
+		if slices.Contains(excluded, granted) {
+			t.Fatalf("declared surface tool %q excluded: %#v", granted, excluded)
+		}
+	}
+}
+
+func TestPrepareTerminalAppliesDeclaredToolAllowlist(t *testing.T) {
+	fixture := newRunFixture(t, supportedBinary, "exit 0")
+	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model", "tools": []string{"read", "edit"}}})
+	spec, err := fixture.adapter.PrepareTerminal(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	excluded := strings.Split(excludeArgValue(t, spec.Arguments), ",")
+	for _, want := range []string{"write", "write_file", "save_memory", "write_todos", "shell", "run_shell_command", "grep", "glob", "ls"} {
+		if !slices.Contains(excluded, want) {
+			t.Fatalf("undeclared tool %q missing from terminal --exclude-tools: %#v", want, spec.Arguments)
+		}
+	}
+	for _, granted := range []string{"read_file", "read_many_files", "edit", "replace", "apply_patch"} {
+		if slices.Contains(excluded, granted) {
+			t.Fatalf("declared surface tool %q excluded from terminal argv: %#v", granted, spec.Arguments)
+		}
+	}
+	// The frozen exclusion base stays a prefix in terminal mode too.
+	if !slices.Equal(excluded[:len(excludedTools)], excludedTools) {
+		t.Fatalf("terminal convergence must keep the frozen exclusion base intact: %#v", excluded)
+	}
+	// A malformed declaration fails closed before any terminal launch spec.
+	fixture2 := newRunFixture(t, supportedBinary, "exit 0")
+	writeJSON(t, filepath.Join(fixture2.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"tools": []string{"read", "shell"}}})
+	if _, err := fixture2.adapter.PrepareTerminal(context.Background(), fixture2.request); err == nil || !strings.Contains(err.Error(), "worker tools") {
+		t.Fatalf("err = %v, want fail-closed worker tools rejection in terminal launch", err)
+	}
+}
+
+func TestRunDeclaredToolsCollectSuccessNamesAndSkipDenials(t *testing.T) {
+	body := strings.Join([]string{
+		initEvent("session-1", supportedBinary),
+		`printf '%s\n' '{"type":"tool","tool_call_id":"t1","tool_name":"read_file"}'`,
+		`printf '%s\n' '{"type":"tool","tool_call_id":"t2","tool_name":"edit"}'`,
+		`printf '%s\n' '{"type":"tool","tool_call_id":"t3","tool_name":"read_file"}'`,
+		`printf '%s\n' '{"type":"tool","tool_call_id":"t4","tool_name":"grep","args":{"path":"'"$PWD"'/source.go"},"is_error":true,"error":"permission denied"}'`,
+		resultEvent("success", 2, 1),
+	}, "\n")
+	fixture := newRunFixture(t, supportedBinary, body)
+	if err := os.WriteFile(filepath.Join(fixture.worktree, "source.go"), []byte("package x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+		t.Fatalf("benign denial must not terminate the attempt: %v", err)
+	}
+	metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qwen-transcript-meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta struct {
+		ToolNames []string `json:"toolNames"`
+	}
+	if err := json.Unmarshal(metadata, &meta); err != nil {
+		t.Fatal(err)
+	}
+	// read_file normalizes to read; the denied grep probe must not be
+	// collected as a successful call.
+	if strings.Join(meta.ToolNames, ",") != "edit,read" {
+		t.Fatalf("toolNames = %v, want exactly [edit read]", meta.ToolNames)
+	}
+}
+
+func TestRunRejectsMalformedToolsDeclarationBeforeLaunch(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		tools any
+	}{
+		{name: "outside-vocabulary", tools: []string{"read", "shell"}},
+		{name: "duplicated", tools: []string{"read", "read"}},
+		{name: "wrong-type", tools: "read,edit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunFixture(t, supportedBinary, "exit 0")
+			writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model", "tools": test.tools}})
+			if err := os.Remove(fixture.argsPath); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "worker tools") {
+				t.Fatalf("err = %v, want fail-closed worker tools rejection", err)
+			}
+			if _, statErr := os.Stat(fixture.argsPath); !os.IsNotExist(statErr) {
+				t.Fatal("worker process was launched despite a malformed tools declaration")
+			}
+		})
+	}
+}
+
 func TestWorkerEnvironmentIsolatesCredentials(t *testing.T) {
 	worktree := t.TempDir()
 	t.Setenv("GITHUB_TOKEN", "publisher-secret")

@@ -110,6 +110,81 @@ func excludedToolsFor(profile string) []string {
 	return excludedTools
 }
 
+// qwenAllowlistSurface maps each worker.tools vocabulary word to the Qwen
+// Code tool names that implement it. Qwen Code only supports an
+// --exclude-tools denylist, so a declared allowlist is enforced by reverse
+// exclusion: every surface tool whose vocabulary word is not declared gets
+// excluded. The mapping mirrors the frozen ADR 0013 tool classes.
+var qwenAllowlistSurface = map[string][]string{
+	"read":  {"read_file", "read_many_files"},
+	"grep":  {"grep", "search_file_content"},
+	"find":  {"glob", "search_file"},
+	"ls":    {"list_directory", "ls"},
+	"edit":  {"apply_patch", "edit", "insert", "multiedit", "notebook_edit", "patch", "replace", "save_file"},
+	"write": {"save_memory", "write", "write_file", "write_todos"},
+	"bash":  {"run_shell_command", "shell"},
+}
+
+// qwenSurfaceOrder fixes the iteration order of the allowlist surface so
+// converged exclusion lists are deterministic.
+var qwenSurfaceOrder = []string{"read", "grep", "find", "ls", "edit", "write", "bash"}
+
+// convergedExcludedTools applies the reverse-exclusion convergence for a
+// declared worker.tools allowlist: the profile's frozen exclusion list stays
+// the base (so bash stays excluded even when declared, because the
+// workspace-write profile never grants it), and every surface tool whose
+// vocabulary word is not declared is appended. Undeclared tasks keep the
+// profile base unchanged (backward compatibility). Anything the denylist
+// cannot express is reconciled by the Verification tool-allowlist gate.
+func convergedExcludedTools(profile string, tools []string) []string {
+	base := excludedToolsFor(profile)
+	if len(tools) == 0 {
+		return base
+	}
+	declared := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		declared[tool] = true
+	}
+	result := append([]string{}, base...)
+	seen := make(map[string]bool, len(result))
+	for _, tool := range result {
+		seen[tool] = true
+	}
+	for _, word := range qwenSurfaceOrder {
+		if declared[word] {
+			continue
+		}
+		for _, name := range qwenAllowlistSurface[word] {
+			if !seen[name] {
+				seen[name] = true
+				result = append(result, name)
+			}
+		}
+	}
+	return result
+}
+
+// declaredWorkerTools reads the frozen TaskSpec worker.tools declaration
+// from the control input. A nil result means no allowlist is declared and
+// the frozen profile exclusions apply unchanged. Any read or format failure
+// fails closed before launch; the enforcement layer never runs on a partial
+// declaration.
+func declaredWorkerTools(controlRoot, taskSpecPath string) ([]string, error) {
+	path, err := existingPathWithin(controlRoot, taskSpecPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve TaskSpec: %w", err)
+	}
+	data, err := readBounded(path, maxResultBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read TaskSpec: %w", err)
+	}
+	tools, err := denials.ParseDeclaredWorkerTools(data)
+	if err != nil {
+		return nil, fmt.Errorf("worker tools: %w", err)
+	}
+	return tools, nil
+}
+
 var (
 	ErrUnsupportedVersion = errors.New("unsupported qwen version")
 	ErrOutputLimit        = errors.New("qwen output limit exceeded")
@@ -179,7 +254,11 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 		return port.TerminalLaunchSpec{}, err
 	}
 	model := readModel(controlRoot, request.TaskSpecPath)
-	args, err := buildTerminalArgs(request.ExecutionProfile, request.SessionPolicy, request.SessionID, model, request.AttemptTimeoutSeconds)
+	tools, err := declaredWorkerTools(controlRoot, request.TaskSpecPath)
+	if err != nil {
+		return port.TerminalLaunchSpec{}, err
+	}
+	args, err := buildTerminalArgsWithTools(request.ExecutionProfile, request.SessionPolicy, request.SessionID, model, request.AttemptTimeoutSeconds, tools)
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
@@ -402,7 +481,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, errors.New("resume session policy requires a sessionId")
 	}
 	model := readModel(controlRoot, request.TaskSpecPath)
-	args, err := buildArgs(request.ExecutionProfile, request.SessionPolicy, request.SessionID, model, request.AttemptTimeoutSeconds, string(prompt))
+	tools, err := declaredWorkerTools(controlRoot, request.TaskSpecPath)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	args, err := buildArgsWithTools(request.ExecutionProfile, request.SessionPolicy, request.SessionID, model, request.AttemptTimeoutSeconds, string(prompt), tools)
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -458,7 +541,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		"toolCalls": capture.toolCalls, "inputTokens": capture.inputTokens,
 		"outputTokens": capture.outputTokens, "capturedBytes": len(capture.raw),
 		"outputTruncated": capture.limitExceeded, "permissionDenied": fatalDenials > 0,
-		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials,
+		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials, "toolNames": denials.SortedToolNames(capture.toolNames),
 		"exitCode": exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
 		"contextError": contextError(runCtx),
 	}, "", "  ")
@@ -577,6 +660,7 @@ type captureResult struct {
 	inputTokens   int
 	outputTokens  int
 	denials       []denials.RawDenial
+	toolNames     []string
 	limitExceeded bool
 	err           error
 }
@@ -671,6 +755,12 @@ func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit 
 					// stays FATAL.
 					if event.IsError != nil && *event.IsError && denials.IsPermissionError(event.Error) {
 						result.denials = append(result.denials, denials.RawDenial{Tool: event.ToolName, Input: event.Args})
+					} else if event.ToolName != "" {
+						// Allowlist reconciliation is a read-only side
+						// channel: every successful (non-denial) tool event
+						// is recorded by name; denial events never count
+						// as successful calls.
+						result.toolNames = append(result.toolNames, event.ToolName)
 					}
 					if event.Type == "result" {
 						sawResult = true
@@ -734,6 +824,12 @@ func captureStream(reader io.Reader, limit int64) streamCapture {
 }
 
 func buildArgs(profile, policy, sessionID, model string, wallTimeSeconds int, prompt string) ([]string, error) {
+	return buildArgsWithTools(profile, policy, sessionID, model, wallTimeSeconds, prompt, nil)
+}
+
+// buildArgsWithTools produces the captured-mode argv with the reverse
+// exclusion convergence applied for a declared worker.tools allowlist.
+func buildArgsWithTools(profile, policy, sessionID, model string, wallTimeSeconds int, prompt string, tools []string) ([]string, error) {
 	args := []string{
 		"--safe-mode",
 		"--approval-mode", "auto-edit",
@@ -741,7 +837,7 @@ func buildArgs(profile, policy, sessionID, model string, wallTimeSeconds int, pr
 		"--max-wall-time", strconv.Itoa(wallTimeSeconds),
 		"--max-tool-calls", strconv.Itoa(budgetToolCalls),
 		"--max-session-turns", strconv.Itoa(budgetSessionTurns),
-		"--exclude-tools", strings.Join(excludedToolsFor(profile), ","),
+		"--exclude-tools", strings.Join(convergedExcludedTools(profile, tools), ","),
 	}
 	args, err := appendSessionAndModel(args, policy, sessionID, model)
 	if err != nil {
@@ -750,14 +846,19 @@ func buildArgs(profile, policy, sessionID, model string, wallTimeSeconds int, pr
 	return append(args, "-p", prompt), nil
 }
 
-func buildTerminalArgs(profile, policy, sessionID, model string, wallTimeSeconds int) ([]string, error) {
+// buildTerminalArgsWithTools is the single native TUI argv construction path
+// for every terminal launch: an undeclared task keeps the frozen profile
+// exclusions, and a declared worker.tools allowlist applies the reverse
+// exclusion convergence. The frozen base keeps shell excluded even when
+// bash is declared, so terminal mode never weakens the allowlist.
+func buildTerminalArgsWithTools(profile, policy, sessionID, model string, wallTimeSeconds int, tools []string) ([]string, error) {
 	args := []string{
 		"--safe-mode",
 		"--approval-mode", "auto-edit",
 		"--max-wall-time", strconv.Itoa(wallTimeSeconds),
 		"--max-tool-calls", strconv.Itoa(budgetToolCalls),
 		"--max-session-turns", strconv.Itoa(budgetSessionTurns),
-		"--exclude-tools", strings.Join(excludedToolsFor(profile), ","),
+		"--exclude-tools", strings.Join(convergedExcludedTools(profile, tools), ","),
 	}
 	return appendSessionAndModel(args, policy, sessionID, model)
 }

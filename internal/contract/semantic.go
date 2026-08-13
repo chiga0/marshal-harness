@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
 
@@ -67,6 +68,7 @@ func validateTask(data []byte) ([]Violation, error) {
 		Worker struct {
 			PreferredAdapter string   `json:"preferredAdapter"`
 			FallbackAdapters []string `json:"fallbackAdapters"`
+			Tools            []string `json:"tools"`
 		} `json:"worker"`
 		Budgets struct {
 			RunTimeoutSeconds     int `json:"runTimeoutSeconds"`
@@ -114,6 +116,16 @@ func validateTask(data []byte) ([]Violation, error) {
 
 	adapters := append([]string{task.Worker.PreferredAdapter}, task.Worker.FallbackAdapters...)
 	violations = append(violations, duplicateStringViolations("/worker", adapters)...)
+	// The TaskSpec Schema already enforces the closed worker.tools vocabulary
+	// and uniqueItems; the semantic layer repeats both checks so direct
+	// validateTask callers receive readable violations instead of silently
+	// inheriting raw JSON Schema failures.
+	for index, tool := range task.Worker.Tools {
+		if !denials.IsAllowlistTool(tool) {
+			violations = append(violations, violation(fmt.Sprintf("/worker/tools/%d", index), "unknown-worker-tool", fmt.Sprintf("worker.tools entry %q is outside the closed vocabulary read/edit/write/grep/find/ls/bash", tool)))
+		}
+	}
+	violations = append(violations, duplicateStringViolations("/worker/tools", task.Worker.Tools)...)
 	if task.Budgets.AttemptTimeoutSeconds > task.Budgets.RunTimeoutSeconds {
 		violations = append(violations, violation("/budgets/attemptTimeoutSeconds", "attempt-timeout-exceeds-run", "attempt timeout must not exceed run timeout"))
 	}
