@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-更新时间：2026-08-11
+更新时间：2026-08-12
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
@@ -23,19 +23,21 @@ embedded/local 先行实现的 Local MVP 定义达成：标记 `USABLE`。
 - 临时顺序：`publish` → 等待 required checks 全绿 → `accept`（PR 仍 OPEN 时）→ 维护者在 Marshal 外 merge；
 - 已误入 terminal `BLOCKED` 的 Run：只读 `doctor` 检查与证据保留，等待后续 typed reconciliation，禁止手改状态或伪装修复。
 
-恢复机制（不可变 `SCMMergeReceipt` 与 append-only `PublicationReconcileRecord`）待规划中的 ADR 0026 定义与实现；在此之前，相关 Run 保持 `BLOCKED` 终态。本阻塞不改变 M0–M6 已通过状态与 Local MVP `USABLE` 结论，相关审计 finding `PUBLICATION-MERGED-HEAD-RECONCILE-P1`（状态 `OPEN`，P1）见[设计审计报告](audit-report.md)。
+恢复机制（不可变 `SCMMergeReceipt` 与 append-only `PublicationReconcileRecord`）已由 [ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) 于 2026-08-12 接受并合入（PR #49），冻结 `SCMMergeReceipt` 与 `PublicationReconcileRecord` 契约；typed reconciliation 实现仍待后续任务，在此之前临时护栏不变，相关 Run 保持 `BLOCKED` 终态。本阻塞不改变 M0–M6 已通过状态与 Local MVP `USABLE` 结论，相关审计 finding `PUBLICATION-MERGED-HEAD-RECONCILE-P1`（状态保持 `OPEN` 至实现合入，P1）见[设计审计报告](audit-report.md)。
 
 M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal orchestration）。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 是 M7 通过后的已接受设计增补：它不回滚 M7，也不提前完成 M8–M13；确定性 Supervisor、Typed Execution、通用副作用对账/补偿与 Goal admission 均仍待实现：
 
 | Milestone | 状态 | 证据 |
 | --- | --- | --- |
 | 7：架构与契约 | `PASSED`（2026-08-11，只表示设计与契约阶段通过） | [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 已接受；[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md) 已接受（2026-08-10，接受只关闭设计歧义）；[ADR 0018](adr/0018-control-plane-and-provider-ports.md) 已接受（2026-08-11，接受只冻结设计）；[Runtime 架构](runtime-architecture.md) 同步；Marshal Run `m7-control-provider-boundary-adr-r15-20260811` 完成 M7 最终架构稿并 `ACCEPTED`（reviewRound=2，32/32 required Gates 通过，独立审查无 P0/P1）；[Draft PR #13](https://github.com/chiga0/marshal-harness/pull/13) 通过 Quality (ubuntu-latest)、Quality (macos-latest)、Secret scan 与 GitGuardian 检查（GitHub Actions CI run `31449333738`），2026-08-11 由维护者手工合入 main（merge commit `4b2f3248f24ec2a67642ec77822fe6bb59730df7`） |
-| 8：Sandbox SPI/Fake/Local conformance + embedded/local 纵切 | `IN_PROGRESS` | gate-1（authority 双键空间 AuthorityNamespaceId/SecurityDomainId + SideEffect authority-record Schema，PR #42）与 gate-2（ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence Schema + attestation 全链绑定，PR #45，维护者授权强制合并）已落地 main；gate-3（legacy mapper）/gate-4（durable registration）/gate-5（validation）taskSpec 已备好待 fan-out；gate-6（DispatchLease match）最后。同期合入基础设施修复：digest-fix（PR #41）、pi-auto-retry（PR #43）、publish commit-tree 修复（PR #44）。见[实施计划](implementation-plan.md) |
+| 8：Sandbox SPI/Fake/Local conformance + embedded/local 纵切 | `IN_PROGRESS` | gate-1（authority 双键空间 AuthorityNamespaceId/SecurityDomainId + SideEffect authority-record Schema，PR #42）、gate-2（ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence Schema + attestation 全链绑定，PR #45，维护者授权强制合并）、gate-3（legacy mapper，PR #48）与 gate-5（validation，PR #47）已落地 main；gate-4（durable registration）R1 审查通过，但 PR #46 因 Secret scan 对测试 fixture 的 gitleaks 误报关闭，改以 R2 lineage（`m8-durable-registration-store-r2-20260812b`）重跑，进行中；gate-6（DispatchLease match）最后。同期合入基础设施修复：digest-fix（PR #41）、pi-auto-retry（PR #43）、publish commit-tree 修复（PR #44）；另同期合入 ADR 0026 契约（PR #49）、`.gitleaks.toml` CI 配置与 issue #19 锁重试修复。见[实施计划](implementation-plan.md) |
 | 9：marshal-server、Public API 与 Durable Runtime | `PLANNED` | 通用 SideEffect ledger、观察/权威事件分层与 crash reconcile；见[实施计划](implementation-plan.md) |
 | 10：Cloudflare Provider（remote transport） | `PLANNED` | Cloudflare 资源全生命周期对账与 leak scan；见[实施计划](implementation-plan.md) |
 | 11：生产级存储、多节点 HA 与身份分离 | `PLANNED` | HA effect/compensation 单 owner、fencing 与审批审计；见[实施计划](implementation-plan.md) |
 | 12：开源部署、版本化 Provider SDK/协议、多语言 SDK 与长稳验证 | `PLANNED` | 按 Port effect conformance；ACP/A2A/OpenHands 仅为可选生态扩展；见[实施计划](implementation-plan.md) |
 | 13：Goal orchestration | `PLANNED` | M13.0 契约 → M13.1 plan admission → M13.2 DAG/replan/evidence → M13.3 pause/resume/soak；当前无 Goal Schema/控制器实现；见[实施计划](implementation-plan.md) |
+
+[ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md)（已接受，2026-08-12；维护者合入 PR #49）冻结已合并 PR 的权威 reconcile 契约（`SCMMergeReceipt` 与 `PublicationReconcileRecord`），接受只冻结契约，typed reconciliation 实现仍待后续任务，不升级 M8–M13 实现状态。
 
 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10；全部 P1 经 Round 2 独立验证与 ReviewDecision accept 后由维护者接受）基于首次 Sandbox SPI dogfood 的 reject 证据冻结 provider-neutral Sandbox 安全契约，并修订 M8–M13 分工：
 

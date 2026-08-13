@@ -1,6 +1,6 @@
 # ADR 0026：SCMMergeReceipt 与 PublicationReconcileRecord（已合并 PR 的权威 reconcile 契约）
 
-- 状态：Proposed（待维护者接受）
+- 状态：Accepted（2026-08-12，维护者合入 PR #49）
 - 日期：2026-08-12
 - 决策来源：公开 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) / [PR #24](https://github.com/chiga0/marshal-harness/pull/24) 暴露「全部 required checks 成功且 PR 已合并后，Run 被 `marshal task accept` 永久置为 terminal `BLOCKED`」；审计 finding `PUBLICATION-MERGED-HEAD-RECONCILE-P1`（见 docs/audit-report.md「Issue #25 发布合并后 head reconcile 审计增补（2026-08-12）」节）
 
