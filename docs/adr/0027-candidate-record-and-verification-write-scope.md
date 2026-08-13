@@ -1,6 +1,6 @@
 # ADR 0027：Candidate 一等不可变记录与 Verification 写作用域
 
-- 状态：提案（Proposed，待维护者接受）
+- 状态：已接受（Accepted，2026-08-13 维护者接受）
 - 日期：2026-08-13
 - 决策来源：公开 [Issue #63](https://github.com/chiga0/marshal-harness/issues/63)（D-1，设计审计轮次 [#71](https://github.com/chiga0/marshal-harness/issues/71)）定位到 Verification 阶段写入被验证对象且缺少 Candidate 持久身份；维护者选定方案 A（允许声明式确定性归一化，但必须产出新 Candidate）。量级依据见效率审计 [#73](https://github.com/chiga0/marshal-harness/issues/73) 与 [#76](https://github.com/chiga0/marshal-harness/issues/76)
 - 关联：[ADR 0002](0002-worktree-isolation.md)、[ADR 0004](0004-independent-verification.md)、[ADR 0013](0013-graded-permission-denials.md)、[ADR 0017](0017-provider-neutral-sandbox-contract.md)、[ADR 0018](0018-control-plane-and-provider-ports.md)、[ADR 0019](0019-deterministic-control-plane-typed-execution-and-goal-admission.md)、[验证与评审](../verification-and-review.md)
