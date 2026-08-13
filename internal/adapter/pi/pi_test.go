@@ -957,7 +957,7 @@ func TestCaptureJSONLAcceptsPi0841NormalizedMessageUpdate(t *testing.T) {
 			t.Fatalf("text_delta wire = %s", event)
 		}
 	}
-	result := captureJSONL(strings.NewReader(stream.String()), "/worktree", 1<<20, func() {})
+	result := captureJSONL(context.Background(), strings.NewReader(stream.String()), "/worktree", 1<<20, func() {})
 	if result.err != nil {
 		t.Fatalf("capture error = %v", result.err)
 	}
@@ -1000,7 +1000,7 @@ const retryFixtureDigest = "020219497a259716606045b172a3add3fed392b0b65b25557f22
 func TestCaptureJSONLAutoRetryDeterministicFixture(t *testing.T) {
 	input := strings.Join(retryFixtureLines, "\n") + "\n"
 	terminations := 0
-	result := captureJSONL(strings.NewReader(input), "/workspace", 1<<20, func() { terminations++ })
+	result := captureJSONL(context.Background(), strings.NewReader(input), "/workspace", 1<<20, func() { terminations++ })
 	if result.err != nil {
 		t.Fatalf("capture error = %v", result.err)
 	}
@@ -1061,7 +1061,7 @@ func TestCaptureJSONLAutoRetryChainSuccessClosure(t *testing.T) {
 				events = append(events, `{"type":"agent_settled"}`)
 			}
 			terminations := 0
-			result := captureJSONL(strings.NewReader(jsonLines(events...)), "/worktree", 1<<20, func() { terminations++ })
+			result := captureJSONL(context.Background(), strings.NewReader(jsonLines(events...)), "/worktree", 1<<20, func() { terminations++ })
 			if result.err != nil {
 				t.Fatalf("capture error = %v", result.err)
 			}
@@ -1088,7 +1088,7 @@ func TestCaptureJSONLAutoRetryFailureClosureAndProviderFailure(t *testing.T) {
 				`{"type":"auto_retry_end","success":false,"attempt":1}`,
 				`{"type":"agent_settled"}`,
 			)
-			result := captureJSONL(strings.NewReader(input), "/worktree", 1<<20, func() {})
+			result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() {})
 			if result.err != nil {
 				t.Fatalf("capture error = %v", result.err)
 			}
@@ -1154,7 +1154,7 @@ func TestCaptureJSONLAutoRetryProtocolViolations(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			terminations := 0
-			result := captureJSONL(strings.NewReader(jsonLines(test.events...)), "/worktree", 1<<20, func() { terminations++ })
+			result := captureJSONL(context.Background(), strings.NewReader(jsonLines(test.events...)), "/worktree", 1<<20, func() { terminations++ })
 			if !errors.Is(result.err, ErrProtocol) {
 				t.Fatalf("error = %v, want ErrProtocol", result.err)
 			}
@@ -1174,7 +1174,7 @@ func TestCaptureJSONLStopsAcceptingBytesAfterProtocolFailure(t *testing.T) {
 		`{"type":"auto_retry_start","attempt":1,"maxAttempts":3}`,
 	)
 	terminations := 0
-	result := captureJSONL(strings.NewReader(input), "/worktree", 1<<20, func() { terminations++ })
+	result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() { terminations++ })
 	if !errors.Is(result.err, ErrProtocol) {
 		t.Fatalf("error = %v, want ErrProtocol", result.err)
 	}
@@ -1198,7 +1198,7 @@ func TestCaptureJSONLRejectsUnknownEventEchoInDiagnostics(t *testing.T) {
 		`{"type":"agent_end","messages":[],"willRetry":false}`,
 		`{"type":"zz-mystery-event","payload":"SECRET-TYPE-SENTINEL"}`,
 	)
-	result := captureJSONL(strings.NewReader(input), "/worktree", 1<<20, func() {})
+	result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() {})
 	if !errors.Is(result.err, ErrProtocol) {
 		t.Fatalf("error = %v, want ErrProtocol", result.err)
 	}
@@ -1220,7 +1220,7 @@ func TestCaptureJSONLRejectsNonLFTailAndKeepsRawPrefix(t *testing.T) {
 		`{"type":"agent_settled"}`,
 	)
 	terminations := 0
-	result := captureJSONL(strings.NewReader(success+"trailing-garbage"), "/worktree", 1<<20, func() { terminations++ })
+	result := captureJSONL(context.Background(), strings.NewReader(success+"trailing-garbage"), "/worktree", 1<<20, func() { terminations++ })
 	if !errors.Is(result.err, ErrProtocol) {
 		t.Fatalf("error = %v, want ErrProtocol", result.err)
 	}
@@ -1234,7 +1234,7 @@ func TestCaptureJSONLRejectsNonLFTailAndKeepsRawPrefix(t *testing.T) {
 
 func TestCaptureJSONLAcceptsWhitespacePaddedFragmentsByteForByte(t *testing.T) {
 	input := "  " + captureSessionHeader("session-1") + "  \n\t" + `{"type":"agent_start"}` + " \n" + `{"type":"agent_end","messages":[],"willRetry":false}` + "\n"
-	result := captureJSONL(strings.NewReader(input), "/worktree", 1<<20, func() {})
+	result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() {})
 	if result.err != nil {
 		t.Fatalf("capture error = %v", result.err)
 	}
@@ -1254,7 +1254,7 @@ func TestCaptureJSONLRejectsNegativeUsageCounters(t *testing.T) {
 		{name: "negative-cacheRead", agentEnd: `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","usage":{"input":1,"output":1,"cacheRead":-1,"cost":0}}],"willRetry":false}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			result := captureJSONL(strings.NewReader(jsonLines(header, test.agentEnd)), "/worktree", 1<<20, func() {})
+			result := captureJSONL(context.Background(), strings.NewReader(jsonLines(header, test.agentEnd)), "/worktree", 1<<20, func() {})
 			if !errors.Is(result.err, ErrProtocol) {
 				t.Fatalf("error = %v, want ErrProtocol", result.err)
 			}
@@ -1304,7 +1304,7 @@ func TestCaptureJSONLOutputLimitRawEqualsInputPrefix(t *testing.T) {
 		for _, step := range []int{1, 4096, 64 << 10} {
 			t.Run(test.name+"/chunk-"+strconv.Itoa(step), func(t *testing.T) {
 				terminations := 0
-				result := captureJSONL(&chunkReader{data: []byte(input), step: step}, "/worktree", test.limit, func() { terminations++ })
+				result := captureJSONL(context.Background(), &chunkReader{data: []byte(input), step: step}, "/worktree", test.limit, func() { terminations++ })
 				if result.limitExceeded != test.exceeded {
 					t.Fatalf("limitExceeded = %v, want %v", result.limitExceeded, test.exceeded)
 				}
@@ -1334,7 +1334,7 @@ func TestCaptureJSONLOutputLimitAcrossErrBufferFullFragments(t *testing.T) {
 	)
 	const limit = int64(100_000)
 	terminations := 0
-	result := captureJSONL(&chunkReader{data: []byte(input), step: 64 << 10}, "/worktree", limit, func() { terminations++ })
+	result := captureJSONL(context.Background(), &chunkReader{data: []byte(input), step: 64 << 10}, "/worktree", limit, func() { terminations++ })
 	if !result.limitExceeded {
 		t.Fatal("limitExceeded must be set")
 	}
@@ -1356,13 +1356,132 @@ func TestCaptureJSONLConcurrentCapturesStayIsolated(t *testing.T) {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			result := captureJSONL(strings.NewReader(input), "/workspace", 1<<20, func() {})
+			result := captureJSONL(context.Background(), strings.NewReader(input), "/workspace", 1<<20, func() {})
 			if result.err != nil || result.eventCount != 10 || len(result.raw) != 890 {
 				t.Errorf("concurrent capture = err %v eventCount %d raw %d", result.err, result.eventCount, len(result.raw))
 			}
 		}()
 	}
 	group.Wait()
+}
+
+// TestCaptureJSONLAutoRetryBackoffHonoursCancellation is the Issue #38
+// capture-level contract: an authorized auto_retry_start opens a backoff
+// window that a context cancellation terminates immediately with the context
+// error and exactly one termination, never a fabricated protocol failure,
+// while an intact window keeps the retry chain byte-for-byte identical.
+func TestCaptureJSONLAutoRetryBackoffHonoursCancellation(t *testing.T) {
+	chainLines := func(delayMs int) []string {
+		return []string{
+			captureSessionHeader("session-1"),
+			`{"type":"agent_start"}`,
+			`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","usage":{"input":1,"output":1,"cacheRead":0,"cost":0}}],"willRetry":true}`,
+			`{"type":"auto_retry_start","attempt":1,"maxAttempts":2,"delayMs":` + strconv.Itoa(delayMs) + `,"errorMessage":"transient"}`,
+			`{"type":"agent_start"}`,
+			`{"type":"auto_retry_end","success":true,"attempt":1}`,
+			`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","usage":{"input":2,"output":1,"cacheRead":0,"cost":0}}],"willRetry":false}`,
+		}
+	}
+	chain := func(delayMs int) string { return jsonLines(chainLines(delayMs)...) }
+	t.Run("cancel-during-window-aborts-immediately", func(t *testing.T) {
+		const windowMs = 2000
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		time.AfterFunc(20*time.Millisecond, cancel)
+		terminations := 0
+		started := time.Now()
+		result := captureJSONL(ctx, strings.NewReader(chain(windowMs)), "/worktree", 1<<20, func() { terminations++ })
+		elapsed := time.Since(started)
+		if !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", result.err)
+		}
+		if elapsed >= windowMs*time.Millisecond {
+			t.Fatalf("capture idled out the %dms backoff window: took %v", windowMs, elapsed)
+		}
+		if elapsed > time.Second {
+			t.Fatalf("cancellation did not terminate the backoff wait immediately: took %v", elapsed)
+		}
+		if result.eventCount != 4 {
+			t.Fatalf("eventCount = %d, want 4", result.eventCount)
+		}
+		if !bytes.Equal(result.raw, []byte(jsonLines(chainLines(windowMs)[:4]...))) {
+			t.Fatalf("raw must stop at the auto_retry_start that opened the window: %s", result.raw)
+		}
+		if terminations != 1 {
+			t.Fatalf("terminations = %d, want exactly 1", terminations)
+		}
+	})
+	t.Run("precancelled-context-aborts-at-window-entry", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		terminations := 0
+		started := time.Now()
+		result := captureJSONL(ctx, strings.NewReader(chain(5000)), "/worktree", 1<<20, func() { terminations++ })
+		if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+			t.Fatalf("precancelled capture idled in the backoff window: took %v", elapsed)
+		}
+		if !errors.Is(result.err, context.Canceled) || result.eventCount != 4 || terminations != 1 {
+			t.Fatalf("err = %v eventCount = %d terminations = %d", result.err, result.eventCount, terminations)
+		}
+	})
+	t.Run("window-completes-without-cancel", func(t *testing.T) {
+		terminations := 0
+		result := captureJSONL(context.Background(), strings.NewReader(chain(2)), "/worktree", 1<<20, func() { terminations++ })
+		if result.err != nil {
+			t.Fatalf("capture error = %v", result.err)
+		}
+		if result.eventCount != 7 || terminations != 0 {
+			t.Fatalf("eventCount = %d terminations = %d", result.eventCount, terminations)
+		}
+		if !bytes.Equal(result.raw, []byte(chain(2))) {
+			t.Fatalf("raw must stay byte-for-byte identical across the intact window")
+		}
+		if result.inputTokens != 3 || result.outputTokens != 2 || result.cachedInputTokens != 0 {
+			t.Fatalf("usage = %d/%d/%d, want 3/2/0", result.inputTokens, result.outputTokens, result.cachedInputTokens)
+		}
+	})
+	t.Run("zero-delay-window-completes", func(t *testing.T) {
+		result := captureJSONL(context.Background(), strings.NewReader(chain(0)), "/worktree", 1<<20, func() {})
+		if result.err != nil || result.eventCount != 7 {
+			t.Fatalf("err = %v eventCount = %d", result.err, result.eventCount)
+		}
+	})
+	t.Run("cancel-at-window-boundary-never-fabricates-protocol-errors", func(t *testing.T) {
+		for round := 0; round < 16; round++ {
+			ctx, cancel := context.WithCancel(context.Background())
+			timer := time.AfterFunc(time.Millisecond, cancel)
+			terminations := 0
+			result := captureJSONL(ctx, strings.NewReader(chain(1)), "/worktree", 1<<20, func() { terminations++ })
+			timer.Stop()
+			cancel()
+			if result.err != nil && !errors.Is(result.err, context.Canceled) {
+				t.Fatalf("boundary outcome must be success or cancellation, got %v", result.err)
+			}
+			if terminations > 1 {
+				t.Fatalf("terminations = %d, want at most 1", terminations)
+			}
+			if result.err == nil && result.eventCount != 7 {
+				t.Fatalf("successful boundary outcome lost events: %d", result.eventCount)
+			}
+		}
+	})
+	retryableEnd := `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","usage":{"input":1,"output":1,"cacheRead":0,"cost":0}}],"willRetry":true}`
+	for _, test := range []struct{ name, start string }{
+		{name: "negative-delay", start: `{"type":"auto_retry_start","attempt":1,"maxAttempts":2,"delayMs":-1}`},
+		{name: "fractional-delay", start: `{"type":"auto_retry_start","attempt":1,"maxAttempts":2,"delayMs":1.5}`},
+		{name: "non-number-delay", start: `{"type":"auto_retry_start","attempt":1,"maxAttempts":2,"delayMs":"abc"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			terminations := 0
+			result := captureJSONL(context.Background(), strings.NewReader(jsonLines(captureSessionHeader("session-1"), retryableEnd, test.start)), "/worktree", 1<<20, func() { terminations++ })
+			if !errors.Is(result.err, ErrProtocol) {
+				t.Fatalf("error = %v, want ErrProtocol", result.err)
+			}
+			if terminations != 1 {
+				t.Fatalf("terminations = %d, want exactly 1", terminations)
+			}
+		})
+	}
 }
 
 func TestRunEnforcesOutputCapAndCancellation(t *testing.T) {
@@ -1478,6 +1597,116 @@ func killKnownProcessGroup(readyPath string) {
 		_ = syscall.Kill(-group, syscall.SIGKILL)
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
+}
+
+// TestRunAutoRetryBackoffHonoursCancellation is the Issue #38 Run-level
+// contract: a cancellation that arrives while the adapter paces the
+// auto_retry backoff window returns through the existing cancellation path
+// without idling out the window, an uncanceled attempt still completes the
+// full retry chain, and a cancellation landing on the window boundary never
+// produces a race error.
+func TestRunAutoRetryBackoffHonoursCancellation(t *testing.T) {
+	retryEvents := func(delayMs int) string {
+		return `printf '%s\n'` +
+			` '{"type":"agent_start"}'` +
+			` '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","usage":{"input":4,"output":1,"cacheRead":0,"cost":0}}],"willRetry":true}'` +
+			` '{"type":"auto_retry_start","attempt":1,"maxAttempts":2,"delayMs":` + strconv.Itoa(delayMs) + `,"errorMessage":"transient"}'` +
+			` '{"type":"agent_start"}'` +
+			` '{"type":"auto_retry_end","success":true,"attempt":1}'` +
+			` '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","usage":{"input":5,"output":2,"cacheRead":1,"cost":0.001}}],"willRetry":false}'`
+	}
+	t.Run("cancel-during-backoff-returns-immediately", func(t *testing.T) {
+		const windowMs = 3000
+		readyPath := filepath.Join(t.TempDir(), "backoff.pid")
+		body := sessionHeader("session-1") + "\n" +
+			`printf '%s\n' '{"type":"agent_start"}'` + "\n" +
+			`printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","usage":{"input":1,"output":1,"cacheRead":0,"cost":0}}],"willRetry":true}'` + "\n" +
+			`printf '%s\n' '{"type":"auto_retry_start","attempt":1,"maxAttempts":2,"delayMs":` + strconv.Itoa(windowMs) + `,"errorMessage":"transient"}'` + "\n" +
+			"sleep 30 &\nchild=$!\n" +
+			"printf '%s' \"$child\" > " + shellQuote(readyPath+".tmp") + "\n" +
+			"mv " + shellQuote(readyPath+".tmp") + " " + shellQuote(readyPath) + "\n" +
+			"wait"
+		fixture := newRunFixture(t, supportedBinary, body)
+		t.Cleanup(func() { killKnownProcessGroup(readyPath) })
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		outcome := make(chan error, 1)
+		started := time.Now()
+		go func() {
+			_, err := fixture.adapter.Run(ctx, fixture.requestWith(map[string]any{"attemptTimeoutSeconds": 20, "maxOutputBytes": 4096}))
+			outcome <- err
+		}()
+		readyContent := waitForFileContent(readyPath, 5*time.Second)
+		if childPid, parseErr := strconv.Atoi(readyContent); parseErr != nil || childPid <= 1 {
+			t.Fatalf("worker did not atomically publish its backoff child pid within 5s: %q", readyContent)
+		}
+		// The marker proves auto_retry_start was emitted, so the adapter is
+		// pacing the backoff window; a short pause lets it enter the wait
+		// before the cancellation under test arrives.
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		cancelledAt := time.Now()
+		select {
+		case err := <-outcome:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation error = %v, want context.Canceled", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("Run did not return within 10s of cancellation")
+		}
+		if elapsed := time.Since(cancelledAt); elapsed > 2*time.Second {
+			t.Fatalf("cancellation during the backoff window took %v", elapsed)
+		}
+		if total := time.Since(started); total >= windowMs*time.Millisecond {
+			t.Fatalf("Run idled out the %dms backoff window: took %v", windowMs, total)
+		}
+		metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "pi-transcript-meta.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(metadata), `"contextError": "context canceled"`) {
+			t.Fatalf("transcript metadata must record the cancellation: %s", metadata)
+		}
+	})
+	t.Run("no-cancel-completes-retry-chain", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+retryEvents(3))
+		record, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"maxOutputBytes": 4096}))
+		if err != nil {
+			t.Fatalf("uncanceled auto-retry chain must succeed: %v", err)
+		}
+		var result declaredResult
+		if err := json.Unmarshal(record.Data, &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Session == nil || result.Session.ID != "session-1" || result.Status != "completed" {
+			t.Fatalf("normalized result = %+v", result)
+		}
+		var usage map[string]any
+		if err := json.Unmarshal(result.Usage, &usage); err != nil {
+			t.Fatalf("usage missing: %v", err)
+		}
+		if usage["inputTokens"] != float64(9) || usage["outputTokens"] != float64(3) {
+			t.Fatalf("usage = %v", usage)
+		}
+		transcript, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "pi-transcript.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Contains(transcript, []byte(`"auto_retry_start"`)) || !bytes.Contains(transcript, []byte(`"auto_retry_end"`)) {
+			t.Fatalf("transcript lost the retry chain: %s", transcript)
+		}
+	})
+	t.Run("cancel-at-window-boundary-stays-consistent", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, sessionHeader("session-1")+"\n"+retryEvents(1))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		timer := time.AfterFunc(time.Millisecond, cancel)
+		defer timer.Stop()
+		_, err := fixture.adapter.Run(ctx, fixture.requestWith(map[string]any{"maxOutputBytes": 4096}))
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("boundary outcome must be success or cancellation, got %v", err)
+		}
+	})
 }
 
 func TestRunGradesPermissionDenialsFromToolErrors(t *testing.T) {

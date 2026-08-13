@@ -441,7 +441,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	kill := func() { killOnce.Do(func() { terminateGroup(command) }) }
 	stdoutDone := make(chan captureResult, 1)
 	stderrDone := make(chan streamCapture, 1)
-	go func() { stdoutDone <- captureJSONL(stdout, worktree, int64(request.MaxOutputBytes), kill) }()
+	go func() { stdoutDone <- captureJSONL(runCtx, stdout, worktree, int64(request.MaxOutputBytes), kill) }()
 	go func() { stderrDone <- captureStream(stderr, stderrLimit) }()
 	processFinished := make(chan struct{})
 	go func() {
@@ -664,7 +664,8 @@ type captureResult struct {
 // piEvent covers only the fields Marshal validates. Unknown fields are
 // ignored on purpose; protocol decisions rely solely on type, version, id,
 // cwd, the explicit agent_end willRetry flag, and the auto_retry attempt
-// bookkeeping. Free-text fields such as delayMs or errorMessage are never
+// bookkeeping, including the declared backoff delayMs that the capture paces
+// as a cancellable wait. Free-text fields such as errorMessage are never
 // decoded here: they only survive inside the raw transcript evidence and
 // never reach authorization, budgets, or diagnostics.
 type piEvent struct {
@@ -680,6 +681,7 @@ type piEvent struct {
 	WillRetry   *bool           `json:"willRetry"`
 	Attempt     *int            `json:"attempt"`
 	MaxAttempts *int            `json:"maxAttempts"`
+	DelayMs     json.Number     `json:"delayMs"`
 	Success     *bool           `json:"success"`
 	Messages    []piMessage     `json:"messages"`
 }
@@ -896,6 +898,11 @@ func eofClosureError(state captureState) error {
 	}
 }
 
+// maxBackoffDelayMs bounds the auto_retry backoff window a capture paces;
+// larger declarations fail closed like every other out-of-bounds retry
+// bookkeeping value, and the bound keeps the timer duration representable.
+const maxBackoffDelayMs = int64(math.MaxInt64 / int64(time.Millisecond))
+
 // captureJSONL enforces the strict pi session protocol through an explicit
 // closed state machine:
 //   - the first event must be the session header with version exactly 3 and
@@ -911,6 +918,11 @@ func eofClosureError(state captureState) error {
 //     auto_retry_end(success=true) followed by exactly one final
 //     agent_end(willRetry=false); a failed final invocation inside an active
 //     retry must be followed by the matching auto_retry_end(success=false);
+//   - an authorized auto_retry_start opens the declared backoff window: the
+//     capture paces delayMs itself through a select between the attempt
+//     context and the backoff timer, so a cancellation ends the wait and the
+//     capture immediately with the context error instead of idling out the
+//     window, while an intact window admits every later byte unchanged;
 //   - termination is the complete closed stream (terminal agent_end, complete
 //     retry-failed closure, then at most one agent_settled); any further
 //     event or any non-LF tail fails closed, admits no later byte, and
@@ -919,7 +931,7 @@ func eofClosureError(state captureState) error {
 // Output is bounded; exceeding the limit keeps raw exactly equal to the first
 // limit input bytes and terminates exactly once without fabricating a
 // protocol success.
-func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()) captureResult {
+func captureJSONL(ctx context.Context, reader io.Reader, worktree string, limit int64, onLimit func()) captureResult {
 	capacity := 64 << 10
 	if limit < int64(capacity) {
 		capacity = int(limit)
@@ -950,6 +962,28 @@ func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()
 	}
 	unauthorized := func() {
 		fail(fmt.Errorf("%w: event is not authorized in state %s", ErrProtocol, state))
+	}
+	aborted := false
+	// waitBackoff paces the backoff window declared by an authorized
+	// auto_retry_start. The wait is a select between the attempt context and
+	// the backoff timer, so a cancellation terminates the window immediately
+	// instead of idling out the delay: the capture records the context error,
+	// terminates the process group exactly once, and stops admitting bytes.
+	waitBackoff := func(delayMs int64) {
+		if delayMs <= 0 {
+			return
+		}
+		timer := time.NewTimer(time.Duration(delayMs) * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			aborted = true
+			if result.err == nil {
+				result.err = ctx.Err()
+			}
+			terminate()
+		}
 	}
 	accumulateUsage := func(messages []piMessage) bool {
 		for _, message := range messages {
@@ -1053,8 +1087,18 @@ func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()
 			fail(fmt.Errorf("%w: auto_retry_start attempt must increment by exactly one", ErrProtocol))
 			return
 		}
+		var backoffMs int64
+		if event.DelayMs != "" {
+			delay, delayErr := strconv.ParseInt(string(event.DelayMs), 10, 64)
+			if delayErr != nil || delay < 0 || delay > maxBackoffDelayMs {
+				fail(fmt.Errorf("%w: auto_retry_start delayMs must be a bounded non-negative integer", ErrProtocol))
+				return
+			}
+			backoffMs = delay
+		}
 		retryAttempt, retryMaxAttempts = attempt, maxAttempts
 		state = stateRetryActive
+		waitBackoff(backoffMs)
 	}
 	acceptAutoRetryEnd := func(event *piEvent) {
 		if event.Success == nil || event.Attempt == nil {
@@ -1197,6 +1241,9 @@ func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()
 				result.raw = append(result.raw, line...)
 				handle(line)
 				line = line[:0]
+				if aborted {
+					return result
+				}
 			case errors.Is(err, bufio.ErrBufferFull):
 				received += int64(len(fragment))
 				line = append(line, fragment...)
