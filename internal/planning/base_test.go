@@ -62,16 +62,8 @@ func fakeGit(t *testing.T, script string) {
 func TestResolveBaseSuccess(t *testing.T) {
 	root, sha := gitFixture(t)
 
-	got, err := ResolveBase(context.Background(), root, "HEAD")
-	if err != nil {
-		t.Fatalf("ResolveBase(HEAD) = %v", err)
-	}
-	if got != sha {
-		t.Fatalf("ResolveBase(HEAD) = %q, want %q", got, sha)
-	}
-
-	// A literal object ID must also resolve.
-	got, err = ResolveBase(context.Background(), root, sha)
+	// Only a literal immutable object ID resolves; it resolves to itself.
+	got, err := ResolveBase(context.Background(), root, sha)
 	if err != nil {
 		t.Fatalf("ResolveBase(literal sha) = %v", err)
 	}
@@ -80,11 +72,45 @@ func TestResolveBaseSuccess(t *testing.T) {
 	}
 }
 
+func TestResolveBaseRejectsFloatingRefs(t *testing.T) {
+	root, sha := gitFixture(t)
+	for _, args := range [][]string{
+		{"tag", "v0.1.0"},
+		{"branch", "feature/fixture"},
+	} {
+		command := exec.Command("git", append([]string{"-C", root}, args...)...)
+		command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+		if err := command.Run(); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	for _, ref := range []string{
+		"HEAD",
+		"main",
+		"master",
+		"v0.1.0",
+		"feature/fixture",
+		"origin/main",
+		"refs/heads/master",
+		"HEAD~1",
+		sha[:12],
+		strings.ToUpper(sha),
+	} {
+		_, err := ResolveBase(context.Background(), root, ref)
+		if err == nil || err.Error() != ErrBaseRefNotImmutable {
+			t.Errorf("ResolveBase(ref %q) = %v, want %q", ref, err, ErrBaseRefNotImmutable)
+		}
+	}
+}
+
 func TestResolveBaseUnknownRefFailsClosed(t *testing.T) {
 	root, _ := gitFixture(t)
-	_, err := ResolveBase(context.Background(), root, "no-such-ref")
+	// A well-formed object ID that does not exist in the repository still
+	// reaches git and fails closed there.
+	unknown := strings.Repeat("a", 40)
+	_, err := ResolveBase(context.Background(), root, unknown)
 	if err == nil || err.Error() != ErrBaseGitFailed {
-		t.Fatalf("ResolveBase(no-such-ref) = %v, want %q", err, ErrBaseGitFailed)
+		t.Fatalf("ResolveBase(unknown sha) = %v, want %q", err, ErrBaseGitFailed)
 	}
 }
 
@@ -110,11 +136,11 @@ func TestResolveBaseRejectsOptionInjection(t *testing.T) {
 func TestResolveBaseNeverUsesShell(t *testing.T) {
 	root, _ := gitFixture(t)
 	sentinel := filepath.Join(root, "pwned")
-	// If a shell interpreted this ref, the file would be created. Without a
-	// shell it is simply an unresolvable ref name.
+	// If a shell interpreted this ref, the file would be created. The
+	// immutable-SHA gate rejects it before any git process is even spawned.
 	_, err := ResolveBase(context.Background(), root, "HEAD; touch "+sentinel)
-	if err == nil || err.Error() != ErrBaseGitFailed {
-		t.Fatalf("ResolveBase(shell metacharacters) = %v, want %q", err, ErrBaseGitFailed)
+	if err == nil || err.Error() != ErrBaseRefNotImmutable {
+		t.Fatalf("ResolveBase(shell metacharacters) = %v, want %q", err, ErrBaseRefNotImmutable)
 	}
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 		t.Fatalf("shell metacharacters were executed: %v", err)
@@ -181,7 +207,7 @@ func TestResolveBaseTimeout(t *testing.T) {
 	defer func() { baseResolveTimeout = previous }()
 
 	start := time.Now()
-	_, err := ResolveBase(context.Background(), root, "HEAD")
+	_, err := ResolveBase(context.Background(), root, strings.Repeat("a", 40))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("ResolveBase(timeout) = %v, want context.DeadlineExceeded", err)
 	}
@@ -194,7 +220,7 @@ func TestResolveBaseRejectsOversizedStdout(t *testing.T) {
 	root, _ := gitFixture(t)
 	// Emits ~128KB of lowercase hex characters with exit status 0.
 	fakeGit(t, "#!/bin/sh\nhead -c 131072 /dev/zero | tr '\\0' 'a'\n")
-	_, err := ResolveBase(context.Background(), root, "HEAD")
+	_, err := ResolveBase(context.Background(), root, strings.Repeat("a", 40))
 	if err == nil || err.Error() != ErrBaseOutputInvalid {
 		t.Fatalf("ResolveBase(oversized stdout) = %v, want %q", err, ErrBaseOutputInvalid)
 	}
@@ -203,7 +229,7 @@ func TestResolveBaseRejectsOversizedStdout(t *testing.T) {
 func TestResolveBaseDiscardsStderr(t *testing.T) {
 	root, _ := gitFixture(t)
 	fakeGit(t, "#!/bin/sh\necho SECRET=topsecret >&2\nexit 1\n")
-	_, err := ResolveBase(context.Background(), root, "HEAD")
+	_, err := ResolveBase(context.Background(), root, strings.Repeat("a", 40))
 	if err == nil || err.Error() != ErrBaseGitFailed {
 		t.Fatalf("ResolveBase(stderr) = %v, want %q", err, ErrBaseGitFailed)
 	}
@@ -226,7 +252,7 @@ func TestResolveBaseRejectsMalformedObjectID(t *testing.T) {
 		"empty":            "",
 	} {
 		fakeGit(t, "#!/bin/sh\nprintf '"+output+"'\n")
-		_, err := ResolveBase(context.Background(), root, "HEAD")
+		_, err := ResolveBase(context.Background(), root, strings.Repeat("a", 40))
 		if err == nil || err.Error() != ErrBaseOutputInvalid {
 			t.Errorf("ResolveBase(%s output) = %v, want %q", name, err, ErrBaseOutputInvalid)
 		}
@@ -237,7 +263,7 @@ func TestResolveBaseAcceptsObjectIDWithoutTrailingNewline(t *testing.T) {
 	root, _ := gitFixture(t)
 	valid := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	fakeGit(t, "#!/bin/sh\nprintf '"+valid+"'\n")
-	got, err := ResolveBase(context.Background(), root, "HEAD")
+	got, err := ResolveBase(context.Background(), root, valid)
 	if err != nil {
 		t.Fatalf("ResolveBase(no trailing newline) = %v", err)
 	}
@@ -252,7 +278,7 @@ func TestResolveBaseRestrictedEnvironment(t *testing.T) {
 	fakeGit(t, "#!/bin/sh\nenv > "+envFile+"\nexit 1\n")
 	t.Setenv("MARSHAL_SECRET_SHOULD_NOT_LEAK", "leak")
 
-	_, err := ResolveBase(context.Background(), root, "HEAD")
+	_, err := ResolveBase(context.Background(), root, strings.Repeat("a", 40))
 	if err == nil || err.Error() != ErrBaseGitFailed {
 		t.Fatalf("ResolveBase(env dump) = %v, want %q", err, ErrBaseGitFailed)
 	}

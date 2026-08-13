@@ -30,6 +30,6 @@
     "directPtyPolicy": "record-and-reverify",
     "maxSteeringRounds": 4
   },
-  "policyDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "policyDigest": "sha256:48b407137d1639f674eb81edfac8e6f4b30430700dd3e1ba28dcbc8279f01e3d",
   "generatedAt": "2026-08-03T10:00:01Z"
 }

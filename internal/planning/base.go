@@ -15,10 +15,11 @@ import (
 // Context cancellation and deadline errors are the only exceptions: those are
 // returned as the context's own error.
 const (
-	ErrBaseRootInvalid   = "resolve base: repository root is invalid"
-	ErrBaseRefInvalid    = "resolve base: base ref is invalid"
-	ErrBaseGitFailed     = "resolve base: git rev-parse failed"
-	ErrBaseOutputInvalid = "resolve base: git output is not a valid commit object ID"
+	ErrBaseRootInvalid     = "resolve base: repository root is invalid"
+	ErrBaseRefInvalid      = "resolve base: base ref is invalid"
+	ErrBaseRefNotImmutable = "resolve base: base ref must be an immutable full commit SHA"
+	ErrBaseGitFailed       = "resolve base: git rev-parse failed"
+	ErrBaseOutputInvalid   = "resolve base: git output is not a valid commit object ID"
 )
 
 // baseResolveTimeout bounds a single rev-parse invocation. It is a variable so
@@ -31,7 +32,11 @@ var baseResolveTimeout = 10 * time.Second
 const maxBaseOutput = 256
 
 // ResolveBase resolves ref to a single commit object ID inside the repository
-// at repositoryRoot. It invokes git directly via argv (never through a
+// at repositoryRoot. The ref must already be exactly one immutable full git
+// object ID: floating refs such as branch names, tag names, HEAD,
+// remote-tracking names, or relative spellings are rejected fail-closed
+// before any git invocation, so the locked baseline can never move after
+// planning. It invokes git directly via argv (never through a
 // shell), with a restricted environment and a bounded timeout and output
 // buffer. The command runs in its own process group and the entire group is
 // terminated when the timeout expires, so grandchildren holding the output
@@ -47,6 +52,9 @@ func ResolveBase(ctx context.Context, repositoryRoot, ref string) (string, error
 	}
 	if !validBaseRef(ref) {
 		return "", errors.New(ErrBaseRefInvalid)
+	}
+	if !validObjectID(ref) {
+		return "", errors.New(ErrBaseRefNotImmutable)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, baseResolveTimeout)
@@ -90,7 +98,9 @@ func validRepositoryRoot(root string) bool {
 
 // validBaseRef rejects anything that could be interpreted as a git option or
 // that smuggles control characters. The ref is additionally passed after
-// --end-of-options, so this is defense in depth, not the only line.
+// --end-of-options, so this is defense in depth, not the only line. The
+// immutable full-object-ID shape is enforced on top by validObjectID in
+// ResolveBase, which rejects every floating ref.
 func validBaseRef(ref string) bool {
 	if ref == "" || strings.HasPrefix(ref, "-") {
 		return false
