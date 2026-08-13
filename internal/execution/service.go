@@ -34,6 +34,10 @@ type Input struct {
 	StateRoot, RepositoryRoot, RunID string
 	Adapter                          port.WorkerAdapter
 	Validator                        *contract.Validator
+	// OrphanStalenessThreshold bounds how recent the current attempt's last
+	// journal event must be for a RUNNING run to count as driver-live. Zero
+	// selects defaultOrphanStalenessThreshold.
+	OrphanStalenessThreshold time.Duration
 }
 
 type Result struct {
@@ -72,7 +76,11 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if state.RunID != input.RunID {
 		return Result{}, errors.New("run snapshot identity does not match the requested run")
 	}
-	if state.State != domain.StateReady && state.State != domain.StateRetryPending && state.State != domain.StateReworkRequested {
+	// RUNNING is held for the orphan recovery decision below instead of being
+	// rejected here: a RUNNING run whose current attempt shows no live driver
+	// evidence re-enters through the existing RETRY_PENDING channel, while a
+	// live RUNNING run still fails closed with the same gate sentinel.
+	if state.State != domain.StateReady && state.State != domain.StateRetryPending && state.State != domain.StateReworkRequested && state.State != domain.StateRunning {
 		return Result{}, fmt.Errorf("run state %s cannot start a worker attempt", state.State)
 	}
 	taskData, err := os.ReadFile(filepath.Join(runDir, "task-spec.json"))
@@ -132,6 +140,19 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if selectedAdapterID != input.Adapter.ID() {
 		return Result{}, errors.New("frozen capability snapshot does not match the selected adapter")
 	}
+	// Orphan recovery hooks the early admission layer ahead of Probe: a
+	// RUNNING run whose current attempt shows no live driver evidence is
+	// fenced out and the run re-enters through the existing RETRY_PENDING
+	// channel with a fresh attempt and an incremented fencing generation. A
+	// live RUNNING run keeps the fail-closed state gate rejection.
+	supersededAttemptID := ""
+	if state.State == domain.StateRunning {
+		recovered, orphanAttemptID, recoverErr := recoverOrphanedRunningAttempt(store, lease, runDir, state, task, input.OrphanStalenessThreshold)
+		if recoverErr != nil {
+			return Result{}, recoverErr
+		}
+		state, supersededAttemptID = recovered, orphanAttemptID
+	}
 	// The admission guard runs before Probe and any attempt side effect.
 	reviewFindings, err := loadReviewFindings(store, runDir, state, input.Validator, selectedAdapterID)
 	if err != nil {
@@ -166,6 +187,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	attemptDir := filepath.Join(runDir, "attempts", attemptID)
 	controlRoot := filepath.Join(attemptDir, "control")
+	attemptNumber := int(state.AttemptsUsed) + 1
 	prompt, err := renderPrompt(taskData, task, state, attemptID, controlRoot, selectedAdapterID, reviewFindings)
 	if err != nil {
 		return Result{}, err
@@ -184,13 +206,16 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	requestMap := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindWorkerRequest),
-		"taskId": state.TaskID, "runId": state.RunID, "attemptId": attemptID, "attemptNumber": state.AttemptsUsed + 1,
+		"taskId": state.TaskID, "runId": state.RunID, "attemptId": attemptID, "attemptNumber": attemptNumber,
 		"specDigest": state.SpecDigest, "policyDigest": state.PolicyDigest, "capabilityDigest": state.CapabilityDigest,
 		"baseSha": state.BaseSHA, "worktreePath": state.WorktreePath, "controlRoot": controlRoot,
 		"taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
 		"adapterId": selectedAdapterID, "executionProfile": task.Worker.ExecutionProfile, "sessionPolicy": task.Worker.SessionPolicy,
 		"attemptTimeoutSeconds": task.Budgets.AttemptTimeoutSeconds, "maxOutputBytes": task.Budgets.MaxOutputBytes,
 		"reviewFindings": reviewFindings,
+	}
+	if supersededAttemptID != "" {
+		requestMap["previousAttemptId"] = supersededAttemptID
 	}
 	requestData, err := json.Marshal(requestMap)
 	if err != nil {
@@ -204,7 +229,12 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 
 	started := time.Now().UTC()
-	startEvent, next, err := transition(state, attemptID, "worker.started", domain.StateRunning, started, map[string]any{"adapterId": selectedAdapterID}, lifecycle.Guard{LeaseHeld: true, BudgetAvailable: true})
+	startPayload := map[string]any{"adapterId": selectedAdapterID, "fencingGeneration": attemptNumber}
+	if supersededAttemptID != "" {
+		startPayload["orphanRecovery"] = true
+		startPayload["supersedesAttempt"] = supersededAttemptID
+	}
+	startEvent, next, err := transition(state, attemptID, "worker.started", domain.StateRunning, started, startPayload, lifecycle.Guard{LeaseHeld: true, BudgetAvailable: true})
 	if err != nil {
 		return Result{}, err
 	}
@@ -240,6 +270,15 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	if err := json.Unmarshal(workerResult.Data, &resultIdentity); err != nil || resultIdentity.TaskID != state.TaskID || resultIdentity.RunID != state.RunID || resultIdentity.AttemptID != attemptID || resultIdentity.Adapter.ID != selectedAdapterID {
 		protocolErr := errors.New("WorkerResult identity does not match the active attempt")
+		// A WorkerResult that claims a superseded attempt of this run carries
+		// a stale fencing generation: isolate it as diagnostic material before
+		// the fail-closed protocol rejection so it can never enter the
+		// evidence chain.
+		if err == nil && resultIdentity.TaskID == state.TaskID && resultIdentity.RunID == state.RunID && resultIdentity.AttemptID != attemptID && isSupersededAttempt(runDir, resultIdentity.AttemptID, attemptNumber) {
+			if quarantineErr := quarantineStaleWorkerResult(runDir, resultIdentity.AttemptID, workerResult.Data); quarantineErr != nil {
+				protocolErr = fmt.Errorf("%w: stale fencing quarantine failed: %v", protocolErr, quarantineErr)
+			}
+		}
 		failedState, persistErr := recordFailure(store, lease, next, attemptID, task, protocolErr)
 		if persistErr != nil {
 			return Result{}, errors.Join(protocolErr, persistErr)
@@ -279,6 +318,147 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		return Result{}, err
 	}
 	return Result{State: finalState, AttemptID: attemptID, WorkerResult: workerResult.Data}, nil
+}
+
+// defaultOrphanStalenessThreshold bounds how recent the current attempt's
+// last journal event must be for a RUNNING run to count as driver-live when
+// Input.OrphanStalenessThreshold is unset.
+const defaultOrphanStalenessThreshold = 15 * time.Minute
+
+// recoverOrphanedRunningAttempt implements the fencing-capable re-entry for
+// an orphaned RUNNING attempt: the current attempt shows no live driver
+// evidence (its last journal event is older than the staleness threshold),
+// so it is marked orphaned through a worker.failed event on the existing
+// RUNNING->RETRY_PENDING channel and admission continues for a fresh attempt
+// with an incremented fencing generation. Historical events are never
+// rewritten. A live or structurally ambiguous RUNNING run fails closed with
+// the state gate sentinel, and an exhausted attempt budget blocks recovery
+// without touching the journal.
+func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, threshold time.Duration) (domain.RunState, string, error) {
+	gateReject := func(reason string) (domain.RunState, string, error) {
+		return domain.RunState{}, "", fmt.Errorf("run state %s cannot start a worker attempt: %s", state.State, reason)
+	}
+	if state.CurrentAttemptID == "" {
+		return gateReject("no current attempt is bound to the RUNNING run")
+	}
+	events, _, err := store.ReadEvents(state.RunID)
+	if err != nil {
+		return domain.RunState{}, "", fmt.Errorf("orphan recovery: read run journal: %w", err)
+	}
+	last := events[len(events)-1]
+	if last.Type != "worker.started" || last.AttemptID != state.CurrentAttemptID || last.StateTo != domain.StateRunning || !actorIs(last.Actor, "system", "marshal-worker-runner") {
+		return gateReject("the RUNNING journal tail is not the current attempt's worker.started event")
+	}
+	if threshold <= 0 {
+		threshold = defaultOrphanStalenessThreshold
+	}
+	if time.Since(last.Timestamp.UTC()) < threshold {
+		return gateReject("the current attempt still shows live driver evidence")
+	}
+	if uint(state.AttemptsUsed) >= uint(task.Budgets.MaxAttempts) {
+		return domain.RunState{}, "", errors.New("attempt budget exhausted")
+	}
+	orphanAttemptID := state.CurrentAttemptID
+	quarantined, err := quarantineOrphanedOutputs(runDir, orphanAttemptID, last.Timestamp)
+	if err != nil {
+		return domain.RunState{}, "", fmt.Errorf("orphan recovery: quarantine stale outputs: %w", err)
+	}
+	payload := map[string]any{
+		"error":              fmt.Sprintf("orphaned attempt: no live driver evidence since %s", last.Timestamp.UTC().Format(time.RFC3339)),
+		"orphaned":           true,
+		"fencingGeneration":  state.AttemptsUsed,
+		"staleSince":         last.Timestamp.UTC().Format(time.RFC3339),
+		"quarantinedOutputs": quarantined,
+	}
+	event, next, err := transition(state, orphanAttemptID, "worker.failed", domain.StateRetryPending, time.Now().UTC(), payload, lifecycle.Guard{LeaseHeld: true, BudgetAvailable: true})
+	if err != nil {
+		return domain.RunState{}, "", fmt.Errorf("orphan recovery: %w", err)
+	}
+	if err := store.Append(lease, event, state.Sequence); err != nil {
+		return domain.RunState{}, "", err
+	}
+	if err := store.WriteSnapshot(lease, next); err != nil {
+		return domain.RunState{}, "", err
+	}
+	return next, orphanAttemptID, nil
+}
+
+// quarantineOrphanedOutputs isolates the stale outputs of an orphaned
+// attempt as diagnostic material: evidence-bearing files move under the
+// attempt's diagnostics directory (removing them from every evidence
+// collection glob) and a diagnostics record marks the attempt as orphaned.
+func quarantineOrphanedOutputs(runDir, orphanAttemptID string, staleSince time.Time) ([]string, error) {
+	attemptDir := filepath.Join(runDir, "attempts", orphanAttemptID)
+	diagnosticsDir := filepath.Join(attemptDir, "diagnostics")
+	quarantined := []string{}
+	for _, name := range []string{"worker-result.json", "worktree-snapshot.json"} {
+		source := filepath.Join(attemptDir, name)
+		if _, err := os.Stat(source); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
+			return nil, err
+		}
+		if err := os.Rename(source, filepath.Join(diagnosticsDir, "quarantined-"+name)); err != nil {
+			return nil, err
+		}
+		quarantined = append(quarantined, name)
+	}
+	record := map[string]any{
+		"reason":           "orphaned-attempt-stale-outputs",
+		"attemptId":        orphanAttemptID,
+		"staleSince":       staleSince.UTC().Format(time.RFC3339),
+		"isolatedAt":       time.Now().UTC().Format(time.RFC3339),
+		"quarantinedFiles": quarantined,
+		"note":             "stale fencing outputs are diagnostic material only; they never enter the evidence, review or publication chain",
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
+		return nil, err
+	}
+	if err := atomicWrite(filepath.Join(diagnosticsDir, "orphan-diagnostics.json"), append(data, '\n'), 0o600); err != nil {
+		return nil, err
+	}
+	return quarantined, nil
+}
+
+// quarantineStaleWorkerResult isolates one late WorkerResult carrying a
+// stale fencing generation under the claimed attempt's diagnostics
+// directory, so it can never satisfy the active attempt or enter the
+// evidence chain.
+func quarantineStaleWorkerResult(runDir, claimedAttemptID string, data []byte) error {
+	diagnosticsDir := filepath.Join(runDir, "attempts", claimedAttemptID, "diagnostics")
+	if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
+		return err
+	}
+	if err := atomicWrite(filepath.Join(diagnosticsDir, "quarantined-late-worker-result.json"), append(append([]byte{}, data...), '\n'), 0o600); err != nil {
+		return err
+	}
+	record := map[string]any{
+		"reason":     "stale-fencing-late-worker-result",
+		"attemptId":  claimedAttemptID,
+		"isolatedAt": time.Now().UTC().Format(time.RFC3339),
+		"note":       "late WorkerResult carries a stale fencing generation and is diagnostic material only; it never enters the evidence, review or publication chain",
+	}
+	recordData, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(diagnosticsDir, "orphan-diagnostics.json"), append(recordData, '\n'), 0o600)
+}
+
+// isSupersededAttempt reports whether claimedAttemptID belongs to an earlier
+// attempt of this run (a lower persisted attemptNumber), meaning any output
+// it claims carries a stale fencing generation.
+func isSupersededAttempt(runDir, claimedAttemptID string, activeNumber int) bool {
+	number, _ := attemptIdentity(filepath.Join(runDir, "attempts", claimedAttemptID))
+	return number > 0 && number < activeNumber
 }
 
 // loadReviewFindings is the admission guard for the rework recovery lineage:

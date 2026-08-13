@@ -1514,3 +1514,256 @@ func mutateRawJournalLine(t *testing.T, fixture executionFixture, typePrefix, in
 	}
 	t.Fatalf("journal has no event with type %q", typePrefix)
 }
+
+// appendWorkerStartedAt appends one worker.started event with an explicit
+// timestamp, letting the orphan recovery tests control the driver-liveness
+// signal that admission derives from the journal tail.
+func appendWorkerStartedAt(t *testing.T, fixture executionFixture, attemptID string, at time.Time) {
+	t.Helper()
+	state := inspectState(t, fixture)
+	eventID, err := domain.NewID("event")
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := domain.RunEvent{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: eventID, RunID: fixture.input.RunID,
+		AttemptID: attemptID, Sequence: state.Sequence + 1, Type: "worker.started", StateFrom: state.State, StateTo: domain.StateRunning,
+		Timestamp: at, Actor: workerRunnerActor(), Payload: map[string]any{"adapterId": "fixture"},
+	}
+	if _, err := lifecycle.Replay(state, event); err != nil {
+		t.Fatalf("append worker.started: replay: %v", err)
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendRawJournalBytes(t, fixture, string(data)+"\n")
+}
+
+// setupOrphanedRunningFixture starts one attempt whose worker.started event
+// carries a stale timestamp (the driver died) and materializes the attempt
+// directory the live runner would have created before the journal append.
+func setupOrphanedRunningFixture(t *testing.T, fixture executionFixture, attemptID string) {
+	t.Helper()
+	appendWorkerStartedAt(t, fixture, attemptID, time.Unix(100, 0).UTC())
+	attemptDir := filepath.Join(fixture.runDir, "attempts", attemptID)
+	if err := os.MkdirAll(filepath.Join(attemptDir, "control", "output"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	request := mustJSON(t, map[string]any{"attemptNumber": 1, "executionProfile": "workspace-write"})
+	if err := os.WriteFile(filepath.Join(attemptDir, "worker-request.json"), request, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOrphanedRunningAttemptRecoveryIsFencingCapable(t *testing.T) {
+	for name, threshold := range map[string]time.Duration{"explicit-short-threshold": time.Second, "default-threshold": 0} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newExecutionFixture(t, false)
+			fixture.input.OrphanStalenessThreshold = threshold
+			setupOrphanedRunningFixture(t, fixture, "attempt-orphan")
+			result, err := Run(context.Background(), fixture.input)
+			if err != nil {
+				t.Fatalf("orphan recovery rejected a stale RUNNING attempt: %v", err)
+			}
+			if result.State.State != domain.StateVerifying || result.State.AttemptsUsed != 2 {
+				t.Fatalf("state = %+v", result.State)
+			}
+			if result.AttemptID == "" || result.AttemptID == "attempt-orphan" {
+				t.Fatalf("recovery reused the orphaned attempt id: %q", result.AttemptID)
+			}
+			events, _, readErr := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			var orphanFailed, recoveredStarted *domain.RunEvent
+			for index := range events {
+				event := &events[index]
+				if event.Type == "worker.failed" && event.AttemptID == "attempt-orphan" {
+					orphanFailed = event
+				}
+				if event.Type == "worker.started" && event.AttemptID == result.AttemptID {
+					recoveredStarted = event
+				}
+			}
+			if orphanFailed == nil || orphanFailed.StateFrom != domain.StateRunning || orphanFailed.StateTo != domain.StateRetryPending {
+				t.Fatalf("orphan worker.failed event = %+v", orphanFailed)
+			}
+			if orphanFailed.Payload["orphaned"] != true || orphanFailed.Payload["fencingGeneration"] != float64(1) {
+				t.Fatalf("orphan worker.failed payload = %+v", orphanFailed.Payload)
+			}
+			if recoveredStarted == nil || recoveredStarted.StateFrom != domain.StateRetryPending {
+				t.Fatalf("recovered worker.started event = %+v", recoveredStarted)
+			}
+			if recoveredStarted.Payload["fencingGeneration"] != float64(2) || recoveredStarted.Payload["supersedesAttempt"] != "attempt-orphan" || recoveredStarted.Payload["orphanRecovery"] != true {
+				t.Fatalf("recovered worker.started payload = %+v", recoveredStarted.Payload)
+			}
+			_, requestData := attemptReviewFindings(t, fixture, result.AttemptID)
+			var request struct {
+				PreviousAttemptID string `json:"previousAttemptId"`
+			}
+			if err := json.Unmarshal(requestData, &request); err != nil || request.PreviousAttemptID != "attempt-orphan" {
+				t.Fatalf("worker request previousAttemptId = %q err = %v", request.PreviousAttemptID, err)
+			}
+		})
+	}
+}
+
+func TestOrphanedRecoveryQuarantinesStaleOutputsAndCompletesTheChain(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	fixture.input.OrphanStalenessThreshold = time.Second
+	setupOrphanedRunningFixture(t, fixture, "attempt-orphan-late")
+	orphanDir := filepath.Join(fixture.runDir, "attempts", "attempt-orphan-late")
+	lateResult := mustJSON(t, map[string]any{
+		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerResult",
+		"taskId": "TASK-1", "runId": fixture.input.RunID, "attemptId": "attempt-orphan-late",
+		"adapter":              map[string]any{"id": "fixture", "executable": "/fixture", "version": "1"},
+		"status":               "completed",
+		"summary":              "late orphaned output",
+		"declaredChangedFiles": []string{},
+		"declaredArtifacts":    []any{},
+		"declaredCommands":     []any{},
+		"declaredRisks":        []string{},
+		"startedAt":            "2026-08-04T00:00:00Z",
+		"completedAt":          "2026-08-04T00:00:01Z",
+	})
+	for name, data := range map[string][]byte{"worker-result.json": lateResult, "worktree-snapshot.json": []byte("{\"snapshot\":\"stale\"}\n")} {
+		if err := os.WriteFile(filepath.Join(orphanDir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := Run(context.Background(), fixture.input)
+	if err != nil {
+		t.Fatalf("orphan recovery with stale outputs rejected: %v", err)
+	}
+	if result.State.State != domain.StateVerifying {
+		t.Fatalf("state = %+v", result.State)
+	}
+	for _, name := range []string{"worker-result.json", "worktree-snapshot.json"} {
+		if _, statErr := os.Stat(filepath.Join(orphanDir, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("orphaned %s still reachable for evidence collection: %v", name, statErr)
+		}
+		if _, statErr := os.Stat(filepath.Join(orphanDir, "diagnostics", "quarantined-"+name)); statErr != nil {
+			t.Fatalf("quarantined %s missing from diagnostics: %v", name, statErr)
+		}
+	}
+	quarantined, err := os.ReadFile(filepath.Join(orphanDir, "diagnostics", "quarantined-worker-result.json"))
+	if err != nil || !strings.Contains(string(quarantined), "attempt-orphan-late") {
+		t.Fatalf("quarantined WorkerResult = %q err = %v", quarantined, err)
+	}
+	diagnosticsRaw, err := os.ReadFile(filepath.Join(orphanDir, "diagnostics", "orphan-diagnostics.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diagnostics struct {
+		Reason           string   `json:"reason"`
+		AttemptID        string   `json:"attemptId"`
+		QuarantinedFiles []string `json:"quarantinedFiles"`
+	}
+	if err := json.Unmarshal(diagnosticsRaw, &diagnostics); err != nil {
+		t.Fatal(err)
+	}
+	if diagnostics.Reason != "orphaned-attempt-stale-outputs" || diagnostics.AttemptID != "attempt-orphan-late" || len(diagnostics.QuarantinedFiles) != 2 {
+		t.Fatalf("orphan diagnostics = %+v", diagnostics)
+	}
+	// Evidence-collection view: the review packet glob can only ever see the
+	// recovered attempt's WorkerResult, never the quarantined orphan output.
+	matches, err := filepath.Glob(filepath.Join(fixture.runDir, "attempts", "*", "worker-result.json"))
+	if err != nil || len(matches) != 1 || !strings.Contains(matches[0], result.AttemptID) {
+		t.Fatalf("evidence glob after quarantine = %+v err = %v", matches, err)
+	}
+	// The recovered attempt completes the normal chain to REVIEW_PENDING.
+	appendRunEvent(t, fixture, "verification.completed", domain.StateReviewPending, verifierActor(), "", map[string]any{})
+	final := inspectState(t, fixture)
+	if final.State != domain.StateReviewPending || final.ReviewRound != 1 || final.CurrentAttemptID != result.AttemptID {
+		t.Fatalf("state after recovered chain = %+v", final)
+	}
+}
+
+func TestOrphanedRecoveryRejectsLiveRunningAttempt(t *testing.T) {
+	for name, setup := range map[string]func(t *testing.T) executionFixture{
+		"fresh-timestamp-short-threshold": func(t *testing.T) executionFixture {
+			fixture := newExecutionFixture(t, false)
+			fixture.input.OrphanStalenessThreshold = time.Second
+			appendWorkerStartedAt(t, fixture, "attempt-live", time.Now().UTC())
+			return fixture
+		},
+		"fresh-timestamp-default-threshold": func(t *testing.T) executionFixture {
+			fixture := newExecutionFixture(t, false)
+			appendWorkerStartedAt(t, fixture, "attempt-live", time.Now().UTC())
+			return fixture
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			requireFailsBeforeProbe(t, setup(t), "cannot start a worker attempt", "live driver evidence")
+		})
+	}
+}
+
+// TestOrphanedRecoveryBlocksWhenBudgetExhausted keeps the R1 intent —
+// attempt-budget exhaustion blocks orphan recovery — with fixture budgets
+// that satisfy the attempt-budget-overcommitted semantic rule: maxAttempts
+// must be at least 1 + maxOperationalRetries + maxReworkRounds. The default
+// fixture budgets (maxAttempts=2, maxOperationalRetries=1, maxReworkRounds=0)
+// meet exactly that minimum, and the journal drives a second attempt so
+// AttemptsUsed reaches maxAttempts before the orphan decision. R-11: the
+// recovery layer is reachable here (stale RUNNING tail established first),
+// so the budget sentinel is asserted at the recovery layer ahead of Probe.
+func TestOrphanedRecoveryBlocksWhenBudgetExhausted(t *testing.T) {
+	t.Run("attempt-budget-exhausted", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		fixture.input.OrphanStalenessThreshold = time.Second
+		appendRetrySegment(t, fixture, "attempt-exhausted-1")
+		appendWorkerStartedAt(t, fixture, "attempt-exhausted-2", time.Unix(200, 0).UTC())
+		state := inspectState(t, fixture)
+		if state.State != domain.StateRunning || state.AttemptsUsed != 2 {
+			t.Fatalf("fixture precondition = %+v", state)
+		}
+		requireFailsBeforeProbe(t, fixture, "attempt budget exhausted")
+	})
+}
+
+type staleFencingAdapter struct {
+	*fixtureAdapter
+	claimedAttemptID string
+}
+
+func (a *staleFencingAdapter) Run(ctx context.Context, request domain.Record) (domain.Record, error) {
+	result, err := a.fixtureAdapter.Run(ctx, request)
+	if err != nil {
+		return result, err
+	}
+	var data map[string]any
+	if err := json.Unmarshal(result.Data, &data); err != nil {
+		return result, err
+	}
+	data["attemptId"] = a.claimedAttemptID
+	rewritten, err := json.Marshal(data)
+	return domain.Record{Kind: domain.KindWorkerResult, Data: rewritten}, err
+}
+
+func TestOrphanedRecoveryIsolatesStaleFencingWorkerResult(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, false, reworkBudgetOptions(2))
+	appendRetrySegment(t, fixture, "attempt-superseded")
+	attemptDir := filepath.Join(fixture.runDir, "attempts", "attempt-superseded")
+	if err := os.MkdirAll(attemptDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	request := mustJSON(t, map[string]any{"attemptNumber": 1, "executionProfile": "workspace-write"})
+	if err := os.WriteFile(filepath.Join(attemptDir, "worker-request.json"), request, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := fixture.input
+	input.Adapter = &staleFencingAdapter{fixtureAdapter: input.Adapter.(*fixtureAdapter), claimedAttemptID: "attempt-superseded"}
+	result, err := Run(context.Background(), input)
+	if err == nil || result.State.State != domain.StateRetryPending {
+		t.Fatalf("stale fencing WorkerResult accepted: state=%+v err=%v", result.State, err)
+	}
+	quarantined, readErr := os.ReadFile(filepath.Join(attemptDir, "diagnostics", "quarantined-late-worker-result.json"))
+	if readErr != nil || !strings.Contains(string(quarantined), "attempt-superseded") {
+		t.Fatalf("stale WorkerResult quarantine = %q err = %v", quarantined, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.runDir, "attempts", result.AttemptID, "worker-result.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("stale WorkerResult leaked into the active attempt directory: %v", statErr)
+	}
+}
