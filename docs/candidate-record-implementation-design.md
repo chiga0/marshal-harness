@@ -1,7 +1,7 @@
 # ADR 0027 实现设计：Candidate 一等不可变记录与 Verification 归一化双记录链
 
 - 文档性质：**实现设计文档（冻结蓝图）**，以 [ADR 0027](adr/0027-candidate-record-and-verification-write-scope.md) 被接受为生效前提。
-- ADR 0027 状态：**Proposed**（维护者提案，PR #82）。截至本设计撰写，ADR 0027 尚未合入 main；本设计以 PR #82 的决策摘要为准（见 §0.1）。ADR 文本合入后如与本设计存在冲突，以 ADR 文本为准。
+- ADR 0027 状态：**已接受（Accepted，2026-08-13）**，随 PR #82 合入 main。本设计撰写时 ADR 0027 尚未合入，§0.1 的决策摘要来自 PR #82；ADR 文本已合入后，如与本设计存在冲突，一律以 ADR 文本为准。
 - 权威代码基线：`main` HEAD `f571547a4241e8902299f54fb67193b18c703335`。
 - 本设计只定义实现蓝图与任务拆分，**不新增任何超出 ADR 0027 / ADR 0018 / ADR 0019 的权威决策**；所有与既有不变量（append-only ledger、Core-only 写权威、fail-closed、内容寻址）冲突的解释以既有 ADR 为准。
 
