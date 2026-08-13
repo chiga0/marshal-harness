@@ -1044,6 +1044,110 @@ func TestPlanPreconditionsPassWithExplicitExecutableAdmission(t *testing.T) {
 	}
 }
 
+// TestPlanRecordsSandboxRequirementsInReadyEvent freezes the M8 recording:
+// the READY freeze event carries the two-dimensional sandbox requirements
+// derived from the legacy execution profile via
+// domain.SandboxRequirementsFromLegacy, on top of the issue-23 gate and
+// without changing any existing planning validation.
+func TestPlanRecordsSandboxRequirementsInReadyEvent(t *testing.T) {
+	assertRecordedRequirements := func(t *testing.T, stateRoot, runID, wantAccessMode, wantAssuranceLevel string) {
+		t.Helper()
+		events, truncated, err := runstore.New(stateRoot).ReadEvents(runID)
+		if err != nil || truncated || len(events) != 2 {
+			t.Fatalf("ReadEvents() events=%d truncated=%v err=%v", len(events), truncated, err)
+		}
+		if events[1].Type != "planning.inputs-frozen" {
+			t.Fatalf("second event = %q, want planning.inputs-frozen", events[1].Type)
+		}
+		recorded, ok := events[1].Payload["sandboxRequirements"].(map[string]any)
+		if !ok {
+			t.Fatalf("planning.inputs-frozen payload does not record sandboxRequirements: %#v", events[1].Payload)
+		}
+		if recorded["accessMode"] != wantAccessMode || recorded["minimumAssuranceLevel"] != wantAssuranceLevel {
+			t.Fatalf("sandboxRequirements = %#v, want accessMode=%s minimumAssuranceLevel=%s", recorded, wantAccessMode, wantAssuranceLevel)
+		}
+	}
+
+	t.Run("workspace-write", func(t *testing.T) {
+		repositoryRoot, baseSHA := planningGitFixture(t)
+		const (
+			taskID    = "task-plan-sandbox-ws"
+			runID     = "run-plan-sandbox-ws"
+			adapterID = "adapter-plan"
+			remoteURL = "https://example.invalid/sandbox-ws.git"
+		)
+		planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+		worker := &planningTestWorker{
+			id:         adapterID,
+			capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: planningCapabilityFixture(t, adapterID)},
+		}
+		stateRoot := filepath.Join(repositoryRoot, ".marshal")
+		result, err := Plan(context.Background(), Input{
+			StateRoot:      stateRoot,
+			RepositoryRoot: repositoryRoot,
+			RunID:          runID,
+			TaskSpec:       planningTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA),
+			PolicySnapshot: planningPolicyFixture(t, taskID, runID, adapterID),
+			Selector:       planningSelector(t, worker),
+			Validator:      newValidator(t),
+		})
+		if err != nil {
+			t.Fatalf("Plan(): %v", err)
+		}
+		if result.State.State != domain.StateReady {
+			t.Fatalf("state = %s, want READY", result.State.State)
+		}
+		assertRecordedRequirements(t, stateRoot, runID, "workspace-write", "workspace-write")
+	})
+
+	t.Run("read-only", func(t *testing.T) {
+		repositoryRoot, baseSHA := planningGitFixture(t)
+		const (
+			taskID    = "task-plan-sandbox-ro"
+			runID     = "run-plan-sandbox-ro"
+			adapterID = "adapter-plan"
+			remoteURL = "https://example.invalid/sandbox-ro.git"
+		)
+		planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+		capabilityData := planningCapabilityFixture(t, adapterID)
+		var capability map[string]any
+		if err := json.Unmarshal(capabilityData, &capability); err != nil {
+			t.Fatal(err)
+		}
+		capability["capabilities"].(map[string]any)["executionProfiles"] = []any{"workspace-write", "read-only"}
+		worker := &planningTestWorker{
+			id:         adapterID,
+			capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: mustMarshal(t, capability)},
+		}
+		taskData := planningMutatedTaskFixture(t, repositoryRoot, taskID, adapterID, remoteURL, baseSHA, func(task map[string]any) {
+			task["worker"].(map[string]any)["executionProfile"] = "read-only"
+		})
+		policyData := planningPolicyFixture(t, taskID, runID, adapterID)
+		var policy map[string]any
+		if err := json.Unmarshal(policyData, &policy); err != nil {
+			t.Fatal(err)
+		}
+		policy["effective"].(map[string]any)["minimumExecutionProfile"] = "read-only"
+		stateRoot := filepath.Join(repositoryRoot, ".marshal")
+		result, err := Plan(context.Background(), Input{
+			StateRoot:      stateRoot,
+			RepositoryRoot: repositoryRoot,
+			RunID:          runID,
+			TaskSpec:       taskData,
+			PolicySnapshot: sealPolicyDocument(t, policy),
+			Selector:       planningSelector(t, worker),
+			Validator:      newValidator(t),
+		})
+		if err != nil {
+			t.Fatalf("Plan(): %v", err)
+		}
+		if result.State.State != domain.StateReady {
+			t.Fatalf("state = %s, want READY", result.State.State)
+		}
+		assertRecordedRequirements(t, stateRoot, runID, "read-only", "workspace-write")
+	})
+}
+
 func TestPlanPreconditionTimeoutFailsClosedBeforeSideEffects(t *testing.T) {
 	requireShellAndSleep(t)
 	repositoryRoot, baseSHA := planningGitFixture(t)

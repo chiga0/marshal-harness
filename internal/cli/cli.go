@@ -1352,7 +1352,22 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return ExitFailure
 		}
 	}
-	result, err := execution.Run(ctx, execution.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Adapter: worker, Validator: runtime.Validator()})
+	// Embedded sandbox runtime (M8 vertical slice): strictly opt-in via
+	// MARSHAL_EMBEDDED_SANDBOX=1. The default (unset or any other value)
+	// keeps the Local MVP behavior of `task run` completely unchanged and no
+	// other subcommand is affected. Push/Pull transport, heartbeat, the
+	// dispatcher and the durable lease ledger are M9 scope and intentionally
+	// not wired here.
+	var dispatchBinder execution.DispatchBinder
+	if app.EmbeddedSandboxEnabled(os.Getenv) {
+		embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now)
+		if embeddedErr != nil {
+			fmt.Fprintln(stderr, "运行失败：embedded sandbox runtime 初始化失败。")
+			return ExitFailure
+		}
+		dispatchBinder = embeddedRuntime
+	}
+	result, err := execution.Run(ctx, execution.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Adapter: worker, Validator: runtime.Validator(), DispatchBinder: dispatchBinder})
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败（Attempt %s，状态 %s）：%v\n", result.AttemptID, result.State.State, err)
 		return ExitFailure

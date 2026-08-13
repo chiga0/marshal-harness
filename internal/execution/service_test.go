@@ -3,6 +3,7 @@ package execution
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,9 +15,11 @@ import (
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
+	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/chiga0/marshal-harness/internal/provider"
 	marshalrepo "github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
@@ -1932,4 +1935,156 @@ func TestRunRejectsResultWhenEdgeExpiredOrLeaseInactive(t *testing.T) {
 			t.Fatal("a gate without a bound runtime was accepted")
 		}
 	})
+}
+
+// dispatchBinderFunc adapts a plain function to the DispatchBinder seam so
+// fixtures can inject deterministic bindings, including stale ones.
+type dispatchBinderFunc func(ctx context.Context, taskID, runID, attemptID string, requirements domain.SandboxRequirements) (*DispatchBinding, error)
+
+func (f dispatchBinderFunc) BindDispatch(ctx context.Context, taskID, runID, attemptID string, requirements domain.SandboxRequirements) (*DispatchBinding, error) {
+	return f(ctx, taskID, runID, attemptID, requirements)
+}
+
+// sealedDispatchLease builds a canonically sealed lease binding the given
+// attempt identity, so dispatch.ValidateLeaseFencing adjudicates exactly the
+// presented generation and fencingToken.
+func sealedDispatchLease(t *testing.T, taskID, runID, attemptID string) dispatch.DispatchLease {
+	t.Helper()
+	lease := dispatch.DispatchLease{
+		LeaseId:                          "lease-" + attemptID,
+		AuthorityNamespaceId:             authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: "execution-test"},
+		SecurityDomainId:                 authority.SecurityDomainId{TenantNamespace: "local", TrustDomainKind: authority.TrustDomainKindExecution, IsolationDomainId: "host-process"},
+		RegistrationId:                   "local-sandbox-provider",
+		ProviderCapabilitySnapshotDigest: "sha256:" + strings.Repeat("a", 64),
+		ConformanceEvidenceDigests:       []string{},
+		Attestation:                      provider.Attestation{ProviderInstanceId: "local-instance", ConfigDigest: "sha256:" + strings.Repeat("b", 64), TrustRootKeyId: "local-key", TrustRootAlgorithm: "ed25519"},
+		TaskId:                           taskID,
+		RunId:                            runID,
+		AttemptId:                        attemptID,
+		AllocationId:                     "allocation-" + attemptID,
+		Generation:                       1,
+		FencingToken:                     "sha256:" + strings.Repeat("c", 64),
+		AckDeadlineAt:                    "2026-08-13T12:30:00Z",
+		ExpiresAt:                        "2026-08-14T12:00:00Z",
+		LeaseState:                       dispatch.LeaseStateClaimed,
+		CreatedAt:                        "2026-08-13T12:00:00Z",
+	}
+	digest, err := lease.Digest()
+	if err != nil {
+		t.Fatalf("seal dispatch lease: %v", err)
+	}
+	lease.LeaseDigest = digest
+	return lease
+}
+
+func assertDispatchAdmissionQuarantined(t *testing.T, fixture executionFixture) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(fixture.runDir, "diagnostics", "quarantined-stale-dispatch-admission.json"))
+	if err != nil {
+		t.Fatalf("the rejected dispatch presentation was not quarantined: %v", err)
+	}
+	for _, fragment := range []string{"stale-dispatch-admission", "diagnostic material only"} {
+		if !strings.Contains(string(data), fragment) {
+			t.Fatalf("quarantine record missing %q: %s", fragment, data)
+		}
+	}
+	if state := inspectState(t, fixture); state.State != domain.StateReady {
+		t.Fatalf("run state advanced despite the fenced dispatch admission: %s", state.State)
+	}
+}
+
+// TestRunDispatchAdmissionAcceptsFreshBinding proves the dispatch-bound
+// happy path: a fresh, correctly sealed lease binding passes the fencing
+// guard and the attempt verifies exactly like the Local MVP path.
+func TestRunDispatchAdmissionAcceptsFreshBinding(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	fixture.input.DispatchBinder = dispatchBinderFunc(func(ctx context.Context, taskID, runID, attemptID string, requirements domain.SandboxRequirements) (*DispatchBinding, error) {
+		if taskID != "TASK-1" || runID != fixture.input.RunID {
+			t.Fatalf("binder identity = %s/%s, want TASK-1/%s", taskID, runID, fixture.input.RunID)
+		}
+		if requirements.AccessMode != domain.AccessModeWorkspaceWrite || requirements.MinimumAssuranceLevel != domain.AssuranceLevelWorkspaceWrite {
+			t.Fatalf("binder requirements = %+v, want the frozen workspace-write mapping", requirements)
+		}
+		lease := sealedDispatchLease(t, taskID, runID, attemptID)
+		return &DispatchBinding{Lease: lease, Generation: lease.Generation, FencingToken: lease.FencingToken}, nil
+	})
+	result, err := Run(context.Background(), fixture.input)
+	if err != nil {
+		t.Fatalf("dispatch-bound attempt rejected: %v", err)
+	}
+	if result.State.State != domain.StateVerifying {
+		t.Fatalf("state = %+v", result.State)
+	}
+}
+
+// TestRunDispatchAdmissionRejectsStalePresentationsBeforeProbe freezes
+// negative fixture 3: a stale or misbound dispatch presentation is rejected
+// before Probe and isolated as diagnostic material, never entering the
+// evidence, review or publication chain.
+func TestRunDispatchAdmissionRejectsStalePresentationsBeforeProbe(t *testing.T) {
+	newStaleFixture := func(t *testing.T, mutate func(*DispatchBinding)) executionFixture {
+		t.Helper()
+		fixture := newExecutionFixture(t, false)
+		fixture.input.DispatchBinder = dispatchBinderFunc(func(ctx context.Context, taskID, runID, attemptID string, requirements domain.SandboxRequirements) (*DispatchBinding, error) {
+			lease := sealedDispatchLease(t, taskID, runID, attemptID)
+			binding := &DispatchBinding{Lease: lease, Generation: lease.Generation, FencingToken: lease.FencingToken}
+			mutate(binding)
+			return binding, nil
+		})
+		return fixture
+	}
+	t.Run("stale generation", func(t *testing.T) {
+		fixture := newStaleFixture(t, func(binding *DispatchBinding) { binding.Generation = 0 })
+		requireFailsBeforeProbe(t, fixture, "fencing guard rejected stale generation")
+		assertDispatchAdmissionQuarantined(t, fixture)
+	})
+	t.Run("future generation", func(t *testing.T) {
+		fixture := newStaleFixture(t, func(binding *DispatchBinding) { binding.Generation = 2 })
+		requireFailsBeforeProbe(t, fixture, "fencing guard rejected stale generation")
+		assertDispatchAdmissionQuarantined(t, fixture)
+	})
+	t.Run("mismatched fencing token", func(t *testing.T) {
+		fixture := newStaleFixture(t, func(binding *DispatchBinding) { binding.FencingToken = "sha256:" + strings.Repeat("d", 64) })
+		requireFailsBeforeProbe(t, fixture, "does not match the lease generation")
+		assertDispatchAdmissionQuarantined(t, fixture)
+	})
+	t.Run("misbound attempt identity", func(t *testing.T) {
+		fixture := newStaleFixture(t, func(binding *DispatchBinding) { binding.Lease.AttemptId = "attempt-other" })
+		requireFailsBeforeProbe(t, fixture, "does not bind the active task, run and attempt")
+		assertDispatchAdmissionQuarantined(t, fixture)
+	})
+	t.Run("terminal lease", func(t *testing.T) {
+		fixture := newStaleFixture(t, func(binding *DispatchBinding) { binding.Lease.LeaseState = dispatch.LeaseStateCancelled })
+		requireFailsBeforeProbe(t, fixture, "only claimed or active leases")
+		assertDispatchAdmissionQuarantined(t, fixture)
+	})
+	t.Run("nil binding", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		fixture.input.DispatchBinder = dispatchBinderFunc(func(ctx context.Context, taskID, runID, attemptID string, requirements domain.SandboxRequirements) (*DispatchBinding, error) {
+			return nil, nil
+		})
+		requireFailsBeforeProbe(t, fixture, "returned no binding")
+	})
+	t.Run("binder failure", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		fixture.input.DispatchBinder = dispatchBinderFunc(func(ctx context.Context, taskID, runID, attemptID string, requirements domain.SandboxRequirements) (*DispatchBinding, error) {
+			return nil, errors.New("claim refused: hardened requirements fail closed without downgrade")
+		})
+		requireFailsBeforeProbe(t, fixture, "dispatch admission")
+	})
+}
+
+// TestRunLocalMVPPathUnchangedWithoutDispatchBinder freezes negative fixture
+// 9 at the execution layer: without a dispatch binder the Local MVP
+// admission path runs exactly as before the M8 vertical slice, with no
+// dispatch diagnostics side effect.
+func TestRunLocalMVPPathUnchangedWithoutDispatchBinder(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	result, err := Run(context.Background(), fixture.input)
+	if err != nil || result.State.State != domain.StateVerifying {
+		t.Fatalf("state = %+v err = %v", result.State, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.runDir, "diagnostics")); !os.IsNotExist(statErr) {
+		t.Fatalf("the Local MVP path produced dispatch diagnostics: %v", statErr)
+	}
 }

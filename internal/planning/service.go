@@ -299,6 +299,16 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 	}
 
 	// 15. PLANNED -> READY with the resolved baseline and frozen inputs.
+	// M8 embedded vertical slice: record the frozen two-dimensional sandbox
+	// requirements derived from the legacy execution profile into the READY
+	// freeze event, on top of the issue-23 admission gate. The mapping is the
+	// single compatibility direction of domain.SandboxRequirementsFromLegacy
+	// and fails closed on an unknown profile; the existing planning
+	// validations are unchanged.
+	sandboxRequirements, err := domain.SandboxRequirementsFromLegacy(task.Worker.ExecutionProfile)
+	if err != nil {
+		return Result{}, fmt.Errorf("planning: %w", err)
+	}
 	readyPayload := map[string]any{
 		"adapterId":         selection.Adapter.ID(),
 		"baseSha":           baseSHA,
@@ -309,6 +319,10 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 		"branch":            worktree.Branch,
 		"fallbackAllowed":   effective.AllowFallbackWorkers,
 		"selectionAttempts": selectionAttemptPayload(selection.Attempts),
+		"sandboxRequirements": map[string]any{
+			"accessMode":            string(sandboxRequirements.AccessMode),
+			"minimumAssuranceLevel": string(sandboxRequirements.MinimumAssuranceLevel),
+		},
 	}
 	readyEvent, readyState, err := transition(plannedState, "planning.inputs-frozen", domain.StateReady, now, readyPayload, lifecycle.Guard{
 		LeaseHeld:     true,

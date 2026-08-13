@@ -23,6 +23,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
+	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
@@ -47,6 +48,36 @@ type Input struct {
 	// crosses no provider trust domain; remote dispatch topologies bind the
 	// gate.
 	ResultEdgeRecheck *ResultEdgeRecheck
+	// DispatchBinder binds the dispatch identity of a dispatched attempt
+	// before Probe (M8 embedded vertical slice). When non-nil, execution
+	// derives the frozen two-dimensional sandbox requirements from the
+	// TaskSpec execution profile, asks the binder for the attempt's
+	// dispatch binding and adjudicates the lease fencing guard fail closed
+	// before Probe. A nil binder keeps the Local MVP admission path
+	// completely unchanged. Push/Pull transport, heartbeat, the dispatcher
+	// and the durable lease ledger are M9 scope and intentionally not
+	// wired here.
+	DispatchBinder DispatchBinder
+}
+
+// DispatchBinder binds the dispatch identity of one attempt admission (ADR
+// 0018 §6/§7). The implementation claims — or re-adjudicates — the dispatch
+// lease for the exact attempt and returns the binding admission validates;
+// any failure fails the attempt admission closed before Probe.
+type DispatchBinder interface {
+	BindDispatch(ctx context.Context, taskID, runID, attemptID string, requirements domain.SandboxRequirements) (*DispatchBinding, error)
+}
+
+// DispatchBinding carries the lease identity one dispatched attempt presents
+// at admission: the lease issued for this attempt plus the exact generation
+// and fencingToken presented at claim time. Admission re-adjudicates both
+// against the lease's current values through dispatch.ValidateLeaseFencing;
+// a stale or misbound presentation is isolated as diagnostic material and
+// never enters the evidence, review or publication chain.
+type DispatchBinding struct {
+	Lease        dispatch.DispatchLease
+	Generation   int64
+	FencingToken string
 }
 
 // ResultEdgeRecheck carries the frozen claim-time identity one result
@@ -215,6 +246,32 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if err := assertProfileNotEscalated(runDir, task.Worker.ExecutionProfile); err != nil {
 		return Result{}, err
 	}
+	attemptID, err := domain.NewID("attempt")
+	if err != nil {
+		return Result{}, err
+	}
+	// Dispatch-bound admission (M8 embedded vertical slice): when the attempt
+	// carries a dispatch identity, the lease fencing guard adjudicates it
+	// before Probe. The binder receives the frozen two-dimensional sandbox
+	// requirements derived from the TaskSpec execution profile and binds the
+	// lease of this exact attempt; admission then fails closed on any
+	// misbound, terminal or stale presentation and isolates it as diagnostic
+	// material, so late results carried on a stale lease never enter the
+	// evidence, review or publication chain. Runs without a dispatch binder
+	// keep the Local MVP admission path completely unchanged.
+	if input.DispatchBinder != nil {
+		requirements, requirementsErr := domain.SandboxRequirementsFromLegacy(task.Worker.ExecutionProfile)
+		if requirementsErr != nil {
+			return Result{}, fmt.Errorf("execution: dispatch admission: %w", requirementsErr)
+		}
+		binding, bindErr := input.DispatchBinder.BindDispatch(ctx, state.TaskID, state.RunID, attemptID, requirements)
+		if bindErr != nil {
+			return Result{}, fmt.Errorf("execution: dispatch admission: %w", bindErr)
+		}
+		if admitErr := admitDispatchBinding(runDir, state, attemptID, binding); admitErr != nil {
+			return Result{}, admitErr
+		}
+	}
 	currentCapability, err := input.Adapter.Probe(ctx)
 	if err != nil {
 		return Result{}, err
@@ -235,10 +292,6 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	defer worktreeLease.Release()
 
-	attemptID, err := domain.NewID("attempt")
-	if err != nil {
-		return Result{}, err
-	}
 	attemptDir := filepath.Join(runDir, "attempts", attemptID)
 	controlRoot := filepath.Join(attemptDir, "control")
 	attemptNumber := int(state.AttemptsUsed) + 1
@@ -523,6 +576,63 @@ func quarantineRejectedWorkerResult(runDir, attemptID string, data []byte, cause
 		return err
 	}
 	return atomicWrite(filepath.Join(diagnosticsDir, "orphan-diagnostics.json"), append(recordData, '\n'), 0o600)
+}
+
+// admitDispatchBinding adjudicates one dispatch binding before Probe fail
+// closed: the lease must bind exactly the active task, run and attempt, it
+// must still be in flight, and the presented generation and fencingToken
+// must equal the lease's current values (dispatch.ValidateLeaseFencing).
+// Any rejection isolates the stale or misbound presentation as diagnostic
+// material, so late results carried on a stale lease never enter the
+// evidence, review or publication chain.
+func admitDispatchBinding(runDir string, state domain.RunState, attemptID string, binding *DispatchBinding) error {
+	if binding == nil {
+		return errors.New("execution: dispatch admission rejected: the dispatch binder returned no binding")
+	}
+	reject := func(cause error) error {
+		if quarantineErr := quarantineStaleDispatchAdmission(runDir, state, attemptID, binding, cause); quarantineErr != nil {
+			return fmt.Errorf("execution: dispatch admission rejected: %w; quarantine failed: %v", cause, quarantineErr)
+		}
+		return fmt.Errorf("execution: dispatch admission rejected: %w", cause)
+	}
+	if binding.Lease.TaskId != state.TaskID || binding.Lease.RunId != state.RunID || binding.Lease.AttemptId != attemptID {
+		return reject(errors.New("the lease identity does not bind the active task, run and attempt"))
+	}
+	if binding.Lease.LeaseState != dispatch.LeaseStateClaimed && binding.Lease.LeaseState != dispatch.LeaseStateActive {
+		return reject(fmt.Errorf("the lease carries leaseState %q; only claimed or active leases can authorize an attempt", string(binding.Lease.LeaseState)))
+	}
+	if err := dispatch.ValidateLeaseFencing(binding.Lease, binding.Generation, binding.FencingToken); err != nil {
+		return reject(err)
+	}
+	return nil
+}
+
+// quarantineStaleDispatchAdmission isolates one rejected dispatch
+// presentation under the run's diagnostics directory. The quarantined record
+// is diagnostic material only; it never enters the evidence, review or
+// publication chain.
+func quarantineStaleDispatchAdmission(runDir string, state domain.RunState, attemptID string, binding *DispatchBinding, cause error) error {
+	diagnosticsDir := filepath.Join(runDir, "diagnostics")
+	if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
+		return err
+	}
+	record := map[string]any{
+		"reason":              "stale-dispatch-admission",
+		"taskId":              state.TaskID,
+		"runId":               state.RunID,
+		"attemptId":           attemptID,
+		"leaseId":             binding.Lease.LeaseId,
+		"presentedGeneration": binding.Generation,
+		"leaseGeneration":     binding.Lease.Generation,
+		"error":               cause.Error(),
+		"isolatedAt":          time.Now().UTC().Format(time.RFC3339),
+		"note":                "stale or misbound dispatch presentations are diagnostic material only; they never enter the evidence, review or publication chain",
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(diagnosticsDir, "quarantined-stale-dispatch-admission.json"), append(data, '\n'), 0o600)
 }
 
 // quarantineStaleWorkerResult isolates one late WorkerResult carrying a
