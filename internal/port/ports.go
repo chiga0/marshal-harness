@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
 
 // ErrPRNotMerged is the sentinel merge observers return when the published
@@ -82,3 +83,14 @@ type RemoteCheckObserver interface {
 type MergeReceiptObserver interface {
 	ObserveMergeReceipt(context.Context, domain.Record) (domain.Record, error)
 }
+
+// SandboxProvider is Marshal Core's dispatch-bound sandbox execution port
+// (ADR 0016 §4 / ADR 0017): every SPI request must carry a dispatch-bound
+// operation identity binding task/run/attempt/allocation to the lease
+// generation and fencing token, and the provider must fail closed on an
+// invalid, unknown or stale identity before any side effect. Every receipt a
+// provider returns is an observation, never authority — fencing,
+// single-active and conformance adjudication never trust a receipt alone.
+// The embedded runtime binds the Local provider; remote providers bind
+// through the identical dispatch-bound SPI.
+type SandboxProvider = sandbox.SandboxProvider
