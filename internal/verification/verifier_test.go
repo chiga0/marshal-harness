@@ -45,6 +45,85 @@ func TestVerifierEndToEndPassesWithUntrackedDeliverable(t *testing.T) {
 	}
 }
 
+func TestVerifyNormalizesGoFilesBeforeCommandGates(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	writeFixtureGoFile(t, fixture.worktree.Path, "pkg/code.go", unformattedGoSource)
+	input := fixture.input()
+	input.Scope = ScopePolicy{AllowPaths: []string{"pkg/**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}
+	input.Deliverables = []Deliverable{{ID: "source", Kind: "code", Required: true, PathGlob: "pkg/*.go", MinimumCount: 1}}
+	input.Commands = []CommandSpec{{ID: "format-check", Argv: []string{"sh", "-c", "test -z \"$(gofmt -l pkg/code.go)\""}, CWD: ".", Timeout: 10 * time.Second, Required: true, MaxLogBytes: 4096}}
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Report.Status != "pass" {
+		t.Fatalf("normalized report = %+v", result.Report)
+	}
+	scopeIndex, formatIndex, commandIndex := -1, -1, -1
+	var formatGate *Gate
+	for index := range result.Report.Gates {
+		switch result.Report.Gates[index].ID {
+		case "scope:changed-paths":
+			scopeIndex = index
+		case "format:normalize":
+			formatIndex = index
+			formatGate = &result.Report.Gates[index]
+		case "command:format-check":
+			commandIndex = index
+		}
+	}
+	if formatGate == nil || formatGate.Status != "pass" || formatGate.Required || formatGate.Category != "other" {
+		t.Fatalf("format gate = %+v", formatGate)
+	}
+	if len(formatGate.Evidence) != 1 || formatGate.Evidence[0] != "normalized:pkg/code.go" {
+		t.Fatalf("format gate evidence = %+v", formatGate.Evidence)
+	}
+	if scopeIndex < 0 || commandIndex < 0 || scopeIndex >= formatIndex || formatIndex >= commandIndex {
+		t.Fatalf("gate order scope=%d format=%d command=%d", scopeIndex, formatIndex, commandIndex)
+	}
+	data, err := os.ReadFile(filepath.Join(fixture.worktree.Path, "pkg", "code.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != formattedGoSource {
+		t.Fatalf("worktree bytes after verification = %q", data)
+	}
+	var patchArtifact *Artifact
+	for index := range result.Manifest.Artifacts {
+		if result.Manifest.Artifacts[index].ID == "evidence:observed-patch" {
+			patchArtifact = &result.Manifest.Artifacts[index]
+		}
+	}
+	if patchArtifact == nil || patchArtifact.Digest != canonical.DigestBytes(result.Report.Observed.Patch) {
+		t.Fatalf("observed patch artifact = %+v", patchArtifact)
+	}
+	persisted, err := os.ReadFile(filepath.Join(input.RunDirectory, "observed.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(persisted) != string(result.Report.Observed.Patch) {
+		t.Fatal("persisted observed patch diverges from the post-normalization report")
+	}
+}
+
+func TestVerifyFailsClosedWhenNormalizationFails(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	writeFixtureGoFile(t, fixture.worktree.Path, "pkg/broken.go", "package pkg\n\nfunc { oops\n")
+	input := fixture.input()
+	input.Scope = ScopePolicy{AllowPaths: []string{"pkg/**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}
+	input.Commands = []CommandSpec{{ID: "unreached", Argv: []string{"sh", "-c", "true"}, CWD: ".", Timeout: 5 * time.Second, Required: true, MaxLogBytes: 4096}}
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Report.Status != "fail" || gateStatus(result.Report.Gates, "format:normalize") != "fail" {
+		t.Fatalf("fail-closed report = %+v", result.Report)
+	}
+	if gateStatus(result.Report.Gates, "command:unreached") != "missing" {
+		t.Fatalf("command gate ran after normalization failure: %+v", result.Report.Gates)
+	}
+}
+
 func TestRenameRequiresBothPathsInScope(t *testing.T) {
 	fixture := newVerificationFixture(t)
 	if err := os.MkdirAll(filepath.Join(fixture.worktree.Path, "docs"), 0o700); err != nil {
