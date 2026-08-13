@@ -80,6 +80,21 @@ func validateTask(data []byte) ([]Violation, error) {
 		Publication struct {
 			Required bool `json:"required"`
 		} `json:"publication"`
+		Admission *struct {
+			Status string `json:"status"`
+		} `json:"admission"`
+		DependsOn []struct {
+			Kind          string `json:"kind"`
+			RunID         string `json:"runId"`
+			TaskID        string `json:"taskId"`
+			RequiredState string `json:"requiredState"`
+		} `json:"dependsOn"`
+		Preconditions []struct {
+			ID             string   `json:"id"`
+			Argv           []string `json:"argv"`
+			CWD            string   `json:"cwd"`
+			TimeoutSeconds int64    `json:"timeoutSeconds"`
+		} `json:"preconditions"`
 	}
 	if err := json.Unmarshal(data, &task); err != nil {
 		return nil, err
@@ -136,6 +151,57 @@ func validateTask(data []byte) ([]Violation, error) {
 	if task.Publication.Required != hasRequiredPublication {
 		violations = append(violations, violation("/publication/required", "publication-deliverable-mismatch", "publication.required must match a required publication deliverable"))
 	}
+
+	// admission.status is a closed vocabulary; the TaskSpec Schema enforces
+	// it, and the semantic layer repeats the check so direct validateTask
+	// callers receive readable violations.
+	if task.Admission != nil && task.Admission.Status != domain.AdmissionStatusPrepared && task.Admission.Status != domain.AdmissionStatusExecutable {
+		violations = append(violations, violation("/admission/status", "unknown-admission-status", fmt.Sprintf("admission.status %q is outside the closed vocabulary prepared/executable", task.Admission.Status)))
+	}
+
+	// dependsOn: closed kind vocabulary, per-kind reference presence, closed
+	// terminal requiredState vocabulary and (kind, reference) de-duplication.
+	dependencyKeys := make([]string, 0, len(task.DependsOn))
+	for index, dependency := range task.DependsOn {
+		reference := dependency.RunID
+		switch dependency.Kind {
+		case domain.DependencyKindRun:
+			if dependency.RunID == "" {
+				violations = append(violations, violation(fmt.Sprintf("/dependsOn/%d/runId", index), "missing-dependency-reference", "run-scoped dependsOn entries require runId"))
+			}
+		case domain.DependencyKindTask:
+			reference = dependency.TaskID
+			if dependency.TaskID == "" {
+				violations = append(violations, violation(fmt.Sprintf("/dependsOn/%d/taskId", index), "missing-dependency-reference", "task-scoped dependsOn entries require taskId"))
+			}
+		default:
+			violations = append(violations, violation(fmt.Sprintf("/dependsOn/%d/kind", index), "unknown-dependency-kind", fmt.Sprintf("dependsOn kind %q is outside the closed vocabulary run/task", dependency.Kind)))
+		}
+		if requiredState, err := domain.ParseState(dependency.RequiredState); err != nil {
+			violations = append(violations, violation(fmt.Sprintf("/dependsOn/%d/requiredState", index), "unknown-dependency-state", fmt.Sprintf("dependsOn requiredState %q is not a lifecycle state", dependency.RequiredState)))
+		} else if !requiredState.Terminal() {
+			violations = append(violations, violation(fmt.Sprintf("/dependsOn/%d/requiredState", index), "non-terminal-dependency-state", fmt.Sprintf("dependsOn requiredState %q is not one of the five terminal states", dependency.RequiredState)))
+		}
+		dependencyKeys = append(dependencyKeys, dependency.Kind+"/"+reference)
+	}
+	violations = append(violations, duplicateStringViolations("/dependsOn", dependencyKeys)...)
+
+	// preconditions: id de-duplication, non-empty argv, clean relative cwd
+	// and a positive timeout when declared; required is always true by shape.
+	preconditionIDs := make([]string, 0, len(task.Preconditions))
+	for index, precondition := range task.Preconditions {
+		preconditionIDs = append(preconditionIDs, precondition.ID)
+		if len(precondition.Argv) == 0 {
+			violations = append(violations, violation(fmt.Sprintf("/preconditions/%d/argv", index), "empty-argv", "precondition argv must not be empty"))
+		}
+		if precondition.CWD != "" && !validRelativePath(precondition.CWD, true) {
+			violations = append(violations, violation(fmt.Sprintf("/preconditions/%d/cwd", index), "invalid-relative-path", "precondition cwd must be a clean repository-relative path"))
+		}
+		if precondition.TimeoutSeconds < 0 {
+			violations = append(violations, violation(fmt.Sprintf("/preconditions/%d/timeoutSeconds", index), "invalid-timeout", "precondition timeoutSeconds must be positive when declared"))
+		}
+	}
+	violations = append(violations, duplicateStringViolations("/preconditions", preconditionIDs)...)
 	return violations, nil
 }
 

@@ -1,19 +1,41 @@
 package domain
 
+import "encoding/json"
+
+// Closed admission.status vocabulary and dependsOn kind vocabulary declared
+// by the TaskSpec Schema (issue #23). The zero values carry the backward-
+// compatible semantics: an absent admission declaration is executable and an
+// empty dependsOn or preconditions list imposes no restriction.
+const (
+	// AdmissionStatusPrepared marks a TaskSpec that is declared but not yet
+	// executable: planning rejects it fail-closed with a fixed sentinel.
+	AdmissionStatusPrepared = "prepared"
+	// AdmissionStatusExecutable marks a TaskSpec that planning may execute.
+	AdmissionStatusExecutable = "executable"
+
+	// DependencyKindRun binds a dependsOn entry to one named Run.
+	DependencyKindRun = "run"
+	// DependencyKindTask binds a dependsOn entry to the latest Run of a Task.
+	DependencyKindTask = "task"
+)
+
 // TaskSpec is the immutable, authoritative description of one Marshal Task:
 // what to do, under which scope, budgets and acceptance criteria.
 type TaskSpec struct {
-	APIVersion   APIVersion        `json:"apiVersion"`
-	Kind         Kind              `json:"kind"`
-	Metadata     TaskMetadata      `json:"metadata"`
-	Repository   TaskRepository    `json:"repository"`
-	Work         TaskWork          `json:"work"`
-	Scope        TaskScope         `json:"scope"`
-	Acceptance   TaskAcceptance    `json:"acceptance"`
-	Deliverables []TaskDeliverable `json:"deliverables"`
-	Worker       TaskWorker        `json:"worker"`
-	Budgets      TaskBudgets       `json:"budgets"`
-	Publication  TaskPublication   `json:"publication"`
+	APIVersion    APIVersion         `json:"apiVersion"`
+	Kind          Kind               `json:"kind"`
+	Metadata      TaskMetadata       `json:"metadata"`
+	Repository    TaskRepository     `json:"repository"`
+	Work          TaskWork           `json:"work"`
+	Scope         TaskScope          `json:"scope"`
+	Acceptance    TaskAcceptance     `json:"acceptance"`
+	Deliverables  []TaskDeliverable  `json:"deliverables"`
+	Worker        TaskWorker         `json:"worker"`
+	Budgets       TaskBudgets        `json:"budgets"`
+	Publication   TaskPublication    `json:"publication"`
+	Admission     TaskAdmission      `json:"admission"`
+	DependsOn     []TaskDependency   `json:"dependsOn,omitempty"`
+	Preconditions []TaskPrecondition `json:"preconditions,omitempty"`
 }
 
 // TaskWorker selects the Worker Adapter configuration for executing the Task.
@@ -102,6 +124,53 @@ type TaskBudgets struct {
 	MaxOperationalRetries int   `json:"maxOperationalRetries"`
 	MaxReworkRounds       int   `json:"maxReworkRounds"`
 	MaxOutputBytes        int64 `json:"maxOutputBytes"`
+}
+
+// TaskAdmission declares the machine-executable admission status of the
+// TaskSpec. The zero value carries backward-compatible semantics: a TaskSpec
+// frozen without an admission object decodes to the zero TaskAdmission and
+// planning treats it as executable.
+type TaskAdmission struct {
+	Status string `json:"status"`
+}
+
+// MarshalJSON normalizes freshly constructed Tasks: an unset admission status
+// defaults to AdmissionStatusPrepared so every marshaled TaskSpec carries a
+// legal closed-enum status and existing fixtures and legacy Tasks keep
+// passing the TaskSpec schema. Planning semantics key off the frozen JSON: a
+// spec written without an admission object still decodes to the zero value
+// and stays executable.
+func (admission TaskAdmission) MarshalJSON() ([]byte, error) {
+	if admission.Status == "" {
+		admission.Status = AdmissionStatusPrepared
+	}
+	type normalized TaskAdmission
+	return json.Marshal(normalized(admission))
+}
+
+// TaskDependency declares one dependsOn entry: a run-scoped dependency names
+// the depended-on Run directly, a task-scoped dependency resolves the
+// depended-on Task's latest Run at planning time. RequiredState is one of the
+// five terminal states; BaseSHA and SpecDigest optionally pin the depended-on
+// Run's frozen values, an empty value disables the corresponding check.
+type TaskDependency struct {
+	Kind          string `json:"kind"`
+	RunID         string `json:"runId,omitempty"`
+	TaskID        string `json:"taskId,omitempty"`
+	RequiredState string `json:"requiredState"`
+	BaseSHA       string `json:"baseSha,omitempty"`
+	SpecDigest    string `json:"specDigest,omitempty"`
+}
+
+// TaskPrecondition declares one planning-time precondition: a controlled
+// command executed at the repository root before planning creates any side
+// effect. Every precondition is required; any non-zero exit rejects the plan
+// fail-closed.
+type TaskPrecondition struct {
+	ID             string   `json:"id"`
+	Argv           []string `json:"argv"`
+	CWD            string   `json:"cwd,omitempty"`
+	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty"`
 }
 
 // TaskPublication describes how and where the Run's result may be
