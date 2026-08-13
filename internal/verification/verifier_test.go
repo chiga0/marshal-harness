@@ -8,13 +8,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	marshalRepository "github.com/chiga0/marshal-harness/internal/repository"
 )
@@ -713,4 +716,351 @@ func gitTest(t *testing.T, directory string, args ...string) string {
 		t.Fatalf("git %v: %v: %s", args, err, output)
 	}
 	return string(output)
+}
+
+// candidateInput switches the fixture into ADR 0027 candidate mode exactly as
+// the CLI orchestration layer does: the Attempt identity plus the frozen
+// local authority namespace digest (tenantNamespace=local,
+// controlPlaneId=default, authorityScopeId=repository identity).
+func (f verificationFixture) candidateInput() Input {
+	f.t.Helper()
+	input := f.input()
+	input.AttemptID = "attempt:fixture"
+	namespace, err := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: f.repository}.Digest()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	input.AuthorityNamespaceID = namespace
+	return input
+}
+
+func findArtifact(t *testing.T, manifest ArtifactManifest, id string) Artifact {
+	t.Helper()
+	for _, artifact := range manifest.Artifacts {
+		if artifact.ID == id {
+			return artifact
+		}
+	}
+	t.Fatalf("artifact %s missing from manifest: %+v", id, manifest.Artifacts)
+	return Artifact{}
+}
+
+func TestVerifyCandidateDualRecordChainBindsWorkerAndNormalizer(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	writeFixtureGoFile(t, fixture.worktree.Path, "pkg/code.go", unformattedGoSource)
+	// Capture the worker's raw bytes before Verify; normalization must not
+	// lose them (§7.1).
+	rawObservation, err := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := fixture.candidateInput()
+	input.Scope = ScopePolicy{AllowPaths: []string{"pkg/**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Report.Status != "pass" {
+		t.Fatalf("candidate-mode report = %+v", result.Report)
+	}
+
+	workerPatchData, err := os.ReadFile(filepath.Join(input.RunDirectory, "worker.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observedPatchData, err := os.ReadFile(filepath.Join(input.RunDirectory, "observed.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(workerPatchData) != string(rawObservation.Patch) {
+		t.Fatal("worker.patch must preserve the pre-normalization observation bytes")
+	}
+	if string(observedPatchData) == string(workerPatchData) {
+		t.Fatal("normalization changed no bytes; fixture must drift")
+	}
+	if string(observedPatchData) != string(result.Report.Observed.Patch) {
+		t.Fatal("observed.patch must bind the head observation")
+	}
+
+	store := newLocalCandidateStore(input.RunDirectory)
+	records, err := store.records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("chain length = %d, want exactly 2 candidates: %+v", len(records), records)
+	}
+	if _, statErr := os.Stat(store.quarantineDir()); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("quarantine must stay absent without conflicts: %v", statErr)
+	}
+
+	worker, err := store.ByDigest(result.Report.WorkerCandidateDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := store.ByDigest(result.Report.CandidateDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worker.ProducerKind != domain.ProducerKindWorker || worker.Producer != candidateProducerWorker || worker.PredecessorCandidateDigest != "" {
+		t.Fatalf("worker candidate is not a chain root: %+v", worker)
+	}
+	if head.ProducerKind != domain.ProducerKindNormalizer || head.Producer != candidateProducerNormalizer {
+		t.Fatalf("head candidate is not the normalizer record: %+v", head)
+	}
+	if head.PredecessorCandidateDigest != worker.CandidateDigest {
+		t.Fatalf("predecessor = %s, worker digest = %s", head.PredecessorCandidateDigest, worker.CandidateDigest)
+	}
+	for _, record := range []domain.Candidate{worker, head} {
+		if record.TaskID != input.TaskID || record.RunID != input.RunID || record.AttemptID != input.AttemptID ||
+			record.BaseSHA != input.BaseSHA || record.AuthorityNamespaceID != input.AuthorityNamespaceID {
+			t.Fatalf("candidate identity diverges from the verification input: %+v", record)
+		}
+	}
+	if worker.ContentDigest != canonical.DigestBytes(workerPatchData) {
+		t.Fatalf("worker contentDigest = %s, worker.patch digest = %s", worker.ContentDigest, canonical.DigestBytes(workerPatchData))
+	}
+	if head.ContentDigest != canonical.DigestBytes(observedPatchData) {
+		t.Fatalf("head contentDigest = %s, observed.patch digest = %s", head.ContentDigest, canonical.DigestBytes(observedPatchData))
+	}
+
+	observedArtifact := findArtifact(t, result.Manifest, "evidence:observed-patch")
+	if observedArtifact.Digest != canonical.DigestBytes(observedPatchData) || observedArtifact.CandidateDigest != head.CandidateDigest {
+		t.Fatalf("observed-patch artifact must bind head content once: %+v", observedArtifact)
+	}
+	if !slices.Contains(observedArtifact.RelatedGates, "format:normalize") {
+		t.Fatalf("normalized observed-patch must stay related to format:normalize: %+v", observedArtifact.RelatedGates)
+	}
+	workerArtifact := findArtifact(t, result.Manifest, "evidence:worker-patch")
+	if workerArtifact.Digest != worker.ContentDigest || workerArtifact.CandidateDigest != worker.CandidateDigest ||
+		workerArtifact.RelativePath != "worker.patch" || workerArtifact.ByteSize != int64(len(workerPatchData)) {
+		t.Fatalf("worker-patch artifact must bind the worker candidate content: %+v", workerArtifact)
+	}
+	wantWorkerGates := []string{"diff:observe", "scope:changed-paths", "format:normalize"}
+	if !slices.Equal(workerArtifact.RelatedGates, wantWorkerGates) {
+		t.Fatalf("worker-patch relatedGates = %v, want %v", workerArtifact.RelatedGates, wantWorkerGates)
+	}
+
+	observeGate, formatGate := Gate{}, Gate{}
+	for _, gate := range result.Report.Gates {
+		switch gate.ID {
+		case "diff:observe":
+			observeGate = gate
+		case "format:normalize":
+			formatGate = gate
+		}
+	}
+	if !slices.Equal(observeGate.Evidence, []string{"artifact://evidence:observed-patch", "artifact://evidence:worker-patch"}) {
+		t.Fatalf("diff:observe evidence = %+v", observeGate.Evidence)
+	}
+	if !slices.Equal(formatGate.Evidence, []string{"normalized:pkg/code.go", "candidate:" + head.CandidateDigest}) {
+		t.Fatalf("format:normalize evidence = %+v", formatGate.Evidence)
+	}
+}
+
+func TestVerifyCandidateChainStableAcrossRepeatedVerify(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	writeFixtureGoFile(t, fixture.worktree.Path, "pkg/code.go", unformattedGoSource)
+	input := fixture.candidateInput()
+	input.Scope = ScopePolicy{AllowPaths: []string{"pkg/**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}
+	first, err := New().Verify(context.Background(), input)
+	if err != nil || first.Report.Status != "pass" {
+		t.Fatalf("first verify = %+v err = %v", first.Report, err)
+	}
+	headDigest := first.Report.CandidateDigest
+	store := newLocalCandidateStore(input.RunDirectory)
+	if records, err := store.records(); err != nil || len(records) != 2 {
+		t.Fatalf("first chain = %+v err = %v", records, err)
+	}
+
+	// Second Verify over the already-normalized worktree: normalization is a
+	// no-op and content-addressed admission coalesces onto the existing
+	// records — no third Candidate, head unchanged (§7.2).
+	second, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatalf("repeated verify must stay idempotent: %v", err)
+	}
+	if second.Report.Status != "pass" {
+		t.Fatalf("repeated verify report = %+v", second.Report)
+	}
+	records, err := store.records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("repeated verify inflated the chain: %+v", records)
+	}
+	if entries, statErr := os.ReadDir(store.quarantineDir()); statErr == nil && len(entries) > 0 {
+		t.Fatalf("repeated verify must not quarantine anything: %v", entries)
+	}
+	if second.Report.CandidateDigest != headDigest {
+		t.Fatalf("head changed across repeated verify: %s -> %s", headDigest, second.Report.CandidateDigest)
+	}
+	if second.Report.WorkerCandidateDigest != headDigest {
+		t.Fatalf("worker binding must coalesce onto the existing content fact: %s", second.Report.WorkerCandidateDigest)
+	}
+	head, err := store.ByDigest(headDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerPatchData, err := os.ReadFile(filepath.Join(input.RunDirectory, "worker.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observedPatchData, err := os.ReadFile(filepath.Join(input.RunDirectory, "observed.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(workerPatchData) != string(observedPatchData) || canonical.DigestBytes(observedPatchData) != head.ContentDigest {
+		t.Fatalf("repeated verify must observe the admitted head content: worker.patch=%d bytes observed.patch=%d bytes head contentDigest=%s", len(workerPatchData), len(observedPatchData), head.ContentDigest)
+	}
+}
+
+func TestVerifyCandidateChainRootOnlyWhenNormalizationIsNoop(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	writeFixtureGoFile(t, fixture.worktree.Path, "pkg/code.go", formattedGoSource)
+	input := fixture.candidateInput()
+	input.Scope = ScopePolicy{AllowPaths: []string{"pkg/**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Report.Status != "pass" || gateStatus(result.Report.Gates, "format:normalize") != "pass" {
+		t.Fatalf("no-op normalization report = %+v", result.Report)
+	}
+	if result.Report.WorkerCandidateDigest == "" || result.Report.WorkerCandidateDigest != result.Report.CandidateDigest {
+		t.Fatalf("without drift the head must be the worker candidate itself: %+v", result.Report)
+	}
+	store := newLocalCandidateStore(input.RunDirectory)
+	records, err := store.records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("no-op normalization must admit exactly one candidate: %+v", records)
+	}
+	record, err := store.ByDigest(result.Report.CandidateDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ProducerKind != domain.ProducerKindWorker || record.PredecessorCandidateDigest != "" {
+		t.Fatalf("head must be the worker chain root: %+v", record)
+	}
+	workerPatchData, err := os.ReadFile(filepath.Join(input.RunDirectory, "worker.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observedPatchData, err := os.ReadFile(filepath.Join(input.RunDirectory, "observed.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(workerPatchData) != string(observedPatchData) {
+		t.Fatal("without drift observed.patch must equal worker.patch")
+	}
+	if record.ContentDigest != canonical.DigestBytes(observedPatchData) {
+		t.Fatalf("head contentDigest = %s, patch digest = %s", record.ContentDigest, canonical.DigestBytes(observedPatchData))
+	}
+	formatGate := Gate{}
+	for _, gate := range result.Report.Gates {
+		if gate.ID == "format:normalize" {
+			formatGate = gate
+		}
+	}
+	if !slices.Equal(formatGate.Evidence, []string{"candidate:" + record.CandidateDigest}) {
+		t.Fatalf("no-op format gate evidence = %+v", formatGate.Evidence)
+	}
+}
+
+func TestVerifyCandidateModeRequiresInjectedIdentity(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Input)
+	}{
+		{name: "attempt without authority namespace", mutate: func(input *Input) { input.AuthorityNamespaceID = "" }},
+		{name: "authority namespace without attempt", mutate: func(input *Input) { input.AttemptID = "" }},
+		{name: "malformed attempt identity", mutate: func(input *Input) { input.AttemptID = "not an id" }},
+		{name: "malformed authority namespace", mutate: func(input *Input) { input.AuthorityNamespaceID = "not an id" }},
+		{name: "short base sha", mutate: func(input *Input) { input.BaseSHA = "abc" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newVerificationFixture(t)
+			input := fixture.candidateInput()
+			input.Scope = ScopePolicy{AllowPaths: []string{"**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}
+			tc.mutate(&input)
+			if _, err := New().Verify(context.Background(), input); err == nil {
+				t.Fatalf("candidate mode accepted %s", tc.name)
+			}
+			if _, statErr := os.Stat(filepath.Join(input.RunDirectory, "candidates")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("rejected input must not create candidate records: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestVerifyLegacyRunKeepsByteCompatibleEvidence(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	writeFixtureGoFile(t, fixture.worktree.Path, "pkg/code.go", unformattedGoSource)
+	input := fixture.input()
+	input.Scope = ScopePolicy{AllowPaths: []string{"pkg/**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Report.Status != "pass" {
+		t.Fatalf("legacy report = %+v", result.Report)
+	}
+	if result.Report.WorkerCandidateDigest != "" || result.Report.CandidateDigest != "" {
+		t.Fatalf("legacy report must stay candidate-free: %+v", result.Report)
+	}
+	if _, statErr := os.Stat(filepath.Join(input.RunDirectory, "candidates")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("legacy run must not create a candidate store: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(input.RunDirectory, "worker.patch")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("legacy run must not write worker.patch: %v", statErr)
+	}
+	reportData, err := os.ReadFile(filepath.Join(input.RunDirectory, "verification-report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestData, err := os.ReadFile(filepath.Join(input.RunDirectory, "artifact-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(reportData), "candidateDigest") || strings.Contains(string(manifestData), "candidateDigest") {
+		t.Fatal("legacy documents must not carry candidate bindings")
+	}
+	observedArtifact := findArtifact(t, result.Manifest, "evidence:observed-patch")
+	for _, artifact := range result.Manifest.Artifacts {
+		if artifact.ID == "evidence:worker-patch" {
+			t.Fatalf("legacy manifest must stay worker-patch-free: %+v", artifact)
+		}
+	}
+	persisted, err := os.ReadFile(filepath.Join(input.RunDirectory, "observed.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(persisted) != string(result.Report.Observed.Patch) {
+		t.Fatal("persisted observed patch diverges from the report")
+	}
+	// The read-path invariant legacy review packets rely on: the artifact
+	// digest recomputes from the persisted bytes (§7.5 zero regression).
+	if observedArtifact.Digest != canonical.DigestBytes(persisted) || observedArtifact.ByteSize != int64(len(persisted)) {
+		t.Fatalf("observed-patch artifact no longer recomputes: %+v", observedArtifact)
+	}
+	if !slices.Equal(observedArtifact.RelatedGates, []string{"diff:observe", "scope:changed-paths", "format:normalize"}) {
+		t.Fatalf("legacy observed-patch relatedGates changed: %+v", observedArtifact.RelatedGates)
+	}
+	for _, gate := range result.Report.Gates {
+		switch gate.ID {
+		case "diff:observe":
+			if !slices.Equal(gate.Evidence, []string{"artifact://evidence:observed-patch"}) {
+				t.Fatalf("legacy diff:observe evidence changed: %+v", gate.Evidence)
+			}
+		case "format:normalize":
+			if !slices.Equal(gate.Evidence, []string{"normalized:pkg/code.go"}) {
+				t.Fatalf("legacy format:normalize evidence changed: %+v", gate.Evidence)
+			}
+		}
+	}
 }
