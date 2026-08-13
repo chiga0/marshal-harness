@@ -366,3 +366,103 @@ func TestTaskSpecSchemaAdmissionEnumsMatchFrozenVocabulary(t *testing.T) {
 		t.Fatalf("dependsOn requiredState enum = %v, want the five terminal states %v", requiredState.Enum, want)
 	}
 }
+
+// TestCandidateRecordSchemaProducerKindMatchesFrozenEnumeration pins the ADR
+// 0027 closed producerKind enumeration to its exact frozen vocabulary, so a
+// vocabulary drift is a visible schema change instead of a silent edit.
+func TestCandidateRecordSchemaProducerKindMatchesFrozenEnumeration(t *testing.T) {
+	t.Parallel()
+	data := readFixture(t, "candidate-record.schema.json")
+	var schema struct {
+		Properties map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	producerKind, ok := schema.Properties["producerKind"]
+	if !ok || len(producerKind.Enum) == 0 {
+		t.Fatal("candidate-record schema lost the producerKind closed enum")
+	}
+	got := append([]string{}, producerKind.Enum...)
+	slices.Sort(got)
+	if want := []string{"normalizer", "worker"}; !slices.Equal(got, want) {
+		t.Fatalf("producerKind enum = %v, want %v", producerKind.Enum, want)
+	}
+}
+
+// TestCandidateRecordSchemaConditionalPredecessor pins the ADR 0027 T1
+// fail-closed conditions expressed via allOf + if/then: worker Candidates
+// are chain roots and must not carry predecessorCandidateDigest, normalizer
+// Candidates must carry it, producerKind stays inside the closed
+// enumeration, and contentDigest keeps its sha256 content-addressed form.
+func TestCandidateRecordSchemaConditionalPredecessor(t *testing.T) {
+	t.Parallel()
+
+	predecessor := "sha256:" + strings.Repeat("f", 64)
+	validator := mustValidator(t)
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		valid  bool
+	}{
+		{name: "worker chain root stays valid", valid: true, mutate: func(map[string]any) {}},
+		{
+			name:  "normalizer successor with predecessor",
+			valid: true,
+			mutate: func(document map[string]any) {
+				document["producerKind"] = "normalizer"
+				document["producer"] = "verifier:format-normalize"
+				document["predecessorCandidateDigest"] = predecessor
+			},
+		},
+		{
+			name:  "remote dispatch reserved fields accepted",
+			valid: true,
+			mutate: func(document map[string]any) {
+				document["allocationId"] = "allocation-01"
+				document["generation"] = 3
+			},
+		},
+		{name: "producerKind outside enumeration", mutate: func(document map[string]any) { document["producerKind"] = "publisher" }},
+		{name: "producerKind case-mangled", mutate: func(document map[string]any) { document["producerKind"] = "Worker" }},
+		{name: "worker carrying predecessor", mutate: func(document map[string]any) { document["predecessorCandidateDigest"] = predecessor }},
+		{
+			name: "normalizer missing predecessor",
+			mutate: func(document map[string]any) {
+				document["producerKind"] = "normalizer"
+				document["producer"] = "verifier:format-normalize"
+			},
+		},
+		{
+			name: "normalizer predecessor without prefix",
+			mutate: func(document map[string]any) {
+				document["producerKind"] = "normalizer"
+				document["producer"] = "verifier:format-normalize"
+				document["predecessorCandidateDigest"] = strings.Repeat("f", 64)
+			},
+		},
+		{name: "contentDigest invalid prefix", mutate: func(document map[string]any) { document["contentDigest"] = "md5:" + strings.Repeat("d", 64) }},
+		{name: "contentDigest non-hex", mutate: func(document map[string]any) { document["contentDigest"] = "sha256:" + strings.Repeat("w", 64) }},
+		{name: "candidateDigest invalid", mutate: func(document map[string]any) { document["candidateDigest"] = "sha256:" + strings.Repeat("e", 63) }},
+		{name: "baseSha too short", mutate: func(document map[string]any) { document["baseSha"] = "abc" }},
+		{name: "createdAt not date-time", mutate: func(document map[string]any) { document["createdAt"] = "not-a-date-time" }},
+		{name: "negative generation", mutate: func(document map[string]any) { document["generation"] = -1 }},
+		{name: "unknown extra field", mutate: func(document map[string]any) { document["extra"] = 1 }},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			data := mutateFixture(t, "examples/happy-path/candidate-record.json", test.mutate)
+			err := validator.Validate(domain.KindCandidate, data)
+			if test.valid && err != nil {
+				t.Fatalf("Validate() error = %v, want valid Candidate", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("Validate() unexpectedly accepted an invalid Candidate")
+			}
+		})
+	}
+}

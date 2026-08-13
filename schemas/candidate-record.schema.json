@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/candidate-record.schema.json",
+  "title": "Marshal Candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "taskId",
+    "runId",
+    "attemptId",
+    "authorityNamespaceId",
+    "baseSha",
+    "contentDigest",
+    "producerKind",
+    "producer",
+    "createdAt",
+    "candidateDigest"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "Candidate" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "attemptId": { "$ref": "#/$defs/id" },
+    "authorityNamespaceId": { "$ref": "#/$defs/id" },
+    "baseSha": { "$ref": "#/$defs/gitSha" },
+    "contentDigest": { "$ref": "#/$defs/digest" },
+    "producerKind": { "type": "string", "enum": ["worker", "normalizer"] },
+    "producer": { "$ref": "#/$defs/id" },
+    "predecessorCandidateDigest": { "$ref": "#/$defs/digest" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "allocationId": { "$ref": "#/$defs/id" },
+    "generation": { "type": "integer", "minimum": 0 },
+    "candidateDigest": { "$ref": "#/$defs/digest" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["producerKind"],
+        "properties": { "producerKind": { "const": "worker" } }
+      },
+      "then": { "not": { "required": ["predecessorCandidateDigest"] } }
+    },
+    {
+      "if": {
+        "required": ["producerKind"],
+        "properties": { "producerKind": { "const": "normalizer" } }
+      },
+      "then": { "required": ["predecessorCandidateDigest"] }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" }
+  }
+}

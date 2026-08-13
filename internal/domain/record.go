@@ -42,6 +42,9 @@ const (
 	KindApprovalRecord             Kind = "ApprovalRecord"
 	KindInterventionRecord         Kind = "InterventionRecord"
 	KindSandboxRequirements        Kind = "SandboxRequirements"
+	// KindCandidate is the ADR 0027 first-class immutable candidate record:
+	// an append-only authority ledger fact owned by authorityNamespaceId.
+	KindCandidate Kind = "Candidate"
 )
 
 var kinds = []Kind{
@@ -65,6 +68,7 @@ var kinds = []Kind{
 	KindApprovalRecord,
 	KindInterventionRecord,
 	KindSandboxRequirements,
+	KindCandidate,
 }
 
 // Kinds returns all durable record kinds in stable order.
