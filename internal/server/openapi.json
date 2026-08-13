@@ -3,7 +3,7 @@
   "info": {
     "title": "Marshal Public API",
     "version": "v1alpha1",
-    "description": "Versioned HTTP/JSON Public API of the resident marshal-server Control Plane (ADR 0018 §1/§3/§16). Protocol family marshal-public-api, version v1alpha1. Core is the only business authority: Task create delegates to planning, Task cancel to the frozen explicit-abort lifecycle path, Run approval to the human approval gate, Run status to the Run store projection. Requests carrying providerType are rejected outright; requests carrying workloadRole, allocationId, generation, fencingToken or DispatchLease identity fail closed. SSE events/evidence, remote provider registration and TLS belong to later protocol revisions and are not part of this frozen surface."
+    "description": "Versioned HTTP/JSON Public API of the resident marshal-server Control Plane (ADR 0018 §1/§3/§16). Protocol family marshal-public-api, version v1alpha1. Core is the only business authority: Task create delegates to planning, Task cancel to the frozen explicit-abort lifecycle path, Run approval to the human approval gate, Run status to the Run store projection. Requests carrying providerType are rejected outright; requests carrying workloadRole, allocationId, generation, fencingToken or DispatchLease identity fail closed. The SSE read-only event projection (/events) with its cursor/resync semantics (ADR 0018 §4/§14) and its polling fallback (/events/poll) are part of this frozen surface; evidence retrieval, remote provider registration and TLS belong to later protocol revisions and are not part of this frozen surface."
   },
   "servers": [
     {
@@ -232,6 +232,87 @@
           "500": {"$ref": "#/components/responses/Internal"}
         }
       }
+    },
+    "/v1alpha1/events": {
+      "get": {
+        "operationId": "streamEvents",
+        "summary": "Subscribe to the SSE read-only event projection",
+        "description": "Versioned SSE endpoint of the public-api Port (ADR 0018 §4/§14). The stream is a read-only projection of the Run journals: it never carries business ACK, lease heartbeat or command frames. Cursor identity is (authorityNamespaceId, scope, ledgerSequence); the cursor is the exclusive lower bound of delivered ledgerSequence values, and an absent or zero cursor replays the full backlog from ledgerSequence 1. Resume binds either the cursor query parameter or the Last-Event-ID header (an eventId). Delivery is at-least-once; clients deduplicate by eventId/ledgerSequence. Every data frame carries id=eventId and the field-identical EventProjection JSON of the polling fallback. An expired, gap or unservable cursor yields HTTP 409 EventResync with a deterministic resume point and snapshot digest, never a silent continuation; mid-stream projection rebuilds and backpressure overflows emit a terminal event:resync frame and close the connection. Re-Authorization is periodic and immediate on sensitive change; a failed check closes the connection fail closed. A per-subscriber bounded buffer protects the event source: a slow subscriber is disconnected and guided to resync instead of blocking the ledger.",
+        "parameters": [
+          {"$ref": "#/components/parameters/RequestId"},
+          {"$ref": "#/components/parameters/ProtocolVersion"},
+          {"$ref": "#/components/parameters/Principal"},
+          {"$ref": "#/components/parameters/Audience"},
+          {"$ref": "#/components/parameters/Scope"},
+          {"$ref": "#/components/parameters/Deadline"},
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Last consumed ledgerSequence (exclusive lower bound). Absent or 0 replays the full backlog from ledgerSequence 1.",
+            "schema": {"type": "integer", "minimum": 0}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stream (text/event-stream). Frames: id=eventId plus data=EventProjection; comment heartbeats; a terminal event:resync frame carrying EventResync when the subscription must be rebuilt.",
+            "content": {
+              "text/event-stream": {
+                "schema": {"type": "string"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "403": {"$ref": "#/components/responses/ForbiddenIdentity"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "409": {"$ref": "#/components/responses/EventResync"},
+          "500": {"$ref": "#/components/responses/Internal"}
+        }
+      }
+    },
+    "/v1alpha1/events/poll": {
+      "get": {
+        "operationId": "pollEvents",
+        "summary": "Poll the read-only event projection (fallback of the SSE stream)",
+        "description": "HTTP/JSON fallback reading the identical projection data as /events: one EventPage of EventProjection records after the exclusive cursor, field-identical to the SSE data frames and produced by the identical projection constructor. An expired, gap or unservable cursor yields the identical deterministic HTTP 409 EventResync directive. Read endpoints accept no request body.",
+        "parameters": [
+          {"$ref": "#/components/parameters/RequestId"},
+          {"$ref": "#/components/parameters/ProtocolVersion"},
+          {"$ref": "#/components/parameters/Principal"},
+          {"$ref": "#/components/parameters/Audience"},
+          {"$ref": "#/components/parameters/Scope"},
+          {"$ref": "#/components/parameters/Deadline"},
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Last consumed ledgerSequence (exclusive lower bound). Absent or 0 reads from ledgerSequence 1.",
+            "schema": {"type": "integer", "minimum": 0}
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum number of events in the page.",
+            "schema": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of the event projection.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/EventPage"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "403": {"$ref": "#/components/responses/ForbiddenIdentity"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "409": {"$ref": "#/components/responses/EventResync"},
+          "500": {"$ref": "#/components/responses/Internal"}
+        }
+      }
     }
   },
   "components": {
@@ -333,6 +414,14 @@
         "content": {
           "application/json": {
             "schema": {"$ref": "#/components/schemas/Error"}
+          }
+        }
+      },
+      "EventResync": {
+        "description": "The cursor is expired, gap or unservable; the body is the deterministic EventResync directive (resume point plus snapshot digest), never a silent continuation. This directive is deliberately not the Error envelope.",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/EventResync"}
           }
         }
       }
@@ -621,6 +710,59 @@
           "uri": {"type": "string"},
           "headSha": {"type": "string"}
         }
+      },
+      "EventProjection": {
+        "type": "object",
+        "description": "Read-only projection of one Run ledger event. One constructor feeds both the SSE data frames and the polling fallback, so the JSON is field-identical across the two channels. A rebuildable projection, never a second authority.",
+        "additionalProperties": false,
+        "required": ["apiVersion", "kind", "authorityNamespaceId", "scope", "eventId", "ledgerSequence", "runId", "runSequence", "type", "timestamp", "payloadDigest"],
+        "properties": {
+          "apiVersion": {"const": "marshal.dev/v1alpha1"},
+          "kind": {"const": "EventProjection"},
+          "authorityNamespaceId": {"$ref": "#/components/schemas/AuthorityNamespaceId"},
+          "scope": {"type": "string", "minLength": 1},
+          "eventId": {"type": "string", "minLength": 1},
+          "ledgerSequence": {"type": "integer", "minimum": 1, "description": "Monotonic sequence within the scope ledger; the cursor identity member."},
+          "runId": {"type": "string"},
+          "runSequence": {"type": "integer", "minimum": 1, "description": "The event's sequence within its Run journal."},
+          "taskId": {"type": "string"},
+          "attemptId": {"type": "string"},
+          "type": {"type": "string"},
+          "stateFrom": {"$ref": "#/components/schemas/RunLifecycleState"},
+          "stateTo": {"$ref": "#/components/schemas/RunLifecycleState"},
+          "timestamp": {"type": "string", "format": "date-time"},
+          "payloadDigest": {"type": "string", "description": "Canonical sha256 digest of the event payload."}
+        }
+      },
+      "EventPage": {
+        "type": "object",
+        "description": "One polling-fallback page of the event projection: the identical EventProjection records the SSE stream delivers, plus the cursor and snapshot binding of the page.",
+        "additionalProperties": false,
+        "required": ["apiVersion", "kind", "authorityNamespaceId", "scope", "events", "nextCursor", "snapshotDigest"],
+        "properties": {
+          "apiVersion": {"const": "marshal.dev/v1alpha1"},
+          "kind": {"const": "EventPage"},
+          "authorityNamespaceId": {"$ref": "#/components/schemas/AuthorityNamespaceId"},
+          "scope": {"type": "string"},
+          "events": {"type": "array", "items": {"$ref": "#/components/schemas/EventProjection"}},
+          "nextCursor": {"type": "integer", "minimum": 0, "description": "ledgerSequence of the last returned event, or the request cursor when the page is empty."},
+          "snapshotDigest": {"type": "string", "description": "Digest of the complete current projection content; changes deterministically on every rebuild."}
+        }
+      },
+      "EventResync": {
+        "type": "object",
+        "description": "Deterministic resync directive (ADR 0018 §4/§14): the cursor is expired, gap or unservable, and the subscription must be rebuilt from startSequence against the snapshotDigest. Never a silent continuation and never an incomplete replay.",
+        "additionalProperties": false,
+        "required": ["apiVersion", "kind", "authorityNamespaceId", "scope", "reason", "startSequence", "snapshotDigest"],
+        "properties": {
+          "apiVersion": {"const": "marshal.dev/v1alpha1"},
+          "kind": {"const": "EventResync"},
+          "authorityNamespaceId": {"$ref": "#/components/schemas/AuthorityNamespaceId"},
+          "scope": {"type": "string"},
+          "reason": {"enum": ["cursor-expired", "projection-rebuilt", "backpressure-buffer-full", "cursor-backlog-overflow"]},
+          "startSequence": {"type": "integer", "minimum": 1, "description": "Deterministic resume point of the rebuilt subscription."},
+          "snapshotDigest": {"type": "string"}
+        }
       }
     }
   },
@@ -644,7 +786,7 @@
     ]
   },
   "x-error-codes": {
-    "INVALID_REQUEST": {"status": 400, "reasons": ["protocol-version-mismatch", "audience-mismatch", "deadline-invalid", "deadline-exceeded", "header-too-long", "content-type-invalid", "body-too-large", "empty-body", "malformed-json", "unknown-member", "missing-member", "empty-member", "invalid-member", "member-too-long", "request-digest-invalid", "request-digest-mismatch", "payload-not-json", "invalid-id", "invalid-gate", "method-not-allowed", "body-not-allowed"]},
+    "INVALID_REQUEST": {"status": 400, "reasons": ["protocol-version-mismatch", "audience-mismatch", "deadline-invalid", "deadline-exceeded", "header-too-long", "content-type-invalid", "body-too-large", "empty-body", "malformed-json", "unknown-member", "missing-member", "empty-member", "invalid-member", "member-too-long", "request-digest-invalid", "request-digest-mismatch", "payload-not-json", "invalid-id", "invalid-gate", "method-not-allowed", "body-not-allowed", "cursor-invalid", "limit-invalid", "unknown-query"]},
     "MISSING_IDENTITY": {"status": 400, "reasons": ["missing-header"]},
     "FORBIDDEN_IDENTITY": {"status": 403, "reasons": ["forbidden-header", "forbidden-query", "forbidden-field"]},
     "SCOPE_MISMATCH": {"status": 400, "reasons": ["scope-mismatch"]},
