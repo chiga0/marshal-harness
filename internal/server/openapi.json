@@ -1,0 +1,657 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Marshal Public API",
+    "version": "v1alpha1",
+    "description": "Versioned HTTP/JSON Public API of the resident marshal-server Control Plane (ADR 0018 §1/§3/§16). Protocol family marshal-public-api, version v1alpha1. Core is the only business authority: Task create delegates to planning, Task cancel to the frozen explicit-abort lifecycle path, Run approval to the human approval gate, Run status to the Run store projection. Requests carrying providerType are rejected outright; requests carrying workloadRole, allocationId, generation, fencingToken or DispatchLease identity fail closed. SSE events/evidence, remote provider registration and TLS belong to later protocol revisions and are not part of this frozen surface."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:7718",
+      "description": "Loopback listener of the resident marshal-server. Non-loopback transports are not enabled in this revision."
+    }
+  ],
+  "security": [],
+  "paths": {
+    "/v1alpha1/tasks": {
+      "post": {
+        "operationId": "createTask",
+        "summary": "Create one Task and its first Run",
+        "description": "Idempotent submission under the frozen identity quadruple (authorityNamespaceId, scope, idempotencyKey, requestDigest): authorityNamespaceId is derived from the bound repository identity and owns the durable submission record (IdempotencyRecord). Validates the TaskSpec and PolicySnapshot against the durable contracts, then plans the Run to READY through the existing planning business path. The requestDigest must equal the RFC 8785 canonical digest of the payload. The identical quadruple merges into the stored result (HTTP 200, no second Run); the identical (authorityNamespaceId, scope, idempotencyKey) with a different requestDigest conflicts fail closed (HTTP 409).",
+        "parameters": [
+          {"$ref": "#/components/parameters/RequestId"},
+          {"$ref": "#/components/parameters/ProtocolVersion"},
+          {"$ref": "#/components/parameters/Principal"},
+          {"$ref": "#/components/parameters/Audience"},
+          {"$ref": "#/components/parameters/Scope"},
+          {"$ref": "#/components/parameters/Deadline"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskCreateRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Task created; the Run is planned to READY.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskSubmission"}
+              }
+            }
+          },
+          "200": {
+            "description": "Idempotent replay merged; the stored result of the first accepted submission is returned verbatim.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskSubmission"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "403": {"$ref": "#/components/responses/ForbiddenIdentity"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "422": {"$ref": "#/components/responses/Rejected"},
+          "500": {"$ref": "#/components/responses/Internal"}
+        }
+      }
+    },
+    "/v1alpha1/tasks/{taskId}": {
+      "get": {
+        "operationId": "getTask",
+        "summary": "Read the projection of one Task and its Runs",
+        "description": "Read-only rebuildable projection over the Run store snapshots; never a second authority. Read endpoints accept no request body.",
+        "parameters": [
+          {"$ref": "#/components/parameters/RequestId"},
+          {"$ref": "#/components/parameters/ProtocolVersion"},
+          {"$ref": "#/components/parameters/Principal"},
+          {"$ref": "#/components/parameters/Audience"},
+          {"$ref": "#/components/parameters/Scope"},
+          {"$ref": "#/components/parameters/Deadline"},
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {"$ref": "#/components/schemas/MarshalId"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Task projection.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskView"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "403": {"$ref": "#/components/responses/ForbiddenIdentity"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "500": {"$ref": "#/components/responses/Internal"}
+        }
+      }
+    },
+    "/v1alpha1/tasks/{taskId}/cancel": {
+      "post": {
+        "operationId": "cancelTask",
+        "summary": "Cancel one Task's Run through the frozen explicit-abort path",
+        "description": "Idempotent submission. Only a RETRY_PENDING Run can be cancelled: the lifecycle reducer records the run.aborted event to BLOCKED with terminalReason aborted-by-operator and stages the terminal Outcome records. Without an explicit runId the unique non-terminal Run of the Task is selected; zero or several candidates fail closed. Replays merge into the stored result and never journal a second abort event.",
+        "parameters": [
+          {"$ref": "#/components/parameters/RequestId"},
+          {"$ref": "#/components/parameters/ProtocolVersion"},
+          {"$ref": "#/components/parameters/Principal"},
+          {"$ref": "#/components/parameters/Audience"},
+          {"$ref": "#/components/parameters/Scope"},
+          {"$ref": "#/components/parameters/Deadline"},
+          {
+            "name": "taskId",
+            "in": "path",
+            "required": true,
+            "schema": {"$ref": "#/components/schemas/MarshalId"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskCancelRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The Run is BLOCKED, or the identical replay merged into the stored result.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskCancellation"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "403": {"$ref": "#/components/responses/ForbiddenIdentity"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "422": {"$ref": "#/components/responses/Rejected"},
+          "500": {"$ref": "#/components/responses/Internal"}
+        }
+      }
+    },
+    "/v1alpha1/runs/{runId}/approval": {
+      "post": {
+        "operationId": "approveRun",
+        "summary": "Append one human ApprovalRecord to a Run gate",
+        "description": "Idempotent submission. Delegates to the human approval gate: the record is bound to the exact current frozen inputs and evidence of the Run. The gate must be plan (READY state) or publish (PUBLISHING state); unavailable gates fail closed. Replays merge into the stored ApprovalRecord and append no second control record.",
+        "parameters": [
+          {"$ref": "#/components/parameters/RequestId"},
+          {"$ref": "#/components/parameters/ProtocolVersion"},
+          {"$ref": "#/components/parameters/Principal"},
+          {"$ref": "#/components/parameters/Audience"},
+          {"$ref": "#/components/parameters/Scope"},
+          {"$ref": "#/components/parameters/Deadline"},
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "schema": {"$ref": "#/components/schemas/MarshalId"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/RunApprovalRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "ApprovalRecord appended.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ApprovalRecord"}
+              }
+            }
+          },
+          "200": {
+            "description": "Idempotent replay merged; the stored ApprovalRecord is returned verbatim.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ApprovalRecord"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "403": {"$ref": "#/components/responses/ForbiddenIdentity"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "422": {"$ref": "#/components/responses/Rejected"},
+          "500": {"$ref": "#/components/responses/Internal"}
+        }
+      }
+    },
+    "/v1alpha1/runs/{runId}/status": {
+      "get": {
+        "operationId": "getRunStatus",
+        "summary": "Read the durable RunState of one Run",
+        "description": "Read-only inspection of the Run snapshot reconciled against its journal. Read endpoints accept no request body.",
+        "parameters": [
+          {"$ref": "#/components/parameters/RequestId"},
+          {"$ref": "#/components/parameters/ProtocolVersion"},
+          {"$ref": "#/components/parameters/Principal"},
+          {"$ref": "#/components/parameters/Audience"},
+          {"$ref": "#/components/parameters/Scope"},
+          {"$ref": "#/components/parameters/Deadline"},
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "schema": {"$ref": "#/components/schemas/MarshalId"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The durable RunState.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/RunState"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "403": {"$ref": "#/components/responses/ForbiddenIdentity"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "422": {"$ref": "#/components/responses/Rejected"},
+          "500": {"$ref": "#/components/responses/Internal"}
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "RequestId": {
+        "name": "Marshal-Request-Id",
+        "in": "header",
+        "required": true,
+        "description": "Client-chosen identity of one request; echoed in every response.",
+        "schema": {"type": "string", "minLength": 1, "maxLength": 512}
+      },
+      "ProtocolVersion": {
+        "name": "Marshal-Protocol-Version",
+        "in": "header",
+        "required": true,
+        "description": "Protocol family and version of the request.",
+        "schema": {"const": "marshal-public-api/v1alpha1"}
+      },
+      "Principal": {
+        "name": "Marshal-Principal",
+        "in": "header",
+        "required": true,
+        "description": "AuthN principal of the client.",
+        "schema": {"type": "string", "minLength": 1, "maxLength": 512}
+      },
+      "Audience": {
+        "name": "Marshal-Audience",
+        "in": "header",
+        "required": true,
+        "description": "Audience of the request; must address the public-api Port.",
+        "schema": {"const": "marshal-public-api"}
+      },
+      "Scope": {
+        "name": "Marshal-Scope",
+        "in": "header",
+        "required": true,
+        "description": "Authority scope of the request; must equal the authorityScopeId of the serving authority namespace.",
+        "schema": {"type": "string", "minLength": 1, "maxLength": 512}
+      },
+      "Deadline": {
+        "name": "Marshal-Deadline",
+        "in": "header",
+        "required": true,
+        "description": "RFC 3339 deadline after which the request fails closed.",
+        "schema": {"type": "string", "format": "date-time"}
+      }
+    },
+    "responses": {
+      "InvalidRequest": {
+        "description": "The request envelope, identity context or a document failed validation (MISSING_IDENTITY and SCOPE_MISMATCH also map to HTTP 400).",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/Error"}
+          }
+        }
+      },
+      "ForbiddenIdentity": {
+        "description": "The request carries identity the public-api Port rejects fail closed: providerType outright, or workloadRole, allocationId, generation, fencingToken, DispatchLease.",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/Error"}
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The route, Task or Run does not exist.",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/Error"}
+          }
+        }
+      },
+      "MethodNotAllowed": {
+        "description": "The method is not part of this endpoint's frozen surface; the Allow header lists the permitted methods.",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/Error"}
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Idempotency conflict (same key, different requestDigest) or a lifecycle/state conflict such as a held lease, an unavailable transition or a terminal Run.",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/Error"}
+          }
+        }
+      },
+      "Rejected": {
+        "description": "The business path rejected the submission fail closed (invalid TaskSpec or PolicySnapshot, planning rejection, approval unavailable, journal truncated).",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/Error"}
+          }
+        }
+      },
+      "Internal": {
+        "description": "An internal failure; no dynamic detail is disclosed.",
+        "content": {
+          "application/json": {
+            "schema": {"$ref": "#/components/schemas/Error"}
+          }
+        }
+      }
+    },
+    "schemas": {
+      "AuthorityNamespaceId": {
+        "type": "object",
+        "description": "Composite authority-side key space owning every Control Plane authority object, including the idempotent submission records (ADR 0018 §10). Only Core writes it; the loopback MVP derives it deterministically from the bound repository identity.",
+        "additionalProperties": false,
+        "required": ["tenantNamespace", "controlPlaneId", "authorityScopeId"],
+        "properties": {
+          "tenantNamespace": {"type": "string", "minLength": 1},
+          "controlPlaneId": {"type": "string", "minLength": 1},
+          "authorityScopeId": {"type": "string", "minLength": 1}
+        }
+      },
+      "MarshalId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$"
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["apiVersion", "kind", "code", "reason", "message"],
+        "properties": {
+          "apiVersion": {"const": "marshal.dev/v1alpha1"},
+          "kind": {"const": "Error"},
+          "code": {
+            "enum": [
+              "INVALID_REQUEST",
+              "MISSING_IDENTITY",
+              "FORBIDDEN_IDENTITY",
+              "SCOPE_MISMATCH",
+              "NOT_FOUND",
+              "IDEMPOTENCY_CONFLICT",
+              "INVALID_STATE",
+              "REJECTED",
+              "INTERNAL"
+            ]
+          },
+          "reason": {"type": "string"},
+          "message": {"type": "string"},
+          "requestId": {"type": "string"}
+        }
+      },
+      "IdempotencyEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["idempotencyKey", "requestDigest", "payload"],
+        "properties": {
+          "idempotencyKey": {"type": "string", "minLength": 1, "maxLength": 512},
+          "requestDigest": {
+            "type": "string",
+            "description": "RFC 8785 canonical sha256 digest of the payload document.",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "payload": {"type": "object"}
+        }
+      },
+      "TaskCreateRequest": {
+        "allOf": [
+          {"$ref": "#/components/schemas/IdempotencyEnvelope"},
+          {
+            "type": "object",
+            "properties": {
+              "payload": {"$ref": "#/components/schemas/TaskCreatePayload"}
+            }
+          }
+        ]
+      },
+      "TaskCreatePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "taskSpec", "policySnapshot"],
+        "properties": {
+          "runId": {"$ref": "#/components/schemas/MarshalId"},
+          "taskSpec": {
+            "type": "object",
+            "description": "A Marshal Task document validated against the durable Task contract schema before planning."
+          },
+          "policySnapshot": {
+            "type": "object",
+            "description": "A Marshal PolicySnapshot document validated against the durable PolicySnapshot contract schema before planning."
+          }
+        }
+      },
+      "TaskSubmission": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["apiVersion", "kind", "authorityNamespaceId", "taskId", "runId", "adapterId", "state"],
+        "properties": {
+          "apiVersion": {"const": "marshal.dev/v1alpha1"},
+          "kind": {"const": "TaskSubmission"},
+          "authorityNamespaceId": {"$ref": "#/components/schemas/AuthorityNamespaceId"},
+          "taskId": {"type": "string"},
+          "runId": {"type": "string"},
+          "adapterId": {"type": "string"},
+          "state": {"$ref": "#/components/schemas/RunState"}
+        }
+      },
+      "TaskView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["apiVersion", "kind", "taskId", "latestRunId", "runs"],
+        "properties": {
+          "apiVersion": {"const": "marshal.dev/v1alpha1"},
+          "kind": {"const": "TaskView"},
+          "taskId": {"type": "string"},
+          "title": {"type": "string"},
+          "latestRunId": {"type": "string"},
+          "runs": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/RunSummary"}
+          }
+        }
+      },
+      "RunSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "state", "sequence", "createdAt", "updatedAt"],
+        "properties": {
+          "runId": {"type": "string"},
+          "state": {"$ref": "#/components/schemas/RunLifecycleState"},
+          "sequence": {"type": "integer", "minimum": 0},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"},
+          "terminalReason": {"type": "string"}
+        }
+      },
+      "TaskCancelRequest": {
+        "allOf": [
+          {"$ref": "#/components/schemas/IdempotencyEnvelope"},
+          {
+            "type": "object",
+            "properties": {
+              "payload": {"$ref": "#/components/schemas/TaskCancelPayload"}
+            }
+          }
+        ]
+      },
+      "TaskCancelPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["actor", "reason"],
+        "properties": {
+          "actor": {"type": "string", "minLength": 1, "maxLength": 512},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 12000},
+          "runId": {"$ref": "#/components/schemas/MarshalId"}
+        }
+      },
+      "TaskCancellation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["apiVersion", "kind", "authorityNamespaceId", "taskId", "runId", "state", "terminalReason", "actor", "sequence"],
+        "properties": {
+          "apiVersion": {"const": "marshal.dev/v1alpha1"},
+          "kind": {"const": "TaskCancellation"},
+          "authorityNamespaceId": {"$ref": "#/components/schemas/AuthorityNamespaceId"},
+          "taskId": {"type": "string"},
+          "runId": {"type": "string"},
+          "state": {"const": "BLOCKED"},
+          "terminalReason": {"const": "aborted-by-operator"},
+          "actor": {"type": "string"},
+          "sequence": {"type": "integer", "minimum": 0}
+        }
+      },
+      "RunApprovalRequest": {
+        "allOf": [
+          {"$ref": "#/components/schemas/IdempotencyEnvelope"},
+          {
+            "type": "object",
+            "properties": {
+              "payload": {"$ref": "#/components/schemas/RunApprovalPayload"}
+            }
+          }
+        ]
+      },
+      "RunApprovalPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gate", "actor"],
+        "properties": {
+          "gate": {"enum": ["plan", "publish"]},
+          "actor": {"type": "string", "minLength": 1, "maxLength": 512}
+        }
+      },
+      "ApprovalRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["apiVersion", "kind", "recordId", "taskId", "runId", "controlSequence", "gate", "source", "binding", "outcome", "createdAt"],
+        "properties": {
+          "apiVersion": {"const": "marshal.dev/v1alpha1"},
+          "kind": {"const": "ApprovalRecord"},
+          "recordId": {"type": "string"},
+          "taskId": {"type": "string"},
+          "runId": {"type": "string"},
+          "controlSequence": {"type": "integer", "minimum": 1},
+          "gate": {"enum": ["plan", "publish"]},
+          "source": {"$ref": "#/components/schemas/ControlSource"},
+          "binding": {"$ref": "#/components/schemas/ApprovalBinding"},
+          "outcome": {"const": "approved"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ControlSource": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "id"],
+        "properties": {
+          "type": {"enum": ["human", "lead-agent", "terminal-hook"]},
+          "id": {"type": "string"}
+        }
+      },
+      "ApprovalBinding": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stateSequence", "specDigest", "policyDigest", "capabilityDigest", "baseSha"],
+        "properties": {
+          "stateSequence": {"type": "integer", "minimum": 0},
+          "specDigest": {"type": "string"},
+          "policyDigest": {"type": "string"},
+          "capabilityDigest": {"type": "string"},
+          "baseSha": {"type": "string"},
+          "reviewRound": {"type": "integer", "minimum": 0},
+          "decisionDigest": {"type": "string"},
+          "evidenceDigest": {"type": "string"}
+        }
+      },
+      "RunLifecycleState": {
+        "enum": [
+          "CREATED",
+          "PLANNED",
+          "READY",
+          "RUNNING",
+          "RETRY_PENDING",
+          "VERIFYING",
+          "REVIEW_PENDING",
+          "REWORK_REQUESTED",
+          "PUBLISHING",
+          "PUBLISHED",
+          "CI_PENDING",
+          "ACCEPTED",
+          "REJECTED",
+          "BLOCKED",
+          "ABORTED",
+          "NO_CHANGE"
+        ]
+      },
+      "RunState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["apiVersion", "kind", "taskId", "runId", "state", "sequence", "reviewRound", "attemptsUsed", "operationalRetriesUsed", "reworkRoundsUsed", "createdAt", "updatedAt"],
+        "properties": {
+          "apiVersion": {"const": "marshal.dev/v1alpha1"},
+          "kind": {"const": "RunState"},
+          "taskId": {"type": "string"},
+          "runId": {"type": "string"},
+          "state": {"$ref": "#/components/schemas/RunLifecycleState"},
+          "sequence": {"type": "integer", "minimum": 0},
+          "specDigest": {"type": "string"},
+          "policyDigest": {"type": "string"},
+          "capabilityDigest": {"type": "string"},
+          "baseSha": {"type": "string"},
+          "worktreePath": {"type": "string"},
+          "publication": {"$ref": "#/components/schemas/RunPublication"},
+          "currentAttemptId": {"type": "string"},
+          "reviewRound": {"type": "integer", "minimum": 0},
+          "attemptsUsed": {"type": "integer", "minimum": 0},
+          "operationalRetriesUsed": {"type": "integer", "minimum": 0},
+          "reworkRoundsUsed": {"type": "integer", "minimum": 0},
+          "terminalReason": {"type": "string"},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "RunPublication": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "repository", "headBranch", "baseBranch"],
+        "properties": {
+          "provider": {"type": "string"},
+          "repository": {"type": "string"},
+          "headBranch": {"type": "string"},
+          "baseBranch": {"type": "string"},
+          "externalId": {"type": "string"},
+          "uri": {"type": "string"},
+          "headSha": {"type": "string"}
+        }
+      }
+    }
+  },
+  "x-idempotent-submission": {
+    "description": "Frozen idempotent submission identity of the public-api Port (ADR 0018 §3): (authorityNamespaceId, scope, idempotencyKey, requestDigest). The submission record is an authority object owned by authorityNamespaceId, never by an actor-side securityDomainId. The identical quadruple merges into the stored result without re-executing the business operation; the identical lookup key with a different requestDigest conflicts fail closed; a failed business operation stores nothing and stays retryable.",
+    "identity": ["authorityNamespaceId", "scope", "idempotencyKey", "requestDigest"],
+    "lookupKey": ["authorityNamespaceId", "scope", "idempotencyKey"],
+    "recordKind": "IdempotencyRecord",
+    "recordSchema": ["apiVersion", "kind", "authorityNamespaceId", "scope", "idempotencyKey", "requestDigest", "status", "result", "createdAt"]
+  },
+  "x-forbidden-identity": {
+    "description": "ADR 0018 §3 identity matrix of the public-api Port. Requests carrying any of these fields fail closed in body (any depth), query or headers.",
+    "forbiddenFields": ["providerType", "workloadRole", "allocationId", "generation", "fencingToken", "dispatchLease", "leaseId"],
+    "forbiddenHeaders": [
+      "Marshal-Provider-Type",
+      "Marshal-Workload-Role",
+      "Marshal-Allocation-Id",
+      "Marshal-Generation",
+      "Marshal-Fencing-Token",
+      "Marshal-Dispatch-Lease"
+    ]
+  },
+  "x-error-codes": {
+    "INVALID_REQUEST": {"status": 400, "reasons": ["protocol-version-mismatch", "audience-mismatch", "deadline-invalid", "deadline-exceeded", "header-too-long", "content-type-invalid", "body-too-large", "empty-body", "malformed-json", "unknown-member", "missing-member", "empty-member", "invalid-member", "member-too-long", "request-digest-invalid", "request-digest-mismatch", "payload-not-json", "invalid-id", "invalid-gate", "method-not-allowed", "body-not-allowed"]},
+    "MISSING_IDENTITY": {"status": 400, "reasons": ["missing-header"]},
+    "FORBIDDEN_IDENTITY": {"status": 403, "reasons": ["forbidden-header", "forbidden-query", "forbidden-field"]},
+    "SCOPE_MISMATCH": {"status": 400, "reasons": ["scope-mismatch"]},
+    "NOT_FOUND": {"status": 404, "reasons": ["unknown-route", "task-not-found", "run-not-found"]},
+    "IDEMPOTENCY_CONFLICT": {"status": 409, "reasons": ["idempotency-key-conflict"]},
+    "INVALID_STATE": {"status": 409, "reasons": ["run-lease-held", "run-already-exists", "invalid-lifecycle-transition", "run-terminal", "no-cancelable-run", "journal-conflict", "approval-gate-unavailable", "approval-stale"]},
+    "REJECTED": {"status": 422, "reasons": ["task-spec-invalid", "policy-snapshot-invalid", "planning-rejected", "approval-not-required", "control-input-invalid", "approval-rejected", "journal-truncated", "run-inspect-failed", "run-state-conflict", "ambiguous-run", "outcome-unavailable", "abort-staging-failed", "journal-append-failed", "abort-commit-failed", "outcome-commit-failed", "snapshot-write-failed", "run-lease-unavailable", "request-cancelled"]},
+    "INTERNAL": {"status": 500, "reasons": ["internal"]}
+  }
+}
