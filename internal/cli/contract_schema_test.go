@@ -80,7 +80,7 @@ func TestContractSchemaAllPrintsSelfDescribingCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	descriptors := contract.Descriptors()
-	if len(catalog.Schemas) != len(descriptors) || len(catalog.Schemas) != 18 {
+	if len(catalog.Schemas) != len(descriptors) || len(catalog.Schemas) != 20 {
 		t.Fatalf("catalog schemas = %d, want %d", len(catalog.Schemas), len(descriptors))
 	}
 	for index, entry := range catalog.Schemas {
@@ -174,7 +174,7 @@ func TestContractSchemaAllWritesEmbeddedFileSet(t *testing.T) {
 			if err := json.Unmarshal(exported, &catalog); err != nil {
 				t.Fatalf("decode catalog.json: %v", err)
 			}
-			if len(catalog.Schemas) != 18 || catalog.Schemas[0].Name != "approval-record" {
+			if len(catalog.Schemas) != 20 || catalog.Schemas[0].Name != "approval-record" {
 				t.Fatalf("catalog.json = %+v", catalog)
 			}
 			continue

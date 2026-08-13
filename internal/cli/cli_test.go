@@ -69,7 +69,7 @@ func TestDoctorReportsCompiledContracts(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode doctor output: %v", err)
 	}
-	if report.Status != "ok" || report.ContractSchemas != 18 || report.WorkerAdapters != 0 || report.Milestone != buildinfo.Milestone || len(report.Workers) != 3 {
+	if report.Status != "ok" || report.ContractSchemas != 20 || report.WorkerAdapters != 0 || report.Milestone != buildinfo.Milestone || len(report.Workers) != 3 {
 		t.Fatalf("doctor report = %+v", report)
 	}
 	for index, adapterID := range []string{"opencode", "qwen", "pi"} {
@@ -361,7 +361,7 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 	})
 
 	for _, command := range taskCommands {
-		if command == "plan" || command == "approve" || command == "run" || command == "status" || command == "verify" || command == "review" || command == "publish" || command == "accept" || command == "cleanup" || command == "abort" || command == "migrate-outcomes" {
+		if command == "plan" || command == "approve" || command == "run" || command == "status" || command == "verify" || command == "review" || command == "publish" || command == "accept" || command == "reconcile" || command == "cleanup" || command == "abort" || command == "migrate-outcomes" {
 			continue
 		}
 		var stdout, stderr bytes.Buffer

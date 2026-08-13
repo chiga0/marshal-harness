@@ -296,3 +296,175 @@ func TestRepairAuditEvent(t *testing.T) {
 func allGuards() Guard {
 	return Guard{LeaseHeld: true, DraftValid: true, BaseResolved: true, PolicyAllowed: true, AdapterProbed: true, InputsFrozen: true, WorkerProtocolComplete: true, SnapshotRecorded: true, EvidenceCurrent: true, ReportComplete: true, RequiredGatesPass: true, DecisionCurrent: true, NoChangeAllowed: true, RemoteChecksRequired: true, PublicationCurrent: true, BudgetAvailable: true, AbortAuthorized: true, ChildrenStopped: true, EvidenceFlushed: true}
 }
+
+func reconcileGuards() Guard {
+	guard := allGuards()
+	guard.ReconcileAuthorized = true
+	return guard
+}
+
+func reconcileEvent(state domain.RunState) domain.RunEvent {
+	return domain.RunEvent{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: "event:reconcile-1",
+		RunID: state.RunID, Sequence: state.Sequence + 1, Type: PublicationReconcileEventType,
+		StateFrom: state.State, StateTo: domain.StateAccepted, Timestamp: time.Unix(9, 0),
+		Actor: &domain.Actor{Type: "system", ID: "marshal-reconciliation"},
+		Payload: map[string]any{
+			"receiptDigest":     "sha256:" + "c0" + repeatHex("c", 62),
+			"reconcileId":       "reconcile:" + repeatHex("1", 64),
+			"publicationDigest": "sha256:" + repeatHex("b", 64),
+			"decisionDigest":    "sha256:" + repeatHex("d", 64),
+			"terminalReason":    "reconciled-after-merge",
+		},
+	}
+}
+
+func repeatHex(fill string, count int) string {
+	value := make([]byte, 0, count)
+	for index := 0; index < count; index++ {
+		value = append(value, fill[0])
+	}
+	return string(value)
+}
+
+func TestPublicationReconcileValidateTransition(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		current domain.State
+		mutate  func(*domain.RunEvent)
+		wantErr bool
+	}{
+		{"blocked to accepted allowed", domain.StateBlocked, nil, false},
+		{"accepted terminal forged", domain.StateAccepted, func(e *domain.RunEvent) { e.StateFrom = domain.StateAccepted }, true},
+		{"rejected terminal forged", domain.StateRejected, func(e *domain.RunEvent) { e.StateFrom = domain.StateRejected }, true},
+		{"aborted terminal forged", domain.StateAborted, func(e *domain.RunEvent) { e.StateFrom = domain.StateAborted }, true},
+		{"no change terminal forged", domain.StateNoChange, func(e *domain.RunEvent) { e.StateFrom = domain.StateNoChange }, true},
+		{"non-terminal source rejected", domain.StateCIPending, func(e *domain.RunEvent) { e.StateFrom = domain.StateCIPending }, true},
+		{"blocked to rejected rejected", domain.StateBlocked, func(e *domain.RunEvent) { e.StateTo = domain.StateRejected }, true},
+		{"blocked to blocked rejected", domain.StateBlocked, func(e *domain.RunEvent) { e.StateTo = domain.StateBlocked }, true},
+		{"omitted actor rejected", domain.StateBlocked, func(e *domain.RunEvent) { e.Actor = nil }, true},
+		{"wrong actor type rejected", domain.StateBlocked, func(e *domain.RunEvent) { e.Actor = &domain.Actor{Type: "publisher", ID: "marshal-reconciliation"} }, true},
+		{"wrong actor id rejected", domain.StateBlocked, func(e *domain.RunEvent) { e.Actor = &domain.Actor{Type: "system", ID: "marshal-review"} }, true},
+		{"wrong run id rejected", domain.StateBlocked, func(e *domain.RunEvent) { e.RunID = "run:other" }, true},
+		{"same sequence rejected", domain.StateBlocked, func(e *domain.RunEvent) { e.Sequence-- }, true},
+		{"skipped sequence rejected", domain.StateBlocked, func(e *domain.RunEvent) { e.Sequence++ }, true},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			state := domain.NewRunState("task:1", "run:1", time.Unix(1, 0))
+			state.State = test.current
+			event := reconcileEvent(state)
+			if test.mutate != nil {
+				test.mutate(&event)
+			}
+			err := ValidateTransition(state.State, state.RunID, state.Sequence, event)
+			if test.wantErr && !errors.Is(err, ErrInvalidTransition) {
+				t.Fatalf("want rejection, got err = %v", err)
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("reconcile transition rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestPublicationReconcileReduceGuards(t *testing.T) {
+	t.Parallel()
+	newState := func() domain.RunState {
+		state := domain.NewRunState("task:1", "run:1", time.Unix(1, 0))
+		state.State = domain.StateBlocked
+		state.Publication = &domain.RunPublication{Provider: "github", Repository: "org/repo", HeadBranch: "marshal/task-1", BaseBranch: "main", ExternalID: "PR_1", URI: "https://example.invalid/pr/1", HeadSHA: repeatHex("2", 40)}
+		return state
+	}
+	t.Run("authorized reconcile accepts without required-gates guard", func(t *testing.T) {
+		state := newState()
+		guard := reconcileGuards()
+		guard.RequiredGatesPass = false
+		next, err := Reduce(state, reconcileEvent(state), guard)
+		if err != nil {
+			t.Fatalf("authorized reconcile rejected: %v", err)
+		}
+		if next.State != domain.StateAccepted || next.TerminalReason != "reconciled-after-merge" {
+			t.Fatalf("reconciled state = %+v", next)
+		}
+		if next.Publication == nil || next.Publication.HeadSHA != state.Publication.HeadSHA {
+			t.Fatalf("reconcile must preserve the publication snapshot: %+v", next.Publication)
+		}
+	})
+	for name, mutate := range map[string]func(*Guard){
+		"missing reconcile authorization": func(g *Guard) { g.ReconcileAuthorized = false },
+		"missing evidence currency":       func(g *Guard) { g.EvidenceCurrent = false },
+		"missing publication currency":    func(g *Guard) { g.PublicationCurrent = false },
+		"missing decision currency":       func(g *Guard) { g.DecisionCurrent = false },
+		"missing lease":                   func(g *Guard) { g.LeaseHeld = false },
+	} {
+		mutate := mutate
+		t.Run(name, func(t *testing.T) {
+			state := newState()
+			guard := reconcileGuards()
+			mutate(&guard)
+			if _, err := Reduce(state, reconcileEvent(state), guard); !errors.Is(err, ErrInvalidTransition) {
+				t.Fatalf("unguarded reconcile error = %v", err)
+			}
+		})
+	}
+}
+
+func TestPublicationReconcileReplay(t *testing.T) {
+	t.Parallel()
+	newState := func() domain.RunState {
+		state := domain.NewRunState("task:1", "run:1", time.Unix(1, 0))
+		state.State = domain.StateBlocked
+		state.Sequence = 7
+		state.Publication = &domain.RunPublication{Provider: "github", Repository: "org/repo", HeadBranch: "marshal/task-1", BaseBranch: "main", ExternalID: "PR_1", URI: "https://example.invalid/pr/1", HeadSHA: repeatHex("2", 40)}
+		return state
+	}
+	t.Run("valid event replays to accepted and preserves publication", func(t *testing.T) {
+		state := newState()
+		event := reconcileEvent(state)
+		replayed, err := Replay(state, event)
+		if err != nil {
+			t.Fatalf("replay rejected: %v", err)
+		}
+		if replayed.State != domain.StateAccepted || replayed.Sequence != state.Sequence+1 || replayed.TerminalReason != "reconciled-after-merge" {
+			t.Fatalf("replayed = %+v", replayed)
+		}
+		if replayed.Publication == nil || *replayed.Publication != *state.Publication {
+			t.Fatalf("replay must keep the BLOCKED publication snapshot: %+v", replayed.Publication)
+		}
+	})
+	t.Run("missing payload fields fail closed", func(t *testing.T) {
+		for _, key := range []string{"receiptDigest", "reconcileId", "publicationDigest", "decisionDigest", "terminalReason"} {
+			key := key
+			t.Run(key, func(t *testing.T) {
+				state := newState()
+				event := reconcileEvent(state)
+				delete(event.Payload, key)
+				if _, err := Replay(state, event); !errors.Is(err, ErrInvalidTransition) {
+					t.Fatalf("replay without %s error = %v", key, err)
+				}
+			})
+		}
+	})
+	t.Run("omitted or forged actor rejected", func(t *testing.T) {
+		for name, mutate := range map[string]func(*domain.RunEvent){
+			"omitted":     func(e *domain.RunEvent) { e.Actor = nil },
+			"forged type": func(e *domain.RunEvent) { e.Actor = &domain.Actor{Type: "publisher", ID: "marshal-reconciliation"} },
+			"forged id":   func(e *domain.RunEvent) { e.Actor = &domain.Actor{Type: "system", ID: "marshal-github-publisher"} },
+			"wrong from":  func(e *domain.RunEvent) { e.StateFrom = domain.StateCIPending },
+			"wrong to":    func(e *domain.RunEvent) { e.StateTo = domain.StateRejected },
+		} {
+			mutate := mutate
+			t.Run(name, func(t *testing.T) {
+				state := newState()
+				event := reconcileEvent(state)
+				mutate(&event)
+				if _, err := Replay(state, event); !errors.Is(err, ErrInvalidTransition) {
+					t.Fatalf("replay of forged reconcile error = %v", err)
+				}
+			})
+		}
+	})
+}

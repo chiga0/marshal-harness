@@ -23,6 +23,12 @@ const AbortEventType = "run.aborted"
 // and never inside the terminalReason value.
 const AbortTerminalReason = "aborted-by-operator"
 
+// PublicationReconcileEventType is the ADR 0026 typed reconciliation event.
+// It is the single named exception to terminal-state immutability: it may
+// move a BLOCKED run to ACCEPTED after an accept-after-merge reconcile and is
+// rejected for every other state combination.
+const PublicationReconcileEventType = "publication.reconciled"
+
 var allowed = map[domain.State]map[domain.State]bool{
 	domain.StateCreated:         {domain.StatePlanned: true},
 	domain.StatePlanned:         {domain.StateReady: true},
@@ -57,6 +63,10 @@ type Guard struct {
 	AbortAuthorized        bool
 	ChildrenStopped        bool
 	EvidenceFlushed        bool
+	// ReconcileAuthorized is set only when the SCMMergeReceipt, the
+	// PublicationReconcileRecord and the current-ledger recheck have all been
+	// validated for an ADR 0026 typed reconciliation.
+	ReconcileAuthorized bool
 }
 
 func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain.RunState, error) {
@@ -68,6 +78,14 @@ func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain
 			return current, fmt.Errorf("%w: run lease is not held", ErrInvalidTransition)
 		}
 		return Replay(current, event)
+	}
+	if event.Type == PublicationReconcileEventType {
+		if !guard.LeaseHeld {
+			return current, fmt.Errorf("%w: run lease is not held", ErrInvalidTransition)
+		}
+		if !guard.ReconcileAuthorized || !guard.EvidenceCurrent || !guard.PublicationCurrent || !guard.DecisionCurrent {
+			return current, fmt.Errorf("%w: reconciliation requires the authorized receipt, record and current-ledger recheck", ErrInvalidTransition)
+		}
 	}
 	if !guard.LeaseHeld {
 		return current, fmt.Errorf("%w: run lease is not held", ErrInvalidTransition)
@@ -87,7 +105,14 @@ func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain
 	if event.StateTo == domain.StateReviewPending && (!guard.EvidenceCurrent || !guard.ReportComplete) {
 		return current, fmt.Errorf("%w: complete current report required", ErrInvalidTransition)
 	}
-	if (event.StateTo == domain.StateAccepted || event.StateTo == domain.StatePublishing) && (!guard.EvidenceCurrent || !guard.RequiredGatesPass) {
+	// Reconcile path choice (declared): the allowed map never opens a wildcard
+	// BLOCKED exit. The ADR 0026 reconcile event instead reuses the
+	// StateTo==StateAccepted evidence gate while exempting RequiredGatesPass:
+	// the merged head's all-green required checks are independently proven by
+	// the re-verified, materialized RemoteCheckRecord, and the ReviewDecision
+	// and current-ledger recheck remain mandatory through EvidenceCurrent,
+	// DecisionCurrent, PublicationCurrent and ReconcileAuthorized above.
+	if (event.StateTo == domain.StateAccepted || event.StateTo == domain.StatePublishing) && (!guard.EvidenceCurrent || (event.Type != PublicationReconcileEventType && !guard.RequiredGatesPass)) {
 		return current, fmt.Errorf("%w: current passing evidence required", ErrInvalidTransition)
 	}
 	if event.StateTo == domain.StateAccepted && current.State == domain.StateCIPending && !guard.PublicationCurrent {
@@ -156,6 +181,22 @@ func ValidateTransition(current domain.State, runID string, sequence uint64, eve
 		}
 		return nil
 	}
+	if event.Type == PublicationReconcileEventType {
+		// Single named terminal exception (ADR 0026): only the accept-after-
+		// merge typed reconciliation may move BLOCKED to ACCEPTED. Every other
+		// terminal state and every other combination of this event type is
+		// rejected; the allowed map keeps no wildcard BLOCKED exit.
+		if current != domain.StateBlocked || event.StateTo != domain.StateAccepted {
+			return fmt.Errorf("%w: publication.reconciled only allows BLOCKED -> ACCEPTED", ErrInvalidTransition)
+		}
+		if event.Actor == nil || event.Actor.Type != "system" || event.Actor.ID != "marshal-reconciliation" {
+			return fmt.Errorf("%w: publication.reconciled must be recorded by system/marshal-reconciliation", ErrInvalidTransition)
+		}
+		if event.RunID != runID || event.Sequence != sequence+1 || event.StateFrom != current {
+			return fmt.Errorf("%w: event identity or sequence does not match current state", ErrInvalidTransition)
+		}
+		return nil
+	}
 	if current.Terminal() {
 		return fmt.Errorf("%w: terminal state %s", ErrInvalidTransition, current)
 	}
@@ -177,6 +218,17 @@ func Replay(current domain.RunState, event domain.RunEvent) (domain.RunState, er
 		next.Sequence = event.Sequence
 		next.UpdatedAt = event.Timestamp.UTC()
 		return next, nil
+	}
+	if event.Type == PublicationReconcileEventType {
+		// Replay fails closed on any missing required payload field. The
+		// BLOCKED snapshot's Publication value is intentionally preserved: the
+		// reconcile migrates the terminal state without rewriting publication
+		// identity.
+		for _, key := range []string{"receiptDigest", "reconcileId", "publicationDigest", "decisionDigest", "terminalReason"} {
+			if payloadString(event.Payload, key) == "" {
+				return current, fmt.Errorf("%w: publication.reconciled lacks required payload field %s", ErrInvalidTransition, key)
+			}
+		}
 	}
 	next := current
 	next.State, next.Sequence, next.UpdatedAt = event.StateTo, event.Sequence, event.Timestamp.UTC()

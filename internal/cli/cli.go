@@ -61,6 +61,7 @@ var taskCommands = []string{
 	"rework",
 	"publish",
 	"accept",
+	"reconcile",
 	"abort",
 	"cleanup",
 	"migrate-outcomes",
@@ -689,6 +690,9 @@ func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if args[0] == "accept" {
 		return runTaskAccept(ctx, args[1:], stdout, stderr)
 	}
+	if args[0] == "reconcile" {
+		return runTaskReconcile(ctx, args[1:], stdout, stderr)
+	}
 	if args[0] == "review" {
 		return runTaskReview(ctx, args[1:], stdout, stderr)
 	}
@@ -1203,9 +1207,12 @@ func runTaskAccept(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "CI 验收不可用：%v\n", err)
 		return ExitUnavailable
 	}
-	result, err := publication.ObserveChecks(ctx, publication.CheckInput{StateRoot: location.StateRoot, RunID: *runID, Observer: publisher, Validator: validator})
+	result, err := publication.ObserveChecks(ctx, publication.CheckInput{StateRoot: location.StateRoot, RunID: *runID, Observer: publisher, MergeObserver: publisher, Validator: validator})
 	if err != nil {
 		fmt.Fprintf(stderr, "CI 验收失败（状态 %s）：%v\n", result.State.State, err)
+		if inspected, inspectErr := runstore.New(location.StateRoot).Inspect(*runID); inspectErr == nil && inspected.State == domain.StateBlocked {
+			fmt.Fprintf(stderr, "Run 已进入终态 BLOCKED；若 PR 已被合并且 required checks 全绿，可运行补偿命令：marshal task reconcile --run %s --actor ID\n", *runID)
+		}
 		return ExitFailure
 	}
 	if *jsonOutput {
@@ -1218,6 +1225,66 @@ func runTaskAccept(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	if result.State.State == domain.StateCIPending {
 		return ExitUnavailable
+	}
+	if result.State.State != domain.StateAccepted {
+		return ExitFailure
+	}
+	return ExitOK
+}
+
+func runTaskReconcile(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task reconcile", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	runID := flags.String("run", "", "Run ID")
+	actor := flags.String("actor", "", "reconcile 执行者身份（缺省观察 GitHub 维护者 login）")
+	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
+		fmt.Fprintln(stderr, "用法：marshal task reconcile --run RUN_ID [--actor ID] [--json]")
+		return ExitUsage
+	}
+	if domain.ValidateID(*runID) != nil {
+		fmt.Fprintln(stderr, "reconcile 失败：Run ID 无效。")
+		return ExitUsage
+	}
+	location, err := repository.Discover(".")
+	if err != nil {
+		fmt.Fprintf(stderr, "reconcile 失败：%v\n", err)
+		return ExitFailure
+	}
+	if err := location.ValidateIdentity(); err != nil {
+		fmt.Fprintf(stderr, "reconcile 失败：%v\n", err)
+		return ExitFailure
+	}
+	publisher, validator, err := publisherFromEnvironment(location)
+	if err != nil {
+		fmt.Fprintf(stderr, "reconcile 不可用：%v\n", err)
+		return ExitUnavailable
+	}
+	reconciledBy := strings.TrimSpace(*actor)
+	if reconciledBy == "" {
+		login, actorErr := publisher.ActorLogin(ctx)
+		if actorErr != nil {
+			fmt.Fprintf(stderr, "reconcile 失败：无法观察维护者身份：%v\n", actorErr)
+			return ExitFailure
+		}
+		reconciledBy = login
+	}
+	result, err := publication.Reconcile(ctx, publication.ReconcileInput{
+		StateRoot: location.StateRoot, RunID: *runID,
+		MergeObserver: publisher, CheckObserver: publisher, Validator: validator,
+		ReconciledBy: reconciledBy, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "reconcile 失败（状态 %s）：%s\n", result.State.State, redactLocalPaths(err.Error(), location.RepositoryRoot, location.StateRoot))
+		return ExitFailure
+	}
+	if *jsonOutput {
+		if err := writeRedactedJSON(stdout, result, location.RepositoryRoot, location.StateRoot); err != nil {
+			fmt.Fprintf(stderr, "输出 reconcile 结果失败：%v\n", err)
+			return ExitFailure
+		}
+	} else {
+		fmt.Fprintf(stdout, "Run：%s\n状态：%s\nReconcile 记录：%s\n", *runID, result.State.State, result.Record.ReconcileID)
 	}
 	if result.State.State != domain.StateAccepted {
 		return ExitFailure
@@ -1808,6 +1875,32 @@ func writeJSON(output io.Writer, value any) error {
 	return nil
 }
 
+// redactLocalPaths replaces local repository/state roots with a fixed token
+// so reconcile diagnostics and output never carry absolute local paths.
+func redactLocalPaths(document string, roots ...string) string {
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		document = strings.ReplaceAll(document, root, "<local-path>")
+	}
+	return document
+}
+
+// writeRedactedJSON encodes value and redacts the local repository/state
+// roots before writing: RunState carries local-only provenance such as the
+// worktree path, which must never surface in command output.
+func writeRedactedJSON(output io.Writer, value any, roots ...string) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return errors.New("encode JSON: " + err.Error())
+	}
+	if _, err := fmt.Fprintln(output, redactLocalPaths(string(data), roots...)); err != nil {
+		return err
+	}
+	return nil
+}
+
 func writeUsage(output io.Writer) {
 	fmt.Fprintln(output, `Marshal：证据门禁式 Coding Agent 编排器
 
@@ -1826,9 +1919,12 @@ func writeUsage(output io.Writer) {
   marshal task review --run RUN_ID [--decision PATH] [--json]
   marshal task publish --run RUN_ID [--json]
   marshal task accept --run RUN_ID [--json]
+  marshal task reconcile --run RUN_ID [--actor ID] [--json]
   marshal task <COMMAND>
 
-OpenCode、Qwen Code 与 Pi Worker 只产生 Attempt 与真实快照；verify、review、publish 与 accept 是彼此独立的证据门禁。发布命令还要求 absolute MARSHAL_GH_PATH 与 MARSHAL_GH_CONFIG_DIR。`)
+OpenCode、Qwen Code 与 Pi Worker 只产生 Attempt 与真实快照；verify、review、publish 与 accept 是彼此独立的证据门禁。发布命令还要求 absolute MARSHAL_GH_PATH 与 MARSHAL_GH_CONFIG_DIR。
+
+task reconcile 是 ADR 0026 的 accept-after-merge 补偿命令：仅当 Run 处于发布后的终态 BLOCKED、PR 已被合并且 required checks 全绿时，才将其安全迁移到 ACCEPTED。`)
 }
 
 // runServe starts the read-only dashboard (experimental). It exposes no control
