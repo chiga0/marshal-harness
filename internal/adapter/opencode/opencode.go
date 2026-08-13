@@ -111,12 +111,16 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
-	config, err := permissionConfigFor(request.ExecutionProfile, worktree, controlRoot, readOnly)
+	tools, err := declaredWorkerTools(controlRoot, request.TaskSpecPath)
+	if err != nil {
+		return port.TerminalLaunchSpec{}, err
+	}
+	config, err := permissionConfigFor(request.ExecutionProfile, worktree, controlRoot, readOnly, tools)
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
 	environment := terminalWorkerEnvironment(worktree, config)
-	if err := validateResolvedConfig(ctx, a.executable, environment, controlRoot, worktree, request.ExecutionProfile, readOnly); err != nil {
+	if err := validateResolvedConfig(ctx, a.executable, environment, controlRoot, worktree, request.ExecutionProfile, readOnly, tools); err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
 	return port.TerminalLaunchSpec{
@@ -360,6 +364,11 @@ type PreparedAttempt struct {
 	ResultRelPath   string
 	ResultPath      string
 
+	// WorkerTools is the declared worker.tools allowlist extracted from the
+	// frozen TaskSpec; nil means the profile defaults apply. It is bound to
+	// the integrity digest because it drives the permission configuration.
+	WorkerTools []string
+
 	readOnlyScope readOnlyScope
 	integrity     string
 }
@@ -404,6 +413,10 @@ func (p *PreparedAttempt) integrityDigest() string {
 	field(p.PromptRelPath)
 	field(p.ResultRelPath)
 	field(p.ResultPath)
+	count(len(p.WorkerTools))
+	for _, tool := range p.WorkerTools {
+		field(tool)
+	}
 	count(len(p.readOnlyScope.allowPaths))
 	for _, entry := range p.readOnlyScope.allowPaths {
 		field(entry)
@@ -535,7 +548,11 @@ func (a *Adapter) prepareAttempt(identity ExecutableIdentity, request workerRequ
 	if err != nil {
 		return nil, err
 	}
-	config, err := permissionConfigFor(request.ExecutionProfile, worktree, controlRoot, readOnly)
+	tools, err := declaredWorkerTools(controlRoot, request.TaskSpecPath)
+	if err != nil {
+		return nil, err
+	}
+	config, err := permissionConfigFor(request.ExecutionProfile, worktree, controlRoot, readOnly, tools)
 	if err != nil {
 		return nil, err
 	}
@@ -557,6 +574,7 @@ func (a *Adapter) prepareAttempt(identity ExecutableIdentity, request workerRequ
 		PromptRelPath:    request.PromptPath,
 		ResultRelPath:    request.ResultPath,
 		ResultPath:       resultPath,
+		WorkerTools:      cloneStrings(tools),
 		readOnlyScope:    readOnly,
 	}
 	prepared.integrity = prepared.integrityDigest()
@@ -617,7 +635,7 @@ func (a *Adapter) runLocalAttempt(runCtx context.Context, prepared *PreparedAtte
 	if _, err := prepared.evidenceDirectory(); err != nil {
 		return ExecutionObservation{}, err
 	}
-	if err := validateResolvedConfig(runCtx, a.executable, prepared.Environment, prepared.ControlRoot, prepared.WorkingDirectory, prepared.ExecutionProfile, prepared.readOnlyScope); err != nil {
+	if err := validateResolvedConfig(runCtx, a.executable, prepared.Environment, prepared.ControlRoot, prepared.WorkingDirectory, prepared.ExecutionProfile, prepared.readOnlyScope, prepared.WorkerTools); err != nil {
 		return ExecutionObservation{}, err
 	}
 	command := exec.Command(a.executable, prepared.Arguments...)
@@ -720,7 +738,7 @@ func (a *Adapter) DecodeAttempt(prepared *PreparedAttempt, observation Execution
 		"toolCalls": capture.toolCalls, "inputTokens": capture.inputTokens,
 		"outputTokens": capture.outputTokens, "capturedBytes": len(observation.StdoutRaw),
 		"outputTruncated": observation.OutputTruncated || stdoutViolated, "permissionDenied": fatalDenials > 0,
-		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials,
+		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials, "toolNames": denials.SortedToolNames(capture.toolNames),
 		"exitCode": observation.ExitCode, "signal": observation.Signal, "stderrBytes": len(observation.Stderr), "stderrTruncated": observation.StderrTruncated || stderrViolated,
 		"contextError": contextErrorOf(observation.ContextErr),
 	}, "", "  ")
@@ -839,6 +857,7 @@ type captureResult struct {
 	inputTokens   int
 	outputTokens  int
 	denials       []denials.RawDenial
+	toolNames     []string
 	limitExceeded bool
 	err           error
 }
@@ -940,6 +959,12 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 	}
 	if event.Part.State.Status == "error" && denials.IsPermissionError(event.Part.State.Error) {
 		result.denials = append(result.denials, denials.RawDenial{Tool: event.Part.Tool, Input: event.Part.State.Input})
+	} else if event.Part.Tool != "" && (event.Part.State.Status == "completed" || event.Part.State.Status == "error") {
+		// Allowlist reconciliation is a read-only side channel: every
+		// terminal non-denial tool completion is recorded by name so the
+		// Verification tool-allowlist gate can reconcile successful calls
+		// against the declared allowlist. Denials never count as success.
+		result.toolNames = append(result.toolNames, event.Part.Tool)
 	}
 	return nil
 }
@@ -1012,12 +1037,21 @@ func validateSession(policy, sessionID string) error {
 	}
 }
 
+// workspaceBashRules is the frozen workspace-write bash permission map:
+// allow by default with the fixed dangerous-command deny list.
+func workspaceBashRules() map[string]string {
+	return map[string]string{"*": "allow", "/usr/bin/curl *": "deny", "/usr/bin/ssh *": "deny", "bash *": "deny", "curl *": "deny", "env *": "deny", "gh *": "deny", "git commit *": "deny", "git push *": "deny", "git tag *": "deny", "glab *": "deny", "nc *": "deny", "nohup *": "deny", "scp *": "deny", "sh *": "deny", "ssh *": "deny", "sudo *": "deny", "wget *": "deny", "xargs *": "deny"}
+}
+
+// workspaceBashDenyPatterns is the exact deny list every resolved workspace-
+// write bash configuration must carry, declared or not.
+var workspaceBashDenyPatterns = []string{"/usr/bin/curl *", "/usr/bin/ssh *", "bash *", "curl *", "env *", "gh *", "git commit *", "git push *", "git tag *", "glab *", "nc *", "nohup *", "scp *", "sh *", "ssh *", "sudo *", "wget *", "xargs *"}
+
 func permissionConfig(controlRoot string) (string, error) {
 	inputRoot := filepath.ToSlash(filepath.Join(controlRoot, "input")) + "/**"
 	outputRoot := filepath.ToSlash(filepath.Join(controlRoot, "output")) + "/**"
-	bash := map[string]string{"*": "allow", "/usr/bin/curl *": "deny", "/usr/bin/ssh *": "deny", "bash *": "deny", "curl *": "deny", "env *": "deny", "gh *": "deny", "git commit *": "deny", "git push *": "deny", "git tag *": "deny", "glab *": "deny", "nc *": "deny", "nohup *": "deny", "scp *": "deny", "sh *": "deny", "ssh *": "deny", "sudo *": "deny", "wget *": "deny", "xargs *": "deny"}
 	permission := map[string]any{
-		"*": "deny", "bash": bash,
+		"*": "deny", "bash": workspaceBashRules(),
 		"edit":               map[string]string{"*": "allow", inputRoot: "deny", outputRoot: "allow"},
 		"external_directory": map[string]string{"*": "deny", inputRoot: "allow", outputRoot: "allow"},
 		"glob":               "allow", "grep": "allow", "list": "allow", "lsp": "allow", "question": "deny", "read": "allow", "skill": "deny", "task": "deny", "webfetch": "deny", "websearch": "deny",
@@ -1025,6 +1059,148 @@ func permissionConfig(controlRoot string) (string, error) {
 	config := map[string]any{"autoupdate": false, "permission": permission, "share": "disabled", "agent": map[string]any{"build": map[string]any{"permission": permission}}}
 	data, err := json.Marshal(config)
 	return string(data), err
+}
+
+// declaredWorkerTools reads the frozen TaskSpec worker.tools declaration
+// from the control input. A nil result means no allowlist is declared and
+// the frozen profile configuration applies unchanged. Any read or format
+// failure fails closed before launch; the enforcement layer never runs on a
+// partial declaration.
+func declaredWorkerTools(controlRoot, taskSpecPath string) ([]string, error) {
+	path, err := existingPathWithin(controlRoot, taskSpecPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve TaskSpec: %w", err)
+	}
+	data, err := readBounded(path, maxPromptBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read TaskSpec: %w", err)
+	}
+	tools, err := denials.ParseDeclaredWorkerTools(data)
+	if err != nil {
+		return nil, fmt.Errorf("worker tools: %w", err)
+	}
+	return tools, nil
+}
+
+// toolGrantSet converts a validated worker.tools declaration into its grant
+// lookup for permission-map construction and read-back validation.
+func toolGrantSet(tools []string) map[string]bool {
+	granted := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		granted[tool] = true
+	}
+	return granted
+}
+
+func marshalPermissionConfig(permission map[string]any) (string, error) {
+	config := map[string]any{"autoupdate": false, "permission": permission, "share": "disabled", "agent": map[string]any{"build": map[string]any{"permission": permission}}}
+	data, err := json.Marshal(config)
+	return string(data), err
+}
+
+// declaredPermissionConfig builds the minimal workspace-write permission map
+// for a declared worker.tools allowlist: the global wildcard denies
+// everything, each declared word grants exactly its own tool (read→read,
+// grep→grep, find→glob, ls→list, edit→edit with control input locked
+// read-only, write→write, bash→the frozen workspace bash rules), every
+// undeclared tool key is explicitly denied, and lsp is always denied.
+func declaredPermissionConfig(controlRoot string, tools []string) (string, error) {
+	inputRoot := filepath.ToSlash(filepath.Join(controlRoot, "input")) + "/**"
+	outputRoot := filepath.ToSlash(filepath.Join(controlRoot, "output")) + "/**"
+	granted := toolGrantSet(tools)
+	permission := map[string]any{
+		"*":                  "deny",
+		"external_directory": map[string]string{"*": "deny", inputRoot: "allow", outputRoot: "allow"},
+		"lsp":                "deny",
+		"question":           "deny",
+		"skill":              "deny",
+		"task":               "deny",
+		"webfetch":           "deny",
+		"websearch":          "deny",
+	}
+	permission["read"] = grantOrDeny(granted["read"])
+	permission["grep"] = grantOrDeny(granted["grep"])
+	permission["glob"] = grantOrDeny(granted["find"])
+	permission["list"] = grantOrDeny(granted["ls"])
+	permission["write"] = grantOrDeny(granted["write"])
+	if granted["edit"] {
+		permission["edit"] = map[string]string{"*": "allow", inputRoot: "deny", outputRoot: "allow"}
+	} else {
+		permission["edit"] = "deny"
+	}
+	if granted["bash"] {
+		permission["bash"] = workspaceBashRules()
+	} else {
+		permission["bash"] = "deny"
+	}
+	return marshalPermissionConfig(permission)
+}
+
+// declaredReadOnlyPermissionConfig converges the read-only profile (ADR
+// 0014) onto a declared worker.tools allowlist: read-class tools are granted
+// exactly per declaration, lsp stays denied, edit and write stay locked to
+// control output and the TaskSpec artifact allowPaths (write is granted that
+// same scoped map only when declared), and the read-only bash whitelist is
+// non-empty only when bash is declared.
+func declaredReadOnlyPermissionConfig(worktree, controlRoot string, scope readOnlyScope, tools []string) (string, error) {
+	inputRoot := filepath.ToSlash(filepath.Join(controlRoot, "input")) + "/**"
+	outputRoot := filepath.ToSlash(filepath.Join(controlRoot, "output")) + "/**"
+	granted := toolGrantSet(tools)
+	scopedWriteTools := func() map[string]string {
+		rules := map[string]string{"*": "deny", inputRoot: "deny", outputRoot: "allow"}
+		for _, allowPath := range scope.allowPaths {
+			rules[filepath.ToSlash(filepath.Join(worktree, allowPath))] = "allow"
+		}
+		return rules
+	}
+	// The whitelist entries are always present so the resolved-config
+	// read-back can prove each command's grant or denial explicitly; the
+	// allow entries exist only when bash is declared.
+	bash := map[string]string{"*": "deny"}
+	for _, command := range readOnlyBashAllowlist {
+		if granted["bash"] {
+			bash[command+" *"] = "allow"
+		} else {
+			bash[command+" *"] = "deny"
+		}
+	}
+	external := map[string]string{"*": "deny", inputRoot: "allow", outputRoot: "allow"}
+	for _, entry := range readOnlyExternalEntries(worktree, scope.readRoots) {
+		external[entry] = "allow"
+	}
+	permission := map[string]any{
+		"*":                  "deny",
+		"bash":               bash,
+		"external_directory": external,
+		"lsp":                "deny",
+		"question":           "deny",
+		"skill":              "deny",
+		"task":               "deny",
+		"webfetch":           "deny",
+		"websearch":          "deny",
+	}
+	permission["read"] = grantOrDeny(granted["read"])
+	permission["grep"] = grantOrDeny(granted["grep"])
+	permission["glob"] = grantOrDeny(granted["find"])
+	permission["list"] = grantOrDeny(granted["ls"])
+	if granted["edit"] {
+		permission["edit"] = scopedWriteTools()
+	} else {
+		permission["edit"] = "deny"
+	}
+	if granted["write"] {
+		permission["write"] = scopedWriteTools()
+	} else {
+		permission["write"] = "deny"
+	}
+	return marshalPermissionConfig(permission)
+}
+
+func grantOrDeny(granted bool) string {
+	if granted {
+		return "allow"
+	}
+	return "deny"
 }
 
 // readOnlyBashAllowlist is the fixed read-only command whitelist of the
@@ -1036,10 +1212,18 @@ func permissionConfig(controlRoot string) (string, error) {
 var readOnlyBashAllowlist = []string{"cat", "file", "find", "grep", "head", "ls", "rg", "sed -n", "stat", "tail", "wc"}
 
 // permissionConfigFor selects the profile-specific permission configuration:
-// workspace-write keeps the existing fail-closed development grant, and
-// read-only builds the ADR 0014 mapping (edit locked to artifact allowPaths,
-// bash locked to the read-only whitelist, readRoots read-permitted).
-func permissionConfigFor(profile, worktree, controlRoot string, scope readOnlyScope) (string, error) {
+// a declared worker.tools allowlist converges the profile onto the minimal
+// declared grant; otherwise workspace-write keeps the existing fail-closed
+// development grant, and read-only builds the ADR 0014 mapping (edit locked
+// to artifact allowPaths, bash locked to the read-only whitelist, readRoots
+// read-permitted).
+func permissionConfigFor(profile, worktree, controlRoot string, scope readOnlyScope, tools []string) (string, error) {
+	if len(tools) > 0 {
+		if profile == "read-only" {
+			return declaredReadOnlyPermissionConfig(worktree, controlRoot, scope, tools)
+		}
+		return declaredPermissionConfig(controlRoot, tools)
+	}
 	if profile == "read-only" {
 		return readOnlyPermissionConfig(worktree, controlRoot, scope)
 	}
@@ -1108,8 +1292,14 @@ func readOnlyExternalEntries(worktree string, readRoots []string) []string {
 	return entries
 }
 
-func validateResolvedConfig(ctx context.Context, executable string, environment []string, controlRoot, worktree, profile string, readOnly readOnlyScope) error {
+func validateResolvedConfig(ctx context.Context, executable string, environment []string, controlRoot, worktree, profile string, readOnly readOnlyScope, tools []string) error {
 	check := func(permission map[string]any) error {
+		if len(tools) > 0 {
+			if profile == "read-only" {
+				return validateDeclaredReadOnlyPermissionMap(permission, controlRoot, worktree, readOnly, tools)
+			}
+			return validateDeclaredPermissionMap(permission, controlRoot, tools)
+		}
 		if profile == "read-only" {
 			return validateReadOnlyPermissionMap(permission, controlRoot, worktree, readOnly)
 		}
@@ -1213,9 +1403,162 @@ func validatePermissionMap(permission map[string]any, controlRoot string) error 
 	if !ok {
 		return errors.New("bash rules are missing")
 	}
-	for _, pattern := range []string{"/usr/bin/curl *", "/usr/bin/ssh *", "bash *", "curl *", "env *", "gh *", "git commit *", "git push *", "git tag *", "glab *", "nc *", "nohup *", "scp *", "sh *", "ssh *", "sudo *", "wget *", "xargs *"} {
+	for _, pattern := range workspaceBashDenyPatterns {
 		if bash[pattern] != "deny" {
 			return fmt.Errorf("bash pattern %q is not denied", pattern)
+		}
+	}
+	return nil
+}
+
+// validateDeclaredPermissionMap read-back-checks a resolved workspace-write
+// configuration against the same declared worker.tools allowlist that built
+// it: the global wildcard and the interactive/network surfaces stay denied,
+// every tool key matches its declaration exactly, lsp is never granted, and
+// a declared bash keeps the full dangerous-command deny list.
+func validateDeclaredPermissionMap(permission map[string]any, controlRoot string, tools []string) error {
+	if permission["*"] != "deny" {
+		return errors.New("global wildcard is not denied")
+	}
+	for _, name := range []string{"question", "skill", "task", "webfetch", "websearch", "lsp"} {
+		if permission[name] != "deny" {
+			return fmt.Errorf("%s is not denied", name)
+		}
+	}
+	external, ok := permission["external_directory"].(map[string]any)
+	if !ok || external["*"] != "deny" || external[filepath.ToSlash(filepath.Join(controlRoot, "input"))+"/**"] != "allow" || external[filepath.ToSlash(filepath.Join(controlRoot, "output"))+"/**"] != "allow" {
+		return errors.New("attempt-scoped external directory rules are missing")
+	}
+	granted := toolGrantSet(tools)
+	expect := func(name string, want bool) error {
+		wantValue := "deny"
+		if want {
+			wantValue = "allow"
+		}
+		if permission[name] != wantValue {
+			return fmt.Errorf("%s does not match the declared allowlist (want %s)", name, wantValue)
+		}
+		return nil
+	}
+	for _, check := range []struct {
+		name    string
+		granted bool
+	}{
+		{"read", granted["read"]}, {"grep", granted["grep"]},
+		{"glob", granted["find"]}, {"list", granted["ls"]}, {"write", granted["write"]},
+	} {
+		if err := expect(check.name, check.granted); err != nil {
+			return err
+		}
+	}
+	inputRoot := filepath.ToSlash(filepath.Join(controlRoot, "input")) + "/**"
+	if granted["edit"] {
+		edit, ok := permission["edit"].(map[string]any)
+		if !ok || edit["*"] != "allow" || edit[inputRoot] != "deny" {
+			return errors.New("declared edit rules are missing or do not keep control input read-only")
+		}
+	} else if permission["edit"] != "deny" {
+		return errors.New("undeclared edit is not denied")
+	}
+	if granted["bash"] {
+		bash, ok := permission["bash"].(map[string]any)
+		if !ok {
+			return errors.New("declared bash rules are missing")
+		}
+		for _, pattern := range workspaceBashDenyPatterns {
+			if bash[pattern] != "deny" {
+				return fmt.Errorf("bash pattern %q is not denied", pattern)
+			}
+		}
+	} else if permission["bash"] != "deny" {
+		return errors.New("undeclared bash is not denied")
+	}
+	return nil
+}
+
+// validateDeclaredReadOnlyPermissionMap read-back-checks a resolved
+// read-only configuration against the same declared worker.tools allowlist
+// that built it, including the ADR 0014 scoped edit/write maps and the bash
+// whitelist that is non-empty only when bash is declared.
+func validateDeclaredReadOnlyPermissionMap(permission map[string]any, controlRoot, worktree string, scope readOnlyScope, tools []string) error {
+	if permission["*"] != "deny" {
+		return errors.New("global wildcard is not denied")
+	}
+	for _, name := range []string{"question", "skill", "task", "webfetch", "websearch", "lsp"} {
+		if permission[name] != "deny" {
+			return fmt.Errorf("%s is not denied", name)
+		}
+	}
+	inputRoot := filepath.ToSlash(filepath.Join(controlRoot, "input")) + "/**"
+	outputRoot := filepath.ToSlash(filepath.Join(controlRoot, "output")) + "/**"
+	external, ok := permission["external_directory"].(map[string]any)
+	if !ok || external["*"] != "deny" || external[inputRoot] != "allow" || external[outputRoot] != "allow" {
+		return errors.New("attempt-scoped external directory rules are missing")
+	}
+	for _, entry := range readOnlyExternalEntries(worktree, scope.readRoots) {
+		if external[entry] != "allow" {
+			return fmt.Errorf("readRoot external directory rule %q is missing", entry)
+		}
+	}
+	granted := toolGrantSet(tools)
+	expect := func(name string, want bool) error {
+		wantValue := "deny"
+		if want {
+			wantValue = "allow"
+		}
+		if permission[name] != wantValue {
+			return fmt.Errorf("%s does not match the declared allowlist (want %s)", name, wantValue)
+		}
+		return nil
+	}
+	for _, check := range []struct {
+		name    string
+		granted bool
+	}{
+		{"read", granted["read"]}, {"grep", granted["grep"]},
+		{"glob", granted["find"]}, {"list", granted["ls"]},
+	} {
+		if err := expect(check.name, check.granted); err != nil {
+			return err
+		}
+	}
+	checkScopedWrite := func(name string) error {
+		rules, ok := permission[name].(map[string]any)
+		if !ok || rules["*"] != "deny" || rules[inputRoot] != "deny" || rules[outputRoot] != "allow" {
+			return fmt.Errorf("declared %s rules are missing or not scoped to the artifact write domain", name)
+		}
+		for _, allowPath := range scope.allowPaths {
+			if rules[filepath.ToSlash(filepath.Join(worktree, allowPath))] != "allow" {
+				return fmt.Errorf("declared %s rules do not cover allowPath %q", name, allowPath)
+			}
+		}
+		return nil
+	}
+	if granted["edit"] {
+		if err := checkScopedWrite("edit"); err != nil {
+			return err
+		}
+	} else if permission["edit"] != "deny" {
+		return errors.New("undeclared edit is not denied")
+	}
+	if granted["write"] {
+		if err := checkScopedWrite("write"); err != nil {
+			return err
+		}
+	} else if permission["write"] != "deny" {
+		return errors.New("undeclared write is not denied")
+	}
+	bash, ok := permission["bash"].(map[string]any)
+	if !ok || bash["*"] != "deny" {
+		return errors.New("bash rules are missing")
+	}
+	for _, command := range readOnlyBashAllowlist {
+		want := "deny"
+		if granted["bash"] {
+			want = "allow"
+		}
+		if bash[command+" *"] != want {
+			return fmt.Errorf("bash command %q does not match the declared allowlist (want %s)", command, want)
 		}
 	}
 	return nil

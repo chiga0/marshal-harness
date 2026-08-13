@@ -57,6 +57,59 @@ func toolsForProfile(profile string) string {
 	return workerTools
 }
 
+// toolsArgFor resolves the effective --tools value. Undeclared tasks keep the
+// frozen profile default (backward compatibility). Declared tasks receive
+// exactly the declared set intersected with Pi's tool surface for the
+// profile, in frozen surface order; Pi fails closed before launch when it
+// cannot provide a declared tool (bash is never available, write is
+// unavailable under the read-only profile). The declaration never expands the
+// profile surface.
+func toolsArgFor(profile string, tools []string) (string, error) {
+	if len(tools) == 0 {
+		return toolsForProfile(profile), nil
+	}
+	surface := strings.Split(toolsForProfile(profile), ",")
+	supported := make(map[string]bool, len(surface))
+	for _, tool := range surface {
+		supported[tool] = true
+	}
+	for _, tool := range tools {
+		if !supported[tool] {
+			return "", fmt.Errorf("pi cannot provide declared tool %q under execution profile %q", tool, profile)
+		}
+	}
+	selected := make([]string, 0, len(tools))
+	for _, tool := range surface {
+		for _, declared := range tools {
+			if declared == tool {
+				selected = append(selected, tool)
+				break
+			}
+		}
+	}
+	return strings.Join(selected, ","), nil
+}
+
+// declaredWorkerTools reads the frozen TaskSpec worker.tools declaration
+// from the control input. A nil result means no allowlist is declared and
+// the frozen profile defaults apply. Any read or format failure fails closed
+// before launch; the enforcement layer never runs on a partial declaration.
+func declaredWorkerTools(controlRoot, taskSpecPath string) ([]string, error) {
+	path, err := existingPathWithin(controlRoot, taskSpecPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve TaskSpec: %w", err)
+	}
+	data, err := readBounded(path, maxResultBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read TaskSpec: %w", err)
+	}
+	tools, err := denials.ParseDeclaredWorkerTools(data)
+	if err != nil {
+		return nil, fmt.Errorf("worker tools: %w", err)
+	}
+	return tools, nil
+}
+
 var (
 	ErrUnsupportedVersion       = errors.New("unsupported pi version")
 	ErrOutputLimit              = errors.New("pi output limit exceeded")
@@ -128,10 +181,18 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
+	tools, err := declaredWorkerTools(controlRoot, request.TaskSpecPath)
+	if err != nil {
+		return port.TerminalLaunchSpec{}, err
+	}
+	arguments, err := buildTerminalArgsWithTools(request.ExecutionProfile, readModel(controlRoot, request.TaskSpecPath), tools)
+	if err != nil {
+		return port.TerminalLaunchSpec{}, err
+	}
 	return port.TerminalLaunchSpec{
 		AdapterID: adapterID, AdapterVersion: adapterVersion, RunID: request.RunID, AttemptID: request.AttemptID, BinaryVersion: identity.version,
 		Executable: identity.path, ExecutableDigest: identity.digest, WorkingDirectory: worktree,
-		Arguments:   buildTerminalArgs(request.ExecutionProfile, readModel(controlRoot, request.TaskSpecPath)),
+		Arguments:   arguments,
 		Environment: terminalWorkerEnvironment(worktree), InitialPrompt: string(prompt),
 		CompletionGate: port.TerminalCompletionSupervisedConfirmation,
 	}, nil
@@ -352,7 +413,14 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("resolve result: %w", err)
 	}
 	model := readModel(controlRoot, request.TaskSpecPath)
-	args := buildArgs(request.ExecutionProfile, model, string(prompt))
+	tools, err := declaredWorkerTools(controlRoot, request.TaskSpecPath)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	args, err := buildArgsWithTools(request.ExecutionProfile, model, string(prompt), tools)
+	if err != nil {
+		return domain.Record{}, err
+	}
 	command := exec.Command(a.executable, args...)
 	command.Dir = worktree
 	command.Env = workerEnvironment(worktree)
@@ -404,7 +472,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		"outputTokens": capture.outputTokens, "cachedInputTokens": capture.cachedInputTokens,
 		"cost": capture.cost, "capturedBytes": len(capture.raw),
 		"outputTruncated": capture.limitExceeded, "permissionDenied": fatalDenials > 0,
-		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials,
+		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials, "toolNames": denials.SortedToolNames(capture.toolNames),
 		"exitCode": exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
 		"contextError": contextError(runCtx),
 	}, "", "  ")
@@ -587,6 +655,7 @@ type captureResult struct {
 	cachedInputTokens int
 	cost              float64
 	denials           []denials.RawDenial
+	toolNames         []string
 	limitExceeded     bool
 	providerFailed    bool
 	err               error
@@ -1069,6 +1138,11 @@ func captureJSONL(reader io.Reader, worktree string, limit int64, onLimit func()
 				// the classifier cannot prove benign stays FATAL.
 				if event.IsError != nil && *event.IsError && denials.IsPermissionError(event.Error) {
 					result.denials = append(result.denials, denials.RawDenial{Tool: tool, Input: args})
+				} else if tool != "" {
+					// Allowlist reconciliation is a read-only side channel:
+					// every successful (non-denial) tool completion is
+					// recorded by name; state transitions never change.
+					result.toolNames = append(result.toolNames, tool)
 				}
 			case "session", "agent_settled", "auto_retry_start":
 				unauthorized()
@@ -1179,38 +1253,64 @@ func captureStream(reader io.Reader, limit int64) streamCapture {
 	}
 }
 
-// hardeningFlags returns the frozen, ordered hardening surface for a profile.
-// Every flag is listed exactly once; buildArgs copies it verbatim so no
-// hardening flag can ever appear twice in the argv Marshal hands to pi.
-func hardeningFlags(profile string) []string {
+// hardeningFlags returns the frozen, ordered hardening surface for a
+// resolved --tools allowlist value. Every flag is listed exactly once;
+// buildArgs copies it verbatim so no hardening flag can ever appear twice in
+// the argv Marshal hands to pi.
+func hardeningFlags(toolsArg string) []string {
 	return []string{
 		"--mode", "json", "--print", "--no-approve",
 		"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files",
-		"--tools", toolsForProfile(profile),
+		"--tools", toolsArg,
 		"--no-session",
 	}
 }
 
-// buildArgs produces the exact hardened argv. Sessions are always disabled:
-// Marshal only supports ephemeral attempts. The prompt is always the final
-// positional argument; Marshal never invokes pi through a shell.
+// buildArgs produces the exact hardened argv for a TaskSpec without a
+// declared tool allowlist: the frozen profile defaults apply unchanged.
+// Sessions are always disabled: Marshal only supports ephemeral attempts.
+// The prompt is always the final positional argument; Marshal never invokes
+// pi through a shell.
 func buildArgs(profile, model, prompt string) []string {
-	args := append([]string{}, hardeningFlags(profile)...)
+	args := append([]string{}, hardeningFlags(toolsForProfile(profile))...)
 	if model != "" {
 		args = append(args, "--model", model)
 	}
 	return append(args, prompt)
 }
 
-func buildTerminalArgs(profile, model string) []string {
+// buildArgsWithTools produces the hardened argv for a declared tool
+// allowlist; it fails closed when Pi cannot provide a declared tool.
+func buildArgsWithTools(profile, model, prompt string, tools []string) ([]string, error) {
+	toolsArg, err := toolsArgFor(profile, tools)
+	if err != nil {
+		return nil, err
+	}
+	args := append([]string{}, hardeningFlags(toolsArg)...)
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	return append(args, prompt), nil
+}
+
+// buildTerminalArgsWithTools is the single native TUI argv construction path
+// for every terminal launch: an undeclared task keeps the frozen profile tool
+// surface, and a declared worker.tools allowlist converges --tools to the
+// declared intersection. It fails closed when Pi cannot provide a declared
+// tool, so terminal mode never weakens the allowlist.
+func buildTerminalArgsWithTools(profile, model string, tools []string) ([]string, error) {
+	toolsArg, err := toolsArgFor(profile, tools)
+	if err != nil {
+		return nil, err
+	}
 	args := []string{
 		"--no-approve", "--no-extensions", "--no-skills", "--no-prompt-templates",
-		"--no-themes", "--no-context-files", "--tools", toolsForProfile(profile), "--no-session",
+		"--no-themes", "--no-context-files", "--tools", toolsArg, "--no-session",
 	}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
-	return args
+	return args, nil
 }
 
 // processFailureError reports a failed pi process using only fixed

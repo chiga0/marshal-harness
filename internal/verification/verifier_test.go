@@ -2,6 +2,7 @@ package verification
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	marshalRepository "github.com/chiga0/marshal-harness/internal/repository"
 )
@@ -280,6 +282,98 @@ func TestSubmoduleMutationFailsWhenNotAllowed(t *testing.T) {
 	if gate.Status != "fail" || !strings.Contains(gate.Summary, "Submodule") {
 		t.Fatalf("submodule gate = %+v, observation = %+v", gate, observation)
 	}
+}
+
+func TestVerifyAppliesToolAllowlistGateEndToEnd(t *testing.T) {
+	stageAttempt := func(t *testing.T, fixture verificationFixture, tools []string, toolNames []string) Input {
+		t.Helper()
+		if err := os.MkdirAll(fixture.runDirectory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		worker := map[string]any{"preferredAdapter": "fake", "executionProfile": "workspace-write", "sessionPolicy": "ephemeral"}
+		if tools != nil {
+			worker["tools"] = tools
+		}
+		specData, err := json.Marshal(map[string]any{"apiVersion": "marshal.dev/v1alpha1", "kind": "Task", "worker": worker})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fixture.runDirectory, "task-spec.json"), specData, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		specDigest, err := canonical.DigestJSON(specData)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attemptDir := filepath.Join(fixture.runDirectory, "attempts", "attempt-1")
+		outputDir := filepath.Join(attemptDir, "control", "output")
+		if err := os.MkdirAll(outputDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(attemptDir, "worker-request.json"), []byte(`{"attemptNumber":1}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if toolNames != nil {
+			metaData, err := json.Marshal(map[string]any{"toolNames": toolNames})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(outputDir, "fake-transcript-meta.json"), metaData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		input := fixture.input()
+		input.SpecDigest = specDigest
+		input.Scope = ScopePolicy{AllowPaths: []string{"**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}
+		return input
+	}
+	t.Run("compliant-declaration-passes", func(t *testing.T) {
+		fixture := newVerificationFixture(t)
+		input := stageAttempt(t, fixture, []string{"read", "edit"}, []string{"read"})
+		result, err := New().Verify(context.Background(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Report.Status != "pass" || gateStatus(result.Report.Gates, "tool-allowlist") != "pass" {
+			t.Fatalf("report = %+v", result.Report)
+		}
+	})
+	t.Run("violation-fails-report", func(t *testing.T) {
+		fixture := newVerificationFixture(t)
+		input := stageAttempt(t, fixture, []string{"read", "edit"}, []string{"read", "grep"})
+		result, err := New().Verify(context.Background(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Report.Status != "fail" || gateStatus(result.Report.Gates, "tool-allowlist") != "fail" {
+			t.Fatalf("report = %+v", result.Report)
+		}
+		if _, err := os.Stat(filepath.Join(input.RunDirectory, toolAllowlistEvidenceFileName)); err != nil {
+			t.Fatalf("violation evidence missing: %v", err)
+		}
+	})
+	t.Run("undeclared-keeps-report-green", func(t *testing.T) {
+		fixture := newVerificationFixture(t)
+		input := stageAttempt(t, fixture, nil, []string{"read", "bash"})
+		result, err := New().Verify(context.Background(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Report.Status != "pass" || gateStatus(result.Report.Gates, "tool-allowlist") != "skipped" {
+			t.Fatalf("undeclared runs must keep the gate skipped and the report green: %+v", result.Report)
+		}
+	})
+	t.Run("declared-but-evidence-missing-fails-closed", func(t *testing.T) {
+		fixture := newVerificationFixture(t)
+		input := stageAttempt(t, fixture, []string{"read"}, nil)
+		result, err := New().Verify(context.Background(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Report.Status != "fail" || gateStatus(result.Report.Gates, "tool-allowlist") != "fail" {
+			t.Fatalf("missing evidence must fail closed: %+v", result.Report)
+		}
+	})
 }
 
 func TestVerifierDetectsDirtyCommandOutput(t *testing.T) {

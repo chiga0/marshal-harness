@@ -169,6 +169,166 @@ func TestBuildArgsLocksHardeningFlagsAndNeverGrantsBash(t *testing.T) {
 	})
 }
 
+func TestToolsArgForResolvesDeclaredAllowlistFailClosed(t *testing.T) {
+	t.Run("undeclared-keeps-profile-defaults", func(t *testing.T) {
+		for profile, want := range map[string]string{"workspace-write": workerTools, "read-only": readOnlyTools} {
+			got, err := toolsArgFor(profile, nil)
+			if err != nil || got != want {
+				t.Fatalf("toolsArgFor(%s, nil) = %q, %v; want %q", profile, got, err, want)
+			}
+		}
+	})
+	t.Run("declared-intersects-surface-in-frozen-order", func(t *testing.T) {
+		got, err := toolsArgFor("workspace-write", []string{"read", "edit", "write"})
+		if err != nil || got != "read,write,edit" {
+			t.Fatalf("toolsArgFor = %q, %v; want exactly read,write,edit", got, err)
+		}
+		for _, banned := range []string{"grep", "find", "ls", "bash"} {
+			if strings.Contains(got, banned) {
+				t.Fatalf("undeclared tool %q leaked into --tools: %q", banned, got)
+			}
+		}
+	})
+	t.Run("bash-declaration-fails-closed", func(t *testing.T) {
+		if _, err := toolsArgFor("workspace-write", []string{"read", "bash"}); err == nil || !strings.Contains(err.Error(), "bash") {
+			t.Fatalf("err = %v, want pi cannot provide bash", err)
+		}
+	})
+	t.Run("read-only-rejects-write-declaration", func(t *testing.T) {
+		if _, err := toolsArgFor("read-only", []string{"read", "write"}); err == nil || !strings.Contains(err.Error(), "write") {
+			t.Fatalf("err = %v, want pi cannot provide write under read-only", err)
+		}
+	})
+	t.Run("read-only-honors-read-edit-declaration", func(t *testing.T) {
+		got, err := toolsArgFor("read-only", []string{"edit", "read"})
+		if err != nil || got != "read,edit" {
+			t.Fatalf("toolsArgFor = %q, %v; want read,edit", got, err)
+		}
+	})
+}
+
+func TestRunDeclaredToolsLockArgvToExactIntersection(t *testing.T) {
+	successBody := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[],"willRetry":false}'`
+	fixture := newRunFixture(t, supportedBinary, successBody)
+	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model", "tools": []string{"read", "edit", "write"}}})
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+		t.Fatal(err)
+	}
+	argv := readArgv(t, fixture.argsPath)
+	if !containsSequence(argv, "--tools", "read,write,edit") {
+		t.Fatalf("declared allowlist did not lock --tools to the exact intersection: %#v", argv)
+	}
+	for _, banned := range []string{"grep", "find", "ls", "bash"} {
+		if contains(argv, banned) {
+			t.Fatalf("undeclared tool %q granted in argv: %#v", banned, argv)
+		}
+	}
+}
+
+func TestRunDeclaredBashFailsClosedBeforeLaunch(t *testing.T) {
+	fixture := newRunFixture(t, supportedBinary, "exit 0")
+	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model", "tools": []string{"read", "bash"}}})
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err == nil || !strings.Contains(err.Error(), "cannot provide declared tool \"bash\"") {
+		t.Fatalf("err = %v, want fail-closed bash rejection", err)
+	}
+	if _, statErr := os.Stat(fixture.argsPath); !os.IsNotExist(statErr) {
+		t.Fatal("worker process was launched despite an unprovidable declared tool")
+	}
+}
+
+func TestRunReadOnlyProfileRejectsDeclaredWriteTool(t *testing.T) {
+	fixture := newRunFixture(t, supportedBinary, "exit 0")
+	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model", "tools": []string{"read", "write"}}})
+	_, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "read-only"}))
+	if err == nil || !strings.Contains(err.Error(), "cannot provide declared tool \"write\"") {
+		t.Fatalf("err = %v, want fail-closed write rejection under read-only", err)
+	}
+}
+
+func TestRunRejectsMalformedToolsDeclarationBeforeLaunch(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		tools any
+	}{
+		{name: "outside-vocabulary", tools: []string{"read", "shell"}},
+		{name: "duplicated", tools: []string{"read", "read"}},
+		{name: "wrong-type", tools: "read,edit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunFixture(t, supportedBinary, "exit 0")
+			writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model", "tools": test.tools}})
+			if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "worker tools") {
+				t.Fatalf("err = %v, want fail-closed worker tools rejection", err)
+			}
+			if _, statErr := os.Stat(fixture.argsPath); !os.IsNotExist(statErr) {
+				t.Fatal("worker process was launched despite a malformed tools declaration")
+			}
+		})
+	}
+}
+
+func TestPrepareTerminalAppliesDeclaredToolAllowlist(t *testing.T) {
+	fixture := newRunFixture(t, supportedBinary, "exit 0")
+	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model", "tools": []string{"read", "edit", "write"}}})
+	spec, err := fixture.adapter.PrepareTerminal(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSequence(spec.Arguments, "--tools", "read,write,edit") {
+		t.Fatalf("native argv did not lock --tools to the declared intersection: %#v", spec.Arguments)
+	}
+	fixture2 := newRunFixture(t, supportedBinary, "exit 0")
+	writeJSON(t, filepath.Join(fixture2.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"tools": []string{"bash"}}})
+	if _, err := fixture2.adapter.PrepareTerminal(context.Background(), fixture2.request); err == nil || !strings.Contains(err.Error(), "bash") {
+		t.Fatalf("err = %v, want fail-closed bash rejection in terminal launch", err)
+	}
+}
+
+func TestRunCollectsSuccessfulToolNamesIntoTranscriptMeta(t *testing.T) {
+	body := sessionHeader("session-1") + "\n" + `printf '%s\n'` +
+		` '{"type":"agent_start"}'` +
+		` '{"type":"tool_execution_start","toolCallId":"t1","toolName":"read","args":{}}'` +
+		` '{"type":"tool_execution_end","toolCallId":"t1","toolName":"read","result":{},"isError":false}'` +
+		` '{"type":"tool_execution_start","toolCallId":"t2","toolName":"edit","args":{}}'` +
+		` '{"type":"tool_execution_end","toolCallId":"t2","toolName":"edit","result":{},"isError":false}'` +
+		` '{"type":"tool_execution_start","toolCallId":"t3","toolName":"read","args":{}}'` +
+		` '{"type":"tool_execution_end","toolCallId":"t3","toolName":"read","result":{},"isError":false}'` +
+		` '{"type":"tool_execution_start","toolCallId":"t4","toolName":"grep","args":{"path":"/outside"}}'` +
+		` '{"type":"tool_execution_end","toolCallId":"t4","toolName":"grep","isError":true,"error":"permission denied"}'` +
+		` '{"type":"agent_end","messages":[],"willRetry":false}'`
+	fixture := newRunFixture(t, supportedBinary, body)
+	// The denied grep probe targets an outside absolute path on purpose: it
+	// grades FATAL only if the classifier sees it, and the attempt outcome
+	// does not matter for the toolNames assertion below. The output cap is
+	// widened so the multi-event fixture stays below the byte limit.
+	if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"maxOutputBytes": 8192})); err != nil && !errors.Is(err, ErrPermissionDenied) {
+		t.Fatal(err)
+	}
+	metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "pi-transcript-meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta struct {
+		ToolNames []string `json:"toolNames"`
+	}
+	if err := json.Unmarshal(metadata, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(meta.ToolNames, ",") != "edit,read" {
+		t.Fatalf("toolNames = %v, want exactly [edit read]; denied calls must not be collected", meta.ToolNames)
+	}
+}
+
+func readArgv(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
 func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
 	secrets := []string{"sk-ant-api03-super-secret-token", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret-payload", "user private content: password=hunter2"}
 	body := sessionHeader("session-1") + "\n" + `printf '%s\n' '{"type":"agent_start"}' '{"type":"agent_end","messages":[],"willRetry":false}'`

@@ -87,6 +87,14 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 		result.Manifest.Artifacts = append(result.Manifest.Artifacts, *denialAssessment.Artifact)
 	}
 	result.denialsBenign, result.denialsFatal, result.denialsPresent = denialAssessment.Benign, denialAssessment.Fatal, denialAssessment.Present
+	allowlistAssessment, err := assessToolAllowlist(input.RunDirectory, input.SpecDigest, started)
+	if err != nil {
+		return result, err
+	}
+	result.Report.Gates = append(result.Report.Gates, allowlistAssessment.Gate)
+	if allowlistAssessment.Artifact != nil {
+		result.Manifest.Artifacts = append(result.Manifest.Artifacts, *allowlistAssessment.Artifact)
+	}
 	runner := Runner{Environment: input.Environment}
 	for _, spec := range input.Commands {
 		if ctx.Err() != nil {

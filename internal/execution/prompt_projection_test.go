@@ -81,6 +81,7 @@ var nonLeakOracle = []string{
 	"/worker/model",
 	"/worker/preferredAdapter",
 	"/worker/reasoning",
+	"/worker/tools/*",
 }
 
 func stringSet(values []string) map[string]bool {
@@ -501,6 +502,11 @@ func TestRenderPromptProjectionV1VerifierOnlyAndHiddenValuesDoNotLeak(t *testing
 	spec["worker"].(map[string]any)["fallbackAdapters"] = []string{"nl-fallback"}
 	spec["worker"].(map[string]any)["model"] = "nl-model"
 	spec["worker"].(map[string]any)["reasoning"] = "nl-reasoning"
+	// worker.tools is hidden: it is consumed by the adapter enforcement
+	// layer and the Verification tool-allowlist gate, never rendered. The
+	// sentinel is deliberately not a closed vocabulary word; renderPrompt
+	// never schema-validates the fixture, so a leak would surface verbatim.
+	spec["worker"].(map[string]any)["tools"] = []string{"nl-tools-sentinel"}
 	spec["publication"].(map[string]any)["required"] = true
 	spec["publication"].(map[string]any)["provider"] = "nl-provider"
 	spec["publication"].(map[string]any)["mode"] = "nl-mode"
@@ -519,7 +525,7 @@ func TestRenderPromptProjectionV1VerifierOnlyAndHiddenValuesDoNotLeak(t *testing
 		"nl-api-version", "nl-kind", "nl-meta-title", "nl-meta-desc",
 		"nl-label-key", "nl-label-value", "nl-repo-path", "nl-base-ref", "nl-remote",
 		"nl-expected-url", "nl-preferred", "nl-fallback", "nl-model",
-		"nl-reasoning", "nl-provider", "nl-mode", "nl-pub-remote",
+		"nl-reasoning", "nl-tools-sentinel", "nl-provider", "nl-mode", "nl-pub-remote",
 		"nl-base-branch", "nl-merge-policy", "nl-check", "nl.ext", "nl-ext-value",
 	}
 	for _, s := range sentinels {

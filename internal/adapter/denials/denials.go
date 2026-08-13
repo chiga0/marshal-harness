@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -73,6 +74,138 @@ func ToolKind(tool string) Kind {
 	default:
 		return KindUnknown
 	}
+}
+
+// allowlistVocabulary is the frozen closed vocabulary of the TaskSpec
+// worker.tools declaration. It is the reconciliation vocabulary: every
+// adapter normalizes observed tool names into it, and the Verification
+// tool-allowlist gate compares successful calls against the declared set.
+var allowlistVocabulary = map[string]bool{
+	"read":  true,
+	"edit":  true,
+	"write": true,
+	"grep":  true,
+	"find":  true,
+	"ls":    true,
+	"bash":  true,
+}
+
+// IsAllowlistTool reports whether a name belongs to the closed worker.tools
+// vocabulary.
+func IsAllowlistTool(tool string) bool { return allowlistVocabulary[tool] }
+
+// ValidateAllowlist fails closed on vocabulary entries outside the closed
+// worker.tools vocabulary and on duplicated entries. The TaskSpec Schema
+// enforces both mechanically; this check is the shared fail-closed guard for
+// every adapter that reads the declaration from the frozen control input.
+func ValidateAllowlist(tools []string) error {
+	seen := make(map[string]bool, len(tools))
+	for index, tool := range tools {
+		if !IsAllowlistTool(tool) {
+			return fmt.Errorf("worker.tools entry %d %q is outside the closed vocabulary read/edit/write/grep/find/ls/bash", index, tool)
+		}
+		if seen[tool] {
+			return fmt.Errorf("worker.tools entry %q is duplicated", tool)
+		}
+		seen[tool] = true
+	}
+	return nil
+}
+
+// ParseDeclaredWorkerTools extracts the optional worker.tools declaration
+// from frozen TaskSpec bytes. A nil result means the TaskSpec declares no
+// allowlist and adapters keep their frozen profile behavior. Any decode or
+// format failure is an error so adapters fail closed before launch instead
+// of silently running with a partial declaration.
+func ParseDeclaredWorkerTools(taskSpecData []byte) ([]string, error) {
+	var spec struct {
+		Worker struct {
+			Tools json.RawMessage `json:"tools"`
+		} `json:"worker"`
+	}
+	if err := json.Unmarshal(taskSpecData, &spec); err != nil {
+		return nil, fmt.Errorf("decode TaskSpec: %w", err)
+	}
+	trimmed := bytes.TrimSpace(spec.Worker.Tools)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return nil, nil
+	}
+	var tools []string
+	if err := json.Unmarshal(trimmed, &tools); err != nil {
+		return nil, fmt.Errorf("worker.tools must be a string array: %w", err)
+	}
+	if err := ValidateAllowlist(tools); err != nil {
+		return nil, err
+	}
+	return tools, nil
+}
+
+// NormalizeToolName canonicalizes a provider tool name into the closed
+// worker.tools vocabulary using the frozen tool tables: vocabulary words are
+// returned unchanged, other table members map to their class representative
+// (read/write/bash), and off-table names are returned unchanged so
+// reconciliation treats them as undeclared violations.
+func NormalizeToolName(tool string) string {
+	if IsAllowlistTool(tool) {
+		return tool
+	}
+	switch ToolKind(tool) {
+	case KindRead:
+		return "read"
+	case KindWrite:
+		return "write"
+	case KindExecute:
+		return "bash"
+	default:
+		return tool
+	}
+}
+
+// SortedToolNames normalizes observed raw tool names, drops blanks, and
+// returns the de-duplicated sorted vocabulary list adapters persist as the
+// transcript-meta toolNames field.
+func SortedToolNames(raw []string) []string {
+	set := make(map[string]bool, len(raw))
+	for _, name := range raw {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		set[NormalizeToolName(name)] = true
+	}
+	result := make([]string, 0, len(set))
+	for name := range set {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
+}
+
+// AllowlistViolations returns the sorted, de-duplicated normalized tool
+// names among observed that fall outside the declared allowlist. Observed
+// names are normalized again so hand-edited transcript metadata can never
+// bypass reconciliation; declared names are normalized defensively for the
+// same reason.
+func AllowlistViolations(observed, declared []string) []string {
+	allowed := make(map[string]bool, len(declared))
+	for _, tool := range declared {
+		allowed[NormalizeToolName(tool)] = true
+	}
+	set := make(map[string]bool)
+	for _, name := range observed {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		normalized := NormalizeToolName(name)
+		if !allowed[normalized] {
+			set[normalized] = true
+		}
+	}
+	result := make([]string, 0, len(set))
+	for name := range set {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // Event is one normalized denial observation extracted from an adapter

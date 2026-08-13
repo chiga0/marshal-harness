@@ -43,7 +43,7 @@ Prompt 由带版本 Template 渲染并保存到 Attempt。Adapter 可以增加 P
 
 原生 TUI 仍由同一 Adapter 生成冻结的 executable、argv、allowlisted environment、Provider Budget 与 `CompletionGate`，不能调用 Provider 默认配置作为隐式策略。PTY Backend 只消费 `TerminalLaunchSpec`，不根据 Adapter ID 拼命令。缺少可信自动 completion/idle 信号时，Adapter 只能声明受监督 PTY，不得把 WorkerResult 文件或屏幕文本单独当作完成协议。启动边界见 [ADR 0011](adr/0011-sealed-native-tui-transport.md)。
 
-当前 Qwen、OpenCode 与 Pi Adapter 均实现 `PrepareTerminal`：先校验 WorkerRequest、精确二进制版本与 realpath/digest，再返回原生 TUI argv、完整替换式环境、worktree、独立初始 Prompt 和 `supervised-confirmation` 门禁。原生环境移除 captured 专用的 `CI=1`，显式冻结 `TERM=xterm-256color` 与 `COLORTERM=truecolor`，不依赖 Desktop/cmux ambient environment。Qwen 保留 safe-mode、工具排除和原生 wall/tool/turn/session 预算；OpenCode 保留 `--pure` 与经过 `debug config` 反向验证的权限配置；Pi 保留无 bash 工具白名单、关闭扩展/Skill/上下文和 ephemeral session。三者均移除 captured 模式的 JSON/print/位置 Prompt 参数，且目前不接入默认 `task run`。
+当前 Qwen、OpenCode 与 Pi Adapter 均实现 `PrepareTerminal`：先校验 WorkerRequest、精确二进制版本与 realpath/digest，再返回原生 TUI argv、完整替换式环境、worktree、独立初始 Prompt 和 `supervised-confirmation` 门禁。原生环境移除 captured 专用的 `CI=1`，显式冻结 `TERM=xterm-256color` 与 `COLORTERM=truecolor`，不依赖 Desktop/cmux ambient environment。Qwen 保留 safe-mode、工具排除（含声明式 Allowlist 反向收敛）和原生 wall/tool/turn/session 预算；OpenCode 保留 `--pure` 与经过 `debug config` 反向验证的权限配置（声明时为按声明收敛的最小配置）；Pi 保留无 bash 工具白名单（声明时为声明集与工具面的精确交集）、关闭扩展/Skill/上下文和 ephemeral session。三者均移除 captured 模式的 JSON/print/位置 Prompt 参数，且目前不接入默认 `task run`。
 
 `terminal.StartPrepared` 是 Adapter 与 PTY Backend 之间唯一的 provider-neutral 映射：它校验 Adapter identity 与 completion gate，复制 argv/environment，并把 Adapter 冻结的 executable digest 传入密封 launcher。Backend 与 `LaunchEnvelope.Seal` 都会重新计算并比对该 digest，防止在 Adapter probe 与启动之间替换 Worker 二进制。该映射仍是显式受监督 Pilot API，不会改变默认 captured transport。
 
@@ -112,6 +112,16 @@ MVP 使用 one-shot JSON。只有测量证明需要 Session Steering 或降低�
 ## 权限归一化
 
 Provider Flag 的安全强度并不相同。Marshal 定义期望 Profile，由 Adapter 证明能否满足。
+
+### 声明式工具 Allowlist（worker.tools）
+
+TaskSpec 可选声明 `worker.tools`（封闭枚举 `read`/`edit`/`write`/`grep`/`find`/`ls`/`bash`，`uniqueItems`）。声明后，工具面不再由执行画像在 Adapter 内硬编码决定，而是“声明式 Allowlist + Profile 缺省”：未声明的 Task 保持现行 Profile 工具面（向后兼容），声明的 Task 由各 Adapter 在 Provider 调用层机械强制，Prompt 禁令不再代替 enforcement：
+
+- **pi**：`--tools` 精确等于声明集与 Pi 工具面的交集；Pi 永不提供 `bash`，read-only 画像不提供 `write`，声明即在 Worker 启动前 fail closed。
+- **opencode**：按声明生成最小 permission 配置（顶层通配 deny；read→read、grep→grep、find→glob、ls→list、edit→edit（control input 保持只读）、write→write、bash 仅声明时授予并保留危险命令 deny 清单；lsp 一律 deny），并在启动前用 `opencode debug config --pure` 回读、按同一声明校验 resolved config。
+- **qwen**：仅支持 `--exclude-tools` denylist，按声明反向排除 Profile 工具面中未声明的工具；基础排除集不变，声明 `bash` 也不会解除 shell 排除；无法正向穷举时由 Verification `tool-allowlist` gate 对账兑底。
+
+三个 Adapter 都把成功（非拒绝）工具调用的工具名规范化到封闭词汇（经 ADR 0013 冻结工具分类表）并去重排序，写入 `<adapter>-transcript-meta.json` 的 `toolNames` 字段；拒绝事件不计入成功调用。采集是只读旁路，不改变各 Adapter 的状态机与拒绝分级语义。Verification 的 `tool-allowlist` required gate 读取最新 Attempt 的 `toolNames` 与声明集对账：任一成功调用越权判 required fail 并附越权清单证据；证据缺失、不可读或格式非法一律 fail closed；未声明 `worker.tools` 的 Run gate 记为 skipped，不阻塞既有 Run。
 
 ### `read-only`
 

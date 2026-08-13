@@ -223,7 +223,16 @@
           "enum": ["ephemeral", "persist", "resume"]
         },
         "model": { "type": "string", "minLength": 1, "maxLength": 512 },
-        "reasoning": { "type": "string", "minLength": 1, "maxLength": 128 }
+        "reasoning": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "tools": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["read", "edit", "write", "grep", "find", "ls", "bash"]
+          },
+          "description": "声明式工具 allowlist。缺省时 Adapter 保持既有执行画像的工具面；声明时由 Adapter 在 Provider 调用层机械强制，成功工具调用经 transcript 采集并由 Verification tool-allowlist gate 对账。"
+        }
       },
       "dependentSchemas": {
         "readRoots": {

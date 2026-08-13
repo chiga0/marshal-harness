@@ -87,6 +87,7 @@ Artifact Collector 记录真实文件与摘要。Worker 声明只有在采集成
 - `executionProfile`：`read-only`、`workspace-write` 或 `hardened`。自 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10）起，该字段保留为兼容面，Runtime 阶段按固定映射解析为 `AccessMode × AssuranceLevel`：`read-only` → `read-only × workspace-write`、`workspace-write` → `workspace-write × workspace-write`、`hardened` → `workspace-write × hardened`；二维字段随 M8 落地 Schema，历史持久记录不重写。
 - 可选 Model 与 Reasoning Selector，仅在 Adapter 支持时传递。
 - `sessionPolicy`：`ephemeral`、`persist` 或 `resume`。
+- 可选 `tools`：声明式工具 Allowlist，封闭枚举 `read`、`edit`、`write`、`grep`、`find`、`ls`、`bash`，`uniqueItems`。缺省时 Adapter 保持执行画像缺省工具面（全部既有 TaskSpec 向后兼容）；声明时由 Adapter 在 Provider 调用层机械强制（pi `--tools` 精确交集、OpenCode 最小 permission 配置并回读校验、Qwen 反向 `--exclude-tools` 收敛），读取或格式失败在启动前 fail closed。pi 无法提供 `bash`，声明即在启动前失败。成功（非拒绝）工具调用经 `<adapter>-transcript-meta.json` 的 `toolNames` 采集，由 Verification `tool-allowlist` required gate 对账：越权成功调用判 required fail，证据缺失或非法 fail closed，未声明的 Run 该 gate skipped。该字段不经 Worker Prompt 投影渲染（hidden），只由强制层与 Verification 消费。
 
 Capability Probe 必须拒绝不兼容请求，不能忽略不支持的安全或输出选项。
 
@@ -171,6 +172,7 @@ worker:
   fallbackAdapters: [opencode, pi]
   executionProfile: workspace-write
   sessionPolicy: persist
+  tools: [read, grep, find, ls, edit, write]
 budgets:
   runTimeoutSeconds: 3600
   attemptTimeoutSeconds: 1200
@@ -205,7 +207,7 @@ WorkerResult 包含：
 
 ## VerificationReport
 
-VerificationReport 按 Repository、Scope、Diff、Command 和 Artifact 分组记录真实 Gate。每个 Gate 有稳定 ID、required、status 和 evidence。总状态机械计算：
+VerificationReport 按 Repository、Scope、Diff、Command 和 Artifact 分组记录真实 Gate，Policy 类 Gate（`denial-summary`、`tool-allowlist`）独立记录 permission 拒绝分级与声明式工具 Allowlist 对账。每个 Gate 有稳定 ID、required、status 和 evidence。总状态机械计算：
 
 - `pass`：全部 Required Gate 通过；
 - `fail`：至少一个 Required Gate 明确失败；
