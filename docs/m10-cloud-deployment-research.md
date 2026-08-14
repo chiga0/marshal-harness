@@ -267,6 +267,20 @@ Marshal 事件密度来源（按活跃 Attempt 计）：heartbeat（间隔由 le
 
 每个子阶段都必须：先过 Local MVP 全量回归；不改变生命周期语义；不把 Cloudflare 变成 Core 必选依赖；任何平台能力漂移按 fail closed 处置（终止 + 对账 + 新 Attempt；无兼容 Provider 时 Run 保持 `BLOCKED`）。
 
+### M10-b 部署事实（2026-08-14 在线核验）
+
+以下事实为**在线核验**（非记忆引用），核对账号掩码 `34817bdd...`（账号名「高琦」，standard 计划）：
+
+| 事实 | 核验结果 |
+| --- | --- |
+| Containers 可用性 | `/accounts/:id/containers/instances` 返回 `success:true`（实例清单为空）——账号已具备 Containers 能力，无需单独 beta 申请 |
+| Bridge 来源 | 调研中的 `cloudflare/sandbox-template` 仓库已下线；官方继任为 `cloudflare/sandbox-sdk`，Bridge worker 位于其 `bridge/worker/`（TypeScript + Hono，`@cloudflare/sandbox` SDK 0.12.5） |
+| 部署形态 | `marshal-bridge` worker 部署成功：containers[]（Sandbox class，`instance_type: lite`，`max_instances: 3`）+ Durable Objects 绑定（Sandbox/WarmPool）+ cron（warm pool，`WARM_POOL_TARGET=0` 不预热不产生实例费用）；镜像直引 `docker.io/cloudflare/sandbox:0.12.5`（免本地 Docker 构建） |
+| 访问入口 | 自定义域 `https://bridge.aflow.dev`（custom_domain 绑定后 `*.workers.dev` 子域默认停用）；办公网对 `*.workers.dev` 与部分自定义域存在安全网关拦截，远端验证经 GitHub Actions（`.github/workflows/m10-bridge-smoke.yml`）执行 |
+| 鉴权核验 | 三探针全过：`GET /health` → 200 `{"ok":true}`；`GET /v1/openapi.json` 无凭据 → 401；携 `SANDBOX_API_KEY` → 200。密钥经 `openssl rand -hex 32` 生成、`wrangler secret` 注入，并因一次日志回显事故完成全链轮换（worker secret + 本地 env + CI secret） |
+| R2 | registry bucket `aflow-registry` 已创建（账号现有 buckets：images/sites/aflow-registry） |
+| 漂移处置 | `sandbox-template → sandbox-sdk` 的仓库漂移不影响 §1.2 Bridge OpenAPI 口径（端点/语义一致，已合入的 `internal/provider/cloudflare` Bridge client 按此口径实现）；`Containers beta 必须显式开启` 一项修正为「付费计划默认可用，经 instances API 探测确认」 |
+
 ## 8. 风险清单
 
 等级：`P0`=可能阻塞 M10 验收或触碰 ADR 契约；`P1`=影响实现方案但可工程缓解；`P2`=观察项。"来源"列标注事实依据分级。
