@@ -1,0 +1,36 @@
+name: M10 Bridge Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      bridge_url:
+        description: "Bridge base URL"
+        required: false
+        default: "https://bridge.aflow.dev"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BRIDGE_API_KEY: ${{ secrets.BRIDGE_API_KEY }}
+    steps:
+      - name: Health probe
+        run: |
+          URL="${{ inputs.bridge_url }}"
+          code=$(curl -s -o /tmp/health.json -w '%{http_code}' -m 30 "$URL/health")
+          echo "health: $code $(cat /tmp/health.json)"
+          test "$code" = "200"
+      - name: OpenAPI unauthenticated must be 401
+        run: |
+          URL="${{ inputs.bridge_url }}"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 "$URL/v1/openapi.json")
+          echo "openapi-noauth: $code"
+          test "$code" = "401"
+      - name: OpenAPI authenticated (when key provided)
+        run: |
+          if [ -z "$BRIDGE_API_KEY" ]; then echo "no BRIDGE_API_KEY secret, skipping authed probe"; exit 0; fi
+          URL="${{ inputs.bridge_url }}"
+          code=$(curl -s -o /tmp/openapi.json -w '%{http_code}' -m 30 -H "Authorization: Bearer $BRIDGE_API_KEY" "$URL/v1/openapi.json")
+          echo "openapi-authed: $code"
+          test "$code" = "200"
