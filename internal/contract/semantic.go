@@ -109,6 +109,11 @@ func validateTask(data []byte) ([]Violation, error) {
 
 	violations = append(violations, validatePatterns("/scope/allowPaths", task.Scope.AllowPaths)...)
 	violations = append(violations, validatePatterns("/scope/denyPaths", task.Scope.DenyPaths)...)
+	// The issue #87 acceptance floor deliberately does NOT run here: this is
+	// the re-validation semantic path shared by archived packets,
+	// reconciliation and every frozen-record check, and archived TaskSpecs
+	// planned before the floor existed must stay valid forever. The floor is
+	// a plan-entry gate: see ValidateTaskSpecAcceptanceFloor below.
 	violations = append(violations, duplicateStringViolations("/acceptance/commands", commandIDs(task.Acceptance.Commands))...)
 	for index, command := range task.Acceptance.Commands {
 		if !validRelativePath(command.CWD, true) {
@@ -203,6 +208,55 @@ func validateTask(data []byte) ([]Violation, error) {
 	}
 	violations = append(violations, duplicateStringViolations("/preconditions", preconditionIDs)...)
 	return violations, nil
+}
+
+// TaskSpecAcceptanceFloorViolations reports the issue #87 acceptance floor
+// violations of a decoded TaskSpec: the commands list must not be empty,
+// every command must declare a non-empty argv, and at least one command must
+// be required:true. The floor is a plan-entry gate for new TaskSpecs (see
+// ValidateTaskSpecAcceptanceFloor); it is deliberately not part of
+// validateTask, so the durable schema plus the regular semantic layer keep
+// re-validating archived TaskSpecs — including legacy specs planned before
+// the floor existed — forever.
+func TaskSpecAcceptanceFloorViolations(task domain.TaskSpec) []Violation {
+	var violations []Violation
+	if len(task.Acceptance.Commands) == 0 {
+		violations = append(violations, violation("/acceptance/commands", "acceptance-commands-empty", "acceptance.commands must declare at least one command"))
+		return violations
+	}
+	hasRequiredCommand := false
+	for index, command := range task.Acceptance.Commands {
+		if command.Required {
+			hasRequiredCommand = true
+		}
+		if len(command.Argv) == 0 {
+			violations = append(violations, violation(fmt.Sprintf("/acceptance/commands/%d/argv", index), "empty-argv", fmt.Sprintf("acceptance command %q argv must not be empty", command.ID)))
+		}
+	}
+	if !hasRequiredCommand {
+		violations = append(violations, violation("/acceptance/commands", "acceptance-required-command-missing", "acceptance.commands must declare at least one required:true command"))
+	}
+	return violations
+}
+
+// ValidateTaskSpecAcceptanceFloor fails closed on any issue #87 acceptance
+// floor violation. It is the plan-entry semantic gate for new TaskSpecs:
+// the planning policy gate calls it before a Run can be planned. Archived
+// packet re-validation never calls it — archived TaskSpecs re-validate under
+// the durable schema and validateTask only, both floor-free by design — so
+// legacy records remain valid forever.
+func ValidateTaskSpecAcceptanceFloor(task domain.TaskSpec) error {
+	violations := TaskSpecAcceptanceFloorViolations(task)
+	if len(violations) == 0 {
+		return nil
+	}
+	slices.SortFunc(violations, func(left, right Violation) int {
+		if result := strings.Compare(left.Path, right.Path); result != 0 {
+			return result
+		}
+		return strings.Compare(left.Code, right.Code)
+	})
+	return &SemanticError{Violations: violations}
 }
 
 func validateVerificationReport(data []byte) ([]Violation, error) {

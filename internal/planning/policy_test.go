@@ -94,7 +94,25 @@ func defaultTask() domain.TaskSpec {
 			Required:    false,
 			MergePolicy: "never",
 		},
+		// The acceptance floor (issue #87) requires every planned task to
+		// declare at least one acceptance command with at least one
+		// required:true entry; the default fixture satisfies the floor.
+		Acceptance: domain.TaskAcceptance{
+			Commands: []domain.TaskCommand{{
+				ID:             "acceptance-check",
+				Argv:           []string{"true"},
+				CWD:            ".",
+				TimeoutSeconds: 60,
+				Required:       true,
+			}},
+		},
 	}
+}
+
+// optionalTaskCommand builds a non-required acceptance command for floor
+// fixtures that need extra commands without satisfying the required leg.
+func optionalTaskCommand(id string) domain.TaskCommand {
+	return domain.TaskCommand{ID: id, Argv: []string{"true"}, CWD: ".", TimeoutSeconds: 60}
 }
 
 func mustMarshal(t *testing.T, value any) []byte {
@@ -496,6 +514,80 @@ func TestValidatePolicyPublication(t *testing.T) {
 		fixture.Effective.AllowPublication = false
 		if _, err := ValidatePolicy(sealPolicyFixture(t, fixture), defaultTask(), "run-1", validator); err != nil {
 			t.Fatalf("ValidatePolicy() error = %v, want nil", err)
+		}
+	})
+}
+
+func TestValidatePolicyAcceptanceFloor(t *testing.T) {
+	validator := newValidator(t)
+
+	t.Run("no commands fails closed", func(t *testing.T) {
+		task := defaultTask()
+		task.Acceptance.Commands = nil
+		assertPolicyError(t, sealPolicyFixture(t, defaultFixture()), task, "run-1", validator, ErrPolicyAcceptanceFloorEmpty)
+	})
+
+	t.Run("empty commands slice fails closed", func(t *testing.T) {
+		task := defaultTask()
+		task.Acceptance.Commands = []domain.TaskCommand{}
+		assertPolicyError(t, sealPolicyFixture(t, defaultFixture()), task, "run-1", validator, ErrPolicyAcceptanceFloorEmpty)
+	})
+
+	t.Run("commands without any required fail closed", func(t *testing.T) {
+		task := defaultTask()
+		for index := range task.Acceptance.Commands {
+			task.Acceptance.Commands[index].Required = false
+		}
+		task.Acceptance.Commands = append(task.Acceptance.Commands, optionalTaskCommand("optional-extra"))
+		assertPolicyError(t, sealPolicyFixture(t, defaultFixture()), task, "run-1", validator, ErrPolicyAcceptanceFloorNoRequired)
+	})
+
+	t.Run("single required command satisfies the floor", func(t *testing.T) {
+		policy, err := ValidatePolicy(sealPolicyFixture(t, defaultFixture()), defaultTask(), "run-1", validator)
+		if err != nil {
+			t.Fatalf("ValidatePolicy() error = %v, want nil", err)
+		}
+		if policy.TaskID != "task-1" || policy.RunID != "run-1" {
+			t.Fatalf("identity = (%q, %q), want (task-1, run-1)", policy.TaskID, policy.RunID)
+		}
+	})
+
+	t.Run("one required among optional commands satisfies the floor", func(t *testing.T) {
+		task := defaultTask()
+		task.Acceptance.Commands = append(task.Acceptance.Commands, optionalTaskCommand("optional-extra"), optionalTaskCommand("optional-more"))
+		if _, err := ValidatePolicy(sealPolicyFixture(t, defaultFixture()), task, "run-1", validator); err != nil {
+			t.Fatalf("ValidatePolicy() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("command with empty argv fails closed", func(t *testing.T) {
+		task := defaultTask()
+		task.Acceptance.Commands[0].Argv = nil
+		assertPolicyError(t, sealPolicyFixture(t, defaultFixture()), task, "run-1", validator, ErrPolicyAcceptanceFloorArgv)
+	})
+
+	t.Run("every command argv must be non-empty", func(t *testing.T) {
+		task := defaultTask()
+		task.Acceptance.Commands = append(task.Acceptance.Commands, optionalTaskCommand("optional-empty"))
+		task.Acceptance.Commands[1].Argv = []string{}
+		assertPolicyError(t, sealPolicyFixture(t, defaultFixture()), task, "run-1", validator, ErrPolicyAcceptanceFloorArgv)
+	})
+
+	// Backward compatibility (issue #87 rework): the floor binds snapshots
+	// that declare the control regime; a legacy control-less snapshot keeps
+	// the pre-issue-87 planning semantics exactly, so legacy runs — like the
+	// embedded sandbox E2E fixture — are never rejected by the floor.
+	t.Run("legacy control-less snapshot keeps pre-floor planning semantics", func(t *testing.T) {
+		fixture := defaultFixture()
+		fixture.Control = nil
+		task := defaultTask()
+		task.Acceptance.Commands = nil
+		policy, err := ValidatePolicy(sealPolicyFixture(t, fixture), task, "run-1", validator)
+		if err != nil {
+			t.Fatalf("legacy control-less snapshot must not enforce the acceptance floor: %v", err)
+		}
+		if !policy.LegacyControl {
+			t.Fatalf("policy.LegacyControl = false, want true for a control-less snapshot")
 		}
 	})
 }
