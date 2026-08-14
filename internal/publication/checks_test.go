@@ -318,3 +318,137 @@ func (f *publicationFixture) observeAtMerge(t *testing.T, observer *fakeObserver
 		StateRoot: f.stateRoot, RunID: f.runID, Observer: observer, MergeObserver: mergeObserver, Validator: f.validator, Now: now,
 	})
 }
+
+// Issue #30 deadline facts: the adjudication basis is the frozen
+// publication-anchored ciDeadline, so a late observation (late relative to
+// the legacy run-creation-anchored deadline) still reads the remote facts,
+// while observations at or after the frozen ciDeadline fail closed.
+
+// TestObserveChecksLateObservationAcceptsOnTimePass cuts the Issue #30
+// BLOCKED reproduction chain: the required checks pass on time, Marshal's
+// observation lands after the legacy createdAt + runTimeoutSeconds deadline
+// but before the frozen publication-anchored ciDeadline, and the run is
+// ACCEPTED instead of being terminally blocked by the observation instant.
+func TestObserveChecksLateObservationAcceptsOnTimePass(t *testing.T) {
+	createdAt, publishedAt, legacyDeadline, ciDeadline := deadlineFixtureInstants()
+	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600})
+	lateObservation := legacyDeadline.Add(30 * time.Minute) // 11:30Z
+	if !lateObservation.After(legacyDeadline) || !lateObservation.Before(ciDeadline) {
+		t.Fatalf("test instant %s must sit between the legacy deadline %s and the frozen ciDeadline %s", lateObservation, legacyDeadline, ciDeadline)
+	}
+	observer := &fakeObserver{status: "pass"}
+	result, err := fixture.observeAt(t, observer, lateObservation)
+	if err != nil {
+		t.Fatalf("late observation inside the frozen ciDeadline failed: %v", err)
+	}
+	if result.State.State != domain.StateAccepted || result.Checks.Status != "pass" {
+		t.Fatalf("result = %+v, want ACCEPTED on the on-time pass", result)
+	}
+	if observer.calls != 1 {
+		t.Fatalf("observer calls = %d, want the remote facts read despite the late observation", observer.calls)
+	}
+	state := fixture.inspect(t)
+	if state.State != domain.StateAccepted || state.TerminalReason == "" {
+		t.Fatalf("state = %+v", state)
+	}
+	if state.Publication == nil || state.Publication.HeadSHA == "" {
+		t.Fatalf("publication snapshot lost on accept: %+v", state.Publication)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDirectory, "remote-check-record.json")); err != nil {
+		t.Fatalf("remote check record missing: %v", err)
+	}
+	outcomeData, err := os.ReadFile(filepath.Join(fixture.runDirectory, "outcome.json"))
+	if err != nil {
+		t.Fatalf("accepted outcome missing: %v", err)
+	}
+	if err := fixture.validator.Validate(domain.KindOutcome, outcomeData); err != nil {
+		t.Fatalf("accepted outcome invalid: %v", err)
+	}
+}
+
+// TestObserveChecksPassOnlyAfterDeadlineFailsClosed covers checks that only
+// pass after the frozen ciDeadline: such a pass can only be observed at or
+// after the deadline, where no trusted on-time completion proof exists, so
+// the run fails closed with the fixed sentinel and is never accepted.
+func TestObserveChecksPassOnlyAfterDeadlineFailsClosed(t *testing.T) {
+	createdAt, publishedAt, _, ciDeadline := deadlineFixtureInstants()
+	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600})
+	observer := &fakeObserver{status: "pass"}
+	result, err := fixture.observeAt(t, observer, ciDeadline.Add(time.Minute))
+	assertCIDeadlineBlocked(t, fixture, result, err, observer)
+}
+
+// TestObserveChecksPendingAfterCIDeadlineFailsClosed covers the pending-at-
+// deadline fail-closed exit under the frozen publication-anchored basis.
+func TestObserveChecksPendingAfterCIDeadlineFailsClosed(t *testing.T) {
+	createdAt, publishedAt, _, ciDeadline := deadlineFixtureInstants()
+	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600})
+	observer := &fakeObserver{status: "pending"}
+	result, err := fixture.observeAt(t, observer, ciDeadline)
+	assertCIDeadlineBlocked(t, fixture, result, err, observer)
+}
+
+// TestObserveChecksLateObservationRejectsIdentityDrift keeps the immutable
+// PR identity/head verification fail-closed at a late-but-in-window
+// observation: green checks from a stale head are never valid.
+func TestObserveChecksLateObservationRejectsIdentityDrift(t *testing.T) {
+	createdAt, publishedAt, legacyDeadline, _ := deadlineFixtureInstants()
+	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600})
+	observer := &fakeObserver{status: "pass", mutate: func(checks *domain.RemoteCheckRecord) {
+		checks.HeadSHA = fabricatedSHA("3")
+	}}
+	result, err := fixture.observeAt(t, observer, legacyDeadline.Add(30*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "identity mismatch") {
+		t.Fatalf("err = %v, want identity mismatch diagnosis", err)
+	}
+	if result.State.State != domain.StateBlocked {
+		t.Fatalf("result = %+v, want BLOCKED on identity drift", result)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.runDirectory, "remote-check-record.json")); !os.IsNotExist(statErr) {
+		t.Fatal("drifted RemoteCheckRecord must not be persisted")
+	}
+	fixture.assertBlockedOutcome(t)
+}
+
+// TestObserveChecksObserverUnavailableFailsClosed covers the observer-
+// unavailable matrix cell: an unavailable observer never produces an
+// acceptance, and past the frozen ciDeadline the gate fails closed before
+// any remote observation.
+func TestObserveChecksObserverUnavailableFailsClosed(t *testing.T) {
+	createdAt, publishedAt, legacyDeadline, ciDeadline := deadlineFixtureInstants()
+
+	t.Run("transient outage keeps CI_PENDING without writes", func(t *testing.T) {
+		fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600})
+		before := fixture.inspect(t)
+		observer := &fakeObserver{failWith: errors.New("simulated observer outage")}
+		if _, err := fixture.observeAt(t, observer, legacyDeadline.Add(30*time.Minute)); err == nil {
+			t.Fatal("expected the observer outage to surface")
+		}
+		after := fixture.inspect(t)
+		if after.State != domain.StateCIPending || after.Sequence != before.Sequence {
+			t.Fatalf("observer outage mutated the run: %+v", after)
+		}
+		if _, statErr := os.Stat(filepath.Join(fixture.runDirectory, "remote-check-record.json")); !os.IsNotExist(statErr) {
+			t.Fatal("failed observation must not persist a check record")
+		}
+	})
+
+	t.Run("permanent outage blocks the run", func(t *testing.T) {
+		fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600})
+		observer := &fakeObserver{failWith: port.Permanent(errors.New("provider access revoked"))}
+		_, err := fixture.observeAt(t, observer, legacyDeadline.Add(30*time.Minute))
+		if err == nil || !port.IsPermanent(err) {
+			t.Fatalf("err = %v, want the permanent outage classified permanent", err)
+		}
+		if state := fixture.inspect(t); state.State != domain.StateBlocked || state.TerminalReason == "" {
+			t.Fatalf("state = %+v, want BLOCKED on permanent observer failure", state)
+		}
+	})
+
+	t.Run("past the frozen ciDeadline the gate precedes the observer", func(t *testing.T) {
+		fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600})
+		observer := &fakeObserver{failWith: errors.New("simulated observer outage")}
+		result, err := fixture.observeAt(t, observer, ciDeadline.Add(time.Minute))
+		assertCIDeadlineBlocked(t, fixture, result, err, observer)
+	})
+}

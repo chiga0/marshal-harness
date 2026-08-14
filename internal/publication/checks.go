@@ -18,8 +18,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
-var errCIDeadlineExceeded = errors.New("ci-deadline-exceeded")
-
 type CheckInput struct {
 	StateRoot, RunID string
 	Observer         port.RemoteCheckObserver
@@ -76,10 +74,6 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 	} else {
 		now = now.UTC()
 	}
-	if deadline := state.CreatedAt.Add(time.Duration(task.Budgets.RunTimeoutSeconds) * time.Second); now.Compare(deadline) >= 0 {
-		result, blockedErr := block(store, lease, state, runDir, errCIDeadlineExceeded)
-		return CheckResult{State: result.State}, blockedErr
-	}
 	// Explicit producer-authority admission at the consumption site: the
 	// publication.completed event ObserveChecks consumes must have been
 	// recorded by the exact publisher actor. An omitted or forged actor fails
@@ -114,6 +108,22 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 	}
 	if state.Publication == nil || state.Publication.HeadSHA != published.HeadSHA || state.Publication.ExternalID != published.Request.ID || published.TaskID != state.TaskID || published.RunID != state.RunID {
 		return CheckResult{}, errors.New("RunState publication identity mismatch")
+	}
+	// ADR 0028 phased deadline gate: the adjudication basis is the frozen
+	// ciDeadline derived from the digest-anchored publication facts (see
+	// frozenCIDeadline), not the run-creation-anchored runTimeoutSeconds that
+	// used to swallow the CI budget. An observation that arrives late relative
+	// to the run budget but before the frozen ciDeadline still reads the
+	// remote facts, so a published head whose required checks passed on time
+	// is never terminally blocked by the local observation instant alone
+	// (Issue #30 expectations 1 and 4). At or after the frozen ciDeadline the
+	// run fails closed with the fixed sentinel before any remote observation;
+	// recovery afterwards is only possible through typed reconciliation, and a
+	// blocked run is never revived by observation.
+	ciDeadline := frozenCIDeadline(state.CreatedAt, published.PublishedAt, task.Budgets)
+	if now.Compare(ciDeadline) >= 0 {
+		result, blockedErr := block(store, lease, state, runDir, errCIDeadlineExceeded)
+		return CheckResult{State: result.State}, blockedErr
 	}
 	// ADR 0026 path A: after the state gate and the local deadline check
 	// (which stay first and are never exempted), identify a PR that has been
@@ -168,6 +178,17 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 	var next domain.RunState
 	switch checks.Status {
 	case "pass":
+		// ADR 0028 trusted-completion adjudication: a pass proves timely
+		// completion when the observation precedes the frozen ciDeadline or
+		// when provider completedAt facts fall inside the adjudication
+		// window; every other shape fails closed with a fixed reason code.
+		// With the frozen RemoteCheckRecord schema no completedAt facts exist
+		// yet, so the in-window observation itself carries the proof and the
+		// existing checks-passed semantics are unchanged.
+		if adjudicationErr := adjudicateTimelyCompletion(checks, parseCheckCompletionTimes(observedRecord.Data), ciDeadline, published.PublishedAt, now); adjudicationErr != nil {
+			result, blockedErr := block(store, lease, state, runDir, adjudicationErr)
+			return CheckResult{State: result.State, Checks: checks}, blockedErr
+		}
 		event, next, err = transition(state, "publication.checks-passed", domain.StateAccepted, map[string]any{"terminalReason": "published head passed all required checks"}, lifecycle.Guard{LeaseHeld: true, EvidenceCurrent: true, RequiredGatesPass: true, PublicationCurrent: true})
 	case "fail":
 		if state.ReworkRoundsUsed < uint(task.Budgets.MaxReworkRounds) {
