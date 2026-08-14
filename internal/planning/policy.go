@@ -41,6 +41,16 @@ const (
 	ErrPolicySteering       = "validate policy: mediated steering conflicts with steering round budget"
 )
 
+// Acceptance floor errors (issue #87): a control-regime PolicySnapshot is
+// accepted only when the frozen TaskSpec declares at least one acceptance
+// command, a non-empty argv on every command, and at least one required:true
+// command, so verification always has a mandatory command to run.
+const (
+	ErrPolicyAcceptanceFloorEmpty      = "validate policy: acceptance floor requires at least one acceptance command"
+	ErrPolicyAcceptanceFloorNoRequired = "validate policy: acceptance floor requires at least one required:true acceptance command"
+	ErrPolicyAcceptanceFloorArgv       = "validate policy: acceptance floor requires every acceptance command to declare a non-empty argv"
+)
+
 const (
 	AutonomySupervised         = "supervised"
 	AutonomyBalanced           = "balanced"
@@ -145,6 +155,10 @@ type policySource struct {
 //   - a task that requires publication needs allowPublication;
 //   - automatic merge is never permitted in the Local MVP: neither a
 //     mergePolicy other than "never" nor allowMerge can relax this;
+//   - under a control-regime snapshot, the frozen TaskSpec must satisfy the
+//     acceptance floor: at least one acceptance command, a non-empty argv
+//     on every command, and at least one required:true command; a legacy
+//     control-less snapshot keeps the pre-issue-87 planning semantics;
 //   - an empty adapter allow-list, or one that shares no candidate with the
 //     TaskSpec's explicit adapter declarations, is rejected;
 //   - when fallback workers are not allowed, only the preferred adapter
@@ -196,6 +210,35 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 	// asks for merge nor a policy that grants it can relax this boundary.
 	if task.Publication.MergePolicy != "never" || snapshot.Effective.AllowMerge {
 		return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyMerge)
+	}
+	// Acceptance floor (issue #87): the frozen TaskSpec must carry at least
+	// one acceptance command, a non-empty argv on every command, and at
+	// least one required:true command, so a planned Run always has a
+	// mandatory acceptance command for independent Verification. Fail-closed
+	// with fixed, readable errors. The floor binds snapshots that declare
+	// the control regime; a legacy control-less snapshot keeps the
+	// pre-issue-87 planning semantics exactly, so legacy runs revalidated
+	// through this gate are never rejected by the floor.
+	if snapshot.Control != nil {
+		if len(task.Acceptance.Commands) == 0 {
+			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyAcceptanceFloorEmpty)
+		}
+		hasRequiredCommand := false
+		for _, command := range task.Acceptance.Commands {
+			if command.Required {
+				hasRequiredCommand = true
+				break
+			}
+		}
+		if !hasRequiredCommand {
+			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyAcceptanceFloorNoRequired)
+		}
+		// The contract semantic layer repeats the full floor (issue #87
+		// rework): after the two fixed-category checks above only an empty
+		// argv remains reachable, reported under its own fixed category.
+		if err := contract.ValidateTaskSpecAcceptanceFloor(task); err != nil {
+			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyAcceptanceFloorArgv)
+		}
 	}
 	effective := EffectivePolicy{
 		TaskID:               snapshot.TaskID,

@@ -498,6 +498,141 @@ func TestOnFailureBaselineClassifiesWithoutWaivingFailure(t *testing.T) {
 	}
 }
 
+// Issue #87 baseline regression verdicts: comparing the candidate outcome
+// with the locked-baseline rerun only produces a mark; it never changes
+// the candidate's pass/fail outcome.
+
+func TestBaselineRegressionVerdictMatrix(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		candidate   string
+		baseline    string
+		wantVerdict string
+	}{
+		{name: "candidate fail baseline pass is regression confirmed", candidate: "fail", baseline: "pass", wantVerdict: BaselineVerdictRegressionConfirmed},
+		{name: "candidate fail baseline fail is pre-existing", candidate: "fail", baseline: "fail", wantVerdict: BaselineVerdictPreExistingFailure},
+		{name: "candidate fail baseline error carries no verdict", candidate: "fail", baseline: "error"},
+		{name: "candidate fail baseline not-run carries no verdict", candidate: "fail", baseline: "not-run"},
+		{name: "candidate pass baseline pass carries no verdict", candidate: "pass", baseline: "pass"},
+		{name: "candidate pass baseline fail carries no verdict", candidate: "pass", baseline: "fail"},
+		{name: "candidate error baseline pass carries no verdict", candidate: "error", baseline: "pass"},
+		{name: "candidate cancelled baseline fail carries no verdict", candidate: "cancelled", baseline: "fail"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if verdict := baselineRegressionVerdict(test.candidate, test.baseline); verdict != test.wantVerdict {
+				t.Fatalf("baselineRegressionVerdict(%q, %q) = %q, want %q", test.candidate, test.baseline, verdict, test.wantVerdict)
+			}
+		})
+	}
+}
+
+func commandGateByID(t *testing.T, gates []Gate, id string) Gate {
+	t.Helper()
+	for _, gate := range gates {
+		if gate.ID == id {
+			return gate
+		}
+	}
+	t.Fatalf("gate %s missing: %+v", id, gates)
+	return Gate{}
+}
+
+func hasBaselineVerdictEvidence(gate Gate, verdict string) bool {
+	want := baselineVerdictEvidencePrefix + verdict
+	for _, evidence := range gate.Evidence {
+		if evidence == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestOnFailureBaselineMarksRegressionConfirmed(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	if err := os.Remove(filepath.Join(fixture.worktree.Path, "README.md")); err != nil {
+		t.Fatal(err)
+	}
+	input := fixture.input()
+	input.BaselinePath = fixture.repository
+	input.Scope = ScopePolicy{AllowPaths: []string{"README.md"}, MaxChangedFiles: 10, MaxDiffBytes: 1 << 20}
+	input.Commands = []CommandSpec{{ID: "readme", Argv: []string{"sh", "-c", "test -f README.md"}, CWD: ".", Timeout: 5 * time.Second, Required: true, MaxLogBytes: 4096, BaselinePolicy: "on-failure"}}
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Report.Status != "fail" {
+		t.Fatalf("regression verdict waived the candidate failure: %+v", result.Report)
+	}
+	gate := commandGateByID(t, result.Report.Gates, "command:readme")
+	if gate.Status != "fail" {
+		t.Fatalf("command gate status = %q, want fail", gate.Status)
+	}
+	if gate.Command == nil || gate.Command.BaselineStatus != "pass" {
+		t.Fatalf("baseline status = %+v, want pass", gate.Command)
+	}
+	if !hasBaselineVerdictEvidence(gate, BaselineVerdictRegressionConfirmed) {
+		t.Fatalf("gate evidence = %+v, want %s mark", gate.Evidence, baselineVerdictEvidencePrefix+BaselineVerdictRegressionConfirmed)
+	}
+	if !strings.Contains(gate.Summary, BaselineVerdictRegressionConfirmed) {
+		t.Fatalf("gate summary %q does not carry the regression verdict", gate.Summary)
+	}
+}
+
+func TestAlwaysBaselineMarksPreExistingFailure(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	input := fixture.input()
+	input.BaselinePath = fixture.repository
+	input.Scope = ScopePolicy{AllowPaths: []string{"README.md"}, MaxChangedFiles: 10, MaxDiffBytes: 1 << 20}
+	input.Commands = []CommandSpec{{ID: "missing", Argv: []string{"sh", "-c", "test -f NO-SUCH-BASELINE-FILE"}, CWD: ".", Timeout: 5 * time.Second, Required: true, MaxLogBytes: 4096, BaselinePolicy: "always"}}
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Report.Status != "fail" {
+		t.Fatalf("pre-existing verdict waived the candidate failure: %+v", result.Report)
+	}
+	gate := commandGateByID(t, result.Report.Gates, "command:missing")
+	if gate.Status != "fail" {
+		t.Fatalf("command gate status = %q, want fail", gate.Status)
+	}
+	if gate.Command == nil || gate.Command.BaselineStatus != "fail" {
+		t.Fatalf("baseline status = %+v, want fail", gate.Command)
+	}
+	if !hasBaselineVerdictEvidence(gate, BaselineVerdictPreExistingFailure) {
+		t.Fatalf("gate evidence = %+v, want %s mark", gate.Evidence, baselineVerdictEvidencePrefix+BaselineVerdictPreExistingFailure)
+	}
+	if !strings.Contains(gate.Summary, BaselineVerdictPreExistingFailure) {
+		t.Fatalf("gate summary %q does not carry the pre-existing verdict", gate.Summary)
+	}
+}
+
+func TestNoBaselineVerdictWithoutBaselinePolicy(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	input := fixture.input()
+	input.BaselinePath = fixture.repository
+	input.Scope = ScopePolicy{AllowPaths: []string{"README.md"}, MaxChangedFiles: 10, MaxDiffBytes: 1 << 20}
+	input.Commands = []CommandSpec{{ID: "none-policy", Argv: []string{"sh", "-c", "test -f NO-SUCH-FILE"}, CWD: ".", Timeout: 5 * time.Second, Required: true, MaxLogBytes: 4096, BaselinePolicy: "none"}}
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := commandGateByID(t, result.Report.Gates, "command:none-policy")
+	if gate.Status != "fail" {
+		t.Fatalf("command gate status = %q, want fail", gate.Status)
+	}
+	if gate.Command == nil || gate.Command.BaselineStatus != "not-run" {
+		t.Fatalf("baseline status = %+v, want not-run", gate.Command)
+	}
+	for _, evidence := range gate.Evidence {
+		if strings.HasPrefix(evidence, baselineVerdictEvidencePrefix) {
+			t.Fatalf("baselinePolicy none produced a verdict mark: %+v", gate.Evidence)
+		}
+	}
+	if strings.Contains(gate.Summary, BaselineVerdictRegressionConfirmed) || strings.Contains(gate.Summary, BaselineVerdictPreExistingFailure) {
+		t.Fatalf("baselinePolicy none altered the summary with a verdict: %q", gate.Summary)
+	}
+}
+
 func TestRunnerCancellationTerminatesProcessGroup(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("process-group test is Unix-specific")

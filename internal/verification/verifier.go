@@ -195,6 +195,7 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 		commandResult := runner.Run(ctx, input.Worktree, spec)
 		baselineRequested := spec.BaselinePolicy == "always" || (spec.BaselinePolicy == "on-failure" && commandResult.Status != "pass")
 		baselineMissing := baselineRequested && input.BaselinePath == ""
+		verdict := ""
 		if input.BaselinePath != "" && baselineRequested {
 			baseline := runner.Run(ctx, input.BaselinePath, spec)
 			if baseline.Status == "cancelled" {
@@ -202,12 +203,22 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 			} else {
 				commandResult.Record.BaselineStatus = baseline.Status
 			}
+			verdict = baselineRegressionVerdict(commandResult.Status, commandResult.Record.BaselineStatus)
 		}
 		stdoutID, stderrID, persistErr := persistCommandLogs(input.RunDirectory, spec.ID, commandResult, &result.Manifest, started)
 		if persistErr != nil {
 			return result, persistErr
 		}
 		gate := Gate{ID: "command:" + spec.ID, Category: "command", Required: spec.Required, Status: commandResult.Status, Summary: commandSummary(commandResult), Evidence: []string{"artifact://" + stdoutID, "artifact://" + stderrID}, Command: &commandResult.Record}
+		if verdict != "" {
+			// The regression verdict is a mark only (issue #87): it never
+			// alters the candidate status or the gate outcome. The command
+			// record wire shape is frozen by the verification-report schema,
+			// so the mark rides the gate summary and a namespaced evidence
+			// entry instead of a new serialized field.
+			gate.Summary += "；Baseline 回归裁决：" + verdict
+			gate.Evidence = append(gate.Evidence, baselineVerdictEvidencePrefix+verdict)
+		}
 		if baselineMissing {
 			gate.Status, gate.Summary = "error", "命令请求 Baseline Diagnostic，但没有提供干净 Base Worktree"
 			commandResult.Record.BaselineStatus = "error"
@@ -406,6 +417,44 @@ func commandSummary(result CommandResult) string {
 		return fmt.Sprintf("命令状态 %s，退出码 %d", result.Status, *result.Record.ExitCode)
 	}
 	return fmt.Sprintf("命令状态 %s，退出结果不可用", result.Status)
+}
+
+// Baseline regression verdict vocabulary (issue #87). The marks classify a
+// failing candidate command against the rerun of the same command on the
+// locked baseline; they never change the candidate's pass/fail outcome.
+const (
+	// BaselineVerdictRegressionConfirmed marks a candidate failure that
+	// passes on the baseline: the change under verification introduced it.
+	BaselineVerdictRegressionConfirmed = "regression-confirmed"
+	// BaselineVerdictPreExistingFailure marks a candidate failure that
+	// fails identically on the baseline: the failure predates the change
+	// and does not constitute a new regression.
+	BaselineVerdictPreExistingFailure = "pre-existing-failure"
+
+	// baselineVerdictEvidencePrefix namespaces the verdict mark inside the
+	// command gate evidence list.
+	baselineVerdictEvidencePrefix = "baseline-verdict:"
+)
+
+// baselineRegressionVerdict derives the regression verdict for one command
+// from the candidate and baseline outcomes. It classifies only a failing
+// candidate against a decisive baseline: candidate fail + baseline pass is
+// a confirmed regression; candidate fail + baseline fail is a pre-existing
+// failure. Every other combination (candidate not failing, baselinePolicy
+// none so the baseline never ran, or an inconclusive baseline outcome such
+// as error or not-run) carries no verdict.
+func baselineRegressionVerdict(candidateStatus, baselineStatus string) string {
+	if candidateStatus != "fail" {
+		return ""
+	}
+	switch baselineStatus {
+	case "pass":
+		return BaselineVerdictRegressionConfirmed
+	case "fail":
+		return BaselineVerdictPreExistingFailure
+	default:
+		return ""
+	}
 }
 
 func overallStatus(gates []Gate) string {

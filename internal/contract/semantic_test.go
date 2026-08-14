@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -201,6 +202,177 @@ func TestValidateTaskDependsOnSemantics(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("violations = %+v, want %s at %s", violations, test.code, test.path)
+			}
+		})
+	}
+}
+
+// Issue #87 acceptance floor: the durable TaskSpec Schema intentionally
+// carries no acceptance floor, and neither does validateTask, so archived
+// TaskSpecs planned before the floor existed re-validate unchanged forever.
+// The floor lives in the semantic layer as a plan-entry gate for new
+// TaskSpecs: commands non-empty, every argv non-empty, and at least one
+// required:true command, fail closed.
+
+// decodeTaskSpec decodes a fixture document into the canonical TaskSpec
+// shape the plan entry hands to the floor gate.
+func decodeTaskSpec(t *testing.T, data []byte) domain.TaskSpec {
+	t.Helper()
+	var task domain.TaskSpec
+	if err := json.Unmarshal(data, &task); err != nil {
+		t.Fatalf("decode TaskSpec fixture: %v", err)
+	}
+	return task
+}
+
+// TestTaskSpecSchemaAcceptanceCommandsRemainFloorless pins the issue #87
+// rework decision on the durable schema: acceptance.commands carries no
+// minItems floor, so archived legacy TaskSpecs remain schema-valid forever
+// and the floor stays a semantic plan-entry concern.
+func TestTaskSpecSchemaAcceptanceCommandsRemainFloorless(t *testing.T) {
+	t.Parallel()
+	data := readFixture(t, "task-spec.schema.json")
+	var schema struct {
+		Defs map[string]struct {
+			Properties map[string]struct {
+				MinItems *int `json:"minItems"`
+			} `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	acceptance, ok := schema.Defs["acceptance"]
+	if !ok {
+		t.Fatal("task-spec schema lost $defs/acceptance")
+	}
+	commands, ok := acceptance.Properties["commands"]
+	if !ok {
+		t.Fatal("task-spec schema lost $defs/acceptance/commands")
+	}
+	if commands.MinItems != nil {
+		t.Fatalf("acceptance.commands minItems = %v, want no floor in the durable schema", *commands.MinItems)
+	}
+}
+
+func acceptanceCommandFixture(id string, argv []any, required bool) map[string]any {
+	return map[string]any{"id": id, "argv": argv, "cwd": ".", "timeoutSeconds": 60, "required": required}
+}
+
+func TestTaskSpecAcceptanceFloorRejectsEmptyCommands(t *testing.T) {
+	data := mutateFixture(t, "examples/happy-path/task-spec.json", func(document map[string]any) {
+		document["acceptance"].(map[string]any)["commands"] = []any{}
+	})
+	violations := TaskSpecAcceptanceFloorViolations(decodeTaskSpec(t, data))
+	found := false
+	for _, violation := range violations {
+		if violation.Path == "/acceptance/commands" && violation.Code == "acceptance-commands-empty" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("violations = %+v, want acceptance-commands-empty at /acceptance/commands", violations)
+	}
+	if err := ValidateTaskSpecAcceptanceFloor(decodeTaskSpec(t, data)); err == nil {
+		t.Fatal("ValidateTaskSpecAcceptanceFloor() unexpectedly accepted an empty acceptance.commands list")
+	}
+}
+
+func TestTaskSpecAcceptanceFloorRejectsEmptyArgv(t *testing.T) {
+	data := mutateFixture(t, "examples/happy-path/task-spec.json", func(document map[string]any) {
+		document["acceptance"].(map[string]any)["commands"] = []any{acceptanceCommandFixture("empty-argv", []any{}, true)}
+	})
+	violations := TaskSpecAcceptanceFloorViolations(decodeTaskSpec(t, data))
+	found := false
+	for _, violation := range violations {
+		if violation.Path == "/acceptance/commands/0/argv" && violation.Code == "empty-argv" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("violations = %+v, want empty-argv at /acceptance/commands/0/argv", violations)
+	}
+	if err := ValidateTaskSpecAcceptanceFloor(decodeTaskSpec(t, data)); err == nil {
+		t.Fatal("ValidateTaskSpecAcceptanceFloor() unexpectedly accepted an acceptance command with empty argv")
+	}
+}
+
+func TestTaskSpecAcceptanceFloorRejectsWithoutRequiredCommand(t *testing.T) {
+	data := mutateFixture(t, "examples/happy-path/task-spec.json", func(document map[string]any) {
+		document["acceptance"].(map[string]any)["commands"] = []any{
+			acceptanceCommandFixture("optional-a", []any{"true"}, false),
+			acceptanceCommandFixture("optional-b", []any{"true"}, false),
+		}
+	})
+	violations := TaskSpecAcceptanceFloorViolations(decodeTaskSpec(t, data))
+	found := false
+	for _, violation := range violations {
+		if violation.Path == "/acceptance/commands" && violation.Code == "acceptance-required-command-missing" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("violations = %+v, want acceptance-required-command-missing at /acceptance/commands", violations)
+	}
+	if err := ValidateTaskSpecAcceptanceFloor(decodeTaskSpec(t, data)); err == nil {
+		t.Fatal("ValidateTaskSpecAcceptanceFloor() unexpectedly accepted acceptance commands without any required:true entry")
+	}
+}
+
+func TestTaskSpecAcceptanceFloorAcceptsFloorSatisfiedCommands(t *testing.T) {
+	data := mutateFixture(t, "examples/happy-path/task-spec.json", func(document map[string]any) {
+		document["acceptance"].(map[string]any)["commands"] = []any{
+			acceptanceCommandFixture("optional-check", []any{"true"}, false),
+			acceptanceCommandFixture("required-check", []any{"true"}, true),
+		}
+	})
+	task := decodeTaskSpec(t, data)
+	for _, violation := range TaskSpecAcceptanceFloorViolations(task) {
+		t.Fatalf("floor-satisfied acceptance commands produced a floor violation: %+v", violation)
+	}
+	if err := ValidateTaskSpecAcceptanceFloor(task); err != nil {
+		t.Fatalf("ValidateTaskSpecAcceptanceFloor() rejected floor-satisfied acceptance commands: %v", err)
+	}
+}
+
+// TestValidateTaskKeepsLegacyAcceptanceShapesRevalidatable pins the issue
+// #87 rework scope: the floor never rides the archived re-validation path.
+// Legacy TaskSpec shapes that predate the floor — an empty commands list or
+// optional-only commands — stay schema-valid and semantically clean under
+// the regular validator, exactly as archived packets, reconciliation and
+// every frozen-record check re-validate them.
+func TestValidateTaskKeepsLegacyAcceptanceShapesRevalidatable(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{
+			name: "empty commands",
+			mutate: func(document map[string]any) {
+				document["acceptance"].(map[string]any)["commands"] = []any{}
+			},
+		},
+		{
+			name: "optional-only commands",
+			mutate: func(document map[string]any) {
+				document["acceptance"].(map[string]any)["commands"] = []any{
+					acceptanceCommandFixture("optional-a", []any{"true"}, false),
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data := mutateFixture(t, "examples/happy-path/task-spec.json", test.mutate)
+			violations, err := validateTask(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, violation := range violations {
+				t.Fatalf("legacy acceptance shape produced a semantic violation: %+v", violation)
+			}
+			if err := mustValidator(t).Validate(domain.KindTask, data); err != nil {
+				t.Fatalf("regular validator rejected a legacy acceptance shape: %v", err)
 			}
 		})
 	}
