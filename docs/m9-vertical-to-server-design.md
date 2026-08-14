@@ -1,6 +1,6 @@
 # M9 任务拆分设计：从 embedded/local 纵切到 marshal-server
 
-- 文档状态：设计文档（非 ADR），本身不冻结契约；供 Lead 依据本文档另行制作 M9 任务 spec 的唯一设计依据
+- 文档状态：设计文档（非 ADR），本身不冻结契约；供 Lead 依据本文档另行制作 M9 任务 spec 的唯一设计依据；M9 七交付已全部合入 main（2026-08-14，状态与 PR 证据见 [roadmap-status.md](roadmap-status.md) 与 §2）
 - 权威基线：main HEAD `f571547a4241e8902299f54fb67193b18c703335` 与 M8 已合入现实
 - 日期：2026-08-13
 - 取代对象：三份已失效 M9 草案（见 §0）
@@ -24,7 +24,7 @@
 
 ### 1.1 M9 目标复述（roadmap-status）
 
-[roadmap-status.md](roadmap-status.md) 中 M9 为“**marshal-server、Public API 与 Durable Runtime**”，状态 `PLANNED`，义务注记“通用 SideEffect ledger、观察/权威事件分层与 crash reconcile”。对应条款锚点：
+[roadmap-status.md](roadmap-status.md) 中 M9 为“**marshal-server、Public API 与 Durable Runtime**”，状态 `PASSED`（2026-08-14，设计与契约+本 milestone 交付门禁通过），证据为七交付 PR 全部合入 main 且各 PR 远端 CI 全绿（见 §2）。对应条款锚点：
 
 - ADR 0016 §9 路线：M9 = Durable Runtime（submit API、inbox/outbox、dispatcher、heartbeat/fencing、kill/restart recovery）；
 - ADR 0016 §5：耐久调度经可替换 DurableExecutionEngine Port 外包，生产参考 backend 为 Temporal，Core 保留生命周期权威，backend 不是业务权威；
@@ -69,11 +69,11 @@ M9 全部任务锚定以下已合入包，spec 不得锚定该清单之外的包
 | `internal/authority` | 双键空间（`AuthorityNamespaceId`/`SecurityDomainId`）+ SideEffect 类型 + 三条 typed edge 记录层（`DispatchResultCapability`/`MaterialAccessGrant`/`PublicationAuthorization`，含 `Validate`/`Digest`/`ReplayKey`/`ValidAt`；**运行时未接线，源码注释明确接线留给 M9**） | M9-b 的直接锚点 |
 | `internal/runstore` | 状态转换通知钩子（`MARSHAL_NOTIFY_CMD`） | M9-c SSE 只读投影的事件源 |
 
-未合入但在途或待启动：
+上述盘点中原“未合入但在途或待启动”各项的现状（截至 2026-08-14）：
 
-- 任务 C：Provider Port 绑定 + embedded E2E（在途、未合入）——与 M9 的衔接点见 §4；
-- typed edge 运行时接线——即 M9-b；
-- lease 持久账本——即 M9-a。
+- 任务 C：Provider Port 绑定 + embedded E2E——已合入 main（M9-a/M9-b 的合入前置，与 M9 的衔接点见 §4）；
+- typed edge 运行时接线——即 M9-b，已合入 main（PR #107）；
+- lease 持久账本——即 M9-a，已合入 main（PR #104）。
 
 ## 3. M9 任务拆分（重写）
 
@@ -259,9 +259,9 @@ M9 全部任务锚定以下已合入包，spec 不得锚定该清单之外的包
 - Local Engine 必须是完整一等 backend 而非 Temporal stub；反向地不得把 Temporal 变成 Core 必选依赖（ADR 0016 §7），两者均由一致性测试守护；
 - Temporal dev server + SQLite/local blob adapter 只作为单机开发形态（ADR 0016 §5），生产 PostgreSQL/S3 存储形态属 M11，M9-e 不得提前引入生产存储依赖。
 
-## 4. 与任务 C（在途）的衔接点
+## 4. 与任务 C 的衔接点
 
-任务 C（Provider Port 绑定 + embedded E2E）未合入、在途。衔接口径：
+任务 C（Provider Port 绑定 + embedded E2E）已合入 main（截至 2026-08-14，为 M9-a/M9-b 的合入前置）。衔接口径：
 
 1. **并行启动点**：任务 C 合入后，M9-a 与 M9-b 可并行启动。
 2. **写域边界**（并行不冲突口径）：

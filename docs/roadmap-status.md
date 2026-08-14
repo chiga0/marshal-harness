@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-更新时间：2026-08-13
+更新时间：2026-08-14
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
@@ -42,7 +42,7 @@ M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal 
 | --- | --- | --- |
 | 7：架构与契约 | `PASSED`（2026-08-11，只表示设计与契约阶段通过） | [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 已接受；[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md) 已接受（2026-08-10，接受只关闭设计歧义）；[ADR 0018](adr/0018-control-plane-and-provider-ports.md) 已接受（2026-08-11，接受只冻结设计）；[Runtime 架构](runtime-architecture.md) 同步；Marshal Run `m7-control-provider-boundary-adr-r15-20260811` 完成 M7 最终架构稿并 `ACCEPTED`（reviewRound=2，32/32 required Gates 通过，独立审查无 P0/P1）；[Draft PR #13](https://github.com/chiga0/marshal-harness/pull/13) 通过 Quality (ubuntu-latest)、Quality (macos-latest)、Secret scan 与 GitGuardian 检查（GitHub Actions CI run `31449333738`），2026-08-11 由维护者手工合入 main（merge commit `4b2f3248f24ec2a67642ec77822fe6bb59730df7`） |
 | 8：Sandbox SPI/Fake/Local conformance + embedded/local 纵切 | `PASSED`（2026-08-13，退出门禁通过） | [验收报告](milestone-8-report.md)；六个硬门禁 gate 全部合入 main 且各 PR 远端 CI 全绿：gate-1（authority 双键空间 AuthorityNamespaceId/SecurityDomainId + SideEffect authority-record Schema，PR #42）、gate-2（ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence Schema + attestation 全链绑定，PR #45）、gate-3（legacy fail-closed mapper，PR #48）、gate-4（durable ProviderRegistration store + restart recovery，R2 lineage `m8-durable-registration-store-r2-20260812b`，PR #57）、gate-5（snapshot/evidence validation，PR #47）、gate-6（enable DispatchLease match，PR #60）；embedded 纵切：internal/sandbox SPI 类型 + Fake Provider + conformance 套件（PR #75）、Local SandboxRunner 宿主进程执行 + lease 绑定 + receipt observation（PR #80）、typed cross-domain edge 记录类型 + fixture 矩阵残留（PR #61）。各 gate 尚未整体接入最终 Runtime 执行路径；同期合入基础设施修复见[验收报告](milestone-8-report.md)。见[实施计划](implementation-plan.md) |
-| 9：marshal-server、Public API 与 Durable Runtime | `PLANNED` | 通用 SideEffect ledger、观察/权威事件分层与 crash reconcile；见[实施计划](implementation-plan.md) |
+| 9：marshal-server、Public API 与 Durable Runtime | `PASSED`（2026-08-14，设计与契约+本 milestone 交付门禁通过） | 七交付全部合入 main 且各 PR 远端 CI 全绿：a lease 持久账本与 crash recovery（PR #104）、b typed edge 运行时接线（PR #107）、c1 marshal-server 常驻 + Public API（PR #111）、c2 SSE 只读投影（PR #115）、c3 远程注册 + TLS 基线（PR #116）、e DurableExecutionEngine seam（PR #119）、d Push/Pull 双拓扑 transport + outcome/invariant equivalence conformance（PR #120）；任务拆分见[M9 任务拆分设计](m9-vertical-to-server-design.md)。不表示 M10–M13 实现状态变化，不表示 conformance 终态；见[实施计划](implementation-plan.md) |
 | 10：Cloudflare Provider（remote transport） | `PLANNED` | Cloudflare 资源全生命周期对账与 leak scan；见[实施计划](implementation-plan.md) |
 | 11：生产级存储、多节点 HA 与身份分离 | `PLANNED` | HA effect/compensation 单 owner、fencing 与审批审计；见[实施计划](implementation-plan.md) |
 | 12：开源部署、版本化 Provider SDK/协议、多语言 SDK 与长稳验证 | `PLANNED` | 按 Port effect conformance；ACP/A2A/OpenHands 仅为可选生态扩展；见[实施计划](implementation-plan.md) |
@@ -95,6 +95,6 @@ M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal 
 
 ADR 0017 中以下历史 universal 口径就地标注**已被 ADR 0018 取代**，不再作为实施依据：所有远程副作用统一绑定完整 Task/Run/Attempt/allocation/lease 身份（现仅 dispatch-bound Port）；所有 Attempt/Artifact 接纳统一 fencing（现按 Port 分流）；所有远程请求统一额外绑定 providerType（现 public-api 禁止 providerType）；六类 Provider 注册产生 legacy CapabilitySnapshot（现为 ProviderRegistration + 不可变 ProviderCapabilitySnapshot，legacy 快照仅经 fail-closed mapper 转换）。
 
-实现状态不因文档冻结或 ADR 接受而提前升级：ADR 0017 的接受只关闭设计歧义、ADR 0018 的接受只冻结设计，均只冻结设计不升级 M8–M13 实现/conformance 状态；上表各 Milestone 状态为：M7 于 2026-08-11 通过退出门禁后更新为已通过（只表示设计与契约阶段通过，不表示后续实现或 conformance 完成），M8 按修订后的契约（含 ADR 0018 §7 顺序硬门禁）以新任务启动，六个硬门禁 gate 全部合入 main 且各 PR 远端 CI 全绿后于 2026-08-13 通过退出门禁，更新为 `PASSED`（各 gate 尚未整体接入最终 Runtime 执行路径），M9–M13 保持 `PLANNED`；首次 Sandbox SPI dogfood Run 的既有实现成果按**未接纳探索证据**对待，不计为 M8 实现进度。
+实现状态不因文档冻结或 ADR 接受而提前升级：ADR 0017 的接受只关闭设计歧义、ADR 0018 的接受只冻结设计，均只冻结设计不升级 M8–M13 实现/conformance 状态；上表各 Milestone 状态为：M7 于 2026-08-11 通过退出门禁后更新为已通过（只表示设计与契约阶段通过，不表示后续实现或 conformance 完成），M8 按修订后的契约（含 ADR 0018 §7 顺序硬门禁）以新任务启动，六个硬门禁 gate 全部合入 main 且各 PR 远端 CI 全绿后于 2026-08-13 通过退出门禁，更新为 `PASSED`（各 gate 尚未整体接入最终 Runtime 执行路径），M9 七交付（a lease 持久账本 PR #104、b typed edge 运行时接线 PR #107、c1 marshal-server 常驻 + Public API PR #111、c2 SSE 只读投影 PR #115、c3 远程注册 + TLS 基线 PR #116、e DurableExecutionEngine seam PR #119、d Push/Pull 双拓扑 transport + conformance PR #120）全部合入 main 且各 PR 远端 CI 全绿后于 2026-08-14 通过退出门禁，更新为 `PASSED`（只表示设计与契约+本 milestone 交付门禁通过，不表示 M10–M13 实现状态变化，不表示 conformance 终态），M10–M13 保持 `PLANNED`；首次 Sandbox SPI dogfood Run 的既有实现成果按**未接纳探索证据**对待，不计为 M8 实现进度。
 
 每个 Milestone 都执行范围冻结、实现、单元/集成/E2E 测试、独立审计、提交推送和远端 CI 绿色验收。任何 P0/P1 审计问题或 CI 失败都会阻止进入下一阶段。M7–M13 还要求每个 Milestone 先通过 Local MVP 全量回归。M7 只冻结 Project/Goal 的存在性、authority ownership 与多 Run 原则；M13 才实现 ADR 0019 的完整 Goal 控制器，M7–M12 完成声明不涵盖复杂需求目标。
