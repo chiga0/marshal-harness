@@ -1,9 +1,23 @@
 // Command marshal-server runs Marshal's resident Control Plane Public API
 // (ADR 0018 §1/§3): the versioned HTTP/JSON endpoints Task create/get/cancel
-// and Run approval/status, served on a loopback listener. Core remains the
-// only business authority: the server assembles the existing internal
-// packages and never opens a second write path. Remote registration and
-// non-loopback transports belong to later milestones and stay disabled.
+// and Run approval/status, plus the provider-registration/control Port's
+// remote registration endpoints. Core remains the only business authority:
+// the server assembles the existing internal packages and never opens a
+// second write path.
+//
+// Transport policy (ADR 0018 §12, enabled with remote registration):
+// loopback listeners keep their existing plaintext behavior unchanged when
+// no TLS baseline is configured; any non-loopback listener demands the
+// complete TLS baseline — server certificate + key and client CA for
+// mutual identity validation — at construction time and is additionally
+// wrapped with request-signature and nonce/time-window replay protection.
+// The remote listener is a peeking listener: only connections whose first
+// byte is a TLS handshake record (0x16) enter the handshake; plaintext
+// connections are closed at the first byte directly, without any response
+// bytes. A loopback listener may explicitly opt into the identical
+// TLS-only surface with the complete baseline. A partial baseline refuses
+// to start fail closed on every listen address, and a non-loopback bind
+// without the complete baseline never starts.
 package main
 
 import (
@@ -13,10 +27,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,22 +58,41 @@ func main() {
 }
 
 // run executes one marshal-server invocation: it binds the repository
-// identity, assembles the Public API over the existing internal packages and
-// serves it on an explicit loopback listener until the context is cancelled.
+// identity, assembles the Public API and the provider-registration/control
+// Port over the existing internal packages and serves them until the
+// context is cancelled — loopback listeners keep their frozen plaintext
+// behavior unless the complete TLS baseline opts them into the TLS-only
+// surface, non-loopback listeners start only with the complete TLS
+// baseline plus replay protection and close plaintext connections at the
+// first byte (peeking listener, ADR 0018 §12).
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("marshal-server", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	listen := flags.String("listen", defaultListen, "监听地址，主机必须是显式 loopback IP 地址")
+	listen := flags.String("listen", defaultListen, "监听地址：loopback 必须是显式 loopback IP；非 loopback 必须同时提供完整 TLS 基线")
 	dir := flags.String("dir", ".", "仓库目录")
+	tlsCert := flags.String("tls-cert", "", "TLS 服务端证书（PEM）：非 loopback 监听强制要求；loopback 显式启用 TLS 时使用，与 --tls-key、--tls-client-ca 缺一不可")
+	tlsKey := flags.String("tls-key", "", "TLS 服务端私钥（PEM）：非 loopback 监听强制要求；loopback 显式启用 TLS 时使用")
+	tlsClientCA := flags.String("tls-client-ca", "", "双向身份校验的客户端 CA（PEM）：非 loopback 监听强制要求；loopback 显式启用 TLS 时使用")
+	trustRoots := flags.String("trust-roots", "", "注册信任根 key id 列表（逗号分隔）；为空时注册请求一律 fail closed")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "用法：marshal-server [--listen HOST:PORT] [--dir PATH]")
+		fmt.Fprintln(stderr, "用法：marshal-server [--listen HOST:PORT] [--dir PATH] [--tls-cert PEM --tls-key PEM --tls-client-ca PEM] [--trust-roots ID,...]")
 		return exitUsage
 	}
-	if err := validateLoopbackListen(*listen); err != nil {
+	loopback, err := server.ClassifyListen(*listen)
+	if err != nil {
 		fmt.Fprintf(stderr, "marshal-server: %v\n", err)
+		return exitUsage
+	}
+	baseline := server.TLSBaseline{CertFile: *tlsCert, KeyFile: *tlsKey, ClientCAFile: *tlsClientCA}
+	if !baseline.Complete() && baseline.HasParts() {
+		fmt.Fprintln(stderr, "marshal-server: TLS 基线不完整：--tls-cert、--tls-key、--tls-client-ca 必须同时提供，缺一即拒绝启动；loopback 显式启用 TLS 时同样要求完整基线，loopback 默认路径保持明文不变。")
+		return exitUsage
+	}
+	if !loopback && !baseline.Complete() {
+		fmt.Fprintln(stderr, "marshal-server: 非 loopback 监听缺少完整 TLS 配置（--tls-cert、--tls-key、--tls-client-ca）：一切非 loopback 传输首次启用即要求 TLS + 双向身份校验 + replay protection（ADR 0018 §12），拒绝启动；loopback 路径不受影响。")
 		return exitUsage
 	}
 	location, err := repository.Discover(*dir)
@@ -79,29 +112,51 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "marshal-server: 组装 Public API 失败：%v\n", err)
 		return exitFailure
 	}
-	listener, err := net.Listen("tcp", *listen)
+	registrationPort, err := server.NewRegistrationPort(server.RegistrationPortConfig{
+		StateRoot:       location.StateRoot,
+		RepositoryRoot:  location.RepositoryRoot,
+		TrustRootKeyIds: splitList(*trustRoots),
+	})
 	if err != nil {
-		fmt.Fprintf(stderr, "marshal-server: 监听失败：%v\n", err)
+		fmt.Fprintf(stderr, "marshal-server: 组装 provider-registration/control Port 失败：%v\n", err)
 		return exitFailure
 	}
-	tcpAddress, ok := listener.Addr().(*net.TCPAddr)
-	if !ok || tcpAddress.IP == nil || !tcpAddress.IP.IsLoopback() {
-		_ = listener.Close()
-		fmt.Fprintln(stderr, "marshal-server: 绑定地址不是 loopback，拒绝启动。")
+	handler := server.CombineHandlers(apiServer.Handler(), registrationPort)
+	transport, err := server.NewTransport(*listen, baseline, handler, server.NewReplayGuard(server.DefaultReplayWindow, nil))
+	if err != nil {
+		fmt.Fprintf(stderr, "marshal-server: 组装传输失败：%v\n", err)
 		return exitFailure
 	}
+	listener := transport.Listener
 	httpServer := &http.Server{
-		Handler:           apiServer.Handler(),
+		Handler:           transport.Handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	serveErrors := make(chan error, 1)
 	go func() { serveErrors <- httpServer.Serve(listener) }()
+	scheme := "http"
+	if transport.TLSEnabled {
+		scheme = "https"
+	}
+	registrationProtocol := server.RegistrationProtocolFamily + "/" + server.RegistrationProtocolVersion
+	publicProtocol := server.ProtocolFamily + "/" + server.ProtocolVersion
+	// The banner advertises the protocol family owning the enabled surface:
+	// a TLS-enabled listener is the remote registration transport, the
+	// plaintext loopback listener keeps its frozen public-api banner.
+	bannerProtocol := publicProtocol
+	if transport.TLSEnabled {
+		bannerProtocol = registrationProtocol
+	}
 	banner := struct {
-		Listen   string `json:"listen"`
-		Protocol string `json:"protocol"`
+		Listen               string `json:"listen"`
+		Protocol             string `json:"protocol"`
+		RegistrationProtocol string `json:"registrationProtocol"`
+		PublicProtocol       string `json:"publicProtocol"`
 	}{
-		Listen:   "http://" + listener.Addr().String(),
-		Protocol: server.ProtocolFamily + "/" + server.ProtocolVersion,
+		Listen:               scheme + "://" + listener.Addr().String(),
+		Protocol:             bannerProtocol,
+		RegistrationProtocol: registrationProtocol,
+		PublicProtocol:       publicProtocol,
 	}
 	data, err := json.Marshal(banner)
 	if err != nil {
@@ -125,21 +180,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// validateLoopbackListen fails closed on any listen address that is not an
-// explicit loopback IP: wildcard hosts, host names and routable addresses
-// all stay disabled until the remote transport security baseline is enabled
-// by a later milestone (ADR 0018 §12).
-func validateLoopbackListen(listen string) error {
-	host, _, err := net.SplitHostPort(listen)
-	if err != nil {
-		return fmt.Errorf("监听地址无效：%w", err)
+// splitList splits a comma-separated flag value, trimming blanks.
+func splitList(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
 	}
-	if host == "" {
-		return errors.New("监听主机必须是显式 loopback IP 地址，禁止绑定全部接口")
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
 	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return errors.New("监听主机必须是显式 loopback IP 地址，非 loopback 传输要求尚未启用的 TLS 安全基线")
-	}
-	return nil
+	return out
 }
