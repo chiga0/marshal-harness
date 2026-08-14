@@ -102,6 +102,8 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return runSupervise(ctx, args[1:], stdout, stderr)
 	case "__launch":
 		return runInternalLaunch(args[1:], stderr)
+	case "__detach":
+		return runInternalDetach(stderr)
 	default:
 		fmt.Fprintf(stderr, "未知命令 %q。\n", args[0])
 		writeUsage(stderr)
@@ -1635,9 +1637,22 @@ func runTaskPublish(ctx context.Context, args []string, stdout, stderr io.Writer
 	flags.SetOutput(stderr)
 	runID := flags.String("run", "", "Run ID")
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	detach := flags.Bool("detach", false, "以双 fork + setsid 进入独立会话/进程组运行；父进程打印 detached pid 后立即返回")
+	logPath := flags.String("log", "", "--detach 的 stdout 日志文件（缺省 .marshal/detached/RUN_ID.log）")
+	logErrPath := flags.String("log-err", "", "--detach 的 stderr 日志文件（缺省与 --log 相同）")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
-		fmt.Fprintln(stderr, "用法：marshal task publish --run RUN_ID [--json]")
+		fmt.Fprintln(stderr, "用法：marshal task publish --run RUN_ID [--json] [--detach [--log PATH] [--log-err PATH]]")
 		return ExitUsage
+	}
+	if (*logPath != "" || *logErrPath != "") && !*detach {
+		fmt.Fprintln(stderr, "发布失败：--log/--log-err 只能与 --detach 一起使用。")
+		return ExitUsage
+	}
+	if *detach {
+		return detachTaskCommand(stdout, stderr, detachRequest{
+			RunID: *runID, JSON: *jsonOutput, LogPath: *logPath, LogErrPath: *logErrPath,
+			FinalArgs: taskPublishDetachedArgs(*runID, *jsonOutput),
+		})
 	}
 	location, err := repository.Discover(".")
 	if err != nil {
@@ -1788,13 +1803,26 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	runID := flags.String("run", "", "Run ID")
 	throughVerify := flags.Bool("through-verify", false, "Worker 成功转入 VERIFYING 后，在同一调用内继续执行独立 verify")
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
+	detach := flags.Bool("detach", false, "以双 fork + setsid 进入独立会话/进程组运行；父进程打印 detached pid 后立即返回")
+	logPath := flags.String("log", "", "--detach 的 stdout 日志文件（缺省 .marshal/detached/RUN_ID.log）")
+	logErrPath := flags.String("log-err", "", "--detach 的 stderr 日志文件（缺省与 --log 相同）")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *runID == "" {
-		fmt.Fprintln(stderr, "用法：marshal task run --run RUN_ID [--through-verify] [--json]")
+		fmt.Fprintln(stderr, "用法：marshal task run --run RUN_ID [--through-verify] [--json] [--detach [--log PATH] [--log-err PATH]]")
+		return ExitUsage
+	}
+	if (*logPath != "" || *logErrPath != "") && !*detach {
+		fmt.Fprintln(stderr, "运行失败：--log/--log-err 只能与 --detach 一起使用。")
 		return ExitUsage
 	}
 	if err := domain.ValidateID(*runID); err != nil {
 		fmt.Fprintln(stderr, "运行失败：Run ID 无效。")
 		return ExitUsage
+	}
+	if *detach {
+		return detachTaskCommand(stdout, stderr, detachRequest{
+			RunID: *runID, JSON: *jsonOutput, LogPath: *logPath, LogErrPath: *logErrPath,
+			FinalArgs: taskRunDetachedArgs(*runID, *throughVerify, *jsonOutput),
+		})
 	}
 	location, err := repository.Discover(".")
 	if err != nil {
@@ -2449,10 +2477,10 @@ func writeUsage(output io.Writer) {
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
   marshal task approve --run RUN_ID --gate plan|publish [--actor ID] [--json]
   marshal task status --run RUN_ID [--json]
-  marshal task run --run RUN_ID [--through-verify] [--json]
+  marshal task run --run RUN_ID [--through-verify] [--json] [--detach [--log PATH] [--log-err PATH]]
   marshal task verify --run RUN_ID [--json]
   marshal task review --run RUN_ID [--decision PATH] [--json]
-  marshal task publish --run RUN_ID [--json]
+  marshal task publish --run RUN_ID [--json] [--detach [--log PATH] [--log-err PATH]]
   marshal task accept --run RUN_ID [--json]
   marshal task reconcile --run RUN_ID [--actor ID] [--json]
   marshal task <COMMAND>
