@@ -24,9 +24,15 @@ import (
 const (
 	ReconcileTypeAcceptAfterMerge = domain.ReconcileTypeAcceptAfterMerge
 	ReconcileReasonMergedHead     = "merged-head.reconciled-after-block"
-	ReconcileTerminalReason       = "reconciled-after-merge"
-	reconcileActorID              = "marshal-reconciliation"
-	reconcileAcceptedSummary      = "merged head reconciled after publication block"
+	// ReconcileReasonCIDeadlineReconciled is the ADR 0028 positive reason
+	// code: a deadline-blocked Run reconciled to ACCEPTED on a positive
+	// timely-completion proof. reconcileReason is a machine-readable
+	// reason-code field, so the closed vocabulary extends without a schema
+	// change.
+	ReconcileReasonCIDeadlineReconciled = "ci-deadline-reconciled"
+	ReconcileTerminalReason             = "reconciled-after-merge"
+	reconcileActorID                    = "marshal-reconciliation"
+	reconcileAcceptedSummary            = "merged head reconciled after publication block"
 )
 
 type ReconcileInput struct {
@@ -54,6 +60,14 @@ type ReconcileResult struct {
 // ReviewDecision, never rewrites the PublicationRecord or ReviewDecision, and
 // fails closed with the run kept in BLOCKED on any missing prerequisite,
 // identity mismatch, digest mismatch or idempotency conflict.
+//
+// For Runs whose terminal block was the CI deadline adjudication (ADR 0028),
+// the merged-head green checks additionally pass the trusted-completion
+// precondition against the frozen ciDeadline: a timely recovery records the
+// ci-deadline-reconciled reason code, while a late or unproven recovery fails
+// closed with the run kept in BLOCKED and no RunState mutation. Recovery is
+// append-only and idempotent; nothing here ever mutates the RunState
+// directly.
 func Reconcile(ctx context.Context, input ReconcileInput) (ReconcileResult, error) {
 	if input.MergeObserver == nil || input.CheckObserver == nil || input.Validator == nil {
 		return ReconcileResult{}, errors.New("merge observer, check observer and validator are required")
@@ -185,6 +199,28 @@ func Reconcile(ctx context.Context, input ReconcileInput) (ReconcileResult, erro
 		return ReconcileResult{}, err
 	}
 
+	// (4.5) ADR 0028 trusted-completion precondition for deadline blocks: a
+	// Run whose terminal block was the CI deadline adjudication may only be
+	// reconciled on a positive timely-completion proof against the frozen
+	// ciDeadline (an in-window re-observation, or provider completedAt facts
+	// inside the adjudication window). A late re-observation without trusted
+	// completion facts fails closed with the run kept in BLOCKED — reconcile
+	// never credits a late green light without on-time proof, keeping the ADR
+	// 0026 "reconcile never bypasses required checks" invariant in its time
+	// dimension. Non-deadline blocks keep the exact ADR 0026 semantics.
+	reconcileReason := ReconcileReasonMergedHead
+	deadlineBlocked, deadlineErr := runBlockedByCIDeadline(store, state.RunID)
+	if deadlineErr != nil {
+		return ReconcileResult{}, deadlineErr
+	}
+	if deadlineBlocked {
+		ciDeadline := frozenCIDeadline(state.CreatedAt, publication.PublishedAt, task.Budgets)
+		if adjudicationErr := adjudicateTimelyCompletion(checks, parseCheckCompletionTimes(checkRecord.Data), ciDeadline, publication.PublishedAt, now); adjudicationErr != nil {
+			return ReconcileResult{}, adjudicationErr
+		}
+		reconcileReason = ReconcileReasonCIDeadlineReconciled
+	}
+
 	// (5) Record ordering for crash-cut safety: receipt (immutable) first,
 	// then the append-only reconcile record; both carry deterministic
 	// identities so replay merges instead of duplicating.
@@ -209,7 +245,7 @@ func Reconcile(ctx context.Context, input ReconcileInput) (ReconcileResult, erro
 		ObservedState:        domain.StateBlocked,
 		DecidedState:         domain.StateAccepted,
 		EvidenceDigests:      []string{publicationDigest, frozen.decisionDigest, receipt.ReceiptDigest, checkDigest},
-		ReconcileReason:      ReconcileReasonMergedHead,
+		ReconcileReason:      reconcileReason,
 		ReconciledBy:         reconciledBy,
 		ReconciledAt:         now,
 	}

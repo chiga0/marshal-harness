@@ -1103,3 +1103,210 @@ func TestReconcileLedgerCASConflictRollsBack(t *testing.T) {
 		t.Fatal("CAS conflict must leave no reconcile event in the journal")
 	}
 }
+
+// ADR 0028 deadline-block recovery (Issue #30): recovery after a deadline
+// misfire only walks the append-only typed reconciliation, never a direct
+// RunState mutation; the trusted-completion precondition admits an in-window
+// re-observation and fails closed on late or unproven green lights.
+
+// TestReconcileRecoversDeadlineBlockedRunOnTimelyCompletion is the Issue #30
+// recovery positive: a run terminally BLOCKED by the deadline adjudication
+// whose PR a maintainer merged with all required checks green on time is
+// migrated to ACCEPTED by the typed reconciliation, recording the
+// ci-deadline-reconciled reason code.
+func TestReconcileRecoversDeadlineBlockedRunOnTimelyCompletion(t *testing.T) {
+	createdAt, publishedAt, legacyDeadline, ciDeadline := deadlineFixtureInstants()
+	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
+	_, publicationDigest := fixturePublicationBytes(t, fixture)
+	harness := newReconcileHarness(t, fixture)
+	harness.now = legacyDeadline.Add(30 * time.Minute)
+	if !harness.now.After(legacyDeadline) || !harness.now.Before(ciDeadline) {
+		t.Fatalf("reconcile instant %s must sit between the legacy deadline %s and the frozen ciDeadline %s", harness.now, legacyDeadline, ciDeadline)
+	}
+
+	result, err := harness.reconcile(t)
+	if err != nil {
+		t.Fatalf("deadline-blocked reconcile failed: %v", err)
+	}
+	if result.State.State != domain.StateAccepted || result.State.TerminalReason != ReconcileTerminalReason {
+		t.Fatalf("state = %+v", result.State)
+	}
+	if result.State.Publication == nil || result.State.Publication.HeadSHA == "" {
+		t.Fatalf("publication snapshot lost on reconcile: %+v", result.State.Publication)
+	}
+
+	receipt := readPersistedReceipt(t, fixture)
+	if receipt.RunID != fixture.runID || receipt.PublicationRecordID != publicationDigest || receipt.ReceiptDigest != result.Receipt.ReceiptDigest {
+		t.Fatalf("receipt binding = %+v", receipt)
+	}
+
+	records := readReconcileRecords(t, fixture)
+	if len(records) != 1 {
+		t.Fatalf("reconcile records = %d, want 1", len(records))
+	}
+	record := records[0]
+	if record.ReconcileType != ReconcileTypeAcceptAfterMerge || record.ObservedState != domain.StateBlocked || record.DecidedState != domain.StateAccepted {
+		t.Fatalf("record enumerations = %+v", record)
+	}
+	if record.ReconcileReason != ReconcileReasonCIDeadlineReconciled {
+		t.Fatalf("record reconcileReason = %q, want %q for a deadline recovery", record.ReconcileReason, ReconcileReasonCIDeadlineReconciled)
+	}
+	if record.SCMMergeReceiptID != receipt.ReceiptID || record.ReconciledBy != "maintainer" {
+		t.Fatalf("record identity = %+v", record)
+	}
+	if len(record.EvidenceDigests) != 4 || record.EvidenceDigests[0] != publicationDigest || record.EvidenceDigests[2] != receipt.ReceiptDigest {
+		t.Fatalf("evidence digests = %+v", record.EvidenceDigests)
+	}
+	checkData, err := os.ReadFile(filepath.Join(fixture.runDirectory, "remote-check-record.json"))
+	if err != nil {
+		t.Fatalf("re-observed check record missing: %v", err)
+	}
+	if record.EvidenceDigests[3] != canonical.DigestBytes(mustCanonical(t, checkData)) {
+		t.Fatal("record does not bind the re-observed RemoteCheckRecord digest")
+	}
+
+	event := lastJournalEvent(t, fixture)
+	if event.Type != lifecycle.PublicationReconcileEventType || event.StateFrom != domain.StateBlocked || event.StateTo != domain.StateAccepted {
+		t.Fatalf("reconcile event = %+v", event)
+	}
+	if event.Actor == nil || event.Actor.Type != "system" || event.Actor.ID != "marshal-reconciliation" {
+		t.Fatalf("reconcile event actor = %+v", event.Actor)
+	}
+
+	archives, err := filepath.Glob(filepath.Join(fixture.runDirectory, "outcomes", "blocked-*", "outcome.json"))
+	if err != nil || len(archives) != 1 {
+		t.Fatalf("blocked outcome archive = %v (err=%v)", archives, err)
+	}
+	outcomeData, err := os.ReadFile(filepath.Join(fixture.runDirectory, "outcome.json"))
+	if err != nil {
+		t.Fatalf("accepted outcome missing: %v", err)
+	}
+	var outcome domain.OutcomeBundle
+	if err := json.Unmarshal(outcomeData, &outcome); err != nil {
+		t.Fatal(err)
+	}
+	if outcome.TerminalState != domain.StateAccepted || outcome.Verdict != "accept" {
+		t.Fatalf("accepted outcome = %+v", outcome)
+	}
+
+	// The frozen PublicationRecord is never rewritten by the recovery.
+	_, afterDigest := fixturePublicationBytes(t, fixture)
+	if afterDigest != publicationDigest {
+		t.Fatalf("PublicationRecord rewritten by reconcile: %s vs %s", afterDigest, publicationDigest)
+	}
+}
+
+// TestReconcileDeadlineRecoveryIsIdempotent covers the repeated-reconcile
+// matrix cell: the recovery merges offline and idempotently — no second
+// record, no second event, no second network observation.
+func TestReconcileDeadlineRecoveryIsIdempotent(t *testing.T) {
+	createdAt, publishedAt, legacyDeadline, _ := deadlineFixtureInstants()
+	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
+	harness := newReconcileHarness(t, fixture)
+	harness.now = legacyDeadline.Add(30 * time.Minute)
+	first, err := harness.reconcile(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := harness.reconcile(t)
+	if err != nil {
+		t.Fatalf("offline idempotent replay failed: %v", err)
+	}
+	if second.Record.ReconcileID != first.Record.ReconcileID {
+		t.Fatalf("second replay produced a different record: %s vs %s", second.Record.ReconcileID, first.Record.ReconcileID)
+	}
+	if second.State.State != domain.StateAccepted {
+		t.Fatalf("replayed state = %+v", second.State)
+	}
+	if count := countJournalEvents(t, fixture, lifecycle.PublicationReconcileEventType); count != 1 {
+		t.Fatalf("reconcile events = %d, want exactly 1", count)
+	}
+	if len(readReconcileRecords(t, fixture)) != 1 {
+		t.Fatal("idempotent replay duplicated the reconcile record")
+	}
+	if harness.mergeObserver.calls != 1 {
+		t.Fatalf("offline replay must not observe the network again: %d calls", harness.mergeObserver.calls)
+	}
+}
+
+// TestReconcileDeadlineRecoveryAfterCIDeadlineFailsClosed covers the
+// missing-completion-time matrix cell at the reconcile boundary: a
+// re-observation at or after the frozen ciDeadline carries no trusted
+// completedAt proof under the frozen RemoteCheckRecord schema, so the
+// recovery fails closed with the run kept in BLOCKED and zero writes.
+func TestReconcileDeadlineRecoveryAfterCIDeadlineFailsClosed(t *testing.T) {
+	createdAt, publishedAt, _, ciDeadline := deadlineFixtureInstants()
+	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
+	before := fixture.inspect(t)
+	harness := newReconcileHarness(t, fixture)
+	harness.now = ciDeadline.Add(10 * time.Minute)
+	_, err := harness.reconcile(t)
+	if !errors.Is(err, errCICompletedAtMissing) {
+		t.Fatalf("err = %v, want ci-completed-at-missing fail closed", err)
+	}
+	after := fixture.inspect(t)
+	if after.State != domain.StateBlocked || after.Sequence != before.Sequence {
+		t.Fatalf("failed recovery mutated the run: %+v", after)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.runDirectory, "scm-merge-receipt.json")); !os.IsNotExist(statErr) {
+		t.Fatal("rejected recovery must not persist a receipt")
+	}
+	if _, statErr := os.Lstat(filepath.Join(fixture.runDirectory, "publication-reconcile-records")); !os.IsNotExist(statErr) {
+		t.Fatal("rejected recovery must not create reconcile records")
+	}
+	if count := countJournalEvents(t, fixture, lifecycle.PublicationReconcileEventType); count != 0 {
+		t.Fatalf("rejected recovery appended %d reconcile events", count)
+	}
+}
+
+// TestReconcileDeadlineRecoveryRejectsCheckIdentityDrift covers the
+// head/identity matrix cell at the reconcile boundary: green checks from a
+// stale head never authorize the recovery.
+func TestReconcileDeadlineRecoveryRejectsCheckIdentityDrift(t *testing.T) {
+	createdAt, publishedAt, legacyDeadline, _ := deadlineFixtureInstants()
+	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
+	harness := newReconcileHarness(t, fixture)
+	harness.now = legacyDeadline.Add(30 * time.Minute)
+	harness.checkObserver.mutate = func(checks *domain.RemoteCheckRecord) {
+		checks.HeadSHA = fabricatedSHA("3")
+	}
+	_, err := harness.reconcile(t)
+	if err == nil || !strings.Contains(err.Error(), "identity mismatch") {
+		t.Fatalf("err = %v, want identity mismatch diagnosis", err)
+	}
+	if state := fixture.inspect(t); state.State != domain.StateBlocked {
+		t.Fatalf("identity drift must keep the run BLOCKED: %+v", state)
+	}
+	if count := countJournalEvents(t, fixture, lifecycle.PublicationReconcileEventType); count != 0 {
+		t.Fatal("identity drift must not append a reconcile event")
+	}
+}
+
+// TestReconcileDeadlineRecoveryObserverUnavailableFailsClosed covers the
+// observer-unavailable matrix cell for a deadline-blocked run: no acceptance,
+// no receipt, no record, no event.
+func TestReconcileDeadlineRecoveryObserverUnavailableFailsClosed(t *testing.T) {
+	createdAt, publishedAt, legacyDeadline, _ := deadlineFixtureInstants()
+	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
+	before := fixture.inspect(t)
+	harness := newReconcileHarness(t, fixture)
+	harness.now = legacyDeadline.Add(30 * time.Minute)
+	harness.checkObserver.failWith = errors.New("simulated observer outage")
+	_, err := harness.reconcile(t)
+	if err == nil || port.IsPermanent(err) {
+		t.Fatalf("expected the retryable observer outage to surface, got %v", err)
+	}
+	after := fixture.inspect(t)
+	if after.State != domain.StateBlocked || after.Sequence != before.Sequence {
+		t.Fatalf("observer outage mutated the run: %+v", after)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.runDirectory, "scm-merge-receipt.json")); !os.IsNotExist(statErr) {
+		t.Fatal("observer outage must not persist a receipt")
+	}
+	if _, statErr := os.Lstat(filepath.Join(fixture.runDirectory, "publication-reconcile-records")); !os.IsNotExist(statErr) {
+		t.Fatal("observer outage must not create reconcile records")
+	}
+	if count := countJournalEvents(t, fixture, lifecycle.PublicationReconcileEventType); count != 0 {
+		t.Fatalf("observer outage appended %d reconcile events", count)
+	}
+}
