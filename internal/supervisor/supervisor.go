@@ -53,13 +53,22 @@ type RunStatus struct {
 	SkipReason string
 }
 
+// SkipReasonExcluded is the stable DecisionRecord.SkipReason for candidates
+// listed in the supervise-exclude list (issue #100): they are never
+// re-dispatched by supervise.
+const SkipReasonExcluded = "excluded by supervise-exclude list"
+
 // DecisionRecord describes one dispatch decision taken by Supervise.
+// SkipReason is non-empty when a dispatch candidate was deliberately not
+// started (exclusion list or write-domain conflict); Started and Error then
+// both stay zero values.
 type DecisionRecord struct {
-	RunID   string
-	State   domain.State
-	Action  Action
-	Started bool
-	Error   string
+	RunID      string
+	State      domain.State
+	Action     Action
+	Started    bool
+	Error      string
+	SkipReason string
 }
 
 // Executor starts one marshal CLI child process. The production
@@ -79,6 +88,9 @@ type Supervisor struct {
 	stalenessThreshold time.Duration
 	now                func() time.Time
 	executor           Executor
+	// reviveRetryPending gates the RETRY_PENDING opt-in introduced by
+	// issue #100: false (the default) leaves RETRY_PENDING Runs alone.
+	reviveRetryPending bool
 }
 
 // Option customises a Supervisor constructed by New.
@@ -111,6 +123,16 @@ func WithClock(now func() time.Time) Option {
 		if now != nil {
 			s.now = now
 		}
+	}
+}
+
+// WithReviveRetryPending opts back into the pre-issue-#100 behaviour of
+// automatically reviving RETRY_PENDING Runs. The default (false) never
+// re-dispatches RETRY_PENDING Runs: revival requires this explicit opt-in,
+// exposed on the supervise command as --revive-retry-pending.
+func WithReviveRetryPending(enabled bool) Option {
+	return func(s *Supervisor) {
+		s.reviveRetryPending = enabled
 	}
 }
 
@@ -200,16 +222,23 @@ func (s *Supervisor) driverAlive(state domain.RunState) bool {
 }
 
 // Decide maps one scanned RunStatus to the supervisor Action. It is a pure
-// function and never touches Run state: READY, REWORK_REQUESTED and
-// RETRY_PENDING wait for a worker driver; PUBLISHING with a dead driver is
-// re-published; everything else is left alone.
+// function and never touches Run state: READY and REWORK_REQUESTED wait for
+// a worker driver; RETRY_PENDING waits for a worker driver only when the
+// supervisor was constructed with WithReviveRetryPending — since issue #100
+// RETRY_PENDING Runs are never revived automatically by default; PUBLISHING
+// with a dead driver is re-published; everything else is left alone.
 func (s *Supervisor) Decide(status RunStatus) Action {
 	if status.RunID == "" || status.SkipReason != "" {
 		return ActionNone
 	}
 	switch status.State {
-	case domain.StateReady, domain.StateReworkRequested, domain.StateRetryPending:
+	case domain.StateReady, domain.StateReworkRequested:
 		return ActionRunWorker
+	case domain.StateRetryPending:
+		if s.reviveRetryPending {
+			return ActionRunWorker
+		}
+		return ActionNone
 	case domain.StatePublishing:
 		if status.DriverAlive {
 			return ActionNone
@@ -221,14 +250,37 @@ func (s *Supervisor) Decide(status RunStatus) Action {
 }
 
 // Supervise performs one scan-decide-dispatch round and returns one
-// DecisionRecord per non-none action, deterministically sorted by RunID. A
+// DecisionRecord per dispatch decision, deterministically sorted by RunID:
+// started actions, failed starts and candidates skipped before dispatch
+// (exclusion list or write-domain conflict) each carry their own record. A
 // failed spawn is recorded on its own record and never aborts the rest of
 // the round.
+//
+// Issue #100 gates every re-dispatch fail-closed. The round first loads the
+// supervise-exclude list: an existing but unreadable list aborts the whole
+// round with ErrExcludeListUnreadable and zero dispatches; any candidate
+// listed in it is skipped forever. Before starting a driver the round then
+// checks the candidate's frozen TaskSpec write domain against every
+// in-flight Run (non-terminal state with a live driver) and skips the
+// candidate on any path overlap, directory-prefix or wildcard containment.
 func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
+	excluded, err := loadExcludeList(s.stateRoot)
+	if err != nil {
+		// Fail closed: report the read failure and re-dispatch nothing.
+		return nil, err
+	}
 	statuses, err := s.Scan(ctx)
 	if err != nil {
 		return nil, err
 	}
+	inflight := make([]string, 0, len(statuses))
+	for _, status := range statuses {
+		if status.SkipReason != "" || status.State.Terminal() || !status.DriverAlive {
+			continue
+		}
+		inflight = append(inflight, status.RunID)
+	}
+	inflightDomains := make(map[string][]string, len(inflight))
 	records := make([]DecisionRecord, 0, len(statuses))
 	for _, status := range statuses {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -239,6 +291,16 @@ func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
 			continue
 		}
 		record := DecisionRecord{RunID: status.RunID, State: status.State, Action: action}
+		if _, isExcluded := excluded[status.RunID]; isExcluded {
+			record.SkipReason = SkipReasonExcluded
+			records = append(records, record)
+			continue
+		}
+		if reason := s.writeDomainConflictReason(status.RunID, inflight, inflightDomains); reason != "" {
+			record.SkipReason = reason
+			records = append(records, record)
+			continue
+		}
 		if startErr := s.executor.Start(ctx, s.commandArgv(action, status.RunID)); startErr != nil {
 			record.Error = startErr.Error()
 		} else {
@@ -248,6 +310,39 @@ func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].RunID < records[j].RunID })
 	return records, nil
+}
+
+// writeDomainConflictReason returns a non-empty reason when the candidate
+// Run must not be re-dispatched because its frozen TaskSpec write domain
+// (scope.allowPaths) overlaps the write domain of at least one in-flight
+// Run. Every undecidable input fails closed and yields a skip: an
+// unreadable task-spec.json on either side counts as a conflict. The check
+// only reads the frozen task-spec.json files and never modifies them. An
+// empty return value means no conflict was detected; with no in-flight Runs
+// the check passes without reading any spec.
+func (s *Supervisor) writeDomainConflictReason(candidateID string, inflightIDs []string, domainCache map[string][]string) string {
+	if len(inflightIDs) == 0 {
+		return ""
+	}
+	candidatePaths, err := readSpecAllowPaths(s.stateRoot, candidateID)
+	if err != nil {
+		return fmt.Sprintf("write-domain check failed closed for candidate %s: %v", candidateID, err)
+	}
+	for _, runID := range inflightIDs {
+		inflightPaths, cached := domainCache[runID]
+		if !cached {
+			var readErr error
+			inflightPaths, readErr = readSpecAllowPaths(s.stateRoot, runID)
+			if readErr != nil {
+				return fmt.Sprintf("write-domain check failed closed for in-flight run %s: %v", runID, readErr)
+			}
+			domainCache[runID] = inflightPaths
+		}
+		if allowPathsConflict(candidatePaths, inflightPaths) {
+			return fmt.Sprintf("write-domain conflict with in-flight run %s", runID)
+		}
+	}
+	return ""
 }
 
 // commandArgv builds the exact marshal CLI invocation for one action. All
