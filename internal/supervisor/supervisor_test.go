@@ -35,10 +35,11 @@ func writeFakeMarshalBinary(t *testing.T) string {
 	return path
 }
 
-func newSupervisor(t *testing.T, stateRoot string, executor Executor) (*Supervisor, string) {
+func newSupervisor(t *testing.T, stateRoot string, executor Executor, opts ...Option) (*Supervisor, string) {
 	t.Helper()
 	binary := writeFakeMarshalBinary(t)
-	supervisor, err := New(stateRoot, binary, WithExecutor(executor), WithClock(func() time.Time { return fixtureNow }))
+	options := append([]Option{WithExecutor(executor), WithClock(func() time.Time { return fixtureNow })}, opts...)
+	supervisor, err := New(stateRoot, binary, options...)
 	if err != nil {
 		t.Fatalf("construct supervisor: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestDecideMatrix(t *testing.T) {
 	}{
 		{name: "ready waits for worker", status: RunStatus{RunID: "run-x", State: domain.StateReady}, want: ActionRunWorker},
 		{name: "rework requested returns to worker", status: RunStatus{RunID: "run-x", State: domain.StateReworkRequested}, want: ActionRunWorker},
-		{name: "retry pending returns to worker", status: RunStatus{RunID: "run-x", State: domain.StateRetryPending}, want: ActionRunWorker},
+		{name: "retry pending is left alone by default", status: RunStatus{RunID: "run-x", State: domain.StateRetryPending}, want: ActionNone},
 		{name: "publishing with dead driver retries publish", status: RunStatus{RunID: "run-x", State: domain.StatePublishing, DriverAlive: false}, want: ActionRetryPublish},
 		{name: "publishing with live driver is left alone", status: RunStatus{RunID: "run-x", State: domain.StatePublishing, DriverAlive: true}, want: ActionNone},
 		{name: "running with live driver is left alone", status: RunStatus{RunID: "run-x", State: domain.StateRunning, DriverAlive: true}, want: ActionNone},
@@ -234,6 +235,16 @@ func TestDecideMatrix(t *testing.T) {
 			}
 		})
 	}
+	t.Run("retry pending revives only with explicit opt-in", func(t *testing.T) {
+		reviving, _ := newSupervisor(t, t.TempDir(), &fakeExecutor{}, WithReviveRetryPending(true))
+		status := RunStatus{RunID: "run-x", State: domain.StateRetryPending}
+		if got := reviving.Decide(status); got != ActionRunWorker {
+			t.Fatalf("Decide with WithReviveRetryPending = %q, want %q", got.String(), ActionRunWorker.String())
+		}
+		if got := supervisor.Decide(status); got != ActionNone {
+			t.Fatalf("Decide without opt-in = %q, want %q", got.String(), ActionNone.String())
+		}
+	})
 }
 
 func TestScanStateMatrix(t *testing.T) {
@@ -250,7 +261,7 @@ func TestScanStateMatrix(t *testing.T) {
 	}{
 		{name: "ready run waits for dispatch", path: pathTo(domain.StatePlanned, domain.StateReady), age: 0, wantState: domain.StateReady, wantAlive: false, wantAction: ActionRunWorker},
 		{name: "rework requested run waits for dispatch", path: pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StateReworkRequested), age: 0, wantState: domain.StateReworkRequested, wantAlive: false, wantAction: ActionRunWorker},
-		{name: "retry pending run waits for dispatch", path: pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateRetryPending), age: 0, wantState: domain.StateRetryPending, wantAlive: false, wantAction: ActionRunWorker},
+		{name: "retry pending run stays undispatched by default", path: pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateRetryPending), age: 0, wantState: domain.StateRetryPending, wantAlive: false, wantAction: ActionNone},
 		{name: "publishing with dead driver retries publish", path: publishingPath(), age: fixtureStaleAge, wantState: domain.StatePublishing, wantAlive: false, wantAction: ActionRetryPublish},
 		{name: "publishing with live driver is left alone", path: publishingPath(), age: time.Minute, wantState: domain.StatePublishing, wantAlive: true, wantAction: ActionNone},
 		{name: "publishing exactly at threshold stays alive", path: publishingPath(), age: DefaultStalenessThreshold, wantState: domain.StatePublishing, wantAlive: true, wantAction: ActionNone},
@@ -389,6 +400,11 @@ func TestSuperviseSpawnsExactArgv(t *testing.T) {
 	seedRun(t, root, "run-alpha", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
 	seedRun(t, root, "run-beta", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing), fixtureNow.Add(-fixtureStaleAge))
 	seedRun(t, root, "run-gamma", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing), fixtureNow.Add(-time.Minute))
+	// run-gamma is in-flight (live driver), so the candidates carry disjoint
+	// frozen write domains to pass the issue #100 conflict check.
+	writeTaskSpecFixture(t, root, "run-alpha", []string{"src/alpha/**"})
+	writeTaskSpecFixture(t, root, "run-beta", []string{"src/beta/**"})
+	writeTaskSpecFixture(t, root, "run-gamma", []string{"src/gamma/**"})
 	fake := &fakeExecutor{}
 	supervisor, binary := newSupervisor(t, root, fake)
 	records, err := supervisor.Supervise(context.Background())
@@ -550,5 +566,298 @@ func TestSuperviseOrdersRecordsDeterministically(t *testing.T) {
 		if got := runIDFromArgv(fake.started[index]); got != want {
 			t.Fatalf("start order[%d] targets %q, want %q", index, got, want)
 		}
+	}
+}
+
+// writeExcludeListFixture writes the supervise-exclude list at its fixed
+// stateRoot-relative location (issue #100).
+func writeExcludeListFixture(t *testing.T, stateRoot, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(stateRoot, ".marshal"), 0o700); err != nil {
+		t.Fatalf("mkdir exclude list directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateRoot, excludeListRelativePath), []byte(content), 0o600); err != nil {
+		t.Fatalf("write exclude list: %v", err)
+	}
+}
+
+// writeTaskSpecFixture writes a minimal frozen task-spec.json carrying the
+// scope.allowPaths write domain for one seeded Run.
+func writeTaskSpecFixture(t *testing.T, stateRoot, runID string, allowPaths []string) {
+	t.Helper()
+	runDir := filepath.Join(stateRoot, "runs", runID)
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatalf("mkdir run directory for task spec: %v", err)
+	}
+	entries := make([]string, 0, len(allowPaths))
+	for _, entry := range allowPaths {
+		entries = append(entries, fmt.Sprintf("%q", entry))
+	}
+	spec := fmt.Sprintf(`{"apiVersion":"marshal.dev/v1alpha1","kind":"Task","metadata":{"id":%q,"title":"supervisor fixture"},"scope":{"allowPaths":[%s]}}`, fixtureTaskID, strings.Join(entries, ","))
+	if err := os.WriteFile(filepath.Join(runDir, "task-spec.json"), []byte(spec), 0o600); err != nil {
+		t.Fatalf("write task-spec.json for %s: %v", runID, err)
+	}
+}
+
+func TestSuperviseExcludeListBlocksRedispatchOfDeadDrivers(t *testing.T) {
+	root := t.TempDir()
+	seedRun(t, root, "run-excluded-worker", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+	seedRun(t, root, "run-excluded-publish", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing), fixtureNow.Add(-fixtureStaleAge))
+	seedRun(t, root, "run-dispatched", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+	writeExcludeListFixture(t, root, "# excluded even though their drivers are dead\nrun-excluded-worker\nrun-excluded-publish\n")
+	fake := &fakeExecutor{}
+	supervisor, binary := newSupervisor(t, root, fake)
+	records, err := supervisor.Supervise(context.Background())
+	if err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("records = %+v, want 3 decision records", records)
+	}
+	dispatched := records[0]
+	if dispatched.RunID != "run-dispatched" || dispatched.Action != ActionRunWorker || !dispatched.Started || dispatched.SkipReason != "" || dispatched.Error != "" {
+		t.Fatalf("unlisted record = %+v, want a clean run-worker dispatch", dispatched)
+	}
+	wantSkipped := []struct {
+		runID  string
+		action Action
+	}{
+		{"run-excluded-publish", ActionRetryPublish},
+		{"run-excluded-worker", ActionRunWorker},
+	}
+	for index, want := range wantSkipped {
+		record := records[index+1]
+		if record.RunID != want.runID || record.Action != want.action || record.Started || record.Error != "" || record.SkipReason != SkipReasonExcluded {
+			t.Fatalf("excluded record = %+v, want %s skipped via the exclude list", record, want.runID)
+		}
+	}
+	wantArgv := []string{binary, "task", "run", "--run", "run-dispatched", "--through-verify", "--json"}
+	if len(fake.started) != 1 || !reflect.DeepEqual(fake.started[0], wantArgv) {
+		t.Fatalf("started argv = %v, want %v", fake.started, wantArgv)
+	}
+}
+
+func TestSuperviseExcludeListMissingKeepsLegacyRedispatch(t *testing.T) {
+	root := t.TempDir()
+	seedRun(t, root, "run-ready", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+	seedRun(t, root, "run-publishing-dead", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing), fixtureNow.Add(-fixtureStaleAge))
+	fake := &fakeExecutor{}
+	supervisor, _ := newSupervisor(t, root, fake)
+	records, err := supervisor.Supervise(context.Background())
+	if err != nil {
+		t.Fatalf("Supervise without an exclude list: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %+v, want both dead-driver runs re-dispatched", records)
+	}
+	for _, record := range records {
+		if !record.Started || record.Error != "" || record.SkipReason != "" {
+			t.Fatalf("record = %+v, want a clean dispatch when no exclude list exists", record)
+		}
+	}
+	if len(fake.started) != 2 {
+		t.Fatalf("executor started %d processes, want 2", len(fake.started))
+	}
+}
+
+func TestSuperviseExcludeListReadFailureFailsClosedRound(t *testing.T) {
+	root := t.TempDir()
+	seedRun(t, root, "run-ready", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+	seedRun(t, root, "run-publishing-dead", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing), fixtureNow.Add(-fixtureStaleAge))
+	// A directory occupying the list path makes the read fail
+	// deterministically regardless of the test user's permissions.
+	if err := os.MkdirAll(filepath.Join(root, ".marshal", "supervise-exclude"), 0o700); err != nil {
+		t.Fatalf("create directory at exclude list path: %v", err)
+	}
+	fake := &fakeExecutor{}
+	supervisor, _ := newSupervisor(t, root, fake)
+	records, err := supervisor.Supervise(context.Background())
+	if !errors.Is(err, ErrExcludeListUnreadable) {
+		t.Fatalf("Supervise with unreadable exclude list: err = %v, want ErrExcludeListUnreadable", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("records = %+v, want zero dispatch decisions", records)
+	}
+	if fake.attempts != 0 {
+		t.Fatalf("executor attempts = %d, want zero re-dispatch on exclude list read failure", fake.attempts)
+	}
+}
+
+func TestSuperviseRetryPendingDefaultSkipsAndOptInRevives(t *testing.T) {
+	retryPath := func() []domain.State {
+		return pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateRetryPending)
+	}
+	t.Run("default leaves retry pending undispatched", func(t *testing.T) {
+		root := t.TempDir()
+		seedRun(t, root, "run-retry", retryPath(), fixtureNow)
+		fake := &fakeExecutor{}
+		supervisor, _ := newSupervisor(t, root, fake)
+		records, err := supervisor.Supervise(context.Background())
+		if err != nil {
+			t.Fatalf("Supervise: %v", err)
+		}
+		if len(records) != 0 {
+			t.Fatalf("records = %+v, want RETRY_PENDING left alone by default", records)
+		}
+		if fake.attempts != 0 {
+			t.Fatalf("executor attempts = %d, want none for RETRY_PENDING by default", fake.attempts)
+		}
+	})
+	t.Run("opt-in flag revives retry pending", func(t *testing.T) {
+		root := t.TempDir()
+		seedRun(t, root, "run-retry", retryPath(), fixtureNow)
+		fake := &fakeExecutor{}
+		supervisor, binary := newSupervisor(t, root, fake, WithReviveRetryPending(true))
+		records, err := supervisor.Supervise(context.Background())
+		if err != nil {
+			t.Fatalf("Supervise with revival opt-in: %v", err)
+		}
+		if len(records) != 1 {
+			t.Fatalf("records = %+v, want the RETRY_PENDING run revived", records)
+		}
+		record := records[0]
+		if record.RunID != "run-retry" || record.State != domain.StateRetryPending || record.Action != ActionRunWorker || !record.Started || record.SkipReason != "" || record.Error != "" {
+			t.Fatalf("record = %+v, want a clean revival dispatch", record)
+		}
+		wantArgv := []string{binary, "task", "run", "--run", "run-retry", "--through-verify", "--json"}
+		if len(fake.started) != 1 || !reflect.DeepEqual(fake.started[0], wantArgv) {
+			t.Fatalf("started argv = %v, want %v", fake.started, wantArgv)
+		}
+	})
+}
+
+func TestSuperviseWriteDomainConflictSkipsCandidate(t *testing.T) {
+	cases := []struct {
+		name           string
+		candidatePaths []string
+		inflightPaths  []string
+	}{
+		{name: "overlap", candidatePaths: []string{"README.md", "src/app/main.go"}, inflightPaths: []string{"src/app/main.go"}},
+		{name: "prefix", candidatePaths: []string{"src"}, inflightPaths: []string{"src/app/main.go"}},
+		{name: "wildcard", candidatePaths: []string{"docs/**"}, inflightPaths: []string{"docs/guide.md"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			seedRun(t, root, "run-candidate", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+			seedRun(t, root, "run-inflight", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-time.Minute))
+			writeTaskSpecFixture(t, root, "run-candidate", tc.candidatePaths)
+			writeTaskSpecFixture(t, root, "run-inflight", tc.inflightPaths)
+			fake := &fakeExecutor{}
+			supervisor, _ := newSupervisor(t, root, fake)
+			records, err := supervisor.Supervise(context.Background())
+			if err != nil {
+				t.Fatalf("Supervise: %v", err)
+			}
+			if len(records) != 1 {
+				t.Fatalf("records = %+v, want exactly the skipped candidate", records)
+			}
+			record := records[0]
+			if record.RunID != "run-candidate" || record.Started || record.Error != "" {
+				t.Fatalf("record = %+v, want the conflicting candidate skipped", record)
+			}
+			if !strings.Contains(record.SkipReason, "write-domain conflict with in-flight run run-inflight") {
+				t.Fatalf("SkipReason = %q, want the write-domain conflict with run-inflight", record.SkipReason)
+			}
+			if fake.attempts != 0 {
+				t.Fatalf("executor attempts = %d, want none for a conflicting candidate", fake.attempts)
+			}
+		})
+	}
+}
+
+func TestSuperviseWriteDomainNoConflictDispatches(t *testing.T) {
+	root := t.TempDir()
+	seedRun(t, root, "run-candidate", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+	seedRun(t, root, "run-inflight", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-time.Minute))
+	writeTaskSpecFixture(t, root, "run-candidate", []string{"src/**", "internal/tool.go"})
+	writeTaskSpecFixture(t, root, "run-inflight", []string{"docs/guide.md", "tools/*"})
+	fake := &fakeExecutor{}
+	supervisor, binary := newSupervisor(t, root, fake)
+	records, err := supervisor.Supervise(context.Background())
+	if err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %+v, want the disjoint candidate dispatched", records)
+	}
+	record := records[0]
+	if record.RunID != "run-candidate" || record.Action != ActionRunWorker || !record.Started || record.SkipReason != "" || record.Error != "" {
+		t.Fatalf("record = %+v, want a clean dispatch for disjoint write domains", record)
+	}
+	wantArgv := []string{binary, "task", "run", "--run", "run-candidate", "--through-verify", "--json"}
+	if len(fake.started) != 1 || !reflect.DeepEqual(fake.started[0], wantArgv) {
+		t.Fatalf("started argv = %v, want %v", fake.started, wantArgv)
+	}
+}
+
+func TestSuperviseWriteDomainFailsClosedOnUnreadableSpecs(t *testing.T) {
+	assertFailClosedSkip := func(t *testing.T, records []DecisionRecord, fake *fakeExecutor) {
+		t.Helper()
+		if len(records) != 1 {
+			t.Fatalf("records = %+v, want exactly the skipped candidate", records)
+		}
+		if records[0].Started || records[0].Error != "" || !strings.Contains(records[0].SkipReason, "failed closed") {
+			t.Fatalf("record = %+v, want a fail-closed skip", records[0])
+		}
+		if fake.attempts != 0 {
+			t.Fatalf("executor attempts = %d, want none for an undecidable candidate", fake.attempts)
+		}
+	}
+	t.Run("candidate spec missing", func(t *testing.T) {
+		root := t.TempDir()
+		seedRun(t, root, "run-candidate", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+		seedRun(t, root, "run-inflight", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-time.Minute))
+		writeTaskSpecFixture(t, root, "run-inflight", []string{"src/**"})
+		fake := &fakeExecutor{}
+		supervisor, _ := newSupervisor(t, root, fake)
+		records, err := supervisor.Supervise(context.Background())
+		if err != nil {
+			t.Fatalf("Supervise: %v", err)
+		}
+		assertFailClosedSkip(t, records, fake)
+	})
+	t.Run("inflight spec missing", func(t *testing.T) {
+		root := t.TempDir()
+		seedRun(t, root, "run-candidate", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+		seedRun(t, root, "run-inflight", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-time.Minute))
+		writeTaskSpecFixture(t, root, "run-candidate", []string{"src/**"})
+		fake := &fakeExecutor{}
+		supervisor, _ := newSupervisor(t, root, fake)
+		records, err := supervisor.Supervise(context.Background())
+		if err != nil {
+			t.Fatalf("Supervise: %v", err)
+		}
+		assertFailClosedSkip(t, records, fake)
+	})
+}
+
+func TestSuperviseWriteDomainIgnoresDeadAndTerminalRuns(t *testing.T) {
+	root := t.TempDir()
+	seedRun(t, root, "run-candidate", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+	// Identical write domains everywhere, but the only other Runs have a
+	// dead driver or reached a terminal state: neither is in-flight, so
+	// nothing blocks the candidate.
+	seedRun(t, root, "run-dead-driver", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-fixtureStaleAge))
+	seedRun(t, root, "run-terminal", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StateAccepted), fixtureNow)
+	writeTaskSpecFixture(t, root, "run-candidate", []string{"src/app/main.go"})
+	writeTaskSpecFixture(t, root, "run-dead-driver", []string{"src/app/main.go"})
+	writeTaskSpecFixture(t, root, "run-terminal", []string{"src/app/main.go"})
+	fake := &fakeExecutor{}
+	supervisor, binary := newSupervisor(t, root, fake)
+	records, err := supervisor.Supervise(context.Background())
+	if err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %+v, want only the candidate dispatched", records)
+	}
+	record := records[0]
+	if record.RunID != "run-candidate" || record.Action != ActionRunWorker || !record.Started || record.SkipReason != "" || record.Error != "" {
+		t.Fatalf("record = %+v, want a clean dispatch when only dead or terminal runs share the domain", record)
+	}
+	wantArgv := []string{binary, "task", "run", "--run", "run-candidate", "--through-verify", "--json"}
+	if len(fake.started) != 1 || !reflect.DeepEqual(fake.started[0], wantArgv) {
+		t.Fatalf("started argv = %v, want %v", fake.started, wantArgv)
 	}
 }

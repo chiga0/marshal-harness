@@ -566,24 +566,36 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	return ExitOK
 }
 
-const superviseUsage = "用法：marshal supervise [--once] [--interval DURATION] [--marshal-binary PATH] [--json]"
+const superviseUsage = "用法：marshal supervise [--once] [--interval DURATION] [--marshal-binary PATH] [--revive-retry-pending] [--json]"
 
 // superviseDecision is the stable JSON projection of one supervisor
-// DecisionRecord for supervise CLI output.
+// DecisionRecord for supervise CLI output. SkipReason is non-empty when the
+// candidate was deliberately not dispatched (supervise-exclude list or
+// write-domain conflict, issue #100).
 type superviseDecision struct {
-	RunID   string `json:"runId"`
-	State   string `json:"state"`
-	Action  string `json:"action"`
-	Started bool   `json:"started"`
-	Error   string `json:"error,omitempty"`
+	RunID      string `json:"runId"`
+	State      string `json:"state"`
+	Action     string `json:"action"`
+	Started    bool   `json:"started"`
+	Error      string `json:"error,omitempty"`
+	SkipReason string `json:"skipReason,omitempty"`
 }
 
+// runSupervise drives the supervisor. Issue #100 semantics, all fail-closed:
+// RETRY_PENDING Runs are NOT revived automatically by default — the
+// --revive-retry-pending flag is the explicit opt-in restoring the legacy
+// behaviour; Runs listed in the stateRoot-relative supervise-exclude list
+// are never re-dispatched (a readable list is mandatory: an unreadable list
+// aborts the round with zero dispatches); and before any re-dispatch the
+// candidate's frozen TaskSpec write domain is checked against every
+// in-flight Run's write domain.
 func runSupervise(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("supervise", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	once := flags.Bool("once", false, "只执行一轮监督决策后退出")
 	interval := flags.Duration("interval", 30*time.Second, "常驻监督轮询间隔（必须为正时长）")
 	marshalBinary := flags.String("marshal-binary", "", "用于派发驱动的 marshal 可执行文件路径（默认当前可执行文件）")
+	reviveRetryPending := flags.Bool("revive-retry-pending", false, "显式复活 RETRY_PENDING 的 Run（默认不再自动重派，issue #100）")
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出决策记录")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		fmt.Fprintln(stderr, superviseUsage)
@@ -608,7 +620,7 @@ func runSupervise(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		}
 		binary = executable
 	}
-	driver, err := supervisor.New(location.StateRoot, binary)
+	driver, err := supervisor.New(location.StateRoot, binary, supervisor.WithReviveRetryPending(*reviveRetryPending))
 	if err != nil {
 		fmt.Fprintf(stderr, "supervise 失败：%v\n", err)
 		return ExitFailure
@@ -643,7 +655,7 @@ func superviseOnce(ctx context.Context, driver *supervisor.Supervisor, jsonOutpu
 		if record.Error != "" {
 			exitCode = ExitFailure
 		}
-		decisions = append(decisions, superviseDecision{RunID: record.RunID, State: string(record.State), Action: record.Action.String(), Started: record.Started, Error: record.Error})
+		decisions = append(decisions, superviseDecision{RunID: record.RunID, State: string(record.State), Action: record.Action.String(), Started: record.Started, Error: record.Error, SkipReason: record.SkipReason})
 	}
 	if jsonOutput {
 		if err := writeJSON(stdout, decisions); err != nil {
@@ -657,6 +669,10 @@ func superviseOnce(ctx context.Context, driver *supervisor.Supervisor, jsonOutpu
 		return exitCode
 	}
 	for _, decision := range decisions {
+		if decision.SkipReason != "" {
+			fmt.Fprintf(stdout, "Run：%s 状态：%s 动作：%s 已跳过：%s\n", decision.RunID, decision.State, decision.Action, decision.SkipReason)
+			continue
+		}
 		fmt.Fprintf(stdout, "Run：%s 状态：%s 动作：%s 已启动：%t\n", decision.RunID, decision.State, decision.Action, decision.Started)
 		if decision.Error != "" {
 			fmt.Fprintf(stdout, "启动错误：%s\n", decision.Error)
@@ -2350,7 +2366,7 @@ func writeUsage(output io.Writer) {
   marshal version [--json]
   marshal doctor [--run RUN_ID] [--repair] [--print-env] [--json]
   marshal init [--json]
-  marshal supervise [--once] [--interval DURATION] [--marshal-binary PATH] [--json]
+  marshal supervise [--once] [--interval DURATION] [--marshal-binary PATH] [--revive-retry-pending] [--json]
   marshal contract validate [--schema NAME] <PATH|->
   marshal contract schema [--all [--out DIR]] [--schema NAME] [--json]
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
