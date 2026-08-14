@@ -1,0 +1,21 @@
+{
+  "authorityNamespaceId": {
+    "tenantNamespace": "default",
+    "controlPlaneId": "default",
+    "authorityScopeId": "marshal-harness"
+  },
+  "effectId": "effect:1",
+  "ownerIdentity": "core",
+  "port": "sandbox-control",
+  "operation": "allocate",
+  "targetRef": "sandbox:run-1",
+  "targetDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "requestDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  "commandId": "command:1",
+  "idempotencyKey": "idempotency:1",
+  "policyDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  "authorizationDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "purpose": "forward",
+  "dispositionClass": "rollback",
+  "deadline": "2026-12-31T00:00:00Z"
+}

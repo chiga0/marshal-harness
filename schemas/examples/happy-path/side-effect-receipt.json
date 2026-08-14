@@ -1,0 +1,19 @@
+{
+  "authorityNamespaceId": {
+    "tenantNamespace": "default",
+    "controlPlaneId": "default",
+    "authorityScopeId": "marshal-harness"
+  },
+  "intentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "disposition": "applied",
+  "providerResourceIdentity": "sandbox:resource-1",
+  "observedDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "actorProvenance": {
+    "securityDomainId": {
+      "tenantNamespace": "default",
+      "trustDomainKind": "execution",
+      "isolationDomainId": "isolation-local"
+    }
+  },
+  "reconcileIdentity": "reconcile:1"
+}

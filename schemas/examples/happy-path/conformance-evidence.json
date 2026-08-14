@@ -1,0 +1,28 @@
+{
+  "evidenceDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "authorityNamespaceId": {
+    "tenantNamespace": "default",
+    "controlPlaneId": "default",
+    "authorityScopeId": "marshal-harness"
+  },
+  "securityDomainId": {
+    "tenantNamespace": "default",
+    "trustDomainKind": "execution",
+    "isolationDomainId": "isolation-local"
+  },
+  "providerInstanceId": "provider-instance-1",
+  "configDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "trustRootKeyId": "trust-root-key-1",
+  "suiteName": "marshal-sandbox-conformance-suite",
+  "probeArtifactDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "dimensionResults": {
+    "mount": "passed",
+    "network": "passed",
+    "resource": "passed",
+    "credential": "passed"
+  },
+  "evidenceState": "valid",
+  "providerSelfSigned": false,
+  "signedAt": "2026-08-12T00:00:02Z",
+  "validUntil": "2026-09-11T00:00:02Z"
+}

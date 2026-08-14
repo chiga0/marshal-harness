@@ -1,0 +1,22 @@
+{
+  "providerCapabilitySnapshotDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "registrationId": "registration-1",
+  "protocolVersion": "v1alpha1",
+  "providerType": "sandbox",
+  "providerName": "local-sandbox",
+  "providerVersion": "1.0.0",
+  "capabilities": {
+    "structuredOutput": "json",
+    "nonInteractiveEdit": "true"
+  },
+  "conformanceEvidenceDigests": [],
+  "scope": "repository:marshal-harness",
+  "snapshotState": "active",
+  "createdAt": "2026-08-12T00:00:01Z",
+  "attestation": {
+    "providerInstanceId": "provider-instance-1",
+    "configDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "trustRootKeyId": "trust-root-key-1",
+    "trustRootAlgorithm": "ed25519"
+  }
+}

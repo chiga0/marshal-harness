@@ -1,0 +1,30 @@
+{
+  "registrationId": "registration-1",
+  "authorityNamespaceId": {
+    "tenantNamespace": "default",
+    "controlPlaneId": "default",
+    "authorityScopeId": "marshal-harness"
+  },
+  "securityDomainId": {
+    "tenantNamespace": "default",
+    "trustDomainKind": "execution",
+    "isolationDomainId": "isolation-local"
+  },
+  "principal": "principal-local-sandbox",
+  "providerType": "sandbox",
+  "providerName": "local-sandbox",
+  "providerVersion": "1.0.0",
+  "protocolVersion": "v1alpha1",
+  "scope": "repository:marshal-harness",
+  "idempotencyKey": "idempotency-key-1",
+  "requestDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "attestation": {
+    "providerInstanceId": "provider-instance-1",
+    "configDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "trustRootKeyId": "trust-root-key-1",
+    "trustRootAlgorithm": "ed25519"
+  },
+  "lifecycleState": "created",
+  "createdAt": "2026-08-12T00:00:00Z",
+  "registrationDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+}

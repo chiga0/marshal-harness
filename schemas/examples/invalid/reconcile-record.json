@@ -1,0 +1,11 @@
+{
+  "authorityNamespaceId": {
+    "tenantNamespace": "default",
+    "controlPlaneId": "default",
+    "authorityScopeId": "marshal-harness"
+  },
+  "observation": "present",
+  "decision": "accept",
+  "intentDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "receiptDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+}

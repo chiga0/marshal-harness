@@ -50,6 +50,46 @@ func init() {
 	}
 }
 
+// CatalogException documents one embedded v1alpha1 schema that Issue #65
+// asked to register in the durable catalog but that cannot become a
+// Descriptor without changing its frozen schema document.
+type CatalogException struct {
+	Name   string
+	Reason string
+}
+
+// catalogExceptions is the Issue #65 exception list. The issue named nine
+// M8 gate-1/gate-2 schemas; scm-merge-receipt and publication-reconcile-
+// record carry the durable apiVersion/kind envelope and are registered as
+// Descriptors above. The seven entries below freeze internal authority and
+// provider Go types (AuthorityNamespaceId, ProviderRegistration,
+// ProviderCapabilitySnapshot, ConformanceEvidence, SideEffectIntent,
+// SideEffectReceipt, ReconcileRecord) with additionalProperties:false and
+// without the apiVersion/kind envelope. A durable Descriptor requires
+// happy-path fixtures that pass both the schema and the envelope match
+// enforced by Validator.Validate, and every enveloped document is rejected
+// by these frozen schemas (TestIssue65ExceptionSchemasRejectDurableEnvelope
+// proves the infeasibility), so the schemas cannot join the catalog while
+// their documents stay frozen. They keep a schema-level fixture gate
+// instead (TestIssue65ExceptionFixturesPassSchemaGate) with happy-path and
+// invalid fixtures under schemas/examples. Promoting any exception to a
+// Descriptor first requires adding the envelope to the schema itself.
+var catalogExceptions = []CatalogException{
+	{Name: "authority-namespace", Reason: "frozen schema of the internal authority.AuthorityNamespaceId key space declares no apiVersion/kind envelope and forbids additional properties"},
+	{Name: "conformance-evidence", Reason: "frozen schema of the internal provider.ConformanceEvidence record declares no apiVersion/kind envelope and forbids additional properties"},
+	{Name: "provider-capability-snapshot", Reason: "frozen schema of the internal provider.ProviderCapabilitySnapshot record declares no apiVersion/kind envelope and forbids additional properties"},
+	{Name: "provider-registration", Reason: "frozen schema of the internal provider.ProviderRegistration record declares no apiVersion/kind envelope and forbids additional properties"},
+	{Name: "reconcile-record", Reason: "frozen schema of the internal authority.ReconcileRecord record declares no apiVersion/kind envelope and forbids additional properties"},
+	{Name: "side-effect-intent", Reason: "frozen schema of the internal authority.SideEffectIntent record declares no apiVersion/kind envelope and forbids additional properties"},
+	{Name: "side-effect-receipt", Reason: "frozen schema of the internal authority.SideEffectReceipt record declares no apiVersion/kind envelope and forbids additional properties"},
+}
+
+// CatalogExceptions returns the documented non-catalog schemas in stable
+// order.
+func CatalogExceptions() []CatalogException {
+	return slices.Clone(catalogExceptions)
+}
+
 // Descriptors returns the complete catalog in stable order.
 func Descriptors() []Descriptor {
 	return slices.Clone(descriptors)

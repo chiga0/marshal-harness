@@ -47,6 +47,30 @@ const (
 	KindCandidate Kind = "Candidate"
 )
 
+// Issue #65 reserved kinds for the seven M8 gate-1/gate-2 schemas that
+// freeze internal authority and provider Go types: AuthorityNamespaceId,
+// ProviderRegistration, ProviderCapabilitySnapshot, ConformanceEvidence,
+// SideEffectIntent, SideEffectReceipt and ReconcileRecord. Their frozen
+// v1alpha1 schema documents set additionalProperties:false and declare no
+// apiVersion/kind envelope, so no document can satisfy both the schema and
+// the durable-record envelope match enforced by the contract Validator;
+// contract.CatalogExceptions documents the resulting catalog exception.
+// These constants are therefore deliberately not members of kinds: Kinds
+// and ParseKind expose durable record kinds only. The other two Issue #65
+// M8 ledger schemas, scm-merge-receipt and publication-reconcile-record,
+// carry the durable envelope and are catalog kinds above. Promoting any
+// reserved kind to a durable catalog kind first requires adding the
+// apiVersion/kind envelope to its schema document.
+const (
+	KindAuthorityNamespace         Kind = "AuthorityNamespace"
+	KindConformanceEvidence        Kind = "ConformanceEvidence"
+	KindProviderCapabilitySnapshot Kind = "ProviderCapabilitySnapshot"
+	KindProviderRegistration       Kind = "ProviderRegistration"
+	KindReconcileRecord            Kind = "ReconcileRecord"
+	KindSideEffectIntent           Kind = "SideEffectIntent"
+	KindSideEffectReceipt          Kind = "SideEffectReceipt"
+)
+
 var kinds = []Kind{
 	KindTask,
 	KindCapabilitySnapshot,
