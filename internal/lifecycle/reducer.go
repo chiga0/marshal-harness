@@ -33,6 +33,15 @@ const AbortTerminalReason = "aborted-by-operator"
 // AbortTerminalReason; free operator text never enters either value.
 const PreAttemptAbortTerminalReason = "aborted-before-attempt"
 
+// The issue #68 wall-clock watchdog (watchdog.go) is strictly advisory with
+// respect to this transition table: it classifies non-terminal Runs against
+// the frozen budgets.RunTimeoutSeconds window and emits guidance sentinels
+// pointing at the abort exits frozen here (pre-attempt-abort at the ADR 0029
+// PLANNED/READY exit, attempt-abort at the ADR 0012 exit, wait otherwise).
+// The watchdog never appends journal events, never writes Run state and adds
+// no transition; terminal disposition always happens through the existing
+// legal commands.
+
 // PublicationReconcileEventType is the ADR 0026 typed reconciliation event.
 // It is the single named exception to terminal-state immutability: it may
 // move a BLOCKED run to ACCEPTED after an accept-after-merge reconcile and is

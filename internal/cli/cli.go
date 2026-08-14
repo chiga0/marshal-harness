@@ -158,15 +158,16 @@ type doctorWorker struct {
 }
 
 type doctorReport struct {
-	Status          string                       `json:"status"`
-	Build           buildinfo.Info               `json:"build"`
-	ContractSchemas int                          `json:"contractSchemas"`
-	WorkerAdapters  int                          `json:"workerAdapters"`
-	Milestone       string                       `json:"milestone"`
-	Workers         []doctorWorker               `json:"workers"`
-	Discovery       []app.Discovery              `json:"discovery"`
-	Run             *reconciliation.Report       `json:"run,omitempty"`
-	Repair          *reconciliation.RepairResult `json:"repair,omitempty"`
+	Status            string                       `json:"status"`
+	Build             buildinfo.Info               `json:"build"`
+	ContractSchemas   int                          `json:"contractSchemas"`
+	WorkerAdapters    int                          `json:"workerAdapters"`
+	Milestone         string                       `json:"milestone"`
+	Workers           []doctorWorker               `json:"workers"`
+	Discovery         []app.Discovery              `json:"discovery"`
+	TimeoutCandidates []lifecycle.TimeoutCandidate `json:"timeoutCandidates"`
+	Run               *reconciliation.Report       `json:"run,omitempty"`
+	Repair            *reconciliation.RepairResult `json:"repair,omitempty"`
 }
 
 func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -213,13 +214,14 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	workers := doctorWorkers(ctx, runtime)
 	report := doctorReport{
-		Status:          "ok",
-		Build:           buildinfo.Current(),
-		ContractSchemas: application.ContractCount(),
-		WorkerAdapters:  len(runtime.Registry().IDs()),
-		Milestone:       buildinfo.Milestone,
-		Workers:         workers,
-		Discovery:       doctorDiscovery(ctx),
+		Status:            "ok",
+		Build:             buildinfo.Current(),
+		ContractSchemas:   application.ContractCount(),
+		WorkerAdapters:    len(runtime.Registry().IDs()),
+		Milestone:         buildinfo.Milestone,
+		Workers:           workers,
+		Discovery:         doctorDiscovery(ctx),
+		TimeoutCandidates: doctorTimeoutCandidates(ctx, time.Now().UTC()),
 	}
 	if *runID != "" {
 		location, err := repository.Discover(".")
@@ -272,6 +274,16 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			continue
 		}
 		fmt.Fprintf(stdout, "建议注册 %s：export %s=%s（发现仅提供建议，不会自动注册）\n", entry.AdapterID, entry.EnvironmentVariable, entry.SuggestedEnv)
+	}
+	if len(report.TimeoutCandidates) > 0 {
+		fmt.Fprintf(stdout, "超时候选 Run：%d 个（doctor 只报告不处置；终态处置一律由既有合法命令完成）\n", len(report.TimeoutCandidates))
+		for _, candidate := range report.TimeoutCandidates {
+			fmt.Fprintf(stdout, "- %s：%s / 已挂起 %s / %s / 处置指引：%s", candidate.RunID, candidate.State, candidate.HungFor, candidate.Category, candidate.Guidance)
+			if command := lifecycle.GuidanceCommand(candidate.Guidance, candidate.RunID); command != "" {
+				fmt.Fprintf(stdout, "（%s）", command)
+			}
+			fmt.Fprintln(stdout)
+		}
 	}
 	if report.Run != nil {
 		fmt.Fprintf(stdout, "Run %s：%s（Snapshot %d / Journal %d）\n", report.Run.RunID, report.Run.Status, report.Run.SnapshotSequence, report.Run.JournalSequence)
@@ -349,6 +361,71 @@ func doctorDiscovery(ctx context.Context) []app.Discovery {
 		discovery = []app.Discovery{}
 	}
 	return discovery
+}
+
+// doctorTimeoutCandidates is the issue #68 wall-clock watchdog wiring: it
+// scans every local Run and reports the timeout candidates classified by
+// the pure lifecycle watchdog. Doctor only reports: it never writes Run
+// state and never executes an abort; terminal disposition is always
+// completed through the existing legal command each guidance sentinel
+// points to. A repository whose identity cannot be verified, an unreadable
+// runs directory, a Run whose evidence does not inspect cleanly, a terminal
+// Run and a Run without a readable positive RunTimeoutSeconds budget are
+// all skipped fail-closed instead of being reported.
+func doctorTimeoutCandidates(ctx context.Context, now time.Time) []lifecycle.TimeoutCandidate {
+	candidates := make([]lifecycle.TimeoutCandidate, 0)
+	location, err := repository.Discover(".")
+	if err != nil || location.ValidateIdentity() != nil {
+		return candidates
+	}
+	entries, err := os.ReadDir(filepath.Join(location.StateRoot, "runs"))
+	if err != nil {
+		return candidates
+	}
+	store := runstore.New(location.StateRoot)
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return candidates
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		runID := entry.Name()
+		state, inspectErr := store.Inspect(runID)
+		if inspectErr != nil || state.State.Terminal() {
+			continue
+		}
+		timeoutSeconds, ok := doctorRunTimeoutSeconds(filepath.Join(location.StateRoot, "runs", runID))
+		if !ok {
+			continue
+		}
+		verdict := lifecycle.WatchdogForRun(state, timeoutSeconds, now)
+		if !verdict.TimedOut {
+			continue
+		}
+		candidates = append(candidates, lifecycle.CandidateFromVerdict(runID, state.State, verdict))
+	}
+	return candidates
+}
+
+// doctorRunTimeoutSeconds extracts the frozen RunTimeoutSeconds budget from
+// the Run's frozen TaskSpec; a missing, unreadable or non-positive budget
+// fails closed as absent so the watchdog never judges a Run without a
+// defined window.
+func doctorRunTimeoutSeconds(runDirectory string) (int64, bool) {
+	data, err := os.ReadFile(filepath.Join(runDirectory, "task-spec.json"))
+	if err != nil {
+		return 0, false
+	}
+	var spec struct {
+		Budgets struct {
+			RunTimeoutSeconds int64 `json:"runTimeoutSeconds"`
+		} `json:"budgets"`
+	}
+	if json.Unmarshal(data, &spec) != nil || spec.Budgets.RunTimeoutSeconds <= 0 {
+		return 0, false
+	}
+	return spec.Budgets.RunTimeoutSeconds, true
 }
 
 func runContract(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
