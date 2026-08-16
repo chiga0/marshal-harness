@@ -4,6 +4,8 @@
 
 2026-08-11，维护者基于 Typed Execution、补偿与 Goal Roadmap 三路独立只读审计接受 ADR 0019：确定性 Core 是唯一 Supervisor；Typed Execution 不形成通用 Provider 协议；副作用采用 append-only 对账与补偿；Goal plan 必须先 proposal、后 deterministic admission。ADR 0019 是 M7 通过后的设计增补，不回滚 M7，也不升级 M8–M13 实现状态。
 
+2026-08-14，针对公开 [Issue #53](https://github.com/chiga0/marshal-harness/issues/53) 起草 ADR 0030（Proposed）：为 CI checks-failed → typed evidence → rework findings 注入 → 下一 Attempt prompt 消费提议冻结一条可恢复、可审计、无双计数的闭环契约（一等不可变 CIFailureEvidence、ReviewPacket typed CI 扩展与 ReviewDecision 绑定、ci-checks-failed 命名自环、双预算守卫终态与 execution lineage 消费）。ADR 0030 仅为提案，未经维护者接受，不构成实现、M8 状态或 conformance 声明。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -29,3 +31,4 @@
 | [0027](0027-candidate-record-and-verification-write-scope.md) | Candidate 一等不可变记录与 Verification 写作用域（声明式确定性归一化产出新 Candidate、原始产物永久留档、写作用域机械断言、gate required 为定义属性） | 已接受（Accepted，2026-08-13） |
 | [0028](0028-ci-deadline-phased-observation.md) | CI deadline 分阶段观察契约（远端检查集合的 typed 观察与 deadline 判定） | 已接受（Accepted，2026-08-13） |
 | [0029](0029-pre-attempt-abort.md) | 无 Attempt Run 的显式 abort 出口（PLANNED/READY 且无 Attempt 记录/无 publication intent/无 SideEffect/无已发布分支 → ABORTED，补充 ADR 0012 而非替代） | 已接受（Accepted，2026-08-13） |
+| [0030](0030-ci-failure-rework-evidence-and-injection.md) | CI 失败 typed evidence 与 rework 注入闭环（一等不可变 CIFailureEvidence、ReviewPacket typed CI 扩展与 ReviewDecision 绑定、ci-checks-failed 命名自环、双预算守卫终态与 execution prompt lineage 消费，Issue #53） | 提议（Proposed，2026-08-14；仅契约设计，未实现） |
