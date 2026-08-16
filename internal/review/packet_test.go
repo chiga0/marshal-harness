@@ -1,13 +1,16 @@
 package review
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/verification"
@@ -390,5 +393,133 @@ func TestArchivedLegacyPacketRevalidatesUnderExtendedSchema(t *testing.T) {
 	}
 	if decoded.EvidenceDigest != packet.EvidenceDigest {
 		t.Fatalf("archived packet evidence binding diverged: %s != %s", decoded.EvidenceDigest, packet.EvidenceDigest)
+	}
+}
+
+// earlyExitGitFixture prepares a minimal git repository with one base
+// commit; the repository directory doubles as the verification worktree.
+func earlyExitGitFixture(t *testing.T) (worktree, baseSHA string) {
+	t.Helper()
+	repository := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", repository}, args...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.name", "Marshal Test")
+	run("config", "user.email", "marshal@example.invalid")
+	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "README.md")
+	run("commit", "-q", "-m", "base")
+	output, err := exec.Command("git", "-C", repository, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v: %s", err, output)
+	}
+	return repository, strings.TrimSpace(string(output))
+}
+
+// TestPacketBuildsFromEarlyExitVerificationEvidence is the issue #142
+// end-to-end regression: when Verification exits early with a failed or
+// errored Gate (repository integrity or format:normalize), it must persist
+// an observed.patch that agrees with the frozen Observation plus a validated
+// observed-patch artifact with recomputable digest, byte size and candidate
+// binding, so task review still builds a schema-valid ReviewPacket and the
+// Lead can formally rework or reject the failed candidate instead of facing
+// an unexaminable REVIEW_PENDING. The flow mirrors the review command:
+// re-observe the worktree, validate the frozen identities, then build.
+func TestPacketBuildsFromEarlyExitVerificationEvidence(t *testing.T) {
+	cases := []struct {
+		name       string
+		candidate  bool
+		repository bool // fail the repository Gate instead of format:normalize
+	}{
+		{name: "repository gate fail legacy"},
+		{name: "repository gate fail candidate mode", candidate: true},
+		{name: "format normalize fail legacy"},
+		{name: "format normalize fail candidate mode", candidate: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newReviewFixture(t)
+			worktree, baseSHA := earlyExitGitFixture(t)
+			if !tc.repository {
+				directory := filepath.Join(worktree, "pkg")
+				if err := os.MkdirAll(directory, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(directory, "broken.go"), []byte("package pkg\n\nfunc { oops\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			input := verification.Input{TaskID: "ENG-123", RunID: "run-01", SpecDigest: fixture.specDigest, BaseSHA: baseSHA, Worktree: worktree, RunDirectory: fixture.directory, Scope: verification.ScopePolicy{AllowPaths: []string{"**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}, PatchCaptureBytes: 1 << 20}
+			if tc.repository {
+				input.ExpectedCommonDir = filepath.Join(t.TempDir(), "foreign-common-dir")
+			}
+			if tc.candidate {
+				input.AttemptID = "attempt-01"
+				namespace, err := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: worktree}.Digest()
+				if err != nil {
+					t.Fatal(err)
+				}
+				input.AuthorityNamespaceID = namespace
+			}
+			if _, err := verification.New().Verify(context.Background(), input); err != nil {
+				t.Fatalf("early exit verification must complete: %v", err)
+			}
+			reportData, err := os.ReadFile(filepath.Join(fixture.directory, "verification-report.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifestData, err := os.ReadFile(filepath.Join(fixture.directory, "artifact-manifest.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report verification.Report
+			if err := json.Unmarshal(reportData, &report); err != nil {
+				t.Fatal(err)
+			}
+			var manifest verification.ArtifactManifest
+			if err := json.Unmarshal(manifestData, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			if report.Status != "fail" {
+				t.Fatalf("early exit report = %+v", report)
+			}
+			// The review command re-observes the worktree before building;
+			// the frozen report identities must reproduce exactly.
+			observation, err := verification.ObserveContext(context.Background(), worktree, baseSHA, 1<<20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateCurrentObservation(report, observation); err != nil {
+				t.Fatalf("early exit evidence must stay current for review: %v", err)
+			}
+			builder := PacketBuilder{RunDirectory: fixture.directory, Validator: fixture.validator}
+			packet, packetDigest, err := builder.Build(PacketBuildInput{Task: fixture.task, TaskData: fixture.taskData, Report: report, ReportData: reportData, Manifest: manifest, ManifestData: manifestData, TaskID: "ENG-123", RunID: "run-01", SpecDigest: fixture.specDigest, BaseSHA: baseSHA, ReviewRound: 1, AttemptsUsed: 1})
+			if err != nil {
+				t.Fatalf("review packet must build from the early exit evidence: %v", err)
+			}
+			if packet.CandidateDigest != "" || packet.WorkerCandidateDigest != "" {
+				t.Fatalf("failed run packet must not fabricate candidate bindings: %+v", packet)
+			}
+			if packet.DiffDigest != report.Observed.DiffDigest || packet.SnapshotDigest != report.Observed.SnapshotDigest {
+				t.Fatalf("packet observation binding diverges from the report: %+v", packet)
+			}
+			if tc.candidate && !tc.repository {
+				// The failed candidate must stay formally reworkable by the
+				// Lead over the generated packet.
+				decision := validDecision(fixture, packet, packetDigest, "rework")
+				path := writeDecision(t, fixture.directory, decision)
+				imported, err := (&DecisionImporter{RunDirectory: fixture.directory, Validator: fixture.validator}).Import(DecisionInput{Path: path, Task: fixture.task, TaskID: "ENG-123", RunID: "run-01", SpecDigest: fixture.specDigest, ReviewRound: 1, AttemptsUsed: 1, Report: report, Manifest: manifest})
+				if err != nil || imported.TargetState != domain.StateReworkRequested {
+					t.Fatalf("lead rework over the failed candidate = %+v err = %v", imported, err)
+				}
+			}
+		})
 	}
 }
