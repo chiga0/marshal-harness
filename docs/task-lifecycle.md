@@ -119,6 +119,43 @@ Worker Attempt、Verifier 或 Publisher 在同一时间只能有一个持有 wor
 
 CI 结果必须绑定精确的 published head SHA。旧 commit 的绿色检查不能满足门禁。Rework 更新 branch 后，旧检查失效，生命周期重新经过 Verification、Review、Publishing 与 `CI_PENDING`。
 
+当前实现（current behavior）：`CI_PENDING` 的失败观察只把 `headSha` 写入 `publication.checks-failed` 事件并进入 `REWORK_REQUESTED`，下一 Attempt 得不到任何 review findings；`REWORK_REQUESTED` 的 CI origin 没有 ReviewPacket/ReviewDecision 入口。目标契约（target contract）见下节（[ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)，Proposed，未实现）。
+
+## ADR 0030 目标契约：CI 失败证据与 rework 注入（Proposed，非当前行为）
+
+本节描述 [ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)（草案已提出，状态：提议（Proposed），待接受）给出的目标转换与 counter 语义，仅供实施与审计引用；在 ADR 0030 被接受并实现合入前，它们不构成当前行为，上方状态表与转换表保持当前行为不变。
+
+### 目标转换（相对当前转换表的增量）
+
+| From | To | 事件与守卫条件 |
+| --- | --- | --- |
+| `CI_PENDING` | `REWORK_REQUESTED` | `publication.checks-failed`（target shape）：失败观察的 RemoteCheckRecord 与一等不可变 `CIFailureEvidence` 已内容寻址持久化，payload 携带 `headSha`、`remoteCheckRecordDigest`、`ciFailureEvidenceDigest`；双预算守卫（`ReworkRoundsUsed < maxReworkRounds` 且 `AttemptsUsed < maxAttempts`）通过 |
+| `CI_PENDING` | `REJECTED` | `publication.checks-rework-budget-exhausted`（新增，actor 固定 `publisher/marshal-github-publisher`）：任一预算守卫耗尽；封闭 `terminalReason`：`ci-rework-attempt-budget-exhausted`（attempt 耗尽优先）或 `ci-rework-round-budget-exhausted`；必须写 Outcome/result.md 并绑定 PublicationRecord、RemoteCheckRecord、CIFailureEvidence 摘要 |
+| `REWORK_REQUESTED` | `REWORK_REQUESTED` | `review.rework`（originKind=`ci-checks-failed`，唯一命名自环例外）：actor 固定 `system/marshal-review`，消费唯一未消费的 target shape checks-failed origin，绑定 round-bound ReviewDecision；不触碰任何 counter |
+| `CI_PENDING` | `BLOCKED` | 证据接纳拒绝（身份字段不匹配、重复 check identity、required fail 集合为空）：复用既有 `publication.blocked` typed failure（actor `publisher/marshal-github-publisher`，`error` 原因码 `ci-evidence-admission-rejected`——ADR 0028 封闭原因码集合经 ADR 0030 提议的后续扩展），不触碰任何 counter；不产生内容寻址证据 |
+
+`review.rework` 的两类 origin：既有 `REVIEW_PENDING → REWORK_REQUESTED` 为 normal-review origin，语义逐字不变；新增 `REWORK_REQUESTED → REWORK_REQUESTED` 只允许 `ci-checks-failed` origin。除该命名例外与既有 `reconciliation.snapshot-repaired` 审计事件外，不开放任何通用 same-state transition。
+
+### 目标 counter 语义（相对当前 reducer 的差异）
+
+| 事件 | AttemptsUsed | OperationalRetriesUsed | ReworkRoundsUsed | ReviewRound |
+| --- | --- | --- | --- | --- |
+| `publication.checks-failed`（target shape） | — | — | +1（仅一次） | +1（原子预留一个新的 CI reviewRound） |
+| `review.rework`（originKind=ci-checks-failed 自环） | — | — | — | — |
+| `publication.checks-rework-budget-exhausted` | — | — | — | — |
+| 其余事件 | 当前语义不变（`worker.started` +AttemptsUsed；RETRY_PENDING +OperationalRetriesUsed；`verification.completed` +ReviewRound；normal `review.rework` +ReworkRoundsUsed） | | | |
+
+切换前的 legacy `publication.checks-failed`（payload 仅 `headSha`）在 replay 中保持历史 counter 语义（+ReworkRoundsUsed，不预留 ReviewRound），保证历史 journal 与其快照一致；legacy origin 是 replay-only 的，不进入目标消费路径。接纳拒绝的 `publication.blocked` 与既有语义一样不触碰任何 counter。
+
+### 目标消费与拒绝规则
+
+- CI review（`marshal task review`）接纳集合扩展为 `REVIEW_PENDING`（既有）与 `REWORK_REQUESTED` 且存在唯一未消费 target shape CI origin（新增）；CI 入口生成现有 ReviewPacket 的 typed CI 扩展（不伪造新的 Verification），只导入 `verdict=rework` 且每项 `requiredOutcome` 非空的 blockingFindings 的 ReviewDecision；
+- `task run` 对尚无唯一匹配自环的 CI origin 在 Probe/Attempt 创建/任何副作用之前拒绝，不注入空 findings；
+- 自环成功后，新 rework Attempt 沿相邻 journal lineage 加载预留 reviewRound 的 Decision，把 `blockingFindings` 的 `id`、`severity`、`description`、`requiredOutcome` 精确投影到 `WorkerRequest.reviewFindings` 与 worker prompt；同一 origin 的 operational retry 解析同一 Decision 并得到字节等价 findings；
+- 一个 checks-failed origin 与一次成功注入一对一：一个 origin 最多对应一个成功注入；导入唯一键 `(runId, originEventId, originSequence)` 先经只读解析裁决 replay/conflict，仅 fresh origin 才准备记录与追加事件；同 key 同 `decisionDigest` 的 lost-response 重放幂等返回既有结果（零追加），同 key 不同 digest 固定 conflict 零副作用；自环成功绑定 Decision 后不再次递增任何 counter。
+
+完整字段表、digest 公式、事务/崩溃窗口与测试矩阵见 [ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)；恢复矩阵见[故障与恢复](failure-and-recovery.md)的对应目标节。
+
 ## 清理
 
 Cleanup 不是状态转换，也不能销毁 Outcome Bundle。

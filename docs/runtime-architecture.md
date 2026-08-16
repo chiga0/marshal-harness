@@ -293,7 +293,7 @@ Goal 可以进入 `PAUSED`，`pauseReason` 为 `awaiting-input|operator|policy|b
 
 ## 保留的 Local MVP 不变量
 
-Worker 不自证；Run 冻结 spec/base/policy/最低环境要求；单 workspace/attempt 写入者；Worker/Verifier/Publisher 分权；ReviewDecision 精确绑定 evidence；失败保存 Outcome；副作用 intent-first + receipt + reconcile，补偿不回滚历史；能力不足 fail closed；普通宿主进程不宣称恶意代码隔离；Merge 默认禁用；`.marshal/` 不进入业务提交。
+Worker 不自证；Run 冻结 spec/base/policy/最低环境要求；单 workspace/attempt 写入者；Worker/Verifier/Publisher 分权；ReviewDecision 精确绑定 evidence；失败保存 Outcome；副作用 intent-first + receipt + reconcile，补偿不回滚历史；能力不足 fail closed；普通宿主进程不宣称恶意代码隔离；Merge 默认禁用；`.marshal/` 不进入业务提交。此外，CI Provider/Publisher 的失败观察只是 typed facts，不构成权威 finding 或 ReviewDecision：CI 失败 typed evidence（`CIFailureEvidence`）与 rework findings 注入闭环的目标契约见 [ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)（Proposed，未实现），其 execution prompt 消费边界由[任务生命周期](task-lifecycle.md)与[故障与恢复](failure-and-recovery.md)的目标节承接；本节不变量集合不因该提案缩减。
 
 ## 文档关系
 

@@ -107,7 +107,48 @@ Ambiguous Timeout 后先查询 Remote，不能假设失败并创建重复 PR/MR�
 
 CI Polling 保存 Cursor/Last Observation 并通过有界 Backoff 恢复。Check Identity 包含 Repository、Head SHA 与 Provider Check ID，其他 SHA 的结果视为陈旧。
 
-Provider 不可用时保持 `CI_PENDING` 到 Timeout，随后进入 `BLOCKED`。只有日志与责任归属表明是代码失败时，才进入 Actionable Rework。
+Provider 不可用时保持 `CI_PENDING` 到 Timeout，随后进入 `BLOCKED`。只有日志与责任归属表明是代码失败时，才进入 Actionable Rework。目标契约下（见下节，[ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)，Proposed），“代码失败”的 findings 不再由日志推断，而是由 Lead 对 typed CI evidence 作出 ReviewDecision 后注入。
+
+## ADR 0030 目标契约：CI 失败、预算耗尽与恢复矩阵（Proposed，非当前行为）
+
+本节描述 [ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)（草案已提出，状态：提议（Proposed），待接受）给出的 CI 失败处置与恢复语义；在其被接受并实现合入前，它们不构成当前行为，上文各节保持当前行为。
+
+### CI 失败处置链（target）
+
+1. 失败观察（`status=fail`）的 RemoteCheckRecord bytes 内容寻址持久化（put-if-absent，不依赖可被覆盖的单一 `remote-check-record.json`），并产出一等不可变 `CIFailureEvidence`（绑定 taskId/runId/specDigest/publicationDigest/remoteCheckRecordDigest/repositoryId/requestId/headSha/origin 事件身份/失败 required checks/observedAt）；
+2. 双预算守卫通过 → `publication.checks-failed`（payload 携带 `headSha` 与两个 digest），`CI_PENDING → REWORK_REQUESTED`，原子预留一个新 CI reviewRound 且只增加一次 ReworkRoundsUsed；
+3. CI review 导入 verdict=rework 的 ReviewDecision（typed CI 扩展 packet，不伪造新 Verification）→ `review.rework`（originKind=`ci-checks-failed`）命名自环消费 origin，零 counter 变化；
+4. 新 Attempt 沿相邻 lineage 消费 Decision 的 blockingFindings；未注入前 `task run` fail closed 拒绝。
+
+证据接纳 fail closed：未知/缺失/重复 check identity、身份字段不匹配、筛选为空、摘要或 current-ledger 漂移一律拒绝；拒绝时经既有 `publication.blocked` typed failure 进入 `BLOCKED`（`error` 原因码 `ci-evidence-admission-rejected`，ADR 0028 封闭原因码集合经 ADR 0030 提议的后续扩展；事件/actor/payload/Outcome/事务与崩溃语义见 ADR 0030 第二节「接纳拒绝 typed 事务」），且已 BLOCKED 的 Run 不因后续观察自动复活。Provider/Publisher 只报告 typed facts，不产生 finding、不宣布 ReviewDecision。
+
+### 预算耗尽终态矩阵（target）
+
+| 情形 | 事件 | 转换 | terminalReason | Outcome/result.md |
+| --- | --- | --- | --- | --- |
+| attempt 耗尽（无论 rework round 是否同时耗尽，attempt sentinel 优先） | `publication.checks-rework-budget-exhausted`（actor `publisher/marshal-github-publisher`） | `CI_PENDING → REJECTED` | `ci-rework-attempt-budget-exhausted` | 必须写，绑定 publicationDigest/remoteCheckRecordDigest/ciFailureEvidenceDigest |
+| 仅 rework round 耗尽 | 同上 | 同上 | `ci-rework-round-budget-exhausted` | 同上 |
+| 双守卫通过 | `publication.checks-failed`（target shape） | `CI_PENDING → REWORK_REQUESTED` | — | 不产生终态 |
+
+终态不得以自由文本替代封闭 terminalReason；异常或不可判定时 fail closed，不伪造终态。`REJECTED` 不进入 ADR 0026 typed reconciliation 例外（该例外仅限 accept-after-merge 的 `BLOCKED → ACCEPTED`）。预算耗尽终态 Outcome 的 `verdict`/`finalReviewRound`/`finalReviewDigest`/`finalEvidenceDigest`/`findingCount` 继承产出失败 head 的发布世代的既有 accept Decision 与证据（见 ADR 0030 第三节「预算耗尽终态 Outcome 投影」）；该路径不产生任何 ReviewDecision，Publisher 只追加 typed facts。
+
+### 崩溃/重放恢复矩阵（target）
+
+| 崩溃窗口 | 恢复规则 |
+| --- | --- |
+| 内容寻址 bytes 写入后、origin 事件 append 前 | 孤儿不可变 bytes 无害；重试同内容幂等复用，整体未发生；CAS 失败时本次 evidence 的 origin 绑定作废，重新派生后重建 |
+| 接纳拒绝（`publication.blocked`）的 outcome pending 后、append 前 | 孤儿 pending outcome 由下一次 prepare 清理；零 journal 副作用 |
+| origin 事件 append 后、终态 Outcome commit 前（仅预算耗尽分支） | journal 已权威；恢复路径按 journal 绑定重新 stage 并 commit 一次，final no-replace |
+| origin append 后、snapshot 写入前/损坏 | full replay 重建 State、counter、origin consumed 状态与 terminalReason；doctor `--repair` 仅 snapshot-rebuild（`reconciliation.snapshot-repaired` 审计） |
+| CI review 唯一键只读裁决后：记录 pending 后、自环 append 前 | replay/conflict 在 prepare 之前裁决（同 digest 零追加返回、不同 digest conflict 零副作用）；fresh origin 的孤儿 pending 由下一次导入清理；零 journal 副作用 |
+| 自环 append CAS 失败（并发推进） | abort pending，回到唯一键只读裁决，按 replay/conflict/fresh 规则继续 |
+| 自环 append 后、decision/packet commit 前 | journal 已权威，按 journal 绑定完成 commit（字节一致），final no-replace |
+| lost-response：同 key 同 decisionDigest 重放 | 幂等返回既有结果，不追加第二条事件 |
+| conflict：同 key 不同 decisionDigest | 固定 conflict，零副作用 |
+| 内容寻址记录缺失/摘要漂移 | 消费路径（review 导入、execution admission、doctor 校验）fail closed；doctor 不重建、不伪造 |
+| 重复 origin 消费、自环先于 origin、旧 publication head、伪造 actor、truncated tail、snapshot 与 replay 分歧 | replay/接纳 fail closed（完整清单见 ADR 0030 第九节） |
+
+doctor 边界不变：只读校验 digest 链与 consumed 状态，`--repair` 只修复 snapshot，不追加业务事件、不改变业务终态。
 
 ## 状态损坏
 
