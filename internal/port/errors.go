@@ -3,6 +3,8 @@ package port
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"time"
 )
 
 type permanentError struct{ err error }
@@ -23,4 +25,198 @@ func Permanentf(format string, args ...any) error { return Permanent(fmt.Errorf(
 func IsPermanent(err error) bool {
 	var target interface{ Permanent() bool }
 	return errors.As(err, &target) && target.Permanent()
+}
+
+// FailureKind 是 Provider 终止性失败的封闭分类集合。Qwen CLI/底层 API 会把
+// quota、rate limit、DNS 或 connection terminal error 包装成 exitCode=0，
+// 因此分类只能依赖结构化信号，exitCode、文件存在或自由文本 summary 都不是
+// 成功或失败的证据。
+type FailureKind string
+
+const (
+	FailureKindQuotaExhausted    FailureKind = "quota-exhausted"
+	FailureKindRateLimited       FailureKind = "rate-limited"
+	FailureKindDNSFailure        FailureKind = "dns-failure"
+	FailureKindConnectionFailure FailureKind = "connection-failure"
+	FailureKindProtocolInvalid   FailureKind = "protocol-invalid"
+	FailureKindResultMissing     FailureKind = "result-missing"
+	FailureKindProviderTerminal  FailureKind = "provider-terminal"
+)
+
+// FailureKinds 冻结封闭分类全集，顺序固定，供契约测试逐项遍历。
+var FailureKinds = []FailureKind{
+	FailureKindQuotaExhausted,
+	FailureKindRateLimited,
+	FailureKindDNSFailure,
+	FailureKindConnectionFailure,
+	FailureKindProtocolInvalid,
+	FailureKindResultMissing,
+	FailureKindProviderTerminal,
+}
+
+// RetryDisposition 是失败处置意向的封闭集合。
+type RetryDisposition string
+
+const (
+	RetryDispositionRetryable  RetryDisposition = "retryable"
+	RetryDispositionBlocked    RetryDisposition = "blocked"
+	RetryDispositionDoNotRetry RetryDisposition = "do-not-retry"
+)
+
+// RetryDispositions 冻结封闭处置全集，顺序固定。
+var RetryDispositions = []RetryDisposition{
+	RetryDispositionRetryable,
+	RetryDispositionBlocked,
+	RetryDispositionDoNotRetry,
+}
+
+// AdapterID 是 Adapter 的封闭身份集合。
+type AdapterID string
+
+const (
+	AdapterIDQwen     AdapterID = "qwen"
+	AdapterIDPi       AdapterID = "pi"
+	AdapterIDOpenCode AdapterID = "opencode"
+	AdapterIDFake     AdapterID = "fake"
+	AdapterIDCodex    AdapterID = "codex"
+	AdapterIDQoder    AdapterID = "qoder"
+)
+
+// AdapterIDs 冻结封闭身份全集，顺序固定。
+var AdapterIDs = []AdapterID{
+	AdapterIDQwen,
+	AdapterIDPi,
+	AdapterIDOpenCode,
+	AdapterIDFake,
+	AdapterIDCodex,
+	AdapterIDQoder,
+}
+
+// dispositionForKey 冻结唯一合法配对：quota=blocked；
+// rate/DNS/connection/result-missing=retryable；
+// protocol/provider-terminal=do-not-retry。
+var dispositionForKey = map[FailureKind]RetryDisposition{
+	FailureKindQuotaExhausted:    RetryDispositionBlocked,
+	FailureKindRateLimited:       RetryDispositionRetryable,
+	FailureKindDNSFailure:        RetryDispositionRetryable,
+	FailureKindConnectionFailure: RetryDispositionRetryable,
+	FailureKindResultMissing:     RetryDispositionRetryable,
+	FailureKindProtocolInvalid:   RetryDispositionDoNotRetry,
+	FailureKindProviderTerminal:  RetryDispositionDoNotRetry,
+}
+
+// DispositionFor 返回失败分类唯一合法的处置意向。
+func DispositionFor(kind FailureKind) (RetryDisposition, bool) {
+	disposition, ok := dispositionForKey[kind]
+	return disposition, ok
+}
+
+// MaxRetryHintWindow 是 retry hint 的固定上界；超过 24h 的 hint 一律拒绝。
+const MaxRetryHintWindow = 24 * time.Hour
+
+// AdapterFailure 是跨 Adapter 的 typed 终止性失败。Error() 只由固定词汇与
+// 已验证的安全数值/时间组成：构造器不接受任何自由文本，因此 provider
+// message、stderr、session/request ID、credential、URL 或绝对路径都不可能
+// 进入错误文本。
+type AdapterFailure struct {
+	Adapter     AdapterID
+	Kind        FailureKind
+	Disposition RetryDisposition
+	// RetryAfter 为零值表示没有 hint；非零值必然通过构造器验证。
+	RetryAfter time.Duration
+	// NotBefore 为零值表示没有 hint；非零值必然通过构造器验证。
+	NotBefore time.Time
+}
+
+// NewAdapterFailure 构造 typed 失败并强制封闭契约：未知枚举、非法配对、
+// 冲突/零/负/过去/溢出或超过 24h 的 hint 全部拒绝。retryAfter 与 notBefore
+// 为 nil 表示对应 hint 缺失；两者同时出现视为冲突。now 是验证 notBefore 的
+// 参考时间，必须显式提供，保证失败构造可确定性重放。
+func NewAdapterFailure(adapter AdapterID, kind FailureKind, disposition RetryDisposition, retryAfter *time.Duration, notBefore *time.Time, now time.Time) (AdapterFailure, error) {
+	if now.IsZero() {
+		return AdapterFailure{}, errors.New("adapter failure: reference time is required")
+	}
+	if !knownAdapterID(adapter) {
+		return AdapterFailure{}, errors.New("adapter failure: unknown adapter id")
+	}
+	expected, knownKind := dispositionForKey[kind]
+	if !knownKind {
+		return AdapterFailure{}, errors.New("adapter failure: unknown failure kind")
+	}
+	if !knownDisposition(disposition) {
+		return AdapterFailure{}, errors.New("adapter failure: unknown retry disposition")
+	}
+	if disposition != expected {
+		return AdapterFailure{}, errors.New("adapter failure: failure kind and retry disposition disagree")
+	}
+	if retryAfter != nil && notBefore != nil {
+		return AdapterFailure{}, errors.New("adapter failure: retry hints conflict")
+	}
+	failure := AdapterFailure{Adapter: adapter, Kind: kind, Disposition: disposition}
+	if retryAfter != nil {
+		if *retryAfter <= 0 {
+			return AdapterFailure{}, errors.New("adapter failure: retry-after must be positive")
+		}
+		if *retryAfter > MaxRetryHintWindow {
+			return AdapterFailure{}, errors.New("adapter failure: retry-after exceeds the 24h window")
+		}
+		failure.RetryAfter = *retryAfter
+	}
+	if notBefore != nil {
+		if notBefore.IsZero() {
+			return AdapterFailure{}, errors.New("adapter failure: not-before must not be zero")
+		}
+		if !notBefore.After(now) {
+			return AdapterFailure{}, errors.New("adapter failure: not-before is in the past")
+		}
+		if notBefore.After(now.Add(MaxRetryHintWindow)) {
+			return AdapterFailure{}, errors.New("adapter failure: not-before exceeds the 24h window")
+		}
+		failure.NotBefore = *notBefore
+	}
+	return failure, nil
+}
+
+func knownAdapterID(adapter AdapterID) bool {
+	for _, candidate := range AdapterIDs {
+		if adapter == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func knownDisposition(disposition RetryDisposition) bool {
+	for _, candidate := range RetryDispositions {
+		if disposition == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+// Error 只拼接封闭枚举、整数秒与 RFC3339 时间这些已验证的安全值。
+func (f AdapterFailure) Error() string {
+	message := "adapter " + string(f.Adapter) + " provider failure " + string(f.Kind) + "/" + string(f.Disposition)
+	if f.RetryAfter > 0 {
+		message += " retry-after=" + strconv.FormatInt(int64(f.RetryAfter.Round(time.Second)/time.Second), 10) + "s"
+	}
+	if !f.NotBefore.IsZero() {
+		message += " not-before=" + f.NotBefore.UTC().Format(time.RFC3339)
+	}
+	return message
+}
+
+// Permanent 与既有 IsPermanent 语义兼容：do-not-retry 的 typed 失败即视为
+// 永久失败，retryable/blocked 仍交给运维重试预算处理。
+func (f AdapterFailure) Permanent() bool { return f.Disposition == RetryDispositionDoNotRetry }
+
+// AsAdapterFailure 是 errors.As 的 typed helper，沿错误链提取第一个
+// AdapterFailure。
+func AsAdapterFailure(err error) (AdapterFailure, bool) {
+	var failure AdapterFailure
+	if errors.As(err, &failure) {
+		return failure, true
+	}
+	return AdapterFailure{}, false
 }
