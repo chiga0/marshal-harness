@@ -58,7 +58,11 @@ func New() *Verifier { return &Verifier{now: time.Now} }
 
 func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 	started := v.now().UTC()
-	result := Result{Report: Report{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindVerificationReport, TaskID: input.TaskID, RunID: input.RunID, SpecDigest: input.SpecDigest, BaseSHA: input.BaseSHA, Observed: emptyObservation(), StartedAt: started}, Manifest: ArtifactManifest{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindArtifactManifest, TaskID: input.TaskID, RunID: input.RunID, GeneratedAt: started}}
+	// Artifacts starts as a non-nil empty slice: a nil slice would marshal
+	// to JSON null and violate the ArtifactManifest schema's array contract
+	// on every exit path that precedes the first observed artifact, notably
+	// the early repository Gate fail/error returns (issue #142).
+	result := Result{Report: Report{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindVerificationReport, TaskID: input.TaskID, RunID: input.RunID, SpecDigest: input.SpecDigest, BaseSHA: input.BaseSHA, Observed: emptyObservation(), StartedAt: started}, Manifest: ArtifactManifest{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindArtifactManifest, TaskID: input.TaskID, RunID: input.RunID, Artifacts: []Artifact{}, GeneratedAt: started}}
 	if err := validateInput(input); err != nil {
 		return result, err
 	}
@@ -243,6 +247,13 @@ func emptyObservation() Observation {
 func (v *Verifier) finish(input Input, result Result) (Result, error) {
 	result.Report.CompletedAt = v.now().UTC()
 	result.Manifest.GeneratedAt = result.Report.CompletedAt
+	// Finish is the serialization boundary for every exit path: keep the
+	// artifact collection a JSON array even when nothing was observed
+	// (issue #142), so contract validation never strands a Run in
+	// VERIFYING over a null artifacts field.
+	if result.Manifest.Artifacts == nil {
+		result.Manifest.Artifacts = []Artifact{}
+	}
 	result.Report.Status = overallStatus(result.Report.Gates)
 	result.Report.Summary = fmt.Sprintf("Verification %s：%d 个 Gate", result.Report.Status, len(result.Report.Gates))
 	if result.denialsPresent {
