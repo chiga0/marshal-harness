@@ -17,6 +17,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	marshalRepository "github.com/chiga0/marshal-harness/internal/repository"
@@ -1197,5 +1198,99 @@ func TestVerifyLegacyRunKeepsByteCompatibleEvidence(t *testing.T) {
 				t.Fatalf("legacy format:normalize evidence changed: %+v", gate.Evidence)
 			}
 		}
+	}
+}
+
+// Issue #142: the early repository Gate fail/error exits precede every
+// artifact observation. Verify must still complete without error and persist
+// both evidence documents through the contract Validator, with the manifest
+// encoding artifacts as an empty JSON array (never null), so task verify can
+// run its typed state transition instead of stranding the Run in VERIFYING.
+func TestVerifyEarlyRepositoryGateExitsPersistSchemaLegalEvidence(t *testing.T) {
+	cases := []struct {
+		name       string
+		candidate  bool
+		mutate     func(*testing.T, *Input)
+		wantStatus string
+	}{
+		{
+			name: "gate fail on foreign common directory",
+			mutate: func(t *testing.T, input *Input) {
+				input.ExpectedCommonDir = filepath.Join(t.TempDir(), "foreign-common-dir")
+			},
+			wantStatus: "fail",
+		},
+		{
+			name: "gate error on non-repository worktree",
+			mutate: func(t *testing.T, input *Input) {
+				input.Worktree = t.TempDir()
+			},
+			wantStatus: "error",
+		},
+		{
+			name:      "candidate mode gate fail on foreign common directory",
+			candidate: true,
+			mutate: func(t *testing.T, input *Input) {
+				input.ExpectedCommonDir = filepath.Join(t.TempDir(), "foreign-common-dir")
+			},
+			wantStatus: "fail",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newVerificationFixture(t)
+			input := fixture.input()
+			if tc.candidate {
+				input = fixture.candidateInput()
+			}
+			input.Scope = ScopePolicy{AllowPaths: []string{"**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}
+			tc.mutate(t, &input)
+			result, err := New().Verify(context.Background(), input)
+			if err != nil {
+				t.Fatalf("early repository gate exit must complete verification: %v", err)
+			}
+			if result.Report.Status != tc.wantStatus {
+				t.Fatalf("report status = %q, want %q: %+v", result.Report.Status, tc.wantStatus, result.Report)
+			}
+			if gateStatus(result.Report.Gates, "repository:integrity") != tc.wantStatus {
+				t.Fatalf("repository gate = %+v", result.Report.Gates)
+			}
+			if len(result.Report.Gates) != 1 {
+				t.Fatalf("early exit must stop at the repository gate: %+v", result.Report.Gates)
+			}
+			if result.Manifest.Artifacts == nil || len(result.Manifest.Artifacts) != 0 {
+				t.Fatalf("manifest artifacts = %#v, want non-nil empty slice", result.Manifest.Artifacts)
+			}
+			assertPersistedEvidenceSchemaLegal(t, input.RunDirectory)
+		})
+	}
+}
+
+func assertPersistedEvidenceSchemaLegal(t *testing.T, runDirectory string) {
+	t.Helper()
+	reportData, err := os.ReadFile(filepath.Join(runDirectory, "verification-report.json"))
+	if err != nil {
+		t.Fatalf("verification report must be persisted on early exits: %v", err)
+	}
+	manifestData, err := os.ReadFile(filepath.Join(runDirectory, "artifact-manifest.json"))
+	if err != nil {
+		t.Fatalf("artifact manifest must be persisted on early exits: %v", err)
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validator.Validate(domain.KindVerificationReport, reportData); err != nil {
+		t.Fatalf("persisted verification report violates contract: %v", err)
+	}
+	if err := validator.Validate(domain.KindArtifactManifest, manifestData); err != nil {
+		t.Fatalf("persisted artifact manifest violates contract: %v", err)
+	}
+	var manifest ArtifactManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Artifacts == nil {
+		t.Fatalf("persisted manifest encodes artifacts as null: %s", manifestData)
 	}
 }
