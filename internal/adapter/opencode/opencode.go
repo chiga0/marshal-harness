@@ -48,6 +48,25 @@ func isSupportedBinary(version string) bool {
 	return slices.Contains(supportedBinaries, version)
 }
 
+// liveProbeExemptionEnv names the environment variable that deterministically
+// exempts the probe-only live gate (TestLiveProbeVersionSupported) when a
+// host OpenCode binary auto-upgrades outside the closed supported set. The
+// exemption reaches only that gate's version-membership judgment:
+// supportedBinaries stays a closed set, Probe keeps its exact reporting, and
+// Run and PrepareTerminal keep failing closed on unsupported versions.
+const liveProbeExemptionEnv = "MARSHAL_SKIP_LIVE_PROBE"
+
+// liveProbeSkipReason is the searchable exemption reason carried by the
+// skipped live gate output whenever the exemption applies.
+const liveProbeSkipReason = "skipped: " + liveProbeExemptionEnv + "=1 exempts the probe-only live gate"
+
+// liveProbeExempted reports whether liveProbeExemptionEnv exempts the
+// probe-only live gate. Only the exact value "1" exempts; every other value,
+// including an empty one, leaves the gate untouched.
+func liveProbeExempted() bool {
+	return os.Getenv(liveProbeExemptionEnv) == "1"
+}
+
 var (
 	ErrUnsupportedVersion = errors.New("unsupported opencode version")
 	ErrOutputLimit        = errors.New("opencode output limit exceeded")
