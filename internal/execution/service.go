@@ -1407,6 +1407,25 @@ func splitDeliverables(raw any) (workerOwned, publisherOwned []any) {
 	return workerOwned, publisherOwned
 }
 
+// renderScopeLimitLines 生成可选 Scope 配额（maxChangedFiles、maxDiffBytes）
+// 的两行投影。判定依据是已校验 TaskSpec 的原始 scope map 中对应 key 是否
+// 出现，而不是解码后的零值：key 省略时显示“未设置（不限制）”，key 显式
+// 存在时按既有格式逐字投影解码的正整数。这样旧 Run、省略字段与显式
+// 合法最小值 1 可确定性区分，也不物化任何默认值。Verifier 的零值未设置
+// 语义与 TaskSpec canonical digest 不受影响；Schema 已拒绝显式 0、负数与
+// 非整数，本 helper 不自行容忍或改写无效输入。
+func renderScopeLimitLines(scope map[string]any, limits domain.TaskScope) (string, string) {
+	maxChangedFiles := "- maxChangedFiles：未设置（不限制）\n"
+	if _, present := scope["maxChangedFiles"]; present {
+		maxChangedFiles = fmt.Sprintf("- maxChangedFiles：%d 个文件\n", limits.MaxChangedFiles)
+	}
+	maxDiffBytes := "- maxDiffBytes：未设置（不限制）\n"
+	if _, present := scope["maxDiffBytes"]; present {
+		maxDiffBytes = fmt.Sprintf("- maxDiffBytes：%d 字节\n", limits.MaxDiffBytes)
+	}
+	return maxChangedFiles, maxDiffBytes
+}
+
 func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, attemptID, controlRoot, adapterID string, findings []map[string]string) (string, error) {
 	if !utf8.Valid(taskData) {
 		return "", errors.New("prompt projection: taskData is not valid UTF-8 and cannot be projected verbatim")
@@ -1501,8 +1520,10 @@ func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, 
 	b.WriteString("- denyPaths（禁止路径，逐项为一个 JSON 字符串）：\n")
 	writeIndentedLiterals(&b, denyPaths)
 	fmt.Fprintf(&b, "- allowSubmodules：%t\n", task.Scope.AllowSubmodules)
-	fmt.Fprintf(&b, "- maxChangedFiles：%d 个文件\n", task.Scope.MaxChangedFiles)
-	fmt.Fprintf(&b, "- maxDiffBytes：%d 字节\n", task.Scope.MaxDiffBytes)
+	scopeSection, _ := spec["scope"].(map[string]any)
+	maxChangedFilesLine, maxDiffBytesLine := renderScopeLimitLines(scopeSection, task.Scope)
+	b.WriteString(maxChangedFilesLine)
+	b.WriteString(maxDiffBytesLine)
 	b.WriteString("\n## Worker 交付物（非 publication，由 Worker 产出）\n\n")
 	writeDeliverables(&b, workerDeliverables)
 	b.WriteString("\n## Publisher-owned 交付物（不属于 Worker 职责）\n\n")

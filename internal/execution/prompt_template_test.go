@@ -775,3 +775,95 @@ func substituteWorkerResultPlaceholders(t *testing.T, value any, pointer string)
 		return typed
 	}
 }
+
+// TestRenderPromptScopeLimitsTruthfulProjection 覆盖可选 Scope 配额的
+// truthful 投影：原始 TaskSpec JSON 省略 maxChangedFiles 或 maxDiffBytes
+// 时显示“未设置（不限制）”而不是 0；字段显式存在时继续逐字投影正整数
+// （包括合法最小值 1）；既有正整数 fixture 文本逐字不回归；省略与显式值
+// 产生不同且稳定的 prompt，且投影不物化任何默认值、不改写 TaskSpec bytes。
+func TestRenderPromptScopeLimitsTruthfulProjection(t *testing.T) {
+	const unsetMaxChangedFiles = "- maxChangedFiles：未设置（不限制）"
+	const unsetMaxDiffBytes = "- maxDiffBytes：未设置（不限制）"
+
+	assertScopeLines := func(t *testing.T, prompt string, anchors ...string) {
+		t.Helper()
+		for _, anchor := range anchors {
+			if !strings.Contains(prompt, anchor) {
+				t.Fatalf("prompt is missing scope limit line %q:\n%s", anchor, prompt)
+			}
+		}
+	}
+	assertNoZeroQuota := func(t *testing.T, prompt string) {
+		t.Helper()
+		for _, leaked := range []string{"maxChangedFiles：0", "maxDiffBytes：0"} {
+			if strings.Contains(prompt, leaked) {
+				t.Fatalf("scope limit must never be projected as an explicit 0 quota (%q):\n%s", leaked, prompt)
+			}
+		}
+	}
+	specWithoutLimits := func() map[string]any {
+		spec := promptFixtureSpec()
+		scope := spec["scope"].(map[string]any)
+		delete(scope, "maxChangedFiles")
+		delete(scope, "maxDiffBytes")
+		return spec
+	}
+
+	t.Run("both-limits-omitted", func(t *testing.T) {
+		prompt := renderFixturePrompt(t, specWithoutLimits(), nil)
+		assertScopeLines(t, prompt, unsetMaxChangedFiles, unsetMaxDiffBytes)
+		assertNoZeroQuota(t, prompt)
+	})
+
+	t.Run("only-max-changed-files-omitted", func(t *testing.T) {
+		spec := promptFixtureSpec()
+		delete(spec["scope"].(map[string]any), "maxChangedFiles")
+		prompt := renderFixturePrompt(t, spec, nil)
+		assertScopeLines(t, prompt, unsetMaxChangedFiles, "- maxDiffBytes：100000 字节")
+		assertNoZeroQuota(t, prompt)
+	})
+
+	t.Run("only-max-diff-bytes-omitted", func(t *testing.T) {
+		spec := promptFixtureSpec()
+		delete(spec["scope"].(map[string]any), "maxDiffBytes")
+		prompt := renderFixturePrompt(t, spec, nil)
+		assertScopeLines(t, prompt, "- maxChangedFiles：2 个文件", unsetMaxDiffBytes)
+		assertNoZeroQuota(t, prompt)
+	})
+
+	t.Run("explicit-minimum-one-stays-verbatim", func(t *testing.T) {
+		spec := promptFixtureSpec()
+		scope := spec["scope"].(map[string]any)
+		scope["maxChangedFiles"] = 1
+		scope["maxDiffBytes"] = 1
+		prompt := renderFixturePrompt(t, spec, nil)
+		assertScopeLines(t, prompt, "- maxChangedFiles：1 个文件", "- maxDiffBytes：1 字节")
+		if strings.Contains(prompt, "未设置（不限制）") {
+			t.Fatalf("explicit minimum 1 must not be projected as unset:\n%s", prompt)
+		}
+	})
+
+	t.Run("explicit-positive-fixtures-unchanged", func(t *testing.T) {
+		prompt := renderFixturePrompt(t, promptFixtureSpec(), nil)
+		assertScopeLines(t, prompt, "- maxChangedFiles：2 个文件", "- maxDiffBytes：100000 字节")
+		if strings.Contains(prompt, "未设置（不限制）") {
+			t.Fatalf("explicit positive fixture limits must not regress into the unset wording:\n%s", prompt)
+		}
+	})
+
+	t.Run("omitted-and-explicit-projections-differ-and-are-stable", func(t *testing.T) {
+		omittedFirst := renderFixturePrompt(t, specWithoutLimits(), nil)
+		omittedSecond := renderFixturePrompt(t, specWithoutLimits(), nil)
+		if omittedFirst != omittedSecond {
+			t.Fatalf("omitted scope limit projection is not deterministic across renders")
+		}
+		explicitFirst := renderFixturePrompt(t, promptFixtureSpec(), nil)
+		explicitSecond := renderFixturePrompt(t, promptFixtureSpec(), nil)
+		if explicitFirst != explicitSecond {
+			t.Fatalf("explicit scope limit projection is not deterministic across renders")
+		}
+		if omittedFirst == explicitFirst {
+			t.Fatalf("omitted and explicit scope limits must produce distinct prompts")
+		}
+	})
+}
