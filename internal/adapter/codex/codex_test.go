@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -542,6 +543,7 @@ func TestRunUsesAuthenticatedLauncherWhenExecutablePathIsReplaced(t *testing.T) 
 		t.Skip("production launcher is unsupported on this platform")
 	}
 	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	useFixtureExecutable(t, &fixture, nativeFakeExecutable(t))
 	fixture.adapter.unsafePathExecutionForTest = false
 	configured, err := os.Executable()
 	if err != nil {
@@ -1804,6 +1806,74 @@ func fakeExecutable(t *testing.T, versionOutput, body string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// nativeFakeExecutable builds a real platform-native fixture for production
+// fd-exec tests. A shebang fixture cannot be executed from a CLOEXEC descriptor:
+// the kernel must hand its pathname to the interpreter after the descriptor is
+// closed. Production's authenticated path intentionally targets a native Codex
+// image, while parser-focused tests continue to use deterministic shell fakes.
+func nativeFakeExecutable(t *testing.T) string {
+	t.Helper()
+	source := fmt.Sprintf(`package main
+import (
+    "fmt"
+    "os"
+)
+func main() {
+    if len(os.Args) > 1 && os.Args[1] == "--version" {
+        fmt.Println(%q)
+        return
+    }
+    resultPath := ""
+    for index, argument := range os.Args {
+        if argument == "--output-last-message" && index+1 < len(os.Args) {
+            resultPath = os.Args[index+1]
+        }
+    }
+    if resultPath == "" {
+        os.Exit(2)
+    }
+    if err := os.WriteFile("capture", []byte("native fixture"), 0600); err != nil {
+        os.Exit(3)
+    }
+    if err := os.WriteFile(resultPath, []byte(%q), 0600); err != nil {
+        os.Exit(4)
+    }
+    fmt.Println(%q)
+    fmt.Println(%q)
+    fmt.Println(%q)
+    fmt.Println(%q)
+}
+`, supportedVersionOutput, validDeclaredResultJSON(), successTranscriptLines()[0], successTranscriptLines()[1], successTranscriptLines()[2], successTranscriptLines()[3])
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "main.go")
+	executable := filepath.Join(directory, "codex-native")
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-o", executable, sourcePath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build native Codex fixture: %v: %s", err, output)
+	}
+	return executable
+}
+
+func useFixtureExecutable(t *testing.T, fixture *runFixture, executable string) {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.executable = real
+	fixture.adapter.executable = real
+	snapshot, err := fixture.adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.close()
+	pinned := snapshot.identity
+	fixture.adapter.pinned = &pinned
 }
 
 // fakeScript 生成 fake codex：--version 返回冻结格式版本行；其余调用先按

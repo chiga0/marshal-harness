@@ -51,43 +51,10 @@ func TestLinuxRunningImageRejectsProcfsLookalike(t *testing.T) {
 }
 
 func TestLinuxNativeTargetClosesLauncherAuthorityFDs(t *testing.T) {
-	helperSource := `package main
-import (
-	"errors"
-	"fmt"
-	"os"
-	"golang.org/x/sys/unix"
-)
-func main() {
-    for _, fd := range []int{3, 4} {
-        if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil {
-            fmt.Fprintf(os.Stderr, "evidence fd %d unavailable: %v", fd, err)
-            os.Exit(21)
-        }
-    }
-    for _, fd := range []int{5, 6, 7} {
-		if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
-            fmt.Fprintf(os.Stderr, "authority fd %d remained open: %v", fd, err)
-            os.Exit(22)
-        }
-    }
-    if _, err := unix.Write(4, []byte("ok")); err != nil {
-        fmt.Fprintf(os.Stderr, "write result fd: %v", err)
-        os.Exit(23)
-    }
-}
-`
-	helperDir := t.TempDir()
-	helperGo := filepath.Join(helperDir, "main.go")
-	helper := filepath.Join(helperDir, "native-helper")
-	if err := os.WriteFile(helperGo, []byte(helperSource), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	build := exec.Command("go", "build", "-o", helper, helperGo)
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build native helper: %v: %s", err, output)
-	}
-	target, err := sealedExecutableFD(helper)
+	// /bin/sh is a native image on the Linux CI/runtime boundary. Unlike a Go
+	// helper it does not initialize an epoll/eventfd pair into the newly-free
+	// fd5/fd6 slots before the test can inspect inheritance.
+	target, err := sealedExecutableFD("/bin/sh")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +79,10 @@ func main() {
 	}
 	defer worktree.Close()
 
-	command := exec.Command(secureFDPath(6), codexLauncherArgument, secureFDPath(7), "", "")
+	checkFDs := "test -e /proc/self/fd/3 && test -e /proc/self/fd/4 && " +
+		"test ! -e /proc/self/fd/5 && test ! -e /proc/self/fd/6 && test ! -e /proc/self/fd/7 && " +
+		"printf ok >&4"
+	command := exec.Command(secureFDPath(6), codexLauncherArgument, secureFDPath(7), "", "", "-c", checkFDs)
 	command.ExtraFiles = []*os.File{schema, result, worktree, launcher, target}
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("native helper exec: %v: %s", err, output)
@@ -183,6 +153,7 @@ func TestLinuxExecutableMemfdIsSealedAgainstSameUIDMutation(t *testing.T) {
 func TestLinuxFDExecBindsProbeAndRunToHeldInodes(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "replacement-ran")
 	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	useFixtureExecutable(t, &fixture, nativeFakeExecutable(t))
 	fixture.adapter.unsafePathExecutionForTest = false
 	fixture.adapter.testHook = func(stage string) {
 		if stage != "after-identity-verify" {
@@ -207,7 +178,7 @@ func TestLinuxFDExecProbeUsesOneHeldInodeAndCreatesNoSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(t.TempDir(), "replacement-version-ran")
-	executable := fakeExecutable(t, supportedVersionOutput, "exit 0")
+	executable := nativeFakeExecutable(t)
 	adapter, err := New(executable, newValidator(t))
 	if err != nil {
 		t.Fatal(err)
