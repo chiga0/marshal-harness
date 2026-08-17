@@ -429,9 +429,10 @@ Qoder production authority wiring 候选提交的独立审计确认四项 P1：�
 | ID | 级别 | 状态 | 关闭条件 |
 | --- | --- | --- | --- |
 | `QODER-AUTHORITY-ADR-MISSING` | P1 | `PROPOSED-HARD-DISABLED` | 维护者接受 ADR 0034；当前生产构造器无条件 typed fail-closed，接受 ADR 也不得自动启用，须独立后续变更。 |
+| `QODER-LIVE-VERIFIER-PIPELINE-MISSING` | P1 | `OPEN` | 实现受限、只读且无仓库写权限的真实 executable verifier、closed typed observation schema 与独立 signer；其 evidence 必须机械导出完整 argv/environment manifest 并与精确 executable/host/challenge identity 绑定，不能只提交 opaque digest。 |
 | `QODER-OBSERVATION-NOT-EXACTLY-BOUND` | P1 | `IMPLEMENTED-PENDING-REVIEW` | observation 逐项携带 suite/artifact/challenge/capability/profile/argv/env/tool/event/protocol/permission/transcript/verdict/time，Seal 不注入期望值；独立复审与真实 probe 证据分别通过。 |
 | `QODER-HOST-BINDING-REPLAYABLE` | P1 | `IMPLEMENTED-PENDING-REVIEW` | verifier/evidence/consumer 三方精确 host fingerprint，跨 host fixture fail closed。 |
-| `QODER-AUTHORITY-LIFECYCLE-NOT-RECHECKED` | P1 | `IMPLEMENTED-PENDING-REVIEW` | 候选 consumer 的 Probe 与 launch guard 每次重读 current config/evidence/revocation/generation，维护 generation high-water 并拒绝 rollback/同代替换；完整 Run 撤销 fixture 与 doctor metadata fixture 通过。生产仍硬禁用。 |
+| `QODER-AUTHORITY-LIFECYCLE-NOT-RECHECKED` | P1 | `REWORKED-PENDING-REVIEW` | 候选 consumer 的 Probe 与 launch guard 每次重读 current config/evidence/revocation/generation；generation high-water 已扩展为 consumer-owned 私有 nofollow root 中的跨进程/重启耐久记录，以 advisory lock 串行化并按 file fsync→renameat→directory fsync 原子提交，绑定完整 config canonical digest，拒绝 rollback/同代替换，且在 missing/revoked evidence leaf 前先消费。终审 rework 进一步同时持有 fence dirfd 与实际解析 leaf 的同一 evidence dirfd，按 device/inode 与双向祖先关系拒绝同目录、路径别名及双向嵌套，并把 lock/record 收紧为精确 `0600`、single-link regular file；完整负向矩阵待再次独立复核，生产仍硬禁用。 |
 | `QODER-AUTHORITY-PATH-BOUNDARY` | P2 | `IMPLEMENTED-PENDING-REVIEW` | config/root/evidence 全路径逐段 nofollow、leaf `O_NONBLOCK`+`fstat`、owner/private mode 与 FIFO 负向 fixture 通过。 |
 | `QODER-CONFORMANCE-FRESHNESS` | P2 | `IMPLEMENTED-PENDING-REVIEW` | validity window 与 observation age 固定最多 24 小时；超长与陈旧 fixture fail closed。 |
 
