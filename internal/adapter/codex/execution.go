@@ -32,6 +32,13 @@ const sandboxNetworkOverride = "sandbox_workspace_write.network_access=false"
 const (
 	codexLauncherArgument = "__marshal_codex_fchdir_exec_v1"
 	launcherWorktreeFD    = 5 // stdin/stdout/stderr + schema/result ExtraFiles
+	launcherCloseFailure  = "inject-close-failure"
+)
+
+var (
+	codexLauncherPath string
+	codexLauncherDir  string
+	codexLauncherErr  error
 )
 
 // init implements the minimal controlled launcher used by Run. The already
@@ -39,23 +46,100 @@ const (
 // worktree descriptor, closes that descriptor, then atomically execs the
 // private Codex snapshot. No pathname participates in selecting the cwd.
 func init() {
-	if len(os.Args) < 4 || os.Args[1] != codexLauncherArgument {
-		return
-	}
-	if gate := os.Args[3]; gate != "" {
-		if err := runLauncherTestGate(gate); err != nil {
+	if len(os.Args) >= 5 && os.Args[1] == codexLauncherArgument {
+		if gate := os.Args[3]; gate != "" {
+			if err := runLauncherTestGate(gate); err != nil {
+				os.Exit(126)
+			}
+		}
+		if err := unix.Fchdir(launcherWorktreeFD); err != nil {
+			os.Exit(126)
+		}
+		if os.Args[4] == launcherCloseFailure {
+			_ = unix.Close(launcherWorktreeFD)
+		}
+		if err := unix.Close(launcherWorktreeFD); err != nil {
+			os.Exit(126)
+		}
+		executable := os.Args[2]
+		argv := append([]string{executable}, os.Args[5:]...)
+		if err := unix.Exec(executable, argv, os.Environ()); err != nil {
 			os.Exit(126)
 		}
 	}
-	if err := unix.Fchdir(launcherWorktreeFD); err != nil {
-		os.Exit(126)
+	codexLauncherPath, codexLauncherDir, codexLauncherErr = snapshotCurrentLauncher()
+}
+
+// snapshotCurrentLauncher runs during process initialization, before any
+// Adapter or Worker can act. It copies the currently executing, trusted
+// Marshal image into a private content-addressed directory. Later replacement
+// of os.Executable's pathname therefore cannot change the inherited-fd helper.
+func snapshotCurrentLauncher() (string, string, error) {
+	configured, err := os.Executable()
+	if err != nil {
+		return "", "", err
 	}
-	_ = unix.Close(launcherWorktreeFD)
-	executable := os.Args[2]
-	argv := append([]string{executable}, os.Args[4:]...)
-	if err := unix.Exec(executable, argv, os.Environ()); err != nil {
-		os.Exit(126)
+	real, err := filepath.EvalSymlinks(configured)
+	if err != nil {
+		return "", "", err
 	}
+	fd, err := unix.Open(real, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return "", "", err
+	}
+	source := os.NewFile(uintptr(fd), real)
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", "", errors.New("current launcher is not an executable regular file")
+	}
+	directory, err := os.MkdirTemp("", ".marshal-codex-launcher-")
+	if err != nil {
+		return "", "", err
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = os.Chmod(directory, 0o700)
+			_ = os.RemoveAll(directory)
+		}
+	}()
+	temporary := filepath.Join(directory, "launcher.tmp")
+	target, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o700)
+	if err != nil {
+		return "", "", err
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(target, hash), source); err != nil {
+		target.Close()
+		return "", "", err
+	}
+	if err := target.Sync(); err != nil {
+		target.Close()
+		return "", "", err
+	}
+	if err := target.Close(); err != nil {
+		return "", "", err
+	}
+	path := filepath.Join(directory, "launcher-"+hex.EncodeToString(hash.Sum(nil)))
+	if err := os.Rename(temporary, path); err != nil {
+		return "", "", err
+	}
+	if err := os.Chmod(path, 0o500); err != nil {
+		return "", "", err
+	}
+	if err := os.Chmod(directory, 0o500); err != nil {
+		return "", "", err
+	}
+	failed = false
+	return path, directory, nil
+}
+
+func trustedCodexLauncher() (string, error) {
+	if codexLauncherErr != nil || codexLauncherPath == "" || codexLauncherDir == "" {
+		return "", errors.New("trusted Codex launcher snapshot is unavailable")
+	}
+	return codexLauncherPath, nil
 }
 
 // runLauncherTestGate is reachable only when a test-only Adapter field is
