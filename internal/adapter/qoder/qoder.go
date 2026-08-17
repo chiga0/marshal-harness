@@ -30,7 +30,9 @@ const (
 	maxResultBytes           = 4 << 20
 	stderrLimit              = 64 << 10
 	probeTimeout             = 10 * time.Second
-	conformanceEventContract = "qoder-stream-json-1.1-v1"
+	conformanceEventContract = "qoder-stream-json-1.2.0-v1"
+	qoderProtocolVersion     = "1.2.0"
+	qoderPermissionMode      = "acceptEdits"
 
 	// conformancePendingReason is the fixed, searchable reason Probe reports
 	// "unsupported" until an independent, credentialed live run verifies the
@@ -62,6 +64,7 @@ type Adapter struct {
 	executable string
 	validator  *contract.Validator
 	now        func() time.Time
+	authority  *AuthorityEvidenceStore
 
 	mu          sync.Mutex
 	pinned      *executableIdentity
@@ -73,6 +76,14 @@ var _ port.WorkerAdapter = (*Adapter)(nil)
 // New requires an exact absolute executable path. Marshal never resolves a
 // provider executable by a similar name or by an implicit fallback.
 func New(executable string, validator *contract.Validator) (*Adapter, error) {
+	return NewWithConformanceAuthority(executable, validator, nil)
+}
+
+// NewWithConformanceAuthority binds an authority-owned evidence store. A nil
+// store is deliberately valid and leaves Probe permanently unsupported; it is
+// the default application wiring until independently signed live evidence is
+// configured.
+func NewWithConformanceAuthority(executable string, validator *contract.Validator, authority *AuthorityEvidenceStore) (*Adapter, error) {
 	if validator == nil {
 		return nil, errors.New("contract validator is required")
 	}
@@ -90,7 +101,7 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("qoder executable must be an executable regular file")
 	}
-	return &Adapter{executable: realPath, validator: validator, now: time.Now}, nil
+	return &Adapter{executable: realPath, validator: validator, now: time.Now, authority: authority}, nil
 }
 
 func (a *Adapter) ID() string { return adapterID }
@@ -172,32 +183,17 @@ func (a *Adapter) isConformant(identity executableIdentity) bool {
 	return a.conformance != nil && *a.conformance == identity
 }
 
-// ConformanceReceipt is produced by an independent credentialed runner. A
-// CapabilitySnapshot is deliberately not accepted: changing Probe JSON can
-// never authorize execution. EvidenceDigest binds the external evidence,
-// while the remaining fields bind runner provenance and the complete adapter
-// contract that was exercised.
-type ConformanceReceipt struct {
-	RunnerID, RunnerVersion, EvidenceDigest  string
-	ObservedAt                               time.Time
-	AdapterVersion                           string
-	Executable, ExecutableDigest             string
-	BinaryVersion                            string
-	CapabilitiesDigest                       string
-	ProbeErrors                              []string
-	CredentialVerified, LiveProtocolVerified bool
-	EventContract                            string
-}
-
-func (a *Adapter) BindConformance(ctx context.Context, receipt ConformanceReceipt) error {
-	if receipt.RunnerID == "" || receipt.RunnerID == adapterID || receipt.RunnerVersion == "" || receipt.ObservedAt.IsZero() {
-		return errors.New("conformance receipt lacks independent runner provenance")
+// BindConformance accepts only a content digest. The corresponding record is
+// resolved and signature-verified by the authority store fixed at adapter
+// construction; callers cannot authorize execution with a locally populated
+// struct or a rewritten CapabilitySnapshot.
+func (a *Adapter) BindConformance(ctx context.Context, evidenceDigest string) error {
+	if a.authority == nil {
+		return port.Permanent(ErrConformancePending)
 	}
-	if !validSHA256Digest(receipt.EvidenceDigest) {
-		return errors.New("conformance receipt has an invalid evidence digest")
-	}
-	if receipt.AdapterVersion != adapterVersion || receipt.CapabilitiesDigest != expectedCapabilitiesDigest() || receipt.ProbeErrors == nil || len(receipt.ProbeErrors) != 0 || !receipt.CredentialVerified || !receipt.LiveProtocolVerified || receipt.EventContract != conformanceEventContract {
-		return errors.New("conformance receipt does not bind the complete verified adapter contract")
+	evidence, err := a.authority.resolve(ctx, evidenceDigest, a.now().UTC())
+	if err != nil {
+		return err
 	}
 	identity, err := a.inspect(ctx)
 	if err != nil {
@@ -206,7 +202,7 @@ func (a *Adapter) BindConformance(ctx context.Context, receipt ConformanceReceip
 	if !isSupportedBinaryVersion(identity.version) {
 		return fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
 	}
-	if receipt.Executable != identity.path || receipt.ExecutableDigest != identity.digest || receipt.BinaryVersion != identity.version {
+	if evidence.Executable != identity.path || evidence.ExecutableDigest != identity.digest || evidence.BinaryVersion != identity.version || evidence.QoderCLIVersion != identity.version {
 		return fmt.Errorf("%w: conformance identity does not match current executable", ErrIdentityDrift)
 	}
 	a.mu.Lock()
@@ -425,11 +421,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil || !filepath.IsAbs(controlRoot) {
 		return domain.Record{}, errors.New("control root must be an existing absolute directory")
 	}
-	promptPath, err := existingPathWithin(controlRoot, request.PromptPath)
-	if err != nil {
-		return domain.Record{}, fmt.Errorf("resolve prompt: %w", err)
-	}
-	prompt, err := readBounded(promptPath, maxPromptBytes)
+	prompt, err := readBoundedWithin(controlRoot, request.PromptPath, maxPromptBytes)
 	if err != nil {
 		return domain.Record{}, fmt.Errorf("read prompt: %w", err)
 	}
@@ -499,6 +491,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
 	resolved := resolveAttemptFailure(capture, observation, runCtx, a.now())
+	if resolved == nil && (capture.cliVersion != identity.version || capture.protocolVersion != qoderProtocolVersion || capture.permissionMode != qoderPermissionMode) {
+		resolved = qoderProtocolInvalid("system contract does not match the bound Qoder protocol", a.now())
+	}
 	if bindingErr := trustedOutput.verifyPathBinding(); bindingErr != nil {
 		resolved = qoderProtocolInvalid("output directory binding changed during execution", a.now())
 	}
@@ -511,6 +506,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	metadata, err := json.MarshalIndent(map[string]any{
 		"sessionId": capture.sessionID, "model": capture.model,
+		"qodercliVersion": capture.cliVersion, "protocolVersion": capture.protocolVersion, "permissionMode": capture.permissionMode,
 		"eventCount": capture.eventCount, "assistantMessages": capture.assistantCount,
 		"inputTokens": capture.inputTokens, "outputTokens": capture.outputTokens,
 		"capturedBytes": len(capture.raw), "outputTruncated": capture.limitExceeded,
@@ -547,6 +543,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if err := claimedResult.write(append(data, '\n')); err != nil {
 		return domain.Record{}, fmt.Errorf("write normalized WorkerResult: %w", err)
+	}
+	if err := trustedOutput.verifyPathBinding(); err != nil {
+		return domain.Record{}, qoderProtocolInvalid("output directory binding changed before result publication", a.now())
 	}
 	return domain.Record{Kind: domain.KindWorkerResult, Data: data}, nil
 }

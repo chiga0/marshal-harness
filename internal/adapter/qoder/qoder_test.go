@@ -1,7 +1,11 @@
 package qoder
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -9,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
@@ -99,7 +104,7 @@ func TestRunRequiresBoundConformanceIdentityBeforeLaunch(t *testing.T) {
 	}
 }
 
-func TestBindConformanceRequiresIndependentExactReceipt(t *testing.T) {
+func TestBindConformanceRequiresAuthorityResolvedSignedEvidence(t *testing.T) {
 	fixture := newRunFixture(t, supportedBinary, successEvents("provider/model"))
 	fixture.adapter.mu.Lock()
 	fixture.adapter.conformance = nil
@@ -126,8 +131,12 @@ func TestBindConformanceRequiresIndependentExactReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receipt := validConformanceReceipt(identity)
-	if err := fixture.adapter.BindConformance(context.Background(), receipt); err != nil {
+	if err := fixture.adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrConformancePending) {
+		t.Fatalf("adapter without authority accepted caller digest: %v", err)
+	}
+	store, evidenceDigest := signedTestAuthority(t, identity)
+	fixture.adapter.authority = store
+	if err := fixture.adapter.BindConformance(context.Background(), evidenceDigest); err != nil {
 		t.Fatal(err)
 	}
 	probe, err := fixture.adapter.Probe(context.Background())
@@ -137,24 +146,64 @@ func TestBindConformanceRequiresIndependentExactReceipt(t *testing.T) {
 	if !strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
 		t.Fatalf("probe did not reflect exact bound conformance: %s", probe.Data)
 	}
-	receipt.ExecutableDigest = digest("f")
-	if err := fixture.adapter.BindConformance(context.Background(), receipt); !errors.Is(err, ErrIdentityDrift) {
-		t.Fatalf("stale conformance identity accepted: %v", err)
+	fixture.adapter.mu.Lock()
+	fixture.adapter.conformance = nil
+	fixture.adapter.mu.Unlock()
+	path := filepath.Join(store.root, strings.TrimPrefix(evidenceDigest, "sha256:")+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	receipt = validConformanceReceipt(identity)
-	receipt.CapabilitiesDigest = digest("e")
-	if err := fixture.adapter.BindConformance(context.Background(), receipt); err == nil {
-		t.Fatal("receipt with different capabilities was accepted")
+	data = bytes.Replace(data, []byte(`"credentialVerified":true`), []byte(`"credentialVerified":false`), 1)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.adapter.BindConformance(context.Background(), evidenceDigest); err == nil {
+		t.Fatal("tampered authority evidence was accepted")
 	}
 }
 
-func validConformanceReceipt(identity executableIdentity) ConformanceReceipt {
-	return ConformanceReceipt{
-		RunnerID: "marshal-conformance", RunnerVersion: "1", EvidenceDigest: digest("a"), ObservedAt: classifyNow,
-		AdapterVersion: adapterVersion, Executable: identity.path, ExecutableDigest: identity.digest,
-		BinaryVersion: identity.version, CapabilitiesDigest: expectedCapabilitiesDigest(),
-		ProbeErrors: []string{}, CredentialVerified: true, LiveProtocolVerified: true, EventContract: conformanceEventContract,
+func signedTestAuthority(t *testing.T, identity executableIdentity) (*AuthorityEvidenceStore, string) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	evidence := ConformanceEvidence{
+		RunnerID: "marshal-conformance", RunnerVersion: "1", ObservedAt: now.Add(-time.Minute).Format(time.RFC3339Nano), ValidUntil: now.Add(time.Hour).Format(time.RFC3339Nano),
+		AdapterVersion: adapterVersion, Executable: identity.path, ExecutableDigest: identity.digest, BinaryVersion: identity.version,
+		CapabilitiesDigest: expectedCapabilitiesDigest(), TranscriptDigest: digest("b"), CredentialVerified: true, LiveProtocolVerified: true,
+		EventContract: conformanceEventContract, QoderCLIVersion: identity.version, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode,
+		TrustRootKeyID: "test-root",
+	}
+	evidence.EvidenceDigest, err = evidence.digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := evidence.signingBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, message))
+	data, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, strings.TrimPrefix(evidence.EvidenceDigest, "sha256:")+".json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewAuthorityEvidenceStore(root, map[string]ed25519.PublicKey{"test-root": publicKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store, evidence.EvidenceDigest
 }
 
 func TestSupportedBinaryVersionAllowsCompatiblePatchOnly(t *testing.T) {
@@ -542,6 +591,53 @@ ln -s "$PWD/escaped-output" "$marshal_root/output"`
 		if _, err := os.Stat(filepath.Join(fixture.worktree, "escaped-output", name)); !os.IsNotExist(err) {
 			t.Fatalf("evidence %s escaped through replacement symlink", name)
 		}
+	}
+}
+
+func TestRunRejectsClaimedLeafUnlinkAndReplacement(t *testing.T) {
+	declared, err := json.Marshal(validDeclaredResult("/worker/claim"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := successEvents("provider/model") + `
+marshal_root=$(dirname "$(dirname "$HOME")")
+printf '%s' ` + shellQuote(string(declared)) + ` > "$marshal_root/output/worker-result.json"
+rm "$marshal_root/output/worker-result.json"
+printf '%s' 'forged replacement' > "$marshal_root/output/worker-result.json"`
+	fixture := newRunFixtureWithResult(t, supportedBinary, body, nil)
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil {
+		t.Fatal("Run accepted an unlinked and replaced WorkerResult leaf")
+	}
+	data, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "worker-result.json"))
+	if err != nil || string(data) != "forged replacement" {
+		t.Fatalf("replacement fixture was not established: %q, %v", data, err)
+	}
+}
+
+func TestRunRejectsRealProtocolContractDrift(t *testing.T) {
+	for _, drift := range []struct{ old, replacement string }{
+		{`"qodercli_version":"1.1.23"`, `"qodercli_version":"1.1.24"`},
+		{`"protocol_version":"1.2.0"`, `"protocol_version":"1.3.0"`},
+		{`"permissionMode":"acceptEdits"`, `"permissionMode":"bypassPermissions"`},
+	} {
+		body := strings.Replace(successEvents("provider/model"), drift.old, drift.replacement, 1)
+		fixture := newRunFixture(t, supportedBinary, body)
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) {
+			t.Fatalf("drift %s error = %v, want protocol-invalid", drift.replacement, err)
+		}
+	}
+}
+
+func TestReadBoundedWithinRejectsSymlinkInputs(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("must-not-read"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "secret"), filepath.Join(root, "prompt.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readBoundedWithin(root, "prompt.md", 1024); err == nil {
+		t.Fatal("fd-based input reader followed a symlink")
 	}
 }
 

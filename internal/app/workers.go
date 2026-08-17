@@ -11,6 +11,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/adapter"
 	"github.com/chiga0/marshal-harness/internal/adapter/opencode"
 	"github.com/chiga0/marshal-harness/internal/adapter/pi"
+	"github.com/chiga0/marshal-harness/internal/adapter/qoder"
 	"github.com/chiga0/marshal-harness/internal/adapter/qwen"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/port"
@@ -66,6 +67,18 @@ var workerBindings = []workerBinding{
 		identify:            qwen.Identify,
 		construct: func(executable string, validator *contract.Validator) (port.WorkerAdapter, error) {
 			return qwen.New(executable, validator)
+		},
+	},
+	{
+		adapterID:           "qoder",
+		environmentVariable: "MARSHAL_QODER_PATH",
+		binaryNames:         []string{"qodercli"},
+		identify:            qoder.Identify,
+		construct: func(executable string, validator *contract.Validator) (port.WorkerAdapter, error) {
+			// Registration is not support admission. New intentionally has no
+			// conformance authority, so Probe remains unsupported until trusted
+			// authority evidence is explicitly wired.
+			return qoder.New(executable, validator)
 		},
 	},
 	{

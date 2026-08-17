@@ -48,6 +48,7 @@ func TestInternalLaunchIsHiddenAndFailClosed(t *testing.T) {
 func TestDoctorReportsCompiledContracts(t *testing.T) {
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_QODER_PATH", "")
 	t.Setenv("MARSHAL_PI_PATH", "")
 
 	var stdout, stderr bytes.Buffer
@@ -69,10 +70,10 @@ func TestDoctorReportsCompiledContracts(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode doctor output: %v", err)
 	}
-	if report.Status != "ok" || report.ContractSchemas != 22 || report.WorkerAdapters != 0 || report.Milestone != buildinfo.Milestone || len(report.Workers) != 3 {
+	if report.Status != "ok" || report.ContractSchemas != 22 || report.WorkerAdapters != 0 || report.Milestone != buildinfo.Milestone || len(report.Workers) != 4 {
 		t.Fatalf("doctor report = %+v", report)
 	}
-	for index, adapterID := range []string{"opencode", "qwen", "pi"} {
+	for index, adapterID := range []string{"opencode", "qwen", "qoder", "pi"} {
 		if report.Workers[index].AdapterID != adapterID || report.Workers[index].Outcome != app.WorkerOutcomeNotConfigured || report.Workers[index].Compatibility != "not-probed" {
 			t.Fatalf("doctor worker %d = %+v", index, report.Workers[index])
 		}
@@ -96,6 +97,7 @@ func TestDoctorReportsCompatibilityWithoutLocalDetails(t *testing.T) {
 			}
 			t.Setenv("MARSHAL_OPENCODE_PATH", executable)
 			t.Setenv("MARSHAL_QWEN_PATH", "")
+			t.Setenv("MARSHAL_QODER_PATH", "")
 			t.Setenv("MARSHAL_PI_PATH", "")
 
 			var stdout, stderr bytes.Buffer
@@ -109,7 +111,7 @@ func TestDoctorReportsCompatibilityWithoutLocalDetails(t *testing.T) {
 			if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 				t.Fatal(err)
 			}
-			if len(report.Workers) != 3 || report.Workers[0].AdapterID != "opencode" || report.Workers[0].Compatibility != test.compatibility {
+			if len(report.Workers) != 4 || report.Workers[0].AdapterID != "opencode" || report.Workers[0].Compatibility != test.compatibility {
 				t.Fatalf("workers = %+v", report.Workers)
 			}
 			output := stdout.String() + stderr.String()
@@ -132,6 +134,7 @@ func TestDoctorCanceledContextDoesNotProbeWorkers(t *testing.T) {
 	}
 	t.Setenv("MARSHAL_OPENCODE_PATH", executable)
 	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_QODER_PATH", "")
 	t.Setenv("MARSHAL_PI_PATH", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -148,7 +151,7 @@ func TestDoctorCanceledContextDoesNotProbeWorkers(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Workers) != 3 || report.Workers[0].Compatibility != "not-probed" {
+	if len(report.Workers) != 4 || report.Workers[0].Compatibility != "not-probed" {
 		t.Fatalf("workers = %+v", report.Workers)
 	}
 }

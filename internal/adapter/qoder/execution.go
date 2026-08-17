@@ -310,11 +310,7 @@ type taskProjection struct {
 }
 
 func readTaskProjection(controlRoot, relative string) (taskProjection, error) {
-	path, err := existingPathWithin(controlRoot, relative)
-	if err != nil {
-		return taskProjection{}, fmt.Errorf("resolve TaskSpec: %w", err)
-	}
-	data, err := readBounded(path, maxResultBytes)
+	data, err := readBoundedWithin(controlRoot, relative, maxResultBytes)
 	if err != nil {
 		return taskProjection{}, fmt.Errorf("read TaskSpec: %w", err)
 	}
@@ -397,21 +393,6 @@ func lexicalPathWithin(root, relative string) (string, error) {
 		return "", errors.New("path escapes control root")
 	}
 	return path, nil
-}
-
-func existingPathWithin(root, relative string) (string, error) {
-	path, err := lexicalPathWithin(root, relative)
-	if err != nil {
-		return "", err
-	}
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", err
-	}
-	if !pathWithin(root, real) {
-		return "", errors.New("symlink escapes control root")
-	}
-	return real, nil
 }
 
 func digestFile(path string) (string, error) {
@@ -497,9 +478,10 @@ type trustedOutputDirectory struct {
 }
 
 type claimedLeaf struct {
-	name string
-	file *os.File
-	info os.FileInfo
+	name      string
+	file      *os.File
+	stat      unix.Stat_t
+	directory *trustedOutputDirectory
 }
 
 func openTrustedOutputDirectory(path string) (*trustedOutputDirectory, error) {
@@ -538,19 +520,18 @@ func (directory *trustedOutputDirectory) claim(name, kind string) (*claimedLeaf,
 		return nil, fmt.Errorf("claim attempt %s leaf: %w", kind, err)
 	}
 	file := os.NewFile(uintptr(fd), name)
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG {
 		file.Close()
 		return nil, fmt.Errorf("stat claimed attempt %s leaf: %w", kind, err)
 	}
-	return &claimedLeaf{name: name, file: file, info: info}, nil
+	return &claimedLeaf{name: name, file: file, stat: stat, directory: directory}, nil
 }
 
 func (leaf *claimedLeaf) close() error { return leaf.file.Close() }
 
 func (leaf *claimedLeaf) write(data []byte) error {
-	info, err := leaf.file.Stat()
-	if err != nil || !os.SameFile(info, leaf.info) {
+	if err := leaf.verifyNameBinding(); err != nil {
 		return errors.New("claimed output leaf identity changed")
 	}
 	if err := leaf.file.Truncate(0); err != nil {
@@ -562,12 +543,14 @@ func (leaf *claimedLeaf) write(data []byte) error {
 	if _, err := leaf.file.Write(data); err != nil {
 		return err
 	}
-	return leaf.file.Sync()
+	if err := leaf.file.Sync(); err != nil {
+		return err
+	}
+	return leaf.verifyNameBinding()
 }
 
 func (leaf *claimedLeaf) readBounded(limit int64) ([]byte, error) {
-	info, err := leaf.file.Stat()
-	if err != nil || !os.SameFile(info, leaf.info) {
+	if err := leaf.verifyNameBinding(); err != nil {
 		return nil, errors.New("claimed output leaf identity changed")
 	}
 	if _, err := leaf.file.Seek(0, io.SeekStart); err != nil {
@@ -580,15 +563,71 @@ func (leaf *claimedLeaf) readBounded(limit int64) ([]byte, error) {
 	if int64(len(data)) > limit {
 		return nil, errors.New("file exceeds byte limit")
 	}
+	if err := leaf.verifyNameBinding(); err != nil {
+		return nil, err
+	}
 	return data, nil
 }
 
-func readBounded(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
+func (leaf *claimedLeaf) verifyNameBinding() error {
+	var descriptor, named unix.Stat_t
+	if err := unix.Fstat(int(leaf.file.Fd()), &descriptor); err != nil {
+		return err
+	}
+	if err := unix.Fstatat(int(leaf.directory.dir.Fd()), leaf.name, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return err
+	}
+	if descriptor.Dev != leaf.stat.Dev || descriptor.Ino != leaf.stat.Ino || named.Dev != leaf.stat.Dev || named.Ino != leaf.stat.Ino || named.Mode&unix.S_IFMT != unix.S_IFREG {
+		return errors.New("claimed output leaf name no longer identifies the trusted inode")
+	}
+	return nil
+}
+
+// readBoundedWithin opens every component relative to a trusted control-root
+// directory descriptor. O_NOFOLLOW on every hop closes resolve-to-open races:
+// neither a prompt nor TaskSpec can be swapped to an external symlink between
+// validation and read.
+func readBoundedWithin(root, relative string, limit int64) ([]byte, error) {
+	if relative == "" || filepath.IsAbs(relative) || filepath.Clean(relative) != relative {
+		return nil, errors.New("input path must be a clean relative path")
+	}
+	components := strings.Split(relative, string(filepath.Separator))
+	for _, component := range components {
+		if component == "" || component == "." || component == ".." {
+			return nil, errors.New("input path contains an invalid component")
+		}
+	}
+	rootFD, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
+	directory := os.NewFile(uintptr(rootFD), root)
+	defer directory.Close()
+	current := directory
+	for _, component := range components[:len(components)-1] {
+		fd, openErr := unix.Openat(int(current.Fd()), component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if openErr != nil {
+			return nil, openErr
+		}
+		next := os.NewFile(uintptr(fd), component)
+		if current != directory {
+			_ = current.Close()
+		}
+		current = next
+	}
+	if current != directory {
+		defer current.Close()
+	}
+	fd, err := unix.Openat(int(current.Fd()), components[len(components)-1], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), components[len(components)-1])
 	defer file.Close()
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil, errors.New("input path must identify a regular file")
+	}
 	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err

@@ -396,7 +396,7 @@ func emitLines(lines ...string) string {
 
 func successEvents(model string) string {
 	return emitLines(
-		`{"type":"system","subtype":"init","session_id":"sess-1","model":"`+model+`"}`,
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"`+model+`","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[]}}`,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":5}}`,
 	)
@@ -404,7 +404,7 @@ func successEvents(model string) string {
 
 func errorEvents(reason string) string {
 	return emitLines(
-		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model"}`,
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"`+reason+`","usage":{"input_tokens":1,"output_tokens":0}}`,
 	)
 }

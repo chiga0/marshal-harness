@@ -20,16 +20,19 @@ import (
 // Provider free text such as item content never reaches authorization or
 // budgets; it survives only inside the raw transcript evidence.
 type captureResult struct {
-	raw            []byte
-	sessionID      string
-	model          string
-	eventCount     int
-	assistantCount int
-	inputTokens    int
-	outputTokens   int
-	terminal       terminalOutcome
-	limitExceeded  bool
-	err            error
+	raw             []byte
+	sessionID       string
+	model           string
+	cliVersion      string
+	protocolVersion string
+	permissionMode  string
+	eventCount      int
+	assistantCount  int
+	inputTokens     int
+	outputTokens    int
+	terminal        terminalOutcome
+	limitExceeded   bool
+	err             error
 }
 
 // terminalOutcome is the single terminal `result` event that ends a Qoder
@@ -45,14 +48,17 @@ type terminalOutcome struct {
 // are ignored on purpose; protocol decisions rely solely on the event type,
 // session id, usage numbers, and the terminal result status/code.
 type qoderEvent struct {
-	Type           string          `json:"type"`
-	Subtype        string          `json:"subtype"`
-	SessionID      string          `json:"session_id"`
-	Model          string          `json:"model"`
-	Message        json.RawMessage `json:"message"`
-	IsError        *bool           `json:"is_error"`
-	TerminalReason string          `json:"terminal_reason"`
-	Usage          struct {
+	Type            string          `json:"type"`
+	Subtype         string          `json:"subtype"`
+	SessionID       string          `json:"session_id"`
+	Model           string          `json:"model"`
+	QoderCLIVersion string          `json:"qodercli_version"`
+	ProtocolVersion string          `json:"protocol_version"`
+	PermissionMode  string          `json:"permissionMode"`
+	Message         json.RawMessage `json:"message"`
+	IsError         *bool           `json:"is_error"`
+	TerminalReason  string          `json:"terminal_reason"`
+	Usage           struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
@@ -202,10 +208,11 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 	}
 	switch event.Type {
 	case "system":
-		if result.sessionID != "" || event.Subtype != "init" || event.SessionID == "" || event.Model == "" {
+		if result.sessionID != "" || event.Subtype != "init" || event.SessionID == "" || event.Model == "" || event.QoderCLIVersion == "" || event.ProtocolVersion == "" || event.PermissionMode == "" {
 			return fmt.Errorf("%w: invalid or duplicate system init event", ErrProtocol)
 		}
 		result.sessionID, result.model = event.SessionID, event.Model
+		result.cliVersion, result.protocolVersion, result.permissionMode = event.QoderCLIVersion, event.ProtocolVersion, event.PermissionMode
 	case "assistant":
 		if result.sessionID == "" || len(bytes.TrimSpace(event.Message)) == 0 || bytes.Equal(bytes.TrimSpace(event.Message), []byte("null")) {
 			return fmt.Errorf("%w: invalid assistant message event", ErrProtocol)

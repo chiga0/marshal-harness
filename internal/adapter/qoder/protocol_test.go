@@ -22,7 +22,7 @@ func TestDecodeEventLineExtractsSessionUsageAndTerminal(t *testing.T) {
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if result.sessionID != "sess-1" || result.model != "provider/model" || result.assistantCount != 1 || result.eventCount != 3 || result.inputTokens != 10 || result.outputTokens != 5 {
+	if result.sessionID != "sess-1" || result.model != "provider/model" || result.cliVersion != "1.1.23" || result.protocolVersion != "1.2.0" || result.permissionMode != "acceptEdits" || result.assistantCount != 1 || result.eventCount != 3 || result.inputTokens != 10 || result.outputTokens != 5 {
 		t.Fatalf("result = %+v", result)
 	}
 	if !result.terminal.seen || !result.terminal.success {
@@ -31,7 +31,7 @@ func TestDecodeEventLineExtractsSessionUsageAndTerminal(t *testing.T) {
 }
 
 func TestDecodeEventLineRecordsErrorTerminalCode(t *testing.T) {
-	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model"}
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 {"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"connection_failed"}
 `
 	result := decodeTranscript([]byte(stream))
@@ -59,7 +59,7 @@ func TestDecodeEventLineRejectsMalformedAndBlank(t *testing.T) {
 
 func TestDecodeEventLineRejectsDuplicateAndUnrecognizedTerminal(t *testing.T) {
 	t.Run("duplicate", func(t *testing.T) {
-		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model"}
+		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 {"type":"assistant","message":{}}
 {"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
 {"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
@@ -70,7 +70,7 @@ func TestDecodeEventLineRejectsDuplicateAndUnrecognizedTerminal(t *testing.T) {
 		}
 	})
 	t.Run("unrecognized-status", func(t *testing.T) {
-		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model"}
+		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 {"type":"result","subtype":"success","is_error":true,"terminal_reason":"weird"}
 `
 		result := decodeTranscript([]byte(stream))
