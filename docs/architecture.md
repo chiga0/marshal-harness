@@ -213,6 +213,12 @@ Rework 会创建新的 Evidence 与 ReviewDecision 绑定；旧 Evidence 不会�
 - compensation 是新的、可失败的 SideEffect，不回滚历史；
 - Sandbox、Agent 或 Runtime crash 后，恢复结论只来自 ledger 与外部真实状态对账。
 
+### 受控 merge 的目标权威事务（ADR 0033，Proposed）
+
+[ADR 0033](adr/0033-journal-bound-merge-authority-and-delivery.md) 提议把 prepared intent+authorization 与 delivery pending/result 绑定到 Run 的同一权威 journal：`MergeAuthorityTransaction` 以单次 append 原子冻结授权与 intent；`MergeDeliveryAnchor` 在 mutation 前先持久化 pending 并同步 snapshot，恢复只能 Inspect/Reconcile 外部真实状态，不能盲重放。独立 sidecar head 只能作为可重建投影，不能证明整体存储未回滚；M11 production storage 还必须提供外部 rollback witness。
+
+该节是目标契约，不是当前能力。ADR 0033 未接受且 A–D 实现/conformance 未全部通过前，`mergePolicy=policy` 不得注册为 supported，默认 `mergePolicy=never` 不变。
+
 ## 可插拔边界
 
 - `AgentAdapter` 只处理 Agent prepare/decode/capability；

@@ -71,6 +71,19 @@ M13 的长周期人工等待不改变本表：根据 [ADR 0019](adr/0019-determi
 
 意外进程退出不会自动创造转换。Recovery 必须先比较 Journal、Snapshot、Process Lease 与 worktree 状态，再选择合法转换。
 
+### ADR 0033 目标同状态事件（Proposed，非当前行为）
+
+[ADR 0033](adr/0033-journal-bound-merge-authority-and-delivery.md) 提议登记四个封闭的 `CI_PENDING → CI_PENDING` 事件：
+
+| 事件 | actor | 目标语义 |
+| --- | --- | --- |
+| `publication.merge-authority-prepared` | `system/marshal-core` | 原子绑定 prepared intent、current authorization 与冻结 admission digests |
+| `publication.merge-authority-revoked` | `system/marshal-core` | 追加授权 successor，不删除历史 |
+| `publication.merge-delivery-pending` | `publisher/marshal-scm-merger` | mutation 前原子消费 durable delivery budget 并形成 anchor |
+| `publication.merge-delivery-resolved` | `publisher/marshal-scm-merger` | Inspect/Reconcile 后追加封闭 outcome，不覆盖 pending |
+
+这些事件不是通用 same-state 入口。ADR 未接受且 reducer/Schema/producer-authority/replay negative fixtures 未实现前，当前转换表不增加它们；不得从 projection 或 sidecar 反向推进生命周期。
+
 ## 强制不变量
 
 ### 冻结执行输入
