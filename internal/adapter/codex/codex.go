@@ -55,6 +55,7 @@ func isSupportedBinary(version string) bool {
 var (
 	ErrUnsupportedVersion       = errors.New("unsupported codex version")
 	ErrVersionUnrecognized      = errors.New("unrecognized codex version output")
+	ErrIdentityInvalid          = errors.New("codex executable identity is invalid")
 	ErrIdentityDrift            = errors.New("codex executable identity drift")
 	ErrOutputLimit              = errors.New("codex output limit exceeded")
 	ErrProtocol                 = errors.New("invalid codex protocol")
@@ -120,7 +121,7 @@ func (a *Adapter) ID() string { return adapterID }
 func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	identity, err := a.inspect(ctx)
 	if err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, errors.Join(ErrIdentityInvalid, err), "executable identity probe failed", a.now())
 	}
 	a.pinIdentity(identity)
 	status := "supported"
@@ -297,15 +298,15 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// transcript 从不落盘。
 	identity, err := a.inspect(ctx)
 	if err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, errors.Join(ErrIdentityInvalid, err), "executable identity probe failed", a.now())
 	}
 	if !isSupportedBinary(identity.version) {
-		return domain.Record{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrUnsupportedVersion, "binary version is outside the compatible line", a.now())
 	}
 	// 启动前把重新解析的身份与钉住身份比较，防止 Probe 后替换、
 	// symlink/内容漂移或同版本二进制漂移进入 captured worker。
 	if err := a.verifyPinnedIdentity(identity); err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, newCodexFailure(port.FailureKindProtocolInvalid, ErrIdentityDrift, "executable identity changed after pinning", a.now())
 	}
 	worktree, err := filepath.EvalSymlinks(request.WorktreePath)
 	if err != nil {
@@ -332,7 +333,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	evidenceDir, err := evidenceDirectory(controlRoot, resultPath)
 	if err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, codexProtocolFailure("attempt evidence path escapes the control root or is unsafe", a.now())
 	}
 	model := readModel(controlRoot, request.TaskSpecPath)
 	tools, err := declaredWorkerTools(controlRoot, request.TaskSpecPath)
@@ -345,9 +346,6 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("%w: the frozen codex argv cannot express a per-tool allowlist", ErrUnsupportedWorkerTools)
 	}
 	schemaPath := filepath.Join(evidenceDir, "codex-output-schema.json")
-	if err := os.MkdirAll(evidenceDir, 0o700); err != nil {
-		return domain.Record{}, fmt.Errorf("prepare evidence directory: %w", err)
-	}
 	// 启动前 fail closed：result 与 Schema 临时物叶子都不得已存在
 	// （含指向 control root 外的 symlink 或非预期节点）。
 	for _, leaf := range []attemptLeaf{
@@ -355,17 +353,17 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		{path: schemaPath, kind: "output schema"},
 	} {
 		if err := leafMustBeAbsent(leaf.path, leaf.kind); err != nil {
-			return domain.Record{}, err
+			return domain.Record{}, codexProtocolFailure("attempt "+leaf.kind+" leaf already exists or is unsafe", a.now())
 		}
 	}
 	schemaDocument, err := contract.SchemaDocument("worker-result")
 	if err != nil {
-		return domain.Record{}, fmt.Errorf("read durable worker-result schema: %w", err)
+		return domain.Record{}, codexProtocolFailure("durable output schema is unavailable", a.now())
 	}
 	// Schema 临时物在启动前以 O_EXCL 原子占用；Schema 内容逐字来自
 	// durable Schema，不复制、不修改。
 	if err := claimLeaf(schemaPath, schemaDocument, "output schema"); err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, codexProtocolFailure("output schema leaf could not be claimed", a.now())
 	}
 	// result 叶子在启动前占用为空普通文件：既阻止预置 symlink/节点把
 	// worker 写入重定向到 control root 外，又保证 worker 未声明结果时
@@ -373,7 +371,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// 指向同一叶子，真实 CLI 会在成功 attempt 时覆盖该空占位，使该叶子
 	// 成为唯一真实结果来源。
 	if err := claimLeaf(resultPath, nil, "result"); err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, codexProtocolFailure("result leaf could not be claimed", a.now())
 	}
 	// attempt wall-time 预算从 worker 启动前一刻才开始计时，preflight
 	// 不消耗它；调用方 context 已过期时在启动前 fail，绝不带病启动。
@@ -389,15 +387,15 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "provider stdout pipe could not be created", a.now())
 	}
 	stderr, err := command.StderrPipe()
 	if err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "provider stderr pipe could not be created", a.now())
 	}
 	started := a.now().UTC()
 	if err := command.Start(); err != nil {
-		return domain.Record{}, fmt.Errorf("start codex: %w", err)
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "provider process could not be started", a.now())
 	}
 	var killOnce sync.Once
 	kill := func() {
@@ -429,10 +427,10 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// 证据在任何失败分类之前落盘：timeout/取消/超限/协议/进程失败场景都
 	// 保留 transcript、有界 stderr 与结构化 metadata。
 	if err := atomicWrite(filepath.Join(evidenceDir, "codex-transcript.jsonl"), capture.raw); err != nil {
-		return domain.Record{}, fmt.Errorf("write transcript: %w", err)
+		return domain.Record{}, codexProtocolFailure("attempt transcript evidence could not be persisted", a.now())
 	}
 	if err := atomicWrite(filepath.Join(evidenceDir, "codex-stderr.log"), stderrCapture.data); err != nil {
-		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
+		return domain.Record{}, codexProtocolFailure("attempt stderr evidence could not be persisted", a.now())
 	}
 	exitCode, signal := processOutcome(command)
 	// metadata 只含结构化计数、截断、exit/signal/context 分类与 digest；
@@ -447,10 +445,10 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		"contextError": contextError(runCtx),
 	}, "", "  ")
 	if err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, codexProtocolFailure("attempt evidence metadata could not be encoded", a.now())
 	}
 	if err := atomicWrite(filepath.Join(evidenceDir, "codex-transcript-meta.json"), append(metadata, '\n')); err != nil {
-		return domain.Record{}, fmt.Errorf("write transcript metadata: %w", err)
+		return domain.Record{}, codexProtocolFailure("attempt evidence metadata could not be persisted", a.now())
 	}
 	if runCtx.Err() != nil {
 		return domain.Record{}, runCtx.Err()
@@ -459,23 +457,26 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, ErrOutputLimit
 	}
 	if capture.err != nil {
-		return domain.Record{}, capture.err
+		if errors.Is(capture.err, ErrProviderFailed) {
+			return domain.Record{}, codexProviderFailure(a.now())
+		}
+		return domain.Record{}, codexProtocolFailure("stream protocol validation failed", a.now())
 	}
 	if waitErr != nil {
-		return domain.Record{}, processFailureError(command)
+		return domain.Record{}, processFailureError(a.now())
 	}
 	if capture.threadID == "" {
-		return domain.Record{}, fmt.Errorf("%w: thread identity is missing", ErrProtocol)
+		return domain.Record{}, codexProtocolFailure("thread identity is missing", a.now())
 	}
 	declared, err := readDeclaredResult(resultPath, int64(maxResultBytes), a.validator)
 	if err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, codexResultFailure("WorkerResult declaration is missing or invalid", a.now())
 	}
 	if declared.TaskID != request.TaskID || declared.RunID != request.RunID || declared.AttemptID != request.AttemptID || declared.Adapter.ID != adapterID {
-		return domain.Record{}, errors.New("WorkerResult identity does not match WorkerRequest")
+		return domain.Record{}, codexProtocolFailure("WorkerResult identity does not match WorkerRequest", a.now())
 	}
 	if declared.Session != nil && declared.Session.ID != "" && declared.Session.ID != capture.threadID {
-		return domain.Record{}, errors.New("WorkerResult session does not match transcript")
+		return domain.Record{}, codexProtocolFailure("WorkerResult session does not match transcript", a.now())
 	}
 	// 声明中的 executable/version 不作为权威；身份字段匹配后由 Adapter
 	// 覆盖为本 attempt 钉住的 realpath/version，session 绑定 transcript
@@ -488,13 +489,13 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	declared.Adapter.Model = model
 	data, err := json.Marshal(declared)
 	if err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, codexProtocolFailure("normalized WorkerResult could not be encoded", a.now())
 	}
 	if err := a.validator.Validate(domain.KindWorkerResult, data); err != nil {
-		return domain.Record{}, fmt.Errorf("validate normalized WorkerResult: %w", err)
+		return domain.Record{}, codexProtocolFailure("normalized WorkerResult violates the durable schema", a.now())
 	}
 	if err := atomicWrite(resultPath, append(data, '\n')); err != nil {
-		return domain.Record{}, fmt.Errorf("write normalized WorkerResult: %w", err)
+		return domain.Record{}, codexResultFailure("normalized WorkerResult could not be persisted", a.now())
 	}
 	return domain.Record{Kind: domain.KindWorkerResult, Data: data}, nil
 }

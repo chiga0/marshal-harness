@@ -80,7 +80,11 @@ func TestFakeParserRejectsWrongOrderingAndValues(t *testing.T) {
 		},
 		{
 			name: "color-invalid-value",
-			args: []string{"--color", "sometimes", "exec", "--json", "--sandbox", "workspace-write"},
+			args: []string{"exec", "--color", "sometimes", "--json", "--sandbox", "workspace-write"},
+		},
+		{
+			name: "color-before-exec-subcommand",
+			args: []string{"--color", "never", "exec", "--json", "--sandbox", "workspace-write"},
 		},
 		{
 			name: "unknown-global-flag",
