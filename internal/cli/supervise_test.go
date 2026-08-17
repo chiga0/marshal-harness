@@ -26,11 +26,28 @@ func superviseFixtureBinary(t *testing.T, argvFile string) string {
 	path := filepath.Join(t.TempDir(), "marshal-supervise-fixture")
 	script := "#!/bin/sh\n" +
 		"{ printf '%s\\n' \"$@\"; } > \"" + argvFile + ".tmp\"\n" +
-		"mv \"" + argvFile + ".tmp\" \"" + argvFile + "\"\n"
+		"mv \"" + argvFile + ".tmp\" \"" + argvFile + "\"\n" +
+		"run_id=''\n" +
+		"previous=''\n" +
+		"for argument in \"$@\"; do if [ \"$previous\" = '--run' ]; then run_id=\"$argument\"; break; fi; previous=\"$argument\"; done\n" +
+		"MARSHAL_CLI_HELPER_STATE_ROOT=\"$PWD/.marshal\" MARSHAL_CLI_HELPER_RUN_ID=\"$run_id\" exec \"" + os.Args[0] + "\" -test.run '^TestCLISuperviseLeaseHelper$'\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestCLISuperviseLeaseHelper(t *testing.T) {
+	root, runID := os.Getenv("MARSHAL_CLI_HELPER_STATE_ROOT"), os.Getenv("MARSHAL_CLI_HELPER_RUN_ID")
+	if root == "" || runID == "" {
+		return
+	}
+	lease, err := runstore.New(root).Acquire(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	time.Sleep(500 * time.Millisecond)
 }
 
 // newSuperviseRepository prepares a hermetic git repository with initialised
@@ -209,6 +226,30 @@ func TestSuperviseOnceRetriesPublishForDeadDriver(t *testing.T) {
 	output := stdout.String()
 	if !strings.Contains(output, runID) || !strings.Contains(output, "retry-publish") {
 		t.Fatalf("stdout missing retry-publish decision record: %s", output)
+	}
+}
+
+func TestSuperviseOnceReturnsDeadRunningRunToCore(t *testing.T) {
+	_, stateRoot := newSuperviseRepository(t)
+	const runID = "run-supervise-orphan"
+	seedSuperviseRun(t, stateRoot, runID, []domain.State{
+		domain.StatePlanned, domain.StateReady, domain.StateRunning,
+	}, time.Now().UTC().Add(-2*time.Hour))
+	argvFile := filepath.Join(t.TempDir(), "argv-record")
+	binary := superviseFixtureBinary(t, argvFile)
+
+	var stdout, stderr bytes.Buffer
+	exit := Run([]string{"supervise", "--once", "--marshal-binary", binary}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitOK {
+		t.Fatalf("supervise --once exit = %d, stderr = %s", exit, stderr.String())
+	}
+	gotArgv := waitForArgvFile(t, argvFile)
+	wantArgv := []string{"task", "run", "--run", runID, "--through-verify", "--json"}
+	if !reflect.DeepEqual(gotArgv, wantArgv) {
+		t.Fatalf("fake binary argv = %v, want %v", gotArgv, wantArgv)
+	}
+	if output := stdout.String(); !strings.Contains(output, runID) || !strings.Contains(output, "run-worker") {
+		t.Fatalf("stdout missing orphan run-worker decision record: %s", output)
 	}
 }
 

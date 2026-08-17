@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/gofrs/flock"
 )
 
 // Action is the closed set of actions the supervisor may take for one Run.
@@ -31,7 +33,7 @@ func (a Action) String() string { return string(a) }
 
 // DefaultStalenessThreshold is how long an actively-driven Run may go
 // without a fresh journal event before its driver is considered dead.
-const DefaultStalenessThreshold = 30 * time.Minute
+const DefaultStalenessThreshold = lifecycle.DefaultDriverStalenessThreshold
 
 var (
 	// ErrMarshalBinaryUnavailable is the fixed sentinel returned by New when
@@ -47,6 +49,11 @@ type RunStatus struct {
 	RunID       string
 	State       domain.State
 	DriverAlive bool
+	// LeaseHeld is the actual OS ownership observation. DriverAlive may also
+	// remain true during the short journal-age grace window, but a held lease
+	// always wins over event age so a legitimate long attempt is never
+	// declared dead merely because it emitted no recent lifecycle event.
+	LeaseHeld bool
 	// SkipReason is non-empty when the Run could not be inspected with
 	// journal consistency (for example a corrupted snapshot or journal) and
 	// was therefore skipped for decision-making.
@@ -164,7 +171,7 @@ func New(stateRoot, marshalBinary string, opts ...Option) (*Supervisor, error) {
 		s.now = func() time.Time { return time.Now().UTC() }
 	}
 	if s.executor == nil {
-		s.executor = commandExecutor{}
+		s.executor = commandExecutor{stateRoot: s.stateRoot, readinessTimeout: 10 * time.Second}
 	}
 	return s, nil
 }
@@ -198,22 +205,31 @@ func (s *Supervisor) Scan(ctx context.Context) ([]RunStatus, error) {
 			statuses = append(statuses, RunStatus{RunID: runID, SkipReason: fmt.Sprintf("inspect failed: %v", inspectErr)})
 			continue
 		}
-		statuses = append(statuses, RunStatus{RunID: runID, State: state.State, DriverAlive: s.driverAlive(state)})
+		leaseHeld, leaseErr := store.LeaseHeld(runID)
+		if leaseErr != nil {
+			statuses = append(statuses, RunStatus{RunID: runID, State: state.State, SkipReason: fmt.Sprintf("ownership probe failed: %v", leaseErr)})
+			continue
+		}
+		statuses = append(statuses, RunStatus{RunID: runID, State: state.State, LeaseHeld: leaseHeld, DriverAlive: s.driverAlive(state, leaseHeld)})
 	}
 	sort.Slice(statuses, func(i, j int) bool { return statuses[i].RunID < statuses[j].RunID })
 	return statuses, nil
 }
 
 // driverAlive applies the conservative liveness signal: only Runs in an
-// actively-driven state can be alive at all, and only while their most
-// recent journal event (reflected in RunState.UpdatedAt after inspection)
-// is within the staleness threshold. Runs waiting for dispatch or in any
-// other state have no driver to probe and always report false.
-func (s *Supervisor) driverAlive(state domain.RunState) bool {
+// actively-driven state can be alive at all. A held OS lease is affirmative
+// owner evidence and always wins, including for a long attempt with no new
+// journal event. Without a held lease, the recent-event window is only a
+// race-avoidance grace period; once it expires the driver is considered
+// dead. Runs waiting for dispatch or in any other state always report false.
+func (s *Supervisor) driverAlive(state domain.RunState, leaseHeld bool) bool {
 	switch state.State {
 	case domain.StateRunning, domain.StateVerifying, domain.StatePublishing:
 	default:
 		return false
+	}
+	if leaseHeld {
+		return true
 	}
 	if state.UpdatedAt.IsZero() {
 		return false
@@ -231,6 +247,12 @@ func (s *Supervisor) Decide(status RunStatus) Action {
 	if status.RunID == "" || status.SkipReason != "" {
 		return ActionNone
 	}
+	// A child may hold the Run lease before appending worker.started. Treat
+	// that ownership as an admitted in-flight driver in every source state;
+	// otherwise a second supervisor could duplicate the spawn in this gap.
+	if status.LeaseHeld {
+		return ActionNone
+	}
 	switch status.State {
 	case domain.StateReady, domain.StateReworkRequested:
 		return ActionRunWorker
@@ -239,6 +261,11 @@ func (s *Supervisor) Decide(status RunStatus) Action {
 			return ActionRunWorker
 		}
 		return ActionNone
+	case domain.StateRunning:
+		if status.DriverAlive {
+			return ActionNone
+		}
+		return ActionRunWorker
 	case domain.StatePublishing:
 		if status.DriverAlive {
 			return ActionNone
@@ -264,6 +291,17 @@ func (s *Supervisor) Decide(status RunStatus) Action {
 // in-flight Run (non-terminal state with a live driver) and skips the
 // candidate on any path overlap, directory-prefix or wildcard containment.
 func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
+	// Serialize scan + admission + spawn with the existing repository-wide
+	// coordination lock used by worktree lifecycle operations. This closes
+	// the cross-process TOCTOU where two supervisors could scan the same
+	// authority snapshot and both admit overlapping write domains. Drivers
+	// acquire their Run lease before attempting the worktree lock, so holding
+	// this lock across Start cannot invert the ownership order.
+	coordination, err := s.acquireCoordinationLock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer coordination.Unlock()
 	excluded, err := loadExcludeList(s.stateRoot)
 	if err != nil {
 		// Fail closed: report the read failure and re-dispatch nothing.
@@ -275,7 +313,7 @@ func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
 	}
 	inflight := make([]string, 0, len(statuses))
 	for _, status := range statuses {
-		if status.SkipReason != "" || status.State.Terminal() || !status.DriverAlive {
+		if status.SkipReason != "" || status.State.Terminal() || (!status.DriverAlive && !status.LeaseHeld) {
 			continue
 		}
 		inflight = append(inflight, status.RunID)
@@ -305,11 +343,32 @@ func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
 			record.Error = startErr.Error()
 		} else {
 			record.Started = true
+			// A driver successfully admitted in this round is immediately part
+			// of the in-flight write-domain set. This prevents two candidates
+			// selected from the same scan (for example READY plus orphaned
+			// RUNNING) from being spawned concurrently into overlapping paths.
+			inflight = append(inflight, status.RunID)
 		}
 		records = append(records, record)
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].RunID < records[j].RunID })
 	return records, nil
+}
+
+func (s *Supervisor) acquireCoordinationLock(ctx context.Context) (*flock.Flock, error) {
+	locks := filepath.Join(s.stateRoot, "locks")
+	if err := os.MkdirAll(locks, 0o700); err != nil {
+		return nil, fmt.Errorf("supervisor: create coordination directory: %w", err)
+	}
+	lock := flock.New(filepath.Join(locks, "repository.lock"))
+	locked, err := lock.TryLockContext(ctx, 25*time.Millisecond)
+	if err != nil {
+		return nil, fmt.Errorf("supervisor: acquire repository coordination lock: %w", err)
+	}
+	if !locked {
+		return nil, errors.New("supervisor: repository coordination lock unavailable")
+	}
+	return lock, nil
 }
 
 // writeDomainConflictReason returns a non-empty reason when the candidate
@@ -393,18 +452,65 @@ func (s *Supervisor) Loop(ctx context.Context, interval time.Duration) error {
 // that started them, including the supervisor itself stopping. Killing the
 // drivers together with the supervisor context would reproduce exactly the
 // silent-death failure mode the supervisor exists to eliminate.
-type commandExecutor struct{}
+type commandExecutor struct {
+	stateRoot        string
+	readinessTimeout time.Duration
+}
 
-// Start starts the child process and reaps it asynchronously; it never
-// blocks on the child's completion.
-func (commandExecutor) Start(ctx context.Context, argv []string) error {
+// Start starts the child and does not acknowledge dispatch until the child
+// holds the authoritative Run lease (or exits after completing synchronously).
+// A child that misses the bounded readiness window is killed and reaped while
+// the repository coordination lock is still held, so another supervisor can
+// never race a late, unreserved child.
+func (executor commandExecutor) Start(ctx context.Context, argv []string) error {
 	if len(argv) == 0 {
 		return errors.New("supervisor: empty argv")
+	}
+	runID := ""
+	for index, argument := range argv {
+		if argument == "--run" && index+1 < len(argv) {
+			runID = argv[index+1]
+			break
+		}
+	}
+	if runID == "" || executor.stateRoot == "" {
+		return errors.New("supervisor: child readiness requires state root and run ID")
 	}
 	command := exec.CommandContext(context.WithoutCancel(ctx), argv[0], argv[1:]...)
 	if err := command.Start(); err != nil {
 		return err
 	}
-	go func() { _ = command.Wait() }()
-	return nil
+	waited := make(chan error, 1)
+	go func() { waited <- command.Wait() }()
+	timeout := executor.readinessTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	store := runstore.New(executor.stateRoot)
+	for {
+		select {
+		case err := <-waited:
+			if err != nil {
+				return fmt.Errorf("supervisor: child exited before lease readiness: %w", err)
+			}
+			return errors.New("supervisor: child exited before acquiring the Run lease")
+		case <-ticker.C:
+			held, err := store.LeaseHeld(runID)
+			if err == nil && held {
+				return nil
+			}
+		case <-timer.C:
+			_ = command.Process.Kill()
+			<-waited
+			return errors.New("supervisor: child did not acquire the Run lease before readiness timeout")
+		case <-ctx.Done():
+			_ = command.Process.Kill()
+			<-waited
+			return ctx.Err()
+		}
+	}
 }

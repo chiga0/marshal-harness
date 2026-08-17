@@ -111,6 +111,37 @@ func TestControlRecordsAppendAndReadTyped(t *testing.T) {
 	}
 }
 
+func TestControlMutationHookRejectsReplacementBeforeAnyBytes(t *testing.T) {
+	store, lease := newControlStore(t)
+	validator := newControlValidator(t)
+	runDirectory, err := store.runDir("run:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDirectory := runDirectory + ".old"
+	lease.beforeMutation = func() error {
+		lease.beforeMutation = nil
+		if err := os.Rename(runDirectory, oldDirectory); err != nil {
+			return err
+		}
+		if err := os.Mkdir(runDirectory, 0o700); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(runDirectory, "lease.lock"), nil, 0o600)
+	}
+	if err := store.AppendApproval(lease, validator, approvalFixture(1)); err == nil {
+		t.Fatal("control mutation crossed a replaced run authority")
+	}
+	for _, directory := range []string{runDirectory, oldDirectory} {
+		path := filepath.Join(directory, "control", "records.jsonl")
+		if data, readErr := os.ReadFile(path); readErr == nil && len(data) != 0 {
+			t.Fatalf("%s received unauthorized bytes: %q", directory, data)
+		} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatal(readErr)
+		}
+	}
+}
+
 func TestControlAppendRequiresMatchingLease(t *testing.T) {
 	t.Parallel()
 	store, _ := newControlStore(t)

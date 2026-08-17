@@ -370,6 +370,99 @@ func TestPrepareOutcomeDoesNotProduceResultRecord(t *testing.T) {
 	assertAbsent(t, filepath.Join(fixture.directory, "result.md"), filepath.Join(fixture.directory, "result.md.pending"))
 }
 
+func TestPreparedOutcomeAtRejectsChangedCanonicalAuthorityWithoutFinalBytes(t *testing.T) {
+	fixture := newReviewFixture(t)
+	outcome := terminalOutcome(fixture, terminalRejectResult(t, fixture))
+	authority, err := os.Open(fixture.directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareOutcomeAt(authority, *outcome)
+	_ = authority.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDirectory := fixture.directory + ".old"
+	if err := os.Rename(fixture.directory, oldDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(fixture.directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := os.Open(fixture.directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = prepared.CommitAt(replacement)
+	_ = replacement.Close()
+	if err == nil {
+		t.Fatal("prepared Outcome committed through a changed canonical authority")
+	}
+	for _, directory := range []string{fixture.directory, oldDirectory} {
+		for _, name := range []string{"outcome.json", "outcome.md"} {
+			if _, err := os.Lstat(filepath.Join(directory, name)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s received final Outcome bytes: %v", directory, err)
+			}
+		}
+	}
+}
+
+func TestEnsureOutcomeRejectsSymlinkAndHardlinkRecords(t *testing.T) {
+	for _, name := range []string{"outcome.json", "outcome.json.pending", "outcome.md", "outcome.md.pending"} {
+		for _, kind := range []string{"symlink", "hardlink"} {
+			t.Run(name+"-"+kind, func(t *testing.T) {
+				fixture := newReviewFixture(t)
+				outcome := terminalOutcome(fixture, terminalRejectResult(t, fixture))
+				target := filepath.Join(fixture.directory, "outside")
+				want := []byte("must-not-change\n")
+				if err := os.WriteFile(target, want, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(fixture.directory, name)
+				var err error
+				if kind == "symlink" {
+					err = os.Symlink(target, path)
+				} else {
+					err = os.Link(target, path)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := EnsureOutcome(fixture.directory, *outcome); err == nil {
+					t.Fatalf("EnsureOutcome accepted %s %s", kind, name)
+				}
+				got, err := os.ReadFile(target)
+				if err != nil || string(got) != string(want) {
+					t.Fatalf("external record mutated: %q err=%v", got, err)
+				}
+			})
+		}
+	}
+}
+
+func TestEnsureOutcomeRejectsSymlinkedParentComponent(t *testing.T) {
+	fixture := newReviewFixture(t)
+	outcome := terminalOutcome(fixture, terminalRejectResult(t, fixture))
+	realParent := t.TempDir()
+	realRun := filepath.Join(realParent, "runs", "run-target")
+	if err := os.MkdirAll(realRun, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	aliasRoot := t.TempDir()
+	if err := os.Symlink(filepath.Join(realParent, "runs"), filepath.Join(aliasRoot, "runs")); err != nil {
+		t.Fatal(err)
+	}
+	redirected := filepath.Join(aliasRoot, "runs", "run-target")
+	if err := EnsureOutcome(redirected, *outcome); err == nil {
+		t.Fatal("EnsureOutcome followed a symlinked parent component")
+	}
+	for _, name := range []string{"outcome.json", "outcome.md"} {
+		if _, err := os.Lstat(filepath.Join(realRun, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("redirected outcome %s was created: %v", name, err)
+		}
+	}
+}
+
 func TestPrepareRecordsTerminalProducesIndependentResultRecord(t *testing.T) {
 	fixture := newReviewFixture(t)
 	result := terminalRejectResult(t, fixture)

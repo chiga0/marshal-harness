@@ -45,6 +45,171 @@ func TestLeaseIsExclusive(t *testing.T) {
 	}
 }
 
+func TestLeaseHeldIsReadOnlyOwnershipProbe(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := New(root)
+	if _, err := store.LeaseHeld("run:missing"); err == nil {
+		t.Fatal("missing lease lock was treated as known ownership")
+	}
+	if _, err := os.Stat(filepath.Join(root, "runs", "run:missing", "lease.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ownership probe created a missing lock file: %v", err)
+	}
+	lease, err := store.Acquire("run:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := store.LeaseHeld("run:1")
+	if err != nil || !held {
+		t.Fatalf("LeaseHeld while owned = %v, %v", held, err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	held, err = store.LeaseHeld("run:1")
+	if err != nil || held {
+		t.Fatalf("LeaseHeld after release = %v, %v", held, err)
+	}
+}
+
+func TestLeaseHeldFailsClosedWhenLockPathIsReplaced(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	lease, err := store.Acquire("run:replace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	path := filepath.Join(root, "runs", "run:replace", "lease.lock")
+	old := path + ".replaced"
+	if err := os.Rename(path, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := store.LeaseHeld("run:replace"); err == nil || held {
+		t.Fatalf("replacement probe = held:%v err:%v, want fail-closed identity error", held, err)
+	}
+	if _, err := store.Acquire("run:replace"); err == nil {
+		t.Fatal("second Acquire accepted a replacement lease inode")
+	}
+	if err := store.Append(lease, transition("event:replace", 1, domain.StateCreated, domain.StatePlanned), 0); err == nil {
+		t.Fatal("original owner appended after its authoritative pathname was replaced")
+	}
+}
+
+func TestLeaseMutationRejectsReplacedRunAuthorityDirectory(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	lease, err := store.Acquire("run:directory-replace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	runDirectory := filepath.Join(root, "runs", "run:directory-replace")
+	if err := os.Rename(runDirectory, runDirectory+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(runDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDirectory, "lease.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(lease, transition("event:directory-replace", 1, domain.StateCreated, domain.StatePlanned), 0); err == nil {
+		t.Fatal("old lease appended after the canonical run directory was replaced")
+	}
+	if _, err := os.Stat(filepath.Join(runDirectory, "events.jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement authority received an event: %v", err)
+	}
+}
+
+func TestMutationHookRejectsReplacementBeforeAnyJournalOrSnapshotBytes(t *testing.T) {
+	for _, operation := range []string{"journal", "snapshot"} {
+		t.Run(operation, func(t *testing.T) {
+			root := t.TempDir()
+			store := New(root)
+			lease, err := store.Acquire("run:mutation-window")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Release()
+			runDirectory := filepath.Join(root, "runs", "run:mutation-window")
+			oldDirectory := runDirectory + ".old"
+			lease.beforeMutation = func() error {
+				lease.beforeMutation = nil
+				if err := os.Rename(runDirectory, oldDirectory); err != nil {
+					return err
+				}
+				if err := os.Mkdir(runDirectory, 0o700); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(runDirectory, "lease.lock"), nil, 0o600)
+			}
+			if operation == "journal" {
+				err = store.Append(lease, transition("event:mutation-window", 1, domain.StateCreated, domain.StatePlanned), 0)
+			} else {
+				err = store.WriteSnapshot(lease, domain.NewRunState("task:mutation-window", "run:mutation-window", time.Unix(1, 0).UTC()))
+			}
+			if err == nil {
+				t.Fatal("mutation crossed a replaced run authority")
+			}
+			name := "events.jsonl"
+			if operation == "snapshot" {
+				name = "state.json"
+			}
+			for _, directory := range []string{runDirectory, oldDirectory} {
+				if data, readErr := os.ReadFile(filepath.Join(directory, name)); readErr == nil && len(data) != 0 {
+					t.Fatalf("%s received unauthorized bytes: %q", directory, data)
+				} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+					t.Fatal(readErr)
+				}
+			}
+		})
+	}
+}
+
+func TestAcquireRejectsUnsafeOwnerWithoutMutatingTarget(t *testing.T) {
+	for _, kind := range []string{"symlink", "hardlink"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			store := New(root)
+			lease, err := store.Acquire("run:owner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := lease.Release(); err != nil {
+				t.Fatal(err)
+			}
+			owner := filepath.Join(root, "runs", "run:owner", "lease.lock.owner")
+			if err := os.Remove(owner); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(root, "outside")
+			want := []byte("must-not-change\n")
+			if err := os.WriteFile(target, want, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "symlink" {
+				err = os.Symlink(target, owner)
+			} else {
+				err = os.Link(target, owner)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Acquire("run:owner"); err == nil {
+				t.Fatalf("Acquire accepted %s owner", kind)
+			}
+			got, err := os.ReadFile(target)
+			if err != nil || string(got) != string(want) {
+				t.Fatalf("unsafe owner target mutated: %q err=%v", got, err)
+			}
+		})
+	}
+}
+
 func TestRebuildIgnoresTruncatedJournalTail(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

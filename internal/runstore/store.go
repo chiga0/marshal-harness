@@ -17,7 +17,6 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
-	"github.com/gofrs/flock"
 )
 
 var (
@@ -29,9 +28,26 @@ var (
 type Store struct{ root string }
 
 type Lease struct {
-	lock  *flock.Flock
-	path  string
-	runID string
+	file   *os.File
+	runDir *os.File
+	held   bool
+	root   string
+	dev    uint64
+	inode  uint64
+	runID  string
+	// beforeMutation is a deterministic test seam. Production leases leave it
+	// nil. The mutation still uses the already-bound run directory descriptor.
+	beforeMutation func() error
+}
+
+type leaseOwnerRecord struct {
+	Token            string    `json:"token"`
+	PID              int       `json:"pid"`
+	ProcessStartedAt time.Time `json:"processStartedAt"`
+	AcquiredAt       time.Time `json:"acquiredAt"`
+	HeartbeatAt      time.Time `json:"heartbeatAt"`
+	Device           uint64    `json:"device"`
+	Inode            uint64    `json:"inode"`
 }
 
 var processStartedAt = time.Now().UTC()
@@ -58,9 +74,7 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("create run directory: %w", err)
 	}
-	path := filepath.Join(directory, "lease.lock")
-	lock := flock.New(path)
-	locked, err := lock.TryLock()
+	leaseFile, runDirectory, device, inode, locked, err := acquireLeaseFile(s.root, runID)
 	if err != nil {
 		return nil, fmt.Errorf("acquire run lease: %w", err)
 	}
@@ -69,67 +83,65 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 	}
 	var tokenBytes [16]byte
 	if _, err := rand.Read(tokenBytes[:]); err != nil {
-		_ = lock.Unlock()
+		_ = releaseLeaseFile(leaseFile)
+		if runDirectory != nil {
+			_ = runDirectory.Close()
+		}
 		return nil, fmt.Errorf("generate lease token: %w", err)
 	}
 	now := time.Now().UTC()
-	record, err := json.MarshalIndent(struct {
-		Token            string    `json:"token"`
-		PID              int       `json:"pid"`
-		ProcessStartedAt time.Time `json:"processStartedAt"`
-		AcquiredAt       time.Time `json:"acquiredAt"`
-		HeartbeatAt      time.Time `json:"heartbeatAt"`
-	}{hex.EncodeToString(tokenBytes[:]), os.Getpid(), processStartedAt, now, now}, "", "  ")
+	record, err := json.MarshalIndent(leaseOwnerRecord{
+		Token: hex.EncodeToString(tokenBytes[:]), PID: os.Getpid(), ProcessStartedAt: processStartedAt,
+		AcquiredAt: now, HeartbeatAt: now, Device: device, Inode: inode,
+	}, "", "  ")
 	if err != nil {
-		_ = lock.Unlock()
+		_ = releaseLeaseFile(leaseFile)
+		if runDirectory != nil {
+			_ = runDirectory.Close()
+		}
 		return nil, err
 	}
 	record = append(record, '\n')
-	if err := os.WriteFile(path+".owner", record, 0o600); err != nil {
-		_ = lock.Unlock()
+	if err := writeLeaseOwnerAt(int(runDirectory.Fd()), record); err != nil {
+		_ = releaseLeaseFile(leaseFile)
+		_ = runDirectory.Close()
 		return nil, fmt.Errorf("write lease owner: %w", err)
 	}
-	return &Lease{lock: lock, path: path, runID: runID}, nil
+	return &Lease{file: leaseFile, runDir: runDirectory, held: true, root: s.root, dev: device, inode: inode, runID: runID}, nil
+}
+
+// LeaseHeld reports whether the operating system lock for runID is
+// currently held by a live owner. It is a read-only observation used by
+// supervisor: unlike Acquire it never rewrites lease.lock.owner and never
+// creates a missing lock file. A missing, linked or non-regular lock fails
+// closed because process ownership then cannot be proven.
+func (s *Store) LeaseHeld(runID string) (bool, error) {
+	if _, err := s.runDir(runID); err != nil {
+		return false, err
+	}
+	return probeLeaseHeld(s.root, runID)
 }
 
 func (l *Lease) Release() error {
-	if l == nil || l.lock == nil {
+	if l == nil || l.file == nil || !l.held {
 		return nil
 	}
-	err := l.lock.Unlock()
-	l.lock = nil
-	return err
+	err := releaseLeaseFile(l.file)
+	directoryErr := l.runDir.Close()
+	l.file = nil
+	l.runDir = nil
+	l.held = false
+	return errors.Join(err, directoryErr)
 }
 
 func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uint64) error {
-	if lease == nil || lease.lock == nil || !lease.lock.Locked() {
+	if lease == nil || lease.file == nil || !lease.held {
 		return errors.New("append requires held run lease")
 	}
 	if lease.runID != event.RunID {
 		return fmt.Errorf("%w: lease belongs to run %s", ErrConflict, lease.runID)
 	}
-	directory, err := s.runDir(event.RunID)
-	if err != nil {
-		return err
-	}
-	events, _, readErr := s.ReadEvents(event.RunID)
-	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
-		return readErr
-	}
-	actual := uint64(len(events))
-	if actual != expectedSequence || event.Sequence != expectedSequence+1 {
-		return fmt.Errorf("%w: expected sequence %d, journal is %d, event is %d", ErrConflict, expectedSequence, actual, event.Sequence)
-	}
-	for _, existing := range events {
-		if existing.EventID == event.EventID {
-			return fmt.Errorf("%w: duplicate event ID %s", ErrConflict, event.EventID)
-		}
-	}
-	currentState := domain.StateCreated
-	if len(events) > 0 {
-		currentState = events[len(events)-1].StateTo
-	}
-	if err := lifecycle.ValidateTransition(currentState, event.RunID, expectedSequence, event); err != nil {
+	if _, err := s.runDir(event.RunID); err != nil {
 		return err
 	}
 	if event.EventID == "" || event.Payload == nil || event.Kind != domain.KindRunEvent || event.APIVersion != domain.APIVersionV1Alpha1 {
@@ -150,15 +162,37 @@ func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uin
 	if err != nil {
 		return fmt.Errorf("encode event: %w", err)
 	}
-	file, err := os.OpenFile(filepath.Join(directory, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if lease.beforeMutation != nil {
+		if err := lease.beforeMutation(); err != nil {
+			return fmt.Errorf("append mutation hook: %w", err)
+		}
+	}
+	authority, err := OpenRunAuthority(lease)
 	if err != nil {
-		return fmt.Errorf("open event journal: %w", err)
+		return fmt.Errorf("append mutation authority: %w", err)
 	}
-	defer file.Close()
-	if _, err := file.Write(append(data, '\n')); err != nil {
-		return fmt.Errorf("append event: %w", err)
+	defer authority.Close()
+	events, _, readErr := readEventsAt(int(authority.Fd()))
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return readErr
 	}
-	if err := file.Sync(); err != nil {
+	actual := uint64(len(events))
+	if actual != expectedSequence || event.Sequence != expectedSequence+1 {
+		return fmt.Errorf("%w: expected sequence %d, journal is %d, event is %d", ErrConflict, expectedSequence, actual, event.Sequence)
+	}
+	for _, existing := range events {
+		if existing.EventID == event.EventID {
+			return fmt.Errorf("%w: duplicate event ID %s", ErrConflict, event.EventID)
+		}
+	}
+	currentState := domain.StateCreated
+	if len(events) > 0 {
+		currentState = events[len(events)-1].StateTo
+	}
+	if err := lifecycle.ValidateTransition(currentState, event.RunID, expectedSequence, event); err != nil {
+		return err
+	}
+	if err := appendRegularAt(int(authority.Fd()), "events.jsonl", append(data, '\n')); err != nil {
 		return fmt.Errorf("sync event journal: %w", err)
 	}
 	notifyStateTransition(len(events) == 0, []domain.RunEvent{event})
@@ -219,6 +253,21 @@ func (s *Store) ReadEvents(runID string) ([]domain.RunEvent, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+	return decodeEvents(data)
+}
+
+// ReadEventsUnderLease reads the journal through the exact canonical run
+// authority descriptor validated against lease.
+func (s *Store) ReadEventsUnderLease(lease *Lease) ([]domain.RunEvent, bool, error) {
+	authority, err := OpenRunAuthority(lease)
+	if err != nil {
+		return nil, false, err
+	}
+	defer authority.Close()
+	return readEventsAt(int(authority.Fd()))
+}
+
+func decodeEvents(data []byte) ([]domain.RunEvent, bool, error) {
 	truncated := len(data) > 0 && data[len(data)-1] != '\n'
 	reader := bufio.NewReader(bytes.NewReader(data))
 	var events []domain.RunEvent
@@ -251,7 +300,7 @@ func (s *Store) ReadEvents(runID string) ([]domain.RunEvent, bool, error) {
 }
 
 func (s *Store) WriteSnapshot(lease *Lease, state domain.RunState) error {
-	if lease == nil || lease.lock == nil || !lease.lock.Locked() {
+	if lease == nil || lease.file == nil || !lease.held {
 		return errors.New("snapshot write requires held run lease")
 	}
 	if lease.runID != state.RunID {
@@ -263,44 +312,42 @@ func (s *Store) WriteSnapshot(lease *Lease, state domain.RunState) error {
 	if err := domain.ValidateID(state.TaskID); err != nil {
 		return err
 	}
-	directory, err := s.runDir(state.RunID)
-	if err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(directory, ".state-*.tmp")
+	if lease.beforeMutation != nil {
+		if err := lease.beforeMutation(); err != nil {
+			return fmt.Errorf("snapshot mutation hook: %w", err)
+		}
+	}
+	authority, err := OpenRunAuthority(lease)
 	if err != nil {
+		return fmt.Errorf("snapshot mutation authority: %w", err)
+	}
+	defer authority.Close()
+	events, _, journalErr := readEventsAt(int(authority.Fd()))
+	if errors.Is(journalErr, os.ErrNotExist) {
+		// A first snapshot may seed an imported/rebuilt state. There is no
+		// journal CAS value to compare in this case.
+	} else if journalErr != nil {
+		return journalErr
+	} else if state.Sequence > uint64(len(events)) {
+		return fmt.Errorf("%w: snapshot sequence %d is ahead of descriptor-bound journal %d", ErrConflict, state.Sequence, len(events))
+	} else if state.Sequence == 0 {
+		if state.State != domain.StateCreated {
+			return fmt.Errorf("%w: sequence-zero snapshot is not CREATED", ErrConflict)
+		}
+	} else {
+		bound := events[state.Sequence-1]
+		if bound.RunID != state.RunID || bound.StateTo != state.State {
+			return fmt.Errorf("%w: snapshot candidate does not match descriptor-bound journal record %d", ErrConflict, state.Sequence)
+		}
+	}
+	if err := writeSnapshotAt(int(authority.Fd()), append(data, '\n')); err != nil {
 		return err
 	}
-	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(append(data, '\n')); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryName, filepath.Join(directory, "state.json")); err != nil {
-		return err
-	}
-	dir, err := os.Open(directory)
-	if err == nil {
-		err = dir.Sync()
-		_ = dir.Close()
-	}
-	return err
+	return nil
 }
 
 func (s *Store) ReadSnapshot(runID string) (domain.RunState, error) {
@@ -325,6 +372,37 @@ func (s *Store) Inspect(runID string) (domain.RunState, error) {
 		return state, err
 	}
 	events, _, journalErr := s.ReadEvents(runID)
+	if errors.Is(journalErr, os.ErrNotExist) && state.Sequence == 0 {
+		return state, nil
+	}
+	if journalErr != nil && !errors.Is(journalErr, ErrTruncatedTail) {
+		return state, journalErr
+	}
+	if uint64(len(events)) < state.Sequence {
+		return state, fmt.Errorf("%w: snapshot sequence %d is ahead of journal sequence %d", ErrConflict, state.Sequence, len(events))
+	}
+	for index := state.Sequence; index < uint64(len(events)); index++ {
+		state, err = lifecycle.Replay(state, events[index])
+		if err != nil {
+			return state, fmt.Errorf("%w: replay journal tail: %v", ErrConflict, err)
+		}
+	}
+	if len(events) > 0 && events[len(events)-1].StateTo != state.State {
+		return state, fmt.Errorf("%w: snapshot state %s differs from journal state %s", ErrConflict, state.State, events[len(events)-1].StateTo)
+	}
+	return state, nil
+}
+
+func inspectAt(runFD int) (domain.RunState, error) {
+	data, err := readRegularAt(runFD, "state.json", 0)
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	var state domain.RunState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return state, err
+	}
+	events, _, journalErr := readEventsAt(runFD)
 	if errors.Is(journalErr, os.ErrNotExist) && state.Sequence == 0 {
 		return state, nil
 	}
