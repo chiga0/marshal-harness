@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -85,7 +86,7 @@ func TestProbeIsFailClosedUntilConformance(t *testing.T) {
 
 func TestRunRequiresBoundConformanceIdentityBeforeLaunch(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "launched")
-	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`))
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+successEvents("provider/model"))
 	fixture.adapter.mu.Lock()
 	fixture.adapter.conformance = nil
 	fixture.adapter.mu.Unlock()
@@ -98,8 +99,8 @@ func TestRunRequiresBoundConformanceIdentityBeforeLaunch(t *testing.T) {
 	}
 }
 
-func TestBindConformanceRequiresExactSupportedCapabilityIdentity(t *testing.T) {
-	fixture := newRunFixture(t, supportedBinary, emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`))
+func TestBindConformanceRequiresIndependentExactReceipt(t *testing.T) {
+	fixture := newRunFixture(t, supportedBinary, successEvents("provider/model"))
 	fixture.adapter.mu.Lock()
 	fixture.adapter.conformance = nil
 	fixture.adapter.mu.Unlock()
@@ -111,13 +112,22 @@ func TestBindConformanceRequiresExactSupportedCapabilityIdentity(t *testing.T) {
 	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	snapshot["probeStatus"] = "supported"
-	snapshot["probeErrors"] = []string{}
+	// A caller can rewrite Probe JSON, but BindConformance accepts no
+	// CapabilitySnapshot and therefore cannot authorize that self-claim.
+	snapshot["probeStatus"], snapshot["probeErrors"] = "supported", []string{}
 	record.Data, err = json.Marshal(snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.adapter.BindConformance(context.Background(), record); err != nil {
+	if strings.Contains(string(record.Data), conformanceEventContract) {
+		t.Fatal("Probe unexpectedly contains an independent conformance receipt")
+	}
+	identity, err := fixture.adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := validConformanceReceipt(identity)
+	if err := fixture.adapter.BindConformance(context.Background(), receipt); err != nil {
 		t.Fatal(err)
 	}
 	probe, err := fixture.adapter.Probe(context.Background())
@@ -127,10 +137,23 @@ func TestBindConformanceRequiresExactSupportedCapabilityIdentity(t *testing.T) {
 	if !strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
 		t.Fatalf("probe did not reflect exact bound conformance: %s", probe.Data)
 	}
-	snapshot["executableDigest"] = digest("f")
-	record.Data, _ = json.Marshal(snapshot)
-	if err := fixture.adapter.BindConformance(context.Background(), record); !errors.Is(err, ErrIdentityDrift) {
+	receipt.ExecutableDigest = digest("f")
+	if err := fixture.adapter.BindConformance(context.Background(), receipt); !errors.Is(err, ErrIdentityDrift) {
 		t.Fatalf("stale conformance identity accepted: %v", err)
+	}
+	receipt = validConformanceReceipt(identity)
+	receipt.CapabilitiesDigest = digest("e")
+	if err := fixture.adapter.BindConformance(context.Background(), receipt); err == nil {
+		t.Fatal("receipt with different capabilities was accepted")
+	}
+}
+
+func validConformanceReceipt(identity executableIdentity) ConformanceReceipt {
+	return ConformanceReceipt{
+		RunnerID: "marshal-conformance", RunnerVersion: "1", EvidenceDigest: digest("a"), ObservedAt: classifyNow,
+		AdapterVersion: adapterVersion, Executable: identity.path, ExecutableDigest: identity.digest,
+		BinaryVersion: identity.version, CapabilitiesDigest: expectedCapabilitiesDigest(),
+		ProbeErrors: []string{}, CredentialVerified: true, LiveProtocolVerified: true, EventContract: conformanceEventContract,
 	}
 }
 
@@ -419,11 +442,7 @@ func TestManagedConfigDirResolvesSymlinkedControlRoot(t *testing.T) {
 }
 
 func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
-	body := emitLines(
-		`{"type":"session","id":"sess-1"}`,
-		`{"type":"usage","input_tokens":10,"output_tokens":5}`,
-		`{"type":"result","status":"success"}`,
-	)
+	body := successEvents("provider/model")
 	fixture := newRunFixture(t, supportedBinary, body)
 	record, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if err != nil {
@@ -443,7 +462,7 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 		t.Fatalf("invalid times: %s %s", result.StartedAt, result.CompletedAt)
 	}
 	transcript, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qoder-transcript.jsonl"))
-	if err != nil || !strings.Contains(string(transcript), `"id":"sess-1"`) {
+	if err != nil || !strings.Contains(string(transcript), `"session_id":"sess-1"`) {
 		t.Fatalf("transcript = %s err=%v", transcript, err)
 	}
 	metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qoder-transcript-meta.json"))
@@ -475,6 +494,80 @@ func TestRunRejectsExecutableDriftAfterConformance(t *testing.T) {
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("drifted executable launched")
 	}
+}
+
+func TestLaunchSnapshotSurvivesConfiguredExecutableReplacement(t *testing.T) {
+	oldMarker, newMarker := filepath.Join(t.TempDir(), "old"), filepath.Join(t.TempDir(), "new")
+	executable := fakeExecutable(t, supportedBinary, "touch "+shellQuote(oldMarker))
+	identity := executableIdentity{path: executable, version: supportedBinary}
+	var err error
+	identity.digest, err = digestFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, cleanup, err := snapshotExecutable(context.Background(), identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if err := os.WriteFile(executable, []byte(fakeScript(supportedBinary, "touch "+shellQuote(newMarker))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command(snapshot).Run(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldMarker); err != nil {
+		t.Fatalf("immutable launch object did not run inspected bytes: %v", err)
+	}
+	if _, err := os.Stat(newMarker); !os.IsNotExist(err) {
+		t.Fatal("replacement executable was launched")
+	}
+}
+
+func TestRunKeepsEvidenceOnTrustedDirectoryHandleAfterRenameAndSymlink(t *testing.T) {
+	body := successEvents("provider/model") + `
+marshal_root=$(dirname "$(dirname "$HOME")")
+mv "$marshal_root/output" "$marshal_root/output-held"
+mkdir -p "$PWD/escaped-output"
+ln -s "$PWD/escaped-output" "$marshal_root/output"`
+	fixture := newRunFixture(t, supportedBinary, body)
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if failure, ok := port.AsAdapterFailure(err); !ok || failure.Kind != port.FailureKindProtocolInvalid {
+		t.Fatalf("error = %v, want typed protocol-invalid boundary failure", err)
+	}
+	for _, name := range []string{"qoder-transcript.jsonl", "qoder-stderr.log", "qoder-transcript-meta.json"} {
+		if _, err := os.Stat(filepath.Join(fixture.controlRoot, "output-held", name)); err != nil {
+			t.Fatalf("trusted evidence %s missing after directory replacement: %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(fixture.worktree, "escaped-output", name)); !os.IsNotExist(err) {
+			t.Fatalf("evidence %s escaped through replacement symlink", name)
+		}
+	}
+}
+
+func TestRunBindsReportedModelToSystemEvent(t *testing.T) {
+	t.Run("requested mismatch", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, successEvents("different/model"))
+		_, err := fixture.adapter.Run(context.Background(), fixture.request)
+		if !errors.Is(err, ErrProtocol) {
+			t.Fatalf("error = %v, want model mismatch protocol failure", err)
+		}
+	})
+	t.Run("unspecified uses observed", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedBinary, successEvents("actual/model"))
+		writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{}})
+		record, err := fixture.adapter.Run(context.Background(), fixture.request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result declaredResult
+		if err := json.Unmarshal(record.Data, &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.Adapter.Model != "actual/model" {
+			t.Fatalf("model = %q, want observed system model", result.Adapter.Model)
+		}
+	})
 }
 
 func TestRunRejectsStaleResultLeafBeforeLaunch(t *testing.T) {
@@ -524,7 +617,7 @@ func TestRunRejectsNamedWorkerToolsBeforeLaunch(t *testing.T) {
 func TestRunClearsWorkerClaimedModelWhenTaskSpecOmitsModel(t *testing.T) {
 	claimed := validDeclaredResult("/worker/claim")
 	claimed["adapter"].(map[string]any)["model"] = "worker-secret-model"
-	fixture := newRunFixtureWithResult(t, supportedBinary, emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`), claimed)
+	fixture := newRunFixtureWithResult(t, supportedBinary, successEvents("provider/model"), claimed)
 	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{}})
 	record, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if err != nil {
@@ -575,7 +668,7 @@ func TestRunRejectsMalformedJSONLAndIdentityMismatch(t *testing.T) {
 		}
 	})
 	t.Run("identity", func(t *testing.T) {
-		body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`)
+		body := successEvents("provider/model")
 		data := validDeclaredResult("/worker/claim")
 		data["taskId"] = "OTHER"
 		fixture := newRunFixtureWithResult(t, supportedBinary, body, data)
@@ -592,7 +685,7 @@ func TestRunRejectsMalformedJSONLAndIdentityMismatch(t *testing.T) {
 
 func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
 	secrets := []string{"qoder-stderr-secret-sentinel-0001", "qoder-stderr-bearer-sentinel-0002", "qoder-stderr-content-sentinel-0003"}
-	body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`)
+	body := successEvents("provider/model")
 	for _, secret := range secrets {
 		body += "\nprintf '%s\\n' " + shellQuote(secret) + " >&2"
 	}

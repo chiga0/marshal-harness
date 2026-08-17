@@ -1,6 +1,7 @@
 package qoder
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,15 +14,15 @@ import (
 var classifyNow = time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
 
 func TestDecodeEventLineExtractsSessionUsageAndTerminal(t *testing.T) {
-	stream := `{"type":"session","id":"sess-1"}
-{"type":"usage","input_tokens":10,"output_tokens":5}
-{"type":"result","status":"success"}
-`
-	result := decodeTranscript([]byte(stream))
+	stream, err := os.ReadFile("testdata/qoder-1.1.23-success.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := decodeTranscript(stream)
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if result.sessionID != "sess-1" || result.eventCount != 3 || result.inputTokens != 10 || result.outputTokens != 5 {
+	if result.sessionID != "sess-1" || result.model != "provider/model" || result.assistantCount != 1 || result.eventCount != 3 || result.inputTokens != 10 || result.outputTokens != 5 {
 		t.Fatalf("result = %+v", result)
 	}
 	if !result.terminal.seen || !result.terminal.success {
@@ -30,8 +31,8 @@ func TestDecodeEventLineExtractsSessionUsageAndTerminal(t *testing.T) {
 }
 
 func TestDecodeEventLineRecordsErrorTerminalCode(t *testing.T) {
-	stream := `{"type":"session","id":"sess-1"}
-{"type":"result","status":"error","code":"connection_failed"}
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"connection_failed"}
 `
 	result := decodeTranscript([]byte(stream))
 	if result.err != nil {
@@ -58,24 +59,32 @@ func TestDecodeEventLineRejectsMalformedAndBlank(t *testing.T) {
 
 func TestDecodeEventLineRejectsDuplicateAndUnrecognizedTerminal(t *testing.T) {
 	t.Run("duplicate", func(t *testing.T) {
-		stream := `{"type":"session","id":"sess-1"}
-{"type":"result","status":"success"}
-{"type":"result","status":"success"}
+		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model"}
+{"type":"assistant","message":{}}
+{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
+{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
 `
 		result := decodeTranscript([]byte(stream))
-		if result.err == nil || !strings.Contains(result.err.Error(), "duplicate") {
-			t.Fatalf("error = %v, want duplicate terminal error", result.err)
+		if result.err == nil || !strings.Contains(result.err.Error(), "follows terminal") {
+			t.Fatalf("error = %v, want event-after-terminal error", result.err)
 		}
 	})
 	t.Run("unrecognized-status", func(t *testing.T) {
-		stream := `{"type":"session","id":"sess-1"}
-{"type":"result","status":"weird"}
+		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model"}
+{"type":"result","subtype":"success","is_error":true,"terminal_reason":"weird"}
 `
 		result := decodeTranscript([]byte(stream))
-		if result.err == nil || !strings.Contains(result.err.Error(), "unrecognized status") {
-			t.Fatalf("error = %v, want unrecognized status error", result.err)
+		if result.err == nil || !strings.Contains(result.err.Error(), "contradictory") {
+			t.Fatalf("error = %v, want contradictory terminal error", result.err)
 		}
 	})
+}
+
+func TestDecodeEventLineRejectsFabricatedLegacyContract(t *testing.T) {
+	result := decodeTranscript([]byte("{\"type\":\"session\",\"id\":\"sess-1\"}\n"))
+	if result.err == nil {
+		t.Fatal("legacy fabricated session event was accepted")
+	}
 }
 
 func TestClassifyTerminalFailureFollowsClosedCodeTable(t *testing.T) {

@@ -24,22 +24,19 @@ const (
 	adapterVersion = "0.1.0"
 	// supportedBinary is the minimum verified patch in the compatible 1.1.x
 	// line. Other minor/major lines and older patches fail closed.
-	supportedBinary      = "1.1.23"
-	supportedBinaryRange = ">=1.1.23 <1.2.0"
-	maxPromptBytes       = 256 << 10
-	maxResultBytes       = 4 << 20
-	stderrLimit          = 64 << 10
-	probeTimeout         = 10 * time.Second
+	supportedBinary          = "1.1.23"
+	supportedBinaryRange     = ">=1.1.23 <1.2.0"
+	maxPromptBytes           = 256 << 10
+	maxResultBytes           = 4 << 20
+	stderrLimit              = 64 << 10
+	probeTimeout             = 10 * time.Second
+	conformanceEventContract = "qoder-stream-json-1.1-v1"
 
 	// conformancePendingReason is the fixed, searchable reason Probe reports
-	// "unsupported" until a real Qoder CLI live conformance verifies the exact
-	// non-interactive argv and JSONL event contract. The hermetic fake
-	// fixtures in this package freeze the protocol but never flip this gate;
-	// a real capability/live conformance run is the only thing allowed to
-	// lift it. --permission-mode and --setting-sources are frozen from the
-	// real 1.1.23 help, while --output-format and the JSONL event schema stay
-	// unverified until that live conformance captures the real CLI output.
-	conformancePendingReason = "live conformance pending: --output-format and the JSONL event schema are unverified against the real Qoder CLI"
+	// "unsupported" until an independent, credentialed live run verifies the
+	// frozen 1.1.23 argv and stream-json event contract. Hermetic fixtures and
+	// unauthenticated help/version probes never flip this gate.
+	conformancePendingReason = "credentialed live conformance pending: independent runner evidence is not bound to the Qoder CLI identity and stream-json contract"
 )
 
 var (
@@ -124,19 +121,8 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
 		"executable": identity.path, "executableDigest": identity.digest,
 		"binaryVersion": identity.version, "probeStatus": status,
-		"capabilities": map[string]any{
-			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
-			"sessionPolicies": []string{"ephemeral"}, "modelSelection": true,
-			"executionProfiles": []string{"workspace-write"}, "nativeBudgets": []string{},
-			"processTreeCancellation": true,
-			"notes": []string{
-				"由 Marshal 实施 wall-time 与 output-bytes 上限。",
-				"Qoder 非交互模式不是恶意代码隔离边界。",
-				"执行环境被完整替换：HOME 绑定 Marshal 管理的独立 config dir，user/project/local setting sources 被禁用。",
-				"仅当 live conformance 记录与当前 realpath、digest、version 精确一致时才声明 supported。",
-			},
-		},
-		"probeErrors": probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
+		"capabilities": expectedCapabilities(),
+		"probeErrors":  probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
 	data, err := json.Marshal(snapshot)
 	if err != nil {
@@ -146,6 +132,26 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		return domain.Record{}, fmt.Errorf("validate CapabilitySnapshot: %w", err)
 	}
 	return domain.Record{Kind: domain.KindCapabilitySnapshot, Data: data}, nil
+}
+
+func expectedCapabilities() map[string]any {
+	return map[string]any{
+		"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
+		"sessionPolicies": []string{"ephemeral"}, "modelSelection": true,
+		"executionProfiles": []string{"workspace-write"}, "nativeBudgets": []string{},
+		"processTreeCancellation": true,
+		"notes": []string{
+			"由 Marshal 实施 wall-time 与 output-bytes 上限。",
+			"Qoder 非交互模式不是恶意代码隔离边界。",
+			"执行环境被完整替换：HOME 绑定 Marshal 管理的独立 config dir，user/project/local setting sources 被禁用。",
+			"仅当 live conformance 记录与当前 realpath、digest、version 精确一致时才声明 supported。",
+		},
+	}
+}
+
+func expectedCapabilitiesDigest() string {
+	data, _ := json.Marshal(expectedCapabilities())
+	return digestBytes(data)
 }
 
 type executableIdentity struct{ path, digest, version string }
@@ -166,30 +172,32 @@ func (a *Adapter) isConformant(identity executableIdentity) bool {
 	return a.conformance != nil && *a.conformance == identity
 }
 
-// BindConformance binds an independently produced, schema-valid supported
-// CapabilitySnapshot to the exact current executable identity. It does not
-// run conformance itself; the shared conformance runner remains the authority
-// that may supply the supported record. A stale or fabricated mismatch never
-// changes adapter state.
-func (a *Adapter) BindConformance(ctx context.Context, record domain.Record) error {
-	if record.Kind != domain.KindCapabilitySnapshot {
-		return errors.New("conformance record must be a CapabilitySnapshot")
+// ConformanceReceipt is produced by an independent credentialed runner. A
+// CapabilitySnapshot is deliberately not accepted: changing Probe JSON can
+// never authorize execution. EvidenceDigest binds the external evidence,
+// while the remaining fields bind runner provenance and the complete adapter
+// contract that was exercised.
+type ConformanceReceipt struct {
+	RunnerID, RunnerVersion, EvidenceDigest  string
+	ObservedAt                               time.Time
+	AdapterVersion                           string
+	Executable, ExecutableDigest             string
+	BinaryVersion                            string
+	CapabilitiesDigest                       string
+	ProbeErrors                              []string
+	CredentialVerified, LiveProtocolVerified bool
+	EventContract                            string
+}
+
+func (a *Adapter) BindConformance(ctx context.Context, receipt ConformanceReceipt) error {
+	if receipt.RunnerID == "" || receipt.RunnerID == adapterID || receipt.RunnerVersion == "" || receipt.ObservedAt.IsZero() {
+		return errors.New("conformance receipt lacks independent runner provenance")
 	}
-	if err := a.validator.Validate(domain.KindCapabilitySnapshot, record.Data); err != nil {
-		return fmt.Errorf("validate conformance CapabilitySnapshot: %w", err)
+	if !validSHA256Digest(receipt.EvidenceDigest) {
+		return errors.New("conformance receipt has an invalid evidence digest")
 	}
-	var snapshot struct {
-		AdapterID        string `json:"adapterId"`
-		Executable       string `json:"executable"`
-		ExecutableDigest string `json:"executableDigest"`
-		BinaryVersion    string `json:"binaryVersion"`
-		ProbeStatus      string `json:"probeStatus"`
-	}
-	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
-		return fmt.Errorf("decode conformance CapabilitySnapshot: %w", err)
-	}
-	if snapshot.AdapterID != adapterID || snapshot.ProbeStatus != "supported" {
-		return errors.New("conformance CapabilitySnapshot is not supported qoder")
+	if receipt.AdapterVersion != adapterVersion || receipt.CapabilitiesDigest != expectedCapabilitiesDigest() || receipt.ProbeErrors == nil || len(receipt.ProbeErrors) != 0 || !receipt.CredentialVerified || !receipt.LiveProtocolVerified || receipt.EventContract != conformanceEventContract {
+		return errors.New("conformance receipt does not bind the complete verified adapter contract")
 	}
 	identity, err := a.inspect(ctx)
 	if err != nil {
@@ -198,7 +206,7 @@ func (a *Adapter) BindConformance(ctx context.Context, record domain.Record) err
 	if !isSupportedBinaryVersion(identity.version) {
 		return fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
 	}
-	if snapshot.Executable != identity.path || snapshot.ExecutableDigest != identity.digest || snapshot.BinaryVersion != identity.version {
+	if receipt.Executable != identity.path || receipt.ExecutableDigest != identity.digest || receipt.BinaryVersion != identity.version {
 		return fmt.Errorf("%w: conformance identity does not match current executable", ErrIdentityDrift)
 	}
 	a.mu.Lock()
@@ -401,6 +409,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := a.verifyExecutionIdentity(identity); err != nil {
 		return domain.Record{}, err
 	}
+	launchExecutable, cleanupExecutable, err := snapshotExecutable(ctx, identity)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	defer cleanupExecutable()
 	worktree, err := filepath.EvalSymlinks(request.WorktreePath)
 	if err != nil {
 		return domain.Record{}, fmt.Errorf("resolve worktree: %w", err)
@@ -445,38 +458,60 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := runCtx.Err(); err != nil {
 		return domain.Record{}, err
 	}
-	if err := leafMustBeAbsent(resultPath, "result"); err != nil {
-		return domain.Record{}, err
-	}
-	claimedResult, err := claimLeaf(resultPath, "result")
+	trustedOutput, err := openTrustedOutputDirectory(outputDir)
 	if err != nil {
 		return domain.Record{}, err
 	}
-	observation, err := a.runLocalAttempt(runCtx, identity.path, buildArgs(task.model, configDir, worktree, task.disableAllTools), prompt, worktree, workerEnvironment(worktree, configDir), int64(request.MaxOutputBytes))
+	defer trustedOutput.close()
+	claim := func(name, kind string) (*claimedLeaf, error) { return trustedOutput.claim(name, kind) }
+	claimedResult, err := claim(filepath.Base(resultPath), "result")
+	if err != nil {
+		return domain.Record{}, err
+	}
+	defer claimedResult.close()
+	transcriptLeaf, err := claim("qoder-transcript.jsonl", "transcript")
+	if err != nil {
+		return domain.Record{}, err
+	}
+	defer transcriptLeaf.close()
+	stderrLeaf, err := claim("qoder-stderr.log", "stderr")
+	if err != nil {
+		return domain.Record{}, err
+	}
+	defer stderrLeaf.close()
+	metadataLeaf, err := claim("qoder-transcript-meta.json", "metadata")
+	if err != nil {
+		return domain.Record{}, err
+	}
+	defer metadataLeaf.close()
+	if err := trustedOutput.dir.Sync(); err != nil {
+		return domain.Record{}, err
+	}
+	observation, err := a.runLocalAttempt(runCtx, launchExecutable, buildArgs(task.model, configDir, worktree, task.disableAllTools), prompt, worktree, workerEnvironment(worktree, configDir), int64(request.MaxOutputBytes))
 	if err != nil {
 		return domain.Record{}, err
 	}
 	capture := observation.capture
-	if err := atomicWrite(filepath.Join(outputDir, "qoder-transcript.jsonl"), capture.raw); err != nil {
+	if err := transcriptLeaf.write(capture.raw); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript: %w", err)
 	}
-	if err := atomicWrite(filepath.Join(outputDir, "qoder-stderr.log"), observation.stderr.data); err != nil {
+	if err := stderrLeaf.write(observation.stderr.data); err != nil {
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
 	resolved := resolveAttemptFailure(capture, observation, runCtx, a.now())
+	if bindingErr := trustedOutput.verifyPathBinding(); bindingErr != nil {
+		resolved = qoderProtocolInvalid("output directory binding changed during execution", a.now())
+	}
 	var declared declaredResult
 	if resolved == nil {
-		var safeResultPath string
-		safeResultPath, err = existingRegularLeaf(controlRoot, resultPath, "result", claimedResult)
-		if err != nil {
-			resolved = newQoderFailure(port.FailureKindResultMissing, "WorkerResult declaration missing or unreadable", a.now())
-		} else {
-			resultPath = safeResultPath
-			declared, resolved = resolveDeclaredResult(resultPath, request, capture.sessionID, a.validator, a.now())
-		}
+		declared, resolved = resolveDeclaredResultLeaf(claimedResult, request, capture.sessionID, a.validator, a.now())
+	}
+	if resolved == nil && task.model != "" && capture.model != task.model {
+		resolved = qoderProtocolInvalid("system model does not match requested model", a.now())
 	}
 	metadata, err := json.MarshalIndent(map[string]any{
-		"sessionId": capture.sessionID, "eventCount": capture.eventCount,
+		"sessionId": capture.sessionID, "model": capture.model,
+		"eventCount": capture.eventCount, "assistantMessages": capture.assistantCount,
 		"inputTokens": capture.inputTokens, "outputTokens": capture.outputTokens,
 		"capturedBytes": len(capture.raw), "outputTruncated": capture.limitExceeded,
 		"exitCode": observation.exitCode, "signal": observation.signal,
@@ -487,7 +522,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if err := atomicWrite(filepath.Join(outputDir, "qoder-transcript-meta.json"), append(metadata, '\n')); err != nil {
+	if err := metadataLeaf.write(append(metadata, '\n')); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript metadata: %w", err)
 	}
 	if resolved != nil {
@@ -496,7 +531,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	declared.Adapter.Executable, declared.Adapter.Version = identity.path, identity.version
 	declared.Session = &declaredSession{ID: capture.sessionID, Resumable: false}
 	declared.StartedAt, declared.CompletedAt = observation.startedAt, observation.completedAt
-	declared.Adapter.Model = task.model
+	declared.Adapter.Model = capture.model
 	if capture.inputTokens > 0 || capture.outputTokens > 0 {
 		usage := map[string]any{"inputTokens": capture.inputTokens, "outputTokens": capture.outputTokens}
 		if usageData, err := json.Marshal(usage); err == nil {
@@ -510,7 +545,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := a.validator.Validate(domain.KindWorkerResult, data); err != nil {
 		return domain.Record{}, fmt.Errorf("validate normalized WorkerResult: %w", err)
 	}
-	if err := atomicWrite(resultPath, append(data, '\n')); err != nil {
+	if err := claimedResult.write(append(data, '\n')); err != nil {
 		return domain.Record{}, fmt.Errorf("write normalized WorkerResult: %w", err)
 	}
 	return domain.Record{Kind: domain.KindWorkerResult, Data: data}, nil
@@ -540,18 +575,21 @@ func resolveAttemptFailure(capture captureResult, observation attemptObservation
 	if capture.sessionID == "" {
 		return qoderProtocolInvalid("session id is missing", now)
 	}
+	if capture.model == "" {
+		return qoderProtocolInvalid("system model is missing", now)
+	}
 	if !capture.terminal.seen {
 		return qoderProtocolInvalid("terminal result event is missing", now)
 	}
 	return nil
 }
 
-// resolveDeclaredResult reads and validates the declared WorkerResult and
-// returns a typed failure when the declaration is missing, unreadable,
-// schema-invalid, or carries an identity/session that does not match the
-// request and transcript.
-func resolveDeclaredResult(resultPath string, request workerRequest, sessionID string, validator *contract.Validator, now time.Time) (declaredResult, error) {
-	declared, err := readDeclaredResult(resultPath, int64(maxResultBytes), validator)
+func resolveDeclaredResultLeaf(leaf *claimedLeaf, request workerRequest, sessionID string, validator *contract.Validator, now time.Time) (declaredResult, error) {
+	data, err := leaf.readBounded(int64(maxResultBytes))
+	if err != nil {
+		return declaredResult{}, newQoderFailure(port.FailureKindResultMissing, "WorkerResult declaration missing or unreadable", now)
+	}
+	declared, err := decodeDeclaredResult(data, validator)
 	if err != nil {
 		return declaredResult{}, newQoderFailure(port.FailureKindResultMissing, "WorkerResult declaration missing or unreadable", now)
 	}
@@ -611,11 +649,7 @@ type declaredSession struct {
 	Resumable bool   `json:"resumable"`
 }
 
-func readDeclaredResult(path string, limit int64, validator *contract.Validator) (declaredResult, error) {
-	data, err := readBounded(path, limit)
-	if err != nil {
-		return declaredResult{}, fmt.Errorf("read WorkerResult declaration: %w", err)
-	}
+func decodeDeclaredResult(data []byte, validator *contract.Validator) (declaredResult, error) {
 	if err := validator.Validate(domain.KindWorkerResult, data); err != nil {
 		return declaredResult{}, fmt.Errorf("validate WorkerResult declaration: %w", err)
 	}

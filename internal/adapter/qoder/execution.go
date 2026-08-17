@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/adapter/denials"
+	"golang.org/x/sys/unix"
 )
 
 // attemptObservation is the bounded outcome of executing one qoder attempt:
@@ -382,61 +383,6 @@ func preparePrivateDirectory(root, target string) (string, error) {
 	return real, nil
 }
 
-func leafMustBeAbsent(path, kind string) error {
-	info, err := os.Lstat(path)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("attempt %s leaf is a symlink and must not pre-exist", kind)
-		}
-		return fmt.Errorf("attempt %s leaf unexpectedly pre-exists", kind)
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect attempt %s leaf: %w", kind, err)
-	}
-	return nil
-}
-
-func claimLeaf(path, kind string) (os.FileInfo, error) {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("claim attempt %s leaf: %w", kind, err)
-	}
-	defer file.Close()
-	if err := file.Sync(); err != nil {
-		return nil, fmt.Errorf("sync attempt %s leaf: %w", kind, err)
-	}
-	fileInfo, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("stat claimed attempt %s leaf: %w", kind, err)
-	}
-	linkInfo, err := os.Lstat(path)
-	if err != nil || !linkInfo.Mode().IsRegular() || !os.SameFile(fileInfo, linkInfo) {
-		return nil, fmt.Errorf("attempt %s leaf was replaced after claim", kind)
-	}
-	return fileInfo, nil
-}
-
-func existingRegularLeaf(root, path, kind string, claimed os.FileInfo) (string, error) {
-	if !pathWithin(root, path) {
-		return "", fmt.Errorf("attempt %s leaf escapes control root", kind)
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", fmt.Errorf("inspect attempt %s leaf: %w", kind, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", fmt.Errorf("attempt %s leaf must be a regular non-symlink file", kind)
-	}
-	if claimed != nil && !os.SameFile(claimed, info) {
-		return "", fmt.Errorf("attempt %s leaf was replaced after claim", kind)
-	}
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil || real != path || !pathWithin(root, real) {
-		return "", fmt.Errorf("attempt %s leaf realpath is outside its claimed boundary", kind)
-	}
-	return real, nil
-}
-
 func pathWithin(root, path string) bool {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
@@ -481,6 +427,162 @@ func digestFile(path string) (string, error) {
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+func digestBytes(data []byte) string {
+	hash := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(hash[:])
+}
+
+func validSHA256Digest(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+64 {
+		return false
+	}
+	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
+	return err == nil
+}
+
+// snapshotExecutable copies the inspected executable into a private immutable
+// launch object, then revalidates both digest and version against the inspected
+// identity. Run executes only this object, closing inspect-to-Start replacement
+// races on the configured path.
+func snapshotExecutable(ctx context.Context, identity executableIdentity) (string, func(), error) {
+	root, err := os.MkdirTemp("", "marshal-qoder-exec-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(root) }
+	if err := os.Chmod(root, 0o700); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	source, err := os.Open(identity.path)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	defer source.Close()
+	path := filepath.Join(root, "qodercli")
+	target, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o500)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	_, copyErr := io.Copy(target, source)
+	syncErr := target.Sync()
+	closeErr := target.Close()
+	if copyErr != nil || syncErr != nil || closeErr != nil {
+		cleanup()
+		return "", nil, errors.Join(copyErr, syncErr, closeErr)
+	}
+	if err := os.Chmod(path, 0o500); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	digest, err := digestFile(path)
+	if err != nil || digest != identity.digest {
+		cleanup()
+		return "", nil, fmt.Errorf("%w: executable changed before immutable launch snapshot", ErrIdentityDrift)
+	}
+	version, err := readBinaryVersion(ctx, path)
+	if err != nil || version != identity.version {
+		cleanup()
+		return "", nil, fmt.Errorf("%w: launch snapshot version does not match inspected identity", ErrIdentityDrift)
+	}
+	return path, cleanup, nil
+}
+
+type trustedOutputDirectory struct {
+	path string
+	dir  *os.File
+	info os.FileInfo
+}
+
+type claimedLeaf struct {
+	name string
+	file *os.File
+	info os.FileInfo
+}
+
+func openTrustedOutputDirectory(path string) (*trustedOutputDirectory, error) {
+	dir, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := dir.Stat()
+	linkInfo, linkErr := os.Lstat(path)
+	if err != nil || linkErr != nil || !info.IsDir() || linkInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(info, linkInfo) {
+		dir.Close()
+		return nil, errors.New("output directory changed while acquiring trusted handle")
+	}
+	return &trustedOutputDirectory{path: path, dir: dir, info: info}, nil
+}
+
+func (directory *trustedOutputDirectory) close() error { return directory.dir.Close() }
+
+func (directory *trustedOutputDirectory) verifyPathBinding() error {
+	info, err := os.Lstat(directory.path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || !os.SameFile(info, directory.info) {
+		return errors.New("output directory path no longer names the trusted directory")
+	}
+	return nil
+}
+
+func (directory *trustedOutputDirectory) claim(name, kind string) (*claimedLeaf, error) {
+	if name == "" || name == "." || filepath.Base(name) != name {
+		return nil, fmt.Errorf("invalid attempt %s leaf name", kind)
+	}
+	fd, err := unix.Openat(int(directory.dir.Fd()), name, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return nil, fmt.Errorf("attempt %s leaf unexpectedly pre-exists", kind)
+		}
+		return nil, fmt.Errorf("claim attempt %s leaf: %w", kind, err)
+	}
+	file := os.NewFile(uintptr(fd), name)
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		file.Close()
+		return nil, fmt.Errorf("stat claimed attempt %s leaf: %w", kind, err)
+	}
+	return &claimedLeaf{name: name, file: file, info: info}, nil
+}
+
+func (leaf *claimedLeaf) close() error { return leaf.file.Close() }
+
+func (leaf *claimedLeaf) write(data []byte) error {
+	info, err := leaf.file.Stat()
+	if err != nil || !os.SameFile(info, leaf.info) {
+		return errors.New("claimed output leaf identity changed")
+	}
+	if err := leaf.file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := leaf.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := leaf.file.Write(data); err != nil {
+		return err
+	}
+	return leaf.file.Sync()
+}
+
+func (leaf *claimedLeaf) readBounded(limit int64) ([]byte, error) {
+	info, err := leaf.file.Stat()
+	if err != nil || !os.SameFile(info, leaf.info) {
+		return nil, errors.New("claimed output leaf identity changed")
+	}
+	if _, err := leaf.file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(leaf.file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, errors.New("file exceeds byte limit")
+	}
+	return data, nil
+}
+
 func readBounded(path string, limit int64) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -495,42 +597,6 @@ func readBounded(path string, limit int64) ([]byte, error) {
 		return nil, errors.New("file exceeds byte limit")
 	}
 	return data, nil
-}
-
-func atomicWrite(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".qoder-*.tmp")
-	if err != nil {
-		return err
-	}
-	name := file.Name()
-	defer os.Remove(name)
-	if err := file.Chmod(0o600); err != nil {
-		file.Close()
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(name, path); err != nil {
-		return err
-	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
 }
 
 func terminateGroup(command *exec.Cmd) {

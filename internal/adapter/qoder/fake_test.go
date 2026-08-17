@@ -24,11 +24,7 @@ import (
 // runs end-to-end without any real provider or network. Probe stays
 // fail-closed at "unsupported" because live conformance is still pending.
 func TestFakeExecutableConformsToQoderCLI(t *testing.T) {
-	body := emitLines(
-		`{"type":"session","id":"sess-1"}`,
-		`{"type":"usage","input_tokens":10,"output_tokens":5}`,
-		`{"type":"result","status":"success"}`,
-	)
+	body := successEvents("provider/model")
 	executable := fakeExecutable(t, supportedBinary, body)
 
 	version, digestValue, err := Identify(executable)
@@ -92,7 +88,7 @@ func TestFakeExecutableReportsBareVersion(t *testing.T) {
 // `run --json --non-interactive --sandbox workspace-write` construct.
 func TestRunPassesFrozenArgvToWorker(t *testing.T) {
 	body := "cat > stdin-dump.txt\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > argv-dump.txt\n" +
-		emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`)
+		successEvents("provider/model")
 	fixture := newRunFixture(t, supportedBinary, body)
 	promptSentinel := "qoder-prompt-secret-sentinel-0001"
 	if err := os.WriteFile(filepath.Join(fixture.controlRoot, "input", "prompt.md"), []byte(promptSentinel), 0o600); err != nil {
@@ -128,7 +124,7 @@ func TestRunPassesFrozenArgvToWorker(t *testing.T) {
 }
 
 func TestRunPermanentFailureReturnsDoNotRetry(t *testing.T) {
-	body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"error","code":"mystery_code"}`)
+	body := errorEvents("mystery_code")
 	fixture := newRunFixture(t, supportedBinary, body)
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	failure, ok := port.AsAdapterFailure(err)
@@ -141,7 +137,7 @@ func TestRunPermanentFailureReturnsDoNotRetry(t *testing.T) {
 }
 
 func TestRunRetriableFailureReturnsRetryable(t *testing.T) {
-	body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"error","code":"connection_failed"}`)
+	body := errorEvents("connection_failed")
 	fixture := newRunFixture(t, supportedBinary, body)
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	failure, ok := port.AsAdapterFailure(err)
@@ -151,7 +147,7 @@ func TestRunRetriableFailureReturnsRetryable(t *testing.T) {
 }
 
 func TestRunResultMissingReturnsRetryable(t *testing.T) {
-	body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`) + "\nexit 0"
+	body := successEvents("provider/model") + "\nexit 0"
 	fixture := newRunFixtureWithResult(t, supportedBinary, body, nil)
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	failure, ok := port.AsAdapterFailure(err)
@@ -162,7 +158,7 @@ func TestRunResultMissingReturnsRetryable(t *testing.T) {
 
 func TestRunEnforcesOutputCap(t *testing.T) {
 	large := strings.Repeat("x", 1800)
-	body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"usage","input_tokens":1,"output_tokens":1,"extra":"`+large+`"}`, `{"type":"result","status":"success"}`)
+	body := emitLines(`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model"}`, `{"type":"assistant","session_id":"sess-1","message":{"extra":"`+large+`"}}`, `{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","session_id":"sess-1"}`)
 	fixture := newRunFixture(t, supportedBinary, body)
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrOutputLimit) {
 		t.Fatalf("error = %v", err)
@@ -225,7 +221,7 @@ func TestRunSensitiveEnvironmentNotInherited(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "qoder-openai-secret-0002")
 	t.Setenv("HOME", "/home/qoder-secret-home")
 	t.Setenv("SSH_AUTH_SOCK", "/tmp/qoder-ssh-secret")
-	body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`) + "\nenv > env-dump.txt"
+	body := successEvents("provider/model") + "\nenv > env-dump.txt"
 	fixture := newRunFixture(t, supportedBinary, body)
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
 		t.Fatal(err)
@@ -267,7 +263,7 @@ func TestRunConfigIsolationHidesSystemHomeConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", systemHome)
-	body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`) + "\nenv > env-dump.txt\nprintf '%s' \"$HOME\" > home-dump.txt"
+	body := successEvents("provider/model") + "\nenv > env-dump.txt\nprintf '%s' \"$HOME\" > home-dump.txt"
 	fixture := newRunFixture(t, supportedBinary, body)
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
 		t.Fatal(err)
@@ -296,7 +292,7 @@ func TestRunConfigIsolationHidesSystemHomeConfig(t *testing.T) {
 // account home via os.homedir().
 func TestRunHomeMissingStillBindsManagedConfigDir(t *testing.T) {
 	t.Setenv("HOME", "")
-	body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`) + "\nprintf '%s' \"$HOME\" > home-dump.txt"
+	body := successEvents("provider/model") + "\nprintf '%s' \"$HOME\" > home-dump.txt"
 	fixture := newRunFixture(t, supportedBinary, body)
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
 		t.Fatal(err)
@@ -337,7 +333,7 @@ func TestRunConfigDirSymlinkFailsClosedBeforeLaunch(t *testing.T) {
 // project or local settings) and that HOME is rebound to the managed config
 // dir rather than the ambient account home.
 func TestRunSettingSourcesDisabledHidesProjectAndLocalBait(t *testing.T) {
-	body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`) + "\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > argv-dump.txt\nprintf '%s' \"$HOME\" > home-dump.txt"
+	body := successEvents("provider/model") + "\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > argv-dump.txt\nprintf '%s' \"$HOME\" > home-dump.txt"
 	fixture := newRunFixture(t, supportedBinary, body)
 	// Plant a project-level bait config inside the worktree that a real CLI
 	// would read unless setting sources are disabled.
@@ -396,6 +392,21 @@ func emitLines(lines ...string) string {
 		quoted[i] = shellQuote(line)
 	}
 	return "printf '%s\\n' " + strings.Join(quoted, " ")
+}
+
+func successEvents(model string) string {
+	return emitLines(
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"`+model+`"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[]}}`,
+		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":5}}`,
+	)
+}
+
+func errorEvents(reason string) string {
+	return emitLines(
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model"}`,
+		`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"`+reason+`","usage":{"input_tokens":1,"output_tokens":0}}`,
+	)
 }
 
 func waitForFile(t *testing.T, path string, timeout time.Duration) {

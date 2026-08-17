@@ -13,21 +13,23 @@ import (
 )
 
 // captureResult aggregates the bounded, decoded JSONL transcript of one
-// non-interactive attempt. The event schema below (session, usage, and a
-// single terminal result) is the frozen working contract the adapter consumes;
-// it stays fail-closed at "unsupported" until a live conformance run captures
-// the real Qoder CLI output and confirms --output-format and the event schema.
+// non-interactive attempt. The fields mirror Qoder 1.1.23 stream-json frames:
+// system.session_id/model, assistant.message, and result subtype/is_error/
+// terminal_reason/usage. The adapter still stays fail-closed at unsupported
+// until an independent credentialed live run binds a conformance receipt.
 // Provider free text such as item content never reaches authorization or
 // budgets; it survives only inside the raw transcript evidence.
 type captureResult struct {
-	raw           []byte
-	sessionID     string
-	eventCount    int
-	inputTokens   int
-	outputTokens  int
-	terminal      terminalOutcome
-	limitExceeded bool
-	err           error
+	raw            []byte
+	sessionID      string
+	model          string
+	eventCount     int
+	assistantCount int
+	inputTokens    int
+	outputTokens   int
+	terminal       terminalOutcome
+	limitExceeded  bool
+	err            error
 }
 
 // terminalOutcome is the single terminal `result` event that ends a Qoder
@@ -43,12 +45,17 @@ type terminalOutcome struct {
 // are ignored on purpose; protocol decisions rely solely on the event type,
 // session id, usage numbers, and the terminal result status/code.
 type qoderEvent struct {
-	Type         string `json:"type"`
-	ID           string `json:"id"`
-	Status       string `json:"status"`
-	Code         string `json:"code"`
-	InputTokens  int    `json:"input_tokens"`
-	OutputTokens int    `json:"output_tokens"`
+	Type           string          `json:"type"`
+	Subtype        string          `json:"subtype"`
+	SessionID      string          `json:"session_id"`
+	Model          string          `json:"model"`
+	Message        json.RawMessage `json:"message"`
+	IsError        *bool           `json:"is_error"`
+	TerminalReason string          `json:"terminal_reason"`
+	Usage          struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
 }
 
 // qoderTerminalCodes maps a qoder terminal `code` literal to a closed
@@ -179,32 +186,53 @@ func decodeTranscript(raw []byte) captureResult {
 // and unrecognized terminal statuses. It never classifies a terminal error
 // into a failure kind; Run performs that classification after capture.
 func (result *captureResult) decodeEventLine(line []byte) error {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return fmt.Errorf("%w: blank JSONL event", ErrProtocol)
+	}
 	var event qoderEvent
 	if err := json.Unmarshal(bytes.TrimSpace(line), &event); err != nil {
 		return fmt.Errorf("%w: malformed JSONL: %v", ErrProtocol, err)
 	}
 	result.eventCount++
+	if result.terminal.seen {
+		return fmt.Errorf("%w: event follows terminal result", ErrProtocol)
+	}
+	if event.SessionID != "" && result.sessionID != "" && event.SessionID != result.sessionID {
+		return fmt.Errorf("%w: event session id changed", ErrProtocol)
+	}
 	switch event.Type {
-	case "session":
-		if result.sessionID == "" && event.ID != "" {
-			result.sessionID = event.ID
+	case "system":
+		if result.sessionID != "" || event.Subtype != "init" || event.SessionID == "" || event.Model == "" {
+			return fmt.Errorf("%w: invalid or duplicate system init event", ErrProtocol)
 		}
-	case "usage":
-		result.inputTokens = event.InputTokens
-		result.outputTokens = event.OutputTokens
+		result.sessionID, result.model = event.SessionID, event.Model
+	case "assistant":
+		if result.sessionID == "" || len(bytes.TrimSpace(event.Message)) == 0 || bytes.Equal(bytes.TrimSpace(event.Message), []byte("null")) {
+			return fmt.Errorf("%w: invalid assistant message event", ErrProtocol)
+		}
+		result.assistantCount++
 	case "result":
-		if result.terminal.seen {
-			return fmt.Errorf("%w: duplicate terminal result event", ErrProtocol)
+		if result.sessionID == "" || event.IsError == nil || event.TerminalReason == "" {
+			return fmt.Errorf("%w: incomplete terminal result event", ErrProtocol)
 		}
 		result.terminal.seen = true
-		switch event.Status {
-		case "success":
-			result.terminal.success = true
-		case "error":
-			result.terminal.code = event.Code
-		default:
-			return fmt.Errorf("%w: result terminal has an unrecognized status", ErrProtocol)
+		result.inputTokens, result.outputTokens = event.Usage.InputTokens, event.Usage.OutputTokens
+		if result.inputTokens < 0 || result.outputTokens < 0 {
+			return fmt.Errorf("%w: terminal usage is negative", ErrProtocol)
 		}
+		switch {
+		case event.Subtype == "success" && !*event.IsError:
+			if result.assistantCount == 0 {
+				return fmt.Errorf("%w: successful result has no assistant message", ErrProtocol)
+			}
+			result.terminal.success = true
+		case event.Subtype != "success" && *event.IsError:
+			result.terminal.code = event.TerminalReason
+		default:
+			return fmt.Errorf("%w: contradictory terminal result event", ErrProtocol)
+		}
+	default:
+		return fmt.Errorf("%w: unrecognized stream-json event type", ErrProtocol)
 	}
 	return nil
 }
