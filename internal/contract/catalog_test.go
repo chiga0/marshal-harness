@@ -53,8 +53,9 @@ var issue65ExceptionKinds = map[string]domain.Kind{
 // the durable catalog and domain.Kinds carry the identical inventory. The
 // Issue #65 baseline had eighteen descriptors; the only growth since is
 // scm-merge-receipt and publication-reconcile-record (the two Issue #65
-// schemas that carry the durable envelope) and candidate-record, while the
-// seven envelope-less M8 schemas remain documented CatalogExceptions.
+// schemas that carry the durable envelope), candidate-record, and the ADR
+// 0032 scm-merge-intent, while the seven envelope-less M8 schemas remain
+// documented CatalogExceptions.
 func TestCatalogCountAndKindConsistency(t *testing.T) {
 	t.Parallel()
 
@@ -63,8 +64,8 @@ func TestCatalogCountAndKindConsistency(t *testing.T) {
 	if len(descriptors) != len(kinds) {
 		t.Fatalf("catalog has %d descriptors but domain declares %d kinds", len(descriptors), len(kinds))
 	}
-	if len(descriptors) != 21 {
-		t.Fatalf("catalog has %d descriptors, want 21: the eighteen Issue #65 baseline entries plus scm-merge-receipt, publication-reconcile-record and candidate-record", len(descriptors))
+	if len(descriptors) != 22 {
+		t.Fatalf("catalog has %d descriptors, want 22: the eighteen Issue #65 baseline entries plus scm-merge-receipt, publication-reconcile-record, candidate-record and scm-merge-intent", len(descriptors))
 	}
 
 	seen := make(map[string]bool, len(descriptors))
@@ -94,6 +95,7 @@ func TestIssue65EnvelopeSchemasAreRegistered(t *testing.T) {
 	}{
 		{name: "scm-merge-receipt", kind: domain.KindSCMMergeReceipt},
 		{name: "publication-reconcile-record", kind: domain.KindPublicationReconcileRecord},
+		{name: "scm-merge-intent", kind: domain.KindSCMMergeIntent},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -183,8 +185,8 @@ func TestEmbeddedSchemaInventoryCoveredByCatalogOrExceptions(t *testing.T) {
 		}
 	}
 	slices.Sort(inventory)
-	if len(inventory) != 28 {
-		t.Fatalf("embedded schema inventory = %v, want the 21 catalog schemas plus the 7 Issue #65 exceptions", inventory)
+	if len(inventory) != 29 {
+		t.Fatalf("embedded schema inventory = %v, want the 22 catalog schemas plus the 7 Issue #65 exceptions", inventory)
 	}
 
 	registered := make(map[string]bool)

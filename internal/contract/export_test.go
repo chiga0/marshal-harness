@@ -18,7 +18,7 @@ func TestExportCatalogMatchesEmbeddedCollection(t *testing.T) {
 		t.Fatalf("apiVersion = %q", catalog.APIVersion)
 	}
 	descriptors := Descriptors()
-	if len(catalog.Schemas) != len(descriptors) || len(catalog.Schemas) != 21 {
+	if len(catalog.Schemas) != len(descriptors) || len(catalog.Schemas) != 22 {
 		t.Fatalf("catalog has %d schemas, want %d", len(catalog.Schemas), len(descriptors))
 	}
 	for index, entry := range catalog.Schemas {

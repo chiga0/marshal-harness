@@ -182,5 +182,6 @@ type TaskPublication struct {
 	Remote         string   `json:"remote"`
 	BaseBranch     string   `json:"baseBranch"`
 	MergePolicy    string   `json:"mergePolicy"`
+	MergeMethod    string   `json:"mergeMethod,omitempty"`
 	RequiredChecks []string `json:"requiredChecks"`
 }

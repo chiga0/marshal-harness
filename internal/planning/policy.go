@@ -22,23 +22,27 @@ import (
 // source paths, digests, environment values, or free text from the snapshot,
 // so callers can compare and log them deterministically.
 const (
-	ErrPolicyNilValidator   = "validate policy: nil validator"
-	ErrPolicySchemaInvalid  = "validate policy: schema invalid"
-	ErrPolicyMalformed      = "validate policy: malformed snapshot"
-	ErrPolicyTaskMismatch   = "validate policy: taskId does not match the frozen task"
-	ErrPolicyRunMismatch    = "validate policy: runId does not match the frozen run"
-	ErrPolicyGeneratedAt    = "validate policy: generatedAt is not a valid RFC 3339 timestamp"
-	ErrPolicyDigestMismatch = "validate policy: policyDigest does not match the detached snapshot digest"
-	ErrPolicySourceDigest   = "validate policy: sources digest is not a valid sha256 digest"
-	ErrPolicyProfileUnknown = "validate policy: unknown execution profile"
-	ErrPolicyProfile        = "validate policy: task execution profile is below the policy minimum"
-	ErrPolicyPublication    = "validate policy: publication is required but not allowed"
-	ErrPolicyMerge          = "validate policy: merge is not permitted in the Local MVP"
-	ErrPolicyPreferredEmpty = "validate policy: task preferredAdapter is empty"
-	ErrPolicyNoAdapters     = "validate policy: allowedAdapters is empty"
-	ErrPolicyNoCandidates   = "validate policy: no explicit task adapter candidate is allowed"
-	ErrPolicyControlGates   = "validate policy: approval gates conflict with autonomy profile"
-	ErrPolicySteering       = "validate policy: mediated steering conflicts with steering round budget"
+	ErrPolicyNilValidator    = "validate policy: nil validator"
+	ErrPolicySchemaInvalid   = "validate policy: schema invalid"
+	ErrPolicyMalformed       = "validate policy: malformed snapshot"
+	ErrPolicyTaskMismatch    = "validate policy: taskId does not match the frozen task"
+	ErrPolicyRunMismatch     = "validate policy: runId does not match the frozen run"
+	ErrPolicyGeneratedAt     = "validate policy: generatedAt is not a valid RFC 3339 timestamp"
+	ErrPolicyDigestMismatch  = "validate policy: policyDigest does not match the detached snapshot digest"
+	ErrPolicySourceDigest    = "validate policy: sources digest is not a valid sha256 digest"
+	ErrPolicyProfileUnknown  = "validate policy: unknown execution profile"
+	ErrPolicyProfile         = "validate policy: task execution profile is below the policy minimum"
+	ErrPolicyPublication     = "validate policy: publication is required but not allowed"
+	ErrPolicyMerge           = "validate policy: merge is not permitted (manual merge is not implemented)"
+	ErrPolicyMergeNotAllowed = "validate policy: merge requires the policy to allow both publication and merge"
+	ErrPolicyMergeProvider   = "validate policy: merge requires provider github and draft mode"
+	ErrPolicyMergeMethod     = "validate policy: merge requires a mergeMethod from the closed merge/squash/rebase enumeration"
+	ErrPolicyMergeChecks     = "validate policy: merge requires non-empty unique requiredChecks"
+	ErrPolicyPreferredEmpty  = "validate policy: task preferredAdapter is empty"
+	ErrPolicyNoAdapters      = "validate policy: allowedAdapters is empty"
+	ErrPolicyNoCandidates    = "validate policy: no explicit task adapter candidate is allowed"
+	ErrPolicyControlGates    = "validate policy: approval gates conflict with autonomy profile"
+	ErrPolicySteering        = "validate policy: mediated steering conflicts with steering round budget"
 )
 
 // Acceptance floor errors (issue #87): a control-regime PolicySnapshot is
@@ -153,8 +157,13 @@ type policySource struct {
 //   - every sources entry digest must be a well-formed sha256 digest;
 //   - the task execution profile must not be below minimumExecutionProfile;
 //   - a task that requires publication needs allowPublication;
-//   - automatic merge is never permitted in the Local MVP: neither a
-//     mergePolicy other than "never" nor allowMerge can relax this;
+//   - controlled merge is admitted only under the ADR 0032 section-1
+//     planning conditions: mergePolicy "never" stays compatible and never
+//     merges (a policy that grants allowMerge to a never task fails closed
+//     as a mismatch), "manual" stays fail closed (not implemented), and
+//     "policy" additionally requires allowPublication and allowMerge,
+//     provider github, mode draft, a closed mergeMethod and a non-empty
+//     de-duplicated requiredChecks set;
 //   - under a control-regime snapshot, the frozen TaskSpec must satisfy the
 //     acceptance floor: at least one acceptance command, a non-empty argv
 //     on every command, and at least one required:true command; a legacy
@@ -206,9 +215,41 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 	if task.Publication.Required && !snapshot.Effective.AllowPublication {
 		return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyPublication)
 	}
-	// The Local MVP never performs merges. Fail-closed: neither a task that
-	// asks for merge nor a policy that grants it can relax this boundary.
-	if task.Publication.MergePolicy != "never" || snapshot.Effective.AllowMerge {
+	// ADR 0032 controlled-merge admission (planning side). The Local MVP's
+	// blanket merge denial is replaced by the section-1 admission checks:
+	// mergePolicy "never" stays compatible and performs no merge, "manual"
+	// stays fail closed (not implemented), and "policy" is admitted only
+	// when the PolicySnapshot grants both publication and merge, the
+	// TaskSpec pins provider=github and mode=draft, and it declares a
+	// closed mergeMethod plus a non-empty de-duplicated requiredChecks set.
+	switch task.Publication.MergePolicy {
+	case domain.MergePolicyNever:
+		// A never task stays backward compatible, but a policy that grants
+		// merge cannot silently apply to it: the grant is a mismatch and
+		// fails closed instead of being ignored.
+		if snapshot.Effective.AllowMerge {
+			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyMerge)
+		}
+	case domain.MergePolicyManual:
+		// Manual merge is not implemented and remains fail closed.
+		return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyMerge)
+	case domain.MergePolicyPolicy:
+		if !snapshot.Effective.AllowPublication || !snapshot.Effective.AllowMerge {
+			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyMergeNotAllowed)
+		}
+		if task.Publication.Provider != domain.PublicationProviderGitHub || task.Publication.Mode != domain.PublicationModeDraft {
+			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyMergeProvider)
+		}
+		switch task.Publication.MergeMethod {
+		case domain.MergeMethodMerge, domain.MergeMethodSquash, domain.MergeMethodRebase:
+		default:
+			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyMergeMethod)
+		}
+		if !hasNonEmptyUniqueRequiredChecks(task.Publication.RequiredChecks) {
+			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyMergeChecks)
+		}
+	default:
+		// Any mergePolicy outside the closed enumeration fails closed.
 		return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyMerge)
 	}
 	// Acceptance floor (issue #87): the frozen TaskSpec must carry at least
@@ -345,6 +386,23 @@ func detachedPolicyDigest(data []byte) (string, error) {
 		return "", err
 	}
 	return canonical.DigestBytes(canonicalized), nil
+}
+
+// hasNonEmptyUniqueRequiredChecks reports whether the frozen requiredChecks
+// set is non-empty and de-duplicated with no blank entries, as required by
+// the ADR 0032 merge admission (M4).
+func hasNonEmptyUniqueRequiredChecks(checks []string) bool {
+	if len(checks) == 0 {
+		return false
+	}
+	seen := make(map[string]bool, len(checks))
+	for _, check := range checks {
+		if check == "" || seen[check] {
+			return false
+		}
+		seen[check] = true
+	}
+	return true
 }
 
 // validSHA256Digest reports whether value is exactly "sha256:" followed by

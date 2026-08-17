@@ -78,6 +78,7 @@ var nonLeakOracle = []string{
 	"/preconditions/*/id",
 	"/preconditions/*/timeoutSeconds",
 	"/publication/baseBranch",
+	"/publication/mergeMethod",
 	"/publication/mergePolicy",
 	"/publication/mode",
 	"/publication/provider",
@@ -524,6 +525,7 @@ func TestRenderPromptProjectionV1VerifierOnlyAndHiddenValuesDoNotLeak(t *testing
 	spec["publication"].(map[string]any)["remote"] = "nl-pub-remote"
 	spec["publication"].(map[string]any)["baseBranch"] = "nl-base-branch"
 	spec["publication"].(map[string]any)["mergePolicy"] = "nl-merge-policy"
+	spec["publication"].(map[string]any)["mergeMethod"] = "nl-merge-method"
 	spec["publication"].(map[string]any)["requiredChecks"] = []string{"nl-check"}
 	spec["extensions"] = map[string]any{"nl.ext": "nl-ext-value"}
 
@@ -548,7 +550,7 @@ func TestRenderPromptProjectionV1VerifierOnlyAndHiddenValuesDoNotLeak(t *testing
 		"nl-label-key", "nl-label-value", "nl-repo-path", "nl-base-ref", "nl-remote",
 		"nl-expected-url", "nl-preferred", "nl-fallback", "nl-model",
 		"nl-reasoning", "nl-tools-sentinel", "nl-provider", "nl-mode", "nl-pub-remote",
-		"nl-base-branch", "nl-merge-policy", "nl-check", "nl.ext", "nl-ext-value",
+		"nl-base-branch", "nl-merge-policy", "nl-merge-method", "nl-check", "nl.ext", "nl-ext-value",
 		"nl-admission-status", "nl-dep-kind", "nl-dep-run", "nl-dep-task",
 		"nl-dep-state", "nl-dep-base", "nl-dep-digest",
 		"nl-pre-id", "nl-pre-argv", "nl-pre-cwd",

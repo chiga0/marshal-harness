@@ -6,11 +6,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	marshalSchemas "github.com/chiga0/marshal-harness/schemas"
 )
 
@@ -80,7 +82,7 @@ func TestContractSchemaAllPrintsSelfDescribingCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	descriptors := contract.Descriptors()
-	if len(catalog.Schemas) != len(descriptors) || len(catalog.Schemas) != 21 {
+	if len(catalog.Schemas) != len(descriptors) || len(catalog.Schemas) != 22 {
 		t.Fatalf("catalog schemas = %d, want %d", len(catalog.Schemas), len(descriptors))
 	}
 	for index, entry := range catalog.Schemas {
@@ -108,6 +110,60 @@ func TestContractSchemaAllPrintsSelfDescribingCatalog(t *testing.T) {
 				t.Fatalf("example %s digest mismatch: %s", example.Path, example.Digest)
 			}
 		}
+	}
+}
+
+// TestContractSchemaNameOrderPinsADR0032IntentRegistration pins the full
+// ordered catalog name set, so adding a schema descriptor must update the
+// explicit name list rather than only a magic count. It also proves the ADR
+// 0032 scm-merge-intent descriptor is registered at the durable catalog
+// position and resolves to KindSCMMergeIntent.
+func TestContractSchemaNameOrderPinsADR0032IntentRegistration(t *testing.T) {
+	t.Parallel()
+
+	want := []string{
+		"approval-record",
+		"artifact-manifest",
+		"candidate-record",
+		"capability-snapshot",
+		"intervention-record",
+		"outcome",
+		"policy-snapshot",
+		"publication-intent",
+		"publication-reconcile-record",
+		"publication-record",
+		"remote-check-record",
+		"review-decision",
+		"review-packet",
+		"run-event",
+		"run-state",
+		"sandbox-requirements",
+		"scm-merge-intent",
+		"scm-merge-receipt",
+		"task-spec",
+		"verification-report",
+		"worker-request",
+		"worker-result",
+	}
+
+	descriptors := contract.Descriptors()
+	if len(descriptors) != len(want) {
+		t.Fatalf("catalog has %d descriptors, want %d", len(descriptors), len(want))
+	}
+	names := make([]string, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		names = append(names, descriptor.Name)
+	}
+	if !slices.Equal(names, want) {
+		t.Fatalf("catalog names = %v, want %v", names, want)
+	}
+
+	descriptor, err := contract.DescriptorByName("scm-merge-intent")
+	if err != nil {
+		t.Fatalf("DescriptorByName(scm-merge-intent) = %v", err)
+	}
+	if descriptor.Kind != domain.KindSCMMergeIntent {
+		t.Fatalf("scm-merge-intent kind = %q, want %q", descriptor.Kind, domain.KindSCMMergeIntent)
 	}
 }
 
@@ -174,7 +230,7 @@ func TestContractSchemaAllWritesEmbeddedFileSet(t *testing.T) {
 			if err := json.Unmarshal(exported, &catalog); err != nil {
 				t.Fatalf("decode catalog.json: %v", err)
 			}
-			if len(catalog.Schemas) != 21 || catalog.Schemas[0].Name != "approval-record" {
+			if len(catalog.Schemas) != 22 || catalog.Schemas[0].Name != "approval-record" {
 				t.Fatalf("catalog.json = %+v", catalog)
 			}
 			continue

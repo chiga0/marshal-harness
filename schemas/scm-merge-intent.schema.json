@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/v1alpha1/scm-merge-intent.schema.json",
+  "title": "Marshal SCMMergeIntent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "kind",
+    "intentId",
+    "authorityNamespaceId",
+    "taskId",
+    "runId",
+    "publicationRecordId",
+    "publicationDigest",
+    "reviewDecisionDigest",
+    "verificationDigest",
+    "evidenceDigest",
+    "policyDigest",
+    "publishApprovalRecordId",
+    "publishApprovalDigest",
+    "remoteCheckRecordDigest",
+    "repositoryRef",
+    "prNumber",
+    "headOid",
+    "baseOid",
+    "mergeMethod",
+    "requestedBy",
+    "requestedAt",
+    "expectedMergedBy",
+    "mergerSecurityDomainId",
+    "mergerCredentialIdentity",
+    "intentDigest"
+  ],
+  "properties": {
+    "apiVersion": { "const": "marshal.dev/v1alpha1" },
+    "kind": { "const": "SCMMergeIntent" },
+    "intentId": { "$ref": "#/$defs/id" },
+    "authorityNamespaceId": { "$ref": "#/$defs/id" },
+    "taskId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "publicationRecordId": { "$ref": "#/$defs/digest" },
+    "publicationDigest": { "$ref": "#/$defs/digest" },
+    "reviewDecisionDigest": { "$ref": "#/$defs/digest" },
+    "verificationDigest": { "$ref": "#/$defs/digest" },
+    "evidenceDigest": { "$ref": "#/$defs/digest" },
+    "policyDigest": { "$ref": "#/$defs/digest" },
+    "publishApprovalRecordId": { "$ref": "#/$defs/id" },
+    "publishApprovalDigest": { "$ref": "#/$defs/digest" },
+    "remoteCheckRecordDigest": { "$ref": "#/$defs/digest" },
+    "repositoryRef": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "prNumber": { "type": "integer", "minimum": 1 },
+    "headOid": { "$ref": "#/$defs/sha" },
+    "baseOid": { "$ref": "#/$defs/sha" },
+    "mergeMethod": { "type": "string", "enum": ["merge", "squash", "rebase"] },
+    "requestedBy": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "requestedAt": { "type": "string", "format": "date-time" },
+    "expectedMergedBy": { "$ref": "#/$defs/githubLogin" },
+    "mergerSecurityDomainId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "mergerCredentialIdentity": { "$ref": "#/$defs/digest" },
+    "intentDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40,64}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "githubLogin": {
+      "type": "string",
+      "pattern": "^github-login:[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$"
+    }
+  }
+}

@@ -116,6 +116,10 @@ func buildTaskSpecPromptProjectionCatalog() []catalogEntry {
 	c = append(c, catalogEntry{"/publication/remote", hidden})
 	c = append(c, catalogEntry{"/publication/baseBranch", hidden})
 	c = append(c, catalogEntry{"/publication/mergePolicy", hidden})
+	// mergeMethod belongs to Publisher/Merger permission control: the Worker
+	// must never derive merge authority from it, so it stays hidden under
+	// the existing security model.
+	c = append(c, catalogEntry{"/publication/mergeMethod", hidden})
 	c = append(c, catalogEntry{"/publication/requiredChecks/*", hidden})
 	// admission, dependsOn and preconditions are scheduling metadata consumed
 	// by the planning admission gate; they never enter the Worker prompt.
