@@ -495,7 +495,12 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := trustedOutput.dir.Sync(); err != nil {
 		return domain.Record{}, err
 	}
-	observation, err := a.runLocalAttempt(runCtx, launchExecutable, buildArgs(task.model, configDir, worktree, task.disableAllTools), prompt, worktree, workerEnvironment(worktree, configDir), int64(request.MaxOutputBytes))
+	// Recheck authority admission at the launch boundary. Identity inspection,
+	// executable snapshotting and input/output preparation can take long enough
+	// for a short-lived conformance statement to expire; a Run admitted earlier
+	// must never launch after that authority window closes.
+	launchGuard := func() error { return a.verifyExecutionIdentity(identity) }
+	observation, err := a.runLocalAttempt(runCtx, launchExecutable, buildArgs(task.model, configDir, worktree, task.disableAllTools), prompt, worktree, workerEnvironment(worktree, configDir), int64(request.MaxOutputBytes), launchGuard)
 	if err != nil {
 		return domain.Record{}, err
 	}

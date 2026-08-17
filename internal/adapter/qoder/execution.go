@@ -152,48 +152,104 @@ func captureProbeStream(reader io.Reader, limit int64, onLimit func()) streamCap
 // process: process group, cancellation/timeout kill, and bounded stdout/stderr
 // capture. It owns local process semantics only and never interprets the
 // qoder protocol payload.
-func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arguments []string, prompt []byte, workingDirectory string, environment []string, outputLimit int64) (attemptObservation, error) {
+func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arguments []string, prompt []byte, workingDirectory string, environment []string, outputLimit int64, launchGuard func() error) (attemptObservation, error) {
 	command := exec.Command(executable, arguments...)
 	command.Dir = workingDirectory
 	command.Env = environment
 	command.Stdin = bytes.NewReader(prompt)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := command.StdoutPipe()
+	// Own both output pipes explicitly. Cmd.Wait closes descriptors returned by
+	// StdoutPipe/StderrPipe as soon as the direct child is reaped, which can
+	// race readers and discard buffered protocol bytes. Explicit pipes let Wait
+	// observe the direct process first while the readers retain stable handles
+	// until the captured process group has been cleaned up.
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		return attemptObservation{}, err
 	}
-	stderr, err := command.StderrPipe()
+	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		return attemptObservation{}, err
+	}
+	command.Stdout = stdoutWriter
+	command.Stderr = stderrWriter
+	if launchGuard == nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
+		return attemptObservation{}, errors.New("qoder launch guard is required")
+	}
+	if err := launchGuard(); err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		return attemptObservation{}, err
 	}
 	started := a.now().UTC()
 	if err := command.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		return attemptObservation{}, fmt.Errorf("start qoder: %w", err)
 	}
-	var killOnce sync.Once
-	kill := func() {
+	// Only the child process tree may retain the writer ends after Start.
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
+	groupID, groupErr := syscall.Getpgid(command.Process.Pid)
+	if groupErr != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		return attemptObservation{}, errors.New("acquire qoder process group")
+	}
+	// Capture the group identity while the direct child is alive. Never query
+	// Getpgid after Wait has reaped that PID: it may already name an unrelated
+	// process. The captured PGID remains owned while any same-group descendant
+	// survives and is the only process-tree target used below.
+	var killOnce, closeOnce sync.Once
+	killGroup := func() {
 		killOnce.Do(func() {
-			terminateGroup(command)
+			_ = syscall.Kill(-groupID, syscall.SIGKILL)
+		})
+	}
+	closePipes := func() {
+		closeOnce.Do(func() {
 			_ = stdout.Close()
 			_ = stderr.Close()
 		})
 	}
+	abort := func() {
+		killGroup()
+		closePipes()
+	}
 	stdoutDone := make(chan captureResult, 1)
 	stderrDone := make(chan streamCapture, 1)
-	go func() { stdoutDone <- captureJSONL(stdout, outputLimit, kill) }()
+	go func() { stdoutDone <- captureJSONL(stdout, outputLimit, abort) }()
 	go func() { stderrDone <- captureStream(stderr, stderrLimit) }()
 	processFinished := make(chan struct{})
 	go func() {
 		select {
 		case <-runCtx.Done():
-			kill()
+			abort()
 		case <-processFinished:
 		}
 	}()
+	// Wait owns the direct child and runs before joining output readers. Kill
+	// the captured group immediately after direct-process exit so a forked child
+	// holding either writer cannot keep this method blocked until the attempt
+	// deadline, then join the bounded readers.
+	waitErr := command.Wait()
+	killGroup()
+	close(processFinished)
 	capture := <-stdoutDone
 	stderrCapture := <-stderrDone
-	waitErr := command.Wait()
-	close(processFinished)
+	closePipes()
 	exitCode, signal := processOutcome(command)
 	return attemptObservation{
 		capture:       capture,
@@ -749,16 +805,4 @@ func readBoundedWithin(root, relative string, limit int64) ([]byte, error) {
 		return nil, errors.New("file exceeds byte limit")
 	}
 	return data, nil
-}
-
-func terminateGroup(command *exec.Cmd) {
-	if command.Process == nil {
-		return
-	}
-	group, err := syscall.Getpgid(command.Process.Pid)
-	if err == nil {
-		_ = syscall.Kill(-group, syscall.SIGKILL)
-	} else {
-		_ = command.Process.Kill()
-	}
 }

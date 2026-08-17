@@ -247,6 +247,33 @@ func TestConformanceExpiryRevokesProbeAndRunAdmission(t *testing.T) {
 	}
 }
 
+func TestConformanceExpiryAtLaunchBoundaryPreventsWorkerStart(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched-after-admission-window")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+successEvents("provider/model"))
+	beforeExpiry := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
+	afterExpiry := beforeExpiry.Add(2 * time.Minute)
+	fixture.adapter.mu.Lock()
+	fixture.adapter.conformance.validUntil = beforeExpiry.Add(time.Minute)
+	fixture.adapter.mu.Unlock()
+	var calls int
+	fixture.adapter.now = func() time.Time {
+		calls++
+		if calls == 1 {
+			return beforeExpiry
+		}
+		return afterExpiry
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("launch-boundary expiry error = %v, want permanent pending", err)
+	}
+	if calls < 2 {
+		t.Fatalf("conformance clock calls = %d, want admission and launch-boundary checks", calls)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("worker launched after conformance expired during preparation")
+	}
+}
+
 func TestSupportedBinaryVersionAllowsCompatiblePatchOnly(t *testing.T) {
 	for _, version := range []string{"1.1.23", "1.1.24", "1.1.999"} {
 		if !isSupportedBinaryVersion(version) {

@@ -216,6 +216,38 @@ func TestRunCancellationCleansProcessGroup(t *testing.T) {
 	}
 }
 
+func TestRunDirectExitCleansForkHoldingOutputPipes(t *testing.T) {
+	handshake := t.TempDir()
+	pidFile := filepath.Join(handshake, "child.pid")
+	body := successEvents("provider/model") + "\nsleep 60 &\nchild=$!\nprintf '%s' \"$child\" > " + shellQuote(pidFile)
+	fixture := newRunFixture(t, supportedBinary, body)
+	started := time.Now()
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+		t.Fatalf("Run failed after successful direct-process exit: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 3*time.Second {
+		t.Fatalf("Run waited %s for a forked child holding output pipes", elapsed)
+	}
+	pidData, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil {
+		t.Fatalf("pid file = %q: %v", pidData, err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("forked child %d survived direct-process cleanup", pid)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestRunSensitiveEnvironmentNotInherited(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "qoder-gh-secret-0001")
 	t.Setenv("OPENAI_API_KEY", "qoder-openai-secret-0002")
