@@ -23,9 +23,12 @@ const authorityConfigLimit = 64 << 10
 // public verification material only; private signing keys and credentials
 // must never be placed in this document or inherited by Marshal.
 type AuthorityConfig struct {
-	EvidenceRoot   string               `json:"evidenceRoot"`
-	EvidenceDigest string               `json:"evidenceDigest"`
-	TrustRoots     []AuthorityTrustRoot `json:"trustRoots"`
+	EvidenceRoot           string               `json:"evidenceRoot"`
+	EvidenceDigest         string               `json:"evidenceDigest"`
+	AuthorityGeneration    uint64               `json:"authorityGeneration"`
+	ProbeArtifactDigest    string               `json:"probeArtifactDigest"`
+	RevokedEvidenceDigests []string             `json:"revokedEvidenceDigests"`
+	TrustRoots             []AuthorityTrustRoot `json:"trustRoots"`
 }
 
 type AuthorityTrustRoot struct {
@@ -39,10 +42,18 @@ type AuthorityTrustRoot struct {
 // digest named by that config. Invalid, missing, stale, substituted or
 // untrusted authority material fails construction closed.
 func NewFromAuthorityConfig(ctx context.Context, executable string, validator *contract.Validator, configPath string) (*Adapter, error) {
-	config, err := loadAuthorityConfig(configPath)
+	adapter, err := NewWithConformanceAuthority(executable, validator, nil)
 	if err != nil {
 		return nil, err
 	}
+	adapter.authorityConfigPath = configPath
+	if err := adapter.refreshConfiguredConformance(ctx); err != nil {
+		return nil, err
+	}
+	return adapter, nil
+}
+
+func authorityFromConfig(config AuthorityConfig) (*AuthorityEvidenceStore, error) {
 	trustRoots := make(map[string]ed25519.PublicKey, len(config.TrustRoots))
 	for _, root := range config.TrustRoots {
 		if strings.TrimSpace(root.KeyID) == "" || root.Algorithm != "ed25519" {
@@ -61,30 +72,19 @@ func NewFromAuthorityConfig(ctx context.Context, executable string, validator *c
 	if err != nil {
 		return nil, err
 	}
-	adapter, err := NewWithConformanceAuthority(executable, validator, store)
-	if err != nil {
-		_ = store.Close()
-		return nil, err
-	}
-	if err := adapter.BindConformance(ctx, config.EvidenceDigest); err != nil {
-		_ = store.Close()
-		return nil, err
-	}
-	return adapter, nil
+	return store, nil
 }
 
 func loadAuthorityConfig(path string) (AuthorityConfig, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return AuthorityConfig{}, errors.New("qoder conformance authority config path must be absolute and clean")
 	}
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	file, stat, err := openNoSymlinkPath(path, false)
 	if err != nil {
 		return AuthorityConfig{}, errors.New("open qoder conformance authority config")
 	}
-	file := os.NewFile(uintptr(fd), filepath.Base(path))
 	defer file.Close()
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o077 != 0 {
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o077 != 0 || (int(stat.Uid) != os.Geteuid() && stat.Uid != 0) {
 		return AuthorityConfig{}, errors.New("qoder conformance authority config must be a private regular file")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, authorityConfigLimit+1))
@@ -100,8 +100,54 @@ func loadAuthorityConfig(path string) (AuthorityConfig, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return AuthorityConfig{}, errors.New("qoder conformance authority config is invalid")
 	}
-	if !filepath.IsAbs(config.EvidenceRoot) || filepath.Clean(config.EvidenceRoot) != config.EvidenceRoot || !validSHA256Digest(config.EvidenceDigest) || len(config.TrustRoots) == 0 {
+	if !filepath.IsAbs(config.EvidenceRoot) || filepath.Clean(config.EvidenceRoot) != config.EvidenceRoot || !validSHA256Digest(config.EvidenceDigest) || !validSHA256Digest(config.ProbeArtifactDigest) || config.AuthorityGeneration == 0 || len(config.TrustRoots) == 0 {
 		return AuthorityConfig{}, errors.New("qoder conformance authority config is incomplete")
 	}
+	seen := map[string]struct{}{}
+	for _, digest := range config.RevokedEvidenceDigests {
+		if !validSHA256Digest(digest) {
+			return AuthorityConfig{}, errors.New("qoder conformance authority config has an invalid revocation")
+		}
+		if _, duplicate := seen[digest]; duplicate {
+			return AuthorityConfig{}, errors.New("qoder conformance authority config has a duplicate revocation")
+		}
+		seen[digest] = struct{}{}
+	}
+	if _, revoked := seen[config.EvidenceDigest]; revoked {
+		return AuthorityConfig{}, errors.New("qoder conformance authority evidence is revoked")
+	}
 	return config, nil
+}
+
+// openNoSymlinkPath walks every absolute path component through directory
+// file descriptors. O_NOFOLLOW on only the leaf is insufficient because an
+// attacker could substitute a symlinked parent before authority admission.
+func openNoSymlinkPath(path string, directory bool) (*os.File, unix.Stat_t, error) {
+	var zero unix.Stat_t
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+		return nil, zero, errors.New("authority path must be absolute and clean")
+	}
+	parts := strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator))
+	current, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, zero, err
+	}
+	for index, part := range parts {
+		flags := unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_CLOEXEC
+		if index < len(parts)-1 || directory {
+			flags |= unix.O_DIRECTORY
+		}
+		next, openErr := unix.Openat(current, part, flags, 0)
+		_ = unix.Close(current)
+		if openErr != nil {
+			return nil, zero, openErr
+		}
+		current = next
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(current, &stat); err != nil {
+		_ = unix.Close(current)
+		return nil, zero, err
+	}
+	return os.NewFile(uintptr(current), filepath.Base(path)), stat, nil
 }

@@ -422,6 +422,21 @@ ADR 0032 B2 初轮复核曾把五项实现缺口记为关闭。随后独立复�
 
 残留 `#160` 保持 P2 `OPEN`：更通用的共享 outbox/投递观测与运维视图仍应由后续切片处理；它不能替代 ADR 0033 的 merge 专属 authority/delivery journal facts。ADR 0033 未接受且 A–D 未全部实现前，`mergePolicy=policy` 必须保持 unsupported；A–D 通过后最多启用显式 opt-in 的 local/non-production 受限 profile，production supported 仍以 M11 external witness/fence 恢复门禁为前提。
 
+## Issue #137 Qoder live conformance authority 审计增补（2026-08-17）
+
+Qoder production authority wiring 候选提交的独立审计确认四项 P1：生产 trust root 首次改变 Adapter admission 却无 ADR；Seal 用常量替代 verifier 实测 profile；证据只绑定 OS/arch 而可跨 host 重放；一次 Bind 后长寿命进程不再消费撤销。另有父级 symlink/owner 路径边界与无上限 TTL 两项 P2。ADR 0034 据此提出三方 authority、完整 observation、host fingerprint、24 小时 freshness、逐段 nofollow 和 Probe/launch 逐次复核契约。
+
+| ID | 级别 | 状态 | 关闭条件 |
+| --- | --- | --- | --- |
+| `QODER-AUTHORITY-ADR-MISSING` | P1 | `PROPOSED` | 维护者接受 ADR 0034；不得以实现提交或 hermetic test 冒充接受。 |
+| `QODER-OBSERVATION-NOT-EXACTLY-BOUND` | P1 | `IMPLEMENTED-PENDING-REVIEW` | observation 逐项携带 suite/artifact/challenge/capability/profile/argv/env/tool/event/protocol/permission/transcript/verdict/time，Seal 不注入期望值；独立复审与真实 probe 证据分别通过。 |
+| `QODER-HOST-BINDING-REPLAYABLE` | P1 | `IMPLEMENTED-PENDING-REVIEW` | verifier/evidence/consumer 三方精确 host fingerprint，跨 host fixture fail closed。 |
+| `QODER-AUTHORITY-LIFECYCLE-NOT-RECHECKED` | P1 | `IMPLEMENTED-PENDING-REVIEW` | Probe 与 launch guard 每次重读 current config/evidence/revocation/generation，doctor 输出非敏感 evidence binding；长寿命进程撤销 fixture 通过。 |
+| `QODER-AUTHORITY-PATH-BOUNDARY` | P2 | `IMPLEMENTED-PENDING-REVIEW` | config/root/evidence 全路径逐段 nofollow、owner/private mode 校验与负向 fixture 通过。 |
+| `QODER-CONFORMANCE-FRESHNESS` | P2 | `IMPLEMENTED-PENDING-REVIEW` | validity window 与 observation age 固定最多 24 小时；超长与陈旧 fixture fail closed。 |
+
+该候选实现与 CI 生成的 Ed25519 key/fake executable 只验证机制，不是 credentialed live evidence；在 ADR 0034 未接受且当前 host 未配置外部真实 evidence 前，Issue #137 保持打开，Qoder 不得被报告为已完成或当前部署 `supported`。
+
 ## Issue #53 CI 失败 rework 注入设计缺口审计增补（2026-08-14）
 
 公开 [Issue #53](https://github.com/chiga0/marshal-harness/issues/53) 要求为 CI 失败 rework 闭环冻结可恢复、可审计且无双计数的契约。基线（main commit `981b53d`）行为定位：PublicationRecord 已建立且 Run 位于 `CI_PENDING`；RemoteCheckObserver 产出 `status=fail` 的 RemoteCheckRecord；`publication.checks-failed` 当前只把 `headSha` 写入事件并进入 `REWORK_REQUESTED`；execution 的 CI origin 分支返回空 findings；`task review` 仅接受 `REVIEW_PENDING`——既无法把失败检查的权威证据绑定到新 Decision，也无法把精确 `requiredOutcome` 投影给下一 Attempt；fail 分支预算守卫也只检查 rework round、不检查 attempt 余额。
