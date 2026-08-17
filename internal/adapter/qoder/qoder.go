@@ -187,8 +187,19 @@ func expectedProbeProfileDigest() string {
 }
 
 func expectedProbeArgvDigest() string {
-	data, _ := json.Marshal([]string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--config-dir", "$ISOLATED_CONFIG_DIR", "--setting-sources", "", "--cwd", "$ISOLATED_WORKTREE", "--model", "$MODEL"})
+	data, _ := json.Marshal(expectedProbeArgvVariants())
 	return digestBytes(data)
+}
+
+func expectedProbeArgvVariants() [][]string {
+	const configDir = "$ISOLATED_CONFIG_DIR"
+	const worktree = "$ISOLATED_WORKTREE"
+	return [][]string{
+		buildArgs("", configDir, worktree, false),
+		buildArgs("$MODEL", configDir, worktree, false),
+		buildArgs("", configDir, worktree, true),
+		buildArgs("$MODEL", configDir, worktree, true),
+	}
 }
 
 func expectedProbeEnvironmentDigest() string {
@@ -262,6 +273,12 @@ func (a *Adapter) refreshConfiguredConformance(ctx context.Context) error {
 		return port.Permanent(ErrConformancePending)
 	}
 	defer store.Close()
+	if err := a.observeAuthorityConfig(config); err != nil {
+		return err
+	}
+	if authorityConfigRevokes(config, config.EvidenceDigest) {
+		return port.Permanent(ErrConformancePending)
+	}
 	evidence, err := store.resolve(ctx, config.EvidenceDigest, a.now().UTC())
 	if err != nil || evidence.ProbeArtifactDigest != config.ProbeArtifactDigest || evidence.ChallengeDigest != config.ChallengeDigest || evidence.AuthorityGeneration != config.AuthorityGeneration {
 		return port.Permanent(ErrConformancePending)
@@ -288,6 +305,30 @@ func (a *Adapter) bindVerifiedConformance(identity executableIdentity, evidence 
 	if err != nil {
 		return port.Permanent(ErrConformancePending)
 	}
+	if err := a.observeAuthorityConfig(config); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pinned := identity
+	a.pinned = &pinned
+	a.conformance = &boundConformance{identity: identity, evidenceDigest: evidence.EvidenceDigest, validUntil: validUntil, trustRootKeyID: evidence.TrustRootKeyID, probeProfileDigest: evidence.ProbeProfileDigest, hostFingerprint: evidence.HostFingerprint, authorityGeneration: evidence.AuthorityGeneration}
+	return nil
+}
+
+func authorityConfigRevokes(config AuthorityConfig, evidenceDigest string) bool {
+	for _, revoked := range config.RevokedEvidenceDigests {
+		if revoked == evidenceDigest {
+			return true
+		}
+	}
+	return false
+}
+
+// observeAuthorityConfig consumes the generation before resolving its leaf.
+// A trusted newer config therefore cannot be rolled back merely because its
+// selected evidence is revoked, missing, or not yet readable.
+func (a *Adapter) observeAuthorityConfig(config AuthorityConfig) error {
 	configData, err := json.Marshal(config)
 	if err != nil {
 		return port.Permanent(ErrConformancePending)
@@ -301,9 +342,6 @@ func (a *Adapter) bindVerifiedConformance(identity executableIdentity, evidence 
 	if config.AuthorityGeneration == a.authorityGenerationHighWater && a.authorityGenerationHighWater != 0 && configDigest != a.authorityConfigHighWater {
 		return port.Permanent(ErrConformancePending)
 	}
-	pinned := identity
-	a.pinned = &pinned
-	a.conformance = &boundConformance{identity: identity, evidenceDigest: evidence.EvidenceDigest, validUntil: validUntil, trustRootKeyID: evidence.TrustRootKeyID, probeProfileDigest: evidence.ProbeProfileDigest, hostFingerprint: evidence.HostFingerprint, authorityGeneration: evidence.AuthorityGeneration}
 	a.authorityGenerationHighWater = config.AuthorityGeneration
 	a.authorityConfigHighWater = configDigest
 	return nil

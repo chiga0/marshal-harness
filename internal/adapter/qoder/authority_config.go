@@ -114,9 +114,6 @@ func loadAuthorityConfig(path string) (AuthorityConfig, error) {
 		}
 		seen[digest] = struct{}{}
 	}
-	if _, revoked := seen[config.EvidenceDigest]; revoked {
-		return AuthorityConfig{}, errors.New("qoder conformance authority evidence is revoked")
-	}
 	return config, nil
 }
 

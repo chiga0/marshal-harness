@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -194,7 +195,6 @@ func TestCandidateAuthorityDynamicallyRevalidatesAndRevokesFullRun(t *testing.T)
 	for name, mutate := range map[string]func(*AuthorityConfig){
 		"wrong probe artifact": func(value *AuthorityConfig) { value.ProbeArtifactDigest = digest("f") },
 		"wrong challenge":      func(value *AuthorityConfig) { value.ChallengeDigest = digest("f") },
-		"wrong generation":     func(value *AuthorityConfig) { value.AuthorityGeneration++ },
 	} {
 		t.Run(name, func(t *testing.T) {
 			broken := configValue
@@ -217,6 +217,7 @@ func TestCandidateAuthorityDynamicallyRevalidatesAndRevokesFullRun(t *testing.T)
 	if !strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
 		t.Fatalf("restored exact authority config did not recover: %s", probe.Data)
 	}
+	configValue.AuthorityGeneration = 2
 	configValue.RevokedEvidenceDigests = []string{evidenceDigest}
 	revokedData, err := json.Marshal(configValue)
 	if err != nil {
@@ -237,6 +238,19 @@ func TestCandidateAuthorityDynamicallyRevalidatesAndRevokesFullRun(t *testing.T)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("revoked full Run launched the worker")
+	}
+	configValue.AuthorityGeneration = 1
+	configValue.RevokedEvidenceDigests = nil
+	writeAuthorityConfig(t, configPath, configValue)
+	rollbackProbe, err := fixture.adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rollbackProbe.Data), `"probeStatus":"unsupported"`) {
+		t.Fatalf("revoked generation rollback revived support: %s", rollbackProbe.Data)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("revoked generation rollback did not fail closed for full Run: %v", err)
 	}
 
 	badConfig := filepath.Join(realTempDir(t), "authority.json")
@@ -311,6 +325,49 @@ func TestCandidateAuthorityGenerationRollbackFailsClosed(t *testing.T) {
 	}
 }
 
+func TestCandidateAuthorityMissingEvidenceAdvancesGenerationHighWater(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched-after-missing-evidence-rollback")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+successEvents("provider/model"))
+	fixture.adapter.mu.Lock()
+	fixture.adapter.conformance = nil
+	fixture.adapter.mu.Unlock()
+	identity, err := fixture.adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, evidenceDigest := signedTestAuthority(t, identity)
+	configPath := filepath.Join(realTempDir(t), "authority.json")
+	generationOne := authorityConfigForStore(store, evidenceDigest, 1)
+	writeAuthorityConfig(t, configPath, generationOne)
+	fixture.adapter.authorityConfigPath = configPath
+	if err := fixture.adapter.refreshConfiguredConformance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	missing := authorityConfigForStore(store, digest("f"), 2)
+	writeAuthorityConfig(t, configPath, missing)
+	probe, err := fixture.adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(probe.Data), `"probeStatus":"unsupported"`) {
+		t.Fatalf("missing generation-two evidence remained supported: %s", probe.Data)
+	}
+	writeAuthorityConfig(t, configPath, generationOne)
+	probe, err = fixture.adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(probe.Data), `"probeStatus":"unsupported"`) {
+		t.Fatalf("missing-evidence generation rollback revived support: %s", probe.Data)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("missing-evidence generation rollback did not fail closed for full Run: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("missing-evidence generation rollback launched the worker")
+	}
+}
+
 func TestCandidateAuthorityRevocationAtFullRunLaunchBoundary(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "launched-after-boundary-revoke")
 	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+successEvents("provider/model"))
@@ -327,6 +384,7 @@ func TestCandidateAuthorityRevocationAtFullRunLaunchBoundary(t *testing.T) {
 	writeAuthorityConfig(t, configPath, config)
 	fixture.adapter.authorityConfigPath = configPath
 	fixture.adapter.beforeLaunchGuard = func() {
+		config.AuthorityGeneration = 2
 		config.RevokedEvidenceDigests = []string{evidenceDigest}
 		writeAuthorityConfig(t, configPath, config)
 	}
@@ -988,6 +1046,38 @@ func TestBuildArgsDisablesAllToolsForExplicitEmptyAllowlist(t *testing.T) {
 	args := buildArgs("", "/isolated/config", "/worktree", true)
 	if !containsSequence(args, "--tools", "") {
 		t.Fatalf("explicit empty allowlist must disable all tools: %#v", args)
+	}
+}
+
+func TestExpectedProbeArgvDigestCoversEveryExecutionVariant(t *testing.T) {
+	variants := expectedProbeArgvVariants()
+	want := [][]string{
+		buildArgs("", "$ISOLATED_CONFIG_DIR", "$ISOLATED_WORKTREE", false),
+		buildArgs("$MODEL", "$ISOLATED_CONFIG_DIR", "$ISOLATED_WORKTREE", false),
+		buildArgs("", "$ISOLATED_CONFIG_DIR", "$ISOLATED_WORKTREE", true),
+		buildArgs("$MODEL", "$ISOLATED_CONFIG_DIR", "$ISOLATED_WORKTREE", true),
+	}
+	if !reflect.DeepEqual(variants, want) {
+		t.Fatalf("probe argv variants = %#v, want %#v", variants, want)
+	}
+	if containsSequence(variants[0], "--model", "$MODEL") || containsSequence(variants[0], "--tools", "") {
+		t.Fatalf("omitted model/tools variant is not exact: %#v", variants[0])
+	}
+	if !containsSequence(variants[1], "--model", "$MODEL") || containsSequence(variants[1], "--tools", "") {
+		t.Fatalf("model-only variant is not exact: %#v", variants[1])
+	}
+	if containsSequence(variants[2], "--model", "$MODEL") || !containsSequence(variants[2], "--tools", "") {
+		t.Fatalf("explicit-empty tools variant is not exact: %#v", variants[2])
+	}
+	if !containsSequence(variants[3], "--model", "$MODEL") || !containsSequence(variants[3], "--tools", "") {
+		t.Fatalf("model plus explicit-empty tools variant is not exact: %#v", variants[3])
+	}
+	data, err := json.Marshal(variants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := digestBytes(data); got != expectedProbeArgvDigest() {
+		t.Fatalf("probe argv digest = %s, want %s", expectedProbeArgvDigest(), got)
 	}
 }
 
