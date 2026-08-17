@@ -410,6 +410,60 @@ func TestRunFailsClosedWhenWorktreeChangesAcrossStart(t *testing.T) {
 	}
 }
 
+func TestRunKeepsStartedWorktreeWhenPathChangesAfterLaunchVerification(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	original := fixture.worktree
+	retained := original + "-retained"
+	replacement := t.TempDir()
+	t.Cleanup(func() { _ = os.RemoveAll(retained) })
+	fixture.adapter.testHook = func(stage string) {
+		if stage != "after-worktree-launch-verify" {
+			return
+		}
+		if err := os.Rename(original, retained); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(replacement, original); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+		t.Fatalf("Run after post-Start rename: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(retained, "capture")); err != nil {
+		t.Fatalf("provider did not stay in the already-started worktree inode: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(replacement, "capture")); !os.IsNotExist(err) {
+		t.Fatal("provider followed the mutable worktree pathname after Start")
+	}
+}
+
+func TestRunRejectsControlRootReplacementAfterLaunchVerification(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	original := fixture.controlRoot
+	retained := original + "-retained"
+	replacement := t.TempDir()
+	t.Cleanup(func() { _ = os.RemoveAll(retained) })
+	fixture.adapter.testHook = func(stage string) {
+		if stage != "after-worktree-launch-verify" {
+			return
+		}
+		if err := os.Rename(original, retained); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(replacement, original); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "control root changed") {
+		t.Fatalf("err = %v, want detached control-root rejection", err)
+	}
+	entries, err := os.ReadDir(replacement)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("replacement control root received evidence: entries=%v err=%v", entries, err)
+	}
+}
+
 func TestProbeTimeoutKillsForkHoldingStdout(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "child.pid")
 	executable := filepath.Join(t.TempDir(), "codex")
@@ -478,13 +532,11 @@ func TestProbeExecutesSameSnapshotAcrossDigestAndVersion(t *testing.T) {
 }
 
 func TestBuildArgsFreezesCapturedSurface(t *testing.T) {
-	worktree := "/tmp/worktree"
 	schemaPath := "/control/codex-output-schema.json"
 	resultPath := "/control/output/worker-result.json"
 	// 精确相等断言同时冻结参数顺序并证明冻结面之外没有任何额外参数。
 	want := []string{
 		"--ask-for-approval", "never",
-		"-C", worktree,
 		"-c", sandboxNetworkOverride,
 		"exec",
 		"--color", "never",
@@ -497,11 +549,11 @@ func TestBuildArgsFreezesCapturedSurface(t *testing.T) {
 		"--output-last-message", resultPath,
 		"-m", "provider/model",
 	}
-	args := buildArgs(worktree, schemaPath, resultPath, "provider/model")
+	args := buildArgs(schemaPath, resultPath, "provider/model")
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
-	withoutModel := buildArgs(worktree, schemaPath, resultPath, "")
+	withoutModel := buildArgs(schemaPath, resultPath, "")
 	if strings.Join(withoutModel, "\x00") != strings.Join(want[:len(want)-2], "\x00") {
 		t.Fatalf("empty model args = %#v", withoutModel)
 	}
@@ -516,7 +568,7 @@ func TestBuildArgsFreezesCapturedSurface(t *testing.T) {
 	if execIndex <= 0 {
 		t.Fatalf("exec subcommand missing or first: %#v", args)
 	}
-	if !containsSequence(args[:execIndex], "--ask-for-approval", "never") || !containsSequence(args[:execIndex], "-C", worktree) || !containsSequence(args[:execIndex], "-c", sandboxNetworkOverride) {
+	if !containsSequence(args[:execIndex], "--ask-for-approval", "never") || !containsSequence(args[:execIndex], "-c", sandboxNetworkOverride) || slices.Contains(args, "-C") || slices.Contains(args, "--cd") {
 		t.Fatalf("global arguments are not frozen before the exec subcommand: %#v", args[:execIndex])
 	}
 	if !containsSequence(args[execIndex:], "--sandbox", "workspace-write") {
@@ -541,17 +593,19 @@ func TestEnvironmentReplacementFailsClosed(t *testing.T) {
 	}
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
-	worktree := t.TempDir()
-	joined := strings.Join(workerEnvironment(worktree), "\n")
+	joined := strings.Join(workerEnvironment(), "\n")
 	for key, value := range secrets {
 		if strings.Contains(joined, key) || strings.Contains(joined, value) {
 			t.Fatalf("worker environment leaked %s", key)
 		}
 	}
-	for _, required := range []string{"CI=1", "GH_PROMPT_DISABLED=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "PWD=" + worktree, "CODEX_HOME=" + codexHome} {
+	for _, required := range []string{"CI=1", "GH_PROMPT_DISABLED=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "CODEX_HOME=" + codexHome} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("worker environment misses %s: %s", required, joined)
 		}
+	}
+	if strings.Contains(joined, "PWD=") {
+		t.Fatalf("worker environment must not reintroduce a mutable workspace pathname: %s", joined)
 	}
 	probeJoined := strings.Join(probeEnvironment(), "\n")
 	for key := range secrets {
@@ -638,7 +692,6 @@ func assertCapturedInvocation(t *testing.T, fixture runFixture, withModel bool) 
 	gotArgs := strings.Split(strings.TrimSpace(string(argvData)), "\n")
 	wantArgs := []string{
 		"--ask-for-approval", "never",
-		"-C", fixture.worktree,
 		"-c", sandboxNetworkOverride,
 		"exec",
 		"--color", "never",
@@ -1632,8 +1685,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ "$saw_exec" = "1" ] || exit 2
-[ -n "$worktree_path" ] || exit 2
-cd "$worktree_path" || exit 2
+if [ -n "$worktree_path" ]; then cd "$worktree_path" || exit 2; fi
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json|--ephemeral|--ignore-user-config|--ignore-rules) shift ;;

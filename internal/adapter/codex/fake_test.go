@@ -26,8 +26,8 @@ func runFakeExitCode(t *testing.T, executable string, args ...string) int {
 }
 
 // frozenAdapterArgv 复算 Adapter 冻结的完整 argv，供 parser 契约双向验证。
-func frozenAdapterArgv(worktree, schemaPath, resultPath string) []string {
-	return buildArgs(worktree, schemaPath, resultPath, "")
+func frozenAdapterArgv(schemaPath, resultPath string) []string {
+	return buildArgs(schemaPath, resultPath, "")
 }
 
 func TestFakeParserAcceptsFrozenAdapterArgv(t *testing.T) {
@@ -38,11 +38,11 @@ func TestFakeParserAcceptsFrozenAdapterArgv(t *testing.T) {
 	}{
 		{
 			name: "adapter-argv-without-model",
-			args: frozenAdapterArgv("/tmp/worktree", "/control/codex-output-schema.json", "/control/output/worker-result.json"),
+			args: frozenAdapterArgv("/control/codex-output-schema.json", "/control/output/worker-result.json"),
 		},
 		{
 			name: "adapter-argv-with-model",
-			args: append(frozenAdapterArgv("/tmp/worktree", "/control/codex-output-schema.json", "/control/output/worker-result.json"), "-m", "provider/model"),
+			args: append(frozenAdapterArgv("/control/codex-output-schema.json", "/control/output/worker-result.json"), "-m", "provider/model"),
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
