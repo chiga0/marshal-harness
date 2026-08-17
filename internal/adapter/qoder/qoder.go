@@ -177,11 +177,13 @@ func expectedCapabilitiesDigest() string {
 func expectedProbeProfileDigest() string {
 	profile := map[string]any{
 		"ambientCredentialInheritance": false,
+		"businessRepositoryAccess":     false,
 		"eventContract":                conformanceEventContract,
 		"isolatedWorkingDirectory":     true,
 		"permissionMode":               qoderPermissionMode,
 		"repositoryWritePermission":    true,
 		"settingSources":               []string{},
+		"writableRoots":                []string{"$ISOLATED_WORKTREE"},
 	}
 	data, _ := json.Marshal(profile)
 	return digestBytes(data)
@@ -204,7 +206,7 @@ func expectedProbeArgvVariants() [][]string {
 }
 
 func expectedProbeEnvironmentDigest() string {
-	data, _ := json.Marshal(map[string]any{"ambientEnvironment": false, "home": "$ISOLATED_CONFIG_DIR", "xdg": "$ISOLATED_CONFIG_DIR", "gitConfigGlobal": "/dev/null", "gitConfigNoSystem": true, "terminalPrompt": false})
+	data, _ := json.Marshal(candidateProbeEnvironment("$ISOLATED_WORKTREE", "$ISOLATED_CONFIG_DIR"))
 	return digestBytes(data)
 }
 
