@@ -203,6 +203,85 @@ func TestIssue138RejectsSymlinkThenDotDotIntoCandidate(t *testing.T) {
 	}
 }
 
+func TestIssue138RejectsMissingParentDotDotThenCandidateAlias(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	expected, err := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	missing := filepath.Join(parent, "command-created-parent")
+	alias := filepath.Join(parent, "candidate-alias")
+	if err := os.Symlink(fixture.worktree.Path, alias); err != nil {
+		t.Fatal(err)
+	}
+	target := missing + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(alias) + string(filepath.Separator) + "output.txt"
+	_, err = runCommandIsolated(context.Background(), Runner{}, fixture.worktree.Path, fixture.baseSHA, expected, CommandSpec{
+		ID:   "dynamic-parent-dotdot-alias",
+		Argv: []string{"sh", "-c", "mkdir " + missing + "; printf dirty > " + target},
+		CWD:  ".", Timeout: 5 * time.Second, Required: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "references the managed candidate") {
+		t.Fatalf("dynamic missing parent followed by dot-dot and alias was not rejected: %v", err)
+	}
+	if _, statErr := os.Stat(missing); !os.IsNotExist(statErr) {
+		t.Fatal("rejected dynamic-parent command was executed")
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.worktree.Path, "output.txt")); !os.IsNotExist(statErr) {
+		t.Fatal("rejected dynamic-parent command changed the candidate")
+	}
+}
+
+func TestIssue138CloneMustMatchFrozenCandidateBeforeCommand(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	expected, err := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(fixture.worktree.Path, "README.md")
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	altered := append([]byte(nil), original...)
+	altered[0] ^= 0x20
+	mutated := false
+	restored := false
+	hooks := commandIsolationHooks{
+		afterLstat: func(current string) {
+			if current != path || mutated {
+				return
+			}
+			mutated = true
+			if err := os.WriteFile(path, altered, 0o600); err != nil {
+				t.Fatalf("mutate source during clone: %v", err)
+			}
+		},
+		afterCopy: func(current string) {
+			if current != path || restored {
+				return
+			}
+			restored = true
+			if err := os.WriteFile(path, original, 0o600); err != nil {
+				t.Fatalf("restore source after clone: %v", err)
+			}
+		},
+	}
+	result, err := runCommandIsolatedWithHooks(context.Background(), Runner{}, fixture.worktree.Path, fixture.baseSHA, expected, CommandSpec{
+		ID: "must-not-run", Argv: []string{"sh", "-c", "exit 99"}, CWD: ".", Timeout: 5 * time.Second, Required: true,
+	}, hooks)
+	if !mutated || !restored {
+		t.Fatalf("clone mutation hooks did not run: mutated=%t restored=%t", mutated, restored)
+	}
+	if err == nil || !strings.Contains(err.Error(), "does not match the frozen candidate") || result.Executed {
+		t.Fatalf("non-frozen isolate reached command execution: result=%+v err=%v", result, err)
+	}
+	after, observeErr := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
+	if observeErr != nil || !sameObservationIdentity(after, expected) {
+		t.Fatalf("source was not restored to its frozen identity: observation=%+v err=%v", after, observeErr)
+	}
+}
+
 func TestIssue138CandidateCommandAlsoProtectsBaselineRoot(t *testing.T) {
 	fixture := newVerificationFixture(t)
 	candidate, err := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
@@ -361,6 +440,72 @@ func TestIssue138SlowReadStopsAtContextDeadline(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed >= time.Second {
 		t.Fatalf("slow verifier read exceeded its bounded deadline: %s", elapsed)
+	}
+}
+
+func TestIssue138ObserveRejectsLstatToFIFORaceWithoutBlocking(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	path := filepath.Join(fixture.worktree.Path, "README.md")
+	if err := os.WriteFile(path, []byte("changed candidate\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var hookErr error
+	replaced := false
+	hooks := observeHooks{afterLstat: func(current string) {
+		if replaced || current != path {
+			return
+		}
+		replaced = true
+		if err := os.Remove(current); err != nil {
+			hookErr = err
+			return
+		}
+		hookErr = syscall.Mkfifo(current, 0o600)
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err := observeContextWithHooks(ctx, fixture.worktree.Path, fixture.baseSHA, 1<<20, hooks)
+	if hookErr != nil {
+		t.Fatal(hookErr)
+	}
+	if !replaced {
+		t.Fatal("ObserveContext race hook did not replace the changed file")
+	}
+	if err == nil || time.Since(started) >= 8*time.Second {
+		t.Fatalf("ObserveContext did not fail closed before deadline: err=%v elapsed=%s", err, time.Since(started))
+	}
+}
+
+func TestIssue138ObserveSlowReadStopsAtContextDeadline(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	path := filepath.Join(fixture.worktree.Path, "README.md")
+	if err := os.WriteFile(path, []byte("changed candidate\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	hooks := observeHooks{openRegular: func(current string, expected os.FileInfo) (*os.File, error) {
+		if current == path {
+			return reader, nil
+		}
+		return openStableRegular(current, expected)
+	}}
+	// Leave enough budget for the preceding Git enumeration even under the
+	// repository-wide race suite; the injected reader then remains blocked
+	// until this exact deadline closes its descriptor.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err = observeContextWithHooks(ctx, fixture.worktree.Path, fixture.baseSHA, 1<<20, hooks)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("slow ObserveContext read returned %v, want context deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 8*time.Second {
+		t.Fatalf("slow ObserveContext read exceeded its bounded deadline: %s", elapsed)
 	}
 }
 

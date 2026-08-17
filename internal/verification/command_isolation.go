@@ -48,6 +48,10 @@ type commandProtectedSource struct {
 // managed candidate worktree is only read while the clone is constructed and
 // re-observed; command writes can therefore never become candidate bytes.
 func runCommandIsolated(ctx context.Context, runner Runner, source, baseSHA string, expected Observation, spec CommandSpec, additional ...commandProtectedSource) (result isolatedCommandResult, resultErr error) {
+	return runCommandIsolatedWithHooks(ctx, runner, source, baseSHA, expected, spec, commandIsolationHooks{}, additional...)
+}
+
+func runCommandIsolatedWithHooks(ctx context.Context, runner Runner, source, baseSHA string, expected Observation, spec CommandSpec, hooks commandIsolationHooks, additional ...commandProtectedSource) (result isolatedCommandResult, resultErr error) {
 	canonicalSource, err := filepath.EvalSymlinks(source)
 	if err != nil {
 		return isolatedCommandResult{}, errors.New("cannot resolve command source")
@@ -103,8 +107,12 @@ func runCommandIsolated(ctx context.Context, runner Runner, source, baseSHA stri
 	}()
 
 	isolate := filepath.Join(root, "worktree")
-	if err := cloneCandidate(ctx, source, isolate); err != nil {
+	if err := cloneCandidateWithHooks(ctx, source, isolate, hooks); err != nil {
 		return isolatedCommandResult{}, err
+	}
+	isolateObservation, err := ObserveContext(ctx, isolate, baseSHA, expected.DiffBytes+1<<20)
+	if err != nil || !sameObservationIdentity(isolateObservation, expected) {
+		return isolatedCommandResult{}, errors.New("command isolate does not match the frozen candidate")
 	}
 	beforeContext, cancelBefore := context.WithTimeout(ctx, commandIsolationSnapshotTimeout)
 	before, err := snapshotCommandTree(beforeContext, isolate)
@@ -256,7 +264,7 @@ func resolveWithMissingTail(path string) (string, error) {
 	remainder := strings.TrimPrefix(path, root)
 	pending := strings.Split(remainder, string(filepath.Separator))
 	current := root
-	missing := false
+	missingDepth := 0
 	symlinks := 0
 	for len(pending) > 0 {
 		part := pending[0]
@@ -266,16 +274,20 @@ func resolveWithMissingTail(path string) (string, error) {
 			continue
 		case "..":
 			current = filepath.Dir(current)
+			if missingDepth > 0 {
+				missingDepth--
+			}
 			continue
 		}
 		next := filepath.Join(current, part)
-		if missing {
+		if missingDepth > 0 {
 			current = next
+			missingDepth++
 			continue
 		}
 		info, err := os.Lstat(next)
 		if errors.Is(err, os.ErrNotExist) {
-			missing = true
+			missingDepth = 1
 			current = next
 			continue
 		}
@@ -309,7 +321,7 @@ func sameObservationIdentity(left, right Observation) bool {
 	return left.SnapshotDigest == right.SnapshotDigest && left.DiffDigest == right.DiffDigest
 }
 
-func cloneCandidate(ctx context.Context, source, destination string) error {
+func cloneCandidateWithHooks(ctx context.Context, source, destination string, hooks commandIsolationHooks) error {
 	canonicalSource, err := filepath.EvalSymlinks(source)
 	if err != nil {
 		return errors.New("cannot resolve command source")
@@ -333,7 +345,7 @@ func cloneCandidate(ctx context.Context, source, destination string) error {
 	if err := clearCommandWorktree(destination); err != nil {
 		return err
 	}
-	if err := copyCandidateFiles(ctx, canonicalSource, destination); err != nil {
+	if err := copyCandidateFilesWithHooks(ctx, canonicalSource, destination, hooks); err != nil {
 		return err
 	}
 	return nil
@@ -355,12 +367,9 @@ func clearCommandWorktree(root string) error {
 	return nil
 }
 
-func copyCandidateFiles(ctx context.Context, source, destination string) error {
-	return copyCandidateFilesWithHooks(ctx, source, destination, commandIsolationHooks{})
-}
-
 type commandIsolationHooks struct {
 	afterLstat func(string)
+	afterCopy  func(string)
 }
 
 func copyCandidateFilesWithHooks(ctx context.Context, source, destination string, hooks commandIsolationHooks) error {
@@ -424,6 +433,9 @@ func copyCandidateFilesWithHooks(ctx context.Context, source, destination string
 			if err := copyRegularCandidateFile(ctx, sourcePath, destinationPath, info); err != nil {
 				return err
 			}
+			if hooks.afterCopy != nil {
+				hooks.afterCopy(sourcePath)
+			}
 		case info.Mode()&os.ModeSymlink != 0:
 			target, err := os.Readlink(sourcePath)
 			if err != nil || len(target) == 0 || len(target) > commandIsolationMaxTargetBytes || filepath.IsAbs(target) {
@@ -469,11 +481,14 @@ func copyRegularCandidateFile(ctx context.Context, source, destination string, e
 		return err
 	}
 	defer input.Close()
-	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600|expected.Mode().Perm()&0o111)
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return errors.New("cannot create a command clone file")
 	}
-	if err := output.Chmod(0o600 | expected.Mode().Perm()&0o111); err != nil {
+	// The isolation root is 0700, so reproducing the exact candidate mode
+	// does not expose bytes to other users. Exact mode reproduction is also
+	// required for the post-clone authoritative Observation identity.
+	if err := output.Chmod(expected.Mode().Perm()); err != nil {
 		_ = output.Close()
 		return errors.New("cannot protect a command clone file")
 	}
