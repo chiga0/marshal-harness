@@ -73,16 +73,17 @@ M13 的长周期人工等待不改变本表：根据 [ADR 0019](adr/0019-determi
 
 ### ADR 0033 目标同状态事件（Proposed，非当前行为）
 
-[ADR 0033](adr/0033-journal-bound-merge-authority-and-delivery.md) 提议登记四个封闭的 `CI_PENDING → CI_PENDING` 事件：
+[ADR 0033](adr/0033-journal-bound-merge-authority-and-delivery.md) 提议登记五个封闭的 `CI_PENDING → CI_PENDING` 事件：
 
 | 事件 | actor | 目标语义 |
 | --- | --- | --- |
 | `publication.merge-authority-prepared` | `system/marshal-core` | 原子绑定 prepared intent、current authorization 与冻结 admission digests |
 | `publication.merge-authority-revoked` | `system/marshal-core` | 追加授权 successor，不删除历史 |
-| `publication.merge-delivery-pending` | `publisher/marshal-scm-merger` | mutation 前原子消费 durable delivery budget 并形成 anchor |
-| `publication.merge-delivery-resolved` | `publisher/marshal-scm-merger` | Inspect/Reconcile 后追加封闭 outcome，不覆盖 pending |
+| `publication.merge-delivery-pending` | `system/marshal-core` | Core 在 mutation 前原子消费 durable delivery budget 并形成 anchor |
+| `publication.merge-delivery-observed` | `system/marshal-core` | Core 校验 typed Publisher observation 后追加；unknown/lag 保持 pending unresolved |
+| `publication.merge-delivery-resolved` | `system/marshal-core` | Core 只在 Inspect/Reconcile 得到确定 outcome 后追加，不覆盖 pending |
 
-这些事件不是通用 same-state 入口。ADR 未接受且 reducer/Schema/producer-authority/replay negative fixtures 未实现前，当前转换表不增加它们；不得从 projection 或 sidecar 反向推进生命周期。
+这些事件不是通用 same-state 入口。Publisher/SCMMerger 只提供 typed observation 与 provenance，不能追加 authority event、消费预算或裁决 resolved。ADR 未接受且 reducer/Schema/producer-authority/replay negative fixtures 未实现前，当前转换表不增加它们；不得从 projection 或 sidecar 反向推进生命周期。
 
 ## 强制不变量
 

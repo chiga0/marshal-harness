@@ -141,7 +141,7 @@ Secret 仅在需要它的授权组件内 Just-in-time 解析。Publisher Credent
 - Publisher 只接受无 Force Push 的新分支创建或经 `previousHeadSha` 证明的返工 fast-forward；CI 必须绑定同一 Repository、Draft PR 与 Head SHA。
 - 实际 Merge 不属于 MVP 权限。
 
-受控 merge 的目标安全门禁见 [ADR 0033](adr/0033-journal-bound-merge-authority-and-delivery.md)（Proposed）：授权与 prepared intent 必须是同一 Run journal 原子事实；每次 mutation 先追加 pending、同步 snapshot，再执行并 Inspect/Reconcile；delivery budget 只从 journal pending facts 派生。credentialed `gh` 必须通过已打开且已校验的只读 fd/immutable handle 执行同一对象，并对输出设界、超限时终止进程组。只校验路径后再次按路径打开不构成 TOCTOU 关闭。完整实现与 conformance 通过前，`mergePolicy=policy` 不是 supported 能力。
+受控 merge 的目标安全门禁见 [ADR 0033](adr/0033-journal-bound-merge-authority-and-delivery.md)（Proposed）：授权与 prepared intent 必须是同一 Run journal 原子事实；每次 mutation 先追加 pending、同步 snapshot，再执行 mutation-adjacent journal/current/expiry recheck 或取得等价 fence，变化必须零 mutation。Publisher 只提供 typed observation/provenance，只有 Core 可校验后 CAS append；unknown/lag 保持 pending unresolved 并重复 Inspect。delivery budget 只从 journal pending facts 派生。credentialed `gh` 必须通过已打开且已校验的只读 fd/immutable handle 执行同一对象，并对输出设界、超限时终止进程组。只校验路径后再次按路径打开不构成 TOCTOU 关闭。A–D 完整实现与 conformance 通过后也只允许 local/non-production 受限 profile；production supported 还要求 M11 external rollback witness 与跨节点 fence 恢复演练。
 
 ## 安全就绪等级
 

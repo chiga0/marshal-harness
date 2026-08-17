@@ -5,7 +5,7 @@
 - 结论（分层）：
   - Local MVP（Milestone 0–6）：**`APPROVED_FOR_IMPLEMENTATION`** / `USABLE`，行为与门禁不变；
   - Runtime/Sandbox 契约（M7–M13）：在 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md) 接受前为 **`BLOCKED`**（首次 Sandbox SPI dogfood reject 与 Round 2 评审暴露的合同级歧义）；2026-08-10 全部 P1 经 Round 2 独立验证与 ReviewDecision accept，维护者接受 ADR 0017，设计歧义关闭；2026-08-11 维护者接受 [ADR 0018](adr/0018-control-plane-and-provider-ports.md)，冻结 Marshal C/S Control Plane、按信任域分隔的 Provider Port、耐久注册/能力快照与在途 lease 撤销，澄清/部分取代 ADR 0017 §4/§6/§7/§8/§10/§12 并显式取代 ADR 0016 §6 经 ADR 0017 承接的 universal 接纳口径，并随 Round 4 独立评审八项 P1（远程 transport 基线、securityDomainId 键空间、attestation 全链绑定、原子 fencing sink、SSE 恢复与再授权、engine 单一 seam、Port protocol family、legacy snapshot 残留）全部关闭增补 §10–§16，随 Round 6 复核两项残留（Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge）全部关闭修订 §3/§10，随 Round 7 复核三项残留（双键空间残留清除、Core-only typed edge 生命周期细化、Public API 幂等/SSE/对象 key 修正为 authorityNamespaceId）全部关闭修订 §3/§4/§5/§7/§10/§13，随 Round 8 复核一项残留（typed edge 跨域例外与适用范围）全部关闭修订 §3/§10，随 Round 9 复核两项残留（ADR0018-UNQUALIFIED-CROSS-DOMAIN-RESIDUE、ADR0018-NONEDGE-PORT-AND-SAME-DOMAIN-AUTHZ）全部关闭修订 §2/§3/§5/§7/§10（接受只冻结设计，不升级 M8–M13 实现/conformance 状态）。
-- 未关闭 Blocking Finding：4 项 P1。`ISSUE53-CI-REWORK-EVIDENCE-P1` 仍为 `OPEN`；ADR 0032 B2 独立复核另重开 `ADR0032-B2-AUTHORITY-ROLLBACK-DOMAIN`、`ADR0032-B2-DELIVERY-CRASH-WINDOW`、`ADR0032-B2-RECOVERY-RESIGN` 三项 P1。后三项的目标契约由 [ADR 0033](adr/0033-journal-bound-merge-authority-and-delivery.md)（Proposed）给出；关闭要求 ADR 接受、A–D implementation successor 全部合入、独立验证 P0/P1 清零及 required CI/secret scan/recovery conformance 全绿。它们不改变 Local MVP `APPROVED_FOR_IMPLEMENTATION` / `USABLE`，但在关闭前禁止把 `mergePolicy=policy` 登记为 supported。
+- 未关闭 Blocking Finding：4 项 P1。`ISSUE53-CI-REWORK-EVIDENCE-P1` 仍为 `OPEN`；ADR 0032 B2 独立复核另重开 `ADR0032-B2-AUTHORITY-ROLLBACK-DOMAIN`、`ADR0032-B2-DELIVERY-CRASH-WINDOW`、`ADR0032-B2-RECOVERY-RESIGN` 三项 P1。后三项的目标契约由 [ADR 0033](adr/0033-journal-bound-merge-authority-and-delivery.md)（Proposed）给出；local/non-production 受限 profile 的关闭要求 ADR 接受、A–D implementation successor 全部合入、独立验证 P0/P1 清零及 required CI/secret scan/recovery conformance 全绿；production supported 的关闭还必须等待 M11 external rollback witness、跨节点 fence 与协调回滚演练。它们不改变 Local MVP `APPROVED_FOR_IMPLEMENTATION` / `USABLE`，但在关闭前禁止把 `mergePolicy=policy` 登记为无限定 supported。
 - 门禁状态（分层）：
   - 维护者已接受 ADR 0001–0011、ADR 0012–0014 与 ADR 0016（2026-08-10，含 M7–M12 路线）及 Local MVP Scope；
   - ADR 0017（provider-neutral Sandbox 安全契约）已接受（2026-08-10）；**接受只关闭设计歧义**：不得把 M8 实现或 conformance 状态提前标为完成，M7 保持 `IN_PROGRESS`、M8–M13 保持 `PLANNED`，首次 Sandbox SPI dogfood 的既有实现成果按未接纳探索证据对待（见 [Roadmap 状态](roadmap-status.md)）；
@@ -415,12 +415,12 @@ ADR 0032 B2 初轮复核曾把五项实现缺口记为关闭。随后独立复�
 
 | 新 ID | 级别 | 状态 | 问题与关闭条件 |
 | --- | --- | --- | --- |
-| `ADR0032-B2-AUTHORITY-ROLLBACK-DOMAIN` | P1 | `OPEN` | authorization/intent 与 sidecar head 可协调回滚；由 ADR 0033 `MergeAuthorityTransaction` 同 journal 原子事实及 M11 external rollback witness 关闭。 |
-| `ADR0032-B2-DELIVERY-CRASH-WINDOW` | P1 | `OPEN` | delivery attempt/result 分步写存在 unknown 副作用窗口，预算可随同域回滚重置；由 `MergeDeliveryAnchor`、snapshot-before-mutation 与 pending→inspect/reconcile→resolved 关闭。 |
+| `ADR0032-B2-AUTHORITY-ROLLBACK-DOMAIN` | P1 | `OPEN` | authorization/intent 与 sidecar head 可协调回滚；由 ADR 0033 `MergeAuthorityTransaction` 同 journal 原子事实关闭本地分步窗口，production supported 还必须等待 M11 external rollback witness 与协调回滚恢复演练。 |
+| `ADR0032-B2-DELIVERY-CRASH-WINDOW` | P1 | `OPEN` | delivery attempt/result 分步写存在 unknown 副作用窗口，预算可随同域回滚重置；关闭要求 Core-only pending/observed/resolved CAS append、snapshot 后 mutation-adjacent current/expiry recheck 或等价 fence，以及 unknown/lag 保持 unresolved 并可重复 Inspect（含 restart lag→receipt-visible fixture）。Publisher 只提供 typed observation/provenance，不能裁决权威结果。 |
 | `ADR0032-B2-RECOVERY-RESIGN` | P1 | `OPEN` | 恢复可能重观察 `requestedAt`/check freshness 并为不同 digest 重签；由 prepared transaction 精确 bytes hydrate、同 identity 不同 digest conflict 关闭。 |
 | `ADR0032-B2-EXECUTABLE-SNAPSHOT-TOCTOU` | P2 | `OPEN` | snapshot 路径本身可在校验后被替换；ADR 0033 要求通过已校验 fd/immutable handle 执行同一对象并约束 config dir handle。 |
 
-残留 `#160` 保持 P2 `OPEN`：更通用的共享 outbox/投递观测与运维视图仍应由后续切片处理；它不能替代 ADR 0033 的 merge 专属 authority/delivery journal facts。ADR 0033 未接受且 A–D 未全部实现前，`mergePolicy=policy` 必须保持 unsupported。
+残留 `#160` 保持 P2 `OPEN`：更通用的共享 outbox/投递观测与运维视图仍应由后续切片处理；它不能替代 ADR 0033 的 merge 专属 authority/delivery journal facts。ADR 0033 未接受且 A–D 未全部实现前，`mergePolicy=policy` 必须保持 unsupported；A–D 通过后最多启用显式 opt-in 的 local/non-production 受限 profile，production supported 仍以 M11 external witness/fence 恢复门禁为前提。
 
 ## Issue #53 CI 失败 rework 注入设计缺口审计增补（2026-08-14）
 

@@ -1,7 +1,8 @@
 # ADR 0032：Policy 显式授权的受控 Task Merge（SCMMergeIntent → 独立 SCMMerger → SCMMergeReceipt 收敛 ACCEPTED）
 
-- 状态：提议（Proposed）——本 ADR 为草案，须经维护者 ApprovalRecord 接受后生效；接受人与接受时间另行记录，不改写本文。接受前，下文全部契约内容仅为草案提议，不构成已冻结契约、已关闭缺口或任何实现/生产可用/conformance 声明。本切片只新增本文档：不实现任何代码、Schema、Policy 或生命周期变更，不接受本 ADR，不改变任何 PR 的 Draft 状态，不执行任何 merge
+- 状态：已接受（Accepted，2026-08-17）——接受只冻结本 ADR 的业务契约，不构成实现完整、production supported、conformance 通过或 Milestone 完成声明；journal-bound authority/delivery 的后续缺口由 [ADR 0033](0033-journal-bound-merge-authority-and-delivery.md)（Proposed）承接，关闭前 `mergePolicy=policy` 保持 unsupported
 - 日期：2026-08-17
+- 接受证据：维护者显式接受；对应 Marshal Run `adr0032-controlled-policy-merge-r1-20260817` 已以 reviewRound=3、state=`ACCEPTED` 收敛。真实 [ApprovalRecord Schema](../../schemas/approval-record.schema.json) 实例为 `approval:9de1bb4f138d3b33d34add75b57ca5b5`（`gate=publish`、`outcome=approved`、`source=human:user-explicit-standing-authorization`、`controlSequence=2`、`stateSequence=14`），精确绑定 `decisionDigest=sha256:7edacd64e51955bcf5b0f011ffa6ba5cec307b91bdc5abf7d9aac01fd40f1b9b` 与 `evidenceDigest=sha256:46db79cf0997dcf84085c394304a4fe8397b09b2f78d971fb085e4a4281dbfcf`；该记录是 publish gate 的耐久批准，不冒充一个不存在的独立 `adr-accept` gate。公开交付证据为 [PR #152](https://github.com/chiga0/marshal-harness/pull/152)（MERGED，merge commit `79a9e5038b0a9b51095235ab644b8a7b57257a05`），其正文绑定同一 Task/Run 与 evidence digest
 - 决策来源：维护者已授权「独立审计与 required checks 全部通过之后自动合并」这一能力方向；但仓库 universal 规则（[AGENTS.md](../../AGENTS.md)）规定 Merge 默认禁用、不属于 MVP 生命周期，且不允许任何参与者以 `gh pr merge` 等 Marshal 之外的方式绕过受控流程合并 PR。发布权限的改变必须先新增或替代 ADR，本 ADR 是获得该正式能力的设计前置，并显式声明部分取代哪些旧裁决（见第九节）
 - 公开背景：[Issue #25](https://github.com/chiga0/marshal-harness/issues/25) / [PR #24](https://github.com/chiga0/marshal-harness/pull/24) 暴露并推动了 PR 已合并语义下的权威 reconcile 契约（[ADR 0026](0026-scm-merge-receipt-and-publication-reconcile.md)）；当前仓库的全部合入（例如早期 Draft PR 的维护者手工合入）均由维护者在 Marshal 之外手工执行，Marshal 自身没有任何 merge 路径
 - 关联：[ADR 0007](0007-intent-first-publication.md)（先记录意图的受控发布与远端对账）、[ADR 0010](0010-controlled-autonomy-and-intervention.md)（受控自治、审批 Gate 与人工介入）、[ADR 0019](0019-deterministic-control-plane-typed-execution-and-goal-admission.md)（确定性控制面、typed execution 与 append-only 补偿）、[ADR 0026](0026-scm-merge-receipt-and-publication-reconcile.md)（SCMMergeReceipt 与 PublicationReconcileRecord）、[ADR 0018](0018-control-plane-and-provider-ports.md)（Control Plane 与 Provider Port、权威/actor 双键空间）、[ADR 0028](0028-ci-deadline-phased-observation.md)（CI deadline 分阶段观察）、[ADR 0030](0030-ci-failure-rework-evidence-and-injection.md)（CI 失败证据与 rework 注入，Proposed，正交契约）、[任务生命周期](../task-lifecycle.md)、[安全模型](../security-model.md)
@@ -361,7 +362,7 @@ ADR 0030（Proposed）的 CI 失败 rework 闭环与本 ADR 正交：checks 失�
 4. **[ADR 0018](0018-control-plane-and-provider-ports.md)**：PublicationAuthorization typed edge 绑定清单中的「merge-never」——接受后由 B2 切片冻结受控 merge 的授权绑定以部分取代该条目；授权绑定必须包含预期 merge 执行者 principal（`expectedMergedBy` canonical 编码）与 SCMMerger actor 侧 `securityDomainId`，并与 intent 同名字段联动核验；trust domain 隔离、default deny、current-ledger recheck 与双键空间不变；
 5. **[AGENTS.md](../../AGENTS.md)** 的 universal 不变量「Merge 默认禁用，不属于 MVP 生命周期」及 [任务生命周期](../task-lifecycle.md)、[安全模型](../security-model.md) 中的相应表述：本 ADR 接受后须在 B1–B3 切片同步修订这些文档；本 ADR 与本切片不修改它们。
 
-取代生效以本 ADR 被维护者接受为前提；在接受前，上述旧裁决全部按其现有文本有效。
+上述部分取代已随本 ADR 接受生效；实现与 supported 状态仍受 ADR 0033 及其退出门禁约束。
 
 ## 十、后续切片与串行约束
 
@@ -385,12 +386,12 @@ ADR 0030（Proposed）的 CI 失败 rework 闭环与本 ADR 正交：checks 失�
 - Worker/Verifier/普通 Adapter 的凭据边界不放宽：GitHub credential 仍只存在于 Publisher 侧（SCMMerger 复用），环境构造负向断言；
 - 成本：两份新 Schema 演进点（SCMMergeIntent 新增、Outcome 可选字段扩展）、一个新 Port、一个新事件类型与三个串行实现切片；
 - 已声明的残留风险：base 分支在 Provider merge API 上无机械绑定参数。本 ADR 以「intent.baseOid 必须逐字等于 RunState 冻结 baseSha + 全部观察时点不等即 fail closed + base 前进必须 fresh rebase/rework 重走 Verification/Review/Approval」消除自证循环与静默放行；残留的有界 TOCTOU 窗口仅存在于「最后一次 base 观察通过 → Provider 实际执行 merge」之间，由 receipt `baseOid` 与冻结 baseSha 的事后核对兜底（不符即 fail closed，不得 ACCEPTED）。head 由 expectedHeadOid 机械 fencing，不存在同类残留；
-- 本 ADR 的提出与（未来）接受均不改变 Roadmap 里程碑 M8–M13（与第一节 admission 条件编号无关）的实现状态，不构成 conformance 声明。
+- 本 ADR 的提出与接受均不改变 Roadmap 里程碑 M8–M13（与第一节 admission 条件编号无关）的实现状态，不构成 conformance 声明。
 
 ## 非目标
 
 - 不实现 task merge、SCMMerger、Schema、Policy 或 lifecycle 代码（本切片只新增本文档）；
-- 不合并当前 PR，不改变 main，不接受 ADR 0032，不改变任何 PR 的 Draft 状态；
+- ADR 设计切片本身不执行 merge，也不因 ADR 接受而改变任何业务 PR 的 Draft 状态；
 - 不实现 `manual` 模式；
 - 不提供 branch delete、PR close、force、bypass、auto-merge queue 或任何 admin 能力；
 - 不把 adapter patch semver fingerprint 设计混入本 ADR；

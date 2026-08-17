@@ -1,6 +1,6 @@
 # ADR 0033：Journal-bound Merge Authority Transaction 与 Delivery Anchor
 
-- 状态：提议（Proposed）——未经维护者接受且 A–D 实现切片全部通过独立验证前，本 ADR 只是一份目标契约；不得据此宣称受控自动合并已支持、ADR 0032 B2 缺口已关闭或任何 Milestone 已完成
+- 状态：提议（Proposed）——未经维护者接受且 A–D 实现切片全部通过独立验证前，本 ADR 只是一份目标契约；即使 A–D 通过，也只能启用显式 opt-in 的 local/non-production 受限 profile，production supported 仍须等待 M11 external rollback witness 通过恢复演练；不得据此宣称受控自动合并已全面支持、ADR 0032 B2 缺口已关闭或任何 Milestone 已完成
 - 日期：2026-08-17
 - 决策来源：[ADR 0032](0032-controlled-policy-merge.md) B2 独立复核发现：正文记录与 sidecar monotonic head 位于同一可回滚故障域，无法检测协调回滚；authorization→intent 与 delivery attempt→result 的分步写存在 crash dead zone；恢复入口还可能重新观察时间并为不同 digest 重签授权；凭据执行时只校验可替换路径，仍有 snapshot 自身 TOCTOU
 - 关联：[ADR 0018](0018-control-plane-and-provider-ports.md)、[ADR 0019](0019-deterministic-control-plane-typed-execution-and-goal-admission.md)、[ADR 0026](0026-scm-merge-receipt-and-publication-reconcile.md)、[ADR 0032](0032-controlled-policy-merge.md)、公开 Issue #160
@@ -39,7 +39,7 @@ sidecar 文件、目录名、mtime、独立 head 文件或进程内 counter 都�
 
 ### 2. Prepared intent 与 authorization 是一个原子事实
 
-新增同状态事件：
+新增同状态事件；两者都只能由 Core 在完成 Schema、binding、current-ledger 与 expectedSequence 校验后追加：
 
 | 事件 | actor | 状态 | 语义 |
 | --- | --- | --- | --- |
@@ -61,30 +61,36 @@ prepared 事件冻结签名输入的精确 bytes，包括 `requestedAt`、fresh 
 
 | 事件 | actor | 状态 | 语义 |
 | --- | --- | --- | --- |
-| `publication.merge-delivery-pending` | `publisher/marshal-scm-merger` | `CI_PENDING → CI_PENDING` | 在 mutation 前持久化 attempt、operation、预算消费与前一 anchor |
-| `publication.merge-delivery-resolved` | `publisher/marshal-scm-merger` | `CI_PENDING → CI_PENDING` | 追加 observation-bound 结果；不得覆盖 pending |
+| `publication.merge-delivery-pending` | `system/marshal-core` | `CI_PENDING → CI_PENDING` | Core 在 mutation 前持久化 attempt、operation、预算消费与前一 anchor |
+| `publication.merge-delivery-observed` | `system/marshal-core` | `CI_PENDING → CI_PENDING` | Core 接纳一次 typed Inspect observation；unknown/lag 时 pending 仍 unresolved，可继续 Inspect |
+| `publication.merge-delivery-resolved` | `system/marshal-core` | `CI_PENDING → CI_PENDING` | Core 只在 observation 可确定裁决时追加结果；不得覆盖 pending |
+
+SCMMerger/Publisher 只能返回封闭的 typed observation，并作为 `sourceActor=publisher/marshal-scm-merger` provenance 被记录；它无权追加 authority journal、消费预算或宣布 resolved。Core 接纳前必须逐项验证 source Port/protocol、pending/intent/operation/attempt identity、target observation、authorization/security domain、Provider principal、observation digest 与 current journal sequence；任一不符即拒绝，零 authority append。事件的 producer-authority 表只登记 `system/marshal-core`。
 
 执行顺序固定为：
 
-1. 紧邻 mutation 的 `ObserveTarget` 与 current authority recheck；
+1. 紧邻 mutation 的 `ObserveTarget`：SCMMerger 返回封闭 typed preflight observation，Core 校验 source provenance、target binding、observation digest 与 current authority；
 2. 以 journal CAS 追加 `pending`，并原子消费一次 delivery budget；
 3. **同步持久化包含该 sequence 的 Run snapshot**；snapshot 未成功不得 mutation；
-4. 执行一次 credentialed mutation；
-5. Inspect 外部真实状态并追加 `resolved`；之后才允许继续下一 operation 或生命周期收敛。
+4. snapshot 成功后、credentialed mutation 前，在 Core 的 mutation-serialization critical section 内再次读取 authority journal：精确核对 pending 仍 unresolved/current、journal sequence 未变化、authorization 未撤销且未过期、intent/target/check binding 仍 current；随后取得绑定 `(authorityNamespaceId, runId, pendingDigest, journalSequence, authorizationDigest, expiry)` 的单次 mutation fence，并在不释放该 fence 的情况下把调用交给 SCMMerger；任一值变化或 fence CAS 失败必须零 mutation；
+5. 执行一次 credentialed mutation；调用已进入 Provider 后才释放 fence，之后的进程崩溃或响应丢失由 unresolved pending 承担；M11 多节点实现必须用同一 authority store 的 fenced lease/serializable transaction 提供等价保证，进程内 mutex 不构成 HA fence；
+6. Inspect 外部真实状态，把 SCMMerger typed observation 交给 Core 校验；Core 先追加 `observed`，只有结果可确定时再 CAS 追加 `resolved`；之后才允许继续下一 operation 或生命周期收敛。
 
-`resolved.outcome` 是封闭枚举：`succeeded|not-applied|permanent-failure|ambiguous|conflict`。Provider 原始输出不进入 journal、Outcome 或错误字符串。
+`resolved.outcome` 是封闭枚举：`succeeded|not-applied|permanent-failure|conflict`。`unknown|lag` 是 `observed.observationClass` 的非终态取值，永远不能伪装成 resolved outcome。Provider 原始输出不进入 journal、Outcome 或错误字符串。
 
 恢复发现 unresolved pending 时必须先 Inspect/Reconcile：
 
-- ready：目标已 ready 且全部 binding 匹配，追加 `succeeded`；仍为绑定一致的 Draft，追加 `not-applied` 后方可新建下一 attempt；漂移或关闭为 permanent/conflict；
-- merge：先观察 receipt；匹配 receipt 追加 `succeeded`；明确未合并、仍 ready 且全部 binding 匹配时可追加 `not-applied`；Provider 返回 unknown、延迟可见或观察歧义时保持 pending/追加 `ambiguous`，不得 mutation replay；
+- ready：目标已 ready 且全部 binding 匹配，Core 追加 observed+`succeeded`；仍为绑定一致的 Draft，Core 追加 observed+`not-applied` 后方可新建下一 attempt；漂移或关闭形成可确定 permanent/conflict；
+- merge：先观察 receipt；匹配 receipt 时 Core 追加 observed+`succeeded`；明确未合并、仍 ready 且全部 binding 匹配时可追加 observed+`not-applied`；Provider 返回 unknown、延迟可见或观察歧义时只追加 `publication.merge-delivery-observed(observationClass=unknown|lag)`，pending 保持 unresolved，可用同一 pending 重复 Inspect，且不得 mutation replay；
 - 已合并但 receipt 绑定不符：`conflict`，不得 `ACCEPTED`。
 
 ### 4. 预算不可通过投影回滚重置
 
 delivery budget 只由 journal 中 `publication.merge-delivery-pending` 的数量派生，按 `(authorityNamespaceId, runId, intentDigest, operation)` 计数，固定最多三次。删除 projection、result 或本地 cache 不改变已消费预算；pending 即已消费，不能因为没有 result 返还。
 
-同一 pending 的 Inspect/Reconcile 不消费新预算。只有上一 pending 已有 `not-applied`，且 current authority、target binding 与剩余预算均重新校验通过，才能追加下一 pending。
+同一 pending 的 Inspect/Reconcile 与重复 `observed(unknown|lag)` 不消费新预算。只有上一 pending 已有 `not-applied`，且 current authority、target binding 与剩余预算均重新校验通过，才能追加下一 pending。
+
+每个 pending 还必须冻结 `reconcileDeadline` 与确定性 backoff schedule；重复 Inspect 不能无限悬挂。deadline 到期仍只有 unknown/lag 时，Core 追加绑定 pending 与全部 observation anchors 的既有 typed `publication.blocked`，停止后续 mutation，但仍不伪造 `resolved`。恢复只能继续只读 reconcile 或由新治理契约处置，不能重置 pending、deadline 或 mutation budget。
 
 ### 5. 回滚与删尾检测边界
 
@@ -111,11 +117,16 @@ credentialed mutation 必须在一次打开中完成身份确认与执行：
 | --- | --- |
 | authorization 已准备但 intent 未成为同一 journal fact | Schema/reducer 不允许表达；零 mutation |
 | prepared transaction 同 identity 不同 digest 重放 | conflict；零追加、零 mutation |
+| Publisher 直接提交 pending/observed/resolved event | producer-authority 拒绝；零 authority append |
+| preflight typed observation 的 provenance/digest/target 不匹配 | Core 拒绝 pending；零 budget 消费、零 mutation |
 | 恢复时 wall clock/check observation 已变化 | hydrate 原 transaction；禁止重签不同 digest |
 | pending 已写、snapshot 未同步成功 | 零 mutation |
+| snapshot 已同步、mutation 前 authorization/journal/expiry 变化 | mutation-adjacent recheck 或 fence CAS 失败；零 mutation |
 | pending 已写、mutation 前崩溃 | Inspect；只有明确 `not-applied` 才可新 attempt |
 | mutation 已生效、响应丢失 | Inspect 得到匹配远端事实并 resolved；不得重放 |
-| merge observation 为 unknown/lag | 保持 pending/ambiguous；不得重放 |
+| merge observation 为 unknown/lag | Core 追加非终态 observed anchor，pending 保持 unresolved；可重复 Inspect，不得重放 mutation |
+| restart 后首次 Inspect=lag、后续 receipt 可见 | 第一次只追加 observed(lag)；重启后以同一 pending 再 Inspect，匹配 receipt 后 observed+resolved(succeeded)；mutation 总次数仍为 1 |
+| reconcileDeadline 到期仍为 unknown/lag | 追加 observation-bound `publication.blocked`，pending 不伪造 resolved，mutation 总次数不增加 |
 | 删除 delivery projection/result | budget 仍由 pending journal facts 派生 |
 | journal 尾删、snapshot 较新 | fail closed，禁止 mutation |
 | journal+snapshot 协调回滚 | 明确记录为本地不可检测；production 必须由外部 rollback witness 覆盖 |
@@ -128,12 +139,12 @@ credentialed mutation 必须在一次打开中完成身份确认与执行：
 
 严格串行实施，前一切片未合入不得开始后一切片：
 
-- **A：契约与 reducer**——新增事件/记录 Schema、closed payload、producer authority、same-state 命名 allowlist、journal replay 与 negative fixtures；
+- **A：契约与 reducer**——新增事件/记录 Schema、closed payload、producer authority（仅 Core）、same-state 命名 allowlist、journal replay 与 negative fixtures；
 - **B：Authority transaction**——原子 prepared/revoked append、hydrate/re-entry、current-ledger recheck；
 - **C：Delivery anchor**——pending/resolved、snapshot-before-mutation、Inspect/Reconcile、预算派生与 crash matrix；
 - **D：Credentialed execution**——fd/immutable-handle 执行、process-group containment、GitHub fake/live conformance。
 
-受控 merge 只有在 A–D 全部完成、独立审计 P0/P1 清零、required CI/secret scan 全绿并完成真实 lost-response/recovery conformance 后才可注册为 supported。部分切片合入不得启用 `mergePolicy=policy`。
+受控 merge 在 A–D 全部完成、独立审计 P0/P1 清零、required CI/secret scan 全绿并完成真实 lost-response/recovery conformance 后，最多只能注册为显式 opt-in 的 `local-nonproduction` 受限 profile。production supported 必须额外等待 M11 external rollback witness、跨节点 fenced lease 与协调回滚恢复演练全部通过；部分切片合入不得启用 `mergePolicy=policy`，不得使用无限定的 supported 表述。
 
 ## 后果
 

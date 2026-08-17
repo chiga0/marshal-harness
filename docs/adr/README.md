@@ -6,7 +6,7 @@
 
 2026-08-14，针对公开 [Issue #53](https://github.com/chiga0/marshal-harness/issues/53) 起草 ADR 0030（Proposed）：为 CI checks-failed → typed evidence → rework findings 注入 → 下一 Attempt prompt 消费提议冻结一条可恢复、可审计、无双计数的闭环契约（一等不可变 CIFailureEvidence、ReviewPacket typed CI 扩展与 ReviewDecision 绑定、ci-checks-failed 命名自环、双预算守卫终态与 execution lineage 消费）。ADR 0030 仅为提案，未经维护者接受，不构成实现、M8 状态或 conformance 声明。
 
-2026-08-17，ADR 0032 B2 独立复核发现同故障域 sidecar head 无法检测协调回滚，authorization/intent 与 delivery attempt/result 的分步写仍有 crash dead zone。ADR 0033（Proposed）提议用 Run journal 中的原子 `MergeAuthorityTransaction`、`MergeDeliveryAnchor` 与 pending→inspect/reconcile→resolved 状态机取代这些实现解释，并要求通过 fd/immutable handle 执行同一已校验的 `gh` 对象。该提案及其接受均不表示受控 merge 已支持，也不改变 M10–M13 状态。
+2026-08-17，维护者接受 ADR 0032；接受证据绑定 Run `adr0032-controlled-policy-merge-r1-20260817`、publish ApprovalRecord `approval:9de1bb4f138d3b33d34add75b57ca5b5`、reviewRound=3 的精确 decision/evidence digest 与已合入 [PR #152](https://github.com/chiga0/marshal-harness/pull/152)。该 ApprovalRecord 是真实 publish gate 记录，不冒充独立 `adr-accept` gate。随后 B2 独立复核发现同故障域 sidecar head 无法检测协调回滚，authorization/intent 与 delivery attempt/result 的分步写仍有 crash dead zone。ADR 0033（Proposed）提议用 Run journal 中的原子 `MergeAuthorityTransaction`、`MergeDeliveryAnchor` 与 pending→inspect/reconcile→resolved 状态机取代这些实现解释，并要求通过 fd/immutable handle 执行同一已校验的 `gh` 对象。ADR 0032 接受与 ADR 0033 提出均不表示受控 merge 已支持，也不改变 M10–M13 状态。
 
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
@@ -35,5 +35,5 @@
 | [0029](0029-pre-attempt-abort.md) | 无 Attempt Run 的显式 abort 出口（PLANNED/READY 且无 Attempt 记录/无 publication intent/无 SideEffect/无已发布分支 → ABORTED，补充 ADR 0012 而非替代） | 已接受（Accepted，2026-08-13） |
 | [0030](0030-ci-failure-rework-evidence-and-injection.md) | CI 失败 typed evidence 与 rework 注入闭环（一等不可变 CIFailureEvidence、ReviewPacket typed CI 扩展与 ReviewDecision 绑定、ci-checks-failed 命名自环、双预算守卫终态与 execution prompt lineage 消费，Issue #53） | 提议（Proposed，2026-08-14；仅契约设计，未实现） |
 | [0031](0031-durable-publication-retry.md) | Typed Durable Publication Retry（Core-owned PublicationRetryLedger、approval lineage 与 CI_PENDING re-observation，Issue #54） | 提议（Proposed，2026-08-17；仅契约设计，未实现） |
-| [0032](0032-controlled-policy-merge.md) | Policy 显式授权的受控 Task Merge（SCMMergeIntent、独立 SCMMerger、SCMMergeReceipt 与 ACCEPTED 收敛） | 提议（Proposed，2026-08-17；实现解释由 ADR 0033 部分取代，未注册为 supported） |
+| [0032](0032-controlled-policy-merge.md) | Policy 显式授权的受控 Task Merge（SCMMergeIntent、独立 SCMMerger、SCMMergeReceipt 与 ACCEPTED 收敛） | 已接受（Accepted，2026-08-17；接受证据绑定真实 publish ApprovalRecord 与 PR #152；authority/delivery 实现解释由 ADR 0033 部分取代，未注册为 supported） |
 | [0033](0033-journal-bound-merge-authority-and-delivery.md) | Journal-bound MergeAuthorityTransaction、MergeDeliveryAnchor、pending→inspect/reconcile→resolved 恢复与 executable snapshot TOCTOU 关闭 | 提议（Proposed，2026-08-17；契约/负向矩阵第一切片，未实现） |
