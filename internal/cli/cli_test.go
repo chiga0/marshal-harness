@@ -125,6 +125,26 @@ func TestDoctorReportsCompatibilityWithoutLocalDetails(t *testing.T) {
 	}
 }
 
+func TestDoctorBindsSupportedQoderConformanceMetadata(t *testing.T) {
+	identity := doctorSnapshotIdentity{
+		AdapterID: "qoder", AdapterVersion: "0.1.0", BinaryVersion: "1.1.23", ProbeStatus: "supported",
+		ConformanceEvidenceDigest: "sha256:" + strings.Repeat("a", 64), ConformanceTrustRootKeyID: "root-1",
+		ConformanceProbeProfileDigest: "sha256:" + strings.Repeat("b", 64), ConformanceValidUntil: "2026-08-18T01:00:00Z",
+		ConformanceHostFingerprint: "sha256:" + strings.Repeat("c", 64), ConformanceAuthorityGeneration: 7,
+	}
+	result := doctorWorker{AdapterID: "qoder", Compatibility: "probe-failed"}
+	applyDoctorSnapshotIdentity(&result, identity)
+	if result.Compatibility != "supported" || result.ConformanceEvidenceDigest != identity.ConformanceEvidenceDigest || result.ConformanceTrustRootKeyID != identity.ConformanceTrustRootKeyID || result.ConformanceProbeProfileDigest != identity.ConformanceProbeProfileDigest || result.ConformanceValidUntil != identity.ConformanceValidUntil || result.ConformanceHostFingerprint != identity.ConformanceHostFingerprint || result.ConformanceAuthorityGeneration != 7 {
+		t.Fatalf("doctor metadata = %+v", result)
+	}
+	identity.ConformanceEvidenceDigest = ""
+	result = doctorWorker{AdapterID: "qoder", Compatibility: "probe-failed"}
+	applyDoctorSnapshotIdentity(&result, identity)
+	if result.Compatibility != "probe-failed" {
+		t.Fatalf("doctor accepted incomplete qoder metadata: %+v", result)
+	}
+}
+
 func TestDoctorCanceledContextDoesNotProbeWorkers(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "probed")
 	executable := filepath.Join(t.TempDir(), "opencode")
