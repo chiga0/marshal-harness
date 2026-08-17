@@ -162,7 +162,7 @@ credentialed mutation 必须在一次打开中完成身份确认与执行：
 | fence→Provider handoff 先于 revoke 线性化 | 本次 mutation 先获授权并最多执行一次；后到 revoke 只阻止后续 mutation，结果由同一 pending 对账 |
 | fence journal commit 后、fence snapshot barrier 前崩溃 | restart 从 journal hydrate consumption、重建 snapshot、Inspect/Reconcile；零 handoff replay |
 | fence 已消费并 durable、handoff 边界崩溃后 restart | hydrate consumed identity/providerRequestDigest，按可能已 handoff 处理；Inspect/Reconcile，绝不重新 consume 或重放 mutation |
-| pending 已写、mutation 前崩溃 | Inspect；只有明确 `not-applied` 才可新 attempt |
+| pending 与 pending snapshot 已 durable、journal 明确不存在 fence consumption，进程在消费 fence 前崩溃 | restart hydrate 同一 pending，重新执行 current/expiry recheck 并竞争唯一 fence；只有 CAS 胜者完成 fence durability barrier 后可 handoff 一次，不先 Inspect，也不新建 attempt |
 | mutation 已生效、响应丢失 | Inspect 得到匹配远端事实并 resolved；不得重放 |
 | merge observation 为 unknown/lag | Core 追加非终态 observed anchor，pending 保持 unresolved；可重复 Inspect，不得重放 mutation |
 | restart 后首次 Inspect=lag、后续 receipt 可见 | 第一次只追加 observed(lag)；重启后以同一 pending 再 Inspect，匹配 receipt 后 observed+resolved(succeeded)；mutation 总次数仍为 1 |
