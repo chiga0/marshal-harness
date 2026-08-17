@@ -109,6 +109,31 @@ func TestQoderRegistrationRemainsUnsupportedWithoutAuthorityEvidence(t *testing.
 	}
 }
 
+func TestQoderAuthorityConfigCannotActivateWhileADR0034Proposed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qodercli")
+	script := "#!/bin/sh\nprintf '1.1.23\\n'\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "qoder-authority.json")
+	if err := os.WriteFile(configPath, []byte(`{"candidate":"must-not-activate"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewWorkerRuntime(staticEnv(map[string]string{
+		"MARSHAL_QODER_PATH": path, "MARSHAL_QODER_CONFORMANCE_CONFIG": configPath,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Registry().Resolve("qoder"); err == nil {
+		t.Fatal("Proposed ADR authority config activated qoder")
+	}
+	configuration := configurationByID(t, runtime, "qoder")
+	if !configuration.Configured || configuration.Registered || configuration.Outcome != WorkerOutcomeInvalidConfiguration {
+		t.Fatalf("qoder configuration = %+v", configuration)
+	}
+}
+
 func TestNewWorkerRuntimeRegistersAllThree(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{

@@ -72,8 +72,35 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1, "maxLength": 4000 }
     },
+    "conformanceEvidenceDigest": { "$ref": "#/$defs/digest" },
+    "conformanceTrustRootKeyId": { "$ref": "#/$defs/id" },
+    "conformanceProbeProfileDigest": { "$ref": "#/$defs/digest" },
+    "conformanceValidUntil": { "type": "string", "format": "date-time" },
+    "conformanceHostFingerprint": { "$ref": "#/$defs/digest" },
+    "conformanceAuthorityGeneration": { "type": "integer", "minimum": 1 },
     "probedAt": { "type": "string", "format": "date-time" }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "adapterId": { "const": "qoder" },
+          "probeStatus": { "const": "supported" }
+        },
+        "required": ["adapterId", "probeStatus"]
+      },
+      "then": {
+        "required": [
+          "conformanceEvidenceDigest",
+          "conformanceTrustRootKeyId",
+          "conformanceProbeProfileDigest",
+          "conformanceValidUntil",
+          "conformanceHostFingerprint",
+          "conformanceAuthorityGeneration"
+        ]
+      }
+    }
+  ],
   "$defs": {
     "id": {
       "type": "string",

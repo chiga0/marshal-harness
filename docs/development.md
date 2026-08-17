@@ -186,6 +186,57 @@ marshal doctor --json
 
 确认对应 Adapter 的 `workers` 条目 `outcome=registered`、`compatibility=supported`；此时该 Adapter 不再出现在 `discovery` 段。若 `compatibility=unsupported`，说明二进制版本与冻结的 supported 版本不符，doctor 会如实报告但不会因此放行。
 
+Qoder 额外设计了独立 Conformance authority 门禁。只配置
+`MARSHAL_QODER_PATH` 会完成注册，但 `compatibility` 必须保持
+`unsupported`。**ADR 0034 仍为 Proposed，生产构造器当前硬禁用
+`MARSHAL_QODER_CONFORMANCE_CONFIG`：配置该变量会得到
+`outcome=invalid-configuration`，绝不会注册或产生 `supported`。** 下述格式只供
+候选机制的 hermetic 负向矩阵与独立审计使用，不是启用说明。独立 verifier 应在无业务仓库写权限、独立临时目录、
+不继承 ambient credential 的 probe-only 环境中验证 credential 与冻结的
+`stream-json` 协议；随后使用 `qoder.SealConformanceEvidence` 将非敏感
+observation（可执行文件 realpath/digest/version、稳定 host fingerprint、
+suite/probe artifact/challenge、capability/profile/argv/env/tool policy（其中 argv
+覆盖由运行时同一 `buildArgs` 模板生成的 model 省略/存在 × `--tools` 省略/显式空值四种组合）、
+event/protocol/permission、transcript digest、有效期和三个 typed verdict）交给
+独立签名者。probe 必须在隔离 scratch worktree 实际验证写入，但不得拥有业务
+仓库权限。私钥、credential 与 transcript 正文不得进入 Marshal 配置或仓库。
+
+签名者把返回的 JSON 以 `<digest-without-sha256-prefix>.json` 写入权限为
+`0700` 的 authority 目录，文件权限为 `0600`。生产侧另建权限为 `0600`
+且全部路径组件都不是符号链接的配置文件：
+
+```json
+{
+  "evidenceRoot": "/absolute/private/qoder-authority",
+  "evidenceDigest": "sha256:<64-hex>",
+  "authorityGeneration": 1,
+  "probeArtifactDigest": "sha256:<64-hex>",
+  "challengeDigest": "sha256:<64-hex>",
+  "revokedEvidenceDigests": [],
+  "trustRoots": [
+    {
+      "keyId": "verifier-key-1",
+      "algorithm": "ed25519",
+      "publicKey": "<base64-public-key>"
+    }
+  ]
+}
+```
+
+ADR 0034 接受后仍须由独立后续变更显式移除生产硬禁用；本候选提交不会自动启用。
+未来启用版本的 `marshal doctor --json` 只有在 evidence 签名、内容摘要、Qoder identity、
+兼容 semver、完整 probe contract、当前 host fingerprint、authority generation、
+撤销集合和不超过 24 小时的有效期全部匹配时才报告
+`supported`；缺失、过期、替换、未知字段、错误权限或环境不匹配均
+fail closed。候选 consumer 的每次 Probe 与 Worker launch guard 都重新读取 authority 配置与 evidence，
+并维护进程内单调 `authorityGeneration` high-water；generation rollback 或同 generation
+替换 evidence/artifact 均 fail closed，
+不会把一次成功结果写入仓库或 `.marshal` 作为第二权威。
+
+CI 中生成的临时 key、fake executable 与 synthetic transcript 只验证签名和
+fail-closed 机制，不是 credentialed live evidence。ADR 0034 未接受或当前
+host 尚无外部真实 evidence 时，不得据此宣称 Qoder 已完成 live conformance。
+
 本节与 Operator Runbook §9.1“一次性环境准备”交叉引用：§9.1 给出五个环境变量的固化方法，本节给出如何用 doctor 发现正确的绝对路径。
 
 ## 契约策略
