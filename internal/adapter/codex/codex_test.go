@@ -1874,6 +1874,14 @@ func useFixtureExecutable(t *testing.T, fixture *runFixture, executable string) 
 	defer snapshot.close()
 	pinned := snapshot.identity
 	fixture.adapter.pinned = &pinned
+	// Changing the executable invalidates the old fixture's conformance
+	// authority. Rebind fresh evidence to the exact native identity so Run
+	// exercises the launcher path instead of failing at conformance admission.
+	fixture.adapter.conformance = &boundConformance{
+		identity:       pinned,
+		validUntil:     time.Now().UTC().Add(time.Hour),
+		evidenceDigest: digest("native-fixture-conformance"),
+	}
 }
 
 // fakeScript 生成 fake codex：--version 返回冻结格式版本行；其余调用先按

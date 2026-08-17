@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -51,10 +52,8 @@ func TestLinuxRunningImageRejectsProcfsLookalike(t *testing.T) {
 }
 
 func TestLinuxNativeTargetClosesLauncherAuthorityFDs(t *testing.T) {
-	// /bin/sh is a native image on the Linux CI/runtime boundary. Unlike a Go
-	// helper it does not initialize an epoll/eventfd pair into the newly-free
-	// fd5/fd6 slots before the test can inspect inheritance.
-	target, err := sealedExecutableFD("/bin/sh")
+	helper := buildRawFDHelper(t)
+	target, err := sealedExecutableFD(helper)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,10 +78,18 @@ func TestLinuxNativeTargetClosesLauncherAuthorityFDs(t *testing.T) {
 	}
 	defer worktree.Close()
 
-	checkFDs := "test -e /proc/self/fd/3 && test -e /proc/self/fd/4 && " +
-		"test ! -e /proc/self/fd/5 && test ! -e /proc/self/fd/6 && test ! -e /proc/self/fd/7 && " +
-		"printf ok >&4"
-	command := exec.Command(secureFDPath(6), codexLauncherArgument, secureFDPath(7), "", "", "-c", checkFDs)
+	// Negative control: direct execution deliberately inherits fd3..fd7. The
+	// raw helper must detect the first leaked authority descriptor before any
+	// language runtime or libc can allocate and reuse a descriptor number.
+	leaking := exec.Command(helper)
+	leaking.ExtraFiles = []*os.File{schema, result, worktree, launcher, target}
+	err = leaking.Run()
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) || exitError.ExitCode() != 22 {
+		t.Fatalf("negative control err = %v, want authority leak exit 22", err)
+	}
+
+	command := exec.Command(secureFDPath(6), codexLauncherArgument, secureFDPath(7), "", "")
 	command.ExtraFiles = []*os.File{schema, result, worktree, launcher, target}
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("native helper exec: %v: %s", err, output)
@@ -97,6 +104,73 @@ func TestLinuxNativeTargetClosesLauncherAuthorityFDs(t *testing.T) {
 	if string(data) != "ok" {
 		t.Fatalf("native helper result = %q, want ok", data)
 	}
+}
+
+// buildRawFDHelper produces a static native image with a custom _start. Its
+// first operations are direct fcntl(F_GETFD) syscalls: no dynamic loader,
+// libc, Go runtime, procfs traversal, or file allocation can reuse fd5..fd7
+// before the inheritance assertions execute.
+func buildRawFDHelper(t *testing.T) string {
+	t.Helper()
+	var syscallBody string
+	switch runtime.GOARCH {
+	case "amd64":
+		syscallBody = `
+#define SYS_WRITE 1
+#define SYS_FCNTL 72
+#define SYS_EXIT 60
+static inline long syscall3(long number, long first, long second, long third) {
+    long result;
+    __asm__ volatile ("syscall" : "=a"(result) : "a"(number), "D"(first), "S"(second), "d"(third) : "rcx", "r11", "memory");
+    return result;
+}`
+	case "arm64":
+		syscallBody = `
+#define SYS_WRITE 64
+#define SYS_FCNTL 25
+#define SYS_EXIT 93
+static inline long syscall3(long number, long first, long second, long third) {
+    register long x0 __asm__("x0") = first;
+    register long x1 __asm__("x1") = second;
+    register long x2 __asm__("x2") = third;
+    register long x8 __asm__("x8") = number;
+    __asm__ volatile ("svc 0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x8) : "memory");
+    return x0;
+}`
+	default:
+		t.Fatalf("raw fd helper is unavailable on Linux/%s", runtime.GOARCH)
+	}
+	source := syscallBody + `
+#define F_GETFD 1
+#define EBADF_RESULT -9
+static __attribute__((noreturn)) void finish(long code) {
+    syscall3(SYS_EXIT, code, 0, 0);
+    __builtin_unreachable();
+}
+void _start(void) {
+    if (syscall3(SYS_FCNTL, 3, F_GETFD, 0) < 0) finish(20);
+    if (syscall3(SYS_FCNTL, 4, F_GETFD, 0) < 0) finish(21);
+    if (syscall3(SYS_FCNTL, 5, F_GETFD, 0) != EBADF_RESULT) finish(22);
+    if (syscall3(SYS_FCNTL, 6, F_GETFD, 0) != EBADF_RESULT) finish(22);
+    if (syscall3(SYS_FCNTL, 7, F_GETFD, 0) != EBADF_RESULT) finish(22);
+    if (syscall3(SYS_WRITE, 4, (long)"ok", 2) != 2) finish(23);
+    finish(0);
+}`
+	directory := t.TempDir()
+	sourcePath := filepath.Join(directory, "fd-helper.c")
+	helper := filepath.Join(directory, "fd-helper")
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	compiler, err := exec.LookPath("cc")
+	if err != nil {
+		t.Fatal("Linux native fd test requires cc")
+	}
+	build := exec.Command(compiler, "-nostdlib", "-static", "-fno-stack-protector", "-fno-pie", "-no-pie", "-Wl,--build-id=none", "-o", helper, sourcePath)
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build raw fd helper: %v: %s", err, output)
+	}
+	return helper
 }
 
 func TestLinuxLauncherInitializationFailureMakesAllSurfacesUnsupported(t *testing.T) {
