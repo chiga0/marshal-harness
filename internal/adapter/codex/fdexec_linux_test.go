@@ -4,6 +4,7 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,63 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+func TestLinuxRunningImageUsesVerifiedProcfsMagicLink(t *testing.T) {
+	fd, err := unix.Open("/proc/self/exe", unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if fd >= 0 {
+		_ = unix.Close(fd)
+	}
+	if !errors.Is(err, unix.ELOOP) {
+		t.Fatalf("ordinary O_NOFOLLOW opener err = %v, want ELOOP", err)
+	}
+	running, err := openRunningExecutableFD()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer running.Close()
+	opened, err := running.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked, err := os.Stat("/proc/self/exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(opened, linked) {
+		t.Fatal("verified procfs opener did not bind the running image inode")
+	}
+}
+
+func TestLinuxLauncherInitializationFailureMakesAllSurfacesUnsupported(t *testing.T) {
+	originalFile, originalErr := launcherFile, launcherErr
+	launcherFile, launcherErr = nil, errors.New("injected launcher init failure")
+	defer func() { launcherFile, launcherErr = originalFile, originalErr }()
+	if secureFDExecutionAvailable() {
+		t.Fatal("failed launcher initialization reported fd execution available")
+	}
+	executable := fakeExecutable(t, supportedVersionOutput, "exit 0")
+	adapter, err := New(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.unsafePathExecutionForTest = false
+	record, err := adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(record.Data), `"probeStatus":"unsupported"`) ||
+		!strings.Contains(string(record.Data), "launcher initialization failed") {
+		t.Fatalf("probe = %s, want auditable launcher initialization failure", record.Data)
+	}
+	if err := adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrPlatformUnsupported) {
+		t.Fatalf("BindConformance err = %v, want platform unsupported", err)
+	}
+	fixture := newRunFixture(t, supportedVersionOutput, "exit 0")
+	fixture.adapter.unsafePathExecutionForTest = false
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPlatformUnsupported) {
+		t.Fatalf("Run err = %v, want platform unsupported", err)
+	}
+}
 
 func TestLinuxExecutableMemfdIsSealedAgainstSameUIDMutation(t *testing.T) {
 	executable := fakeExecutable(t, supportedVersionOutput, "exit 0")

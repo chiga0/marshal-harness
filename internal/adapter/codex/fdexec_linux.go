@@ -9,17 +9,26 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 
 	"golang.org/x/sys/unix"
 )
 
-const secureFDPlatformReason = ""
-
 var (
-	launcherFile, launcherErr = sealedExecutableFD("/proc/self/exe")
+	launcherFile, launcherErr = sealedRunningExecutableFD()
 )
 
-func secureFDExecutionAvailable() bool { return true }
+func secureFDExecutionAvailable() bool { return launcherErr == nil && launcherFile != nil }
+
+func secureFDExecutionReason() string {
+	if launcherErr != nil {
+		return "authenticated launcher initialization failed: " + launcherErr.Error()
+	}
+	if launcherFile == nil {
+		return "authenticated launcher initialization failed: launcher image is unavailable"
+	}
+	return "authenticated fd execution is available"
+}
 
 func secureFDPath(fd int) string { return fmt.Sprintf("/proc/self/fd/%d", fd) }
 
@@ -28,9 +37,57 @@ func secureFDPath(fd int) string { return fmt.Sprintf("/proc/self/fd/%d", fd) }
 // os.Executable's mutable pathname.
 func secureLauncherFD() (*os.File, error) {
 	if launcherErr != nil || launcherFile == nil {
-		return nil, fmt.Errorf("%w: %v", errSecureFDExecutionUnavailable, launcherErr)
+		return nil, fmt.Errorf("%w: %s", errSecureFDExecutionUnavailable, secureFDExecutionReason())
 	}
 	return launcherFile, nil
+}
+
+// openRunningExecutableFD deliberately follows only procfs' kernel-provided
+// `exe` magic link. The proc mount and numeric PID directory are first pinned
+// by descriptors and verified as procfs/non-symlink objects, so an attacker
+// cannot substitute an ordinary pathname symlink for the running image.
+func openRunningExecutableFD() (*os.File, error) {
+	procFD, err := unix.Open("/proc", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	proc := os.NewFile(uintptr(procFD), "/proc")
+	defer proc.Close()
+	var filesystem unix.Statfs_t
+	if err := unix.Fstatfs(procFD, &filesystem); err != nil {
+		return nil, err
+	}
+	if uint64(filesystem.Type) != uint64(unix.PROC_SUPER_MAGIC) {
+		return nil, errors.New("/proc is not a procfs mount")
+	}
+	pidFD, err := unix.Openat(procFD, strconv.Itoa(os.Getpid()), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	pidDirectory := os.NewFile(uintptr(pidFD), "proc-self-pid")
+	defer pidDirectory.Close()
+	// `exe` is a procfs magic link by contract. O_NOFOLLOW would correctly
+	// return ELOOP and is intentionally not used at this one verified edge.
+	executableFD, err := unix.Openat(pidFD, "exe", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	executable := os.NewFile(uintptr(executableFD), "proc-self-exe")
+	info, err := executable.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		_ = executable.Close()
+		return nil, errors.New("procfs running image is not an executable regular file")
+	}
+	return executable, nil
+}
+
+func sealedRunningExecutableFD() (*os.File, error) {
+	source, err := openRunningExecutableFD()
+	if err != nil {
+		return nil, err
+	}
+	defer source.Close()
+	return sealOpenExecutable(source)
 }
 
 // sealedExecutableFD copies one opened source inode into an anonymous memfd,
@@ -48,6 +105,10 @@ func sealedExecutableFD(configured string) (*os.File, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("executable source inode is unavailable")
 	}
+	return sealOpenExecutable(source)
+}
+
+func sealOpenExecutable(source *os.File) (*os.File, error) {
 	fd, err := unix.MemfdCreate("marshal-codex-exec", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
 	if err != nil {
 		return nil, err
