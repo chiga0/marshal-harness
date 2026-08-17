@@ -212,6 +212,30 @@ func TestSuperviseOnceRetriesPublishForDeadDriver(t *testing.T) {
 	}
 }
 
+func TestSuperviseOnceReturnsDeadRunningRunToCore(t *testing.T) {
+	_, stateRoot := newSuperviseRepository(t)
+	const runID = "run-supervise-orphan"
+	seedSuperviseRun(t, stateRoot, runID, []domain.State{
+		domain.StatePlanned, domain.StateReady, domain.StateRunning,
+	}, time.Now().UTC().Add(-2*time.Hour))
+	argvFile := filepath.Join(t.TempDir(), "argv-record")
+	binary := superviseFixtureBinary(t, argvFile)
+
+	var stdout, stderr bytes.Buffer
+	exit := Run([]string{"supervise", "--once", "--marshal-binary", binary}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitOK {
+		t.Fatalf("supervise --once exit = %d, stderr = %s", exit, stderr.String())
+	}
+	gotArgv := waitForArgvFile(t, argvFile)
+	wantArgv := []string{"task", "run", "--run", runID, "--through-verify", "--json"}
+	if !reflect.DeepEqual(gotArgv, wantArgv) {
+		t.Fatalf("fake binary argv = %v, want %v", gotArgv, wantArgv)
+	}
+	if output := stdout.String(); !strings.Contains(output, runID) || !strings.Contains(output, "run-worker") {
+		t.Fatalf("stdout missing orphan run-worker decision record: %s", output)
+	}
+}
+
 func TestSuperviseOnceLeavesTerminalAndAliveRunsAlone(t *testing.T) {
 	_, stateRoot := newSuperviseRepository(t)
 	now := time.Now().UTC()

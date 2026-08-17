@@ -47,6 +47,11 @@ type RunStatus struct {
 	RunID       string
 	State       domain.State
 	DriverAlive bool
+	// LeaseHeld is the actual OS ownership observation. DriverAlive may also
+	// remain true during the short journal-age grace window, but a held lease
+	// always wins over event age so a legitimate long attempt is never
+	// declared dead merely because it emitted no recent lifecycle event.
+	LeaseHeld bool
 	// SkipReason is non-empty when the Run could not be inspected with
 	// journal consistency (for example a corrupted snapshot or journal) and
 	// was therefore skipped for decision-making.
@@ -198,22 +203,31 @@ func (s *Supervisor) Scan(ctx context.Context) ([]RunStatus, error) {
 			statuses = append(statuses, RunStatus{RunID: runID, SkipReason: fmt.Sprintf("inspect failed: %v", inspectErr)})
 			continue
 		}
-		statuses = append(statuses, RunStatus{RunID: runID, State: state.State, DriverAlive: s.driverAlive(state)})
+		leaseHeld, leaseErr := store.LeaseHeld(runID)
+		if leaseErr != nil {
+			statuses = append(statuses, RunStatus{RunID: runID, State: state.State, SkipReason: fmt.Sprintf("ownership probe failed: %v", leaseErr)})
+			continue
+		}
+		statuses = append(statuses, RunStatus{RunID: runID, State: state.State, LeaseHeld: leaseHeld, DriverAlive: s.driverAlive(state, leaseHeld)})
 	}
 	sort.Slice(statuses, func(i, j int) bool { return statuses[i].RunID < statuses[j].RunID })
 	return statuses, nil
 }
 
 // driverAlive applies the conservative liveness signal: only Runs in an
-// actively-driven state can be alive at all, and only while their most
-// recent journal event (reflected in RunState.UpdatedAt after inspection)
-// is within the staleness threshold. Runs waiting for dispatch or in any
-// other state have no driver to probe and always report false.
-func (s *Supervisor) driverAlive(state domain.RunState) bool {
+// actively-driven state can be alive at all. A held OS lease is affirmative
+// owner evidence and always wins, including for a long attempt with no new
+// journal event. Without a held lease, the recent-event window is only a
+// race-avoidance grace period; once it expires the driver is considered
+// dead. Runs waiting for dispatch or in any other state always report false.
+func (s *Supervisor) driverAlive(state domain.RunState, leaseHeld bool) bool {
 	switch state.State {
 	case domain.StateRunning, domain.StateVerifying, domain.StatePublishing:
 	default:
 		return false
+	}
+	if leaseHeld {
+		return true
 	}
 	if state.UpdatedAt.IsZero() {
 		return false
@@ -239,6 +253,11 @@ func (s *Supervisor) Decide(status RunStatus) Action {
 			return ActionRunWorker
 		}
 		return ActionNone
+	case domain.StateRunning:
+		if status.DriverAlive {
+			return ActionNone
+		}
+		return ActionRunWorker
 	case domain.StatePublishing:
 		if status.DriverAlive {
 			return ActionNone
@@ -305,6 +324,11 @@ func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
 			record.Error = startErr.Error()
 		} else {
 			record.Started = true
+			// A driver successfully admitted in this round is immediately part
+			// of the in-flight write-domain set. This prevents two candidates
+			// selected from the same scan (for example READY plus orphaned
+			// RUNNING) from being spawned concurrently into overlapping paths.
+			inflight = append(inflight, status.RunID)
 		}
 		records = append(records, record)
 	}

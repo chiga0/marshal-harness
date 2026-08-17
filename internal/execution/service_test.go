@@ -1727,6 +1727,46 @@ func TestOrphanedRecoveryBlocksWhenBudgetExhausted(t *testing.T) {
 	})
 }
 
+func TestOrphanedRecoveryClosesAtOperationalRetryBudget(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+		preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture",
+		maxAttempts: 3, maxOperationalRetries: 1,
+	})
+	fixture.input.OrphanStalenessThreshold = time.Second
+	appendRetrySegment(t, fixture, "attempt-retry-used")
+	appendWorkerStartedAt(t, fixture, "attempt-orphan-budget", time.Unix(200, 0).UTC())
+	before := inspectState(t, fixture)
+	if before.OperationalRetriesUsed != 1 || before.AttemptsUsed != 2 {
+		t.Fatalf("fixture budget precondition = %+v", before)
+	}
+	result, err := Run(context.Background(), fixture.input)
+	if err == nil || !strings.Contains(err.Error(), "operator intervention") {
+		t.Fatalf("Run error = %v, want explicit intervention", err)
+	}
+	if result.State.State != domain.StateBlocked || result.State.OperationalRetriesUsed != 1 || result.State.AttemptsUsed != 2 {
+		t.Fatalf("budget-exhausted recovery state = %+v", result.State)
+	}
+	events, _, readErr := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	last := events[len(events)-1]
+	if last.Type != "worker.failed" || last.StateFrom != domain.StateRunning || last.StateTo != domain.StateBlocked || last.AttemptID != "attempt-orphan-budget" {
+		t.Fatalf("budget terminal event = %+v", last)
+	}
+	if last.Payload["terminalReason"] != "orphan-operational-retry-budget-exhausted" || last.Payload["operationalRetriesUsed"] != float64(1) || last.Payload["maxOperationalRetries"] != float64(1) {
+		t.Fatalf("budget terminal payload = %+v", last.Payload)
+	}
+	outcomeData, outcomeErr := os.ReadFile(filepath.Join(fixture.runDir, "outcome.json"))
+	if outcomeErr != nil {
+		t.Fatalf("terminal Outcome missing: %v", outcomeErr)
+	}
+	var outcome domain.OutcomeBundle
+	if json.Unmarshal(outcomeData, &outcome) != nil || outcome.TerminalState != domain.StateBlocked || outcome.Verdict != "blocked" {
+		t.Fatalf("terminal Outcome = %+v", outcome)
+	}
+}
+
 type staleFencingAdapter struct {
 	*fixtureAdapter
 	claimedAttemptID string

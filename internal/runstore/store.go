@@ -92,6 +92,38 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 	return &Lease{lock: lock, path: path, runID: runID}, nil
 }
 
+// LeaseHeld reports whether the operating system lock for runID is
+// currently held by a live owner. It is a read-only observation used by
+// supervisor: unlike Acquire it never rewrites lease.lock.owner and never
+// creates a missing lock file. A missing, linked or non-regular lock fails
+// closed because process ownership then cannot be proven.
+func (s *Store) LeaseHeld(runID string) (bool, error) {
+	directory, err := s.runDir(runID)
+	if err != nil {
+		return false, err
+	}
+	path := filepath.Join(directory, "lease.lock")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, fmt.Errorf("inspect run lease: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false, errors.New("inspect run lease: lock path is not a regular file")
+	}
+	probe := flock.New(path)
+	locked, err := probe.TryLock()
+	if err != nil {
+		return false, fmt.Errorf("probe run lease: %w", err)
+	}
+	if !locked {
+		return true, nil
+	}
+	if err := probe.Unlock(); err != nil {
+		return false, fmt.Errorf("release run lease probe: %w", err)
+	}
+	return false, nil
+}
+
 func (l *Lease) Release() error {
 	if l == nil || l.lock == nil {
 		return nil

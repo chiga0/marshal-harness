@@ -45,6 +45,33 @@ func TestLeaseIsExclusive(t *testing.T) {
 	}
 }
 
+func TestLeaseHeldIsReadOnlyOwnershipProbe(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := New(root)
+	if _, err := store.LeaseHeld("run:missing"); err == nil {
+		t.Fatal("missing lease lock was treated as known ownership")
+	}
+	if _, err := os.Stat(filepath.Join(root, "runs", "run:missing", "lease.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ownership probe created a missing lock file: %v", err)
+	}
+	lease, err := store.Acquire("run:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := store.LeaseHeld("run:1")
+	if err != nil || !held {
+		t.Fatalf("LeaseHeld while owned = %v, %v", held, err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	held, err = store.LeaseHeld("run:1")
+	if err != nil || held {
+		t.Fatalf("LeaseHeld after release = %v, %v", held, err)
+	}
+}
+
 func TestRebuildIgnoresTruncatedJournalTail(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

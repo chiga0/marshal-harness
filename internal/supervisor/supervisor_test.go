@@ -218,7 +218,7 @@ func TestDecideMatrix(t *testing.T) {
 		{name: "publishing with dead driver retries publish", status: RunStatus{RunID: "run-x", State: domain.StatePublishing, DriverAlive: false}, want: ActionRetryPublish},
 		{name: "publishing with live driver is left alone", status: RunStatus{RunID: "run-x", State: domain.StatePublishing, DriverAlive: true}, want: ActionNone},
 		{name: "running with live driver is left alone", status: RunStatus{RunID: "run-x", State: domain.StateRunning, DriverAlive: true}, want: ActionNone},
-		{name: "running with dead driver is left alone", status: RunStatus{RunID: "run-x", State: domain.StateRunning, DriverAlive: false}, want: ActionNone},
+		{name: "running with dead driver returns to core", status: RunStatus{RunID: "run-x", State: domain.StateRunning, DriverAlive: false}, want: ActionRunWorker},
 		{name: "review pending is left alone", status: RunStatus{RunID: "run-x", State: domain.StateReviewPending}, want: ActionNone},
 		{name: "published is left alone", status: RunStatus{RunID: "run-x", State: domain.StatePublished}, want: ActionNone},
 		{name: "ci pending is left alone", status: RunStatus{RunID: "run-x", State: domain.StateCIPending}, want: ActionNone},
@@ -266,7 +266,7 @@ func TestScanStateMatrix(t *testing.T) {
 		{name: "publishing with live driver is left alone", path: publishingPath(), age: time.Minute, wantState: domain.StatePublishing, wantAlive: true, wantAction: ActionNone},
 		{name: "publishing exactly at threshold stays alive", path: publishingPath(), age: DefaultStalenessThreshold, wantState: domain.StatePublishing, wantAlive: true, wantAction: ActionNone},
 		{name: "running with live driver is left alone", path: pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), age: time.Minute, wantState: domain.StateRunning, wantAlive: true, wantAction: ActionNone},
-		{name: "running with dead driver stays undispatched", path: pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), age: fixtureStaleAge, wantState: domain.StateRunning, wantAlive: false, wantAction: ActionNone},
+		{name: "running with dead driver returns to core", path: pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), age: fixtureStaleAge, wantState: domain.StateRunning, wantAlive: false, wantAction: ActionRunWorker},
 		{name: "verifying with live driver is left alone", path: pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying), age: time.Minute, wantState: domain.StateVerifying, wantAlive: true, wantAction: ActionNone},
 		{name: "accepted run is terminal", path: pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StateAccepted), age: 0, wantState: domain.StateAccepted, wantAlive: false, wantAction: ActionNone},
 		{name: "rejected run is terminal", path: pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StateRejected), age: 0, wantState: domain.StateRejected, wantAlive: false, wantAction: ActionNone},
@@ -312,6 +312,24 @@ func TestScanWithoutRunsDirectory(t *testing.T) {
 	}
 	if len(statuses) != 0 {
 		t.Fatalf("statuses = %+v, want none", statuses)
+	}
+}
+
+func TestScanHeldLeaseKeepsStaleLongAttemptAlive(t *testing.T) {
+	root := t.TempDir()
+	seedRun(t, root, "run-long", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-fixtureStaleAge))
+	lease, err := runstore.New(root).Acquire("run-long")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	supervisor, _ := newSupervisor(t, root, &fakeExecutor{})
+	statuses, err := supervisor.Scan(context.Background())
+	if err != nil || len(statuses) != 1 {
+		t.Fatalf("Scan = %+v err=%v", statuses, err)
+	}
+	if !statuses[0].LeaseHeld || !statuses[0].DriverAlive || supervisor.Decide(statuses[0]) != ActionNone {
+		t.Fatalf("stale long-running owner was treated as dead: %+v", statuses[0])
 	}
 }
 
@@ -467,6 +485,9 @@ func TestSuperviseIsolatesStartFailures(t *testing.T) {
 	seedRun(t, root, "run-a", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
 	seedRun(t, root, "run-b", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
 	seedRun(t, root, "run-c", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+	writeTaskSpecFixture(t, root, "run-a", []string{"a/**"})
+	writeTaskSpecFixture(t, root, "run-b", []string{"b/**"})
+	writeTaskSpecFixture(t, root, "run-c", []string{"c/**"})
 	fake := &fakeExecutor{failRunID: "run-a"}
 	supervisor, _ := newSupervisor(t, root, fake)
 	records, err := supervisor.Supervise(context.Background())
@@ -536,6 +557,7 @@ func TestSuperviseOrdersRecordsDeterministically(t *testing.T) {
 	root := t.TempDir()
 	for _, runID := range []string{"run-c", "run-a", "run-b"} {
 		seedRun(t, root, runID, pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+		writeTaskSpecFixture(t, root, runID, []string{runID + "/**"})
 	}
 	fake := &fakeExecutor{}
 	supervisor, _ := newSupervisor(t, root, fake)
@@ -641,6 +663,8 @@ func TestSuperviseExcludeListMissingKeepsLegacyRedispatch(t *testing.T) {
 	root := t.TempDir()
 	seedRun(t, root, "run-ready", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
 	seedRun(t, root, "run-publishing-dead", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning, domain.StateVerifying, domain.StateReviewPending, domain.StatePublishing), fixtureNow.Add(-fixtureStaleAge))
+	writeTaskSpecFixture(t, root, "run-ready", []string{"ready/**"})
+	writeTaskSpecFixture(t, root, "run-publishing-dead", []string{"publishing/**"})
 	fake := &fakeExecutor{}
 	supervisor, _ := newSupervisor(t, root, fake)
 	records, err := supervisor.Supervise(context.Background())
@@ -849,8 +873,8 @@ func TestSuperviseWriteDomainIgnoresDeadAndTerminalRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Supervise: %v", err)
 	}
-	if len(records) != 1 {
-		t.Fatalf("records = %+v, want only the candidate dispatched", records)
+	if len(records) != 2 {
+		t.Fatalf("records = %+v, want candidate dispatched and overlapping orphan skipped", records)
 	}
 	record := records[0]
 	if record.RunID != "run-candidate" || record.Action != ActionRunWorker || !record.Started || record.SkipReason != "" || record.Error != "" {
@@ -859,5 +883,8 @@ func TestSuperviseWriteDomainIgnoresDeadAndTerminalRuns(t *testing.T) {
 	wantArgv := []string{binary, "task", "run", "--run", "run-candidate", "--through-verify", "--json"}
 	if len(fake.started) != 1 || !reflect.DeepEqual(fake.started[0], wantArgv) {
 		t.Fatalf("started argv = %v, want %v", fake.started, wantArgv)
+	}
+	if records[1].RunID != "run-dead-driver" || records[1].Started || !strings.Contains(records[1].SkipReason, "write-domain conflict") {
+		t.Fatalf("orphan overlap record = %+v, want fail-closed skip", records[1])
 	}
 }
