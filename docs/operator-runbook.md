@@ -232,6 +232,7 @@ Attempt 级 Worker transcript、stderr、VerificationReport、ReviewPacket 与 P
 - **进程所有权隔离**：每个编排只允许对归属自己的进程树执行 pause/resume/terminate；不同编排会话的进程管理动作可能误杀对方 worker（表现为多个 Run 同时 `worker.failed`/`context canceled`），禁止对其他编排或无法证明归属的进程做 blanket kill；
 - **疑似被外部 kill 的排查路径**：`doctor --run` 确认状态一致 → `events.jsonl` 失败时间戳 → 比对同时段其他会话/系统动作 → 对账后幂等重跑；不要直接归因为任务本身失败；
 - **事件驱动监控**：用 `tail -f .marshal/runs/RUN_ID/events.jsonl`（或 ≤ 2 分钟短周期）监听 `worker.completed` 并立即触发 verify；禁止 8–15 分钟粒度的长 sleep 轮询——实测每衔接点空转半个轮询周期，多 Run 累计可达 30–50 分钟。
+- **心跳行动队列**：每个 heartbeat 先运行 `scripts/marshal-watch.sh --once --json` 并处理最高优先级项，反空转纪律、REVIEW_PENDING 时限与合并边界见 §11。
 
 ## 10. 多 Agent Fan-out 协作模式（v0.2）
 
@@ -306,16 +307,78 @@ Lead 的汇总必须产出三份清单并可回溯：**共识**（多 Agent 独�
 - **度量纪律**：每次 fan-out 必须记录：任务族 ID、agent 数、墙钟时间（并行 vs 串行估计）、token/工具成本、冲突数、findings 数与处置分布、人工分钟数。没有度量记录，不得扩大 fan-out 使用面；
 - **并发 admission 记录**：每次并发决策（首次 fan-out、加派、排队、降载、回升）都必须随 fan-out 度量人工记录，至少包含：**策略来源**——用户显式并发策略（最高优先）还是 Lead 推断，还是因信号缺失而默认保守；**决策时并发数**与本次动作对象（taskId/runId/attemptId）；**容量样本与观察**——可实际取得的宿主 CPU（load average）/可用内存/磁盘 I/O 读数、Provider/API 明示的 rate limit 与容量限制观察、背压观察（超时率、事件延迟），取得不到的项如实标注"未取得"，不得虚构；**动作与时间**——排队/降载/回升动作及发生时间（RFC3339）；**编排与进程所有权标识**——归属编排会话及进程归属判据，确保降载/回升只触碰本编排进程。M12 的自动 admission queue 与 backpressure 控制器尚未实现，当前这些人工记录是并发决策可回溯的唯一手段；没有 admission 记录，不得扩大并发度。
 
-### 9.7 心跳 watchdog：后台任务的可见性（防"挂了毫无感知"）
+## 11. 心跳 watchdog 与行动队列（防"挂了毫无感知"与"持续报告无交付动作"）
 
 后台 `task run` 期间 Lead 与操作者都可能失去可见性（opencode 长 attempt 很少发事件，`events.jsonl`
-长时间不增长是**正常**的，不能据此判死）。必须用**进程存活**判定：
+长时间不增长是**正常**的，不能据此判死），必须用**进程存活**判定。2026-08-16 夜间 dogfood
+进一步暴露吞吐事故：多个 Run 已 ACCEPTED 且 Draft PR CI 全绿，但主干未前移；失败或
+REVIEW_PENDING 状态跨多个心跳无人采取下一动作。因此 watchdog 从"周期性拼接状态字符串"
+升级为**一次性、机器可读的行动队列**：不仅报告，还给出优先级与下一动作。
+
+### 11.1 两种调用模式
+
+循环模式（向后兼容旧入口，长期后台兜底）：
 
 ```bash
 nohup scripts/marshal-watch.sh 600 > /tmp/marshal-watch.log 2>&1 < /dev/null & disown
 ```
 
-- 每 10 分钟（可调）轮询所有 Run：终态/待审态直接标注；`RUNNING` 且 `task run`/opencode 进程存活 → `RUNNING(active)`；无活进程 → `DEAD?`（立即 `doctor --run` 对账并重跑）。
-- 输出 tee 到 `/tmp/marshal-watch.log` 并 `osascript` 系统通知，轮间也有感知。
-- Lead 每轮交互也应主动汇报各 Run 状态（watchdog 是轮间兜底，Lead 汇报是轮内）。
-- 不要用"事件年龄"判死（opencode 单 attempt 可能 20-40min 无事件）；判死唯一依据是进程存活 + `doctor`。
+一次性模式（每个 heartbeat 的第一步；执行一次立即退出，不 sleep）：
+
+```bash
+MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
+```
+
+- `--once` 单次执行后立即退出；`--json` 输出行动队列；两者组合供 Lead 机器消费，处理 `items[0]`（最高优先级项）。
+- 循环模式保留旧行为：每 interval（默认 600 秒）输出一行文本状态，tee 到 `$MARSHAL_WATCH_LOG` 并 osascript 通知。
+- 确定性测试用 `bash scripts/marshal-watch_test.sh`，只使用临时 fixture，不触碰真实 `.marshal`。
+
+### 11.2 JSON 行动队列契约
+
+输出包含 `generatedAt` 与按 priority 升序的 `items`；每个 item 含
+`runId`、`state`、`priority`、`action`、`ageSeconds`、`processOwnership`。
+不写入 secret、环境变量值、完整命令行参数、绝对路径。
+
+动作映射（priority 越小越优先）：
+
+| state | 条件 | action | priority |
+| --- | --- | --- | --- |
+| REVIEW_PENDING | — | review-now | 10 |
+| REWORK_REQUESTED | — | run-rework-now | 20 |
+| RUNNING | 无可证明归属进程 | doctor-dead | 30 |
+| RETRY_PENDING | — | retry-or-abort | 40 |
+| VERIFYING | — | verify-or-doctor | 50 |
+| PUBLISHING | — | publish-or-doctor | 60 |
+| READY / APPROVED | — | run-now | 70 |
+| CI_PENDING | — | check-ci | 80 |
+| RUNNING | 有可证明归属活进程 | monitor | 90 |
+
+终态（ACCEPTED/REJECTED/BLOCKED/ABORTED/NO_CHANGE）默认不进入行动队列。
+
+`processOwnership` 只有三种取值：`owned-active`（有可证明归属的活进程）、`not-found`
+（RUNNING 但找不到归属进程，需 doctor-dead）、`not-applicable`（非 RUNNING 状态）。
+进程匹配覆盖 `marshal task run/verify/publish/supervise` 与 qwen/codex/qoder/opencode/pi，
+且必须绑定**精确 runId**——同名进程不等于本 Run 所有者。不得以事件年龄单独判定 RUNNING
+死亡（opencode 单 attempt 可能 20–40 分钟无事件）；无法证明归属时输出 doctor-dead，
+由操作者用 `marshal doctor --run RUN_ID --json` 对账后幂等重跑。
+
+### 11.3 环境变量
+
+- `MARSHAL_WATCH_ROOT`：含 runs 目录的根，默认 `.marshal`；测试可指向 fixture 根目录。
+- `MARSHAL_WATCH_NOTIFY=0`：禁用 osascript 通知（heartbeat 消费 JSON 时必设）。
+- `MARSHAL_WATCH_LOG`：循环模式日志，默认 `/tmp/marshal-watch.log`。
+- `MARSHAL_WATCH_PROCESS_FILE`：进程 fixture 文件（每行 `<pid> <command>`），设置后归属判定只按文件内容，不触碰真实进程。
+
+### 11.4 每轮有限动作（反空转纪律）
+
+- 每个 heartbeat 先运行 `scripts/marshal-watch.sh --once --json`，处理最高优先级项。
+- 除所有 Run 均有真实活进程（`owned-active`）或明确外部阻塞外，每轮至少完成一个安全有限动作：review、导入 rework、恢复 driver、publish、检查 CI、准备互斥 successor。
+- REVIEW_PENDING 必须在**一个 heartbeat 内**完成完整审查并导入 ReviewDecision，或给出明确 blocking finding；Required Gate 失败且 ReviewPacket 可用时，同轮进入 rework。
+- 连续多个 heartbeat 只报告状态而不推进交付，按空转事故处理。
+
+### 11.5 合并边界（ACCEPTED ≠ 主干交付）
+
+- ACCEPTED、Draft PR、CI green 都不等于主干交付；Marshal 无 merge 权限（merge-never），merge 由维护者按仓库策略在 Marshal 之外完成（见 §7.1）。
+- mergePolicy=never 或 Core 不支持 merge 时，必须在**首次发现**即报告为外部/治理阻塞，并按 §10.7 记入当轮记录，不得静默视为"已完成"。
+- 不得连续派发依赖该 PR 的 stale-base successor：后续任务的 base 依赖未合并变更时，先等待合并或显式声明阻塞，避免 base 漂移造成连锁 rework。
+- 不得把此类 PR 计为 milestone 完成；milestone 以实际进入主干的交付计数。
