@@ -328,7 +328,7 @@ func TestRunGradesBenignDenialAndContinues(t *testing.T) {
 }
 
 func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
-	secrets := []string{"codex-stderr-secret-sentinel-0001", "codex-stderr-bearer-sentinel-0002", "codex-stderr-content-sentinel-0003"}
+	secrets := []string{"sensitive-output-marker-alpha", "private-output-marker-beta", "user-output-marker-gamma"}
 	body := `printf '%s\n' '{"type":"thread.started","thread_id":"thread-1","thread":{"id":"thread-1"}}'`
 	for _, secret := range secrets {
 		body += "\nprintf '%s\\n' " + shellQuote(secret) + " >&2"
