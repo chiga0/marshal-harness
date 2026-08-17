@@ -23,12 +23,33 @@ func TestCaptureJSONLAcceptsFrozenSuccess(t *testing.T) {
 	if terminations != 0 {
 		t.Fatalf("terminations = %d", terminations)
 	}
-	if result.threadID != "thread-1" || !result.sawTerminal || result.eventCount != 5 || result.turnCount != 1 || result.itemCount != 1 || result.inputTokens != 11 || result.outputTokens != 7 {
+	if result.threadID != "thread-1" || !result.sawTerminal || result.eventCount != 4 || result.turnCount != 1 || result.itemCount != 1 || result.inputTokens != 11 || result.outputTokens != 7 {
 		t.Fatalf("capture = %+v", result)
 	}
 	// raw 证据逐字节保留全部 stdout。
 	if got, want := string(result.raw), input; got != want {
 		t.Fatalf("raw = %q, want %q", got, want)
+	}
+}
+
+func TestCaptureJSONLAcceptsCodex01450RealSmokeSequence(t *testing.T) {
+	// 真实 Codex 0.145.0 exec --json smoke：turn.started 没有 turn_id，
+	// agent_message 直接以 item.completed 出现，没有 item.started 前导。
+	input := strings.Join([]string{
+		`{"type":"thread.started","thread_id":"019c75c5-4773-78c2-a1c8-4ca967d81f40"}`,
+		`{"type":"turn.started"}`,
+		`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"ok"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":256,"cached_input_tokens":128,"output_tokens":3}}`,
+	}, "\n") + "\n"
+	result, terminations := captureForTest(t, input, 65536)
+	if result.err != nil || terminations != 0 {
+		t.Fatalf("err=%v terminations=%d", result.err, terminations)
+	}
+	if result.threadID == "" || !result.sawTerminal || result.turnCount != 1 || result.itemCount != 1 || result.inputTokens != 256 || result.outputTokens != 3 {
+		t.Fatalf("capture = %+v", result)
+	}
+	if got := string(result.raw); got != input {
+		t.Fatalf("raw stdout lost byte fidelity: got %q want %q", got, input)
 	}
 }
 
@@ -69,7 +90,7 @@ func TestCaptureJSONLToleratesBlankLines(t *testing.T) {
 	lines := successTranscriptLines()
 	input := lines[0] + "\n\n   \n" + strings.Join(lines[1:], "\n") + "\n\n"
 	result, _ := captureForTest(t, input, 65536)
-	if result.err != nil || result.eventCount != 5 {
+	if result.err != nil || result.eventCount != 4 {
 		t.Fatalf("blank lines must not be events: err=%v count=%d", result.err, result.eventCount)
 	}
 	if got := string(result.raw); got != input {
@@ -110,12 +131,12 @@ func TestCaptureJSONLFailClosedMatrix(t *testing.T) {
 		{name: "unknown-item-evil", input: first + "\n" + `{"type":"item.evil","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
 		{name: "unknown-item-cancelled", input: first + "\n" + `{"type":"item.cancelled","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
 		{name: "missing-terminal", input: first + "\n" + `{"type":"item.completed","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
-		{name: "trailing-after-terminal", input: first + "\n" + terminal + "\n" + `{"type":"item.completed","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
-		{name: "item-started-after-terminal", input: first + "\n" + terminal + "\n" + `{"type":"item.started","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
+		{name: "trailing-after-terminal", input: first + "\n" + turnStarted + "\n" + terminal + "\n" + `{"type":"item.completed","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
+		{name: "item-started-after-terminal", input: first + "\n" + turnStarted + "\n" + terminal + "\n" + `{"type":"item.started","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
 		{name: "turn-failed", input: first + "\n" + turnStarted + "\n" + turnFailed + "\n", sentinel: ErrProviderFailed},
-		{name: "failed-after-success-terminal", input: first + "\n" + terminal + "\n" + turnFailed + "\n", sentinel: ErrProtocol},
+		{name: "failed-after-success-terminal", input: first + "\n" + turnStarted + "\n" + terminal + "\n" + turnFailed + "\n", sentinel: ErrProtocol},
 		{name: "success-after-failed-terminal", input: first + "\n" + turnStarted + "\n" + turnFailed + "\n" + terminal + "\n", sentinel: ErrProviderFailed},
-		{name: "negative-usage", input: first + "\n" + `{"type":"turn.completed","thread_id":"thread-1","usage":{"input_tokens":-1,"output_tokens":1}}` + "\n", sentinel: ErrProtocol},
+		{name: "negative-usage", input: first + "\n" + turnStarted + "\n" + `{"type":"turn.completed","thread_id":"thread-1","usage":{"input_tokens":-1,"output_tokens":1}}` + "\n", sentinel: ErrProtocol},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result, terminations := captureForTest(t, test.input, 65536)
@@ -142,7 +163,6 @@ func TestCaptureJSONLRejectsOutOfOrderTurnAndItemEvents(t *testing.T) {
 	for _, input := range []string{
 		thread + "\n" + `{"type":"item.started","thread_id":"thread-1"}` + "\n",
 		thread + "\n" + turn + "\n" + `{"type":"item.updated","thread_id":"thread-1"}` + "\n",
-		thread + "\n" + turn + "\n" + `{"type":"item.completed","thread_id":"thread-1"}` + "\n",
 		thread + "\n" + turn + "\n" + itemStart + "\n" + itemStart + "\n",
 		thread + "\n" + turn + "\n" + itemStart + "\n" + `{"type":"turn.completed","thread_id":"thread-1"}` + "\n",
 		thread + "\n" + turn + "\n" + turn + "\n",
