@@ -85,6 +85,10 @@ M13 的长周期人工等待不改变本表：根据 [ADR 0019](adr/0019-determi
 
 这些事件不是通用 same-state 入口。Publisher/SCMMerger 只提供 typed observation 与 provenance，不能追加 authority event、消费预算或裁决 resolved。ADR 未接受且 reducer/Schema/producer-authority/replay negative fixtures 未实现前，当前转换表不增加它们；不得从 projection 或 sidecar 反向推进生命周期。
 
+目标 mutation 路径必须在 snapshot 后、Provider handoff 前**同时**完成 mutation-adjacent journal/current/expiry recheck **AND** single-use fence；二者不可替代。authorization revoke、其它改变 current authority 的 append、fence consumption 与 fence→Provider handoff 共享同一 serializable ordering：revoke/authority append 先线性化则零 mutation；handoff 先线性化则该次 mutation 已先获授权，后到 revoke 只阻止后续 mutation，结果继续由既有 pending 对账。
+
+pending 的 `reconcileDeadline` 到期仍为 unknown/lag 时，Core 以 actor `system/marshal-core` 追加 `publication.blocked`，固定 `terminalReason=merge-delivery-reconcile-deadline-exceeded`，并原子写入绑定 intent、authorization、pending、全部 observation、deadline 与 budget 的 `BLOCKED` Outcome。deadline 后匹配的 late receipt 只能复用 ADR 0026 唯一 `BLOCKED → ACCEPTED` 例外：在同一 authority-store transaction 中原子关闭 pending、追加 receipt/reconcile、`publication.reconciled` 与 `ACCEPTED` Outcome，并归档旧 `BLOCKED` Outcome；任一 binding 不符或事务中断都保持原 `BLOCKED`/pending，且不得称恢复完成。
+
 ## 强制不变量
 
 ### 冻结执行输入

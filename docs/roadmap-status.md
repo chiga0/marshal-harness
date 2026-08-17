@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-更新时间：2026-08-14
+更新时间：2026-08-17
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 

@@ -72,9 +72,10 @@ SCMMerger/Publisher 只能返回封闭的 typed observation，并作为 `sourceA
 1. 紧邻 mutation 的 `ObserveTarget`：SCMMerger 返回封闭 typed preflight observation，Core 校验 source provenance、target binding、observation digest 与 current authority；
 2. 以 journal CAS 追加 `pending`，并原子消费一次 delivery budget；
 3. **同步持久化包含该 sequence 的 Run snapshot**；snapshot 未成功不得 mutation；
-4. snapshot 成功后、credentialed mutation 前，在 Core 的 mutation-serialization critical section 内再次读取 authority journal：精确核对 pending 仍 unresolved/current、journal sequence 未变化、authorization 未撤销且未过期、intent/target/check binding 仍 current；随后取得绑定 `(authorityNamespaceId, runId, pendingDigest, journalSequence, authorizationDigest, expiry)` 的单次 mutation fence，并在不释放该 fence 的情况下把调用交给 SCMMerger；任一值变化或 fence CAS 失败必须零 mutation；
-5. 执行一次 credentialed mutation；调用已进入 Provider 后才释放 fence，之后的进程崩溃或响应丢失由 unresolved pending 承担；M11 多节点实现必须用同一 authority store 的 fenced lease/serializable transaction 提供等价保证，进程内 mutex 不构成 HA fence；
-6. Inspect 外部真实状态，把 SCMMerger typed observation 交给 Core 校验；Core 先追加 `observed`，只有结果可确定时再 CAS 追加 `resolved`；之后才允许继续下一 operation 或生命周期收敛。
+4. snapshot 成功后、credentialed mutation 前，Core **必须同时执行** mutation-adjacent recheck **AND** single-use fence，二者不可互相替代：在 authority store 的同一 serialization key/serializable ordering 内再次读取 journal，精确核对 pending 仍 unresolved/current、journal sequence 未变化、authorization 未撤销且未过期、intent/target/check binding 仍 current；随后 CAS 追加绑定 `(authorityNamespaceId, runId, pendingDigest, journalSequence, authorizationDigest, expiry)` 的唯一 `MergeMutationFenceConsumption`；任一值变化、expiry 已到或 fence 已消费必须零 mutation；
+5. `PublicationAuthorization` revoke、其它会改变 current authority 的 append、`MergeMutationFenceConsumption` 与 fence→Provider handoff 必须共享上述同一线性化/serializable ordering，Core 从 fence consumption 到把调用交给 SCMMerger 期间不释放该 serialization key。顺序裁决固定为：revoke/authority append 先线性化，则 mutation-adjacent recheck 失败并零 mutation；fence consumption+Provider handoff 先线性化，则该次 mutation 已先获得授权，后到 revoke 只能阻止后续 mutation，并把本次可能结果留给 pending Inspect/Reconcile。fence 已消费但 handoff 响应未知（含进程在边界崩溃）一律按“可能已 handoff”处理，绝不重放；
+6. 执行一次 credentialed mutation；调用已进入 Provider 后才释放 serialization key，之后的进程崩溃或响应丢失由 unresolved pending 承担；M11 多节点实现必须用同一 authority store 的 fenced lease/serializable transaction 提供等价保证，进程内 mutex 不构成 HA fence；
+7. Inspect 外部真实状态，把 SCMMerger typed observation 交给 Core 校验；Core 先追加 `observed`，只有结果可确定时再 CAS 追加 `resolved`；之后才允许继续下一 operation 或生命周期收敛。
 
 `resolved.outcome` 是封闭枚举：`succeeded|not-applied|permanent-failure|conflict`。`unknown|lag` 是 `observed.observationClass` 的非终态取值，永远不能伪装成 resolved outcome。Provider 原始输出不进入 journal、Outcome 或错误字符串。
 
@@ -90,7 +91,16 @@ delivery budget 只由 journal 中 `publication.merge-delivery-pending` 的数�
 
 同一 pending 的 Inspect/Reconcile 与重复 `observed(unknown|lag)` 不消费新预算。只有上一 pending 已有 `not-applied`，且 current authority、target binding 与剩余预算均重新校验通过，才能追加下一 pending。
 
-每个 pending 还必须冻结 `reconcileDeadline` 与确定性 backoff schedule；重复 Inspect 不能无限悬挂。deadline 到期仍只有 unknown/lag 时，Core 追加绑定 pending 与全部 observation anchors 的既有 typed `publication.blocked`，停止后续 mutation，但仍不伪造 `resolved`。恢复只能继续只读 reconcile 或由新治理契约处置，不能重置 pending、deadline 或 mutation budget。
+每个 pending 还必须冻结 `reconcileDeadline` 与确定性 backoff schedule；重复 Inspect 不能无限悬挂。deadline 到期仍只有 unknown/lag 时，Core 以 actor `system/marshal-core` 追加绑定 pending 与全部 observation anchors 的既有 typed `publication.blocked`，`terminalReason=merge-delivery-reconcile-deadline-exceeded`，并原子写入 `BLOCKED` Outcome；Outcome 必须绑定 intent、authorization、pending、全部 observed anchor、最后 observation digest、deadline 与 budget digest。停止后续 mutation，但不伪造 `resolved`。
+
+deadline 后只允许只读 late-receipt reconcile。若之后观察到精确匹配的 `SCMMergeReceipt`，Core 必须复用 [ADR 0026](0026-scm-merge-receipt-and-publication-reconcile.md) 的唯一 `BLOCKED → ACCEPTED` 终态例外，并在**同一 authority-store transaction/CAS** 中：
+
+1. 校验 receipt、原 intent/authorization、PublicationRecord、ReviewDecision、required checks、pending、全部 observed anchors 与 deadline BLOCKED Outcome 的 digest；
+2. 追加 `MergeDeliveryAnchor(status=resolved,outcome=succeeded,resolutionKind=late-receipt)`，其 `previousAnchorDigest` 指向最后 observation anchor，从而权威关闭 pending；
+3. 追加 ADR 0026 `SCMMergeReceipt` 与 `PublicationReconcileRecord(reconcileType=accept-after-merge)`，其 `evidenceDigests` 必须额外包含 pending、late-receipt resolution anchor 与旧 BLOCKED Outcome digest；
+4. 追加 `publication.reconciled` 并写入新的 `ACCEPTED` Outcome，旧 BLOCKED Outcome 只归档不删除。
+
+任一步失败则全部不落账，Run 保持 `BLOCKED` 且 pending 未关闭；不得创建第二个 mutation。late observation 若明确证明 not-applied，也只能在同一 reconciliation transaction 中追加 `resolved/not-applied` anchor 并保持 `BLOCKED`，禁止续作；其它 unknown/conflict 继续保留为只读证据，不能称恢复完成。
 
 ### 5. 回滚与删尾检测边界
 
@@ -121,12 +131,17 @@ credentialed mutation 必须在一次打开中完成身份确认与执行：
 | preflight typed observation 的 provenance/digest/target 不匹配 | Core 拒绝 pending；零 budget 消费、零 mutation |
 | 恢复时 wall clock/check observation 已变化 | hydrate 原 transaction；禁止重签不同 digest |
 | pending 已写、snapshot 未同步成功 | 零 mutation |
-| snapshot 已同步、mutation 前 authorization/journal/expiry 变化 | mutation-adjacent recheck 或 fence CAS 失败；零 mutation |
+| snapshot 已同步、mutation 前 authorization/journal/expiry 变化 | mutation-adjacent recheck **AND** single-use fence 任一失败即零 mutation |
+| revoke 先于 fence→Provider handoff 线性化 | revoke 提交；recheck/fence 拒绝，零 mutation |
+| fence→Provider handoff 先于 revoke 线性化 | 本次 mutation 先获授权并最多执行一次；后到 revoke 只阻止后续 mutation，结果由同一 pending 对账 |
+| fence 已消费、handoff 边界崩溃 | 按可能已 handoff 处理；Inspect/Reconcile，绝不重放 |
 | pending 已写、mutation 前崩溃 | Inspect；只有明确 `not-applied` 才可新 attempt |
 | mutation 已生效、响应丢失 | Inspect 得到匹配远端事实并 resolved；不得重放 |
 | merge observation 为 unknown/lag | Core 追加非终态 observed anchor，pending 保持 unresolved；可重复 Inspect，不得重放 mutation |
 | restart 后首次 Inspect=lag、后续 receipt 可见 | 第一次只追加 observed(lag)；重启后以同一 pending 再 Inspect，匹配 receipt 后 observed+resolved(succeeded)；mutation 总次数仍为 1 |
 | reconcileDeadline 到期仍为 unknown/lag | 追加 observation-bound `publication.blocked`，pending 不伪造 resolved，mutation 总次数不增加 |
+| deadline 后出现匹配 late receipt | 单一 CAS 原子追加 late-receipt resolution anchor、ADR 0026 receipt/reconcile、`publication.reconciled` 与 ACCEPTED Outcome；pending 被关闭，旧 BLOCKED Outcome 保留 |
+| deadline 后 late receipt 任一 binding 不符或事务中断 | 全部不落账；保持 BLOCKED/pending，零 mutation |
 | 删除 delivery projection/result | budget 仍由 pending journal facts 派生 |
 | journal 尾删、snapshot 较新 | fail closed，禁止 mutation |
 | journal+snapshot 协调回滚 | 明确记录为本地不可检测；production 必须由外部 rollback witness 覆盖 |
