@@ -131,6 +131,7 @@ go run ./cmd/marshal contract schema --all --out /tmp/marshal-schemas
 | `MARSHAL_STATE_DIR` | 覆盖默认 `.marshal/` 状态目录（绝对路径；仓库内则必须等于默认目录） | 运行配置 |
 | `MARSHAL_OPENCODE_PATH` | OpenCode Worker 可执行文件绝对路径 | Adapter 注册 |
 | `MARSHAL_QWEN_PATH` | Qwen Code Worker 可执行文件绝对路径 | Adapter 注册 |
+| `MARSHAL_QODER_PATH` | Qoder CLI Worker 可执行文件绝对路径；仅设置此变量不会通过 live conformance 门禁 | Adapter 注册候选 |
 | `MARSHAL_PI_PATH` | Pi Worker 可执行文件绝对路径 | Adapter 注册 |
 | `MARSHAL_GH_PATH` | Publisher 的 `gh` 可执行文件绝对路径 | 发布凭据边界 |
 | `MARSHAL_GH_CONFIG_DIR` | Publisher 独立凭据目录（不复用 ambient 配置） | 发布凭据边界 |
@@ -146,7 +147,7 @@ go run ./cmd/marshal contract schema --all --out /tmp/marshal-schemas
 
 新环境部署的目标是把“读文档自己猜”变成“doctor 给建议、用户一行注册”。核心原则：**discovery advisory，registration explicit**——doctor 只发现并建议，注册仍须显式环境变量；这保持了“Registry 不得静默替换二进制或版本”的不变量。
 
-doctor 扫描 PATH 目录与常见安装位置（`~/.local/bin`、`/opt/homebrew/bin`、`~/.opencode/bin`、fnm/node 全局 bin、`npm root -g`），匹配已知二进制名 `opencode`、`qwen`、`qwen-code`、`pi`。它不递归全盘、不猜近似名；对每个候选只执行 `<bin> --version` 读取版本并计算 realpath 与 SHA256，任何执行失败静默跳过。已配置环境变量的 Adapter 不参与发现。
+doctor 扫描 PATH 目录与常见安装位置（`~/.local/bin`、`/opt/homebrew/bin`、`~/.opencode/bin`、fnm/node 全局 bin、`npm root -g`），匹配已知二进制名 `opencode`、`qwen`、`qwen-code`、`qodercli`、`pi`。它不递归全盘、不猜近似名；对 OpenCode、Qwen Code 与 Pi 候选只执行精确的 `<bin> --version`，使用各 Adapter 的净化 probe 环境并受 10 秒 deadline 约束。Qoder 候选只执行精确的 `<bin> --config-dir <private-temp> --setting-sources "" --version`：`<private-temp>` 是本次 probe 新建的 `0700` 临时配置目录，环境只保留 `PATH`/`TMPDIR`/`LANG` 并把 `HOME` 与 XDG 目录重绑到隔离临时根，stdout/stderr 有严格 byte limit，超限、超时或子进程残留均按有界 process-group 清理后跳过。所有这些命令都只读取版本与计算 realpath/SHA256，不注册 Adapter、不启动 Worker Attempt，也不把发现结果作为 conformance evidence；任何执行失败静默跳过。已配置环境变量的 Adapter 不参与发现。
 
 ### doctor 解读
 
@@ -184,7 +185,7 @@ export MARSHAL_QWEN_PATH=/Users/me/.local/bin/qwen
 marshal doctor --json
 ```
 
-确认对应 Adapter 的 `workers` 条目 `outcome=registered`、`compatibility=supported`；此时该 Adapter 不再出现在 `discovery` 段。若 `compatibility=unsupported`，说明二进制版本与冻结的 supported 版本不符，doctor 会如实报告但不会因此放行。
+确认对应 Adapter 的 `workers` 条目 `outcome=registered`，并按该 Adapter 的独立门禁检查 `compatibility`；此时该 Adapter 不再出现在 `discovery` 段。对已有 production-supported Adapter，`compatibility=unsupported` 表示版本或能力门禁未通过，doctor 会如实报告但不会因此放行。Qoder 的特殊门禁如下，发现或注册候选都不等于 `supported`。
 
 Qoder 额外设计了独立 Conformance authority 门禁。只配置
 `MARSHAL_QODER_PATH` 会完成注册，但 `compatibility` 必须保持
@@ -205,6 +206,8 @@ event/protocol/permission、transcript digest、有效期和三个 typed verdict
 authority key。签名者另行持有 evidence private key，并以自身固定 trust policy 重新严格解码、
 验证 verifier signature、四份 receipt chain 与全部 candidate identity 后签名。私钥、credential、stderr 与 transcript 正文
 不得进入 observation、Marshal 配置或仓库。
+
+Qoder 的版本解析只接受裸 `X.Y.Z`，兼容范围固定为 `>=1.1.23 <1.2.0`；前缀、预发布版本、build metadata、低于 `1.1.23` 的版本及其他 minor/major 均 fail closed。这个 semver 范围只表示允许进入独立验证的候选范围，不是跨二进制授权：每个实际 patch 版本都必须以自身 realpath、SHA256 digest、版本和当前 host 重新完成真实 credentialed live probe，并取得精确绑定的新 evidence。当前没有可用于生产准入的真实 evidence，因此 Qoder 仍不是 production `supported`。
 
 候选 verifier 与 sandbox 之间不是普通函数返回值信任：verifier 从验证到执行持续持有
 executable/scratch/credential/business-root 的 fd/dirfd，sandbox 只能消费这些 handle；每轮返回由
