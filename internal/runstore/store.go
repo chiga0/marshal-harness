@@ -30,6 +30,9 @@ type Store struct{ root string }
 type Lease struct {
 	file  *os.File
 	held  bool
+	root  string
+	dev   uint64
+	inode uint64
 	path  string
 	runID string
 }
@@ -95,7 +98,7 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 		_ = releaseLeaseFile(leaseFile)
 		return nil, fmt.Errorf("write lease owner: %w", err)
 	}
-	return &Lease{file: leaseFile, held: true, path: path, runID: runID}, nil
+	return &Lease{file: leaseFile, held: true, root: s.root, dev: device, inode: inode, path: path, runID: runID}, nil
 }
 
 // LeaseHeld reports whether the operating system lock for runID is
@@ -123,6 +126,9 @@ func (l *Lease) Release() error {
 func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uint64) error {
 	if lease == nil || lease.file == nil || !lease.held {
 		return errors.New("append requires held run lease")
+	}
+	if err := leaseStillAuthoritative(lease); err != nil {
+		return fmt.Errorf("append requires authoritative run lease: %w", err)
 	}
 	if lease.runID != event.RunID {
 		return fmt.Errorf("%w: lease belongs to run %s", ErrConflict, lease.runID)
@@ -272,6 +278,9 @@ func (s *Store) ReadEvents(runID string) ([]domain.RunEvent, bool, error) {
 func (s *Store) WriteSnapshot(lease *Lease, state domain.RunState) error {
 	if lease == nil || lease.file == nil || !lease.held {
 		return errors.New("snapshot write requires held run lease")
+	}
+	if err := leaseStillAuthoritative(lease); err != nil {
+		return fmt.Errorf("snapshot write requires authoritative run lease: %w", err)
 	}
 	if lease.runID != state.RunID {
 		return fmt.Errorf("%w: lease belongs to run %s", ErrConflict, lease.runID)

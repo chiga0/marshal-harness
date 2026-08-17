@@ -1,7 +1,6 @@
 package review
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,48 +19,7 @@ func EnsureOutcome(runDirectory string, outcome OutcomeData) error {
 	if err != nil {
 		return err
 	}
-	pairs := [][2]any{
-		{filepath.Join(runDirectory, "outcome.json"), jsonData},
-		{filepath.Join(runDirectory, "outcome.md"), []byte(markdown)},
-	}
-	for _, pair := range pairs {
-		final := pair[0].(string)
-		want := pair[1].([]byte)
-		if existing, readErr := os.ReadFile(final); readErr == nil {
-			if !bytes.Equal(existing, want) {
-				return fmt.Errorf("terminal outcome conflicts with authoritative event: %s", final)
-			}
-			_ = os.Remove(final + ".pending")
-			continue
-		} else if !os.IsNotExist(readErr) {
-			return readErr
-		}
-		pending := final + ".pending"
-		if existing, readErr := os.ReadFile(pending); readErr != nil || !bytes.Equal(existing, want) {
-			if readErr != nil && !os.IsNotExist(readErr) {
-				return readErr
-			}
-			if err := os.Remove(pending); err != nil && !os.IsNotExist(err) {
-				return err
-			}
-			if err := atomicWrite(pending, want, false); err != nil {
-				return err
-			}
-		}
-		if err := os.Link(pending, final); err != nil {
-			return err
-		}
-		if err := os.Remove(pending); err != nil {
-			return err
-		}
-	}
-	handle, err := os.Open(runDirectory)
-	if err != nil {
-		return err
-	}
-	err = handle.Sync()
-	_ = handle.Close()
-	return err
+	return ensureOutcomeRecords(runDirectory, map[string][]byte{"outcome.json": jsonData, "outcome.md": []byte(markdown)})
 }
 
 type PreparedRecords struct {
@@ -198,9 +156,9 @@ func prepareRecordsWithWriter(runDirectory string, result DecisionResult, outcom
 // hard link: os.Link fails instead of overwriting a final that appeared
 // after prepare, and a failed link never masquerades as success. Each pair
 // links its own pending to its own final, so outcome.md and result.md keep
-// distinct inodes even when their bytes are identical. Crash coordination
-// across files is out of scope; the guarantees are no overwrite and visible
-// errors.
+// distinct inodes even when their bytes are identical. Terminal Outcome
+// callers pair this with EnsureOutcome restart compensation; review-round
+// multi-record compensation remains owned by its lifecycle caller.
 func (r *PreparedRecords) Commit() error {
 	directories := map[string]bool{}
 	for _, pair := range [][2]string{{r.pendingDecision, r.finalDecision}, {r.pendingPacket, r.finalPacket}, {r.pendingOutcome, r.finalOutcome}, {r.pendingMarkdown, r.finalMarkdown}, {r.pendingResult, r.finalResult}} {

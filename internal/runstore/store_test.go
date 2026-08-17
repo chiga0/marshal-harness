@@ -91,6 +91,52 @@ func TestLeaseHeldFailsClosedWhenLockPathIsReplaced(t *testing.T) {
 	if held, err := store.LeaseHeld("run:replace"); err == nil || held {
 		t.Fatalf("replacement probe = held:%v err:%v, want fail-closed identity error", held, err)
 	}
+	if _, err := store.Acquire("run:replace"); err == nil {
+		t.Fatal("second Acquire accepted a replacement lease inode")
+	}
+	if err := store.Append(lease, transition("event:replace", 1, domain.StateCreated, domain.StatePlanned), 0); err == nil {
+		t.Fatal("original owner appended after its authoritative pathname was replaced")
+	}
+}
+
+func TestAcquireRejectsUnsafeOwnerWithoutMutatingTarget(t *testing.T) {
+	for _, kind := range []string{"symlink", "hardlink"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			store := New(root)
+			lease, err := store.Acquire("run:owner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := lease.Release(); err != nil {
+				t.Fatal(err)
+			}
+			owner := filepath.Join(root, "runs", "run:owner", "lease.lock.owner")
+			if err := os.Remove(owner); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(root, "outside")
+			want := []byte("must-not-change\n")
+			if err := os.WriteFile(target, want, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "symlink" {
+				err = os.Symlink(target, owner)
+			} else {
+				err = os.Link(target, owner)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Acquire("run:owner"); err == nil {
+				t.Fatalf("Acquire accepted %s owner", kind)
+			}
+			got, err := os.ReadFile(target)
+			if err != nil || string(got) != string(want) {
+				t.Fatalf("unsafe owner target mutated: %q err=%v", got, err)
+			}
+		})
+	}
 }
 
 func TestRebuildIgnoresTruncatedJournalTail(t *testing.T) {

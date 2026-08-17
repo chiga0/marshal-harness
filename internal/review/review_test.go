@@ -370,6 +370,39 @@ func TestPrepareOutcomeDoesNotProduceResultRecord(t *testing.T) {
 	assertAbsent(t, filepath.Join(fixture.directory, "result.md"), filepath.Join(fixture.directory, "result.md.pending"))
 }
 
+func TestEnsureOutcomeRejectsSymlinkAndHardlinkRecords(t *testing.T) {
+	for _, name := range []string{"outcome.json", "outcome.json.pending", "outcome.md", "outcome.md.pending"} {
+		for _, kind := range []string{"symlink", "hardlink"} {
+			t.Run(name+"-"+kind, func(t *testing.T) {
+				fixture := newReviewFixture(t)
+				outcome := terminalOutcome(fixture, terminalRejectResult(t, fixture))
+				target := filepath.Join(fixture.directory, "outside")
+				want := []byte("must-not-change\n")
+				if err := os.WriteFile(target, want, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(fixture.directory, name)
+				var err error
+				if kind == "symlink" {
+					err = os.Symlink(target, path)
+				} else {
+					err = os.Link(target, path)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := EnsureOutcome(fixture.directory, *outcome); err == nil {
+					t.Fatalf("EnsureOutcome accepted %s %s", kind, name)
+				}
+				got, err := os.ReadFile(target)
+				if err != nil || string(got) != string(want) {
+					t.Fatalf("external record mutated: %q err=%v", got, err)
+				}
+			})
+		}
+	}
+}
+
 func TestPrepareRecordsTerminalProducesIndependentResultRecord(t *testing.T) {
 	fixture := newReviewFixture(t)
 	result := terminalRejectResult(t, fixture)

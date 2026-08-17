@@ -531,6 +531,60 @@ func TestTwoSupervisorsSerializeOverlappingAdmission(t *testing.T) {
 	}
 }
 
+func TestCommandExecutorRequiresRunLeaseReadiness(t *testing.T) {
+	root := t.TempDir()
+	runID := "run:command-ready"
+	if err := os.MkdirAll(filepath.Join(root, "runs", runID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("real child acquires lease", func(t *testing.T) {
+		script := filepath.Join(t.TempDir(), "marshal-helper")
+		body := "#!/bin/sh\nexec \"$MARSHAL_HELPER_BINARY\" -test.run '^TestCommandExecutorLeaseHelper$'\n"
+		if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("MARSHAL_HELPER_BINARY", os.Args[0])
+		t.Setenv("MARSHAL_HELPER_STATE_ROOT", root)
+		t.Setenv("MARSHAL_HELPER_RUN_ID", runID)
+		executor := commandExecutor{stateRoot: root, readinessTimeout: 5 * time.Second}
+		if err := executor.Start(context.Background(), []string{script, "task", "run", "--run", runID}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		held, err := runstore.New(root).LeaseHeld(runID)
+		if err != nil || !held {
+			t.Fatalf("Start returned without child lease readiness: held=%v err=%v", held, err)
+		}
+	})
+	t.Run("unready child is killed", func(t *testing.T) {
+		timeoutRunID := "run:command-timeout"
+		if err := os.MkdirAll(filepath.Join(root, "runs", timeoutRunID), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		script := filepath.Join(t.TempDir(), "marshal-never-ready")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 5\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		executor := commandExecutor{stateRoot: root, readinessTimeout: 100 * time.Millisecond}
+		err := executor.Start(context.Background(), []string{script, "task", "run", "--run", timeoutRunID})
+		if err == nil || !strings.Contains(err.Error(), "readiness timeout") {
+			t.Fatalf("unready child error = %v", err)
+		}
+	})
+}
+
+func TestCommandExecutorLeaseHelper(t *testing.T) {
+	root, runID := os.Getenv("MARSHAL_HELPER_STATE_ROOT"), os.Getenv("MARSHAL_HELPER_RUN_ID")
+	if root == "" || runID == "" {
+		return
+	}
+	lease, err := runstore.New(root).Acquire(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	time.Sleep(500 * time.Millisecond)
+}
+
 func TestSuperviseIsolatesStartFailures(t *testing.T) {
 	root := t.TempDir()
 	seedRun(t, root, "run-a", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)

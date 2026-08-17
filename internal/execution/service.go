@@ -45,6 +45,12 @@ type Input struct {
 	// to verify restart compensation between the terminal journal append and
 	// Outcome finalization. Production callers leave it nil.
 	AfterOrphanTerminalAppend func() error
+	// AfterOrphanQuarantine injects a crash after the durable quarantine
+	// transaction is complete but before its terminal journal append.
+	AfterOrphanQuarantine func() error
+	// AfterWorkerTerminalAppend injects a crash after an ordinary Worker
+	// failure exhausts a budget and appends its BLOCKED event.
+	AfterWorkerTerminalAppend func() error
 	// ResultEdgeRecheck wires the M9-b typed-edge gate into result
 	// acceptance: when set, every accepted WorkerResult must recheck its
 	// DispatchResultCapability against the current authority ledger before
@@ -167,7 +173,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		return Result{}, errors.New("run snapshot identity does not match the requested run")
 	}
 	if state.State == domain.StateBlocked {
-		recovered, recoverErr := recoverOrphanTerminalOutcome(store, lease, runDir, state)
+		recovered, recoverErr := recoverBudgetTerminalOutcome(store, lease, runDir, state)
 		if recoverErr != nil {
 			return Result{State: state, AttemptID: state.CurrentAttemptID}, recoverErr
 		}
@@ -246,7 +252,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	// live RUNNING run keeps the fail-closed state gate rejection.
 	supersededAttemptID := ""
 	if state.State == domain.StateRunning {
-		recovered, orphanAttemptID, recoverErr := recoverOrphanedRunningAttempt(store, lease, runDir, state, task, input.OrphanStalenessThreshold, input.AfterOrphanTerminalAppend)
+		recovered, orphanAttemptID, recoverErr := recoverOrphanedRunningAttempt(store, lease, runDir, state, task, input.OrphanStalenessThreshold, input.AfterOrphanTerminalAppend, input.AfterOrphanQuarantine)
 		if recoverErr != nil {
 			if recovered.RunID != "" {
 				return Result{State: recovered, AttemptID: orphanAttemptID}, recoverErr
@@ -370,17 +376,17 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	workerResult, runErr := input.Adapter.Run(ctx, domain.Record{Kind: domain.KindWorkerRequest, Data: requestData})
 	if runErr != nil {
-		failedState, persistErr := recordFailure(store, lease, next, attemptID, task, runErr)
+		failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, task, runErr, input.AfterWorkerTerminalAppend)
 		if persistErr != nil {
-			return Result{}, errors.Join(runErr, persistErr)
+			return Result{State: failedState, AttemptID: attemptID}, errors.Join(runErr, persistErr)
 		}
 		return Result{State: failedState, AttemptID: attemptID}, runErr
 	}
 	if workerResult.Kind != domain.KindWorkerResult || input.Validator.Validate(domain.KindWorkerResult, workerResult.Data) != nil {
 		protocolErr := errors.New("adapter returned an invalid WorkerResult")
-		failedState, persistErr := recordFailure(store, lease, next, attemptID, task, protocolErr)
+		failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, task, protocolErr, input.AfterWorkerTerminalAppend)
 		if persistErr != nil {
-			return Result{}, errors.Join(protocolErr, persistErr)
+			return Result{State: failedState, AttemptID: attemptID}, errors.Join(protocolErr, persistErr)
 		}
 		return Result{State: failedState, AttemptID: attemptID}, protocolErr
 	}
@@ -403,9 +409,9 @@ func Run(ctx context.Context, input Input) (Result, error) {
 				protocolErr = fmt.Errorf("%w: stale fencing quarantine failed: %v", protocolErr, quarantineErr)
 			}
 		}
-		failedState, persistErr := recordFailure(store, lease, next, attemptID, task, protocolErr)
+		failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, task, protocolErr, input.AfterWorkerTerminalAppend)
 		if persistErr != nil {
-			return Result{}, errors.Join(protocolErr, persistErr)
+			return Result{State: failedState, AttemptID: attemptID}, errors.Join(protocolErr, persistErr)
 		}
 		return Result{State: failedState, AttemptID: attemptID}, protocolErr
 	}
@@ -419,9 +425,9 @@ func Run(ctx context.Context, input Input) (Result, error) {
 			if quarantineErr := quarantineRejectedWorkerResult(runDir, attemptID, workerResult.Data, err); quarantineErr != nil {
 				err = fmt.Errorf("%w; quarantine failed: %v", err, quarantineErr)
 			}
-			failedState, persistErr := recordFailure(store, lease, next, attemptID, task, err)
+			failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, task, err, input.AfterWorkerTerminalAppend)
 			if persistErr != nil {
-				return Result{}, errors.Join(err, persistErr)
+				return Result{State: failedState, AttemptID: attemptID}, errors.Join(err, persistErr)
 			}
 			return Result{State: failedState, AttemptID: attemptID}, err
 		}
@@ -473,9 +479,10 @@ const defaultOrphanStalenessThreshold = lifecycle.DefaultDriverStalenessThreshol
 // RUNNING->RETRY_PENDING channel and admission continues for a fresh attempt
 // with an incremented fencing generation. Historical events are never
 // rewritten. A live or structurally ambiguous RUNNING run fails closed with
-// the state gate sentinel, and an exhausted attempt budget blocks recovery
-// without touching the journal.
-func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, threshold time.Duration, afterTerminalAppend func() error) (domain.RunState, string, error) {
+// the state gate sentinel. Either exhausted retry budget is closed through a
+// durable BLOCKED event, quarantine transaction and restart-compensated
+// Outcome instead of leaving a non-terminal RUNNING orphan behind.
+func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, threshold time.Duration, afterTerminalAppend, afterQuarantine func() error) (domain.RunState, string, error) {
 	gateReject := func(reason string) (domain.RunState, string, error) {
 		return domain.RunState{}, "", fmt.Errorf("run state %s cannot start a worker attempt: %s", state.State, reason)
 	}
@@ -499,10 +506,10 @@ func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease,
 	attemptsExhausted := uint(state.AttemptsUsed) >= uint(task.Budgets.MaxAttempts)
 	operationalExhausted := uint(state.OperationalRetriesUsed) >= uint(task.Budgets.MaxOperationalRetries)
 	if attemptsExhausted || operationalExhausted {
-		return closeOrphanBudget(store, lease, runDir, state, task, last, attemptsExhausted, afterTerminalAppend)
+		return closeOrphanBudget(store, lease, runDir, state, task, last, attemptsExhausted, afterTerminalAppend, afterQuarantine)
 	}
 	orphanAttemptID := state.CurrentAttemptID
-	quarantined, err := quarantineOrphanedOutputs(runDir, orphanAttemptID, last.Timestamp)
+	quarantined, err := quarantineAttemptOutputs(runDir, orphanAttemptID, last.Timestamp)
 	if err != nil {
 		return domain.RunState{}, "", fmt.Errorf("orphan recovery: quarantine stale outputs: %w", err)
 	}
@@ -526,11 +533,16 @@ func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease,
 	return next, orphanAttemptID, nil
 }
 
-func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, last domain.RunEvent, attemptsExhausted bool, afterAppend func() error) (domain.RunState, string, error) {
+func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, last domain.RunEvent, attemptsExhausted bool, afterAppend func() error, afterQuarantine func() error) (domain.RunState, string, error) {
 	orphanAttemptID := state.CurrentAttemptID
-	quarantined, err := quarantineOrphanedOutputs(runDir, orphanAttemptID, last.Timestamp)
+	quarantined, err := quarantineAttemptOutputs(runDir, orphanAttemptID, last.Timestamp)
 	if err != nil {
 		return domain.RunState{}, "", fmt.Errorf("orphan recovery: quarantine stale outputs: %w", err)
+	}
+	if afterQuarantine != nil {
+		if err := afterQuarantine(); err != nil {
+			return domain.RunState{}, orphanAttemptID, fmt.Errorf("orphan recovery: injected post-quarantine failure: %w", err)
+		}
 	}
 	reason, summary := "orphan-operational-retry-budget-exhausted", "orphaned RUNNING attempt cannot be recovered because the frozen operational retry budget is exhausted"
 	if attemptsExhausted {
@@ -552,7 +564,7 @@ func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir stri
 	if err != nil {
 		return domain.RunState{}, "", fmt.Errorf("orphan recovery: close exhausted retry budget: %w", err)
 	}
-	outcome, err := orphanOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), event)
+	outcome, err := budgetOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), event)
 	if err != nil {
 		return domain.RunState{}, "", err
 	}
@@ -581,7 +593,7 @@ func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir stri
 	return next, orphanAttemptID, errors.New("orphan recovery requires operator intervention: operational retry budget exhausted")
 }
 
-func recoverOrphanTerminalOutcome(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState) (bool, error) {
+func recoverBudgetTerminalOutcome(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState) (bool, error) {
 	events, _, err := store.ReadEvents(state.RunID)
 	if err != nil || len(events) == 0 {
 		return false, err
@@ -591,14 +603,23 @@ func recoverOrphanTerminalOutcome(store *runstore.Store, lease *runstore.Lease, 
 		return false, nil
 	}
 	reason, _ := last.Payload["terminalReason"].(string)
-	if reason != "orphan-attempt-budget-exhausted" && reason != "orphan-operational-retry-budget-exhausted" {
+	if reason != "orphan-attempt-budget-exhausted" && reason != "orphan-operational-retry-budget-exhausted" && reason != "attempt-budget-exhausted" && reason != "operational-retry-budget-exhausted" {
 		return false, nil
 	}
 	orphaned, _ := last.Payload["orphaned"].(bool)
-	if !orphaned {
-		return false, errors.New("orphan recovery: terminal event lacks orphan authority binding")
+	budgetTerminal, _ := last.Payload["budgetTerminal"].(bool)
+	if !orphaned && !budgetTerminal {
+		return false, errors.New("budget recovery: terminal event lacks authority binding")
 	}
-	outcome, err := orphanOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), last)
+	staleText, _ := last.Payload["staleSince"].(string)
+	staleSince, err := time.Parse(time.RFC3339, staleText)
+	if err != nil {
+		return false, errors.New("orphan recovery: terminal event lacks valid staleSince")
+	}
+	if _, err := quarantineAttemptOutputs(runDir, last.AttemptID, staleSince); err != nil {
+		return false, fmt.Errorf("orphan recovery: compensate quarantine: %w", err)
+	}
+	outcome, err := budgetOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), last)
 	if err != nil {
 		return false, err
 	}
@@ -611,7 +632,7 @@ func recoverOrphanTerminalOutcome(store *runstore.Store, lease *runstore.Lease, 
 	return true, nil
 }
 
-func orphanOutcomeFromEvent(taskID string, reviewRound uint, event domain.RunEvent) (review.OutcomeData, error) {
+func budgetOutcomeFromEvent(taskID string, reviewRound uint, event domain.RunEvent) (review.OutcomeData, error) {
 	payloadData, err := json.Marshal(event.Payload)
 	if err != nil {
 		return review.OutcomeData{}, fmt.Errorf("orphan recovery: encode exhausted retry evidence: %w", err)
@@ -627,49 +648,84 @@ func orphanOutcomeFromEvent(taskID string, reviewRound uint, event domain.RunEve
 	return review.OutcomeData{TaskID: taskID, RunID: event.RunID, TerminalState: domain.StateBlocked, Verdict: "blocked", FinalReviewRound: reviewRound, FinalReviewDigest: digest, FinalEvidenceDigest: digest, Summary: summary, FindingCount: 1, GeneratedAt: event.Timestamp}, nil
 }
 
-// quarantineOrphanedOutputs isolates the stale outputs of an orphaned
-// attempt as diagnostic material: evidence-bearing files move under the
-// attempt's diagnostics directory (removing them from every evidence
-// collection glob) and a diagnostics record marks the attempt as orphaned.
-func quarantineOrphanedOutputs(runDir, orphanAttemptID string, staleSince time.Time) ([]string, error) {
+// quarantineAttemptOutputs durably isolates outputs from an orphaned or
+// terminally failed attempt. The transaction manifest is written before any
+// rename, so restart can finish the exact file set without losing its event
+// binding even when the process dies before the terminal journal append.
+func quarantineAttemptOutputs(runDir, orphanAttemptID string, staleSince time.Time) ([]string, error) {
 	attemptDir := filepath.Join(runDir, "attempts", orphanAttemptID)
 	diagnosticsDir := filepath.Join(attemptDir, "diagnostics")
-	quarantined := []string{}
+	if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
+		return nil, err
+	}
+	type quarantineTransaction struct {
+		AttemptID  string   `json:"attemptId"`
+		StaleSince string   `json:"staleSince"`
+		Files      []string `json:"files"`
+	}
+	transactionPath := filepath.Join(diagnosticsDir, "orphan-quarantine-transaction.json")
+	transaction := quarantineTransaction{AttemptID: orphanAttemptID, StaleSince: staleSince.UTC().Format(time.RFC3339), Files: []string{}}
+	if data, err := os.ReadFile(transactionPath); err == nil {
+		if err := json.Unmarshal(data, &transaction); err != nil || transaction.AttemptID != orphanAttemptID || transaction.StaleSince != staleSince.UTC().Format(time.RFC3339) {
+			return nil, errors.New("orphan quarantine transaction identity mismatch")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	present := make(map[string]bool, len(transaction.Files))
+	for _, name := range transaction.Files {
+		present[name] = true
+	}
 	for _, name := range []string{"worker-result.json", "worktree-snapshot.json"} {
 		source := filepath.Join(attemptDir, name)
-		if _, err := os.Stat(source); err != nil {
+		if _, err := os.Lstat(source); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			return nil, err
 		}
-		if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
-			return nil, err
+		if !present[name] {
+			transaction.Files = append(transaction.Files, name)
+			present[name] = true
 		}
-		if err := os.Rename(source, filepath.Join(diagnosticsDir, "quarantined-"+name)); err != nil {
+	}
+	sort.Strings(transaction.Files)
+	transactionData, err := json.MarshalIndent(transaction, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if err := atomicWrite(transactionPath, append(transactionData, '\n'), 0o600); err != nil {
+		return nil, err
+	}
+	for _, name := range transaction.Files {
+		source := filepath.Join(attemptDir, name)
+		destination := filepath.Join(diagnosticsDir, "quarantined-"+name)
+		if _, err := os.Lstat(source); err == nil {
+			if err := os.Rename(source, destination); err != nil {
+				return nil, err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return nil, err
+		} else if _, err := os.Lstat(destination); err != nil {
+			return nil, fmt.Errorf("orphan quarantine transaction lost %s: %w", name, err)
 		}
-		quarantined = append(quarantined, name)
 	}
 	record := map[string]any{
 		"reason":           "orphaned-attempt-stale-outputs",
 		"attemptId":        orphanAttemptID,
 		"staleSince":       staleSince.UTC().Format(time.RFC3339),
 		"isolatedAt":       time.Now().UTC().Format(time.RFC3339),
-		"quarantinedFiles": quarantined,
+		"quarantinedFiles": transaction.Files,
 		"note":             "stale fencing outputs are diagnostic material only; they never enter the evidence, review or publication chain",
 	}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
-		return nil, err
-	}
 	if err := atomicWrite(filepath.Join(diagnosticsDir, "orphan-diagnostics.json"), append(data, '\n'), 0o600); err != nil {
 		return nil, err
 	}
-	return quarantined, nil
+	return append([]string(nil), transaction.Files...), nil
 }
 
 // quarantineRejectedWorkerResult isolates a WorkerResult rejected by the
@@ -1379,21 +1435,64 @@ func transition(state domain.RunState, attemptID, eventType string, target domai
 	return event, next, err
 }
 
-func recordFailure(store *runstore.Store, lease *runstore.Lease, state domain.RunState, attemptID string, task domain.TaskSpec, cause error) (domain.RunState, error) {
+func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, attemptID string, task domain.TaskSpec, cause error, afterTerminalAppend func() error) (domain.RunState, error) {
 	target := domain.StateBlocked
 	guard := lifecycle.Guard{LeaseHeld: true}
+	payload := map[string]any{"error": cause.Error()}
+	eventAt := time.Now().UTC()
 	if state.OperationalRetriesUsed < uint(task.Budgets.MaxOperationalRetries) && state.AttemptsUsed < uint(task.Budgets.MaxAttempts) {
 		target, guard.BudgetAvailable = domain.StateRetryPending, true
+	} else {
+		reason := "operational-retry-budget-exhausted"
+		if state.AttemptsUsed >= uint(task.Budgets.MaxAttempts) {
+			reason = "attempt-budget-exhausted"
+		}
+		quarantined, err := quarantineAttemptOutputs(runDir, attemptID, eventAt)
+		if err != nil {
+			return state, fmt.Errorf("terminal worker failure quarantine: %w", err)
+		}
+		payload["budgetTerminal"] = true
+		payload["terminalReason"] = reason
+		payload["quarantinedOutputs"] = quarantined
+		payload["staleSince"] = eventAt.Format(time.RFC3339)
+		payload["attemptsUsed"] = state.AttemptsUsed
+		payload["maxAttempts"] = task.Budgets.MaxAttempts
+		payload["operationalRetriesUsed"] = state.OperationalRetriesUsed
+		payload["maxOperationalRetries"] = task.Budgets.MaxOperationalRetries
 	}
-	event, next, err := transition(state, attemptID, "worker.failed", target, time.Now().UTC(), map[string]any{"error": cause.Error()}, guard)
+	event, next, err := transition(state, attemptID, "worker.failed", target, eventAt, payload, guard)
 	if err != nil {
 		return state, err
 	}
+	var prepared *review.PreparedRecords
+	if target == domain.StateBlocked {
+		outcome, err := budgetOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), event)
+		if err != nil {
+			return state, err
+		}
+		prepared, err = review.PrepareOutcome(runDir, outcome)
+		if err != nil {
+			return state, err
+		}
+	}
 	if err := store.Append(lease, event, state.Sequence); err != nil {
+		if prepared != nil {
+			prepared.Abort()
+		}
 		return state, err
 	}
+	if prepared != nil {
+		if afterTerminalAppend != nil {
+			if err := afterTerminalAppend(); err != nil {
+				return next, fmt.Errorf("terminal worker failure: injected post-append failure: %w", err)
+			}
+		}
+		if err := prepared.Commit(); err != nil {
+			return next, err
+		}
+	}
 	if err := store.WriteSnapshot(lease, next); err != nil {
-		return state, err
+		return next, err
 	}
 	return next, nil
 }

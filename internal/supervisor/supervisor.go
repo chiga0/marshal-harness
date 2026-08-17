@@ -171,7 +171,7 @@ func New(stateRoot, marshalBinary string, opts ...Option) (*Supervisor, error) {
 		s.now = func() time.Time { return time.Now().UTC() }
 	}
 	if s.executor == nil {
-		s.executor = commandExecutor{}
+		s.executor = commandExecutor{stateRoot: s.stateRoot, readinessTimeout: 10 * time.Second}
 	}
 	return s, nil
 }
@@ -452,18 +452,65 @@ func (s *Supervisor) Loop(ctx context.Context, interval time.Duration) error {
 // that started them, including the supervisor itself stopping. Killing the
 // drivers together with the supervisor context would reproduce exactly the
 // silent-death failure mode the supervisor exists to eliminate.
-type commandExecutor struct{}
+type commandExecutor struct {
+	stateRoot        string
+	readinessTimeout time.Duration
+}
 
-// Start starts the child process and reaps it asynchronously; it never
-// blocks on the child's completion.
-func (commandExecutor) Start(ctx context.Context, argv []string) error {
+// Start starts the child and does not acknowledge dispatch until the child
+// holds the authoritative Run lease (or exits after completing synchronously).
+// A child that misses the bounded readiness window is killed and reaped while
+// the repository coordination lock is still held, so another supervisor can
+// never race a late, unreserved child.
+func (executor commandExecutor) Start(ctx context.Context, argv []string) error {
 	if len(argv) == 0 {
 		return errors.New("supervisor: empty argv")
+	}
+	runID := ""
+	for index, argument := range argv {
+		if argument == "--run" && index+1 < len(argv) {
+			runID = argv[index+1]
+			break
+		}
+	}
+	if runID == "" || executor.stateRoot == "" {
+		return errors.New("supervisor: child readiness requires state root and run ID")
 	}
 	command := exec.CommandContext(context.WithoutCancel(ctx), argv[0], argv[1:]...)
 	if err := command.Start(); err != nil {
 		return err
 	}
-	go func() { _ = command.Wait() }()
-	return nil
+	waited := make(chan error, 1)
+	go func() { waited <- command.Wait() }()
+	timeout := executor.readinessTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	store := runstore.New(executor.stateRoot)
+	for {
+		select {
+		case err := <-waited:
+			if err != nil {
+				return fmt.Errorf("supervisor: child exited before lease readiness: %w", err)
+			}
+			return errors.New("supervisor: child exited before acquiring the Run lease")
+		case <-ticker.C:
+			held, err := store.LeaseHeld(runID)
+			if err == nil && held {
+				return nil
+			}
+		case <-timer.C:
+			_ = command.Process.Kill()
+			<-waited
+			return errors.New("supervisor: child did not acquire the Run lease before readiness timeout")
+		case <-ctx.Done():
+			_ = command.Process.Kill()
+			<-waited
+			return ctx.Err()
+		}
+	}
 }

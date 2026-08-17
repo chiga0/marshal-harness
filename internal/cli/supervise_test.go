@@ -26,11 +26,28 @@ func superviseFixtureBinary(t *testing.T, argvFile string) string {
 	path := filepath.Join(t.TempDir(), "marshal-supervise-fixture")
 	script := "#!/bin/sh\n" +
 		"{ printf '%s\\n' \"$@\"; } > \"" + argvFile + ".tmp\"\n" +
-		"mv \"" + argvFile + ".tmp\" \"" + argvFile + "\"\n"
+		"mv \"" + argvFile + ".tmp\" \"" + argvFile + "\"\n" +
+		"run_id=''\n" +
+		"previous=''\n" +
+		"for argument in \"$@\"; do if [ \"$previous\" = '--run' ]; then run_id=\"$argument\"; break; fi; previous=\"$argument\"; done\n" +
+		"MARSHAL_CLI_HELPER_STATE_ROOT=\"$PWD/.marshal\" MARSHAL_CLI_HELPER_RUN_ID=\"$run_id\" exec \"" + os.Args[0] + "\" -test.run '^TestCLISuperviseLeaseHelper$'\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestCLISuperviseLeaseHelper(t *testing.T) {
+	root, runID := os.Getenv("MARSHAL_CLI_HELPER_STATE_ROOT"), os.Getenv("MARSHAL_CLI_HELPER_RUN_ID")
+	if root == "" || runID == "" {
+		return
+	}
+	lease, err := runstore.New(root).Acquire(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	time.Sleep(500 * time.Millisecond)
 }
 
 // newSuperviseRepository prepares a hermetic git repository with initialised

@@ -3,6 +3,8 @@
 package runstore
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,7 +22,12 @@ func acquireLeaseFile(root, runID string) (*os.File, uint64, uint64, bool, error
 	defer unix.Close(rootFD)
 	defer unix.Close(runsFD)
 	defer unix.Close(runFD)
-	leaseFD, err := unix.Openat(runFD, "lease.lock", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT, 0o600)
+	created := false
+	leaseFD, err := unix.Openat(runFD, "lease.lock", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, unix.ENOENT) {
+		leaseFD, err = unix.Openat(runFD, "lease.lock", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_EXCL, 0o600)
+		created = err == nil
+	}
 	if err != nil {
 		return nil, 0, 0, false, err
 	}
@@ -39,6 +46,19 @@ func acquireLeaseFile(root, runID string) (*os.File, uint64, uint64, bool, error
 			return nil, 0, 0, false, nil
 		}
 		return nil, 0, 0, false, err
+	}
+	if !created {
+		owner, err := readLeaseOwnerAt(runFD)
+		if err != nil {
+			unix.Flock(leaseFD, unix.LOCK_UN)
+			unix.Close(leaseFD)
+			return nil, 0, 0, false, fmt.Errorf("validate existing lease owner: %w", err)
+		}
+		if owner.Device != uint64(stat.Dev) || owner.Inode != uint64(stat.Ino) {
+			unix.Flock(leaseFD, unix.LOCK_UN)
+			unix.Close(leaseFD)
+			return nil, 0, 0, false, errors.New("existing lease owner does not bind the opened lock descriptor")
+		}
 	}
 	return os.NewFile(uintptr(leaseFD), "lease.lock"), uint64(stat.Dev), uint64(stat.Ino), true, nil
 }
@@ -59,23 +79,93 @@ func writeLeaseOwner(root, runID string, data []byte) error {
 	defer unix.Close(rootFD)
 	defer unix.Close(runsFD)
 	defer unix.Close(runFD)
-	fd, err := unix.Openat(runFD, "lease.lock.owner", unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_TRUNC, 0o600)
+	if _, err := readLeaseOwnerAt(runFD); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return err
+	}
+	temporary := ".lease.lock.owner-" + hex.EncodeToString(random[:]) + ".pending"
+	fd, err := unix.Openat(runFD, temporary, unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	file := os.NewFile(uintptr(fd), "lease.lock.owner")
-	defer file.Close()
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
-		return err
-	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
-		return errors.New("lease owner descriptor is not a single-link regular file")
-	}
+	file := os.NewFile(uintptr(fd), temporary)
+	defer func() {
+		file.Close()
+		_ = unix.Unlinkat(runFD, temporary, 0)
+	}()
 	if _, err := file.Write(data); err != nil {
 		return err
 	}
-	return file.Sync()
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := unix.Renameat(runFD, temporary, runFD, "lease.lock.owner"); err != nil {
+		return err
+	}
+	return unix.Fsync(runFD)
+}
+
+func readLeaseOwnerAt(runFD int) (leaseOwnerRecord, error) {
+	ownerFD, err := unix.Openat(runFD, "lease.lock.owner", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return leaseOwnerRecord{}, os.ErrNotExist
+		}
+		return leaseOwnerRecord{}, err
+	}
+	ownerFile := os.NewFile(uintptr(ownerFD), "lease.lock.owner")
+	defer ownerFile.Close()
+	var stat unix.Stat_t
+	if err := unix.Fstat(ownerFD, &stat); err != nil {
+		return leaseOwnerRecord{}, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+		return leaseOwnerRecord{}, errors.New("lease owner descriptor is not a single-link regular file")
+	}
+	var owner leaseOwnerRecord
+	if err := json.NewDecoder(io.LimitReader(ownerFile, 16<<10)).Decode(&owner); err != nil {
+		return leaseOwnerRecord{}, err
+	}
+	if owner.Device == 0 || owner.Inode == 0 {
+		return leaseOwnerRecord{}, errors.New("lease owner record lacks descriptor identity")
+	}
+	return owner, nil
+}
+
+func leaseStillAuthoritative(lease *Lease) error {
+	rootFD, runsFD, runFD, err := openRunAuthority(lease.root, lease.runID)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(rootFD)
+	defer unix.Close(runsFD)
+	defer unix.Close(runFD)
+	currentFD, err := unix.Openat(runFD, "lease.lock", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(currentFD)
+	var current, held unix.Stat_t
+	if err := unix.Fstat(currentFD, &current); err != nil {
+		return err
+	}
+	if err := unix.Fstat(int(lease.file.Fd()), &held); err != nil {
+		return err
+	}
+	if uint64(current.Dev) != lease.dev || uint64(current.Ino) != lease.inode || uint64(held.Dev) != lease.dev || uint64(held.Ino) != lease.inode {
+		return errors.New("lease pathname no longer binds the held descriptor")
+	}
+	owner, err := readLeaseOwnerAt(runFD)
+	if err != nil {
+		return err
+	}
+	if owner.Device != lease.dev || owner.Inode != lease.inode {
+		return errors.New("lease owner no longer binds the held descriptor")
+	}
+	return nil
 }
 
 func openRunAuthority(root, runID string) (int, int, int, error) {
@@ -122,15 +212,9 @@ func probeLeaseHeld(root, runID string) (bool, error) {
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
 		return false, errors.New("inspect run lease: lock descriptor is not a single-link regular file")
 	}
-	ownerFD, err := unix.Openat(runFD, "lease.lock.owner", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	owner, err := readLeaseOwnerAt(runFD)
 	if err != nil {
 		return false, fmt.Errorf("inspect run lease owner: %w", err)
-	}
-	ownerFile := os.NewFile(uintptr(ownerFD), "lease.lock.owner")
-	defer ownerFile.Close()
-	var owner leaseOwnerRecord
-	if err := json.NewDecoder(io.LimitReader(ownerFile, 16<<10)).Decode(&owner); err != nil {
-		return false, fmt.Errorf("decode run lease owner: %w", err)
 	}
 	if owner.Device == 0 || owner.Inode == 0 || owner.Device != uint64(stat.Dev) || owner.Inode != uint64(stat.Ino) {
 		return false, errors.New("inspect run lease: owner identity does not bind the opened lock descriptor")

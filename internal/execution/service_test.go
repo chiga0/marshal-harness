@@ -1824,6 +1824,99 @@ func TestOrphanBudgetTerminalTransactionRecoversAfterRestart(t *testing.T) {
 	}
 }
 
+func TestOrphanQuarantineTransactionRecoversBeforeTerminalAppend(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+		preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture", maxAttempts: 3, maxOperationalRetries: 1,
+	})
+	fixture.input.OrphanStalenessThreshold = time.Second
+	appendRetrySegment(t, fixture, "attempt-retry-before-quarantine-crash")
+	appendWorkerStartedAt(t, fixture, "attempt-orphan-quarantine-crash", time.Unix(200, 0).UTC())
+	attemptDir := filepath.Join(fixture.runDir, "attempts", "attempt-orphan-quarantine-crash")
+	if err := os.MkdirAll(attemptDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"worker-result.json", "worktree-snapshot.json"} {
+		if err := os.WriteFile(filepath.Join(attemptDir, name), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixture.input.AfterOrphanQuarantine = func() error { return errors.New("crash after quarantine") }
+	_, err := Run(context.Background(), fixture.input)
+	if err == nil || !strings.Contains(err.Error(), "post-quarantine failure") {
+		t.Fatalf("Run error = %v", err)
+	}
+	if state := inspectState(t, fixture); state.State != domain.StateRunning {
+		t.Fatalf("journal advanced before terminal append: %+v", state)
+	}
+	transaction := filepath.Join(attemptDir, "diagnostics", "orphan-quarantine-transaction.json")
+	data, err := os.ReadFile(transaction)
+	if err != nil || !strings.Contains(string(data), "worker-result.json") || !strings.Contains(string(data), "worktree-snapshot.json") {
+		t.Fatalf("durable quarantine transaction = %q err=%v", data, err)
+	}
+	fixture.input.AfterOrphanQuarantine = nil
+	result, err := Run(context.Background(), fixture.input)
+	if err == nil || result.State.State != domain.StateBlocked {
+		t.Fatalf("restart result = %+v err=%v", result, err)
+	}
+	events, _, err := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := events[len(events)-1]
+	quarantined, _ := last.Payload["quarantinedOutputs"].([]any)
+	if len(quarantined) != 2 {
+		t.Fatalf("terminal event lost quarantine binding: %+v", last.Payload)
+	}
+}
+
+func TestOrdinaryWorkerFailureBudgetClosureAndRestartCompensation(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		maxAttempts    int
+		maxOperational int
+		wantReason     string
+	}{
+		{name: "attempt", maxAttempts: 2, maxOperational: 1, wantReason: "attempt-budget-exhausted"},
+		{name: "operational", maxAttempts: 3, maxOperational: 1, wantReason: "operational-retry-budget-exhausted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newExecutionFixtureWithOptions(t, true, executionFixtureOptions{
+				preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture",
+				maxAttempts: tc.maxAttempts, maxOperationalRetries: tc.maxOperational,
+			})
+			first, err := Run(context.Background(), fixture.input)
+			if err == nil || first.State.State != domain.StateRetryPending {
+				t.Fatalf("first failure = %+v err=%v", first, err)
+			}
+			fixture.input.AfterWorkerTerminalAppend = func() error { return errors.New("ordinary terminal crash") }
+			second, err := Run(context.Background(), fixture.input)
+			if err == nil || !strings.Contains(err.Error(), "post-append failure") || second.State.State != domain.StateBlocked {
+				t.Fatalf("terminal failure = %+v err=%v", second, err)
+			}
+			fixture.input.AfterWorkerTerminalAppend = nil
+			recovered, err := Run(context.Background(), fixture.input)
+			if err == nil || !strings.Contains(err.Error(), "operator intervention") || recovered.State.State != domain.StateBlocked {
+				t.Fatalf("restart compensation = %+v err=%v", recovered, err)
+			}
+			state := inspectState(t, fixture)
+			if state.AttemptsUsed != 2 || state.OperationalRetriesUsed != 1 {
+				t.Fatalf("budget counters advanced past limits: %+v", state)
+			}
+			events, _, err := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			last := events[len(events)-1]
+			if last.Payload["terminalReason"] != tc.wantReason || last.Payload["budgetTerminal"] != true {
+				t.Fatalf("terminal payload = %+v", last.Payload)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.runDir, "outcome.json")); err != nil {
+				t.Fatalf("terminal Outcome missing after restart: %v", err)
+			}
+		})
+	}
+}
+
 type staleFencingAdapter struct {
 	*fixtureAdapter
 	claimedAttemptID string

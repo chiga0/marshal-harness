@@ -107,6 +107,9 @@ func (s *Store) appendControlRecord(lease *Lease, validator ControlValidator, en
 	if lease == nil || lease.file == nil || !lease.held {
 		return errors.New("control append requires held run lease")
 	}
+	if err := leaseStillAuthoritative(lease); err != nil {
+		return fmt.Errorf("control append requires authoritative run lease: %w", err)
+	}
 	if validator == nil {
 		return errors.New("control append requires a validator")
 	}
