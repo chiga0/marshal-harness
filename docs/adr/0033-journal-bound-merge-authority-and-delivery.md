@@ -25,7 +25,7 @@ ADR 0032 冻结了受控 merge 的业务门禁，但 B2 的本地实现用内容
 受控 merge 新增两类 journal-bound authority facts；它们必须与 Run 的权威事件使用同一 `authorityNamespaceId`、同一 append-only journal 与同一 `expectedSequence` CAS。事件及其引用的 authority bytes 必须在同一 authority-store transaction 中提交；Run snapshot 随后作为 mutation 前的同步持久化 barrier，不是第二业务权威：
 
 - `MergeAuthorityTransaction`：原子绑定 prepared `SCMMergeIntent`、当前 `PublicationAuthorization` 或 revocation successor，以及全部 admission digest；
-- `MergeDeliveryAnchor`：绑定某一 ready/merge delivery 的 pending attempt、预算消费、观察/结果与前一 anchor。
+- `MergeDeliveryAnchor`：绑定某一 ready/merge delivery 的 pending attempt、预算消费、mutation fence consumption、观察/结果与前一 anchor；`MergeMutationFenceConsumption` 不是进程内 token，而是该 authority fact 的 `status=mutation-fence-consumed` 封闭变体。
 
 sidecar 文件、目录名、mtime、独立 head 文件或进程内 counter 都只能是可重建投影，不能成为权威。每个 authority fact 必须记录：
 
@@ -55,27 +55,52 @@ prepared 事件冻结签名输入的精确 bytes，包括 `requestedAt`、fresh 
 
 撤销只能通过 `publication.merge-authority-revoked` 追加 successor；删除或改写旧授权不构成撤销。每次 credentialed mutation 前必须用当前 journal snapshot 重新校验 transaction 仍为 current。
 
-### 3. Delivery 使用 pending→inspect/reconcile→resolved 状态机
+### 3. Delivery 使用 pending→fence-consumed→inspect/reconcile→resolved 状态机
 
 新增同状态事件：
 
 | 事件 | actor | 状态 | 语义 |
 | --- | --- | --- | --- |
 | `publication.merge-delivery-pending` | `system/marshal-core` | `CI_PENDING → CI_PENDING` | Core 在 mutation 前持久化 attempt、operation、预算消费与前一 anchor |
+| `publication.merge-mutation-fence-consumed` | `system/marshal-core` | `CI_PENDING → CI_PENDING` | Core 原子消费唯一 mutation fence，追加 journal-bound `MergeDeliveryAnchor(status=mutation-fence-consumed)`；handoff 前必须持久化 |
 | `publication.merge-delivery-observed` | `system/marshal-core` | `CI_PENDING → CI_PENDING` | Core 接纳一次 typed Inspect observation；unknown/lag 时 pending 仍 unresolved，可继续 Inspect |
 | `publication.merge-delivery-resolved` | `system/marshal-core` | `CI_PENDING → CI_PENDING` | Core 只在 observation 可确定裁决时追加结果；不得覆盖 pending |
 
-SCMMerger/Publisher 只能返回封闭的 typed observation，并作为 `sourceActor=publisher/marshal-scm-merger` provenance 被记录；它无权追加 authority journal、消费预算或宣布 resolved。Core 接纳前必须逐项验证 source Port/protocol、pending/intent/operation/attempt identity、target observation、authorization/security domain、Provider principal、observation digest 与 current journal sequence；任一不符即拒绝，零 authority append。事件的 producer-authority 表只登记 `system/marshal-core`。
+SCMMerger/Publisher 只能返回封闭的 typed observation，并作为 `sourceActor=publisher/marshal-scm-merger` provenance 被记录；它无权追加 authority journal、消费预算/fence 或宣布 resolved。Core 接纳前必须逐项验证 source Port/protocol、pending/intent/operation/attempt identity、target observation、authorization/security domain、Provider principal、observation digest 与 current journal sequence；任一不符即拒绝，零 authority append。上述四个 delivery 事件的 producer-authority 表只登记 `system/marshal-core`，same-state allowlist 只接受事件表中的精确 event type、actor 与 `CI_PENDING → CI_PENDING` 组合；其它 actor、状态或未命名同状态事件全部拒绝，replay 也执行同一校验。
+
+`publication.merge-mutation-fence-consumed` 的 payload Schema 固定 `additionalProperties=false`，以下字段全部 required，不允许 nullable 或默认补值：
+
+| 字段 | 封闭约束 |
+| --- | --- |
+| `schemaVersion` | `const: 1` |
+| `recordKind`、`status` | 分别为 `const: MergeDeliveryAnchor` 与 `const: mutation-fence-consumed` |
+| `authorityNamespaceId`、`taskId`、`runId` | 必须逐字等于事件 envelope 与 current Run identity |
+| `journalSequence` | 正整数，必须等于本次 append 后事件 envelope 的 authority journal sequence |
+| `expectedPreviousJournalSequence` | 正整数，必须等于 `journalSequence-1` 与 CAS 输入；不得跳号 |
+| `ledgerSequence` | 正整数，必须等于同一 merge anchor lineage 的前一值加一 |
+| `previousAnchorDigest`、`pendingAnchorDigest` | `sha256:<64 lowercase hex>`；两者必须相等并指向 current unresolved pending anchor；不得跨 pending/operation 接链 |
+| `anchorDigest` | `sha256:<64 lowercase hex>`；按 §1 JCS 规则覆盖完整 payload |
+| `canonicalReplayIdentity` | `sha256:<64 lowercase hex>`，值固定为 `sha256(JCS([eventType,authorityNamespaceId,runId,pendingAnchorDigest,intentDigest,operation,deliveryAttempt]))`；同 identity 只允许一个 consumption |
+| `operation` | `enum: ready|merge` |
+| `deliveryAttempt` | `integer: 1..3`，必须等于 pending 冻结值 |
+| `intentDigest`、`authorizationDigest`、`publicationDigest`、`reviewDecisionDigest`、`verificationDigest`、`evidenceDigest`、`policyDigest`、`approvalDigest`、`remoteCheckDigest` | 均为 `sha256:<64 lowercase hex>`，逐字等于 prepared authority transaction 与 current pending 的冻结 binding |
+| `expiresAt`、`consumedAt` | RFC 3339 UTC；`consumedAt < expiresAt`，恢复不得重取时间或改写 |
+| `providerRequestDigest` | `sha256:<64 lowercase hex>`，绑定即将 handoff 的精确 SCMMerger operation、target 与 canonical request bytes |
+
+`MergeDeliveryAnchor.status` 的封闭枚举因此是 `pending|mutation-fence-consumed|observed|resolved`。reducer 只在 current unresolved pending、authorization/intent/check 仍 current、expiry 未到、`expectedPreviousJournalSequence` 命中且该 `canonicalReplayIdentity` 尚未消费时接受 fence 事件；接受后不改变 Run 状态、不返还或再消费 delivery budget，只推进 journal/ledger sequence、anchor lineage，并在 snapshot 中保存 consumed identity、anchor digest 与 provider request digest。同 identity+同 digest 的重放幂等返回既有 fact，但调用方必须进入 crash hydration/Inspect，不能再次 handoff；同 identity+不同 digest、第二个 concurrent consume 或错 lineage 一律 conflict，零 append、零 mutation。
+
+replay 与 crash hydration 必须仅从 journal 重建上述 reducer 状态：看见 pending 而未看见 fence consumption 时仍须重新执行 current/expiry recheck 后竞争唯一 fence；看见 fence consumption 时，无论有没有进程内 handoff 标记或 Provider response，都按“可能已 handoff”恢复，只能 Inspect/Reconcile，绝不重新 consume 或 replay mutation。projection、内存锁与进程日志不能改变该裁决。
 
 执行顺序固定为：
 
 1. 紧邻 mutation 的 `ObserveTarget`：SCMMerger 返回封闭 typed preflight observation，Core 校验 source provenance、target binding、observation digest 与 current authority；
 2. 以 journal CAS 追加 `pending`，并原子消费一次 delivery budget；
 3. **同步持久化包含该 sequence 的 Run snapshot**；snapshot 未成功不得 mutation；
-4. snapshot 成功后、credentialed mutation 前，Core **必须同时执行** mutation-adjacent recheck **AND** single-use fence，二者不可互相替代：在 authority store 的同一 serialization key/serializable ordering 内再次读取 journal，精确核对 pending 仍 unresolved/current、journal sequence 未变化、authorization 未撤销且未过期、intent/target/check binding 仍 current；随后 CAS 追加绑定 `(authorityNamespaceId, runId, pendingDigest, journalSequence, authorizationDigest, expiry)` 的唯一 `MergeMutationFenceConsumption`；任一值变化、expiry 已到或 fence 已消费必须零 mutation；
-5. `PublicationAuthorization` revoke、其它会改变 current authority 的 append、`MergeMutationFenceConsumption` 与 fence→Provider handoff 必须共享上述同一线性化/serializable ordering，Core 从 fence consumption 到把调用交给 SCMMerger 期间不释放该 serialization key。顺序裁决固定为：revoke/authority append 先线性化，则 mutation-adjacent recheck 失败并零 mutation；fence consumption+Provider handoff 先线性化，则该次 mutation 已先获得授权，后到 revoke 只能阻止后续 mutation，并把本次可能结果留给 pending Inspect/Reconcile。fence 已消费但 handoff 响应未知（含进程在边界崩溃）一律按“可能已 handoff”处理，绝不重放；
-6. 执行一次 credentialed mutation；调用已进入 Provider 后才释放 serialization key，之后的进程崩溃或响应丢失由 unresolved pending 承担；M11 多节点实现必须用同一 authority store 的 fenced lease/serializable transaction 提供等价保证，进程内 mutex 不构成 HA fence；
-7. Inspect 外部真实状态，把 SCMMerger typed observation 交给 Core 校验；Core 先追加 `observed`，只有结果可确定时再 CAS 追加 `resolved`；之后才允许继续下一 operation 或生命周期收敛。
+4. snapshot 成功后、credentialed mutation 前，Core **必须同时执行** mutation-adjacent recheck **AND** single-use fence，二者不可互相替代：在 authority store 的同一 serialization key/serializable ordering 内再次读取 journal，精确核对 pending 仍 unresolved/current、journal sequence 未变化、authorization 未撤销且未过期、intent/target/check binding 仍 current；随后 CAS 追加上述 `publication.merge-mutation-fence-consumed` 与 journal-bound `MergeDeliveryAnchor(status=mutation-fence-consumed)`；任一值变化、expiry 已到或 fence identity 已消费必须零 mutation；
+5. authority journal transaction 必须先 durable commit，并**同步持久化包含 fence `journalSequence`、consumed identity 与 anchor digest 的 Run snapshot**；journal commit 或该 snapshot barrier 任一未完成都不得 Provider handoff。恢复以 journal 为权威重建 snapshot，不得因 snapshot 落后重放 consumption 或 mutation；
+6. `PublicationAuthorization` revoke、其它会改变 current authority 的 append、fence consumption 与 fence→Provider handoff 必须共享上述同一线性化/serializable ordering，Core 从 fence consumption、durability barrier 到把调用交给 SCMMerger 期间不释放该 serialization key。顺序裁决固定为：revoke/authority append 先线性化，则 mutation-adjacent recheck 失败并零 mutation；fence consumption+Provider handoff 先线性化，则该次 mutation 已先获得授权，后到 revoke 只能阻止后续 mutation，并把本次可能结果留给 pending Inspect/Reconcile。fence 已消费但 handoff 响应未知（含进程在 durability/handoff 边界崩溃）一律按“可能已 handoff”处理，绝不重放；
+7. 执行一次 credentialed mutation；调用已进入 Provider 后才释放 serialization key，之后的进程崩溃或响应丢失由 unresolved pending 承担；M11 多节点实现必须用同一 authority store 的 fenced lease/serializable transaction 提供等价保证，进程内 mutex 不构成 HA fence；
+8. Inspect 外部真实状态，把 SCMMerger typed observation 交给 Core 校验；Core 先追加 `observed`，只有结果可确定时再 CAS 追加 `resolved`；observed 的 `previousAnchorDigest` 必须接到 fence consumption anchor（其后观察继续逐条接链），之后才允许继续下一 operation 或生命周期收敛。
 
 `resolved.outcome` 是封闭枚举：`succeeded|not-applied|permanent-failure|conflict`。`unknown|lag` 是 `observed.observationClass` 的非终态取值，永远不能伪装成 resolved outcome。Provider 原始输出不进入 journal、Outcome 或错误字符串。
 
@@ -127,14 +152,16 @@ credentialed mutation 必须在一次打开中完成身份确认与执行：
 | --- | --- |
 | authorization 已准备但 intent 未成为同一 journal fact | Schema/reducer 不允许表达；零 mutation |
 | prepared transaction 同 identity 不同 digest 重放 | conflict；零追加、零 mutation |
-| Publisher 直接提交 pending/observed/resolved event | producer-authority 拒绝；零 authority append |
+| Publisher 直接提交 pending/fence-consumed/observed/resolved event | producer-authority 拒绝；零 authority append |
 | preflight typed observation 的 provenance/digest/target 不匹配 | Core 拒绝 pending；零 budget 消费、零 mutation |
 | 恢复时 wall clock/check observation 已变化 | hydrate 原 transaction；禁止重签不同 digest |
 | pending 已写、snapshot 未同步成功 | 零 mutation |
 | snapshot 已同步、mutation 前 authorization/journal/expiry 变化 | mutation-adjacent recheck **AND** single-use fence 任一失败即零 mutation |
+| 两个 Core 调用并发消费同一 canonical fence identity | 仅一个 CAS 追加 fence authority fact；另一个幂等 hydrate 或 conflict，但均不得第二次 handoff；mutation 总次数最多 1 |
 | revoke 先于 fence→Provider handoff 线性化 | revoke 提交；recheck/fence 拒绝，零 mutation |
 | fence→Provider handoff 先于 revoke 线性化 | 本次 mutation 先获授权并最多执行一次；后到 revoke 只阻止后续 mutation，结果由同一 pending 对账 |
-| fence 已消费、handoff 边界崩溃 | 按可能已 handoff 处理；Inspect/Reconcile，绝不重放 |
+| fence journal commit 后、fence snapshot barrier 前崩溃 | restart 从 journal hydrate consumption、重建 snapshot、Inspect/Reconcile；零 handoff replay |
+| fence 已消费并 durable、handoff 边界崩溃后 restart | hydrate consumed identity/providerRequestDigest，按可能已 handoff 处理；Inspect/Reconcile，绝不重新 consume 或重放 mutation |
 | pending 已写、mutation 前崩溃 | Inspect；只有明确 `not-applied` 才可新 attempt |
 | mutation 已生效、响应丢失 | Inspect 得到匹配远端事实并 resolved；不得重放 |
 | merge observation 为 unknown/lag | Core 追加非终态 observed anchor，pending 保持 unresolved；可重复 Inspect，不得重放 mutation |
@@ -154,9 +181,9 @@ credentialed mutation 必须在一次打开中完成身份确认与执行：
 
 严格串行实施，前一切片未合入不得开始后一切片：
 
-- **A：契约与 reducer**——新增事件/记录 Schema、closed payload、producer authority（仅 Core）、same-state 命名 allowlist、journal replay 与 negative fixtures；
+- **A：契约与 reducer**——新增六个命名事件/两类 authority record Schema（含 fence consumption closed payload）、producer authority（仅 Core）、same-state 命名 allowlist、journal/anchor sequence reducer、canonical replay identity、crash hydration 与 negative fixtures；
 - **B：Authority transaction**——原子 prepared/revoked append、hydrate/re-entry、current-ledger recheck；
-- **C：Delivery anchor**——pending/resolved、snapshot-before-mutation、Inspect/Reconcile、预算派生与 crash matrix；
+- **C：Delivery anchor**——pending/fence-consumed/observed/resolved、pending 与 fence 两次 durability-before-handoff barrier、concurrent consume、consume→crash→restart no-replay、Inspect/Reconcile、预算派生与 crash matrix；
 - **D：Credentialed execution**——fd/immutable-handle 执行、process-group containment、GitHub fake/live conformance。
 
 受控 merge 在 A–D 全部完成、独立审计 P0/P1 清零、required CI/secret scan 全绿并完成真实 lost-response/recovery conformance 后，最多只能注册为显式 opt-in 的 `local-nonproduction` 受限 profile。production supported 必须额外等待 M11 external rollback witness、跨节点 fenced lease 与协调回滚恢复演练全部通过；部分切片合入不得启用 `mergePolicy=policy`，不得使用无限定的 supported 表述。
@@ -171,7 +198,7 @@ credentialed mutation 必须在一次打开中完成身份确认与执行：
 
 ## 非目标
 
-- 不引入通用 same-state transition；仅登记本文列出的四个命名事件；
+- 不引入通用 same-state transition；仅登记本文列出的六个命名事件；
 - 不允许 Worker/Verifier/普通 Agent 获得 Publisher/SCMMerger 凭据；
 - 不允许 admin/force/bypass/branch delete；
 - 不承诺用同一台主机的两个文件检测整机/整存储回滚；

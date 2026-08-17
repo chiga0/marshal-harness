@@ -73,19 +73,20 @@ M13 的长周期人工等待不改变本表：根据 [ADR 0019](adr/0019-determi
 
 ### ADR 0033 目标同状态事件（Proposed，非当前行为）
 
-[ADR 0033](adr/0033-journal-bound-merge-authority-and-delivery.md) 提议登记五个封闭的 `CI_PENDING → CI_PENDING` 事件：
+[ADR 0033](adr/0033-journal-bound-merge-authority-and-delivery.md) 提议登记六个封闭的 `CI_PENDING → CI_PENDING` 事件：
 
 | 事件 | actor | 目标语义 |
 | --- | --- | --- |
 | `publication.merge-authority-prepared` | `system/marshal-core` | 原子绑定 prepared intent、current authorization 与冻结 admission digests |
 | `publication.merge-authority-revoked` | `system/marshal-core` | 追加授权 successor，不删除历史 |
 | `publication.merge-delivery-pending` | `system/marshal-core` | Core 在 mutation 前原子消费 durable delivery budget 并形成 anchor |
+| `publication.merge-mutation-fence-consumed` | `system/marshal-core` | Core 追加 journal-bound `MergeDeliveryAnchor(status=mutation-fence-consumed)`；durable journal+snapshot barrier 完成后才可 handoff |
 | `publication.merge-delivery-observed` | `system/marshal-core` | Core 校验 typed Publisher observation 后追加；unknown/lag 保持 pending unresolved |
 | `publication.merge-delivery-resolved` | `system/marshal-core` | Core 只在 Inspect/Reconcile 得到确定 outcome 后追加，不覆盖 pending |
 
-这些事件不是通用 same-state 入口。Publisher/SCMMerger 只提供 typed observation 与 provenance，不能追加 authority event、消费预算或裁决 resolved。ADR 未接受且 reducer/Schema/producer-authority/replay negative fixtures 未实现前，当前转换表不增加它们；不得从 projection 或 sidecar 反向推进生命周期。
+这些事件不是通用 same-state 入口。same-state allowlist 与 producer-authority 表必须逐项登记上述六个 event type，actor 只能是 `system/marshal-core`；Publisher/SCMMerger 只提供 typed observation 与 provenance，不能追加 authority event、消费预算/fence 或裁决 resolved。ADR 未接受且 reducer/closed Schema/producer-authority/replay/crash-hydration negative fixtures 未实现前，当前转换表不增加它们；不得从 projection 或 sidecar 反向推进生命周期。
 
-目标 mutation 路径必须在 snapshot 后、Provider handoff 前**同时**完成 mutation-adjacent journal/current/expiry recheck **AND** single-use fence；二者不可替代。authorization revoke、其它改变 current authority 的 append、fence consumption 与 fence→Provider handoff 共享同一 serializable ordering：revoke/authority append 先线性化则零 mutation；handoff 先线性化则该次 mutation 已先获授权，后到 revoke 只阻止后续 mutation，结果继续由既有 pending 对账。
+目标 mutation 路径必须在 pending snapshot 后、Provider handoff 前**同时**完成 mutation-adjacent journal/current/expiry recheck **AND** single-use fence；二者不可替代。fence consumption 是带 canonical replay identity、journal/ledger sequence 与 anchor lineage 的 Core-only authority fact；journal commit 和包含该 fence sequence 的同步 snapshot 均 durable 后才可 handoff。authorization revoke、其它改变 current authority 的 append、fence consumption 与 fence→Provider handoff 共享同一 serializable ordering：revoke/authority append 先线性化则零 mutation；handoff 先线性化则该次 mutation 已先获授权，后到 revoke 只阻止后续 mutation，结果继续由既有 pending 对账。replay/hydration 看见已消费 fence 时只能 Inspect/Reconcile，不得再次 handoff。
 
 pending 的 `reconcileDeadline` 到期仍为 unknown/lag 时，Core 以 actor `system/marshal-core` 追加 `publication.blocked`，固定 `terminalReason=merge-delivery-reconcile-deadline-exceeded`，并原子写入绑定 intent、authorization、pending、全部 observation、deadline 与 budget 的 `BLOCKED` Outcome。deadline 后匹配的 late receipt 只能复用 ADR 0026 唯一 `BLOCKED → ACCEPTED` 例外：在同一 authority-store transaction 中原子关闭 pending、追加 receipt/reconcile、`publication.reconciled` 与 `ACCEPTED` Outcome，并归档旧 `BLOCKED` Outcome；任一 binding 不符或事务中断都保持原 `BLOCKED`/pending，且不得称恢复完成。
 
