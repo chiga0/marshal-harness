@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -165,6 +166,147 @@ func TestBindConformanceRequiresAuthorityResolvedSignedEvidence(t *testing.T) {
 	}
 }
 
+func TestNewFromAuthorityConfigBindsExactSignedEvidence(t *testing.T) {
+	executable := fakeExecutable(t, supportedBinary, "exit 0")
+	validator := newValidator(t)
+	base, err := New(executable, validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := base.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, evidenceDigest := signedTestAuthority(t, identity)
+	publicKey := store.trustRoots["test-root"]
+	configPath := filepath.Join(t.TempDir(), "authority.json")
+	configData, err := json.Marshal(AuthorityConfig{
+		EvidenceRoot: store.root, EvidenceDigest: evidenceDigest,
+		TrustRoots: []AuthorityTrustRoot{{KeyID: "test-root", Algorithm: "ed25519", PublicKey: base64.StdEncoding.EncodeToString(publicKey)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, configData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := NewFromAuthorityConfig(context.Background(), executable, validator, configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, err := adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
+		t.Fatalf("production authority wiring did not bind support: %s", probe.Data)
+	}
+
+	badConfig := filepath.Join(t.TempDir(), "authority.json")
+	if err := os.WriteFile(badConfig, configData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewFromAuthorityConfig(context.Background(), executable, validator, badConfig); err == nil {
+		t.Fatal("world-readable authority config was accepted")
+	}
+	symlink := filepath.Join(t.TempDir(), "authority-link.json")
+	if err := os.Symlink(configPath, symlink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewFromAuthorityConfig(context.Background(), executable, validator, symlink); err == nil {
+		t.Fatal("symlinked authority config was accepted")
+	}
+}
+
+func TestSealConformanceEvidenceFreezesProbeProfile(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	observation := LiveConformanceObservation{
+		RunnerID: "independent-qoder-verifier", RunnerVersion: "1", ObservedAt: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
+		Executable: "/opt/qoder/qodercli", ExecutableDigest: digest("e"), BinaryVersion: supportedBinary, HostOS: runtime.GOOS, HostArch: runtime.GOARCH, TranscriptDigest: digest("b"),
+		CredentialVerified: true, LiveProtocolVerified: true, TrustRootKeyID: "root-1",
+	}
+	data, evidenceDigest, err := SealConformanceEvidence(observation, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evidence ConformanceEvidence
+	if err := json.Unmarshal(data, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if evidence.EvidenceDigest != evidenceDigest || evidence.ProbeProfileDigest != expectedProbeProfileDigest() {
+		t.Fatalf("sealed evidence did not freeze profile: %+v", evidence)
+	}
+	if err := evidence.validate(now, map[string]ed25519.PublicKey{"root-1": publicKey}); err != nil {
+		t.Fatal(err)
+	}
+	wrongProfile := evidence
+	wrongProfile.ProbeProfileDigest = digest("c")
+	wrongProfile.EvidenceDigest, err = wrongProfile.digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := wrongProfile.signingBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongProfile.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, message))
+	if err := wrongProfile.validate(now, map[string]ed25519.PublicKey{"root-1": publicKey}); err == nil {
+		t.Fatal("validly signed evidence for a different probe environment was accepted")
+	}
+	wrongHost := evidence
+	wrongHost.HostOS = "not-" + runtime.GOOS
+	wrongHost.EvidenceDigest, err = wrongHost.digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err = wrongHost.signingBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongHost.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, message))
+	if err := wrongHost.validate(now, map[string]ed25519.PublicKey{"root-1": publicKey}); err == nil {
+		t.Fatal("validly signed evidence for a different host environment was accepted")
+	}
+
+	for name, mutate := range map[string]func(*LiveConformanceObservation){
+		"credential not verified": func(value *LiveConformanceObservation) { value.CredentialVerified = false },
+		"protocol not verified":   func(value *LiveConformanceObservation) { value.LiveProtocolVerified = false },
+		"unsupported version":     func(value *LiveConformanceObservation) { value.BinaryVersion = "1.2.0" },
+		"wrong host environment":  func(value *LiveConformanceObservation) { value.HostArch = "wrong-arch" },
+		"non-independent runner":  func(value *LiveConformanceObservation) { value.RunnerID = adapterID },
+	} {
+		t.Run(name, func(t *testing.T) {
+			broken := observation
+			mutate(&broken)
+			if _, _, err := SealConformanceEvidence(broken, privateKey); err == nil {
+				t.Fatal("invalid observation was sealed")
+			}
+		})
+	}
+}
+
+func TestAuthorityEvidenceStoreRejectsSymlinkRoot(t *testing.T) {
+	realRoot := t.TempDir()
+	if err := os.Chmod(realRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "authority")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewAuthorityEvidenceStore(link, map[string]ed25519.PublicKey{"root": publicKey}); err == nil {
+		t.Fatal("symlinked authority root was accepted")
+	}
+}
+
 func signedTestAuthority(t *testing.T, identity executableIdentity) (*AuthorityEvidenceStore, string) {
 	t.Helper()
 	now := time.Now().UTC()
@@ -183,8 +325,8 @@ func signedTestAuthorityWindow(t *testing.T, identity executableIdentity, observ
 	}
 	evidence := ConformanceEvidence{
 		RunnerID: "marshal-conformance", RunnerVersion: "1", ObservedAt: observedAt.Format(time.RFC3339Nano), ValidUntil: validUntil.Format(time.RFC3339Nano),
-		AdapterVersion: adapterVersion, Executable: identity.path, ExecutableDigest: identity.digest, BinaryVersion: identity.version,
-		CapabilitiesDigest: expectedCapabilitiesDigest(), TranscriptDigest: digest("b"), CredentialVerified: true, LiveProtocolVerified: true,
+		AdapterVersion: adapterVersion, Executable: identity.path, ExecutableDigest: identity.digest, BinaryVersion: identity.version, HostOS: runtime.GOOS, HostArch: runtime.GOARCH,
+		CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), TranscriptDigest: digest("b"), CredentialVerified: true, LiveProtocolVerified: true,
 		EventContract: conformanceEventContract, QoderCLIVersion: identity.version, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode,
 		TrustRootKeyID: "test-root",
 	}

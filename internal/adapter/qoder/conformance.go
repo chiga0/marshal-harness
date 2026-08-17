@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -33,7 +34,10 @@ type ConformanceEvidence struct {
 	Executable           string `json:"executable"`
 	ExecutableDigest     string `json:"executableDigest"`
 	BinaryVersion        string `json:"binaryVersion"`
+	HostOS               string `json:"hostOs"`
+	HostArch             string `json:"hostArch"`
 	CapabilitiesDigest   string `json:"capabilitiesDigest"`
+	ProbeProfileDigest   string `json:"probeProfileDigest"`
 	TranscriptDigest     string `json:"transcriptDigest"`
 	CredentialVerified   bool   `json:"credentialVerified"`
 	LiveProtocolVerified bool   `json:"liveProtocolVerified"`
@@ -85,7 +89,7 @@ func (evidence ConformanceEvidence) validate(now time.Time, trustRoots map[strin
 	if err != nil || !now.Before(validUntil) || !observedAt.Before(validUntil) {
 		return errors.New("qoder conformance evidence is expired or has an invalid validity window")
 	}
-	if evidence.AdapterVersion != adapterVersion || evidence.CapabilitiesDigest != expectedCapabilitiesDigest() || !validSHA256Digest(evidence.ExecutableDigest) || !validSHA256Digest(evidence.TranscriptDigest) || !evidence.CredentialVerified || !evidence.LiveProtocolVerified {
+	if evidence.AdapterVersion != adapterVersion || evidence.HostOS != runtime.GOOS || evidence.HostArch != runtime.GOARCH || evidence.CapabilitiesDigest != expectedCapabilitiesDigest() || evidence.ProbeProfileDigest != expectedProbeProfileDigest() || !validSHA256Digest(evidence.ExecutableDigest) || !validSHA256Digest(evidence.TranscriptDigest) || !evidence.CredentialVerified || !evidence.LiveProtocolVerified {
 		return errors.New("qoder conformance evidence does not bind the complete verified adapter contract")
 	}
 	if evidence.EventContract != conformanceEventContract || evidence.QoderCLIVersion != evidence.BinaryVersion || evidence.ProtocolVersion != qoderProtocolVersion || evidence.PermissionMode != qoderPermissionMode {
@@ -106,6 +110,66 @@ func (evidence ConformanceEvidence) validate(now time.Time, trustRoots map[strin
 	return nil
 }
 
+// LiveConformanceObservation is the non-sensitive adjudicated result passed
+// from an independent probe-only verifier to its signer. Transcript contents,
+// credentials and private configuration are intentionally absent; only their
+// content digest and the boolean verdicts cross this boundary.
+type LiveConformanceObservation struct {
+	RunnerID             string
+	RunnerVersion        string
+	ObservedAt           time.Time
+	ValidUntil           time.Time
+	Executable           string
+	ExecutableDigest     string
+	BinaryVersion        string
+	HostOS               string
+	HostArch             string
+	TranscriptDigest     string
+	CredentialVerified   bool
+	LiveProtocolVerified bool
+	TrustRootKeyID       string
+}
+
+// SealConformanceEvidence lets an independent verifier produce the exact
+// authority record consumed by NewFromAuthorityConfig. It does not run Qoder,
+// read credentials, write the evidence store, or mutate Marshal state. The
+// verifier remains responsible for running the probe in the frozen isolated
+// profile and for protecting the signing key.
+func SealConformanceEvidence(observation LiveConformanceObservation, privateKey ed25519.PrivateKey) ([]byte, string, error) {
+	if len(privateKey) != ed25519.PrivateKeySize || observation.RunnerID == "" || observation.RunnerID == adapterID || observation.RunnerVersion == "" || observation.TrustRootKeyID == "" {
+		return nil, "", errors.New("qoder live conformance observation lacks independent signer provenance")
+	}
+	if !filepath.IsAbs(observation.Executable) || filepath.Clean(observation.Executable) != observation.Executable || !validSHA256Digest(observation.ExecutableDigest) || !validSHA256Digest(observation.TranscriptDigest) || !isSupportedBinaryVersion(observation.BinaryVersion) || observation.HostOS != runtime.GOOS || observation.HostArch != runtime.GOARCH {
+		return nil, "", errors.New("qoder live conformance observation identity is invalid")
+	}
+	if observation.ObservedAt.IsZero() || observation.ValidUntil.IsZero() || !observation.ObservedAt.Before(observation.ValidUntil) || !observation.CredentialVerified || !observation.LiveProtocolVerified {
+		return nil, "", errors.New("qoder live conformance observation did not pass the frozen probe")
+	}
+	evidence := ConformanceEvidence{
+		RunnerID: observation.RunnerID, RunnerVersion: observation.RunnerVersion,
+		ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano), ValidUntil: observation.ValidUntil.UTC().Format(time.RFC3339Nano),
+		AdapterVersion: adapterVersion, Executable: observation.Executable, ExecutableDigest: observation.ExecutableDigest, BinaryVersion: observation.BinaryVersion, HostOS: observation.HostOS, HostArch: observation.HostArch,
+		CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), TranscriptDigest: observation.TranscriptDigest,
+		CredentialVerified: true, LiveProtocolVerified: true, EventContract: conformanceEventContract, QoderCLIVersion: observation.BinaryVersion,
+		ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode, TrustRootKeyID: observation.TrustRootKeyID,
+	}
+	var err error
+	evidence.EvidenceDigest, err = evidence.digest()
+	if err != nil {
+		return nil, "", err
+	}
+	message, err := evidence.signingBytes()
+	if err != nil {
+		return nil, "", err
+	}
+	evidence.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, message))
+	data, err := json.Marshal(evidence)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, evidence.EvidenceDigest, nil
+}
+
 // AuthorityEvidenceStore resolves immutable signed evidence from a private,
 // content-addressed authority directory. The trust roots are copied at
 // construction; changing caller-owned slices cannot change verification.
@@ -118,6 +182,10 @@ type AuthorityEvidenceStore struct {
 func NewAuthorityEvidenceStore(root string, trustRoots map[string]ed25519.PublicKey) (*AuthorityEvidenceStore, error) {
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || len(trustRoots) == 0 {
 		return nil, errors.New("qoder conformance authority requires an absolute root and trust roots")
+	}
+	originalInfo, err := os.Lstat(root)
+	if err != nil || originalInfo.Mode()&os.ModeSymlink != 0 || !originalInfo.IsDir() {
+		return nil, errors.New("qoder conformance authority root must be a real directory")
 	}
 	real, err := filepath.EvalSymlinks(root)
 	if err != nil {

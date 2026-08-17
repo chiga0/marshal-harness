@@ -166,6 +166,19 @@ func expectedCapabilitiesDigest() string {
 	return digestBytes(data)
 }
 
+func expectedProbeProfileDigest() string {
+	profile := map[string]any{
+		"ambientCredentialInheritance": false,
+		"eventContract":                conformanceEventContract,
+		"isolatedWorkingDirectory":     true,
+		"permissionMode":               qoderPermissionMode,
+		"repositoryWritePermission":    false,
+		"settingSources":               []string{},
+	}
+	data, _ := json.Marshal(profile)
+	return digestBytes(data)
+}
+
 type executableIdentity struct{ path, digest, version string }
 
 // boundConformance retains the authority evidence freshness boundary as well

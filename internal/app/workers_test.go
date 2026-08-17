@@ -2,11 +2,19 @@ package app
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/chiga0/marshal-harness/internal/adapter/qoder"
 )
 
 // writeExecutable creates a regular executable file and returns its absolute
@@ -106,6 +114,70 @@ func TestQoderRegistrationRemainsUnsupportedWithoutAuthorityEvidence(t *testing.
 	}
 	if snapshot.ProbeStatus != "unsupported" {
 		t.Fatalf("qoder without authority evidence = %q, want unsupported", snapshot.ProbeStatus)
+	}
+}
+
+func TestQoderProductionAuthorityWiringRegistersSupported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qodercli")
+	script := "#!/bin/sh\nfor arg in \"$@\"; do if [ \"$arg\" = \"--version\" ]; then printf '1.1.23\\n'; exit 0; fi; done\nexit 1\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	version, executableDigest, err := qoder.Identify(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	evidence, evidenceDigest, err := qoder.SealConformanceEvidence(qoder.LiveConformanceObservation{
+		RunnerID: "independent-verifier", RunnerVersion: "1", ObservedAt: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
+		Executable: realPath, ExecutableDigest: executableDigest, BinaryVersion: version, HostOS: runtime.GOOS, HostArch: runtime.GOARCH,
+		TranscriptDigest: "sha256:" + strings.Repeat("b", 64), CredentialVerified: true, LiveProtocolVerified: true, TrustRootKeyID: "root-1",
+	}, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, strings.TrimPrefix(evidenceDigest, "sha256:")+".json"), evidence, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "qoder-authority.json")
+	config, err := json.Marshal(qoder.AuthorityConfig{
+		EvidenceRoot: root, EvidenceDigest: evidenceDigest,
+		TrustRoots: []qoder.AuthorityTrustRoot{{KeyID: "root-1", Algorithm: "ed25519", PublicKey: base64.StdEncoding.EncodeToString(publicKey)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewWorkerRuntime(staticEnv(map[string]string{
+		"MARSHAL_QODER_PATH": path, "MARSHAL_QODER_CONFORMANCE_CONFIG": configPath,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := runtime.Registry().Resolve("qoder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := worker.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(record.Data), `"probeStatus":"supported"`) {
+		t.Fatalf("authority-wired qoder was not supported: %s", record.Data)
 	}
 }
 

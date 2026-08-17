@@ -47,7 +47,7 @@ type workerBinding struct {
 	environmentVariable string
 	binaryNames         []string
 	identify            func(executable string) (version, digest string, err error)
-	construct           func(executable string, validator *contract.Validator) (port.WorkerAdapter, error)
+	construct           func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error)
 }
 
 var workerBindings = []workerBinding{
@@ -56,7 +56,7 @@ var workerBindings = []workerBinding{
 		environmentVariable: "MARSHAL_OPENCODE_PATH",
 		binaryNames:         []string{"opencode"},
 		identify:            opencode.Identify,
-		construct: func(executable string, validator *contract.Validator) (port.WorkerAdapter, error) {
+		construct: func(executable string, validator *contract.Validator, _ func(string) string) (port.WorkerAdapter, error) {
 			return opencode.New(executable, validator)
 		},
 	},
@@ -65,7 +65,7 @@ var workerBindings = []workerBinding{
 		environmentVariable: "MARSHAL_QWEN_PATH",
 		binaryNames:         []string{"qwen", "qwen-code"},
 		identify:            qwen.Identify,
-		construct: func(executable string, validator *contract.Validator) (port.WorkerAdapter, error) {
+		construct: func(executable string, validator *contract.Validator, _ func(string) string) (port.WorkerAdapter, error) {
 			return qwen.New(executable, validator)
 		},
 	},
@@ -74,11 +74,14 @@ var workerBindings = []workerBinding{
 		environmentVariable: "MARSHAL_QODER_PATH",
 		binaryNames:         []string{"qodercli"},
 		identify:            qoder.Identify,
-		construct: func(executable string, validator *contract.Validator) (port.WorkerAdapter, error) {
-			// Registration is not support admission. New intentionally has no
-			// conformance authority, so Probe remains unsupported until trusted
-			// authority evidence is explicitly wired.
-			return qoder.New(executable, validator)
+		construct: func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error) {
+			config := getenv("MARSHAL_QODER_CONFORMANCE_CONFIG")
+			if config == "" {
+				// Registration is not support admission. Without an authority
+				// config Probe remains unsupported.
+				return qoder.New(executable, validator)
+			}
+			return qoder.NewFromAuthorityConfig(context.Background(), executable, validator, config)
 		},
 	},
 	{
@@ -86,7 +89,7 @@ var workerBindings = []workerBinding{
 		environmentVariable: "MARSHAL_PI_PATH",
 		binaryNames:         []string{"pi"},
 		identify:            pi.Identify,
-		construct: func(executable string, validator *contract.Validator) (port.WorkerAdapter, error) {
+		construct: func(executable string, validator *contract.Validator, _ func(string) string) (port.WorkerAdapter, error) {
 			return pi.New(executable, validator)
 		},
 	},
@@ -130,7 +133,7 @@ func NewWorkerRuntime(getenv func(string) string) (*WorkerRuntime, error) {
 			continue
 		}
 		configuration.Configured = true
-		worker, constructErr := binding.construct(executable, validator)
+		worker, constructErr := binding.construct(executable, validator, getenv)
 		if constructErr != nil {
 			// Deliberately discard the executable, the environment value, and
 			// the underlying error: none may be stored or echoed.
