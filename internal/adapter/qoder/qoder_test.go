@@ -748,12 +748,23 @@ func TestSealConformanceEvidenceFreezesProbeProfile(t *testing.T) {
 	observation := LiveConformanceObservation{
 		RunnerID: "independent-qoder-verifier", RunnerVersion: "1", ObservedAt: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
 		AdapterVersion: adapterVersion, Executable: "/opt/qoder/qodercli", ExecutableDigest: digest("e"), BinaryVersion: supportedBinary, QoderCLIVersion: supportedBinary, HostOS: runtime.GOOS, HostArch: runtime.GOARCH, HostFingerprint: digest("d"), AuthorityGeneration: 1,
-		ProbeSuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), ArgvDigest: expectedProbeArgvDigest(), EnvironmentDigest: expectedProbeEnvironmentDigest(), ToolPolicyDigest: expectedProbeToolPolicyDigest(), TranscriptDigest: digest("b"),
+		ProbeSuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), ArgvDigest: expectedProbeArgvDigest(), EnvironmentDigest: expectedProbeEnvironmentDigest(), ToolPolicyDigest: expectedProbeToolPolicyDigest(), TranscriptDigest: digest("b"), ExecutionReceiptDigest: digest("e"), ExecutionReceiptDigests: []string{digest("a"), digest("b"), digest("c"), digest("d")}, ExecutionReceipts: []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`)}, EvidenceClass: candidateEvidenceClassLive, ReceiptAuthorityKeyID: "receipt-root", ReceiptAuthorityPublicKeyDigest: digest("a"), VerifierKeyID: "verifier-root", VerifierPublicKeyDigest: digest("b"), VerifierSignature: base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)),
 		CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true, EventContract: conformanceEventContract, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode, TrustRootKeyID: "root-1",
 	}
-	data, evidenceDigest, err := SealConformanceEvidence(observation, privateKey)
+	document, observationDigest, err := EncodeLiveConformanceObservation(observation)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !validSHA256Digest(observationDigest) {
+		t.Fatalf("observation digest = %q", observationDigest)
+	}
+	data, evidenceDigest, err := SignLiveConformanceObservation(document, privateKey)
+	if !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("exported candidate signer must remain hard-disabled: %v", err)
+	}
+	_, _ = data, evidenceDigest
+	if err != nil {
+		return
 	}
 	var evidence ConformanceEvidence
 	if err := json.Unmarshal(data, &evidence); err != nil {
@@ -831,6 +842,8 @@ func TestSealConformanceEvidenceFreezesProbeProfile(t *testing.T) {
 		"missing probe artifact":    func(value *LiveConformanceObservation) { value.ProbeArtifactDigest = "" },
 		"missing challenge":         func(value *LiveConformanceObservation) { value.ChallengeDigest = "" },
 		"missing transcript digest": func(value *LiveConformanceObservation) { value.TranscriptDigest = "" },
+		"missing receipt digest":    func(value *LiveConformanceObservation) { value.ExecutionReceiptDigest = "" },
+		"non-live evidence class":   func(value *LiveConformanceObservation) { value.EvidenceClass = candidateEvidenceClassHermetic },
 		"wrong suite":               func(value *LiveConformanceObservation) { value.ProbeSuiteDigest = digest("f") },
 		"wrong capabilities":        func(value *LiveConformanceObservation) { value.CapabilitiesDigest = digest("f") },
 		"wrong probe profile":       func(value *LiveConformanceObservation) { value.ProbeProfileDigest = digest("f") },
@@ -856,7 +869,11 @@ func TestSealConformanceEvidenceFreezesProbeProfile(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			broken := observation
 			mutate(&broken)
-			if _, _, err := SealConformanceEvidence(broken, privateKey); err == nil {
+			document, _, encodeErr := EncodeLiveConformanceObservation(broken)
+			if encodeErr == nil {
+				_, _, encodeErr = SignLiveConformanceObservation(document, privateKey)
+			}
+			if encodeErr == nil {
 				t.Fatal("invalid observation was sealed")
 			}
 		})
@@ -1163,7 +1180,7 @@ func signedTestAuthorityWindowGeneration(t *testing.T, identity executableIdenti
 	evidence := ConformanceEvidence{
 		RunnerID: "marshal-conformance", RunnerVersion: "1", ObservedAt: observedAt.Format(time.RFC3339Nano), ValidUntil: validUntil.Format(time.RFC3339Nano),
 		AdapterVersion: adapterVersion, Executable: identity.path, ExecutableDigest: identity.digest, BinaryVersion: identity.version, HostOS: runtime.GOOS, HostArch: runtime.GOARCH, HostFingerprint: hostFingerprint, AuthorityGeneration: generation,
-		ProbeSuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), ArgvDigest: expectedProbeArgvDigest(), EnvironmentDigest: expectedProbeEnvironmentDigest(), ToolPolicyDigest: expectedProbeToolPolicyDigest(), TranscriptDigest: digest("b"), CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true,
+		ProbeSuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), ArgvDigest: expectedProbeArgvDigest(), EnvironmentDigest: expectedProbeEnvironmentDigest(), ToolPolicyDigest: expectedProbeToolPolicyDigest(), TranscriptDigest: digest("b"), ExecutionReceiptDigest: digest("e"), ExecutionReceiptDigests: []string{digest("a"), digest("b"), digest("c"), digest("d")}, EvidenceClass: candidateEvidenceClassLive, ReceiptAuthorityKeyID: "receipt-root", ReceiptAuthorityPublicKeyDigest: digest("a"), VerifierKeyID: "verifier-root", VerifierPublicKeyDigest: digest("b"), CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true,
 		EventContract: conformanceEventContract, QoderCLIVersion: identity.version, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode,
 		TrustRootKeyID: "test-root",
 	}

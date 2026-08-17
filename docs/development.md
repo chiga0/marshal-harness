@@ -191,15 +191,30 @@ Qoder 额外设计了独立 Conformance authority 门禁。只配置
 `unsupported`。**ADR 0034 仍为 Proposed，生产构造器当前硬禁用
 `MARSHAL_QODER_CONFORMANCE_CONFIG`：配置该变量会得到
 `outcome=invalid-configuration`，绝不会注册或产生 `supported`。** 下述格式只供
-候选机制的 hermetic 负向矩阵与独立审计使用，不是启用说明。独立 verifier 应在无业务仓库写权限、独立临时目录、
-不继承 ambient credential 的 probe-only 环境中验证 credential 与冻结的
-`stream-json` 协议；随后使用 `qoder.SealConformanceEvidence` 将非敏感
-observation（可执行文件 realpath/digest/version、稳定 host fingerprint、
+候选机制的 hermetic 负向矩阵与独立审计使用，不是启用说明。ADR 0034 为 Proposed 时
+exported `qoder.NewCandidateLiveVerifier` 与 `qoder.SignLiveConformanceObservation` 都会 typed
+hard-disabled；调用者不能以自带 keypair 建立 receipt/verifier trust root。候选同包机制强制使用
+固定 authority policy 与无普通宿主 fallback 的隔离 sandbox；sandbox
+只能写 verifier-owned scratch、显式拒绝全部业务仓库 root，并以完整替换环境验证 credential
+与冻结的 `stream-json` 协议。verifier 只能使用
+`qoder.EncodeLiveConformanceObservation` 输出非敏感 observation document（可执行文件 realpath/digest/version、稳定 host fingerprint、
 suite/probe artifact/challenge、capability/profile/argv/env/tool policy（其中 argv
 覆盖由运行时同一 `buildArgs` 模板生成的 model 省略/存在 × `--tools` 省略/显式空值四种组合）、
 event/protocol/permission、transcript digest、有效期和三个 typed verdict）交给
-独立签名者。probe 必须在隔离 scratch worktree 实际验证写入，但不得拥有业务
-仓库权限。私钥、credential 与 transcript 正文不得进入 Marshal 配置或仓库。
+独立签名者。verifier 只持独立 attestation key 并签名完整 observation，不持 receipt/evidence
+authority key。签名者另行持有 evidence private key，并以自身固定 trust policy 重新严格解码、
+验证 verifier signature、四份 receipt chain 与全部 candidate identity 后签名。私钥、credential、stderr 与 transcript 正文
+不得进入 observation、Marshal 配置或仓库。
+
+候选 verifier 与 sandbox 之间不是普通函数返回值信任：verifier 从验证到执行持续持有
+executable/scratch/credential/business-root 的 fd/dirfd，sandbox 只能消费这些 handle；每轮返回由
+独立 receipt authority 签名的 closed execution receipt，绑定实际 fd identity、argv、完整环境、
+write/deny policy、challenge、transcript/session/model 与 marker。verifier 只持 public key 并逐字段复核。
+`hermetic-fixture`、fake transcript、字段忽略/替换或跨轮 replay 均不能输出
+`credentialed-live` observation。marker 仅经 held scratch dirfd 的 nofollow/nonblock `openat` 与
+owner/mode/nlink/type/size 检查读取，不按路径重开。
+每个 variant 的 pre/post/marker-post 都重新遍历 held dirfd ancestry，receipt 另行绑定执行时
+topology digest；credential/business root 执行中 nest 到 scratch 再 swap-back 也会被拒绝。
 
 签名者把返回的 JSON 以 `<digest-without-sha256-prefix>.json` 写入权限为
 `0700` 的 authority 目录，文件权限为 `0600`。生产侧另建权限为 `0600`
@@ -229,8 +244,10 @@ ADR 0034 接受后仍须由独立后续变更显式移除生产硬禁用；本�
 撤销集合和不超过 24 小时的有效期全部匹配时才报告
 `supported`；缺失、过期、替换、未知字段、错误权限或环境不匹配均
 fail closed。候选 consumer 的每次 Probe 与 Worker launch guard 都重新读取 authority 配置与 evidence，
-并维护进程内单调 `authorityGeneration` high-water；generation rollback 或同 generation
-替换 evidence/artifact 均 fail closed，
+并在独立于只读 authority root 的 consumer-owned 私有目录中耐久维护单调
+`authorityGeneration` high-water；该 fence 跨进程、跨重启，以完整 authority config
+canonical digest 绑定同代 identity，并在解析 evidence leaf 前原子消费。进程内缓存只作投影，
+不能替代耐久 fence；generation rollback 或同 generation 替换 evidence/artifact 均 fail closed，
 不会把一次成功结果写入仓库或 `.marshal` 作为第二权威。
 
 CI 中生成的临时 key、fake executable 与 synthetic transcript 只验证签名和
