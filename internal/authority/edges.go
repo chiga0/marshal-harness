@@ -105,12 +105,17 @@ const (
 	// PublicationOperationChecksRead authorizes the target actor to read the
 	// checks of the bound publication.
 	PublicationOperationChecksRead PublicationOperation = "publication-checks-read"
+
+	// PublicationOperationControlledMerge authorizes only the ADR 0032
+	// intent-bound ready/merge side effect. It does not grant submit, admin,
+	// force, bypass, close or branch-delete capability.
+	PublicationOperationControlledMerge PublicationOperation = "publication-controlled-merge"
 )
 
 // Validate rejects every value outside the closed enumeration.
 func (operation PublicationOperation) Validate() error {
 	switch operation {
-	case PublicationOperationSubmit, PublicationOperationChecksRead:
+	case PublicationOperationSubmit, PublicationOperationChecksRead, PublicationOperationControlledMerge:
 		return nil
 	default:
 		return fmt.Errorf("authority: publicationAuthorization: operation %q: %w", string(operation), ErrEdgeOperation)
@@ -407,6 +412,7 @@ type PublicationAuthorization struct {
 	TargetActor            SecurityDomainId     `json:"targetActor"`
 	Operation              PublicationOperation `json:"operation"`
 	BoundPublicationDigest string               `json:"boundPublicationDigest"`
+	ExpectedPrincipal      string               `json:"expectedPrincipal"`
 	Expiry                 string               `json:"expiry"`
 	Generation             uint64               `json:"generation"`
 	RevocationGeneration   uint64               `json:"revocationGeneration"`
@@ -427,6 +433,9 @@ func (authorization PublicationAuthorization) Validate() error {
 		return err
 	}
 	if err := requireDigest("publicationAuthorization.boundPublicationDigest", authorization.BoundPublicationDigest); err != nil {
+		return err
+	}
+	if err := requireText("publicationAuthorization.expectedPrincipal", authorization.ExpectedPrincipal); err != nil {
 		return err
 	}
 	if err := validateExpiry("publicationAuthorization", authorization.Expiry); err != nil {

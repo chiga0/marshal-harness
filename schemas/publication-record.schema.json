@@ -36,7 +36,7 @@
     "reviewDecisionDigest": { "$ref": "#/$defs/digest" },
     "marker": { "type": "string", "minLength": 1, "maxLength": 400 },
     "mode": { "const": "draft" },
-    "mergePolicy": { "const": "never" },
+    "mergePolicy": { "type": "string", "enum": ["never", "policy"] },
     "request": {
       "type": "object", "additionalProperties": false, "required": ["id", "number", "url", "draft", "state"],
       "properties": {

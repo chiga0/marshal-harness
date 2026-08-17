@@ -63,8 +63,10 @@ func Publish(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return block(store, lease, state, runDir, err)
 	}
-	if evidence.task.Publication.Provider != "github" || evidence.task.Publication.Mode != "draft" || evidence.task.Publication.MergePolicy != "never" || !evidence.task.Publication.Required {
-		return block(store, lease, state, runDir, errors.New("M5 only publishes required GitHub draft PRs with mergePolicy=never"))
+	if evidence.task.Publication.Provider != "github" || evidence.task.Publication.Mode != "draft" ||
+		(evidence.task.Publication.MergePolicy != domain.MergePolicyNever && evidence.task.Publication.MergePolicy != domain.MergePolicyPolicy) ||
+		!evidence.task.Publication.Required {
+		return block(store, lease, state, runDir, errors.New("publication only supports required GitHub draft PRs with mergePolicy=never|policy"))
 	}
 	taskRepository, err := filepath.EvalSymlinks(evidence.task.Repository.Path)
 	if err != nil || taskRepository != input.RepositoryRoot {
@@ -151,7 +153,7 @@ func Publish(ctx context.Context, input Input) (Result, error) {
 			BaseSHA: state.BaseSHA, PreviousHeadSHA: previousHeadSHA, CommitSHA: commitSHA,
 			SnapshotDigest: current.SnapshotDigest, DiffDigest: current.DiffDigest, SpecDigest: state.SpecDigest, PolicyDigest: state.PolicyDigest,
 			EvidenceDigest: evidence.decision.EvidenceDigest, VerificationDigest: evidence.decision.VerificationDigest, ReviewDecisionDigest: evidence.decisionDigest,
-			Marker: marker(state.TaskID, state.RunID), Mode: "draft", MergePolicy: "never", Summary: evidence.task.Metadata.Title, CreatedAt: time.Now().UTC(),
+			Marker: marker(state.TaskID, state.RunID), Mode: "draft", MergePolicy: evidence.task.Publication.MergePolicy, Summary: evidence.task.Metadata.Title, CreatedAt: time.Now().UTC(),
 		}
 		intentData, marshalErr := json.Marshal(intent)
 		if marshalErr != nil {
@@ -365,7 +367,7 @@ func loadEvidence(runDir string, state domain.RunState, validator *contract.Vali
 	if err != nil {
 		return evidenceSet{}, err
 	}
-	_, decision, decisionDigest, err := authorizePublicationDecision(runDir, state, validator, frozen)
+	_, decision, decisionDigest, err := authorizePublicationDecision(runDir, state, validator, frozen, task.Publication.MergePolicy)
 	if err != nil {
 		return evidenceSet{}, err
 	}
@@ -397,7 +399,7 @@ func loadEvidence(runDir string, state domain.RunState, validator *contract.Vali
 // evidenceDigest, and the verdict must authorize publication with no
 // blocking findings. It is shared by the live publication gate and the ADR
 // 0026 reconcile current-ledger recheck so neither path can drift.
-func authorizePublicationDecision(runDir string, state domain.RunState, validator *contract.Validator, frozen frozenPublicationEvidence) ([]byte, domain.ReviewDecision, string, error) {
+func authorizePublicationDecision(runDir string, state domain.RunState, validator *contract.Validator, frozen frozenPublicationEvidence, mergePolicy string) ([]byte, domain.ReviewDecision, string, error) {
 	decisionData, err := os.ReadFile(filepath.Join(runDir, "decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound)))
 	if err != nil {
 		return nil, domain.ReviewDecision{}, "", err
@@ -419,7 +421,11 @@ func authorizePublicationDecision(runDir string, state domain.RunState, validato
 	if decision.EvidenceDigest != frozen.evidenceDigest {
 		return nil, domain.ReviewDecision{}, "", errors.New("publication evidence differs from frozen lifecycle event")
 	}
-	if decision.TaskID != state.TaskID || decision.RunID != state.RunID || decision.SpecDigest != state.SpecDigest || decision.Verdict != "accept" || decision.PublicationRecommendation != "publish" || decision.MergeRecommendation != "do-not-merge" || len(decision.BlockingFindings) != 0 {
+	expectedMergeRecommendation := "do-not-merge"
+	if mergePolicy == domain.MergePolicyPolicy {
+		expectedMergeRecommendation = mergeRecommendationEligible
+	}
+	if decision.TaskID != state.TaskID || decision.RunID != state.RunID || decision.SpecDigest != state.SpecDigest || decision.Verdict != "accept" || decision.PublicationRecommendation != "publish" || decision.MergeRecommendation != expectedMergeRecommendation || len(decision.BlockingFindings) != 0 {
 		return nil, domain.ReviewDecision{}, "", errors.New("ReviewDecision does not authorize publication")
 	}
 	return decisionData, decision, decisionDigest, nil
@@ -774,7 +780,7 @@ func validateIntent(intent domain.PublicationIntent, state domain.RunState, evid
 		intent.SpecDigest != state.SpecDigest || intent.PolicyDigest != state.PolicyDigest ||
 		intent.EvidenceDigest != evidence.decision.EvidenceDigest || intent.VerificationDigest != evidence.decision.VerificationDigest ||
 		intent.ReviewDecisionDigest != evidence.decisionDigest || intent.Marker != marker(state.TaskID, state.RunID) ||
-		intent.Mode != domain.PublicationModeDraft || intent.MergePolicy != domain.MergePolicyNever ||
+		intent.Mode != domain.PublicationModeDraft || intent.MergePolicy != evidence.task.Publication.MergePolicy ||
 		!regexp.MustCompile(`^[0-9a-f]{40,64}$`).MatchString(intent.CommitSHA) {
 		return errors.New("persisted PublicationIntent is stale or incomplete")
 	}

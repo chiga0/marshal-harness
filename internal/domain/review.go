@@ -120,4 +120,10 @@ type OutcomeBundle struct {
 	FindingCount        uint       `json:"findingCount"`
 	RetentionPolicy     string     `json:"retentionPolicy"`
 	GeneratedAt         time.Time  `json:"generatedAt"`
+	// IntentDigest and ReceiptDigest are the ADR 0032 optional Outcome
+	// bindings for a controlled merge: only a receipt/intent-bound
+	// publication.merged convergence sets them. Historical outcomes omit
+	// both, keeping their exact legacy serialization (omitempty).
+	IntentDigest  string `json:"intentDigest,omitempty"`
+	ReceiptDigest string `json:"receiptDigest,omitempty"`
 }
