@@ -483,6 +483,68 @@ func TestRunBindsWorktreeFDDespiteStartABA(t *testing.T) {
 	}
 }
 
+func TestRunUsesPrivateLauncherSnapshotWhenExecutablePathIsReplaced(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	configured, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	real, err := filepath.EvalSymlinks(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained := real + "-marshal-retained"
+	marker := filepath.Join(t.TempDir(), "replacement-launcher-ran")
+	if err := os.Rename(real, retained); err != nil {
+		t.Fatal(err)
+	}
+	restored := false
+	defer func() {
+		if !restored {
+			_ = os.Remove(real)
+			_ = os.Rename(retained, real)
+		}
+	}()
+	replacement := "#!/bin/sh\ntouch " + shellQuote(marker) + "\nexit 99\n"
+	if err := os.WriteFile(real, []byte(replacement), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+		t.Fatalf("Run through private launcher snapshot: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("replacement os.Executable pathname was launched")
+	}
+	if err := os.Remove(real); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(retained, real); err != nil {
+		t.Fatal(err)
+	}
+	restored = true
+}
+
+func TestRunFailsClosedWhenLauncherCannotCloseWorktreeFD(t *testing.T) {
+	secretHome := filepath.Join(t.TempDir(), "credential-home")
+	t.Setenv("CODEX_HOME", secretHome)
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	fixture.adapter.launcherTestCloseFailure = true
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err == nil {
+		t.Fatal("launcher close failure unexpectedly executed Codex")
+	}
+	if strings.Contains(err.Error(), secretHome) {
+		t.Fatalf("launcher failure leaked CODEX_HOME: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.worktree, "capture")); !os.IsNotExist(err) {
+		t.Fatal("Codex executed after the launcher worktree fd close failed")
+	}
+	metadata, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "codex-transcript-meta.json"))
+	if readErr != nil || !strings.Contains(string(metadata), `"exitCode": 126`) {
+		t.Fatalf("metadata = %s err=%v, want launcher exit 126", metadata, readErr)
+	}
+}
+
 func TestRunRejectsControlRootReplacementAfterLaunchVerification(t *testing.T) {
 	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
 	original := fixture.controlRoot

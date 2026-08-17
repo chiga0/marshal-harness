@@ -96,8 +96,9 @@ type Adapter struct {
 	conformance *boundConformance
 
 	// testHook 只用于确定性触发安全竞态测试；生产构造器始终为 nil。
-	testHook         func(string)
-	launcherTestGate string
+	testHook                 func(string)
+	launcherTestGate         string
+	launcherTestCloseFailure bool
 }
 
 var _ port.WorkerAdapter = (*Adapter)(nil)
@@ -494,11 +495,15 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// The child performs its os-level chdir before Start returns. Codex receives
 	// no -C/PWD pathname to resolve later, so replacement after Start cannot
 	// redirect its actual workspace away from that already-open directory.
-	launcher, err := os.Executable()
+	launcher, err := trustedCodexLauncher()
 	if err != nil {
 		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "provider launcher is unavailable", a.now())
 	}
-	launcherArgs := []string{codexLauncherArgument, snapshot.path, a.launcherTestGate}
+	closeMode := ""
+	if a.launcherTestCloseFailure {
+		closeMode = launcherCloseFailure
+	}
+	launcherArgs := []string{codexLauncherArgument, snapshot.path, a.launcherTestGate, closeMode}
 	launcherArgs = append(launcherArgs, buildArgs(inheritedFilePath(0), inheritedFilePath(1), projection.model)...)
 	command := exec.CommandContext(processCtx, launcher, launcherArgs...)
 	command.Env = workerEnvironment()
