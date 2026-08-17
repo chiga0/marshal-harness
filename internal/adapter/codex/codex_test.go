@@ -1,9 +1,14 @@
 package codex
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
@@ -73,7 +79,7 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 		}
 		return raw
 	}
-	t.Run("supported", func(t *testing.T) {
+	t.Run("compatible-but-untrusted", func(t *testing.T) {
 		for _, version := range []string{"0.145.0", "0.145.1", "0.145.27"} {
 			adapter, err := New(fakeExecutable(t, "codex-cli "+version, "exit 0"), newValidator(t))
 			if err != nil {
@@ -87,7 +93,7 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 				t.Fatalf("CapabilitySnapshot schema: %v", err)
 			}
 			raw := probeSnapshot(t, record)
-			if raw["probeStatus"] != "supported" || raw["binaryVersion"] != version {
+			if raw["probeStatus"] != "unsupported" || raw["binaryVersion"] != version {
 				t.Fatalf("snapshot status/version = %v/%v", raw["probeStatus"], raw["binaryVersion"])
 			}
 			digest, _ := raw["executableDigest"].(string)
@@ -95,8 +101,8 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 			if !strings.HasPrefix(digest, "sha256:") || !filepath.IsAbs(executable) {
 				t.Fatalf("identity = %s/%s", digest, executable)
 			}
-			if probeErrors, _ := raw["probeErrors"].([]any); len(probeErrors) != 0 {
-				t.Fatalf("probeErrors = %v", probeErrors)
+			if probeErrors, _ := raw["probeErrors"].([]any); len(probeErrors) != 1 || !strings.Contains(fmt.Sprint(probeErrors), conformancePendingReason) {
+				t.Fatalf("probeErrors must report pending conformance: %v", probeErrors)
 			}
 			capabilities, _ := raw["capabilities"].(map[string]any)
 			if capabilities == nil {
@@ -136,11 +142,11 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 				t.Fatalf("snapshot status/version = %v/%v", raw["probeStatus"], raw["binaryVersion"])
 			}
 			probeErrors, _ := raw["probeErrors"].([]any)
-			if len(probeErrors) != 1 {
+			if len(probeErrors) != 2 {
 				t.Fatalf("probeErrors = %v", probeErrors)
 			}
-			message, _ := probeErrors[0].(string)
-			if !strings.Contains(message, version) || !strings.Contains(message, supportedCompatibilityLine) {
+			message := fmt.Sprint(probeErrors)
+			if !strings.Contains(message, version) || !strings.Contains(message, supportedCompatibilityLine) || !strings.Contains(message, conformancePendingReason) {
 				t.Fatalf("probeErrors must list supported and actual versions: %v", probeErrors)
 			}
 		}
@@ -193,6 +199,117 @@ func TestProbeVersionOutputHasStrictByteLimit(t *testing.T) {
 	}
 	if _, err := adapter.Probe(context.Background()); !errors.Is(err, ErrVersionUnrecognized) {
 		t.Fatalf("err = %v, want bounded ErrVersionUnrecognized", err)
+	}
+}
+
+func TestRunRequiresAuthorityBackedConformance(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, "touch "+shellQuote(filepath.Join(t.TempDir(), "launched")))
+	fixture.adapter.mu.Lock()
+	fixture.adapter.pinned, fixture.adapter.conformance = nil, nil
+	fixture.adapter.mu.Unlock()
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrConformancePending) {
+		t.Fatalf("err = %v, want ErrConformancePending", err)
+	}
+	probe, err := fixture.adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(probe.Data), `"probeStatus":"unsupported"`) || !strings.Contains(string(probe.Data), conformancePendingReason) {
+		t.Fatalf("untrusted probe became supported: %s", probe.Data)
+	}
+}
+
+func TestBindConformanceRequiresSignedAuthorityEvidence(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	fixture.adapter.mu.Lock()
+	fixture.adapter.pinned, fixture.adapter.conformance = nil, nil
+	fixture.adapter.mu.Unlock()
+	snapshot, err := fixture.adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := snapshot.identity
+	snapshot.close()
+	if err := fixture.adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrConformancePending) {
+		t.Fatalf("adapter without authority accepted caller digest: %v", err)
+	}
+	store, evidenceDigest := signedTestAuthority(t, identity)
+	fixture.adapter.authority = store
+	if err := fixture.adapter.BindConformance(context.Background(), evidenceDigest); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := fixture.adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
+		t.Fatalf("signed conformance did not authorize exact identity: %s", probe.Data)
+	}
+	fixture.adapter.mu.Lock()
+	expires := fixture.adapter.conformance.validUntil
+	fixture.adapter.mu.Unlock()
+	fixture.adapter.now = func() time.Time { return expires.Add(time.Second) }
+	expiredProbe, err := fixture.adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(expiredProbe.Data), `"probeStatus":"unsupported"`) {
+		t.Fatalf("expired conformance remained supported: %s", expiredProbe.Data)
+	}
+	fixture.adapter.now = time.Now
+	fixture.adapter.mu.Lock()
+	fixture.adapter.conformance = nil
+	fixture.adapter.mu.Unlock()
+	path := filepath.Join(store.root, strings.TrimPrefix(evidenceDigest, "sha256:")+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.Replace(data, []byte(`"credentialVerified":true`), []byte(`"credentialVerified":false`), 1)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.adapter.BindConformance(context.Background(), evidenceDigest); err == nil {
+		t.Fatal("tampered authority evidence was accepted")
+	}
+}
+
+func TestProbeTimeoutKillsForkHoldingStdout(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "child.pid")
+	executable := filepath.Join(t.TempDir(), "codex")
+	script := "#!/bin/sh\nif [ \"${1:-}\" = \"--version\" ]; then (trap '' TERM; while :; do sleep 1; done) & echo $! > " + shellQuote(pidPath) + "; wait; fi\nexit 9\n"
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := New(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if _, err := adapter.Probe(context.Background()); err == nil || !errors.Is(err, ErrIdentityInvalid) {
+		t.Fatalf("err = %v, want bounded identity probe failure", err)
+	}
+	if elapsed := time.Since(started); elapsed > probeTimeout+3*time.Second {
+		t.Fatalf("probe exceeded watchdog bound: %s", elapsed)
+	}
+	pidData, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err = syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("probe child %d survived process-group timeout", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -352,7 +469,7 @@ func TestRunOmitsModelWhenTaskSpecDeclaresNone(t *testing.T) {
 	// worker 自述的 model 不作为权威：TaskSpec 未声明时归一化必须置空。
 	claimed := strings.Replace(validDeclaredResultJSON(), `"version":"worker-claim"`, `"version":"worker-claim","model":"claimed-by-worker"`, 1)
 	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(claimed))
-	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{}})
+	fixture.replaceTaskSpec(t, "", nil)
 	record, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatal(err)
@@ -604,9 +721,7 @@ func TestRunRejectsDeclaredWorkerToolsBeforeLaunch(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "launched")
 	t.Run("declared-allowlist", func(t *testing.T) {
 		fixture := newRunFixture(t, supportedVersionOutput, "touch "+shellQuote(marker))
-		writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{
-			"worker": map[string]any{"model": "provider/model", "tools": []string{"read"}},
-		})
+		fixture.replaceTaskSpec(t, "provider/model", []string{"read"})
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrUnsupportedWorkerTools) {
 			t.Fatalf("err = %v, want ErrUnsupportedWorkerTools", err)
 		}
@@ -616,16 +731,44 @@ func TestRunRejectsDeclaredWorkerToolsBeforeLaunch(t *testing.T) {
 	})
 	t.Run("malformed-declaration", func(t *testing.T) {
 		fixture := newRunFixture(t, supportedVersionOutput, "touch "+shellQuote(marker))
-		writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{
-			"worker": map[string]any{"model": "provider/model", "tools": "read,edit"},
-		})
-		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "worker tools") {
-			t.Fatalf("err = %v, want fail-closed worker tools rejection", err)
+		fixture.replaceTaskSpec(t, "provider/model", "read,edit")
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "validate TaskSpec") {
+			t.Fatalf("err = %v, want fail-closed TaskSpec schema rejection", err)
 		}
 	})
 }
 
 func TestRunTaskSpecProjectionIsSingleReadAndFailClosed(t *testing.T) {
+	t.Run("digest-mismatch", func(t *testing.T) {
+		marker := filepath.Join(t.TempDir(), "launched")
+		fixture := newRunFixture(t, supportedVersionOutput, "touch "+shellQuote(marker))
+		request := fixture.requestWith(map[string]any{"specDigest": digest("a")})
+		if _, err := fixture.adapter.Run(context.Background(), request); err == nil || !strings.Contains(err.Error(), "specDigest mismatch") {
+			t.Fatalf("err = %v, want frozen specDigest rejection", err)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatal("worker launched with mismatched TaskSpec")
+		}
+	})
+	t.Run("symlink-leaf", func(t *testing.T) {
+		marker := filepath.Join(t.TempDir(), "launched")
+		fixture := newRunFixture(t, supportedVersionOutput, "touch "+shellQuote(marker))
+		path := filepath.Join(fixture.controlRoot, "input", "task-spec.json")
+		outside := filepath.Join(t.TempDir(), "task.json")
+		writeValidTaskSpec(t, outside, "replacement/model", nil)
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, path); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "read TaskSpec") {
+			t.Fatalf("err = %v, want O_NOFOLLOW TaskSpec rejection", err)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatal("worker launched through symlinked TaskSpec")
+		}
+	})
 	t.Run("malformed", func(t *testing.T) {
 		marker := filepath.Join(t.TempDir(), "launched")
 		fixture := newRunFixture(t, supportedVersionOutput, "touch "+shellQuote(marker))
@@ -633,8 +776,8 @@ func TestRunTaskSpecProjectionIsSingleReadAndFailClosed(t *testing.T) {
 		if err := os.WriteFile(path, []byte(`{"worker":`), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "parse TaskSpec") {
-			t.Fatalf("err = %v, want fail-closed TaskSpec parse", err)
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "validate TaskSpec") {
+			t.Fatalf("err = %v, want fail-closed TaskSpec validation", err)
 		}
 		if _, err := os.Stat(marker); !os.IsNotExist(err) {
 			t.Fatal("worker launched with malformed TaskSpec")
@@ -644,7 +787,7 @@ func TestRunTaskSpecProjectionIsSingleReadAndFailClosed(t *testing.T) {
 		fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
 		fixture.adapter.testHook = func(stage string) {
 			if stage == "after-task-projection" {
-				writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "replacement/model", "tools": []string{"shell"}}})
+				writeValidTaskSpec(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), "replacement/model", []string{"shell"})
 			}
 		}
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
@@ -1166,7 +1309,8 @@ func newRunFixture(t *testing.T, versionOutput, body string) runFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeJSON(t, filepath.Join(controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model"}})
+	taskPath := filepath.Join(controlRoot, "input", "task-spec.json")
+	specDigest := writeValidTaskSpec(t, taskPath, "provider/model", nil)
 	promptPath := filepath.Join(controlRoot, "input", "prompt.md")
 	if err := os.MkdirAll(filepath.Dir(promptPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -1176,7 +1320,7 @@ func newRunFixture(t *testing.T, versionOutput, body string) runFixture {
 	}
 	requestData := map[string]any{
 		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerRequest", "taskId": "TASK-1", "runId": "run-1", "attemptId": "attempt-1", "attemptNumber": 1,
-		"specDigest": digest("a"), "policyDigest": digest("b"), "capabilityDigest": digest("c"), "baseSha": strings.Repeat("1", 40),
+		"specDigest": specDigest, "policyDigest": digest("b"), "capabilityDigest": digest("c"), "baseSha": strings.Repeat("1", 40),
 		"worktreePath": resolvedWorktree, "controlRoot": resolvedControlRoot, "taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
 		"adapterId": "codex", "executionProfile": "workspace-write", "sessionPolicy": "ephemeral", "attemptTimeoutSeconds": 5, "maxOutputBytes": 65536, "reviewFindings": []any{},
 	}
@@ -1184,7 +1328,54 @@ func newRunFixture(t *testing.T, versionOutput, body string) runFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	snapshot, err := adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := snapshot.identity
+	snapshot.close()
+	pinned := identity
+	adapter.pinned = &pinned
+	adapter.conformance = &boundConformance{identity: identity, validUntil: time.Now().UTC().Add(time.Hour), evidenceDigest: digest("f")}
 	return runFixture{adapter, validator, adapter.executable, resolvedWorktree, resolvedControlRoot, domain.Record{Kind: domain.KindWorkerRequest, Data: requestBytes}}
+}
+
+func writeValidTaskSpec(t *testing.T, path, model string, tools any) string {
+	t.Helper()
+	worker := map[string]any{"preferredAdapter": "codex", "fallbackAdapters": []any{}, "executionProfile": "workspace-write", "sessionPolicy": "ephemeral"}
+	if model != "" {
+		worker["model"] = model
+	}
+	if tools != nil {
+		worker["tools"] = tools
+	}
+	spec := map[string]any{
+		"apiVersion": "marshal.dev/v1alpha1", "kind": "Task",
+		"metadata":     map[string]any{"id": "TASK-1", "title": "Codex fixture"},
+		"repository":   map[string]any{"path": "/tmp/repository", "baseRef": "main", "remote": "origin"},
+		"work":         map[string]any{"objective": "执行 Codex fixture。"},
+		"scope":        map[string]any{"allowPaths": []any{"**"}, "denyPaths": []any{}, "allowSubmodules": false},
+		"acceptance":   map[string]any{"commands": []any{}, "allowNoChange": true},
+		"deliverables": []any{map[string]any{"id": "result", "kind": "diagnostic", "required": true}},
+		"worker":       worker,
+		"budgets":      map[string]any{"runTimeoutSeconds": 60, "attemptTimeoutSeconds": 30, "maxAttempts": 1, "maxOperationalRetries": 0, "maxReworkRounds": 0, "maxOutputBytes": 65536},
+		"publication":  map[string]any{"required": false, "provider": "none", "mode": "none", "remote": "origin", "baseBranch": "main", "mergePolicy": "never", "requiredChecks": []any{}},
+	}
+	writeJSON(t, path, spec)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := canonical.DigestJSON(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
+func (f *runFixture) replaceTaskSpec(t *testing.T, model string, tools any) {
+	digest := writeValidTaskSpec(t, filepath.Join(f.controlRoot, "input", "task-spec.json"), model, tools)
+	f.request = f.requestWith(map[string]any{"specDigest": digest})
 }
 
 func (f runFixture) requestWith(overrides map[string]any) domain.Record {
@@ -1367,6 +1558,50 @@ func jsonString(value any) string {
 }
 
 func digest(character string) string { return "sha256:" + strings.Repeat(character, 64) }
+
+func signedTestAuthority(t *testing.T, identity executableIdentity) (*AuthorityEvidenceStore, string) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	evidence := ConformanceEvidence{
+		RunnerID: "marshal-conformance", RunnerVersion: "1",
+		ObservedAt: now.Add(-time.Minute).Format(time.RFC3339Nano), ValidUntil: now.Add(time.Hour).Format(time.RFC3339Nano),
+		AdapterVersion: adapterVersion, Executable: identity.path, ExecutableDigest: identity.digest, BinaryVersion: identity.version,
+		CapabilitiesDigest: expectedCapabilitiesDigest(), TranscriptDigest: digest("b"), CredentialVerified: true, LiveProtocolVerified: true,
+		EventContract: conformanceEventContract, CodexCLIVersion: identity.version, ProtocolVersion: codexProtocolVersion, PermissionMode: codexPermissionMode,
+		TrustRootKeyID: "test-root",
+	}
+	evidence.EvidenceDigest, err = evidence.digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := evidence.signingBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, message))
+	data, err := json.Marshal(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, strings.TrimPrefix(evidence.EvidenceDigest, "sha256:")+".json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewAuthorityEvidenceStore(root, map[string]ed25519.PublicKey{"test-root": publicKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store, evidence.EvidenceDigest
+}
 
 func assertCodexFailure(t *testing.T, err error, kind port.FailureKind, disposition port.RetryDisposition) {
 	t.Helper()

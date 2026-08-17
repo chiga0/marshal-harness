@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/adapter/denials"
+	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/contract"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"golang.org/x/sys/unix"
 )
@@ -528,14 +531,17 @@ type taskProjection struct {
 
 // readTaskProjection 对冻结 TaskSpec 只做一次受限读取；model 与 tools 从
 // 同一字节快照投影，任何路径、读取或 JSON/工具声明解析失败均 fail closed。
-func readTaskProjection(controlRoot, relative string) (taskProjection, error) {
-	path, err := existingPathWithin(controlRoot, relative)
-	if err != nil {
-		return taskProjection{}, fmt.Errorf("resolve TaskSpec: %w", err)
-	}
-	data, err := readBounded(path, maxResultBytes)
+func readTaskProjection(controlRoot, relative, expectedDigest string, validator *contract.Validator) (taskProjection, error) {
+	data, err := readInputFileAt(controlRoot, relative, maxResultBytes)
 	if err != nil {
 		return taskProjection{}, fmt.Errorf("read TaskSpec: %w", err)
+	}
+	if err := validator.Validate(domain.KindTask, data); err != nil {
+		return taskProjection{}, errors.New("validate TaskSpec: schema rejected")
+	}
+	digest, err := canonical.DigestJSON(data)
+	if err != nil || digest != expectedDigest {
+		return taskProjection{}, errors.New("validate TaskSpec: specDigest mismatch")
 	}
 	var task struct {
 		Worker struct {
@@ -550,4 +556,44 @@ func readTaskProjection(controlRoot, relative string) (taskProjection, error) {
 		return taskProjection{}, fmt.Errorf("worker tools: %w", err)
 	}
 	return taskProjection{model: task.Worker.Model, tools: tools}, nil
+}
+
+// readInputFileAt 从钉住的 controlRoot dirfd 开始逐组件 openat，拒绝
+// symlink 与非目录中间节点，并从最终 regular-file fd 只读取一次。
+func readInputFileAt(controlRoot, relative string, limit int64) ([]byte, error) {
+	if relative == "" || filepath.IsAbs(relative) || filepath.Clean(relative) != relative {
+		return nil, errors.New("input path is not a clean relative path")
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil, errors.New("input path contains an unsafe component")
+		}
+	}
+	rootFD, err := unix.Open(controlRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	current := os.NewFile(uintptr(rootFD), controlRoot)
+	defer func() { _ = current.Close() }()
+	for _, part := range parts[:len(parts)-1] {
+		fd, openErr := unix.Openat(int(current.Fd()), part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if openErr != nil {
+			return nil, openErr
+		}
+		next := os.NewFile(uintptr(fd), part)
+		current.Close()
+		current = next
+	}
+	fd, err := unix.Openat(int(current.Fd()), parts[len(parts)-1], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), parts[len(parts)-1])
+	defer file.Close()
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil, errors.New("input leaf is not a regular file")
+	}
+	return readBoundedFile(file, limit)
 }

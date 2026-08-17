@@ -35,8 +35,12 @@ const (
 	stderrLimit    = 64 << 10
 	// probeTimeout 为每次 --version 探测的固定上限，避免 preflight 在
 	// 无响应的可执行文件上无限挂起；attempt wall-time 预算不用于探测。
-	probeTimeout    = 10 * time.Second
-	maxVersionBytes = 4 << 10
+	probeTimeout             = 10 * time.Second
+	maxVersionBytes          = 4 << 10
+	conformanceEventContract = "codex-exec-json-0.145-v1"
+	codexProtocolVersion     = "0.145"
+	codexPermissionMode      = "workspace-write-network-off-approval-never"
+	conformancePendingReason = "credentialed live conformance pending: independent authority evidence is not bound to the Codex CLI identity and exec JSON contract"
 )
 
 // supportedCompatibilityLine 冻结已经通过真实 argv、JSONL 与结果契约
@@ -55,6 +59,7 @@ func isSupportedBinary(version string) bool {
 
 var (
 	ErrUnsupportedVersion       = errors.New("unsupported codex version")
+	ErrConformancePending       = errors.New("codex live conformance is not bound")
 	ErrVersionUnrecognized      = errors.New("unrecognized codex version output")
 	ErrIdentityInvalid          = errors.New("codex executable identity is invalid")
 	ErrIdentityDrift            = errors.New("codex executable identity drift")
@@ -82,9 +87,11 @@ type Adapter struct {
 	executable string
 	validator  *contract.Validator
 	now        func() time.Time
+	authority  *AuthorityEvidenceStore
 
-	mu     sync.Mutex
-	pinned *executableIdentity
+	mu          sync.Mutex
+	pinned      *executableIdentity
+	conformance *boundConformance
 
 	// testHook 只用于确定性触发安全竞态测试；生产构造器始终为 nil。
 	testHook func(string)
@@ -95,6 +102,12 @@ var _ port.WorkerAdapter = (*Adapter)(nil)
 // New 要求非空 Validator 与绝对 clean 的可执行文件路径；解析 symlink 后
 // 钉住可执行普通文件。Marshal 从不按相似名字或隐式回退解析 provider 可执行文件。
 func New(executable string, validator *contract.Validator) (*Adapter, error) {
+	return NewWithConformanceAuthority(executable, validator, nil)
+}
+
+// NewWithConformanceAuthority 绑定只读、签名验证的 conformance authority。
+// nil 是安全默认值：Probe 保持 unsupported，Run 永不获得执行授权。
+func NewWithConformanceAuthority(executable string, validator *contract.Validator, authority *AuthorityEvidenceStore) (*Adapter, error) {
 	if validator == nil {
 		return nil, errors.New("contract validator is required")
 	}
@@ -112,7 +125,7 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("codex executable must be an executable regular file")
 	}
-	return &Adapter{executable: realPath, validator: validator, now: time.Now}, nil
+	return &Adapter{executable: realPath, validator: validator, now: time.Now, authority: authority}, nil
 }
 
 func (a *Adapter) ID() string { return adapterID }
@@ -130,30 +143,23 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	defer snapshot.close()
 	identity := snapshot.identity
 	a.pinIdentity(identity)
-	status := "supported"
+	status := "unsupported"
 	probeErrors := []string{}
 	if !isSupportedBinary(identity.version) {
-		status = "unsupported"
 		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Codex CLI %s 兼容线，实际为 %s", supportedCompatibilityLine, identity.version))
+	}
+	if !a.isConformant(identity) {
+		probeErrors = append(probeErrors, conformancePendingReason)
+	} else if isSupportedBinary(identity.version) {
+		status = "supported"
 	}
 	capability := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
 		"executable": identity.path, "executableDigest": identity.digest,
 		"binaryVersion": identity.version, "probeStatus": status,
-		"capabilities": map[string]any{
-			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
-			"sessionPolicies": []string{"ephemeral"}, "modelSelection": true,
-			"executionProfiles":       []string{"workspace-write"},
-			"nativeBudgets":           []string{},
-			"processTreeCancellation": true,
-			"notes": []string{
-				"由 Marshal 实施 wall-time 与 output-bytes 上限。",
-				"workspace-write sandbox 显式关闭网络且 approval=never，仍不构成恶意代码隔离。",
-				"仅支持 ephemeral 会话；--ignore-user-config/--ignore-rules 阻止用户配置、rules、MCP 与 plugin 介入。",
-			},
-		},
-		"probeErrors": probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
+		"capabilities": expectedCapabilities(),
+		"probeErrors":  probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
 	data, err := json.Marshal(capability)
 	if err != nil {
@@ -165,7 +171,32 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	return domain.Record{Kind: domain.KindCapabilitySnapshot, Data: data}, nil
 }
 
+func expectedCapabilities() map[string]any {
+	return map[string]any{
+		"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
+		"sessionPolicies": []string{"ephemeral"}, "modelSelection": true,
+		"executionProfiles": []string{"workspace-write"}, "nativeBudgets": []string{},
+		"processTreeCancellation": true,
+		"notes": []string{
+			"由 Marshal 实施 wall-time 与 output-bytes 上限。",
+			"workspace-write sandbox 显式关闭网络且 approval=never，仍不构成恶意代码隔离。",
+			"仅支持 ephemeral 会话；--ignore-user-config/--ignore-rules 阻止用户配置、rules、MCP 与 plugin 介入。",
+			"仅当独立签名 conformance 记录与当前 executable identity 精确一致时才声明 supported。",
+		},
+	}
+}
+
+func expectedCapabilitiesDigest() string {
+	data, _ := json.Marshal(expectedCapabilities())
+	return digestBytes(data)
+}
+
 type executableIdentity struct{ path, digest, version string }
+type boundConformance struct {
+	identity       executableIdentity
+	validUntil     time.Time
+	evidenceDigest string
+}
 
 // inspect 每次重新钉住可执行文件身份：realpath、SHA-256 digest 与
 // 受限 probe 环境下执行 `--version` 解析出的版本，防止 Probe 后替换。
@@ -184,8 +215,48 @@ func (a *Adapter) callTestHook(stage string) {
 func (a *Adapter) pinIdentity(identity executableIdentity) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.conformance != nil {
+		return
+	}
 	pinned := identity
 	a.pinned = &pinned
+}
+
+func (a *Adapter) isConformant(identity executableIdentity) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.conformance != nil && a.conformance.identity == identity && a.now().UTC().Before(a.conformance.validUntil)
+}
+
+// BindConformance 只接受 authority store 中内容寻址、独立签名的 evidence。
+// 调用者不能通过传入自造结构或 CapabilitySnapshot 获得执行授权。
+func (a *Adapter) BindConformance(ctx context.Context, evidenceDigest string) error {
+	if a.authority == nil {
+		return port.Permanent(ErrConformancePending)
+	}
+	evidence, err := a.authority.resolve(ctx, evidenceDigest, a.now().UTC())
+	if err != nil {
+		return err
+	}
+	snapshot, err := a.inspect(ctx)
+	if err != nil {
+		return err
+	}
+	defer snapshot.close()
+	identity := snapshot.identity
+	if !isSupportedBinary(identity.version) {
+		return fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
+	}
+	if evidence.Executable != identity.path || evidence.ExecutableDigest != identity.digest || evidence.BinaryVersion != identity.version || evidence.CodexCLIVersion != identity.version {
+		return fmt.Errorf("%w: conformance identity does not match current executable", ErrIdentityDrift)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	validUntil, _ := time.Parse(time.RFC3339Nano, evidence.ValidUntil)
+	pinned := identity
+	a.pinned = &pinned
+	a.conformance = &boundConformance{identity: identity, validUntil: validUntil, evidenceDigest: evidence.EvidenceDigest}
+	return nil
 }
 
 // verifyPinnedIdentity 将 Run 启动前重新解析的身份与钉住身份比较：
@@ -198,10 +269,12 @@ func (a *Adapter) verifyPinnedIdentity(identity executableIdentity) error {
 	if a.pinned == nil {
 		pinned := identity
 		a.pinned = &pinned
-		return nil
 	}
 	if a.pinned.path != identity.path || a.pinned.digest != identity.digest {
 		return fmt.Errorf("%w: executable content changed since the identity was pinned", ErrIdentityDrift)
+	}
+	if a.conformance == nil || a.conformance.identity != identity || !a.now().UTC().Before(a.conformance.validUntil) {
+		return port.Permanent(ErrConformancePending)
 	}
 	return nil
 }
@@ -213,9 +286,10 @@ func (a *Adapter) verifyPinnedIdentity(identity executableIdentity) error {
 func readBinaryVersion(ctx context.Context, executable string) (string, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	command := exec.CommandContext(probeCtx, executable, "--version")
+	command := exec.Command(executable, "--version")
 	command.Env = probeEnvironment()
 	command.Stderr = io.Discard
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		return "", fmt.Errorf("probe codex version: %w", err)
@@ -223,18 +297,53 @@ func readBinaryVersion(ctx context.Context, executable string) (string, error) {
 	if err := command.Start(); err != nil {
 		return "", fmt.Errorf("probe codex version: %w", err)
 	}
-	output, readErr := io.ReadAll(io.LimitReader(stdout, maxVersionBytes+1))
-	if readErr != nil {
-		_ = command.Process.Kill()
+	type probeRead struct {
+		data []byte
+		err  error
+	}
+	readDone := make(chan probeRead, 1)
+	go func() {
+		data, err := io.ReadAll(io.LimitReader(stdout, maxVersionBytes+1))
+		readDone <- probeRead{data, err}
+	}()
+	var output []byte
+	select {
+	case read := <-readDone:
+		output = read.data
+		if read.err != nil {
+			terminateGroup(command)
+			_ = stdout.Close()
+			_ = command.Wait()
+			return "", fmt.Errorf("probe codex version: %w", read.err)
+		}
+	case <-probeCtx.Done():
+		terminateGroup(command)
+		_ = stdout.Close()
 		_ = command.Wait()
-		return "", fmt.Errorf("probe codex version: %w", readErr)
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("probe codex version: timed out after %s", probeTimeout)
 	}
 	if len(output) > maxVersionBytes {
-		_ = command.Process.Kill()
+		terminateGroup(command)
+		_ = stdout.Close()
 		_ = command.Wait()
 		return "", fmt.Errorf("%w: --version output exceeds %d bytes", ErrVersionUnrecognized, maxVersionBytes)
 	}
-	err = command.Wait()
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- command.Wait() }()
+	select {
+	case err = <-waitDone:
+	case <-probeCtx.Done():
+		terminateGroup(command)
+		_ = stdout.Close()
+		<-waitDone
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("probe codex version: timed out after %s", probeTimeout)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -258,6 +367,7 @@ func parseBinaryVersion(output string) (string, error) {
 
 type workerRequest struct {
 	TaskID, RunID, AttemptID                                        string
+	SpecDigest                                                      string
 	WorktreePath, ControlRoot, TaskSpecPath, PromptPath, ResultPath string
 	AdapterID, ExecutionProfile, SessionPolicy                      string
 	SessionID                                                       string
@@ -272,6 +382,7 @@ func decodeRequest(data []byte, validator *contract.Validator) (workerRequest, e
 		TaskID                string `json:"taskId"`
 		RunID                 string `json:"runId"`
 		AttemptID             string `json:"attemptId"`
+		SpecDigest            string `json:"specDigest"`
 		WorktreePath          string `json:"worktreePath"`
 		ControlRoot           string `json:"controlRoot"`
 		TaskSpecPath          string `json:"taskSpecPath"`
@@ -327,6 +438,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// 启动前把重新解析的身份与钉住身份比较，防止 Probe 后替换、
 	// symlink/内容漂移或同版本二进制漂移进入 captured worker。
 	if err := a.verifyPinnedIdentity(identity); err != nil {
+		if errors.Is(err, ErrConformancePending) {
+			return domain.Record{}, err
+		}
 		return domain.Record{}, newCodexFailure(port.FailureKindProtocolInvalid, ErrIdentityDrift, "executable identity changed after pinning", a.now())
 	}
 	a.callTestHook("after-identity-verify")
@@ -357,7 +471,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt evidence path escapes the control root or is unsafe", a.now())
 	}
-	projection, err := readTaskProjection(controlRoot, request.TaskSpecPath)
+	projection, err := readTaskProjection(controlRoot, request.TaskSpecPath, request.SpecDigest, a.validator)
 	if err != nil {
 		return domain.Record{}, err
 	}
