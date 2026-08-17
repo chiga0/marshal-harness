@@ -80,6 +80,27 @@
     "conformanceAuthorityGeneration": { "type": "integer", "minimum": 1 },
     "probedAt": { "type": "string", "format": "date-time" }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "adapterId": { "const": "qoder" },
+          "probeStatus": { "const": "supported" }
+        },
+        "required": ["adapterId", "probeStatus"]
+      },
+      "then": {
+        "required": [
+          "conformanceEvidenceDigest",
+          "conformanceTrustRootKeyId",
+          "conformanceProbeProfileDigest",
+          "conformanceValidUntil",
+          "conformanceHostFingerprint",
+          "conformanceAuthorityGeneration"
+        ]
+      }
+    }
+  ],
   "$defs": {
     "id": {
       "type": "string",

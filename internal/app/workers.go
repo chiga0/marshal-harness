@@ -98,8 +98,8 @@ var workerBindings = []workerBinding{
 // WorkerRuntime assembles the provider-neutral local Worker runtime shared by
 // `task plan`, `task run`, and `doctor`. It constructs concrete adapters from
 // explicit environment values and never searches PATH, reads os.Environ, or
-// writes files. Qoder authority construction performs only its bounded identity
-// probe and private authority reads; the caller supplies the environment lookup.
+// writes files. While ADR 0034 is Proposed, Qoder authority configuration is
+// hard-disabled before any authority read; the caller supplies the environment lookup.
 type WorkerRuntime struct {
 	validator      *contract.Validator
 	registry       *adapter.Registry

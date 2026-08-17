@@ -23,9 +23,9 @@ const maxConformanceValidity = 24 * time.Hour
 
 // ConformanceEvidence is an independently signed, content-addressed authority
 // record. It is data an external conformance runner may produce, but Adapter
-// callers cannot authorize execution by passing this value directly:
-// BindConformance accepts only a digest and resolves it through the trusted
-// AuthorityEvidenceStore configured when the Adapter is constructed.
+// callers cannot authorize execution by passing this value directly. The
+// candidate consumer resolves it only from current private authority config;
+// production activation remains disabled while ADR 0034 is Proposed.
 type ConformanceEvidence struct {
 	EvidenceDigest         string `json:"evidenceDigest"`
 	RunnerID               string `json:"runnerId"`
@@ -130,9 +130,11 @@ type LiveConformanceObservation struct {
 	RunnerVersion          string
 	ObservedAt             time.Time
 	ValidUntil             time.Time
+	AdapterVersion         string
 	Executable             string
 	ExecutableDigest       string
 	BinaryVersion          string
+	QoderCLIVersion        string
 	HostOS                 string
 	HostArch               string
 	HostFingerprint        string
@@ -158,6 +160,7 @@ type LiveConformanceObservation struct {
 // LiveConformanceContract is the public, non-secret frozen contract an
 // independent verifier must actually exercise and echo in its observation.
 type LiveConformanceContract struct {
+	AdapterVersion     string
 	ProbeSuiteDigest   string
 	CapabilitiesDigest string
 	ProbeProfileDigest string
@@ -171,6 +174,7 @@ type LiveConformanceContract struct {
 
 func FrozenLiveConformanceContract() LiveConformanceContract {
 	return LiveConformanceContract{
+		AdapterVersion:   adapterVersion,
 		ProbeSuiteDigest: expectedProbeSuiteDigest(), CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(),
 		ArgvDigest: expectedProbeArgvDigest(), EnvironmentDigest: expectedProbeEnvironmentDigest(), ToolPolicyDigest: expectedProbeToolPolicyDigest(),
 		EventContract: conformanceEventContract, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode,
@@ -183,25 +187,26 @@ func FrozenLiveConformanceContract() LiveConformanceContract {
 // verifier remains responsible for running the probe in the frozen isolated
 // profile and for protecting the signing key.
 func SealConformanceEvidence(observation LiveConformanceObservation, privateKey ed25519.PrivateKey) ([]byte, string, error) {
+	now := time.Now().UTC()
 	if len(privateKey) != ed25519.PrivateKeySize || observation.RunnerID == "" || observation.RunnerID == adapterID || observation.RunnerVersion == "" || observation.TrustRootKeyID == "" {
 		return nil, "", errors.New("qoder live conformance observation lacks independent signer provenance")
 	}
-	if !filepath.IsAbs(observation.Executable) || filepath.Clean(observation.Executable) != observation.Executable || !validSHA256Digest(observation.ExecutableDigest) || !validSHA256Digest(observation.HostFingerprint) || !validSHA256Digest(observation.ProbeArtifactDigest) || !validSHA256Digest(observation.ChallengeDigest) || !validSHA256Digest(observation.TranscriptDigest) || !isSupportedBinaryVersion(observation.BinaryVersion) {
+	if observation.AdapterVersion == "" || observation.BinaryVersion == "" || observation.QoderCLIVersion == "" || observation.HostOS == "" || observation.HostArch == "" || !filepath.IsAbs(observation.Executable) || filepath.Clean(observation.Executable) != observation.Executable || !validSHA256Digest(observation.ExecutableDigest) || !validSHA256Digest(observation.HostFingerprint) || !validSHA256Digest(observation.ProbeArtifactDigest) || !validSHA256Digest(observation.ChallengeDigest) || !validSHA256Digest(observation.TranscriptDigest) || !isSupportedBinaryVersion(observation.BinaryVersion) {
 		return nil, "", errors.New("qoder live conformance observation identity is invalid")
 	}
-	if observation.ObservedAt.IsZero() || observation.ValidUntil.IsZero() || !observation.ObservedAt.Before(observation.ValidUntil) || observation.ValidUntil.Sub(observation.ObservedAt) > maxConformanceValidity || observation.AuthorityGeneration == 0 || !observation.CredentialVerified || !observation.LiveProtocolVerified || !observation.WorkspaceWriteVerified {
+	if observation.ObservedAt.IsZero() || observation.ValidUntil.IsZero() || observation.ObservedAt.After(now) || !now.Before(observation.ValidUntil) || now.Sub(observation.ObservedAt) > maxConformanceValidity || !observation.ObservedAt.Before(observation.ValidUntil) || observation.ValidUntil.Sub(observation.ObservedAt) > maxConformanceValidity || observation.AuthorityGeneration == 0 || !observation.CredentialVerified || !observation.LiveProtocolVerified || !observation.WorkspaceWriteVerified {
 		return nil, "", errors.New("qoder live conformance observation did not pass the frozen probe")
 	}
-	if observation.ProbeSuiteDigest != expectedProbeSuiteDigest() || observation.CapabilitiesDigest != expectedCapabilitiesDigest() || observation.ProbeProfileDigest != expectedProbeProfileDigest() || observation.ArgvDigest != expectedProbeArgvDigest() || observation.EnvironmentDigest != expectedProbeEnvironmentDigest() || observation.ToolPolicyDigest != expectedProbeToolPolicyDigest() || observation.EventContract != conformanceEventContract || observation.ProtocolVersion != qoderProtocolVersion || observation.PermissionMode != qoderPermissionMode {
+	if observation.AdapterVersion != adapterVersion || observation.QoderCLIVersion != observation.BinaryVersion || observation.ProbeSuiteDigest != expectedProbeSuiteDigest() || observation.CapabilitiesDigest != expectedCapabilitiesDigest() || observation.ProbeProfileDigest != expectedProbeProfileDigest() || observation.ArgvDigest != expectedProbeArgvDigest() || observation.EnvironmentDigest != expectedProbeEnvironmentDigest() || observation.ToolPolicyDigest != expectedProbeToolPolicyDigest() || observation.EventContract != conformanceEventContract || observation.ProtocolVersion != qoderProtocolVersion || observation.PermissionMode != qoderPermissionMode {
 		return nil, "", errors.New("qoder live conformance observation does not bind the frozen probe contract")
 	}
 	evidence := ConformanceEvidence{
 		RunnerID: observation.RunnerID, RunnerVersion: observation.RunnerVersion,
 		ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano), ValidUntil: observation.ValidUntil.UTC().Format(time.RFC3339Nano),
-		AdapterVersion: adapterVersion, Executable: observation.Executable, ExecutableDigest: observation.ExecutableDigest, BinaryVersion: observation.BinaryVersion, HostOS: observation.HostOS, HostArch: observation.HostArch, HostFingerprint: observation.HostFingerprint,
+		AdapterVersion: observation.AdapterVersion, Executable: observation.Executable, ExecutableDigest: observation.ExecutableDigest, BinaryVersion: observation.BinaryVersion, QoderCLIVersion: observation.QoderCLIVersion, HostOS: observation.HostOS, HostArch: observation.HostArch, HostFingerprint: observation.HostFingerprint,
 		AuthorityGeneration: observation.AuthorityGeneration, ProbeSuiteDigest: observation.ProbeSuiteDigest, ProbeArtifactDigest: observation.ProbeArtifactDigest, ChallengeDigest: observation.ChallengeDigest,
 		CapabilitiesDigest: observation.CapabilitiesDigest, ProbeProfileDigest: observation.ProbeProfileDigest, ArgvDigest: observation.ArgvDigest, EnvironmentDigest: observation.EnvironmentDigest, ToolPolicyDigest: observation.ToolPolicyDigest, TranscriptDigest: observation.TranscriptDigest,
-		CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true, EventContract: observation.EventContract, QoderCLIVersion: observation.BinaryVersion,
+		CredentialVerified: observation.CredentialVerified, LiveProtocolVerified: observation.LiveProtocolVerified, WorkspaceWriteVerified: observation.WorkspaceWriteVerified, EventContract: observation.EventContract,
 		ProtocolVersion: observation.ProtocolVersion, PermissionMode: observation.PermissionMode, TrustRootKeyID: observation.TrustRootKeyID,
 	}
 	var err error
@@ -239,7 +244,7 @@ func NewAuthorityEvidenceStore(root string, trustRoots map[string]ed25519.Public
 		return nil, errors.New("qoder conformance authority root must be a real directory")
 	}
 	info, err := directory.Stat()
-	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || (int(stat.Uid) != os.Geteuid() && stat.Uid != 0) {
+	if err != nil || !info.IsDir() || !privateDirectory(stat, os.Geteuid()) {
 		directory.Close()
 		return nil, errors.New("qoder conformance authority root must be a private directory")
 	}
@@ -266,14 +271,14 @@ func (store *AuthorityEvidenceStore) resolve(ctx context.Context, digest string,
 		return ConformanceEvidence{}, ErrConformancePending
 	}
 	name := strings.TrimPrefix(digest, "sha256:") + ".json"
-	fd, err := unix.Openat(int(store.directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(int(store.directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return ConformanceEvidence{}, fmt.Errorf("resolve qoder authority evidence: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), name)
 	defer file.Close()
 	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o077 != 0 || (int(stat.Uid) != os.Geteuid() && stat.Uid != 0) {
+	if err := unix.Fstat(fd, &stat); err != nil || !privateRegularFile(stat, os.Geteuid()) {
 		return ConformanceEvidence{}, errors.New("qoder authority evidence must be a private regular file")
 	}
 	data, err := readBoundedFile(file, maxResultBytes)

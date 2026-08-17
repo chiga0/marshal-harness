@@ -428,11 +428,11 @@ Qoder production authority wiring 候选提交的独立审计确认四项 P1：�
 
 | ID | 级别 | 状态 | 关闭条件 |
 | --- | --- | --- | --- |
-| `QODER-AUTHORITY-ADR-MISSING` | P1 | `PROPOSED` | 维护者接受 ADR 0034；不得以实现提交或 hermetic test 冒充接受。 |
+| `QODER-AUTHORITY-ADR-MISSING` | P1 | `PROPOSED-HARD-DISABLED` | 维护者接受 ADR 0034；当前生产构造器无条件 typed fail-closed，接受 ADR 也不得自动启用，须独立后续变更。 |
 | `QODER-OBSERVATION-NOT-EXACTLY-BOUND` | P1 | `IMPLEMENTED-PENDING-REVIEW` | observation 逐项携带 suite/artifact/challenge/capability/profile/argv/env/tool/event/protocol/permission/transcript/verdict/time，Seal 不注入期望值；独立复审与真实 probe 证据分别通过。 |
 | `QODER-HOST-BINDING-REPLAYABLE` | P1 | `IMPLEMENTED-PENDING-REVIEW` | verifier/evidence/consumer 三方精确 host fingerprint，跨 host fixture fail closed。 |
-| `QODER-AUTHORITY-LIFECYCLE-NOT-RECHECKED` | P1 | `IMPLEMENTED-PENDING-REVIEW` | Probe 与 launch guard 每次重读 current config/evidence/revocation/generation，doctor 输出非敏感 evidence binding；长寿命进程撤销 fixture 通过。 |
-| `QODER-AUTHORITY-PATH-BOUNDARY` | P2 | `IMPLEMENTED-PENDING-REVIEW` | config/root/evidence 全路径逐段 nofollow、owner/private mode 校验与负向 fixture 通过。 |
+| `QODER-AUTHORITY-LIFECYCLE-NOT-RECHECKED` | P1 | `IMPLEMENTED-PENDING-REVIEW` | 候选 consumer 的 Probe 与 launch guard 每次重读 current config/evidence/revocation/generation，维护 generation high-water 并拒绝 rollback/同代替换；完整 Run 撤销 fixture 与 doctor metadata fixture 通过。生产仍硬禁用。 |
+| `QODER-AUTHORITY-PATH-BOUNDARY` | P2 | `IMPLEMENTED-PENDING-REVIEW` | config/root/evidence 全路径逐段 nofollow、leaf `O_NONBLOCK`+`fstat`、owner/private mode 与 FIFO 负向 fixture 通过。 |
 | `QODER-CONFORMANCE-FRESHNESS` | P2 | `IMPLEMENTED-PENDING-REVIEW` | validity window 与 observation age 固定最多 24 小时；超长与陈旧 fixture fail closed。 |
 
 该候选实现与 CI 生成的 Ed25519 key/fake executable 只验证机制，不是 credentialed live evidence；在 ADR 0034 未接受且当前 host 未配置外部真实 evidence 前，Issue #137 保持打开，Qoder 不得被报告为已完成或当前部署 `supported`。
