@@ -69,6 +69,13 @@ func init() {
 			if err := unix.Close(6); err != nil {
 				os.Exit(126)
 			}
+			// fd 7 is required only while the kernel resolves
+			// /proc/self/fd/7 for this exec. Mark it close-on-exec before the
+			// transition so the attested Codex image, and therefore every
+			// descendant it may spawn, cannot retain the executable authority.
+			if _, err := unix.FcntlInt(uintptr(7), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+				os.Exit(126)
+			}
 		}
 		argv := append([]string{executable}, os.Args[5:]...)
 		if err := unix.Exec(executable, argv, os.Environ()); err != nil {
