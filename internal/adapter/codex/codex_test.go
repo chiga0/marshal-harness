@@ -1867,20 +1867,25 @@ func useFixtureExecutable(t *testing.T, fixture *runFixture, executable string) 
 	}
 	fixture.executable = real
 	fixture.adapter.executable = real
+	// Native fixtures exercise the same authenticated fd-exec and conformance
+	// admission path as production. Do not retain TestMain's pathname-only
+	// fixture escape hatch for these launcher tests.
+	fixture.adapter.unsafePathExecutionForTest = false
 	snapshot, err := fixture.adapter.inspect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer snapshot.close()
-	pinned := snapshot.identity
-	fixture.adapter.pinned = &pinned
+	identity := snapshot.identity
+	snapshot.close()
 	// Changing the executable invalidates the old fixture's conformance
-	// authority. Rebind fresh evidence to the exact native identity so Run
-	// exercises the launcher path instead of failing at conformance admission.
-	fixture.adapter.conformance = &boundConformance{
-		identity:       pinned,
-		validUntil:     time.Now().UTC().Add(time.Hour),
-		evidenceDigest: digest("native-fixture-conformance"),
+	// authority. Produce independently signed evidence for the exact native
+	// identity and pass it through the production authority store and
+	// BindConformance validation; directly constructing boundConformance would
+	// bypass the security boundary this integration fixture must prove.
+	store, evidenceDigest := signedTestAuthority(t, identity)
+	fixture.adapter.authority = store
+	if err := fixture.adapter.BindConformance(context.Background(), evidenceDigest); err != nil {
+		t.Fatalf("bind native fixture conformance: %v", err)
 	}
 }
 
