@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -62,10 +63,11 @@ var (
 )
 
 type Adapter struct {
-	executable string
-	validator  *contract.Validator
-	now        func() time.Time
-	authority  *AuthorityEvidenceStore
+	executable          string
+	validator           *contract.Validator
+	now                 func() time.Time
+	authority           *AuthorityEvidenceStore
+	authorityConfigPath string
 
 	mu          sync.Mutex
 	pinned      *executableIdentity
@@ -136,6 +138,17 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"capabilities": expectedCapabilities(),
 		"probeErrors":  probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
+	if status == "supported" {
+		a.mu.Lock()
+		bound := *a.conformance
+		a.mu.Unlock()
+		snapshot["conformanceEvidenceDigest"] = bound.evidenceDigest
+		snapshot["conformanceTrustRootKeyId"] = bound.trustRootKeyID
+		snapshot["conformanceProbeProfileDigest"] = bound.probeProfileDigest
+		snapshot["conformanceValidUntil"] = bound.validUntil.UTC().Format(time.RFC3339Nano)
+		snapshot["conformanceHostFingerprint"] = bound.hostFingerprint
+		snapshot["conformanceAuthorityGeneration"] = bound.authorityGeneration
+	}
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return domain.Record{}, err
@@ -172,12 +185,45 @@ func expectedProbeProfileDigest() string {
 		"eventContract":                conformanceEventContract,
 		"isolatedWorkingDirectory":     true,
 		"permissionMode":               qoderPermissionMode,
-		"repositoryWritePermission":    false,
+		"repositoryWritePermission":    true,
 		"settingSources":               []string{},
 	}
 	data, _ := json.Marshal(profile)
 	return digestBytes(data)
 }
+
+func expectedProbeArgvDigest() string {
+	data, _ := json.Marshal([]string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--config-dir", "$ISOLATED_CONFIG_DIR", "--setting-sources", "", "--cwd", "$ISOLATED_WORKTREE", "--model", "$MODEL"})
+	return digestBytes(data)
+}
+
+func expectedProbeEnvironmentDigest() string {
+	data, _ := json.Marshal(map[string]any{"ambientEnvironment": false, "home": "$ISOLATED_CONFIG_DIR", "xdg": "$ISOLATED_CONFIG_DIR", "gitConfigGlobal": "/dev/null", "gitConfigNoSystem": true, "terminalPrompt": false})
+	return digestBytes(data)
+}
+
+func expectedProbeToolPolicyDigest() string {
+	data, _ := json.Marshal(map[string]any{"namedWorkerTools": []string{}, "providerPermissionMode": qoderPermissionMode, "repositoryScope": "isolated-scratch-worktree"})
+	return digestBytes(data)
+}
+
+func expectedProbeSuiteDigest() string {
+	data, _ := json.Marshal(map[string]any{"adapterId": adapterID, "adapterVersion": adapterVersion, "argvDigest": expectedProbeArgvDigest(), "environmentDigest": expectedProbeEnvironmentDigest(), "profileDigest": expectedProbeProfileDigest(), "toolPolicyDigest": expectedProbeToolPolicyDigest(), "eventContract": conformanceEventContract, "protocolVersion": qoderProtocolVersion})
+	return digestBytes(data)
+}
+
+func currentHostFingerprint() (string, error) {
+	hostname, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostname) == "" {
+		return "", errors.New("qoder host identity is unavailable")
+	}
+	data, _ := json.Marshal(map[string]string{"hostname": hostname, "os": runtime.GOOS, "arch": runtime.GOARCH})
+	return digestBytes(data), nil
+}
+
+// CurrentHostFingerprint returns the non-secret target-host binding used by
+// the external verifier and the production consumer.
+func CurrentHostFingerprint() (string, error) { return currentHostFingerprint() }
 
 type executableIdentity struct{ path, digest, version string }
 
@@ -186,9 +232,13 @@ type executableIdentity struct{ path, digest, version string }
 // time-limited conformance statement into permanent admission after one
 // successful BindConformance call.
 type boundConformance struct {
-	identity       executableIdentity
-	evidenceDigest string
-	validUntil     time.Time
+	identity            executableIdentity
+	evidenceDigest      string
+	validUntil          time.Time
+	trustRootKeyID      string
+	probeProfileDigest  string
+	hostFingerprint     string
+	authorityGeneration uint64
 }
 
 func (a *Adapter) pinIdentity(identity executableIdentity) {
@@ -202,9 +252,68 @@ func (a *Adapter) pinIdentity(identity executableIdentity) {
 }
 
 func (a *Adapter) isConformant(identity executableIdentity) bool {
+	return a.revalidateConformance(context.Background(), identity) == nil
+}
+
+func (a *Adapter) refreshConfiguredConformance(ctx context.Context) error {
+	if a.authorityConfigPath == "" {
+		return port.Permanent(ErrConformancePending)
+	}
+	config, err := loadAuthorityConfig(a.authorityConfigPath)
+	if err != nil {
+		return port.Permanent(ErrConformancePending)
+	}
+	store, err := authorityFromConfig(config)
+	if err != nil {
+		return port.Permanent(ErrConformancePending)
+	}
+	defer store.Close()
+	evidence, err := store.resolve(ctx, config.EvidenceDigest, a.now().UTC())
+	if err != nil || evidence.ProbeArtifactDigest != config.ProbeArtifactDigest || evidence.AuthorityGeneration != config.AuthorityGeneration {
+		return port.Permanent(ErrConformancePending)
+	}
+	identity, err := a.inspect(ctx)
+	if err != nil {
+		return err
+	}
+	return a.bindVerifiedConformance(identity, evidence)
+}
+
+func (a *Adapter) bindVerifiedConformance(identity executableIdentity, evidence ConformanceEvidence) error {
+	if !isSupportedBinaryVersion(identity.version) {
+		return fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
+	}
+	hostFingerprint, err := currentHostFingerprint()
+	if err != nil {
+		return err
+	}
+	if evidence.Executable != identity.path || evidence.ExecutableDigest != identity.digest || evidence.BinaryVersion != identity.version || evidence.QoderCLIVersion != identity.version || evidence.HostFingerprint != hostFingerprint {
+		return fmt.Errorf("%w: conformance identity does not match current executable or host", ErrIdentityDrift)
+	}
+	validUntil, err := time.Parse(time.RFC3339Nano, evidence.ValidUntil)
+	if err != nil {
+		return port.Permanent(ErrConformancePending)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.conformance != nil && a.conformance.identity == identity && a.now().UTC().Before(a.conformance.validUntil)
+	pinned := identity
+	a.pinned = &pinned
+	a.conformance = &boundConformance{identity: identity, evidenceDigest: evidence.EvidenceDigest, validUntil: validUntil, trustRootKeyID: evidence.TrustRootKeyID, probeProfileDigest: evidence.ProbeProfileDigest, hostFingerprint: evidence.HostFingerprint, authorityGeneration: evidence.AuthorityGeneration}
+	return nil
+}
+
+func (a *Adapter) revalidateConformance(ctx context.Context, identity executableIdentity) error {
+	if a.authorityConfigPath != "" {
+		if err := a.refreshConfiguredConformance(ctx); err != nil {
+			return err
+		}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.conformance == nil || a.conformance.identity != identity || !a.now().UTC().Before(a.conformance.validUntil) {
+		return port.Permanent(ErrConformancePending)
+	}
+	return nil
 }
 
 // BindConformance accepts only a content digest. The corresponding record is
@@ -223,27 +332,19 @@ func (a *Adapter) BindConformance(ctx context.Context, evidenceDigest string) er
 	if err != nil {
 		return err
 	}
-	if !isSupportedBinaryVersion(identity.version) {
-		return fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
-	}
-	if evidence.Executable != identity.path || evidence.ExecutableDigest != identity.digest || evidence.BinaryVersion != identity.version || evidence.QoderCLIVersion != identity.version {
-		return fmt.Errorf("%w: conformance identity does not match current executable", ErrIdentityDrift)
-	}
-	validUntil, err := time.Parse(time.RFC3339Nano, evidence.ValidUntil)
-	if err != nil {
-		// resolve already validates this field; keep this guard local so the
-		// stored admission boundary can never become a zero-time wildcard.
-		return port.Permanent(ErrConformancePending)
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	pinned := identity
-	a.pinned = &pinned
-	a.conformance = &boundConformance{identity: identity, evidenceDigest: evidence.EvidenceDigest, validUntil: validUntil}
-	return nil
+	return a.bindVerifiedConformance(identity, evidence)
 }
 
 func (a *Adapter) verifyExecutionIdentity(identity executableIdentity) error {
+	a.mu.Lock()
+	if a.pinned != nil && *a.pinned != identity {
+		a.mu.Unlock()
+		return fmt.Errorf("%w: executable changed after capability probe", ErrIdentityDrift)
+	}
+	a.mu.Unlock()
+	if err := a.revalidateConformance(context.Background(), identity); err != nil {
+		return err
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.pinned == nil {

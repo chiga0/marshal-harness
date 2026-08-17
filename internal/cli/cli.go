@@ -149,14 +149,20 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 }
 
 type doctorWorker struct {
-	AdapterID           string `json:"adapterId"`
-	EnvironmentVariable string `json:"environmentVariable"`
-	Configured          bool   `json:"configured"`
-	Registered          bool   `json:"registered"`
-	Outcome             string `json:"outcome"`
-	Compatibility       string `json:"compatibility"`
-	AdapterVersion      string `json:"adapterVersion,omitempty"`
-	BinaryVersion       string `json:"binaryVersion,omitempty"`
+	AdapterID                      string `json:"adapterId"`
+	EnvironmentVariable            string `json:"environmentVariable"`
+	Configured                     bool   `json:"configured"`
+	Registered                     bool   `json:"registered"`
+	Outcome                        string `json:"outcome"`
+	Compatibility                  string `json:"compatibility"`
+	AdapterVersion                 string `json:"adapterVersion,omitempty"`
+	BinaryVersion                  string `json:"binaryVersion,omitempty"`
+	ConformanceEvidenceDigest      string `json:"conformanceEvidenceDigest,omitempty"`
+	ConformanceTrustRootKeyID      string `json:"conformanceTrustRootKeyId,omitempty"`
+	ConformanceProbeProfileDigest  string `json:"conformanceProbeProfileDigest,omitempty"`
+	ConformanceValidUntil          string `json:"conformanceValidUntil,omitempty"`
+	ConformanceHostFingerprint     string `json:"conformanceHostFingerprint,omitempty"`
+	ConformanceAuthorityGeneration uint64 `json:"conformanceAuthorityGeneration,omitempty"`
 }
 
 type doctorReport struct {
@@ -335,10 +341,16 @@ func doctorWorkers(ctx context.Context, runtime *app.WorkerRuntime) []doctorWork
 			continue
 		}
 		var identity struct {
-			AdapterID      string `json:"adapterId"`
-			AdapterVersion string `json:"adapterVersion"`
-			BinaryVersion  string `json:"binaryVersion"`
-			ProbeStatus    string `json:"probeStatus"`
+			AdapterID                      string `json:"adapterId"`
+			AdapterVersion                 string `json:"adapterVersion"`
+			BinaryVersion                  string `json:"binaryVersion"`
+			ProbeStatus                    string `json:"probeStatus"`
+			ConformanceEvidenceDigest      string `json:"conformanceEvidenceDigest"`
+			ConformanceTrustRootKeyID      string `json:"conformanceTrustRootKeyId"`
+			ConformanceProbeProfileDigest  string `json:"conformanceProbeProfileDigest"`
+			ConformanceValidUntil          string `json:"conformanceValidUntil"`
+			ConformanceHostFingerprint     string `json:"conformanceHostFingerprint"`
+			ConformanceAuthorityGeneration uint64 `json:"conformanceAuthorityGeneration"`
 		}
 		if json.Unmarshal(snapshot.Data, &identity) != nil || identity.AdapterID != configuration.AdapterID ||
 			(identity.ProbeStatus != "supported" && identity.ProbeStatus != "unsupported") {
@@ -348,6 +360,19 @@ func doctorWorkers(ctx context.Context, runtime *app.WorkerRuntime) []doctorWork
 		result.Compatibility = identity.ProbeStatus
 		result.AdapterVersion = identity.AdapterVersion
 		result.BinaryVersion = identity.BinaryVersion
+		if identity.ProbeStatus == "supported" && identity.AdapterID == "qoder" {
+			if identity.ConformanceEvidenceDigest == "" || identity.ConformanceTrustRootKeyID == "" || identity.ConformanceProbeProfileDigest == "" || identity.ConformanceValidUntil == "" || identity.ConformanceHostFingerprint == "" || identity.ConformanceAuthorityGeneration == 0 {
+				result.Compatibility = "probe-failed"
+				workers = append(workers, result)
+				continue
+			}
+			result.ConformanceEvidenceDigest = identity.ConformanceEvidenceDigest
+			result.ConformanceTrustRootKeyID = identity.ConformanceTrustRootKeyID
+			result.ConformanceProbeProfileDigest = identity.ConformanceProbeProfileDigest
+			result.ConformanceValidUntil = identity.ConformanceValidUntil
+			result.ConformanceHostFingerprint = identity.ConformanceHostFingerprint
+			result.ConformanceAuthorityGeneration = identity.ConformanceAuthorityGeneration
+		}
 		workers = append(workers, result)
 	}
 	return workers

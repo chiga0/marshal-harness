@@ -8,6 +8,8 @@
 
 2026-08-17，维护者接受 ADR 0032；接受证据绑定 Run `adr0032-controlled-policy-merge-r1-20260817`、publish ApprovalRecord `approval:9de1bb4f138d3b33d34add75b57ca5b5`、reviewRound=3 的精确 decision/evidence digest 与已合入 [PR #152](https://github.com/chiga0/marshal-harness/pull/152)。该 ApprovalRecord 是真实 publish gate 记录，不冒充独立 `adr-accept` gate。随后 B2 独立复核发现同故障域 sidecar head 无法检测协调回滚，authorization/intent 与 delivery attempt/result 的分步写仍有 crash dead zone。ADR 0033（Proposed）提议用 Run journal 中的原子 `MergeAuthorityTransaction`、`MergeDeliveryAnchor` 与 pending→fence-consumed→inspect/reconcile→resolved 状态机取代这些实现解释，并要求通过 fd/immutable handle 执行同一已校验的 `gh` 对象。ADR 0032 接受与 ADR 0033 提出均不表示受控 merge 已支持，也不改变 M10–M13 状态。
 
+2026-08-17，Qoder production authority wiring 的独立审计发现：仅用 OS/arch 不能绑定目标 host、Seal 不能代替 verifier observation 填写期望 profile、一次性内存 Bind 无法及时消费撤销，而且 authority 配置首次改变了生产准入信任边界。ADR 0034（Proposed）据此冻结 Qoder CLI 独立 verifier→authority signer→Marshal consumer 三方证据链、24 小时 freshness、逐段 nofollow 路径、host fingerprint、逐次撤销复核及 doctor 非敏感 evidence 绑定。在 ADR 被接受且真实 credentialed evidence 到位前，不得宣称当前 Qoder 部署 `supported`。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -37,3 +39,4 @@
 | [0031](0031-durable-publication-retry.md) | Typed Durable Publication Retry（Core-owned PublicationRetryLedger、approval lineage 与 CI_PENDING re-observation，Issue #54） | 提议（Proposed，2026-08-17；仅契约设计，未实现） |
 | [0032](0032-controlled-policy-merge.md) | Policy 显式授权的受控 Task Merge（SCMMergeIntent、独立 SCMMerger、SCMMergeReceipt 与 ACCEPTED 收敛） | 已接受（Accepted，2026-08-17；接受证据绑定真实 publish ApprovalRecord 与 PR #152；authority/delivery 实现解释由 ADR 0033 部分取代，未注册为 supported） |
 | [0033](0033-journal-bound-merge-authority-and-delivery.md) | Journal-bound MergeAuthorityTransaction、MergeDeliveryAnchor、pending→fence-consumed→inspect/reconcile→resolved 恢复与 executable snapshot TOCTOU 关闭 | 提议（Proposed，2026-08-17；契约/负向矩阵第一切片，未实现） |
+| [0034](0034-qoder-cli-live-conformance-authority.md) | Qoder CLI 独立 live conformance authority、host/profile 精确绑定、短期可撤销准入与 doctor evidence 可观察性 | 提议（Proposed，2026-08-17；未获得真实 credentialed evidence，不表示当前部署 supported） |

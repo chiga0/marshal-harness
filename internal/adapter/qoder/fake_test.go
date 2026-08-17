@@ -579,9 +579,13 @@ func bindTestConformance(t *testing.T, adapter *Adapter) {
 	pinned := identity
 	adapter.pinned = &pinned
 	adapter.conformance = &boundConformance{
-		identity:       identity,
-		evidenceDigest: digest("test-conformance"),
-		validUntil:     adapter.now().UTC().Add(24 * time.Hour),
+		identity:            identity,
+		evidenceDigest:      digest("d"),
+		validUntil:          adapter.now().UTC().Add(24 * time.Hour),
+		trustRootKeyID:      "test-root",
+		probeProfileDigest:  expectedProbeProfileDigest(),
+		hostFingerprint:     mustHostFingerprint(t),
+		authorityGeneration: 1,
 	}
 }
 
