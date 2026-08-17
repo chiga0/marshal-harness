@@ -438,6 +438,16 @@ Qoder production authority wiring 候选提交的独立审计确认四项 P1：�
 
 该候选实现与 CI 生成的 Ed25519 key/fake executable 只验证机制，不是 credentialed live evidence；在 ADR 0034 未接受且当前 host 未配置外部真实 evidence 前，Issue #137 保持打开，Qoder 不得被报告为已完成或当前部署 `supported`。
 
+## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
+
+Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Verifier 虽能在命令后观察到 Candidate worktree 变化并把 Gate 标为失败，却让污染字节留在受管 worktree；随后 Review 的 current-observation guard 正确拒绝变化后的字节，Run 因而无法生成绑定原 Candidate 的 ReviewPacket。该问题不是新生命周期或 Schema 缺口：ADR 0027 已冻结 command 写作用域默认为 `none`、未声明写入 fail closed、Candidate 与 Evidence 不可被覆盖；缺失的是实现级 command 隔离。
+
+| ID | 级别 | 状态 | 关闭条件 |
+| --- | --- | --- | --- |
+| `ISSUE138-VERIFIER-WORKTREE-MUTATION` | P1 | `IMPLEMENTED-PENDING-INDEPENDENT-REVIEW` | 每条 candidate/Baseline command 使用 fresh standalone 临时 Git 副本；原 Candidate 复制前后身份一致；缓存与临时目录定向到副本外的命令专属临时根；submodule、特殊文件、逃逸/悬空/循环 symlink 在启动前拒绝；副本 before/after digest 不同形成稳定 `verifier-worktree-mutated` fail-closed Gate，同时保留原 command exit/signal/log；命令 pass/fail/cancel 后原受管 worktree 与 Candidate/patch digest 保持不变且 ReviewPacket 可重建；定向、race、全量 quality 与独立审查 P0/P1 清零后方可置为 `CLOSED`。 |
+
+该切片不新增 TaskSpec temporary-directory 字段，不改变 VerificationReport/ReviewPacket Schema、Run 状态、doctor/status、发布权限或 ADR 0027 normalizer 规则，也不把普通宿主临时目录描述为 hardened sandbox。
+
 ## Issue #53 CI 失败 rework 注入设计缺口审计增补（2026-08-14）
 
 公开 [Issue #53](https://github.com/chiga0/marshal-harness/issues/53) 要求为 CI 失败 rework 闭环冻结可恢复、可审计且无双计数的契约。基线（main commit `981b53d`）行为定位：PublicationRecord 已建立且 Run 位于 `CI_PENDING`；RemoteCheckObserver 产出 `status=fail` 的 RemoteCheckRecord；`publication.checks-failed` 当前只把 `headSha` 写入事件并进入 `REWORK_REQUESTED`；execution 的 CI origin 分支返回空 findings；`task review` 仅接受 `REVIEW_PENDING`——既无法把失败检查的权威证据绑定到新 Decision，也无法把精确 `requiredOutcome` 投影给下一 Attempt；fail 分支预算守卫也只检查 rework round、不检查 attempt 余额。

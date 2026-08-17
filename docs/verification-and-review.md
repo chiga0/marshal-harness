@@ -67,15 +67,13 @@ Scope Gate 的判定输入**只有**路径字符串、变更计数、diff 字节
 - 执行 Per-command 与 Verification-wide Timeout；
 - 捕获 stdout/stderr，记录 Truncation；
 - 记录 Exit Code、Signal、Start/End、Duration 与 Executable Resolution；
-- 每个可能生成文件的命令执行后重新 Snapshot。
+- 每条 candidate 与 Baseline 命令都在 fresh、无远端且不共享可写 Git 管理目录的临时副本执行；副本只复制当前 Git tracked 与 non-ignored untracked 候选字节，拒绝 submodule、特殊文件、逃逸/悬空/循环 symlink，并在复制前后重验原 Candidate 身份；
+- `HOME`、`TMPDIR`、XDG/Go/Python cache 定向到命令专属临时根；命令结束后对副本做确定性 before/after Snapshot，任何 tracked、untracked、删除、rename、mode 或 symlink 变更以 `verifier-worktree-mutated` fail closed，并保存两个精确 digest；
+- 每条命令使用新的副本，前序命令的生成物不得进入后序命令；无论 pass、非零退出、取消或清理失败，原受管 candidate worktree 都不得被 Verifier command 修改。
 
-Verification Command 修改仓库时不得静默并入 Worker Output。Policy 只能明确选择：
+Verification Command 修改临时副本时不得静默并入 Worker Output，也不得把污染后的字节接纳为新 Candidate。当前 command 写作用域固定为 `none`；只有 ADR 0027 声明式 normalizer 可在持有排他 Lease 时产出带 predecessor 的新 Candidate。命令 mutation Gate 保留原 command exit/signal 与 stdout/stderr，同时以 before/after digest 精确绑定污染事实。
 
-- 让 Dirty-verifier Gate 失败；
-- 采集已声明路径中的已知生成物；
-- 执行显式 Cleanup Command 后重新 Snapshot。
-
-默认规则是未声明的 Verifier Mutation 直接失败。
+这些临时副本只是普通宿主目录，不是恶意代码沙箱；它们关闭的是 Verifier 自身污染受管 Candidate 的证据边界，不赋予不可信命令额外安全保证。
 
 ## Baseline Diagnostic
 
