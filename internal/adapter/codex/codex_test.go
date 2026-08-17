@@ -537,8 +537,12 @@ func TestRunBindsWorktreeFDDespiteStartABA(t *testing.T) {
 	}
 }
 
-func TestRunUsesPrivateLauncherSnapshotWhenExecutablePathIsReplaced(t *testing.T) {
+func TestRunUsesAuthenticatedLauncherWhenExecutablePathIsReplaced(t *testing.T) {
+	if !secureFDExecutionAvailable() {
+		t.Skip("production launcher is unsupported on this platform")
+	}
 	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	fixture.adapter.unsafePathExecutionForTest = false
 	configured, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)

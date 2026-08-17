@@ -12,6 +12,8 @@ const secureFDPlatformReason = "当前平台缺少可验证的 fd-exec：Codex l
 
 func secureFDExecutionAvailable() bool { return false }
 
+func secureFDExecutionReason() string { return secureFDPlatformReason }
+
 func secureFDPath(fd int) string { return fmt.Sprintf("/dev/fd/%d", fd) }
 
 func secureLauncherFD() (*os.File, error) {

@@ -198,7 +198,7 @@ func (a *Adapter) unsupportedPlatformProbe() (domain.Record, error) {
 		"executable": a.executable, "executableDigest": digest,
 		"binaryVersion": "unavailable", "probeStatus": "unsupported",
 		"capabilities": expectedCapabilities(),
-		"probeErrors":  []string{secureFDPlatformReason}, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
+		"probeErrors":  []string{secureFDExecutionReason()}, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
 	data, err := json.Marshal(capability)
 	if err != nil {
@@ -271,7 +271,7 @@ func (a *Adapter) isConformant(identity executableIdentity) bool {
 // 调用者不能通过传入自造结构或 CapabilitySnapshot 获得执行授权。
 func (a *Adapter) BindConformance(ctx context.Context, evidenceDigest string) error {
 	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest {
-		return port.Permanent(fmt.Errorf("%w: %s", ErrPlatformUnsupported, secureFDPlatformReason))
+		return port.Permanent(fmt.Errorf("%w: %s", ErrPlatformUnsupported, secureFDExecutionReason()))
 	}
 	if a.authority == nil {
 		return port.Permanent(ErrConformancePending)
@@ -430,7 +430,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
 	}
 	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest {
-		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrPlatformUnsupported, secureFDPlatformReason, a.now())
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrPlatformUnsupported, secureFDExecutionReason(), a.now())
 	}
 	request, err := decodeRequest(record.Data, a.validator)
 	if err != nil {
