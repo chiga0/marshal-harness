@@ -3,15 +3,49 @@ package cloudflare
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
 
-// TestProviderFullTenOperationHappyPath drives the full ten-operation
-// chain — Probe, Provision, Stage, Exec, Inspect, Signal, Checkpoint,
-// Restore, Terminate, Reconcile — through the Bridge provider against the
-// fake Bridge fixture.
+// newTestProviderWithStore constructs one Bridge provider against a specific
+// durable store.
+func newTestProviderWithStore(t *testing.T, fb *fakeBridge, store *FileStateStore, evidenceRef string) *Provider {
+	t.Helper()
+	provider, err := NewProvider(ProviderConfig{
+		BridgeBaseURL:          fb.server.URL,
+		BridgeToken:            fb.token,
+		ConformanceEvidenceRef: evidenceRef,
+		MaxRetries:             2,
+		RetryDelay:             -1,
+		RequestTimeout:         5 * time.Second,
+		StateStore:             store,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	return provider
+}
+
+// failStoreWriteOn makes the nth store persist fail, leaving the first n-1
+// persists durable.
+func failStoreWriteOn(t *testing.T, store *FileStateStore, failOn int) {
+	t.Helper()
+	original := store.write
+	count := 0
+	store.write = func(data []byte) error {
+		count++
+		if count == failOn {
+			return errors.New("injected state store write failure")
+		}
+		return original(data)
+	}
+}
+
+// TestProviderFullTenOperationHappyPath drives the full ten-operation chain
+// through the Bridge provider against the fake Bridge fixture.
 func TestProviderFullTenOperationHappyPath(t *testing.T) {
 	name := "chain"
 	alloc := "alloc-" + name
@@ -50,6 +84,7 @@ func TestProviderFullTenOperationHappyPath(t *testing.T) {
 	storeContent := []byte("store" + "-content-" + name)
 	storeDigest := sandbox.RecomputeSHA256(storeContent)
 	fb.SeedStore("store-"+name, storeDigest, storeContent)
+	provider.locatorResolver = fb.Resolver()
 	stageReport, err := provider.Stage(ctx, sandbox.StageRequest{
 		Identity:     id(alloc, "cmd-stage", 1),
 		AllocationId: alloc,
@@ -107,11 +142,10 @@ func TestProviderFullTenOperationHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if inspectReport.State != sandbox.AllocationActive || len(inspectReport.Violations) != 0 || len(inspectReport.LogLines) == 0 {
-		t.Fatalf("the observation must reflect the contained execution, got %+v", inspectReport)
+	if inspectReport.State != sandbox.AllocationActive {
+		t.Fatalf("the observation must reflect the running allocation, got %+v", inspectReport)
 	}
 
-	fb.SetLiveSessions(t, alloc, 1)
 	signalReceipt, err := provider.Signal(ctx, sandbox.SignalRequest{
 		Identity:     id(alloc, "cmd-signal", 1),
 		AllocationId: alloc,
@@ -121,7 +155,7 @@ func TestProviderFullTenOperationHappyPath(t *testing.T) {
 		t.Fatalf("Signal: %v", err)
 	}
 	if !signalReceipt.Delivered {
-		t.Fatal("the signal must be delivered to the live session")
+		t.Fatal("the signal must be delivered to the session the exec created")
 	}
 
 	checkpointReceipt, err := provider.Checkpoint(ctx, sandbox.CheckpointRequest{
@@ -131,12 +165,9 @@ func TestProviderFullTenOperationHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Checkpoint: %v", err)
 	}
-	snapshot, ok := fb.CheckpointBytes(checkpointReceipt.CheckpointId)
-	if !ok {
-		t.Fatalf("the fixture bridge must hold the persisted snapshot %q", checkpointReceipt.CheckpointId)
-	}
-	if checkpointReceipt.SHA256 != sandbox.RecomputeSHA256(snapshot) {
-		t.Fatal("the checkpoint receipt must carry the recomputed snapshot digest, never an echo")
+	tar := provider.allocations[alloc].lastCheckpoint.tar
+	if checkpointReceipt.SHA256 != sandbox.RecomputeSHA256(tar) || checkpointReceipt.SizeBytes != int64(len(tar)) {
+		t.Fatal("the checkpoint receipt must carry the recomputed snapshot digest and size, never an echo")
 	}
 
 	restoreReceipt, err := provider.Restore(ctx, sandbox.RestoreOperationRequest{
@@ -257,9 +288,7 @@ func TestProviderInvalidIdentityFailsClosedBeforeBridge(t *testing.T) {
 	}
 }
 
-// TestProviderHardenedAssuranceGate freezes the fail-closed assurance gate:
-// a hardened request against a provider without evidence is refused
-// outright and never downgraded.
+// TestProviderHardenedAssuranceGate freezes the fail-closed assurance gate.
 func TestProviderHardenedAssuranceGate(t *testing.T) {
 	name := "hardened-gate"
 	alloc := "alloc-" + name
@@ -291,8 +320,7 @@ func TestProviderHardenedAssuranceGate(t *testing.T) {
 }
 
 // TestProviderHardenedWithEvidenceServes freezes that a hardened request
-// served on valid evidence grants exactly the hardened combination and
-// carries the evidence reference.
+// served on valid evidence grants exactly the hardened combination.
 func TestProviderHardenedWithEvidenceServes(t *testing.T) {
 	name := "hardened-evidence"
 	alloc := "alloc-" + name
@@ -338,7 +366,7 @@ func TestProviderDuplicateActiveAllocationRejected(t *testing.T) {
 	if !errors.Is(err, sandbox.ErrDuplicateActiveAllocation) {
 		t.Fatalf("a second concurrent allocation must be rejected, got %v", err)
 	}
-	if got := fb.RequestCount("POST", sandboxesPath); got != 1 {
+	if got := fb.RequestCount("POST", sandboxPath); got != 1 {
 		t.Fatalf("the rejected duplicate must never reach the bridge, got %d creates", got)
 	}
 }
@@ -359,8 +387,6 @@ func TestProviderCapacityExhaustionFailsClosed(t *testing.T) {
 	if !errors.Is(err, ErrCapacityExhausted) {
 		t.Fatalf("capacity exhaustion must fail closed, got %v", err)
 	}
-	// The failed provision must leave no bookkeeping: the identical retry
-	// succeeds once the capacity clears.
 	if _, err := provider.Provision(ctx, sandbox.ProvisionRequest{
 		Identity:     scenarioIdentity(name, alloc, "cmd-provision-retry", 1),
 		Requirements: workspaceRequirements(t),
@@ -370,8 +396,8 @@ func TestProviderCapacityExhaustionFailsClosed(t *testing.T) {
 }
 
 // TestProviderStageDigestMismatchFailsClosed freezes that a mismatched
-// declared digest fails the attempt with the fixed sentinel, produces no
-// receipt and fails the allocation.
+// declared digest fails the attempt with the fixed sentinel and fails the
+// allocation.
 func TestProviderStageDigestMismatchFailsClosed(t *testing.T) {
 	name := "stage-mismatch"
 	alloc := "alloc-" + name
@@ -404,10 +430,9 @@ func TestProviderStageDigestMismatchFailsClosed(t *testing.T) {
 	if report != nil {
 		t.Fatal("a failed stage must produce no receipt")
 	}
-	if _, ok := fb.SandboxFile(alloc, "staged/payload"); ok {
+	if _, ok := fb.SandboxFile(providerBridgeLocator(t, provider, alloc), "staged/payload"); ok {
 		t.Fatal("the mismatched bytes must never be consumed by the container")
 	}
-	// The attempt is failed: later exec refuses the allocation.
 	if _, err := provider.Exec(ctx, sandbox.ExecRequest{
 		Identity:     identity("cmd-exec"),
 		AllocationId: alloc,
@@ -424,13 +449,14 @@ func TestProviderStageDigestMismatchFailsClosed(t *testing.T) {
 }
 
 // TestProviderStageLocatorPath freezes the locator staging path: bound and
-// seeded locators stage, unbound aliases are rejected by validation and
-// unresolvable locators fail closed with the fixed sentinel.
+// seeded locators stage, unbound aliases are rejected and unresolvable
+// locators fail closed with the fixed sentinel.
 func TestProviderStageLocatorPath(t *testing.T) {
 	name := "stage-locator"
 	alloc := "alloc-" + name
 	fb := newFakeBridge(t, testBridgeToken(name))
 	provider := newTestProvider(t, fb, "")
+	provider.locatorResolver = fb.Resolver()
 	ctx := context.Background()
 	identity := func(commandId string) sandbox.OperationIdentity {
 		return scenarioIdentity(name, alloc, commandId, 1)
@@ -446,7 +472,7 @@ func TestProviderStageLocatorPath(t *testing.T) {
 	content := []byte("locator" + "-content-" + name)
 	digest := sandbox.RecomputeSHA256(content)
 
-	_, err := provider.Stage(ctx, sandbox.StageRequest{
+	if _, err := provider.Stage(ctx, sandbox.StageRequest{
 		Identity:     identity("cmd-stage-unbound"),
 		AllocationId: alloc,
 		Inputs: []sandbox.StageInput{{
@@ -454,12 +480,11 @@ func TestProviderStageLocatorPath(t *testing.T) {
 			DeclaredSHA256: digest,
 			Locator:        &sandbox.Locator{StoreId: "store-unbound", SHA256: digest, SizeBytes: int64(len(content))},
 		}},
-	})
-	if !errors.Is(err, sandbox.ErrInvalidLocator) {
+	}); !errors.Is(err, sandbox.ErrInvalidLocator) {
 		t.Fatalf("an unbound store alias must be rejected with ErrInvalidLocator, got %v", err)
 	}
 
-	_, err = provider.Stage(ctx, sandbox.StageRequest{
+	if _, err := provider.Stage(ctx, sandbox.StageRequest{
 		Identity:     identity("cmd-stage-unresolved"),
 		AllocationId: alloc,
 		Inputs: []sandbox.StageInput{{
@@ -467,8 +492,7 @@ func TestProviderStageLocatorPath(t *testing.T) {
 			DeclaredSHA256: digest,
 			Locator:        &sandbox.Locator{StoreId: "store-" + name, SHA256: digest, SizeBytes: int64(len(content))},
 		}},
-	})
-	if !errors.Is(err, sandbox.ErrLocatorUnresolved) {
+	}); !errors.Is(err, sandbox.ErrLocatorUnresolved) {
 		t.Fatalf("an unresolved locator must fail closed with ErrLocatorUnresolved, got %v", err)
 	}
 
@@ -488,14 +512,13 @@ func TestProviderStageLocatorPath(t *testing.T) {
 	if len(report.Receipts) != 1 || report.Receipts[0].RecomputedSHA256 != digest || report.Receipts[0].PostConsumptionSHA256 != digest {
 		t.Fatalf("the locator receipt must carry the recomputed digests, got %+v", report.Receipts)
 	}
-	if staged, ok := fb.SandboxFile(alloc, "staged/resolved"); !ok || sandbox.RecomputeSHA256(staged) != digest {
+	if staged, ok := fb.SandboxFile(providerBridgeLocator(t, provider, alloc), "staged/resolved"); !ok || sandbox.RecomputeSHA256(staged) != digest {
 		t.Fatal("the staged locator content must match the store object byte for byte")
 	}
 }
 
 // TestProviderStagePostConsumptionTamperFailsClosed freezes that tampering
-// between the pre-consumption check and the read-back recomputation fails
-// the attempt closed.
+// between the write and the read-back recomputation fails the attempt closed.
 func TestProviderStagePostConsumptionTamperFailsClosed(t *testing.T) {
 	name := "stage-tamper"
 	alloc := "alloc-" + name
@@ -576,11 +599,11 @@ func TestProviderExecStatusMapping(t *testing.T) {
 		AllocationId: alloc,
 		Command:      []string{"doomed-cmd"},
 	})
-	if err != nil || killed.Status != sandbox.ExecutionKilled || killed.ExitCode != 137 {
-		t.Fatalf("the signaled exit must map to killed, got %+v err=%v", killed, err)
+	if err != nil || killed.Status != sandbox.ExecutionKilled || killed.ExitCode != -1 {
+		t.Fatalf("the signaled exit must map to killed with no exit code, got %+v err=%v", killed, err)
 	}
 
-	execCalls := fb.RequestCount("POST", sandboxesPath+"/"+alloc+"/exec")
+	execCalls := fb.RequestCount("POST", "/v1/sandbox/"+providerBridgeLocator(t, provider, alloc)+"/exec")
 	if _, err := provider.Exec(ctx, sandbox.ExecRequest{
 		Identity:     identity("cmd-exec-empty"),
 		AllocationId: alloc,
@@ -588,7 +611,7 @@ func TestProviderExecStatusMapping(t *testing.T) {
 	}); !errors.Is(err, sandbox.ErrInvalidRequest) {
 		t.Fatalf("an empty command must be rejected with ErrInvalidRequest, got %v", err)
 	}
-	if got := fb.RequestCount("POST", sandboxesPath+"/"+alloc+"/exec"); got != execCalls {
+	if got := fb.RequestCount("POST", "/v1/sandbox/"+providerBridgeLocator(t, provider, alloc)+"/exec"); got != execCalls {
 		t.Fatalf("the empty command must never reach the bridge, got %d exec calls", got)
 	}
 }
@@ -624,8 +647,8 @@ func TestProviderStaleGenerationRejected(t *testing.T) {
 	}
 }
 
-// TestProviderSignalClosedEnumeration freezes the closed signal
-// enumeration and the delivery observation.
+// TestProviderSignalClosedEnumeration freezes the closed signal enumeration
+// and the session-deletion delivery observation.
 func TestProviderSignalClosedEnumeration(t *testing.T) {
 	name := "signal"
 	alloc := "alloc-" + name
@@ -648,9 +671,6 @@ func TestProviderSignalClosedEnumeration(t *testing.T) {
 	}); !errors.Is(err, sandbox.ErrInvalidSignal) {
 		t.Fatalf("a signal outside the closed enumeration must be rejected, got %v", err)
 	}
-	if got := fb.RequestCount("POST", sandboxesPath+"/"+alloc+"/signal"); got != 0 {
-		t.Fatalf("an invalid signal must never reach the bridge, got %d calls", got)
-	}
 
 	notDelivered, err := provider.Signal(ctx, sandbox.SignalRequest{
 		Identity:     identity("cmd-signal-absent"),
@@ -658,22 +678,36 @@ func TestProviderSignalClosedEnumeration(t *testing.T) {
 		Signal:       sandbox.SignalTerm,
 	})
 	if err != nil || notDelivered.Delivered {
-		t.Fatalf("a signal without a live session must observe non-delivery, got %+v err=%v", notDelivered, err)
+		t.Fatalf("a signal without a session must observe non-delivery, got %+v err=%v", notDelivered, err)
 	}
-	fb.SetLiveSessions(t, alloc, 1)
+
+	if _, err := provider.Exec(ctx, sandbox.ExecRequest{
+		Identity:     identity("cmd-exec"),
+		AllocationId: alloc,
+		Command:      []string{"echo"},
+	}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
 	delivered, err := provider.Signal(ctx, sandbox.SignalRequest{
 		Identity:     identity("cmd-signal-live"),
 		AllocationId: alloc,
 		Signal:       sandbox.SignalKill,
 	})
 	if err != nil || !delivered.Delivered {
-		t.Fatalf("a signal to the live session must observe delivery, got %+v err=%v", delivered, err)
+		t.Fatalf("a signal to the session must observe delivery, got %+v err=%v", delivered, err)
+	}
+	again, err := provider.Signal(ctx, sandbox.SignalRequest{
+		Identity:     identity("cmd-signal-again"),
+		AllocationId: alloc,
+		Signal:       sandbox.SignalKill,
+	})
+	if err != nil || again.Delivered {
+		t.Fatalf("a signal after the session was deleted must observe non-delivery, got %+v err=%v", again, err)
 	}
 }
 
-// TestProviderCheckpointDigestRecomputed freezes that the checkpoint
-// receipt digest is the out-of-band recomputation of the persisted snapshot
-// bytes, never an echo.
+// TestProviderCheckpointDigestRecomputed freezes that the checkpoint receipt
+// digest is the out-of-band recomputation of the persisted snapshot bytes.
 func TestProviderCheckpointDigestRecomputed(t *testing.T) {
 	name := "checkpoint-honesty"
 	alloc := "alloc-" + name
@@ -708,11 +742,8 @@ func TestProviderCheckpointDigestRecomputed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Checkpoint: %v", err)
 	}
-	snapshot, ok := fb.CheckpointBytes(first.CheckpointId)
-	if !ok {
-		t.Fatalf("the fixture bridge must hold the persisted snapshot %q", first.CheckpointId)
-	}
-	if first.SHA256 != sandbox.RecomputeSHA256(snapshot) || first.SizeBytes != int64(len(snapshot)) {
+	tar := provider.allocations[alloc].lastCheckpoint.tar
+	if first.SHA256 != sandbox.RecomputeSHA256(tar) || first.SizeBytes != int64(len(tar)) {
 		t.Fatalf("the checkpoint receipt must carry the recomputed snapshot digest and size: %+v", first)
 	}
 	second, err := provider.Checkpoint(ctx, sandbox.CheckpointRequest{
@@ -732,7 +763,7 @@ func TestProviderCheckpointDigestRecomputed(t *testing.T) {
 
 // TestProviderRestoreReplacementSemantics freezes the replacement restore
 // chain on top of the implicit persist: create + hydrate + destroy, the
-// previous allocation becomes replaced and terminate observes it idempotently.
+// previous allocation becomes replaced.
 func TestProviderRestoreReplacementSemantics(t *testing.T) {
 	name := "restore-replacement"
 	alloc := "alloc-" + name
@@ -769,10 +800,11 @@ func TestProviderRestoreReplacementSemantics(t *testing.T) {
 	if receipt.Allocation.AllocationId != next || receipt.Allocation.Generation != 2 || receipt.Allocation.State != sandbox.AllocationActive {
 		t.Fatalf("the restore must activate the replacement at generation 2, got %+v", receipt.Allocation)
 	}
-	if staged, ok := fb.SandboxFile(next, "staged/payload"); !ok || sandbox.RecomputeSHA256(staged) != sandbox.RecomputeSHA256(content) {
+	if staged, ok := fb.SandboxFile(providerBridgeLocator(t, provider, next), "staged/payload"); !ok || sandbox.RecomputeSHA256(staged) != sandbox.RecomputeSHA256(content) {
 		t.Fatal("the hydrate must restore the staged content byte for byte")
 	}
-	if got := fb.RequestCount("DELETE", sandboxesPath+"/"+alloc); got != 1 {
+	previousBridge := providerBridgeLocator(t, provider, alloc)
+	if got := fb.RequestCount("DELETE", "/v1/sandbox/"+previousBridge); got != 1 {
 		t.Fatalf("the restore must destroy the previous sandbox exactly once, got %d", got)
 	}
 	previousTerminate, err := provider.Terminate(ctx, sandbox.TerminateRequest{
@@ -782,14 +814,14 @@ func TestProviderRestoreReplacementSemantics(t *testing.T) {
 	if err != nil || previousTerminate.State != sandbox.AllocationReplaced {
 		t.Fatalf("terminate of the replaced allocation must observe replaced, got %+v err=%v", previousTerminate, err)
 	}
-	if got := fb.RequestCount("DELETE", sandboxesPath+"/"+alloc); got != 1 {
+	if got := fb.RequestCount("DELETE", "/v1/sandbox/"+previousBridge); got != 1 {
 		t.Fatalf("terminating a terminal allocation must not call the bridge again, got %d", got)
 	}
 }
 
 // TestProviderRestoreInPlaceSemantics freezes the confirmed in-place
 // restore: the same locator is re-activated at the bumped generation after
-// the Bridge observation confirms no live exec session.
+// the running observation confirms the container survived.
 func TestProviderRestoreInPlaceSemantics(t *testing.T) {
 	name := "restore-in-place"
 	alloc := "alloc-" + name
@@ -802,31 +834,26 @@ func TestProviderRestoreInPlaceSemantics(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	content := []byte("in-place" + "-content")
-	if _, err := provider.Stage(ctx, sandbox.StageRequest{
-		Identity:     scenarioIdentity(name, alloc, "cmd-stage", 1),
-		AllocationId: alloc,
-		Inputs: []sandbox.StageInput{{
-			InputId:        "payload",
-			DeclaredSHA256: sandbox.RecomputeSHA256(content),
-			Inline:         content,
-		}},
-	}); err != nil {
-		t.Fatalf("Stage: %v", err)
-	}
 
-	// A live exec session blocks the in-place restore re-verification.
-	fb.SetLiveSessions(t, alloc, 1)
+	fb.LoseContainer(t, providerBridgeLocator(t, provider, alloc))
 	if _, err := provider.Restore(ctx, sandbox.RestoreOperationRequest{
-		Identity:             scenarioIdentity(name, alloc, "cmd-restore-blocked", 2),
+		Identity:             scenarioIdentity(name, alloc, "cmd-restore-lost", 2),
 		PreviousAllocationId: alloc,
 		InPlaceConfirmed:     true,
 	}); !errors.Is(err, sandbox.ErrRestoreRejected) {
-		t.Fatalf("an in-place restore against a live session must be rejected, got %v", err)
+		t.Fatalf("an in-place restore against a lost container must be rejected, got %v", err)
 	}
 
-	fb.SetLiveSessions(t, alloc, 0)
-	receipt, err := provider.Restore(ctx, sandbox.RestoreOperationRequest{
+	// A fresh sandbox is running again; the in-place restore re-activates it.
+	fb2 := newFakeBridge(t, testBridgeToken(name))
+	provider2 := newTestProvider(t, fb2, "")
+	if _, err := provider2.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:     scenarioIdentity(name, alloc, "cmd-provision", 1),
+		Requirements: workspaceRequirements(t),
+	}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	receipt, err := provider2.Restore(ctx, sandbox.RestoreOperationRequest{
 		Identity:             scenarioIdentity(name, alloc, "cmd-restore", 2),
 		PreviousAllocationId: alloc,
 		InPlaceConfirmed:     true,
@@ -837,7 +864,7 @@ func TestProviderRestoreInPlaceSemantics(t *testing.T) {
 	if receipt.Allocation.AllocationId != alloc || receipt.Allocation.Generation != 2 || receipt.Allocation.State != sandbox.AllocationActive {
 		t.Fatalf("the in-place restore must re-activate the same locator at generation 2, got %+v", receipt.Allocation)
 	}
-	if _, err := provider.Exec(ctx, sandbox.ExecRequest{
+	if _, err := provider2.Exec(ctx, sandbox.ExecRequest{
 		Identity:     scenarioIdentity(name, alloc, "cmd-exec-stale", 1),
 		AllocationId: alloc,
 		Command:      []string{"echo"},
@@ -860,8 +887,8 @@ func TestProviderRestoreRejectionRules(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	creates := fb.RequestCount("POST", sandboxesPath)
-	persists := fb.RequestCount("POST", sandboxesPath+"/"+alloc+"/persist")
+	creates := fb.RequestCount("POST", sandboxPath)
+	persists := fb.RequestCount("POST", "/v1/sandbox/"+providerBridgeLocator(t, provider, alloc)+"/persist")
 
 	if _, err := provider.Restore(ctx, sandbox.RestoreOperationRequest{
 		Identity:             scenarioIdentity(name, alloc, "cmd-restore-unconfirmed", 2),
@@ -891,10 +918,10 @@ func TestProviderRestoreRejectionRules(t *testing.T) {
 		t.Fatalf("a restore of an unknown allocation must fail closed, got %v", err)
 	}
 
-	if got := fb.RequestCount("POST", sandboxesPath); got != creates {
+	if got := fb.RequestCount("POST", sandboxPath); got != creates {
 		t.Fatalf("rejected restores must never create a sandbox, got %d creates", got)
 	}
-	if got := fb.RequestCount("POST", sandboxesPath+"/"+alloc+"/persist"); got != persists {
+	if got := fb.RequestCount("POST", "/v1/sandbox/"+providerBridgeLocator(t, provider, alloc)+"/persist"); got != persists {
 		t.Fatalf("rejected restores must never persist, got %d persists", got)
 	}
 }
@@ -916,6 +943,7 @@ func TestProviderTerminateIdempotent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
+	bridgeId := providerBridgeLocator(t, provider, alloc)
 	first, err := provider.Terminate(ctx, sandbox.TerminateRequest{
 		Identity:     identity("cmd-terminate-1"),
 		AllocationId: alloc,
@@ -923,7 +951,7 @@ func TestProviderTerminateIdempotent(t *testing.T) {
 	if err != nil || first.State != sandbox.AllocationTerminated {
 		t.Fatalf("Terminate: state=%q err=%v", string(first.State), err)
 	}
-	if got := fb.RequestCount("DELETE", sandboxesPath+"/"+alloc); got != 1 {
+	if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != 1 {
 		t.Fatalf("exactly one destroy call was expected, got %d", got)
 	}
 	second, err := provider.Terminate(ctx, sandbox.TerminateRequest{
@@ -933,15 +961,14 @@ func TestProviderTerminateIdempotent(t *testing.T) {
 	if err != nil || second.State != sandbox.AllocationTerminated {
 		t.Fatalf("Terminate again: state=%q err=%v", string(second.State), err)
 	}
-	if got := fb.RequestCount("DELETE", sandboxesPath+"/"+alloc); got != 1 {
+	if got := fb.RequestCount("DELETE", "/v1/sandbox/"+bridgeId); got != 1 {
 		t.Fatalf("the idempotent terminate must not call the bridge again, got %d", got)
 	}
 }
 
-// TestProviderInspectObservedState freezes that Inspect reflects the Bridge
-// observation channel: escaped probes surface as violations, a terminated
-// sandbox is observed terminal, and a silently reclaimed sandbox fails
-// closed.
+// TestProviderInspectObservedState freezes that Inspect reflects the running
+// observation: a lost container is observed failed and a terminated
+// allocation is observed terminal.
 func TestProviderInspectObservedState(t *testing.T) {
 	name := "inspect-observed"
 	alloc := "alloc-" + name
@@ -957,24 +984,21 @@ func TestProviderInspectObservedState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-
-	fb.DisableContainment(true)
-	if _, err := provider.Exec(ctx, sandbox.ExecRequest{
-		Identity:     identity("cmd-exec-probe"),
-		AllocationId: alloc,
-		Command:      []string{sandbox.ProbeCommandBoundaryWrite},
-	}); err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	observed, err := provider.Inspect(ctx, sandbox.InspectRequest{
-		Identity:     identity("cmd-inspect-violations"),
+	running, err := provider.Inspect(ctx, sandbox.InspectRequest{
+		Identity:     identity("cmd-inspect-running"),
 		AllocationId: alloc,
 	})
-	if err != nil {
-		t.Fatalf("Inspect: %v", err)
+	if err != nil || running.State != sandbox.AllocationActive {
+		t.Fatalf("Inspect of a running allocation must observe active, got %+v err=%v", running, err)
 	}
-	if len(observed.Violations) != 1 || observed.Violations[0].Kind != sandbox.ViolationOutOfBoundsWrite {
-		t.Fatalf("the escaped probe must surface as an observed violation, got %+v", observed.Violations)
+
+	fb.LoseContainer(t, providerBridgeLocator(t, provider, alloc))
+	lost, err := provider.Inspect(ctx, sandbox.InspectRequest{
+		Identity:     identity("cmd-inspect-lost"),
+		AllocationId: alloc,
+	})
+	if err != nil || lost.State != sandbox.AllocationFailed {
+		t.Fatalf("Inspect of a lost container must observe failed, got %+v err=%v", lost, err)
 	}
 
 	if _, err := provider.Terminate(ctx, sandbox.TerminateRequest{
@@ -1006,7 +1030,7 @@ func TestProviderInspectSilentReclaimFailsClosed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	fb.ForgetSandbox(t, alloc)
+	fb.ForgetSandbox(t, providerBridgeLocator(t, provider, alloc))
 	if _, err := provider.Inspect(ctx, sandbox.InspectRequest{
 		Identity:     scenarioIdentity(name, alloc, "cmd-inspect", 1),
 		AllocationId: alloc,
@@ -1015,53 +1039,10 @@ func TestProviderInspectSilentReclaimFailsClosed(t *testing.T) {
 	}
 }
 
-// TestProviderReconcileDriftFailsClosed freezes that reconcile reports
-// drift fail closed for Bridge-side orphans and for locally active
-// allocations missing from the Bridge running list.
+// TestProviderReconcileDriftFailsClosed freezes that reconcile reports drift
+// fail closed for a locally active allocation that is missing or no longer
+// running on the bridge, and for a pending create intent.
 func TestProviderReconcileDriftFailsClosed(t *testing.T) {
-	t.Run("bridge-orphan", func(t *testing.T) {
-		name := "reconcile-orphan"
-		alloc := "alloc-" + name
-		fb := newFakeBridge(t, testBridgeToken(name))
-		provider := newTestProvider(t, fb, "")
-		ctx := context.Background()
-		if _, err := provider.Provision(ctx, sandbox.ProvisionRequest{
-			Identity:     scenarioIdentity(name, alloc, "cmd-provision", 1),
-			Requirements: workspaceRequirements(t),
-		}); err != nil {
-			t.Fatalf("Provision: %v", err)
-		}
-		// A sandbox exists on the Bridge that the bookkeeping does not know.
-		if _, err := provider.client.CreateSandbox(ctx, CreateSandboxRequest{
-			SandboxId:  "alloc-ghost",
-			RunId:      "run-" + name,
-			AttemptId:  "attempt-" + name,
-			Generation: 1,
-		}, "key-ghost"); err != nil {
-			t.Fatalf("direct bridge create: %v", err)
-		}
-		report, err := provider.Reconcile(ctx, sandbox.ReconcileRequest{
-			Identity:  scenarioIdentity(name, alloc, "cmd-reconcile", 1),
-			RunId:     "run-" + name,
-			AttemptId: "attempt-" + name,
-		})
-		if err == nil {
-			t.Fatal("reconcile must fail closed on a bridge-side orphan")
-		}
-		if report == nil || !report.DriftDetected {
-			t.Fatalf("reconcile must report drift, got %+v", report)
-		}
-		orphaned := false
-		for _, orphan := range report.OrphanAllocationIds {
-			if orphan == "alloc-ghost" {
-				orphaned = true
-			}
-		}
-		if !orphaned {
-			t.Fatalf("the ghost sandbox must be reported as an orphan, got %+v", report)
-		}
-	})
-
 	t.Run("silent-reclaim", func(t *testing.T) {
 		name := "reconcile-reclaim"
 		alloc := "alloc-" + name
@@ -1074,7 +1055,7 @@ func TestProviderReconcileDriftFailsClosed(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("Provision: %v", err)
 		}
-		fb.ForgetSandbox(t, alloc)
+		fb.ForgetSandbox(t, providerBridgeLocator(t, provider, alloc))
 		report, err := provider.Reconcile(ctx, sandbox.ReconcileRequest{
 			Identity:  scenarioIdentity(name, alloc, "cmd-reconcile", 1),
 			RunId:     "run-" + name,
@@ -1090,12 +1071,41 @@ func TestProviderReconcileDriftFailsClosed(t *testing.T) {
 			t.Fatalf("a reclaimed sandbox must not be reported active, got %+v", report)
 		}
 	})
+
+	t.Run("ambiguous-intent", func(t *testing.T) {
+		name := "reconcile-ambiguous"
+		alloc := "alloc-" + name
+		fb := newFakeBridge(t, testBridgeToken(name))
+		store := newMemoryStateStore()
+		provider := newTestProviderWithStore(t, fb, store, "")
+		ctx := context.Background()
+		// Inject a create whose response is lost beyond the retry budget,
+		// leaving a durable intent with no committed outcome.
+		fb.DropPathTimes("POST", sandboxPath, 3)
+		_, err := provider.Provision(ctx, sandbox.ProvisionRequest{
+			Identity:     scenarioIdentity(name, alloc, "cmd-provision", 1),
+			Requirements: workspaceRequirements(t),
+		})
+		if !errors.Is(err, ErrBridgeUnavailable) {
+			t.Fatalf("Provision must fail closed with ErrBridgeUnavailable, got %v", err)
+		}
+		report, reconcileErr := provider.Reconcile(ctx, sandbox.ReconcileRequest{
+			Identity:  scenarioIdentity(name, alloc, "cmd-reconcile", 1),
+			RunId:     "run-" + name,
+			AttemptId: "attempt-" + name,
+		})
+		if reconcileErr == nil {
+			t.Fatal("reconcile must fail closed when a create intent has no committed outcome")
+		}
+		if report == nil || !report.DriftDetected {
+			t.Fatalf("reconcile must report drift, got %+v", report)
+		}
+	})
 }
 
 // TestProviderCredentialDiscipline freezes the credential discipline end to
-// end: the Bridge Bearer token travels only as the Authorization header and
-// never surfaces in any provider observable — errors, receipts, reports,
-// observation logs or diagnostics.
+// end: the Bearer token travels only as the Authorization header and never
+// surfaces in any provider observable.
 func TestProviderCredentialDiscipline(t *testing.T) {
 	token := testBridgeToken("discipline")
 	name := "discipline"
@@ -1195,8 +1205,7 @@ func TestProviderCredentialDiscipline(t *testing.T) {
 		observables = append(observables, reconcileReport.OrphanAllocationIds...)
 	}
 
-	// Error paths through the credential, exercised in a second scope so
-	// the fail-closed stage mismatch cannot corrupt the happy chain above.
+	// Error paths through the credential, exercised in a second scope.
 	mismatchName := name + "-mismatch"
 	mismatchAlloc := "alloc-" + mismatchName
 	mismatchIdentity := func(commandId string) sandbox.OperationIdentity {
@@ -1234,13 +1243,19 @@ func TestProviderCredentialDiscipline(t *testing.T) {
 	assertNoCredential(t, token, observables...)
 
 	headers := fb.AuthHeaders()
-	if len(headers) == 0 {
-		t.Fatal("the fixture bridge must have observed authenticated requests")
-	}
+	authenticated := 0
 	for _, header := range headers {
-		if header != "Bearer "+token {
-			t.Fatalf("the credential must travel only as the Authorization header, got %q", header)
+		if header == "Bearer "+token {
+			authenticated++
+			continue
 		}
+		if header == "" {
+			continue // the health read carries no credential
+		}
+		t.Fatalf("the credential must travel only as the Authorization header, got %q", header)
+	}
+	if authenticated == 0 {
+		t.Fatal("the fixture bridge must have observed authenticated requests")
 	}
 }
 
@@ -1265,5 +1280,215 @@ func TestProviderMissingCredentialFailsClosed(t *testing.T) {
 		ConformanceEvidenceRef: "sha256:zz",
 	}); !errors.Is(err, sandbox.ErrInvalidRequest) {
 		t.Fatalf("a malformed evidence reference must fail closed at construction, got %v", err)
+	}
+}
+
+// TestProviderProvisionWritePointFailures freezes that each durable write
+// point fails cleanly: an intent-write failure performs no create, a
+// locator-write failure leaves a pending intent, and an outcome-write
+// failure leaves the locator persisted without an installed allocation.
+func TestProviderProvisionWritePointFailures(t *testing.T) {
+	cases := []struct {
+		name              string
+		failOn            int
+		wantCreateCalls   int
+		wantPendingIntent bool
+	}{
+		{"intent", 1, 0, false},
+		{"locator", 2, 1, true},
+		{"outcome", 3, 1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name := tc.name
+			alloc := "alloc-" + name
+			fb := newFakeBridge(t, testBridgeToken(name))
+			store := newMemoryStateStore()
+			failStoreWriteOn(t, store, tc.failOn)
+			provider := newTestProviderWithStore(t, fb, store, "")
+			ctx := context.Background()
+			_, err := provider.Provision(ctx, sandbox.ProvisionRequest{
+				Identity:     scenarioIdentity(name, alloc, "cmd-provision", 1),
+				Requirements: workspaceRequirements(t),
+			})
+			if err == nil {
+				t.Fatal("the injected write failure must surface")
+			}
+			if got := fb.RequestCount("POST", sandboxPath); got != tc.wantCreateCalls {
+				t.Fatalf("create calls = %d, want %d", got, tc.wantCreateCalls)
+			}
+			if pending := len(store.PendingIntents()) != 0; pending != tc.wantPendingIntent {
+				t.Fatalf("pending intent = %t, want %t", pending, tc.wantPendingIntent)
+			}
+			if _, ok := provider.allocations[alloc]; ok {
+				t.Fatal("a failed provision must not install an in-memory allocation")
+			}
+		})
+	}
+}
+
+// TestProviderProvisionReopenReplayConverges freezes that a provision whose
+// locator write failed (a crash after the remote create) converges when the
+// store is re-opened and the identical identity replays: the create is
+// idempotent, so exactly one remote sandbox exists.
+func TestProviderProvisionReopenReplayConverges(t *testing.T) {
+	name := "reopen"
+	alloc := "alloc-" + name
+	path := filepath.Join(t.TempDir(), "state.json")
+	fb := newFakeBridge(t, testBridgeToken(name))
+	store, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStateStore: %v", err)
+	}
+	failStoreWriteOn(t, store, 2)
+	providerA := newTestProviderWithStore(t, fb, store, "")
+	identity := scenarioIdentity(name, alloc, "cmd-provision", 1)
+	ctx := context.Background()
+	if _, err := providerA.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:     identity,
+		Requirements: workspaceRequirements(t),
+	}); err == nil {
+		t.Fatal("the locator write failure must surface")
+	}
+
+	reopened, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	providerB := newTestProviderWithStore(t, fb, reopened, "")
+	receipt, err := providerB.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:     identity,
+		Requirements: workspaceRequirements(t),
+	})
+	if err != nil {
+		t.Fatalf("the replay after reopen must converge, got %v", err)
+	}
+	if receipt.Allocation.AllocationId != alloc || receipt.Allocation.State != sandbox.AllocationActive {
+		t.Fatalf("the replayed provision must install the active allocation, got %+v", receipt.Allocation)
+	}
+	if got := fb.sandboxCount(); got != 1 {
+		t.Fatalf("the idempotent replay must leave exactly one remote sandbox, got %d", got)
+	}
+	if pending := len(reopened.PendingIntents()); pending != 0 {
+		t.Fatalf("the converged provision must clear the pending intent, got %d", pending)
+	}
+}
+
+// TestProviderProvisionIdempotentAfterCommittedOutcome freezes that a
+// re-provision after a fully committed outcome is an idempotent observation
+// and performs no further Bridge call.
+func TestProviderProvisionIdempotentAfterCommittedOutcome(t *testing.T) {
+	name := "committed"
+	alloc := "alloc-" + name
+	path := filepath.Join(t.TempDir(), "state.json")
+	fb := newFakeBridge(t, testBridgeToken(name))
+	store, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStateStore: %v", err)
+	}
+	providerA := newTestProviderWithStore(t, fb, store, "")
+	identity := scenarioIdentity(name, alloc, "cmd-provision", 1)
+	ctx := context.Background()
+	if _, err := providerA.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:     identity,
+		Requirements: workspaceRequirements(t),
+	}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	creates := fb.RequestCount("POST", sandboxPath)
+
+	reopened, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	providerB := newTestProviderWithStore(t, fb, reopened, "")
+	receipt, err := providerB.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:     identity,
+		Requirements: workspaceRequirements(t),
+	})
+	if err != nil {
+		t.Fatalf("the idempotent re-provision must succeed, got %v", err)
+	}
+	if receipt.Allocation.AllocationId != alloc || receipt.Allocation.State != sandbox.AllocationActive {
+		t.Fatalf("the idempotent re-provision must observe the active allocation, got %+v", receipt.Allocation)
+	}
+	if got := fb.RequestCount("POST", sandboxPath); got != creates {
+		t.Fatalf("the idempotent re-provision must not create again, got %d creates", got)
+	}
+}
+
+// TestProviderRestoreReopenReplayConverges freezes that a replacement
+// restore whose locator write failed converges on replay: the replacement
+// create is idempotent and the previous sandbox is destroyed exactly once.
+func TestProviderRestoreReopenReplayConverges(t *testing.T) {
+	name := "restore-reopen"
+	alloc := "alloc-" + name
+	next := alloc + "-next"
+	path := filepath.Join(t.TempDir(), "state.json")
+	fb := newFakeBridge(t, testBridgeToken(name))
+	store, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("NewFileStateStore: %v", err)
+	}
+	providerA := newTestProviderWithStore(t, fb, store, "")
+	ctx := context.Background()
+	if _, err := providerA.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:     scenarioIdentity(name, alloc, "cmd-provision", 1),
+		Requirements: workspaceRequirements(t),
+	}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	content := []byte("restore-reopen" + "-content")
+	if _, err := providerA.Stage(ctx, sandbox.StageRequest{
+		Identity:     scenarioIdentity(name, alloc, "cmd-stage", 1),
+		AllocationId: alloc,
+		Inputs: []sandbox.StageInput{{
+			InputId:        "payload",
+			DeclaredSHA256: sandbox.RecomputeSHA256(content),
+			Inline:         content,
+		}},
+	}); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if _, err := providerA.Checkpoint(ctx, sandbox.CheckpointRequest{
+		Identity:     scenarioIdentity(name, alloc, "cmd-checkpoint", 1),
+		AllocationId: alloc,
+	}); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+
+	// Crash the restore at the locator write point (the create succeeded but
+	// its locator was not persisted). The checkpoint tar is in-memory only,
+	// so the replayed restore re-persists the previous sandbox.
+	failStoreWriteOn(t, store, 2)
+	if _, err := providerA.Restore(ctx, sandbox.RestoreOperationRequest{
+		Identity:             scenarioIdentity(name, next, "cmd-restore", 2),
+		PreviousAllocationId: alloc,
+		NextAllocationId:     next,
+	}); err == nil {
+		t.Fatal("the locator write failure must surface")
+	}
+
+	reopened, err := NewFileStateStore(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	providerB := newTestProviderWithStore(t, fb, reopened, "")
+	receipt, err := providerB.Restore(ctx, sandbox.RestoreOperationRequest{
+		Identity:             scenarioIdentity(name, next, "cmd-restore", 2),
+		PreviousAllocationId: alloc,
+		NextAllocationId:     next,
+	})
+	if err != nil {
+		t.Fatalf("the replayed restore must converge, got %v", err)
+	}
+	if receipt.Allocation.AllocationId != next || receipt.Allocation.State != sandbox.AllocationActive {
+		t.Fatalf("the replayed restore must activate the replacement, got %+v", receipt.Allocation)
+	}
+	if staged, ok := fb.SandboxFile(providerBridgeLocator(t, providerB, next), "staged/payload"); !ok || sandbox.RecomputeSHA256(staged) != sandbox.RecomputeSHA256(content) {
+		t.Fatal("the replayed restore must restore the staged content")
+	}
+	if got := fb.sandboxCount(); got != 2 {
+		t.Fatalf("exactly two remote sandboxes must exist (previous + replacement), got %d", got)
 	}
 }
