@@ -22,7 +22,8 @@ func TestMergeReobservesBaseImmediatelyBeforeMutation(t *testing.T) {
 	drifted := initial
 	drifted.Draft = false
 	drifted.BaseOid = fabricatedSHA("9")
-	harness.targetObserver.seq = []domain.SCMMergeTarget{initial, drifted}
+	// admission, mutation-adjacent ready fence, mutation-adjacent merge fence
+	harness.targetObserver.seq = []domain.SCMMergeTarget{initial, initial, drifted}
 
 	if _, err := harness.merge(t); err == nil || !port.IsPermanent(err) {
 		t.Fatalf("Merge() immediate-base-drift error = %v, want permanent", err)
@@ -31,6 +32,23 @@ func TestMergeReobservesBaseImmediatelyBeforeMutation(t *testing.T) {
 	defer harness.merger.mu.Unlock()
 	if harness.merger.readyCalls != 1 || harness.merger.mergeCalls != 0 {
 		t.Fatalf("drifted immediate cut mutations: ready=%d merge=%d", harness.merger.readyCalls, harness.merger.mergeCalls)
+	}
+}
+
+func TestMergeReadyReobservesTargetImmediatelyBeforeMutation(t *testing.T) {
+	fixture := newMergeFixture(t)
+	harness := newMergeHarness(t, fixture)
+	initial := mergeTargetFor(fixture)
+	drifted := initial
+	drifted.MarkerPresent = false
+	harness.targetObserver.seq = []domain.SCMMergeTarget{initial, drifted}
+	if _, err := harness.merge(t); err == nil || !port.IsPermanent(err) {
+		t.Fatalf("error=%v, want permanent", err)
+	}
+	harness.merger.mu.Lock()
+	defer harness.merger.mu.Unlock()
+	if harness.merger.readyCalls != 0 || harness.merger.mergeCalls != 0 {
+		t.Fatal("drift reached mutation")
 	}
 }
 
@@ -112,7 +130,7 @@ func TestMergeRecoveryRejectsTamperedDurableAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(fixture.runDirectory, "merge-authorizations", strings.TrimPrefix(record.RecordDigest, "sha256:")+".json")
+	path := filepath.Join(fixture.runDirectory, "merge-authorizations", strings.TrimPrefix(intent.IntentDigest, "sha256:"), strings.TrimPrefix(record.RecordDigest, "sha256:")+".json")
 	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +145,32 @@ func TestMergeRecoveryRejectsTamperedDurableAuthorization(t *testing.T) {
 	defer harness.merger.mu.Unlock()
 	if harness.merger.readyCalls != before {
 		t.Fatal("tampered durable authorization reached another mutation")
+	}
+}
+
+func TestMergeRecoveryRejectsDeletedAuthorizationSuccessor(t *testing.T) {
+	fixture := newMergeFixture(t)
+	harness := newMergeHarness(t, fixture)
+	harness.merger.readyErr = errors.New("stop")
+	_, _ = harness.merge(t)
+	intent := readPersistedIntent(t, fixture)
+	record, err := loadDurableMergeAuthorization(fixture.runDirectory, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.authorization.RevokePublicationAuthorization(record.LedgerKey, authority.EdgeRevocationOrdinary, harness.now); err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := loadDurableMergeAuthorization(fixture.runDirectory, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(fixture.runDirectory, "merge-authorizations", strings.TrimPrefix(intent.IntentDigest, "sha256:"), strings.TrimPrefix(revoked.RecordDigest, "sha256:")+".json")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDurableMergeAuthorization(fixture.runDirectory, intent); err == nil {
+		t.Fatal("deleted successor was not detected")
 	}
 }
 
@@ -297,6 +341,29 @@ func TestMergeDeliveryLedgerTamperFailsClosedBeforeAnotherMutation(t *testing.T)
 	defer harness.merger.mu.Unlock()
 	if harness.merger.readyCalls != before {
 		t.Fatalf("tampered ledger reached another mutation: before=%d after=%d", before, harness.merger.readyCalls)
+	}
+}
+
+func TestMergeDeliveryTailDeletionDoesNotResetBudget(t *testing.T) {
+	fixture := newMergeFixture(t)
+	harness := newMergeHarness(t, fixture)
+	harness.merger.readyErr = errors.New("transient")
+	_, _ = harness.merge(t)
+	intent := readPersistedIntent(t, fixture)
+	dir := filepath.Join(fixture.runDirectory, "merge-delivery", strings.TrimPrefix(intent.IntentDigest, "sha256:"), mergeDeliveryReady)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "002-") {
+			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := persistMergeDeliveryAttempt(fixture.runDirectory, intent.IntentDigest, mergeDeliveryReady, harness.now); err == nil {
+		t.Fatal("tail deletion reset delivery budget")
 	}
 }
 

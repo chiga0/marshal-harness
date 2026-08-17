@@ -21,6 +21,23 @@ type durableMergeAuthorization struct {
 	RecordDigest    string                               `json:"recordDigest"`
 }
 
+type durableMergeAuthorizationHead struct {
+	IntentDigest         string `json:"intentDigest"`
+	RecordDigest         string `json:"recordDigest"`
+	RevocationGeneration uint64 `json:"revocationGeneration"`
+	HeadDigest           string `json:"headDigest"`
+}
+
+func (head durableMergeAuthorizationHead) digest() (string, error) {
+	detached := head
+	detached.HeadDigest = ""
+	data, err := json.Marshal(detached)
+	if err != nil {
+		return "", err
+	}
+	return canonical.DigestJSON(data)
+}
+
 type mergeAuthorizationSink struct {
 	runDir string
 	intent domain.SCMMergeIntent
@@ -105,22 +122,38 @@ func persistDurableMergeAuthorization(runDir string, record durableMergeAuthoriz
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(runDir, "merge-authorizations", strings.TrimPrefix(digest, "sha256:")+".json")
+	intentDigest := record.DecisionBinding.SideEffectIntentDigest
+	directory := filepath.Join(runDir, "merge-authorizations", strings.TrimPrefix(intentDigest, "sha256:"))
+	path := filepath.Join(directory, strings.TrimPrefix(digest, "sha256:")+".json")
 	if existing, readErr := os.ReadFile(path); readErr == nil {
 		existingDigest, digestErr := canonical.DigestJSON(existing)
 		incomingDigest, incomingErr := canonical.DigestJSON(data)
 		if digestErr != nil || incomingErr != nil || existingDigest != incomingDigest {
 			return errors.New("durable merge authorization conflicts with immutable bytes")
 		}
-		return nil
+		// Continue to the head write: a previous crash may have persisted the
+		// record but not advanced its independently stored monotonic anchor.
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return readErr
+	} else {
+		if err := putFileNoReplace(path, append(data, '\n')); err != nil {
+			return err
+		}
 	}
-	return putFileNoReplace(path, append(data, '\n'))
+	head := durableMergeAuthorizationHead{IntentDigest: intentDigest, RecordDigest: digest, RevocationGeneration: record.Authorization.RevocationGeneration}
+	head.HeadDigest, err = head.digest()
+	if err != nil {
+		return err
+	}
+	headData, err := json.Marshal(head)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(runDir, "merge-authorization-heads", strings.TrimPrefix(intentDigest, "sha256:")+".json"), append(headData, '\n'))
 }
 
 func loadDurableMergeAuthorization(runDir string, intent domain.SCMMergeIntent) (durableMergeAuthorization, error) {
-	directory := filepath.Join(runDir, "merge-authorizations")
+	directory := filepath.Join(runDir, "merge-authorizations", strings.TrimPrefix(intent.IntentDigest, "sha256:"))
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		return durableMergeAuthorization{}, err
@@ -154,6 +187,18 @@ func loadDurableMergeAuthorization(runDir string, intent domain.SCMMergeIntent) 
 	}
 	if !found {
 		return durableMergeAuthorization{}, errors.New("merge intent lacks its durable PublicationAuthorization")
+	}
+	headData, err := os.ReadFile(filepath.Join(runDir, "merge-authorization-heads", strings.TrimPrefix(intent.IntentDigest, "sha256:")+".json"))
+	if err != nil {
+		return durableMergeAuthorization{}, errors.New("durable merge authorization lacks its monotonic head")
+	}
+	var head durableMergeAuthorizationHead
+	if err := json.Unmarshal(headData, &head); err != nil {
+		return durableMergeAuthorization{}, err
+	}
+	recomputedHead, err := head.digest()
+	if err != nil || recomputedHead != head.HeadDigest || head.IntentDigest != intent.IntentDigest || head.RecordDigest != selected.RecordDigest || head.RevocationGeneration != selected.Authorization.RevocationGeneration {
+		return durableMergeAuthorization{}, errors.New("durable merge authorization head is missing, rolled back or divergent")
 	}
 	return selected, nil
 }

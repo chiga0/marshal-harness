@@ -5,6 +5,10 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "taskId", "runId", "terminalState", "verdict", "finalReviewRound", "finalReviewDigest", "finalEvidenceDigest", "summary", "findingCount", "retentionPolicy", "generatedAt"],
+  "dependentRequired": {
+    "intentDigest": ["receiptDigest"],
+    "receiptDigest": ["intentDigest"]
+  },
   "properties": {
     "apiVersion": { "const": "marshal.dev/v1alpha1" },
     "kind": { "const": "Outcome" },

@@ -71,6 +71,13 @@ func TestNewMergerResolvesAndValidatesPaths(t *testing.T) {
 	if !merger.BindsExpectedHead() {
 		t.Fatal("GitHub SCMMerger must report that it mechanically binds the expected head")
 	}
+	if err := os.WriteFile(ghPath, []byte("#!/bin/sh\nexit 99\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := os.ReadFile(merger.ghPath)
+	if err != nil || string(snapshot) != "#!/bin/sh\nexit 0\n" {
+		t.Fatalf("merger executable was not bound to an immutable snapshot: %q, %v", snapshot, err)
+	}
 
 	t.Run("nil validator rejected", func(t *testing.T) {
 		if _, err := NewMerger(ghPath, configDir, repoRoot, nil); err == nil {
@@ -101,6 +108,16 @@ func TestNewMergerResolvesAndValidatesPaths(t *testing.T) {
 			t.Fatal("NewMerger accepted a missing repository")
 		}
 	})
+}
+
+func TestCappedOutputRejectsBeforeUnboundedAllocation(t *testing.T) {
+	w := &cappedOutput{limit: 4}
+	if _, err := w.Write([]byte("1234")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("5")); err == nil {
+		t.Fatal("capped output accepted bytes past its limit")
+	}
 }
 
 func TestMergeMethodFlagClosedEnumeration(t *testing.T) {

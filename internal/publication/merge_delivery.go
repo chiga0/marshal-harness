@@ -39,6 +39,42 @@ type mergeDeliveryResult struct {
 	ResultDigest  string    `json:"resultDigest"`
 }
 
+type mergeDeliveryHead struct {
+	IntentDigest  string `json:"intentDigest"`
+	Operation     string `json:"operation"`
+	Sequence      int    `json:"sequence"`
+	AttemptDigest string `json:"attemptDigest"`
+	ResultDigest  string `json:"resultDigest,omitempty"`
+	HeadDigest    string `json:"headDigest"`
+}
+
+func (head mergeDeliveryHead) digest() (string, error) {
+	detached := head
+	detached.HeadDigest = ""
+	data, err := json.Marshal(detached)
+	if err != nil {
+		return "", err
+	}
+	return canonical.DigestJSON(data)
+}
+
+func mergeDeliveryHeadPath(runDir, intentDigest, operation string) string {
+	return filepath.Join(runDir, "merge-delivery-heads", strings.TrimPrefix(intentDigest, "sha256:"), operation+".json")
+}
+
+func persistMergeDeliveryHead(runDir string, head mergeDeliveryHead) error {
+	var err error
+	head.HeadDigest, err = head.digest()
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(head)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(mergeDeliveryHeadPath(runDir, head.IntentDigest, head.Operation), append(data, '\n'))
+}
+
 const (
 	mergeOutcomeSucceeded  = "succeeded"
 	mergeOutcomeTransient  = "transient-failure"
@@ -51,7 +87,7 @@ const (
 	mergeFailureExhausted  = "retry-exhausted"
 )
 
-func authorizedMutation(ctx context.Context, input MergeInput, authorization authority.PublicationAuthorization, intent domain.SCMMergeIntent, runDir, operation string, mutate func() error) error {
+func authorizedMutation(ctx context.Context, input MergeInput, authorization authority.PublicationAuthorization, intent domain.SCMMergeIntent, runDir, operation string, preflight func(context.Context) error, mutate func() error) error {
 	sequence, err := persistMergeDeliveryAttempt(runDir, intent.IntentDigest, operation, time.Now().UTC())
 	if err != nil {
 		return err
@@ -62,6 +98,13 @@ func authorizedMutation(ctx context.Context, input MergeInput, authorization aut
 			return errors.Join(wrapped, persistErr)
 		}
 		return wrapped
+	}
+	if preflight == nil {
+		return port.Permanent(errors.New("merge mutation requires an immediate target fence"))
+	}
+	if err := preflight(ctx); err != nil {
+		_ = persistMergeDeliveryResult(runDir, intent.IntentDigest, operation, sequence, mergeOutcomePermanent, mergeFailureTarget, time.Now().UTC())
+		return err
 	}
 	err = mutate()
 	if err == nil {
@@ -125,6 +168,9 @@ func persistMergeDeliveryAttempt(runDir, intentDigest, operation string, now tim
 	if err := putFileNoReplace(path, append(data, '\n')); err != nil {
 		return 0, err
 	}
+	if err := persistMergeDeliveryHead(runDir, mergeDeliveryHead{IntentDigest: intentDigest, Operation: operation, Sequence: sequence, AttemptDigest: attempt.AttemptDigest}); err != nil {
+		return 0, err
+	}
 	return sequence, nil
 }
 
@@ -163,7 +209,10 @@ func persistMergeDeliveryResult(runDir, intentDigest, operation string, sequence
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return putFileNoReplace(path, append(data, '\n'))
+	if err := putFileNoReplace(path, append(data, '\n')); err != nil {
+		return err
+	}
+	return persistMergeDeliveryHead(runDir, mergeDeliveryHead{IntentDigest: intentDigest, Operation: operation, Sequence: sequence, AttemptDigest: attempt.AttemptDigest, ResultDigest: result.ResultDigest})
 }
 
 func validateMergeDeliveryLedger(directory, intentDigest, operation string) (int, error) {
@@ -229,6 +278,38 @@ func validateMergeDeliveryLedger(directory, intentDigest, operation string) (int
 		}
 		if !recognized {
 			return 0, port.Permanent(errors.New("merge delivery ledger contains a record outside the contiguous sequence"))
+		}
+	}
+	if count > 0 {
+		headData, readErr := os.ReadFile(mergeDeliveryHeadPath(filepath.Dir(filepath.Dir(filepath.Dir(directory))), intentDigest, operation))
+		if readErr != nil {
+			return 0, port.Permanent(errors.New("merge delivery ledger lacks its monotonic head"))
+		}
+		var head mergeDeliveryHead
+		if err := json.Unmarshal(headData, &head); err != nil {
+			return 0, port.Permanent(err)
+		}
+		recomputed, err := head.digest()
+		if err != nil || recomputed != head.HeadDigest || head.IntentDigest != intentDigest || head.Operation != operation || head.Sequence != count {
+			return 0, port.Permanent(errors.New("merge delivery head is missing, rolled back or divergent"))
+		}
+		lastAttemptData, err := os.ReadFile(filepath.Join(directory, fmt.Sprintf("%03d-attempt.json", count)))
+		if err != nil {
+			return 0, port.Permanent(err)
+		}
+		var lastAttempt mergeDeliveryAttempt
+		if err := json.Unmarshal(lastAttemptData, &lastAttempt); err != nil || lastAttempt.AttemptDigest != head.AttemptDigest {
+			return 0, port.Permanent(errors.New("merge delivery head does not bind the latest attempt"))
+		}
+		resultPath := filepath.Join(directory, fmt.Sprintf("%03d-result.json", count))
+		resultData, resultErr := os.ReadFile(resultPath)
+		if resultErr == nil {
+			var result mergeDeliveryResult
+			if err := json.Unmarshal(resultData, &result); err != nil || result.ResultDigest != head.ResultDigest {
+				return 0, port.Permanent(errors.New("merge delivery head does not bind the latest result"))
+			}
+		} else if !errors.Is(resultErr, os.ErrNotExist) || head.ResultDigest != "" {
+			return 0, port.Permanent(errors.New("merge delivery latest result was deleted or diverged"))
 		}
 	}
 	return count, nil

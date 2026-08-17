@@ -5,6 +5,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -30,6 +32,29 @@ type Merger struct {
 	ghPath, configDir, repositoryRoot string
 	validator                         *contract.Validator
 }
+
+const maxGHOutputBytes = 4 << 20
+
+type cappedOutput struct {
+	mu sync.Mutex
+	bytes.Buffer
+	limit int
+}
+
+func (w *cappedOutput) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.Buffer.Len()+len(p) > w.limit {
+		return 0, errors.New("GitHub CLI output exceeds limit")
+	}
+	return w.Buffer.Write(p)
+}
+func (w *cappedOutput) data() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.Buffer.Bytes()...)
+}
+func (w *cappedOutput) text() string { return string(w.data()) }
 
 // NewMerger returns the concrete SCMMerger. It resolves the gh binary, gh
 // config dir and repository to their real absolute paths exactly like
@@ -65,7 +90,49 @@ func NewMerger(ghPath, configDir, repositoryRoot string, validator *contract.Val
 	if info, statErr := os.Stat(realRepository); statErr != nil || !info.IsDir() {
 		return nil, errors.New("repository must be an existing directory")
 	}
-	return &Merger{ghPath: realGH, configDir: realConfig, repositoryRoot: realRepository, validator: validator}, nil
+	snapshot, err := snapshotExecutable(realRepository, realGH)
+	if err != nil {
+		return nil, err
+	}
+	return &Merger{ghPath: snapshot, configDir: realConfig, repositoryRoot: realRepository, validator: validator}, nil
+}
+
+func snapshotExecutable(repositoryRoot, source string) (string, error) {
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return "", err
+	}
+	if len(data) == 0 || len(data) > 256<<20 {
+		return "", errors.New("GitHub CLI executable snapshot size is invalid")
+	}
+	digest := strings.TrimPrefix(canonical.DigestBytes(data), "sha256:")
+	directory := filepath.Join(repositoryRoot, ".marshal", "exec-snapshots")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(directory, "gh-"+digest)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
+	if errors.Is(err, os.ErrExist) {
+		existing, readErr := os.ReadFile(path)
+		if readErr != nil || canonical.DigestBytes(existing) != canonical.DigestBytes(data) {
+			return "", errors.New("GitHub CLI executable snapshot conflicts")
+		}
+		return path, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if _, err = file.Write(data); err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
 }
 
 // BindsExpectedHead reports that the GitHub merge API mechanically binds the
@@ -247,11 +314,13 @@ func (m *Merger) gh(ctx context.Context, args ...string) ([]byte, error) {
 	command := exec.CommandContext(commandCtx, m.ghPath, args...)
 	command.Dir = m.repositoryRoot
 	command.Env = append(baseEnvironment(), "GH_CONFIG_DIR="+m.configDir, "GH_PROMPT_DISABLED=1", "NO_COLOR=1")
-	output, err := command.CombinedOutput()
+	output := &cappedOutput{limit: maxGHOutputBytes}
+	command.Stdout, command.Stderr = output, output
+	err := command.Run()
 	if err != nil {
-		return nil, &ghCommandError{operation: args[0], cause: err, output: string(output)}
+		return nil, &ghCommandError{operation: args[0], cause: err, output: output.text()}
 	}
-	return output, nil
+	return output.data(), nil
 }
 
 // ghCommandError retains provider output only for local typed classification.
@@ -299,9 +368,6 @@ func (m *Merger) ghJSON(ctx context.Context, target any, args ...string) error {
 	output, err := m.gh(ctx, args...)
 	if err != nil {
 		return err
-	}
-	if len(output) > 4<<20 {
-		return errors.New("GitHub CLI output exceeds limit")
 	}
 	return json.Unmarshal(output, target)
 }

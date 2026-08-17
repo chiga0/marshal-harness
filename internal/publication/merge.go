@@ -268,14 +268,6 @@ func Merge(ctx context.Context, input MergeInput) (MergeResult, error) {
 		return MergeResult{State: result.State}, blockedErr
 	}
 
-	// §3 intent-first: persist the immutable intent before any side effect.
-	if !found {
-		intent, _, err = persistMergeIntent(runDir, input.Validator, intent)
-		if err != nil {
-			return MergeResult{}, err
-		}
-	}
-
 	// ADR 0018/0032: controlled merge consumes a Core-issued
 	// PublicationAuthorization. Issuance binds the exact intent/review/evidence
 	// chain, expected GitHub principal and Publication security domain; every
@@ -284,6 +276,16 @@ func Merge(ctx context.Context, input MergeInput) (MergeResult, error) {
 	if err != nil {
 		result, blockedErr := block(store, lease, state, runDir, port.Permanent(err))
 		return MergeResult{State: result.State}, blockedErr
+	}
+	// Persisting the deterministic authorization first closes the crash cut
+	// between intent persistence and authorization issuance. A crash here
+	// leaves an idempotently replayable authorization but no remote effect;
+	// intent-first still holds because both records precede every mutation.
+	if !found {
+		intent, _, err = persistMergeIntent(runDir, input.Validator, intent)
+		if err != nil {
+			return MergeResult{}, err
+		}
 	}
 
 	receipt, err := executeMergeSideEffects(ctx, input, admission, intent, target, authorization, runDir)
@@ -641,7 +643,7 @@ func executeMergeSideEffects(ctx context.Context, input MergeInput, admission me
 	case domain.MergeReadyDrifted:
 		return domain.SCMMergeReceipt{}, port.Permanent(errors.New("merge target drifted during admission"))
 	case domain.MergeReadyStillDraft:
-		if err := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryReady, func() error {
+		if err := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryReady, targetFence(input, admission, intent, domain.MergeReadyStillDraft), func() error {
 			return input.Merger.ReadyForReview(ctx, intent)
 		}); err != nil {
 			if port.IsPermanent(err) {
@@ -668,7 +670,7 @@ func recoverReady(ctx context.Context, input MergeInput, admission mergeAdmissio
 	switch classifyMergeTarget(target, intent, admission.publication.BaseBranch) {
 	case domain.MergeReadyStillDraft:
 		// ready did not take effect: idempotent retry with the same intent.
-		if err := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryReady, func() error {
+		if err := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryReady, targetFence(input, admission, intent, domain.MergeReadyStillDraft), func() error {
 			return input.Merger.ReadyForReview(ctx, intent)
 		}); err != nil {
 			return domain.SCMMergeReceipt{}, err
@@ -706,7 +708,7 @@ func mergeAndObserve(ctx context.Context, input MergeInput, admission mergeAdmis
 	default:
 		return domain.SCMMergeReceipt{}, port.Permanent(errors.New("merge target drifted immediately before merge mutation"))
 	}
-	if err := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryMerge, func() error {
+	if err := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryMerge, targetFence(input, admission, intent, domain.MergeReadyReady), func() error {
 		return input.Merger.Merge(ctx, intent)
 	}); err != nil {
 		if port.IsPermanent(err) {
@@ -727,13 +729,13 @@ func mergeAndObserve(ctx context.Context, input MergeInput, admission mergeAdmis
 		case domain.MergeReadyMerged:
 			return tryObserveMergeReceipt(ctx, input, admission, intent)
 		case domain.MergeReadyReady:
-			if retryErr := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryMerge, func() error {
+			if retryErr := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryMerge, targetFence(input, admission, intent, domain.MergeReadyReady), func() error {
 				return input.Merger.Merge(ctx, intent)
 			}); retryErr != nil {
 				return domain.SCMMergeReceipt{}, retryErr
 			}
 		case domain.MergeReadyStillDraft:
-			if retryErr := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryReady, func() error {
+			if retryErr := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryReady, targetFence(input, admission, intent, domain.MergeReadyStillDraft), func() error {
 				return input.Merger.ReadyForReview(ctx, intent)
 			}); retryErr != nil {
 				return domain.SCMMergeReceipt{}, retryErr
@@ -746,6 +748,19 @@ func mergeAndObserve(ctx context.Context, input MergeInput, admission mergeAdmis
 		}
 	}
 	return observeMergeReceiptForIntent(ctx, input, admission, intent)
+}
+
+func targetFence(input MergeInput, admission mergeAdmission, intent domain.SCMMergeIntent, expected domain.MergeReadyState) func(context.Context) error {
+	return func(ctx context.Context) error {
+		target, err := input.TargetObserver.ObserveTarget(ctx, intent)
+		if err != nil {
+			return err
+		}
+		if actual := classifyMergeTarget(target, intent, admission.publication.BaseBranch); actual != expected {
+			return port.Permanent(fmt.Errorf("merge target changed immediately before mutation: got %s want %s", actual, expected))
+		}
+		return nil
+	}
 }
 
 func tryObserveMergeReceipt(ctx context.Context, input MergeInput, admission mergeAdmission, intent domain.SCMMergeIntent) (domain.SCMMergeReceipt, error) {
