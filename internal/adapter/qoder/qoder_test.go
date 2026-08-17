@@ -465,12 +465,108 @@ func TestAuthorityGenerationFenceIsAtomicPrivateAndCrashRecoverable(t *testing.T
 	if err := consumeAuthorityGeneration(modeRoot, 2, digest("b")); err == nil {
 		t.Fatal("world-readable durable fence was accepted")
 	}
+	privateWrongModeRoot := realPrivateTempDir(t)
+	if err := consumeAuthorityGeneration(privateWrongModeRoot, 1, configDigest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(privateWrongModeRoot, authorityGenerationFenceName), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(privateWrongModeRoot, 2, digest("b")); err == nil {
+		t.Fatal("private but non-0600 durable fence was accepted")
+	}
+	recordHardlinkRoot := realPrivateTempDir(t)
+	if err := consumeAuthorityGeneration(recordHardlinkRoot, 1, configDigest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(recordHardlinkRoot, authorityGenerationFenceName), filepath.Join(recordHardlinkRoot, "generation-hardlink")); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(recordHardlinkRoot, 2, digest("b")); err == nil {
+		t.Fatal("hard-linked durable fence was accepted")
+	}
 	lockRoot := realPrivateTempDir(t)
 	if err := os.Symlink(target, filepath.Join(lockRoot, authorityGenerationLockName)); err != nil {
 		t.Fatal(err)
 	}
 	if err := consumeAuthorityGeneration(lockRoot, 1, configDigest); err == nil {
 		t.Fatal("symlinked durable fence lock was accepted")
+	}
+	lockModeRoot := realPrivateTempDir(t)
+	if err := os.WriteFile(filepath.Join(lockModeRoot, authorityGenerationLockName), nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(lockModeRoot, 1, configDigest); err == nil {
+		t.Fatal("private but non-0600 durable fence lock was accepted")
+	}
+	lockFIFORoot := realPrivateTempDir(t)
+	if err := unix.Mkfifo(filepath.Join(lockFIFORoot, authorityGenerationLockName), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(lockFIFORoot, 1, configDigest); err == nil {
+		t.Fatal("FIFO durable fence lock was accepted")
+	}
+	lockHardlinkRoot := realPrivateTempDir(t)
+	lockTarget := filepath.Join(lockHardlinkRoot, "lock-target")
+	if err := os.WriteFile(lockTarget, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(lockTarget, filepath.Join(lockHardlinkRoot, authorityGenerationLockName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(lockHardlinkRoot, 1, configDigest); err == nil {
+		t.Fatal("hard-linked durable fence lock was accepted")
+	}
+}
+
+func TestAuthorityGenerationFenceRejectsAuthorityRootOverlapAndAliases(t *testing.T) {
+	configDigest := digest("a")
+	rejects := func(fenceRoot string, evidenceRoot string) bool {
+		t.Helper()
+		evidenceDirectory, err := openPrivateAuthorityDirectory(evidenceRoot, "test evidence root is invalid")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer evidenceDirectory.Close()
+		return consumeAuthorityGenerationSeparated(fenceRoot, evidenceDirectory, 1, configDigest) != nil
+	}
+	sameRoot := realPrivateTempDir(t)
+	if !rejects(sameRoot, sameRoot) {
+		t.Fatal("same fence and evidence directory was accepted")
+	}
+
+	authorityParent := realPrivateTempDir(t)
+	fenceChild := filepath.Join(authorityParent, "consumer-state")
+	if err := os.Mkdir(fenceChild, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !rejects(fenceChild, authorityParent) {
+		t.Fatal("fence nested under authority root was accepted")
+	}
+
+	fenceParent := realPrivateTempDir(t)
+	authorityChild := filepath.Join(fenceParent, "authority-evidence")
+	if err := os.Mkdir(authorityChild, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if !rejects(fenceParent, authorityChild) {
+		t.Fatal("authority root nested under fence was accepted")
+	}
+
+	aliasTarget := realPrivateTempDir(t)
+	alias := filepath.Join(realPrivateTempDir(t), "authority-alias")
+	if err := os.Symlink(aliasTarget, alias); err != nil {
+		t.Fatal(err)
+	}
+	if !rejects(alias, aliasTarget) {
+		t.Fatal("symlink path alias between fence and authority roots was accepted")
+	}
+	uncleanAlias := filepath.Join(aliasTarget, ".")
+	if uncleanAlias == filepath.Clean(uncleanAlias) {
+		uncleanAlias = aliasTarget + string(filepath.Separator) + "."
+	}
+	if !rejects(uncleanAlias, realPrivateTempDir(t)) {
+		t.Fatal("unclean path alias for fence root was accepted")
 	}
 }
 
@@ -1035,7 +1131,7 @@ func TestCandidateAuthorityRejectsSamePlatformDifferentHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := AuthorityConfig{EvidenceDigest: evidenceDigest, ProbeArtifactDigest: evidence.ProbeArtifactDigest, AuthorityGeneration: evidence.AuthorityGeneration}
-	if err := adapter.bindVerifiedConformance(identity, evidence, config); !errors.Is(err, ErrIdentityDrift) {
+	if err := adapter.bindVerifiedConformance(identity, evidence, config, nil); !errors.Is(err, ErrIdentityDrift) {
 		t.Fatalf("same-platform evidence from another host was accepted: %v", err)
 	}
 }
@@ -1142,7 +1238,7 @@ func TestConformanceExpiryRevokesProbeAndRunAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := AuthorityConfig{EvidenceDigest: evidenceDigest, ProbeArtifactDigest: evidence.ProbeArtifactDigest, AuthorityGeneration: evidence.AuthorityGeneration}
-	if err := fixture.adapter.bindVerifiedConformance(identity, evidence, config); err != nil {
+	if err := fixture.adapter.bindVerifiedConformance(identity, evidence, config, nil); err != nil {
 		t.Fatal(err)
 	}
 	current = boundAt.Add(2 * time.Minute)

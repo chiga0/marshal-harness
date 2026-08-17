@@ -27,13 +27,13 @@ Qoder CLI Worker Adapter 已能以版本、realpath 和 executable digest 固定
 - evidence 的最大 validity window 与最大 observation age 均为 24 小时；更长窗口、未来时间、过期或陈旧记录 fail closed。
 - authority config 精确绑定一个 current evidence digest、probe artifact digest、challenge digest 与递增 authority generation，并可列出 revoked evidence digests。相同 key 的新 generation 不改写旧 evidence。
 - consumer 必须在独立于只读 authority root 的 consumer-owned 私有目录中耐久维护 generation high-water；安全解析配置并验证 trust root/authority root 边界后的新 generation，必须在解析 current evidence leaf 前先单调消费，即使其 evidence 已撤销、缺失或暂不可读也不得回退。记录同时绑定完整 authority config 的 canonical digest；更小 generation，或相同 generation 下替换 evidence/probe artifact/revocation/trust root 等任一 config identity，均 fail closed。
-- 耐久 fence 目录必须是绝对 clean path、逐段 `openat(O_NOFOLLOW)` 打开的当前 uid/root-owned `0700` 真实目录，并与 authority signer 的只读 evidence root 分离。consumer 以 owner-only、single-link regular lock file + OS advisory exclusive lock 串行化跨线程/跨进程消费；记录通过同目录随机 `O_CREAT|O_EXCL|O_NOFOLLOW` 临时文件、file `fsync`、`renameat`、directory `fsync` 原子提交。重启只读取已提交的封闭版本记录；损坏、超限、未知字段、异常类型/权限、锁争用都 fail closed，残留临时文件不构成 authority。
+- 耐久 fence 目录必须是绝对 clean path、逐段 `openat(O_NOFOLLOW)` 打开的当前 uid/root-owned `0700` 真实目录，并与 authority signer 的只读 evidence root 处于独立故障域。consumer 必须同时持有 fence dirfd 与后续实际解析 evidence leaf 的同一个 authority dirfd，以 device/inode identity 和双向祖先遍历拒绝同目录、路径别名、fence-under-authority 与 authority-under-fence，不能重开路径或只比较路径字符串。consumer 以精确 `0600`、owner-only、single-link regular lock file + OS advisory exclusive lock 串行化跨线程/跨进程消费；精确 `0600` 的记录通过同目录随机 `O_CREAT|O_EXCL|O_NOFOLLOW` 临时文件、file `fsync`、`renameat`、directory `fsync` 原子提交。重启只读取已提交的封闭版本记录；损坏、超限、未知字段、异常类型/权限、锁争用都 fail closed，残留临时文件不构成 authority。
 
 ### 3. 文件与路径边界
 
 `MARSHAL_QODER_CONFORMANCE_CONFIG`、authority root 与 evidence leaf 必须是绝对 clean path。consumer 从 `/` 开始逐段使用 dirfd + `openat(O_NOFOLLOW)`，不跟随任何父级或 leaf symlink；leaf 用 `O_NONBLOCK` 打开并在读取前 `fstat`，FIFO/device/socket 均不得阻塞或伪装。config/evidence 必须是当前 uid 或 root 拥有的私有 regular file，authority root 必须是当前 uid 或 root 拥有且权限 `0700` 的真实目录。JSON 拒绝未知字段并执行严格字节上限；digest 命名 leaf 只通过已打开的 authority root dirfd 解析。
 
-generation fence root 是 Marshal consumer 的本地耐久状态边界，不得由 evidence signer 写入、不得放在 evidence root 内，也不得携带 credential、private key、config path、evidence 正文或 transcript。ADR 为 Proposed 期间该 root 仅由同包 hermetic candidate 测试显式注入；未来生产启用必须由 Marshal 应用状态配置提供，不得从 authority config 自行选择可写路径。
+generation fence root 是 Marshal consumer 的本地耐久状态边界，不得由 evidence signer 写入、不得与 evidence root 相同或互相嵌套，也不得携带 credential、private key、config path、evidence 正文或 transcript。ADR 为 Proposed 期间该 root 仅由同包 hermetic candidate 测试显式注入；未来生产启用必须由 Marshal 应用 state 配置提供，不得从 authority config 自行选择、覆盖或间接别名到可写路径。
 
 ### 4. 撤销、恢复与可观察性
 
@@ -45,7 +45,7 @@ ADR 0034 为 Proposed 时，生产 `NewFromAuthorityConfig` 必须无条件返�
 
 ### 5. 验证与启用门禁
 
-负向 fixture 至少覆盖：生产硬禁用、缺失配置/evidence、未知字段、过期/未来/超长 TTL、完整 observation 缺失与逐字段替换、错误 executable realpath/digest/version、同 OS/arch 不同 host、错误 suite/artifact/challenge/profile/argv/env/tool policy/event/protocol/permission、任一 verdict 为 false、未知/轮换 key、generation rollback/同代替换、已撤销 digest、config/root/evidence symlink（含父级）、FIFO、错 owner/权限、运行中撤销后 Probe 与完整 `Run` launch 拒绝，以及 supported-Qoder Schema/doctor metadata 必填。generation fence 另须覆盖进程重启与独立进程 rollback、同代 identity 冲突、并发消费、临时文件残留、损坏/超限/未知字段记录、root/lock/record symlink/FIFO/错 owner/权限以及 commit 后重开恢复。
+负向 fixture 至少覆盖：生产硬禁用、缺失配置/evidence、未知字段、过期/未来/超长 TTL、完整 observation 缺失与逐字段替换、错误 executable realpath/digest/version、同 OS/arch 不同 host、错误 suite/artifact/challenge/profile/argv/env/tool policy/event/protocol/permission、任一 verdict 为 false、未知/轮换 key、generation rollback/同代替换、已撤销 digest、config/root/evidence symlink（含父级）、FIFO、错 owner/权限、运行中撤销后 Probe 与完整 `Run` launch 拒绝，以及 supported-Qoder Schema/doctor metadata 必填。generation fence 另须覆盖进程重启与独立进程 rollback、同代 identity 冲突、并发消费、临时文件残留、损坏/超限/未知字段记录、root/lock/record symlink/FIFO/非精确 `0600`/hardlink、同目录、双向嵌套、路径 alias 以及 commit 后重开恢复。
 
 CI 中生成的 key、fake executable 和 synthetic transcript 只能验证 canonical/signature/fail-closed 机制，必须明确标记 hermetic fixture；它不构成真实 live evidence，不改变当前部署状态。只有独立外部 probe 的真实 evidence 被运维配置并在当前 host 通过 doctor 后，该 host 的 Qoder 才可参与调度。
 

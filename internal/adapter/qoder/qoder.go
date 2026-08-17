@@ -274,7 +274,7 @@ func (a *Adapter) refreshConfiguredConformance(ctx context.Context) error {
 		return port.Permanent(ErrConformancePending)
 	}
 	defer store.Close()
-	if err := a.observeAuthorityConfig(config); err != nil {
+	if err := a.observeAuthorityConfig(config, store.directory); err != nil {
 		return err
 	}
 	if authorityConfigRevokes(config, config.EvidenceDigest) {
@@ -288,10 +288,10 @@ func (a *Adapter) refreshConfiguredConformance(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return a.bindVerifiedConformance(identity, evidence, config)
+	return a.bindVerifiedConformance(identity, evidence, config, store.directory)
 }
 
-func (a *Adapter) bindVerifiedConformance(identity executableIdentity, evidence ConformanceEvidence, config AuthorityConfig) error {
+func (a *Adapter) bindVerifiedConformance(identity executableIdentity, evidence ConformanceEvidence, config AuthorityConfig, evidenceDirectory *os.File) error {
 	if !isSupportedBinaryVersion(identity.version) {
 		return fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
 	}
@@ -306,7 +306,7 @@ func (a *Adapter) bindVerifiedConformance(identity executableIdentity, evidence 
 	if err != nil {
 		return port.Permanent(ErrConformancePending)
 	}
-	if err := a.observeAuthorityConfig(config); err != nil {
+	if err := a.observeAuthorityConfig(config, evidenceDirectory); err != nil {
 		return err
 	}
 	a.mu.Lock()
@@ -329,7 +329,7 @@ func authorityConfigRevokes(config AuthorityConfig, evidenceDigest string) bool 
 // observeAuthorityConfig consumes the generation before resolving its leaf.
 // A trusted newer config therefore cannot be rolled back merely because its
 // selected evidence is revoked, missing, or not yet readable.
-func (a *Adapter) observeAuthorityConfig(config AuthorityConfig) error {
+func (a *Adapter) observeAuthorityConfig(config AuthorityConfig, evidenceDirectory *os.File) error {
 	configDigest, err := authorityConfigIdentity(config)
 	if err != nil {
 		return port.Permanent(ErrConformancePending)
@@ -350,7 +350,7 @@ func (a *Adapter) observeAuthorityConfig(config AuthorityConfig) error {
 		if a.authorityFenceRoot == "" {
 			return port.Permanent(ErrConformancePending)
 		}
-		if err := consumeAuthorityGeneration(a.authorityFenceRoot, config.AuthorityGeneration, configDigest); err != nil {
+		if err := consumeAuthorityGenerationSeparated(a.authorityFenceRoot, evidenceDirectory, config.AuthorityGeneration, configDigest); err != nil {
 			return port.Permanent(ErrConformancePending)
 		}
 	}

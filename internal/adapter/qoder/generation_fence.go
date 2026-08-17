@@ -49,15 +49,119 @@ func consumeAuthorityGeneration(root string, generation uint64, configDigest str
 	if generation == 0 || !validSHA256Digest(configDigest) {
 		return errors.New("qoder authority generation fence input is invalid")
 	}
+	directory, err := openPrivateAuthorityDirectory(root, "qoder authority generation fence root is not a private real directory")
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return consumeAuthorityGenerationFD(int(directory.Fd()), generation, configDigest)
+}
+
+// consumeAuthorityGenerationSeparated holds both directories open while it
+// checks inode ancestry and commits the fence. The evidence signer therefore
+// cannot select the consumer's writable state directory through a path alias,
+// nor can either trust domain be nested below the other.
+func consumeAuthorityGenerationSeparated(fenceRoot string, evidenceDirectory *os.File, generation uint64, configDigest string) error {
+	if generation == 0 || !validSHA256Digest(configDigest) {
+		return errors.New("qoder authority generation fence input is invalid")
+	}
+	fence, err := openPrivateAuthorityDirectory(fenceRoot, "qoder authority generation fence root is not a private real directory")
+	if err != nil {
+		return err
+	}
+	defer fence.Close()
+	if evidenceDirectory == nil {
+		return errors.New("qoder authority evidence root directory is unavailable")
+	}
+	evidenceStat, err := directoryStat(int(evidenceDirectory.Fd()))
+	if err != nil || !privateDirectory(evidenceStat, os.Geteuid()) {
+		return errors.New("qoder authority evidence root is not a private real directory")
+	}
+	overlaps, err := authorityDirectoriesOverlap(int(fence.Fd()), int(evidenceDirectory.Fd()))
+	if err != nil {
+		return errors.New("qoder authority generation fence root separation cannot be verified")
+	}
+	if overlaps {
+		return errors.New("qoder authority generation fence root overlaps authority evidence root")
+	}
+	return consumeAuthorityGenerationFD(int(fence.Fd()), generation, configDigest)
+}
+
+func openPrivateAuthorityDirectory(root string, invalidMessage string) (*os.File, error) {
 	directory, stat, err := openNoSymlinkPath(root, true)
 	if err != nil || !privateDirectory(stat, os.Geteuid()) {
 		if directory != nil {
 			_ = directory.Close()
 		}
-		return errors.New("qoder authority generation fence root is not a private real directory")
+		return nil, errors.New(invalidMessage)
 	}
-	defer directory.Close()
-	dirFD := int(directory.Fd())
+	return directory, nil
+}
+
+func authorityDirectoriesOverlap(leftFD int, rightFD int) (bool, error) {
+	leftStat, err := directoryStat(leftFD)
+	if err != nil {
+		return false, err
+	}
+	rightStat, err := directoryStat(rightFD)
+	if err != nil {
+		return false, err
+	}
+	leftContainsRight, err := directoryIdentityInAncestors(leftStat, rightFD)
+	if err != nil || leftContainsRight {
+		return leftContainsRight, err
+	}
+	return directoryIdentityInAncestors(rightStat, leftFD)
+}
+
+func directoryIdentityInAncestors(target unix.Stat_t, descendantFD int) (bool, error) {
+	current, err := unix.Openat(descendantFD, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = unix.Close(current) }()
+	for {
+		currentStat, err := directoryStat(current)
+		if err != nil {
+			return false, err
+		}
+		if sameDirectoryIdentity(target, currentStat) {
+			return true, nil
+		}
+		parent, err := unix.Openat(current, "..", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return false, err
+		}
+		parentStat, statErr := directoryStat(parent)
+		if statErr != nil {
+			_ = unix.Close(parent)
+			return false, statErr
+		}
+		if sameDirectoryIdentity(currentStat, parentStat) {
+			_ = unix.Close(parent)
+			return false, nil
+		}
+		_ = unix.Close(current)
+		current = parent
+	}
+}
+
+func directoryStat(fd int) (unix.Stat_t, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return unix.Stat_t{}, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return unix.Stat_t{}, errors.New("authority directory identity is not a directory")
+	}
+	return stat, nil
+}
+
+func sameDirectoryIdentity(left unix.Stat_t, right unix.Stat_t) bool {
+	return left.Dev == right.Dev && left.Ino == right.Ino
+}
+
+func consumeAuthorityGenerationFD(dirFD int, generation uint64, configDigest string) error {
 
 	lockFD, err := openAuthorityGenerationLock(dirFD)
 	if err != nil {
@@ -185,5 +289,5 @@ func writeAuthorityGenerationFence(dirFD int, record authorityGenerationFenceRec
 }
 
 func privateSingleLinkRegularFile(stat unix.Stat_t, effectiveUID int) bool {
-	return privateRegularFile(stat, effectiveUID) && stat.Nlink == 1
+	return stat.Mode&unix.S_IFMT == unix.S_IFREG && stat.Mode&0o7777 == 0o600 && stat.Nlink == 1 && (int(stat.Uid) == effectiveUID || stat.Uid == 0)
 }
