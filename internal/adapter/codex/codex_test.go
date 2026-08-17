@@ -412,7 +412,7 @@ func assertEvidenceFiles(t *testing.T, fixture runFixture) {
 	if err := json.Unmarshal(metadata, &meta); err != nil {
 		t.Fatal(err)
 	}
-	if meta["threadId"] != "thread-1" || meta["eventCount"] != float64(5) || meta["turnCount"] != float64(1) || meta["itemCount"] != float64(1) || meta["inputTokens"] != float64(11) || meta["outputTokens"] != float64(7) || meta["outputTruncated"] != false {
+	if meta["threadId"] != "thread-1" || meta["eventCount"] != float64(4) || meta["turnCount"] != float64(1) || meta["itemCount"] != float64(1) || meta["inputTokens"] != float64(11) || meta["outputTokens"] != float64(7) || meta["outputTruncated"] != false {
 		t.Fatalf("metadata = %v", meta)
 	}
 	digestValue, _ := meta["transcriptDigest"].(string)
@@ -667,10 +667,10 @@ func TestRunProtocolFailClosed(t *testing.T) {
 		{name: "unknown-event-type", lines: []string{first, `{"type":"weird.event","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
 		{name: "unknown-item-evil", lines: []string{first, `{"type":"item.evil","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
 		{name: "missing-terminal", lines: []string{first, `{"type":"item.completed","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
-		{name: "trailing-after-terminal", lines: []string{first, terminal, `{"type":"item.completed","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
-		{name: "item-started-after-terminal", lines: []string{first, terminal, `{"type":"item.started","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
+		{name: "trailing-after-terminal", lines: []string{first, turnStarted, terminal, `{"type":"item.completed","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
+		{name: "item-started-after-terminal", lines: []string{first, turnStarted, terminal, `{"type":"item.started","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
 		{name: "turn-failed", lines: []string{first, turnStarted, turnFailed}, sentinel: ErrProviderFailed},
-		{name: "failed-after-success-terminal", lines: []string{first, terminal, turnFailed}, sentinel: ErrProtocol},
+		{name: "failed-after-success-terminal", lines: []string{first, turnStarted, terminal, turnFailed}, sentinel: ErrProtocol},
 		{name: "success-after-failed-terminal", lines: []string{first, turnStarted, turnFailed, terminal}, sentinel: ErrProviderFailed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1045,16 +1045,15 @@ func validDeclaredResultJSON() string {
 	return `{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"TASK-1","runId":"run-1","attemptId":"attempt-1","adapter":{"id":"codex","executable":"claimed-by-worker","version":"worker-claim"},"session":{"id":"thread-1","resumable":true},"status":"completed","summary":"fixture completed","declaredChangedFiles":["file.txt"],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"2026-08-17T00:00:00Z","completedAt":"2026-08-17T00:00:01Z"}`
 }
 
-// successTranscriptLines 是按 0.145.0 真实 JSONL 契约冻结的成功事件序列：
-// thread.started 绑定 thread_id，单一 turn 携带 item.*，最终以
-// turn.completed 收口。
+// successTranscriptLines 是按 0.145.0 真实 JSONL smoke 冻结的成功事件
+// 序列：turn.started 不携带 turn_id，终态型 agent_message 直接发出
+// item.completed，最终以 turn.completed 收口。
 func successTranscriptLines() []string {
 	return []string{
 		`{"type":"thread.started","thread_id":"thread-1"}`,
-		`{"type":"turn.started","thread_id":"thread-1","turn_id":"turn-1"}`,
-		`{"type":"item.started","thread_id":"thread-1","item":{"type":"agent_message"}}`,
-		`{"type":"item.completed","thread_id":"thread-1","item":{"type":"agent_message"}}`,
-		`{"type":"turn.completed","thread_id":"thread-1","usage":{"input_tokens":11,"output_tokens":7}}`,
+		`{"type":"turn.started"}`,
+		`{"type":"item.completed","item":{"type":"agent_message"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":7}}`,
 	}
 }
 

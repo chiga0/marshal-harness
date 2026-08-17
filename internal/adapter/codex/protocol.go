@@ -87,7 +87,6 @@ func codexResultFailure(detail string, now time.Time) error {
 type codexEvent struct {
 	Type     string  `json:"type"`
 	ThreadID *string `json:"thread_id"`
-	TurnID   string  `json:"turn_id"`
 	Item     struct {
 		Type string `json:"type"`
 	} `json:"item"`
@@ -231,8 +230,10 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 	case "thread.started":
 		return fmt.Errorf("%w: duplicate thread.started; only one attempt/thread is allowed", ErrProtocol)
 	case "turn.started":
-		if result.phase != phaseAwaitingTurn || event.TurnID == "" {
-			return fmt.Errorf("%w: turn.started is out of order or missing turn identity", ErrProtocol)
+		// Codex 0.145.0 的真实 exec --json 事件不保证携带 turn_id；turn
+		// 身份不属于 Marshal 需要绑定的会话权威，顺序才是门禁。
+		if result.phase != phaseAwaitingTurn {
+			return fmt.Errorf("%w: turn.started is out of order", ErrProtocol)
 		}
 		result.phase = phaseInTurn
 		result.turnCount++
@@ -248,7 +249,9 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			return fmt.Errorf("%w: item.updated is out of order", ErrProtocol)
 		}
 	case "item.completed":
-		if result.phase != phaseInTurn || !result.itemActive {
+		// 0.145.0 对 agent_message 等终态型 item 可直接发 completed，
+		// 不先发 started；若此前存在 started，则 completed 同时关闭它。
+		if result.phase != phaseInTurn {
 			return fmt.Errorf("%w: item.completed is out of order", ErrProtocol)
 		}
 		result.itemActive = false
