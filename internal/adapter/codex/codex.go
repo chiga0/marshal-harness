@@ -71,7 +71,13 @@ var (
 	ErrProcessFailed            = errors.New("codex process failed")
 	ErrUnsupportedSessionPolicy = errors.New("unsupported session policy")
 	ErrUnsupportedWorkerTools   = errors.New("codex worker tools allowlist unsupported")
+	ErrPlatformUnsupported      = errors.New("codex secure launcher unsupported on this platform")
 )
+
+// unsafePathExecutionForTests is set only by this package's TestMain. It is
+// absent from every production API and lets Darwin exercise protocol fixtures
+// without weakening the production platform gate.
+var unsafePathExecutionForTests bool
 
 // versionPattern 冻结 --version 输出的唯一可接受格式：单行
 // `codex-cli <semver>`。三段均为 canonical 十进制整数，不接受前导零、
@@ -99,6 +105,9 @@ type Adapter struct {
 	testHook                 func(string)
 	launcherTestGate         string
 	launcherTestCloseFailure bool
+	// unsafePathExecutionForTest exists only for script fixtures on platforms
+	// without fd-exec. Production constructors always leave it false.
+	unsafePathExecutionForTest bool
 }
 
 var _ port.WorkerAdapter = (*Adapter)(nil)
@@ -129,7 +138,7 @@ func NewWithConformanceAuthority(executable string, validator *contract.Validato
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("codex executable must be an executable regular file")
 	}
-	return &Adapter{executable: realPath, validator: validator, now: time.Now, authority: authority}, nil
+	return &Adapter{executable: realPath, validator: validator, now: time.Now, authority: authority, unsafePathExecutionForTest: unsafePathExecutionForTests}, nil
 }
 
 func (a *Adapter) ID() string { return adapterID }
@@ -140,6 +149,9 @@ func (a *Adapter) ID() string { return adapterID }
 // 返回 typed/stable error。能力声明保持 truthful：nativeBudgets 不虚报
 // Codex 原生保障，普通宿主子进程不是恶意代码 sandbox。
 func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
+	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest {
+		return a.unsupportedPlatformProbe()
+	}
 	snapshot, err := a.inspect(ctx)
 	if err != nil {
 		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, errors.Join(ErrIdentityInvalid, err), "executable identity probe failed", a.now())
@@ -164,6 +176,29 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"binaryVersion": identity.version, "probeStatus": status,
 		"capabilities": expectedCapabilities(),
 		"probeErrors":  probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
+	}
+	data, err := json.Marshal(capability)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	if err := a.validator.Validate(domain.KindCapabilitySnapshot, data); err != nil {
+		return domain.Record{}, fmt.Errorf("validate CapabilitySnapshot: %w", err)
+	}
+	return domain.Record{Kind: domain.KindCapabilitySnapshot, Data: data}, nil
+}
+
+func (a *Adapter) unsupportedPlatformProbe() (domain.Record, error) {
+	digest, err := digestConfiguredExecutable(a.executable)
+	if err != nil {
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, errors.Join(ErrIdentityInvalid, err), "platform capability probe could not bind executable digest", a.now())
+	}
+	capability := map[string]any{
+		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
+		"adapterId": adapterID, "adapterVersion": adapterVersion,
+		"executable": a.executable, "executableDigest": digest,
+		"binaryVersion": "unavailable", "probeStatus": "unsupported",
+		"capabilities": expectedCapabilities(),
+		"probeErrors":  []string{secureFDPlatformReason}, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
 	data, err := json.Marshal(capability)
 	if err != nil {
@@ -205,7 +240,7 @@ type boundConformance struct {
 // inspect 每次重新钉住可执行文件身份：realpath、SHA-256 digest 与
 // 受限 probe 环境下执行 `--version` 解析出的版本，防止 Probe 后替换。
 func (a *Adapter) inspect(ctx context.Context) (*executableSnapshot, error) {
-	return snapshotExecutable(ctx, a.executable, a.callTestHook)
+	return snapshotExecutable(ctx, a.executable, a.callTestHook, a.unsafePathExecutionForTest)
 }
 
 func (a *Adapter) callTestHook(stage string) {
@@ -235,6 +270,9 @@ func (a *Adapter) isConformant(identity executableIdentity) bool {
 // BindConformance 只接受 authority store 中内容寻址、独立签名的 evidence。
 // 调用者不能通过传入自造结构或 CapabilitySnapshot 获得执行授权。
 func (a *Adapter) BindConformance(ctx context.Context, evidenceDigest string) error {
+	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest {
+		return port.Permanent(fmt.Errorf("%w: %s", ErrPlatformUnsupported, secureFDPlatformReason))
+	}
 	if a.authority == nil {
 		return port.Permanent(ErrConformancePending)
 	}
@@ -291,6 +329,10 @@ func readBinaryVersion(ctx context.Context, executable string) (string, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	command := exec.CommandContext(probeCtx, executable, "--version")
+	return readBinaryVersionCommand(ctx, probeCtx, command)
+}
+
+func readBinaryVersionCommand(ctx, probeCtx context.Context, command *exec.Cmd) (string, error) {
 	command.Env = probeEnvironment()
 	command.Stderr = io.Discard
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -307,7 +349,7 @@ func readBinaryVersion(ctx context.Context, executable string) (string, error) {
 	}
 	output, readErr := io.ReadAll(io.LimitReader(stdout, maxVersionBytes+1))
 	if len(output) > maxVersionBytes {
-		cancel()
+		terminateGroup(command)
 		_ = command.Wait()
 		return "", fmt.Errorf("%w: --version output exceeds %d bytes", ErrVersionUnrecognized, maxVersionBytes)
 	}
@@ -386,6 +428,9 @@ func decodeRequest(data []byte, validator *contract.Validator) (workerRequest, e
 func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record, error) {
 	if record.Kind != domain.KindWorkerRequest {
 		return domain.Record{}, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
+	}
+	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest {
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrPlatformUnsupported, secureFDPlatformReason, a.now())
 	}
 	request, err := decodeRequest(record.Data, a.validator)
 	if err != nil {
@@ -495,20 +540,36 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// The child performs its os-level chdir before Start returns. Codex receives
 	// no -C/PWD pathname to resolve later, so replacement after Start cannot
 	// redirect its actual workspace away from that already-open directory.
-	launcher, err := trustedCodexLauncher()
-	if err != nil {
-		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "provider launcher is unavailable", a.now())
-	}
 	closeMode := ""
 	if a.launcherTestCloseFailure {
 		closeMode = launcherCloseFailure
 	}
-	launcherArgs := []string{codexLauncherArgument, snapshot.path, a.launcherTestGate, closeMode}
+	launcher := ""
+	target := ""
+	extraFiles := []*os.File{evidence.schema, evidence.result, worktree.file}
+	if a.unsafePathExecutionForTest {
+		launcher, err = os.Executable()
+		if err != nil {
+			return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "test launcher is unavailable", a.now())
+		}
+		target = snapshot.path
+	} else {
+		launcherFD, launcherErr := secureLauncherFD()
+		if launcherErr != nil || snapshot.file == nil {
+			return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "authenticated provider launcher is unavailable", a.now())
+		}
+		// ExtraFiles are fd 3..7: schema, result, worktree, the running
+		// Marshal image, and the already-attested Codex image.
+		launcher = secureFDPath(6)
+		target = secureFDPath(7)
+		extraFiles = append(extraFiles, launcherFD, snapshot.file)
+	}
+	launcherArgs := []string{codexLauncherArgument, target, a.launcherTestGate, closeMode}
 	launcherArgs = append(launcherArgs, buildArgs(inheritedFilePath(0), inheritedFilePath(1), projection.model)...)
 	command := exec.CommandContext(processCtx, launcher, launcherArgs...)
 	command.Env = workerEnvironment()
 	command.Stdin = bytes.NewReader(prompt)
-	command.ExtraFiles = []*os.File{evidence.schema, evidence.result, worktree.file}
+	command.ExtraFiles = extraFiles
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := command.StdoutPipe()
 	if err != nil {

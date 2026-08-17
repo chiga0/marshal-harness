@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +27,59 @@ import (
 
 // supportedVersionOutput 是冻结的 --version 输出行。
 const supportedVersionOutput = "codex-cli " + "0.145.0"
+
+func TestMain(m *testing.M) {
+	unsafePathExecutionForTests = true
+	os.Exit(m.Run())
+}
+
+func TestProductionPlatformGateIsAuditableAndLeavesNoLauncherSnapshots(t *testing.T) {
+	if secureFDExecutionAvailable() {
+		t.Skip("platform provides authenticated fd execution")
+	}
+	before, err := filepath.Glob(filepath.Join(os.TempDir(), ".marshal-codex-launcher-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "version-executed")
+	executable := filepath.Join(t.TempDir(), "codex")
+	script := "#!/bin/sh\ntouch " + shellQuote(marker) + "\nprintf 'codex-cli 0.145.0\\n'\n"
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := New(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.unsafePathExecutionForTest = false
+	record, err := adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(record.Data), `"probeStatus":"unsupported"`) ||
+		!strings.Contains(string(record.Data), "fd-exec") ||
+		!strings.Contains(string(record.Data), `"binaryVersion":"unavailable"`) {
+		t.Fatalf("platform probe is not auditable: %s", record.Data)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("unsupported platform executed the configured Codex pathname")
+	}
+	if err := adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrPlatformUnsupported) {
+		t.Fatalf("BindConformance err = %v, want platform unsupported", err)
+	}
+	fixture := newRunFixture(t, supportedVersionOutput, "exit 0")
+	fixture.adapter.unsafePathExecutionForTest = false
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPlatformUnsupported) {
+		t.Fatalf("Run err = %v, want platform unsupported on %s", err, runtime.GOOS)
+	}
+	after, err := filepath.Glob(filepath.Join(os.TempDir(), ".marshal-codex-launcher-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("launcher snapshot residue changed: before=%d after=%d", len(before), len(after))
+	}
+}
 
 func TestNewRequiresExactExecutableAndValidator(t *testing.T) {
 	validator := newValidator(t)

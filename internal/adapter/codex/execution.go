@@ -36,9 +36,10 @@ const (
 )
 
 var (
-	codexLauncherPath string
-	codexLauncherDir  string
-	codexLauncherErr  error
+	// errSecureFDExecutionUnavailable is returned only by the platform layer.
+	// Callers expose its stable reason through Probe/doctor instead of silently
+	// falling back to a pathname-based exec.
+	errSecureFDExecutionUnavailable = errors.New("authenticated fd execution is unavailable")
 )
 
 // init implements the minimal controlled launcher used by Run. The already
@@ -62,84 +63,18 @@ func init() {
 			os.Exit(126)
 		}
 		executable := os.Args[2]
+		if strings.HasPrefix(executable, "/proc/self/fd/") {
+			// The authenticated launcher image is no longer needed after this
+			// point. Do not expose its descriptor to the Worker.
+			if err := unix.Close(6); err != nil {
+				os.Exit(126)
+			}
+		}
 		argv := append([]string{executable}, os.Args[5:]...)
 		if err := unix.Exec(executable, argv, os.Environ()); err != nil {
 			os.Exit(126)
 		}
 	}
-	codexLauncherPath, codexLauncherDir, codexLauncherErr = snapshotCurrentLauncher()
-}
-
-// snapshotCurrentLauncher runs during process initialization, before any
-// Adapter or Worker can act. It copies the currently executing, trusted
-// Marshal image into a private content-addressed directory. Later replacement
-// of os.Executable's pathname therefore cannot change the inherited-fd helper.
-func snapshotCurrentLauncher() (string, string, error) {
-	configured, err := os.Executable()
-	if err != nil {
-		return "", "", err
-	}
-	real, err := filepath.EvalSymlinks(configured)
-	if err != nil {
-		return "", "", err
-	}
-	fd, err := unix.Open(real, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return "", "", err
-	}
-	source := os.NewFile(uintptr(fd), real)
-	defer source.Close()
-	info, err := source.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return "", "", errors.New("current launcher is not an executable regular file")
-	}
-	directory, err := os.MkdirTemp("", ".marshal-codex-launcher-")
-	if err != nil {
-		return "", "", err
-	}
-	failed := true
-	defer func() {
-		if failed {
-			_ = os.Chmod(directory, 0o700)
-			_ = os.RemoveAll(directory)
-		}
-	}()
-	temporary := filepath.Join(directory, "launcher.tmp")
-	target, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o700)
-	if err != nil {
-		return "", "", err
-	}
-	hash := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(target, hash), source); err != nil {
-		target.Close()
-		return "", "", err
-	}
-	if err := target.Sync(); err != nil {
-		target.Close()
-		return "", "", err
-	}
-	if err := target.Close(); err != nil {
-		return "", "", err
-	}
-	path := filepath.Join(directory, "launcher-"+hex.EncodeToString(hash.Sum(nil)))
-	if err := os.Rename(temporary, path); err != nil {
-		return "", "", err
-	}
-	if err := os.Chmod(path, 0o500); err != nil {
-		return "", "", err
-	}
-	if err := os.Chmod(directory, 0o500); err != nil {
-		return "", "", err
-	}
-	failed = false
-	return path, directory, nil
-}
-
-func trustedCodexLauncher() (string, error) {
-	if codexLauncherErr != nil || codexLauncherPath == "" || codexLauncherDir == "" {
-		return "", errors.New("trusted Codex launcher snapshot is unavailable")
-	}
-	return codexLauncherPath, nil
 }
 
 // runLauncherTestGate is reachable only when a test-only Adapter field is
@@ -169,6 +104,7 @@ type executableSnapshot struct {
 	identity executableIdentity
 	path     string
 	dir      string
+	file     *os.File
 }
 
 // pinnedDirectory keeps a directory inode open for the whole attempt.  All
@@ -262,7 +198,51 @@ func (directory *pinnedDirectory) verifyLinked() error {
 // snapshotExecutable 先从 O_NOFOLLOW 打开的源 inode 复制出私有只读可执行
 // 快照，再只对该快照计算 digest、执行 --version 与正式 exec。配置路径在
 // 任意两个阶段之间被替换，都不会改变本 attempt 实际执行的字节。
-func snapshotExecutable(ctx context.Context, configured string, hook func(string)) (*executableSnapshot, error) {
+func snapshotExecutable(ctx context.Context, configured string, hook func(string), unsafePathTest bool) (*executableSnapshot, error) {
+	if !unsafePathTest {
+		return snapshotExecutableByFD(ctx, configured, hook)
+	}
+	return snapshotExecutableByPathForTest(ctx, configured, hook)
+}
+
+// snapshotExecutableByFD binds digest, version probe and the later worker exec
+// to one persistently-held inode. No pathname snapshot is created.
+func snapshotExecutableByFD(ctx context.Context, configured string, hook func(string)) (*executableSnapshot, error) {
+	file, err := sealedExecutableFD(configured)
+	if err != nil {
+		return nil, err
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = file.Close()
+		}
+	}()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return nil, errors.New("configured codex executable is unavailable")
+	}
+	digest, err := digestOpenFile(file)
+	if err != nil {
+		return nil, err
+	}
+	if hook != nil {
+		hook("after-executable-digest")
+	}
+	version, err := readBinaryVersionFromFD(ctx, file)
+	if err != nil {
+		return nil, err
+	}
+	failed = false
+	return &executableSnapshot{
+		identity: executableIdentity{path: configured, digest: digest, version: version},
+		file:     file,
+	}, nil
+}
+
+// snapshotExecutableByPathForTest preserves deterministic script fixtures on
+// platforms without fd-exec. Production construction can never select it.
+func snapshotExecutableByPathForTest(ctx context.Context, configured string, hook func(string)) (*executableSnapshot, error) {
 	sourceFD, err := unix.Open(configured, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
@@ -326,12 +306,18 @@ func snapshotExecutable(ctx context.Context, configured string, hook func(string
 }
 
 func (s *executableSnapshot) close() {
-	if s == nil || s.dir == "" {
+	if s == nil {
 		return
 	}
-	_ = os.Chmod(s.dir, 0o700)
-	_ = os.RemoveAll(s.dir)
-	s.dir = ""
+	if s.file != nil {
+		_ = s.file.Close()
+		s.file = nil
+	}
+	if s.dir != "" {
+		_ = os.Chmod(s.dir, 0o700)
+		_ = os.RemoveAll(s.dir)
+		s.dir = ""
+	}
 }
 
 // buildArgs 生成冻结的 captured-mode argv。全局参数必须位于 exec 子命令
@@ -657,6 +643,34 @@ func digestFile(path string) (string, error) {
 	defer file.Close()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func digestConfiguredExecutable(path string) (string, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return "", err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", errors.New("configured codex executable is unavailable")
+	}
+	return digestOpenFile(file)
+}
+
+func digestOpenFile(file *os.File) (string, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return "", err
 	}
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
