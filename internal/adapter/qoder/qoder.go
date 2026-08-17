@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -29,6 +28,8 @@ const (
 	maxPromptBytes           = 256 << 10
 	maxResultBytes           = 4 << 20
 	stderrLimit              = 64 << 10
+	versionOutputLimit       = 4 << 10
+	versionStderrLimit       = 4 << 10
 	probeTimeout             = 10 * time.Second
 	conformanceEventContract = "qoder-stream-json-1.2.0-v1"
 	qoderProtocolVersion     = "1.2.0"
@@ -68,7 +69,7 @@ type Adapter struct {
 
 	mu          sync.Mutex
 	pinned      *executableIdentity
-	conformance *executableIdentity
+	conformance *boundConformance
 }
 
 var _ port.WorkerAdapter = (*Adapter)(nil)
@@ -167,6 +168,16 @@ func expectedCapabilitiesDigest() string {
 
 type executableIdentity struct{ path, digest, version string }
 
+// boundConformance retains the authority evidence freshness boundary as well
+// as the executable identity. Keeping only the identity would turn a
+// time-limited conformance statement into permanent admission after one
+// successful BindConformance call.
+type boundConformance struct {
+	identity       executableIdentity
+	evidenceDigest string
+	validUntil     time.Time
+}
+
 func (a *Adapter) pinIdentity(identity executableIdentity) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -180,7 +191,7 @@ func (a *Adapter) pinIdentity(identity executableIdentity) {
 func (a *Adapter) isConformant(identity executableIdentity) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.conformance != nil && *a.conformance == identity
+	return a.conformance != nil && a.conformance.identity == identity && a.now().UTC().Before(a.conformance.validUntil)
 }
 
 // BindConformance accepts only a content digest. The corresponding record is
@@ -205,10 +216,17 @@ func (a *Adapter) BindConformance(ctx context.Context, evidenceDigest string) er
 	if evidence.Executable != identity.path || evidence.ExecutableDigest != identity.digest || evidence.BinaryVersion != identity.version || evidence.QoderCLIVersion != identity.version {
 		return fmt.Errorf("%w: conformance identity does not match current executable", ErrIdentityDrift)
 	}
+	validUntil, err := time.Parse(time.RFC3339Nano, evidence.ValidUntil)
+	if err != nil {
+		// resolve already validates this field; keep this guard local so the
+		// stored admission boundary can never become a zero-time wildcard.
+		return port.Permanent(ErrConformancePending)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	pinned, conformance := identity, identity
-	a.pinned, a.conformance = &pinned, &conformance
+	pinned := identity
+	a.pinned = &pinned
+	a.conformance = &boundConformance{identity: identity, evidenceDigest: evidence.EvidenceDigest, validUntil: validUntil}
 	return nil
 }
 
@@ -222,7 +240,7 @@ func (a *Adapter) verifyExecutionIdentity(identity executableIdentity) error {
 	if *a.pinned != identity {
 		return fmt.Errorf("%w: executable changed after capability probe", ErrIdentityDrift)
 	}
-	if a.conformance == nil || *a.conformance != identity {
+	if a.conformance == nil || a.conformance.identity != identity || !a.now().UTC().Before(a.conformance.validUntil) {
 		return port.Permanent(ErrConformancePending)
 	}
 	return nil
@@ -270,9 +288,7 @@ func readBinaryVersion(ctx context.Context, executable string) (string, error) {
 	if err := os.Mkdir(configDir, 0o700); err != nil {
 		return "", fmt.Errorf("create qoder probe config: %w", err)
 	}
-	command := exec.CommandContext(probeCtx, executable, "--config-dir", configDir, "--setting-sources", "", "--version")
-	command.Env = probeEnvironment(probeRoot)
-	output, err := command.Output()
+	output, err := runBoundedVersionProbe(probeCtx, executable, configDir, probeEnvironment(probeRoot))
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()

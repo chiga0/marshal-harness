@@ -479,8 +479,13 @@ func bindTestConformance(t *testing.T, adapter *Adapter) {
 	}
 	adapter.mu.Lock()
 	defer adapter.mu.Unlock()
-	pinned, conformance := identity, identity
-	adapter.pinned, adapter.conformance = &pinned, &conformance
+	pinned := identity
+	adapter.pinned = &pinned
+	adapter.conformance = &boundConformance{
+		identity:       identity,
+		evidenceDigest: digest("test-conformance"),
+		validUntil:     adapter.now().UTC().Add(24 * time.Hour),
+	}
 }
 
 func (f runFixture) requestWith(overrides map[string]any) domain.Record {

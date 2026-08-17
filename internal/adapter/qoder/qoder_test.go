@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -165,6 +167,12 @@ func TestBindConformanceRequiresAuthorityResolvedSignedEvidence(t *testing.T) {
 
 func signedTestAuthority(t *testing.T, identity executableIdentity) (*AuthorityEvidenceStore, string) {
 	t.Helper()
+	now := time.Now().UTC()
+	return signedTestAuthorityWindow(t, identity, now.Add(-time.Minute), now.Add(time.Hour))
+}
+
+func signedTestAuthorityWindow(t *testing.T, identity executableIdentity, observedAt, validUntil time.Time) (*AuthorityEvidenceStore, string) {
+	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -173,9 +181,8 @@ func signedTestAuthority(t *testing.T, identity executableIdentity) (*AuthorityE
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
 	evidence := ConformanceEvidence{
-		RunnerID: "marshal-conformance", RunnerVersion: "1", ObservedAt: now.Add(-time.Minute).Format(time.RFC3339Nano), ValidUntil: now.Add(time.Hour).Format(time.RFC3339Nano),
+		RunnerID: "marshal-conformance", RunnerVersion: "1", ObservedAt: observedAt.Format(time.RFC3339Nano), ValidUntil: validUntil.Format(time.RFC3339Nano),
 		AdapterVersion: adapterVersion, Executable: identity.path, ExecutableDigest: identity.digest, BinaryVersion: identity.version,
 		CapabilitiesDigest: expectedCapabilitiesDigest(), TranscriptDigest: digest("b"), CredentialVerified: true, LiveProtocolVerified: true,
 		EventContract: conformanceEventContract, QoderCLIVersion: identity.version, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode,
@@ -204,6 +211,40 @@ func signedTestAuthority(t *testing.T, identity executableIdentity) (*AuthorityE
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store, evidence.EvidenceDigest
+}
+
+func TestConformanceExpiryRevokesProbeAndRunAdmission(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched-after-expiry")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+successEvents("provider/model"))
+	fixture.adapter.mu.Lock()
+	fixture.adapter.conformance = nil
+	fixture.adapter.mu.Unlock()
+	boundAt := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
+	current := boundAt
+	fixture.adapter.now = func() time.Time { return current }
+	identity, err := fixture.adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, evidenceDigest := signedTestAuthorityWindow(t, identity, boundAt.Add(-time.Minute), boundAt.Add(time.Minute))
+	fixture.adapter.authority = store
+	if err := fixture.adapter.BindConformance(context.Background(), evidenceDigest); err != nil {
+		t.Fatal(err)
+	}
+	current = boundAt.Add(2 * time.Minute)
+	probe, err := fixture.adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(probe.Data), `"probeStatus":"unsupported"`) {
+		t.Fatalf("expired conformance probe = %s", probe.Data)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("expired conformance Run error = %v, want permanent pending", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("worker launched after conformance expiry")
+	}
 }
 
 func TestSupportedBinaryVersionAllowsCompatiblePatchOnly(t *testing.T) {
@@ -392,6 +433,79 @@ exit 2
 	if _, err := os.Stat(string(home)); !os.IsNotExist(err) {
 		t.Fatalf("probe root was not removed after probe: %v", err)
 	}
+}
+
+func TestVersionProbeBoundsOutputAndKillsProcessGroup(t *testing.T) {
+	t.Run("stdout limit", func(t *testing.T) {
+		executable := filepath.Join(t.TempDir(), "qodercli")
+		script := `#!/bin/sh
+while :; do printf '0123456789abcdef'; done
+`
+		if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		_, err := readBinaryVersion(context.Background(), executable)
+		if err == nil || err.Error() != "probe qoder version: qoder version output exceeds byte limit" {
+			t.Fatalf("error = %v, want stable output-limit error", err)
+		}
+	})
+	t.Run("stderr limit", func(t *testing.T) {
+		executable := filepath.Join(t.TempDir(), "qodercli")
+		script := `#!/bin/sh
+while :; do printf '0123456789abcdef' >&2; done
+`
+		if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		_, err := readBinaryVersion(context.Background(), executable)
+		if err == nil || err.Error() != "probe qoder version: qoder version output exceeds byte limit" {
+			t.Fatalf("error = %v, want stable output-limit error", err)
+		}
+	})
+
+	t.Run("child holding pipe", func(t *testing.T) {
+		root := t.TempDir()
+		executable := filepath.Join(root, "qodercli")
+		pidPath := filepath.Join(root, "child.pid")
+		script := `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "--version" ]; then
+    sleep 60 &
+    child=$!
+    printf '%s' "$child" > ` + shellQuote(pidPath) + `
+    printf '1.1.23\n'
+    exit 0
+  fi
+done
+exit 2
+`
+		if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		version, err := readBinaryVersion(context.Background(), executable)
+		if err != nil || version != supportedBinary {
+			t.Fatalf("version = %q err=%v", version, err)
+		}
+		pidData, err := os.ReadFile(pidPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			err = syscall.Kill(pid, 0)
+			if errors.Is(err, syscall.ESRCH) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("version probe child %d survived process-group cleanup: %v", pid, err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
 }
 
 func TestManagedConfigDirBindsPrivateDir(t *testing.T) {

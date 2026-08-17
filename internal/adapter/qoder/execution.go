@@ -35,6 +35,119 @@ type attemptObservation struct {
 	completedAt   time.Time
 }
 
+// runBoundedVersionProbe executes the non-worker --version probe with the
+// same process-ownership discipline as a Worker attempt. Stdout and stderr
+// are strictly bounded, output overflow terminates the whole process group,
+// and a child that keeps a pipe open cannot keep the caller blocked after the
+// direct process exits.
+func runBoundedVersionProbe(ctx context.Context, executable, configDir string, environment []string) ([]byte, error) {
+	command := exec.Command(executable, "--config-dir", configDir, "--setting-sources", "", "--version")
+	command.Env = environment
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := command.Start(); err != nil {
+		return nil, fmt.Errorf("start qoder version probe: %w", err)
+	}
+	groupID, groupErr := syscall.Getpgid(command.Process.Pid)
+	if groupErr != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return nil, errors.New("acquire qoder version probe process group")
+	}
+	var killOnce, closeOnce sync.Once
+	killGroup := func() {
+		killOnce.Do(func() {
+			_ = syscall.Kill(-groupID, syscall.SIGKILL)
+		})
+	}
+	closePipes := func() {
+		closeOnce.Do(func() {
+			_ = stdout.Close()
+			_ = stderr.Close()
+		})
+	}
+	abort := func() {
+		killGroup()
+		closePipes()
+	}
+	stdoutDone := make(chan streamCapture, 1)
+	stderrDone := make(chan streamCapture, 1)
+	go func() { stdoutDone <- captureProbeStream(stdout, versionOutputLimit, abort) }()
+	go func() { stderrDone <- captureProbeStream(stderr, versionStderrLimit, abort) }()
+	processFinished := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			abort()
+		case <-processFinished:
+		}
+	}()
+	waitErr := command.Wait()
+	// A successfully exited parent may leave a same-group child holding one of
+	// the inherited pipes. Terminate that group, but let readers drain already
+	// buffered parent output before closing our descriptors as a final guard.
+	killGroup()
+	close(processFinished)
+	var output, stderrOutput streamCapture
+	var stdoutJoined, stderrJoined bool
+	drainTimer := time.NewTimer(time.Second)
+	defer drainTimer.Stop()
+	for !stdoutJoined || !stderrJoined {
+		select {
+		case output = <-stdoutDone:
+			stdoutJoined = true
+		case stderrOutput = <-stderrDone:
+			stderrJoined = true
+		case <-drainTimer.C:
+			closePipes()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if output.truncated || stderrOutput.truncated {
+		return nil, errors.New("qoder version output exceeds byte limit")
+	}
+	if waitErr != nil {
+		return nil, fmt.Errorf("qoder version probe failed: %w", waitErr)
+	}
+	return output.data, nil
+}
+
+func captureProbeStream(reader io.Reader, limit int64, onLimit func()) streamCapture {
+	var output []byte
+	buffer := make([]byte, 4096)
+	var total int64
+	for {
+		count, err := reader.Read(buffer)
+		if count > 0 {
+			total += int64(count)
+			remaining := limit - int64(len(output))
+			if remaining > 0 {
+				take := int64(count)
+				if take > remaining {
+					take = remaining
+				}
+				output = append(output, buffer[:take]...)
+			}
+			if total > limit {
+				onLimit()
+				return streamCapture{data: output, truncated: true}
+			}
+		}
+		if err != nil {
+			return streamCapture{data: output}
+		}
+	}
+}
+
 // runLocalAttempt executes one qoder attempt as a supervised host child
 // process: process group, cancellation/timeout kill, and bounded stdout/stderr
 // capture. It owns local process semantics only and never interprets the
