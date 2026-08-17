@@ -1,93 +1,147 @@
 package codex
 
 import (
-	"context"
-	"encoding/json"
-	"os"
+	"errors"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/chiga0/marshal-harness/internal/domain"
 )
 
-// TestFakeExecutableConformsToCodexCLI proves the fake executable helper
-// conforms to the Codex CLI contract the adapter consumes: exact `--version`
-// reporting and a well-formed non-interactive JSONL stream that runs
-// end-to-end without any real provider or network.
-func TestFakeExecutableConformsToCodexCLI(t *testing.T) {
-	body := `printf '%s\n' '{"type":"thread.started","thread_id":"thread-1","thread":{"id":"thread-1"}}' '{"type":"item.completed","item":{"id":"i","type":"command","role":"assistant","status":"completed"}}' '{"type":"turn.completed","turn":{"id":"turn-1","status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}'`
-	executable := fakeExecutable(t, supportedBinary, body)
-
-	version, digestValue, err := Identify(executable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if version != supportedBinary || !strings.HasPrefix(digestValue, "sha256:") {
-		t.Fatalf("identify = %q %q", version, digestValue)
-	}
-
-	adapter, err := New(executable, newValidator(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	probe, err := adapter.Probe(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var snapshot map[string]any
-	if err := json.Unmarshal(probe.Data, &snapshot); err != nil {
-		t.Fatal(err)
-	}
-	if snapshot["probeStatus"] != "supported" || snapshot["binaryVersion"] != supportedBinary {
-		t.Fatalf("probe snapshot = %v", snapshot)
-	}
-
-	fixture := newRunFixture(t, supportedBinary, body)
-	record, err := fixture.adapter.Run(context.Background(), fixture.request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.validator.Validate(domain.KindWorkerResult, record.Data); err != nil {
-		t.Fatal(err)
-	}
-	var result declaredResult
-	if err := json.Unmarshal(record.Data, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.Session == nil || result.Session.ID != "thread-1" || result.Adapter.ID != adapterID {
-		t.Fatalf("result = %+v", result)
-	}
-}
-
-// TestFakeExecutableReportsCodexCLIVersionLine proves the fake binary emits
-// the exact official `codex-cli <semver>` contract that readBinaryVersion
-// normalizes, so the end-to-end conformance test above exercises the real
-// probe path rather than a simplified bare-version path.
-func TestFakeExecutableReportsCodexCLIVersionLine(t *testing.T) {
-	executable := fakeExecutable(t, supportedBinary, "exit 0")
-	output, err := exec.Command(executable, "--version").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.TrimSpace(string(output)); got != "codex-cli "+supportedBinary {
-		t.Fatalf("fake --version = %q, want %q", got, "codex-cli "+supportedBinary)
-	}
-}
-
-// fakeExecutable writes a fake Codex CLI binary that answers `--version`
-// with the official `codex-cli <version>` line and otherwise runs body as a
-// shell script.
-func fakeExecutable(t *testing.T, version, body string) string {
+// runFakeExitCode 直接执行 fake codex 并返回退出码；parser 契约拒绝必须
+// 表现为 exit=2，与 0.145.0 真实 parser 一致。
+func runFakeExitCode(t *testing.T, executable string, args ...string) int {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "codex")
-	if err := os.WriteFile(path, []byte(fakeScript(version, body)), 0o700); err != nil {
-		t.Fatal(err)
+	command := exec.Command(executable, args...)
+	command.Dir = t.TempDir()
+	err := command.Run()
+	if err == nil {
+		return 0
 	}
-	return path
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	t.Fatalf("fake execution failed outside the parser contract: %v", err)
+	return -1
 }
 
-func fakeScript(version, body string) string {
-	return "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'codex-cli %s\\n' '" + version + "'; exit 0; fi\n" + body + "\n"
+// frozenAdapterArgv 复算 Adapter 冻结的完整 argv，供 parser 契约双向验证。
+func frozenAdapterArgv(schemaPath, resultPath string) []string {
+	return buildArgs(schemaPath, resultPath, "")
+}
+
+func TestFakeParserAcceptsFrozenAdapterArgv(t *testing.T) {
+	executable := fakeExecutable(t, supportedVersionOutput, "exit 0")
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "adapter-argv-without-model",
+			args: frozenAdapterArgv("/control/codex-output-schema.json", "/control/output/worker-result.json"),
+		},
+		{
+			name: "adapter-argv-with-model",
+			args: append(frozenAdapterArgv("/control/codex-output-schema.json", "/control/output/worker-result.json"), "-m", "provider/model"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if code := runFakeExitCode(t, executable, test.args...); code != 0 {
+				t.Fatalf("frozen adapter argv rejected by the 0.145.0 parser contract: exit=%d argv=%#v", code, test.args)
+			}
+		})
+	}
+}
+
+func TestFakeParserRejectsWrongOrderingAndValues(t *testing.T) {
+	executable := fakeExecutable(t, supportedVersionOutput, "exit 0")
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{
+			// 真实 0.145.0 只接受顶层 --ask-for-approval；放在 exec 之后
+			// 必须以 exit=2 失败。
+			name: "approval-after-exec-subcommand",
+			args: []string{"exec", "--json", "--sandbox", "workspace-write", "--ask-for-approval", "never"},
+		},
+		{
+			// exec --sandbox 只接受枚举值；JSON 策略对象必须被拒绝。
+			name: "sandbox-json-policy-object",
+			args: []string{"--ask-for-approval", "never", "exec", "--json", "--sandbox", `{"mode":"workspace-write","networkAccess":false,"writableRoots":["/tmp/worktree"]}`},
+		},
+		{
+			name: "sandbox-invalid-enum",
+			args: []string{"--ask-for-approval", "never", "exec", "--json", "--sandbox", "danger-full-access-everywhere"},
+		},
+		{
+			name: "approval-invalid-value",
+			args: []string{"--ask-for-approval", "always", "exec", "--json", "--sandbox", "workspace-write"},
+		},
+		{
+			name: "color-invalid-value",
+			args: []string{"exec", "--color", "sometimes", "--json", "--sandbox", "workspace-write"},
+		},
+		{
+			name: "color-before-exec-subcommand",
+			args: []string{"--color", "never", "exec", "--json", "--sandbox", "workspace-write"},
+		},
+		{
+			name: "unknown-global-flag",
+			args: []string{"--weird-global", "exec", "--json", "--sandbox", "workspace-write"},
+		},
+		{
+			name: "unknown-exec-flag",
+			args: []string{"--ask-for-approval", "never", "exec", "--json", "--sandbox", "workspace-write", "--weird-exec"},
+		},
+		{
+			name: "missing-sandbox-value",
+			args: []string{"--ask-for-approval", "never", "exec", "--json", "--sandbox"},
+		},
+		{
+			name: "missing-approval-value",
+			args: []string{"--ask-for-approval", "exec", "--json"},
+		},
+		{
+			name: "missing-exec-subcommand",
+			args: []string{"--ask-for-approval", "never", "--json", "--sandbox", "workspace-write"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if code := runFakeExitCode(t, executable, test.args...); code != 2 {
+				t.Fatalf("parser contract accepted an invalid argv: exit=%d argv=%#v", code, test.args)
+			}
+		})
+	}
+}
+
+func TestFakeParserRejectsSandboxEnumDrift(t *testing.T) {
+	executable := fakeExecutable(t, supportedVersionOutput, "exit 0")
+	for _, mode := range []string{"read-only", "workspace-write", "danger-full-access"} {
+		if code := runFakeExitCode(t, executable, "--ask-for-approval", "never", "exec", "--json", "--sandbox", mode); code != 0 {
+			t.Fatalf("sandbox enum %q rejected: exit=%d", mode, code)
+		}
+	}
+	for _, mode := range []string{"workspace_write", "Workspace-Write", "full-access", ""} {
+		if code := runFakeExitCode(t, executable, "--ask-for-approval", "never", "exec", "--json", "--sandbox", mode); code != 2 {
+			t.Fatalf("sandbox enum %q accepted: exit=%d", mode, code)
+		}
+	}
+}
+
+func TestFakeVersionOutputIsFrozen(t *testing.T) {
+	executable := fakeExecutable(t, supportedVersionOutput, "exit 0")
+	command := exec.Command(executable, "--version")
+	command.Dir = t.TempDir()
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(output)) != "codex-cli 0.145.0" {
+		t.Fatalf("--version output = %q, want the frozen codex-cli line", output)
+	}
+	version, err := parseBinaryVersion(string(output))
+	if err != nil || version != "0.145.0" {
+		t.Fatalf("parseBinaryVersion = %q/%v, want 0.145.0", version, err)
+	}
 }
