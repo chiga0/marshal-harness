@@ -36,9 +36,18 @@ type doctorDiscoveryReport struct {
 	Discovery []discoveryEntry `json:"discovery"`
 }
 
-// fakeWorkerScript returns a shell script that reports version on --version.
-func fakeWorkerScript(version string) string {
-	return "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '" + version + "'; exit 0; fi\nexit 1\n"
+// fakeWorkerScript returns a shell script that accepts only the exact version
+// probe argv frozen by the matching Adapter. Qoder additionally requires its
+// private temporary config directory and disabled setting sources.
+func fakeWorkerScript(name, version string) string {
+	switch name {
+	case "qodercli":
+		return "#!/bin/sh\nif [ \"$#\" -eq 5 ] && [ \"$1\" = \"--config-dir\" ] && [ -d \"$2\" ] && [ \"$3\" = \"--setting-sources\" ] && [ -z \"$4\" ] && [ \"$5\" = \"--version\" ]; then printf '%s\\n' '" + version + "'; exit 0; fi\nexit 1\n"
+	case "opencode", "qwen", "qwen-code", "pi":
+		return "#!/bin/sh\nif [ \"$#\" -eq 1 ] && [ \"$1\" = \"--version\" ]; then printf '%s\\n' '" + version + "'; exit 0; fi\nexit 1\n"
+	default:
+		return "#!/bin/sh\nexit 1\n"
+	}
 }
 
 // plantBinary writes an executable fake Worker binary and returns its path
@@ -46,7 +55,7 @@ func fakeWorkerScript(version string) string {
 func plantBinary(t *testing.T, dir, name, version string) (string, string) {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(fakeWorkerScript(version)), 0o700); err != nil {
+	if err := os.WriteFile(path, []byte(fakeWorkerScript(name, version)), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	realpath, err := filepath.EvalSymlinks(path)
@@ -67,6 +76,7 @@ func hermeticDiscoveryEnvironment(t *testing.T, binDir string) {
 	t.Setenv("FNM_DIR", "")
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_QODER_PATH", "")
 	t.Setenv("MARSHAL_PI_PATH", "")
 }
 
@@ -133,13 +143,14 @@ func TestDoctorDiscoveryPinsCandidateAndSuggestion(t *testing.T) {
 	}
 }
 
-// TestDoctorDiscoveryCoversEveryBinding plants binaries for all three known
+// TestDoctorDiscoveryCoversEveryBinding plants binaries for all four known
 // names and verifies each binding reports its own candidate and suggestion.
 func TestDoctorDiscoveryCoversEveryBinding(t *testing.T) {
 	binDir := t.TempDir()
 	hermeticDiscoveryEnvironment(t, binDir)
 	_, opencodeReal := plantBinary(t, binDir, "opencode", "1.18.13")
 	_, qwenReal := plantBinary(t, binDir, "qwen-code", "0.21.5")
+	_, qoderReal := plantBinary(t, binDir, "qodercli", "1.1.23")
 	_, piReal := plantBinary(t, binDir, "pi", "0.83.0")
 
 	report := runDoctorDiscoveryJSON(t)
@@ -150,6 +161,7 @@ func TestDoctorDiscoveryCoversEveryBinding(t *testing.T) {
 	}{
 		{"opencode", "MARSHAL_OPENCODE_PATH", opencodeReal},
 		{"qwen", "MARSHAL_QWEN_PATH", qwenReal},
+		{"qoder", "MARSHAL_QODER_PATH", qoderReal},
 		{"pi", "MARSHAL_PI_PATH", piReal},
 	}
 	for _, expectation := range expectations {
