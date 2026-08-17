@@ -291,6 +291,28 @@ func TestWaitProcessExitNoReapRetainsLeaderIdentityUntilCleanup(t *testing.T) {
 	}
 }
 
+func TestSignalOwnedProcessGroupRequiresSuccessfulExitObservation(t *testing.T) {
+	for _, observationErr := range []error{syscall.ECHILD, syscall.ESRCH, syscall.EPERM, errors.New("observer failed")} {
+		calls := 0
+		signalOwnedProcessGroup(observationErr, 1234, func(int, syscall.Signal) error {
+			calls++
+			return nil
+		})
+		if calls != 0 {
+			t.Fatalf("observation error %v emitted %d stale PGID signals", observationErr, calls)
+		}
+	}
+	var target int
+	var signal syscall.Signal
+	signalOwnedProcessGroup(nil, 1234, func(pid int, sent syscall.Signal) error {
+		target, signal = pid, sent
+		return nil
+	})
+	if target != -1234 || signal != syscall.SIGKILL {
+		t.Fatalf("owned group signal = (%d, %v), want (-1234, SIGKILL)", target, signal)
+	}
+}
+
 func TestRunSensitiveEnvironmentNotInherited(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "qoder-gh-secret-0001")
 	t.Setenv("OPENAI_API_KEY", "qoder-openai-secret-0002")

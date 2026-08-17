@@ -35,6 +35,19 @@ type attemptObservation struct {
 	completedAt   time.Time
 }
 
+type processGroupSignal func(int, syscall.Signal) error
+
+// signalOwnedProcessGroup is deliberately total over the exit-observation
+// result: only a successful non-reaping observation proves the leader PID is
+// still allocated and the captured PGID cannot have been reused. Every error
+// path skips the numeric group signal, even if that sacrifices descendant
+// cleanup, because cross-orchestration process safety takes precedence.
+func signalOwnedProcessGroup(observationErr error, groupID int, signal processGroupSignal) {
+	if observationErr == nil {
+		_ = signal(-groupID, syscall.SIGKILL)
+	}
+}
+
 // runBoundedVersionProbe executes the non-worker --version probe with the
 // same process-ownership discipline as a Worker attempt. Stdout and stderr
 // are strictly bounded, output overflow terminates the whole process group,
@@ -44,27 +57,42 @@ func runBoundedVersionProbe(ctx context.Context, executable, configDir string, e
 	command := exec.Command(executable, "--config-dir", configDir, "--setting-sources", "", "--version")
 	command.Env = environment
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := command.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	stderr, err := command.StderrPipe()
+	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		return nil, err
 	}
+	command.Stdout = stdoutWriter
+	command.Stderr = stderrWriter
 	if err := command.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		return nil, fmt.Errorf("start qoder version probe: %w", err)
 	}
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
 	groupID, groupErr := syscall.Getpgid(command.Process.Pid)
 	if groupErr != nil {
 		_ = command.Process.Kill()
 		_ = command.Wait()
+		_ = stdout.Close()
+		_ = stderr.Close()
 		return nil, errors.New("acquire qoder version probe process group")
 	}
-	var killOnce, closeOnce sync.Once
-	killGroup := func() {
-		killOnce.Do(func() {
-			_ = syscall.Kill(-groupID, syscall.SIGKILL)
+	var killDirectOnce, killGroupOnce, closeOnce sync.Once
+	killDirect := func() {
+		killDirectOnce.Do(func() { _ = command.Process.Kill() })
+	}
+	killGroup := func(observationErr error) {
+		killGroupOnce.Do(func() {
+			signalOwnedProcessGroup(observationErr, groupID, syscall.Kill)
 		})
 	}
 	closePipes := func() {
@@ -74,7 +102,10 @@ func runBoundedVersionProbe(ctx context.Context, executable, configDir string, e
 		})
 	}
 	abort := func() {
-		killGroup()
+		// The direct child has not been reaped, so Process.Kill cannot target a
+		// reused PID. Descendants are cleaned only after exit observation proves
+		// the captured PGID is still non-reusable.
+		killDirect()
 		closePipes()
 	}
 	stdoutDone := make(chan streamCapture, 1)
@@ -95,7 +126,7 @@ func runBoundedVersionProbe(ctx context.Context, executable, configDir string, e
 	// before Cmd.Wait performs the sole reap; signalling the numeric PGID after
 	// Wait would introduce a window where it could name an unrelated group.
 	waitObservationErr := waitProcessExitNoReap(command.Process.Pid)
-	killGroup()
+	killGroup(waitObservationErr)
 	waitErr := command.Wait()
 	close(processFinished)
 	var output, stderrOutput streamCapture
@@ -218,10 +249,13 @@ func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arg
 	// Getpgid after Wait has reaped that PID: it may already name an unrelated
 	// process. The captured PGID remains owned while any same-group descendant
 	// survives and is the only process-tree target used below.
-	var killOnce, closeOnce sync.Once
-	killGroup := func() {
-		killOnce.Do(func() {
-			_ = syscall.Kill(-groupID, syscall.SIGKILL)
+	var killDirectOnce, killGroupOnce, closeOnce sync.Once
+	killDirect := func() {
+		killDirectOnce.Do(func() { _ = command.Process.Kill() })
+	}
+	killGroup := func(observationErr error) {
+		killGroupOnce.Do(func() {
+			signalOwnedProcessGroup(observationErr, groupID, syscall.Kill)
 		})
 	}
 	closePipes := func() {
@@ -231,7 +265,7 @@ func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arg
 		})
 	}
 	abort := func() {
-		killGroup()
+		killDirect()
 		closePipes()
 	}
 	stdoutDone := make(chan captureResult, 1)
@@ -254,7 +288,7 @@ func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arg
 	// has been cleaned. This makes the PGID non-reusable throughout signalling;
 	// Cmd.Wait is then the single reap owner.
 	waitObservationErr := waitProcessExitNoReap(command.Process.Pid)
-	killGroup()
+	killGroup(waitObservationErr)
 	waitErr := command.Wait()
 	close(processFinished)
 	capture := <-stdoutDone
