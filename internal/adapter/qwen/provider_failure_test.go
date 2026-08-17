@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,31 @@ func terminalEventMap(t *testing.T, raw string) map[string]any {
 func terminalLine(body string) string {
 	return `printf '%s\n' ` + shellQuote(body)
 }
+
+// controlledDeadlineContext 只在测试显式 expire 后报告
+// context.DeadlineExceeded。它让 terminal 已形成与 deadline 到达之间存在
+// 确定性 happens-before，而不依赖宿主调度速度或真实 wall-clock timer。
+type controlledDeadlineContext struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func newControlledDeadlineContext() *controlledDeadlineContext {
+	return &controlledDeadlineContext{done: make(chan struct{})}
+}
+
+func (*controlledDeadlineContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *controlledDeadlineContext) Done() <-chan struct{}     { return c.done }
+func (c *controlledDeadlineContext) Value(any) any             { return nil }
+func (c *controlledDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+func (c *controlledDeadlineContext) expire() { c.once.Do(func() { close(c.done) }) }
 
 // TestTerminalClassificationFollowsClosedSignalTable 冻结封闭信号表：分类只
 // 接受结构化 code/type/status，不使用 message substring；每个 signal 先独立
@@ -1039,9 +1065,10 @@ func TestRunContextCannotMaskTerminalConflict(t *testing.T) {
 	}
 }
 
-// TestRunTerminalConflictBeatsContextDeadline 是 R5 P1 之一：attempt 截止
-// （context deadline exceeded）同样不得掩盖 terminal/process 冲突；固定窗口
-// 内确定性收敛并保留 contextError/signal metadata。
+// TestRunTerminalConflictBeatsContextDeadline 是 R5 P1 之一：Run context 的
+// deadline exceeded 同样不得掩盖 terminal/process 冲突；测试先以 ready
+// barrier 证明 terminal 已写入，再触发可控 deadline，在固定窗口内确定性
+// 收敛并保留 contextError/signal metadata。
 func TestRunTerminalConflictBeatsContextDeadline(t *testing.T) {
 	for iteration := 0; iteration < conflictRepetitions/2; iteration++ {
 		ready := filepath.Join(t.TempDir(), "ready")
@@ -1050,13 +1077,31 @@ func TestRunTerminalConflictBeatsContextDeadline(t *testing.T) {
 			initEvent("session-1", supportedBinary),
 			terminalLine(terminal),
 			"touch " + shellQuote(ready),
-			"sleep 30",
+			// exec 保证 Adapter 等待的顶层进程直接承受 SIGKILL；否则 shell
+			// 可能把子进程信号转译为普通 exitCode 137 并丢失 signal metadata。
+			"exec sleep 30",
 		}, "\n")
 		fixture := newRunFixture(t, supportedBinary, body)
+		ctx := newControlledDeadlineContext()
+		t.Cleanup(ctx.expire)
+		done := make(chan error, 1)
+		go func() {
+			_, err := fixture.adapter.Run(ctx, fixture.requestWith(map[string]any{"attemptTimeoutSeconds": 30}))
+			done <- err
+		}()
+		// ready 只会在完整 terminal JSONL 写入成功后建立；随后触发的
+		// DeadlineExceeded 因而只能与已经形成的 terminal failure 竞争。
+		waitForFile(t, ready)
 		started := time.Now()
-		_, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"attemptTimeoutSeconds": 2}))
-		if time.Since(started) > 5*time.Second {
-			t.Fatalf("iteration %d: Run exceeded the fixed convergence window", iteration)
+		ctx.expire()
+		var err error
+		select {
+		case err = <-done:
+			if time.Since(started) > 5*time.Second {
+				t.Fatalf("iteration %d: Run exceeded the fixed convergence window", iteration)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: Run did not converge after controlled deadline", iteration)
 		}
 		failure, ok := port.AsAdapterFailure(err)
 		if !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
