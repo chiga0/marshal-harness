@@ -8,6 +8,18 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
+
+	"github.com/chiga0/marshal-harness/internal/port"
+)
+
+type protocolPhase uint8
+
+const (
+	phaseBeforeThread protocolPhase = iota
+	phaseAwaitingTurn
+	phaseInTurn
+	phaseTerminal
 )
 
 // captureResult 聚合一次有界 JSONL 捕获的结构化结果。
@@ -20,8 +32,51 @@ type captureResult struct {
 	inputTokens   int
 	outputTokens  int
 	sawTerminal   bool
+	phase         protocolPhase
+	itemActive    bool
 	limitExceeded bool
 	err           error
+}
+
+// codexFailure 把所有可持久化的 Adapter 失败绑定到 port.AdapterFailure，
+// 同时保留旧 sentinel 供 errors.Is 使用。detail 只能来自本包固定词汇，
+// 绝不接受 provider 字段、stderr、路径、prompt 或其他自由文本。
+type codexFailure struct {
+	failure  port.AdapterFailure
+	sentinel error
+	detail   string
+}
+
+func newCodexFailure(kind port.FailureKind, sentinel error, detail string, now time.Time) *codexFailure {
+	disposition, _ := port.DispositionFor(kind)
+	failure, _ := port.NewAdapterFailure(port.AdapterIDCodex, kind, disposition, nil, nil, now)
+	return &codexFailure{failure: failure, sentinel: sentinel, detail: detail}
+}
+
+func (e *codexFailure) Error() string {
+	if e.detail == "" {
+		return e.failure.Error()
+	}
+	return e.failure.Error() + ": " + e.detail
+}
+
+func (e *codexFailure) Unwrap() []error {
+	if e.sentinel == nil {
+		return []error{e.failure}
+	}
+	return []error{e.failure, e.sentinel}
+}
+
+func codexProtocolFailure(detail string, now time.Time) error {
+	return newCodexFailure(port.FailureKindProtocolInvalid, ErrProtocol, detail, now)
+}
+
+func codexProviderFailure(now time.Time) error {
+	return newCodexFailure(port.FailureKindProviderTerminal, ErrProviderFailed, "provider reported a terminal failure", now)
+}
+
+func codexResultFailure(detail string, now time.Time) error {
+	return newCodexFailure(port.FailureKindResultMissing, nil, detail, now)
 }
 
 // codexEvent 只覆盖 0.145.0 `codex exec --json` 契约中 Marshal 需要校验
@@ -92,13 +147,19 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 		}
 		terminate()
 	}
-	var consumed int64
 	var line []byte
 	for {
 		fragment, err := buffered.ReadSlice('\n')
 		if len(fragment) > 0 {
-			consumed += int64(len(fragment))
-			if consumed > limit {
+			remaining := limit - int64(len(result.raw))
+			if remaining > 0 {
+				take := int64(len(fragment))
+				if take > remaining {
+					take = remaining
+				}
+				result.raw = append(result.raw, fragment[:take]...)
+			}
+			if int64(len(fragment)) > remaining {
 				if !result.limitExceeded {
 					result.limitExceeded = true
 					terminate()
@@ -114,7 +175,6 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 				if len(trimmed) == 0 {
 					continue
 				}
-				result.raw = append(result.raw, append(trimmed, '\n')...)
 				if decodeErr := result.decodeEventLine(trimmed); decodeErr != nil {
 					fail(decodeErr)
 				}
@@ -148,12 +208,13 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 	result.eventCount++
 	if result.eventCount == 1 {
 		if event.Type != "thread.started" {
-			return fmt.Errorf("%w: first event must be thread.started, got %s", ErrProtocol, event.Type)
+			return fmt.Errorf("%w: first event must be thread.started", ErrProtocol)
 		}
 		if event.ThreadID == nil || *event.ThreadID == "" {
 			return fmt.Errorf("%w: first event is missing the thread identity", ErrProtocol)
 		}
 		result.threadID = *event.ThreadID
+		result.phase = phaseAwaitingTurn
 		return nil
 	}
 	if result.sawTerminal {
@@ -170,20 +231,44 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 	case "thread.started":
 		return fmt.Errorf("%w: duplicate thread.started; only one attempt/thread is allowed", ErrProtocol)
 	case "turn.started":
+		if result.phase != phaseAwaitingTurn || event.TurnID == "" {
+			return fmt.Errorf("%w: turn.started is out of order or missing turn identity", ErrProtocol)
+		}
+		result.phase = phaseInTurn
 		result.turnCount++
 	// item 事件收紧为 0.145.0 已证实的精确闭集：item.started/item.updated/
 	// item.completed；其他任何 item.* 与未知类型一律 fail closed。
-	case "item.started", "item.updated":
+	case "item.started":
+		if result.phase != phaseInTurn || result.itemActive {
+			return fmt.Errorf("%w: item.started is out of order", ErrProtocol)
+		}
+		result.itemActive = true
+	case "item.updated":
+		if result.phase != phaseInTurn || !result.itemActive {
+			return fmt.Errorf("%w: item.updated is out of order", ErrProtocol)
+		}
 	case "item.completed":
+		if result.phase != phaseInTurn || !result.itemActive {
+			return fmt.Errorf("%w: item.completed is out of order", ErrProtocol)
+		}
+		result.itemActive = false
 		result.itemCount++
 	case "turn.completed":
+		if result.phase != phaseInTurn || result.itemActive {
+			return fmt.Errorf("%w: turn.completed is out of order", ErrProtocol)
+		}
 		if event.Usage.InputTokens < 0 || event.Usage.OutputTokens < 0 {
 			return fmt.Errorf("%w: usage counters must be non-negative", ErrProtocol)
 		}
 		result.inputTokens, result.outputTokens = event.Usage.InputTokens, event.Usage.OutputTokens
 		result.sawTerminal = true
+		result.phase = phaseTerminal
 	case "turn.failed":
-		return fmt.Errorf("%w: terminal event type %s", ErrProviderFailed, event.Type)
+		if result.phase != phaseInTurn {
+			return fmt.Errorf("%w: failed turn is out of order", ErrProtocol)
+		}
+		result.phase = phaseTerminal
+		return fmt.Errorf("%w: provider reported a terminal failure", ErrProviderFailed)
 	default:
 		return fmt.Errorf("%w: unknown event type", ErrProtocol)
 	}

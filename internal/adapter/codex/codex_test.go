@@ -15,6 +15,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/port"
 )
 
 // supportedVersionOutput 是冻结的 --version 输出行。
@@ -179,7 +180,7 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 		if err := os.Remove(adapter.executable); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := adapter.Probe(context.Background()); err == nil || !strings.Contains(err.Error(), "unavailable") {
+		if _, err := adapter.Probe(context.Background()); err == nil || !errors.Is(err, ErrIdentityInvalid) {
 			t.Fatalf("err = %v, want unavailable executable", err)
 		}
 	})
@@ -192,10 +193,10 @@ func TestBuildArgsFreezesCapturedSurface(t *testing.T) {
 	// 精确相等断言同时冻结参数顺序并证明冻结面之外没有任何额外参数。
 	want := []string{
 		"--ask-for-approval", "never",
-		"--color", "never",
 		"-C", worktree,
 		"-c", sandboxNetworkOverride,
 		"exec",
+		"--color", "never",
 		"--ephemeral",
 		"--ignore-user-config",
 		"--ignore-rules",
@@ -348,10 +349,10 @@ func assertCapturedInvocation(t *testing.T, fixture runFixture, withModel bool) 
 	resultPath := filepath.Join(fixture.controlRoot, "output", "worker-result.json")
 	wantArgs := []string{
 		"--ask-for-approval", "never",
-		"--color", "never",
 		"-C", fixture.worktree,
 		"-c", sandboxNetworkOverride,
 		"exec",
+		"--color", "never",
 		"--ephemeral",
 		"--ignore-user-config",
 		"--ignore-rules",
@@ -479,6 +480,8 @@ func TestRunRejectsUnsupportedVersionBeforeLaunch(t *testing.T) {
 	fixture := newRunFixture(t, "codex-cli 0.146.0", "touch "+shellQuote(marker))
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrUnsupportedVersion) {
 		t.Fatalf("err = %v, want ErrUnsupportedVersion", err)
+	} else {
+		assertCodexFailure(t, err, port.FailureKindProviderTerminal, port.RetryDispositionDoNotRetry)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("unsupported worker process was launched")
@@ -512,6 +515,8 @@ func TestRunRejectsSameVersionContentDriftAfterProbe(t *testing.T) {
 	}
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrIdentityDrift) {
 		t.Fatalf("err = %v, want ErrIdentityDrift after same-version content drift", err)
+	} else {
+		assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("drifted worker process was launched")
@@ -533,6 +538,8 @@ func TestRunPinsIdentityOnFirstRunAndRejectsLaterDrift(t *testing.T) {
 	}
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrIdentityDrift) {
 		t.Fatalf("err = %v, want ErrIdentityDrift after first-run pin", err)
+	} else {
+		assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("drifted worker process was launched")
@@ -583,6 +590,7 @@ func TestRunRejectsResultLeafBeforeLaunch(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "result leaf") {
 			t.Fatalf("err = %v, want pre-launch result leaf rejection", err)
 		}
+		assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
 		content, readErr := os.ReadFile(sentinel)
 		if readErr != nil || string(content) != "sentinel-content" {
 			t.Fatalf("outside sentinel was modified: %q err=%v", content, readErr)
@@ -604,6 +612,7 @@ func TestRunRejectsResultLeafBeforeLaunch(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "result leaf") {
 			t.Fatalf("err = %v, want pre-launch result leaf rejection", err)
 		}
+		assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
 		content, readErr := os.ReadFile(resultPath)
 		if readErr != nil || string(content) != "planted" {
 			t.Fatalf("planted node was modified before launch: %q err=%v", content, readErr)
@@ -629,6 +638,7 @@ func TestRunRejectsResultLeafBeforeLaunch(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "output schema leaf") {
 			t.Fatalf("err = %v, want pre-launch schema leaf rejection", err)
 		}
+		assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
 		content, readErr := os.ReadFile(sentinel)
 		if readErr != nil || string(content) != "sentinel-schema" {
 			t.Fatalf("outside sentinel was modified: %q err=%v", content, readErr)
@@ -639,6 +649,7 @@ func TestRunRejectsResultLeafBeforeLaunch(t *testing.T) {
 func TestRunProtocolFailClosed(t *testing.T) {
 	first := `{"type":"thread.started","thread_id":"thread-1"}`
 	terminal := `{"type":"turn.completed","thread_id":"thread-1","usage":{"input_tokens":1,"output_tokens":1}}`
+	turnStarted := `{"type":"turn.started","thread_id":"thread-1","turn_id":"turn-1"}`
 	turnFailed := `{"type":"turn.failed","thread_id":"thread-1","error":"secret-provider-text"}`
 	for _, test := range []struct {
 		name     string
@@ -658,9 +669,9 @@ func TestRunProtocolFailClosed(t *testing.T) {
 		{name: "missing-terminal", lines: []string{first, `{"type":"item.completed","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
 		{name: "trailing-after-terminal", lines: []string{first, terminal, `{"type":"item.completed","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
 		{name: "item-started-after-terminal", lines: []string{first, terminal, `{"type":"item.started","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
-		{name: "turn-failed", lines: []string{first, turnFailed}, sentinel: ErrProviderFailed},
+		{name: "turn-failed", lines: []string{first, turnStarted, turnFailed}, sentinel: ErrProviderFailed},
 		{name: "failed-after-success-terminal", lines: []string{first, terminal, turnFailed}, sentinel: ErrProtocol},
-		{name: "success-after-failed-terminal", lines: []string{first, turnFailed, terminal}, sentinel: ErrProviderFailed},
+		{name: "success-after-failed-terminal", lines: []string{first, turnStarted, turnFailed, terminal}, sentinel: ErrProviderFailed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			body := transcriptBody(test.lines)
@@ -671,6 +682,11 @@ func TestRunProtocolFailClosed(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), "secret-provider-text") {
 				t.Fatalf("provider free text leaked into error: %v", err)
+			}
+			if errors.Is(err, ErrProviderFailed) {
+				assertCodexFailure(t, err, port.FailureKindProviderTerminal, port.RetryDispositionDoNotRetry)
+			} else {
+				assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
 			}
 			if _, statErr := os.Stat(filepath.Join(fixture.controlRoot, "output", "codex-transcript.jsonl")); statErr != nil {
 				t.Fatal("transcript evidence was not preserved on protocol failure")
@@ -703,6 +719,10 @@ func TestRunResultFailClosed(t *testing.T) {
 			fixture := newRunFixture(t, supportedVersionOutput, body)
 			if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), test.message) {
 				t.Fatalf("err = %v, want failure containing %q", err, test.message)
+			} else if strings.Contains(test.name, "mismatch") {
+				assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
+			} else {
+				assertCodexFailure(t, err, port.FailureKindResultMissing, port.RetryDispositionRetryable)
 			}
 		})
 	}
@@ -866,8 +886,9 @@ func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
 	if !errors.Is(err, ErrProcessFailed) {
 		t.Fatalf("err = %v, want ErrProcessFailed", err)
 	}
-	if !strings.Contains(err.Error(), "exit=7") {
-		t.Fatalf("error must carry the exit code: %v", err)
+	failure, ok := port.AsAdapterFailure(err)
+	if !ok || failure.Adapter != port.AdapterIDCodex || failure.Kind != port.FailureKindProviderTerminal || failure.Disposition != port.RetryDispositionDoNotRetry {
+		t.Fatalf("err = %v, want typed codex provider-terminal/do-not-retry", err)
 	}
 	for _, secret := range secrets {
 		if strings.Contains(err.Error(), secret) {
@@ -914,6 +935,40 @@ func TestRunRejectsEvidenceDirectoryEscape(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("evidence was written outside the control root: %v", entries)
+	}
+}
+
+func TestRunRejectsSymlinkedMissingEvidenceSuffix(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	outsideParent := t.TempDir()
+	missingOutside := filepath.Join(outsideParent, "missing", "nested")
+	link := filepath.Join(fixture.controlRoot, "linked-output")
+	if err := os.Symlink(missingOutside, link); err != nil {
+		t.Fatal(err)
+	}
+	request := fixture.requestWith(map[string]any{"resultPath": "linked-output/deeper/worker-result.json"})
+	_, err := fixture.adapter.Run(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "evidence path") {
+		t.Fatalf("err = %v, want symlinked missing suffix rejection", err)
+	}
+	assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
+	if _, statErr := os.Stat(filepath.Join(outsideParent, "missing")); !os.IsNotExist(statErr) {
+		t.Fatal("missing outside suffix was created through a symlink")
+	}
+}
+
+func TestRunCreatesAndContainsMissingEvidenceSuffix(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	request := fixture.requestWith(map[string]any{"resultPath": "new/deep/output/worker-result.json"})
+	if _, err := fixture.adapter.Run(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"worker-result.json", "codex-output-schema.json", "codex-transcript.jsonl"} {
+		path := filepath.Join(fixture.controlRoot, "new", "deep", "output", name)
+		real, err := filepath.EvalSymlinks(path)
+		if err != nil || !strings.HasPrefix(real, fixture.controlRoot+string(filepath.Separator)) {
+			t.Fatalf("evidence %s escaped: real=%q err=%v", name, real, err)
+		}
 	}
 }
 
@@ -1070,14 +1125,13 @@ saw_exec=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     exec) saw_exec=1; shift; break ;;
-    --ask-for-approval|--color|-C|--cd|-c|--config)
+    --ask-for-approval|-C|--cd|-c|--config)
       flag=$1
       [ "$#" -ge 2 ] || exit 2
       value=$2
       shift 2
       case "$flag" in
         --ask-for-approval) case "$value" in never|untrusted|on-failure|on-request) ;; *) exit 2 ;; esac ;;
-        --color) case "$value" in never|always|auto) ;; *) exit 2 ;; esac ;;
       esac ;;
     *) exit 2 ;;
   esac
@@ -1086,6 +1140,10 @@ done
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json|--ephemeral|--ignore-user-config|--ignore-rules) shift ;;
+    --color)
+      [ "$#" -ge 2 ] || exit 2
+      case "$2" in never|always|auto) ;; *) exit 2 ;; esac
+      shift 2 ;;
     --sandbox)
       [ "$#" -ge 2 ] || exit 2
       case "$2" in read-only|workspace-write|danger-full-access) ;; *) exit 2 ;; esac
@@ -1143,6 +1201,14 @@ func jsonString(value any) string {
 }
 
 func digest(character string) string { return "sha256:" + strings.Repeat(character, 64) }
+
+func assertCodexFailure(t *testing.T, err error, kind port.FailureKind, disposition port.RetryDisposition) {
+	t.Helper()
+	failure, ok := port.AsAdapterFailure(err)
+	if !ok || failure.Adapter != port.AdapterIDCodex || failure.Kind != kind || failure.Disposition != disposition {
+		t.Fatalf("err = %v, want typed codex %s/%s", err, kind, disposition)
+	}
+}
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
 

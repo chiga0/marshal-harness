@@ -13,6 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
+
+	"github.com/chiga0/marshal-harness/internal/port"
 )
 
 // sandboxNetworkOverride 是冻结的 workspace-write 网络关闭配置覆盖：
@@ -22,8 +25,9 @@ import (
 const sandboxNetworkOverride = "sandbox_workspace_write.network_access=false"
 
 // buildArgs 生成冻结的 captured-mode argv。全局参数必须位于 exec 子命令
-// 之前：approval=never、--color never、-C 钉住解析后的 worktree、-c 显式
-// 关闭 workspace-write 网络；exec 子命令携带 JSONL 输出、ephemeral、
+// 之前：approval=never、-C 钉住解析后的 worktree、-c 显式关闭
+// workspace-write 网络；--color 是 0.145.0 的 exec 子命令参数，必须放在
+// exec 之后。exec 子命令还携带 JSONL 输出、ephemeral、
 // 忽略用户配置与 rules、workspace-write sandbox 枚举，以及经 containment/
 // symlink 检查的 Schema 临时物与 result 路径。--output-last-message 机械
 // 指向最终受控 WorkerResult 叶子，使该叶子成为唯一真实结果来源：Run 从
@@ -33,10 +37,10 @@ const sandboxNetworkOverride = "sandbox_workspace_write.network_access=false"
 func buildArgs(worktree, schemaPath, resultPath, model string) []string {
 	args := []string{
 		"--ask-for-approval", "never",
-		"--color", "never",
 		"-C", worktree,
 		"-c", sandboxNetworkOverride,
 		"exec",
+		"--color", "never",
 		"--ephemeral",
 		"--ignore-user-config",
 		"--ignore-rules",
@@ -148,12 +152,8 @@ func probeEnvironment() []string {
 // 进程。provider stderr 作为有界证据文件单独持久化（codex-stderr.log），
 // 从不拼接进返回错误，因此 token、秘密或用户内容不可能进入 Events、
 // CLI 输出或 Outcome。
-func processFailureError(command *exec.Cmd) error {
-	exitCode, signal := processOutcome(command)
-	if signal != "" {
-		return fmt.Errorf("%w: exit=%d signal=%s", ErrProcessFailed, exitCode, signal)
-	}
-	return fmt.Errorf("%w: exit=%d", ErrProcessFailed, exitCode)
+func processFailureError(now time.Time) error {
+	return newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "provider process exited unsuccessfully", now)
 }
 
 func processOutcome(command *exec.Cmd) (int, string) {
@@ -189,18 +189,52 @@ func terminateGroup(command *exec.Cmd) {
 	}
 }
 
-// evidenceDirectory 在写入任何证据前再次确认冻结 result 路径与其所在
-// 证据目录都保持在冻结 control root 内；已存在的目录额外通过 symlink
-// 解析，防止准备后重新链接把证据重定向到 control root 之外。
+// evidenceDirectory 在写入任何证据前逐组件准备 result 所在目录。它拒绝
+// control root 以下任意既存 symlink/非目录节点；缺失后缀逐级以 0700 创建，
+// 每一级随后 realpath 校验仍位于 control root 内。不能解析的缺失后缀不再
+// 被当作安全成功，从而关闭 link->outside 与 missing-suffix 组合逃逸。
 func evidenceDirectory(controlRoot, resultPath string) (string, error) {
 	if err := containedWithin(controlRoot, resultPath); err != nil {
 		return "", fmt.Errorf("attempt result path: %w", err)
+	}
+	rootInfo, err := os.Stat(controlRoot)
+	if err != nil || !rootInfo.IsDir() {
+		return "", errors.New("attempt control root is not an existing directory")
 	}
 	dir := filepath.Dir(resultPath)
 	if err := containedWithin(controlRoot, dir); err != nil {
 		return "", fmt.Errorf("attempt evidence directory: %w", err)
 	}
-	if real, err := filepath.EvalSymlinks(dir); err == nil {
+	relative, err := filepath.Rel(controlRoot, dir)
+	if err != nil {
+		return "", fmt.Errorf("attempt evidence directory: %w", err)
+	}
+	current := controlRoot
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, statErr := os.Lstat(current)
+		if errors.Is(statErr, os.ErrNotExist) {
+			if mkdirErr := os.Mkdir(current, 0o700); mkdirErr != nil {
+				return "", fmt.Errorf("create attempt evidence directory: %w", mkdirErr)
+			}
+			info, statErr = os.Lstat(current)
+		}
+		if statErr != nil {
+			return "", fmt.Errorf("inspect attempt evidence directory: %w", statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("attempt evidence directory must not traverse a symlink")
+		}
+		if !info.IsDir() {
+			return "", errors.New("attempt evidence path component is not a directory")
+		}
+		real, resolveErr := filepath.EvalSymlinks(current)
+		if resolveErr != nil {
+			return "", fmt.Errorf("resolve attempt evidence directory: %w", resolveErr)
+		}
 		if err := containedWithin(controlRoot, real); err != nil {
 			return "", fmt.Errorf("attempt evidence directory: %w", err)
 		}

@@ -26,7 +26,7 @@ func TestCaptureJSONLAcceptsFrozenSuccess(t *testing.T) {
 	if result.threadID != "thread-1" || !result.sawTerminal || result.eventCount != 5 || result.turnCount != 1 || result.itemCount != 1 || result.inputTokens != 11 || result.outputTokens != 7 {
 		t.Fatalf("capture = %+v", result)
 	}
-	// raw 证据按行归一化并保留全部事件。
+	// raw 证据逐字节保留全部 stdout。
 	if got, want := string(result.raw), input; got != want {
 		t.Fatalf("raw = %q, want %q", got, want)
 	}
@@ -72,11 +72,26 @@ func TestCaptureJSONLToleratesBlankLines(t *testing.T) {
 	if result.err != nil || result.eventCount != 5 {
 		t.Fatalf("blank lines must not be events: err=%v count=%d", result.err, result.eventCount)
 	}
+	if got := string(result.raw); got != input {
+		t.Fatalf("raw stdout lost byte fidelity: got %q want %q", got, input)
+	}
+}
+
+func TestCaptureJSONLPreservesWhitespaceAndFinalLineBytes(t *testing.T) {
+	input := "  \n" + strings.Join(successTranscriptLines(), "\n")
+	result, terminations := captureForTest(t, input, 65536)
+	if result.err != nil || terminations != 0 {
+		t.Fatalf("err=%v terminations=%d", result.err, terminations)
+	}
+	if got := string(result.raw); got != input {
+		t.Fatalf("raw stdout = %q, want exact %q", got, input)
+	}
 }
 
 func TestCaptureJSONLFailClosedMatrix(t *testing.T) {
 	first := `{"type":"thread.started","thread_id":"thread-1"}`
 	terminal := `{"type":"turn.completed","thread_id":"thread-1","usage":{"input_tokens":1,"output_tokens":1}}`
+	turnStarted := `{"type":"turn.started","thread_id":"thread-1","turn_id":"turn-1"}`
 	turnFailed := `{"type":"turn.failed","thread_id":"thread-1","error":"secret-provider-text"}`
 	for _, test := range []struct {
 		name     string
@@ -97,9 +112,9 @@ func TestCaptureJSONLFailClosedMatrix(t *testing.T) {
 		{name: "missing-terminal", input: first + "\n" + `{"type":"item.completed","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
 		{name: "trailing-after-terminal", input: first + "\n" + terminal + "\n" + `{"type":"item.completed","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
 		{name: "item-started-after-terminal", input: first + "\n" + terminal + "\n" + `{"type":"item.started","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
-		{name: "turn-failed", input: first + "\n" + turnFailed + "\n", sentinel: ErrProviderFailed},
+		{name: "turn-failed", input: first + "\n" + turnStarted + "\n" + turnFailed + "\n", sentinel: ErrProviderFailed},
 		{name: "failed-after-success-terminal", input: first + "\n" + terminal + "\n" + turnFailed + "\n", sentinel: ErrProtocol},
-		{name: "success-after-failed-terminal", input: first + "\n" + turnFailed + "\n" + terminal + "\n", sentinel: ErrProviderFailed},
+		{name: "success-after-failed-terminal", input: first + "\n" + turnStarted + "\n" + turnFailed + "\n" + terminal + "\n", sentinel: ErrProviderFailed},
 		{name: "negative-usage", input: first + "\n" + `{"type":"turn.completed","thread_id":"thread-1","usage":{"input_tokens":-1,"output_tokens":1}}` + "\n", sentinel: ErrProtocol},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -113,7 +128,29 @@ func TestCaptureJSONLFailClosedMatrix(t *testing.T) {
 			if strings.Contains(result.err.Error(), "secret-provider-text") {
 				t.Fatalf("provider free text leaked into error: %v", result.err)
 			}
+			if strings.Contains(result.err.Error(), "weird.event") {
+				t.Fatalf("unknown provider event type leaked into error: %v", result.err)
+			}
 		})
+	}
+}
+
+func TestCaptureJSONLRejectsOutOfOrderTurnAndItemEvents(t *testing.T) {
+	thread := `{"type":"thread.started","thread_id":"thread-1"}`
+	turn := `{"type":"turn.started","thread_id":"thread-1","turn_id":"turn-1"}`
+	itemStart := `{"type":"item.started","thread_id":"thread-1"}`
+	for _, input := range []string{
+		thread + "\n" + `{"type":"item.started","thread_id":"thread-1"}` + "\n",
+		thread + "\n" + turn + "\n" + `{"type":"item.updated","thread_id":"thread-1"}` + "\n",
+		thread + "\n" + turn + "\n" + `{"type":"item.completed","thread_id":"thread-1"}` + "\n",
+		thread + "\n" + turn + "\n" + itemStart + "\n" + itemStart + "\n",
+		thread + "\n" + turn + "\n" + itemStart + "\n" + `{"type":"turn.completed","thread_id":"thread-1"}` + "\n",
+		thread + "\n" + turn + "\n" + turn + "\n",
+	} {
+		result, terminations := captureForTest(t, input, 65536)
+		if !errors.Is(result.err, ErrProtocol) || terminations == 0 {
+			t.Fatalf("input=%q err=%v terminations=%d", input, result.err, terminations)
+		}
 	}
 }
 
@@ -127,8 +164,8 @@ func TestCaptureJSONLOutputLimitTerminatesUnterminatedLine(t *testing.T) {
 	if result.err != nil {
 		t.Fatalf("byte-limit termination is classified by ErrOutputLimit, not protocol: %v", result.err)
 	}
-	if len(result.raw) != 0 {
-		t.Fatalf("raw must stay bounded, got %d bytes", len(result.raw))
+	if len(result.raw) != 100 || string(result.raw) != input[:100] {
+		t.Fatalf("raw must preserve the exact bounded stdout prefix, got %d bytes", len(result.raw))
 	}
 }
 
