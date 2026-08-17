@@ -144,6 +144,132 @@ func TestIssue138RejectsDirectManagedCandidateReference(t *testing.T) {
 	}
 }
 
+func TestIssue138RejectsLexicalAndSymlinkCandidateAliases(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	expected, err := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasParent := t.TempDir()
+	alias := filepath.Join(aliasParent, "candidate-alias")
+	if err := os.Symlink(fixture.worktree.Path, alias); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{
+		"lexical-dotdot": fixture.worktree.Path + string(filepath.Separator) + "subdir" + string(filepath.Separator) + ".." + string(filepath.Separator) + "dirty.txt",
+		"symlink-alias":  filepath.Join(alias, "dirty.txt"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, runErr := runCommandIsolated(context.Background(), Runner{}, fixture.worktree.Path, fixture.baseSHA, expected, CommandSpec{
+				ID: name, Argv: []string{"sh", "-c", "printf dirty > " + target}, CWD: ".", Timeout: 5 * time.Second, Required: true,
+			})
+			if runErr == nil || !strings.Contains(runErr.Error(), "references the managed candidate") {
+				t.Fatalf("candidate alias was not rejected: %v", runErr)
+			}
+		})
+	}
+}
+
+func TestIssue138CandidateCommandAlsoProtectsBaselineRoot(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	candidate, err := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := Observe(fixture.repository, fixture.baseSHA, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "baseline-alias")
+	if err := os.Symlink(fixture.repository, alias); err != nil {
+		t.Fatal(err)
+	}
+	_, err = runCommandIsolated(context.Background(), Runner{}, fixture.worktree.Path, fixture.baseSHA, candidate, CommandSpec{
+		ID: "cross-root", Argv: []string{"sh", "-c", "printf dirty > " + filepath.Join(alias, "dirty.txt")}, CWD: ".", Timeout: 5 * time.Second, Required: true,
+	}, commandProtectedSource{Path: fixture.repository, BaseSHA: fixture.baseSHA, Expected: baseline})
+	if err == nil || !strings.Contains(err.Error(), "references the managed candidate") {
+		t.Fatalf("candidate command could reference baseline alias: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.repository, "dirty.txt")); !os.IsNotExist(statErr) {
+		t.Fatal("rejected cross-root command modified baseline")
+	}
+}
+
+func TestIssue138RejectsCandidateAliasInPATH(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	bin := filepath.Join(fixture.worktree.Path, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tool := filepath.Join(bin, "candidate-tool")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\nprintf changed > ../source.txt\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "candidate-bin")
+	if err := os.Symlink(bin, alias); err != nil {
+		t.Fatal(err)
+	}
+	_, err = runCommandIsolated(context.Background(), Runner{Environment: []string{"PATH=" + alias}}, fixture.worktree.Path, fixture.baseSHA, expected, CommandSpec{
+		ID: "path-alias", Argv: []string{"candidate-tool"}, CWD: ".", Timeout: 5 * time.Second, Required: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "environment references the managed candidate") {
+		t.Fatalf("PATH alias into candidate was not rejected: %v", err)
+	}
+}
+
+func TestIssue138PostRunSnapshotErrorPreservesCommandOutcome(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	input := fixture.input()
+	input.Commands = []CommandSpec{{
+		ID: "fifo-after-failure", Argv: []string{"sh", "-c", "printf preserved-output; mkfifo unsupported-entry; exit 7"}, CWD: ".", Timeout: 5 * time.Second, Required: true, MaxLogBytes: 4096,
+	}}
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := commandGateByID(t, result.Report.Gates, "command:fifo-after-failure")
+	if gate.Status != "error" || !strings.Contains(gate.Summary, "verifier-command-isolation-error") {
+		t.Fatalf("post-run isolation error was not typed: %+v", gate)
+	}
+	if gate.Command == nil || gate.Command.ExitCode == nil || *gate.Command.ExitCode != 7 {
+		t.Fatalf("post-run isolation error discarded real exit: %+v", gate.Command)
+	}
+	stdoutPath := filepath.Join(input.RunDirectory, "logs", "fifo-after-failure.stdout.log")
+	stdout, err := os.ReadFile(stdoutPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stdout) != "preserved-output" {
+		t.Fatalf("post-run isolation error discarded stdout: %q", stdout)
+	}
+}
+
+func TestIssue138IsolationEnvironmentCoversCachesWithExactModes(t *testing.T) {
+	root := t.TempDir()
+	environment, err := commandIsolationEnvironment(root, []string{"PATH=/usr/bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]string{}
+	for _, item := range environment {
+		name, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[name] = value
+		}
+	}
+	for _, name := range []string{"HOME", "TMPDIR", "TMP", "TEMP", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "PYTHONPYCACHEPREFIX", "PIP_CACHE_DIR", "GOCACHE", "GOMODCACHE", "GOTMPDIR", "GOPATH", "npm_config_cache", "CARGO_HOME", "RUSTUP_HOME"} {
+		path := values[name]
+		info, statErr := os.Stat(path)
+		if statErr != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("cache %s is not an exact 0700 directory: path=%q info=%v err=%v", name, path, info, statErr)
+		}
+	}
+}
+
 func TestIssue138EscapingSymlinkRefusesCommand(t *testing.T) {
 	fixture := newVerificationFixture(t)
 	outside := filepath.Join(t.TempDir(), "outside.txt")

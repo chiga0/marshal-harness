@@ -233,9 +233,24 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 			result.Report.Gates = append(result.Report.Gates, Gate{ID: "command:" + spec.ID, Category: "command", Required: spec.Required, Status: "cancelled", Summary: "验证已取消", Evidence: []string{}})
 			break
 		}
-		isolated, isolationErr := runCommandIsolated(ctx, runner, input.Worktree, input.BaseSHA, observation, spec)
+		var baselineObservation Observation
+		var baselineObserveErr error
+		var candidateProtection []commandProtectedSource
+		if input.BaselinePath != "" {
+			baselineObservation, baselineObserveErr = ObserveContext(ctx, input.BaselinePath, input.BaseSHA, input.PatchCaptureBytes)
+			if baselineObserveErr == nil {
+				candidateProtection = append(candidateProtection, commandProtectedSource{Path: input.BaselinePath, BaseSHA: input.BaseSHA, Expected: baselineObservation})
+			}
+		}
+		isolated := isolatedCommandResult{}
+		var isolationErr error
+		if baselineObserveErr != nil {
+			isolationErr = errors.New("cannot freeze baseline before candidate command")
+		} else {
+			isolated, isolationErr = runCommandIsolated(ctx, runner, input.Worktree, input.BaseSHA, observation, spec, candidateProtection...)
+		}
 		commandResult := isolated.Command
-		if isolationErr != nil {
+		if isolationErr != nil && !isolated.Executed {
 			commandResult = isolationErrorCommand(spec)
 		}
 		baselineRequested := spec.BaselinePolicy == "always" || (spec.BaselinePolicy == "on-failure" && commandResult.Status != "pass")
@@ -245,11 +260,10 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 		baselineMutationBefore, baselineMutationAfter := "", ""
 		baselineIsolationFailed := false
 		if input.BaselinePath != "" && baselineRequested {
-			baselineObservation, baselineObserveErr := ObserveContext(ctx, input.BaselinePath, input.BaseSHA, input.PatchCaptureBytes)
 			baseline := isolatedCommandResult{}
 			var baselineErr error
 			if baselineObserveErr == nil {
-				baseline, baselineErr = runCommandIsolated(ctx, runner, input.BaselinePath, input.BaseSHA, baselineObservation, spec)
+				baseline, baselineErr = runCommandIsolated(ctx, runner, input.BaselinePath, input.BaseSHA, baselineObservation, spec, commandProtectedSource{Path: input.Worktree, BaseSHA: input.BaseSHA, Expected: observation})
 			}
 			if baselineObserveErr != nil || baselineErr != nil {
 				commandResult.Record.BaselineStatus = "error"
@@ -282,7 +296,8 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 			commandResult.Record.BaselineStatus = "error"
 		}
 		if isolationErr != nil {
-			gate.Status, gate.Summary = "error", "Verifier command isolation failed: "+isolationErr.Error()
+			gate.Status = "error"
+			gate.Summary = commandSummary(commandResult) + "；verifier-command-isolation-error: " + isolationErr.Error()
 		} else if isolated.Mutated {
 			gate.Status = "fail"
 			gate.Summary = commandSummary(commandResult) + "；" + verifierWorktreeMutatedReason + " before=" + isolated.BeforeDigest + " after=" + isolated.AfterDigest

@@ -18,31 +18,55 @@ import (
 
 const verifierWorktreeMutatedReason = "verifier-worktree-mutated"
 
+const (
+	commandIsolationCleanupTimeout  = 5 * time.Second
+	commandIsolationAuditTimeout    = 10 * time.Second
+	commandIsolationSnapshotTimeout = 30 * time.Second
+	commandIsolationMaxEntries      = 200000
+	commandIsolationMaxPathBytes    = 4096
+	commandIsolationMaxTargetBytes  = 4096
+	commandIsolationMaxFileBytes    = int64(256 << 20)
+	commandIsolationMaxTotalBytes   = int64(1 << 30)
+)
+
 type isolatedCommandResult struct {
 	Command      CommandResult
 	BeforeDigest string
 	AfterDigest  string
 	Mutated      bool
+	Executed     bool
+}
+
+type commandProtectedSource struct {
+	Path     string
+	BaseSHA  string
+	Expected Observation
 }
 
 // runCommandIsolated executes one acceptance command against a disposable,
 // standalone Git clone containing the exact observed candidate bytes.  The
 // managed candidate worktree is only read while the clone is constructed and
 // re-observed; command writes can therefore never become candidate bytes.
-func runCommandIsolated(ctx context.Context, runner Runner, source, baseSHA string, expected Observation, spec CommandSpec) (isolatedCommandResult, error) {
+func runCommandIsolated(ctx context.Context, runner Runner, source, baseSHA string, expected Observation, spec CommandSpec, additional ...commandProtectedSource) (result isolatedCommandResult, resultErr error) {
 	canonicalSource, err := filepath.EvalSymlinks(source)
 	if err != nil {
 		return isolatedCommandResult{}, errors.New("cannot resolve command source")
 	}
-	for _, argument := range spec.Argv {
-		if strings.Contains(argument, canonicalSource) || (source != canonicalSource && strings.Contains(argument, source)) {
-			return isolatedCommandResult{}, errors.New("command argv references the managed candidate directly")
+	protected := append([]commandProtectedSource{{Path: source, BaseSHA: baseSHA, Expected: expected}}, additional...)
+	protectedRoots := []string{source, canonicalSource}
+	for _, item := range additional {
+		canonical, resolveErr := filepath.EvalSymlinks(item.Path)
+		if resolveErr != nil {
+			return isolatedCommandResult{}, errors.New("cannot resolve an additional managed source")
+		}
+		protectedRoots = append(protectedRoots, item.Path, canonical)
+		observed, observeErr := ObserveContext(ctx, item.Path, item.BaseSHA, item.Expected.DiffBytes+1<<20)
+		if observeErr != nil || !sameObservationIdentity(observed, item.Expected) {
+			return isolatedCommandResult{}, errors.New("additional managed source no longer matches its frozen observation")
 		}
 	}
-	for _, item := range runner.Environment {
-		if strings.Contains(item, canonicalSource) || (source != canonicalSource && strings.Contains(item, source)) {
-			return isolatedCommandResult{}, errors.New("command environment references the managed candidate directly")
-		}
+	if err := rejectProtectedReferences(spec.Argv, runner.Environment, protectedRoots...); err != nil {
+		return isolatedCommandResult{}, err
 	}
 	observed, err := ObserveContext(ctx, source, baseSHA, expected.DiffBytes+1<<20)
 	if err != nil {
@@ -60,13 +84,31 @@ func runCommandIsolated(ctx context.Context, runner Runner, source, baseSHA stri
 		_ = os.RemoveAll(root)
 		return isolatedCommandResult{}, errors.New("cannot protect command isolation root")
 	}
-	defer os.RemoveAll(root)
+	// Cleanup precedes the final source audit on every return after creation.
+	// The named return lets cleanup/audit failures overlay isolation status
+	// without discarding an already executed command's real result and logs.
+	defer func() {
+		cleanupErr := removeAllBounded(root, commandIsolationCleanupTimeout)
+		auditContext, cancelAudit := context.WithTimeout(context.Background(), commandIsolationAuditTimeout)
+		defer cancelAudit()
+		if cleanupErr != nil {
+			resultErr = errors.Join(resultErr, errors.New("cannot clean command isolation root within deadline"))
+		}
+		for _, item := range protected {
+			sourceAfter, observeErr := ObserveContext(auditContext, item.Path, item.BaseSHA, item.Expected.DiffBytes+1<<20)
+			if observeErr != nil || !sameObservationIdentity(sourceAfter, item.Expected) {
+				resultErr = errors.Join(resultErr, errors.New("managed candidate or baseline changed while verifier command ran"))
+			}
+		}
+	}()
 
 	isolate := filepath.Join(root, "worktree")
 	if err := cloneCandidate(ctx, source, isolate); err != nil {
 		return isolatedCommandResult{}, err
 	}
-	before, err := snapshotCommandTree(isolate)
+	beforeContext, cancelBefore := context.WithTimeout(ctx, commandIsolationSnapshotTimeout)
+	before, err := snapshotCommandTree(beforeContext, isolate)
+	cancelBefore()
 	if err != nil {
 		return isolatedCommandResult{}, errors.New("cannot snapshot command isolate before execution")
 	}
@@ -76,22 +118,146 @@ func runCommandIsolated(ctx context.Context, runner Runner, source, baseSHA stri
 		return isolatedCommandResult{}, err
 	}
 	runner.Environment = environment
+	if err := rejectResolvedExecutable(isolate, runner, spec, protectedRoots...); err != nil {
+		return isolatedCommandResult{}, err
+	}
 	command := runner.Run(ctx, isolate, spec)
 	command.Record.Executable = stableIsolateExecutable(command.Record.Executable, isolate)
-	after, snapshotErr := snapshotCommandTree(isolate)
+	result.Command = command
+	result.BeforeDigest = before
+	result.Executed = true
+	afterContext, cancelAfter := context.WithTimeout(context.Background(), commandIsolationSnapshotTimeout)
+	after, snapshotErr := snapshotCommandTree(afterContext, isolate)
+	cancelAfter()
 	if snapshotErr != nil {
-		return isolatedCommandResult{Command: command, BeforeDigest: before}, errors.New("cannot snapshot command isolate after execution")
+		return result, errors.New("cannot snapshot command isolate after execution")
 	}
+	result.AfterDigest = after
+	result.Mutated = before != after
+	return result, nil
+}
 
-	// Cancellation still requires a final immutable-candidate check. Use a
-	// short cleanup context so the caller's cancellation cannot skip it.
-	auditContext, cancelAudit := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelAudit()
-	sourceAfter, observeErr := ObserveContext(auditContext, source, baseSHA, expected.DiffBytes+1<<20)
-	if observeErr != nil || !sameObservationIdentity(sourceAfter, expected) {
-		return isolatedCommandResult{Command: command, BeforeDigest: before, AfterDigest: after}, errors.New("managed candidate changed while verifier command ran")
+func removeAllBounded(path string, timeout time.Duration) error {
+	done := make(chan error, 1)
+	go func() { done <- os.RemoveAll(path) }()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		return context.DeadlineExceeded
 	}
-	return isolatedCommandResult{Command: command, BeforeDigest: before, AfterDigest: after, Mutated: before != after}, nil
+}
+
+func rejectResolvedExecutable(worktree string, runner Runner, spec CommandSpec, roots ...string) error {
+	if len(spec.Argv) == 0 {
+		return nil
+	}
+	cwd, err := secureDirectory(worktree, spec.CWD)
+	if err != nil {
+		return nil // Runner will preserve its existing typed command error.
+	}
+	executable, err := lookPath(spec.Argv[0], cwd, worktree, verifierEnvironment(runner.Environment))
+	if err != nil {
+		return nil
+	}
+	resolved, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		return errors.New("cannot resolve command executable")
+	}
+	for _, root := range roots {
+		canonical, canonicalErr := filepath.EvalSymlinks(root)
+		if canonicalErr == nil && within(canonical, resolved) {
+			return errors.New("command executable resolves inside the managed candidate")
+		}
+	}
+	return nil
+}
+
+func rejectProtectedReferences(argv, environment []string, roots ...string) error {
+	canonicalRoots := make([]string, 0, len(roots))
+	for _, root := range roots {
+		absolute, err := filepath.Abs(root)
+		if err != nil {
+			return errors.New("cannot canonicalize managed candidate path")
+		}
+		resolved, err := filepath.EvalSymlinks(absolute)
+		if err != nil {
+			return errors.New("cannot resolve managed candidate path")
+		}
+		canonicalRoots = append(canonicalRoots, filepath.Clean(resolved))
+	}
+	check := func(value string) bool {
+		for _, candidate := range pathCandidates(value) {
+			resolved, err := resolveWithMissingTail(candidate)
+			if err != nil {
+				continue
+			}
+			for _, root := range canonicalRoots {
+				if within(root, resolved) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, value := range argv {
+		if check(value) {
+			return errors.New("command argv references the managed candidate directly or through an alias")
+		}
+	}
+	for _, value := range environment {
+		if check(value) {
+			return errors.New("command environment references the managed candidate directly or through an alias")
+		}
+	}
+	return nil
+}
+
+func pathCandidates(value string) []string {
+	var result []string
+	for start := 0; start < len(value); start++ {
+		if value[start] != filepath.Separator {
+			continue
+		}
+		end := start + 1
+		for end < len(value) && !strings.ContainsRune(" \t\r\n\"'`;|&<>(){}[],:=", rune(value[end])) {
+			end++
+		}
+		if end-start <= commandIsolationMaxPathBytes {
+			result = append(result, filepath.Clean(value[start:end]))
+		}
+		start = end - 1
+	}
+	return result
+}
+
+// resolveWithMissingTail resolves every existing ancestor, including symlink
+// aliases, then rejoins the not-yet-created tail. This catches argv such as
+// /tmp/alias-to-candidate/../candidate/new-output before the output exists.
+func resolveWithMissingTail(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	current := filepath.Clean(absolute)
+	var tail []string
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(current)
+		if resolveErr == nil {
+			for index := len(tail) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, tail[index])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", resolveErr
+		}
+		tail = append(tail, filepath.Base(current))
+		current = parent
+	}
 }
 
 func sameObservationIdentity(left, right Observation) bool {
@@ -159,9 +325,19 @@ func copyCandidateFiles(ctx context.Context, source, destination string) error {
 		return errors.New("cannot enumerate candidate files")
 	}
 	paths := splitNUL(listed)
+	if len(paths) > commandIsolationMaxEntries {
+		return errors.New("command isolation candidate exceeds the safe entry limit")
+	}
 	sort.Strings(paths)
 	var symlinks []string
+	var totalBytes int64
 	for _, relative := range paths {
+		if err := ctx.Err(); err != nil {
+			return errors.New("command isolation candidate copy cancelled")
+		}
+		if len(relative) == 0 || len(relative) > commandIsolationMaxPathBytes {
+			return errors.New("command isolation refuses an oversized candidate path")
+		}
 		if err := validateRelativePath(relative); err != nil {
 			return errors.New("command isolation refuses an unsafe candidate path")
 		}
@@ -180,14 +356,21 @@ func copyCandidateFiles(ctx context.Context, source, destination string) error {
 		if err := os.MkdirAll(filepath.Dir(destinationPath), 0o700); err != nil {
 			return errors.New("cannot create command clone directory")
 		}
+		if err := os.Chmod(filepath.Dir(destinationPath), 0o700); err != nil {
+			return errors.New("cannot protect command clone directory")
+		}
 		switch {
 		case info.Mode().IsRegular():
+			if info.Size() < 0 || info.Size() > commandIsolationMaxFileBytes || totalBytes > commandIsolationMaxTotalBytes-info.Size() {
+				return errors.New("command isolation candidate exceeds the safe byte limit")
+			}
+			totalBytes += info.Size()
 			if err := copyRegularCandidateFile(sourcePath, destinationPath, info.Mode()); err != nil {
 				return err
 			}
 		case info.Mode()&os.ModeSymlink != 0:
 			target, err := os.Readlink(sourcePath)
-			if err != nil || filepath.IsAbs(target) {
+			if err != nil || len(target) == 0 || len(target) > commandIsolationMaxTargetBytes || filepath.IsAbs(target) {
 				return errors.New("command isolation refuses an unsafe symlink")
 			}
 			resolved, err := filepath.EvalSymlinks(sourcePath)
@@ -234,6 +417,10 @@ func copyRegularCandidateFile(source, destination string, mode os.FileMode) erro
 	if err != nil {
 		return errors.New("cannot create a command clone file")
 	}
+	if err := output.Chmod(0o600 | mode.Perm()&0o111); err != nil {
+		_ = output.Close()
+		return errors.New("cannot protect a command clone file")
+	}
 	_, copyErr := io.Copy(output, input)
 	closeErr := output.Close()
 	if copyErr != nil || closeErr != nil {
@@ -242,10 +429,13 @@ func copyRegularCandidateFile(source, destination string, mode os.FileMode) erro
 	return nil
 }
 
-func snapshotCommandTree(root string) (string, error) {
+func snapshotCommandTree(ctx context.Context, root string) (string, error) {
 	var records []string
 	var totalBytes int64
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return errors.New("command isolate snapshot deadline exceeded")
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -262,6 +452,9 @@ func snapshotCommandTree(root string) (string, error) {
 		if relative == "." {
 			return nil
 		}
+		if len(records) >= commandIsolationMaxEntries || len(relative) > commandIsolationMaxPathBytes {
+			return errors.New("command isolate snapshot exceeds the safe entry or path limit")
+		}
 		info, err := os.Lstat(path)
 		if err != nil {
 			return err
@@ -271,7 +464,7 @@ func snapshotCommandTree(root string) (string, error) {
 		case info.IsDir():
 			records = append(records, fmt.Sprintf("d\x00%s\x00%o", name, info.Mode().Perm()))
 		case info.Mode().IsRegular():
-			if info.Size() > 256<<20 || totalBytes > (1<<30)-info.Size() {
+			if info.Size() > commandIsolationMaxFileBytes || totalBytes > commandIsolationMaxTotalBytes-info.Size() {
 				return errors.New("command isolate snapshot exceeds the safe byte limit")
 			}
 			totalBytes += info.Size()
@@ -290,6 +483,9 @@ func snapshotCommandTree(root string) (string, error) {
 			target, err := os.Readlink(path)
 			if err != nil {
 				return err
+			}
+			if len(target) == 0 || len(target) > commandIsolationMaxTargetBytes {
+				return errors.New("command isolate snapshot exceeds the safe symlink target limit")
 			}
 			records = append(records, "l\x00"+name+"\x00"+target)
 		default:
@@ -310,13 +506,28 @@ func commandIsolationEnvironment(root string, inherited []string) ([]string, err
 	for name, relative := range map[string]string{
 		"HOME":                "home",
 		"TMPDIR":              "tmp",
+		"TMP":                 "tmp",
+		"TEMP":                "tmp",
 		"XDG_CACHE_HOME":      "cache",
+		"XDG_CONFIG_HOME":     "config",
+		"XDG_DATA_HOME":       "data",
+		"XDG_STATE_HOME":      "state",
 		"PYTHONPYCACHEPREFIX": "python-cache",
+		"PIP_CACHE_DIR":       "pip-cache",
 		"GOCACHE":             "go-cache",
+		"GOMODCACHE":          "go-mod-cache",
+		"GOTMPDIR":            "go-tmp",
+		"GOPATH":              "go-path",
+		"npm_config_cache":    "npm-cache",
+		"CARGO_HOME":          "cargo-home",
+		"RUSTUP_HOME":         "rustup-home",
 	} {
 		path := filepath.Join(root, relative)
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			return nil, errors.New("cannot create isolated command cache")
+		}
+		if err := os.Chmod(path, 0o700); err != nil {
+			return nil, errors.New("cannot protect isolated command cache")
 		}
 		result = append(result, name+"="+path)
 	}
