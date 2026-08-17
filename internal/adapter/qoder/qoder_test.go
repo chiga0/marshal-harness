@@ -165,6 +165,7 @@ func TestCandidateAuthorityDynamicallyRevalidatesAndRevokesFullRun(t *testing.T)
 		t.Fatal(err)
 	}
 	fixture.adapter.authorityConfigPath = configPath
+	fixture.adapter.authorityFenceRoot = realPrivateTempDir(t)
 	if err := fixture.adapter.refreshConfiguredConformance(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -304,6 +305,7 @@ func TestCandidateAuthorityGenerationRollbackFailsClosed(t *testing.T) {
 	configPath := filepath.Join(realTempDir(t), "authority.json")
 	writeAuthorityConfig(t, configPath, authorityConfigForStore(store1, digest1, 1))
 	adapter.authorityConfigPath = configPath
+	adapter.authorityFenceRoot = realPrivateTempDir(t)
 	if err := adapter.refreshConfiguredConformance(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -325,6 +327,231 @@ func TestCandidateAuthorityGenerationRollbackFailsClosed(t *testing.T) {
 	}
 }
 
+func TestConfiguredAuthorityGenerationFenceSurvivesAdapterRestart(t *testing.T) {
+	executable := fakeExecutable(t, supportedBinary, "exit 0")
+	first, err := New(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := first.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	store1, digest1 := signedTestAuthorityWindowGeneration(t, identity, now.Add(-time.Minute), now.Add(time.Hour), mustHostFingerprint(t), 1)
+	store2, digest2 := signedTestAuthorityWindowGeneration(t, identity, now.Add(-time.Minute), now.Add(time.Hour), mustHostFingerprint(t), 2)
+	configPath := filepath.Join(realTempDir(t), "authority.json")
+	fenceRoot := realPrivateTempDir(t)
+	writeAuthorityConfig(t, configPath, authorityConfigForStore(store1, digest1, 1))
+	first.authorityConfigPath, first.authorityFenceRoot = configPath, fenceRoot
+	if err := first.refreshConfiguredConformance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Consume generation two even though its leaf is deliberately missing.
+	missingGenerationTwo := authorityConfigForStore(store2, digest("f"), 2)
+	writeAuthorityConfig(t, configPath, missingGenerationTwo)
+	if err := first.refreshConfiguredConformance(context.Background()); !errors.Is(err, ErrConformancePending) {
+		t.Fatalf("missing generation-two evidence error = %v", err)
+	}
+
+	// A new Adapter instance has no process-local high-water. The durable
+	// consumer fence must still reject both rollback and same-generation
+	// identity substitution.
+	restarted, err := New(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.authorityConfigPath, restarted.authorityFenceRoot = configPath, fenceRoot
+	writeAuthorityConfig(t, configPath, authorityConfigForStore(store1, digest1, 1))
+	if err := restarted.refreshConfiguredConformance(context.Background()); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("restart rollback error = %v", err)
+	}
+	writeAuthorityConfig(t, configPath, authorityConfigForStore(store2, digest2, 2))
+	if err := restarted.refreshConfiguredConformance(context.Background()); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("restart same-generation replacement error = %v", err)
+	}
+	writeAuthorityConfig(t, configPath, missingGenerationTwo)
+	if err := restarted.refreshConfiguredConformance(context.Background()); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("restart exact generation-two config error = %v", err)
+	}
+}
+
+func TestAuthorityGenerationFenceIsAtomicPrivateAndCrashRecoverable(t *testing.T) {
+	root := realPrivateTempDir(t)
+	configDigest := digest("a")
+	if err := consumeAuthorityGeneration(root, 1, configDigest); err != nil {
+		t.Fatal(err)
+	}
+	// Same-directory staging residue is not authority. A restarted consumer
+	// reads only the fsync+rename committed record.
+	if err := os.WriteFile(filepath.Join(root, ".generation-crash-residue.tmp"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(root, 1, configDigest); err != nil {
+		t.Fatalf("exact restart replay rejected: %v", err)
+	}
+	if err := consumeAuthorityGeneration(root, 0, configDigest); err == nil {
+		t.Fatal("zero generation was accepted")
+	}
+	if err := consumeAuthorityGeneration(root, 1, digest("b")); err == nil {
+		t.Fatal("same-generation identity replacement was accepted")
+	}
+
+	privateRoot := realTempDir(t)
+	if err := os.Chmod(privateRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(privateRoot, 1, configDigest); err == nil {
+		t.Fatal("world-searchable fence root was accepted")
+	}
+	realRoot := realTempDir(t)
+	linkedRoot := filepath.Join(realTempDir(t), "fence-link")
+	if err := os.Symlink(realRoot, linkedRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(linkedRoot, 1, configDigest); err == nil {
+		t.Fatal("symlinked fence root was accepted")
+	}
+
+	corruptRoot := realPrivateTempDir(t)
+	if err := os.WriteFile(filepath.Join(corruptRoot, authorityGenerationFenceName), []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(corruptRoot, 2, configDigest); err == nil {
+		t.Fatal("corrupt durable fence was overwritten instead of failing closed")
+	}
+	unknownRoot := realPrivateTempDir(t)
+	unknown := []byte(`{"kind":"qoder-authority-generation-fence-v1","authorityGeneration":1,"authorityConfigDigest":"` + configDigest + `","unknown":true}`)
+	if err := os.WriteFile(filepath.Join(unknownRoot, authorityGenerationFenceName), unknown, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(unknownRoot, 2, configDigest); err == nil {
+		t.Fatal("durable fence with an unknown field was accepted")
+	}
+	oversizedRoot := realPrivateTempDir(t)
+	if err := os.WriteFile(filepath.Join(oversizedRoot, authorityGenerationFenceName), make([]byte, authorityGenerationLimit+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(oversizedRoot, 2, configDigest); err == nil {
+		t.Fatal("oversized durable fence was accepted")
+	}
+
+	abnormalRoot := realPrivateTempDir(t)
+	target := filepath.Join(realTempDir(t), "target")
+	if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(abnormalRoot, authorityGenerationFenceName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(abnormalRoot, 1, configDigest); err == nil {
+		t.Fatal("symlinked durable fence was accepted")
+	}
+	fifoRoot := realPrivateTempDir(t)
+	if err := unix.Mkfifo(filepath.Join(fifoRoot, authorityGenerationFenceName), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(fifoRoot, 1, configDigest); err == nil {
+		t.Fatal("FIFO durable fence was accepted")
+	}
+	modeRoot := realPrivateTempDir(t)
+	if err := consumeAuthorityGeneration(modeRoot, 1, configDigest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(modeRoot, authorityGenerationFenceName), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(modeRoot, 2, digest("b")); err == nil {
+		t.Fatal("world-readable durable fence was accepted")
+	}
+	lockRoot := realPrivateTempDir(t)
+	if err := os.Symlink(target, filepath.Join(lockRoot, authorityGenerationLockName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumeAuthorityGeneration(lockRoot, 1, configDigest); err == nil {
+		t.Fatal("symlinked durable fence lock was accepted")
+	}
+}
+
+func TestAuthorityGenerationFenceConcurrentSameGenerationHasOneIdentity(t *testing.T) {
+	root := realPrivateTempDir(t)
+	start := make(chan struct{})
+	type result struct {
+		digest string
+		err    error
+	}
+	results := make(chan result, 2)
+	for _, candidate := range []string{digest("a"), digest("b")} {
+		candidate := candidate
+		go func() {
+			<-start
+			results <- result{digest: candidate, err: consumeAuthorityGeneration(root, 1, candidate)}
+		}()
+	}
+	close(start)
+	var winner, loser string
+	for range 2 {
+		outcome := <-results
+		if outcome.err == nil {
+			if winner != "" {
+				t.Fatal("two config identities consumed the same generation")
+			}
+			winner = outcome.digest
+		} else {
+			loser = outcome.digest
+		}
+	}
+	if winner == "" || loser == "" {
+		t.Fatalf("concurrent outcomes did not select exactly one identity: winner=%q loser=%q", winner, loser)
+	}
+	if err := consumeAuthorityGeneration(root, 1, winner); err != nil {
+		t.Fatalf("winning identity was not durable: %v", err)
+	}
+	if err := consumeAuthorityGeneration(root, 1, loser); err == nil {
+		t.Fatal("losing same-generation identity became admissible")
+	}
+}
+
+func TestAuthorityGenerationFenceCrossProcess(t *testing.T) {
+	if os.Getenv("MARSHAL_QODER_FENCE_HELPER") == "1" {
+		generation, err := strconv.ParseUint(os.Getenv("MARSHAL_QODER_FENCE_GENERATION"), 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := consumeAuthorityGeneration(os.Getenv("MARSHAL_QODER_FENCE_ROOT"), generation, os.Getenv("MARSHAL_QODER_FENCE_DIGEST")); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	root := realPrivateTempDir(t)
+	run := func(generation uint64, configDigest string) error {
+		command := exec.Command(os.Args[0], "-test.run=^TestAuthorityGenerationFenceCrossProcess$")
+		command.Env = append(os.Environ(),
+			"MARSHAL_QODER_FENCE_HELPER=1",
+			"MARSHAL_QODER_FENCE_ROOT="+root,
+			"MARSHAL_QODER_FENCE_GENERATION="+strconv.FormatUint(generation, 10),
+			"MARSHAL_QODER_FENCE_DIGEST="+configDigest,
+		)
+		return command.Run()
+	}
+	if err := run(1, digest("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(2, digest("b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(1, digest("a")); err == nil {
+		t.Fatal("fresh process revived an older generation")
+	}
+	if err := run(2, digest("c")); err == nil {
+		t.Fatal("fresh process replaced same-generation identity")
+	}
+	if err := run(2, digest("b")); err != nil {
+		t.Fatalf("fresh process rejected exact durable identity: %v", err)
+	}
+}
+
 func TestCandidateAuthorityMissingEvidenceAdvancesGenerationHighWater(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "launched-after-missing-evidence-rollback")
 	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+successEvents("provider/model"))
@@ -340,6 +567,7 @@ func TestCandidateAuthorityMissingEvidenceAdvancesGenerationHighWater(t *testing
 	generationOne := authorityConfigForStore(store, evidenceDigest, 1)
 	writeAuthorityConfig(t, configPath, generationOne)
 	fixture.adapter.authorityConfigPath = configPath
+	fixture.adapter.authorityFenceRoot = realPrivateTempDir(t)
 	if err := fixture.adapter.refreshConfiguredConformance(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -383,6 +611,7 @@ func TestCandidateAuthorityRevocationAtFullRunLaunchBoundary(t *testing.T) {
 	config := authorityConfigForStore(store, evidenceDigest, 1)
 	writeAuthorityConfig(t, configPath, config)
 	fixture.adapter.authorityConfigPath = configPath
+	fixture.adapter.authorityFenceRoot = realPrivateTempDir(t)
 	fixture.adapter.beforeLaunchGuard = func() {
 		config.AuthorityGeneration = 2
 		config.RevokedEvidenceDigests = []string{evidenceDigest}
@@ -713,6 +942,14 @@ func TestAuthorityOwnerAndModePredicatesFailClosed(t *testing.T) {
 	if privateRegularFile(regular, uid) {
 		t.Fatal("wrong-owner authority file was accepted")
 	}
+	regular.Mode, regular.Uid, regular.Nlink = unix.S_IFREG|0o600, uint32(uid), 2
+	if privateSingleLinkRegularFile(regular, uid) {
+		t.Fatal("multi-link authority fence file was accepted")
+	}
+	regular.Nlink = 1
+	if !privateSingleLinkRegularFile(regular, uid) {
+		t.Fatal("private single-link authority fence file was rejected")
+	}
 	directory := unix.Stat_t{Mode: unix.S_IFDIR | 0o700, Uid: uint32(uid)}
 	if !privateDirectory(directory, uid) {
 		t.Fatal("private owner authority directory was rejected")
@@ -872,6 +1109,15 @@ func realTempDir(t *testing.T) string {
 	t.Helper()
 	path, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func realPrivateTempDir(t *testing.T) string {
+	t.Helper()
+	path := realTempDir(t)
+	if err := os.Chmod(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return path

@@ -67,6 +67,7 @@ type Adapter struct {
 	validator           *contract.Validator
 	now                 func() time.Time
 	authorityConfigPath string
+	authorityFenceRoot  string
 	beforeLaunchGuard   func()
 
 	mu                           sync.Mutex
@@ -329,11 +330,10 @@ func authorityConfigRevokes(config AuthorityConfig, evidenceDigest string) bool 
 // A trusted newer config therefore cannot be rolled back merely because its
 // selected evidence is revoked, missing, or not yet readable.
 func (a *Adapter) observeAuthorityConfig(config AuthorityConfig) error {
-	configData, err := json.Marshal(config)
+	configDigest, err := authorityConfigIdentity(config)
 	if err != nil {
 		return port.Permanent(ErrConformancePending)
 	}
-	configDigest := digestBytes(configData)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if config.AuthorityGeneration < a.authorityGenerationHighWater {
@@ -341,6 +341,18 @@ func (a *Adapter) observeAuthorityConfig(config AuthorityConfig) error {
 	}
 	if config.AuthorityGeneration == a.authorityGenerationHighWater && a.authorityGenerationHighWater != 0 && configDigest != a.authorityConfigHighWater {
 		return port.Permanent(ErrConformancePending)
+	}
+	// Configured authority admission must never fall back to a process-local
+	// high-water. The consumer-owned fence is committed before resolving the
+	// selected evidence, so restart cannot revive an older generation after a
+	// newer config selected missing or revoked evidence.
+	if a.authorityConfigPath != "" {
+		if a.authorityFenceRoot == "" {
+			return port.Permanent(ErrConformancePending)
+		}
+		if err := consumeAuthorityGeneration(a.authorityFenceRoot, config.AuthorityGeneration, configDigest); err != nil {
+			return port.Permanent(ErrConformancePending)
+		}
 	}
 	a.authorityGenerationHighWater = config.AuthorityGeneration
 	a.authorityConfigHighWater = configDigest
