@@ -1,6 +1,7 @@
 package qoder
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,6 +16,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 )
 
 // attemptObservation is the bounded outcome of executing one qoder attempt:
@@ -35,10 +38,11 @@ type attemptObservation struct {
 // process: process group, cancellation/timeout kill, and bounded stdout/stderr
 // capture. It owns local process semantics only and never interprets the
 // qoder protocol payload.
-func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arguments []string, workingDirectory string, environment []string, outputLimit int64) (attemptObservation, error) {
+func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arguments []string, prompt []byte, workingDirectory string, environment []string, outputLimit int64) (attemptObservation, error) {
 	command := exec.Command(executable, arguments...)
 	command.Dir = workingDirectory
 	command.Env = environment
+	command.Stdin = bytes.NewReader(prompt)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
@@ -53,7 +57,13 @@ func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arg
 		return attemptObservation{}, fmt.Errorf("start qoder: %w", err)
 	}
 	var killOnce sync.Once
-	kill := func() { killOnce.Do(func() { terminateGroup(command) }) }
+	kill := func() {
+		killOnce.Do(func() {
+			terminateGroup(command)
+			_ = stdout.Close()
+			_ = stderr.Close()
+		})
+	}
 	stdoutDone := make(chan captureResult, 1)
 	stderrDone := make(chan streamCapture, 1)
 	go func() { stdoutDone <- captureJSONL(stdout, outputLimit, kill) }()
@@ -112,14 +122,18 @@ func hardeningFlags(configDir string) []string {
 }
 
 // buildArgs produces the exact hardened argv for a non-interactive qoder
-// attempt. The prompt is always the final positional argument; Marshal never
-// invokes qoder through a shell.
-func buildArgs(model, configDir, prompt string) []string {
+// attempt. The prompt is deliberately absent and travels only through stdin;
+// Marshal never invokes qoder through a shell.
+func buildArgs(model, configDir, worktree string, disableAllTools bool) []string {
 	args := append([]string{}, hardeningFlags(configDir)...)
+	args = append(args, "--cwd", worktree)
+	if disableAllTools {
+		args = append(args, "--tools", "")
+	}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
-	return append(args, prompt)
+	return args
 }
 
 // processFailureError reports a failed qoder process using only fixed
@@ -189,7 +203,7 @@ func workerEnvironment(worktree, configDir string) []string {
 // probeEnvironment mirrors the sanitized probe environment and deliberately
 // rebinds HOME to a benign isolated directory so the `--version` probe never
 // falls back to the system account home or reads user configuration.
-func probeEnvironment() []string {
+func probeEnvironment(probeRoot string) []string {
 	var result []string
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
@@ -198,11 +212,11 @@ func probeEnvironment() []string {
 		}
 	}
 	return append(result,
-		"HOME=/nonexistent",
-		"XDG_CONFIG_HOME=/nonexistent",
-		"XDG_CACHE_HOME=/nonexistent",
-		"XDG_DATA_HOME=/nonexistent",
-		"XDG_STATE_HOME=/nonexistent",
+		"HOME="+probeRoot,
+		"XDG_CONFIG_HOME="+filepath.Join(probeRoot, "xdg-config"),
+		"XDG_CACHE_HOME="+filepath.Join(probeRoot, "xdg-cache"),
+		"XDG_DATA_HOME="+filepath.Join(probeRoot, "xdg-data"),
+		"XDG_STATE_HOME="+filepath.Join(probeRoot, "xdg-state"),
 	)
 }
 
@@ -289,14 +303,19 @@ func rejectSymlinkedComponents(root, path string) error {
 	return nil
 }
 
-func readModel(controlRoot, relative string) (string, error) {
+type taskProjection struct {
+	model           string
+	disableAllTools bool
+}
+
+func readTaskProjection(controlRoot, relative string) (taskProjection, error) {
 	path, err := existingPathWithin(controlRoot, relative)
 	if err != nil {
-		return "", fmt.Errorf("resolve TaskSpec: %w", err)
+		return taskProjection{}, fmt.Errorf("resolve TaskSpec: %w", err)
 	}
 	data, err := readBounded(path, maxResultBytes)
 	if err != nil {
-		return "", fmt.Errorf("read TaskSpec: %w", err)
+		return taskProjection{}, fmt.Errorf("read TaskSpec: %w", err)
 	}
 	var task struct {
 		Worker struct {
@@ -304,9 +323,118 @@ func readModel(controlRoot, relative string) (string, error) {
 		} `json:"worker"`
 	}
 	if err := json.Unmarshal(data, &task); err != nil {
-		return "", fmt.Errorf("decode TaskSpec: %w", err)
+		return taskProjection{}, fmt.Errorf("decode TaskSpec: %w", err)
 	}
-	return task.Worker.Model, nil
+	tools, err := denials.ParseDeclaredWorkerTools(data)
+	if err != nil {
+		return taskProjection{}, fmt.Errorf("worker tools: %w", err)
+	}
+	if len(tools) > 0 {
+		return taskProjection{}, fmt.Errorf("%w: named worker.tools cannot be mapped to a verified Qoder built-in tool identifier", ErrUnsupportedWorkerTools)
+	}
+	return taskProjection{model: task.Worker.Model, disableAllTools: tools != nil}, nil
+}
+
+// preparePrivateDirectory creates each missing directory component one at a
+// time and rejects every existing symlink, non-directory, or non-private
+// component below root. The final realpath must remain contained in root.
+func preparePrivateDirectory(root, target string) (string, error) {
+	if !pathWithin(root, target) {
+		return "", errors.New("output directory escapes control root")
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil {
+		return "", err
+	}
+	current := root
+	for _, component := range strings.Split(rel, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, statErr := os.Lstat(current)
+		if errors.Is(statErr, os.ErrNotExist) {
+			if err := os.Mkdir(current, 0o700); err != nil {
+				return "", fmt.Errorf("create private output directory: %w", err)
+			}
+			info, statErr = os.Lstat(current)
+		}
+		if statErr != nil {
+			return "", fmt.Errorf("inspect output directory component: %w", statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("output directory must not traverse a symlink: %s", component)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("output path component is not a directory: %s", component)
+		}
+		if info.Mode().Perm() != 0o700 {
+			return "", fmt.Errorf("output directory component has non-private permissions: %s", component)
+		}
+	}
+	real, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", fmt.Errorf("resolve output directory: %w", err)
+	}
+	if !pathWithin(root, real) {
+		return "", errors.New("output directory escapes control root")
+	}
+	return real, nil
+}
+
+func leafMustBeAbsent(path, kind string) error {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("attempt %s leaf is a symlink and must not pre-exist", kind)
+		}
+		return fmt.Errorf("attempt %s leaf unexpectedly pre-exists", kind)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect attempt %s leaf: %w", kind, err)
+	}
+	return nil
+}
+
+func claimLeaf(path, kind string) (os.FileInfo, error) {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("claim attempt %s leaf: %w", kind, err)
+	}
+	defer file.Close()
+	if err := file.Sync(); err != nil {
+		return nil, fmt.Errorf("sync attempt %s leaf: %w", kind, err)
+	}
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat claimed attempt %s leaf: %w", kind, err)
+	}
+	linkInfo, err := os.Lstat(path)
+	if err != nil || !linkInfo.Mode().IsRegular() || !os.SameFile(fileInfo, linkInfo) {
+		return nil, fmt.Errorf("attempt %s leaf was replaced after claim", kind)
+	}
+	return fileInfo, nil
+}
+
+func existingRegularLeaf(root, path, kind string, claimed os.FileInfo) (string, error) {
+	if !pathWithin(root, path) {
+		return "", fmt.Errorf("attempt %s leaf escapes control root", kind)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("inspect attempt %s leaf: %w", kind, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("attempt %s leaf must be a regular non-symlink file", kind)
+	}
+	if claimed != nil && !os.SameFile(claimed, info) {
+		return "", fmt.Errorf("attempt %s leaf was replaced after claim", kind)
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil || real != path || !pathWithin(root, real) {
+		return "", fmt.Errorf("attempt %s leaf realpath is outside its claimed boundary", kind)
+	}
+	return real, nil
 }
 
 func pathWithin(root, path string) bool {

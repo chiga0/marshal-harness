@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/contract"
@@ -28,6 +29,7 @@ const (
 	maxPromptBytes       = 256 << 10
 	maxResultBytes       = 4 << 20
 	stderrLimit          = 64 << 10
+	probeTimeout         = 10 * time.Second
 
 	// conformancePendingReason is the fixed, searchable reason Probe reports
 	// "unsupported" until a real Qoder CLI live conformance verifies the exact
@@ -42,10 +44,13 @@ const (
 
 var (
 	ErrUnsupportedVersion       = errors.New("unsupported qoder version")
+	ErrConformancePending       = errors.New("qoder live conformance is not bound")
+	ErrIdentityDrift            = errors.New("qoder executable identity drift")
 	ErrOutputLimit              = errors.New("qoder output limit exceeded")
 	ErrProtocol                 = errors.New("invalid qoder protocol")
 	ErrProcessFailed            = errors.New("qoder process failed")
 	ErrUnsupportedSessionPolicy = errors.New("unsupported session policy")
+	ErrUnsupportedWorkerTools   = errors.New("qoder worker tools allowlist unsupported")
 
 	// qoderVersionPattern accepts exactly the bare semantic version the real
 	// Qoder CLI reports from `--version`: a single three-component numeric
@@ -60,6 +65,10 @@ type Adapter struct {
 	executable string
 	validator  *contract.Validator
 	now        func() time.Time
+
+	mu          sync.Mutex
+	pinned      *executableIdentity
+	conformance *executableIdentity
 }
 
 var _ port.WorkerAdapter = (*Adapter)(nil)
@@ -99,18 +108,22 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	if err != nil {
 		return domain.Record{}, err
 	}
+	a.pinIdentity(identity)
 	probeErrors := []string{}
 	if !isSupportedBinaryVersion(identity.version) {
 		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Qoder %s，实际为 %s", supportedBinaryRange, identity.version))
 	}
-	// Always append the conformance gate: even a matching version stays
-	// "unsupported" until real capability/live conformance passes.
-	probeErrors = append(probeErrors, conformancePendingReason)
+	status := "unsupported"
+	if !a.isConformant(identity) {
+		probeErrors = append(probeErrors, conformancePendingReason)
+	} else if isSupportedBinaryVersion(identity.version) {
+		status = "supported"
+	}
 	snapshot := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
 		"executable": identity.path, "executableDigest": identity.digest,
-		"binaryVersion": identity.version, "probeStatus": "unsupported",
+		"binaryVersion": identity.version, "probeStatus": status,
 		"capabilities": map[string]any{
 			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
 			"sessionPolicies": []string{"ephemeral"}, "modelSelection": true,
@@ -120,7 +133,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 				"由 Marshal 实施 wall-time 与 output-bytes 上限。",
 				"Qoder 非交互模式不是恶意代码隔离边界。",
 				"执行环境被完整替换：HOME 绑定 Marshal 管理的独立 config dir，user/project/local setting sources 被禁用。",
-				"live conformance 尚未执行，本适配器不声明 supported。",
+				"仅当 live conformance 记录与当前 realpath、digest、version 精确一致时才声明 supported。",
 			},
 		},
 		"probeErrors": probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
@@ -137,6 +150,80 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 
 type executableIdentity struct{ path, digest, version string }
 
+func (a *Adapter) pinIdentity(identity executableIdentity) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.conformance != nil {
+		return
+	}
+	pinned := identity
+	a.pinned = &pinned
+}
+
+func (a *Adapter) isConformant(identity executableIdentity) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.conformance != nil && *a.conformance == identity
+}
+
+// BindConformance binds an independently produced, schema-valid supported
+// CapabilitySnapshot to the exact current executable identity. It does not
+// run conformance itself; the shared conformance runner remains the authority
+// that may supply the supported record. A stale or fabricated mismatch never
+// changes adapter state.
+func (a *Adapter) BindConformance(ctx context.Context, record domain.Record) error {
+	if record.Kind != domain.KindCapabilitySnapshot {
+		return errors.New("conformance record must be a CapabilitySnapshot")
+	}
+	if err := a.validator.Validate(domain.KindCapabilitySnapshot, record.Data); err != nil {
+		return fmt.Errorf("validate conformance CapabilitySnapshot: %w", err)
+	}
+	var snapshot struct {
+		AdapterID        string `json:"adapterId"`
+		Executable       string `json:"executable"`
+		ExecutableDigest string `json:"executableDigest"`
+		BinaryVersion    string `json:"binaryVersion"`
+		ProbeStatus      string `json:"probeStatus"`
+	}
+	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
+		return fmt.Errorf("decode conformance CapabilitySnapshot: %w", err)
+	}
+	if snapshot.AdapterID != adapterID || snapshot.ProbeStatus != "supported" {
+		return errors.New("conformance CapabilitySnapshot is not supported qoder")
+	}
+	identity, err := a.inspect(ctx)
+	if err != nil {
+		return err
+	}
+	if !isSupportedBinaryVersion(identity.version) {
+		return fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
+	}
+	if snapshot.Executable != identity.path || snapshot.ExecutableDigest != identity.digest || snapshot.BinaryVersion != identity.version {
+		return fmt.Errorf("%w: conformance identity does not match current executable", ErrIdentityDrift)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	pinned, conformance := identity, identity
+	a.pinned, a.conformance = &pinned, &conformance
+	return nil
+}
+
+func (a *Adapter) verifyExecutionIdentity(identity executableIdentity) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pinned == nil {
+		pinned := identity
+		a.pinned = &pinned
+	}
+	if *a.pinned != identity {
+		return fmt.Errorf("%w: executable changed after capability probe", ErrIdentityDrift)
+	}
+	if a.conformance == nil || *a.conformance != identity {
+		return port.Permanent(ErrConformancePending)
+	}
+	return nil
+}
+
 // inspect pins the executable identity through realpath and SHA256 and reads
 // the binary version for the patch-compatible gate applied by Probe and Run.
 func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
@@ -152,18 +239,42 @@ func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
 	if err != nil {
 		return executableIdentity{}, err
 	}
+	confirmedDigest, err := digestFile(a.executable)
+	if err != nil {
+		return executableIdentity{}, err
+	}
+	if confirmedDigest != digest {
+		return executableIdentity{}, fmt.Errorf("%w: executable changed during identity inspection", ErrIdentityDrift)
+	}
 	return executableIdentity{a.executable, digest, version}, nil
 }
 
 // readBinaryVersion runs `<executable> --version` inside the sanitized probe
 // environment and parses the bare version string reported by the binary.
 func readBinaryVersion(ctx context.Context, executable string) (string, error) {
-	command := exec.CommandContext(ctx, executable, "--version")
-	command.Env = probeEnvironment()
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	probeRoot, err := os.MkdirTemp("", "marshal-qoder-probe-")
+	if err != nil {
+		return "", fmt.Errorf("create qoder probe root: %w", err)
+	}
+	defer os.RemoveAll(probeRoot)
+	if err := os.Chmod(probeRoot, 0o700); err != nil {
+		return "", fmt.Errorf("lock qoder probe root: %w", err)
+	}
+	configDir := filepath.Join(probeRoot, "config")
+	if err := os.Mkdir(configDir, 0o700); err != nil {
+		return "", fmt.Errorf("create qoder probe config: %w", err)
+	}
+	command := exec.CommandContext(probeCtx, executable, "--config-dir", configDir, "--setting-sources", "", "--version")
+	command.Env = probeEnvironment(probeRoot)
 	output, err := command.Output()
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
+		}
+		if probeCtx.Err() != nil {
+			return "", fmt.Errorf("probe qoder version: timed out after %s", probeTimeout)
 		}
 		return "", fmt.Errorf("probe qoder version: %w", err)
 	}
@@ -201,10 +312,6 @@ func isSupportedBinaryVersion(version string) bool {
 	return major == 1 && minor == 1 && patch >= 23
 }
 
-// identifyTimeout bounds every advisory Identify call so doctor discovery can
-// never hang on an unresponsive candidate binary.
-const identifyTimeout = 10 * time.Second
-
 // Identify pins the version and SHA256 digest of an absolute candidate
 // executable, reusing the probe's sanitized environment and version parsing.
 // It is advisory identity collection shared by doctor discovery and future
@@ -222,9 +329,7 @@ func Identify(executable string) (version, digest string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), identifyTimeout)
-	defer cancel()
-	version, err = readBinaryVersion(ctx, executable)
+	version, err = readBinaryVersion(context.Background(), executable)
 	if err != nil {
 		return "", "", err
 	}
@@ -286,14 +391,15 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if request.SessionPolicy != "ephemeral" {
 		return domain.Record{}, fmt.Errorf("%w: %q is permanently unsupported; only ephemeral sessions are managed by Marshal", ErrUnsupportedSessionPolicy, request.SessionPolicy)
 	}
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(request.AttemptTimeoutSeconds)*time.Second)
-	defer cancel()
-	identity, err := a.inspect(runCtx)
+	identity, err := a.inspect(ctx)
 	if err != nil {
 		return domain.Record{}, err
 	}
 	if !isSupportedBinaryVersion(identity.version) {
 		return domain.Record{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
+	}
+	if err := a.verifyExecutionIdentity(identity); err != nil {
+		return domain.Record{}, err
 	}
 	worktree, err := filepath.EvalSymlinks(request.WorktreePath)
 	if err != nil {
@@ -318,6 +424,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, fmt.Errorf("resolve result: %w", err)
 	}
+	outputDir, err := preparePrivateDirectory(controlRoot, filepath.Dir(resultPath))
+	if err != nil {
+		return domain.Record{}, err
+	}
+	resultPath = filepath.Join(outputDir, filepath.Base(resultPath))
 	// Bind the Marshal-managed, isolated config dir before launching anything:
 	// user/project/local settings must never influence the attempt, and a
 	// symlink, escape, or abnormal permission must fail closed up front.
@@ -325,16 +436,27 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, err
 	}
-	model, err := readModel(controlRoot, request.TaskSpecPath)
+	task, err := readTaskProjection(controlRoot, request.TaskSpecPath)
 	if err != nil {
 		return domain.Record{}, err
 	}
-	observation, err := a.runLocalAttempt(runCtx, identity.path, buildArgs(model, configDir, string(prompt)), worktree, workerEnvironment(worktree, configDir), int64(request.MaxOutputBytes))
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(request.AttemptTimeoutSeconds)*time.Second)
+	defer cancel()
+	if err := runCtx.Err(); err != nil {
+		return domain.Record{}, err
+	}
+	if err := leafMustBeAbsent(resultPath, "result"); err != nil {
+		return domain.Record{}, err
+	}
+	claimedResult, err := claimLeaf(resultPath, "result")
+	if err != nil {
+		return domain.Record{}, err
+	}
+	observation, err := a.runLocalAttempt(runCtx, identity.path, buildArgs(task.model, configDir, worktree, task.disableAllTools), prompt, worktree, workerEnvironment(worktree, configDir), int64(request.MaxOutputBytes))
 	if err != nil {
 		return domain.Record{}, err
 	}
 	capture := observation.capture
-	outputDir := filepath.Dir(resultPath)
 	if err := atomicWrite(filepath.Join(outputDir, "qoder-transcript.jsonl"), capture.raw); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript: %w", err)
 	}
@@ -344,7 +466,14 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	resolved := resolveAttemptFailure(capture, observation, runCtx, a.now())
 	var declared declaredResult
 	if resolved == nil {
-		declared, resolved = resolveDeclaredResult(resultPath, request, capture.sessionID, a.validator, a.now())
+		var safeResultPath string
+		safeResultPath, err = existingRegularLeaf(controlRoot, resultPath, "result", claimedResult)
+		if err != nil {
+			resolved = newQoderFailure(port.FailureKindResultMissing, "WorkerResult declaration missing or unreadable", a.now())
+		} else {
+			resultPath = safeResultPath
+			declared, resolved = resolveDeclaredResult(resultPath, request, capture.sessionID, a.validator, a.now())
+		}
 	}
 	metadata, err := json.MarshalIndent(map[string]any{
 		"sessionId": capture.sessionID, "eventCount": capture.eventCount,
@@ -367,9 +496,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	declared.Adapter.Executable, declared.Adapter.Version = identity.path, identity.version
 	declared.Session = &declaredSession{ID: capture.sessionID, Resumable: false}
 	declared.StartedAt, declared.CompletedAt = observation.startedAt, observation.completedAt
-	if model != "" {
-		declared.Adapter.Model = model
-	}
+	declared.Adapter.Model = task.model
 	if capture.inputTokens > 0 || capture.outputTokens > 0 {
 		usage := map[string]any{"inputTokens": capture.inputTokens, "outputTokens": capture.outputTokens}
 		if usageData, err := json.Marshal(usage); err == nil {

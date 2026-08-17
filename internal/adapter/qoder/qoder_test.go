@@ -83,6 +83,57 @@ func TestProbeIsFailClosedUntilConformance(t *testing.T) {
 	}
 }
 
+func TestRunRequiresBoundConformanceIdentityBeforeLaunch(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`))
+	fixture.adapter.mu.Lock()
+	fixture.adapter.conformance = nil
+	fixture.adapter.mu.Unlock()
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("error = %v, want permanent conformance-pending", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatal("worker launched without a bound conformance identity")
+	}
+}
+
+func TestBindConformanceRequiresExactSupportedCapabilityIdentity(t *testing.T) {
+	fixture := newRunFixture(t, supportedBinary, emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`))
+	fixture.adapter.mu.Lock()
+	fixture.adapter.conformance = nil
+	fixture.adapter.mu.Unlock()
+	record, err := fixture.adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot["probeStatus"] = "supported"
+	snapshot["probeErrors"] = []string{}
+	record.Data, err = json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.adapter.BindConformance(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := fixture.adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
+		t.Fatalf("probe did not reflect exact bound conformance: %s", probe.Data)
+	}
+	snapshot["executableDigest"] = digest("f")
+	record.Data, _ = json.Marshal(snapshot)
+	if err := fixture.adapter.BindConformance(context.Background(), record); !errors.Is(err, ErrIdentityDrift) {
+		t.Fatalf("stale conformance identity accepted: %v", err)
+	}
+}
+
 func TestSupportedBinaryVersionAllowsCompatiblePatchOnly(t *testing.T) {
 	for _, version := range []string{"1.1.23", "1.1.24", "1.1.999"} {
 		if !isSupportedBinaryVersion(version) {
@@ -143,15 +194,15 @@ func TestParseQoderVersionRejectsMalformedOutput(t *testing.T) {
 }
 
 func TestBuildArgsFreezesRealNonInteractiveArgv(t *testing.T) {
-	args := buildArgs("provider/model", "/managed/config", "完成任务")
-	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--config-dir", "/managed/config", "--setting-sources", "", "--model", "provider/model", "完成任务"}
+	args := buildArgs("provider/model", "/managed/config", "/worktree", false)
+	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--config-dir", "/managed/config", "--setting-sources", "", "--cwd", "/worktree", "--model", "provider/model"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v", args)
 	}
 }
 
 func TestBuildArgsRejectsFabricatedRunSandboxArgv(t *testing.T) {
-	args := buildArgs("", "/isolated/config", "完成任务")
+	args := buildArgs("", "/isolated/config", "/worktree", false)
 	joined := strings.Join(args, "\x00")
 	// The previous `run --json --non-interactive --sandbox workspace-write`
 	// construct does not exist in the real help and must never reappear.
@@ -177,9 +228,16 @@ func TestBuildArgsRejectsFabricatedRunSandboxArgv(t *testing.T) {
 			t.Fatalf("argv leaked bait setting source %q: %#v", bait, args)
 		}
 	}
-	noModel := buildArgs("", "/isolated/config", "完成任务")
+	noModel := buildArgs("", "/isolated/config", "/worktree", false)
 	if strings.Contains(strings.Join(noModel, "\x00"), "--model") {
 		t.Fatalf("empty model must not emit --model: %#v", noModel)
+	}
+}
+
+func TestBuildArgsDisablesAllToolsForExplicitEmptyAllowlist(t *testing.T) {
+	args := buildArgs("", "/isolated/config", "/worktree", true)
+	if !containsSequence(args, "--tools", "") {
+		t.Fatalf("explicit empty allowlist must disable all tools: %#v", args)
 	}
 }
 
@@ -216,14 +274,51 @@ func TestWorkerEnvironmentRebindsHomeToManagedConfigDir(t *testing.T) {
 func TestProbeEnvironmentDoesNotUseAmbientHomeOrConfig(t *testing.T) {
 	t.Setenv("HOME", "/home/secret-user")
 	t.Setenv("XDG_CONFIG_HOME", "/home/secret-user/.config")
-	joined := strings.Join(probeEnvironment(), "\n")
+	probeRoot := t.TempDir()
+	joined := strings.Join(probeEnvironment(probeRoot), "\n")
 	if strings.Contains(joined, "secret-user") {
 		t.Fatalf("probe environment leaked ambient home/config: %s", joined)
 	}
-	for _, want := range []string{"HOME=/nonexistent", "XDG_CONFIG_HOME=/nonexistent", "XDG_CACHE_HOME=/nonexistent", "XDG_DATA_HOME=/nonexistent", "XDG_STATE_HOME=/nonexistent"} {
+	for _, want := range []string{"HOME=" + probeRoot, "XDG_CONFIG_HOME=" + filepath.Join(probeRoot, "xdg-config"), "XDG_CACHE_HOME=" + filepath.Join(probeRoot, "xdg-cache"), "XDG_DATA_HOME=" + filepath.Join(probeRoot, "xdg-data"), "XDG_STATE_HOME=" + filepath.Join(probeRoot, "xdg-state")} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("probe environment missing %s: %s", want, joined)
 		}
+	}
+}
+
+func TestVersionProbeUsesPrivateWritableTemporaryHome(t *testing.T) {
+	ambientHome := t.TempDir()
+	t.Setenv("HOME", ambientHome)
+	capture := filepath.Join(t.TempDir(), "probe-home")
+	script := `#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "--version" ]; then
+    test -d "$HOME" && test -w "$HOME" || exit 9
+    printf '%s' "$HOME" > ` + shellQuote(capture) + `
+    : > "$HOME/probe-write"
+    printf '%s\n' '1.1.23'
+    exit 0
+  fi
+done
+exit 2
+`
+	executable := filepath.Join(t.TempDir(), "qodercli")
+	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	version, err := readBinaryVersion(context.Background(), executable)
+	if err != nil || version != supportedBinary {
+		t.Fatalf("version = %q err=%v", version, err)
+	}
+	home, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(home) == ambientHome || string(home) == "/nonexistent" || !strings.Contains(string(home), "marshal-qoder-probe-") {
+		t.Fatalf("probe HOME was not an isolated temporary root: %q", home)
+	}
+	if _, err := os.Stat(string(home)); !os.IsNotExist(err) {
+		t.Fatalf("probe root was not removed after probe: %v", err)
 	}
 }
 
@@ -368,6 +463,78 @@ func TestRunRejectsUnsupportedVersionBeforeWorkerLaunch(t *testing.T) {
 	}
 }
 
+func TestRunRejectsExecutableDriftAfterConformance(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker))
+	if err := os.WriteFile(fixture.executable, []byte(fakeScript(supportedBinary, "touch "+shellQuote(marker)+"\n# changed")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrIdentityDrift) {
+		t.Fatalf("error = %v, want identity drift", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("drifted executable launched")
+	}
+}
+
+func TestRunRejectsStaleResultLeafBeforeLaunch(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker))
+	writeJSON(t, filepath.Join(fixture.controlRoot, "output", "worker-result.json"), validDeclaredResult("/stale"))
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "pre-exists") {
+		t.Fatalf("error = %v, want stale result rejection", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("worker launched with a stale result leaf")
+	}
+}
+
+func TestRunRejectsSymlinkedOutputAncestorWithMissingSuffix(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker))
+	outside := t.TempDir()
+	output := filepath.Join(fixture.controlRoot, "output")
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(output, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	request := fixture.requestWith(map[string]any{"resultPath": "output/escape/missing/worker-result.json"})
+	if _, err := fixture.adapter.Run(context.Background(), request); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error = %v, want output ancestor symlink rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "missing")); !os.IsNotExist(err) {
+		t.Fatal("output directory was created outside the control root")
+	}
+}
+
+func TestRunRejectsNamedWorkerToolsBeforeLaunch(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker))
+	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model", "tools": []string{"read"}}})
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrUnsupportedWorkerTools) {
+		t.Fatalf("error = %v, want unsupported worker tools", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("worker launched with an unverified named tool mapping")
+	}
+}
+
+func TestRunClearsWorkerClaimedModelWhenTaskSpecOmitsModel(t *testing.T) {
+	claimed := validDeclaredResult("/worker/claim")
+	claimed["adapter"].(map[string]any)["model"] = "worker-secret-model"
+	fixture := newRunFixtureWithResult(t, supportedBinary, emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`), claimed)
+	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{}})
+	record, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(record.Data), "worker-secret-model") {
+		t.Fatalf("normalized result retained worker-claimed model: %s", record.Data)
+	}
+}
+
 func TestRunFailsClosedOnInvalidTaskSpecBeforeWorkerLaunch(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "launched")
 	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker))
@@ -409,10 +576,9 @@ func TestRunRejectsMalformedJSONLAndIdentityMismatch(t *testing.T) {
 	})
 	t.Run("identity", func(t *testing.T) {
 		body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`)
-		fixture := newRunFixture(t, supportedBinary, body)
-		data := validDeclaredResult(fixture.executable)
+		data := validDeclaredResult("/worker/claim")
 		data["taskId"] = "OTHER"
-		writeJSON(t, filepath.Join(fixture.controlRoot, "output", "worker-result.json"), data)
+		fixture := newRunFixtureWithResult(t, supportedBinary, body, data)
 		_, err := fixture.adapter.Run(context.Background(), fixture.request)
 		failure, ok := port.AsAdapterFailure(err)
 		if !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {

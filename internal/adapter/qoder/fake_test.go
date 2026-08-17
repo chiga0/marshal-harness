@@ -91,9 +91,13 @@ func TestFakeExecutableReportsBareVersion(t *testing.T) {
 // non-interactive argv (help-derived flags) rather than the fabricated
 // `run --json --non-interactive --sandbox workspace-write` construct.
 func TestRunPassesFrozenArgvToWorker(t *testing.T) {
-	body := "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > argv-dump.txt\n" +
+	body := "cat > stdin-dump.txt\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > argv-dump.txt\n" +
 		emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`)
 	fixture := newRunFixture(t, supportedBinary, body)
+	promptSentinel := "qoder-prompt-secret-sentinel-0001"
+	if err := os.WriteFile(filepath.Join(fixture.controlRoot, "input", "prompt.md"), []byte(promptSentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
 		t.Fatal(err)
 	}
@@ -106,9 +110,20 @@ func TestRunPassesFrozenArgvToWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--config-dir", filepath.Join(resolved, "config", "qoder"), "--setting-sources", "", "--model", "provider/model", "完成 fixture"}
+	resolvedWorktree, err := filepath.EvalSymlinks(fixture.worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--config-dir", filepath.Join(resolved, "config", "qoder"), "--setting-sources", "", "--cwd", resolvedWorktree, "--model", "provider/model"}
 	if strings.Join(argv, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("argv = %#v, want %#v", argv, want)
+	}
+	stdin, err := os.ReadFile(filepath.Join(fixture.worktree, "stdin-dump.txt"))
+	if err != nil || string(stdin) != promptSentinel {
+		t.Fatalf("stdin = %q err=%v", stdin, err)
+	}
+	if strings.Contains(strings.Join(argv, "\x00"), promptSentinel) {
+		t.Fatalf("prompt leaked into argv: %#v", argv)
 	}
 }
 
@@ -136,11 +151,8 @@ func TestRunRetriableFailureReturnsRetryable(t *testing.T) {
 }
 
 func TestRunResultMissingReturnsRetryable(t *testing.T) {
-	body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`)
-	fixture := newRunFixture(t, supportedBinary, body)
-	if err := os.Remove(filepath.Join(fixture.controlRoot, "output", "worker-result.json")); err != nil {
-		t.Fatal(err)
-	}
+	body := emitLines(`{"type":"session","id":"sess-1"}`, `{"type":"result","status":"success"}`) + "\nexit 0"
+	fixture := newRunFixtureWithResult(t, supportedBinary, body, nil)
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	failure, ok := port.AsAdapterFailure(err)
 	if !ok || failure.Adapter != port.AdapterIDQoder || failure.Kind != port.FailureKindResultMissing || failure.Disposition != port.RetryDispositionRetryable {
@@ -373,7 +385,7 @@ func fakeExecutable(t *testing.T, version, body string) string {
 }
 
 func fakeScript(version, body string) string {
-	return "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' '" + version + "'; exit 0; fi\n" + body + "\n"
+	return "#!/bin/sh\nfor marshal_arg in \"$@\"; do if [ \"$marshal_arg\" = \"--version\" ]; then printf '%s\\n' '" + version + "'; exit 0; fi; done\n" + body + "\n"
 }
 
 // emitLines renders a `printf '%s\n'` shell command that writes each JSONL
@@ -408,15 +420,28 @@ type runFixture struct {
 }
 
 func newRunFixture(t *testing.T, version, body string) runFixture {
+	return newRunFixtureWithResult(t, version, body, validDeclaredResult("/worker/claim"))
+}
+
+func newRunFixtureWithResult(t *testing.T, version, body string, result map[string]any) runFixture {
 	t.Helper()
+	worktree := t.TempDir()
+	controlRoot := t.TempDir()
+	resultPath := filepath.Join(controlRoot, "output", "worker-result.json")
+	if result != nil {
+		data, err := json.Marshal(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body += "\nmkdir -p " + shellQuote(filepath.Dir(resultPath)) + "\nprintf '%s' " + shellQuote(string(data)) + " > " + shellQuote(resultPath)
+	}
 	executable := fakeExecutable(t, version, body)
 	validator := newValidator(t)
 	adapter, err := New(executable, validator)
 	if err != nil {
 		t.Fatal(err)
 	}
-	worktree := t.TempDir()
-	controlRoot := t.TempDir()
+	bindTestConformance(t, adapter)
 	writeJSON(t, filepath.Join(controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model"}})
 	promptPath := filepath.Join(controlRoot, "input", "prompt.md")
 	if err := os.MkdirAll(filepath.Dir(promptPath), 0o700); err != nil {
@@ -425,7 +450,6 @@ func newRunFixture(t *testing.T, version, body string) runFixture {
 	if err := os.WriteFile(promptPath, []byte("完成 fixture"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeJSON(t, filepath.Join(controlRoot, "output", "worker-result.json"), validDeclaredResult(executable))
 	requestData := map[string]any{
 		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerRequest", "taskId": "TASK-1", "runId": "run-1", "attemptId": "attempt-1", "attemptNumber": 1,
 		"specDigest": digest("a"), "policyDigest": digest("b"), "capabilityDigest": digest("c"), "baseSha": strings.Repeat("1", 40),
@@ -434,6 +458,18 @@ func newRunFixture(t *testing.T, version, body string) runFixture {
 	}
 	requestBytes, _ := json.Marshal(requestData)
 	return runFixture{adapter, validator, adapter.executable, worktree, controlRoot, domain.Record{Kind: domain.KindWorkerRequest, Data: requestBytes}}
+}
+
+func bindTestConformance(t *testing.T, adapter *Adapter) {
+	t.Helper()
+	identity, err := adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	pinned, conformance := identity, identity
+	adapter.pinned, adapter.conformance = &pinned, &conformance
 }
 
 func (f runFixture) requestWith(overrides map[string]any) domain.Record {
