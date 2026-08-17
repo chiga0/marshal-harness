@@ -438,6 +438,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt evidence path escapes the control root or is unsafe", a.now())
 	}
+	defer evidenceDir.close()
 	projection, err := readTaskProjection(controlRoot.file, request.TaskSpecPath, request.SpecDigest, a.validator)
 	if err != nil {
 		return domain.Record{}, err
@@ -482,13 +483,19 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := controlRoot.verifyLinked(); err != nil {
 		return domain.Record{}, codexProtocolFailure("control root changed before provider launch", a.now())
 	}
+	if err := evidence.verifyLeaves(); err != nil {
+		return domain.Record{}, codexProtocolFailure("attempt evidence containment changed before provider launch", a.now())
+	}
 	// Schema/result 通过继承 fd 暴露给 child，避免 provider 按可替换路径
 	// 重新打开叶子；父进程始终持有同一 inode 直至最终验证完成。
 	processCtx, cancelProcess := context.WithCancel(runCtx)
 	defer cancelProcess()
-	command := exec.CommandContext(processCtx, snapshot.path, buildArgs(worktree.path, inheritedFilePath(0), inheritedFilePath(1), projection.model)...)
+	// The child performs its os-level chdir before Start returns. Codex receives
+	// no -C/PWD pathname to resolve later, so replacement after Start cannot
+	// redirect its actual workspace away from that already-open directory.
+	command := exec.CommandContext(processCtx, snapshot.path, buildArgs(inheritedFilePath(0), inheritedFilePath(1), projection.model)...)
 	command.Dir = worktree.path
-	command.Env = workerEnvironment(worktree.path)
+	command.Env = workerEnvironment()
 	command.Stdin = bytes.NewReader(prompt)
 	command.ExtraFiles = []*os.File{evidence.schema, evidence.result}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -518,6 +525,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		_ = command.Wait()
 		return domain.Record{}, codexProtocolFailure("worktree changed during provider launch", a.now())
 	}
+	a.callTestHook("after-worktree-launch-verify")
 	stdoutDone := make(chan captureResult, 1)
 	stderrDone := make(chan streamCapture, 1)
 	go func() { stdoutDone <- captureJSONL(stdout, int64(request.MaxOutputBytes), cancelProcess) }()
@@ -551,6 +559,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if err := replaceFileContents(evidence.metadata, append(metadata, '\n')); err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt evidence metadata could not be persisted", a.now())
+	}
+	if err := controlRoot.verifyLinked(); err != nil {
+		return domain.Record{}, codexProtocolFailure("control root changed during execution", a.now())
 	}
 	if err := evidence.verifyLeaves(); err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt evidence containment changed during execution", a.now())
@@ -601,6 +612,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if err := replaceFileContents(evidence.result, append(data, '\n')); err != nil {
 		return domain.Record{}, codexResultFailure("normalized WorkerResult could not be persisted", a.now())
+	}
+	if err := controlRoot.verifyLinked(); err != nil {
+		return domain.Record{}, codexProtocolFailure("control root changed before completion", a.now())
 	}
 	if err := evidence.verifyLeaves(); err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt evidence containment changed before completion", a.now())

@@ -43,6 +43,49 @@ type pinnedDirectory struct {
 	file *os.File
 }
 
+// pinnedDescendantDirectory keeps every component of a descendant path open.
+// verifyLinked checks each parent/name edge, rather than only the final inode,
+// so rename-and-replace of an evidence directory cannot detach durable output
+// from the authoritative control-root namespace unnoticed.
+type pinnedDescendantDirectory struct {
+	files []*os.File
+	names []string
+}
+
+func (directory *pinnedDescendantDirectory) leaf() *os.File {
+	return directory.files[len(directory.files)-1]
+}
+
+func (directory *pinnedDescendantDirectory) verifyLinked() error {
+	if directory == nil || len(directory.files) != len(directory.names)+1 {
+		return errors.New("pinned descendant directory is invalid")
+	}
+	for index, name := range directory.names {
+		parent, child := directory.files[index], directory.files[index+1]
+		var opened, linked unix.Stat_t
+		if err := unix.Fstat(int(child.Fd()), &opened); err != nil {
+			return err
+		}
+		if err := unix.Fstatat(int(parent.Fd()), name, &linked, unix.AT_SYMLINK_NOFOLLOW); err != nil ||
+			linked.Mode&unix.S_IFMT != unix.S_IFDIR || opened.Ino != linked.Ino || opened.Dev != linked.Dev {
+			return errors.New("pinned descendant directory pathname was replaced")
+		}
+	}
+	return nil
+}
+
+func (directory *pinnedDescendantDirectory) close() {
+	if directory == nil {
+		return
+	}
+	for _, file := range directory.files {
+		if file != nil {
+			_ = file.Close()
+		}
+	}
+	directory.files = nil
+}
+
 func openPinnedDirectory(configured string) (*pinnedDirectory, error) {
 	if !filepath.IsAbs(configured) || filepath.Clean(configured) != configured {
 		return nil, errors.New("directory path must be absolute and clean")
@@ -156,8 +199,8 @@ func (s *executableSnapshot) close() {
 }
 
 // buildArgs 生成冻结的 captured-mode argv。全局参数必须位于 exec 子命令
-// 之前：approval=never、-C 钉住解析后的 worktree、-c 显式关闭
-// workspace-write 网络；--color 是 0.145.0 的 exec 子命令参数，必须放在
+// 之前：approval=never、-c 显式关闭 workspace-write 网络；worktree 只由
+// exec.Cmd.Dir 在 Start 前 chdir，不把可变路径作为 -C 再交给 CLI。--color 是 0.145.0 的 exec 子命令参数，必须放在
 // exec 之后。exec 子命令还携带 JSONL 输出、ephemeral、
 // 忽略用户配置与 rules、workspace-write sandbox 枚举，以及经 containment/
 // symlink 检查后持续持有的 Schema/result fd 路径。--output-last-message
@@ -165,10 +208,9 @@ func (s *executableSnapshot) close() {
 // 从持有的 fd 读取并验证，杜绝路径替换与未经 argv 绑定的旁路结果。prompt
 // 经 stdin 传入而非 argv；model 仅在 TaskSpec 声明非空时追加。所有 argv
 // 直接构造，不经 shell。
-func buildArgs(worktree, schemaPath, resultPath, model string) []string {
+func buildArgs(schemaPath, resultPath, model string) []string {
 	args := []string{
 		"--ask-for-approval", "never",
-		"-C", worktree,
 		"-c", sandboxNetworkOverride,
 		"exec",
 		"--color", "never",
@@ -188,7 +230,7 @@ func buildArgs(worktree, schemaPath, resultPath, model string) []string {
 
 // attemptEvidence 持有启动前以 dirfd/openat 原子占用的全部证据叶子。
 type attemptEvidence struct {
-	dir                        *os.File
+	dir                        *pinnedDescendantDirectory
 	resultName, schemaName     string
 	transcriptName, stderrName string
 	metadataName               string
@@ -208,7 +250,7 @@ func (e *leafClaimError) Unwrap() error { return e.err }
 // prepareAttemptEvidence 打开并钉住 evidence directory inode，然后只经
 // openat(O_EXCL|O_NOFOLLOW) 占用全部 attempt 叶子。后续 worker I/O 与
 // Adapter 落盘都使用这些持续打开的 fd，不再按可被替换的路径重新打开。
-func prepareAttemptEvidence(dir *os.File, resultName string, schemaDocument []byte) (*attemptEvidence, error) {
+func prepareAttemptEvidence(dir *pinnedDescendantDirectory, resultName string, schemaDocument []byte) (*attemptEvidence, error) {
 	evidence := &attemptEvidence{
 		dir: dir, resultName: resultName, schemaName: "codex-output-schema.json",
 		transcriptName: "codex-transcript.jsonl", stderrName: "codex-stderr.log",
@@ -233,12 +275,12 @@ func prepareAttemptEvidence(dir *os.File, resultName string, schemaDocument []by
 		{evidence.metadataName, "metadata", nil, false, &evidence.metadata},
 	}
 	for _, claim := range claims {
-		file, claimErr := claimLeafAt(evidence.dir, claim.name, claim.content, claim.kind)
+		file, claimErr := claimLeafAt(evidence.dir.leaf(), claim.name, claim.content, claim.kind)
 		if claimErr != nil {
 			return nil, claimErr
 		}
 		if claim.readOnly {
-			readFD, openErr := unix.Openat(int(evidence.dir.Fd()), claim.name, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+			readFD, openErr := unix.Openat(int(evidence.dir.leaf().Fd()), claim.name, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
 			if openErr != nil {
 				file.Close()
 				return nil, &leafClaimError{kind: claim.kind, err: fmt.Errorf("reopen attempt %s leaf read-only: %w", claim.kind, openErr)}
@@ -255,7 +297,7 @@ func prepareAttemptEvidence(dir *os.File, resultName string, schemaDocument []by
 		}
 		*claim.target = file
 	}
-	if err := evidence.dir.Sync(); err != nil {
+	if err := evidence.dir.leaf().Sync(); err != nil {
 		return nil, fmt.Errorf("sync attempt evidence directory: %w", err)
 	}
 	failed = false
@@ -315,6 +357,9 @@ func readBoundedFile(file *os.File, limit int64) ([]byte, error) {
 }
 
 func (e *attemptEvidence) verifyLeaves() error {
+	if err := e.dir.verifyLinked(); err != nil {
+		return err
+	}
 	for _, leaf := range []struct {
 		name string
 		file *os.File
@@ -324,7 +369,7 @@ func (e *attemptEvidence) verifyLeaves() error {
 			return err
 		}
 		var linked unix.Stat_t
-		err := unix.Fstatat(int(e.dir.Fd()), leaf.name, &linked, unix.AT_SYMLINK_NOFOLLOW)
+		err := unix.Fstatat(int(e.dir.leaf().Fd()), leaf.name, &linked, unix.AT_SYMLINK_NOFOLLOW)
 		if err != nil || linked.Mode&unix.S_IFMT != unix.S_IFREG || opened.Ino != linked.Ino || opened.Dev != linked.Dev {
 			return errors.New("attempt evidence leaf was replaced")
 		}
@@ -333,10 +378,13 @@ func (e *attemptEvidence) verifyLeaves() error {
 }
 
 func (e *attemptEvidence) close() {
-	for _, file := range []*os.File{e.result, e.schema, e.transcript, e.stderr, e.metadata, e.dir} {
+	for _, file := range []*os.File{e.result, e.schema, e.transcript, e.stderr, e.metadata} {
 		if file != nil {
 			_ = file.Close()
 		}
+	}
+	if e.dir != nil {
+		e.dir.close()
 	}
 }
 
@@ -345,7 +393,7 @@ func inheritedFilePath(index int) string { return fmt.Sprintf("/dev/fd/%d", 3+in
 // prepareEvidenceDirectory traverses/creates the result parent strictly from
 // the pinned control-root descriptor.  It never resolves a descendant through
 // a mutable absolute pathname.
-func prepareEvidenceDirectory(root *os.File, resultRelative string) (*os.File, string, error) {
+func prepareEvidenceDirectory(root *os.File, resultRelative string) (*pinnedDescendantDirectory, string, error) {
 	if resultRelative == "" || filepath.IsAbs(resultRelative) || filepath.Clean(resultRelative) != resultRelative {
 		return nil, "", errors.New("attempt result path is not a clean relative path")
 	}
@@ -362,35 +410,42 @@ func prepareEvidenceDirectory(root *os.File, resultRelative string) (*os.File, s
 	if err != nil {
 		return nil, "", err
 	}
-	current := os.NewFile(uintptr(rootFD), "control-root")
+	directory := &pinnedDescendantDirectory{files: []*os.File{os.NewFile(uintptr(rootFD), "control-root")}}
+	current := directory.files[0]
 	for _, part := range parts[:len(parts)-1] {
 		fd, openErr := unix.Openat(int(current.Fd()), part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if errors.Is(openErr, unix.ENOENT) {
 			if mkdirErr := unix.Mkdirat(int(current.Fd()), part, 0o700); mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
-				current.Close()
+				directory.close()
 				return nil, "", mkdirErr
 			}
 			fd, openErr = unix.Openat(int(current.Fd()), part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		}
 		if openErr != nil {
-			current.Close()
+			directory.close()
 			return nil, "", openErr
 		}
 		next := os.NewFile(uintptr(fd), part)
-		current.Close()
+		directory.names = append(directory.names, part)
+		directory.files = append(directory.files, next)
 		current = next
 	}
-	return current, parts[len(parts)-1], nil
+	if err := directory.verifyLinked(); err != nil {
+		directory.close()
+		return nil, "", err
+	}
+	return directory, parts[len(parts)-1], nil
 }
 
 // workerEnvironment 是 worker 进程环境的完整替换（而非 os.Environ 追加）：
 // 仅从固定基础集合按需传递 HOME、CODEX_HOME、PATH、LANG/LC_*、USER/LOGNAME、
 // SHELL/TERM、TMP/TEMP/TMPDIR 与 XDG cache/data/state 位置，并追加固定隔离
-// 变量。OPENAI_API_KEY、CODEX_API_KEY、GITHUB_TOKEN、GH_TOKEN、AWS_*、
+// 变量。PWD 不透传或重建，避免 CLI 在 Start 后重新解析可变 worktree 路径。
+// OPENAI_API_KEY、CODEX_API_KEY、GITHUB_TOKEN、GH_TOKEN、AWS_*、
 // GOOGLE_*、ANTHROPIC_API_KEY、DASHSCOPE_API_KEY、代理变量、SSH_AUTH_SOCK、
 // MARSHAL_* 及任意未列变量一律不继承。CODEX_HOME 仅透传给 Codex 自身定位
 // 既有认证，Adapter 从不读取、复制、打印或写入其中内容。
-func workerEnvironment(worktree string) []string {
+func workerEnvironment() []string {
 	allowed := map[string]bool{"HOME": true, "CODEX_HOME": true, "PATH": true, "LANG": true, "USER": true, "LOGNAME": true, "SHELL": true, "TERM": true, "TMP": true, "TEMP": true, "TMPDIR": true, "XDG_CACHE_HOME": true, "XDG_DATA_HOME": true, "XDG_STATE_HOME": true}
 	environment := make([]string, 0, len(allowed)+6)
 	for _, entry := range os.Environ() {
@@ -399,7 +454,7 @@ func workerEnvironment(worktree string) []string {
 			environment = append(environment, entry)
 		}
 	}
-	environment = append(environment, "CI=1", "GH_PROMPT_DISABLED=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "PWD="+worktree)
+	environment = append(environment, "CI=1", "GH_PROMPT_DISABLED=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
 	return environment
 }
 
