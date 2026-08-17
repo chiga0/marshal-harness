@@ -17,7 +17,6 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
-	"github.com/gofrs/flock"
 )
 
 var (
@@ -29,9 +28,20 @@ var (
 type Store struct{ root string }
 
 type Lease struct {
-	lock  *flock.Flock
+	file  *os.File
+	held  bool
 	path  string
 	runID string
+}
+
+type leaseOwnerRecord struct {
+	Token            string    `json:"token"`
+	PID              int       `json:"pid"`
+	ProcessStartedAt time.Time `json:"processStartedAt"`
+	AcquiredAt       time.Time `json:"acquiredAt"`
+	HeartbeatAt      time.Time `json:"heartbeatAt"`
+	Device           uint64    `json:"device"`
+	Inode            uint64    `json:"inode"`
 }
 
 var processStartedAt = time.Now().UTC()
@@ -59,8 +69,7 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 		return nil, fmt.Errorf("create run directory: %w", err)
 	}
 	path := filepath.Join(directory, "lease.lock")
-	lock := flock.New(path)
-	locked, err := lock.TryLock()
+	leaseFile, device, inode, locked, err := acquireLeaseFile(s.root, runID)
 	if err != nil {
 		return nil, fmt.Errorf("acquire run lease: %w", err)
 	}
@@ -69,27 +78,24 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 	}
 	var tokenBytes [16]byte
 	if _, err := rand.Read(tokenBytes[:]); err != nil {
-		_ = lock.Unlock()
+		_ = releaseLeaseFile(leaseFile)
 		return nil, fmt.Errorf("generate lease token: %w", err)
 	}
 	now := time.Now().UTC()
-	record, err := json.MarshalIndent(struct {
-		Token            string    `json:"token"`
-		PID              int       `json:"pid"`
-		ProcessStartedAt time.Time `json:"processStartedAt"`
-		AcquiredAt       time.Time `json:"acquiredAt"`
-		HeartbeatAt      time.Time `json:"heartbeatAt"`
-	}{hex.EncodeToString(tokenBytes[:]), os.Getpid(), processStartedAt, now, now}, "", "  ")
+	record, err := json.MarshalIndent(leaseOwnerRecord{
+		Token: hex.EncodeToString(tokenBytes[:]), PID: os.Getpid(), ProcessStartedAt: processStartedAt,
+		AcquiredAt: now, HeartbeatAt: now, Device: device, Inode: inode,
+	}, "", "  ")
 	if err != nil {
-		_ = lock.Unlock()
+		_ = releaseLeaseFile(leaseFile)
 		return nil, err
 	}
 	record = append(record, '\n')
-	if err := os.WriteFile(path+".owner", record, 0o600); err != nil {
-		_ = lock.Unlock()
+	if err := writeLeaseOwner(s.root, runID, record); err != nil {
+		_ = releaseLeaseFile(leaseFile)
 		return nil, fmt.Errorf("write lease owner: %w", err)
 	}
-	return &Lease{lock: lock, path: path, runID: runID}, nil
+	return &Lease{file: leaseFile, held: true, path: path, runID: runID}, nil
 }
 
 // LeaseHeld reports whether the operating system lock for runID is
@@ -98,43 +104,24 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 // creates a missing lock file. A missing, linked or non-regular lock fails
 // closed because process ownership then cannot be proven.
 func (s *Store) LeaseHeld(runID string) (bool, error) {
-	directory, err := s.runDir(runID)
-	if err != nil {
+	if _, err := s.runDir(runID); err != nil {
 		return false, err
 	}
-	path := filepath.Join(directory, "lease.lock")
-	info, err := os.Lstat(path)
-	if err != nil {
-		return false, fmt.Errorf("inspect run lease: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return false, errors.New("inspect run lease: lock path is not a regular file")
-	}
-	probe := flock.New(path)
-	locked, err := probe.TryLock()
-	if err != nil {
-		return false, fmt.Errorf("probe run lease: %w", err)
-	}
-	if !locked {
-		return true, nil
-	}
-	if err := probe.Unlock(); err != nil {
-		return false, fmt.Errorf("release run lease probe: %w", err)
-	}
-	return false, nil
+	return probeLeaseHeld(s.root, runID)
 }
 
 func (l *Lease) Release() error {
-	if l == nil || l.lock == nil {
+	if l == nil || l.file == nil || !l.held {
 		return nil
 	}
-	err := l.lock.Unlock()
-	l.lock = nil
+	err := releaseLeaseFile(l.file)
+	l.file = nil
+	l.held = false
 	return err
 }
 
 func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uint64) error {
-	if lease == nil || lease.lock == nil || !lease.lock.Locked() {
+	if lease == nil || lease.file == nil || !lease.held {
 		return errors.New("append requires held run lease")
 	}
 	if lease.runID != event.RunID {
@@ -283,7 +270,7 @@ func (s *Store) ReadEvents(runID string) ([]domain.RunEvent, bool, error) {
 }
 
 func (s *Store) WriteSnapshot(lease *Lease, state domain.RunState) error {
-	if lease == nil || lease.lock == nil || !lease.lock.Locked() {
+	if lease == nil || lease.file == nil || !lease.held {
 		return errors.New("snapshot write requires held run lease")
 	}
 	if lease.runID != state.RunID {

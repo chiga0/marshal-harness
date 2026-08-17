@@ -4,9 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
+
+// DefaultDriverStalenessThreshold is the single conservative grace window
+// used by both execution orphan recovery and supervisor ownership scans.
+const DefaultDriverStalenessThreshold = 30 * time.Minute
 
 var ErrInvalidTransition = errors.New("invalid lifecycle transition")
 

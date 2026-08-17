@@ -1,6 +1,7 @@
 package review
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,60 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
+
+// EnsureOutcome completes or verifies the terminal Outcome transaction for
+// callers recovering after the authoritative terminal journal event was
+// appended. Existing final records are accepted only when their bytes equal
+// the event-derived record; differing bytes fail closed and are never
+// replaced. The caller must hold the Run lease.
+func EnsureOutcome(runDirectory string, outcome OutcomeData) error {
+	jsonData, markdown, err := renderOutcome(outcome)
+	if err != nil {
+		return err
+	}
+	pairs := [][2]any{
+		{filepath.Join(runDirectory, "outcome.json"), jsonData},
+		{filepath.Join(runDirectory, "outcome.md"), []byte(markdown)},
+	}
+	for _, pair := range pairs {
+		final := pair[0].(string)
+		want := pair[1].([]byte)
+		if existing, readErr := os.ReadFile(final); readErr == nil {
+			if !bytes.Equal(existing, want) {
+				return fmt.Errorf("terminal outcome conflicts with authoritative event: %s", final)
+			}
+			_ = os.Remove(final + ".pending")
+			continue
+		} else if !os.IsNotExist(readErr) {
+			return readErr
+		}
+		pending := final + ".pending"
+		if existing, readErr := os.ReadFile(pending); readErr != nil || !bytes.Equal(existing, want) {
+			if readErr != nil && !os.IsNotExist(readErr) {
+				return readErr
+			}
+			if err := os.Remove(pending); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			if err := atomicWrite(pending, want, false); err != nil {
+				return err
+			}
+		}
+		if err := os.Link(pending, final); err != nil {
+			return err
+		}
+		if err := os.Remove(pending); err != nil {
+			return err
+		}
+	}
+	handle, err := os.Open(runDirectory)
+	if err != nil {
+		return err
+	}
+	err = handle.Sync()
+	_ = handle.Close()
+	return err
+}
 
 type PreparedRecords struct {
 	pendingDecision string

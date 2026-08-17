@@ -72,6 +72,27 @@ func TestLeaseHeldIsReadOnlyOwnershipProbe(t *testing.T) {
 	}
 }
 
+func TestLeaseHeldFailsClosedWhenLockPathIsReplaced(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	lease, err := store.Acquire("run:replace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	path := filepath.Join(root, "runs", "run:replace", "lease.lock")
+	old := path + ".replaced"
+	if err := os.Rename(path, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if held, err := store.LeaseHeld("run:replace"); err == nil || held {
+		t.Fatalf("replacement probe = held:%v err:%v, want fail-closed identity error", held, err)
+	}
+}
+
 func TestRebuildIgnoresTruncatedJournalTail(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

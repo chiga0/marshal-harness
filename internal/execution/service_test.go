@@ -1723,7 +1723,23 @@ func TestOrphanedRecoveryBlocksWhenBudgetExhausted(t *testing.T) {
 		if state.State != domain.StateRunning || state.AttemptsUsed != 2 {
 			t.Fatalf("fixture precondition = %+v", state)
 		}
-		requireFailsBeforeProbe(t, fixture, "attempt budget exhausted")
+		adapter := &countingAdapter{delegate: fixture.input.Adapter.(*fixtureAdapter)}
+		fixture.input.Adapter = adapter
+		_, err := Run(context.Background(), fixture.input)
+		if err == nil || !strings.Contains(err.Error(), "attempt budget exhausted") {
+			t.Fatalf("Run error = %v, want attempt budget exhaustion", err)
+		}
+		if adapter.probes != 0 || adapter.runs != 0 {
+			t.Fatalf("adapter invoked while closing exhausted budget: probes=%d runs=%d", adapter.probes, adapter.runs)
+		}
+		state = inspectState(t, fixture)
+		if state.State != domain.StateBlocked || state.AttemptsUsed != 2 || state.OperationalRetriesUsed != 1 {
+			t.Fatalf("attempt-budget terminal state = %+v", state)
+		}
+		outcomeData, err := os.ReadFile(filepath.Join(fixture.runDir, "outcome.json"))
+		if err != nil || len(outcomeData) == 0 {
+			t.Fatalf("attempt-budget Outcome missing: %v", err)
+		}
 	})
 }
 
@@ -1764,6 +1780,47 @@ func TestOrphanedRecoveryClosesAtOperationalRetryBudget(t *testing.T) {
 	var outcome domain.OutcomeBundle
 	if json.Unmarshal(outcomeData, &outcome) != nil || outcome.TerminalState != domain.StateBlocked || outcome.Verdict != "blocked" {
 		t.Fatalf("terminal Outcome = %+v", outcome)
+	}
+}
+
+func TestOrphanBudgetTerminalTransactionRecoversAfterRestart(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+		preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture", maxAttempts: 3, maxOperationalRetries: 1,
+	})
+	fixture.input.OrphanStalenessThreshold = time.Second
+	appendRetrySegment(t, fixture, "attempt-retry-before-crash")
+	appendWorkerStartedAt(t, fixture, "attempt-orphan-crash", time.Unix(200, 0).UTC())
+	fixture.input.AfterOrphanTerminalAppend = func() error { return errors.New("crash fixture") }
+	result, err := Run(context.Background(), fixture.input)
+	if err == nil || !strings.Contains(err.Error(), "post-append failure") || result.State.State != domain.StateBlocked {
+		t.Fatalf("crash result = %+v err = %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "outcome.json")); !os.IsNotExist(err) {
+		t.Fatalf("final Outcome unexpectedly visible before recovery: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "outcome.json.pending")); err != nil {
+		t.Fatalf("prepared Outcome not durable across crash: %v", err)
+	}
+	fixture.input.AfterOrphanTerminalAppend = nil
+	result, err = Run(context.Background(), fixture.input)
+	if err == nil || !strings.Contains(err.Error(), "operator intervention") || result.State.State != domain.StateBlocked {
+		t.Fatalf("restart compensation result = %+v err = %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "outcome.json")); err != nil {
+		t.Fatalf("restart did not finalize Outcome: %v", err)
+	}
+	events, _, err := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := 0
+	for _, event := range events {
+		if event.Type == "worker.failed" && event.StateTo == domain.StateBlocked {
+			terminal++
+		}
+	}
+	if terminal != 1 {
+		t.Fatalf("terminal events = %d, want exactly one", terminal)
 	}
 }
 

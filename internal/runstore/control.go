@@ -104,7 +104,7 @@ func (s *Store) controlDir(runID string) (string, error) {
 }
 
 func (s *Store) appendControlRecord(lease *Lease, validator ControlValidator, entry controlEntry, payload any, maxJournalBytes int64) error {
-	if lease == nil || lease.lock == nil || !lease.lock.Locked() {
+	if lease == nil || lease.file == nil || !lease.held {
 		return errors.New("control append requires held run lease")
 	}
 	if validator == nil {

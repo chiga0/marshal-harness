@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/gofrs/flock"
 )
 
 // Action is the closed set of actions the supervisor may take for one Run.
@@ -31,7 +33,7 @@ func (a Action) String() string { return string(a) }
 
 // DefaultStalenessThreshold is how long an actively-driven Run may go
 // without a fresh journal event before its driver is considered dead.
-const DefaultStalenessThreshold = 30 * time.Minute
+const DefaultStalenessThreshold = lifecycle.DefaultDriverStalenessThreshold
 
 var (
 	// ErrMarshalBinaryUnavailable is the fixed sentinel returned by New when
@@ -245,6 +247,12 @@ func (s *Supervisor) Decide(status RunStatus) Action {
 	if status.RunID == "" || status.SkipReason != "" {
 		return ActionNone
 	}
+	// A child may hold the Run lease before appending worker.started. Treat
+	// that ownership as an admitted in-flight driver in every source state;
+	// otherwise a second supervisor could duplicate the spawn in this gap.
+	if status.LeaseHeld {
+		return ActionNone
+	}
 	switch status.State {
 	case domain.StateReady, domain.StateReworkRequested:
 		return ActionRunWorker
@@ -283,6 +291,17 @@ func (s *Supervisor) Decide(status RunStatus) Action {
 // in-flight Run (non-terminal state with a live driver) and skips the
 // candidate on any path overlap, directory-prefix or wildcard containment.
 func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
+	// Serialize scan + admission + spawn with the existing repository-wide
+	// coordination lock used by worktree lifecycle operations. This closes
+	// the cross-process TOCTOU where two supervisors could scan the same
+	// authority snapshot and both admit overlapping write domains. Drivers
+	// acquire their Run lease before attempting the worktree lock, so holding
+	// this lock across Start cannot invert the ownership order.
+	coordination, err := s.acquireCoordinationLock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer coordination.Unlock()
 	excluded, err := loadExcludeList(s.stateRoot)
 	if err != nil {
 		// Fail closed: report the read failure and re-dispatch nothing.
@@ -294,7 +313,7 @@ func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
 	}
 	inflight := make([]string, 0, len(statuses))
 	for _, status := range statuses {
-		if status.SkipReason != "" || status.State.Terminal() || !status.DriverAlive {
+		if status.SkipReason != "" || status.State.Terminal() || (!status.DriverAlive && !status.LeaseHeld) {
 			continue
 		}
 		inflight = append(inflight, status.RunID)
@@ -334,6 +353,22 @@ func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].RunID < records[j].RunID })
 	return records, nil
+}
+
+func (s *Supervisor) acquireCoordinationLock(ctx context.Context) (*flock.Flock, error) {
+	locks := filepath.Join(s.stateRoot, "locks")
+	if err := os.MkdirAll(locks, 0o700); err != nil {
+		return nil, fmt.Errorf("supervisor: create coordination directory: %w", err)
+	}
+	lock := flock.New(filepath.Join(locks, "repository.lock"))
+	locked, err := lock.TryLockContext(ctx, 25*time.Millisecond)
+	if err != nil {
+		return nil, fmt.Errorf("supervisor: acquire repository coordination lock: %w", err)
+	}
+	if !locked {
+		return nil, errors.New("supervisor: repository coordination lock unavailable")
+	}
+	return lock, nil
 }
 
 // writeDomainConflictReason returns a non-empty reason when the candidate

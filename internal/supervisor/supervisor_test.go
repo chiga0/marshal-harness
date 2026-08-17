@@ -125,6 +125,10 @@ type fakeExecutor struct {
 	onStart   func()
 }
 
+type executorFunc func(context.Context, []string) error
+
+func (f executorFunc) Start(ctx context.Context, argv []string) error { return f(ctx, argv) }
+
 func (f *fakeExecutor) Start(_ context.Context, argv []string) error {
 	f.attempts++
 	if f.failRunID != "" && runIDFromArgv(argv) == f.failRunID {
@@ -477,6 +481,53 @@ func TestSuperviseDoesNotWriteRunState(t *testing.T) {
 	}
 	if !bytes.Equal(journalBefore, journalAfter) {
 		t.Fatal("Supervise modified events.jsonl; supervisor must be read-only plus spawn")
+	}
+}
+
+func TestTwoSupervisorsSerializeOverlappingAdmission(t *testing.T) {
+	root := t.TempDir()
+	seedRun(t, root, "run-a", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+	seedRun(t, root, "run-b", pathTo(domain.StatePlanned, domain.StateReady), fixtureNow)
+	writeTaskSpecFixture(t, root, "run-a", []string{"shared/**"})
+	writeTaskSpecFixture(t, root, "run-b", []string{"shared/file.go"})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var owner *runstore.Lease
+	firstExec := executorFunc(func(_ context.Context, argv []string) error {
+		if runIDFromArgv(argv) == "run-a" {
+			var err error
+			owner, err = runstore.New(root).Acquire("run-a")
+			if err != nil {
+				return err
+			}
+			close(started)
+			<-release
+		}
+		return nil
+	})
+	secondFake := &fakeExecutor{}
+	first, _ := newSupervisor(t, root, firstExec)
+	second, _ := newSupervisor(t, root, secondFake)
+	firstDone := make(chan error, 1)
+	go func() { _, err := first.Supervise(context.Background()); firstDone <- err }()
+	<-started
+	secondDone := make(chan error, 1)
+	go func() { _, err := second.Supervise(context.Background()); secondDone <- err }()
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second supervisor escaped repository coordination lock: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Release()
+	if secondFake.attempts != 0 {
+		t.Fatalf("second supervisor dispatched %d overlapping runs", secondFake.attempts)
 	}
 }
 

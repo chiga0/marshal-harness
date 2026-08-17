@@ -41,6 +41,10 @@ type Input struct {
 	// journal event must be for a RUNNING run to count as driver-live. Zero
 	// selects defaultOrphanStalenessThreshold.
 	OrphanStalenessThreshold time.Duration
+	// AfterOrphanTerminalAppend is a deterministic fault-injection seam used
+	// to verify restart compensation between the terminal journal append and
+	// Outcome finalization. Production callers leave it nil.
+	AfterOrphanTerminalAppend func() error
 	// ResultEdgeRecheck wires the M9-b typed-edge gate into result
 	// acceptance: when set, every accepted WorkerResult must recheck its
 	// DispatchResultCapability against the current authority ledger before
@@ -162,6 +166,15 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if state.RunID != input.RunID {
 		return Result{}, errors.New("run snapshot identity does not match the requested run")
 	}
+	if state.State == domain.StateBlocked {
+		recovered, recoverErr := recoverOrphanTerminalOutcome(store, lease, runDir, state)
+		if recoverErr != nil {
+			return Result{State: state, AttemptID: state.CurrentAttemptID}, recoverErr
+		}
+		if recovered {
+			return Result{State: state, AttemptID: state.CurrentAttemptID}, errors.New("orphan recovery requires operator intervention: retry budget exhausted")
+		}
+	}
 	// RUNNING is held for the orphan recovery decision below instead of being
 	// rejected here: a RUNNING run whose current attempt shows no live driver
 	// evidence re-enters through the existing RETRY_PENDING channel, while a
@@ -233,7 +246,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	// live RUNNING run keeps the fail-closed state gate rejection.
 	supersededAttemptID := ""
 	if state.State == domain.StateRunning {
-		recovered, orphanAttemptID, recoverErr := recoverOrphanedRunningAttempt(store, lease, runDir, state, task, input.OrphanStalenessThreshold)
+		recovered, orphanAttemptID, recoverErr := recoverOrphanedRunningAttempt(store, lease, runDir, state, task, input.OrphanStalenessThreshold, input.AfterOrphanTerminalAppend)
 		if recoverErr != nil {
 			if recovered.RunID != "" {
 				return Result{State: recovered, AttemptID: orphanAttemptID}, recoverErr
@@ -451,7 +464,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 // defaultOrphanStalenessThreshold bounds how recent the current attempt's
 // last journal event must be for a RUNNING run to count as driver-live when
 // Input.OrphanStalenessThreshold is unset.
-const defaultOrphanStalenessThreshold = 15 * time.Minute
+const defaultOrphanStalenessThreshold = lifecycle.DefaultDriverStalenessThreshold
 
 // recoverOrphanedRunningAttempt implements the fencing-capable re-entry for
 // an orphaned RUNNING attempt: the current attempt shows no live driver
@@ -462,7 +475,7 @@ const defaultOrphanStalenessThreshold = 15 * time.Minute
 // rewritten. A live or structurally ambiguous RUNNING run fails closed with
 // the state gate sentinel, and an exhausted attempt budget blocks recovery
 // without touching the journal.
-func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, threshold time.Duration) (domain.RunState, string, error) {
+func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, threshold time.Duration, afterTerminalAppend func() error) (domain.RunState, string, error) {
 	gateReject := func(reason string) (domain.RunState, string, error) {
 		return domain.RunState{}, "", fmt.Errorf("run state %s cannot start a worker attempt: %s", state.State, reason)
 	}
@@ -483,57 +496,10 @@ func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease,
 	if time.Since(last.Timestamp.UTC()) < threshold {
 		return gateReject("the current attempt still shows live driver evidence")
 	}
-	if uint(state.AttemptsUsed) >= uint(task.Budgets.MaxAttempts) {
-		return domain.RunState{}, "", errors.New("attempt budget exhausted")
-	}
-	if uint(state.OperationalRetriesUsed) >= uint(task.Budgets.MaxOperationalRetries) {
-		orphanAttemptID := state.CurrentAttemptID
-		quarantined, quarantineErr := quarantineOrphanedOutputs(runDir, orphanAttemptID, last.Timestamp)
-		if quarantineErr != nil {
-			return domain.RunState{}, "", fmt.Errorf("orphan recovery: quarantine stale outputs: %w", quarantineErr)
-		}
-		payload := map[string]any{
-			"error":                  "orphaned attempt cannot be retried: operational retry budget exhausted",
-			"orphaned":               true,
-			"terminalReason":         "orphan-operational-retry-budget-exhausted",
-			"fencingGeneration":      state.AttemptsUsed,
-			"staleSince":             last.Timestamp.UTC().Format(time.RFC3339),
-			"quarantinedOutputs":     quarantined,
-			"operationalRetriesUsed": state.OperationalRetriesUsed,
-			"maxOperationalRetries":  task.Budgets.MaxOperationalRetries,
-		}
-		event, next, transitionErr := transition(state, orphanAttemptID, "worker.failed", domain.StateBlocked, time.Now().UTC(), payload, lifecycle.Guard{LeaseHeld: true})
-		if transitionErr != nil {
-			return domain.RunState{}, "", fmt.Errorf("orphan recovery: close exhausted retry budget: %w", transitionErr)
-		}
-		payloadData, marshalErr := json.Marshal(payload)
-		if marshalErr != nil {
-			return domain.RunState{}, "", fmt.Errorf("orphan recovery: encode exhausted retry evidence: %w", marshalErr)
-		}
-		evidenceDigest, digestErr := canonical.DigestJSON(payloadData)
-		if digestErr != nil {
-			return domain.RunState{}, "", fmt.Errorf("orphan recovery: digest exhausted retry evidence: %w", digestErr)
-		}
-		prepared, prepareErr := review.PrepareOutcome(runDir, review.OutcomeData{
-			TaskID: state.TaskID, RunID: state.RunID, TerminalState: domain.StateBlocked, Verdict: "blocked",
-			FinalReviewRound: max(1, state.ReviewRound), FinalReviewDigest: evidenceDigest, FinalEvidenceDigest: evidenceDigest,
-			Summary:      "orphaned RUNNING attempt cannot be recovered because the frozen operational retry budget is exhausted",
-			FindingCount: 1, GeneratedAt: event.Timestamp,
-		})
-		if prepareErr != nil {
-			return domain.RunState{}, "", fmt.Errorf("orphan recovery: prepare terminal outcome: %w", prepareErr)
-		}
-		if appendErr := store.Append(lease, event, state.Sequence); appendErr != nil {
-			prepared.Abort()
-			return domain.RunState{}, "", appendErr
-		}
-		if commitErr := prepared.Commit(); commitErr != nil {
-			return next, orphanAttemptID, fmt.Errorf("orphan recovery: commit terminal outcome: %w", commitErr)
-		}
-		if snapshotErr := store.WriteSnapshot(lease, next); snapshotErr != nil {
-			return next, orphanAttemptID, snapshotErr
-		}
-		return next, orphanAttemptID, errors.New("orphan recovery requires operator intervention: operational retry budget exhausted")
+	attemptsExhausted := uint(state.AttemptsUsed) >= uint(task.Budgets.MaxAttempts)
+	operationalExhausted := uint(state.OperationalRetriesUsed) >= uint(task.Budgets.MaxOperationalRetries)
+	if attemptsExhausted || operationalExhausted {
+		return closeOrphanBudget(store, lease, runDir, state, task, last, attemptsExhausted, afterTerminalAppend)
 	}
 	orphanAttemptID := state.CurrentAttemptID
 	quarantined, err := quarantineOrphanedOutputs(runDir, orphanAttemptID, last.Timestamp)
@@ -558,6 +524,107 @@ func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease,
 		return domain.RunState{}, "", err
 	}
 	return next, orphanAttemptID, nil
+}
+
+func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, last domain.RunEvent, attemptsExhausted bool, afterAppend func() error) (domain.RunState, string, error) {
+	orphanAttemptID := state.CurrentAttemptID
+	quarantined, err := quarantineOrphanedOutputs(runDir, orphanAttemptID, last.Timestamp)
+	if err != nil {
+		return domain.RunState{}, "", fmt.Errorf("orphan recovery: quarantine stale outputs: %w", err)
+	}
+	reason, summary := "orphan-operational-retry-budget-exhausted", "orphaned RUNNING attempt cannot be recovered because the frozen operational retry budget is exhausted"
+	if attemptsExhausted {
+		reason, summary = "orphan-attempt-budget-exhausted", "orphaned RUNNING attempt cannot be recovered because the frozen attempt budget is exhausted"
+	}
+	payload := map[string]any{
+		"error":                  summary,
+		"orphaned":               true,
+		"terminalReason":         reason,
+		"fencingGeneration":      state.AttemptsUsed,
+		"staleSince":             last.Timestamp.UTC().Format(time.RFC3339),
+		"quarantinedOutputs":     quarantined,
+		"attemptsUsed":           state.AttemptsUsed,
+		"maxAttempts":            task.Budgets.MaxAttempts,
+		"operationalRetriesUsed": state.OperationalRetriesUsed,
+		"maxOperationalRetries":  task.Budgets.MaxOperationalRetries,
+	}
+	event, next, err := transition(state, orphanAttemptID, "worker.failed", domain.StateBlocked, time.Now().UTC(), payload, lifecycle.Guard{LeaseHeld: true})
+	if err != nil {
+		return domain.RunState{}, "", fmt.Errorf("orphan recovery: close exhausted retry budget: %w", err)
+	}
+	outcome, err := orphanOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), event)
+	if err != nil {
+		return domain.RunState{}, "", err
+	}
+	prepared, err := review.PrepareOutcome(runDir, outcome)
+	if err != nil {
+		return domain.RunState{}, "", fmt.Errorf("orphan recovery: prepare terminal outcome: %w", err)
+	}
+	if err := store.Append(lease, event, state.Sequence); err != nil {
+		prepared.Abort()
+		return domain.RunState{}, "", err
+	}
+	if afterAppend != nil {
+		if err := afterAppend(); err != nil {
+			return next, orphanAttemptID, fmt.Errorf("orphan recovery: injected post-append failure: %w", err)
+		}
+	}
+	if err := prepared.Commit(); err != nil {
+		return next, orphanAttemptID, fmt.Errorf("orphan recovery: commit terminal outcome: %w", err)
+	}
+	if err := store.WriteSnapshot(lease, next); err != nil {
+		return next, orphanAttemptID, err
+	}
+	if attemptsExhausted {
+		return next, orphanAttemptID, errors.New("orphan recovery requires operator intervention: attempt budget exhausted")
+	}
+	return next, orphanAttemptID, errors.New("orphan recovery requires operator intervention: operational retry budget exhausted")
+}
+
+func recoverOrphanTerminalOutcome(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState) (bool, error) {
+	events, _, err := store.ReadEvents(state.RunID)
+	if err != nil || len(events) == 0 {
+		return false, err
+	}
+	last := events[len(events)-1]
+	if last.Type != "worker.failed" || last.StateFrom != domain.StateRunning || last.StateTo != domain.StateBlocked || !actorIs(last.Actor, "system", "marshal-worker-runner") {
+		return false, nil
+	}
+	reason, _ := last.Payload["terminalReason"].(string)
+	if reason != "orphan-attempt-budget-exhausted" && reason != "orphan-operational-retry-budget-exhausted" {
+		return false, nil
+	}
+	orphaned, _ := last.Payload["orphaned"].(bool)
+	if !orphaned {
+		return false, errors.New("orphan recovery: terminal event lacks orphan authority binding")
+	}
+	outcome, err := orphanOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), last)
+	if err != nil {
+		return false, err
+	}
+	if err := review.EnsureOutcome(runDir, outcome); err != nil {
+		return false, fmt.Errorf("orphan recovery: compensate terminal outcome: %w", err)
+	}
+	if err := store.WriteSnapshot(lease, state); err != nil {
+		return false, fmt.Errorf("orphan recovery: compensate terminal snapshot: %w", err)
+	}
+	return true, nil
+}
+
+func orphanOutcomeFromEvent(taskID string, reviewRound uint, event domain.RunEvent) (review.OutcomeData, error) {
+	payloadData, err := json.Marshal(event.Payload)
+	if err != nil {
+		return review.OutcomeData{}, fmt.Errorf("orphan recovery: encode exhausted retry evidence: %w", err)
+	}
+	digest, err := canonical.DigestJSON(payloadData)
+	if err != nil {
+		return review.OutcomeData{}, fmt.Errorf("orphan recovery: digest exhausted retry evidence: %w", err)
+	}
+	summary, _ := event.Payload["error"].(string)
+	if summary == "" {
+		return review.OutcomeData{}, errors.New("orphan recovery: terminal event lacks summary")
+	}
+	return review.OutcomeData{TaskID: taskID, RunID: event.RunID, TerminalState: domain.StateBlocked, Verdict: "blocked", FinalReviewRound: reviewRound, FinalReviewDigest: digest, FinalEvidenceDigest: digest, Summary: summary, FindingCount: 1, GeneratedAt: event.Timestamp}, nil
 }
 
 // quarantineOrphanedOutputs isolates the stale outputs of an orphaned
