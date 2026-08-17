@@ -194,7 +194,7 @@ func TestDoctorDiscoveryCleanWhenNoCandidates(t *testing.T) {
 	hermeticDiscoveryEnvironment(t, binDir)
 
 	report := runDoctorDiscoveryJSON(t)
-	for _, adapterID := range []string{"opencode", "qwen", "pi"} {
+	for _, adapterID := range []string{"opencode", "qwen", "qoder", "pi"} {
 		entry := findDiscovery(report.Discovery, adapterID)
 		if entry == nil {
 			t.Fatalf("discovery missing %s entry: %+v", adapterID, report.Discovery)

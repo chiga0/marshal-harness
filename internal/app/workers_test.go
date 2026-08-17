@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -53,10 +55,10 @@ func TestNewWorkerRuntimeAllUnconfigured(t *testing.T) {
 		t.Fatal(err)
 	}
 	configurations := runtime.Configurations()
-	if len(configurations) != 3 {
-		t.Fatalf("expected 3 configurations, got %d", len(configurations))
+	if len(configurations) != 4 {
+		t.Fatalf("expected 4 configurations, got %d", len(configurations))
 	}
-	wantOrder := []string{"opencode", "qwen", "pi"}
+	wantOrder := []string{"opencode", "qwen", "qoder", "pi"}
 	for index, want := range wantOrder {
 		if configurations[index].AdapterID != want {
 			t.Fatalf("configurations[%d].AdapterID = %q, want %q", index, configurations[index].AdapterID, want)
@@ -78,11 +80,41 @@ func TestNewWorkerRuntimeAllUnconfigured(t *testing.T) {
 	}
 }
 
+func TestQoderRegistrationRemainsUnsupportedWithoutAuthorityEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "qodercli")
+	script := "#!/bin/sh\nfor arg in \"$@\"; do if [ \"$arg\" = \"--version\" ]; then printf '1.1.23\\n'; exit 0; fi; done\nexit 1\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewWorkerRuntime(staticEnv(map[string]string{"MARSHAL_QODER_PATH": path}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := runtime.Registry().Resolve("qoder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := worker.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		ProbeStatus string `json:"probeStatus"`
+	}
+	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ProbeStatus != "unsupported" {
+		t.Fatalf("qoder without authority evidence = %q, want unsupported", snapshot.ProbeStatus)
+	}
+}
+
 func TestNewWorkerRuntimeRegistersAllThree(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
 		"MARSHAL_OPENCODE_PATH": writeExecutable(t, "opencode"),
 		"MARSHAL_QWEN_PATH":     writeExecutable(t, "qwen"),
+		"MARSHAL_QODER_PATH":    writeExecutable(t, "qodercli"),
 		"MARSHAL_PI_PATH":       writeExecutable(t, "pi"),
 	}
 	runtime, err := NewWorkerRuntime(staticEnv(env))
@@ -90,10 +122,10 @@ func TestNewWorkerRuntimeRegistersAllThree(t *testing.T) {
 		t.Fatal(err)
 	}
 	configurations := runtime.Configurations()
-	if len(configurations) != 3 {
-		t.Fatalf("expected 3 configurations, got %d", len(configurations))
+	if len(configurations) != 4 {
+		t.Fatalf("expected 4 configurations, got %d", len(configurations))
 	}
-	wantOrder := []string{"opencode", "qwen", "pi"}
+	wantOrder := []string{"opencode", "qwen", "qoder", "pi"}
 	for index, want := range wantOrder {
 		if configurations[index].AdapterID != want {
 			t.Fatalf("configurations[%d].AdapterID = %q, want %q", index, configurations[index].AdapterID, want)
@@ -108,10 +140,10 @@ func TestNewWorkerRuntimeRegistersAllThree(t *testing.T) {
 	}
 	// Registry.IDs returns sorted IDs; verify membership and count.
 	ids := runtime.Registry().IDs()
-	if len(ids) != 3 {
-		t.Fatalf("expected 3 registered adapters, got %v", ids)
+	if len(ids) != 4 {
+		t.Fatalf("expected 4 registered adapters, got %v", ids)
 	}
-	wantIDs := map[string]bool{"opencode": true, "qwen": true, "pi": true}
+	wantIDs := map[string]bool{"opencode": true, "qwen": true, "qoder": true, "pi": true}
 	for _, id := range ids {
 		if !wantIDs[id] {
 			t.Errorf("unexpected registered adapter %q", id)
@@ -261,7 +293,7 @@ func TestConfigurationsCloneIsImmutable(t *testing.T) {
 		t.Fatal("expected fresh clone to differ from the tampered slice")
 	}
 	// The clone must preserve frozen order and outcomes.
-	wantOrder := []string{"opencode", "qwen", "pi"}
+	wantOrder := []string{"opencode", "qwen", "qoder", "pi"}
 	for index, want := range wantOrder {
 		if second[index].AdapterID != want {
 			t.Fatalf("second[%d].AdapterID = %q, want %q", index, second[index].AdapterID, want)
