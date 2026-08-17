@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-更新时间：2026-08-14
+更新时间：2026-08-17
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
@@ -96,5 +96,7 @@ M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal 
 ADR 0017 中以下历史 universal 口径就地标注**已被 ADR 0018 取代**，不再作为实施依据：所有远程副作用统一绑定完整 Task/Run/Attempt/allocation/lease 身份（现仅 dispatch-bound Port）；所有 Attempt/Artifact 接纳统一 fencing（现按 Port 分流）；所有远程请求统一额外绑定 providerType（现 public-api 禁止 providerType）；六类 Provider 注册产生 legacy CapabilitySnapshot（现为 ProviderRegistration + 不可变 ProviderCapabilitySnapshot，legacy 快照仅经 fail-closed mapper 转换）。
 
 实现状态不因文档冻结或 ADR 接受而提前升级：ADR 0017 的接受只关闭设计歧义、ADR 0018 的接受只冻结设计，均只冻结设计不升级 M8–M13 实现/conformance 状态；上表各 Milestone 状态为：M7 于 2026-08-11 通过退出门禁后更新为已通过（只表示设计与契约阶段通过，不表示后续实现或 conformance 完成），M8 按修订后的契约（含 ADR 0018 §7 顺序硬门禁）以新任务启动，六个硬门禁 gate 全部合入 main 且各 PR 远端 CI 全绿后于 2026-08-13 通过退出门禁，更新为 `PASSED`（各 gate 尚未整体接入最终 Runtime 执行路径），M9 七交付（a lease 持久账本 PR #104、b typed edge 运行时接线 PR #107、c1 marshal-server 常驻 + Public API PR #111、c2 SSE 只读投影 PR #115、c3 远程注册 + TLS 基线 PR #116、e DurableExecutionEngine seam PR #119、d Push/Pull 双拓扑 transport + conformance PR #120）全部合入 main 且各 PR 远端 CI 全绿后于 2026-08-14 通过退出门禁，更新为 `PASSED`（只表示设计与契约+本 milestone 交付门禁通过，不表示 M10–M13 实现状态变化，不表示 conformance 终态），M10–M13 保持 `PLANNED`；首次 Sandbox SPI dogfood Run 的既有实现成果按**未接纳探索证据**对待，不计为 M8 实现进度。
+
+ADR 0033（Proposed）只冻结受控 merge 的 journal-bound authority/delivery 目标与负向恢复矩阵。提出、接受、Schema 落盘或任一前置实现切片合入都不构成受控 merge supported 声明，也不改变 M10 在途及 M11–M13 `PLANNED` 状态；A–D 全部实现、独立审计 P0/P1 清零且 required CI/secret scan 与恢复 conformance 全绿后，最多登记显式 opt-in 的 `local-nonproduction` 受限 profile。production supported 仍须等待 M11 external rollback witness、跨节点 fenced lease 与协调回滚恢复演练通过。
 
 每个 Milestone 都执行范围冻结、实现、单元/集成/E2E 测试、独立审计、提交推送和远端 CI 绿色验收。任何 P0/P1 审计问题或 CI 失败都会阻止进入下一阶段。M7–M13 还要求每个 Milestone 先通过 Local MVP 全量回归。M7 只冻结 Project/Goal 的存在性、authority ownership 与多 Run 原则；M13 才实现 ADR 0019 的完整 Goal 控制器，M7–M12 完成声明不涵盖复杂需求目标。

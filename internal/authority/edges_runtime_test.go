@@ -162,6 +162,7 @@ func testPublicationIssuance(suffix string) PublicationIssuance {
 		TargetActor:            runtimePublicationActor(),
 		Operation:              PublicationOperationSubmit,
 		BoundPublicationDigest: digestBytes([]byte("publication-" + suffix)),
+		ExpectedPrincipal:      "github-login:marshal-publisher",
 		DecisionBinding: PublicationDecisionBinding{
 			SideEffectIntentDigest: digestBytes([]byte("side-effect-intent-" + suffix)),
 			ReviewDecisionDigest:   digestBytes([]byte("review-decision-" + suffix)),
@@ -177,6 +178,7 @@ func publicationUseRequestFor(authorization PublicationAuthorization, issuance P
 		TargetActor:            authorization.TargetActor,
 		Operation:              authorization.Operation,
 		PublicationDigest:      authorization.BoundPublicationDigest,
+		ExpectedPrincipal:      authorization.ExpectedPrincipal,
 		SideEffectIntentDigest: issuance.DecisionBinding.SideEffectIntentDigest,
 		ReviewDecisionDigest:   issuance.DecisionBinding.ReviewDecisionDigest,
 		EvidenceDigest:         issuance.DecisionBinding.EvidenceDigest,

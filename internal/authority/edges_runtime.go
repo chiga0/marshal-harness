@@ -313,6 +313,7 @@ type PublicationIssuance struct {
 	TargetActor            SecurityDomainId           `json:"targetActor"`
 	Operation              PublicationOperation       `json:"operation"`
 	BoundPublicationDigest string                     `json:"boundPublicationDigest"`
+	ExpectedPrincipal      string                     `json:"expectedPrincipal"`
 	DecisionBinding        PublicationDecisionBinding `json:"decisionBinding"`
 	Expiry                 string                     `json:"expiry"`
 }
@@ -328,6 +329,9 @@ func (request PublicationIssuance) validate() error {
 		return err
 	}
 	if err := requireDigest("publicationIssuance.boundPublicationDigest", request.BoundPublicationDigest); err != nil {
+		return err
+	}
+	if err := requireText("publicationIssuance.expectedPrincipal", request.ExpectedPrincipal); err != nil {
 		return err
 	}
 	if err := request.DecisionBinding.Validate(); err != nil {
@@ -428,6 +432,7 @@ type PublicationUseRequest struct {
 	TargetActor            SecurityDomainId     `json:"targetActor"`
 	Operation              PublicationOperation `json:"operation"`
 	PublicationDigest      string               `json:"publicationDigest"`
+	ExpectedPrincipal      string               `json:"expectedPrincipal"`
 	SideEffectIntentDigest string               `json:"sideEffectIntentDigest"`
 	ReviewDecisionDigest   string               `json:"reviewDecisionDigest"`
 	EvidenceDigest         string               `json:"evidenceDigest"`
@@ -458,6 +463,9 @@ func (request PublicationUseRequest) validate() error {
 			return err
 		}
 	}
+	if err := requireText("publicationUseRequest.expectedPrincipal", request.ExpectedPrincipal); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -484,6 +492,16 @@ type publicationEdgeEntry struct {
 	Decision      PublicationDecisionBinding
 }
 
+// PublicationAuthorizationPersistence is the durable sink for publication
+// authorization issuance and revocation successors. PersistenceID must be
+// stable so repeated recovery wiring coalesces instead of accumulating
+// duplicate callbacks. Persist runs before the in-memory ledger mutation;
+// failure therefore fails closed and leaves the current ledger unchanged.
+type PublicationAuthorizationPersistence interface {
+	PersistenceID() string
+	PersistPublicationAuthorization(ledgerKey string, authorization PublicationAuthorization, decision PublicationDecisionBinding) error
+}
+
 // EdgeRuntime is the issuance/revocation/current-ledger recheck runtime of
 // the three typed cross-domain edges (ADR 0018 §3/§7). The issuer is always
 // the Core AuthorityNamespaceId supplied at construction; individual
@@ -507,6 +525,7 @@ type EdgeRuntime struct {
 	dispatchEdges    map[string]dispatchEdgeEntry
 	materialEdges    map[string]materialEdgeEntry
 	publicationEdges map[string]publicationEdgeEntry
+	publicationSinks map[string]PublicationAuthorizationPersistence
 	revokedAliases   map[string]string
 	useReplays       map[string]struct{}
 	audit            []EdgeAuditRecord
@@ -525,10 +544,33 @@ func NewEdgeRuntime(coreNamespace AuthorityNamespaceId) (*EdgeRuntime, error) {
 		dispatchEdges:    map[string]dispatchEdgeEntry{},
 		materialEdges:    map[string]materialEdgeEntry{},
 		publicationEdges: map[string]publicationEdgeEntry{},
+		publicationSinks: map[string]PublicationAuthorizationPersistence{},
 		revokedAliases:   map[string]string{},
 		useReplays:       map[string]struct{}{},
 		nextAudit:        1,
 	}, nil
+}
+
+// BindPublicationAuthorizationPersistence binds a durable sink used by every
+// later publication authorization issuance/revocation. Rebinding the same
+// stable ID is idempotent and replaces only the equivalent recovery handle.
+func (r *EdgeRuntime) BindPublicationAuthorizationPersistence(sink PublicationAuthorizationPersistence) error {
+	if r == nil || sink == nil || sink.PersistenceID() == "" {
+		return errors.New("authority: publication authorization persistence requires a stable sink")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.publicationSinks[sink.PersistenceID()] = sink
+	return nil
+}
+
+func (r *EdgeRuntime) persistPublicationAuthorization(ledgerKey string, authorization PublicationAuthorization, decision PublicationDecisionBinding) error {
+	for _, sink := range r.publicationSinks {
+		if err := sink.PersistPublicationAuthorization(ledgerKey, authorization, decision); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Issuer returns the Core AuthorityNamespaceId every issued edge carries.
@@ -737,6 +779,7 @@ func (r *EdgeRuntime) IssuePublicationAuthorization(request PublicationIssuance,
 		TargetActor:            request.TargetActor,
 		Operation:              request.Operation,
 		BoundPublicationDigest: request.BoundPublicationDigest,
+		ExpectedPrincipal:      request.ExpectedPrincipal,
 		Expiry:                 request.Expiry,
 		Generation:             1,
 	}
@@ -753,8 +796,18 @@ func (r *EdgeRuntime) IssuePublicationAuthorization(request PublicationIssuance,
 		return PublicationAuthorization{}, wrapped
 	}
 	if existing, recorded := r.publicationEdges[digest]; recorded {
+		if err := r.persistPublicationAuthorization(digest, existing.Authorization, existing.Decision); err != nil {
+			wrapped := fmt.Errorf("authority: publicationAuthorization: durable issuance replay rejected: %w", err)
+			r.appendAudit(EdgeAuditIssuanceRejected, kind, digest, "", wrapped.Error(), now)
+			return PublicationAuthorization{}, wrapped
+		}
 		r.appendAudit(EdgeAuditIssuanceMerged, kind, digest, "", "", now)
 		return existing.Authorization, nil
+	}
+	if err := r.persistPublicationAuthorization(digest, authorization, request.DecisionBinding); err != nil {
+		wrapped := fmt.Errorf("authority: publicationAuthorization: durable issuance rejected: %w", err)
+		r.appendAudit(EdgeAuditIssuanceRejected, kind, digest, "", wrapped.Error(), now)
+		return PublicationAuthorization{}, wrapped
 	}
 	r.publicationEdges[digest] = publicationEdgeEntry{Authorization: authorization, Decision: request.DecisionBinding}
 	r.appendAudit(EdgeAuditIssued, kind, digest, "", "", now)
@@ -904,6 +957,12 @@ func (r *EdgeRuntime) RevokePublicationAuthorization(edgeDigest string, reason E
 		r.mu.Unlock()
 		return PublicationAuthorization{}, fmt.Errorf("authority: publicationAuthorization: revocation rejected: %w", err)
 	}
+	if err := r.persistPublicationAuthorization(edgeDigest, revoked, entry.Decision); err != nil {
+		wrapped := fmt.Errorf("authority: publicationAuthorization: durable revocation rejected: %w", err)
+		r.appendAudit(EdgeAuditRevocationRejected, kind, edgeDigest, "", wrapped.Error(), now)
+		r.mu.Unlock()
+		return PublicationAuthorization{}, wrapped
+	}
 	entry.Authorization = revoked
 	r.publicationEdges[edgeDigest] = entry
 	r.revokedAliases[revokedDigest] = edgeDigest
@@ -974,6 +1033,50 @@ func (r *EdgeRuntime) CurrentPublicationAuthorization(edgeDigest string) (Public
 		return PublicationAuthorization{}, PublicationDecisionBinding{}, false
 	}
 	return entry.Authorization, entry.Decision, true
+}
+
+// RestorePublicationAuthorization hydrates an already-issued durable
+// PublicationAuthorization into a newly constructed runtime. It is not an
+// issuance path: callers must present the original ledger key, the complete
+// current record (including any revocation successor), and the frozen
+// decision binding. This is the crash-recovery counterpart of current-ledger
+// recheck; it never turns a revoked record back into an active authorization.
+func (r *EdgeRuntime) RestorePublicationAuthorization(ledgerKey string, authorization PublicationAuthorization, decision PublicationDecisionBinding) error {
+	if r == nil {
+		return errors.New("authority: edge runtime is not initialized")
+	}
+	if err := authorization.Validate(); err != nil {
+		return err
+	}
+	if err := decision.Validate(); err != nil {
+		return err
+	}
+	if !authorization.Issuer.Equal(r.issuer) {
+		return errors.New("authority: durable publication authorization issuer does not match this runtime")
+	}
+	issuance := authorization
+	issuance.RevocationGeneration = 0
+	issuance.EdgeDigest = ""
+	issuanceDigest, err := issuance.Digest()
+	if err != nil {
+		return err
+	}
+	if ledgerKey != issuanceDigest {
+		return errors.New("authority: durable publication authorization ledger key is not its issuance digest")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.publicationEdges[ledgerKey]; ok {
+		if existing.Authorization != authorization || existing.Decision != decision {
+			return ErrEdgeDiverged
+		}
+		return nil
+	}
+	r.publicationEdges[ledgerKey] = publicationEdgeEntry{Authorization: authorization, Decision: decision}
+	if authorization.RevocationGeneration > 0 {
+		r.revokedAliases[authorization.EdgeDigest] = ledgerKey
+	}
+	return nil
 }
 
 // RecheckDispatchResult is the current-ledger recheck of one result-ingress
@@ -1186,6 +1289,9 @@ func (r *EdgeRuntime) RecheckPublicationAuthorization(presented PublicationAutho
 		!request.TargetActor.Equal(entry.Authorization.TargetActor) ||
 		request.PublicationDigest != entry.Authorization.BoundPublicationDigest {
 		return reject("binding match", ErrEdgeBindingMismatch)
+	}
+	if request.ExpectedPrincipal != entry.Authorization.ExpectedPrincipal {
+		return reject("principal binding", ErrEdgeBindingMismatch)
 	}
 	if request.SideEffectIntentDigest != entry.Decision.SideEffectIntentDigest ||
 		request.ReviewDecisionDigest != entry.Decision.ReviewDecisionDigest ||

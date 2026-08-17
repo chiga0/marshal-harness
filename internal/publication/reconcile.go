@@ -145,20 +145,6 @@ func Reconcile(ctx context.Context, input ReconcileInput) (ReconcileResult, erro
 	if publicationDigest != frozenDigest || state.Publication.HeadSHA != publication.HeadSHA || state.Publication.ExternalID != publication.Request.ID || state.Publication.Repository != publication.Repository.NameWithOwner || publication.TaskID != state.TaskID || publication.RunID != state.RunID {
 		return ReconcileResult{}, errors.New("current PublicationRecord differs from frozen lifecycle identity")
 	}
-	if _, _, _, err := authorizePublicationDecision(runDir, state, input.Validator, frozen); err != nil {
-		return ReconcileResult{}, err
-	}
-
-	// (3) Merge fact capture: observe the immutable SCMMergeReceipt from the
-	// merged PR node. An unmerged PR must go through accept, not reconcile.
-	receiptRecord, err := input.MergeObserver.ObserveMergeReceipt(ctx, domain.Record{Kind: domain.KindPublicationRecord, Data: publicationData})
-	if err != nil {
-		if errors.Is(err, port.ErrPRNotMerged) {
-			return ReconcileResult{}, errors.New("PR is not merged; reconcile is only for merged publications, use marshal task accept otherwise")
-		}
-		return ReconcileResult{}, err
-	}
-
 	taskData, err := os.ReadFile(filepath.Join(runDir, "task-spec.json"))
 	if err != nil {
 		return ReconcileResult{}, err
@@ -171,6 +157,19 @@ func Reconcile(ctx context.Context, input ReconcileInput) (ReconcileResult, erro
 	}
 	var task domain.TaskSpec
 	if err := json.Unmarshal(taskData, &task); err != nil {
+		return ReconcileResult{}, err
+	}
+	if _, _, _, err := authorizePublicationDecision(runDir, state, input.Validator, frozen, task.Publication.MergePolicy); err != nil {
+		return ReconcileResult{}, err
+	}
+
+	// (3) Merge fact capture: observe the immutable SCMMergeReceipt from the
+	// merged PR node. An unmerged PR must go through accept, not reconcile.
+	receiptRecord, err := input.MergeObserver.ObserveMergeReceipt(ctx, domain.Record{Kind: domain.KindPublicationRecord, Data: publicationData})
+	if err != nil {
+		if errors.Is(err, port.ErrPRNotMerged) {
+			return ReconcileResult{}, errors.New("PR is not merged; reconcile is only for merged publications, use marshal task accept otherwise")
+		}
 		return ReconcileResult{}, err
 	}
 

@@ -144,6 +144,7 @@ type fixtureOptions struct {
 	reworkRoundsUsed uint
 	noRequiredChecks bool
 	noExpectedRemote bool
+	policyMerge      bool
 }
 
 type publicationFixture struct {
@@ -275,6 +276,12 @@ func newPublicationFixture(t *testing.T, opts fixtureOptions) *publicationFixtur
 	if opts.noExpectedRemote {
 		expectedRemoteURL = ""
 	}
+	mergePolicy := domain.MergePolicyNever
+	mergeMethod := ""
+	if opts.policyMerge {
+		mergePolicy = domain.MergePolicyPolicy
+		mergeMethod = domain.MergeMethodSquash
+	}
 	task := domain.TaskSpec{
 		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindTask,
 		Metadata:   domain.TaskMetadata{ID: taskID, Title: "Publish controlled commit"},
@@ -290,7 +297,7 @@ func newPublicationFixture(t *testing.T, opts fixtureOptions) *publicationFixtur
 		Budgets: domain.TaskBudgets{RunTimeoutSeconds: 120, AttemptTimeoutSeconds: 60, MaxAttempts: 3, MaxOperationalRetries: 1, MaxReworkRounds: opts.maxReworkRounds, MaxOutputBytes: 100000},
 		Publication: domain.TaskPublication{
 			Required: true, Provider: "github", Mode: "draft", Remote: "origin",
-			BaseBranch: "main", MergePolicy: "never", RequiredChecks: requiredChecks,
+			BaseBranch: "main", MergePolicy: mergePolicy, MergeMethod: mergeMethod, RequiredChecks: requiredChecks,
 		},
 	}
 	taskData, err := json.Marshal(task)
@@ -305,7 +312,7 @@ func newPublicationFixture(t *testing.T, opts fixtureOptions) *publicationFixtur
 		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindPolicySnapshot,
 		TaskID: taskID, RunID: runID,
 		Sources:      []fixturePolicySource{{Scope: "builtin", Digest: "sha256:" + strings.Repeat("b", 64), Required: true}},
-		Effective:    fixturePolicyEffective{MinimumExecutionProfile: "workspace-write", RequireEnforcedNetworkPolicy: false, NetworkPolicy: "unenforced", AllowFallbackWorkers: true, AllowWorkerSubagents: false, AllowPublication: true, AllowMerge: false, AllowGateWaivers: false, AllowedAdapters: []string{"fake"}, EnvironmentAllowlist: []string{"PATH", "LANG", "TMPDIR"}, RetentionDays: 30},
+		Effective:    fixturePolicyEffective{MinimumExecutionProfile: "workspace-write", RequireEnforcedNetworkPolicy: false, NetworkPolicy: "unenforced", AllowFallbackWorkers: true, AllowWorkerSubagents: false, AllowPublication: true, AllowMerge: opts.policyMerge, AllowGateWaivers: false, AllowedAdapters: []string{"fake"}, EnvironmentAllowlist: []string{"PATH", "LANG", "TMPDIR"}, RetentionDays: 30},
 		PolicyDigest: "sha256:" + strings.Repeat("c", 64),
 		GeneratedAt:  now,
 	}
@@ -402,6 +409,10 @@ func newPublicationFixture(t *testing.T, opts fixtureOptions) *publicationFixtur
 	if err != nil {
 		t.Fatal(err)
 	}
+	mergeRecommendation := "do-not-merge"
+	if opts.policyMerge {
+		mergeRecommendation = mergeRecommendationEligible
+	}
 	decision := domain.ReviewDecision{
 		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindReviewDecision,
 		TaskID: taskID, RunID: runID, ReviewRound: 1,
@@ -410,7 +421,7 @@ func newPublicationFixture(t *testing.T, opts fixtureOptions) *publicationFixtur
 		VerificationDigest: reportDigest, ArtifactManifestDigest: manifestDigest,
 		EvidenceDigest: evidenceDigest, Verdict: "accept", Summary: "accept and publish",
 		BlockingFindings: []domain.Finding{}, NonBlockingFindings: []domain.Finding{},
-		PublicationRecommendation: "publish", MergeRecommendation: "do-not-merge",
+		PublicationRecommendation: "publish", MergeRecommendation: mergeRecommendation,
 		DecidedAt: decidedAt,
 	}
 	decisionData, err := json.Marshal(decision)
@@ -726,6 +737,84 @@ func TestPublishWithoutRequiredChecksAcceptsAndWritesOutcome(t *testing.T) {
 	}
 	if err := fixture.validator.Validate(domain.KindOutcome, data); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPublishPolicyMergeProducesMergeEligiblePublication(t *testing.T) {
+	fixture := newPublicationFixture(t, fixtureOptions{maxReworkRounds: 1, policyMerge: true})
+	result, err := fixture.publish(t, newFakePublisher(fakePublishOK))
+	if err != nil {
+		t.Fatalf("policy merge publication failed: %v", err)
+	}
+	if result.State.State != domain.StateCIPending {
+		t.Fatalf("state = %s, want CI_PENDING", result.State.State)
+	}
+	if result.Publication.MergePolicy != domain.MergePolicyPolicy {
+		t.Fatalf("publication mergePolicy = %q, want policy", result.Publication.MergePolicy)
+	}
+	intent := fixture.readIntent(t)
+	if intent.MergePolicy != domain.MergePolicyPolicy {
+		t.Fatalf("intent mergePolicy = %q, want policy", intent.MergePolicy)
+	}
+	decisionData, err := os.ReadFile(filepath.Join(fixture.runDirectory, "decisions", "decision-001.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisionDigest, err := canonical.DigestJSON(decisionData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decision domain.ReviewDecision
+	if err := json.Unmarshal(decisionData, &decision); err != nil {
+		t.Fatal(err)
+	}
+	state := fixture.inspect(t)
+	capabilityDigest := fabricatedDigest("8")
+	lease, err := fixture.store.Acquire(fixture.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.CapabilityDigest = capabilityDigest
+	if err := fixture.store.WriteSnapshot(lease, state); err != nil {
+		_ = lease.Release()
+		t.Fatal(err)
+	}
+	approval := domain.ApprovalRecord{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindApprovalRecord,
+		RecordID: "approval-policy-merge", TaskID: fixture.taskID, RunID: fixture.runID, ControlSequence: 1,
+		Gate: domain.ApprovalGatePublish, Source: domain.ControlSource{Type: domain.ControlSourceTypeHuman, ID: "maintainer"},
+		Binding: domain.ApprovalBinding{StateSequence: state.Sequence, SpecDigest: fixture.specDigest, PolicyDigest: fixture.policyDigest,
+			CapabilityDigest: capabilityDigest, BaseSHA: fixture.baseSHA, ReviewRound: state.ReviewRound,
+			DecisionDigest: decisionDigest, EvidenceDigest: fixture.evidenceDigest},
+		Outcome: domain.ApprovalOutcomeApproved, CreatedAt: time.Now().UTC(),
+	}
+	if err := fixture.store.AppendApproval(lease, fixture.validator, approval); err != nil {
+		_ = lease.Release()
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	authorityNamespaceID, err := reconcileAuthorityNamespaceID(fixture.stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mergeFixture := &mergeFixture{
+		t: fixture.t, stateRoot: fixture.stateRoot, runDirectory: fixture.runDirectory,
+		taskID: fixture.taskID, runID: fixture.runID, baseSHA: fixture.baseSHA,
+		headSHA: result.Publication.HeadSHA, specDigest: fixture.specDigest,
+		policyDigest: fixture.policyDigest, decisionDigest: decisionDigest,
+		evidenceDigest: fixture.evidenceDigest, verificationDigest: decision.VerificationDigest,
+		capabilityDigest: capabilityDigest, authorityNamespaceID: authorityNamespaceID,
+		validator: fixture.validator, store: fixture.store,
+	}
+	mergeHarness := newMergeHarness(t, mergeFixture)
+	merged, err := mergeHarness.merge(t)
+	if err != nil {
+		t.Fatalf("published policy run did not enter controlled merge: %v", err)
+	}
+	if merged.State.State != domain.StateAccepted || merged.Intent.PublicationDigest == "" || merged.Receipt.ReceiptDigest == "" {
+		t.Fatalf("controlled merge result = %+v", merged)
 	}
 }
 

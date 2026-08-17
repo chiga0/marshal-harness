@@ -48,6 +48,34 @@ const PreAttemptAbortTerminalReason = "aborted-before-attempt"
 // rejected for every other state combination.
 const PublicationReconcileEventType = "publication.reconciled"
 
+// PublicationMergedEventType is the ADR 0032 controlled-merge convergence
+// event. It is the only CI_PENDING -> ACCEPTED trigger allowed under
+// mergePolicy=policy and must be recorded by the fixed SCMMerger actor; the
+// reducer enforces the actor and the closed receipt-bound payload on replay.
+const PublicationMergedEventType = "publication.merged"
+
+// MergerActorType and MergerActorID are the frozen producer-authority
+// identity of the publication.merged event. Only this exact actor may record
+// the controlled-merge convergence.
+const (
+	MergerActorType = "publisher"
+	MergerActorID   = "marshal-scm-merger"
+)
+
+// mergedPayloadFields is the ADR 0032 §6 closed payload shape of the
+// publication.merged event. Any other key is rejected on replay.
+var mergedPayloadFields = []string{
+	"intentId",
+	"intentDigest",
+	"receiptId",
+	"receiptDigest",
+	"headOid",
+	"mergeCommitSha",
+	"mergeMethod",
+	"publicationDigest",
+	"remoteCheckRecordDigest",
+}
+
 var allowed = map[domain.State]map[domain.State]bool{
 	domain.StateCreated:         {domain.StatePlanned: true},
 	domain.StatePlanned:         {domain.StateReady: true},
@@ -92,6 +120,11 @@ type Guard struct {
 	// PublicationReconcileRecord and the current-ledger recheck have all been
 	// validated for an ADR 0026 typed reconciliation.
 	ReconcileAuthorized bool
+	// MergeAuthorized is set only when the ADR 0032 §5 receipt binding
+	// verification has fully passed (authorityNamespaceId, runId, head/base,
+	// method, publicationRecordId/publicationDigest triple, mergedBy canonical
+	// identity and receiptDigest recomputation). It gates publication.merged.
+	MergeAuthorized bool
 }
 
 func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain.RunState, error) {
@@ -110,6 +143,19 @@ func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain
 		}
 		if !guard.ReconcileAuthorized || !guard.EvidenceCurrent || !guard.PublicationCurrent || !guard.DecisionCurrent {
 			return current, fmt.Errorf("%w: reconciliation requires the authorized receipt, record and current-ledger recheck", ErrInvalidTransition)
+		}
+	}
+	if event.Type == PublicationMergedEventType {
+		if !guard.LeaseHeld {
+			return current, fmt.Errorf("%w: run lease is not held", ErrInvalidTransition)
+		}
+		// ADR 0032 §6: controlled merge converges only on the fully
+		// receipt-bound intent (MergeAuthorized) plus current evidence and
+		// publication. Required checks were independently proven by the fresh
+		// RemoteCheckRecord bound into the intent, so RequiredGatesPass is
+		// deliberately not required here (it gates the never-merge path).
+		if !guard.MergeAuthorized || !guard.EvidenceCurrent || !guard.PublicationCurrent {
+			return current, fmt.Errorf("%w: controlled merge requires the authorized intent, receipt binding and current-ledger recheck", ErrInvalidTransition)
 		}
 	}
 	if !guard.LeaseHeld {
@@ -137,7 +183,7 @@ func Reduce(current domain.RunState, event domain.RunEvent, guard Guard) (domain
 	// the re-verified, materialized RemoteCheckRecord, and the ReviewDecision
 	// and current-ledger recheck remain mandatory through EvidenceCurrent,
 	// DecisionCurrent, PublicationCurrent and ReconcileAuthorized above.
-	if (event.StateTo == domain.StateAccepted || event.StateTo == domain.StatePublishing) && (!guard.EvidenceCurrent || (event.Type != PublicationReconcileEventType && !guard.RequiredGatesPass)) {
+	if (event.StateTo == domain.StateAccepted || event.StateTo == domain.StatePublishing) && (!guard.EvidenceCurrent || (event.Type != PublicationReconcileEventType && event.Type != PublicationMergedEventType && !guard.RequiredGatesPass)) {
 		return current, fmt.Errorf("%w: current passing evidence required", ErrInvalidTransition)
 	}
 	if event.StateTo == domain.StateAccepted && current.State == domain.StateCIPending && !guard.PublicationCurrent {
@@ -229,6 +275,24 @@ func ValidateTransition(current domain.State, runID string, sequence uint64, eve
 		}
 		return nil
 	}
+	if event.Type == PublicationMergedEventType {
+		// ADR 0032 §6: the controlled-merge convergence event is the single
+		// CI_PENDING -> ACCEPTED trigger under mergePolicy=policy and carries
+		// the fixed producer actor and closed receipt-bound payload.
+		if current != domain.StateCIPending || event.StateTo != domain.StateAccepted {
+			return fmt.Errorf("%w: publication.merged only allows CI_PENDING -> ACCEPTED", ErrInvalidTransition)
+		}
+		if event.Actor == nil || event.Actor.Type != MergerActorType || event.Actor.ID != MergerActorID {
+			return fmt.Errorf("%w: publication.merged must be recorded by publisher/marshal-scm-merger", ErrInvalidTransition)
+		}
+		if event.RunID != runID || event.Sequence != sequence+1 || event.StateFrom != current {
+			return fmt.Errorf("%w: event identity or sequence does not match current state", ErrInvalidTransition)
+		}
+		if err := validateMergedPayload(event.Payload); err != nil {
+			return err
+		}
+		return nil
+	}
 	if event.Type == AbortEventType {
 		// Closed source-state set (ADR 0012 + ADR 0029): the explicit abort
 		// event never borrows the generic StateAborted structural exception
@@ -291,6 +355,23 @@ func validateAbortPayload(current domain.State, payload map[string]any) error {
 	reason, ok := payload["reason"].(string)
 	if !ok || strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("%w: run.aborted reason must be a non-empty operator string", ErrInvalidTransition)
+	}
+	return nil
+}
+
+// validateMergedPayload freezes the publication.merged payload shape: exactly
+// the nine closed receipt/intent-bound fields, every value a non-empty
+// string. Any missing field, extra key, or non-string value fails closed so
+// a journal entry can never carry injected machine fields.
+func validateMergedPayload(payload map[string]any) error {
+	if len(payload) != len(mergedPayloadFields) {
+		return fmt.Errorf("%w: publication.merged payload must carry exactly the closed field set", ErrInvalidTransition)
+	}
+	for _, key := range mergedPayloadFields {
+		value, ok := payload[key].(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%w: publication.merged payload field %s must be a non-empty string", ErrInvalidTransition, key)
+		}
 	}
 	return nil
 }

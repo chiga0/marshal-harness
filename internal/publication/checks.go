@@ -141,6 +141,14 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 				return CheckResult{State: state}, mergeErr
 			}
 		} else {
+			// ADR 0032 §6 / T7: under mergePolicy=policy a PR that was merged
+			// outside Marshal (no local SCMMergeIntent) must never be claimed
+			// as a controlled merge; it blocks and only ADR 0026 reconcile may
+			// later migrate it.
+			if task.Publication.MergePolicy == domain.MergePolicyPolicy {
+				result, blockedErr := block(store, lease, state, runDir, errors.New("policy merge run observed an external merge without a local SCMMergeIntent"))
+				return CheckResult{State: result.State}, blockedErr
+			}
 			if _, persistErr := persistMergeReceipt(runDir, input.Validator, receiptRecord, state.RunID, published, publicationDigest); persistErr != nil {
 				result, blockedErr := block(store, lease, state, runDir, persistErr)
 				return CheckResult{State: result.State}, blockedErr
@@ -188,6 +196,12 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 		if adjudicationErr := adjudicateTimelyCompletion(checks, parseCheckCompletionTimes(observedRecord.Data), ciDeadline, published.PublishedAt, now); adjudicationErr != nil {
 			result, blockedErr := block(store, lease, state, runDir, adjudicationErr)
 			return CheckResult{State: result.State, Checks: checks}, blockedErr
+		}
+		// ADR 0032 §6: under mergePolicy=policy all-green required checks are
+		// only merge admission input, never ACCEPTED on their own. The run
+		// stays CI_PENDING; only publication.merged may converge it.
+		if task.Publication.MergePolicy == domain.MergePolicyPolicy {
+			return CheckResult{State: state, Checks: checks}, nil
 		}
 		event, next, err = transition(state, "publication.checks-passed", domain.StateAccepted, map[string]any{"terminalReason": "published head passed all required checks"}, lifecycle.Guard{LeaseHeld: true, EvidenceCurrent: true, RequiredGatesPass: true, PublicationCurrent: true})
 	case "fail":
