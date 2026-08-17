@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/chiga0/marshal-harness/internal/contract"
+	"github.com/chiga0/marshal-harness/internal/port"
 	"golang.org/x/sys/unix"
 )
 
@@ -27,6 +28,7 @@ type AuthorityConfig struct {
 	EvidenceDigest         string               `json:"evidenceDigest"`
 	AuthorityGeneration    uint64               `json:"authorityGeneration"`
 	ProbeArtifactDigest    string               `json:"probeArtifactDigest"`
+	ChallengeDigest        string               `json:"challengeDigest"`
 	RevokedEvidenceDigests []string             `json:"revokedEvidenceDigests"`
 	TrustRoots             []AuthorityTrustRoot `json:"trustRoots"`
 }
@@ -37,20 +39,19 @@ type AuthorityTrustRoot struct {
 	PublicKey string `json:"publicKey"`
 }
 
-// NewFromAuthorityConfig constructs a Qoder adapter from a private,
-// no-symlink authority config and immediately binds the exact signed evidence
-// digest named by that config. Invalid, missing, stale, substituted or
-// untrusted authority material fails construction closed.
+// NewFromAuthorityConfig is the production admission boundary. ADR 0034 is
+// still Proposed, so the candidate authority mechanism is deliberately not
+// activatable by application configuration. Acceptance plus independent
+// negative-matrix review must land before a later change can enable it.
 func NewFromAuthorityConfig(ctx context.Context, executable string, validator *contract.Validator, configPath string) (*Adapter, error) {
-	adapter, err := NewWithConformanceAuthority(executable, validator, nil)
+	if ctx == nil || ctx.Err() != nil || strings.TrimSpace(configPath) == "" {
+		return nil, port.Permanent(ErrConformancePending)
+	}
+	_, err := New(executable, validator)
 	if err != nil {
 		return nil, err
 	}
-	adapter.authorityConfigPath = configPath
-	if err := adapter.refreshConfiguredConformance(ctx); err != nil {
-		return nil, err
-	}
-	return adapter, nil
+	return nil, port.Permanent(ErrConformancePending)
 }
 
 func authorityFromConfig(config AuthorityConfig) (*AuthorityEvidenceStore, error) {
@@ -84,7 +85,7 @@ func loadAuthorityConfig(path string) (AuthorityConfig, error) {
 		return AuthorityConfig{}, errors.New("open qoder conformance authority config")
 	}
 	defer file.Close()
-	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o077 != 0 || (int(stat.Uid) != os.Geteuid() && stat.Uid != 0) {
+	if !privateRegularFile(stat, os.Geteuid()) {
 		return AuthorityConfig{}, errors.New("qoder conformance authority config must be a private regular file")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, authorityConfigLimit+1))
@@ -100,7 +101,7 @@ func loadAuthorityConfig(path string) (AuthorityConfig, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return AuthorityConfig{}, errors.New("qoder conformance authority config is invalid")
 	}
-	if !filepath.IsAbs(config.EvidenceRoot) || filepath.Clean(config.EvidenceRoot) != config.EvidenceRoot || !validSHA256Digest(config.EvidenceDigest) || !validSHA256Digest(config.ProbeArtifactDigest) || config.AuthorityGeneration == 0 || len(config.TrustRoots) == 0 {
+	if !filepath.IsAbs(config.EvidenceRoot) || filepath.Clean(config.EvidenceRoot) != config.EvidenceRoot || !validSHA256Digest(config.EvidenceDigest) || !validSHA256Digest(config.ProbeArtifactDigest) || !validSHA256Digest(config.ChallengeDigest) || config.AuthorityGeneration == 0 || len(config.TrustRoots) == 0 {
 		return AuthorityConfig{}, errors.New("qoder conformance authority config is incomplete")
 	}
 	seen := map[string]struct{}{}
@@ -136,6 +137,8 @@ func openNoSymlinkPath(path string, directory bool) (*os.File, unix.Stat_t, erro
 		flags := unix.O_RDONLY | unix.O_NOFOLLOW | unix.O_CLOEXEC
 		if index < len(parts)-1 || directory {
 			flags |= unix.O_DIRECTORY
+		} else {
+			flags |= unix.O_NONBLOCK
 		}
 		next, openErr := unix.Openat(current, part, flags, 0)
 		_ = unix.Close(current)
@@ -150,4 +153,12 @@ func openNoSymlinkPath(path string, directory bool) (*os.File, unix.Stat_t, erro
 		return nil, zero, err
 	}
 	return os.NewFile(uintptr(current), filepath.Base(path)), stat, nil
+}
+
+func privateRegularFile(stat unix.Stat_t, effectiveUID int) bool {
+	return stat.Mode&unix.S_IFMT == unix.S_IFREG && stat.Mode&0o077 == 0 && (int(stat.Uid) == effectiveUID || stat.Uid == 0)
+}
+
+func privateDirectory(stat unix.Stat_t, effectiveUID int) bool {
+	return stat.Mode&unix.S_IFMT == unix.S_IFDIR && stat.Mode&0o777 == 0o700 && (int(stat.Uid) == effectiveUID || stat.Uid == 0)
 }

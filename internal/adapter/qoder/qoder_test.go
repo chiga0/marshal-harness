@@ -1,7 +1,6 @@
 package qoder
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"golang.org/x/sys/unix"
 )
 
 func TestNewRequiresExactExecutableAndValidator(t *testing.T) {
@@ -107,7 +107,7 @@ func TestRunRequiresBoundConformanceIdentityBeforeLaunch(t *testing.T) {
 	}
 }
 
-func TestBindConformanceRequiresAuthorityResolvedSignedEvidence(t *testing.T) {
+func TestCallerRewrittenCapabilitySnapshotCannotAuthorizeAdapter(t *testing.T) {
 	fixture := newRunFixture(t, supportedBinary, successEvents("provider/model"))
 	fixture.adapter.mu.Lock()
 	fixture.adapter.conformance = nil
@@ -120,8 +120,8 @@ func TestBindConformanceRequiresAuthorityResolvedSignedEvidence(t *testing.T) {
 	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	// A caller can rewrite Probe JSON, but BindConformance accepts no
-	// CapabilitySnapshot and therefore cannot authorize that self-claim.
+	// A caller can rewrite Probe JSON, but no public binding API consumes a
+	// CapabilitySnapshot or caller-supplied authority store.
 	snapshot["probeStatus"], snapshot["probeErrors"] = "supported", []string{}
 	record.Data, err = json.Marshal(snapshot)
 	if err != nil {
@@ -130,50 +130,22 @@ func TestBindConformanceRequiresAuthorityResolvedSignedEvidence(t *testing.T) {
 	if strings.Contains(string(record.Data), conformanceEventContract) {
 		t.Fatal("Probe unexpectedly contains an independent conformance receipt")
 	}
-	identity, err := fixture.adapter.inspect(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrConformancePending) {
-		t.Fatalf("adapter without authority accepted caller digest: %v", err)
-	}
-	store, evidenceDigest := signedTestAuthority(t, identity)
-	fixture.adapter.authority = store
-	if err := fixture.adapter.BindConformance(context.Background(), evidenceDigest); err != nil {
-		t.Fatal(err)
-	}
 	probe, err := fixture.adapter.Probe(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
-		t.Fatalf("probe did not reflect exact bound conformance: %s", probe.Data)
-	}
-	fixture.adapter.mu.Lock()
-	fixture.adapter.conformance = nil
-	fixture.adapter.mu.Unlock()
-	path := filepath.Join(store.root, strings.TrimPrefix(evidenceDigest, "sha256:")+".json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data = bytes.Replace(data, []byte(`"credentialVerified":true`), []byte(`"credentialVerified":false`), 1)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := fixture.adapter.BindConformance(context.Background(), evidenceDigest); err == nil {
-		t.Fatal("tampered authority evidence was accepted")
+	if strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
+		t.Fatalf("rewritten caller snapshot authorized adapter: %s", probe.Data)
 	}
 }
 
-func TestNewFromAuthorityConfigBindsExactSignedEvidence(t *testing.T) {
-	executable := fakeExecutable(t, supportedBinary, "exit 0")
-	validator := newValidator(t)
-	base, err := New(executable, validator)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := base.inspect(context.Background())
+func TestCandidateAuthorityDynamicallyRevalidatesAndRevokesFullRun(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched-after-revoke")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+successEvents("provider/model"))
+	fixture.adapter.mu.Lock()
+	fixture.adapter.conformance = nil
+	fixture.adapter.mu.Unlock()
+	identity, err := fixture.adapter.inspect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +153,7 @@ func TestNewFromAuthorityConfigBindsExactSignedEvidence(t *testing.T) {
 	publicKey := store.trustRoots["test-root"]
 	configPath := filepath.Join(realTempDir(t), "authority.json")
 	configValue := AuthorityConfig{
-		EvidenceRoot: store.root, EvidenceDigest: evidenceDigest, AuthorityGeneration: 1, ProbeArtifactDigest: digest("a"), RevokedEvidenceDigests: []string{},
+		EvidenceRoot: store.root, EvidenceDigest: evidenceDigest, AuthorityGeneration: 1, ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), RevokedEvidenceDigests: []string{},
 		TrustRoots: []AuthorityTrustRoot{{KeyID: "test-root", Algorithm: "ed25519", PublicKey: base64.StdEncoding.EncodeToString(publicKey)}},
 	}
 	configData, err := json.Marshal(configValue)
@@ -191,11 +163,11 @@ func TestNewFromAuthorityConfigBindsExactSignedEvidence(t *testing.T) {
 	if err := os.WriteFile(configPath, configData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := NewFromAuthorityConfig(context.Background(), executable, validator, configPath)
-	if err != nil {
+	fixture.adapter.authorityConfigPath = configPath
+	if err := fixture.adapter.refreshConfiguredConformance(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	probe, err := adapter.Probe(context.Background())
+	probe, err := fixture.adapter.Probe(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,6 +179,44 @@ func TestNewFromAuthorityConfigBindsExactSignedEvidence(t *testing.T) {
 			t.Fatalf("supported snapshot omitted %s: %s", field, probe.Data)
 		}
 	}
+	var incomplete map[string]any
+	if err := json.Unmarshal(probe.Data, &incomplete); err != nil {
+		t.Fatal(err)
+	}
+	delete(incomplete, "conformanceEvidenceDigest")
+	incompleteData, err := json.Marshal(incomplete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.validator.Validate(domain.KindCapabilitySnapshot, incompleteData); err == nil {
+		t.Fatal("schema accepted supported qoder without required conformance metadata")
+	}
+	for name, mutate := range map[string]func(*AuthorityConfig){
+		"wrong probe artifact": func(value *AuthorityConfig) { value.ProbeArtifactDigest = digest("f") },
+		"wrong challenge":      func(value *AuthorityConfig) { value.ChallengeDigest = digest("f") },
+		"wrong generation":     func(value *AuthorityConfig) { value.AuthorityGeneration++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			broken := configValue
+			mutate(&broken)
+			writeAuthorityConfig(t, configPath, broken)
+			brokenProbe, err := fixture.adapter.Probe(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(brokenProbe.Data), `"probeStatus":"unsupported"`) {
+				t.Fatalf("mismatched authority config remained supported: %s", brokenProbe.Data)
+			}
+			writeAuthorityConfig(t, configPath, configValue)
+		})
+	}
+	probe, err = fixture.adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
+		t.Fatalf("restored exact authority config did not recover: %s", probe.Data)
+	}
 	configValue.RevokedEvidenceDigests = []string{evidenceDigest}
 	revokedData, err := json.Marshal(configValue)
 	if err != nil {
@@ -215,29 +225,32 @@ func TestNewFromAuthorityConfigBindsExactSignedEvidence(t *testing.T) {
 	if err := os.WriteFile(configPath, revokedData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	revokedProbe, err := adapter.Probe(context.Background())
+	revokedProbe, err := fixture.adapter.Probe(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(revokedProbe.Data), `"probeStatus":"unsupported"`) {
 		t.Fatalf("revoked evidence remained supported: %s", revokedProbe.Data)
 	}
-	if err := adapter.verifyExecutionIdentity(identity); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
-		t.Fatalf("revoked evidence did not fail closed at launch: %v", err)
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("revoked evidence did not fail closed for full Run: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("revoked full Run launched the worker")
 	}
 
 	badConfig := filepath.Join(realTempDir(t), "authority.json")
 	if err := os.WriteFile(badConfig, configData, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewFromAuthorityConfig(context.Background(), executable, validator, badConfig); err == nil {
+	if _, err := loadAuthorityConfig(badConfig); err == nil {
 		t.Fatal("world-readable authority config was accepted")
 	}
 	symlink := filepath.Join(realTempDir(t), "authority-link.json")
 	if err := os.Symlink(configPath, symlink); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewFromAuthorityConfig(context.Background(), executable, validator, symlink); err == nil {
+	if _, err := loadAuthorityConfig(symlink); err == nil {
 		t.Fatal("symlinked authority config was accepted")
 	}
 	realParent := realTempDir(t)
@@ -249,8 +262,97 @@ func TestNewFromAuthorityConfigBindsExactSignedEvidence(t *testing.T) {
 	if err := os.Symlink(realParent, parentLink); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewFromAuthorityConfig(context.Background(), executable, validator, filepath.Join(parentLink, "authority.json")); err == nil {
+	if _, err := loadAuthorityConfig(filepath.Join(parentLink, "authority.json")); err == nil {
 		t.Fatal("authority config beneath a symlinked parent was accepted")
+	}
+}
+
+func TestProductionAuthorityConfigRemainsDisabledWhileADR0034Proposed(t *testing.T) {
+	executable := fakeExecutable(t, supportedBinary, "exit 0")
+	if _, err := NewFromAuthorityConfig(context.Background(), executable, newValidator(t), "/private/candidate.json"); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("production candidate activation error = %v", err)
+	}
+}
+
+func TestCandidateAuthorityGenerationRollbackFailsClosed(t *testing.T) {
+	executable := fakeExecutable(t, supportedBinary, "exit 0")
+	adapter, err := New(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	store1, digest1 := signedTestAuthorityWindowGeneration(t, identity, now.Add(-time.Minute), now.Add(time.Hour), mustHostFingerprint(t), 1)
+	store2, digest2 := signedTestAuthorityWindowGeneration(t, identity, now.Add(-time.Minute), now.Add(time.Hour), mustHostFingerprint(t), 2)
+	configPath := filepath.Join(realTempDir(t), "authority.json")
+	writeAuthorityConfig(t, configPath, authorityConfigForStore(store1, digest1, 1))
+	adapter.authorityConfigPath = configPath
+	if err := adapter.refreshConfiguredConformance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	writeAuthorityConfig(t, configPath, authorityConfigForStore(store2, digest2, 2))
+	if err := adapter.refreshConfiguredConformance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	storeSameGeneration, digestSameGeneration := signedTestAuthorityWindowGeneration(t, identity, now.Add(-2*time.Minute), now.Add(time.Hour), mustHostFingerprint(t), 2)
+	writeAuthorityConfig(t, configPath, authorityConfigForStore(storeSameGeneration, digestSameGeneration, 2))
+	if err := adapter.refreshConfiguredConformance(context.Background()); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("same-generation evidence substitution error = %v", err)
+	}
+	writeAuthorityConfig(t, configPath, authorityConfigForStore(store1, digest1, 1))
+	if err := adapter.refreshConfiguredConformance(context.Background()); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("generation rollback error = %v", err)
+	}
+	if adapter.authorityGenerationHighWater != 2 {
+		t.Fatalf("authority high-water = %d, want 2", adapter.authorityGenerationHighWater)
+	}
+}
+
+func TestCandidateAuthorityRevocationAtFullRunLaunchBoundary(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched-after-boundary-revoke")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+successEvents("provider/model"))
+	fixture.adapter.mu.Lock()
+	fixture.adapter.conformance = nil
+	fixture.adapter.mu.Unlock()
+	identity, err := fixture.adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, evidenceDigest := signedTestAuthority(t, identity)
+	configPath := filepath.Join(realTempDir(t), "authority.json")
+	config := authorityConfigForStore(store, evidenceDigest, 1)
+	writeAuthorityConfig(t, configPath, config)
+	fixture.adapter.authorityConfigPath = configPath
+	fixture.adapter.beforeLaunchGuard = func() {
+		config.RevokedEvidenceDigests = []string{evidenceDigest}
+		writeAuthorityConfig(t, configPath, config)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
+		t.Fatalf("launch-boundary revocation error = %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("worker launched after launch-boundary revocation")
+	}
+}
+
+func authorityConfigForStore(store *AuthorityEvidenceStore, evidenceDigest string, generation uint64) AuthorityConfig {
+	return AuthorityConfig{
+		EvidenceRoot: store.root, EvidenceDigest: evidenceDigest, AuthorityGeneration: generation, ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), RevokedEvidenceDigests: []string{},
+		TrustRoots: []AuthorityTrustRoot{{KeyID: "test-root", Algorithm: "ed25519", PublicKey: base64.StdEncoding.EncodeToString(store.trustRoots["test-root"])}},
+	}
+}
+
+func writeAuthorityConfig(t *testing.T, path string, config AuthorityConfig) {
+	t.Helper()
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -262,7 +364,7 @@ func TestSealConformanceEvidenceFreezesProbeProfile(t *testing.T) {
 	now := time.Now().UTC()
 	observation := LiveConformanceObservation{
 		RunnerID: "independent-qoder-verifier", RunnerVersion: "1", ObservedAt: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
-		Executable: "/opt/qoder/qodercli", ExecutableDigest: digest("e"), BinaryVersion: supportedBinary, HostOS: runtime.GOOS, HostArch: runtime.GOARCH, HostFingerprint: digest("d"), AuthorityGeneration: 1,
+		AdapterVersion: adapterVersion, Executable: "/opt/qoder/qodercli", ExecutableDigest: digest("e"), BinaryVersion: supportedBinary, QoderCLIVersion: supportedBinary, HostOS: runtime.GOOS, HostArch: runtime.GOARCH, HostFingerprint: digest("d"), AuthorityGeneration: 1,
 		ProbeSuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), ArgvDigest: expectedProbeArgvDigest(), EnvironmentDigest: expectedProbeEnvironmentDigest(), ToolPolicyDigest: expectedProbeToolPolicyDigest(), TranscriptDigest: digest("b"),
 		CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true, EventContract: conformanceEventContract, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode, TrustRootKeyID: "root-1",
 	}
@@ -274,7 +376,7 @@ func TestSealConformanceEvidenceFreezesProbeProfile(t *testing.T) {
 	if err := json.Unmarshal(data, &evidence); err != nil {
 		t.Fatal(err)
 	}
-	if evidence.EvidenceDigest != evidenceDigest || evidence.ProbeProfileDigest != expectedProbeProfileDigest() {
+	if evidence.EvidenceDigest != evidenceDigest || evidence.RunnerVersion != observation.RunnerVersion || evidence.AdapterVersion != observation.AdapterVersion || evidence.BinaryVersion != observation.BinaryVersion || evidence.QoderCLIVersion != observation.QoderCLIVersion || evidence.HostOS != observation.HostOS || evidence.HostArch != observation.HostArch || evidence.CredentialVerified != observation.CredentialVerified || evidence.LiveProtocolVerified != observation.LiveProtocolVerified || evidence.WorkspaceWriteVerified != observation.WorkspaceWriteVerified {
 		t.Fatalf("sealed evidence did not freeze profile: %+v", evidence)
 	}
 	if err := evidence.validate(now, map[string]ed25519.PublicKey{"root-1": publicKey}); err != nil {
@@ -325,11 +427,45 @@ func TestSealConformanceEvidenceFreezesProbeProfile(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*LiveConformanceObservation){
-		"credential not verified": func(value *LiveConformanceObservation) { value.CredentialVerified = false },
-		"protocol not verified":   func(value *LiveConformanceObservation) { value.LiveProtocolVerified = false },
-		"unsupported version":     func(value *LiveConformanceObservation) { value.BinaryVersion = "1.2.0" },
-		"wrong probe profile":     func(value *LiveConformanceObservation) { value.ProbeProfileDigest = digest("f") },
-		"non-independent runner":  func(value *LiveConformanceObservation) { value.RunnerID = adapterID },
+		"missing runner id":         func(value *LiveConformanceObservation) { value.RunnerID = "" },
+		"missing runner version":    func(value *LiveConformanceObservation) { value.RunnerVersion = "" },
+		"missing trust root":        func(value *LiveConformanceObservation) { value.TrustRootKeyID = "" },
+		"credential not verified":   func(value *LiveConformanceObservation) { value.CredentialVerified = false },
+		"protocol not verified":     func(value *LiveConformanceObservation) { value.LiveProtocolVerified = false },
+		"workspace not verified":    func(value *LiveConformanceObservation) { value.WorkspaceWriteVerified = false },
+		"unsupported version":       func(value *LiveConformanceObservation) { value.BinaryVersion = "1.2.0" },
+		"qoder version mismatch":    func(value *LiveConformanceObservation) { value.QoderCLIVersion = "1.1.24" },
+		"missing adapter version":   func(value *LiveConformanceObservation) { value.AdapterVersion = "" },
+		"wrong adapter version":     func(value *LiveConformanceObservation) { value.AdapterVersion = "0.0.0" },
+		"missing host os":           func(value *LiveConformanceObservation) { value.HostOS = "" },
+		"missing host arch":         func(value *LiveConformanceObservation) { value.HostArch = "" },
+		"missing host fingerprint":  func(value *LiveConformanceObservation) { value.HostFingerprint = "" },
+		"missing executable":        func(value *LiveConformanceObservation) { value.Executable = "" },
+		"missing executable digest": func(value *LiveConformanceObservation) { value.ExecutableDigest = "" },
+		"missing binary version":    func(value *LiveConformanceObservation) { value.BinaryVersion = "" },
+		"missing qoder version":     func(value *LiveConformanceObservation) { value.QoderCLIVersion = "" },
+		"missing generation":        func(value *LiveConformanceObservation) { value.AuthorityGeneration = 0 },
+		"missing probe artifact":    func(value *LiveConformanceObservation) { value.ProbeArtifactDigest = "" },
+		"missing challenge":         func(value *LiveConformanceObservation) { value.ChallengeDigest = "" },
+		"missing transcript digest": func(value *LiveConformanceObservation) { value.TranscriptDigest = "" },
+		"wrong suite":               func(value *LiveConformanceObservation) { value.ProbeSuiteDigest = digest("f") },
+		"wrong capabilities":        func(value *LiveConformanceObservation) { value.CapabilitiesDigest = digest("f") },
+		"wrong probe profile":       func(value *LiveConformanceObservation) { value.ProbeProfileDigest = digest("f") },
+		"wrong argv":                func(value *LiveConformanceObservation) { value.ArgvDigest = digest("f") },
+		"wrong environment":         func(value *LiveConformanceObservation) { value.EnvironmentDigest = digest("f") },
+		"wrong tool policy":         func(value *LiveConformanceObservation) { value.ToolPolicyDigest = digest("f") },
+		"wrong event contract":      func(value *LiveConformanceObservation) { value.EventContract = "wrong" },
+		"wrong protocol":            func(value *LiveConformanceObservation) { value.ProtocolVersion = "wrong" },
+		"wrong permission":          func(value *LiveConformanceObservation) { value.PermissionMode = "wrong" },
+		"non-independent runner":    func(value *LiveConformanceObservation) { value.RunnerID = adapterID },
+		"future observation": func(value *LiveConformanceObservation) {
+			value.ObservedAt = time.Now().UTC().Add(time.Hour)
+			value.ValidUntil = value.ObservedAt.Add(time.Hour)
+		},
+		"stale observation": func(value *LiveConformanceObservation) {
+			value.ObservedAt = time.Now().UTC().Add(-25 * time.Hour)
+			value.ValidUntil = time.Now().UTC().Add(time.Hour)
+		},
 		"validity window too long": func(value *LiveConformanceObservation) {
 			value.ValidUntil = value.ObservedAt.Add(maxConformanceValidity + time.Second)
 		},
@@ -362,7 +498,231 @@ func TestAuthorityEvidenceStoreRejectsSymlinkRoot(t *testing.T) {
 	}
 }
 
-func TestBindConformanceRejectsSamePlatformDifferentHost(t *testing.T) {
+func TestAuthorityConfigRejectsUnknownFieldAndFIFOWithoutBlocking(t *testing.T) {
+	if _, err := loadAuthorityConfig(filepath.Join(realTempDir(t), "missing.json")); err == nil {
+		t.Fatal("missing authority config was accepted")
+	}
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := AuthorityConfig{
+		EvidenceRoot: realTempDir(t), EvidenceDigest: digest("a"), AuthorityGeneration: 1, ProbeArtifactDigest: digest("b"), ChallengeDigest: digest("c"), RevokedEvidenceDigests: []string{},
+		TrustRoots: []AuthorityTrustRoot{{KeyID: "root", Algorithm: "ed25519", PublicKey: base64.StdEncoding.EncodeToString(publicKey)}},
+	}
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["unknownField"] = true
+	data, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(realTempDir(t), "authority.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadAuthorityConfig(path); err == nil {
+		t.Fatal("authority config with unknown field was accepted")
+	}
+	delete(document, "unknownField")
+	delete(document, "evidenceDigest")
+	data, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadAuthorityConfig(path); err == nil {
+		t.Fatal("authority config with missing evidence digest was accepted")
+	}
+	fifo := filepath.Join(realTempDir(t), "authority.fifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadAuthorityConfig(fifo); err == nil {
+		t.Fatal("authority config FIFO was accepted")
+	}
+}
+
+func TestAuthorityEvidenceRejectsMissingUnknownRotatedAndAbnormalLeaf(t *testing.T) {
+	executable := fakeExecutable(t, supportedBinary, "exit 0")
+	adapter, err := New(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, evidenceDigest := signedTestAuthority(t, identity)
+	now := time.Now().UTC()
+	if _, err := store.resolve(context.Background(), digest("f"), now); err == nil {
+		t.Fatal("missing authority evidence was accepted")
+	}
+	otherPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknownStore, err := NewAuthorityEvidenceStore(store.root, map[string]ed25519.PublicKey{"other-root": otherPublic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unknownStore.Close()
+	if _, err := unknownStore.resolve(context.Background(), evidenceDigest, now); err == nil {
+		t.Fatal("evidence signed by an unknown key was accepted")
+	}
+	rotatedStore, err := NewAuthorityEvidenceStore(store.root, map[string]ed25519.PublicKey{"test-root": otherPublic})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rotatedStore.Close()
+	if _, err := rotatedStore.resolve(context.Background(), evidenceDigest, now); err == nil {
+		t.Fatal("evidence signed by the pre-rotation key was accepted")
+	}
+
+	leaf := filepath.Join(store.root, strings.TrimPrefix(evidenceDigest, "sha256:")+".json")
+	data, err := os.ReadFile(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(leaf, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.resolve(context.Background(), evidenceDigest, now); err == nil {
+		t.Fatal("world-readable authority evidence was accepted")
+	}
+	if err := os.Chmod(leaf, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	document["unknownField"] = true
+	data, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(leaf, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.resolve(context.Background(), evidenceDigest, now); err == nil {
+		t.Fatal("authority evidence with unknown field was accepted")
+	}
+
+	if err := os.Remove(leaf); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(realTempDir(t), "target.json")
+	if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, leaf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.resolve(context.Background(), evidenceDigest, now); err == nil {
+		t.Fatal("symlinked authority evidence leaf was accepted")
+	}
+	if err := os.Remove(leaf); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(leaf, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.resolve(context.Background(), evidenceDigest, now); err == nil {
+		t.Fatal("authority evidence FIFO was accepted")
+	}
+}
+
+func TestAuthorityOwnerAndModePredicatesFailClosed(t *testing.T) {
+	uid := os.Geteuid()
+	regular := unix.Stat_t{Mode: unix.S_IFREG | 0o600, Uid: uint32(uid)}
+	if !privateRegularFile(regular, uid) {
+		t.Fatal("private owner regular file was rejected")
+	}
+	regular.Mode = unix.S_IFREG | 0o644
+	if privateRegularFile(regular, uid) {
+		t.Fatal("world-readable authority file was accepted")
+	}
+	regular.Mode, regular.Uid = unix.S_IFREG|0o600, uint32(uid+1)
+	if privateRegularFile(regular, uid) {
+		t.Fatal("wrong-owner authority file was accepted")
+	}
+	directory := unix.Stat_t{Mode: unix.S_IFDIR | 0o700, Uid: uint32(uid)}
+	if !privateDirectory(directory, uid) {
+		t.Fatal("private owner authority directory was rejected")
+	}
+	directory.Mode = unix.S_IFDIR | 0o755
+	if privateDirectory(directory, uid) {
+		t.Fatal("world-searchable authority directory was accepted")
+	}
+	directory.Mode, directory.Uid = unix.S_IFDIR|0o700, uint32(uid+1)
+	if privateDirectory(directory, uid) {
+		t.Fatal("wrong-owner authority directory was accepted")
+	}
+}
+
+func TestSignedEvidenceRejectsEveryFieldSubstitution(t *testing.T) {
+	executable := fakeExecutable(t, supportedBinary, "exit 0")
+	adapter, err := New(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, evidenceDigest := signedTestAuthority(t, identity)
+	leaf := filepath.Join(store.root, strings.TrimPrefix(evidenceDigest, "sha256:")+".json")
+	original, err := os.ReadFile(leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var base map[string]any
+	if err := json.Unmarshal(original, &base); err != nil {
+		t.Fatal(err)
+	}
+	replacements := map[string]any{
+		"runnerId": "replacement-runner", "runnerVersion": "replacement-version", "observedAt": "2026-01-01T00:00:00Z", "validUntil": "2026-01-01T00:00:01Z",
+		"adapterVersion": "replacement-adapter", "executable": "/replacement/qodercli", "executableDigest": digest("f"), "binaryVersion": "1.1.24", "qodercliVersion": "1.1.24",
+		"hostOs": "replacement-os", "hostArch": "replacement-arch", "hostFingerprint": digest("f"), "authorityGeneration": float64(2),
+		"probeSuiteDigest": digest("f"), "probeArtifactDigest": digest("f"), "challengeDigest": digest("f"), "capabilitiesDigest": digest("f"), "probeProfileDigest": digest("f"),
+		"argvDigest": digest("f"), "environmentDigest": digest("f"), "toolPolicyDigest": digest("f"), "transcriptDigest": digest("f"),
+		"credentialVerified": false, "liveProtocolVerified": false, "workspaceWriteVerified": false,
+		"eventContract": "replacement-event", "protocolVersion": "replacement-protocol", "permissionMode": "replacement-permission", "trustRootKeyId": "replacement-root",
+	}
+	for field, replacement := range replacements {
+		t.Run(field, func(t *testing.T) {
+			document := make(map[string]any, len(base))
+			for key, value := range base {
+				document[key] = value
+			}
+			document[field] = replacement
+			data, err := json.Marshal(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(leaf, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.resolve(context.Background(), evidenceDigest, time.Now().UTC()); err == nil {
+				t.Fatalf("signed evidence substitution for %s was accepted", field)
+			}
+			if err := os.WriteFile(leaf, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestCandidateAuthorityRejectsSamePlatformDifferentHost(t *testing.T) {
 	executable := fakeExecutable(t, supportedBinary, "exit 0")
 	validator := newValidator(t)
 	adapter, err := New(executable, validator)
@@ -375,8 +735,12 @@ func TestBindConformanceRejectsSamePlatformDifferentHost(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	store, evidenceDigest := signedTestAuthorityWindowForHost(t, identity, now.Add(-time.Minute), now.Add(time.Hour), digest("f"))
-	adapter.authority = store
-	if err := adapter.BindConformance(context.Background(), evidenceDigest); !errors.Is(err, ErrIdentityDrift) {
+	evidence, err := store.resolve(context.Background(), evidenceDigest, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := AuthorityConfig{EvidenceDigest: evidenceDigest, ProbeArtifactDigest: evidence.ProbeArtifactDigest, AuthorityGeneration: evidence.AuthorityGeneration}
+	if err := adapter.bindVerifiedConformance(identity, evidence, config); !errors.Is(err, ErrIdentityDrift) {
 		t.Fatalf("same-platform evidence from another host was accepted: %v", err)
 	}
 }
@@ -392,6 +756,10 @@ func signedTestAuthorityWindow(t *testing.T, identity executableIdentity, observ
 }
 
 func signedTestAuthorityWindowForHost(t *testing.T, identity executableIdentity, observedAt, validUntil time.Time, hostFingerprint string) (*AuthorityEvidenceStore, string) {
+	return signedTestAuthorityWindowGeneration(t, identity, observedAt, validUntil, hostFingerprint, 1)
+}
+
+func signedTestAuthorityWindowGeneration(t *testing.T, identity executableIdentity, observedAt, validUntil time.Time, hostFingerprint string, generation uint64) (*AuthorityEvidenceStore, string) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -403,7 +771,7 @@ func signedTestAuthorityWindowForHost(t *testing.T, identity executableIdentity,
 	}
 	evidence := ConformanceEvidence{
 		RunnerID: "marshal-conformance", RunnerVersion: "1", ObservedAt: observedAt.Format(time.RFC3339Nano), ValidUntil: validUntil.Format(time.RFC3339Nano),
-		AdapterVersion: adapterVersion, Executable: identity.path, ExecutableDigest: identity.digest, BinaryVersion: identity.version, HostOS: runtime.GOOS, HostArch: runtime.GOARCH, HostFingerprint: hostFingerprint, AuthorityGeneration: 1,
+		AdapterVersion: adapterVersion, Executable: identity.path, ExecutableDigest: identity.digest, BinaryVersion: identity.version, HostOS: runtime.GOOS, HostArch: runtime.GOARCH, HostFingerprint: hostFingerprint, AuthorityGeneration: generation,
 		ProbeSuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), ArgvDigest: expectedProbeArgvDigest(), EnvironmentDigest: expectedProbeEnvironmentDigest(), ToolPolicyDigest: expectedProbeToolPolicyDigest(), TranscriptDigest: digest("b"), CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true,
 		EventContract: conformanceEventContract, QoderCLIVersion: identity.version, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode,
 		TrustRootKeyID: "test-root",
@@ -465,8 +833,12 @@ func TestConformanceExpiryRevokesProbeAndRunAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	store, evidenceDigest := signedTestAuthorityWindow(t, identity, boundAt.Add(-time.Minute), boundAt.Add(time.Minute))
-	fixture.adapter.authority = store
-	if err := fixture.adapter.BindConformance(context.Background(), evidenceDigest); err != nil {
+	evidence, err := store.resolve(context.Background(), evidenceDigest, boundAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := AuthorityConfig{EvidenceDigest: evidenceDigest, ProbeArtifactDigest: evidence.ProbeArtifactDigest, AuthorityGeneration: evidence.AuthorityGeneration}
+	if err := fixture.adapter.bindVerifiedConformance(identity, evidence, config); err != nil {
 		t.Fatal(err)
 	}
 	current = boundAt.Add(2 * time.Minute)

@@ -66,12 +66,14 @@ type Adapter struct {
 	executable          string
 	validator           *contract.Validator
 	now                 func() time.Time
-	authority           *AuthorityEvidenceStore
 	authorityConfigPath string
+	beforeLaunchGuard   func()
 
-	mu          sync.Mutex
-	pinned      *executableIdentity
-	conformance *boundConformance
+	mu                           sync.Mutex
+	pinned                       *executableIdentity
+	conformance                  *boundConformance
+	authorityGenerationHighWater uint64
+	authorityConfigHighWater     string
 }
 
 var _ port.WorkerAdapter = (*Adapter)(nil)
@@ -79,14 +81,6 @@ var _ port.WorkerAdapter = (*Adapter)(nil)
 // New requires an exact absolute executable path. Marshal never resolves a
 // provider executable by a similar name or by an implicit fallback.
 func New(executable string, validator *contract.Validator) (*Adapter, error) {
-	return NewWithConformanceAuthority(executable, validator, nil)
-}
-
-// NewWithConformanceAuthority binds an authority-owned evidence store. A nil
-// store is deliberately valid and leaves Probe permanently unsupported; it is
-// the default application wiring until independently signed live evidence is
-// configured.
-func NewWithConformanceAuthority(executable string, validator *contract.Validator, authority *AuthorityEvidenceStore) (*Adapter, error) {
 	if validator == nil {
 		return nil, errors.New("contract validator is required")
 	}
@@ -104,7 +98,7 @@ func NewWithConformanceAuthority(executable string, validator *contract.Validato
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("qoder executable must be an executable regular file")
 	}
-	return &Adapter{executable: realPath, validator: validator, now: time.Now, authority: authority}, nil
+	return &Adapter{executable: realPath, validator: validator, now: time.Now}, nil
 }
 
 func (a *Adapter) ID() string { return adapterID }
@@ -230,7 +224,7 @@ type executableIdentity struct{ path, digest, version string }
 // boundConformance retains the authority evidence freshness boundary as well
 // as the executable identity. Keeping only the identity would turn a
 // time-limited conformance statement into permanent admission after one
-// successful BindConformance call.
+// successful candidate authority validation.
 type boundConformance struct {
 	identity            executableIdentity
 	evidenceDigest      string
@@ -269,17 +263,17 @@ func (a *Adapter) refreshConfiguredConformance(ctx context.Context) error {
 	}
 	defer store.Close()
 	evidence, err := store.resolve(ctx, config.EvidenceDigest, a.now().UTC())
-	if err != nil || evidence.ProbeArtifactDigest != config.ProbeArtifactDigest || evidence.AuthorityGeneration != config.AuthorityGeneration {
+	if err != nil || evidence.ProbeArtifactDigest != config.ProbeArtifactDigest || evidence.ChallengeDigest != config.ChallengeDigest || evidence.AuthorityGeneration != config.AuthorityGeneration {
 		return port.Permanent(ErrConformancePending)
 	}
 	identity, err := a.inspect(ctx)
 	if err != nil {
 		return err
 	}
-	return a.bindVerifiedConformance(identity, evidence)
+	return a.bindVerifiedConformance(identity, evidence, config)
 }
 
-func (a *Adapter) bindVerifiedConformance(identity executableIdentity, evidence ConformanceEvidence) error {
+func (a *Adapter) bindVerifiedConformance(identity executableIdentity, evidence ConformanceEvidence, config AuthorityConfig) error {
 	if !isSupportedBinaryVersion(identity.version) {
 		return fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
 	}
@@ -294,11 +288,24 @@ func (a *Adapter) bindVerifiedConformance(identity executableIdentity, evidence 
 	if err != nil {
 		return port.Permanent(ErrConformancePending)
 	}
+	configData, err := json.Marshal(config)
+	if err != nil {
+		return port.Permanent(ErrConformancePending)
+	}
+	configDigest := digestBytes(configData)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if config.AuthorityGeneration < a.authorityGenerationHighWater {
+		return port.Permanent(ErrConformancePending)
+	}
+	if config.AuthorityGeneration == a.authorityGenerationHighWater && a.authorityGenerationHighWater != 0 && configDigest != a.authorityConfigHighWater {
+		return port.Permanent(ErrConformancePending)
+	}
 	pinned := identity
 	a.pinned = &pinned
 	a.conformance = &boundConformance{identity: identity, evidenceDigest: evidence.EvidenceDigest, validUntil: validUntil, trustRootKeyID: evidence.TrustRootKeyID, probeProfileDigest: evidence.ProbeProfileDigest, hostFingerprint: evidence.HostFingerprint, authorityGeneration: evidence.AuthorityGeneration}
+	a.authorityGenerationHighWater = config.AuthorityGeneration
+	a.authorityConfigHighWater = configDigest
 	return nil
 }
 
@@ -314,25 +321,6 @@ func (a *Adapter) revalidateConformance(ctx context.Context, identity executable
 		return port.Permanent(ErrConformancePending)
 	}
 	return nil
-}
-
-// BindConformance accepts only a content digest. The corresponding record is
-// resolved and signature-verified by the authority store fixed at adapter
-// construction; callers cannot authorize execution with a locally populated
-// struct or a rewritten CapabilitySnapshot.
-func (a *Adapter) BindConformance(ctx context.Context, evidenceDigest string) error {
-	if a.authority == nil {
-		return port.Permanent(ErrConformancePending)
-	}
-	evidence, err := a.authority.resolve(ctx, evidenceDigest, a.now().UTC())
-	if err != nil {
-		return err
-	}
-	identity, err := a.inspect(ctx)
-	if err != nil {
-		return err
-	}
-	return a.bindVerifiedConformance(identity, evidence)
 }
 
 func (a *Adapter) verifyExecutionIdentity(identity executableIdentity) error {
@@ -613,6 +601,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// executable snapshotting and input/output preparation can take long enough
 	// for a short-lived conformance statement to expire; a Run admitted earlier
 	// must never launch after that authority window closes.
+	if a.beforeLaunchGuard != nil {
+		a.beforeLaunchGuard()
+	}
 	launchGuard := func() error { return a.verifyExecutionIdentity(identity) }
 	observation, err := a.runLocalAttempt(runCtx, launchExecutable, buildArgs(task.model, configDir, worktree, task.disableAllTools), prompt, worktree, workerEnvironment(worktree, configDir), int64(request.MaxOutputBytes), launchGuard)
 	if err != nil {

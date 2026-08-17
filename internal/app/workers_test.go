@@ -2,19 +2,11 @@ package app
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
-	"strings"
 	"testing"
-	"time"
-
-	"github.com/chiga0/marshal-harness/internal/adapter/qoder"
 )
 
 // writeExecutable creates a regular executable file and returns its absolute
@@ -117,65 +109,14 @@ func TestQoderRegistrationRemainsUnsupportedWithoutAuthorityEvidence(t *testing.
 	}
 }
 
-// TestQoderHermeticSignedAuthorityWiring verifies only the cryptographic and
-// runtime wiring. Its fake executable, generated key and synthetic transcript
-// are not credentialed live evidence and make no deployment readiness claim.
-func TestQoderHermeticSignedAuthorityWiring(t *testing.T) {
+func TestQoderAuthorityConfigCannotActivateWhileADR0034Proposed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qodercli")
-	script := "#!/bin/sh\nfor arg in \"$@\"; do if [ \"$arg\" = \"--version\" ]; then printf '1.1.23\\n'; exit 0; fi; done\nexit 1\n"
+	script := "#!/bin/sh\nprintf '1.1.23\\n'\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	version, executableDigest, err := qoder.Identify(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	realPath, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	contract := qoder.FrozenLiveConformanceContract()
-	hostFingerprint, err := qoder.CurrentHostFingerprint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	evidence, evidenceDigest, err := qoder.SealConformanceEvidence(qoder.LiveConformanceObservation{
-		RunnerID: "independent-verifier", RunnerVersion: "1", ObservedAt: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
-		Executable: realPath, ExecutableDigest: executableDigest, BinaryVersion: version, HostOS: runtime.GOOS, HostArch: runtime.GOARCH, HostFingerprint: hostFingerprint, AuthorityGeneration: 1,
-		ProbeSuiteDigest: contract.ProbeSuiteDigest, ProbeArtifactDigest: "sha256:" + strings.Repeat("a", 64), ChallengeDigest: "sha256:" + strings.Repeat("c", 64), CapabilitiesDigest: contract.CapabilitiesDigest, ProbeProfileDigest: contract.ProbeProfileDigest, ArgvDigest: contract.ArgvDigest, EnvironmentDigest: contract.EnvironmentDigest, ToolPolicyDigest: contract.ToolPolicyDigest,
-		TranscriptDigest: "sha256:" + strings.Repeat("b", 64), CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true, EventContract: contract.EventContract, ProtocolVersion: contract.ProtocolVersion, PermissionMode: contract.PermissionMode, TrustRootKeyID: "root-1",
-	}, privateKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, strings.TrimPrefix(evidenceDigest, "sha256:")+".json"), evidence, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	configParent, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(configParent, "qoder-authority.json")
-	config, err := json.Marshal(qoder.AuthorityConfig{
-		EvidenceRoot: root, EvidenceDigest: evidenceDigest, AuthorityGeneration: 1, ProbeArtifactDigest: "sha256:" + strings.Repeat("a", 64), RevokedEvidenceDigests: []string{},
-		TrustRoots: []qoder.AuthorityTrustRoot{{KeyID: "root-1", Algorithm: "ed25519", PublicKey: base64.StdEncoding.EncodeToString(publicKey)}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+	configPath := filepath.Join(t.TempDir(), "qoder-authority.json")
+	if err := os.WriteFile(configPath, []byte(`{"candidate":"must-not-activate"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	runtime, err := NewWorkerRuntime(staticEnv(map[string]string{
@@ -184,16 +125,12 @@ func TestQoderHermeticSignedAuthorityWiring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker, err := runtime.Registry().Resolve("qoder")
-	if err != nil {
-		t.Fatal(err)
+	if _, err := runtime.Registry().Resolve("qoder"); err == nil {
+		t.Fatal("Proposed ADR authority config activated qoder")
 	}
-	record, err := worker.Probe(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(record.Data), `"probeStatus":"supported"`) {
-		t.Fatalf("authority-wired qoder was not supported: %s", record.Data)
+	configuration := configurationByID(t, runtime, "qoder")
+	if !configuration.Configured || configuration.Registered || configuration.Outcome != WorkerOutcomeInvalidConfiguration {
+		t.Fatalf("qoder configuration = %+v", configuration)
 	}
 }
 
