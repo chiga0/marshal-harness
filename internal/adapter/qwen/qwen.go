@@ -158,6 +158,19 @@ var qwenAllowlistSurface = map[string][]string{
 // converged exclusion lists are deterministic.
 var qwenSurfaceOrder = []string{"read", "grep", "find", "ls", "edit", "write", "bash"}
 
+// knownQwenTools 冻结 stream-json 允许出现的 tool_name 封闭面（工具类映射
+// 的全部成员）；表外名称是未知工具，事件一律 typed protocol-invalid，且
+// 不得回显该名称。
+var knownQwenTools = func() map[string]bool {
+	known := make(map[string]bool)
+	for _, names := range qwenAllowlistSurface {
+		for _, name := range names {
+			known[name] = true
+		}
+	}
+	return known
+}()
+
 // convergedExcludedTools applies the reverse-exclusion convergence for a
 // declared worker.tools allowlist: the profile's frozen exclusion list stays
 // the base (so bash stays excluded even when declared, because the
@@ -535,11 +548,16 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("start qwen: %w", err)
 	}
 	var killOnce sync.Once
-	kill := func() { killOnce.Do(func() { terminateGroup(command) }) }
+	killSignal := make(chan struct{})
+	kill := func() { killOnce.Do(func() { terminateGroup(command); close(killSignal) }) }
+	excludedTools := make(map[string]bool)
+	for _, tool := range convergedExcludedTools(request.ExecutionProfile, tools) {
+		excludedTools[tool] = true
+	}
 	stdoutDone := make(chan captureResult, 1)
 	stderrDone := make(chan streamCapture, 1)
 	go func() {
-		stdoutDone <- captureStreamJSONL(stdout, worktree, int64(request.MaxOutputBytes), kill, identity.version)
+		stdoutDone <- captureStreamJSONL(stdout, worktree, int64(request.MaxOutputBytes), kill, identity.version, excludedTools, a.now)
 	}()
 	go func() { stderrDone <- captureStream(stderr, stderrLimit) }()
 	processFinished := make(chan struct{})
@@ -550,11 +568,23 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		case <-processFinished:
 		}
 	}()
-	capture := <-stdoutDone
-	stderrCapture := <-stderrDone
+	// capture 必须在 Wait 之前读完（StdoutPipe 由 Wait 关闭），而进程组
+	// SIGKILL 之后管道必然到达 EOF：kill 之后用固定窗口 join capture，保证
+	// structured terminal + cancel + SIGKILL 的收敛不被任何 fd 残留无限拖延。
+	capture, captureSettled := joinCaptureResult(stdoutDone, killSignal)
+	stderrCapture, stderrSettled := joinStreamCapture(stderrDone, killSignal)
 	waitErr := command.Wait()
 	close(processFinished)
 	completed := a.now().UTC()
+	if !captureSettled {
+		capture = captureResult{err: qwenProtocolInvalid("stream capture did not converge", a.now())}
+	}
+	if !stderrSettled {
+		stderrCapture = streamCapture{}
+		if capture.err == nil && capture.terminalFailure == nil {
+			capture.err = qwenProtocolInvalid("stderr capture did not converge", a.now())
+		}
+	}
 	transcriptPath := filepath.Join(filepath.Dir(resultPath), "qwen-transcript.jsonl")
 	if err := atomicWrite(transcriptPath, capture.raw); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript: %w", err)
@@ -562,57 +592,53 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "qwen-stderr.log"), stderrCapture.data); err != nil {
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
-	exitCode, signal := processOutcome(command)
+	exitCode, signalName := processOutcome(command)
 	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: worktree, ControlRoot: controlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
 	fatalDenials := denials.CountFatal(denialRecords)
-	metadata, err := json.MarshalIndent(map[string]any{
-		"sessionId": capture.sessionID, "eventCount": capture.eventCount,
-		"toolCalls": capture.toolCalls, "inputTokens": capture.inputTokens,
-		"outputTokens": capture.outputTokens, "capturedBytes": len(capture.raw),
-		"outputTruncated": capture.limitExceeded, "permissionDenied": fatalDenials > 0,
-		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials, "toolNames": denials.SortedToolNames(capture.toolNames),
-		"exitCode": exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
-		"contextError": contextError(runCtx),
-	}, "", "  ")
-	if err != nil {
-		return domain.Record{}, err
-	}
-	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "qwen-transcript-meta.json"), append(metadata, '\n')); err != nil {
+	// typed 终止失败先于一切后续判定与 WorkerResult 读取；terminal/process
+	// 冲突与 capture 协议违规优先于 context canceled/deadline exceeded。
+	resolved := resolveAttemptFailure(capture, waitErr, command, runCtx, request, fatalDenials, a.now())
+	metaPath := filepath.Join(filepath.Dir(resultPath), "qwen-transcript-meta.json")
+	if err := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(runCtx), resolved); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript metadata: %w", err)
 	}
 	if err := denials.AppendLog(filepath.Join(filepath.Dir(resultPath), denials.LogFileName), denialRecords); err != nil {
 		return domain.Record{}, fmt.Errorf("write denial log: %w", err)
 	}
-	if runCtx.Err() != nil {
-		return domain.Record{}, runCtx.Err()
-	}
-	if capture.limitExceeded {
-		return domain.Record{}, ErrOutputLimit
-	}
-	if capture.err != nil {
-		return domain.Record{}, capture.err
-	}
-	if waitErr != nil {
-		return domain.Record{}, processFailureError(command)
-	}
-	if fatalDenials > 0 {
-		return domain.Record{}, ErrPermissionDenied
-	}
-	if capture.sessionID == "" {
-		return domain.Record{}, fmt.Errorf("%w: session_id is missing", ErrProtocol)
-	}
-	if request.SessionPolicy == "resume" && capture.sessionID != request.SessionID {
-		return domain.Record{}, fmt.Errorf("%w: resumed session does not match requested session", ErrProtocol)
+	if resolved != nil {
+		return domain.Record{}, resolved
 	}
 	declared, err := readDeclaredResult(resultPath, int64(maxResultBytes), a.validator)
 	if err != nil {
-		return domain.Record{}, err
+		detail := "WorkerResult declaration missing or unreadable"
+		var declaredErr *declaredResultError
+		if errors.As(err, &declaredErr) {
+			switch declaredErr.stage {
+			case declaredResultStageValidate:
+				detail = "validate WorkerResult declaration"
+			case declaredResultStageDecode:
+				detail = "decode WorkerResult declaration"
+			}
+		}
+		failure := newQwenFailure(port.FailureKindResultMissing, detail, nil, nil, a.now())
+		if persistErr := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(runCtx), failure); persistErr != nil {
+			return domain.Record{}, fmt.Errorf("write transcript metadata: %w", persistErr)
+		}
+		return domain.Record{}, failure
 	}
 	if declared.TaskID != request.TaskID || declared.RunID != request.RunID || declared.AttemptID != request.AttemptID || declared.Adapter.ID != adapterID {
-		return domain.Record{}, errors.New("WorkerResult identity does not match WorkerRequest")
+		failure := qwenProtocolInvalid("WorkerResult identity does not match WorkerRequest", a.now())
+		if persistErr := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(runCtx), failure); persistErr != nil {
+			return domain.Record{}, fmt.Errorf("write transcript metadata: %w", persistErr)
+		}
+		return domain.Record{}, failure
 	}
 	if declared.Session != nil && declared.Session.ID != "" && declared.Session.ID != capture.sessionID {
-		return domain.Record{}, errors.New("WorkerResult session does not match transcript")
+		failure := qwenProtocolInvalid("WorkerResult session does not match transcript", a.now())
+		if persistErr := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(runCtx), failure); persistErr != nil {
+			return domain.Record{}, fmt.Errorf("write transcript metadata: %w", persistErr)
+		}
+		return domain.Record{}, failure
 	}
 	declared.Adapter.Executable, declared.Adapter.Version = identity.path, identity.version
 	declared.Session = &declaredSession{ID: capture.sessionID, Resumable: request.SessionPolicy != "ephemeral"}
@@ -665,18 +691,36 @@ type declaredSession struct {
 	Resumable bool   `json:"resumable"`
 }
 
+type declaredResultStage string
+
+const (
+	declaredResultStageRead     declaredResultStage = "read"
+	declaredResultStageValidate declaredResultStage = "validate"
+	declaredResultStageDecode   declaredResultStage = "decode"
+)
+
+// declaredResultError 携带失败阶段，使 Run 能把缺失/不可读/非法声明统一
+// 归为 result-missing/retryable，而不回显底层错误文本。
+type declaredResultError struct {
+	stage declaredResultStage
+	err   error
+}
+
+func (e *declaredResultError) Error() string { return string(e.stage) + ": " + e.err.Error() }
+func (e *declaredResultError) Unwrap() error { return e.err }
+
 func readDeclaredResult(path string, limit int64, validator *contract.Validator) (declaredResult, error) {
 	data, err := readBounded(path, limit)
 	if err != nil {
-		return declaredResult{}, fmt.Errorf("read WorkerResult declaration: %w", err)
+		return declaredResult{}, &declaredResultError{declaredResultStageRead, fmt.Errorf("read WorkerResult declaration: %w", err)}
 	}
 	data = pi.NormalizeDeclaredWorkerResult(data)
 	if err := validator.Validate(domain.KindWorkerResult, data); err != nil {
-		return declaredResult{}, fmt.Errorf("validate WorkerResult declaration: %w", err)
+		return declaredResult{}, &declaredResultError{declaredResultStageValidate, fmt.Errorf("validate WorkerResult declaration: %w", err)}
 	}
 	var result declaredResult
 	if err := json.Unmarshal(data, &result); err != nil {
-		return result, err
+		return result, &declaredResultError{declaredResultStageDecode, fmt.Errorf("decode WorkerResult declaration: %w", err)}
 	}
 	return result, nil
 }
@@ -692,28 +736,33 @@ type captureResult struct {
 	toolNames     []string
 	limitExceeded bool
 	err           error
+	// terminalFailure 是结构化终止事件的 typed 分类（或终止相关协议违规）。
+	terminalFailure error
+	// terminalSeen 冻结事件流："result" 或 "error"；终止后不再处理任何事件。
+	terminalSeen string
+	// missingTerminal 标记“流结束但没有终止事件”，被取消/进程组终止/输出
+	// 上限导致的截断在 Run 里不视为协议违规。
+	missingTerminal bool
 }
 
 // captureStreamJSONL enforces the measured Qwen Code 0.21.5 stream-json
 // contract: the first non-empty event must be system/init bound to this
 // worktree, and the last non-empty event must be result/success.
-func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit func(), binaryVersion string) captureResult {
+func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit func(), binaryVersion string, excludedTools map[string]bool, now func() time.Time) captureResult {
 	capacity := 64 << 10
 	if limit < int64(capacity) {
 		capacity = int(limit)
 	}
 	result := captureResult{raw: make([]byte, 0, capacity)}
 	buffered := bufio.NewReaderSize(reader, 64<<10)
-	fail := func(err error) {
+	fail := func(failure *typedFailure) {
 		if result.err == nil {
-			result.err = err
+			result.err = failure
 		}
 		onLimit()
 	}
 	var consumed int64
 	var line []byte
-	resultSubtype := ""
-	sawResult := false
 	for {
 		fragment, err := buffered.ReadSlice('\n')
 		if len(fragment) > 0 {
@@ -741,10 +790,11 @@ func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit 
 					SessionID       string          `json:"session_id"`
 					Cwd             string          `json:"cwd"`
 					QwenCodeVersion string          `json:"qwen_code_version"`
+					ToolCallID      string          `json:"tool_call_id"`
 					ToolName        string          `json:"tool_name"`
 					Args            json.RawMessage `json:"args"`
 					IsError         *bool           `json:"is_error"`
-					Error           string          `json:"error"`
+					Error           json.RawMessage `json:"error"`
 					Usage           struct {
 						InputTokens  int `json:"input_tokens"`
 						OutputTokens int `json:"output_tokens"`
@@ -755,52 +805,109 @@ func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit 
 					} `json:"stats"`
 				}
 				if decodeErr := json.Unmarshal(trimmed, &event); decodeErr != nil {
-					fail(fmt.Errorf("%w: malformed JSONL: %v", ErrProtocol, decodeErr))
-				} else {
-					result.eventCount++
-					if sawResult {
-						fail(fmt.Errorf("%w: trailing event after result: %s/%s", ErrProtocol, event.Type, event.Subtype))
+					fail(qwenProtocolInvalid("malformed JSONL", now()))
+					continue
+				}
+				result.eventCount++
+				// terminalSeen 之后事件流被冻结：trailing、重复 terminal 与
+				// success/error 共存一律 typed protocol-invalid，且不再统计
+				// trailing tool/token。
+				if result.terminalSeen != "" {
+					detail := "trailing event after result"
+					if result.terminalSeen == "error" {
+						detail = "trailing event after error terminal"
+					}
+					if event.Type == "result" || event.Type == "error" {
+						detail = "duplicate terminal event"
+					}
+					fail(qwenProtocolInvalid(detail, now()))
+					continue
+				}
+				// 非 tool 事件携带工具身份字段也必须走 typed 路径。
+				if event.Type != "tool" && (event.ToolName != "" || event.ToolCallID != "") {
+					fail(qwenProtocolInvalid("non-tool event carries tool identity fields", now()))
+					continue
+				}
+				if result.eventCount == 1 {
+					if event.Type != "system" || event.Subtype != "init" {
+						fail(qwenProtocolInvalid("first event must be system/init", now()))
 						continue
 					}
-					if result.eventCount == 1 {
-						if event.Type != "system" || event.Subtype != "init" {
-							fail(fmt.Errorf("%w: first event must be system/init, got %s/%s", ErrProtocol, event.Type, event.Subtype))
-						} else if event.SessionID == "" || event.Cwd == "" || event.QwenCodeVersion == "" {
-							fail(fmt.Errorf("%w: init event is missing session_id, cwd or qwen_code_version", ErrProtocol))
-						} else if initVersion := versionPattern.FindString(event.QwenCodeVersion); initVersion != binaryVersion {
-							fail(fmt.Errorf("%w: init qwen_code_version %s does not match binary %s", ErrProtocol, event.QwenCodeVersion, binaryVersion))
-						} else if filepath.Clean(event.Cwd) != worktree {
-							fail(fmt.Errorf("%w: init cwd %q does not match worktree %q", ErrProtocol, event.Cwd, worktree))
-						} else {
-							result.sessionID = event.SessionID
-						}
+					if event.SessionID == "" || event.Cwd == "" || event.QwenCodeVersion == "" {
+						fail(qwenProtocolInvalid("init event is missing session_id, cwd or qwen_code_version", now()))
+						continue
 					}
-					if event.Type == "tool" || event.ToolName != "" {
-						result.toolCalls++
+					if versionPattern.FindString(event.QwenCodeVersion) != binaryVersion {
+						fail(qwenProtocolInvalid("init qwen_code_version does not match binary", now()))
+						continue
 					}
+					if filepath.Clean(event.Cwd) != worktree {
+						fail(qwenProtocolInvalid("init cwd does not match worktree", now()))
+						continue
+					}
+					result.sessionID = event.SessionID
+				}
+				switch event.Type {
+				case "tool":
+					// 工具身份必须先验证：非空 tool_call_id、已知 tool_name 且
+					// 通过当前 execution profile/声明工具面。验证完成前不得
+					// 计数、收集名称或处理权限拒绝，违规也不得污染 metadata。
+					if event.ToolCallID == "" {
+						fail(qwenProtocolInvalid("tool event is missing tool_call_id", now()))
+						continue
+					}
+					if !knownQwenTools[event.ToolName] {
+						fail(qwenProtocolInvalid("tool event carries unknown tool_name", now()))
+						continue
+					}
+					if excludedTools[event.ToolName] {
+						fail(qwenProtocolInvalid("tool event carries excluded tool_name", now()))
+						continue
+					}
+					result.toolCalls++
 					// Denial grading is fail-closed: only an explicit
 					// permission marker turns a tool error into a denial
 					// event, and anything the classifier cannot prove benign
-					// stays FATAL.
-					if event.IsError != nil && *event.IsError && denials.IsPermissionError(event.Error) {
+					// stays FATAL. Error 保持 RawMessage 以容忍字符串与对象
+					// 两种终止事件载体，判定时按原始 JSON 文本匹配关键词。
+					if event.IsError != nil && *event.IsError && denials.IsPermissionError(string(event.Error)) {
 						result.denials = append(result.denials, denials.RawDenial{Tool: event.ToolName, Input: event.Args})
-					} else if event.ToolName != "" {
+					} else {
 						// Allowlist reconciliation is a read-only side
 						// channel: every successful (non-denial) tool event
 						// is recorded by name; denial events never count
 						// as successful calls.
 						result.toolNames = append(result.toolNames, event.ToolName)
 					}
-					if event.Type == "result" {
-						sawResult = true
-						resultSubtype = event.Subtype
+				case "result":
+					result.terminalSeen = "result"
+					eventMap, mapErr := parseEventMap(trimmed)
+					if mapErr != nil {
+						fail(qwenProtocolInvalid("malformed JSONL", now()))
+						continue
+					}
+					if event.Subtype == "success" {
+						if violation := successTerminalViolation(eventMap, now()); violation != nil {
+							fail(violation)
+							continue
+						}
 						if event.Usage.InputTokens > 0 || event.Usage.OutputTokens > 0 {
 							result.inputTokens, result.outputTokens = event.Usage.InputTokens, event.Usage.OutputTokens
 						}
 						if event.Stats.InputTokens > 0 || event.Stats.OutputTokens > 0 {
 							result.inputTokens, result.outputTokens = event.Stats.InputTokens, event.Stats.OutputTokens
 						}
+					} else {
+						result.terminalFailure = classifyTerminalFailure(eventMap, now())
 					}
+				case "error":
+					result.terminalSeen = "error"
+					eventMap, mapErr := parseEventMap(trimmed)
+					if mapErr != nil {
+						fail(qwenProtocolInvalid("malformed JSONL", now()))
+						continue
+					}
+					result.terminalFailure = classifyTerminalFailure(eventMap, now())
 				}
 			}
 		}
@@ -808,12 +915,9 @@ func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit 
 			if !errors.Is(err, io.EOF) && result.err == nil {
 				result.err = err
 			}
-			if result.err == nil && !result.limitExceeded {
-				if !sawResult {
-					result.err = fmt.Errorf("%w: stream ended without a result event", ErrProtocol)
-				} else if resultSubtype != "success" {
-					result.err = fmt.Errorf("%w: result subtype is %s, expected success", ErrProtocol, resultSubtype)
-				}
+			if result.err == nil && result.terminalFailure == nil && !result.limitExceeded && result.terminalSeen == "" {
+				result.err = qwenProtocolInvalid("stream ended without a result event", now())
+				result.missingTerminal = true
 			}
 			return result
 		}
@@ -1102,4 +1206,109 @@ func terminateGroup(command *exec.Cmd) {
 	} else {
 		_ = command.Process.Kill()
 	}
+}
+
+// captureSettleBound 是进程组终止后 capture 收敛的固定窗口。SIGKILL 之后
+// 管道必然到达 EOF；该窗口仅防御脱离进程组的 fd 残留，保证 Run 在任何情况
+// 下都在固定窗口内结束，而不是无限等待。
+const captureSettleBound = 2 * time.Second
+
+// joinCaptureResult 在固定窗口内等待 stdout capture 收敛。kill 之前不限时
+// （由输出上限与 attempt 截止兜底），kill 之后必须确定性结束。
+func joinCaptureResult(done <-chan captureResult, killSignal <-chan struct{}) (captureResult, bool) {
+	select {
+	case result := <-done:
+		return result, true
+	case <-killSignal:
+		select {
+		case result := <-done:
+			return result, true
+		case <-time.After(captureSettleBound):
+			return captureResult{}, false
+		}
+	}
+}
+
+// joinStreamCapture 与 joinCaptureResult 相同，用于 stderr capture。
+func joinStreamCapture(done <-chan streamCapture, killSignal <-chan struct{}) (streamCapture, bool) {
+	select {
+	case result := <-done:
+		return result, true
+	case <-killSignal:
+		select {
+		case result := <-done:
+			return result, true
+		case <-time.After(captureSettleBound):
+			return streamCapture{}, false
+		}
+	}
+}
+
+// resolveAttemptFailure 按冻结优先级合并本次 attempt 的失败：capture 协议
+// 违规与 typed 终止失败最高，其次 context 取消/超时、输出上限、进程失败与
+// 权限拒绝。terminal/process 冲突与 capture 协议违规优先于 context
+// canceled/deadline exceeded；exitCode=0 不能掩盖 structured failure。
+func resolveAttemptFailure(capture captureResult, waitErr error, command *exec.Cmd, runCtx context.Context, request workerRequest, fatalDenials int, now time.Time) error {
+	// terminalSeen 之后的 trailing/重复 terminal/success-error 共存等 capture
+	// 协议违规优先于终止分类；它们本身就是 protocol-invalid/do-not-retry。
+	streamErr := capture.err
+	if capture.missingTerminal && (runCtx.Err() != nil || waitErr != nil || capture.limitExceeded) {
+		// 取消、进程组终止或输出上限造成的截断不是 provider 协议违规。
+		streamErr = nil
+	}
+	if streamErr != nil {
+		return streamErr
+	}
+	terminal := capture.terminalFailure
+	if terminal != nil && waitErr != nil {
+		// structured failure 与 nonzero exitCode/signal 共存是证据冲突，
+		// 统一归 protocol-invalid/do-not-retry。
+		if failure, ok := port.AsAdapterFailure(terminal); ok && failure.Kind != port.FailureKindProtocolInvalid {
+			terminal = qwenProtocolInvalid("structured terminal failure conflicts with process outcome", now)
+		}
+	}
+	if terminal != nil {
+		return terminal
+	}
+	if runCtx.Err() != nil {
+		return runCtx.Err()
+	}
+	if capture.limitExceeded {
+		return ErrOutputLimit
+	}
+	if waitErr != nil {
+		return processFailureError(command)
+	}
+	if fatalDenials > 0 {
+		return ErrPermissionDenied
+	}
+	if capture.sessionID == "" {
+		return qwenProtocolInvalid("session_id is missing", now)
+	}
+	if request.SessionPolicy == "resume" && capture.sessionID != request.SessionID {
+		return qwenProtocolInvalid("resumed session does not match requested session", now)
+	}
+	return nil
+}
+
+// persistTranscriptMetadata 原子写安全投影：只包含固定失败分类/处置、安全
+// hint、计数、字节数、截断标记与 contextError；session 只以固定形状摘要
+// 出现，绝不复制 provider session ID、message、stderr、request ID、
+// credential、URL、绝对路径或未知 tool name。
+func persistTranscriptMetadata(path string, capture captureResult, stderrCapture streamCapture, exitCode int, signalName string, denialRecords []denials.Record, fatalDenials int, contextErr string, resolved error) error {
+	kind, disposition, retryAfterSeconds, notBefore := failureProjection(resolved)
+	metadata, err := json.MarshalIndent(map[string]any{
+		"sessionDigest": sessionDigestOf(capture.sessionID), "eventCount": capture.eventCount,
+		"toolCalls": capture.toolCalls, "inputTokens": capture.inputTokens,
+		"outputTokens": capture.outputTokens, "capturedBytes": len(capture.raw),
+		"outputTruncated": capture.limitExceeded, "permissionDenied": fatalDenials > 0,
+		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials, "toolNames": denials.SortedToolNames(capture.toolNames),
+		"exitCode": exitCode, "signal": signalName, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
+		"contextError": contextErr,
+		"failureKind":  kind, "retryDisposition": disposition, "retryAfterSeconds": retryAfterSeconds, "notBefore": notBefore,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(path, append(metadata, '\n'))
 }
