@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strconv"
 
 	"golang.org/x/sys/unix"
 )
@@ -47,11 +46,18 @@ func secureLauncherFD() (*os.File, error) {
 // by descriptors and verified as procfs/non-symlink objects, so an attacker
 // cannot substitute an ordinary pathname symlink for the running image.
 func openRunningExecutableFD() (*os.File, error) {
-	procFD, err := unix.Open("/proc", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	return openRunningExecutableFDAt("/proc")
+}
+
+// openRunningExecutableFDAt exists so tests can prove that a lookalike tree
+// is rejected before either magic link is followed. Production always passes
+// /proc.
+func openRunningExecutableFDAt(procPath string) (*os.File, error) {
+	procFD, err := unix.Open(procPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
-	proc := os.NewFile(uintptr(procFD), "/proc")
+	proc := os.NewFile(uintptr(procFD), procPath)
 	defer proc.Close()
 	var filesystem unix.Statfs_t
 	if err := unix.Fstatfs(procFD, &filesystem); err != nil {
@@ -60,11 +66,14 @@ func openRunningExecutableFD() (*os.File, error) {
 	if uint64(filesystem.Type) != uint64(unix.PROC_SUPER_MAGIC) {
 		return nil, errors.New("/proc is not a procfs mount")
 	}
-	pidFD, err := unix.Openat(procFD, strconv.Itoa(os.Getpid()), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	// Follow only procfs' kernel-provided self magic link from the already
+	// verified mount. A numeric os.Getpid() lookup is not equivalent when the
+	// process and the pinned procfs mount observe different PID namespaces.
+	pidFD, err := unix.Openat(procFD, "self", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
-	pidDirectory := os.NewFile(uintptr(pidFD), "proc-self-pid")
+	pidDirectory := os.NewFile(uintptr(pidFD), "proc-self")
 	defer pidDirectory.Close()
 	// `exe` is a procfs magic link by contract. O_NOFOLLOW would correctly
 	// return ELOOP and is intentionally not used at this one verified edge.

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,6 +37,95 @@ func TestLinuxRunningImageUsesVerifiedProcfsMagicLink(t *testing.T) {
 	}
 	if !os.SameFile(opened, linked) {
 		t.Fatal("verified procfs opener did not bind the running image inode")
+	}
+}
+
+func TestLinuxRunningImageRejectsProcfsLookalike(t *testing.T) {
+	lookalike := t.TempDir()
+	if err := os.Symlink(".", filepath.Join(lookalike, "self")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openRunningExecutableFDAt(lookalike); err == nil || !strings.Contains(err.Error(), "not a procfs") {
+		t.Fatalf("lookalike proc tree err = %v, want fail-closed procfs rejection", err)
+	}
+}
+
+func TestLinuxNativeTargetClosesLauncherAuthorityFDs(t *testing.T) {
+	helperSource := `package main
+import (
+	"errors"
+	"fmt"
+	"os"
+	"golang.org/x/sys/unix"
+)
+func main() {
+    for _, fd := range []int{3, 4} {
+        if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil {
+            fmt.Fprintf(os.Stderr, "evidence fd %d unavailable: %v", fd, err)
+            os.Exit(21)
+        }
+    }
+    for _, fd := range []int{5, 6, 7} {
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); !errors.Is(err, unix.EBADF) {
+            fmt.Fprintf(os.Stderr, "authority fd %d remained open: %v", fd, err)
+            os.Exit(22)
+        }
+    }
+    if _, err := unix.Write(4, []byte("ok")); err != nil {
+        fmt.Fprintf(os.Stderr, "write result fd: %v", err)
+        os.Exit(23)
+    }
+}
+`
+	helperDir := t.TempDir()
+	helperGo := filepath.Join(helperDir, "main.go")
+	helper := filepath.Join(helperDir, "native-helper")
+	if err := os.WriteFile(helperGo, []byte(helperSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	build := exec.Command("go", "build", "-o", helper, helperGo)
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build native helper: %v: %s", err, output)
+	}
+	target, err := sealedExecutableFD(helper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	launcher, err := secureLauncherFD()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema, err := os.CreateTemp(t.TempDir(), "schema-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer schema.Close()
+	result, err := os.CreateTemp(t.TempDir(), "result-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Close()
+	worktree, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worktree.Close()
+
+	command := exec.Command(secureFDPath(6), codexLauncherArgument, secureFDPath(7), "", "")
+	command.ExtraFiles = []*os.File{schema, result, worktree, launcher, target}
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("native helper exec: %v: %s", err, output)
+	}
+	if _, err := result.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(result.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("native helper result = %q, want ok", data)
 	}
 }
 
