@@ -2,9 +2,12 @@ package verification
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -170,6 +173,36 @@ func TestIssue138RejectsLexicalAndSymlinkCandidateAliases(t *testing.T) {
 	}
 }
 
+func TestIssue138RejectsSymlinkThenDotDotIntoCandidate(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	subdirectory := filepath.Join(fixture.worktree.Path, "candidate-subdirectory")
+	if err := os.Mkdir(subdirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "subdirectory-alias")
+	if err := os.Symlink(subdirectory, alias); err != nil {
+		t.Fatal(err)
+	}
+	// Kernel traversal expands alias to candidate/candidate-subdirectory
+	// before applying "..", so the absent output is candidate/output.txt.
+	// A lexical Clean before symlink expansion would incorrectly turn this
+	// into a sibling of alias and miss the protected-root reference.
+	target := alias + string(filepath.Separator) + ".." + string(filepath.Separator) + "output.txt"
+	_, err = runCommandIsolated(context.Background(), Runner{}, fixture.worktree.Path, fixture.baseSHA, expected, CommandSpec{
+		ID: "symlink-dotdot", Argv: []string{"sh", "-c", "printf dirty > " + target}, CWD: ".", Timeout: 5 * time.Second, Required: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "references the managed candidate") {
+		t.Fatalf("symlink followed by dot-dot escaped protected-reference detection: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.worktree.Path, "output.txt")); !os.IsNotExist(statErr) {
+		t.Fatal("rejected symlink/dot-dot reference still changed the candidate")
+	}
+}
+
 func TestIssue138CandidateCommandAlsoProtectsBaselineRoot(t *testing.T) {
 	fixture := newVerificationFixture(t)
 	candidate, err := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
@@ -245,6 +278,89 @@ func TestIssue138PostRunSnapshotErrorPreservesCommandOutcome(t *testing.T) {
 	}
 	if string(stdout) != "preserved-output" {
 		t.Fatalf("post-run isolation error discarded stdout: %q", stdout)
+	}
+}
+
+func TestIssue138CandidateCopyRejectsLstatToFIFORaceWithoutBlocking(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	destination := t.TempDir()
+	var hookErr error
+	replaced := false
+	hooks := commandIsolationHooks{afterLstat: func(path string) {
+		if replaced || filepath.Base(path) != "README.md" {
+			return
+		}
+		replaced = true
+		if err := os.Remove(path); err != nil {
+			hookErr = err
+			return
+		}
+		hookErr = syscall.Mkfifo(path, 0o600)
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := copyCandidateFilesWithHooks(ctx, fixture.worktree.Path, destination, hooks)
+	if hookErr != nil {
+		t.Fatal(hookErr)
+	}
+	if !replaced {
+		t.Fatal("copy race hook did not replace the candidate file")
+	}
+	if err == nil || time.Since(started) >= time.Second {
+		t.Fatalf("candidate copy did not fail closed before its deadline: err=%v elapsed=%s", err, time.Since(started))
+	}
+}
+
+func TestIssue138SnapshotRejectsLstatToFIFORaceWithoutBlocking(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "regular.txt")
+	if err := os.WriteFile(path, []byte("regular\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var hookErr error
+	replaced := false
+	hooks := commandIsolationHooks{afterLstat: func(current string) {
+		if replaced || current != path {
+			return
+		}
+		replaced = true
+		if err := os.Remove(current); err != nil {
+			hookErr = err
+			return
+		}
+		hookErr = syscall.Mkfifo(current, 0o600)
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := snapshotCommandTreeWithHooks(ctx, root, hooks)
+	if hookErr != nil {
+		t.Fatal(hookErr)
+	}
+	if !replaced {
+		t.Fatal("snapshot race hook did not replace the isolate file")
+	}
+	if err == nil || time.Since(started) >= time.Second {
+		t.Fatalf("snapshot did not fail closed before its deadline: err=%v elapsed=%s", err, time.Since(started))
+	}
+}
+
+func TestIssue138SlowReadStopsAtContextDeadline(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err = copyStreamContext(ctx, io.Discard, reader)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("slow verifier read returned %v, want context deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("slow verifier read exceeded its bounded deadline: %s", elapsed)
 	}
 }
 

@@ -226,38 +226,83 @@ func pathCandidates(value string) []string {
 			end++
 		}
 		if end-start <= commandIsolationMaxPathBytes {
-			result = append(result, filepath.Clean(value[start:end]))
+			// Preserve dot and dot-dot components until after symlinks are
+			// expanded. The kernel resolves an alias before a following "..";
+			// cleaning here would change that traversal and could hide a path
+			// that lands back inside a protected root.
+			result = append(result, value[start:end])
 		}
 		start = end - 1
 	}
 	return result
 }
 
-// resolveWithMissingTail resolves every existing ancestor, including symlink
-// aliases, then rejoins the not-yet-created tail. This catches argv such as
-// /tmp/alias-to-candidate/../candidate/new-output before the output exists.
+// resolveWithMissingTail follows filesystem components in kernel traversal
+// order, resolving a symlink before applying any later ".." component. Once
+// an absent component is reached, the remaining (necessarily absent) tail is
+// reduced lexically. Cleaning the full input before symlink expansion is
+// unsafe: alias-to-candidate/subdir/../output must resolve to candidate/output,
+// not to the lexical sibling of alias-to-candidate.
 func resolveWithMissingTail(path string) (string, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	current := filepath.Clean(absolute)
-	var tail []string
-	for {
-		resolved, resolveErr := filepath.EvalSymlinks(current)
-		if resolveErr == nil {
-			for index := len(tail) - 1; index >= 0; index-- {
-				resolved = filepath.Join(resolved, tail[index])
-			}
-			return filepath.Clean(resolved), nil
+	if !filepath.IsAbs(path) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", resolveErr
-		}
-		tail = append(tail, filepath.Base(current))
-		current = parent
+		path = cwd + string(filepath.Separator) + path
 	}
+	volume := filepath.VolumeName(path)
+	root := volume + string(filepath.Separator)
+	remainder := strings.TrimPrefix(path, root)
+	pending := strings.Split(remainder, string(filepath.Separator))
+	current := root
+	missing := false
+	symlinks := 0
+	for len(pending) > 0 {
+		part := pending[0]
+		pending = pending[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+			continue
+		}
+		next := filepath.Join(current, part)
+		if missing {
+			current = next
+			continue
+		}
+		info, err := os.Lstat(next)
+		if errors.Is(err, os.ErrNotExist) {
+			missing = true
+			current = next
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+		symlinks++
+		if symlinks > 255 {
+			return "", errors.New("too many symlinks while resolving protected reference")
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			volume = filepath.VolumeName(target)
+			current = volume + string(filepath.Separator)
+			target = strings.TrimPrefix(target, current)
+		}
+		targetParts := strings.Split(target, string(filepath.Separator))
+		pending = append(targetParts, pending...)
+	}
+	return filepath.Clean(current), nil
 }
 
 func sameObservationIdentity(left, right Observation) bool {
@@ -311,6 +356,14 @@ func clearCommandWorktree(root string) error {
 }
 
 func copyCandidateFiles(ctx context.Context, source, destination string) error {
+	return copyCandidateFilesWithHooks(ctx, source, destination, commandIsolationHooks{})
+}
+
+type commandIsolationHooks struct {
+	afterLstat func(string)
+}
+
+func copyCandidateFilesWithHooks(ctx context.Context, source, destination string, hooks commandIsolationHooks) error {
 	stages, err := commandOutput(ctx, source, "ls-files", "--stage", "-z")
 	if err != nil {
 		return errors.New("cannot inspect candidate index")
@@ -349,6 +402,9 @@ func copyCandidateFiles(ctx context.Context, source, destination string) error {
 		if err != nil {
 			return errors.New("cannot inspect a candidate file")
 		}
+		if hooks.afterLstat != nil {
+			hooks.afterLstat(sourcePath)
+		}
 		if err := validateCandidatePathComponents(source, relative); err != nil {
 			return err
 		}
@@ -365,7 +421,7 @@ func copyCandidateFiles(ctx context.Context, source, destination string) error {
 				return errors.New("command isolation candidate exceeds the safe byte limit")
 			}
 			totalBytes += info.Size()
-			if err := copyRegularCandidateFile(sourcePath, destinationPath, info.Mode()); err != nil {
+			if err := copyRegularCandidateFile(ctx, sourcePath, destinationPath, info); err != nil {
 				return err
 			}
 		case info.Mode()&os.ModeSymlink != 0:
@@ -407,29 +463,34 @@ func validateCandidatePathComponents(root, relative string) error {
 	return nil
 }
 
-func copyRegularCandidateFile(source, destination string, mode os.FileMode) error {
-	input, err := os.OpenFile(source, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+func copyRegularCandidateFile(ctx context.Context, source, destination string, expected os.FileInfo) error {
+	input, err := openStableRegular(source, expected)
 	if err != nil {
-		return errors.New("cannot safely open a candidate file")
+		return err
 	}
 	defer input.Close()
-	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600|mode.Perm()&0o111)
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600|expected.Mode().Perm()&0o111)
 	if err != nil {
 		return errors.New("cannot create a command clone file")
 	}
-	if err := output.Chmod(0o600 | mode.Perm()&0o111); err != nil {
+	if err := output.Chmod(0o600 | expected.Mode().Perm()&0o111); err != nil {
 		_ = output.Close()
 		return errors.New("cannot protect a command clone file")
 	}
-	_, copyErr := io.Copy(output, input)
+	written, copyErr := copyStreamContext(ctx, output, input)
 	closeErr := output.Close()
-	if copyErr != nil || closeErr != nil {
+	finalInfo, statErr := input.Stat()
+	if copyErr != nil || closeErr != nil || statErr != nil || written != expected.Size() || !os.SameFile(expected, finalInfo) || finalInfo.Size() != expected.Size() {
 		return errors.New("cannot copy a candidate file")
 	}
 	return nil
 }
 
 func snapshotCommandTree(ctx context.Context, root string) (string, error) {
+	return snapshotCommandTreeWithHooks(ctx, root, commandIsolationHooks{})
+}
+
+func snapshotCommandTreeWithHooks(ctx context.Context, root string, hooks commandIsolationHooks) (string, error) {
 	var records []string
 	var totalBytes int64
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -459,6 +520,9 @@ func snapshotCommandTree(ctx context.Context, root string) (string, error) {
 		if err != nil {
 			return err
 		}
+		if hooks.afterLstat != nil {
+			hooks.afterLstat(path)
+		}
 		name := filepath.ToSlash(relative)
 		switch {
 		case info.IsDir():
@@ -468,14 +532,15 @@ func snapshotCommandTree(ctx context.Context, root string) (string, error) {
 				return errors.New("command isolate snapshot exceeds the safe byte limit")
 			}
 			totalBytes += info.Size()
-			input, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+			input, err := openStableRegular(path, info)
 			if err != nil {
 				return err
 			}
 			digest := sha256.New()
-			_, copyErr := io.Copy(digest, input)
+			read, copyErr := copyStreamContext(ctx, digest, input)
+			finalInfo, statErr := input.Stat()
 			closeErr := input.Close()
-			if copyErr != nil || closeErr != nil {
+			if copyErr != nil || closeErr != nil || statErr != nil || read != info.Size() || !os.SameFile(info, finalInfo) || finalInfo.Size() != info.Size() {
 				return errors.New("cannot digest a command isolate file")
 			}
 			records = append(records, fmt.Sprintf("f\x00%s\x00%o\x00%d\x00%s", name, info.Mode().Perm(), info.Size(), hex.EncodeToString(digest.Sum(nil))))
@@ -499,6 +564,51 @@ func snapshotCommandTree(ctx context.Context, root string) (string, error) {
 	sort.Strings(records)
 	digest := sha256.Sum256([]byte(strings.Join(records, "\x00")))
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
+}
+
+func openStableRegular(path string, expected os.FileInfo) (*os.File, error) {
+	input, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, errors.New("cannot safely open a regular verifier file")
+	}
+	actual, statErr := input.Stat()
+	if statErr != nil || !actual.Mode().IsRegular() || !expected.Mode().IsRegular() || !os.SameFile(expected, actual) || actual.Size() != expected.Size() {
+		_ = input.Close()
+		return nil, errors.New("verifier file changed type or identity after inspection")
+	}
+	return input, nil
+}
+
+func copyStreamContext(ctx context.Context, destination io.Writer, source io.ReadCloser) (int64, error) {
+	stop := context.AfterFunc(ctx, func() { _ = source.Close() })
+	defer stop()
+	buffer := make([]byte, 128<<10)
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		read, readErr := source.Read(buffer)
+		if read > 0 {
+			written, writeErr := destination.Write(buffer[:read])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != read {
+				return total, io.ErrShortWrite
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return total, nil
+			}
+			if ctx.Err() != nil {
+				return total, ctx.Err()
+			}
+			return total, readErr
+		}
+	}
 }
 
 func commandIsolationEnvironment(root string, inherited []string) ([]string, error) {
