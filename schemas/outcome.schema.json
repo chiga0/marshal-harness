@@ -18,7 +18,9 @@
     "summary": { "type": "string", "minLength": 1, "maxLength": 12000 },
     "findingCount": { "type": "integer", "minimum": 0 },
     "retentionPolicy": { "type": "string", "minLength": 1, "maxLength": 256 },
-    "generatedAt": { "type": "string", "format": "date-time" }
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "intentDigest": { "$ref": "#/$defs/digest" },
+    "receiptDigest": { "$ref": "#/$defs/digest" }
   },
   "$defs": {
     "id": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },

@@ -87,8 +87,9 @@ func (p *Publisher) Publish(ctx context.Context, record domain.Record) (domain.R
 	if err := json.Unmarshal(record.Data, &intent); err != nil {
 		return domain.Record{}, err
 	}
-	if intent.Provider != domain.PublicationProviderGitHub || intent.Mode != domain.PublicationModeDraft || intent.MergePolicy != domain.MergePolicyNever {
-		return domain.Record{}, errors.New("GitHub publisher only supports draft PRs with mergePolicy=never")
+	if intent.Provider != domain.PublicationProviderGitHub || intent.Mode != domain.PublicationModeDraft ||
+		(intent.MergePolicy != domain.MergePolicyNever && intent.MergePolicy != domain.MergePolicyPolicy) {
+		return domain.Record{}, errors.New("GitHub publisher only supports draft PRs with mergePolicy=never|policy")
 	}
 	owner, name, err := parseGitHubRepository(intent.RemoteURL)
 	if err != nil || owner+"/"+name != intent.Repository {

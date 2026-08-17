@@ -163,6 +163,62 @@ func DetachedIntentDigest(data []byte) (string, error) {
 	return canonical.DigestJSON(blanked)
 }
 
+// SCMMergeIntentIdentity is the ADR 0032 canonical idempotency tuple of a
+// merge intent: (authorityNamespaceId, runId, publicationRecordId, headOid,
+// mergeMethod). Identical tuples always derive the identical intentId, so a
+// lost-response replay coalesces onto the existing intent instead of minting
+// a second one.
+type SCMMergeIntentIdentity struct {
+	AuthorityNamespaceID string
+	RunID                string
+	PublicationRecordID  string
+	HeadOid              string
+	MergeMethod          string
+}
+
+// Identity returns the canonical idempotency tuple of the intent.
+func (i SCMMergeIntent) Identity() SCMMergeIntentIdentity {
+	return SCMMergeIntentIdentity{
+		AuthorityNamespaceID: i.AuthorityNamespaceID,
+		RunID:                i.RunID,
+		PublicationRecordID:  i.PublicationRecordID,
+		HeadOid:              i.HeadOid,
+		MergeMethod:          i.MergeMethod,
+	}
+}
+
+// IntentID derives the deterministic intent identity from the canonical
+// idempotency tuple: "intent-" plus the sha256 digest of the canonical JSON
+// form of the five-tuple. It mirrors the ADR 0026 MergeReceiptID and
+// reconcileID derivation so all authority records share one naming rule.
+func (identity SCMMergeIntentIdentity) IntentID() (string, error) {
+	document, err := json.Marshal(map[string]string{
+		"authorityNamespaceId": identity.AuthorityNamespaceID,
+		"headOid":              identity.HeadOid,
+		"mergeMethod":          identity.MergeMethod,
+		"publicationRecordId":  identity.PublicationRecordID,
+		"runId":                identity.RunID,
+	})
+	if err != nil {
+		return "", err
+	}
+	digest, err := canonical.DigestJSON(document)
+	if err != nil {
+		return "", err
+	}
+	return "intent-" + trimDigestPrefix(digest), nil
+}
+
+// trimDigestPrefix removes the "sha256:" prefix from a canonical digest,
+// yielding the 64 lowercase hex body used in identity suffixes.
+func trimDigestPrefix(digest string) string {
+	const prefix = "sha256:"
+	if len(digest) > len(prefix) && digest[:len(prefix)] == prefix {
+		return digest[len(prefix):]
+	}
+	return digest
+}
+
 // blankedDigest canonicalizes the document with the named digest field set
 // to the empty string (retained, unlike detachedDigest which removes it), so
 // producers can back-fill the digest and verifiers can blank it and recompute

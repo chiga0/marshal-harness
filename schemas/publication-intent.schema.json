@@ -54,7 +54,7 @@
     "reviewDecisionDigest": { "$ref": "#/$defs/digest" },
     "marker": { "$ref": "#/$defs/marker" },
     "mode": { "type": "string", "enum": ["draft"] },
-    "mergePolicy": { "type": "string", "enum": ["never"] },
+    "mergePolicy": { "type": "string", "enum": ["never", "policy"] },
     "attemptId": { "$ref": "#/$defs/id" },
     "summary": { "type": "string", "minLength": 1, "maxLength": 12000 },
     "createdAt": { "type": "string", "format": "date-time" }

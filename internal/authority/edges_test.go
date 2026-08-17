@@ -76,6 +76,7 @@ func publicationAuthorizationForPair(source SecurityDomainId, target SecurityDom
 		TargetActor:            target,
 		Operation:              operation,
 		BoundPublicationDigest: digestBytes([]byte("publication")),
+		ExpectedPrincipal:      "github-login:marshal-publisher",
 		Expiry:                 "2026-12-31T00:00:00Z",
 		Generation:             1,
 	}
@@ -186,7 +187,7 @@ func TestTypedEdgesAcceptLegalPairsIdempotently(t *testing.T) {
 	publicationOperations := []PublicationOperation{
 		PublicationOperationSubmit,
 		PublicationOperationChecksRead,
-		PublicationOperationSubmit,
+		PublicationOperationControlledMerge,
 	}
 
 	for index, tc := range pairs {

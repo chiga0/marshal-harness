@@ -313,6 +313,7 @@ type PublicationIssuance struct {
 	TargetActor            SecurityDomainId           `json:"targetActor"`
 	Operation              PublicationOperation       `json:"operation"`
 	BoundPublicationDigest string                     `json:"boundPublicationDigest"`
+	ExpectedPrincipal      string                     `json:"expectedPrincipal"`
 	DecisionBinding        PublicationDecisionBinding `json:"decisionBinding"`
 	Expiry                 string                     `json:"expiry"`
 }
@@ -328,6 +329,9 @@ func (request PublicationIssuance) validate() error {
 		return err
 	}
 	if err := requireDigest("publicationIssuance.boundPublicationDigest", request.BoundPublicationDigest); err != nil {
+		return err
+	}
+	if err := requireText("publicationIssuance.expectedPrincipal", request.ExpectedPrincipal); err != nil {
 		return err
 	}
 	if err := request.DecisionBinding.Validate(); err != nil {
@@ -428,6 +432,7 @@ type PublicationUseRequest struct {
 	TargetActor            SecurityDomainId     `json:"targetActor"`
 	Operation              PublicationOperation `json:"operation"`
 	PublicationDigest      string               `json:"publicationDigest"`
+	ExpectedPrincipal      string               `json:"expectedPrincipal"`
 	SideEffectIntentDigest string               `json:"sideEffectIntentDigest"`
 	ReviewDecisionDigest   string               `json:"reviewDecisionDigest"`
 	EvidenceDigest         string               `json:"evidenceDigest"`
@@ -457,6 +462,9 @@ func (request PublicationUseRequest) validate() error {
 		if err := requireDigest(field.name, field.value); err != nil {
 			return err
 		}
+	}
+	if err := requireText("publicationUseRequest.expectedPrincipal", request.ExpectedPrincipal); err != nil {
+		return err
 	}
 	return nil
 }
@@ -737,6 +745,7 @@ func (r *EdgeRuntime) IssuePublicationAuthorization(request PublicationIssuance,
 		TargetActor:            request.TargetActor,
 		Operation:              request.Operation,
 		BoundPublicationDigest: request.BoundPublicationDigest,
+		ExpectedPrincipal:      request.ExpectedPrincipal,
 		Expiry:                 request.Expiry,
 		Generation:             1,
 	}
@@ -1186,6 +1195,9 @@ func (r *EdgeRuntime) RecheckPublicationAuthorization(presented PublicationAutho
 		!request.TargetActor.Equal(entry.Authorization.TargetActor) ||
 		request.PublicationDigest != entry.Authorization.BoundPublicationDigest {
 		return reject("binding match", ErrEdgeBindingMismatch)
+	}
+	if request.ExpectedPrincipal != entry.Authorization.ExpectedPrincipal {
+		return reject("principal binding", ErrEdgeBindingMismatch)
 	}
 	if request.SideEffectIntentDigest != entry.Decision.SideEffectIntentDigest ||
 		request.ReviewDecisionDigest != entry.Decision.ReviewDecisionDigest ||

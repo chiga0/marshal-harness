@@ -14,6 +14,13 @@ import (
 // check observation flow", never as a failure that mutates the run.
 var ErrPRNotMerged = errors.New("pr-not-merged")
 
+var (
+	ErrMergeNotMergeable     = errors.New("merge-not-mergeable")
+	ErrMergePermissionDenied = errors.New("merge-permission-denied")
+	ErrMergeIdentityMismatch = errors.New("merge-identity-mismatch")
+	ErrMergeRetryExhausted   = errors.New("merge-delivery-retry-exhausted")
+)
+
 // WorkerAdapter edits a task worktree but cannot verify or publish its own
 // result authoritatively.
 type WorkerAdapter interface {
@@ -82,6 +89,51 @@ type RemoteCheckObserver interface {
 // must never merge, edit, close or otherwise mutate the remote PR.
 type MergeReceiptObserver interface {
 	ObserveMergeReceipt(context.Context, domain.Record) (domain.Record, error)
+}
+
+// SCMMerger is the ADR 0032 independent credentialed merge port inside the
+// Publication trust domain. It exposes exactly the two frozen mutations and
+// nothing else: admin, force, bypass, branch-delete, close and remote
+// auto-merge queue operations are never exposed through it.
+type SCMMerger interface {
+	// ReadyForReview transitions the intent-bound Draft PR to ready for
+	// review. It is idempotent: an already-ready PR is observed as success.
+	ReadyForReview(context.Context, domain.SCMMergeIntent) error
+	// Merge executes the merge with expectedHeadOid == intent.HeadOid
+	// mechanically bound into the merge request (when the provider can) and
+	// intent.MergeMethod applied. Any response loss is reconciled by the
+	// caller through ObserveMergeReceipt, never by blind retry.
+	Merge(context.Context, domain.SCMMergeIntent) error
+	// BindsExpectedHead reports whether the provider mechanically binds
+	// intent.HeadOid into the merge request (ADR 0032 §4 atomicity). A
+	// provider that cannot bind it must make the run BLOCKED rather than
+	// fall back to before/after observation, which is not a fence.
+	BindsExpectedHead() bool
+	// SecurityDomainID returns the SCMMerger actor-side composite security
+	// domain (ADR 0018 §10) the merger executes under. It is a mechanical,
+	// secret-free declaration: admission freezes it into the intent and every
+	// mutation re-checks it against the frozen value, so the actual mutation
+	// actor is provably the one the intent bound.
+	SecurityDomainID() string
+}
+
+// SCMMergeCredentialObserver observes the current authenticated merge
+// executor principal and the credential-resolution identity under the
+// Publisher-side credential path (ADR 0032 §4). It is strictly read-only and
+// never carries credential material in either return value.
+type SCMMergeCredentialObserver interface {
+	// ObserveCredentialIdentity returns the canonical "github-login:<login>"
+	// principal and the canonical digest of the (gh binary resolved path, gh
+	// config dir resolved path, principal) tuple. An empty or ambiguous
+	// observation must fail closed.
+	ObserveCredentialIdentity(context.Context) (principal string, credentialIdentityDigest string, err error)
+}
+
+// MergeTargetObserver observes the pre-merge PR facts bound to an intent for
+// admission re-observation and the ObserveReady recovery state machine
+// (ADR 0032 §2, §5). It is strictly read-only and never mutates the remote.
+type MergeTargetObserver interface {
+	ObserveTarget(context.Context, domain.SCMMergeIntent) (domain.SCMMergeTarget, error)
 }
 
 // SandboxProvider is Marshal Core's dispatch-bound sandbox execution port

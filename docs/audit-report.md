@@ -401,6 +401,20 @@ ADR 0019 首稿的最终独立复核另发现并关闭五项 P1：按 Port 接�
 
 本次只改变发布信息架构与面向用户的解释层，工程规范内容及其权威顺序保持不变，不改变信任边界、持久化契约、生命周期或发布权限，不触发新 ADR。
 
+## ADR 0032 B2 受控合并实现审计增补（2026-08-17）
+
+维护者接受 ADR 0032 后，B2 实现复核发现五项会使 `mergePolicy=policy` 无法安全闭环的 P1。当前实现切片按“先持久意图、再消费授权、每次 mutation 前 current-ledger recheck、最后以不可变 receipt 收敛”的顺序关闭这些缺口；本节只记录 B2 实现状态，不把受控合并误报为 M10 完成，也不改变 M11–M13 状态。
+
+| ID | 级别 | 状态 | 关闭口径 |
+| --- | --- | --- | --- |
+| `ADR0032-B2-PUBLISH-DEADEND` | P1 | `CLOSED` | `Publish` 同时支持冻结的 `mergePolicy=never|policy`；`policy` 必须绑定 `eligible-after-policy` ReviewDecision，生成同策略的 PublicationIntent/PublicationRecord 并停留于 `CI_PENDING`，只有 `publication.merged` 可进入 `ACCEPTED`。 |
+| `ADR0032-B2-AUTHORIZATION-BYPASS` | P1 | `CLOSED` | 新增 `publication-controlled-merge` operation；Core 签发的 `PublicationAuthorization` 精确绑定 publication、SCMMergeIntent、ReviewDecision、evidence、预期 GitHub principal 与 Execution→Publication security domain；ready/merge 每次调用前都做 current-ledger recheck，缺失、过期、撤销、target ineligible 或绑定漂移均 fail closed。 |
+| `ADR0032-B2-BASE-BRANCH-UNBOUND` | P1 | `CLOSED` | `SCMMergeTarget` 同时携带 `baseBranch` 与 `baseOid`；fresh admission 与 ObserveReady recovery 都分别对照冻结 PublicationRecord base branch 与 intent base OID，任一漂移在 mutation 前进入 `BLOCKED`。 |
+| `ADR0032-B2-CHECK-EVIDENCE-ORPHAN` | P1 | `CLOSED` | fresh `RemoteCheckRecord` 以 canonical digest 为文件名持久化不可变 bytes；恢复与 C7 重建重新校验 Schema、重算 digest，并核对 task/run/repository/request/head/status/requiredChecks，缺失或篡改不得收敛。 |
+| `ADR0032-B2-UNBOUNDED-MERGE-FAILURE` | P1 | `CLOSED` | ready/merge delivery attempt 先以 append-only 记录消耗 durable budget，固定最多三次；GitHub not-mergeable、permission 与 identity drift 使用 typed permanent failure，瞬态失败耗尽后转 `merge-delivery-retry-exhausted` 并进入 `BLOCKED`，provider 原始诊断不进入持久错误。 |
+
+残留 `#160` 保持 P2 `OPEN`：当前 B2 的 bounded delivery ledger 已阻止无限 mutation，但更通用的共享 outbox/投递观测与运维视图仍应由后续切片处理；不得为关闭该 P2 扩大本切片的信任边界或把 provider 原始输出写入 Outcome。
+
 ## Issue #53 CI 失败 rework 注入设计缺口审计增补（2026-08-14）
 
 公开 [Issue #53](https://github.com/chiga0/marshal-harness/issues/53) 要求为 CI 失败 rework 闭环冻结可恢复、可审计且无双计数的契约。基线（main commit `981b53d`）行为定位：PublicationRecord 已建立且 Run 位于 `CI_PENDING`；RemoteCheckObserver 产出 `status=fail` 的 RemoteCheckRecord；`publication.checks-failed` 当前只把 `headSha` 写入事件并进入 `REWORK_REQUESTED`；execution 的 CI origin 分支返回空 findings；`task review` 仅接受 `REVIEW_PENDING`——既无法把失败检查的权威证据绑定到新 Decision，也无法把精确 `requiredOutcome` 投影给下一 Attempt；fail 分支预算守卫也只检查 rework round、不检查 attempt 余额。
