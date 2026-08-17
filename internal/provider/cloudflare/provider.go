@@ -2,7 +2,6 @@ package cloudflare
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,14 +13,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
-
-// maxLogLines bounds the observation log surfaced through Inspect; it
-// mirrors internal/sandbox's bounded adjudication input.
-const maxLogLines = 32
-
-// bridgeStateRunning is the Bridge lifecycle word mapped onto
-// sandbox.AllocationActive.
-const bridgeStateRunning = "running"
 
 // Compile-time proof that the Bridge provider implements the ten-operation
 // SPI of internal/sandbox/spi.go.
@@ -44,9 +35,6 @@ type ProviderConfig struct {
 	// digest the provider holds; empty means it holds none, so every
 	// hardened request is refused fail closed and never downgraded.
 	ConformanceEvidenceRef string
-	// ProtocolVersion overrides the Bridge protocol version the client
-	// requires (default DefaultProtocolVersion); mismatch fails closed.
-	ProtocolVersion string
 	// HTTPClient optionally injects the transport (tests); nil takes a
 	// plain client.
 	HTTPClient *http.Client
@@ -54,44 +42,62 @@ type ProviderConfig struct {
 	MaxRetries     int
 	RetryDelay     time.Duration
 	RequestTimeout time.Duration
+	// StateStore is the durable side-effect store. Nil selects an ephemeral
+	// in-memory store (tests); production callers must supply a file-backed
+	// store constructed with NewFileStateStore.
+	StateStore *FileStateStore
+	// LocatorResolver resolves a bound stage locator to its content bytes.
+	// It is the provider's window onto the ArtifactStore; nil means locator
+	// staging is refused with ErrLocatorUnresolved.
+	LocatorResolver func(sandbox.Locator) ([]byte, error)
 }
 
-// Diagnostic is one fail-closed observation recorded by the provider:
-// rejected identities, stale generations, assurance refusals, container
-// loss and drift. Diagnostic text never carries the transport credential.
+// Diagnostic is one fail-closed observation recorded by the provider.
+// Diagnostic text never carries the transport credential.
 type Diagnostic struct {
 	Operation    string
 	AllocationId string
 	Reason       string
 }
 
+// checkpointRecord holds the raw tar snapshot the provider keeps in memory
+// for a later hydrate. The tar is not durable: the official persist returns
+// the snapshot to the caller, and durably storing it is the caller's
+// (ArtifactStore) responsibility.
+type checkpointRecord struct {
+	tar []byte
+}
+
 // allocationEntry is the provider's bookkeeping of one allocation: the
-// opaque SPI record, the workload role bound at provision time and the last
-// checkpoint observation feeding a later Restore.
+// opaque SPI record, the workload role, the Bridge locator returned by the
+// remote create, the interactive session id and the last checkpoint.
 type allocationEntry struct {
 	meta           sandbox.SandboxAllocation
 	role           sandbox.WorkloadRole
-	lastCheckpoint *sandbox.CheckpointReceipt
+	bridgeLocator  string
+	sessionId      string
+	lastCheckpoint *checkpointRecord
 }
 
 // Provider implements sandbox.SandboxProvider against the official Bridge
-// OpenAPI family (create / running / exec SSE / file / persist / hydrate /
-// destroy). Cloudflare-specific concepts (Durable Objects, R2, Workers
+// HTTP API. Cloudflare-specific concepts (Durable Objects, R2, Workers
 // bindings) never surface here: the Bridge-internal identity of a sandbox
-// travels only as the opaque allocationId locator and as receipt fields,
-// and Marshal Core never interprets them (ADR 0016 §4). Every receipt this
-// provider returns is an observation of Bridge state, never authority.
+// travels only as the opaque bridgeLocator mapping and the SPI allocationId,
+// and Marshal Core never interprets them (ADR 0016 §4).
 type Provider struct {
-	client      *Client
-	evidenceRef string
+	client          *Client
+	evidenceRef     string
+	store           *FileStateStore
+	locatorResolver func(sandbox.Locator) ([]byte, error)
 
 	mu          sync.Mutex
 	allocations map[string]*allocationEntry
 	diagnostics []Diagnostic
 }
 
-// NewProvider validates the configuration fail closed: a missing transport
-// credential or a malformed evidence digest refuses construction outright.
+// NewProvider validates the configuration fail closed and reconstructs the
+// provider's bookkeeping from the durable store when one is supplied, so a
+// re-opened provider converges with a crashed one.
 func NewProvider(config ProviderConfig) (*Provider, error) {
 	if strings.TrimSpace(config.BridgeBaseURL) == "" {
 		return nil, fmt.Errorf("%w: the provider configuration must carry the bridge base URL", sandbox.ErrInvalidRequest)
@@ -106,22 +112,36 @@ func NewProvider(config ProviderConfig) (*Provider, error) {
 		}
 	}
 	client, err := NewClient(ClientConfig{
-		BaseURL:         config.BridgeBaseURL,
-		Credential:      credential,
-		ProtocolVersion: config.ProtocolVersion,
-		HTTPClient:      config.HTTPClient,
-		MaxRetries:      config.MaxRetries,
-		RetryDelay:      config.RetryDelay,
-		RequestTimeout:  config.RequestTimeout,
+		BaseURL:        config.BridgeBaseURL,
+		Credential:     credential,
+		HTTPClient:     config.HTTPClient,
+		MaxRetries:     config.MaxRetries,
+		RetryDelay:     config.RetryDelay,
+		RequestTimeout: config.RequestTimeout,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &Provider{
-		client:      client,
-		evidenceRef: config.ConformanceEvidenceRef,
-		allocations: map[string]*allocationEntry{},
-	}, nil
+	store := config.StateStore
+	if store == nil {
+		store = newMemoryStateStore()
+	}
+	provider := &Provider{
+		client:          client,
+		evidenceRef:     config.ConformanceEvidenceRef,
+		store:           store,
+		locatorResolver: config.LocatorResolver,
+		allocations:     map[string]*allocationEntry{},
+	}
+	for _, record := range store.Allocations() {
+		provider.allocations[record.Meta.AllocationId] = &allocationEntry{
+			meta:          record.Meta,
+			role:          record.Role,
+			bridgeLocator: record.BridgeLocator,
+			sessionId:     record.SessionId,
+		}
+	}
+	return provider, nil
 }
 
 // Diagnostics returns a copy of the recorded fail-closed observations.
@@ -167,11 +187,12 @@ func (p *Provider) Probe(ctx context.Context, request sandbox.ProbeRequest) (*sa
 	}, nil
 }
 
-// Provision implements sandbox.SandboxProvider: the assurance gate, the
-// single-active invariant and the Bridge create call. A hardened request
-// without valid evidence is refused outright (ErrAssuranceNotMet) and never
-// downgraded; the granted allocation carries exactly the requested
-// two-dimensional combination.
+// Provision implements sandbox.SandboxProvider with the durable
+// intent/outcome/locator discipline: a durable intent is written first, the
+// remote create runs under its idempotency key, the Bridge locator is
+// persisted immediately after the create succeeds, and the active allocation
+// is installed atomically with the committed outcome. A crash at any write
+// point converges on replay because the create is idempotent.
 func (p *Provider) Provision(ctx context.Context, request sandbox.ProvisionRequest) (*sandbox.ProvisionReceipt, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -200,35 +221,64 @@ func (p *Provider) Provision(ctx context.Context, request sandbox.ProvisionReque
 		p.recordDiagnostic(sandbox.OperationProvision, candidate.AllocationId, "single-active check rejected the provision: "+err.Error())
 		return nil, err
 	}
+	if entry, ok := p.allocations[candidate.AllocationId]; ok && entry.meta.Generation == candidate.Generation && entry.meta.State == sandbox.AllocationActive {
+		// Idempotent replay of an already committed outcome.
+		return &sandbox.ProvisionReceipt{Allocation: entry.meta}, nil
+	}
 	replayKey, err := request.Identity.ReplayKey()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := p.client.CreateSandbox(ctx, CreateSandboxRequest{
-		SandboxId:  candidate.AllocationId,
-		RunId:      candidate.RunId,
-		AttemptId:  candidate.AttemptId,
-		Generation: candidate.Generation,
-	}, replayKey); err != nil {
+	intent := CreateIntent{
+		ReplayKey:    replayKey,
+		AllocationId: candidate.AllocationId,
+		RunId:        candidate.RunId,
+		AttemptId:    candidate.AttemptId,
+		Generation:   candidate.Generation,
+	}
+	if err := p.store.RecordIntent(intent); err != nil {
+		return nil, err
+	}
+	bridgeLocator, err := p.client.CreateSandbox(ctx, replayKey)
+	if err != nil {
+		// A definitive refusal (conflict, capacity, credential, semantic
+		// 4xx) clears the intent; an exhausted retry budget is ambiguous —
+		// the create may have happened — so the intent stays and reconcile
+		// reports the ambiguity, never clean.
+		if !ambiguousCreateError(err) {
+			_ = p.store.ClearIntent(replayKey)
+		}
 		if errors.Is(err, ErrBridgeConflict) {
 			err = fmt.Errorf("%w: the bridge observed a conflicting sandbox for %q", sandbox.ErrDuplicateActiveAllocation, candidate.AllocationId)
 		}
 		p.recordDiagnostic(sandbox.OperationProvision, candidate.AllocationId, "bridge create failed: "+err.Error())
 		return nil, err
 	}
+	if err := p.store.RecordBridgeLocator(candidate.AllocationId, bridgeLocator); err != nil {
+		return nil, err
+	}
+	if err := p.store.CommitCreateOutcome(CreateOutcome{
+		ReplayKey:     replayKey,
+		AllocationId:  candidate.AllocationId,
+		BridgeLocator: bridgeLocator,
+		Meta:          candidate,
+		Role:          request.Identity.WorkloadRole,
+	}); err != nil {
+		return nil, err
+	}
 	p.allocations[candidate.AllocationId] = &allocationEntry{
-		meta: candidate,
-		role: request.Identity.WorkloadRole,
+		meta:          candidate,
+		role:          request.Identity.WorkloadRole,
+		bridgeLocator: bridgeLocator,
 	}
 	return &sandbox.ProvisionReceipt{Allocation: candidate}, nil
 }
 
-// Stage implements sandbox.SandboxProvider over the Bridge file endpoint.
-// The digest is recomputed before consumption (the Bridge refuses a
-// mismatch without writing; inline inputs are additionally recomputed on
-// this side of the wire) and once more after consumption by reading the
-// staged bytes back: the receipt carries recomputed digests only, never an
-// echo of the declared digest.
+// Stage implements sandbox.SandboxProvider over the official raw-bytes file
+// endpoint. The digest discipline is Marshal-side: the content is recomputed
+// before the raw write, written, read back, and recomputed once more, so the
+// receipt carries recomputed digests only, never an echo of the declared
+// digest.
 func (p *Provider) Stage(ctx context.Context, request sandbox.StageRequest) (*sandbox.StageReport, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -267,82 +317,55 @@ func (p *Provider) stageInput(ctx context.Context, entry *allocationEntry, alloc
 		p.recordDiagnostic(sandbox.OperationStage, allocationId, "stage target rejected: "+err.Error())
 		return nil, err
 	}
-	writeRequest := WriteFileRequest{Path: path, DeclaredSHA256: input.DeclaredSHA256}
-	var localPre string
+	var content []byte
 	if input.Locator == nil {
-		writeRequest.ContentBase64 = base64.StdEncoding.EncodeToString(input.Inline)
-		localPre = sandbox.RecomputeSHA256(input.Inline)
+		content = append([]byte(nil), input.Inline...)
 	} else {
-		writeRequest.Locator = &LocatorRef{
-			StoreId:   input.Locator.StoreId,
-			SHA256:    input.Locator.SHA256,
-			SizeBytes: input.Locator.SizeBytes,
-		}
-	}
-	inputKey := sandbox.RecomputeSHA256([]byte(replayKey + "\x00" + input.InputId))
-	result, err := p.client.WriteFile(ctx, allocationId, writeRequest, inputKey)
-	if err != nil {
-		if errors.Is(err, ErrDigestMismatch) {
-			p.failAllocation(entry, "stage input digest mismatch detected before consumption for "+input.InputId)
-			return nil, fmt.Errorf("%w: input %q", sandbox.ErrStageInputMismatch, input.InputId)
-		}
-		if errors.Is(err, ErrBridgeLocatorUnresolved) {
-			p.recordDiagnostic(sandbox.OperationStage, allocationId, "locator unresolved for "+input.InputId)
+		if p.locatorResolver == nil {
+			p.recordDiagnostic(sandbox.OperationStage, allocationId, "locator staging refused: no locator resolver is configured")
 			return nil, fmt.Errorf("%w: input %q", sandbox.ErrLocatorUnresolved, input.InputId)
 		}
-		if errors.Is(err, ErrContainerLost) {
-			p.recordDiagnostic(sandbox.OperationStage, allocationId, "container state lost before staging "+input.InputId)
-			return nil, fmt.Errorf("%w: the container state was lost after hibernation", sandbox.ErrAllocationNotActive)
+		resolved, resolveErr := p.locatorResolver(*input.Locator)
+		if resolveErr != nil {
+			p.recordDiagnostic(sandbox.OperationStage, allocationId, "locator resolution failed for "+input.InputId)
+			return nil, fmt.Errorf("%w: input %q", sandbox.ErrLocatorUnresolved, input.InputId)
 		}
-		var bridgeErr *BridgeError
-		if errors.As(err, &bridgeErr) && bridgeErr.Code == "post-write-mismatch" {
-			p.failAllocation(entry, "post-consumption digest mismatch reported by the bridge for "+input.InputId)
+		content = append([]byte(nil), resolved...)
+		if int64(len(content)) != input.Locator.SizeBytes {
+			p.failAllocation(entry, "staged locator size disagreement for "+input.InputId)
+			return nil, fmt.Errorf("cloudflare: stage input %q: the staged size disagrees with the locator", input.InputId)
 		}
-		return nil, err
 	}
-	// Belt-and-braces pre-consumption check for inline inputs: the digest
-	// this side computed over the very bytes it sent must equal the digest
-	// the Bridge computed over the very bytes it received.
-	if localPre != "" && result.PreSHA256 != localPre {
-		p.failAllocation(entry, "stage transport integrity failure for "+input.InputId)
-		return nil, fmt.Errorf("cloudflare: stage input %q: the transport altered the staged bytes", input.InputId)
-	}
-	if result.PreSHA256 != input.DeclaredSHA256 {
-		p.failAllocation(entry, "stage pre-consumption digest disagreement for "+input.InputId)
+	pre := sandbox.RecomputeSHA256(content)
+	if pre != input.DeclaredSHA256 {
+		p.failAllocation(entry, "stage pre-consumption digest mismatch for "+input.InputId)
 		return nil, fmt.Errorf("%w: input %q", sandbox.ErrStageInputMismatch, input.InputId)
 	}
-	// Post-consumption recomputation: read the staged bytes back and
-	// recompute the digest out-of-band, so the receipt can never be
-	// satisfied by echoing a Bridge self-report.
-	readBack, err := p.client.ReadFile(ctx, allocationId, path)
-	if err != nil {
-		return nil, err
+	inputKey := sandbox.RecomputeSHA256([]byte(replayKey + "\x00" + input.InputId))
+	if err := p.client.WriteFile(ctx, entry.bridgeLocator, path, content, inputKey); err != nil {
+		return nil, p.mapAllocationError(sandbox.OperationStage, allocationId, err)
 	}
-	content, err := base64.StdEncoding.DecodeString(readBack.ContentBase64)
+	readBack, err := p.client.ReadFile(ctx, entry.bridgeLocator, path)
 	if err != nil {
-		return nil, fmt.Errorf("%w: the bridge returned a malformed staged payload", ErrInvalidBridgeResponse)
+		return nil, p.mapAllocationError(sandbox.OperationStage, allocationId, err)
 	}
-	post := sandbox.RecomputeSHA256(content)
-	if post != result.PostSHA256 || post != input.DeclaredSHA256 {
+	post := sandbox.RecomputeSHA256(readBack)
+	if post != pre || post != input.DeclaredSHA256 {
 		p.failAllocation(entry, "stage post-consumption digest mismatch for "+input.InputId)
 		return nil, fmt.Errorf("cloudflare: stage input %q: post-consumption digest mismatch", input.InputId)
 	}
-	sizeBytes := int64(len(content))
-	if input.Locator != nil && sizeBytes != input.Locator.SizeBytes {
-		p.failAllocation(entry, "staged locator size disagreement for "+input.InputId)
-		return nil, fmt.Errorf("cloudflare: stage input %q: the staged size disagrees with the locator", input.InputId)
-	}
 	return &sandbox.StageReceipt{
 		InputId:               input.InputId,
-		RecomputedSHA256:      result.PreSHA256,
+		RecomputedSHA256:      pre,
 		PostConsumptionSHA256: post,
-		SizeBytes:             sizeBytes,
+		SizeBytes:             int64(len(content)),
 	}, nil
 }
 
 // Exec implements sandbox.SandboxProvider over the Bridge exec SSE stream.
-// The receipt is a lifecycle guard only: no conformance or fencing verdict
-// is ever derived from it.
+// The provider creates (or reuses) the allocation's session and executes
+// with the Session-Id, matching the official "create a session, then execute
+// with the Session-Id" model. The receipt is a lifecycle guard only.
 func (p *Provider) Exec(ctx context.Context, request sandbox.ExecRequest) (*sandbox.ExecReceipt, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -359,11 +382,20 @@ func (p *Provider) Exec(ctx context.Context, request sandbox.ExecRequest) (*sand
 	if err != nil {
 		return nil, err
 	}
-	streamRequest := ExecStreamRequest{Command: append([]string(nil), request.Command...)}
-	if len(request.Stdin) > 0 {
-		streamRequest.StdinBase64 = base64.StdEncoding.EncodeToString(request.Stdin)
+	replayKey, err := request.Identity.ReplayKey()
+	if err != nil {
+		return nil, err
 	}
-	stream, err := p.client.Exec(ctx, entry.meta.AllocationId, streamRequest)
+	if entry.sessionId == "" {
+		sessionId, sessionErr := p.client.CreateSession(ctx, entry.bridgeLocator, replayKey)
+		if sessionErr != nil {
+			return nil, p.mapAllocationError(sandbox.OperationExec, request.AllocationId, sessionErr)
+		}
+		entry.sessionId = sessionId
+	}
+	stream, err := p.client.Exec(ctx, entry.bridgeLocator, entry.sessionId, ExecStreamRequest{
+		Argv: append([]string(nil), request.Command...),
+	})
 	if err != nil {
 		return nil, p.mapAllocationError(sandbox.OperationExec, request.AllocationId, err)
 	}
@@ -382,11 +414,11 @@ func (p *Provider) Exec(ctx context.Context, request sandbox.ExecRequest) (*sand
 	}, nil
 }
 
-// Inspect implements sandbox.SandboxProvider: the out-of-band observation
-// comes from the Bridge observation endpoint, never from provider
-// self-report. A container whose state was lost after hibernation is
-// observed as failed; a locally active allocation the Bridge no longer
-// knows fails closed.
+// Inspect implements sandbox.SandboxProvider over the official running
+// observation. The official wire exposes no containment-violation or log
+// observation channel, so Inspect reports only the observable running state
+// and carries empty violation/log/spawn observations; the provider never
+// fabricates an observation it cannot make.
 func (p *Provider) Inspect(ctx context.Context, request sandbox.InspectRequest) (*sandbox.InspectReport, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -413,16 +445,8 @@ func (p *Provider) Inspect(ctx context.Context, request sandbox.InspectRequest) 
 		p.recordDiagnostic(sandbox.OperationInspect, request.AllocationId, fmt.Sprintf("stale generation %d rejected: the allocation carries generation %d", request.Identity.Generation, entry.meta.Generation))
 		return nil, fmt.Errorf("%w: the identity carries generation %d, the allocation carries generation %d", sandbox.ErrStaleAllocationGeneration, request.Identity.Generation, entry.meta.Generation)
 	}
-	status, err := p.client.SandboxStatus(ctx, request.AllocationId)
+	running, err := p.client.SandboxRunning(ctx, entry.bridgeLocator)
 	if err != nil {
-		if errors.Is(err, ErrContainerLost) {
-			p.recordDiagnostic(sandbox.OperationInspect, request.AllocationId, "the container state was lost after hibernation")
-			return &sandbox.InspectReport{
-				State:    sandbox.AllocationFailed,
-				ExitCode: -1,
-				LogLines: []string{"observed: the container state was lost after hibernation"},
-			}, nil
-		}
 		if errors.Is(err, ErrSandboxNotFound) {
 			if entry.meta.State.IsTerminal() {
 				return &sandbox.InspectReport{State: entry.meta.State, ExitCode: -1}, nil
@@ -430,31 +454,23 @@ func (p *Provider) Inspect(ctx context.Context, request sandbox.InspectRequest) 
 			p.recordDiagnostic(sandbox.OperationInspect, request.AllocationId, "the bridge holds no sandbox for this locally active allocation")
 			return nil, fmt.Errorf("%w: %q", sandbox.ErrAllocationNotFound, request.AllocationId)
 		}
+		if errors.Is(err, ErrContainerLost) {
+			p.recordDiagnostic(sandbox.OperationInspect, request.AllocationId, "the container state was lost after hibernation")
+			return &sandbox.InspectReport{State: sandbox.AllocationFailed, ExitCode: -1}, nil
+		}
 		return nil, err
 	}
-	state := sandbox.AllocationActive
-	if status.State != bridgeStateRunning {
-		state = sandbox.AllocationFailed
+	if running {
+		return &sandbox.InspectReport{State: sandbox.AllocationActive, ExitCode: -1}, nil
 	}
-	violations := make([]sandbox.BoundaryViolation, 0, len(status.Violations))
-	for _, violation := range status.Violations {
-		violations = append(violations, sandbox.BoundaryViolation{Kind: violation.Kind, Detail: violation.Detail})
-	}
-	logLines := append([]string(nil), status.LogLines...)
-	if len(logLines) > maxLogLines {
-		logLines = logLines[len(logLines)-maxLogLines:]
-	}
-	return &sandbox.InspectReport{
-		State:      state,
-		ExitCode:   status.ExitCode,
-		Violations: violations,
-		SpawnCount: status.SpawnCount,
-		LogLines:   logLines,
-	}, nil
+	p.recordDiagnostic(sandbox.OperationInspect, request.AllocationId, "the bridge observed the sandbox is no longer running")
+	return &sandbox.InspectReport{State: sandbox.AllocationFailed, ExitCode: -1}, nil
 }
 
-// Signal implements sandbox.SandboxProvider through the Bridge signal
-// endpoint; the closed enumeration is validated before any wire call.
+// Signal implements sandbox.SandboxProvider by deleting the exact session:
+// the official wire has no dedicated kill endpoint, so the kill is
+// delivered by deleting the allocation's tracked session. The closed
+// enumeration is validated before any wire call.
 func (p *Provider) Signal(ctx context.Context, request sandbox.SignalRequest) (*sandbox.SignalReceipt, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -472,23 +488,25 @@ func (p *Provider) Signal(ctx context.Context, request sandbox.SignalRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	replayKey, err := request.Identity.ReplayKey()
-	if err != nil {
-		return nil, err
+	if entry.sessionId == "" {
+		return &sandbox.SignalReceipt{Delivered: false}, nil
 	}
-	result, err := p.client.Signal(ctx, entry.meta.AllocationId, string(request.Signal), replayKey)
-	if err != nil {
+	if err := p.client.DeleteSession(ctx, entry.bridgeLocator, entry.sessionId); err != nil {
+		if errors.Is(err, ErrSessionNotFound) {
+			entry.sessionId = ""
+			return &sandbox.SignalReceipt{Delivered: false}, nil
+		}
 		return nil, p.mapAllocationError(sandbox.OperationSignal, request.AllocationId, err)
 	}
-	return &sandbox.SignalReceipt{Delivered: result.Delivered}, nil
+	entry.sessionId = ""
+	return &sandbox.SignalReceipt{Delivered: true}, nil
 }
 
 // Checkpoint implements sandbox.SandboxProvider over the Bridge persist
-// endpoint. The receipt carries the checkpoint id, the sha256 the Bridge
-// recomputed over the snapshot bytes and the snapshot size; checkpoint
-// semantics cover the staged file-system content only (SPI: "snapshot the
-// staged content") — platform-internal hibernation state is never a
-// checkpoint.
+// endpoint, which returns the raw tar snapshot. The receipt carries the
+// deterministic checkpoint id, the sha256 recomputed over the snapshot bytes
+// and the snapshot size; checkpoint semantics cover the staged file-system
+// content only (SPI: "snapshot the staged content").
 func (p *Provider) Checkpoint(ctx context.Context, request sandbox.CheckpointRequest) (*sandbox.CheckpointReceipt, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -506,27 +524,26 @@ func (p *Provider) Checkpoint(ctx context.Context, request sandbox.CheckpointReq
 	if err != nil {
 		return nil, err
 	}
-	result, err := p.client.Persist(ctx, entry.meta.AllocationId, replayKey)
+	tar, err := p.client.Persist(ctx, entry.bridgeLocator, replayKey)
 	if err != nil {
 		return nil, p.mapAllocationError(sandbox.OperationCheckpoint, request.AllocationId, err)
 	}
 	receipt := &sandbox.CheckpointReceipt{
-		CheckpointId: result.CheckpointId,
-		SHA256:       result.SHA256,
-		SizeBytes:    result.SizeBytes,
+		CheckpointId: sandbox.RecomputeSHA256([]byte("checkpoint\x00" + replayKey)),
+		SHA256:       sandbox.RecomputeSHA256(tar),
+		SizeBytes:    int64(len(tar)),
 	}
-	entry.lastCheckpoint = receipt
+	entry.lastCheckpoint = &checkpointRecord{tar: append([]byte(nil), tar...)}
 	return receipt, nil
 }
 
 // Restore implements sandbox.SandboxProvider on top of the frozen
 // sandbox.PlanRestore semantics. The default is a replacement allocation:
-// Bridge create for the fresh locator, hydrate from the previous
-// allocation's checkpoint (an implicit persist when none exists yet) and
-// destroy of the previous sandbox; an in-place restore additionally
-// re-verifies through the Bridge observation channel that no live exec
-// session exists and that the container state survived. The identity must
-// carry the post-restore generation.
+// durable intent, Bridge create for the fresh locator, hydrate from the
+// previous allocation's checkpoint (an implicit persist when none exists
+// yet), destroy of the previous sandbox and an atomic outcome commit; an
+// in-place restore re-verifies the container survived and bumps the
+// generation. The identity must carry the post-restore generation.
 func (p *Provider) Restore(ctx context.Context, request sandbox.RestoreOperationRequest) (*sandbox.RestoreReceipt, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -571,20 +588,26 @@ func (p *Provider) Restore(ctx context.Context, request sandbox.RestoreOperation
 }
 
 func (p *Provider) restoreInPlace(ctx context.Context, previous *allocationEntry, next sandbox.SandboxAllocation) (*sandbox.RestoreReceipt, error) {
-	status, err := p.client.SandboxStatus(ctx, previous.meta.AllocationId)
+	running, err := p.client.SandboxRunning(ctx, previous.bridgeLocator)
 	if err != nil {
-		if errors.Is(err, ErrContainerLost) {
-			p.recordDiagnostic(sandbox.OperationRestore, previous.meta.AllocationId, "in-place restore rejected: the container state was lost after hibernation")
-			return nil, fmt.Errorf("%w: in-place restore rejected: the container state was lost after hibernation", sandbox.ErrRestoreRejected)
+		if errors.Is(err, ErrContainerLost) || errors.Is(err, ErrSandboxNotFound) {
+			p.recordDiagnostic(sandbox.OperationRestore, previous.meta.AllocationId, "in-place restore rejected: the container state did not survive")
+			return nil, fmt.Errorf("%w: in-place restore rejected: the container state did not survive", sandbox.ErrRestoreRejected)
 		}
 		return nil, err
 	}
-	if status.LiveSessions > 0 {
-		p.recordDiagnostic(sandbox.OperationRestore, previous.meta.AllocationId, "in-place restore re-verification failed: a live exec session exists")
-		return nil, fmt.Errorf("%w: in-place restore re-verification failed: the previous process tree is still alive", sandbox.ErrRestoreRejected)
+	if !running {
+		p.recordDiagnostic(sandbox.OperationRestore, previous.meta.AllocationId, "in-place restore rejected: the container state was lost")
+		return nil, fmt.Errorf("%w: in-place restore rejected: the container state was lost", sandbox.ErrRestoreRejected)
 	}
 	next.State = sandbox.AllocationActive
 	previous.meta = next
+	_ = p.store.UpdateAllocation(AllocationRecord{
+		Meta:          next,
+		Role:          previous.role,
+		BridgeLocator: previous.bridgeLocator,
+		SessionId:     previous.sessionId,
+	})
 	return &sandbox.RestoreReceipt{Allocation: next}, nil
 }
 
@@ -602,7 +625,7 @@ func (p *Provider) restoreReplacement(ctx context.Context, previous *allocationE
 	}
 	checkpoint := previous.lastCheckpoint
 	if checkpoint == nil {
-		result, persistErr := p.client.Persist(ctx, previous.meta.AllocationId, subKey("persist"))
+		tar, persistErr := p.client.Persist(ctx, previous.bridgeLocator, subKey("persist"))
 		if persistErr != nil {
 			if errors.Is(persistErr, ErrContainerLost) {
 				p.recordDiagnostic(sandbox.OperationRestore, previous.meta.AllocationId, "restore rejected: no checkpoint exists and the previous container state was lost")
@@ -610,50 +633,74 @@ func (p *Provider) restoreReplacement(ctx context.Context, previous *allocationE
 			}
 			return nil, persistErr
 		}
-		checkpoint = &sandbox.CheckpointReceipt{
-			CheckpointId: result.CheckpointId,
-			SHA256:       result.SHA256,
-			SizeBytes:    result.SizeBytes,
-		}
+		checkpoint = &checkpointRecord{tar: append([]byte(nil), tar...)}
 	}
-	if _, err := p.client.CreateSandbox(ctx, CreateSandboxRequest{
-		SandboxId:  next.AllocationId,
-		RunId:      next.RunId,
-		AttemptId:  next.AttemptId,
-		Generation: next.Generation,
-	}, subKey("create")); err != nil {
+
+	createKey := subKey("create")
+	intent := CreateIntent{
+		ReplayKey:    createKey,
+		AllocationId: next.AllocationId,
+		RunId:        next.RunId,
+		AttemptId:    next.AttemptId,
+		Generation:   next.Generation,
+	}
+	if err := p.store.RecordIntent(intent); err != nil {
+		return nil, err
+	}
+	bridgeLocator, err := p.client.CreateSandbox(ctx, createKey)
+	if err != nil {
+		if !ambiguousCreateError(err) {
+			_ = p.store.ClearIntent(createKey)
+		}
 		if errors.Is(err, ErrBridgeConflict) {
 			err = fmt.Errorf("%w: the bridge observed a conflicting sandbox for %q", sandbox.ErrDuplicateActiveAllocation, next.AllocationId)
 		}
+		p.recordDiagnostic(sandbox.OperationRestore, next.AllocationId, "bridge create failed during restore: "+err.Error())
 		return nil, err
 	}
-	hydrateResult, err := p.client.Hydrate(ctx, next.AllocationId, checkpoint.CheckpointId, subKey("hydrate"))
-	if err != nil {
-		// Compensation: never leave a half-hydrated replacement sandbox
-		// behind on a deterministic failure.
-		if _, destroyErr := p.client.Destroy(ctx, next.AllocationId, subKey("cleanup")); destroyErr != nil {
-			p.recordDiagnostic(sandbox.OperationRestore, next.AllocationId, "post-failure cleanup of the replacement sandbox failed: "+destroyErr.Error())
-		}
+	if err := p.store.RecordBridgeLocator(next.AllocationId, bridgeLocator); err != nil {
 		return nil, err
 	}
-	if hydrateResult.SHA256 != checkpoint.SHA256 {
-		if _, destroyErr := p.client.Destroy(ctx, next.AllocationId, subKey("cleanup")); destroyErr != nil {
-			p.recordDiagnostic(sandbox.OperationRestore, next.AllocationId, "post-failure cleanup of the replacement sandbox failed: "+destroyErr.Error())
+	if err := p.client.Hydrate(ctx, bridgeLocator, checkpoint.tar, subKey("hydrate")); err != nil {
+		if !ambiguousCreateError(err) {
+			// Deterministic failure: compensate by destroying the
+			// half-hydrated replacement sandbox and resolve the intent.
+			if destroyErr := p.client.Destroy(ctx, bridgeLocator, subKey("cleanup")); destroyErr != nil {
+				p.recordDiagnostic(sandbox.OperationRestore, next.AllocationId, "post-failure cleanup of the replacement sandbox failed: "+destroyErr.Error())
+			}
+			_ = p.store.ClearIntent(createKey)
 		}
-		p.recordDiagnostic(sandbox.OperationRestore, next.AllocationId, "hydrate digest disagrees with the checkpoint receipt")
-		return nil, fmt.Errorf("cloudflare: restore: the hydrate observation disagrees with the checkpoint digest")
+		// An ambiguous (lost) hydrate response leaves the intent pending, so
+		// reconcile reports the unknown remote side effect, never clean.
+		return nil, err
 	}
-	if _, err := p.client.Destroy(ctx, previous.meta.AllocationId, subKey("destroy")); err != nil {
+	if err := p.client.Destroy(ctx, previous.bridgeLocator, subKey("destroy")); err != nil {
 		// The replacement is fully hydrated; a failed destroy of the
 		// previous sandbox is a leak for the reconcile/leak-scan path, not
 		// a reason to roll back the restore.
 		p.recordDiagnostic(sandbox.OperationRestore, previous.meta.AllocationId, "previous sandbox destroy failed; reconcile and leak scan must recover it: "+err.Error())
 	}
 	next.State = sandbox.AllocationActive
+	if err := p.store.CommitCreateOutcome(CreateOutcome{
+		ReplayKey:     createKey,
+		AllocationId:  next.AllocationId,
+		BridgeLocator: bridgeLocator,
+		Meta:          next,
+		Role:          previous.role,
+	}); err != nil {
+		return nil, err
+	}
 	previous.meta.State = sandbox.AllocationReplaced
+	_ = p.store.UpdateAllocation(AllocationRecord{
+		Meta:          previous.meta,
+		Role:          previous.role,
+		BridgeLocator: previous.bridgeLocator,
+		SessionId:     previous.sessionId,
+	})
 	p.allocations[next.AllocationId] = &allocationEntry{
 		meta:           next,
 		role:           previous.role,
+		bridgeLocator:  bridgeLocator,
 		lastCheckpoint: checkpoint,
 	}
 	return &sandbox.RestoreReceipt{Allocation: next}, nil
@@ -661,12 +708,7 @@ func (p *Provider) restoreReplacement(ctx context.Context, previous *allocationE
 
 // Terminate implements sandbox.SandboxProvider over the Bridge destroy
 // endpoint. Terminating a terminated or replaced allocation is idempotent
-// and performs no further Bridge call; an active or failed allocation is
-// destroyed at the Bridge and recorded terminated. A failed allocation —
-// the fail-closed outcome of a stage integrity violation — recovers through
-// the identical terminal bookkeeping the deterministic fake provider
-// applies, so after a successful destroy Reconcile never observes a
-// lingering active allocation.
+// and performs no further Bridge call.
 func (p *Provider) Terminate(ctx context.Context, request sandbox.TerminateRequest) (*sandbox.TerminateReceipt, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -701,33 +743,31 @@ func (p *Provider) Terminate(ctx context.Context, request sandbox.TerminateReque
 	if err != nil {
 		return nil, err
 	}
-	if _, err := p.client.Destroy(ctx, request.AllocationId, replayKey); err != nil {
+	if err := p.client.Destroy(ctx, entry.bridgeLocator, replayKey); err != nil {
 		switch {
 		case errors.Is(err, ErrSandboxNotFound):
-			// The platform already reclaimed the sandbox: observe the
-			// terminal transition and leave the disagreement to reconcile.
 			p.recordDiagnostic(sandbox.OperationTerminate, request.AllocationId, "the bridge no longer knew the sandbox; the platform reclaimed it silently")
 		case errors.Is(err, ErrContainerLost):
-			// The container state was already lost after hibernation: the
-			// destroy can only observe the terminal transition.
 			p.recordDiagnostic(sandbox.OperationTerminate, request.AllocationId, "destroy observed the terminal transition of a lost container")
 		default:
 			return nil, err
 		}
 	}
-	// A successful destroy records the allocation terminated — including one
-	// a fail-closed stage integrity refusal left failed — mirroring the
-	// deterministic fake provider's terminal bookkeeping, so Reconcile never
-	// observes a lingering active allocation after a destroy.
 	entry.meta.State = sandbox.AllocationTerminated
+	entry.sessionId = ""
+	_ = p.store.UpdateAllocation(AllocationRecord{
+		Meta:          entry.meta,
+		Role:          entry.role,
+		BridgeLocator: entry.bridgeLocator,
+	})
 	return &sandbox.TerminateReceipt{State: entry.meta.State}, nil
 }
 
-// Reconcile implements sandbox.SandboxProvider: it reconciles the
-// provider's bookkeeping against the Bridge running-class listing for one
-// (runId, attemptId) scope. Silent platform reclaim, stale-generation
-// actives and Bridge-side unknowns are drift and fail closed: the report is
-// returned together with an error.
+// Reconcile implements sandbox.SandboxProvider. The official Bridge exposes
+// no remote listing endpoint, so reconcile is derived from the local
+// bookkeeping plus the per-sandbox running observation. Any pending intent —
+// the durable trace of a create whose outcome is unknown — is ambiguity and
+// fails closed: the report is returned together with an error, never clean.
 func (p *Provider) Reconcile(ctx context.Context, request sandbox.ReconcileRequest) (*sandbox.ReconcileReport, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -742,14 +782,6 @@ func (p *Provider) Reconcile(ctx context.Context, request sandbox.ReconcileReque
 	}
 	if request.Identity.RunId != request.RunId || request.Identity.AttemptId != request.AttemptId {
 		return nil, fmt.Errorf("%w: the identity does not bind the requested scope", sandbox.ErrInvalidRequest)
-	}
-	listed, err := p.client.ListSandboxes(ctx, request.RunId, request.AttemptId)
-	if err != nil {
-		return nil, err
-	}
-	bridgeRunning := make(map[string]bool, len(listed))
-	for _, record := range listed {
-		bridgeRunning[record.SandboxId] = true
 	}
 	metas := p.allocationsInScope(request.RunId, request.AttemptId)
 	var currentGeneration int64
@@ -772,24 +804,32 @@ func (p *Provider) Reconcile(ctx context.Context, request sandbox.ReconcileReque
 			drift = true
 			continue
 		}
-		if bridgeRunning[meta.AllocationId] {
+		entry := p.allocations[meta.AllocationId]
+		running, err := p.client.SandboxRunning(ctx, entry.bridgeLocator)
+		if err != nil {
+			if errors.Is(err, ErrSandboxNotFound) || errors.Is(err, ErrContainerLost) {
+				report.OrphanAllocationIds = append(report.OrphanAllocationIds, meta.AllocationId)
+				drift = true
+				p.recordDiagnostic(sandbox.OperationReconcile, meta.AllocationId, "locally active allocation is missing or lost on the bridge")
+				continue
+			}
+			return nil, err
+		}
+		if running {
 			report.ActiveAllocationIds = append(report.ActiveAllocationIds, meta.AllocationId)
-			continue
+		} else {
+			report.OrphanAllocationIds = append(report.OrphanAllocationIds, meta.AllocationId)
+			drift = true
+			p.recordDiagnostic(sandbox.OperationReconcile, meta.AllocationId, "locally active allocation is no longer running on the bridge")
 		}
-		// Locally active at the current generation but absent from the
-		// Bridge running list: silent platform reclaim or loss, fail closed.
-		report.OrphanAllocationIds = append(report.OrphanAllocationIds, meta.AllocationId)
-		drift = true
-		p.recordDiagnostic(sandbox.OperationReconcile, meta.AllocationId, "locally active allocation missing from the bridge running list")
 	}
-	for _, record := range listed {
-		entry, ok := p.allocations[record.SandboxId]
-		if ok && entry.meta.State == sandbox.AllocationActive {
+	for _, intent := range p.store.PendingIntents() {
+		if intent.RunId != request.RunId || intent.AttemptId != request.AttemptId {
 			continue
 		}
-		report.OrphanAllocationIds = append(report.OrphanAllocationIds, record.SandboxId)
+		report.OrphanAllocationIds = append(report.OrphanAllocationIds, intent.AllocationId)
 		drift = true
-		p.recordDiagnostic(sandbox.OperationReconcile, record.SandboxId, "the bridge runs a sandbox the bookkeeping does not hold active")
+		p.recordDiagnostic(sandbox.OperationReconcile, intent.AllocationId, "a create intent has no committed outcome; the remote side effect is unknown")
 	}
 	sort.Strings(report.ActiveAllocationIds)
 	sort.Strings(report.OrphanAllocationIds)
@@ -805,9 +845,7 @@ func (p *Provider) Reconcile(ctx context.Context, request sandbox.ReconcileReque
 }
 
 // enterOperation validates the operation identity fail closed before any
-// side effect. Fencing/generation authority stays at the marshal-server
-// write boundary; the provider only validates and passes the identity
-// through. Callers must hold p.mu.
+// side effect. Callers must hold p.mu.
 func (p *Provider) enterOperation(operation string, identity sandbox.OperationIdentity) error {
 	if err := identity.Validate(); err != nil {
 		p.recordDiagnostic(operation, identity.AllocationId, "operation identity rejected: "+err.Error())
@@ -816,10 +854,8 @@ func (p *Provider) enterOperation(operation string, identity sandbox.OperationId
 	return nil
 }
 
-// resolveActive enforces the dispatch-bound bindings fail closed: the
-// identity must bind the addressed locator and the allocation's workload
-// role, and must carry the allocation's current generation. Callers must
-// hold p.mu.
+// resolveActive enforces the dispatch-bound bindings fail closed. Callers
+// must hold p.mu.
 func (p *Provider) resolveActive(identity sandbox.OperationIdentity, allocationId string) (*allocationEntry, error) {
 	if strings.TrimSpace(allocationId) == "" {
 		return nil, fmt.Errorf("%w: allocationId must be a non-empty string", sandbox.ErrInvalidRequest)
@@ -860,12 +896,17 @@ func (p *Provider) allocationsInScope(runId, attemptId string) []sandbox.Sandbox
 	return result
 }
 
-// failAllocation transitions an active allocation to the failed state; it
-// marks the attempt failed closed after an integrity violation. Callers
-// must hold p.mu.
+// failAllocation transitions an active allocation to the failed state and
+// persists the transition durably. Callers must hold p.mu.
 func (p *Provider) failAllocation(entry *allocationEntry, reason string) {
 	if entry.meta.State == sandbox.AllocationActive {
 		entry.meta.State = sandbox.AllocationFailed
+		_ = p.store.UpdateAllocation(AllocationRecord{
+			Meta:          entry.meta,
+			Role:          entry.role,
+			BridgeLocator: entry.bridgeLocator,
+			SessionId:     entry.sessionId,
+		})
 	}
 	p.recordDiagnostic(sandbox.OperationStage, entry.meta.AllocationId, reason)
 }
@@ -892,16 +933,14 @@ func (p *Provider) mapAllocationError(operation, allocationId string, err error)
 	}
 }
 
-// validateStageInputs admits one stage request fail closed. Every locator
-// input is additionally adjudicated through sandbox.Locator.Validate so a
-// locator refusal keeps the ErrInvalidLocator sentinel chain the SPI
-// assigns to locator refusals (an unbound store alias, a URL-shaped or
-// credential-shaped alias, a malformed digest or a non-positive size):
-// sandbox.ValidateStageRequest remains the admission authority for every
-// other rule, but its whole-request wrapping surfaces the locator sentinel
-// only as message text, so the provider re-validates the locator shape
-// first and wraps the refusal with %w (recorded per the M10-a rule that
-// SPI conflicts are resolved in favor of the SPI and noted in a comment).
+// ambiguousCreateError reports whether a create error is the ambiguous
+// exhausted-retry outcome: the remote side effect may or may not have
+// happened, so the durable intent is kept and reconcile reports ambiguity.
+func ambiguousCreateError(err error) bool {
+	return errors.Is(err, ErrBridgeUnavailable)
+}
+
+// validateStageInputs admits one stage request fail closed.
 func validateStageInputs(inputs []sandbox.StageInput, allowedStoreIds []string) error {
 	for _, input := range inputs {
 		if input.Locator == nil {
@@ -932,8 +971,7 @@ func stagedFilePath(inputId string) (string, error) {
 }
 
 // requireEvidenceDigestShape fails closed unless the configured evidence
-// reference is a sha256:-prefixed 64 character lowercase hex digest,
-// mirroring the SPI's digest admission rule.
+// reference is a sha256:-prefixed 64 character lowercase hex digest.
 func requireEvidenceDigestShape(value string) error {
 	if !strings.HasPrefix(value, sandbox.DigestPrefix) {
 		return fmt.Errorf("%w: conformanceEvidenceRef must carry the %s digest prefix", sandbox.ErrInvalidRequest, sandbox.DigestPrefix)
