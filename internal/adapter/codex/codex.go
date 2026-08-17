@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +21,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/adapter/pi"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -35,7 +35,8 @@ const (
 	stderrLimit    = 64 << 10
 	// probeTimeout 为每次 --version 探测的固定上限，避免 preflight 在
 	// 无响应的可执行文件上无限挂起；attempt wall-time 预算不用于探测。
-	probeTimeout = 10 * time.Second
+	probeTimeout    = 10 * time.Second
+	maxVersionBytes = 4 << 10
 )
 
 // supportedCompatibilityLine 冻结已经通过真实 argv、JSONL 与结果契约
@@ -84,6 +85,9 @@ type Adapter struct {
 
 	mu     sync.Mutex
 	pinned *executableIdentity
+
+	// testHook 只用于确定性触发安全竞态测试；生产构造器始终为 nil。
+	testHook func(string)
 }
 
 var _ port.WorkerAdapter = (*Adapter)(nil)
@@ -119,10 +123,12 @@ func (a *Adapter) ID() string { return adapterID }
 // 返回 typed/stable error。能力声明保持 truthful：nativeBudgets 不虚报
 // Codex 原生保障，普通宿主子进程不是恶意代码 sandbox。
 func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
-	identity, err := a.inspect(ctx)
+	snapshot, err := a.inspect(ctx)
 	if err != nil {
 		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, errors.Join(ErrIdentityInvalid, err), "executable identity probe failed", a.now())
 	}
+	defer snapshot.close()
+	identity := snapshot.identity
 	a.pinIdentity(identity)
 	status := "supported"
 	probeErrors := []string{}
@@ -130,7 +136,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		status = "unsupported"
 		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Codex CLI %s 兼容线，实际为 %s", supportedCompatibilityLine, identity.version))
 	}
-	snapshot := map[string]any{
+	capability := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
 		"executable": identity.path, "executableDigest": identity.digest,
@@ -149,7 +155,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		},
 		"probeErrors": probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
-	data, err := json.Marshal(snapshot)
+	data, err := json.Marshal(capability)
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -163,20 +169,14 @@ type executableIdentity struct{ path, digest, version string }
 
 // inspect 每次重新钉住可执行文件身份：realpath、SHA-256 digest 与
 // 受限 probe 环境下执行 `--version` 解析出的版本，防止 Probe 后替换。
-func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
-	info, err := os.Stat(a.executable)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return executableIdentity{}, errors.New("configured codex executable is unavailable")
+func (a *Adapter) inspect(ctx context.Context) (*executableSnapshot, error) {
+	return snapshotExecutable(ctx, a.executable, a.callTestHook)
+}
+
+func (a *Adapter) callTestHook(stage string) {
+	if a.testHook != nil {
+		a.testHook(stage)
 	}
-	digest, err := digestFile(a.executable)
-	if err != nil {
-		return executableIdentity{}, err
-	}
-	version, err := readBinaryVersion(ctx, a.executable)
-	if err != nil {
-		return executableIdentity{}, err
-	}
-	return executableIdentity{a.executable, digest, version}, nil
 }
 
 // pinIdentity 在 Probe 成功后刷新钉住身份；Probe 失败不改动既有绑定，
@@ -215,7 +215,26 @@ func readBinaryVersion(ctx context.Context, executable string) (string, error) {
 	defer cancel()
 	command := exec.CommandContext(probeCtx, executable, "--version")
 	command.Env = probeEnvironment()
-	output, err := command.Output()
+	command.Stderr = io.Discard
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("probe codex version: %w", err)
+	}
+	if err := command.Start(); err != nil {
+		return "", fmt.Errorf("probe codex version: %w", err)
+	}
+	output, readErr := io.ReadAll(io.LimitReader(stdout, maxVersionBytes+1))
+	if readErr != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return "", fmt.Errorf("probe codex version: %w", readErr)
+	}
+	if len(output) > maxVersionBytes {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return "", fmt.Errorf("%w: --version output exceeds %d bytes", ErrVersionUnrecognized, maxVersionBytes)
+	}
+	err = command.Wait()
 	if err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -296,10 +315,12 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// context 下执行，不消耗 attempt 的 wall-time 预算；attempt 预算只在
 	// worker 启动时开始计时，杜绝高并发负载下 pre-start 耗尽预算导致
 	// transcript 从不落盘。
-	identity, err := a.inspect(ctx)
+	snapshot, err := a.inspect(ctx)
 	if err != nil {
 		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, errors.Join(ErrIdentityInvalid, err), "executable identity probe failed", a.now())
 	}
+	defer snapshot.close()
+	identity := snapshot.identity
 	if !isSupportedBinary(identity.version) {
 		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrUnsupportedVersion, "binary version is outside the compatible line", a.now())
 	}
@@ -308,6 +329,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := a.verifyPinnedIdentity(identity); err != nil {
 		return domain.Record{}, newCodexFailure(port.FailureKindProtocolInvalid, ErrIdentityDrift, "executable identity changed after pinning", a.now())
 	}
+	a.callTestHook("after-identity-verify")
 	worktree, err := filepath.EvalSymlinks(request.WorktreePath)
 	if err != nil {
 		return domain.Record{}, fmt.Errorf("resolve worktree: %w", err)
@@ -335,44 +357,30 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt evidence path escapes the control root or is unsafe", a.now())
 	}
-	model := readModel(controlRoot, request.TaskSpecPath)
-	tools, err := declaredWorkerTools(controlRoot, request.TaskSpecPath)
+	projection, err := readTaskProjection(controlRoot, request.TaskSpecPath)
 	if err != nil {
 		return domain.Record{}, err
 	}
+	a.callTestHook("after-task-projection")
 	// 本切片的冻结 argv 无法机械表达逐工具 allowlist；非空声明在启动前
 	// fail closed，绝不静默扩大工具面。
-	if len(tools) > 0 {
+	if len(projection.tools) > 0 {
 		return domain.Record{}, fmt.Errorf("%w: the frozen codex argv cannot express a per-tool allowlist", ErrUnsupportedWorkerTools)
-	}
-	schemaPath := filepath.Join(evidenceDir, "codex-output-schema.json")
-	// 启动前 fail closed：result 与 Schema 临时物叶子都不得已存在
-	// （含指向 control root 外的 symlink 或非预期节点）。
-	for _, leaf := range []attemptLeaf{
-		{path: resultPath, kind: "result"},
-		{path: schemaPath, kind: "output schema"},
-	} {
-		if err := leafMustBeAbsent(leaf.path, leaf.kind); err != nil {
-			return domain.Record{}, codexProtocolFailure("attempt "+leaf.kind+" leaf already exists or is unsafe", a.now())
-		}
 	}
 	schemaDocument, err := contract.SchemaDocument("worker-result")
 	if err != nil {
 		return domain.Record{}, codexProtocolFailure("durable output schema is unavailable", a.now())
 	}
-	// Schema 临时物在启动前以 O_EXCL 原子占用；Schema 内容逐字来自
-	// durable Schema，不复制、不修改。
-	if err := claimLeaf(schemaPath, schemaDocument, "output schema"); err != nil {
-		return domain.Record{}, codexProtocolFailure("output schema leaf could not be claimed", a.now())
+	evidence, err := prepareAttemptEvidence(evidenceDir, resultPath, schemaDocument)
+	if err != nil {
+		var claimErr *leafClaimError
+		if errors.As(err, &claimErr) {
+			return domain.Record{}, codexProtocolFailure("attempt "+claimErr.kind+" leaf already exists or is unsafe", a.now())
+		}
+		return domain.Record{}, codexProtocolFailure("attempt evidence leaves could not be claimed", a.now())
 	}
-	// result 叶子在启动前占用为空普通文件：既阻止预置 symlink/节点把
-	// worker 写入重定向到 control root 外，又保证 worker 未声明结果时
-	// 归一化阶段读到的是有界的空声明而非越界内容。--output-last-message
-	// 指向同一叶子，真实 CLI 会在成功 attempt 时覆盖该空占位，使该叶子
-	// 成为唯一真实结果来源。
-	if err := claimLeaf(resultPath, nil, "result"); err != nil {
-		return domain.Record{}, codexProtocolFailure("result leaf could not be claimed", a.now())
-	}
+	defer evidence.close()
+	a.callTestHook("after-evidence-claim")
 	// attempt wall-time 预算从 worker 启动前一刻才开始计时，preflight
 	// 不消耗它；调用方 context 已过期时在启动前 fail，绝不带病启动。
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(request.AttemptTimeoutSeconds)*time.Second)
@@ -380,10 +388,13 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if runCtx.Err() != nil {
 		return domain.Record{}, runCtx.Err()
 	}
-	command := exec.Command(a.executable, buildArgs(worktree, schemaPath, resultPath, model)...)
+	// Schema/result 通过继承 fd 暴露给 child，避免 provider 按可替换路径
+	// 重新打开叶子；父进程始终持有同一 inode 直至最终验证完成。
+	command := exec.Command(snapshot.path, buildArgs(worktree, inheritedFilePath(0), inheritedFilePath(1), projection.model)...)
 	command.Dir = worktree
 	command.Env = workerEnvironment(worktree)
 	command.Stdin = bytes.NewReader(prompt)
+	command.ExtraFiles = []*os.File{evidence.schema, evidence.result}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
@@ -426,10 +437,10 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	completed := a.now().UTC()
 	// 证据在任何失败分类之前落盘：timeout/取消/超限/协议/进程失败场景都
 	// 保留 transcript、有界 stderr 与结构化 metadata。
-	if err := atomicWrite(filepath.Join(evidenceDir, "codex-transcript.jsonl"), capture.raw); err != nil {
+	if err := replaceFileContents(evidence.transcript, capture.raw); err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt transcript evidence could not be persisted", a.now())
 	}
-	if err := atomicWrite(filepath.Join(evidenceDir, "codex-stderr.log"), stderrCapture.data); err != nil {
+	if err := replaceFileContents(evidence.stderr, stderrCapture.data); err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt stderr evidence could not be persisted", a.now())
 	}
 	exitCode, signal := processOutcome(command)
@@ -447,8 +458,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt evidence metadata could not be encoded", a.now())
 	}
-	if err := atomicWrite(filepath.Join(evidenceDir, "codex-transcript-meta.json"), append(metadata, '\n')); err != nil {
+	if err := replaceFileContents(evidence.metadata, append(metadata, '\n')); err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt evidence metadata could not be persisted", a.now())
+	}
+	if err := evidence.verifyLeaves(); err != nil {
+		return domain.Record{}, codexProtocolFailure("attempt evidence containment changed during execution", a.now())
 	}
 	if runCtx.Err() != nil {
 		return domain.Record{}, runCtx.Err()
@@ -468,7 +482,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if capture.threadID == "" {
 		return domain.Record{}, codexProtocolFailure("thread identity is missing", a.now())
 	}
-	declared, err := readDeclaredResult(resultPath, int64(maxResultBytes), a.validator)
+	declared, err := readDeclaredResultFile(evidence.result, int64(maxResultBytes), a.validator)
 	if err != nil {
 		return domain.Record{}, codexResultFailure("WorkerResult declaration is missing or invalid", a.now())
 	}
@@ -486,7 +500,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	declared.StartedAt, declared.CompletedAt = started, completed
 	// model 只由冻结 TaskSpec 投影：无条件覆盖，worker 自述的 model
 	// 声明不作为权威（未声明时置空并由 omitempty 丢弃）。
-	declared.Adapter.Model = model
+	declared.Adapter.Model = projection.model
 	data, err := json.Marshal(declared)
 	if err != nil {
 		return domain.Record{}, codexProtocolFailure("normalized WorkerResult could not be encoded", a.now())
@@ -494,8 +508,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := a.validator.Validate(domain.KindWorkerResult, data); err != nil {
 		return domain.Record{}, codexProtocolFailure("normalized WorkerResult violates the durable schema", a.now())
 	}
-	if err := atomicWrite(resultPath, append(data, '\n')); err != nil {
+	if err := replaceFileContents(evidence.result, append(data, '\n')); err != nil {
 		return domain.Record{}, codexResultFailure("normalized WorkerResult could not be persisted", a.now())
+	}
+	if err := evidence.verifyLeaves(); err != nil {
+		return domain.Record{}, codexProtocolFailure("attempt evidence containment changed before completion", a.now())
 	}
 	return domain.Record{Kind: domain.KindWorkerResult, Data: data}, nil
 }
@@ -532,8 +549,8 @@ type declaredSession struct {
 	Resumable bool   `json:"resumable"`
 }
 
-func readDeclaredResult(path string, limit int64, validator *contract.Validator) (declaredResult, error) {
-	data, err := readBounded(path, limit)
+func readDeclaredResultFile(file *os.File, limit int64, validator *contract.Validator) (declaredResult, error) {
+	data, err := readBoundedFile(file, limit)
 	if err != nil {
 		return declaredResult{}, fmt.Errorf("read WorkerResult declaration: %w", err)
 	}
@@ -546,22 +563,4 @@ func readDeclaredResult(path string, limit int64, validator *contract.Validator)
 		return result, err
 	}
 	return result, nil
-}
-
-// declaredWorkerTools 读取冻结 TaskSpec 的 worker.tools 声明；任何读取或
-// 格式失败都在启动前 fail closed，绝不基于部分声明运行。
-func declaredWorkerTools(controlRoot, taskSpecPath string) ([]string, error) {
-	path, err := existingPathWithin(controlRoot, taskSpecPath)
-	if err != nil {
-		return nil, fmt.Errorf("resolve TaskSpec: %w", err)
-	}
-	data, err := readBounded(path, maxResultBytes)
-	if err != nil {
-		return nil, fmt.Errorf("read TaskSpec: %w", err)
-	}
-	tools, err := denials.ParseDeclaredWorkerTools(data)
-	if err != nil {
-		return nil, fmt.Errorf("worker tools: %w", err)
-	}
-	return tools, nil
 }

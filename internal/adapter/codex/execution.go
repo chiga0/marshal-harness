@@ -15,7 +15,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"golang.org/x/sys/unix"
 )
 
 // sandboxNetworkOverride 是冻结的 workspace-write 网络关闭配置覆盖：
@@ -24,16 +26,97 @@ import (
 // 绝不以 JSON 策略对象或隐式默认值替代。
 const sandboxNetworkOverride = "sandbox_workspace_write.network_access=false"
 
+type executableSnapshot struct {
+	identity executableIdentity
+	path     string
+	dir      string
+}
+
+// snapshotExecutable 先从 O_NOFOLLOW 打开的源 inode 复制出私有只读可执行
+// 快照，再只对该快照计算 digest、执行 --version 与正式 exec。配置路径在
+// 任意两个阶段之间被替换，都不会改变本 attempt 实际执行的字节。
+func snapshotExecutable(ctx context.Context, configured string, hook func(string)) (*executableSnapshot, error) {
+	sourceFD, err := unix.Open(configured, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	source := os.NewFile(uintptr(sourceFD), configured)
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return nil, errors.New("configured codex executable is unavailable")
+	}
+	dir, err := os.MkdirTemp("", ".marshal-codex-executable-")
+	if err != nil {
+		return nil, err
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = os.Chmod(dir, 0o700)
+			_ = os.RemoveAll(dir)
+		}
+	}()
+	path := filepath.Join(dir, "codex")
+	target, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o700)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(target, source); err != nil {
+		target.Close()
+		return nil, err
+	}
+	if err := target.Sync(); err != nil {
+		target.Close()
+		return nil, err
+	}
+	if err := target.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o500); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		return nil, err
+	}
+	digest, err := digestFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if hook != nil {
+		hook("after-executable-digest")
+	}
+	version, err := readBinaryVersion(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	failed = false
+	return &executableSnapshot{
+		identity: executableIdentity{path: configured, digest: digest, version: version},
+		path:     path,
+		dir:      dir,
+	}, nil
+}
+
+func (s *executableSnapshot) close() {
+	if s == nil || s.dir == "" {
+		return
+	}
+	_ = os.Chmod(s.dir, 0o700)
+	_ = os.RemoveAll(s.dir)
+	s.dir = ""
+}
+
 // buildArgs 生成冻结的 captured-mode argv。全局参数必须位于 exec 子命令
 // 之前：approval=never、-C 钉住解析后的 worktree、-c 显式关闭
 // workspace-write 网络；--color 是 0.145.0 的 exec 子命令参数，必须放在
 // exec 之后。exec 子命令还携带 JSONL 输出、ephemeral、
 // 忽略用户配置与 rules、workspace-write sandbox 枚举，以及经 containment/
-// symlink 检查的 Schema 临时物与 result 路径。--output-last-message 机械
-// 指向最终受控 WorkerResult 叶子，使该叶子成为唯一真实结果来源：Run 从
-// 同一路径读取并验证，杜绝任何未经 argv 绑定的旁路结果。prompt 经 stdin
-// 传入而非 argv；model 仅在 TaskSpec 声明非空时追加。所有 argv 直接构造，
-// 不经 shell。
+// symlink 检查后持续持有的 Schema/result fd 路径。--output-last-message
+// 机械指向受控 WorkerResult fd，使同一 inode 成为唯一真实结果来源：Run
+// 从持有的 fd 读取并验证，杜绝路径替换与未经 argv 绑定的旁路结果。prompt
+// 经 stdin 传入而非 argv；model 仅在 TaskSpec 声明非空时追加。所有 argv
+// 直接构造，不经 shell。
 func buildArgs(worktree, schemaPath, resultPath, model string) []string {
 	args := []string{
 		"--ask-for-approval", "never",
@@ -55,65 +138,191 @@ func buildArgs(worktree, schemaPath, resultPath, model string) []string {
 	return args
 }
 
-// attemptLeaf 描述一个启动前必须不存在、启动时以 O_EXCL 原子占用的
-// control output 叶子节点。
-type attemptLeaf struct {
-	path string
+// attemptEvidence 持有启动前以 dirfd/openat 原子占用的全部证据叶子。
+type attemptEvidence struct {
+	dirPath                    string
+	dir                        *os.File
+	resultName, schemaName     string
+	transcriptName, stderrName string
+	metadataName               string
+	result, schema             *os.File
+	transcript, stderr         *os.File
+	metadata                   *os.File
+}
+
+type leafClaimError struct {
 	kind string
+	err  error
 }
 
-// leafMustBeAbsent 在启动前拒绝任何已存在的叶子节点：普通文件、目录或
-// symlink（含指向 control root 外的预存 result 链接）都构成 fail closed
-// 输入，真实 worker 不得在归一化之前写入被预置的越界目标。
-func leafMustBeAbsent(path, kind string) error {
-	info, err := os.Lstat(path)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("attempt %s leaf is a symlink and must not pre-exist", kind)
-		}
-		return fmt.Errorf("attempt %s leaf unexpectedly pre-exists", kind)
-	}
-	if !os.IsNotExist(err) {
-		return fmt.Errorf("inspect attempt %s leaf: %w", kind, err)
-	}
-	return nil
-}
+func (e *leafClaimError) Error() string { return e.err.Error() }
+func (e *leafClaimError) Unwrap() error { return e.err }
 
-// claimLeaf 以 O_EXCL|O_NOFOLLOW 原子占用叶子路径并写入内容（nil 表示
-// 空文件），随后用 fstat/lstat 的 dev+ino 比较确认落盘节点仍是同一个
-// 普通文件：预置 symlink、并发替换或越界重定向都在启动前 fail closed。
-// 该占用与紧随其后的进程启动之间只保留最小 TOCTOU 窗口，且窗口内的
-// 写入者必须先控制 control output 目录本身。
-func claimLeaf(path string, content []byte, kind string) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+// prepareAttemptEvidence 打开并钉住 evidence directory inode，然后只经
+// openat(O_EXCL|O_NOFOLLOW) 占用全部 attempt 叶子。后续 worker I/O 与
+// Adapter 落盘都使用这些持续打开的 fd，不再按可被替换的路径重新打开。
+func prepareAttemptEvidence(dirPath, resultPath string, schemaDocument []byte) (*attemptEvidence, error) {
+	dirFD, err := unix.Open(dirPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		if os.IsExist(err) {
-			return fmt.Errorf("attempt %s leaf unexpectedly pre-exists", kind)
-		}
-		return fmt.Errorf("claim attempt %s leaf: %w", kind, err)
+		return nil, fmt.Errorf("open attempt evidence directory: %w", err)
 	}
-	defer file.Close()
+	evidence := &attemptEvidence{
+		dirPath: dirPath, dir: os.NewFile(uintptr(dirFD), dirPath),
+		resultName: filepath.Base(resultPath), schemaName: "codex-output-schema.json",
+		transcriptName: "codex-transcript.jsonl", stderrName: "codex-stderr.log",
+		metadataName: "codex-transcript-meta.json",
+	}
+	failed := true
+	defer func() {
+		if failed {
+			evidence.close()
+		}
+	}()
+	if filepath.Join(dirPath, evidence.resultName) != resultPath {
+		return nil, errors.New("attempt result leaf is not directly below the evidence directory")
+	}
+	if err := evidence.verifyDirectory(); err != nil {
+		return nil, err
+	}
+	claims := []struct {
+		name, kind string
+		content    []byte
+		readOnly   bool
+		target     **os.File
+	}{
+		{evidence.schemaName, "output schema", schemaDocument, true, &evidence.schema},
+		{evidence.resultName, "result", nil, false, &evidence.result},
+		{evidence.transcriptName, "transcript", nil, false, &evidence.transcript},
+		{evidence.stderrName, "stderr", nil, false, &evidence.stderr},
+		{evidence.metadataName, "metadata", nil, false, &evidence.metadata},
+	}
+	for _, claim := range claims {
+		file, claimErr := claimLeafAt(evidence.dir, claim.name, claim.content, claim.kind)
+		if claimErr != nil {
+			return nil, claimErr
+		}
+		if claim.readOnly {
+			readFD, openErr := unix.Openat(int(evidence.dir.Fd()), claim.name, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+			if openErr != nil {
+				file.Close()
+				return nil, &leafClaimError{kind: claim.kind, err: fmt.Errorf("reopen attempt %s leaf read-only: %w", claim.kind, openErr)}
+			}
+			readFile := os.NewFile(uintptr(readFD), claim.name)
+			writtenInfo, writtenErr := file.Stat()
+			readInfo, readErr := readFile.Stat()
+			file.Close()
+			if writtenErr != nil || readErr != nil || !os.SameFile(writtenInfo, readInfo) {
+				readFile.Close()
+				return nil, &leafClaimError{kind: claim.kind, err: fmt.Errorf("attempt %s leaf changed while reopening", claim.kind)}
+			}
+			file = readFile
+		}
+		*claim.target = file
+	}
+	if err := evidence.dir.Sync(); err != nil {
+		return nil, fmt.Errorf("sync attempt evidence directory: %w", err)
+	}
+	failed = false
+	return evidence, nil
+}
+
+func claimLeafAt(directory *os.File, name string, content []byte, kind string) (*os.File, error) {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		return nil, fmt.Errorf("attempt %s leaf name is invalid", kind)
+	}
+	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return nil, &leafClaimError{kind: kind, err: fmt.Errorf("attempt %s leaf unexpectedly pre-exists", kind)}
+		}
+		return nil, &leafClaimError{kind: kind, err: fmt.Errorf("claim attempt %s leaf: %w", kind, err)}
+	}
+	file := os.NewFile(uintptr(fd), name)
+	if err := replaceFileContents(file, content); err != nil {
+		file.Close()
+		return nil, &leafClaimError{kind: kind, err: fmt.Errorf("initialize attempt %s leaf: %w", kind, err)}
+	}
+	return file, nil
+}
+
+func replaceFileContents(file *os.File, content []byte) error {
+	if err := file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
 	if len(content) > 0 {
 		if _, err := file.Write(content); err != nil {
-			return fmt.Errorf("write attempt %s leaf: %w", kind, err)
+			return err
 		}
 	}
 	if err := file.Sync(); err != nil {
-		return fmt.Errorf("sync attempt %s leaf: %w", kind, err)
+		return err
 	}
-	fileInfo, err := file.Stat()
+	_, err := file.Seek(0, io.SeekStart)
+	return err
+}
+
+func readBoundedFile(file *os.File, limit int64) ([]byte, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
-		return fmt.Errorf("stat claimed attempt %s leaf: %w", kind, err)
+		return nil, err
 	}
-	linkInfo, err := os.Lstat(path)
+	if int64(len(data)) > limit {
+		return nil, errors.New("file exceeds byte limit")
+	}
+	return data, nil
+}
+
+func (e *attemptEvidence) verifyDirectory() error {
+	opened, err := e.dir.Stat()
 	if err != nil {
-		return fmt.Errorf("re-inspect attempt %s leaf: %w", kind, err)
+		return err
 	}
-	if !linkInfo.Mode().IsRegular() || !os.SameFile(fileInfo, linkInfo) {
-		return fmt.Errorf("attempt %s leaf was replaced after claim", kind)
+	linked, err := os.Lstat(e.dirPath)
+	if err != nil || !linked.IsDir() || !os.SameFile(opened, linked) {
+		return errors.New("attempt evidence directory was replaced")
+	}
+	real, err := filepath.EvalSymlinks(e.dirPath)
+	if err != nil || real != e.dirPath {
+		return errors.New("attempt evidence directory containment changed")
 	}
 	return nil
 }
+
+func (e *attemptEvidence) verifyLeaves() error {
+	if err := e.verifyDirectory(); err != nil {
+		return err
+	}
+	for _, leaf := range []struct {
+		name string
+		file *os.File
+	}{{e.resultName, e.result}, {e.schemaName, e.schema}, {e.transcriptName, e.transcript}, {e.stderrName, e.stderr}, {e.metadataName, e.metadata}} {
+		opened, err := leaf.file.Stat()
+		if err != nil {
+			return err
+		}
+		linked, err := os.Lstat(filepath.Join(e.dirPath, leaf.name))
+		if err != nil || !linked.Mode().IsRegular() || !os.SameFile(opened, linked) {
+			return errors.New("attempt evidence leaf was replaced")
+		}
+	}
+	return nil
+}
+
+func (e *attemptEvidence) close() {
+	for _, file := range []*os.File{e.result, e.schema, e.transcript, e.stderr, e.metadata, e.dir} {
+		if file != nil {
+			_ = file.Close()
+		}
+	}
+}
+
+func inheritedFilePath(index int) string { return fmt.Sprintf("/dev/fd/%d", 3+index) }
 
 // workerEnvironment 是 worker 进程环境的完整替换（而非 os.Environ 追加）：
 // 仅从固定基础集合按需传递 HOME、CODEX_HOME、PATH、LANG/LC_*、USER/LOGNAME、
@@ -312,61 +521,33 @@ func readBounded(path string, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-// readModel 从冻结 TaskSpec 投影 worker.model；读取失败视为未声明，
-// 绝不接受运行时自述的 model。
-func readModel(controlRoot, relative string) string {
+type taskProjection struct {
+	model string
+	tools []string
+}
+
+// readTaskProjection 对冻结 TaskSpec 只做一次受限读取；model 与 tools 从
+// 同一字节快照投影，任何路径、读取或 JSON/工具声明解析失败均 fail closed。
+func readTaskProjection(controlRoot, relative string) (taskProjection, error) {
 	path, err := existingPathWithin(controlRoot, relative)
 	if err != nil {
-		return ""
+		return taskProjection{}, fmt.Errorf("resolve TaskSpec: %w", err)
 	}
 	data, err := readBounded(path, maxResultBytes)
 	if err != nil {
-		return ""
+		return taskProjection{}, fmt.Errorf("read TaskSpec: %w", err)
 	}
 	var task struct {
 		Worker struct {
 			Model string `json:"model"`
 		} `json:"worker"`
 	}
-	if json.Unmarshal(data, &task) != nil {
-		return ""
+	if err := json.Unmarshal(data, &task); err != nil {
+		return taskProjection{}, fmt.Errorf("parse TaskSpec: %w", err)
 	}
-	return task.Worker.Model
-}
-
-// atomicWrite 以临时文件+rename 原子写入 0600 证据文件。
-func atomicWrite(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	file, err := os.CreateTemp(filepath.Dir(path), ".codex-*.tmp")
+	tools, err := denials.ParseDeclaredWorkerTools(data)
 	if err != nil {
-		return err
+		return taskProjection{}, fmt.Errorf("worker tools: %w", err)
 	}
-	name := file.Name()
-	defer os.Remove(name)
-	if err := file.Chmod(0o600); err != nil {
-		file.Close()
-		return err
-	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(name, path); err != nil {
-		return err
-	}
-	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
+	return taskProjection{model: task.Worker.Model, tools: tools}, nil
 }
