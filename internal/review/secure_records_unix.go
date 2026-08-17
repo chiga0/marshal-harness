@@ -28,6 +28,10 @@ func ensureOutcomeRecords(runDirectory string, records map[string][]byte) error 
 		return err
 	}
 	defer unix.Close(dirFD)
+	return ensureOutcomeRecordsAt(dirFD, records)
+}
+
+func ensureOutcomeRecordsAt(dirFD int, records map[string][]byte) error {
 	for finalName, want := range records {
 		pendingName := finalName + ".pending"
 		final, err := readSecureRecordAt(dirFD, finalName, 2)

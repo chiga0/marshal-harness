@@ -1,12 +1,14 @@
 package review
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"golang.org/x/sys/unix"
 )
 
 // EnsureOutcome completes or verifies the terminal Outcome transaction for
@@ -20,6 +22,113 @@ func EnsureOutcome(runDirectory string, outcome OutcomeData) error {
 		return err
 	}
 	return ensureOutcomeRecords(runDirectory, map[string][]byte{"outcome.json": jsonData, "outcome.md": []byte(markdown)})
+}
+
+// EnsureOutcomeAt completes a terminal Outcome through a caller-supplied,
+// already validated canonical run directory descriptor. No pathname is
+// reopened between authority validation and the no-replace transaction.
+func EnsureOutcomeAt(runDirectory *os.File, outcome OutcomeData) error {
+	if runDirectory == nil {
+		return errors.New("terminal outcome requires a run authority descriptor")
+	}
+	jsonData, markdown, err := renderOutcome(outcome)
+	if err != nil {
+		return err
+	}
+	return ensureOutcomeRecordsAt(int(runDirectory.Fd()), map[string][]byte{"outcome.json": jsonData, "outcome.md": []byte(markdown)})
+}
+
+type PreparedOutcomeRecords struct {
+	directory *os.File
+	pairs     [][2]string
+}
+
+// PrepareOutcomeAt stages terminal records relative to the exact canonical
+// authority descriptor. CommitAt must receive the then-current authority and
+// proves it is the same directory before exposing final names.
+func PrepareOutcomeAt(runDirectory *os.File, outcome OutcomeData) (*PreparedOutcomeRecords, error) {
+	if runDirectory == nil {
+		return nil, errors.New("terminal outcome requires a run authority descriptor")
+	}
+	jsonData, markdown, err := renderOutcome(outcome)
+	if err != nil {
+		return nil, err
+	}
+	dupFD, err := unix.Dup(int(runDirectory.Fd()))
+	if err != nil {
+		return nil, err
+	}
+	unix.CloseOnExec(dupFD)
+	prepared := &PreparedOutcomeRecords{directory: os.NewFile(uintptr(dupFD), "prepared-outcome-authority"), pairs: [][2]string{{"outcome.json.pending", "outcome.json"}, {"outcome.md.pending", "outcome.md"}}}
+	records := map[string][]byte{"outcome.json.pending": jsonData, "outcome.md.pending": []byte(markdown)}
+	for _, pair := range prepared.pairs {
+		final, err := readSecureRecordAt(dupFD, pair[1], 2)
+		if err != nil {
+			prepared.Abort()
+			return nil, err
+		}
+		if final.exists {
+			prepared.Abort()
+			return nil, fmt.Errorf("terminal outcome already exists: %s", pair[1])
+		}
+		pending, err := readSecureRecordAt(dupFD, pair[0], 1)
+		if err != nil {
+			prepared.Abort()
+			return nil, err
+		}
+		if err := writeSecureRecordAt(dupFD, pair[0], records[pair[0]], pending.exists); err != nil {
+			prepared.Abort()
+			return nil, err
+		}
+	}
+	if err := unix.Fsync(dupFD); err != nil {
+		prepared.Abort()
+		return nil, err
+	}
+	return prepared, nil
+}
+
+func (r *PreparedOutcomeRecords) CommitAt(runDirectory *os.File) error {
+	if r == nil || r.directory == nil || runDirectory == nil {
+		return errors.New("terminal outcome commit lacks authority descriptor")
+	}
+	defer r.close()
+	var staged, current unix.Stat_t
+	if err := unix.Fstat(int(r.directory.Fd()), &staged); err != nil {
+		return err
+	}
+	if err := unix.Fstat(int(runDirectory.Fd()), &current); err != nil {
+		return err
+	}
+	if staged.Dev != current.Dev || staged.Ino != current.Ino || current.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return errors.New("terminal outcome canonical authority changed before commit")
+	}
+	for _, pair := range r.pairs {
+		if err := unix.Linkat(int(runDirectory.Fd()), pair[0], int(runDirectory.Fd()), pair[1], 0); err != nil {
+			return err
+		}
+		if err := unix.Unlinkat(int(runDirectory.Fd()), pair[0], 0); err != nil {
+			return err
+		}
+	}
+	return unix.Fsync(int(runDirectory.Fd()))
+}
+
+func (r *PreparedOutcomeRecords) Abort() {
+	if r == nil || r.directory == nil {
+		return
+	}
+	for _, pair := range r.pairs {
+		_ = unix.Unlinkat(int(r.directory.Fd()), pair[0], 0)
+	}
+	r.close()
+}
+
+func (r *PreparedOutcomeRecords) close() {
+	if r.directory != nil {
+		_ = r.directory.Close()
+		r.directory = nil
+	}
 }
 
 type PreparedRecords struct {

@@ -125,6 +125,51 @@ func TestLeaseMutationRejectsReplacedRunAuthorityDirectory(t *testing.T) {
 	}
 }
 
+func TestMutationHookRejectsReplacementBeforeAnyJournalOrSnapshotBytes(t *testing.T) {
+	for _, operation := range []string{"journal", "snapshot"} {
+		t.Run(operation, func(t *testing.T) {
+			root := t.TempDir()
+			store := New(root)
+			lease, err := store.Acquire("run:mutation-window")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lease.Release()
+			runDirectory := filepath.Join(root, "runs", "run:mutation-window")
+			oldDirectory := runDirectory + ".old"
+			lease.beforeMutation = func() error {
+				lease.beforeMutation = nil
+				if err := os.Rename(runDirectory, oldDirectory); err != nil {
+					return err
+				}
+				if err := os.Mkdir(runDirectory, 0o700); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(runDirectory, "lease.lock"), nil, 0o600)
+			}
+			if operation == "journal" {
+				err = store.Append(lease, transition("event:mutation-window", 1, domain.StateCreated, domain.StatePlanned), 0)
+			} else {
+				err = store.WriteSnapshot(lease, domain.NewRunState("task:mutation-window", "run:mutation-window", time.Unix(1, 0).UTC()))
+			}
+			if err == nil {
+				t.Fatal("mutation crossed a replaced run authority")
+			}
+			name := "events.jsonl"
+			if operation == "snapshot" {
+				name = "state.json"
+			}
+			for _, directory := range []string{runDirectory, oldDirectory} {
+				if data, readErr := os.ReadFile(filepath.Join(directory, name)); readErr == nil && len(data) != 0 {
+					t.Fatalf("%s received unauthorized bytes: %q", directory, data)
+				} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+					t.Fatal(readErr)
+				}
+			}
+		})
+	}
+}
+
 func TestAcquireRejectsUnsafeOwnerWithoutMutatingTarget(t *testing.T) {
 	for _, kind := range []string{"symlink", "hardlink"} {
 		t.Run(kind, func(t *testing.T) {

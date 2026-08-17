@@ -370,6 +370,43 @@ func TestPrepareOutcomeDoesNotProduceResultRecord(t *testing.T) {
 	assertAbsent(t, filepath.Join(fixture.directory, "result.md"), filepath.Join(fixture.directory, "result.md.pending"))
 }
 
+func TestPreparedOutcomeAtRejectsChangedCanonicalAuthorityWithoutFinalBytes(t *testing.T) {
+	fixture := newReviewFixture(t)
+	outcome := terminalOutcome(fixture, terminalRejectResult(t, fixture))
+	authority, err := os.Open(fixture.directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareOutcomeAt(authority, *outcome)
+	_ = authority.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDirectory := fixture.directory + ".old"
+	if err := os.Rename(fixture.directory, oldDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(fixture.directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := os.Open(fixture.directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = prepared.CommitAt(replacement)
+	_ = replacement.Close()
+	if err == nil {
+		t.Fatal("prepared Outcome committed through a changed canonical authority")
+	}
+	for _, directory := range []string{fixture.directory, oldDirectory} {
+		for _, name := range []string{"outcome.json", "outcome.md"} {
+			if _, err := os.Lstat(filepath.Join(directory, name)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s received final Outcome bytes: %v", directory, err)
+			}
+		}
+	}
+}
+
 func TestEnsureOutcomeRejectsSymlinkAndHardlinkRecords(t *testing.T) {
 	for _, name := range []string{"outcome.json", "outcome.json.pending", "outcome.md", "outcome.md.pending"} {
 		for _, kind := range []string{"symlink", "hardlink"} {

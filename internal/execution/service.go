@@ -5,6 +5,7 @@ package execution
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,7 +19,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -35,6 +35,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/verification"
+	"golang.org/x/sys/unix"
 )
 
 type Input struct {
@@ -52,6 +53,9 @@ type Input struct {
 	// AfterOrphanQuarantine injects a crash after the durable quarantine
 	// transaction is complete but before its terminal journal append.
 	AfterOrphanQuarantine func() error
+	// AfterOrphanRetryAppend injects a crash after a non-terminal orphan
+	// worker.failed event is durable but before its RETRY_PENDING snapshot.
+	AfterOrphanRetryAppend func() error
 	// AfterWorkerTerminalAppend injects a crash after an ordinary Worker
 	// failure exhausts a budget and appends its BLOCKED event.
 	AfterWorkerTerminalAppend func() error
@@ -189,6 +193,11 @@ func Run(ctx context.Context, input Input) (Result, error) {
 			return Result{State: state, AttemptID: state.CurrentAttemptID}, errors.New("orphan recovery requires operator intervention: retry budget exhausted")
 		}
 	}
+	if state.State == domain.StateRetryPending {
+		if err := reconcileRetryPendingQuarantine(store, lease, state); err != nil {
+			return Result{State: state, AttemptID: state.CurrentAttemptID}, err
+		}
+	}
 	// RUNNING is held for the orphan recovery decision below instead of being
 	// rejected here: a RUNNING run whose current attempt shows no live driver
 	// evidence re-enters through the existing RETRY_PENDING channel, while a
@@ -260,7 +269,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	// live RUNNING run keeps the fail-closed state gate rejection.
 	supersededAttemptID := ""
 	if state.State == domain.StateRunning {
-		recovered, orphanAttemptID, recoverErr := recoverOrphanedRunningAttempt(store, lease, runDir, state, task, input.OrphanStalenessThreshold, input.AfterOrphanTerminalAppend, input.AfterOrphanQuarantine)
+		recovered, orphanAttemptID, recoverErr := recoverOrphanedRunningAttempt(store, lease, runDir, state, task, input.OrphanStalenessThreshold, input.AfterOrphanTerminalAppend, input.AfterOrphanQuarantine, input.AfterOrphanRetryAppend)
 		if recoverErr != nil {
 			if recovered.RunID != "" {
 				return Result{State: recovered, AttemptID: orphanAttemptID}, recoverErr
@@ -490,14 +499,14 @@ const defaultOrphanStalenessThreshold = lifecycle.DefaultDriverStalenessThreshol
 // the state gate sentinel. Either exhausted retry budget is closed through a
 // durable BLOCKED event, quarantine transaction and restart-compensated
 // Outcome instead of leaving a non-terminal RUNNING orphan behind.
-func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, threshold time.Duration, afterTerminalAppend, afterQuarantine func() error) (domain.RunState, string, error) {
+func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, threshold time.Duration, afterTerminalAppend, afterQuarantine, afterRetryAppend func() error) (domain.RunState, string, error) {
 	gateReject := func(reason string) (domain.RunState, string, error) {
 		return domain.RunState{}, "", fmt.Errorf("run state %s cannot start a worker attempt: %s", state.State, reason)
 	}
 	if state.CurrentAttemptID == "" {
 		return gateReject("no current attempt is bound to the RUNNING run")
 	}
-	events, _, err := store.ReadEvents(state.RunID)
+	events, _, err := store.ReadEventsUnderLease(lease)
 	if err != nil {
 		return domain.RunState{}, "", fmt.Errorf("orphan recovery: read run journal: %w", err)
 	}
@@ -517,16 +526,17 @@ func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease,
 		return closeOrphanBudget(store, lease, runDir, state, task, last, attemptsExhausted, afterTerminalAppend, afterQuarantine)
 	}
 	orphanAttemptID := state.CurrentAttemptID
-	quarantined, err := quarantineAttemptOutputs(runDir, orphanAttemptID, last.Timestamp)
+	quarantine, err := quarantineAttemptOutputs(lease, orphanAttemptID, last.Timestamp)
 	if err != nil {
 		return domain.RunState{}, "", fmt.Errorf("orphan recovery: quarantine stale outputs: %w", err)
 	}
 	payload := map[string]any{
-		"error":              fmt.Sprintf("orphaned attempt: no live driver evidence since %s", last.Timestamp.UTC().Format(time.RFC3339)),
-		"orphaned":           true,
-		"fencingGeneration":  state.AttemptsUsed,
-		"staleSince":         last.Timestamp.UTC().Format(time.RFC3339),
-		"quarantinedOutputs": quarantined,
+		"error":                 fmt.Sprintf("orphaned attempt: no live driver evidence since %s", last.Timestamp.UTC().Format(time.RFC3339)),
+		"orphaned":              true,
+		"fencingGeneration":     state.AttemptsUsed,
+		"staleSince":            last.Timestamp.UTC().Format(time.RFC3339),
+		"quarantinedOutputs":    quarantine.Files,
+		"quarantineTransaction": quarantine,
 	}
 	event, next, err := transition(state, orphanAttemptID, "worker.failed", domain.StateRetryPending, time.Now().UTC(), payload, lifecycle.Guard{LeaseHeld: true, BudgetAvailable: true})
 	if err != nil {
@@ -534,6 +544,11 @@ func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease,
 	}
 	if err := store.Append(lease, event, state.Sequence); err != nil {
 		return domain.RunState{}, "", err
+	}
+	if afterRetryAppend != nil {
+		if err := afterRetryAppend(); err != nil {
+			return next, orphanAttemptID, fmt.Errorf("orphan recovery: injected retry post-append failure: %w", err)
+		}
 	}
 	if err := store.WriteSnapshot(lease, next); err != nil {
 		return domain.RunState{}, "", err
@@ -543,7 +558,7 @@ func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease,
 
 func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, last domain.RunEvent, attemptsExhausted bool, afterAppend func() error, afterQuarantine func() error) (domain.RunState, string, error) {
 	orphanAttemptID := state.CurrentAttemptID
-	quarantined, err := quarantineAttemptOutputs(runDir, orphanAttemptID, last.Timestamp)
+	quarantine, err := quarantineAttemptOutputs(lease, orphanAttemptID, last.Timestamp)
 	if err != nil {
 		return domain.RunState{}, "", fmt.Errorf("orphan recovery: quarantine stale outputs: %w", err)
 	}
@@ -562,7 +577,8 @@ func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir stri
 		"terminalReason":         reason,
 		"fencingGeneration":      state.AttemptsUsed,
 		"staleSince":             last.Timestamp.UTC().Format(time.RFC3339),
-		"quarantinedOutputs":     quarantined,
+		"quarantinedOutputs":     quarantine.Files,
+		"quarantineTransaction":  quarantine,
 		"attemptsUsed":           state.AttemptsUsed,
 		"maxAttempts":            task.Budgets.MaxAttempts,
 		"operationalRetriesUsed": state.OperationalRetriesUsed,
@@ -576,7 +592,12 @@ func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir stri
 	if err != nil {
 		return domain.RunState{}, "", err
 	}
-	prepared, err := review.PrepareOutcome(runDir, outcome)
+	outcomeAuthority, err := runstore.OpenRunAuthority(lease)
+	if err != nil {
+		return domain.RunState{}, "", fmt.Errorf("orphan recovery: open terminal outcome authority: %w", err)
+	}
+	prepared, err := review.PrepareOutcomeAt(outcomeAuthority, outcome)
+	_ = outcomeAuthority.Close()
 	if err != nil {
 		return domain.RunState{}, "", fmt.Errorf("orphan recovery: prepare terminal outcome: %w", err)
 	}
@@ -589,7 +610,14 @@ func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir stri
 			return next, orphanAttemptID, fmt.Errorf("orphan recovery: injected post-append failure: %w", err)
 		}
 	}
-	if err := prepared.Commit(); err != nil {
+	commitAuthority, err := runstore.OpenRunAuthority(lease)
+	if err != nil {
+		prepared.Abort()
+		return next, orphanAttemptID, fmt.Errorf("orphan recovery: reopen terminal outcome authority: %w", err)
+	}
+	err = prepared.CommitAt(commitAuthority)
+	_ = commitAuthority.Close()
+	if err != nil {
 		return next, orphanAttemptID, fmt.Errorf("orphan recovery: commit terminal outcome: %w", err)
 	}
 	if err := store.WriteSnapshot(lease, next); err != nil {
@@ -602,7 +630,7 @@ func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir stri
 }
 
 func recoverBudgetTerminalOutcome(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState) (bool, error) {
-	events, _, err := store.ReadEvents(state.RunID)
+	events, _, err := store.ReadEventsUnderLease(lease)
 	if err != nil || len(events) == 0 {
 		return false, err
 	}
@@ -624,20 +652,69 @@ func recoverBudgetTerminalOutcome(store *runstore.Store, lease *runstore.Lease, 
 	if err != nil {
 		return false, errors.New("orphan recovery: terminal event lacks valid staleSince")
 	}
-	if _, err := quarantineAttemptOutputs(runDir, last.AttemptID, staleSince); err != nil {
+	want, err := quarantineBindingFromPayload(last.Payload)
+	if err != nil {
+		return false, fmt.Errorf("orphan recovery: terminal event quarantine binding: %w", err)
+	}
+	actual, err := quarantineAttemptOutputs(lease, last.AttemptID, staleSince)
+	if err != nil {
 		return false, fmt.Errorf("orphan recovery: compensate quarantine: %w", err)
+	}
+	if !reflect.DeepEqual(actual, want) {
+		return false, errors.New("orphan recovery: terminal event quarantine transaction does not equal durable transaction")
 	}
 	outcome, err := budgetOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), last)
 	if err != nil {
 		return false, err
 	}
-	if err := review.EnsureOutcome(runDir, outcome); err != nil {
+	outcomeAuthority, err := runstore.OpenRunAuthority(lease)
+	if err != nil {
+		return false, fmt.Errorf("orphan recovery: open terminal outcome authority: %w", err)
+	}
+	err = review.EnsureOutcomeAt(outcomeAuthority, outcome)
+	_ = outcomeAuthority.Close()
+	if err != nil {
 		return false, fmt.Errorf("orphan recovery: compensate terminal outcome: %w", err)
 	}
 	if err := store.WriteSnapshot(lease, state); err != nil {
 		return false, fmt.Errorf("orphan recovery: compensate terminal snapshot: %w", err)
 	}
 	return true, nil
+}
+
+func reconcileRetryPendingQuarantine(store *runstore.Store, lease *runstore.Lease, state domain.RunState) error {
+	events, _, err := store.ReadEventsUnderLease(lease)
+	if err != nil || len(events) == 0 {
+		return err
+	}
+	last := events[len(events)-1]
+	orphaned, _ := last.Payload["orphaned"].(bool)
+	if !orphaned {
+		return nil
+	}
+	if last.Type != "worker.failed" || last.StateFrom != domain.StateRunning || last.StateTo != domain.StateRetryPending || last.AttemptID == "" || !actorIs(last.Actor, "system", "marshal-worker-runner") {
+		return errors.New("retry quarantine recovery: orphan event authority binding is invalid")
+	}
+	staleText, _ := last.Payload["staleSince"].(string)
+	staleSince, err := time.Parse(time.RFC3339, staleText)
+	if err != nil {
+		return errors.New("retry quarantine recovery: event lacks valid staleSince")
+	}
+	want, err := quarantineBindingFromPayload(last.Payload)
+	if err != nil {
+		return fmt.Errorf("retry quarantine recovery: event binding: %w", err)
+	}
+	actual, err := quarantineAttemptOutputs(lease, last.AttemptID, staleSince)
+	if err != nil {
+		return fmt.Errorf("retry quarantine recovery: durable transaction: %w", err)
+	}
+	if !reflect.DeepEqual(actual, want) {
+		return errors.New("retry quarantine recovery: event binding does not equal durable transaction")
+	}
+	if err := store.WriteSnapshot(lease, state); err != nil {
+		return fmt.Errorf("retry quarantine recovery: reconcile snapshot: %w", err)
+	}
+	return nil
 }
 
 func budgetOutcomeFromEvent(taskID string, reviewRound uint, event domain.RunEvent) (review.OutcomeData, error) {
@@ -666,141 +743,132 @@ type quarantinedOutput struct {
 	Size          int64  `json:"size"`
 }
 
+type quarantineTransaction struct {
+	Version    int                 `json:"version"`
+	AttemptID  string              `json:"attemptId"`
+	StaleSince string              `json:"staleSince"`
+	Files      []quarantinedOutput `json:"files"`
+}
+
+type quarantineBinding struct {
+	TransactionDigest string              `json:"transactionDigest"`
+	AttemptID         string              `json:"attemptId"`
+	StaleSince        string              `json:"staleSince"`
+	Files             []quarantinedOutput `json:"files"`
+}
+
 const maxQuarantineTransactionBytes = 64 << 10
 
-func quarantineAttemptOutputs(runDir, orphanAttemptID string, staleSince time.Time) ([]quarantinedOutput, error) {
-	attemptDir := filepath.Join(runDir, "attempts", orphanAttemptID)
-	diagnosticsDir := filepath.Join(attemptDir, "diagnostics")
-	if err := validateDirectoryComponentsNoSymlink(runDir); err != nil {
-		return nil, err
+func quarantineAttemptOutputs(lease *runstore.Lease, orphanAttemptID string, staleSince time.Time) (quarantineBinding, error) {
+	if err := domain.ValidateID(orphanAttemptID); err != nil {
+		return quarantineBinding{}, err
 	}
-	if err := os.MkdirAll(attemptDir, 0o700); err != nil {
-		return nil, err
+	runDirectory, err := runstore.DupRunDirectory(lease)
+	if err != nil {
+		return quarantineBinding{}, err
 	}
-	if err := validateDirectoryComponentsNoSymlink(attemptDir); err != nil {
-		return nil, err
+	defer runDirectory.Close()
+	attemptsFD, err := openOrCreateDirectoryAt(int(runDirectory.Fd()), "attempts")
+	if err != nil {
+		return quarantineBinding{}, err
 	}
-	if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
-		return nil, err
+	defer unix.Close(attemptsFD)
+	attemptFD, err := openOrCreateDirectoryAt(attemptsFD, orphanAttemptID)
+	if err != nil {
+		return quarantineBinding{}, err
 	}
-	if err := validateDirectoryComponentsNoSymlink(diagnosticsDir); err != nil {
-		return nil, err
+	defer unix.Close(attemptFD)
+	diagnosticsFD, err := openOrCreateDirectoryAt(attemptFD, "diagnostics")
+	if err != nil {
+		return quarantineBinding{}, err
 	}
-	type quarantineTransaction struct {
-		Version    int                 `json:"version"`
-		AttemptID  string              `json:"attemptId"`
-		StaleSince string              `json:"staleSince"`
-		Files      []quarantinedOutput `json:"files"`
-	}
-	transactionPath := filepath.Join(diagnosticsDir, "orphan-quarantine-transaction.json")
-	transactionPendingPath := transactionPath + ".pending"
-	transaction := quarantineTransaction{Version: 1, AttemptID: orphanAttemptID, StaleSince: staleSince.UTC().Format(time.RFC3339), Files: []quarantinedOutput{}}
-	if data, err := readBoundedRegularFile(transactionPath, maxQuarantineTransactionBytes, 2); err == nil {
-		if finalInfo, statErr := os.Lstat(transactionPath); statErr == nil && fileLinkCount(finalInfo) == 2 {
-			pendingInfo, pendingErr := os.Lstat(transactionPendingPath)
-			if pendingErr != nil || !os.SameFile(finalInfo, pendingInfo) {
-				return nil, errors.New("orphan quarantine transaction hard-link commit is not bound")
-			}
-			if err := os.Remove(transactionPendingPath); err != nil {
-				return nil, err
-			}
-		}
-		if _, digestErr := canonical.DigestJSON(data); digestErr != nil {
-			return nil, errors.New("orphan quarantine transaction is not canonical-admissible JSON")
-		}
-		decoder := json.NewDecoder(bytes.NewReader(data))
-		decoder.DisallowUnknownFields()
-		decodeErr := decoder.Decode(&transaction)
-		if decodeErr == nil {
-			var trailing any
-			if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-				decodeErr = errors.New("quarantine transaction has trailing JSON")
-			}
-		}
-		if decodeErr != nil || transaction.Version != 1 || transaction.AttemptID != orphanAttemptID {
-			return nil, errors.New("orphan quarantine transaction identity mismatch")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	present := make(map[string]quarantinedOutput, len(transaction.Files))
-	for _, record := range transaction.Files {
-		if record.Name != "worker-result.json" && record.Name != "worktree-snapshot.json" {
-			return nil, errors.New("orphan quarantine transaction contains an unknown file")
-		}
-		_, digestErr := hex.DecodeString(strings.TrimPrefix(record.ContentDigest, "sha256:"))
-		if len(record.ContentDigest) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(record.ContentDigest, "sha256:") || digestErr != nil || record.Size < 0 {
-			return nil, errors.New("orphan quarantine transaction contains an incomplete file binding")
-		}
-		if _, duplicate := present[record.Name]; duplicate {
-			return nil, errors.New("orphan quarantine transaction contains a duplicate file binding")
-		}
-		present[record.Name] = record
-	}
-	manifestExists := false
-	if _, err := os.Lstat(transactionPath); err == nil {
-		manifestExists = true
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+	defer unix.Close(diagnosticsFD)
+
+	wantIdentity := quarantineTransaction{Version: 1, AttemptID: orphanAttemptID, StaleSince: staleSince.UTC().Format(time.RFC3339), Files: []quarantinedOutput{}}
+	transaction := wantIdentity
+	manifestData, manifestExists, err := readQuarantineRecordAt(diagnosticsFD, "orphan-quarantine-transaction.json", maxQuarantineTransactionBytes, 2)
+	if err != nil {
+		return quarantineBinding{}, err
 	}
 	if manifestExists {
-		for _, name := range []string{"worker-result.json", "worktree-snapshot.json"} {
-			if _, bound := present[name]; bound {
-				continue
-			}
-			if _, err := os.Lstat(filepath.Join(attemptDir, name)); err == nil {
-				return nil, fmt.Errorf("late output %s is not bound by the immutable quarantine transaction", name)
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return nil, err
-			}
+		if err := decodeQuarantineTransaction(manifestData, &transaction); err != nil {
+			return quarantineBinding{}, err
 		}
-	}
-	if _, err := os.Lstat(transactionPath); errors.Is(err, os.ErrNotExist) {
+		if transaction.Version != wantIdentity.Version || transaction.AttemptID != wantIdentity.AttemptID || transaction.StaleSince != wantIdentity.StaleSince {
+			return quarantineBinding{}, errors.New("orphan quarantine transaction identity mismatch")
+		}
+	} else {
 		for _, name := range []string{"worker-result.json", "worktree-snapshot.json"} {
-			record, exists, inspectErr := inspectQuarantineFile(filepath.Join(attemptDir, name), name, 1)
+			record, exists, inspectErr := inspectQuarantineAt(attemptFD, name, name, 1)
 			if inspectErr != nil {
-				return nil, inspectErr
+				return quarantineBinding{}, inspectErr
 			}
 			if exists {
 				transaction.Files = append(transaction.Files, record)
-				present[name] = record
 			}
 		}
 		sort.Slice(transaction.Files, func(i, j int) bool { return transaction.Files[i].Name < transaction.Files[j].Name })
-		if len(transaction.Files) > 0 {
-			transactionData, err := json.MarshalIndent(transaction, "", "  ")
-			if err != nil {
-				return nil, err
-			}
-			if err := atomicWrite(transactionPendingPath, append(transactionData, '\n'), 0o600); err != nil {
-				return nil, err
-			}
-			if err := os.Link(transactionPendingPath, transactionPath); err != nil {
-				return nil, err
-			}
-			if err := os.Remove(transactionPendingPath); err != nil {
-				return nil, err
-			}
-			if err := syncDirectory(diagnosticsDir); err != nil {
-				return nil, err
+		manifestData, err = json.MarshalIndent(transaction, "", "  ")
+		if err != nil {
+			return quarantineBinding{}, err
+		}
+		manifestData = append(manifestData, '\n')
+		if quarantineMutationHook != nil {
+			if err := quarantineMutationHook("manifest-install"); err != nil {
+				return quarantineBinding{}, err
 			}
 		}
+		if err := quarantineAuthorityStillBound(int(runDirectory.Fd()), attemptsFD, orphanAttemptID, attemptFD, diagnosticsFD); err != nil {
+			return quarantineBinding{}, err
+		}
+		if err := installImmutableRecordAt(attemptFD, diagnosticsFD, "diagnostics", "orphan-quarantine-transaction.json", manifestData); err != nil {
+			return quarantineBinding{}, err
+		}
 	}
+	if err := validateQuarantineFiles(transaction.Files); err != nil {
+		return quarantineBinding{}, err
+	}
+	bound := make(map[string]bool, len(transaction.Files))
 	for _, binding := range transaction.Files {
-		source := filepath.Join(attemptDir, binding.Name)
-		destination := filepath.Join(diagnosticsDir, "quarantined-"+binding.Name)
-		if err := installQuarantineFile(source, destination, binding); err != nil {
-			return nil, fmt.Errorf("orphan quarantine transaction file %s: %w", binding.Name, err)
+		bound[binding.Name] = true
+		if quarantineMutationHook != nil {
+			if err := quarantineMutationHook("file-install:" + binding.Name); err != nil {
+				return quarantineBinding{}, err
+			}
+		}
+		if err := quarantineAuthorityStillBound(int(runDirectory.Fd()), attemptsFD, orphanAttemptID, attemptFD, diagnosticsFD); err != nil {
+			return quarantineBinding{}, err
+		}
+		if err := installQuarantineAt(attemptFD, diagnosticsFD, binding); err != nil {
+			return quarantineBinding{}, fmt.Errorf("orphan quarantine transaction file %s: %w", binding.Name, err)
 		}
 	}
+	for _, name := range []string{"worker-result.json", "worktree-snapshot.json"} {
+		if bound[name] {
+			continue
+		}
+		if _, exists, err := inspectQuarantineAt(attemptFD, name, name, 1); err != nil {
+			return quarantineBinding{}, err
+		} else if exists {
+			return quarantineBinding{}, fmt.Errorf("late output %s is not bound by the immutable quarantine transaction", name)
+		}
+	}
+	digest, err := canonical.DigestJSON(manifestData)
+	if err != nil {
+		return quarantineBinding{}, err
+	}
+	files := make([]quarantinedOutput, len(transaction.Files))
+	copy(files, transaction.Files)
+	result := quarantineBinding{TransactionDigest: digest, AttemptID: transaction.AttemptID, StaleSince: transaction.StaleSince, Files: files}
 	fileNames := make([]string, 0, len(transaction.Files))
 	for _, binding := range transaction.Files {
 		fileNames = append(fileNames, binding.Name)
 	}
 	record := map[string]any{
 		"reason":                  "orphaned-attempt-stale-outputs",
-		"attemptId":               orphanAttemptID,
-		"staleSince":              staleSince.UTC().Format(time.RFC3339),
+		"attemptId":               result.AttemptID,
+		"staleSince":              result.StaleSince,
+		"transactionDigest":       result.TransactionDigest,
 		"isolatedAt":              time.Now().UTC().Format(time.RFC3339),
 		"quarantinedFiles":        fileNames,
 		"quarantinedFileBindings": transaction.Files,
@@ -808,110 +876,315 @@ func quarantineAttemptOutputs(runDir, orphanAttemptID string, staleSince time.Ti
 	}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
-		return nil, err
+		return quarantineBinding{}, err
 	}
-	if err := atomicWrite(filepath.Join(diagnosticsDir, "orphan-diagnostics.json"), append(data, '\n'), 0o600); err != nil {
-		return nil, err
+	if err := quarantineAuthorityStillBound(int(runDirectory.Fd()), attemptsFD, orphanAttemptID, attemptFD, diagnosticsFD); err != nil {
+		return quarantineBinding{}, err
 	}
-	return append([]quarantinedOutput(nil), transaction.Files...), nil
+	if err := writeReplaceRecordAt(diagnosticsFD, "orphan-diagnostics.json", append(data, '\n')); err != nil {
+		return quarantineBinding{}, err
+	}
+	return result, nil
 }
 
-func validateDirectoryComponentsNoSymlink(path string) error {
-	clean := filepath.Clean(path)
-	prefix := ""
-	if filepath.IsAbs(clean) {
-		prefix = string(filepath.Separator)
-		clean = strings.TrimPrefix(clean, string(filepath.Separator))
+// quarantineMutationHook is a deterministic package-test seam. Production
+// callers leave it nil. It is invoked after descriptor inspection and before
+// the corresponding descriptor-relative install.
+var quarantineMutationHook func(stage string) error
+
+func openOrCreateDirectoryAt(parentFD int, name string) (int, error) {
+	if name == "" || name == "." || name == ".." || strings.ContainsRune(name, filepath.Separator) {
+		return -1, errors.New("unsafe quarantine directory component")
 	}
-	for _, component := range strings.Split(clean, string(filepath.Separator)) {
-		if component == "" || component == "." || component == ".." {
-			return errors.New("directory contains an unsafe path component")
+	if err := unix.Mkdirat(parentFD, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+		return -1, err
+	}
+	return unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+}
+
+func validateQuarantineFiles(files []quarantinedOutput) error {
+	if files == nil {
+		return errors.New("orphan quarantine transaction files must be an array")
+	}
+	seen := make(map[string]bool, len(files))
+	for _, record := range files {
+		if record.Name != "worker-result.json" && record.Name != "worktree-snapshot.json" {
+			return errors.New("orphan quarantine transaction contains an unknown file")
 		}
-		prefix = filepath.Join(prefix, component)
-		info, err := os.Lstat(prefix)
-		if err != nil {
-			return err
+		hexDigest := strings.TrimPrefix(record.ContentDigest, "sha256:")
+		_, digestErr := hex.DecodeString(hexDigest)
+		if len(hexDigest) != sha256.Size*2 || !strings.HasPrefix(record.ContentDigest, "sha256:") || digestErr != nil || record.Size < 0 || record.Size > 64<<20 {
+			return errors.New("orphan quarantine transaction contains an incomplete file binding")
 		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return errors.New("directory authority contains a symlink or non-directory component")
+		if seen[record.Name] {
+			return errors.New("orphan quarantine transaction contains a duplicate file binding")
 		}
+		seen[record.Name] = true
 	}
 	return nil
 }
 
-func inspectQuarantineFile(path, name string, maxLinks uint64) (quarantinedOutput, bool, error) {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return quarantinedOutput{}, false, nil
+func decodeQuarantineTransaction(data []byte, transaction *quarantineTransaction) error {
+	if _, err := canonical.DigestJSON(data); err != nil {
+		return errors.New("orphan quarantine transaction is not canonical-admissible JSON")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(transaction); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("quarantine transaction has trailing JSON")
+	}
+	return validateQuarantineFiles(transaction.Files)
+}
+
+func quarantineBindingFromPayload(payload map[string]any) (quarantineBinding, error) {
+	raw, ok := payload["quarantineTransaction"]
+	if !ok {
+		return quarantineBinding{}, errors.New("missing quarantineTransaction")
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return quarantineBinding{}, err
+	}
+	var binding quarantineBinding
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&binding); err != nil {
+		return quarantineBinding{}, err
+	}
+	if binding.AttemptID == "" || binding.StaleSince == "" || !strings.HasPrefix(binding.TransactionDigest, "sha256:") {
+		return quarantineBinding{}, errors.New("incomplete quarantine transaction binding")
+	}
+	if err := validateQuarantineFiles(binding.Files); err != nil {
+		return quarantineBinding{}, err
+	}
+	return binding, nil
+}
+
+func inspectQuarantineAt(directoryFD int, pathName, bindingName string, maxLinks uint64) (quarantinedOutput, bool, error) {
+	record, _, exists, err := inspectQuarantineAtWithStat(directoryFD, pathName, bindingName, maxLinks)
+	return record, exists, err
+}
+
+func inspectQuarantineAtWithStat(directoryFD int, pathName, bindingName string, maxLinks uint64) (quarantinedOutput, unix.Stat_t, bool, error) {
+	fd, err := unix.Openat(directoryFD, pathName, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return quarantinedOutput{}, unix.Stat_t{}, false, nil
 	}
 	if err != nil {
-		return quarantinedOutput{}, false, err
+		return quarantinedOutput{}, unix.Stat_t{}, false, err
 	}
-	links := fileLinkCount(info)
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || links < 1 || links > maxLinks {
-		return quarantinedOutput{}, false, errors.New("quarantine record is not a bounded-link regular file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return quarantinedOutput{}, false, err
-	}
+	file := os.NewFile(uintptr(fd), pathName)
 	defer file.Close()
-	opened, err := file.Stat()
-	if err != nil || !os.SameFile(info, opened) {
-		return quarantinedOutput{}, false, errors.New("quarantine source identity changed while opening")
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		return quarantinedOutput{}, unix.Stat_t{}, false, err
+	}
+	if before.Mode&unix.S_IFMT != unix.S_IFREG || before.Nlink < 1 || uint64(before.Nlink) > maxLinks {
+		return quarantinedOutput{}, unix.Stat_t{}, false, errors.New("quarantine record is not a bounded-link regular file")
 	}
 	hash := sha256.New()
 	size, err := io.Copy(hash, io.LimitReader(file, (64<<20)+1))
 	if err != nil {
-		return quarantinedOutput{}, false, err
+		return quarantinedOutput{}, unix.Stat_t{}, false, err
 	}
 	if size > 64<<20 {
-		return quarantinedOutput{}, false, errors.New("quarantine source exceeds 64 MiB")
+		return quarantinedOutput{}, unix.Stat_t{}, false, errors.New("quarantine source exceeds 64 MiB")
 	}
-	return quarantinedOutput{Name: name, ContentDigest: "sha256:" + hex.EncodeToString(hash.Sum(nil)), Size: size}, true, nil
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil {
+		return quarantinedOutput{}, unix.Stat_t{}, false, err
+	}
+	if before.Dev != after.Dev || before.Ino != after.Ino || before.Size != after.Size || before.Mode != after.Mode || before.Nlink != after.Nlink {
+		return quarantinedOutput{}, unix.Stat_t{}, false, errors.New("quarantine source identity changed while reading")
+	}
+	return quarantinedOutput{Name: bindingName, ContentDigest: "sha256:" + hex.EncodeToString(hash.Sum(nil)), Size: size}, after, true, nil
 }
 
-func installQuarantineFile(source, destination string, want quarantinedOutput) error {
-	if existing, ok, err := inspectQuarantineFile(destination, want.Name, 2); err != nil {
+func readQuarantineRecordAt(directoryFD int, name string, limit int64, maxLinks uint64) ([]byte, bool, error) {
+	_, stat, exists, err := inspectQuarantineAtWithStat(directoryFD, name, name, maxLinks)
+	if err != nil || !exists {
+		return nil, exists, err
+	}
+	if stat.Size > limit {
+		return nil, false, errors.New("quarantine transaction exceeds size limit")
+	}
+	if stat.Nlink == 2 {
+		pending := "." + name + ".pending"
+		var pendingStat unix.Stat_t
+		if err := unix.Fstatat(directoryFD, pending, &pendingStat, unix.AT_SYMLINK_NOFOLLOW); err != nil || pendingStat.Dev != stat.Dev || pendingStat.Ino != stat.Ino || pendingStat.Mode&unix.S_IFMT != unix.S_IFREG {
+			return nil, false, errors.New("orphan quarantine transaction hard-link commit is not bound")
+		}
+		if err := unix.Unlinkat(directoryFD, pending, 0); err != nil {
+			return nil, false, err
+		}
+	}
+	fd, err := unix.Openat(directoryFD, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || int64(len(data)) > limit {
+		if err == nil {
+			err = errors.New("quarantine transaction exceeds size limit")
+		}
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+func installImmutableRecordAt(parentFD, directoryFD int, directoryName, name string, data []byte) error {
+	if err := directoryEntryStillBound(parentFD, directoryName, directoryFD); err != nil {
+		return err
+	}
+	pending := "." + name + ".pending"
+	_ = unix.Unlinkat(directoryFD, pending, 0)
+	fd, err := unix.Openat(directoryFD, pending, unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_EXCL, 0o400)
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(fd), pending)
+	if _, err = file.Write(data); err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = unix.Unlinkat(directoryFD, pending, 0)
+		return err
+	}
+	if err := unix.Linkat(directoryFD, pending, directoryFD, name, 0); err != nil {
+		_ = unix.Unlinkat(directoryFD, pending, 0)
+		if errors.Is(err, unix.EEXIST) {
+			return errors.New("immutable quarantine transaction already exists")
+		}
+		return err
+	}
+	installed, exists, err := readQuarantineRecordAt(directoryFD, name, int64(len(data)), 2)
+	if err != nil || !exists || !bytes.Equal(installed, data) {
+		_ = unix.Unlinkat(directoryFD, name, 0)
+		_ = unix.Unlinkat(directoryFD, pending, 0)
+		if err == nil {
+			err = errors.New("immutable quarantine transaction install verification failed")
+		}
+		return err
+	}
+	return unix.Fsync(directoryFD)
+}
+
+func quarantineAuthorityStillBound(runFD, attemptsFD int, attemptID string, attemptFD, diagnosticsFD int) error {
+	if err := directoryEntryStillBound(runFD, "attempts", attemptsFD); err != nil {
+		return err
+	}
+	if err := directoryEntryStillBound(attemptsFD, attemptID, attemptFD); err != nil {
+		return err
+	}
+	return directoryEntryStillBound(attemptFD, "diagnostics", diagnosticsFD)
+}
+
+func directoryEntryStillBound(parentFD int, name string, directoryFD int) error {
+	var pathStat, descriptorStat unix.Stat_t
+	if err := unix.Fstatat(parentFD, name, &pathStat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return err
+	}
+	if err := unix.Fstat(directoryFD, &descriptorStat); err != nil {
+		return err
+	}
+	if pathStat.Mode&unix.S_IFMT != unix.S_IFDIR || descriptorStat.Mode&unix.S_IFMT != unix.S_IFDIR || pathStat.Dev != descriptorStat.Dev || pathStat.Ino != descriptorStat.Ino {
+		return errors.New("quarantine directory pathname no longer binds the trusted descriptor")
+	}
+	return nil
+}
+
+func installQuarantineAt(attemptFD, diagnosticsFD int, want quarantinedOutput) error {
+	destination := "quarantined-" + want.Name
+	if existing, destinationStat, ok, err := inspectQuarantineAtWithStat(diagnosticsFD, destination, want.Name, 2); err != nil {
 		return err
 	} else if ok {
-		if existing.ContentDigest != want.ContentDigest || existing.Size != want.Size {
+		if existing != want {
 			return errors.New("immutable quarantine destination conflicts with transaction")
 		}
-		if sourceInfo, statErr := os.Lstat(source); statErr == nil {
-			destinationInfo, _ := os.Lstat(destination)
-			if !os.SameFile(sourceInfo, destinationInfo) {
+		_, sourceStat, sourceExists, err := inspectQuarantineAtWithStat(attemptFD, want.Name, want.Name, 2)
+		if err != nil {
+			return err
+		}
+		if sourceExists {
+			if sourceStat.Dev != destinationStat.Dev || sourceStat.Ino != destinationStat.Ino {
 				return errors.New("late output conflicts with immutable quarantine destination")
 			}
-			return os.Remove(source)
-		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return statErr
+			if err := unix.Unlinkat(attemptFD, want.Name, 0); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
-	actual, ok, err := inspectQuarantineFile(source, want.Name, 1)
+	actual, sourceStat, ok, err := inspectQuarantineAtWithStat(attemptFD, want.Name, want.Name, 1)
 	if err != nil || !ok {
 		if err == nil {
 			err = errors.New("bound quarantine source is missing")
 		}
 		return err
 	}
-	if actual.ContentDigest != want.ContentDigest || actual.Size != want.Size {
+	if actual != want {
 		return errors.New("quarantine source bytes conflict with transaction")
 	}
-	if err := os.Link(source, destination); err != nil {
+	if err := directoryEntryStillBound(attemptFD, "diagnostics", diagnosticsFD); err != nil {
 		return err
 	}
-	sourceInfo, sourceErr := os.Lstat(source)
-	destinationInfo, destinationErr := os.Lstat(destination)
-	if sourceErr != nil || destinationErr != nil || !os.SameFile(sourceInfo, destinationInfo) {
-		_ = os.Remove(destination)
-		return errors.New("quarantine link transaction lost inode identity")
+	var pathStat unix.Stat_t
+	if err := unix.Fstatat(attemptFD, want.Name, &pathStat, unix.AT_SYMLINK_NOFOLLOW); err != nil || pathStat.Dev != sourceStat.Dev || pathStat.Ino != sourceStat.Ino || pathStat.Mode != sourceStat.Mode || pathStat.Size != sourceStat.Size {
+		return errors.New("quarantine source pathname changed before install")
 	}
-	if err := os.Remove(source); err != nil {
+	if err := unix.Linkat(attemptFD, want.Name, diagnosticsFD, destination, 0); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(destination))
+	installed, installedStat, ok, err := inspectQuarantineAtWithStat(diagnosticsFD, destination, want.Name, 2)
+	if err != nil || !ok || installed != want || installedStat.Dev != sourceStat.Dev || installedStat.Ino != sourceStat.Ino {
+		_ = unix.Unlinkat(diagnosticsFD, destination, 0)
+		return errors.New("quarantine install did not preserve bound source identity")
+	}
+	if err := unix.Fstatat(attemptFD, want.Name, &pathStat, unix.AT_SYMLINK_NOFOLLOW); err != nil || pathStat.Dev != sourceStat.Dev || pathStat.Ino != sourceStat.Ino {
+		_ = unix.Unlinkat(diagnosticsFD, destination, 0)
+		return errors.New("quarantine source pathname changed before removal")
+	}
+	if err := unix.Unlinkat(attemptFD, want.Name, 0); err != nil {
+		return err
+	}
+	return errors.Join(unix.Fsync(attemptFD), unix.Fsync(diagnosticsFD))
+}
+
+func writeReplaceRecordAt(directoryFD int, name string, data []byte) error {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return err
+	}
+	temporary := "." + name + "-" + hex.EncodeToString(random[:]) + ".pending"
+	fd, err := unix.Openat(directoryFD, temporary, unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(fd), temporary)
+	defer func() {
+		file.Close()
+		_ = unix.Unlinkat(directoryFD, temporary, 0)
+	}()
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := unix.Renameat(directoryFD, temporary, directoryFD, name); err != nil {
+		return err
+	}
+	return unix.Fsync(directoryFD)
 }
 
 // quarantineRejectedWorkerResult isolates a WorkerResult rejected by the
@@ -1633,7 +1906,11 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 		if state.AttemptsUsed >= uint(task.Budgets.MaxAttempts) {
 			reason = "attempt-budget-exhausted"
 		}
-		quarantined, err := quarantineAttemptOutputs(runDir, attemptID, eventAt)
+		staleSince, err := attemptStartedAt(store, lease, attemptID)
+		if err != nil {
+			return state, fmt.Errorf("terminal worker failure identity: %w", err)
+		}
+		quarantine, err := quarantineAttemptOutputs(lease, attemptID, staleSince)
 		if err != nil {
 			return state, fmt.Errorf("terminal worker failure quarantine: %w", err)
 		}
@@ -1644,8 +1921,9 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 		}
 		payload["budgetTerminal"] = true
 		payload["terminalReason"] = reason
-		payload["quarantinedOutputs"] = quarantined
-		payload["staleSince"] = eventAt.Format(time.RFC3339)
+		payload["quarantinedOutputs"] = quarantine.Files
+		payload["quarantineTransaction"] = quarantine
+		payload["staleSince"] = staleSince.Format(time.RFC3339)
 		payload["attemptsUsed"] = state.AttemptsUsed
 		payload["maxAttempts"] = task.Budgets.MaxAttempts
 		payload["operationalRetriesUsed"] = state.OperationalRetriesUsed
@@ -1655,13 +1933,18 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 	if err != nil {
 		return state, err
 	}
-	var prepared *review.PreparedRecords
+	var prepared *review.PreparedOutcomeRecords
 	if target == domain.StateBlocked {
 		outcome, err := budgetOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), event)
 		if err != nil {
 			return state, err
 		}
-		prepared, err = review.PrepareOutcome(runDir, outcome)
+		outcomeAuthority, authorityErr := runstore.OpenRunAuthority(lease)
+		if authorityErr != nil {
+			return state, authorityErr
+		}
+		prepared, err = review.PrepareOutcomeAt(outcomeAuthority, outcome)
+		_ = outcomeAuthority.Close()
 		if err != nil {
 			return state, err
 		}
@@ -1678,7 +1961,14 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 				return next, fmt.Errorf("terminal worker failure: injected post-append failure: %w", err)
 			}
 		}
-		if err := prepared.Commit(); err != nil {
+		commitAuthority, err := runstore.OpenRunAuthority(lease)
+		if err != nil {
+			prepared.Abort()
+			return next, err
+		}
+		err = prepared.CommitAt(commitAuthority)
+		_ = commitAuthority.Close()
+		if err != nil {
 			return next, err
 		}
 	}
@@ -1686,6 +1976,20 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 		return next, err
 	}
 	return next, nil
+}
+
+func attemptStartedAt(store *runstore.Store, lease *runstore.Lease, attemptID string) (time.Time, error) {
+	events, _, err := store.ReadEventsUnderLease(lease)
+	if err != nil {
+		return time.Time{}, err
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Type == "worker.started" && event.AttemptID == attemptID {
+			return event.Timestamp.UTC(), nil
+		}
+	}
+	return time.Time{}, errors.New("worker.started event is missing for terminal attempt")
 }
 
 var projectionFindingKeys = []string{"id", "severity", "description", "requiredOutcome"}
@@ -2060,50 +2364,6 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	directory, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
-}
-
-func readBoundedRegularFile(path string, limit int64, maxLinks uint64) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	links := fileLinkCount(info)
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || links < 1 || links > maxLinks {
-		return nil, errors.New("record is not a bounded-link regular file")
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	opened, err := file.Stat()
-	if err != nil || !os.SameFile(info, opened) {
-		return nil, errors.New("record identity changed while opening")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, errors.New("record exceeds safe byte limit")
-	}
-	return data, nil
-}
-
-func fileLinkCount(info os.FileInfo) uint64 {
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		return uint64(stat.Nlink)
-	}
-	return 0
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
 	if err != nil {
 		return err
 	}

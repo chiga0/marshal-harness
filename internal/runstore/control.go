@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"golang.org/x/sys/unix"
 )
 
 // maxControlJournalBytes caps the control journal at 32 MiB, including the
@@ -107,9 +108,6 @@ func (s *Store) appendControlRecord(lease *Lease, validator ControlValidator, en
 	if lease == nil || lease.file == nil || !lease.held {
 		return errors.New("control append requires held run lease")
 	}
-	if err := leaseStillAuthoritative(lease); err != nil {
-		return fmt.Errorf("control append requires authoritative run lease: %w", err)
-	}
 	if validator == nil {
 		return errors.New("control append requires a validator")
 	}
@@ -119,7 +117,17 @@ func (s *Store) appendControlRecord(lease *Lease, validator ControlValidator, en
 	if entry.kind != domain.KindApprovalRecord && entry.kind != domain.KindInterventionRecord {
 		return fmt.Errorf("%w: unsupported control kind %q", ErrConflict, entry.kind)
 	}
-	state, err := s.Inspect(entry.runID)
+	if lease.beforeMutation != nil {
+		if err := lease.beforeMutation(); err != nil {
+			return fmt.Errorf("control mutation hook: %w", err)
+		}
+	}
+	authority, err := OpenRunAuthority(lease)
+	if err != nil {
+		return fmt.Errorf("control mutation authority: %w", err)
+	}
+	defer authority.Close()
+	state, err := inspectAt(int(authority.Fd()))
 	if err != nil {
 		return err
 	}
@@ -134,7 +142,7 @@ func (s *Store) appendControlRecord(lease *Lease, validator ControlValidator, en
 			return fmt.Errorf("%w: %v", ErrConflict, err)
 		}
 	}
-	raw, records, err := s.readControlJournal(entry.runID, state.TaskID, state.Sequence, validator, maxJournalBytes)
+	raw, records, err := readControlJournalAt(int(authority.Fd()), entry.runID, state.TaskID, state.Sequence, validator, maxJournalBytes)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -168,11 +176,8 @@ func (s *Store) appendControlRecord(lease *Lease, validator ControlValidator, en
 	if int64(len(raw))+int64(len(line)) > maxJournalBytes {
 		return fmt.Errorf("%w: control journal would exceed %d bytes", ErrConflict, maxJournalBytes)
 	}
-	if err := appendRegularInDirectoryAt(int(lease.runDir.Fd()), "control", "records.jsonl", line); err != nil {
+	if err := appendRegularInDirectoryAt(int(authority.Fd()), "control", "records.jsonl", line); err != nil {
 		return fmt.Errorf("sync control journal: %w", err)
-	}
-	if err := leaseStillAuthoritative(lease); err != nil {
-		return fmt.Errorf("control append lost lease authority: %w", err)
 	}
 	return nil
 }
@@ -205,6 +210,23 @@ func (s *Store) readControlJournal(runID, taskID string, stateSequence uint64, v
 	if err != nil {
 		return nil, nil, err
 	}
+	return decodeControlJournalData(data, runID, taskID, stateSequence, validator)
+}
+
+func readControlJournalAt(runFD int, runID, taskID string, stateSequence uint64, validator ControlValidator, maxJournalBytes int64) ([]byte, []ControlRecord, error) {
+	controlFD, err := openDirectoryAt(runFD, "control", false)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer unix.Close(controlFD)
+	data, err := readRegularAt(controlFD, "records.jsonl", maxJournalBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	return decodeControlJournalData(data, runID, taskID, stateSequence, validator)
+}
+
+func decodeControlJournalData(data []byte, runID, taskID string, stateSequence uint64, validator ControlValidator) ([]byte, []ControlRecord, error) {
 	truncated := len(data) > 0 && data[len(data)-1] != '\n'
 	reader := bufio.NewReader(bytes.NewReader(data))
 	records := make([]ControlRecord, 0)

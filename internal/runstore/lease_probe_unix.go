@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"golang.org/x/sys/unix"
 )
 
@@ -37,11 +38,57 @@ func appendRegularAt(runFD int, name string, data []byte) error {
 	return file.Sync()
 }
 
-func appendRegularInDirectoryAt(runFD int, directory, name string, data []byte) error {
-	if err := unix.Mkdirat(runFD, directory, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
-		return err
+func readRegularAt(directoryFD int, name string, limit int64) ([]byte, error) {
+	fd, err := unix.Openat(directoryFD, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil, os.ErrNotExist
+		}
+		return nil, err
 	}
-	directoryFD, err := unix.Openat(runFD, directory, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	file := os.NewFile(uintptr(fd), name)
+	defer file.Close()
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return nil, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+		return nil, errors.New("authority record is not a single-link regular file")
+	}
+	if limit > 0 && stat.Size > limit {
+		return nil, fmt.Errorf("authority record exceeds %d bytes", limit)
+	}
+	reader := io.Reader(file)
+	if limit > 0 {
+		reader = io.LimitReader(file, limit+1)
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && int64(len(data)) > limit {
+		return nil, fmt.Errorf("authority record exceeds %d bytes", limit)
+	}
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil {
+		return nil, err
+	}
+	if after.Dev != stat.Dev || after.Ino != stat.Ino || after.Size != stat.Size || after.Mode != stat.Mode || after.Nlink != stat.Nlink {
+		return nil, errors.New("authority record identity changed while reading")
+	}
+	return data, nil
+}
+
+func readEventsAt(runFD int) ([]domain.RunEvent, bool, error) {
+	data, err := readRegularAt(runFD, "events.jsonl", 0)
+	if err != nil {
+		return nil, false, err
+	}
+	return decodeEvents(data)
+}
+
+func appendRegularInDirectoryAt(runFD int, directory, name string, data []byte) error {
+	directoryFD, err := openDirectoryAt(runFD, directory, true)
 	if err != nil {
 		return err
 	}
@@ -50,6 +97,15 @@ func appendRegularInDirectoryAt(runFD int, directory, name string, data []byte) 
 		return err
 	}
 	return unix.Fsync(directoryFD)
+}
+
+func openDirectoryAt(parentFD int, name string, create bool) (int, error) {
+	if create {
+		if err := unix.Mkdirat(parentFD, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+			return -1, err
+		}
+	}
+	return unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 }
 
 func writeSnapshotAt(runFD int, data []byte) error {
@@ -200,28 +256,41 @@ func readLeaseOwnerAt(runFD int) (leaseOwnerRecord, error) {
 	return owner, nil
 }
 
-func leaseStillAuthoritative(lease *Lease) error {
-	if lease == nil || lease.runDir == nil {
-		return errors.New("lease lacks bound run authority directory")
+// OpenRunAuthority opens the current canonical run pathname, validates that
+// exact directory descriptor against the held lease and owner records, and
+// returns it without reopening by pathname. CAS reads and mutations must use
+// this returned descriptor for the entire operation.
+func OpenRunAuthority(lease *Lease) (*os.File, error) {
+	if lease == nil || lease.runDir == nil || lease.file == nil || !lease.held {
+		return nil, errors.New("lease lacks bound authority descriptors")
 	}
-	runFD := int(lease.runDir.Fd())
 	rootFD, runsFD, currentRunFD, err := openRunAuthority(lease.root, lease.runID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer unix.Close(rootFD)
-	defer unix.Close(runsFD)
-	defer unix.Close(currentRunFD)
+	unix.Close(rootFD)
+	unix.Close(runsFD)
 	var boundRun, currentRun unix.Stat_t
-	if err := unix.Fstat(runFD, &boundRun); err != nil {
-		return err
+	if err := unix.Fstat(int(lease.runDir.Fd()), &boundRun); err != nil {
+		unix.Close(currentRunFD)
+		return nil, err
 	}
 	if err := unix.Fstat(currentRunFD, &currentRun); err != nil {
-		return err
+		unix.Close(currentRunFD)
+		return nil, err
 	}
 	if boundRun.Dev != currentRun.Dev || boundRun.Ino != currentRun.Ino {
-		return errors.New("run authority pathname no longer binds the held directory")
+		unix.Close(currentRunFD)
+		return nil, errors.New("run authority pathname no longer binds the held directory")
 	}
+	if err := leaseDescriptorAuthoritativeAt(lease, currentRunFD); err != nil {
+		unix.Close(currentRunFD)
+		return nil, err
+	}
+	return os.NewFile(uintptr(currentRunFD), "canonical-run-authority"), nil
+}
+
+func leaseDescriptorAuthoritativeAt(lease *Lease, runFD int) error {
 	currentFD, err := unix.Openat(runFD, "lease.lock", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
@@ -245,6 +314,13 @@ func leaseStillAuthoritative(lease *Lease) error {
 		return errors.New("lease owner no longer binds the held descriptor")
 	}
 	return nil
+}
+
+// DupRunDirectory returns a close-on-exec duplicate of the directory
+// descriptor bound by the held lease. Callers use it for descriptor-relative
+// attempt persistence without reopening the mutable run pathname.
+func DupRunDirectory(lease *Lease) (*os.File, error) {
+	return OpenRunAuthority(lease)
 }
 
 func openRunAuthority(root, runID string) (int, int, int, error) {
