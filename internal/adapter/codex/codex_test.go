@@ -849,7 +849,7 @@ func TestRunCancellationTerminatesProcessGroup(t *testing.T) {
 }
 
 func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
-	secrets := []string{"sk-codex-super-secret-token", "Bearer eyJhbGciOiJIUzI1NiJ9.secret-payload", "user private content: password=hunter2"}
+	secrets := []string{"codex-stderr-secret-sentinel-0001", "codex-stderr-secret-sentinel-0002", "codex-stderr-secret-sentinel-0003"}
 	// 协议完整结束后进程才以非零退出：进程失败分类优先于结果读取。
 	body := transcriptBody(successTranscriptLines())
 	for _, secret := range secrets {
