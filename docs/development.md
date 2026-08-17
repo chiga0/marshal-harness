@@ -186,6 +186,40 @@ marshal doctor --json
 
 确认对应 Adapter 的 `workers` 条目 `outcome=registered`、`compatibility=supported`；此时该 Adapter 不再出现在 `discovery` 段。若 `compatibility=unsupported`，说明二进制版本与冻结的 supported 版本不符，doctor 会如实报告但不会因此放行。
 
+Qoder 额外采用独立 Conformance authority 门禁。只配置
+`MARSHAL_QODER_PATH` 会完成注册，但 `compatibility` 必须保持
+`unsupported`。独立 verifier 应在无业务仓库写权限、独立临时目录、
+不继承 ambient credential 的 probe-only 环境中验证 credential 与冻结的
+`stream-json` 协议；随后使用 `qoder.SealConformanceEvidence` 将非敏感
+observation（可执行文件 realpath/digest/version、host OS/arch、transcript
+digest、有效期和 verdict）交给独立签名者。私钥、credential 与 transcript
+正文不得进入 Marshal 配置或仓库。
+
+签名者把返回的 JSON 以 `<digest-without-sha256-prefix>.json` 写入权限为
+`0700` 的 authority 目录，文件权限为 `0600`。生产侧另建权限为 `0600`
+且最终路径不是符号链接的配置文件：
+
+```json
+{
+  "evidenceRoot": "/absolute/private/qoder-authority",
+  "evidenceDigest": "sha256:<64-hex>",
+  "trustRoots": [
+    {
+      "keyId": "verifier-key-1",
+      "algorithm": "ed25519",
+      "publicKey": "<base64-public-key>"
+    }
+  ]
+}
+```
+
+再显式设置 `MARSHAL_QODER_CONFORMANCE_CONFIG` 为该配置文件的绝对路径。
+`marshal doctor --json` 只有在 evidence 签名、内容摘要、Qoder identity、
+兼容 semver、probe profile、host OS/arch 和有效期全部匹配时才报告
+`supported`；缺失、过期、替换、未知字段、错误权限或环境不匹配均
+fail closed。每次 CLI 进程都会重新读取 authority 配置与 evidence，
+不会把一次成功结果写入仓库或 `.marshal` 作为第二权威。
+
 本节与 Operator Runbook §9.1“一次性环境准备”交叉引用：§9.1 给出五个环境变量的固化方法，本节给出如何用 doctor 发现正确的绝对路径。
 
 ## 契约策略
