@@ -37,6 +37,8 @@ const (
 	// 无响应的可执行文件上无限挂起；attempt wall-time 预算不用于探测。
 	probeTimeout             = 10 * time.Second
 	maxVersionBytes          = 4 << 10
+	maxConformanceAge        = 24 * time.Hour
+	maxConformanceTTL        = 24 * time.Hour
 	conformanceEventContract = "codex-exec-json-0.145-v1"
 	codexProtocolVersion     = "0.145"
 	codexPermissionMode      = "workspace-write-network-off-approval-never"
@@ -286,7 +288,7 @@ func (a *Adapter) verifyPinnedIdentity(identity executableIdentity) error {
 func readBinaryVersion(ctx context.Context, executable string) (string, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	command := exec.Command(executable, "--version")
+	command := exec.CommandContext(probeCtx, executable, "--version")
 	command.Env = probeEnvironment()
 	command.Stderr = io.Discard
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -294,51 +296,24 @@ func readBinaryVersion(ctx context.Context, executable string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("probe codex version: %w", err)
 	}
+	command.Cancel = func() error {
+		terminateGroup(command)
+		return stdout.Close()
+	}
 	if err := command.Start(); err != nil {
 		return "", fmt.Errorf("probe codex version: %w", err)
 	}
-	type probeRead struct {
-		data []byte
-		err  error
-	}
-	readDone := make(chan probeRead, 1)
-	go func() {
-		data, err := io.ReadAll(io.LimitReader(stdout, maxVersionBytes+1))
-		readDone <- probeRead{data, err}
-	}()
-	var output []byte
-	select {
-	case read := <-readDone:
-		output = read.data
-		if read.err != nil {
-			terminateGroup(command)
-			_ = stdout.Close()
-			_ = command.Wait()
-			return "", fmt.Errorf("probe codex version: %w", read.err)
-		}
-	case <-probeCtx.Done():
-		terminateGroup(command)
-		_ = stdout.Close()
-		_ = command.Wait()
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		return "", fmt.Errorf("probe codex version: timed out after %s", probeTimeout)
-	}
+	output, readErr := io.ReadAll(io.LimitReader(stdout, maxVersionBytes+1))
 	if len(output) > maxVersionBytes {
-		terminateGroup(command)
-		_ = stdout.Close()
+		cancel()
 		_ = command.Wait()
 		return "", fmt.Errorf("%w: --version output exceeds %d bytes", ErrVersionUnrecognized, maxVersionBytes)
 	}
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- command.Wait() }()
-	select {
-	case err = <-waitDone:
-	case <-probeCtx.Done():
-		terminateGroup(command)
-		_ = stdout.Close()
-		<-waitDone
+	err = command.Wait()
+	if readErr != nil && probeCtx.Err() == nil {
+		return "", fmt.Errorf("probe codex version: %w", readErr)
+	}
+	if probeCtx.Err() != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
@@ -444,34 +419,26 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, newCodexFailure(port.FailureKindProtocolInvalid, ErrIdentityDrift, "executable identity changed after pinning", a.now())
 	}
 	a.callTestHook("after-identity-verify")
-	worktree, err := filepath.EvalSymlinks(request.WorktreePath)
+	worktree, err := openPinnedDirectory(request.WorktreePath)
 	if err != nil {
-		return domain.Record{}, fmt.Errorf("resolve worktree: %w", err)
+		return domain.Record{}, fmt.Errorf("pin worktree: %w", err)
 	}
-	if !filepath.IsAbs(worktree) {
-		return domain.Record{}, errors.New("worktree path must be absolute")
-	}
-	controlRoot, err := filepath.EvalSymlinks(request.ControlRoot)
-	if err != nil || !filepath.IsAbs(controlRoot) {
-		return domain.Record{}, errors.New("control root must be an existing absolute directory")
-	}
-	promptPath, err := existingPathWithin(controlRoot, request.PromptPath)
+	defer worktree.close()
+	controlRoot, err := openPinnedDirectory(request.ControlRoot)
 	if err != nil {
-		return domain.Record{}, fmt.Errorf("resolve prompt: %w", err)
+		return domain.Record{}, fmt.Errorf("pin control root: %w", err)
 	}
-	prompt, err := readBounded(promptPath, maxPromptBytes)
+	defer controlRoot.close()
+	a.callTestHook("before-prompt-read")
+	prompt, err := readInputFileAt(controlRoot.file, request.PromptPath, maxPromptBytes)
 	if err != nil {
 		return domain.Record{}, fmt.Errorf("read prompt: %w", err)
 	}
-	resultPath, err := lexicalPathWithin(controlRoot, request.ResultPath)
-	if err != nil {
-		return domain.Record{}, fmt.Errorf("resolve result: %w", err)
-	}
-	evidenceDir, err := evidenceDirectory(controlRoot, resultPath)
+	evidenceDir, resultName, err := prepareEvidenceDirectory(controlRoot.file, request.ResultPath)
 	if err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt evidence path escapes the control root or is unsafe", a.now())
 	}
-	projection, err := readTaskProjection(controlRoot, request.TaskSpecPath, request.SpecDigest, a.validator)
+	projection, err := readTaskProjection(controlRoot.file, request.TaskSpecPath, request.SpecDigest, a.validator)
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -485,7 +452,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, codexProtocolFailure("durable output schema is unavailable", a.now())
 	}
-	evidence, err := prepareAttemptEvidence(evidenceDir, resultPath, schemaDocument)
+	evidence, err := prepareAttemptEvidence(evidenceDir, resultName, schemaDocument)
 	if err != nil {
 		var claimErr *leafClaimError
 		if errors.As(err, &claimErr) {
@@ -502,11 +469,26 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if runCtx.Err() != nil {
 		return domain.Record{}, runCtx.Err()
 	}
+	// Authorization and both configured directory identities are rechecked at
+	// the launch boundary. The worktree descriptor remains pinned across Start;
+	// the path must name that same inode both before and after the child's chdir.
+	a.callTestHook("before-command-start")
+	if err := a.verifyPinnedIdentity(identity); err != nil {
+		return domain.Record{}, err
+	}
+	if err := worktree.verifyLinked(); err != nil {
+		return domain.Record{}, codexProtocolFailure("worktree changed before provider launch", a.now())
+	}
+	if err := controlRoot.verifyLinked(); err != nil {
+		return domain.Record{}, codexProtocolFailure("control root changed before provider launch", a.now())
+	}
 	// Schema/result 通过继承 fd 暴露给 child，避免 provider 按可替换路径
 	// 重新打开叶子；父进程始终持有同一 inode 直至最终验证完成。
-	command := exec.Command(snapshot.path, buildArgs(worktree, inheritedFilePath(0), inheritedFilePath(1), projection.model)...)
-	command.Dir = worktree
-	command.Env = workerEnvironment(worktree)
+	processCtx, cancelProcess := context.WithCancel(runCtx)
+	defer cancelProcess()
+	command := exec.CommandContext(processCtx, snapshot.path, buildArgs(worktree.path, inheritedFilePath(0), inheritedFilePath(1), projection.model)...)
+	command.Dir = worktree.path
+	command.Env = workerEnvironment(worktree.path)
 	command.Stdin = bytes.NewReader(prompt)
 	command.ExtraFiles = []*os.File{evidence.schema, evidence.result}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -518,36 +500,31 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "provider stderr pipe could not be created", a.now())
 	}
+	command.Cancel = func() error {
+		terminateGroup(command)
+		_ = stdout.Close()
+		return stderr.Close()
+	}
 	started := a.now().UTC()
 	if err := command.Start(); err != nil {
 		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "provider process could not be started", a.now())
 	}
-	var killOnce sync.Once
-	kill := func() {
-		killOnce.Do(func() {
-			terminateGroup(command)
-			// 关闭读端强制解除捕获阻塞：进程组外的残留子进程即使继续
-			// 持有管道，证据落盘也不得被无限期挂起。
-			_ = stdout.Close()
-			_ = stderr.Close()
-		})
+	a.callTestHook("after-command-start")
+	// Start returns only after the child has performed chdir. Requiring the
+	// configured path to name the pinned inode both immediately before and
+	// immediately after Start makes rename/symlink races fail closed.
+	if err := worktree.verifyLinked(); err != nil {
+		cancelProcess()
+		_ = command.Wait()
+		return domain.Record{}, codexProtocolFailure("worktree changed during provider launch", a.now())
 	}
 	stdoutDone := make(chan captureResult, 1)
 	stderrDone := make(chan streamCapture, 1)
-	go func() { stdoutDone <- captureJSONL(stdout, int64(request.MaxOutputBytes), kill) }()
+	go func() { stdoutDone <- captureJSONL(stdout, int64(request.MaxOutputBytes), cancelProcess) }()
 	go func() { stderrDone <- captureStream(stderr, stderrLimit) }()
-	processFinished := make(chan struct{})
-	go func() {
-		select {
-		case <-runCtx.Done():
-			kill()
-		case <-processFinished:
-		}
-	}()
 	capture := <-stdoutDone
 	stderrCapture := <-stderrDone
 	waitErr := command.Wait()
-	close(processFinished)
 	completed := a.now().UTC()
 	// 证据在任何失败分类之前落盘：timeout/取消/超限/协议/进程失败场景都
 	// 保留 transcript、有界 stderr 与结构化 metadata。

@@ -274,6 +274,142 @@ func TestBindConformanceRequiresSignedAuthorityEvidence(t *testing.T) {
 	}
 }
 
+func TestConformanceEvidenceRejectsExcessiveAgeAndTTL(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	base := ConformanceEvidence{
+		RunnerID: "marshal-conformance", RunnerVersion: "1", AdapterVersion: adapterVersion,
+		Executable: "/private/codex", ExecutableDigest: digest("a"), BinaryVersion: "0.145.0",
+		CapabilitiesDigest: expectedCapabilitiesDigest(), TranscriptDigest: digest("b"), CredentialVerified: true, LiveProtocolVerified: true,
+		EventContract: conformanceEventContract, CodexCLIVersion: "0.145.0", ProtocolVersion: codexProtocolVersion,
+		PermissionMode: codexPermissionMode, TrustRootKeyID: "root",
+	}
+	sign := func(evidence ConformanceEvidence) ConformanceEvidence {
+		evidence.EvidenceDigest, err = evidence.digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		message, signErr := evidence.signingBytes()
+		if signErr != nil {
+			t.Fatal(signErr)
+		}
+		evidence.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, message))
+		return evidence
+	}
+	for _, test := range []struct {
+		name       string
+		observedAt time.Time
+		validUntil time.Time
+	}{
+		{"stale-observation", now.Add(-maxConformanceAge - time.Second), now.Add(time.Hour)},
+		{"excessive-validity-window", now.Add(-time.Minute), now.Add(maxConformanceTTL + time.Hour)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			evidence := base
+			evidence.ObservedAt = test.observedAt.Format(time.RFC3339Nano)
+			evidence.ValidUntil = test.validUntil.Format(time.RFC3339Nano)
+			if err := sign(evidence).validate(now, map[string]ed25519.PublicKey{"root": publicKey}); err == nil {
+				t.Fatal("out-of-policy conformance window was accepted")
+			}
+		})
+	}
+}
+
+func TestRunRechecksConformanceAtLaunchBoundary(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	fixture.adapter.mu.Lock()
+	expires := fixture.adapter.conformance.validUntil
+	fixture.adapter.mu.Unlock()
+	now := expires.Add(-time.Minute)
+	fixture.adapter.now = func() time.Time { return now }
+	fixture.adapter.testHook = func(stage string) {
+		if stage == "before-command-start" {
+			now = expires.Add(time.Second)
+		}
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrConformancePending) {
+		t.Fatalf("err = %v, want launch-adjacent ErrConformancePending", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.worktree, "capture")); !os.IsNotExist(err) {
+		t.Fatal("provider launched after conformance expired during preflight")
+	}
+}
+
+func TestRunFailsClosedWhenPinnedControlRootIsReplaced(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	retained := fixture.controlRoot + "-retained"
+	t.Cleanup(func() { _ = os.RemoveAll(retained) })
+	fixture.adapter.testHook = func(stage string) {
+		if stage != "before-prompt-read" {
+			return
+		}
+		if err := os.Rename(fixture.controlRoot, retained); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(fixture.controlRoot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "control root changed") {
+		t.Fatalf("err = %v, want pinned control-root replacement rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.worktree, "capture")); !os.IsNotExist(err) {
+		t.Fatal("provider launched after the control root pathname was replaced")
+	}
+}
+
+func TestRunFailsClosedWhenPinnedWorktreeIsReplaced(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	retained := fixture.worktree + "-retained"
+	replacement := t.TempDir()
+	t.Cleanup(func() { _ = os.RemoveAll(retained) })
+	fixture.adapter.testHook = func(stage string) {
+		if stage != "before-command-start" {
+			return
+		}
+		if err := os.Rename(fixture.worktree, retained); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(replacement, fixture.worktree); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "worktree changed") {
+		t.Fatalf("err = %v, want pinned worktree replacement rejection", err)
+	}
+	if _, err := os.Stat(filepath.Join(replacement, "capture")); !os.IsNotExist(err) {
+		t.Fatal("provider launched in the replacement worktree")
+	}
+}
+
+func TestRunFailsClosedWhenWorktreeChangesAcrossStart(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, "sleep 30")
+	retained := fixture.worktree + "-retained"
+	replacement := t.TempDir()
+	t.Cleanup(func() { _ = os.RemoveAll(retained) })
+	fixture.adapter.testHook = func(stage string) {
+		if stage != "after-command-start" {
+			return
+		}
+		if err := os.Rename(fixture.worktree, retained); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(replacement, fixture.worktree); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := time.Now()
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "worktree changed during") {
+		t.Fatalf("err = %v, want post-Start worktree identity rejection", err)
+	}
+	if time.Since(started) > 5*time.Second {
+		t.Fatal("worktree replacement did not promptly terminate the launched process group")
+	}
+}
+
 func TestProbeTimeoutKillsForkHoldingStdout(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "child.pid")
 	executable := filepath.Join(t.TempDir(), "codex")
@@ -1478,6 +1614,7 @@ func fakeParserScript() string {
 )
 stdin_log=$(cat)
 result_path=""
+worktree_path=""
 saw_exec=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -1489,11 +1626,14 @@ while [ "$#" -gt 0 ]; do
       shift 2
       case "$flag" in
         --ask-for-approval) case "$value" in never|untrusted|on-failure|on-request) ;; *) exit 2 ;; esac ;;
+        -C|--cd) worktree_path=$value ;;
       esac ;;
     *) exit 2 ;;
   esac
 done
 [ "$saw_exec" = "1" ] || exit 2
+[ -n "$worktree_path" ] || exit 2
+cd "$worktree_path" || exit 2
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json|--ephemeral|--ignore-user-config|--ignore-rules) shift ;;

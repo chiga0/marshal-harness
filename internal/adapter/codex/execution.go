@@ -35,6 +35,51 @@ type executableSnapshot struct {
 	dir      string
 }
 
+// pinnedDirectory keeps a directory inode open for the whole attempt.  All
+// security-sensitive descendants are opened relative to this descriptor, so
+// renaming or replacing the configured pathname cannot redirect an attempt.
+type pinnedDirectory struct {
+	path string
+	file *os.File
+}
+
+func openPinnedDirectory(configured string) (*pinnedDirectory, error) {
+	if !filepath.IsAbs(configured) || filepath.Clean(configured) != configured {
+		return nil, errors.New("directory path must be absolute and clean")
+	}
+	real, err := filepath.EvalSymlinks(configured)
+	if err != nil || real != configured {
+		return nil, errors.New("directory path must not contain symlinks")
+	}
+	fd, err := unix.Open(real, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	return &pinnedDirectory{path: real, file: os.NewFile(uintptr(fd), real)}, nil
+}
+
+func (directory *pinnedDirectory) close() {
+	if directory != nil && directory.file != nil {
+		_ = directory.file.Close()
+		directory.file = nil
+	}
+}
+
+func (directory *pinnedDirectory) verifyLinked() error {
+	if directory == nil || directory.file == nil {
+		return errors.New("pinned directory is closed")
+	}
+	opened, err := directory.file.Stat()
+	if err != nil {
+		return err
+	}
+	linked, err := os.Lstat(directory.path)
+	if err != nil || !linked.IsDir() || !os.SameFile(opened, linked) {
+		return errors.New("pinned directory pathname was replaced")
+	}
+	return nil
+}
+
 // snapshotExecutable 先从 O_NOFOLLOW 打开的源 inode 复制出私有只读可执行
 // 快照，再只对该快照计算 digest、执行 --version 与正式 exec。配置路径在
 // 任意两个阶段之间被替换，都不会改变本 attempt 实际执行的字节。
@@ -143,7 +188,6 @@ func buildArgs(worktree, schemaPath, resultPath, model string) []string {
 
 // attemptEvidence 持有启动前以 dirfd/openat 原子占用的全部证据叶子。
 type attemptEvidence struct {
-	dirPath                    string
 	dir                        *os.File
 	resultName, schemaName     string
 	transcriptName, stderrName string
@@ -164,14 +208,9 @@ func (e *leafClaimError) Unwrap() error { return e.err }
 // prepareAttemptEvidence 打开并钉住 evidence directory inode，然后只经
 // openat(O_EXCL|O_NOFOLLOW) 占用全部 attempt 叶子。后续 worker I/O 与
 // Adapter 落盘都使用这些持续打开的 fd，不再按可被替换的路径重新打开。
-func prepareAttemptEvidence(dirPath, resultPath string, schemaDocument []byte) (*attemptEvidence, error) {
-	dirFD, err := unix.Open(dirPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, fmt.Errorf("open attempt evidence directory: %w", err)
-	}
+func prepareAttemptEvidence(dir *os.File, resultName string, schemaDocument []byte) (*attemptEvidence, error) {
 	evidence := &attemptEvidence{
-		dirPath: dirPath, dir: os.NewFile(uintptr(dirFD), dirPath),
-		resultName: filepath.Base(resultPath), schemaName: "codex-output-schema.json",
+		dir: dir, resultName: resultName, schemaName: "codex-output-schema.json",
 		transcriptName: "codex-transcript.jsonl", stderrName: "codex-stderr.log",
 		metadataName: "codex-transcript-meta.json",
 	}
@@ -181,12 +220,6 @@ func prepareAttemptEvidence(dirPath, resultPath string, schemaDocument []byte) (
 			evidence.close()
 		}
 	}()
-	if filepath.Join(dirPath, evidence.resultName) != resultPath {
-		return nil, errors.New("attempt result leaf is not directly below the evidence directory")
-	}
-	if err := evidence.verifyDirectory(); err != nil {
-		return nil, err
-	}
 	claims := []struct {
 		name, kind string
 		content    []byte
@@ -281,36 +314,18 @@ func readBoundedFile(file *os.File, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-func (e *attemptEvidence) verifyDirectory() error {
-	opened, err := e.dir.Stat()
-	if err != nil {
-		return err
-	}
-	linked, err := os.Lstat(e.dirPath)
-	if err != nil || !linked.IsDir() || !os.SameFile(opened, linked) {
-		return errors.New("attempt evidence directory was replaced")
-	}
-	real, err := filepath.EvalSymlinks(e.dirPath)
-	if err != nil || real != e.dirPath {
-		return errors.New("attempt evidence directory containment changed")
-	}
-	return nil
-}
-
 func (e *attemptEvidence) verifyLeaves() error {
-	if err := e.verifyDirectory(); err != nil {
-		return err
-	}
 	for _, leaf := range []struct {
 		name string
 		file *os.File
 	}{{e.resultName, e.result}, {e.schemaName, e.schema}, {e.transcriptName, e.transcript}, {e.stderrName, e.stderr}, {e.metadataName, e.metadata}} {
-		opened, err := leaf.file.Stat()
-		if err != nil {
+		var opened unix.Stat_t
+		if err := unix.Fstat(int(leaf.file.Fd()), &opened); err != nil {
 			return err
 		}
-		linked, err := os.Lstat(filepath.Join(e.dirPath, leaf.name))
-		if err != nil || !linked.Mode().IsRegular() || !os.SameFile(opened, linked) {
+		var linked unix.Stat_t
+		err := unix.Fstatat(int(e.dir.Fd()), leaf.name, &linked, unix.AT_SYMLINK_NOFOLLOW)
+		if err != nil || linked.Mode&unix.S_IFMT != unix.S_IFREG || opened.Ino != linked.Ino || opened.Dev != linked.Dev {
 			return errors.New("attempt evidence leaf was replaced")
 		}
 	}
@@ -326,6 +341,47 @@ func (e *attemptEvidence) close() {
 }
 
 func inheritedFilePath(index int) string { return fmt.Sprintf("/dev/fd/%d", 3+index) }
+
+// prepareEvidenceDirectory traverses/creates the result parent strictly from
+// the pinned control-root descriptor.  It never resolves a descendant through
+// a mutable absolute pathname.
+func prepareEvidenceDirectory(root *os.File, resultRelative string) (*os.File, string, error) {
+	if resultRelative == "" || filepath.IsAbs(resultRelative) || filepath.Clean(resultRelative) != resultRelative {
+		return nil, "", errors.New("attempt result path is not a clean relative path")
+	}
+	parts := strings.Split(resultRelative, string(filepath.Separator))
+	if len(parts) < 2 {
+		return nil, "", errors.New("attempt result path must include an evidence directory")
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil, "", errors.New("attempt result path contains an unsafe component")
+		}
+	}
+	rootFD, err := unix.Dup(int(root.Fd()))
+	if err != nil {
+		return nil, "", err
+	}
+	current := os.NewFile(uintptr(rootFD), "control-root")
+	for _, part := range parts[:len(parts)-1] {
+		fd, openErr := unix.Openat(int(current.Fd()), part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if errors.Is(openErr, unix.ENOENT) {
+			if mkdirErr := unix.Mkdirat(int(current.Fd()), part, 0o700); mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
+				current.Close()
+				return nil, "", mkdirErr
+			}
+			fd, openErr = unix.Openat(int(current.Fd()), part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		}
+		if openErr != nil {
+			current.Close()
+			return nil, "", openErr
+		}
+		next := os.NewFile(uintptr(fd), part)
+		current.Close()
+		current = next
+	}
+	return current, parts[len(parts)-1], nil
+}
 
 // workerEnvironment 是 worker 进程环境的完整替换（而非 os.Environ 追加）：
 // 仅从固定基础集合按需传递 HOME、CODEX_HOME、PATH、LANG/LC_*、USER/LOGNAME、
@@ -401,95 +457,6 @@ func terminateGroup(command *exec.Cmd) {
 	}
 }
 
-// evidenceDirectory 在写入任何证据前逐组件准备 result 所在目录。它拒绝
-// control root 以下任意既存 symlink/非目录节点；缺失后缀逐级以 0700 创建，
-// 每一级随后 realpath 校验仍位于 control root 内。不能解析的缺失后缀不再
-// 被当作安全成功，从而关闭 link->outside 与 missing-suffix 组合逃逸。
-func evidenceDirectory(controlRoot, resultPath string) (string, error) {
-	if err := containedWithin(controlRoot, resultPath); err != nil {
-		return "", fmt.Errorf("attempt result path: %w", err)
-	}
-	rootInfo, err := os.Stat(controlRoot)
-	if err != nil || !rootInfo.IsDir() {
-		return "", errors.New("attempt control root is not an existing directory")
-	}
-	dir := filepath.Dir(resultPath)
-	if err := containedWithin(controlRoot, dir); err != nil {
-		return "", fmt.Errorf("attempt evidence directory: %w", err)
-	}
-	relative, err := filepath.Rel(controlRoot, dir)
-	if err != nil {
-		return "", fmt.Errorf("attempt evidence directory: %w", err)
-	}
-	current := controlRoot
-	for _, component := range strings.Split(relative, string(filepath.Separator)) {
-		if component == "" || component == "." {
-			continue
-		}
-		current = filepath.Join(current, component)
-		info, statErr := os.Lstat(current)
-		if errors.Is(statErr, os.ErrNotExist) {
-			if mkdirErr := os.Mkdir(current, 0o700); mkdirErr != nil {
-				return "", fmt.Errorf("create attempt evidence directory: %w", mkdirErr)
-			}
-			info, statErr = os.Lstat(current)
-		}
-		if statErr != nil {
-			return "", fmt.Errorf("inspect attempt evidence directory: %w", statErr)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return "", errors.New("attempt evidence directory must not traverse a symlink")
-		}
-		if !info.IsDir() {
-			return "", errors.New("attempt evidence path component is not a directory")
-		}
-		real, resolveErr := filepath.EvalSymlinks(current)
-		if resolveErr != nil {
-			return "", fmt.Errorf("resolve attempt evidence directory: %w", resolveErr)
-		}
-		if err := containedWithin(controlRoot, real); err != nil {
-			return "", fmt.Errorf("attempt evidence directory: %w", err)
-		}
-	}
-	return dir, nil
-}
-
-func containedWithin(root, path string) error {
-	if root == "" || !filepath.IsAbs(root) || path == "" || !filepath.IsAbs(path) {
-		return errors.New("escapes the control root")
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return errors.New("escapes the control root")
-	}
-	return nil
-}
-
-func lexicalPathWithin(root, relative string) (string, error) {
-	path := filepath.Join(root, relative)
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errors.New("path escapes control root")
-	}
-	return path, nil
-}
-
-func existingPathWithin(root, relative string) (string, error) {
-	path, err := lexicalPathWithin(root, relative)
-	if err != nil {
-		return "", err
-	}
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(root, real)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errors.New("symlink escapes control root")
-	}
-	return real, nil
-}
-
 func digestFile(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -508,22 +475,6 @@ func digestBytes(data []byte) string {
 	return "sha256:" + hex.EncodeToString(hash[:])
 }
 
-func readBounded(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, errors.New("file exceeds byte limit")
-	}
-	return data, nil
-}
-
 type taskProjection struct {
 	model string
 	tools []string
@@ -531,7 +482,7 @@ type taskProjection struct {
 
 // readTaskProjection 对冻结 TaskSpec 只做一次受限读取；model 与 tools 从
 // 同一字节快照投影，任何路径、读取或 JSON/工具声明解析失败均 fail closed。
-func readTaskProjection(controlRoot, relative, expectedDigest string, validator *contract.Validator) (taskProjection, error) {
+func readTaskProjection(controlRoot *os.File, relative, expectedDigest string, validator *contract.Validator) (taskProjection, error) {
 	data, err := readInputFileAt(controlRoot, relative, maxResultBytes)
 	if err != nil {
 		return taskProjection{}, fmt.Errorf("read TaskSpec: %w", err)
@@ -560,7 +511,7 @@ func readTaskProjection(controlRoot, relative, expectedDigest string, validator 
 
 // readInputFileAt 从钉住的 controlRoot dirfd 开始逐组件 openat，拒绝
 // symlink 与非目录中间节点，并从最终 regular-file fd 只读取一次。
-func readInputFileAt(controlRoot, relative string, limit int64) ([]byte, error) {
+func readInputFileAt(controlRoot *os.File, relative string, limit int64) ([]byte, error) {
 	if relative == "" || filepath.IsAbs(relative) || filepath.Clean(relative) != relative {
 		return nil, errors.New("input path is not a clean relative path")
 	}
@@ -570,11 +521,11 @@ func readInputFileAt(controlRoot, relative string, limit int64) ([]byte, error) 
 			return nil, errors.New("input path contains an unsafe component")
 		}
 	}
-	rootFD, err := unix.Open(controlRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	rootFD, err := unix.Dup(int(controlRoot.Fd()))
 	if err != nil {
 		return nil, err
 	}
-	current := os.NewFile(uintptr(rootFD), controlRoot)
+	current := os.NewFile(uintptr(rootFD), "control-root")
 	defer func() { _ = current.Close() }()
 	for _, part := range parts[:len(parts)-1] {
 		fd, openErr := unix.Openat(int(current.Fd()), part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
