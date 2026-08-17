@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -21,7 +23,7 @@ type secureRecord struct {
 }
 
 func ensureOutcomeRecords(runDirectory string, records map[string][]byte) error {
-	dirFD, err := unix.Open(runDirectory, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	dirFD, err := openDirectoryComponentsNoFollow(runDirectory)
 	if err != nil {
 		return err
 	}
@@ -76,6 +78,39 @@ func ensureOutcomeRecords(runDirectory string, records map[string][]byte) error 
 		}
 	}
 	return unix.Fsync(dirFD)
+}
+
+// openDirectoryComponentsNoFollow resolves every path component through a
+// directory descriptor. O_NOFOLLOW on a single absolute-path open protects
+// only the basename; walking with openat also prevents an intermediate
+// `.marshal` or `runs` symlink from redirecting terminal recovery.
+func openDirectoryComponentsNoFollow(path string) (int, error) {
+	clean := filepath.Clean(path)
+	base := "."
+	if filepath.IsAbs(clean) {
+		base = string(filepath.Separator)
+		clean = strings.TrimPrefix(clean, string(filepath.Separator))
+	}
+	fd, err := unix.Open(base, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, err
+	}
+	if clean == "" || clean == "." {
+		return fd, nil
+	}
+	for _, component := range strings.Split(clean, string(filepath.Separator)) {
+		if component == "" || component == "." || component == ".." {
+			unix.Close(fd)
+			return -1, errors.New("outcome directory contains an unsafe path component")
+		}
+		next, openErr := unix.Openat(fd, component, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		unix.Close(fd)
+		if openErr != nil {
+			return -1, openErr
+		}
+		fd = next
+	}
+	return fd, nil
 }
 
 func readSecureRecordAt(dirFD int, name string, maxLinks uint64) (secureRecord, error) {

@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1915,6 +1916,125 @@ func TestOrdinaryWorkerFailureBudgetClosureAndRestartCompensation(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestOrdinaryTerminalQuarantineRecoversBeforeEventAppend(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, true, executionFixtureOptions{
+		preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture",
+		maxAttempts: 2, maxOperationalRetries: 1,
+	})
+	first, err := Run(context.Background(), fixture.input)
+	if err == nil || first.State.State != domain.StateRetryPending {
+		t.Fatalf("first failure = %+v err=%v", first, err)
+	}
+	fixture.input.AfterWorkerQuarantine = func() error { return errors.New("crash before terminal append") }
+	second, err := Run(context.Background(), fixture.input)
+	if err == nil || !strings.Contains(err.Error(), "post-quarantine failure") || second.State.State != domain.StateRunning {
+		t.Fatalf("pre-append crash = %+v err=%v", second, err)
+	}
+	fixture.input.AfterWorkerQuarantine = nil
+	fixture.input.OrphanStalenessThreshold = time.Nanosecond
+	time.Sleep(time.Millisecond)
+	recovered, err := Run(context.Background(), fixture.input)
+	if err == nil || recovered.State.State != domain.StateBlocked {
+		t.Fatalf("restart recovery = %+v err=%v", recovered, err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "outcome.json")); err != nil {
+		t.Fatalf("terminal Outcome missing: %v", err)
+	}
+}
+
+func TestQuarantineIsImmutableAndRejectsUnsafeSources(t *testing.T) {
+	t.Run("late conflicting bytes cannot overwrite", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		attemptID := "attempt-quarantine-immutable"
+		attemptDir := filepath.Join(fixture.runDir, "attempts", attemptID)
+		if err := os.MkdirAll(attemptDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		source := filepath.Join(attemptDir, "worker-result.json")
+		if err := os.WriteFile(source, []byte("first\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := quarantineAttemptOutputs(fixture.runDir, attemptID, time.Unix(100, 0)); err != nil {
+			t.Fatal(err)
+		}
+		destination := filepath.Join(attemptDir, "diagnostics", "quarantined-worker-result.json")
+		before, _ := os.ReadFile(destination)
+		if err := os.WriteFile(source, []byte("late-conflict\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := quarantineAttemptOutputs(fixture.runDir, attemptID, time.Unix(200, 0)); err == nil {
+			t.Fatal("late conflicting output was accepted")
+		}
+		after, _ := os.ReadFile(destination)
+		if !bytes.Equal(before, after) {
+			t.Fatal("immutable quarantine destination was overwritten")
+		}
+	})
+	t.Run("manifest hard-link commit resumes", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		attemptID := "attempt-quarantine-manifest-resume"
+		attemptDir := filepath.Join(fixture.runDir, "attempts", attemptID)
+		if err := os.MkdirAll(attemptDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(attemptDir, "worker-result.json"), []byte("stable\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := quarantineAttemptOutputs(fixture.runDir, attemptID, time.Unix(100, 0)); err != nil {
+			t.Fatal(err)
+		}
+		manifest := filepath.Join(attemptDir, "diagnostics", "orphan-quarantine-transaction.json")
+		pending := manifest + ".pending"
+		if err := os.Link(manifest, pending); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := quarantineAttemptOutputs(fixture.runDir, attemptID, time.Unix(200, 0)); err != nil {
+			t.Fatalf("resume hard-link commit: %v", err)
+		}
+		if _, err := os.Lstat(pending); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("pending manifest remains: %v", err)
+		}
+	})
+	t.Run("symlink source rejected", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		attemptID := "attempt-quarantine-symlink"
+		attemptDir := filepath.Join(fixture.runDir, "attempts", attemptID)
+		if err := os.MkdirAll(attemptDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(t.TempDir(), "outside")
+		if err := os.WriteFile(target, []byte("outside\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(attemptDir, "worker-result.json")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := quarantineAttemptOutputs(fixture.runDir, attemptID, time.Unix(100, 0)); err == nil {
+			t.Fatal("symlink quarantine source was accepted")
+		}
+	})
+	t.Run("symlinked attempt directory rejected", func(t *testing.T) {
+		fixture := newExecutionFixture(t, false)
+		attemptID := "attempt-quarantine-parent-symlink"
+		external := t.TempDir()
+		if err := os.WriteFile(filepath.Join(external, "worker-result.json"), []byte("outside\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(fixture.runDir, "attempts"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(external, filepath.Join(fixture.runDir, "attempts", attemptID)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := quarantineAttemptOutputs(fixture.runDir, attemptID, time.Unix(100, 0)); err == nil {
+			t.Fatal("symlinked attempt directory was accepted")
+		}
+		if _, err := os.Lstat(filepath.Join(external, "diagnostics")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("external diagnostics directory was created: %v", err)
+		}
+	})
 }
 
 type staleFencingAdapter struct {

@@ -99,6 +99,32 @@ func TestLeaseHeldFailsClosedWhenLockPathIsReplaced(t *testing.T) {
 	}
 }
 
+func TestLeaseMutationRejectsReplacedRunAuthorityDirectory(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	lease, err := store.Acquire("run:directory-replace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	runDirectory := filepath.Join(root, "runs", "run:directory-replace")
+	if err := os.Rename(runDirectory, runDirectory+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(runDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDirectory, "lease.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(lease, transition("event:directory-replace", 1, domain.StateCreated, domain.StatePlanned), 0); err == nil {
+		t.Fatal("old lease appended after the canonical run directory was replaced")
+	}
+	if _, err := os.Stat(filepath.Join(runDirectory, "events.jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement authority received an event: %v", err)
+	}
+}
+
 func TestAcquireRejectsUnsafeOwnerWithoutMutatingTarget(t *testing.T) {
 	for _, kind := range []string{"symlink", "hardlink"} {
 		t.Run(kind, func(t *testing.T) {

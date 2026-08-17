@@ -14,10 +14,75 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func acquireLeaseFile(root, runID string) (*os.File, uint64, uint64, bool, error) {
+func appendRegularAt(runFD int, name string, data []byte) error {
+	fd, err := unix.Openat(runFD, name, unix.O_WRONLY|unix.O_APPEND|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, unix.ENOENT) {
+		fd, err = unix.Openat(runFD, name, unix.O_WRONLY|unix.O_APPEND|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_EXCL, 0o600)
+	}
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	defer file.Close()
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+		return errors.New("authority journal is not a single-link regular file")
+	}
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+func appendRegularInDirectoryAt(runFD int, directory, name string, data []byte) error {
+	if err := unix.Mkdirat(runFD, directory, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+		return err
+	}
+	directoryFD, err := unix.Openat(runFD, directory, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(directoryFD)
+	if err := appendRegularAt(directoryFD, name, data); err != nil {
+		return err
+	}
+	return unix.Fsync(directoryFD)
+}
+
+func writeSnapshotAt(runFD int, data []byte) error {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return err
+	}
+	temporary := ".state-" + hex.EncodeToString(token[:]) + ".tmp"
+	fd, err := unix.Openat(runFD, temporary, unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(fd), temporary)
+	defer func() {
+		file.Close()
+		_ = unix.Unlinkat(runFD, temporary, 0)
+	}()
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := unix.Renameat(runFD, temporary, runFD, "state.json"); err != nil {
+		return err
+	}
+	return unix.Fsync(runFD)
+}
+
+func acquireLeaseFile(root, runID string) (*os.File, *os.File, uint64, uint64, bool, error) {
 	rootFD, runsFD, runFD, err := openRunAuthority(root, runID)
 	if err != nil {
-		return nil, 0, 0, false, err
+		return nil, nil, 0, 0, false, err
 	}
 	defer unix.Close(rootFD)
 	defer unix.Close(runsFD)
@@ -29,38 +94,45 @@ func acquireLeaseFile(root, runID string) (*os.File, uint64, uint64, bool, error
 		created = err == nil
 	}
 	if err != nil {
-		return nil, 0, 0, false, err
+		return nil, nil, 0, 0, false, err
 	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(leaseFD, &stat); err != nil {
 		unix.Close(leaseFD)
-		return nil, 0, 0, false, err
+		return nil, nil, 0, 0, false, err
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
 		unix.Close(leaseFD)
-		return nil, 0, 0, false, errors.New("lease lock descriptor is not a single-link regular file")
+		return nil, nil, 0, 0, false, errors.New("lease lock descriptor is not a single-link regular file")
 	}
 	if err := unix.Flock(leaseFD, unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		unix.Close(leaseFD)
 		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return nil, 0, 0, false, nil
+			return nil, nil, 0, 0, false, nil
 		}
-		return nil, 0, 0, false, err
+		return nil, nil, 0, 0, false, err
 	}
 	if !created {
 		owner, err := readLeaseOwnerAt(runFD)
 		if err != nil {
 			unix.Flock(leaseFD, unix.LOCK_UN)
 			unix.Close(leaseFD)
-			return nil, 0, 0, false, fmt.Errorf("validate existing lease owner: %w", err)
+			return nil, nil, 0, 0, false, fmt.Errorf("validate existing lease owner: %w", err)
 		}
 		if owner.Device != uint64(stat.Dev) || owner.Inode != uint64(stat.Ino) {
 			unix.Flock(leaseFD, unix.LOCK_UN)
 			unix.Close(leaseFD)
-			return nil, 0, 0, false, errors.New("existing lease owner does not bind the opened lock descriptor")
+			return nil, nil, 0, 0, false, errors.New("existing lease owner does not bind the opened lock descriptor")
 		}
 	}
-	return os.NewFile(uintptr(leaseFD), "lease.lock"), uint64(stat.Dev), uint64(stat.Ino), true, nil
+	boundRunFD, err := unix.Dup(runFD)
+	if err != nil {
+		unix.Flock(leaseFD, unix.LOCK_UN)
+		unix.Close(leaseFD)
+		return nil, nil, 0, 0, false, err
+	}
+	unix.CloseOnExec(boundRunFD)
+	return os.NewFile(uintptr(leaseFD), "lease.lock"), os.NewFile(uintptr(boundRunFD), "run-authority"), uint64(stat.Dev), uint64(stat.Ino), true, nil
 }
 
 func releaseLeaseFile(file *os.File) error {
@@ -71,14 +143,7 @@ func releaseLeaseFile(file *os.File) error {
 	return errors.Join(unlockErr, file.Close())
 }
 
-func writeLeaseOwner(root, runID string, data []byte) error {
-	rootFD, runsFD, runFD, err := openRunAuthority(root, runID)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(rootFD)
-	defer unix.Close(runsFD)
-	defer unix.Close(runFD)
+func writeLeaseOwnerAt(runFD int, data []byte) error {
 	if _, err := readLeaseOwnerAt(runFD); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -136,13 +201,27 @@ func readLeaseOwnerAt(runFD int) (leaseOwnerRecord, error) {
 }
 
 func leaseStillAuthoritative(lease *Lease) error {
-	rootFD, runsFD, runFD, err := openRunAuthority(lease.root, lease.runID)
+	if lease == nil || lease.runDir == nil {
+		return errors.New("lease lacks bound run authority directory")
+	}
+	runFD := int(lease.runDir.Fd())
+	rootFD, runsFD, currentRunFD, err := openRunAuthority(lease.root, lease.runID)
 	if err != nil {
 		return err
 	}
 	defer unix.Close(rootFD)
 	defer unix.Close(runsFD)
-	defer unix.Close(runFD)
+	defer unix.Close(currentRunFD)
+	var boundRun, currentRun unix.Stat_t
+	if err := unix.Fstat(runFD, &boundRun); err != nil {
+		return err
+	}
+	if err := unix.Fstat(currentRunFD, &currentRun); err != nil {
+		return err
+	}
+	if boundRun.Dev != currentRun.Dev || boundRun.Ino != currentRun.Ino {
+		return errors.New("run authority pathname no longer binds the held directory")
+	}
 	currentFD, err := unix.Openat(runFD, "lease.lock", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return err

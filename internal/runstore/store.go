@@ -28,13 +28,13 @@ var (
 type Store struct{ root string }
 
 type Lease struct {
-	file  *os.File
-	held  bool
-	root  string
-	dev   uint64
-	inode uint64
-	path  string
-	runID string
+	file   *os.File
+	runDir *os.File
+	held   bool
+	root   string
+	dev    uint64
+	inode  uint64
+	runID  string
 }
 
 type leaseOwnerRecord struct {
@@ -71,8 +71,7 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return nil, fmt.Errorf("create run directory: %w", err)
 	}
-	path := filepath.Join(directory, "lease.lock")
-	leaseFile, device, inode, locked, err := acquireLeaseFile(s.root, runID)
+	leaseFile, runDirectory, device, inode, locked, err := acquireLeaseFile(s.root, runID)
 	if err != nil {
 		return nil, fmt.Errorf("acquire run lease: %w", err)
 	}
@@ -82,6 +81,9 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 	var tokenBytes [16]byte
 	if _, err := rand.Read(tokenBytes[:]); err != nil {
 		_ = releaseLeaseFile(leaseFile)
+		if runDirectory != nil {
+			_ = runDirectory.Close()
+		}
 		return nil, fmt.Errorf("generate lease token: %w", err)
 	}
 	now := time.Now().UTC()
@@ -91,14 +93,18 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 	}, "", "  ")
 	if err != nil {
 		_ = releaseLeaseFile(leaseFile)
+		if runDirectory != nil {
+			_ = runDirectory.Close()
+		}
 		return nil, err
 	}
 	record = append(record, '\n')
-	if err := writeLeaseOwner(s.root, runID, record); err != nil {
+	if err := writeLeaseOwnerAt(int(runDirectory.Fd()), record); err != nil {
 		_ = releaseLeaseFile(leaseFile)
+		_ = runDirectory.Close()
 		return nil, fmt.Errorf("write lease owner: %w", err)
 	}
-	return &Lease{file: leaseFile, held: true, root: s.root, dev: device, inode: inode, path: path, runID: runID}, nil
+	return &Lease{file: leaseFile, runDir: runDirectory, held: true, root: s.root, dev: device, inode: inode, runID: runID}, nil
 }
 
 // LeaseHeld reports whether the operating system lock for runID is
@@ -118,9 +124,11 @@ func (l *Lease) Release() error {
 		return nil
 	}
 	err := releaseLeaseFile(l.file)
+	directoryErr := l.runDir.Close()
 	l.file = nil
+	l.runDir = nil
 	l.held = false
-	return err
+	return errors.Join(err, directoryErr)
 }
 
 func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uint64) error {
@@ -133,8 +141,7 @@ func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uin
 	if lease.runID != event.RunID {
 		return fmt.Errorf("%w: lease belongs to run %s", ErrConflict, lease.runID)
 	}
-	directory, err := s.runDir(event.RunID)
-	if err != nil {
+	if _, err := s.runDir(event.RunID); err != nil {
 		return err
 	}
 	events, _, readErr := s.ReadEvents(event.RunID)
@@ -175,16 +182,11 @@ func (s *Store) Append(lease *Lease, event domain.RunEvent, expectedSequence uin
 	if err != nil {
 		return fmt.Errorf("encode event: %w", err)
 	}
-	file, err := os.OpenFile(filepath.Join(directory, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("open event journal: %w", err)
-	}
-	defer file.Close()
-	if _, err := file.Write(append(data, '\n')); err != nil {
-		return fmt.Errorf("append event: %w", err)
-	}
-	if err := file.Sync(); err != nil {
+	if err := appendRegularAt(int(lease.runDir.Fd()), "events.jsonl", append(data, '\n')); err != nil {
 		return fmt.Errorf("sync event journal: %w", err)
+	}
+	if err := leaseStillAuthoritative(lease); err != nil {
+		return fmt.Errorf("event append lost lease authority: %w", err)
 	}
 	notifyStateTransition(len(events) == 0, []domain.RunEvent{event})
 	return nil
@@ -291,44 +293,17 @@ func (s *Store) WriteSnapshot(lease *Lease, state domain.RunState) error {
 	if err := domain.ValidateID(state.TaskID); err != nil {
 		return err
 	}
-	directory, err := s.runDir(state.RunID)
-	if err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(directory, ".state-*.tmp")
-	if err != nil {
+	if err := writeSnapshotAt(int(lease.runDir.Fd()), append(data, '\n')); err != nil {
 		return err
 	}
-	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
-		return err
+	if err := leaseStillAuthoritative(lease); err != nil {
+		return fmt.Errorf("snapshot write lost lease authority: %w", err)
 	}
-	if _, err := temporary.Write(append(data, '\n')); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryName, filepath.Join(directory, "state.json")); err != nil {
-		return err
-	}
-	dir, err := os.Open(directory)
-	if err == nil {
-		err = dir.Sync()
-		_ = dir.Close()
-	}
-	return err
+	return nil
 }
 
 func (s *Store) ReadSnapshot(runID string) (domain.RunState, error) {

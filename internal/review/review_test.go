@@ -403,6 +403,29 @@ func TestEnsureOutcomeRejectsSymlinkAndHardlinkRecords(t *testing.T) {
 	}
 }
 
+func TestEnsureOutcomeRejectsSymlinkedParentComponent(t *testing.T) {
+	fixture := newReviewFixture(t)
+	outcome := terminalOutcome(fixture, terminalRejectResult(t, fixture))
+	realParent := t.TempDir()
+	realRun := filepath.Join(realParent, "runs", "run-target")
+	if err := os.MkdirAll(realRun, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	aliasRoot := t.TempDir()
+	if err := os.Symlink(filepath.Join(realParent, "runs"), filepath.Join(aliasRoot, "runs")); err != nil {
+		t.Fatal(err)
+	}
+	redirected := filepath.Join(aliasRoot, "runs", "run-target")
+	if err := EnsureOutcome(redirected, *outcome); err == nil {
+		t.Fatal("EnsureOutcome followed a symlinked parent component")
+	}
+	for _, name := range []string{"outcome.json", "outcome.md"} {
+		if _, err := os.Lstat(filepath.Join(realRun, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("redirected outcome %s was created: %v", name, err)
+		}
+	}
+}
+
 func TestPrepareRecordsTerminalProducesIndependentResultRecord(t *testing.T) {
 	fixture := newReviewFixture(t)
 	result := terminalRejectResult(t, fixture)

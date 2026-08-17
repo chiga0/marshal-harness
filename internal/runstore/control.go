@@ -168,35 +168,11 @@ func (s *Store) appendControlRecord(lease *Lease, validator ControlValidator, en
 	if int64(len(raw))+int64(len(line)) > maxJournalBytes {
 		return fmt.Errorf("%w: control journal would exceed %d bytes", ErrConflict, maxJournalBytes)
 	}
-	directory, err := s.controlDir(entry.runID)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create control journal directory: %w", err)
-	}
-	if err := os.Chmod(directory, 0o700); err != nil {
-		return fmt.Errorf("secure control journal directory: %w", err)
-	}
-	journal := filepath.Join(directory, "records.jsonl")
-	if info, statErr := os.Lstat(journal); statErr == nil && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
-		return fmt.Errorf("%w: control journal is not a regular file", ErrConflict)
-	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("inspect control journal: %w", statErr)
-	}
-	file, err := os.OpenFile(journal, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("open control journal: %w", err)
-	}
-	defer file.Close()
-	if err := file.Chmod(0o600); err != nil {
-		return fmt.Errorf("secure control journal: %w", err)
-	}
-	if _, err := file.Write(line); err != nil {
-		return fmt.Errorf("append control record: %w", err)
-	}
-	if err := file.Sync(); err != nil {
+	if err := appendRegularInDirectoryAt(int(lease.runDir.Fd()), "control", "records.jsonl", line); err != nil {
 		return fmt.Errorf("sync control journal: %w", err)
+	}
+	if err := leaseStillAuthoritative(lease); err != nil {
+		return fmt.Errorf("control append lost lease authority: %w", err)
 	}
 	return nil
 }
