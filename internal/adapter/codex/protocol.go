@@ -24,18 +24,19 @@ const (
 
 // captureResult 聚合一次有界 JSONL 捕获的结构化结果。
 type captureResult struct {
-	raw           []byte
-	threadID      string
-	eventCount    int
-	turnCount     int
-	itemCount     int
-	inputTokens   int
-	outputTokens  int
-	sawTerminal   bool
-	phase         protocolPhase
-	itemActive    bool
-	limitExceeded bool
-	err           error
+	raw            []byte
+	threadID       string
+	eventCount     int
+	turnCount      int
+	itemCount      int
+	inputTokens    int
+	outputTokens   int
+	sawTerminal    bool
+	phase          protocolPhase
+	itemActive     bool
+	activeItemType string
+	limitExceeded  bool
+	err            error
 }
 
 // codexFailure 把所有可持久化的 Adapter 失败绑定到 port.AdapterFailure，
@@ -243,10 +244,17 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		if result.phase != phaseInTurn || result.itemActive {
 			return fmt.Errorf("%w: item.started is out of order", ErrProtocol)
 		}
+		if !supportedItemType(event.Item.Type) {
+			return fmt.Errorf("%w: item.started carries an unknown item type", ErrProtocol)
+		}
 		result.itemActive = true
+		result.activeItemType = event.Item.Type
 	case "item.updated":
 		if result.phase != phaseInTurn || !result.itemActive {
 			return fmt.Errorf("%w: item.updated is out of order", ErrProtocol)
+		}
+		if event.Item.Type != result.activeItemType {
+			return fmt.Errorf("%w: item.updated changed the active item type", ErrProtocol)
 		}
 	case "item.completed":
 		// 0.145.0 对 agent_message 等终态型 item 可直接发 completed，
@@ -254,7 +262,11 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		if result.phase != phaseInTurn {
 			return fmt.Errorf("%w: item.completed is out of order", ErrProtocol)
 		}
+		if !supportedItemType(event.Item.Type) || (result.itemActive && event.Item.Type != result.activeItemType) {
+			return fmt.Errorf("%w: item.completed carries an unknown or changed item type", ErrProtocol)
+		}
 		result.itemActive = false
+		result.activeItemType = ""
 		result.itemCount++
 	case "turn.completed":
 		if result.phase != phaseInTurn || result.itemActive {
@@ -276,6 +288,18 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		return fmt.Errorf("%w: unknown event type", ErrProtocol)
 	}
 	return nil
+}
+
+// supportedItemType is the closed item-kind set observed and frozen for the
+// Codex 0.145 exec JSON contract.  Unknown future item kinds require a new
+// conformance receipt and adapter version instead of being silently accepted.
+func supportedItemType(itemType string) bool {
+	switch itemType {
+	case "agent_message", "reasoning", "command_execution", "file_change", "mcp_tool_call", "web_search", "todo_list", "error":
+		return true
+	default:
+		return false
+	}
 }
 
 type streamCapture struct {

@@ -75,11 +75,11 @@ func (evidence ConformanceEvidence) validate(now time.Time, trustRoots map[strin
 		return errors.New("codex conformance evidence lacks independent runner provenance")
 	}
 	observedAt, err := time.Parse(time.RFC3339Nano, evidence.ObservedAt)
-	if err != nil || observedAt.After(now) {
+	if err != nil || observedAt.After(now) || now.Sub(observedAt) > maxConformanceAge {
 		return errors.New("codex conformance evidence observedAt is invalid")
 	}
 	validUntil, err := time.Parse(time.RFC3339Nano, evidence.ValidUntil)
-	if err != nil || !now.Before(validUntil) || !observedAt.Before(validUntil) {
+	if err != nil || !now.Before(validUntil) || !observedAt.Before(validUntil) || validUntil.Sub(observedAt) > maxConformanceTTL {
 		return errors.New("codex conformance evidence is expired or has an invalid validity window")
 	}
 	if evidence.AdapterVersion != adapterVersion || evidence.CapabilitiesDigest != expectedCapabilitiesDigest() ||

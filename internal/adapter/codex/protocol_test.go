@@ -73,9 +73,9 @@ func TestCaptureJSONLAcceptsItemUpdatedInClosedSet(t *testing.T) {
 	// item.updated 属于 0.145.0 已证实的 item 闭集；计数只累计 item.completed。
 	input := `{"type":"thread.started","thread_id":"thread-1"}` + "\n" +
 		`{"type":"turn.started","thread_id":"thread-1","turn_id":"turn-1"}` + "\n" +
-		`{"type":"item.started","thread_id":"thread-1"}` + "\n" +
-		`{"type":"item.updated","thread_id":"thread-1"}` + "\n" +
-		`{"type":"item.completed","thread_id":"thread-1"}` + "\n" +
+		`{"type":"item.started","thread_id":"thread-1","item":{"type":"command_execution"}}` + "\n" +
+		`{"type":"item.updated","thread_id":"thread-1","item":{"type":"command_execution"}}` + "\n" +
+		`{"type":"item.completed","thread_id":"thread-1","item":{"type":"command_execution"}}` + "\n" +
 		`{"type":"turn.completed","thread_id":"thread-1","usage":{"input_tokens":1,"output_tokens":1}}` + "\n"
 	result, terminations := captureForTest(t, input, 65536)
 	if result.err != nil || terminations != 0 {
@@ -130,6 +130,9 @@ func TestCaptureJSONLFailClosedMatrix(t *testing.T) {
 		{name: "unknown-event-type", input: first + "\n" + `{"type":"weird.event","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
 		{name: "unknown-item-evil", input: first + "\n" + `{"type":"item.evil","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
 		{name: "unknown-item-cancelled", input: first + "\n" + `{"type":"item.cancelled","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
+		{name: "missing-item-kind", input: first + "\n" + turnStarted + "\n" + `{"type":"item.completed","item":{}}` + "\n", sentinel: ErrProtocol},
+		{name: "unknown-item-kind", input: first + "\n" + turnStarted + "\n" + `{"type":"item.completed","item":{"type":"future_kind"}}` + "\n", sentinel: ErrProtocol},
+		{name: "changed-item-kind", input: first + "\n" + turnStarted + "\n" + `{"type":"item.started","item":{"type":"command_execution"}}` + "\n" + `{"type":"item.updated","item":{"type":"reasoning"}}` + "\n", sentinel: ErrProtocol},
 		{name: "missing-terminal", input: first + "\n" + `{"type":"item.completed","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
 		{name: "trailing-after-terminal", input: first + "\n" + turnStarted + "\n" + terminal + "\n" + `{"type":"item.completed","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
 		{name: "item-started-after-terminal", input: first + "\n" + turnStarted + "\n" + terminal + "\n" + `{"type":"item.started","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
