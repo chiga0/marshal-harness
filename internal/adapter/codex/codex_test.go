@@ -186,6 +186,44 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 	})
 }
 
+func TestProbeVersionOutputHasStrictByteLimit(t *testing.T) {
+	adapter, err := New(fakeExecutable(t, strings.Repeat("x", maxVersionBytes+1), "exit 0"), newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Probe(context.Background()); !errors.Is(err, ErrVersionUnrecognized) {
+		t.Fatalf("err = %v, want bounded ErrVersionUnrecognized", err)
+	}
+}
+
+func TestProbeExecutesSameSnapshotAcrossDigestAndVersion(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "replacement-version-ran")
+	executable := fakeExecutable(t, supportedVersionOutput, "exit 0")
+	adapter, err := New(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.testHook = func(stage string) {
+		if stage != "after-executable-digest" {
+			return
+		}
+		replacement := "#!/bin/sh\nif [ \"${1:-}\" = \"--version\" ]; then touch " + shellQuote(marker) + "; printf '%s\\n' " + shellQuote(supportedVersionOutput) + "; exit 0; fi\nexit 9\n"
+		if err := os.WriteFile(executable, []byte(replacement), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record, err := adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(record.Data), `"binaryVersion":"0.145.0"`) {
+		t.Fatalf("probe = %s", record.Data)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("replacement path was executed between digest and --version")
+	}
+}
+
 func TestBuildArgsFreezesCapturedSurface(t *testing.T) {
 	worktree := "/tmp/worktree"
 	schemaPath := "/control/codex-output-schema.json"
@@ -345,8 +383,6 @@ func assertCapturedInvocation(t *testing.T, fixture runFixture, withModel bool) 
 		t.Fatalf("fake did not capture argv: %v", err)
 	}
 	gotArgs := strings.Split(strings.TrimSpace(string(argvData)), "\n")
-	schemaPath := filepath.Join(fixture.controlRoot, "output", "codex-output-schema.json")
-	resultPath := filepath.Join(fixture.controlRoot, "output", "worker-result.json")
 	wantArgs := []string{
 		"--ask-for-approval", "never",
 		"-C", fixture.worktree,
@@ -358,8 +394,8 @@ func assertCapturedInvocation(t *testing.T, fixture runFixture, withModel bool) 
 		"--ignore-rules",
 		"--json",
 		"--sandbox", "workspace-write",
-		"--output-schema", schemaPath,
-		"--output-last-message", resultPath,
+		"--output-schema", inheritedFilePath(0),
+		"--output-last-message", inheritedFilePath(1),
 	}
 	if withModel {
 		wantArgs = append(wantArgs, "-m", "provider/model")
@@ -546,6 +582,24 @@ func TestRunPinsIdentityOnFirstRunAndRejectsLaterDrift(t *testing.T) {
 	}
 }
 
+func TestRunExecutesVerifiedSnapshotWhenConfiguredPathIsReplacedBeforeStart(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "replacement-worker-ran")
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	fixture.adapter.testHook = func(stage string) {
+		if stage == "after-identity-verify" {
+			if err := os.WriteFile(fixture.executable, []byte(fakeScript(supportedVersionOutput, "touch "+shellQuote(marker)+"; exit 9")), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("same-version replacement path was executed after identity verification")
+	}
+}
+
 func TestRunRejectsDeclaredWorkerToolsBeforeLaunch(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "launched")
 	t.Run("declared-allowlist", func(t *testing.T) {
@@ -568,6 +622,35 @@ func TestRunRejectsDeclaredWorkerToolsBeforeLaunch(t *testing.T) {
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "worker tools") {
 			t.Fatalf("err = %v, want fail-closed worker tools rejection", err)
 		}
+	})
+}
+
+func TestRunTaskSpecProjectionIsSingleReadAndFailClosed(t *testing.T) {
+	t.Run("malformed", func(t *testing.T) {
+		marker := filepath.Join(t.TempDir(), "launched")
+		fixture := newRunFixture(t, supportedVersionOutput, "touch "+shellQuote(marker))
+		path := filepath.Join(fixture.controlRoot, "input", "task-spec.json")
+		if err := os.WriteFile(path, []byte(`{"worker":`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "parse TaskSpec") {
+			t.Fatalf("err = %v, want fail-closed TaskSpec parse", err)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatal("worker launched with malformed TaskSpec")
+		}
+	})
+	t.Run("mutation-after-projection", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+		fixture.adapter.testHook = func(stage string) {
+			if stage == "after-task-projection" {
+				writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "replacement/model", "tools": []string{"shell"}}})
+			}
+		}
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+			t.Fatal(err)
+		}
+		assertCapturedInvocation(t, fixture, true)
 	})
 }
 
@@ -742,11 +825,16 @@ func TestRunEnforcesOutputCap(t *testing.T) {
 	})
 	t.Run("unterminated-line", func(t *testing.T) {
 		fixture := newRunFixture(t, supportedVersionOutput, `yes x | tr -d '\n'`)
-		started := time.Now()
+		started := time.Time{}
+		fixture.adapter.testHook = func(stage string) {
+			if stage == "after-evidence-claim" {
+				started = time.Now()
+			}
+		}
 		if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"maxOutputBytes": 1024})); !errors.Is(err, ErrOutputLimit) {
 			t.Fatalf("err = %v, want ErrOutputLimit", err)
 		}
-		if time.Since(started) > 5*time.Second {
+		if started.IsZero() || time.Since(started) > 5*time.Second {
 			t.Fatal("unterminated line was not terminated at the byte limit promptly")
 		}
 	})
@@ -761,11 +849,22 @@ func TestRunTimeoutReturnsContextDeadlineAndPersistsEvidence(t *testing.T) {
 		transcriptBody([]string{`{"type":"thread.started","thread_id":"thread-1"}`}) +
 		"sleep 30\n"
 	fixture := newRunFixture(t, supportedVersionOutput, body)
+	preflightDone := make(chan struct{})
+	fixture.adapter.testHook = func(stage string) {
+		if stage == "after-evidence-claim" {
+			close(preflightDone)
+		}
+	}
 	done := make(chan error, 1)
 	go func() {
 		_, runErr := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"attemptTimeoutSeconds": 1}))
 		done <- runErr
 	}()
+	select {
+	case <-preflightDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run preflight did not complete")
+	}
 	waitForFile(t, started, 5*time.Second)
 	select {
 	case err := <-done:
@@ -836,6 +935,12 @@ func TestRunCancellationTerminatesProcessGroup(t *testing.T) {
 	readyFile := filepath.Join(handshake, "ready")
 	body := "sleep 60 &\nchild=$!\nprintf '%s' \"$child\" > " + shellQuote(pidFile+".tmp") + " && mv " + shellQuote(pidFile+".tmp") + " " + shellQuote(pidFile) + "\n: > " + shellQuote(readyFile+".tmp") + " && mv " + shellQuote(readyFile+".tmp") + " " + shellQuote(readyFile) + "\nwait"
 	fixture := newRunFixture(t, supportedVersionOutput, body)
+	preflightDone := make(chan struct{})
+	fixture.adapter.testHook = func(stage string) {
+		if stage == "after-evidence-claim" {
+			close(preflightDone)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := make(chan error, 1)
@@ -843,6 +948,11 @@ func TestRunCancellationTerminatesProcessGroup(t *testing.T) {
 		_, runErr := fixture.adapter.Run(ctx, fixture.requestWith(map[string]any{"attemptTimeoutSeconds": 15}))
 		errCh <- runErr
 	}()
+	select {
+	case <-preflightDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run preflight did not complete")
+	}
 	waitForFile(t, readyFile, 5*time.Second)
 	pidData, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -969,6 +1079,63 @@ func TestRunCreatesAndContainsMissingEvidenceSuffix(t *testing.T) {
 		if err != nil || !strings.HasPrefix(real, fixture.controlRoot+string(filepath.Separator)) {
 			t.Fatalf("evidence %s escaped: real=%q err=%v", name, real, err)
 		}
+	}
+}
+
+func TestRunRejectsEvidenceDirectoryReplacementAfterClaim(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	outside := t.TempDir()
+	output := filepath.Join(fixture.controlRoot, "output")
+	retained := filepath.Join(fixture.controlRoot, "claimed-output")
+	fixture.adapter.testHook = func(stage string) {
+		if stage != "after-evidence-claim" {
+			return
+		}
+		if err := os.Rename(output, retained); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, output); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err == nil || !strings.Contains(err.Error(), "containment changed") {
+		t.Fatalf("err = %v, want replaced evidence directory rejection", err)
+	}
+	assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
+	entries, readErr := os.ReadDir(outside)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("replacement directory received evidence: entries=%v err=%v", entries, readErr)
+	}
+}
+
+func TestRunRejectsResultLeafReplacementAfterClaim(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	result := filepath.Join(fixture.controlRoot, "output", "worker-result.json")
+	retained := filepath.Join(fixture.controlRoot, "output", "claimed-worker-result.json")
+	outside := filepath.Join(t.TempDir(), "outside-result.json")
+	if err := os.WriteFile(outside, []byte("outside-sentinel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.adapter.testHook = func(stage string) {
+		if stage != "after-evidence-claim" {
+			return
+		}
+		if err := os.Rename(result, retained); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err == nil || !strings.Contains(err.Error(), "containment changed") {
+		t.Fatalf("err = %v, want replaced result leaf rejection", err)
+	}
+	assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
+	content, readErr := os.ReadFile(outside)
+	if readErr != nil || string(content) != "outside-sentinel" {
+		t.Fatalf("outside result was modified: %q err=%v", content, readErr)
 	}
 }
 
