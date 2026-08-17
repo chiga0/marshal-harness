@@ -410,7 +410,7 @@ func TestRunFailsClosedWhenWorktreeChangesAcrossStart(t *testing.T) {
 	}
 }
 
-func TestRunKeepsStartedWorktreeWhenPathChangesAfterLaunchVerification(t *testing.T) {
+func TestRunRejectsWorktreePathChangeAfterLaunchVerification(t *testing.T) {
 	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
 	original := fixture.worktree
 	retained := original + "-retained"
@@ -427,14 +427,59 @@ func TestRunKeepsStartedWorktreeWhenPathChangesAfterLaunchVerification(t *testin
 			t.Fatal(err)
 		}
 	}
-	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
-		t.Fatalf("Run after post-Start rename: %v", err)
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "worktree changed") {
+		t.Fatalf("err = %v, want post-Start worktree drift rejection", err)
 	}
 	if _, err := os.Stat(filepath.Join(retained, "capture")); err != nil {
 		t.Fatalf("provider did not stay in the already-started worktree inode: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(replacement, "capture")); !os.IsNotExist(err) {
 		t.Fatal("provider followed the mutable worktree pathname after Start")
+	}
+}
+
+func TestRunBindsWorktreeFDDespiteStartABA(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	original := fixture.worktree
+	retained := original + "-retained"
+	replacement := t.TempDir()
+	gate := t.TempDir()
+	fixture.adapter.launcherTestGate = gate
+	t.Cleanup(func() { _ = os.RemoveAll(retained) })
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := fixture.adapter.Run(context.Background(), fixture.request)
+		errCh <- err
+	}()
+	waitForFile(t, filepath.Join(gate, "ready"), 5*time.Second)
+	if err := os.Rename(original, retained); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(replacement, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(retained, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gate, "release"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Run after pathname ABA: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not complete after launcher gate release")
+	}
+	if _, err := os.Stat(filepath.Join(original, "capture")); err != nil {
+		t.Fatalf("provider did not execute in the pinned worktree inode: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(replacement, "capture")); !os.IsNotExist(err) {
+		t.Fatal("provider followed the transient replacement during ABA")
 	}
 }
 

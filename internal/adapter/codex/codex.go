@@ -96,7 +96,8 @@ type Adapter struct {
 	conformance *boundConformance
 
 	// testHook 只用于确定性触发安全竞态测试；生产构造器始终为 nil。
-	testHook func(string)
+	testHook         func(string)
+	launcherTestGate string
 }
 
 var _ port.WorkerAdapter = (*Adapter)(nil)
@@ -493,11 +494,16 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// The child performs its os-level chdir before Start returns. Codex receives
 	// no -C/PWD pathname to resolve later, so replacement after Start cannot
 	// redirect its actual workspace away from that already-open directory.
-	command := exec.CommandContext(processCtx, snapshot.path, buildArgs(inheritedFilePath(0), inheritedFilePath(1), projection.model)...)
-	command.Dir = worktree.path
+	launcher, err := os.Executable()
+	if err != nil {
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "provider launcher is unavailable", a.now())
+	}
+	launcherArgs := []string{codexLauncherArgument, snapshot.path, a.launcherTestGate}
+	launcherArgs = append(launcherArgs, buildArgs(inheritedFilePath(0), inheritedFilePath(1), projection.model)...)
+	command := exec.CommandContext(processCtx, launcher, launcherArgs...)
 	command.Env = workerEnvironment()
 	command.Stdin = bytes.NewReader(prompt)
-	command.ExtraFiles = []*os.File{evidence.schema, evidence.result}
+	command.ExtraFiles = []*os.File{evidence.schema, evidence.result, worktree.file}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
@@ -560,6 +566,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := replaceFileContents(evidence.metadata, append(metadata, '\n')); err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt evidence metadata could not be persisted", a.now())
 	}
+	if err := worktree.verifyLinked(); err != nil {
+		return domain.Record{}, codexProtocolFailure("worktree changed during execution", a.now())
+	}
 	if err := controlRoot.verifyLinked(); err != nil {
 		return domain.Record{}, codexProtocolFailure("control root changed during execution", a.now())
 	}
@@ -612,6 +621,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if err := replaceFileContents(evidence.result, append(data, '\n')); err != nil {
 		return domain.Record{}, codexResultFailure("normalized WorkerResult could not be persisted", a.now())
+	}
+	if err := worktree.verifyLinked(); err != nil {
+		return domain.Record{}, codexProtocolFailure("worktree changed before completion", a.now())
 	}
 	if err := controlRoot.verifyLinked(); err != nil {
 		return domain.Record{}, codexProtocolFailure("control root changed before completion", a.now())

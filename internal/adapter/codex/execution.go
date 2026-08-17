@@ -29,6 +29,58 @@ import (
 // 绝不以 JSON 策略对象或隐式默认值替代。
 const sandboxNetworkOverride = "sandbox_workspace_write.network_access=false"
 
+const (
+	codexLauncherArgument = "__marshal_codex_fchdir_exec_v1"
+	launcherWorktreeFD    = 5 // stdin/stdout/stderr + schema/result ExtraFiles
+)
+
+// init implements the minimal controlled launcher used by Run. The already
+// running Marshal executable re-execs itself, fchdir(2)s to the inherited
+// worktree descriptor, closes that descriptor, then atomically execs the
+// private Codex snapshot. No pathname participates in selecting the cwd.
+func init() {
+	if len(os.Args) < 4 || os.Args[1] != codexLauncherArgument {
+		return
+	}
+	if gate := os.Args[3]; gate != "" {
+		if err := runLauncherTestGate(gate); err != nil {
+			os.Exit(126)
+		}
+	}
+	if err := unix.Fchdir(launcherWorktreeFD); err != nil {
+		os.Exit(126)
+	}
+	_ = unix.Close(launcherWorktreeFD)
+	executable := os.Args[2]
+	argv := append([]string{executable}, os.Args[4:]...)
+	if err := unix.Exec(executable, argv, os.Environ()); err != nil {
+		os.Exit(126)
+	}
+}
+
+// runLauncherTestGate is reachable only when a test-only Adapter field is
+// populated. Production construction always passes an empty gate.
+func runLauncherTestGate(directory string) error {
+	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
+		return errors.New("invalid launcher test gate")
+	}
+	if err := os.WriteFile(filepath.Join(directory, "ready"), nil, 0o600); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(directory, "release")); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return errors.New("launcher test gate timed out")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 type executableSnapshot struct {
 	identity executableIdentity
 	path     string
@@ -199,8 +251,9 @@ func (s *executableSnapshot) close() {
 }
 
 // buildArgs 生成冻结的 captured-mode argv。全局参数必须位于 exec 子命令
-// 之前：approval=never、-c 显式关闭 workspace-write 网络；worktree 只由
-// exec.Cmd.Dir 在 Start 前 chdir，不把可变路径作为 -C 再交给 CLI。--color 是 0.145.0 的 exec 子命令参数，必须放在
+// 之前：approval=never、-c 显式关闭 workspace-write 网络；worktree 由
+// 受控 launcher 对继承 fd 执行 fchdir，不把可变路径作为 -C 交给 CLI。
+// --color 是 0.145.0 的 exec 子命令参数，必须放在
 // exec 之后。exec 子命令还携带 JSONL 输出、ephemeral、
 // 忽略用户配置与 rules、workspace-write sandbox 枚举，以及经 containment/
 // symlink 检查后持续持有的 Schema/result fd 路径。--output-last-message
