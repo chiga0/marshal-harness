@@ -128,6 +128,121 @@ func TestVerifyFailsClosedWhenNormalizationFails(t *testing.T) {
 	}
 }
 
+// Issue #142: the deterministic empty Observation bound by the early exits
+// must be byte-compatible with a real observation of a change-free worktree,
+// so review-time re-observation reproduces the frozen report identities.
+func TestEmptyObservationMatchesCleanTreeObservation(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	want, err := emptyObservation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed, err := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed.SnapshotDigest != want.SnapshotDigest || observed.DiffDigest != want.DiffDigest {
+		t.Fatalf("empty observation diverges from a clean-tree observation: empty=%+v clean=%+v", want, observed)
+	}
+	if want.DiffDigest != canonical.DigestBytes(nil) {
+		t.Fatalf("empty observation diff digest must recompute from empty bytes: %s", want.DiffDigest)
+	}
+}
+
+// Issue #142: a legacy fail-closed normalization exit must keep persisting
+// the observed patch together with an artifact whose digest and byte size
+// recompute from the persisted bytes, so ReviewPacket construction never
+// strands the failed run.
+func TestVerifyLegacyFormatFailureKeepsObservedPatchRecomputable(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	writeFixtureGoFile(t, fixture.worktree.Path, "pkg/broken.go", "package pkg\n\nfunc { oops\n")
+	input := fixture.input()
+	input.Scope = ScopePolicy{AllowPaths: []string{"pkg/**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Report.Status != "fail" || gateStatus(result.Report.Gates, "format:normalize") != "fail" {
+		t.Fatalf("fail-closed report = %+v", result.Report)
+	}
+	persisted, err := os.ReadFile(filepath.Join(input.RunDirectory, "observed.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(persisted) != string(result.Report.Observed.Patch) || len(persisted) == 0 {
+		t.Fatal("persisted observed patch diverges from the failed run's observation")
+	}
+	patchArtifact := findArtifact(t, result.Manifest, "evidence:observed-patch")
+	if patchArtifact.Status != "validated" || patchArtifact.Digest != canonical.DigestBytes(persisted) || patchArtifact.ByteSize != int64(len(persisted)) || patchArtifact.CandidateDigest != "" {
+		t.Fatalf("legacy failed-run observed-patch artifact must recompute from the persisted bytes: %+v", patchArtifact)
+	}
+	if !slices.Equal(patchArtifact.RelatedGates, []string{"diff:observe", "scope:changed-paths"}) {
+		t.Fatalf("legacy failed-run observed-patch relatedGates changed: %+v", patchArtifact.RelatedGates)
+	}
+	assertPersistedEvidenceSchemaLegal(t, input.RunDirectory)
+}
+
+// Issue #142 (M10 scenario): candidate mode defers the observed-patch
+// artifact until the head content is known, so a format:normalize failure
+// used to persist observed.patch without any manifest artifact, breaking
+// ReviewPacket construction. The failed run must now persist a validated,
+// content-addressed observed-patch artifact without faking a head Candidate
+// binding or a passing gate.
+func TestVerifyCandidateFormatFailurePersistsReviewableObservedPatch(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	writeFixtureGoFile(t, fixture.worktree.Path, "pkg/broken.go", "package pkg\n\nfunc { oops\n")
+	rawObservation, err := Observe(fixture.worktree.Path, fixture.baseSHA, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := fixture.candidateInput()
+	input.Scope = ScopePolicy{AllowPaths: []string{"pkg/**"}, MaxChangedFiles: 5, MaxDiffBytes: 1 << 20}
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Report.Status != "fail" || gateStatus(result.Report.Gates, "format:normalize") != "fail" {
+		t.Fatalf("candidate fail-closed report = %+v", result.Report)
+	}
+	if result.Report.CandidateDigest != "" || result.Report.WorkerCandidateDigest != "" {
+		t.Fatalf("failed run must not carry candidate identities: %+v", result.Report)
+	}
+	persisted, err := os.ReadFile(filepath.Join(input.RunDirectory, "observed.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(persisted) != string(rawObservation.Patch) || string(persisted) != string(result.Report.Observed.Patch) {
+		t.Fatal("failed run must persist the worker's real observed bytes")
+	}
+	workerPersisted, err := os.ReadFile(filepath.Join(input.RunDirectory, "worker.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(workerPersisted) != string(persisted) {
+		t.Fatal("without normalization the worker and observed patches must agree")
+	}
+	if len(result.Manifest.Artifacts) != 1 {
+		t.Fatalf("failed candidate run must persist exactly the observed-patch artifact: %+v", result.Manifest.Artifacts)
+	}
+	patchArtifact := findArtifact(t, result.Manifest, "evidence:observed-patch")
+	if patchArtifact.Status != "validated" || patchArtifact.Producer != "verifier" || patchArtifact.RelativePath != "observed.patch" ||
+		patchArtifact.Digest != canonical.DigestBytes(persisted) || patchArtifact.ByteSize != int64(len(persisted)) || patchArtifact.CandidateDigest != "" {
+		t.Fatalf("failed candidate run observed-patch artifact = %+v", patchArtifact)
+	}
+	if !slices.Equal(patchArtifact.RelatedGates, []string{"diff:observe", "scope:changed-paths", "format:normalize"}) {
+		t.Fatalf("failed candidate run observed-patch relatedGates = %+v", patchArtifact.RelatedGates)
+	}
+	store := newLocalCandidateStore(input.RunDirectory)
+	records, err := store.records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ProducerKind != domain.ProducerKindWorker {
+		t.Fatalf("failed candidate run must admit only the worker candidate: %+v", records)
+	}
+	assertPersistedEvidenceSchemaLegal(t, input.RunDirectory)
+}
+
 func TestRenameRequiresBothPathsInScope(t *testing.T) {
 	fixture := newVerificationFixture(t)
 	if err := os.MkdirAll(filepath.Join(fixture.worktree.Path, "docs"), 0o700); err != nil {
@@ -1204,8 +1319,11 @@ func TestVerifyLegacyRunKeepsByteCompatibleEvidence(t *testing.T) {
 // Issue #142: the early repository Gate fail/error exits precede every
 // artifact observation. Verify must still complete without error and persist
 // both evidence documents through the contract Validator, with the manifest
-// encoding artifacts as an empty JSON array (never null), so task verify can
-// run its typed state transition instead of stranding the Run in VERIFYING.
+// encoding artifacts as a JSON array (never null) that binds the real empty
+// observed.patch bytes to the deterministic empty Observation, so task verify
+// can run its typed state transition instead of stranding the Run in
+// VERIFYING, and task review can still build a ReviewPacket over the failed
+// run.
 func TestVerifyEarlyRepositoryGateExitsPersistSchemaLegalEvidence(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -1258,8 +1376,32 @@ func TestVerifyEarlyRepositoryGateExitsPersistSchemaLegalEvidence(t *testing.T) 
 			if len(result.Report.Gates) != 1 {
 				t.Fatalf("early exit must stop at the repository gate: %+v", result.Report.Gates)
 			}
-			if result.Manifest.Artifacts == nil || len(result.Manifest.Artifacts) != 0 {
-				t.Fatalf("manifest artifacts = %#v, want non-nil empty slice", result.Manifest.Artifacts)
+			wantObservation, observationErr := emptyObservation()
+			if observationErr != nil {
+				t.Fatal(observationErr)
+			}
+			if result.Report.Observed.SnapshotDigest != wantObservation.SnapshotDigest || result.Report.Observed.DiffDigest != wantObservation.DiffDigest ||
+				result.Report.Observed.DiffDigest != canonical.DigestBytes(nil) || len(result.Report.Observed.ChangedFiles) != 0 || result.Report.Observed.ChangedFileCount != 0 {
+				t.Fatalf("early exit must bind the deterministic empty observation: %+v", result.Report.Observed)
+			}
+			if len(result.Manifest.Artifacts) != 1 {
+				t.Fatalf("early exit must persist exactly the observed-patch artifact: %+v", result.Manifest.Artifacts)
+			}
+			patchArtifact := result.Manifest.Artifacts[0]
+			persisted, readErr := os.ReadFile(filepath.Join(input.RunDirectory, "observed.patch"))
+			if readErr != nil {
+				t.Fatalf("observed.patch must be persisted on early exits: %v", readErr)
+			}
+			if len(persisted) != 0 {
+				t.Fatalf("early exit observed patch must bind the real empty bytes, got %d bytes", len(persisted))
+			}
+			if patchArtifact.ID != "evidence:observed-patch" || patchArtifact.Producer != "verifier" || patchArtifact.Status != "validated" ||
+				patchArtifact.PathRoot != "run" || patchArtifact.RelativePath != "observed.patch" ||
+				patchArtifact.ByteSize != 0 || patchArtifact.Digest != canonical.DigestBytes(nil) || patchArtifact.CandidateDigest != "" {
+				t.Fatalf("early exit observed-patch artifact = %+v", patchArtifact)
+			}
+			if !slices.Equal(patchArtifact.RelatedGates, []string{"repository:integrity"}) {
+				t.Fatalf("early exit observed-patch relatedGates = %+v", patchArtifact.RelatedGates)
 			}
 			assertPersistedEvidenceSchemaLegal(t, input.RunDirectory)
 		})

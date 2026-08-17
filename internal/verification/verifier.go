@@ -58,11 +58,15 @@ func New() *Verifier { return &Verifier{now: time.Now} }
 
 func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 	started := v.now().UTC()
+	empty, err := emptyObservation()
+	if err != nil {
+		return Result{}, err
+	}
 	// Artifacts starts as a non-nil empty slice: a nil slice would marshal
 	// to JSON null and violate the ArtifactManifest schema's array contract
 	// on every exit path that precedes the first observed artifact, notably
 	// the early repository Gate fail/error returns (issue #142).
-	result := Result{Report: Report{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindVerificationReport, TaskID: input.TaskID, RunID: input.RunID, SpecDigest: input.SpecDigest, BaseSHA: input.BaseSHA, Observed: emptyObservation(), StartedAt: started}, Manifest: ArtifactManifest{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindArtifactManifest, TaskID: input.TaskID, RunID: input.RunID, Artifacts: []Artifact{}, GeneratedAt: started}}
+	result := Result{Report: Report{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindVerificationReport, TaskID: input.TaskID, RunID: input.RunID, SpecDigest: input.SpecDigest, BaseSHA: input.BaseSHA, Observed: empty, StartedAt: started}, Manifest: ArtifactManifest{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindArtifactManifest, TaskID: input.TaskID, RunID: input.RunID, Artifacts: []Artifact{}, GeneratedAt: started}}
 	if err := validateInput(input); err != nil {
 		return result, err
 	}
@@ -72,11 +76,23 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 	repositoryGate := verifyRepository(ctx, input)
 	result.Report.Gates = append(result.Report.Gates, repositoryGate)
 	if repositoryGate.Status == "error" || repositoryGate.Status == "fail" {
+		// Repository integrity collapses before any git observation exists:
+		// bind the deterministic empty Observation to its real empty patch
+		// bytes so the run still carries a content-addressed observed patch
+		// and remains reviewable (issue #142).
+		if err := v.persistEarlyObservedPatch(input, &result, nil, false, []string{"repository:integrity"}); err != nil {
+			return result, err
+		}
 		return v.finish(input, result)
 	}
 	observation, err := ObserveContext(ctx, input.Worktree, input.BaseSHA, input.PatchCaptureBytes)
 	if err != nil {
 		result.Report.Gates = append(result.Report.Gates, Gate{ID: "diff:observe", Category: "diff", Required: true, Status: "error", Summary: err.Error(), Evidence: []string{}})
+		// The report keeps the deterministic empty Observation; persist the
+		// matching empty patch bytes with their artifact (issue #142).
+		if persistErr := v.persistEarlyObservedPatch(input, &result, nil, false, []string{"diff:observe"}); persistErr != nil {
+			return result, persistErr
+		}
 		return v.finish(input, result)
 	}
 	result.Report.Observed = observation
@@ -115,6 +131,9 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 		admitted, admitErr := v.admitObservedCandidate(store, input, workerPatch, domain.ProducerKindWorker, candidateProducerWorker, "")
 		if admitErr != nil {
 			result.Report.Gates = append(result.Report.Gates, Gate{ID: "format:normalize", Category: "other", Required: true, Status: "fail", Summary: "Candidate 接纳失败：" + admitErr.Error(), Evidence: []string{}})
+			if persistErr := v.persistEarlyObservedPatch(input, &result, observation.Patch, observation.DiffTruncated, observedPatchFailureGates); persistErr != nil {
+				return result, persistErr
+			}
 			return v.finish(input, result)
 		}
 		workerCandidate, headCandidate = admitted, admitted
@@ -122,12 +141,27 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 	normalized, formatErr := normalizeFormat(ctx, input.Worktree, observation.ChangedFiles, input.Scope.AllowPaths)
 	if formatErr != nil {
 		result.Report.Gates = append(result.Report.Gates, Gate{ID: "format:normalize", Category: "other", Required: true, Status: "fail", Summary: "gofmt 归一化失败：" + formatErr.Error(), Evidence: []string{}})
+		if candidateMode {
+			// Legacy mode already carries the observed-patch artifact from
+			// the pre-normalization append; candidate mode defers it and must
+			// bind the last observed bytes here (issue #142).
+			if persistErr := v.persistEarlyObservedPatch(input, &result, observation.Patch, observation.DiffTruncated, observedPatchFailureGates); persistErr != nil {
+				return result, persistErr
+			}
+		}
 		return v.finish(input, result)
 	}
 	if len(normalized) > 0 {
 		updated, observeErr := ObserveContext(ctx, input.Worktree, input.BaseSHA, input.PatchCaptureBytes)
 		if observeErr != nil {
 			result.Report.Gates = append(result.Report.Gates, Gate{ID: "format:normalize", Category: "other", Required: true, Status: "fail", Summary: "归一化后无法重新观察 worktree：" + observeErr.Error(), Evidence: []string{}})
+			if candidateMode {
+				// The report still binds the pre-normalization observation;
+				// re-bind those bytes so the manifest matches them (issue #142).
+				if persistErr := v.persistEarlyObservedPatch(input, &result, observation.Patch, observation.DiffTruncated, observedPatchFailureGates); persistErr != nil {
+					return result, persistErr
+				}
+			}
 			return v.finish(input, result)
 		}
 		observation = updated
@@ -139,6 +173,9 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 			admitted, admitErr := v.admitObservedCandidate(store, input, observation.Patch, domain.ProducerKindNormalizer, candidateProducerNormalizer, workerCandidate.CandidateDigest)
 			if admitErr != nil {
 				result.Report.Gates = append(result.Report.Gates, Gate{ID: "format:normalize", Category: "other", Required: true, Status: "fail", Summary: "Candidate 接纳失败：" + admitErr.Error(), Evidence: []string{}})
+				if persistErr := v.persistEarlyObservedPatch(input, &result, observation.Patch, observation.DiffTruncated, observedPatchFailureGates); persistErr != nil {
+					return result, persistErr
+				}
 				return v.finish(input, result)
 			}
 			headCandidate = admitted
@@ -239,9 +276,47 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 	return v.finish(input, result)
 }
 
-func emptyObservation() Observation {
-	emptyDigest := canonical.DigestBytes(nil)
-	return Observation{SnapshotDigest: emptyDigest, DiffDigest: emptyDigest, ChangedFiles: []string{}, Changes: []Change{}}
+// emptyObservation returns the deterministic Observation of a change-free
+// worktree, byte-compatible with what ObserveContext computes for a clean
+// tree: json.Marshal serializes the empty change set to "null", RFC 8785
+// canonicalization preserves it, and the diff is empty. The early exits that
+// never reach git observation bind this Observation to real empty
+// observed.patch bytes, so review-time re-observation and artifact digest
+// recomputation reproduce identical identities (issue #142).
+func emptyObservation() (Observation, error) {
+	snapshotJSON, err := json.Marshal([]Change(nil))
+	if err != nil {
+		return Observation{}, err
+	}
+	canonicalSnapshot, err := canonical.JSON(snapshotJSON)
+	if err != nil {
+		return Observation{}, err
+	}
+	return Observation{SnapshotDigest: canonical.DigestBytes(canonicalSnapshot), DiffDigest: canonical.DigestBytes(nil), ChangedFiles: []string{}, Changes: []Change{}}, nil
+}
+
+// observedPatchFailureGates lists the gates the observed patch relates to
+// when verification fails after a successful observation: diff:observe and
+// scope:changed-paths already evaluated the bytes, and the format:normalize
+// gate (fail) closed the run.
+var observedPatchFailureGates = []string{"diff:observe", "scope:changed-paths", "format:normalize"}
+
+// persistEarlyObservedPatch writes observed.patch and appends its validated
+// artifact on the fail/error exits that never reach the normal artifact
+// finalization: the repository Gate and diff:observe exits bind the
+// deterministic empty Observation's real empty bytes, and the candidate-mode
+// normalization exits bind the last successfully observed bytes. The digest
+// and byte size always recompute from the persisted bytes; the candidate
+// binding stays absent because no head Candidate identity reaches the report
+// on failure paths; relatedGates name the gates that evaluated the bytes.
+// This keeps every failed run reviewable instead of leaving an
+// unexaminable REVIEW_PENDING (issue #142).
+func (v *Verifier) persistEarlyObservedPatch(input Input, result *Result, patch []byte, truncated bool, relatedGates []string) error {
+	if err := atomicWrite(filepath.Join(input.RunDirectory, "observed.patch"), patch); err != nil {
+		return err
+	}
+	result.Manifest.Artifacts = append(result.Manifest.Artifacts, Artifact{ID: "evidence:observed-patch", Kind: "patch", MediaType: "text/x-diff", Producer: "verifier", Required: true, Status: "validated", PathRoot: "run", RelativePath: "observed.patch", ByteSize: int64(len(patch)), Digest: canonical.DigestBytes(patch), CreatedAt: result.Report.StartedAt, Truncated: truncated, RelatedGates: relatedGates})
+	return nil
 }
 
 func (v *Verifier) finish(input Input, result Result) (Result, error) {
