@@ -1,8 +1,12 @@
 package cloudflare
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
+	"log"
 	"strings"
 	"testing"
 	"time"
@@ -63,49 +67,83 @@ func TestClientRejectsCredentialInsideBaseURL(t *testing.T) {
 	}
 }
 
-func TestClientHealthHappyPath(t *testing.T) {
+// TestCredentialRedaction freezes the credential discipline across every
+// common formatting surface: value and pointer verbs, a carrier struct, an
+// error wrap and a log call all redact the literal.
+func TestCredentialRedaction(t *testing.T) {
+	token := testBridgeToken("redaction")
+	credential, err := NewCredential(token)
+	if err != nil {
+		t.Fatalf("NewCredential: %v", err)
+	}
+	observables := []string{
+		fmt.Sprintf("%v", credential),
+		fmt.Sprintf("%+v", credential),
+		fmt.Sprintf("%#v", credential),
+		fmt.Sprintf("%s", credential),
+		fmt.Sprintf("%q", credential),
+		fmt.Sprintf("%v", &credential),
+		fmt.Sprintf("%+v", &credential),
+		fmt.Sprintf("%#v", &credential),
+	}
+	type carrier struct {
+		Cred Credential
+	}
+	observables = append(observables, fmt.Sprintf("%+v", carrier{Cred: credential}))
+	observables = append(observables, fmt.Sprintf("%#v", carrier{Cred: credential}))
+	observables = append(observables, fmt.Sprintf("%v", carrier{Cred: credential}))
+
+	wrapped := fmt.Errorf("wrapped credential: %v", credential)
+	observables = append(observables, wrapped.Error())
+
+	var logBuf bytes.Buffer
+	logger := log.New(&logBuf, "", 0)
+	logger.Printf("credential=%v", credential)
+	logger.Printf("credential=%+v", credential)
+	observables = append(observables, logBuf.String())
+
+	for _, observable := range observables {
+		assertNoCredential(t, token, observable)
+		if !strings.Contains(observable, redactedCredential) {
+			t.Fatalf("the credential must be redacted, got %q", observable)
+		}
+	}
+}
+
+func TestClientHealthHappyPathNoCredential(t *testing.T) {
 	fb := newFakeBridge(t, testBridgeToken("health"))
 	client := newTestClient(t, fb, "")
 	report, err := client.Health(context.Background())
 	if err != nil {
 		t.Fatalf("Health: %v", err)
 	}
-	if report.Status != "ok" || report.ProtocolVersion != DefaultProtocolVersion {
+	if !report.OK {
 		t.Fatalf("unexpected health report: %+v", report)
 	}
 	headers := fb.AuthHeaders()
-	if len(headers) != 1 || headers[0] != "Bearer "+fb.token {
-		t.Fatalf("the credential must travel only as the Authorization header, got %v", headers)
+	if len(headers) != 1 || headers[0] != "" {
+		t.Fatalf("the health read must carry no Authorization header, got %v", headers)
 	}
 }
 
-func TestClientHealthProtocolMismatchFailsClosed(t *testing.T) {
-	fb := newFakeBridge(t, testBridgeToken("protocol"))
-	fb.SetProtocolVersion("v2" + "-drift")
+func TestClientHealthMalformedRejected(t *testing.T) {
+	fb := newFakeBridge(t, testBridgeToken("health-malformed"))
+	fb.SetHealthRawBody([]byte(`{"ok":true,"ok":false}`))
 	client := newTestClient(t, fb, "")
-	if _, err := client.Health(context.Background()); !errors.Is(err, ErrProtocolVersionMismatch) {
-		t.Fatalf("a protocol version drift must fail closed, got %v", err)
+	if _, err := client.Health(context.Background()); !errors.Is(err, ErrInvalidBridgeResponse) {
+		t.Fatalf("duplicate JSON members must be rejected by the canonical admission gate, got %v", err)
 	}
 }
 
 func TestClientCredentialRejectedFailsClosedWithoutRetry(t *testing.T) {
 	fb := newFakeBridge(t, testBridgeToken("authz"))
 	client := newTestClient(t, fb, fb.token+"-wrong")
-	_, err := client.Health(context.Background())
+	_, err := client.CreateSandbox(context.Background(), "key-authz")
 	if !errors.Is(err, ErrCredentialRejected) {
 		t.Fatalf("a rejected credential must fail closed with ErrCredentialRejected, got %v", err)
 	}
-	if got := fb.RequestCount("GET", healthPath); got != 1 {
+	if got := fb.RequestCount("POST", sandboxPath); got != 1 {
 		t.Fatalf("a credential refusal must never be retried, got %d attempts", got)
-	}
-}
-
-func TestClientDuplicateJSONMemberRejected(t *testing.T) {
-	fb := newFakeBridge(t, testBridgeToken("duplicate-member"))
-	fb.SetHealthRawBody([]byte(`{"status":"ok","status":"ok","protocolVersion":"v1"}`))
-	client := newTestClient(t, fb, "")
-	if _, err := client.Health(context.Background()); !errors.Is(err, ErrInvalidBridgeResponse) {
-		t.Fatalf("duplicate JSON members must be rejected by the canonical admission gate, got %v", err)
 	}
 }
 
@@ -134,131 +172,54 @@ func TestClientRetryExhaustedFailsClosed(t *testing.T) {
 	}
 }
 
-// TestClientDropBudgetExhaustedFailsClosed freezes that connection-level
-// response loss consumes exactly one wire request per attempt: the bounded
-// retry budget of the client is the single retry authority, so three lost
-// connections exhaust it fail closed for a bodied write and a bodiless
-// write alike, with no transparent transport-level recovery beyond the
-// budget.
-func TestClientDropBudgetExhaustedFailsClosed(t *testing.T) {
-	t.Run("create", func(t *testing.T) {
-		fb := newFakeBridge(t, testBridgeToken("drop-budget-create"))
-		client := newTestClient(t, fb, "")
-		fb.DropPathTimes("POST", sandboxesPath, 3)
-		_, err := client.CreateSandbox(context.Background(), CreateSandboxRequest{
-			SandboxId:  "alloc-drop-budget",
-			RunId:      "run-x",
-			AttemptId:  "attempt-x",
-			Generation: 1,
-		}, "key-drop-budget")
-		if !errors.Is(err, ErrBridgeUnavailable) {
-			t.Fatalf("three lost create responses must exhaust the retry budget fail closed, got %v", err)
-		}
-		if got := fb.RequestCount("POST", sandboxesPath); got != 3 {
-			t.Fatalf("one attempt must be exactly one wire request, got %d", got)
-		}
-	})
-	t.Run("destroy", func(t *testing.T) {
-		fb := newFakeBridge(t, testBridgeToken("drop-budget-destroy"))
-		client := newTestClient(t, fb, "")
-		ctx := context.Background()
-		if _, err := client.CreateSandbox(ctx, CreateSandboxRequest{
-			SandboxId:  "alloc-drop-budget",
-			RunId:      "run-x",
-			AttemptId:  "attempt-x",
-			Generation: 1,
-		}, "key-create"); err != nil {
-			t.Fatalf("CreateSandbox: %v", err)
-		}
-		fb.DropPathTimes("DELETE", sandboxesPath+"/alloc-drop-budget", 3)
-		_, err := client.Destroy(ctx, "alloc-drop-budget", "key-destroy")
-		if !errors.Is(err, ErrBridgeUnavailable) {
-			t.Fatalf("three lost destroy responses must exhaust the retry budget fail closed, got %v", err)
-		}
-		if got := fb.RequestCount("DELETE", sandboxesPath+"/alloc-drop-budget"); got != 3 {
-			t.Fatalf("one attempt must be exactly one wire request, got %d", got)
-		}
-	})
-}
+func TestClientCreateRunningDestroy(t *testing.T) {
+	fb := newFakeBridge(t, testBridgeToken("lifecycle"))
+	client := newTestClient(t, fb, "")
+	ctx := context.Background()
 
-func TestClientRequestTimeoutRetried(t *testing.T) {
-	fb := newFakeBridge(t, testBridgeToken("timeout"))
-	fb.SetSlowDuration(200 * time.Millisecond)
-	fb.SlowPathTimes("GET", sandboxesPath, 1)
-	client, err := NewClient(ClientConfig{
-		BaseURL:        fb.server.URL,
-		Credential:     mustCredential(t, fb.token),
-		MaxRetries:     2,
-		RetryDelay:     -1,
-		RequestTimeout: 50 * time.Millisecond,
-	})
+	bridgeId, err := client.CreateSandbox(ctx, "key-create")
 	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	if _, err := client.ListSandboxes(context.Background(), "run-timeout", "attempt-timeout"); err != nil {
-		t.Fatalf("ListSandboxes must recover from one timeout through the retry budget, got %v", err)
-	}
-	if got := fb.RequestCount("GET", sandboxesPath); got != 2 {
-		t.Fatalf("exactly one retry after the timeout was expected, got %d", got)
-	}
-}
-
-func TestClientSandboxNotFoundAndContainerLost(t *testing.T) {
-	fb := newFakeBridge(t, testBridgeToken("not-found"))
-	client := newTestClient(t, fb, "")
-	ctx := context.Background()
-	if _, err := client.SandboxStatus(ctx, "alloc-missing"); !errors.Is(err, ErrSandboxNotFound) {
-		t.Fatalf("an unknown sandbox must map to ErrSandboxNotFound, got %v", err)
-	}
-	if _, err := client.CreateSandbox(ctx, CreateSandboxRequest{SandboxId: "alloc-lost", RunId: "run-x", AttemptId: "attempt-x", Generation: 1}, "key-lost"); err != nil {
 		t.Fatalf("CreateSandbox: %v", err)
 	}
-	fb.LoseContainer(t, "alloc-lost")
-	if _, err := client.SandboxStatus(ctx, "alloc-lost"); !errors.Is(err, ErrContainerLost) {
-		t.Fatalf("a lost container must map to ErrContainerLost, got %v", err)
+	if bridgeId == "" {
+		t.Fatal("the create must return the Bridge locator")
 	}
-}
-
-func TestClientNotFoundCodeMapping(t *testing.T) {
-	fb := newFakeBridge(t, testBridgeToken("codes"))
-	client := newTestClient(t, fb, "")
-	ctx := context.Background()
-	if _, err := client.CreateSandbox(ctx, CreateSandboxRequest{SandboxId: "alloc-codes", RunId: "run-x", AttemptId: "attempt-x", Generation: 1}, "key-codes"); err != nil {
-		t.Fatalf("CreateSandbox: %v", err)
+	running, err := client.SandboxRunning(ctx, bridgeId)
+	if err != nil {
+		t.Fatalf("SandboxRunning: %v", err)
 	}
-	if _, err := client.Hydrate(ctx, "alloc-codes", "ckpt-missing", "key-hydrate"); !errors.Is(err, ErrCheckpointNotFound) {
-		t.Fatalf("an unknown checkpoint must map to ErrCheckpointNotFound, got %v", err)
+	if !running {
+		t.Fatal("the fresh sandbox must be running")
 	}
-	if _, err := client.WriteFile(ctx, "alloc-codes", WriteFileRequest{
-		Path:           "staged/ref",
-		DeclaredSHA256: fixtureDigest("locator" + "-content"),
-		Locator:        &LocatorRef{StoreId: "store-empty", SHA256: fixtureDigest("locator" + "-content"), SizeBytes: 4},
-	}, "key-write"); !errors.Is(err, ErrBridgeLocatorUnresolved) {
-		t.Fatalf("an unresolved locator must map to ErrBridgeLocatorUnresolved, got %v", err)
+	if err := client.Destroy(ctx, bridgeId, "key-destroy"); err != nil {
+		t.Fatalf("Destroy: %v", err)
 	}
-	if _, err := client.ReadFile(ctx, "alloc-codes", "staged/missing"); !errors.Is(err, ErrSandboxNotFound) {
-		t.Fatalf("a missing file must map to ErrSandboxNotFound, got %v", err)
+	if _, err := client.SandboxRunning(ctx, bridgeId); !errors.Is(err, ErrSandboxNotFound) {
+		t.Fatalf("the destroyed sandbox must map to ErrSandboxNotFound, got %v", err)
 	}
 }
 
 func TestClientIdempotentReplayAfterLostResponse(t *testing.T) {
 	fb := newFakeBridge(t, testBridgeToken("idempotent"))
 	client := newTestClient(t, fb, "")
-	fb.DropPathTimes("POST", sandboxesPath, 1)
-	record, err := client.CreateSandbox(context.Background(), CreateSandboxRequest{
-		SandboxId:  "alloc-idempotent",
-		RunId:      "run-x",
-		AttemptId:  "attempt-x",
-		Generation: 1,
-	}, "key-create")
+	fb.DropPathTimes("POST", sandboxPath, 1)
+	bridgeId, err := client.CreateSandbox(context.Background(), "key-create")
 	if err != nil {
 		t.Fatalf("CreateSandbox must recover from one lost response through the idempotent retry, got %v", err)
 	}
-	if record.SandboxId != "alloc-idempotent" || record.State != "running" {
-		t.Fatalf("unexpected create record: %+v", record)
+	if bridgeId == "" {
+		t.Fatal("the create must return a locator")
 	}
-	if got := fb.RequestCount("POST", sandboxesPath); got != 2 {
+	if got := fb.RequestCount("POST", sandboxPath); got != 2 {
 		t.Fatalf("exactly one retry after the lost response was expected, got %d", got)
+	}
+	// Replaying the identical key must converge on the identical locator.
+	replayed, err := client.CreateSandbox(context.Background(), "key-create")
+	if err != nil {
+		t.Fatalf("CreateSandbox replay: %v", err)
+	}
+	if replayed != bridgeId {
+		t.Fatalf("the idempotent replay must return the identical locator: %q != %q", replayed, bridgeId)
 	}
 }
 
@@ -266,10 +227,11 @@ func TestClientExecStreamHappyPathAndOutcomes(t *testing.T) {
 	fb := newFakeBridge(t, testBridgeToken("exec"))
 	client := newTestClient(t, fb, "")
 	ctx := context.Background()
-	if _, err := client.CreateSandbox(ctx, CreateSandboxRequest{SandboxId: "alloc-exec", RunId: "run-x", AttemptId: "attempt-x", Generation: 1}, "key-exec"); err != nil {
+	bridgeId, err := client.CreateSandbox(ctx, "key-exec")
+	if err != nil {
 		t.Fatalf("CreateSandbox: %v", err)
 	}
-	result, err := client.Exec(ctx, "alloc-exec", ExecStreamRequest{Command: []string{"echo", "hello"}})
+	result, err := client.Exec(ctx, bridgeId, "sess-1", ExecStreamRequest{Argv: []string{"echo", "hello"}})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -280,13 +242,9 @@ func TestClientExecStreamHappyPathAndOutcomes(t *testing.T) {
 	if string(result.Stdout) != expectedStdout {
 		t.Fatalf("unexpected stdout capture: %q", string(result.Stdout))
 	}
-	expectedStderr := "exec stderr\x00" + strings.Join([]string{"echo", "hello"}, "\x00")
-	if string(result.Stderr) != expectedStderr {
-		t.Fatalf("unexpected stderr capture: %q", string(result.Stderr))
-	}
 
 	fb.SetExecOutcome("failing-cmd", 3, false)
-	failed, err := client.Exec(ctx, "alloc-exec", ExecStreamRequest{Command: []string{"failing-cmd"}})
+	failed, err := client.Exec(ctx, bridgeId, "sess-1", ExecStreamRequest{Argv: []string{"failing-cmd"}})
 	if err != nil {
 		t.Fatalf("Exec of the failing command: %v", err)
 	}
@@ -295,11 +253,11 @@ func TestClientExecStreamHappyPathAndOutcomes(t *testing.T) {
 	}
 
 	fb.SetExecOutcome("doomed-cmd", 137, true)
-	killed, err := client.Exec(ctx, "alloc-exec", ExecStreamRequest{Command: []string{"doomed-cmd"}})
+	killed, err := client.Exec(ctx, bridgeId, "sess-1", ExecStreamRequest{Argv: []string{"doomed-cmd"}})
 	if err != nil {
 		t.Fatalf("Exec of the doomed command: %v", err)
 	}
-	if !killed.Signaled || killed.ExitCode != 137 {
+	if !killed.Signaled {
 		t.Fatalf("the scripted kill must surface the signaled flag, got %+v", killed)
 	}
 }
@@ -308,15 +266,170 @@ func TestClientExecStreamBrokenFailsClosedWithoutRetry(t *testing.T) {
 	fb := newFakeBridge(t, testBridgeToken("exec-broken"))
 	client := newTestClient(t, fb, "")
 	ctx := context.Background()
-	if _, err := client.CreateSandbox(ctx, CreateSandboxRequest{SandboxId: "alloc-broken", RunId: "run-x", AttemptId: "attempt-x", Generation: 1}, "key-broken"); err != nil {
+	bridgeId, err := client.CreateSandbox(ctx, "key-broken")
+	if err != nil {
 		t.Fatalf("CreateSandbox: %v", err)
 	}
-	fb.DropPathTimes("POST", sandboxesPath+"/alloc-broken/exec", 1)
-	if _, err := client.Exec(ctx, "alloc-broken", ExecStreamRequest{Command: []string{"echo"}}); !errors.Is(err, ErrBridgeUnavailable) {
+	fb.DropPathTimes("POST", "/v1/sandbox/"+bridgeId+"/exec", 1)
+	if _, err := client.Exec(ctx, bridgeId, "", ExecStreamRequest{Argv: []string{"echo"}}); !errors.Is(err, ErrBridgeUnavailable) {
 		t.Fatalf("a broken exec stream must fail closed, got %v", err)
 	}
-	if got := fb.RequestCount("POST", sandboxesPath+"/alloc-broken/exec"); got != 1 {
+	if got := fb.RequestCount("POST", "/v1/sandbox/"+bridgeId+"/exec"); got != 1 {
 		t.Fatalf("exec must never be auto-retried, got %d attempts", got)
+	}
+}
+
+func TestClientFileWriteReadRawBytes(t *testing.T) {
+	fb := newFakeBridge(t, testBridgeToken("file"))
+	client := newTestClient(t, fb, "")
+	ctx := context.Background()
+	bridgeId, err := client.CreateSandbox(ctx, "key-file")
+	if err != nil {
+		t.Fatalf("CreateSandbox: %v", err)
+	}
+	content := []byte("raw-file-content")
+	if err := client.WriteFile(ctx, bridgeId, "staged/payload", content, "key-write"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	readBack, err := client.ReadFile(ctx, bridgeId, "staged/payload")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !bytes.Equal(readBack, content) {
+		t.Fatalf("the raw bytes must round-trip, got %q", string(readBack))
+	}
+}
+
+func TestClientPersistHydrateRawTar(t *testing.T) {
+	fb := newFakeBridge(t, testBridgeToken("persist"))
+	client := newTestClient(t, fb, "")
+	ctx := context.Background()
+	bridgeId, err := client.CreateSandbox(ctx, "key-persist")
+	if err != nil {
+		t.Fatalf("CreateSandbox: %v", err)
+	}
+	content := []byte("persist-content")
+	if err := client.WriteFile(ctx, bridgeId, "staged/payload", content, "key-write"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tarBytes, err := client.Persist(ctx, bridgeId, "key-persist-2")
+	if err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	if len(tarBytes) == 0 {
+		t.Fatal("the persist must return the raw tar snapshot")
+	}
+	files, err := parseTar(tarBytes)
+	if err != nil {
+		t.Fatalf("the persist payload must be a tar: %v", err)
+	}
+	if !bytes.Equal(files["staged/payload"], content) {
+		t.Fatal("the tar snapshot must hold the staged content")
+	}
+
+	replacement, err := client.CreateSandbox(ctx, "key-create-2")
+	if err != nil {
+		t.Fatalf("CreateSandbox: %v", err)
+	}
+	if err := client.Hydrate(ctx, replacement, tarBytes, "key-hydrate"); err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	restored, err := client.ReadFile(ctx, replacement, "staged/payload")
+	if err != nil {
+		t.Fatalf("ReadFile after hydrate: %v", err)
+	}
+	if !bytes.Equal(restored, content) {
+		t.Fatal("the hydrate must restore the staged content byte for byte")
+	}
+}
+
+func TestClientSessionCreateDelete(t *testing.T) {
+	fb := newFakeBridge(t, testBridgeToken("session"))
+	client := newTestClient(t, fb, "")
+	ctx := context.Background()
+	bridgeId, err := client.CreateSandbox(ctx, "key-session")
+	if err != nil {
+		t.Fatalf("CreateSandbox: %v", err)
+	}
+	sessionId, err := client.CreateSession(ctx, bridgeId, "key-session-2")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if sessionId == "" {
+		t.Fatal("the session endpoint must return a session id")
+	}
+	if err := client.DeleteSession(ctx, bridgeId, sessionId); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if err := client.DeleteSession(ctx, bridgeId, sessionId); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("deleting a deleted session must map to ErrSessionNotFound, got %v", err)
+	}
+}
+
+// TestParseExecStreamTerminalDiscipline freezes the "exactly one terminal"
+// rule: a stream without a terminal, with two terminals, or with a trailing
+// event after the terminal, all fail closed.
+func TestParseExecStreamTerminalDiscipline(t *testing.T) {
+	stream := func(events ...string) string {
+		var b strings.Builder
+		for _, event := range events {
+			b.WriteString(event)
+			b.WriteString("\n\n")
+		}
+		return b.String()
+	}
+	outputEvent := func(name, raw string) string {
+		return "event: " + name + "\ndata: " + base64.StdEncoding.EncodeToString([]byte(raw))
+	}
+	exitEvent := "event: exit\ndata: {\"exit_code\":0}"
+	errorEvent := "event: error\ndata: {\"message\":\"killed\"}"
+
+	cases := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{"happy", stream(outputEvent("stdout", "out"), exitEvent), false},
+		{"error-terminal", stream(errorEvent), false},
+		{"no-terminal", stream(outputEvent("stdout", "out")), true},
+		{"two-terminals", stream(exitEvent, exitEvent), true},
+		{"trailing-after-terminal", stream(exitEvent, outputEvent("stdout", "out")), true},
+		{"malformed-output", stream("event: stdout\ndata: !!!not-base64!!!", exitEvent), true},
+		{"unknown-event", stream("event: mystery\ndata: x", exitEvent), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := parseExecStream(strings.NewReader(tc.body))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("the stream must fail closed, got %+v", result)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("the stream must parse, got %v", err)
+			}
+		})
+	}
+}
+
+func TestClientNotFoundAndContainerLostMapping(t *testing.T) {
+	fb := newFakeBridge(t, testBridgeToken("not-found"))
+	client := newTestClient(t, fb, "")
+	ctx := context.Background()
+	if _, err := client.SandboxRunning(ctx, "br-missing"); !errors.Is(err, ErrSandboxNotFound) {
+		t.Fatalf("an unknown sandbox must map to ErrSandboxNotFound, got %v", err)
+	}
+	bridgeId, err := client.CreateSandbox(ctx, "key-lost")
+	if err != nil {
+		t.Fatalf("CreateSandbox: %v", err)
+	}
+	fb.LoseContainer(t, bridgeId)
+	if _, err := client.SandboxRunning(ctx, bridgeId); err != nil {
+		t.Fatalf("running of a lost container must be an observation, got %v", err)
+	}
+	if _, err := client.Persist(ctx, bridgeId, "key-persist"); !errors.Is(err, ErrContainerLost) {
+		t.Fatalf("persist of a lost container must map to ErrContainerLost, got %v", err)
 	}
 }
 
@@ -327,7 +440,7 @@ func TestClientCredentialNeverSurfacesInErrors(t *testing.T) {
 	var observables []string
 
 	wrongClient := newTestClient(t, fb, token+"-wrong")
-	if _, err := wrongClient.Health(ctx); err != nil {
+	if _, err := wrongClient.CreateSandbox(ctx, "key-leak"); err != nil {
 		observables = append(observables, err.Error())
 	} else {
 		t.Fatal("the wrong credential must be rejected")
@@ -340,7 +453,7 @@ func TestClientCredentialNeverSurfacesInErrors(t *testing.T) {
 	} else {
 		t.Fatal("the exhausted retry budget must fail")
 	}
-	if _, err := client.SandboxStatus(ctx, "alloc-missing"); err != nil {
+	if _, err := client.SandboxRunning(ctx, "br-missing"); err != nil {
 		observables = append(observables, err.Error())
 	} else {
 		t.Fatal("the unknown sandbox must fail")

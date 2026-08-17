@@ -1,6 +1,7 @@
 package cloudflare
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -23,24 +24,20 @@ import (
 )
 
 // This file hosts the fake Bridge conformance fixture: an in-process
-// httptest implementation of the M10-a Bridge endpoint family (create /
-// running / exec SSE / file / persist / hydrate / destroy) that carries the
-// deterministic fixtures and fault injections for the provider and client
-// tests. It never connects to real Cloudflare infrastructure and depends on
-// no Cloudflare SDK.
+// httptest implementation of the official Cloudflare Sandbox Bridge HTTP
+// API (health / create / running / exec SSE / file / persist / hydrate /
+// destroy / session) with deterministic fixtures and fault injections for
+// the provider and client tests. It never connects to real Cloudflare
+// infrastructure and depends on no Cloudflare SDK.
 
-// fakeBridgeSandbox is the fixture state of one Bridge sandbox.
+// fakeBridgeSandbox is the fixture state of one Bridge sandbox, keyed by the
+// Bridge locator the create endpoint assigns.
 type fakeBridgeSandbox struct {
-	record       SandboxRecord
-	files        map[string][]byte
-	violations   []ViolationRecord
-	spawnCount   int64
-	logLines     []string
-	exitCode     int
-	liveSessions int
-	persistCount int
-	lost         bool
-	destroyed    bool
+	bridgeId  string
+	files     map[string][]byte
+	sessions  map[string]bool
+	lost      bool
+	destroyed bool
 }
 
 type fakeExecOutcome struct {
@@ -55,15 +52,15 @@ type idempotentResponse struct {
 
 // fakeBridge is the deterministic in-process Bridge fixture.
 type fakeBridge struct {
-	mu              sync.Mutex
-	token           string
-	protocolVersion string
-	mux             *http.ServeMux
-	server          *httptest.Server
+	mu      sync.Mutex
+	token   string
+	mux     *http.ServeMux
+	server  *httptest.Server
+	nextId  int
+	nextSid int
 
-	sandboxes   map[string]*fakeBridgeSandbox
-	stores      map[string][]byte
-	checkpoints map[string][]byte
+	sandboxes map[string]*fakeBridgeSandbox
+	stores    map[string][]byte
 
 	idempotencyCache map[string]idempotentResponse
 	failTimes        map[string]int
@@ -71,12 +68,12 @@ type fakeBridge struct {
 	slowTimes        map[string]int
 	slowDuration     time.Duration
 	dropTimes        map[string]int
+	dropSuffixes     map[string]int
 
-	disableContainment bool
-	tamperAfterWrite   bool
-	capacityErrorNext  bool
-	execOutcomes       map[string]fakeExecOutcome
-	healthRawBody      []byte
+	tamperAfterWrite  bool
+	capacityErrorNext bool
+	execOutcomes      map[string]fakeExecOutcome
+	healthRawBody     []byte
 
 	requestCounts           map[string]int
 	authHeaders             []string
@@ -89,39 +86,39 @@ func newFakeBridge(t *testing.T, token string) *fakeBridge {
 	t.Helper()
 	fb := &fakeBridge{
 		token:            token,
-		protocolVersion:  DefaultProtocolVersion,
 		sandboxes:        map[string]*fakeBridgeSandbox{},
 		stores:           map[string][]byte{},
-		checkpoints:      map[string][]byte{},
 		idempotencyCache: map[string]idempotentResponse{},
 		failTimes:        map[string]int{},
 		failStatus:       http.StatusServiceUnavailable,
 		slowTimes:        map[string]int{},
 		slowDuration:     200 * time.Millisecond,
 		dropTimes:        map[string]int{},
+		dropSuffixes:     map[string]int{},
 		execOutcomes:     map[string]fakeExecOutcome{},
 		requestCounts:    map[string]int{},
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/health", fb.handleHealth)
-	mux.HandleFunc("POST /v1/sandboxes", fb.handleCreate)
-	mux.HandleFunc("GET /v1/sandboxes", fb.handleList)
-	mux.HandleFunc("GET /v1/sandboxes/{id}", fb.handleStatus)
-	mux.HandleFunc("DELETE /v1/sandboxes/{id}", fb.handleDestroy)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/exec", fb.handleExec)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/file", fb.handleFileWrite)
-	mux.HandleFunc("GET /v1/sandboxes/{id}/file", fb.handleFileRead)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/persist", fb.handlePersist)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/hydrate", fb.handleHydrate)
-	mux.HandleFunc("POST /v1/sandboxes/{id}/signal", fb.handleSignal)
+	mux.HandleFunc("GET /health", fb.handleHealth)
+	mux.HandleFunc("POST /v1/sandbox", fb.handleCreate)
+	mux.HandleFunc("GET /v1/sandbox/{id}/running", fb.handleRunning)
+	mux.HandleFunc("DELETE /v1/sandbox/{id}", fb.handleDestroy)
+	mux.HandleFunc("POST /v1/sandbox/{id}/exec", fb.handleExec)
+	mux.HandleFunc("GET /v1/sandbox/{id}/file/{path...}", fb.handleFileRead)
+	mux.HandleFunc("PUT /v1/sandbox/{id}/file/{path...}", fb.handleFileWrite)
+	mux.HandleFunc("POST /v1/sandbox/{id}/persist", fb.handlePersist)
+	mux.HandleFunc("POST /v1/sandbox/{id}/hydrate", fb.handleHydrate)
+	mux.HandleFunc("POST /v1/sandbox/{id}/session", fb.handleCreateSession)
+	mux.HandleFunc("DELETE /v1/sandbox/{id}/session/{sessionId}", fb.handleDeleteSession)
 	fb.mux = mux
 	fb.server = httptest.NewServer(http.HandlerFunc(fb.serve))
 	t.Cleanup(fb.server.Close)
 	return fb
 }
 
-// serve enforces the Bearer credential gate and records the transport
-// surface for the credential-isolation assertions.
+// serve enforces the Bearer credential gate for every endpoint except the
+// unauthenticated health read, and records the transport surface for the
+// credential-isolation assertions.
 func (fb *fakeBridge) serve(w http.ResponseWriter, r *http.Request) {
 	fb.mu.Lock()
 	fb.requestCounts[r.Method+" "+r.URL.Path]++
@@ -131,6 +128,10 @@ func (fb *fakeBridge) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	token := fb.token
 	fb.mu.Unlock()
+	if r.Method == http.MethodGet && r.URL.Path == healthPath {
+		fb.mux.ServeHTTP(w, r)
+		return
+	}
 	if r.Header.Get("Authorization") != "Bearer "+token {
 		writeJSON(w, http.StatusUnauthorized, errorPayload("credential-rejected", "the bridge credential was rejected"))
 		return
@@ -147,7 +148,6 @@ func (fb *fakeBridge) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	fb.mu.Lock()
 	raw := fb.healthRawBody
-	version := fb.protocolVersion
 	fb.mu.Unlock()
 	if len(raw) > 0 {
 		w.Header().Set("Content-Type", "application/json")
@@ -155,11 +155,7 @@ func (fb *fakeBridge) handleHealth(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(raw)
 		return
 	}
-	writeJSON(w, http.StatusOK, HealthReport{
-		Status:          "ok",
-		ProtocolVersion: version,
-		BridgeVersion:   "m10a-fixture" + "-bridge",
-	})
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (fb *fakeBridge) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -172,69 +168,25 @@ func (fb *fakeBridge) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if fb.injectAPIFault(w, r) {
 		return
 	}
-	var request CreateSandboxRequest
-	if err := decodeRequestBody(r, &request); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorPayload("invalid-request", "the create payload was rejected"))
-		return
-	}
 	fb.mu.Lock()
 	if fb.capacityErrorNext {
 		fb.capacityErrorNext = false
 		fb.mu.Unlock()
-		fb.respondMutating(w, r, http.StatusInsufficientStorage, errorPayload("capacity-exhausted", "the account container capacity is exhausted"))
+		fb.respondJSON(w, r, http.StatusInsufficientStorage, errorPayload("capacity-exhausted", "the account container capacity is exhausted"))
 		return
 	}
-	existing, exists := fb.sandboxes[request.SandboxId]
-	if exists && !existing.destroyed && !existing.lost {
-		fb.mu.Unlock()
-		fb.respondMutating(w, r, http.StatusConflict, errorPayload("duplicate-sandbox", "a running sandbox already carries this identifier"))
-		return
-	}
-	box := &fakeBridgeSandbox{
-		record: SandboxRecord{
-			SandboxId:  request.SandboxId,
-			RunId:      request.RunId,
-			AttemptId:  request.AttemptId,
-			Generation: request.Generation,
-			State:      "running",
-		},
-		files: map[string][]byte{},
-	}
-	fb.sandboxes[request.SandboxId] = box
-	record := box.record
-	fb.mu.Unlock()
-	fb.respondMutating(w, r, http.StatusCreated, record)
-}
-
-func (fb *fakeBridge) handleList(w http.ResponseWriter, r *http.Request) {
-	if fb.injectTransportFault(w, r) {
-		return
-	}
-	if fb.injectAPIFault(w, r) {
-		return
-	}
-	runId := r.URL.Query().Get("runId")
-	attemptId := r.URL.Query().Get("attemptId")
-	fb.mu.Lock()
-	records := []SandboxRecord{}
-	for _, box := range fb.sandboxes {
-		if box.destroyed || box.lost {
-			continue
-		}
-		if runId != "" && box.record.RunId != runId {
-			continue
-		}
-		if attemptId != "" && box.record.AttemptId != attemptId {
-			continue
-		}
-		records = append(records, box.record)
+	fb.nextId++
+	bridgeId := "br-" + strconv.Itoa(fb.nextId)
+	fb.sandboxes[bridgeId] = &fakeBridgeSandbox{
+		bridgeId: bridgeId,
+		files:    map[string][]byte{},
+		sessions: map[string]bool{},
 	}
 	fb.mu.Unlock()
-	sort.Slice(records, func(i, j int) bool { return records[i].SandboxId < records[j].SandboxId })
-	writeJSON(w, http.StatusOK, SandboxList{Sandboxes: records})
+	fb.respondJSON(w, r, http.StatusOK, map[string]string{"id": bridgeId})
 }
 
-func (fb *fakeBridge) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (fb *fakeBridge) handleRunning(w http.ResponseWriter, r *http.Request) {
 	if fb.injectTransportFault(w, r) {
 		return
 	}
@@ -243,22 +195,44 @@ func (fb *fakeBridge) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	fb.mu.Lock()
-	box, ok := fb.resolveBoxLocked(w, id)
-	if !ok {
+	box, ok := fb.sandboxes[id]
+	switch {
+	case !ok || box.destroyed:
 		fb.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, errorPayload("sandbox-not-found", "no sandbox carries this identifier"))
+		return
+	case box.lost:
+		fb.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]bool{"running": false})
 		return
 	}
-	status := SandboxStatus{
-		SandboxId:    id,
-		State:        "running",
-		ExitCode:     box.exitCode,
-		SpawnCount:   box.spawnCount,
-		Violations:   append([]ViolationRecord(nil), box.violations...),
-		LogLines:     append([]string(nil), box.logLines...),
-		LiveSessions: box.liveSessions,
-	}
 	fb.mu.Unlock()
-	writeJSON(w, http.StatusOK, status)
+	writeJSON(w, http.StatusOK, map[string]bool{"running": true})
+}
+
+func (fb *fakeBridge) handleDestroy(w http.ResponseWriter, r *http.Request) {
+	if fb.replayCached(w, r) {
+		return
+	}
+	if fb.injectTransportFault(w, r) {
+		return
+	}
+	if fb.injectAPIFault(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	fb.mu.Lock()
+	box, ok := fb.sandboxes[id]
+	if !ok || box.destroyed {
+		fb.mu.Unlock()
+		fb.respondJSON(w, r, http.StatusNotFound, errorPayload("sandbox-not-found", "no sandbox carries this identifier"))
+		return
+	}
+	box.destroyed = true
+	box.lost = false
+	box.sessions = map[string]bool{}
+	fb.mu.Unlock()
+	fb.respondRaw(w, r, http.StatusNoContent, "application/octet-stream", nil)
 }
 
 func (fb *fakeBridge) handleExec(w http.ResponseWriter, r *http.Request) {
@@ -274,56 +248,68 @@ func (fb *fakeBridge) handleExec(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorPayload("invalid-request", "the exec payload was rejected"))
 		return
 	}
-	if len(request.Command) == 0 {
-		writeJSON(w, http.StatusBadRequest, errorPayload("invalid-request", "exec requires a non-empty command"))
+	if len(request.Argv) == 0 {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid-request", "exec requires a non-empty argv"))
 		return
 	}
 	fb.mu.Lock()
-	box, ok := fb.resolveBoxLocked(w, id)
-	if !ok {
+	box, ok := fb.sandboxes[id]
+	if !ok || box.destroyed {
 		fb.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, errorPayload("sandbox-not-found", "no sandbox carries this identifier"))
 		return
 	}
-	outcome := fb.execOutcomeLocked(request.Command[0])
-	contained := !fb.disableContainment
-	for _, token := range request.Command {
-		switch token {
-		case sandbox.ProbeCommandBoundaryWrite:
-			if contained {
-				appendLogLocked(box, "probe blocked: out-of-bounds write attempt contained")
-			} else {
-				box.violations = append(box.violations, ViolationRecord{Kind: sandbox.ViolationOutOfBoundsWrite, Detail: "the probe wrote outside the allocation boundary"})
-				appendLogLocked(box, "observed violation: out-of-bounds write escaped containment")
-			}
-		case sandbox.ProbeCommandSensitiveEnvRead:
-			if contained {
-				appendLogLocked(box, "probe blocked: sensitive environment read denied")
-			} else {
-				box.violations = append(box.violations, ViolationRecord{Kind: sandbox.ViolationSensitiveEnvRead, Detail: "the probe read sensitive environment entries"})
-				appendLogLocked(box, "observed violation: sensitive environment read escaped containment")
-			}
-		case sandbox.ProbeCommandSpawnFlood:
-			if contained {
-				appendLogLocked(box, "probe blocked: spawn flood capped at the limit")
-			} else {
-				box.spawnCount += 8
-				box.violations = append(box.violations, ViolationRecord{Kind: sandbox.ViolationSpawnLimitExceeded, Detail: "the probe exceeded the spawn limit"})
-				appendLogLocked(box, "observed violation: spawn flood escaped containment")
-			}
-		default:
-			appendLogLocked(box, "exec: "+token)
-		}
+	if box.lost {
+		fb.mu.Unlock()
+		writeJSON(w, http.StatusGone, errorPayload("container-lost", "the container state was lost after hibernation"))
+		return
 	}
-	box.exitCode = outcome.exitCode
-	stdout := []byte("exec stdout\x00" + strings.Join(request.Command, "\x00"))
-	stderr := []byte("exec stderr\x00" + strings.Join(request.Command, "\x00"))
+	outcome := fb.execOutcomeLocked(request.Argv[0])
 	fb.mu.Unlock()
+	stdout := []byte("exec stdout\x00" + strings.Join(request.Argv, "\x00"))
+	stderr := []byte("exec stderr\x00" + strings.Join(request.Argv, "\x00"))
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
-	emitSSE(w, flusher, "output", sseOutputEvent{Stream: "stdout", Data: base64.StdEncoding.EncodeToString(stdout)})
-	emitSSE(w, flusher, "output", sseOutputEvent{Stream: "stderr", Data: base64.StdEncoding.EncodeToString(stderr)})
-	emitSSE(w, flusher, "exit", sseExitEvent{ExitCode: outcome.exitCode, Signaled: outcome.signaled})
+	emitSSE(w, flusher, "stdout", base64.StdEncoding.EncodeToString(stdout))
+	emitSSE(w, flusher, "stderr", base64.StdEncoding.EncodeToString(stderr))
+	if outcome.signaled {
+		emitSSE(w, flusher, "error", sseJSON(map[string]string{"message": "process killed"}))
+	} else {
+		emitSSE(w, flusher, "exit", sseJSON(map[string]int{"exit_code": outcome.exitCode}))
+	}
+}
+
+func (fb *fakeBridge) handleFileRead(w http.ResponseWriter, r *http.Request) {
+	if fb.injectTransportFault(w, r) {
+		return
+	}
+	if fb.injectAPIFault(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	path := r.PathValue("path")
+	fb.mu.Lock()
+	box, ok := fb.sandboxes[id]
+	if !ok || box.destroyed {
+		fb.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, errorPayload("sandbox-not-found", "no sandbox carries this identifier"))
+		return
+	}
+	if box.lost {
+		fb.mu.Unlock()
+		writeJSON(w, http.StatusGone, errorPayload("container-lost", "the container state was lost after hibernation"))
+		return
+	}
+	content, exists := box.files[path]
+	if !exists {
+		fb.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, errorPayload("file-not-found", "the sandbox holds no such staged file"))
+		return
+	}
+	out := append([]byte(nil), content...)
+	fb.mu.Unlock()
+	fb.respondRaw(w, r, http.StatusOK, "application/octet-stream", out)
 }
 
 func (fb *fakeBridge) handleFileWrite(w http.ResponseWriter, r *http.Request) {
@@ -337,87 +323,34 @@ func (fb *fakeBridge) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	var request WriteFileRequest
-	if err := decodeRequestBody(r, &request); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorPayload("invalid-request", "the file payload was rejected"))
+	path := r.PathValue("path")
+	content, err := io.ReadAll(io.LimitReader(r.Body, maxRawBytes+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid-request", "the file payload could not be read"))
+		return
+	}
+	if int64(len(content)) > maxRawBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorPayload("payload-too-large", "the file payload exceeds the budget"))
 		return
 	}
 	fb.mu.Lock()
-	box, ok := fb.resolveBoxLocked(w, id)
-	if !ok {
+	box, ok := fb.sandboxes[id]
+	if !ok || box.destroyed {
 		fb.mu.Unlock()
+		fb.respondJSON(w, r, http.StatusNotFound, errorPayload("sandbox-not-found", "no sandbox carries this identifier"))
 		return
 	}
-	var content []byte
-	if request.Locator != nil {
-		seeded, resolved := fb.stores[request.Locator.StoreId+"\x00"+request.Locator.SHA256]
-		if !resolved {
-			fb.mu.Unlock()
-			fb.respondMutating(w, r, http.StatusNotFound, errorPayload("locator-unresolved", "the bound store does not hold the referenced object"))
-			return
-		}
-		content = append([]byte(nil), seeded...)
-	} else {
-		decoded, err := base64.StdEncoding.DecodeString(request.ContentBase64)
-		if err != nil {
-			fb.mu.Unlock()
-			fb.respondMutating(w, r, http.StatusBadRequest, errorPayload("invalid-request", "the inline content was rejected"))
-			return
-		}
-		content = decoded
-	}
-	// Fail-closed pre-consumption recomputation: a mismatch refuses the
-	// write outright, so a declared digest is never consumed unchecked.
-	pre := sandbox.RecomputeSHA256(content)
-	if pre != request.DeclaredSHA256 {
+	if box.lost {
 		fb.mu.Unlock()
-		fb.respondMutating(w, r, http.StatusUnprocessableEntity, errorPayload("digest-mismatch", "the digest recomputed before consumption does not match the declared digest"))
+		fb.respondJSON(w, r, http.StatusGone, errorPayload("container-lost", "the container state was lost after hibernation"))
 		return
 	}
-	box.files[request.Path] = append([]byte(nil), content...)
+	box.files[path] = append([]byte(nil), content...)
 	if fb.tamperAfterWrite {
-		box.files[request.Path] = append(append([]byte(nil), content...), []byte("|bridge-fixture-tamper")...)
-	}
-	post := sandbox.RecomputeSHA256(box.files[request.Path])
-	if post != pre {
-		fb.mu.Unlock()
-		fb.respondMutating(w, r, http.StatusUnprocessableEntity, errorPayload("post-write-mismatch", "the read-back digest disagrees with the pre-consumption digest"))
-		return
-	}
-	result := WriteFileResult{PreSHA256: pre, PostSHA256: post, SizeBytes: int64(len(content))}
-	fb.mu.Unlock()
-	fb.respondMutating(w, r, http.StatusOK, result)
-}
-
-func (fb *fakeBridge) handleFileRead(w http.ResponseWriter, r *http.Request) {
-	if fb.injectTransportFault(w, r) {
-		return
-	}
-	if fb.injectAPIFault(w, r) {
-		return
-	}
-	id := r.PathValue("id")
-	path := r.URL.Query().Get("path")
-	fb.mu.Lock()
-	box, ok := fb.resolveBoxLocked(w, id)
-	if !ok {
-		fb.mu.Unlock()
-		return
-	}
-	content, exists := box.files[path]
-	if !exists {
-		fb.mu.Unlock()
-		writeJSON(w, http.StatusNotFound, errorPayload("file-not-found", "the sandbox holds no such staged file"))
-		return
-	}
-	result := ReadFileResult{
-		Path:          path,
-		ContentBase64: base64.StdEncoding.EncodeToString(content),
-		SHA256:        sandbox.RecomputeSHA256(content),
-		SizeBytes:     int64(len(content)),
+		box.files[path] = append(append([]byte(nil), content...), []byte("|bridge-fixture-tamper")...)
 	}
 	fb.mu.Unlock()
-	writeJSON(w, http.StatusOK, result)
+	fb.respondRaw(w, r, http.StatusNoContent, "application/octet-stream", nil)
 }
 
 func (fb *fakeBridge) handlePersist(w http.ResponseWriter, r *http.Request) {
@@ -432,35 +365,20 @@ func (fb *fakeBridge) handlePersist(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	fb.mu.Lock()
-	box, ok := fb.resolveBoxLocked(w, id)
-	if !ok {
+	box, ok := fb.sandboxes[id]
+	if !ok || box.destroyed {
 		fb.mu.Unlock()
+		fb.respondJSON(w, r, http.StatusNotFound, errorPayload("sandbox-not-found", "no sandbox carries this identifier"))
 		return
 	}
-	box.persistCount++
-	paths := make([]string, 0, len(box.files))
-	for path := range box.files {
-		paths = append(paths, path)
+	if box.lost {
+		fb.mu.Unlock()
+		fb.respondJSON(w, r, http.StatusGone, errorPayload("container-lost", "the container state was lost after hibernation"))
+		return
 	}
-	sort.Strings(paths)
-	var payload []byte
-	for _, path := range paths {
-		content := box.files[path]
-		payload = append(payload, path...)
-		payload = append(payload, 0)
-		payload = append(payload, []byte(strconv.Itoa(len(content)))...)
-		payload = append(payload, 0)
-		payload = append(payload, content...)
-	}
-	checkpointId := "ckpt:" + id + ":" + strconv.Itoa(box.persistCount)
-	fb.checkpoints[checkpointId] = payload
-	result := PersistResult{
-		CheckpointId: checkpointId,
-		SHA256:       sandbox.RecomputeSHA256(payload),
-		SizeBytes:    int64(len(payload)),
-	}
+	tar := buildTar(box.files)
 	fb.mu.Unlock()
-	fb.respondMutating(w, r, http.StatusOK, result)
+	fb.respondRaw(w, r, http.StatusOK, "application/octet-stream", tar)
 }
 
 func (fb *fakeBridge) handleHydrate(w http.ResponseWriter, r *http.Request) {
@@ -474,41 +392,38 @@ func (fb *fakeBridge) handleHydrate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	var request HydrateRequest
-	if err := decodeRequestBody(r, &request); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorPayload("invalid-request", "the hydrate payload was rejected"))
+	tarBytes, err := io.ReadAll(io.LimitReader(r.Body, maxRawBytes+1))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid-request", "the hydrate payload could not be read"))
+		return
+	}
+	if int64(len(tarBytes)) > maxRawBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorPayload("payload-too-large", "the hydrate payload exceeds the budget"))
+		return
+	}
+	files, err := parseTar(tarBytes)
+	if err != nil {
+		fb.respondJSON(w, r, http.StatusUnprocessableEntity, errorPayload("invalid-checkpoint", "the checkpoint snapshot could not be parsed"))
 		return
 	}
 	fb.mu.Lock()
-	box, ok := fb.resolveBoxLocked(w, id)
-	if !ok {
+	box, ok := fb.sandboxes[id]
+	if !ok || box.destroyed {
 		fb.mu.Unlock()
+		fb.respondJSON(w, r, http.StatusNotFound, errorPayload("sandbox-not-found", "no sandbox carries this identifier"))
 		return
 	}
-	snapshot, exists := fb.checkpoints[request.CheckpointId]
-	if !exists {
+	if box.lost {
 		fb.mu.Unlock()
-		fb.respondMutating(w, r, http.StatusNotFound, errorPayload("checkpoint-not-found", "no checkpoint carries this identifier"))
-		return
-	}
-	files, err := parseCheckpointPayload(snapshot)
-	if err != nil {
-		fb.mu.Unlock()
-		fb.respondMutating(w, r, http.StatusUnprocessableEntity, errorPayload("invalid-checkpoint", "the checkpoint snapshot could not be parsed"))
+		fb.respondJSON(w, r, http.StatusGone, errorPayload("container-lost", "the container state was lost after hibernation"))
 		return
 	}
 	box.files = files
-	result := HydrateResult{
-		SandboxId:    id,
-		CheckpointId: request.CheckpointId,
-		FileCount:    len(files),
-		SHA256:       sandbox.RecomputeSHA256(snapshot),
-	}
 	fb.mu.Unlock()
-	fb.respondMutating(w, r, http.StatusOK, result)
+	fb.respondRaw(w, r, http.StatusNoContent, "application/octet-stream", nil)
 }
 
-func (fb *fakeBridge) handleDestroy(w http.ResponseWriter, r *http.Request) {
+func (fb *fakeBridge) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if fb.replayCached(w, r) {
 		return
 	}
@@ -520,69 +435,53 @@ func (fb *fakeBridge) handleDestroy(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	fb.mu.Lock()
-	box, exists := fb.sandboxes[id]
-	if !exists {
-		fb.mu.Unlock()
-		fb.respondMutating(w, r, http.StatusNotFound, errorPayload("sandbox-not-found", "no sandbox carries this identifier"))
-		return
-	}
-	box.destroyed = true
-	box.lost = false
-	box.liveSessions = 0
-	box.record.State = "destroyed"
-	record := box.record
-	fb.mu.Unlock()
-	fb.respondMutating(w, r, http.StatusOK, record)
-}
-
-func (fb *fakeBridge) handleSignal(w http.ResponseWriter, r *http.Request) {
-	if fb.replayCached(w, r) {
-		return
-	}
-	if fb.injectTransportFault(w, r) {
-		return
-	}
-	if fb.injectAPIFault(w, r) {
-		return
-	}
-	id := r.PathValue("id")
-	var request SignalRequest
-	if err := decodeRequestBody(r, &request); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorPayload("invalid-request", "the signal payload was rejected"))
-		return
-	}
-	fb.mu.Lock()
-	box, ok := fb.resolveBoxLocked(w, id)
-	if !ok {
-		fb.mu.Unlock()
-		return
-	}
-	delivered := false
-	if box.liveSessions > 0 {
-		box.liveSessions--
-		delivered = true
-		appendLogLocked(box, "signal delivered: "+request.Signal)
-	} else {
-		appendLogLocked(box, "signal not delivered: no live workload process for "+request.Signal)
-	}
-	fb.mu.Unlock()
-	fb.respondMutating(w, r, http.StatusOK, SignalResult{Signal: request.Signal, Delivered: delivered})
-}
-
-// resolveBoxLocked resolves one live sandbox while the caller holds fb.mu;
-// it writes the fixture error response and returns false for unknown,
-// destroyed or lost sandboxes.
-func (fb *fakeBridge) resolveBoxLocked(w http.ResponseWriter, id string) (*fakeBridgeSandbox, bool) {
 	box, ok := fb.sandboxes[id]
-	switch {
-	case !ok || box.destroyed:
-		writeJSON(w, http.StatusNotFound, errorPayload("sandbox-not-found", "no sandbox carries this identifier"))
-		return nil, false
-	case box.lost:
-		writeJSON(w, http.StatusGone, errorPayload("container-lost", "the container state was lost after hibernation"))
-		return nil, false
+	if !ok || box.destroyed {
+		fb.mu.Unlock()
+		fb.respondJSON(w, r, http.StatusNotFound, errorPayload("sandbox-not-found", "no sandbox carries this identifier"))
+		return
 	}
-	return box, true
+	if box.lost {
+		fb.mu.Unlock()
+		fb.respondJSON(w, r, http.StatusGone, errorPayload("container-lost", "the container state was lost after hibernation"))
+		return
+	}
+	fb.nextSid++
+	sessionId := "sess-" + strconv.Itoa(fb.nextSid)
+	box.sessions[sessionId] = true
+	fb.mu.Unlock()
+	fb.respondJSON(w, r, http.StatusOK, map[string]string{"sessionId": sessionId})
+}
+
+func (fb *fakeBridge) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	if fb.injectTransportFault(w, r) {
+		return
+	}
+	if fb.injectAPIFault(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	sessionId := r.PathValue("sessionId")
+	fb.mu.Lock()
+	box, ok := fb.sandboxes[id]
+	if !ok || box.destroyed {
+		fb.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, errorPayload("sandbox-not-found", "no sandbox carries this identifier"))
+		return
+	}
+	if box.lost {
+		fb.mu.Unlock()
+		writeJSON(w, http.StatusGone, errorPayload("container-lost", "the container state was lost after hibernation"))
+		return
+	}
+	if !box.sessions[sessionId] {
+		fb.mu.Unlock()
+		writeJSON(w, http.StatusNotFound, errorPayload("session-not-found", "no session carries this identifier"))
+		return
+	}
+	delete(box.sessions, sessionId)
+	fb.mu.Unlock()
+	fb.respondRaw(w, r, http.StatusNoContent, "application/octet-stream", nil)
 }
 
 func (fb *fakeBridge) execOutcomeLocked(command0 string) fakeExecOutcome {
@@ -612,22 +511,37 @@ func (fb *fakeBridge) replayCached(w http.ResponseWriter, r *http.Request) bool 
 	return true
 }
 
-// respondMutating writes one mutating outcome and caches it under the
+// respondJSON writes one JSON outcome and caches it under the
 // Idempotency-Key when present.
-func (fb *fakeBridge) respondMutating(w http.ResponseWriter, r *http.Request, status int, payload any) {
+func (fb *fakeBridge) respondJSON(w http.ResponseWriter, r *http.Request, status int, payload any) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		http.Error(w, "fixture encoding failure", http.StatusInternalServerError)
 		return
 	}
+	fb.cacheResponse(r, status, body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}
+
+// respondRaw writes one raw byte outcome and caches it under the
+// Idempotency-Key when present.
+func (fb *fakeBridge) respondRaw(w http.ResponseWriter, r *http.Request, status int, contentType string, body []byte) {
+	fb.cacheResponse(r, status, body)
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(status)
+	if len(body) > 0 {
+		_, _ = w.Write(body)
+	}
+}
+
+func (fb *fakeBridge) cacheResponse(r *http.Request, status int, body []byte) {
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
 		fb.mu.Lock()
 		fb.idempotencyCache[r.Method+" "+r.URL.Path+"\x00"+key] = idempotentResponse{status: status, body: body}
 		fb.mu.Unlock()
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
 }
 
 // injectTransportFault applies the drop and slow transport faults; it
@@ -639,13 +553,21 @@ func (fb *fakeBridge) injectTransportFault(w http.ResponseWriter, r *http.Reques
 	if drop {
 		fb.dropTimes[key]--
 	}
+	suffixDrop := false
+	for suffixKey, remaining := range fb.dropSuffixes {
+		method, suffix, ok := strings.Cut(suffixKey, " ")
+		if ok && method == r.Method && strings.HasSuffix(r.URL.Path, suffix) && remaining > 0 {
+			fb.dropSuffixes[suffixKey] = remaining - 1
+			suffixDrop = true
+		}
+	}
 	slow := fb.slowTimes[key] > 0
 	if slow {
 		fb.slowTimes[key]--
 	}
 	duration := fb.slowDuration
 	fb.mu.Unlock()
-	if drop {
+	if drop || suffixDrop {
 		if hijacker, ok := w.(http.Hijacker); ok {
 			if conn, _, err := hijacker.Hijack(); err == nil {
 				_ = conn.Close()
@@ -681,27 +603,29 @@ func (fb *fakeBridge) injectAPIFault(w http.ResponseWriter, r *http.Request) boo
 // Test-control helpers.
 
 // SeedStore places deterministic content behind one bound store alias and
-// digest so staged locators resolve inside the fixture container.
+// digest so staged locators resolve through the resolver.
 func (fb *fakeBridge) SeedStore(storeId, sha256 string, content []byte) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
 	fb.stores[storeId+"\x00"+sha256] = append([]byte(nil), content...)
 }
 
-// SetLiveSessions scripts the number of live exec sessions of one sandbox.
-func (fb *fakeBridge) SetLiveSessions(t *testing.T, id string, sessions int) {
-	t.Helper()
-	fb.mu.Lock()
-	defer fb.mu.Unlock()
-	box, ok := fb.sandboxes[id]
-	if !ok {
-		t.Fatalf("the fixture bridge holds no sandbox %q", id)
+// Resolver returns a locator resolver reading from the fixture store, to be
+// wired into the provider under test.
+func (fb *fakeBridge) Resolver() func(sandbox.Locator) ([]byte, error) {
+	return func(locator sandbox.Locator) ([]byte, error) {
+		fb.mu.Lock()
+		defer fb.mu.Unlock()
+		content, ok := fb.stores[locator.StoreId+"\x00"+locator.SHA256]
+		if !ok {
+			return nil, errors.New("cloudflare fixture: locator content is not resolvable")
+		}
+		return append([]byte(nil), content...), nil
 	}
-	box.liveSessions = sessions
 }
 
-// LoseContainer simulates the platform silently losing the container's
-// file and process state after hibernation.
+// LoseContainer simulates the platform silently losing the container's file
+// and process state after hibernation.
 func (fb *fakeBridge) LoseContainer(t *testing.T, id string) {
 	t.Helper()
 	fb.mu.Lock()
@@ -711,8 +635,8 @@ func (fb *fakeBridge) LoseContainer(t *testing.T, id string) {
 		t.Fatalf("the fixture bridge holds no sandbox %q", id)
 	}
 	box.lost = true
-	box.files = nil
-	box.liveSessions = 0
+	box.files = map[string][]byte{}
+	box.sessions = map[string]bool{}
 }
 
 // ForgetSandbox removes one sandbox from the fixture entirely, simulating a
@@ -727,15 +651,8 @@ func (fb *fakeBridge) ForgetSandbox(t *testing.T, id string) {
 	delete(fb.sandboxes, id)
 }
 
-// DisableContainment toggles the containment simulation of the fixture.
-func (fb *fakeBridge) DisableContainment(on bool) {
-	fb.mu.Lock()
-	defer fb.mu.Unlock()
-	fb.disableContainment = on
-}
-
-// TamperAfterWrite corrupts the staged bytes after the pre-consumption
-// check, exercising the post-consumption recomputation path.
+// TamperAfterWrite corrupts the staged bytes after the raw write, exercising
+// the Marshal-side post-consumption recomputation path.
 func (fb *fakeBridge) TamperAfterWrite(on bool) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
@@ -787,11 +704,13 @@ func (fb *fakeBridge) DropPathTimes(method, path string, times int) {
 	fb.dropTimes[method+" "+path] = times
 }
 
-// SetProtocolVersion overrides the advertised protocol version.
-func (fb *fakeBridge) SetProtocolVersion(version string) {
+// DropPathSuffixTimes hijacks the next n calls of any endpoint whose path
+// ends with suffix, for endpoints whose full path is not known in advance
+// (a Bridge-assigned sandbox id).
+func (fb *fakeBridge) DropPathSuffixTimes(method, suffix string, times int) {
 	fb.mu.Lock()
 	defer fb.mu.Unlock()
-	fb.protocolVersion = version
+	fb.dropSuffixes[method+" "+suffix] = times
 }
 
 // SetHealthRawBody injects a raw health response body (malformed JSON or
@@ -834,16 +753,6 @@ func (fb *fakeBridge) AuthHeaders() []string {
 	return append([]string(nil), fb.authHeaders...)
 }
 
-// CheckpointBytes exposes the raw snapshot bytes the fixture persisted, so
-// tests can recompute the digest out-of-band and prove the receipt is not
-// an echo.
-func (fb *fakeBridge) CheckpointBytes(checkpointId string) ([]byte, bool) {
-	fb.mu.Lock()
-	defer fb.mu.Unlock()
-	content, ok := fb.checkpoints[checkpointId]
-	return append([]byte(nil), content...), ok
-}
-
 // SandboxFile exposes one staged file of the fixture for out-of-band
 // assertions.
 func (fb *fakeBridge) SandboxFile(id, path string) ([]byte, bool) {
@@ -855,6 +764,14 @@ func (fb *fakeBridge) SandboxFile(id, path string) ([]byte, bool) {
 	}
 	content, exists := box.files[path]
 	return append([]byte(nil), content...), exists
+}
+
+// sandboxCount returns the number of sandboxes the fixture holds, including
+// destroyed ones, for idempotency convergence assertions.
+func (fb *fakeBridge) sandboxCount() int {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+	return len(fb.sandboxes)
 }
 
 // Wire helpers.
@@ -886,22 +803,8 @@ func decodeRequestBody(r *http.Request, out any) error {
 	return json.Unmarshal(canonicalized, out)
 }
 
-type sseOutputEvent struct {
-	Stream string `json:"stream"`
-	Data   string `json:"data"`
-}
-
-type sseExitEvent struct {
-	ExitCode int  `json:"exitCode"`
-	Signaled bool `json:"signaled"`
-}
-
-func emitSSE(w http.ResponseWriter, flusher http.Flusher, event string, payload any) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, body); err != nil {
+func emitSSE(w http.ResponseWriter, flusher http.Flusher, event, data string) {
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
 		return
 	}
 	if flusher != nil {
@@ -909,39 +812,49 @@ func emitSSE(w http.ResponseWriter, flusher http.Flusher, event string, payload 
 	}
 }
 
-func appendLogLocked(box *fakeBridgeSandbox, line string) {
-	box.logLines = append(box.logLines, line)
-	if len(box.logLines) > maxLogLines {
-		box.logLines = box.logLines[len(box.logLines)-maxLogLines:]
+func sseJSON(payload any) string {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
 	}
+	return string(body)
 }
 
-// parseCheckpointPayload inverts the deterministic snapshot serialization of
-// handlePersist.
-func parseCheckpointPayload(payload []byte) (map[string][]byte, error) {
+// buildTar serializes the fixture files into a real ustar tar, so the
+// persist/hydrate path exercises the official raw tar contract.
+func buildTar(files map[string][]byte) []byte {
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	var buf bytes.Buffer
+	writer := tar.NewWriter(&buf)
+	for _, path := range paths {
+		content := files[path]
+		_ = writer.WriteHeader(&tar.Header{Name: path, Mode: 0644, Size: int64(len(content))})
+		_, _ = writer.Write(content)
+	}
+	_ = writer.Close()
+	return buf.Bytes()
+}
+
+func parseTar(data []byte) (map[string][]byte, error) {
 	files := map[string][]byte{}
-	rest := payload
-	for len(rest) > 0 {
-		pathEnd := bytes.IndexByte(rest, 0)
-		if pathEnd < 0 {
-			return nil, errors.New("cloudflare fixture: truncated checkpoint path")
+	reader := tar.NewReader(bytes.NewReader(data))
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
 		}
-		path := string(rest[:pathEnd])
-		rest = rest[pathEnd+1:]
-		sizeEnd := bytes.IndexByte(rest, 0)
-		if sizeEnd < 0 {
-			return nil, errors.New("cloudflare fixture: truncated checkpoint size")
+		if err != nil {
+			return nil, err
 		}
-		size, err := strconv.Atoi(string(rest[:sizeEnd]))
-		if err != nil || size < 0 {
-			return nil, errors.New("cloudflare fixture: malformed checkpoint size")
+		content, err := io.ReadAll(reader)
+		if err != nil {
+			return nil, err
 		}
-		rest = rest[sizeEnd+1:]
-		if len(rest) < size {
-			return nil, errors.New("cloudflare fixture: truncated checkpoint content")
-		}
-		files[path] = append([]byte(nil), rest[:size]...)
-		rest = rest[size:]
+		files[header.Name] = content
 	}
 	return files, nil
 }
@@ -1003,7 +916,8 @@ func scenarioIdentity(name, allocationId, commandId string, generation int64) sa
 }
 
 // newTestProvider constructs one Bridge provider against one fixture Bridge
-// with deterministic retry settings and no retry delay.
+// with deterministic retry settings, an ephemeral in-memory store and no
+// retry delay.
 func newTestProvider(t *testing.T, fb *fakeBridge, evidenceRef string) *Provider {
 	t.Helper()
 	provider, err := NewProvider(ProviderConfig{
@@ -1018,6 +932,19 @@ func newTestProvider(t *testing.T, fb *fakeBridge, evidenceRef string) *Provider
 		t.Fatalf("NewProvider: %v", err)
 	}
 	return provider
+}
+
+// providerBridgeLocator returns the Bridge locator the provider recorded for
+// one allocation.
+func providerBridgeLocator(t *testing.T, provider *Provider, allocationId string) string {
+	t.Helper()
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	entry, ok := provider.allocations[allocationId]
+	if !ok {
+		t.Fatalf("the provider holds no allocation %q", allocationId)
+	}
+	return entry.bridgeLocator
 }
 
 // assertNoCredential freezes the credential discipline: no observable
@@ -1067,8 +994,7 @@ func assertVerdictsEquivalent(t *testing.T, fixtureName string, expected, observ
 // TestConformanceEquivalenceFakeBridge drives the identical probe set of
 // sandbox.RunConformance through the scripted fake provider and the Bridge
 // provider backed by the fake Bridge, and freezes their verdict
-// equivalence: identical Passed/ReasonCode and normalized business-trace
-// outcome/invariant equivalence.
+// equivalence.
 func TestConformanceEquivalenceFakeBridge(t *testing.T) {
 	fixtures := []sandbox.ConformanceFixture{
 		{Name: "workspace-write-happy", Requirements: workspaceRequirements(t), Payload: []byte("payload" + "-workspace-write")},
@@ -1157,7 +1083,7 @@ func TestBridgeContainerLossCheckpointRestoreSemantics(t *testing.T) {
 		t.Fatalf("Checkpoint: %v", err)
 	}
 
-	fb.LoseContainer(t, alloc)
+	fb.LoseContainer(t, providerBridgeLocator(t, provider, alloc))
 
 	if _, err := provider.Checkpoint(ctx, sandbox.CheckpointRequest{
 		Identity:     identity("cmd-checkpoint-lost", 1),
@@ -1202,7 +1128,8 @@ func TestBridgeContainerLossCheckpointRestoreSemantics(t *testing.T) {
 	if restored.State != sandbox.AllocationActive {
 		t.Fatalf("the restored allocation must be observed active, got %q", string(restored.State))
 	}
-	if staged, ok := fb.SandboxFile(next, "staged/snapshot-source"); !ok || sandbox.RecomputeSHA256(staged) != sandbox.RecomputeSHA256(content) {
+	nextBridgeId := providerBridgeLocator(t, provider, next)
+	if staged, ok := fb.SandboxFile(nextBridgeId, "staged/snapshot-source"); !ok || sandbox.RecomputeSHA256(staged) != sandbox.RecomputeSHA256(content) {
 		t.Fatal("the hydrate must restore the staged content byte for byte")
 	}
 	restoredCheckpoint, err := provider.Checkpoint(ctx, sandbox.CheckpointRequest{
@@ -1355,7 +1282,7 @@ func TestBridgeLostRestoreResponseRecoversThroughIdempotency(t *testing.T) {
 		t.Fatalf("Checkpoint: %v", err)
 	}
 
-	fb.DropPathTimes("POST", "/v1/sandboxes/"+next+"/hydrate", 1)
+	fb.DropPathSuffixTimes("POST", "/hydrate", 1)
 	receipt, err := provider.Restore(ctx, sandbox.RestoreOperationRequest{
 		Identity:             scenarioIdentity(name, next, "cmd-restore", 2),
 		PreviousAllocationId: alloc,
@@ -1364,21 +1291,20 @@ func TestBridgeLostRestoreResponseRecoversThroughIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Restore must recover from one lost hydrate response through the idempotent retry, got %v", err)
 	}
-	if got := fb.RequestCount("POST", "/v1/sandboxes/"+next+"/hydrate"); got != 2 {
+	if got := fb.RequestCount("POST", "/v1/sandbox/"+providerBridgeLocator(t, provider, next)+"/hydrate"); got != 2 {
 		t.Fatalf("exactly one retry after the lost response was expected, got %d hydrate calls", got)
 	}
 	if receipt.Allocation.AllocationId != next || receipt.Allocation.State != sandbox.AllocationActive {
 		t.Fatalf("the restored allocation must be the active replacement, got %+v", receipt.Allocation)
 	}
-	if staged, ok := fb.SandboxFile(next, "staged/payload"); !ok || sandbox.RecomputeSHA256(staged) != sandbox.RecomputeSHA256(content) {
+	if staged, ok := fb.SandboxFile(providerBridgeLocator(t, provider, next), "staged/payload"); !ok || sandbox.RecomputeSHA256(staged) != sandbox.RecomputeSHA256(content) {
 		t.Fatal("the idempotent recovery must restore the staged content byte for byte")
 	}
 }
 
 // TestBridgeLostRestoreResponseReconcilesFailClosed freezes that a restore
 // whose hydrate responses are lost beyond the retry budget surfaces as
-// fail-closed drift through the independent reconcile path: the orphaned
-// Bridge-side sandbox is reported, never silently adopted.
+// fail-closed drift through the independent reconcile path.
 func TestBridgeLostRestoreResponseReconcilesFailClosed(t *testing.T) {
 	name := "lost-beyond-budget"
 	alloc := "alloc-" + name
@@ -1414,9 +1340,7 @@ func TestBridgeLostRestoreResponseReconcilesFailClosed(t *testing.T) {
 		t.Fatalf("Checkpoint: %v", err)
 	}
 
-	// Every hydrate attempt and every compensating destroy is lost.
-	fb.DropPathTimes("POST", "/v1/sandboxes/"+next+"/hydrate", 3)
-	fb.DropPathTimes("DELETE", "/v1/sandboxes/"+next, 3)
+	fb.DropPathSuffixTimes("POST", "/hydrate", 3)
 
 	_, err := provider.Restore(ctx, sandbox.RestoreOperationRequest{
 		Identity:             scenarioIdentity(name, next, "cmd-restore", 2),
@@ -1433,7 +1357,7 @@ func TestBridgeLostRestoreResponseReconcilesFailClosed(t *testing.T) {
 		AttemptId: "attempt-" + name,
 	})
 	if reconcileErr == nil {
-		t.Fatal("reconcile must fail closed when an orphaned sandbox survives a lost restore response")
+		t.Fatal("reconcile must fail closed when a create intent survives a lost restore response")
 	}
 	if report == nil || !report.DriftDetected {
 		t.Fatalf("reconcile must report drift, got %+v", report)
@@ -1445,6 +1369,6 @@ func TestBridgeLostRestoreResponseReconcilesFailClosed(t *testing.T) {
 		}
 	}
 	if !orphaned {
-		t.Fatalf("the orphaned replacement sandbox must be reported, got %+v", report)
+		t.Fatalf("the ambiguous replacement allocation must be reported, got %+v", report)
 	}
 }

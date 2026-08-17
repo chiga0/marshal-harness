@@ -17,42 +17,46 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 )
 
-// Wire contract status: the endpoint family below mirrors the official
-// Bridge operation set recorded in docs/m10-cloud-deployment-research.md
-// §2 (create / running / exec SSE / file / persist / hydrate / destroy),
-// but the exact paths, payload shapes and version identifiers frozen here
-// are the M10-a fixture contract. Every one of them is subject to the M10-b
-// online re-verification of the official Bridge OpenAPI; drift discovered
-// there is fail-closed material, not a compatibility negotiation. Platform
-// quota numbers are deliberately NOT expressed as constants here (research
-// doc §6.3): they were not re-verified online in M10-a.
-
-// DefaultProtocolVersion is the only Bridge protocol version this client
-// serves; any other advertised version fails closed.
-const DefaultProtocolVersion = "v1"
+// Wire contract status: the endpoint family below is the official
+// Cloudflare stable Sandbox Bridge HTTP API (cloudflare/sandbox-sdk bridge
+// worker), as re-verified online and frozen here:
+//
+//	GET    /health                     -> 200 {"ok":true}        (no credential)
+//	POST   /v1/sandbox                 -> 200 {"id":"<locator>"}
+//	DELETE /v1/sandbox/:id             -> 204
+//	GET    /v1/sandbox/:id/running     -> 200 {"running":bool}
+//	POST   /v1/sandbox/:id/exec        -> SSE stdout/stderr base64 + terminal
+//	GET    /v1/sandbox/:id/file/*      -> raw bytes
+//	PUT    /v1/sandbox/:id/file/*      -> raw bytes
+//	POST   /v1/sandbox/:id/persist     -> raw tar
+//	POST   /v1/sandbox/:id/hydrate     -> raw tar request
+//	POST   /v1/sandbox/:id/session     -> {"sessionId":"<id>"}
+//	DELETE /v1/sandbox/:id/session/:id -> 204
+//
+// The wire exposes no alternate health route, no bulk listing of sandboxes
+// and no dedicated kill endpoint. Signal is delivered by deleting the exact
+// session.
 
 const (
 	defaultMaxRetries     = 2
 	defaultRetryDelay     = 5 * time.Millisecond
 	defaultRequestTimeout = 10 * time.Second
 
-	// maxResponseBytes bounds one non-streaming Bridge response body. It
-	// mirrors the Marshal stage-request budget (internal/sandbox
-	// MaxStageRequestBytes), never a Cloudflare platform quota.
-	maxResponseBytes int64 = 16 << 20
+	// maxRawBytes bounds one raw byte payload (file read/write, persist
+	// tar, hydrate tar) at 32 MiB, the frozen official wire budget.
+	maxRawBytes int64 = 32 << 20
 
-	// maxStreamCaptureBytes bounds each captured exec output stream, in the
-	// spirit of internal/sandbox/local's bounded capture; it is a Marshal
-	// bounded-capture budget, never a Cloudflare platform quota.
+	// maxStreamCaptureBytes bounds each captured exec output stream; it is a
+	// Marshal bounded-capture budget, never a Cloudflare platform quota.
 	maxStreamCaptureBytes int64 = 1 << 20
 
 	redactedCredential = "[redacted:bridge-credential]"
 )
 
-// Endpoint paths of the M10-a fixture wire contract.
+// Endpoint paths of the official Bridge wire contract.
 const (
-	healthPath    = "/v1/health"
-	sandboxesPath = "/v1/sandboxes"
+	healthPath  = "/health"
+	sandboxPath = "/v1/sandbox"
 )
 
 var (
@@ -65,9 +69,6 @@ var (
 	// ErrCredentialRejected is returned when the Bridge endpoint rejects the
 	// transport credential (HTTP 401/403). It is never retried.
 	ErrCredentialRejected = errors.New("cloudflare bridge: the endpoint rejected the transport credential")
-	// ErrProtocolVersionMismatch fails closed when the Bridge endpoint
-	// advertises a protocol version other than the one the client requires.
-	ErrProtocolVersionMismatch = errors.New("cloudflare bridge: protocol version mismatch")
 	// ErrBridgeUnavailable is returned after the bounded retry budget is
 	// exhausted against transient failures (5xx or transport errors).
 	ErrBridgeUnavailable = errors.New("cloudflare bridge: endpoint unavailable")
@@ -77,19 +78,15 @@ var (
 	ErrInvalidBridgeResponse = errors.New("cloudflare bridge: response rejected")
 	// ErrSandboxNotFound maps a Bridge 404 for an unknown sandbox.
 	ErrSandboxNotFound = errors.New("cloudflare bridge: sandbox not found")
+	// ErrSessionNotFound maps a Bridge 404 for an unknown session.
+	ErrSessionNotFound = errors.New("cloudflare bridge: session not found")
 	// ErrCheckpointNotFound maps a Bridge 404 for an unknown checkpoint.
 	ErrCheckpointNotFound = errors.New("cloudflare bridge: checkpoint not found")
-	// ErrBridgeLocatorUnresolved maps a Bridge 404 reporting that a staged
-	// locator could not be resolved by the container.
-	ErrBridgeLocatorUnresolved = errors.New("cloudflare bridge: locator content is not resolvable")
 	// ErrContainerLost maps a Bridge 410: the container's file and process
 	// state was lost (hibernation/fault/restart), fail closed.
 	ErrContainerLost = errors.New("cloudflare bridge: container state lost")
 	// ErrBridgeConflict maps a Bridge 409 duplicate-sandbox observation.
 	ErrBridgeConflict = errors.New("cloudflare bridge: sandbox conflict")
-	// ErrDigestMismatch maps the Bridge's fail-closed pre-consumption digest
-	// check (HTTP 422 code digest-mismatch).
-	ErrDigestMismatch = errors.New("cloudflare bridge: digest mismatch before consumption")
 	// ErrCapacityExhausted maps Bridge capacity refusals (HTTP 429/507);
 	// they are never retried and never downgraded.
 	ErrCapacityExhausted = errors.New("cloudflare bridge: capacity exhausted")
@@ -98,9 +95,10 @@ var (
 )
 
 // Credential holds the Bridge Bearer transport credential. It is a
-// transport-layer secret only: it never substitutes for the fencingToken (a
-// non-credential stale-write guard), never enters business JSON, events,
-// logs, digests or error messages, and String() always redacts it.
+// transport-layer secret only: it never substitutes for the fencingToken,
+// never enters business JSON, events, logs, digests or error messages, and
+// String, Format and GoString all redact it, so no verb, pointer, carrier
+// struct, error wrap or log call can surface the literal.
 type Credential struct {
 	token string
 }
@@ -113,9 +111,18 @@ func NewCredential(token string) (Credential, error) {
 	return Credential{token: token}, nil
 }
 
-// String always returns the fixed redaction marker, so the credential can
-// never surface through logging or formatting.
+// String always returns the fixed redaction marker.
 func (c Credential) String() string { return redactedCredential }
+
+// Format implements fmt.Formatter so every formatting verb (%v, %+v, %#v,
+// %s, %q, ...) redacts the credential; it never writes the token.
+func (c Credential) Format(f fmt.State, _ rune) {
+	_, _ = f.Write([]byte(redactedCredential))
+}
+
+// GoString implements fmt.GoStringer so %#v redacts the credential instead
+// of printing the struct literal with its token field.
+func (c Credential) GoString() string { return redactedCredential }
 
 // BridgeError is one structured refusal observed on the Bridge wire. Its
 // message is scrubbed of the credential before it can surface.
@@ -142,26 +149,25 @@ func (e *BridgeError) Unwrap() error { return e.sentinel }
 // frozen defaults; negative MaxRetries disables retries and a negative
 // RetryDelay disables the delay between attempts (deterministic tests).
 type ClientConfig struct {
-	BaseURL         string
-	Credential      Credential
-	ProtocolVersion string
-	HTTPClient      *http.Client
-	MaxRetries      int
-	RetryDelay      time.Duration
-	RequestTimeout  time.Duration
+	BaseURL        string
+	Credential     Credential
+	HTTPClient     *http.Client
+	MaxRetries     int
+	RetryDelay     time.Duration
+	RequestTimeout time.Duration
 }
 
-// Client is the versioned HTTP/JSON client of the Bridge endpoint family.
-// The Bearer credential lives only inside the client and only ever travels
-// as the Authorization header of one transport request.
+// Client is the versioned HTTP client of the official Bridge endpoint
+// family. The Bearer credential lives only inside the client and only ever
+// travels as the Authorization header of one transport request; the health
+// endpoint is the single unauthenticated member.
 type Client struct {
-	baseURL         string
-	credential      Credential
-	protocolVersion string
-	httpClient      *http.Client
-	maxRetries      int
-	retryDelay      time.Duration
-	requestTimeout  time.Duration
+	baseURL        string
+	credential     Credential
+	httpClient     *http.Client
+	maxRetries     int
+	retryDelay     time.Duration
+	requestTimeout time.Duration
 }
 
 // NewClient validates the configuration fail closed and constructs the
@@ -182,10 +188,6 @@ func NewClient(config ClientConfig) (*Client, error) {
 	}
 	if strings.Contains(baseURL, config.Credential.token) {
 		return nil, fmt.Errorf("%w: the transport credential must never appear inside the bridge base URL", ErrInvalidClientConfig)
-	}
-	protocolVersion := config.ProtocolVersion
-	if protocolVersion == "" {
-		protocolVersion = DefaultProtocolVersion
 	}
 	maxRetries := config.MaxRetries
 	if maxRetries == 0 {
@@ -208,142 +210,49 @@ func NewClient(config ClientConfig) (*Client, error) {
 		httpClient = &http.Client{}
 	}
 	return &Client{
-		baseURL:         baseURL,
-		credential:      config.Credential,
-		protocolVersion: protocolVersion,
-		httpClient:      httpClient,
-		maxRetries:      maxRetries,
-		retryDelay:      retryDelay,
-		requestTimeout:  requestTimeout,
+		baseURL:        baseURL,
+		credential:     config.Credential,
+		httpClient:     httpClient,
+		maxRetries:     maxRetries,
+		retryDelay:     retryDelay,
+		requestTimeout: requestTimeout,
 	}, nil
 }
 
-// Wire types of the M10-a fixture contract.
+// Wire types of the official Bridge contract.
 
-// HealthReport is the read-only health/version observation of the Bridge.
+// HealthReport is the read-only health observation.
 type HealthReport struct {
-	Status          string `json:"status"`
-	ProtocolVersion string `json:"protocolVersion"`
-	BridgeVersion   string `json:"bridgeVersion"`
+	OK bool `json:"ok"`
 }
 
-// SandboxRecord is the Bridge's view of one sandbox lifecycle record.
-type SandboxRecord struct {
-	SandboxId  string `json:"sandboxId"`
-	RunId      string `json:"runId"`
-	AttemptId  string `json:"attemptId"`
-	Generation int64  `json:"generation"`
-	State      string `json:"state"`
+// CreateSandboxResult is the create observation; ID is the Bridge locator.
+type CreateSandboxResult struct {
+	ID string `json:"id"`
 }
 
-// CreateSandboxRequest is the create payload.
-type CreateSandboxRequest struct {
-	SandboxId  string `json:"sandboxId"`
-	RunId      string `json:"runId"`
-	AttemptId  string `json:"attemptId"`
-	Generation int64  `json:"generation"`
+// RunningReport is the running observation of one sandbox.
+type RunningReport struct {
+	Running bool `json:"running"`
 }
 
-// SandboxList is the running-class listing payload (reconcile input).
-type SandboxList struct {
-	Sandboxes []SandboxRecord `json:"sandboxes"`
+// SessionResult is the session-creation observation.
+type SessionResult struct {
+	SessionId string `json:"sessionId"`
 }
 
-// ViolationRecord is one observed containment failure reported by the
-// Bridge observation channel.
-type ViolationRecord struct {
-	Kind   string `json:"kind"`
-	Detail string `json:"detail"`
-}
-
-// SandboxStatus is the read-only observation payload of one sandbox.
-type SandboxStatus struct {
-	SandboxId    string            `json:"sandboxId"`
-	State        string            `json:"state"`
-	ExitCode     int               `json:"exitCode"`
-	SpawnCount   int64             `json:"spawnCount"`
-	Violations   []ViolationRecord `json:"violations"`
-	LogLines     []string          `json:"logLines"`
-	LiveSessions int               `json:"liveSessions"`
-}
-
-// LocatorRef is the wire form of one content-addressed locator handed to
-// the container: the bound store alias plus digest and size, never a URL
-// and never a credential.
-type LocatorRef struct {
-	StoreId   string `json:"storeId"`
-	SHA256    string `json:"sha256"`
-	SizeBytes int64  `json:"sizeBytes"`
-}
-
-// WriteFileRequest is the file-write payload: exactly one of inline
-// content or locator.
-type WriteFileRequest struct {
-	Path           string      `json:"path"`
-	DeclaredSHA256 string      `json:"declaredSha256"`
-	ContentBase64  string      `json:"contentBase64,omitempty"`
-	Locator        *LocatorRef `json:"locator,omitempty"`
-}
-
-// WriteFileResult carries the digests the Bridge recomputed before and
-// after consumption; a provider must never echo the declared digest in
-// their place.
-type WriteFileResult struct {
-	PreSHA256  string `json:"preSha256"`
-	PostSHA256 string `json:"postSha256"`
-	SizeBytes  int64  `json:"sizeBytes"`
-}
-
-// ReadFileResult is the file-read observation used for the Marshal-side
-// post-consumption recomputation.
-type ReadFileResult struct {
-	Path          string `json:"path"`
-	ContentBase64 string `json:"contentBase64"`
-	SHA256        string `json:"sha256"`
-	SizeBytes     int64  `json:"sizeBytes"`
-}
-
-// PersistResult is the persist (checkpoint) observation.
-type PersistResult struct {
-	CheckpointId string `json:"checkpointId"`
-	SHA256       string `json:"sha256"`
-	SizeBytes    int64  `json:"sizeBytes"`
-}
-
-// HydrateRequest names the checkpoint to hydrate from.
-type HydrateRequest struct {
-	CheckpointId string `json:"checkpointId"`
-}
-
-// HydrateResult is the hydrate observation.
-type HydrateResult struct {
-	SandboxId    string `json:"sandboxId"`
-	CheckpointId string `json:"checkpointId"`
-	FileCount    int    `json:"fileCount"`
-	SHA256       string `json:"sha256"`
-}
-
-// SignalRequest carries one closed-enumeration signal name.
-type SignalRequest struct {
-	Signal string `json:"signal"`
-}
-
-// SignalResult observes the signal delivery.
-type SignalResult struct {
-	Signal    string `json:"signal"`
-	Delivered bool   `json:"delivered"`
-}
-
-// ExecStreamRequest is the exec payload: argv plus optional stdin. The
-// operation identity never travels in the business JSON; only the derived
-// idempotency digest may accompany the call as a header.
+// ExecStreamRequest is the exec payload: argv plus optional timeout and
+// working directory. The operation identity never travels in the business
+// JSON; the idempotency of the surrounding operations lives in headers.
 type ExecStreamRequest struct {
-	Command     []string `json:"command"`
-	StdinBase64 string   `json:"stdinBase64,omitempty"`
+	Argv      []string `json:"argv"`
+	TimeoutMs int      `json:"timeout_ms,omitempty"`
+	Cwd       string   `json:"cwd,omitempty"`
 }
 
 // ExecStreamResult is the client-side observation of one completed exec
-// stream: exit code, the signaled flag and the bounded stream captures.
+// stream: exit code, the signaled flag (an error terminal) and the bounded
+// stream captures.
 type ExecStreamResult struct {
 	ExitCode int
 	Signaled bool
@@ -351,77 +260,103 @@ type ExecStreamResult struct {
 	Stderr   []byte
 }
 
-// Health probes the read-only health endpoint and fails closed on any
-// protocol version drift.
+// Health probes the read-only health endpoint. It is the single
+// unauthenticated member of the wire family and never carries the Bearer
+// credential.
 func (c *Client) Health(ctx context.Context) (report HealthReport, err error) {
 	defer func() { err = c.scrub(err) }()
-	data, err := c.do(ctx, http.MethodGet, healthPath, nil, nil, "", true)
+	data, err := c.do(ctx, http.MethodGet, healthPath, nil, nil, "", "", true, false)
 	if err != nil {
 		return HealthReport{}, err
 	}
 	if err := decodeCanonical(data, &report); err != nil {
 		return HealthReport{}, err
 	}
-	if report.ProtocolVersion != c.protocolVersion {
-		return HealthReport{}, fmt.Errorf("%w: the endpoint serves protocol %q, the client requires %q", ErrProtocolVersionMismatch, report.ProtocolVersion, c.protocolVersion)
+	if !report.OK {
+		return HealthReport{}, fmt.Errorf("%w: the bridge health endpoint did not report ok", ErrInvalidBridgeResponse)
 	}
 	return report, nil
 }
 
-// CreateSandbox calls the create endpoint with one idempotency key.
-func (c *Client) CreateSandbox(ctx context.Context, request CreateSandboxRequest, idempotencyKey string) (record SandboxRecord, err error) {
+// CreateSandbox calls the create endpoint with one idempotency key and
+// returns the Bridge locator the platform assigned. Create is an opaque side
+// effect: a lost response is retried under the identical idempotency key, so
+// a replay after a crash converges on the identical locator.
+func (c *Client) CreateSandbox(ctx context.Context, idempotencyKey string) (id string, err error) {
 	defer func() { err = c.scrub(err) }()
-	data, err := c.do(ctx, http.MethodPost, sandboxesPath, nil, request, idempotencyKey, true)
+	data, err := c.do(ctx, http.MethodPost, sandboxPath, nil, []byte("{}"), "application/json", idempotencyKey, true, true)
 	if err != nil {
-		return SandboxRecord{}, err
+		return "", err
 	}
-	if err := decodeCanonical(data, &record); err != nil {
-		return SandboxRecord{}, err
+	var result CreateSandboxResult
+	if err := decodeCanonical(data, &result); err != nil {
+		return "", err
 	}
-	return record, nil
+	if strings.TrimSpace(result.ID) == "" {
+		return "", fmt.Errorf("%w: the create endpoint returned no sandbox id", ErrInvalidBridgeResponse)
+	}
+	return result.ID, nil
 }
 
-// ListSandboxes calls the running-class listing endpoint for one (runId,
-// attemptId) scope.
-func (c *Client) ListSandboxes(ctx context.Context, runId, attemptId string) (records []SandboxRecord, err error) {
+// SandboxRunning reads the running observation of one sandbox.
+func (c *Client) SandboxRunning(ctx context.Context, sandboxId string) (running bool, err error) {
 	defer func() { err = c.scrub(err) }()
-	query := url.Values{}
-	query.Set("runId", runId)
-	query.Set("attemptId", attemptId)
-	data, err := c.do(ctx, http.MethodGet, sandboxesPath, query, nil, "", true)
+	data, err := c.do(ctx, http.MethodGet, sandboxRunningPath(sandboxId), nil, nil, "", "", true, true)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	var list SandboxList
-	if err := decodeCanonical(data, &list); err != nil {
-		return nil, err
+	var report RunningReport
+	if err := decodeCanonical(data, &report); err != nil {
+		return false, err
 	}
-	return list.Sandboxes, nil
+	return report.Running, nil
 }
 
-// SandboxStatus reads the observation endpoint of one sandbox.
-func (c *Client) SandboxStatus(ctx context.Context, sandboxId string) (status SandboxStatus, err error) {
+// Destroy calls the destroy endpoint; destroy is idempotent at the Bridge and
+// returns 204 on success.
+func (c *Client) Destroy(ctx context.Context, sandboxId, idempotencyKey string) (err error) {
 	defer func() { err = c.scrub(err) }()
-	data, err := c.do(ctx, http.MethodGet, sandboxItemPath(sandboxId), nil, nil, "", true)
+	_, err = c.do(ctx, http.MethodDelete, sandboxItemPath(sandboxId), nil, nil, "", idempotencyKey, true, true)
+	return err
+}
+
+// CreateSession creates one interactive session inside a sandbox and returns
+// its session id.
+func (c *Client) CreateSession(ctx context.Context, sandboxId, idempotencyKey string) (sessionId string, err error) {
+	defer func() { err = c.scrub(err) }()
+	data, err := c.do(ctx, http.MethodPost, sandboxSessionPath(sandboxId), nil, []byte("{}"), "application/json", idempotencyKey, true, true)
 	if err != nil {
-		return SandboxStatus{}, err
+		return "", err
 	}
-	if err := decodeCanonical(data, &status); err != nil {
-		return SandboxStatus{}, err
+	var result SessionResult
+	if err := decodeCanonical(data, &result); err != nil {
+		return "", err
 	}
-	return status, nil
+	if strings.TrimSpace(result.SessionId) == "" {
+		return "", fmt.Errorf("%w: the session endpoint returned no session id", ErrInvalidBridgeResponse)
+	}
+	return result.SessionId, nil
+}
+
+// DeleteSession deletes the exact session, delivering the kill that Signal
+// maps onto. A 204 acknowledges the deletion; a 404 surfaces ErrSessionNotFound.
+func (c *Client) DeleteSession(ctx context.Context, sandboxId, sessionId string) (err error) {
+	defer func() { err = c.scrub(err) }()
+	_, err = c.do(ctx, http.MethodDelete, sandboxSessionItemPath(sandboxId, sessionId), nil, nil, "", "", true, true)
+	return err
 }
 
 // Exec drives the exec SSE endpoint. Exec is never auto-retried: a command
 // may have started executing even when the stream breaks, so a broken
-// stream fails closed instead of re-executing.
-func (c *Client) Exec(ctx context.Context, sandboxId string, request ExecStreamRequest) (result ExecStreamResult, err error) {
+// stream fails closed instead of re-executing. The optional session id
+// travels only as the Session-Id header.
+func (c *Client) Exec(ctx context.Context, sandboxId, sessionId string, request ExecStreamRequest) (result ExecStreamResult, err error) {
 	defer func() { err = c.scrub(err) }()
 	raw, err := json.Marshal(request)
 	if err != nil {
 		return result, fmt.Errorf("cloudflare bridge: exec request encoding: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(sandboxActionPath(sandboxId, "exec")), bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(sandboxExecPath(sandboxId)), bytes.NewReader(raw))
 	if err != nil {
 		return result, fmt.Errorf("cloudflare bridge: exec request construction: %w", err)
 	}
@@ -429,105 +364,96 @@ func (c *Client) Exec(ctx context.Context, sandboxId string, request ExecStreamR
 	req.Header.Set("Authorization", "Bearer "+c.credential.token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	if sessionId != "" {
+		req.Header.Set("Session-Id", sessionId)
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return result, fmt.Errorf("%w: the exec stream could not be established: %v", ErrBridgeUnavailable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, maxRawBytes))
 		return result, c.decodeError(resp.StatusCode, data)
 	}
 	return parseExecStream(resp.Body)
 }
 
-// WriteFile calls the file-write endpoint; the Bridge recomputes the
-// digest before consumption and refuses a mismatch without writing.
-func (c *Client) WriteFile(ctx context.Context, sandboxId string, request WriteFileRequest, idempotencyKey string) (result WriteFileResult, err error) {
+// ReadFile reads one staged file back as raw bytes.
+func (c *Client) ReadFile(ctx context.Context, sandboxId, path string) (content []byte, err error) {
 	defer func() { err = c.scrub(err) }()
-	data, err := c.do(ctx, http.MethodPost, sandboxActionPath(sandboxId, "file"), nil, request, idempotencyKey, true)
+	data, err := c.do(ctx, http.MethodGet, sandboxFilePath(sandboxId, path), nil, nil, "", "", true, true)
 	if err != nil {
-		return WriteFileResult{}, err
+		return nil, err
 	}
-	if err := decodeCanonical(data, &result); err != nil {
-		return WriteFileResult{}, err
-	}
-	return result, nil
+	return data, nil
 }
 
-// ReadFile reads one staged file back for the Marshal-side recomputation.
-func (c *Client) ReadFile(ctx context.Context, sandboxId, path string) (result ReadFileResult, err error) {
+// WriteFile writes one staged file as raw bytes. The digest discipline is
+// the caller's: this endpoint is a dumb byte store.
+func (c *Client) WriteFile(ctx context.Context, sandboxId, path string, content []byte, idempotencyKey string) (err error) {
 	defer func() { err = c.scrub(err) }()
-	query := url.Values{}
-	query.Set("path", path)
-	data, err := c.do(ctx, http.MethodGet, sandboxActionPath(sandboxId, "file"), query, nil, "", true)
-	if err != nil {
-		return ReadFileResult{}, err
-	}
-	if err := decodeCanonical(data, &result); err != nil {
-		return ReadFileResult{}, err
-	}
-	return result, nil
+	_, err = c.do(ctx, http.MethodPut, sandboxFilePath(sandboxId, path), nil, content, "application/octet-stream", idempotencyKey, true, true)
+	return err
 }
 
-// Persist calls the persist endpoint (checkpoint of the staged content).
-func (c *Client) Persist(ctx context.Context, sandboxId, idempotencyKey string) (result PersistResult, err error) {
+// Persist snapshots the staged content and returns the raw tar bytes. The
+// caller recomputes the checkpoint digest out of band; the Bridge never
+// echoes a declared digest.
+func (c *Client) Persist(ctx context.Context, sandboxId, idempotencyKey string) (tar []byte, err error) {
 	defer func() { err = c.scrub(err) }()
-	data, err := c.do(ctx, http.MethodPost, sandboxActionPath(sandboxId, "persist"), nil, struct{}{}, idempotencyKey, true)
+	data, err := c.do(ctx, http.MethodPost, sandboxPersistPath(sandboxId), nil, []byte("{}"), "application/json", idempotencyKey, true, true)
 	if err != nil {
-		return PersistResult{}, err
+		return nil, err
 	}
-	if err := decodeCanonical(data, &result); err != nil {
-		return PersistResult{}, err
-	}
-	return result, nil
+	return data, nil
 }
 
-// Hydrate calls the hydrate endpoint of one sandbox against one checkpoint.
-func (c *Client) Hydrate(ctx context.Context, sandboxId, checkpointId, idempotencyKey string) (result HydrateResult, err error) {
+// Hydrate restores the staged content from the raw tar bytes.
+func (c *Client) Hydrate(ctx context.Context, sandboxId string, tar []byte, idempotencyKey string) (err error) {
 	defer func() { err = c.scrub(err) }()
-	data, err := c.do(ctx, http.MethodPost, sandboxActionPath(sandboxId, "hydrate"), nil, HydrateRequest{CheckpointId: checkpointId}, idempotencyKey, true)
-	if err != nil {
-		return HydrateResult{}, err
-	}
-	if err := decodeCanonical(data, &result); err != nil {
-		return HydrateResult{}, err
-	}
-	return result, nil
-}
-
-// Destroy calls the destroy endpoint; destroy is idempotent at the Bridge.
-func (c *Client) Destroy(ctx context.Context, sandboxId, idempotencyKey string) (record SandboxRecord, err error) {
-	defer func() { err = c.scrub(err) }()
-	data, err := c.do(ctx, http.MethodDelete, sandboxItemPath(sandboxId), nil, nil, idempotencyKey, true)
-	if err != nil {
-		return SandboxRecord{}, err
-	}
-	if err := decodeCanonical(data, &record); err != nil {
-		return SandboxRecord{}, err
-	}
-	return record, nil
-}
-
-// Signal delivers one closed-enumeration signal through the Bridge.
-func (c *Client) Signal(ctx context.Context, sandboxId, signal, idempotencyKey string) (result SignalResult, err error) {
-	defer func() { err = c.scrub(err) }()
-	data, err := c.do(ctx, http.MethodPost, sandboxActionPath(sandboxId, "signal"), nil, SignalRequest{Signal: signal}, idempotencyKey, true)
-	if err != nil {
-		return SignalResult{}, err
-	}
-	if err := decodeCanonical(data, &result); err != nil {
-		return SignalResult{}, err
-	}
-	return result, nil
+	_, err = c.do(ctx, http.MethodPost, sandboxHydratePath(sandboxId), nil, tar, "application/octet-stream", idempotencyKey, true, true)
+	return err
 }
 
 func sandboxItemPath(sandboxId string) string {
-	return sandboxesPath + "/" + url.PathEscape(sandboxId)
+	return sandboxPath + "/" + url.PathEscape(sandboxId)
 }
 
-func sandboxActionPath(sandboxId, action string) string {
-	return sandboxItemPath(sandboxId) + "/" + action
+func sandboxRunningPath(sandboxId string) string {
+	return sandboxItemPath(sandboxId) + "/running"
+}
+
+func sandboxExecPath(sandboxId string) string {
+	return sandboxItemPath(sandboxId) + "/exec"
+}
+
+func sandboxPersistPath(sandboxId string) string {
+	return sandboxItemPath(sandboxId) + "/persist"
+}
+
+func sandboxHydratePath(sandboxId string) string {
+	return sandboxItemPath(sandboxId) + "/hydrate"
+}
+
+func sandboxSessionPath(sandboxId string) string {
+	return sandboxItemPath(sandboxId) + "/session"
+}
+
+func sandboxSessionItemPath(sandboxId, sessionId string) string {
+	return sandboxSessionPath(sandboxId) + "/" + url.PathEscape(sessionId)
+}
+
+// sandboxFilePath builds the wildcard file path, escaping each segment while
+// preserving the path separators so the file content address is a raw byte
+// route, never a JSON payload.
+func sandboxFilePath(sandboxId, path string) string {
+	segments := strings.Split(path, "/")
+	escaped := make([]string, len(segments))
+	for i, segment := range segments {
+		escaped[i] = url.PathEscape(segment)
+	}
+	return sandboxItemPath(sandboxId) + "/file/" + strings.Join(escaped, "/")
 }
 
 func (c *Client) endpoint(path string) string {
@@ -536,20 +462,12 @@ func (c *Client) endpoint(path string) string {
 
 // disableTransportRetries makes one request fail closed in exactly one wire
 // attempt. The stdlib Transport transparently re-sends a request after a
-// connection-level failure whenever it can rewind the request body
-// (GetBody != nil, which http.NewRequestWithContext assigns for the
-// bytes.Reader bodies this client builds) or whenever the request carries
-// no body at all. That transparent retry would silently multiply the
-// bounded retry budget of do(): one logical attempt would consume several
-// lost responses and reach the endpoint well beyond the frozen attempt
-// bound. The retry budget of this client is owned exclusively by do(), so
-// clearing GetBody removes the Transport's ability to rewind a bodied
-// request, and a bodiless request (the running-class reads and destroy)
-// receives a non-rewindable zero-length body for the identical reason: one
-// logical attempt is always exactly one wire request, and a lost or refused
-// response surfaces for an explicit idempotency-keyed decision instead of
-// disappearing into a transparent side effect. Recovery above the budget is
-// the caller's decision, never the transport's.
+// connection-level failure whenever it can rewind the request body. That
+// transparent retry would silently multiply the bounded retry budget of do:
+// one logical attempt would consume several lost responses. The retry budget
+// of this client is owned exclusively by do, so clearing GetBody removes the
+// Transport's ability to rewind a bodied request, and a bodiless request
+// receives a non-rewindable zero-length body for the identical reason.
 func disableTransportRetries(req *http.Request) {
 	req.GetBody = nil
 	if req.Body == nil || req.Body == http.NoBody {
@@ -559,12 +477,10 @@ func disableTransportRetries(req *http.Request) {
 }
 
 // do performs one request with the bounded deterministic retry budget: one
-// attempt is exactly one wire request (disableTransportRetries strips the
-// stdlib Transport's own transparent retry, so the budget below is the
-// single retry authority of this client). Reads and idempotency-keyed
-// mutations retry on 500/502/503/504 and on transport failures; credential
-// refusals, capacity refusals and semantic 4xx errors never retry.
-func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any, idempotencyKey string, allowRetry bool) ([]byte, error) {
+// attempt is exactly one wire request. Reads and idempotency-keyed mutations
+// retry on 500/502/503/504 and on transport failures; credential refusals,
+// capacity refusals and semantic 4xx errors never retry.
+func (c *Client) do(ctx context.Context, method, path string, query url.Values, body []byte, contentType, idempotencyKey string, allowRetry, authenticated bool) ([]byte, error) {
 	attempts := 1
 	if allowRetry {
 		attempts = c.maxRetries + 1
@@ -588,7 +504,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		if c.requestTimeout > 0 {
 			callCtx, cancel = context.WithTimeout(ctx, c.requestTimeout)
 		}
-		status, data, err := c.send(callCtx, method, path, query, body, idempotencyKey)
+		status, data, err := c.send(callCtx, method, path, query, body, contentType, idempotencyKey, authenticated)
 		if cancel != nil {
 			cancel()
 		}
@@ -619,28 +535,26 @@ func retryableStatus(status int) bool {
 	return false
 }
 
-func (c *Client) send(ctx context.Context, method, path string, query url.Values, body any, idempotencyKey string) (int, []byte, error) {
+func (c *Client) send(ctx context.Context, method, path string, query url.Values, body []byte, contentType, idempotencyKey string, authenticated bool) (int, []byte, error) {
 	endpoint := c.endpoint(path)
 	if len(query) > 0 {
 		endpoint += "?" + query.Encode()
 	}
 	var reader io.Reader
 	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return 0, nil, fmt.Errorf("cloudflare bridge: request encoding: %w", err)
-		}
-		reader = bytes.NewReader(raw)
+		reader = bytes.NewReader(body)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
 	if err != nil {
 		return 0, nil, fmt.Errorf("cloudflare bridge: request construction: %w", err)
 	}
 	disableTransportRetries(req)
-	req.Header.Set("Authorization", "Bearer "+c.credential.token)
 	req.Header.Set("Accept", "application/json")
+	if authenticated {
+		req.Header.Set("Authorization", "Bearer "+c.credential.token)
+	}
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 	if idempotencyKey != "" {
 		req.Header.Set("Idempotency-Key", idempotencyKey)
@@ -650,11 +564,11 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRawBytes+1))
 	if err != nil {
 		return resp.StatusCode, nil, err
 	}
-	if int64(len(data)) > maxResponseBytes {
+	if int64(len(data)) > maxRawBytes {
 		return resp.StatusCode, nil, fmt.Errorf("%w: the response body exceeds the bounded capture budget", ErrInvalidBridgeResponse)
 	}
 	return resp.StatusCode, data, nil
@@ -689,8 +603,8 @@ func sentinelFor(status int, code string) error {
 		switch code {
 		case "checkpoint-not-found":
 			return ErrCheckpointNotFound
-		case "locator-unresolved":
-			return ErrBridgeLocatorUnresolved
+		case "session-not-found":
+			return ErrSessionNotFound
 		default:
 			return ErrSandboxNotFound
 		}
@@ -698,11 +612,6 @@ func sentinelFor(status int, code string) error {
 		return ErrBridgeConflict
 	case http.StatusGone:
 		return ErrContainerLost
-	case http.StatusUnprocessableEntity:
-		if code == "digest-mismatch" {
-			return ErrDigestMismatch
-		}
-		return ErrBridgeRejected
 	case http.StatusTooManyRequests, http.StatusInsufficientStorage:
 		return ErrCapacityExhausted
 	default:
@@ -760,9 +669,11 @@ func (b *boundedBuffer) Write(data []byte) (int, error) {
 
 func (b *boundedBuffer) bytes() []byte { return bytes.Clone(b.buf.Bytes()) }
 
-// parseExecStream consumes one Bridge exec SSE stream: "output" events
-// feed the bounded stdout/stderr captures, the "exit" event carries the
-// terminal observation. A stream that ends without an exit event fails
+// parseExecStream consumes one Bridge exec SSE stream. The "stdout" and
+// "stderr" events carry base64 chunks; the stream must carry exactly one
+// terminal event — "exit" carrying {"exit_code":N} or "error" carrying the
+// abnormal-termination terminal. A stream that ends without a terminal, that
+// carries two terminals, or that carries any event after the terminal, fails
 // closed.
 func parseExecStream(body io.Reader) (ExecStreamResult, error) {
 	result := ExecStreamResult{ExitCode: -1}
@@ -772,7 +683,7 @@ func parseExecStream(body io.Reader) (ExecStreamResult, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 4<<20)
 	eventName := ""
 	var dataLines []string
-	exited := false
+	terminated := false
 	dispatch := func() error {
 		if eventName == "" && len(dataLines) == 0 {
 			return nil
@@ -781,36 +692,36 @@ func parseExecStream(body io.Reader) (ExecStreamResult, error) {
 		payload := strings.Join(dataLines, "\n")
 		eventName = ""
 		dataLines = nil
+		if terminated {
+			return fmt.Errorf("%w: the exec stream carried an event after its terminal event", ErrInvalidBridgeResponse)
+		}
 		switch name {
-		case "output":
-			var event struct {
-				Stream string `json:"stream"`
-				Data   string `json:"data"`
-			}
-			if err := decodeCanonical([]byte(payload), &event); err != nil {
-				return err
-			}
-			content, err := base64.StdEncoding.DecodeString(event.Data)
+		case "stdout", "stderr":
+			content, err := base64.StdEncoding.DecodeString(payload)
 			if err != nil {
 				return fmt.Errorf("%w: the exec stream carried a malformed output payload", ErrInvalidBridgeResponse)
 			}
-			switch event.Stream {
-			case "stdout":
+			if name == "stdout" {
 				_, _ = stdout.Write(content)
-			case "stderr":
+			} else {
 				_, _ = stderr.Write(content)
 			}
 		case "exit":
 			var event struct {
-				ExitCode int  `json:"exitCode"`
-				Signaled bool `json:"signaled"`
+				ExitCode int `json:"exit_code"`
 			}
 			if err := decodeCanonical([]byte(payload), &event); err != nil {
 				return err
 			}
 			result.ExitCode = event.ExitCode
-			result.Signaled = event.Signaled
-			exited = true
+			result.Signaled = false
+			terminated = true
+		case "error":
+			result.ExitCode = -1
+			result.Signaled = true
+			terminated = true
+		default:
+			return fmt.Errorf("%w: the exec stream carried an unknown event %q", ErrInvalidBridgeResponse, name)
 		}
 		return nil
 	}
@@ -819,9 +730,6 @@ func parseExecStream(body io.Reader) (ExecStreamResult, error) {
 		if line == "" {
 			if err := dispatch(); err != nil {
 				return result, err
-			}
-			if exited {
-				break
 			}
 			continue
 		}
@@ -843,8 +751,11 @@ func parseExecStream(body io.Reader) (ExecStreamResult, error) {
 	if err := scanner.Err(); err != nil {
 		return result, fmt.Errorf("%w: the exec stream broke: %v", ErrBridgeUnavailable, err)
 	}
-	if !exited {
-		return result, fmt.Errorf("%w: the exec stream ended without an exit event", ErrBridgeUnavailable)
+	if err := dispatch(); err != nil {
+		return result, err
+	}
+	if !terminated {
+		return result, fmt.Errorf("%w: the exec stream ended without a terminal event", ErrInvalidBridgeResponse)
 	}
 	result.Stdout = stdout.bytes()
 	result.Stderr = stderr.bytes()
