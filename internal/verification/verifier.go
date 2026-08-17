@@ -233,16 +233,47 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 			result.Report.Gates = append(result.Report.Gates, Gate{ID: "command:" + spec.ID, Category: "command", Required: spec.Required, Status: "cancelled", Summary: "验证已取消", Evidence: []string{}})
 			break
 		}
-		commandResult := runner.Run(ctx, input.Worktree, spec)
+		var baselineObservation Observation
+		var baselineObserveErr error
+		var candidateProtection []commandProtectedSource
+		if input.BaselinePath != "" {
+			baselineObservation, baselineObserveErr = ObserveContext(ctx, input.BaselinePath, input.BaseSHA, input.PatchCaptureBytes)
+			if baselineObserveErr == nil {
+				candidateProtection = append(candidateProtection, commandProtectedSource{Path: input.BaselinePath, BaseSHA: input.BaseSHA, Expected: baselineObservation})
+			}
+		}
+		isolated := isolatedCommandResult{}
+		var isolationErr error
+		if baselineObserveErr != nil {
+			isolationErr = errors.New("cannot freeze baseline before candidate command")
+		} else {
+			isolated, isolationErr = runCommandIsolated(ctx, runner, input.Worktree, input.BaseSHA, observation, spec, candidateProtection...)
+		}
+		commandResult := isolated.Command
+		if isolationErr != nil && !isolated.Executed {
+			commandResult = isolationErrorCommand(spec)
+		}
 		baselineRequested := spec.BaselinePolicy == "always" || (spec.BaselinePolicy == "on-failure" && commandResult.Status != "pass")
 		baselineMissing := baselineRequested && input.BaselinePath == ""
 		verdict := ""
+		baselineMutated := false
+		baselineMutationBefore, baselineMutationAfter := "", ""
+		baselineIsolationFailed := false
 		if input.BaselinePath != "" && baselineRequested {
-			baseline := runner.Run(ctx, input.BaselinePath, spec)
-			if baseline.Status == "cancelled" {
+			baseline := isolatedCommandResult{}
+			var baselineErr error
+			if baselineObserveErr == nil {
+				baseline, baselineErr = runCommandIsolated(ctx, runner, input.BaselinePath, input.BaseSHA, baselineObservation, spec, commandProtectedSource{Path: input.Worktree, BaseSHA: input.BaseSHA, Expected: observation})
+			}
+			if baselineObserveErr != nil || baselineErr != nil {
 				commandResult.Record.BaselineStatus = "error"
+				baselineIsolationFailed = true
+			} else if baseline.Mutated || baseline.Command.Status == "cancelled" {
+				commandResult.Record.BaselineStatus = "error"
+				baselineMutated = baseline.Mutated
+				baselineMutationBefore, baselineMutationAfter = baseline.BeforeDigest, baseline.AfterDigest
 			} else {
-				commandResult.Record.BaselineStatus = baseline.Status
+				commandResult.Record.BaselineStatus = baseline.Command.Status
 			}
 			verdict = baselineRegressionVerdict(commandResult.Status, commandResult.Record.BaselineStatus)
 		}
@@ -264,12 +295,18 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 			gate.Status, gate.Summary = "error", "命令请求 Baseline Diagnostic，但没有提供干净 Base Worktree"
 			commandResult.Record.BaselineStatus = "error"
 		}
-		after, observeErr := ObserveContext(ctx, input.Worktree, input.BaseSHA, input.PatchCaptureBytes)
-		if observeErr != nil {
-			gate.Status, gate.Summary = "error", "命令后无法重新观察 worktree: "+observeErr.Error()
-		} else if after.SnapshotDigest != observation.SnapshotDigest || after.DiffDigest != observation.DiffDigest {
+		if isolationErr != nil {
+			gate.Status = "error"
+			gate.Summary = commandSummary(commandResult) + "；verifier-command-isolation-error: " + isolationErr.Error()
+		} else if isolated.Mutated {
 			gate.Status = "fail"
-			gate.Summary = "Verifier 命令产生了未声明的 worktree 变更"
+			gate.Summary = commandSummary(commandResult) + "；" + verifierWorktreeMutatedReason + " before=" + isolated.BeforeDigest + " after=" + isolated.AfterDigest
+		} else if baselineIsolationFailed {
+			gate.Status = "error"
+			gate.Summary += "；Baseline command isolation failed"
+		} else if baselineMutated {
+			gate.Status = "fail"
+			gate.Summary += "；baseline-" + verifierWorktreeMutatedReason + " before=" + baselineMutationBefore + " after=" + baselineMutationAfter
 		}
 		result.Report.Gates = append(result.Report.Gates, gate)
 	}

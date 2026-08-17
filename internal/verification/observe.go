@@ -26,6 +26,15 @@ func Observe(worktree, baseSHA string, captureLimit int64) (Observation, error) 
 }
 
 func ObserveContext(ctx context.Context, worktree, baseSHA string, captureLimit int64) (Observation, error) {
+	return observeContextWithHooks(ctx, worktree, baseSHA, captureLimit, observeHooks{})
+}
+
+type observeHooks struct {
+	afterLstat  func(string)
+	openRegular func(string, os.FileInfo) (*os.File, error)
+}
+
+func observeContextWithHooks(ctx context.Context, worktree, baseSHA string, captureLimit int64, hooks observeHooks) (Observation, error) {
 	if captureLimit <= 0 {
 		captureLimit = 64 << 20
 	}
@@ -51,7 +60,7 @@ func ObserveContext(ctx context.Context, worktree, baseSHA string, captureLimit 
 		return changes[i].Path < changes[j].Path
 	})
 	for index := range changes {
-		if err := enrichChange(ctx, worktree, &changes[index]); err != nil {
+		if err := enrichChangeWithHooks(ctx, worktree, &changes[index], hooks); err != nil {
 			return Observation{}, err
 		}
 	}
@@ -118,7 +127,7 @@ func parseNameStatus(data []byte) ([]Change, error) {
 	return changes, nil
 }
 
-func enrichChange(ctx context.Context, root string, change *Change) error {
+func enrichChangeWithHooks(ctx context.Context, root string, change *Change, hooks observeHooks) error {
 	if err := validateRelativePath(change.Path); err != nil {
 		return err
 	}
@@ -134,6 +143,9 @@ func enrichChange(ctx context.Context, root string, change *Change) error {
 	}
 	if err != nil {
 		return err
+	}
+	if hooks.afterLstat != nil {
+		hooks.afterLstat(path)
 	}
 	change.Mode = uint32(info.Mode())
 	change.ByteSize = info.Size()
@@ -155,7 +167,7 @@ func enrichChange(ctx context.Context, root string, change *Change) error {
 		return nil
 	}
 	if info.Mode().IsRegular() {
-		digest, err := digestFile(path)
+		digest, err := digestFileContext(ctx, path, info, hooks.openRegular)
 		if err != nil {
 			return err
 		}
@@ -270,15 +282,23 @@ func replaceEnvironment(environment []string, key, value string) []string {
 	return append(environment, prefix+value)
 }
 
-func digestFile(path string) (string, error) {
-	file, err := os.Open(path)
+func digestFileContext(ctx context.Context, path string, expected os.FileInfo, opener func(string, os.FileInfo) (*os.File, error)) (string, error) {
+	if opener == nil {
+		opener = openStableRegular
+	}
+	file, err := opener(path, expected)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 	hasher := sha256.New()
-	if _, err := io.Copy(hasher, file); err != nil {
+	read, err := copyStreamContext(ctx, hasher, file)
+	if err != nil {
 		return "", err
+	}
+	actual, err := file.Stat()
+	if err != nil || read != expected.Size() || !os.SameFile(expected, actual) || actual.Size() != expected.Size() {
+		return "", errors.New("observed file changed identity or size while being digested")
 	}
 	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
