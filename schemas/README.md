@@ -18,6 +18,7 @@
 - [`remote-check-record.schema.json`](remote-check-record.schema.json)
 - [`scm-merge-receipt.schema.json`](scm-merge-receipt.schema.json)
 - [`publication-reconcile-record.schema.json`](publication-reconcile-record.schema.json)
+- [`scm-merge-intent.schema.json`](scm-merge-intent.schema.json)
 - [`approval-record.schema.json`](approval-record.schema.json)
 - [`intervention-record.schema.json`](intervention-record.schema.json)
 - [`sandbox-requirements.schema.json`](sandbox-requirements.schema.json)
@@ -45,6 +46,8 @@ Schema 是已接受但仍处于 `v1alpha1` 的契约。Implementation 必须为�
 Publication 记录（PublicationIntent、PublicationRecord、RemoteCheckRecord）只包含发布世代、Provider/Repository/PR 身份、Branch、SHA、Digest 与 Marker；不得包含 Token、GH Config Dir 或绝对本地 Worktree Path。
 
 ADR 0026 权威 reconcile 记录：SCMMergeReceipt 是已合并 PR 的不可变 merge 事实证据（headOid/baseOid/mergeCommitSha 与 GitHub PR 节点对账，`receiptDigest` 为去除自身后的 canonical digest）；PublicationReconcileRecord 是 append-only 对账载体，幂等身份 canonical 绑定 `(authorityNamespaceId, runId, scmMergeReceiptId, reconcileType)`，同身份重复提交归并、关键内容不同冲突 fail closed。两者均为 authority ledger 事实，只允许 Core 写入；`BLOCKED → ACCEPTED` 迁移是由这两个记录与 current-ledger recheck 共同门禁的 typed reconciliation，不放宽任何其他终态语义。
+
+ADR 0032 B1 权威 merge 意图记录：SCMMergeIntent 是受控 Task Merge 的唯一事前授权载体，先于一切远端副作用持久化且永不在原地改写；它逐字段绑定当前发布世代、ReviewDecision/Verification/Evidence/Policy/Approval/RemoteCheck 的 canonical digest 与预期 merge 执行者身份（`expectedMergedBy` canonical 表示 `github-login:<login>`）。`intentDigest` 是 detached canonical digest：计算时把 `intentDigest` 自身置为空字符串（字段保留）后经 RFC 8785 JCS 重算，权威校验永远自行重算、不信任记录内自报摘要；`publicationRecordId` 必须逐字等于 `publicationDigest`。TaskSpec 的 `publication.mergeMethod` 为 `merge|squash|rebase` 封闭枚举，仅当 `mergePolicy=policy` 时强制存在，且此时 `requiredChecks` 必须非空去重；`never` 保持兼容，`manual` 仍 fail closed。
 
 Control 记录（ApprovalRecord、InterventionRecord）是 Run Lease 保护下的追加式授权与介入证据。Approval 必须绑定当时的冻结输入或发布证据；Intervention 的分类决定是否可在当前 Attempt 继续、必须重新验证或必须创建新 Run。Worker 无权创建这两类记录。
 

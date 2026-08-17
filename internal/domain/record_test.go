@@ -7,12 +7,13 @@ import (
 
 // TestKindsAreUniqueAndStable pins the durable kind inventory: the eighteen
 // Issue #65 baseline kinds plus scm-merge-receipt, publication-reconcile-
-// record and candidate-record. The seven envelope-less Issue #65 M8 schemas
-// are reserved kinds below and deliberately not part of this inventory.
+// record, candidate-record and scm-merge-intent. The seven envelope-less
+// Issue #65 M8 schemas are reserved kinds below and deliberately not part
+// of this inventory.
 func TestKindsAreUniqueAndStable(t *testing.T) {
 	kinds := Kinds()
-	if len(kinds) != 21 {
-		t.Fatalf("Kinds() has %d entries, want 21", len(kinds))
+	if len(kinds) != 22 {
+		t.Fatalf("Kinds() has %d entries, want 22", len(kinds))
 	}
 	seen := make(map[Kind]bool, len(kinds))
 	for _, kind := range kinds {

@@ -35,6 +35,7 @@ var descriptors = []Descriptor{
 	{Name: "run-event", Kind: domain.KindRunEvent},
 	{Name: "run-state", Kind: domain.KindRunState},
 	{Name: "sandbox-requirements", Kind: domain.KindSandboxRequirements},
+	{Name: "scm-merge-intent", Kind: domain.KindSCMMergeIntent},
 	{Name: "scm-merge-receipt", Kind: domain.KindSCMMergeReceipt},
 	{Name: "task-spec", Kind: domain.KindTask},
 	{Name: "verification-report", Kind: domain.KindVerificationReport},

@@ -289,12 +289,22 @@
         "remote": { "type": "string", "minLength": 1, "maxLength": 256 },
         "baseBranch": { "type": "string", "minLength": 1, "maxLength": 512 },
         "mergePolicy": { "type": "string", "enum": ["never", "manual", "policy"] },
+        "mergeMethod": { "type": "string", "enum": ["merge", "squash", "rebase"] },
         "requiredChecks": {
           "type": "array",
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1, "maxLength": 512 }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "mergePolicy": { "const": "policy" } },
+            "required": ["mergePolicy"]
+          },
+          "then": { "required": ["mergeMethod"] }
+        }
+      ]
     },
     "admission": {
       "type": "object",

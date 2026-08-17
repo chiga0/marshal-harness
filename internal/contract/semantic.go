@@ -26,6 +26,8 @@ func validateSemantics(kind domain.Kind, data []byte) error {
 		violations, err = validateReviewDecision(data)
 	case domain.KindArtifactManifest:
 		violations, err = validateArtifactManifest(data)
+	case domain.KindSCMMergeIntent:
+		violations, err = validateSCMMergeIntent(data)
 	default:
 		return nil
 	}
@@ -78,7 +80,12 @@ func validateTask(data []byte) ([]Violation, error) {
 			MaxReworkRounds       int `json:"maxReworkRounds"`
 		} `json:"budgets"`
 		Publication struct {
-			Required bool `json:"required"`
+			Required       bool     `json:"required"`
+			Provider       string   `json:"provider"`
+			Mode           string   `json:"mode"`
+			MergePolicy    string   `json:"mergePolicy"`
+			MergeMethod    string   `json:"mergeMethod"`
+			RequiredChecks []string `json:"requiredChecks"`
 		} `json:"publication"`
 		Admission *struct {
 			Status string `json:"status"`
@@ -155,6 +162,29 @@ func validateTask(data []byte) ([]Violation, error) {
 	}
 	if task.Publication.Required != hasRequiredPublication {
 		violations = append(violations, violation("/publication/required", "publication-deliverable-mismatch", "publication.required must match a required publication deliverable"))
+	}
+
+	// ADR 0032 policy-merge admission: when mergePolicy is "policy", the
+	// TaskSpec must additionally declare a closed mergeMethod and a non-empty
+	// de-duplicated requiredChecks set. The Schema enforces the closed enum
+	// and uniqueItems; the semantic layer repeats both so direct validateTask
+	// callers receive readable violations instead of raw JSON Schema errors.
+	if task.Publication.MergePolicy == domain.MergePolicyPolicy {
+		switch task.Publication.MergeMethod {
+		case domain.MergeMethodMerge, domain.MergeMethodSquash, domain.MergeMethodRebase:
+		default:
+			violations = append(violations, violation("/publication/mergeMethod", "invalid-merge-method", fmt.Sprintf("mergePolicy=policy requires mergeMethod to be one of merge/squash/rebase, got %q", task.Publication.MergeMethod)))
+		}
+		if len(task.Publication.RequiredChecks) == 0 {
+			violations = append(violations, violation("/publication/requiredChecks", "required-checks-empty", "mergePolicy=policy requires a non-empty requiredChecks set"))
+		}
+		seenChecks := make(map[string]bool, len(task.Publication.RequiredChecks))
+		for index, check := range task.Publication.RequiredChecks {
+			if seenChecks[check] {
+				violations = append(violations, violation(fmt.Sprintf("/publication/requiredChecks/%d", index), "duplicate-required-check", fmt.Sprintf("requiredChecks entry %q is duplicated", check)))
+			}
+			seenChecks[check] = true
+		}
 	}
 
 	// admission.status is a closed vocabulary; the TaskSpec Schema enforces
@@ -363,6 +393,31 @@ func validateArtifactManifest(data []byte) ([]Violation, error) {
 		}
 	}
 	violations = append(violations, duplicateStringViolations("/artifacts", ids)...)
+	return violations, nil
+}
+
+// validateSCMMergeIntent enforces the ADR 0032 cross-field semantics of a
+// standalone SCMMergeIntent document. It delegates the frozen field
+// constraints to domain.SCMMergeIntent.Validate and then authoritatively
+// recomputes the detached intentDigest over the raw document, never trusting
+// the record's self-reported digest. Any forged or tampered digest fails
+// closed.
+func validateSCMMergeIntent(data []byte) ([]Violation, error) {
+	var intent domain.SCMMergeIntent
+	if err := json.Unmarshal(data, &intent); err != nil {
+		return nil, err
+	}
+	var violations []Violation
+	if err := intent.Validate(); err != nil {
+		violations = append(violations, violation("/", "scm-merge-intent-invalid", err.Error()))
+	}
+	recomputed, err := domain.DetachedIntentDigest(data)
+	if err != nil {
+		return nil, err
+	}
+	if recomputed != intent.IntentDigest {
+		violations = append(violations, violation("/intentDigest", "intent-digest-mismatch", "intentDigest must equal the detached canonical digest recomputed over the document"))
+	}
 	return violations, nil
 }
 

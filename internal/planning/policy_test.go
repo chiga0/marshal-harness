@@ -594,24 +594,56 @@ func TestValidatePolicyAcceptanceFloor(t *testing.T) {
 
 func TestValidatePolicyMerge(t *testing.T) {
 	validator := newValidator(t)
+
+	// policyMergeTask returns a TaskSpec whose publication declaration is
+	// fully shaped for the ADR 0032 policy-merge admission; individual tests
+	// override one field at a time to exercise each fail-closed condition.
+	policyMergeTask := func() domain.TaskSpec {
+		task := defaultTask()
+		task.Publication.Provider = domain.PublicationProviderGitHub
+		task.Publication.Mode = domain.PublicationModeDraft
+		task.Publication.MergePolicy = domain.MergePolicyPolicy
+		task.Publication.MergeMethod = domain.MergeMethodSquash
+		task.Publication.RequiredChecks = []string{"ci/test"}
+		return task
+	}
+
 	tests := []struct {
 		name        string
 		mergePolicy string
 		allowMerge  bool
+		allowPub    bool
+		provider    string
+		mode        string
+		mergeMethod string
+		checks      []string
 		wantErr     string
 	}{
-		{"never and denied is accepted", "never", false, ""},
-		{"manual merge rejected", "manual", false, ErrPolicyMerge},
-		{"policy merge rejected", "policy", false, ErrPolicyMerge},
-		{"allowMerge cannot relax the mvp", "never", true, ErrPolicyMerge},
-		{"both conditions rejected", "manual", true, ErrPolicyMerge},
+		{"never and denied is accepted", "never", false, true, "github", "draft", "", nil, ""},
+		{"never with allowMerge rejected", "never", true, true, "github", "draft", "", nil, ErrPolicyMerge},
+		{"manual merge rejected", "manual", false, true, "github", "draft", "", nil, ErrPolicyMerge},
+		{"manual with allowMerge still rejected", "manual", true, true, "github", "draft", "squash", []string{"ci/test"}, ErrPolicyMerge},
+		{"policy without allowMerge rejected", "policy", false, true, "github", "draft", "squash", []string{"ci/test"}, ErrPolicyMergeNotAllowed},
+		{"policy without allowPublication rejected", "policy", true, false, "github", "draft", "squash", []string{"ci/test"}, ErrPolicyMergeNotAllowed},
+		{"policy with non-github provider rejected", "policy", true, true, "gitlab", "draft", "squash", []string{"ci/test"}, ErrPolicyMergeProvider},
+		{"policy with non-draft mode rejected", "policy", true, true, "github", "ready", "squash", []string{"ci/test"}, ErrPolicyMergeProvider},
+		{"policy with missing mergeMethod rejected", "policy", true, true, "github", "draft", "", []string{"ci/test"}, ErrPolicyMergeMethod},
+		{"policy with invalid mergeMethod rejected", "policy", true, true, "github", "draft", "fast-forward", []string{"ci/test"}, ErrPolicyMergeMethod},
+		{"policy with empty requiredChecks rejected", "policy", true, true, "github", "draft", "squash", nil, ErrPolicyMergeChecks},
+		{"policy with duplicate requiredChecks rejected", "policy", true, true, "github", "draft", "squash", []string{"ci/test", "ci/test"}, ErrPolicyMergeChecks},
+		{"policy merge admitted", "policy", true, true, "github", "draft", "squash", []string{"ci/test"}, ""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := defaultFixture()
 			fixture.Effective.AllowMerge = test.allowMerge
-			task := defaultTask()
+			fixture.Effective.AllowPublication = test.allowPub
+			task := policyMergeTask()
 			task.Publication.MergePolicy = test.mergePolicy
+			task.Publication.Provider = test.provider
+			task.Publication.Mode = test.mode
+			task.Publication.MergeMethod = test.mergeMethod
+			task.Publication.RequiredChecks = test.checks
 			policy, err := ValidatePolicy(sealPolicyFixture(t, fixture), task, "run-1", validator)
 			if test.wantErr != "" {
 				assertError(t, err, test.wantErr)

@@ -39,9 +39,13 @@ const (
 	// append-only accept-after-merge reconciliation of a merged publication.
 	KindSCMMergeReceipt            Kind = "SCMMergeReceipt"
 	KindPublicationReconcileRecord Kind = "PublicationReconcileRecord"
-	KindApprovalRecord             Kind = "ApprovalRecord"
-	KindInterventionRecord         Kind = "InterventionRecord"
-	KindSandboxRequirements        Kind = "SandboxRequirements"
+	// KindSCMMergeIntent is the ADR 0032 immutable authority record that
+	// carries the sole pre-authorization for a controlled task merge. It is
+	// written before any remote side effect and is never rewritten.
+	KindSCMMergeIntent      Kind = "SCMMergeIntent"
+	KindApprovalRecord      Kind = "ApprovalRecord"
+	KindInterventionRecord  Kind = "InterventionRecord"
+	KindSandboxRequirements Kind = "SandboxRequirements"
 	// KindCandidate is the ADR 0027 first-class immutable candidate record:
 	// an append-only authority ledger fact owned by authorityNamespaceId.
 	KindCandidate Kind = "Candidate"
@@ -89,6 +93,7 @@ var kinds = []Kind{
 	KindRemoteCheckRecord,
 	KindSCMMergeReceipt,
 	KindPublicationReconcileRecord,
+	KindSCMMergeIntent,
 	KindApprovalRecord,
 	KindInterventionRecord,
 	KindSandboxRequirements,

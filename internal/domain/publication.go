@@ -6,6 +6,8 @@ const (
 	PublicationProviderGitHub = "github"
 	PublicationModeDraft      = "draft"
 	MergePolicyNever          = "never"
+	MergePolicyManual         = "manual"
+	MergePolicyPolicy         = "policy"
 )
 
 const (
