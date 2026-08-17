@@ -23,10 +23,10 @@ Qoder CLI Worker Adapter 已能以版本、realpath 和 executable digest 固定
 ### 2. 精确绑定
 
 - host fingerprint 是 `sha256(JCS({hostname,os,arch}))` 的非敏感目标主机 identity；verifier observation、signed evidence 与 consumer 当前实机必须三方相等。仅 `GOOS/GOARCH` 不构成 host 绑定。
-- probe profile 必须冻结真实 argv 模板、完整替换环境、空 setting sources、`accept_edits`、无 session persistence、空 named Worker tool allowlist 与隔离 scratch worktree 写入。probe 不拥有业务仓库权限不等于不能验证 workspace-write。
+- probe profile 必须冻结真实 argv 模板、完整替换环境、空 setting sources、`accept_edits`、无 session persistence、空 named Worker tool allowlist 与隔离 scratch worktree 写入。`argvDigest` 绑定由运行时同一个 `buildArgs` 模板机械生成的四种真实组合：model 省略/存在 × `--tools` 省略/显式空值；任何未进入该矩阵的 TaskSpec argv 都必须 fail closed。probe 不拥有业务仓库权限不等于不能验证 workspace-write。
 - evidence 的最大 validity window 与最大 observation age 均为 24 小时；更长窗口、未来时间、过期或陈旧记录 fail closed。
 - authority config 精确绑定一个 current evidence digest、probe artifact digest、challenge digest 与递增 authority generation，并可列出 revoked evidence digests。相同 key 的新 generation 不改写旧 evidence。
-- consumer 在进程内维护已验证 generation high-water；更小 generation，或相同 generation 下替换 evidence/probe artifact，均 fail closed。该 high-water 不替代未来生产所需的持久化 rollback 设计。
+- consumer 在进程内维护已验证 generation high-water；安全解析并验证 trust root 边界后的新 generation 必须先单调消费，即使其 current evidence 已撤销或缺失也不得回退；更小 generation，或相同 generation 下替换 evidence/probe artifact，均 fail closed。该 high-water 不替代未来生产所需的持久化 rollback 设计。
 
 ### 3. 文件与路径边界
 

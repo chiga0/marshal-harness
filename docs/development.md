@@ -195,7 +195,8 @@ Qoder 额外设计了独立 Conformance authority 门禁。只配置
 不继承 ambient credential 的 probe-only 环境中验证 credential 与冻结的
 `stream-json` 协议；随后使用 `qoder.SealConformanceEvidence` 将非敏感
 observation（可执行文件 realpath/digest/version、稳定 host fingerprint、
-suite/probe artifact/challenge、capability/profile/argv/env/tool policy、
+suite/probe artifact/challenge、capability/profile/argv/env/tool policy（其中 argv
+覆盖由运行时同一 `buildArgs` 模板生成的 model 省略/存在 × `--tools` 省略/显式空值四种组合）、
 event/protocol/permission、transcript digest、有效期和三个 typed verdict）交给
 独立签名者。probe 必须在隔离 scratch worktree 实际验证写入，但不得拥有业务
 仓库权限。私钥、credential 与 transcript 正文不得进入 Marshal 配置或仓库。
