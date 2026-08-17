@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,12 +17,18 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
 
+// supportedVersionOutput 是冻结的 --version 输出行。
+const supportedVersionOutput = "codex-cli " + "0.145.0"
+
 func TestNewRequiresExactExecutableAndValidator(t *testing.T) {
 	validator := newValidator(t)
 	if _, err := New("codex", validator); err == nil {
 		t.Fatal("relative executable accepted")
 	}
-	executable := fakeExecutable(t, supportedBinary, "exit 0")
+	if _, err := New(t.TempDir()+"/./codex", validator); err == nil {
+		t.Fatal("unclean absolute executable accepted")
+	}
+	executable := fakeExecutable(t, supportedVersionOutput, "exit 0")
 	if _, err := New(executable, nil); err == nil {
 		t.Fatal("nil validator accepted")
 	}
@@ -32,17 +39,42 @@ func TestNewRequiresExactExecutableAndValidator(t *testing.T) {
 	if _, err := New(nonExecutable, validator); err == nil {
 		t.Fatal("non-executable file accepted")
 	}
+	if _, err := New(filepath.Join(t.TempDir(), "missing"), validator); err == nil {
+		t.Fatal("missing executable accepted")
+	}
+}
+
+func TestNewResolvesSymlinkAndPinsRealFile(t *testing.T) {
+	realExecutable := fakeExecutable(t, supportedVersionOutput, "exit 0")
+	link := filepath.Join(t.TempDir(), "codex-link")
+	if err := os.Symlink(realExecutable, link); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := New(link, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(realExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.executable != resolved {
+		t.Fatalf("executable = %q, want pinned realpath %q", adapter.executable, resolved)
+	}
 }
 
 func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
-	for _, test := range []struct{ version, status string }{
-		{supportedBinary, "supported"},
-		{"0.145.1", "unsupported"},
-		{"0.146.0", "unsupported"},
-		{"9.9.9", "unsupported"},
-	} {
-		t.Run(test.version, func(t *testing.T) {
-			adapter, err := New(fakeExecutable(t, test.version, "exit 0"), newValidator(t))
+	probeSnapshot := func(t *testing.T, record domain.Record) map[string]any {
+		t.Helper()
+		var raw map[string]any
+		if err := json.Unmarshal(record.Data, &raw); err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	t.Run("supported", func(t *testing.T) {
+		for _, version := range []string{"0.145.0", "0.145.1", "0.145.27"} {
+			adapter, err := New(fakeExecutable(t, "codex-cli "+version, "exit 0"), newValidator(t))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -50,114 +82,203 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var raw map[string]any
-			if err := json.Unmarshal(record.Data, &raw); err != nil {
-				t.Fatal(err)
+			if err := newValidator(t).Validate(domain.KindCapabilitySnapshot, record.Data); err != nil {
+				t.Fatalf("CapabilitySnapshot schema: %v", err)
 			}
-			status, _ := raw["probeStatus"].(string)
-			version, _ := raw["binaryVersion"].(string)
+			raw := probeSnapshot(t, record)
+			if raw["probeStatus"] != "supported" || raw["binaryVersion"] != version {
+				t.Fatalf("snapshot status/version = %v/%v", raw["probeStatus"], raw["binaryVersion"])
+			}
 			digest, _ := raw["executableDigest"].(string)
 			executable, _ := raw["executable"].(string)
-			if status != test.status || version != test.version || !strings.HasPrefix(digest, "sha256:") || !filepath.IsAbs(executable) {
-				t.Fatalf("snapshot = %s/%s/%s/%s", status, version, digest, executable)
+			if !strings.HasPrefix(digest, "sha256:") || !filepath.IsAbs(executable) {
+				t.Fatalf("identity = %s/%s", digest, executable)
+			}
+			if probeErrors, _ := raw["probeErrors"].([]any); len(probeErrors) != 0 {
+				t.Fatalf("probeErrors = %v", probeErrors)
+			}
+			capabilities, _ := raw["capabilities"].(map[string]any)
+			if capabilities == nil {
+				t.Fatal("capabilities missing")
+			}
+			// truthful 能力声明：冻结首切片的精确面。
+			wantCapabilities := map[string]any{
+				"structuredOutput":        []any{"jsonl"},
+				"nonInteractiveEdit":      true,
+				"sessionPolicies":         []any{"ephemeral"},
+				"modelSelection":          true,
+				"executionProfiles":       []any{"workspace-write"},
+				"nativeBudgets":           []any{},
+				"processTreeCancellation": true,
+			}
+			for key, want := range wantCapabilities {
+				if got, ok := capabilities[key]; !ok {
+					t.Fatalf("capability %s missing", key)
+				} else if jsonString(got) != jsonString(want) {
+					t.Fatalf("capability %s = %v, want %v", key, got, want)
+				}
+			}
+		}
+	})
+	t.Run("unsupported", func(t *testing.T) {
+		for _, version := range []string{"0.146.0", "9.9.9"} {
+			adapter, err := New(fakeExecutable(t, "codex-cli "+version, "exit 0"), newValidator(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := adapter.Probe(context.Background())
+			if err != nil {
+				t.Fatalf("parseable unsupported version must report, not error: %v", err)
+			}
+			raw := probeSnapshot(t, record)
+			if raw["probeStatus"] != "unsupported" || raw["binaryVersion"] != version {
+				t.Fatalf("snapshot status/version = %v/%v", raw["probeStatus"], raw["binaryVersion"])
 			}
 			probeErrors, _ := raw["probeErrors"].([]any)
-			if test.status == "supported" {
-				if len(probeErrors) != 0 {
-					t.Fatalf("probeErrors = %v", probeErrors)
-				}
-				return
-			}
 			if len(probeErrors) != 1 {
 				t.Fatalf("probeErrors = %v", probeErrors)
 			}
 			message, _ := probeErrors[0].(string)
-			if !strings.Contains(message, test.version) || !strings.Contains(message, supportedBinary) {
-				t.Fatalf("probeErrors must report the actual and supported version: %v", probeErrors)
+			if !strings.Contains(message, version) || !strings.Contains(message, supportedCompatibilityLine) {
+				t.Fatalf("probeErrors must list supported and actual versions: %v", probeErrors)
 			}
-		})
-	}
-}
-
-func TestParseCodexVersionNormalizesOfficialOutput(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		output  string
-		version string
-	}{
-		{"real", "codex-cli 0.145.0\n", supportedBinary},
-		{"trailing-newline", "codex-cli 0.145.0\n", supportedBinary},
-		{"extra-whitespace", "  codex-cli\t0.145.0  \n", supportedBinary},
-		{"unsupported-patch", "codex-cli 0.145.1\n", "0.145.1"},
-		{"unsupported-minor", "codex-cli 0.146.0\n", "0.146.0"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			version, err := parseCodexVersion(test.output)
+		}
+	})
+	t.Run("unrecognized-version", func(t *testing.T) {
+		for _, output := range []string{
+			"codex 0.145.0", "codex-cli", "0.145.0", "codex-cli v0.145.0",
+			"codex-cli 0.145.01", "codex-cli 0.145.0-beta.1", "codex-cli 0.145.0+build",
+		} {
+			adapter, err := New(fakeExecutable(t, output, "exit 0"), newValidator(t))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if version != test.version {
-				t.Fatalf("version = %q, want %q", version, test.version)
+			if _, err := adapter.Probe(context.Background()); !errors.Is(err, ErrVersionUnrecognized) {
+				t.Fatalf("output %q: err = %v, want ErrVersionUnrecognized", output, err)
 			}
-		})
-	}
-}
-
-func TestParseCodexVersionRejectsMalformedOutput(t *testing.T) {
-	for _, input := range []string{
-		"",
-		"\n",
-		"codex-cli\n",
-		"codex-cli 0.145\n",
-		"codex-cli 0.145.0.0\n",
-		"codex-cli 00.145.0\n",
-		"codex-cli 0.145.0-rc1\n",
-		"codex-cli 0.145.0+build\n",
-		"codex-cli 0.145.0 extra\n",
-		"codex 0.145.0\n",
-		"0.145.0\n",
-		"codex-cli v0.145.0\n",
-		"codex-cli not-a-version\n",
-	} {
-		if _, err := parseCodexVersion(input); err == nil {
-			t.Fatalf("input %q did not produce an error", input)
 		}
-	}
+	})
+	t.Run("version-probe-fails", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "codex")
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 3\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		adapter, err := New(path, newValidator(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := adapter.Probe(context.Background()); err == nil || errors.Is(err, ErrVersionUnrecognized) {
+			t.Fatalf("err = %v, want execution failure distinct from unrecognized version", err)
+		}
+	})
+	t.Run("executable-unavailable", func(t *testing.T) {
+		adapter, err := New(fakeExecutable(t, supportedVersionOutput, "exit 0"), newValidator(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(adapter.executable); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := adapter.Probe(context.Background()); err == nil || !strings.Contains(err.Error(), "unavailable") {
+			t.Fatalf("err = %v, want unavailable executable", err)
+		}
+	})
 }
 
-func TestBuildArgsNeverUsesShellAndBindsModelPrompt(t *testing.T) {
-	args := buildArgs("provider/model", "完成任务")
-	want := []string{"exec", "--json", "--full-auto", "--sandbox", "workspace-write", "--skip-git-repo-check", "--model", "provider/model", "完成任务"}
+func TestBuildArgsFreezesCapturedSurface(t *testing.T) {
+	worktree := "/tmp/worktree"
+	schemaPath := "/control/codex-output-schema.json"
+	resultPath := "/control/output/worker-result.json"
+	// 精确相等断言同时冻结参数顺序并证明冻结面之外没有任何额外参数。
+	want := []string{
+		"--ask-for-approval", "never",
+		"--color", "never",
+		"-C", worktree,
+		"-c", sandboxNetworkOverride,
+		"exec",
+		"--ephemeral",
+		"--ignore-user-config",
+		"--ignore-rules",
+		"--json",
+		"--sandbox", "workspace-write",
+		"--output-schema", schemaPath,
+		"--output-last-message", resultPath,
+		"-m", "provider/model",
+	}
+	args := buildArgs(worktree, schemaPath, resultPath, "provider/model")
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("args = %#v", args)
+		t.Fatalf("args = %#v, want %#v", args, want)
 	}
-	noModel := buildArgs("", "完成任务")
-	if strings.Contains(strings.Join(noModel, "\x00"), "--model") {
-		t.Fatalf("empty model must not emit --model: %#v", noModel)
+	withoutModel := buildArgs(worktree, schemaPath, resultPath, "")
+	if strings.Join(withoutModel, "\x00") != strings.Join(want[:len(want)-2], "\x00") {
+		t.Fatalf("empty model args = %#v", withoutModel)
 	}
-}
-
-func TestWorkerEnvironmentFiltersCredentials(t *testing.T) {
-	t.Setenv("GITHUB_TOKEN", "publisher-secret")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "cloud-secret")
-	t.Setenv("OPENAI_API_KEY", "model-secret")
-	environment := workerEnvironment(t.TempDir())
-	joined := strings.Join(environment, "\n")
-	for _, secret := range []string{"GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "OPENAI_API_KEY", "publisher-secret", "cloud-secret", "model-secret"} {
-		if strings.Contains(joined, secret) {
-			t.Fatalf("worker environment leaked %s", secret)
+	// 全局参数必须位于 exec 子命令之前，sandbox 必须是枚举值而非策略对象。
+	execIndex := -1
+	for index, argument := range args {
+		if argument == "exec" {
+			execIndex = index
+			break
 		}
 	}
-	if !strings.Contains(joined, "CI=1") || !strings.Contains(joined, "GIT_CONFIG_GLOBAL=/dev/null") {
-		t.Fatalf("missing isolation environment: %s", joined)
+	if execIndex <= 0 {
+		t.Fatalf("exec subcommand missing or first: %#v", args)
+	}
+	if !containsSequence(args[:execIndex], "--ask-for-approval", "never") || !containsSequence(args[:execIndex], "-C", worktree) || !containsSequence(args[:execIndex], "-c", sandboxNetworkOverride) {
+		t.Fatalf("global arguments are not frozen before the exec subcommand: %#v", args[:execIndex])
+	}
+	if !containsSequence(args[execIndex:], "--sandbox", "workspace-write") {
+		t.Fatalf("exec sandbox must be the workspace-write enum value: %#v", args[execIndex:])
+	}
+	if slices.Contains(args, "完成 fixture") {
+		t.Fatal("prompt must travel through stdin, not argv")
 	}
 }
 
-func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
-	fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"thread.started","thread_id":"thread-1","thread":{"id":"thread-1"}}' '{"type":"turn.completed","turn":{"id":"turn-1","status":"completed","usage":{"input_tokens":10,"output_tokens":5}}}'`)
+func TestEnvironmentReplacementFailsClosed(t *testing.T) {
+	secrets := map[string]string{
+		"OPENAI_API_KEY": "model-secret", "CODEX_API_KEY": "codex-secret",
+		"GITHUB_TOKEN": "publisher-secret", "GH_TOKEN": "gh-secret",
+		"AWS_SECRET_ACCESS_KEY": "cloud-secret", "GOOGLE_API_KEY": "google-secret",
+		"ANTHROPIC_API_KEY": "anthropic-secret", "DASHSCOPE_API_KEY": "dashscope-secret",
+		"HTTP_PROXY": "http://proxy.example", "HTTPS_PROXY": "https://proxy.example",
+		"SSH_AUTH_SOCK": "/tmp/agent.sock", "MARSHAL_TASK_ID": "marshal-state",
+	}
+	for key, value := range secrets {
+		t.Setenv(key, value)
+	}
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	worktree := t.TempDir()
+	joined := strings.Join(workerEnvironment(worktree), "\n")
+	for key, value := range secrets {
+		if strings.Contains(joined, key) || strings.Contains(joined, value) {
+			t.Fatalf("worker environment leaked %s", key)
+		}
+	}
+	for _, required := range []string{"CI=1", "GH_PROMPT_DISABLED=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "PWD=" + worktree, "CODEX_HOME=" + codexHome} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("worker environment misses %s: %s", required, joined)
+		}
+	}
+	probeJoined := strings.Join(probeEnvironment(), "\n")
+	for key := range secrets {
+		if strings.Contains(probeJoined, key) {
+			t.Fatalf("probe environment leaked %s", key)
+		}
+	}
+}
+
+func TestRunHappyPathNormalizesIdentityAndEvidence(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "model-secret")
+	t.Setenv("GITHUB_TOKEN", "publisher-secret")
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
 	record, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if record.Kind != domain.KindWorkerResult {
+		t.Fatalf("kind = %s", record.Kind)
 	}
 	if err := fixture.validator.Validate(domain.KindWorkerResult, record.Data); err != nil {
 		t.Fatal(err)
@@ -166,184 +287,587 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 	if err := json.Unmarshal(record.Data, &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.TaskID != "TASK-1" || result.Adapter.ID != adapterID || result.Adapter.Version != supportedBinary || result.Adapter.Executable != fixture.executable || result.Session == nil || result.Session.ID != "thread-1" || result.Adapter.Model != "provider/model" {
-		t.Fatalf("normalized result = %+v", result)
+	// 声明中的 executable/version 不作为权威：归一化覆盖为钉住身份。
+	if result.Adapter.Executable != fixture.executable || result.Adapter.Version != "0.145.0" || result.Adapter.ID != adapterID || result.Adapter.Model != "provider/model" {
+		t.Fatalf("normalized adapter identity = %+v", result.Adapter)
 	}
-	if !result.StartedAt.Before(result.CompletedAt) && !result.StartedAt.Equal(result.CompletedAt) {
+	if result.Session == nil || result.Session.ID != "thread-1" || result.Session.Resumable {
+		t.Fatalf("normalized session = %+v, want transcript thread bound with resumable=false", result.Session)
+	}
+	if result.StartedAt.IsZero() || result.CompletedAt.IsZero() || result.CompletedAt.Before(result.StartedAt) {
 		t.Fatalf("invalid times: %s %s", result.StartedAt, result.CompletedAt)
 	}
-	transcript, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "codex-transcript.jsonl"))
-	if err != nil || !strings.Contains(string(transcript), `"thread_id":"thread-1"`) {
-		t.Fatalf("transcript = %s err=%v", transcript, err)
+	// 归一化结果必须原子写回 resultPath。
+	persisted, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "worker-result.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "codex-transcript-meta.json"))
-	if err != nil || !strings.Contains(string(metadata), `"eventCount": 2`) {
-		t.Fatalf("metadata = %s err=%v", metadata, err)
+	if !strings.Contains(string(persisted), `"version":"0.145.0"`) || strings.Contains(string(persisted), "worker-claim") {
+		t.Fatalf("persisted result not normalized: %s", persisted)
+	}
+	assertCapturedInvocation(t, fixture, true)
+	assertEvidenceFiles(t, fixture)
+}
+
+func TestRunOmitsModelWhenTaskSpecDeclaresNone(t *testing.T) {
+	// worker 自述的 model 不作为权威：TaskSpec 未声明时归一化必须置空。
+	claimed := strings.Replace(validDeclaredResultJSON(), `"version":"worker-claim"`, `"version":"worker-claim","model":"claimed-by-worker"`, 1)
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(claimed))
+	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{}})
+	record, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result declaredResult
+	if err := json.Unmarshal(record.Data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Adapter.Model != "" {
+		t.Fatalf("model must come only from the frozen TaskSpec: %+v", result.Adapter)
+	}
+	argvData, err := os.ReadFile(filepath.Join(fixture.worktree, "capture", "argv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(argvData)), "\n") {
+		if line == "-m" || line == "--model" {
+			t.Fatalf("argv carries a model flag without a declared model: %s", argvData)
+		}
 	}
 }
 
-func TestRunRejectsUnsupportedVersionBeforeWorkerLaunch(t *testing.T) {
+func assertCapturedInvocation(t *testing.T, fixture runFixture, withModel bool) {
+	t.Helper()
+	captureDir := filepath.Join(fixture.worktree, "capture")
+	argvData, err := os.ReadFile(filepath.Join(captureDir, "argv"))
+	if err != nil {
+		t.Fatalf("fake did not capture argv: %v", err)
+	}
+	gotArgs := strings.Split(strings.TrimSpace(string(argvData)), "\n")
+	schemaPath := filepath.Join(fixture.controlRoot, "output", "codex-output-schema.json")
+	resultPath := filepath.Join(fixture.controlRoot, "output", "worker-result.json")
+	wantArgs := []string{
+		"--ask-for-approval", "never",
+		"--color", "never",
+		"-C", fixture.worktree,
+		"-c", sandboxNetworkOverride,
+		"exec",
+		"--ephemeral",
+		"--ignore-user-config",
+		"--ignore-rules",
+		"--json",
+		"--sandbox", "workspace-write",
+		"--output-schema", schemaPath,
+		"--output-last-message", resultPath,
+	}
+	if withModel {
+		wantArgs = append(wantArgs, "-m", "provider/model")
+	}
+	// 精确相等既冻结 global/subcommand 排序，也证明没有任何额外参数。
+	if strings.Join(gotArgs, "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("captured argv = %#v, want %#v", gotArgs, wantArgs)
+	}
+	for _, argument := range gotArgs {
+		if argument == "完成 fixture" {
+			t.Fatal("prompt leaked into argv; it must travel through stdin")
+		}
+	}
+	stdinData, err := os.ReadFile(filepath.Join(captureDir, "stdin"))
+	if err != nil {
+		t.Fatalf("fake did not capture stdin: %v", err)
+	}
+	if strings.TrimSpace(string(stdinData)) != "完成 fixture" {
+		t.Fatalf("stdin = %q, want frozen prompt", stdinData)
+	}
+	envData, err := os.ReadFile(filepath.Join(captureDir, "env"))
+	if err != nil {
+		t.Fatalf("fake did not capture env: %v", err)
+	}
+	envJoined := string(envData)
+	for _, secret := range []string{"OPENAI_API_KEY", "GITHUB_TOKEN", "model-secret", "publisher-secret"} {
+		if strings.Contains(envJoined, secret) {
+			t.Fatalf("worker environment leaked %s", secret)
+		}
+	}
+	for _, required := range []string{"CI=1", "GH_PROMPT_DISABLED=1", "GIT_TERMINAL_PROMPT=0", "PWD=" + fixture.worktree} {
+		if !strings.Contains(envJoined, required) {
+			t.Fatalf("worker environment misses %s", required)
+		}
+	}
+}
+
+func assertEvidenceFiles(t *testing.T, fixture runFixture) {
+	t.Helper()
+	outputDir := filepath.Join(fixture.controlRoot, "output")
+	transcript, err := os.ReadFile(filepath.Join(outputDir, "codex-transcript.jsonl"))
+	if err != nil || !strings.Contains(string(transcript), `"thread_id":"thread-1"`) || !strings.Contains(string(transcript), `"type":"turn.completed"`) {
+		t.Fatalf("transcript = %s err=%v", transcript, err)
+	}
+	metadata, err := os.ReadFile(filepath.Join(outputDir, "codex-transcript-meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(metadata, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta["threadId"] != "thread-1" || meta["eventCount"] != float64(5) || meta["turnCount"] != float64(1) || meta["itemCount"] != float64(1) || meta["inputTokens"] != float64(11) || meta["outputTokens"] != float64(7) || meta["outputTruncated"] != false {
+		t.Fatalf("metadata = %v", meta)
+	}
+	digestValue, _ := meta["transcriptDigest"].(string)
+	if !strings.HasPrefix(digestValue, "sha256:") {
+		t.Fatalf("metadata misses transcript digest: %v", meta)
+	}
+	// metadata 不得包含 prompt、自由文本或凭据。
+	for _, forbidden := range []string{"完成 fixture", "model-secret", "publisher-secret"} {
+		if strings.Contains(string(metadata), forbidden) {
+			t.Fatalf("metadata leaked %q", forbidden)
+		}
+	}
+	schemaTemp, err := os.ReadFile(filepath.Join(outputDir, "codex-output-schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	durableSchema, err := contract.SchemaDocument("worker-result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(schemaTemp) != string(durableSchema) {
+		t.Fatal("schema temp is not byte-identical to the durable worker-result schema")
+	}
+	// result 叶子是唯一真实结果来源：--output-last-message 机械指向它，
+	// 旧的 codex-last-message.json 不再存在。
+	if _, err := os.Lstat(filepath.Join(outputDir, "codex-last-message.json")); !os.IsNotExist(err) {
+		t.Fatal("codex-last-message.json must not exist; the result leaf is the single output source")
+	}
+}
+
+func TestRunRejectsProfileAndPolicyBeforeLaunch(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "launched")
-	fixture := newRunFixture(t, "9.9.9", "touch "+shellQuote(marker))
+	body := "touch " + shellQuote(marker)
+	for _, test := range []struct {
+		name      string
+		overrides map[string]any
+		sentinel  error
+		message   string
+	}{
+		{name: "foreign-adapter", overrides: map[string]any{"adapterId": "qwen"}, message: "does not match"},
+		{name: "read-only-profile", overrides: map[string]any{"executionProfile": "read-only"}, message: "does not match"},
+		{name: "hardened-profile", overrides: map[string]any{"executionProfile": "hardened"}, message: "does not match"},
+		{name: "persist-session", overrides: map[string]any{"sessionPolicy": "persist"}, sentinel: ErrUnsupportedSessionPolicy},
+		{name: "resume-session", overrides: map[string]any{"sessionPolicy": "resume"}, sentinel: ErrUnsupportedSessionPolicy},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunFixture(t, supportedVersionOutput, body)
+			_, err := fixture.adapter.Run(context.Background(), fixture.requestWith(test.overrides))
+			if test.sentinel != nil {
+				if !errors.Is(err, test.sentinel) {
+					t.Fatalf("err = %v, want %v", err, test.sentinel)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("err = %v, want %q", err, test.message)
+			}
+			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+				t.Fatal("worker process was launched for a rejected profile/policy")
+			}
+		})
+	}
+}
+
+func TestRunRejectsUnsupportedVersionBeforeLaunch(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched")
+	fixture := newRunFixture(t, "codex-cli 0.146.0", "touch "+shellQuote(marker))
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrUnsupportedVersion) {
-		t.Fatalf("error = %v", err)
+		t.Fatalf("err = %v, want ErrUnsupportedVersion", err)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("unsupported worker process was launched")
 	}
 }
 
-func TestRunRejectsUnsupportedProfileAndSessionPolicy(t *testing.T) {
-	t.Run("profile", func(t *testing.T) {
-		fixture := newRunFixture(t, supportedBinary, "exit 0")
-		if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "hardened"})); err == nil || !strings.Contains(err.Error(), "does not match") {
-			t.Fatalf("err = %v, want profile mismatch", err)
+func TestRunReResolvesIdentityAndRejectsDriftAfterProbe(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, "exit 0")
+	if _, err := fixture.adapter.Probe(context.Background()); err != nil {
+		t.Fatalf("probe before drift: %v", err)
+	}
+	// Probe 之后替换可执行文件内容（版本漂移）必须被 Run 前的重新解析拦截。
+	if err := os.WriteFile(fixture.executable, []byte(fakeScript("codex-cli 0.147.0", "exit 0")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrUnsupportedVersion) {
+		t.Fatalf("err = %v, want ErrUnsupportedVersion after version drift", err)
+	}
+}
+
+func TestRunRejectsSameVersionContentDriftAfterProbe(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched")
+	fixture := newRunFixture(t, supportedVersionOutput, "exit 0")
+	if _, err := fixture.adapter.Probe(context.Background()); err != nil {
+		t.Fatalf("probe before drift: %v", err)
+	}
+	// 版本保持 0.145.0 但内容被替换：digest 漂移必须在启动前 fail closed，
+	// worker marker 绝不出现。
+	if err := os.WriteFile(fixture.executable, []byte(fakeScript(supportedVersionOutput, "touch "+shellQuote(marker))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrIdentityDrift) {
+		t.Fatalf("err = %v, want ErrIdentityDrift after same-version content drift", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("drifted worker process was launched")
+	}
+	if _, err := os.Stat(filepath.Join(fixture.worktree, "capture")); !os.IsNotExist(err) {
+		t.Fatal("drifted worker captured an invocation")
+	}
+}
+
+func TestRunPinsIdentityOnFirstRunAndRejectsLaterDrift(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched")
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	// 未经 Probe 的首次 Run 当场钉住身份，并保持版本闭集校验。
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err != nil {
+		t.Fatalf("first run without probe: %v", err)
+	}
+	if err := os.WriteFile(fixture.executable, []byte(fakeScript(supportedVersionOutput, "touch "+shellQuote(marker))), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrIdentityDrift) {
+		t.Fatalf("err = %v, want ErrIdentityDrift after first-run pin", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("drifted worker process was launched")
+	}
+}
+
+func TestRunRejectsDeclaredWorkerToolsBeforeLaunch(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched")
+	t.Run("declared-allowlist", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedVersionOutput, "touch "+shellQuote(marker))
+		writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{
+			"worker": map[string]any{"model": "provider/model", "tools": []string{"read"}},
+		})
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrUnsupportedWorkerTools) {
+			t.Fatalf("err = %v, want ErrUnsupportedWorkerTools", err)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatal("worker process was launched despite a declared tool allowlist")
 		}
 	})
-	t.Run("session-policy", func(t *testing.T) {
-		fixture := newRunFixture(t, supportedBinary, "exit 0")
-		if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"sessionPolicy": "persist"})); !errors.Is(err, ErrUnsupportedSessionPolicy) {
-			t.Fatalf("err = %v, want ErrUnsupportedSessionPolicy", err)
+	t.Run("malformed-declaration", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedVersionOutput, "touch "+shellQuote(marker))
+		writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{
+			"worker": map[string]any{"model": "provider/model", "tools": "read,edit"},
+		})
+		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "worker tools") {
+			t.Fatalf("err = %v, want fail-closed worker tools rejection", err)
 		}
 	})
 }
 
-func TestRunRejectsMalformedJSONLAndIdentityMismatch(t *testing.T) {
-	t.Run("malformed", func(t *testing.T) {
-		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' 'not-json'`)
-		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrProtocol) {
-			t.Fatalf("error = %v", err)
+func TestRunRejectsResultLeafBeforeLaunch(t *testing.T) {
+	t.Run("symlink-escapes-control-root", func(t *testing.T) {
+		outsideDir := t.TempDir()
+		sentinel := filepath.Join(outsideDir, "sentinel.json")
+		if err := os.WriteFile(sentinel, []byte("sentinel-content"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+		if err := os.MkdirAll(filepath.Join(fixture.controlRoot, "output"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		resultPath := filepath.Join(fixture.controlRoot, "output", "worker-result.json")
+		if err := os.Symlink(sentinel, resultPath); err != nil {
+			t.Fatal(err)
+		}
+		_, err := fixture.adapter.Run(context.Background(), fixture.request)
+		if err == nil || !strings.Contains(err.Error(), "result leaf") {
+			t.Fatalf("err = %v, want pre-launch result leaf rejection", err)
+		}
+		content, readErr := os.ReadFile(sentinel)
+		if readErr != nil || string(content) != "sentinel-content" {
+			t.Fatalf("outside sentinel was modified: %q err=%v", content, readErr)
+		}
+		if _, statErr := os.Stat(filepath.Join(fixture.worktree, "capture")); !os.IsNotExist(statErr) {
+			t.Fatal("worker was launched despite the pre-existing result symlink")
 		}
 	})
-	t.Run("identity", func(t *testing.T) {
-		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"thread.started","thread_id":"thread-1","thread":{"id":"thread-1"}}'`)
-		data := validDeclaredResult(fixture.executable)
-		data["taskId"] = "OTHER"
-		writeJSON(t, filepath.Join(fixture.controlRoot, "output", "worker-result.json"), data)
-		if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "identity") {
-			t.Fatalf("error = %v", err)
+	t.Run("pre-existing-regular-file", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+		if err := os.MkdirAll(filepath.Join(fixture.controlRoot, "output"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		resultPath := filepath.Join(fixture.controlRoot, "output", "worker-result.json")
+		if err := os.WriteFile(resultPath, []byte("planted"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := fixture.adapter.Run(context.Background(), fixture.request)
+		if err == nil || !strings.Contains(err.Error(), "result leaf") {
+			t.Fatalf("err = %v, want pre-launch result leaf rejection", err)
+		}
+		content, readErr := os.ReadFile(resultPath)
+		if readErr != nil || string(content) != "planted" {
+			t.Fatalf("planted node was modified before launch: %q err=%v", content, readErr)
+		}
+		if _, statErr := os.Stat(filepath.Join(fixture.worktree, "capture")); !os.IsNotExist(statErr) {
+			t.Fatal("worker was launched despite the pre-existing result node")
+		}
+	})
+	t.Run("symlink-on-schema-leaf", func(t *testing.T) {
+		outsideDir := t.TempDir()
+		sentinel := filepath.Join(outsideDir, "schema-sentinel.json")
+		if err := os.WriteFile(sentinel, []byte("sentinel-schema"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+		if err := os.MkdirAll(filepath.Join(fixture.controlRoot, "output"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(sentinel, filepath.Join(fixture.controlRoot, "output", "codex-output-schema.json")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := fixture.adapter.Run(context.Background(), fixture.request)
+		if err == nil || !strings.Contains(err.Error(), "output schema leaf") {
+			t.Fatalf("err = %v, want pre-launch schema leaf rejection", err)
+		}
+		content, readErr := os.ReadFile(sentinel)
+		if readErr != nil || string(content) != "sentinel-schema" {
+			t.Fatalf("outside sentinel was modified: %q err=%v", content, readErr)
 		}
 	})
 }
 
-func TestRunEnforcesOutputCapAndCancellation(t *testing.T) {
-	t.Run("output-cap", func(t *testing.T) {
+func TestRunProtocolFailClosed(t *testing.T) {
+	first := `{"type":"thread.started","thread_id":"thread-1"}`
+	terminal := `{"type":"turn.completed","thread_id":"thread-1","usage":{"input_tokens":1,"output_tokens":1}}`
+	turnFailed := `{"type":"turn.failed","thread_id":"thread-1","error":"secret-provider-text"}`
+	for _, test := range []struct {
+		name     string
+		lines    []string
+		sentinel error
+	}{
+		{name: "missing-first-event", lines: nil, sentinel: ErrProtocol},
+		{name: "first-event-not-thread-started", lines: []string{`{"type":"turn.started","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
+		{name: "first-event-missing-identity", lines: []string{`{"type":"thread.started"}`}, sentinel: ErrProtocol},
+		{name: "first-event-empty-identity", lines: []string{`{"type":"thread.started","thread_id":""}`}, sentinel: ErrProtocol},
+		{name: "malformed-jsonl", lines: []string{"not-json"}, sentinel: ErrProtocol},
+		{name: "identity-switch", lines: []string{first, `{"type":"item.completed","thread_id":"thread-2"}`}, sentinel: ErrProtocol},
+		{name: "empty-thread-id-after-binding", lines: []string{first, `{"type":"item.completed","thread_id":""}`}, sentinel: ErrProtocol},
+		{name: "duplicate-thread-started", lines: []string{first, `{"type":"thread.started","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
+		{name: "unknown-event-type", lines: []string{first, `{"type":"weird.event","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
+		{name: "unknown-item-evil", lines: []string{first, `{"type":"item.evil","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
+		{name: "missing-terminal", lines: []string{first, `{"type":"item.completed","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
+		{name: "trailing-after-terminal", lines: []string{first, terminal, `{"type":"item.completed","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
+		{name: "item-started-after-terminal", lines: []string{first, terminal, `{"type":"item.started","thread_id":"thread-1"}`}, sentinel: ErrProtocol},
+		{name: "turn-failed", lines: []string{first, turnFailed}, sentinel: ErrProviderFailed},
+		{name: "failed-after-success-terminal", lines: []string{first, terminal, turnFailed}, sentinel: ErrProtocol},
+		{name: "success-after-failed-terminal", lines: []string{first, turnFailed, terminal}, sentinel: ErrProviderFailed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := transcriptBody(test.lines)
+			fixture := newRunFixture(t, supportedVersionOutput, body)
+			_, err := fixture.adapter.Run(context.Background(), fixture.request)
+			if !errors.Is(err, test.sentinel) {
+				t.Fatalf("err = %v, want %v", err, test.sentinel)
+			}
+			if strings.Contains(err.Error(), "secret-provider-text") {
+				t.Fatalf("provider free text leaked into error: %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(fixture.controlRoot, "output", "codex-transcript.jsonl")); statErr != nil {
+				t.Fatal("transcript evidence was not preserved on protocol failure")
+			}
+		})
+	}
+}
+
+func TestRunResultFailClosed(t *testing.T) {
+	valid := validDeclaredResultJSON()
+	for _, test := range []struct {
+		name        string
+		resultWrite string
+		message     string
+	}{
+		{name: "missing-result", resultWrite: "", message: "WorkerResult declaration"},
+		{name: "empty-result", resultWrite: `: > "$result_path"`, message: "WorkerResult declaration"},
+		{name: "malformed-json", resultWrite: resultHeredoc("{not-json"), message: "WorkerResult declaration"},
+		{name: "oversize-result", resultWrite: `head -c 4194305 /dev/zero | tr '\0' 'a' > "$result_path"`, message: "WorkerResult declaration"},
+		{name: "unknown-field", resultWrite: resultHeredoc(strings.Replace(valid, `"kind":"WorkerResult",`, `"kind":"WorkerResult","extraField":true,`, 1)), message: "WorkerResult declaration"},
+		{name: "absolute-changed-path", resultWrite: resultHeredoc(strings.Replace(valid, `"declaredChangedFiles":["file.txt"]`, `"declaredChangedFiles":["/etc/passwd"]`, 1)), message: "WorkerResult declaration"},
+		{name: "task-id-mismatch", resultWrite: resultHeredoc(strings.Replace(valid, `"taskId":"TASK-1"`, `"taskId":"OTHER"`, 1)), message: "identity"},
+		{name: "run-id-mismatch", resultWrite: resultHeredoc(strings.Replace(valid, `"runId":"run-1"`, `"runId":"OTHER"`, 1)), message: "identity"},
+		{name: "attempt-id-mismatch", resultWrite: resultHeredoc(strings.Replace(valid, `"attemptId":"attempt-1"`, `"attemptId":"OTHER"`, 1)), message: "identity"},
+		{name: "adapter-id-mismatch", resultWrite: resultHeredoc(strings.Replace(valid, `"adapter":{"id":"codex"`, `"adapter":{"id":"qwen"`, 1)), message: "identity"},
+		{name: "session-mismatch", resultWrite: resultHeredoc(strings.Replace(valid, `"session":{"id":"thread-1"`, `"session":{"id":"other-thread"`, 1)), message: "session does not match transcript"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := transcriptBody(successTranscriptLines()) + test.resultWrite
+			fixture := newRunFixture(t, supportedVersionOutput, body)
+			if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("err = %v, want failure containing %q", err, test.message)
+			}
+		})
+	}
+}
+
+func TestRunEnforcesOutputCap(t *testing.T) {
+	t.Run("large-event", func(t *testing.T) {
 		large := strings.Repeat("x", 1800)
-		fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"thread.started","thread_id":"thread-1","thread":{"id":"thread-1"}}' '{"type":"item.completed","item":{"id":"i","type":"message","role":"assistant","content":[{"type":"output_text","text":"`+large+`"}]}}'`)
-		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrOutputLimit) {
-			t.Fatalf("error = %v", err)
+		body := transcriptBody([]string{
+			`{"type":"thread.started","thread_id":"thread-1"}`,
+			`{"type":"item.completed","thread_id":"thread-1","item":{"type":"agent_message","text":"` + large + `"}}`,
+		})
+		fixture := newRunFixture(t, supportedVersionOutput, body)
+		if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"maxOutputBytes": 1024})); !errors.Is(err, ErrOutputLimit) {
+			t.Fatalf("err = %v, want ErrOutputLimit", err)
 		}
 	})
-	t.Run("cancel-process-group", func(t *testing.T) {
-		handshake := t.TempDir()
-		pidFile := filepath.Join(handshake, "child.pid")
-		readyFile := filepath.Join(handshake, "ready")
-		body := "sleep 60 &\nchild=$!\nprintf '%s' \"$child\" > " + shellQuote(pidFile+".tmp") + " && mv " + shellQuote(pidFile+".tmp") + " " + shellQuote(pidFile) + "\n: > " + shellQuote(readyFile+".tmp") + " && mv " + shellQuote(readyFile+".tmp") + " " + shellQuote(readyFile) + "\nwait"
-		fixture := newRunFixture(t, supportedBinary, body)
-		var raw map[string]any
-		if err := json.Unmarshal(fixture.request.Data, &raw); err != nil {
-			t.Fatal(err)
+	t.Run("unterminated-line", func(t *testing.T) {
+		fixture := newRunFixture(t, supportedVersionOutput, `yes x | tr -d '\n'`)
+		started := time.Now()
+		if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"maxOutputBytes": 1024})); !errors.Is(err, ErrOutputLimit) {
+			t.Fatalf("err = %v, want ErrOutputLimit", err)
 		}
-		raw["attemptTimeoutSeconds"] = 15
-		requestData, err := json.Marshal(raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		errCh := make(chan error, 1)
-		go func() {
-			_, runErr := fixture.adapter.Run(ctx, domain.Record{Kind: domain.KindWorkerRequest, Data: requestData})
-			errCh <- runErr
-		}()
-		waitForFile(t, readyFile, 5*time.Second)
-		pidData, err := os.ReadFile(pidFile)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
-		if err != nil {
-			t.Fatalf("pid file = %q: %v", pidData, err)
-		}
-		cancel()
-		select {
-		case runErr := <-errCh:
-			if !errors.Is(runErr, context.Canceled) {
-				t.Fatalf("error = %v", runErr)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("Run did not return promptly after cancellation")
-		}
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("background child %d survived process-group cancellation", pid)
-			}
-			time.Sleep(5 * time.Millisecond)
+		if time.Since(started) > 5*time.Second {
+			t.Fatal("unterminated line was not terminated at the byte limit promptly")
 		}
 	})
 }
 
-func TestRunGradesFatalDenialFailClosedAndPersistsEvidence(t *testing.T) {
-	fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"item.completed","item":{"id":"i","type":"command","role":"assistant","status":"error","error":"permission denied by rule","input":{"command":"curl http://evil.example"}}}'`)
-	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("error = %v", err)
+func TestRunTimeoutReturnsContextDeadlineAndPersistsEvidence(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "started")
+	// body：先落启动 handshake，再输出首个事件并长睡以触发 attempt 超时。
+	// handshake 使测试能确定性区分 pre-start deadline 与已启动 worker 的
+	// timeout：只有确认 worker 已启动后才断言 transcript。
+	body := "touch " + shellQuote(started) + "\n" +
+		transcriptBody([]string{`{"type":"thread.started","thread_id":"thread-1"}`}) +
+		"sleep 30\n"
+	fixture := newRunFixture(t, supportedVersionOutput, body)
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"attemptTimeoutSeconds": 1}))
+		done <- runErr
+	}()
+	waitForFile(t, started, 5*time.Second)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return promptly after the attempt timeout")
 	}
-	data, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "denials.jsonl"))
-	if err != nil {
-		t.Fatalf("denial log missing: %v", err)
+	// DeadlineExceeded 之后 transcript 与结构化 metadata 必须已落盘。
+	transcript, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "codex-transcript.jsonl"))
+	if readErr != nil {
+		t.Fatal(readErr)
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("denial log = %s", data)
+	if !strings.Contains(string(transcript), `"thread_id":"thread-1"`) {
+		t.Fatalf("timeout transcript lost the captured event: %s", transcript)
 	}
-	var record map[string]any
-	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
-		t.Fatal(err)
+	metadata, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "codex-transcript-meta.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
 	}
-	if record["tool"] != "command" || record["kind"] != "execute" || record["grade"] != "FATAL" || record["path-or-cmd"] != "curl http://evil.example" {
-		t.Fatalf("fatal denial record = %+v", record)
+	if !strings.Contains(string(metadata), `"contextError": "context deadline exceeded"`) {
+		t.Fatalf("metadata lost context classification: %s", metadata)
+	}
+	if !strings.Contains(string(metadata), `"threadId": "thread-1"`) || !strings.Contains(string(metadata), `"exitCode"`) {
+		t.Fatalf("metadata lost structured accounting on timeout: %s", metadata)
 	}
 }
 
-func TestRunGradesBenignDenialAndContinues(t *testing.T) {
-	fixture := newRunFixture(t, supportedBinary, `printf '%s\n' '{"type":"thread.started","thread_id":"thread-1","thread":{"id":"thread-1"}}' '{"type":"item.completed","item":{"id":"i","type":"command","role":"assistant","status":"error","error":"permission denied","input":{"command":"git status"}}}' '{"type":"turn.completed","turn":{"id":"turn-1","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}'`)
-	record, err := fixture.adapter.Run(context.Background(), fixture.request)
-	if err != nil {
-		t.Fatalf("benign denial must not terminate the attempt: %v", err)
+func TestRunPreStartDeadlineReturnsWithoutEvidence(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "started")
+	body := "touch " + shellQuote(started) + "\n" +
+		transcriptBody([]string{`{"type":"thread.started","thread_id":"thread-1"}`})
+	fixture := newRunFixture(t, supportedVersionOutput, body)
+	// 调用方 context 在 Run 入口前已过期：preflight 的 version probe 在
+	// worker 启动前即失败，绝不启动 worker、绝不伪造 transcript。
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if _, err := fixture.adapter.Run(ctx, fixture.requestWith(map[string]any{"attemptTimeoutSeconds": 15})); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
 	}
-	if err := fixture.validator.Validate(domain.KindWorkerResult, record.Data); err != nil {
+	if _, statErr := os.Stat(started); !os.IsNotExist(statErr) {
+		t.Fatal("worker was started despite an already-expired caller context")
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.controlRoot, "output", "codex-transcript.jsonl")); !os.IsNotExist(statErr) {
+		t.Fatal("transcript evidence fabricated for a never-started worker")
+	}
+}
+
+func TestRunRejectsBypassedResultNotBoundToOutputArg(t *testing.T) {
+	// 声明被写入一个测试硬编码的旁路路径，而不是 argv 绑定的
+	// --output-last-message 目标：Run 只信任同一叶子，旁路结果不能成功。
+	bypassPath := filepath.Join(t.TempDir(), "bypass-result.json")
+	body := transcriptBody(successTranscriptLines()) +
+		"cat > " + shellQuote(bypassPath) + " <<'CODEX_BYPASS_EOF'\n" + validDeclaredResultJSON() + "\nCODEX_BYPASS_EOF\n"
+	fixture := newRunFixture(t, supportedVersionOutput, body)
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil || !strings.Contains(err.Error(), "WorkerResult declaration") {
+		t.Fatalf("err = %v, want bypassed result to fail as a missing declaration", err)
+	}
+	if _, err := os.ReadFile(bypassPath); err != nil {
+		t.Fatalf("bypass file was not written by the fake: %v", err)
+	}
+}
+
+func TestRunCancellationTerminatesProcessGroup(t *testing.T) {
+	handshake := t.TempDir()
+	pidFile := filepath.Join(handshake, "child.pid")
+	readyFile := filepath.Join(handshake, "ready")
+	body := "sleep 60 &\nchild=$!\nprintf '%s' \"$child\" > " + shellQuote(pidFile+".tmp") + " && mv " + shellQuote(pidFile+".tmp") + " " + shellQuote(pidFile) + "\n: > " + shellQuote(readyFile+".tmp") + " && mv " + shellQuote(readyFile+".tmp") + " " + shellQuote(readyFile) + "\nwait"
+	fixture := newRunFixture(t, supportedVersionOutput, body)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, runErr := fixture.adapter.Run(ctx, fixture.requestWith(map[string]any{"attemptTimeoutSeconds": 15}))
+		errCh <- runErr
+	}()
+	waitForFile(t, readyFile, 5*time.Second)
+	pidData, err := os.ReadFile(pidFile)
+	if err != nil {
 		t.Fatal(err)
 	}
-	metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "codex-transcript-meta.json"))
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("pid file = %q: %v", pidData, err)
 	}
-	if !strings.Contains(string(metadata), `"permissionDenied": false`) || !strings.Contains(string(metadata), `"denialsBenign": 1`) || !strings.Contains(string(metadata), `"denialsFatal": 0`) {
-		t.Fatalf("metadata lost denial grading: %s", metadata)
+	cancel()
+	select {
+	case runErr := <-errCh:
+		if !errors.Is(runErr, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return promptly after cancellation")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background child %d survived process-group cancellation", pid)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
 func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
-	secrets := []string{"codex-stderr-secret-sentinel-0001", "codex-stderr-bearer-sentinel-0002", "codex-stderr-content-sentinel-0003"}
-	body := `printf '%s\n' '{"type":"thread.started","thread_id":"thread-1","thread":{"id":"thread-1"}}'`
+	secrets := []string{"sk-codex-super-secret-token", "Bearer eyJhbGciOiJIUzI1NiJ9.secret-payload", "user private content: password=hunter2"}
+	// 协议完整结束后进程才以非零退出：进程失败分类优先于结果读取。
+	body := transcriptBody(successTranscriptLines())
 	for _, secret := range secrets {
-		body += "\nprintf '%s\\n' " + shellQuote(secret) + " >&2"
+		body += "printf '%s\\n' " + shellQuote(secret) + " >&2\n"
 	}
-	body += "\nexit 7"
-	fixture := newRunFixture(t, supportedBinary, body)
+	body += "exit 7\n"
+	fixture := newRunFixture(t, supportedVersionOutput, body)
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if !errors.Is(err, ErrProcessFailed) {
-		t.Fatalf("error = %v", err)
+		t.Fatalf("err = %v, want ErrProcessFailed", err)
 	}
 	if !strings.Contains(err.Error(), "exit=7") {
 		t.Fatalf("error must carry the exit code: %v", err)
-	}
-	if strings.Contains(err.Error(), "stderr") {
-		t.Fatalf("error references stderr contents: %v", err)
 	}
 	for _, secret := range secrets {
 		if strings.Contains(err.Error(), secret) {
@@ -366,24 +890,34 @@ func TestRunProcessFailureNeverLeaksStderrIntoError(t *testing.T) {
 			t.Fatalf("metadata leaked stderr content %q", secret)
 		}
 	}
-	if !strings.Contains(string(metadata), `"stderrBytes"`) || !strings.Contains(string(metadata), `"exitCode": 7`) {
-		t.Fatalf("metadata lost bounded stderr/process accounting: %s", metadata)
+	if !strings.Contains(string(metadata), `"exitCode": 7`) || !strings.Contains(string(metadata), `"stderrBytes"`) {
+		t.Fatalf("metadata lost process/stderr accounting: %s", metadata)
 	}
 }
 
-func waitForFile(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("file %s was not produced within %s", path, timeout)
-		}
-		time.Sleep(5 * time.Millisecond)
+func TestRunRejectsEvidenceDirectoryEscape(t *testing.T) {
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	outside := t.TempDir()
+	if err := os.RemoveAll(filepath.Join(fixture.controlRoot, "output")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(fixture.controlRoot, "output")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err == nil || !strings.Contains(err.Error(), "escapes the control root") {
+		t.Fatalf("err = %v, want evidence directory containment failure", err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("evidence was written outside the control root: %v", entries)
 	}
 }
+
+// ---------- fixtures ----------
 
 type runFixture struct {
 	adapter                           *Adapter
@@ -392,16 +926,24 @@ type runFixture struct {
 	request                           domain.Record
 }
 
-func newRunFixture(t *testing.T, version, body string) runFixture {
+func newRunFixture(t *testing.T, versionOutput, body string) runFixture {
 	t.Helper()
-	executable := fakeExecutable(t, version, body)
+	worktree := t.TempDir()
+	controlRoot := t.TempDir()
+	resolvedWorktree, err := filepath.EvalSymlinks(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedControlRoot, err := filepath.EvalSymlinks(controlRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := fakeExecutable(t, versionOutput, body)
 	validator := newValidator(t)
 	adapter, err := New(executable, validator)
 	if err != nil {
 		t.Fatal(err)
 	}
-	worktree := t.TempDir()
-	controlRoot := t.TempDir()
 	writeJSON(t, filepath.Join(controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model"}})
 	promptPath := filepath.Join(controlRoot, "input", "prompt.md")
 	if err := os.MkdirAll(filepath.Dir(promptPath), 0o700); err != nil {
@@ -410,15 +952,17 @@ func newRunFixture(t *testing.T, version, body string) runFixture {
 	if err := os.WriteFile(promptPath, []byte("完成 fixture"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeJSON(t, filepath.Join(controlRoot, "output", "worker-result.json"), validDeclaredResult(executable))
 	requestData := map[string]any{
 		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerRequest", "taskId": "TASK-1", "runId": "run-1", "attemptId": "attempt-1", "attemptNumber": 1,
 		"specDigest": digest("a"), "policyDigest": digest("b"), "capabilityDigest": digest("c"), "baseSha": strings.Repeat("1", 40),
-		"worktreePath": worktree, "controlRoot": controlRoot, "taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
-		"adapterId": "codex", "executionProfile": "workspace-write", "sessionPolicy": "ephemeral", "attemptTimeoutSeconds": 5, "maxOutputBytes": 1024, "reviewFindings": []any{},
+		"worktreePath": resolvedWorktree, "controlRoot": resolvedControlRoot, "taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
+		"adapterId": "codex", "executionProfile": "workspace-write", "sessionPolicy": "ephemeral", "attemptTimeoutSeconds": 5, "maxOutputBytes": 65536, "reviewFindings": []any{},
 	}
-	requestBytes, _ := json.Marshal(requestData)
-	return runFixture{adapter, validator, adapter.executable, worktree, controlRoot, domain.Record{Kind: domain.KindWorkerRequest, Data: requestBytes}}
+	requestBytes, err := json.Marshal(requestData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runFixture{adapter, validator, adapter.executable, resolvedWorktree, resolvedControlRoot, domain.Record{Kind: domain.KindWorkerRequest, Data: requestBytes}}
 }
 
 func (f runFixture) requestWith(overrides map[string]any) domain.Record {
@@ -440,14 +984,131 @@ func (f runFixture) requestWith(overrides map[string]any) domain.Record {
 	return domain.Record{Kind: domain.KindWorkerRequest, Data: requestBytes}
 }
 
-func validDeclaredResult(executable string) map[string]any {
-	return map[string]any{
-		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerResult", "taskId": "TASK-1", "runId": "run-1", "attemptId": "attempt-1",
-		"adapter": map[string]any{"id": "codex", "executable": executable, "version": "worker-claim"},
-		"session": map[string]any{"id": "thread-1", "resumable": false}, "status": "completed", "summary": "fixture completed",
-		"declaredChangedFiles": []string{"file.txt"}, "declaredArtifacts": []any{}, "declaredCommands": []any{}, "declaredRisks": []string{}, "outputTruncated": false,
-		"startedAt": "2026-08-04T00:00:00Z", "completedAt": "2026-08-04T00:00:01Z",
+// validDeclaredResultJSON 是 fake worker 声明的 WorkerResult：executable/
+// version/session 均不可信，用于验证归一化覆盖。
+func validDeclaredResultJSON() string {
+	return `{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"TASK-1","runId":"run-1","attemptId":"attempt-1","adapter":{"id":"codex","executable":"claimed-by-worker","version":"worker-claim"},"session":{"id":"thread-1","resumable":true},"status":"completed","summary":"fixture completed","declaredChangedFiles":["file.txt"],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"2026-08-17T00:00:00Z","completedAt":"2026-08-17T00:00:01Z"}`
+}
+
+// successTranscriptLines 是按 0.145.0 真实 JSONL 契约冻结的成功事件序列：
+// thread.started 绑定 thread_id，单一 turn 携带 item.*，最终以
+// turn.completed 收口。
+func successTranscriptLines() []string {
+	return []string{
+		`{"type":"thread.started","thread_id":"thread-1"}`,
+		`{"type":"turn.started","thread_id":"thread-1","turn_id":"turn-1"}`,
+		`{"type":"item.started","thread_id":"thread-1","item":{"type":"agent_message"}}`,
+		`{"type":"item.completed","thread_id":"thread-1","item":{"type":"agent_message"}}`,
+		`{"type":"turn.completed","thread_id":"thread-1","usage":{"input_tokens":11,"output_tokens":7}}`,
 	}
+}
+
+// transcriptBody 生成只打印给定 JSONL 事件的 fake 主体。
+func transcriptBody(lines []string) string {
+	if len(lines) == 0 {
+		return "exit 0"
+	}
+	quoted := make([]string, 0, len(lines))
+	for _, line := range lines {
+		quoted = append(quoted, shellQuote(line))
+	}
+	return "printf '%s\\n' " + strings.Join(quoted, " ") + "\n"
+}
+
+// successBodyWithResult 组装成功 attempt 的 fake 主体：打印冻结 transcript，
+// 并把声明的 WorkerResult 写入 result 路径；resultJSON 为空时不写 result，
+// 用于缺失 result 的失败路径。argv/stdin/环境捕获由 fakeScript 统一完成。
+func successBodyWithResult(resultJSON string) string {
+	body := transcriptBody(successTranscriptLines())
+	if resultJSON != "" {
+		body += resultHeredoc(resultJSON)
+	}
+	return body
+}
+
+// resultHeredoc 把声明的 WorkerResult 写入 fake 从 argv 解析出的 result_path。
+func resultHeredoc(resultJSON string) string {
+	return "cat > \"$result_path\" <<'CODEX_RESULT_EOF'\n" + resultJSON + "\nCODEX_RESULT_EOF\n"
+}
+
+func fakeExecutable(t *testing.T, versionOutput, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(path, []byte(fakeScript(versionOutput, body)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// fakeScript 生成 fake codex：--version 返回冻结格式版本行；其余调用先按
+// 0.145.0 真实 parser 契约校验 argv（全局参数在 exec 子命令之前、
+// --ask-for-approval 只接受顶层位置、exec --sandbox 只接受
+// read-only/workspace-write/danger-full-access 枚举），任何错误排序或取值
+// 以 exit=2 拒绝；校验通过后从 argv 的 --output-last-message/-o 解析出
+// 唯一结果叶子 result_path，确定性捕获 argv/stdin/环境并执行 body。
+// 全部 fixture 均由测试在 t.TempDir 内动态生成，不依赖真实 Codex、网络、
+// 用户认证或用户配置。
+func fakeScript(versionOutput, body string) string {
+	return "#!/bin/sh\n" +
+		"if [ \"${1:-}\" = \"--version\" ]; then printf '%s\\n' " + shellQuote(versionOutput) + "; exit 0; fi\n" +
+		fakeParserScript() +
+		fakeCaptureScript() +
+		body + "\n"
+}
+
+// fakeParserScript 是冻结的 0.145.0 parser 契约：拒绝错误排序与取值时
+// 输出为空且以 exit=2 终止。--output-last-message/-o 的值被解析进
+// result_path，模拟真实 CLI 把最终输出写到该叶子；测试构造器不再向
+// fake 注入任何 control path，杜绝绕过 argv/CLI output contract 的假绿。
+func fakeParserScript() string {
+	return `argv_log=$(
+  for a in "$@"; do printf '%s\n' "$a"; done
+)
+stdin_log=$(cat)
+result_path=""
+saw_exec=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    exec) saw_exec=1; shift; break ;;
+    --ask-for-approval|--color|-C|--cd|-c|--config)
+      flag=$1
+      [ "$#" -ge 2 ] || exit 2
+      value=$2
+      shift 2
+      case "$flag" in
+        --ask-for-approval) case "$value" in never|untrusted|on-failure|on-request) ;; *) exit 2 ;; esac ;;
+        --color) case "$value" in never|always|auto) ;; *) exit 2 ;; esac ;;
+      esac ;;
+    *) exit 2 ;;
+  esac
+done
+[ "$saw_exec" = "1" ] || exit 2
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json|--ephemeral|--ignore-user-config|--ignore-rules) shift ;;
+    --sandbox)
+      [ "$#" -ge 2 ] || exit 2
+      case "$2" in read-only|workspace-write|danger-full-access) ;; *) exit 2 ;; esac
+      shift 2 ;;
+    --output-schema) [ "$#" -ge 2 ] || exit 2; shift 2 ;;
+    --output-last-message|-o)
+      [ "$#" -ge 2 ] || exit 2
+      result_path=$2
+      shift 2 ;;
+    -m|--model) [ "$#" -ge 2 ] || exit 2; shift 2 ;;
+    *) exit 2 ;;
+  esac
+done
+`
+}
+
+// fakeCaptureScript 在 parser 契约通过后把调用证据写入 worktree/capture。
+func fakeCaptureScript() string {
+	return `mkdir -p capture
+printf '%s\n' "$argv_log" > capture/argv
+printf '%s' "$stdin_log" > capture/stdin
+env | LC_ALL=C sort > capture/env
+`
 }
 
 func newValidator(t *testing.T) *contract.Validator {
@@ -473,6 +1134,37 @@ func writeJSON(t *testing.T, path string, value any) {
 	}
 }
 
+func jsonString(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
 func digest(character string) string { return "sha256:" + strings.Repeat(character, 64) }
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
+
+func containsSequence(values []string, first, second string) bool {
+	for index := 0; index+1 < len(values); index++ {
+		if values[index] == first && values[index+1] == second {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("file %s was not produced within %s", path, timeout)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
