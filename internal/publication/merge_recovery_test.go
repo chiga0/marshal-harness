@@ -10,9 +10,125 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
 )
+
+func TestMergeReobservesBaseImmediatelyBeforeMutation(t *testing.T) {
+	fixture := newMergeFixture(t)
+	harness := newMergeHarness(t, fixture)
+	initial := mergeTargetFor(fixture)
+	drifted := initial
+	drifted.Draft = false
+	drifted.BaseOid = fabricatedSHA("9")
+	harness.targetObserver.seq = []domain.SCMMergeTarget{initial, drifted}
+
+	if _, err := harness.merge(t); err == nil || !port.IsPermanent(err) {
+		t.Fatalf("Merge() immediate-base-drift error = %v, want permanent", err)
+	}
+	harness.merger.mu.Lock()
+	defer harness.merger.mu.Unlock()
+	if harness.merger.readyCalls != 1 || harness.merger.mergeCalls != 0 {
+		t.Fatalf("drifted immediate cut mutations: ready=%d merge=%d", harness.merger.readyCalls, harness.merger.mergeCalls)
+	}
+}
+
+func TestMergeRecoveryRestoresDurableAuthorizationWithoutIssuance(t *testing.T) {
+	fixture := newMergeFixture(t)
+	harness := newMergeHarness(t, fixture)
+	harness.merger.readyErr = errors.New("persist intent and authorization")
+	if _, err := harness.merge(t); err == nil {
+		t.Fatal("initial Merge() unexpectedly succeeded")
+	}
+
+	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: filepath.Dir(fixture.stateRoot)}
+	restarted, err := authority.NewEdgeRuntime(namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.BindTargetEligibilityResolver(harness.eligibility)
+	harness.authorization = restarted
+	harness.merger.readyErr = nil
+	if _, err := harness.merge(t); err != nil {
+		t.Fatalf("recovery with a fresh runtime failed: %v", err)
+	}
+	for _, audit := range restarted.AuditTrail() {
+		if audit.Action == authority.EdgeAuditIssued || audit.Action == authority.EdgeAuditIssuanceMerged {
+			t.Fatalf("recovery re-issued PublicationAuthorization: %+v", audit)
+		}
+	}
+}
+
+func TestMergeRecoveryPersistsRevocationAndNeverRevivesIt(t *testing.T) {
+	fixture := newMergeFixture(t)
+	harness := newMergeHarness(t, fixture)
+	harness.merger.readyErr = errors.New("persist intent and authorization")
+	if _, err := harness.merge(t); err == nil {
+		t.Fatal("initial Merge() unexpectedly succeeded")
+	}
+	intent := readPersistedIntent(t, fixture)
+	record, err := loadDurableMergeAuthorization(fixture.runDirectory, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := harness.authorization.RevokePublicationAuthorization(record.LedgerKey, authority.EdgeRevocationOrdinary, harness.now); err != nil {
+		t.Fatal(err)
+	}
+	harness.merger.readyErr = nil
+	if _, err := harness.merge(t); err == nil || !port.IsPermanent(err) {
+		t.Fatalf("revoked recovery error = %v, want permanent", err)
+	}
+	persisted, err := loadDurableMergeAuthorization(fixture.runDirectory, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Authorization.RevocationGeneration == 0 {
+		t.Fatal("revocation successor was not persisted durably")
+	}
+
+	namespace := authority.AuthorityNamespaceId{TenantNamespace: "local", ControlPlaneId: "default", AuthorityScopeId: filepath.Dir(fixture.stateRoot)}
+	restarted, err := authority.NewEdgeRuntime(namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.RestorePublicationAuthorization(persisted.LedgerKey, persisted.Authorization, persisted.DecisionBinding); err != nil {
+		t.Fatal(err)
+	}
+	if current, _, ok := restarted.CurrentPublicationAuthorization(persisted.LedgerKey); !ok || current.RevocationGeneration == 0 {
+		t.Fatal("fresh runtime revived a revoked durable authorization")
+	}
+}
+
+func TestMergeRecoveryRejectsTamperedDurableAuthorization(t *testing.T) {
+	fixture := newMergeFixture(t)
+	harness := newMergeHarness(t, fixture)
+	harness.merger.readyErr = errors.New("persist intent and authorization")
+	if _, err := harness.merge(t); err == nil {
+		t.Fatal("initial Merge() unexpectedly succeeded")
+	}
+	intent := readPersistedIntent(t, fixture)
+	record, err := loadDurableMergeAuthorization(fixture.runDirectory, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(fixture.runDirectory, "merge-authorizations", strings.TrimPrefix(record.RecordDigest, "sha256:")+".json")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	harness.merger.mu.Lock()
+	before := harness.merger.readyCalls
+	harness.merger.mu.Unlock()
+	harness.merger.readyErr = nil
+	if _, err := harness.merge(t); err == nil || !port.IsPermanent(err) {
+		t.Fatalf("tampered authorization error = %v, want permanent", err)
+	}
+	harness.merger.mu.Lock()
+	defer harness.merger.mu.Unlock()
+	if harness.merger.readyCalls != before {
+		t.Fatal("tampered durable authorization reached another mutation")
+	}
+}
 
 func countMergeIntents(t *testing.T, fixture *mergeFixture) int {
 	t.Helper()
@@ -155,6 +271,32 @@ func TestMergeDeliveryRetryBudgetExhaustsToBlocked(t *testing.T) {
 	harness.merger.mu.Unlock()
 	if readyCalls != maxMergeDeliveryAttempts {
 		t.Fatalf("ready calls = %d, want durable budget %d", readyCalls, maxMergeDeliveryAttempts)
+	}
+}
+
+func TestMergeDeliveryLedgerTamperFailsClosedBeforeAnotherMutation(t *testing.T) {
+	fixture := newMergeFixture(t)
+	harness := newMergeHarness(t, fixture)
+	harness.merger.readyErr = errors.New("transient ready outage")
+	if _, err := harness.merge(t); err == nil {
+		t.Fatal("initial Merge() unexpectedly succeeded")
+	}
+	intent := readPersistedIntent(t, fixture)
+	path := filepath.Join(fixture.runDirectory, "merge-delivery", strings.TrimPrefix(intent.IntentDigest, "sha256:"), mergeDeliveryReady, "001-attempt.json")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	harness.merger.mu.Lock()
+	before := harness.merger.readyCalls
+	harness.merger.mu.Unlock()
+	harness.merger.readyErr = nil
+	if _, err := harness.merge(t); err == nil || !port.IsPermanent(err) {
+		t.Fatalf("tampered ledger error = %v, want permanent", err)
+	}
+	harness.merger.mu.Lock()
+	defer harness.merger.mu.Unlock()
+	if harness.merger.readyCalls != before {
+		t.Fatalf("tampered ledger reached another mutation: before=%d after=%d", before, harness.merger.readyCalls)
 	}
 }
 
@@ -304,6 +446,43 @@ func TestMergeReentryAfterConvergenceRebuildsOutcomeIdempotently(t *testing.T) {
 	}
 	if count := countMergeJournalEvents(t, fixture, "publication.merged"); count != mergedEvents {
 		t.Fatalf("idempotent re-entry appended duplicate merged events: want %d got %d", mergedEvents, count)
+	}
+}
+
+func TestMergeC7RepairsEitherMissingOutcomeDocumentWithoutOverwrite(t *testing.T) {
+	for _, missing := range []string{"outcome.json", "outcome.md"} {
+		t.Run(missing, func(t *testing.T) {
+			fixture := newMergeFixture(t)
+			harness := newMergeHarness(t, fixture)
+			if _, err := harness.merge(t); err != nil {
+				t.Fatal(err)
+			}
+			kept := "outcome.md"
+			if missing == kept {
+				kept = "outcome.json"
+			}
+			keptPath := filepath.Join(fixture.runDirectory, kept)
+			keptBefore, err := os.ReadFile(keptPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(fixture.runDirectory, missing)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := harness.merge(t); err != nil {
+				t.Fatalf("C7 repair failed: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.runDirectory, missing)); err != nil {
+				t.Fatalf("missing side was not repaired: %v", err)
+			}
+			keptAfter, err := os.ReadFile(keptPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(keptBefore) != string(keptAfter) {
+				t.Fatal("C7 repair overwrote the existing outcome document")
+			}
+		})
 	}
 }
 

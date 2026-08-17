@@ -200,43 +200,10 @@ type preparedMergeOutcome struct {
 }
 
 func prepareMergeOutcome(runDir string, validator *contract.Validator, state domain.RunState, summary, decisionDigest, evidenceDigest, intentDigest, receiptDigest string) (*preparedMergeOutcome, error) {
-	decisionData, err := os.ReadFile(filepath.Join(runDir, "decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound)))
+	jsonData, markdown, err := mergeOutcomeDocuments(runDir, validator, state, summary, decisionDigest, evidenceDigest, intentDigest, receiptDigest)
 	if err != nil {
 		return nil, err
 	}
-	if err := validator.Validate(domain.KindReviewDecision, decisionData); err != nil {
-		return nil, err
-	}
-	var decision domain.ReviewDecision
-	if err := json.Unmarshal(decisionData, &decision); err != nil {
-		return nil, err
-	}
-	recomputedDecisionDigest, err := canonical.DigestJSON(decisionData)
-	if err != nil {
-		return nil, err
-	}
-	if decision.TaskID != state.TaskID || decision.RunID != state.RunID || decision.Verdict != "accept" ||
-		recomputedDecisionDigest != decisionDigest || decision.EvidenceDigest != evidenceDigest {
-		return nil, errors.New("terminal Outcome review identity mismatch")
-	}
-	outcome := domain.OutcomeBundle{
-		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindOutcome,
-		TaskID: state.TaskID, RunID: state.RunID, TerminalState: state.State, Verdict: decision.Verdict,
-		FinalReviewRound: decision.ReviewRound, FinalReviewDigest: decisionDigest, FinalEvidenceDigest: decision.EvidenceDigest,
-		Summary: summary, FindingCount: uint(len(decision.BlockingFindings) + len(decision.NonBlockingFindings)),
-		RetentionPolicy: "default", GeneratedAt: state.UpdatedAt,
-		IntentDigest: intentDigest, ReceiptDigest: receiptDigest,
-	}
-	jsonData, err := json.MarshalIndent(outcome, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	if err := validator.Validate(domain.KindOutcome, jsonData); err != nil {
-		return nil, fmt.Errorf("generated merge outcome violates contract: %w", err)
-	}
-	markdown := fmt.Sprintf("# Run 结果报告\n\n- 任务 ID：%s\n- Run ID：%s\n- 终态：%s\n- Review Verdict：%s\n- Review Round：%d\n- 生成时间：%s\n\n## 摘要\n\n%s\n\n## 证据绑定\n\n- Decision：%s\n- Evidence：%s\n- Merge Intent：%s\n- Merge Receipt：%s\n\n## 保留策略\n\n默认保留；清理不得销毁本 Outcome。\n",
-		state.TaskID, state.RunID, state.State, decision.Verdict, decision.ReviewRound, state.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
-		summary, decisionDigest, evidenceDigest, intentDigest, receiptDigest)
 	prepared := &preparedMergeOutcome{
 		finalJSON:   filepath.Join(runDir, "outcome.json"),
 		pendingJSON: filepath.Join(runDir, "outcome.json.pending"),
@@ -255,15 +222,56 @@ func prepareMergeOutcome(runDir string, validator *contract.Validator, state dom
 			return nil, fmt.Errorf("remove orphan outcome %s: %w", pending, err)
 		}
 	}
-	if err := atomicWrite(prepared.pendingJSON, append(jsonData, '\n')); err != nil {
+	if err := atomicWrite(prepared.pendingJSON, jsonData); err != nil {
 		prepared.Abort()
 		return nil, err
 	}
-	if err := atomicWrite(prepared.pendingMD, []byte(markdown)); err != nil {
+	if err := atomicWrite(prepared.pendingMD, markdown); err != nil {
 		prepared.Abort()
 		return nil, err
 	}
 	return prepared, nil
+}
+
+func mergeOutcomeDocuments(runDir string, validator *contract.Validator, state domain.RunState, summary, decisionDigest, evidenceDigest, intentDigest, receiptDigest string) ([]byte, []byte, error) {
+	decisionData, err := os.ReadFile(filepath.Join(runDir, "decisions", fmt.Sprintf("decision-%03d.json", state.ReviewRound)))
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validator.Validate(domain.KindReviewDecision, decisionData); err != nil {
+		return nil, nil, err
+	}
+	var decision domain.ReviewDecision
+	if err := json.Unmarshal(decisionData, &decision); err != nil {
+		return nil, nil, err
+	}
+	recomputedDecisionDigest, err := canonical.DigestJSON(decisionData)
+	if err != nil {
+		return nil, nil, err
+	}
+	if decision.TaskID != state.TaskID || decision.RunID != state.RunID || decision.Verdict != "accept" ||
+		recomputedDecisionDigest != decisionDigest || decision.EvidenceDigest != evidenceDigest {
+		return nil, nil, errors.New("terminal Outcome review identity mismatch")
+	}
+	outcome := domain.OutcomeBundle{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindOutcome,
+		TaskID: state.TaskID, RunID: state.RunID, TerminalState: state.State, Verdict: decision.Verdict,
+		FinalReviewRound: decision.ReviewRound, FinalReviewDigest: decisionDigest, FinalEvidenceDigest: decision.EvidenceDigest,
+		Summary: summary, FindingCount: uint(len(decision.BlockingFindings) + len(decision.NonBlockingFindings)),
+		RetentionPolicy: "default", GeneratedAt: state.UpdatedAt,
+		IntentDigest: intentDigest, ReceiptDigest: receiptDigest,
+	}
+	jsonData, err := json.MarshalIndent(outcome, "", "  ")
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validator.Validate(domain.KindOutcome, jsonData); err != nil {
+		return nil, nil, fmt.Errorf("generated merge outcome violates contract: %w", err)
+	}
+	markdown := fmt.Sprintf("# Run 结果报告\n\n- 任务 ID：%s\n- Run ID：%s\n- 终态：%s\n- Review Verdict：%s\n- Review Round：%d\n- 生成时间：%s\n\n## 摘要\n\n%s\n\n## 证据绑定\n\n- Decision：%s\n- Evidence：%s\n- Merge Intent：%s\n- Merge Receipt：%s\n\n## 保留策略\n\n默认保留；清理不得销毁本 Outcome。\n",
+		state.TaskID, state.RunID, state.State, decision.Verdict, decision.ReviewRound, state.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		summary, decisionDigest, evidenceDigest, intentDigest, receiptDigest)
+	return append(jsonData, '\n'), []byte(markdown), nil
 }
 
 func (o *preparedMergeOutcome) Commit() error {
@@ -284,4 +292,19 @@ func (o *preparedMergeOutcome) Abort() {
 			_ = os.Remove(path)
 		}
 	}
+}
+
+func putFileNoReplace(path string, data []byte) error {
+	pending := path + ".recovery.pending"
+	if err := os.Remove(pending); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := atomicWrite(pending, data); err != nil {
+		return err
+	}
+	defer os.Remove(pending)
+	if err := os.Link(pending, path); err != nil {
+		return err
+	}
+	return nil
 }

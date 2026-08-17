@@ -310,6 +310,7 @@ type fakeSCMMerger struct {
 	mergeCalls       int
 	readyIntents     []domain.SCMMergeIntent
 	mergeIntents     []domain.SCMMergeIntent
+	onReady          func()
 }
 
 var _ port.SCMMerger = (*fakeSCMMerger)(nil)
@@ -319,7 +320,11 @@ func (m *fakeSCMMerger) ReadyForReview(_ context.Context, intent domain.SCMMerge
 	defer m.mu.Unlock()
 	m.readyCalls++
 	m.readyIntents = append(m.readyIntents, intent)
-	return m.readyErr
+	err := m.readyErr
+	if err == nil && m.onReady != nil {
+		m.onReady()
+	}
+	return err
 }
 
 func (m *fakeSCMMerger) Merge(_ context.Context, intent domain.SCMMergeIntent) error {
@@ -465,7 +470,7 @@ func newMergeHarness(t *testing.T, fixture *mergeFixture) *mergeHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &mergeHarness{
+	harness := &mergeHarness{
 		fixture:             fixture,
 		merger:              &fakeSCMMerger{bindsHead: true, securityDomainID: targetDigest},
 		targetObserver:      &fakeTargetObserver{target: mergeTargetFor(fixture)},
@@ -479,6 +484,12 @@ func newMergeHarness(t *testing.T, fixture *mergeFixture) *mergeHarness {
 		authorizationTarget: target,
 		eligibility:         eligibility,
 	}
+	harness.merger.onReady = func() {
+		harness.targetObserver.mu.Lock()
+		defer harness.targetObserver.mu.Unlock()
+		harness.targetObserver.target.Draft = false
+	}
+	return harness
 }
 
 func mergeTargetFor(fixture *mergeFixture) domain.SCMMergeTarget {

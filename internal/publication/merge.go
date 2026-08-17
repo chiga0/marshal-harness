@@ -280,7 +280,7 @@ func Merge(ctx context.Context, input MergeInput) (MergeResult, error) {
 	// PublicationAuthorization. Issuance binds the exact intent/review/evidence
 	// chain, expected GitHub principal and Publication security domain; every
 	// mutation below performs a current-ledger recheck of this record.
-	authorization, err := issueMergeAuthorization(input, intent, admission, ciDeadline, now)
+	authorization, err := loadOrIssueMergeAuthorization(input, intent, admission, ciDeadline, now, runDir, found)
 	if err != nil {
 		result, blockedErr := block(store, lease, state, runDir, port.Permanent(err))
 		return MergeResult{State: result.State}, blockedErr
@@ -688,6 +688,24 @@ func recoverReady(ctx context.Context, input MergeInput, admission mergeAdmissio
 // On a failed merge it reconciles through ObserveMergeReceipt / ObserveReady
 // first (C4) instead of blind replay.
 func mergeAndObserve(ctx context.Context, input MergeInput, admission mergeAdmission, intent domain.SCMMergeIntent, authorization authority.PublicationAuthorization, runDir string) (domain.SCMMergeReceipt, error) {
+	// ADR 0032 §2 requires an immediate target cut before every merge
+	// mutation. GitHub can mechanically fence the head OID but not the base
+	// OID, so the earlier admission observation cannot authorize this later
+	// side effect (ReadyForReview itself may have taken time).
+	target, err := input.TargetObserver.ObserveTarget(ctx, intent)
+	if err != nil {
+		return domain.SCMMergeReceipt{}, err
+	}
+	switch classifyMergeTarget(target, intent, admission.publication.BaseBranch) {
+	case domain.MergeReadyMerged:
+		return observeMergeReceiptForIntent(ctx, input, admission, intent)
+	case domain.MergeReadyReady:
+		// This is the sole mutation-authorizing target state.
+	case domain.MergeReadyStillDraft:
+		return domain.SCMMergeReceipt{}, port.Permanent(errors.New("merge target became Draft before merge mutation"))
+	default:
+		return domain.SCMMergeReceipt{}, port.Permanent(errors.New("merge target drifted immediately before merge mutation"))
+	}
 	if err := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryMerge, func() error {
 		return input.Merger.Merge(ctx, intent)
 	}); err != nil {
@@ -720,11 +738,9 @@ func mergeAndObserve(ctx context.Context, input MergeInput, admission mergeAdmis
 			}); retryErr != nil {
 				return domain.SCMMergeReceipt{}, retryErr
 			}
-			if retryErr := authorizedMutation(ctx, input, authorization, intent, runDir, mergeDeliveryMerge, func() error {
-				return input.Merger.Merge(ctx, intent)
-			}); retryErr != nil {
-				return domain.SCMMergeReceipt{}, retryErr
-			}
+			// Re-enter through the immediate target cut; ready may have raced
+			// with base/head/marker drift and never directly authorizes merge.
+			return mergeAndObserve(ctx, input, admission, intent, authorization, runDir)
 		default:
 			return domain.SCMMergeReceipt{}, port.Permanent(errors.New("merge target drifted during recovery"))
 		}
@@ -869,30 +885,27 @@ func rebuildMergeConvergence(runDir string, store *runstore.Store, validator *co
 		decision.VerificationDigest != intent.VerificationDigest || decision.Verdict != "accept" {
 		return MergeResult{}, errors.New("C7 review evidence does not bind the merge intent")
 	}
-	outcomePath := filepath.Join(runDir, "outcome.json")
-	if outcomeData, readErr := os.ReadFile(outcomePath); readErr == nil {
-		if err := validator.Validate(domain.KindOutcome, outcomeData); err != nil {
-			return MergeResult{}, err
-		}
-		var outcome domain.OutcomeBundle
-		if err := json.Unmarshal(outcomeData, &outcome); err != nil {
-			return MergeResult{}, err
-		}
-		if outcome.TaskID != state.TaskID || outcome.RunID != state.RunID || outcome.TerminalState != domain.StateAccepted ||
-			outcome.FinalReviewDigest != decisionDigest || outcome.FinalEvidenceDigest != decision.EvidenceDigest ||
-			outcome.IntentDigest != intent.IntentDigest || outcome.ReceiptDigest != receipt.ReceiptDigest {
-			return MergeResult{}, errors.New("existing C7 Outcome does not bind the journal, intent, receipt and review evidence")
-		}
-		return MergeResult{State: state, Intent: intent, Receipt: receipt}, nil
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return MergeResult{}, readErr
-	}
-	prepared, err := prepareMergeOutcome(runDir, validator, state, "merged by Marshal after required checks", decisionDigest, decision.EvidenceDigest, intent.IntentDigest, receiptDigest)
+	expectedJSON, expectedMarkdown, err := mergeOutcomeDocuments(runDir, validator, state, "merged by Marshal after required checks", decisionDigest, decision.EvidenceDigest, intent.IntentDigest, receiptDigest)
 	if err != nil {
 		return MergeResult{}, err
 	}
-	if err := prepared.Commit(); err != nil {
-		return MergeResult{}, err
+	for _, document := range []struct {
+		path string
+		data []byte
+	}{{filepath.Join(runDir, "outcome.json"), expectedJSON}, {filepath.Join(runDir, "outcome.md"), expectedMarkdown}} {
+		existing, readErr := os.ReadFile(document.path)
+		if readErr == nil {
+			if string(existing) != string(document.data) {
+				return MergeResult{}, errors.New("existing C7 Outcome document conflicts with the journal-bound reconstruction")
+			}
+			continue
+		}
+		if !errors.Is(readErr, os.ErrNotExist) {
+			return MergeResult{}, readErr
+		}
+		if err := putFileNoReplace(document.path, document.data); err != nil {
+			return MergeResult{}, err
+		}
 	}
 	return MergeResult{State: state, Intent: intent, Receipt: receipt}, nil
 }

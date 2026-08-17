@@ -408,10 +408,10 @@ ADR 0019 首稿的最终独立复核另发现并关闭五项 P1：按 Port 接�
 | ID | 级别 | 状态 | 关闭口径 |
 | --- | --- | --- | --- |
 | `ADR0032-B2-PUBLISH-DEADEND` | P1 | `CLOSED` | `Publish` 同时支持冻结的 `mergePolicy=never|policy`；`policy` 必须绑定 `eligible-after-policy` ReviewDecision，生成同策略的 PublicationIntent/PublicationRecord 并停留于 `CI_PENDING`，只有 `publication.merged` 可进入 `ACCEPTED`。 |
-| `ADR0032-B2-AUTHORIZATION-BYPASS` | P1 | `CLOSED` | 新增 `publication-controlled-merge` operation；Core 签发的 `PublicationAuthorization` 精确绑定 publication、SCMMergeIntent、ReviewDecision、evidence、预期 GitHub principal 与 Execution→Publication security domain；ready/merge 每次调用前都做 current-ledger recheck，缺失、过期、撤销、target ineligible 或绑定漂移均 fail closed。 |
-| `ADR0032-B2-BASE-BRANCH-UNBOUND` | P1 | `CLOSED` | `SCMMergeTarget` 同时携带 `baseBranch` 与 `baseOid`；fresh admission 与 ObserveReady recovery 都分别对照冻结 PublicationRecord base branch 与 intent base OID，任一漂移在 mutation 前进入 `BLOCKED`。 |
+| `ADR0032-B2-AUTHORIZATION-BYPASS` | P1 | `CLOSED` | 新增 `publication-controlled-merge` operation；Core 签发的 `PublicationAuthorization` 精确绑定 publication、SCMMergeIntent、ReviewDecision、evidence、预期 GitHub principal 与 Execution→Publication security domain。授权及其 revocation successor 以 detached digest 的 append-only 记录持久化；恢复只 hydrate/复用既有 ledger fact，禁止重新签发。ready/merge 每次调用前都做 current-ledger recheck，缺失、过期、撤销、target ineligible 或绑定漂移均 fail closed。 |
+| `ADR0032-B2-BASE-BRANCH-UNBOUND` | P1 | `CLOSED` | `SCMMergeTarget` 同时携带 `baseBranch` 与 `baseOid`；fresh admission、ObserveReady recovery 以及每次实际 merge mutation 前的即时观察都分别对照冻结 PublicationRecord base branch 与 intent base OID，任一漂移在 mutation 前进入 `BLOCKED`。 |
 | `ADR0032-B2-CHECK-EVIDENCE-ORPHAN` | P1 | `CLOSED` | fresh `RemoteCheckRecord` 以 canonical digest 为文件名持久化不可变 bytes；恢复与 C7 重建重新校验 Schema、重算 digest，并核对 task/run/repository/request/head/status/requiredChecks，缺失或篡改不得收敛。 |
-| `ADR0032-B2-UNBOUNDED-MERGE-FAILURE` | P1 | `CLOSED` | ready/merge delivery attempt 先以 append-only 记录消耗 durable budget，固定最多三次；GitHub not-mergeable、permission 与 identity drift 使用 typed permanent failure，瞬态失败耗尽后转 `merge-delivery-retry-exhausted` 并进入 `BLOCKED`，provider 原始诊断不进入持久错误。 |
+| `ADR0032-B2-UNBOUNDED-MERGE-FAILURE` | P1 | `CLOSED` | ready/merge delivery attempt 先以 digest-verified、连续序列的 append-only typed attempt/result 记录消耗 durable budget，固定最多三次；结果封闭记录 success/transient/permanent 与 typed failure class。GitHub not-mergeable、permission 与 identity drift 使用 typed permanent failure，瞬态失败耗尽后转 `merge-delivery-retry-exhausted` 并进入 `BLOCKED`，provider 原始诊断不进入持久错误。 |
 
 残留 `#160` 保持 P2 `OPEN`：当前 B2 的 bounded delivery ledger 已阻止无限 mutation，但更通用的共享 outbox/投递观测与运维视图仍应由后续切片处理；不得为关闭该 P2 扩大本切片的信任边界或把 provider 原始输出写入 Outcome。
 

@@ -30,20 +30,61 @@ type mergeDeliveryAttempt struct {
 	AttemptDigest string    `json:"attemptDigest"`
 }
 
+type mergeDeliveryResult struct {
+	AttemptDigest string    `json:"attemptDigest"`
+	Sequence      int       `json:"sequence"`
+	Outcome       string    `json:"outcome"`
+	FailureClass  string    `json:"failureClass"`
+	CompletedAt   time.Time `json:"completedAt"`
+	ResultDigest  string    `json:"resultDigest"`
+}
+
+const (
+	mergeOutcomeSucceeded  = "succeeded"
+	mergeOutcomeTransient  = "transient-failure"
+	mergeOutcomePermanent  = "permanent-failure"
+	mergeFailureNone       = "none"
+	mergeFailureTransient  = "transient"
+	mergeFailurePermission = "permission-denied"
+	mergeFailureTarget     = "not-mergeable"
+	mergeFailureIdentity   = "identity-mismatch"
+	mergeFailureExhausted  = "retry-exhausted"
+)
+
 func authorizedMutation(ctx context.Context, input MergeInput, authorization authority.PublicationAuthorization, intent domain.SCMMergeIntent, runDir, operation string, mutate func() error) error {
 	sequence, err := persistMergeDeliveryAttempt(runDir, intent.IntentDigest, operation, time.Now().UTC())
 	if err != nil {
 		return err
 	}
 	if err := recheckMergeAuthorization(input, authorization, intent, operation, time.Now().UTC()); err != nil {
-		return port.Permanent(fmt.Errorf("%w: %v", port.ErrMergeIdentityMismatch, err))
+		wrapped := port.Permanent(fmt.Errorf("%w: %v", port.ErrMergeIdentityMismatch, err))
+		if persistErr := persistMergeDeliveryResult(runDir, intent.IntentDigest, operation, sequence, mergeOutcomePermanent, mergeFailureIdentity, time.Now().UTC()); persistErr != nil {
+			return errors.Join(wrapped, persistErr)
+		}
+		return wrapped
 	}
 	err = mutate()
-	if err == nil || port.IsPermanent(err) {
+	if err == nil {
+		if persistErr := persistMergeDeliveryResult(runDir, intent.IntentDigest, operation, sequence, mergeOutcomeSucceeded, mergeFailureNone, time.Now().UTC()); persistErr != nil {
+			return persistErr
+		}
+		return nil
+	}
+	if port.IsPermanent(err) {
+		if persistErr := persistMergeDeliveryResult(runDir, intent.IntentDigest, operation, sequence, mergeOutcomePermanent, classifyMergeFailure(err), time.Now().UTC()); persistErr != nil {
+			return errors.Join(err, persistErr)
+		}
 		return err
 	}
 	if sequence >= maxMergeDeliveryAttempts {
-		return port.Permanent(fmt.Errorf("%w: %v", port.ErrMergeRetryExhausted, err))
+		wrapped := port.Permanent(fmt.Errorf("%w: %v", port.ErrMergeRetryExhausted, err))
+		if persistErr := persistMergeDeliveryResult(runDir, intent.IntentDigest, operation, sequence, mergeOutcomePermanent, mergeFailureExhausted, time.Now().UTC()); persistErr != nil {
+			return errors.Join(wrapped, persistErr)
+		}
+		return wrapped
+	}
+	if persistErr := persistMergeDeliveryResult(runDir, intent.IntentDigest, operation, sequence, mergeOutcomeTransient, mergeFailureTransient, time.Now().UTC()); persistErr != nil {
+		return errors.Join(err, persistErr)
 	}
 	return err
 }
@@ -53,11 +94,11 @@ func persistMergeDeliveryAttempt(runDir, intentDigest, operation string, now tim
 		return 0, errors.New("merge delivery operation is outside the closed set")
 	}
 	directory := filepath.Join(runDir, "merge-delivery", strings.TrimPrefix(intentDigest, "sha256:"), operation)
-	entries, err := os.ReadDir(directory)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	count, err := validateMergeDeliveryLedger(directory, intentDigest, operation)
+	if err != nil {
 		return 0, err
 	}
-	sequence := len(entries) + 1
+	sequence := count + 1
 	if sequence > maxMergeDeliveryAttempts {
 		return 0, port.Permanent(port.ErrMergeRetryExhausted)
 	}
@@ -75,14 +116,177 @@ func persistMergeDeliveryAttempt(runDir, intentDigest, operation string, now tim
 	if err != nil {
 		return 0, err
 	}
-	path := filepath.Join(directory, fmt.Sprintf("%03d.json", sequence))
+	path := filepath.Join(directory, fmt.Sprintf("%03d-attempt.json", sequence))
 	if _, err := os.Lstat(path); err == nil {
 		return 0, errors.New("merge delivery attempt path already exists")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return 0, err
 	}
-	if err := atomicWrite(path, append(data, '\n')); err != nil {
+	if err := putFileNoReplace(path, append(data, '\n')); err != nil {
 		return 0, err
 	}
 	return sequence, nil
+}
+
+func persistMergeDeliveryResult(runDir, intentDigest, operation string, sequence int, outcome, failureClass string, now time.Time) error {
+	directory := filepath.Join(runDir, "merge-delivery", strings.TrimPrefix(intentDigest, "sha256:"), operation)
+	attemptData, err := os.ReadFile(filepath.Join(directory, fmt.Sprintf("%03d-attempt.json", sequence)))
+	if err != nil {
+		return err
+	}
+	var attempt mergeDeliveryAttempt
+	if err := json.Unmarshal(attemptData, &attempt); err != nil {
+		return err
+	}
+	if err := validateMergeDeliveryAttempt(attempt, intentDigest, operation, sequence); err != nil {
+		return err
+	}
+	result := mergeDeliveryResult{AttemptDigest: attempt.AttemptDigest, Sequence: sequence, Outcome: outcome, FailureClass: failureClass, CompletedAt: now}
+	detached, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	result.ResultDigest, err = canonical.DigestJSON(detached)
+	if err != nil {
+		return err
+	}
+	if err := validateMergeDeliveryResult(result, attempt); err != nil {
+		return err
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(directory, fmt.Sprintf("%03d-result.json", sequence))
+	if _, err := os.Lstat(path); err == nil {
+		return errors.New("merge delivery result path already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return putFileNoReplace(path, append(data, '\n'))
+}
+
+func validateMergeDeliveryLedger(directory, intentDigest, operation string) (int, error) {
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	entrySet := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), "-attempt.json") && !strings.HasSuffix(entry.Name(), "-result.json")) {
+			return 0, port.Permanent(errors.New("merge delivery ledger contains an invalid entry"))
+		}
+		entrySet[entry.Name()] = true
+	}
+	count := 0
+	for sequence := 1; sequence <= maxMergeDeliveryAttempts; sequence++ {
+		attemptName := fmt.Sprintf("%03d-attempt.json", sequence)
+		if !entrySet[attemptName] {
+			for name := range entrySet {
+				if name > attemptName {
+					return 0, port.Permanent(errors.New("merge delivery ledger sequence is not contiguous"))
+				}
+			}
+			break
+		}
+		data, readErr := os.ReadFile(filepath.Join(directory, attemptName))
+		if readErr != nil {
+			return 0, readErr
+		}
+		var attempt mergeDeliveryAttempt
+		if err := json.Unmarshal(data, &attempt); err != nil {
+			return 0, port.Permanent(err)
+		}
+		if err := validateMergeDeliveryAttempt(attempt, intentDigest, operation, sequence); err != nil {
+			return 0, port.Permanent(err)
+		}
+		resultName := fmt.Sprintf("%03d-result.json", sequence)
+		if entrySet[resultName] {
+			resultData, readErr := os.ReadFile(filepath.Join(directory, resultName))
+			if readErr != nil {
+				return 0, readErr
+			}
+			var result mergeDeliveryResult
+			if err := json.Unmarshal(resultData, &result); err != nil {
+				return 0, port.Permanent(err)
+			}
+			if err := validateMergeDeliveryResult(result, attempt); err != nil {
+				return 0, port.Permanent(err)
+			}
+		}
+		count++
+	}
+	for name := range entrySet {
+		recognized := false
+		for sequence := 1; sequence <= count; sequence++ {
+			if name == fmt.Sprintf("%03d-attempt.json", sequence) || name == fmt.Sprintf("%03d-result.json", sequence) {
+				recognized = true
+				break
+			}
+		}
+		if !recognized {
+			return 0, port.Permanent(errors.New("merge delivery ledger contains a record outside the contiguous sequence"))
+		}
+	}
+	return count, nil
+}
+
+func validateMergeDeliveryAttempt(attempt mergeDeliveryAttempt, intentDigest, operation string, sequence int) error {
+	if attempt.IntentDigest != intentDigest || attempt.Operation != operation || attempt.Sequence != sequence || attempt.StartedAt.IsZero() {
+		return errors.New("merge delivery attempt binding mismatch")
+	}
+	detached := attempt
+	detached.AttemptDigest = ""
+	data, err := json.Marshal(detached)
+	if err != nil {
+		return err
+	}
+	digest, err := canonical.DigestJSON(data)
+	if err != nil || digest != attempt.AttemptDigest {
+		return errors.New("merge delivery attempt digest mismatch")
+	}
+	return nil
+}
+
+func validateMergeDeliveryResult(result mergeDeliveryResult, attempt mergeDeliveryAttempt) error {
+	if result.AttemptDigest != attempt.AttemptDigest || result.Sequence != attempt.Sequence || result.CompletedAt.IsZero() {
+		return errors.New("merge delivery result binding mismatch")
+	}
+	closedFailureClass := result.FailureClass == mergeFailurePermission || result.FailureClass == mergeFailureTarget ||
+		result.FailureClass == mergeFailureIdentity || result.FailureClass == mergeFailureExhausted
+	valid := (result.Outcome == mergeOutcomeSucceeded && result.FailureClass == mergeFailureNone) ||
+		(result.Outcome == mergeOutcomeTransient && result.FailureClass == mergeFailureTransient) ||
+		(result.Outcome == mergeOutcomePermanent && closedFailureClass)
+	if !valid {
+		return errors.New("merge delivery result outcome or failure class is outside the closed set")
+	}
+	detached := result
+	detached.ResultDigest = ""
+	data, err := json.Marshal(detached)
+	if err != nil {
+		return err
+	}
+	digest, err := canonical.DigestJSON(data)
+	if err != nil || digest != result.ResultDigest {
+		return errors.New("merge delivery result digest mismatch")
+	}
+	return nil
+}
+
+func classifyMergeFailure(err error) string {
+	switch {
+	case errors.Is(err, port.ErrMergePermissionDenied):
+		return mergeFailurePermission
+	case errors.Is(err, port.ErrMergeNotMergeable):
+		return mergeFailureTarget
+	case errors.Is(err, port.ErrMergeIdentityMismatch):
+		return mergeFailureIdentity
+	case errors.Is(err, port.ErrMergeRetryExhausted):
+		return mergeFailureExhausted
+	default:
+		return mergeFailureIdentity
+	}
 }
