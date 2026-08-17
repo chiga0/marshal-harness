@@ -1077,7 +1077,9 @@ func TestRunTerminalConflictBeatsContextDeadline(t *testing.T) {
 			initEvent("session-1", supportedBinary),
 			terminalLine(terminal),
 			"touch " + shellQuote(ready),
-			"sleep 30",
+			// exec 保证 Adapter 等待的顶层进程直接承受 SIGKILL；否则 shell
+			// 可能把子进程信号转译为普通 exitCode 137 并丢失 signal metadata。
+			"exec sleep 30",
 		}, "\n")
 		fixture := newRunFixture(t, supportedBinary, body)
 		ctx := newControlledDeadlineContext()
