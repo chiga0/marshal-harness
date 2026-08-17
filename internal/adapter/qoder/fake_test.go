@@ -248,6 +248,49 @@ func TestRunDirectExitCleansForkHoldingOutputPipes(t *testing.T) {
 	}
 }
 
+// TestWaitProcessExitNoReapRetainsLeaderIdentityUntilCleanup exercises the
+// no-descendant fast-exit boundary repeatedly. Exit observation must leave the
+// leader waitable, hence its PID/PGID cannot be recycled while cleanup targets
+// the captured group. Only Cmd.Wait may release that identity afterward.
+func TestWaitProcessExitNoReapRetainsLeaderIdentityUntilCleanup(t *testing.T) {
+	for iteration := 0; iteration < 32; iteration++ {
+		command := exec.Command("sh", "-c", "read marshal_release || exit 0")
+		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		stdin, err := command.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		pid := command.Process.Pid
+		groupID, err := syscall.Getpgid(pid)
+		if err != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			t.Fatalf("iteration %d: acquire process group: %v", iteration, err)
+		}
+		if err := stdin.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := waitProcessExitNoReap(pid); err != nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+			t.Fatalf("iteration %d: observe exit without reap: %v", iteration, err)
+		}
+		_ = syscall.Kill(-groupID, syscall.SIGKILL)
+		// A successful Cmd.Wait proves the exit observer did not reap the
+		// child. Until this call releases the waitable leader, its numeric PID
+		// cannot be reused as an unrelated process-group identity.
+		if err := command.Wait(); err != nil {
+			t.Fatalf("iteration %d: reap exited leader: %v", iteration, err)
+		}
+		if err := waitProcessExitNoReap(pid); !errors.Is(err, syscall.ECHILD) && !errors.Is(err, syscall.ESRCH) {
+			t.Fatalf("iteration %d: leader remained waitable after reap: %v", iteration, err)
+		}
+	}
+}
+
 func TestRunSensitiveEnvironmentNotInherited(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "qoder-gh-secret-0001")
 	t.Setenv("OPENAI_API_KEY", "qoder-openai-secret-0002")

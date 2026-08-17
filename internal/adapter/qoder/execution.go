@@ -89,11 +89,14 @@ func runBoundedVersionProbe(ctx context.Context, executable, configDir string, e
 		case <-processFinished:
 		}
 	}()
-	waitErr := command.Wait()
-	// A successfully exited parent may leave a same-group child holding one of
-	// the inherited pipes. Terminate that group, but let readers drain already
-	// buffered parent output before closing our descriptors as a final guard.
+	// Observe the direct child's exit without reaping it. While the group
+	// leader remains waitable its PID cannot be reused, so the captured PGID
+	// still identifies only the process tree we launched. Clean that group
+	// before Cmd.Wait performs the sole reap; signalling the numeric PGID after
+	// Wait would introduce a window where it could name an unrelated group.
+	waitObservationErr := waitProcessExitNoReap(command.Process.Pid)
 	killGroup()
+	waitErr := command.Wait()
 	close(processFinished)
 	var output, stderrOutput streamCapture
 	var stdoutJoined, stderrJoined bool
@@ -117,6 +120,9 @@ func runBoundedVersionProbe(ctx context.Context, executable, configDir string, e
 	}
 	if waitErr != nil {
 		return nil, fmt.Errorf("qoder version probe failed: %w", waitErr)
+	}
+	if waitObservationErr != nil {
+		return nil, fmt.Errorf("observe qoder version probe exit: %w", waitObservationErr)
 	}
 	return output.data, nil
 }
@@ -244,8 +250,12 @@ func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arg
 	// the captured group immediately after direct-process exit so a forked child
 	// holding either writer cannot keep this method blocked until the attempt
 	// deadline, then join the bounded readers.
-	waitErr := command.Wait()
+	// Keep the exited leader waitable until its entire captured process group
+	// has been cleaned. This makes the PGID non-reusable throughout signalling;
+	// Cmd.Wait is then the single reap owner.
+	waitObservationErr := waitProcessExitNoReap(command.Process.Pid)
 	killGroup()
+	waitErr := command.Wait()
 	close(processFinished)
 	capture := <-stdoutDone
 	stderrCapture := <-stderrDone
@@ -256,7 +266,7 @@ func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arg
 		stderr:        stderrCapture,
 		exitCode:      exitCode,
 		signal:        signal,
-		processFailed: waitErr != nil,
+		processFailed: waitErr != nil || waitObservationErr != nil,
 		startedAt:     started,
 		completedAt:   a.now().UTC(),
 	}, nil
