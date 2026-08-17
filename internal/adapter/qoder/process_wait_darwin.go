@@ -30,8 +30,12 @@ func waitProcessExitNoReap(pid int) error {
 		Flags:  unix.EV_ADD | unix.EV_ONESHOT,
 		Fflags: unix.NOTE_EXIT,
 	}
-	if _, err := qoderKevent(queue, []unix.Kevent_t{change}, nil, nil); err != nil {
-		return err
+	for {
+		if _, err := qoderKevent(queue, []unix.Kevent_t{change}, nil, nil); err == nil {
+			break
+		} else if !errors.Is(err, unix.EINTR) {
+			return err
+		}
 	}
 	events := make([]unix.Kevent_t, 1)
 	for {
