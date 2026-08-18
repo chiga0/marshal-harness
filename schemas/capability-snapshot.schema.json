@@ -78,6 +78,8 @@
     "conformanceValidUntil": { "type": "string", "format": "date-time" },
     "conformanceHostFingerprint": { "$ref": "#/$defs/digest" },
     "conformanceAuthorityGeneration": { "type": "integer", "minimum": 1 },
+    "codexAuthority": { "$ref": "#/$defs/codexAuthority" },
+    "adapterFailure": { "$ref": "#/$defs/adapterFailure" },
     "probedAt": { "type": "string", "format": "date-time" }
   },
   "allOf": [
@@ -99,6 +101,79 @@
           "conformanceAuthorityGeneration"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": { "adapterId": { "const": "codex" } },
+        "required": ["adapterId"]
+      },
+      "then": {
+        "properties": {
+          "probeStatus": { "enum": ["supported", "unsupported"] }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "probeStatus": { "const": "supported" } },
+              "required": ["probeStatus"]
+            },
+            "then": {
+              "required": [
+                "codexAuthority",
+                "conformanceEvidenceDigest",
+                "conformanceTrustRootKeyId",
+                "conformanceProbeProfileDigest",
+                "conformanceValidUntil",
+                "conformanceHostFingerprint",
+                "conformanceAuthorityGeneration"
+              ],
+              "properties": {
+                "adapterFailure": false,
+                "probeErrors": { "maxItems": 0 }
+              },
+              "oneOf": [
+                {
+                  "properties": {
+                    "capabilities": { "properties": { "executionProfiles": { "const": ["read-only"] } } },
+                    "codexAuthority": { "properties": { "executionProfiles": { "const": ["read-only"] } } }
+                  }
+                },
+                {
+                  "properties": {
+                    "capabilities": { "properties": { "executionProfiles": { "const": ["workspace-write"] } } },
+                    "codexAuthority": { "properties": { "executionProfiles": { "const": ["workspace-write"] } } }
+                  }
+                },
+                {
+                  "properties": {
+                    "capabilities": { "properties": { "executionProfiles": { "const": ["read-only", "workspace-write"] } } },
+                    "codexAuthority": { "properties": { "executionProfiles": { "const": ["read-only", "workspace-write"] } } }
+                  }
+                }
+              ]
+            },
+            "else": {
+              "required": ["adapterFailure", "probeErrors"],
+              "properties": {
+                "codexAuthority": false,
+                "conformanceEvidenceDigest": false,
+                "conformanceTrustRootKeyId": false,
+                "conformanceProbeProfileDigest": false,
+                "conformanceValidUntil": false,
+                "conformanceHostFingerprint": false,
+                "conformanceAuthorityGeneration": false,
+                "probeErrors": { "minItems": 1, "maxItems": 1 }
+              }
+            }
+          }
+        ]
+      },
+      "else": {
+        "properties": {
+          "codexAuthority": false,
+          "adapterFailure": false
+        }
+      }
     }
   ],
   "$defs": {
@@ -108,6 +183,116 @@
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
     },
-    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "codexAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "codexVersion", "binaryIdentityDigest", "hostIdentityDigest",
+        "platform", "launcherKind", "evidenceDigest", "configDigest", "keysetDigest",
+        "fenceDigest", "suiteDigest", "profileDigest", "argvMatrixDigest", "environmentDigest",
+        "eventContractDigest", "permissionContractDigest", "toolPolicyDigest", "resultContractDigest",
+        "outputLimitDigest", "nativeBudgetsDigest", "trustRootKeyId", "evidenceSignerKeyId",
+        "trustRootGeneration", "authorityGeneration", "revocationSetDigest", "observedAt",
+        "validUntil", "executionProfiles", "isolationClaim"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "marshal.codex.authority-metadata.v1" },
+        "codexVersion": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$", "maxLength": 128 },
+        "binaryIdentityDigest": { "$ref": "#/$defs/digest" },
+        "hostIdentityDigest": { "$ref": "#/$defs/digest" },
+        "platform": { "const": "linux" },
+        "launcherKind": { "const": "linux-execveat-sealed-memfd-ptrace-v1" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" },
+        "configDigest": { "$ref": "#/$defs/digest" },
+        "keysetDigest": { "$ref": "#/$defs/digest" },
+        "fenceDigest": { "$ref": "#/$defs/digest" },
+        "suiteDigest": { "$ref": "#/$defs/digest" },
+        "profileDigest": { "$ref": "#/$defs/digest" },
+        "argvMatrixDigest": { "$ref": "#/$defs/digest" },
+        "environmentDigest": { "$ref": "#/$defs/digest" },
+        "eventContractDigest": { "$ref": "#/$defs/digest" },
+        "permissionContractDigest": { "$ref": "#/$defs/digest" },
+        "toolPolicyDigest": { "$ref": "#/$defs/digest" },
+        "resultContractDigest": { "$ref": "#/$defs/digest" },
+        "outputLimitDigest": { "$ref": "#/$defs/digest" },
+        "nativeBudgetsDigest": { "$ref": "#/$defs/digest" },
+        "trustRootKeyId": { "$ref": "#/$defs/id" },
+        "evidenceSignerKeyId": { "$ref": "#/$defs/id" },
+        "trustRootGeneration": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "authorityGeneration": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "revocationSetDigest": { "$ref": "#/$defs/digest" },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "validUntil": { "type": "string", "format": "date-time" },
+        "executionProfiles": {
+          "oneOf": [
+            { "const": ["read-only"] },
+            { "const": ["workspace-write"] },
+            { "const": ["read-only", "workspace-write"] }
+          ]
+        },
+        "isolationClaim": { "const": "cooperative-host-process-not-malicious-code-sandbox" }
+      }
+    },
+    "adapterFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "adapterId", "operation", "code", "retryClass", "safeMessage", "observedAt", "details"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.adapter-failure.v1" },
+        "adapterId": { "const": "codex" },
+        "operation": { "enum": ["constructor", "probe", "launch", "run", "doctor"] },
+        "code": { "type": "string" },
+        "retryClass": { "enum": ["permanent", "transient", "reconcile-required"] },
+        "safeMessage": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "details": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "authorityGeneration": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+            "trustRootGeneration": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+            "evidenceDigest": { "$ref": "#/$defs/digest" },
+            "configDigest": { "$ref": "#/$defs/digest" },
+            "phase": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "platform": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "code": { "enum": [
+              "codex_conformance_pending", "codex_not_registered", "codex_platform_unsupported",
+              "codex_host_attestation_unsupported", "codex_mount_identity_unsupported", "codex_fd_exec_unavailable",
+              "codex_executable_unsafe", "codex_launch_identity_mismatch", "codex_launch_receipt_invalid",
+              "codex_launch_nonce_replay", "codex_authority_config_missing", "codex_authority_config_invalid",
+              "codex_authority_signature_invalid", "codex_trust_root_invalid", "codex_key_revoked",
+              "codex_authority_rollback", "codex_authority_identity_conflict",
+              "codex_fence_invalid", "codex_fence_commit_failed", "codex_evidence_missing", "codex_evidence_invalid",
+              "codex_evidence_expired", "codex_evidence_not_yet_valid", "codex_evidence_revoked",
+              "codex_evidence_host_mismatch", "codex_evidence_binary_mismatch", "codex_evidence_contract_mismatch",
+              "codex_path_invalid", "codex_path_unsafe_type", "codex_path_identity_changed",
+              "codex_path_topology_conflict", "codex_path_permission_invalid", "codex_protocol_invalid",
+              "codex_permission_denied", "codex_output_limit_exceeded", "codex_timeout", "codex_canceled",
+              "codex_process_failed", "codex_internal_fail_closed"
+            ] },
+            "retryClass": { "const": "permanent" }
+          }
+        },
+        {
+          "properties": {
+            "code": { "enum": ["codex_authority_temporarily_unavailable", "codex_fence_lock_busy"] },
+            "retryClass": { "const": "transient" }
+          }
+        },
+        {
+          "properties": {
+            "code": { "const": "codex_launch_outcome_ambiguous" },
+            "retryClass": { "const": "reconcile-required" }
+          }
+        }
+      ]
+    }
   }
 }

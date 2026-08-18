@@ -28,10 +28,30 @@ type ReviewPacket struct {
 	// packet's evidence binds: the normalizer Candidate when normalization
 	// changed bytes, otherwise the worker Candidate. Optional with the same
 	// legacy omission semantics as WorkerCandidateDigest.
-	CandidateDigest          string            `json:"candidateDigest,omitempty"`
-	Inputs                   PacketInputs      `json:"inputs"`
-	PreviousBlockingFindings []PreviousFinding `json:"previousBlockingFindings"`
-	GeneratedAt              time.Time         `json:"generatedAt"`
+	CandidateDigest string `json:"candidateDigest,omitempty"`
+	// CodexEligibilityBinding is the ADR 0037 T4 identity tuple for a Codex
+	// Attempt. It is optional so non-Codex and archived packets preserve their
+	// exact historical wire representation.
+	CodexEligibilityBinding  *CodexEligibilityBindingV1 `json:"codexEligibilityBinding,omitempty"`
+	Inputs                   PacketInputs               `json:"inputs"`
+	PreviousBlockingFindings []PreviousFinding          `json:"previousBlockingFindings"`
+	GeneratedAt              time.Time                  `json:"generatedAt"`
+}
+
+// CodexEligibilityBindingV1 binds a Codex review packet to the exact
+// authority, configuration, fence and accepted-launch identities used by the
+// Attempt. Its canonical digest is included in the packet evidence identity.
+type CodexEligibilityBindingV1 struct {
+	SchemaVersion              string `json:"schemaVersion"`
+	TaskID                     string `json:"taskId"`
+	RunID                      string `json:"runId"`
+	AttemptID                  string `json:"attemptId"`
+	CapabilitySnapshotDigest   string `json:"capabilitySnapshotDigest"`
+	AuthorityEvidenceDigest    string `json:"authorityEvidenceDigest"`
+	ConfigDigest               string `json:"configDigest"`
+	FenceDigest                string `json:"fenceDigest"`
+	LaunchReceiptDigest        string `json:"launchReceiptDigest"`
+	LaunchAcceptTopologyDigest string `json:"launchAcceptTopologyDigest"`
 }
 
 // PacketInputs holds the raw input documents referenced by a ReviewPacket.

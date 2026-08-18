@@ -2,10 +2,117 @@ package contract
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
+
+func codexCapabilityFixture(t *testing.T) map[string]any {
+	t.Helper()
+	digest := "sha256:" + strings.Repeat("a", 64)
+	nativeData, err := json.Marshal([]string{"wall-time"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeDigest, err := canonical.DigestJSON(nativeData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]any{
+		"apiVersion": "marshal.dev/v1alpha1", "kind": "CapabilitySnapshot", "adapterId": "codex",
+		"adapterVersion": "1.0.0", "executable": "/usr/bin/codex", "binaryVersion": "1.2.3",
+		"probeStatus": "supported", "probeErrors": []any{}, "probedAt": "2026-08-18T00:00:00Z",
+		"capabilities": map[string]any{
+			"structuredOutput": []any{"jsonl"}, "nonInteractiveEdit": true,
+			"sessionPolicies": []any{"ephemeral"}, "modelSelection": true,
+			"executionProfiles": []any{"read-only", "workspace-write"}, "nativeBudgets": []any{"wall-time"},
+		},
+		"conformanceEvidenceDigest": digest, "conformanceTrustRootKeyId": "codex-root",
+		"conformanceProbeProfileDigest": digest, "conformanceValidUntil": "2026-08-19T00:00:00Z",
+		"conformanceHostFingerprint": digest, "conformanceAuthorityGeneration": float64(1),
+		"codexAuthority": map[string]any{
+			"schemaVersion": "marshal.codex.authority-metadata.v1", "codexVersion": "1.2.3",
+			"binaryIdentityDigest": digest, "hostIdentityDigest": digest, "platform": "linux",
+			"launcherKind": "linux-execveat-sealed-memfd-ptrace-v1", "evidenceDigest": digest,
+			"configDigest": digest, "keysetDigest": digest, "fenceDigest": digest, "suiteDigest": digest,
+			"profileDigest": digest, "argvMatrixDigest": digest, "environmentDigest": digest,
+			"eventContractDigest": digest, "permissionContractDigest": digest, "toolPolicyDigest": digest,
+			"resultContractDigest": digest, "outputLimitDigest": digest, "nativeBudgetsDigest": nativeDigest,
+			"trustRootKeyId": "codex-root", "evidenceSignerKeyId": "codex-signer",
+			"trustRootGeneration": float64(1), "authorityGeneration": float64(1), "revocationSetDigest": digest,
+			"observedAt": "2026-08-18T00:00:00Z", "validUntil": "2026-08-19T00:00:00Z",
+			"executionProfiles": []any{"read-only", "workspace-write"},
+			"isolationClaim":    "cooperative-host-process-not-malicious-code-sandbox",
+		},
+	}
+}
+
+func marshalCapabilityFixture(t *testing.T, document map[string]any) []byte {
+	t.Helper()
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestCodexCapabilitySemanticProjectionMismatchesFailClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"evidence digest", func(doc map[string]any) { doc["conformanceEvidenceDigest"] = "sha256:" + strings.Repeat("b", 64) }},
+		{"trust root key", func(doc map[string]any) { doc["conformanceTrustRootKeyId"] = "other-root" }},
+		{"profile digest", func(doc map[string]any) { doc["conformanceProbeProfileDigest"] = "sha256:" + strings.Repeat("b", 64) }},
+		{"valid until", func(doc map[string]any) { doc["conformanceValidUntil"] = "2026-08-20T00:00:00Z" }},
+		{"host identity", func(doc map[string]any) { doc["conformanceHostFingerprint"] = "sha256:" + strings.Repeat("b", 64) }},
+		{"authority generation", func(doc map[string]any) { doc["conformanceAuthorityGeneration"] = float64(2) }},
+		{"native budgets digest", func(doc map[string]any) {
+			doc["codexAuthority"].(map[string]any)["nativeBudgetsDigest"] = "sha256:" + strings.Repeat("b", 64)
+		}},
+	}
+	validator := mustValidator(t)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := codexCapabilityFixture(t)
+			test.mutate(document)
+			if err := validator.Validate(domain.KindCapabilitySnapshot, marshalCapabilityFixture(t, document)); err == nil {
+				t.Fatal("contradictory Codex CapabilitySnapshot accepted")
+			}
+		})
+	}
+}
+
+func TestCodexUnsupportedFailureProjectionAndUTF8ByteLimit(t *testing.T) {
+	validator := mustValidator(t)
+	base := codexCapabilityFixture(t)
+	delete(base, "codexAuthority")
+	for _, key := range []string{"conformanceEvidenceDigest", "conformanceTrustRootKeyId", "conformanceProbeProfileDigest", "conformanceValidUntil", "conformanceHostFingerprint", "conformanceAuthorityGeneration"} {
+		delete(base, key)
+	}
+	base["probeStatus"] = "unsupported"
+	base["adapterFailure"] = map[string]any{
+		"schemaVersion": "marshal.adapter-failure.v1", "adapterId": "codex", "operation": "probe",
+		"code": "codex_fence_lock_busy", "retryClass": "transient", "safeMessage": "temporarily unavailable",
+		"observedAt": "2026-08-18T00:00:00Z", "details": map[string]any{},
+	}
+	base["probeErrors"] = []any{"temporarily unavailable"}
+	if err := validator.Validate(domain.KindCapabilitySnapshot, marshalCapabilityFixture(t, base)); err != nil {
+		t.Fatalf("valid unsupported Codex projection rejected: %v", err)
+	}
+	base["probeErrors"] = []any{"different safe projection"}
+	if err := validator.Validate(domain.KindCapabilitySnapshot, marshalCapabilityFixture(t, base)); err == nil {
+		t.Fatal("probeErrors divergent from adapterFailure.safeMessage accepted")
+	}
+	longCJK := strings.Repeat("界", 300)
+	base["adapterFailure"].(map[string]any)["safeMessage"] = longCJK
+	base["probeErrors"] = []any{longCJK}
+	if err := validator.Validate(domain.KindCapabilitySnapshot, marshalCapabilityFixture(t, base)); err == nil {
+		t.Fatal("900-byte CJK safeMessage accepted despite 512-byte limit")
+	}
+}
 
 // The TaskSpec Schema rejects unknown vocabulary words and duplicates before
 // the semantic layer runs; these tests pin the readable semantic violations
