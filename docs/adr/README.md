@@ -12,6 +12,8 @@
 
 2026-08-18，维护者在 ADR 0037 独立复审 P0/P1/P2/P3 全部清零后接受该 ADR：冻结 Codex CLI 独立 verifier/receipt/evidence/config/launch authority、稳定 TPM-backed host identity 与逐次 fresh nonce、consumer-owned active-root-pin/fence 原子状态、authenticated fd-exec topology、逐次撤销复核及 CapabilitySnapshot/ReviewPacket 精确绑定。接受只关闭合同缺口；实现、真实 credentialed live evidence、独立负向矩阵与 registry enablement 仍须按序完成，因此不得宣称当前 Codex 部署 `supported`、Issue #136 完成或相关 milestone 完成。
 
+2026-08-18，APAP transport 实现审计发现 ADR 0038 的 held `/proc/<pid>/exe` 与 pidfd 只能证明采样时身份，不能阻止 peer `exec-away → send → exec-back`。ADR 0039（Proposed）据此提议用 root-owned trusted launcher、`no_new_privs`、不可放宽 seccomp 永久 exec deny 与一次性 signed launch receipt 建立双向 bootstrap；未接受和实现前 production transport 继续 fail closed。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -43,3 +45,4 @@
 | [0033](0033-journal-bound-merge-authority-and-delivery.md) | Journal-bound MergeAuthorityTransaction、MergeDeliveryAnchor、pending→fence-consumed→inspect/reconcile→resolved 恢复与 executable snapshot TOCTOU 关闭 | 提议（Proposed，2026-08-17；契约/负向矩阵第一切片，未实现） |
 | [0034](0034-qoder-cli-live-conformance-authority.md) | Qoder CLI 独立 live conformance authority、host/profile 精确绑定、短期可撤销准入与 doctor evidence 可观察性 | 接受（Accepted，2026-08-18；未获得真实 credentialed evidence，不表示当前部署 supported） |
 | [0037](0037-codex-cli-production-authority.md) | Codex CLI production authority、TPM-backed host identity、authenticated fd-exec 与可撤销准入 | 接受（Accepted，2026-08-18；未实现且未获得真实 credentialed live evidence，不表示当前部署 supported） |
+| [0039](0039-apap-peer-exec-barrier.md) | APAP control peer trusted-launcher、seccomp 永久 exec deny 与双向 signed bootstrap | 提议（Proposed，2026-08-18；未接受前不得实现或启用） |
