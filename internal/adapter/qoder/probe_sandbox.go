@@ -3,7 +3,6 @@ package qoder
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 
@@ -306,7 +305,7 @@ func validateCandidateOSAuditAttestation(value CandidateOSAuditAttestation, fini
 	if value.ProviderReceiptDigest != expectedReceipt {
 		return errors.New("qoder OS audit provider receipt is invalid")
 	}
-	signature, signatureErr := base64.RawURLEncoding.DecodeString(value.Signature)
+	signature, signatureErr := decodeCandidateRawURL(value.Signature)
 	if !validCandidateASCII(value.ProviderKeyID) || value.AuditProviderIdentity != trust.ProviderIdentity || value.ProviderKeyID != trust.ProviderKeyID || value.ProviderKeyEpoch > candidateMaxJSONInteger || value.ProviderKeyEpoch != trust.ProviderKeyEpoch || !validCandidateASCII(value.SignatureAlgorithm) || value.SignatureAlgorithm != candidateSignatureAlgorithm || !validCandidateASCII(value.SignatureEncoding) || value.SignatureEncoding != candidateSignatureEncoding || !validCandidateASCII(value.Signature) || len(trust.PublicKey) != ed25519.PublicKeySize || signatureErr != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(trust.PublicKey, []byte(candidateOSAuditSigningDomain+value.ProviderReceiptDigest), signature) {
 		return errors.New("qoder OS audit provider signature is not trusted")
 	}

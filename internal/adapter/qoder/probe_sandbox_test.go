@@ -21,18 +21,21 @@ import (
 )
 
 type candidateOSAuditProviderFixture struct {
-	t                        *testing.T
-	sessions                 map[string]CandidateOSAuditStartRequest
-	executed                 map[string]candidateExecutedProof
-	forgeProviderIdentity    bool
-	forgeCapabilityIdentity  bool
-	forgeAuditBoolean        bool
-	forgeCredentialKey       bool
-	forgeAuditKey            bool
-	credentialKey            ed25519.PrivateKey
-	auditKey                 ed25519.PrivateKey
-	credentialMutate         func(*CandidateCredentialCapabilityIdentity)
-	lastCredentialCapability CandidateCredentialCapabilityIdentity
+	t                             *testing.T
+	sessions                      map[string]CandidateOSAuditStartRequest
+	executed                      map[string]candidateExecutedProof
+	forgeProviderIdentity         bool
+	forgeCapabilityIdentity       bool
+	forgeAuditBoolean             bool
+	forgeCredentialKey            bool
+	forgeAuditKey                 bool
+	credentialKey                 ed25519.PrivateKey
+	auditKey                      ed25519.PrivateKey
+	credentialMutate              func(*CandidateCredentialCapabilityIdentity)
+	credentialSignatureTextMutate func(string) string
+	auditSignatureTextMutate      func(string) string
+	lastCredentialCapability      CandidateCredentialCapabilityIdentity
+	lastAuditAttestation          CandidateOSAuditAttestation
 }
 
 type candidateExecutedProof struct {
@@ -89,11 +92,19 @@ func (provider *candidateOSAuditProviderFixture) VerifySession(_ context.Context
 	if err != nil {
 		return CandidateOSAuditAttestation{}, err
 	}
+	credentialChanged := false
 	if provider.credentialMutate != nil {
 		provider.credentialMutate(&capability)
 		capability.RecordDigest = capability.digest()
 		capabilityMessage, _ = capability.signingBytes()
 		capability.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(credentialKey, capabilityMessage))
+		credentialChanged = true
+	}
+	if provider.credentialSignatureTextMutate != nil {
+		capability.Signature = provider.credentialSignatureTextMutate(capability.Signature)
+		credentialChanged = true
+	}
+	if credentialChanged {
 		for index := range manifest.EnvironmentManifest.Entries {
 			if manifest.EnvironmentManifest.Entries[index].Source == "credential-capability" {
 				copy := capability
@@ -123,6 +134,10 @@ func (provider *candidateOSAuditProviderFixture) VerifySession(_ context.Context
 		_, auditKey, _ = ed25519.GenerateKey(rand.Reader)
 	}
 	attestation.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(auditKey, []byte(candidateOSAuditSigningDomain+attestation.ProviderReceiptDigest)))
+	if provider.auditSignatureTextMutate != nil {
+		attestation.Signature = provider.auditSignatureTextMutate(attestation.Signature)
+	}
+	provider.lastAuditAttestation = attestation
 	return attestation, nil
 }
 
@@ -215,14 +230,15 @@ func (transport *candidateIsolationTransportFixture) RunIsolated(_ context.Conte
 }
 
 type candidateReceiptAuthorityFixture struct {
-	t              *testing.T
-	identity       CandidateReceiptAuthorityIdentity
-	key            ed25519.PrivateKey
-	lastCompleted  time.Time
-	mutate         func(*CandidateExecutionReceipt)
-	documentMutate func([]byte) []byte
-	auditTrust     CandidateOSAuditTrustBinding
-	lastReceipt    CandidateExecutionReceipt
+	t                   *testing.T
+	identity            CandidateReceiptAuthorityIdentity
+	key                 ed25519.PrivateKey
+	lastCompleted       time.Time
+	mutate              func(*CandidateExecutionReceipt)
+	signatureTextMutate func(string) string
+	documentMutate      func([]byte) []byte
+	auditTrust          CandidateOSAuditTrustBinding
+	lastReceipt         CandidateExecutionReceipt
 }
 
 func (authority *candidateReceiptAuthorityFixture) Identity(context.Context) (CandidateReceiptAuthorityIdentity, error) {
@@ -271,6 +287,9 @@ func (authority *candidateReceiptAuthorityFixture) IssueExecutionReceipt(ctx con
 	}
 	message, _ := receipt.signingBytes()
 	receipt.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(authority.key, message))
+	if authority.signatureTextMutate != nil {
+		receipt.Signature = authority.signatureTextMutate(receipt.Signature)
+	}
 	authority.lastReceipt = receipt
 	document, _ := json.Marshal(receipt)
 	document, _ = canonical.JSON(document)
@@ -323,6 +342,39 @@ func assertTrustedInvalidCapabilityWasSigned(t *testing.T, provider *candidateOS
 	if err != nil || capability.RecordDigest != capability.digest() || !ed25519.Verify(provider.credentialKey.Public().(ed25519.PublicKey), message, signature) {
 		t.Fatal("invalid capability was not signed by the trusted credential provider key")
 	}
+}
+
+func assertTrustedInvalidAuditWasSigned(t *testing.T, provider *candidateOSAuditProviderFixture) {
+	t.Helper()
+	attestation := provider.lastAuditAttestation
+	signature, err := base64.RawURLEncoding.DecodeString(attestation.Signature)
+	if err != nil || attestation.ProviderReceiptDigest != candidateOSProviderReceiptDigest(attestation) || !ed25519.Verify(provider.auditKey.Public().(ed25519.PublicKey), []byte(candidateOSAuditSigningDomain+attestation.ProviderReceiptDigest), signature) {
+		t.Fatal("invalid OS audit attestation was not signed by the trusted audit key")
+	}
+}
+
+func nonCanonicalRawURLSameBytes(t *testing.T, canonicalText string) string {
+	t.Helper()
+	decoded, err := base64.RawURLEncoding.DecodeString(canonicalText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	for _, replacement := range alphabet {
+		if byte(replacement) == canonicalText[len(canonicalText)-1] {
+			continue
+		}
+		candidate := canonicalText[:len(canonicalText)-1] + string(replacement)
+		candidateDecoded, candidateErr := base64.RawURLEncoding.DecodeString(candidate)
+		if candidateErr != nil || !bytes.Equal(candidateDecoded, decoded) {
+			continue
+		}
+		if _, strictErr := base64.RawURLEncoding.Strict().DecodeString(candidate); strictErr != nil {
+			return candidate
+		}
+	}
+	t.Fatal("could not construct non-canonical raw-url text for the same bytes")
+	return ""
 }
 
 func sortCandidateBusinessRootsByReceiptIdentity(t *testing.T, paths []string) {
@@ -470,6 +522,84 @@ func TestProductionProbeRejectsTrustedSignedInvalidCredentialCapabilityScalars(t
 				t.Fatal("trusted signed credential capability with invalid exact contract was accepted")
 			}
 			assertTrustedInvalidCapabilityWasSigned(t, provider)
+		})
+	}
+}
+
+func TestProductionProbeRejectsNonCanonicalReceiptBase64URL(t *testing.T) {
+	t.Run("receipt id nonzero trailing bits", func(t *testing.T) {
+		verifier, request, _, authority, _ := productionCandidateVerifierFixture(t)
+		authority.mutate = func(receipt *CandidateExecutionReceipt) {
+			receipt.ReceiptID = nonCanonicalRawURLSameBytes(t, receipt.ReceiptID)
+		}
+		if _, _, err := verifier.Verify(context.Background(), request); err == nil {
+			t.Fatal("trusted signed receipt with non-canonical receipt id was accepted")
+		}
+		assertTrustedInvalidReceiptWasSigned(t, authority)
+	})
+	t.Run("realpath bytes line break", func(t *testing.T) {
+		verifier, request, _, authority, _ := productionCandidateVerifierFixture(t)
+		authority.mutate = func(receipt *CandidateExecutionReceipt) {
+			receipt.CandidateExecutableIdentity.RealpathBytes.Bytes = receipt.CandidateExecutableIdentity.RealpathBytes.Bytes[:4] + "\r\n" + receipt.CandidateExecutableIdentity.RealpathBytes.Bytes[4:]
+		}
+		if _, _, err := verifier.Verify(context.Background(), request); err == nil {
+			t.Fatal("trusted signed receipt with line-broken realpath bytes was accepted")
+		}
+		assertTrustedInvalidReceiptWasSigned(t, authority)
+	})
+	for name, mutate := range map[string]func(*testing.T, string) string{
+		"signature line break":            func(_ *testing.T, value string) string { return value[:4] + "\r\n" + value[4:] },
+		"signature nonzero trailing bits": nonCanonicalRawURLSameBytes,
+	} {
+		t.Run(name, func(t *testing.T) {
+			verifier, request, _, authority, _ := productionCandidateVerifierFixture(t)
+			authority.signatureTextMutate = func(value string) string { return mutate(t, value) }
+			if _, _, err := verifier.Verify(context.Background(), request); err == nil {
+				t.Fatal("trusted receipt with non-canonical signature text was accepted")
+			}
+			assertTrustedInvalidReceiptWasSigned(t, authority)
+		})
+	}
+}
+
+func TestProductionProbeRejectsNonCanonicalCapabilityBase64URL(t *testing.T) {
+	t.Run("capability id nonzero trailing bits", func(t *testing.T) {
+		verifier, request, _, _, provider := productionCandidateVerifierFixture(t)
+		provider.credentialMutate = func(capability *CandidateCredentialCapabilityIdentity) {
+			capability.CapabilityID = nonCanonicalRawURLSameBytes(t, capability.CapabilityID)
+		}
+		if _, _, err := verifier.Verify(context.Background(), request); err == nil {
+			t.Fatal("trusted capability with non-canonical id was accepted")
+		}
+		assertTrustedInvalidCapabilityWasSigned(t, provider)
+	})
+	for name, mutate := range map[string]func(*testing.T, string) string{
+		"signature line break":            func(_ *testing.T, value string) string { return value[:4] + "\r\n" + value[4:] },
+		"signature nonzero trailing bits": nonCanonicalRawURLSameBytes,
+	} {
+		t.Run(name, func(t *testing.T) {
+			verifier, request, _, _, provider := productionCandidateVerifierFixture(t)
+			provider.credentialSignatureTextMutate = func(value string) string { return mutate(t, value) }
+			if _, _, err := verifier.Verify(context.Background(), request); err == nil {
+				t.Fatal("trusted capability with non-canonical signature text was accepted")
+			}
+			assertTrustedInvalidCapabilityWasSigned(t, provider)
+		})
+	}
+}
+
+func TestProductionProbeRejectsNonCanonicalOSAuditSignature(t *testing.T) {
+	for name, mutate := range map[string]func(*testing.T, string) string{
+		"line break":            func(_ *testing.T, value string) string { return value[:4] + "\r\n" + value[4:] },
+		"nonzero trailing bits": nonCanonicalRawURLSameBytes,
+	} {
+		t.Run(name, func(t *testing.T) {
+			verifier, request, _, _, provider := productionCandidateVerifierFixture(t)
+			provider.auditSignatureTextMutate = func(value string) string { return mutate(t, value) }
+			if _, _, err := verifier.Verify(context.Background(), request); err == nil {
+				t.Fatal("trusted OS audit attestation with non-canonical signature text was accepted")
+			}
+			assertTrustedInvalidAuditWasSigned(t, provider)
 		})
 	}
 }

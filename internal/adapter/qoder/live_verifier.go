@@ -570,7 +570,7 @@ func (verifier *CandidateLiveVerifier) verifyExecutionReceipt(document []byte, i
 	if err != nil {
 		return CandidateExecutionReceipt{}, "", err
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(receipt.Signature)
+	signature, err := decodeCandidateRawURL(receipt.Signature)
 	if err != nil || !ed25519.Verify(verifier.policy.receiptPublicKey, message, signature) {
 		return CandidateExecutionReceipt{}, "", errors.New("qoder candidate live probe receipt signature is not trusted")
 	}
@@ -744,7 +744,7 @@ func verifyCandidateObservationAuthorityChain(observation LiveConformanceObserva
 		if err != nil {
 			return err
 		}
-		signature, err := base64.RawURLEncoding.DecodeString(receipt.Signature)
+		signature, err := decodeCandidateRawURL(receipt.Signature)
 		if err != nil || !ed25519.Verify(policy.receiptPublicKey, message, signature) {
 			return errors.New("qoder candidate signer rejected receipt signature")
 		}
@@ -1236,7 +1236,7 @@ func credentialCapabilityFromManifest(manifest CandidateEnvironmentManifest) (Ca
 }
 
 func validateCandidateCredentialCapability(value CandidateCredentialCapabilityIdentity, probeRunID, variantID string) error {
-	capabilityBytes, err := base64.RawURLEncoding.DecodeString(value.CapabilityID)
+	capabilityBytes, err := decodeCandidateRawURL(value.CapabilityID)
 	if err != nil || len(capabilityBytes) != 16 ||
 		!validCandidateASCII(value.APIVersion) || value.APIVersion != candidateReceiptAPIVersion ||
 		!validCandidateASCII(value.Kind) || value.Kind != "QoderCredentialCapabilityIdentity" || value.SchemaVersion != 1 ||
@@ -1251,7 +1251,7 @@ func validateCandidateCredentialCapability(value CandidateCredentialCapabilityId
 		!validCandidateASCII(value.Signature) || !validSHA256Digest(value.RecordDigest) {
 		return errors.New("qoder credential capability identity is invalid")
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(value.Signature)
+	signature, err := decodeCandidateRawURL(value.Signature)
 	if err != nil || len(signature) != ed25519.SignatureSize || value.RecordDigest != value.digest() {
 		return errors.New("qoder credential capability signature encoding is invalid")
 	}
@@ -1271,7 +1271,7 @@ func verifyCandidateCredentialCapability(value CandidateCredentialCapabilityIden
 	if err != nil {
 		return err
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(value.Signature)
+	signature, err := decodeCandidateRawURL(value.Signature)
 	if err != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(policy.credentialProviderPublicKey, message, signature) {
 		return errors.New("qoder credential capability signature is not trusted")
 	}
@@ -1346,8 +1346,8 @@ func validateCandidateReceiptIsolationAudit(audit CandidateReceiptIsolationAudit
 }
 
 func validateCandidateExactReceipt(receipt CandidateExecutionReceipt) error {
-	receiptID, receiptIDErr := base64.RawURLEncoding.DecodeString(receipt.ReceiptID)
-	signature, signatureErr := base64.RawURLEncoding.DecodeString(receipt.Signature)
+	receiptID, receiptIDErr := decodeCandidateRawURL(receipt.ReceiptID)
+	signature, signatureErr := decodeCandidateRawURL(receipt.Signature)
 	if receiptIDErr != nil || len(receiptID) != 16 || signatureErr != nil || len(signature) != ed25519.SignatureSize ||
 		!validCandidateASCII(receipt.APIVersion) || receipt.APIVersion != candidateReceiptAPIVersion ||
 		!validCandidateASCII(receipt.Kind) || receipt.Kind != candidateReceiptKind || receipt.SchemaVersion != candidateReceiptSchemaVersion ||
@@ -1367,7 +1367,7 @@ func validateCandidateExactReceipt(receipt CandidateExecutionReceipt) error {
 		!validSHA256Digest(receipt.RecordDigest) {
 		return errors.New("qoder exact receipt scalar is invalid")
 	}
-	pathBytes, err := base64.RawURLEncoding.DecodeString(receipt.CandidateExecutableIdentity.RealpathBytes.Bytes)
+	pathBytes, err := decodeCandidateRawURL(receipt.CandidateExecutableIdentity.RealpathBytes.Bytes)
 	if err != nil || !validCandidateASCII(receipt.CandidateExecutableIdentity.RealpathBytes.Encoding) || receipt.CandidateExecutableIdentity.RealpathBytes.Encoding != candidateSignatureEncoding || len(pathBytes) == 0 || len(pathBytes) > 4096 || pathBytes[0] != '/' || bytes.IndexByte(pathBytes, 0) >= 0 || filepath.Clean(string(pathBytes)) != string(pathBytes) || string(pathBytes) == "/" || receipt.CandidateExecutableIdentity.RealpathBytes.Digest != digestBytes(pathBytes) || !validSHA256Digest(receipt.CandidateExecutableIdentity.Digest) || !validCandidateASCII(receipt.CandidateExecutableIdentity.BinaryVersion) || !isSupportedBinaryVersion(receipt.CandidateExecutableIdentity.BinaryVersion) {
 		return errors.New("qoder exact receipt executable identity is invalid")
 	}
@@ -1402,6 +1402,17 @@ func validCandidateASCII(value string) bool {
 		}
 	}
 	return true
+}
+
+func decodeCandidateRawURL(value string) ([]byte, error) {
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return nil, errors.New("qoder base64url value is empty or contains a line break")
+	}
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(value)
+	if err != nil || base64.RawURLEncoding.EncodeToString(decoded) != value {
+		return nil, errors.New("qoder base64url value is not canonical unpadded encoding")
+	}
+	return decoded, nil
 }
 
 func validCandidateLiteral(value string) bool {
