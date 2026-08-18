@@ -48,8 +48,12 @@ func newQoderAPAPFixture(t *testing.T) qoderAPAPFixture {
 	return qoderAPAPFixture{authority: authority, now: osFixture.now, responsePrivate: responsePrivate, receiptPrivate: probe.keys["receipt-0"], fencePrivate: osFixture.keys["fence-0"]}
 }
 
-func signQoderAPAPResponse(t *testing.T, document []byte, private ed25519.PrivateKey) QoderAPAPSignedResponse {
+func signQoderAPAPResponse(t *testing.T, request authorityprovider.APAPRequestEnvelopeV1, response []byte, private ed25519.PrivateKey) QoderAPAPSignedResponse {
 	t.Helper()
+	document, err := SealQoderAPAPResponseBinding(request.RequestEnvelopeDigest, response)
+	if err != nil {
+		t.Fatal(err)
+	}
 	signature, err := authorityprovider.SignObjectForFake(document, qoderAPAPResponseDomain, "response-key", 0, private)
 	if err != nil {
 		t.Fatal(err)
@@ -122,28 +126,21 @@ func TestQoderAPAPReceiptMapsExactADR0034Object(t *testing.T) {
 	if _, err := authorityprovider.DecodeControlRequest(beginRaw, fixture.authority.Peer, fixture.now, refs); err != nil {
 		t.Fatal(err)
 	}
-	payload, _ := json.Marshal(authorityprovider.BeginProbeSuccessPayload{ProbeSessionID: receipt.ProbeRunID, TargetIsolationIdentityDigest: digest("d"), CredentialIngressEndpointIdentityDigest: digest("f"), ExpiresAt: begin.ExpiresAt})
+	payload, _ := json.Marshal(authorityprovider.BeginProbeSuccessPayload{ProbeSessionID: fixture.authority.Evidence.ProbeRunID, TargetIsolationIdentityDigest: receipt.TopologyDigest, CredentialIngressEndpointIdentityDigest: receipt.CredentialRootIdentity.IdentityDigest, ExpiresAt: begin.ExpiresAt})
 	responseRaw, err := authorityprovider.SealControlResponse(authorityprovider.APAPResponseEnvelopeV1{SchemaVersion: authorityprovider.ResponseSchema, ProtocolFamily: authorityprovider.ControlFamily, ProtocolVersion: authorityprovider.ProtocolVersion, Audience: authorityprovider.ControlAudience, RequestID: beginRequest.RequestID, CommandID: beginRequest.CommandID, ProviderInstanceID: beginRequest.ProviderInstanceID, AuthorityProfile: authorityprovider.ProfileQoder, Operation: authorityprovider.OperationBeginProbe, ObservedProviderSequence: fixture.authority.ProviderSequence, SafeCode: authorityprovider.CodeOK, Payload: payload})
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := bridge.ValidateBeginProbe(beginRequest, signQoderAPAPResponse(t, responseRaw, fixture.responsePrivate))
+	session, err := bridge.ValidateBeginProbe(beginRequest, signQoderAPAPResponse(t, beginRequest, responseRaw, fixture.responsePrivate))
 	if err != nil {
 		t.Fatal(err)
 	}
+	receipt.ProbeRunID = session.ProbeSessionID
 	receipt.ReceiptSequence, receipt.VariantID, receipt.PreviousReceiptDigest = 1, candidateVariantID(0), nil
-	receipt.InvocationManifest.ReceiptSequence, receipt.InvocationManifest.VariantID = 1, candidateVariantID(0)
-	for index := range receipt.InvocationManifest.EnvironmentManifest.Entries {
-		capability := receipt.InvocationManifest.EnvironmentManifest.Entries[index].CapabilityIdentity
-		if capability == nil {
-			continue
-		}
-		capability.VariantID = candidateVariantID(0)
-		capability.RecordDigest = capability.digest()
-	}
-	recomputeExactCandidateManifestDigests(&receipt.InvocationManifest)
+	receipt.InvocationManifest = fixture.authority.Evidence.VariantInvocationManifests[0]
 	receipt.CandidateExecutableIdentity = bridge.identity
 	receipt.ProbeRunChallengeDigest = session.ChallengeDigest
+	receipt.VariantChallengeDigest = candidateVariantChallenge(session.ChallengeDigest, 0)
 	receipt.HostIdentityDigest = session.HostIdentityDigest
 	receipt.ReceiptAuthorityKeyID, receipt.ReceiptAuthorityKeyEpoch = "receipt-0", 0
 	receipt.RecordDigest, _ = receipt.digest()
@@ -157,6 +154,31 @@ func TestQoderAPAPReceiptMapsExactADR0034Object(t *testing.T) {
 	}
 	if _, err := bridge.BindReceipt(session, document); err != nil {
 		t.Fatalf("exact receipt replay failed: %v", err)
+	}
+	for name, mutate := range map[string]func(*CandidateExecutionReceipt){
+		"variant order":     func(v *CandidateExecutionReceipt) { v.VariantID = candidateVariantID(1) },
+		"variant challenge": func(v *CandidateExecutionReceipt) { v.VariantChallengeDigest = digest("b") },
+		"isolation profile": func(v *CandidateExecutionReceipt) { v.IsolationProfileDigest = digest("b") },
+		"topology": func(v *CandidateExecutionReceipt) {
+			v.TopologyDigest = digest("b")
+			v.IsolationAudit.AncestorChainDigest = digest("b")
+		},
+		"protocol":       func(v *CandidateExecutionReceipt) { v.ProtocolVersion = "substitute" },
+		"permission":     func(v *CandidateExecutionReceipt) { v.PermissionMode = "substitute" },
+		"event contract": func(v *CandidateExecutionReceipt) { v.EventContract = "substitute" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := receipt
+			mutate(&changed)
+			changed.RecordDigest, _ = changed.digest()
+			message, _ := changed.signingBytes()
+			changed.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(fixture.receiptPrivate, message))
+			changedDocument, _ := json.Marshal(changed)
+			changedDocument, _ = canonical.JSON(changedDocument)
+			if _, err := bridge.BindReceipt(session, changedDocument); err == nil {
+				t.Fatal("trusted re-signing widened the frozen receipt contract")
+			}
+		})
 	}
 	tamperedSession := session
 	tamperedSession.AuthorityGeneration++

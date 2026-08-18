@@ -35,12 +35,12 @@ func TestQoderAPAPDescribeRequiresSignedQoderOnlyProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	valid := qoderDescribeResponse(t, request, fixture.authority.ProviderSequence, []authorityprovider.AuthorityProfile{authorityprovider.ProfileQoder})
-	if _, err := bridge.ValidateDescribe(request, signQoderAPAPResponse(t, valid, fixture.responsePrivate)); err != nil {
+	if _, err := bridge.ValidateDescribe(request, signQoderAPAPResponse(t, request, valid, fixture.responsePrivate)); err != nil {
 		t.Fatal(err)
 	}
 
 	foreign := qoderDescribeResponse(t, request, fixture.authority.ProviderSequence, []authorityprovider.AuthorityProfile{authorityprovider.ProfileCodex})
-	if _, err := bridge.ValidateDescribe(request, signQoderAPAPResponse(t, foreign, fixture.responsePrivate)); err == nil {
+	if _, err := bridge.ValidateDescribe(request, signQoderAPAPResponse(t, request, foreign, fixture.responsePrivate)); err == nil {
 		t.Fatal("foreign Codex profile accepted")
 	}
 
@@ -48,25 +48,49 @@ func TestQoderAPAPDescribeRequiresSignedQoderOnlyProfile(t *testing.T) {
 	_ = json.Unmarshal(valid, &response)
 	response.ProviderInstanceID = "foreign-provider"
 	foreignProvider, _ := authorityprovider.SealControlResponse(response)
-	if _, err := bridge.ValidateDescribe(request, signQoderAPAPResponse(t, foreignProvider, fixture.responsePrivate)); err == nil {
+	if _, err := bridge.ValidateDescribe(request, signQoderAPAPResponse(t, request, foreignProvider, fixture.responsePrivate)); err == nil {
 		t.Fatal("foreign provider accepted")
 	}
 
 	response.ProviderInstanceID = request.ProviderInstanceID
 	response.ObservedProviderSequence++
 	wrongSequence, _ := authorityprovider.SealControlResponse(response)
-	if _, err := bridge.ValidateDescribe(request, signQoderAPAPResponse(t, wrongSequence, fixture.responsePrivate)); err == nil {
+	if _, err := bridge.ValidateDescribe(request, signQoderAPAPResponse(t, request, wrongSequence, fixture.responsePrivate)); err == nil {
 		t.Fatal("wrong provider sequence accepted")
 	}
 
 	_, foreignPrivate, _ := ed25519.GenerateKey(rand.Reader)
-	if _, err := bridge.ValidateDescribe(request, signQoderAPAPResponse(t, valid, foreignPrivate)); err == nil {
+	if _, err := bridge.ValidateDescribe(request, signQoderAPAPResponse(t, request, valid, foreignPrivate)); err == nil {
 		t.Fatal("foreign response signer accepted")
 	}
 	tamperedRequest := request
 	tamperedRequest.Nonce = "nonce-0002"
-	if _, err := bridge.ValidateDescribe(tamperedRequest, signQoderAPAPResponse(t, valid, fixture.responsePrivate)); err == nil {
+	if _, err := bridge.ValidateDescribe(tamperedRequest, signQoderAPAPResponse(t, request, valid, fixture.responsePrivate)); err == nil {
 		t.Fatal("request mutation without digest refresh accepted")
+	}
+	for name, mutate := range map[string]func(*authorityprovider.APAPRequestEnvelopeV1){
+		"nonce with refreshed digest":     func(v *authorityprovider.APAPRequestEnvelopeV1) { v.Nonce = "nonce-0003" },
+		"issuedAt with refreshed digest":  func(v *authorityprovider.APAPRequestEnvelopeV1) { v.IssuedAt = v.IssuedAt.Add(time.Millisecond) },
+		"expiresAt with refreshed digest": func(v *authorityprovider.APAPRequestEnvelopeV1) { v.ExpiresAt = v.ExpiresAt.Add(time.Millisecond) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := request
+			mutate(&changed)
+			raw, err := authorityprovider.SealControlRequest(changed)
+			if err != nil || json.Unmarshal(raw, &changed) != nil {
+				t.Fatal("reseal request")
+			}
+			if _, err := bridge.ValidateDescribe(changed, signQoderAPAPResponse(t, request, valid, fixture.responsePrivate)); err == nil {
+				t.Fatal("caller-resealed request accepted")
+			}
+		})
+	}
+	other, _, err := bridge.DescribeRequest("describe-2", "describe-command-2", "nonce-0004", fixture.now.Add(-time.Second), fixture.now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bridge.ValidateDescribe(request, signQoderAPAPResponse(t, other, valid, fixture.responsePrivate)); err == nil {
+		t.Fatal("trusted response rebound to another issued request accepted")
 	}
 }
 
@@ -86,7 +110,7 @@ func TestQoderAPAPBeginMapsHeldIdentityEvidenceAndRejectsReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed := signQoderAPAPResponse(t, responseRaw, fixture.responsePrivate)
+	signed := signQoderAPAPResponse(t, request, responseRaw, fixture.responsePrivate)
 	session, err := bridge.ValidateBeginProbe(request, signed)
 	if err != nil {
 		t.Fatal(err)

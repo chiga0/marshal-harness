@@ -22,11 +22,25 @@ type qoderAPAPReplay struct {
 	responseDigest string
 }
 
+type qoderAPAPIssuedRequest struct {
+	requestDigest string
+	identity      string
+	operation     authorityprovider.Operation
+}
+
 type qoderAPAPReceiptReplay struct {
-	sessionDigest string
-	lastSequence  uint64
-	lastDigest    string
-	digests       map[uint64]string
+	sessionDigest  string
+	lastSequence   uint64
+	lastDigest     string
+	digests        map[uint64]string
+	credentialRoot CandidateRootIdentity
+	businessRoots  []CandidateRootIdentity
+	scratchRoots   map[CandidateRootIdentity]struct{}
+	topologies     map[string]struct{}
+	sessionIDs     map[string]struct{}
+	capabilityIDs  map[string]struct{}
+	modelDigest    string
+	lastCompleted  time.Time
 }
 
 // QoderAPAPProfileBridge validates and maps APAP control objects into the
@@ -39,6 +53,7 @@ type QoderAPAPProfileBridge struct {
 
 	mu            sync.Mutex
 	replay        map[string]qoderAPAPReplay
+	issued        map[string]qoderAPAPIssuedRequest
 	sessions      map[string]string
 	receiptReplay map[string]qoderAPAPReceiptReplay
 }
@@ -57,7 +72,7 @@ func newQoderAPAPProfileBridge(authority QoderAPAPAuthority, now time.Time) (*Qo
 		return nil, err
 	}
 	_ = trust
-	return &QoderAPAPProfileBridge{authority: authority, identity: identity, now: func() time.Time { return now.UTC() }, replay: map[string]qoderAPAPReplay{}, sessions: map[string]string{}, receiptReplay: map[string]qoderAPAPReceiptReplay{}}, nil
+	return &QoderAPAPProfileBridge{authority: authority, identity: identity, now: func() time.Time { return now.UTC() }, replay: map[string]qoderAPAPReplay{}, issued: map[string]qoderAPAPIssuedRequest{}, sessions: map[string]string{}, receiptReplay: map[string]qoderAPAPReceiptReplay{}}, nil
 }
 
 func (bridge *QoderAPAPProfileBridge) DescribeRequest(requestID, commandID, nonce string, issuedAt, expiresAt time.Time) (authorityprovider.APAPRequestEnvelopeV1, []byte, error) {
@@ -65,7 +80,14 @@ func (bridge *QoderAPAPProfileBridge) DescribeRequest(requestID, commandID, nonc
 		return authorityprovider.APAPRequestEnvelopeV1{}, nil, errors.New("qoder APAP bridge is unavailable")
 	}
 	request := bridge.request(authorityprovider.OperationDescribe, requestID, commandID, nonce, issuedAt, expiresAt, nil, json.RawMessage(`{}`))
-	return sealQoderAPAPRequest(request)
+	decoded, raw, err := sealQoderAPAPRequest(request)
+	if err != nil {
+		return decoded, nil, err
+	}
+	if err := bridge.registerIssuedRequest(decoded); err != nil {
+		return authorityprovider.APAPRequestEnvelopeV1{}, nil, err
+	}
+	return decoded, raw, nil
 }
 
 func (bridge *QoderAPAPProfileBridge) BeginProbeRequest(input QoderAPAPBeginInput) (authorityprovider.APAPRequestEnvelopeV1, []byte, []authorityprovider.FDRef, error) {
@@ -88,6 +110,9 @@ func (bridge *QoderAPAPProfileBridge) BeginProbeRequest(input QoderAPAPBeginInpu
 	request := bridge.request(authorityprovider.OperationBeginProbe, input.RequestID, input.CommandID, input.Nonce, input.IssuedAt, input.ExpiresAt, &expected, payloadRaw)
 	decoded, raw, err := sealQoderAPAPRequest(request)
 	if err != nil {
+		return authorityprovider.APAPRequestEnvelopeV1{}, nil, nil, err
+	}
+	if err := bridge.registerIssuedRequest(decoded); err != nil {
 		return authorityprovider.APAPRequestEnvelopeV1{}, nil, nil, err
 	}
 	refs := []authorityprovider.FDRef{{Role: authorityprovider.FDCandidateExecutable}, {Role: authorityprovider.FDScratchRoot}, {Role: authorityprovider.FDBusinessDenyRoot, Index: 0}}
@@ -171,7 +196,7 @@ func (bridge *QoderAPAPProfileBridge) BindReceipt(session QoderAPAPProbeSession,
 	sessionDigest := digestRecordWithoutFields(session)
 	state, ok := bridge.receiptReplay[session.ProbeSessionID]
 	if !ok {
-		state = qoderAPAPReceiptReplay{sessionDigest: sessionDigest, digests: map[uint64]string{}}
+		state = qoderAPAPReceiptReplay{sessionDigest: sessionDigest, digests: map[uint64]string{}, scratchRoots: map[CandidateRootIdentity]struct{}{}, topologies: map[string]struct{}{}, sessionIDs: map[string]struct{}{}, capabilityIDs: map[string]struct{}{}}
 	}
 	sequence := binding.Receipt.ReceiptSequence
 	if state.sessionDigest != sessionDigest {
@@ -186,10 +211,64 @@ func (bridge *QoderAPAPProfileBridge) BindReceipt(session QoderAPAPProbeSession,
 	if sequence != state.lastSequence+1 || (sequence == 1 && binding.Receipt.PreviousReceiptDigest != nil) || (sequence > 1 && (binding.Receipt.PreviousReceiptDigest == nil || *binding.Receipt.PreviousReceiptDigest != state.lastDigest)) {
 		return QoderAPAPReceiptBinding{}, errors.New("qoder APAP receipt chain is not contiguous")
 	}
+	nextModelDigest, completed, capabilityID, err := bridge.validateReceiptContract(session, binding.Receipt, state)
+	if err != nil {
+		return QoderAPAPReceiptBinding{}, err
+	}
+	if sequence == 1 {
+		state.credentialRoot = binding.Receipt.CredentialRootIdentity
+		state.businessRoots = append([]CandidateRootIdentity(nil), binding.Receipt.BusinessRootIdentities...)
+	}
+	state.scratchRoots[binding.Receipt.ScratchRootIdentity] = struct{}{}
+	state.topologies[binding.Receipt.TopologyDigest] = struct{}{}
+	state.sessionIDs[binding.Receipt.SessionID] = struct{}{}
+	state.capabilityIDs[capabilityID] = struct{}{}
+	state.modelDigest = nextModelDigest
+	state.lastCompleted = completed
 	state.lastSequence, state.lastDigest = sequence, binding.ReceiptDigest
 	state.digests[sequence] = binding.ReceiptDigest
 	bridge.receiptReplay[session.ProbeSessionID] = state
 	return binding, nil
+}
+
+func (bridge *QoderAPAPProfileBridge) validateReceiptContract(session QoderAPAPProbeSession, receipt CandidateExecutionReceipt, state qoderAPAPReceiptReplay) (string, time.Time, string, error) {
+	index := int(receipt.ReceiptSequence) - 1
+	capability, err := credentialCapabilityFromManifest(receipt.InvocationManifest.EnvironmentManifest)
+	expected, nextModelDigest, manifestErr := exactExpectedInvocationManifest(index, session.ProbeSessionID, receipt.InvocationManifest, capability, state.modelDigest)
+	started, startErr := time.Parse(time.RFC3339Nano, receipt.StartedAt)
+	completed, completeErr := time.Parse(time.RFC3339Nano, receipt.CompletedAt)
+	if err != nil || manifestErr != nil || !candidateManifestsEqual(receipt.InvocationManifest, expected) || startErr != nil || completeErr != nil || (!state.lastCompleted.IsZero() && started.Before(state.lastCompleted)) {
+		return "", time.Time{}, "", errors.New("qoder APAP receipt invocation chain is invalid")
+	}
+	if receipt.TopologyDigest != session.TargetIsolationIdentityDigest || receipt.CredentialRootIdentity.IdentityDigest != session.CredentialIngressEndpointIdentityDigest {
+		return "", time.Time{}, "", errors.New("qoder APAP receipt held endpoint binding is invalid")
+	}
+	if state.lastSequence != 0 && (receipt.CredentialRootIdentity != state.credentialRoot || !equalCandidateRootIdentities(receipt.BusinessRootIdentities, state.businessRoots)) {
+		return "", time.Time{}, "", errors.New("qoder APAP receipt held root chain changed")
+	}
+	if _, duplicate := state.scratchRoots[receipt.ScratchRootIdentity]; duplicate {
+		return "", time.Time{}, "", errors.New("qoder APAP receipt scratch identity was replayed")
+	}
+	if _, duplicate := state.sessionIDs[receipt.SessionID]; duplicate {
+		return "", time.Time{}, "", errors.New("qoder APAP receipt execution session was replayed")
+	}
+	if _, duplicate := state.capabilityIDs[capability.CapabilityID]; duplicate {
+		return "", time.Time{}, "", errors.New("qoder APAP receipt credential capability was replayed")
+	}
+	osTrust, trustErr := ReplayQoderOSTrustRootLedger(bridge.authority.Current.OSTrustRecords, bridge.authority.Current.OSTrustReceipts, bridge.authority.Current.OSAnchorProviderIdentity, bridge.authority.Current.OSAnchorProviderKeyID, bridge.authority.Current.OSAnchorProviderKeyEpoch, bridge.authority.Current.OSAnchorProviderPublicKey, bridge.now())
+	credentialKey, keyOK := findTrustKey(osTrust.ActiveKeys["credential-capability-provider"], capability.ProviderKeyID, capability.ProviderKeyEpoch)
+	issuedAt, issuedErr := time.Parse(time.RFC3339Nano, capability.IssuedAt)
+	expiresAt, expiresErr := time.Parse(time.RFC3339Nano, capability.ExpiresAt)
+	policy := candidateAuthorityPolicy{credentialProviderKeyID: credentialKey.KeyID, credentialProviderKeyEpoch: credentialKey.KeyEpoch, credentialProviderPublicKey: credentialKey.PublicKey}
+	if trustErr != nil || !keyOK || validateCandidateCredentialCapability(capability, session.ProbeSessionID, receipt.VariantID) != nil || verifyCandidateCredentialCapability(capability, policy) != nil || capability.ProviderIdentity != bridge.authority.Current.CredentialProviderIdentity || capability.CapabilityClass != "qoder-live-probe" || capability.PolicyScopeDigest != bridge.authority.Config.TrustPolicyDigest || issuedErr != nil || expiresErr != nil || issuedAt.After(started) || !completed.Before(expiresAt) {
+		return "", time.Time{}, "", errors.New("qoder APAP receipt credential authority is invalid")
+	}
+	if index == 1 || index == 3 {
+		if receipt.ModelID == "" || nextModelDigest != digestBytes([]byte(receipt.ModelID)) {
+			return "", time.Time{}, "", errors.New("qoder APAP receipt model identity is invalid")
+		}
+	}
+	return nextModelDigest, completed, capability.CapabilityID, nil
 }
 
 func (bridge *QoderAPAPProfileBridge) request(operation authorityprovider.Operation, requestID, commandID, nonce string, issuedAt, expiresAt time.Time, expected *uint64, payload json.RawMessage) authorityprovider.APAPRequestEnvelopeV1 {
@@ -217,7 +296,11 @@ func (bridge *QoderAPAPProfileBridge) validateResponse(request authorityprovider
 	if err := authorityprovider.ValidateSignedObject(signed.Document, signed.Signature, qoderAPAPResponseDomain, qoderAPAPResponseUsage, bridge.authority.ResponseKeys); err != nil {
 		return authorityprovider.APAPResponseEnvelopeV1{}, errors.New("qoder APAP response signature is invalid")
 	}
-	response, err := authorityprovider.DecodeControlResponse(signed.Document, request, sequence)
+	binding, err := decodeQoderAPAPResponseBinding(signed.Document)
+	if err != nil || binding.RequestEnvelopeDigest != request.RequestEnvelopeDigest {
+		return authorityprovider.APAPResponseEnvelopeV1{}, errors.New("qoder APAP response request binding is invalid")
+	}
+	response, err := authorityprovider.DecodeControlResponse(binding.Response, request, sequence)
 	if err != nil {
 		return response, errors.New("qoder APAP response envelope is invalid")
 	}
@@ -231,6 +314,12 @@ func (bridge *QoderAPAPProfileBridge) validateResponse(request authorityprovider
 }
 
 func (bridge *QoderAPAPProfileBridge) validateRequest(request authorityprovider.APAPRequestEnvelopeV1) error {
+	bridge.mu.Lock()
+	issued, ok := bridge.issued[request.CommandID]
+	bridge.mu.Unlock()
+	if !ok || issued.requestDigest != request.RequestEnvelopeDigest || issued.operation != request.Operation || issued.identity != digestRecordWithoutFields(request) {
+		return errors.New("qoder APAP request was not issued by this bridge")
+	}
 	raw, err := authorityprovider.SealControlRequest(request)
 	if err != nil {
 		return errors.New("qoder APAP request cannot be sealed")
@@ -246,6 +335,20 @@ func (bridge *QoderAPAPProfileBridge) validateRequest(request authorityprovider.
 	if _, err := authorityprovider.DecodeControlRequest(raw, bridge.authority.Peer, bridge.now(), refs); err != nil {
 		return errors.New("qoder APAP request is not admitted by the shared core")
 	}
+	return nil
+}
+
+func (bridge *QoderAPAPProfileBridge) registerIssuedRequest(request authorityprovider.APAPRequestEnvelopeV1) error {
+	issued := qoderAPAPIssuedRequest{requestDigest: request.RequestEnvelopeDigest, identity: digestRecordWithoutFields(request), operation: request.Operation}
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	if prior, ok := bridge.issued[request.CommandID]; ok {
+		if prior != issued {
+			return errors.New("qoder APAP command was already issued with another identity")
+		}
+		return nil
+	}
+	bridge.issued[request.CommandID] = issued
 	return nil
 }
 
