@@ -18,11 +18,12 @@ import (
 )
 
 type approvalFixture struct {
-	root      string
-	runDir    string
-	runID     string
-	taskID    string
-	validator *contract.Validator
+	root       string
+	runDir     string
+	runID      string
+	taskID     string
+	taskDigest string
+	validator  *contract.Validator
 }
 
 func TestPlanApprovalLifecycle(t *testing.T) {
@@ -130,7 +131,7 @@ func TestPublishApprovalReadsRoundBoundDecisionFile(t *testing.T) {
 	}
 	decision := decodeObject(t, decisionData)
 	if decision["reviewRound"] != float64(1) || decision["verdict"] != "accept" ||
-		decision["publicationRecommendation"] != "publish" || decision["specDigest"] != mustDigest(t, readSchemaFixture(t, "examples/happy-path/task-spec.json")) {
+		decision["publicationRecommendation"] != "publish" || decision["specDigest"] != fixture.taskDigest {
 		t.Fatalf("fixture decision = %+v", decision)
 	}
 	if _, err := os.Stat(filepath.Join(fixture.runDir, "review-decision.json")); !errors.Is(err, os.ErrNotExist) {
@@ -234,6 +235,13 @@ func newApprovalFixture(t *testing.T, mutatePolicy func(map[string]any), publish
 	defer lease.Release()
 	runDir := filepath.Join(root, "runs", runID)
 	taskData := readSchemaFixture(t, "examples/happy-path/task-spec.json")
+	// The planning gate rejects OpenCode as a new-task candidate. Keep this
+	// control fixture on an eligible fallback without changing the shared
+	// cross-record happy-path example used by unrelated contract tests.
+	task := decodeObject(t, taskData)
+	worker := task["worker"].(map[string]any)
+	worker["fallbackAdapters"] = []any{"pi"}
+	taskData = encodeObject(t, task)
 	policy := decodeObject(t, readSchemaFixture(t, "examples/happy-path/policy-snapshot.json"))
 	if mutatePolicy != nil {
 		mutatePolicy(policy)
@@ -287,7 +295,7 @@ func newApprovalFixture(t *testing.T, mutatePolicy func(map[string]any), publish
 		}
 		writeObject(t, filepath.Join(decisionDir, "decision-001.json"), decision)
 	}
-	return approvalFixture{root: root, runDir: runDir, runID: runID, taskID: taskID, validator: validator}
+	return approvalFixture{root: root, runDir: runDir, runID: runID, taskID: taskID, taskDigest: state.SpecDigest, validator: validator}
 }
 
 func (f approvalFixture) input(gate string) ApprovalInput {
