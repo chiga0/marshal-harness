@@ -65,13 +65,13 @@ func TestProductionPlatformGateIsAuditableAndLeavesNoLauncherSnapshots(t *testin
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("unsupported platform executed the configured Codex pathname")
 	}
-	if err := adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrPlatformUnsupported) {
-		t.Fatalf("BindConformance err = %v, want platform unsupported", err)
+	if err := adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrPlatformUnsupported) || !strings.Contains(err.Error(), secureFDPublicReason) || strings.Contains(err.Error(), "signed/privileged launcher ADR") {
+		t.Fatalf("BindConformance err = %v, want fixed safe platform error", err)
 	}
 	fixture := newRunFixture(t, supportedVersionOutput, "exit 0")
 	fixture.adapter.unsafePathExecutionForTest = false
-	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPlatformUnsupported) {
-		t.Fatalf("Run err = %v, want platform unsupported on %s", err, runtime.GOOS)
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPlatformUnsupported) || !strings.Contains(err.Error(), secureFDPublicReason) || strings.Contains(err.Error(), "signed/privileged launcher ADR") {
+		t.Fatalf("Run err = %v, want fixed safe platform error on %s", err, runtime.GOOS)
 	}
 	after, err := filepath.Glob(filepath.Join(os.TempDir(), ".marshal-codex-launcher-*"))
 	if err != nil {

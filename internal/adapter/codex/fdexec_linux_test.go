@@ -205,13 +205,13 @@ func TestLinuxLauncherInitializationFailureMakesAllSurfacesUnsupported(t *testin
 		!strings.Contains(string(record.Data), secureFDPublicReason) || strings.Contains(string(record.Data), "launcher initialization failed:") {
 		t.Fatalf("probe = %s, want auditable launcher initialization failure", record.Data)
 	}
-	if err := adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrPlatformUnsupported) {
-		t.Fatalf("BindConformance err = %v, want platform unsupported", err)
+	if err := adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrPlatformUnsupported) || !strings.Contains(err.Error(), secureFDPublicReason) || strings.Contains(err.Error(), "injected launcher init failure") {
+		t.Fatalf("BindConformance err = %v, want fixed safe platform error", err)
 	}
 	fixture := newRunFixture(t, supportedVersionOutput, "exit 0")
 	fixture.adapter.unsafePathExecutionForTest = false
-	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPlatformUnsupported) {
-		t.Fatalf("Run err = %v, want platform unsupported", err)
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPlatformUnsupported) || !strings.Contains(err.Error(), secureFDPublicReason) || strings.Contains(err.Error(), "injected launcher init failure") {
+		t.Fatalf("Run err = %v, want fixed safe platform error", err)
 	}
 }
 

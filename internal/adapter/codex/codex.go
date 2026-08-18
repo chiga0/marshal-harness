@@ -44,7 +44,7 @@ const (
 	codexProtocolVersion     = "0.145"
 	codexPermissionMode      = "workspace-write-network-off-approval-never"
 	conformancePendingReason = "credentialed live conformance pending: independent authority evidence is not bound to the Codex CLI identity and exec JSON contract"
-	secureFDPublicReason     = "authenticated Codex fd execution is unavailable"
+	secureFDPublicReason     = "authenticated Codex fd-exec is unavailable"
 )
 
 // supportedCompatibilityLine 冻结已经通过真实 argv、JSONL 与结果契约
@@ -332,7 +332,7 @@ func (a *Adapter) pinIdentity(identity executableIdentity) {
 // 调用者不能通过传入自造结构或 CapabilitySnapshot 获得执行授权。
 func (a *Adapter) BindConformance(ctx context.Context, evidenceDigest string) error {
 	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest {
-		return port.Permanent(fmt.Errorf("%w: %s", ErrPlatformUnsupported, secureFDExecutionReason()))
+		return port.Permanent(fmt.Errorf("%w: %s", ErrPlatformUnsupported, secureFDPublicReason))
 	}
 	if !a.unsafePathExecutionForTest && !a.legacyAuthorityForTest {
 		return port.Permanent(ErrConformancePending)
@@ -497,7 +497,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
 	}
 	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest {
-		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrPlatformUnsupported, secureFDExecutionReason(), a.now())
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrPlatformUnsupported, secureFDPublicReason, a.now())
 	}
 	request, err := decodeRequest(record.Data, a.validator)
 	if err != nil {
