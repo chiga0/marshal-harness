@@ -19,7 +19,13 @@ import (
 const verifierWorktreeMutatedReason = "verifier-worktree-mutated"
 
 const (
-	commandIsolationCleanupTimeout  = 5 * time.Second
+	// A verifier command may leave a large Go test binary, race profile, or
+	// compiler cache in the disposable clone.  Five seconds is routinely too
+	// short on macOS under normal host contention, which turns an otherwise
+	// successful required command into a false isolation error.  Keep cleanup
+	// bounded, but allow the filesystem enough time to remove the command
+	// outputs before the result is classified as non-authoritative.
+	commandIsolationCleanupTimeout  = 60 * time.Second
 	commandIsolationAuditTimeout    = 10 * time.Second
 	commandIsolationSnapshotTimeout = 30 * time.Second
 	commandIsolationMaxEntries      = 200000
