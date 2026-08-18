@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,11 +16,13 @@ import (
 )
 
 const d = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const d2 = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+func fixedNow() time.Time { return time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC) }
 
 func TestDraft202012SchemaAndExamples(t *testing.T) {
-	root := repositoryRoot(t)
-	schemaPath := filepath.Join(root, "schemas/apap/apap-v1.schema.json")
-	raw, err := os.ReadFile(schemaPath)
+	root := repositoryRoot()
+	raw, err := os.ReadFile(filepath.Join(root, "schemas/apap/apap-v1.schema.json"))
 	if err != nil || !json.Valid(raw) {
 		t.Fatalf("read schema: %v", err)
 	}
@@ -52,70 +55,61 @@ func TestDraft202012SchemaAndExamples(t *testing.T) {
 		}
 		value, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
 		if err != nil {
-			t.Fatalf("%s: %v", filepath.Base(path), err)
+			t.Fatalf("decode schema example %s: %v", filepath.Base(path), err)
 		}
 		if err := schema.Validate(value); err != nil {
-			t.Fatalf("%s: %v", filepath.Base(path), err)
+			t.Fatalf("schema example %s rejected: %v", filepath.Base(path), err)
 		}
 		packet := bytes.TrimSuffix(data, []byte("\n"))
 		switch filepath.Base(path) {
 		case "describe-request.json":
-			if _, err := ValidateControlRequest(packet, nil); err != nil {
-				t.Fatalf("%s strict example admission: %v", filepath.Base(path), err)
+			if _, err := ValidateControlRequest(packet, nil, fixedNow()); err != nil {
+				t.Fatalf("strict example admission: %v", err)
 			}
 		case "begin-probe-request.json":
-			fds := []FDDescriptor{{"candidateExecutable", 0, d}, {"scratchRoot", 0, d}, {"businessDenyRoot", 0, d}}
-			if _, err := ValidateControlRequest(packet, fds); err != nil {
-				t.Fatalf("%s strict example admission: %v", filepath.Base(path), err)
-			}
-		case "stage-bundle-request.json":
-			if _, err := ValidateControlRequest(packet, []FDDescriptor{{"bundleLeaf", 0, d}}); err != nil {
-				t.Fatalf("%s strict example admission: %v", filepath.Base(path), err)
+			if _, err := ValidateControlRequest(packet, beginFDs(d), fixedNow()); err != nil {
+				t.Fatalf("strict example admission: %v", err)
 			}
 		case "describe-response.json":
-			if _, err := ValidateControlResponse(packet); err != nil {
-				t.Fatalf("%s strict example admission: %v", filepath.Base(path), err)
+			if _, err := ValidateControlResponse(packet, describeRequest(), 7); err != nil {
+				t.Fatalf("strict example admission: %v", err)
 			}
 		case "fd-table.json":
 			if _, _, err := ValidateFDTable(packet); err != nil {
-				t.Fatalf("%s strict example admission: %v", filepath.Base(path), err)
+				t.Fatalf("strict example admission: %v", err)
 			}
 		case "signed-object-envelope.json":
 			if err := ValidateSignedObjectEnvelope(packet, "marshal-bundle-prepared-receipt-v1\x00"); err != nil {
-				t.Fatalf("%s strict example admission: %v", filepath.Base(path), err)
+				t.Fatalf("strict example admission: %v", err)
 			}
+		default:
+			t.Fatalf("unrouted schema example %s", filepath.Base(path))
 		}
 	}
 }
 
-func TestRegisteredOperationsAcceptExactVectors(t *testing.T) {
-	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
-	tests := []struct {
-		name    string
-		op      Operation
-		seq     any
-		payload any
-		fds     []FDDescriptor
-	}{
-		{"describe", Describe, nil, struct{}{}, nil},
-		{"begin-probe", BeginProbe, uint64(7), map[string]any{"candidateIdentityDigest": d, "suiteDigest": d, "probeArtifactDigest": d, "policyDigest": d, "challengeDigest": d, "deadline": now.Add(time.Minute).Format(time.RFC3339Nano)}, []FDDescriptor{{"candidateExecutable", 0, d}, {"scratchRoot", 0, d}, {"businessDenyRoot", 0, d}}},
-		{"stage", StageBundleLeafBatch, uint64(7), map[string]any{"bundleTransactionId": "tx-123456", "updateKind": "evidence-update", "orderedLeafDescriptors": []any{map[string]any{"leafKind": "config", "digest": d, "size": 2, "mediaType": "application/json"}}}, []FDDescriptor{{"bundleLeaf", 0, d}}},
+func TestOnlyDescribeAndBeginProbeRegistered(t *testing.T) {
+	now := fixedNow()
+	describeRaw := requestVector(t, Describe, nil, struct{}{}, now)
+	if _, err := ValidateControlRequest(describeRaw, nil, now); err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			raw := requestVector(t, test.op, test.seq, test.payload, now)
-			got, err := ValidateControlRequest(raw, test.fds)
-			if err != nil || got.Operation != test.op {
-				t.Fatalf("ValidateControlRequest() = %v, %v", got, err)
-			}
-		})
+	beginRaw := requestVector(t, BeginProbe, uint64(7), beginPayload(now, d), now)
+	if _, err := ValidateControlRequest(beginRaw, beginFDs(d), now); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range []Operation{"RunProbeVariant", "PrepareLaunch"} {
+		raw := requestVector(t, op, uint64(7), map[string]any{}, now)
+		if _, err := ValidateControlRequest(raw, nil, now); err == nil {
+			t.Fatalf("unregistered operation %q accepted", op)
+		}
 	}
 }
 
 func TestStrictRequestNegatives(t *testing.T) {
-	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
-	valid := requestVector(t, BeginProbe, uint64(1), map[string]any{"candidateIdentityDigest": d, "suiteDigest": d, "probeArtifactDigest": d, "policyDigest": d, "challengeDigest": d, "deadline": now.Add(time.Minute).Format(time.RFC3339Nano)}, now)
-	fds := []FDDescriptor{{"candidateExecutable", 0, d}, {"scratchRoot", 0, d}, {"businessDenyRoot", 0, d}}
+	now := fixedNow()
+	valid := requestVector(t, BeginProbe, uint64(1), beginPayload(now, d), now)
+	fds := beginFDs(d)
 	mutations := map[string][]byte{
 		"unknown":            bytes.Replace(valid, []byte(`"audience":`), []byte(`"extra":true,"audience":`), 1),
 		"duplicate":          bytes.Replace(valid, []byte(`"audience":`), []byte(`"audience":"marshal.agent-production-authority.local","audience":`), 1),
@@ -125,63 +119,133 @@ func TestStrictRequestNegatives(t *testing.T) {
 		"noncanonical-order": append([]byte(" "), valid...),
 		"substitution":       bytes.Replace(valid, []byte(`"operation":"BeginProbe"`), []byte(`"operation":"RunProbeVariant"`), 1),
 		"bad-digest":         bytes.Replace(valid, []byte(d), []byte("sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"), 1),
-		"bad-time":           bytes.Replace(valid, []byte("2026-08-18T08:01:00Z"), []byte("2026-08-18T08:01:00+00:00"), 1),
+		"bad-time":           bytes.Replace(valid, []byte("2026-08-18T08:02:00Z"), []byte("2026-08-18T08:02:00+00:00"), 1),
 	}
 	for name, raw := range mutations {
 		t.Run(name, func(t *testing.T) {
-			if _, err := ValidateControlRequest(raw, fds); err == nil {
+			if _, err := ValidateControlRequest(raw, fds, now); err == nil {
 				t.Fatal("mutation accepted")
+			}
+		})
+	}
+	for name, validationNow := range map[string]time.Time{"zero-now": {}, "issued-in-future": now.Add(-time.Second), "expired": now.Add(3 * time.Minute)} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ValidateControlRequest(valid, fds, validationNow); err == nil {
+				t.Fatal("freshness violation accepted")
 			}
 		})
 	}
 }
 
-func TestCardinalityOrderAndFDBindingNegatives(t *testing.T) {
-	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
-	leaves := []any{map[string]any{"leafKind": "z", "digest": d, "size": 2, "mediaType": "application/json"}, map[string]any{"leafKind": "a", "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "size": 2, "mediaType": "application/json"}}
-	raw := requestVector(t, StageBundleLeafBatch, uint64(1), map[string]any{"bundleTransactionId": "tx-123456", "updateKind": "evidence-update", "orderedLeafDescriptors": leaves}, now)
-	if _, err := ValidateControlRequest(raw, []FDDescriptor{{"bundleLeaf", 0, d}, {"bundleLeaf", 1, "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}); err == nil {
-		t.Fatal("out-of-order descriptors accepted")
+func TestBeginProbeExactDeadlineAndCandidateFDBinding(t *testing.T) {
+	now := fixedNow()
+	mismatchedDeadline := requestVector(t, BeginProbe, uint64(1), map[string]any{"candidateIdentityDigest": d, "suiteDigest": d, "probeArtifactDigest": d, "policyDigest": d, "challengeDigest": d, "deadline": now.Add(time.Minute).Format(time.RFC3339Nano)}, now)
+	if _, err := ValidateControlRequest(mismatchedDeadline, beginFDs(d), now); err == nil {
+		t.Fatal("deadline different from envelope expiresAt accepted")
 	}
-	empty := requestVector(t, StageBundleLeafBatch, uint64(1), map[string]any{"bundleTransactionId": "tx-123456", "updateKind": "evidence-update", "orderedLeafDescriptors": []any{}}, now)
-	if _, err := ValidateControlRequest(empty, nil); err == nil {
-		t.Fatal("empty batch accepted")
+	// requestVector recomputes requestEnvelopeDigest, proving a correctly
+	// re-signed payload cannot substitute a different held candidate identity.
+	substituted := requestVector(t, BeginProbe, uint64(1), beginPayload(now, d2), now)
+	if _, err := ValidateControlRequest(substituted, beginFDs(d), now); err == nil {
+		t.Fatal("re-signed candidate fd substitution accepted")
 	}
-	begin := requestVector(t, BeginProbe, uint64(1), map[string]any{"candidateIdentityDigest": d, "suiteDigest": d, "probeArtifactDigest": d, "policyDigest": d, "challengeDigest": d, "deadline": now.Add(time.Minute).Format(time.RFC3339Nano)}, now)
-	if _, err := ValidateControlRequest(begin, []FDDescriptor{{"scratchRoot", 0, d}, {"candidateExecutable", 0, d}, {"businessDenyRoot", 0, d}}); err == nil {
-		t.Fatal("fd substitution accepted")
-	}
-}
-
-func TestResponseSuccessAndFailureAreDisjoint(t *testing.T) {
-	success := responseVector(t, Describe, "ok", "", map[string]any{"providerBuildDigest": d, "platform": "linux", "profiles": []any{map[string]any{"authorityProfile": "qoder-cli-adr0034-v1", "status": "unsupported"}}})
-	if _, err := ValidateControlResponse(success); err != nil {
-		t.Fatal(err)
-	}
-	failure := responseVector(t, Describe, "platform-unsupported", "unsupported", nil)
-	if _, err := ValidateControlResponse(failure); err != nil {
-		t.Fatal(err)
-	}
-	smuggled := responseVector(t, Describe, "platform-unsupported", "unsupported", map[string]any{})
-	if _, err := ValidateControlResponse(smuggled); err == nil {
-		t.Fatal("failure success-payload smuggling accepted")
-	}
-}
-
-func TestSignedEnvelopeStrictBase64URL(t *testing.T) {
-	signature := base64.RawURLEncoding.EncodeToString(make([]byte, 64))
-	domain := "marshal-bundle-prepared-receipt-v1\x00"
-	raw := canonicalValue(t, map[string]any{"objectDigest": d, "signatureAlgorithm": "Ed25519", "signatureEncoding": "base64url-unpadded", "keyId": "key-123456", "keyEpoch": 1, "signatureDomain": domain, "signature": signature})
-	if err := ValidateSignedObjectEnvelope(raw, domain); err != nil {
-		t.Fatal(err)
-	}
-	for name, mutation := range map[string][]byte{
-		"padding": bytes.Replace(raw, []byte(signature), []byte(signature+"=="), 1),
-		"short":   bytes.Replace(raw, []byte(signature), []byte(signature[:84]), 1),
-		"domain":  bytes.Replace(raw, []byte("marshal-bundle-prepared"), []byte("marshal-bundle-commit"), 1),
+	valid := requestVector(t, BeginProbe, uint64(1), beginPayload(now, d), now)
+	for name, fds := range map[string][]FDDescriptor{
+		"cardinality": beginFDs(d)[:2],
+		"order":       {{"scratchRoot", 0, d}, {"candidateExecutable", 0, d}, {"businessDenyRoot", 0, d}},
+		"deny-index":  {{"candidateExecutable", 0, d}, {"scratchRoot", 0, d}, {"businessDenyRoot", 1, d}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := ValidateSignedObjectEnvelope(mutation, domain); err == nil {
+			if _, err := ValidateControlRequest(valid, fds, now); err == nil {
+				t.Fatal("invalid fd table accepted")
+			}
+		})
+	}
+}
+
+func TestDescribeProfilesAreExactSortedUniqueStrings(t *testing.T) {
+	request := describeRequest()
+	for name, profiles := range map[string]any{
+		"objects":   []any{map[string]any{"authorityProfile": "qoder-cli-adr0034-v1", "status": "unsupported"}},
+		"unsorted":  []string{"qoder-cli-adr0034-v1", "codex-cli-adr0037-v1"},
+		"duplicate": []string{"qoder-cli-adr0034-v1", "qoder-cli-adr0034-v1"},
+		"unknown":   []string{"other"},
+		"empty":     []string{},
+		"too-many":  []string{"codex-cli-adr0037-v1", "qoder-cli-adr0034-v1", "qoder-cli-adr0034-v1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := responseVector(t, Describe, "ok", "", map[string]any{"providerBuildDigest": d, "platform": "linux", "profiles": profiles})
+			if _, err := ValidateControlResponse(raw, request, 7); err == nil {
+				t.Fatal("invalid Describe profiles accepted")
+			}
+		})
+	}
+	valid := responseVector(t, Describe, "ok", "", map[string]any{"providerBuildDigest": d, "platform": "linux", "profiles": []string{"codex-cli-adr0037-v1", "qoder-cli-adr0034-v1"}})
+	if _, err := ValidateControlResponse(valid, request, 7); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResponseBindsRequestSequenceMessageAndExpiry(t *testing.T) {
+	now := fixedNow()
+	describe := describeRequest()
+	success := responseVector(t, Describe, "ok", "", map[string]any{"providerBuildDigest": d, "platform": "linux", "profiles": []string{"qoder-cli-adr0034-v1"}})
+	if _, err := ValidateControlResponse(success, describe, 7); err != nil {
+		t.Fatal(err)
+	}
+	failure := responseVector(t, Describe, "platform-unsupported", "request rejected: platform-unsupported", nil)
+	if _, err := ValidateControlResponse(failure, describe, 7); err != nil {
+		t.Fatal(err)
+	}
+	for name, fieldValue := range map[string]any{"requestId": "other-request", "commandId": "other-command", "providerInstanceId": "other-provider", "authorityProfile": "codex-cli-adr0037-v1", "operation": "BeginProbe", "observedProviderSequence": uint64(8)} {
+		t.Run(name, func(t *testing.T) {
+			mutated := resignResponse(t, success, name, fieldValue)
+			if _, err := ValidateControlResponse(mutated, describe, 7); err == nil {
+				t.Fatal("re-signed response identity substitution accepted")
+			}
+		})
+	}
+	wrongMessage := responseVector(t, Describe, "platform-unsupported", "unsupported", nil)
+	if _, err := ValidateControlResponse(wrongMessage, describe, 7); err == nil {
+		t.Fatal("non-canonical safe message accepted")
+	}
+	smuggled := responseVector(t, Describe, "platform-unsupported", "request rejected: platform-unsupported", map[string]any{})
+	if _, err := ValidateControlResponse(smuggled, describe, 7); err == nil {
+		t.Fatal("failure success payload accepted")
+	}
+	beginRaw := requestVector(t, BeginProbe, uint64(7), beginPayload(now, d), now)
+	begin, err := ValidateControlRequest(beginRaw, beginFDs(d), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beginResponse := responseVector(t, BeginProbe, "ok", "", map[string]any{"probeSessionId": "probe-123456", "targetIsolationIdentityDigest": d, "credentialIngressEndpointIdentityDigest": d, "expiresAt": now.Add(time.Minute).Format(time.RFC3339Nano)})
+	if _, err := ValidateControlResponse(beginResponse, begin, 7); err == nil {
+		t.Fatal("response expiry substitution accepted")
+	}
+	exactBeginResponse := responseVector(t, BeginProbe, "ok", "", map[string]any{"probeSessionId": "probe-123456", "targetIsolationIdentityDigest": d, "credentialIngressEndpointIdentityDigest": d, "expiresAt": begin.ExpiresAt.Format(time.RFC3339Nano)})
+	if _, err := ValidateControlResponse(exactBeginResponse, begin, 7); err != nil {
+		t.Fatalf("exact BeginProbe response rejected: %v", err)
+	}
+}
+
+func TestSignedEnvelopeMatchesMainBoundsAndStrictBase64URL(t *testing.T) {
+	signature := base64.RawURLEncoding.EncodeToString(make([]byte, 64))
+	domain := "marshal-bundle-prepared-receipt-v1\x00"
+	for _, epoch := range []uint64{0, 7} {
+		raw := signedVector(t, "printable key !~", epoch, domain, signature)
+		if err := ValidateSignedObjectEnvelope(raw, domain); err != nil {
+			t.Fatalf("epoch %d rejected: %v", epoch, err)
+		}
+	}
+	for name, raw := range map[string][]byte{
+		"epoch-overflow": signedVector(t, "key", uint64(math.MaxInt64)+1, domain, signature),
+		"control-key":    signedVector(t, "bad\nkey", 0, domain, signature),
+		"long-key":       signedVector(t, string(bytes.Repeat([]byte{'x'}, 257)), 0, domain, signature),
+		"padding":        signedVector(t, "key", 0, domain, signature+"=="),
+		"short":          signedVector(t, "key", 0, domain, signature[:84]),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateSignedObjectEnvelope(raw, domain); err == nil {
 				t.Fatal("invalid signed envelope accepted")
 			}
 		})
@@ -201,41 +265,56 @@ func TestJCSGoldenVector(t *testing.T) {
 }
 
 func FuzzControlRequestAdmission(f *testing.F) {
-	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
-	f.Add(requestVectorForFuzz(Describe, nil, struct{}{}, now))
+	f.Add(requestVectorBytes(Describe, nil, struct{}{}, fixedNow()))
 	f.Add([]byte(`{"x":1,"x":2}`))
 	f.Add([]byte(`null`))
-	f.Fuzz(func(t *testing.T, raw []byte) {
-		_, _ = ValidateControlRequest(raw, nil)
-	})
+	f.Fuzz(func(t *testing.T, raw []byte) { _, _ = ValidateControlRequest(raw, nil, fixedNow()) })
 }
 
+func beginPayload(now time.Time, candidate string) map[string]any {
+	return map[string]any{"candidateIdentityDigest": candidate, "suiteDigest": d, "probeArtifactDigest": d, "policyDigest": d, "challengeDigest": d, "deadline": now.Add(2 * time.Minute).Format(time.RFC3339Nano)}
+}
+func beginFDs(candidate string) []FDDescriptor {
+	return []FDDescriptor{{"candidateExecutable", 0, candidate}, {"scratchRoot", 0, d}, {"businessDenyRoot", 0, d}}
+}
+func describeRequest() ValidatedRequest {
+	return ValidatedRequest{Operation: Describe, AuthorityProfile: "qoder-cli-adr0034-v1", RequestID: "request-123456", CommandID: "command-123456", ProviderInstanceID: "provider-123456", IssuedAt: fixedNow(), ExpiresAt: fixedNow().Add(2 * time.Minute)}
+}
 func requestVector(t *testing.T, op Operation, sequence any, payload any, now time.Time) []byte {
 	t.Helper()
-	return requestVectorForFuzz(op, sequence, payload, now)
+	return requestVectorBytes(op, sequence, payload, now)
 }
-
-func requestVectorForFuzz(op Operation, sequence any, payload any, now time.Time) []byte {
+func requestVectorBytes(op Operation, sequence any, payload any, now time.Time) []byte {
 	object := map[string]any{"schemaVersion": RequestSchema, "protocolFamily": ControlFamily, "protocolVersion": 1, "audience": ControlAudience, "requestId": "request-123456", "commandId": "command-123456", "callerPrincipalDigest": d, "providerInstanceId": "provider-123456", "authorityProfile": "qoder-cli-adr0034-v1", "operation": op, "issuedAt": now.Format(time.RFC3339Nano), "expiresAt": now.Add(2 * time.Minute).Format(time.RFC3339Nano), "nonce": "nonce-123456", "expectedProviderSequence": sequence, "payload": payload, "requestEnvelopeDigest": d}
+	return sealMap(object, "requestEnvelopeDigest")
+}
+func responseVector(t *testing.T, op Operation, code, message string, payload any) []byte {
+	t.Helper()
+	object := map[string]any{"schemaVersion": ResponseSchema, "protocolFamily": ControlFamily, "protocolVersion": 1, "audience": ControlAudience, "requestId": "request-123456", "commandId": "command-123456", "providerInstanceId": "provider-123456", "authorityProfile": "qoder-cli-adr0034-v1", "operation": op, "observedProviderSequence": 7, "safeCode": code, "safeMessage": message, "payload": payload, "responseEnvelopeDigest": d}
+	return sealMap(object, "responseEnvelopeDigest")
+}
+func resignResponse(t *testing.T, raw []byte, field string, value any) []byte {
+	t.Helper()
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		t.Fatal(err)
+	}
+	object[field] = value
+	return sealMap(object, "responseEnvelopeDigest")
+}
+func signedVector(t *testing.T, key string, epoch uint64, domain, signature string) []byte {
+	t.Helper()
+	return canonicalValue(t, map[string]any{"objectDigest": d, "signatureAlgorithm": "Ed25519", "signatureEncoding": "base64url-unpadded", "keyId": key, "keyEpoch": epoch, "signatureDomain": domain, "signature": signature})
+}
+func sealMap(object map[string]any, field string) []byte {
 	raw, _ := json.Marshal(object)
 	var members map[string]json.RawMessage
 	_ = json.Unmarshal(raw, &members)
-	object["requestEnvelopeDigest"] = digestDetached(members, "requestEnvelopeDigest")
+	object[field] = digestDetached(members, field)
 	raw, _ = json.Marshal(object)
 	canonicalRaw, _ := canonical.JSON(raw)
 	return canonicalRaw
 }
-
-func responseVector(t *testing.T, op Operation, code, message string, payload any) []byte {
-	t.Helper()
-	object := map[string]any{"schemaVersion": ResponseSchema, "protocolFamily": ControlFamily, "protocolVersion": 1, "audience": ControlAudience, "requestId": "request-123456", "commandId": "command-123456", "providerInstanceId": "provider-123456", "authorityProfile": "qoder-cli-adr0034-v1", "operation": op, "observedProviderSequence": 7, "safeCode": code, "safeMessage": message, "payload": payload, "responseEnvelopeDigest": d}
-	raw, _ := json.Marshal(object)
-	var members map[string]json.RawMessage
-	_ = json.Unmarshal(raw, &members)
-	object["responseEnvelopeDigest"] = digestDetached(members, "responseEnvelopeDigest")
-	return canonicalValue(t, object)
-}
-
 func canonicalValue(t *testing.T, value any) []byte {
 	t.Helper()
 	raw, err := json.Marshal(value)
@@ -248,9 +327,7 @@ func canonicalValue(t *testing.T, value any) []byte {
 	}
 	return got
 }
-
-func repositoryRoot(t *testing.T) string {
-	t.Helper()
+func repositoryRoot() string {
 	_, file, _, _ := runtime.Caller(0)
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "../../.."))
 }

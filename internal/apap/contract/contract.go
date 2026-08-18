@@ -1,6 +1,6 @@
 // Package contract implements the closed, transport-neutral APAP v1 wire
-// contracts frozen by ADR 0038. It intentionally registers only Describe,
-// BeginProbe, and StageBundleLeafBatch; adding another operation requires its
+// contracts frozen by ADR 0038. It intentionally registers only Describe and
+// BeginProbe; adding another operation requires its
 // own closed request/response schema and conformance vectors first.
 package contract
 
@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -30,9 +31,8 @@ const (
 type Operation string
 
 const (
-	Describe             Operation = "Describe"
-	BeginProbe           Operation = "BeginProbe"
-	StageBundleLeafBatch Operation = "StageBundleLeafBatch"
+	Describe   Operation = "Describe"
+	BeginProbe Operation = "BeginProbe"
 )
 
 type FDDescriptor struct {
@@ -44,6 +44,11 @@ type FDDescriptor struct {
 type ValidatedRequest struct {
 	Operation                Operation
 	AuthorityProfile         string
+	RequestID                string
+	CommandID                string
+	ProviderInstanceID       string
+	IssuedAt                 time.Time
+	ExpiresAt                time.Time
 	ExpectedProviderSequence *uint64
 	Payload                  json.RawMessage
 	RequestEnvelopeDigest    string
@@ -89,15 +94,6 @@ func ValidateFDTable(raw []byte) (Operation, []FDDescriptor, error) {
 		if err := validateBeginProbeFDs(descriptors); err != nil {
 			return "", nil, err
 		}
-	case StageBundleLeafBatch:
-		if len(descriptors) < 1 || len(descriptors) > 24 {
-			return "", nil, errors.New("apap contract: stage fd cardinality rejected")
-		}
-		for i, descriptor := range descriptors {
-			if descriptor.Role != "bundleLeaf" || descriptor.Index != uint64(i) {
-				return "", nil, errors.New("apap contract: stage fd order rejected")
-			}
-		}
 	default:
 		return "", nil, errors.New("apap contract: operation has no registered schema")
 	}
@@ -106,7 +102,7 @@ func ValidateFDTable(raw []byte) (Operation, []FDDescriptor, error) {
 
 var (
 	digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	idPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	idPattern     = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 	noncePattern  = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,128}$`)
 )
 
@@ -116,7 +112,7 @@ var responseFields = []string{"audience", "authorityProfile", "commandId", "obse
 // ValidateControlRequest performs canonical admission, exact member/type
 // validation, operation-specific payload validation, digest binding, and fd
 // table validation. It never accepts an operation absent from the v1 schemas.
-func ValidateControlRequest(raw []byte, fds []FDDescriptor) (ValidatedRequest, error) {
+func ValidateControlRequest(raw []byte, fds []FDDescriptor, now time.Time) (ValidatedRequest, error) {
 	object, err := admitObject(raw, requestFields)
 	if err != nil {
 		return ValidatedRequest{}, err
@@ -137,7 +133,7 @@ func ValidateControlRequest(raw []byte, fds []FDDescriptor) (ValidatedRequest, e
 		return ValidatedRequest{}, errors.New("apap contract: issuedAt rejected")
 	}
 	expires, ok := canonicalTime(object["expiresAt"])
-	if !ok || !expires.After(issued) {
+	if !ok || now.IsZero() || issued.After(now) || !expires.After(now) || !expires.After(issued) {
 		return ValidatedRequest{}, errors.New("apap contract: expiresAt rejected")
 	}
 	op := Operation(rawString(object["operation"]))
@@ -160,13 +156,18 @@ func ValidateControlRequest(raw []byte, fds []FDDescriptor) (ValidatedRequest, e
 	if !validDigest(want) || digestDetached(object, "requestEnvelopeDigest") != want {
 		return ValidatedRequest{}, errors.New("apap contract: request digest rejected")
 	}
-	return ValidatedRequest{Operation: op, AuthorityProfile: rawString(object["authorityProfile"]), ExpectedProviderSequence: expected, Payload: slices.Clone(object["payload"]), RequestEnvelopeDigest: want}, nil
+	return ValidatedRequest{
+		Operation: op, AuthorityProfile: rawString(object["authorityProfile"]),
+		RequestID: rawString(object["requestId"]), CommandID: rawString(object["commandId"]), ProviderInstanceID: rawString(object["providerInstanceId"]),
+		IssuedAt: issued, ExpiresAt: expires, ExpectedProviderSequence: expected,
+		Payload: slices.Clone(object["payload"]), RequestEnvelopeDigest: want,
+	}, nil
 }
 
 // ValidateControlResponse validates the closed response surface. Successful
 // responses require the operation-specific payload and an empty safeMessage;
 // failures require a null payload and therefore cannot smuggle success data.
-func ValidateControlResponse(raw []byte) (ValidatedResponse, error) {
+func ValidateControlResponse(raw []byte, request ValidatedRequest, expectedObservedSequence uint64) (ValidatedResponse, error) {
 	object, err := admitObject(raw, responseFields)
 	if err != nil {
 		return ValidatedResponse{}, err
@@ -174,17 +175,12 @@ func ValidateControlResponse(raw []byte) (ValidatedResponse, error) {
 	if !equalString(object, "schemaVersion", ResponseSchema) || !equalString(object, "protocolFamily", ControlFamily) || !equalUint(object, "protocolVersion", 1) || !equalString(object, "audience", ControlAudience) {
 		return ValidatedResponse{}, errors.New("apap contract: framing rejected")
 	}
-	for _, field := range []string{"requestId", "commandId", "providerInstanceId"} {
-		if !validID(rawString(object[field])) {
-			return ValidatedResponse{}, errors.New("apap contract: identity rejected")
-		}
-	}
-	if !validProfile(rawString(object["authorityProfile"])) {
-		return ValidatedResponse{}, errors.New("apap contract: profile rejected")
+	if rawString(object["requestId"]) != request.RequestID || rawString(object["commandId"]) != request.CommandID || rawString(object["providerInstanceId"]) != request.ProviderInstanceID || rawString(object["authorityProfile"]) != request.AuthorityProfile || Operation(rawString(object["operation"])) != request.Operation {
+		return ValidatedResponse{}, errors.New("apap contract: response identity rejected")
 	}
 	op := Operation(rawString(object["operation"]))
 	sequence, ok := rawUint(object["observedProviderSequence"])
-	if !ok {
+	if !ok || sequence != expectedObservedSequence || (request.ExpectedProviderSequence != nil && sequence != *request.ExpectedProviderSequence) {
 		return ValidatedResponse{}, errors.New("apap contract: sequence rejected")
 	}
 	code := rawString(object["safeCode"])
@@ -192,11 +188,11 @@ func ValidateControlResponse(raw []byte) (ValidatedResponse, error) {
 	if !isString || len(message) > 128 || !validSafeCode(code) {
 		return ValidatedResponse{}, errors.New("apap contract: safe error rejected")
 	}
+	if message != safeMessageFor(code) {
+		return ValidatedResponse{}, errors.New("apap contract: safe message rejected")
+	}
 	if code == "ok" {
-		if message != "" {
-			return ValidatedResponse{}, errors.New("apap contract: success message rejected")
-		}
-		if err := validateResponsePayload(op, object["payload"]); err != nil {
+		if err := validateResponsePayload(op, object["payload"], request); err != nil {
 			return ValidatedResponse{}, err
 		}
 	} else if !bytes.Equal(object["payload"], []byte("null")) {
@@ -217,11 +213,11 @@ func ValidateSignedObjectEnvelope(raw []byte, expectedDomain string) error {
 	if err != nil {
 		return err
 	}
-	if !validDigest(rawString(object["objectDigest"])) || !equalString(object, "signatureAlgorithm", "Ed25519") || !equalString(object, "signatureEncoding", "base64url-unpadded") || !validID(rawString(object["keyId"])) || !equalString(object, "signatureDomain", expectedDomain) {
+	if !validDigest(rawString(object["objectDigest"])) || !equalString(object, "signatureAlgorithm", "Ed25519") || !equalString(object, "signatureEncoding", "base64url-unpadded") || !validPrintableID(rawString(object["keyId"])) || !equalString(object, "signatureDomain", expectedDomain) {
 		return errors.New("apap contract: signed envelope rejected")
 	}
 	epoch, ok := rawUint(object["keyEpoch"])
-	if !ok || epoch == 0 || !validSignatureDomain(expectedDomain) {
+	if !ok || epoch > math.MaxInt64 || !validSignatureDomain(expectedDomain) {
 		return errors.New("apap contract: signed envelope rejected")
 	}
 	encoded := rawString(object["signature"])
@@ -250,34 +246,14 @@ func validateRequestPayload(op Operation, raw json.RawMessage, fds []FDDescripto
 			}
 		}
 		deadline, ok := canonicalTime(object["deadline"])
-		if !ok || deadline.After(expires) {
+		if !ok || !deadline.Equal(expires) {
 			return errors.New("apap contract: BeginProbe deadline rejected")
 		}
 		if err := validateBeginProbeFDs(fds); err != nil {
 			return err
 		}
-	case StageBundleLeafBatch:
-		fields := []string{"bundleTransactionId", "orderedLeafDescriptors", "updateKind"}
-		object, err := admitObject(raw, fields)
-		if err != nil || !validID(rawString(object["bundleTransactionId"])) || !oneOf(rawString(object["updateKind"]), "evidence-update", "planned-rotation", "security-revocation") {
-			return errors.New("apap contract: StageBundleLeafBatch payload rejected")
-		}
-		var leaves []json.RawMessage
-		if err := json.Unmarshal(object["orderedLeafDescriptors"], &leaves); err != nil || len(leaves) < 1 || len(leaves) > 24 || len(leaves) != len(fds) {
-			return errors.New("apap contract: leaf cardinality rejected")
-		}
-		previous := ""
-		for i, leaf := range leaves {
-			item, err := admitObject(leaf, []string{"digest", "leafKind", "mediaType", "size"})
-			size, sizeOK := rawUint(item["size"])
-			key := rawString(item["leafKind"]) + "\x00" + rawString(item["digest"])
-			if err != nil || !validID(rawString(item["leafKind"])) || !validDigest(rawString(item["digest"])) || !equalString(item, "mediaType", "application/json") || !sizeOK || size == 0 || size > 1<<20 || (i > 0 && key <= previous) {
-				return errors.New("apap contract: leaf descriptor rejected")
-			}
-			if fds[i].Role != "bundleLeaf" || fds[i].Index != uint64(i) || fds[i].IdentityDigest != rawString(item["digest"]) {
-				return errors.New("apap contract: leaf fd binding rejected")
-			}
-			previous = key
+		if rawString(object["candidateIdentityDigest"]) != fds[0].IdentityDigest {
+			return errors.New("apap contract: candidate fd identity mismatch")
 		}
 	default:
 		return errors.New("apap contract: operation has no registered schema")
@@ -285,47 +261,32 @@ func validateRequestPayload(op Operation, raw json.RawMessage, fds []FDDescripto
 	return nil
 }
 
-func validateResponsePayload(op Operation, raw json.RawMessage) error {
+func validateResponsePayload(op Operation, raw json.RawMessage, request ValidatedRequest) error {
 	switch op {
 	case Describe:
 		object, err := admitObject(raw, []string{"platform", "profiles", "providerBuildDigest"})
 		if err != nil || !validDigest(rawString(object["providerBuildDigest"])) || !oneOf(rawString(object["platform"]), "linux", "darwin") {
 			return errors.New("apap contract: Describe response rejected")
 		}
-		var profiles []json.RawMessage
+		var profiles []string
 		if err := json.Unmarshal(object["profiles"], &profiles); err != nil || len(profiles) < 1 || len(profiles) > 2 {
 			return errors.New("apap contract: Describe profiles rejected")
 		}
-		seen := map[string]bool{}
-		for _, value := range profiles {
-			profile, err := admitObject(value, []string{"authorityProfile", "status"})
-			name := rawString(profile["authorityProfile"])
-			if err != nil || !validProfile(name) || seen[name] || !oneOf(rawString(profile["status"]), "available", "unsupported", "misconfigured") {
+		previous := ""
+		for _, name := range profiles {
+			if !validProfile(name) || (previous != "" && name <= previous) {
 				return errors.New("apap contract: Describe profile rejected")
 			}
-			seen[name] = true
+			previous = name
 		}
 	case BeginProbe:
 		object, err := admitObject(raw, []string{"credentialIngressEndpointIdentityDigest", "expiresAt", "probeSessionId", "targetIsolationIdentityDigest"})
 		if err != nil || !validID(rawString(object["probeSessionId"])) || !validDigest(rawString(object["targetIsolationIdentityDigest"])) || !validDigest(rawString(object["credentialIngressEndpointIdentityDigest"])) {
 			return errors.New("apap contract: BeginProbe response rejected")
 		}
-		if _, ok := canonicalTime(object["expiresAt"]); !ok {
+		expires, ok := canonicalTime(object["expiresAt"])
+		if !ok || !expires.Equal(request.ExpiresAt) {
 			return errors.New("apap contract: BeginProbe response expiry rejected")
-		}
-	case StageBundleLeafBatch:
-		object, err := admitObject(raw, []string{"bundleTransactionId", "stagedLeafDigests", "stagingReceiptDigest"})
-		if err != nil || !validID(rawString(object["bundleTransactionId"])) || !validDigest(rawString(object["stagingReceiptDigest"])) {
-			return errors.New("apap contract: staging response rejected")
-		}
-		var digests []string
-		if err := json.Unmarshal(object["stagedLeafDigests"], &digests); err != nil || len(digests) < 1 || len(digests) > 24 {
-			return errors.New("apap contract: staged digests rejected")
-		}
-		for _, digest := range digests {
-			if !validDigest(digest) {
-				return errors.New("apap contract: staged digest rejected")
-			}
 		}
 	default:
 		return errors.New("apap contract: operation has no registered schema")
@@ -432,6 +393,25 @@ func validProfile(value string) bool {
 	return oneOf(value, "qoder-cli-adr0034-v1", "codex-cli-adr0037-v1")
 }
 func oneOf(value string, values ...string) bool { return slices.Contains(values, value) }
+
+func validPrintableID(value string) bool {
+	if len(value) == 0 || len(value) > 256 {
+		return false
+	}
+	for _, b := range []byte(value) {
+		if b < 0x20 || b > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func safeMessageFor(code string) string {
+	if code == "ok" {
+		return ""
+	}
+	return "request rejected: " + code
+}
 
 func validSafeCode(value string) bool {
 	return oneOf(value, "ok", "platform-unsupported", "profile-unsupported", "principal-unauthorized", "identity-mismatch", "bundle-invalid", "bundle-rollback", "evidence-invalid", "evidence-revoked", "evidence-expired", "host-attestation-invalid", "isolation-unavailable", "launch-receipt-invalid", "secret-boundary-violation", "provider-busy", "anchor-temporarily-unavailable", "bundle-commit-ambiguous", "launch-outcome-ambiguous", "internal-fail-closed")
