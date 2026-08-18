@@ -22,28 +22,7 @@ func fixedNow() time.Time { return time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC) 
 
 func TestDraft202012SchemaAndExamples(t *testing.T) {
 	root := repositoryRoot()
-	raw, err := os.ReadFile(filepath.Join(root, "schemas/apap/apap-v1.schema.json"))
-	if err != nil || !json.Valid(raw) {
-		t.Fatalf("read schema: %v", err)
-	}
-	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	object := document.(map[string]any)
-	if object["$schema"] != "https://json-schema.org/draft/2020-12/schema" {
-		t.Fatal("schema does not declare Draft 2020-12")
-	}
-	compiler := jsonschema.NewCompiler()
-	compiler.DefaultDraft(jsonschema.Draft2020)
-	compiler.AssertFormat()
-	if err := compiler.AddResource(object["$id"].(string), document); err != nil {
-		t.Fatal(err)
-	}
-	schema, err := compiler.Compile(object["$id"].(string))
-	if err != nil {
-		t.Fatalf("metaschema/compile: %v", err)
-	}
+	schema := compileAPAPSchema(t)
 	examples, err := filepath.Glob(filepath.Join(root, "schemas/apap/examples/*.json"))
 	if err != nil || len(examples) == 0 {
 		t.Fatalf("examples: %v", err)
@@ -85,6 +64,123 @@ func TestDraft202012SchemaAndExamples(t *testing.T) {
 		default:
 			t.Fatalf("unrouted schema example %s", filepath.Base(path))
 		}
+	}
+}
+
+func TestSchemaAndSemanticAdmissionRejectOrderingViolations(t *testing.T) {
+	schema := compileAPAPSchema(t)
+	describe := responseVector(t, Describe, "ok", "", map[string]any{
+		"providerBuildDigest": d,
+		"platform":            "linux",
+		"profiles":            []string{"qoder-cli-adr0034-v1", "codex-cli-adr0037-v1"},
+	})
+	fdWrongRoleOrder := canonicalValue(t, map[string]any{
+		"schemaVersion": FDTableSchema,
+		"operation":     BeginProbe,
+		"descriptors": []any{
+			map[string]any{"role": "scratchRoot", "index": 0, "identityDigest": d},
+			map[string]any{"role": "candidateExecutable", "index": 0, "identityDigest": d},
+			map[string]any{"role": "businessDenyRoot", "index": 0, "identityDigest": d},
+		},
+	})
+	fdWrongIndexOrder := canonicalValue(t, map[string]any{
+		"schemaVersion": FDTableSchema,
+		"operation":     BeginProbe,
+		"descriptors": []any{
+			map[string]any{"role": "candidateExecutable", "index": 0, "identityDigest": d},
+			map[string]any{"role": "scratchRoot", "index": 0, "identityDigest": d},
+			map[string]any{"role": "businessDenyRoot", "index": 1, "identityDigest": d},
+		},
+	})
+	for name, raw := range map[string][]byte{
+		"unsorted-profiles": describe,
+		"wrong-role-order":  fdWrongRoleOrder,
+		"wrong-index-order": fdWrongIndexOrder,
+	} {
+		t.Run(name, func(t *testing.T) {
+			value, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := schema.Validate(value); err == nil {
+				t.Fatal("Draft 2020-12 schema accepted ordering violation")
+			}
+			switch name {
+			case "unsorted-profiles":
+				if _, err := ValidateControlResponse(raw, describeRequest(), 7); err == nil {
+					t.Fatal("semantic admission accepted unsorted profiles")
+				}
+			default:
+				if _, _, err := ValidateFDTable(raw); err == nil {
+					t.Fatal("semantic admission accepted fd ordering violation")
+				}
+			}
+		})
+	}
+}
+
+func TestUintAdmissionRejectsNullAndNonCanonicalTokens(t *testing.T) {
+	for name, raw := range map[string][]byte{
+		"null": []byte("null"), "string": []byte(`"0"`), "bool": []byte("true"),
+		"object": []byte("{}"), "array": []byte("[]"), "fraction": []byte("1.0"),
+		"exponent": []byte("1e0"), "positive-sign": []byte("+1"), "negative": []byte("-1"),
+		"leading-zero": []byte("01"), "overflow": []byte("18446744073709551616"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, ok := rawUint(raw); ok {
+				t.Fatal("invalid uint64 token accepted")
+			}
+		})
+	}
+	for _, raw := range [][]byte{[]byte("0"), []byte("18446744073709551615")} {
+		if _, ok := rawUint(raw); !ok {
+			t.Fatalf("valid uint64 token %s rejected", raw)
+		}
+	}
+
+	// Recompute the detached response digest after substituting null so this
+	// vector proves numeric admission, not stale-digest rejection.
+	response := responseVector(t, Describe, "ok", "", map[string]any{"providerBuildDigest": d, "platform": "linux", "profiles": []string{"qoder-cli-adr0034-v1"}})
+	response = resignResponse(t, response, "observedProviderSequence", nil)
+	if _, err := ValidateControlResponse(response, describeRequest(), 0); err == nil {
+		t.Fatal("re-digested null observedProviderSequence accepted as zero")
+	}
+	safeMessage := responseVector(t, Describe, "ok", "", map[string]any{"providerBuildDigest": d, "platform": "linux", "profiles": []string{"qoder-cli-adr0034-v1"}})
+	safeMessage = resignResponse(t, safeMessage, "safeMessage", nil)
+	if _, err := ValidateControlResponse(safeMessage, describeRequest(), 7); err == nil {
+		t.Fatal("re-digested null safeMessage accepted as empty string")
+	}
+
+	domain := "marshal-bundle-prepared-receipt-v1\x00"
+	signature := base64.RawURLEncoding.EncodeToString(make([]byte, 64))
+	envelope := canonicalValue(t, map[string]any{"objectDigest": d, "signatureAlgorithm": "Ed25519", "signatureEncoding": "base64url-unpadded", "keyId": "key", "keyEpoch": nil, "signatureDomain": domain, "signature": signature})
+	if err := ValidateSignedObjectEnvelope(envelope, domain); err == nil {
+		t.Fatal("null keyEpoch accepted as valid epoch zero")
+	}
+
+	fdTable := canonicalValue(t, map[string]any{
+		"schemaVersion": FDTableSchema,
+		"operation":     BeginProbe,
+		"descriptors": []any{
+			map[string]any{"role": "candidateExecutable", "index": nil, "identityDigest": d},
+			map[string]any{"role": "scratchRoot", "index": 0, "identityDigest": d},
+			map[string]any{"role": "businessDenyRoot", "index": 0, "identityDigest": d},
+		},
+	})
+	if _, _, err := ValidateFDTable(fdTable); err == nil {
+		t.Fatal("null fd index accepted as valid index zero")
+	}
+
+	for name, raw := range map[string][]byte{"response-null": response, "safe-message-null": safeMessage, "epoch-null": envelope, "fd-index-null": fdTable} {
+		t.Run("schema-"+name, func(t *testing.T) {
+			value, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := compileAPAPSchema(t).Validate(value); err == nil {
+				t.Fatal("schema accepted null numeric field")
+			}
+		})
 	}
 }
 
@@ -326,6 +422,32 @@ func canonicalValue(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return got
+}
+func compileAPAPSchema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(repositoryRoot(), "schemas/apap/apap-v1.schema.json"))
+	if err != nil || !json.Valid(raw) {
+		t.Fatalf("read schema: %v", err)
+	}
+	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := document.(map[string]any)
+	if object["$schema"] != "https://json-schema.org/draft/2020-12/schema" {
+		t.Fatal("schema does not declare Draft 2020-12")
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	compiler.AssertFormat()
+	if err := compiler.AddResource(object["$id"].(string), document); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile(object["$id"].(string))
+	if err != nil {
+		t.Fatalf("metaschema/compile: %v", err)
+	}
+	return schema
 }
 func repositoryRoot() string {
 	_, file, _, _ := runtime.Caller(0)

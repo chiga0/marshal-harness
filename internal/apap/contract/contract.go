@@ -366,7 +366,9 @@ func rawString(raw json.RawMessage) string {
 
 func decodeString(raw json.RawMessage) (string, bool) {
 	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
+	// encoding/json accepts null into a string destination as its zero value.
+	// Require the JSON string token class before decoding.
+	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' || json.Unmarshal(raw, &value) != nil {
 		return "", false
 	}
 	return value, true
@@ -374,7 +376,19 @@ func decodeString(raw json.RawMessage) (string, bool) {
 
 func rawUint(raw json.RawMessage) (uint64, bool) {
 	var value uint64
-	if len(raw) == 0 || bytes.ContainsAny(raw, ".eE-+") || json.Unmarshal(raw, &value) != nil {
+	// Admission is deliberately lexical before decoding: encoding/json accepts
+	// null into a numeric destination as its zero value, while APAP only admits
+	// the canonical unsigned-integer token grammar. Unmarshal then enforces the
+	// uint64 upper bound.
+	if len(raw) == 0 || (len(raw) > 1 && raw[0] == '0') || raw[0] < '0' || raw[0] > '9' {
+		return 0, false
+	}
+	for _, digit := range raw[1:] {
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+	}
+	if json.Unmarshal(raw, &value) != nil {
 		return 0, false
 	}
 	return value, true

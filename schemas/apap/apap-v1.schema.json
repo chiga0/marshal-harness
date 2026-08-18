@@ -16,6 +16,13 @@
     "uint64": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
     "signedEpoch": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807 },
     "profile": { "enum": ["qoder-cli-adr0034-v1", "codex-cli-adr0037-v1"] },
+    "describeProfiles": {
+      "oneOf": [
+        { "type": "array", "prefixItems": [{ "const": "codex-cli-adr0037-v1" }], "minItems": 1, "maxItems": 1, "items": false },
+        { "type": "array", "prefixItems": [{ "const": "qoder-cli-adr0034-v1" }], "minItems": 1, "maxItems": 1, "items": false },
+        { "type": "array", "prefixItems": [{ "const": "codex-cli-adr0037-v1" }, { "const": "qoder-cli-adr0034-v1" }], "minItems": 2, "maxItems": 2, "items": false }
+      ]
+    },
     "safeCode": {
       "enum": [
         "ok", "platform-unsupported", "profile-unsupported", "principal-unauthorized",
@@ -33,10 +40,7 @@
       "properties": {
         "providerBuildDigest": { "$ref": "#/$defs/digest" },
         "platform": { "enum": ["linux", "darwin"] },
-        "profiles": {
-          "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true,
-          "items": { "$ref": "#/$defs/profile" }
-        }
+        "profiles": { "$ref": "#/$defs/describeProfiles" }
       },
       "additionalProperties": false
     },
@@ -158,25 +162,54 @@
       ],
       "unevaluatedProperties": false
     },
-    "fdDescriptor": {
-      "type": "object", "required": ["role", "index", "identityDigest"],
-      "properties": {
-        "role": { "enum": ["candidateExecutable", "scratchRoot", "businessDenyRoot"] },
-        "index": { "type": "integer", "minimum": 0, "maximum": 15 },
-        "identityDigest": { "$ref": "#/$defs/digest" }
-      },
-      "additionalProperties": false
+    "fdCandidate": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "candidateExecutable" }, "index": { "const": 0 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdScratch": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "scratchRoot" }, "index": { "const": 0 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny0": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 0 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny1": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 1 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny2": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 2 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny3": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 3 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny4": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 4 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny5": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 5 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny6": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 6 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny7": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 7 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny8": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 8 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny9": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 9 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny10": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 10 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny11": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 11 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny12": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 12 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny13": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 13 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny14": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 14 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny15": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 15 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "beginProbeFDDescriptors": {
+      "oneOf": [
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }], "minItems": 3, "maxItems": 3, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }], "minItems": 4, "maxItems": 4, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }], "minItems": 5, "maxItems": 5, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }], "minItems": 6, "maxItems": 6, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }], "minItems": 7, "maxItems": 7, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }], "minItems": 8, "maxItems": 8, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }], "minItems": 9, "maxItems": 9, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }], "minItems": 10, "maxItems": 10, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }], "minItems": 11, "maxItems": 11, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }], "minItems": 12, "maxItems": 12, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }], "minItems": 13, "maxItems": 13, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }, { "$ref": "#/$defs/fdDeny11" }], "minItems": 14, "maxItems": 14, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }, { "$ref": "#/$defs/fdDeny11" }, { "$ref": "#/$defs/fdDeny12" }], "minItems": 15, "maxItems": 15, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }, { "$ref": "#/$defs/fdDeny11" }, { "$ref": "#/$defs/fdDeny12" }, { "$ref": "#/$defs/fdDeny13" }], "minItems": 16, "maxItems": 16, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }, { "$ref": "#/$defs/fdDeny11" }, { "$ref": "#/$defs/fdDeny12" }, { "$ref": "#/$defs/fdDeny13" }, { "$ref": "#/$defs/fdDeny14" }], "minItems": 17, "maxItems": 17, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }, { "$ref": "#/$defs/fdDeny11" }, { "$ref": "#/$defs/fdDeny12" }, { "$ref": "#/$defs/fdDeny13" }, { "$ref": "#/$defs/fdDeny14" }, { "$ref": "#/$defs/fdDeny15" }], "minItems": 18, "maxItems": 18, "items": false }
+      ]
     },
     "fdTable": {
       "type": "object", "required": ["schemaVersion", "operation", "descriptors"],
       "properties": {
         "schemaVersion": { "const": "marshal.agent-production-authority.fd-table.v1" },
         "operation": { "enum": ["Describe", "BeginProbe"] },
-        "descriptors": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/fdDescriptor" } }
+        "descriptors": { "type": "array" }
       },
-      "allOf": [
-        { "if": { "properties": { "operation": { "const": "Describe" } } }, "then": { "properties": { "descriptors": { "maxItems": 0 } } } },
-        { "if": { "properties": { "operation": { "const": "BeginProbe" } } }, "then": { "properties": { "descriptors": { "minItems": 3, "maxItems": 18 } } } }
+      "oneOf": [
+        { "properties": { "operation": { "const": "Describe" }, "descriptors": { "type": "array", "maxItems": 0 } } },
+        { "properties": { "operation": { "const": "BeginProbe" }, "descriptors": { "$ref": "#/$defs/beginProbeFDDescriptors" } } }
       ],
       "additionalProperties": false
     },
