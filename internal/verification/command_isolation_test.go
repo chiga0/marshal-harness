@@ -384,6 +384,29 @@ func TestIssue138PostRunSnapshotErrorPreservesCommandOutcome(t *testing.T) {
 	}
 }
 
+func TestRemoveTreeBoundedRestoresReadOnlyCacheDirectories(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "go-mod-cache", "toolchain")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "LICENSE"), []byte("cache"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(cache, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Dir(cache), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeAllBounded(root, 5*time.Second); err != nil {
+		t.Fatalf("read-only disposable tree was not cleaned: %v", err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("isolation root still exists: %v", err)
+	}
+}
+
 func TestIssue138CandidateCopyRejectsLstatToFIFORaceWithoutBlocking(t *testing.T) {
 	fixture := newVerificationFixture(t)
 	destination := t.TempDir()

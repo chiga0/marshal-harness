@@ -199,6 +199,17 @@ func removeTreeBounded(path string, deadline time.Time) error {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return os.Remove(path)
 	}
+	// Toolchains and package managers commonly make extracted cache
+	// directories read-only after writing them (for example Go's downloaded
+	// toolchain).  The tree is disposable and lives below the verifier-owned
+	// isolation root, so restore owner write/search permission before removing
+	// children.  This does not touch the managed candidate or any user path;
+	// failure remains fail-closed and is reported to the verifier.
+	if info.Mode().Perm()&0o700 != 0o700 {
+		if err := os.Chmod(path, info.Mode().Perm()|0o700); err != nil {
+			return err
+		}
+	}
 
 	directory, err := os.Open(path)
 	if err != nil {
