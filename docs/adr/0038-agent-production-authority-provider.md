@@ -108,7 +108,7 @@ operation payload 的最小 v1 形状如下；表中未列字段一律非法，f
 | OS provisioner | 安装服务、首次 pin provider/root identity、离线恢复授权 | 运行 Worker、日常签 evidence |
 | verifier controller | probe policy、challenge、仅调用 Begin/Run/Finalize | 业务仓库写、CredentialIngress endpoint handle、credential handle、evidence/config/receipt/launch 私钥 |
 | Secret provider | 验证 target child kernel peer identity 后经 session-scoped CredentialIngress 直连移交 opaque capability、credential-delivery signing key | 连接 APAP credential fd table、把 capability 交给 verifier/Marshal/APAP、读业务仓库、签 probe/evidence/config |
-| isolation/receipt authority | 强制启动与外部 audit、仅转送 opaque capability、probe receipt key | 映射/读取 credential、evidence/config key、Marshal 状态写入 |
+| isolation/receipt authority | 强制启动、OS endpoint bootstrap、外部 audit 与 probe/install receipt signing key | 持有或转送 CredentialIngress connection、endpoint handle、capability fd/bytes，映射/读取 credential，evidence/config key，Marshal 状态写入 |
 | evidence/config authority | 验证完整 observation/receipt 后签 bundle leaf 并提交 evidence update | 运行 CLI、读 credential、轮换 root、执行 security revoke |
 | rotation authority | 授权 key/root rotation 与 bounded overlap | 签 probe observation、执行 security revoke、离线 recovery |
 | revocation authority | 授权 security-critical revoke | 签 probe observation、降低 generation、离线 recovery |
