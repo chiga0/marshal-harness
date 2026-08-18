@@ -33,6 +33,9 @@ type PacketBuildInput struct {
 	BaseSHA      string
 	ReviewRound  uint
 	AttemptsUsed uint
+	// CodexEligibilityBinding is present only for a Codex Attempt admitted by
+	// the ADR 0037 production authority. Legacy and non-Codex builds omit it.
+	CodexEligibilityBinding *domain.CodexEligibilityBindingV1
 }
 
 type evidenceIdentity struct {
@@ -47,8 +50,9 @@ type evidenceIdentity struct {
 	// Candidate adoption leave both empty; the omitempty tags then keep them
 	// out of the canonical serialization entirely, so legacy evidenceDigest
 	// recomputation stays byte-identical (§5.1/§7.5).
-	CandidateDigest       string `json:"candidateDigest,omitempty"`
-	WorkerCandidateDigest string `json:"workerCandidateDigest,omitempty"`
+	CandidateDigest          string `json:"candidateDigest,omitempty"`
+	WorkerCandidateDigest    string `json:"workerCandidateDigest,omitempty"`
+	EligibilityBindingDigest string `json:"eligibilityBindingDigest,omitempty"`
 }
 
 func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, string, error) {
@@ -100,7 +104,11 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 	if err != nil {
 		return nil, "", err
 	}
-	identity := evidenceIdentity{SpecDigest: input.SpecDigest, PatchDigest: canonical.DigestBytes(patchData), VerificationDigest: verificationDigest, ArtifactManifestDigest: manifestDigest, WorkerResultDigests: workerDigests, PreviousFindings: previous, CandidateDigest: input.Report.CandidateDigest, WorkerCandidateDigest: input.Report.WorkerCandidateDigest}
+	eligibilityBinding, eligibilityBindingDigest, err := validateCodexEligibilityBinding(input.CodexEligibilityBinding, input.TaskID, input.RunID)
+	if err != nil {
+		return nil, "", err
+	}
+	identity := evidenceIdentity{SpecDigest: input.SpecDigest, PatchDigest: canonical.DigestBytes(patchData), VerificationDigest: verificationDigest, ArtifactManifestDigest: manifestDigest, WorkerResultDigests: workerDigests, PreviousFindings: previous, CandidateDigest: input.Report.CandidateDigest, WorkerCandidateDigest: input.Report.WorkerCandidateDigest, EligibilityBindingDigest: eligibilityBindingDigest}
 	identityData, err := json.Marshal(identity)
 	if err != nil {
 		return nil, "", err
@@ -117,6 +125,7 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 		VerificationDigest: verificationDigest, ArtifactManifestDigest: manifestDigest,
 		WorkerResultDigests: workerDigests, EvidenceDigest: evidenceDigest,
 		WorkerCandidateDigest: input.Report.WorkerCandidateDigest, CandidateDigest: input.Report.CandidateDigest,
+		CodexEligibilityBinding:  eligibilityBinding,
 		Inputs:                   domain.PacketInputs{TaskSpec: "task-spec.json", Patch: "observed.patch", VerificationReport: "verification-report.json", ArtifactManifest: "artifact-manifest.json", WorkerResults: workerPaths},
 		PreviousBlockingFindings: previous, GeneratedAt: input.Report.CompletedAt.UTC(),
 	}
@@ -142,6 +151,28 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 		return nil, "", fmt.Errorf("write review packet: %w", err)
 	}
 	return packet, packetDigest, nil
+}
+
+func validateCodexEligibilityBinding(binding *domain.CodexEligibilityBindingV1, taskID, runID string) (*domain.CodexEligibilityBindingV1, string, error) {
+	if binding == nil {
+		return nil, "", nil
+	}
+	if binding.SchemaVersion != "marshal.codex.eligibility-binding.v1" {
+		return nil, "", errors.New("codex eligibility binding has unsupported schema version")
+	}
+	if binding.TaskID != taskID || binding.RunID != runID || binding.AttemptID == "" {
+		return nil, "", errors.New("codex eligibility binding identity does not match frozen run")
+	}
+	cloned := *binding
+	data, err := json.Marshal(cloned)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal codex eligibility binding: %w", err)
+	}
+	digest, err := canonical.DigestJSON(data)
+	if err != nil {
+		return nil, "", fmt.Errorf("digest codex eligibility binding: %w", err)
+	}
+	return &cloned, digest, nil
 }
 
 func validateObservedPatch(manifest verification.ArtifactManifest, patchData []byte) error {

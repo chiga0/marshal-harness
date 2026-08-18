@@ -42,6 +42,7 @@
     "evidenceDigest": { "$ref": "#/$defs/digest" },
     "candidateDigest": { "$ref": "#/$defs/digest" },
     "workerCandidateDigest": { "$ref": "#/$defs/digest" },
+    "codexEligibilityBinding": { "$ref": "#/$defs/codexEligibilityBinding" },
     "inputs": {
       "type": "object",
       "additionalProperties": false,
@@ -105,6 +106,27 @@
         "snapshotDigest": { "$ref": "#/$defs/digest" },
         "verificationDigest": { "$ref": "#/$defs/digest" },
         "candidateDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "codexEligibilityBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "taskId", "runId", "attemptId", "capabilitySnapshotDigest",
+        "authorityEvidenceDigest", "configDigest", "fenceDigest", "launchReceiptDigest",
+        "launchAcceptTopologyDigest"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "marshal.codex.eligibility-binding.v1" },
+        "taskId": { "$ref": "#/$defs/id" },
+        "runId": { "$ref": "#/$defs/id" },
+        "attemptId": { "$ref": "#/$defs/id" },
+        "capabilitySnapshotDigest": { "$ref": "#/$defs/digest" },
+        "authorityEvidenceDigest": { "$ref": "#/$defs/digest" },
+        "configDigest": { "$ref": "#/$defs/digest" },
+        "fenceDigest": { "$ref": "#/$defs/digest" },
+        "launchReceiptDigest": { "$ref": "#/$defs/digest" },
+        "launchAcceptTopologyDigest": { "$ref": "#/$defs/digest" }
       }
     },
     "relativePath": {

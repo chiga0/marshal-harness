@@ -304,11 +304,11 @@ func TestReviewPacketSchemaKeepsCandidateFieldsOptional(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, required := range schema.Required {
-		if required == "candidateDigest" || required == "workerCandidateDigest" {
+		if required == "candidateDigest" || required == "workerCandidateDigest" || required == "codexEligibilityBinding" {
 			t.Fatalf("packet-level candidate field %s must stay optional", required)
 		}
 	}
-	for _, key := range []string{"candidateDigest", "workerCandidateDigest"} {
+	for _, key := range []string{"candidateDigest", "workerCandidateDigest", "codexEligibilityBinding"} {
 		if _, ok := schema.Properties[key]; !ok {
 			t.Fatalf("packet schema misses optional property %s", key)
 		}
@@ -324,6 +324,174 @@ func TestReviewPacketSchemaKeepsCandidateFieldsOptional(t *testing.T) {
 	}
 	if _, ok := previousFinding.Properties["candidateDigest"]; !ok {
 		t.Fatal("previousFinding definition misses optional candidateDigest")
+	}
+}
+
+func TestPacketBindsCodexEligibilityIdentity(t *testing.T) {
+	fixture := newReviewFixture(t)
+	legacyPacket, _ := fixture.build(t, 1)
+	binding := &domain.CodexEligibilityBindingV1{
+		SchemaVersion: "marshal.codex.eligibility-binding.v1", TaskID: "ENG-123", RunID: "run-01", AttemptID: "attempt-01",
+		CapabilitySnapshotDigest: packetTestDigest("4"), AuthorityEvidenceDigest: packetTestDigest("5"),
+		ConfigDigest: packetTestDigest("6"), FenceDigest: packetTestDigest("7"), LaunchReceiptDigest: packetTestDigest("8"),
+		LaunchAcceptTopologyDigest: packetTestDigest("9"),
+	}
+	builder := PacketBuilder{RunDirectory: fixture.directory, Validator: fixture.validator}
+	packet, _, err := builder.Build(PacketBuildInput{
+		Task: fixture.task, TaskData: fixture.taskData, Report: fixture.report, ReportData: fixture.reportData,
+		Manifest: fixture.manifest, ManifestData: fixture.manifestData, TaskID: "ENG-123", RunID: "run-01",
+		SpecDigest: fixture.specDigest, BaseSHA: packetTestSHA("1"), ReviewRound: 1, AttemptsUsed: 1,
+		CodexEligibilityBinding: binding,
+	})
+	if err != nil {
+		t.Fatalf("codex-bound packet build failed: %v", err)
+	}
+	if packet.CodexEligibilityBinding == nil || packet.CodexEligibilityBinding.AttemptID != "attempt-01" {
+		t.Fatalf("packet misses exact Codex eligibility binding: %+v", packet.CodexEligibilityBinding)
+	}
+	if packet.EvidenceDigest == legacyPacket.EvidenceDigest {
+		t.Fatal("Codex eligibility binding must change evidenceDigest")
+	}
+	bindingData, err := json.Marshal(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindingDigest, err := canonical.DigestJSON(bindingData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchData, err := os.ReadFile(filepath.Join(fixture.directory, "observed.patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := struct {
+		SpecDigest               string                   `json:"specDigest"`
+		PatchDigest              string                   `json:"patchDigest"`
+		VerificationDigest       string                   `json:"verificationDigest"`
+		ArtifactManifestDigest   string                   `json:"artifactManifestDigest"`
+		WorkerResultDigests      []string                 `json:"workerResultDigests"`
+		PreviousFindings         []domain.PreviousFinding `json:"previousBlockingFindings"`
+		CandidateDigest          string                   `json:"candidateDigest,omitempty"`
+		WorkerCandidateDigest    string                   `json:"workerCandidateDigest,omitempty"`
+		EligibilityBindingDigest string                   `json:"eligibilityBindingDigest,omitempty"`
+	}{
+		SpecDigest: fixture.specDigest, PatchDigest: canonical.DigestBytes(patchData),
+		VerificationDigest: packet.VerificationDigest, ArtifactManifestDigest: packet.ArtifactManifestDigest,
+		WorkerResultDigests: packet.WorkerResultDigests, PreviousFindings: packet.PreviousBlockingFindings,
+		EligibilityBindingDigest: bindingDigest,
+	}
+	identityData, err := json.Marshal(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEvidenceDigest, err := canonical.DigestJSON(identityData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packet.EvidenceDigest != wantEvidenceDigest {
+		t.Fatalf("Codex evidenceDigest = %s, want exact binding projection %s", packet.EvidenceDigest, wantEvidenceDigest)
+	}
+
+	binding.TaskID = "OTHER"
+	_, _, err = builder.Build(PacketBuildInput{
+		Task: fixture.task, TaskData: fixture.taskData, Report: fixture.report, ReportData: fixture.reportData,
+		Manifest: fixture.manifest, ManifestData: fixture.manifestData, TaskID: "ENG-123", RunID: "run-01",
+		SpecDigest: fixture.specDigest, BaseSHA: packetTestSHA("1"), ReviewRound: 1,
+		CodexEligibilityBinding: binding,
+	})
+	if err == nil || !strings.Contains(err.Error(), "identity does not match frozen run") {
+		t.Fatalf("divergent Codex eligibility identity accepted: %v", err)
+	}
+	binding.TaskID = "ENG-123"
+	for _, missing := range []string{"launchReceiptDigest", "launchAcceptTopologyDigest"} {
+		invalid := *binding
+		if missing == "launchReceiptDigest" {
+			invalid.LaunchReceiptDigest = ""
+		} else {
+			invalid.LaunchAcceptTopologyDigest = ""
+		}
+		_, _, err = builder.Build(PacketBuildInput{
+			Task: fixture.task, TaskData: fixture.taskData, Report: fixture.report, ReportData: fixture.reportData,
+			Manifest: fixture.manifest, ManifestData: fixture.manifestData, TaskID: "ENG-123", RunID: "run-01",
+			SpecDigest: fixture.specDigest, BaseSHA: packetTestSHA("1"), ReviewRound: 1,
+			CodexEligibilityBinding: &invalid,
+		})
+		if err == nil || !strings.Contains(err.Error(), "generated review packet violates contract") {
+			t.Fatalf("Codex eligibility binding without %s accepted: %v", missing, err)
+		}
+	}
+}
+
+func TestCapabilitySnapshotSchemaEnforcesCodexAuthorityShape(t *testing.T) {
+	fixture := newReviewFixture(t)
+	digest := packetTestDigest("a")
+	authority := map[string]any{
+		"schemaVersion": "marshal.codex.authority-metadata.v1", "codexVersion": "1.2.3",
+		"binaryIdentityDigest": digest, "hostIdentityDigest": digest, "platform": "linux",
+		"launcherKind": "linux-execveat-sealed-memfd-ptrace-v1", "evidenceDigest": digest,
+		"configDigest": digest, "keysetDigest": digest, "fenceDigest": digest, "suiteDigest": digest,
+		"profileDigest": digest, "argvMatrixDigest": digest, "environmentDigest": digest,
+		"eventContractDigest": digest, "permissionContractDigest": digest, "toolPolicyDigest": digest,
+		"resultContractDigest": digest, "outputLimitDigest": digest, "nativeBudgetsDigest": digest,
+		"trustRootKeyId": "codex-root", "evidenceSignerKeyId": "codex-signer",
+		"trustRootGeneration": 1, "authorityGeneration": 1, "revocationSetDigest": digest,
+		"observedAt": "2026-08-18T00:00:00Z", "validUntil": "2026-08-19T00:00:00Z",
+		"executionProfiles": []string{"read-only", "workspace-write"},
+		"isolationClaim":    "cooperative-host-process-not-malicious-code-sandbox",
+	}
+	base := map[string]any{
+		"apiVersion": "marshal.dev/v1alpha1", "kind": "CapabilitySnapshot", "adapterId": "codex",
+		"adapterVersion": "1.0.0", "executable": "/usr/bin/codex", "binaryVersion": "1.2.3",
+		"probeStatus": "supported", "probeErrors": []string{}, "probedAt": "2026-08-18T00:00:00Z",
+		"capabilities": map[string]any{
+			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
+			"sessionPolicies": []string{"ephemeral"}, "modelSelection": true,
+			"executionProfiles": []string{"read-only", "workspace-write"}, "nativeBudgets": []string{"wall-time"},
+		},
+		"codexAuthority": authority, "conformanceEvidenceDigest": digest,
+		"conformanceTrustRootKeyId": "codex-root", "conformanceProbeProfileDigest": digest,
+		"conformanceValidUntil": "2026-08-19T00:00:00Z", "conformanceHostFingerprint": digest,
+		"conformanceAuthorityGeneration": 1,
+	}
+	validate := func(snapshot map[string]any) error {
+		data, err := json.Marshal(snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fixture.validator.Validate(domain.KindCapabilitySnapshot, data)
+	}
+	if err := validate(base); err != nil {
+		t.Fatalf("valid supported Codex authority rejected: %v", err)
+	}
+	authority["executionProfiles"] = []string{"workspace-write"}
+	if err := validate(base); err == nil {
+		t.Fatal("Codex authority/capability execution profile mismatch accepted")
+	}
+	authority["executionProfiles"] = []string{"read-only", "workspace-write"}
+	delete(base, "codexAuthority")
+	if err := validate(base); err == nil {
+		t.Fatal("supported Codex snapshot without authority accepted")
+	}
+	base["probeStatus"] = "unsupported"
+	base["probeErrors"] = []string{"Codex production authority is temporarily unavailable."}
+	for _, key := range []string{"conformanceEvidenceDigest", "conformanceTrustRootKeyId", "conformanceProbeProfileDigest", "conformanceValidUntil", "conformanceHostFingerprint", "conformanceAuthorityGeneration"} {
+		delete(base, key)
+	}
+	base["adapterFailure"] = map[string]any{
+		"schemaVersion": "marshal.adapter-failure.v1", "adapterId": "codex", "operation": "probe",
+		"code": "codex_fence_lock_busy", "retryClass": "permanent", "safeMessage": "Codex production authority is temporarily unavailable.",
+		"observedAt": "2026-08-18T00:00:00Z", "details": map[string]any{},
+	}
+	if err := validate(base); err == nil {
+		t.Fatal("Codex failure with invalid code/retryClass pairing accepted")
+	}
+	base["adapterFailure"].(map[string]any)["retryClass"] = "transient"
+	if err := validate(base); err != nil {
+		t.Fatalf("valid unsupported Codex failure rejected: %v", err)
+	}
+	base["adapterId"] = "fake"
+	if err := validate(base); err == nil {
+		t.Fatal("non-Codex snapshot carrying Codex adapterFailure accepted")
 	}
 }
 
