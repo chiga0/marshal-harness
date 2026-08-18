@@ -1,8 +1,10 @@
 package publication
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"time"
 
@@ -45,6 +47,12 @@ type MergeDeliveryAnchor struct {
 }
 
 const mergeDeliveryAnchorEvent = "publication.merge-mutation-fence-consumed"
+
+const (
+	mergeCoreActorType = "system"
+	mergeCoreActorID   = "marshal-core"
+	ciPendingState     = "CI_PENDING"
+)
 
 // Digest returns the detached digest of the complete payload.  The digest
 // field itself is blanked before hashing, matching the ADR 0033 JCS rule.
@@ -107,6 +115,33 @@ func (a MergeDeliveryAnchor) ValidateMutationFence(eventJournalSequence, previou
 		return errors.New("merge delivery anchor replay identity mismatch")
 	}
 	return nil
+}
+
+// DecodeMergeDeliveryAnchor applies the ADR 0033 closed-payload rule before
+// semantic validation.  In particular, an unknown field cannot be silently
+// accepted by a future caller and omitted from the detached digest.
+func DecodeMergeDeliveryAnchor(data []byte) (MergeDeliveryAnchor, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var anchor MergeDeliveryAnchor
+	if err := decoder.Decode(&anchor); err != nil {
+		return MergeDeliveryAnchor{}, errors.New("invalid merge delivery anchor payload")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return MergeDeliveryAnchor{}, errors.New("merge delivery anchor payload has trailing data")
+	}
+	return anchor, nil
+}
+
+// ValidateMutationFenceEvent enforces the producer-authority and same-state
+// allowlist for the named ADR 0033 event.  It is intentionally independent of
+// the lifecycle reducer until the A slice is accepted and wired into Core.
+func ValidateMutationFenceEvent(eventType, actorType, actorID, stateFrom, stateTo string, anchor MergeDeliveryAnchor, eventJournalSequence, previousJournalSequence uint64) error {
+	if eventType != mergeDeliveryAnchorEvent || actorType != mergeCoreActorType || actorID != mergeCoreActorID || stateFrom != ciPendingState || stateTo != ciPendingState {
+		return errors.New("merge mutation fence event is not Core-owned or same-state allowlisted")
+	}
+	return anchor.ValidateMutationFence(eventJournalSequence, previousJournalSequence)
 }
 
 func validAnchorDigest(value string) bool {

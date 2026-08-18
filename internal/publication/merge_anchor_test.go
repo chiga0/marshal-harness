@@ -1,6 +1,7 @@
 package publication
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 )
@@ -31,6 +32,9 @@ func TestMergeDeliveryAnchorMutationFenceValidatesDetachedDigestAndReplayIdentit
 	if err := a.ValidateMutationFence(8, 7); err != nil {
 		t.Fatalf("valid anchor rejected: %v", err)
 	}
+	if err := ValidateMutationFenceEvent(mergeDeliveryAnchorEvent, mergeCoreActorType, mergeCoreActorID, ciPendingState, ciPendingState, a, 8, 7); err != nil {
+		t.Fatalf("valid Core event rejected: %v", err)
+	}
 }
 
 func TestMergeDeliveryAnchorMutationFenceRejectsLineageAndDigestDrift(t *testing.T) {
@@ -43,6 +47,18 @@ func TestMergeDeliveryAnchorMutationFenceRejectsLineageAndDigestDrift(t *testing
 	a.ProviderRequestDigest = digestFixture("different-request")
 	if err := a.ValidateMutationFence(8, 7); err == nil {
 		t.Fatal("accepted provider request digest drift")
+	}
+	a = validMergeDeliveryAnchorFixture(t)
+	if err := ValidateMutationFenceEvent(mergeDeliveryAnchorEvent, "publisher", "marshal-scm-merger", ciPendingState, ciPendingState, a, 8, 7); err == nil {
+		t.Fatal("accepted publisher-authored mutation fence event")
+	}
+	data, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data[:len(data)-1], []byte(`,"unexpected":true}`)...)
+	if _, err := DecodeMergeDeliveryAnchor(data); err == nil {
+		t.Fatal("accepted mutation fence payload with unknown field")
 	}
 }
 
