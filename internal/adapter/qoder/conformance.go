@@ -179,8 +179,6 @@ type LiveConformanceObservation struct {
 	TrustRootKeyID                  string            `json:"trustRootKeyId"`
 }
 
-const liveObservationLimit = 64 << 10
-
 // EncodeLiveConformanceObservation is the verifier-to-signer boundary. It
 // emits only the closed, non-sensitive typed observation; credentials,
 // private keys, stderr and transcript contents have no field in this format.
@@ -197,30 +195,6 @@ func EncodeLiveConformanceObservation(observation LiveConformanceObservation) ([
 		return nil, "", err
 	}
 	return canonicalData, digestBytes(canonicalData), nil
-}
-
-func decodeLiveConformanceObservation(document []byte) (LiveConformanceObservation, error) {
-	if len(document) == 0 || len(document) > liveObservationLimit {
-		return LiveConformanceObservation{}, errors.New("qoder live conformance observation is empty or oversized")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(document))
-	decoder.DisallowUnknownFields()
-	var observation LiveConformanceObservation
-	if err := decoder.Decode(&observation); err != nil {
-		return LiveConformanceObservation{}, errors.New("qoder live conformance observation document is invalid")
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return LiveConformanceObservation{}, errors.New("qoder live conformance observation document is invalid")
-	}
-	encoded, err := json.Marshal(observation)
-	if err != nil {
-		return LiveConformanceObservation{}, errors.New("qoder live conformance observation document is invalid")
-	}
-	canonicalData, err := canonical.JSON(encoded)
-	if err != nil || !bytes.Equal(document, canonicalData) {
-		return LiveConformanceObservation{}, errors.New("qoder live conformance observation document is not canonical")
-	}
-	return observation, nil
 }
 
 // LiveConformanceContract is the public, non-secret frozen contract an
@@ -255,37 +229,6 @@ func SignLiveConformanceObservation(document []byte, privateKey ed25519.PrivateK
 	return nil, "", port.Permanent(ErrConformancePending)
 }
 
-func signCandidateLiveConformanceObservation(document []byte, policy candidateAuthorityPolicy, privateKey ed25519.PrivateKey) ([]byte, string, error) {
-	observation, err := decodeLiveConformanceObservation(document)
-	if err != nil {
-		return nil, "", err
-	}
-	if err := validateLiveConformanceObservation(observation, time.Now().UTC()); err != nil {
-		return nil, "", err
-	}
-	if err := verifyCandidateObservationAuthorityChain(observation, policy, time.Now().UTC()); err != nil {
-		return nil, "", err
-	}
-	if len(privateKey) != ed25519.PrivateKeySize {
-		return nil, "", errors.New("qoder conformance signer private key is invalid")
-	}
-	evidence := evidenceFromObservation(observation)
-	evidence.EvidenceDigest, err = evidence.digest()
-	if err != nil {
-		return nil, "", err
-	}
-	message, err := evidence.signingBytes()
-	if err != nil {
-		return nil, "", err
-	}
-	evidence.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, message))
-	data, err := json.Marshal(evidence)
-	if err != nil {
-		return nil, "", err
-	}
-	return data, evidence.EvidenceDigest, nil
-}
-
 func validateLiveConformanceObservation(observation LiveConformanceObservation, now time.Time) error {
 	if observation.RunnerID == "" || observation.RunnerID == adapterID || observation.RunnerVersion == "" || observation.TrustRootKeyID == "" {
 		return errors.New("qoder live conformance observation lacks independent verifier provenance")
@@ -315,18 +258,6 @@ func liveObservationSigningBytes(observation LiveConformanceObservation) ([]byte
 		return nil, err
 	}
 	return canonical.JSON(data)
-}
-
-func evidenceFromObservation(observation LiveConformanceObservation) ConformanceEvidence {
-	return ConformanceEvidence{
-		RunnerID: observation.RunnerID, RunnerVersion: observation.RunnerVersion,
-		ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano), ValidUntil: observation.ValidUntil.UTC().Format(time.RFC3339Nano),
-		AdapterVersion: observation.AdapterVersion, Executable: observation.Executable, ExecutableDigest: observation.ExecutableDigest, BinaryVersion: observation.BinaryVersion, QoderCLIVersion: observation.QoderCLIVersion, HostOS: observation.HostOS, HostArch: observation.HostArch, HostFingerprint: observation.HostFingerprint,
-		AuthorityGeneration: observation.AuthorityGeneration, ProbeSuiteDigest: observation.ProbeSuiteDigest, ProbeArtifactDigest: observation.ProbeArtifactDigest, ChallengeDigest: observation.ChallengeDigest,
-		CapabilitiesDigest: observation.CapabilitiesDigest, ProbeProfileDigest: observation.ProbeProfileDigest, ArgvDigest: observation.ArgvDigest, EnvironmentDigest: observation.EnvironmentDigest, ToolPolicyDigest: observation.ToolPolicyDigest, TranscriptDigest: observation.TranscriptDigest, ExecutionReceiptDigest: observation.ExecutionReceiptDigest, ExecutionReceiptDigests: append([]string(nil), observation.ExecutionReceiptDigests...), EvidenceClass: observation.EvidenceClass, ReceiptAuthorityKeyID: observation.ReceiptAuthorityKeyID, ReceiptAuthorityPublicKeyDigest: observation.ReceiptAuthorityPublicKeyDigest, VerifierKeyID: observation.VerifierKeyID, VerifierPublicKeyDigest: observation.VerifierPublicKeyDigest,
-		CredentialVerified: observation.CredentialVerified, LiveProtocolVerified: observation.LiveProtocolVerified, WorkspaceWriteVerified: observation.WorkspaceWriteVerified, EventContract: observation.EventContract,
-		ProtocolVersion: observation.ProtocolVersion, PermissionMode: observation.PermissionMode, TrustRootKeyID: observation.TrustRootKeyID,
-	}
 }
 
 // AuthorityEvidenceStore resolves immutable signed evidence from a private,

@@ -9,7 +9,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 )
 
-const candidateIsolationProfile = "qoder-probe-isolation-v1"
 const candidateOSAuditSigningDomain = "marshal-qoder-os-audit-v1\x00"
 
 // CandidateOSAuditSession is created by the OS audit provider before launch.
