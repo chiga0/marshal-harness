@@ -182,6 +182,15 @@ type doctorSnapshotIdentity struct {
 	AdapterFailure                 json.RawMessage `json:"adapterFailure"`
 }
 
+type doctorCodexAuthority struct {
+	EvidenceDigest      string `json:"evidenceDigest"`
+	TrustRootKeyID      string `json:"trustRootKeyId"`
+	ProfileDigest       string `json:"profileDigest"`
+	ValidUntil          string `json:"validUntil"`
+	HostIdentityDigest  string `json:"hostIdentityDigest"`
+	AuthorityGeneration uint64 `json:"authorityGeneration"`
+}
+
 type doctorReport struct {
 	Status            string                       `json:"status"`
 	Build             buildinfo.Info               `json:"build"`
@@ -379,7 +388,20 @@ func applyDoctorSnapshotIdentity(result *doctorWorker, identity doctorSnapshotId
 				result.Compatibility = "probe-failed"
 				return
 			}
+			var authority doctorCodexAuthority
+			if json.Unmarshal(identity.CodexAuthority, &authority) != nil ||
+				authority.EvidenceDigest == "" || authority.TrustRootKeyID == "" || authority.ProfileDigest == "" || authority.ValidUntil == "" || authority.HostIdentityDigest == "" || authority.AuthorityGeneration == 0 ||
+				identity.ConformanceEvidenceDigest != authority.EvidenceDigest || identity.ConformanceTrustRootKeyID != authority.TrustRootKeyID || identity.ConformanceProbeProfileDigest != authority.ProfileDigest || identity.ConformanceValidUntil != authority.ValidUntil || identity.ConformanceHostFingerprint != authority.HostIdentityDigest || identity.ConformanceAuthorityGeneration != authority.AuthorityGeneration {
+				result.Compatibility = "probe-failed"
+				return
+			}
 			result.CodexAuthority = append(json.RawMessage(nil), identity.CodexAuthority...)
+			result.ConformanceEvidenceDigest = identity.ConformanceEvidenceDigest
+			result.ConformanceTrustRootKeyID = identity.ConformanceTrustRootKeyID
+			result.ConformanceProbeProfileDigest = identity.ConformanceProbeProfileDigest
+			result.ConformanceValidUntil = identity.ConformanceValidUntil
+			result.ConformanceHostFingerprint = identity.ConformanceHostFingerprint
+			result.ConformanceAuthorityGeneration = identity.ConformanceAuthorityGeneration
 		} else {
 			if len(identity.AdapterFailure) == 0 || len(identity.CodexAuthority) != 0 {
 				result.Compatibility = "probe-failed"

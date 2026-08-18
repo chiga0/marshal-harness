@@ -163,6 +163,27 @@ func TestDoctorBindsCodexFailClosedMetadata(t *testing.T) {
 	}
 }
 
+func TestDoctorBindsCodexSupportedMetadataWithEqualityGuard(t *testing.T) {
+	digest := func(char string) string { return "sha256:" + strings.Repeat(char, 64) }
+	authority := json.RawMessage(`{"evidenceDigest":"` + digest("a") + `","trustRootKeyId":"root-1","profileDigest":"` + digest("b") + `","validUntil":"2026-08-19T01:00:00Z","hostIdentityDigest":"` + digest("c") + `","authorityGeneration":7}`)
+	identity := doctorSnapshotIdentity{
+		AdapterID: "codex", AdapterVersion: "0.1.0", BinaryVersion: "0.145.0", ProbeStatus: "supported", CodexAuthority: authority,
+		ConformanceEvidenceDigest: digest("a"), ConformanceTrustRootKeyID: "root-1", ConformanceProbeProfileDigest: digest("b"),
+		ConformanceValidUntil: "2026-08-19T01:00:00Z", ConformanceHostFingerprint: digest("c"), ConformanceAuthorityGeneration: 7,
+	}
+	result := doctorWorker{AdapterID: "codex", Compatibility: "probe-failed"}
+	applyDoctorSnapshotIdentity(&result, identity)
+	if result.Compatibility != "supported" || result.ConformanceEvidenceDigest != identity.ConformanceEvidenceDigest || result.ConformanceTrustRootKeyID != identity.ConformanceTrustRootKeyID || result.ConformanceProbeProfileDigest != identity.ConformanceProbeProfileDigest || result.ConformanceValidUntil != identity.ConformanceValidUntil || result.ConformanceHostFingerprint != identity.ConformanceHostFingerprint || result.ConformanceAuthorityGeneration != 7 {
+		t.Fatalf("doctor codex metadata = %+v", result)
+	}
+	identity.ConformanceEvidenceDigest = digest("d")
+	result = doctorWorker{AdapterID: "codex", Compatibility: "probe-failed"}
+	applyDoctorSnapshotIdentity(&result, identity)
+	if result.Compatibility != "probe-failed" {
+		t.Fatalf("doctor accepted divergent codex metadata: %+v", result)
+	}
+}
+
 func TestDoctorCanceledContextDoesNotProbeWorkers(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "probed")
 	executable := filepath.Join(t.TempDir(), "opencode")

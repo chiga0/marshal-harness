@@ -6,12 +6,16 @@ import "errors"
 // version probing and later exec into the ADR 0037 authority identity. It
 // never reopens the configured pathname.
 func (snapshot *executableSnapshot) authorityExecutableIdentity() (ExecutableIdentityV1, error) {
-	if snapshot == nil || snapshot.file == nil {
+	if snapshot == nil || snapshot.source == nil || snapshot.file == nil {
 		return ExecutableIdentityV1{}, errors.New("held codex executable is unavailable")
 	}
-	stat, err := heldExecutableStat(snapshot.file)
+	stat, err := heldExecutableStat(snapshot.source)
 	if err != nil {
 		return ExecutableIdentityV1{}, err
+	}
+	sourceDigest, err := digestOpenFile(snapshot.source)
+	if err != nil || sourceDigest != snapshot.identity.digest {
+		return ExecutableIdentityV1{}, errors.New("held codex source and sealed child identity differ")
 	}
 	identity := ExecutableIdentityV1{
 		CanonicalRealpath:   snapshot.identity.path,

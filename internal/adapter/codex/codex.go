@@ -44,6 +44,7 @@ const (
 	codexProtocolVersion     = "0.145"
 	codexPermissionMode      = "workspace-write-network-off-approval-never"
 	conformancePendingReason = "credentialed live conformance pending: independent authority evidence is not bound to the Codex CLI identity and exec JSON contract"
+	secureFDPublicReason     = "authenticated Codex fd execution is unavailable"
 )
 
 // supportedCompatibilityLine 冻结已经通过真实 argv、JSONL 与结果契约
@@ -102,7 +103,11 @@ type Adapter struct {
 	mu          sync.Mutex
 	pinned      *executableIdentity
 	conformance *boundConformance
-	admission   *authorityAdmission
+
+	authorityMu         sync.Mutex
+	authoritySource     atomicAuthoritySource
+	authorityNonceFence *HostAttestationNonceFence
+	lastAuthorityState  *CodexConsumerAuthorityStateV1
 
 	// testHook 只用于确定性触发安全竞态测试；生产构造器始终为 nil。
 	testHook                 func(string)
@@ -111,6 +116,10 @@ type Adapter struct {
 	// unsafePathExecutionForTest exists only for script fixtures on platforms
 	// without fd-exec. Production constructors always leave it false.
 	unsafePathExecutionForTest bool
+	// legacyAuthorityForTest preserves the old signed-store fixture only for
+	// native launcher tests. No production constructor or public method can set
+	// it, so legacy BindConformance can never grant production execution.
+	legacyAuthorityForTest bool
 }
 
 var _ port.WorkerAdapter = (*Adapter)(nil)
@@ -189,7 +198,19 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	defer snapshot.close()
 	identity := snapshot.identity
 	a.pinIdentity(identity)
-	if authority, ok := a.authorityAdmission(snapshot); ok {
+	if a.hasAtomicAuthoritySource() {
+		authority, failure := a.consumeFreshAuthority(ctx, snapshot, "probe")
+		if failure != nil {
+			capability := map[string]any{
+				"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
+				"adapterId": adapterID, "adapterVersion": adapterVersion,
+				"executable": identity.path, "executableDigest": identity.digest,
+				"binaryVersion": identity.version, "probeStatus": "unsupported",
+				"capabilities": expectedCapabilities(), "probeErrors": []string{failure.SafeMessage}, "adapterFailure": failure,
+				"probedAt": a.now().UTC().Format(time.RFC3339Nano),
+			}
+			return a.capabilityRecord(capability)
+		}
 		capability := map[string]any{
 			"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
 			"adapterId": adapterID, "adapterVersion": adapterVersion,
@@ -237,7 +258,7 @@ func (a *Adapter) unsupportedPlatformProbe() (domain.Record, error) {
 	if err != nil {
 		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, errors.Join(ErrIdentityInvalid, err), "platform capability probe could not bind executable digest", a.now())
 	}
-	failure := newAuthorityFailure("probe", "codex_platform_unsupported", secureFDExecutionReason(), AuthorityFailureDetails{Platform: runtime.GOOS}, ErrPlatformUnsupported, a.now())
+	failure := newAuthorityFailure("probe", "codex_platform_unsupported", secureFDPublicReason, AuthorityFailureDetails{Platform: runtime.GOOS}, ErrPlatformUnsupported, a.now())
 	capability := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
@@ -313,6 +334,9 @@ func (a *Adapter) BindConformance(ctx context.Context, evidenceDigest string) er
 	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest {
 		return port.Permanent(fmt.Errorf("%w: %s", ErrPlatformUnsupported, secureFDExecutionReason()))
 	}
+	if !a.unsafePathExecutionForTest && !a.legacyAuthorityForTest {
+		return port.Permanent(ErrConformancePending)
+	}
 	if a.authority == nil {
 		return port.Permanent(ErrConformancePending)
 	}
@@ -355,7 +379,7 @@ func (a *Adapter) verifyPinnedIdentity(identity executableIdentity) error {
 	if a.pinned.path != identity.path || a.pinned.digest != identity.digest {
 		return fmt.Errorf("%w: executable content changed since the identity was pinned", ErrIdentityDrift)
 	}
-	if a.conformance == nil || a.conformance.identity != identity || !a.now().UTC().Before(a.conformance.validUntil) {
+	if (a.unsafePathExecutionForTest || a.legacyAuthorityForTest) && (a.conformance == nil || a.conformance.identity != identity || !a.now().UTC().Before(a.conformance.validUntil)) {
 		return port.Permanent(ErrConformancePending)
 	}
 	return nil
@@ -417,7 +441,10 @@ func readBinaryVersionCommand(ctx, probeCtx context.Context, command *exec.Cmd) 
 
 // parseBinaryVersion 按冻结格式解析版本字符串；不做任何范围或兼容性猜测。
 func parseBinaryVersion(output string) (string, error) {
-	match := versionPattern.FindStringSubmatch(strings.TrimSpace(output))
+	if !strings.HasSuffix(output, "\n") || strings.Count(output, "\n") != 1 || strings.Contains(output, "\r") {
+		return "", fmt.Errorf("%w: codex-cli version format is frozen", ErrVersionUnrecognized)
+	}
+	match := versionPattern.FindStringSubmatch(strings.TrimSuffix(output, "\n"))
 	if match == nil {
 		return "", fmt.Errorf("%w: codex-cli version format is frozen", ErrVersionUnrecognized)
 	}
@@ -561,6 +588,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// the launch boundary. The worktree descriptor remains pinned across Start;
 	// the path must name that same inode both before and after the child's chdir.
 	a.callTestHook("before-command-start")
+	if !a.unsafePathExecutionForTest && !a.legacyAuthorityForTest {
+		if _, failure := a.consumeFreshAuthority(ctx, snapshot, "run"); failure != nil {
+			return domain.Record{}, failure
+		}
+	}
 	if err := a.verifyPinnedIdentity(identity); err != nil {
 		return domain.Record{}, err
 	}

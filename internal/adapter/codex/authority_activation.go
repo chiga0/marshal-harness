@@ -5,7 +5,6 @@ import (
 	"errors"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/chiga0/marshal-harness/internal/contract"
 )
@@ -13,52 +12,94 @@ import (
 var ErrCodexConformancePending = errors.New("codex credentialed live conformance pending")
 
 type authorityAdmission struct {
-	identity   ExecutableIdentityV1
-	metadata   CodexAuthorityMetadataV1
-	validUntil time.Time
+	metadata CodexAuthorityMetadataV1
 }
 
-// verifiedAuthorityConsumer freezes the adapter-side consumer contract while
-// keeping it package-private until the live credentialed provider exists.
-type verifiedAuthorityConsumer interface {
-	consumeVerifiedAuthority(context.Context, VerifiedAuthorityBundleV1, CodexActiveRootPinV1, CodexConsumerFenceV1) error
+// authorityProbeMaterial is one fresh, closed authority transaction. The
+// source must recover State atomically before returning its signed objects.
+// It contains no private key and is consumed once by one Probe or Run launch.
+type authorityProbeMaterial struct {
+	State               CodexConsumerAuthorityStateV1
+	KeysetEnvelope      SignedEnvelopeV1
+	ConfigEnvelope      SignedEnvelopeV1
+	EvidenceEnvelope    SignedEnvelopeV1
+	ObservationEnvelope SignedEnvelopeV1
+	ReceiptEnvelopes    []SignedEnvelopeV1
+	ExpectedHostNonce   []byte
+	HostVerifier        TPMHostAttestationVerifier
 }
 
-var _ verifiedAuthorityConsumer = (*Adapter)(nil)
+type atomicAuthoritySource interface {
+	LoadFreshAuthority(context.Context) (authorityProbeMaterial, error)
+}
 
-// consumeVerifiedAuthority is the hermetic consumer seam between the ADR
-// 0037 verifier and the adapter. It is deliberately unexported: only a future
-// credentialed constructor may feed it the immediate result of
-// VerifyAuthorityBundle. The current production constructor remains disabled.
-func (a *Adapter) consumeVerifiedAuthority(ctx context.Context, bundle VerifiedAuthorityBundleV1, pin CodexActiveRootPinV1, fence CodexConsumerFenceV1) error {
+type atomicAuthorityConsumer interface {
+	bindAtomicAuthoritySource(atomicAuthoritySource)
+}
+
+var _ atomicAuthorityConsumer = (*Adapter)(nil)
+
+// bindAtomicAuthoritySource is package-private until the credentialed source
+// exists. Binding does not admit support: every Probe reloads and completely
+// verifies a fresh transaction; no successful admission is cached.
+func (a *Adapter) bindAtomicAuthoritySource(source atomicAuthoritySource) {
+	a.authorityMu.Lock()
+	defer a.authorityMu.Unlock()
+	a.authoritySource = source
+	a.authorityNonceFence = NewHostAttestationNonceFence()
+	a.lastAuthorityState = nil
+}
+
+func (a *Adapter) hasAtomicAuthoritySource() bool {
+	a.authorityMu.Lock()
+	defer a.authorityMu.Unlock()
+	return a.authoritySource != nil
+}
+
+func (a *Adapter) consumeFreshAuthority(ctx context.Context, snapshot *executableSnapshot, action string) (authorityAdmission, *AuthorityFailure) {
+	a.authorityMu.Lock()
+	defer a.authorityMu.Unlock()
 	if ctx == nil || ctx.Err() != nil {
-		return newAuthorityFailure("probe", "codex_conformance_pending", "Codex credentialed live conformance is pending", AuthorityFailureDetails{}, ErrCodexConformancePending, a.now())
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_conformance_pending", "Codex credentialed live conformance is pending", AuthorityFailureDetails{}, ErrCodexConformancePending, a.now())
 	}
-	if pin.Validate() != nil || bundle.Config.Validate() != nil || bundle.Evidence.Validate() != nil || bundle.Observation.Validate() != nil || bundle.Observation.Contract.Validate() != nil {
-		return newAuthorityFailure("probe", "codex_evidence_invalid", "Codex authority evidence is invalid", AuthorityFailureDetails{}, nil, a.now())
+	if a.authoritySource == nil || a.authorityNonceFence == nil {
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_conformance_pending", conformancePendingReason, AuthorityFailureDetails{}, ErrCodexConformancePending, a.now())
 	}
-	snapshot, err := a.inspect(ctx)
+	material, err := a.authoritySource.LoadFreshAuthority(ctx)
 	if err != nil {
-		return newAuthorityFailure("probe", "codex_executable_unsafe", "Codex held executable identity is unavailable", AuthorityFailureDetails{}, err, a.now())
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_authority_temporarily_unavailable", "Codex authority material is unavailable", AuthorityFailureDetails{}, err, a.now())
 	}
-	defer snapshot.close()
+	if err := material.State.Validate(); err != nil {
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_fence_invalid", "Codex recovered authority state is invalid", AuthorityFailureDetails{}, err, a.now())
+	}
+	if err := ValidateStateAdvance(a.lastAuthorityState, material.State); err != nil {
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_authority_rollback", "Codex recovered authority state was rejected", AuthorityFailureDetails{}, err, a.now())
+	}
+	bundle, err := VerifyAuthorityBundle(a.now().UTC(), material.State.ActiveRootPin, material.KeysetEnvelope, material.ConfigEnvelope, material.EvidenceEnvelope, material.ObservationEnvelope, material.ReceiptEnvelopes, material.ExpectedHostNonce, material.HostVerifier, a.authorityNonceFence)
+	if err != nil {
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_evidence_invalid", "Codex signed authority bundle was rejected", AuthorityFailureDetails{}, err, a.now())
+	}
+	if err := validateRecoveredAuthorityState(material, bundle); err != nil {
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_fence_invalid", "Codex signed authority bundle differs from recovered state", AuthorityFailureDetails{}, err, a.now())
+	}
 	identity, err := snapshot.authorityExecutableIdentity()
 	if err != nil {
-		return newAuthorityFailure("probe", "codex_mount_identity_unsupported", "Codex held executable mount identity is unavailable", AuthorityFailureDetails{Platform: runtime.GOOS}, err, a.now())
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_mount_identity_unsupported", "Codex held executable mount identity is unavailable", AuthorityFailureDetails{Platform: runtime.GOOS}, err, a.now())
 	}
 	binaryDigest, err := canonicalDigest(identity)
 	if err != nil || binaryDigest != bundle.Evidence.BinaryIdentityDigest || identity != bundle.Observation.BinaryIdentity {
-		return newAuthorityFailure("probe", "codex_evidence_binary_mismatch", "Codex authority evidence does not match the held executable", AuthorityFailureDetails{EvidenceDigest: bundle.Config.CurrentEvidenceDigest}, err, a.now())
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_evidence_binary_mismatch", "Codex authority evidence does not match the held executable", AuthorityFailureDetails{EvidenceDigest: bundle.Config.CurrentEvidenceDigest}, err, a.now())
 	}
-	if !isSupportedBinary(identity.Version) || bundle.ConfigDigest != fence.ConfigDigest || bundle.Config.CurrentEvidenceDigest == "" {
-		return newAuthorityFailure("probe", "codex_evidence_contract_mismatch", "Codex authority evidence does not match the adapter contract", AuthorityFailureDetails{}, nil, a.now())
+	expectedContract, err := compiledCodexContractBinding()
+	if err != nil || !isSupportedBinary(identity.Version) || !equalCodexContractBinding(bundle.Observation.Contract, expectedContract) {
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_evidence_contract_mismatch", "Codex authority evidence does not match the compiled adapter contract", AuthorityFailureDetails{}, err, a.now())
 	}
 	contract := bundle.Observation.Contract
 	observedAt, err := parseAuthorityTime(bundle.Observation.ObservedAt)
 	if err != nil {
-		return newAuthorityFailure("probe", "codex_evidence_invalid", "Codex authority evidence is invalid", AuthorityFailureDetails{}, err, a.now())
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_evidence_invalid", "Codex authority evidence is invalid", AuthorityFailureDetails{}, err, a.now())
 	}
-	metadata, err := NewAuthorityMetadata(bundle.Config, bundle.Evidence, pin, fence, CodexContractMetadataInput{
+	metadata, err := NewAuthorityMetadata(bundle.Config, bundle.Evidence, material.State.ActiveRootPin, material.State.Fence, CodexContractMetadataInput{
 		CodexVersion: identity.Version, ArgvMatrixDigest: contract.ArgvMatrixDigest, EnvironmentDigest: contract.EnvironmentDigest,
 		EventContractDigest: contract.EventContractDigest, PermissionContractDigest: contract.PermissionContractDigest,
 		ToolPolicyDigest: contract.ToolPolicyDigest, ResultContractDigest: contract.ResultContractDigest,
@@ -66,29 +107,29 @@ func (a *Adapter) consumeVerifiedAuthority(ctx context.Context, bundle VerifiedA
 		ExecutionProfiles: append([]string(nil), contract.ExecutionProfiles...),
 	}, observedAt)
 	if err != nil {
-		return newAuthorityFailure("probe", "codex_evidence_invalid", "Codex authority metadata is invalid", AuthorityFailureDetails{}, err, a.now())
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_evidence_invalid", "Codex authority metadata is invalid", AuthorityFailureDetails{}, err, a.now())
 	}
 	validUntil, err := parseAuthorityTime(metadata.ValidUntil)
 	if err != nil || !a.now().UTC().Before(validUntil) {
-		return newAuthorityFailure("probe", "codex_evidence_expired", "Codex authority evidence is expired", AuthorityFailureDetails{EvidenceDigest: metadata.EvidenceDigest}, err, a.now())
+		return authorityAdmission{}, newAuthorityFailure(action, "codex_evidence_expired", "Codex authority evidence is expired", AuthorityFailureDetails{EvidenceDigest: metadata.EvidenceDigest}, err, a.now())
 	}
-	a.mu.Lock()
-	a.admission = &authorityAdmission{identity: identity, metadata: metadata, validUntil: validUntil}
-	a.mu.Unlock()
-	return nil
+	state := material.State
+	a.lastAuthorityState = &state
+	return authorityAdmission{metadata: metadata}, nil
 }
 
-func (a *Adapter) authorityAdmission(snapshot *executableSnapshot) (authorityAdmission, bool) {
-	identity, err := snapshot.authorityExecutableIdentity()
-	if err != nil {
-		return authorityAdmission{}, false
+func validateRecoveredAuthorityState(material authorityProbeMaterial, bundle VerifiedAuthorityBundleV1) error {
+	state, fence, config := material.State, material.State.Fence, bundle.Config
+	if material.KeysetEnvelope.PayloadDigest != state.ActiveRootPin.KeysetDigest || material.ConfigEnvelope.PayloadDigest != fence.ConfigDigest || material.EvidenceEnvelope.PayloadDigest != fence.CurrentEvidenceDigest {
+		return errors.New("codex signed envelope digests differ from recovered fence")
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.admission == nil || a.admission.identity != identity || !a.now().UTC().Before(a.admission.validUntil) {
-		return authorityAdmission{}, false
+	if bundle.ConfigDigest != fence.ConfigDigest || config.AuthorityNamespace != fence.AuthorityNamespace || config.AuthorityGeneration != fence.AuthorityGeneration || config.TrustRootGeneration != fence.TrustRootGeneration || config.KeysetDigest != fence.KeysetDigest || config.CurrentEvidenceDigest != fence.CurrentEvidenceDigest || config.RevocationSetDigest != fence.RevocationSetDigest || config.HostIdentityDigest != fence.HostIdentityDigest || config.BootstrapID != fence.BootstrapID {
+		return errors.New("codex config projection differs from recovered fence")
 	}
-	return *a.admission, true
+	if bundle.Evidence.AuthorityNamespace != fence.AuthorityNamespace || bundle.Evidence.AuthorityGeneration != fence.AuthorityGeneration || bundle.Evidence.TrustRootGeneration != fence.TrustRootGeneration || bundle.Evidence.HostIdentityDigest != fence.HostIdentityDigest || bundle.Evidence.BootstrapID != fence.BootstrapID {
+		return errors.New("codex evidence projection differs from recovered fence")
+	}
+	return nil
 }
 
 // NewFromAuthorityConfig is intentionally a hard-disabled production seam.

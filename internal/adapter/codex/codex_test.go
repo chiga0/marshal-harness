@@ -220,6 +220,19 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 			}
 		}
 	})
+	t.Run("version-bytes-are-exact", func(t *testing.T) {
+		for _, output := range []string{
+			"codex-cli 0.145.0",
+			" codex-cli 0.145.0\n",
+			"codex-cli 0.145.0 \n",
+			"codex-cli 0.145.0\r\n",
+			"codex-cli 0.145.0\n\n",
+		} {
+			if _, err := parseBinaryVersion(output); !errors.Is(err, ErrVersionUnrecognized) {
+				t.Fatalf("parseBinaryVersion(%q) err = %v, want ErrVersionUnrecognized", output, err)
+			}
+		}
+	})
 	t.Run("version-probe-fails", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "codex")
 		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 3\n"), 0o700); err != nil {
@@ -1868,9 +1881,10 @@ func useFixtureExecutable(t *testing.T, fixture *runFixture, executable string) 
 	fixture.executable = real
 	fixture.adapter.executable = real
 	// Native fixtures exercise the same authenticated fd-exec and conformance
-	// admission path as production. Do not retain TestMain's pathname-only
-	// fixture escape hatch for these launcher tests.
+	// launcher path as production. The legacy authority binding is explicitly
+	// test-only; production Run always consumes a fresh atomic authority state.
 	fixture.adapter.unsafePathExecutionForTest = false
+	fixture.adapter.legacyAuthorityForTest = true
 	snapshot, err := fixture.adapter.inspect(context.Background())
 	if err != nil {
 		t.Fatal(err)

@@ -24,6 +24,14 @@ func sealedExecutableFD(string) (*os.File, error) {
 	return nil, fmt.Errorf("%w: %s", errSecureFDExecutionUnavailable, secureFDPlatformReason)
 }
 
+func openExecutableSourceFD(string) (*os.File, error) {
+	return nil, fmt.Errorf("%w: %s", errSecureFDExecutionUnavailable, secureFDPlatformReason)
+}
+
+func sealExecutableSourceFD(*os.File) (*os.File, error) {
+	return nil, fmt.Errorf("%w: %s", errSecureFDExecutionUnavailable, secureFDPlatformReason)
+}
+
 func readBinaryVersionFromFD(context.Context, *os.File) (string, error) {
 	return "", fmt.Errorf("%w: %s", errSecureFDExecutionUnavailable, secureFDPlatformReason)
 }

@@ -104,17 +104,26 @@ func sealedRunningExecutableFD() (*os.File, error) {
 // consume immutable bytes even if the configured pathname or source inode is
 // concurrently replaced or modified by another same-UID process.
 func sealedExecutableFD(configured string) (*os.File, error) {
+	source, err := openExecutableSourceFD(configured)
+	if err != nil {
+		return nil, err
+	}
+	defer source.Close()
+	return sealOpenExecutable(source)
+}
+
+func openExecutableSourceFD(configured string) (*os.File, error) {
 	sourceFD, err := unix.Open(configured, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
 	source := os.NewFile(uintptr(sourceFD), configured)
-	defer source.Close()
 	info, err := source.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		_ = source.Close()
 		return nil, errors.New("executable source inode is unavailable")
 	}
-	return sealOpenExecutable(source)
+	return source, nil
 }
 
 func sealOpenExecutable(source *os.File) (*os.File, error) {
@@ -145,6 +154,8 @@ func sealOpenExecutable(source *os.File) (*os.File, error) {
 	failed = false
 	return sealed, nil
 }
+
+func sealExecutableSourceFD(source *os.File) (*os.File, error) { return sealOpenExecutable(source) }
 
 func readBinaryVersionFromFD(ctx context.Context, file *os.File) (string, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)

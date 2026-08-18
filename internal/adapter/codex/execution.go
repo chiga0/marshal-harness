@@ -111,6 +111,7 @@ type executableSnapshot struct {
 	identity executableIdentity
 	path     string
 	dir      string
+	source   *os.File
 	file     *os.File
 }
 
@@ -215,14 +216,20 @@ func snapshotExecutable(ctx context.Context, configured string, hook func(string
 // snapshotExecutableByFD binds digest, version probe and the later worker exec
 // to one persistently-held inode. No pathname snapshot is created.
 func snapshotExecutableByFD(ctx context.Context, configured string, hook func(string)) (*executableSnapshot, error) {
-	file, err := sealedExecutableFD(configured)
+	source, err := openExecutableSourceFD(configured)
 	if err != nil {
+		return nil, err
+	}
+	file, err := sealExecutableSourceFD(source)
+	if err != nil {
+		_ = source.Close()
 		return nil, err
 	}
 	failed := true
 	defer func() {
 		if failed {
 			_ = file.Close()
+			_ = source.Close()
 		}
 	}()
 	info, err := file.Stat()
@@ -243,6 +250,7 @@ func snapshotExecutableByFD(ctx context.Context, configured string, hook func(st
 	failed = false
 	return &executableSnapshot{
 		identity: executableIdentity{path: configured, digest: digest, version: version},
+		source:   source,
 		file:     file,
 	}, nil
 }
@@ -319,6 +327,10 @@ func (s *executableSnapshot) close() {
 	if s.file != nil {
 		_ = s.file.Close()
 		s.file = nil
+	}
+	if s.source != nil {
+		_ = s.source.Close()
+		s.source = nil
 	}
 	if s.dir != "" {
 		_ = os.Chmod(s.dir, 0o700)
