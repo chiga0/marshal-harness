@@ -224,6 +224,26 @@ func TestLinuxExecutableMemfdIsSealedAgainstSameUIDMutation(t *testing.T) {
 	}
 }
 
+func TestLinuxAuthorityIdentityComesFromHeldExecutable(t *testing.T) {
+	executable := nativeFakeExecutable(t)
+	snapshot, err := snapshotExecutable(context.Background(), executable, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.close()
+	identity, err := snapshot.authorityExecutableIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.CanonicalRealpath != executable || identity.SHA256 != snapshot.identity.digest || identity.Version != snapshot.identity.version || identity.MountIDUnique == 0 || identity.Inode == 0 {
+		t.Fatalf("held authority identity = %+v", identity)
+	}
+	digest, err := canonicalDigest(identity)
+	if err != nil || !validDigest(digest) {
+		t.Fatalf("held authority identity digest = %q, err = %v", digest, err)
+	}
+}
+
 func TestLinuxFDExecBindsProbeAndRunToHeldInodes(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "replacement-ran")
 	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))

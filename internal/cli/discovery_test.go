@@ -45,6 +45,8 @@ func fakeWorkerScript(name, version string) string {
 		return "#!/bin/sh\nif [ \"$#\" -eq 5 ] && [ \"$1\" = \"--config-dir\" ] && [ -d \"$2\" ] && [ \"$3\" = \"--setting-sources\" ] && [ -z \"$4\" ] && [ \"$5\" = \"--version\" ]; then printf '%s\\n' '" + version + "'; exit 0; fi\nexit 1\n"
 	case "opencode", "qwen", "qwen-code", "pi":
 		return "#!/bin/sh\nif [ \"$#\" -eq 1 ] && [ \"$1\" = \"--version\" ]; then printf '%s\\n' '" + version + "'; exit 0; fi\nexit 1\n"
+	case "codex":
+		return "#!/bin/sh\nif [ \"$#\" -eq 1 ] && [ \"$1\" = \"--version\" ]; then printf 'codex-cli %s\\n' '" + version + "'; exit 0; fi\nexit 1\n"
 	default:
 		return "#!/bin/sh\nexit 1\n"
 	}
@@ -77,6 +79,7 @@ func hermeticDiscoveryEnvironment(t *testing.T, binDir string) {
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", "")
 	t.Setenv("MARSHAL_QODER_PATH", "")
+	t.Setenv("MARSHAL_CODEX_PATH", "")
 	t.Setenv("MARSHAL_PI_PATH", "")
 }
 
@@ -143,7 +146,7 @@ func TestDoctorDiscoveryPinsCandidateAndSuggestion(t *testing.T) {
 	}
 }
 
-// TestDoctorDiscoveryCoversEveryBinding plants binaries for all four known
+// TestDoctorDiscoveryCoversEveryBinding plants binaries for every known
 // names and verifies each binding reports its own candidate and suggestion.
 func TestDoctorDiscoveryCoversEveryBinding(t *testing.T) {
 	binDir := t.TempDir()
@@ -151,6 +154,7 @@ func TestDoctorDiscoveryCoversEveryBinding(t *testing.T) {
 	_, opencodeReal := plantBinary(t, binDir, "opencode", "1.18.13")
 	_, qwenReal := plantBinary(t, binDir, "qwen-code", "0.21.5")
 	_, qoderReal := plantBinary(t, binDir, "qodercli", "1.1.23")
+	_, codexReal := plantBinary(t, binDir, "codex", "0.145.0")
 	_, piReal := plantBinary(t, binDir, "pi", "0.83.0")
 
 	report := runDoctorDiscoveryJSON(t)
@@ -162,6 +166,7 @@ func TestDoctorDiscoveryCoversEveryBinding(t *testing.T) {
 		{"opencode", "MARSHAL_OPENCODE_PATH", opencodeReal},
 		{"qwen", "MARSHAL_QWEN_PATH", qwenReal},
 		{"qoder", "MARSHAL_QODER_PATH", qoderReal},
+		{"codex", "MARSHAL_CODEX_PATH", codexReal},
 		{"pi", "MARSHAL_PI_PATH", piReal},
 	}
 	for _, expectation := range expectations {
@@ -206,7 +211,7 @@ func TestDoctorDiscoveryCleanWhenNoCandidates(t *testing.T) {
 	hermeticDiscoveryEnvironment(t, binDir)
 
 	report := runDoctorDiscoveryJSON(t)
-	for _, adapterID := range []string{"opencode", "qwen", "qoder", "pi"} {
+	for _, adapterID := range []string{"opencode", "qwen", "qoder", "codex", "pi"} {
 		entry := findDiscovery(report.Discovery, adapterID)
 		if entry == nil {
 			t.Fatalf("discovery missing %s entry: %+v", adapterID, report.Discovery)

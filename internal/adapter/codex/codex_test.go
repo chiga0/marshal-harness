@@ -197,12 +197,12 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 				t.Fatalf("snapshot status/version = %v/%v", raw["probeStatus"], raw["binaryVersion"])
 			}
 			probeErrors, _ := raw["probeErrors"].([]any)
-			if len(probeErrors) != 2 {
+			if len(probeErrors) != 1 {
 				t.Fatalf("probeErrors = %v", probeErrors)
 			}
 			message := fmt.Sprint(probeErrors)
-			if !strings.Contains(message, version) || !strings.Contains(message, supportedCompatibilityLine) || !strings.Contains(message, conformancePendingReason) {
-				t.Fatalf("probeErrors must list supported and actual versions: %v", probeErrors)
+			if !strings.Contains(message, "outside the admitted compatibility line") {
+				t.Fatalf("probeErrors must report the fixed contract mismatch: %v", probeErrors)
 			}
 		}
 	})
@@ -297,8 +297,8 @@ func TestBindConformanceRequiresSignedAuthorityEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
-		t.Fatalf("signed conformance did not authorize exact identity: %s", probe.Data)
+	if !strings.Contains(string(probe.Data), `"probeStatus":"unsupported"`) || !strings.Contains(string(probe.Data), `"codex_conformance_pending"`) {
+		t.Fatalf("legacy conformance promoted production authority: %s", probe.Data)
 	}
 	fixture.adapter.mu.Lock()
 	expires := fixture.adapter.conformance.validUntil

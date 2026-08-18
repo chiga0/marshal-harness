@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/adapter"
+	"github.com/chiga0/marshal-harness/internal/adapter/codex"
 	"github.com/chiga0/marshal-harness/internal/adapter/opencode"
 	"github.com/chiga0/marshal-harness/internal/adapter/pi"
 	"github.com/chiga0/marshal-harness/internal/adapter/qoder"
@@ -85,6 +86,21 @@ var workerBindings = []workerBinding{
 		},
 	},
 	{
+		adapterID:           "codex",
+		environmentVariable: "MARSHAL_CODEX_PATH",
+		binaryNames:         []string{"codex"},
+		identify:            codex.Identify,
+		construct: func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error) {
+			config := getenv("MARSHAL_CODEX_AUTHORITY_CONFIG")
+			if config == "" {
+				// Registration only makes the fail-closed Probe observable. It
+				// does not admit Codex as supported without ADR 0037 authority.
+				return codex.New(executable, validator)
+			}
+			return codex.NewFromAuthorityConfig(context.Background(), executable, validator, config)
+		},
+	},
+	{
 		adapterID:           "pi",
 		environmentVariable: "MARSHAL_PI_PATH",
 		binaryNames:         []string{"pi"},
@@ -98,8 +114,9 @@ var workerBindings = []workerBinding{
 // WorkerRuntime assembles the provider-neutral local Worker runtime shared by
 // `task plan`, `task run`, and `doctor`. It constructs concrete adapters from
 // explicit environment values and never searches PATH, reads os.Environ, or
-// writes files. While ADR 0034 is Proposed, Qoder authority configuration is
-// hard-disabled before any authority read; the caller supplies the environment lookup.
+// writes files. Codex authority configuration is hard-disabled before any
+// authority read until the credentialed provider is implemented; the caller
+// supplies the environment lookup.
 type WorkerRuntime struct {
 	validator      *contract.Validator
 	registry       *adapter.Registry

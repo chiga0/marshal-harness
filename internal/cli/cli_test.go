@@ -49,6 +49,7 @@ func TestDoctorReportsCompiledContracts(t *testing.T) {
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", "")
 	t.Setenv("MARSHAL_QODER_PATH", "")
+	t.Setenv("MARSHAL_CODEX_PATH", "")
 	t.Setenv("MARSHAL_PI_PATH", "")
 
 	var stdout, stderr bytes.Buffer
@@ -70,10 +71,10 @@ func TestDoctorReportsCompiledContracts(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("decode doctor output: %v", err)
 	}
-	if report.Status != "ok" || report.ContractSchemas != 22 || report.WorkerAdapters != 0 || report.Milestone != buildinfo.Milestone || len(report.Workers) != 4 {
+	if report.Status != "ok" || report.ContractSchemas != 22 || report.WorkerAdapters != 0 || report.Milestone != buildinfo.Milestone || len(report.Workers) != 5 {
 		t.Fatalf("doctor report = %+v", report)
 	}
-	for index, adapterID := range []string{"opencode", "qwen", "qoder", "pi"} {
+	for index, adapterID := range []string{"opencode", "qwen", "qoder", "codex", "pi"} {
 		if report.Workers[index].AdapterID != adapterID || report.Workers[index].Outcome != app.WorkerOutcomeNotConfigured || report.Workers[index].Compatibility != "not-probed" {
 			t.Fatalf("doctor worker %d = %+v", index, report.Workers[index])
 		}
@@ -98,6 +99,7 @@ func TestDoctorReportsCompatibilityWithoutLocalDetails(t *testing.T) {
 			t.Setenv("MARSHAL_OPENCODE_PATH", executable)
 			t.Setenv("MARSHAL_QWEN_PATH", "")
 			t.Setenv("MARSHAL_QODER_PATH", "")
+			t.Setenv("MARSHAL_CODEX_PATH", "")
 			t.Setenv("MARSHAL_PI_PATH", "")
 
 			var stdout, stderr bytes.Buffer
@@ -111,7 +113,7 @@ func TestDoctorReportsCompatibilityWithoutLocalDetails(t *testing.T) {
 			if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 				t.Fatal(err)
 			}
-			if len(report.Workers) != 4 || report.Workers[0].AdapterID != "opencode" || report.Workers[0].Compatibility != test.compatibility {
+			if len(report.Workers) != 5 || report.Workers[0].AdapterID != "opencode" || report.Workers[0].Compatibility != test.compatibility {
 				t.Fatalf("workers = %+v", report.Workers)
 			}
 			output := stdout.String() + stderr.String()
@@ -145,6 +147,22 @@ func TestDoctorBindsSupportedQoderConformanceMetadata(t *testing.T) {
 	}
 }
 
+func TestDoctorBindsCodexFailClosedMetadata(t *testing.T) {
+	failure := json.RawMessage(`{"schemaVersion":"marshal.adapter-failure.v1","adapterId":"codex"}`)
+	identity := doctorSnapshotIdentity{AdapterID: "codex", AdapterVersion: "0.1.0", BinaryVersion: "0.145.0", ProbeStatus: "unsupported", AdapterFailure: failure}
+	result := doctorWorker{AdapterID: "codex", Compatibility: "probe-failed"}
+	applyDoctorSnapshotIdentity(&result, identity)
+	if result.Compatibility != "unsupported" || string(result.AdapterFailure) != string(failure) || len(result.CodexAuthority) != 0 {
+		t.Fatalf("doctor codex failure metadata = %+v", result)
+	}
+	identity.AdapterFailure = nil
+	result = doctorWorker{AdapterID: "codex", Compatibility: "probe-failed"}
+	applyDoctorSnapshotIdentity(&result, identity)
+	if result.Compatibility != "probe-failed" {
+		t.Fatalf("doctor accepted missing codex failure metadata: %+v", result)
+	}
+}
+
 func TestDoctorCanceledContextDoesNotProbeWorkers(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "probed")
 	executable := filepath.Join(t.TempDir(), "opencode")
@@ -155,6 +173,7 @@ func TestDoctorCanceledContextDoesNotProbeWorkers(t *testing.T) {
 	t.Setenv("MARSHAL_OPENCODE_PATH", executable)
 	t.Setenv("MARSHAL_QWEN_PATH", "")
 	t.Setenv("MARSHAL_QODER_PATH", "")
+	t.Setenv("MARSHAL_CODEX_PATH", "")
 	t.Setenv("MARSHAL_PI_PATH", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -171,7 +190,7 @@ func TestDoctorCanceledContextDoesNotProbeWorkers(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Workers) != 4 || report.Workers[0].Compatibility != "not-probed" {
+	if len(report.Workers) != 5 || report.Workers[0].Compatibility != "not-probed" {
 		t.Fatalf("workers = %+v", report.Workers)
 	}
 }

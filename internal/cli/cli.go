@@ -149,33 +149,37 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 }
 
 type doctorWorker struct {
-	AdapterID                      string `json:"adapterId"`
-	EnvironmentVariable            string `json:"environmentVariable"`
-	Configured                     bool   `json:"configured"`
-	Registered                     bool   `json:"registered"`
-	Outcome                        string `json:"outcome"`
-	Compatibility                  string `json:"compatibility"`
-	AdapterVersion                 string `json:"adapterVersion,omitempty"`
-	BinaryVersion                  string `json:"binaryVersion,omitempty"`
-	ConformanceEvidenceDigest      string `json:"conformanceEvidenceDigest,omitempty"`
-	ConformanceTrustRootKeyID      string `json:"conformanceTrustRootKeyId,omitempty"`
-	ConformanceProbeProfileDigest  string `json:"conformanceProbeProfileDigest,omitempty"`
-	ConformanceValidUntil          string `json:"conformanceValidUntil,omitempty"`
-	ConformanceHostFingerprint     string `json:"conformanceHostFingerprint,omitempty"`
-	ConformanceAuthorityGeneration uint64 `json:"conformanceAuthorityGeneration,omitempty"`
+	AdapterID                      string          `json:"adapterId"`
+	EnvironmentVariable            string          `json:"environmentVariable"`
+	Configured                     bool            `json:"configured"`
+	Registered                     bool            `json:"registered"`
+	Outcome                        string          `json:"outcome"`
+	Compatibility                  string          `json:"compatibility"`
+	AdapterVersion                 string          `json:"adapterVersion,omitempty"`
+	BinaryVersion                  string          `json:"binaryVersion,omitempty"`
+	ConformanceEvidenceDigest      string          `json:"conformanceEvidenceDigest,omitempty"`
+	ConformanceTrustRootKeyID      string          `json:"conformanceTrustRootKeyId,omitempty"`
+	ConformanceProbeProfileDigest  string          `json:"conformanceProbeProfileDigest,omitempty"`
+	ConformanceValidUntil          string          `json:"conformanceValidUntil,omitempty"`
+	ConformanceHostFingerprint     string          `json:"conformanceHostFingerprint,omitempty"`
+	ConformanceAuthorityGeneration uint64          `json:"conformanceAuthorityGeneration,omitempty"`
+	CodexAuthority                 json.RawMessage `json:"codexAuthority,omitempty"`
+	AdapterFailure                 json.RawMessage `json:"adapterFailure,omitempty"`
 }
 
 type doctorSnapshotIdentity struct {
-	AdapterID                      string `json:"adapterId"`
-	AdapterVersion                 string `json:"adapterVersion"`
-	BinaryVersion                  string `json:"binaryVersion"`
-	ProbeStatus                    string `json:"probeStatus"`
-	ConformanceEvidenceDigest      string `json:"conformanceEvidenceDigest"`
-	ConformanceTrustRootKeyID      string `json:"conformanceTrustRootKeyId"`
-	ConformanceProbeProfileDigest  string `json:"conformanceProbeProfileDigest"`
-	ConformanceValidUntil          string `json:"conformanceValidUntil"`
-	ConformanceHostFingerprint     string `json:"conformanceHostFingerprint"`
-	ConformanceAuthorityGeneration uint64 `json:"conformanceAuthorityGeneration"`
+	AdapterID                      string          `json:"adapterId"`
+	AdapterVersion                 string          `json:"adapterVersion"`
+	BinaryVersion                  string          `json:"binaryVersion"`
+	ProbeStatus                    string          `json:"probeStatus"`
+	ConformanceEvidenceDigest      string          `json:"conformanceEvidenceDigest"`
+	ConformanceTrustRootKeyID      string          `json:"conformanceTrustRootKeyId"`
+	ConformanceProbeProfileDigest  string          `json:"conformanceProbeProfileDigest"`
+	ConformanceValidUntil          string          `json:"conformanceValidUntil"`
+	ConformanceHostFingerprint     string          `json:"conformanceHostFingerprint"`
+	ConformanceAuthorityGeneration uint64          `json:"conformanceAuthorityGeneration"`
+	CodexAuthority                 json.RawMessage `json:"codexAuthority"`
+	AdapterFailure                 json.RawMessage `json:"adapterFailure"`
 }
 
 type doctorReport struct {
@@ -369,6 +373,22 @@ func applyDoctorSnapshotIdentity(result *doctorWorker, identity doctorSnapshotId
 	result.Compatibility = identity.ProbeStatus
 	result.AdapterVersion = identity.AdapterVersion
 	result.BinaryVersion = identity.BinaryVersion
+	if identity.AdapterID == "codex" {
+		if identity.ProbeStatus == "supported" {
+			if len(identity.CodexAuthority) == 0 || len(identity.AdapterFailure) != 0 {
+				result.Compatibility = "probe-failed"
+				return
+			}
+			result.CodexAuthority = append(json.RawMessage(nil), identity.CodexAuthority...)
+		} else {
+			if len(identity.AdapterFailure) == 0 || len(identity.CodexAuthority) != 0 {
+				result.Compatibility = "probe-failed"
+				return
+			}
+			result.AdapterFailure = append(json.RawMessage(nil), identity.AdapterFailure...)
+		}
+		return
+	}
 	if identity.ProbeStatus != "supported" || identity.AdapterID != "qoder" {
 		return
 	}
