@@ -452,7 +452,7 @@ ADR 0037 接受不表示实现、真实 evidence 或 enablement 已完成。Issu
 
 Qoder 与 Codex 的 production consumer 实现复核进一步证明：两个 Adapter 虽已有封闭 evidence/config/consumer 合同，但当前仓库和宿主仍没有可独立 provision 的在线 verifier、外部 OS isolation/audit receipt authority、host attestation/monotonic anchor、stopped-child launch barrier，以及可原子交付 keyset/revocation/config/evidence 的 authority provider。把 fixture、同 UID helper 或若干普通文件直接接到 registry，会让 Adapter/Worker 所在故障域为自己的准入证据和 rollback 状态背书。
 
-[ADR 0038](adr/0038-agent-production-authority-provider.md)（Proposed）提议以独立本机 `AgentProductionAuthorityProvider` Port、外部 principal、held-fd IPC、atomic bundle+monotonic fence 和 Prepare/Commit/Inspect launch barrier 补齐该层。共享仅限基础设施；Qoder/Codex 继续分别运行 ADR 0034/0037 的 exact profile 与 conformance。该 ADR 未接受，也没有把任何当前部署升级为 `supported`。
+[ADR 0038](adr/0038-agent-production-authority-provider.md) 已于 2026-08-18 接受，以独立本机 `AgentProductionAuthorityProvider` Port、外部 principal、held-fd IPC、atomic bundle+monotonic fence 和 Prepare/Commit/Inspect launch barrier 补齐该层。共享仅限基础设施；Qoder/Codex 继续分别运行 ADR 0034/0037 的 exact profile 与 conformance。接受只冻结实现合同，没有把任何当前部署升级为 `supported`。
 
 | ID | 级别 | 状态 | 问题与关闭条件 |
 | --- | --- | --- | --- |

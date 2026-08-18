@@ -241,9 +241,9 @@ Goal：交付常驻服务形态与耐久 Runtime 主体——`marshal-server`（
 
 Dogfooding：Marshal 自身的回归与审计任务全部经 Durable Runtime 调度执行；故障注入成为常规测试集并在每次发布前运行。
 
-### 跨 Milestone 前置门禁：Agent Production Authority Provider（ADR 0038，Proposed）
+### 跨 Milestone 前置门禁：Agent Production Authority Provider（ADR 0038，Accepted）
 
-Qoder/Codex 的 AgentAdapter production enablement 在 M10–M12 平台路线中共享一个宿主前置，但不新增或提前完成 Milestone：[ADR 0038](adr/0038-agent-production-authority-provider.md) 提议实现独立本机 `AgentProductionAuthorityProvider` Port。共享范围只包括外部 principal、认证 IPC、held-fd identity、OS isolation/audit receipt、host attestation、monotonic fence、atomic authority bundle、launch receipt/workload barrier 与 crash reconcile；Qoder/Codex 仍分别遵守 ADR 0034/0037 的封闭 profile、证据 Schema 与 conformance，AgentAdapter evidence 不得冒充 ADR 0018 Sandbox Provider `ConformanceEvidence`。
+Qoder/Codex 的 AgentAdapter production enablement 在 M10–M12 平台路线中共享一个宿主前置，但不新增或提前完成 Milestone：[ADR 0038](adr/0038-agent-production-authority-provider.md) 已接受独立本机 `AgentProductionAuthorityProvider` Port 的实现合同。共享范围只包括外部 principal、认证 IPC、held-fd identity、OS isolation/audit receipt、host attestation、monotonic fence、atomic authority bundle、launch receipt/workload barrier 与 crash reconcile；Qoder/Codex 仍分别遵守 ADR 0034/0037 的封闭 profile、证据 Schema 与 conformance，AgentAdapter evidence 不得冒充 ADR 0018 Sandbox Provider `ConformanceEvidence`。
 
 实施顺序为硬门禁：
 
