@@ -196,7 +196,20 @@ func removeTreeBounded(path string, deadline time.Time) error {
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return os.Remove(path)
+	}
+	if !info.IsDir() {
+		// Toolchains and package managers commonly mark extracted regular
+		// files read-only after writing them (for example Go's downloaded
+		// toolchain LICENSE). Restore owner write permission before unlinking
+		// within the verifier-owned disposable root. Symlinks are handled above
+		// and never followed; failures remain fail-closed.
+		if info.Mode().IsRegular() && info.Mode().Perm()&0o200 == 0 {
+			if err := os.Chmod(path, info.Mode().Perm()|0o200); err != nil {
+				return err
+			}
+		}
 		return os.Remove(path)
 	}
 	// Toolchains and package managers commonly make extracted cache
