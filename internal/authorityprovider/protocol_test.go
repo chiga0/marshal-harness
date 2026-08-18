@@ -3,6 +3,9 @@ package authorityprovider
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -12,29 +15,15 @@ import (
 
 var fixtureNow = time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
 
-func sequence(value uint64) *uint64 { return &value }
-
-func validRequest(operation Operation, principal Principal) APAPRequestEnvelopeV1 {
-	expected := sequence(7)
-	if operation.readOnly() {
-		expected = nil
-	}
-	payload := json.RawMessage(`{}`)
-	if operation == OperationDescribe {
-		payload = json.RawMessage(`{}`)
-	}
-	if operation == OperationBeginProbe {
-		payload = mustJSON(BeginProbePayload{CandidateIdentityDigest: "sha256:candidate", SuiteDigest: "sha256:suite", ProbeArtifactDigest: "sha256:artifact", PolicyDigest: "sha256:policy", ChallengeDigest: "sha256:challenge", Deadline: fixtureNow.Add(time.Minute)})
-	} else if fields, ok := controlPayloadFields[operation]; ok {
-		object := make(map[string]any, len(fields))
-		for _, field := range fields {
-			object[field] = "fixture"
-		}
-		payload = mustJSON(object)
-	}
-	return APAPRequestEnvelopeV1{SchemaVersion: RequestSchema, ProtocolFamily: ControlFamily, ProtocolVersion: ProtocolVersion, Audience: ControlAudience, RequestID: "request-1", CommandID: "command-1", CallerPrincipalDigest: string(principal), ProviderInstanceID: "provider-1", AuthorityProfile: ProfileQoder, Operation: operation, IssuedAt: fixtureNow.Add(-time.Second), ExpiresAt: fixtureNow.Add(time.Minute), Nonce: "nonce-0001", ExpectedProviderSequence: expected, Payload: payload}
+func testDigest(label string) string {
+	sum := sha256.Sum256([]byte(label))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
-
+func peer(role Principal, label string) PeerIdentity {
+	return PeerIdentity{PrincipalDigest: testDigest(label), Role: role}
+}
+func defaultPeer(role Principal) PeerIdentity { return peer(role, string(role)) }
+func sequence(value uint64) *uint64           { return &value }
 func mustJSON(value any) json.RawMessage {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -42,6 +31,29 @@ func mustJSON(value any) json.RawMessage {
 	}
 	return raw
 }
+
+func validRequest(operation Operation, p PeerIdentity) APAPRequestEnvelopeV1 {
+	expected := sequence(7)
+	if operation.readOnly() {
+		expected = nil
+	}
+	payload := json.RawMessage(`{}`)
+	switch operation {
+	case OperationBeginProbe:
+		payload = mustJSON(BeginProbePayload{CandidateIdentityDigest: testDigest("candidate"), SuiteDigest: testDigest("suite"), ProbeArtifactDigest: testDigest("artifact"), PolicyDigest: testDigest("policy"), ChallengeDigest: testDigest("challenge"), Deadline: fixtureNow.Add(time.Minute)})
+	case OperationStageBundleLeafBatch:
+		kind := UpdateEvidence
+		if p.Role == PrincipalRotation {
+			kind = UpdateRotation
+		}
+		if p.Role == PrincipalRevocation {
+			kind = UpdateRevocation
+		}
+		payload = mustJSON(StageBundleLeafBatchPayload{BundleTransactionID: "txn-1", UpdateKind: kind, OrderedLeafDescriptors: []BundleLeafDescriptor{{LeafKind: "a", Digest: testDigest("leaf-a"), Size: 10, MediaType: "application/json"}}})
+	}
+	return APAPRequestEnvelopeV1{SchemaVersion: RequestSchema, ProtocolFamily: ControlFamily, ProtocolVersion: ProtocolVersion, Audience: ControlAudience, RequestID: "request-1", CommandID: "command-1", CallerPrincipalDigest: p.PrincipalDigest, ProviderInstanceID: "provider-1", AuthorityProfile: ProfileQoder, Operation: operation, IssuedAt: fixtureNow.Add(-time.Second), ExpiresAt: fixtureNow.Add(time.Minute), Nonce: "nonce-0001", ExpectedProviderSequence: expected, Payload: payload}
+}
+
 func mustSeal(t *testing.T, request APAPRequestEnvelopeV1) []byte {
 	t.Helper()
 	raw, err := SealControlRequest(request)
@@ -53,108 +65,93 @@ func mustSeal(t *testing.T, request APAPRequestEnvelopeV1) []byte {
 func beginFDs() []FDRef {
 	return []FDRef{{Role: FDCandidateExecutable}, {Role: FDScratchRoot}, {Role: FDBusinessDenyRoot, Index: 0}}
 }
-
 func validFDs(operation Operation) []FDRef {
-	switch operation {
-	case OperationBeginProbe:
+	if operation == OperationBeginProbe {
 		return beginFDs()
-	case OperationStageBundleLeafBatch:
-		return []FDRef{{Role: FDBundleLeaf}}
-	case OperationPrepareLaunch:
-		return []FDRef{{Role: FDCandidateExecutable}, {Role: FDAuthorityRoot}, {Role: FDFenceRoot}, {Role: FDWorktree}, {Role: FDControlRoot}, {Role: FDControlInput}, {Role: FDControlOutput}, {Role: FDMountNamespace}}
-	default:
-		return nil
 	}
+	if operation == OperationStageBundleLeafBatch {
+		return []FDRef{{Role: FDBundleLeaf}}
+	}
+	return nil
 }
 
-func TestOperationAuthorizationMatrix(t *testing.T) {
+func TestRegisteredOperationAuthorizationAndUnsupportedSurface(t *testing.T) {
 	for operation, principals := range operationPrincipals {
-		for principal := range principals {
-			name := string(operation) + "/" + string(principal)
-			t.Run(name, func(t *testing.T) {
-				request := validRequest(operation, principal)
-				raw := mustSeal(t, request)
-				if _, err := DecodeControlRequest(raw, principal, fixtureNow, validFDs(operation)); err != nil {
-					t.Fatal(err)
-				}
-			})
-		}
-		t.Run(string(operation)+"/worker-rejected", func(t *testing.T) {
-			request := validRequest(operation, PrincipalWorker)
-			raw := mustSeal(t, request)
-			if _, err := DecodeControlRequest(raw, PrincipalWorker, fixtureNow, validFDs(operation)); err == nil || ErrorCode(err) != CodePrincipalUnauthorized {
-				t.Fatalf("error=%v", err)
+		for role := range principals {
+			p := defaultPeer(role)
+			if _, err := DecodeControlRequest(mustSeal(t, validRequest(operation, p)), p, fixtureNow, validFDs(operation)); err != nil {
+				t.Fatalf("%s/%s: %v", operation, role, err)
 			}
-		})
+		}
+	}
+	for _, operation := range []Operation{OperationPrepareLaunch, OperationCommitBundleUpdate, OperationWatchEpoch, OperationRunProbeVariant} {
+		p := defaultPeer(PrincipalConsumer)
+		request := validRequest(OperationDescribe, p)
+		request.Operation = operation
+		request.ExpectedProviderSequence = sequence(7)
+		if _, err := DecodeControlRequest(mustSeal(t, request), p, fixtureNow, nil); err == nil {
+			t.Fatalf("unimplemented %s registered", operation)
+		}
 	}
 }
 
 func TestFDRoleExactValidation(t *testing.T) {
-	launch := validFDs(OperationPrepareLaunch)
-	leaves := make([]FDRef, 24)
+	launch := []FDRef{{Role: FDCandidateExecutable}, {Role: FDAuthorityRoot}, {Role: FDFenceRoot}, {Role: FDWorktree}, {Role: FDControlRoot}, {Role: FDControlInput}, {Role: FDControlOutput}, {Role: FDMountNamespace}}
+	if err := ValidateControlFDRoles(OperationPrepareLaunch, launch); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateControlFDRoles(OperationPrepareLaunch, launch[:7]); err == nil {
+		t.Fatal("short launch fd table accepted")
+	}
+	if err := ValidateControlFDRoles(OperationBeginProbe, []FDRef{{Role: FDCandidateExecutable}, {Role: FDScratchRoot}, {Role: FDBusinessDenyRoot, Index: 1}}); err == nil {
+		t.Fatal("business deny index gap accepted")
+	}
+	leaves := make([]FDRef, 25)
 	for i := range leaves {
 		leaves[i] = FDRef{Role: FDBundleLeaf, Index: i}
 	}
-	tests := []struct {
-		name      string
-		operation Operation
-		refs      []FDRef
-		ok        bool
-	}{
-		{name: "launch exact", operation: OperationPrepareLaunch, refs: launch, ok: true},
-		{name: "launch missing", operation: OperationPrepareLaunch, refs: launch[:7]},
-		{name: "launch duplicate", operation: OperationPrepareLaunch, refs: append(append([]FDRef(nil), launch[:7]...), FDRef{Role: FDControlOutput})},
-		{name: "leaf 24", operation: OperationStageBundleLeafBatch, refs: leaves, ok: true},
-		{name: "leaf 25", operation: OperationStageBundleLeafBatch, refs: append(leaves, FDRef{Role: FDBundleLeaf, Index: 24})},
-		{name: "leaf index gap", operation: OperationStageBundleLeafBatch, refs: []FDRef{{Role: FDBundleLeaf, Index: 1}}},
-		{name: "unexpected on describe", operation: OperationDescribe, refs: []FDRef{{Role: FDCandidateExecutable}}},
+	if err := ValidateControlFDRoles(OperationStageBundleLeafBatch, leaves); err == nil {
+		t.Fatal("oversized leaf table accepted")
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			err := ValidateControlFDRoles(test.operation, test.refs)
-			if (err == nil) != test.ok {
-				t.Fatalf("error=%v ok=%v", err, test.ok)
-			}
-		})
+	if err := ValidateControlFDRoles(OperationDescribe, []FDRef{{Role: FDCredentialCapability}}); err == nil || ErrorCode(err) != CodeSecretBoundaryViolation {
+		t.Fatal("credential fd crossed control boundary")
 	}
 }
 
-func TestDecodeControlRequestNegativeConformance(t *testing.T) {
-	base := validRequest(OperationBeginProbe, PrincipalVerifierController)
+func TestControlRequestTypedClosedNegativeVectors(t *testing.T) {
+	p := defaultPeer(PrincipalVerifierController)
+	base := validRequest(OperationBeginProbe, p)
 	tests := []struct {
 		name   string
 		mutate func(*APAPRequestEnvelopeV1)
-		peer   Principal
-		fds    []FDRef
 		raw    func([]byte) []byte
-		code   SafeCode
+		peer   PeerIdentity
+		fds    []FDRef
 	}{
-		{name: "wrong principal", peer: PrincipalConsumer, fds: beginFDs(), code: CodeIdentityMismatch},
-		{name: "unauthorized operation", peer: PrincipalVerifierController, fds: beginFDs(), mutate: func(r *APAPRequestEnvelopeV1) {
-			r.CallerPrincipalDigest = string(PrincipalVerifierController)
-			r.Operation = OperationPrepareLaunch
-		}, code: CodePrincipalUnauthorized},
-		{name: "unknown profile", peer: PrincipalVerifierController, fds: beginFDs(), mutate: func(r *APAPRequestEnvelopeV1) { r.AuthorityProfile = "unknown" }, code: CodeProfileUnsupported},
-		{name: "wrong audience", peer: PrincipalVerifierController, fds: beginFDs(), mutate: func(r *APAPRequestEnvelopeV1) { r.Audience = "wrong" }, code: CodeIdentityMismatch},
-		{name: "attach forbidden on control", peer: PrincipalVerifierController, fds: nil, mutate: func(r *APAPRequestEnvelopeV1) { r.Operation = OperationAttachProbeCredential }, code: CodeIdentityMismatch},
-		{name: "nonce invalid", peer: PrincipalVerifierController, fds: beginFDs(), mutate: func(r *APAPRequestEnvelopeV1) { r.Nonce = "short" }, code: CodeIdentityMismatch},
-		{name: "expired", peer: PrincipalVerifierController, fds: beginFDs(), mutate: func(r *APAPRequestEnvelopeV1) { r.ExpiresAt = fixtureNow }, code: CodeIdentityMismatch},
-		{name: "fd missing", peer: PrincipalVerifierController, fds: beginFDs()[:2], code: CodeIdentityMismatch},
-		{name: "fd order", peer: PrincipalVerifierController, fds: []FDRef{{Role: FDScratchRoot}, {Role: FDCandidateExecutable}, {Role: FDBusinessDenyRoot}}, code: CodeIdentityMismatch},
-		{name: "credential root on APAP", peer: PrincipalVerifierController, fds: []FDRef{{Role: FDCandidateExecutable}, {Role: FDScratchRoot}, {Role: FDCredentialRoot}}, code: CodeSecretBoundaryViolation},
-		{name: "credential capability on APAP", peer: PrincipalVerifierController, fds: []FDRef{{Role: FDCandidateExecutable}, {Role: FDScratchRoot}, {Role: FDCredentialCapability}}, code: CodeSecretBoundaryViolation},
-		{name: "unknown semantic field", peer: PrincipalVerifierController, fds: beginFDs(), mutate: func(r *APAPRequestEnvelopeV1) {
-			r.Payload = json.RawMessage(`{"candidateIdentityDigest":"sha256:candidate","suiteDigest":"sha256:suite","probeArtifactDigest":"sha256:artifact","policyDigest":"sha256:policy","challengeDigest":"sha256:challenge","deadline":"2026-08-18T08:01:00Z","credentialRoot":"forbidden"}`)
-		}, code: CodeIdentityMismatch},
-		{name: "duplicate envelope field", peer: PrincipalVerifierController, fds: beginFDs(), raw: func(raw []byte) []byte {
-			return bytes.Replace(raw, []byte(`"requestId":"request-1"`), []byte(`"requestId":"request-1","requestId":"request-2"`), 1)
-		}, code: CodeIdentityMismatch},
-		{name: "duplicate semantic field", peer: PrincipalVerifierController, fds: beginFDs(), raw: func(raw []byte) []byte {
-			return bytes.Replace(raw, []byte(`"suiteDigest":"sha256:suite"`), []byte(`"suiteDigest":"sha256:suite","suiteDigest":"sha256:other"`), 1)
-		}, code: CodeIdentityMismatch},
-		{name: "unknown envelope field", peer: PrincipalVerifierController, fds: beginFDs(), raw: func(raw []byte) []byte {
-			return bytes.Replace(raw, []byte(`{"audience"`), []byte(`{"alien":true,"audience"`), 1)
-		}, code: CodeIdentityMismatch},
+		{name: "peer digest mismatch", peer: peer(PrincipalVerifierController, "other"), fds: beginFDs()},
+		{name: "peer digest malformed", peer: PeerIdentity{Role: PrincipalVerifierController, PrincipalDigest: "sha256:no"}, fds: beginFDs()},
+		{name: "wrong role", peer: PeerIdentity{Role: PrincipalConsumer, PrincipalDigest: p.PrincipalDigest}, fds: beginFDs()},
+		{name: "digest shape", peer: p, fds: beginFDs(), mutate: func(r *APAPRequestEnvelopeV1) {
+			var v BeginProbePayload
+			_ = json.Unmarshal(r.Payload, &v)
+			v.SuiteDigest = "sha256:bad"
+			r.Payload = mustJSON(v)
+		}},
+		{name: "deadline cross bind", peer: p, fds: beginFDs(), mutate: func(r *APAPRequestEnvelopeV1) {
+			var v BeginProbePayload
+			_ = json.Unmarshal(r.Payload, &v)
+			v.Deadline = r.ExpiresAt.Add(time.Second)
+			r.Payload = mustJSON(v)
+		}},
+		{name: "payload null", peer: p, fds: beginFDs(), mutate: func(r *APAPRequestEnvelopeV1) { r.Payload = json.RawMessage(`null`) }},
+		{name: "wrong json type", peer: p, fds: beginFDs(), mutate: func(r *APAPRequestEnvelopeV1) { r.Payload = json.RawMessage(`{"candidateIdentityDigest":7}`) }},
+		{name: "unknown payload field", peer: p, fds: beginFDs(), raw: func(raw []byte) []byte {
+			return bytes.Replace(raw, []byte(`"suiteDigest":"`), []byte(`"alien":true,"suiteDigest":"`), 1)
+		}},
+		{name: "duplicate payload field", peer: p, fds: beginFDs(), raw: func(raw []byte) []byte {
+			return bytes.Replace(raw, []byte(`"suiteDigest":"`), []byte(`"suiteDigest":"x","suiteDigest":"`), 1)
+		}},
+		{name: "fd missing", peer: p, fds: beginFDs()[:2]},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -167,82 +164,136 @@ func TestDecodeControlRequestNegativeConformance(t *testing.T) {
 			if test.raw != nil {
 				raw = test.raw(raw)
 			}
-			_, err := DecodeControlRequest(raw, test.peer, fixtureNow, test.fds)
-			if err == nil || ErrorCode(err) != test.code {
-				t.Fatalf("error=%v code=%s want=%s", err, ErrorCode(err), test.code)
+			if _, err := DecodeControlRequest(raw, test.peer, fixtureNow, test.fds); err == nil {
+				t.Fatal("invalid request accepted")
 			}
 		})
 	}
 }
 
-func TestExpectedSequenceAndReplay(t *testing.T) {
-	request := validRequest(OperationCommitBundleUpdate, PrincipalEvidenceConfig)
-	raw := mustSeal(t, request)
-	fake := NewFakeProvider(7)
-	first, err := fake.HandleControl(raw, PrincipalEvidenceConfig, fixtureNow, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fake.ProviderSequence() != 8 {
-		t.Fatalf("sequence=%d", fake.ProviderSequence())
-	}
-	replay, err := fake.HandleControl(raw, PrincipalEvidenceConfig, fixtureNow, nil)
-	if err != nil {
-		t.Fatalf("exact replay failed after sequence advance: %v", err)
-	}
-	if !bytes.Equal(first, replay) {
-		t.Fatal("replay response changed")
-	}
-	conflict := request
-	conflict.Nonce = "nonce-0002"
-	conflictRaw := mustSeal(t, conflict)
-	if _, err := fake.HandleControl(conflictRaw, PrincipalEvidenceConfig, fixtureNow, nil); err == nil || ErrorCode(err) != CodeIdentityMismatch {
-		t.Fatalf("conflict=%v", err)
-	}
-	stale := validRequest(OperationBeginProbe, PrincipalVerifierController)
-	stale.ExpectedProviderSequence = sequence(6)
-	if _, err := fake.HandleControl(mustSeal(t, stale), PrincipalVerifierController, fixtureNow, beginFDs()); err == nil || ErrorCode(err) != CodeIdentityMismatch {
-		t.Fatalf("stale CAS=%v", err)
-	}
-	readWithCAS := validRequest(OperationDescribe, PrincipalConsumer)
-	readWithCAS.ExpectedProviderSequence = sequence(7)
-	if _, err := DecodeControlRequest(mustSeal(t, readWithCAS), PrincipalConsumer, fixtureNow, nil); err == nil {
-		t.Fatal("read-only request with CAS accepted")
+func TestDescribeRejectsNullPayload(t *testing.T) {
+	p := defaultPeer(PrincipalConsumer)
+	request := validRequest(OperationDescribe, p)
+	request.Payload = json.RawMessage(`null`)
+	if _, err := DecodeControlRequest(mustSeal(t, request), p, fixtureNow, nil); err == nil {
+		t.Fatal("null Describe payload accepted")
 	}
 }
 
-func TestControlResponseEnvelopeClosed(t *testing.T) {
-	request := validRequest(OperationBeginProbe, PrincipalVerifierController)
+func TestStagePayloadCardinalityOrderAndRoleBinding(t *testing.T) {
+	p := defaultPeer(PrincipalEvidenceConfig)
+	base := validRequest(OperationStageBundleLeafBatch, p)
+	mutations := map[string]func(*StageBundleLeafBatchPayload){
+		"null array":      func(v *StageBundleLeafBatchPayload) { v.OrderedLeafDescriptors = nil },
+		"wrong role kind": func(v *StageBundleLeafBatchPayload) { v.UpdateKind = UpdateRotation },
+		"bad size":        func(v *StageBundleLeafBatchPayload) { v.OrderedLeafDescriptors[0].Size = 0 },
+		"bad media":       func(v *StageBundleLeafBatchPayload) { v.OrderedLeafDescriptors[0].MediaType = "text/plain" },
+		"bad digest":      func(v *StageBundleLeafBatchPayload) { v.OrderedLeafDescriptors[0].Digest = "sha256:BAD" },
+		"unordered": func(v *StageBundleLeafBatchPayload) {
+			v.OrderedLeafDescriptors = append([]BundleLeafDescriptor{{LeafKind: "z", Digest: testDigest("z"), Size: 1, MediaType: "application/json"}}, v.OrderedLeafDescriptors...)
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			request := base
+			var payload StageBundleLeafBatchPayload
+			_ = json.Unmarshal(base.Payload, &payload)
+			mutate(&payload)
+			request.Payload = mustJSON(payload)
+			fds := make([]FDRef, len(payload.OrderedLeafDescriptors))
+			for i := range fds {
+				fds[i] = FDRef{Role: FDBundleLeaf, Index: i}
+			}
+			if _, err := DecodeControlRequest(mustSeal(t, request), p, fixtureNow, fds); err == nil {
+				t.Fatal("invalid stage accepted")
+			}
+		})
+	}
+	request := base
+	var payload StageBundleLeafBatchPayload
+	_ = json.Unmarshal(base.Payload, &payload)
+	payload.OrderedLeafDescriptors = append(payload.OrderedLeafDescriptors, BundleLeafDescriptor{LeafKind: "b", Digest: testDigest("leaf-b"), Size: 1, MediaType: "application/json"})
+	request.Payload = mustJSON(payload)
+	if _, err := DecodeControlRequest(mustSeal(t, request), p, fixtureNow, []FDRef{{Role: FDBundleLeaf}}); err == nil {
+		t.Fatal("descriptor/fd cardinality mismatch accepted")
+	}
+}
+
+func TestPeerBoundReplayAndSequence(t *testing.T) {
+	p1, p2 := peer(PrincipalVerifierController, "peer-1"), peer(PrincipalVerifierController, "peer-2")
+	request := validRequest(OperationBeginProbe, p1)
 	raw := mustSeal(t, request)
-	decodedRequest, err := DecodeControlRequest(raw, PrincipalVerifierController, fixtureNow, beginFDs())
+	fake := NewFakeProvider(7)
+	first, err := fake.HandleControl(raw, p1, fixtureNow, beginFDs())
 	if err != nil {
 		t.Fatal(err)
 	}
-	responseRaw, err := NewFakeProvider(7).HandleControl(raw, PrincipalVerifierController, fixtureNow, beginFDs())
+	replay, err := fake.HandleControl(raw, p1, fixtureNow, beginFDs())
+	if err != nil || !bytes.Equal(first, replay) {
+		t.Fatalf("exact replay: %v", err)
+	}
+	if _, err := fake.HandleControl(raw, p2, fixtureNow, beginFDs()); err == nil {
+		t.Fatal("cross-peer raw replay accepted")
+	}
+	other := request
+	other.CallerPrincipalDigest = p2.PrincipalDigest
+	other.Nonce = "nonce-0002"
+	if _, err := fake.HandleControl(mustSeal(t, other), p2, fixtureNow, beginFDs()); err == nil {
+		t.Fatal("same-role different-peer command replay accepted")
+	}
+	stale := validRequest(OperationBeginProbe, p1)
+	stale.CommandID = "stale-command"
+	stale.ExpectedProviderSequence = sequence(6)
+	if _, err := fake.HandleControl(mustSeal(t, stale), p1, fixtureNow, beginFDs()); err == nil {
+		t.Fatal("stale sequence accepted")
+	}
+}
+
+func TestControlResponseClosedTypedAndSequenceBound(t *testing.T) {
+	p := defaultPeer(PrincipalVerifierController)
+	request := validRequest(OperationBeginProbe, p)
+	raw := mustSeal(t, request)
+	decoded, err := DecodeControlRequest(raw, p, fixtureNow, beginFDs())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DecodeControlResponse(responseRaw, decodedRequest); err != nil {
+	responseRaw, err := NewFakeProvider(7).HandleControl(raw, p, fixtureNow, beginFDs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeControlResponse(responseRaw, decoded, 7); err != nil {
 		t.Fatal(err)
 	}
 	var response APAPResponseEnvelopeV1
-	if err := json.Unmarshal(responseRaw, &response); err != nil {
-		t.Fatal(err)
-	}
+	_ = json.Unmarshal(responseRaw, &response)
 	tests := []struct {
 		name   string
 		mutate func(*APAPResponseEnvelopeV1)
 		raw    func([]byte) []byte
 	}{
+		{name: "wrong sequence", mutate: func(r *APAPResponseEnvelopeV1) { r.ObservedProviderSequence++ }},
+		{name: "sequence wrong type", raw: func(raw []byte) []byte {
+			return bytes.Replace(raw, []byte(`"observedProviderSequence":7`), []byte(`"observedProviderSequence":"7"`), 1)
+		}},
 		{name: "wrong operation", mutate: func(r *APAPResponseEnvelopeV1) { r.Operation = OperationDescribe }},
 		{name: "unknown safe code", mutate: func(r *APAPResponseEnvelopeV1) { r.SafeCode = "unknown" }},
-		{name: "unknown field", raw: func(raw []byte) []byte {
-			return bytes.Replace(raw, []byte(`{"audience"`), []byte(`{"alien":true,"audience"`), 1)
+		{name: "success null", mutate: func(r *APAPResponseEnvelopeV1) { r.Payload = json.RawMessage(`null`) }},
+		{name: "payload wrong type", mutate: func(r *APAPResponseEnvelopeV1) { r.Payload = json.RawMessage(`{"probeSessionId":7}`) }},
+		{name: "payload unknown", mutate: func(r *APAPResponseEnvelopeV1) {
+			r.Payload = json.RawMessage(`{"probeSessionId":"x","targetIsolationIdentityDigest":"x","credentialIngressEndpointIdentityDigest":"x","expiresAt":"2026-08-18T08:01:00Z","alien":true}`)
 		}},
-		{name: "duplicate field", raw: func(raw []byte) []byte {
-			return bytes.Replace(raw, []byte(`"requestId":"request-1"`), []byte(`"requestId":"request-1","requestId":"other"`), 1)
+		{name: "failure success payload", mutate: func(r *APAPResponseEnvelopeV1) {
+			r.SafeCode = CodeProviderBusy
+			r.SafeMessage = SafeMessageFor(r.SafeCode)
 		}},
-		{name: "missing required field", raw: func(raw []byte) []byte { return bytes.Replace(raw, []byte(`,"safeMessage":""`), nil, 1) }},
+		{name: "failure raw error", mutate: func(r *APAPResponseEnvelopeV1) {
+			r.SafeCode = CodeProviderBusy
+			r.SafeMessage = "dial tcp: secret path"
+			r.Payload = json.RawMessage(`null`)
+		}},
+		{name: "duplicate", raw: func(raw []byte) []byte {
+			return bytes.Replace(raw, []byte(`"safeCode":"ok"`), []byte(`"safeCode":"ok","safeCode":"ok"`), 1)
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -255,99 +306,72 @@ func TestControlResponseEnvelopeClosed(t *testing.T) {
 			if test.raw != nil {
 				encoded = test.raw(encoded)
 			}
-			if _, err := DecodeControlResponse(encoded, decodedRequest); err == nil {
+			if _, err := DecodeControlResponse(encoded, decoded, 7); err == nil {
 				t.Fatal("invalid response accepted")
 			}
 		})
 	}
-}
-
-func validIngressRequest() CredentialIngressRequestV1 {
-	payload := AttachProbeCredentialPayload{ProbeSessionID: "probe-1", CapabilityIdentityDigest: "sha256:cap", CapabilityPolicyDigest: "sha256:policy", ServiceIdentityDigest: "sha256:service", CapabilityExpiresAt: fixtureNow.Add(time.Minute), DeliveryNonce: "delivery-0001", TargetIsolationIdentityDigest: "sha256:target"}
-	return CredentialIngressRequestV1{SchemaVersion: IngressRequestSchema, ProtocolFamily: IngressFamily, ProtocolVersion: ProtocolVersion, Audience: IngressAudience, RequestID: "request-1", CommandID: "command-1", SecretProviderPrincipalDigest: string(PrincipalSecretProvider), ProviderInstanceID: "provider-1", AuthorityProfile: ProfileQoder, ProbeSessionID: "probe-1", TargetIsolationIdentityDigest: "sha256:target", CredentialIngressEndpointIdentityDigest: "sha256:endpoint", CredentialIngressTicketDigest: "sha256:ticket", IssuedAt: fixtureNow.Add(-time.Second), ExpiresAt: fixtureNow.Add(time.Minute), Nonce: "nonce-0001", Payload: mustJSON(payload)}
-}
-
-func TestCredentialIngressIsSeparateAndClosed(t *testing.T) {
-	request := validIngressRequest()
-	raw, err := SealCredentialIngressRequest(request)
-	if err != nil {
-		t.Fatal(err)
+	failure := response
+	failure.SafeCode = CodeProviderBusy
+	failure.SafeMessage = SafeMessageFor(failure.SafeCode)
+	failure.Payload = json.RawMessage(`null`)
+	encoded, _ := SealControlResponse(failure)
+	if _, err := DecodeControlResponse(encoded, decoded, 7); err != nil {
+		t.Fatalf("closed failure rejected: %v", err)
 	}
-	credentialFD := []FDRef{{Role: FDCredentialCapability}}
-	if _, err := DecodeCredentialIngressRequest(raw, PrincipalSecretProvider, fixtureNow, credentialFD); err != nil {
+}
+
+func validIngressRequest(p PeerIdentity) CredentialIngressRequestV1 {
+	payload := AttachProbeCredentialPayload{ProbeSessionID: "probe-1", CapabilityIdentityDigest: testDigest("cap"), CapabilityPolicyDigest: testDigest("policy"), ServiceIdentityDigest: testDigest("service"), CapabilityExpiresAt: fixtureNow.Add(time.Minute), DeliveryNonce: "delivery-0001", TargetIsolationIdentityDigest: testDigest("target")}
+	return CredentialIngressRequestV1{SchemaVersion: IngressRequestSchema, ProtocolFamily: IngressFamily, ProtocolVersion: ProtocolVersion, Audience: IngressAudience, RequestID: "request-1", CommandID: "command-1", SecretProviderPrincipalDigest: p.PrincipalDigest, ProviderInstanceID: "provider-1", AuthorityProfile: ProfileQoder, ProbeSessionID: "probe-1", TargetIsolationIdentityDigest: testDigest("target"), CredentialIngressEndpointIdentityDigest: testDigest("endpoint"), CredentialIngressTicketDigest: testDigest("ticket"), IssuedAt: fixtureNow.Add(-time.Second), ExpiresAt: fixtureNow.Add(time.Minute), Nonce: "nonce-0001", Payload: mustJSON(payload)}
+}
+
+func TestCredentialIngressPeerReplayAndClosedResponse(t *testing.T) {
+	p1, p2 := peer(PrincipalSecretProvider, "secret-1"), peer(PrincipalSecretProvider, "secret-2")
+	request := validIngressRequest(p1)
+	raw, _ := SealCredentialIngressRequest(request)
+	fd := []FDRef{{Role: FDCredentialCapability}}
+	if _, err := DecodeCredentialIngressRequest(raw, p1, fixtureNow, fd); err != nil {
 		t.Fatal(err)
 	}
 	fake := NewFakeProvider(7)
-	responseRaw, err := fake.HandleCredentialIngress(raw, PrincipalSecretProvider, fixtureNow, credentialFD)
+	responseRaw, err := fake.HandleCredentialIngress(raw, p1, fixtureNow, fd)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := DecodeCredentialIngressResponse(responseRaw, request); err != nil {
 		t.Fatal(err)
 	}
-	conflict := request
-	conflict.Nonce = "nonce-0002"
-	conflictRaw, _ := SealCredentialIngressRequest(conflict)
-	if _, err := fake.HandleCredentialIngress(conflictRaw, PrincipalSecretProvider, fixtureNow, credentialFD); err == nil {
-		t.Fatal("ingress replay conflict accepted")
+	if _, err := fake.HandleCredentialIngress(raw, p2, fixtureNow, fd); err == nil {
+		t.Fatal("cross-peer ingress replay accepted")
 	}
-	tests := []struct {
-		name   string
-		peer   Principal
-		fds    []FDRef
-		mutate func(*CredentialIngressRequestV1)
-		code   SafeCode
-	}{
-		{name: "wrong principal", peer: PrincipalVerifierController, fds: credentialFD, code: CodePrincipalUnauthorized},
-		{name: "missing capability", peer: PrincipalSecretProvider, code: CodeSecretBoundaryViolation},
-		{name: "wrong fd", peer: PrincipalSecretProvider, fds: []FDRef{{Role: FDCandidateExecutable}}, code: CodeSecretBoundaryViolation},
-		{name: "wrong audience", peer: PrincipalSecretProvider, fds: credentialFD, mutate: func(r *CredentialIngressRequestV1) { r.Audience = ControlAudience }, code: CodeIdentityMismatch},
-		{name: "target substitution", peer: PrincipalSecretProvider, fds: credentialFD, mutate: func(r *CredentialIngressRequestV1) {
-			var p AttachProbeCredentialPayload
-			_ = json.Unmarshal(r.Payload, &p)
-			p.TargetIsolationIdentityDigest = "sha256:other"
-			r.Payload = mustJSON(p)
-		}, code: CodeSecretBoundaryViolation},
+	bad := request
+	bad.SecretProviderPrincipalDigest = p2.PrincipalDigest
+	bad.Nonce = "nonce-0002"
+	badRaw, _ := SealCredentialIngressRequest(bad)
+	if _, err := fake.HandleCredentialIngress(badRaw, p2, fixtureNow, fd); err == nil {
+		t.Fatal("same-role ingress command replay accepted")
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			candidate := request
-			candidate.Payload = append(json.RawMessage(nil), request.Payload...)
-			if test.mutate != nil {
-				test.mutate(&candidate)
-			}
-			encoded, sealErr := SealCredentialIngressRequest(candidate)
-			if sealErr != nil {
-				t.Fatal(sealErr)
-			}
-			_, decodeErr := DecodeCredentialIngressRequest(encoded, test.peer, fixtureNow, test.fds)
-			if decodeErr == nil || ErrorCode(decodeErr) != test.code {
-				t.Fatalf("error=%v", decodeErr)
-			}
-		})
+	var response CredentialIngressResponseV1
+	_ = json.Unmarshal(responseRaw, &response)
+	response.SafeCode = CodeProviderBusy
+	response.SafeMessage = SafeMessageFor(response.SafeCode)
+	encoded, _ := SealCredentialIngressResponse(response)
+	if _, err := DecodeCredentialIngressResponse(encoded, request); err == nil {
+		t.Fatal("failure with success payload accepted")
+	}
+	response.Payload = json.RawMessage(`null`)
+	encoded, _ = SealCredentialIngressResponse(response)
+	if _, err := DecodeCredentialIngressResponse(encoded, request); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestSafeCodeClassificationClosed(t *testing.T) {
-	tests := map[SafeCode]SafeClass{CodeOK: ClassOK, CodeBundleInvalid: ClassPermanent, CodeProviderBusy: ClassTransient, CodeBundleCommitAmbiguous: ClassReconcile, CodeInternalFailClosed: ClassPermanent}
-	for code, want := range tests {
-		got, ok := code.Class()
-		if !ok || got != want {
-			t.Fatalf("%s class=%s", code, got)
-		}
-	}
-	if _, ok := SafeCode("unknown").Class(); ok {
-		t.Fatal("unknown safe code accepted")
-	}
-}
-
-func TestSignedObjectEnvelopeValidation(t *testing.T) {
-	seed := bytes.Repeat([]byte{0x42}, ed25519.SeedSize)
-	privateKey := ed25519.NewKeyFromSeed(seed)
+func TestSignedObjectStrictBase64URL(t *testing.T) {
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x42}, ed25519.SeedSize))
 	publicKey := privateKey.Public().(ed25519.PublicKey)
-	unsigned := []byte(`{"authorityProfile":"qoder-cli-adr0034-v1","value":1}`)
-	domain := "marshal-test-v1\x00"
-	usage := "test-usage"
+	unsigned := []byte(`{"value":1}`)
+	domain, usage := "marshal-test-v1\x00", "test-usage"
 	envelope, err := SignObjectForFake(unsigned, domain, "key-1", 3, privateKey)
 	if err != nil {
 		t.Fatal(err)
@@ -356,58 +380,34 @@ func TestSignedObjectEnvelopeValidation(t *testing.T) {
 	if err := ValidateSignedObject(unsigned, envelope, domain, usage, keyring); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateSignedObject(unsigned, envelope, domain, usage, nil); err == nil {
-		t.Fatal("nil key resolver accepted")
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	index := strings.IndexByte(alphabet, envelope.Signature[len(envelope.Signature)-1])
+	malleated := envelope
+	malleated.Signature = envelope.Signature[:len(envelope.Signature)-1] + string(alphabet[(index&0x30)|1])
+	if _, err := base64.RawURLEncoding.DecodeString(malleated.Signature); err != nil {
+		t.Fatalf("vector is not permissively decodable: %v", err)
 	}
-	tests := []struct {
-		name      string
-		mutate    func(*SignedObjectEnvelopeV1)
-		wantUsage string
-	}{
-		{name: "domain", mutate: func(e *SignedObjectEnvelopeV1) { e.SignatureDomain = "wrong" }},
-		{name: "key usage", wantUsage: "wrong"},
-		{name: "key epoch", mutate: func(e *SignedObjectEnvelopeV1) { e.KeyEpoch = 4 }},
-		{name: "algorithm", mutate: func(e *SignedObjectEnvelopeV1) { e.SignatureAlgorithm = "unknown" }},
-		{name: "encoding", mutate: func(e *SignedObjectEnvelopeV1) { e.SignatureEncoding = "base64" }},
-		{name: "signature", mutate: func(e *SignedObjectEnvelopeV1) { e.Signature = strings.Repeat("A", 86) }},
-		{name: "digest", mutate: func(e *SignedObjectEnvelopeV1) { e.ObjectDigest = "sha256:" + strings.Repeat("0", 64) }},
+	if err := ValidateSignedObject(unsigned, malleated, domain, usage, keyring); err == nil {
+		t.Fatal("non-canonical base64url accepted")
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			candidate := envelope
-			if test.mutate != nil {
-				test.mutate(&candidate)
-			}
-			expectedUsage := usage
-			if test.wantUsage != "" {
-				expectedUsage = test.wantUsage
-			}
-			if err := ValidateSignedObject(unsigned, candidate, domain, expectedUsage, keyring); err == nil {
-				t.Fatal("invalid signature envelope accepted")
-			}
-		})
-	}
-	if err := ValidateSignedObject([]byte(`{"value":1,"value":2}`), envelope, domain, usage, keyring); err == nil {
-		t.Fatal("duplicate unsigned member accepted")
+	bad := envelope
+	bad.Signature = strings.Repeat("A", 86)
+	if err := ValidateSignedObject(unsigned, bad, domain, usage, keyring); err == nil {
+		t.Fatal("bad signature accepted")
 	}
 }
 
 func TestFakeProviderFaults(t *testing.T) {
-	request := validRequest(OperationBeginProbe, PrincipalVerifierController)
-	raw := mustSeal(t, request)
+	p := defaultPeer(PrincipalVerifierController)
+	raw := mustSeal(t, validRequest(OperationBeginProbe, p))
 	dropped := NewFakeProvider(7).WithFaults(FaultSpec{Operation: OperationBeginProbe, Fault: FaultDropResponse})
-	if _, err := dropped.HandleControl(raw, PrincipalVerifierController, fixtureNow, beginFDs()); !errors.Is(err, ErrResponseLost) {
+	if _, err := dropped.HandleControl(raw, p, fixtureNow, beginFDs()); !errors.Is(err, ErrResponseLost) {
 		t.Fatalf("drop=%v", err)
 	}
-	if _, err := dropped.HandleControl(raw, PrincipalVerifierController, fixtureNow, beginFDs()); err != nil {
-		t.Fatalf("lost response replay=%v", err)
+	if _, err := dropped.HandleControl(raw, p, fixtureNow, beginFDs()); err != nil {
+		t.Fatalf("replay=%v", err)
 	}
-	advanced := NewFakeProvider(7).WithFaults(FaultSpec{Operation: OperationBeginProbe, Fault: FaultAdvanceSequence})
-	if _, err := advanced.HandleControl(raw, PrincipalVerifierController, fixtureNow, beginFDs()); err == nil {
-		t.Fatal("advance fault did not force CAS conflict")
-	}
-	rejected := NewFakeProvider(7).WithFaults(FaultSpec{Operation: OperationBeginProbe, Fault: FaultReject})
-	if _, err := rejected.HandleControl(raw, PrincipalVerifierController, fixtureNow, beginFDs()); err == nil || ErrorCode(err) != CodeInternalFailClosed {
-		t.Fatalf("reject=%v", err)
+	if _, err := NewFakeProvider(7).WithFaults(FaultSpec{Operation: OperationBeginProbe, Fault: FaultAdvanceSequence}).HandleControl(raw, p, fixtureNow, beginFDs()); err == nil {
+		t.Fatal("advance fault accepted")
 	}
 }

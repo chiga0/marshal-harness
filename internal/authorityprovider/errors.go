@@ -71,3 +71,13 @@ func (c SafeCode) Validate() error {
 	}
 	return nil
 }
+
+func SafeMessageFor(code SafeCode) string {
+	if code == CodeOK {
+		return ""
+	}
+	if err := code.Validate(); err != nil {
+		return ""
+	}
+	return "request rejected: " + string(code)
+}

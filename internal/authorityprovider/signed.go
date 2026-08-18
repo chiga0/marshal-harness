@@ -59,8 +59,9 @@ func ValidateSignedObject(unsignedObject []byte, envelope SignedObjectEnvelopeV1
 	if !ok || key.Revoked || key.Usage != expectedUsage || len(key.PublicKey) != ed25519.PublicKeySize {
 		return protocolError(CodeIdentityMismatch, "signing-key-invalid")
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(envelope.Signature)
-	if err != nil || len(signature) != ed25519.SignatureSize {
+	encoding := base64.RawURLEncoding.Strict()
+	signature, err := encoding.DecodeString(envelope.Signature)
+	if err != nil || len(signature) != ed25519.SignatureSize || encoding.EncodeToString(signature) != envelope.Signature {
 		return protocolError(CodeIdentityMismatch, "signature-invalid")
 	}
 	message := append([]byte(envelope.SignatureDomain), []byte(envelope.ObjectDigest)...)

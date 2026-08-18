@@ -5,6 +5,7 @@ package authorityprovider
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -60,12 +61,11 @@ const (
 	OperationWatchEpoch               Operation = "WatchEpoch"
 )
 
+// Slice A registers only operations with complete typed request and response
+// validators. Known-but-unimplemented operations remain enum members and are
+// rejected before authorization or side effects.
 var controlOperations = map[Operation]struct{}{
-	OperationDescribe: {}, OperationBeginProbe: {}, OperationRunProbeVariant: {}, OperationFinalizeProbe: {},
-	OperationReadCurrentBundle: {}, OperationReadBundleLeafBatch: {}, OperationStageBundleLeafBatch: {},
-	OperationPrepareEvidenceUpdate: {}, OperationPrepareRotation: {}, OperationPrepareRevocation: {},
-	OperationCommitBundleUpdate: {}, OperationInspectBundleTransaction: {}, OperationRecoverBundleTransaction: {},
-	OperationPrepareLaunch: {}, OperationCommitLaunch: {}, OperationAbortLaunch: {}, OperationInspectLaunch: {}, OperationWatchEpoch: {},
+	OperationDescribe: {}, OperationBeginProbe: {}, OperationStageBundleLeafBatch: {},
 }
 
 func (op Operation) validControl() bool { _, ok := controlOperations[op]; return ok }
@@ -80,6 +80,11 @@ func (op Operation) readOnly() bool {
 
 type Principal string
 
+type PeerIdentity struct {
+	PrincipalDigest string
+	Role            Principal
+}
+
 const (
 	PrincipalConsumer           Principal = "marshal-consumer"
 	PrincipalVerifierController Principal = "verifier-controller"
@@ -92,15 +97,9 @@ const (
 )
 
 var operationPrincipals = map[Operation]map[Principal]struct{}{
-	OperationDescribe:   setOf(PrincipalConsumer, PrincipalVerifierController),
-	OperationBeginProbe: setOf(PrincipalVerifierController), OperationRunProbeVariant: setOf(PrincipalVerifierController), OperationFinalizeProbe: setOf(PrincipalVerifierController),
-	OperationReadCurrentBundle: setOf(PrincipalConsumer, PrincipalVerifierController), OperationReadBundleLeafBatch: setOf(PrincipalConsumer, PrincipalVerifierController),
-	OperationStageBundleLeafBatch:  setOf(PrincipalEvidenceConfig, PrincipalRotation, PrincipalRevocation),
-	OperationPrepareEvidenceUpdate: setOf(PrincipalEvidenceConfig), OperationPrepareRotation: setOf(PrincipalRotation), OperationPrepareRevocation: setOf(PrincipalRevocation),
-	OperationCommitBundleUpdate:       setOf(PrincipalEvidenceConfig, PrincipalRotation, PrincipalRevocation),
-	OperationInspectBundleTransaction: setOf(PrincipalConsumer, PrincipalEvidenceConfig, PrincipalRotation, PrincipalRevocation, PrincipalRecovery),
-	OperationRecoverBundleTransaction: setOf(PrincipalRecovery),
-	OperationPrepareLaunch:            setOf(PrincipalConsumer), OperationCommitLaunch: setOf(PrincipalConsumer), OperationAbortLaunch: setOf(PrincipalConsumer), OperationInspectLaunch: setOf(PrincipalConsumer), OperationWatchEpoch: setOf(PrincipalConsumer),
+	OperationDescribe:             setOf(PrincipalConsumer, PrincipalVerifierController),
+	OperationBeginProbe:           setOf(PrincipalVerifierController),
+	OperationStageBundleLeafBatch: setOf(PrincipalEvidenceConfig, PrincipalRotation, PrincipalRevocation),
 }
 
 func setOf(values ...Principal) map[Principal]struct{} {
@@ -225,9 +224,56 @@ type AttachProbeCredentialPayload struct {
 	TargetIsolationIdentityDigest string    `json:"targetIsolationIdentityDigest"`
 }
 
-var noncePattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,128}$`)
+type UpdateKind string
 
-func DecodeControlRequest(raw []byte, peer Principal, now time.Time, fds []FDRef) (APAPRequestEnvelopeV1, error) {
+const (
+	UpdateEvidence   UpdateKind = "evidence-update"
+	UpdateRotation   UpdateKind = "planned-rotation"
+	UpdateRevocation UpdateKind = "security-revocation"
+)
+
+type BundleLeafDescriptor struct {
+	LeafKind  string `json:"leafKind"`
+	Digest    string `json:"digest"`
+	Size      int64  `json:"size"`
+	MediaType string `json:"mediaType"`
+}
+
+type StageBundleLeafBatchPayload struct {
+	BundleTransactionID    string                 `json:"bundleTransactionId"`
+	UpdateKind             UpdateKind             `json:"updateKind"`
+	OrderedLeafDescriptors []BundleLeafDescriptor `json:"orderedLeafDescriptors"`
+}
+
+type DescribeSuccessPayload struct {
+	ProviderBuildDigest string             `json:"providerBuildDigest"`
+	Platform            string             `json:"platform"`
+	Profiles            []AuthorityProfile `json:"profiles"`
+}
+
+type BeginProbeSuccessPayload struct {
+	ProbeSessionID                          string    `json:"probeSessionId"`
+	TargetIsolationIdentityDigest           string    `json:"targetIsolationIdentityDigest"`
+	CredentialIngressEndpointIdentityDigest string    `json:"credentialIngressEndpointIdentityDigest"`
+	ExpiresAt                               time.Time `json:"expiresAt"`
+}
+
+type StageBundleLeafBatchSuccessPayload struct {
+	BundleTransactionID  string   `json:"bundleTransactionId"`
+	StagedLeafDigests    []string `json:"stagedLeafDigests"`
+	StagingReceiptDigest string   `json:"stagingReceiptDigest"`
+}
+
+type CredentialIngressSuccessPayload struct {
+	DeliveryReceiptDigest string `json:"deliveryReceiptDigest"`
+	InstallReceiptDigest  string `json:"installReceiptDigest"`
+}
+
+var noncePattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,128}$`)
+var idPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+func DecodeControlRequest(raw []byte, peer PeerIdentity, now time.Time, fds []FDRef) (APAPRequestEnvelopeV1, error) {
 	var request APAPRequestEnvelopeV1
 	if err := decodeExact(raw, controlRequestFields, &request); err != nil {
 		return request, protocolError(CodeIdentityMismatch, "request-rejected")
@@ -235,7 +281,7 @@ func DecodeControlRequest(raw []byte, peer Principal, now time.Time, fds []FDRef
 	if request.SchemaVersion != RequestSchema || request.ProtocolFamily != ControlFamily || request.ProtocolVersion != ProtocolVersion || request.Audience != ControlAudience {
 		return request, protocolError(CodeIdentityMismatch, "framing-mismatch")
 	}
-	if request.RequestID == "" || request.CommandID == "" || request.ProviderInstanceID == "" || request.CallerPrincipalDigest != string(peer) {
+	if !validID(request.RequestID) || !validID(request.CommandID) || !validID(request.ProviderInstanceID) || !validDigest(peer.PrincipalDigest) || request.CallerPrincipalDigest != peer.PrincipalDigest {
 		return request, protocolError(CodeIdentityMismatch, "identity-mismatch")
 	}
 	if !request.AuthorityProfile.valid() {
@@ -244,10 +290,10 @@ func DecodeControlRequest(raw []byte, peer Principal, now time.Time, fds []FDRef
 	if !request.Operation.validControl() {
 		return request, protocolError(CodeIdentityMismatch, "operation-unsupported")
 	}
-	if _, ok := operationPrincipals[request.Operation][peer]; !ok {
+	if _, ok := operationPrincipals[request.Operation][peer.Role]; !ok {
 		return request, protocolError(CodePrincipalUnauthorized, "principal-unauthorized")
 	}
-	if peer == PrincipalWorker {
+	if peer.Role == PrincipalWorker {
 		return request, protocolError(CodePrincipalUnauthorized, "principal-unauthorized")
 	}
 	if err := validateTimeNonce(request.IssuedAt, request.ExpiresAt, request.Nonce, now); err != nil {
@@ -260,7 +306,7 @@ func DecodeControlRequest(raw []byte, peer Principal, now time.Time, fds []FDRef
 	if err != nil || digest != request.RequestEnvelopeDigest {
 		return request, protocolError(CodeIdentityMismatch, "request-digest-invalid")
 	}
-	if err := validateControlPayload(request.Operation, request.Payload); err != nil {
+	if err := validateControlPayload(request, peer, fds); err != nil {
 		return request, err
 	}
 	if err := ValidateControlFDRoles(request.Operation, fds); err != nil {
@@ -269,18 +315,18 @@ func DecodeControlRequest(raw []byte, peer Principal, now time.Time, fds []FDRef
 	return request, nil
 }
 
-func DecodeCredentialIngressRequest(raw []byte, peer Principal, now time.Time, fds []FDRef) (CredentialIngressRequestV1, error) {
+func DecodeCredentialIngressRequest(raw []byte, peer PeerIdentity, now time.Time, fds []FDRef) (CredentialIngressRequestV1, error) {
 	var request CredentialIngressRequestV1
 	if err := decodeExact(raw, ingressRequestFields, &request); err != nil {
 		return request, protocolError(CodeIdentityMismatch, "request-rejected")
 	}
-	if peer != PrincipalSecretProvider || request.SecretProviderPrincipalDigest != string(peer) {
+	if peer.Role != PrincipalSecretProvider || !validDigest(peer.PrincipalDigest) || request.SecretProviderPrincipalDigest != peer.PrincipalDigest {
 		return request, protocolError(CodePrincipalUnauthorized, "principal-unauthorized")
 	}
 	if request.SchemaVersion != IngressRequestSchema || request.ProtocolFamily != IngressFamily || request.ProtocolVersion != ProtocolVersion || request.Audience != IngressAudience || !request.AuthorityProfile.valid() {
 		return request, protocolError(CodeIdentityMismatch, "framing-mismatch")
 	}
-	if request.RequestID == "" || request.CommandID == "" || request.ProviderInstanceID == "" || request.ProbeSessionID == "" || request.TargetIsolationIdentityDigest == "" || request.CredentialIngressEndpointIdentityDigest == "" || request.CredentialIngressTicketDigest == "" {
+	if !validID(request.RequestID) || !validID(request.CommandID) || !validID(request.ProviderInstanceID) || !validID(request.ProbeSessionID) || !validDigest(request.TargetIsolationIdentityDigest) || !validDigest(request.CredentialIngressEndpointIdentityDigest) || !validDigest(request.CredentialIngressTicketDigest) {
 		return request, protocolError(CodeIdentityMismatch, "identity-mismatch")
 	}
 	if err := validateTimeNonce(request.IssuedAt, request.ExpiresAt, request.Nonce, now); err != nil {
@@ -291,7 +337,7 @@ func DecodeCredentialIngressRequest(raw []byte, peer Principal, now time.Time, f
 		return request, protocolError(CodeIdentityMismatch, "request-digest-invalid")
 	}
 	var payload AttachProbeCredentialPayload
-	if err := decodeClosed(request.Payload, &payload); err != nil || payload.ProbeSessionID != request.ProbeSessionID || payload.TargetIsolationIdentityDigest != request.TargetIsolationIdentityDigest || payload.CapabilityIdentityDigest == "" || payload.CapabilityPolicyDigest == "" || payload.ServiceIdentityDigest == "" || payload.DeliveryNonce == "" || payload.CapabilityExpiresAt.IsZero() {
+	if err := decodeClosed(request.Payload, &payload); err != nil || payload.ProbeSessionID != request.ProbeSessionID || payload.TargetIsolationIdentityDigest != request.TargetIsolationIdentityDigest || !validDigest(payload.CapabilityIdentityDigest) || !validDigest(payload.CapabilityPolicyDigest) || !validDigest(payload.ServiceIdentityDigest) || !noncePattern.MatchString(payload.DeliveryNonce) || payload.CapabilityExpiresAt.IsZero() || !payload.CapabilityExpiresAt.Equal(request.ExpiresAt) {
 		return request, protocolError(CodeSecretBoundaryViolation, "credential-payload-invalid")
 	}
 	if len(fds) != 1 || fds[0].Role != FDCredentialCapability || fds[0].Index != 0 {
@@ -359,44 +405,68 @@ func ValidateControlFDRoles(operation Operation, refs []FDRef) error {
 	return nil
 }
 
-func validateControlPayload(operation Operation, raw json.RawMessage) error {
-	switch operation {
+func validateControlPayload(request APAPRequestEnvelopeV1, peer PeerIdentity, fds []FDRef) error {
+	switch request.Operation {
 	case OperationDescribe:
 		var payload struct{}
-		if err := decodeClosed(raw, &payload); err != nil {
+		if err := decodeClosed(request.Payload, &payload); err != nil {
 			return protocolError(CodeIdentityMismatch, "payload-invalid")
 		}
 	case OperationBeginProbe:
 		var payload BeginProbePayload
-		if err := decodeClosed(raw, &payload); err != nil || payload.CandidateIdentityDigest == "" || payload.SuiteDigest == "" || payload.ProbeArtifactDigest == "" || payload.PolicyDigest == "" || payload.ChallengeDigest == "" || payload.Deadline.IsZero() {
+		if err := decodeClosed(request.Payload, &payload); err != nil || !validDigest(payload.CandidateIdentityDigest) || !validDigest(payload.SuiteDigest) || !validDigest(payload.ProbeArtifactDigest) || !validDigest(payload.PolicyDigest) || !validDigest(payload.ChallengeDigest) || !payload.Deadline.Equal(request.ExpiresAt) {
 			return protocolError(CodeIdentityMismatch, "payload-invalid")
+		}
+	case OperationStageBundleLeafBatch:
+		var payload StageBundleLeafBatchPayload
+		if err := decodeClosed(request.Payload, &payload); err != nil || !validID(payload.BundleTransactionID) || payload.OrderedLeafDescriptors == nil || len(payload.OrderedLeafDescriptors) == 0 || len(payload.OrderedLeafDescriptors) > 24 || len(payload.OrderedLeafDescriptors) != len(fds) || !updateKindAuthorized(payload.UpdateKind, peer.Role) {
+			return protocolError(CodeIdentityMismatch, "payload-invalid")
+		}
+		previous := ""
+		for _, leaf := range payload.OrderedLeafDescriptors {
+			key := leaf.LeafKind + "\x00" + leaf.Digest
+			if !validID(leaf.LeafKind) || !validDigest(leaf.Digest) || leaf.Size < 1 || leaf.Size > 1<<20 || leaf.MediaType != "application/json" || (previous != "" && key <= previous) {
+				return protocolError(CodeIdentityMismatch, "payload-invalid")
+			}
+			previous = key
 		}
 	default:
-		allowed, ok := controlPayloadFields[operation]
-		if !ok || validateExactObjectFields(raw, allowed) != nil {
-			return protocolError(CodeIdentityMismatch, "payload-invalid")
-		}
+		return protocolError(CodeIdentityMismatch, "operation-unsupported")
 	}
 	return nil
 }
 
-var controlPayloadFields = map[Operation][]string{
-	OperationRunProbeVariant:          {"probeSessionId", "variantId", "invocationManifestDigest", "credentialHandoffReceiptRef", "previousReceiptDigest", "deadline"},
-	OperationFinalizeProbe:            {"probeSessionId", "orderedReceiptDigests", "observationDigest"},
-	OperationReadCurrentBundle:        {"minProviderSequence"},
-	OperationReadBundleLeafBatch:      {"bundleDigest", "orderedLeafIndexes"},
-	OperationStageBundleLeafBatch:     {"bundleTransactionId", "updateKind", "orderedLeafDescriptors"},
-	OperationPrepareEvidenceUpdate:    {"bundleTransactionId", "manifest", "detachedSignature", "updateAuthorization", "observationCandidateDigest", "previousBundleDigest"},
-	OperationPrepareRotation:          {"bundleTransactionId", "manifest", "detachedSignature", "updateAuthorization", "previousBundleDigest"},
-	OperationPrepareRevocation:        {"bundleTransactionId", "manifest", "detachedSignature", "updateAuthorization", "previousBundleDigest"},
-	OperationCommitBundleUpdate:       {"bundleTransactionId", "bundleDigest", "originalExpectedProviderSequence", "anchoredNextProviderSequence", "preparedReceiptDigest"},
-	OperationInspectBundleTransaction: {"bundleTransactionId", "bundleDigest"},
-	OperationRecoverBundleTransaction: {"bundleTransactionId", "bundleDigest", "originalExpectedProviderSequence", "observedCurrentProviderSequence", "anchoredNextProviderSequence", "preparedReceiptDigest", "anchorReceiptDigest"},
-	OperationPrepareLaunch:            {"taskId", "runId", "attemptId", "authorityNamespaceId", "launchNonce", "apapLaunchRequestDigest", "profileRequestDigest", "bundleDigest", "evidenceDigest", "configDigest", "fenceDigest", "candidateExecutableIdentityDigest", "authorityRootIdentityDigest", "fenceRootIdentityDigest", "worktreeIdentityDigest", "controlRootIdentityDigest", "controlInputIdentityDigest", "controlOutputIdentityDigest", "mountNamespaceIdentityDigest", "argvDigest", "environmentDigest", "deadline"},
-	OperationCommitLaunch:             {"launchTransactionId", "launchReceiptDigest", "releaseIdentity", "durableAcceptDigest"},
-	OperationAbortLaunch:              {"launchTransactionId", "reasonCode"},
-	OperationInspectLaunch:            {"attemptId", "launchNonce", "apapLaunchRequestDigest", "profileRequestDigest"},
-	OperationWatchEpoch:               {"afterProviderSequence"},
+func updateKindAuthorized(kind UpdateKind, role Principal) bool {
+	switch role {
+	case PrincipalEvidenceConfig:
+		return kind == UpdateEvidence
+	case PrincipalRotation:
+		return kind == UpdateRotation
+	case PrincipalRevocation:
+		return kind == UpdateRevocation
+	default:
+		return false
+	}
+}
+
+func validID(value string) bool     { return idPattern.MatchString(value) }
+func validDigest(value string) bool { return digestPattern.MatchString(value) }
+func stableDigest(parts ...string) string {
+	h := sha256.New()
+	for _, part := range parts {
+		_, _ = h.Write([]byte(part))
+		_, _ = h.Write([]byte{0})
+	}
+	return "sha256:" + fmtHex(h.Sum(nil))
+}
+
+func fmtHex(value []byte) string {
+	const alphabet = "0123456789abcdef"
+	out := make([]byte, len(value)*2)
+	for i, b := range value {
+		out[i*2], out[i*2+1] = alphabet[b>>4], alphabet[b&15]
+	}
+	return string(out)
 }
 
 func validateExactObjectFields(raw []byte, fields []string) error {
@@ -429,6 +499,9 @@ func validateTimeNonce(issued, expires time.Time, nonce string, now time.Time) e
 
 func decodeClosed(raw []byte, target any) error {
 	if len(raw) == 0 || len(raw) > MaxEnvelopeBytes {
+		return errors.New("rejected")
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return errors.New("rejected")
 	}
 	admitted, err := canonical.JSON(raw)
@@ -538,18 +611,18 @@ func SealCredentialIngressResponse(response CredentialIngressResponseV1) ([]byte
 	return marshalCanonical(response)
 }
 
-func DecodeControlResponse(raw []byte, request APAPRequestEnvelopeV1) (APAPResponseEnvelopeV1, error) {
+func DecodeControlResponse(raw []byte, request APAPRequestEnvelopeV1, expectedObservedSequence uint64) (APAPResponseEnvelopeV1, error) {
 	var response APAPResponseEnvelopeV1
 	if err := decodeExact(raw, controlResponseFields, &response); err != nil {
 		return response, protocolError(CodeIdentityMismatch, "response-rejected")
 	}
-	if response.SchemaVersion != ResponseSchema || response.ProtocolFamily != ControlFamily || response.ProtocolVersion != ProtocolVersion || response.Audience != ControlAudience || response.RequestID != request.RequestID || response.CommandID != request.CommandID || response.ProviderInstanceID != request.ProviderInstanceID || response.AuthorityProfile != request.AuthorityProfile || response.Operation != request.Operation {
+	if response.SchemaVersion != ResponseSchema || response.ProtocolFamily != ControlFamily || response.ProtocolVersion != ProtocolVersion || response.Audience != ControlAudience || response.RequestID != request.RequestID || response.CommandID != request.CommandID || response.ProviderInstanceID != request.ProviderInstanceID || response.AuthorityProfile != request.AuthorityProfile || response.Operation != request.Operation || response.ObservedProviderSequence != expectedObservedSequence {
 		return response, protocolError(CodeIdentityMismatch, "response-identity-invalid")
 	}
 	if err := response.SafeCode.Validate(); err != nil {
 		return response, protocolError(CodeInternalFailClosed, "response-code-invalid")
 	}
-	if response.SafeCode == CodeOK && response.SafeMessage != "" {
+	if response.SafeMessage != SafeMessageFor(response.SafeCode) || !validateControlResponsePayload(response, request) {
 		return response, protocolError(CodeInternalFailClosed, "response-message-invalid")
 	}
 	digest, err := controlResponseDigest(response)
@@ -570,7 +643,7 @@ func DecodeCredentialIngressResponse(raw []byte, request CredentialIngressReques
 	if err := response.SafeCode.Validate(); err != nil {
 		return response, protocolError(CodeInternalFailClosed, "response-code-invalid")
 	}
-	if response.SafeCode == CodeOK && response.SafeMessage != "" {
+	if response.SafeMessage != SafeMessageFor(response.SafeCode) || !validateIngressResponsePayload(response) {
 		return response, protocolError(CodeInternalFailClosed, "response-message-invalid")
 	}
 	digest, err := ingressResponseDigest(response)
@@ -580,6 +653,58 @@ func DecodeCredentialIngressResponse(raw []byte, request CredentialIngressReques
 	return response, nil
 }
 
+func validateControlResponsePayload(response APAPResponseEnvelopeV1, request APAPRequestEnvelopeV1) bool {
+	if response.SafeCode != CodeOK {
+		return bytes.Equal(bytes.TrimSpace(response.Payload), []byte("null"))
+	}
+	if bytes.Equal(bytes.TrimSpace(response.Payload), []byte("null")) {
+		return false
+	}
+	switch request.Operation {
+	case OperationDescribe:
+		var payload DescribeSuccessPayload
+		if decodeClosed(response.Payload, &payload) != nil || !validDigest(payload.ProviderBuildDigest) || (payload.Platform != "linux" && payload.Platform != "darwin") || len(payload.Profiles) == 0 || len(payload.Profiles) > 2 {
+			return false
+		}
+		previous := AuthorityProfile("")
+		for _, profile := range payload.Profiles {
+			if !profile.valid() || (previous != "" && profile <= previous) {
+				return false
+			}
+			previous = profile
+		}
+		return true
+	case OperationBeginProbe:
+		var payload BeginProbeSuccessPayload
+		return decodeClosed(response.Payload, &payload) == nil && validID(payload.ProbeSessionID) && validDigest(payload.TargetIsolationIdentityDigest) && validDigest(payload.CredentialIngressEndpointIdentityDigest) && payload.ExpiresAt.Equal(request.ExpiresAt)
+	case OperationStageBundleLeafBatch:
+		var requestPayload StageBundleLeafBatchPayload
+		var payload StageBundleLeafBatchSuccessPayload
+		if decodeClosed(request.Payload, &requestPayload) != nil || decodeClosed(response.Payload, &payload) != nil || payload.BundleTransactionID != requestPayload.BundleTransactionID || payload.StagedLeafDigests == nil || len(payload.StagedLeafDigests) != len(requestPayload.OrderedLeafDescriptors) || !validDigest(payload.StagingReceiptDigest) {
+			return false
+		}
+		for i, digest := range payload.StagedLeafDigests {
+			if !validDigest(digest) || digest != requestPayload.OrderedLeafDescriptors[i].Digest {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func validateIngressResponsePayload(response CredentialIngressResponseV1) bool {
+	if response.SafeCode != CodeOK {
+		return bytes.Equal(bytes.TrimSpace(response.Payload), []byte("null"))
+	}
+	if bytes.Equal(bytes.TrimSpace(response.Payload), []byte("null")) {
+		return false
+	}
+	var payload CredentialIngressSuccessPayload
+	return decodeClosed(response.Payload, &payload) == nil && validDigest(payload.DeliveryReceiptDigest) && validDigest(payload.InstallReceiptDigest)
+}
+
 func marshalCanonical(value any) ([]byte, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -587,5 +712,3 @@ func marshalCanonical(value any) ([]byte, error) {
 	}
 	return canonical.JSON(raw)
 }
-
-func fixedPayload() json.RawMessage { return json.RawMessage(`{}`) }

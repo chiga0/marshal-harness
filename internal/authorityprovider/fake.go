@@ -27,8 +27,9 @@ func (s FaultSpec) matches(operation Operation, commandID string) bool {
 }
 
 type replayEntry struct {
-	digest   string
-	response []byte
+	digest     string
+	peerDigest string
+	response   []byte
 }
 
 type FakeProvider struct {
@@ -58,7 +59,7 @@ func (f *FakeProvider) fault(operation Operation, commandID string) FaultKind {
 	return ""
 }
 
-func (f *FakeProvider) HandleControl(raw []byte, peer Principal, now time.Time, fds []FDRef) ([]byte, error) {
+func (f *FakeProvider) HandleControl(raw []byte, peer PeerIdentity, now time.Time, fds []FDRef) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	request, err := DecodeControlRequest(raw, peer, now, fds)
@@ -66,7 +67,7 @@ func (f *FakeProvider) HandleControl(raw []byte, peer Principal, now time.Time, 
 		return nil, err
 	}
 	if replay, ok := f.controlReplay[request.CommandID]; ok {
-		if replay.digest != request.RequestEnvelopeDigest {
+		if replay.digest != request.RequestEnvelopeDigest || replay.peerDigest != peer.PrincipalDigest {
 			return nil, protocolError(CodeIdentityMismatch, "replay-conflict")
 		}
 		return append([]byte(nil), replay.response...), nil
@@ -80,22 +81,23 @@ func (f *FakeProvider) HandleControl(raw []byte, peer Principal, now time.Time, 
 	if err := ValidateExpectedSequence(request, f.sequence); err != nil {
 		return nil, err
 	}
-	if request.Operation == OperationCommitBundleUpdate {
-		f.sequence++
+	payload, err := fakeControlPayload(request)
+	if err != nil {
+		return nil, err
 	}
-	response := APAPResponseEnvelopeV1{SchemaVersion: ResponseSchema, ProtocolFamily: ControlFamily, ProtocolVersion: ProtocolVersion, Audience: ControlAudience, RequestID: request.RequestID, CommandID: request.CommandID, ProviderInstanceID: request.ProviderInstanceID, AuthorityProfile: request.AuthorityProfile, Operation: request.Operation, ObservedProviderSequence: f.sequence, SafeCode: CodeOK, SafeMessage: "", Payload: fixedPayload()}
+	response := APAPResponseEnvelopeV1{SchemaVersion: ResponseSchema, ProtocolFamily: ControlFamily, ProtocolVersion: ProtocolVersion, Audience: ControlAudience, RequestID: request.RequestID, CommandID: request.CommandID, ProviderInstanceID: request.ProviderInstanceID, AuthorityProfile: request.AuthorityProfile, Operation: request.Operation, ObservedProviderSequence: f.sequence, SafeCode: CodeOK, SafeMessage: SafeMessageFor(CodeOK), Payload: payload}
 	encoded, err := SealControlResponse(response)
 	if err != nil {
 		return nil, err
 	}
-	f.controlReplay[request.CommandID] = replayEntry{digest: request.RequestEnvelopeDigest, response: append([]byte(nil), encoded...)}
+	f.controlReplay[request.CommandID] = replayEntry{digest: request.RequestEnvelopeDigest, peerDigest: peer.PrincipalDigest, response: append([]byte(nil), encoded...)}
 	if f.fault(request.Operation, request.CommandID) == FaultDropResponse {
 		return nil, ErrResponseLost
 	}
 	return encoded, nil
 }
 
-func (f *FakeProvider) HandleCredentialIngress(raw []byte, peer Principal, now time.Time, fds []FDRef) ([]byte, error) {
+func (f *FakeProvider) HandleCredentialIngress(raw []byte, peer PeerIdentity, now time.Time, fds []FDRef) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	request, err := DecodeCredentialIngressRequest(raw, peer, now, fds)
@@ -103,7 +105,7 @@ func (f *FakeProvider) HandleCredentialIngress(raw []byte, peer Principal, now t
 		return nil, err
 	}
 	if replay, ok := f.ingressReplay[request.CommandID]; ok {
-		if replay.digest != request.RequestDigest {
+		if replay.digest != request.RequestDigest || replay.peerDigest != peer.PrincipalDigest {
 			return nil, protocolError(CodeIdentityMismatch, "replay-conflict")
 		}
 		return append([]byte(nil), replay.response...), nil
@@ -112,14 +114,39 @@ func (f *FakeProvider) HandleCredentialIngress(raw []byte, peer Principal, now t
 	case FaultReject:
 		return nil, protocolError(CodeInternalFailClosed, "fault-injected")
 	}
-	response := CredentialIngressResponseV1{SchemaVersion: IngressResponseSchema, ProtocolFamily: IngressFamily, ProtocolVersion: ProtocolVersion, Audience: IngressAudience, RequestID: request.RequestID, CommandID: request.CommandID, ProviderInstanceID: request.ProviderInstanceID, AuthorityProfile: request.AuthorityProfile, SafeCode: CodeOK, SafeMessage: "", Payload: fixedPayload()}
+	payload, err := marshalCanonical(CredentialIngressSuccessPayload{DeliveryReceiptDigest: stableDigest("delivery", request.RequestDigest), InstallReceiptDigest: stableDigest("install", request.RequestDigest)})
+	if err != nil {
+		return nil, err
+	}
+	response := CredentialIngressResponseV1{SchemaVersion: IngressResponseSchema, ProtocolFamily: IngressFamily, ProtocolVersion: ProtocolVersion, Audience: IngressAudience, RequestID: request.RequestID, CommandID: request.CommandID, ProviderInstanceID: request.ProviderInstanceID, AuthorityProfile: request.AuthorityProfile, SafeCode: CodeOK, SafeMessage: SafeMessageFor(CodeOK), Payload: payload}
 	encoded, err := SealCredentialIngressResponse(response)
 	if err != nil {
 		return nil, err
 	}
-	f.ingressReplay[request.CommandID] = replayEntry{digest: request.RequestDigest, response: append([]byte(nil), encoded...)}
+	f.ingressReplay[request.CommandID] = replayEntry{digest: request.RequestDigest, peerDigest: peer.PrincipalDigest, response: append([]byte(nil), encoded...)}
 	if f.fault(OperationAttachProbeCredential, request.CommandID) == FaultDropResponse {
 		return nil, ErrResponseLost
 	}
 	return encoded, nil
+}
+
+func fakeControlPayload(request APAPRequestEnvelopeV1) ([]byte, error) {
+	switch request.Operation {
+	case OperationDescribe:
+		return marshalCanonical(DescribeSuccessPayload{ProviderBuildDigest: stableDigest("fake-build"), Platform: "linux", Profiles: []AuthorityProfile{ProfileCodex, ProfileQoder}})
+	case OperationBeginProbe:
+		return marshalCanonical(BeginProbeSuccessPayload{ProbeSessionID: "probe-" + request.CommandID, TargetIsolationIdentityDigest: stableDigest("target", request.RequestEnvelopeDigest), CredentialIngressEndpointIdentityDigest: stableDigest("endpoint", request.RequestEnvelopeDigest), ExpiresAt: request.ExpiresAt})
+	case OperationStageBundleLeafBatch:
+		var staged StageBundleLeafBatchPayload
+		if err := decodeClosed(request.Payload, &staged); err != nil {
+			return nil, err
+		}
+		digests := make([]string, len(staged.OrderedLeafDescriptors))
+		for i := range staged.OrderedLeafDescriptors {
+			digests[i] = staged.OrderedLeafDescriptors[i].Digest
+		}
+		return marshalCanonical(StageBundleLeafBatchSuccessPayload{BundleTransactionID: staged.BundleTransactionID, StagedLeafDigests: digests, StagingReceiptDigest: stableDigest("staging", request.RequestEnvelopeDigest)})
+	default:
+		return nil, protocolError(CodeIdentityMismatch, "operation-unsupported")
+	}
 }
