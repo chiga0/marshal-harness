@@ -244,6 +244,24 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
+func TestGitRetriesTransientProcessTermination(t *testing.T) {
+	h := newHarness(t)
+	gitPath := filepath.Join(h.stateDir, "retry-git")
+	script := fmt.Sprintf("#!/bin/sh\ncount=0\nif [ -f '%s/count' ]; then count=$(cat '%s/count'); fi\ncount=$((count + 1))\nprintf '%%s' \"$count\" > '%s/count'\nif [ \"$count\" -lt 2 ]; then kill -KILL $$; fi\nprintf 'ok\\n'\n", h.stateDir, h.stateDir, h.stateDir)
+	if err := os.WriteFile(gitPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h.publisher.gitPath = gitPath
+	output, err := h.publisher.git(context.Background(), "", "ls-remote")
+	if err != nil || string(output) != "ok\n" {
+		t.Fatalf("transient git retry output=%q err=%v", output, err)
+	}
+	count, err := os.ReadFile(filepath.Join(h.stateDir, "count"))
+	if err != nil || string(count) != "2" {
+		t.Fatalf("git retry count=%q err=%v", count, err)
+	}
+}
+
 func (h *harness) writeState(name, content string) {
 	h.t.Helper()
 	if err := os.WriteFile(filepath.Join(h.stateDir, name), []byte(content), 0o600); err != nil {
