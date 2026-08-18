@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.invalid/schemas/apap/apap-v1.schema.json",
+  "title": "APAP v1 closed contracts",
+  "oneOf": [
+    { "$ref": "#/$defs/controlRequest" },
+    { "$ref": "#/$defs/controlResponse" },
+    { "$ref": "#/$defs/fdTable" },
+    { "$ref": "#/$defs/signedObjectEnvelope" }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+    "nonce": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+    "time": { "type": "string", "format": "date-time", "pattern": "Z$" },
+    "uint64": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+    "positiveUint64": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 },
+    "profile": { "enum": ["qoder-cli-adr0034-v1", "codex-cli-adr0037-v1"] },
+    "updateKind": { "enum": ["evidence-update", "planned-rotation", "security-revocation"] },
+    "safeCode": {
+      "enum": [
+        "ok", "platform-unsupported", "profile-unsupported", "principal-unauthorized",
+        "identity-mismatch", "bundle-invalid", "bundle-rollback", "evidence-invalid",
+        "evidence-revoked", "evidence-expired", "host-attestation-invalid",
+        "isolation-unavailable", "launch-receipt-invalid", "secret-boundary-violation",
+        "provider-busy", "anchor-temporarily-unavailable", "bundle-commit-ambiguous",
+        "launch-outcome-ambiguous", "internal-fail-closed"
+      ]
+    },
+    "describeRequestPayload": { "type": "object", "properties": {}, "additionalProperties": false },
+    "describeResponsePayload": {
+      "type": "object",
+      "required": ["providerBuildDigest", "platform", "profiles"],
+      "properties": {
+        "providerBuildDigest": { "$ref": "#/$defs/digest" },
+        "platform": { "enum": ["linux", "darwin"] },
+        "profiles": {
+          "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true,
+          "items": {
+            "type": "object", "required": ["authorityProfile", "status"],
+            "properties": {
+              "authorityProfile": { "$ref": "#/$defs/profile" },
+              "status": { "enum": ["available", "unsupported", "misconfigured"] }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "beginProbeRequestPayload": {
+      "type": "object",
+      "required": ["candidateIdentityDigest", "suiteDigest", "probeArtifactDigest", "policyDigest", "challengeDigest", "deadline"],
+      "properties": {
+        "candidateIdentityDigest": { "$ref": "#/$defs/digest" },
+        "suiteDigest": { "$ref": "#/$defs/digest" },
+        "probeArtifactDigest": { "$ref": "#/$defs/digest" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "challengeDigest": { "$ref": "#/$defs/digest" },
+        "deadline": { "$ref": "#/$defs/time" }
+      },
+      "additionalProperties": false
+    },
+    "beginProbeResponsePayload": {
+      "type": "object",
+      "required": ["probeSessionId", "targetIsolationIdentityDigest", "credentialIngressEndpointIdentityDigest", "expiresAt"],
+      "properties": {
+        "probeSessionId": { "$ref": "#/$defs/id" },
+        "targetIsolationIdentityDigest": { "$ref": "#/$defs/digest" },
+        "credentialIngressEndpointIdentityDigest": { "$ref": "#/$defs/digest" },
+        "expiresAt": { "$ref": "#/$defs/time" }
+      },
+      "additionalProperties": false
+    },
+    "authorityBundleLeaf": {
+      "type": "object",
+      "required": ["leafKind", "digest", "size", "mediaType"],
+      "properties": {
+        "leafKind": { "$ref": "#/$defs/id" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "mediaType": { "const": "application/json" }
+      },
+      "additionalProperties": false
+    },
+    "stageBundleLeafBatchRequestPayload": {
+      "type": "object",
+      "required": ["bundleTransactionId", "updateKind", "orderedLeafDescriptors"],
+      "properties": {
+        "bundleTransactionId": { "$ref": "#/$defs/id" },
+        "updateKind": { "$ref": "#/$defs/updateKind" },
+        "orderedLeafDescriptors": {
+          "type": "array", "minItems": 1, "maxItems": 24,
+          "items": { "$ref": "#/$defs/authorityBundleLeaf" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "stageBundleLeafBatchResponsePayload": {
+      "type": "object",
+      "required": ["bundleTransactionId", "stagedLeafDigests", "stagingReceiptDigest"],
+      "properties": {
+        "bundleTransactionId": { "$ref": "#/$defs/id" },
+        "stagedLeafDigests": {
+          "type": "array", "minItems": 1, "maxItems": 24,
+          "items": { "$ref": "#/$defs/digest" }
+        },
+        "stagingReceiptDigest": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "requestBase": {
+      "type": "object",
+      "required": ["schemaVersion", "protocolFamily", "protocolVersion", "audience", "requestId", "commandId", "callerPrincipalDigest", "providerInstanceId", "authorityProfile", "operation", "issuedAt", "expiresAt", "nonce", "expectedProviderSequence", "payload", "requestEnvelopeDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.agent-production-authority.request.v1" },
+        "protocolFamily": { "const": "marshal.agent-production-authority" },
+        "protocolVersion": { "const": 1 },
+        "audience": { "const": "marshal.agent-production-authority.local" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "commandId": { "$ref": "#/$defs/id" },
+        "callerPrincipalDigest": { "$ref": "#/$defs/digest" },
+        "providerInstanceId": { "$ref": "#/$defs/id" },
+        "authorityProfile": { "$ref": "#/$defs/profile" },
+        "operation": { "enum": ["Describe", "BeginProbe", "StageBundleLeafBatch"] },
+        "issuedAt": { "$ref": "#/$defs/time" },
+        "expiresAt": { "$ref": "#/$defs/time" },
+        "nonce": { "$ref": "#/$defs/nonce" },
+        "expectedProviderSequence": { "oneOf": [{ "$ref": "#/$defs/uint64" }, { "type": "null" }] },
+        "payload": { "type": "object" },
+        "requestEnvelopeDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "controlRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "oneOf": [
+            { "properties": { "operation": { "const": "Describe" }, "expectedProviderSequence": { "type": "null" }, "payload": { "$ref": "#/$defs/describeRequestPayload" } } },
+            { "properties": { "operation": { "const": "BeginProbe" }, "expectedProviderSequence": { "$ref": "#/$defs/uint64" }, "payload": { "$ref": "#/$defs/beginProbeRequestPayload" } } },
+            { "properties": { "operation": { "const": "StageBundleLeafBatch" }, "expectedProviderSequence": { "$ref": "#/$defs/uint64" }, "payload": { "$ref": "#/$defs/stageBundleLeafBatchRequestPayload" } } }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "responseBase": {
+      "type": "object",
+      "required": ["schemaVersion", "protocolFamily", "protocolVersion", "audience", "requestId", "commandId", "providerInstanceId", "authorityProfile", "operation", "observedProviderSequence", "safeCode", "safeMessage", "payload", "responseEnvelopeDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.agent-production-authority.response.v1" },
+        "protocolFamily": { "const": "marshal.agent-production-authority" },
+        "protocolVersion": { "const": 1 },
+        "audience": { "const": "marshal.agent-production-authority.local" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "commandId": { "$ref": "#/$defs/id" },
+        "providerInstanceId": { "$ref": "#/$defs/id" },
+        "authorityProfile": { "$ref": "#/$defs/profile" },
+        "operation": { "enum": ["Describe", "BeginProbe", "StageBundleLeafBatch"] },
+        "observedProviderSequence": { "$ref": "#/$defs/uint64" },
+        "safeCode": { "$ref": "#/$defs/safeCode" },
+        "safeMessage": { "type": "string", "maxLength": 128 },
+        "payload": {},
+        "responseEnvelopeDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "controlResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/responseBase" },
+        {
+          "oneOf": [
+            {
+              "properties": { "safeCode": { "const": "ok" }, "safeMessage": { "const": "" } },
+              "oneOf": [
+                { "properties": { "operation": { "const": "Describe" }, "payload": { "$ref": "#/$defs/describeResponsePayload" } } },
+                { "properties": { "operation": { "const": "BeginProbe" }, "payload": { "$ref": "#/$defs/beginProbeResponsePayload" } } },
+                { "properties": { "operation": { "const": "StageBundleLeafBatch" }, "payload": { "$ref": "#/$defs/stageBundleLeafBatchResponsePayload" } } }
+              ]
+            },
+            { "properties": { "safeCode": { "not": { "const": "ok" } }, "payload": { "type": "null" } } }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "fdDescriptor": {
+      "type": "object", "required": ["role", "index", "identityDigest"],
+      "properties": {
+        "role": { "enum": ["candidateExecutable", "scratchRoot", "businessDenyRoot", "bundleLeaf"] },
+        "index": { "type": "integer", "minimum": 0, "maximum": 23 },
+        "identityDigest": { "$ref": "#/$defs/digest" }
+      },
+      "additionalProperties": false
+    },
+    "fdTable": {
+      "type": "object", "required": ["schemaVersion", "operation", "descriptors"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.agent-production-authority.fd-table.v1" },
+        "operation": { "enum": ["Describe", "BeginProbe", "StageBundleLeafBatch"] },
+        "descriptors": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/fdDescriptor" } }
+      },
+      "allOf": [
+        { "if": { "properties": { "operation": { "const": "Describe" } } }, "then": { "properties": { "descriptors": { "maxItems": 0 } } } },
+        { "if": { "properties": { "operation": { "const": "StageBundleLeafBatch" } } }, "then": { "properties": { "descriptors": { "minItems": 1, "maxItems": 24 } } } },
+        { "if": { "properties": { "operation": { "const": "BeginProbe" } } }, "then": { "properties": { "descriptors": { "minItems": 3, "maxItems": 18 } } } }
+      ],
+      "additionalProperties": false
+    },
+    "signedObjectEnvelope": {
+      "type": "object",
+      "required": ["objectDigest", "signatureAlgorithm", "signatureEncoding", "keyId", "keyEpoch", "signatureDomain", "signature"],
+      "properties": {
+        "objectDigest": { "$ref": "#/$defs/digest" },
+        "signatureAlgorithm": { "const": "Ed25519" },
+        "signatureEncoding": { "const": "base64url-unpadded" },
+        "keyId": { "$ref": "#/$defs/id" },
+        "keyEpoch": { "$ref": "#/$defs/positiveUint64" },
+        "signatureDomain": {
+          "enum": [
+            "marshal-credential-ingress-ticket-v1\u0000", "marshal-credential-delivery-receipt-v1\u0000",
+            "marshal-credential-install-receipt-v1\u0000", "marshal-apap-launch-binding-receipt-v1\u0000",
+            "marshal-agent-authority-bundle-v1\u0000", "marshal-evidence-update-authorization-v1\u0000",
+            "marshal-rotation-authorization-v1\u0000", "marshal-revocation-authorization-v1\u0000",
+            "marshal-bundle-prepared-receipt-v1\u0000", "marshal-anchor-advance-receipt-v1\u0000",
+            "marshal-bundle-commit-receipt-v1\u0000", "marshal-bundle-recovery-receipt-v1\u0000"
+          ]
+        },
+        "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]{86}$" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
