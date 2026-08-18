@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.invalid/schemas/apap/apap-v1.schema.json",
+  "title": "APAP v1 closed contracts",
+  "oneOf": [
+    { "$ref": "#/$defs/controlRequest" },
+    { "$ref": "#/$defs/controlResponse" },
+    { "$ref": "#/$defs/fdTable" },
+    { "$ref": "#/$defs/signedObjectEnvelope" }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+    "nonce": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$" },
+    "time": { "type": "string", "format": "date-time", "pattern": "Z$" },
+    "uint64": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+    "signedEpoch": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807 },
+    "profile": { "enum": ["qoder-cli-adr0034-v1", "codex-cli-adr0037-v1"] },
+    "describeProfiles": {
+      "oneOf": [
+        { "type": "array", "prefixItems": [{ "const": "codex-cli-adr0037-v1" }], "minItems": 1, "maxItems": 1, "items": false },
+        { "type": "array", "prefixItems": [{ "const": "qoder-cli-adr0034-v1" }], "minItems": 1, "maxItems": 1, "items": false },
+        { "type": "array", "prefixItems": [{ "const": "codex-cli-adr0037-v1" }, { "const": "qoder-cli-adr0034-v1" }], "minItems": 2, "maxItems": 2, "items": false }
+      ]
+    },
+    "safeCode": {
+      "enum": [
+        "ok", "platform-unsupported", "profile-unsupported", "principal-unauthorized",
+        "identity-mismatch", "bundle-invalid", "bundle-rollback", "evidence-invalid",
+        "evidence-revoked", "evidence-expired", "host-attestation-invalid",
+        "isolation-unavailable", "launch-receipt-invalid", "secret-boundary-violation",
+        "provider-busy", "anchor-temporarily-unavailable", "bundle-commit-ambiguous",
+        "launch-outcome-ambiguous", "internal-fail-closed"
+      ]
+    },
+    "describeRequestPayload": { "type": "object", "properties": {}, "additionalProperties": false },
+    "describeResponsePayload": {
+      "type": "object",
+      "required": ["providerBuildDigest", "platform", "profiles"],
+      "properties": {
+        "providerBuildDigest": { "$ref": "#/$defs/digest" },
+        "platform": { "enum": ["linux", "darwin"] },
+        "profiles": { "$ref": "#/$defs/describeProfiles" }
+      },
+      "additionalProperties": false
+    },
+    "beginProbeRequestPayload": {
+      "type": "object",
+      "required": ["candidateIdentityDigest", "suiteDigest", "probeArtifactDigest", "policyDigest", "challengeDigest", "deadline"],
+      "properties": {
+        "candidateIdentityDigest": { "$ref": "#/$defs/digest" },
+        "suiteDigest": { "$ref": "#/$defs/digest" },
+        "probeArtifactDigest": { "$ref": "#/$defs/digest" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "challengeDigest": { "$ref": "#/$defs/digest" },
+        "deadline": { "$ref": "#/$defs/time" }
+      },
+      "additionalProperties": false
+    },
+    "beginProbeResponsePayload": {
+      "type": "object",
+      "required": ["probeSessionId", "targetIsolationIdentityDigest", "credentialIngressEndpointIdentityDigest", "expiresAt"],
+      "properties": {
+        "probeSessionId": { "$ref": "#/$defs/id" },
+        "targetIsolationIdentityDigest": { "$ref": "#/$defs/digest" },
+        "credentialIngressEndpointIdentityDigest": { "$ref": "#/$defs/digest" },
+        "expiresAt": { "$ref": "#/$defs/time" }
+      },
+      "additionalProperties": false
+    },
+    "requestBase": {
+      "type": "object",
+      "required": ["schemaVersion", "protocolFamily", "protocolVersion", "audience", "requestId", "commandId", "callerPrincipalDigest", "providerInstanceId", "authorityProfile", "operation", "issuedAt", "expiresAt", "nonce", "expectedProviderSequence", "payload", "requestEnvelopeDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.agent-production-authority.request.v1" },
+        "protocolFamily": { "const": "marshal.agent-production-authority" },
+        "protocolVersion": { "const": 1 },
+        "audience": { "const": "marshal.agent-production-authority.local" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "commandId": { "$ref": "#/$defs/id" },
+        "callerPrincipalDigest": { "$ref": "#/$defs/digest" },
+        "providerInstanceId": { "$ref": "#/$defs/id" },
+        "authorityProfile": { "$ref": "#/$defs/profile" },
+        "operation": { "enum": ["Describe", "BeginProbe"] },
+        "issuedAt": { "$ref": "#/$defs/time" },
+        "expiresAt": { "$ref": "#/$defs/time" },
+        "nonce": { "$ref": "#/$defs/nonce" },
+        "expectedProviderSequence": { "oneOf": [{ "$ref": "#/$defs/uint64" }, { "type": "null" }] },
+        "payload": { "type": "object" },
+        "requestEnvelopeDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "controlRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestBase" },
+        {
+          "oneOf": [
+            { "properties": { "operation": { "const": "Describe" }, "expectedProviderSequence": { "type": "null" }, "payload": { "$ref": "#/$defs/describeRequestPayload" } } },
+            { "properties": { "operation": { "const": "BeginProbe" }, "expectedProviderSequence": { "$ref": "#/$defs/uint64" }, "payload": { "$ref": "#/$defs/beginProbeRequestPayload" } } }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "responseBase": {
+      "type": "object",
+      "required": ["schemaVersion", "protocolFamily", "protocolVersion", "audience", "requestId", "commandId", "providerInstanceId", "authorityProfile", "operation", "observedProviderSequence", "safeCode", "safeMessage", "payload", "responseEnvelopeDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.agent-production-authority.response.v1" },
+        "protocolFamily": { "const": "marshal.agent-production-authority" },
+        "protocolVersion": { "const": 1 },
+        "audience": { "const": "marshal.agent-production-authority.local" },
+        "requestId": { "$ref": "#/$defs/id" },
+        "commandId": { "$ref": "#/$defs/id" },
+        "providerInstanceId": { "$ref": "#/$defs/id" },
+        "authorityProfile": { "$ref": "#/$defs/profile" },
+        "operation": { "enum": ["Describe", "BeginProbe"] },
+        "observedProviderSequence": { "$ref": "#/$defs/uint64" },
+        "safeCode": { "$ref": "#/$defs/safeCode" },
+        "safeMessage": { "type": "string", "maxLength": 128 },
+        "payload": {},
+        "responseEnvelopeDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "controlResponse": {
+      "allOf": [
+        { "$ref": "#/$defs/responseBase" },
+        {
+          "oneOf": [
+            {
+              "properties": { "safeCode": { "const": "ok" }, "safeMessage": { "const": "" } },
+              "oneOf": [
+                { "properties": { "operation": { "const": "Describe" }, "payload": { "$ref": "#/$defs/describeResponsePayload" } } },
+                { "properties": { "operation": { "const": "BeginProbe" }, "payload": { "$ref": "#/$defs/beginProbeResponsePayload" } } }
+              ]
+            },
+            {
+              "properties": { "safeCode": { "not": { "const": "ok" } }, "payload": { "type": "null" } },
+              "oneOf": [
+                { "properties": { "safeCode": { "const": "platform-unsupported" }, "safeMessage": { "const": "request rejected: platform-unsupported" } } },
+                { "properties": { "safeCode": { "const": "profile-unsupported" }, "safeMessage": { "const": "request rejected: profile-unsupported" } } },
+                { "properties": { "safeCode": { "const": "principal-unauthorized" }, "safeMessage": { "const": "request rejected: principal-unauthorized" } } },
+                { "properties": { "safeCode": { "const": "identity-mismatch" }, "safeMessage": { "const": "request rejected: identity-mismatch" } } },
+                { "properties": { "safeCode": { "const": "bundle-invalid" }, "safeMessage": { "const": "request rejected: bundle-invalid" } } },
+                { "properties": { "safeCode": { "const": "bundle-rollback" }, "safeMessage": { "const": "request rejected: bundle-rollback" } } },
+                { "properties": { "safeCode": { "const": "evidence-invalid" }, "safeMessage": { "const": "request rejected: evidence-invalid" } } },
+                { "properties": { "safeCode": { "const": "evidence-revoked" }, "safeMessage": { "const": "request rejected: evidence-revoked" } } },
+                { "properties": { "safeCode": { "const": "evidence-expired" }, "safeMessage": { "const": "request rejected: evidence-expired" } } },
+                { "properties": { "safeCode": { "const": "host-attestation-invalid" }, "safeMessage": { "const": "request rejected: host-attestation-invalid" } } },
+                { "properties": { "safeCode": { "const": "isolation-unavailable" }, "safeMessage": { "const": "request rejected: isolation-unavailable" } } },
+                { "properties": { "safeCode": { "const": "launch-receipt-invalid" }, "safeMessage": { "const": "request rejected: launch-receipt-invalid" } } },
+                { "properties": { "safeCode": { "const": "secret-boundary-violation" }, "safeMessage": { "const": "request rejected: secret-boundary-violation" } } },
+                { "properties": { "safeCode": { "const": "provider-busy" }, "safeMessage": { "const": "request rejected: provider-busy" } } },
+                { "properties": { "safeCode": { "const": "anchor-temporarily-unavailable" }, "safeMessage": { "const": "request rejected: anchor-temporarily-unavailable" } } },
+                { "properties": { "safeCode": { "const": "bundle-commit-ambiguous" }, "safeMessage": { "const": "request rejected: bundle-commit-ambiguous" } } },
+                { "properties": { "safeCode": { "const": "launch-outcome-ambiguous" }, "safeMessage": { "const": "request rejected: launch-outcome-ambiguous" } } },
+                { "properties": { "safeCode": { "const": "internal-fail-closed" }, "safeMessage": { "const": "request rejected: internal-fail-closed" } } }
+              ]
+            }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "fdCandidate": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "candidateExecutable" }, "index": { "const": 0 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdScratch": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "scratchRoot" }, "index": { "const": 0 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny0": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 0 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny1": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 1 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny2": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 2 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny3": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 3 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny4": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 4 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny5": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 5 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny6": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 6 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny7": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 7 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny8": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 8 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny9": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 9 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny10": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 10 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny11": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 11 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny12": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 12 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny13": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 13 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny14": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 14 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "fdDeny15": { "type": "object", "required": ["role", "index", "identityDigest"], "properties": { "role": { "const": "businessDenyRoot" }, "index": { "const": 15 }, "identityDigest": { "$ref": "#/$defs/digest" } }, "additionalProperties": false },
+    "beginProbeFDDescriptors": {
+      "oneOf": [
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }], "minItems": 3, "maxItems": 3, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }], "minItems": 4, "maxItems": 4, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }], "minItems": 5, "maxItems": 5, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }], "minItems": 6, "maxItems": 6, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }], "minItems": 7, "maxItems": 7, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }], "minItems": 8, "maxItems": 8, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }], "minItems": 9, "maxItems": 9, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }], "minItems": 10, "maxItems": 10, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }], "minItems": 11, "maxItems": 11, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }], "minItems": 12, "maxItems": 12, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }], "minItems": 13, "maxItems": 13, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }, { "$ref": "#/$defs/fdDeny11" }], "minItems": 14, "maxItems": 14, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }, { "$ref": "#/$defs/fdDeny11" }, { "$ref": "#/$defs/fdDeny12" }], "minItems": 15, "maxItems": 15, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }, { "$ref": "#/$defs/fdDeny11" }, { "$ref": "#/$defs/fdDeny12" }, { "$ref": "#/$defs/fdDeny13" }], "minItems": 16, "maxItems": 16, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }, { "$ref": "#/$defs/fdDeny11" }, { "$ref": "#/$defs/fdDeny12" }, { "$ref": "#/$defs/fdDeny13" }, { "$ref": "#/$defs/fdDeny14" }], "minItems": 17, "maxItems": 17, "items": false },
+        { "type": "array", "prefixItems": [{ "$ref": "#/$defs/fdCandidate" }, { "$ref": "#/$defs/fdScratch" }, { "$ref": "#/$defs/fdDeny0" }, { "$ref": "#/$defs/fdDeny1" }, { "$ref": "#/$defs/fdDeny2" }, { "$ref": "#/$defs/fdDeny3" }, { "$ref": "#/$defs/fdDeny4" }, { "$ref": "#/$defs/fdDeny5" }, { "$ref": "#/$defs/fdDeny6" }, { "$ref": "#/$defs/fdDeny7" }, { "$ref": "#/$defs/fdDeny8" }, { "$ref": "#/$defs/fdDeny9" }, { "$ref": "#/$defs/fdDeny10" }, { "$ref": "#/$defs/fdDeny11" }, { "$ref": "#/$defs/fdDeny12" }, { "$ref": "#/$defs/fdDeny13" }, { "$ref": "#/$defs/fdDeny14" }, { "$ref": "#/$defs/fdDeny15" }], "minItems": 18, "maxItems": 18, "items": false }
+      ]
+    },
+    "fdTable": {
+      "type": "object", "required": ["schemaVersion", "operation", "descriptors"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.agent-production-authority.fd-table.v1" },
+        "operation": { "enum": ["Describe", "BeginProbe"] },
+        "descriptors": { "type": "array" }
+      },
+      "oneOf": [
+        { "properties": { "operation": { "const": "Describe" }, "descriptors": { "type": "array", "maxItems": 0 } } },
+        { "properties": { "operation": { "const": "BeginProbe" }, "descriptors": { "$ref": "#/$defs/beginProbeFDDescriptors" } } }
+      ],
+      "additionalProperties": false
+    },
+    "signedObjectEnvelope": {
+      "type": "object",
+      "required": ["objectDigest", "signatureAlgorithm", "signatureEncoding", "keyId", "keyEpoch", "signatureDomain", "signature"],
+      "properties": {
+        "objectDigest": { "$ref": "#/$defs/digest" },
+        "signatureAlgorithm": { "const": "Ed25519" },
+        "signatureEncoding": { "const": "base64url-unpadded" },
+        "keyId": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[ -~]+$" },
+        "keyEpoch": { "$ref": "#/$defs/signedEpoch" },
+        "signatureDomain": {
+          "enum": [
+            "marshal-credential-ingress-ticket-v1\u0000", "marshal-credential-delivery-receipt-v1\u0000",
+            "marshal-credential-install-receipt-v1\u0000", "marshal-apap-launch-binding-receipt-v1\u0000",
+            "marshal-agent-authority-bundle-v1\u0000", "marshal-evidence-update-authorization-v1\u0000",
+            "marshal-rotation-authorization-v1\u0000", "marshal-revocation-authorization-v1\u0000",
+            "marshal-bundle-prepared-receipt-v1\u0000", "marshal-anchor-advance-receipt-v1\u0000",
+            "marshal-bundle-commit-receipt-v1\u0000", "marshal-bundle-recovery-receipt-v1\u0000"
+          ]
+        },
+        "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]{86}$" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
