@@ -407,6 +407,64 @@ func TestRemoveTreeBoundedRestoresReadOnlyCacheDirectories(t *testing.T) {
 	}
 }
 
+func TestRemoveTreeBoundedRestoresReadOnlyRegularFiles(t *testing.T) {
+	root := t.TempDir()
+	toolchain := filepath.Join(root, "go-mod-cache", "golang.org", "toolchain@v0.0.1-go1.26.6.darwin-arm64")
+	if err := os.MkdirAll(toolchain, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(toolchain, "LICENSE"), []byte("BSD-3-Clause\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(toolchain, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte("#!/bin/sh\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "readonly.txt"), []byte("readonly\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(toolchain, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(bin, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeAllBounded(root, 5*time.Second); err != nil {
+		t.Fatalf("read-only regular files were not cleaned: %v", err)
+	}
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("isolation root still exists: %v", err)
+	}
+}
+
+func TestRemoveTreeBoundedDoesNotFollowSymlinks(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "target.txt")
+	if err := os.WriteFile(target, []byte("keep\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeAllBounded(root, 5*time.Second); err != nil {
+		t.Fatalf("symlink-bearing disposable tree was not cleaned: %v", err)
+	}
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("isolation root still exists: %v", err)
+	}
+	info, err := os.Lstat(target)
+	if err != nil {
+		t.Fatalf("symlink removal deleted its target: %v", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o200 != 0 {
+		t.Fatalf("symlink removal followed or chmodded its target: mode=%v", info.Mode())
+	}
+}
+
 func TestIssue138CandidateCopyRejectsLstatToFIFORaceWithoutBlocking(t *testing.T) {
 	fixture := newVerificationFixture(t)
 	destination := t.TempDir()
