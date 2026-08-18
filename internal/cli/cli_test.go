@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
+	"github.com/chiga0/marshal-harness/internal/planning"
 	marshalRepository "github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	marshalSchemas "github.com/chiga0/marshal-harness/schemas"
@@ -263,12 +265,12 @@ func TestDoctorRunReconcilesEvidenceAndBlocksCorruption(t *testing.T) {
 	if exit := Run([]string{"init"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
 		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
 	}
-	executable := filepath.Join(t.TempDir(), "opencode")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf '1.18.13\\n'\n"), 0o700); err != nil {
+	executable := filepath.Join(t.TempDir(), "qwen")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf '0.21.11\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("MARSHAL_OPENCODE_PATH", executable)
-	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_OPENCODE_PATH", "")
+	t.Setenv("MARSHAL_QWEN_PATH", executable)
 	t.Setenv("MARSHAL_PI_PATH", "")
 	const (
 		taskID = "doctor-run-task"
@@ -429,8 +431,12 @@ func TestTaskSkeletonHasNoFilesystemSideEffects(t *testing.T) {
 		}
 		var stdout, stderr bytes.Buffer
 		exitCode := Run([]string{"task", command}, strings.NewReader(""), &stdout, &stderr)
-		if exitCode != ExitUnavailable {
-			t.Fatalf("task %s exit = %d, want %d", command, exitCode, ExitUnavailable)
+		want := ExitUnavailable
+		if command == "scaffold" {
+			want = ExitUsage
+		}
+		if exitCode != want {
+			t.Fatalf("task %s exit = %d, want %d", command, exitCode, want)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(temporaryDirectory, ".marshal")); !os.IsNotExist(err) {
@@ -504,12 +510,12 @@ func TestTaskPlanEndToEndFreezesSelectedAdapter(t *testing.T) {
 		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
 	}
 
-	executable := filepath.Join(t.TempDir(), "opencode")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '1.18.13\\n'; exit 0; fi\nexit 1\n"), 0o700); err != nil {
+	executable := filepath.Join(t.TempDir(), "qwen")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '0.21.11\\n'; exit 0; fi\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("MARSHAL_OPENCODE_PATH", executable)
-	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_OPENCODE_PATH", "")
+	t.Setenv("MARSHAL_QWEN_PATH", executable)
 	t.Setenv("MARSHAL_PI_PATH", "")
 
 	const (
@@ -543,7 +549,7 @@ func TestTaskPlanEndToEndFreezesSelectedAdapter(t *testing.T) {
 	var identity struct {
 		AdapterID string `json:"adapterId"`
 	}
-	if err := json.Unmarshal(capability, &identity); err != nil || identity.AdapterID != "opencode" {
+	if err := json.Unmarshal(capability, &identity); err != nil || identity.AdapterID != "qwen" {
 		t.Fatalf("frozen capability adapter = %q, err = %v", identity.AdapterID, err)
 	}
 }
@@ -592,8 +598,10 @@ func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
 	)
 	taskPath := filepath.Join(t.TempDir(), "task.json")
 	policyPath := filepath.Join(t.TempDir(), "policy.json")
-	writeCLIFixture(t, taskPath, cliPlanningTaskWithWorkers(t, repositoryRoot, taskID, remoteURL, "opencode", []any{"pi"}))
-	writeCLIFixture(t, policyPath, cliPlanningPolicyWithWorkers(t, taskID, runID, true, []any{"opencode", "pi"}))
+	t.Setenv("MARSHAL_QODER_PATH", writeVersionExecutableForCLI(t, "qodercli", "1.1.23"))
+	t.Setenv("MARSHAL_QODER_CONFORMANCE_CONFIG", "")
+	writeCLIFixture(t, taskPath, cliPlanningTaskWithWorkers(t, repositoryRoot, taskID, remoteURL, "qoder", []any{"pi"}))
+	writeCLIFixture(t, policyPath, cliPlanningPolicyWithWorkers(t, taskID, runID, true, []any{"qoder", "pi"}))
 	stdout.Reset()
 	stderr.Reset()
 	if exit := Run([]string{"task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
@@ -631,6 +639,219 @@ func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
 	}
 	if err := json.Unmarshal(capability, &identity); err != nil || identity.AdapterID != "pi" {
 		t.Fatalf("frozen capability adapter = %q, err = %v", identity.AdapterID, err)
+	}
+}
+
+// TestTaskPlanProductionDefaultOrder pins the production task-generation
+// contract at the real CLI boundary. Planning itself remains deliberately
+// explicit: the generated TaskSpec carries qoder -> codex -> qwen -> pi, and
+// the Selector attempts that exact order without adding configured OpenCode.
+func TestTaskPlanProductionDefaultOrder(t *testing.T) {
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	templateData, err := os.ReadFile(filepath.Join(originalDirectory, "../../.agents/skills/marshal/templates/research-task.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot := t.TempDir()
+	runGit(t, repositoryRoot, "init", "-q", "-b", "main")
+	runGit(t, repositoryRoot, "config", "user.email", "marshal@example.invalid")
+	runGit(t, repositoryRoot, "config", "user.name", "Marshal Test")
+	if err := os.WriteFile(filepath.Join(repositoryRoot, "README.md"), []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repositoryRoot, "add", "README.md")
+	runGit(t, repositoryRoot, "commit", "-q", "-m", "fixture")
+	const remoteURL = "https://example.invalid/marshal-cli-default-order.git"
+	runGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	if err := os.Chdir(repositoryRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"init"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
+	}
+	writeVersionExecutable := func(name, version string) string {
+		path := filepath.Join(t.TempDir(), name)
+		script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' %q\n", version)
+		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	// Qoder and Codex are configured but lack production authority, so their
+	// truthful probes are unsupported and selection continues to Qwen.
+	// OpenCode is configured to prove it is never injected into the explicit
+	// production candidate chain.
+	t.Setenv("MARSHAL_QODER_PATH", writeVersionExecutable("qodercli", "1.1.23"))
+	t.Setenv("MARSHAL_QODER_CONFORMANCE_CONFIG", "")
+	t.Setenv("MARSHAL_CODEX_PATH", writeVersionExecutable("codex", "0.145.0"))
+	t.Setenv("MARSHAL_CODEX_AUTHORITY_CONFIG", "")
+	t.Setenv("MARSHAL_QWEN_PATH", writeVersionExecutable("qwen", "0.21.11"))
+	t.Setenv("MARSHAL_PI_PATH", writeVersionExecutable("pi", "0.84.1"))
+	openCodeProbeMarker := filepath.Join(t.TempDir(), "opencode-probed")
+	openCodeExecutable := filepath.Join(t.TempDir(), "opencode")
+	openCodeScript := fmt.Sprintf("#!/bin/sh\n: > %q\nprintf '1.18.13\\n'\n", openCodeProbeMarker)
+	if err := os.WriteFile(openCodeExecutable, []byte(openCodeScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MARSHAL_OPENCODE_PATH", openCodeExecutable)
+
+	scaffold := func(taskID string, extraArgs ...string) (string, []byte) {
+		t.Helper()
+		draft := cliProductionTaskDraftFromTemplate(t, templateData, repositoryRoot, taskID, remoteURL)
+		worker := draft["worker"].(map[string]any)
+		delete(worker, "preferredAdapter")
+		delete(worker, "fallbackAdapters")
+		draftPath := filepath.Join(t.TempDir(), "draft.json")
+		taskPath := filepath.Join(t.TempDir(), "task.json")
+		writeCLIFixture(t, draftPath, draft)
+		stdout.Reset()
+		stderr.Reset()
+		args := append([]string{"task", "scaffold", "--draft", draftPath}, extraArgs...)
+		if exit := Run(args, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+			t.Fatalf("task scaffold exit = %d, stderr = %s", exit, stderr.String())
+		}
+		generated := append([]byte(nil), stdout.Bytes()...)
+		if err := os.WriteFile(taskPath, generated, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return taskPath, generated
+	}
+
+	const (
+		taskID = "cli-default-order-task"
+		runID  = "cli-default-order-run"
+	)
+	taskPath, generated := scaffold(taskID)
+	assertCLITaskWorkerOrder(t, generated, "qoder", []string{"codex", "qwen", "pi"})
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	writeCLIFixture(t, policyPath, cliPlanningPolicyWithWorkers(t, taskID, runID, true, []any{"qoder", "codex", "qwen", "pi", "opencode"}))
+
+	stdout.Reset()
+	stderr.Reset()
+	exit := Run([]string{"task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID, "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitOK {
+		t.Fatalf("task plan exit = %d, stderr = %s", exit, stderr.String())
+	}
+	var result struct {
+		State             domain.RunState `json:"state"`
+		SelectionAttempts []struct {
+			AdapterID string `json:"adapterId"`
+			Outcome   string `json:"outcome"`
+		} `json:"selectionAttempts"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode planning result: %v", err)
+	}
+	if result.State.State != domain.StateReady {
+		t.Fatalf("planning state = %+v", result.State)
+	}
+	want := []struct{ adapterID, outcome string }{
+		{"qoder", "unsupported"},
+		{"codex", "unsupported"},
+		{"qwen", "selected"},
+	}
+	if len(result.SelectionAttempts) != len(want) {
+		t.Fatalf("selection attempts = %+v, want %d attempts", result.SelectionAttempts, len(want))
+	}
+	for index, expected := range want {
+		actual := result.SelectionAttempts[index]
+		if actual.AdapterID != expected.adapterID || actual.Outcome != expected.outcome {
+			t.Fatalf("selectionAttempts[%d] = %+v, want adapter=%q outcome=%q", index, actual, expected.adapterID, expected.outcome)
+		}
+	}
+	for _, attempt := range result.SelectionAttempts {
+		if attempt.AdapterID == "opencode" {
+			t.Fatalf("OpenCode entered the production candidate chain: %+v", result.SelectionAttempts)
+		}
+	}
+
+	const (
+		customTaskID = "cli-custom-order-task"
+		customRunID  = "cli-custom-order-run"
+	)
+	customTaskPath, customGenerated := scaffold(customTaskID,
+		"--preferred-adapter", "pi",
+		"--fallback-adapter", "qwen",
+		"--fallback-adapter", "codex",
+		"--fallback-adapter", "qoder",
+	)
+	assertCLITaskWorkerOrder(t, customGenerated, "pi", []string{"qwen", "codex", "qoder"})
+	customPolicyPath := filepath.Join(t.TempDir(), "policy.json")
+	writeCLIFixture(t, customPolicyPath, cliPlanningPolicyWithWorkers(t, customTaskID, customRunID, true, []any{"qoder", "codex", "qwen", "pi", "opencode"}))
+	stdout.Reset()
+	stderr.Reset()
+	exit = Run([]string{"task", "plan", "--task", customTaskPath, "--policy", customPolicyPath, "--run", customRunID, "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitOK {
+		t.Fatalf("custom task plan exit = %d, stderr = %s", exit, stderr.String())
+	}
+	result = struct {
+		State             domain.RunState `json:"state"`
+		SelectionAttempts []struct {
+			AdapterID string `json:"adapterId"`
+			Outcome   string `json:"outcome"`
+		} `json:"selectionAttempts"`
+	}{}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode custom planning result: %v", err)
+	}
+	if len(result.SelectionAttempts) != 1 || result.SelectionAttempts[0].AdapterID != "pi" || result.SelectionAttempts[0].Outcome != "selected" {
+		t.Fatalf("custom selection attempts = %+v, want pi selected", result.SelectionAttempts)
+	}
+
+	openCodeDraft := cliProductionTaskDraftFromTemplate(t, templateData, repositoryRoot, "cli-opencode-rejected-task", remoteURL)
+	openCodeDraft["worker"].(map[string]any)["preferredAdapter"] = "opencode"
+	openCodeDraft["worker"].(map[string]any)["fallbackAdapters"] = []any{"qoder"}
+	openCodeDraftPath := filepath.Join(t.TempDir(), "draft.json")
+	writeCLIFixture(t, openCodeDraftPath, openCodeDraft)
+	for name, args := range map[string][]string{
+		"draft":              {"task", "scaffold", "--draft", openCodeDraftPath},
+		"preferred override": {"task", "scaffold", "--draft", taskPath, "--preferred-adapter", "opencode"},
+		"fallback override":  {"task", "scaffold", "--draft", taskPath, "--preferred-adapter", "qoder", "--fallback-adapter", "opencode"},
+	} {
+		t.Run("reject OpenCode "+name, func(t *testing.T) {
+			stdout.Reset()
+			stderr.Reset()
+			exit := Run(args, strings.NewReader(""), &stdout, &stderr)
+			if exit != ExitUnavailable || stderr.String() != "生成失败：OpenCode 不可用于新 Task。\n" || stdout.Len() != 0 {
+				t.Fatalf("exit = %d, stdout = %q, stderr = %q", exit, stdout.String(), stderr.String())
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name      string
+		preferred string
+		fallbacks []any
+	}{
+		{name: "preferred", preferred: "opencode", fallbacks: []any{"pi"}},
+		{name: "fallback", preferred: "pi", fallbacks: []any{"opencode"}},
+	} {
+		t.Run("direct task plan rejects OpenCode "+test.name, func(t *testing.T) {
+			directTaskID := "cli-direct-opencode-" + test.name + "-task"
+			directRunID := "cli-direct-opencode-" + test.name + "-run"
+			directTaskPath := filepath.Join(t.TempDir(), "task.json")
+			directPolicyPath := filepath.Join(t.TempDir(), "policy.json")
+			writeCLIFixture(t, directTaskPath, cliPlanningTaskWithWorkers(t, repositoryRoot, directTaskID, remoteURL, test.preferred, test.fallbacks))
+			writeCLIFixture(t, directPolicyPath, cliPlanningPolicyWithWorkers(t, directTaskID, directRunID, true, []any{"opencode", "pi"}))
+			stdout.Reset()
+			stderr.Reset()
+			exit := Run([]string{"task", "plan", "--task", directTaskPath, "--policy", directPolicyPath, "--run", directRunID, "--json"}, strings.NewReader(""), &stdout, &stderr)
+			if exit != ExitFailure || !strings.Contains(stderr.String(), planning.ErrPolicyOpenCode) || stdout.Len() != 0 {
+				t.Fatalf("exit = %d, stdout = %q, stderr = %q", exit, stdout.String(), stderr.String())
+			}
+			if _, err := os.Stat(filepath.Join(repositoryRoot, ".marshal", "runs", directRunID)); !os.IsNotExist(err) {
+				t.Fatalf("rejected direct TaskSpec created run state: %v", err)
+			}
+			if _, err := os.Stat(openCodeProbeMarker); !os.IsNotExist(err) {
+				t.Fatalf("rejected direct TaskSpec probed OpenCode: %v", err)
+			}
+		})
 	}
 }
 
@@ -708,7 +929,7 @@ func TestTaskRunRejectsUnsafeOrUnavailableFrozenIdentityBeforeWorkerStart(t *tes
 }
 
 func cliPlanningTask(t *testing.T, repositoryRoot, taskID, remoteURL string) map[string]any {
-	return cliPlanningTaskWithWorkers(t, repositoryRoot, taskID, remoteURL, "opencode", []any{})
+	return cliPlanningTaskWithWorkers(t, repositoryRoot, taskID, remoteURL, "qwen", []any{})
 }
 
 func cliPlanningTaskWithWorkers(t *testing.T, repositoryRoot, taskID, remoteURL, preferred string, fallbacks []any) map[string]any {
@@ -737,8 +958,45 @@ func cliPlanningTaskWithWorkers(t *testing.T, repositoryRoot, taskID, remoteURL,
 	return fixture
 }
 
+func cliProductionTaskDraftFromTemplate(t *testing.T, templateData []byte, repositoryRoot, taskID, remoteURL string) map[string]any {
+	t.Helper()
+	var draft map[string]any
+	if err := json.Unmarshal(templateData, &draft); err != nil {
+		t.Fatal(err)
+	}
+	draft["metadata"].(map[string]any)["id"] = taskID
+	repository := draft["repository"].(map[string]any)
+	repository["path"] = repositoryRoot
+	repository["baseRef"] = strings.TrimSpace(runGitCLI(t, repositoryRoot, "rev-parse", "HEAD"))
+	repository["remote"] = "origin"
+	repository["expectedRemoteUrl"] = remoteURL
+	scope := draft["scope"].(map[string]any)
+	scope["allowPaths"] = []any{"README.md"}
+	draft["acceptance"] = readCLIFixture(t, "examples/happy-path/task-spec.json")["acceptance"]
+	draft["deliverables"] = []any{map[string]any{
+		"id": "research-report", "kind": "documentation", "pathGlob": "README.md", "minimumCount": float64(1), "required": true,
+	}}
+	return draft
+}
+
+func assertCLITaskWorkerOrder(t *testing.T, generated []byte, preferred string, fallbacks []string) {
+	t.Helper()
+	var task struct {
+		Worker struct {
+			Preferred string   `json:"preferredAdapter"`
+			Fallback  []string `json:"fallbackAdapters"`
+		} `json:"worker"`
+	}
+	if err := json.Unmarshal(generated, &task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Worker.Preferred != preferred || !reflect.DeepEqual(task.Worker.Fallback, fallbacks) {
+		t.Fatalf("worker order = %q -> %v, want %q -> %v", task.Worker.Preferred, task.Worker.Fallback, preferred, fallbacks)
+	}
+}
+
 func cliPlanningPolicy(t *testing.T, taskID, runID string) map[string]any {
-	return cliPlanningPolicyWithWorkers(t, taskID, runID, false, []any{"opencode"})
+	return cliPlanningPolicyWithWorkers(t, taskID, runID, false, []any{"qwen"})
 }
 
 func cliPlanningPolicyWithWorkers(t *testing.T, taskID, runID string, allowFallback bool, allowed []any) map[string]any {
@@ -796,6 +1054,16 @@ func writeCLIFixture(t *testing.T, path string, value any) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeVersionExecutableForCLI(t *testing.T, name, version string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' %q\n", version)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func runGit(t *testing.T, root string, args ...string) {
@@ -986,8 +1254,8 @@ func newAutoFlowSetup(t *testing.T) autoFlowSetup {
 	if exit := Run([]string{"init"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
 		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
 	}
-	t.Setenv("MARSHAL_OPENCODE_PATH", autoFlowWorkerExecutable(t))
-	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_OPENCODE_PATH", "")
+	t.Setenv("MARSHAL_QWEN_PATH", autoFlowWorkerExecutable(t))
 	t.Setenv("MARSHAL_PI_PATH", "")
 	return autoFlowSetup{repositoryRoot: repositoryRoot, remoteURL: remoteURL}
 }
@@ -1025,26 +1293,22 @@ func (s autoFlowSetup) planAndApprove(t *testing.T, taskID, runID string, accept
 
 func autoFlowWorkerExecutable(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "opencode")
+	path := filepath.Join(t.TempDir(), "qwen")
 	script := `#!/bin/sh
-if [ "$1" = "--version" ]; then printf '1.18.13\n'; exit 0; fi
-if [ "$1" = "debug" ] && [ "$2" = "config" ]; then printf '%s\n' "$OPENCODE_CONFIG_CONTENT"; exit 0; fi
-if [ "$1" = "run" ]; then
-  for last; do :; done
-  result_path=$(printf '%s\n' "$last" | sed -n 's/.*写入：\([^[:space:]]*\).*/\1/p')
-  task_id=$(printf '%s\n' "$last" | sed -n 's/.*taskId=\(.*\)、runId=.*/\1/p')
-  run_id=$(printf '%s\n' "$last" | sed -n 's/.*runId=\(.*\)、attemptId=.*/\1/p')
-  attempt_id=$(printf '%s\n' "$last" | sed -n 's/.*attemptId=\(.*\)、adapter\.id=.*/\1/p')
-  mkdir -p src/auth
-  printf 'fixture change\n' > src/auth/worker-change.txt
-  cat > "$result_path" <<EOF
-{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"$task_id","runId":"$run_id","attemptId":"$attempt_id","adapter":{"id":"opencode","executable":"/fixture/opencode","version":"fixture"},"status":"completed","summary":"fixture change","declaredChangedFiles":["src/auth/worker-change.txt"],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"2026-08-07T00:00:00Z","completedAt":"2026-08-07T00:00:01Z"}
+if [ "$1" = "--version" ]; then printf '0.21.11\n'; exit 0; fi
+for last; do :; done
+result_path=$(printf '%s\n' "$last" | sed -n 's/.*写入：\([^[:space:]]*\).*/\1/p')
+task_id=$(printf '%s\n' "$last" | sed -n 's/.*taskId=\(.*\)、runId=.*/\1/p')
+run_id=$(printf '%s\n' "$last" | sed -n 's/.*runId=\(.*\)、attemptId=.*/\1/p')
+attempt_id=$(printf '%s\n' "$last" | sed -n 's/.*attemptId=\(.*\)、adapter\.id=.*/\1/p')
+mkdir -p src/auth
+printf 'fixture change\n' > src/auth/worker-change.txt
+cat > "$result_path" <<EOF
+{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"$task_id","runId":"$run_id","attemptId":"$attempt_id","adapter":{"id":"qwen","executable":"/fixture/qwen","version":"fixture"},"status":"completed","summary":"fixture change","declaredChangedFiles":["src/auth/worker-change.txt"],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"2026-08-07T00:00:00Z","completedAt":"2026-08-07T00:00:01Z"}
 EOF
-  printf '%s\n' '{"type":"step_start","sessionID":"session-autoflow","part":{"type":"step-start"}}'
-  printf '%s\n' '{"type":"text","sessionID":"session-autoflow","part":{"type":"text","text":"done"}}'
-  exit 0
-fi
-exit 1
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"session-autoflow","cwd":"'"$PWD"'","qwen_code_version":"0.21.11"}'
+printf '%s\n' '{"type":"result","subtype":"success","usage":{"input_tokens":1,"output_tokens":1}}'
+exit 0
 `
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)

@@ -39,6 +39,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/supervisor"
+	"github.com/chiga0/marshal-harness/internal/taskgen"
 	"github.com/chiga0/marshal-harness/internal/verification"
 )
 
@@ -53,6 +54,7 @@ const (
 )
 
 var taskCommands = []string{
+	"scaffold",
 	"plan",
 	"approve",
 	"run",
@@ -97,7 +99,7 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	case "serve", "web":
 		return runServe(args[1:], stdout, stderr)
 	case "task":
-		return runTask(ctx, args[1:], stdout, stderr)
+		return runTask(ctx, args[1:], stdin, stdout, stderr)
 	case "supervise":
 		return runSupervise(ctx, args[1:], stdout, stderr)
 	case "__launch":
@@ -833,13 +835,16 @@ func superviseOnce(ctx context.Context, driver *supervisor.Supervisor, jsonOutpu
 	return exitCode
 }
 
-func runTask(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 || !slices.Contains(taskCommands, args[0]) {
 		fmt.Fprintf(stderr, "用法：marshal task <%s>\n", strings.Join(taskCommands, "|"))
 		return ExitUsage
 	}
 	if args[0] == "plan" {
 		return runTaskPlan(ctx, args[1:], stdout, stderr)
+	}
+	if args[0] == "scaffold" {
+		return runTaskScaffold(args[1:], stdin, stdout, stderr)
 	}
 	if args[0] == "status" {
 		return runTaskStatus(args[1:], stdout, stderr)
@@ -1583,6 +1588,47 @@ func commitAbortResult(runDirectory string) error {
 
 func removeAbortResult(runDirectory string) {
 	_ = os.Remove(filepath.Join(runDirectory, "result.md.pending"))
+}
+
+func runTaskScaffold(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("task scaffold", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	draftPath := flags.String("draft", "", "TaskSpec draft 路径")
+	preferred := flags.String("preferred-adapter", "", "显式首选 Worker Adapter")
+	var fallbacks stringSlice
+	flags.Var(&fallbacks, "fallback-adapter", "显式 fallback Worker Adapter（可重复且保持顺序）")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *draftPath == "" || (*preferred == "" && len(fallbacks) > 0) {
+		fmt.Fprintln(stderr, "用法：marshal task scaffold --draft PATH|- [--preferred-adapter ID --fallback-adapter ID ...]")
+		return ExitUsage
+	}
+	draft, err := readInput(*draftPath, stdin)
+	if err != nil {
+		fmt.Fprintln(stderr, "生成失败：无法读取 TaskSpec draft。")
+		return ExitFailure
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		fmt.Fprintln(stderr, "生成失败：Schema 初始化失败。")
+		return ExitFailure
+	}
+	var override *taskgen.Selection
+	if *preferred != "" {
+		override = &taskgen.Selection{Preferred: *preferred, Fallback: append([]string(nil), fallbacks...)}
+	}
+	generated, err := taskgen.Generate(draft, override, validator)
+	if err != nil {
+		if errors.Is(err, taskgen.ErrOpenCodeIneligible) {
+			fmt.Fprintln(stderr, "生成失败：OpenCode 不可用于新 Task。")
+			return ExitUnavailable
+		}
+		fmt.Fprintln(stderr, "生成失败：TaskSpec draft 无法生成合法 TaskSpec。")
+		return ExitFailure
+	}
+	if _, err := stdout.Write(append(generated, '\n')); err != nil {
+		fmt.Fprintln(stderr, "生成失败：无法输出 TaskSpec。")
+		return ExitFailure
+	}
+	return ExitOK
 }
 
 func runTaskPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -2547,6 +2593,7 @@ func writeUsage(output io.Writer) {
   marshal supervise [--once] [--interval DURATION] [--marshal-binary PATH] [--revive-retry-pending] [--json]
   marshal contract validate [--schema NAME] <PATH|->
   marshal contract schema [--all [--out DIR]] [--schema NAME] [--json]
+  marshal task scaffold --draft PATH|- [--preferred-adapter ID --fallback-adapter ID ...]
   marshal task plan --task PATH --policy PATH --run RUN_ID [--json]
   marshal task approve --run RUN_ID --gate plan|publish [--actor ID] [--json]
   marshal task status --run RUN_ID [--json]

@@ -231,6 +231,22 @@ func TestValidatePolicyIdentity(t *testing.T) {
 	})
 }
 
+func TestValidatePolicyRejectsOpenCodeInAnyTaskCandidate(t *testing.T) {
+	validator := newValidator(t)
+	for _, mutate := range []func(*domain.TaskSpec){
+		func(task *domain.TaskSpec) { task.Worker.PreferredAdapter = "opencode" },
+		func(task *domain.TaskSpec) {
+			task.Worker.FallbackAdapters = append(task.Worker.FallbackAdapters, "OpenCode")
+		},
+	} {
+		task := defaultTask()
+		mutate(&task)
+		fixture := defaultFixture()
+		fixture.Effective.AllowedAdapters = append(fixture.Effective.AllowedAdapters, "opencode")
+		assertPolicyError(t, sealPolicyFixture(t, fixture), task, "run-1", validator, ErrPolicyOpenCode)
+	}
+}
+
 func TestValidatePolicyGeneratedAt(t *testing.T) {
 	validator := newValidator(t)
 
