@@ -18,9 +18,9 @@ embedded/local 先行实现的 Local MVP 定义达成：标记 `USABLE`。
 
 ## Qoder/Codex production authority 共同阻塞
 
-[ADR 0038](adr/0038-agent-production-authority-provider.md) 处于 `Proposed`：它为 ADR 0034/0037 已冻结但尚未由真实宿主提供的外部 authority 层提出共享 `AgentProductionAuthorityProvider` Port，包括独立在线 verifier、OS isolation/audit receipt、host attestation、monotonic fence、held-fd identity、原子 authority bundle、stopped-child launch receipt/workload barrier，以及 rotation/revocation/crash reconcile。
+[ADR 0038](adr/0038-agent-production-authority-provider.md) 已于 2026-08-18 接受：它为 ADR 0034/0037 已冻结但尚未由真实宿主提供的外部 authority 层冻结共享 `AgentProductionAuthorityProvider` Port，包括独立在线 verifier、OS isolation/audit receipt、host attestation、monotonic fence、held-fd identity、原子 authority bundle、stopped-child launch receipt/workload barrier，以及 rotation/revocation/crash reconcile。接受只允许进入实现，不表示 Qoder/Codex 或任何当前宿主已 `supported`。
 
-该提案不改变 Roadmap 状态，也不表示 Qoder 或 Codex 已可生产调度。Linux 只有在对应 profile 的平台机制、真实 credentialed probe 与独立 conformance 全部通过后才是候选；Darwin 的 Qoder/Codex profile 在等价强制机制与后续合同通过前保持 `unsupported`。关闭条件见[设计审计报告](audit-report.md)中的 `AGENT-AUTHORITY-*` open findings。
+接受本 ADR 不改变 Roadmap 状态，也不表示 Qoder 或 Codex 已可生产调度。Linux 只有在对应 profile 的平台机制、真实 credentialed probe 与独立 conformance 全部通过后才是候选；Darwin 的 Qoder/Codex profile 在等价强制机制与后续合同通过前保持 `unsupported`。关闭条件见[设计审计报告](audit-report.md)中的 `AGENT-AUTHORITY-*` open findings。
 
 ## 已知阻塞与进展：Issue #25 已关闭，Issue #30 部分满足
 

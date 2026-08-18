@@ -1,6 +1,6 @@
 # ADR 0038：共享 Agent Production Authority Provider 与原子准入交付
 
-- 状态：提议（Proposed，2026-08-18）——仅冻结候选合同；未经维护者接受、实现、独立 conformance 与真实宿主 provision，不得把 Qoder CLI 或 Codex CLI 报告为 `supported`
+- 状态：已接受（Accepted，2026-08-18）——仅冻结实现合同；未经实现、独立 conformance 与真实宿主 provision，不得把 Qoder CLI 或 Codex CLI 报告为 `supported`
 - 日期：2026-08-18
 - 关联：[ADR 0003](0003-separate-worker-and-publisher.md)、[ADR 0004](0004-independent-verification.md)、[ADR 0014](0014-read-only-execution-profile.md)、[ADR 0017](0017-provider-neutral-sandbox-contract.md)、[ADR 0018](0018-control-plane-and-provider-ports.md)、[ADR 0034](0034-qoder-cli-live-conformance-authority.md)、[ADR 0037](0037-codex-cli-production-authority.md)、Issue #136、Issue #137
 
@@ -78,7 +78,7 @@ operation payload 的最小 v1 形状如下；表中未列字段一律非法，f
 | operation | request payload | request fd role | success payload |
 | --- | --- | --- | --- |
 | `Describe` | `{}` | 无 | `providerBuildDigest/platform/profiles[]` |
-| `BeginProbe` | `candidateIdentityDigest/suiteDigest/probeArtifactDigest/policyDigest/challengeDigest/deadline` | `candidateExecutable,scratchRoot,credentialRoot,businessDenyRoot[1..16]` | `probeSessionId/targetIsolationIdentityDigest/credentialIngressEndpointIdentityDigest/expiresAt`；challenge 只来自 request，不在 response 重复，endpoint handle 不返回 |
+| `BeginProbe` | `candidateIdentityDigest/suiteDigest/probeArtifactDigest/policyDigest/challengeDigest/deadline` | `candidateExecutable,scratchRoot,businessDenyRoot[1..16]` | `probeSessionId/targetIsolationIdentityDigest/credentialIngressEndpointIdentityDigest/expiresAt`；challenge 只来自 request，不在 response 重复，endpoint handle 不返回；`credentialRoot`/credential capability 出现在 verifier 或 APAP fd table 必须拒绝 |
 | `AttachProbeCredential`（只存在于 `CredentialIngressPort`） | `probeSessionId/capabilityIdentityDigest/capabilityPolicyDigest/serviceIdentityDigest/capabilityExpiresAt/deliveryNonce/targetIsolationIdentityDigest` | Secret provider 与 target child 的直连 socket 上精确一个 `credentialCapability`；APAP fd table 中出现即拒绝 | `credentialHandoffReceiptRef`；两份 signed receipt 存入独立只读 receipt store，APAP/verifier 只持非敏感 digest ref，不返回或回显 handle |
 | `RunProbeVariant` | `probeSessionId/variantId/invocationManifestDigest/credentialHandoffReceiptRef/previousReceiptDigest/deadline` | 无；只复用隔离边界内 pinned handle | `receiptDigest/receipt/nextVariantSet` |
 | `FinalizeProbe` | `probeSessionId/orderedReceiptDigests/observationDigest` | 无 | `observationCandidateDigest/observationCandidate/credentialRevocationReceiptDigest` |
@@ -165,7 +165,7 @@ Probe session 与 Worker launch 是两条不可互换的权限路径：
 
 ### 6. Held identity 与外部 audit receipt
 
-所有安全关键对象在检查到使用期间保持 held handle：executable、authority bundle root/leaf、scratch、credential root/capability、business deny roots、worktree、control input/output、mount/pid namespace 与 stopped child。identity 至少绑定平台可用的 device/inode/mount-or-volume generation/owner/mode/type/link count/size/content digest；路径只是非权威审计投影。
+所有安全关键对象在检查到使用期间保持 held handle：APAP 侧只包括 executable、authority bundle root/leaf、scratch、business deny roots、worktree、control input/output、mount/pid namespace 与 stopped child；credential capability 只由 Secret provider 直达并固定在 target child 内，绝不进入 verifier/APAP fd table。identity 至少绑定平台可用的 device/inode/mount-or-volume generation/owner/mode/type/link count/size/content digest；路径只是非权威审计投影。
 
 probe `IsolationExecutionReceiptV1` 和 launch `WorkloadLaunchReceiptV1` 使用 profile-specific closed payload，但共同 envelope 必须绑定：
 
@@ -317,7 +317,7 @@ APAP response 使用封闭 `safeCode`：
 - 共享层不会把两个Agent的证据语义合并；每个profile仍需独立真实probe与conformance。
 - 部署成本上升：需要系统级provisioning、独立service users、不可导出key/monotonic anchor与平台特有内核能力。
 - Linux可按机制逐项实现；Darwin在替代强制机制被新ADR接受并实证前保持unsupported。
-- 提议本身不改变Issue #136/#137、M10–M13或任何当前registry状态。
+- 接受本 ADR 本身不改变Issue #136/#137、M10–M13或任何当前registry状态。
 
 ## 备选方案（已否决）
 
