@@ -491,6 +491,78 @@ func TestRecoverRejectsRollbackAndForkedProvider(t *testing.T) {
 	}
 }
 
+func TestObservedHigherAnchorIsDurableAcrossRollbackAndRestart(t *testing.T) {
+	t.Run("inspect-persists-high-water", func(t *testing.T) {
+		f := newFixture(t)
+		r := bundleRequest()
+		if _, err := f.provider.PrepareBundle(r); err != nil {
+			t.Fatal(err)
+		}
+		f.anchor.current = AnchorSnapshot{3, td(13), td(14)}
+		result, err := f.provider.InspectBundle(r.TransactionID, r.BundleDigest)
+		if !errors.Is(err, ErrReconcileRequired) || result.Status != BundleUnknown || result.ObservedCurrent != 3 {
+			t.Fatalf("inspect higher anchor: %+v %v", result, err)
+		}
+		found := false
+		for _, record := range f.journal.snapshotRecords() {
+			if record.Kind == "anchor-high-water" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("higher anchor observation was not durable")
+		}
+		if err := f.journal.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.anchor.current = AnchorSnapshot{1, td(1), td(2)}
+		journal, err := OpenJournal(f.dir, f.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer journal.Close()
+		if _, err = Open(journal, f.anchor, f.child, f.initial); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("anchor rollback reopened provider: %v", err)
+		}
+	})
+
+	t.Run("commit-append-failure-is-sticky", func(t *testing.T) {
+		f := newFixture(t)
+		r := bundleRequest()
+		prepared, err := f.provider.PrepareBundle(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.anchor.current = AnchorSnapshot{3, td(13), td(14)}
+		f.journal.fail = func(kind string) error {
+			if kind == "anchor-high-water" {
+				return ErrUnavailable
+			}
+			return nil
+		}
+		result, err := f.provider.CommitBundle(r.TransactionID, r.BundleDigest, r.OriginalExpected, prepared.PreparedReceiptDigest)
+		if !errors.Is(err, ErrReconcileRequired) || result.Status != BundleUnknown || !f.journal.failClosed {
+			t.Fatalf("commit higher anchor append failure: %+v %v", result, err)
+		}
+		f.journal.fail = nil
+		if err := f.journal.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.anchor.current = AnchorSnapshot{1, td(1), td(2)}
+		journal, err := OpenJournal(f.dir, f.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer journal.Close()
+		if !journal.failClosed {
+			t.Fatal("anchor observation append failure marker was not sticky")
+		}
+		if _, err = Open(journal, f.anchor, f.child, f.initial); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("fail-closed marker reopened provider: %v", err)
+		}
+	})
+}
+
 func TestForkAppendFailureCreatesStickyFailClosedMarker(t *testing.T) {
 	f := newFixture(t)
 	_ = f.journal.Close()
@@ -551,6 +623,10 @@ func TestAbortFailuresRemainAddressableAndNeverWriteEmptyAbortedFacts(t *testing
 		if !found {
 			t.Fatal("orphan child was not durably addressable")
 		}
+		inspected, inspectErr := f.provider.InspectLaunch(request.AttemptID, request.LaunchNonce, request.RequestDigest)
+		if !errors.Is(inspectErr, ErrReconcileRequired) || inspected.Status != LaunchUnknown || inspected.ChildIdentityDigest != result.ChildIdentityDigest {
+			t.Fatalf("same-process orphan inspect: %+v %v", inspected, inspectErr)
+		}
 		f.journal.fail = nil
 		f.child.abortFail = false
 		_ = f.journal.Close()
@@ -563,7 +639,7 @@ func TestAbortFailuresRemainAddressableAndNeverWriteEmptyAbortedFacts(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		inspected, err := restarted.InspectLaunch(request.AttemptID, request.LaunchNonce, request.RequestDigest)
+		inspected, err = restarted.InspectLaunch(request.AttemptID, request.LaunchNonce, request.RequestDigest)
 		if err != nil || inspected.Status != LaunchAborted {
 			t.Fatalf("orphan recovery: %+v %v", inspected, err)
 		}

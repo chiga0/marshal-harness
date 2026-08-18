@@ -86,6 +86,7 @@ type bundleState struct {
 type launchState struct {
 	Request           LaunchRequest
 	Child             StoppedChild
+	Orphaned          bool
 	Accepted          string
 	Released, Aborted string
 }
@@ -188,8 +189,12 @@ func (p *Provider) CommitBundle(transactionID, bundleDigest string, expected uin
 	if err != nil {
 		return BundleResult{}, ErrUnavailable
 	}
-	if p.forked || snapshot.Sequence < p.highWater || p.unknownAnchorBundle != "" && (snapshot.Sequence != state.Request.AnchoredNext || snapshot.BundleDigest != bundleDigest) {
+	if p.forked || snapshot.Sequence < p.highWater {
 		p.unavailable = true
+		return BundleResult{Status: BundleUnknown, ObservedCurrent: snapshot.Sequence}, ErrUnavailable
+	}
+	if p.unknownAnchorBundle != "" && (snapshot.Sequence != state.Request.AnchoredNext || snapshot.BundleDigest != bundleDigest) {
+		p.recordUnknownAnchor(snapshot)
 		return BundleResult{Status: BundleUnknown, ObservedCurrent: snapshot.Sequence}, ErrUnavailable
 	}
 	if snapshot.Sequence == state.Request.OriginalExpected && snapshot.BundleDigest == state.Request.PreviousBundleDigest {
@@ -199,8 +204,7 @@ func (p *Provider) CommitBundle(transactionID, bundleDigest string, expected uin
 		}
 	}
 	if snapshot.Sequence != state.Request.AnchoredNext || snapshot.BundleDigest != bundleDigest || !validDigest(snapshot.ReceiptDigest) {
-		p.consumeHighWater(snapshot.Sequence)
-		p.unavailable = true
+		p.recordUnknownAnchor(snapshot)
 		return BundleResult{Status: BundleUnknown, ObservedCurrent: snapshot.Sequence}, ErrReconcileRequired
 	}
 	p.consumeHighWater(snapshot.Sequence)
@@ -211,6 +215,7 @@ func (p *Provider) CommitBundle(transactionID, bundleDigest string, expected uin
 			Sequence      uint64 `json:"sequence"`
 		}{snapshot.ReceiptDigest, snapshot.Sequence}
 		if _, err := p.journal.appendRecord("bundle-anchor-advanced", transactionID, payload); err != nil {
+			_ = p.journal.markFailClosed()
 			return BundleResult{Status: BundleAnchorAdvanced, AnchorReceiptDigest: snapshot.ReceiptDigest}, ErrReconcileRequired
 		}
 		state.Anchor = snapshot.ReceiptDigest
@@ -228,6 +233,7 @@ func (p *Provider) CommitBundle(transactionID, bundleDigest string, expected uin
 	}
 	state.Commit = commit
 	p.current = Current{Sequence: snapshot.Sequence, BundleDigest: bundleDigest}
+	p.unknownAnchorBundle = ""
 	p.unavailable = false
 	return p.bundleResult(state), nil
 }
@@ -250,16 +256,14 @@ func (p *Provider) InspectBundle(transactionID, bundleDigest string) (BundleResu
 		return p.bundleResult(state), nil
 	}
 	if snapshot.Sequence == state.Request.AnchoredNext && snapshot.BundleDigest == state.Request.BundleDigest && validDigest(snapshot.ReceiptDigest) {
-		p.consumeHighWater(snapshot.Sequence)
-		p.unavailable = true
+		p.recordUnknownAnchor(snapshot)
 		result := p.bundleResult(state)
 		result.Status = BundleAnchorAdvanced
 		result.AnchorReceiptDigest = snapshot.ReceiptDigest
 		result.ObservedCurrent = snapshot.Sequence
 		return result, nil
 	}
-	p.consumeHighWater(snapshot.Sequence)
-	p.unavailable = true
+	p.recordUnknownAnchor(snapshot)
 	return BundleResult{Status: BundleUnknown, ObservedCurrent: snapshot.Sequence}, ErrReconcileRequired
 }
 
@@ -274,8 +278,12 @@ func (p *Provider) RecoverBundle(transactionID, bundleDigest string, originalExp
 	if err != nil {
 		return BundleResult{}, ErrUnavailable
 	}
-	if p.forked || snapshot.Sequence < p.highWater || p.unknownAnchorBundle != "" && (snapshot.Sequence != next || snapshot.BundleDigest != bundleDigest) {
+	if p.forked || snapshot.Sequence < p.highWater {
 		p.unavailable = true
+		return BundleResult{Status: BundleUnknown, ObservedCurrent: snapshot.Sequence}, ErrUnavailable
+	}
+	if p.unknownAnchorBundle != "" && (snapshot.Sequence != next || snapshot.BundleDigest != bundleDigest) {
+		p.recordUnknownAnchor(snapshot)
 		return BundleResult{Status: BundleUnknown, ObservedCurrent: snapshot.Sequence}, ErrUnavailable
 	}
 	if snapshot.Sequence != observedCurrent {
@@ -314,6 +322,7 @@ func (p *Provider) finishRecoveredBundle(state *bundleState, snapshot AnchorSnap
 			ReceiptDigest string
 			Sequence      uint64
 		}{snapshot.ReceiptDigest, snapshot.Sequence}); err != nil {
+			_ = p.journal.markFailClosed()
 			return BundleResult{Status: BundleAnchorAdvanced}, ErrReconcileRequired
 		}
 		state.Anchor = snapshot.ReceiptDigest
@@ -330,6 +339,7 @@ func (p *Provider) finishRecoveredBundle(state *bundleState, snapshot AnchorSnap
 	}
 	state.Commit = commit
 	p.current = Current{snapshot.Sequence, state.Request.BundleDigest}
+	p.unknownAnchorBundle = ""
 	p.unavailable = false
 	return p.bundleResult(state), nil
 }
@@ -371,6 +381,10 @@ func (p *Provider) PrepareLaunch(request LaunchRequest) (LaunchResult, error) {
 			p.unavailable = true
 			if _, orphanErr := p.journal.appendRecord("launch-orphaned", request.TransactionID, payload); orphanErr != nil {
 				_ = p.journal.markFailClosed()
+			} else {
+				state := &launchState{Request: request, Child: child, Orphaned: true}
+				p.launches[request.TransactionID] = state
+				p.launchKeys[key] = request.TransactionID
 			}
 			return LaunchResult{Status: LaunchUnknown, TransactionID: request.TransactionID, ChildIdentityDigest: child.IdentityDigest}, ErrReconcileRequired
 		}
@@ -452,6 +466,9 @@ func (p *Provider) InspectLaunch(attemptID, nonce, requestDigest string) (Launch
 	if state == nil || state.Request.RequestDigest != requestDigest {
 		return LaunchResult{Status: LaunchUnknown}, ErrReconcileRequired
 	}
+	if state.Orphaned {
+		return LaunchResult{Status: LaunchUnknown, TransactionID: state.Request.TransactionID, ChildIdentityDigest: state.Child.IdentityDigest}, ErrReconcileRequired
+	}
 	if state.Released != "" || state.Aborted != "" {
 		return launchResult(state), nil
 	}
@@ -502,6 +519,10 @@ func (p *Provider) rebuild() error {
 			state.Commit = v.CommitReceiptDigest
 			p.current = Current{v.Sequence, v.BundleDigest}
 			p.consumeHighWater(v.Sequence)
+			if p.unknownAnchorBundle == v.BundleDigest && p.highWater == v.Sequence {
+				p.unknownAnchorBundle = ""
+				p.unavailable = false
+			}
 		case "launch-prepared":
 			var v struct {
 				Request LaunchRequest `json:"request"`
@@ -521,7 +542,7 @@ func (p *Provider) rebuild() error {
 			if json.Unmarshal(record.Payload, &v) != nil {
 				return ErrUnavailable
 			}
-			state := &launchState{Request: v.Request, Child: v.Child}
+			state := &launchState{Request: v.Request, Child: v.Child, Orphaned: true}
 			p.launches[record.TransactionID] = state
 			p.launchKeys[v.Request.AttemptID+"\x00"+v.Request.LaunchNonce] = record.TransactionID
 		case "launch-orphan-aborted":
@@ -555,6 +576,7 @@ func (p *Provider) rebuild() error {
 				return ErrUnavailable
 			}
 			state.Aborted = v.ReceiptDigest
+			state.Orphaned = false
 		case "anchor-high-water":
 			var v struct {
 				Sequence     uint64
@@ -596,6 +618,7 @@ func (p *Provider) reconcileAnchorOnOpen() error {
 					ReceiptDigest string
 					Sequence      uint64
 				}{snapshot.ReceiptDigest, snapshot.Sequence}); appendErr != nil {
+					_ = p.journal.markFailClosed()
 					return appendErr
 				}
 				state.Anchor = snapshot.ReceiptDigest
@@ -604,15 +627,7 @@ func (p *Provider) reconcileAnchorOnOpen() error {
 				return nil
 			}
 		}
-		p.consumeHighWater(snapshot.Sequence)
-		p.unavailable = true
-		if _, appendErr := p.journal.appendRecord("anchor-high-water", "anchor-observation", struct {
-			Sequence     uint64
-			BundleDigest string
-		}{snapshot.Sequence, snapshot.BundleDigest}); appendErr != nil {
-			return appendErr
-		}
-		return nil
+		return p.recordUnknownAnchor(snapshot)
 	}
 	for _, state := range p.bundles {
 		if state.Commit == "" && state.Anchor != "" && state.Request.AnchoredNext == snapshot.Sequence && state.Request.BundleDigest == snapshot.BundleDigest {
@@ -666,6 +681,7 @@ func (p *Provider) abortLaunchLocked(state *launchState, reason string) error {
 		return ErrReconcileRequired
 	}
 	state.Aborted = receipt
+	state.Orphaned = false
 	return nil
 }
 
@@ -673,6 +689,31 @@ func (p *Provider) consumeHighWater(sequence uint64) {
 	if sequence > p.highWater {
 		p.highWater = sequence
 	}
+}
+
+func (p *Provider) recordUnknownAnchor(snapshot AnchorSnapshot) error {
+	p.unavailable = true
+	if snapshot.Sequence == p.highWater && snapshot.BundleDigest == p.unknownAnchorBundle {
+		return nil
+	}
+	if !validDigest(snapshot.BundleDigest) {
+		p.consumeHighWater(snapshot.Sequence)
+		p.forked = true
+		_ = p.journal.markFailClosed()
+		return ErrUnavailable
+	}
+	if _, err := p.journal.appendRecord("anchor-high-water", "anchor-observation", struct {
+		Sequence     uint64
+		BundleDigest string
+	}{snapshot.Sequence, snapshot.BundleDigest}); err != nil {
+		p.consumeHighWater(snapshot.Sequence)
+		p.forked = true
+		_ = p.journal.markFailClosed()
+		return ErrUnavailable
+	}
+	p.consumeHighWater(snapshot.Sequence)
+	p.unknownAnchorBundle = snapshot.BundleDigest
+	return nil
 }
 func (p *Provider) bundleResult(s *bundleState) BundleResult {
 	status := BundlePreparedNoAnchor
