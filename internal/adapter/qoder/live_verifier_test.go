@@ -34,6 +34,7 @@ type attestedCandidateSandbox struct {
 	transcriptChallenge string
 	transcriptModel     string
 	receiptTopology     func(CandidateProbeInvocation) string
+	lastCompleted       time.Time
 }
 
 func (sandbox *attestedCandidateSandbox) RunProbe(_ context.Context, invocation CandidateProbeInvocation) (CandidateProbeResult, error) {
@@ -85,22 +86,34 @@ func (sandbox *attestedCandidateSandbox) RunProbe(_ context.Context, invocation 
 	if sandbox.after != nil {
 		sandbox.after(invocation)
 	}
-	now := time.Now().UTC()
+	startedAt := time.Now().UTC().Add(-time.Second)
+	if !sandbox.lastCompleted.IsZero() {
+		startedAt = sandbox.lastCompleted.Add(time.Nanosecond)
+	}
+	completedAt := startedAt.Add(time.Millisecond)
+	sandbox.lastCompleted = completedAt
 	scratchArgumentPath := fmt.Sprintf("/sandbox/objects/scratch-%d-%d", invocation.WorkingDirectory.Identity.Device, invocation.WorkingDirectory.Identity.Inode)
 	credentialArgumentPath := fmt.Sprintf("/sandbox/objects/credential-%d-%d", invocation.CredentialConfigRoot.Identity.Device, invocation.CredentialConfigRoot.Identity.Inode)
 	actualArguments := substituteBoundPaths(invocation.Arguments, scratchArgumentPath, credentialArgumentPath)
 	actualEnvironment := substituteBoundPaths(invocation.Environment, scratchArgumentPath, credentialArgumentPath)
+	audit := CandidateIsolationAudit{LaunchAuditDigest: digest("a"), DenialAuditDigest: digest("b"), ExitAuditDigest: digest("c"), AncestorChainDigest: topologyDigest, CredentialReadOnlyEnforced: true, BusinessRootsDenied: true, ScratchOnlyWriteEnforced: true, NetworkPolicyEnforced: true, AmbientStateDenied: true}
+	for index := range invocation.BusinessRepositoryRoots {
+		audit.BusinessRootDenialDigests = append(audit.BusinessRootDenialDigests, digest(fmt.Sprintf("%x", index+1)))
+	}
+	principal := CandidateIsolationPrincipal{ProviderIdentity: "fixture-isolation-provider", ProcessIdentity: "fixture-qoder-principal", Profile: candidateIsolationProfile}
+	authority := CandidateReceiptAuthorityIdentity{ProviderIdentity: "fixture-receipt-provider", ProcessIdentity: "fixture-receipt-principal", Issuer: "external-live-sandbox", KeyID: "receipt-root-1"}
 	receipt := CandidateExecutionReceipt{
 		Kind: candidateReceiptKind, EvidenceClass: sandbox.class, SandboxID: "external-live-sandbox", SandboxVersion: "1", ReceiptAuthorityKeyID: "receipt-root-1",
-		InvocationDigest: invocation.InvocationDigest, VariantIndex: invocation.VariantIndex,
+		InvocationDigest: invocation.InvocationDigest, ProbeRunID: invocation.ProbeRunID, ReceiptSequence: invocation.ReceiptSequence, PreviousReceiptDigest: invocation.PreviousReceiptDigest, InvocationManifestDigest: invocation.InvocationManifestDigest, VariantIndex: invocation.VariantIndex,
 		Executable: invocation.Executable.Identity, ExecutableDigest: invocation.Executable.Digest,
 		Arguments: actualArguments, Environment: actualEnvironment, ScratchArgumentPath: scratchArgumentPath, CredentialArgumentPath: credentialArgumentPath,
 		WorkingDirectory: invocation.WorkingDirectory.Identity, CredentialConfigRoot: invocation.CredentialConfigRoot.Identity,
 		WritableRoots: objectIdentities(invocation.WritableRoots), BusinessRepositoryRoots: objectIdentities(invocation.BusinessRepositoryRoots),
 		ChallengeDigest: invocation.ChallengeDigest, TranscriptDigest: digestBytes(transcript), SessionID: session, ObservedModel: model,
 		BinaryVersion: "1.1.23", ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode, MarkerDigest: digestBytes(marker),
-		StartedAt: now.Add(-time.Second).Format(time.RFC3339Nano), CompletedAt: now.Format(time.RFC3339Nano),
-		TopologyDigest: topologyDigest,
+		StartedAt: startedAt.Format(time.RFC3339Nano), CompletedAt: completedAt.Format(time.RFC3339Nano),
+		TopologyDigest:   topologyDigest,
+		IsolationProfile: principal.Profile, IsolationProviderID: principal.ProviderIdentity, IsolationProcessID: principal.ProcessIdentity, ReceiptAuthorityProviderID: authority.ProviderIdentity, ReceiptAuthorityProcessID: authority.ProcessIdentity, IsolationAudit: audit,
 	}
 	if sandbox.mutate != nil {
 		sandbox.mutate(&receipt)
@@ -109,7 +122,7 @@ func (sandbox *attestedCandidateSandbox) RunProbe(_ context.Context, invocation 
 	if sandbox.documentMutate != nil {
 		document = sandbox.documentMutate(document)
 	}
-	return CandidateProbeResult{Transcript: transcript, ExecutionReceipt: document}, nil
+	return CandidateProbeResult{Transcript: transcript, ExecutionReceipt: document, IsolationPrincipal: principal, ReceiptAuthorityIdentity: authority, IsolationAudit: audit}, nil
 }
 
 func substituteBoundPaths(values []string, scratch, credential string) []string {
@@ -258,6 +271,10 @@ func TestCandidateSignerRejectsUnsignedOrCandidateSubstitutedObservation(t *test
 func TestExecutionReceiptRejectsEveryBoundFieldSubstitution(t *testing.T) {
 	mutations := map[string]func(*CandidateExecutionReceipt){
 		"invocation":           func(value *CandidateExecutionReceipt) { value.InvocationDigest = digest("f") },
+		"probe run":            func(value *CandidateExecutionReceipt) { value.ProbeRunID = "substitute" },
+		"receipt sequence":     func(value *CandidateExecutionReceipt) { value.ReceiptSequence++ },
+		"previous receipt":     func(value *CandidateExecutionReceipt) { value.PreviousReceiptDigest = digest("f") },
+		"invocation manifest":  func(value *CandidateExecutionReceipt) { value.InvocationManifestDigest = digest("f") },
 		"variant":              func(value *CandidateExecutionReceipt) { value.VariantIndex++ },
 		"executable identity":  func(value *CandidateExecutionReceipt) { value.Executable.Inode++ },
 		"executable digest":    func(value *CandidateExecutionReceipt) { value.ExecutableDigest = digest("f") },
@@ -277,6 +294,8 @@ func TestExecutionReceiptRejectsEveryBoundFieldSubstitution(t *testing.T) {
 		"protocol":             func(value *CandidateExecutionReceipt) { value.ProtocolVersion = "substitute" },
 		"permission":           func(value *CandidateExecutionReceipt) { value.PermissionMode = "substitute" },
 		"marker":               func(value *CandidateExecutionReceipt) { value.MarkerDigest = digest("f") },
+		"isolation audit":      func(value *CandidateExecutionReceipt) { value.IsolationAudit.ScratchOnlyWriteEnforced = false },
+		"isolation principal":  func(value *CandidateExecutionReceipt) { value.IsolationProcessID = value.ReceiptAuthorityProcessID },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {

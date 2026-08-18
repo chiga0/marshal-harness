@@ -31,6 +31,7 @@ const (
 	candidateMarkerLimit           = 256
 	candidateBoundScratchToken     = "$BOUND_SCRATCH_DIR"
 	candidateBoundCredentialToken  = "$BOUND_CREDENTIAL_DIR"
+	candidateReceiptMaxExecution   = 30 * time.Minute
 )
 
 type CandidateObjectIdentity struct {
@@ -55,57 +56,74 @@ type CandidateProbeSandbox interface {
 }
 
 type CandidateProbeInvocation struct {
-	InvocationDigest        string
-	VariantIndex            int
-	Executable              CandidateBoundObject
-	Arguments               []string
-	Environment             []string
-	WorkingDirectory        CandidateBoundObject
-	ScratchRoot             CandidateBoundObject
-	CredentialConfigRoot    CandidateBoundObject
-	WritableRoots           []CandidateBoundObject
-	BusinessRepositoryRoots []CandidateBoundObject
-	ChallengeDigest         string
-	ExpectedModel           string
-	ExpectedTopologyDigest  string
-	Prompt                  []byte
+	InvocationDigest         string
+	ProbeRunID               string
+	ReceiptSequence          int
+	PreviousReceiptDigest    string
+	InvocationManifestDigest string
+	VariantIndex             int
+	Executable               CandidateBoundObject
+	Arguments                []string
+	Environment              []string
+	WorkingDirectory         CandidateBoundObject
+	ScratchRoot              CandidateBoundObject
+	CredentialConfigRoot     CandidateBoundObject
+	WritableRoots            []CandidateBoundObject
+	BusinessRepositoryRoots  []CandidateBoundObject
+	ChallengeDigest          string
+	ExpectedModel            string
+	ExpectedTopologyDigest   string
+	Prompt                   []byte
 }
 
 type CandidateProbeResult struct {
-	Transcript       []byte
-	ExecutionReceipt []byte
+	Transcript               []byte
+	ExecutionReceipt         []byte
+	IsolationPrincipal       CandidateIsolationPrincipal
+	ReceiptAuthorityIdentity CandidateReceiptAuthorityIdentity
+	IsolationAudit           CandidateIsolationAudit
 }
 
 type CandidateExecutionReceipt struct {
-	Kind                    string                    `json:"kind"`
-	EvidenceClass           string                    `json:"evidenceClass"`
-	SandboxID               string                    `json:"sandboxId"`
-	SandboxVersion          string                    `json:"sandboxVersion"`
-	ReceiptAuthorityKeyID   string                    `json:"receiptAuthorityKeyId"`
-	InvocationDigest        string                    `json:"invocationDigest"`
-	VariantIndex            int                       `json:"variantIndex"`
-	Executable              CandidateObjectIdentity   `json:"executable"`
-	ExecutableDigest        string                    `json:"executableDigest"`
-	Arguments               []string                  `json:"arguments"`
-	Environment             []string                  `json:"environment"`
-	ScratchArgumentPath     string                    `json:"scratchArgumentPath"`
-	CredentialArgumentPath  string                    `json:"credentialArgumentPath"`
-	WorkingDirectory        CandidateObjectIdentity   `json:"workingDirectory"`
-	CredentialConfigRoot    CandidateObjectIdentity   `json:"credentialConfigRoot"`
-	WritableRoots           []CandidateObjectIdentity `json:"writableRoots"`
-	BusinessRepositoryRoots []CandidateObjectIdentity `json:"businessRepositoryRoots"`
-	ChallengeDigest         string                    `json:"challengeDigest"`
-	TranscriptDigest        string                    `json:"transcriptDigest"`
-	SessionID               string                    `json:"sessionId"`
-	ObservedModel           string                    `json:"observedModel"`
-	BinaryVersion           string                    `json:"binaryVersion"`
-	ProtocolVersion         string                    `json:"protocolVersion"`
-	PermissionMode          string                    `json:"permissionMode"`
-	MarkerDigest            string                    `json:"markerDigest"`
-	StartedAt               string                    `json:"startedAt"`
-	CompletedAt             string                    `json:"completedAt"`
-	TopologyDigest          string                    `json:"topologyDigest"`
-	Signature               string                    `json:"signature"`
+	Kind                       string                    `json:"kind"`
+	EvidenceClass              string                    `json:"evidenceClass"`
+	SandboxID                  string                    `json:"sandboxId"`
+	SandboxVersion             string                    `json:"sandboxVersion"`
+	ReceiptAuthorityKeyID      string                    `json:"receiptAuthorityKeyId"`
+	InvocationDigest           string                    `json:"invocationDigest"`
+	ProbeRunID                 string                    `json:"probeRunId"`
+	ReceiptSequence            int                       `json:"receiptSequence"`
+	PreviousReceiptDigest      string                    `json:"previousReceiptDigest"`
+	InvocationManifestDigest   string                    `json:"invocationManifestDigest"`
+	VariantIndex               int                       `json:"variantIndex"`
+	Executable                 CandidateObjectIdentity   `json:"executable"`
+	ExecutableDigest           string                    `json:"executableDigest"`
+	Arguments                  []string                  `json:"arguments"`
+	Environment                []string                  `json:"environment"`
+	ScratchArgumentPath        string                    `json:"scratchArgumentPath"`
+	CredentialArgumentPath     string                    `json:"credentialArgumentPath"`
+	WorkingDirectory           CandidateObjectIdentity   `json:"workingDirectory"`
+	CredentialConfigRoot       CandidateObjectIdentity   `json:"credentialConfigRoot"`
+	WritableRoots              []CandidateObjectIdentity `json:"writableRoots"`
+	BusinessRepositoryRoots    []CandidateObjectIdentity `json:"businessRepositoryRoots"`
+	ChallengeDigest            string                    `json:"challengeDigest"`
+	TranscriptDigest           string                    `json:"transcriptDigest"`
+	SessionID                  string                    `json:"sessionId"`
+	ObservedModel              string                    `json:"observedModel"`
+	BinaryVersion              string                    `json:"binaryVersion"`
+	ProtocolVersion            string                    `json:"protocolVersion"`
+	PermissionMode             string                    `json:"permissionMode"`
+	MarkerDigest               string                    `json:"markerDigest"`
+	StartedAt                  string                    `json:"startedAt"`
+	CompletedAt                string                    `json:"completedAt"`
+	TopologyDigest             string                    `json:"topologyDigest"`
+	IsolationProfile           string                    `json:"isolationProfile"`
+	IsolationProviderID        string                    `json:"isolationProviderId"`
+	IsolationProcessID         string                    `json:"isolationProcessId"`
+	ReceiptAuthorityProviderID string                    `json:"receiptAuthorityProviderId"`
+	ReceiptAuthorityProcessID  string                    `json:"receiptAuthorityProcessId"`
+	IsolationAudit             CandidateIsolationAudit   `json:"isolationAudit"`
+	Signature                  string                    `json:"signature"`
 }
 
 func (receipt CandidateExecutionReceipt) signingBytes() ([]byte, error) {
@@ -210,6 +228,11 @@ func (verifier *CandidateLiveVerifier) Verify(ctx context.Context, request Candi
 		return nil, "", err
 	}
 	started := verifier.now().UTC()
+	probeRunID, err := newCandidateProbeRunID()
+	if err != nil {
+		return nil, "", err
+	}
+	previousReceiptDigest := ""
 	var binaryVersion string
 	sessions := map[string]struct{}{}
 	transcriptDigests := make([]string, 0, 4)
@@ -217,12 +240,13 @@ func (verifier *CandidateLiveVerifier) Verify(ctx context.Context, request Candi
 	receiptDocuments := make([]json.RawMessage, 0, 4)
 	observedArgv := make([][]string, 0, 4)
 	var observedEnvironmentDigest string
+	var previousCompletedAt time.Time
 	for index, variant := range candidateProbeVariants(request.Model) {
 		variantDirectory, cleanup, err := createCandidateScratchDirectory(int(handles.scratchRoot.File.Fd()))
 		if err != nil {
 			return nil, "", err
 		}
-		result, probeErr := verifier.runVariant(ctx, request, handles, variantDirectory, index, variant)
+		result, probeErr := verifier.runVariant(ctx, request, handles, variantDirectory, probeRunID, previousReceiptDigest, index, variant)
 		cleanup()
 		if probeErr != nil {
 			return nil, "", probeErr
@@ -231,12 +255,17 @@ func (verifier *CandidateLiveVerifier) Verify(ctx context.Context, request Candi
 			return nil, "", errors.New("qoder candidate live probe binary version changed between variants")
 		}
 		binaryVersion = result.binaryVersion
+		if !previousCompletedAt.IsZero() && result.startedAt.Before(previousCompletedAt) {
+			return nil, "", errors.New("qoder candidate live probe receipts overlap")
+		}
+		previousCompletedAt = result.completedAt
 		if _, replay := sessions[result.sessionID]; replay {
 			return nil, "", errors.New("qoder candidate live probe replayed a session across variants")
 		}
 		sessions[result.sessionID] = struct{}{}
 		transcriptDigests = append(transcriptDigests, result.transcriptDigest)
 		receiptDigests = append(receiptDigests, result.receiptDigest)
+		previousReceiptDigest = result.receiptDigest
 		receiptDocuments = append(receiptDocuments, append(json.RawMessage(nil), result.receiptDocument...))
 		observedArgv = append(observedArgv, result.normalizedArguments)
 		environmentDigest := result.normalizedEnvironmentDigest
@@ -300,18 +329,22 @@ type candidateVariantResult struct {
 	normalizedArguments         []string
 	normalizedEnvironmentDigest string
 	receiptDocument             []byte
+	startedAt                   time.Time
+	completedAt                 time.Time
 }
 
-func (verifier *CandidateLiveVerifier) runVariant(ctx context.Context, request CandidateLiveProbeRequest, handles *candidateProbeHandles, scratch CandidateBoundObject, index int, variant candidateProbeVariant) (candidateVariantResult, error) {
+func (verifier *CandidateLiveVerifier) runVariant(ctx context.Context, request CandidateLiveProbeRequest, handles *candidateProbeHandles, scratch CandidateBoundObject, probeRunID, previousReceiptDigest string, index int, variant candidateProbeVariant) (candidateVariantResult, error) {
 	challenge := candidateVariantChallenge(request.ChallengeDigest, index)
 	arguments := buildArgs(variant.model, candidateBoundCredentialToken, candidateBoundScratchToken, variant.disableAllTools)
 	environment := candidateProbeEnvironment(candidateBoundScratchToken, candidateBoundCredentialToken)
 	invocation := CandidateProbeInvocation{
+		ProbeRunID: probeRunID, ReceiptSequence: index + 1, PreviousReceiptDigest: previousReceiptDigest,
 		VariantIndex: index, Executable: handles.executable, Arguments: arguments, Environment: environment,
 		WorkingDirectory: scratch, ScratchRoot: handles.scratchRoot, CredentialConfigRoot: handles.credential, WritableRoots: []CandidateBoundObject{scratch}, BusinessRepositoryRoots: handles.business,
 		ChallengeDigest: challenge, ExpectedModel: variant.model,
-		Prompt: []byte("Probe-only conformance challenge. Create .marshal-qoder-probe-challenge with mode 0600 in the bound scratch directory containing exactly this line: " + challenge + "\n"),
+		Prompt: candidateProbePrompt(challenge),
 	}
+	invocation.InvocationManifestDigest = digestCandidateInvocationManifest(invocation)
 	topologyDigest, err := validateCandidateTopology(handles, scratch)
 	if err != nil {
 		return candidateVariantResult{}, err
@@ -341,7 +374,7 @@ func (verifier *CandidateLiveVerifier) runVariant(ctx context.Context, request C
 	if err != nil || postMarkerTopology != invocation.ExpectedTopologyDigest {
 		return candidateVariantResult{}, errors.New("qoder candidate live probe topology changed during marker verification")
 	}
-	receipt, receiptDigest, err := verifier.verifyExecutionReceipt(result.ExecutionReceipt, invocation, result.Transcript, capture, markerDigest)
+	receipt, receiptDigest, err := verifier.verifyExecutionReceipt(result.ExecutionReceipt, invocation, result, capture, markerDigest)
 	if err != nil {
 		return candidateVariantResult{}, err
 	}
@@ -349,7 +382,9 @@ func (verifier *CandidateLiveVerifier) runVariant(ctx context.Context, request C
 	if err != nil {
 		return candidateVariantResult{}, err
 	}
-	return candidateVariantResult{transcriptDigest: receipt.TranscriptDigest, receiptDigest: receiptDigest, receiptDocument: append([]byte(nil), result.ExecutionReceipt...), sessionID: receipt.SessionID, binaryVersion: receipt.BinaryVersion, normalizedArguments: normalizedArguments, normalizedEnvironmentDigest: normalizedEnvironmentDigest}, nil
+	startedAt, _ := time.Parse(time.RFC3339Nano, receipt.StartedAt)
+	completedAt, _ := time.Parse(time.RFC3339Nano, receipt.CompletedAt)
+	return candidateVariantResult{transcriptDigest: receipt.TranscriptDigest, receiptDigest: receiptDigest, receiptDocument: append([]byte(nil), result.ExecutionReceipt...), sessionID: receipt.SessionID, binaryVersion: receipt.BinaryVersion, normalizedArguments: normalizedArguments, normalizedEnvironmentDigest: normalizedEnvironmentDigest, startedAt: startedAt, completedAt: completedAt}, nil
 }
 
 func transcriptBindsCandidateChallenge(transcript []byte, challenge string) bool {
@@ -384,7 +419,7 @@ func transcriptBindsCandidateChallenge(transcript []byte, challenge string) bool
 	return matches == 1
 }
 
-func (verifier *CandidateLiveVerifier) verifyExecutionReceipt(document []byte, invocation CandidateProbeInvocation, transcript []byte, capture captureResult, markerDigest string) (CandidateExecutionReceipt, string, error) {
+func (verifier *CandidateLiveVerifier) verifyExecutionReceipt(document []byte, invocation CandidateProbeInvocation, result CandidateProbeResult, capture captureResult, markerDigest string) (CandidateExecutionReceipt, string, error) {
 	receipt, err := decodeCandidateExecutionReceipt(document)
 	if err != nil {
 		return CandidateExecutionReceipt{}, "", err
@@ -408,8 +443,11 @@ func (verifier *CandidateLiveVerifier) verifyExecutionReceipt(document []byte, i
 	if receipt.TopologyDigest != invocation.ExpectedTopologyDigest {
 		return CandidateExecutionReceipt{}, "", errors.New("qoder candidate live probe receipt topology differs from verifier topology")
 	}
-	if receipt.InvocationDigest != invocation.InvocationDigest || receipt.VariantIndex != invocation.VariantIndex || receipt.Executable != invocation.Executable.Identity || receipt.ExecutableDigest != candidateExecutableDigest(invocation.Executable) || receipt.WorkingDirectory != invocation.WorkingDirectory.Identity || receipt.CredentialConfigRoot != invocation.CredentialConfigRoot.Identity || !equalIdentities(receipt.WritableRoots, writable) || !equalIdentities(receipt.BusinessRepositoryRoots, denied) || receipt.ChallengeDigest != invocation.ChallengeDigest || receipt.TranscriptDigest != digestBytes(transcript) || receipt.SessionID != capture.sessionID || receipt.ObservedModel != capture.model || receipt.BinaryVersion != capture.cliVersion || receipt.ProtocolVersion != capture.protocolVersion || receipt.PermissionMode != capture.permissionMode || receipt.MarkerDigest != markerDigest {
+	if receipt.InvocationDigest != invocation.InvocationDigest || receipt.ProbeRunID != invocation.ProbeRunID || receipt.ReceiptSequence != invocation.ReceiptSequence || receipt.PreviousReceiptDigest != invocation.PreviousReceiptDigest || receipt.InvocationManifestDigest != invocation.InvocationManifestDigest || receipt.VariantIndex != invocation.VariantIndex || receipt.Executable != invocation.Executable.Identity || receipt.ExecutableDigest != candidateExecutableDigest(invocation.Executable) || receipt.WorkingDirectory != invocation.WorkingDirectory.Identity || receipt.CredentialConfigRoot != invocation.CredentialConfigRoot.Identity || !equalIdentities(receipt.WritableRoots, writable) || !equalIdentities(receipt.BusinessRepositoryRoots, denied) || receipt.ChallengeDigest != invocation.ChallengeDigest || receipt.TranscriptDigest != digestBytes(result.Transcript) || receipt.SessionID != capture.sessionID || receipt.ObservedModel != capture.model || receipt.BinaryVersion != capture.cliVersion || receipt.ProtocolVersion != capture.protocolVersion || receipt.PermissionMode != capture.permissionMode || receipt.MarkerDigest != markerDigest || receipt.IsolationProfile != result.IsolationPrincipal.Profile || receipt.IsolationProviderID != result.IsolationPrincipal.ProviderIdentity || receipt.IsolationProcessID != result.IsolationPrincipal.ProcessIdentity || receipt.ReceiptAuthorityProviderID != result.ReceiptAuthorityIdentity.ProviderIdentity || receipt.ReceiptAuthorityProcessID != result.ReceiptAuthorityIdentity.ProcessIdentity || !equalCandidateIsolationAudit(receipt.IsolationAudit, result.IsolationAudit) {
 		return CandidateExecutionReceipt{}, "", errors.New("qoder candidate live probe receipt does not bind actual execution")
+	}
+	if receipt.IsolationProfile != candidateIsolationProfile || receipt.IsolationProcessID == "" || receipt.ReceiptAuthorityProcessID == "" || receipt.IsolationProcessID == receipt.ReceiptAuthorityProcessID || validateCandidateIsolationAudit(receipt.IsolationAudit, len(denied)) != nil {
+		return CandidateExecutionReceipt{}, "", errors.New("qoder candidate live probe receipt isolation authority is invalid")
 	}
 	if _, _, err := normalizeActualReceiptProfile(receipt, invocation); err != nil {
 		return CandidateExecutionReceipt{}, "", err
@@ -417,7 +455,7 @@ func (verifier *CandidateLiveVerifier) verifyExecutionReceipt(document []byte, i
 	started, startErr := time.Parse(time.RFC3339Nano, receipt.StartedAt)
 	completed, completeErr := time.Parse(time.RFC3339Nano, receipt.CompletedAt)
 	now := verifier.now().UTC()
-	if startErr != nil || completeErr != nil || completed.Before(started) || completed.After(now) || now.Sub(started) > maxConformanceValidity {
+	if startErr != nil || completeErr != nil || completed.Before(started) || completed.After(now) || completed.Sub(started) > candidateReceiptMaxExecution || now.Sub(started) > maxConformanceValidity {
 		return CandidateExecutionReceipt{}, "", errors.New("qoder candidate live probe receipt time bounds are invalid")
 	}
 	digest, err := receipt.digest()
@@ -466,18 +504,28 @@ func verifyCandidateObservationAuthorityChain(observation LiveConformanceObserva
 	seenVariants, seenSessions := map[int]struct{}{}, map[string]struct{}{}
 	var environmentDigest string
 	var executableIdentity CandidateObjectIdentity
+	var probeRunID, previousReceiptDigest string
+	var previousCompletedAt time.Time
 	for index, document := range observation.ExecutionReceipts {
 		receipt, err := decodeCandidateExecutionReceipt(document)
 		if err != nil {
 			return err
 		}
-		if receipt.Kind != candidateReceiptKind || receipt.EvidenceClass != candidateEvidenceClassLive || receipt.SandboxID != policy.receiptIssuer || receipt.ReceiptAuthorityKeyID != policy.receiptKeyID || receipt.SandboxVersion == "" || receipt.VariantIndex < 0 || receipt.VariantIndex > 3 || !validSHA256Digest(receipt.TopologyDigest) {
+		if receipt.Kind != candidateReceiptKind || receipt.EvidenceClass != candidateEvidenceClassLive || receipt.SandboxID != policy.receiptIssuer || receipt.ReceiptAuthorityKeyID != policy.receiptKeyID || receipt.SandboxVersion == "" || receipt.VariantIndex < 0 || receipt.VariantIndex > 3 || receipt.ReceiptSequence != index+1 || !validSHA256Digest(receipt.TopologyDigest) || !validSHA256Digest(receipt.InvocationManifestDigest) || receipt.IsolationProfile != candidateIsolationProfile || receipt.IsolationProcessID == "" || receipt.ReceiptAuthorityProcessID == "" || receipt.IsolationProcessID == receipt.ReceiptAuthorityProcessID || validateCandidateIsolationAudit(receipt.IsolationAudit, len(receipt.BusinessRepositoryRoots)) != nil {
 			return errors.New("qoder candidate signer rejected receipt provenance")
 		}
 		if _, duplicate := seenVariants[receipt.VariantIndex]; duplicate || receipt.VariantIndex != index {
 			return errors.New("qoder candidate signer rejected receipt variant replay")
 		}
 		seenVariants[receipt.VariantIndex] = struct{}{}
+		if index == 0 {
+			if strings.TrimSpace(receipt.ProbeRunID) == "" || receipt.PreviousReceiptDigest != "" {
+				return errors.New("qoder candidate signer rejected receipt run chain")
+			}
+			probeRunID = receipt.ProbeRunID
+		} else if receipt.ProbeRunID != probeRunID || receipt.PreviousReceiptDigest != previousReceiptDigest {
+			return errors.New("qoder candidate signer rejected receipt run chain")
+		}
 		if receipt.SessionID == "" {
 			return errors.New("qoder candidate signer rejected empty receipt session")
 		}
@@ -498,6 +546,7 @@ func verifyCandidateObservationAuthorityChain(observation LiveConformanceObserva
 			return errors.New("qoder candidate signer rejected receipt digest")
 		}
 		receiptDigests = append(receiptDigests, digest)
+		previousReceiptDigest = digest
 		transcriptDigests = append(transcriptDigests, receipt.TranscriptDigest)
 		if receipt.ExecutableDigest != observation.ExecutableDigest || receipt.BinaryVersion != observation.BinaryVersion || receipt.ProtocolVersion != observation.ProtocolVersion || receipt.PermissionMode != observation.PermissionMode || receipt.ChallengeDigest != candidateVariantChallenge(observation.ChallengeDigest, receipt.VariantIndex) || !equalIdentities(receipt.WritableRoots, []CandidateObjectIdentity{receipt.WorkingDirectory}) || !validSHA256Digest(receipt.MarkerDigest) || !validSHA256Digest(receipt.TranscriptDigest) {
 			return errors.New("qoder candidate signer rejected receipt candidate identity")
@@ -512,10 +561,15 @@ func verifyCandidateObservationAuthorityChain(observation LiveConformanceObserva
 			expectedModel = receipt.ObservedModel
 		}
 		invocation := CandidateProbeInvocation{
+			ProbeRunID: receipt.ProbeRunID, ReceiptSequence: receipt.ReceiptSequence, PreviousReceiptDigest: receipt.PreviousReceiptDigest,
 			VariantIndex: receipt.VariantIndex, Executable: CandidateBoundObject{Identity: receipt.Executable, Digest: receipt.ExecutableDigest},
 			Arguments: buildArgs(expectedModel, candidateBoundCredentialToken, candidateBoundScratchToken, receipt.VariantIndex >= 2), Environment: candidateProbeEnvironment(candidateBoundScratchToken, candidateBoundCredentialToken),
 			WorkingDirectory: CandidateBoundObject{Identity: receipt.WorkingDirectory}, CredentialConfigRoot: CandidateBoundObject{Identity: receipt.CredentialConfigRoot},
-			WritableRoots: []CandidateBoundObject{{Identity: receipt.WorkingDirectory}}, ChallengeDigest: receipt.ChallengeDigest, ExpectedModel: expectedModel, ExpectedTopologyDigest: receipt.TopologyDigest,
+			WritableRoots: []CandidateBoundObject{{Identity: receipt.WorkingDirectory}}, ChallengeDigest: receipt.ChallengeDigest, ExpectedModel: expectedModel, ExpectedTopologyDigest: receipt.TopologyDigest, Prompt: candidateProbePrompt(receipt.ChallengeDigest),
+		}
+		invocation.InvocationManifestDigest = digestCandidateInvocationManifest(invocation)
+		if invocation.InvocationManifestDigest != receipt.InvocationManifestDigest {
+			return errors.New("qoder candidate signer rejected invocation manifest")
 		}
 		for _, identity := range receipt.BusinessRepositoryRoots {
 			invocation.BusinessRepositoryRoots = append(invocation.BusinessRepositoryRoots, CandidateBoundObject{Identity: identity})
@@ -535,9 +589,10 @@ func verifyCandidateObservationAuthorityChain(observation LiveConformanceObserva
 		environmentDigest = envDigest
 		started, startErr := time.Parse(time.RFC3339Nano, receipt.StartedAt)
 		completed, completeErr := time.Parse(time.RFC3339Nano, receipt.CompletedAt)
-		if startErr != nil || completeErr != nil || completed.Before(started) || completed.After(now) || started.Before(observation.ObservedAt.Add(-time.Minute)) || completed.After(observation.ValidUntil) {
+		if startErr != nil || completeErr != nil || completed.Before(started) || completed.Sub(started) > candidateReceiptMaxExecution || completed.After(now) || started.Before(observation.ObservedAt.Add(-time.Minute)) || completed.After(observation.ValidUntil) || (!previousCompletedAt.IsZero() && started.Before(previousCompletedAt)) {
 			return errors.New("qoder candidate signer rejected receipt time bounds")
 		}
+		previousCompletedAt = completed
 	}
 	receiptSet, _ := json.Marshal(map[string]any{"variantExecutionReceiptDigests": receiptDigests})
 	transcriptSet, _ := json.Marshal(map[string]any{"variantTranscriptDigests": transcriptDigests})
@@ -582,6 +637,12 @@ func openCandidateProbeHandles(request CandidateLiveProbeRequest) (*candidatePro
 		}
 		handles.business = append(handles.business, object)
 	}
+	sort.Slice(handles.business, func(left, right int) bool {
+		if handles.business[left].Identity.Device != handles.business[right].Identity.Device {
+			return handles.business[left].Identity.Device < handles.business[right].Identity.Device
+		}
+		return handles.business[left].Identity.Inode < handles.business[right].Identity.Inode
+	})
 	directories := append([]CandidateBoundObject{handles.scratchRoot, handles.credential}, handles.business...)
 	for left := range directories {
 		for right := left + 1; right < len(directories); right++ {
@@ -698,6 +759,10 @@ func candidateVariantChallenge(base string, index int) string {
 	return digestBytes(data)
 }
 
+func candidateProbePrompt(challenge string) []byte {
+	return []byte("Probe-only conformance challenge. Create .marshal-qoder-probe-challenge with mode 0600 in the bound scratch directory containing exactly this line: " + challenge + "\n")
+}
+
 func validateCandidateTopology(handles *candidateProbeHandles, scratch CandidateBoundObject) (string, error) {
 	if handles == nil {
 		return "", errors.New("qoder candidate topology handles are unavailable")
@@ -777,9 +842,23 @@ func candidateAncestorChain(directoryFD int) ([]CandidateObjectIdentity, error) 
 }
 
 func digestCandidateInvocation(invocation CandidateProbeInvocation) string {
-	data, _ := json.Marshal(map[string]any{"variantIndex": invocation.VariantIndex, "executable": invocation.Executable.Identity, "executableDigest": candidateExecutableDigest(invocation.Executable), "arguments": invocation.Arguments, "environment": invocation.Environment, "workingDirectory": invocation.WorkingDirectory.Identity, "credentialConfigRoot": invocation.CredentialConfigRoot.Identity, "writableRoots": objectIdentities(invocation.WritableRoots), "businessRepositoryRoots": objectIdentities(invocation.BusinessRepositoryRoots), "challengeDigest": invocation.ChallengeDigest, "expectedModel": invocation.ExpectedModel, "expectedTopologyDigest": invocation.ExpectedTopologyDigest})
+	data, _ := json.Marshal(map[string]any{"probeRunId": invocation.ProbeRunID, "receiptSequence": invocation.ReceiptSequence, "previousReceiptDigest": invocation.PreviousReceiptDigest, "invocationManifestDigest": invocation.InvocationManifestDigest, "variantIndex": invocation.VariantIndex, "executable": invocation.Executable.Identity, "executableDigest": candidateExecutableDigest(invocation.Executable), "arguments": invocation.Arguments, "environment": invocation.Environment, "workingDirectory": invocation.WorkingDirectory.Identity, "credentialConfigRoot": invocation.CredentialConfigRoot.Identity, "writableRoots": objectIdentities(invocation.WritableRoots), "businessRepositoryRoots": objectIdentities(invocation.BusinessRepositoryRoots), "challengeDigest": invocation.ChallengeDigest, "expectedModel": invocation.ExpectedModel, "expectedTopologyDigest": invocation.ExpectedTopologyDigest})
 	canonicalData, _ := canonical.JSON(data)
 	return digestBytes(canonicalData)
+}
+
+func digestCandidateInvocationManifest(invocation CandidateProbeInvocation) string {
+	data, _ := json.Marshal(map[string]any{"arguments": invocation.Arguments, "environment": invocation.Environment, "inheritedEnvironmentDiscarded": true, "promptDigest": digestBytes(invocation.Prompt), "receiptSequence": invocation.ReceiptSequence, "variantIndex": invocation.VariantIndex})
+	canonicalData, _ := canonical.JSON(data)
+	return digestBytes(canonicalData)
+}
+
+func newCandidateProbeRunID() (string, error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", errors.New("create qoder candidate probe run identity")
+	}
+	return hex.EncodeToString(token[:]), nil
 }
 
 func objectIdentities(objects []CandidateBoundObject) []CandidateObjectIdentity {
