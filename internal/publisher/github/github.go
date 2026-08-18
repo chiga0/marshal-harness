@@ -22,7 +22,11 @@ import (
 	"github.com/chiga0/marshal-harness/internal/port"
 )
 
-const commandTimeout = 45 * time.Second
+const (
+	commandTimeout         = 45 * time.Second
+	transientRetryAttempts = 3
+	transientRetryDelay    = 100 * time.Millisecond
+)
 
 type Publisher struct {
 	ghPath, gitPath, configDir, repositoryRoot string
@@ -630,29 +634,78 @@ func (p *Publisher) writeAskPass(directory string) (string, error) {
 }
 
 func (p *Publisher) git(ctx context.Context, askpass string, args ...string) ([]byte, error) {
-	commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
-	defer cancel()
-	command := exec.CommandContext(commandCtx, p.gitPath, args...)
-	command.Dir = p.repositoryRoot
-	command.Env = append(baseEnvironment(), "GH_CONFIG_DIR="+p.configDir, "GIT_ASKPASS="+askpass, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=", "GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/dev/null")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("git %s failed: %w", args[0], err)
+	var lastErr error
+	for attempt := 0; attempt < transientRetryAttempts; attempt++ {
+		commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
+		command := exec.CommandContext(commandCtx, p.gitPath, args...)
+		command.Dir = p.repositoryRoot
+		command.Env = append(baseEnvironment(), "GH_CONFIG_DIR="+p.configDir, "GIT_ASKPASS="+askpass, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=", "GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/dev/null")
+		output, err := command.CombinedOutput()
+		cancel()
+		if err == nil {
+			return output, nil
+		}
+		lastErr = fmt.Errorf("git %s failed: %w", args[0], err)
+		if !isTransientPublisherError(lastErr) || attempt+1 == transientRetryAttempts {
+			return nil, lastErr
+		}
+		if err := waitTransientRetry(ctx, attempt); err != nil {
+			return nil, errors.Join(lastErr, err)
+		}
 	}
-	return output, nil
+	return nil, lastErr
 }
 
 func (p *Publisher) gh(ctx context.Context, args ...string) ([]byte, error) {
-	commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
-	defer cancel()
-	command := exec.CommandContext(commandCtx, p.ghPath, args...)
-	command.Dir = p.repositoryRoot
-	command.Env = append(baseEnvironment(), "GH_CONFIG_DIR="+p.configDir, "GH_PROMPT_DISABLED=1", "NO_COLOR=1")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("gh %s failed: %w", args[0], err)
+	var lastErr error
+	for attempt := 0; attempt < transientRetryAttempts; attempt++ {
+		commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
+		command := exec.CommandContext(commandCtx, p.ghPath, args...)
+		command.Dir = p.repositoryRoot
+		command.Env = append(baseEnvironment(), "GH_CONFIG_DIR="+p.configDir, "GH_PROMPT_DISABLED=1", "NO_COLOR=1")
+		output, err := command.CombinedOutput()
+		cancel()
+		if err == nil {
+			return output, nil
+		}
+		lastErr = fmt.Errorf("gh %s failed: %w", args[0], err)
+		if !isTransientPublisherError(lastErr) || attempt+1 == transientRetryAttempts {
+			return nil, lastErr
+		}
+		if err := waitTransientRetry(ctx, attempt); err != nil {
+			return nil, errors.Join(lastErr, err)
+		}
 	}
-	return output, nil
+	return nil, lastErr
+}
+
+// isTransientPublisherError recognizes only transport/process failures that
+// are safe to retry. Identity mismatches, malformed observations, auth errors,
+// and ordinary command failures remain single-shot and fail closed.
+func isTransientPublisherError(err error) bool {
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"signal: killed", "context deadline exceeded", "timed out", "timeout",
+		"connection reset", "connection refused", "temporarily unavailable",
+		"502", "503", "504", "rate limit",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func waitTransientRetry(ctx context.Context, attempt int) error {
+	delay := transientRetryDelay * time.Duration(1<<attempt)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (p *Publisher) ghAllowPending(ctx context.Context, args ...string) ([]byte, error) {
