@@ -32,6 +32,25 @@ func mustJSON(value any) json.RawMessage {
 	return raw
 }
 
+func withNullAndValidDigest(t *testing.T, raw []byte, field, digestField string) []byte {
+	t.Helper()
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		t.Fatal(err)
+	}
+	object[field] = json.RawMessage(`null`)
+	digest, err := digestWithoutEmptyField(object, digestField)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object[digestField] = mustJSON(digest)
+	encoded, err := marshalCanonical(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
 func validRequest(operation Operation, p PeerIdentity) APAPRequestEnvelopeV1 {
 	expected := sequence(7)
 	if operation.readOnly() {
@@ -311,6 +330,24 @@ func TestControlResponseClosedTypedAndSequenceBound(t *testing.T) {
 	if _, err := DecodeControlResponse(encodedWrongSequence, decoded, 8); err == nil {
 		t.Fatal("caller-selected sequence bypassed request CAS binding")
 	}
+	if _, err := DecodeControlResponse(withNullAndValidDigest(t, responseRaw, "safeMessage", "responseEnvelopeDigest"), decoded, 7); err == nil {
+		t.Fatal("null safeMessage accepted")
+	}
+	zeroRequest := validRequest(OperationBeginProbe, p)
+	zeroRequest.CommandID = "zero-command"
+	zeroRequest.ExpectedProviderSequence = sequence(0)
+	zeroRaw := mustSeal(t, zeroRequest)
+	zeroDecoded, err := DecodeControlRequest(zeroRaw, p, fixtureNow, beginFDs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	zeroResponseRaw, err := NewFakeProvider(0).HandleControl(zeroRaw, p, fixtureNow, beginFDs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeControlResponse(withNullAndValidDigest(t, zeroResponseRaw, "observedProviderSequence", "responseEnvelopeDigest"), zeroDecoded, 0); err == nil {
+		t.Fatal("null observedProviderSequence accepted at zero")
+	}
 	failure := response
 	failure.SafeCode = CodeProviderBusy
 	failure.SafeMessage = SafeMessageFor(failure.SafeCode)
@@ -341,6 +378,9 @@ func TestCredentialIngressPeerReplayAndClosedResponse(t *testing.T) {
 	}
 	if _, err := DecodeCredentialIngressResponse(responseRaw, request); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := DecodeCredentialIngressResponse(withNullAndValidDigest(t, responseRaw, "safeMessage", "responseDigest"), request); err == nil {
+		t.Fatal("null ingress safeMessage accepted")
 	}
 	if _, err := fake.HandleCredentialIngress(raw, p2, fixtureNow, fd); err == nil {
 		t.Fatal("cross-peer ingress replay accepted")

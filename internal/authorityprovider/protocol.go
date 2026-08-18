@@ -618,6 +618,9 @@ func DecodeControlResponse(raw []byte, request APAPRequestEnvelopeV1, expectedOb
 	if err := decodeExact(raw, controlResponseFields, &response); err != nil {
 		return response, protocolError(CodeIdentityMismatch, "response-rejected")
 	}
+	if hasNullMember(raw, "observedProviderSequence", "safeMessage") {
+		return response, protocolError(CodeIdentityMismatch, "response-null-scalar")
+	}
 	if response.SchemaVersion != ResponseSchema || response.ProtocolFamily != ControlFamily || response.ProtocolVersion != ProtocolVersion || response.Audience != ControlAudience || response.RequestID != request.RequestID || response.CommandID != request.CommandID || response.ProviderInstanceID != request.ProviderInstanceID || response.AuthorityProfile != request.AuthorityProfile || response.Operation != request.Operation || response.ObservedProviderSequence != expectedObservedSequence {
 		return response, protocolError(CodeIdentityMismatch, "response-identity-invalid")
 	}
@@ -642,6 +645,9 @@ func DecodeCredentialIngressResponse(raw []byte, request CredentialIngressReques
 	if err := decodeExact(raw, ingressResponseFields, &response); err != nil {
 		return response, protocolError(CodeIdentityMismatch, "response-rejected")
 	}
+	if hasNullMember(raw, "safeMessage") {
+		return response, protocolError(CodeIdentityMismatch, "response-null-scalar")
+	}
 	if response.SchemaVersion != IngressResponseSchema || response.ProtocolFamily != IngressFamily || response.ProtocolVersion != ProtocolVersion || response.Audience != IngressAudience || response.RequestID != request.RequestID || response.CommandID != request.CommandID || response.ProviderInstanceID != request.ProviderInstanceID || response.AuthorityProfile != request.AuthorityProfile {
 		return response, protocolError(CodeIdentityMismatch, "response-identity-invalid")
 	}
@@ -656,6 +662,19 @@ func DecodeCredentialIngressResponse(raw []byte, request CredentialIngressReques
 		return response, protocolError(CodeIdentityMismatch, "response-digest-invalid")
 	}
 	return response, nil
+}
+
+func hasNullMember(raw []byte, fields ...string) bool {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return true
+	}
+	for _, field := range fields {
+		if bytes.Equal(bytes.TrimSpace(object[field]), []byte("null")) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateControlResponsePayload(response APAPResponseEnvelopeV1, request APAPRequestEnvelopeV1) bool {
