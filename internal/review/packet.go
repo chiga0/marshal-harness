@@ -236,7 +236,7 @@ func (b *PacketBuilder) deriveCodexEligibilityBinding(report verification.Report
 		return nil, "", fmt.Errorf("decode frozen run state for Codex eligibility: %w", err)
 	}
 	if state.TaskID != taskID || state.RunID != runID || state.CurrentAttemptID != worker.AttemptID {
-		return nil, "", errors.New("Codex WorkerResult attempt does not match frozen run state")
+		return nil, "", errors.New("codex WorkerResult attempt does not match frozen run state")
 	}
 
 	capabilityData, err := readBounded(filepath.Join(b.RunDirectory, "capability-snapshot.json"), packetByteLimit)
@@ -251,7 +251,7 @@ func (b *PacketBuilder) deriveCodexEligibilityBinding(report verification.Report
 		return nil, "", fmt.Errorf("digest frozen Codex capability snapshot: %w", err)
 	}
 	if capabilityDigest != state.CapabilityDigest {
-		return nil, "", errors.New("Codex capability snapshot digest does not match frozen run state")
+		return nil, "", errors.New("codex capability snapshot digest does not match frozen run state")
 	}
 	var capability struct {
 		AdapterID      string `json:"adapterId"`
@@ -269,7 +269,7 @@ func (b *PacketBuilder) deriveCodexEligibilityBinding(report verification.Report
 		return nil, "", fmt.Errorf("decode frozen Codex capability snapshot: %w", err)
 	}
 	if capability.AdapterID != "codex" || capability.ProbeStatus != "supported" || capability.CodexAuthority == nil {
-		return nil, "", errors.New("Codex WorkerResult is not backed by a supported Codex capability authority")
+		return nil, "", errors.New("codex WorkerResult is not backed by a supported Codex capability authority")
 	}
 
 	authorityData, err := b.readCodexManifestArtifact(manifest, codexAuthorityEvidenceArtifactID, "codex-authority-evidence.json")
@@ -281,7 +281,7 @@ func (b *PacketBuilder) deriveCodexEligibilityBinding(report verification.Report
 		return nil, "", fmt.Errorf("validate frozen Codex authority evidence: %w", err)
 	}
 	if authorityEvidenceDigest != capability.CodexAuthority.EvidenceDigest {
-		return nil, "", errors.New("Codex authority evidence digest does not match capability authority")
+		return nil, "", errors.New("codex authority evidence digest does not match capability authority")
 	}
 	var authorityIdentity struct {
 		HostIdentityDigest   string `json:"hostIdentityDigest"`
@@ -294,7 +294,7 @@ func (b *PacketBuilder) deriveCodexEligibilityBinding(report verification.Report
 	if authorityIdentity.HostIdentityDigest != capability.CodexAuthority.HostIdentityDigest ||
 		authorityIdentity.BinaryIdentityDigest != capability.CodexAuthority.BinaryIdentityDigest ||
 		authorityIdentity.ProfileDigest != capability.CodexAuthority.ProfileDigest {
-		return nil, "", errors.New("Codex authority evidence identity digests do not match capability authority")
+		return nil, "", errors.New("codex authority evidence identity digests do not match capability authority")
 	}
 
 	attemptPrefix := filepath.ToSlash(filepath.Join("attempts", worker.AttemptID))
@@ -320,13 +320,13 @@ func (b *PacketBuilder) deriveCodexEligibilityBinding(report verification.Report
 		return nil, "", fmt.Errorf("decode frozen Codex launch receipt payload: %w", err)
 	}
 	if receipt.TaskID != taskID || receipt.RunID != runID || receipt.AttemptID != worker.AttemptID {
-		return nil, "", errors.New("Codex launch receipt identity does not match frozen WorkerResult")
+		return nil, "", errors.New("codex launch receipt identity does not match frozen WorkerResult")
 	}
 	if receipt.EvidenceDigest != authorityEvidenceDigest || receipt.ConfigDigest != capability.CodexAuthority.ConfigDigest || receipt.FenceDigest != capability.CodexAuthority.FenceDigest {
-		return nil, "", errors.New("Codex launch receipt authority digests do not match frozen evidence and capability")
+		return nil, "", errors.New("codex launch receipt authority digests do not match frozen evidence and capability")
 	}
 	if len(receipt.PhaseDigests) != 4 {
-		return nil, "", errors.New("Codex launch receipt must bind exactly T0 through T3")
+		return nil, "", errors.New("codex launch receipt must bind exactly T0 through T3")
 	}
 
 	topologyPath := attemptPrefix + "/codex-launch-accept-topology.json"
@@ -363,7 +363,7 @@ func (b *PacketBuilder) currentWorkerIdentity(report verification.Report, worker
 		}
 		for _, worker := range workers {
 			if worker.Adapter.ID == "codex" {
-				return workerEvidenceIdentity{}, false, errors.New("Codex review evidence has no unambiguous current Candidate attempt")
+				return workerEvidenceIdentity{}, false, errors.New("codex review evidence has no unambiguous current Candidate attempt")
 			}
 		}
 		return workerEvidenceIdentity{}, false, nil
@@ -405,19 +405,19 @@ func (b *PacketBuilder) readCodexManifestArtifact(manifest verification.Artifact
 			continue
 		}
 		if match != nil {
-			return nil, fmt.Errorf("Codex eligibility artifact %s is duplicated", id)
+			return nil, fmt.Errorf("codex eligibility artifact %s is duplicated", id)
 		}
 		match = artifact
 	}
 	if match == nil || match.Producer != "system" || !match.Required || match.Status != "validated" || match.PathRoot != "run" || match.RelativePath != relativePath {
-		return nil, fmt.Errorf("Codex eligibility artifact %s is missing or not a validated system artifact", id)
+		return nil, fmt.Errorf("codex eligibility artifact %s is missing or not a validated system artifact", id)
 	}
 	data, err := readBounded(filepath.Join(b.RunDirectory, filepath.FromSlash(relativePath)), packetByteLimit)
 	if err != nil {
 		return nil, fmt.Errorf("read Codex eligibility artifact %s: %w", id, err)
 	}
 	if match.ByteSize != int64(len(data)) || match.Digest != canonical.DigestBytes(data) {
-		return nil, fmt.Errorf("Codex eligibility artifact %s does not match its frozen manifest identity", id)
+		return nil, fmt.Errorf("codex eligibility artifact %s does not match its frozen manifest identity", id)
 	}
 	return data, nil
 }

@@ -107,6 +107,10 @@ func candidateManifest(t *testing.T, patchData []byte, workerCandidate, headCand
 // result stay untouched).
 func candidateFixtureInputs(t *testing.T, fixture reviewFixture, workerCandidate, headCandidate, summary string) (verification.Report, []byte, verification.ArtifactManifest, []byte) {
 	t.Helper()
+	// Candidate-mode fixtures must materialize the frozen record selected by
+	// VerificationReport. The caller-provided head digest is a deterministic
+	// content seed; the report carries the record's recomputed detached digest.
+	headCandidate = materializeCandidateFixture(t, fixture, headCandidate)
 	reportData := candidateReportData(fixture.specDigest, packetTestSHA("1"), workerCandidate, headCandidate, summary)
 	var report verification.Report
 	if err := json.Unmarshal(reportData, &report); err != nil {
@@ -118,6 +122,32 @@ func candidateFixtureInputs(t *testing.T, fixture reviewFixture, workerCandidate
 	}
 	manifest, manifestData := candidateManifest(t, patchData, workerCandidate, headCandidate)
 	return report, reportData, manifest, manifestData
+}
+
+func materializeCandidateFixture(t *testing.T, fixture reviewFixture, contentDigest string) string {
+	t.Helper()
+	candidate := domain.Candidate{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindCandidate, TaskID: "ENG-123", RunID: "run-01",
+		AttemptID: "attempt-01", AuthorityNamespaceID: "authority-01", BaseSHA: packetTestSHA("1"),
+		ContentDigest: contentDigest, ProducerKind: domain.ProducerKindWorker, Producer: "worker", CreatedAt: packetTestTime,
+	}
+	digest, err := candidate.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.CandidateDigest = digest
+	data, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(fixture.directory, "candidates", digest+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return digest
 }
 
 // TestPacketLegacyEvidenceDigestSurvivesCandidateMembers proves the §5.1/§7.5
@@ -187,6 +217,7 @@ func TestPacketBindsCandidateChain(t *testing.T) {
 	fixture := newReviewFixture(t)
 	workerCandidate, headCandidate := packetTestDigest("a"), packetTestDigest("b")
 	report, reportData, manifest, manifestData := candidateFixtureInputs(t, fixture, workerCandidate, headCandidate, "candidate round")
+	headCandidate = report.CandidateDigest
 	builder := PacketBuilder{RunDirectory: fixture.directory, Validator: fixture.validator}
 	packet, _, err := builder.Build(PacketBuildInput{Task: fixture.task, TaskData: fixture.taskData, Report: report, ReportData: reportData, Manifest: manifest, ManifestData: manifestData, TaskID: "ENG-123", RunID: "run-01", SpecDigest: fixture.specDigest, BaseSHA: packetTestSHA("1"), ReviewRound: 1})
 	if err != nil {

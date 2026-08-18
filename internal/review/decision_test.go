@@ -80,7 +80,7 @@ func TestStaleFixCandidatePathBlocksIdenticalHead(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "cannot close without new evidence") {
 		t.Fatalf("identical head candidate allowed a stale closure: %v", err)
 	}
-	if len(packet.PreviousBlockingFindings) != 1 || packet.PreviousBlockingFindings[0].CandidateDigest != headCandidate {
+	if len(packet.PreviousBlockingFindings) != 1 || packet.PreviousBlockingFindings[0].CandidateDigest != report.CandidateDigest {
 		t.Fatalf("previous finding must carry the round-1 head candidate: %+v", packet.PreviousBlockingFindings)
 	}
 }
@@ -140,7 +140,7 @@ func TestStaleFixCrossBoundaryCandidateToLegacy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reverse-boundary fallback must not block a legitimate closure: %v", err)
 	}
-	if len(packet.PreviousBlockingFindings) != 1 || packet.PreviousBlockingFindings[0].CandidateDigest != packetTestDigest("b") {
+	if len(packet.PreviousBlockingFindings) != 1 || packet.PreviousBlockingFindings[0].CandidateDigest != report.CandidateDigest {
 		t.Fatalf("candidate-round finding must carry its head candidate: %+v", packet.PreviousBlockingFindings)
 	}
 }
