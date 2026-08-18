@@ -11,6 +11,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/chiga0/marshal-harness/internal/adapter/denials"
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
 
@@ -28,6 +29,8 @@ func validateSemantics(kind domain.Kind, data []byte) error {
 		violations, err = validateArtifactManifest(data)
 	case domain.KindSCMMergeIntent:
 		violations, err = validateSCMMergeIntent(data)
+	case domain.KindCapabilitySnapshot:
+		violations, err = validateCapabilitySnapshot(data)
 	default:
 		return nil
 	}
@@ -44,6 +47,90 @@ func validateSemantics(kind domain.Kind, data []byte) error {
 		return strings.Compare(left.Code, right.Code)
 	})
 	return &SemanticError{Violations: violations}
+}
+
+func validateCapabilitySnapshot(data []byte) ([]Violation, error) {
+	var snapshot struct {
+		AdapterID    string `json:"adapterId"`
+		ProbeStatus  string `json:"probeStatus"`
+		Capabilities struct {
+			ExecutionProfiles []string `json:"executionProfiles"`
+			NativeBudgets     []string `json:"nativeBudgets"`
+		} `json:"capabilities"`
+		ConformanceEvidenceDigest      string `json:"conformanceEvidenceDigest"`
+		ConformanceTrustRootKeyID      string `json:"conformanceTrustRootKeyId"`
+		ConformanceProbeProfileDigest  string `json:"conformanceProbeProfileDigest"`
+		ConformanceValidUntil          string `json:"conformanceValidUntil"`
+		ConformanceHostFingerprint     string `json:"conformanceHostFingerprint"`
+		ConformanceAuthorityGeneration uint64 `json:"conformanceAuthorityGeneration"`
+		CodexAuthority                 *struct {
+			EvidenceDigest      string   `json:"evidenceDigest"`
+			TrustRootKeyID      string   `json:"trustRootKeyId"`
+			ProfileDigest       string   `json:"profileDigest"`
+			ValidUntil          string   `json:"validUntil"`
+			HostIdentityDigest  string   `json:"hostIdentityDigest"`
+			AuthorityGeneration uint64   `json:"authorityGeneration"`
+			NativeBudgetsDigest string   `json:"nativeBudgetsDigest"`
+			ExecutionProfiles   []string `json:"executionProfiles"`
+		} `json:"codexAuthority"`
+		AdapterFailure *struct {
+			SafeMessage string `json:"safeMessage"`
+		} `json:"adapterFailure"`
+		ProbeErrors []string `json:"probeErrors"`
+	}
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return nil, err
+	}
+	if snapshot.AdapterID != "codex" {
+		return nil, nil
+	}
+
+	var violations []Violation
+	if snapshot.ProbeStatus == "supported" && snapshot.CodexAuthority != nil {
+		authority := snapshot.CodexAuthority
+		checks := []struct {
+			path  string
+			code  string
+			left  any
+			right any
+		}{
+			{"/conformanceEvidenceDigest", "codex-evidence-digest-mismatch", snapshot.ConformanceEvidenceDigest, authority.EvidenceDigest},
+			{"/conformanceTrustRootKeyId", "codex-trust-root-key-mismatch", snapshot.ConformanceTrustRootKeyID, authority.TrustRootKeyID},
+			{"/conformanceProbeProfileDigest", "codex-profile-digest-mismatch", snapshot.ConformanceProbeProfileDigest, authority.ProfileDigest},
+			{"/conformanceValidUntil", "codex-valid-until-mismatch", snapshot.ConformanceValidUntil, authority.ValidUntil},
+			{"/conformanceHostFingerprint", "codex-host-identity-mismatch", snapshot.ConformanceHostFingerprint, authority.HostIdentityDigest},
+			{"/conformanceAuthorityGeneration", "codex-authority-generation-mismatch", snapshot.ConformanceAuthorityGeneration, authority.AuthorityGeneration},
+		}
+		for _, check := range checks {
+			if check.left != check.right {
+				violations = append(violations, violation(check.path, check.code, "Codex conformance projection must equal codexAuthority"))
+			}
+		}
+		nativeBudgetsData, err := json.Marshal(snapshot.Capabilities.NativeBudgets)
+		if err != nil {
+			return nil, err
+		}
+		nativeBudgetsDigest, err := canonical.DigestJSON(nativeBudgetsData)
+		if err != nil {
+			return nil, err
+		}
+		if authority.NativeBudgetsDigest != nativeBudgetsDigest {
+			violations = append(violations, violation("/codexAuthority/nativeBudgetsDigest", "codex-native-budgets-digest-mismatch", "nativeBudgetsDigest must equal SHA-256(JCS(capabilities.nativeBudgets))"))
+		}
+		if !slices.Equal(snapshot.Capabilities.ExecutionProfiles, authority.ExecutionProfiles) {
+			violations = append(violations, violation("/codexAuthority/executionProfiles", "codex-execution-profiles-mismatch", "executionProfiles must equal capabilities.executionProfiles"))
+		}
+	}
+	if snapshot.ProbeStatus == "unsupported" && snapshot.AdapterFailure != nil {
+		safeMessageBytes := len([]byte(snapshot.AdapterFailure.SafeMessage))
+		if safeMessageBytes < 1 || safeMessageBytes > 512 {
+			violations = append(violations, violation("/adapterFailure/safeMessage", "codex-safe-message-byte-length-invalid", "safeMessage must contain 1..512 UTF-8 bytes"))
+		}
+		if len(snapshot.ProbeErrors) != 1 || snapshot.ProbeErrors[0] != snapshot.AdapterFailure.SafeMessage {
+			violations = append(violations, violation("/probeErrors", "codex-probe-error-projection-mismatch", "probeErrors must contain only adapterFailure.safeMessage"))
+		}
+	}
+	return violations, nil
 }
 
 func validateTask(data []byte) ([]Violation, error) {

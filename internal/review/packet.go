@@ -33,9 +33,21 @@ type PacketBuildInput struct {
 	BaseSHA      string
 	ReviewRound  uint
 	AttemptsUsed uint
-	// CodexEligibilityBinding is present only for a Codex Attempt admitted by
-	// the ADR 0037 production authority. Legacy and non-Codex builds omit it.
-	CodexEligibilityBinding *domain.CodexEligibilityBindingV1
+}
+
+const (
+	codexAuthorityEvidenceArtifactID = "evidence:codex-authority-evidence"
+	codexLaunchReceiptArtifactID     = "evidence:codex-launch-receipt"
+	codexLaunchTopologyArtifactID    = "evidence:codex-launch-accept-topology"
+)
+
+type workerEvidenceIdentity struct {
+	TaskID    string `json:"taskId"`
+	RunID     string `json:"runId"`
+	AttemptID string `json:"attemptId"`
+	Adapter   struct {
+		ID string `json:"id"`
+	} `json:"adapter"`
 }
 
 type evidenceIdentity struct {
@@ -85,7 +97,7 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 	if err := validateCandidateBinding(input.Report, input.Manifest); err != nil {
 		return nil, "", err
 	}
-	workerPaths, workerDigests, err := b.collectWorkerResults(input.TaskID, input.RunID)
+	workerPaths, workerDigests, workerIdentities, err := b.collectWorkerResults(input.TaskID, input.RunID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -104,7 +116,7 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 	if err != nil {
 		return nil, "", err
 	}
-	eligibilityBinding, eligibilityBindingDigest, err := validateCodexEligibilityBinding(input.CodexEligibilityBinding, input.TaskID, input.RunID)
+	eligibilityBinding, eligibilityBindingDigest, err := b.deriveCodexEligibilityBinding(input.Report, input.Manifest, workerIdentities, input.TaskID, input.RunID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -153,28 +165,6 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 	return packet, packetDigest, nil
 }
 
-func validateCodexEligibilityBinding(binding *domain.CodexEligibilityBindingV1, taskID, runID string) (*domain.CodexEligibilityBindingV1, string, error) {
-	if binding == nil {
-		return nil, "", nil
-	}
-	if binding.SchemaVersion != "marshal.codex.eligibility-binding.v1" {
-		return nil, "", errors.New("codex eligibility binding has unsupported schema version")
-	}
-	if binding.TaskID != taskID || binding.RunID != runID || binding.AttemptID == "" {
-		return nil, "", errors.New("codex eligibility binding identity does not match frozen run")
-	}
-	cloned := *binding
-	data, err := json.Marshal(cloned)
-	if err != nil {
-		return nil, "", fmt.Errorf("marshal codex eligibility binding: %w", err)
-	}
-	digest, err := canonical.DigestJSON(data)
-	if err != nil {
-		return nil, "", fmt.Errorf("digest codex eligibility binding: %w", err)
-	}
-	return &cloned, digest, nil
-}
-
 func validateObservedPatch(manifest verification.ArtifactManifest, patchData []byte) error {
 	for _, artifact := range manifest.Artifacts {
 		if artifact.RelativePath != "observed.patch" {
@@ -216,39 +206,331 @@ func validateCandidateBinding(report verification.Report, manifest verification.
 	return nil
 }
 
-func (b *PacketBuilder) collectWorkerResults(taskID, runID string) ([]string, []string, error) {
+func (b *PacketBuilder) deriveCodexEligibilityBinding(report verification.Report, manifest verification.ArtifactManifest, workers []workerEvidenceIdentity, taskID, runID string) (*domain.CodexEligibilityBindingV1, string, error) {
+	hasCodexWorker := false
+	for _, worker := range workers {
+		if worker.Adapter.ID == "codex" {
+			hasCodexWorker = true
+			break
+		}
+	}
+	if !hasCodexWorker {
+		if manifestHasCodexEligibilityArtifacts(manifest) {
+			return nil, "", errors.New("non-Codex attempt cannot carry Codex eligibility artifacts")
+		}
+		return nil, "", nil
+	}
+	worker, found, err := b.currentWorkerIdentity(report, workers, taskID, runID)
+	if err != nil {
+		return nil, "", err
+	}
+	if !found || worker.Adapter.ID != "codex" {
+		return nil, "", errors.New("Codex review evidence does not select the frozen Codex WorkerResult")
+	}
+
+	stateData, err := readBounded(filepath.Join(b.RunDirectory, "state.json"), packetByteLimit)
+	if err != nil {
+		return nil, "", fmt.Errorf("read frozen run state for Codex eligibility: %w", err)
+	}
+	if err := b.Validator.Validate(domain.KindRunState, stateData); err != nil {
+		return nil, "", fmt.Errorf("validate frozen run state for Codex eligibility: %w", err)
+	}
+	var state domain.RunState
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		return nil, "", fmt.Errorf("decode frozen run state for Codex eligibility: %w", err)
+	}
+	if state.TaskID != taskID || state.RunID != runID || state.CurrentAttemptID != worker.AttemptID {
+		return nil, "", errors.New("Codex WorkerResult attempt does not match frozen run state")
+	}
+
+	capabilityData, err := readBounded(filepath.Join(b.RunDirectory, "capability-snapshot.json"), packetByteLimit)
+	if err != nil {
+		return nil, "", fmt.Errorf("read frozen Codex capability snapshot: %w", err)
+	}
+	if err := b.Validator.Validate(domain.KindCapabilitySnapshot, capabilityData); err != nil {
+		return nil, "", fmt.Errorf("validate frozen Codex capability snapshot: %w", err)
+	}
+	capabilityDigest, err := canonical.DigestJSON(capabilityData)
+	if err != nil {
+		return nil, "", fmt.Errorf("digest frozen Codex capability snapshot: %w", err)
+	}
+	if capabilityDigest != state.CapabilityDigest {
+		return nil, "", errors.New("Codex capability snapshot digest does not match frozen run state")
+	}
+	var capability struct {
+		AdapterID      string `json:"adapterId"`
+		ProbeStatus    string `json:"probeStatus"`
+		CodexAuthority *struct {
+			EvidenceDigest       string `json:"evidenceDigest"`
+			ConfigDigest         string `json:"configDigest"`
+			FenceDigest          string `json:"fenceDigest"`
+			HostIdentityDigest   string `json:"hostIdentityDigest"`
+			BinaryIdentityDigest string `json:"binaryIdentityDigest"`
+			ProfileDigest        string `json:"profileDigest"`
+		} `json:"codexAuthority"`
+	}
+	if err := json.Unmarshal(capabilityData, &capability); err != nil {
+		return nil, "", fmt.Errorf("decode frozen Codex capability snapshot: %w", err)
+	}
+	if capability.AdapterID != "codex" || capability.ProbeStatus != "supported" || capability.CodexAuthority == nil {
+		return nil, "", errors.New("Codex WorkerResult is not backed by a supported Codex capability authority")
+	}
+
+	authorityData, err := b.readCodexManifestArtifact(manifest, codexAuthorityEvidenceArtifactID, "codex-authority-evidence.json")
+	if err != nil {
+		return nil, "", err
+	}
+	authorityPayload, authorityEvidenceDigest, err := parseSignedPayload(authorityData, "marshal.codex.production-evidence.v1")
+	if err != nil {
+		return nil, "", fmt.Errorf("validate frozen Codex authority evidence: %w", err)
+	}
+	if authorityEvidenceDigest != capability.CodexAuthority.EvidenceDigest {
+		return nil, "", errors.New("Codex authority evidence digest does not match capability authority")
+	}
+	var authorityIdentity struct {
+		HostIdentityDigest   string `json:"hostIdentityDigest"`
+		BinaryIdentityDigest string `json:"binaryIdentityDigest"`
+		ProfileDigest        string `json:"profileDigest"`
+	}
+	if err := json.Unmarshal(authorityPayload, &authorityIdentity); err != nil {
+		return nil, "", fmt.Errorf("decode frozen Codex authority evidence payload: %w", err)
+	}
+	if authorityIdentity.HostIdentityDigest != capability.CodexAuthority.HostIdentityDigest ||
+		authorityIdentity.BinaryIdentityDigest != capability.CodexAuthority.BinaryIdentityDigest ||
+		authorityIdentity.ProfileDigest != capability.CodexAuthority.ProfileDigest {
+		return nil, "", errors.New("Codex authority evidence identity digests do not match capability authority")
+	}
+
+	attemptPrefix := filepath.ToSlash(filepath.Join("attempts", worker.AttemptID))
+	receiptPath := attemptPrefix + "/codex-launch-receipt.json"
+	receiptData, err := b.readCodexManifestArtifact(manifest, codexLaunchReceiptArtifactID, receiptPath)
+	if err != nil {
+		return nil, "", err
+	}
+	receiptPayload, launchReceiptDigest, err := parseSignedPayload(receiptData, "marshal.codex.launch-receipt.v1")
+	if err != nil {
+		return nil, "", fmt.Errorf("validate frozen Codex launch receipt: %w", err)
+	}
+	var receipt struct {
+		TaskID         string   `json:"taskId"`
+		RunID          string   `json:"runId"`
+		AttemptID      string   `json:"attemptId"`
+		EvidenceDigest string   `json:"evidenceDigest"`
+		ConfigDigest   string   `json:"configDigest"`
+		FenceDigest    string   `json:"fenceDigest"`
+		PhaseDigests   []string `json:"phaseDigests"`
+	}
+	if err := json.Unmarshal(receiptPayload, &receipt); err != nil {
+		return nil, "", fmt.Errorf("decode frozen Codex launch receipt payload: %w", err)
+	}
+	if receipt.TaskID != taskID || receipt.RunID != runID || receipt.AttemptID != worker.AttemptID {
+		return nil, "", errors.New("Codex launch receipt identity does not match frozen WorkerResult")
+	}
+	if receipt.EvidenceDigest != authorityEvidenceDigest || receipt.ConfigDigest != capability.CodexAuthority.ConfigDigest || receipt.FenceDigest != capability.CodexAuthority.FenceDigest {
+		return nil, "", errors.New("Codex launch receipt authority digests do not match frozen evidence and capability")
+	}
+	if len(receipt.PhaseDigests) != 4 {
+		return nil, "", errors.New("Codex launch receipt must bind exactly T0 through T3")
+	}
+
+	topologyPath := attemptPrefix + "/codex-launch-accept-topology.json"
+	topologyData, err := b.readCodexManifestArtifact(manifest, codexLaunchTopologyArtifactID, topologyPath)
+	if err != nil {
+		return nil, "", err
+	}
+	launchAcceptTopologyDigest, err := validateLaunchAcceptTopology(topologyData)
+	if err != nil {
+		return nil, "", fmt.Errorf("validate frozen Codex launch-accept topology: %w", err)
+	}
+
+	binding := &domain.CodexEligibilityBindingV1{
+		SchemaVersion: "marshal.codex.eligibility-binding.v1", TaskID: taskID, RunID: runID, AttemptID: worker.AttemptID,
+		CapabilitySnapshotDigest: capabilityDigest, AuthorityEvidenceDigest: authorityEvidenceDigest,
+		ConfigDigest: capability.CodexAuthority.ConfigDigest, FenceDigest: capability.CodexAuthority.FenceDigest,
+		LaunchReceiptDigest: launchReceiptDigest, LaunchAcceptTopologyDigest: launchAcceptTopologyDigest,
+	}
+	bindingData, err := json.Marshal(binding)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal derived Codex eligibility binding: %w", err)
+	}
+	bindingDigest, err := canonical.DigestJSON(bindingData)
+	if err != nil {
+		return nil, "", fmt.Errorf("digest derived Codex eligibility binding: %w", err)
+	}
+	return binding, bindingDigest, nil
+}
+
+func (b *PacketBuilder) currentWorkerIdentity(report verification.Report, workers []workerEvidenceIdentity, taskID, runID string) (workerEvidenceIdentity, bool, error) {
+	if report.CandidateDigest == "" {
+		if len(workers) == 1 {
+			return workers[0], true, nil
+		}
+		for _, worker := range workers {
+			if worker.Adapter.ID == "codex" {
+				return workerEvidenceIdentity{}, false, errors.New("Codex review evidence has no unambiguous current Candidate attempt")
+			}
+		}
+		return workerEvidenceIdentity{}, false, nil
+	}
+	candidateData, err := readBounded(filepath.Join(b.RunDirectory, "candidates", report.CandidateDigest+".json"), packetByteLimit)
+	if err != nil {
+		return workerEvidenceIdentity{}, false, fmt.Errorf("read head Candidate for review attempt: %w", err)
+	}
+	var candidate domain.Candidate
+	if err := json.Unmarshal(candidateData, &candidate); err != nil {
+		return workerEvidenceIdentity{}, false, fmt.Errorf("decode head Candidate for review attempt: %w", err)
+	}
+	if err := candidate.Validate(); err != nil || candidate.CandidateDigest != report.CandidateDigest || candidate.TaskID != taskID || candidate.RunID != runID {
+		return workerEvidenceIdentity{}, false, errors.New("head Candidate does not bind the frozen review run")
+	}
+	for _, worker := range workers {
+		if worker.AttemptID == candidate.AttemptID {
+			return worker, true, nil
+		}
+	}
+	return workerEvidenceIdentity{}, false, errors.New("head Candidate attempt has no frozen WorkerResult")
+}
+
+func manifestHasCodexEligibilityArtifacts(manifest verification.ArtifactManifest) bool {
+	for _, artifact := range manifest.Artifacts {
+		switch artifact.ID {
+		case codexAuthorityEvidenceArtifactID, codexLaunchReceiptArtifactID, codexLaunchTopologyArtifactID:
+			return true
+		}
+	}
+	return false
+}
+
+func (b *PacketBuilder) readCodexManifestArtifact(manifest verification.ArtifactManifest, id, relativePath string) ([]byte, error) {
+	var match *verification.Artifact
+	for index := range manifest.Artifacts {
+		artifact := &manifest.Artifacts[index]
+		if artifact.ID != id {
+			continue
+		}
+		if match != nil {
+			return nil, fmt.Errorf("Codex eligibility artifact %s is duplicated", id)
+		}
+		match = artifact
+	}
+	if match == nil || match.Producer != "system" || !match.Required || match.Status != "validated" || match.PathRoot != "run" || match.RelativePath != relativePath {
+		return nil, fmt.Errorf("Codex eligibility artifact %s is missing or not a validated system artifact", id)
+	}
+	data, err := readBounded(filepath.Join(b.RunDirectory, filepath.FromSlash(relativePath)), packetByteLimit)
+	if err != nil {
+		return nil, fmt.Errorf("read Codex eligibility artifact %s: %w", id, err)
+	}
+	if match.ByteSize != int64(len(data)) || match.Digest != canonical.DigestBytes(data) {
+		return nil, fmt.Errorf("Codex eligibility artifact %s does not match its frozen manifest identity", id)
+	}
+	return data, nil
+}
+
+func parseSignedPayload(data []byte, schemaVersion string) (json.RawMessage, string, error) {
+	if _, err := canonical.JSON(data); err != nil {
+		return nil, "", err
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, "", err
+	}
+	if len(envelope) != 3 || envelope["payload"] == nil || envelope["payloadDigest"] == nil || envelope["signatures"] == nil {
+		return nil, "", errors.New("signed envelope has an invalid closed shape")
+	}
+	var payloadDigest string
+	var signatures []json.RawMessage
+	if err := json.Unmarshal(envelope["payloadDigest"], &payloadDigest); err != nil {
+		return nil, "", err
+	}
+	if err := json.Unmarshal(envelope["signatures"], &signatures); err != nil || len(signatures) != 1 {
+		return nil, "", errors.New("signed envelope must contain exactly one signature")
+	}
+	var signature map[string]json.RawMessage
+	if err := json.Unmarshal(signatures[0], &signature); err != nil || len(signature) != 3 || signature["alg"] == nil || signature["keyId"] == nil || signature["value"] == nil {
+		return nil, "", errors.New("signed envelope signature has an invalid closed shape")
+	}
+	var alg, keyID, value string
+	if json.Unmarshal(signature["alg"], &alg) != nil || json.Unmarshal(signature["keyId"], &keyID) != nil || json.Unmarshal(signature["value"], &value) != nil || alg != "Ed25519" || keyID == "" || value == "" {
+		return nil, "", errors.New("signed envelope signature identity is invalid")
+	}
+	computed, err := canonical.DigestJSON(envelope["payload"])
+	if err != nil || computed != payloadDigest {
+		return nil, "", errors.New("signed envelope payloadDigest does not match its canonical payload")
+	}
+	var tag struct {
+		SchemaVersion string `json:"schemaVersion"`
+	}
+	if err := json.Unmarshal(envelope["payload"], &tag); err != nil || tag.SchemaVersion != schemaVersion {
+		return nil, "", errors.New("signed envelope payload schemaVersion mismatch")
+	}
+	return append(json.RawMessage(nil), envelope["payload"]...), payloadDigest, nil
+}
+
+func validateLaunchAcceptTopology(data []byte) (string, error) {
+	digest, err := canonical.DigestJSON(data)
+	if err != nil {
+		return "", err
+	}
+	var topology map[string]json.RawMessage
+	if err := json.Unmarshal(data, &topology); err != nil {
+		return "", err
+	}
+	required := []string{"schemaVersion", "mountNamespaceDevice", "mountNamespaceInode", "phase", "fixedRoots", "executables"}
+	if len(topology) != len(required) {
+		return "", errors.New("launch-accept topology has an invalid closed shape")
+	}
+	for _, member := range required {
+		if topology[member] == nil {
+			return "", errors.New("launch-accept topology has an invalid closed shape")
+		}
+	}
+	var tag struct {
+		SchemaVersion string            `json:"schemaVersion"`
+		Phase         string            `json:"phase"`
+		FixedRoots    []json.RawMessage `json:"fixedRoots"`
+		Executables   []json.RawMessage `json:"executables"`
+	}
+	if err := json.Unmarshal(data, &tag); err != nil || tag.SchemaVersion != "marshal.codex.topology-snapshot.v1" || tag.Phase != "consumer-receipt-accept" || len(tag.FixedRoots) != 6 || len(tag.Executables) != 3 {
+		return "", errors.New("launch-accept topology must be a T4 consumer-receipt-accept record")
+	}
+	return digest, nil
+}
+
+func (b *PacketBuilder) collectWorkerResults(taskID, runID string) ([]string, []string, []workerEvidenceIdentity, error) {
 	pattern := filepath.Join(b.RunDirectory, "attempts", "*", "worker-result.json")
 	paths, err := filepath.Glob(pattern)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	sort.Strings(paths)
 	relativePaths := make([]string, 0, len(paths))
 	digests := make([]string, 0, len(paths))
+	identities := make([]workerEvidenceIdentity, 0, len(paths))
 	for _, path := range paths {
 		data, err := readBounded(path, packetByteLimit)
 		if err != nil {
-			return nil, nil, fmt.Errorf("read worker result: %w", err)
+			return nil, nil, nil, fmt.Errorf("read worker result: %w", err)
 		}
 		if err := b.Validator.Validate(domain.KindWorkerResult, data); err != nil {
-			return nil, nil, fmt.Errorf("validate worker result: %w", err)
+			return nil, nil, nil, fmt.Errorf("validate worker result: %w", err)
 		}
-		var identity struct{ TaskID, RunID string }
+		var identity workerEvidenceIdentity
 		if err := json.Unmarshal(data, &identity); err != nil || identity.TaskID != taskID || identity.RunID != runID {
-			return nil, nil, errors.New("worker result identity does not match run")
+			return nil, nil, nil, errors.New("worker result identity does not match run")
 		}
 		digest, err := canonical.DigestJSON(data)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		relative, err := filepath.Rel(b.RunDirectory, path)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		relativePaths = append(relativePaths, filepath.ToSlash(relative))
 		digests = append(digests, digest)
+		identities = append(identities, identity)
 	}
-	return relativePaths, digests, nil
+	return relativePaths, digests, identities, nil
 }
 
 func (b *PacketBuilder) loadPreviousFindings() ([]domain.PreviousFinding, error) {

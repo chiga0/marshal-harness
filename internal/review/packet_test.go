@@ -327,104 +327,284 @@ func TestReviewPacketSchemaKeepsCandidateFieldsOptional(t *testing.T) {
 	}
 }
 
-func TestPacketBindsCodexEligibilityIdentity(t *testing.T) {
-	fixture := newReviewFixture(t)
-	legacyPacket, _ := fixture.build(t, 1)
-	binding := &domain.CodexEligibilityBindingV1{
-		SchemaVersion: "marshal.codex.eligibility-binding.v1", TaskID: "ENG-123", RunID: "run-01", AttemptID: "attempt-01",
-		CapabilitySnapshotDigest: packetTestDigest("4"), AuthorityEvidenceDigest: packetTestDigest("5"),
-		ConfigDigest: packetTestDigest("6"), FenceDigest: packetTestDigest("7"), LaunchReceiptDigest: packetTestDigest("8"),
-		LaunchAcceptTopologyDigest: packetTestDigest("9"),
+func signedCodexFixture(t *testing.T, payload map[string]any) ([]byte, string) {
+	t.Helper()
+	payloadData, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
 	}
-	builder := PacketBuilder{RunDirectory: fixture.directory, Validator: fixture.validator}
-	packet, _, err := builder.Build(PacketBuildInput{
-		Task: fixture.task, TaskData: fixture.taskData, Report: fixture.report, ReportData: fixture.reportData,
-		Manifest: fixture.manifest, ManifestData: fixture.manifestData, TaskID: "ENG-123", RunID: "run-01",
-		SpecDigest: fixture.specDigest, BaseSHA: packetTestSHA("1"), ReviewRound: 1, AttemptsUsed: 1,
-		CodexEligibilityBinding: binding,
+	payloadDigest, err := canonical.DigestJSON(payloadData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{
+		"payload": payload, "payloadDigest": payloadDigest,
+		"signatures": []any{map[string]any{"alg": "Ed25519", "keyId": "fixture-key", "value": "fixture-signature"}},
 	})
 	if err != nil {
-		t.Fatalf("codex-bound packet build failed: %v", err)
+		t.Fatal(err)
+	}
+	return data, payloadDigest
+}
+
+func addCodexFixtureArtifact(t *testing.T, fixture *reviewFixture, id, relativePath string, data []byte) {
+	t.Helper()
+	absolute := filepath.Join(fixture.directory, filepath.FromSlash(relativePath))
+	if err := os.MkdirAll(filepath.Dir(absolute), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absolute, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.manifest.Artifacts = append(fixture.manifest.Artifacts, verification.Artifact{
+		ID: id, Kind: "evidence", MediaType: "application/json", Producer: "system", Required: true,
+		Status: "validated", PathRoot: "run", RelativePath: relativePath, ByteSize: int64(len(data)),
+		Digest: canonical.DigestBytes(data), CreatedAt: packetTestTime, RelatedGates: []string{"codex:eligibility"},
+	})
+	refreshCodexFixtureManifest(t, fixture)
+}
+
+func refreshCodexFixtureManifest(t *testing.T, fixture *reviewFixture) {
+	t.Helper()
+	data, err := json.Marshal(fixture.manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.manifestData = data
+}
+
+func rewriteCodexFixtureArtifact(t *testing.T, fixture *reviewFixture, id string, data []byte) {
+	t.Helper()
+	for index := range fixture.manifest.Artifacts {
+		artifact := &fixture.manifest.Artifacts[index]
+		if artifact.ID != id {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(fixture.directory, filepath.FromSlash(artifact.RelativePath)), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		artifact.ByteSize = int64(len(data))
+		artifact.Digest = canonical.DigestBytes(data)
+		refreshCodexFixtureManifest(t, fixture)
+		return
+	}
+	t.Fatalf("missing fixture artifact %s", id)
+}
+
+func newCodexReviewFixture(t *testing.T, adapterID string) reviewFixture {
+	t.Helper()
+	fixture := newReviewFixture(t)
+	workerPath := filepath.Join(fixture.directory, "attempts/attempt-01/worker-result.json")
+	workerData, err := os.ReadFile(workerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var worker map[string]any
+	if err := json.Unmarshal(workerData, &worker); err != nil {
+		t.Fatal(err)
+	}
+	worker["adapter"].(map[string]any)["id"] = adapterID
+	workerData, err = json.Marshal(worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workerPath, workerData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	digest := packetTestDigest("a")
+	configDigest, fenceDigest := packetTestDigest("b"), packetTestDigest("c")
+	authorityData, authorityDigest := signedCodexFixture(t, map[string]any{
+		"schemaVersion": "marshal.codex.production-evidence.v1", "hostIdentityDigest": digest,
+		"binaryIdentityDigest": digest, "profileDigest": digest,
+	})
+	nativeBudgetsData, _ := json.Marshal([]string{"wall-time"})
+	nativeBudgetsDigest, _ := canonical.DigestJSON(nativeBudgetsData)
+	authority := map[string]any{
+		"schemaVersion": "marshal.codex.authority-metadata.v1", "codexVersion": "1.2.3",
+		"binaryIdentityDigest": digest, "hostIdentityDigest": digest, "platform": "linux",
+		"launcherKind": "linux-execveat-sealed-memfd-ptrace-v1", "evidenceDigest": authorityDigest,
+		"configDigest": configDigest, "keysetDigest": digest, "fenceDigest": fenceDigest, "suiteDigest": digest,
+		"profileDigest": digest, "argvMatrixDigest": digest, "environmentDigest": digest,
+		"eventContractDigest": digest, "permissionContractDigest": digest, "toolPolicyDigest": digest,
+		"resultContractDigest": digest, "outputLimitDigest": digest, "nativeBudgetsDigest": nativeBudgetsDigest,
+		"trustRootKeyId": "codex-root", "evidenceSignerKeyId": "codex-signer",
+		"trustRootGeneration": 1, "authorityGeneration": 1, "revocationSetDigest": digest,
+		"observedAt": "2026-08-18T00:00:00Z", "validUntil": "2026-08-19T00:00:00Z",
+		"executionProfiles": []string{"read-only", "workspace-write"},
+		"isolationClaim":    "cooperative-host-process-not-malicious-code-sandbox",
+	}
+	capabilityData, err := json.Marshal(map[string]any{
+		"apiVersion": "marshal.dev/v1alpha1", "kind": "CapabilitySnapshot", "adapterId": "codex",
+		"adapterVersion": "1.0.0", "executable": "/usr/bin/codex", "binaryVersion": "1.2.3",
+		"probeStatus": "supported", "probeErrors": []string{}, "probedAt": "2026-08-18T00:00:00Z",
+		"capabilities": map[string]any{"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
+			"sessionPolicies": []string{"ephemeral"}, "modelSelection": true,
+			"executionProfiles": []string{"read-only", "workspace-write"}, "nativeBudgets": []string{"wall-time"}},
+		"codexAuthority": authority, "conformanceEvidenceDigest": authorityDigest,
+		"conformanceTrustRootKeyId": "codex-root", "conformanceProbeProfileDigest": digest,
+		"conformanceValidUntil": "2026-08-19T00:00:00Z", "conformanceHostFingerprint": digest,
+		"conformanceAuthorityGeneration": 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityDigest, err := canonical.DigestJSON(capabilityData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.directory, "capability-snapshot.json"), capabilityData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateData, err := json.Marshal(map[string]any{
+		"apiVersion": "marshal.dev/v1alpha1", "kind": "RunState", "taskId": "ENG-123", "runId": "run-01",
+		"state": "REVIEW_PENDING", "sequence": 7, "specDigest": fixture.specDigest,
+		"capabilityDigest": capabilityDigest, "baseSha": packetTestSHA("1"), "worktreePath": "/tmp/repo",
+		"currentAttemptId": "attempt-01", "reviewRound": 1, "attemptsUsed": 1,
+		"operationalRetriesUsed": 0, "reworkRoundsUsed": 0,
+		"createdAt": "2026-08-18T00:00:00Z", "updatedAt": "2026-08-18T00:01:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.directory, "state.json"), stateData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	receiptData, _ := signedCodexFixture(t, map[string]any{
+		"schemaVersion": "marshal.codex.launch-receipt.v1", "taskId": "ENG-123", "runId": "run-01",
+		"attemptId": "attempt-01", "evidenceDigest": authorityDigest, "configDigest": configDigest,
+		"fenceDigest": fenceDigest, "phaseDigests": []string{digest, digest, digest, digest},
+	})
+	topologyData, err := json.Marshal(map[string]any{
+		"schemaVersion": "marshal.codex.topology-snapshot.v1", "mountNamespaceDevice": uint64(1),
+		"mountNamespaceInode": uint64(2), "phase": "consumer-receipt-accept",
+		"fixedRoots":  []any{map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}},
+		"executables": []any{map[string]any{}, map[string]any{}, map[string]any{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addCodexFixtureArtifact(t, &fixture, codexAuthorityEvidenceArtifactID, "codex-authority-evidence.json", authorityData)
+	addCodexFixtureArtifact(t, &fixture, codexLaunchReceiptArtifactID, "attempts/attempt-01/codex-launch-receipt.json", receiptData)
+	addCodexFixtureArtifact(t, &fixture, codexLaunchTopologyArtifactID, "attempts/attempt-01/codex-launch-accept-topology.json", topologyData)
+	return fixture
+}
+
+func buildCodexFixture(fixture reviewFixture) (*domain.ReviewPacket, error) {
+	builder := PacketBuilder{RunDirectory: fixture.directory, Validator: fixture.validator}
+	packet, _, err := builder.Build(PacketBuildInput{Task: fixture.task, TaskData: fixture.taskData, Report: fixture.report,
+		ReportData: fixture.reportData, Manifest: fixture.manifest, ManifestData: fixture.manifestData,
+		TaskID: "ENG-123", RunID: "run-01", SpecDigest: fixture.specDigest, BaseSHA: packetTestSHA("1"), ReviewRound: 1})
+	return packet, err
+}
+
+func TestPacketBindsCodexEligibilityIdentity(t *testing.T) {
+	fixture := newCodexReviewFixture(t, "codex")
+	packet, err := buildCodexFixture(fixture)
+	if err != nil {
+		t.Fatalf("derive frozen Codex eligibility binding: %v", err)
 	}
 	if packet.CodexEligibilityBinding == nil || packet.CodexEligibilityBinding.AttemptID != "attempt-01" {
-		t.Fatalf("packet misses exact Codex eligibility binding: %+v", packet.CodexEligibilityBinding)
+		t.Fatalf("missing exact derived binding: %+v", packet.CodexEligibilityBinding)
 	}
-	if packet.EvidenceDigest == legacyPacket.EvidenceDigest {
-		t.Fatal("Codex eligibility binding must change evidenceDigest")
-	}
-	bindingData, err := json.Marshal(binding)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bindingDigest, err := canonical.DigestJSON(bindingData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	patchData, err := os.ReadFile(filepath.Join(fixture.directory, "observed.patch"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := struct {
-		SpecDigest               string                   `json:"specDigest"`
-		PatchDigest              string                   `json:"patchDigest"`
-		VerificationDigest       string                   `json:"verificationDigest"`
-		ArtifactManifestDigest   string                   `json:"artifactManifestDigest"`
-		WorkerResultDigests      []string                 `json:"workerResultDigests"`
-		PreviousFindings         []domain.PreviousFinding `json:"previousBlockingFindings"`
-		CandidateDigest          string                   `json:"candidateDigest,omitempty"`
-		WorkerCandidateDigest    string                   `json:"workerCandidateDigest,omitempty"`
-		EligibilityBindingDigest string                   `json:"eligibilityBindingDigest,omitempty"`
-	}{
+	bindingData, _ := json.Marshal(packet.CodexEligibilityBinding)
+	bindingDigest, _ := canonical.DigestJSON(bindingData)
+	patchData, _ := os.ReadFile(filepath.Join(fixture.directory, "observed.patch"))
+	identityData, _ := json.Marshal(evidenceIdentity{
 		SpecDigest: fixture.specDigest, PatchDigest: canonical.DigestBytes(patchData),
 		VerificationDigest: packet.VerificationDigest, ArtifactManifestDigest: packet.ArtifactManifestDigest,
 		WorkerResultDigests: packet.WorkerResultDigests, PreviousFindings: packet.PreviousBlockingFindings,
 		EligibilityBindingDigest: bindingDigest,
-	}
-	identityData, err := json.Marshal(identity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantEvidenceDigest, err := canonical.DigestJSON(identityData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if packet.EvidenceDigest != wantEvidenceDigest {
-		t.Fatalf("Codex evidenceDigest = %s, want exact binding projection %s", packet.EvidenceDigest, wantEvidenceDigest)
-	}
-
-	binding.TaskID = "OTHER"
-	_, _, err = builder.Build(PacketBuildInput{
-		Task: fixture.task, TaskData: fixture.taskData, Report: fixture.report, ReportData: fixture.reportData,
-		Manifest: fixture.manifest, ManifestData: fixture.manifestData, TaskID: "ENG-123", RunID: "run-01",
-		SpecDigest: fixture.specDigest, BaseSHA: packetTestSHA("1"), ReviewRound: 1,
-		CodexEligibilityBinding: binding,
 	})
-	if err == nil || !strings.Contains(err.Error(), "identity does not match frozen run") {
-		t.Fatalf("divergent Codex eligibility identity accepted: %v", err)
+	wantEvidenceDigest, _ := canonical.DigestJSON(identityData)
+	if packet.EvidenceDigest != wantEvidenceDigest {
+		t.Fatalf("packet evidence does not bind derived eligibility: %s != %s", packet.EvidenceDigest, wantEvidenceDigest)
 	}
-	binding.TaskID = "ENG-123"
-	for _, missing := range []string{"launchReceiptDigest", "launchAcceptTopologyDigest"} {
-		invalid := *binding
-		if missing == "launchReceiptDigest" {
-			invalid.LaunchReceiptDigest = ""
-		} else {
-			invalid.LaunchAcceptTopologyDigest = ""
-		}
-		_, _, err = builder.Build(PacketBuildInput{
-			Task: fixture.task, TaskData: fixture.taskData, Report: fixture.report, ReportData: fixture.reportData,
-			Manifest: fixture.manifest, ManifestData: fixture.manifestData, TaskID: "ENG-123", RunID: "run-01",
-			SpecDigest: fixture.specDigest, BaseSHA: packetTestSHA("1"), ReviewRound: 1,
-			CodexEligibilityBinding: &invalid,
+}
+
+func TestPacketRejectsInvalidFrozenCodexEligibilityArtifacts(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *reviewFixture)
+	}{
+		{"missing manifest", func(t *testing.T, f *reviewFixture) {
+			f.manifest.Artifacts = f.manifest.Artifacts[:len(f.manifest.Artifacts)-1]
+			refreshCodexFixtureManifest(t, f)
+		}},
+		{"forged path", func(t *testing.T, f *reviewFixture) {
+			f.manifest.Artifacts[len(f.manifest.Artifacts)-2].RelativePath = "attempts/forged/codex-launch-receipt.json"
+			refreshCodexFixtureManifest(t, f)
+		}},
+		{"wrong producer", func(t *testing.T, f *reviewFixture) {
+			f.manifest.Artifacts[len(f.manifest.Artifacts)-3].Producer = "worker"
+			refreshCodexFixtureManifest(t, f)
+		}},
+		{"wrong status", func(t *testing.T, f *reviewFixture) {
+			f.manifest.Artifacts[len(f.manifest.Artifacts)-2].Status = "missing"
+			refreshCodexFixtureManifest(t, f)
+		}},
+		{"wrong digest", func(t *testing.T, f *reviewFixture) {
+			f.manifest.Artifacts[len(f.manifest.Artifacts)-1].Digest = packetTestDigest("f")
+			refreshCodexFixtureManifest(t, f)
+		}},
+		{"bad envelope", func(t *testing.T, f *reviewFixture) {
+			rewriteCodexFixtureArtifact(t, f, codexLaunchReceiptArtifactID, []byte(`{"payload":{},"payloadDigest":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","signatures":[]}`))
+		}},
+		{"wrong task", func(t *testing.T, f *reviewFixture) { rewriteCodexReceipt(t, f, "taskId", "OTHER") }},
+		{"wrong run", func(t *testing.T, f *reviewFixture) { rewriteCodexReceipt(t, f, "runId", "other-run") }},
+		{"wrong attempt", func(t *testing.T, f *reviewFixture) { rewriteCodexReceipt(t, f, "attemptId", "attempt-02") }},
+		{"wrong fence", func(t *testing.T, f *reviewFixture) { rewriteCodexReceipt(t, f, "fenceDigest", packetTestDigest("f")) }},
+		{"wrong T4", func(t *testing.T, f *reviewFixture) {
+			data, _ := json.Marshal(map[string]any{"schemaVersion": "marshal.codex.topology-snapshot.v1", "mountNamespaceDevice": 1, "mountNamespaceInode": 2, "phase": "pre-exec", "fixedRoots": []any{map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}, map[string]any{}}, "executables": []any{map[string]any{}, map[string]any{}, map[string]any{}}})
+			rewriteCodexFixtureArtifact(t, f, codexLaunchTopologyArtifactID, data)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCodexReviewFixture(t, "codex")
+			test.mutate(t, &fixture)
+			if _, err := buildCodexFixture(fixture); err == nil {
+				t.Fatal("invalid frozen Codex evidence accepted")
+			}
 		})
-		if err == nil || !strings.Contains(err.Error(), "generated review packet violates contract") {
-			t.Fatalf("Codex eligibility binding without %s accepted: %v", missing, err)
-		}
 	}
+	t.Run("nonCodex injection", func(t *testing.T) {
+		fixture := newCodexReviewFixture(t, "qwen")
+		if _, err := buildCodexFixture(fixture); err == nil || !strings.Contains(err.Error(), "non-Codex") {
+			t.Fatalf("non-Codex attempt accepted Codex artifacts: %v", err)
+		}
+	})
+}
+
+func rewriteCodexReceipt(t *testing.T, fixture *reviewFixture, key string, value any) {
+	t.Helper()
+	path := filepath.Join(fixture.directory, "attempts/attempt-01/codex-launch-receipt.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	envelope.Payload[key] = value
+	data, _ = signedCodexFixture(t, envelope.Payload)
+	rewriteCodexFixtureArtifact(t, fixture, codexLaunchReceiptArtifactID, data)
 }
 
 func TestCapabilitySnapshotSchemaEnforcesCodexAuthorityShape(t *testing.T) {
 	fixture := newReviewFixture(t)
 	digest := packetTestDigest("a")
+	nativeBudgetsData, err := json.Marshal([]string{"wall-time"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeBudgetsDigest, err := canonical.DigestJSON(nativeBudgetsData)
+	if err != nil {
+		t.Fatal(err)
+	}
 	authority := map[string]any{
 		"schemaVersion": "marshal.codex.authority-metadata.v1", "codexVersion": "1.2.3",
 		"binaryIdentityDigest": digest, "hostIdentityDigest": digest, "platform": "linux",
@@ -432,7 +612,7 @@ func TestCapabilitySnapshotSchemaEnforcesCodexAuthorityShape(t *testing.T) {
 		"configDigest": digest, "keysetDigest": digest, "fenceDigest": digest, "suiteDigest": digest,
 		"profileDigest": digest, "argvMatrixDigest": digest, "environmentDigest": digest,
 		"eventContractDigest": digest, "permissionContractDigest": digest, "toolPolicyDigest": digest,
-		"resultContractDigest": digest, "outputLimitDigest": digest, "nativeBudgetsDigest": digest,
+		"resultContractDigest": digest, "outputLimitDigest": digest, "nativeBudgetsDigest": nativeBudgetsDigest,
 		"trustRootKeyId": "codex-root", "evidenceSignerKeyId": "codex-signer",
 		"trustRootGeneration": 1, "authorityGeneration": 1, "revocationSetDigest": digest,
 		"observedAt": "2026-08-18T00:00:00Z", "validUntil": "2026-08-19T00:00:00Z",
