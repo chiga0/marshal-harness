@@ -522,6 +522,122 @@ func TestPacketBindsCodexEligibilityIdentity(t *testing.T) {
 	}
 }
 
+func addHistoricalWorkerResult(t *testing.T, fixture *reviewFixture, attemptID, adapterID string) {
+	t.Helper()
+	source, err := os.ReadFile(filepath.Join(fixture.directory, "attempts/attempt-01/worker-result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var worker map[string]any
+	if err := json.Unmarshal(source, &worker); err != nil {
+		t.Fatal(err)
+	}
+	worker["attemptId"] = attemptID
+	worker["adapter"].(map[string]any)["id"] = adapterID
+	data, err := json.Marshal(worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(fixture.directory, "attempts", attemptID, "worker-result.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func selectFrozenCandidateAttempt(t *testing.T, fixture *reviewFixture, attemptID string) {
+	t.Helper()
+	candidate := domain.Candidate{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindCandidate, TaskID: "ENG-123", RunID: "run-01",
+		AttemptID: attemptID, AuthorityNamespaceID: "authority-01", BaseSHA: packetTestSHA("1"),
+		ContentDigest: packetTestDigest("d"), ProducerKind: domain.ProducerKindWorker, Producer: "verifier",
+		CreatedAt: packetTestTime,
+	}
+	digest, err := candidate.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.CandidateDigest = digest
+	data, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(fixture.directory, "candidates", digest+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.report.CandidateDigest = digest
+	fixture.report.WorkerCandidateDigest = digest
+	fixture.reportData, err = json.Marshal(fixture.report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range fixture.manifest.Artifacts {
+		if fixture.manifest.Artifacts[index].RelativePath == "observed.patch" {
+			fixture.manifest.Artifacts[index].CandidateDigest = digest
+		}
+	}
+	refreshCodexFixtureManifest(t, fixture)
+}
+
+func stripCodexFixtureArtifacts(t *testing.T, fixture *reviewFixture) []verification.Artifact {
+	t.Helper()
+	kept := fixture.manifest.Artifacts[:0]
+	var removed []verification.Artifact
+	for _, artifact := range fixture.manifest.Artifacts {
+		switch artifact.ID {
+		case codexAuthorityEvidenceArtifactID, codexLaunchReceiptArtifactID, codexLaunchTopologyArtifactID:
+			removed = append(removed, artifact)
+		default:
+			kept = append(kept, artifact)
+		}
+	}
+	fixture.manifest.Artifacts = kept
+	refreshCodexFixtureManifest(t, fixture)
+	return removed
+}
+
+func TestHistoricalCodexWorkerDoesNotPolluteCurrentNonCodexAttempt(t *testing.T) {
+	fixture := newCodexReviewFixture(t, "codex")
+	addHistoricalWorkerResult(t, &fixture, "attempt-02", "qwen")
+	selectFrozenCandidateAttempt(t, &fixture, "attempt-02")
+	removed := stripCodexFixtureArtifacts(t, &fixture)
+	packet, err := buildCodexFixture(fixture)
+	if err != nil {
+		t.Fatalf("current non-Codex attempt rejected because of historical Codex WorkerResult: %v", err)
+	}
+	if packet.CodexEligibilityBinding != nil {
+		t.Fatalf("current non-Codex attempt received historical Codex binding: %+v", packet.CodexEligibilityBinding)
+	}
+	fixture.manifest.Artifacts = append(fixture.manifest.Artifacts, removed[0])
+	refreshCodexFixtureManifest(t, &fixture)
+	if _, err := buildCodexFixture(fixture); err == nil || !strings.Contains(err.Error(), "non-Codex") {
+		t.Fatalf("current non-Codex manifest injection accepted: %v", err)
+	}
+}
+
+func TestHistoricalNonCodexWorkerCannotRelaxCurrentCodexBinding(t *testing.T) {
+	fixture := newCodexReviewFixture(t, "codex")
+	addHistoricalWorkerResult(t, &fixture, "attempt-00", "qwen")
+	selectFrozenCandidateAttempt(t, &fixture, "attempt-01")
+	packet, err := buildCodexFixture(fixture)
+	if err != nil {
+		t.Fatalf("current Codex binding rejected because of historical non-Codex WorkerResult: %v", err)
+	}
+	if packet.CodexEligibilityBinding == nil || packet.CodexEligibilityBinding.AttemptID != "attempt-01" {
+		t.Fatalf("current Codex attempt lacks exact mandatory binding: %+v", packet.CodexEligibilityBinding)
+	}
+	stripCodexFixtureArtifacts(t, &fixture)
+	if _, err := buildCodexFixture(fixture); err == nil {
+		t.Fatal("current Codex attempt accepted without mandatory binding artifacts")
+	}
+}
+
 func TestPacketRejectsInvalidFrozenCodexEligibilityArtifacts(t *testing.T) {
 	tests := []struct {
 		name   string

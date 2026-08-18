@@ -207,25 +207,21 @@ func validateCandidateBinding(report verification.Report, manifest verification.
 }
 
 func (b *PacketBuilder) deriveCodexEligibilityBinding(report verification.Report, manifest verification.ArtifactManifest, workers []workerEvidenceIdentity, taskID, runID string) (*domain.CodexEligibilityBindingV1, string, error) {
-	hasCodexWorker := false
-	for _, worker := range workers {
-		if worker.Adapter.ID == "codex" {
-			hasCodexWorker = true
-			break
-		}
-	}
-	if !hasCodexWorker {
-		if manifestHasCodexEligibilityArtifacts(manifest) {
-			return nil, "", errors.New("non-Codex attempt cannot carry Codex eligibility artifacts")
-		}
-		return nil, "", nil
-	}
 	worker, found, err := b.currentWorkerIdentity(report, workers, taskID, runID)
 	if err != nil {
 		return nil, "", err
 	}
-	if !found || worker.Adapter.ID != "codex" {
-		return nil, "", errors.New("Codex review evidence does not select the frozen Codex WorkerResult")
+	if !found {
+		if manifestHasCodexEligibilityArtifacts(manifest) {
+			return nil, "", errors.New("unresolved current attempt cannot carry Codex eligibility artifacts")
+		}
+		return nil, "", nil
+	}
+	if worker.Adapter.ID != "codex" {
+		if manifestHasCodexEligibilityArtifacts(manifest) {
+			return nil, "", errors.New("non-Codex attempt cannot carry Codex eligibility artifacts")
+		}
+		return nil, "", nil
 	}
 
 	stateData, err := readBounded(filepath.Join(b.RunDirectory, "state.json"), packetByteLimit)
