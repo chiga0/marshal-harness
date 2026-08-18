@@ -104,7 +104,11 @@ func runCommandIsolatedWithHooks(ctx context.Context, runner Runner, source, bas
 		auditContext, cancelAudit := context.WithTimeout(context.Background(), commandIsolationAuditTimeout)
 		defer cancelAudit()
 		if cleanupErr != nil {
-			resultErr = errors.Join(resultErr, errors.New("cannot clean command isolation root within deadline"))
+			if errors.Is(cleanupErr, context.DeadlineExceeded) {
+				resultErr = errors.Join(resultErr, fmt.Errorf("cannot clean command isolation root within deadline: %w", cleanupErr))
+			} else {
+				resultErr = errors.Join(resultErr, fmt.Errorf("cannot clean command isolation root: %w", cleanupErr))
+			}
 		}
 		for _, item := range protected {
 			sourceAfter, observeErr := ObserveContext(auditContext, item.Path, item.BaseSHA, item.Expected.DiffBytes+1<<20)
@@ -154,15 +158,25 @@ func runCommandIsolatedWithHooks(ctx context.Context, runner Runner, source, bas
 }
 
 func removeAllBounded(path string, timeout time.Duration) error {
-	done := make(chan error, 1)
-	go func() { done <- os.RemoveAll(path) }()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
+	if timeout <= 0 {
 		return context.DeadlineExceeded
+	}
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		lastErr = os.RemoveAll(path)
+		if lastErr == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: %v", context.DeadlineExceeded, lastErr)
+		}
+		// A command may still be closing a race profile or compiler output
+		// after its process group has exited. Retry within the same bounded
+		// window instead of converting one transient RemoveAll error into a
+		// false verifier failure.
+		retry := time.NewTimer(50 * time.Millisecond)
+		<-retry.C
 	}
 }
 
