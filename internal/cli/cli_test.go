@@ -634,6 +634,104 @@ func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
 	}
 }
 
+// TestTaskPlanProductionDefaultOrder pins the production task-generation
+// contract at the real CLI boundary. Planning itself remains deliberately
+// explicit: the generated TaskSpec carries qoder -> codex -> qwen -> pi, and
+// the Selector attempts that exact order without adding configured OpenCode.
+func TestTaskPlanProductionDefaultOrder(t *testing.T) {
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot := t.TempDir()
+	runGit(t, repositoryRoot, "init", "-q", "-b", "main")
+	runGit(t, repositoryRoot, "config", "user.email", "marshal@example.invalid")
+	runGit(t, repositoryRoot, "config", "user.name", "Marshal Test")
+	if err := os.WriteFile(filepath.Join(repositoryRoot, "README.md"), []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repositoryRoot, "add", "README.md")
+	runGit(t, repositoryRoot, "commit", "-q", "-m", "fixture")
+	const remoteURL = "https://example.invalid/marshal-cli-default-order.git"
+	runGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+	if err := os.Chdir(repositoryRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"init"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
+	}
+	writeVersionExecutable := func(name, version string) string {
+		path := filepath.Join(t.TempDir(), name)
+		script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' %q\n", version)
+		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	// Qoder and Codex are configured but lack production authority, so their
+	// truthful probes are unsupported and selection continues to Qwen.
+	// OpenCode is configured to prove it is never injected into the explicit
+	// production candidate chain.
+	t.Setenv("MARSHAL_QODER_PATH", writeVersionExecutable("qodercli", "1.1.23"))
+	t.Setenv("MARSHAL_QODER_CONFORMANCE_CONFIG", "")
+	t.Setenv("MARSHAL_CODEX_PATH", writeVersionExecutable("codex", "0.145.0"))
+	t.Setenv("MARSHAL_CODEX_AUTHORITY_CONFIG", "")
+	t.Setenv("MARSHAL_QWEN_PATH", writeVersionExecutable("qwen", "0.21.11"))
+	t.Setenv("MARSHAL_PI_PATH", writeVersionExecutable("pi", "0.84.1"))
+	t.Setenv("MARSHAL_OPENCODE_PATH", writeVersionExecutable("opencode", "1.18.13"))
+
+	const (
+		taskID = "cli-default-order-task"
+		runID  = "cli-default-order-run"
+	)
+	taskPath := filepath.Join(t.TempDir(), "task.json")
+	policyPath := filepath.Join(t.TempDir(), "policy.json")
+	writeCLIFixture(t, taskPath, cliPlanningTaskWithWorkers(t, repositoryRoot, taskID, remoteURL, "qoder", []any{"codex", "qwen", "pi"}))
+	writeCLIFixture(t, policyPath, cliPlanningPolicyWithWorkers(t, taskID, runID, true, []any{"qoder", "codex", "qwen", "pi", "opencode"}))
+
+	stdout.Reset()
+	stderr.Reset()
+	exit := Run([]string{"task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID, "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitOK {
+		t.Fatalf("task plan exit = %d, stderr = %s", exit, stderr.String())
+	}
+	var result struct {
+		State             domain.RunState `json:"state"`
+		SelectionAttempts []struct {
+			AdapterID string `json:"adapterId"`
+			Outcome   string `json:"outcome"`
+		} `json:"selectionAttempts"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode planning result: %v", err)
+	}
+	if result.State.State != domain.StateReady {
+		t.Fatalf("planning state = %+v", result.State)
+	}
+	want := []struct{ adapterID, outcome string }{
+		{"qoder", "unsupported"},
+		{"codex", "unsupported"},
+		{"qwen", "selected"},
+	}
+	if len(result.SelectionAttempts) != len(want) {
+		t.Fatalf("selection attempts = %+v, want %d attempts", result.SelectionAttempts, len(want))
+	}
+	for index, expected := range want {
+		actual := result.SelectionAttempts[index]
+		if actual.AdapterID != expected.adapterID || actual.Outcome != expected.outcome {
+			t.Fatalf("selectionAttempts[%d] = %+v, want adapter=%q outcome=%q", index, actual, expected.adapterID, expected.outcome)
+		}
+	}
+	for _, attempt := range result.SelectionAttempts {
+		if attempt.AdapterID == "opencode" {
+			t.Fatalf("OpenCode entered the production candidate chain: %+v", result.SelectionAttempts)
+		}
+	}
+}
+
 func TestTaskRunRejectsUnsafeOrUnavailableFrozenIdentityBeforeWorkerStart(t *testing.T) {
 	originalDirectory, err := os.Getwd()
 	if err != nil {
