@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -643,6 +644,10 @@ func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	templateData, err := os.ReadFile(filepath.Join(originalDirectory, "../../.agents/skills/marshal/templates/research-task.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	repositoryRoot := t.TempDir()
 	runGit(t, repositoryRoot, "init", "-q", "-b", "main")
 	runGit(t, repositoryRoot, "config", "user.email", "marshal@example.invalid")
@@ -683,13 +688,35 @@ func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 	t.Setenv("MARSHAL_PI_PATH", writeVersionExecutable("pi", "0.84.1"))
 	t.Setenv("MARSHAL_OPENCODE_PATH", writeVersionExecutable("opencode", "1.18.13"))
 
+	scaffold := func(taskID string, extraArgs ...string) (string, []byte) {
+		t.Helper()
+		draft := cliProductionTaskDraftFromTemplate(t, templateData, repositoryRoot, taskID, remoteURL)
+		worker := draft["worker"].(map[string]any)
+		delete(worker, "preferredAdapter")
+		delete(worker, "fallbackAdapters")
+		draftPath := filepath.Join(t.TempDir(), "draft.json")
+		taskPath := filepath.Join(t.TempDir(), "task.json")
+		writeCLIFixture(t, draftPath, draft)
+		stdout.Reset()
+		stderr.Reset()
+		args := append([]string{"task", "scaffold", "--draft", draftPath}, extraArgs...)
+		if exit := Run(args, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+			t.Fatalf("task scaffold exit = %d, stderr = %s", exit, stderr.String())
+		}
+		generated := append([]byte(nil), stdout.Bytes()...)
+		if err := os.WriteFile(taskPath, generated, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return taskPath, generated
+	}
+
 	const (
 		taskID = "cli-default-order-task"
 		runID  = "cli-default-order-run"
 	)
-	taskPath := filepath.Join(t.TempDir(), "task.json")
+	taskPath, generated := scaffold(taskID)
+	assertCLITaskWorkerOrder(t, generated, "qoder", []string{"codex", "qwen", "pi"})
 	policyPath := filepath.Join(t.TempDir(), "policy.json")
-	writeCLIFixture(t, taskPath, cliPlanningTaskWithWorkers(t, repositoryRoot, taskID, remoteURL, "qoder", []any{"codex", "qwen", "pi"}))
 	writeCLIFixture(t, policyPath, cliPlanningPolicyWithWorkers(t, taskID, runID, true, []any{"qoder", "codex", "qwen", "pi", "opencode"}))
 
 	stdout.Reset()
@@ -729,6 +756,59 @@ func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 		if attempt.AdapterID == "opencode" {
 			t.Fatalf("OpenCode entered the production candidate chain: %+v", result.SelectionAttempts)
 		}
+	}
+
+	const (
+		customTaskID = "cli-custom-order-task"
+		customRunID  = "cli-custom-order-run"
+	)
+	customTaskPath, customGenerated := scaffold(customTaskID,
+		"--preferred-adapter", "pi",
+		"--fallback-adapter", "qwen",
+		"--fallback-adapter", "codex",
+		"--fallback-adapter", "qoder",
+	)
+	assertCLITaskWorkerOrder(t, customGenerated, "pi", []string{"qwen", "codex", "qoder"})
+	customPolicyPath := filepath.Join(t.TempDir(), "policy.json")
+	writeCLIFixture(t, customPolicyPath, cliPlanningPolicyWithWorkers(t, customTaskID, customRunID, true, []any{"qoder", "codex", "qwen", "pi", "opencode"}))
+	stdout.Reset()
+	stderr.Reset()
+	exit = Run([]string{"task", "plan", "--task", customTaskPath, "--policy", customPolicyPath, "--run", customRunID, "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitOK {
+		t.Fatalf("custom task plan exit = %d, stderr = %s", exit, stderr.String())
+	}
+	result = struct {
+		State             domain.RunState `json:"state"`
+		SelectionAttempts []struct {
+			AdapterID string `json:"adapterId"`
+			Outcome   string `json:"outcome"`
+		} `json:"selectionAttempts"`
+	}{}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode custom planning result: %v", err)
+	}
+	if len(result.SelectionAttempts) != 1 || result.SelectionAttempts[0].AdapterID != "pi" || result.SelectionAttempts[0].Outcome != "selected" {
+		t.Fatalf("custom selection attempts = %+v, want pi selected", result.SelectionAttempts)
+	}
+
+	openCodeDraft := cliProductionTaskDraftFromTemplate(t, templateData, repositoryRoot, "cli-opencode-rejected-task", remoteURL)
+	openCodeDraft["worker"].(map[string]any)["preferredAdapter"] = "opencode"
+	openCodeDraft["worker"].(map[string]any)["fallbackAdapters"] = []any{"qoder"}
+	openCodeDraftPath := filepath.Join(t.TempDir(), "draft.json")
+	writeCLIFixture(t, openCodeDraftPath, openCodeDraft)
+	for name, args := range map[string][]string{
+		"draft":              {"task", "scaffold", "--draft", openCodeDraftPath},
+		"preferred override": {"task", "scaffold", "--draft", taskPath, "--preferred-adapter", "opencode"},
+		"fallback override":  {"task", "scaffold", "--draft", taskPath, "--preferred-adapter", "qoder", "--fallback-adapter", "opencode"},
+	} {
+		t.Run("reject OpenCode "+name, func(t *testing.T) {
+			stdout.Reset()
+			stderr.Reset()
+			exit := Run(args, strings.NewReader(""), &stdout, &stderr)
+			if exit != ExitUnavailable || stderr.String() != "生成失败：OpenCode 不可用于新 Task。\n" || stdout.Len() != 0 {
+				t.Fatalf("exit = %d, stdout = %q, stderr = %q", exit, stdout.String(), stderr.String())
+			}
+		})
 	}
 }
 
@@ -833,6 +913,43 @@ func cliPlanningTaskWithWorkers(t *testing.T, repositoryRoot, taskID, remoteURL,
 	publication["mergePolicy"] = "never"
 	publication["requiredChecks"] = []any{}
 	return fixture
+}
+
+func cliProductionTaskDraftFromTemplate(t *testing.T, templateData []byte, repositoryRoot, taskID, remoteURL string) map[string]any {
+	t.Helper()
+	var draft map[string]any
+	if err := json.Unmarshal(templateData, &draft); err != nil {
+		t.Fatal(err)
+	}
+	draft["metadata"].(map[string]any)["id"] = taskID
+	repository := draft["repository"].(map[string]any)
+	repository["path"] = repositoryRoot
+	repository["baseRef"] = strings.TrimSpace(runGitCLI(t, repositoryRoot, "rev-parse", "HEAD"))
+	repository["remote"] = "origin"
+	repository["expectedRemoteUrl"] = remoteURL
+	scope := draft["scope"].(map[string]any)
+	scope["allowPaths"] = []any{"README.md"}
+	draft["acceptance"] = readCLIFixture(t, "examples/happy-path/task-spec.json")["acceptance"]
+	draft["deliverables"] = []any{map[string]any{
+		"id": "research-report", "kind": "documentation", "pathGlob": "README.md", "minimumCount": float64(1), "required": true,
+	}}
+	return draft
+}
+
+func assertCLITaskWorkerOrder(t *testing.T, generated []byte, preferred string, fallbacks []string) {
+	t.Helper()
+	var task struct {
+		Worker struct {
+			Preferred string   `json:"preferredAdapter"`
+			Fallback  []string `json:"fallbackAdapters"`
+		} `json:"worker"`
+	}
+	if err := json.Unmarshal(generated, &task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Worker.Preferred != preferred || !reflect.DeepEqual(task.Worker.Fallback, fallbacks) {
+		t.Fatalf("worker order = %q -> %v, want %q -> %v", task.Worker.Preferred, task.Worker.Fallback, preferred, fallbacks)
+	}
 }
 
 func cliPlanningPolicy(t *testing.T, taskID, runID string) map[string]any {
