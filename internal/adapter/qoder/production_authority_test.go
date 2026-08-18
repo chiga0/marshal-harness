@@ -134,6 +134,207 @@ func TestExactOSTrustRootAndAnchorValidation(t *testing.T) {
 	}
 }
 
+type exactLedgerFixture struct {
+	now             time.Time
+	providerPublic  ed25519.PublicKey
+	providerPrivate ed25519.PrivateKey
+	keys            map[string]ed25519.PrivateKey
+	records         []QoderOSTrustRootRecord
+	receipts        []QoderOSTrustAnchorReceipt
+}
+
+func newExactLedgerFixture(t *testing.T) *exactLedgerFixture {
+	t.Helper()
+	providerPublic, providerPrivate, _ := ed25519.GenerateKey(rand.Reader)
+	fixture := &exactLedgerFixture{now: time.Now().UTC(), providerPublic: providerPublic, providerPrivate: providerPrivate, keys: map[string]ed25519.PrivateKey{}}
+	fixture.appendActivate(t, "trust-ledger-operator", "operator-0", 0, "")
+	fixture.appendActivate(t, "host-attestation-provider", "host-0", 0, "operator-0")
+	fixture.appendActivate(t, "host-attestation-provider", "host-1", 1, "host-0")
+	fixture.appendRevoke(t, "host-attestation-provider", "host-0", "host-1")
+	fixture.appendActivate(t, "consumer-fence-provider", "fence-0", 0, "operator-0")
+	return fixture
+}
+
+func (fixture *exactLedgerFixture) appendActivate(t *testing.T, role, keyID string, epoch uint64, authorizer string) {
+	t.Helper()
+	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
+	fixture.keys[keyID] = privateKey
+	fixture.appendRecord(t, role, keyID, epoch, "activate", publicKey, authorizer)
+}
+
+func (fixture *exactLedgerFixture) appendRevoke(t *testing.T, role, keyID, authorizer string) {
+	t.Helper()
+	privateKey := fixture.keys[keyID]
+	fixture.appendRecord(t, role, keyID, fixture.keyEpoch(keyID), "revoke", privateKey.Public().(ed25519.PublicKey), authorizer)
+}
+
+func (fixture *exactLedgerFixture) appendRecord(t *testing.T, role, keyID string, epoch uint64, operation string, publicKey ed25519.PublicKey, authorizer string) {
+	t.Helper()
+	sequence := uint64(len(fixture.records))
+	record := QoderOSTrustRootRecord{
+		APIVersion: exactAuthorityAPIVersion, Kind: "QoderOSTrustRootRecord", SchemaVersion: 1,
+		TrustDomainID: "host-domain", RootSequence: sequence, Role: role, KeyID: keyID, KeyEpoch: epoch, Operation: operation,
+		PublicKeyEncoding: exactSignatureEncoding, Ed25519PublicKey: base64.RawURLEncoding.EncodeToString(publicKey), PublicKeyDigest: digestBytes(publicKey),
+		EffectiveAt: candidateExactTimestamp(fixture.now.Add(-time.Second)), AnchorProviderIdentity: "os-anchor", AnchorProviderCounter: sequence,
+	}
+	if sequence > 0 {
+		previous := fixture.records[sequence-1].RecordDigest
+		record.PreviousRecordDigest = &previous
+		authorizerID, authorizerEpoch := authorizer, fixture.keyEpoch(authorizer)
+		algorithm, encoding := exactSignatureAlgorithm, exactSignatureEncoding
+		record.AuthorizingKeyID, record.AuthorizingKeyEpoch = &authorizerID, &authorizerEpoch
+		record.AuthorizationSignatureAlgorithm, record.AuthorizationSignatureEncoding = &algorithm, &encoding
+	}
+	fixture.resignRecord(t, &record, authorizer)
+	fixture.records = append(fixture.records, record)
+	fixture.receipts = append(fixture.receipts, fixture.anchorReceipt(t, record))
+}
+
+func (fixture *exactLedgerFixture) resignRecord(t *testing.T, record *QoderOSTrustRootRecord, authorizer string) {
+	t.Helper()
+	record.RecordDigest = digestRecordWithoutFields(*record, "authorizationSignature", "recordDigest")
+	if authorizer == "" {
+		record.AuthorizationSignature = nil
+		return
+	}
+	signature := base64.RawURLEncoding.EncodeToString(ed25519.Sign(fixture.keys[authorizer], []byte(osTrustRootSigningDomain+record.RecordDigest)))
+	record.AuthorizationSignature = &signature
+}
+
+func (fixture *exactLedgerFixture) anchorReceipt(t *testing.T, record QoderOSTrustRootRecord) QoderOSTrustAnchorReceipt {
+	t.Helper()
+	receipt := QoderOSTrustAnchorReceipt{
+		APIVersion: exactAuthorityAPIVersion, Kind: "QoderOSTrustAnchorReceipt", SchemaVersion: 1,
+		AnchorProviderIdentity: "os-anchor", TrustDomainID: record.TrustDomainID, RootSequence: record.RootSequence, RootRecordDigest: record.RecordDigest,
+		PreviousRootRecordDigest: record.PreviousRecordDigest, AnchorProviderCounter: record.AnchorProviderCounter, ObservedAt: candidateExactTimestamp(fixture.now.Add(-time.Second)),
+		ProviderKeyID: "anchor-key", SignatureAlgorithm: exactSignatureAlgorithm, SignatureEncoding: exactSignatureEncoding,
+	}
+	if len(fixture.receipts) > 0 {
+		previous := fixture.receipts[len(fixture.receipts)-1].RecordDigest
+		receipt.PreviousAnchorReceiptDigest = &previous
+	}
+	receipt.RecordDigest = digestRecordWithoutFields(receipt, "signature", "recordDigest")
+	receipt.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(fixture.providerPrivate, []byte(osTrustAnchorSigningDomain+receipt.RecordDigest)))
+	return receipt
+}
+
+func (fixture *exactLedgerFixture) keyEpoch(keyID string) uint64 {
+	for _, record := range fixture.records {
+		if record.KeyID == keyID && record.Operation == "activate" {
+			return record.KeyEpoch
+		}
+	}
+	return 0
+}
+
+func TestExactOSTrustLedgerReplayEnforcesActiveSet(t *testing.T) {
+	fixture := newExactLedgerFixture(t)
+	state, err := ReplayQoderOSTrustRootLedger(fixture.records, fixture.receipts, "os-anchor", "anchor-key", 0, fixture.providerPublic, fixture.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.RootSequence != 4 || len(state.ActiveKeys["host-attestation-provider"]) != 1 || state.ActiveKeys["host-attestation-provider"][0].KeyID != "host-1" {
+		t.Fatalf("unexpected active set: %+v", state)
+	}
+
+	t.Run("cross role authorization", func(t *testing.T) {
+		broken := newExactLedgerFixture(t)
+		record := &broken.records[2]
+		authorizer, epoch := "operator-0", uint64(0)
+		record.AuthorizingKeyID, record.AuthorizingKeyEpoch = &authorizer, &epoch
+		broken.resignRecord(t, record, authorizer)
+		broken.receipts[2] = broken.anchorReceiptForIndex(t, 2)
+		if _, err := ReplayQoderOSTrustRootLedger(broken.records, broken.receipts, "os-anchor", "anchor-key", 0, broken.providerPublic, broken.now); err == nil {
+			t.Fatal("cross-role authorization was accepted")
+		}
+	})
+	t.Run("last active revoke", func(t *testing.T) {
+		broken := newExactLedgerFixture(t)
+		broken.records, broken.receipts = broken.records[:2], broken.receipts[:2]
+		broken.appendRevoke(t, "host-attestation-provider", "host-0", "host-0")
+		if _, err := ReplayQoderOSTrustRootLedger(broken.records, broken.receipts, "os-anchor", "anchor-key", 0, broken.providerPublic, broken.now); err == nil {
+			t.Fatal("last active role key was revoked")
+		}
+	})
+	t.Run("revoked authorizer", func(t *testing.T) {
+		broken := newExactLedgerFixture(t)
+		broken.appendActivate(t, "host-attestation-provider", "host-2", 2, "host-0")
+		if _, err := ReplayQoderOSTrustRootLedger(broken.records, broken.receipts, "os-anchor", "anchor-key", 0, broken.providerPublic, broken.now); err == nil {
+			t.Fatal("revoked key authorized a new record")
+		}
+	})
+	for name, mutate := range map[string]func(*exactLedgerFixture){
+		"sequence jump": func(value *exactLedgerFixture) { value.records[2].RootSequence++ },
+		"previous mismatch": func(value *exactLedgerFixture) {
+			changed := digest("f")
+			value.records[2].PreviousRecordDigest = &changed
+		},
+		"epoch jump":   func(value *exactLedgerFixture) { value.records[2].KeyEpoch++ },
+		"key id reuse": func(value *exactLedgerFixture) { value.records[2].KeyID = "host-0" },
+		"public key reuse": func(value *exactLedgerFixture) {
+			publicKey := value.keys["host-0"].Public().(ed25519.PublicKey)
+			value.records[2].Ed25519PublicKey = base64.RawURLEncoding.EncodeToString(publicKey)
+			value.records[2].PublicKeyDigest = digestBytes(publicKey)
+		},
+		"future effective time": func(value *exactLedgerFixture) {
+			value.records[2].EffectiveAt = candidateExactTimestamp(value.now.Add(time.Hour))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			broken := newExactLedgerFixture(t)
+			mutate(broken)
+			broken.resignRecord(t, &broken.records[2], "host-0")
+			broken.receipts[2] = broken.anchorReceiptForIndex(t, 2)
+			if _, err := ReplayQoderOSTrustRootLedger(broken.records, broken.receipts, "os-anchor", "anchor-key", 0, broken.providerPublic, broken.now); err == nil {
+				t.Fatal("invalid trust ledger was accepted")
+			}
+		})
+	}
+}
+
+func (fixture *exactLedgerFixture) anchorReceiptForIndex(t *testing.T, index int) QoderOSTrustAnchorReceipt {
+	t.Helper()
+	saved := fixture.receipts
+	fixture.receipts = saved[:index]
+	receipt := fixture.anchorReceipt(t, fixture.records[index])
+	fixture.receipts = saved
+	return receipt
+}
+
+func (fixture *exactLedgerFixture) anchorReceiptForRecord(t *testing.T, record QoderOSTrustRootRecord, index int) QoderOSTrustAnchorReceipt {
+	t.Helper()
+	saved := fixture.receipts
+	fixture.receipts = saved[:index]
+	receipt := fixture.anchorReceipt(t, record)
+	fixture.receipts = saved
+	return receipt
+}
+
+func TestExactRootAndAnchorRejectIdentityAndIntegerOverflow(t *testing.T) {
+	fixture := newExactLedgerFixture(t)
+	root := fixture.records[0]
+	root.RootSequence = candidateMaxJSONInteger + 1
+	root.AnchorProviderCounter = root.RootSequence
+	root.RecordDigest = digestRecordWithoutFields(root, "authorizationSignature", "recordDigest")
+	if err := ValidateQoderOSTrustRootRecord(root, "", 0, nil, fixture.now); err == nil {
+		t.Fatal("root sequence above exact JSON integer bound was accepted")
+	}
+	root = fixture.records[0]
+	root.AnchorProviderIdentity = "replacement-anchor"
+	root.RecordDigest = digestRecordWithoutFields(root, "authorizationSignature", "recordDigest")
+	receipt := fixture.anchorReceiptForRecord(t, root, 0)
+	if err := ValidateQoderOSTrustAnchorReceipt(receipt, root, "os-anchor", "anchor-key", 0, fixture.providerPublic, fixture.now); err == nil {
+		t.Fatal("root anchor provider identity mismatch was accepted")
+	}
+	receipt = fixture.receipts[0]
+	receipt.AnchorProviderCounter = candidateMaxJSONInteger + 1
+	receipt.RecordDigest = digestRecordWithoutFields(receipt, "signature", "recordDigest")
+	receipt.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(fixture.providerPrivate, []byte(osTrustAnchorSigningDomain+receipt.RecordDigest)))
+	if err := ValidateQoderOSTrustAnchorReceipt(receipt, fixture.records[0], "os-anchor", "anchor-key", 0, fixture.providerPublic, fixture.now); err == nil {
+		t.Fatal("anchor counter above exact JSON integer bound was accepted")
+	}
+}
+
 func TestExactHostAttestationValidation(t *testing.T) {
 	identity, publicKey := exactHostIdentityFixture(t)
 	now, err := time.Parse(time.RFC3339Nano, identity.IssuedAt)
@@ -190,6 +391,29 @@ func TestExactConsumerFenceReceiptsBindRequests(t *testing.T) {
 	request.TransactionID = "txn-2"
 	if err := ValidateConsumerFenceReceipt(receipt, request, "fence-provider", "fence-key", 0, publicKey, now); err == nil {
 		t.Fatal("fence receipt replayed for a different transaction")
+	}
+	for name, verify := range map[string]func() error{
+		"empty provider identity genesis": func() error {
+			return ValidateConsumerFenceGenesisReceipt(genesis, genesisRequest, "", "fence-key", 0, publicKey, now)
+		},
+		"empty provider key genesis": func() error {
+			return ValidateConsumerFenceGenesisReceipt(genesis, genesisRequest, "fence-provider", "", 0, publicKey, now)
+		},
+		"provider epoch overflow genesis": func() error {
+			return ValidateConsumerFenceGenesisReceipt(genesis, genesisRequest, "fence-provider", "fence-key", candidateMaxJSONInteger+1, publicKey, now)
+		},
+		"advance counter overflow": func() error {
+			overflow := request
+			overflow.TransactionID = "txn-1"
+			overflow.ExpectedProviderCounter = candidateMaxJSONInteger
+			return ValidateConsumerFenceReceipt(receipt, overflow, "fence-provider", "fence-key", 0, publicKey, now)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := verify(); err == nil {
+				t.Fatal("invalid fence provider identity or counter was accepted")
+			}
+		})
 	}
 }
 

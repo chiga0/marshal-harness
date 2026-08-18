@@ -154,6 +154,27 @@ type ExactAuthorityProviders struct {
 	fence   ConsumerFenceAnchorProvider
 }
 
+type QoderOSTrustKeyIdentity struct {
+	Role            string
+	KeyID           string
+	KeyEpoch        uint64
+	PublicKeyDigest string
+	PublicKey       ed25519.PublicKey
+}
+
+type QoderOSTrustLedgerState struct {
+	TrustDomainID       string
+	RootSequence        uint64
+	RootRecordDigest    string
+	AnchorReceiptDigest string
+	ActiveKeys          map[string][]QoderOSTrustKeyIdentity
+}
+
+type qoderOSTrustLedgerKey struct {
+	identity QoderOSTrustKeyIdentity
+	active   bool
+}
+
 func NewExactAuthorityProviders(osTrust QoderOSTrustAnchorProvider, host HostAttestationProvider, fence ConsumerFenceAnchorProvider) (*ExactAuthorityProviders, error) {
 	if osTrust == nil || host == nil || fence == nil {
 		return nil, errors.New("qoder exact authority providers are incomplete")
@@ -253,7 +274,7 @@ func decodeExactAuthorityDocument[T any](document []byte) (T, error) {
 func ValidateQoderOSTrustRootRecord(record QoderOSTrustRootRecord, authorizingKeyID string, authorizingKeyEpoch uint64, authorizingKey ed25519.PublicKey, now time.Time) error {
 	publicKey, publicErr := decodeCandidateRawURL(record.Ed25519PublicKey)
 	effectiveAt, timeErr := time.Parse(time.RFC3339Nano, record.EffectiveAt)
-	if record.APIVersion != exactAuthorityAPIVersion || record.Kind != "QoderOSTrustRootRecord" || record.SchemaVersion != 1 || !validCandidateASCII(record.TrustDomainID) || !validTrustRootRole(record.Role) || !validCandidateASCII(record.KeyID) || record.KeyEpoch > candidateMaxJSONInteger || record.PublicKeyEncoding != exactSignatureEncoding || publicErr != nil || len(publicKey) != ed25519.PublicKeySize || record.PublicKeyDigest != digestBytes(publicKey) || !validSHA256Digest(record.RecordDigest) || timeErr != nil || !validCandidateTimestamp(record.EffectiveAt) || effectiveAt.After(now) || record.AnchorProviderCounter != record.RootSequence {
+	if record.APIVersion != exactAuthorityAPIVersion || record.Kind != "QoderOSTrustRootRecord" || record.SchemaVersion != 1 || !validCandidateASCII(record.TrustDomainID) || !validTrustRootRole(record.Role) || !validCandidateASCII(record.KeyID) || record.RootSequence > candidateMaxJSONInteger || record.KeyEpoch > candidateMaxJSONInteger || record.PublicKeyEncoding != exactSignatureEncoding || publicErr != nil || len(publicKey) != ed25519.PublicKeySize || record.PublicKeyDigest != digestBytes(publicKey) || !validSHA256Digest(record.RecordDigest) || timeErr != nil || !validCandidateTimestamp(record.EffectiveAt) || effectiveAt.After(now) || !validCandidateASCII(record.AnchorProviderIdentity) || record.AnchorProviderCounter > candidateMaxJSONInteger || record.AnchorProviderCounter != record.RootSequence {
 		return errors.New("qoder OS trust root record is invalid")
 	}
 	if record.Operation != "activate" && record.Operation != "revoke" {
@@ -280,7 +301,7 @@ func ValidateQoderOSTrustRootRecord(record QoderOSTrustRootRecord, authorizingKe
 
 func ValidateQoderOSTrustAnchorReceipt(receipt QoderOSTrustAnchorReceipt, root QoderOSTrustRootRecord, providerIdentity, providerKeyID string, providerKeyEpoch uint64, providerKey ed25519.PublicKey, now time.Time) error {
 	observedAt, timeErr := time.Parse(time.RFC3339Nano, receipt.ObservedAt)
-	if !validCandidateASCII(providerIdentity) || !validCandidateASCII(providerKeyID) || providerKeyEpoch > candidateMaxJSONInteger || receipt.APIVersion != exactAuthorityAPIVersion || receipt.Kind != "QoderOSTrustAnchorReceipt" || receipt.SchemaVersion != 1 || receipt.AnchorProviderIdentity != providerIdentity || receipt.ProviderKeyID != providerKeyID || receipt.ProviderKeyEpoch != providerKeyEpoch || receipt.TrustDomainID != root.TrustDomainID || receipt.RootSequence != root.RootSequence || receipt.RootRecordDigest != root.RecordDigest || receipt.AnchorProviderCounter != root.AnchorProviderCounter || !sameOptionalDigest(receipt.PreviousRootRecordDigest, root.PreviousRecordDigest) || !validOptionalDigest(receipt.PreviousAnchorReceiptDigest) || receipt.SignatureAlgorithm != exactSignatureAlgorithm || receipt.SignatureEncoding != exactSignatureEncoding || timeErr != nil || !validCandidateTimestamp(receipt.ObservedAt) || observedAt.After(now) || receipt.RecordDigest != digestRecordWithoutFields(receipt, "signature", "recordDigest") {
+	if !validCandidateASCII(providerIdentity) || !validCandidateASCII(providerKeyID) || providerKeyEpoch > candidateMaxJSONInteger || receipt.APIVersion != exactAuthorityAPIVersion || receipt.Kind != "QoderOSTrustAnchorReceipt" || receipt.SchemaVersion != 1 || receipt.AnchorProviderIdentity != providerIdentity || root.AnchorProviderIdentity != providerIdentity || receipt.ProviderKeyID != providerKeyID || receipt.ProviderKeyEpoch != providerKeyEpoch || receipt.TrustDomainID != root.TrustDomainID || receipt.RootSequence > candidateMaxJSONInteger || receipt.RootSequence != root.RootSequence || receipt.RootRecordDigest != root.RecordDigest || receipt.AnchorProviderCounter > candidateMaxJSONInteger || receipt.AnchorProviderCounter != root.AnchorProviderCounter || !sameOptionalDigest(receipt.PreviousRootRecordDigest, root.PreviousRecordDigest) || !validOptionalDigest(receipt.PreviousAnchorReceiptDigest) || receipt.SignatureAlgorithm != exactSignatureAlgorithm || receipt.SignatureEncoding != exactSignatureEncoding || timeErr != nil || !validCandidateTimestamp(receipt.ObservedAt) || observedAt.After(now) || receipt.RecordDigest != digestRecordWithoutFields(receipt, "signature", "recordDigest") {
 		return errors.New("qoder OS trust anchor receipt is invalid")
 	}
 	signature, err := decodeCandidateRawURL(receipt.Signature)
@@ -304,7 +325,7 @@ func ValidateHostAttestationIdentity(identity HostAttestationIdentity, providerI
 
 func ValidateConsumerFenceReceipt(receipt ConsumerFenceReceipt, request ConsumerFenceAdvanceRequest, providerIdentity, providerKeyID string, providerKeyEpoch uint64, providerKey ed25519.PublicKey, now time.Time) error {
 	observedAt, timeErr := time.Parse(time.RFC3339Nano, receipt.ObservedAt)
-	if !validCandidateASCII(providerIdentity) || !validCandidateASCII(providerKeyID) || providerKeyEpoch > candidateMaxJSONInteger || !validCandidateASCII(request.ConsumerInstanceID) || !validCandidateASCII(request.RepositoryIdentity) || !validCandidateASCII(request.TransactionID) || !validSHA256Digest(request.PreparedRecordDigest) || request.AuthorityGeneration == 0 || request.AuthorityGeneration > candidateMaxJSONInteger || !validSHA256Digest(request.ConfigDigest) || request.ExpectedProviderCounter == ^uint64(0) || receipt.APIVersion != exactAuthorityAPIVersion || receipt.Kind != "QoderConsumerFenceAdvanceReceipt" || receipt.SchemaVersion != 1 || receipt.ProviderIdentity != providerIdentity || receipt.ConsumerInstanceID != request.ConsumerInstanceID || receipt.RepositoryIdentity != request.RepositoryIdentity || receipt.TransactionID != request.TransactionID || receipt.PreparedRecordDigest == nil || *receipt.PreparedRecordDigest != request.PreparedRecordDigest || receipt.AuthorityGeneration != request.AuthorityGeneration || receipt.ConfigDigest == nil || *receipt.ConfigDigest != request.ConfigDigest || receipt.ProviderCounter != request.ExpectedProviderCounter+1 || !sameOptionalDigest(receipt.PreviousReceiptDigest, request.ExpectedPreviousReceiptDigest) || receipt.ProviderKeyID != providerKeyID || receipt.ProviderKeyEpoch != providerKeyEpoch || receipt.SignatureAlgorithm != exactSignatureAlgorithm || receipt.SignatureEncoding != exactSignatureEncoding || timeErr != nil || !validCandidateTimestamp(receipt.ObservedAt) || observedAt.After(now) || receipt.RecordDigest != digestRecordWithoutFields(receipt, "signature", "recordDigest") {
+	if !validCandidateASCII(providerIdentity) || !validCandidateASCII(providerKeyID) || providerKeyEpoch > candidateMaxJSONInteger || !validCandidateASCII(request.ConsumerInstanceID) || !validCandidateASCII(request.RepositoryIdentity) || !validCandidateASCII(request.TransactionID) || !validSHA256Digest(request.PreparedRecordDigest) || request.AuthorityGeneration == 0 || request.AuthorityGeneration > candidateMaxJSONInteger || !validSHA256Digest(request.ConfigDigest) || request.ExpectedProviderCounter >= candidateMaxJSONInteger || receipt.APIVersion != exactAuthorityAPIVersion || receipt.Kind != "QoderConsumerFenceAdvanceReceipt" || receipt.SchemaVersion != 1 || receipt.ProviderIdentity != providerIdentity || receipt.ConsumerInstanceID != request.ConsumerInstanceID || receipt.RepositoryIdentity != request.RepositoryIdentity || receipt.TransactionID != request.TransactionID || receipt.PreparedRecordDigest == nil || *receipt.PreparedRecordDigest != request.PreparedRecordDigest || receipt.AuthorityGeneration != request.AuthorityGeneration || receipt.ConfigDigest == nil || *receipt.ConfigDigest != request.ConfigDigest || receipt.ProviderCounter > candidateMaxJSONInteger || receipt.ProviderCounter != request.ExpectedProviderCounter+1 || !sameOptionalDigest(receipt.PreviousReceiptDigest, request.ExpectedPreviousReceiptDigest) || receipt.ProviderKeyID != providerKeyID || receipt.ProviderKeyEpoch != providerKeyEpoch || receipt.SignatureAlgorithm != exactSignatureAlgorithm || receipt.SignatureEncoding != exactSignatureEncoding || timeErr != nil || !validCandidateTimestamp(receipt.ObservedAt) || observedAt.After(now) || receipt.RecordDigest != digestRecordWithoutFields(receipt, "signature", "recordDigest") {
 		return errors.New("qoder consumer fence receipt is invalid")
 	}
 	signature, err := decodeCandidateRawURL(receipt.Signature)
@@ -316,7 +337,7 @@ func ValidateConsumerFenceReceipt(receipt ConsumerFenceReceipt, request Consumer
 
 func ValidateConsumerFenceGenesisReceipt(receipt ConsumerFenceReceipt, request ConsumerFenceGenesisRequest, providerIdentity, providerKeyID string, providerKeyEpoch uint64, providerKey ed25519.PublicKey, now time.Time) error {
 	observedAt, timeErr := time.Parse(time.RFC3339Nano, receipt.ObservedAt)
-	if !validCandidateASCII(request.ConsumerInstanceID) || !validCandidateASCII(request.RepositoryIdentity) || receipt.APIVersion != exactAuthorityAPIVersion || receipt.Kind != "QoderConsumerFenceGenesisReceipt" || receipt.SchemaVersion != 1 || receipt.ProviderIdentity != providerIdentity || receipt.ConsumerInstanceID != request.ConsumerInstanceID || receipt.RepositoryIdentity != request.RepositoryIdentity || receipt.ProviderCounter != 0 || receipt.TransactionID != "genesis" || receipt.PreparedRecordDigest != nil || receipt.AuthorityGeneration != 0 || receipt.ConfigDigest != nil || receipt.PreviousReceiptDigest != nil || receipt.ProviderKeyID != providerKeyID || receipt.ProviderKeyEpoch != providerKeyEpoch || receipt.SignatureAlgorithm != exactSignatureAlgorithm || receipt.SignatureEncoding != exactSignatureEncoding || timeErr != nil || !validCandidateTimestamp(receipt.ObservedAt) || observedAt.After(now) || receipt.RecordDigest != digestRecordWithoutFields(receipt, "signature", "recordDigest") {
+	if !validCandidateASCII(providerIdentity) || !validCandidateASCII(providerKeyID) || providerKeyEpoch > candidateMaxJSONInteger || !validCandidateASCII(request.ConsumerInstanceID) || !validCandidateASCII(request.RepositoryIdentity) || receipt.APIVersion != exactAuthorityAPIVersion || receipt.Kind != "QoderConsumerFenceGenesisReceipt" || receipt.SchemaVersion != 1 || receipt.ProviderIdentity != providerIdentity || receipt.ConsumerInstanceID != request.ConsumerInstanceID || receipt.RepositoryIdentity != request.RepositoryIdentity || receipt.ProviderCounter != 0 || receipt.TransactionID != "genesis" || receipt.PreparedRecordDigest != nil || receipt.AuthorityGeneration != 0 || receipt.ConfigDigest != nil || receipt.PreviousReceiptDigest != nil || receipt.ProviderKeyID != providerKeyID || receipt.ProviderKeyEpoch != providerKeyEpoch || receipt.SignatureAlgorithm != exactSignatureAlgorithm || receipt.SignatureEncoding != exactSignatureEncoding || timeErr != nil || !validCandidateTimestamp(receipt.ObservedAt) || observedAt.After(now) || receipt.RecordDigest != digestRecordWithoutFields(receipt, "signature", "recordDigest") {
 		return errors.New("qoder consumer fence genesis receipt is invalid")
 	}
 	signature, err := decodeCandidateRawURL(receipt.Signature)
@@ -324,6 +345,135 @@ func ValidateConsumerFenceGenesisReceipt(receipt ConsumerFenceReceipt, request C
 		return errors.New("qoder consumer fence genesis receipt is not trusted")
 	}
 	return nil
+}
+
+// ReplayQoderOSTrustRootLedger validates the complete append-only root and
+// anchor chains before exposing an active set. A record can only be authorized
+// by a key that was active immediately before that record was applied.
+func ReplayQoderOSTrustRootLedger(records []QoderOSTrustRootRecord, receipts []QoderOSTrustAnchorReceipt, providerIdentity, providerKeyID string, providerKeyEpoch uint64, providerKey ed25519.PublicKey, now time.Time) (QoderOSTrustLedgerState, error) {
+	if len(records) == 0 || len(records) != len(receipts) || len(records) > 4096 || !validCandidateASCII(providerIdentity) || !validCandidateASCII(providerKeyID) || providerKeyEpoch > candidateMaxJSONInteger || len(providerKey) != ed25519.PublicKeySize {
+		return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger is incomplete")
+	}
+	keys := map[string]*qoderOSTrustLedgerKey{}
+	seenDigests := map[string]struct{}{}
+	lastEpoch := map[string]uint64{}
+	epochStarted := map[string]bool{}
+	activeCount := map[string]int{}
+	var trustDomain, previousRecord, previousAnchor string
+	for index := range records {
+		record, receipt := records[index], receipts[index]
+		if record.RootSequence != uint64(index) || record.AnchorProviderCounter != uint64(index) || receipt.RootSequence != uint64(index) || receipt.AnchorProviderCounter != uint64(index) {
+			return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger sequence is invalid")
+		}
+		if index == 0 {
+			trustDomain = record.TrustDomainID
+			if record.PreviousRecordDigest != nil || receipt.PreviousRootRecordDigest != nil || receipt.PreviousAnchorReceiptDigest != nil {
+				return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger genesis chain is invalid")
+			}
+		} else {
+			if record.TrustDomainID != trustDomain || record.PreviousRecordDigest == nil || *record.PreviousRecordDigest != previousRecord || receipt.PreviousRootRecordDigest == nil || *receipt.PreviousRootRecordDigest != previousRecord || receipt.PreviousAnchorReceiptDigest == nil || *receipt.PreviousAnchorReceiptDigest != previousAnchor {
+				return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger chain is invalid")
+			}
+		}
+		if record.AnchorProviderIdentity != providerIdentity {
+			return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger anchor identity changed")
+		}
+		publicBytes, err := decodeCandidateRawURL(record.Ed25519PublicKey)
+		if err != nil {
+			return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger public key is invalid")
+		}
+		keyIdentity := QoderOSTrustKeyIdentity{Role: record.Role, KeyID: record.KeyID, KeyEpoch: record.KeyEpoch, PublicKeyDigest: record.PublicKeyDigest, PublicKey: append(ed25519.PublicKey(nil), publicBytes...)}
+		keyName := record.KeyID
+		var authorizer *qoderOSTrustLedgerKey
+		if index > 0 {
+			if record.AuthorizingKeyID == nil || record.AuthorizingKeyEpoch == nil {
+				return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger authorizer is missing")
+			}
+			authorizer = keys[*record.AuthorizingKeyID]
+			if authorizer == nil || !authorizer.active || authorizer.identity.KeyEpoch != *record.AuthorizingKeyEpoch {
+				return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger authorizer is inactive or unknown")
+			}
+			roleBootstrapping := record.Operation == "activate" && !epochStarted[record.Role] && activeCount[record.Role] == 0 && record.Role != "trust-ledger-operator"
+			if roleBootstrapping {
+				if authorizer.identity.Role != "trust-ledger-operator" {
+					return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger role bootstrap is not operator-authorized")
+				}
+			} else if authorizer.identity.Role != record.Role {
+				return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger cross-role authorization rejected")
+			}
+		}
+		if err := ValidateQoderOSTrustRootRecord(record, authorizerKeyID(authorizer), authorizerKeyEpoch(authorizer), authorizerPublicKey(authorizer), now); err != nil {
+			return QoderOSTrustLedgerState{}, err
+		}
+		if err := ValidateQoderOSTrustAnchorReceipt(receipt, record, providerIdentity, providerKeyID, providerKeyEpoch, providerKey, now); err != nil {
+			return QoderOSTrustLedgerState{}, err
+		}
+		switch record.Operation {
+		case "activate":
+			if _, reused := keys[keyName]; reused {
+				return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger key id reuse rejected")
+			}
+			if _, reused := seenDigests[record.PublicKeyDigest]; reused {
+				return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger public key reuse rejected")
+			}
+			expectedEpoch := uint64(0)
+			if epochStarted[record.Role] {
+				if lastEpoch[record.Role] == candidateMaxJSONInteger {
+					return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger key epoch is exhausted")
+				}
+				expectedEpoch = lastEpoch[record.Role] + 1
+			}
+			if record.KeyEpoch != expectedEpoch {
+				return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger key epoch is invalid")
+			}
+			lastEpoch[record.Role] = record.KeyEpoch
+			epochStarted[record.Role] = true
+			keys[keyName] = &qoderOSTrustLedgerKey{identity: keyIdentity, active: true}
+			seenDigests[record.PublicKeyDigest] = struct{}{}
+			activeCount[record.Role]++
+		case "revoke":
+			target := keys[keyName]
+			if target == nil || !target.active || target.identity.Role != record.Role || target.identity.KeyEpoch != record.KeyEpoch || target.identity.PublicKeyDigest != record.PublicKeyDigest || !bytes.Equal(target.identity.PublicKey, publicBytes) {
+				return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger revocation target is inactive or unknown")
+			}
+			if activeCount[record.Role] <= 1 {
+				return QoderOSTrustLedgerState{}, errors.New("qoder OS trust ledger last active key revocation rejected")
+			}
+			target.active = false
+			activeCount[record.Role]--
+		}
+		previousRecord, previousAnchor = record.RecordDigest, receipt.RecordDigest
+	}
+	active := map[string][]QoderOSTrustKeyIdentity{}
+	for _, key := range keys {
+		if key.active {
+			identity := key.identity
+			identity.PublicKey = append(ed25519.PublicKey(nil), identity.PublicKey...)
+			active[identity.Role] = append(active[identity.Role], identity)
+		}
+	}
+	return QoderOSTrustLedgerState{TrustDomainID: trustDomain, RootSequence: uint64(len(records) - 1), RootRecordDigest: previousRecord, AnchorReceiptDigest: previousAnchor, ActiveKeys: active}, nil
+}
+
+func authorizerKeyID(key *qoderOSTrustLedgerKey) string {
+	if key == nil {
+		return ""
+	}
+	return key.identity.KeyID
+}
+
+func authorizerKeyEpoch(key *qoderOSTrustLedgerKey) uint64 {
+	if key == nil {
+		return 0
+	}
+	return key.identity.KeyEpoch
+}
+
+func authorizerPublicKey(key *qoderOSTrustLedgerKey) ed25519.PublicKey {
+	if key == nil {
+		return nil
+	}
+	return key.identity.PublicKey
 }
 
 func validTrustRootRole(role string) bool {
