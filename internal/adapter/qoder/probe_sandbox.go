@@ -2,35 +2,68 @@ package qoder
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
+
+	"github.com/chiga0/marshal-harness/internal/canonical"
 )
 
 const candidateIsolationProfile = "qoder-probe-isolation-v1"
+const candidateOSAuditSigningDomain = "marshal-qoder-os-audit-v1\x00"
 
-// CandidateIsolationPrincipal describes the OS-enforced principal used to run
-// Qoder. ProcessIdentity must identify a principal distinct from the receipt
-// authority; a normal child process of the verifier is not sufficient.
-type CandidateIsolationPrincipal struct {
+// CandidateOSAuditSession is created by the OS audit provider before launch.
+// Its opaque capability is consumable by the isolation transport, but only
+// the provider can validate it or produce the corresponding audit receipt.
+type CandidateOSAuditSession struct {
 	ProviderIdentity string
-	ProcessIdentity  string
-	Profile          string
+	SessionID        string
+	LaunchCapability []byte
+	providerSeal     []byte
 }
 
-// CandidateReceiptAuthorityIdentity identifies the out-of-sandbox principal
-// that turns provider audit evidence into a signed receipt. No private key or
-// signing callback is accepted by the verifier or sandbox constructor.
-type CandidateReceiptAuthorityIdentity struct {
-	ProviderIdentity string
-	ProcessIdentity  string
-	Issuer           string
-	KeyID            string
+type CandidateHeldHandleProof struct {
+	Executable               CandidateObjectIdentity
+	ExecutableDigest         string
+	ScratchRoot              CandidateObjectIdentity
+	WorkingDirectory         CandidateObjectIdentity
+	CredentialRoot           CandidateObjectIdentity
+	BusinessRoots            []CandidateObjectIdentity
+	InvocationManifestDigest string
+	TopologyDigest           string
 }
 
-// CandidateIsolationAudit is non-sensitive evidence produced by the OS
-// isolation provider. The receipt authority, not Qoder, is responsible for
-// these verdicts and digests.
-type CandidateIsolationAudit struct {
+type CandidateOSAuditStartRequest struct {
+	ProbeRunID       string
+	ReceiptSequence  int
+	VariantID        string
+	Held             CandidateHeldHandleProof
+	Executable       *CandidateBoundObject
+	ScratchRoot      *CandidateBoundObject
+	WorkingDirectory *CandidateBoundObject
+	CredentialRoot   *CandidateBoundObject
+	BusinessRoots    []CandidateBoundObject
+	Invocation       CandidateProbeInvocation
+}
+
+type CandidateOSAuditFinishRequest struct {
+	Session                 CandidateOSAuditSession
+	Held                    CandidateHeldHandleProof
+	Invocation              CandidateProbeInvocation
+	TranscriptDigest        string
+	MarkerDigest            string
+	ExecutionTopologyDigest string
+}
+
+// CandidateOSAuditAttestation is produced only after the provider has checked
+// its opaque launch session against the same held handles at exit. It contains
+// no credential material or caller-supplied verdicts.
+type CandidateOSAuditAttestation struct {
+	AuditProviderIdentity      string
+	AuditSessionID             string
+	PrincipalHandleDigest      string
 	LaunchAuditDigest          string
 	DenialAuditDigest          string
 	ExitAuditDigest            string
@@ -41,32 +74,60 @@ type CandidateIsolationAudit struct {
 	ScratchOnlyWriteEnforced   bool
 	NetworkPolicyEnforced      bool
 	AmbientStateDenied         bool
+	HostIdentityDigest         string
+	ProviderReceiptDigest      string
+	ProviderKeyID              string
+	ProviderKeyEpoch           uint64
+	SignatureAlgorithm         string
+	SignatureEncoding          string
+	Signature                  string
+	CredentialCapability       CandidateCredentialCapabilityIdentity
+	InvocationManifest         CandidateVariantInvocationManifest
 }
 
-// CandidateIsolationRequest contains only held objects and the exact
-// replacement invocation. Implementations must consume the handles and must
-// not reopen CandidateBoundObject.CanonicalPath.
+type CandidateOSAuditTrustBinding struct {
+	ProviderIdentity string
+	ProviderKeyID    string
+	ProviderKeyEpoch uint64
+	PublicKey        ed25519.PublicKey
+}
+
+// CandidateOSAuditProvider owns the unforgeable audit session and OS
+// principal attestation. The transport cannot return either authority value.
+type CandidateOSAuditProvider interface {
+	BeginSession(context.Context, CandidateOSAuditStartRequest) (CandidateOSAuditSession, error)
+	VerifySession(context.Context, CandidateOSAuditFinishRequest) (CandidateOSAuditAttestation, error)
+}
+
 type CandidateIsolationRequest struct {
-	Principal  CandidateIsolationPrincipal
-	Invocation CandidateProbeInvocation
+	LaunchCapability []byte
+	Invocation       CandidateProbeInvocation
 }
 
+// CandidateIsolationResult deliberately has no principal or audit fields;
+// those are queried independently from CandidateOSAuditProvider.
 type CandidateIsolationResult struct {
 	Transcript              []byte
 	ExecutionTopologyDigest string
-	Audit                   CandidateIsolationAudit
 }
 
-// CandidateIsolationTransport is the only production execution seam. There
-// is deliberately no os/exec fallback in this package.
+// CandidateIsolationTransport is the only execution seam. There is no
+// ordinary host subprocess fallback in this package.
 type CandidateIsolationTransport interface {
-	Principal(context.Context) (CandidateIsolationPrincipal, error)
 	RunIsolated(context.Context, CandidateIsolationRequest) (CandidateIsolationResult, error)
+}
+
+type CandidateReceiptAuthorityIdentity struct {
+	Issuer   string
+	KeyID    string
+	KeyEpoch uint64
 }
 
 type CandidateReceiptRequest struct {
 	Authority               CandidateReceiptAuthorityIdentity
-	Principal               CandidateIsolationPrincipal
+	AuditProvider           CandidateOSAuditProvider
+	AuditSession            CandidateOSAuditSession
+	AuditFinish             CandidateOSAuditFinishRequest
 	Invocation              CandidateProbeInvocation
 	TranscriptDigest        string
 	SessionID               string
@@ -76,33 +137,32 @@ type CandidateReceiptRequest struct {
 	PermissionMode          string
 	MarkerDigest            string
 	ExecutionTopologyDigest string
-	Audit                   CandidateIsolationAudit
 }
 
-// CandidateReceiptAuthority runs outside the Qoder principal. Implementations
-// retain their signing key and return only a closed signed receipt document.
+// CandidateReceiptAuthority runs outside the Qoder principal. A conforming
+// implementation calls AuditProvider.VerifySession itself and signs only the
+// returned attestation plus the held invocation. No signing key is accepted by
+// this constructor or exposed to the verifier.
 type CandidateReceiptAuthority interface {
 	Identity(context.Context) (CandidateReceiptAuthorityIdentity, error)
 	IssueExecutionReceipt(context.Context, CandidateReceiptRequest) ([]byte, error)
 }
 
 type candidateProductionProbeSandbox struct {
-	transport CandidateIsolationTransport
-	authority CandidateReceiptAuthority
+	transport     CandidateIsolationTransport
+	auditProvider CandidateOSAuditProvider
+	authority     CandidateReceiptAuthority
 }
 
-// newCandidateProductionProbeSandbox is package-private while production
-// Qoder admission remains hard-disabled. It cannot accept a receipt key and
-// cannot degrade to an ordinary host subprocess.
-func newCandidateProductionProbeSandbox(transport CandidateIsolationTransport, authority CandidateReceiptAuthority) (CandidateProbeSandbox, error) {
-	if transport == nil || authority == nil {
-		return nil, errors.New("qoder production probe isolation provider is unavailable")
+func newCandidateProductionProbeSandbox(transport CandidateIsolationTransport, auditProvider CandidateOSAuditProvider, authority CandidateReceiptAuthority) (CandidateProbeSandbox, error) {
+	if transport == nil || auditProvider == nil || authority == nil {
+		return nil, errors.New("qoder production probe isolation authority is unavailable")
 	}
-	return &candidateProductionProbeSandbox{transport: transport, authority: authority}, nil
+	return &candidateProductionProbeSandbox{transport: transport, auditProvider: auditProvider, authority: authority}, nil
 }
 
 func (sandbox *candidateProductionProbeSandbox) RunProbe(ctx context.Context, invocation CandidateProbeInvocation) (CandidateProbeResult, error) {
-	if sandbox == nil || sandbox.transport == nil || sandbox.authority == nil || ctx == nil || ctx.Err() != nil {
+	if sandbox == nil || sandbox.transport == nil || sandbox.auditProvider == nil || sandbox.authority == nil || ctx == nil || ctx.Err() != nil {
 		return CandidateProbeResult{}, errors.New("qoder production probe sandbox is unavailable")
 	}
 	if err := validateCandidateIsolationInvocation(invocation); err != nil {
@@ -113,28 +173,23 @@ func (sandbox *candidateProductionProbeSandbox) RunProbe(ctx context.Context, in
 	if err != nil || preTopology != invocation.ExpectedTopologyDigest {
 		return CandidateProbeResult{}, errors.New("qoder production probe pre-execution topology is invalid")
 	}
-	principal, err := sandbox.transport.Principal(ctx)
-	if err != nil || strings.TrimSpace(principal.ProviderIdentity) == "" || strings.TrimSpace(principal.ProcessIdentity) == "" || principal.Profile != candidateIsolationProfile {
-		return CandidateProbeResult{}, errors.New("qoder production probe isolation principal is not trusted")
+	held := candidateHeldHandleProof(invocation, preTopology)
+	start := CandidateOSAuditStartRequest{
+		ProbeRunID: invocation.ProbeRunID, ReceiptSequence: invocation.ReceiptSequence, VariantID: candidateVariantID(invocation.VariantIndex), Held: held,
+		Executable: &invocation.Executable, ScratchRoot: &invocation.ScratchRoot, WorkingDirectory: &invocation.WorkingDirectory, CredentialRoot: &invocation.CredentialConfigRoot, BusinessRoots: append([]CandidateBoundObject(nil), invocation.BusinessRepositoryRoots...),
+		Invocation: cloneCandidateProbeInvocation(invocation),
 	}
-	authority, err := sandbox.authority.Identity(ctx)
-	if err != nil || strings.TrimSpace(authority.ProviderIdentity) == "" || strings.TrimSpace(authority.ProcessIdentity) == "" || strings.TrimSpace(authority.Issuer) == "" || strings.TrimSpace(authority.KeyID) == "" || authority.ProcessIdentity == principal.ProcessIdentity {
-		return CandidateProbeResult{}, errors.New("qoder production probe receipt authority is not independent")
+	auditSession, err := sandbox.auditProvider.BeginSession(ctx, start)
+	if err != nil || strings.TrimSpace(auditSession.ProviderIdentity) == "" || strings.TrimSpace(auditSession.SessionID) == "" || len(auditSession.LaunchCapability) == 0 || len(auditSession.providerSeal) == 0 {
+		return CandidateProbeResult{}, errors.New("qoder production probe OS audit session is unavailable")
 	}
-	requestInvocation := cloneCandidateProbeInvocation(invocation)
-	result, err := sandbox.transport.RunIsolated(ctx, CandidateIsolationRequest{Principal: principal, Invocation: requestInvocation})
+	result, err := sandbox.transport.RunIsolated(ctx, CandidateIsolationRequest{LaunchCapability: append([]byte(nil), auditSession.LaunchCapability...), Invocation: cloneCandidateProbeInvocationForTransport(invocation)})
 	if err != nil {
 		return CandidateProbeResult{}, errors.New("qoder production probe isolated execution failed")
 	}
 	postTopology, topologyErr := validateCandidateTopology(handles, invocation.WorkingDirectory)
 	if topologyErr != nil || postTopology != preTopology || result.ExecutionTopologyDigest != preTopology {
 		return CandidateProbeResult{}, errors.New("qoder production probe execution topology is not continuous")
-	}
-	if result.Audit.AncestorChainDigest != result.ExecutionTopologyDigest {
-		return CandidateProbeResult{}, errors.New("qoder production probe audit topology is substituted")
-	}
-	if err := validateCandidateIsolationAudit(result.Audit, len(invocation.BusinessRepositoryRoots)); err != nil {
-		return CandidateProbeResult{}, err
 	}
 	if len(result.Transcript) == 0 || len(result.Transcript) > maxResultBytes {
 		return CandidateProbeResult{}, errors.New("qoder production probe transcript is empty or oversized")
@@ -151,14 +206,23 @@ func (sandbox *candidateProductionProbeSandbox) RunProbe(ctx context.Context, in
 	if topologyErr != nil || postMarkerTopology != preTopology {
 		return CandidateProbeResult{}, errors.New("qoder production probe topology changed during marker verification")
 	}
+	authority, err := sandbox.authority.Identity(ctx)
+	if err != nil || strings.TrimSpace(authority.Issuer) == "" || strings.TrimSpace(authority.KeyID) == "" {
+		return CandidateProbeResult{}, errors.New("qoder production probe receipt authority is unavailable")
+	}
+	finish := CandidateOSAuditFinishRequest{Session: cloneCandidateOSAuditSession(auditSession), Held: held, Invocation: cloneCandidateProbeInvocation(invocation), TranscriptDigest: digestBytes(result.Transcript), MarkerDigest: markerDigest, ExecutionTopologyDigest: result.ExecutionTopologyDigest}
 	receiptRequest := CandidateReceiptRequest{
-		Authority: authority, Principal: principal, Invocation: cloneCandidateProbeInvocation(invocation), TranscriptDigest: digestBytes(result.Transcript), SessionID: capture.sessionID, ObservedModel: capture.model, BinaryVersion: capture.cliVersion, ProtocolVersion: capture.protocolVersion, PermissionMode: capture.permissionMode, MarkerDigest: markerDigest, ExecutionTopologyDigest: result.ExecutionTopologyDigest, Audit: cloneCandidateIsolationAudit(result.Audit),
+		Authority: authority, AuditProvider: sandbox.auditProvider, AuditSession: cloneCandidateOSAuditSession(auditSession), AuditFinish: finish, Invocation: cloneCandidateProbeInvocation(invocation), TranscriptDigest: finish.TranscriptDigest, SessionID: capture.sessionID, ObservedModel: capture.model, BinaryVersion: capture.cliVersion, ProtocolVersion: capture.protocolVersion, PermissionMode: capture.permissionMode, MarkerDigest: markerDigest, ExecutionTopologyDigest: result.ExecutionTopologyDigest,
 	}
 	document, err := sandbox.authority.IssueExecutionReceipt(ctx, receiptRequest)
 	if err != nil || len(document) == 0 || len(document) > candidateReceiptLimit {
 		return CandidateProbeResult{}, errors.New("qoder production probe receipt authority failed")
 	}
-	return CandidateProbeResult{Transcript: append([]byte(nil), result.Transcript...), ExecutionReceipt: append([]byte(nil), document...), IsolationPrincipal: principal, ReceiptAuthorityIdentity: authority, IsolationAudit: cloneCandidateIsolationAudit(result.Audit)}, nil
+	return CandidateProbeResult{Transcript: append([]byte(nil), result.Transcript...), ExecutionReceipt: append([]byte(nil), document...), AuthorityBacked: true}, nil
+}
+
+func candidateHeldHandleProof(invocation CandidateProbeInvocation, topology string) CandidateHeldHandleProof {
+	return CandidateHeldHandleProof{Executable: invocation.Executable.Identity, ExecutableDigest: invocation.Executable.Digest, ScratchRoot: invocation.ScratchRoot.Identity, WorkingDirectory: invocation.WorkingDirectory.Identity, CredentialRoot: invocation.CredentialConfigRoot.Identity, BusinessRoots: objectIdentities(invocation.BusinessRepositoryRoots), InvocationManifestDigest: invocation.InvocationManifestDigest, TopologyDigest: topology}
 }
 
 func validateCandidateIsolationInvocation(invocation CandidateProbeInvocation) error {
@@ -187,37 +251,6 @@ func validateCandidateIsolationInvocation(invocation CandidateProbeInvocation) e
 	if !equalStrings(invocation.Arguments, buildArgs(invocation.ExpectedModel, candidateBoundCredentialToken, candidateBoundScratchToken, invocation.VariantIndex >= 2)) || !equalStrings(invocation.Environment, candidateProbeEnvironment(candidateBoundScratchToken, candidateBoundCredentialToken)) {
 		return errors.New("qoder production probe argv or replacement environment is not exact")
 	}
-	seenEnvironment := map[string]struct{}{}
-	for _, entry := range invocation.Environment {
-		name, _, ok := strings.Cut(entry, "=")
-		if !ok || name == "" {
-			return errors.New("qoder production probe replacement environment is malformed")
-		}
-		if _, duplicate := seenEnvironment[name]; duplicate {
-			return errors.New("qoder production probe replacement environment has duplicate names")
-		}
-		seenEnvironment[name] = struct{}{}
-	}
-	return nil
-}
-
-func validateCandidateIsolationAudit(audit CandidateIsolationAudit, businessRootCount int) error {
-	digests := append([]string{audit.LaunchAuditDigest, audit.DenialAuditDigest, audit.ExitAuditDigest, audit.AncestorChainDigest}, audit.BusinessRootDenialDigests...)
-	for _, value := range digests {
-		if !validSHA256Digest(value) {
-			return errors.New("qoder production probe isolation audit digest is invalid")
-		}
-	}
-	if len(audit.BusinessRootDenialDigests) != businessRootCount || !audit.CredentialReadOnlyEnforced || !audit.BusinessRootsDenied || !audit.ScratchOnlyWriteEnforced || !audit.NetworkPolicyEnforced || !audit.AmbientStateDenied {
-		return errors.New("qoder production probe isolation audit is incomplete")
-	}
-	seen := map[string]struct{}{}
-	for _, value := range audit.BusinessRootDenialDigests {
-		if _, duplicate := seen[value]; duplicate {
-			return errors.New("qoder production probe business-root audit is duplicated")
-		}
-		seen[value] = struct{}{}
-	}
 	return nil
 }
 
@@ -230,14 +263,87 @@ func cloneCandidateProbeInvocation(value CandidateProbeInvocation) CandidateProb
 	return value
 }
 
-func cloneCandidateIsolationAudit(value CandidateIsolationAudit) CandidateIsolationAudit {
-	value.BusinessRootDenialDigests = append([]string(nil), value.BusinessRootDenialDigests...)
+func cloneCandidateProbeInvocationForTransport(value CandidateProbeInvocation) CandidateProbeInvocation {
+	value = cloneCandidateProbeInvocation(value)
+	value.Executable.CanonicalPath = ""
+	value.WorkingDirectory.CanonicalPath = ""
+	value.ScratchRoot.CanonicalPath = ""
+	value.CredentialConfigRoot.CanonicalPath = ""
+	for index := range value.WritableRoots {
+		value.WritableRoots[index].CanonicalPath = ""
+	}
+	for index := range value.BusinessRepositoryRoots {
+		value.BusinessRepositoryRoots[index].CanonicalPath = ""
+	}
 	return value
 }
 
-func equalCandidateIsolationAudit(left, right CandidateIsolationAudit) bool {
-	if left.LaunchAuditDigest != right.LaunchAuditDigest || left.DenialAuditDigest != right.DenialAuditDigest || left.ExitAuditDigest != right.ExitAuditDigest || left.AncestorChainDigest != right.AncestorChainDigest || left.CredentialReadOnlyEnforced != right.CredentialReadOnlyEnforced || left.BusinessRootsDenied != right.BusinessRootsDenied || left.ScratchOnlyWriteEnforced != right.ScratchOnlyWriteEnforced || left.NetworkPolicyEnforced != right.NetworkPolicyEnforced || left.AmbientStateDenied != right.AmbientStateDenied {
-		return false
+func cloneCandidateOSAuditSession(value CandidateOSAuditSession) CandidateOSAuditSession {
+	value.LaunchCapability = append([]byte(nil), value.LaunchCapability...)
+	value.providerSeal = append([]byte(nil), value.providerSeal...)
+	return value
+}
+
+// validateCandidateOSAuditAttestation is the receipt-authority side of the
+// contract. It binds the provider's principal attestation to the opaque
+// session and exact held-handle proof instead of accepting transport verdicts.
+func validateCandidateOSAuditAttestation(value CandidateOSAuditAttestation, finish CandidateOSAuditFinishRequest, businessRootCount int, trust CandidateOSAuditTrustBinding) error {
+	if value.AuditProviderIdentity != finish.Session.ProviderIdentity || value.AuditSessionID != finish.Session.SessionID || !validSHA256Digest(value.PrincipalHandleDigest) || !validSHA256Digest(value.HostIdentityDigest) || value.AncestorChainDigest != finish.ExecutionTopologyDigest || len(value.BusinessRootDenialDigests) != businessRootCount || !value.CredentialReadOnlyEnforced || !value.BusinessRootsDenied || !value.ScratchOnlyWriteEnforced || !value.NetworkPolicyEnforced || !value.AmbientStateDenied {
+		return errors.New("qoder OS audit attestation identity is invalid")
 	}
-	return equalStrings(left.BusinessRootDenialDigests, right.BusinessRootDenialDigests)
+	expectedLaunch := candidateOSLaunchAuditDigest(value.AuditProviderIdentity, value.AuditSessionID, value.PrincipalHandleDigest, finish.Held)
+	if value.LaunchAuditDigest != expectedLaunch {
+		return errors.New("qoder OS audit principal is not bound to held handles")
+	}
+	for _, digest := range append([]string{value.LaunchAuditDigest, value.DenialAuditDigest, value.ExitAuditDigest, value.AncestorChainDigest}, value.BusinessRootDenialDigests...) {
+		if !validSHA256Digest(digest) {
+			return errors.New("qoder OS audit digest is invalid")
+		}
+	}
+	expectedReceipt := candidateOSProviderReceiptDigest(value)
+	if value.ProviderReceiptDigest != expectedReceipt {
+		return errors.New("qoder OS audit provider receipt is invalid")
+	}
+	signature, signatureErr := base64.RawURLEncoding.DecodeString(value.Signature)
+	if value.AuditProviderIdentity != trust.ProviderIdentity || value.ProviderKeyID != trust.ProviderKeyID || value.ProviderKeyEpoch != trust.ProviderKeyEpoch || value.SignatureAlgorithm != candidateSignatureAlgorithm || value.SignatureEncoding != candidateSignatureEncoding || len(trust.PublicKey) != ed25519.PublicKeySize || signatureErr != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(trust.PublicKey, []byte(candidateOSAuditSigningDomain+value.ProviderReceiptDigest), signature) {
+		return errors.New("qoder OS audit provider signature is not trusted")
+	}
+	expectedManifest, err := candidateInvocationManifest(finish.Invocation, value.CredentialCapability)
+	if err != nil || !candidateManifestsEqual(value.InvocationManifest, expectedManifest) {
+		return errors.New("qoder OS audit invocation manifest is invalid")
+	}
+	return nil
+}
+
+func validateCandidateReceiptHeldHandles(invocation CandidateProbeInvocation, executionTopologyDigest string) error {
+	if err := validateCandidateIsolationInvocation(invocation); err != nil {
+		return err
+	}
+	handles := &candidateProbeHandles{executable: invocation.Executable, credential: invocation.CredentialConfigRoot, scratchRoot: invocation.ScratchRoot, business: invocation.BusinessRepositoryRoots}
+	topology, err := validateCandidateTopology(handles, invocation.WorkingDirectory)
+	if err != nil || topology != executionTopologyDigest || topology != invocation.ExpectedTopologyDigest {
+		return errors.New("qoder receipt authority held-handle topology is invalid")
+	}
+	return nil
+}
+
+func candidateOSLaunchAuditDigest(providerIdentity, sessionID, principalHandleDigest string, held CandidateHeldHandleProof) string {
+	data, _ := json.Marshal(map[string]any{"providerIdentity": providerIdentity, "sessionId": sessionID, "principalHandleDigest": principalHandleDigest, "held": held})
+	canonicalData, _ := canonical.JSON(data)
+	return digestBytes(canonicalData)
+}
+
+func candidateOSProviderReceiptDigest(value CandidateOSAuditAttestation) string {
+	value.ProviderReceiptDigest = ""
+	value.Signature = ""
+	data, _ := json.Marshal(value)
+	var object map[string]any
+	_ = json.Unmarshal(data, &object)
+	delete(object, "ProviderReceiptDigest")
+	delete(object, "providerReceiptDigest")
+	delete(object, "Signature")
+	delete(object, "signature")
+	data, _ = json.Marshal(object)
+	canonicalData, _ := canonical.JSON(data)
+	return digestBytes(canonicalData)
 }
