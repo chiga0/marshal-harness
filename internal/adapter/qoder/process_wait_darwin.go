@@ -13,6 +13,7 @@ var (
 	qoderKqueue = unix.Kqueue
 	qoderKevent = unix.Kevent
 	qoderClose  = unix.Close
+	qoderKill   = unix.Kill
 )
 
 // waitProcessExitNoReap uses EVFILT_PROC/NOTE_EXIT to observe termination
@@ -33,6 +34,18 @@ func waitProcessExitNoReap(pid int) error {
 	for {
 		if _, err := qoderKevent(queue, []unix.Kevent_t{change}, nil, nil); err == nil {
 			break
+		} else if errors.Is(err, unix.ESRCH) {
+			// The child may exit between Cmd.Start and kqueue registration.
+			// Distinguish that fast-exit race from a PID that has already been
+			// reaped: the latter must remain an observation error because the
+			// caller no longer owns a non-reusable process-group identity.
+			if probeErr := qoderKill(int(change.Ident), 0); probeErr == nil {
+				// Cmd.Wait still owns the unreaped child, so its PID cannot be
+				// reused. Treat the registration race as an observed exit so
+				// the caller can still clean the captured process group.
+				return nil
+			}
+			return err
 		} else if !errors.Is(err, unix.EINTR) {
 			return err
 		}

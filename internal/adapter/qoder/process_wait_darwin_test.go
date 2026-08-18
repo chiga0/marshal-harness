@@ -4,20 +4,24 @@ package qoder
 
 import (
 	"errors"
+	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
 )
 
-func TestDarwinExitObserverRejectsRegistrationESRCH(t *testing.T) {
+func TestDarwinExitObserverAcceptsRegistrationESRCHAsAlreadyExited(t *testing.T) {
+	originalKill := qoderKill
+	qoderKill = func(int, syscall.Signal) error { return nil }
+	t.Cleanup(func() { qoderKill = originalKill })
 	installDarwinObserverFakes(t, func(_ int, changes, _ []unix.Kevent_t, _ *unix.Timespec) (int, error) {
 		if len(changes) > 0 {
 			return 0, unix.ESRCH
 		}
 		return 0, errors.New("unexpected wait")
 	})
-	if err := waitProcessExitNoReap(4242); !errors.Is(err, unix.ESRCH) {
-		t.Fatalf("observer error = %v, want ESRCH", err)
+	if err := waitProcessExitNoReap(4242); err != nil {
+		t.Fatalf("observer error = %v, want already-exited success", err)
 	}
 }
 
