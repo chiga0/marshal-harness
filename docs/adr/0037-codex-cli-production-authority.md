@@ -1,6 +1,6 @@
 # ADR 0037：Codex CLI Production Authority、宿主绑定证据与可撤销准入
 
-- 状态：提议（Proposed）——本 ADR 尚未被维护者接受；在本 ADR 被接受、独立负向矩阵通过、当前宿主取得真实 credentialed live evidence 且后续启用变更通过门禁前，Codex CLI 必须保持 production hard-disable
+- 状态：接受（Accepted，2026-08-18）——接受只冻结本 ADR 的安全合同，不表示实现、独立负向矩阵、当前宿主真实 credentialed live evidence 或后续启用变更已经完成；Codex CLI 仍须保持 production hard-disable，不得据此报告当前部署 `supported`
 - 日期：2026-08-18
 - 关联：[ADR 0003](0003-separate-worker-and-publisher.md)、[ADR 0004](0004-independent-verification.md)、[ADR 0006](0006-attempt-control-root.md)、[ADR 0014](0014-read-only-execution-profile.md)、[ADR 0018](0018-control-plane-and-provider-ports.md)、[ADR 0034](0034-qoder-cli-live-conformance-authority.md)、公开 Issue #136
 
@@ -18,7 +18,7 @@ Codex 还存在平台特有的执行身份问题。若 Adapter 先按路径计�
 
 Codex production Adapter 采用 deny-by-default：
 
-1. 本 ADR 为 `Proposed` 时，production constructor 必须稳定返回 typed `codex_conformance_pending`；应用 registry、doctor 与调度器不得把 Codex 列为 `supported` 或 eligible。
+1. 本 ADR 接受前，production constructor 必须稳定返回 typed `codex_conformance_pending`；接受后也只有全部实施与启用门禁完成，应用 registry、doctor 与调度器才可把 Codex 列为 `supported` 或 eligible。
 2. 接受本 ADR 不自动启用 Codex。必须另有独立实施变更完成本文全部机制、负向测试与跨平台门禁，并由非作者 reviewer 审查。
 3. 即使实现已合入，当前宿主没有有效的 credentialed live evidence 时仍为 hard-disabled；fake、synthetic、作者自测或其他宿主 evidence 不能降级替代。
 4. 最终启用必须是显式 registry 变更，并同时要求当前 `Probe` 成功。不得用环境变量、隐藏 fallback、`force` 参数或测试 hook 绕过 authority。
@@ -284,7 +284,7 @@ hermetic 测试只证明 canonical、signature、路径与 fail-closed 机制。
 6. 独立 reviewer 对真实 diff、race、跨平台、secret scan 与本文负向矩阵给出 P0/P1 清零结论；
 7. 当前 host 配置真实、未撤销且新鲜的 signed evidence 后，最后以单独 registry 变更显式启用；production v1 仍不得宣称 running revocation。
 
-任何前置切片合入都不表示本 ADR 被接受、不表示 live evidence 已存在，也不表示 Issue #136 或相关 milestone 完成。
+本 ADR 的接受只冻结合同；任何前置或后续实施切片合入都不表示 live evidence 已存在，也不表示 Issue #136 或相关 milestone 完成。
 
 ## 后果
 
