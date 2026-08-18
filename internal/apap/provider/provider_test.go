@@ -18,6 +18,24 @@ func td(b byte) string {
 	return string(value)
 }
 
+func authorityDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func authorityIdentity(t *testing.T, dir string) AuthorityRootIdentity {
+	t.Helper()
+	identity, err := MeasureAuthorityRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return identity
+}
+
 type fakeAnchor struct {
 	mu       sync.Mutex
 	current  AnchorSnapshot
@@ -57,6 +75,7 @@ type fakeChildren struct {
 	prepares, releases, aborts int
 	releaseResponseLost        bool
 	unknown                    bool
+	abortFail                  bool
 }
 
 func newFakeChildren() *fakeChildren { return &fakeChildren{states: map[string]*fakeChildState{}} }
@@ -90,6 +109,9 @@ func (c *fakeChildren) AbortWait(id, reason string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s := c.states[id]
+	if c.abortFail {
+		return "", ErrUnavailable
+	}
 	if s == nil {
 		return "", ErrUnavailable
 	}
@@ -120,6 +142,7 @@ func (c *fakeChildren) Inspect(id string) (ChildObservation, error) {
 
 type fixture struct {
 	dir      string
+	root     AuthorityRootIdentity
 	journal  *Journal
 	anchor   *fakeAnchor
 	child    *fakeChildren
@@ -129,8 +152,9 @@ type fixture struct {
 
 func newFixture(t *testing.T) fixture {
 	t.Helper()
-	dir := t.TempDir()
-	journal, err := OpenJournal(dir)
+	dir := authorityDir(t)
+	root := authorityIdentity(t, dir)
+	journal, err := OpenJournal(dir, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +165,7 @@ func newFixture(t *testing.T) fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fixture{dir, journal, anchor, child, provider, initial}
+	return fixture{dir: dir, root: root, journal: journal, anchor: anchor, child: child, provider: provider, initial: initial}
 }
 func bundleRequest() BundlePrepare {
 	return BundlePrepare{TransactionID: "bundle-1", UpdateKind: "evidence-update", PreviousBundleDigest: td(1), BundleDigest: td(3), OriginalExpected: 1, AnchoredNext: 2, AuthorizationDigest: td(4), StagedLeafSetDigest: td(5)}
@@ -151,12 +175,13 @@ func launchRequest() LaunchRequest {
 }
 
 func TestJournalAppendCRCChainLockAndPartialTailRecovery(t *testing.T) {
-	dir := t.TempDir()
-	j, err := OpenJournal(dir)
+	dir := authorityDir(t)
+	root := authorityIdentity(t, dir)
+	j, err := OpenJournal(dir, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenJournal(dir); !errors.Is(err, ErrAlreadyOpen) {
+	if _, err := OpenJournal(dir, root); !errors.Is(err, ErrAlreadyOpen) {
 		t.Fatalf("second writer: %v", err)
 	}
 	if _, err := j.appendRecord("one", "tx-1", struct{ Digest string }{td(1)}); err != nil {
@@ -180,7 +205,7 @@ func TestJournalAppendCRCChainLockAndPartialTailRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = file.Close()
-	reopened, err := OpenJournal(dir)
+	reopened, err := OpenJournal(dir, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +221,7 @@ func TestJournalAppendCRCChainLockAndPartialTailRecovery(t *testing.T) {
 	if err = os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = OpenJournal(dir); !errors.Is(err, ErrUnavailable) {
+	if _, err = OpenJournal(dir, root); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("corrupt CRC/digest accepted: %v", err)
 	}
 }
@@ -259,7 +284,7 @@ func TestBundleRecoveryPreparedAndAnchorAdvanced(t *testing.T) {
 			t.Fatalf("inspect: %+v %v", inspect, err)
 		}
 		_ = f.journal.Close()
-		journal, err := OpenJournal(f.dir)
+		journal, err := OpenJournal(f.dir, f.root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -279,7 +304,7 @@ func TestHigherInvalidAnchorConsumesHighWaterAndNeverFallsBack(t *testing.T) {
 	f := newFixture(t)
 	_ = f.journal.Close()
 	f.anchor.current = AnchorSnapshot{2, td(9), td(8)}
-	journal, err := OpenJournal(f.dir)
+	journal, err := OpenJournal(f.dir, f.root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +317,7 @@ func TestHigherInvalidAnchorConsumesHighWaterAndNeverFallsBack(t *testing.T) {
 	}
 	_ = journal.Close()
 	f.anchor.current = AnchorSnapshot{1, td(1), td(2)}
-	journal, err = OpenJournal(f.dir)
+	journal, err = OpenJournal(f.dir, f.root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +331,7 @@ func TestSameSequenceAnchorForkIsDurablyFailClosed(t *testing.T) {
 	f := newFixture(t)
 	_ = f.journal.Close()
 	f.anchor.current = AnchorSnapshot{1, td(9), td(8)}
-	journal, err := OpenJournal(f.dir)
+	journal, err := OpenJournal(f.dir, f.root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +340,7 @@ func TestSameSequenceAnchorForkIsDurablyFailClosed(t *testing.T) {
 	}
 	_ = journal.Close()
 	f.anchor.current = AnchorSnapshot{1, td(1), td(2)}
-	journal, err = OpenJournal(f.dir)
+	journal, err = OpenJournal(f.dir, f.root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +384,7 @@ func TestLaunchBarrierIdempotencyResponseLostUnknownAndRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = f.journal.Close()
-		journal, err := OpenJournal(f.dir)
+		journal, err := OpenJournal(f.dir, f.root)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -425,5 +450,227 @@ func TestRevokeAnchorLinearizationBlocksReleaseBeforeCommitProjection(t *testing
 	result, err := f.provider.CommitLaunch(launch.TransactionID, pending.LaunchReceiptDigest, pending.ReleaseIdentity, td(9))
 	if !errors.Is(err, ErrConflict) || result.Status != LaunchAborted || f.child.releases != 0 {
 		t.Fatalf("anchor-advanced revoke released child: %+v %v", result, err)
+	}
+}
+
+func TestPrepareLaunchRejectsTransactionIdentityReuseBeforeSpawn(t *testing.T) {
+	f := newFixture(t)
+	defer f.journal.Close()
+	request := launchRequest()
+	if _, err := f.provider.PrepareLaunch(request); err != nil {
+		t.Fatal(err)
+	}
+	changed := request
+	changed.AttemptID = "attempt-2"
+	changed.LaunchNonce = "nonce-2"
+	changed.RequestDigest = td(12)
+	if _, err := f.provider.PrepareLaunch(changed); !errors.Is(err, ErrConflict) {
+		t.Fatalf("transaction reuse: %v", err)
+	}
+	if f.child.prepares != 1 {
+		t.Fatal("transaction reuse spawned another child")
+	}
+}
+
+func TestRecoverRejectsRollbackAndForkedProvider(t *testing.T) {
+	f := newFixture(t)
+	defer f.journal.Close()
+	r := bundleRequest()
+	prepared, err := f.provider.PrepareBundle(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.provider.highWater = 2
+	if _, err = f.provider.RecoverBundle(r.TransactionID, r.BundleDigest, 1, 1, 2, prepared.PreparedReceiptDigest, ""); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("rollback recovery: %v", err)
+	}
+	f.provider.highWater = 1
+	f.provider.forked = true
+	if _, err = f.provider.RecoverBundle(r.TransactionID, r.BundleDigest, 1, 1, 2, prepared.PreparedReceiptDigest, ""); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("fork recovery: %v", err)
+	}
+}
+
+func TestForkAppendFailureCreatesStickyFailClosedMarker(t *testing.T) {
+	f := newFixture(t)
+	_ = f.journal.Close()
+	journal, err := OpenJournal(f.dir, f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal.fail = func(kind string) error {
+		if kind == "anchor-fork" {
+			return ErrUnavailable
+		}
+		return nil
+	}
+	f.anchor.current = AnchorSnapshot{1, td(9), td(8)}
+	if _, err = Open(journal, f.anchor, f.child, f.initial); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("fork: %v", err)
+	}
+	journal.fail = nil
+	_ = journal.Close()
+	f.anchor.current = AnchorSnapshot{1, td(1), td(2)}
+	journal, err = OpenJournal(f.dir, f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	if !journal.failClosed {
+		t.Fatal("fork append failure did not persist fail-closed marker")
+	}
+	if _, err = Open(journal, f.anchor, f.child, f.initial); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("restored anchor bypassed fail-closed marker")
+	}
+}
+
+func TestAbortFailuresRemainAddressableAndNeverWriteEmptyAbortedFacts(t *testing.T) {
+	t.Run("prepare", func(t *testing.T) {
+		f := newFixture(t)
+		request := launchRequest()
+		f.journal.fail = func(kind string) error {
+			if kind == "launch-prepared" {
+				return ErrUnavailable
+			}
+			return nil
+		}
+		f.child.abortFail = true
+		result, err := f.provider.PrepareLaunch(request)
+		if !errors.Is(err, ErrReconcileRequired) || result.Status != LaunchUnknown {
+			t.Fatalf("prepare: %+v %v", result, err)
+		}
+		found := false
+		for _, record := range f.journal.snapshotRecords() {
+			if record.Kind == "launch-orphaned" {
+				found = true
+			}
+			if record.Kind == "launch-aborted" {
+				t.Fatal("empty/false aborted fact written")
+			}
+		}
+		if !found {
+			t.Fatal("orphan child was not durably addressable")
+		}
+		f.journal.fail = nil
+		f.child.abortFail = false
+		_ = f.journal.Close()
+		journal, err := OpenJournal(f.dir, f.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer journal.Close()
+		restarted, err := Open(journal, f.anchor, f.child, f.initial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inspected, err := restarted.InspectLaunch(request.AttemptID, request.LaunchNonce, request.RequestDigest)
+		if err != nil || inspected.Status != LaunchAborted {
+			t.Fatalf("orphan recovery: %+v %v", inspected, err)
+		}
+	})
+	t.Run("deadline", func(t *testing.T) {
+		f := newFixture(t)
+		defer f.journal.Close()
+		request := launchRequest()
+		pending, err := f.provider.PrepareLaunch(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.provider.launches[request.TransactionID].Request.Deadline = time.Now().Add(-time.Second)
+		f.child.abortFail = true
+		result, err := f.provider.CommitLaunch(request.TransactionID, pending.LaunchReceiptDigest, pending.ReleaseIdentity, td(9))
+		if !errors.Is(err, ErrReconcileRequired) || result.Status != LaunchUnknown || f.provider.launches[request.TransactionID].Aborted != "" {
+			t.Fatalf("deadline: %+v %v", result, err)
+		}
+		for _, record := range f.journal.snapshotRecords() {
+			if record.Kind == "launch-aborted" {
+				t.Fatal("abort failure became aborted fact")
+			}
+		}
+	})
+	t.Run("abort-ambiguity-journal", func(t *testing.T) {
+		f := newFixture(t)
+		defer f.journal.Close()
+		request := launchRequest()
+		pending, err := f.provider.PrepareLaunch(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.provider.launches[request.TransactionID].Request.Deadline = time.Now().Add(-time.Second)
+		f.child.abortFail = true
+		f.journal.fail = func(kind string) error {
+			if kind == "launch-abort-ambiguous" {
+				return ErrUnavailable
+			}
+			return nil
+		}
+		result, err := f.provider.CommitLaunch(request.TransactionID, pending.LaunchReceiptDigest, pending.ReleaseIdentity, td(9))
+		if !errors.Is(err, ErrReconcileRequired) || result.Status != LaunchUnknown || !f.journal.failClosed {
+			t.Fatalf("abort ambiguity journal: %+v %v", result, err)
+		}
+	})
+	t.Run("revoke-journal", func(t *testing.T) {
+		f := newFixture(t)
+		defer f.journal.Close()
+		launch := launchRequest()
+		pending, err := f.provider.PrepareLaunch(launch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bundle := bundleRequest()
+		bundle.UpdateKind = "security-revocation"
+		prepared, _ := f.provider.PrepareBundle(bundle)
+		if _, err = f.provider.CommitBundle(bundle.TransactionID, bundle.BundleDigest, 1, prepared.PreparedReceiptDigest); err != nil {
+			t.Fatal(err)
+		}
+		f.journal.fail = func(kind string) error {
+			if kind == "launch-aborted" {
+				return ErrUnavailable
+			}
+			return nil
+		}
+		result, err := f.provider.CommitLaunch(launch.TransactionID, pending.LaunchReceiptDigest, pending.ReleaseIdentity, td(9))
+		if !errors.Is(err, ErrReconcileRequired) || result.Status != LaunchUnknown || !f.journal.failClosed {
+			t.Fatalf("revoke abort journal: %+v %v", result, err)
+		}
+	})
+}
+
+func TestOpenJournalRejectsSymlinkParentAndWritableAuthorityRoot(t *testing.T) {
+	base := authorityDir(t)
+	realParent := filepath.Join(base, "real-parent")
+	if err := os.Mkdir(realParent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	realRoot := filepath.Join(realParent, "root")
+	if err := os.Mkdir(realRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	root := authorityIdentity(t, realRoot)
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realParent, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenJournal(filepath.Join(link, "root"), root); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("symlink authority root: %v", err)
+	}
+	if err := os.Chmod(realRoot, 0777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenJournal(realRoot, root); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("writable authority root: %v", err)
+	}
+	if err := os.Chmod(realRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	movedRoot := filepath.Join(realParent, "moved-root")
+	if err := os.Rename(realRoot, movedRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(realRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenJournal(realRoot, root); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("replaced authority root: %v", err)
 	}
 }

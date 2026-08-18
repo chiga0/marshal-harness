@@ -113,6 +113,10 @@ func Open(journal *Journal, anchor Anchor, children ChildBarrier, initial Curren
 	if err := p.rebuild(); err != nil {
 		return nil, err
 	}
+	if journal.failClosed {
+		p.forked = true
+		p.unavailable = true
+	}
 	reconcileErr := p.reconcileAnchorOnOpen()
 	abortErr := p.abortRestartPending()
 	if abortErr != nil {
@@ -183,6 +187,10 @@ func (p *Provider) CommitBundle(transactionID, bundleDigest string, expected uin
 	snapshot, err := p.anchor.Snapshot()
 	if err != nil {
 		return BundleResult{}, ErrUnavailable
+	}
+	if p.forked || snapshot.Sequence < p.highWater || p.unknownAnchorBundle != "" && (snapshot.Sequence != state.Request.AnchoredNext || snapshot.BundleDigest != bundleDigest) {
+		p.unavailable = true
+		return BundleResult{Status: BundleUnknown, ObservedCurrent: snapshot.Sequence}, ErrUnavailable
 	}
 	if snapshot.Sequence == state.Request.OriginalExpected && snapshot.BundleDigest == state.Request.PreviousBundleDigest {
 		snapshot, err = p.anchor.CompareAndAdvance(AnchorAdvance{TransactionID: transactionID, BundleDigest: bundleDigest, OriginalExpected: expected, Next: state.Request.AnchoredNext, PreparedReceiptDigest: state.Prepared})
@@ -266,6 +274,10 @@ func (p *Provider) RecoverBundle(transactionID, bundleDigest string, originalExp
 	if err != nil {
 		return BundleResult{}, ErrUnavailable
 	}
+	if p.forked || snapshot.Sequence < p.highWater || p.unknownAnchorBundle != "" && (snapshot.Sequence != next || snapshot.BundleDigest != bundleDigest) {
+		p.unavailable = true
+		return BundleResult{Status: BundleUnknown, ObservedCurrent: snapshot.Sequence}, ErrUnavailable
+	}
 	if snapshot.Sequence != observedCurrent {
 		return BundleResult{}, ErrConflict
 	}
@@ -332,6 +344,12 @@ func (p *Provider) PrepareLaunch(request LaunchRequest) (LaunchResult, error) {
 		return LaunchResult{}, ErrConflict
 	}
 	key := request.AttemptID + "\x00" + request.LaunchNonce
+	if prior := p.launches[request.TransactionID]; prior != nil {
+		if digestObject(prior.Request) != digestObject(request) {
+			return LaunchResult{}, ErrConflict
+		}
+		return launchResult(prior), nil
+	}
 	if id := p.launchKeys[key]; id != "" {
 		state := p.launches[id]
 		if state == nil || digestObject(state.Request) != digestObject(request) {
@@ -348,8 +366,25 @@ func (p *Provider) PrepareLaunch(request LaunchRequest) (LaunchResult, error) {
 		Child   StoppedChild  `json:"child"`
 	}{request, child}
 	if _, err := p.journal.appendRecord("launch-prepared", request.TransactionID, payload); err != nil {
-		_, _ = p.children.AbortWait(child.IdentityDigest, "prepare-not-durable")
-		return LaunchResult{}, ErrUnavailable
+		abort, abortErr := p.children.AbortWait(child.IdentityDigest, "prepare-not-durable")
+		if abortErr != nil || !validDigest(abort) {
+			p.unavailable = true
+			if _, orphanErr := p.journal.appendRecord("launch-orphaned", request.TransactionID, payload); orphanErr != nil {
+				_ = p.journal.markFailClosed()
+			}
+			return LaunchResult{Status: LaunchUnknown, TransactionID: request.TransactionID, ChildIdentityDigest: child.IdentityDigest}, ErrReconcileRequired
+		}
+		orphaned := struct {
+			Request            LaunchRequest `json:"request"`
+			Child              StoppedChild  `json:"child"`
+			AbortReceiptDigest string        `json:"abortReceiptDigest"`
+		}{request, child, abort}
+		if _, abortJournalErr := p.journal.appendRecord("launch-orphan-aborted", request.TransactionID, orphaned); abortJournalErr != nil {
+			p.unavailable = true
+			_ = p.journal.markFailClosed()
+			return LaunchResult{Status: LaunchUnknown, TransactionID: request.TransactionID, ChildIdentityDigest: child.IdentityDigest}, ErrReconcileRequired
+		}
+		return LaunchResult{Status: LaunchAborted, TransactionID: request.TransactionID, ChildIdentityDigest: child.IdentityDigest, AbortReceiptDigest: abort}, ErrUnavailable
 	}
 	state := &launchState{Request: request, Child: child}
 	p.launches[request.TransactionID] = state
@@ -374,15 +409,15 @@ func (p *Provider) CommitLaunch(transactionID, launchReceipt, releaseIdentity, d
 		return LaunchResult{}, ErrConflict
 	}
 	if !time.Now().UTC().Before(state.Request.Deadline) {
-		abort, _ := p.children.AbortWait(state.Child.IdentityDigest, "launch-deadline-expired")
-		state.Aborted = abort
-		_, _ = p.journal.appendRecord("launch-aborted", transactionID, struct{ ReceiptDigest, Reason string }{abort, "launch-deadline-expired"})
+		if err := p.abortLaunchLocked(state, "launch-deadline-expired"); err != nil {
+			return LaunchResult{Status: LaunchUnknown, TransactionID: transactionID, ChildIdentityDigest: state.Child.IdentityDigest}, err
+		}
 		return launchResult(state), ErrConflict
 	}
 	if p.unavailable || p.current.Sequence != state.Request.ExpectedSequence || p.current.BundleDigest != state.Request.BundleDigest {
-		abort, _ := p.children.AbortWait(state.Child.IdentityDigest, "authority-changed-before-release")
-		state.Aborted = abort
-		_, _ = p.journal.appendRecord("launch-aborted", transactionID, struct{ ReceiptDigest, Reason string }{abort, "authority-changed-before-release"})
+		if err := p.abortLaunchLocked(state, "authority-changed-before-release"); err != nil {
+			return LaunchResult{Status: LaunchUnknown, TransactionID: transactionID, ChildIdentityDigest: state.Child.IdentityDigest}, err
+		}
 		return launchResult(state), ErrConflict
 	}
 	if state.Accepted == "" {
@@ -478,6 +513,27 @@ func (p *Provider) rebuild() error {
 			state := &launchState{Request: v.Request, Child: v.Child}
 			p.launches[record.TransactionID] = state
 			p.launchKeys[v.Request.AttemptID+"\x00"+v.Request.LaunchNonce] = record.TransactionID
+		case "launch-orphaned":
+			var v struct {
+				Request LaunchRequest `json:"request"`
+				Child   StoppedChild  `json:"child"`
+			}
+			if json.Unmarshal(record.Payload, &v) != nil {
+				return ErrUnavailable
+			}
+			state := &launchState{Request: v.Request, Child: v.Child}
+			p.launches[record.TransactionID] = state
+			p.launchKeys[v.Request.AttemptID+"\x00"+v.Request.LaunchNonce] = record.TransactionID
+		case "launch-orphan-aborted":
+			var v struct {
+				Request            LaunchRequest `json:"request"`
+				Child              StoppedChild  `json:"child"`
+				AbortReceiptDigest string        `json:"abortReceiptDigest"`
+			}
+			if json.Unmarshal(record.Payload, &v) != nil || !validDigest(v.AbortReceiptDigest) {
+				return ErrUnavailable
+			}
+		case "launch-abort-ambiguous":
 		case "launch-accepted":
 			state := p.launches[record.TransactionID]
 			var v struct{ DurableAcceptDigest string }
@@ -571,10 +627,12 @@ func (p *Provider) reconcileAnchorOnOpen() error {
 		}
 		if snapshot.Sequence == p.highWater {
 			p.forked = true
-			_, _ = p.journal.appendRecord("anchor-fork", "anchor-observation", struct {
+			if _, appendErr := p.journal.appendRecord("anchor-fork", "anchor-observation", struct {
 				Sequence     uint64
 				BundleDigest string
-			}{snapshot.Sequence, snapshot.BundleDigest})
+			}{snapshot.Sequence, snapshot.BundleDigest}); appendErr != nil {
+				_ = p.journal.markFailClosed()
+			}
 		}
 		p.unavailable = true
 		return ErrUnavailable
@@ -583,19 +641,31 @@ func (p *Provider) reconcileAnchorOnOpen() error {
 }
 
 func (p *Provider) abortRestartPending() error {
-	for id, state := range p.launches {
+	for _, state := range p.launches {
 		if state.Released == "" && state.Aborted == "" {
-			receipt, err := p.children.AbortWait(state.Child.IdentityDigest, "provider-restart-fail-closed")
-			if err != nil || !validDigest(receipt) {
-				p.unavailable = true
-				return ErrUnavailable
-			}
-			if _, err = p.journal.appendRecord("launch-aborted", id, struct{ ReceiptDigest, Reason string }{receipt, "provider-restart-fail-closed"}); err != nil {
+			if err := p.abortLaunchLocked(state, "provider-restart-fail-closed"); err != nil {
 				return err
 			}
-			state.Aborted = receipt
 		}
 	}
+	return nil
+}
+
+func (p *Provider) abortLaunchLocked(state *launchState, reason string) error {
+	receipt, err := p.children.AbortWait(state.Child.IdentityDigest, reason)
+	if err != nil || !validDigest(receipt) {
+		p.unavailable = true
+		if _, appendErr := p.journal.appendRecord("launch-abort-ambiguous", state.Request.TransactionID, struct{ ChildIdentityDigest, Reason string }{state.Child.IdentityDigest, reason}); appendErr != nil {
+			_ = p.journal.markFailClosed()
+		}
+		return ErrReconcileRequired
+	}
+	if _, err = p.journal.appendRecord("launch-aborted", state.Request.TransactionID, struct{ ReceiptDigest, Reason string }{receipt, reason}); err != nil {
+		p.unavailable = true
+		_ = p.journal.markFailClosed()
+		return ErrReconcileRequired
+	}
+	state.Aborted = receipt
 	return nil
 }
 

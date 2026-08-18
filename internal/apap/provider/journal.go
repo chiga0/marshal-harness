@@ -8,6 +8,8 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -16,6 +18,7 @@ import (
 
 const (
 	journalName      = "provider.journal"
+	failClosedName   = "provider.fail-closed"
 	maxJournalRecord = 64 << 10
 )
 
@@ -38,19 +41,52 @@ type journalRecord struct {
 }
 
 type Journal struct {
-	mu      sync.Mutex
-	file    *os.File
-	records []journalRecord
-	closed  bool
-	fail    func(kind string) error
+	mu         sync.Mutex
+	file       *os.File
+	dir        *os.File
+	records    []journalRecord
+	closed     bool
+	failClosed bool
+	fail       func(kind string) error
 }
 
-func OpenJournal(directory string) (*Journal, error) {
-	dirfd, err := unix.Open(directory, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+type AuthorityRootIdentity struct {
+	Device uint64
+	Inode  uint64
+	UID    uint32
+	Mode   uint32
+}
+
+func MeasureAuthorityRoot(directory string) (AuthorityRootIdentity, error) {
+	fd, err := openAuthorityRoot(directory)
+	if err != nil {
+		return AuthorityRootIdentity{}, err
+	}
+	defer unix.Close(fd)
+	return authorityRootIdentity(fd)
+}
+
+func OpenJournal(directory string, expected AuthorityRootIdentity) (*Journal, error) {
+	dirfd, err := openAuthorityRoot(directory)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
-	defer unix.Close(dirfd)
+	actual, identityErr := authorityRootIdentity(dirfd)
+	if identityErr != nil || actual != expected {
+		unix.Close(dirfd)
+		return nil, ErrUnavailable
+	}
+	dir := os.NewFile(uintptr(dirfd), "provider-authority-root")
+	if dir == nil {
+		unix.Close(dirfd)
+		return nil, ErrUnavailable
+	}
+	dirOwned := true
+	defer func() {
+		if dirOwned {
+			_ = dir.Close()
+		}
+	}()
 	fd, err := unix.Openat(dirfd, journalName, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
 	if err != nil {
 		return nil, ErrUnavailable
@@ -76,12 +112,58 @@ func OpenJournal(directory string) (*Journal, error) {
 	if err := unix.Fsync(dirfd); err != nil {
 		return nil, ErrUnavailable
 	}
-	j := &Journal{file: file}
+	var marker unix.Stat_t
+	markerErr := unix.Fstatat(dirfd, failClosedName, &marker, unix.AT_SYMLINK_NOFOLLOW)
+	if markerErr != nil && !errors.Is(markerErr, unix.ENOENT) {
+		return nil, ErrUnavailable
+	}
+	markerExists := markerErr == nil
+	if markerExists && (marker.Mode&unix.S_IFMT != unix.S_IFREG || marker.Mode&0777 != 0600 || marker.Nlink != 1 || (marker.Uid != uint32(os.Geteuid()) && marker.Uid != 0)) {
+		return nil, ErrUnavailable
+	}
+	j := &Journal{file: file, dir: dir, failClosed: markerExists}
 	if err := j.load(); err != nil {
 		return nil, err
 	}
 	failed = false
+	dirOwned = false
 	return j, nil
+}
+
+func authorityRootIdentity(fd int) (AuthorityRootIdentity, error) {
+	var st unix.Stat_t
+	if unix.Fstat(fd, &st) != nil {
+		return AuthorityRootIdentity{}, ErrUnavailable
+	}
+	return AuthorityRootIdentity{Device: uint64(st.Dev), Inode: st.Ino, UID: st.Uid, Mode: uint32(st.Mode)}, nil
+}
+
+func openAuthorityRoot(path string) (int, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return -1, ErrUnavailable
+	}
+	current, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, ErrUnavailable
+	}
+	components := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	for _, component := range components {
+		if component == "" {
+			continue
+		}
+		next, openErr := unix.Openat(current, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		unix.Close(current)
+		if openErr != nil {
+			return -1, ErrUnavailable
+		}
+		current = next
+	}
+	var st unix.Stat_t
+	if unix.Fstat(current, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFDIR || st.Mode&0022 != 0 || (st.Uid != uint32(os.Geteuid()) && st.Uid != 0) {
+		unix.Close(current)
+		return -1, ErrUnavailable
+	}
+	return current, nil
 }
 
 func (j *Journal) Close() error {
@@ -95,7 +177,52 @@ func (j *Journal) Close() error {
 	}
 	j.closed = true
 	_ = unix.Flock(int(j.file.Fd()), unix.LOCK_UN)
-	return j.file.Close()
+	fileErr := j.file.Close()
+	dirErr := j.dir.Close()
+	if fileErr != nil {
+		return fileErr
+	}
+	return dirErr
+}
+
+func (j *Journal) markFailClosed() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.closed {
+		return ErrUnavailable
+	}
+	if j.failClosed {
+		return nil
+	}
+	fd, err := unix.Openat(int(j.dir.Fd()), failClosedName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+	if errors.Is(err, unix.EEXIST) {
+		j.failClosed = true
+		return nil
+	}
+	if err != nil {
+		return ErrUnavailable
+	}
+	marker := os.NewFile(uintptr(fd), failClosedName)
+	if marker == nil {
+		unix.Close(fd)
+		return ErrUnavailable
+	}
+	if err := writeAll(marker, []byte("fail-closed\n")); err != nil {
+		_ = marker.Close()
+		return ErrUnavailable
+	}
+	if err := marker.Sync(); err != nil {
+		_ = marker.Close()
+		return ErrUnavailable
+	}
+	if err := marker.Close(); err != nil {
+		return ErrUnavailable
+	}
+	if err := unix.Fsync(int(j.dir.Fd())); err != nil {
+		return ErrUnavailable
+	}
+	j.failClosed = true
+	return nil
 }
 
 func (j *Journal) snapshotRecords() []journalRecord {
