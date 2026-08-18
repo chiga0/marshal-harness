@@ -38,6 +38,7 @@ const (
 	ErrPolicyMergeProvider   = "validate policy: merge requires provider github and draft mode"
 	ErrPolicyMergeMethod     = "validate policy: merge requires a mergeMethod from the closed merge/squash/rebase enumeration"
 	ErrPolicyMergeChecks     = "validate policy: merge requires non-empty unique requiredChecks"
+	ErrPolicyOpenCode        = "validate policy: OpenCode is ineligible for new tasks"
 	ErrPolicyPreferredEmpty  = "validate policy: task preferredAdapter is empty"
 	ErrPolicyNoAdapters      = "validate policy: allowedAdapters is empty"
 	ErrPolicyNoCandidates    = "validate policy: no explicit task adapter candidate is allowed"
@@ -168,6 +169,8 @@ type policySource struct {
 //     acceptance floor: at least one acceptance command, a non-empty argv
 //     on every command, and at least one required:true command; a legacy
 //     control-less snapshot keeps the pre-issue-87 planning semantics;
+//   - OpenCode is ineligible in either the preferred or fallback candidates,
+//     regardless of the policy allow-list or configured registry;
 //   - an empty adapter allow-list, or one that shares no candidate with the
 //     TaskSpec's explicit adapter declarations, is rejected;
 //   - when fallback workers are not allowed, only the preferred adapter
@@ -188,6 +191,9 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 	}
 	if snapshot.RunID != runID {
 		return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyRunMismatch)
+	}
+	if isOpenCode(task.Worker.PreferredAdapter) || slices.ContainsFunc(task.Worker.FallbackAdapters, isOpenCode) {
+		return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyOpenCode)
 	}
 	if _, err := time.Parse(time.RFC3339, snapshot.GeneratedAt); err != nil {
 		return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyGeneratedAt)
@@ -346,6 +352,10 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 	effective.PreferredAdapter = candidates[0]
 	effective.FallbackAdapters = candidates[1:]
 	return effective, nil
+}
+
+func isOpenCode(adapterID string) bool {
+	return strings.EqualFold(strings.TrimSpace(adapterID), "opencode")
 }
 
 const (

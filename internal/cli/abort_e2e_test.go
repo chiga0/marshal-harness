@@ -666,7 +666,7 @@ func TestTaskAbortSucceedsAfterPreflightFailures(t *testing.T) {
 		setup := newAutoFlowSetup(t)
 		const taskID, runID = "abort-unregistered-task", "abort-unregistered-run"
 		planReadyRunViaCLI(t, setup, taskID, runID)
-		t.Setenv("MARSHAL_OPENCODE_PATH", "")
+		t.Setenv("MARSHAL_QWEN_PATH", "")
 		var stdout, stderr bytes.Buffer
 		if exit := Run([]string{"task", "run", "--run", runID}, strings.NewReader(""), &stdout, &stderr); exit != ExitUnavailable {
 			t.Fatalf("task run exit = %d, stderr = %q", exit, stderr.String())
