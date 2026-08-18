@@ -85,9 +85,9 @@ client/server helper 不能运行 Worker、读 probe credential、持 Publisher 
 - `endpointRole`，枚举为 `client|server|helper|main`；
 - `direction`，枚举为 `dial-out|accept-in|helper-to-main|main-to-helper`；
 - `addressFamily="AF_UNIX"`、`socketType="SOCK_SEQPACKET"`、`protocol=0`；
-- `device`、`inode`、`mode`、`socketCookie`，分别来自 held fd 的 `fstat` 与 `SO_COOKIE`；
-- `ownerPid`、`ownerStartTimeTicks`、`ownerPidfdInode`；
-- `peerUid`、`peerGid`、`peerPid`、`peerStartTimeTicks`，来自 `SO_PEERCRED` 与同一 held pidfd/proc birth identity。
+- `device:KernelUint64`、`inode:KernelUint64`、`mode`、`socketCookie:KernelUint64`，分别来自 held fd 的 `fstat` 与 `SO_COOKIE`；
+- `ownerPid`、`ownerStartTimeTicks:KernelUint64`、`ownerPidfdInode:KernelUint64`；
+- `peerUid`、`peerGid`、`peerPid`、`peerStartTimeTicks:KernelUint64`，来自 `SO_PEERCRED` 与同一 held pidfd/proc birth identity。
 
 `connectionIdentityDigest` 精确等于 `sha256(JCS(ConnectionIdentityV1))`；`ConnectionIdentityV1` 字段只有 `schemaVersion="marshal.apap-connection-identity.v1"` 与 `endpoints`。`endpoints` 必须精确为 `[clientEndpoint,serverEndpoint]`，前者 `endpointRole=client,direction=dial-out`，后者 `endpointRole=server,direction=accept-in`。launcher/supervisor 必须分别持有两个 endpoint 的原始 fd，验证二者互为 `SO_PEERCRED` 所指进程，并要求 client 与 server connection receipt 携带逐字节相同的 digest；交换顺序、只绑定本端、socketpair替换、cookie/stat/peer变化全部拒绝。
 
@@ -96,14 +96,18 @@ client/server helper 不能运行 Worker、读 probe credential、持 Publisher 
 `notifierIdentityDigest` 精确等于 `sha256(JCS(SeccompNotifierIdentityV1))`；该 record 字段精确为：
 
 - `schemaVersion="marshal.seccomp-notifier-identity.v1"`；
-- `ownerPid`、`ownerStartTimeTicks`、`ownerPidfdInode`；
-- `fdDevice`、`fdInode`、`fdMode`、`fdFlags`，来自 launcher 持有 notifier fd 的 `fstat/fcntl`；
+- `ownerPid`、`ownerStartTimeTicks:KernelUint64`、`ownerPidfdInode:KernelUint64`；
+- `fdDevice:KernelUint64`、`fdInode:KernelUint64`、`fdMode`、`fdFlags`，来自 launcher 持有 notifier fd 的 `fstat/fcntl`；
 - `filterDigest`、`listenerFlags=["NEW_LISTENER"]`；
 - `openFileDescriptionProof="kcmp-file-equal"`。
 
 launcher 与独立 supervisor 各持一个同一 notifier open-file-description 的 duplicate，并在 attestation 前及每次 connection receipt 签发前用 `kcmp(KCMP_FILE)` 证明二者相等；任一 duplicate 关闭、FD identity/flags/filter digest变化、`kcmp` 不可用或不等即终止 child。`notifierIdentityDigest` 是该 held kernel authority 的 canonical投影，不替代持续持有与 `kcmp` 复核。
 
-三类 record 的整数都使用无符号十进制 JSON number（PID 字段除外，范围 `1..2^31-1`），`mode` 记录完整 `fstat.st_mode`，`socketCookie` 使用 kernel 返回的 unsigned 64-bit 值。禁止 map 遍历顺序、可选字段、别名、额外字段或把三个 digest 互换。
+`KernelUint64` 不是 JSON number，而是 canonical 十进制 JSON string：正则精确为 `^(0|[1-9][0-9]{0,19})$`，解析后必须位于 `0..18446744073709551615`，重新以 base-10 无符号格式编码必须逐字节等于输入。前导零、正负号、空白、小数、指数、超出 `uint64`、以及把该字段编码成 JSON number 全部非法。这样 JCS 实现即使内部通过 IEEE-754 `float64` 处理 JSON number，也不能把大 kernel identity 合并。
+
+只有具有协议安全上界且该上界不超过 `2^53-1` 的值保留 JSON integer：`ownerPid/peerPid` 为 `1..2^31-1`，`peerUid/peerGid/mode/fdMode/fdFlags` 为 `0..2^32-1`，`protocol` 固定为 `0`，数组 `index` 为 `0..31`。`mode/fdMode` 记录完整 `fstat.st_mode`；`socketCookie` 使用 kernel 返回的 unsigned 64-bit值并编码为 `KernelUint64`。任何未来新增、没有机械上界证明的 kernel counter/id/size/time tick 默认必须使用 `KernelUint64`，不得使用 JSON number。
+
+canonical vectors 必须包含 `"9007199254740991"`、`"9007199254740992"`、`"9007199254740993"` 与 `"18446744073709551615"` 的成功向量；相邻的 `"9007199254740992"`/`"9007199254740993"` 及 `"18446744073709551614"`/`"18446744073709551615"` 必须产生不同 JCS bytes 与不同 digest。另须覆盖 JSON number `9007199254740992`、`"01"`、`"+1"`、`"1e3"`、`"18446744073709551616"` 全部拒绝，证明不存在 `2^53` 舍入碰撞或 `uint64` wrap。
 
 ### 5. challenge、在线签发、消费与恢复
 
@@ -136,7 +140,7 @@ launch-attestation key 与 connection-receipt key是不同 usage，可属于同�
 2. initial exec 非 held FD、非空 path、flags 错误、FD 关闭/复用、`pidfd_getfd` identity 不符、第二次 initial allowance、notification id失效、非法 `NEW_LISTENER|TSYNC` 组合、任一阶段额外线程、x32/非 native ABI 全部 kill+wait且无连接；
 3. launch attestation 与 connection receipt 互换、nonce复用、同 challenge不同 digest、lost response inspect、consume crash/replay、过期、错 connection/helper/main/private channel identity全部 fail closed；
 4. receipt 自签、错 producer principal、top-level key id、错 key epoch/generation/usage/domain、revoked key、launcher或supervisor crash全部 fail closed；
-5. main process尝试直接连接APAP、helper转移APAP fd/receipt/notifier/credential/signer handle、private frame 的 operation/方向/role/顺序/count/identity/envelope/custody ack 任一不符、裸 fd slice/backend pathname、同 UID进程 `ptrace`/`pidfd_getfd`复制 forbidden fd 均失败；合法 `BeginProbe`/`PrepareLaunch`/bundle leaf 双向多 hop custody则保持 exact table；connection/private endpoint 顺序交换、方向错、`SO_COOKIE`/held stat/peer birth变更、notifier `kcmp` 不等、path或application nonce参与 identity也失败；
+5. main process尝试直接连接APAP、helper转移APAP fd/receipt/notifier/credential/signer handle、private frame 的 operation/方向/role/顺序/count/identity/envelope/custody ack 任一不符、裸 fd slice/backend pathname、同 UID进程 `ptrace`/`pidfd_getfd`复制 forbidden fd 均失败；合法 `BeginProbe`/`PrepareLaunch`/bundle leaf 双向多 hop custody则保持 exact table；connection/private endpoint 顺序交换、方向错、`SO_COOKIE`/held stat/peer birth变更、notifier `kcmp` 不等、path或application nonce参与 identity也失败；`2^53` 边界、`uint64` max 与相邻大整数 canonical/digest vectors 无碰撞；
 6. Qoder与Codex共用transport barrier测试，但继续分别满足ADR 0034/0037；本ADR不能让任一 Adapter 自动变为 `supported`。
 
 ## 后果与实施门禁
