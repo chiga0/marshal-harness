@@ -65,13 +65,13 @@ func TestProductionPlatformGateIsAuditableAndLeavesNoLauncherSnapshots(t *testin
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("unsupported platform executed the configured Codex pathname")
 	}
-	if err := adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrPlatformUnsupported) {
-		t.Fatalf("BindConformance err = %v, want platform unsupported", err)
+	if err := adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrPlatformUnsupported) || !strings.Contains(err.Error(), secureFDPublicReason) || strings.Contains(err.Error(), "signed/privileged launcher ADR") {
+		t.Fatalf("BindConformance err = %v, want fixed safe platform error", err)
 	}
 	fixture := newRunFixture(t, supportedVersionOutput, "exit 0")
 	fixture.adapter.unsafePathExecutionForTest = false
-	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPlatformUnsupported) {
-		t.Fatalf("Run err = %v, want platform unsupported on %s", err, runtime.GOOS)
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPlatformUnsupported) || !strings.Contains(err.Error(), secureFDPublicReason) || strings.Contains(err.Error(), "signed/privileged launcher ADR") {
+		t.Fatalf("Run err = %v, want fixed safe platform error on %s", err, runtime.GOOS)
 	}
 	after, err := filepath.Glob(filepath.Join(os.TempDir(), ".marshal-codex-launcher-*"))
 	if err != nil {
@@ -197,12 +197,12 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 				t.Fatalf("snapshot status/version = %v/%v", raw["probeStatus"], raw["binaryVersion"])
 			}
 			probeErrors, _ := raw["probeErrors"].([]any)
-			if len(probeErrors) != 2 {
+			if len(probeErrors) != 1 {
 				t.Fatalf("probeErrors = %v", probeErrors)
 			}
 			message := fmt.Sprint(probeErrors)
-			if !strings.Contains(message, version) || !strings.Contains(message, supportedCompatibilityLine) || !strings.Contains(message, conformancePendingReason) {
-				t.Fatalf("probeErrors must list supported and actual versions: %v", probeErrors)
+			if !strings.Contains(message, "outside the admitted compatibility line") {
+				t.Fatalf("probeErrors must report the fixed contract mismatch: %v", probeErrors)
 			}
 		}
 	})
@@ -217,6 +217,19 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 			}
 			if _, err := adapter.Probe(context.Background()); !errors.Is(err, ErrVersionUnrecognized) {
 				t.Fatalf("output %q: err = %v, want ErrVersionUnrecognized", output, err)
+			}
+		}
+	})
+	t.Run("version-bytes-are-exact", func(t *testing.T) {
+		for _, output := range []string{
+			"codex-cli 0.145.0",
+			" codex-cli 0.145.0\n",
+			"codex-cli 0.145.0 \n",
+			"codex-cli 0.145.0\r\n",
+			"codex-cli 0.145.0\n\n",
+		} {
+			if _, err := parseBinaryVersion(output); !errors.Is(err, ErrVersionUnrecognized) {
+				t.Fatalf("parseBinaryVersion(%q) err = %v, want ErrVersionUnrecognized", output, err)
 			}
 		}
 	})
@@ -297,8 +310,8 @@ func TestBindConformanceRequiresSignedAuthorityEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
-		t.Fatalf("signed conformance did not authorize exact identity: %s", probe.Data)
+	if !strings.Contains(string(probe.Data), `"probeStatus":"unsupported"`) || !strings.Contains(string(probe.Data), `"codex_conformance_pending"`) {
+		t.Fatalf("legacy conformance promoted production authority: %s", probe.Data)
 	}
 	fixture.adapter.mu.Lock()
 	expires := fixture.adapter.conformance.validUntil
@@ -1868,9 +1881,10 @@ func useFixtureExecutable(t *testing.T, fixture *runFixture, executable string) 
 	fixture.executable = real
 	fixture.adapter.executable = real
 	// Native fixtures exercise the same authenticated fd-exec and conformance
-	// admission path as production. Do not retain TestMain's pathname-only
-	// fixture escape hatch for these launcher tests.
+	// launcher path as production. The legacy authority binding is explicitly
+	// test-only; production Run always consumes a fresh atomic authority state.
 	fixture.adapter.unsafePathExecutionForTest = false
+	fixture.adapter.legacyAuthorityForTest = true
 	snapshot, err := fixture.adapter.inspect(context.Background())
 	if err != nil {
 		t.Fatal(err)

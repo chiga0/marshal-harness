@@ -11,9 +11,20 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+type replayingAtomicAuthoritySource struct {
+	material authorityProbeMaterial
+	calls    int
+}
+
+func (source *replayingAtomicAuthoritySource) LoadFreshAuthority(context.Context) (authorityProbeMaterial, error) {
+	source.calls++
+	return source.material, nil
+}
 
 func TestLinuxRunningImageUsesVerifiedProcfsMagicLink(t *testing.T) {
 	fd, err := unix.Open("/proc/self/exe", unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
@@ -191,16 +202,16 @@ func TestLinuxLauncherInitializationFailureMakesAllSurfacesUnsupported(t *testin
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(record.Data), `"probeStatus":"unsupported"`) ||
-		!strings.Contains(string(record.Data), "launcher initialization failed") {
+		!strings.Contains(string(record.Data), secureFDPublicReason) || strings.Contains(string(record.Data), "launcher initialization failed:") {
 		t.Fatalf("probe = %s, want auditable launcher initialization failure", record.Data)
 	}
-	if err := adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrPlatformUnsupported) {
-		t.Fatalf("BindConformance err = %v, want platform unsupported", err)
+	if err := adapter.BindConformance(context.Background(), digest("a")); !errors.Is(err, ErrPlatformUnsupported) || !strings.Contains(err.Error(), secureFDPublicReason) || strings.Contains(err.Error(), "injected launcher init failure") {
+		t.Fatalf("BindConformance err = %v, want fixed safe platform error", err)
 	}
 	fixture := newRunFixture(t, supportedVersionOutput, "exit 0")
 	fixture.adapter.unsafePathExecutionForTest = false
-	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPlatformUnsupported) {
-		t.Fatalf("Run err = %v, want platform unsupported", err)
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrPlatformUnsupported) || !strings.Contains(err.Error(), secureFDPublicReason) || strings.Contains(err.Error(), "injected launcher init failure") {
+		t.Fatalf("Run err = %v, want fixed safe platform error", err)
 	}
 }
 
@@ -221,6 +232,157 @@ func TestLinuxExecutableMemfdIsSealedAgainstSameUIDMutation(t *testing.T) {
 	}
 	if _, err := unix.Pwrite(int(file.Fd()), []byte("attacker"), 0); err == nil {
 		t.Fatal("same-UID write changed a sealed executable image")
+	}
+}
+
+func TestLinuxAuthorityIdentityComesFromHeldExecutable(t *testing.T) {
+	executable := nativeFakeExecutable(t)
+	snapshot, err := snapshotExecutable(context.Background(), executable, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.close()
+	identity, err := snapshot.authorityExecutableIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.CanonicalRealpath != executable || identity.SHA256 != snapshot.identity.digest || identity.Version != snapshot.identity.version || identity.MountIDUnique == 0 || identity.Inode == 0 {
+		t.Fatalf("held authority identity = %+v", identity)
+	}
+	child, err := heldExecutableStat(snapshot.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.inode == identity.Inode && child.mountIDUnique == identity.MountIDUnique {
+		t.Fatal("stable source identity was conflated with the per-attempt sealed child")
+	}
+	second, err := snapshotExecutable(context.Background(), executable, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.close()
+	secondIdentity, err := second.authorityExecutableIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondIdentity != identity {
+		t.Fatalf("two snapshots of the stable source differ: first=%+v second=%+v", identity, secondIdentity)
+	}
+	digest, err := canonicalDigest(identity)
+	if err != nil || !validDigest(digest) {
+		t.Fatalf("held authority identity digest = %q, err = %v", digest, err)
+	}
+}
+
+func TestLinuxAuthorityIdentityRejectsSourceReplacement(t *testing.T) {
+	executable := nativeFakeExecutable(t)
+	first, err := snapshotExecutable(context.Background(), executable, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.close()
+	firstIdentity, err := first.authorityExecutableIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := nativeFakeExecutable(t)
+	if err := os.Rename(replacement, executable); err != nil {
+		t.Fatal(err)
+	}
+	if heldAgain, err := first.authorityExecutableIdentity(); err != nil || heldAgain != firstIdentity {
+		t.Fatalf("held source identity changed after pathname replacement: identity=%+v err=%v", heldAgain, err)
+	}
+	second, err := snapshotExecutable(context.Background(), executable, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.close()
+	secondIdentity, err := second.authorityExecutableIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondIdentity == firstIdentity || secondIdentity.Inode == firstIdentity.Inode {
+		t.Fatalf("replacement source reused authority identity: first=%+v second=%+v", firstIdentity, secondIdentity)
+	}
+}
+
+func TestLinuxProbeReverifiesAtomicAuthorityWithoutAdmissionCache(t *testing.T) {
+	executable := nativeFakeExecutable(t)
+	adapter, err := New(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.unsafePathExecutionForTest = false
+	snapshot, err := adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := snapshot.authorityExecutableIdentity()
+	snapshot.close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := compiledCodexContractBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := newTestAuthorityBundleFor(t, identity, compiled)
+	source := &replayingAtomicAuthoritySource{material: authorityMaterialFromFixture(t, fixture)}
+	adapter.now = func() time.Time { return fixture.now }
+	adapter.bindAtomicAuthoritySource(source)
+	first, err := adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(first.Data), `"probeStatus":"supported"`) || !strings.Contains(string(first.Data), `"codexAuthority"`) {
+		t.Fatalf("fresh atomic authority was not admitted: %s", first.Data)
+	}
+	second, err := adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(second.Data), `"probeStatus":"unsupported"`) || !strings.Contains(string(second.Data), `"codex_evidence_invalid"`) {
+		t.Fatalf("replayed proof reused cached admission: %s", second.Data)
+	}
+	if source.calls != 2 {
+		t.Fatalf("authority source calls = %d, want one per Probe", source.calls)
+	}
+}
+
+func TestLinuxRunReverifiesFreshAuthorityAfterSupportedProbe(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "worker-launched")
+	fixture := newRunFixture(t, supportedVersionOutput, "touch "+shellQuote(marker)+"; exit 91")
+	useFixtureExecutable(t, &fixture, nativeFakeExecutable(t))
+	fixture.adapter.legacyAuthorityForTest = false
+	snapshot, err := fixture.adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := snapshot.authorityExecutableIdentity()
+	snapshot.close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := compiledCodexContractBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := newTestAuthorityBundleFor(t, identity, compiled)
+	source := &replayingAtomicAuthoritySource{material: authorityMaterialFromFixture(t, authority)}
+	fixture.adapter.now = func() time.Time { return authority.now }
+	fixture.adapter.bindAtomicAuthoritySource(source)
+	probe, err := fixture.adapter.Probe(context.Background())
+	if err != nil || !strings.Contains(string(probe.Data), `"probeStatus":"supported"`) {
+		t.Fatalf("Probe = %s, err = %v", probe.Data, err)
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); err == nil {
+		t.Fatal("Run reused Probe admission instead of rejecting replayed host proof")
+	}
+	if source.calls != 2 {
+		t.Fatalf("authority source calls = %d, want Probe + launch", source.calls)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("worker launched after fresh authority verification failed")
 	}
 }
 

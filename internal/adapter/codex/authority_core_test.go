@@ -667,6 +667,13 @@ type testAuthorityBundle struct {
 
 func newTestAuthorityBundle(t *testing.T) testAuthorityBundle {
 	t.Helper()
+	binary := ExecutableIdentityV1{CanonicalRealpath: "/usr/bin/codex", DeviceMajor: 1, Inode: 2, MountIDUnique: 3, Size: 100, Mode: 0o755, SHA256: testDigest("binary"), Version: "1.2.3", VersionOutputDigest: testDigest("version")}
+	contract := CodexContractBindingV1{AdapterContractDigest: testDigest("adapter"), LauncherBuildDigest: testDigest("launcher"), ProfileDigest: testDigest("profile"), ArgvMatrixDigest: testDigest("argv-matrix"), EnvironmentDigest: testDigest("environment"), EventContractDigest: testDigest("event"), PermissionContractDigest: testDigest("permission"), ToolPolicyDigest: testDigest("tools"), ResultContractDigest: testDigest("result"), OutputLimitDigest: testDigest("output"), NativeBudgetsDigest: testDigest("budgets"), ExecutionProfiles: []string{"read-only", "workspace-write"}}
+	return newTestAuthorityBundleFor(t, binary, contract)
+}
+
+func newTestAuthorityBundleFor(t *testing.T, binary ExecutableIdentityV1, contract CodexContractBindingV1) testAuthorityBundle {
+	t.Helper()
 	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
 	rootPublic, rootPrivate := testRoot(t, "bundle-root")
 	configPublic, configPrivate := testRoot(t, "bundle-config")
@@ -692,9 +699,7 @@ func newTestAuthorityBundle(t *testing.T) testAuthorityBundle {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary := ExecutableIdentityV1{CanonicalRealpath: "/usr/bin/codex", DeviceMajor: 1, Inode: 2, MountIDUnique: 3, Size: 100, Mode: 0o755, SHA256: testDigest("binary"), Version: "1.2.3", VersionOutputDigest: testDigest("version")}
 	binaryDigest, _ := canonicalDigest(binary)
-	contract := CodexContractBindingV1{AdapterContractDigest: testDigest("adapter"), LauncherBuildDigest: testDigest("launcher"), ProfileDigest: testDigest("profile"), ArgvMatrixDigest: testDigest("argv-matrix"), EnvironmentDigest: testDigest("environment"), EventContractDigest: testDigest("event"), PermissionContractDigest: testDigest("permission"), ToolPolicyDigest: testDigest("tools"), ResultContractDigest: testDigest("result"), OutputLimitDigest: testDigest("output"), NativeBudgetsDigest: testDigest("budgets"), ExecutionProfiles: []string{"read-only", "workspace-write"}}
 	contractDigest, _ := canonicalDigest(contract)
 	receipt := CodexProbeExecutionReceiptV1{SchemaVersion: probeReceiptSchema, AuthorityNamespace: keysetPayload.AuthorityNamespace, AuthorityGeneration: 1, TrustRootGeneration: 1, BootstrapID: hostIdentity.BootstrapID, SuiteDigest: testDigest("suite"), ProbeArtifactDigest: testDigest("artifact"), VariantID: "default", ChallengeNonce: testNonce(7), StartedAt: formatAuthorityTime(now.Add(-30 * time.Minute)), EndedAt: formatAuthorityTime(now.Add(-29 * time.Minute)), HostIdentityDigest: hostDigest, BinaryIdentityDigest: binaryDigest, ArgvDigest: testDigest("argv"), EnvironmentDigest: contract.EnvironmentDigest, TopologyDigest: testDigest("topology"), TranscriptDigest: testDigest("transcript"), MarkerDigest: testDigest("marker"), EventContractDigest: contract.EventContractDigest, PermissionContractDigest: contract.PermissionContractDigest, ReceiptKeyID: "receipt-key"}
 	receipt.ReceiptChallengeDigest, _ = receiptChallengeDigest(receipt)
@@ -709,6 +714,94 @@ func newTestAuthorityBundle(t *testing.T) testAuthorityBundle {
 	config.RevocationSetDigest, _ = RevocationSetDigest(config)
 	configEnvelope := buildTestSignedEnvelope(t, config, authorityConfigSchema, map[string]ed25519.PrivateKey{"config-key": configPrivate})
 	return testAuthorityBundle{now: now, pin: pin, keyset: keyset, config: configEnvelope, evidence: evidenceEnvelope, observation: observationEnvelope, receipts: []SignedEnvelopeV1{receiptEnvelope}, hostNonce: hostNonce, configPrivate: configPrivate, evidencePrivate: evidencePrivate}
+}
+
+func authorityMaterialFromFixture(t *testing.T, fixture testAuthorityBundle) authorityProbeMaterial {
+	t.Helper()
+	var config CodexAuthorityConfigV1
+	if err := json.Unmarshal(fixture.config.Payload, &config); err != nil {
+		t.Fatal(err)
+	}
+	committed := formatAuthorityTime(fixture.now.Add(-5 * time.Minute))
+	transactionID, err := newNonce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := CodexConsumerFenceV1{
+		SchemaVersion: consumerFenceSchema, AuthorityNamespace: config.AuthorityNamespace, AdapterID: adapterID,
+		BootstrapDigest: fixture.pin.BootstrapDigest, HostIdentityDigest: config.HostIdentityDigest, BootstrapID: config.BootstrapID,
+		TrustRootGeneration: config.TrustRootGeneration, AuthorityGeneration: config.AuthorityGeneration,
+		KeysetDigest: config.KeysetDigest, ConfigDigest: fixture.config.PayloadDigest, RevocationSetDigest: config.RevocationSetDigest,
+		CurrentEvidenceDigest: config.CurrentEvidenceDigest, CommittedAt: committed,
+	}
+	state := CodexConsumerAuthorityStateV1{SchemaVersion: consumerStateSchema, TransactionID: transactionID, ActiveRootPin: fixture.pin, Fence: fence, CommittedAt: committed}
+	if err := state.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return authorityProbeMaterial{
+		State: state, KeysetEnvelope: fixture.keyset, ConfigEnvelope: fixture.config, EvidenceEnvelope: fixture.evidence,
+		ObservationEnvelope: fixture.observation, ReceiptEnvelopes: fixture.receipts,
+		ExpectedHostNonce: append([]byte(nil), fixture.hostNonce...), HostVerifier: fakeHostTPM{},
+	}
+}
+
+func TestRecoveredAuthorityStateBindsEveryCurrentProjection(t *testing.T) {
+	fixture := newTestAuthorityBundle(t)
+	material := authorityMaterialFromFixture(t, fixture)
+	bundle, err := VerifyAuthorityBundle(fixture.now, material.State.ActiveRootPin, material.KeysetEnvelope, material.ConfigEnvelope, material.EvidenceEnvelope, material.ObservationEnvelope, material.ReceiptEnvelopes, material.ExpectedHostNonce, material.HostVerifier, NewHostAttestationNonceFence())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRecoveredAuthorityState(material, bundle); err != nil {
+		t.Fatal(err)
+	}
+	mutations := []func(*authorityProbeMaterial){
+		func(value *authorityProbeMaterial) { value.State.Fence.AuthorityNamespace = "marshal.codex.other" },
+		func(value *authorityProbeMaterial) { value.State.Fence.BootstrapID = testNonce(31) },
+		func(value *authorityProbeMaterial) { value.State.Fence.KeysetDigest = testDigest("other-keyset") },
+		func(value *authorityProbeMaterial) {
+			value.State.Fence.CurrentEvidenceDigest = testDigest("other-evidence")
+		},
+		func(value *authorityProbeMaterial) {
+			value.State.Fence.RevocationSetDigest = testDigest("other-revocations")
+		},
+	}
+	for index, mutate := range mutations {
+		changed := material
+		mutate(&changed)
+		if err := validateRecoveredAuthorityState(changed, bundle); err == nil {
+			t.Fatalf("recovered authority mutation %d was accepted", index)
+		}
+	}
+}
+
+func TestCompiledCodexContractRejectsEveryFieldDrift(t *testing.T) {
+	binding, err := compiledCodexContractBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutations := []func(*CodexContractBindingV1){
+		func(value *CodexContractBindingV1) { value.AdapterContractDigest = testDigest("adapter-drift") },
+		func(value *CodexContractBindingV1) { value.LauncherBuildDigest = testDigest("launcher-drift") },
+		func(value *CodexContractBindingV1) { value.ProfileDigest = testDigest("profile-drift") },
+		func(value *CodexContractBindingV1) { value.ArgvMatrixDigest = testDigest("argv-drift") },
+		func(value *CodexContractBindingV1) { value.EnvironmentDigest = testDigest("environment-drift") },
+		func(value *CodexContractBindingV1) { value.EventContractDigest = testDigest("event-drift") },
+		func(value *CodexContractBindingV1) { value.PermissionContractDigest = testDigest("permission-drift") },
+		func(value *CodexContractBindingV1) { value.ToolPolicyDigest = testDigest("tool-drift") },
+		func(value *CodexContractBindingV1) { value.ResultContractDigest = testDigest("result-drift") },
+		func(value *CodexContractBindingV1) { value.OutputLimitDigest = testDigest("output-drift") },
+		func(value *CodexContractBindingV1) { value.NativeBudgetsDigest = testDigest("budget-drift") },
+		func(value *CodexContractBindingV1) { value.ExecutionProfiles = []string{"read-only"} },
+	}
+	for index, mutate := range mutations {
+		changed := binding
+		changed.ExecutionProfiles = append([]string(nil), binding.ExecutionProfiles...)
+		mutate(&changed)
+		if equalCodexContractBinding(binding, changed) {
+			t.Fatalf("compiled contract mutation %d was accepted", index)
+		}
+	}
 }
 
 func TestSignedAuthorityBundleDomainsUsageFreshnessAndReplay(t *testing.T) {
