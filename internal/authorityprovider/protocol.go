@@ -65,7 +65,7 @@ const (
 // validators. Known-but-unimplemented operations remain enum members and are
 // rejected before authorization or side effects.
 var controlOperations = map[Operation]struct{}{
-	OperationDescribe: {}, OperationBeginProbe: {}, OperationStageBundleLeafBatch: {},
+	OperationDescribe: {}, OperationBeginProbe: {},
 }
 
 func (op Operation) validControl() bool { _, ok := controlOperations[op]; return ok }
@@ -97,9 +97,8 @@ const (
 )
 
 var operationPrincipals = map[Operation]map[Principal]struct{}{
-	OperationDescribe:             setOf(PrincipalConsumer, PrincipalVerifierController),
-	OperationBeginProbe:           setOf(PrincipalVerifierController),
-	OperationStageBundleLeafBatch: setOf(PrincipalEvidenceConfig, PrincipalRotation, PrincipalRevocation),
+	OperationDescribe:   setOf(PrincipalConsumer, PrincipalVerifierController),
+	OperationBeginProbe: setOf(PrincipalVerifierController),
 }
 
 func setOf(values ...Principal) map[Principal]struct{} {
@@ -520,6 +519,9 @@ func decodeClosed(raw []byte, target any) error {
 }
 
 func decodeExact(raw []byte, fields []string, target any) error {
+	if len(raw) == 0 || len(raw) > MaxEnvelopeBytes {
+		return errors.New("rejected")
+	}
 	if err := validateExactObjectFields(raw, fields); err != nil {
 		return err
 	}

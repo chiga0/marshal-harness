@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
+	"math"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 )
@@ -52,7 +53,7 @@ func ValidateSignedObject(unsignedObject []byte, envelope SignedObjectEnvelopeV1
 	if err != nil || digest != envelope.ObjectDigest {
 		return protocolError(CodeIdentityMismatch, "signed-object-digest-invalid")
 	}
-	if envelope.SignatureAlgorithm != SignatureAlgorithmEd25519 || envelope.SignatureEncoding != SignatureEncodingBase64URL || envelope.SignatureDomain != expectedDomain || envelope.KeyID == "" || envelope.KeyEpoch == 0 {
+	if envelope.SignatureAlgorithm != SignatureAlgorithmEd25519 || envelope.SignatureEncoding != SignatureEncodingBase64URL || envelope.SignatureDomain != expectedDomain || !validPrintableID(envelope.KeyID) || envelope.KeyEpoch > math.MaxInt64 {
 		return protocolError(CodeIdentityMismatch, "signed-object-envelope-invalid")
 	}
 	key, ok := resolver.Resolve(envelope.KeyID, envelope.KeyEpoch)
@@ -72,7 +73,7 @@ func ValidateSignedObject(unsignedObject []byte, envelope SignedObjectEnvelopeV1
 }
 
 func SignObjectForFake(unsignedObject []byte, domain, keyID string, keyEpoch uint64, privateKey ed25519.PrivateKey) (SignedObjectEnvelopeV1, error) {
-	if len(privateKey) != ed25519.PrivateKeySize || keyID == "" || keyEpoch == 0 || domain == "" {
+	if len(privateKey) != ed25519.PrivateKeySize || !validPrintableID(keyID) || keyEpoch > math.MaxInt64 || domain == "" {
 		return SignedObjectEnvelopeV1{}, errors.New("authorityprovider: invalid fake signing configuration")
 	}
 	digest, err := ObjectDigest(unsignedObject)
@@ -82,6 +83,18 @@ func SignObjectForFake(unsignedObject []byte, domain, keyID string, keyEpoch uin
 	message := append([]byte(domain), []byte(digest)...)
 	signature := ed25519.Sign(privateKey, message)
 	return SignedObjectEnvelopeV1{ObjectDigest: digest, SignatureAlgorithm: SignatureAlgorithmEd25519, SignatureEncoding: SignatureEncodingBase64URL, KeyID: keyID, KeyEpoch: keyEpoch, SignatureDomain: domain, Signature: base64.RawURLEncoding.EncodeToString(signature)}, nil
+}
+
+func validPrintableID(value string) bool {
+	if len(value) == 0 || len(value) > 256 {
+		return false
+	}
+	for _, b := range []byte(value) {
+		if b < 0x20 || b > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func uintString(value uint64) string {

@@ -84,7 +84,7 @@ func TestRegisteredOperationAuthorizationAndUnsupportedSurface(t *testing.T) {
 			}
 		}
 	}
-	for _, operation := range []Operation{OperationPrepareLaunch, OperationCommitBundleUpdate, OperationWatchEpoch, OperationRunProbeVariant} {
+	for _, operation := range []Operation{OperationStageBundleLeafBatch, OperationPrepareLaunch, OperationCommitBundleUpdate, OperationWatchEpoch, OperationRunProbeVariant} {
 		p := defaultPeer(PrincipalConsumer)
 		request := validRequest(OperationDescribe, p)
 		request.Operation = operation
@@ -180,45 +180,6 @@ func TestDescribeRejectsNullPayload(t *testing.T) {
 	}
 }
 
-func TestStagePayloadCardinalityOrderAndRoleBinding(t *testing.T) {
-	p := defaultPeer(PrincipalEvidenceConfig)
-	base := validRequest(OperationStageBundleLeafBatch, p)
-	mutations := map[string]func(*StageBundleLeafBatchPayload){
-		"null array":      func(v *StageBundleLeafBatchPayload) { v.OrderedLeafDescriptors = nil },
-		"wrong role kind": func(v *StageBundleLeafBatchPayload) { v.UpdateKind = UpdateRotation },
-		"bad size":        func(v *StageBundleLeafBatchPayload) { v.OrderedLeafDescriptors[0].Size = 0 },
-		"bad media":       func(v *StageBundleLeafBatchPayload) { v.OrderedLeafDescriptors[0].MediaType = "text/plain" },
-		"bad digest":      func(v *StageBundleLeafBatchPayload) { v.OrderedLeafDescriptors[0].Digest = "sha256:BAD" },
-		"unordered": func(v *StageBundleLeafBatchPayload) {
-			v.OrderedLeafDescriptors = append([]BundleLeafDescriptor{{LeafKind: "z", Digest: testDigest("z"), Size: 1, MediaType: "application/json"}}, v.OrderedLeafDescriptors...)
-		},
-	}
-	for name, mutate := range mutations {
-		t.Run(name, func(t *testing.T) {
-			request := base
-			var payload StageBundleLeafBatchPayload
-			_ = json.Unmarshal(base.Payload, &payload)
-			mutate(&payload)
-			request.Payload = mustJSON(payload)
-			fds := make([]FDRef, len(payload.OrderedLeafDescriptors))
-			for i := range fds {
-				fds[i] = FDRef{Role: FDBundleLeaf, Index: i}
-			}
-			if _, err := DecodeControlRequest(mustSeal(t, request), p, fixtureNow, fds); err == nil {
-				t.Fatal("invalid stage accepted")
-			}
-		})
-	}
-	request := base
-	var payload StageBundleLeafBatchPayload
-	_ = json.Unmarshal(base.Payload, &payload)
-	payload.OrderedLeafDescriptors = append(payload.OrderedLeafDescriptors, BundleLeafDescriptor{LeafKind: "b", Digest: testDigest("leaf-b"), Size: 1, MediaType: "application/json"})
-	request.Payload = mustJSON(payload)
-	if _, err := DecodeControlRequest(mustSeal(t, request), p, fixtureNow, []FDRef{{Role: FDBundleLeaf}}); err == nil {
-		t.Fatal("descriptor/fd cardinality mismatch accepted")
-	}
-}
-
 func TestPeerBoundReplayAndSequence(t *testing.T) {
 	p1, p2 := peer(PrincipalVerifierController, "peer-1"), peer(PrincipalVerifierController, "peer-2")
 	request := validRequest(OperationBeginProbe, p1)
@@ -246,6 +207,39 @@ func TestPeerBoundReplayAndSequence(t *testing.T) {
 	stale.ExpectedProviderSequence = sequence(6)
 	if _, err := fake.HandleControl(mustSeal(t, stale), p1, fixtureNow, beginFDs()); err == nil {
 		t.Fatal("stale sequence accepted")
+	}
+}
+
+func TestReplayBindsRoleEvenWhenDigestMatches(t *testing.T) {
+	digest := testDigest("shared-os-peer")
+	consumer := PeerIdentity{PrincipalDigest: digest, Role: PrincipalConsumer}
+	verifier := PeerIdentity{PrincipalDigest: digest, Role: PrincipalVerifierController}
+	request := validRequest(OperationDescribe, consumer)
+	raw := mustSeal(t, request)
+	fake := NewFakeProvider(7)
+	if _, err := fake.HandleControl(raw, consumer, fixtureNow, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fake.HandleControl(raw, verifier, fixtureNow, nil); err == nil {
+		t.Fatal("same-digest cross-role replay accepted")
+	}
+}
+
+func TestEnvelopeSizeRejectedAtEveryEntryPoint(t *testing.T) {
+	oversize := bytes.Repeat([]byte{' '}, MaxEnvelopeBytes+1)
+	p := defaultPeer(PrincipalConsumer)
+	request := validRequest(OperationDescribe, p)
+	if _, err := DecodeControlRequest(oversize, p, fixtureNow, nil); err == nil {
+		t.Fatal("oversize control request accepted")
+	}
+	if _, err := DecodeCredentialIngressRequest(oversize, defaultPeer(PrincipalSecretProvider), fixtureNow, nil); err == nil {
+		t.Fatal("oversize ingress request accepted")
+	}
+	if _, err := DecodeControlResponse(oversize, request, 7); err == nil {
+		t.Fatal("oversize control response accepted")
+	}
+	if _, err := DecodeCredentialIngressResponse(oversize, validIngressRequest(defaultPeer(PrincipalSecretProvider))); err == nil {
+		t.Fatal("oversize ingress response accepted")
 	}
 }
 
@@ -394,6 +388,28 @@ func TestSignedObjectStrictBase64URL(t *testing.T) {
 	bad.Signature = strings.Repeat("A", 86)
 	if err := ValidateSignedObject(unsigned, bad, domain, usage, keyring); err == nil {
 		t.Fatal("bad signature accepted")
+	}
+}
+
+func TestSignedObjectKeyEpochBoundsAndID(t *testing.T) {
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x24}, ed25519.SeedSize))
+	publicKey := privateKey.Public().(ed25519.PublicKey)
+	unsigned := []byte(`{"value":1}`)
+	for _, epoch := range []uint64{0, uint64(^uint64(0) >> 1)} {
+		envelope, err := SignObjectForFake(unsigned, "domain", "key printable", epoch, privateKey)
+		if err != nil {
+			t.Fatalf("epoch %d: %v", epoch, err)
+		}
+		keyring := StaticKeyring{"key printable:" + uintString(epoch): {PublicKey: publicKey, Usage: "usage"}}
+		if err := ValidateSignedObject(unsigned, envelope, "domain", "usage", keyring); err != nil {
+			t.Fatalf("epoch %d: %v", epoch, err)
+		}
+	}
+	if _, err := SignObjectForFake(unsigned, "domain", "key", uint64(^uint64(0)>>1)+1, privateKey); err == nil {
+		t.Fatal("overflow epoch accepted")
+	}
+	if _, err := SignObjectForFake(unsigned, "domain", "bad\nkey", 0, privateKey); err == nil {
+		t.Fatal("non-printable key id accepted")
 	}
 }
 

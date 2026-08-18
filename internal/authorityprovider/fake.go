@@ -29,6 +29,7 @@ func (s FaultSpec) matches(operation Operation, commandID string) bool {
 type replayEntry struct {
 	digest     string
 	peerDigest string
+	peerRole   Principal
 	response   []byte
 }
 
@@ -67,7 +68,7 @@ func (f *FakeProvider) HandleControl(raw []byte, peer PeerIdentity, now time.Tim
 		return nil, err
 	}
 	if replay, ok := f.controlReplay[request.CommandID]; ok {
-		if replay.digest != request.RequestEnvelopeDigest || replay.peerDigest != peer.PrincipalDigest {
+		if replay.digest != request.RequestEnvelopeDigest || replay.peerDigest != peer.PrincipalDigest || replay.peerRole != peer.Role {
 			return nil, protocolError(CodeIdentityMismatch, "replay-conflict")
 		}
 		return append([]byte(nil), replay.response...), nil
@@ -90,7 +91,7 @@ func (f *FakeProvider) HandleControl(raw []byte, peer PeerIdentity, now time.Tim
 	if err != nil {
 		return nil, err
 	}
-	f.controlReplay[request.CommandID] = replayEntry{digest: request.RequestEnvelopeDigest, peerDigest: peer.PrincipalDigest, response: append([]byte(nil), encoded...)}
+	f.controlReplay[request.CommandID] = replayEntry{digest: request.RequestEnvelopeDigest, peerDigest: peer.PrincipalDigest, peerRole: peer.Role, response: append([]byte(nil), encoded...)}
 	if f.fault(request.Operation, request.CommandID) == FaultDropResponse {
 		return nil, ErrResponseLost
 	}
@@ -105,7 +106,7 @@ func (f *FakeProvider) HandleCredentialIngress(raw []byte, peer PeerIdentity, no
 		return nil, err
 	}
 	if replay, ok := f.ingressReplay[request.CommandID]; ok {
-		if replay.digest != request.RequestDigest || replay.peerDigest != peer.PrincipalDigest {
+		if replay.digest != request.RequestDigest || replay.peerDigest != peer.PrincipalDigest || replay.peerRole != peer.Role {
 			return nil, protocolError(CodeIdentityMismatch, "replay-conflict")
 		}
 		return append([]byte(nil), replay.response...), nil
@@ -123,7 +124,7 @@ func (f *FakeProvider) HandleCredentialIngress(raw []byte, peer PeerIdentity, no
 	if err != nil {
 		return nil, err
 	}
-	f.ingressReplay[request.CommandID] = replayEntry{digest: request.RequestDigest, peerDigest: peer.PrincipalDigest, response: append([]byte(nil), encoded...)}
+	f.ingressReplay[request.CommandID] = replayEntry{digest: request.RequestDigest, peerDigest: peer.PrincipalDigest, peerRole: peer.Role, response: append([]byte(nil), encoded...)}
 	if f.fault(OperationAttachProbeCredential, request.CommandID) == FaultDropResponse {
 		return nil, ErrResponseLost
 	}
