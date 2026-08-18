@@ -115,19 +115,20 @@ type QoderConformanceEvidenceExact struct {
 // consumer replays both ledgers itself; callers cannot detach an active key
 // set, host identity, or fence receipt from the records that authorized it.
 type QoderExactAuthorityCurrent struct {
-	OSTrustRecords            []QoderOSTrustRootRecord
-	OSTrustReceipts           []QoderOSTrustAnchorReceipt
-	OSAnchorProviderIdentity  string
-	OSAnchorProviderKeyID     string
-	OSAnchorProviderKeyEpoch  uint64
-	OSAnchorProviderPublicKey ed25519.PublicKey
-	ProbeTrustRecords         []QoderProbeTrustKeyRecord
-	HostIdentity              HostAttestationIdentity
-	FenceRequest              ConsumerFenceAdvanceRequest
-	FenceReceipt              ConsumerFenceReceipt
-	Executable                CandidateBoundObject
-	ExecutableVersion         string
-	EvidenceRoot              CandidateBoundObject
+	OSTrustRecords             []QoderOSTrustRootRecord
+	OSTrustReceipts            []QoderOSTrustAnchorReceipt
+	OSAnchorProviderIdentity   string
+	OSAnchorProviderKeyID      string
+	OSAnchorProviderKeyEpoch   uint64
+	OSAnchorProviderPublicKey  ed25519.PublicKey
+	ProbeTrustRecords          []QoderProbeTrustKeyRecord
+	HostIdentity               HostAttestationIdentity
+	FenceRequest               ConsumerFenceAdvanceRequest
+	FenceReceipt               ConsumerFenceReceipt
+	CredentialProviderIdentity string
+	Executable                 CandidateBoundObject
+	ExecutableVersion          string
+	EvidenceRoot               CandidateBoundObject
 }
 
 func DecodeQoderProbeTrustKeyRecord(document []byte) (QoderProbeTrustKeyRecord, error) {
@@ -259,6 +260,7 @@ func ValidateExactAuthorityBinding(config QoderAuthorityConfigExact, evidence Qo
 	if evidence.APIVersion != exactAuthorityAPIVersion || evidence.Kind != "QoderConformanceEvidence" || evidence.SchemaVersion != 1 || evidence.EvidenceDigest != digestRecordWithoutFields(evidence, "signature", "evidenceDigest") || evidence.SignatureAlgorithm != exactSignatureAlgorithm || evidence.SignatureEncoding != exactSignatureEncoding || !validCandidateASCII(evidence.EvidenceAuthorityKeyID) || evidence.EvidenceAuthorityKeyEpoch > candidateMaxJSONInteger || !validCandidateASCII(evidence.ProbeRunID) || !validCandidateASCII(evidence.RunnerID) || !validCandidateASCII(evidence.RunnerVersion) || evidence.AdapterVersion != adapterVersion || evidence.SuiteDigest != expectedProbeSuiteDigest() || evidence.CapabilitiesDigest != expectedCapabilitiesDigest() || evidence.ProfileDigest != expectedProbeProfileDigest() || evidence.ToolPolicyDigest != expectedProbeToolPolicyDigest() || evidence.EventContract != conformanceEventContract || evidence.ProtocolVersion != qoderProtocolVersion || evidence.PermissionMode != qoderPermissionMode || !validSHA256Digest(evidence.ObservationDigest) || !validSHA256Digest(evidence.ProbeArtifactDigest) || !validSHA256Digest(evidence.ProbeRunChallengeDigest) || !validSHA256Digest(evidence.TranscriptDigest) || !validSHA256Digest(evidence.AggregateReceiptDigest) || !evidence.CredentialVerified || !evidence.LiveProtocolVerified || !evidence.WorkspaceWriteVerified || len(evidence.ReceiptDigests) != 4 || len(evidence.VariantInvocationManifests) != 4 || !validExactExecutableIdentity(evidence.CandidateExecutableIdentity) {
 		return errors.New("qoder exact conformance evidence is invalid")
 	}
+	var modelDigest string
 	for index, receiptDigest := range evidence.ReceiptDigests {
 		manifest := evidence.VariantInvocationManifests[index]
 		if !validSHA256Digest(receiptDigest) || manifest.ReceiptSequence != uint64(index+1) || validateCandidateInvocationManifest(manifest, evidence.ProbeRunID, candidateVariantID(index)) != nil {
@@ -266,9 +268,17 @@ func ValidateExactAuthorityBinding(config QoderAuthorityConfigExact, evidence Qo
 		}
 		capability, capabilityErr := credentialCapabilityFromManifest(manifest.EnvironmentManifest)
 		credentialKey, credentialKeyOK := findTrustKey(osTrust.ActiveKeys["credential-capability-provider"], capability.ProviderKeyID, capability.ProviderKeyEpoch)
-		if capabilityErr != nil || !credentialKeyOK || capability.ProviderIdentity == "" || verifyCandidateCredentialCapability(capability, candidateAuthorityPolicy{credentialProviderKeyID: credentialKey.KeyID, credentialProviderKeyEpoch: credentialKey.KeyEpoch, credentialProviderPublicKey: credentialKey.PublicKey}) != nil {
+		issuedAt, issuedErr := time.Parse(time.RFC3339Nano, capability.IssuedAt)
+		expiresAt, expiresErr := time.Parse(time.RFC3339Nano, capability.ExpiresAt)
+		observedAt, observedErr := time.Parse(time.RFC3339Nano, evidence.ObservedAt)
+		if capabilityErr != nil || !credentialKeyOK || !validCandidateASCII(current.CredentialProviderIdentity) || capability.ProviderIdentity != current.CredentialProviderIdentity || capability.CapabilityClass != "qoder-live-probe" || capability.PolicyScopeDigest != config.TrustPolicyDigest || issuedErr != nil || expiresErr != nil || observedErr != nil || issuedAt.After(observedAt) || !observedAt.Before(expiresAt) || verifyCandidateCredentialCapability(capability, candidateAuthorityPolicy{credentialProviderKeyID: credentialKey.KeyID, credentialProviderKeyEpoch: credentialKey.KeyEpoch, credentialProviderPublicKey: credentialKey.PublicKey}) != nil {
 			return errors.New("qoder exact credential capability is not OS-root trusted")
 		}
+		expected, nextModelDigest, expectedErr := exactExpectedInvocationManifest(index, evidence.ProbeRunID, manifest, capability, modelDigest)
+		if expectedErr != nil || !candidateManifestsEqual(manifest, expected) {
+			return errors.New("qoder exact invocation manifest differs from the frozen matrix")
+		}
+		modelDigest = nextModelDigest
 	}
 	observed, oerr := time.Parse(time.RFC3339Nano, evidence.ObservedAt)
 	validUntil, verr := time.Parse(time.RFC3339Nano, evidence.ValidUntil)
@@ -281,6 +291,47 @@ func ValidateExactAuthorityBinding(config QoderAuthorityConfigExact, evidence Qo
 		return errors.New("qoder exact conformance evidence signature is not trusted")
 	}
 	return nil
+}
+
+func exactExpectedInvocationManifest(index int, probeRunID string, observed CandidateVariantInvocationManifest, capability CandidateCredentialCapabilityIdentity, sharedModelDigest string) (CandidateVariantInvocationManifest, string, error) {
+	variants := candidateProbeVariants("$MODEL")
+	if index < 0 || index >= len(variants) {
+		return CandidateVariantInvocationManifest{}, sharedModelDigest, errors.New("qoder exact invocation variant is invalid")
+	}
+	variant := variants[index]
+	invocation := CandidateProbeInvocation{ProbeRunID: probeRunID, ReceiptSequence: index + 1, VariantIndex: index, Arguments: buildArgs(variant.model, candidateBoundCredentialToken, candidateBoundScratchToken, variant.disableAllTools), Environment: candidateProbeEnvironment(candidateBoundScratchToken, candidateBoundCredentialToken), ExpectedModel: variant.model}
+	expected, err := candidateInvocationManifest(invocation, capability)
+	if err != nil {
+		return CandidateVariantInvocationManifest{}, sharedModelDigest, err
+	}
+	if variant.model == "" {
+		return expected, sharedModelDigest, nil
+	}
+	var observedModelDigest string
+	for _, entry := range observed.ArgvManifest.Entries {
+		if entry.Source == "model-id" {
+			if observedModelDigest != "" {
+				return CandidateVariantInvocationManifest{}, sharedModelDigest, errors.New("qoder exact invocation has duplicate model identity")
+			}
+			observedModelDigest = entry.ValueDigest
+		}
+	}
+	if !validSHA256Digest(observedModelDigest) || sharedModelDigest != "" && sharedModelDigest != observedModelDigest {
+		return CandidateVariantInvocationManifest{}, sharedModelDigest, errors.New("qoder exact invocation model identity differs")
+	}
+	for entryIndex := range expected.ArgvManifest.Entries {
+		if expected.ArgvManifest.Entries[entryIndex].Source == "model-id" {
+			expected.ArgvManifest.Entries[entryIndex].ValueDigest = observedModelDigest
+		}
+	}
+	recomputeExactCandidateManifestDigests(&expected)
+	return expected, observedModelDigest, nil
+}
+
+func recomputeExactCandidateManifestDigests(manifest *CandidateVariantInvocationManifest) {
+	manifest.ArgvManifest.ManifestDigest = digestRecordWithoutFields(manifest.ArgvManifest, "manifestDigest")
+	manifest.EnvironmentManifest.ManifestDigest = digestRecordWithoutFields(manifest.EnvironmentManifest, "manifestDigest")
+	manifest.ManifestDigest = digestRecordWithoutFields(*manifest, "manifestDigest")
 }
 
 func currentExecutableIdentity(object CandidateBoundObject, version string) (CandidateExecutableReceiptIdentity, error) {

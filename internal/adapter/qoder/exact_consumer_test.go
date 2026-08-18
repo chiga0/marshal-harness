@@ -204,7 +204,7 @@ func TestExactAuthorityBindingPinsFourTailsAndCurrentEvidence(t *testing.T) {
 	config := QoderAuthorityConfigExact{APIVersion: exactAuthorityAPIVersion, Kind: "QoderAuthorityConfig", SchemaVersion: 1, RepositoryIdentity: "repo-1", AuthorityGeneration: 1, HostIdentityDigest: host.RecordDigest, EvidenceRootIdentity: candidateRootIdentity(evidenceRoot.Identity), CurrentEvidenceDigest: evidence.EvidenceDigest, ProbeArtifactDigest: evidence.ProbeArtifactDigest, ProbeRunChallengeDigest: evidence.ProbeRunChallengeDigest, RevokedEvidenceDigests: []string{}, TrustPolicyDigest: digest("a"), ReceiptTrustLedgerTailDigest: trust.TailDigest, VerifierTrustLedgerTailDigest: trust.TailDigest, EvidenceTrustLedgerTailDigest: trust.TailDigest, OSTrustRootLedgerTailDigest: osState.RootRecordDigest, ConsumerFenceProviderIdentity: "fence-provider"}
 	config.ConfigDigest = digestRecordWithoutFields(config, "configDigest")
 	fenceRequest := ConsumerFenceAdvanceRequest{ConsumerInstanceID: "consumer-1", RepositoryIdentity: config.RepositoryIdentity, TransactionID: "transaction-1", PreparedRecordDigest: digest("9"), AuthorityGeneration: config.AuthorityGeneration, ConfigDigest: config.ConfigDigest}
-	current := QoderExactAuthorityCurrent{OSTrustRecords: osFixture.records, OSTrustReceipts: osFixture.receipts, OSAnchorProviderIdentity: "os-anchor", OSAnchorProviderKeyID: "anchor-key", OSAnchorProviderPublicKey: osFixture.providerPublic, ProbeTrustRecords: f.records, HostIdentity: host, FenceRequest: fenceRequest, FenceReceipt: exactFenceAdvanceReceipt(t, f.now, fenceRequest, "fence-0", 0, osFixture.keys["fence-0"]), Executable: executable, ExecutableVersion: supportedBinary, EvidenceRoot: evidenceRoot}
+	current := QoderExactAuthorityCurrent{OSTrustRecords: osFixture.records, OSTrustReceipts: osFixture.receipts, OSAnchorProviderIdentity: "os-anchor", OSAnchorProviderKeyID: "anchor-key", OSAnchorProviderPublicKey: osFixture.providerPublic, ProbeTrustRecords: f.records, HostIdentity: host, FenceRequest: fenceRequest, FenceReceipt: exactFenceAdvanceReceipt(t, f.now, fenceRequest, "fence-0", 0, osFixture.keys["fence-0"]), CredentialProviderIdentity: "credential-provider", Executable: executable, ExecutableVersion: supportedBinary, EvidenceRoot: evidenceRoot}
 	if err := ValidateExactAuthorityBinding(config, evidence, current, f.now); err != nil {
 		t.Fatal(err)
 	}
@@ -349,6 +349,65 @@ func TestExactAuthorityBindingPinsFourTailsAndCurrentEvidence(t *testing.T) {
 			changedCurrent.FenceReceipt = exactFenceAdvanceReceipt(t, f.now, changedCurrent.FenceRequest, "fence-0", 0, osFixture.keys["fence-0"])
 			if err := ValidateExactAuthorityBinding(changedConfig, changedEvidence, changedCurrent, f.now); err == nil {
 				t.Fatal("malformed nested manifest accepted")
+			}
+		})
+	}
+
+	for name, mutate := range map[string]func(*CandidateVariantInvocationManifest){
+		"valid signed scope drift": func(v *CandidateVariantInvocationManifest) {
+			for index := range v.EnvironmentManifest.Entries {
+				if v.EnvironmentManifest.Entries[index].CapabilityIdentity != nil {
+					v.EnvironmentManifest.Entries[index].CapabilityIdentity.PolicyScopeDigest = digest("f")
+				}
+			}
+		},
+		"argv semantic drift": func(v *CandidateVariantInvocationManifest) {
+			literal := "--replacement-output-format"
+			v.ArgvManifest.Entries[0].LiteralValue = &literal
+			v.ArgvManifest.Entries[0].ValueDigest = digestBytes([]byte(literal))
+		},
+		"environment semantic drift": func(v *CandidateVariantInvocationManifest) {
+			for index := range v.EnvironmentManifest.Entries {
+				entry := &v.EnvironmentManifest.Entries[index]
+				if entry.Source == "fixed-policy" && entry.ValueDigest != nil {
+					changed := digestBytes([]byte("replacement-value"))
+					entry.ValueDigest = &changed
+					break
+				}
+			}
+		},
+	} {
+		t.Run("resigned semantic "+name, func(t *testing.T) {
+			changedEvidence := evidence
+			changedEvidence.VariantInvocationManifests = append([]CandidateVariantInvocationManifest(nil), evidence.VariantInvocationManifests...)
+			manifest := &changedEvidence.VariantInvocationManifests[0]
+			manifest.ArgvManifest.Entries = append([]CandidateArgvEntry(nil), manifest.ArgvManifest.Entries...)
+			manifest.EnvironmentManifest.Entries = append([]CandidateEnvironmentEntry(nil), manifest.EnvironmentManifest.Entries...)
+			for index := range manifest.EnvironmentManifest.Entries {
+				if manifest.EnvironmentManifest.Entries[index].CapabilityIdentity != nil {
+					copy := *manifest.EnvironmentManifest.Entries[index].CapabilityIdentity
+					manifest.EnvironmentManifest.Entries[index].CapabilityIdentity = &copy
+				}
+			}
+			mutate(manifest)
+			for index := range manifest.EnvironmentManifest.Entries {
+				capability := manifest.EnvironmentManifest.Entries[index].CapabilityIdentity
+				if capability != nil {
+					capability.RecordDigest = capability.digest()
+					message, _ := capability.signingBytes()
+					capability.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(osFixture.keys["credential-0"], message))
+				}
+			}
+			resignCandidateManifest(manifest)
+			resignExactEvidence(&changedEvidence, f.keys["evidence-0"])
+			changedConfig := config
+			changedConfig.CurrentEvidenceDigest = changedEvidence.EvidenceDigest
+			changedConfig.ConfigDigest = digestRecordWithoutFields(changedConfig, "configDigest")
+			changedCurrent := current
+			changedCurrent.FenceRequest.ConfigDigest = changedConfig.ConfigDigest
+			changedCurrent.FenceReceipt = exactFenceAdvanceReceipt(t, f.now, changedCurrent.FenceRequest, "fence-0", 0, osFixture.keys["fence-0"])
+			if err := ValidateExactAuthorityBinding(changedConfig, changedEvidence, changedCurrent, f.now); err == nil {
+				t.Fatal("fully resigned semantic drift accepted")
 			}
 		})
 	}
