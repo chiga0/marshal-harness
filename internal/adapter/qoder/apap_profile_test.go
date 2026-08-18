@@ -21,6 +21,21 @@ type qoderAPAPFixture struct {
 	fencePrivate    ed25519.PrivateKey
 }
 
+func qoderAPAPHeldFixture() QoderAPAPHeldProbeBinding {
+	return QoderAPAPHeldProbeBinding{
+		ScratchRootIdentities: []CandidateRootIdentity{
+			candidateRootIdentity(CandidateObjectIdentity{Device: 10, Inode: 10}),
+			candidateRootIdentity(CandidateObjectIdentity{Device: 11, Inode: 11}),
+			candidateRootIdentity(CandidateObjectIdentity{Device: 12, Inode: 12}),
+			candidateRootIdentity(CandidateObjectIdentity{Device: 13, Inode: 13}),
+		},
+		CredentialRootIdentity:        candidateRootIdentity(CandidateObjectIdentity{Device: 20, Inode: 20}),
+		BusinessRootIdentities:        []CandidateRootIdentity{candidateRootIdentity(CandidateObjectIdentity{Device: 30, Inode: 30})},
+		VariantTopologyDigests:        []string{digest("1"), digest("2"), digest("3"), digest("4")},
+		TargetIsolationIdentityDigest: digest("d"), CredentialIngressEndpointIdentityDigest: digest("f"),
+	}
+}
+
 func newQoderAPAPFixture(t *testing.T) qoderAPAPFixture {
 	t.Helper()
 	osFixture := newExactLedgerFixture(t)
@@ -118,7 +133,12 @@ func TestQoderAPAPReceiptMapsExactADR0034Object(t *testing.T) {
 	// authority fixture, then bind it to this APAP session and current receipt
 	// trust key. No credential bytes enter this bridge test.
 	receipt := receiptAuthority.lastReceipt
-	begin := QoderAPAPBeginInput{RequestID: "receipt-begin", CommandID: "receipt-command", Nonce: "nonce-0001", IssuedAt: fixture.now.Add(-time.Second), ExpiresAt: fixture.now.Add(time.Minute)}
+	held := qoderAPAPHeldFixture()
+	held.ScratchRootIdentities[0] = receipt.ScratchRootIdentity
+	held.CredentialRootIdentity = receipt.CredentialRootIdentity
+	held.BusinessRootIdentities = append([]CandidateRootIdentity(nil), receipt.BusinessRootIdentities...)
+	held.VariantTopologyDigests[0] = receipt.TopologyDigest
+	begin := QoderAPAPBeginInput{RequestID: "receipt-begin", CommandID: "receipt-command", Nonce: "nonce-0001", IssuedAt: fixture.now.Add(-time.Second), ExpiresAt: fixture.now.Add(time.Minute), Held: held}
 	beginRequest, beginRaw, refs, err := bridge.BeginProbeRequest(begin)
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +146,7 @@ func TestQoderAPAPReceiptMapsExactADR0034Object(t *testing.T) {
 	if _, err := authorityprovider.DecodeControlRequest(beginRaw, fixture.authority.Peer, fixture.now, refs); err != nil {
 		t.Fatal(err)
 	}
-	payload, _ := json.Marshal(authorityprovider.BeginProbeSuccessPayload{ProbeSessionID: fixture.authority.Evidence.ProbeRunID, TargetIsolationIdentityDigest: receipt.TopologyDigest, CredentialIngressEndpointIdentityDigest: receipt.CredentialRootIdentity.IdentityDigest, ExpiresAt: begin.ExpiresAt})
+	payload, _ := json.Marshal(authorityprovider.BeginProbeSuccessPayload{ProbeSessionID: fixture.authority.Evidence.ProbeRunID, TargetIsolationIdentityDigest: held.TargetIsolationIdentityDigest, CredentialIngressEndpointIdentityDigest: held.CredentialIngressEndpointIdentityDigest, ExpiresAt: begin.ExpiresAt})
 	responseRaw, err := authorityprovider.SealControlResponse(authorityprovider.APAPResponseEnvelopeV1{SchemaVersion: authorityprovider.ResponseSchema, ProtocolFamily: authorityprovider.ControlFamily, ProtocolVersion: authorityprovider.ProtocolVersion, Audience: authorityprovider.ControlAudience, RequestID: beginRequest.RequestID, CommandID: beginRequest.CommandID, ProviderInstanceID: beginRequest.ProviderInstanceID, AuthorityProfile: authorityprovider.ProfileQoder, Operation: authorityprovider.OperationBeginProbe, ObservedProviderSequence: fixture.authority.ProviderSequence, SafeCode: authorityprovider.CodeOK, Payload: payload})
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +186,15 @@ func TestQoderAPAPReceiptMapsExactADR0034Object(t *testing.T) {
 		"protocol":       func(v *CandidateExecutionReceipt) { v.ProtocolVersion = "substitute" },
 		"permission":     func(v *CandidateExecutionReceipt) { v.PermissionMode = "substitute" },
 		"event contract": func(v *CandidateExecutionReceipt) { v.EventContract = "substitute" },
+		"scratch root": func(v *CandidateExecutionReceipt) {
+			v.ScratchRootIdentity = candidateRootIdentity(CandidateObjectIdentity{Device: 90, Inode: 90})
+		},
+		"credential root": func(v *CandidateExecutionReceipt) {
+			v.CredentialRootIdentity = candidateRootIdentity(CandidateObjectIdentity{Device: 91, Inode: 91})
+		},
+		"business root": func(v *CandidateExecutionReceipt) {
+			v.BusinessRootIdentities = []CandidateRootIdentity{candidateRootIdentity(CandidateObjectIdentity{Device: 92, Inode: 92})}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := receipt
@@ -179,6 +208,11 @@ func TestQoderAPAPReceiptMapsExactADR0034Object(t *testing.T) {
 				t.Fatal("trusted re-signing widened the frozen receipt contract")
 			}
 		})
+	}
+	aliasedEndpoint := session
+	aliasedEndpoint.CredentialIngressEndpointIdentityDigest = session.CredentialRootIdentity.IdentityDigest
+	if _, err := bridge.BindReceipt(aliasedEndpoint, document); err == nil {
+		t.Fatal("credential ingress endpoint identity aliased to credential root identity")
 	}
 	tamperedSession := session
 	tamperedSession.AuthorityGeneration++

@@ -83,6 +83,10 @@ type QoderAPAPProbeSession struct {
 	ProbeSessionID                          string
 	TargetIsolationIdentityDigest           string
 	CredentialIngressEndpointIdentityDigest string
+	ScratchRootIdentities                   []CandidateRootIdentity
+	CredentialRootIdentity                  CandidateRootIdentity
+	BusinessRootIdentities                  []CandidateRootIdentity
+	VariantTopologyDigests                  []string
 	CandidateIdentity                       CandidateExecutableReceiptIdentity
 	CandidateIdentityDigest                 string
 	EvidenceDigest                          string
@@ -94,6 +98,67 @@ type QoderAPAPProbeSession struct {
 	ResponseEnvelopeDigest                  string
 	IssuedAt                                time.Time
 	ExpiresAt                               time.Time
+}
+
+// QoderAPAPHeldProbeBinding is verifier-owned input measured from held
+// objects. Endpoint identities and ADR 0034 root/topology identities remain
+// separate digest domains and are never inferred from each other.
+type QoderAPAPHeldProbeBinding struct {
+	ScratchRootIdentities                   []CandidateRootIdentity
+	CredentialRootIdentity                  CandidateRootIdentity
+	BusinessRootIdentities                  []CandidateRootIdentity
+	VariantTopologyDigests                  []string
+	TargetIsolationIdentityDigest           string
+	CredentialIngressEndpointIdentityDigest string
+}
+
+func validateQoderAPAPHeldProbeBinding(binding QoderAPAPHeldProbeBinding) error {
+	if len(binding.ScratchRootIdentities) != 4 || len(binding.VariantTopologyDigests) != 4 || len(binding.BusinessRootIdentities) == 0 || len(binding.BusinessRootIdentities) > 256 || !validExactRootIdentity(binding.CredentialRootIdentity) || !validSHA256Digest(binding.TargetIsolationIdentityDigest) || !validSHA256Digest(binding.CredentialIngressEndpointIdentityDigest) || binding.TargetIsolationIdentityDigest == binding.CredentialIngressEndpointIdentityDigest || binding.TargetIsolationIdentityDigest == binding.CredentialRootIdentity.IdentityDigest || binding.CredentialIngressEndpointIdentityDigest == binding.CredentialRootIdentity.IdentityDigest {
+		return errors.New("qoder APAP held probe binding is invalid")
+	}
+	seenRoots := map[CandidateRootIdentity]struct{}{binding.CredentialRootIdentity: {}}
+	seenTopology := map[string]struct{}{}
+	for index, root := range binding.ScratchRootIdentities {
+		if !validExactRootIdentity(root) || root.IdentityDigest == binding.TargetIsolationIdentityDigest || root.IdentityDigest == binding.CredentialIngressEndpointIdentityDigest {
+			return errors.New("qoder APAP held scratch binding is invalid")
+		}
+		if _, duplicate := seenRoots[root]; duplicate {
+			return errors.New("qoder APAP held scratch binding is replayed")
+		}
+		seenRoots[root] = struct{}{}
+		topology := binding.VariantTopologyDigests[index]
+		if !validSHA256Digest(topology) || topology == binding.TargetIsolationIdentityDigest || topology == binding.CredentialIngressEndpointIdentityDigest {
+			return errors.New("qoder APAP held topology binding is invalid")
+		}
+		if _, duplicate := seenTopology[topology]; duplicate {
+			return errors.New("qoder APAP held topology binding is replayed")
+		}
+		seenTopology[topology] = struct{}{}
+	}
+	for index, root := range binding.BusinessRootIdentities {
+		if !validExactRootIdentity(root) || root == binding.CredentialRootIdentity || root.IdentityDigest == binding.TargetIsolationIdentityDigest || root.IdentityDigest == binding.CredentialIngressEndpointIdentityDigest {
+			return errors.New("qoder APAP held business-root binding is invalid")
+		}
+		if _, duplicate := seenRoots[root]; duplicate {
+			return errors.New("qoder APAP held root roles alias")
+		}
+		seenRoots[root] = struct{}{}
+		if index > 0 {
+			left, _ := canonical.JSON(mustCandidateJSON(binding.BusinessRootIdentities[index-1]))
+			right, _ := canonical.JSON(mustCandidateJSON(root))
+			if bytes.Compare(left, right) >= 0 {
+				return errors.New("qoder APAP held business-root binding is not canonical")
+			}
+		}
+	}
+	return nil
+}
+
+func cloneQoderAPAPHeldProbeBinding(binding QoderAPAPHeldProbeBinding) QoderAPAPHeldProbeBinding {
+	binding.ScratchRootIdentities = append([]CandidateRootIdentity(nil), binding.ScratchRootIdentities...)
+	binding.BusinessRootIdentities = append([]CandidateRootIdentity(nil), binding.BusinessRootIdentities...)
+	binding.VariantTopologyDigests = append([]string(nil), binding.VariantTopologyDigests...)
+	return binding
 }
 
 type QoderAPAPReceiptBinding struct {
@@ -133,7 +198,7 @@ func bindQoderAPAPReceipt(session QoderAPAPProbeSession, document []byte, trust 
 	index := int(receipt.ReceiptSequence) - 1
 	capability, capabilityErr := credentialCapabilityFromManifest(receipt.InvocationManifest.EnvironmentManifest)
 	expectedManifest, _, manifestErr := exactExpectedInvocationManifest(index, session.ProbeSessionID, receipt.InvocationManifest, capability, "")
-	if err != nil || digest != receipt.RecordDigest || receipt.ProbeRunID != session.ProbeSessionID || receipt.ReceiptSequence < 1 || receipt.ReceiptSequence > 4 || receipt.VariantID != candidateVariantID(index) || receipt.VariantChallengeDigest != candidateVariantChallenge(session.ChallengeDigest, index) || receipt.CandidateExecutableIdentity != session.CandidateIdentity || receipt.CandidateExecutableIdentity.BinaryVersion != supportedBinary || receipt.ProbeRunChallengeDigest != session.ChallengeDigest || receipt.HostIdentityDigest != session.HostIdentityDigest {
+	if err != nil || digest != receipt.RecordDigest || receipt.ProbeRunID != session.ProbeSessionID || receipt.ReceiptSequence < 1 || receipt.ReceiptSequence > 4 || index >= len(session.ScratchRootIdentities) || index >= len(session.VariantTopologyDigests) || receipt.VariantID != candidateVariantID(index) || receipt.VariantChallengeDigest != candidateVariantChallenge(session.ChallengeDigest, index) || receipt.CandidateExecutableIdentity != session.CandidateIdentity || receipt.CandidateExecutableIdentity.BinaryVersion != supportedBinary || receipt.ProbeRunChallengeDigest != session.ChallengeDigest || receipt.HostIdentityDigest != session.HostIdentityDigest || receipt.ScratchRootIdentity != session.ScratchRootIdentities[index] || receipt.CredentialRootIdentity != session.CredentialRootIdentity || !equalCandidateRootIdentities(receipt.BusinessRootIdentities, session.BusinessRootIdentities) || receipt.TopologyDigest != session.VariantTopologyDigests[index] {
 		return QoderAPAPReceiptBinding{}, errors.New("qoder APAP receipt binding is invalid")
 	}
 	if capabilityErr != nil || manifestErr != nil || !candidateManifestsEqual(receipt.InvocationManifest, expectedManifest) {

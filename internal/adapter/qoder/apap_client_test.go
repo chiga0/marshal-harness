@@ -100,13 +100,18 @@ func TestQoderAPAPBeginMapsHeldIdentityEvidenceAndRejectsReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := QoderAPAPBeginInput{RequestID: "begin-1", CommandID: "begin-command", Nonce: "nonce-0001", IssuedAt: fixture.now.Add(-time.Second), ExpiresAt: fixture.now.Add(time.Minute)}
+	input := QoderAPAPBeginInput{RequestID: "begin-1", CommandID: "begin-command", Nonce: "nonce-0001", IssuedAt: fixture.now.Add(-time.Second), ExpiresAt: fixture.now.Add(time.Minute), Held: qoderAPAPHeldFixture()}
 	request, raw, refs, err := bridge.BeginProbeRequest(input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	provider := authorityprovider.NewFakeProvider(fixture.authority.ProviderSequence)
-	responseRaw, err := provider.HandleControl(raw, fixture.authority.Peer, fixture.now, refs)
+	_, err = provider.HandleControl(raw, fixture.authority.Peer, fixture.now, refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(authorityprovider.BeginProbeSuccessPayload{ProbeSessionID: "probe-begin-command", TargetIsolationIdentityDigest: input.Held.TargetIsolationIdentityDigest, CredentialIngressEndpointIdentityDigest: input.Held.CredentialIngressEndpointIdentityDigest, ExpiresAt: input.ExpiresAt})
+	responseRaw, err := authorityprovider.SealControlResponse(authorityprovider.APAPResponseEnvelopeV1{SchemaVersion: authorityprovider.ResponseSchema, ProtocolFamily: authorityprovider.ControlFamily, ProtocolVersion: authorityprovider.ProtocolVersion, Audience: authorityprovider.ControlAudience, RequestID: request.RequestID, CommandID: request.CommandID, ProviderInstanceID: request.ProviderInstanceID, AuthorityProfile: request.AuthorityProfile, Operation: request.Operation, ObservedProviderSequence: fixture.authority.ProviderSequence, SafeCode: authorityprovider.CodeOK, Payload: payload})
 	if err != nil {
 		t.Fatal(err)
 	}

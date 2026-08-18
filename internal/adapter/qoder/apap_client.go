@@ -15,6 +15,7 @@ type QoderAPAPBeginInput struct {
 	Nonce     string
 	IssuedAt  time.Time
 	ExpiresAt time.Time
+	Held      QoderAPAPHeldProbeBinding
 }
 
 type qoderAPAPReplay struct {
@@ -29,18 +30,14 @@ type qoderAPAPIssuedRequest struct {
 }
 
 type qoderAPAPReceiptReplay struct {
-	sessionDigest  string
-	lastSequence   uint64
-	lastDigest     string
-	digests        map[uint64]string
-	credentialRoot CandidateRootIdentity
-	businessRoots  []CandidateRootIdentity
-	scratchRoots   map[CandidateRootIdentity]struct{}
-	topologies     map[string]struct{}
-	sessionIDs     map[string]struct{}
-	capabilityIDs  map[string]struct{}
-	modelDigest    string
-	lastCompleted  time.Time
+	sessionDigest string
+	lastSequence  uint64
+	lastDigest    string
+	digests       map[uint64]string
+	sessionIDs    map[string]struct{}
+	capabilityIDs map[string]struct{}
+	modelDigest   string
+	lastCompleted time.Time
 }
 
 // QoderAPAPProfileBridge validates and maps APAP control objects into the
@@ -54,6 +51,7 @@ type QoderAPAPProfileBridge struct {
 	mu            sync.Mutex
 	replay        map[string]qoderAPAPReplay
 	issued        map[string]qoderAPAPIssuedRequest
+	beginBindings map[string]QoderAPAPHeldProbeBinding
 	sessions      map[string]string
 	receiptReplay map[string]qoderAPAPReceiptReplay
 }
@@ -72,7 +70,7 @@ func newQoderAPAPProfileBridge(authority QoderAPAPAuthority, now time.Time) (*Qo
 		return nil, err
 	}
 	_ = trust
-	return &QoderAPAPProfileBridge{authority: authority, identity: identity, now: func() time.Time { return now.UTC() }, replay: map[string]qoderAPAPReplay{}, issued: map[string]qoderAPAPIssuedRequest{}, sessions: map[string]string{}, receiptReplay: map[string]qoderAPAPReceiptReplay{}}, nil
+	return &QoderAPAPProfileBridge{authority: authority, identity: identity, now: func() time.Time { return now.UTC() }, replay: map[string]qoderAPAPReplay{}, issued: map[string]qoderAPAPIssuedRequest{}, beginBindings: map[string]QoderAPAPHeldProbeBinding{}, sessions: map[string]string{}, receiptReplay: map[string]qoderAPAPReceiptReplay{}}, nil
 }
 
 func (bridge *QoderAPAPProfileBridge) DescribeRequest(requestID, commandID, nonce string, issuedAt, expiresAt time.Time) (authorityprovider.APAPRequestEnvelopeV1, []byte, error) {
@@ -93,6 +91,9 @@ func (bridge *QoderAPAPProfileBridge) DescribeRequest(requestID, commandID, nonc
 func (bridge *QoderAPAPProfileBridge) BeginProbeRequest(input QoderAPAPBeginInput) (authorityprovider.APAPRequestEnvelopeV1, []byte, []authorityprovider.FDRef, error) {
 	if bridge == nil || bridge.validateCurrentAuthority() != nil {
 		return authorityprovider.APAPRequestEnvelopeV1{}, nil, nil, errors.New("qoder APAP bridge is unavailable")
+	}
+	if err := validateQoderAPAPHeldProbeBinding(input.Held); err != nil {
+		return authorityprovider.APAPRequestEnvelopeV1{}, nil, nil, err
 	}
 	expected := bridge.authority.ProviderSequence
 	payload := authorityprovider.BeginProbePayload{
@@ -115,6 +116,13 @@ func (bridge *QoderAPAPProfileBridge) BeginProbeRequest(input QoderAPAPBeginInpu
 	if err := bridge.registerIssuedRequest(decoded); err != nil {
 		return authorityprovider.APAPRequestEnvelopeV1{}, nil, nil, err
 	}
+	bridge.mu.Lock()
+	if prior, exists := bridge.beginBindings[decoded.RequestEnvelopeDigest]; exists && digestRecordWithoutFields(prior) != digestRecordWithoutFields(input.Held) {
+		bridge.mu.Unlock()
+		return authorityprovider.APAPRequestEnvelopeV1{}, nil, nil, errors.New("qoder APAP request held identity conflicts")
+	}
+	bridge.beginBindings[decoded.RequestEnvelopeDigest] = cloneQoderAPAPHeldProbeBinding(input.Held)
+	bridge.mu.Unlock()
 	refs := []authorityprovider.FDRef{{Role: authorityprovider.FDCandidateExecutable}, {Role: authorityprovider.FDScratchRoot}, {Role: authorityprovider.FDBusinessDenyRoot, Index: 0}}
 	return decoded, raw, refs, nil
 }
@@ -146,6 +154,12 @@ func (bridge *QoderAPAPProfileBridge) ValidateBeginProbe(request authorityprovid
 	if err := json.Unmarshal(response.Payload, &payload); err != nil || payload.ExpiresAt.IsZero() || !payload.ExpiresAt.Equal(request.ExpiresAt) || !payload.ExpiresAt.After(bridge.now()) {
 		return QoderAPAPProbeSession{}, errors.New("qoder APAP BeginProbe session is invalid")
 	}
+	bridge.mu.Lock()
+	held, heldOK := bridge.beginBindings[request.RequestEnvelopeDigest]
+	bridge.mu.Unlock()
+	if !heldOK || payload.TargetIsolationIdentityDigest != held.TargetIsolationIdentityDigest || payload.CredentialIngressEndpointIdentityDigest != held.CredentialIngressEndpointIdentityDigest {
+		return QoderAPAPProbeSession{}, errors.New("qoder APAP BeginProbe held identity binding is invalid")
+	}
 	var begin authorityprovider.BeginProbePayload
 	if err := json.Unmarshal(request.Payload, &begin); err != nil || begin.CandidateIdentityDigest != qoderAPAPCandidateIdentityDigest(bridge.identity) || begin.SuiteDigest != expectedProbeSuiteDigest() || begin.ProbeArtifactDigest != bridge.authority.Evidence.ProbeArtifactDigest || begin.PolicyDigest != bridge.authority.Config.TrustPolicyDigest || begin.ChallengeDigest != bridge.authority.Evidence.ProbeRunChallengeDigest || !begin.Deadline.Equal(request.ExpiresAt) {
 		return QoderAPAPProbeSession{}, errors.New("qoder APAP BeginProbe profile mapping is invalid")
@@ -155,7 +169,9 @@ func (bridge *QoderAPAPProfileBridge) ValidateBeginProbe(request authorityprovid
 		PeerPrincipalDigest: bridge.authority.Peer.PrincipalDigest, AuthorityProfile: authorityprovider.ProfileQoder,
 		ProbeSessionID: payload.ProbeSessionID, TargetIsolationIdentityDigest: payload.TargetIsolationIdentityDigest,
 		CredentialIngressEndpointIdentityDigest: payload.CredentialIngressEndpointIdentityDigest,
-		CandidateIdentity:                       bridge.identity, CandidateIdentityDigest: begin.CandidateIdentityDigest,
+		ScratchRootIdentities:                   append([]CandidateRootIdentity(nil), held.ScratchRootIdentities...), CredentialRootIdentity: held.CredentialRootIdentity,
+		BusinessRootIdentities: append([]CandidateRootIdentity(nil), held.BusinessRootIdentities...), VariantTopologyDigests: append([]string(nil), held.VariantTopologyDigests...),
+		CandidateIdentity: bridge.identity, CandidateIdentityDigest: begin.CandidateIdentityDigest,
 		EvidenceDigest: bridge.authority.Evidence.EvidenceDigest, AuthorityGeneration: bridge.authority.Config.AuthorityGeneration,
 		HostIdentityDigest:  bridge.authority.Evidence.HostIdentity.RecordDigest,
 		ProbeArtifactDigest: begin.ProbeArtifactDigest, ChallengeDigest: begin.ChallengeDigest,
@@ -174,6 +190,10 @@ func (bridge *QoderAPAPProfileBridge) ValidateBeginProbe(request authorityprovid
 }
 
 func (bridge *QoderAPAPProfileBridge) BindReceipt(session QoderAPAPProbeSession, document []byte) (QoderAPAPReceiptBinding, error) {
+	held := QoderAPAPHeldProbeBinding{ScratchRootIdentities: session.ScratchRootIdentities, CredentialRootIdentity: session.CredentialRootIdentity, BusinessRootIdentities: session.BusinessRootIdentities, VariantTopologyDigests: session.VariantTopologyDigests, TargetIsolationIdentityDigest: session.TargetIsolationIdentityDigest, CredentialIngressEndpointIdentityDigest: session.CredentialIngressEndpointIdentityDigest}
+	if err := validateQoderAPAPHeldProbeBinding(held); err != nil {
+		return QoderAPAPReceiptBinding{}, errors.New("qoder APAP session held identity binding is invalid")
+	}
 	if bridge == nil || session.ProviderInstanceID != bridge.authority.ProviderInstanceID || session.ProviderSequence != bridge.authority.ProviderSequence || session.PeerPrincipalDigest != bridge.authority.Peer.PrincipalDigest || session.AuthorityProfile != authorityprovider.ProfileQoder || session.CandidateIdentity != bridge.identity || session.CandidateIdentityDigest != qoderAPAPCandidateIdentityDigest(bridge.identity) || session.EvidenceDigest != bridge.authority.Evidence.EvidenceDigest || session.AuthorityGeneration != bridge.authority.Config.AuthorityGeneration || session.HostIdentityDigest != bridge.authority.Evidence.HostIdentity.RecordDigest || session.ProbeArtifactDigest != bridge.authority.Evidence.ProbeArtifactDigest || session.ChallengeDigest != bridge.authority.Evidence.ProbeRunChallengeDigest || !validCandidateASCII(session.ProbeSessionID) || !validSHA256Digest(session.TargetIsolationIdentityDigest) || !validSHA256Digest(session.CredentialIngressEndpointIdentityDigest) || !validSHA256Digest(session.RequestEnvelopeDigest) || !validSHA256Digest(session.ResponseEnvelopeDigest) || session.IssuedAt.IsZero() || !session.ExpiresAt.After(session.IssuedAt) || containsDigest(bridge.authority.Config.RevokedEvidenceDigests, session.EvidenceDigest) || !session.ExpiresAt.After(bridge.now()) {
 		return QoderAPAPReceiptBinding{}, errors.New("qoder APAP session authority binding is invalid")
 	}
@@ -196,7 +216,7 @@ func (bridge *QoderAPAPProfileBridge) BindReceipt(session QoderAPAPProbeSession,
 	sessionDigest := digestRecordWithoutFields(session)
 	state, ok := bridge.receiptReplay[session.ProbeSessionID]
 	if !ok {
-		state = qoderAPAPReceiptReplay{sessionDigest: sessionDigest, digests: map[uint64]string{}, scratchRoots: map[CandidateRootIdentity]struct{}{}, topologies: map[string]struct{}{}, sessionIDs: map[string]struct{}{}, capabilityIDs: map[string]struct{}{}}
+		state = qoderAPAPReceiptReplay{sessionDigest: sessionDigest, digests: map[uint64]string{}, sessionIDs: map[string]struct{}{}, capabilityIDs: map[string]struct{}{}}
 	}
 	sequence := binding.Receipt.ReceiptSequence
 	if state.sessionDigest != sessionDigest {
@@ -215,12 +235,6 @@ func (bridge *QoderAPAPProfileBridge) BindReceipt(session QoderAPAPProbeSession,
 	if err != nil {
 		return QoderAPAPReceiptBinding{}, err
 	}
-	if sequence == 1 {
-		state.credentialRoot = binding.Receipt.CredentialRootIdentity
-		state.businessRoots = append([]CandidateRootIdentity(nil), binding.Receipt.BusinessRootIdentities...)
-	}
-	state.scratchRoots[binding.Receipt.ScratchRootIdentity] = struct{}{}
-	state.topologies[binding.Receipt.TopologyDigest] = struct{}{}
 	state.sessionIDs[binding.Receipt.SessionID] = struct{}{}
 	state.capabilityIDs[capabilityID] = struct{}{}
 	state.modelDigest = nextModelDigest
@@ -239,15 +253,6 @@ func (bridge *QoderAPAPProfileBridge) validateReceiptContract(session QoderAPAPP
 	completed, completeErr := time.Parse(time.RFC3339Nano, receipt.CompletedAt)
 	if err != nil || manifestErr != nil || !candidateManifestsEqual(receipt.InvocationManifest, expected) || startErr != nil || completeErr != nil || (!state.lastCompleted.IsZero() && started.Before(state.lastCompleted)) {
 		return "", time.Time{}, "", errors.New("qoder APAP receipt invocation chain is invalid")
-	}
-	if receipt.TopologyDigest != session.TargetIsolationIdentityDigest || receipt.CredentialRootIdentity.IdentityDigest != session.CredentialIngressEndpointIdentityDigest {
-		return "", time.Time{}, "", errors.New("qoder APAP receipt held endpoint binding is invalid")
-	}
-	if state.lastSequence != 0 && (receipt.CredentialRootIdentity != state.credentialRoot || !equalCandidateRootIdentities(receipt.BusinessRootIdentities, state.businessRoots)) {
-		return "", time.Time{}, "", errors.New("qoder APAP receipt held root chain changed")
-	}
-	if _, duplicate := state.scratchRoots[receipt.ScratchRootIdentity]; duplicate {
-		return "", time.Time{}, "", errors.New("qoder APAP receipt scratch identity was replayed")
 	}
 	if _, duplicate := state.sessionIDs[receipt.SessionID]; duplicate {
 		return "", time.Time{}, "", errors.New("qoder APAP receipt execution session was replayed")
