@@ -248,9 +248,9 @@ Qoder/Codex 的 AgentAdapter production enablement 在 M10–M12 平台路线中
 实施顺序为硬门禁：
 
 1. 维护者接受 ADR 0038；在此之前只允许 fake Port、Schema/IPC parser 与负向 fixture，production registry 保持 hard-disabled；
-2. 实现本机 Unix `SOCK_SEQPACKET` protocol v1、OS peer credential/operation AuthZ、closed request/response envelope、`expectedProviderSequence` CAS、`SCM_RIGHTS` held handle、command replay/conflict 与 safe error；非本机 transport 留给后续 ADR；
-3. 实现外部 service principal 与互斥 key usage，证明 Worker/Marshal/verifier 无 authority private key；Secret provider 通过专属 `AttachProbeCredential` 直接把 opaque、不可读的一次性 capability 交给 probe 隔离边界，controller/APAP 只能消费非敏感 delivery receipt；
-4. 实现 content-addressed leaf batch、精确 detached manifest signature 与 prepared→external monotonic anchor→committed 原子交付；evidence/rotation/revocation/recovery authority 分权，覆盖每个 fsync/crash/协调回滚、lost response 与 rotation/revocation 线性化点；
+2. 实现本机 Unix `SOCK_SEQPACKET` protocol v1、OS peer credential/operation AuthZ、closed request/response envelope、shared `SignedObjectEnvelopeV1`、`expectedProviderSequence` CAS、`SCM_RIGHTS` held handle、command replay/conflict 与 safe error；非本机 transport 留给后续 ADR；
+3. 实现外部 service principal 与互斥 key usage，证明 Worker/Marshal/verifier 无 authority private key；Secret provider 通过 target child 的 session-scoped `CredentialIngressPort` 直连把 opaque、不可读的一次性 capability 交给 probe isolation principal，controller/APAP 永远不接收连接、fd 或 bytes，只持非敏感 content-addressed receipt ref；
+4. 实现 content-addressed leaf batch、精确 detached manifest signature 与 prepared→external monotonic anchor→committed 原子交付；evidence/rotation/revocation/recovery authority 分权，recovery CAS 分离 original expected、observed current 与 anchored next，覆盖每个 fsync/crash/协调回滚、lost response 与 rotation/revocation 线性化点；
 5. 实现 probe isolation receipt 与 stopped-child `PrepareLaunch/CommitLaunch/AbortLaunch/InspectLaunch` barrier；launch request/receipt 精确绑定 `authorityNamespaceId`、ADR 0037 T1–T3 的全部 held fixed root/mount namespace、current authority CAS，receipt 被 Marshal durable 接纳前 child 不得执行 workload，lost response 不得产生第二 child；
 6. Linux 分别通过 Qoder ADR 0034、Codex ADR 0037 的真实 credentialed profile conformance；Darwin 在等价强制机制与替代 ADR 被接受前稳定返回 `unsupported`；
 7. 非作者 reviewer 对真实 diff、当前宿主 evidence、race/static analysis、secret scan、rollback/revoke/kill 演练给出 P0/P1 清零结论后，Qoder/Codex 各自以独立 registry 变更启用。
