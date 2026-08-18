@@ -210,7 +210,16 @@ func (s *Supervisor) Scan(ctx context.Context) ([]RunStatus, error) {
 			statuses = append(statuses, RunStatus{RunID: runID, State: state.State, SkipReason: fmt.Sprintf("ownership probe failed: %v", leaseErr)})
 			continue
 		}
-		statuses = append(statuses, RunStatus{RunID: runID, State: state.State, LeaseHeld: leaseHeld, DriverAlive: s.driverAlive(state, leaseHeld)})
+		driverAlive := s.driverAlive(state, leaseHeld)
+		// A recent journal event is normally a conservative grace signal. When
+		// the durable owner record proves that its PID has exited, the grace
+		// signal is no longer valid and the supervisor may recover immediately.
+		if !leaseHeld && isActiveState(state.State) {
+			if ownerAlive, ownerErr := store.LeaseOwnerProcessAlive(runID); ownerErr == nil && !ownerAlive {
+				driverAlive = false
+			}
+		}
+		statuses = append(statuses, RunStatus{RunID: runID, State: state.State, LeaseHeld: leaseHeld, DriverAlive: driverAlive})
 	}
 	sort.Slice(statuses, func(i, j int) bool { return statuses[i].RunID < statuses[j].RunID })
 	return statuses, nil
@@ -235,6 +244,15 @@ func (s *Supervisor) driverAlive(state domain.RunState, leaseHeld bool) bool {
 		return false
 	}
 	return s.now().Sub(state.UpdatedAt.UTC()) <= s.stalenessThreshold
+}
+
+func isActiveState(state domain.State) bool {
+	switch state {
+	case domain.StateRunning, domain.StateVerifying, domain.StatePublishing:
+		return true
+	default:
+		return false
+	}
 }
 
 // Decide maps one scanned RunStatus to the supervisor Action. It is a pure
@@ -339,7 +357,8 @@ func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
 			records = append(records, record)
 			continue
 		}
-		if startErr := s.executor.Start(ctx, s.commandArgv(action, status.RunID)); startErr != nil {
+		recoverDeadDriver := action == ActionRunWorker && status.State == domain.StateRunning && !status.DriverAlive && !status.LeaseHeld
+		if startErr := s.executor.Start(ctx, s.commandArgv(action, status.RunID, recoverDeadDriver)); startErr != nil {
 			record.Error = startErr.Error()
 		} else {
 			record.Started = true
@@ -407,10 +426,14 @@ func (s *Supervisor) writeDomainConflictReason(candidateID string, inflightIDs [
 // commandArgv builds the exact marshal CLI invocation for one action. All
 // Run state semantics stay inside that child process; the supervisor only
 // supplies argv.
-func (s *Supervisor) commandArgv(action Action, runID string) []string {
+func (s *Supervisor) commandArgv(action Action, runID string, recoverDeadDriver bool) []string {
 	switch action {
 	case ActionRunWorker:
-		return []string{s.marshalBinary, "task", "run", "--run", runID, "--through-verify", "--json"}
+		args := []string{s.marshalBinary, "task", "run", "--run", runID, "--through-verify"}
+		if recoverDeadDriver {
+			args = append(args, "--recover-dead-driver")
+		}
+		return append(args, "--json")
 	case ActionRetryPublish:
 		return []string{s.marshalBinary, "task", "publish", "--run", runID, "--json"}
 	default:

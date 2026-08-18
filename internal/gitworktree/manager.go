@@ -238,6 +238,40 @@ func (r Repository) Acquire(stateRoot, taskID, worktreePath, baseSHA string) (*W
 	return worktree, nil
 }
 
+// UnlockManaged releases the Git worktree lock for one exact managed path
+// while holding the repository metadata lock. It is used only by orphan
+// recovery after the Run lease and dead-driver proof have fenced the prior
+// attempt; ordinary callers must use Worktree.Release instead.
+func (r Repository) UnlockManaged(stateRoot, worktreePath string) error {
+	absolute, err := filepath.Abs(worktreePath)
+	if err != nil {
+		return err
+	}
+	canonicalPath, err := canonical(absolute)
+	if err != nil {
+		return err
+	}
+	if canonicalPath == r.Root {
+		return errors.New("managed worktree resolved to the main checkout")
+	}
+	opened, err := Open(canonicalPath)
+	if err != nil {
+		return err
+	}
+	if opened.CommonDir != r.CommonDir {
+		return errors.New("managed worktree common directory mismatch")
+	}
+	repositoryLock, err := acquireRepositoryLock(stateRoot)
+	if err != nil {
+		return err
+	}
+	defer repositoryLock.Unlock()
+	if err := gitRun(r.Root, "worktree", "unlock", canonicalPath); err != nil && !strings.Contains(err.Error(), "is not locked") {
+		return err
+	}
+	return nil
+}
+
 func (r Repository) CreateDetached(stateRoot, path, baseSHA string) (*Detached, error) {
 	if _, err := r.ResolveBase(baseSHA); err != nil {
 		return nil, err

@@ -244,7 +244,7 @@ func TestSuperviseOnceReturnsDeadRunningRunToCore(t *testing.T) {
 		t.Fatalf("supervise --once exit = %d, stderr = %s", exit, stderr.String())
 	}
 	gotArgv := waitForArgvFile(t, argvFile)
-	wantArgv := []string{"task", "run", "--run", runID, "--through-verify", "--json"}
+	wantArgv := []string{"task", "run", "--run", runID, "--through-verify", "--recover-dead-driver", "--json"}
 	if !reflect.DeepEqual(gotArgv, wantArgv) {
 		t.Fatalf("fake binary argv = %v, want %v", gotArgv, wantArgv)
 	}

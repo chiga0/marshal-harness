@@ -326,6 +326,16 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if supersededAttemptID != "" {
+		// A process can die after Git records the worker.started event but
+		// before Worktree.Release runs, leaving the exact worktree locked in
+		// Git metadata. The Run lease plus orphan recovery above prove that no
+		// prior writer remains; release that stale lock before reacquiring the
+		// normal single-writer lease.
+		if err := repository.UnlockManaged(input.StateRoot, state.WorktreePath); err != nil {
+			return Result{}, fmt.Errorf("orphan recovery: unlock stale worktree: %w", err)
+		}
+	}
 	worktreeLease, err := repository.Acquire(input.StateRoot, state.TaskID, state.WorktreePath, state.BaseSHA)
 	if err != nil {
 		return Result{}, err

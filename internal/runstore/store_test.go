@@ -72,6 +72,44 @@ func TestLeaseHeldIsReadOnlyOwnershipProbe(t *testing.T) {
 	}
 }
 
+func TestLeaseOwnerProcessAliveDistinguishesExitedOwner(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := New(root)
+	lease, err := store.Acquire("run:owner-probe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	alive, err := store.LeaseOwnerProcessAlive("run:owner-probe")
+	if err != nil || !alive {
+		t.Fatalf("current owner process probe = %v, %v", alive, err)
+	}
+	ownerPath := filepath.Join(root, "runs", "run:owner-probe", "lease.lock.owner")
+	data, err := os.ReadFile(ownerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owner leaseOwnerRecord
+	if err := json.Unmarshal(data, &owner); err != nil {
+		t.Fatal(err)
+	}
+	owner.PID = 99999999
+	data, err = json.Marshal(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ownerPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alive, err = store.LeaseOwnerProcessAlive("run:owner-probe")
+	if err != nil || alive {
+		t.Fatalf("exited owner process probe = %v, %v", alive, err)
+	}
+}
+
 func TestAcquireMigratesLegacyLeaseOwnerAfterExclusiveLock(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

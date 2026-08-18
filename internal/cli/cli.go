@@ -1921,6 +1921,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	flags.SetOutput(stderr)
 	runID := flags.String("run", "", "Run ID")
 	throughVerify := flags.Bool("through-verify", false, "Worker 成功转入 VERIFYING 后，在同一调用内继续执行独立 verify")
+	recoverDeadDriver := flags.Bool("recover-dead-driver", false, "仅在监督器已证明当前 Worker PID 退出时立即恢复孤儿 Attempt")
 	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
 	detach := flags.Bool("detach", false, "以双 fork + setsid 进入独立会话/进程组运行；父进程打印 detached pid 后立即返回")
 	logPath := flags.String("log", "", "--detach 的 stdout 日志文件（缺省 .marshal/detached/RUN_ID.log）")
@@ -1989,6 +1990,29 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return ExitFailure
 		}
 	}
+	// This escape hatch is only valid when the durable lease owner record
+	// proves that its recorded process has exited. The supervisor supplies it
+	// after an independent PID probe; re-checking here prevents callers from
+	// bypassing the normal orphan staleness grace window while a live driver
+	// still owns the Run.
+	orphanStalenessThreshold := time.Duration(0)
+	if *recoverDeadDriver {
+		ownerAlive, ownerErr := runstore.New(location.StateRoot).LeaseOwnerProcessAlive(*runID)
+		if ownerErr != nil || ownerAlive {
+			fmt.Fprintln(stderr, "运行失败：无法证明当前 Worker 进程已退出。")
+			return ExitFailure
+		}
+		repositoryHandle, repositoryErr := gitworktree.Open(location.RepositoryRoot)
+		if repositoryErr != nil {
+			fmt.Fprintln(stderr, "运行失败：无法核验孤儿 Worktree。")
+			return ExitFailure
+		}
+		if repositoryErr = repositoryHandle.UnlockManaged(location.StateRoot, state.WorktreePath); repositoryErr != nil {
+			fmt.Fprintf(stderr, "运行失败：无法解除孤儿 Worktree 锁：%v\n", repositoryErr)
+			return ExitFailure
+		}
+		orphanStalenessThreshold = time.Nanosecond
+	}
 	// Embedded sandbox runtime (M8 vertical slice): strictly opt-in via
 	// MARSHAL_EMBEDDED_SANDBOX=1. The default (unset or any other value)
 	// keeps the Local MVP behavior of `task run` completely unchanged and no
@@ -2004,7 +2028,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}
 		dispatchBinder = embeddedRuntime
 	}
-	result, err := execution.Run(ctx, execution.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Adapter: worker, Validator: runtime.Validator(), DispatchBinder: dispatchBinder})
+	result, err := execution.Run(ctx, execution.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Adapter: worker, Validator: runtime.Validator(), DispatchBinder: dispatchBinder, OrphanStalenessThreshold: orphanStalenessThreshold})
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败（Attempt %s，状态 %s）：%v\n", result.AttemptID, result.State.State, err)
 		return ExitFailure
