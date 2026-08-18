@@ -28,43 +28,43 @@ var envelopeFields = []string{"keyEpoch", "keyId", "objectDigest", "signature", 
 // VerifyCurrentBundle validates the complete immutable bundle and advances a
 // caller-provided high-water projection without mutating it. Every rejection
 // maps to one stable sentinel and exposes no untrusted field value.
-func VerifyCurrentBundle(manifestRaw, detachedSignatureRaw []byte, leaves []ImmutableLeaf, snapshot CurrentSnapshot, previous AcceptedState, keys PublicKeyring, now time.Time) (VerifiedBundle, error) {
+func VerifyCurrentBundle(manifestRaw, detachedSignatureRaw []byte, leaves []ImmutableLeaf, snapshot CurrentSnapshot, previous HighWaterState, keys PublicKeyring, now time.Time) (VerificationResult, error) {
+	result, err := observeCurrent(snapshot, previous)
+	if err != nil {
+		return result, err
+	}
 	manifest, canonicalManifest, err := parseManifest(manifestRaw, now)
-	if err != nil || !validSnapshot(snapshot) {
-		return VerifiedBundle{}, ErrBundleRejected
+	if err != nil {
+		return result, ErrBundleRejected
 	}
 	bundleDigest := canonical.DigestBytes(canonicalManifest)
 	if bundleDigest != snapshot.BundleDigest || !manifestMatchesSnapshot(manifest, snapshot) || rejectHighWater(manifest, snapshot, previous) {
-		return VerifiedBundle{}, ErrBundleRejected
+		return result, ErrBundleRejected
 	}
 	if err := verifyLeaves(manifest, leaves, snapshot); err != nil {
-		return VerifiedBundle{}, err
+		return result, err
 	}
 	if revoked(snapshot, bundleDigest) || revoked(snapshot, snapshot.EvidenceDigest) || revoked(snapshot, snapshot.ConfigDigest) || revoked(snapshot, snapshot.FenceDigest) || revoked(snapshot, snapshot.KeysetDigest) {
-		return VerifiedBundle{}, ErrBundleRejected
+		return result, ErrBundleRejected
 	}
 	if err := verifyDetachedBundleSignature(detachedSignatureRaw, bundleDigest, snapshot.ManifestProducerDigest, keys, mustTime(manifest.CreatedAt)); err != nil {
-		return VerifiedBundle{}, err
+		return result, err
 	}
-	accepted := AcceptedState{
-		Initialized: true, ProviderInstanceID: snapshot.ProviderInstanceID, AuthorityProfile: snapshot.AuthorityProfile,
-		BundleDigest: bundleDigest, ProviderSequence: snapshot.ProviderSequence, AuthorityGeneration: snapshot.AuthorityGeneration,
-		TrustRootGeneration: snapshot.TrustRootGeneration, KeysetDigest: snapshot.KeysetDigest,
-		RevocationSetDigest: snapshot.RevocationSetDigest, ConfigDigest: snapshot.ConfigDigest,
-		EvidenceDigest: snapshot.EvidenceDigest, FenceDigest: snapshot.FenceDigest,
-	}
-	return VerifiedBundle{Manifest: manifest, BundleDigest: bundleDigest, Accepted: accepted}, nil
+	result.Eligible = true
+	result.Bundle = VerifiedBundle{Manifest: manifest, BundleDigest: bundleDigest}
+	return result, nil
 }
 
 // VerifySignedObjectEnvelope verifies exact domain, producer, usage, key
 // identity/epoch, validity, revocation, object digest, encoding and signature.
 func VerifySignedObjectEnvelope(raw []byte, objectDigest, domain, usage, producerPrincipalDigest string, keys PublicKeyring, issuedAt time.Time) error {
-	_, _, err := admitObject(raw, envelopeFields, maxManifestBytes)
+	object, _, err := admitObject(raw, envelopeFields, maxManifestBytes)
 	if err != nil || !validDigest(objectDigest) || !validDigest(producerPrincipalDigest) || issuedAt.IsZero() {
 		return ErrBundleRejected
 	}
 	var envelope SignedObjectEnvelopeV1
-	if json.Unmarshal(raw, &envelope) != nil || envelope.ObjectDigest != objectDigest || envelope.SignatureAlgorithm != "Ed25519" || envelope.SignatureEncoding != "base64url-unpadded" || envelope.SignatureDomain != domain || !validKeyID(envelope.KeyID) || envelope.KeyEpoch > math.MaxInt64 {
+	epoch, epochOK := rawUint(object["keyEpoch"])
+	if !epochOK || epoch > math.MaxInt64 || json.Unmarshal(raw, &envelope) != nil || envelope.KeyEpoch != epoch || envelope.ObjectDigest != objectDigest || envelope.SignatureAlgorithm != "Ed25519" || envelope.SignatureEncoding != "base64url-unpadded" || envelope.SignatureDomain != domain || !validKeyID(envelope.KeyID) {
 		return ErrBundleRejected
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(envelope.Signature)
@@ -97,7 +97,10 @@ func parseManifest(raw []byte, now time.Time) (AuthorityBundleManifestV1, []byte
 		return AuthorityBundleManifestV1{}, nil, ErrBundleRejected
 	}
 	var manifest AuthorityBundleManifestV1
-	if json.Unmarshal(canonicalRaw, &manifest) != nil || manifest.SchemaVersion != ManifestSchema || !idPattern.MatchString(manifest.ProviderInstanceID) || !validProfile(manifest.AuthorityProfile) || !idPattern.MatchString(manifest.TransactionID) {
+	providerSequence, sequenceOK := rawUint(object["providerSequence"])
+	authorityGeneration, authorityOK := rawUint(object["authorityGeneration"])
+	trustRootGeneration, trustOK := rawUint(object["trustRootGeneration"])
+	if !sequenceOK || !authorityOK || !trustOK || json.Unmarshal(canonicalRaw, &manifest) != nil || manifest.ProviderSequence != providerSequence || manifest.AuthorityGeneration != authorityGeneration || manifest.TrustRootGeneration != trustRootGeneration || manifest.SchemaVersion != ManifestSchema || !idPattern.MatchString(manifest.ProviderInstanceID) || !validProfile(manifest.AuthorityProfile) || !idPattern.MatchString(manifest.TransactionID) {
 		return AuthorityBundleManifestV1{}, nil, ErrBundleRejected
 	}
 	for _, value := range []string{manifest.HostIdentityDigest, manifest.KeysetDigest, manifest.RevocationSetDigest, manifest.ConfigDigest, manifest.EvidenceDigest} {
@@ -123,7 +126,9 @@ func parseManifest(raw []byte, now time.Time) (AuthorityBundleManifestV1, []byte
 	previous := ""
 	var total uint64
 	for i, leaf := range manifest.ProfileLeaves {
-		if _, _, err := admitObject(rawLeaves[i], leafFields, maxManifestBytes); err != nil || !leafKindPattern.MatchString(leaf.LeafKind) || !validDigest(leaf.Digest) || leaf.Size < 1 || leaf.Size > maxLeafBytes || leaf.MediaType != "application/json" {
+		rawLeaf, _, leafErr := admitObject(rawLeaves[i], leafFields, maxManifestBytes)
+		size, sizeOK := rawUint(rawLeaf["size"])
+		if leafErr != nil || !sizeOK || leaf.Size != size || !leafKindPattern.MatchString(leaf.LeafKind) || !validDigest(leaf.Digest) || leaf.Size < 1 || leaf.Size > maxLeafBytes || leaf.MediaType != "application/json" {
 			return AuthorityBundleManifestV1{}, nil, ErrBundleRejected
 		}
 		identity := leaf.LeafKind + "\x00" + leaf.Digest
@@ -140,28 +145,38 @@ func parseManifest(raw []byte, now time.Time) (AuthorityBundleManifestV1, []byte
 }
 
 func verifyLeaves(manifest AuthorityBundleManifestV1, leaves []ImmutableLeaf, snapshot CurrentSnapshot) error {
-	if len(leaves) != len(manifest.ProfileLeaves) {
+	policy, ok := profilePolicy(manifest.AuthorityProfile)
+	if !ok || len(manifest.ProfileLeaves) != len(policy.requiredKinds) || len(leaves) != len(manifest.ProfileLeaves) {
 		return ErrBundleRejected
 	}
-	present := make(map[string]int, len(leaves))
+	present := make(map[string]string, len(leaves))
+	seenDigests := make(map[string]struct{}, len(leaves))
 	var total int
 	for i, leaf := range leaves {
 		descriptor := manifest.ProfileLeaves[i]
-		if leaf.LeafKind != descriptor.LeafKind || len(leaf.Content) != int(descriptor.Size) || len(leaf.Content) < 1 || len(leaf.Content) > maxLeafBytes {
+		if descriptor.LeafKind != policy.requiredKinds[i] || leaf.LeafKind != descriptor.LeafKind || len(leaf.Content) != int(descriptor.Size) || len(leaf.Content) < 1 || len(leaf.Content) > maxLeafBytes {
 			return ErrBundleRejected
 		}
 		canonicalLeaf, err := canonical.JSON(leaf.Content)
 		if err != nil || !bytes.Equal(canonicalLeaf, leaf.Content) || canonical.DigestBytes(leaf.Content) != descriptor.Digest {
 			return ErrBundleRejected
 		}
-		present[descriptor.Digest]++
+		if _, duplicate := present[descriptor.LeafKind]; duplicate {
+			return ErrBundleRejected
+		}
+		if _, duplicate := seenDigests[descriptor.Digest]; duplicate {
+			return ErrBundleRejected
+		}
+		present[descriptor.LeafKind] = descriptor.Digest
+		seenDigests[descriptor.Digest] = struct{}{}
 		total += len(leaf.Content)
 		if total > maxBundleBytes {
 			return ErrBundleRejected
 		}
 	}
-	for _, digest := range []string{snapshot.KeysetDigest, snapshot.RevocationSetDigest, snapshot.ConfigDigest, snapshot.EvidenceDigest, snapshot.FenceDigest} {
-		if present[digest] != 1 {
+	bindings := map[string]string{policy.keysetKind: snapshot.KeysetDigest, policy.revocationKind: snapshot.RevocationSetDigest, policy.configKind: snapshot.ConfigDigest, policy.evidenceKind: snapshot.EvidenceDigest, policy.fenceKind: snapshot.FenceDigest}
+	for kind, digest := range bindings {
+		if present[kind] != digest {
 			return ErrBundleRejected
 		}
 	}
@@ -180,7 +195,7 @@ func manifestMatchesSnapshot(manifest AuthorityBundleManifestV1, snapshot Curren
 	return manifest.ProviderInstanceID == snapshot.ProviderInstanceID && manifest.AuthorityProfile == snapshot.AuthorityProfile && manifest.HostIdentityDigest == snapshot.HostIdentityDigest && manifest.ProviderSequence == snapshot.ProviderSequence && manifest.AuthorityGeneration == snapshot.AuthorityGeneration && manifest.TrustRootGeneration == snapshot.TrustRootGeneration && manifest.KeysetDigest == snapshot.KeysetDigest && manifest.RevocationSetDigest == snapshot.RevocationSetDigest && manifest.ConfigDigest == snapshot.ConfigDigest && manifest.EvidenceDigest == snapshot.EvidenceDigest
 }
 
-func rejectHighWater(manifest AuthorityBundleManifestV1, current CurrentSnapshot, previous AcceptedState) bool {
+func rejectHighWater(manifest AuthorityBundleManifestV1, current CurrentSnapshot, previous HighWaterState) bool {
 	if !previous.Initialized {
 		return false
 	}
@@ -202,6 +217,23 @@ func rejectHighWater(manifest AuthorityBundleManifestV1, current CurrentSnapshot
 	return false
 }
 
+func observeCurrent(snapshot CurrentSnapshot, previous HighWaterState) (VerificationResult, error) {
+	if !validSnapshot(snapshot) {
+		return VerificationResult{}, ErrBundleRejected
+	}
+	observed := HighWaterState{Initialized: true, ProviderInstanceID: snapshot.ProviderInstanceID, AuthorityProfile: snapshot.AuthorityProfile, BundleDigest: snapshot.BundleDigest, ProviderSequence: snapshot.ProviderSequence, AuthorityGeneration: snapshot.AuthorityGeneration, TrustRootGeneration: snapshot.TrustRootGeneration, KeysetDigest: snapshot.KeysetDigest, RevocationSetDigest: snapshot.RevocationSetDigest, ConfigDigest: snapshot.ConfigDigest, EvidenceDigest: snapshot.EvidenceDigest, FenceDigest: snapshot.FenceDigest}
+	result := VerificationResult{ObservedCurrent: observed}
+	if !previous.Initialized {
+		result.MustPersistObserved = true
+		return result, nil
+	}
+	if snapshot.ProviderInstanceID != previous.ProviderInstanceID || snapshot.AuthorityProfile != previous.AuthorityProfile || snapshot.ProviderSequence < previous.ProviderSequence || snapshot.AuthorityGeneration < previous.AuthorityGeneration || snapshot.TrustRootGeneration < previous.TrustRootGeneration {
+		return VerificationResult{}, ErrBundleRejected
+	}
+	result.MustPersistObserved = snapshot.ProviderSequence > previous.ProviderSequence || snapshot.AuthorityGeneration > previous.AuthorityGeneration || snapshot.TrustRootGeneration > previous.TrustRootGeneration || snapshot.BundleDigest != previous.BundleDigest || snapshot.ConfigDigest != previous.ConfigDigest || snapshot.EvidenceDigest != previous.EvidenceDigest || snapshot.FenceDigest != previous.FenceDigest || snapshot.RevocationSetDigest != previous.RevocationSetDigest || snapshot.KeysetDigest != previous.KeysetDigest
+	return result, nil
+}
+
 func validSnapshot(snapshot CurrentSnapshot) bool {
 	if !idPattern.MatchString(snapshot.ProviderInstanceID) || !validProfile(snapshot.AuthorityProfile) {
 		return false
@@ -210,6 +242,14 @@ func validSnapshot(snapshot CurrentSnapshot) bool {
 		if !validDigest(digest) {
 			return false
 		}
+	}
+	bindingDigests := []string{snapshot.KeysetDigest, snapshot.RevocationSetDigest, snapshot.ConfigDigest, snapshot.EvidenceDigest, snapshot.FenceDigest}
+	seenBindings := make(map[string]struct{}, len(bindingDigests))
+	for _, digest := range bindingDigests {
+		if _, duplicate := seenBindings[digest]; duplicate {
+			return false
+		}
+		seenBindings[digest] = struct{}{}
 	}
 	copyRevoked := append([]string(nil), snapshot.RevokedObjectDigests...)
 	if !sort.StringsAreSorted(copyRevoked) {
@@ -267,6 +307,22 @@ func rawString(raw json.RawMessage) string {
 	}
 	return value
 }
+func rawUint(raw json.RawMessage) (uint64, bool) {
+	if len(raw) == 0 || (len(raw) > 1 && raw[0] == '0') || raw[0] < '0' || raw[0] > '9' {
+		return 0, false
+	}
+	for _, digit := range raw[1:] {
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+	}
+	var value uint64
+	if json.Unmarshal(raw, &value) != nil {
+		return 0, false
+	}
+	return value, true
+}
+
 func validDigest(value string) bool { return digestPattern.MatchString(value) }
 func validProfile(value string) bool {
 	return value == "qoder-cli-adr0034-v1" || value == "codex-cli-adr0037-v1"

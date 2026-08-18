@@ -130,9 +130,9 @@ type CurrentSnapshot struct {
 	RevokedObjectDigests   []string
 }
 
-// AcceptedState is the consumer's durable high-water. Callers persist a newly
-// returned state only after their own durable acceptance transaction.
-type AcceptedState struct {
+// HighWaterState is the consumer's durable observed-current high-water. It can
+// represent an ineligible poison value that prevents fallback to an older bundle.
+type HighWaterState struct {
 	Initialized         bool
 	ProviderInstanceID  string
 	AuthorityProfile    string
@@ -150,5 +150,40 @@ type AcceptedState struct {
 type VerifiedBundle struct {
 	Manifest     AuthorityBundleManifestV1
 	BundleDigest string
-	Accepted     AcceptedState
+}
+
+// VerificationResult separates observation of the externally anchored current
+// identity from eligibility. When MustPersistObserved is true, the caller must
+// durably store ObservedCurrent before returning the verification error or
+// using any older bundle. Eligible is true only after every bundle gate passes.
+type VerificationResult struct {
+	ObservedCurrent     HighWaterState
+	MustPersistObserved bool
+	Eligible            bool
+	Bundle              VerifiedBundle
+}
+
+type profileLeafPolicy struct {
+	requiredKinds  []string
+	keysetKind     string
+	revocationKind string
+	configKind     string
+	evidenceKind   string
+	fenceKind      string
+}
+
+func profilePolicy(profile string) (profileLeafPolicy, bool) {
+	prefix := ""
+	switch profile {
+	case "qoder-cli-adr0034-v1":
+		prefix = "qoder"
+	case "codex-cli-adr0037-v1":
+		prefix = "codex"
+	default:
+		return profileLeafPolicy{}, false
+	}
+	return profileLeafPolicy{
+		requiredKinds: []string{prefix + "-config", prefix + "-evidence", prefix + "-fence", prefix + "-host-attestation", prefix + "-keyset", prefix + "-policy", prefix + "-receipt-aggregate", prefix + "-revocation", prefix + "-trust-ledger"},
+		keysetKind:    prefix + "-keyset", revocationKind: prefix + "-revocation", configKind: prefix + "-config", evidenceKind: prefix + "-evidence", fenceKind: prefix + "-fence",
+	}, true
 }
