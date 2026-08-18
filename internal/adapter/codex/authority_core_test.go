@@ -122,6 +122,15 @@ func testBootstrap(t *testing.T) CodexConsumerBootstrapV1 {
 	}
 }
 
+func testBootstrapRoot(t *testing.T, label, keyID string) CodexBootstrapRootIdentityV1 {
+	t.Helper()
+	publicKey, _ := testRoot(t, label)
+	return CodexBootstrapRootIdentityV1{
+		AuthorityNamespace: "marshal.codex.production", RootKeyID: keyID, RootAlgorithm: "Ed25519",
+		RootPublicKey: base64.StdEncoding.EncodeToString(publicKey), RootPublicKeyDigest: canonicalDigestBytes(publicKey), TrustRootGeneration: 1,
+	}
+}
+
 func commitTestBootstrap(t *testing.T, store *CodexConsumerAuthorityStore, state CodexConsumerAuthorityStateV1) CodexConsumerAuthorityStateV1 {
 	t.Helper()
 	bootstrap := testBootstrap(t)
@@ -149,7 +158,7 @@ func commitTestBootstrap(t *testing.T, store *CodexConsumerAuthorityStore, state
 
 func TestConsumerAuthorityStateAtomicCommitRecoveryAndReplay(t *testing.T) {
 	stateRoot, authorityRoot := realTempDir(t), realTempDir(t)
-	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot)
+	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot, testBootstrapRoot(t, "root", "root"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -227,7 +236,7 @@ func TestConsumerAuthorityStateIgnoresTempAndRejectsUnsafeState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stateRoot, "state.orphan.tmp"), []byte("incomplete"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot)
+	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot, testBootstrapRoot(t, "root", "root"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,13 +259,13 @@ func TestConsumerAuthorityStoreRejectsOverlappingRootsAndBusyLock(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, pair := range [][2]string{{root, root}, {root, child}, {child, root}} {
-		if store, err := OpenCodexConsumerAuthorityStore(pair[0], pair[1]); err == nil {
+		if store, err := OpenCodexConsumerAuthorityStore(pair[0], pair[1], testBootstrapRoot(t, "root", "root")); err == nil {
 			store.Close()
 			t.Fatalf("overlap accepted: %v", pair)
 		}
 	}
 	stateRoot, authorityRoot := realTempDir(t), realTempDir(t)
-	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot)
+	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot, testBootstrapRoot(t, "root", "root"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +316,7 @@ func TestRootRotationRequiresOldAndNewSignatures(t *testing.T) {
 		t.Fatal("self-signed new root accepted")
 	}
 	stateRoot, authorityRoot := realTempDir(t), realTempDir(t)
-	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot)
+	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot, testBootstrapRoot(t, "old", "root-old"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,6 +328,18 @@ func TestRootRotationRequiresOldAndNewSignatures(t *testing.T) {
 		ConfigDigest: testDigest("config-1"), RevocationSetDigest: testDigest("revoke-1"), CurrentEvidenceDigest: testDigest("evidence-1"),
 	}
 	initialState, err := NewConsumerAuthorityState(current, initialFence, now.Add(-time.Minute))
+	attackerPublic, attackerPrivate := testRoot(t, "attacker-root")
+	attackerKeyset := initialKeyset
+	attackerEnvelope := buildTestSignedEnvelope(t, attackerKeyset, authorityKeysetSchema, map[string]ed25519.PrivateKey{"root-attacker": attackerPrivate})
+	attackerState := initialState
+	attackerState.ActiveRootPin.RootKeyID = "root-attacker"
+	attackerState.ActiveRootPin.RootPublicKey = base64.StdEncoding.EncodeToString(attackerPublic)
+	attackerState.ActiveRootPin.RootPublicKeyDigest = canonicalDigestBytes(attackerPublic)
+	attackerState.ActiveRootPin.KeysetDigest = attackerEnvelope.PayloadDigest
+	attackerState.Fence.KeysetDigest = attackerEnvelope.PayloadDigest
+	if err := store.CommitBootstrap(bootstrap, testHostIdentity(), attackerState, attackerEnvelope, now); err == nil {
+		t.Fatal("self-consistent attacker root and signature replaced deployment root")
+	}
 	forgedInitial := buildTestSignedEnvelope(t, initialKeyset, authorityKeysetSchema, map[string]ed25519.PrivateKey{"root-old": newPrivate})
 	if err := store.CommitBootstrap(bootstrap, testHostIdentity(), initialState, forgedInitial, now); err == nil {
 		t.Fatal("forged initial root proof accepted")
@@ -755,7 +776,7 @@ func TestSignedAuthorityBundleDomainsUsageFreshnessAndReplay(t *testing.T) {
 
 func TestStateLockFileIsPrivateSingleLink(t *testing.T) {
 	stateRoot, authorityRoot := realTempDir(t), realTempDir(t)
-	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot)
+	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot, testBootstrapRoot(t, "root", "root"))
 	if err != nil {
 		t.Fatal(err)
 	}

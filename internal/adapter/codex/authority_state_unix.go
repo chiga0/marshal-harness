@@ -32,14 +32,47 @@ type directoryIdentity struct {
 	inode  uint64
 }
 
+// CodexBootstrapRootIdentityV1 is deployment-owned trust input. It is passed
+// across the store construction boundary rather than derived from authority
+// payloads that an attacker could replace together.
+type CodexBootstrapRootIdentityV1 struct {
+	AuthorityNamespace  string
+	RootKeyID           string
+	RootAlgorithm       string
+	RootPublicKey       string
+	RootPublicKeyDigest string
+	TrustRootGeneration uint64
+}
+
+func (root CodexBootstrapRootIdentityV1) validate() error {
+	publicKey, err := decodeEd25519Public(root.RootPublicKey)
+	if !validID(root.AuthorityNamespace) || !validID(root.RootKeyID) || root.RootAlgorithm != "Ed25519" || err != nil || canonical.DigestBytes(publicKey) != root.RootPublicKeyDigest || !validGeneration(root.TrustRootGeneration) {
+		return errors.New("codex deployment bootstrap root identity is invalid")
+	}
+	return nil
+}
+
+func (root CodexBootstrapRootIdentityV1) matches(pin CodexActiveRootPinV1) bool {
+	return root.AuthorityNamespace == pin.AuthorityNamespace &&
+		root.RootKeyID == pin.RootKeyID &&
+		root.RootAlgorithm == pin.RootAlgorithm &&
+		root.RootPublicKey == pin.RootPublicKey &&
+		root.RootPublicKeyDigest == pin.RootPublicKeyDigest &&
+		root.TrustRootGeneration == pin.TrustRootGeneration
+}
+
 type CodexConsumerAuthorityStore struct {
 	stateRoot     *os.File
 	authorityRoot *os.File
+	bootstrapRoot CodexBootstrapRootIdentityV1
 }
 
 // OpenCodexConsumerAuthorityStore pins both roots through nofollow dirfds and
 // rejects aliases and either direction of nesting before any state is read.
-func OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot string) (*CodexConsumerAuthorityStore, error) {
+func OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot string, bootstrapRoot CodexBootstrapRootIdentityV1) (*CodexConsumerAuthorityStore, error) {
+	if err := bootstrapRoot.validate(); err != nil {
+		return nil, newAuthorityFailure("constructor", "codex_trust_root_invalid", "Codex deployment bootstrap root identity is invalid", AuthorityFailureDetails{}, err, authorityNow())
+	}
 	state, err := openPrivateDirectory(stateRoot)
 	if err != nil {
 		return nil, newAuthorityFailure("constructor", "codex_path_permission_invalid", "Codex consumer state root is not a private real directory", AuthorityFailureDetails{}, err, authorityNow())
@@ -55,7 +88,7 @@ func OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot string) (*CodexCon
 		authority.Close()
 		return nil, newAuthorityFailure("constructor", "codex_path_topology_conflict", "Codex authority and consumer state roots overlap", AuthorityFailureDetails{}, err, authorityNow())
 	}
-	return &CodexConsumerAuthorityStore{stateRoot: state, authorityRoot: authority}, nil
+	return &CodexConsumerAuthorityStore{stateRoot: state, authorityRoot: authority, bootstrapRoot: bootstrapRoot}, nil
 }
 
 func (store *CodexConsumerAuthorityStore) Close() error {
@@ -141,6 +174,9 @@ func (store *CodexConsumerAuthorityStore) CommitBootstrap(bootstrap CodexConsume
 	}
 	if err != nil || bootstrapDigest != next.Fence.BootstrapDigest || bootstrap.AuthorityNamespace != next.Fence.AuthorityNamespace || bootstrap.BootstrapID != next.Fence.BootstrapID || bootstrap.HostIdentityDigest != next.Fence.HostIdentityDigest {
 		return newAuthorityFailure("constructor", "codex_trust_root_invalid", "Codex consumer bootstrap binding is invalid", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	if !store.bootstrapRoot.matches(next.ActiveRootPin) {
+		return newAuthorityFailure("constructor", "codex_trust_root_invalid", "Codex initial root differs from the deployment bootstrap root", AuthorityFailureDetails{}, nil, authorityNow())
 	}
 	if err := VerifyInitialKeyset(next.ActiveRootPin, initialKeyset, now); err != nil {
 		return newAuthorityFailure("constructor", "codex_trust_root_invalid", "Codex initial root proof is invalid", AuthorityFailureDetails{}, err, authorityNow())
