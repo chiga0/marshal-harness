@@ -621,6 +621,9 @@ func DecodeControlResponse(raw []byte, request APAPRequestEnvelopeV1, expectedOb
 	if response.SchemaVersion != ResponseSchema || response.ProtocolFamily != ControlFamily || response.ProtocolVersion != ProtocolVersion || response.Audience != ControlAudience || response.RequestID != request.RequestID || response.CommandID != request.CommandID || response.ProviderInstanceID != request.ProviderInstanceID || response.AuthorityProfile != request.AuthorityProfile || response.Operation != request.Operation || response.ObservedProviderSequence != expectedObservedSequence {
 		return response, protocolError(CodeIdentityMismatch, "response-identity-invalid")
 	}
+	if request.ExpectedProviderSequence != nil && response.ObservedProviderSequence != *request.ExpectedProviderSequence {
+		return response, protocolError(CodeIdentityMismatch, "response-sequence-invalid")
+	}
 	if err := response.SafeCode.Validate(); err != nil {
 		return response, protocolError(CodeInternalFailClosed, "response-code-invalid")
 	}

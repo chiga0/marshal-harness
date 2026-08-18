@@ -305,6 +305,12 @@ func TestControlResponseClosedTypedAndSequenceBound(t *testing.T) {
 			}
 		})
 	}
+	wrongSequence := response
+	wrongSequence.ObservedProviderSequence = 8
+	encodedWrongSequence, _ := SealControlResponse(wrongSequence)
+	if _, err := DecodeControlResponse(encodedWrongSequence, decoded, 8); err == nil {
+		t.Fatal("caller-selected sequence bypassed request CAS binding")
+	}
 	failure := response
 	failure.SafeCode = CodeProviderBusy
 	failure.SafeMessage = SafeMessageFor(failure.SafeCode)
