@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/authorityprovider"
@@ -185,6 +186,18 @@ func loadCodexAPAPCurrent(ctx context.Context, authority CodexAPAPAuthority, now
 		return codexAPAPCurrent{}, errors.New("codex APAP fence digest is invalid")
 	}
 	return codexAPAPCurrent{material: material, bundle: bundle, fence: fence}, nil
+}
+
+func equalCodexAPAPCurrent(left, right codexAPAPCurrent) bool {
+	return left.fence == right.fence &&
+		reflect.DeepEqual(left.material.State, right.material.State) &&
+		reflect.DeepEqual(left.material.KeysetEnvelope, right.material.KeysetEnvelope) &&
+		reflect.DeepEqual(left.material.ConfigEnvelope, right.material.ConfigEnvelope) &&
+		reflect.DeepEqual(left.material.EvidenceEnvelope, right.material.EvidenceEnvelope) &&
+		reflect.DeepEqual(left.material.ObservationEnvelope, right.material.ObservationEnvelope) &&
+		reflect.DeepEqual(left.material.ReceiptEnvelopes, right.material.ReceiptEnvelopes) &&
+		reflect.DeepEqual(left.material.ExpectedHostNonce, right.material.ExpectedHostNonce) &&
+		reflect.DeepEqual(left.bundle, right.bundle)
 }
 
 func codexAPAPIdentityDigest(identity ExecutableIdentityV1) string {

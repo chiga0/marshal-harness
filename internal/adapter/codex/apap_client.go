@@ -107,13 +107,17 @@ func (bridge *CodexAPAPProfileBridge) ValidateDescribe(request authorityprovider
 	return payload, nil
 }
 
-func (bridge *CodexAPAPProfileBridge) ValidateBeginProbe(request authorityprovider.APAPRequestEnvelopeV1, signed CodexAPAPSignedResponse) (CodexAPAPProbeSession, error) {
+func (bridge *CodexAPAPProfileBridge) ValidateBeginProbe(ctx context.Context, request authorityprovider.APAPRequestEnvelopeV1, signed CodexAPAPSignedResponse) (CodexAPAPProbeSession, error) {
 	if bridge == nil || request.Operation != authorityprovider.OperationBeginProbe || request.ExpectedProviderSequence == nil || *request.ExpectedProviderSequence != bridge.authority.ProviderSequence {
 		return CodexAPAPProbeSession{}, errors.New("codex APAP BeginProbe request is invalid")
 	}
 	response, current, err := bridge.validateResponse(request, signed)
 	if err != nil {
 		return CodexAPAPProbeSession{}, err
+	}
+	fresh, err := loadCodexAPAPCurrent(ctx, bridge.authority, bridge.now().UTC(), NewHostAttestationNonceFence())
+	if err != nil || !equalCodexAPAPCurrent(current, fresh) {
+		return CodexAPAPProbeSession{}, errors.New("codex APAP current authority changed before response admission")
 	}
 	var begin authorityprovider.BeginProbePayload
 	var payload authorityprovider.BeginProbeSuccessPayload
@@ -166,7 +170,7 @@ func (bridge *CodexAPAPProfileBridge) validateResponse(request authorityprovider
 	return response, current, nil
 }
 
-func (bridge *CodexAPAPProfileBridge) BindLaunchReceipt(session CodexAPAPProbeSession, request CodexLaunchRequestV1, document []byte, signature authorityprovider.SignedObjectEnvelopeV1) (CodexAPAPLaunchBinding, error) {
+func (bridge *CodexAPAPProfileBridge) BindLaunchReceipt(ctx context.Context, session CodexAPAPProbeSession, request CodexLaunchRequestV1, document []byte, signature authorityprovider.SignedObjectEnvelopeV1) (CodexAPAPLaunchBinding, error) {
 	if bridge == nil || session.ProviderInstanceID != bridge.authority.ProviderInstanceID || session.ProviderSequence != bridge.authority.ProviderSequence || session.PeerPrincipalDigest != bridge.authority.Peer.PrincipalDigest || session.AuthorityProfile != authorityprovider.ProfileCodex || session.CandidateExecutable != bridge.authority.CandidateExecutable || session.CandidateExecutable.Version != codexAPAPVersion || !session.ExpiresAt.After(bridge.now().UTC()) {
 		return CodexAPAPLaunchBinding{}, errors.New("codex APAP launch session identity is invalid")
 	}
@@ -176,6 +180,16 @@ func (bridge *CodexAPAPProfileBridge) BindLaunchReceipt(session CodexAPAPProbeSe
 	bridge.mu.Unlock()
 	if err != nil || registered != sessionDigest {
 		return CodexAPAPLaunchBinding{}, errors.New("codex APAP launch session is not signed-response derived")
+	}
+	bridge.mu.Lock()
+	original, ok := bridge.requests[session.RequestEnvelopeDigest]
+	bridge.mu.Unlock()
+	if !ok {
+		return CodexAPAPLaunchBinding{}, errors.New("codex APAP launch request snapshot is unavailable")
+	}
+	fresh, err := loadCodexAPAPCurrent(ctx, bridge.authority, bridge.now().UTC(), NewHostAttestationNonceFence())
+	if err != nil || !equalCodexAPAPCurrent(original, fresh) || fresh.material.ConfigEnvelope.PayloadDigest != session.ConfigDigest || fresh.material.EvidenceEnvelope.PayloadDigest != session.EvidenceDigest || fresh.fence != session.FenceDigest || fresh.bundle.Config.AuthorityGeneration != session.AuthorityGeneration || fresh.bundle.Config.TrustRootGeneration != session.TrustRootGeneration {
+		return CodexAPAPLaunchBinding{}, errors.New("codex APAP current authority changed before launch binding")
 	}
 	requestDigest, err := codexLaunchRequestDigest(request)
 	if err != nil || request.AuthorityGeneration != session.AuthorityGeneration || request.TrustRootGeneration != session.TrustRootGeneration || request.ConfigDigest != session.ConfigDigest || request.EvidenceDigest != session.EvidenceDigest || request.FenceDigest != session.FenceDigest {

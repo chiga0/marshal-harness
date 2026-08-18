@@ -83,7 +83,7 @@ func TestCodexAPAPBeginProbeMapsAtomicAuthorityAndRejectsReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := codexAPAPResponse(t, request, fixture.authority.ProviderSequence, authorityprovider.BeginProbeSuccessPayload{ProbeSessionID: "probe-session", TargetIsolationIdentityDigest: testDigest("target"), CredentialIngressEndpointIdentityDigest: testDigest("ingress"), ExpiresAt: input.ExpiresAt})
-	session, err := bridge.ValidateBeginProbe(request, signedCodexResponse(t, fixture, response))
+	session, err := bridge.ValidateBeginProbe(context.Background(), request, signedCodexResponse(t, fixture, response))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,27 +95,60 @@ func TestCodexAPAPBeginProbeMapsAtomicAuthorityAndRejectsReplay(t *testing.T) {
 	conflict.Nonce = "nonce-0002"
 	conflictRaw, _ := authorityprovider.SealControlRequest(conflict)
 	_ = json.Unmarshal(conflictRaw, &conflict)
-	if _, err := bridge.ValidateBeginProbe(conflict, signedCodexResponse(t, fixture, response)); err == nil {
+	if _, err := bridge.ValidateBeginProbe(context.Background(), conflict, signedCodexResponse(t, fixture, response)); err == nil {
 		t.Fatal("same-command different-request replay accepted")
 	}
 	wrongPeer := request
 	wrongPeer.CallerPrincipalDigest = testDigest("wrong-peer")
 	wrongPeerRaw, _ := authorityprovider.SealControlRequest(wrongPeer)
 	_ = json.Unmarshal(wrongPeerRaw, &wrongPeer)
-	if _, err := bridge.ValidateBeginProbe(wrongPeer, signedCodexResponse(t, fixture, response)); err == nil {
+	if _, err := bridge.ValidateBeginProbe(context.Background(), wrongPeer, signedCodexResponse(t, fixture, response)); err == nil {
 		t.Fatal("foreign peer accepted")
 	}
 	wrongProfile := request
 	wrongProfile.AuthorityProfile = authorityprovider.ProfileQoder
 	wrongProfileRaw, _ := authorityprovider.SealControlRequest(wrongProfile)
 	_ = json.Unmarshal(wrongProfileRaw, &wrongProfile)
-	if _, err := bridge.ValidateBeginProbe(wrongProfile, signedCodexResponse(t, fixture, response)); err == nil {
+	if _, err := bridge.ValidateBeginProbe(context.Background(), wrongProfile, signedCodexResponse(t, fixture, response)); err == nil {
 		t.Fatal("wrong Qoder profile request accepted")
 	}
 	bridge.now = func() time.Time { return input.ExpiresAt.Add(time.Second) }
-	if _, err := bridge.ValidateBeginProbe(request, signedCodexResponse(t, fixture, response)); err == nil {
+	if _, err := bridge.ValidateBeginProbe(context.Background(), request, signedCodexResponse(t, fixture, response)); err == nil {
 		t.Fatal("expired probe response accepted")
 	}
+}
+
+func TestCodexAPAPFreshRecheckRejectsInterstageAuthorityMutation(t *testing.T) {
+	t.Run("revoked before response", func(t *testing.T) {
+		fixture := newCodexAPAPFixture(t)
+		bridge := fixture.bridge(t)
+		input := CodexAPAPBeginInput{RequestID: "revoked-response", CommandID: "revoked-response-command", Nonce: "nonce-1001", IssuedAt: fixture.now.Add(-time.Second), ExpiresAt: fixture.now.Add(time.Minute)}
+		request, _, _, err := bridge.BeginProbeRequest(context.Background(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := codexAPAPResponse(t, request, fixture.authority.ProviderSequence, authorityprovider.BeginProbeSuccessPayload{ProbeSessionID: "revoked-session", TargetIsolationIdentityDigest: testDigest("target"), CredentialIngressEndpointIdentityDigest: testDigest("ingress"), ExpiresAt: input.ExpiresAt})
+		fixture.authority.Source.(*codexAPAPTestSource).material = revokedCodexAPAPMaterial(t, fixture)
+		if _, err := bridge.ValidateBeginProbe(context.Background(), request, signedCodexResponse(t, fixture, response)); err == nil {
+			t.Fatal("authority revoked between request and response was accepted")
+		}
+	})
+
+	t.Run("generation advance before response", func(t *testing.T) {
+		fixture := newCodexAPAPFixture(t)
+		bridge := fixture.bridge(t)
+		input := CodexAPAPBeginInput{RequestID: "generation-response", CommandID: "generation-response-command", Nonce: "nonce-1002", IssuedAt: fixture.now.Add(-time.Second), ExpiresAt: fixture.now.Add(time.Minute)}
+		request, _, _, err := bridge.BeginProbeRequest(context.Background(), input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := codexAPAPResponse(t, request, fixture.authority.ProviderSequence, authorityprovider.BeginProbeSuccessPayload{ProbeSessionID: "generation-session", TargetIsolationIdentityDigest: testDigest("target"), CredentialIngressEndpointIdentityDigest: testDigest("ingress"), ExpiresAt: input.ExpiresAt})
+		source := fixture.authority.Source.(*codexAPAPTestSource)
+		source.material.State.Fence.AuthorityGeneration++
+		if _, err := bridge.ValidateBeginProbe(context.Background(), request, signedCodexResponse(t, fixture, response)); err == nil {
+			t.Fatal("authority generation advance between request and response was accepted")
+		}
+	})
 }
 
 func TestCodexAPAPUnregisteredOperationsRemainFailClosed(t *testing.T) {
@@ -142,7 +175,7 @@ func codexAPAPSession(t *testing.T, fixture codexAPAPFixture, bridge *CodexAPAPP
 		t.Fatal(err)
 	}
 	response := codexAPAPResponse(t, request, fixture.authority.ProviderSequence, authorityprovider.BeginProbeSuccessPayload{ProbeSessionID: "session-1", TargetIsolationIdentityDigest: testDigest("target"), CredentialIngressEndpointIdentityDigest: testDigest("ingress"), ExpiresAt: input.ExpiresAt})
-	session, err := bridge.ValidateBeginProbe(request, signedCodexResponse(t, fixture, response))
+	session, err := bridge.ValidateBeginProbe(context.Background(), request, signedCodexResponse(t, fixture, response))
 	if err != nil {
 		t.Fatal(err)
 	}

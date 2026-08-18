@@ -150,11 +150,11 @@ func TestCodexAPAPLaunchReceiptExactBindingAndReplay(t *testing.T) {
 	receipt := codexLaunchReceipt(t, fixture, session, request)
 	document := codexCanonical(t, receipt)
 	signature := signCodexAPAP(t, document, codexLaunchDomain, "launch-key", fixture.launchPrivate)
-	binding, err := bridge.BindLaunchReceipt(session, request, document, signature)
+	binding, err := bridge.BindLaunchReceipt(context.Background(), session, request, document, signature)
 	if err != nil || binding.LaunchReceiptDigest != signature.ObjectDigest {
 		t.Fatalf("valid launch receipt rejected: %+v, %v", binding, err)
 	}
-	if _, err := bridge.BindLaunchReceipt(session, request, document, signature); err != nil {
+	if _, err := bridge.BindLaunchReceipt(context.Background(), session, request, document, signature); err != nil {
 		t.Fatalf("identical replay rejected: %v", err)
 	}
 
@@ -174,13 +174,13 @@ func TestCodexAPAPLaunchReceiptExactBindingAndReplay(t *testing.T) {
 			mutate(&changed)
 			raw := codexCanonical(t, changed)
 			signed := signCodexAPAP(t, raw, codexLaunchDomain, "launch-key", fixture.launchPrivate)
-			if _, err := bridge.BindLaunchReceipt(session, request, raw, signed); err == nil {
+			if _, err := bridge.BindLaunchReceipt(context.Background(), session, request, raw, signed); err == nil {
 				t.Fatal("re-signed launch substitution accepted")
 			}
 		})
 	}
 	_, foreignPrivate, _ := ed25519.GenerateKey(rand.Reader)
-	if _, err := bridge.BindLaunchReceipt(session, request, document, signCodexAPAP(t, document, codexLaunchDomain, "launch-key", foreignPrivate)); err == nil {
+	if _, err := bridge.BindLaunchReceipt(context.Background(), session, request, document, signCodexAPAP(t, document, codexLaunchDomain, "launch-key", foreignPrivate)); err == nil {
 		t.Fatal("foreign launch signer accepted")
 	}
 
@@ -188,24 +188,38 @@ func TestCodexAPAPLaunchReceiptExactBindingAndReplay(t *testing.T) {
 	request2.LaunchNonce = testNonce(22)
 	receipt2 := codexLaunchReceipt(t, fixture, session, request2)
 	document2 := codexCanonical(t, receipt2)
-	if _, err := bridge.BindLaunchReceipt(session, request2, document2, signCodexAPAP(t, document2, codexLaunchDomain, "launch-key", fixture.launchPrivate)); err == nil {
+	if _, err := bridge.BindLaunchReceipt(context.Background(), session, request2, document2, signCodexAPAP(t, document2, codexLaunchDomain, "launch-key", fixture.launchPrivate)); err == nil {
 		t.Fatal("same Attempt different nonce replay accepted")
 	}
 
 	tampered := session
 	tampered.AuthorityProfile = authorityprovider.ProfileQoder
-	if _, err := bridge.BindLaunchReceipt(tampered, request, document, signature); err == nil {
+	if _, err := bridge.BindLaunchReceipt(context.Background(), tampered, request, document, signature); err == nil {
 		t.Fatal("wrong Qoder profile accepted")
 	}
 	tampered = session
 	tampered.ProviderSequence++
-	if _, err := bridge.BindLaunchReceipt(tampered, request, document, signature); err == nil {
+	if _, err := bridge.BindLaunchReceipt(context.Background(), tampered, request, document, signature); err == nil {
 		t.Fatal("foreign provider sequence accepted")
 	}
 
 	bridge.now = func() time.Time { return session.ExpiresAt.Add(time.Second) }
-	if _, err := bridge.BindLaunchReceipt(session, request, document, signature); err == nil {
+	if _, err := bridge.BindLaunchReceipt(context.Background(), session, request, document, signature); err == nil {
 		t.Fatal("expired APAP session accepted")
+	}
+}
+
+func TestCodexAPAPFreshRecheckRejectsRevocationBeforeLaunchBinding(t *testing.T) {
+	fixture := newCodexAPAPFixture(t)
+	bridge := fixture.bridge(t)
+	session := codexAPAPSession(t, fixture, bridge)
+	request := CodexLaunchRequestV1{TaskID: "task-fresh", RunID: "run-fresh", AttemptID: "attempt-fresh", LaunchNonce: testNonce(23), AuthorityGeneration: session.AuthorityGeneration, TrustRootGeneration: session.TrustRootGeneration, ArgvDigest: testDigest("argv"), ConfigDigest: session.ConfigDigest, ControlRootIdentityDigest: testDigest("control-root"), EnvironmentDigest: testDigest("environment"), EvidenceDigest: session.EvidenceDigest, FenceDigest: session.FenceDigest, WorktreeIdentityDigest: testDigest("worktree")}
+	receipt := codexLaunchReceipt(t, fixture, session, request)
+	document := codexCanonical(t, receipt)
+	signature := signCodexAPAP(t, document, codexLaunchDomain, "launch-key", fixture.launchPrivate)
+	fixture.authority.Source.(*codexAPAPTestSource).material = revokedCodexAPAPMaterial(t, fixture)
+	if _, err := bridge.BindLaunchReceipt(context.Background(), session, request, document, signature); err == nil {
+		t.Fatal("authority revoked between response and launch binding was accepted")
 	}
 }
 
@@ -218,6 +232,22 @@ func codexLaunchReceipt(t *testing.T, fixture codexAPAPFixture, session CodexAPA
 	contract, _ := compiledCodexContractBinding()
 	requested := fixture.now.Add(-2 * time.Second)
 	return CodexWorkerLaunchReceiptV1{SchemaVersion: codexLaunchSchema, AuthorityNamespace: session.AuthorityNamespace, AuthorityGeneration: session.AuthorityGeneration, TrustRootGeneration: session.TrustRootGeneration, TaskID: request.TaskID, RunID: request.RunID, AttemptID: request.AttemptID, LaunchNonce: request.LaunchNonce, RequestDigest: requestDigest, LauncherBuildDigest: contract.LauncherBuildDigest, LaunchKeyID: "launch-key", ConfigDigest: session.ConfigDigest, EvidenceDigest: session.EvidenceDigest, FenceDigest: session.FenceDigest, HostIdentityDigest: session.HostIdentityDigest, SourceExecutableIdentityDigest: session.CandidateExecutableIdentityDigest, SealedMemfd: SealedMemfdIdentityV1{DeviceMajor: 1, DeviceMinor: 2, Inode: 3, MountIDUnique: 4, Size: session.CandidateExecutable.Size, SHA256: session.CandidateExecutable.SHA256, Seals: codexRequiredMemfdSeals}, Child: ChildExecIdentityV1{PID: 123, StartTimeTicks: 456, PidfdInode: 789, ProcExeDeviceMajor: 1, ProcExeDeviceMinor: 2, ProcExeInode: 3, ProcExeMountIDUnique: 4, ProcExeSize: session.CandidateExecutable.Size, ProcExeSHA256: session.CandidateExecutable.SHA256}, ArgvDigest: request.ArgvDigest, EnvironmentDigest: request.EnvironmentDigest, PhaseDigests: []string{testDigest("t0"), testDigest("t1"), testDigest("t2"), testDigest("t3")}, RequestedAt: formatAuthorityTime(requested), ExecObservedAt: formatAuthorityTime(requested.Add(time.Second)), IssuedAt: formatAuthorityTime(fixture.now)}
+}
+
+func revokedCodexAPAPMaterial(t *testing.T, fixture codexAPAPFixture) authorityProbeMaterial {
+	t.Helper()
+	var config CodexAuthorityConfigV1
+	if err := json.Unmarshal(fixture.bundle.config.Payload, &config); err != nil {
+		t.Fatal(err)
+	}
+	config.RevokedEvidenceDigests = []string{fixture.bundle.evidence.PayloadDigest}
+	config.RevocationSetDigest, _ = RevocationSetDigest(config)
+	configEnvelope := buildTestSignedEnvelope(t, config, authorityConfigSchema, map[string]ed25519.PrivateKey{"config-key": fixture.bundle.configPrivate})
+	material := authorityMaterialFromFixture(t, fixture.bundle)
+	material.ConfigEnvelope = configEnvelope
+	material.State.Fence.ConfigDigest = configEnvelope.PayloadDigest
+	material.State.Fence.RevocationSetDigest = config.RevocationSetDigest
+	return material
 }
 
 func TestCodexAPAPSourceFailureIsFailClosed(t *testing.T) {
