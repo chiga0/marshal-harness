@@ -352,23 +352,46 @@ func cloneCandidateWithHooks(ctx context.Context, source, destination string, ho
 	if err != nil {
 		return errors.New("cannot resolve command source head")
 	}
-	clone := exec.CommandContext(ctx, "git", "-c", "protocol.file.allow=always", "clone", "--no-local", "--no-checkout", "--no-tags", canonicalSource, destination)
-	clone.Env = isolatedGitEnvironment()
-	if output, cloneErr := clone.CombinedOutput(); cloneErr != nil {
-		_ = output // Never surface provider/local-path output through stable evidence.
-		return errors.New("cannot create standalone command clone")
+	// A full --no-local clone copies the entire repository history into every
+	// verifier sandbox. Large/race commands then spend most of their bounded
+	// cleanup budget deleting .git objects, even though the verifier only needs
+	// the exact frozen HEAD and its trees. Initialize an empty repository and
+	// fetch only the source HEAD; candidate files are still copied and
+	// re-observed below, so shallow history does not weaken evidence binding.
+	if err := initializeShallowCommandClone(ctx, canonicalSource, destination, strings.TrimSpace(string(head))); err != nil {
+		return err
 	}
-	if err := commandRun(ctx, destination, "checkout", "--detach", "--quiet", strings.TrimSpace(string(head))); err != nil {
+	if err := commandRun(ctx, destination, "checkout", "--detach", "--quiet", "FETCH_HEAD"); err != nil {
 		return errors.New("cannot checkout command source head")
 	}
-	if err := commandRun(ctx, destination, "remote", "remove", "origin"); err != nil {
-		return errors.New("cannot detach command clone remote")
+	checkedOut, err := commandOutput(ctx, destination, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || strings.TrimSpace(string(checkedOut)) != strings.TrimSpace(string(head)) {
+		return errors.New("command clone head does not match the frozen source")
 	}
 	if err := clearCommandWorktree(destination); err != nil {
 		return err
 	}
 	if err := copyCandidateFilesWithHooks(ctx, canonicalSource, destination, hooks); err != nil {
 		return err
+	}
+	return nil
+}
+
+func initializeShallowCommandClone(ctx context.Context, source, destination, head string) error {
+	if head == "" {
+		return errors.New("frozen command source head is empty")
+	}
+	init := exec.CommandContext(ctx, "git", "init", "--quiet", destination)
+	init.Env = isolatedGitEnvironment()
+	if output, err := init.CombinedOutput(); err != nil {
+		_ = output
+		return errors.New("cannot initialize standalone command clone")
+	}
+	fetch := exec.CommandContext(ctx, "git", "-c", "protocol.file.allow=always", "-C", destination, "fetch", "--quiet", "--no-tags", "--depth=1", source, "HEAD")
+	fetch.Env = isolatedGitEnvironment()
+	if output, err := fetch.CombinedOutput(); err != nil {
+		_ = output
+		return errors.New("cannot fetch frozen command source head")
 	}
 	return nil
 }
