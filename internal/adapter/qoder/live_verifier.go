@@ -17,10 +17,13 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"golang.org/x/sys/unix"
+	"golang.org/x/text/unicode/norm"
 )
 
 const (
@@ -38,6 +41,7 @@ const (
 	candidateBoundScratchToken       = "$BOUND_SCRATCH_DIR"
 	candidateBoundCredentialToken    = "$BOUND_CREDENTIAL_DIR"
 	candidateReceiptMaxExecution     = 30 * time.Minute
+	candidateMaxJSONInteger          = uint64(1<<63 - 1)
 )
 
 type CandidateObjectIdentity struct {
@@ -305,7 +309,7 @@ func NewCandidateLiveVerifier(sandbox CandidateProbeSandbox, receiptIssuer strin
 }
 
 func newCandidateLiveVerifier(sandbox CandidateProbeSandbox, policy candidateAuthorityPolicy, verifierPrivateKey ed25519.PrivateKey) (*CandidateLiveVerifier, error) {
-	if sandbox == nil || policy.receiptRole != "receipt" || strings.TrimSpace(policy.receiptIssuer) == "" || strings.TrimSpace(policy.receiptKeyID) == "" || len(policy.receiptPublicKey) != ed25519.PublicKeySize || !validSHA256Digest(policy.receiptLedgerTailDigest) || policy.credentialProviderKeyID == "" || len(policy.credentialProviderPublicKey) != ed25519.PublicKeySize || strings.TrimSpace(policy.verifierKeyID) == "" || len(policy.verifierPublicKey) != ed25519.PublicKeySize || len(verifierPrivateKey) != ed25519.PrivateKeySize || !bytes.Equal(verifierPrivateKey.Public().(ed25519.PublicKey), policy.verifierPublicKey) {
+	if sandbox == nil || policy.receiptRole != "receipt" || !validCandidateASCII(policy.receiptIssuer) || !validCandidateASCII(policy.receiptKeyID) || policy.receiptKeyEpoch > candidateMaxJSONInteger || len(policy.receiptPublicKey) != ed25519.PublicKeySize || !validSHA256Digest(policy.receiptLedgerTailDigest) || !validCandidateASCII(policy.credentialProviderKeyID) || policy.credentialProviderKeyEpoch > candidateMaxJSONInteger || len(policy.credentialProviderPublicKey) != ed25519.PublicKeySize || !validCandidateASCII(policy.verifierKeyID) || len(policy.verifierPublicKey) != ed25519.PublicKeySize || len(verifierPrivateKey) != ed25519.PrivateKeySize || !bytes.Equal(verifierPrivateKey.Public().(ed25519.PublicKey), policy.verifierPublicKey) {
 		return nil, errors.New("qoder candidate authority policy is invalid")
 	}
 	policy.receiptPublicKey = append(ed25519.PublicKey(nil), policy.receiptPublicKey...)
@@ -784,7 +788,7 @@ func verifyCandidateObservationAuthorityChain(observation LiveConformanceObserva
 }
 
 func validateCandidateLiveProbeRequest(request CandidateLiveProbeRequest) error {
-	if request.RunnerID == "" || request.RunnerID == adapterID || request.RunnerVersion == "" || request.AuthorityGeneration == 0 || request.TrustRootKeyID == "" || !validSHA256Digest(request.ProbeArtifactDigest) || !validSHA256Digest(request.ChallengeDigest) || request.Validity <= 0 || request.Validity > maxConformanceValidity || strings.TrimSpace(request.Model) == "" || len(request.BusinessRepositoryRoots) == 0 {
+	if !validCandidateASCII(request.RunnerID) || request.RunnerID == adapterID || !validCandidateASCII(request.RunnerVersion) || request.AuthorityGeneration == 0 || request.AuthorityGeneration > candidateMaxJSONInteger || !validCandidateASCII(request.TrustRootKeyID) || !validSHA256Digest(request.ProbeArtifactDigest) || !validSHA256Digest(request.ChallengeDigest) || request.Validity <= 0 || request.Validity > maxConformanceValidity || !validCandidateASCII(request.Model) || len(request.BusinessRepositoryRoots) == 0 || len(request.BusinessRepositoryRoots) > 256 {
 		return errors.New("qoder candidate live probe request is incomplete")
 	}
 	for _, path := range append([]string{request.Executable, request.CredentialConfigRoot, request.ScratchRoot}, request.BusinessRepositoryRoots...) {
@@ -1233,16 +1237,27 @@ func credentialCapabilityFromManifest(manifest CandidateEnvironmentManifest) (Ca
 
 func validateCandidateCredentialCapability(value CandidateCredentialCapabilityIdentity, probeRunID, variantID string) error {
 	capabilityBytes, err := base64.RawURLEncoding.DecodeString(value.CapabilityID)
-	if err != nil || len(capabilityBytes) != 16 || value.APIVersion != candidateReceiptAPIVersion || value.Kind != "QoderCredentialCapabilityIdentity" || value.SchemaVersion != 1 || value.ProbeRunID != probeRunID || value.VariantID != variantID || value.ProviderIdentity == "" || value.CapabilityClass == "" || !validSHA256Digest(value.PolicyScopeDigest) || value.ProviderKeyID == "" || value.SignatureAlgorithm != candidateSignatureAlgorithm || value.SignatureEncoding != candidateSignatureEncoding || !validSHA256Digest(value.RecordDigest) {
+	if err != nil || len(capabilityBytes) != 16 ||
+		!validCandidateASCII(value.APIVersion) || value.APIVersion != candidateReceiptAPIVersion ||
+		!validCandidateASCII(value.Kind) || value.Kind != "QoderCredentialCapabilityIdentity" || value.SchemaVersion != 1 ||
+		!validCandidateASCII(value.ProviderIdentity) || !validCandidateASCII(value.CapabilityID) ||
+		!validCandidateASCII(value.ProbeRunID) || value.ProbeRunID != probeRunID ||
+		!validCandidateASCII(value.VariantID) || value.VariantID != variantID ||
+		!validCandidateASCII(value.CapabilityClass) || !validSHA256Digest(value.PolicyScopeDigest) ||
+		!validCandidateTimestamp(value.IssuedAt) || !validCandidateTimestamp(value.ExpiresAt) ||
+		!validCandidateASCII(value.ProviderKeyID) || value.ProviderKeyEpoch > candidateMaxJSONInteger ||
+		!validCandidateASCII(value.SignatureAlgorithm) || value.SignatureAlgorithm != candidateSignatureAlgorithm ||
+		!validCandidateASCII(value.SignatureEncoding) || value.SignatureEncoding != candidateSignatureEncoding ||
+		!validCandidateASCII(value.Signature) || !validSHA256Digest(value.RecordDigest) {
 		return errors.New("qoder credential capability identity is invalid")
 	}
 	signature, err := base64.RawURLEncoding.DecodeString(value.Signature)
 	if err != nil || len(signature) != ed25519.SignatureSize || value.RecordDigest != value.digest() {
 		return errors.New("qoder credential capability signature encoding is invalid")
 	}
-	issuedAt, issueErr := time.Parse(time.RFC3339Nano, value.IssuedAt)
-	expiresAt, expiryErr := time.Parse(time.RFC3339Nano, value.ExpiresAt)
-	if issueErr != nil || expiryErr != nil || !issuedAt.Before(expiresAt) {
+	issuedAt, _ := time.Parse(time.RFC3339Nano, value.IssuedAt)
+	expiresAt, _ := time.Parse(time.RFC3339Nano, value.ExpiresAt)
+	if !issuedAt.Before(expiresAt) {
 		return errors.New("qoder credential capability time bounds are invalid")
 	}
 	return nil
@@ -1264,13 +1279,14 @@ func verifyCandidateCredentialCapability(value CandidateCredentialCapabilityIden
 }
 
 func validateCandidateInvocationManifest(manifest CandidateVariantInvocationManifest, probeRunID, variantID string) error {
-	if manifest.VariantID != variantID || len(manifest.ArgvManifest.Entries) == 0 || len(manifest.ArgvManifest.Entries) > 64 || len(manifest.EnvironmentManifest.Entries) > 256 || manifest.ManifestDigest != digestRecordWithoutFields(manifest, "manifestDigest") || manifest.ArgvManifest.ManifestDigest != digestRecordWithoutFields(manifest.ArgvManifest, "manifestDigest") || manifest.EnvironmentManifest.ManifestDigest != digestRecordWithoutFields(manifest.EnvironmentManifest, "manifestDigest") || !manifest.EnvironmentManifest.InheritedEnvironmentDiscarded || manifest.EnvironmentManifest.PolicyDigest != expectedProbeEnvironmentDigest() {
+	if !validCandidateASCII(manifest.VariantID) || manifest.VariantID != variantID || len(manifest.ArgvManifest.Entries) == 0 || len(manifest.ArgvManifest.Entries) > 64 || len(manifest.EnvironmentManifest.Entries) > 256 || manifest.ManifestDigest != digestRecordWithoutFields(manifest, "manifestDigest") || manifest.ArgvManifest.ManifestDigest != digestRecordWithoutFields(manifest.ArgvManifest, "manifestDigest") || manifest.EnvironmentManifest.ManifestDigest != digestRecordWithoutFields(manifest.EnvironmentManifest, "manifestDigest") || !manifest.EnvironmentManifest.InheritedEnvironmentDiscarded || manifest.EnvironmentManifest.PolicyDigest != expectedProbeEnvironmentDigest() {
 		return errors.New("qoder candidate invocation manifest digest is invalid")
 	}
 	for index, entry := range manifest.ArgvManifest.Entries {
-		validSource := entry.Source == "fixed-literal" || entry.Source == "model-id" || entry.Source == "probe-prompt" || entry.Source == "tools-empty"
-		validRepresentation := (entry.Representation == "literal" && entry.LiteralValue != nil) || (entry.Representation == "digest-only" && entry.LiteralValue == nil)
-		if entry.Index != uint64(index) || !validSource || !validRepresentation || !validSHA256Digest(entry.ValueDigest) || (entry.LiteralValue != nil && digestBytes([]byte(*entry.LiteralValue)) != entry.ValueDigest) {
+		validSource := validCandidateASCII(entry.Source) && (entry.Source == "fixed-literal" || entry.Source == "model-id" || entry.Source == "probe-prompt" || entry.Source == "tools-empty")
+		validRepresentation := validCandidateASCII(entry.Representation) && ((entry.Representation == "literal" && entry.Source == "fixed-literal" && entry.LiteralValue != nil && validCandidateLiteral(*entry.LiteralValue)) || (entry.Representation == "digest-only" && entry.LiteralValue == nil))
+		digestOnlySource := entry.Source == "fixed-literal" || entry.Source == "model-id" || entry.Source == "probe-prompt" || entry.Source == "tools-empty"
+		if entry.Index != uint64(index) || !validSource || !validRepresentation || (entry.Representation == "digest-only" && !digestOnlySource) || !validSHA256Digest(entry.ValueDigest) || (entry.LiteralValue != nil && digestBytes([]byte(*entry.LiteralValue)) != entry.ValueDigest) {
 			return errors.New("qoder candidate argv manifest is invalid")
 		}
 	}
@@ -1280,15 +1296,15 @@ func validateCandidateInvocationManifest(manifest CandidateVariantInvocationMani
 		}
 		switch entry.Source {
 		case "fixed-policy":
-			if entry.Presence != "present" || entry.CapabilityIdentity != nil || entry.OmissionReason != nil || !((entry.ValueRepresentation == "digest-only" && entry.ValueDigest != nil && validSHA256Digest(*entry.ValueDigest)) || (entry.ValueRepresentation == "literal-empty" && entry.ValueDigest == nil)) {
+			if !validCandidateASCII(entry.Source) || !validCandidateASCII(entry.Presence) || !validCandidateASCII(entry.ValueRepresentation) || entry.Presence != "present" || entry.CapabilityIdentity != nil || entry.OmissionReason != nil || !((entry.ValueRepresentation == "digest-only" && entry.ValueDigest != nil && validSHA256Digest(*entry.ValueDigest)) || (entry.ValueRepresentation == "literal-empty" && entry.ValueDigest == nil)) {
 				return errors.New("qoder fixed environment entry is invalid")
 			}
 		case "credential-capability":
-			if entry.Presence != "present" || entry.ValueRepresentation != "capability-identity" || entry.ValueDigest != nil || entry.CapabilityIdentity == nil || entry.OmissionReason != nil {
+			if !validCandidateASCII(entry.Source) || !validCandidateASCII(entry.Presence) || !validCandidateASCII(entry.ValueRepresentation) || entry.Presence != "present" || entry.ValueRepresentation != "capability-identity" || entry.ValueDigest != nil || entry.CapabilityIdentity == nil || entry.OmissionReason != nil {
 				return errors.New("qoder credential environment entry is invalid")
 			}
 		case "cleared-setting-source":
-			if entry.Presence != "omitted" || entry.ValueRepresentation != "omitted" || entry.ValueDigest != nil || entry.CapabilityIdentity != nil || entry.OmissionReason == nil || (*entry.OmissionReason != "policy-absent" && *entry.OmissionReason != "setting-source-cleared") {
+			if !validCandidateASCII(entry.Source) || !validCandidateASCII(entry.Presence) || !validCandidateASCII(entry.ValueRepresentation) || entry.Presence != "omitted" || entry.ValueRepresentation != "omitted" || entry.ValueDigest != nil || entry.CapabilityIdentity != nil || entry.OmissionReason == nil || !validCandidateASCII(*entry.OmissionReason) || (*entry.OmissionReason != "policy-absent" && *entry.OmissionReason != "setting-source-cleared") {
 				return errors.New("qoder omitted environment entry is invalid")
 			}
 		default:
@@ -1303,7 +1319,7 @@ func validateCandidateInvocationManifest(manifest CandidateVariantInvocationMani
 }
 
 func candidateEnvironmentName(value string) bool {
-	if len(value) == 0 || len(value) > 128 || !((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z') || value[0] == '_') {
+	if !validCandidateASCII(value) || len(value) > 128 || !((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z') || value[0] == '_') {
 		return false
 	}
 	for _, character := range []byte(value[1:]) {
@@ -1315,13 +1331,16 @@ func candidateEnvironmentName(value string) bool {
 }
 
 func validateCandidateReceiptIsolationAudit(audit CandidateReceiptIsolationAudit, businessRootCount int, topologyDigest string) error {
-	if audit.AuditProviderIdentity == "" || audit.AuditSessionID == "" || audit.AncestorChainDigest != topologyDigest || len(audit.BusinessRootDenialDigests) != businessRootCount || !audit.CredentialReadOnlyEnforced || !audit.BusinessRootsDenied || !audit.ScratchOnlyWriteEnforced || !audit.NetworkPolicyEnforced || !audit.AmbientStateDenied {
+	if !validCandidateASCII(audit.AuditProviderIdentity) || !validCandidateASCII(audit.AuditSessionID) || audit.AncestorChainDigest != topologyDigest || len(audit.BusinessRootDenialDigests) != businessRootCount || !audit.CredentialReadOnlyEnforced || !audit.BusinessRootsDenied || !audit.ScratchOnlyWriteEnforced || !audit.NetworkPolicyEnforced || !audit.AmbientStateDenied {
 		return errors.New("qoder receipt isolation audit is incomplete")
 	}
-	for _, digest := range append([]string{audit.LaunchAuditDigest, audit.DenialAuditDigest, audit.ExitAuditDigest, audit.AncestorChainDigest}, audit.BusinessRootDenialDigests...) {
+	for _, digest := range []string{audit.LaunchAuditDigest, audit.DenialAuditDigest, audit.ExitAuditDigest, audit.AncestorChainDigest} {
 		if !validSHA256Digest(digest) {
 			return errors.New("qoder receipt isolation audit digest is invalid")
 		}
+	}
+	if !validCandidateSortedDigests(audit.BusinessRootDenialDigests, businessRootCount, businessRootCount) {
+		return errors.New("qoder receipt isolation audit digest array is invalid")
 	}
 	return nil
 }
@@ -1329,11 +1348,27 @@ func validateCandidateReceiptIsolationAudit(audit CandidateReceiptIsolationAudit
 func validateCandidateExactReceipt(receipt CandidateExecutionReceipt) error {
 	receiptID, receiptIDErr := base64.RawURLEncoding.DecodeString(receipt.ReceiptID)
 	signature, signatureErr := base64.RawURLEncoding.DecodeString(receipt.Signature)
-	if receiptIDErr != nil || len(receiptID) != 16 || signatureErr != nil || len(signature) != ed25519.SignatureSize || receipt.ProbeRunID == "" || receipt.ReceiptSequence < 1 || receipt.ReceiptSequence > 4 || receipt.VariantID == "" || !validSHA256Digest(receipt.ProbeRunChallengeDigest) || !validSHA256Digest(receipt.VariantChallengeDigest) || !validSHA256Digest(receipt.IsolationProfileDigest) || !validSHA256Digest(receipt.TopologyDigest) || !validSHA256Digest(receipt.HostIdentityDigest) || !validSHA256Digest(receipt.TranscriptDigest) || !validSHA256Digest(receipt.MarkerDigest) || receipt.SessionID == "" || receipt.ModelID == "" || receipt.ProtocolVersion == "" || receipt.PermissionMode == "" || receipt.EventContract == "" || receipt.ReceiptAuthorityKeyID == "" || !validSHA256Digest(receipt.RecordDigest) {
+	if receiptIDErr != nil || len(receiptID) != 16 || signatureErr != nil || len(signature) != ed25519.SignatureSize ||
+		!validCandidateASCII(receipt.APIVersion) || receipt.APIVersion != candidateReceiptAPIVersion ||
+		!validCandidateASCII(receipt.Kind) || receipt.Kind != candidateReceiptKind || receipt.SchemaVersion != candidateReceiptSchemaVersion ||
+		!validCandidateASCII(receipt.ReceiptID) || !validCandidateASCII(receipt.ProbeRunID) ||
+		receipt.ReceiptSequence < 1 || receipt.ReceiptSequence > 4 || !validCandidateASCII(receipt.VariantID) ||
+		!validSHA256Digest(receipt.ProbeRunChallengeDigest) || !validSHA256Digest(receipt.VariantChallengeDigest) ||
+		(receipt.ReceiptSequence == 1 && receipt.PreviousReceiptDigest != nil) ||
+		(receipt.ReceiptSequence > 1 && (receipt.PreviousReceiptDigest == nil || !validSHA256Digest(*receipt.PreviousReceiptDigest))) ||
+		!validSHA256Digest(receipt.IsolationProfileDigest) || !validSHA256Digest(receipt.TopologyDigest) ||
+		!validSHA256Digest(receipt.HostIdentityDigest) || !validSHA256Digest(receipt.TranscriptDigest) || !validSHA256Digest(receipt.MarkerDigest) ||
+		!validCandidateASCII(receipt.SessionID) || !validCandidateASCII(receipt.ModelID) ||
+		!validCandidateASCII(receipt.ProtocolVersion) || !validCandidateASCII(receipt.PermissionMode) || !validCandidateASCII(receipt.EventContract) ||
+		!validCandidateTimestamp(receipt.StartedAt) || !validCandidateTimestamp(receipt.CompletedAt) ||
+		!validCandidateASCII(receipt.ReceiptAuthorityKeyID) || receipt.ReceiptAuthorityKeyEpoch > candidateMaxJSONInteger ||
+		!validCandidateASCII(receipt.SignatureAlgorithm) || receipt.SignatureAlgorithm != candidateSignatureAlgorithm ||
+		!validCandidateASCII(receipt.SignatureEncoding) || receipt.SignatureEncoding != candidateSignatureEncoding || !validCandidateASCII(receipt.Signature) ||
+		!validSHA256Digest(receipt.RecordDigest) {
 		return errors.New("qoder exact receipt scalar is invalid")
 	}
 	pathBytes, err := base64.RawURLEncoding.DecodeString(receipt.CandidateExecutableIdentity.RealpathBytes.Bytes)
-	if err != nil || receipt.CandidateExecutableIdentity.RealpathBytes.Encoding != candidateSignatureEncoding || len(pathBytes) == 0 || len(pathBytes) > 4096 || pathBytes[0] != '/' || bytes.IndexByte(pathBytes, 0) >= 0 || filepath.Clean(string(pathBytes)) != string(pathBytes) || string(pathBytes) == "/" || receipt.CandidateExecutableIdentity.RealpathBytes.Digest != digestBytes(pathBytes) || !validSHA256Digest(receipt.CandidateExecutableIdentity.Digest) || !isSupportedBinaryVersion(receipt.CandidateExecutableIdentity.BinaryVersion) {
+	if err != nil || !validCandidateASCII(receipt.CandidateExecutableIdentity.RealpathBytes.Encoding) || receipt.CandidateExecutableIdentity.RealpathBytes.Encoding != candidateSignatureEncoding || len(pathBytes) == 0 || len(pathBytes) > 4096 || pathBytes[0] != '/' || bytes.IndexByte(pathBytes, 0) >= 0 || filepath.Clean(string(pathBytes)) != string(pathBytes) || string(pathBytes) == "/" || receipt.CandidateExecutableIdentity.RealpathBytes.Digest != digestBytes(pathBytes) || !validSHA256Digest(receipt.CandidateExecutableIdentity.Digest) || !validCandidateASCII(receipt.CandidateExecutableIdentity.BinaryVersion) || !isSupportedBinaryVersion(receipt.CandidateExecutableIdentity.BinaryVersion) {
 		return errors.New("qoder exact receipt executable identity is invalid")
 	}
 	for _, root := range append([]CandidateRootIdentity{receipt.ScratchRootIdentity, receipt.CredentialRootIdentity}, receipt.BusinessRootIdentities...) {
@@ -1355,6 +1390,57 @@ func validateCandidateExactReceipt(receipt CandidateExecutionReceipt) error {
 		return errors.New("qoder exact receipt nested contract is invalid")
 	}
 	return nil
+}
+
+func validCandidateASCII(value string) bool {
+	if len(value) == 0 || len(value) > 256 || !utf8.ValidString(value) || !norm.NFC.IsNormalString(value) {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x20 || value[index] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func validCandidateLiteral(value string) bool {
+	if len(value) == 0 || len(value) > 4096 || !utf8.ValidString(value) || !norm.NFC.IsNormalString(value) {
+		return false
+	}
+	for _, character := range value {
+		if character == 0 || !unicode.IsPrint(character) {
+			return false
+		}
+	}
+	return true
+}
+
+func validCandidateTimestamp(value string) bool {
+	if len(value) != len("2006-01-02T15:04:05Z") && len(value) != len("2006-01-02T15:04:05.000000000Z") {
+		return false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || parsed.Location() != time.UTC {
+		return false
+	}
+	layout := "2006-01-02T15:04:05Z"
+	if len(value) == len("2006-01-02T15:04:05.000000000Z") {
+		layout = "2006-01-02T15:04:05.000000000Z"
+	}
+	return value == parsed.UTC().Format(layout)
+}
+
+func validCandidateSortedDigests(values []string, minimum, maximum int) bool {
+	if len(values) < minimum || len(values) > maximum {
+		return false
+	}
+	for index, value := range values {
+		if !validSHA256Digest(value) || (index > 0 && values[index-1] >= value) {
+			return false
+		}
+	}
+	return true
 }
 
 func mustCandidateJSON(value any) []byte {

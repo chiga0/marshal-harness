@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -20,16 +21,18 @@ import (
 )
 
 type candidateOSAuditProviderFixture struct {
-	t                       *testing.T
-	sessions                map[string]CandidateOSAuditStartRequest
-	executed                map[string]candidateExecutedProof
-	forgeProviderIdentity   bool
-	forgeCapabilityIdentity bool
-	forgeAuditBoolean       bool
-	forgeCredentialKey      bool
-	forgeAuditKey           bool
-	credentialKey           ed25519.PrivateKey
-	auditKey                ed25519.PrivateKey
+	t                        *testing.T
+	sessions                 map[string]CandidateOSAuditStartRequest
+	executed                 map[string]candidateExecutedProof
+	forgeProviderIdentity    bool
+	forgeCapabilityIdentity  bool
+	forgeAuditBoolean        bool
+	forgeCredentialKey       bool
+	forgeAuditKey            bool
+	credentialKey            ed25519.PrivateKey
+	auditKey                 ed25519.PrivateKey
+	credentialMutate         func(*CandidateCredentialCapabilityIdentity)
+	lastCredentialCapability CandidateCredentialCapabilityIdentity
 }
 
 type candidateExecutedProof struct {
@@ -74,7 +77,7 @@ func (provider *candidateOSAuditProviderFixture) VerifySession(_ context.Context
 		capabilityID = base64.RawURLEncoding.EncodeToString([]byte("replayed-cap-001"))
 	}
 	now := time.Now().UTC()
-	capability := CandidateCredentialCapabilityIdentity{APIVersion: candidateReceiptAPIVersion, Kind: "QoderCredentialCapabilityIdentity", SchemaVersion: 1, ProviderIdentity: "os-credential-provider", CapabilityID: capabilityID, ProbeRunID: started.ProbeRunID, VariantID: started.VariantID, CapabilityClass: "qoder-live-probe", PolicyScopeDigest: digest("a"), IssuedAt: now.Add(-time.Minute).Format(time.RFC3339Nano), ExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano), ProviderKeyID: "credential-provider-key", ProviderKeyEpoch: 3, SignatureAlgorithm: candidateSignatureAlgorithm, SignatureEncoding: candidateSignatureEncoding}
+	capability := CandidateCredentialCapabilityIdentity{APIVersion: candidateReceiptAPIVersion, Kind: "QoderCredentialCapabilityIdentity", SchemaVersion: 1, ProviderIdentity: "os-credential-provider", CapabilityID: capabilityID, ProbeRunID: started.ProbeRunID, VariantID: started.VariantID, CapabilityClass: "qoder-live-probe", PolicyScopeDigest: digest("a"), IssuedAt: candidateExactTimestamp(now.Add(-time.Minute)), ExpiresAt: candidateExactTimestamp(now.Add(time.Minute)), ProviderKeyID: "credential-provider-key", ProviderKeyEpoch: 3, SignatureAlgorithm: candidateSignatureAlgorithm, SignatureEncoding: candidateSignatureEncoding}
 	capability.RecordDigest = capability.digest()
 	capabilityMessage, _ := capability.signingBytes()
 	credentialKey := provider.credentialKey
@@ -86,6 +89,21 @@ func (provider *candidateOSAuditProviderFixture) VerifySession(_ context.Context
 	if err != nil {
 		return CandidateOSAuditAttestation{}, err
 	}
+	if provider.credentialMutate != nil {
+		provider.credentialMutate(&capability)
+		capability.RecordDigest = capability.digest()
+		capabilityMessage, _ = capability.signingBytes()
+		capability.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(credentialKey, capabilityMessage))
+		for index := range manifest.EnvironmentManifest.Entries {
+			if manifest.EnvironmentManifest.Entries[index].Source == "credential-capability" {
+				copy := capability
+				manifest.EnvironmentManifest.Entries[index].CapabilityIdentity = &copy
+			}
+		}
+		manifest.EnvironmentManifest.ManifestDigest = digestRecordWithoutFields(manifest.EnvironmentManifest, "manifestDigest")
+		manifest.ManifestDigest = digestRecordWithoutFields(manifest, "manifestDigest")
+	}
+	provider.lastCredentialCapability = capability
 	businessAudit := make([]string, len(started.Held.BusinessRoots))
 	for index := range businessAudit {
 		businessAudit[index] = digest(fmt.Sprintf("%x", index+1))
@@ -204,6 +222,7 @@ type candidateReceiptAuthorityFixture struct {
 	mutate         func(*CandidateExecutionReceipt)
 	documentMutate func([]byte) []byte
 	auditTrust     CandidateOSAuditTrustBinding
+	lastReceipt    CandidateExecutionReceipt
 }
 
 func (authority *candidateReceiptAuthorityFixture) Identity(context.Context) (CandidateReceiptAuthorityIdentity, error) {
@@ -241,7 +260,7 @@ func (authority *candidateReceiptAuthorityFixture) IssueExecutionReceipt(ctx con
 		CandidateExecutableIdentity: candidateExecutableReceiptIdentity(request.Invocation.Executable, request.BinaryVersion), InvocationManifest: manifest, ScratchRootIdentity: candidateRootIdentity(request.Invocation.WorkingDirectory.Identity), CredentialRootIdentity: candidateRootIdentity(request.Invocation.CredentialConfigRoot.Identity), BusinessRootIdentities: candidateRootIdentities(request.Invocation.BusinessRepositoryRoots),
 		IsolationProfileDigest: candidateObservedProfileDigest(), TopologyDigest: request.ExecutionTopologyDigest, HostIdentityDigest: audit.HostIdentityDigest,
 		IsolationAudit: CandidateReceiptIsolationAudit{AuditProviderIdentity: audit.AuditProviderIdentity, AuditSessionID: audit.AuditSessionID, LaunchAuditDigest: audit.LaunchAuditDigest, DenialAuditDigest: audit.DenialAuditDigest, ExitAuditDigest: audit.ExitAuditDigest, AncestorChainDigest: audit.AncestorChainDigest, BusinessRootDenialDigests: audit.BusinessRootDenialDigests, CredentialReadOnlyEnforced: audit.CredentialReadOnlyEnforced, BusinessRootsDenied: audit.BusinessRootsDenied, ScratchOnlyWriteEnforced: audit.ScratchOnlyWriteEnforced, NetworkPolicyEnforced: audit.NetworkPolicyEnforced, AmbientStateDenied: audit.AmbientStateDenied},
-		SessionID:      request.SessionID, ModelID: request.ObservedModel, ProtocolVersion: request.ProtocolVersion, PermissionMode: request.PermissionMode, EventContract: conformanceEventContract, TranscriptDigest: request.TranscriptDigest, MarkerDigest: request.MarkerDigest, StartedAt: startedAt.Format(time.RFC3339Nano), CompletedAt: completedAt.Format(time.RFC3339Nano), ReceiptAuthorityKeyID: authority.identity.KeyID, ReceiptAuthorityKeyEpoch: authority.identity.KeyEpoch, SignatureAlgorithm: candidateSignatureAlgorithm, SignatureEncoding: candidateSignatureEncoding,
+		SessionID:      request.SessionID, ModelID: request.ObservedModel, ProtocolVersion: request.ProtocolVersion, PermissionMode: request.PermissionMode, EventContract: conformanceEventContract, TranscriptDigest: request.TranscriptDigest, MarkerDigest: request.MarkerDigest, StartedAt: candidateExactTimestamp(startedAt), CompletedAt: candidateExactTimestamp(completedAt), ReceiptAuthorityKeyID: authority.identity.KeyID, ReceiptAuthorityKeyEpoch: authority.identity.KeyEpoch, SignatureAlgorithm: candidateSignatureAlgorithm, SignatureEncoding: candidateSignatureEncoding,
 	}
 	if authority.mutate != nil {
 		authority.mutate(&receipt)
@@ -252,12 +271,84 @@ func (authority *candidateReceiptAuthorityFixture) IssueExecutionReceipt(ctx con
 	}
 	message, _ := receipt.signingBytes()
 	receipt.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(authority.key, message))
+	authority.lastReceipt = receipt
 	document, _ := json.Marshal(receipt)
 	document, _ = canonical.JSON(document)
 	if authority.documentMutate != nil {
 		document = authority.documentMutate(document)
 	}
 	return document, nil
+}
+
+func candidateExactTimestamp(value time.Time) string {
+	return value.UTC().Format("2006-01-02T15:04:05.000000000Z")
+}
+
+func resignCandidateManifest(manifest *CandidateVariantInvocationManifest) {
+	manifest.ArgvManifest.ManifestDigest = digestRecordWithoutFields(manifest.ArgvManifest, "manifestDigest")
+	manifest.EnvironmentManifest.ManifestDigest = digestRecordWithoutFields(manifest.EnvironmentManifest, "manifestDigest")
+	manifest.ManifestDigest = digestRecordWithoutFields(*manifest, "manifestDigest")
+}
+
+func assertTrustedInvalidReceiptWasSigned(t *testing.T, authority *candidateReceiptAuthorityFixture) {
+	t.Helper()
+	receipt := authority.lastReceipt
+	message, err := receipt.signingBytes()
+	if err != nil {
+		t.Fatalf("invalid receipt did not retain a canonical signing message: %v", err)
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(receipt.Signature)
+	if err != nil || receipt.RecordDigest != receipt.digestForTest(t) || !ed25519.Verify(authority.key.Public().(ed25519.PublicKey), message, signature) {
+		t.Fatal("invalid receipt was not signed by the trusted receipt key")
+	}
+}
+
+func (receipt CandidateExecutionReceipt) digestForTest(t *testing.T) string {
+	t.Helper()
+	digest, err := receipt.digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
+func assertTrustedInvalidCapabilityWasSigned(t *testing.T, provider *candidateOSAuditProviderFixture) {
+	t.Helper()
+	capability := provider.lastCredentialCapability
+	message, err := capability.signingBytes()
+	if err != nil {
+		t.Fatalf("invalid capability did not retain a canonical signing message: %v", err)
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(capability.Signature)
+	if err != nil || capability.RecordDigest != capability.digest() || !ed25519.Verify(provider.credentialKey.Public().(ed25519.PublicKey), message, signature) {
+		t.Fatal("invalid capability was not signed by the trusted credential provider key")
+	}
+}
+
+func sortCandidateBusinessRootsByReceiptIdentity(t *testing.T, paths []string) {
+	t.Helper()
+	type orderedRoot struct {
+		path      string
+		canonical []byte
+	}
+	roots := make([]orderedRoot, 0, len(paths))
+	for _, path := range paths {
+		object, err := openCandidateObject(path, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity := candidateRootIdentity(object.Identity)
+		canonical, err := canonical.JSON(mustCandidateJSON(identity))
+		_ = object.File.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots = append(roots, orderedRoot{path: path, canonical: canonical})
+	}
+	sort.Slice(roots, func(left, right int) bool { return bytes.Compare(roots[left].canonical, roots[right].canonical) < 0 })
+	for index := range roots {
+		paths[index] = roots[index].path
+	}
 }
 
 func productionCandidateVerifierFixture(t *testing.T) (*CandidateLiveVerifier, CandidateLiveProbeRequest, *candidateIsolationTransportFixture, *candidateReceiptAuthorityFixture, *candidateOSAuditProviderFixture) {
@@ -299,6 +390,87 @@ func TestProductionProbeUsesOpaqueOSAuditForOneChainedFourVariantRun(t *testing.
 		if invocation.Executable.CanonicalPath != "" || invocation.CredentialConfigRoot.CanonicalPath != "" || invocation.ScratchRoot.CanonicalPath != "" || invocation.BusinessRepositoryRoots[0].CanonicalPath != "" {
 			t.Fatal("transport received caller pathname instead of held-only objects")
 		}
+	}
+}
+
+func TestProductionProbeRejectsTrustedSignedInvalidReceiptScalars(t *testing.T) {
+	tests := []struct {
+		name     string
+		twoRoots bool
+		mutate   func(*CandidateExecutionReceipt)
+	}{
+		{name: "NUL id", mutate: func(receipt *CandidateExecutionReceipt) { receipt.SessionID = "session\x00id" }},
+		{name: "non ASCII id", mutate: func(receipt *CandidateExecutionReceipt) { receipt.ModelID = "modèle" }},
+		{name: "overlong enum", mutate: func(receipt *CandidateExecutionReceipt) { receipt.ProtocolVersion = strings.Repeat("p", 257) }},
+		{name: "epoch above JSON integer bound", mutate: func(receipt *CandidateExecutionReceipt) { receipt.ReceiptAuthorityKeyEpoch = 1 << 63 }},
+		{name: "offset timestamp", mutate: func(receipt *CandidateExecutionReceipt) { receipt.StartedAt = "2026-08-18T00:00:00+00:00" }},
+		{name: "short fractional timestamp", mutate: func(receipt *CandidateExecutionReceipt) { receipt.CompletedAt = "2026-08-18T00:00:00.123Z" }},
+		{name: "unsorted digest array", twoRoots: true, mutate: func(receipt *CandidateExecutionReceipt) {
+			receipt.IsolationAudit.BusinessRootDenialDigests = []string{digest("b"), digest("a")}
+		}},
+		{name: "duplicate digest array", twoRoots: true, mutate: func(receipt *CandidateExecutionReceipt) {
+			receipt.IsolationAudit.BusinessRootDenialDigests = []string{digest("a"), digest("a")}
+		}},
+		{name: "non NFC argv literal", mutate: func(receipt *CandidateExecutionReceipt) {
+			literal := "e\u0301"
+			receipt.InvocationManifest.ArgvManifest.Entries[0].LiteralValue = &literal
+			receipt.InvocationManifest.ArgvManifest.Entries[0].ValueDigest = digestBytes([]byte(literal))
+			resignCandidateManifest(&receipt.InvocationManifest)
+		}},
+		{name: "NUL argv literal", mutate: func(receipt *CandidateExecutionReceipt) {
+			literal := "bad\x00literal"
+			receipt.InvocationManifest.ArgvManifest.Entries[0].LiteralValue = &literal
+			receipt.InvocationManifest.ArgvManifest.Entries[0].ValueDigest = digestBytes([]byte(literal))
+			resignCandidateManifest(&receipt.InvocationManifest)
+		}},
+		{name: "overlong argv literal", mutate: func(receipt *CandidateExecutionReceipt) {
+			literal := strings.Repeat("x", 4097)
+			receipt.InvocationManifest.ArgvManifest.Entries[0].LiteralValue = &literal
+			receipt.InvocationManifest.ArgvManifest.Entries[0].ValueDigest = digestBytes([]byte(literal))
+			resignCandidateManifest(&receipt.InvocationManifest)
+		}},
+		{name: "source representation mismatch", mutate: func(receipt *CandidateExecutionReceipt) {
+			receipt.InvocationManifest.ArgvManifest.Entries[0].Source = "model-id"
+			resignCandidateManifest(&receipt.InvocationManifest)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			verifier, request, _, authority, _ := productionCandidateVerifierFixture(t)
+			if test.twoRoots {
+				request.BusinessRepositoryRoots = append(request.BusinessRepositoryRoots, realPrivateTempDir(t))
+				sortCandidateBusinessRootsByReceiptIdentity(t, request.BusinessRepositoryRoots)
+			}
+			authority.mutate = test.mutate
+			if _, _, err := verifier.Verify(context.Background(), request); err == nil {
+				t.Fatal("trusted signed receipt with invalid exact contract was accepted")
+			}
+			assertTrustedInvalidReceiptWasSigned(t, authority)
+		})
+	}
+}
+
+func TestProductionProbeRejectsTrustedSignedInvalidCredentialCapabilityScalars(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*CandidateCredentialCapabilityIdentity)
+	}{
+		{name: "NUL provider id", mutate: func(value *CandidateCredentialCapabilityIdentity) { value.ProviderIdentity = "provider\x00id" }},
+		{name: "non NFC probe run id", mutate: func(value *CandidateCredentialCapabilityIdentity) { value.ProbeRunID = "e\u0301" }},
+		{name: "overlong class", mutate: func(value *CandidateCredentialCapabilityIdentity) { value.CapabilityClass = strings.Repeat("c", 257) }},
+		{name: "epoch above JSON integer bound", mutate: func(value *CandidateCredentialCapabilityIdentity) { value.ProviderKeyEpoch = 1 << 63 }},
+		{name: "short fractional issued time", mutate: func(value *CandidateCredentialCapabilityIdentity) { value.IssuedAt = "2026-08-18T00:00:00.123Z" }},
+		{name: "offset expiry time", mutate: func(value *CandidateCredentialCapabilityIdentity) { value.ExpiresAt = "2026-08-18T01:00:00+00:00" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			verifier, request, _, _, provider := productionCandidateVerifierFixture(t)
+			provider.credentialMutate = test.mutate
+			if _, _, err := verifier.Verify(context.Background(), request); err == nil {
+				t.Fatal("trusted signed credential capability with invalid exact contract was accepted")
+			}
+			assertTrustedInvalidCapabilityWasSigned(t, provider)
+		})
 	}
 }
 

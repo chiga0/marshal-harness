@@ -143,6 +143,38 @@ func TestCandidateProbeRejectsTmpPrivateTmpAlias(t *testing.T) {
 	}
 }
 
+func TestCandidateExactScalarValidators(t *testing.T) {
+	if !validCandidateASCII("a") || !validCandidateASCII(strings.Repeat("a", 256)) {
+		t.Fatal("printable ASCII boundary was rejected")
+	}
+	for _, value := range []string{"", strings.Repeat("a", 257), "bad\x00id", "bad\nid", "é", "e\u0301"} {
+		if validCandidateASCII(value) {
+			t.Fatalf("invalid ID/version/enum scalar was accepted: %q", value)
+		}
+	}
+	for _, value := range []string{"2026-08-18T00:00:00Z", "2026-08-18T00:00:00.123456789Z"} {
+		if !validCandidateTimestamp(value) {
+			t.Fatalf("exact UTC timestamp was rejected: %q", value)
+		}
+	}
+	for _, value := range []string{"2026-08-18T00:00:00.123Z", "2026-08-18T00:00:00+00:00", "2026-08-18T00:00:00.12345678Z"} {
+		if validCandidateTimestamp(value) {
+			t.Fatalf("non-exact UTC timestamp was accepted: %q", value)
+		}
+	}
+	if !validCandidateLiteral("é") || !validCandidateLiteral(strings.Repeat("x", 4096)) {
+		t.Fatal("printable NFC argv literal boundary was rejected")
+	}
+	for _, value := range []string{"", "e\u0301", "bad\x00literal", "bad\nliteral", strings.Repeat("x", 4097)} {
+		if validCandidateLiteral(value) {
+			t.Fatalf("invalid argv literal was accepted: %q", value)
+		}
+	}
+	if !validCandidateSortedDigests([]string{digest("1"), digest("2")}, 1, 2) || validCandidateSortedDigests([]string{digest("2"), digest("1")}, 1, 2) || validCandidateSortedDigests([]string{digest("1"), digest("1")}, 1, 2) {
+		t.Fatal("digest array ordering or uniqueness contract is incorrect")
+	}
+}
+
 func candidateProbeRequestFixture(t *testing.T) CandidateLiveProbeRequest {
 	t.Helper()
 	executable := fakeExecutable(t, "1.1.23", "exit 0")

@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"strings"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 )
@@ -180,7 +179,7 @@ func (sandbox *candidateProductionProbeSandbox) RunProbe(ctx context.Context, in
 		Invocation: cloneCandidateProbeInvocation(invocation),
 	}
 	auditSession, err := sandbox.auditProvider.BeginSession(ctx, start)
-	if err != nil || strings.TrimSpace(auditSession.ProviderIdentity) == "" || strings.TrimSpace(auditSession.SessionID) == "" || len(auditSession.LaunchCapability) == 0 || len(auditSession.providerSeal) == 0 {
+	if err != nil || !validCandidateASCII(auditSession.ProviderIdentity) || !validCandidateASCII(auditSession.SessionID) || len(auditSession.LaunchCapability) == 0 || len(auditSession.providerSeal) == 0 {
 		return CandidateProbeResult{}, errors.New("qoder production probe OS audit session is unavailable")
 	}
 	result, err := sandbox.transport.RunIsolated(ctx, CandidateIsolationRequest{LaunchCapability: append([]byte(nil), auditSession.LaunchCapability...), Invocation: cloneCandidateProbeInvocationForTransport(invocation)})
@@ -207,7 +206,7 @@ func (sandbox *candidateProductionProbeSandbox) RunProbe(ctx context.Context, in
 		return CandidateProbeResult{}, errors.New("qoder production probe topology changed during marker verification")
 	}
 	authority, err := sandbox.authority.Identity(ctx)
-	if err != nil || strings.TrimSpace(authority.Issuer) == "" || strings.TrimSpace(authority.KeyID) == "" {
+	if err != nil || !validCandidateASCII(authority.Issuer) || !validCandidateASCII(authority.KeyID) || authority.KeyEpoch > candidateMaxJSONInteger {
 		return CandidateProbeResult{}, errors.New("qoder production probe receipt authority is unavailable")
 	}
 	finish := CandidateOSAuditFinishRequest{Session: cloneCandidateOSAuditSession(auditSession), Held: held, Invocation: cloneCandidateProbeInvocation(invocation), TranscriptDigest: digestBytes(result.Transcript), MarkerDigest: markerDigest, ExecutionTopologyDigest: result.ExecutionTopologyDigest}
@@ -226,7 +225,7 @@ func candidateHeldHandleProof(invocation CandidateProbeInvocation, topology stri
 }
 
 func validateCandidateIsolationInvocation(invocation CandidateProbeInvocation) error {
-	if strings.TrimSpace(invocation.ProbeRunID) == "" || invocation.ReceiptSequence < 1 || invocation.ReceiptSequence > 4 || invocation.VariantIndex != invocation.ReceiptSequence-1 || !validSHA256Digest(invocation.InvocationDigest) || !validSHA256Digest(invocation.InvocationManifestDigest) || !validSHA256Digest(invocation.ChallengeDigest) || !validSHA256Digest(invocation.ExpectedTopologyDigest) {
+	if !validCandidateASCII(invocation.ProbeRunID) || invocation.ReceiptSequence < 1 || invocation.ReceiptSequence > 4 || invocation.VariantIndex != invocation.ReceiptSequence-1 || !validSHA256Digest(invocation.InvocationDigest) || !validSHA256Digest(invocation.InvocationManifestDigest) || !validSHA256Digest(invocation.ChallengeDigest) || !validSHA256Digest(invocation.ExpectedTopologyDigest) || (invocation.ExpectedModel != "" && !validCandidateASCII(invocation.ExpectedModel)) {
 		return errors.New("qoder production probe invocation identity is invalid")
 	}
 	if invocation.ReceiptSequence == 1 {
@@ -288,24 +287,27 @@ func cloneCandidateOSAuditSession(value CandidateOSAuditSession) CandidateOSAudi
 // contract. It binds the provider's principal attestation to the opaque
 // session and exact held-handle proof instead of accepting transport verdicts.
 func validateCandidateOSAuditAttestation(value CandidateOSAuditAttestation, finish CandidateOSAuditFinishRequest, businessRootCount int, trust CandidateOSAuditTrustBinding) error {
-	if value.AuditProviderIdentity != finish.Session.ProviderIdentity || value.AuditSessionID != finish.Session.SessionID || !validSHA256Digest(value.PrincipalHandleDigest) || !validSHA256Digest(value.HostIdentityDigest) || value.AncestorChainDigest != finish.ExecutionTopologyDigest || len(value.BusinessRootDenialDigests) != businessRootCount || !value.CredentialReadOnlyEnforced || !value.BusinessRootsDenied || !value.ScratchOnlyWriteEnforced || !value.NetworkPolicyEnforced || !value.AmbientStateDenied {
+	if !validCandidateASCII(value.AuditProviderIdentity) || value.AuditProviderIdentity != finish.Session.ProviderIdentity || !validCandidateASCII(value.AuditSessionID) || value.AuditSessionID != finish.Session.SessionID || !validSHA256Digest(value.PrincipalHandleDigest) || !validSHA256Digest(value.HostIdentityDigest) || value.AncestorChainDigest != finish.ExecutionTopologyDigest || !value.CredentialReadOnlyEnforced || !value.BusinessRootsDenied || !value.ScratchOnlyWriteEnforced || !value.NetworkPolicyEnforced || !value.AmbientStateDenied {
 		return errors.New("qoder OS audit attestation identity is invalid")
 	}
 	expectedLaunch := candidateOSLaunchAuditDigest(value.AuditProviderIdentity, value.AuditSessionID, value.PrincipalHandleDigest, finish.Held)
 	if value.LaunchAuditDigest != expectedLaunch {
 		return errors.New("qoder OS audit principal is not bound to held handles")
 	}
-	for _, digest := range append([]string{value.LaunchAuditDigest, value.DenialAuditDigest, value.ExitAuditDigest, value.AncestorChainDigest}, value.BusinessRootDenialDigests...) {
+	for _, digest := range []string{value.LaunchAuditDigest, value.DenialAuditDigest, value.ExitAuditDigest, value.AncestorChainDigest} {
 		if !validSHA256Digest(digest) {
 			return errors.New("qoder OS audit digest is invalid")
 		}
+	}
+	if !validCandidateSortedDigests(value.BusinessRootDenialDigests, businessRootCount, businessRootCount) {
+		return errors.New("qoder OS audit digest array is invalid")
 	}
 	expectedReceipt := candidateOSProviderReceiptDigest(value)
 	if value.ProviderReceiptDigest != expectedReceipt {
 		return errors.New("qoder OS audit provider receipt is invalid")
 	}
 	signature, signatureErr := base64.RawURLEncoding.DecodeString(value.Signature)
-	if value.AuditProviderIdentity != trust.ProviderIdentity || value.ProviderKeyID != trust.ProviderKeyID || value.ProviderKeyEpoch != trust.ProviderKeyEpoch || value.SignatureAlgorithm != candidateSignatureAlgorithm || value.SignatureEncoding != candidateSignatureEncoding || len(trust.PublicKey) != ed25519.PublicKeySize || signatureErr != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(trust.PublicKey, []byte(candidateOSAuditSigningDomain+value.ProviderReceiptDigest), signature) {
+	if !validCandidateASCII(value.ProviderKeyID) || value.AuditProviderIdentity != trust.ProviderIdentity || value.ProviderKeyID != trust.ProviderKeyID || value.ProviderKeyEpoch > candidateMaxJSONInteger || value.ProviderKeyEpoch != trust.ProviderKeyEpoch || !validCandidateASCII(value.SignatureAlgorithm) || value.SignatureAlgorithm != candidateSignatureAlgorithm || !validCandidateASCII(value.SignatureEncoding) || value.SignatureEncoding != candidateSignatureEncoding || !validCandidateASCII(value.Signature) || len(trust.PublicKey) != ed25519.PublicKeySize || signatureErr != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(trust.PublicKey, []byte(candidateOSAuditSigningDomain+value.ProviderReceiptDigest), signature) {
 		return errors.New("qoder OS audit provider signature is not trusted")
 	}
 	expectedManifest, err := candidateInvocationManifest(finish.Invocation, value.CredentialCapability)
