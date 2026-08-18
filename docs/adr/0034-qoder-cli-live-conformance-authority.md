@@ -1,6 +1,6 @@
 # ADR 0034：Qoder CLI Live Conformance Authority 与可撤销准入
 
-- 状态：提议（Proposed）——在维护者接受、本 ADR 的负向矩阵通过独立审计且真实 credentialed probe evidence 被外部 authority 签发前，Qoder CLI 不得宣称当前部署 `supported`
+- 状态：接受（Accepted，2026-08-18）——接受只冻结本 ADR 的安全合同，不表示真实 credentialed probe evidence 已产生，不移除 production hard-disable，也不表示当前部署 `supported`
 - 日期：2026-08-17
 - 关联：[ADR 0003](0003-separate-worker-and-publisher.md)、[ADR 0004](0004-independent-verification.md)、[ADR 0018](0018-control-plane-and-provider-ports.md)、公开 Issue #137
 
