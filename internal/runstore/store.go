@@ -23,6 +23,11 @@ var (
 	ErrConflict      = errors.New("run store conflict")
 	ErrLeaseHeld     = errors.New("run lease already held")
 	ErrTruncatedTail = errors.New("journal has a truncated final record")
+	// errLegacyLeaseOwner marks the pre-descriptor lease owner format. It is
+	// recoverable only after acquireLeaseFile has obtained the OS flock; the
+	// next Acquire rewrites the owner record with the current descriptor
+	// identity before any mutation is allowed.
+	errLegacyLeaseOwner = errors.New("lease owner record lacks descriptor identity")
 )
 
 type Store struct{ root string }

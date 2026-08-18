@@ -170,12 +170,12 @@ func acquireLeaseFile(root, runID string) (*os.File, *os.File, uint64, uint64, b
 	}
 	if !created {
 		owner, err := readLeaseOwnerAt(runFD)
-		if err != nil {
+		if err != nil && !errors.Is(err, errLegacyLeaseOwner) {
 			unix.Flock(leaseFD, unix.LOCK_UN)
 			unix.Close(leaseFD)
 			return nil, nil, 0, 0, false, fmt.Errorf("validate existing lease owner: %w", err)
 		}
-		if owner.Device != uint64(stat.Dev) || owner.Inode != uint64(stat.Ino) {
+		if err == nil && (owner.Device != uint64(stat.Dev) || owner.Inode != uint64(stat.Ino)) {
 			unix.Flock(leaseFD, unix.LOCK_UN)
 			unix.Close(leaseFD)
 			return nil, nil, 0, 0, false, errors.New("existing lease owner does not bind the opened lock descriptor")
@@ -200,7 +200,7 @@ func releaseLeaseFile(file *os.File) error {
 }
 
 func writeLeaseOwnerAt(runFD int, data []byte) error {
-	if _, err := readLeaseOwnerAt(runFD); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if _, err := readLeaseOwnerAt(runFD); err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, errLegacyLeaseOwner) {
 		return err
 	}
 	var random [16]byte
@@ -251,7 +251,7 @@ func readLeaseOwnerAt(runFD int) (leaseOwnerRecord, error) {
 		return leaseOwnerRecord{}, err
 	}
 	if owner.Device == 0 || owner.Inode == 0 {
-		return leaseOwnerRecord{}, errors.New("lease owner record lacks descriptor identity")
+		return leaseOwnerRecord{}, errLegacyLeaseOwner
 	}
 	return owner, nil
 }

@@ -72,6 +72,55 @@ func TestLeaseHeldIsReadOnlyOwnershipProbe(t *testing.T) {
 	}
 }
 
+func TestAcquireMigratesLegacyLeaseOwnerAfterExclusiveLock(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store := New(root)
+	lease, err := store.Acquire("run:legacy-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	ownerPath := filepath.Join(root, "runs", "run:legacy-owner", "lease.lock.owner")
+	data, err := os.ReadFile(ownerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacy, "device")
+	delete(legacy, "inode")
+	legacyData, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ownerPath, legacyData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := store.Acquire("run:legacy-owner")
+	if err != nil {
+		t.Fatalf("legacy owner was not migrated after exclusive lock: %v", err)
+	}
+	defer migrated.Release()
+	data, err = os.ReadFile(ownerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current leaseOwnerRecord
+	if err := json.Unmarshal(data, &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Device == 0 || current.Inode == 0 {
+		t.Fatalf("migrated owner lacks descriptor identity: %+v", current)
+	}
+}
+
 func TestLeaseHeldFailsClosedWhenLockPathIsReplaced(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)
