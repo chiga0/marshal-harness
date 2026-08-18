@@ -12,6 +12,30 @@ import (
 	"time"
 )
 
+func TestRemoveAllBoundedRemovesDisposableTree(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested", "deeper")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "output"), []byte("temporary\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeAllBounded(root, time.Second); err != nil {
+		t.Fatalf("removeAllBounded() error = %v", err)
+	}
+	if _, err := os.Lstat(root); !os.IsNotExist(err) {
+		t.Fatalf("root still exists, err = %v", err)
+	}
+}
+
+func TestRemoveAllBoundedRejectsExpiredDeadline(t *testing.T) {
+	root := t.TempDir()
+	if err := removeAllBounded(root, 0); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("removeAllBounded() error = %v, want deadline exceeded", err)
+	}
+}
+
 func TestIssue138VerifierCommandsUseFreshIsolates(t *testing.T) {
 	fixture := newVerificationFixture(t)
 	if err := os.WriteFile(filepath.Join(fixture.worktree.Path, "source.txt"), []byte("candidate\n"), 0o600); err != nil {

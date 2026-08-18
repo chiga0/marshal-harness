@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -164,11 +165,11 @@ func removeAllBounded(path string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for {
-		lastErr = os.RemoveAll(path)
+		lastErr = removeTreeBounded(path, deadline)
 		if lastErr == nil {
 			return nil
 		}
-		if time.Now().After(deadline) {
+		if errors.Is(lastErr, context.DeadlineExceeded) || time.Now().After(deadline) {
 			return fmt.Errorf("%w: %v", context.DeadlineExceeded, lastErr)
 		}
 		// A command may still be closing a race profile or compiler output
@@ -178,6 +179,53 @@ func removeAllBounded(path string, timeout time.Duration) error {
 		retry := time.NewTimer(50 * time.Millisecond)
 		<-retry.C
 	}
+}
+
+// removeTreeBounded removes one disposable verifier tree while checking the
+// deadline between bounded directory reads and individual removals. Unlike
+// os.RemoveAll, a large or slow tree cannot spend an unbounded amount of time
+// inside one recursive call before the caller gets a chance to fail closed.
+func removeTreeBounded(path string, deadline time.Time) error {
+	if time.Now().After(deadline) {
+		return context.DeadlineExceeded
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return os.Remove(path)
+	}
+
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	for {
+		if time.Now().After(deadline) {
+			return context.DeadlineExceeded
+		}
+		names, readErr := directory.Readdirnames(128)
+		for _, name := range names {
+			if err := removeTreeBounded(filepath.Join(path, name), deadline); err != nil {
+				return err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func rejectResolvedExecutable(worktree string, runner Runner, spec CommandSpec, roots ...string) error {
