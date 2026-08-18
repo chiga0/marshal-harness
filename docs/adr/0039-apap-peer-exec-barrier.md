@@ -1,6 +1,6 @@
 # ADR 0039：APAP peer exec 单调屏障
 
-- 状态：提议（Proposed，2026-08-18；未接受前不得实现或启用）
+- 状态：已接受（Accepted，2026-08-18；接受只冻结合同，未实现前不得启用）
 - 日期：2026-08-18
 - 关联：[ADR 0038](0038-agent-production-authority-provider.md)、[ADR 0034](0034-qoder-cli-live-conformance-authority.md)、[ADR 0037](0037-codex-cli-production-authority.md)、Issue #136、Issue #137
 
