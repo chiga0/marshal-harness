@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -19,9 +20,11 @@ import (
 )
 
 const (
-	consumerStateName  = "state.json"
-	consumerLockName   = "state.lock"
-	consumerStateLimit = 24 << 10
+	consumerStateName      = "state.json"
+	consumerBootstrapName  = "bootstrap.json"
+	consumerLockName       = "state.lock"
+	consumerStateLimit     = 24 << 10
+	consumerBootstrapLimit = 8 << 10
 )
 
 type directoryIdentity struct {
@@ -87,6 +90,14 @@ func (store *CodexConsumerAuthorityStore) Recover(validateCurrentAuthority func(
 	if err != nil || !exists {
 		return state, exists, err
 	}
+	bootstrap, bootstrapExists, bootstrapErr := readConsumerBootstrap(int(store.stateRoot.Fd()))
+	if bootstrapErr != nil || !bootstrapExists {
+		return CodexConsumerAuthorityStateV1{}, false, newAuthorityFailure("constructor", "codex_fence_invalid", "Codex consumer bootstrap is unavailable", AuthorityFailureDetails{}, bootstrapErr, authorityNow())
+	}
+	bootstrapDigest, _ := BootstrapDigest(bootstrap)
+	if bootstrapDigest != state.Fence.BootstrapDigest || bootstrap.AuthorityNamespace != state.Fence.AuthorityNamespace || bootstrap.BootstrapID != state.Fence.BootstrapID || bootstrap.HostIdentityDigest != state.Fence.HostIdentityDigest {
+		return CodexConsumerAuthorityStateV1{}, false, newAuthorityFailure("constructor", "codex_fence_invalid", "Codex consumer bootstrap differs from committed state", AuthorityFailureDetails{}, nil, authorityNow())
+	}
 	if err := validateCurrentAuthority(state); err != nil {
 		return CodexConsumerAuthorityStateV1{}, false, newAuthorityFailure("constructor", "codex_fence_invalid", "Codex committed authority state cannot be recovered", AuthorityFailureDetails{AuthorityGeneration: state.Fence.AuthorityGeneration, TrustRootGeneration: state.Fence.TrustRootGeneration}, err, authorityNow())
 	}
@@ -98,6 +109,48 @@ func (store *CodexConsumerAuthorityStore) Recover(validateCurrentAuthority func(
 
 func (store *CodexConsumerAuthorityStore) Commit(next CodexConsumerAuthorityStateV1) error {
 	return store.commit(next, nil, nil, time.Time{})
+}
+
+// CommitBootstrap establishes the first trust state from a durable consumer
+// bootstrap and an initial keyset signed by the explicitly pinned root. A
+// config cannot self-select the initial root.
+func (store *CodexConsumerAuthorityStore) CommitBootstrap(bootstrap CodexConsumerBootstrapV1, hostIdentity LinuxHostIdentityV1, next CodexConsumerAuthorityStateV1, initialKeyset SignedEnvelopeV1, now time.Time) error {
+	if store == nil || store.stateRoot == nil {
+		return newAuthorityFailure("constructor", "codex_fence_invalid", "Codex consumer authority store is unavailable", AuthorityFailureDetails{}, nil, authorityNow())
+	}
+	lock, err := lockConsumerState(int(store.stateRoot.Fd()))
+	if err != nil {
+		return err
+	}
+	defer unlockConsumerState(lock)
+	if _, exists, err := readConsumerState(int(store.stateRoot.Fd())); err != nil || exists {
+		return newAuthorityFailure("constructor", "codex_trust_root_invalid", "Codex consumer bootstrap may only be committed once", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	committedBootstrap, bootstrapExists, bootstrapErr := readConsumerBootstrap(int(store.stateRoot.Fd()))
+	if bootstrapErr != nil || bootstrapExists && committedBootstrap != bootstrap {
+		return newAuthorityFailure("constructor", "codex_trust_root_invalid", "Codex consumer bootstrap identity already differs", AuthorityFailureDetails{}, bootstrapErr, authorityNow())
+	}
+	bootstrapDigest, err := BootstrapDigest(bootstrap)
+	hostErr := ValidateBootstrapHostIdentity(bootstrap, hostIdentity)
+	stateErr := next.Validate()
+	if err == nil {
+		err = hostErr
+	}
+	if err == nil {
+		err = stateErr
+	}
+	if err != nil || bootstrapDigest != next.Fence.BootstrapDigest || bootstrap.AuthorityNamespace != next.Fence.AuthorityNamespace || bootstrap.BootstrapID != next.Fence.BootstrapID || bootstrap.HostIdentityDigest != next.Fence.HostIdentityDigest {
+		return newAuthorityFailure("constructor", "codex_trust_root_invalid", "Codex consumer bootstrap binding is invalid", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	if err := VerifyInitialKeyset(next.ActiveRootPin, initialKeyset, now); err != nil {
+		return newAuthorityFailure("constructor", "codex_trust_root_invalid", "Codex initial root proof is invalid", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	if !bootstrapExists {
+		if err := writeConsumerBootstrap(int(store.stateRoot.Fd()), bootstrap); err != nil {
+			return err
+		}
+	}
+	return writeConsumerState(int(store.stateRoot.Fd()), next, nil)
 }
 
 // CommitRootRotation verifies old-root authorization and new-root possession
@@ -124,6 +177,17 @@ func (store *CodexConsumerAuthorityStore) commit(next CodexConsumerAuthorityStat
 	current, exists, err := readConsumerState(int(store.stateRoot.Fd()))
 	if err != nil {
 		return err
+	}
+	if !exists {
+		return newAuthorityFailure("constructor", "codex_trust_root_invalid", "Codex initial root requires consumer bootstrap proof", AuthorityFailureDetails{}, nil, authorityNow())
+	}
+	bootstrap, bootstrapExists, bootstrapErr := readConsumerBootstrap(int(store.stateRoot.Fd()))
+	bootstrapDigest := ""
+	if bootstrapExists && bootstrapErr == nil {
+		bootstrapDigest, bootstrapErr = BootstrapDigest(bootstrap)
+	}
+	if bootstrapErr != nil || !bootstrapExists || bootstrapDigest != current.Fence.BootstrapDigest || bootstrapDigest != next.Fence.BootstrapDigest || bootstrap.BootstrapID != current.Fence.BootstrapID || bootstrap.HostIdentityDigest != current.Fence.HostIdentityDigest {
+		return newAuthorityFailure("constructor", "codex_fence_invalid", "Codex consumer bootstrap binding is unavailable", AuthorityFailureDetails{}, bootstrapErr, authorityNow())
 	}
 	var currentPointer *CodexConsumerAuthorityStateV1
 	if exists {
@@ -156,7 +220,7 @@ func (store *CodexConsumerAuthorityStore) commit(next CodexConsumerAuthorityStat
 	} else if rotation != nil {
 		return newAuthorityFailure("constructor", "codex_trust_root_invalid", "Codex root rotation proof is unexpected", AuthorityFailureDetails{}, nil, authorityNow())
 	}
-	if exists && stateAuthorityIdentityEqual(current, next) {
+	if stateAuthorityIdentityEqual(current, next) {
 		return nil
 	}
 	return writeConsumerState(int(store.stateRoot.Fd()), next, hook)
@@ -225,6 +289,73 @@ func readConsumerState(directoryFD int) (CodexConsumerAuthorityStateV1, bool, er
 		return CodexConsumerAuthorityStateV1{}, false, newAuthorityFailure("constructor", "codex_fence_invalid", "Codex consumer authority state is invalid", AuthorityFailureDetails{}, err, authorityNow())
 	}
 	return state, true, nil
+}
+
+func readConsumerBootstrap(directoryFD int) (CodexConsumerBootstrapV1, bool, error) {
+	fd, err := unix.Openat(directoryFD, consumerBootstrapName, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return CodexConsumerBootstrapV1{}, false, nil
+	}
+	if err != nil {
+		return CodexConsumerBootstrapV1{}, false, newAuthorityFailure("constructor", "codex_fence_invalid", "Codex consumer bootstrap is unavailable", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	file := os.NewFile(uintptr(fd), consumerBootstrapName)
+	defer file.Close()
+	if err := validatePrivateRegularFD(fd); err != nil {
+		return CodexConsumerBootstrapV1{}, false, newAuthorityFailure("constructor", "codex_fence_invalid", "Codex consumer bootstrap is unsafe", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	data, err := io.ReadAll(io.LimitReader(file, consumerBootstrapLimit+1))
+	if err != nil || len(data) > consumerBootstrapLimit {
+		return CodexConsumerBootstrapV1{}, false, newAuthorityFailure("constructor", "codex_fence_invalid", "Codex consumer bootstrap is unreadable", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	data = bytes.TrimSuffix(data, []byte{'\n'})
+	var bootstrap CodexConsumerBootstrapV1
+	if err := decodeClosed(data, consumerBootstrapLimit, &bootstrap); err != nil || bootstrap.Validate() != nil {
+		return CodexConsumerBootstrapV1{}, false, newAuthorityFailure("constructor", "codex_fence_invalid", "Codex consumer bootstrap is invalid", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	return bootstrap, true, nil
+}
+
+func writeConsumerBootstrap(directoryFD int, bootstrap CodexConsumerBootstrapV1) error {
+	if err := bootstrap.Validate(); err != nil {
+		return newAuthorityFailure("constructor", "codex_fence_invalid", "Codex consumer bootstrap is invalid", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	raw, err := json.Marshal(bootstrap)
+	if err != nil {
+		return err
+	}
+	data, err := canonical.JSON(raw)
+	if err != nil || len(data)+1 > consumerBootstrapLimit {
+		return newAuthorityFailure("constructor", "codex_fence_invalid", "Codex consumer bootstrap is invalid", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	data = append(data, '\n')
+	token := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, token); err != nil {
+		return newAuthorityFailure("constructor", "codex_fence_commit_failed", "Codex consumer bootstrap transaction id is unavailable", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	temporary := "bootstrap." + hex.EncodeToString(token) + ".tmp"
+	fd, err := unix.Openat(directoryFD, temporary, unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_EXCL, 0o600)
+	if err != nil {
+		return newAuthorityFailure("constructor", "codex_fence_commit_failed", "Codex consumer bootstrap could not be staged", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	file := os.NewFile(uintptr(fd), temporary)
+	defer func() { _ = file.Close(); _ = unix.Unlinkat(directoryFD, temporary, 0) }()
+	if _, err := file.Write(data); err != nil {
+		return newAuthorityFailure("constructor", "codex_fence_commit_failed", "Codex consumer bootstrap could not be written", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	if err := file.Sync(); err != nil {
+		return newAuthorityFailure("constructor", "codex_fence_commit_failed", "Codex consumer bootstrap could not be synchronized", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	if err := file.Close(); err != nil {
+		return newAuthorityFailure("constructor", "codex_fence_commit_failed", "Codex consumer bootstrap could not be closed", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	if err := unix.Renameat(directoryFD, temporary, directoryFD, consumerBootstrapName); err != nil {
+		return newAuthorityFailure("constructor", "codex_fence_commit_failed", "Codex consumer bootstrap could not be committed", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	if err := unix.Fsync(directoryFD); err != nil {
+		return newAuthorityFailure("constructor", "codex_fence_commit_failed", "Codex consumer bootstrap directory could not be synchronized", AuthorityFailureDetails{}, err, authorityNow())
+	}
+	return nil
 }
 
 func writeConsumerState(directoryFD int, state CodexConsumerAuthorityStateV1, hook func(string) error) error {
@@ -396,84 +527,175 @@ func identityInAncestors(target directoryIdentity, descendantFD int) (bool, erro
 	}
 }
 
-type HeldWorkRoots struct {
-	worktree         *os.File
-	controlRoot      *os.File
-	worktreePath     string
-	controlRootPath  string
-	worktreeIdentity directoryIdentity
-	controlIdentity  directoryIdentity
+type heldLaunchPath struct {
+	role          string
+	path          string
+	file          *os.File
+	identity      MountObjectIdentityV1
+	ancestorChain []MountObjectIdentityV1
 }
 
-func OpenSeparatedWorkRoots(worktree, controlRoot string) (*HeldWorkRoots, error) {
-	work, _, err := openNoSymlinkDirectory(worktree)
-	if err != nil {
-		return nil, newAuthorityFailure("launch", "codex_path_invalid", "Codex worktree root is invalid", AuthorityFailureDetails{}, err, authorityNow())
-	}
-	control, _, err := openNoSymlinkDirectory(controlRoot)
-	if err != nil {
-		work.Close()
-		return nil, newAuthorityFailure("launch", "codex_path_invalid", "Codex control root is invalid", AuthorityFailureDetails{}, err, authorityNow())
-	}
-	overlap, err := heldDirectoriesOverlap(int(work.Fd()), int(control.Fd()))
-	if err != nil || overlap {
-		work.Close()
-		control.Close()
-		return nil, newAuthorityFailure("launch", "codex_path_topology_conflict", "Codex worktree and control roots overlap", AuthorityFailureDetails{}, err, authorityNow())
-	}
-	workIdentity, _ := statDirectory(int(work.Fd()))
-	controlIdentity, _ := statDirectory(int(control.Fd()))
-	return &HeldWorkRoots{worktree: work, controlRoot: control, worktreePath: worktree, controlRootPath: controlRoot, worktreeIdentity: workIdentity, controlIdentity: controlIdentity}, nil
+type HeldLaunchRoots struct {
+	mountNamespaceDevice uint64
+	mountNamespaceInode  uint64
+	paths                [6]heldLaunchPath
 }
 
-func (roots *HeldWorkRoots) Verify() error {
-	if roots == nil || roots.worktree == nil || roots.controlRoot == nil {
-		return errors.New("codex held work roots are unavailable")
+func OpenHeldLaunchRoots(authorityRoot, fenceRoot, worktree, controlRoot string) (*HeldLaunchRoots, error) {
+	rootPaths := []string{authorityRoot, fenceRoot, worktree, controlRoot}
+	roles := fixedRootRoles[:4]
+	roots := &HeldLaunchRoots{}
+	fail := func(code string, err error) (*HeldLaunchRoots, error) {
+		_ = roots.Close()
+		return nil, newAuthorityFailure("launch", code, "Codex held launch root topology is invalid", AuthorityFailureDetails{}, err, authorityNow())
 	}
-	work, err := statDirectory(int(roots.worktree.Fd()))
-	if err != nil || work != roots.worktreeIdentity {
-		return errors.New("codex worktree held identity changed")
+	for index, path := range rootPaths {
+		file, _, err := openNoSymlinkDirectory(path)
+		if err != nil {
+			return fail("codex_path_invalid", err)
+		}
+		roots.paths[index] = heldLaunchPath{role: roles[index], path: path, file: file}
 	}
-	control, err := statDirectory(int(roots.controlRoot.Fd()))
-	if err != nil || control != roots.controlIdentity {
-		return errors.New("codex control root held identity changed")
+	for index, name := range []string{"input", "output"} {
+		fd, err := unix.Openat(int(roots.paths[3].file.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return fail("codex_path_invalid", err)
+		}
+		roots.paths[index+4] = heldLaunchPath{role: fixedRootRoles[index+4], path: filepath.Join(controlRoot, name), file: os.NewFile(uintptr(fd), name)}
 	}
-	overlap, err := heldDirectoriesOverlap(int(roots.worktree.Fd()), int(roots.controlRoot.Fd()))
-	if err != nil || overlap {
-		return errors.New("codex held work roots overlap")
+	for left := 0; left < 4; left++ {
+		for right := left + 1; right < 4; right++ {
+			overlap, err := heldDirectoriesOverlap(int(roots.paths[left].file.Fd()), int(roots.paths[right].file.Fd()))
+			if err != nil || overlap {
+				return fail("codex_path_topology_conflict", err)
+			}
+		}
 	}
-	currentWork, _, err := openNoSymlinkDirectory(roots.worktreePath)
+	inputOutputOverlap, err := heldDirectoriesOverlap(int(roots.paths[4].file.Fd()), int(roots.paths[5].file.Fd()))
+	if err != nil || inputOutputOverlap {
+		return fail("codex_path_topology_conflict", err)
+	}
+	namespaceDevice, namespaceInode, err := heldMountNamespaceIdentity()
 	if err != nil {
-		return errors.New("codex worktree path identity changed")
+		return fail("codex_mount_identity_unsupported", err)
 	}
-	currentWorkIdentity, workErr := statDirectory(int(currentWork.Fd()))
-	_ = currentWork.Close()
-	if workErr != nil || currentWorkIdentity != roots.worktreeIdentity {
-		return errors.New("codex worktree path identity changed")
+	roots.mountNamespaceDevice, roots.mountNamespaceInode = namespaceDevice, namespaceInode
+	for index := range roots.paths {
+		identity, err := mountObjectIdentityForFD(int(roots.paths[index].file.Fd()), roots.paths[index].role, nil)
+		if err != nil {
+			return fail("codex_mount_identity_unsupported", err)
+		}
+		chain, err := mountAncestorChain(int(roots.paths[index].file.Fd()), roots.paths[index].role+"Ancestor")
+		if err != nil {
+			return fail("codex_mount_identity_unsupported", err)
+		}
+		roots.paths[index].identity, roots.paths[index].ancestorChain = identity, chain
 	}
-	currentControl, _, err := openNoSymlinkDirectory(roots.controlRootPath)
+	if roots.paths[4].identity.Mode&0o222 != 0 {
+		return fail("codex_path_permission_invalid", errors.New("control input is writable"))
+	}
+	return roots, nil
+}
+
+func mountAncestorChain(directoryFD int, role string) ([]MountObjectIdentityV1, error) {
+	current, err := unix.Openat(directoryFD, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		return errors.New("codex control root path identity changed")
+		return nil, err
 	}
-	currentControlIdentity, controlErr := statDirectory(int(currentControl.Fd()))
-	_ = currentControl.Close()
-	if controlErr != nil || currentControlIdentity != roots.controlIdentity {
-		return errors.New("codex control root path identity changed")
+	defer func() { _ = unix.Close(current) }()
+	var result []MountObjectIdentityV1
+	for len(result) < 256 {
+		identity, err := mountObjectIdentityForFD(current, role, nil)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, identity)
+		parent, err := unix.Openat(current, "..", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return nil, err
+		}
+		parentIdentity, err := mountObjectIdentityForFD(parent, role, nil)
+		if err != nil {
+			_ = unix.Close(parent)
+			return nil, err
+		}
+		if identity.DeviceMajor == parentIdentity.DeviceMajor && identity.DeviceMinor == parentIdentity.DeviceMinor && identity.Inode == parentIdentity.Inode && identity.MountIDUnique == parentIdentity.MountIDUnique {
+			_ = unix.Close(parent)
+			return result, nil
+		}
+		_ = unix.Close(current)
+		current = parent
+	}
+	return nil, errors.New("codex mount ancestor chain exceeds limit")
+}
+
+func (roots *HeldLaunchRoots) Snapshot(phase string, executables []TopologyObjectV1) (TopologySnapshotV1, error) {
+	if roots == nil {
+		return TopologySnapshotV1{}, errors.New("codex held launch roots are unavailable")
+	}
+	if err := roots.Verify(); err != nil {
+		return TopologySnapshotV1{}, err
+	}
+	fixed := make([]TopologyObjectV1, len(roots.paths))
+	for index := range roots.paths {
+		fixed[index] = TopologyObjectV1{Identity: roots.paths[index].identity, AncestorChain: append([]MountObjectIdentityV1(nil), roots.paths[index].ancestorChain...)}
+	}
+	snapshot := TopologySnapshotV1{SchemaVersion: "marshal.codex.topology-snapshot.v1", MountNamespaceDevice: roots.mountNamespaceDevice, MountNamespaceInode: roots.mountNamespaceInode, Phase: phase, FixedRoots: fixed, Executables: executables}
+	return snapshot, snapshot.Validate()
+}
+
+func (roots *HeldLaunchRoots) Verify() error {
+	if roots == nil {
+		return errors.New("codex held launch roots are unavailable")
+	}
+	namespaceDevice, namespaceInode, err := heldMountNamespaceIdentity()
+	if err != nil || namespaceDevice != roots.mountNamespaceDevice || namespaceInode != roots.mountNamespaceInode {
+		return errors.New("codex held mount namespace identity changed")
+	}
+	for index := range roots.paths {
+		held := &roots.paths[index]
+		identity, err := mountObjectIdentityForFD(int(held.file.Fd()), held.role, nil)
+		if err != nil || identity != held.identity {
+			return errors.New("codex held root identity changed")
+		}
+		chain, err := mountAncestorChain(int(held.file.Fd()), held.role+"Ancestor")
+		if err != nil || !reflect.DeepEqual(chain, held.ancestorChain) {
+			return errors.New("codex held root ancestry changed")
+		}
+		reopened, _, err := openNoSymlinkDirectory(held.path)
+		if err != nil {
+			return errors.New("codex held root pathname changed")
+		}
+		reopenedIdentity, reopenErr := mountObjectIdentityForFD(int(reopened.Fd()), held.role, nil)
+		_ = reopened.Close()
+		if reopenErr != nil || reopenedIdentity != held.identity {
+			return errors.New("codex held root pathname identity changed")
+		}
+	}
+	for left := 0; left < 4; left++ {
+		for right := left + 1; right < 4; right++ {
+			overlap, err := heldDirectoriesOverlap(int(roots.paths[left].file.Fd()), int(roots.paths[right].file.Fd()))
+			if err != nil || overlap {
+				return errors.New("codex held launch roots overlap")
+			}
+		}
+	}
+	if roots.paths[4].identity.Mode&0o222 != 0 {
+		return errors.New("codex held control input became writable")
 	}
 	return nil
 }
 
-func (roots *HeldWorkRoots) Close() error {
+func (roots *HeldLaunchRoots) Close() error {
 	if roots == nil {
 		return nil
 	}
 	var result error
-	if roots.worktree != nil {
-		result = roots.worktree.Close()
-	}
-	if roots.controlRoot != nil {
-		if err := roots.controlRoot.Close(); result == nil {
-			result = err
+	for index := range roots.paths {
+		if roots.paths[index].file != nil {
+			if err := roots.paths[index].file.Close(); result == nil {
+				result = err
+			}
 		}
 	}
 	return result

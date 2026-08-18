@@ -10,16 +10,19 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 )
 
 const (
 	consumerStateSchema      = "marshal.codex.consumer-authority-state.v1"
+	consumerBootstrapSchema  = "marshal.codex.consumer-bootstrap.v1"
 	activeRootPinSchema      = "marshal.codex.active-root-pin.v1"
 	consumerFenceSchema      = "marshal.codex.consumer-fence.v1"
 	hostIdentitySchema       = "marshal.codex.linux-host-identity.v1"
@@ -66,20 +69,28 @@ type AuthorityFailureDetails struct {
 func (failure *AuthorityFailure) Error() string { return failure.Code + ": " + failure.SafeMessage }
 func (failure *AuthorityFailure) Unwrap() error { return failure.cause }
 
-var transientAuthorityCodes = map[string]bool{
-	"codex_authority_temporarily_unavailable": true,
-	"codex_fence_lock_busy":                   true,
+// Permanent implements the Core error classification contract. Reconcile and
+// transient failures must remain visible to their dedicated recovery paths.
+func (failure *AuthorityFailure) Permanent() bool {
+	return failure != nil && failure.RetryClass == "permanent"
+}
+
+var authorityCodes = map[string]string{
+	"codex_conformance_pending": "permanent", "codex_not_registered": "permanent",
+	"codex_platform_unsupported": "permanent", "codex_host_attestation_unsupported": "permanent", "codex_mount_identity_unsupported": "permanent", "codex_fd_exec_unavailable": "permanent", "codex_executable_unsafe": "permanent", "codex_launch_identity_mismatch": "permanent", "codex_launch_receipt_invalid": "permanent", "codex_launch_nonce_replay": "permanent", "codex_launch_outcome_ambiguous": "reconcile-required",
+	"codex_authority_config_missing": "permanent", "codex_authority_config_invalid": "permanent", "codex_authority_signature_invalid": "permanent", "codex_trust_root_invalid": "permanent", "codex_key_revoked": "permanent",
+	"codex_authority_rollback": "permanent", "codex_authority_identity_conflict": "permanent", "codex_authority_temporarily_unavailable": "transient", "codex_fence_invalid": "permanent", "codex_fence_lock_busy": "transient", "codex_fence_commit_failed": "permanent",
+	"codex_evidence_missing": "permanent", "codex_evidence_invalid": "permanent", "codex_evidence_expired": "permanent", "codex_evidence_not_yet_valid": "permanent", "codex_evidence_revoked": "permanent", "codex_evidence_host_mismatch": "permanent", "codex_evidence_binary_mismatch": "permanent", "codex_evidence_contract_mismatch": "permanent",
+	"codex_path_invalid": "permanent", "codex_path_unsafe_type": "permanent", "codex_path_identity_changed": "permanent", "codex_path_topology_conflict": "permanent", "codex_path_permission_invalid": "permanent",
+	"codex_protocol_invalid": "permanent", "codex_permission_denied": "permanent", "codex_output_limit_exceeded": "permanent", "codex_timeout": "permanent", "codex_canceled": "permanent", "codex_process_failed": "permanent", "codex_internal_fail_closed": "permanent",
 }
 
 func newAuthorityFailure(operation, code, safe string, details AuthorityFailureDetails, cause error, now time.Time) *AuthorityFailure {
-	retry := "permanent"
-	if transientAuthorityCodes[code] {
-		retry = "transient"
+	retry, known := authorityCodes[code]
+	if !known {
+		code, retry = "codex_internal_fail_closed", "permanent"
 	}
-	if code == "codex_launch_outcome_ambiguous" {
-		retry = "reconcile-required"
-	}
-	if len(safe) == 0 || len([]byte(safe)) > 512 {
+	if len(safe) == 0 || len([]byte(safe)) > 512 || !utf8.ValidString(safe) {
 		safe = "Codex authority rejected the operation"
 	}
 	return &AuthorityFailure{
@@ -87,6 +98,34 @@ func newAuthorityFailure(operation, code, safe string, details AuthorityFailureD
 		Operation: operation, Code: code, RetryClass: retry,
 		SafeMessage: safe, ObservedAt: formatAuthorityTime(now), Details: details, cause: cause,
 	}
+}
+
+func (failure AuthorityFailure) Validate() error {
+	expectedRetry, ok := authorityCodes[failure.Code]
+	validOperation := failure.Operation == "constructor" || failure.Operation == "probe" || failure.Operation == "launch" || failure.Operation == "run" || failure.Operation == "doctor"
+	if failure.SchemaVersion != "marshal.adapter-failure.v1" || failure.AdapterID != adapterID || !validOperation || !ok || failure.RetryClass != expectedRetry || len(failure.SafeMessage) == 0 || len([]byte(failure.SafeMessage)) > 512 || !utf8.ValidString(failure.SafeMessage) {
+		return errors.New("codex adapter failure carrier is invalid")
+	}
+	if _, err := parseAuthorityTime(failure.ObservedAt); err != nil {
+		return err
+	}
+	for _, digest := range []string{failure.Details.EvidenceDigest, failure.Details.ConfigDigest} {
+		if digest != "" && !validDigest(digest) {
+			return errors.New("codex adapter failure detail digest is invalid")
+		}
+	}
+	for _, generation := range []uint64{failure.Details.AuthorityGeneration, failure.Details.TrustRootGeneration} {
+		if generation != 0 && !validGeneration(generation) {
+			return errors.New("codex adapter failure detail generation is invalid")
+		}
+	}
+	if failure.Details.Phase != "" && !validID(failure.Details.Phase) {
+		return errors.New("codex adapter failure detail phase is invalid")
+	}
+	if failure.Details.Platform != "" && failure.Details.Platform != "linux" && failure.Details.Platform != "darwin" {
+		return errors.New("codex adapter failure detail platform is invalid")
+	}
+	return nil
 }
 
 type SignatureV1 struct {
@@ -126,6 +165,53 @@ type CodexAuthorityKeysetV1 struct {
 	Keys                 []AuthorityPublicKeyV1 `json:"keys"`
 	RevokedKeyIDs        []string               `json:"revokedKeyIds"`
 	RootRotation         *RootRotationV1        `json:"rootRotation"`
+}
+
+type CodexConsumerBootstrapV1 struct {
+	SchemaVersion                 string `json:"schemaVersion"`
+	AuthorityNamespace            string `json:"authorityNamespace"`
+	AdapterID                     string `json:"adapterId"`
+	BootstrapID                   string `json:"bootstrapId"`
+	HostIdentityDigest            string `json:"hostIdentityDigest"`
+	MachineIDDigest               string `json:"machineIdDigest"`
+	TPMHostKeyPublic              string `json:"tpmHostKeyPublic"`
+	TPMHostKeyPublicDigest        string `json:"tpmHostKeyPublicDigest"`
+	TPMHostKeyQualifiedNameDigest string `json:"tpmHostKeyQualifiedNameDigest"`
+	CreatedAt                     string `json:"createdAt"`
+}
+
+func (bootstrap CodexConsumerBootstrapV1) Validate() error {
+	if bootstrap.SchemaVersion != consumerBootstrapSchema || bootstrap.AdapterID != adapterID || !validID(bootstrap.AuthorityNamespace) || !validDigest(bootstrap.HostIdentityDigest) || !validDigest(bootstrap.MachineIDDigest) || !validDigest(bootstrap.TPMHostKeyPublicDigest) || !validDigest(bootstrap.TPMHostKeyQualifiedNameDigest) {
+		return errors.New("codex consumer bootstrap is invalid")
+	}
+	if _, err := decodeNonce(bootstrap.BootstrapID); err != nil {
+		return err
+	}
+	publicArea, err := base64.StdEncoding.DecodeString(bootstrap.TPMHostKeyPublic)
+	if err != nil || len(publicArea) == 0 || len(publicArea) > 1024 || base64.StdEncoding.EncodeToString(publicArea) != bootstrap.TPMHostKeyPublic || canonicalDigestBytes(publicArea) != bootstrap.TPMHostKeyPublicDigest {
+		return errors.New("codex consumer bootstrap TPM public area is invalid")
+	}
+	_, err = parseAuthorityTime(bootstrap.CreatedAt)
+	return err
+}
+
+func BootstrapDigest(bootstrap CodexConsumerBootstrapV1) (string, error) {
+	if err := bootstrap.Validate(); err != nil {
+		return "", err
+	}
+	return canonicalDigest(bootstrap)
+}
+
+func ValidateBootstrapHostIdentity(bootstrap CodexConsumerBootstrapV1, identity LinuxHostIdentityV1) error {
+	bootstrapDigest, err := BootstrapDigest(bootstrap)
+	if err != nil || bootstrapDigest == "" {
+		return errors.New("codex consumer bootstrap is invalid")
+	}
+	hostDigest, err := HostIdentityDigest(identity)
+	if err != nil || bootstrap.BootstrapID != identity.BootstrapID || bootstrap.HostIdentityDigest != hostDigest || bootstrap.MachineIDDigest != identity.MachineIDDigest || bootstrap.TPMHostKeyPublic != identity.TPMHostKeyPublic || bootstrap.TPMHostKeyPublicDigest != identity.TPMHostKeyPublicDigest || bootstrap.TPMHostKeyQualifiedNameDigest != identity.TPMHostKeyQualifiedNameDigest {
+		return errors.New("codex consumer bootstrap and host identity differ")
+	}
+	return nil
 }
 
 type CodexActiveRootPinV1 struct {
@@ -183,6 +269,56 @@ type LinuxHostAttestationV1 struct {
 	ChallengeNonce     string              `json:"challengeNonce"`
 	ChallengeAlgorithm string              `json:"challengeAlg"`
 	ChallengeSignature string              `json:"challengeSignature"`
+}
+
+type ExecutableIdentityV1 struct {
+	CanonicalRealpath   string `json:"canonicalRealpath"`
+	DeviceMajor         uint64 `json:"deviceMajor"`
+	DeviceMinor         uint64 `json:"deviceMinor"`
+	Inode               uint64 `json:"inode"`
+	MountIDUnique       uint64 `json:"mountIdUnique"`
+	Size                uint64 `json:"size"`
+	Mode                uint32 `json:"mode"`
+	SHA256              string `json:"sha256"`
+	Version             string `json:"version"`
+	VersionOutputDigest string `json:"versionOutputDigest"`
+}
+
+type CodexContractBindingV1 struct {
+	AdapterContractDigest    string   `json:"adapterContractDigest"`
+	LauncherBuildDigest      string   `json:"launcherBuildDigest"`
+	ProfileDigest            string   `json:"profileDigest"`
+	ArgvMatrixDigest         string   `json:"argvMatrixDigest"`
+	EnvironmentDigest        string   `json:"environmentDigest"`
+	EventContractDigest      string   `json:"eventContractDigest"`
+	PermissionContractDigest string   `json:"permissionContractDigest"`
+	ToolPolicyDigest         string   `json:"toolPolicyDigest"`
+	ResultContractDigest     string   `json:"resultContractDigest"`
+	OutputLimitDigest        string   `json:"outputLimitDigest"`
+	NativeBudgetsDigest      string   `json:"nativeBudgetsDigest"`
+	ExecutionProfiles        []string `json:"executionProfiles"`
+}
+
+type CodexProbeObservationV1 struct {
+	SchemaVersion            string                 `json:"schemaVersion"`
+	AuthorityNamespace       string                 `json:"authorityNamespace"`
+	AuthorityGeneration      uint64                 `json:"authorityGeneration"`
+	TrustRootGeneration      uint64                 `json:"trustRootGeneration"`
+	BootstrapID              string                 `json:"bootstrapId"`
+	ObservationNonce         string                 `json:"observationNonce"`
+	VerifierKeyID            string                 `json:"verifierKeyId"`
+	VerifierBuildDigest      string                 `json:"verifierBuildDigest"`
+	ObservedAt               string                 `json:"observedAt"`
+	ValidUntil               string                 `json:"validUntil"`
+	HostAttestation          LinuxHostAttestationV1 `json:"hostAttestation"`
+	BinaryIdentity           ExecutableIdentityV1   `json:"binaryIdentity"`
+	Contract                 CodexContractBindingV1 `json:"contract"`
+	SuiteDigest              string                 `json:"suiteDigest"`
+	ProbeArtifactDigest      string                 `json:"probeArtifactDigest"`
+	AggregateChallengeDigest string                 `json:"aggregateChallengeDigest"`
+	TopologyDigest           string                 `json:"topologyDigest"`
+	ReceiptDigests           []string               `json:"receiptDigests"`
+	Verdicts                 AuthorityVerdictsV1    `json:"verdicts"`
 }
 
 type CodexProbeExecutionReceiptV1 struct {
@@ -320,37 +456,51 @@ type CodexWorkerAuthorityContextV1 struct {
 	AuthoritySigningPrivateKeyCount uint8  `json:"authoritySigningPrivateKeyCount"`
 }
 
-func ParseCodexAuthorityConfig(data []byte) (CodexAuthorityConfigV1, error) {
-	var config CodexAuthorityConfigV1
-	if err := decodeClosed(data, 64<<10, &config); err != nil {
-		return CodexAuthorityConfigV1{}, err
+func parseSignedPayload[T any](data []byte, maximum int, validate func(T) error) (SignedEnvelopeV1, T, error) {
+	var zero T
+	var envelope SignedEnvelopeV1
+	if err := decodeClosed(data, maximum, &envelope); err != nil {
+		return SignedEnvelopeV1{}, zero, err
 	}
-	if err := config.Validate(); err != nil {
-		return CodexAuthorityConfigV1{}, err
+	if len(envelope.Signatures) != 1 || !validDigest(envelope.PayloadDigest) {
+		return SignedEnvelopeV1{}, zero, errors.New("codex signed object envelope is invalid")
 	}
-	return config, nil
+	signature := envelope.Signatures[0]
+	if len(signature.Value) != base64.StdEncoding.EncodedLen(ed25519.SignatureSize) {
+		return SignedEnvelopeV1{}, zero, errors.New("codex signed object signature shape is invalid")
+	}
+	decodedSignature, decodeErr := base64.StdEncoding.DecodeString(signature.Value)
+	if signature.Algorithm != "Ed25519" || !validID(signature.KeyID) || decodeErr != nil || len(decodedSignature) != ed25519.SignatureSize || base64.StdEncoding.EncodeToString(decodedSignature) != signature.Value {
+		return SignedEnvelopeV1{}, zero, errors.New("codex signed object signature shape is invalid")
+	}
+	digest, err := canonical.DigestJSON(envelope.Payload)
+	if err != nil || digest != envelope.PayloadDigest {
+		return SignedEnvelopeV1{}, zero, errors.New("codex signed object payload digest is invalid")
+	}
+	var payload T
+	if err := decodeClosed(envelope.Payload, maximum, &payload); err != nil {
+		return SignedEnvelopeV1{}, zero, err
+	}
+	if err := validate(payload); err != nil {
+		return SignedEnvelopeV1{}, zero, err
+	}
+	return envelope, payload, nil
 }
 
-func ParseCodexProductionEvidence(data []byte) (CodexProductionEvidenceV1, error) {
-	var evidence CodexProductionEvidenceV1
-	if err := decodeClosed(data, 256<<10, &evidence); err != nil {
-		return CodexProductionEvidenceV1{}, err
-	}
-	if err := evidence.Validate(); err != nil {
-		return CodexProductionEvidenceV1{}, err
-	}
-	return evidence, nil
+func ParseCodexAuthorityConfig(data []byte) (SignedEnvelopeV1, CodexAuthorityConfigV1, error) {
+	return parseSignedPayload(data, 64<<10, func(config CodexAuthorityConfigV1) error { return config.Validate() })
 }
 
-func ParseCodexProbeReceipt(data []byte) (CodexProbeExecutionReceiptV1, error) {
-	var receipt CodexProbeExecutionReceiptV1
-	if err := decodeClosed(data, 64<<10, &receipt); err != nil {
-		return CodexProbeExecutionReceiptV1{}, err
-	}
-	if err := receipt.Validate(); err != nil {
-		return CodexProbeExecutionReceiptV1{}, err
-	}
-	return receipt, nil
+func ParseCodexProductionEvidence(data []byte) (SignedEnvelopeV1, CodexProductionEvidenceV1, error) {
+	return parseSignedPayload(data, 256<<10, func(evidence CodexProductionEvidenceV1) error { return evidence.Validate() })
+}
+
+func ParseCodexProbeObservation(data []byte) (SignedEnvelopeV1, CodexProbeObservationV1, error) {
+	return parseSignedPayload(data, 256<<10, func(observation CodexProbeObservationV1) error { return observation.Validate() })
+}
+
+func ParseCodexProbeReceipt(data []byte) (SignedEnvelopeV1, CodexProbeExecutionReceiptV1, error) {
+	return parseSignedPayload(data, 64<<10, func(receipt CodexProbeExecutionReceiptV1) error { return receipt.Validate() })
 }
 
 func ParseCodexAuthorityKeysetEnvelope(data []byte) (SignedEnvelopeV1, error) {
@@ -366,6 +516,9 @@ func ParseCodexAuthorityKeysetEnvelope(data []byte) (SignedEnvelopeV1, error) {
 		return SignedEnvelopeV1{}, errors.New("codex authority keyset envelope digest is invalid")
 	}
 	for index, signature := range envelope.Signatures {
+		if len(signature.Value) != base64.StdEncoding.EncodedLen(ed25519.SignatureSize) {
+			return SignedEnvelopeV1{}, errors.New("codex authority keyset envelope signature set is invalid")
+		}
 		value, decodeErr := base64.StdEncoding.DecodeString(signature.Value)
 		if signature.Algorithm != "Ed25519" || !validID(signature.KeyID) || decodeErr != nil || len(value) != ed25519.SignatureSize || index > 0 && envelope.Signatures[index-1].KeyID >= signature.KeyID {
 			return SignedEnvelopeV1{}, errors.New("codex authority keyset envelope signature set is invalid")
@@ -516,6 +669,80 @@ func RevocationSetDigest(config CodexAuthorityConfigV1) (string, error) {
 	return canonicalDigest(projection)
 }
 
+func (identity ExecutableIdentityV1) Validate() error {
+	if !filepath.IsAbs(identity.CanonicalRealpath) || filepath.Clean(identity.CanonicalRealpath) != identity.CanonicalRealpath || len(identity.CanonicalRealpath) > 4096 || identity.Inode == 0 || identity.MountIDUnique == 0 || identity.Size == 0 || strings.TrimSpace(identity.Version) == "" || !validDigest(identity.SHA256) || !validDigest(identity.VersionOutputDigest) {
+		return errors.New("codex executable identity is invalid")
+	}
+	return nil
+}
+
+func (binding CodexContractBindingV1) Validate() error {
+	for _, digest := range []string{binding.AdapterContractDigest, binding.LauncherBuildDigest, binding.ProfileDigest, binding.ArgvMatrixDigest, binding.EnvironmentDigest, binding.EventContractDigest, binding.PermissionContractDigest, binding.ToolPolicyDigest, binding.ResultContractDigest, binding.OutputLimitDigest, binding.NativeBudgetsDigest} {
+		if !validDigest(digest) {
+			return errors.New("codex contract binding digest is invalid")
+		}
+	}
+	return validateExecutionProfiles(binding.ExecutionProfiles)
+}
+
+func validateExecutionProfiles(profiles []string) error {
+	if len(profiles) < 1 || len(profiles) > 2 {
+		return errors.New("codex execution profiles are invalid")
+	}
+	previous := -1
+	for _, profile := range profiles {
+		index := -1
+		if profile == "read-only" {
+			index = 0
+		} else if profile == "workspace-write" {
+			index = 1
+		}
+		if index < 0 || index <= previous {
+			return errors.New("codex execution profiles are invalid")
+		}
+		previous = index
+	}
+	return nil
+}
+
+func (observation CodexProbeObservationV1) Validate() error {
+	if observation.SchemaVersion != "marshal.codex.probe-observation.v1" || !validID(observation.AuthorityNamespace) || !validGeneration(observation.AuthorityGeneration) || !validGeneration(observation.TrustRootGeneration) || !validID(observation.VerifierKeyID) || !observation.Verdicts.allTrue() {
+		return errors.New("codex probe observation is invalid")
+	}
+	if _, err := decodeNonce(observation.BootstrapID); err != nil {
+		return err
+	}
+	if _, err := decodeNonce(observation.ObservationNonce); err != nil {
+		return err
+	}
+	for _, digest := range []string{observation.VerifierBuildDigest, observation.SuiteDigest, observation.ProbeArtifactDigest, observation.AggregateChallengeDigest, observation.TopologyDigest} {
+		if !validDigest(digest) {
+			return errors.New("codex probe observation digest is invalid")
+		}
+	}
+	if err := observation.HostAttestation.HostIdentity.Validate(); err != nil {
+		return err
+	}
+	if err := observation.BinaryIdentity.Validate(); err != nil {
+		return err
+	}
+	if err := observation.Contract.Validate(); err != nil {
+		return err
+	}
+	if err := validateDigestSet(observation.ReceiptDigests, 32); err != nil || len(observation.ReceiptDigests) == 0 {
+		return errors.New("codex probe observation receipt set is invalid")
+	}
+	observedAt, err := parseAuthorityTime(observation.ObservedAt)
+	if err != nil {
+		return err
+	}
+	validUntil, err := parseAuthorityTime(observation.ValidUntil)
+	if err != nil || validUntil.Before(observedAt) || validUntil.Sub(observedAt) > 24*time.Hour {
+		return errors.New("codex probe observation time window is invalid")
+	}
+	return nil
+}
+
 func (receipt CodexProbeExecutionReceiptV1) Validate() error {
 	if receipt.SchemaVersion != probeReceiptSchema || !validID(receipt.AuthorityNamespace) || !validGeneration(receipt.AuthorityGeneration) || !validGeneration(receipt.TrustRootGeneration) || !validID(receipt.VariantID) || !validID(receipt.ReceiptKeyID) {
 		return errors.New("codex probe receipt identity is invalid")
@@ -607,7 +834,7 @@ func (config CodexAuthorityConfigV1) Validate() error {
 	return nil
 }
 
-func ValidateAuthorityProjection(config CodexAuthorityConfigV1, evidence CodexProductionEvidenceV1, evidenceDigest string, receipts []CodexProbeExecutionReceiptV1, receiptDigests map[string]string) error {
+func validateAuthorityProjection(config CodexAuthorityConfigV1, evidence CodexProductionEvidenceV1, evidenceDigest string, receipts []CodexProbeExecutionReceiptV1, receiptDigests map[string]string) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
@@ -658,6 +885,190 @@ func ValidateAuthorityProjection(config CodexAuthorityConfigV1, evidence CodexPr
 	return nil
 }
 
+type VerifiedAuthorityBundleV1 struct {
+	Config       CodexAuthorityConfigV1
+	Evidence     CodexProductionEvidenceV1
+	Observation  CodexProbeObservationV1
+	Receipts     []CodexProbeExecutionReceiptV1
+	ConfigDigest string
+}
+
+func verifyPinnedKeyset(pin CodexActiveRootPinV1, envelope SignedEnvelopeV1, now time.Time) (CodexAuthorityKeysetV1, error) {
+	if err := pin.Validate(); err != nil {
+		return CodexAuthorityKeysetV1{}, err
+	}
+	var keyset CodexAuthorityKeysetV1
+	if err := decodeClosed(envelope.Payload, 64<<10, &keyset); err != nil || keyset.validate() != nil {
+		return CodexAuthorityKeysetV1{}, errors.New("codex authority keyset payload is invalid")
+	}
+	if envelope.PayloadDigest != pin.KeysetDigest || keyset.AuthorityNamespace != pin.AuthorityNamespace || keyset.TrustRootGeneration != pin.TrustRootGeneration {
+		return CodexAuthorityKeysetV1{}, errors.New("codex authority keyset differs from active root pin")
+	}
+	expectedSignatures := 1
+	if keyset.RootRotation != nil {
+		expectedSignatures = 2
+	}
+	if len(envelope.Signatures) != expectedSignatures {
+		return CodexAuthorityKeysetV1{}, errors.New("codex authority keyset signature cardinality is invalid")
+	}
+	for index, signature := range envelope.Signatures {
+		if len(signature.Value) != base64.StdEncoding.EncodedLen(ed25519.SignatureSize) {
+			return CodexAuthorityKeysetV1{}, errors.New("codex authority keyset signature set is invalid")
+		}
+		decoded, decodeErr := base64.StdEncoding.DecodeString(signature.Value)
+		if signature.Algorithm != "Ed25519" || !validID(signature.KeyID) || decodeErr != nil || len(decoded) != ed25519.SignatureSize || index > 0 && envelope.Signatures[index-1].KeyID >= signature.KeyID {
+			return CodexAuthorityKeysetV1{}, errors.New("codex authority keyset signature set is invalid")
+		}
+	}
+	root, err := decodeEd25519Public(pin.RootPublicKey)
+	if err != nil {
+		return CodexAuthorityKeysetV1{}, err
+	}
+	for _, leaf := range keyset.Keys {
+		leafPublic, _ := decodeEd25519Public(leaf.PublicKey)
+		if bytes.Equal(root, leafPublic) {
+			return CodexAuthorityKeysetV1{}, errors.New("codex root key is reused as a leaf authority")
+		}
+	}
+	var rootSignature *SignatureV1
+	for index := range envelope.Signatures {
+		if envelope.Signatures[index].KeyID == pin.RootKeyID {
+			rootSignature = &envelope.Signatures[index]
+		}
+	}
+	if rootSignature == nil {
+		return CodexAuthorityKeysetV1{}, errors.New("codex authority keyset lacks active root signature")
+	}
+	rootEnvelope := envelope
+	rootEnvelope.Signatures = []SignatureV1{*rootSignature}
+	if err := verifyEnvelope(rootEnvelope, authorityKeysetSchema, authorityKeysetSchema, 64<<10, map[string]ed25519.PublicKey{pin.RootKeyID: root}, 1); err != nil {
+		return CodexAuthorityKeysetV1{}, err
+	}
+	validFrom, err := parseAuthorityTime(keyset.ValidFrom)
+	if err != nil || validFrom.After(now.Add(time.Minute)) {
+		return CodexAuthorityKeysetV1{}, errors.New("codex authority keyset is not yet valid")
+	}
+	return keyset, nil
+}
+
+func keyForUsage(keyset CodexAuthorityKeysetV1, keyID, usage string, at time.Time) (ed25519.PublicKey, error) {
+	if contains(keyset.RevokedKeyIDs, keyID) {
+		return nil, errors.New("codex authority signing key is revoked")
+	}
+	for _, key := range keyset.Keys {
+		if key.KeyID != keyID {
+			continue
+		}
+		notBefore, err := parseAuthorityTime(key.NotBefore)
+		if err != nil {
+			return nil, err
+		}
+		notAfter, err := parseAuthorityTime(key.NotAfter)
+		if err != nil || key.Usage != usage || at.Before(notBefore) || at.After(notAfter) {
+			return nil, errors.New("codex authority signing key usage or validity is invalid")
+		}
+		return decodeEd25519Public(key.PublicKey)
+	}
+	return nil, errors.New("codex authority signing key is unknown")
+}
+
+func verifyLeafEnvelope(envelope SignedEnvelopeV1, domain, schema, usage, keyID string, at time.Time, maximum int, keyset CodexAuthorityKeysetV1) error {
+	if len(envelope.Signatures) != 1 || envelope.Signatures[0].KeyID != keyID {
+		return errors.New("codex signed object key identity is invalid")
+	}
+	key, err := keyForUsage(keyset, keyID, usage, at)
+	if err != nil {
+		return err
+	}
+	return verifyEnvelope(envelope, domain, schema, maximum, map[string]ed25519.PublicKey{keyID: key}, 1)
+}
+
+// VerifyAuthorityBundle is the only authority-object consumption entry point
+// in this core slice. It accepts signed envelopes, validates exact domains and
+// key usages, and binds config -> evidence -> observation -> receipts before
+// returning payloads to a caller.
+func VerifyAuthorityBundle(now time.Time, pin CodexActiveRootPinV1, keysetEnvelope, configEnvelope, evidenceEnvelope, observationEnvelope SignedEnvelopeV1, receiptEnvelopes []SignedEnvelopeV1, expectedHostNonce []byte, hostVerifier TPMHostAttestationVerifier, nonceFence *HostAttestationNonceFence) (VerifiedAuthorityBundleV1, error) {
+	keyset, err := verifyPinnedKeyset(pin, keysetEnvelope, now)
+	if err != nil {
+		return VerifiedAuthorityBundleV1{}, err
+	}
+	var config CodexAuthorityConfigV1
+	if err := decodeClosed(configEnvelope.Payload, 64<<10, &config); err != nil || config.Validate() != nil {
+		return VerifiedAuthorityBundleV1{}, errors.New("codex signed config payload is invalid")
+	}
+	configTime, _ := parseAuthorityTime(config.IssuedAt)
+	if configTime.After(now.Add(time.Minute)) {
+		return VerifiedAuthorityBundleV1{}, errors.New("codex authority config is from the future")
+	}
+	if err := verifyLeafEnvelope(configEnvelope, authorityConfigSchema, authorityConfigSchema, "config", config.ConfigKeyID, configTime, 64<<10, keyset); err != nil {
+		return VerifiedAuthorityBundleV1{}, err
+	}
+	if config.KeysetDigest != keysetEnvelope.PayloadDigest || config.TrustRootGeneration != keyset.TrustRootGeneration || config.AuthorityNamespace != keyset.AuthorityNamespace {
+		return VerifiedAuthorityBundleV1{}, errors.New("codex config and pinned keyset differ")
+	}
+	var evidence CodexProductionEvidenceV1
+	if err := decodeClosed(evidenceEnvelope.Payload, 256<<10, &evidence); err != nil || evidence.Validate() != nil {
+		return VerifiedAuthorityBundleV1{}, errors.New("codex signed evidence payload is invalid")
+	}
+	evidenceTime, _ := parseAuthorityTime(evidence.IssuedAt)
+	if err := verifyLeafEnvelope(evidenceEnvelope, productionEvidenceSchema, productionEvidenceSchema, "evidence", evidence.EvidenceKeyID, evidenceTime, 256<<10, keyset); err != nil {
+		return VerifiedAuthorityBundleV1{}, err
+	}
+	var observation CodexProbeObservationV1
+	if err := decodeClosed(observationEnvelope.Payload, 256<<10, &observation); err != nil || observation.Validate() != nil {
+		return VerifiedAuthorityBundleV1{}, errors.New("codex signed observation payload is invalid")
+	}
+	observedAt, _ := parseAuthorityTime(observation.ObservedAt)
+	if err := verifyLeafEnvelope(observationEnvelope, "marshal.codex.probe-observation.v1", "marshal.codex.probe-observation.v1", "verifier-attestation", observation.VerifierKeyID, observedAt, 256<<10, keyset); err != nil {
+		return VerifiedAuthorityBundleV1{}, err
+	}
+	if evidence.ObservationDigest != observationEnvelope.PayloadDigest || !equalStrings(evidence.ReceiptDigests, observation.ReceiptDigests) || evidence.AuthorityNamespace != observation.AuthorityNamespace || evidence.AuthorityGeneration != observation.AuthorityGeneration || evidence.TrustRootGeneration != observation.TrustRootGeneration || evidence.BootstrapID != observation.BootstrapID || evidence.VerifierKeyID != observation.VerifierKeyID || evidence.SuiteDigest != observation.SuiteDigest || evidence.ProbeArtifactDigest != observation.ProbeArtifactDigest || evidence.AggregateChallengeDigest != observation.AggregateChallengeDigest || evidence.TopologyDigest != observation.TopologyDigest || evidence.Verdicts != observation.Verdicts {
+		return VerifiedAuthorityBundleV1{}, errors.New("codex evidence and observation projection differ")
+	}
+	hostDigest, _ := HostIdentityDigest(observation.HostAttestation.HostIdentity)
+	binaryDigest, _ := canonicalDigest(observation.BinaryIdentity)
+	contractDigest, _ := canonicalDigest(observation.Contract)
+	if evidence.HostIdentityDigest != hostDigest || evidence.BinaryIdentityDigest != binaryDigest || evidence.ContractDigest != contractDigest || evidence.ProfileDigest != observation.Contract.ProfileDigest {
+		return VerifiedAuthorityBundleV1{}, errors.New("codex observation identity projection differs")
+	}
+	validFrom, _ := parseAuthorityTime(evidence.ValidFrom)
+	validUntil, _ := parseAuthorityTime(evidence.ValidUntil)
+	observationValidUntil, _ := parseAuthorityTime(observation.ValidUntil)
+	if observedAt.After(validFrom) || validFrom.After(evidenceTime) || evidenceTime.After(validUntil) || validUntil.After(observationValidUntil) || now.Sub(observedAt) > 24*time.Hour || now.After(validUntil) || now.Before(validFrom.Add(-time.Minute)) || observedAt.After(now.Add(time.Minute)) || evidenceTime.After(now.Add(time.Minute)) {
+		return VerifiedAuthorityBundleV1{}, errors.New("codex evidence or observation freshness is invalid")
+	}
+	receipts := make([]CodexProbeExecutionReceiptV1, 0, len(receiptEnvelopes))
+	receiptDigests := make(map[string]string, len(receiptEnvelopes))
+	for _, envelope := range receiptEnvelopes {
+		var receipt CodexProbeExecutionReceiptV1
+		if err := decodeClosed(envelope.Payload, 64<<10, &receipt); err != nil || receipt.Validate() != nil {
+			return VerifiedAuthorityBundleV1{}, errors.New("codex signed probe receipt payload is invalid")
+		}
+		endedAt, _ := parseAuthorityTime(receipt.EndedAt)
+		if err := verifyLeafEnvelope(envelope, probeReceiptSchema, probeReceiptSchema, "probe-receipt", receipt.ReceiptKeyID, endedAt, 64<<10, keyset); err != nil {
+			return VerifiedAuthorityBundleV1{}, err
+		}
+		if receipt.ReceiptKeyID != evidence.ProbeReceiptKeyID || endedAt.After(observedAt) {
+			return VerifiedAuthorityBundleV1{}, errors.New("codex receipt signer or observation time differs")
+		}
+		if _, duplicate := receiptDigests[receipt.VariantID]; duplicate {
+			return VerifiedAuthorityBundleV1{}, errors.New("codex receipt variant is duplicated")
+		}
+		receiptDigests[receipt.VariantID] = envelope.PayloadDigest
+		receipts = append(receipts, receipt)
+	}
+	if observation.VerifierKeyID == evidence.ProbeReceiptKeyID || observation.VerifierKeyID == evidence.EvidenceKeyID || observation.VerifierKeyID == config.ConfigKeyID || evidence.ProbeReceiptKeyID == evidence.EvidenceKeyID || evidence.ProbeReceiptKeyID == config.ConfigKeyID || evidence.EvidenceKeyID == config.ConfigKeyID {
+		return VerifiedAuthorityBundleV1{}, errors.New("codex authority signing roles are not separated")
+	}
+	if err := validateAuthorityProjection(config, evidence, evidenceEnvelope.PayloadDigest, receipts, receiptDigests); err != nil {
+		return VerifiedAuthorityBundleV1{}, err
+	}
+	if err := ValidateHostAttestation(observation.HostAttestation, config.HostIdentityDigest, expectedHostNonce, hostVerifier, nonceFence); err != nil {
+		return VerifiedAuthorityBundleV1{}, err
+	}
+	return VerifiedAuthorityBundleV1{Config: config, Evidence: evidence, Observation: observation, Receipts: receipts, ConfigDigest: configEnvelope.PayloadDigest}, nil
+}
+
 func contains(values []string, target string) bool {
 	index := sort.SearchStrings(values, target)
 	return index < len(values) && values[index] == target
@@ -682,7 +1093,7 @@ func verifyEnvelope(envelope SignedEnvelopeV1, domain, schema string, maximum in
 		return errors.New("signed envelope projection is invalid")
 	}
 	for index, signature := range envelope.Signatures {
-		if signature.Algorithm != "Ed25519" || !validID(signature.KeyID) || index > 0 && envelope.Signatures[index-1].KeyID >= signature.KeyID {
+		if signature.Algorithm != "Ed25519" || !validID(signature.KeyID) || len(signature.Value) != base64.StdEncoding.EncodedLen(ed25519.SignatureSize) || index > 0 && envelope.Signatures[index-1].KeyID >= signature.KeyID {
 			return errors.New("signed envelope signature set is invalid")
 		}
 		publicKey, ok := keys[signature.KeyID]
@@ -717,6 +1128,12 @@ func VerifyRootRotation(current CodexActiveRootPinV1, envelope SignedEnvelopeV1,
 	if err != nil || rotation.Algorithm != "Ed25519" || !validID(rotation.NewRootKeyID) {
 		return CodexActiveRootPinV1{}, errors.New("codex new root is invalid")
 	}
+	for _, leaf := range keyset.Keys {
+		leafPublic, _ := decodeEd25519Public(leaf.PublicKey)
+		if bytes.Equal(oldKey, leafPublic) || bytes.Equal(newKey, leafPublic) {
+			return CodexActiveRootPinV1{}, errors.New("codex root key is reused as a leaf authority")
+		}
+	}
 	keys := map[string]ed25519.PublicKey{current.RootKeyID: oldKey, rotation.NewRootKeyID: newKey}
 	if len(keys) != 2 {
 		return CodexActiveRootPinV1{}, errors.New("codex root rotation reuses root identity")
@@ -739,6 +1156,37 @@ func VerifyRootRotation(current CodexActiveRootPinV1, envelope SignedEnvelopeV1,
 		RootPublicKeyDigest: publicDigest, TrustRootGeneration: keyset.TrustRootGeneration,
 		KeysetDigest: envelope.PayloadDigest, ActivatedAt: formatAuthorityTime(now),
 	}, nil
+}
+
+func VerifyInitialKeyset(pin CodexActiveRootPinV1, envelope SignedEnvelopeV1, now time.Time) error {
+	if err := pin.Validate(); err != nil {
+		return err
+	}
+	var keyset CodexAuthorityKeysetV1
+	if err := decodeClosed(envelope.Payload, 64<<10, &keyset); err != nil || keyset.validate() != nil {
+		return errors.New("codex initial authority keyset is invalid")
+	}
+	if keyset.PreviousKeysetDigest != nil || keyset.RootRotation != nil || keyset.AuthorityNamespace != pin.AuthorityNamespace || keyset.TrustRootGeneration != pin.TrustRootGeneration || envelope.PayloadDigest != pin.KeysetDigest || len(envelope.Signatures) != 1 || envelope.Signatures[0].KeyID != pin.RootKeyID {
+		return errors.New("codex initial authority keyset lineage is invalid")
+	}
+	root, err := decodeEd25519Public(pin.RootPublicKey)
+	if err != nil {
+		return err
+	}
+	for _, leaf := range keyset.Keys {
+		leafPublic, _ := decodeEd25519Public(leaf.PublicKey)
+		if bytes.Equal(root, leafPublic) {
+			return errors.New("codex initial root key is reused as a leaf authority")
+		}
+	}
+	if err := verifyEnvelope(envelope, authorityKeysetSchema, authorityKeysetSchema, 64<<10, map[string]ed25519.PublicKey{pin.RootKeyID: root}, 1); err != nil {
+		return err
+	}
+	validFrom, err := parseAuthorityTime(keyset.ValidFrom)
+	if err != nil || validFrom.After(now.Add(time.Minute)) {
+		return errors.New("codex initial authority keyset is not yet valid")
+	}
+	return nil
 }
 
 func VerifyKeysetAdvance(current CodexActiveRootPinV1, envelope SignedEnvelopeV1, now time.Time) (CodexActiveRootPinV1, error) {
@@ -782,6 +1230,7 @@ func (keyset CodexAuthorityKeysetV1) validate() error {
 		return err
 	}
 	validUsage := map[string]bool{"verifier-attestation": true, "probe-receipt": true, "launch-receipt": true, "evidence": true, "config": true}
+	publicKeys := make(map[string]struct{}, len(keyset.Keys))
 	for index, key := range keyset.Keys {
 		if !validID(key.KeyID) || !validUsage[key.Usage] || key.Algorithm != "Ed25519" || index > 0 && keyset.Keys[index-1].KeyID >= key.KeyID {
 			return errors.New("codex authority keyset leaf is invalid")
@@ -789,6 +1238,10 @@ func (keyset CodexAuthorityKeysetV1) validate() error {
 		if _, err := decodeEd25519Public(key.PublicKey); err != nil {
 			return err
 		}
+		if _, duplicate := publicKeys[key.PublicKey]; duplicate {
+			return errors.New("codex authority key material is reused across roles")
+		}
+		publicKeys[key.PublicKey] = struct{}{}
 		notBefore, err := parseAuthorityTime(key.NotBefore)
 		if err != nil {
 			return err
@@ -952,14 +1405,8 @@ func (metadata CodexAuthorityMetadataV1) Validate() error {
 			return errors.New("codex authority metadata digest is invalid")
 		}
 	}
-	if len(metadata.ExecutionProfiles) < 1 || len(metadata.ExecutionProfiles) > 2 {
-		return errors.New("codex execution profiles are invalid")
-	}
-	allowed := []string{"read-only", "workspace-write"}
-	for index, profile := range metadata.ExecutionProfiles {
-		if profile != allowed[index] {
-			return errors.New("codex execution profiles are invalid")
-		}
+	if err := validateExecutionProfiles(metadata.ExecutionProfiles); err != nil {
+		return err
 	}
 	observedAt, err := parseAuthorityTime(metadata.ObservedAt)
 	if err != nil {

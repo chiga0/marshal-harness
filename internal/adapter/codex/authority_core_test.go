@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/port"
 	"golang.org/x/sys/unix"
 )
 
@@ -106,6 +107,46 @@ func testState(t *testing.T, authorityGeneration, trustGeneration uint64, keyset
 	return state
 }
 
+func testBootstrap(t *testing.T) CodexConsumerBootstrapV1 {
+	t.Helper()
+	identity := testHostIdentity()
+	hostDigest, err := HostIdentityDigest(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return CodexConsumerBootstrapV1{
+		SchemaVersion: consumerBootstrapSchema, AuthorityNamespace: "marshal.codex.production", AdapterID: adapterID,
+		BootstrapID: identity.BootstrapID, HostIdentityDigest: hostDigest, MachineIDDigest: identity.MachineIDDigest,
+		TPMHostKeyPublic: identity.TPMHostKeyPublic, TPMHostKeyPublicDigest: identity.TPMHostKeyPublicDigest,
+		TPMHostKeyQualifiedNameDigest: identity.TPMHostKeyQualifiedNameDigest, CreatedAt: "2026-08-18T01:00:00Z",
+	}
+}
+
+func commitTestBootstrap(t *testing.T, store *CodexConsumerAuthorityStore, state CodexConsumerAuthorityStateV1) CodexConsumerAuthorityStateV1 {
+	t.Helper()
+	bootstrap := testBootstrap(t)
+	bootstrapDigest, err := BootstrapDigest(bootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootPublic, rootPrivate := testRoot(t, "root")
+	configPublic, _ := testRoot(t, "bootstrap-config")
+	keyset := CodexAuthorityKeysetV1{
+		SchemaVersion: authorityKeysetSchema, AuthorityNamespace: state.Fence.AuthorityNamespace, TrustRootGeneration: state.Fence.TrustRootGeneration,
+		PreviousKeysetDigest: nil, ValidFrom: "2026-08-18T00:00:00Z", Keys: []AuthorityPublicKeyV1{{KeyID: "config", Usage: "config", Algorithm: "Ed25519", PublicKey: base64.StdEncoding.EncodeToString(configPublic), NotBefore: "2026-08-18T00:00:00Z", NotAfter: "2026-08-19T00:00:00Z"}}, RevokedKeyIDs: []string{}, RootRotation: nil,
+	}
+	envelope := buildTestSignedEnvelope(t, keyset, authorityKeysetSchema, map[string]ed25519.PrivateKey{"root": rootPrivate})
+	state.ActiveRootPin.BootstrapDigest, state.Fence.BootstrapDigest = bootstrapDigest, bootstrapDigest
+	state.Fence.BootstrapID, state.Fence.HostIdentityDigest = bootstrap.BootstrapID, bootstrap.HostIdentityDigest
+	state.ActiveRootPin.RootPublicKey = base64.StdEncoding.EncodeToString(rootPublic)
+	state.ActiveRootPin.RootPublicKeyDigest = canonicalDigestBytes(rootPublic)
+	state.ActiveRootPin.KeysetDigest, state.Fence.KeysetDigest = envelope.PayloadDigest, envelope.PayloadDigest
+	if err := store.CommitBootstrap(bootstrap, testHostIdentity(), state, envelope, time.Date(2026, 8, 18, 1, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("commit bootstrap: %v", err)
+	}
+	return state
+}
+
 func TestConsumerAuthorityStateAtomicCommitRecoveryAndReplay(t *testing.T) {
 	stateRoot, authorityRoot := realTempDir(t), realTempDir(t)
 	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot)
@@ -115,9 +156,10 @@ func TestConsumerAuthorityStateAtomicCommitRecoveryAndReplay(t *testing.T) {
 	defer store.Close()
 
 	first := testState(t, 1, 1, testDigest("keyset-1"), testDigest("config-1"))
-	if err := store.Commit(first); err != nil {
-		t.Fatalf("commit first: %v", err)
+	if err := store.Commit(first); err == nil || !strings.Contains(err.Error(), "bootstrap") {
+		t.Fatalf("unproved first commit = %v", err)
 	}
+	first = commitTestBootstrap(t, store, first)
 	if err := store.Commit(first); err != nil {
 		t.Fatalf("idempotent replay: %v", err)
 	}
@@ -131,13 +173,19 @@ func TestConsumerAuthorityStateAtomicCommitRecoveryAndReplay(t *testing.T) {
 		t.Fatalf("recover = %#v, %v, %v", recovered, exists, err)
 	}
 
-	rollback := testState(t, 1, 1, testDigest("keyset-1"), testDigest("config-other"))
+	rollback := first
+	rollback.Fence.ConfigDigest = testDigest("config-other")
 	if err := store.Commit(rollback); err == nil || !strings.Contains(err.Error(), "identity") {
 		t.Fatalf("same-generation conflict = %v", err)
 	}
 
-	second := testState(t, 2, 1, testDigest("keyset-1"), testDigest("config-2"))
-	second.ActiveRootPin.ActivatedAt = first.ActiveRootPin.ActivatedAt
+	secondFence := first.Fence
+	secondFence.AuthorityGeneration = 2
+	secondFence.ConfigDigest = testDigest("config-2")
+	second, err := NewConsumerAuthorityState(first.ActiveRootPin, secondFence, time.Date(2026, 8, 18, 1, 3, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
 	crash := errors.New("simulated crash")
 	if err := store.commit(second, func(phase string) error {
 		if phase == "temp-synced" {
@@ -218,7 +266,7 @@ func TestConsumerAuthorityStoreRejectsOverlappingRootsAndBusyLock(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer unlockConsumerState(lock)
-	if err := store.Commit(testState(t, 1, 1, testDigest("keyset"), testDigest("config"))); err == nil || !strings.Contains(err.Error(), "lock") {
+	if err := store.Commit(testState(t, 2, 1, testDigest("keyset"), testDigest("config"))); err == nil || !strings.Contains(err.Error(), "lock") {
 		t.Fatalf("busy lock = %v", err)
 	}
 }
@@ -227,16 +275,26 @@ func TestRootRotationRequiresOldAndNewSignatures(t *testing.T) {
 	oldPublic, oldPrivate := testRoot(t, "old")
 	newPublic, newPrivate := testRoot(t, "new")
 	now := time.Date(2026, 8, 18, 2, 0, 0, 0, time.UTC)
+	bootstrap := testBootstrap(t)
+	bootstrapDigest, _ := BootstrapDigest(bootstrap)
+	initialLeafPublic, _ := testRoot(t, "initial-leaf")
+	initialKeyset := CodexAuthorityKeysetV1{
+		SchemaVersion: authorityKeysetSchema, AuthorityNamespace: "marshal.codex.production", TrustRootGeneration: 1,
+		PreviousKeysetDigest: nil, ValidFrom: formatAuthorityTime(now.Add(-time.Hour)),
+		Keys: []AuthorityPublicKeyV1{{KeyID: "leaf-initial", Usage: "evidence", Algorithm: "Ed25519", PublicKey: base64.StdEncoding.EncodeToString(initialLeafPublic), NotBefore: formatAuthorityTime(now.Add(-time.Hour)), NotAfter: formatAuthorityTime(now.Add(time.Hour))}}, RevokedKeyIDs: []string{}, RootRotation: nil,
+	}
+	initialEnvelope := buildTestSignedEnvelope(t, initialKeyset, authorityKeysetSchema, map[string]ed25519.PrivateKey{"root-old": oldPrivate})
 	current := CodexActiveRootPinV1{
-		SchemaVersion: activeRootPinSchema, AuthorityNamespace: "marshal.codex.production", BootstrapDigest: testDigest("bootstrap"),
+		SchemaVersion: activeRootPinSchema, AuthorityNamespace: "marshal.codex.production", BootstrapDigest: bootstrapDigest,
 		RootKeyID: "root-old", RootAlgorithm: "Ed25519", RootPublicKey: base64.StdEncoding.EncodeToString(oldPublic),
-		RootPublicKeyDigest: canonicalDigestBytes(oldPublic), TrustRootGeneration: 1, KeysetDigest: testDigest("old-keyset"), ActivatedAt: formatAuthorityTime(now.Add(-time.Hour)),
+		RootPublicKeyDigest: canonicalDigestBytes(oldPublic), TrustRootGeneration: 1, KeysetDigest: initialEnvelope.PayloadDigest, ActivatedAt: formatAuthorityTime(now.Add(-time.Hour)),
 	}
 	previous := current.KeysetDigest
+	rotationLeafPublic, _ := testRoot(t, "rotation-leaf")
 	keyset := CodexAuthorityKeysetV1{
 		SchemaVersion: authorityKeysetSchema, AuthorityNamespace: current.AuthorityNamespace, TrustRootGeneration: 2,
 		PreviousKeysetDigest: &previous, ValidFrom: formatAuthorityTime(now),
-		Keys:          []AuthorityPublicKeyV1{{KeyID: "leaf", Usage: "evidence", Algorithm: "Ed25519", PublicKey: base64.StdEncoding.EncodeToString(newPublic), NotBefore: formatAuthorityTime(now), NotAfter: formatAuthorityTime(now.Add(time.Hour))}},
+		Keys:          []AuthorityPublicKeyV1{{KeyID: "leaf", Usage: "evidence", Algorithm: "Ed25519", PublicKey: base64.StdEncoding.EncodeToString(rotationLeafPublic), NotBefore: formatAuthorityTime(now), NotAfter: formatAuthorityTime(now.Add(time.Hour))}},
 		RevokedKeyIDs: []string{}, RootRotation: &RootRotationV1{"root-new", "Ed25519", base64.StdEncoding.EncodeToString(newPublic), formatAuthorityTime(now)},
 	}
 	envelope := buildTestSignedEnvelope(t, keyset, authorityKeysetSchema, map[string]ed25519.PrivateKey{"root-old": oldPrivate, "root-new": newPrivate})
@@ -256,12 +314,25 @@ func TestRootRotationRequiresOldAndNewSignatures(t *testing.T) {
 	defer store.Close()
 	initialFence := CodexConsumerFenceV1{
 		SchemaVersion: consumerFenceSchema, AuthorityNamespace: current.AuthorityNamespace, AdapterID: adapterID,
-		BootstrapDigest: current.BootstrapDigest, HostIdentityDigest: testDigest("host"), BootstrapID: testNonce(1),
+		BootstrapDigest: current.BootstrapDigest, HostIdentityDigest: bootstrap.HostIdentityDigest, BootstrapID: bootstrap.BootstrapID,
 		TrustRootGeneration: 1, AuthorityGeneration: 1, KeysetDigest: current.KeysetDigest,
 		ConfigDigest: testDigest("config-1"), RevocationSetDigest: testDigest("revoke-1"), CurrentEvidenceDigest: testDigest("evidence-1"),
 	}
 	initialState, err := NewConsumerAuthorityState(current, initialFence, now.Add(-time.Minute))
-	if err != nil || store.Commit(initialState) != nil {
+	forgedInitial := buildTestSignedEnvelope(t, initialKeyset, authorityKeysetSchema, map[string]ed25519.PrivateKey{"root-old": newPrivate})
+	if err := store.CommitBootstrap(bootstrap, testHostIdentity(), initialState, forgedInitial, now); err == nil {
+		t.Fatal("forged initial root proof accepted")
+	}
+	forgedBootstrap := bootstrap
+	forgedBootstrap.HostIdentityDigest = testDigest("forged-host")
+	forgedBootstrapDigest, _ := BootstrapDigest(forgedBootstrap)
+	forgedState := initialState
+	forgedState.ActiveRootPin.BootstrapDigest, forgedState.Fence.BootstrapDigest = forgedBootstrapDigest, forgedBootstrapDigest
+	forgedState.Fence.HostIdentityDigest = forgedBootstrap.HostIdentityDigest
+	if err := store.CommitBootstrap(forgedBootstrap, testHostIdentity(), forgedState, initialEnvelope, now); err == nil {
+		t.Fatal("forged bootstrap host binding accepted")
+	}
+	if err != nil || store.CommitBootstrap(bootstrap, testHostIdentity(), initialState, initialEnvelope, now) != nil {
 		t.Fatalf("initial root state: %v", err)
 	}
 	nextFence := initialFence
@@ -279,10 +350,11 @@ func TestRootRotationRequiresOldAndNewSignatures(t *testing.T) {
 		t.Fatalf("dual-signed atomic rotation: %v", err)
 	}
 	previous = envelope.PayloadDigest
+	leafNextPublic, _ := testRoot(t, "leaf-next")
 	leafKeyset := CodexAuthorityKeysetV1{
 		SchemaVersion: authorityKeysetSchema, AuthorityNamespace: current.AuthorityNamespace, TrustRootGeneration: 2,
 		PreviousKeysetDigest: &previous, ValidFrom: formatAuthorityTime(now.Add(time.Second)),
-		Keys:          []AuthorityPublicKeyV1{{KeyID: "leaf-next", Usage: "evidence", Algorithm: "Ed25519", PublicKey: base64.StdEncoding.EncodeToString(oldPublic), NotBefore: formatAuthorityTime(now), NotAfter: formatAuthorityTime(now.Add(time.Hour))}},
+		Keys:          []AuthorityPublicKeyV1{{KeyID: "leaf-next", Usage: "evidence", Algorithm: "Ed25519", PublicKey: base64.StdEncoding.EncodeToString(leafNextPublic), NotBefore: formatAuthorityTime(now), NotAfter: formatAuthorityTime(now.Add(time.Hour))}},
 		RevokedKeyIDs: []string{}, RootRotation: nil,
 	}
 	leafEnvelope := buildTestSignedEnvelope(t, leafKeyset, authorityKeysetSchema, map[string]ed25519.PrivateKey{"root-new": newPrivate})
@@ -334,109 +406,117 @@ func TestStableHostIdentityAllowsDistinctFreshAttestations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstRandom := bytes.NewReader(bytes.Repeat([]byte{3}, 32))
-	secondRandom := bytes.NewReader(bytes.Repeat([]byte{4}, 32))
-	first, err := FreshHostAttestation(context.Background(), identity, fakeHostTPM{}, fakeHostTPM{}, firstRandom)
+	firstNonce := bytes.Repeat([]byte{3}, 32)
+	secondNonce := bytes.Repeat([]byte{4}, 32)
+	first, err := FreshHostAttestation(context.Background(), identity, firstNonce, fakeHostTPM{}, fakeHostTPM{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := FreshHostAttestation(context.Background(), identity, fakeHostTPM{}, fakeHostTPM{}, secondRandom)
+	second, err := FreshHostAttestation(context.Background(), identity, secondNonce, fakeHostTPM{}, fakeHostTPM{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.ChallengeNonce == second.ChallengeNonce || first.ChallengeSignature == second.ChallengeSignature {
 		t.Fatal("fresh attestations reused operation identity")
 	}
-	if err := ValidateHostAttestation(first, digest, fakeHostTPM{}); err != nil {
+	fence := NewHostAttestationNonceFence()
+	if err := ValidateHostAttestation(first, digest, firstNonce, fakeHostTPM{}, fence); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateHostAttestation(second, digest, fakeHostTPM{}); err != nil {
+	if err := ValidateHostAttestation(first, digest, firstNonce, fakeHostTPM{}, fence); err == nil {
+		t.Fatal("replayed host attestation accepted")
+	}
+	if err := ValidateHostAttestation(second, digest, secondNonce, fakeHostTPM{}, fence); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateHostAttestation(first, testDigest("other-host"), fakeHostTPM{}); err == nil {
+	if err := ValidateHostAttestation(first, testDigest("other-host"), firstNonce, fakeHostTPM{}, NewHostAttestationNonceFence()); err == nil {
 		t.Fatal("host mismatch accepted")
+	}
+	if err := ValidateHostAttestation(second, digest, firstNonce, fakeHostTPM{}, NewHostAttestationNonceFence()); err == nil {
+		t.Fatal("attestation-selected nonce accepted")
 	}
 }
 
 func TestTopologySourceSealedChildTransition(t *testing.T) {
-	fixed := SortedTopologyRoles(
-		TopologyRoleV1{"worktree", FileIdentityV1{1, 1, 10, 10, 1, testDigest("work")}},
-		TopologyRoleV1{"control", FileIdentityV1{1, 1, 11, 10, 1, testDigest("control")}},
-	)
-	source := TopologyRoleV1{"source", FileIdentityV1{1, 1, 20, 10, 100, testDigest("binary")}}
-	sealed := TopologyRoleV1{"sealed", FileIdentityV1{2, 2, 30, 20, 100, source.Identity.SHA256}}
-	child := TopologyRoleV1{"child", sealed.Identity}
+	object := func(role string, device, inode, mount, size uint64, digest *string) TopologyObjectV1 {
+		return TopologyObjectV1{Identity: MountObjectIdentityV1{Role: role, DeviceMajor: device, Inode: inode, MountIDUnique: mount, Mode: 0o700, UID: 1, GID: 1, Size: size, SHA256: digest}, AncestorChain: []MountObjectIdentityV1{{Role: role + "Ancestor", DeviceMajor: 1, Inode: inode + 1000, MountIDUnique: 1, Mode: 0o755}}}
+	}
+	fixed := make([]TopologyObjectV1, len(fixedRootRoles))
+	for index, role := range fixedRootRoles {
+		fixed[index] = object(role, 1, uint64(index+10), 1, 0, nil)
+	}
+	binaryDigest := testDigest("binary")
+	source := object("sourceExecutable", 1, 20, 10, 100, &binaryDigest)
+	sealed := object("sealedExecutable", 2, 30, 20, 100, &binaryDigest)
+	child := object("childExecutable", 2, 30, 20, 100, &binaryDigest)
 	snapshots := []TopologySnapshotV1{
-		{"marshal.codex.topology-snapshot.v1", "T0", "consumer", fixed, SortedTopologyRoles(source)},
-		{"marshal.codex.topology-snapshot.v1", "T1", "launcher", fixed, SortedTopologyRoles(source, sealed)},
-		{"marshal.codex.topology-snapshot.v1", "T2", "launcher", fixed, SortedTopologyRoles(source, sealed)},
-		{"marshal.codex.topology-snapshot.v1", "T3", "launch-receipt-authority", fixed, SortedTopologyRoles(source, sealed, child)},
-		{"marshal.codex.topology-snapshot.v1", "T4", "consumer", fixed, SortedTopologyRoles(source, sealed, child)},
+		{SchemaVersion: "marshal.codex.topology-snapshot.v1", MountNamespaceDevice: 1, MountNamespaceInode: 2, Phase: topologyPhases[0], FixedRoots: fixed, Executables: []TopologyObjectV1{source}},
+		{SchemaVersion: "marshal.codex.topology-snapshot.v1", MountNamespaceDevice: 1, MountNamespaceInode: 2, Phase: topologyPhases[1], FixedRoots: fixed, Executables: []TopologyObjectV1{source, sealed}},
+		{SchemaVersion: "marshal.codex.topology-snapshot.v1", MountNamespaceDevice: 1, MountNamespaceInode: 2, Phase: topologyPhases[2], FixedRoots: fixed, Executables: []TopologyObjectV1{source, sealed}},
+		{SchemaVersion: "marshal.codex.topology-snapshot.v1", MountNamespaceDevice: 1, MountNamespaceInode: 2, Phase: topologyPhases[3], FixedRoots: fixed, Executables: []TopologyObjectV1{source, sealed, child}},
+		{SchemaVersion: "marshal.codex.topology-snapshot.v1", MountNamespaceDevice: 1, MountNamespaceInode: 2, Phase: topologyPhases[4], FixedRoots: fixed, Executables: []TopologyObjectV1{source, sealed, child}},
 	}
 	if err := ValidateTopologyTransition(snapshots); err != nil {
 		t.Fatalf("valid topology: %v", err)
 	}
 	bad := append([]TopologySnapshotV1(nil), snapshots...)
 	bad[4] = snapshots[4]
-	bad[4].Executables = append([]TopologyRoleV1(nil), snapshots[4].Executables...)
-	bad[4].Executables[0].Identity.Inode++
+	bad[4].Executables = append([]TopologyObjectV1(nil), snapshots[4].Executables...)
+	bad[4].Executables[2].Identity.Inode++
 	if err := ValidateTopologyTransition(bad); err == nil {
 		t.Fatal("child identity drift accepted")
 	}
 	bad = append([]TopologySnapshotV1(nil), snapshots...)
 	bad[1] = snapshots[1]
-	bad[1].Executables = append([]TopologyRoleV1(nil), snapshots[1].Executables...)
-	bad[1].Executables[0].Identity = source.Identity
+	bad[1].Executables = append([]TopologyObjectV1(nil), snapshots[1].Executables...)
+	bad[1].Executables[1].Identity.DeviceMajor = source.Identity.DeviceMajor
+	bad[1].Executables[1].Identity.Inode = source.Identity.Inode
+	bad[1].Executables[1].Identity.MountIDUnique = source.Identity.MountIDUnique
 	if err := ValidateTopologyTransition(bad); err == nil {
 		t.Fatal("source/sealed alias accepted")
 	}
 }
 
-func TestSeparatedWorkRootsRejectSameAndNested(t *testing.T) {
-	worktree := realTempDir(t)
-	control := realTempDir(t)
-	roots, err := OpenSeparatedWorkRoots(worktree, control)
-	if err != nil {
-		t.Fatalf("open siblings: %v", err)
-	}
-	if err := roots.Verify(); err != nil {
-		t.Fatal(err)
-	}
-	roots.Close()
-	child := filepath.Join(worktree, "control")
-	if err := os.Mkdir(child, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for _, pair := range [][2]string{{worktree, worktree}, {worktree, child}, {child, worktree}} {
-		if roots, err := OpenSeparatedWorkRoots(pair[0], pair[1]); err == nil {
-			roots.Close()
-			t.Fatalf("overlap accepted: %v", pair)
+func TestHeldLaunchRootsRejectRenameRelinkAndCoverControlIO(t *testing.T) {
+	authorityRoot, fenceRoot, worktree, control := realTempDir(t), realTempDir(t), realTempDir(t), realTempDir(t)
+	for _, name := range []string{"input", "output"} {
+		if err := os.Mkdir(filepath.Join(control, name), 0o700); err != nil {
+			t.Fatal(err)
 		}
 	}
-	alias := filepath.Join(realTempDir(t), "alias")
-	if err := os.Symlink(worktree, alias); err != nil {
+	if err := os.Chmod(filepath.Join(control, "input"), 0o500); err != nil {
 		t.Fatal(err)
 	}
-	if roots, err := OpenSeparatedWorkRoots(alias, control); err == nil {
-		roots.Close()
-		t.Fatal("symlink root accepted")
+	roots, err := OpenHeldLaunchRoots(authorityRoot, fenceRoot, worktree, control)
+	if runtime.GOOS != "linux" {
+		if err == nil {
+			roots.Close()
+			t.Fatal("Darwin held mount identity unexpectedly enabled")
+		}
+		return
 	}
-	original, replacement := realTempDir(t), realTempDir(t)
-	pinned, err := OpenSeparatedWorkRoots(original, control)
 	if err != nil {
+		var failure *AuthorityFailure
+		if errors.As(err, &failure) && failure.Code == "codex_mount_identity_unsupported" {
+			t.Skip("kernel lacks STATX_MNT_ID_UNIQUE")
+		}
 		t.Fatal(err)
 	}
-	retained := original + "-retained"
-	if err := os.Rename(original, retained); err != nil {
+	defer roots.Close()
+	if len(roots.paths) != 6 || roots.paths[4].role != "controlInput" || roots.paths[5].role != "controlOutput" || roots.Verify() != nil {
+		t.Fatal("held root set is incomplete")
+	}
+	replacement := realTempDir(t)
+	retained := worktree + "-retained"
+	if err := os.Rename(worktree, retained); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(replacement, original); err != nil {
+	if err := os.Rename(replacement, worktree); err != nil {
 		t.Fatal(err)
 	}
-	if err := pinned.Verify(); err == nil {
-		t.Fatal("worktree pathname relink accepted")
+	if err := roots.Verify(); err == nil {
+		t.Fatal("worktree rename/relink accepted")
 	}
-	pinned.Close()
 }
 
 func TestProductionAuthorityConstructorRemainsHardDisabled(t *testing.T) {
@@ -451,6 +531,22 @@ func TestProductionAuthorityConstructorRemainsHardDisabled(t *testing.T) {
 	}
 	if !errors.As(err, &failure) || failure.Code != expectedCode || failure.RetryClass != "permanent" {
 		t.Fatalf("typed pending failure = %#v", failure)
+	}
+	if !port.IsPermanent(err) || failure.Validate() != nil {
+		t.Fatalf("Core permanent classification = %v, %v", port.IsPermanent(err), failure.Validate())
+	}
+	transient := newAuthorityFailure("probe", "codex_fence_lock_busy", "busy", AuthorityFailureDetails{}, nil, authorityNow())
+	if port.IsPermanent(transient) || transient.RetryClass != "transient" || transient.Validate() != nil {
+		t.Fatalf("transient classification = %#v", transient)
+	}
+	reconcile := newAuthorityFailure("launch", "codex_launch_outcome_ambiguous", "ambiguous", AuthorityFailureDetails{}, nil, authorityNow())
+	if port.IsPermanent(reconcile) || reconcile.RetryClass != "reconcile-required" || reconcile.Validate() != nil {
+		t.Fatalf("reconcile classification = %#v", reconcile)
+	}
+	invalid := *failure
+	invalid.RetryClass = "transient"
+	if invalid.Validate() == nil {
+		t.Fatal("closed retry mapping accepted mismatched carrier")
 	}
 }
 
@@ -485,21 +581,24 @@ func TestExactChallengeRevocationAndWorkerZeroKeyProjection(t *testing.T) {
 		AggregateChallengeDigest: aggregate, ContractDigest: evidence.ContractDigest, ProfileDigest: evidence.ProfileDigest, ConfigKeyID: "config-key", IssuedAt: evidence.IssuedAt,
 	}
 	config.RevocationSetDigest, _ = RevocationSetDigest(config)
-	configJSON, _ := json.Marshal(config)
-	if _, err := ParseCodexAuthorityConfig(configJSON); err != nil {
+	_, parserPrivate := testRoot(t, "parser")
+	configEnvelope := buildTestSignedEnvelope(t, config, authorityConfigSchema, map[string]ed25519.PrivateKey{"config-key": parserPrivate})
+	configJSON, _ := json.Marshal(configEnvelope)
+	if _, _, err := ParseCodexAuthorityConfig(configJSON); err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	if _, err := ParseCodexAuthorityConfig([]byte(`{"schemaVersion":"marshal.codex.authority-config.v1","schemaVersion":"marshal.codex.authority-config.v1"}`)); err == nil {
+	if _, _, err := ParseCodexAuthorityConfig([]byte(`{"payload":{},"payload":{},"payloadDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","signatures":[]}`)); err == nil {
 		t.Fatal("duplicate config member accepted")
 	}
-	if _, err := ParseCodexAuthorityConfig([]byte(`{"unknown":true}`)); err == nil {
+	if _, _, err := ParseCodexAuthorityConfig([]byte(`{"unknown":true}`)); err == nil {
 		t.Fatal("unknown config member accepted")
 	}
-	receiptJSON, _ := json.Marshal(receipt)
-	if _, err := ParseCodexProbeReceipt(receiptJSON); err != nil {
+	receiptEnvelope := buildTestSignedEnvelope(t, receipt, probeReceiptSchema, map[string]ed25519.PrivateKey{"receipt-key": parserPrivate})
+	receiptJSON, _ := json.Marshal(receiptEnvelope)
+	if _, _, err := ParseCodexProbeReceipt(receiptJSON); err != nil {
 		t.Fatalf("parse receipt: %v", err)
 	}
-	if err := ValidateAuthorityProjection(config, evidence, evidenceDigest, []CodexProbeExecutionReceiptV1{receipt}, map[string]string{"success": receiptDigest}); err != nil {
+	if err := validateAuthorityProjection(config, evidence, evidenceDigest, []CodexProbeExecutionReceiptV1{receipt}, map[string]string{"success": receiptDigest}); err != nil {
 		t.Fatalf("projection: %v", err)
 	}
 	state := testState(t, 3, 2, config.KeysetDigest, testDigest("config-envelope"))
@@ -519,7 +618,7 @@ func TestExactChallengeRevocationAndWorkerZeroKeyProjection(t *testing.T) {
 	revoked := config
 	revoked.RevokedChallengeDigests = []string{receipt.ReceiptChallengeDigest}
 	revoked.RevocationSetDigest, _ = RevocationSetDigest(revoked)
-	if err := ValidateAuthorityProjection(revoked, evidence, evidenceDigest, []CodexProbeExecutionReceiptV1{receipt}, map[string]string{"success": receiptDigest}); err == nil {
+	if err := validateAuthorityProjection(revoked, evidence, evidenceDigest, []CodexProbeExecutionReceiptV1{receipt}, map[string]string{"success": receiptDigest}); err == nil {
 		t.Fatal("component challenge revocation accepted")
 	}
 	worker := CodexWorkerAuthorityContextV1{workerAuthoritySchema, config.CurrentEvidenceDigest, evidenceDigest, testDigest("fence"), testDigest("launch"), 0}
@@ -532,6 +631,128 @@ func TestExactChallengeRevocationAndWorkerZeroKeyProjection(t *testing.T) {
 	}
 }
 
+type testAuthorityBundle struct {
+	now             time.Time
+	pin             CodexActiveRootPinV1
+	keyset          SignedEnvelopeV1
+	config          SignedEnvelopeV1
+	evidence        SignedEnvelopeV1
+	observation     SignedEnvelopeV1
+	receipts        []SignedEnvelopeV1
+	hostNonce       []byte
+	configPrivate   ed25519.PrivateKey
+	evidencePrivate ed25519.PrivateKey
+}
+
+func newTestAuthorityBundle(t *testing.T) testAuthorityBundle {
+	t.Helper()
+	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
+	rootPublic, rootPrivate := testRoot(t, "bundle-root")
+	configPublic, configPrivate := testRoot(t, "bundle-config")
+	evidencePublic, evidencePrivate := testRoot(t, "bundle-evidence")
+	receiptPublic, receiptPrivate := testRoot(t, "bundle-receipt")
+	verifierPublic, verifierPrivate := testRoot(t, "bundle-verifier")
+	keysetPayload := CodexAuthorityKeysetV1{
+		SchemaVersion: authorityKeysetSchema, AuthorityNamespace: "marshal.codex.production", TrustRootGeneration: 1,
+		PreviousKeysetDigest: nil, ValidFrom: formatAuthorityTime(now.Add(-2 * time.Hour)),
+		Keys: []AuthorityPublicKeyV1{
+			{KeyID: "config-key", Usage: "config", Algorithm: "Ed25519", PublicKey: base64.StdEncoding.EncodeToString(configPublic), NotBefore: formatAuthorityTime(now.Add(-2 * time.Hour)), NotAfter: formatAuthorityTime(now.Add(2 * time.Hour))},
+			{KeyID: "evidence-key", Usage: "evidence", Algorithm: "Ed25519", PublicKey: base64.StdEncoding.EncodeToString(evidencePublic), NotBefore: formatAuthorityTime(now.Add(-2 * time.Hour)), NotAfter: formatAuthorityTime(now.Add(2 * time.Hour))},
+			{KeyID: "receipt-key", Usage: "probe-receipt", Algorithm: "Ed25519", PublicKey: base64.StdEncoding.EncodeToString(receiptPublic), NotBefore: formatAuthorityTime(now.Add(-2 * time.Hour)), NotAfter: formatAuthorityTime(now.Add(2 * time.Hour))},
+			{KeyID: "verifier-key", Usage: "verifier-attestation", Algorithm: "Ed25519", PublicKey: base64.StdEncoding.EncodeToString(verifierPublic), NotBefore: formatAuthorityTime(now.Add(-2 * time.Hour)), NotAfter: formatAuthorityTime(now.Add(2 * time.Hour))},
+		}, RevokedKeyIDs: []string{}, RootRotation: nil,
+	}
+	keyset := buildTestSignedEnvelope(t, keysetPayload, authorityKeysetSchema, map[string]ed25519.PrivateKey{"root-key": rootPrivate})
+	pin := CodexActiveRootPinV1{SchemaVersion: activeRootPinSchema, AuthorityNamespace: keysetPayload.AuthorityNamespace, BootstrapDigest: testDigest("bundle-bootstrap"), RootKeyID: "root-key", RootAlgorithm: "Ed25519", RootPublicKey: base64.StdEncoding.EncodeToString(rootPublic), RootPublicKeyDigest: canonicalDigestBytes(rootPublic), TrustRootGeneration: 1, KeysetDigest: keyset.PayloadDigest, ActivatedAt: formatAuthorityTime(now.Add(-time.Hour))}
+	hostIdentity := testHostIdentity()
+	hostDigest, _ := HostIdentityDigest(hostIdentity)
+	hostNonce := bytes.Repeat([]byte{9}, 32)
+	hostAttestation, err := FreshHostAttestation(context.Background(), hostIdentity, hostNonce, fakeHostTPM{}, fakeHostTPM{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := ExecutableIdentityV1{CanonicalRealpath: "/usr/bin/codex", DeviceMajor: 1, Inode: 2, MountIDUnique: 3, Size: 100, Mode: 0o755, SHA256: testDigest("binary"), Version: "1.2.3", VersionOutputDigest: testDigest("version")}
+	binaryDigest, _ := canonicalDigest(binary)
+	contract := CodexContractBindingV1{AdapterContractDigest: testDigest("adapter"), LauncherBuildDigest: testDigest("launcher"), ProfileDigest: testDigest("profile"), ArgvMatrixDigest: testDigest("argv-matrix"), EnvironmentDigest: testDigest("environment"), EventContractDigest: testDigest("event"), PermissionContractDigest: testDigest("permission"), ToolPolicyDigest: testDigest("tools"), ResultContractDigest: testDigest("result"), OutputLimitDigest: testDigest("output"), NativeBudgetsDigest: testDigest("budgets"), ExecutionProfiles: []string{"read-only", "workspace-write"}}
+	contractDigest, _ := canonicalDigest(contract)
+	receipt := CodexProbeExecutionReceiptV1{SchemaVersion: probeReceiptSchema, AuthorityNamespace: keysetPayload.AuthorityNamespace, AuthorityGeneration: 1, TrustRootGeneration: 1, BootstrapID: hostIdentity.BootstrapID, SuiteDigest: testDigest("suite"), ProbeArtifactDigest: testDigest("artifact"), VariantID: "default", ChallengeNonce: testNonce(7), StartedAt: formatAuthorityTime(now.Add(-30 * time.Minute)), EndedAt: formatAuthorityTime(now.Add(-29 * time.Minute)), HostIdentityDigest: hostDigest, BinaryIdentityDigest: binaryDigest, ArgvDigest: testDigest("argv"), EnvironmentDigest: contract.EnvironmentDigest, TopologyDigest: testDigest("topology"), TranscriptDigest: testDigest("transcript"), MarkerDigest: testDigest("marker"), EventContractDigest: contract.EventContractDigest, PermissionContractDigest: contract.PermissionContractDigest, ReceiptKeyID: "receipt-key"}
+	receipt.ReceiptChallengeDigest, _ = receiptChallengeDigest(receipt)
+	receiptEnvelope := buildTestSignedEnvelope(t, receipt, probeReceiptSchema, map[string]ed25519.PrivateKey{"receipt-key": receiptPrivate})
+	aggregate, _ := AggregateChallengeDigest([]CodexProbeExecutionReceiptV1{receipt}, map[string]string{receipt.VariantID: receiptEnvelope.PayloadDigest})
+	verdicts := AuthorityVerdictsV1{true, true, true, true, true}
+	observation := CodexProbeObservationV1{SchemaVersion: "marshal.codex.probe-observation.v1", AuthorityNamespace: receipt.AuthorityNamespace, AuthorityGeneration: 1, TrustRootGeneration: 1, BootstrapID: hostIdentity.BootstrapID, ObservationNonce: testNonce(8), VerifierKeyID: "verifier-key", VerifierBuildDigest: testDigest("verifier"), ObservedAt: formatAuthorityTime(now.Add(-20 * time.Minute)), ValidUntil: formatAuthorityTime(now.Add(time.Hour)), HostAttestation: hostAttestation, BinaryIdentity: binary, Contract: contract, SuiteDigest: receipt.SuiteDigest, ProbeArtifactDigest: receipt.ProbeArtifactDigest, AggregateChallengeDigest: aggregate, TopologyDigest: receipt.TopologyDigest, ReceiptDigests: []string{receiptEnvelope.PayloadDigest}, Verdicts: verdicts}
+	observationEnvelope := buildTestSignedEnvelope(t, observation, "marshal.codex.probe-observation.v1", map[string]ed25519.PrivateKey{"verifier-key": verifierPrivate})
+	evidence := CodexProductionEvidenceV1{SchemaVersion: productionEvidenceSchema, AuthorityNamespace: receipt.AuthorityNamespace, AuthorityGeneration: 1, TrustRootGeneration: 1, BootstrapID: hostIdentity.BootstrapID, EvidenceKeyID: "evidence-key", ObservationDigest: observationEnvelope.PayloadDigest, ReceiptDigests: observation.ReceiptDigests, IssuedAt: formatAuthorityTime(now.Add(-15 * time.Minute)), ValidFrom: formatAuthorityTime(now.Add(-19 * time.Minute)), ValidUntil: formatAuthorityTime(now.Add(30 * time.Minute)), HostIdentityDigest: hostDigest, BinaryIdentityDigest: binaryDigest, ContractDigest: contractDigest, ProfileDigest: contract.ProfileDigest, SuiteDigest: receipt.SuiteDigest, ProbeArtifactDigest: receipt.ProbeArtifactDigest, AggregateChallengeDigest: aggregate, TopologyDigest: receipt.TopologyDigest, VerifierKeyID: observation.VerifierKeyID, ProbeReceiptKeyID: receipt.ReceiptKeyID, Verdicts: verdicts}
+	evidenceEnvelope := buildTestSignedEnvelope(t, evidence, productionEvidenceSchema, map[string]ed25519.PrivateKey{"evidence-key": evidencePrivate})
+	config := CodexAuthorityConfigV1{SchemaVersion: authorityConfigSchema, AuthorityNamespace: receipt.AuthorityNamespace, AuthorityGeneration: 1, TrustRootGeneration: 1, KeysetDigest: keyset.PayloadDigest, CurrentEvidenceDigest: evidenceEnvelope.PayloadDigest, RevokedEvidenceDigests: []string{}, RevokedSuiteDigests: []string{}, RevokedChallengeDigests: []string{}, HostIdentityDigest: hostDigest, BootstrapID: hostIdentity.BootstrapID, SuiteDigest: receipt.SuiteDigest, ProbeArtifactDigest: receipt.ProbeArtifactDigest, AggregateChallengeDigest: aggregate, ContractDigest: contractDigest, ProfileDigest: contract.ProfileDigest, ConfigKeyID: "config-key", IssuedAt: formatAuthorityTime(now.Add(-10 * time.Minute))}
+	config.RevocationSetDigest, _ = RevocationSetDigest(config)
+	configEnvelope := buildTestSignedEnvelope(t, config, authorityConfigSchema, map[string]ed25519.PrivateKey{"config-key": configPrivate})
+	return testAuthorityBundle{now: now, pin: pin, keyset: keyset, config: configEnvelope, evidence: evidenceEnvelope, observation: observationEnvelope, receipts: []SignedEnvelopeV1{receiptEnvelope}, hostNonce: hostNonce, configPrivate: configPrivate, evidencePrivate: evidencePrivate}
+}
+
+func TestSignedAuthorityBundleDomainsUsageFreshnessAndReplay(t *testing.T) {
+	fixture := newTestAuthorityBundle(t)
+	verify := func(bundle testAuthorityBundle, fence *HostAttestationNonceFence) error {
+		_, err := VerifyAuthorityBundle(bundle.now, bundle.pin, bundle.keyset, bundle.config, bundle.evidence, bundle.observation, bundle.receipts, bundle.hostNonce, fakeHostTPM{}, fence)
+		return err
+	}
+	fence := NewHostAttestationNonceFence()
+	if err := verify(fixture, fence); err != nil {
+		t.Fatalf("valid signed authority bundle: %v", err)
+	}
+	if err := verify(fixture, fence); err == nil {
+		t.Fatal("host nonce replay accepted")
+	}
+	unsigned := fixture
+	unsigned.config.Signatures = nil
+	if err := verify(unsigned, NewHostAttestationNonceFence()); err == nil {
+		t.Fatal("unsigned config accepted")
+	}
+	unsigned = fixture
+	unsigned.evidence.Signatures = nil
+	if err := verify(unsigned, NewHostAttestationNonceFence()); err == nil {
+		t.Fatal("unsigned evidence accepted")
+	}
+	unsigned = fixture
+	unsigned.receipts = append([]SignedEnvelopeV1(nil), fixture.receipts...)
+	unsigned.receipts[0].Signatures = nil
+	if err := verify(unsigned, NewHostAttestationNonceFence()); err == nil {
+		t.Fatal("unsigned receipt accepted")
+	}
+	unsigned = fixture
+	unsigned.observation.Signatures = nil
+	if err := verify(unsigned, NewHostAttestationNonceFence()); err == nil {
+		t.Fatal("unsigned observation accepted")
+	}
+	wrongDomain := fixture
+	var evidence CodexProductionEvidenceV1
+	if err := json.Unmarshal(fixture.evidence.Payload, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	wrongDomain.evidence = buildTestSignedEnvelope(t, evidence, "marshal.codex.wrong-domain.v1", map[string]ed25519.PrivateKey{"evidence-key": fixture.evidencePrivate})
+	if err := verify(wrongDomain, NewHostAttestationNonceFence()); err == nil {
+		t.Fatal("wrong evidence domain accepted")
+	}
+	wrongUsage := fixture
+	evidence.EvidenceKeyID = "config-key"
+	wrongUsage.evidence = buildTestSignedEnvelope(t, evidence, productionEvidenceSchema, map[string]ed25519.PrivateKey{"config-key": fixture.configPrivate})
+	if err := verify(wrongUsage, NewHostAttestationNonceFence()); err == nil {
+		t.Fatal("wrong evidence key usage accepted")
+	}
+	wrongReceiptProjection := fixture
+	evidence.EvidenceKeyID = "evidence-key"
+	evidence.ProbeReceiptKeyID = "config-key"
+	wrongReceiptProjection.evidence = buildTestSignedEnvelope(t, evidence, productionEvidenceSchema, map[string]ed25519.PrivateKey{"evidence-key": fixture.evidencePrivate})
+	if err := verify(wrongReceiptProjection, NewHostAttestationNonceFence()); err == nil {
+		t.Fatal("receipt key projection mismatch accepted")
+	}
+	stale := fixture
+	stale.now = fixture.now.Add(25 * time.Hour)
+	if err := verify(stale, NewHostAttestationNonceFence()); err == nil {
+		t.Fatal("stale observation/evidence accepted")
+	}
+}
+
 func TestStateLockFileIsPrivateSingleLink(t *testing.T) {
 	stateRoot, authorityRoot := realTempDir(t), realTempDir(t)
 	store, err := OpenCodexConsumerAuthorityStore(stateRoot, authorityRoot)
@@ -539,9 +760,7 @@ func TestStateLockFileIsPrivateSingleLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.Commit(testState(t, 1, 1, testDigest("keyset"), testDigest("config"))); err != nil {
-		t.Fatal(err)
-	}
+	_ = commitTestBootstrap(t, store, testState(t, 1, 1, testDigest("keyset"), testDigest("config")))
 	var stat unix.Stat_t
 	if err := unix.Stat(filepath.Join(stateRoot, consumerLockName), &stat); err != nil {
 		t.Fatal(err)

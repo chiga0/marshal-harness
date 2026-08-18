@@ -1,15 +1,15 @@
 package codex
 
 import (
+	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"io"
-	"sort"
+	"reflect"
 	"strings"
+	"sync"
 )
 
 // TPMHostAttestor is the narrow package boundary to a hardware-backed host
@@ -55,25 +55,45 @@ func HostIdentityDigest(identity LinuxHostIdentityV1) (string, error) {
 	return canonicalDigest(identity)
 }
 
-// FreshHostAttestation always sources a new nonce from the supplied CSPRNG.
-// The stable host identity is compared by digest; nonce/signature bytes are
-// intentionally operation-specific and are never required to equal another
-// valid attestation.
-func FreshHostAttestation(ctx context.Context, identity LinuxHostIdentityV1, attestor TPMHostAttestor, verifier TPMHostAttestationVerifier, random io.Reader) (LinuxHostAttestationV1, error) {
+// HostAttestationNonceFence consumes caller-generated nonces exactly once.
+// It is consumer-owned and is never populated from an attestation payload.
+type HostAttestationNonceFence struct {
+	mu       sync.Mutex
+	consumed map[string]struct{}
+}
+
+func NewHostAttestationNonceFence() *HostAttestationNonceFence {
+	return &HostAttestationNonceFence{consumed: make(map[string]struct{})}
+}
+
+func (fence *HostAttestationNonceFence) consume(nonce []byte) error {
+	if fence == nil || len(nonce) != 32 {
+		return errors.New("codex host attestation nonce fence is unavailable")
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(nonce)
+	fence.mu.Lock()
+	defer fence.mu.Unlock()
+	if _, exists := fence.consumed[encoded]; exists {
+		return errors.New("codex host attestation nonce replayed")
+	}
+	fence.consumed[encoded] = struct{}{}
+	return nil
+}
+
+// FreshHostAttestation signs only the consumer-provided expected nonce. Nonce
+// generation belongs to the caller/Core boundary, never to the attestor.
+func FreshHostAttestation(ctx context.Context, identity LinuxHostIdentityV1, expectedNonce []byte, attestor TPMHostAttestor, verifier TPMHostAttestationVerifier) (LinuxHostAttestationV1, error) {
 	if ctx == nil || attestor == nil || verifier == nil {
 		return LinuxHostAttestationV1{}, errors.New("codex TPM attestation dependency is unavailable")
 	}
 	if err := identity.Validate(); err != nil {
 		return LinuxHostAttestationV1{}, err
 	}
-	if random == nil {
-		random = rand.Reader
+	if len(expectedNonce) != 32 {
+		return LinuxHostAttestationV1{}, errors.New("codex expected host nonce is invalid")
 	}
-	nonce := make([]byte, 32)
-	if _, err := io.ReadFull(random, nonce); err != nil {
-		return LinuxHostAttestationV1{}, errors.New("codex fresh host nonce is unavailable")
-	}
-	challengeDigest, err := hostChallengeDigest(identity, nonce)
+	nonce := append([]byte(nil), expectedNonce...)
+	challengeDigest, err := hostChallengeDigest(identity, expectedNonce)
 	if err != nil {
 		return LinuxHostAttestationV1{}, err
 	}
@@ -92,7 +112,7 @@ func FreshHostAttestation(ctx context.Context, identity LinuxHostIdentityV1, att
 	}, nil
 }
 
-func ValidateHostAttestation(attestation LinuxHostAttestationV1, expectedIdentityDigest string, verifier TPMHostAttestationVerifier) error {
+func ValidateHostAttestation(attestation LinuxHostAttestationV1, expectedIdentityDigest string, expectedNonce []byte, verifier TPMHostAttestationVerifier, nonceFence *HostAttestationNonceFence) error {
 	if attestation.SchemaVersion != hostAttestSchema || attestation.ChallengeAlgorithm != "TPM2_ECDSA_P256_SHA256" || verifier == nil {
 		return errors.New("codex host attestation is invalid")
 	}
@@ -101,8 +121,8 @@ func ValidateHostAttestation(attestation LinuxHostAttestationV1, expectedIdentit
 		return errors.New("codex host attestation identity differs")
 	}
 	nonce, err := decodeNonce(attestation.ChallengeNonce)
-	if err != nil {
-		return err
+	if err != nil || !bytes.Equal(nonce, expectedNonce) {
+		return errors.New("codex host attestation nonce differs")
 	}
 	signature, err := base64.StdEncoding.DecodeString(attestation.ChallengeSignature)
 	if err != nil || len(signature) != 64 || base64.StdEncoding.EncodeToString(signature) != attestation.ChallengeSignature {
@@ -115,7 +135,7 @@ func ValidateHostAttestation(attestation LinuxHostAttestationV1, expectedIdentit
 	if err := verifier.Verify(attestation.HostIdentity, challengeDigest, signature); err != nil {
 		return errors.New("codex host attestation signature is invalid")
 	}
-	return nil
+	return nonceFence.consume(nonce)
 }
 
 func hostChallengeDigest(identity LinuxHostIdentityV1, nonce []byte) ([]byte, error) {
@@ -138,29 +158,36 @@ func hostChallengeDigest(identity LinuxHostIdentityV1, nonce []byte) ([]byte, er
 	return decoded, nil
 }
 
-type FileIdentityV1 struct {
-	DeviceMajor   uint64 `json:"deviceMajor"`
-	DeviceMinor   uint64 `json:"deviceMinor"`
-	Inode         uint64 `json:"inode"`
-	MountIDUnique uint64 `json:"mountIdUnique"`
-	Size          uint64 `json:"size"`
-	SHA256        string `json:"sha256"`
+type MountObjectIdentityV1 struct {
+	Role          string  `json:"role"`
+	DeviceMajor   uint64  `json:"deviceMajor"`
+	DeviceMinor   uint64  `json:"deviceMinor"`
+	Inode         uint64  `json:"inode"`
+	MountIDUnique uint64  `json:"mountIdUnique"`
+	Mode          uint32  `json:"mode"`
+	UID           uint32  `json:"uid"`
+	GID           uint32  `json:"gid"`
+	Size          uint64  `json:"size"`
+	SHA256        *string `json:"sha256"`
 }
 
-type TopologyRoleV1 struct {
-	Actor    string         `json:"actor"`
-	Identity FileIdentityV1 `json:"identity"`
+type TopologyObjectV1 struct {
+	Identity      MountObjectIdentityV1   `json:"identity"`
+	AncestorChain []MountObjectIdentityV1 `json:"ancestorChain"`
 }
 
 type TopologySnapshotV1 struct {
-	SchemaVersion string           `json:"schemaVersion"`
-	Phase         string           `json:"phase"`
-	Observer      string           `json:"observer"`
-	FixedRoots    []TopologyRoleV1 `json:"fixedRoots"`
-	Executables   []TopologyRoleV1 `json:"executables"`
+	SchemaVersion        string             `json:"schemaVersion"`
+	MountNamespaceDevice uint64             `json:"mountNamespaceDevice"`
+	MountNamespaceInode  uint64             `json:"mountNamespaceInode"`
+	Phase                string             `json:"phase"`
+	FixedRoots           []TopologyObjectV1 `json:"fixedRoots"`
+	Executables          []TopologyObjectV1 `json:"executables"`
 }
 
-var topologyPhases = []string{"T0", "T1", "T2", "T3", "T4"}
+var topologyPhases = []string{"consumer-open", "launcher-pre-seal", "child-pre-exec", "child-post-exec-barrier", "consumer-receipt-accept"}
+var fixedRootRoles = []string{"authorityRoot", "fenceRoot", "worktree", "controlRoot", "controlInput", "controlOutput"}
+var executableRoles = [][]string{{"sourceExecutable"}, {"sourceExecutable", "sealedExecutable"}, {"sourceExecutable", "sealedExecutable"}, {"sourceExecutable", "sealedExecutable", "childExecutable"}, {"sourceExecutable", "sealedExecutable", "childExecutable"}}
 
 func (snapshot TopologySnapshotV1) Digest() (string, error) {
 	if err := snapshot.Validate(); err != nil {
@@ -170,29 +197,15 @@ func (snapshot TopologySnapshotV1) Digest() (string, error) {
 }
 
 func (snapshot TopologySnapshotV1) Validate() error {
-	if snapshot.SchemaVersion != "marshal.codex.topology-snapshot.v1" || !containsString(topologyPhases, snapshot.Phase) {
+	phaseIndex := stringIndex(topologyPhases, snapshot.Phase)
+	if snapshot.SchemaVersion != "marshal.codex.topology-snapshot.v1" || phaseIndex < 0 || snapshot.MountNamespaceInode == 0 {
 		return errors.New("codex topology phase is invalid")
 	}
-	expectedObserver := map[string]string{"T0": "consumer", "T1": "launcher", "T2": "launcher", "T3": "launch-receipt-authority", "T4": "consumer"}[snapshot.Phase]
-	if snapshot.Observer != expectedObserver {
-		return errors.New("codex topology phase observer is invalid")
-	}
-	if err := validateTopologyRoles(snapshot.FixedRoots); err != nil {
+	if err := validateTopologyObjects(snapshot.FixedRoots, fixedRootRoles); err != nil {
 		return err
 	}
-	if err := validateTopologyRoles(snapshot.Executables); err != nil {
+	if err := validateTopologyObjects(snapshot.Executables, executableRoles[phaseIndex]); err != nil {
 		return err
-	}
-	expected := map[string][]string{
-		"T0": {"source"}, "T1": {"sealed", "source"}, "T2": {"sealed", "source"},
-		"T3": {"child", "sealed", "source"}, "T4": {"child", "sealed", "source"},
-	}[snapshot.Phase]
-	actual := make([]string, len(snapshot.Executables))
-	for index := range snapshot.Executables {
-		actual[index] = snapshot.Executables[index].Actor
-	}
-	if !equalStrings(actual, expected) {
-		return errors.New("codex topology executable membership is invalid")
 	}
 	return nil
 }
@@ -201,8 +214,9 @@ func ValidateTopologyTransition(snapshots []TopologySnapshotV1) error {
 	if len(snapshots) != len(topologyPhases) {
 		return errors.New("codex topology transition is incomplete")
 	}
-	var fixed []TopologyRoleV1
-	identities := make(map[string]FileIdentityV1)
+	var fixed []TopologyObjectV1
+	var namespaceDevice, namespaceInode uint64
+	identities := make(map[string]TopologyObjectV1)
 	for index, snapshot := range snapshots {
 		if snapshot.Phase != topologyPhases[index] {
 			return errors.New("codex topology phase order is invalid")
@@ -212,65 +226,67 @@ func ValidateTopologyTransition(snapshots []TopologySnapshotV1) error {
 		}
 		if index == 0 {
 			fixed = snapshot.FixedRoots
-		} else if !equalTopologyRoles(fixed, snapshot.FixedRoots) {
+			namespaceDevice, namespaceInode = snapshot.MountNamespaceDevice, snapshot.MountNamespaceInode
+		} else if !reflect.DeepEqual(fixed, snapshot.FixedRoots) || snapshot.MountNamespaceDevice != namespaceDevice || snapshot.MountNamespaceInode != namespaceInode {
 			return errors.New("codex fixed root identity changed")
 		}
-		for _, role := range snapshot.Executables {
-			if old, exists := identities[role.Actor]; exists && old != role.Identity {
+		for _, object := range snapshot.Executables {
+			role := object.Identity.Role
+			if old, exists := identities[role]; exists && !reflect.DeepEqual(old, object) {
 				return errors.New("codex executable identity changed across topology phases")
 			}
-			identities[role.Actor] = role.Identity
+			identities[role] = object
 		}
 	}
-	source, sourceOK := identities["source"]
-	sealed, sealedOK := identities["sealed"]
-	child, childOK := identities["child"]
-	if !sourceOK || !sealedOK || !childOK || source.SHA256 != sealed.SHA256 || source.SHA256 != child.SHA256 || source.Size != sealed.Size || source.Size != child.Size {
+	source, sourceOK := identities["sourceExecutable"]
+	sealed, sealedOK := identities["sealedExecutable"]
+	child, childOK := identities["childExecutable"]
+	if !sourceOK || !sealedOK || !childOK || source.Identity.SHA256 == nil || sealed.Identity.SHA256 == nil || child.Identity.SHA256 == nil || *source.Identity.SHA256 != *sealed.Identity.SHA256 || *source.Identity.SHA256 != *child.Identity.SHA256 || source.Identity.Size != sealed.Identity.Size || source.Identity.Size != child.Identity.Size {
 		return errors.New("codex source, sealed, and child bytes differ")
 	}
-	if sealed.DeviceMajor != child.DeviceMajor || sealed.DeviceMinor != child.DeviceMinor || sealed.Inode != child.Inode || sealed.MountIDUnique != child.MountIDUnique {
+	if sealed.Identity.DeviceMajor != child.Identity.DeviceMajor || sealed.Identity.DeviceMinor != child.Identity.DeviceMinor || sealed.Identity.Inode != child.Identity.Inode || sealed.Identity.MountIDUnique != child.Identity.MountIDUnique || sealed.Identity.Size != child.Identity.Size {
 		return errors.New("codex sealed and child executable identity differ")
 	}
-	if source.DeviceMajor == sealed.DeviceMajor && source.DeviceMinor == sealed.DeviceMinor && source.Inode == sealed.Inode && source.MountIDUnique == sealed.MountIDUnique {
+	if source.Identity.DeviceMajor == sealed.Identity.DeviceMajor && source.Identity.DeviceMinor == sealed.Identity.DeviceMinor && source.Identity.Inode == sealed.Identity.Inode && source.Identity.MountIDUnique == sealed.Identity.MountIDUnique {
 		return errors.New("codex source and sealed identities unexpectedly alias")
 	}
 	return nil
 }
 
-func validateTopologyRoles(roles []TopologyRoleV1) error {
-	if len(roles) == 0 {
-		return errors.New("codex topology role set is empty")
+func validateTopologyObjects(objects []TopologyObjectV1, roles []string) error {
+	if len(objects) != len(roles) {
+		return errors.New("codex topology object cardinality is invalid")
 	}
-	for index, role := range roles {
-		if !validID(role.Actor) || !validDigest(role.Identity.SHA256) || role.Identity.Size == 0 || role.Identity.Inode == 0 || role.Identity.MountIDUnique == 0 {
+	for index, object := range objects {
+		isExecutable := strings.HasSuffix(roles[index], "Executable")
+		if object.Identity.Role != roles[index] || !validID(object.Identity.Role) || object.Identity.Inode == 0 || object.Identity.MountIDUnique == 0 || len(object.AncestorChain) < 1 || len(object.AncestorChain) > 256 || isExecutable && (object.Identity.SHA256 == nil || object.Identity.Size == 0) || !isExecutable && object.Identity.SHA256 != nil {
 			return errors.New("codex topology identity is invalid")
 		}
-		if index > 0 && roles[index-1].Actor >= role.Actor {
-			return errors.New("codex topology roles are not canonical")
+		if object.Identity.SHA256 != nil && !validDigest(*object.Identity.SHA256) {
+			return errors.New("codex topology content digest is invalid")
+		}
+		seen := make(map[[3]uint64]struct{}, len(object.AncestorChain))
+		for _, ancestor := range object.AncestorChain {
+			if !validID(ancestor.Role) || ancestor.Inode == 0 || ancestor.MountIDUnique == 0 || ancestor.SHA256 != nil {
+				return errors.New("codex topology ancestor identity is invalid")
+			}
+			key := [3]uint64{ancestor.DeviceMajor<<32 | ancestor.DeviceMinor, ancestor.Inode, ancestor.MountIDUnique}
+			if _, duplicate := seen[key]; duplicate {
+				return errors.New("codex topology ancestor chain loops")
+			}
+			seen[key] = struct{}{}
 		}
 	}
 	return nil
 }
 
-func equalTopologyRoles(left, right []TopologyRoleV1) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
+func stringIndex(values []string, target string) int {
+	for index, value := range values {
 		if value == target {
-			return true
+			return index
 		}
 	}
-	return false
+	return -1
 }
 
 func equalStrings(left, right []string) bool {
@@ -287,10 +303,4 @@ func equalStrings(left, right []string) bool {
 
 func canonicalDigestBytes(value []byte) string {
 	return digestBytesHex(value)
-}
-
-func SortedTopologyRoles(roles ...TopologyRoleV1) []TopologyRoleV1 {
-	result := append([]TopologyRoleV1(nil), roles...)
-	sort.Slice(result, func(i, j int) bool { return result[i].Actor < result[j].Actor })
-	return result
 }
