@@ -263,6 +263,18 @@ func (a *Adapter) isConformant(identity executableIdentity) bool {
 	return a.revalidateConformance(context.Background(), identity) == nil
 }
 
+// hasConformanceCandidate reports whether Run has any authority state that
+// could admit an exact executable identity. When neither bound evidence nor a
+// configured authority exists, version inspection cannot change the decision;
+// reject before spawning the short-lived --version probe. Besides avoiding
+// unnecessary execution, this makes the permanent fail-closed result
+// independent of a fast child's process-group acquisition timing.
+func (a *Adapter) hasConformanceCandidate() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.conformance != nil || a.authorityConfigPath != ""
+}
+
 func (a *Adapter) refreshConfiguredConformance(ctx context.Context) error {
 	if a.authorityConfigPath == "" {
 		return port.Permanent(ErrConformancePending)
@@ -564,6 +576,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// resume cannot be done safely. Never launch a process for it.
 	if request.SessionPolicy != "ephemeral" {
 		return domain.Record{}, fmt.Errorf("%w: %q is permanently unsupported; only ephemeral sessions are managed by Marshal", ErrUnsupportedSessionPolicy, request.SessionPolicy)
+	}
+	if !a.hasConformanceCandidate() {
+		return domain.Record{}, port.Permanent(ErrConformancePending)
 	}
 	identity, err := a.inspect(ctx)
 	if err != nil {

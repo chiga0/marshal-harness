@@ -94,16 +94,27 @@ func TestProbeIsFailClosedUntilConformance(t *testing.T) {
 }
 
 func TestRunRequiresBoundConformanceIdentityBeforeLaunch(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "launched")
-	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+successEvents("provider/model"))
+	markerRoot := t.TempDir()
+	probeMarker := filepath.Join(markerRoot, "version-probed")
+	workerMarker := filepath.Join(markerRoot, "worker-launched")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(workerMarker)+"\n"+successEvents("provider/model"))
 	fixture.adapter.mu.Lock()
 	fixture.adapter.conformance = nil
 	fixture.adapter.mu.Unlock()
+	// Make every executable invocation observable, including the --version
+	// probe. With no bound or configured authority, Run must return the
+	// permanent admission denial without spawning even that short-lived child.
+	if err := os.WriteFile(fixture.executable, []byte("#!/bin/sh\ntouch "+shellQuote(probeMarker)+"\n"+fakeScript(supportedBinary, "touch "+shellQuote(workerMarker)+"\n"+successEvents("provider/model"))), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if !errors.Is(err, ErrConformancePending) || !port.IsPermanent(err) {
 		t.Fatalf("error = %v, want permanent conformance-pending", err)
 	}
-	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(probeMarker); !os.IsNotExist(statErr) {
+		t.Fatal("version probe launched without a conformance authority candidate")
+	}
+	if _, statErr := os.Stat(workerMarker); !os.IsNotExist(statErr) {
 		t.Fatal("worker launched without a bound conformance identity")
 	}
 }
