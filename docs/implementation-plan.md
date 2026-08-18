@@ -241,6 +241,22 @@ Goal：交付常驻服务形态与耐久 Runtime 主体——`marshal-server`（
 
 Dogfooding：Marshal 自身的回归与审计任务全部经 Durable Runtime 调度执行；故障注入成为常规测试集并在每次发布前运行。
 
+### 跨 Milestone 前置门禁：Agent Production Authority Provider（ADR 0038，Proposed）
+
+Qoder/Codex 的 AgentAdapter production enablement 在 M10–M12 平台路线中共享一个宿主前置，但不新增或提前完成 Milestone：[ADR 0038](adr/0038-agent-production-authority-provider.md) 提议实现独立本机 `AgentProductionAuthorityProvider` Port。共享范围只包括外部 principal、认证 IPC、held-fd identity、OS isolation/audit receipt、host attestation、monotonic fence、atomic authority bundle、launch receipt/workload barrier 与 crash reconcile；Qoder/Codex 仍分别遵守 ADR 0034/0037 的封闭 profile、证据 Schema 与 conformance，AgentAdapter evidence 不得冒充 ADR 0018 Sandbox Provider `ConformanceEvidence`。
+
+实施顺序为硬门禁：
+
+1. 维护者接受 ADR 0038；在此之前只允许 fake Port、Schema/IPC parser 与负向 fixture，production registry 保持 hard-disabled；
+2. 实现本机 Unix `SOCK_SEQPACKET` protocol v1、OS peer credential/operation AuthZ、closed request/response envelope、shared `SignedObjectEnvelopeV1`、`expectedProviderSequence` CAS、`SCM_RIGHTS` held handle、command replay/conflict 与 safe error；非本机 transport 留给后续 ADR；
+3. 实现外部 service principal 与互斥 key usage，证明 Worker/Marshal/verifier 无 authority private key；Secret provider 通过 target child 的 session-scoped `CredentialIngressPort` 直连把 opaque、不可读的一次性 capability 交给 probe isolation principal，controller/APAP 永远不接收连接、fd 或 bytes，只持非敏感 content-addressed receipt ref；
+4. 实现 content-addressed leaf batch、精确 detached manifest signature 与 prepared→external monotonic anchor→committed 原子交付；evidence/rotation/revocation/recovery authority 分权，recovery CAS 分离 original expected、observed current 与 anchored next，覆盖每个 fsync/crash/协调回滚、lost response 与 rotation/revocation 线性化点；
+5. 实现 probe isolation receipt 与 stopped-child `PrepareLaunch/CommitLaunch/AbortLaunch/InspectLaunch` barrier；launch request/receipt 精确绑定 `authorityNamespaceId`、ADR 0037 T1–T3 的全部 held fixed root/mount namespace、current authority CAS，receipt 被 Marshal durable 接纳前 child 不得执行 workload，lost response 不得产生第二 child；
+6. Linux 分别通过 Qoder ADR 0034、Codex ADR 0037 的真实 credentialed profile conformance；Darwin 在等价强制机制与替代 ADR 被接受前稳定返回 `unsupported`；
+7. 非作者 reviewer 对真实 diff、当前宿主 evidence、race/static analysis、secret scan、rollback/revoke/kill 演练给出 P0/P1 清零结论后，Qoder/Codex 各自以独立 registry 变更启用。
+
+该前置门禁不改变 M10 Cloudflare Sandbox Provider 的范围，也不把 APAP 计为 ADR 0018 六类 Provider 的新通用协议。M12 只在 APAP 已实现后交付其 system-service provisioning、运维文档与 profile conformance 工具；不能用 SDK/文档任务补做首次安全基线。
+
 ### Milestone 10：Cloudflare Provider
 
 ADR 0019 增量：Cloudflare `Provision`/`Stage`/`Persist`/`Hydrate`/`Terminate`/TTL 全部进入副作用对账与 leak scan；补偿契约和资源身份无法证明时不得宣称资源生命周期可靠。
