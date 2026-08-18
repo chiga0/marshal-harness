@@ -438,6 +438,16 @@ Qoder production authority wiring 候选提交的独立审计确认四项 P1：�
 
 该候选实现与 CI 生成的 Ed25519 key/fake executable 只验证机制，不是 credentialed live evidence；ADR 0034 虽已接受，但当前 host 尚未配置外部真实 evidence，也未完成独立 production enablement，Issue #137 保持打开，Qoder 不得被报告为已完成或当前部署 `supported`。启用序列固定为 ADR 接受后先只落地仍与 consumer 分离的 isolation/receipt/verifier/signer tooling，再产生真实 evidence 并通过负向矩阵，最后以单独变更启用 consumer/registry；调度优先级只能在 required CI、secret scan 与当前 host doctor 全绿后变更。
 
+## Issue #136 Codex production authority 审计增补（2026-08-18）
+
+Codex production eligibility 首次引入 Adapter 本地准入 trust root、可撤销 evidence、consumer generation fence 与 authenticated fd-exec，属于信任边界和耐久契约变更。ADR 0037 候选经多轮独立复审，最终 P0/P1/P2/P3 全部为 0；维护者于 2026-08-18 接受 [ADR 0037](adr/0037-codex-cli-production-authority.md)。合同现冻结 verifier/receipt/evidence/config/launch authority 分权、Worker 零 authority signing key、稳定 TPM-backed `hostIdentityDigest` 与逐次 fresh nonce、单一 active-root-pin/fence 原子状态及每个 fsync/rename 边界恢复、source→sealed→child 合法 topology 转换、逐次撤销复核和 ReviewPacket 精确证据绑定。
+
+| ID | 级别 | 状态 | 关闭条件 |
+| --- | --- | --- | --- |
+| `CODEX-AUTHORITY-ADR-MISSING` | P1 | `CLOSED-CONTRACT` | 维护者已接受 ADR 0037；接受只冻结合同，不自动启用 production constructor 或 registry。 |
+
+ADR 0037 接受不表示实现、真实 evidence 或 enablement 已完成。Issue #136 与相关 milestone 保持未完成；当前 Codex 部署仍须 production hard-disable，不得报告为 `supported`。Darwin 在等价 authenticated fd-exec 合同由后续 ADR 接受前继续 fail closed。
+
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 
 Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Verifier 虽能在命令后观察到 Candidate worktree 变化并把 Gate 标为失败，却让污染字节留在受管 worktree；随后 Review 的 current-observation guard 正确拒绝变化后的字节，Run 因而无法生成绑定原 Candidate 的 ReviewPacket。该问题不是新生命周期或 Schema 缺口：ADR 0027 已冻结 command 写作用域默认为 `none`、未声明写入 fail closed、Candidate 与 Evidence 不可被覆盖；缺失的是实现级 command 隔离。
