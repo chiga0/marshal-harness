@@ -448,6 +448,20 @@ Codex production eligibility 首次引入 Adapter 本地准入 trust root、可�
 
 ADR 0037 接受不表示实现、真实 evidence 或 enablement 已完成。Issue #136 与相关 milestone 保持未完成；当前 Codex 部署仍须 production hard-disable，不得报告为 `supported`。Darwin 在等价 authenticated fd-exec 合同由后续 ADR 接受前继续 fail closed。
 
+## Qoder/Codex 共享 Production Authority Provider 审计增补（2026-08-18）
+
+Qoder 与 Codex 的 production consumer 实现复核进一步证明：两个 Adapter 虽已有封闭 evidence/config/consumer 合同，但当前仓库和宿主仍没有可独立 provision 的在线 verifier、外部 OS isolation/audit receipt authority、host attestation/monotonic anchor、stopped-child launch barrier，以及可原子交付 keyset/revocation/config/evidence 的 authority provider。把 fixture、同 UID helper 或若干普通文件直接接到 registry，会让 Adapter/Worker 所在故障域为自己的准入证据和 rollback 状态背书。
+
+[ADR 0038](adr/0038-agent-production-authority-provider.md)（Proposed）提议以独立本机 `AgentProductionAuthorityProvider` Port、外部 principal、held-fd IPC、atomic bundle+monotonic fence 和 Prepare/Commit/Inspect launch barrier 补齐该层。共享仅限基础设施；Qoder/Codex 继续分别运行 ADR 0034/0037 的 exact profile 与 conformance。该 ADR 未接受，也没有把任何当前部署升级为 `supported`。
+
+| ID | 级别 | 状态 | 问题与关闭条件 |
+| --- | --- | --- | --- |
+| `AGENT-AUTHORITY-PROVIDER-MISSING` | P1 | `OPEN` | 当前缺少与 Marshal/Worker 分离的在线 verifier、isolation/receipt/evidence/config/launch authority principal 及最小认证 IPC。关闭要求 ADR 0038 被维护者接受，shared Port/peer credential/operation AuthZ/held-fd/role-key separation 实现和负向矩阵通过；同 UID helper、fixture、普通 subprocess 或 `sandbox-exec` 单独不能关闭。 |
+| `AGENT-AUTHORITY-ATOMIC-BUNDLE-AND-BARRIER` | P1 | `OPEN` | keyset/revocation/config/evidence 与 high-water 尚无跨 crash 的原子 current bundle；Worker launch 尚无 receipt durable-before-release barrier 与 lost-response Inspect/Reconcile。关闭要求外部 monotonic anchor、prepared→anchor→committed transaction、协调回滚检测、stopped-child Prepare/Commit/Abort/Inspect、单次 release 与 kill/wait crash matrix 全部通过。 |
+| `AGENT-AUTHORITY-PLATFORM-CONFORMANCE` | P1 | `OPEN` | Linux/Darwin 的强制隔离、host identity、execution identity 与 audit producer 尚未形成真实支持矩阵。关闭要求 Linux Qoder/Codex 分别通过 ADR 0034/0037 全矩阵和非作者真实 credentialed probe；Darwin 在替代强制机制与独立 ADR 通过前保持 `unsupported`，不能以 pathname execution、codesign 摘要或 `sandbox-exec` 降级。 |
+
+上述 finding 是 Issue #136/#137 production enablement 的共同前置阻塞，不改变 M10 在途及 M11–M13 `PLANNED` 状态。只有 shared Port conformance 与对应 profile conformance、当前宿主 doctor、撤销/rollback/kill 演练、required CI 和 secret scan 全绿后，才能分别提交 Qoder 或 Codex 的独立 registry enablement 变更。
+
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 
 Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Verifier 虽能在命令后观察到 Candidate worktree 变化并把 Gate 标为失败，却让污染字节留在受管 worktree；随后 Review 的 current-observation guard 正确拒绝变化后的字节，Run 因而无法生成绑定原 Candidate 的 ReviewPacket。该问题不是新生命周期或 Schema 缺口：ADR 0027 已冻结 command 写作用域默认为 `none`、未声明写入 fail closed、Candidate 与 Evidence 不可被覆盖；缺失的是实现级 command 隔离。
