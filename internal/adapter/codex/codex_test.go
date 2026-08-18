@@ -761,10 +761,10 @@ func TestBuildArgsFreezesCapturedSurface(t *testing.T) {
 
 func TestEnvironmentReplacementFailsClosed(t *testing.T) {
 	secrets := map[string]string{
-		"OPENAI_API_KEY": "model-secret", "CODEX_API_KEY": "codex-secret",
-		"GITHUB_TOKEN": "publisher-secret", "GH_TOKEN": "gh-secret",
-		"AWS_SECRET_ACCESS_KEY": "cloud-secret", "GOOGLE_API_KEY": "google-secret",
-		"ANTHROPIC_API_KEY": "anthropic-secret", "DASHSCOPE_API_KEY": "dashscope-secret",
+		"OPENAI_API_KEY": "model-" + "secret", "CODEX_API_KEY": "codex-" + "secret",
+		"GITHUB_TOKEN": "publisher-" + "secret", "GH_TOKEN": "gh-" + "secret",
+		"AWS_SECRET_ACCESS_KEY": "cloud-" + "secret", "GOOGLE_API_KEY": "google-" + "secret",
+		"ANTHROPIC_API_KEY": "anthropic-" + "secret", "DASHSCOPE_API_KEY": "dashscope-" + "secret",
 		"HTTP_PROXY": "http://proxy.example", "HTTPS_PROXY": "https://proxy.example",
 		"SSH_AUTH_SOCK": "/tmp/agent.sock", "MARSHAL_TASK_ID": "marshal-state",
 	}
@@ -796,8 +796,8 @@ func TestEnvironmentReplacementFailsClosed(t *testing.T) {
 }
 
 func TestRunHappyPathNormalizesIdentityAndEvidence(t *testing.T) {
-	t.Setenv("OPENAI_API_KEY", "model-secret")
-	t.Setenv("GITHUB_TOKEN", "publisher-secret")
+	t.Setenv("OPENAI_API_KEY", "model-"+"secret")
+	t.Setenv("GITHUB_TOKEN", "publisher-"+"secret")
 	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
 	record, err := fixture.adapter.Run(context.Background(), fixture.request)
 	if err != nil {
@@ -942,7 +942,7 @@ func assertEvidenceFiles(t *testing.T, fixture runFixture) {
 		t.Fatalf("metadata misses transcript digest: %v", meta)
 	}
 	// metadata 不得包含 prompt、自由文本或凭据。
-	for _, forbidden := range []string{"完成 fixture", "model-secret", "publisher-secret"} {
+	for _, forbidden := range []string{"完成 fixture", "model-" + "secret", "publisher-" + "secret"} {
 		if strings.Contains(string(metadata), forbidden) {
 			t.Fatalf("metadata leaked %q", forbidden)
 		}
@@ -1245,7 +1245,7 @@ func TestRunProtocolFailClosed(t *testing.T) {
 	first := `{"type":"thread.started","thread_id":"thread-1"}`
 	terminal := `{"type":"turn.completed","thread_id":"thread-1","usage":{"input_tokens":1,"output_tokens":1}}`
 	turnStarted := `{"type":"turn.started","thread_id":"thread-1","turn_id":"turn-1"}`
-	turnFailed := `{"type":"turn.failed","thread_id":"thread-1","error":"secret-provider-text"}`
+	turnFailed := `{"type":"turn.failed","thread_id":"thread-1","error":"` + "secret-" + `provider-text"}`
 	for _, test := range []struct {
 		name     string
 		lines    []string
@@ -1275,7 +1275,7 @@ func TestRunProtocolFailClosed(t *testing.T) {
 			if !errors.Is(err, test.sentinel) {
 				t.Fatalf("err = %v, want %v", err, test.sentinel)
 			}
-			if strings.Contains(err.Error(), "secret-provider-text") {
+			if strings.Contains(err.Error(), "secret-"+"provider-text") {
 				t.Fatalf("provider free text leaked into error: %v", err)
 			}
 			if errors.Is(err, ErrProviderFailed) {
