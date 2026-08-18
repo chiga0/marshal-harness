@@ -74,7 +74,9 @@ func exactEvidenceManifests(t *testing.T, now time.Time, credentialPrivate ed255
 	manifests := make([]CandidateVariantInvocationManifest, 4)
 	for index := range manifests {
 		variant := candidateProbeVariants("provider/model")[index]
-		capability := CandidateCredentialCapabilityIdentity{APIVersion: candidateReceiptAPIVersion, Kind: "QoderCredentialCapabilityIdentity", SchemaVersion: 1, ProviderIdentity: "credential-provider", CapabilityID: base64.RawURLEncoding.EncodeToString([]byte("capability-id-01")), ProbeRunID: "run-1", VariantID: candidateVariantID(index), CapabilityClass: "qoder-live-probe", PolicyScopeDigest: digest("a"), IssuedAt: candidateExactTimestamp(now.Add(-time.Minute)), ExpiresAt: candidateExactTimestamp(now.Add(time.Minute)), ProviderKeyID: "credential-0", SignatureAlgorithm: candidateSignatureAlgorithm, SignatureEncoding: candidateSignatureEncoding}
+		capabilityID := []byte("capability-id-00")
+		capabilityID[len(capabilityID)-1] = byte('0' + index)
+		capability := CandidateCredentialCapabilityIdentity{APIVersion: candidateReceiptAPIVersion, Kind: "QoderCredentialCapabilityIdentity", SchemaVersion: 1, ProviderIdentity: "credential-provider", CapabilityID: base64.RawURLEncoding.EncodeToString(capabilityID), ProbeRunID: "run-1", VariantID: candidateVariantID(index), CapabilityClass: "qoder-live-probe", PolicyScopeDigest: digest("a"), IssuedAt: candidateExactTimestamp(now.Add(-time.Minute)), ExpiresAt: candidateExactTimestamp(now.Add(time.Minute)), ProviderKeyID: "credential-0", SignatureAlgorithm: candidateSignatureAlgorithm, SignatureEncoding: candidateSignatureEncoding}
 		capability.RecordDigest = capability.digest()
 		message, _ := capability.signingBytes()
 		capability.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(credentialPrivate, message))
@@ -86,6 +88,22 @@ func exactEvidenceManifests(t *testing.T, now time.Time, credentialPrivate ed255
 		manifests[index] = manifest
 	}
 	return manifests
+}
+
+func cloneExactEvidenceManifests(manifests []CandidateVariantInvocationManifest) []CandidateVariantInvocationManifest {
+	cloned := append([]CandidateVariantInvocationManifest(nil), manifests...)
+	for manifestIndex := range cloned {
+		manifest := &cloned[manifestIndex]
+		manifest.ArgvManifest.Entries = append([]CandidateArgvEntry(nil), manifest.ArgvManifest.Entries...)
+		manifest.EnvironmentManifest.Entries = append([]CandidateEnvironmentEntry(nil), manifest.EnvironmentManifest.Entries...)
+		for entryIndex := range manifest.EnvironmentManifest.Entries {
+			if manifest.EnvironmentManifest.Entries[entryIndex].CapabilityIdentity != nil {
+				capability := *manifest.EnvironmentManifest.Entries[entryIndex].CapabilityIdentity
+				manifest.EnvironmentManifest.Entries[entryIndex].CapabilityIdentity = &capability
+			}
+		}
+	}
+	return cloned
 }
 
 func exactHeldObjects(t *testing.T) (CandidateBoundObject, CandidateBoundObject) {
@@ -411,4 +429,74 @@ func TestExactAuthorityBindingPinsFourTailsAndCurrentEvidence(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("fully resigned empty model digest in both model variants", func(t *testing.T) {
+		changedEvidence := evidence
+		changedEvidence.VariantInvocationManifests = cloneExactEvidenceManifests(evidence.VariantInvocationManifests)
+		emptyModelDigest := digestBytes(nil)
+		for _, manifestIndex := range []int{1, 3} {
+			manifest := &changedEvidence.VariantInvocationManifests[manifestIndex]
+			found := false
+			for entryIndex := range manifest.ArgvManifest.Entries {
+				entry := &manifest.ArgvManifest.Entries[entryIndex]
+				if entry.Source == "model-id" {
+					entry.ValueDigest = emptyModelDigest
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("model-present variant has no model-id entry")
+			}
+			resignCandidateManifest(manifest)
+		}
+		resignExactEvidence(&changedEvidence, f.keys["evidence-0"])
+		changedConfig := config
+		changedConfig.CurrentEvidenceDigest = changedEvidence.EvidenceDigest
+		changedConfig.ConfigDigest = digestRecordWithoutFields(changedConfig, "configDigest")
+		changedCurrent := current
+		changedCurrent.FenceRequest.ConfigDigest = changedConfig.ConfigDigest
+		changedCurrent.FenceReceipt = exactFenceAdvanceReceipt(t, f.now, changedCurrent.FenceRequest, "fence-0", 0, osFixture.keys["fence-0"])
+		if err := ValidateExactAuthorityBinding(changedConfig, changedEvidence, changedCurrent, f.now); err == nil {
+			t.Fatal("fully resigned empty model semantics accepted for model-present variants")
+		}
+	})
+
+	t.Run("fully resigned capability id replay across variants", func(t *testing.T) {
+		changedEvidence := evidence
+		changedEvidence.VariantInvocationManifests = cloneExactEvidenceManifests(evidence.VariantInvocationManifests)
+		first, err := credentialCapabilityFromManifest(changedEvidence.VariantInvocationManifests[0].EnvironmentManifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest := &changedEvidence.VariantInvocationManifests[1]
+		found := false
+		for entryIndex := range manifest.EnvironmentManifest.Entries {
+			capability := manifest.EnvironmentManifest.Entries[entryIndex].CapabilityIdentity
+			if capability == nil {
+				continue
+			}
+			capability.CapabilityID = first.CapabilityID
+			capability.RecordDigest = capability.digest()
+			message, signingErr := capability.signingBytes()
+			if signingErr != nil {
+				t.Fatal(signingErr)
+			}
+			capability.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(osFixture.keys["credential-0"], message))
+			found = true
+		}
+		if !found {
+			t.Fatal("variant has no credential capability identity")
+		}
+		resignCandidateManifest(manifest)
+		resignExactEvidence(&changedEvidence, f.keys["evidence-0"])
+		changedConfig := config
+		changedConfig.CurrentEvidenceDigest = changedEvidence.EvidenceDigest
+		changedConfig.ConfigDigest = digestRecordWithoutFields(changedConfig, "configDigest")
+		changedCurrent := current
+		changedCurrent.FenceRequest.ConfigDigest = changedConfig.ConfigDigest
+		changedCurrent.FenceReceipt = exactFenceAdvanceReceipt(t, f.now, changedCurrent.FenceRequest, "fence-0", 0, osFixture.keys["fence-0"])
+		if err := ValidateExactAuthorityBinding(changedConfig, changedEvidence, changedCurrent, f.now); err == nil {
+			t.Fatal("fully resigned credential capability replay accepted across variants")
+		}
+	})
 }

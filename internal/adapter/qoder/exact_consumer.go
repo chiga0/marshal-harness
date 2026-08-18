@@ -261,6 +261,7 @@ func ValidateExactAuthorityBinding(config QoderAuthorityConfigExact, evidence Qo
 		return errors.New("qoder exact conformance evidence is invalid")
 	}
 	var modelDigest string
+	capabilityIDs := make(map[string]struct{}, len(evidence.VariantInvocationManifests))
 	for index, receiptDigest := range evidence.ReceiptDigests {
 		manifest := evidence.VariantInvocationManifests[index]
 		if !validSHA256Digest(receiptDigest) || manifest.ReceiptSequence != uint64(index+1) || validateCandidateInvocationManifest(manifest, evidence.ProbeRunID, candidateVariantID(index)) != nil {
@@ -274,6 +275,10 @@ func ValidateExactAuthorityBinding(config QoderAuthorityConfigExact, evidence Qo
 		if capabilityErr != nil || !credentialKeyOK || !validCandidateASCII(current.CredentialProviderIdentity) || capability.ProviderIdentity != current.CredentialProviderIdentity || capability.CapabilityClass != "qoder-live-probe" || capability.PolicyScopeDigest != config.TrustPolicyDigest || issuedErr != nil || expiresErr != nil || observedErr != nil || issuedAt.After(observedAt) || !observedAt.Before(expiresAt) || verifyCandidateCredentialCapability(capability, candidateAuthorityPolicy{credentialProviderKeyID: credentialKey.KeyID, credentialProviderKeyEpoch: credentialKey.KeyEpoch, credentialProviderPublicKey: credentialKey.PublicKey}) != nil {
 			return errors.New("qoder exact credential capability is not OS-root trusted")
 		}
+		if _, duplicate := capabilityIDs[capability.CapabilityID]; capability.CapabilityID == "" || duplicate {
+			return errors.New("qoder exact credential capability identity is empty or replayed across variants")
+		}
+		capabilityIDs[capability.CapabilityID] = struct{}{}
 		expected, nextModelDigest, expectedErr := exactExpectedInvocationManifest(index, evidence.ProbeRunID, manifest, capability, modelDigest)
 		if expectedErr != nil || !candidateManifestsEqual(manifest, expected) {
 			return errors.New("qoder exact invocation manifest differs from the frozen matrix")
@@ -316,7 +321,7 @@ func exactExpectedInvocationManifest(index int, probeRunID string, observed Cand
 			observedModelDigest = entry.ValueDigest
 		}
 	}
-	if !validSHA256Digest(observedModelDigest) || sharedModelDigest != "" && sharedModelDigest != observedModelDigest {
+	if !validSHA256Digest(observedModelDigest) || observedModelDigest == digestBytes(nil) || sharedModelDigest != "" && sharedModelDigest != observedModelDigest {
 		return CandidateVariantInvocationManifest{}, sharedModelDigest, errors.New("qoder exact invocation model identity differs")
 	}
 	for entryIndex := range expected.ArgvManifest.Entries {
