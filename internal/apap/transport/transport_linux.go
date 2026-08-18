@@ -256,10 +256,8 @@ func receive(fd int, policy PeerPolicy, peer authorityprovider.PeerIdentity, op 
 	}
 	var fds []int
 	defer func() {
-		if fds != nil {
-			for _, got := range fds {
-				_ = unix.Close(got)
-			}
+		for _, got := range fds {
+			_ = unix.Close(got)
 		}
 	}()
 	for _, msg := range msgs {
