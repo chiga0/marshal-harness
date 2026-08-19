@@ -982,8 +982,12 @@ func assertEvidenceFiles(t *testing.T, fixture runFixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(schemaTemp) != string(durableSchema) {
-		t.Fatal("schema temp is not byte-identical to the durable worker-result schema")
+	providerSchema, err := providerSchemaDocument(durableSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(schemaTemp) != string(providerSchema) {
+		t.Fatal("schema temp is not byte-identical to the Codex provider schema")
 	}
 	// result 叶子是唯一真实结果来源：--output-last-message 机械指向它，
 	// 旧的 codex-last-message.json 不再存在。

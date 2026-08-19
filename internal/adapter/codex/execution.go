@@ -389,6 +389,32 @@ type leafClaimError struct {
 func (e *leafClaimError) Error() string { return e.err.Error() }
 func (e *leafClaimError) Unwrap() error { return e.err }
 
+// providerSchemaDocument projects the durable WorkerResult schema to the
+// Codex provider-facing subset. Codex 0.145.0 rejects the `not` keyword;
+// durable validation still uses the original schema after execution.
+func providerSchemaDocument(schemaDocument []byte) ([]byte, error) {
+	var doc any
+	if err := json.Unmarshal(schemaDocument, &doc); err != nil {
+		return nil, err
+	}
+	stripRejectedSchemaKeywords(doc)
+	return json.Marshal(doc)
+}
+
+func stripRejectedSchemaKeywords(node any) {
+	switch value := node.(type) {
+	case map[string]any:
+		delete(value, "not")
+		for _, child := range value {
+			stripRejectedSchemaKeywords(child)
+		}
+	case []any:
+		for _, child := range value {
+			stripRejectedSchemaKeywords(child)
+		}
+	}
+}
+
 // prepareAttemptEvidence 打开并钉住 evidence directory inode，然后只经
 // openat(O_EXCL|O_NOFOLLOW) 占用全部 attempt 叶子。后续 worker I/O 与
 // Adapter 落盘都使用这些持续打开的 fd，不再按可被替换的路径重新打开。
@@ -397,6 +423,10 @@ func prepareAttemptEvidence(dir *pinnedDescendantDirectory, resultName string, s
 		dir: dir, resultName: resultName, schemaName: "codex-output-schema.json",
 		transcriptName: "codex-transcript.jsonl", stderrName: "codex-stderr.log",
 		metadataName: "codex-transcript-meta.json",
+	}
+	providerSchema, err := providerSchemaDocument(schemaDocument)
+	if err != nil {
+		return nil, fmt.Errorf("project codex output schema: %w", err)
 	}
 	failed := true
 	defer func() {
@@ -410,7 +440,7 @@ func prepareAttemptEvidence(dir *pinnedDescendantDirectory, resultName string, s
 		readOnly   bool
 		target     **os.File
 	}{
-		{evidence.schemaName, "output schema", schemaDocument, true, &evidence.schema},
+		{evidence.schemaName, "output schema", providerSchema, true, &evidence.schema},
 		{evidence.resultName, "result", nil, false, &evidence.result},
 		{evidence.transcriptName, "transcript", nil, false, &evidence.transcript},
 		{evidence.stderrName, "stderr", nil, false, &evidence.stderr},
