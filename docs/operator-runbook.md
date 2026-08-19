@@ -338,9 +338,34 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 
 ### 11.2 JSON 行动队列契约
 
-输出包含 `generatedAt` 与按 priority 升序的 `items`；每个 item 含
-`runId`、`state`、`priority`、`action`、`ageSeconds`、`processOwnership`。
-不写入 secret、环境变量值、完整命令行参数、绝对路径。
+输出版本为 `marshal-watch/v2`，并固定 `advisoryOnly=true`：watchdog 只给建议，
+不会启动、retry、terminate 或 kill 任何 Worker。`items` 只包含当前 Goal/cohort，
+`topAction` 只从该数组取首项；旧 Run 的非终态待办保留在 `historicalItems`，不会再
+挤占当前交付的最高优先级。推荐把 operator-local `MARSHAL_WATCH_COHORT_FILE` 指向
+`{"goalId":"goal:...","runIds":[...]}`；文件缺失时兼容旧调用，按最近 24 小时
+创建或当前持有 lease 的 Run 自动分桶，并在 `cohort.source` 标明 fallback。历史 Run
+即使因 doctor/reconcile 刷新 `updatedAt` 也不会回到当前队列。
+显式 cohort 文件无效时 fail closed，不把历史 Run 猜成当前 Run。
+
+每个 item 保留原有 `runId`、`state`、`priority`、`action`、`ageSeconds`、
+`processOwnership`、`dedupeKey`，并增加 `queueBucket`、`ownershipSource`、
+`argvMatched`、`journalStatus`、`evidenceStatus`、`journalSequence`、
+`phaseProgressDigest`，以及存在时的
+封闭 `typedFailure`。`dedupeKey` 绑定 RunState sequence、journal sequence、当前 phase
+progress digest、typed failure（含 `notBefore`/`retryAfterNanoseconds`）、ReviewPacket
+和 control journal digest；只有真实进展变化才刷新。输出不写入 secret、环境变量值、
+完整命令行参数或绝对路径。
+
+authority root、`runs` 与每个 Run 目录都从调用方给出的精确路径逐 component 打开：
+输入先用 `abspath` 生成绝对词法路径（只消除 `.`，拒绝 `..`；禁止 `realpath`、
+`readlink` 或解析 symlink），再固定从 held `/` dirfd 起步，全程使用
+`O_DIRECTORY|O_NOFOLLOW`。每个 Run 从 held
+`runs` dirfd 枚举，后续状态、journal、lease、owner 与证据读取也只使用 held dirfd
+绑定目录与文件；Run 目录 symlink/替换、state 的非对象或非封闭 state、journal 的
+非对象 event/非对象 payload/非法时间或类型只把该 Run 标为 `unknown`，不会让整轮
+watchdog 崩溃。ReviewPacket 和 control journal 分别有 8 MiB、16 MiB 硬上限，均以
+bounded chunk 读取并比较前后 dev/inode/size/mode/nlink；超限、增长、替换或 symlink
+统一产生稳定 `unknown` marker，并令当前队列 `hold-concurrency`。
 
 动作映射（priority 越小越优先）：
 
@@ -352,25 +377,49 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 | RETRY_PENDING | — | retry-or-abort | 40 |
 | VERIFYING | — | verify-or-doctor | 50 |
 | PUBLISHING | — | publish-or-doctor | 60 |
-| READY / APPROVED | — | run-now | 70 |
+| READY | — | run-now | 70 |
 | CI_PENDING | — | check-ci | 80 |
 | RUNNING | 有可证明归属活进程 | monitor | 90 |
 
 终态（ACCEPTED/REJECTED/BLOCKED/ABORTED/NO_CHANGE）默认不进入行动队列。
 
-`processOwnership` 只有三种取值：`owned-active`（有可证明归属的活进程）、`not-found`
-（RUNNING 但找不到归属进程，需 doctor-dead）、`not-applicable`（非 RUNNING 状态）。
-进程匹配覆盖 `marshal task run/verify/publish/supervise` 与 qwen/codex/qoder/opencode/pi，
-且必须绑定**精确 runId**——同名进程不等于本 Run 所有者。不得以事件年龄单独判定 RUNNING
-死亡（opencode 单 attempt 可能 20–40 分钟无事件）；无法证明归属时输出 doctor-dead，
-由操作者用 `marshal doctor --run RUN_ID --json` 对账后幂等重跑。
+`processOwnership` 取值为 `owned-active`（OS lock 与 owner 事实一致）、`not-found`
+（RUNNING 但 Marshal lease 未持有）、`unknown`（lease/owner 无法安全读取，fail closed）
+或 `not-applicable`（非 RUNNING 状态）。动作所有权只由 Marshal `lease.lock` 与
+`lease.lock.owner` 的只读事实决定；进程 argv 仅输出布尔 `argvMatched` 供诊断，
+即使出现精确 runId 也不能把未持 lease 的进程升级为 owner，反之无 argv 但 held lease
+仍是 `owned-active`。owner 必须包含与 held `lease.lock` 完全一致的 `device`/`inode`，
+且 Run parent 已由上述 nofollow dirfd 链绑定；`pid` 必须是非布尔的 exact integer，
+范围为 `2..2147483647`；任何 probe 异常、字段缺失或身份不一致一律
+`unknown`。argv 诊断识别 `qodercli`、版本化 `qodercli-1.1.23` 与平台化
+`codex-aarch64-apple-darwin` 等真实 basename，但这些名字仍不构成 authority。
+不得以事件年龄单独判定 RUNNING 死亡；`not-found` 输出
+`doctor-dead`，`unknown` 输出 `hold-ownership-unknown`，均由操作者先用
+`marshal doctor --run RUN_ID --json` 对账。
+
+`capacity` 每轮重新采集三类上限：memory 使用可用字节/当前 pressure，CPU 使用 logical
+cores、1 分钟 load average 与 `activeOwnedWorkers`（同时限制 load headroom 和 owner
+headroom），Provider 使用当前 cohort Adapter 的
+封闭 typed failure。`rate-limited`、`dns-failure`、`connection-failure` 在有效
+`notBefore`/`retryAfterNanoseconds` 窗口内暂停新增槽位，`quota-exhausted` 持续暂停到同
+Adapter 出现更新的成功事实。`notBefore` 必须严格相对对应 `worker.failed.timestamp`
+落在 `(0,24h]`，与 Core `MaxRetryHintWindow` 一致；远期、过去/相等、缺失事件时间或
+类型错误只产生该 Run 的 `unknown`，不会被解释为永久 Provider backpressure。
+未知或非法 typed failure fail closed。最终
+`slotsAvailable=min(memorySlotsAvailable,cpuSlotsAvailable,providerSlotsAvailable)`；
+待派发 Run 无法从 journal 或锁定 TaskSpec 确认 Adapter identity 时 Provider 也视为
+`unknown`。memory pressure、CPU、Provider 或当前队列/ownership 任一关键 signal 为 `unknown` 时固定
+`hold-concurrency`。这仍是 admission 建议，不替代 scope、doctor、plan approval 或 Core lease。
 
 ### 11.3 环境变量
 
 - `MARSHAL_WATCH_ROOT`：含 runs 目录的根，默认 `.marshal`；测试可指向 fixture 根目录。
 - `MARSHAL_WATCH_NOTIFY=0`：禁用 osascript 通知（heartbeat 消费 JSON 时必设）。
 - `MARSHAL_WATCH_LOG`：循环模式日志，默认 `/tmp/marshal-watch.log`。
-- `MARSHAL_WATCH_PROCESS_FILE`：进程 fixture 文件（每行 `<pid> <command>`），设置后归属判定只按文件内容，不触碰真实进程。
+- `MARSHAL_WATCH_PROCESS_FILE`：进程 argv fixture（每行 `<pid> <command>`），只产生 `argvMatched` 诊断，不参与动作所有权。
+- `MARSHAL_WATCH_COHORT_FILE`：operator-local 当前 Goal/cohort JSON；只读，不进入 `.marshal` 权威链。
+- `MARSHAL_WATCH_LEASE_FACTS_FILE`：仅确定性测试使用的 lease/owner 事实 JSON；生产不得设置。
+- `MARSHAL_WATCH_LOGICAL_CPUS` / `MARSHAL_WATCH_LOAD1M`：仅测试/诊断覆盖；生产默认读取宿主实时值。
 
 ### 11.4 每轮有限动作（反空转纪律）
 
