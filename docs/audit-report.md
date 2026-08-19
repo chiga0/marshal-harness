@@ -471,6 +471,10 @@ Qoder 与 Codex 的 production consumer 实现复核进一步证明：两个 Ada
 
 当前 macOS 宿主对 `AF_UNIX/SOCK_SEQPACKET` 返回 `protocol not supported`，导致原 APAP client 即使 endpoint 存在也无法连接。实现已加入 Darwin 专用四字节大端长度帧 `SOCK_STREAM` 与 `SCM_RIGHTS` 累积接收，并以实机 payload+held-FD 测试、race、vet、staticcheck 与 Darwin 交叉编译验证。该变更只关闭 transport 可达性缺口；[ADR 0041](adr/0041-darwin-apap-stream-transport.md) 仍为 Proposed，root-owned APAP provider、签名 launcher、独立 verifier、credentialed live probe 与 registry enablement 继续保持 `unsupported`。
 
+## Darwin launchd 部署投影审计增补（2026-08-19）
+
+`internal/darwin` 新增 deterministic root-owned launchd plist 生成器，固定 `com.marshal.apap` label、service binary、signed launcher binary、APAP endpoint、`RunAtLoad`、`KeepAlive`、Background process type 与 owner-only umask，并拒绝相对路径、路径穿越、根路径和 label 注入。该生成器不执行安装、不改变 launchd 状态、不验证或生成签名；真实安装仍要求外部 root provisioning、独立 launcher signer 与 service identity evidence，当前 doctor/registry 不因此升级。
+
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 
 Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Verifier 虽能在命令后观察到 Candidate worktree 变化并把 Gate 标为失败，却让污染字节留在受管 worktree；随后 Review 的 current-observation guard 正确拒绝变化后的字节，Run 因而无法生成绑定原 Candidate 的 ReviewPacket。该问题不是新生命周期或 Schema 缺口：ADR 0027 已冻结 command 写作用域默认为 `none`、未声明写入 fail closed、Candidate 与 Evidence 不可被覆盖；缺失的是实现级 command 隔离。
