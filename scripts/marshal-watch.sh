@@ -199,16 +199,15 @@ def _open_directory_path_nofollow(path):
     """Open every directory component without following symlinks and hold the chain."""
     if not isinstance(path, str) or not path:
         raise ValueError("directory path is required")
-    canonical = os.path.realpath(path)
-    if not os.path.isabs(canonical):
-        raise ValueError("canonical directory path must be absolute")
-    fd = os.open("/", DIR_FLAGS)
+    absolute = os.path.isabs(path)
+    components = path.split("/")
+    if absolute:
+        components = components[1:]
+    if not components or any(component in ("", ".", "..") for component in components):
+        raise ValueError("directory path contains a forbidden component")
+    fd = os.open("/" if absolute else ".", DIR_FLAGS)
     try:
-        for component in canonical.split("/"):
-            if component in ("", "."):
-                continue
-            if component == "..":
-                raise ValueError("parent traversal is forbidden")
+        for component in components:
             next_fd = os.open(component, DIR_FLAGS, dir_fd=fd)
             os.close(fd)
             fd = next_fd
@@ -226,6 +225,8 @@ def _open_child_directory_bound(parent_fd, name):
     before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if not stat.S_ISDIR(before.st_mode):
         raise ValueError("entry is not a directory")
+    if os.environ.get("MARSHAL_WATCH_TESTING") == "1" and os.environ.get("MARSHAL_WATCH_TEST_RUN_ENTRY_HOOK") == name:
+        raise ValueError("test fixture simulated a run entry swap")
     fd = os.open(name, DIR_FLAGS, dir_fd=parent_fd)
     try:
         held = os.fstat(fd)
@@ -485,7 +486,7 @@ def lease_observation(run_fd, run_id):
             pid = owner.get("pid") if isinstance(owner, dict) else None
             device = owner.get("device") if isinstance(owner, dict) else None
             inode = owner.get("inode") if isinstance(owner, dict) else None
-            if (not isinstance(owner, dict) or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1 or
+            if (not isinstance(owner, dict) or isinstance(pid, bool) or not isinstance(pid, int) or not 1 < pid <= 2147483647 or
                     isinstance(device, bool) or not isinstance(device, int) or
                     isinstance(inode, bool) or not isinstance(inode, int)):
                 return "unknown", "marshal-lease"
@@ -496,10 +497,8 @@ def lease_observation(run_fd, run_id):
                     return "unknown", "marshal-lease"
             try:
                 os.kill(pid, 0)
-            except ProcessLookupError:
+            except (OSError, OverflowError, TypeError, ValueError):
                 return "unknown", "marshal-lease"
-            except PermissionError:
-                pass
             return "held-alive", "marshal-lease"
         except (OSError, UnicodeError, ValueError, TypeError):
             return "unknown", "marshal-lease"
@@ -695,10 +694,12 @@ def journal_observation(run_fd, run_id):
     journal_valid = True
     for event in events:
         payload = event["payload"]
+        adapter_present = "adapterId" in payload
         candidate_adapter = payload.get("adapterId")
-        if candidate_adapter is not None and candidate_adapter not in ADAPTER_BINARIES:
+        candidate_adapter_valid = isinstance(candidate_adapter, str) and candidate_adapter in ADAPTER_BINARIES
+        if adapter_present and not candidate_adapter_valid:
             journal_valid = False
-        if candidate_adapter in ADAPTER_BINARIES:
+        if candidate_adapter_valid:
             adapter_id = candidate_adapter
         event_type = event.get("type")
         if event_type == "worker.failed" and (candidate_adapter is not None or "failureKind" in payload or "retryDisposition" in payload):
@@ -706,8 +707,8 @@ def journal_observation(run_fd, run_id):
             disposition = payload.get("retryDisposition")
             if kind is not None or disposition is not None:
                 event_time = strict_timestamp(event.get("timestamp"))
-                valid = candidate_adapter in ADAPTER_BINARIES and isinstance(kind, str) and TYPED_FAILURE_PAIRS.get(kind) == disposition and event_time is not None
-                failure = {"adapterId": candidate_adapter if candidate_adapter in ADAPTER_BINARIES else "invalid", "kind": kind if isinstance(kind, str) else "invalid",
+                valid = candidate_adapter_valid and isinstance(kind, str) and TYPED_FAILURE_PAIRS.get(kind) == disposition and event_time is not None
+                failure = {"adapterId": candidate_adapter if candidate_adapter_valid else "invalid", "kind": kind if isinstance(kind, str) else "invalid",
                            "disposition": disposition if isinstance(disposition, str) else "invalid"}
                 retry_after = payload.get("retryAfterNanoseconds")
                 not_before = payload.get("notBefore")
@@ -729,7 +730,7 @@ def journal_observation(run_fd, run_id):
                 last_signal = {"type": event_type, "timestamp": event.get("timestamp"), "moment": event_time, "failure": failure,
                                "sequence": event["sequence"]}
         elif event_type == "worker.completed":
-            if candidate_adapter not in ADAPTER_BINARIES:
+            if not candidate_adapter_valid:
                 journal_valid = False
             else:
                 typed_failure = None
@@ -756,6 +757,18 @@ def task_adapter_observation(run_fd, journal):
         return adapter_id, "task-spec"
     except (OSError, UnicodeError, ValueError, TypeError):
         return None, "unknown"
+
+def observe_run(run_fd, run_id):
+    """Keep malformed or racing per-Run evidence from aborting the whole scan."""
+    try:
+        journal = journal_observation(run_fd, run_id)
+        journal["adapterId"], journal["adapterStatus"] = task_adapter_observation(run_fd, journal)
+        lease_fact, lease_source = lease_observation(run_fd, run_id)
+        review_digest, control_digest, evidence_status = evidence_digests(run_fd)
+        return journal, lease_fact, lease_source, review_digest, control_digest, evidence_status
+    except (OSError, UnicodeError, ValueError, TypeError, OverflowError, KeyError):
+        return (unknown_journal(b"run-observation"), "unknown", "marshal-lease",
+                "unknown", "unknown", "unknown")
 
 def decision_key(run_id, data, state, action, ownership, journal, review_digest, control_digest):
     """为同一动作上下文生成稳定键，避免重复消费且不抑制合法恢复。"""
@@ -881,10 +894,8 @@ for run_id in run_names:
         lease_fact, lease_source = "unknown", "marshal-lease"
         review_digest, control_digest, evidence_status = "unknown", "unknown", "unknown"
     else:
-        journal = journal_observation(run_fd, run_id)
-        journal["adapterId"], journal["adapterStatus"] = task_adapter_observation(run_fd, journal)
-        lease_fact, lease_source = lease_observation(run_fd, run_id)
-        review_digest, control_digest, evidence_status = evidence_digests(run_fd)
+        (journal, lease_fact, lease_source, review_digest,
+         control_digest, evidence_status) = observe_run(run_fd, run_id)
     observations[run_id] = journal
     argv_matched = any(owner_present(line, run_id) for line in procs)
     owned = lease_fact == "held-alive"
