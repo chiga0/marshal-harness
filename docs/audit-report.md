@@ -475,6 +475,12 @@ Qoder 与 Codex 的 production consumer 实现复核进一步证明：两个 Ada
 
 `internal/darwin` 新增 deterministic root-owned launchd plist 生成器，固定 `com.marshal.apap` label、service binary、signed launcher binary、APAP endpoint、`RunAtLoad`、`KeepAlive`、Background process type 与 owner-only umask，并拒绝相对路径、路径穿越、根路径和 label 注入。该生成器不执行安装、不改变 launchd 状态、不验证或生成签名；真实安装仍要求外部 root provisioning、独立 launcher signer 与 service identity evidence，当前 doctor/registry 不因此升级。
 
+## APAP credential ingress 实现审计增补（2026-08-19）
+
+共享 provider seam 现加入独立 `CredentialIngress` server：只接受已认证 `SecretProvider` peer、精确一个 `credentialCapability` held fd，并在 handler 返回 typed `CredentialIngressResponseV1` 后立即关闭该 fd。APAP control server 不接收 capability，response 不返回 credential bytes 或 capability fd；Mac 实机 roundtrip、race、vet、staticcheck、交叉编译和 secret scan 通过。该实现只提供 transport/protocol custody，不产生 capability、receipt signing、isolation audit 或 credential authority；因此真实 credentialed live probe 与 registry enablement 仍保持 `unsupported`。
+
+本轮宿主只读核查还确认：`security find-identity -v -p codesigning` 返回 `0 valid identities found`；`/Library/PrivilegedHelperTools`、`/usr/local/libexec` 和 `/opt/homebrew/bin` 没有现成 Marshal/APAP launcher；`MARSHAL_APAP_*`、`MARSHAL_DARWIN_*`、Qoder/Codex authority 环境变量均未配置。该证据支持当前外部 signer/root provisioning 阻塞判断，但不改变任何 registry 状态。
+
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 
 Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Verifier 虽能在命令后观察到 Candidate worktree 变化并把 Gate 标为失败，却让污染字节留在受管 worktree；随后 Review 的 current-observation guard 正确拒绝变化后的字节，Run 因而无法生成绑定原 Candidate 的 ReviewPacket。该问题不是新生命周期或 Schema 缺口：ADR 0027 已冻结 command 写作用域默认为 `none`、未声明写入 fail closed、Candidate 与 Evidence 不可被覆盖；缺失的是实现级 command 隔离。
