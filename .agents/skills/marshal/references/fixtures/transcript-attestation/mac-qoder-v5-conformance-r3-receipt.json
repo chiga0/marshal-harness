@@ -1,0 +1,35 @@
+{
+  "attestationDigest": "sha256:145f55f871c2fd46c8ae26eff04238011dc11aad134fa2e504beac5bcfe302ea",
+  "inputDigests": {
+    "taskSpec": "sha256:fca60511a30335b05c1dcb4ee4784a71500e5c4e7caabc60dc40e9cc1abe665f",
+    "transcript": "sha256:03e24d8d340250c15a5a47b2004b3cbb19255201a17dbe79a60ae003488402b9",
+    "transcriptMeta": "sha256:9e7e4cd5e136895743812f4dcb7388784efc8c0463214d5c445433c74f83df1f",
+    "workerRequest": "sha256:788c7f087b13e6afba88aab713c15a0d24bea44d6e462bf3850c22295a93a22d",
+    "workerResult": "sha256:26fbf7a5ec4149bfea4c5b9167a9b1df209e078467862e46b418ceea9be943c1"
+  },
+  "manifestDigest": "sha256:a42e32632262a8f4cb7ee71b8788e6293ebe11cb6b5a567cc22765c671575351",
+  "observation": {
+    "commandCalls": 0,
+    "eventCount": 18,
+    "toolCalls": 2,
+    "toolNames": [
+      "bash",
+      "write"
+    ],
+    "workerResultTeeLast": true,
+    "workerResultTeeSuccesses": 1
+  },
+  "reasonCode": "transcript-attestation-pass",
+  "status": "pass",
+  "subject": {
+    "adapterId": "qoder",
+    "attemptId": "attempt:c3cf8a35b57dce6b257a229603b0df5d",
+    "binaryVersion": "1.1.23",
+    "eventContract": "qoder-stream-json-1.2.0-v5",
+    "permissionMode": "acceptEdits",
+    "protocolVersion": "1.2.0",
+    "runId": "mac-qoder-v5-conformance-r3-20260820",
+    "sourceHead": "f1fb5a6f11dbb36b9c80a32d6f88b3f0366ab274",
+    "taskId": "MAC-QODER-V5-CONFORMANCE-R3"
+  }
+}

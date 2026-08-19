@@ -19,6 +19,7 @@ SCHEMA = SKILL_ROOT / "references/transcript-attestation-preflight.schema.json"
 SCHEMA_PROBE = SKILL_ROOT / "references/tests/transcript_attestation_schema_probe.go"
 TEMPLATE = SKILL_ROOT / "templates/transcript-attestation-preflight.json"
 FIXTURES = SKILL_ROOT / "references/fixtures/transcript-attestation"
+R3_RECEIPT = FIXTURES / "mac-qoder-v5-conformance-r3-receipt.json"
 
 
 def load_validator_module():
@@ -132,6 +133,33 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
         self.assertEqual(payload["observation"]["commandCalls"], 0)
         self.assertTrue(payload["observation"]["workerResultTeeLast"])
         self.assertRegex(payload["attestationDigest"], r"^sha256:[0-9a-f]{64}$")
+
+    def test_real_r3_receipt_is_sanitized_and_digest_bound(self) -> None:
+        receipt = json.loads(R3_RECEIPT.read_text())
+        self.assertEqual(receipt["status"], "pass")
+        self.assertEqual(receipt["reasonCode"], "transcript-attestation-pass")
+        self.assertEqual(
+            receipt["attestationDigest"],
+            "sha256:145f55f871c2fd46c8ae26eff04238011dc11aad134fa2e504beac5bcfe302ea",
+        )
+        self.assertEqual(receipt["subject"]["attemptId"], "attempt:c3cf8a35b57dce6b257a229603b0df5d")
+        self.assertEqual(receipt["observation"]["commandCalls"], 0)
+        self.assertTrue(receipt["observation"]["workerResultTeeLast"])
+        serialized = json.dumps(receipt, sort_keys=True)
+        for forbidden in ("/Users/", "prompt", "summary", "message", "description"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_skill_requires_attestation_before_independent_reviewer(self) -> None:
+        skill = (SKILL_ROOT / "SKILL.md").read_text()
+        for required in (
+            "Qoder v5 transcript attestation（独立 reviewer 前强制）",
+            "validate-transcript-attestation-preflight.py",
+            "reasonCode=transcript-attestation-pass",
+            "pre-review/operator-local",
+            "不替代 Core",
+            "protocol-invalid/do-not-retry",
+        ):
+            self.assertIn(required, skill)
 
     def test_real_contracts_and_operator_schema_accept_fixtures(self) -> None:
         for schema_name, instance in (

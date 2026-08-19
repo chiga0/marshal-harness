@@ -22,3 +22,5 @@ Validator 逐级使用 nofollow `dirfd` 打开文件，以硬上限分块读取�
 典型固定 `reasonCode` 包括 `forbidden-tool-executed`、`forbidden-command-executed`、`undeclared-command-executed`、`declared-command-mismatch`、`result-tee-count-invalid`、`result-tee-not-last`、`post-result-tool-use`、`input-digest-mismatch` 与 `transcript-meta-mismatch`。任一失败均应在 reviewer 派发前修 TaskSpec/Adapter 或建立 fresh-base successor，不应用 Worker rework 掩盖结构性问题。
 
 当前实现故意只支持已有真实 Mac 证据冻结的 Qoder v5 JSONL 事件模型；Codex、Qwen 与旧 Qoder transcript 不会被猜测性兼容。
+
+`references/fixtures/transcript-attestation/mac-qoder-v5-conformance-r3-receipt.json` 是一次真实 Mac R3 输入的脱敏输出摘要：只保留身份、原始输入摘要、机械 observation、固定 `reasonCode` 与 attestation digest，不包含原始 transcript、prompt、自由文本或绝对用户路径。该 fixture 仅证明所绑定输入曾通过当前 operator-local validator，不能替代 Core authority、当前 Run freshness 或独立 reviewer。
