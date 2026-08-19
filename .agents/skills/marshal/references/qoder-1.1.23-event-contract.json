@@ -1,0 +1,26 @@
+{
+  "adapterId": "qoder",
+  "binaryVersion": "1.1.23",
+  "adapterVersion": "0.1.2",
+  "protocolVersion": "1.2.0",
+  "eventContract": "qoder-stream-json-1.2.0-v3",
+  "evidenceSetDigest": "sha256:ba21e53daa21ac33ce0f9a4ae069682fe493744be5619053c5b04764177dd8cc",
+  "toolUseNames": ["Agent", "Bash", "Edit", "Glob", "Grep", "Read", "TaskCreate", "TaskUpdate", "Write"],
+  "toolNamesCaseSensitive": true,
+  "toolResultContentTypes": ["string"],
+  "toolResultIsErrorPresence": ["missing", "false", "true"],
+  "permissionDenialSignals": {
+    "toolResultMeta": {
+      "requiredFields": ["id", "non_execution_kind"],
+      "nonExecutionKind": "permission-rule",
+      "binding": "same-event-tool-result-id"
+    },
+    "hardFailure": {
+      "field": "tool_use_result.isHardFailure",
+      "trueDisposition": "single-tool-result-only"
+    }
+  },
+  "successfulAgentDisposition": "protocol-invalid-do-not-retry",
+  "permissionMarkerWithMissingOrFalseIsError": "protocol-conflict-do-not-retry",
+  "rawJsonPermissionScanningAllowed": false
+}
