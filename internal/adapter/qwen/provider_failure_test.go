@@ -981,9 +981,13 @@ func TestRunCancellationConflictReturnsDeterministically(t *testing.T) {
 		body := strings.Join([]string{
 			initEvent("session-1", supportedBinary),
 			terminalLine(terminal),
+			// Keep one background fd holder while replacing the top-level shell
+			// with sleep. The process-group kill must therefore converge both
+			// processes and Wait must observe SIGKILL rather than a shell-specific
+			// zero exit from the wait builtin.
 			"sleep 30 &",
 			"touch " + shellQuote(ready),
-			"wait",
+			"exec sleep 30",
 		}, "\n")
 		fixture := newRunFixture(t, supportedBinary, body)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1020,6 +1024,31 @@ func TestRunCancellationConflictReturnsDeterministically(t *testing.T) {
 			t.Fatalf("iteration %d: Run did not converge after cancellation", iteration)
 		}
 		cancel()
+	}
+}
+
+// TestResolveAttemptFailureCancellationConflictDoesNotDependOnWaitError
+// freezes the macOS race where a canceled shell can be reaped with waitErr=nil.
+// The frozen context outcome remains an independent terminal authority, so a
+// structured provider failure cannot become retryable merely because Wait's
+// platform-specific projection reported exit 0.
+func TestResolveAttemptFailureCancellationConflictDoesNotDependOnWaitError(t *testing.T) {
+	terminal := newQwenFailure(port.FailureKindDNSFailure, "", nil, nil, time.Now())
+	err := resolveAttemptFailure(
+		captureResult{terminalFailure: terminal},
+		nil,
+		nil,
+		context.Canceled,
+		workerRequest{},
+		0,
+		time.Now(),
+	)
+	failure, ok := port.AsAdapterFailure(err)
+	if !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry || !errors.Is(err, ErrProtocol) {
+		t.Fatalf("err = %v, want cancellation conflict protocol-invalid independent of waitErr", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("conflict must not degrade to context.Canceled: %v", err)
 	}
 }
 
