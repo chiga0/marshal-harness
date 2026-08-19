@@ -437,6 +437,9 @@ func stripRejectedSchemaKeywords(node any) {
 		delete(value, "oneOf")
 		delete(value, "format")
 		delete(value, "pattern")
+		delete(value, "uniqueItems")
+		delete(value, "minLength")
+		delete(value, "maxLength")
 		if constant, ok := value["const"]; ok {
 			value["type"] = providerSchemaType(constant)
 			value["enum"] = []any{constant}
