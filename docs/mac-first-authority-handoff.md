@@ -23,6 +23,12 @@
 
 ## 管理员交接后的只读核验
 
+交接前可先运行仓库内的只读预检；它只报告缺口，任何失败都会保持 fail-closed，不会安装、签名、bootstrap 或修改 `.marshal/`：
+
+```sh
+scripts/macos-authority-preflight.sh
+```
+
 以下命令只读，不会安装、签名、bootstrap 或修改 Marshal 状态：
 
 ```sh
