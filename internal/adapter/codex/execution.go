@@ -394,8 +394,8 @@ func (e *leafClaimError) Unwrap() error { return e.err }
 // Codex provider-facing subset. Codex 0.145.0 rejects the `not` keyword;
 // durable validation still uses the original schema after execution.
 func providerSchemaDocument(schemaDocument []byte) ([]byte, error) {
-	var doc any
-	if err := json.Unmarshal(schemaDocument, &doc); err != nil {
+	doc, err := decodeStrictJSON(schemaDocument)
+	if err != nil {
 		return nil, err
 	}
 	if root, ok := doc.(map[string]any); ok {
@@ -469,7 +469,7 @@ func providerSchemaType(value any) string {
 		return "string"
 	case bool:
 		return "boolean"
-	case float64:
+	case json.Number:
 		return "number"
 	case nil:
 		return "null"
@@ -478,10 +478,16 @@ func providerSchemaType(value any) string {
 	}
 }
 
+type providerSchemaCompatibilityError struct {
+	reasonCode string
+}
+
+func (e *providerSchemaCompatibilityError) Error() string { return e.reasonCode }
+
 // prepareAttemptEvidence 打开并钉住 evidence directory inode，然后只经
 // openat(O_EXCL|O_NOFOLLOW) 占用全部 attempt 叶子。后续 worker I/O 与
 // Adapter 落盘都使用这些持续打开的 fd，不再按可被替换的路径重新打开。
-func prepareAttemptEvidence(dir *pinnedDescendantDirectory, resultName string, schemaDocument []byte) (*attemptEvidence, error) {
+func prepareAttemptEvidence(dir *pinnedDescendantDirectory, resultName string, schemaDocument []byte, mutateForTest func([]byte) []byte) (*attemptEvidence, error) {
 	evidence := &attemptEvidence{
 		dir: dir, resultName: resultName, schemaName: "codex-output-schema.json",
 		transcriptName: "codex-transcript.jsonl", stderrName: "codex-stderr.log",
@@ -490,6 +496,24 @@ func prepareAttemptEvidence(dir *pinnedDescendantDirectory, resultName string, s
 	providerSchema, err := providerSchemaDocument(schemaDocument)
 	if err != nil {
 		return nil, fmt.Errorf("project codex output schema: %w", err)
+	}
+	if mutateForTest != nil {
+		providerSchema = mutateForTest(append([]byte(nil), providerSchema...))
+	}
+	profileDocument, err := frozenProviderSchemaProfileDocument()
+	if err != nil {
+		return nil, &providerSchemaCompatibilityError{reasonCode: providerProfileInvalid}
+	}
+	compatibility, err := CheckProviderSchemaCompatibility(providerSchema, profileDocument)
+	if err != nil {
+		var checkErr *ProviderSchemaCheckError
+		if errors.As(err, &checkErr) {
+			return nil, &providerSchemaCompatibilityError{reasonCode: checkErr.ReasonCode}
+		}
+		return nil, &providerSchemaCompatibilityError{reasonCode: providerSchemaJSONInvalid}
+	}
+	if compatibility.Status != "pass" || compatibility.ReasonCode != providerSchemaCompatible || compatibility.IssueCount != 0 || len(compatibility.Issues) != 0 {
+		return nil, &providerSchemaCompatibilityError{reasonCode: providerSchemaIncompatible}
 	}
 	failed := true
 	defer func() {
