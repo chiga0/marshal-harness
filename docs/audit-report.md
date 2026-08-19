@@ -535,6 +535,8 @@ Qoder 1.1.23 的真实 Mac ordinary-user smoke 暴露三项实现缺陷：旧隐
 
 该修复不新增 authority、credential、sandbox 或发布权限，不改变 ADR 0042 的降级边界；严格 authority 的旧 `adapterVersion/eventContract` 证据因版本变化自动失效，必须重新取得独立 conformance evidence，不能迁移旧摘要。
 
+后续真实 ordinary-user smoke 发现：Qoder 成功读取的源码正文可能包含 permission marker；若 parser 扫描任意 `tool_result.content`，普通文件字节可伪造 denial 并中止 Attempt。修复后只接受同一事件内按 `tool_result_meta.id` 精确绑定的 `permission-rule`，或仅含一个 `tool_result` 时无歧义的 `tool_use_result.isHardFailure=true`；duplicate、orphan、unknown kind 与多结果 hard failure 均 fail-closed。由于 denial authority 语义发生变化，Qoder adapter 升为 `0.1.2`，event contract 升为 `qoder-stream-json-1.2.0-v3`，使旧 `0.1.1/v2` conformance evidence、suite digest 与 authority bundle 自动失效。该变更不扩大普通用户模式权限，也不把它描述为 hardened authority。
+
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 
 Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Verifier 虽能在命令后观察到 Candidate worktree 变化并把 Gate 标为失败，却让污染字节留在受管 worktree；随后 Review 的 current-observation guard 正确拒绝变化后的字节，Run 因而无法生成绑定原 Candidate 的 ReviewPacket。该问题不是新生命周期或 Schema 缺口：ADR 0027 已冻结 command 写作用域默认为 `none`、未声明写入 fail closed、Candidate 与 Evidence 不可被覆盖；缺失的是实现级 command 隔离。
