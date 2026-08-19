@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/adapter/denials"
@@ -70,7 +69,14 @@ type qoderEvent struct {
 	IsError         *bool           `json:"is_error"`
 	TerminalReason  string          `json:"terminal_reason"`
 	Error           string          `json:"error"`
-	Usage           struct {
+	ToolUseResult   struct {
+		IsHardFailure *bool `json:"isHardFailure"`
+	} `json:"tool_use_result"`
+	ToolResultMeta []struct {
+		ID               string `json:"id"`
+		NonExecutionKind string `json:"non_execution_kind"`
+	} `json:"tool_result_meta"`
+	Usage struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
@@ -289,6 +295,10 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		if err := json.Unmarshal(event.Message, &message); err != nil {
 			return fmt.Errorf("%w: malformed user message", ErrProtocol)
 		}
+		permissionDeniedIDs, err := qoderPermissionDeniedIDs(event, message)
+		if err != nil {
+			return err
+		}
 		for _, part := range message.Content {
 			if part.Type != "tool_result" {
 				continue
@@ -298,11 +308,11 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 				return fmt.Errorf("%w: user tool_result has no matching tool_use", ErrProtocol)
 			}
 			delete(result.pendingTools, part.ToolUseID)
-			content, contentErr := decodeQoderToolResultContent(part.Content)
+			_, contentErr := decodeQoderToolResultContent(part.Content)
 			if contentErr != nil {
 				return contentErr
 			}
-			permissionDenied := isQoderPermissionError(content)
+			_, permissionDenied := permissionDeniedIDs[part.ToolUseID]
 			if permissionDenied {
 				result.denials = append(result.denials, denials.RawDenial{Tool: pending.tool, Input: pending.input})
 				if part.IsError == nil || !*part.IsError {
@@ -393,18 +403,58 @@ func decodeQoderToolResultContent(raw json.RawMessage) (string, error) {
 	return content, nil
 }
 
-func isQoderPermissionError(text string) bool {
-	if denials.IsPermissionError(text) {
-		return true
+// qoderPermissionDeniedIDs consumes only Qoder 1.1.23's structured denial
+// metadata. Tool-result content is arbitrary Worker-visible data: Read may
+// legitimately return source code containing permission-related text, so
+// scanning it would let ordinary file bytes forge a denial and abort a valid
+// attempt. Real 1.1.23 evidence represents permission-rule denials through
+// tool_result_meta.non_execution_kind and represents the provider's hard
+// refusal through tool_use_result.isHardFailure. Metadata is bound to the
+// exact tool_result id in the same event. The event-global hard-failure bit is
+// accepted only for an unambiguous single-result event.
+func qoderPermissionDeniedIDs(event qoderEvent, message qoderMessage) (map[string]struct{}, error) {
+	resultIDs := make(map[string]struct{})
+	for _, part := range message.Content {
+		if part.Type != "tool_result" {
+			continue
+		}
+		if part.ToolUseID == "" {
+			return nil, fmt.Errorf("%w: user tool_result has no id", ErrProtocol)
+		}
+		if _, duplicate := resultIDs[part.ToolUseID]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate user tool_result id", ErrProtocol)
+		}
+		resultIDs[part.ToolUseID] = struct{}{}
 	}
-	// Qoder 1.1.23 reports its fixed path-safety denial without the word
-	// "permission". Keep this provider-specific marker closed and exact enough
-	// that ordinary tool errors cannot be misclassified as security denials.
-	lower := strings.ToLower(text)
-	if strings.Contains(lower, "permission confirmation required") && strings.Contains(lower, "no interactive handler") {
-		return true
+
+	deniedIDs := make(map[string]struct{})
+	metadataIDs := make(map[string]struct{})
+	for _, metadata := range event.ToolResultMeta {
+		if metadata.ID == "" || metadata.NonExecutionKind == "" {
+			return nil, fmt.Errorf("%w: incomplete tool_result_meta", ErrProtocol)
+		}
+		if _, duplicate := metadataIDs[metadata.ID]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate tool_result_meta id", ErrProtocol)
+		}
+		metadataIDs[metadata.ID] = struct{}{}
+		if _, ok := resultIDs[metadata.ID]; !ok {
+			return nil, fmt.Errorf("%w: tool_result_meta has no matching tool_result", ErrProtocol)
+		}
+		if metadata.NonExecutionKind != "permission-rule" {
+			return nil, fmt.Errorf("%w: unreviewed tool_result_meta kind", ErrProtocol)
+		}
+		deniedIDs[metadata.ID] = struct{}{}
 	}
-	return strings.Contains(lower, "suspicious windows syntax") && strings.Contains(lower, "bypass security checks")
+
+	if event.ToolUseResult.IsHardFailure != nil && *event.ToolUseResult.IsHardFailure {
+		if len(resultIDs) != 1 {
+			return nil, fmt.Errorf("%w: ambiguous structured hard failure", ErrProtocol)
+		}
+		for id := range resultIDs {
+			deniedIDs[id] = struct{}{}
+		}
+	}
+	return deniedIDs, nil
 }
 
 type streamCapture struct {
