@@ -52,7 +52,7 @@
       "expectedReasonCode": "expected-reason-code",
       "findingId": "F-000000000000000000000000",
       "receipt": {
-        "argv": ["python3", "-I", "-B", ".agents/skills/marshal/references/closure_matrix_negative_fixture.py", "--input", "path/to/negative-fixture.json"],
+        "argv": ["/ABSOLUTE/PATH/TO/python3", "-I", "-B", ".agents/skills/marshal/references/closure_matrix_negative_fixture.py", "--input", "path/to/negative-fixture.json"],
         "inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "outputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "exitCode": 1,

@@ -75,7 +75,7 @@
       "expectedReasonCode": "identity-mismatch",
       "findingId": "F-000000000000000000000000",
       "receipt": {
-        "argv": ["python3", "-I", "-B", ".agents/skills/marshal/references/closure_matrix_negative_fixture.py", "--input", ".agents/skills/marshal/references/fixtures/closure-matrix/negative-continuation.json"],
+        "argv": ["/ABSOLUTE/PATH/TO/python3", "-I", "-B", ".agents/skills/marshal/references/closure_matrix_negative_fixture.py", "--input", ".agents/skills/marshal/references/fixtures/closure-matrix/negative-continuation.json"],
         "inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "outputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "exitCode": 1,
@@ -89,7 +89,7 @@
       "expectedReasonCode": "missing-regression-case",
       "findingId": "F-111111111111111111111111",
       "receipt": {
-        "argv": ["python3", "-I", "-B", ".agents/skills/marshal/references/closure_matrix_negative_fixture.py", "--input", ".agents/skills/marshal/references/fixtures/closure-matrix/negative-same-domain-p2.json"],
+        "argv": ["/ABSOLUTE/PATH/TO/python3", "-I", "-B", ".agents/skills/marshal/references/closure_matrix_negative_fixture.py", "--input", ".agents/skills/marshal/references/fixtures/closure-matrix/negative-same-domain-p2.json"],
         "inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "outputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
         "exitCode": 1,
