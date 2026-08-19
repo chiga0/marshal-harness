@@ -131,14 +131,14 @@ func TestDoctorReportsCompatibilityWithoutLocalDetails(t *testing.T) {
 
 func TestDoctorBindsSupportedQoderConformanceMetadata(t *testing.T) {
 	identity := doctorSnapshotIdentity{
-		AdapterID: "qoder", AdapterVersion: "0.1.0", BinaryVersion: "1.1.23", ProbeStatus: "supported",
+		AdapterID: "qoder", AdapterVersion: "0.1.0", BinaryVersion: "1.1.23", ExecutableDigest: "sha256:" + strings.Repeat("d", 64), ProbeStatus: "supported",
 		ConformanceEvidenceDigest: "sha256:" + strings.Repeat("a", 64), ConformanceTrustRootKeyID: "root-1",
 		ConformanceProbeProfileDigest: "sha256:" + strings.Repeat("b", 64), ConformanceValidUntil: "2026-08-18T01:00:00Z",
 		ConformanceHostFingerprint: "sha256:" + strings.Repeat("c", 64), ConformanceAuthorityGeneration: 7,
 	}
 	result := doctorWorker{AdapterID: "qoder", Compatibility: "probe-failed"}
 	applyDoctorSnapshotIdentity(&result, identity)
-	if result.Compatibility != "supported" || result.ConformanceEvidenceDigest != identity.ConformanceEvidenceDigest || result.ConformanceTrustRootKeyID != identity.ConformanceTrustRootKeyID || result.ConformanceProbeProfileDigest != identity.ConformanceProbeProfileDigest || result.ConformanceValidUntil != identity.ConformanceValidUntil || result.ConformanceHostFingerprint != identity.ConformanceHostFingerprint || result.ConformanceAuthorityGeneration != 7 {
+	if result.Compatibility != "supported" || result.ExecutableDigest != identity.ExecutableDigest || result.ConformanceEvidenceDigest != identity.ConformanceEvidenceDigest || result.ConformanceTrustRootKeyID != identity.ConformanceTrustRootKeyID || result.ConformanceProbeProfileDigest != identity.ConformanceProbeProfileDigest || result.ConformanceValidUntil != identity.ConformanceValidUntil || result.ConformanceHostFingerprint != identity.ConformanceHostFingerprint || result.ConformanceAuthorityGeneration != 7 {
 		t.Fatalf("doctor metadata = %+v", result)
 	}
 	identity.ConformanceEvidenceDigest = ""
@@ -169,13 +169,13 @@ func TestDoctorBindsCodexSupportedMetadataWithEqualityGuard(t *testing.T) {
 	digest := func(char string) string { return "sha256:" + strings.Repeat(char, 64) }
 	authority := json.RawMessage(`{"evidenceDigest":"` + digest("a") + `","trustRootKeyId":"root-1","profileDigest":"` + digest("b") + `","validUntil":"2026-08-19T01:00:00Z","hostIdentityDigest":"` + digest("c") + `","authorityGeneration":7}`)
 	identity := doctorSnapshotIdentity{
-		AdapterID: "codex", AdapterVersion: "0.1.0", BinaryVersion: "0.145.0", ProbeStatus: "supported", CodexAuthority: authority,
+		AdapterID: "codex", AdapterVersion: "0.1.0", BinaryVersion: "0.145.0", ExecutableDigest: digest("e"), ProbeStatus: "supported", CodexAuthority: authority,
 		ConformanceEvidenceDigest: digest("a"), ConformanceTrustRootKeyID: "root-1", ConformanceProbeProfileDigest: digest("b"),
 		ConformanceValidUntil: "2026-08-19T01:00:00Z", ConformanceHostFingerprint: digest("c"), ConformanceAuthorityGeneration: 7,
 	}
 	result := doctorWorker{AdapterID: "codex", Compatibility: "probe-failed"}
 	applyDoctorSnapshotIdentity(&result, identity)
-	if result.Compatibility != "supported" || result.ConformanceEvidenceDigest != identity.ConformanceEvidenceDigest || result.ConformanceTrustRootKeyID != identity.ConformanceTrustRootKeyID || result.ConformanceProbeProfileDigest != identity.ConformanceProbeProfileDigest || result.ConformanceValidUntil != identity.ConformanceValidUntil || result.ConformanceHostFingerprint != identity.ConformanceHostFingerprint || result.ConformanceAuthorityGeneration != 7 {
+	if result.Compatibility != "supported" || result.ExecutableDigest != identity.ExecutableDigest || result.ConformanceEvidenceDigest != identity.ConformanceEvidenceDigest || result.ConformanceTrustRootKeyID != identity.ConformanceTrustRootKeyID || result.ConformanceProbeProfileDigest != identity.ConformanceProbeProfileDigest || result.ConformanceValidUntil != identity.ConformanceValidUntil || result.ConformanceHostFingerprint != identity.ConformanceHostFingerprint || result.ConformanceAuthorityGeneration != 7 {
 		t.Fatalf("doctor codex metadata = %+v", result)
 	}
 	identity.ConformanceEvidenceDigest = digest("d")

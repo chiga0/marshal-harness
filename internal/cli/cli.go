@@ -161,6 +161,7 @@ type doctorWorker struct {
 	Compatibility                  string          `json:"compatibility"`
 	AdapterVersion                 string          `json:"adapterVersion,omitempty"`
 	BinaryVersion                  string          `json:"binaryVersion,omitempty"`
+	ExecutableDigest               string          `json:"executableDigest,omitempty"`
 	ConformanceEvidenceDigest      string          `json:"conformanceEvidenceDigest,omitempty"`
 	ConformanceTrustRootKeyID      string          `json:"conformanceTrustRootKeyId,omitempty"`
 	ConformanceProbeProfileDigest  string          `json:"conformanceProbeProfileDigest,omitempty"`
@@ -175,6 +176,7 @@ type doctorSnapshotIdentity struct {
 	AdapterID                      string          `json:"adapterId"`
 	AdapterVersion                 string          `json:"adapterVersion"`
 	BinaryVersion                  string          `json:"binaryVersion"`
+	ExecutableDigest               string          `json:"executableDigest"`
 	ProbeStatus                    string          `json:"probeStatus"`
 	ConformanceEvidenceDigest      string          `json:"conformanceEvidenceDigest"`
 	ConformanceTrustRootKeyID      string          `json:"conformanceTrustRootKeyId"`
@@ -394,6 +396,7 @@ func applyDoctorSnapshotIdentity(result *doctorWorker, identity doctorSnapshotId
 	result.Compatibility = identity.ProbeStatus
 	result.AdapterVersion = identity.AdapterVersion
 	result.BinaryVersion = identity.BinaryVersion
+	result.ExecutableDigest = identity.ExecutableDigest
 	if identity.AdapterID == "codex" {
 		if identity.ProbeStatus == "supported" {
 			if len(identity.CodexAuthority) == 0 || len(identity.AdapterFailure) != 0 {
