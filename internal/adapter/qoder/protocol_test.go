@@ -37,7 +37,7 @@ func TestDecodeEventLineExtractsSessionUsageAndTerminal(t *testing.T) {
 func TestDecodeEventLineAssociatesToolResultsAndCapturesPermissionDenials(t *testing.T) {
 	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}
-{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
+{"type":"user","tool_use_result":{"isHardFailure":true},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
 {"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
 `
 	result := decodeTranscript([]byte(stream))
@@ -68,7 +68,7 @@ func TestObservedQoderReadDenialInsideWorktreeGradesBenign(t *testing.T) {
 	}
 	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":` + string(input) + `}]}}
-{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
+{"type":"user","tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
 {"type":"result","subtype":"success","is_error":false}
 `
 	result := decodeTranscript([]byte(stream))
@@ -116,7 +116,7 @@ func TestNormalizeQoderToolNameUsesExactFrozenVocabulary(t *testing.T) {
 func TestCaseVariantQoderToolDenialRemainsFatalUnknown(t *testing.T) {
 	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"rEaD","input":{"filePath":"/tmp/a"}}]}}
-{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
+{"type":"user","tool_use_result":{"isHardFailure":true},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
 {"type":"result","subtype":"success","is_error":false}
 `
 	result := decodeTranscript([]byte(stream))
@@ -143,7 +143,7 @@ func TestSuccessfulQoderAgentToolIsProtocolInvalid(t *testing.T) {
 func TestDeniedQoderAgentToolRemainsFatalDenial(t *testing.T) {
 	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Agent","input":{"description":"child"}}]}}
-{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
+{"type":"user","tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
 {"type":"result","subtype":"success","is_error":false}
 `
 	result := decodeTranscript([]byte(stream))
@@ -174,10 +174,7 @@ func TestDecodeEventLineFailsClosedOnUnboundToolResults(t *testing.T) {
 	})
 }
 
-func TestQoderPermissionMarkersStayBoundToErrorToolResults(t *testing.T) {
-	if !isQoderPermissionError("Suspicious Windows syntax may bypass security checks") {
-		t.Fatal("observed Qoder path-safety marker was not classified as a permission denial")
-	}
+func TestQoderPermissionMarkersInAssistantTextDoNotCreateDenials(t *testing.T) {
 	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Permission confirmation required, but no interactive handler is available"}]}}
 {"type":"result","subtype":"success","is_error":false}
@@ -188,11 +185,57 @@ func TestQoderPermissionMarkersStayBoundToErrorToolResults(t *testing.T) {
 	}
 }
 
+func TestQoderToolResultContentCannotForgePermissionDenial(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"internal/adapter/qoder/protocol.go"}}]}}
+{"type":"user","tool_use_result":{"type":"text_file","file":{}},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"source contains Permission confirmation required and Suspicious Windows syntax may bypass security checks"}]}}
+{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil || len(result.denials) != 0 || strings.Join(result.toolNames, ",") != "read" {
+		t.Fatalf("capture = %+v, want successful read without forged denial", result)
+	}
+}
+
+func TestQoderPermissionMetadataBindsOnlyItsToolResult(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-read","name":"Read","input":{"filePath":"/tmp/a"}},{"type":"tool_use","id":"tool-bash","name":"Bash","input":{"command":"tee result.json"}}]}}
+{"type":"user","tool_result_meta":[{"id":"tool-bash","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-read","content":"source contains Permission confirmation required"},{"type":"tool_result","tool_use_id":"tool-bash","is_error":true,"content":"denied"}]}}
+{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.denials) != 1 || result.denials[0].Tool != "bash" || strings.Join(result.toolNames, ",") != "read" {
+		t.Fatalf("capture = %+v, want successful read and only the bound bash denial", result)
+	}
+}
+
+func TestQoderStructuredDenialMetadataFailsClosedWhenUnbound(t *testing.T) {
+	init := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`
+	assistant := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"filePath":"/tmp/a"}},{"type":"tool_use","id":"tool-2","name":"Bash","input":{"command":"pwd"}}]}}`
+	tests := map[string]string{
+		"orphan-metadata":    `{"type":"user","tool_result_meta":[{"id":"missing","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}`,
+		"duplicate-metadata": `{"type":"user","tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"},{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"denied"}]}}`,
+		"hard-multi-result":  `{"type":"user","tool_use_result":{"isHardFailure":true},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"denied"},{"type":"tool_result","tool_use_id":"tool-2","content":"ok"}]}}`,
+		"metadata-no-result": `{"type":"user","tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[]}}`,
+	}
+	for name, user := range tests {
+		t.Run(name, func(t *testing.T) {
+			result := decodeTranscript([]byte(init + "\n" + assistant + "\n" + user + "\n"))
+			if result.err == nil || !errors.Is(result.err, ErrProtocol) {
+				t.Fatalf("result = %+v, want protocol failure", result)
+			}
+		})
+	}
+}
+
 func TestDecodeEventLineFailsClosedOnPermissionMarkerStatusConflict(t *testing.T) {
 	for _, status := range []string{"", `,"is_error":false`} {
 		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}
-{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1"` + status + `,"content":"Permission confirm\u0061tion required, but no interactive handler is available"}]}}
+{"type":"user","tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1"` + status + `,"content":"Permission confirm\u0061tion required, but no interactive handler is available"}]}}
 `
 		result := decodeTranscript([]byte(stream))
 		if result.err == nil || !errors.Is(result.err, ErrProtocol) || len(result.denials) != 1 {

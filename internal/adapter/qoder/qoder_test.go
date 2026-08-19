@@ -1976,7 +1976,7 @@ func TestRunPersistsQoderPermissionDenialAndReturnsPermanentFailure(t *testing.T
 	body := emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
-		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
+		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`,
 	)
 	fixture := newRunFixture(t, supportedBinary, body)
@@ -2006,7 +2006,7 @@ func TestRunWritesDenialLogThroughHeldOutputDirectory(t *testing.T) {
 	body := emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
-		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
+		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false}`,
 	) + `
 marshal_root=$(dirname "$(dirname "$HOME")")
@@ -2032,7 +2032,7 @@ printf '%s' 'forged' > "$marshal_root/output/denials.jsonl"
 ` + emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
-		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
+		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false}`,
 	)
 	fixture := newRunFixture(t, supportedBinary, body)
