@@ -51,6 +51,7 @@
     "issueCount": { "type": "integer", "minimum": 0 },
     "issues": {
       "type": "array",
+      "uniqueItems": true,
       "items": { "$ref": "#/$defs/issue" }
     }
   },
@@ -78,8 +79,10 @@
     "relativePath": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^[^/\\\\][^\\\\]*$",
-      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+      "allOf": [
+        { "pattern": "^(?:[^/\\\\]+/)*[^/\\\\]+$" },
+        { "not": { "pattern": "(^|/)(?:\\.|\\.\\.)(/|$)" } }
+      ]
     },
     "issue": {
       "type": "object",

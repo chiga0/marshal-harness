@@ -38,6 +38,36 @@ VALIDATOR_MODULE = load_validator_module()
 
 
 class CodexProviderSchemaPreflightTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.checker_directory = tempfile.TemporaryDirectory()
+        cls.checker = Path(cls.checker_directory.name) / "codex-provider-schema-checker"
+        cls.receipt_probe = Path(cls.checker_directory.name) / "codex-provider-schema-receipt-probe"
+        completed = subprocess.run(
+            ["go", "build", "-o", str(cls.checker), str(SKILL_ROOT / "references/codex_provider_schema_checker.go")],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr)
+        completed = subprocess.run(
+            ["go", "build", "-o", str(cls.receipt_probe), str(RECEIPT_PROBE)],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.checker_directory.cleanup()
+
     def invoke(
         self,
         root: Path,
@@ -56,6 +86,8 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
                 profile,
                 "--schema",
                 schema,
+                "--checker",
+                str(self.checker),
             ],
             cwd=REPOSITORY_ROOT,
             check=False,
@@ -109,37 +141,21 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
         self.assertEqual(first.stderr, second.stderr)
         receipt = json.loads(first.stderr)
         self.assertEqual(receipt["reasonCode"], "codex-provider-schema-incompatible")
-        observed = {
-            (issue["code"], issue["jsonPointer"], issue["keyword"])
-            for issue in receipt["issues"]
-        }
-        expected = {
-            ("required-properties-mismatch", "/properties/adapter/required", "required"),
-            ("missing-type", "/properties/apiVersion", "type"),
-            ("unsupported-keyword", "/properties/apiVersion/const", "const"),
-            (
-                "unsupported-keyword",
-                "/properties/declaredArtifacts/items/oneOf",
-                "oneOf",
-            ),
-            (
-                "unsupported-keyword",
-                "/properties/declaredArtifacts/items/properties/uri/format",
-                "format",
-            ),
-            (
-                "unsupported-keyword",
-                "/properties/declaredChangedFiles/uniqueItems",
-                "uniqueItems",
-            ),
-            ("unsupported-keyword", "/not", "not"),
-            ("missing-type", "/not", "type"),
-            ("missing-type", "/not/anyOf/0", "type"),
-            ("unsupported-keyword", "/not/anyOf/0/pattern", "pattern"),
-        }
-        self.assertTrue(expected.issubset(observed), receipt["issues"])
-        self.assertEqual(receipt["issueCount"], len(receipt["issues"]))
-        self.assertGreaterEqual(receipt["issueCount"], len(expected))
+        expected = [
+            {"code": "unsupported-keyword", "jsonPointer": "/not", "keyword": "not"},
+            {"code": "missing-type", "jsonPointer": "/not", "keyword": "type"},
+            {"code": "missing-type", "jsonPointer": "/not/anyOf/0", "keyword": "type"},
+            {"code": "unsupported-keyword", "jsonPointer": "/not/anyOf/0/pattern", "keyword": "pattern"},
+            {"code": "required-properties-mismatch", "jsonPointer": "/properties/adapter/required", "keyword": "required"},
+            {"code": "missing-type", "jsonPointer": "/properties/apiVersion", "keyword": "type"},
+            {"code": "unsupported-keyword", "jsonPointer": "/properties/apiVersion/const", "keyword": "const"},
+            {"code": "unsupported-keyword", "jsonPointer": "/properties/declaredArtifacts/items/oneOf", "keyword": "oneOf"},
+            {"code": "unsupported-keyword", "jsonPointer": "/properties/declaredArtifacts/items/properties/uri/format", "keyword": "format"},
+            {"code": "unsupported-keyword", "jsonPointer": "/properties/declaredChangedFiles/uniqueItems", "keyword": "uniqueItems"},
+        ]
+        expected.sort(key=lambda issue: (issue["jsonPointer"], issue["code"], issue["keyword"]))
+        self.assertEqual(receipt["issues"], expected)
+        self.assertEqual(receipt["issueCount"], len(expected))
 
     def test_unknown_keyword_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -159,16 +175,21 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
                 receipt["issues"],
             )
 
-    def test_duplicate_json_key_is_rejected_before_schema_walk(self) -> None:
+    def test_ambiguous_and_nonfinite_json_is_rejected_before_schema_walk(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             shutil.copyfile(PROFILE, root / "profile.json")
-            (root / "schema.json").write_text(
-                '{"type":"object","type":"object","properties":{},'
-                '"required":[],"additionalProperties":false}'
-            )
-            completed = self.invoke(root, "schema.json", "profile.json")
-            self.assert_fatal(completed, "codex-provider-schema-duplicate-key")
+            for raw in (
+                '{"type":"object","type":"object"}',
+                '{"type":"number","default":NaN}',
+                '{"type":"number","default":Infinity}',
+                '{"type":"number","default":-Infinity}',
+                '{"type":"number","default":1e9999}',
+            ):
+                with self.subTest(raw=raw):
+                    (root / "schema.json").write_text(raw)
+                    completed = self.invoke(root, "schema.json", "profile.json")
+                    self.assert_fatal(completed, "codex-provider-schema-json-invalid")
 
     def test_schema_symlink_is_rejected_by_nofollow_open(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -232,6 +253,91 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
             finally:
                 os.close(root_fd)
 
+    def test_leaf_replacement_and_growth_are_detected(self) -> None:
+        for mode in ("replace", "grow"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                shutil.copyfile(VALID, root / "schema.json")
+                root_fd = VALIDATOR_MODULE.open_root(root)
+                real_read = os.read
+                changed = False
+
+                def change_then_read(file_descriptor: int, size: int) -> bytes:
+                    nonlocal changed
+                    if not changed:
+                        changed = True
+                        if mode == "replace":
+                            (root / "schema.json").rename(root / "schema-old.json")
+                            shutil.copyfile(INVALID_AGGREGATE, root / "schema.json")
+                        else:
+                            with (root / "schema.json").open("ab") as output:
+                                output.write(b" ")
+                    return real_read(file_descriptor, size)
+
+                try:
+                    with mock.patch.object(VALIDATOR_MODULE.os, "read", side_effect=change_then_read):
+                        with self.assertRaises(VALIDATOR_MODULE.PreflightError) as captured:
+                            VALIDATOR_MODULE.read_regular_file_at(
+                                root_fd, "schema.json", 4 * 1024 * 1024,
+                                path_reason="path", unreadable_reason="unreadable",
+                                too_large_reason="too-large", changed_reason="changed",
+                            )
+                    self.assertEqual(captured.exception.reason_code, "changed")
+                finally:
+                    os.close(root_fd)
+
+    def test_profile_parent_fifo_symlink_and_oversize_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "profiles").mkdir()
+            shutil.copyfile(PROFILE, root / "profiles" / "profile.json")
+            shutil.copyfile(VALID, root / "schema.json")
+            root_fd = VALIDATOR_MODULE.open_root(root)
+            real_read = os.read
+            swapped = False
+
+            def swap_profile_parent(file_descriptor: int, size: int) -> bytes:
+                nonlocal swapped
+                if not swapped:
+                    swapped = True
+                    (root / "profiles").rename(root / "profiles-old")
+                    (root / "profiles").mkdir()
+                    shutil.copyfile(PROFILE, root / "profiles" / "profile.json")
+                return real_read(file_descriptor, size)
+
+            try:
+                with mock.patch.object(VALIDATOR_MODULE.os, "read", side_effect=swap_profile_parent):
+                    with self.assertRaises(VALIDATOR_MODULE.PreflightError) as captured:
+                        VALIDATOR_MODULE.read_regular_file_at(
+                            root_fd, "profiles/profile.json", 64 * 1024,
+                            path_reason="path", unreadable_reason="unreadable",
+                            too_large_reason="too-large", changed_reason="changed",
+                        )
+                self.assertEqual(captured.exception.reason_code, "changed")
+            finally:
+                os.close(root_fd)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copyfile(VALID, root / "schema.json")
+            shutil.copyfile(PROFILE, root / "target.json")
+            (root / "profile.json").symlink_to("target.json")
+            self.assert_fatal(self.invoke(root, "schema.json", "profile.json"), "codex-provider-profile-unreadable")
+
+        if hasattr(os, "mkfifo"):
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                shutil.copyfile(VALID, root / "schema.json")
+                os.mkfifo(root / "profile.json")
+                self.assert_fatal(self.invoke(root, "schema.json", "profile.json"), "codex-provider-profile-unreadable")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copyfile(VALID, root / "schema.json")
+            with (root / "profile.json").open("wb") as output:
+                output.truncate(64 * 1024 + 1)
+            self.assert_fatal(self.invoke(root, "schema.json", "profile.json"), "codex-provider-profile-too-large")
+
     def test_profile_rule_drift_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.temporary_inputs(directory)
@@ -273,9 +379,7 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
             fail_receipt.write_text(failed.stderr)
             completed = subprocess.run(
                 [
-                    "go",
-                    "run",
-                    str(RECEIPT_PROBE),
+                    str(self.receipt_probe),
                     str(RECEIPT_SCHEMA),
                     str(TEMPLATE),
                     str(pass_receipt),
@@ -289,6 +393,19 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
             )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("draft-2020-12-receipt-schema-and-instances-ok", completed.stdout)
+
+        invalid_paths = ("./schema.json", "../schema.json", "/schema.json", "a//schema.json", "a\\schema.json")
+        for invalid_path in invalid_paths:
+            with self.subTest(invalid_path=invalid_path), tempfile.TemporaryDirectory() as directory:
+                receipt = json.loads(passed.stdout)
+                receipt["schema"]["path"] = invalid_path
+                invalid = Path(directory) / "invalid-receipt.json"
+                invalid.write_text(json.dumps(receipt))
+                rejected = subprocess.run(
+                    [str(self.receipt_probe), str(RECEIPT_SCHEMA), str(invalid)],
+                    cwd=REPOSITORY_ROOT, check=False, capture_output=True, text=True, timeout=120,
+                )
+                self.assertNotEqual(rejected.returncode, 0, invalid_path)
 
 
 if __name__ == "__main__":

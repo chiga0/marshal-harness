@@ -117,6 +117,10 @@ type Adapter struct {
 	// unsafePathExecutionForTest exists only for script fixtures on platforms
 	// without fd-exec. Production constructors always leave it false.
 	unsafePathExecutionForTest bool
+	// providerSchemaMutationForTest deterministically injects an incompatible
+	// projected schema before the production compatibility checker. Production
+	// constructors always leave it nil.
+	providerSchemaMutationForTest func([]byte) []byte
 	// legacyAuthorityForTest preserves the old signed-store fixture only for
 	// native launcher tests. No production constructor or public method can set
 	// it, so legacy BindConformance can never grant production execution.
@@ -638,11 +642,15 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, codexProtocolFailure("durable output schema is unavailable", a.now())
 	}
-	evidence, err := prepareAttemptEvidence(evidenceDir, resultName, schemaDocument)
+	evidence, err := prepareAttemptEvidence(evidenceDir, resultName, schemaDocument, a.providerSchemaMutationForTest)
 	if err != nil {
 		var claimErr *leafClaimError
 		if errors.As(err, &claimErr) {
 			return domain.Record{}, codexProtocolFailure("attempt "+claimErr.kind+" leaf already exists or is unsafe", a.now())
+		}
+		var compatibilityErr *providerSchemaCompatibilityError
+		if errors.As(err, &compatibilityErr) {
+			return domain.Record{}, codexProtocolFailure(compatibilityErr.reasonCode, a.now())
 		}
 		return domain.Record{}, codexProtocolFailure("attempt evidence leaves could not be claimed", a.now())
 	}
