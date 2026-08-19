@@ -18,3 +18,17 @@ func TestInspectAuthorityEndpointStatusIsFailClosedAndNonSecret(t *testing.T) {
 		t.Fatalf("non-Darwin endpoint status = %q", got)
 	}
 }
+
+func TestInspectLaunchdDeploymentConfigStatusIsDiagnosticOnly(t *testing.T) {
+	if got := InspectLaunchdDeploymentConfigStatus(""); got != AuthorityDeploymentNotConfigured {
+		t.Fatalf("empty deployment config status = %q", got)
+	}
+	got := InspectLaunchdDeploymentConfigStatus("/private/var/run/marshal-deployment.json")
+	if runtime.GOOS == "darwin" {
+		if got != AuthorityDeploymentUnsafe {
+			t.Fatalf("missing deployment config status = %q", got)
+		}
+	} else if got != AuthorityDeploymentUnsupported {
+		t.Fatalf("non-Darwin deployment config status = %q", got)
+	}
+}

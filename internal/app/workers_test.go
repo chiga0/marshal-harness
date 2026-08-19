@@ -120,9 +120,10 @@ func TestMacAuthorityEndpointStatusIsDiagnosticOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeValue, err := NewWorkerRuntime(staticEnv(map[string]string{
-		"MARSHAL_QODER_PATH":    qoderPath,
-		"MARSHAL_CODEX_PATH":    codexPath,
-		"MARSHAL_APAP_ENDPOINT": "/private/var/run/marshal-apap.sock",
+		"MARSHAL_QODER_PATH":            qoderPath,
+		"MARSHAL_CODEX_PATH":            codexPath,
+		"MARSHAL_APAP_ENDPOINT":         "/private/var/run/marshal-apap.sock",
+		"MARSHAL_DARWIN_LAUNCHD_CONFIG": "/private/var/run/marshal-deployment.json",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +136,14 @@ func TestMacAuthorityEndpointStatusIsDiagnosticOnly(t *testing.T) {
 			}
 		} else if status != "unsupported-platform" {
 			t.Fatalf("%s authority status = %q, want unsupported-platform", id, status)
+		}
+		deployment := configurationByID(t, runtimeValue, id).AuthorityDeploymentStatus
+		if runtime.GOOS == "darwin" {
+			if deployment != "unsafe" {
+				t.Fatalf("%s deployment status = %q, want unsafe", id, deployment)
+			}
+		} else if deployment != "unsupported-platform" {
+			t.Fatalf("%s deployment status = %q, want unsupported-platform", id, deployment)
 		}
 	}
 	qoder, err := runtimeValue.Registry().Resolve("qoder")

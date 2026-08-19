@@ -157,6 +157,7 @@ type doctorWorker struct {
 	Registered                     bool            `json:"registered"`
 	Outcome                        string          `json:"outcome"`
 	AuthorityEndpointStatus        string          `json:"authorityEndpointStatus,omitempty"`
+	AuthorityDeploymentStatus      string          `json:"authorityDeploymentStatus,omitempty"`
 	Compatibility                  string          `json:"compatibility"`
 	AdapterVersion                 string          `json:"adapterVersion,omitempty"`
 	BinaryVersion                  string          `json:"binaryVersion,omitempty"`
@@ -304,6 +305,9 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		if worker.AuthorityEndpointStatus != "" {
 			fmt.Fprintf(stdout, " / authority=%s", worker.AuthorityEndpointStatus)
 		}
+		if worker.AuthorityDeploymentStatus != "" {
+			fmt.Fprintf(stdout, " / deployment=%s", worker.AuthorityDeploymentStatus)
+		}
 		if worker.BinaryVersion != "" {
 			fmt.Fprintf(stdout, " (%s)", worker.BinaryVersion)
 		}
@@ -346,13 +350,14 @@ func doctorWorkers(ctx context.Context, runtime *app.WorkerRuntime) []doctorWork
 	workers := make([]doctorWorker, 0, len(configurations))
 	for _, configuration := range configurations {
 		result := doctorWorker{
-			AdapterID:               configuration.AdapterID,
-			EnvironmentVariable:     configuration.EnvironmentVariable,
-			Configured:              configuration.Configured,
-			Registered:              configuration.Registered,
-			Outcome:                 configuration.Outcome,
-			AuthorityEndpointStatus: configuration.AuthorityEndpointStatus,
-			Compatibility:           "not-probed",
+			AdapterID:                 configuration.AdapterID,
+			EnvironmentVariable:       configuration.EnvironmentVariable,
+			Configured:                configuration.Configured,
+			Registered:                configuration.Registered,
+			Outcome:                   configuration.Outcome,
+			AuthorityEndpointStatus:   configuration.AuthorityEndpointStatus,
+			AuthorityDeploymentStatus: configuration.AuthorityDeploymentStatus,
+			Compatibility:             "not-probed",
 		}
 		if !configuration.Registered || ctx.Err() != nil {
 			workers = append(workers, result)

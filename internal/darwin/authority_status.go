@@ -6,11 +6,16 @@ import "runtime"
 // an adapter or mints authority; production support still requires the
 // signed APAP bundle, verifier evidence and launcher barrier.
 const (
-	AuthorityEndpointNotConfigured = "not-configured"
-	AuthorityEndpointUnsupported   = "unsupported-platform"
-	AuthorityEndpointUnavailable   = "unavailable"
-	AuthorityEndpointUnsafe        = "unsafe"
-	AuthorityEndpointReady         = "ready"
+	AuthorityEndpointNotConfigured   = "not-configured"
+	AuthorityEndpointUnsupported     = "unsupported-platform"
+	AuthorityEndpointUnavailable     = "unavailable"
+	AuthorityEndpointUnsafe          = "unsafe"
+	AuthorityEndpointReady           = "ready"
+	AuthorityDeploymentNotConfigured = "not-configured"
+	AuthorityDeploymentUnsupported   = "unsupported-platform"
+	AuthorityDeploymentUnavailable   = "unavailable"
+	AuthorityDeploymentUnsafe        = "unsafe"
+	AuthorityDeploymentReady         = "ready"
 )
 
 // InspectAuthorityEndpointStatus reports a non-secret, fail-closed status for
@@ -27,4 +32,24 @@ func InspectAuthorityEndpointStatus(path string) string {
 		return AuthorityEndpointUnavailable
 	}
 	return AuthorityEndpointReady
+}
+
+// InspectLaunchdDeploymentConfigStatus reports only whether an externally
+// supplied deployment record is readable and its held objects are present.
+// It never changes registry admission and never returns config contents.
+func InspectLaunchdDeploymentConfigStatus(path string) string {
+	if path == "" {
+		return AuthorityDeploymentNotConfigured
+	}
+	if runtime.GOOS != "darwin" {
+		return AuthorityDeploymentUnsupported
+	}
+	config, err := LoadLaunchdDeploymentConfig(path)
+	if err != nil {
+		return AuthorityDeploymentUnsafe
+	}
+	if _, err := InspectLaunchdDeployment(config.Spec, config.Policy); err != nil {
+		return AuthorityDeploymentUnavailable
+	}
+	return AuthorityDeploymentReady
 }

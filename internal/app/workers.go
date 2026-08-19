@@ -40,6 +40,9 @@ type WorkerConfiguration struct {
 	// AuthorityEndpointStatus is diagnostic only; it never changes registry
 	// admission or the adapter's fail-closed probe result.
 	AuthorityEndpointStatus string `json:"authorityEndpointStatus,omitempty"`
+	// AuthorityDeploymentStatus is diagnostic only; it never changes registry
+	// admission or the adapter's fail-closed probe result.
+	AuthorityDeploymentStatus string `json:"authorityDeploymentStatus,omitempty"`
 }
 
 // workerBinding freezes the only adapter-to-environment mapping Marshal
@@ -160,6 +163,7 @@ func NewWorkerRuntime(getenv func(string) string) (*WorkerRuntime, error) {
 		configuration.Configured = true
 		if binding.requiresAuthority {
 			configuration.AuthorityEndpointStatus = darwin.InspectAuthorityEndpointStatus(getenv("MARSHAL_APAP_ENDPOINT"))
+			configuration.AuthorityDeploymentStatus = darwin.InspectLaunchdDeploymentConfigStatus(getenv("MARSHAL_DARWIN_LAUNCHD_CONFIG"))
 		}
 		worker, constructErr := binding.construct(executable, validator, getenv)
 		if constructErr != nil {
