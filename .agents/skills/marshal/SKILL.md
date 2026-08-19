@@ -79,6 +79,17 @@ Decision 必须绑定 `taskId`、`runId`、`reviewRound`、`specDigest`、`revie
      - 仅有明确的 provider timeout、DNS/rate-limit 或短暂 transport 背压，且预检摘要仍匹配时，才允许在原 `taskId` 上做有限 operational retry；重试前记录 attempt、预算和 backoff，超过预算转 `blocked/reject`，不再派发同一失败路径。
      - `REVIEW_PENDING` 的 triage 也只做一次：有完整且身份匹配的 packet 就在本 heartbeat 导入 Decision；缺 packet/旧 manifest/旧 base/证据变更则产出 intervention finding 并准备 successor，禁止跨 heartbeat 反复执行同一 `task review`。
      - 派 reviewer 前生成一次 freshness fingerprint，至少绑定 current attempt/sourceHead/reviewRound 以及 packet/spec/verification/artifact/evidence digest；缺失或不一致使用固定 reasonCode 拦截。相同 stale fingerprint 不得重复派 reviewer 或重复导入 Decision。
+     - **Reviewer freshness 原子预检（强制）**：从 `templates/review-freshness-preflight.json` 复制 operator-local manifest，并从 `templates/review-freshness-history.json` 初始化 history（两者都不得写入 `.marshal`）。manifest 只声明期望的 `REVIEW_PENDING` identity 与各权威文件相对路径，不接受调用方提供 digest、fingerprint 或 dedupeKey；执行：
+
+       ```bash
+       python3 -I -B .agents/skills/marshal/references/validate-review-freshness-preflight.py \
+         --run-root "$REPO/.marshal/runs/$RUN_ID" \
+         --operator-root "$OPERATOR_DIR" \
+         --manifest "$OPERATOR_DIR/review-freshness-preflight.json" \
+         --worktree "$TASK_WORKTREE"
+       ```
+
+       Validator 复用 Core `internal/canonical`、`internal/contract` 与真实 worktree observer，逐个 nofollow 读取并重算 `RunState`、TaskSpec、Policy/Capability、control plan/approval records、ReviewPacket **全部** `PacketInputs`、patch、WorkerResult、Candidate 与当前 snapshot/diff；同时绑定完整 state 原始摘要、当前 attempt/review、sourceHead 及上述所有 control/evidence 摘要。所有权威输入在动作前后必须保持相同 inode 与原始字节。candidate 新字段必须 all-or-none；部分迁移固定返回 `legacy-candidate-partial-requires-migration`，禁止猜测 legacy identity。Validator 在返回 action **之前**以 O_EXCL lock + history raw-digest CAS + atomic rename 写入唯一 claim；只有返回 `historyClaimed=true` 且 `action=dispatch-reviewer` 才能派 reviewer，只有 `action=generate-review-packet` 才能调用一次 `marshal task review --run RUN_ID --json`。任何 `action=intervention`、非零退出、重复/并发 claim 都不派发、不生成、不重试同一 fingerprint；`reasonCode` 原样进入行动队列。history claim 是 operator 去重事实，不是 Core lifecycle authority，禁止据此直接改 Run 状态。
      - 复用的是证据摘要而不是状态副作用；不得手写 `.marshal`、伪造 digest 或把复用摘要当作本次 Run 的独立 reviewer 结论。
   9. **零 Attempt admission 与待办去重**：`task run` 前必须先完成零 Attempt 预检：`task status` 处于 `READY`、plan approval 与当前 `specDigest/policyDigest/capabilityDigest` 匹配、`doctor` 显示 Adapter 已配置且 supported、Mac 普通用户模式显式声明、scope/worktree 不冲突、容量与 Provider 背压检查通过。任一项失败都不得启动 Worker、不得消耗 Attempt/retry 预算；只记录 admission finding 并修复输入或 plan。
      - 使用 `templates/admission-receipt.json` 生成短寿命、机器可读的 operator-local receipt；它不是 `marshal.dev` contract，不得写入 `.marshal` 或冒充 Core authority。Receipt 必须绑定当前 source/spec/policy/capability/base/state/approval、host OS/arch、Adapter config、精确 executable path/digest/device/inode、permission/result-path identity、worktree/scope，以及带摘要的 doctor/capacity/backpressure 观测；有效期最多 60 秒。执行前先重新采集所有时变证据并逐项比对，再用 `jq -e -f .agents/skills/marshal/references/validate-admission-receipt.jq RECEIPT.json` 验证；任一 tuple、sequence、digest 或时效变化即失效。
