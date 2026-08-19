@@ -253,7 +253,7 @@ Fan-out 的价值不在“更快写代码”，而在“更多视角做决策”
 - 每个调研 Run 为 `publication: none`，deliverable 是调研报告（documentation），共享同一份问题简报，各自带不同的评估视角（如：信任模型优先 / 效率优先 / 可操作性优先）；
 - acceptance 裁剪为轻量命令（产物存在性与基本完整性即可），质量由 Lead review 判定；
 - 各 Run 的产物路径必须互斥；报告写入各自 worktree，ACCEPTED 后由 Lead 直接读取；
-- **调研任务模板**：优先从 Skill 目录 `templates/research-task.json` 填空生成 TaskSpec（内含相对路径纪律、bash 命令白名单、预算档位与精准 acceptance），不要从空白起草；
+- **调研任务模板**：优先从 Skill 目录 `templates/research-task.json` 填空生成 TaskSpec（内含相对路径纪律、Provider 工具约束、预算档位与精准 acceptance），不要从空白起草；
 - **只读纪律**：当前尚无 read-only 执行画像（设计中），调研/评审 Worker 的 TaskSpec scope 必须收紧到仅允许报告/评审产物文件（`allowPaths` 单文件、`maxChangedFiles: 1`），并在 constraints 中禁止修改其他内容；
 - **网络限制**：Marshal Worker 无网络权限（设计使然）。需要外部信息的调研在 harness 外的联网会话完成，或等待后续“调研权限画像”（read-only + 显式网络放行）设计落地。
 
@@ -405,4 +405,6 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 - acceptance 若声称验证 crash/replay/idempotency，故障注入必须发生在 effect/cache/persist 边界之后，并同时断言相同 key、相同 outcome 与 effect exactly-once。在副作用前断开连接只证明普通首次执行，不能关闭 replay finding。
 - `verifier-worktree-mutated` 是结构性 Required Gate 失败，不因命令退出码为 0 而降级。先把 cache/temp/生成物移出受验 worktree 或修复验收命令，再创建 fresh-base successor。
 - CapabilitySnapshot、doctor、ReviewPacket 和人工报告必须与真实 env/argv 一致。`ordinary-user` 继承宿主 `HOME/XDG` 时，不得沿用 strict authority 的 managed HOME、禁用宿主配置源或 signed authority 文案。
-- plan 前执行 acceptance purity lint：拒绝 shell wrapper/重定向、工作区 cache/profile/coverage 输出和未带 `-B` 的 Python 验收；无法静态证明纯只读时，在临时副本 dry-run 并比较前后 digest。`.agents/skills/marshal/references/` 中的 Provider manifest 仅是无正文的人工审查基线；协议机械门禁由版本化 Adapter parser 与 typed failure 承担，禁止在真实产品 Attempt 中猜字段或把手工 shape diff 当成 authority。
+- plan 前执行 acceptance purity lint：operator 以保守 admission policy 拒绝 shell wrapper/重定向、工作区 cache/profile/coverage 输出和未带 `-B` 的 Python 验收；这不表示 Core 已证明 wrapper 本身会写入。无法静态证明纯只读时，用 verifier 的真实 argv/env/cwd 在临时副本 dry-run 并比较前后树摘要。`.agents/skills/marshal/references/` 中的 Provider manifest 仅是无正文的人工审查基线；协议机械门禁由版本化 Adapter parser 与 typed failure 承担，禁止在真实产品 Attempt 中猜字段或把手工 shape diff 当成 authority。
+- 对自然语言/内容型 verifier，purity lint 后立即做 acceptance semantic preflight。把 `required_all`、`required_any`、`forbidden`、精确路径、数量和大小边界逐项映射到 Worker prompt；代码型 `go test`、`make check` 等沿用自身断言与 fixture，不要求这些字段。自然语言报告使用 `casefold` 后的稳定 token 和显式等价词组，只有协议字段、命令与路径等契约值才允许单一 literal。若必须逐字包含某个值，prompt 要原样写明，不能只描述其中文语义。最近一次 reviewer 已确认的错误术语、过度声明或自相矛盾句进入 `forbidden`，同时向 Worker 提供正确替代表述。
+- 内容型 verifier 在临时样本目录做 positive/negative dry-run：代表性正确报告应通过；分别缺失 `required_all`、缺失 `required_any` 组和命中 `forbidden` 的样本必须失败，并比较前后树摘要确认命令只读。最近一次同类报告可复制为 positive fixture；不得为了试验 acceptance 再派 Worker。此预检失败属于 TaskSpec 输入错误，修正后再 plan，不消耗 Attempt/retry/rework。代码型 verifier 使用任务自身已有正反测试，不强制套用报告 fixture。
