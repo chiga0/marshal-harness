@@ -21,7 +21,7 @@ import (
 func TestFrozenCIDeadlineAnchorsAtPublication(t *testing.T) {
 	createdAt := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC)
 	publishedAt := time.Date(2026, 8, 4, 10, 50, 0, 0, time.UTC)
-	budgets := domain.TaskBudgets{RunTimeoutSeconds: 3600}
+	budgets := domain.TaskBudgets{RunTimeoutSeconds: 3600, CIObserveTimeoutSeconds: 3600}
 	deadline := frozenCIDeadline(createdAt, publishedAt, budgets)
 	want := time.Date(2026, 8, 4, 11, 50, 0, 0, time.UTC)
 	if !deadline.Equal(want) {
@@ -35,10 +35,9 @@ func TestFrozenCIDeadlineAnchorsAtPublication(t *testing.T) {
 	}
 }
 
-func TestFrozenCIDeadlineKeepsCreationLowerBound(t *testing.T) {
-	// Anomalous lineage (publishedAt earlier than createdAt, e.g. fabricated
-	// or clock-skewed records): the deadline never moves earlier than the
-	// legacy CreatedAt-anchored value, preserving the prior behavior exactly.
+func TestFrozenCIDeadlineLegacyFallbackAnchorsAtCreation(t *testing.T) {
+	// A TaskSpec without ciObserveTimeoutSeconds preserves the exact legacy
+	// CreatedAt + runTimeoutSeconds adjudication basis.
 	createdAt := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	publishedAt := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	budgets := domain.TaskBudgets{RunTimeoutSeconds: 120}
@@ -52,7 +51,7 @@ func TestFrozenCIDeadlineIndependentOfZonePresentation(t *testing.T) {
 	cst := time.FixedZone("CST", 8*3600)
 	createdAt := time.Date(2026, 8, 4, 18, 0, 0, 0, cst) // 10:00Z
 	publishedAt := time.Date(2026, 8, 4, 10, 50, 0, 0, time.UTC)
-	budgets := domain.TaskBudgets{RunTimeoutSeconds: 3600}
+	budgets := domain.TaskBudgets{RunTimeoutSeconds: 3600, CIObserveTimeoutSeconds: 3600}
 	deadline := frozenCIDeadline(createdAt, publishedAt, budgets)
 	if want := time.Date(2026, 8, 4, 11, 50, 0, 0, time.UTC); !deadline.Equal(want) {
 		t.Fatalf("ciDeadline = %s, want %s", deadline, want)
@@ -80,9 +79,6 @@ func deadlineAdjudicationInput() (domain.RemoteCheckRecord, time.Time, time.Time
 		HeadSHA: fabricatedSHA("2"), Status: domain.CheckStatusPass,
 		Checks: []domain.RemoteCheck{
 			{Name: "ci/test", Required: true, Status: domain.CheckStatusPass},
-			// A non-required pending check never participates in the
-			// timely-completion proof.
-			{Name: "optional/lint", Required: false, Status: domain.CheckStatusPending},
 		},
 		ObservedAt: time.Date(2026, 8, 4, 11, 30, 0, 0, time.UTC),
 	}
@@ -91,29 +87,28 @@ func deadlineAdjudicationInput() (domain.RemoteCheckRecord, time.Time, time.Time
 
 func TestAdjudicateTimelyCompletion(t *testing.T) {
 	checks, ciDeadline, publishedAt := deadlineAdjudicationInput()
-	completion := func(instant time.Time) map[string]time.Time {
-		return map[string]time.Time{"ci/test": instant}
-	}
 	tests := []struct {
 		name        string
-		completions map[string]time.Time
+		completedAt *time.Time
 		observedAt  time.Time
 		want        error
 	}{
-		{"trusted completion admits late observation", completion(ciDeadline.Add(-30 * time.Minute)), ciDeadline.Add(time.Hour), nil},
-		{"completion exactly at ciDeadline", completion(ciDeadline), ciDeadline.Add(time.Hour), nil},
-		{"completion at ciDeadline plus skew", completion(ciDeadline.Add(ciClockSkewTolerance)), ciDeadline.Add(2 * time.Hour), nil},
-		{"completion beyond ciDeadline plus skew fails closed", completion(ciDeadline.Add(ciClockSkewTolerance + time.Second)), ciDeadline.Add(2 * time.Hour), errCICompletedAtExceedsDeadline},
-		{"completion at publishedAt minus skew consistent", completion(publishedAt.Add(-ciClockSkewTolerance)), publishedAt.Add(10 * time.Minute), nil},
-		{"completion before publishedAt minus skew inconsistent", completion(publishedAt.Add(-ciClockSkewTolerance - time.Second)), publishedAt.Add(10 * time.Minute), errCICompletedAtInconsistent},
-		{"observation before deadline proves missing completion", nil, ciDeadline.Add(-time.Second), nil},
+		{"trusted completion admits late observation", timePointer(ciDeadline.Add(-30 * time.Minute)), ciDeadline.Add(time.Hour), nil},
+		{"completion exactly at ciDeadline", timePointer(ciDeadline), ciDeadline.Add(time.Hour), nil},
+		{"completion at ciDeadline plus skew", timePointer(ciDeadline.Add(ciClockSkewTolerance)), ciDeadline.Add(2 * time.Hour), nil},
+		{"completion beyond ciDeadline plus skew fails closed", timePointer(ciDeadline.Add(ciClockSkewTolerance + time.Second)), ciDeadline.Add(2 * time.Hour), errCICompletedAtExceedsDeadline},
+		{"completion at publishedAt minus skew consistent", timePointer(publishedAt.Add(-ciClockSkewTolerance)), publishedAt.Add(10 * time.Minute), nil},
+		{"completion before publishedAt minus skew inconsistent", timePointer(publishedAt.Add(-ciClockSkewTolerance - time.Second)), publishedAt.Add(10 * time.Minute), errCICompletedAtInconsistent},
+		{"observation before deadline does not replace missing completion", nil, ciDeadline.Add(-time.Second), errCICompletedAtMissing},
 		{"missing completion at deadline fails closed", nil, ciDeadline, errCICompletedAtMissing},
 		{"missing completion after deadline fails closed", nil, ciDeadline.Add(time.Hour), errCICompletedAtMissing},
 	}
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			err := adjudicateTimelyCompletion(checks, test.completions, ciDeadline, publishedAt, test.observedAt)
+			checks.Checks[0].CompletedAt = test.completedAt
+			checks.ObservedAt = test.observedAt
+			err := adjudicateTimelyCompletion(checks, []string{"ci/test"}, ciDeadline, publishedAt)
 			if test.want == nil {
 				if err != nil {
 					t.Fatalf("adjudication = %v, want timely acceptance", err)
@@ -127,10 +122,28 @@ func TestAdjudicateTimelyCompletion(t *testing.T) {
 	}
 }
 
-// CompletedAt parsing contract (ADR 0028 backward compatibility: absent or
-// unreadable facts are dropped, never presumed, never backfilled).
+func TestAdjudicateTimelyCompletionRejectsUnexpectedOptionalIdentity(t *testing.T) {
+	checks, ciDeadline, publishedAt := deadlineAdjudicationInput()
+	checks.Checks[0].CompletedAt = timePointer(ciDeadline.Add(-time.Minute))
+	checks.Checks = append(checks.Checks, domain.RemoteCheck{
+		Name: "optional/lint", Required: false, Status: domain.CheckStatusPending,
+	})
 
-func TestParseCheckCompletionTimes(t *testing.T) {
+	err := adjudicateTimelyCompletion(checks, []string{"ci/test"}, ciDeadline, publishedAt)
+	if !errors.Is(err, errCICompletedAtInconsistent) {
+		t.Fatalf("adjudication = %v, want exact-set rejection %v", err, errCICompletedAtInconsistent)
+	}
+}
+
+func timePointer(value time.Time) *time.Time {
+	value = value.UTC()
+	return &value
+}
+
+// CompletedAt decoding contract (ADR 0028 backward compatibility: absence
+// remains representable, but adjudication never presumes or backfills it).
+
+func TestDecodeCheckCompletionTimes(t *testing.T) {
 	record := domain.RemoteCheckRecord{
 		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRemoteCheckRecord,
 		TaskID: "TASK-DEADLINE", RunID: "run:task-deadline", Provider: "github",
@@ -145,39 +158,59 @@ func TestParseCheckCompletionTimes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if completions := parseCheckCompletionTimes(data); len(completions) != 0 {
-			t.Fatalf("completions = %v, want none", completions)
+		var decoded domain.RemoteCheckRecord
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.Checks[0].CompletedAt != nil {
+			t.Fatalf("completedAt = %v, want absent", decoded.Checks[0].CompletedAt)
 		}
 	})
 
 	t.Run("completedAt facts are parsed and UTC-normalized", func(t *testing.T) {
 		data := []byte(`{"checks":[{"name":"ci/test","required":true,"status":"pass","completedAt":"2026-08-04T11:20:00+08:00"}]}`)
-		completions := parseCheckCompletionTimes(data)
+		var decoded struct {
+			Checks []domain.RemoteCheck `json:"checks"`
+		}
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatal(err)
+		}
 		want := time.Date(2026, 8, 4, 3, 20, 0, 0, time.UTC)
-		completedAt, ok := completions["ci/test"]
-		if !ok || !completedAt.Equal(want) {
-			t.Fatalf("completions = %v, want ci/test at %s", completions, want)
+		if decoded.Checks[0].CompletedAt == nil || !decoded.Checks[0].CompletedAt.Equal(want) {
+			t.Fatalf("completedAt = %v, want %s", decoded.Checks[0].CompletedAt, want)
 		}
 	})
 
 	t.Run("malformed timestamp drops the fact fail closed", func(t *testing.T) {
 		data := []byte(`{"checks":[{"name":"ci/test","required":true,"status":"pass","completedAt":"not-a-time"}]}`)
-		if completions := parseCheckCompletionTimes(data); len(completions) != 0 {
-			t.Fatalf("completions = %v, want the malformed fact dropped", completions)
+		var decoded struct {
+			Checks []domain.RemoteCheck `json:"checks"`
+		}
+		if err := json.Unmarshal(data, &decoded); err == nil {
+			t.Fatal("malformed completedAt must be rejected")
 		}
 	})
 
 	t.Run("zero timestamp is dropped", func(t *testing.T) {
 		data := []byte(`{"checks":[{"name":"ci/test","required":true,"status":"pass","completedAt":"0001-01-01T00:00:00Z"}]}`)
-		if completions := parseCheckCompletionTimes(data); len(completions) != 0 {
-			t.Fatalf("completions = %v, want the zero fact dropped", completions)
+		var decoded struct {
+			Checks []domain.RemoteCheck `json:"checks"`
+		}
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.Checks[0].CompletedAt == nil || !decoded.Checks[0].CompletedAt.IsZero() {
+			t.Fatalf("completedAt = %v, want explicit zero for fail-closed adjudication", decoded.Checks[0].CompletedAt)
 		}
 	})
 
 	t.Run("non-required entries are ignored", func(t *testing.T) {
 		data := []byte(`{"checks":[{"name":"optional/lint","required":false,"status":"pass","completedAt":"2026-08-04T11:20:00Z"}]}`)
-		if completions := parseCheckCompletionTimes(data); len(completions) != 0 {
-			t.Fatalf("completions = %v, want non-required facts ignored", completions)
+		var decoded struct {
+			Checks []domain.RemoteCheck `json:"checks"`
+		}
+		if err := json.Unmarshal(data, &decoded); err != nil || decoded.Checks[0].CompletedAt == nil {
+			t.Fatalf("non-required completedAt should decode for evidence preservation: decoded=%+v err=%v", decoded, err)
 		}
 	})
 }
@@ -250,7 +283,7 @@ func newCIDeadlineFixture(t *testing.T, config deadlineFixtureConfig) *publicati
 			{ID: "pull-request", Kind: "publication", Required: true, PathGlob: "docs/*.md", MediaType: "text/markdown", MinimumCount: 1},
 		},
 		Worker:  domain.TaskWorker{PreferredAdapter: "fake", FallbackAdapters: []string{}, ExecutionProfile: "workspace-write", SessionPolicy: "ephemeral"},
-		Budgets: domain.TaskBudgets{RunTimeoutSeconds: config.runTimeout, AttemptTimeoutSeconds: 60, MaxAttempts: 3, MaxOperationalRetries: 1, MaxReworkRounds: 1, MaxOutputBytes: 100000},
+		Budgets: domain.TaskBudgets{RunTimeoutSeconds: config.runTimeout, CIObserveTimeoutSeconds: config.runTimeout, AttemptTimeoutSeconds: 60, MaxAttempts: 3, MaxOperationalRetries: 1, MaxReworkRounds: 1, MaxOutputBytes: 100000},
 		Publication: domain.TaskPublication{
 			Required: true, Provider: "github", Mode: "draft", Remote: "origin",
 			BaseBranch: "main", MergePolicy: "never", RequiredChecks: []string{"ci/test"},
@@ -294,6 +327,7 @@ func newCIDeadlineFixture(t *testing.T, config deadlineFixtureConfig) *publicati
 	}
 	writeFile(filepath.Join(runDirectory, "decisions", "decision-001.json"), decisionData)
 
+	ciDeadline := config.publishedAt.Add(time.Duration(config.runTimeout) * time.Second)
 	publication := domain.PublicationRecord{
 		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindPublicationRecord,
 		TaskID: taskID, RunID: runID, Provider: "github",
@@ -306,7 +340,7 @@ func newCIDeadlineFixture(t *testing.T, config deadlineFixtureConfig) *publicati
 		ReviewDecisionDigest: decisionDigest,
 		Marker:               marker(taskID, runID), Mode: "draft", MergePolicy: "never",
 		Request: domain.PullRequestRecord{ID: "PR_deadline0001", Number: 7, URL: "https://github.com/marshal-test/task-deadline/pull/7", Draft: true, State: "OPEN"},
-		Actor:   "marshal-fake-publisher", PublishedAt: config.publishedAt, UpdatedAt: config.publishedAt,
+		Actor:   "marshal-fake-publisher", PublishedAt: config.publishedAt, CIDeadline: &ciDeadline, UpdatedAt: config.publishedAt,
 	}
 	publicationData, err := json.Marshal(publication)
 	if err != nil {
@@ -424,13 +458,15 @@ func deadlineFixtureInstants() (createdAt, publishedAt, legacyDeadline, ciDeadli
 
 func TestRunBlockedByCIDeadlineDetection(t *testing.T) {
 	createdAt, publishedAt, _, _ := deadlineFixtureInstants()
-	t.Run("deadline block recognized", func(t *testing.T) {
-		fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
-		blocked, err := runBlockedByCIDeadline(fixture.store, fixture.runID)
-		if err != nil || !blocked {
-			t.Fatalf("deadline-blocked run not recognized: blocked=%v err=%v", blocked, err)
-		}
-	})
+	for _, reason := range []error{errCIDeadlineExceeded, errCICompletedAtMissing, errCICompletedAtExceedsDeadline, errCICompletedAtInconsistent} {
+		t.Run(reason.Error()+" recognized", func(t *testing.T) {
+			fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: reason.Error()})
+			blocked, err := runBlockedByCIDeadline(fixture.store, fixture.runID)
+			if err != nil || !blocked {
+				t.Fatalf("CI-timing-blocked run not recognized: blocked=%v err=%v", blocked, err)
+			}
+		})
+	}
 	t.Run("other block not recognized", func(t *testing.T) {
 		fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: "remote PR head or identity changed"})
 		blocked, err := runBlockedByCIDeadline(fixture.store, fixture.runID)

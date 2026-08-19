@@ -295,20 +295,20 @@ func TestObserveChecksMergeObserverPermanentFailureBlocksRun(t *testing.T) {
 	}
 }
 
-func TestObserveChecksRunDeadlinePrecedesMergeIdentification(t *testing.T) {
+func TestObserveChecksDeadlineDoesNotPrecedeRemoteIdentification(t *testing.T) {
 	fixture := fabricatedCIPendingFixture(t, fixtureOptions{maxReworkRounds: 1})
 	deadline := fixtureRunDeadline(t, fixture)
 	mergeObserver := &fakeMergeObserver{build: receiptFromPublication}
 	observer := &fakeObserver{status: "pass"}
 	result, err := fixture.observeAtMerge(t, observer, mergeObserver, deadline.Add(time.Minute))
-	if err == nil || err.Error() != "ci-deadline-exceeded" {
-		t.Fatalf("deadline must precede merge identification: err = %v", err)
+	if err != nil {
+		t.Fatalf("late on-time pass should be adjudicated after remote observation: %v", err)
 	}
-	if result.State.State != domain.StateBlocked {
+	if result.State.State != domain.StateAccepted {
 		t.Fatalf("result = %+v", result)
 	}
-	if mergeObserver.calls != 0 {
-		t.Fatalf("merge observer must not run after the local deadline: %d", mergeObserver.calls)
+	if mergeObserver.calls != 1 || observer.calls != 1 {
+		t.Fatalf("remote observers were not both called: merge=%d checks=%d", mergeObserver.calls, observer.calls)
 	}
 }
 
@@ -320,9 +320,8 @@ func (f *publicationFixture) observeAtMerge(t *testing.T, observer *fakeObserver
 }
 
 // Issue #30 deadline facts: the adjudication basis is the frozen
-// publication-anchored ciDeadline, so a late observation (late relative to
-// the legacy run-creation-anchored deadline) still reads the remote facts,
-// while observations at or after the frozen ciDeadline fail closed.
+// publication-anchored ciDeadline. Every invocation reads the remote facts;
+// only pending or unproven/late completion facts fail closed after deadline.
 
 // TestObserveChecksLateObservationAcceptsOnTimePass cuts the Issue #30
 // BLOCKED reproduction chain: the required checks pass on time, Marshal's
@@ -366,16 +365,70 @@ func TestObserveChecksLateObservationAcceptsOnTimePass(t *testing.T) {
 	}
 }
 
-// TestObserveChecksPassOnlyAfterDeadlineFailsClosed covers checks that only
-// pass after the frozen ciDeadline: such a pass can only be observed at or
-// after the deadline, where no trusted on-time completion proof exists, so
-// the run fails closed with the fixed sentinel and is never accepted.
-func TestObserveChecksPassOnlyAfterDeadlineFailsClosed(t *testing.T) {
+// TestObserveChecksAfterDeadlineAcceptsProviderOnTimePass proves the central
+// ADR 0028 ordering: Marshal observes after the deadline, but the provider's
+// completedAt proves the required check completed on time.
+func TestObserveChecksAfterDeadlineAcceptsProviderOnTimePass(t *testing.T) {
 	createdAt, publishedAt, _, ciDeadline := deadlineFixtureInstants()
 	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600})
 	observer := &fakeObserver{status: "pass"}
 	result, err := fixture.observeAt(t, observer, ciDeadline.Add(time.Minute))
-	assertCIDeadlineBlocked(t, fixture, result, err, observer)
+	if err != nil {
+		t.Fatalf("late observation of on-time pass failed: %v", err)
+	}
+	if result.State.State != domain.StateAccepted || observer.calls != 1 {
+		t.Fatalf("result=%+v observerCalls=%d, want ACCEPTED after one observation", result, observer.calls)
+	}
+}
+
+func TestObserveChecksCompletionTimeFailuresFailClosedAfterObservation(t *testing.T) {
+	createdAt, publishedAt, _, ciDeadline := deadlineFixtureInstants()
+	tests := []struct {
+		name   string
+		reason error
+		mutate func(*domain.RemoteCheckRecord)
+	}{
+		{
+			name: "missing", reason: errCICompletedAtMissing,
+			mutate: func(checks *domain.RemoteCheckRecord) { checks.Checks[0].CompletedAt = nil },
+		},
+		{
+			name: "exceeds deadline", reason: errCICompletedAtExceedsDeadline,
+			mutate: func(checks *domain.RemoteCheckRecord) {
+				checks.Checks[0].CompletedAt = timePointer(ciDeadline.Add(ciClockSkewTolerance + time.Second))
+			},
+		},
+		{
+			name: "conflicting duplicate", reason: errCICompletedAtInconsistent,
+			mutate: func(checks *domain.RemoteCheckRecord) {
+				duplicate := checks.Checks[0]
+				duplicate.CompletedAt = timePointer(publishedAt.Add(2 * time.Minute))
+				checks.Checks = append(checks.Checks, duplicate)
+			},
+		},
+		{
+			name: "pre-publication inconsistency", reason: errCICompletedAtInconsistent,
+			mutate: func(checks *domain.RemoteCheckRecord) {
+				checks.Checks[0].CompletedAt = timePointer(publishedAt.Add(-ciClockSkewTolerance - time.Second))
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600})
+			observer := &fakeObserver{status: "pass", mutate: test.mutate}
+			result, err := fixture.observeAt(t, observer, ciDeadline.Add(time.Minute))
+			if !errors.Is(err, test.reason) {
+				t.Fatalf("err = %v, want %v", err, test.reason)
+			}
+			if result.State.State != domain.StateBlocked || observer.calls != 1 {
+				t.Fatalf("result=%+v calls=%d, want BLOCKED after one observation", result, observer.calls)
+			}
+			if _, statErr := os.Stat(filepath.Join(fixture.runDirectory, "remote-check-record.json")); statErr != nil {
+				t.Fatalf("failed adjudication lost remote evidence: %v", statErr)
+			}
+		})
+	}
 }
 
 // TestObserveChecksPendingAfterCIDeadlineFailsClosed covers the pending-at-
@@ -385,7 +438,18 @@ func TestObserveChecksPendingAfterCIDeadlineFailsClosed(t *testing.T) {
 	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600})
 	observer := &fakeObserver{status: "pending"}
 	result, err := fixture.observeAt(t, observer, ciDeadline)
-	assertCIDeadlineBlocked(t, fixture, result, err, observer)
+	if err == nil || err.Error() != errCIDeadlineExceeded.Error() {
+		t.Fatalf("pending observation after deadline err = %v, want %s", err, errCIDeadlineExceeded)
+	}
+	if result.State.State != domain.StateBlocked {
+		t.Fatalf("result state = %s, want BLOCKED", result.State.State)
+	}
+	if observer.calls != 1 {
+		t.Fatalf("observer calls after deadline = %d, want 1 (observe before adjudication)", observer.calls)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.runDirectory, "remote-check-record.json")); statErr != nil {
+		t.Fatalf("deadline adjudication must preserve the remote observation: %v", statErr)
+	}
 }
 
 // TestObserveChecksLateObservationRejectsIdentityDrift keeps the immutable
@@ -412,8 +476,7 @@ func TestObserveChecksLateObservationRejectsIdentityDrift(t *testing.T) {
 
 // TestObserveChecksObserverUnavailableFailsClosed covers the observer-
 // unavailable matrix cell: an unavailable observer never produces an
-// acceptance, and past the frozen ciDeadline the gate fails closed before
-// any remote observation.
+// acceptance. Deadline never suppresses the observation attempt.
 func TestObserveChecksObserverUnavailableFailsClosed(t *testing.T) {
 	createdAt, publishedAt, legacyDeadline, ciDeadline := deadlineFixtureInstants()
 
@@ -445,10 +508,17 @@ func TestObserveChecksObserverUnavailableFailsClosed(t *testing.T) {
 		}
 	})
 
-	t.Run("past the frozen ciDeadline the gate precedes the observer", func(t *testing.T) {
+	t.Run("past the frozen ciDeadline still calls observer", func(t *testing.T) {
 		fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600})
 		observer := &fakeObserver{failWith: errors.New("simulated observer outage")}
-		result, err := fixture.observeAt(t, observer, ciDeadline.Add(time.Minute))
-		assertCIDeadlineBlocked(t, fixture, result, err, observer)
+		before := fixture.inspect(t)
+		_, err := fixture.observeAt(t, observer, ciDeadline.Add(time.Minute))
+		if err == nil || observer.calls != 1 {
+			t.Fatalf("late observer outage err=%v calls=%d, want surfaced after one call", err, observer.calls)
+		}
+		after := fixture.inspect(t)
+		if after.State != domain.StateCIPending || after.Sequence != before.Sequence {
+			t.Fatalf("transient observer outage mutated run: %+v", after)
+		}
 	})
 }

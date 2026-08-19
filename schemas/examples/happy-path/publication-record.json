@@ -35,5 +35,6 @@
   },
   "actor": "octocat",
   "publishedAt": "2026-08-04T05:01:00Z",
+  "ciDeadline": "2026-08-04T06:01:00Z",
   "updatedAt": "2026-08-04T05:01:00Z"
 }

@@ -2,9 +2,12 @@ package publication
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -381,6 +384,142 @@ func TestMergeRejectsRequiredChecksSetMismatch(t *testing.T) {
 		t.Fatal("Merge() accepted a mismatched requiredChecks set")
 	}
 	assertNoMergeSideEffect(t, fixture, harness, domain.StateCIPending)
+}
+
+func TestMergePersistsFreshChecksBeforeTimelyCompletionAdjudication(t *testing.T) {
+	tests := []struct {
+		name   string
+		want   error
+		mutate func(*domain.RemoteCheckRecord, domain.PublicationRecord, time.Time)
+	}{
+		{
+			name: "missing completedAt", want: errCICompletedAtMissing,
+			mutate: func(checks *domain.RemoteCheckRecord, _ domain.PublicationRecord, _ time.Time) {
+				checks.Checks[0].CompletedAt = nil
+			},
+		},
+		{
+			name: "after deadline plus skew", want: errCICompletedAtExceedsDeadline,
+			mutate: func(checks *domain.RemoteCheckRecord, _ domain.PublicationRecord, deadline time.Time) {
+				checks.Checks[0].CompletedAt = timePointer(deadline.Add(ciClockSkewTolerance + time.Second))
+			},
+		},
+		{
+			name: "before publication minus skew", want: errCICompletedAtInconsistent,
+			mutate: func(checks *domain.RemoteCheckRecord, publication domain.PublicationRecord, _ time.Time) {
+				checks.Checks[0].CompletedAt = timePointer(publication.PublishedAt.Add(-ciClockSkewTolerance - time.Second))
+			},
+		},
+		{
+			name: "duplicate required identity", want: errCICompletedAtInconsistent,
+			mutate: func(checks *domain.RemoteCheckRecord, _ domain.PublicationRecord, _ time.Time) {
+				checks.Checks = append(checks.Checks, checks.Checks[0])
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newMergeFixture(t)
+			harness := newMergeHarness(t, fixture)
+			publication := readMergePublication(t, fixture)
+			deadline := fixture.storeDeadline(t, publication)
+			harness.checkObserver = &fakeObserver{status: "pass", mutate: func(checks *domain.RemoteCheckRecord) {
+				test.mutate(checks, publication, deadline)
+			}}
+
+			_, err := harness.merge(t)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Merge() err = %v, want %v", err, test.want)
+			}
+			assertNoMergeSideEffect(t, fixture, harness, domain.StateBlocked)
+			assertFreshCheckEvidencePersisted(t, fixture)
+		})
+	}
+}
+
+func TestMergeObservesBeforePostDeadlineAdjudication(t *testing.T) {
+	t.Run("provider timely pass may merge after local deadline", func(t *testing.T) {
+		fixture := newMergeFixture(t)
+		harness := newMergeHarness(t, fixture)
+		publication := readMergePublication(t, fixture)
+		harness.now = fixture.storeDeadline(t, publication).Add(time.Minute)
+
+		result, err := harness.merge(t)
+		if err != nil {
+			t.Fatalf("Merge() rejected provider-timely proof observed after deadline: %v", err)
+		}
+		if result.State.State != domain.StateAccepted || harness.checkObserver.calls != 1 {
+			t.Fatalf("result=%+v observerCalls=%d", result, harness.checkObserver.calls)
+		}
+	})
+
+	t.Run("pending after deadline blocks only after evidence", func(t *testing.T) {
+		fixture := newMergeFixture(t)
+		harness := newMergeHarness(t, fixture)
+		publication := readMergePublication(t, fixture)
+		harness.now = fixture.storeDeadline(t, publication)
+		harness.checkObserver = &fakeObserver{status: "pending"}
+
+		_, err := harness.merge(t)
+		if !errors.Is(err, errCIDeadlineExceeded) {
+			t.Fatalf("Merge() err = %v, want %v", err, errCIDeadlineExceeded)
+		}
+		if harness.checkObserver.calls != 1 {
+			t.Fatalf("observer calls = %d, want one before deadline adjudication", harness.checkObserver.calls)
+		}
+		assertNoMergeSideEffect(t, fixture, harness, domain.StateBlocked)
+		assertFreshCheckEvidencePersisted(t, fixture)
+	})
+}
+
+func readMergePublication(t *testing.T, fixture *mergeFixture) domain.PublicationRecord {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(fixture.runDirectory, "publication-record.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var publication domain.PublicationRecord
+	if err := json.Unmarshal(data, &publication); err != nil {
+		t.Fatal(err)
+	}
+	return publication
+}
+
+func (f *mergeFixture) storeDeadline(t *testing.T, publication domain.PublicationRecord) time.Time {
+	t.Helper()
+	state, err := f.store.Inspect(f.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(f.runDirectory, "task-spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var task domain.TaskSpec
+	if err := json.Unmarshal(data, &task); err != nil {
+		t.Fatal(err)
+	}
+	deadline, err := publicationCIDeadline(state.CreatedAt, publication, task.Budgets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return deadline
+}
+
+func assertFreshCheckEvidencePersisted(t *testing.T, fixture *mergeFixture) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(fixture.runDirectory, "remote-check-record.json"))
+	if err != nil {
+		t.Fatalf("materialized RemoteCheckRecord missing: %v", err)
+	}
+	digest, err := canonical.DigestJSON(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentAddressed := filepath.Join(fixture.runDirectory, "remote-check-records", strings.TrimPrefix(digest, "sha256:")+".json")
+	if _, err := os.Stat(contentAddressed); err != nil {
+		t.Fatalf("content-addressed RemoteCheckRecord missing: %v", err)
+	}
 }
 
 func TestMergeRejectsRepositoryDrift(t *testing.T) {

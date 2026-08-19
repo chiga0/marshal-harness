@@ -174,8 +174,10 @@ func Reconcile(ctx context.Context, input ReconcileInput) (ReconcileResult, erro
 	}
 
 	// (4) Merged-head required checks re-verification: re-observe the merged
-	// PR's required checks and materialize a fresh RemoteCheckRecord only
-	// when every required check is green. Reconcile never bypasses checks.
+	// PR's required checks, validate its publication identity, then preserve
+	// that fresh RemoteCheckRecord before any status or timing adjudication.
+	// Reconcile never bypasses checks and rejected trusted facts remain audit
+	// evidence without authorizing a receipt or lifecycle mutation.
 	checkRecord, err := input.CheckObserver.ObserveChecks(ctx, domain.Record{Kind: domain.KindPublicationRecord, Data: publicationData}, task.Publication.RequiredChecks)
 	if err != nil {
 		return ReconcileResult{}, err
@@ -190,12 +192,12 @@ func Reconcile(ctx context.Context, input ReconcileInput) (ReconcileResult, erro
 	if checks.TaskID != state.TaskID || checks.RunID != state.RunID || checks.RepositoryID != publication.Repository.ID || checks.RequestID != publication.Request.ID || checks.HeadSHA != publication.HeadSHA {
 		return ReconcileResult{}, errors.New("RemoteCheckRecord identity mismatch")
 	}
-	if checks.Status != "pass" {
-		return ReconcileResult{}, fmt.Errorf("merged head required checks are not all green: %s", checks.Status)
-	}
-	checkDigest, err := canonical.DigestJSON(checkRecord.Data)
+	checkDigest, err := persistFreshRemoteCheckEvidence(runDir, checkRecord.Data)
 	if err != nil {
 		return ReconcileResult{}, err
+	}
+	if checks.Status != "pass" {
+		return ReconcileResult{}, fmt.Errorf("merged head required checks are not all green: %s", checks.Status)
 	}
 
 	// (4.5) ADR 0028 trusted-completion precondition for deadline blocks: a
@@ -213,21 +215,21 @@ func Reconcile(ctx context.Context, input ReconcileInput) (ReconcileResult, erro
 		return ReconcileResult{}, deadlineErr
 	}
 	if deadlineBlocked {
-		ciDeadline := frozenCIDeadline(state.CreatedAt, publication.PublishedAt, task.Budgets)
-		if adjudicationErr := adjudicateTimelyCompletion(checks, parseCheckCompletionTimes(checkRecord.Data), ciDeadline, publication.PublishedAt, now); adjudicationErr != nil {
+		ciDeadline, deadlineResolveErr := publicationCIDeadline(state.CreatedAt, publication, task.Budgets)
+		if deadlineResolveErr != nil {
+			return ReconcileResult{}, deadlineResolveErr
+		}
+		if adjudicationErr := adjudicateTimelyCompletion(checks, task.Publication.RequiredChecks, ciDeadline, publication.PublishedAt); adjudicationErr != nil {
 			return ReconcileResult{}, adjudicationErr
 		}
 		reconcileReason = ReconcileReasonCIDeadlineReconciled
 	}
-
-	// (5) Record ordering for crash-cut safety: receipt (immutable) first,
-	// then the append-only reconcile record; both carry deterministic
-	// identities so replay merges instead of duplicating.
+	// (5) Record ordering for crash-cut safety: the fresh check evidence is
+	// already durable; receipt (immutable) follows successful adjudication,
+	// then the append-only reconcile record. All carry deterministic/content-
+	// addressed identities so replay merges instead of duplicating.
 	receipt, err := persistMergeReceipt(runDir, input.Validator, receiptRecord, state.RunID, publication, publicationDigest)
 	if err != nil {
-		return ReconcileResult{}, err
-	}
-	if err := atomicWrite(filepath.Join(runDir, "remote-check-record.json"), append(checkRecord.Data, '\n')); err != nil {
 		return ReconcileResult{}, err
 	}
 	authorityNamespaceID, err := reconcileAuthorityNamespaceID(input.StateRoot)

@@ -49,6 +49,7 @@
     },
     "actor": { "type": "string", "minLength": 1, "maxLength": 256 },
     "publishedAt": { "type": "string", "format": "date-time" },
+    "ciDeadline": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" }
   },
   "$defs": {

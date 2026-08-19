@@ -109,24 +109,15 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 	if state.Publication == nil || state.Publication.HeadSHA != published.HeadSHA || state.Publication.ExternalID != published.Request.ID || published.TaskID != state.TaskID || published.RunID != state.RunID {
 		return CheckResult{}, errors.New("RunState publication identity mismatch")
 	}
-	// ADR 0028 phased deadline gate: the adjudication basis is the frozen
-	// ciDeadline derived from the digest-anchored publication facts (see
-	// frozenCIDeadline), not the run-creation-anchored runTimeoutSeconds that
-	// used to swallow the CI budget. An observation that arrives late relative
-	// to the run budget but before the frozen ciDeadline still reads the
-	// remote facts, so a published head whose required checks passed on time
-	// is never terminally blocked by the local observation instant alone
-	// (Issue #30 expectations 1 and 4). At or after the frozen ciDeadline the
-	// run fails closed with the fixed sentinel before any remote observation;
-	// recovery afterwards is only possible through typed reconciliation, and a
-	// blocked run is never revived by observation.
-	ciDeadline := frozenCIDeadline(state.CreatedAt, published.PublishedAt, task.Budgets)
-	if now.Compare(ciDeadline) >= 0 {
-		result, blockedErr := block(store, lease, state, runDir, errCIDeadlineExceeded)
+	// ADR 0028: resolve the digest-bound frozen deadline before observation,
+	// but do not adjudicate it yet. Deadline is a decision input, never a
+	// permission to skip reading the current remote fact.
+	ciDeadline, err := publicationCIDeadline(state.CreatedAt, published, task.Budgets)
+	if err != nil {
+		result, blockedErr := block(store, lease, state, runDir, err)
 		return CheckResult{State: result.State}, blockedErr
 	}
-	// ADR 0026 path A: after the state gate and the local deadline check
-	// (which stay first and are never exempted), identify a PR that has been
+	// ADR 0026 path A: after the state and frozen-publication gates, identify a PR that has been
 	// MERGED with its immutable merge facts intact and persist the
 	// SCMMergeReceipt before check observation. An unmerged PR keeps the
 	// original checks observation flow unchanged.
@@ -180,20 +171,20 @@ func ObserveChecks(ctx context.Context, input CheckInput) (CheckResult, error) {
 		return CheckResult{}, err
 	}
 	if checks.Status == "pending" {
+		if now.Compare(ciDeadline) >= 0 {
+			result, blockedErr := block(store, lease, state, runDir, errCIDeadlineExceeded)
+			return CheckResult{State: result.State, Checks: checks}, blockedErr
+		}
 		return CheckResult{State: state, Checks: checks}, nil
 	}
 	var event domain.RunEvent
 	var next domain.RunState
 	switch checks.Status {
 	case "pass":
-		// ADR 0028 trusted-completion adjudication: a pass proves timely
-		// completion when the observation precedes the frozen ciDeadline or
-		// when provider completedAt facts fall inside the adjudication
-		// window; every other shape fails closed with a fixed reason code.
-		// With the frozen RemoteCheckRecord schema no completedAt facts exist
-		// yet, so the in-window observation itself carries the proof and the
-		// existing checks-passed semantics are unchanged.
-		if adjudicationErr := adjudicateTimelyCompletion(checks, parseCheckCompletionTimes(observedRecord.Data), ciDeadline, published.PublishedAt, now); adjudicationErr != nil {
+		// ADR 0028 trusted-completion adjudication: every required pass must
+		// carry provider completedAt and satisfy the frozen deadline window.
+		// Local observation time never substitutes for provider evidence.
+		if adjudicationErr := adjudicateTimelyCompletion(checks, task.Publication.RequiredChecks, ciDeadline, published.PublishedAt); adjudicationErr != nil {
 			result, blockedErr := block(store, lease, state, runDir, adjudicationErr)
 			return CheckResult{State: result.State, Checks: checks}, blockedErr
 		}

@@ -193,10 +193,30 @@ func Publish(ctx context.Context, input Input) (Result, error) {
 	if !publicationMatchesIntent(published, intent) {
 		return block(store, lease, state, runDir, errors.New("PublicationRecord identity does not match intent"))
 	}
+	// ADR 0028: freeze the CI adjudication basis before PublicationRecord
+	// persistence and before publication.completed binds its digest. The
+	// Publisher supplies publishedAt; Core supplies the frozen TaskSpec and
+	// Run CreatedAt. No later observe/accept/reconcile path may recompute this
+	// value from mutable time.
+	expectedCIDeadline := frozenCIDeadline(state.CreatedAt, published.PublishedAt, evidence.task.Budgets)
+	if published.CIDeadline != nil && !published.CIDeadline.Equal(expectedCIDeadline) {
+		return block(store, lease, state, runDir, errors.New("publisher returned a conflicting ciDeadline"))
+	}
+	published.CIDeadline = &expectedCIDeadline
+	publicationRecord = mustPublicationRecord(published)
+	if err := input.Validator.Validate(domain.KindPublicationRecord, publicationRecord.Data); err != nil {
+		return block(store, lease, state, runDir, errors.New("publisher returned an invalid PublicationRecord after ciDeadline freeze"))
+	}
 	recordPath := filepath.Join(runDir, "publication-record.json")
 	if existing, existingErr := existingPublicationRecord(recordPath, input.Validator); existingErr == nil {
 		if !samePublicationIdentity(existing, published) {
 			return block(store, lease, state, runDir, errors.New("existing PublicationRecord differs from reconciled remote identity"))
+		}
+		if existing.CIDeadline != nil {
+			existingExpected := frozenCIDeadline(state.CreatedAt, existing.PublishedAt, evidence.task.Budgets)
+			if !existing.CIDeadline.Equal(existingExpected) {
+				return block(store, lease, state, runDir, errors.New("existing PublicationRecord carries a conflicting ciDeadline"))
+			}
 		}
 		published = existing
 		publicationRecord = mustPublicationRecord(existing)

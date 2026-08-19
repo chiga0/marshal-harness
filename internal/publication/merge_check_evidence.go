@@ -6,12 +6,32 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
 )
+
+// persistFreshRemoteCheckEvidence preserves both an append-only,
+// content-addressed observation and the conventional latest materialization.
+// Callers invoke it only after schema and publication identity validation,
+// and before status or time adjudication, so every trusted negative decision
+// retains the exact remote fact that caused it.
+func persistFreshRemoteCheckEvidence(runDir string, data []byte) (string, error) {
+	digest, err := canonical.DigestJSON(data)
+	if err != nil {
+		return "", err
+	}
+	if err := persistRemoteCheckRecord(runDir, digest, data); err != nil {
+		return "", err
+	}
+	if err := atomicWrite(filepath.Join(runDir, "remote-check-record.json"), append(data, '\n')); err != nil {
+		return "", err
+	}
+	return digest, nil
+}
 
 func persistRemoteCheckRecord(runDir, digest string, data []byte) error {
 	recomputed, err := canonical.DigestJSON(data)
@@ -56,6 +76,29 @@ func bindPersistedRemoteChecks(runDir string, validator *contract.Validator, int
 	}
 	if len(requiredChecks) > 0 && !requiredChecksMatch(checks.Checks, requiredChecks) {
 		return port.Permanent(errors.New("persisted RemoteCheckRecord requiredChecks do not bind the frozen task"))
+	}
+	return nil
+}
+
+// bindPersistedRemoteChecksTimely applies the additional ADR 0028 proof gate
+// to a recovery intent before any SCMMerger call. The compatibility-only C7
+// ACCEPTED outcome rebuild continues to use bindPersistedRemoteChecks because
+// it performs no remote mutation and may consume a legacy accepted intent.
+func bindPersistedRemoteChecksTimely(runDir string, validator *contract.Validator, intent domain.SCMMergeIntent, publication domain.PublicationRecord, requiredChecks []string, state domain.RunState, ciDeadline time.Time) error {
+	if err := bindPersistedRemoteChecks(runDir, validator, intent, publication, requiredChecks, state); err != nil {
+		return err
+	}
+	path := filepath.Join(runDir, "remote-check-records", strings.TrimPrefix(intent.RemoteCheckRecordDigest, "sha256:")+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return port.Permanent(err)
+	}
+	var checks domain.RemoteCheckRecord
+	if err := json.Unmarshal(data, &checks); err != nil {
+		return port.Permanent(err)
+	}
+	if err := adjudicateTimelyCompletion(checks, requiredChecks, ciDeadline, publication.PublishedAt); err != nil {
+		return port.Permanent(err)
 	}
 	return nil
 }

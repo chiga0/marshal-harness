@@ -833,7 +833,7 @@ func TestObserveChecksBindsPRHeadAndClassifies(t *testing.T) {
 		if !observation.ObservedAt.Equal(fixedTime) {
 			t.Fatalf("observedAt = %v", observation.ObservedAt)
 		}
-		if len(observation.Checks) != 2 || observation.Checks[0].Name != "build" || observation.Checks[0].Status != "pass" || !observation.Checks[0].Required || observation.Checks[1].Status != "pass" {
+		if len(observation.Checks) != 2 || observation.Checks[0].Name != "build" || observation.Checks[0].Status != "pass" || !observation.Checks[0].Required || observation.Checks[1].Status != "pass" || observation.Checks[0].CompletedAt == nil || !observation.Checks[0].CompletedAt.Equal(fixedTime) {
 			t.Fatalf("checks = %+v", observation.Checks)
 		}
 	})
@@ -940,6 +940,19 @@ func TestObserveChecksBindsPRHeadAndClassifies(t *testing.T) {
 		}
 	})
 
+	t.Run("malformed completion time blocks", func(t *testing.T) {
+		h := newHarness(t)
+		published := newPublished(t, h)
+		row := checkRow("build", "pass")
+		row["completedAt"] = "not-a-time"
+		h.writeState("checks.json", checkRowsJSON(t, row, checkRow("lint", "pass")))
+
+		_, err := h.publisher.ObserveChecks(context.Background(), domain.Record{Kind: domain.KindPublicationRecord, Data: publicationData(t, h, published)}, required)
+		if err == nil || !port.IsPermanent(err) || !strings.Contains(err.Error(), "malformed completedAt") {
+			t.Fatalf("expected malformed completedAt block, got: %v", err)
+		}
+	})
+
 	t.Run("stale head is rejected permanently", func(t *testing.T) {
 		h := newHarness(t)
 		published := newPublished(t, h)
@@ -999,7 +1012,11 @@ func TestObserveChecksBindsPRHeadAndClassifies(t *testing.T) {
 }
 
 func checkRow(name, bucket string) map[string]string {
-	return map[string]string{"name": name, "bucket": bucket, "link": "https://github.com/example-org/example-repo/runs/1", "state": "COMPLETED"}
+	row := map[string]string{"name": name, "bucket": bucket, "link": "https://github.com/example-org/example-repo/runs/1", "state": "COMPLETED"}
+	if bucket == "pass" {
+		row["completedAt"] = fixedTime.Format(time.RFC3339)
+	}
+	return row
 }
 
 func checkRowsJSON(t *testing.T, rows ...map[string]string) string {

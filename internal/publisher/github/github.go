@@ -186,8 +186,8 @@ func (p *Publisher) ObserveChecks(ctx context.Context, record domain.Record, req
 	if !prMatchesPublication(pr, publication) {
 		return domain.Record{}, port.Permanent(errors.New("remote PR head or identity changed"))
 	}
-	var rows []struct{ Name, Bucket, Link, State string }
-	output, checkErr := p.ghAllowPending(ctx, "pr", "checks", strconv.Itoa(publication.Request.Number), "--repo", publication.Repository.NameWithOwner, "--json", "name,bucket,link,state")
+	var rows []struct{ Name, Bucket, Link, State, CompletedAt string }
+	output, checkErr := p.ghAllowPending(ctx, "pr", "checks", strconv.Itoa(publication.Request.Number), "--repo", publication.Repository.NameWithOwner, "--json", "name,bucket,link,state,completedAt")
 	if checkErr != nil {
 		return domain.Record{}, checkErr
 	}
@@ -208,7 +208,7 @@ func (p *Publisher) ObserveChecks(ctx context.Context, record domain.Record, req
 		}
 		requiredSet[name] = true
 	}
-	byName := map[string]struct{ Bucket, Link string }{}
+	byName := map[string]struct{ Bucket, Link, CompletedAt string }{}
 	for _, row := range rows {
 		if !requiredSet[row.Name] {
 			continue
@@ -216,7 +216,7 @@ func (p *Publisher) ObserveChecks(ctx context.Context, record domain.Record, req
 		if _, duplicate := byName[row.Name]; duplicate {
 			return domain.Record{}, port.Permanentf("multiple GitHub checks share required identity %q", row.Name)
 		}
-		byName[row.Name] = struct{ Bucket, Link string }{strings.ToLower(row.Bucket), row.Link}
+		byName[row.Name] = struct{ Bucket, Link, CompletedAt string }{strings.ToLower(row.Bucket), row.Link, row.CompletedAt}
 	}
 	checks := make([]domain.RemoteCheck, 0, len(required))
 	overall := "pass"
@@ -224,6 +224,7 @@ func (p *Publisher) ObserveChecks(ctx context.Context, record domain.Record, req
 		row, ok := byName[name]
 		status := "missing"
 		link := ""
+		var completedAt *time.Time
 		if ok {
 			link = row.Link
 			switch row.Bucket {
@@ -240,13 +241,21 @@ func (p *Publisher) ObserveChecks(ctx context.Context, record domain.Record, req
 			default:
 				status = "pending"
 			}
+			if status == domain.CheckStatusPass && row.CompletedAt != "" {
+				parsed, parseErr := time.Parse(time.RFC3339, row.CompletedAt)
+				if parseErr != nil {
+					return domain.Record{}, port.Permanentf("required GitHub check %q reports malformed completedAt", name)
+				}
+				parsed = parsed.UTC()
+				completedAt = &parsed
+			}
 		}
 		if status == "fail" || status == "cancel" {
 			overall = "fail"
 		} else if overall != "fail" && status != "pass" {
 			overall = "pending"
 		}
-		checks = append(checks, domain.RemoteCheck{Name: name, Required: true, Status: status, URL: link})
+		checks = append(checks, domain.RemoteCheck{Name: name, Required: true, Status: status, URL: link, CompletedAt: completedAt})
 	}
 	observation := domain.RemoteCheckRecord{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRemoteCheckRecord, TaskID: publication.TaskID, RunID: publication.RunID, Provider: "github", RepositoryID: publication.Repository.ID, RequestID: publication.Request.ID, HeadSHA: publication.HeadSHA, Status: overall, Checks: checks, ObservedAt: p.now().UTC()}
 	data, err := json.Marshal(observation)
