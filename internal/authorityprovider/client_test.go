@@ -32,3 +32,20 @@ func TestControlClientRoundTripAbsentServiceFailsClosed(t *testing.T) {
 		t.Fatal("APAP round trip succeeded without an authority service")
 	}
 }
+
+func TestDecodeSignedResponseEnvelopeRejectsNonCanonicalOrUnknownShape(t *testing.T) {
+	valid := []byte(`{"document":{"response":"ok"},"signature":{"objectDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","signature":"sig"}}`)
+	if _, err := DecodeSignedResponseEnvelope(valid); err != nil {
+		t.Fatalf("valid signed response rejected: %v", err)
+	}
+	for name, raw := range map[string][]byte{
+		"unknown member":        []byte(`{"document":{"response":"ok"},"signature":{"objectDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","signature":"sig"},"extra":true}`),
+		"noncanonical document": []byte(`{"document":{"response":"ok","a":1},"signature":{"objectDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","signature":"sig"}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeSignedResponseEnvelope(raw); err == nil {
+				t.Fatal("malformed signed response was accepted")
+			}
+		})
+	}
+}

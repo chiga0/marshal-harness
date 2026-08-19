@@ -1,13 +1,16 @@
 package authorityprovider
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"golang.org/x/sys/unix"
 )
 
@@ -37,6 +40,37 @@ func NewControlClient(endpoint string) (*ControlClient, error) {
 type ControlResponse struct {
 	Payload []byte
 	FDs     []*os.File
+}
+
+// SignedResponseEnvelopeV1 is the transport projection returned by an APAP
+// service for profile-specific response validation. The profile bridge still
+// verifies the outer request binding and signature domain; this type only
+// enforces the closed, canonical wire shape at the transport boundary.
+type SignedResponseEnvelopeV1 struct {
+	Document  json.RawMessage        `json:"document"`
+	Signature SignedObjectEnvelopeV1 `json:"signature"`
+}
+
+func DecodeSignedResponseEnvelope(raw []byte) (SignedResponseEnvelopeV1, error) {
+	var envelope SignedResponseEnvelopeV1
+	canonicalRaw, err := canonical.JSON(raw)
+	if err != nil || !bytes.Equal(canonicalRaw, raw) {
+		return envelope, errors.New("APAP signed response is not canonical")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil {
+		return envelope, errors.New("APAP signed response shape is invalid")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err == nil || len(envelope.Document) == 0 || envelope.Signature.ObjectDigest == "" || envelope.Signature.Signature == "" {
+		return envelope, errors.New("APAP signed response shape is invalid")
+	}
+	canonicalDocument, err := canonical.JSON(envelope.Document)
+	if err != nil || !bytes.Equal(canonicalDocument, envelope.Document) {
+		return envelope, errors.New("APAP signed response document is not canonical")
+	}
+	return envelope, nil
 }
 
 func (response ControlResponse) Close() error {
