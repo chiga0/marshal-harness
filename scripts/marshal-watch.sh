@@ -238,26 +238,30 @@ def age_seconds(state_path, data):
     seconds = int(now_utc.timestamp() - mtime)
     return seconds if seconds > 0 else 0
 
-def packet_digest(run_dir):
-    """返回当前 ReviewPacket 的内容摘要；缺失时保持稳定的 missing 标记。"""
-    packet_path = os.path.join(run_dir, "review-packet.json")
+def file_digest(path):
+    """返回可读文件内容摘要；缺失时保持稳定的 missing 标记。"""
     try:
-        with open(packet_path, "rb") as handle:
+        with open(path, "rb") as handle:
             return hashlib.sha256(handle.read()).hexdigest()
     except OSError:
         return "missing"
 
-def decision_key(run_id, data, state, run_dir):
-    """为同一待办事实生成稳定键，避免 heartbeat 重复消费同一阻塞。"""
+def decision_key(run_id, data, state, run_dir, action, ownership):
+    """为同一动作上下文生成稳定键，避免重复消费且不抑制合法恢复。"""
     fields = [
         run_id,
         state,
+        action,
+        ownership,
         str(data.get("specDigest", "")),
+        str(data.get("policyDigest", "")),
+        str(data.get("capabilityDigest", "")),
         str(data.get("baseSha", "")),
         str(data.get("currentAttemptId", "")),
         str(data.get("reviewRound", 0)),
         str(data.get("reworkRoundsUsed", 0)),
-        packet_digest(run_dir),
+        file_digest(os.path.join(run_dir, "review-packet.json")),
+        file_digest(os.path.join(run_dir, "control", "records.jsonl")),
     ]
     return "sha256:" + hashlib.sha256("\x1f".join(fields).encode("utf-8")).hexdigest()
 
@@ -299,7 +303,9 @@ for run_id in sorted(os.listdir(runs_dir)):
     # 终态与其他未映射状态一律不进入行动队列。
     if item is not None:
         item["ageSeconds"] = age_seconds(state_path, data)
-        item["dedupeKey"] = decision_key(run_id, data, state, run_dir)
+        item["dedupeKey"] = decision_key(
+            run_id, data, state, run_dir, item["action"], item["processOwnership"]
+        )
         items.append(item)
     if mode == "text":
         if state == "RUNNING":

@@ -47,7 +47,7 @@ print(now.strftime("%Y-%m-%dT%H:%M:%SZ"))
 PYEOF
   )
   cat > "$dir/state.json" <<EOF
-{"apiVersion":"marshal.dev/v1alpha1","kind":"RunState","taskId":"task-$rid","runId":"$rid","state":"$state","sequence":1,"reviewRound":0,"attemptsUsed":0,"operationalRetriesUsed":0,"reworkRoundsUsed":0,"createdAt":"$ts","updatedAt":"$ts"}
+{"apiVersion":"marshal.dev/v1alpha1","kind":"RunState","taskId":"task-$rid","runId":"$rid","state":"$state","sequence":1,"specDigest":"sha256:spec-$rid","policyDigest":"sha256:policy-$rid","capabilityDigest":"sha256:capability-$rid","baseSha":"base-$rid","reviewRound":0,"attemptsUsed":0,"operationalRetriesUsed":0,"reworkRoundsUsed":0,"createdAt":"$ts","updatedAt":"$ts"}
 EOF
 }
 
@@ -178,25 +178,41 @@ PYEOF
     bad "缺失 ReviewPacket 未进入 review-intervention"
   fi
 
-note "1d) 待办 dedupeKey 稳定且随证据变化"
-if python3 - "$OUT_JSON" "$OUT_INTERVENTION" <<'PYEOF'
+note "1d) 待办 dedupeKey 对同输入稳定且随证据/控制记录变化"
+OUT_INTERVENTION_REPEAT="$TMP/out_intervention_repeat.json"
+run_watch --once --json > "$OUT_INTERVENTION_REPEAT"
+mkdir -p "$ROOT/runs/run-review/control"
+printf '%s\n' '{"kind":"ApprovalRecord","recordId":"approval:test"}' > "$ROOT/runs/run-review/control/records.jsonl"
+OUT_CONTROL_CHANGED="$TMP/out_control_changed.json"
+run_watch --once --json > "$OUT_CONTROL_CHANGED"
+if python3 - "$OUT_JSON" "$OUT_INTERVENTION" "$OUT_INTERVENTION_REPEAT" "$OUT_CONTROL_CHANGED" <<'PYEOF'
 import json, sys
 with open(sys.argv[1]) as f:
     with_packet = {it["runId"]: it["dedupeKey"] for it in json.load(f)["items"]}
 with open(sys.argv[2]) as f:
     without_packet = {it["runId"]: it["dedupeKey"] for it in json.load(f)["items"]}
+with open(sys.argv[3]) as f:
+    repeated = {it["runId"]: it["dedupeKey"] for it in json.load(f)["items"]}
+with open(sys.argv[4]) as f:
+    control_changed = {it["runId"]: it["dedupeKey"] for it in json.load(f)["items"]}
 if with_packet.get("run-review") == without_packet.get("run-review"):
     print("ReviewPacket 内容变化/缺失未改变 dedupeKey")
+    sys.exit(1)
+if without_packet.get("run-review") != repeated.get("run-review"):
+    print("同输入重复运行未保持稳定 dedupeKey")
+    sys.exit(1)
+if repeated.get("run-review") == control_changed.get("run-review"):
+    print("control record 变化未改变 dedupeKey")
     sys.exit(1)
 if not with_packet.get("run-rework", "").startswith("sha256:"):
     print("run-rework 缺少稳定 sha256 dedupeKey")
     sys.exit(1)
-print("dedupeKey 稳定性与证据变化 OK")
+print("dedupeKey 稳定性、证据与控制记录变化 OK")
 PYEOF
 then
-  ok "待办 dedupeKey 稳定且随证据变化"
+  ok "待办 dedupeKey 稳定且随证据/控制记录变化"
 else
-  bad "待办 dedupeKey 稳定性或证据变化检查失败"
+  bad "待办 dedupeKey 稳定性或证据/控制记录变化检查失败"
 fi
 else
   bad "缺失 ReviewPacket 场景 watchdog 异常"
@@ -268,6 +284,32 @@ if timeout_run 30 "$OUT_RUN" run_watch --once --json; then
   ok "RUNNING 场景 --once --json 正常退出"
 else
   bad "RUNNING 场景 --once --json 异常"
+fi
+
+# 精确相同 RunState 在 owned-active 与 not-found 间切换时，action/ownership
+# 必须改变 key，确保 Worker 退出后 doctor-dead 不会被旧 monitor key 抑制。
+ALIVE_KEY=$(python3 - "$OUT_RUN" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    print(next(it["dedupeKey"] for it in json.load(f)["items"] if it["runId"] == "run-alive"))
+PYEOF
+)
+: > "$PROCFILE"
+OUT_OWNERSHIP_CHANGED="$TMP/out_ownership_changed.json"
+run_watch --once --json > "$OUT_OWNERSHIP_CHANGED"
+if python3 - "$OUT_OWNERSHIP_CHANGED" "$ALIVE_KEY" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    item = next(it for it in json.load(f)["items"] if it["runId"] == "run-alive")
+if item["action"] != "doctor-dead" or item["dedupeKey"] == sys.argv[2]:
+    print("ownership/action 变化未刷新 dedupeKey: %r" % item)
+    sys.exit(1)
+print("ownership/action 变化刷新 dedupeKey OK")
+PYEOF
+then
+  ok "ownership/action 变化刷新 dedupeKey"
+else
+  bad "ownership/action 变化未刷新 dedupeKey"
 fi
 
 if python3 - "$OUT_RUN" <<'PYEOF'
