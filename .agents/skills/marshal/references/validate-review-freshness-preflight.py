@@ -30,7 +30,7 @@ MAX_FILE_BYTES = 128 << 20
 CORE_KINDS = {
     "RunState", "ReviewPacket", "Task", "PolicySnapshot",
     "CapabilitySnapshot", "VerificationReport", "ArtifactManifest",
-    "WorkerResult", "Candidate", "ApprovalRecord", "InterventionRecord",
+    "WorkerResult", "Candidate", "RunEvent", "ApprovalRecord", "InterventionRecord",
 }
 _CORE_BINARY: Path | None = None
 _CORE_PROCESS: subprocess.Popen[str] | None = None
@@ -40,6 +40,64 @@ class PreflightError(Exception):
     def __init__(self, reason_code: str):
         super().__init__(reason_code)
         self.reason_code = reason_code
+
+
+class HeldRelativeParent:
+    """Hold every directory in a relative parent chain for atomic leaf I/O."""
+
+    def __init__(self, root: Path, relative: object):
+        clean = clean_relative(relative)
+        parts = Path(clean).parts
+        self.root = root
+        self.leaf = parts[-1]
+        self.components = list(parts[:-1])
+        self.fds = [open_dir_nofollow(root)]
+        try:
+            for component in self.components:
+                descriptor = os.open(component, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=self.fds[-1])
+                self.fds.append(descriptor)
+        except OSError:
+            self.close()
+            fail("history-parent-invalid")
+        self.identities = [self._directory_identity(descriptor) for descriptor in self.fds]
+        atexit.register(self.close)
+
+    @staticmethod
+    def _directory_identity(descriptor: int) -> tuple[int, int, int]:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            fail("history-parent-invalid")
+        return metadata.st_dev, metadata.st_ino, metadata.st_mode
+
+    @property
+    def parent_fd(self) -> int:
+        if not self.fds:
+            fail("history-parent-invalid")
+        return self.fds[-1]
+
+    def verify(self) -> None:
+        current_root = open_dir_nofollow(self.root)
+        try:
+            if self._directory_identity(current_root) != self.identities[0]:
+                fail("history-parent-changed")
+        finally:
+            os.close(current_root)
+        for index, component in enumerate(self.components):
+            try:
+                metadata = os.stat(component, dir_fd=self.fds[index], follow_symlinks=False)
+            except OSError:
+                fail("history-parent-changed")
+            identity = (metadata.st_dev, metadata.st_ino, metadata.st_mode)
+            if stat.S_ISLNK(metadata.st_mode) or identity != self.identities[index + 1]:
+                fail("history-parent-changed")
+
+    def read(self, reason: str, limit: int) -> tuple[bytes, tuple[int, int, int, int]]:
+        self.verify()
+        return read_regular_at(self.parent_fd, self.leaf, reason, limit)
+
+    def close(self) -> None:
+        while getattr(self, "fds", []):
+            os.close(self.fds.pop())
 
 
 def fail(reason_code: str) -> None:
@@ -72,7 +130,10 @@ def parse_json(data: bytes, reason: str) -> dict:
 
 
 def clean_relative(value: object) -> str:
-    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+    if not isinstance(value, str) or not value or len(value) > 2048 or "\\" in value or "\x00" in value:
+        fail("path-boundary-invalid")
+    segments = value.split("/")
+    if any(segment in {"", ".", ".."} for segment in segments):
         fail("path-boundary-invalid")
     path = Path(value)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
@@ -135,6 +196,79 @@ def read_regular(root: Path, relative: object, reason: str, limit: int = MAX_FIL
         fail("path-symlink-rejected")
     finally:
         os.close(descriptor)
+
+
+def read_regular_at(parent_fd: int, leaf: str, reason: str, limit: int = MAX_FILE_BYTES) -> tuple[bytes, tuple[int, int, int, int]]:
+    try:
+        file_descriptor = os.open(leaf, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+    except FileNotFoundError:
+        fail(reason)
+    except OSError:
+        fail("path-symlink-rejected")
+    try:
+        metadata = os.fstat(file_descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > limit:
+            fail(reason)
+        chunks: list[bytes] = []
+        remaining = limit + 1
+        while remaining:
+            chunk = os.read(file_descriptor, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > limit:
+            fail(reason)
+        return data, (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
+    finally:
+        os.close(file_descriptor)
+
+
+def enumerate_worker_results(run_root: Path) -> dict[str, tuple[bytes, tuple[int, int, int, int]]]:
+    root_fd = open_dir_nofollow(run_root)
+    try:
+        try:
+            attempts_fd = os.open("attempts", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=root_fd)
+        except OSError:
+            fail("worker-results-directory-invalid")
+    finally:
+        os.close(root_fd)
+    results: dict[str, tuple[bytes, tuple[int, int, int, int]]] = {}
+    try:
+        try:
+            attempt_entries = sorted(os.listdir(attempts_fd))
+        except OSError:
+            fail("worker-results-directory-invalid")
+        for attempt_id in attempt_entries:
+            try:
+                metadata = os.stat(attempt_id, dir_fd=attempts_fd, follow_symlinks=False)
+            except OSError:
+                fail("worker-results-directory-invalid")
+            if stat.S_ISLNK(metadata.st_mode):
+                fail("worker-results-path-symlink-rejected")
+            if not stat.S_ISDIR(metadata.st_mode):
+                continue
+            try:
+                attempt_fd = os.open(attempt_id, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=attempts_fd)
+            except OSError:
+                fail("worker-results-path-symlink-rejected")
+            try:
+                try:
+                    result_metadata = os.stat("worker-result.json", dir_fd=attempt_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISLNK(result_metadata.st_mode):
+                    fail("path-symlink-rejected")
+                if not stat.S_ISREG(result_metadata.st_mode):
+                    fail("worker-result-not-regular")
+                relative = f"attempts/{attempt_id}/worker-result.json"
+                results[relative] = read_regular_at(attempt_fd, "worker-result.json", "packet-input-unreadable")
+            finally:
+                os.close(attempt_fd)
+    finally:
+        os.close(attempts_fd)
+    return results
 
 
 def regular_presence(root: Path, relative: object) -> bool:
@@ -235,6 +369,7 @@ def core_probe(script: Path, mode: str, kind_or_schema: str, path: Path) -> str:
     if not isinstance(response, dict) or response.get("ok") is not True or not isinstance(response.get("digest"), str):
         if mode == "schema": fail("operator-schema-invalid")
         if mode == "contract": fail("core-contract-invalid")
+        if mode == "candidate": fail("candidate-record-core-invalid")
         if mode == "observe": fail("worktree-observation-invalid")
         fail("core-canonicalization-rejected")
     return response["digest"]
@@ -268,6 +403,19 @@ def core_validate_bytes(script: Path, kind: str, data: bytes) -> str:
     path = Path(name)
     try:
         return core_probe(script, "contract", kind, path)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def core_validate_candidate(script: Path, data: bytes) -> str:
+    descriptor, name = tempfile.mkstemp(prefix="marshal-review-candidate.", suffix=".json", dir="/private/tmp")
+    try:
+        os.write(descriptor, data)
+    finally:
+        os.close(descriptor)
+    path = Path(name)
+    try:
+        return core_probe(script, "candidate", "Candidate", path)
     finally:
         path.unlink(missing_ok=True)
 
@@ -323,7 +471,7 @@ def validate_manifest(manifest: dict) -> tuple[dict, dict]:
         fail("manifest-shape-invalid")
     if isinstance(expected["reviewRound"], bool) or not isinstance(expected["reviewRound"], int) or expected["reviewRound"] < 1:
         fail("manifest-shape-invalid")
-    names = {"statePath", "packetPath", "taskSpecPath", "policySnapshotPath", "capabilitySnapshotPath", "controlRecordsPath", "historyPath"}
+    names = {"statePath", "eventsPath", "packetPath", "taskSpecPath", "policySnapshotPath", "capabilitySnapshotPath", "controlRecordsPath", "historyPath"}
     files = exact_keys(manifest["files"], names, names)
     for value in files.values():
         clean_relative(value)
@@ -343,6 +491,43 @@ def validate_control_records(script: Path, raw: bytes) -> list[str]:
     return digests
 
 
+def validate_events(script: Path, raw: bytes, state: dict) -> tuple[list[str], str, str]:
+    events: list[dict] = []
+    digests: list[str] = []
+    seen: set[str] = set()
+    # Mirror runstore.decodeEvents: only complete newline-terminated records
+    # enter authority; an incomplete trailing fragment is ignored.
+    for line in raw.splitlines(keepends=True):
+        if not line.endswith(b"\n"):
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        event = parse_json(stripped, "event-record-invalid")
+        digest = core_validate_bytes(script, "RunEvent", stripped)
+        if event.get("sequence") != len(events) + 1 or event.get("eventId") in seen:
+            fail("event-journal-sequence-invalid")
+        if event.get("runId") != state["runId"]:
+            fail("event-run-identity-mismatch")
+        seen.add(event["eventId"])
+        events.append(event)
+        digests.append(digest)
+    if len(events) != state["sequence"]:
+        fail("event-journal-state-mismatch")
+    for event in reversed(events):
+        if event.get("type") != "verification.completed":
+            continue
+        if event.get("actor") != {"type": "system", "id": "marshal-verifier"}:
+            fail("verification-event-actor-invalid")
+        payload = event.get("payload", {})
+        report_digest = payload.get("reportDigest")
+        artifact_digest = payload.get("artifactManifestDigest")
+        if not isinstance(report_digest, str) or not DIGEST_RE.fullmatch(report_digest) or not isinstance(artifact_digest, str) or not DIGEST_RE.fullmatch(artifact_digest):
+            fail("verification-event-digests-missing")
+        return digests, report_digest, artifact_digest
+    fail("verification-event-missing")
+
+
 def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: dict, worktree: Path) -> tuple[dict, list[tuple[str, bytes, tuple[int, int, int, int]]]]:
     inputs = exact_keys(packet.get("inputs"), {"taskSpec", "patch", "verificationReport", "artifactManifest", "workerResults"}, {"taskSpec", "patch", "verificationReport", "artifactManifest", "workerResults"}, "packet-inputs-invalid")
     if not isinstance(inputs["workerResults"], list) or not inputs["workerResults"]:
@@ -356,14 +541,25 @@ def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: di
         records.append((clean_relative(inputs[name]), data, identity))
     patch, patch_identity = read_regular(run_root, inputs["patch"], "packet-input-unreadable")
     records.append((clean_relative(inputs["patch"]), patch, patch_identity))
+    persisted_workers = enumerate_worker_results(run_root)
+    declared_worker_paths = [clean_relative(path) for path in inputs["workerResults"]]
+    if declared_worker_paths != sorted(persisted_workers):
+        fail("worker-result-set-mismatch")
     worker_digests: list[str] = []
-    for worker_path in inputs["workerResults"]:
-        data, identity = read_regular(run_root, worker_path, "packet-input-unreadable")
+    worker_attempt_ids: list[str] = []
+    for worker_path in declared_worker_paths:
+        parts = Path(worker_path).parts
+        if len(parts) != 3 or parts[0] != "attempts" or parts[2] != "worker-result.json":
+            fail("worker-result-path-invalid")
+        data, identity = persisted_workers[worker_path]
         worker = parse_json(data, "packet-input-invalid-json")
-        if worker.get("taskId") != state["taskId"] or worker.get("runId") != state["runId"]:
+        if worker.get("taskId") != state["taskId"] or worker.get("runId") != state["runId"] or worker.get("attemptId") != parts[1]:
             fail("worker-result-identity-mismatch")
+        worker_attempt_ids.append(parts[1])
         worker_digests.append(core_validate_bytes(script, "WorkerResult", data))
         records.append((clean_relative(worker_path), data, identity))
+    if state["currentAttemptId"] not in worker_attempt_ids or len(set(worker_attempt_ids)) != len(worker_attempt_ids):
+        fail("worker-result-attempt-set-mismatch")
     task, task_digest = loaded["taskSpec"][1], loaded["taskSpec"][2]
     report, verification_digest = loaded["verificationReport"][1], loaded["verificationReport"][2]
     artifacts, artifact_digest = loaded["artifactManifest"][1], loaded["artifactManifest"][2]
@@ -400,9 +596,9 @@ def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: di
         for digest in {candidate, worker_candidate}:
             path = f"candidates/{digest}.json"
             data, identity = read_regular(run_root, path, "candidate-record-unreadable")
-            core_validate_bytes(script, "Candidate", data)
+            recomputed_candidate_digest = core_validate_candidate(script, data)
             record = parse_json(data, "candidate-record-invalid-json")
-            if record.get("candidateDigest") != digest:
+            if record.get("candidateDigest") != digest or recomputed_candidate_digest != digest:
                 fail("candidate-record-digest-mismatch")
             if record.get("taskId") != state["taskId"] or record.get("runId") != state["runId"] or record.get("attemptId") != state["currentAttemptId"] or record.get("baseSha") != state["baseSha"]:
                 fail("candidate-record-identity-mismatch")
@@ -446,19 +642,21 @@ def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: di
     return bindings, records
 
 
-def claim_history(script: Path, operator_root: Path, history_path: str, initial_raw: bytes, action: str, reason: str, dedupe: str, fingerprint: str) -> None:
-    history_file = operator_root / clean_relative(history_path)
-    lock_path = history_file.with_name(history_file.name + ".claim.lock")
+def claim_history(script: Path, authority: HeldRelativeParent, initial_raw: bytes, initial_identity: tuple[int, int, int, int], action: str, reason: str, dedupe: str, fingerprint: str) -> None:
+    lock_leaf = authority.leaf + ".claim.lock"
+    temporary_leaf = authority.leaf + f".pending.{os.getpid()}"
+    authority.verify()
     try:
-        lock_fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        lock_fd = os.open(lock_leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=authority.parent_fd)
     except FileExistsError:
         fail("history-claim-contended")
     except OSError:
         fail("history-claim-unavailable")
     try:
         os.close(lock_fd)
-        current_raw, _ = read_regular(operator_root, history_path, "history-unreadable", 4 << 20)
-        if current_raw != initial_raw:
+        authority.verify()
+        current_raw, current_identity = authority.read("history-unreadable", 4 << 20)
+        if current_raw != initial_raw or current_identity != initial_identity:
             fail("history-cas-mismatch")
         history = parse_json(current_raw, "history-invalid")
         claims = history.get("claims")
@@ -469,24 +667,33 @@ def claim_history(script: Path, operator_root: Path, history_path: str, initial_
         claims.append({"action": action, "reasonCode": reason, "dedupeKey": dedupe, "freshnessFingerprint": fingerprint, "previousHistoryRawDigest": raw_digest(initial_raw)})
         payload = json.dumps(history, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
         validate_operator_schema(script, "review-freshness-history.schema.json", payload)
-        temporary = history_file.with_name(history_file.name + f".pending.{os.getpid()}")
         try:
-            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            fd = os.open(temporary_leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=authority.parent_fd)
         except OSError:
             fail("history-claim-unavailable")
         try:
-            os.write(fd, payload)
+            view = memoryview(payload)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    fail("history-claim-unavailable")
+                view = view[written:]
             os.fsync(fd)
         finally:
             os.close(fd)
-        os.replace(temporary, history_file)
-        directory_fd = open_dir_nofollow(history_file.parent)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        authority.verify()
+        os.replace(temporary_leaf, authority.leaf, src_dir_fd=authority.parent_fd, dst_dir_fd=authority.parent_fd)
+        authority.verify()
+        os.fsync(authority.parent_fd)
     finally:
-        lock_path.unlink(missing_ok=True)
+        try:
+            os.unlink(temporary_leaf, dir_fd=authority.parent_fd)
+        except FileNotFoundError:
+            pass
+        try:
+            os.unlink(lock_leaf, dir_fd=authority.parent_fd)
+        except FileNotFoundError:
+            pass
 
 
 def run(arguments: argparse.Namespace) -> dict:
@@ -532,7 +739,10 @@ def run(arguments: argparse.Namespace) -> dict:
         fail("frozen-input-digest-mismatch")
     control_raw = load(run_root, files["controlRecordsPath"], "control-records-unreadable", 16 << 20)
     control_digests = validate_control_records(script, control_raw)
-    history_raw = load(operator_root, files["historyPath"], "history-unreadable", 4 << 20)
+    events_raw = load(run_root, files["eventsPath"], "events-unreadable", 32 << 20)
+    event_digests, frozen_verification_digest, frozen_artifact_digest = validate_events(script, events_raw, state)
+    history_authority = HeldRelativeParent(operator_root, files["historyPath"])
+    history_raw, history_identity = history_authority.read("history-unreadable", 4 << 20)
     validate_operator_schema(script, "review-freshness-history.schema.json", history_raw)
     history = parse_json(history_raw, "history-invalid")
 
@@ -548,10 +758,16 @@ def run(arguments: argparse.Namespace) -> dict:
         if packet.get("inputs", {}).get("taskSpec") != files["taskSpecPath"]:
             fail("packet-input-path-mismatch")
         input_bindings, packet_records = validate_packet_inputs(script, run_root, packet, state, worktree)
+        if input_bindings.get("verificationDigest") != frozen_verification_digest or input_bindings.get("artifactManifestDigest") != frozen_artifact_digest:
+            fail("verification-event-binding-mismatch")
         for relative, data, identity in packet_records:
             tracked.append((run_root, relative, data, identity))
         action, reason = "dispatch-reviewer", "fresh-review-packet-claimed"
     else:
+        missing_observation = observe(script, worktree, state["baseSha"])
+        if missing_observation.get("diffDigest") != raw_digest(b"") or missing_observation.get("changedFileCount") != 0 or missing_observation.get("hasUntrackedFiles") is not False:
+            fail("packet-missing-worktree-not-clean")
+        input_bindings = {"missingPacketWorktreeObservation": missing_observation}
         action, reason = "generate-review-packet", "packet-missing-generation-claimed"
 
     identity = {
@@ -561,7 +777,9 @@ def run(arguments: argparse.Namespace) -> dict:
         "state": state, "sourceHead": expected["sourceHead"],
         "taskSpecRawDigest": raw_digest(task_raw), "policyRawDigest": raw_digest(policy_raw),
         "capabilityRawDigest": raw_digest(capability_raw), "controlRecordsRawDigest": raw_digest(control_raw),
-        "controlRecordDigests": control_digests, "packetPresence": "present" if packet_present else "missing",
+        "controlRecordDigests": control_digests, "eventsRawDigest": raw_digest(events_raw),
+        "eventRecordDigests": event_digests, "frozenVerificationDigest": frozen_verification_digest,
+        "frozenArtifactManifestDigest": frozen_artifact_digest, "packetPresence": "present" if packet_present else "missing",
         "reviewPacketDigest": packet_digest, "packetInputBindings": input_bindings,
     }
     fingerprint = core_digest_value(script, identity)
@@ -577,12 +795,15 @@ def run(arguments: argparse.Namespace) -> dict:
             fail("input-changed-during-preflight")
     if regular_presence(run_root, files["packetPath"]) != packet_present or git_head(worktree) != expected["sourceHead"]:
         fail("authority-changed-during-preflight")
+    final_observation = observe(script, worktree, state["baseSha"])
     if packet_present:
-        final_observation = observe(script, worktree, state["baseSha"])
         if final_observation.get("snapshotDigest") != packet.get("snapshotDigest") or final_observation.get("diffDigest") != packet.get("diffDigest"):
             fail("worktree-changed-during-preflight")
+    elif final_observation != input_bindings["missingPacketWorktreeObservation"]:
+        fail("worktree-changed-during-preflight")
 
-    claim_history(script, operator_root, files["historyPath"], history_raw, action, reason, dedupe, fingerprint)
+    claim_history(script, history_authority, history_raw, history_identity, action, reason, dedupe, fingerprint)
+    history_authority.close()
     return {"ok": True, "action": action, "reasonCode": reason, "dedupeKey": dedupe, "freshnessFingerprint": fingerprint, "reviewPacketDigest": packet_digest or None, "historyClaimed": True}
 
 

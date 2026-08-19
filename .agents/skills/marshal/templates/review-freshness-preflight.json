@@ -13,6 +13,7 @@
   },
   "files": {
     "statePath": "state.json",
+    "eventsPath": "events.jsonl",
     "packetPath": "review-packet.json",
     "taskSpecPath": "task-spec.json",
     "policySnapshotPath": "policy-snapshot.json",

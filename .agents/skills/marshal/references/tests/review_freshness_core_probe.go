@@ -100,6 +100,18 @@ func process(input request, validator *contract.Validator, schemas map[string]*j
 		if err := validator.Validate(kind, raw); err != nil {
 			return "", err
 		}
+	case "candidate":
+		if err := validator.Validate(domain.KindCandidate, raw); err != nil {
+			return "", err
+		}
+		var candidate domain.Candidate
+		if err := json.Unmarshal(raw, &candidate); err != nil {
+			return "", err
+		}
+		if err := candidate.Validate(); err != nil {
+			return "", err
+		}
+		return candidate.Digest()
 	case "schema":
 		compiled := schemas[input.KindOrSchema]
 		if compiled == nil {
