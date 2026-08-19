@@ -5,10 +5,31 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
 )
+
+func TestReviewedEventContractReferenceMatchesCurrentTransportIdentity(t *testing.T) {
+	path := filepath.Join("..", "..", "..", ".agents", "skills", "marshal", "references", "qoder-1.1.23-event-contract.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reference struct {
+		AdapterVersion              string `json:"adapterVersion"`
+		EventContract               string `json:"eventContract"`
+		WorkerResultTransportDigest string `json:"workerResultTransportDigest"`
+	}
+	if err := json.Unmarshal(data, &reference); err != nil {
+		t.Fatal(err)
+	}
+	if reference.AdapterVersion != adapterVersion || reference.EventContract != conformanceEventContract || reference.WorkerResultTransportDigest != expectedWorkerResultTransportDigest() {
+		t.Fatalf("reference identity = %+v, want adapter=%s event=%s transport=%s", reference, adapterVersion, conformanceEventContract, expectedWorkerResultTransportDigest())
+	}
+}
 
 func validWorkerResultTransportObservation(now time.Time) LiveConformanceObservation {
 	return LiveConformanceObservation{
@@ -43,6 +64,14 @@ func TestWorkerResultTransportContractMutationChangesSuiteAndIsRejected(t *testi
 		"held inode cleanup":         func(v *workerResultTransportContract) { v.HeldInodeCleanup = "unlink-current-path" },
 		"tool name":                  func(v *workerResultTransportContract) { v.ToolName = "bash" },
 		"tool input contract":        func(v *workerResultTransportContract) { v.ToolInputContract = "unknown-fields-allowed" },
+		"description required":       func(v *workerResultTransportContract) { v.ToolInputDescriptionRequired = false },
+		"description authority":      func(v *workerResultTransportContract) { v.ToolInputDescriptionAuthority = "authoritative" },
+		"description min bytes":      func(v *workerResultTransportContract) { v.ToolInputDescriptionMinBytes++ },
+		"description max bytes":      func(v *workerResultTransportContract) { v.ToolInputDescriptionMaxBytes++ },
+		"description utf8":           func(v *workerResultTransportContract) { v.ToolInputDescriptionUTF8Required = false },
+		"description controls":       func(v *workerResultTransportContract) { v.ToolInputDescriptionControls = "allowed" },
+		"canonical member order":     func(v *workerResultTransportContract) { v.ToolInputCanonicalMemberOrder = "description,command" },
+		"unknown members":            func(v *workerResultTransportContract) { v.ToolInputUnknownMembers = "allowed" },
 		"canonical command":          func(v *workerResultTransportContract) { v.CanonicalCommand += "\n" },
 		"tee sequence":               func(v *workerResultTransportContract) { v.TeeSequence = "at-least-once" },
 		"denial extractor":           func(v *workerResultTransportContract) { v.DenialExtractor += "-changed" },
@@ -74,7 +103,9 @@ func TestOldQoderConformanceIdentityIsRejected(t *testing.T) {
 	now := time.Now().UTC()
 	for name, mutate := range map[string]func(*LiveConformanceObservation){
 		"adapter 0.1.2":     func(v *LiveConformanceObservation) { v.AdapterVersion = "0.1.2" },
+		"adapter 0.1.3":     func(v *LiveConformanceObservation) { v.AdapterVersion = "0.1.3" },
 		"event contract v3": func(v *LiveConformanceObservation) { v.EventContract = "qoder-stream-json-1.2.0-v3" },
+		"event contract v4": func(v *LiveConformanceObservation) { v.EventContract = "qoder-stream-json-1.2.0-v4" },
 	} {
 		t.Run("observation "+name, func(t *testing.T) {
 			observation := validWorkerResultTransportObservation(now)
@@ -114,7 +145,16 @@ func TestOldQoderConformanceIdentityIsRejected(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*ConformanceEvidence){
 		"adapter 0.1.2":     func(v *ConformanceEvidence) { v.AdapterVersion = "0.1.2" },
+		"adapter 0.1.3":     func(v *ConformanceEvidence) { v.AdapterVersion = "0.1.3" },
 		"event contract v3": func(v *ConformanceEvidence) { v.EventContract = "qoder-stream-json-1.2.0-v3" },
+		"event contract v4": func(v *ConformanceEvidence) { v.EventContract = "qoder-stream-json-1.2.0-v4" },
+		"v4 transport identity": func(v *ConformanceEvidence) {
+			v.AdapterVersion = "0.1.3"
+			v.EventContract = "qoder-stream-json-1.2.0-v4"
+			v.ProbeProfileDigest = probeProfileDigestForEventContract(v.EventContract)
+			v.WorkerResultTransportDigest = "sha256:ee5a504d0757447c83d8e7c9dc58ae7985791747e7f591c0f803276e5203ffd7"
+			v.ProbeSuiteDigest = probeSuiteDigestForIdentity(v.AdapterVersion, v.EventContract, v.ProbeProfileDigest, v.WorkerResultTransportDigest)
+		},
 	} {
 		t.Run("signed evidence "+name, func(t *testing.T) {
 			old := evidence

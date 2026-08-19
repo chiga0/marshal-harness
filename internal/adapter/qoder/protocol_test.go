@@ -281,6 +281,32 @@ func TestWorkerResultTransportSequenceAcceptsExactlyOneFinalSuccessfulTee(t *tes
 	}
 }
 
+func TestWorkerResultTransportSequenceAcceptsObservedQoderBashDescription(t *testing.T) {
+	payload := []byte(`{"status":"completed"}`)
+	command, err := json.Marshal(workerResultTeeCommand(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []string{
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"Performance","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tee-observed","name":"Bash","input":{"command":` + string(command) + `,"description":"Emit final WorkerResult via adapter-held result channel"}}]}}`,
+		`{"type":"user","tool_use_result":{"kind":"completed"},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tee-observed","content":"(Bash completed with no output)"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"end turn"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Task complete."}]}}`,
+		`{"type":"result","subtype":"success","is_error":false}`,
+	}
+	result := decodeTranscript([]byte(strings.Join(events, "\n") + "\n"))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if err := validateWorkerResultTransportSequence(result); err != nil {
+		t.Fatalf("observed Qoder description envelope rejected: %v; sequence=%+v tools=%d", err, result.resultTransport, result.toolCalls)
+	}
+	if string(result.resultTransport.payload) != string(payload) {
+		t.Fatalf("payload = %q, want %q", result.resultTransport.payload, payload)
+	}
+}
+
 func TestWorkerResultTeeCommandUsesClosedGrammar(t *testing.T) {
 	valid := workerResultTeeCommand([]byte(`{"status":"completed"}`))
 	if payload, ok := parseWorkerResultTeeCommand(valid); !ok || string(payload) != `{"status":"completed"}` {
@@ -306,14 +332,23 @@ func TestWorkerResultTeeCommandUsesClosedGrammar(t *testing.T) {
 func TestWorkerResultTransportRejectsNonCanonicalJSONInput(t *testing.T) {
 	valid := workerResultTeeCommand([]byte(`{"status":"completed"}`))
 	canonical, err := json.Marshal(struct {
-		Command string `json:"command"`
-	}{Command: valid})
+		Command     string `json:"command"`
+		Description string `json:"description"`
+	}{Command: valid, Description: "Emit final WorkerResult via adapter-held result channel"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	tests := map[string]json.RawMessage{
+		"missing-description":         json.RawMessage(`{"command":` + string(mustJSON(t, valid)) + `}`),
+		"empty-description":           json.RawMessage(strings.Replace(string(canonical), `"Emit final WorkerResult via adapter-held result channel"`, `""`, 1)),
+		"control-description":         json.RawMessage(strings.Replace(string(canonical), `"Emit final WorkerResult via adapter-held result channel"`, `"bad\nvalue"`, 1)),
+		"overlong-description":        json.RawMessage(strings.Replace(string(canonical), `"Emit final WorkerResult via adapter-held result channel"`, `"`+strings.Repeat("x", qoderBashDescriptionMaxBytes+1)+`"`, 1)),
 		"unicode-semantic-equivalent": json.RawMessage(strings.Replace(string(canonical), `cat`, `\u0063at`, 1)),
 		"extra-field":                 json.RawMessage(strings.TrimSuffix(string(canonical), "}") + `,"other":true}`),
+		"description-wrong-type":      json.RawMessage(strings.Replace(string(canonical), `"description":"Emit final WorkerResult via adapter-held result channel"`, `"description":true`, 1)),
+		"duplicate-command":           json.RawMessage(strings.TrimSuffix(string(canonical), "}") + `,"command":` + string(mustJSON(t, valid)) + `}`),
+		"duplicate-description":       json.RawMessage(strings.TrimSuffix(string(canonical), "}") + `,"description":"duplicate"}`),
+		"reordered-fields":            json.RawMessage(`{"description":"Emit final WorkerResult via adapter-held result channel","command":` + string(mustJSON(t, valid)) + `}`),
 		"leading-whitespace":          append(json.RawMessage(" "), canonical...),
 	}
 	for name, input := range tests {
@@ -324,6 +359,15 @@ func TestWorkerResultTransportRejectsNonCanonicalJSONInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func mustJSON(t *testing.T, value string) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func TestDeniedFinalWorkerResultTeeIsNotARepeatedSequenceViolation(t *testing.T) {

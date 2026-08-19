@@ -501,7 +501,7 @@ func workerResultTeeToolUseEvent(id string) string {
 
 func workerResultTeeToolUseEventWithPayload(id string, payload []byte) string {
 	command, _ := json.Marshal(workerResultTeeCommand(payload))
-	return `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":` + string(command) + `}}]}}`
+	return `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":` + string(command) + `,"description":"Emit final WorkerResult via adapter-held result channel"}}]}}`
 }
 
 func successfulWorkerResultTeeEvents(id string) []string {

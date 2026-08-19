@@ -233,7 +233,7 @@ func TestRenderPromptProjectsSelfContainedWorkerView(t *testing.T) {
 			"executionProfile": "workspace-write", "sessionPolicy": "ephemeral",
 		}
 		qoderPrompt := renderFixturePromptForAdapter(t, spec, "qoder")
-		for _, anchor := range []string{"Qoder adapter-held result channel (no filesystem path)", "Qoder 特殊规则", "不暴露任何 staging 路径或文件描述符", "仅使用一次 Bash tee", "cat <<'MARSHAL_RESULT' | tee /dev/null > /dev/null", "结束 delimiter 后不得有换行、空白或任何字节", "不要拆分或 glob", "不要增加 shell 变量、fd、管道、重定向、后台任务", "最后一个 tool call", "成功 tool_result 后立即 end_turn", "自由文本 typo", "禁止检查、纠错、替换或第二次 tee", "不得换工具或再次尝试"} {
+		for _, anchor := range []string{"Qoder adapter-held result channel (no filesystem path)", "Qoder 特殊规则", "不暴露任何 staging 路径或文件描述符", "仅使用一次 Bash tee", "cat <<'MARSHAL_RESULT' | tee /dev/null > /dev/null", "结束 delimiter 后不得有换行、空白或任何字节", "不要拆分或 glob", "不要增加 shell 变量、fd、管道、重定向、后台任务", "必须且只包含 canonical `command`", "原生非执行 `description` 字符串", "最后一个 tool call", "成功 tool_result 后立即 end_turn", "自由文本 typo", "禁止检查、纠错、替换或第二次 tee", "不得换工具或再次尝试"} {
 			if !strings.Contains(qoderPrompt, anchor) {
 				t.Fatalf("Qoder prompt is missing %q:\n%s", anchor, qoderPrompt)
 			}
