@@ -35,6 +35,14 @@ CHECKER_TOTAL_OUTPUT_MAX_BYTES = 5 * 1024 * 1024 // 4
 PROCESS_IO_CHUNK_BYTES = 16 * 1024
 CODESIGN_PATH = Path("/usr/bin/codesign")
 CDHASH_FULL_RE = re.compile(rb"(?m)^CandidateCDHashFull sha256=([0-9a-f]{64})$")
+MACHO_CODE_SIGNATURE_COMMAND = 0x1D
+EMBEDDED_SIGNATURE_MAGIC = 0xFADE0CC0
+CODE_DIRECTORY_MAGIC = 0xFADE0C02
+CODE_DIRECTORY_BASE_VERSION = 0x20001
+CODE_DIRECTORY_MAX_VERSION = 0x20600
+CODE_DIRECTORY_SHA256 = 2
+CODE_DIRECTORY_SHA256_BYTES = 32
+CODE_DIRECTORY_MAX_PLATFORM = 12
 INPUT_HARD_LIMITS = {
     "transcript": 8 * 1024 * 1024,
     "transcriptMeta": 128 * 1024,
@@ -631,7 +639,11 @@ def macho_code_directory_sha256(raw: bytes) -> str:
     if len(raw) < 32:
         fail("checker-process-identity-unavailable", "held Mach-O header is truncated")
     ncmds, sizeofcmds = struct.unpack_from(endian + "II", raw, 16)
-    if ncmds > 65536 or sizeofcmds > len(raw) - 32:
+    if (
+        ncmds > 65536
+        or sizeofcmds > len(raw) - 32
+        or ncmds > sizeofcmds // 8
+    ):
         fail("checker-process-identity-unavailable", "held Mach-O load command table is invalid")
     command_offset = 32
     command_end = command_offset + sizeofcmds
@@ -642,7 +654,7 @@ def macho_code_directory_sha256(raw: bytes) -> str:
         command, command_size = struct.unpack_from(endian + "II", raw, command_offset)
         if command_size < 8 or command_offset + command_size > command_end:
             fail("checker-process-identity-unavailable", "held Mach-O load command size is invalid")
-        if command == 0x1D:
+        if command == MACHO_CODE_SIGNATURE_COMMAND:
             if command_size < 16:
                 fail("checker-process-identity-unavailable", "held code-signature command is truncated")
             data_offset, data_size = struct.unpack_from(endian + "II", raw, command_offset + 8)
@@ -651,25 +663,113 @@ def macho_code_directory_sha256(raw: bytes) -> str:
     if command_offset != command_end or len(signatures) != 1:
         fail("checker-process-identity-unavailable", "held Mach-O must have one code-signature command")
     signature_offset, signature_size = signatures[0]
-    if signature_size < 12 or signature_offset > len(raw) - signature_size:
+    if (
+        signature_size < 12
+        or signature_offset < command_end
+        or signature_offset > len(raw) - signature_size
+        or signature_offset + signature_size != len(raw)
+    ):
         fail("checker-process-identity-unavailable", "held Mach-O code signature is out of bounds")
     signature = raw[signature_offset : signature_offset + signature_size]
     magic, super_length, count = struct.unpack_from(">III", signature, 0)
-    if magic != 0xFADE0CC0 or super_length > len(signature) or 12 + count * 8 > super_length:
+    if (
+        magic != EMBEDDED_SIGNATURE_MAGIC
+        or super_length != len(signature)
+        or count > (super_length - 12) // 8
+    ):
         fail("checker-process-identity-unavailable", "held Mach-O superblob is invalid")
-    candidates: list[bytes] = []
+    index_end = 12 + count * 8
+    blobs: list[tuple[int, int, int]] = []
     for index in range(count):
         _slot_type, blob_offset = struct.unpack_from(">II", signature, 12 + index * 8)
-        if blob_offset > super_length - 8:
-            fail("checker-process-identity-unavailable", "held code-directory offset is invalid")
+        if blob_offset < index_end or blob_offset > super_length - 8:
+            fail("checker-process-identity-unavailable", "held embedded-signature blob offset is invalid")
         blob_magic, blob_length = struct.unpack_from(">II", signature, blob_offset)
-        if blob_length < 40 or blob_offset > super_length - blob_length:
-            fail("checker-process-identity-unavailable", "held code-directory length is invalid")
-        if blob_magic != 0xFADE0C02:
+        if blob_length < 8 or blob_offset > super_length - blob_length:
+            fail("checker-process-identity-unavailable", "held embedded-signature blob length is invalid")
+        blobs.append((blob_offset, blob_offset + blob_length, blob_magic))
+    ordered_blobs = sorted(blobs)
+    for previous, current in zip(ordered_blobs, ordered_blobs[1:]):
+        if current[0] < previous[1]:
+            fail("checker-process-identity-unavailable", "held embedded-signature blobs overlap")
+
+    candidates: list[bytes] = []
+    for blob_offset, blob_end, blob_magic in blobs:
+        if blob_magic != CODE_DIRECTORY_MAGIC:
             continue
-        blob = signature[blob_offset : blob_offset + blob_length]
-        if blob[37] == 2:
-            candidates.append(blob)
+        blob = signature[blob_offset:blob_end]
+        if len(blob) < 44:
+            fail("checker-process-identity-unavailable", "held code directory is truncated")
+        (
+            directory_magic,
+            directory_length,
+            version,
+            _flags,
+            hash_offset,
+            ident_offset,
+            special_slots,
+            code_slots,
+            code_limit,
+            hash_size,
+            hash_type,
+            platform,
+            page_size,
+            spare2,
+        ) = struct.unpack_from(">9I4BI", blob, 0)
+        if directory_magic != CODE_DIRECTORY_MAGIC or directory_length != len(blob):
+            fail("checker-process-identity-unavailable", "held code directory header is invalid")
+        if version < CODE_DIRECTORY_BASE_VERSION or version > CODE_DIRECTORY_MAX_VERSION:
+            fail("checker-process-identity-unavailable", "held code directory version is unsupported")
+        minimum_length = 44
+        for introduced_version, introduced_length in (
+            (0x20100, 48),
+            (0x20200, 52),
+            (0x20300, 64),
+            (0x20400, 88),
+            (0x20500, 96),
+            (0x20600, 108),
+        ):
+            if version >= introduced_version:
+                minimum_length = introduced_length
+        if len(blob) < minimum_length:
+            fail("checker-process-identity-unavailable", "held code directory version fields are truncated")
+        if spare2 != 0:
+            fail("checker-process-identity-unavailable", "held code directory reserved field is invalid")
+        if hash_size != CODE_DIRECTORY_SHA256_BYTES or hash_type != CODE_DIRECTORY_SHA256:
+            continue
+        if platform > CODE_DIRECTORY_MAX_PLATFORM or page_size > 31:
+            fail("checker-process-identity-unavailable", "held code directory hash geometry is invalid")
+
+        effective_code_limit = code_limit
+        if version >= 0x20300:
+            spare3, code_limit64 = struct.unpack_from(">IQ", blob, 52)
+            if spare3 != 0:
+                fail("checker-process-identity-unavailable", "held code directory reserved field is invalid")
+            if code_limit == 0:
+                if code_limit64 == 0:
+                    fail("checker-process-identity-unavailable", "held code directory code limit is invalid")
+                effective_code_limit = code_limit64
+            elif code_limit64 != 0:
+                fail("checker-process-identity-unavailable", "held code directory code limits are ambiguous")
+        if effective_code_limit == 0 or effective_code_limit != signature_offset:
+            fail("checker-process-identity-unavailable", "held code directory code limit is invalid")
+        page_bytes = 1 << page_size
+        expected_code_slots = (effective_code_limit + page_bytes - 1) // page_bytes
+        if code_slots != expected_code_slots:
+            fail("checker-process-identity-unavailable", "held code directory code-slot count is invalid")
+
+        if special_slots > hash_offset // hash_size or code_slots > (len(blob) - hash_offset) // hash_size:
+            fail("checker-process-identity-unavailable", "held code directory hash slots are out of bounds")
+        special_hash_start = hash_offset - special_slots * hash_size
+        code_hash_end = hash_offset + code_slots * hash_size
+        if special_hash_start < minimum_length or code_hash_end > len(blob):
+            fail("checker-process-identity-unavailable", "held code directory hash slots are out of bounds")
+        if ident_offset < minimum_length or ident_offset >= special_hash_start:
+            fail("checker-process-identity-unavailable", "held code directory identifier offset is invalid")
+        ident_end = blob.find(b"\x00", ident_offset, special_hash_start)
+        if ident_end < ident_offset + 1:
+            fail("checker-process-identity-unavailable", "held code directory identifier is invalid")
+        candidates.append(blob)
     if len(candidates) != 1:
         fail("checker-process-identity-unavailable", "held Mach-O must have one SHA-256 CodeDirectory")
     return sha256_bytes(candidates[0])
