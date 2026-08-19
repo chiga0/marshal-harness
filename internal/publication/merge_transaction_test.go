@@ -25,6 +25,9 @@ func TestMergeAuthorityTransactionPreparedAndRevokedSuccessor(t *testing.T) {
 	if err := ValidateMergeAuthorityEvent(mergeAuthorityRevokedEvent, mergeCoreActorType, mergeCoreActorID, ciPendingState, ciPendingState, revoked, 10, 9); err != nil {
 		t.Fatalf("revoked successor rejected: %v", err)
 	}
+	if err := ValidateMergeAuthoritySuccessor(prepared, revoked); err != nil {
+		t.Fatalf("successor chain rejected: %v", err)
+	}
 }
 
 func TestMergeAuthorityTransactionRejectsPublisherAndUnknownField(t *testing.T) {
@@ -71,6 +74,26 @@ func TestMergeAuthorityTransactionReplayIdentityAndEventStatusAreBound(t *testin
 	}
 	if err := ValidateMergeAuthorityEvent(mergeAuthorityPreparedEvent, mergeCoreActorType, mergeCoreActorID, ciPendingState, ciPendingState, revoked, 10, 9); err == nil {
 		t.Fatal("accepted revoked transaction under prepared event type")
+	}
+}
+
+func TestMergeAuthorityTransactionSuccessorRejectsAdmissionDrift(t *testing.T) {
+	prepared := validMergeAuthorityTransactionFixture(t, "prepared")
+	revoked := prepared
+	revoked.Status = "revoked"
+	revoked.JournalSequence = 10
+	revoked.ExpectedPreviousJournalSeq = 9
+	revoked.RevocationGeneration = 1
+	revoked.PreviousTransactionDigest = prepared.TransactionDigest
+	revoked.RevokedAt = "2026-08-19T00:01:00Z"
+	revoked.EvidenceDigest = digestFixture("different-evidence")
+	var err error
+	revoked.TransactionDigest, err = revoked.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateMergeAuthoritySuccessor(prepared, revoked); err == nil {
+		t.Fatal("accepted successor with changed evidence binding")
 	}
 }
 

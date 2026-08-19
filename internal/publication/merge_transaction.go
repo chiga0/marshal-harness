@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -98,6 +99,34 @@ func (t MergeAuthorityTransaction) Validate(eventJournalSequence, previousJourna
 	digest, err := t.Digest()
 	if err != nil || digest != t.TransactionDigest {
 		return errors.New("merge authority transaction digest mismatch")
+	}
+	return nil
+}
+
+// ValidateMergeAuthoritySuccessor verifies the only allowed transition in
+// the contract-only model: one prepared fact is followed by one revoked
+// successor. It does not append either fact or authorize a lifecycle change.
+func ValidateMergeAuthoritySuccessor(prepared, revoked MergeAuthorityTransaction) error {
+	if prepared.Status != "prepared" || revoked.Status != "revoked" {
+		return errors.New("merge authority successor has invalid status pair")
+	}
+	if revoked.JournalSequence != prepared.JournalSequence+1 || revoked.ExpectedPreviousJournalSeq != prepared.JournalSequence {
+		return errors.New("merge authority successor sequence is not contiguous")
+	}
+	if revoked.PreviousTransactionDigest != prepared.TransactionDigest || revoked.RevocationGeneration != 1 {
+		return errors.New("merge authority successor does not bind prepared transaction")
+	}
+	if prepared.AuthorityNamespaceID != revoked.AuthorityNamespaceID || prepared.TaskID != revoked.TaskID || prepared.RunID != revoked.RunID {
+		return errors.New("merge authority successor identity changed")
+	}
+	if prepared.IntentDigest != revoked.IntentDigest || prepared.AuthorizationDigest != revoked.AuthorizationDigest || prepared.PublicationDigest != revoked.PublicationDigest || prepared.ReviewDecisionDigest != revoked.ReviewDecisionDigest || prepared.VerificationDigest != revoked.VerificationDigest || prepared.EvidenceDigest != revoked.EvidenceDigest || prepared.PolicyDigest != revoked.PolicyDigest || prepared.ApprovalDigest != revoked.ApprovalDigest || prepared.RemoteCheckDigest != revoked.RemoteCheckDigest {
+		return errors.New("merge authority successor admission binding changed")
+	}
+	if err := prepared.Validate(prepared.JournalSequence, prepared.ExpectedPreviousJournalSeq); err != nil {
+		return fmt.Errorf("prepared transaction invalid: %w", err)
+	}
+	if err := revoked.Validate(revoked.JournalSequence, revoked.ExpectedPreviousJournalSeq); err != nil {
+		return fmt.Errorf("revoked transaction invalid: %w", err)
 	}
 	return nil
 }
