@@ -1,0 +1,125 @@
+{
+  "manifestVersion": "marshal-operator-acceptance-preflight/v1",
+  "taskSpecDigest": "sha256:996538de5f9b8ce0f82c0a89dcc446d624dfd91708ac40048f70bf20477b3af8",
+  "command": {
+    "id": "content-check",
+    "argv": [
+      "python3",
+      "-I",
+      "-B",
+      "-c",
+      "from pathlib import Path; import unicodedata; p=Path('reports/adr-0035.md'); s=p.read_text(encoding='utf-8'); n=unicodedata.normalize('NFKC',s.replace('`','')).casefold(); required_all=['reviewdecision binds digest','four-dimensional gate']; required_any=[['authority boundary','trust boundary']]; forbidden=['unsafe override']; assert len(s.splitlines()) >= 4; assert len(s.encode('utf-8')) <= 4096; assert not [x for x in required_all if x not in n]; assert not [g for g in required_any if not any(x in n for x in g)]; assert not [x for x in forbidden if x in n]"
+    ],
+    "cwd": ".",
+    "timeoutSeconds": 10,
+    "required": true,
+    "baselinePolicy": "none",
+    "maxLogBytes": 10000,
+    "argvDigest": "sha256:2343ad00e174814e88d492cef3aedc98f9927ed0df4c8059fc16c0dcbb59566e",
+    "tupleDigest": "sha256:dd68d67fe6361288c6e44536f987df9729475b84b56e41d1f75cedeab4dc55d1"
+  },
+  "contentGate": {
+    "commandPath": "reports/adr-0035.md",
+    "deliverablePath": "reports/adr-0035.md",
+    "minimumDeliverableCount": 1,
+    "normalizer": "markdown-backtick-strip+nfkc-casefold",
+    "minimumLineCount": 4,
+    "maximumBytes": 4096,
+    "required_all": [
+      "reviewdecision binds digest",
+      "four-dimensional gate"
+    ],
+    "required_any": [
+      [
+        "authority boundary",
+        "trust boundary"
+      ]
+    ],
+    "forbidden": [
+      "unsafe override"
+    ]
+  },
+  "prompt_literals": [
+    {
+      "rule": "commandPath",
+      "literal": "reports/adr-0035.md"
+    },
+    {
+      "rule": "deliverablePath",
+      "literal": "reports/adr-0035.md"
+    },
+    {
+      "rule": "minimumDeliverableCount",
+      "literal": "1"
+    },
+    {
+      "rule": "minimumLineCount",
+      "literal": "4"
+    },
+    {
+      "rule": "maximumBytes",
+      "literal": "4096"
+    },
+    {
+      "rule": "required_all[0]",
+      "literal": "reviewdecision binds digest"
+    },
+    {
+      "rule": "required_all[1]",
+      "literal": "four-dimensional gate"
+    },
+    {
+      "rule": "required_any[0][0]",
+      "literal": "authority boundary"
+    },
+    {
+      "rule": "required_any[0][1]",
+      "literal": "trust boundary"
+    },
+    {
+      "rule": "forbidden[0]",
+      "literal": "unsafe override"
+    }
+  ],
+  "fixtures": {
+    "positive": [
+      {
+        "id": "positive-complete",
+        "path": ".agents/skills/marshal/references/fixtures/acceptance-semantic/report-positive.md",
+        "digest": "sha256:5e9a78090a0e0b190f8027e360b5a74503b1f0dbbb7608e29af3762438095198"
+      }
+    ],
+    "negative": [
+      {
+        "id": "negative-missing-required-all",
+        "path": ".agents/skills/marshal/references/fixtures/acceptance-semantic/report-missing-required-all.md",
+        "digest": "sha256:a934c7a7a9cc0fe9c3b194a676cf271a57c6ca623f055ba18300bf37886a80d2",
+        "expectedReason": "missing-required-all"
+      },
+      {
+        "id": "negative-missing-required-any",
+        "path": ".agents/skills/marshal/references/fixtures/acceptance-semantic/report-missing-required-any.md",
+        "digest": "sha256:059b211218a8deb53008afc18d656926c16a9adb593cbd1bfe4581fa31efd7a1",
+        "expectedReason": "missing-required-any"
+      },
+      {
+        "id": "negative-forbidden",
+        "path": ".agents/skills/marshal/references/fixtures/acceptance-semantic/report-forbidden.md",
+        "digest": "sha256:e1a36e2bcc8c985f0f4db634a32e215c01b3fb7d50fbda66fb74968b32f1f062",
+        "expectedReason": "forbidden-present"
+      },
+      {
+        "id": "negative-too-short",
+        "path": ".agents/skills/marshal/references/fixtures/acceptance-semantic/report-too-short.md",
+        "digest": "sha256:b8083a419dd03c22ed321cbaeefbbc6331c9376d350adc0766b5a70288ce0bfc",
+        "expectedReason": "below-minimum-line-count"
+      },
+      {
+        "id": "negative-too-large",
+        "path": ".agents/skills/marshal/references/fixtures/acceptance-semantic/report-too-large.md",
+        "digest": "sha256:2bd70c62febcdd70a631878282cb7db3c7ec6f4448bceb3b6e46ed7e77938278",
+        "expectedReason": "maximum-bytes-exceeded"
+      }
+    ]
+  }
+}
