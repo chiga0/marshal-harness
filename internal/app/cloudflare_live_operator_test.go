@@ -8,8 +8,23 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/provider/cloudflare"
 )
+
+// TestAdmitCloudflareConformanceFailsClosedAtComposition freezes that the app
+// boundary cannot map a receipt while the required Core authority relation
+// is not representable.
+func TestAdmitCloudflareConformanceFailsClosedAtComposition(t *testing.T) {
+	_, err := AdmitCloudflareConformance(
+		cloudflare.ConformanceAdmissionReceipt{},
+		provider.ProviderRegistration{},
+		provider.ProviderCapabilitySnapshot{},
+	)
+	if err == nil {
+		t.Fatal("app admission accepted an unverified receipt without a replay ledger")
+	}
+}
 
 // liveOperatorTestSigner is a fixture ReceiptSigner. It lives in the test
 // file only: production operator/verifier code never constructs a private

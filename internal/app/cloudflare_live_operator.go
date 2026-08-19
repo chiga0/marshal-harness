@@ -17,8 +17,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/provider/cloudflare"
 )
+
+// AdmitCloudflareConformance is the app composition boundary for hardened
+// admission. It remains fail closed until Core supplies the authority-ledger
+// transaction required by the provider boundary.
+func AdmitCloudflareConformance(receipt cloudflare.ConformanceAdmissionReceipt, registration provider.ProviderRegistration, snapshot provider.ProviderCapabilitySnapshot) (provider.ConformanceEvidence, error) {
+	return cloudflare.AdmitConformanceReceipt(receipt, registration, snapshot)
+}
 
 // LiveEvidenceOperator is the independent credentialed operator that signs
 // unforgeable live-evidence receipts over exact Cloudflare facts. It is
