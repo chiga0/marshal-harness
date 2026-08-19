@@ -58,6 +58,13 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
         )
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr)
+        cls.source_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPOSITORY_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -78,6 +85,10 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
                 str(fixtures / manifest_name),
                 "--task-spec",
                 str(fixtures / task_name),
+                "--protected-root",
+                str(REPOSITORY_ROOT),
+                "--source-head",
+                self.source_head,
             ],
             check=False,
             capture_output=True,
@@ -420,6 +431,121 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
                     VALIDATOR_MODULE.run_command(command, "reports/adr-0035.md", fixture, before)
             self.assertEqual(raised.exception.reason_code, "protected-root-side-effect")
 
+    def test_live_runtime_root_is_rejected_before_tree_walk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, _fixtures = self.copied_fixtures(directory)
+            (root / ".marshal").mkdir()
+            with mock.patch.object(
+                VALIDATOR_MODULE,
+                "bounded_tree_entries",
+                side_effect=AssertionError("tree walk must not start"),
+            ):
+                with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+                    VALIDATOR_MODULE.validate_protected_root_carrier(root)
+            self.assertEqual(raised.exception.reason_code, "protected-root-runtime-state")
+
+    def test_dangling_runtime_symlink_is_rejected_before_tree_walk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".marshal").symlink_to(root / "missing-runtime", target_is_directory=True)
+            with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+                VALIDATOR_MODULE.validate_protected_root_carrier(root)
+            self.assertEqual(raised.exception.reason_code, "protected-root-runtime-state")
+
+    def test_primary_git_repository_root_is_rejected_before_tree_walk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".git").mkdir()
+            with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+                VALIDATOR_MODULE.bind_explicit_protected_roots_to_source_head(
+                    [root], self.source_head
+                )
+            self.assertEqual(raised.exception.reason_code, "protected-root-live-repository")
+
+    def test_locked_source_head_mismatch_is_rejected(self) -> None:
+        with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+            VALIDATOR_MODULE.bind_explicit_protected_roots_to_source_head(
+                [REPOSITORY_ROOT], "0" * 40
+            )
+        self.assertEqual(raised.exception.reason_code, "protected-root-source-head-mismatch")
+
+    def test_every_explicit_protected_root_must_be_a_linked_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            non_git_root = Path(directory)
+            with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+                VALIDATOR_MODULE.bind_explicit_protected_roots_to_source_head(
+                    [REPOSITORY_ROOT, non_git_root], self.source_head
+                )
+            self.assertEqual(raised.exception.reason_code, "protected-root-source-unbound")
+
+    def test_protected_subdirectory_cannot_borrow_parent_git_identity(self) -> None:
+        with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+            VALIDATOR_MODULE.bind_explicit_protected_roots_to_source_head(
+                [REPOSITORY_ROOT, REPOSITORY_ROOT / ".agents"], self.source_head
+            )
+        self.assertEqual(raised.exception.reason_code, "protected-root-source-unbound")
+
+    def test_nested_marshal_is_rejected_during_bounded_enumeration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            nested = root / "nested" / ".marshal"
+            nested.mkdir(parents=True)
+            (nested / "runtime.json").write_text("{}")
+            with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+                VALIDATOR_MODULE.tree_digest(root)
+            self.assertEqual(raised.exception.reason_code, "protected-root-runtime-state")
+
+    def test_protected_tree_entry_limit_is_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "one").write_text("1")
+            (root / "two").write_text("2")
+            with mock.patch.object(VALIDATOR_MODULE, "MAX_PROTECTED_TREE_ENTRIES", 1):
+                with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+                    VALIDATOR_MODULE.tree_digest(root)
+            self.assertEqual(raised.exception.reason_code, "protected-root-too-large")
+
+    def test_protected_tree_byte_limit_is_fail_closed_before_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            large = root / "large.bin"
+            large.write_bytes(b"12")
+            with (
+                mock.patch.object(VALIDATOR_MODULE, "MAX_PROTECTED_TREE_BYTES", 1),
+                mock.patch.object(VALIDATOR_MODULE.os, "read", side_effect=AssertionError("must not read")),
+            ):
+                with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+                    VALIDATOR_MODULE.tree_digest(root)
+            self.assertEqual(raised.exception.reason_code, "protected-root-too-large")
+
+    def test_file_growth_after_enumeration_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "grows-after-enumeration.bin"
+            target.write_bytes(b"")
+            original = VALIDATOR_MODULE.bounded_tree_entries
+            mutated = False
+
+            def enumerate_then_grow(candidate: Path):
+                nonlocal mutated
+                entries = original(candidate)
+                if not mutated:
+                    target.write_bytes(b"grew")
+                    mutated = True
+                return entries
+
+            with mock.patch.object(
+                VALIDATOR_MODULE,
+                "bounded_tree_entries",
+                side_effect=enumerate_then_grow,
+            ):
+                with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+                    VALIDATOR_MODULE.tree_digest(root)
+            self.assertEqual(
+                raised.exception.reason_code,
+                "protected-root-changed-during-hash",
+            )
+
     def test_deleting_required_token_from_positive_fixture_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root, fixtures = self.copied_fixtures(directory)
@@ -488,6 +614,10 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
                     str(fixtures / "manifest-r2.json"),
                     "--task-spec",
                     str(fixtures / "task-spec-r2.json"),
+                    "--protected-root",
+                    str(REPOSITORY_ROOT),
+                    "--source-head",
+                    self.source_head,
                 ],
                 check=False,
                 capture_output=True,
