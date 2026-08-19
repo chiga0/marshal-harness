@@ -505,7 +505,7 @@ Darwin stream transport 同步收紧帧边界：发送端拒绝零长度/超 64 
 
 新增 [Mac-first authority 交接清单](mac-first-authority-handoff.md)，把必须由宿主管理员提供的 OS principal、签名 launcher、root-owned launchd、credential ingress、不可回滚 anchor 及 profile-specific live probe 逐项列出，并提供只读核验命令。清单不包含私钥或 credential，也不把交接材料当作 registry enablement；当前宿主缺少这些外部对象的结论保持不变。
 
-本轮新增 `scripts/macos-authority-preflight.sh` 只读预检，将固定 Qoder/Codex 可执行文件、签名 launcher、root launchd、codesigning identity 与非交互 sudo 等外部前置条件转换为稳定的 `PASS`/`BLOCKED` 输出和非零退出码。脚本不安装、签名、bootstrap、读取 credential 或修改 `.marshal/`；本机实测两个 CLI 文件存在，但六项外部 authority 前置条件仍为 `BLOCKED`，因此 registry 与 doctor 继续保持 `unsupported`。
+本轮新增 `scripts/macos-authority-preflight.sh` 只读预检，将固定 Qoder/Codex 可执行文件、签名 launcher、受管 Team ID、root launchd、codesigning identity 与非交互 sudo 等外部前置条件转换为稳定的 `PASS`/`BLOCKED` 输出和非零退出码。脚本拒绝 ad-hoc 签名，且不安装、签名、bootstrap、读取 credential 或修改 `.marshal/`；本机实测两个 CLI 文件存在，但外部 authority 前置条件仍为 `BLOCKED`，因此 registry 与 doctor 继续保持 `unsupported`。
 
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 

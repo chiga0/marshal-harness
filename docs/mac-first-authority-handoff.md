@@ -26,8 +26,10 @@
 交接前可先运行仓库内的只读预检；它只报告缺口，任何失败都会保持 fail-closed，不会安装、签名、bootstrap 或修改 `.marshal/`：
 
 ```sh
-scripts/macos-authority-preflight.sh
+MARSHAL_SIGNING_TEAM_ID=TEAMID scripts/macos-authority-preflight.sh
 ```
+
+`MARSHAL_SIGNING_TEAM_ID` 只作为签名身份比对输入，不是 secret；未提供时脚本会拒绝通过 Team ID 检查。ad-hoc 签名即使能被 `codesign --verify` 接受，也会被预检拒绝。
 
 以下命令只读，不会安装、签名、bootstrap 或修改 Marshal 状态：
 

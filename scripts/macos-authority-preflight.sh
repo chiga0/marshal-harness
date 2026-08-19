@@ -9,6 +9,7 @@ codex_path=${MARSHAL_CODEX_PATH:-/opt/homebrew/Caskroom/codex/0.145.0/codex-aarc
 apap_service=${MARSHAL_APAP_SERVICE_PATH:-/Library/PrivilegedHelperTools/marshal-apap}
 launcher=${MARSHAL_DARWIN_LAUNCHER_PATH:-/Library/PrivilegedHelperTools/marshal-darwin-launcher}
 plist_label=${MARSHAL_APAP_LABEL:-com.marshal.apap}
+expected_team_id=${MARSHAL_SIGNING_TEAM_ID:-}
 
 failures=0
 check() {
@@ -20,6 +21,15 @@ check() {
         printf 'BLOCKED %s\n' "$label"
         failures=$((failures + 1))
     fi
+}
+
+check_signed_team() {
+    binary=$1
+    [ -n "$expected_team_id" ] || return 1
+    details=$(codesign -dvv "$binary" 2>&1) || return 1
+    printf '%s\n' "$details" | grep -q '^Signature=adhoc$' && return 1
+    team_id=$(printf '%s\n' "$details" | sed -n 's/^TeamIdentifier=//p' | head -n 1)
+    [ -n "$team_id" ] && [ "$team_id" = "$expected_team_id" ]
 }
 
 if [ "$(uname -s)" != "Darwin" ]; then
@@ -34,6 +44,8 @@ check "signed launcher exists" test -f "$launcher"
 check "codesigning identity" sh -c 'security find-identity -v -p codesigning | grep -Eq "[1-9][0-9]* valid identities found"'
 check "APAP service signature" codesign --verify --strict "$apap_service"
 check "launcher signature" codesign --verify --strict "$launcher"
+check "APAP service managed Team ID" check_signed_team "$apap_service"
+check "launcher managed Team ID" check_signed_team "$launcher"
 check "root launchd service" launchctl print "system/$plist_label"
 check "noninteractive sudo" sudo -n true
 
