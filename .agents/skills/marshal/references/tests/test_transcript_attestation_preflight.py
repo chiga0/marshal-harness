@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,11 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             completed = subprocess.run(["go", "build", "-o", str(output), source], cwd=REPOSITORY_ROOT, capture_output=True, text=True)
             if completed.returncode != 0:
                 raise RuntimeError(completed.stderr)
+        spec = importlib.util.spec_from_file_location("transcript_attestation_validator", VALIDATOR)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("cannot load transcript attestation validator")
+        cls.validator_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.validator_module)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -114,6 +120,12 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
         raw = ("".join(json.dumps(event, separators=(",", ":")) + "\n" for event in events)).encode()
         self.refresh_transcript(root, manifest, raw)
 
+    def direct_checker_inputs(self, root: Path, manifest: dict) -> dict[str, bytes]:
+        return {
+            label: (root / descriptor["path"]).read_bytes()
+            for label, descriptor in manifest["inputs"].items()
+        }
+
     def test_positive_uses_production_checker_and_bound_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             root, manifest_path, manifest = self.prepare(directory)
@@ -124,6 +136,19 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             self.assertEqual(output["coreIdentity"]["profileVersion"], "qoder-v5-transcript-attestation-v2")
             self.assertEqual(output["observation"]["capabilityDigest"], self.jcs_digest(root / "capability-snapshot.json"))
             self.assertTrue(output["observation"]["workerResultTeeLast"])
+            self.assertRegex(
+                output["implementationDigests"]["checkerExecutionIdentity"],
+                r"^sha256:[0-9a-f]{64}$",
+            )
+            expected_method = (
+                "darwin-codesign-cdhash-full-sha256"
+                if sys.platform == "darwin"
+                else "linux-proc-exe-sha256"
+            )
+            self.assertEqual(
+                output["implementationDigests"]["checkerExecutionIdentityMethod"],
+                expected_method,
+            )
 
     def test_forbidden_unbound_command_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -268,6 +293,62 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
                     reason = json.loads(completed.stderr)["reasonCode"]
                     self.assertIn(reason, {"checker-invalid", "checker-changed-during-read", "checker-changed-during-execution", "checker-execution-failed", "invalid-json"})
 
+    def test_private_checker_replacement_before_spawn_gets_no_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, manifest = self.prepare(directory)
+            marker = Path(directory) / "evidence-reached-replacement"
+
+            def replace_before_spawn(copied_path: Path) -> None:
+                replacement = copied_path.with_name("replacement")
+                replacement.write_text(
+                    "#!/bin/sh\nIFS= read -r payload\nprintf received > "
+                    + repr(str(marker))
+                    + "\n"
+                )
+                replacement.chmod(0o700)
+                os.replace(replacement, copied_path)
+
+            with self.assertRaises(self.validator_module.PreflightError) as raised:
+                self.validator_module.invoke_core_checker(
+                    self.checker,
+                    manifest["subject"],
+                    self.direct_checker_inputs(root, manifest),
+                    before_spawn=replace_before_spawn,
+                )
+            self.assertEqual(raised.exception.reason_code, "checker-process-identity-mismatch")
+            self.assertFalse(marker.exists(), "evidence must not be sent before process-image attestation")
+
+    def test_private_checker_mutation_after_spawn_is_rejected_before_evidence(self):
+        for mutation in ("replace", "grow", "symlink"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root, _, manifest = self.prepare(directory)
+
+                def mutate_after_spawn(copied_path: Path, _process) -> None:
+                    if mutation == "grow":
+                        with copied_path.open("ab", buffering=0) as stream:
+                            stream.write(b"growth")
+                        return
+                    replacement = copied_path.with_name("replacement")
+                    if mutation == "symlink":
+                        replacement.symlink_to("/bin/cat")
+                    else:
+                        shutil.copyfile("/bin/cat", replacement)
+                        replacement.chmod(0o700)
+                    os.replace(replacement, copied_path)
+
+                with self.assertRaises(self.validator_module.PreflightError) as raised:
+                    self.validator_module.invoke_core_checker(
+                        self.checker,
+                        manifest["subject"],
+                        self.direct_checker_inputs(root, manifest),
+                        after_spawn=mutate_after_spawn,
+                    )
+                self.assertEqual(
+                    raised.exception.reason_code,
+                    "checker-private-path-changed",
+                    str(raised.exception),
+                )
+
     def test_python_bridge_contains_no_tool_or_event_semantic_parser(self):
         source = VALIDATOR.read_text()
         for forbidden in ("def parse_jsonl", "def validate_transcript", "tool_use", "tool_result", "TEE_FIRST_LINE", "TASK_TOOL_NAMES"):
@@ -275,13 +356,19 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
         for required in ("O_NOFOLLOW", "O_EXCL", "CHECKER_MAX_BYTES", "TemporaryDirectory", 'python3'):
             if required != "python3":
                 self.assertIn(required, source)
+        for required in ("codesign_identity", "actual_checker_execution_identity", "checkerExecutionIdentity"):
+            self.assertIn(required, source)
 
     def test_real_mac_r3_receipt_is_current_and_sanitized(self):
         receipt_path = FIXTURES / "mac-qoder-v5-conformance-r3-receipt.json"
         receipt = json.loads(receipt_path.read_text())
         self.assertEqual(receipt["status"], "pass")
         self.assertEqual(receipt["reasonCode"], "transcript-attestation-pass")
-        self.assertEqual(receipt["attestationDigest"], "sha256:cd7c84516c86e6f4e864fdb7f002b833cb9bd60fba2f58a4d7688dff945efcf9")
+        self.assertEqual(receipt["attestationDigest"], "sha256:06a857f95f47c4bcf3b09c7bfc4b4f098bdbb09d998cc6bcf1f83592c924273e")
+        self.assertEqual(
+            receipt["implementationDigests"]["checkerExecutionIdentityMethod"],
+            "darwin-codesign-cdhash-full-sha256",
+        )
         serialized = json.dumps(receipt, ensure_ascii=False)
         for secret_or_free_text in ("/Users/", '"prompt"', '"message"', '"description"'):
             self.assertNotIn(secret_or_free_text, serialized)
