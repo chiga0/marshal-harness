@@ -109,11 +109,19 @@ func resolveSelection(worker map[string]json.RawMessage) (Selection, error) {
 	if json.Unmarshal(preferredRaw, &selection.Preferred) != nil || json.Unmarshal(fallbackRaw, &selection.Fallback) != nil {
 		return Selection{}, ErrInvalidDraft
 	}
+	// A JSON null is not a valid fallbackAdapters value. Keep invalid draft
+	// input fail-closed while allowing a typed operator override with a nil
+	// slice to mean the explicit empty fallback order.
+	if selection.Fallback == nil {
+		return Selection{}, ErrInvalidDraft
+	}
 	return cloneSelection(selection), nil
 }
 
 func cloneSelection(selection Selection) Selection {
-	return Selection{Preferred: selection.Preferred, Fallback: slices.Clone(selection.Fallback)}
+	fallback := make([]string, len(selection.Fallback))
+	copy(fallback, selection.Fallback)
+	return Selection{Preferred: selection.Preferred, Fallback: fallback}
 }
 
 func containsOpenCode(selection Selection) bool {

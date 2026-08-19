@@ -782,6 +782,8 @@ func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 		"--fallback-adapter", "qoder",
 	)
 	assertCLITaskWorkerOrder(t, customGenerated, "pi", []string{"qwen", "codex", "qoder"})
+	_, singleGenerated := scaffold("cli-single-worker-task", "--preferred-adapter", "qwen")
+	assertCLITaskWorkerOrder(t, singleGenerated, "qwen", []string{})
 	customPolicyPath := filepath.Join(t.TempDir(), "policy.json")
 	writeCLIFixture(t, customPolicyPath, cliPlanningPolicyWithWorkers(t, customTaskID, customRunID, true, []any{"qoder", "codex", "qwen", "pi", "opencode"}))
 	stdout.Reset()
