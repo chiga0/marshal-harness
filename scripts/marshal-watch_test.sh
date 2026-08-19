@@ -110,7 +110,7 @@ items = data.get("items")
 if not isinstance(items, list):
     errors.append("items 不是数组")
     items = []
-required = {"runId", "state", "priority", "action", "ageSeconds", "processOwnership"}
+required = {"runId", "state", "priority", "action", "ageSeconds", "processOwnership", "dedupeKey"}
 for it in items:
     missing = required - set(it)
     if missing:
@@ -177,6 +177,27 @@ PYEOF
   else
     bad "缺失 ReviewPacket 未进入 review-intervention"
   fi
+
+note "1d) 待办 dedupeKey 稳定且随证据变化"
+if python3 - "$OUT_JSON" "$OUT_INTERVENTION" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    with_packet = {it["runId"]: it["dedupeKey"] for it in json.load(f)["items"]}
+with open(sys.argv[2]) as f:
+    without_packet = {it["runId"]: it["dedupeKey"] for it in json.load(f)["items"]}
+if with_packet.get("run-review") == without_packet.get("run-review"):
+    print("ReviewPacket 内容变化/缺失未改变 dedupeKey")
+    sys.exit(1)
+if not with_packet.get("run-rework", "").startswith("sha256:"):
+    print("run-rework 缺少稳定 sha256 dedupeKey")
+    sys.exit(1)
+print("dedupeKey 稳定性与证据变化 OK")
+PYEOF
+then
+  ok "待办 dedupeKey 稳定且随证据变化"
+else
+  bad "待办 dedupeKey 稳定性或证据变化检查失败"
+fi
 else
   bad "缺失 ReviewPacket 场景 watchdog 异常"
 fi

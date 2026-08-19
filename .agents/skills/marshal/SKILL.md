@@ -73,6 +73,10 @@ Decision 必须绑定 `taskId`、`runId`、`reviewRound`、`specDigest`、`revie
      - 仅有明确的 provider timeout、DNS/rate-limit 或短暂 transport 背压，且预检摘要仍匹配时，才允许在原 `taskId` 上做有限 operational retry；重试前记录 attempt、预算和 backoff，超过预算转 `blocked/reject`，不再派发同一失败路径。
      - `REVIEW_PENDING` 的 triage 也只做一次：有完整且身份匹配的 packet 就在本 heartbeat 导入 Decision；缺 packet/旧 manifest/旧 base/证据变更则产出 intervention finding 并准备 successor，禁止跨 heartbeat 反复执行同一 `task review`。
      - 复用的是证据摘要而不是状态副作用；不得手写 `.marshal`、伪造 digest 或把复用摘要当作本次 Run 的独立 reviewer 结论。
+  9. **零 Attempt admission 与待办去重**：`task run` 前必须先完成零 Attempt 预检：`task status` 处于 `READY`、plan approval 与当前 `specDigest/policyDigest/capabilityDigest` 匹配、`doctor` 显示 Adapter 已配置且 supported、Mac 普通用户模式显式声明、scope/worktree 不冲突、容量与 Provider 背压检查通过。任一项失败都不得启动 Worker、不得消耗 Attempt/retry 预算；只记录 admission finding 并修复输入或 plan。
+     - watchdog 的每个行动项必须消费 `dedupeKey`（由 runId、state、spec/base、attempt/review/rework 轮次及当前 ReviewPacket 内容摘要组成）。同一 `dedupeKey` 在后续 heartbeat 只能报告或等待外部变化，不得再次执行 `task run`、`task review` 或 rework；只有 key 变化（新 plan、fresh base、新 Attempt、Packet 内容变化或外部阻塞解除）才允许重新行动。
+     - 缺 plan approval、`configured=false`、缺失/陈旧 ReviewPacket 与结构性失败分别使用不同 finding 类别；不要把 admission finding 伪装成 Worker/provider failure，也不要通过重复 Run 清除它。
+     - 并发槽位是容量上限而非派发许可；即使 `concurrencyAction=increase-concurrency`，仍须同时满足零 Attempt 预检、scope 互斥与 Provider 无背压，且同一 dedupeKey 不得 fan-out。
 
 用户明确授权的 Harness 适配修复可在 local main 直接完成，但仍必须保留独立 reviewer、精确验证摘要、`localMergeSha/sourceHead/pendingRemoteSync` 记录；产品 Run 生命周期、Worker 启动与发布权限仍只能由 Marshal Core/CLI 改变。
 - TaskSpec 的 `work.context` 必须自包含（Worker 看不到对话历史）；acceptance 命令按任务裁剪；constraints 中固定“若某操作被 permission 拒绝，不得重试该路径，改用允许路径内的等价输入”。

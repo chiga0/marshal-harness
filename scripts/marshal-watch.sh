@@ -86,6 +86,7 @@ process_snapshot() {
 
 PY_PROG='
 import json, os, re, sys
+import hashlib
 from datetime import datetime, timezone
 
 runs_dir, mode = sys.argv[1], sys.argv[2]
@@ -237,6 +238,29 @@ def age_seconds(state_path, data):
     seconds = int(now_utc.timestamp() - mtime)
     return seconds if seconds > 0 else 0
 
+def packet_digest(run_dir):
+    """返回当前 ReviewPacket 的内容摘要；缺失时保持稳定的 missing 标记。"""
+    packet_path = os.path.join(run_dir, "review-packet.json")
+    try:
+        with open(packet_path, "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        return "missing"
+
+def decision_key(run_id, data, state, run_dir):
+    """为同一待办事实生成稳定键，避免 heartbeat 重复消费同一阻塞。"""
+    fields = [
+        run_id,
+        state,
+        str(data.get("specDigest", "")),
+        str(data.get("baseSha", "")),
+        str(data.get("currentAttemptId", "")),
+        str(data.get("reviewRound", 0)),
+        str(data.get("reworkRoundsUsed", 0)),
+        packet_digest(run_dir),
+    ]
+    return "sha256:" + hashlib.sha256("\x1f".join(fields).encode("utf-8")).hexdigest()
+
 procs = process_lines()
 items, text_tokens = [], []
 owned_runs = set()
@@ -275,6 +299,7 @@ for run_id in sorted(os.listdir(runs_dir)):
     # 终态与其他未映射状态一律不进入行动队列。
     if item is not None:
         item["ageSeconds"] = age_seconds(state_path, data)
+        item["dedupeKey"] = decision_key(run_id, data, state, run_dir)
         items.append(item)
     if mode == "text":
         if state == "RUNNING":
