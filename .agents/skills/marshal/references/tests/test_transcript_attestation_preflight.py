@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tracemalloc
 import unittest
 
 
@@ -18,6 +19,8 @@ SCHEMA = SKILL_ROOT / "references/transcript-attestation-preflight.schema.json"
 TEMPLATE = SKILL_ROOT / "templates/transcript-attestation-preflight.json"
 SCHEMA_PROBE = SKILL_ROOT / "references/tests/transcript_attestation_schema_probe.go"
 CHECKER_SOURCE = SKILL_ROOT / "references/tests/transcript_attestation_core_probe.go"
+FLOOD_CHECKER_SOURCE = SKILL_ROOT / "references/tests/transcript_attestation_flood_probe.go"
+HANG_CHECKER_SOURCE = SKILL_ROOT / "references/tests/transcript_attestation_hang_probe.go"
 FIXTURES = SKILL_ROOT / "references/fixtures/transcript-attestation"
 
 
@@ -30,11 +33,38 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._binary_directory = tempfile.TemporaryDirectory()
         cls.checker = (Path(cls._binary_directory.name) / "transcript-attestation-checker").resolve()
+        cls.flood_checker = (Path(cls._binary_directory.name) / "transcript-attestation-flood-checker").resolve()
+        cls.hang_checker = (Path(cls._binary_directory.name) / "transcript-attestation-hang-checker").resolve()
+        cls.flood_marker = (Path(cls._binary_directory.name) / "flood-evidence-consumed").resolve()
         cls.marshal = (Path(cls._binary_directory.name) / "marshal").resolve()
         for output, source in ((cls.checker, str(CHECKER_SOURCE)), (cls.marshal, "./cmd/marshal")):
             completed = subprocess.run(["go", "build", "-o", str(output), source], cwd=REPOSITORY_ROOT, capture_output=True, text=True)
             if completed.returncode != 0:
                 raise RuntimeError(completed.stderr)
+        completed = subprocess.run(
+            [
+                "go",
+                "build",
+                "-ldflags",
+                f"-X=main.markerPath={cls.flood_marker}",
+                "-o",
+                str(cls.flood_checker),
+                str(FLOOD_CHECKER_SOURCE),
+            ],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr)
+        completed = subprocess.run(
+            ["go", "build", "-o", str(cls.hang_checker), str(HANG_CHECKER_SOURCE)],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr)
         spec = importlib.util.spec_from_file_location("transcript_attestation_validator", VALIDATOR)
         if spec is None or spec.loader is None:
             raise RuntimeError("cannot load transcript attestation validator")
@@ -140,14 +170,23 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
                 output["implementationDigests"]["checkerExecutionIdentity"],
                 r"^sha256:[0-9a-f]{64}$",
             )
-            expected_method = (
+            expected_actual_method = (
                 "darwin-codesign-cdhash-full-sha256"
                 if sys.platform == "darwin"
                 else "linux-proc-exe-sha256"
             )
+            expected_held_method = (
+                "darwin-held-macho-codedirectory-sha256"
+                if sys.platform == "darwin"
+                else "linux-proc-exe-sha256"
+            )
             self.assertEqual(
-                output["implementationDigests"]["checkerExecutionIdentityMethod"],
-                expected_method,
+                output["implementationDigests"]["checkerExecutionActualIdentityMethod"],
+                expected_actual_method,
+            )
+            self.assertEqual(
+                output["implementationDigests"]["checkerExecutionExpectedIdentityMethod"],
+                expected_held_method,
             )
 
     def test_forbidden_unbound_command_rejected(self):
@@ -318,6 +357,48 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             self.assertEqual(raised.exception.reason_code, "checker-process-identity-mismatch")
             self.assertFalse(marker.exists(), "evidence must not be sent before process-image attestation")
 
+    def test_private_checker_double_swap_is_caught_by_actual_process_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, manifest = self.prepare(directory)
+            marker = Path(directory) / "evidence-reached-double-swap"
+            original_raw: list[bytes] = []
+
+            def install_attack(copied_path: Path) -> None:
+                replacement = copied_path.with_name("replacement")
+                replacement.write_text(
+                    "#!/bin/sh\nIFS= read -r payload\nprintf received > "
+                    + repr(str(marker))
+                    + "\n"
+                )
+                replacement.chmod(0o700)
+                os.replace(replacement, copied_path)
+
+            def restore(copied_path: Path) -> None:
+                replacement = copied_path.with_name("restored")
+                replacement.write_bytes(original_raw[0])
+                replacement.chmod(0o700)
+                os.replace(replacement, copied_path)
+
+            def before_spawn(copied_path: Path) -> None:
+                original_raw.append(copied_path.read_bytes())
+                install_attack(copied_path)
+                restore(copied_path)
+                install_attack(copied_path)
+
+            def after_process_spawn(copied_path: Path, _process) -> None:
+                restore(copied_path)
+
+            with self.assertRaises(self.validator_module.PreflightError) as raised:
+                self.validator_module.invoke_core_checker(
+                    self.checker,
+                    manifest["subject"],
+                    self.direct_checker_inputs(root, manifest),
+                    before_spawn=before_spawn,
+                    after_process_spawn=after_process_spawn,
+                )
+            self.assertEqual(raised.exception.reason_code, "checker-process-identity-mismatch")
+            self.assertFalse(marker.exists(), "double-swapped checker must not receive evidence")
+
     def test_private_checker_mutation_after_spawn_is_rejected_before_evidence(self):
         for mutation in ("replace", "grow", "symlink"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
@@ -349,6 +430,46 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
                     str(raised.exception),
                 )
 
+    def test_checker_output_flood_is_bounded_and_reaped_before_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, manifest = self.prepare(directory)
+            self.flood_marker.unlink(missing_ok=True)
+            tracemalloc.start()
+            try:
+                with self.assertRaises(self.validator_module.PreflightError) as raised:
+                    self.validator_module.invoke_core_checker(
+                        self.flood_checker,
+                        manifest["subject"],
+                        self.direct_checker_inputs(root, manifest),
+                    )
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            self.assertEqual(raised.exception.reason_code, "checker-output-limit-exceeded")
+            self.assertLess(peak, 24 * 1024 * 1024)
+            self.assertFalse(self.flood_marker.exists(), "flooding checker must not consume evidence")
+
+    def test_checker_deadline_terminates_and_reaps_only_owned_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, manifest = self.prepare(directory)
+            checker_pid: list[int] = []
+
+            def remember_pid(_copied_path: Path, process) -> None:
+                checker_pid.append(process.pid)
+
+            with self.assertRaises(self.validator_module.PreflightError) as raised:
+                self.validator_module.invoke_core_checker(
+                    self.hang_checker,
+                    manifest["subject"],
+                    self.direct_checker_inputs(root, manifest),
+                    after_process_spawn=remember_pid,
+                    checker_timeout_seconds=1,
+                )
+            self.assertEqual(raised.exception.reason_code, "checker-deadline-exceeded")
+            self.assertEqual(len(checker_pid), 1)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(checker_pid[0], 0)
+
     def test_python_bridge_contains_no_tool_or_event_semantic_parser(self):
         source = VALIDATOR.read_text()
         for forbidden in ("def parse_jsonl", "def validate_transcript", "tool_use", "tool_result", "TEE_FIRST_LINE", "TASK_TOOL_NAMES"):
@@ -364,10 +485,14 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
         receipt = json.loads(receipt_path.read_text())
         self.assertEqual(receipt["status"], "pass")
         self.assertEqual(receipt["reasonCode"], "transcript-attestation-pass")
-        self.assertEqual(receipt["attestationDigest"], "sha256:06a857f95f47c4bcf3b09c7bfc4b4f098bdbb09d998cc6bcf1f83592c924273e")
+        self.assertEqual(receipt["attestationDigest"], "sha256:03eb792347e39bec7c4ad1ade2356d3e6448d3e10077ef1674c6ed1fcaea01a1")
         self.assertEqual(
-            receipt["implementationDigests"]["checkerExecutionIdentityMethod"],
+            receipt["implementationDigests"]["checkerExecutionActualIdentityMethod"],
             "darwin-codesign-cdhash-full-sha256",
+        )
+        self.assertEqual(
+            receipt["implementationDigests"]["checkerExecutionExpectedIdentityMethod"],
+            "darwin-held-macho-codedirectory-sha256",
         )
         serialized = json.dumps(receipt, ensure_ascii=False)
         for secret_or_free_text in ("/Users/", '"prompt"', '"message"', '"description"'):

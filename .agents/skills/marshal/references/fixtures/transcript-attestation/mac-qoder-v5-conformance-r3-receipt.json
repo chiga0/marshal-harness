@@ -1,5 +1,5 @@
 {
-  "attestationDigest": "sha256:06a857f95f47c4bcf3b09c7bfc4b4f098bdbb09d998cc6bcf1f83592c924273e",
+  "attestationDigest": "sha256:03eb792347e39bec7c4ad1ade2356d3e6448d3e10077ef1674c6ed1fcaea01a1",
   "coreIdentity": {
     "adapterVersion": "0.1.4",
     "eventContract": "qoder-stream-json-1.2.0-v5",
@@ -9,10 +9,11 @@
   "implementationDigests": {
     "checkerExecutable": "sha256:4f8d8ff211ca9a1e38aa9ad9317a5273ac5c3df035c11ec1ee71e7a19e6b3fce",
     "checkerExecutionIdentity": "sha256:fda6a66a8a39c65e4a2a78094ee6e1565bc21059fb34fae8a568c219bfd800d2",
-    "checkerExecutionIdentityMethod": "darwin-codesign-cdhash-full-sha256",
+    "checkerExecutionActualIdentityMethod": "darwin-codesign-cdhash-full-sha256",
+    "checkerExecutionExpectedIdentityMethod": "darwin-held-macho-codedirectory-sha256",
     "operatorSchema": "sha256:715bb30d4405dfc3a44b2ec90fe5c79a2c6c3a82f0bf322cb04d22603057fd89",
     "profile": "sha256:d29264ba6693a6c8abeaf34fcca67f33612aee3e42817bd2e92702093303e4ef",
-    "validator": "sha256:7578039e7098c6375c3537a65c68924c5a846ac0993727cd5b04e709446cf182"
+    "validator": "sha256:7b50151f781f6066cbee757a2d1e9c85ab94c408e8e7cf5a680619e1f1ff2e45"
   },
   "inputDigests": {
     "capabilitySnapshot": "sha256:c17f0351f729eff0fea457ef2bf6b5ea8f2cd23a8f8440c069a460fdaff64ed8",

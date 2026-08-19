@@ -13,7 +13,7 @@ python3 -I -B .agents/skills/marshal/references/validate-transcript-attestation-
   --checker /ABSOLUTE/OPERATOR/DIR/transcript-attestation-checker
 ```
 
-Validator 不把私有 pathname 或 held copy inode 误当成实际执行身份：checker 启动后保持 stdin 阻塞，Mac 先用固定系统 `codesign` 从实际 PID 取得 full SHA-256 CDHash，并与发送 evidence 前从受约束私有 copy 得到的预期 CDHash 精确比较；Linux CI 使用 `/proc/PID/exe` 的受限 raw SHA-256 做等价检查。身份不匹配、PID 探针失败或私有路径在任一复核点被替换、增长、改成 symlink 时，都在发送 transcript/evidence 前终止仅由 validator 启动的 checker 并 fail closed。输出的 `implementationDigests` 同时绑定 checker 原始字节摘要与 actual-process identity method/digest。
+Validator 不把私有 pathname 或 held copy inode 误当成实际执行身份：checker 启动后保持 stdin 阻塞，Mac 的预期身份直接从复制前持有的 raw bytes 解析 thin 64-bit Mach-O 唯一 SHA-256 CodeDirectory，实际身份再用固定系统 `codesign -dvvv +PID` 取得 full SHA-256 CDHash 并精确比较；Linux CI 使用 `/proc/PID/exe` 的受限 raw SHA-256 做等价检查。身份不匹配、PID 探针失败或私有路径在任一复核点被替换、增长、改成 symlink 时，都在发送 transcript/evidence 前终止仅由 validator 启动的 checker 并 fail closed。Checker 和 `codesign` 的 stdout/stderr 均由增量 reader 分别及合计施加硬上限；overflow/deadline 使用固定 `reasonCode`，仅终止、等待并回收 validator 自己创建的对应 `Popen`。输出的 `implementationDigests` 同时绑定 checker 原始字节摘要、expected held-bytes identity method、actual-process identity method 与 digest。
 
 Validator 逐级使用 nofollow `dirfd` 打开文件，以硬上限分块读取，并在读取前后复核 inode、大小与时间戳。它要求：
 

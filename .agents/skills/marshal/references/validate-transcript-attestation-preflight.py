@@ -12,9 +12,12 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -26,6 +29,10 @@ CHECKER_MAX_BYTES = 64 * 1024 * 1024
 CODESIGN_MAX_OUTPUT_BYTES = 64 * 1024
 CODESIGN_TIMEOUT_SECONDS = 10
 CHECKER_TIMEOUT_SECONDS = 120
+CHECKER_STDOUT_MAX_BYTES = 1024 * 1024
+CHECKER_STDERR_MAX_BYTES = 256 * 1024
+CHECKER_TOTAL_OUTPUT_MAX_BYTES = 5 * 1024 * 1024 // 4
+PROCESS_IO_CHUNK_BYTES = 16 * 1024
 CODESIGN_PATH = Path("/usr/bin/codesign")
 CDHASH_FULL_RE = re.compile(rb"(?m)^CandidateCDHashFull sha256=([0-9a-f]{64})$")
 INPUT_HARD_LIMITS = {
@@ -466,6 +473,208 @@ def verify_private_checker_path(copied_path: Path, held: os.stat_result, expecte
         os.close(descriptor)
 
 
+class BoundedProcessCapture:
+    def __init__(
+        self,
+        process: subprocess.Popen,
+        stdout_limit: int,
+        stderr_limit: int,
+        total_limit: int,
+    ) -> None:
+        self.process = process
+        self.started_at = time.monotonic()
+        self.buffers = {"stdout": bytearray(), "stderr": bytearray()}
+        self.limits = {"stdout": stdout_limit, "stderr": stderr_limit}
+        self.total_limit = total_limit
+        self.total = 0
+        self.overflow = ""
+        self.io_error = False
+        self.closing = False
+        self.lock = threading.Lock()
+        self.changed = threading.Event()
+        self.readers: list[threading.Thread] = []
+        for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+            if stream is None:
+                fail("checker-execution-failed", "owned process is missing a capture pipe")
+            thread = threading.Thread(target=self._read_stream, args=(name, stream), daemon=True)
+            thread.start()
+            self.readers.append(thread)
+
+    def _read_stream(self, name: str, stream) -> None:
+        try:
+            while True:
+                chunk = os.read(stream.fileno(), PROCESS_IO_CHUNK_BYTES)
+                if not chunk:
+                    return
+                with self.lock:
+                    stream_remaining = self.limits[name] - len(self.buffers[name])
+                    total_remaining = self.total_limit - self.total
+                    accepted = min(len(chunk), max(stream_remaining, 0), max(total_remaining, 0))
+                    if accepted:
+                        self.buffers[name].extend(chunk[:accepted])
+                        self.total += accepted
+                    if accepted != len(chunk):
+                        self.overflow = name
+                        self.changed.set()
+                        return
+        except OSError:
+            with self.lock:
+                if not self.closing:
+                    self.io_error = True
+                    self.changed.set()
+        finally:
+            self.changed.set()
+
+    def fault_before_input(self, overflow_reason: str, io_reason: str) -> None:
+        with self.lock:
+            overflow = bool(self.overflow)
+            io_error = self.io_error
+        if overflow:
+            self.close()
+            fail(overflow_reason, "owned process exceeded its closed output bound before input")
+        if io_error:
+            self.close()
+            fail(io_reason, "owned process capture failed before input")
+
+    def finish(
+        self,
+        input_bytes: bytes | None,
+        timeout_seconds: int,
+        overflow_reason: str,
+        deadline_reason: str,
+        io_reason: str,
+    ) -> tuple[bytes, bytes, int]:
+        writer = None
+        writer_error: list[bool] = []
+        if input_bytes is not None:
+            if self.process.stdin is None:
+                self.close()
+                fail(io_reason, "owned process is missing its input pipe")
+
+            def write_input() -> None:
+                try:
+                    offset = 0
+                    descriptor = self.process.stdin.fileno()
+                    while offset < len(input_bytes):
+                        offset += os.write(descriptor, input_bytes[offset : offset + PROCESS_IO_CHUNK_BYTES])
+                except (BrokenPipeError, OSError):
+                    writer_error.append(True)
+                finally:
+                    try:
+                        self.process.stdin.close()
+                    except OSError:
+                        pass
+                    self.changed.set()
+
+            writer = threading.Thread(target=write_input, daemon=True)
+            writer.start()
+
+        deadline = self.started_at + timeout_seconds
+        while self.process.poll() is None:
+            with self.lock:
+                overflow = bool(self.overflow)
+                io_error = self.io_error
+            if overflow:
+                self.close()
+                fail(overflow_reason, "owned process exceeded its closed output bound")
+            if io_error:
+                self.close()
+                fail(io_reason, "owned process capture failed")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.close()
+                fail(deadline_reason, "owned process exceeded its closed deadline")
+            self.changed.wait(min(0.05, remaining))
+            self.changed.clear()
+
+        if writer is not None:
+            writer.join(timeout=2)
+            if writer.is_alive():
+                self.close()
+                fail(deadline_reason, "owned process input writer did not stop")
+        for reader in self.readers:
+            reader.join(timeout=2)
+        with self.lock:
+            overflow = bool(self.overflow)
+            io_error = self.io_error
+            stdout = bytes(self.buffers["stdout"])
+            stderr = bytes(self.buffers["stderr"])
+        if overflow:
+            self.close()
+            fail(overflow_reason, "owned process exceeded its closed output bound")
+        if io_error or writer_error:
+            self.close()
+            fail(io_reason, "owned process pipe failed")
+        return stdout, stderr, self.process.returncode
+
+    def close(self) -> None:
+        with self.lock:
+            self.closing = True
+        stop_owned_checker(self.process)
+        for reader in self.readers:
+            reader.join(timeout=2)
+        for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+            if stream is not None and not stream.closed:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+def macho_code_directory_sha256(raw: bytes) -> str:
+    if raw[:4] == b"\xcf\xfa\xed\xfe":
+        endian = "<"
+    elif raw[:4] == b"\xfe\xed\xfa\xcf":
+        endian = ">"
+    else:
+        fail("checker-process-identity-unavailable", "held checker is not one thin 64-bit Mach-O image")
+    if len(raw) < 32:
+        fail("checker-process-identity-unavailable", "held Mach-O header is truncated")
+    ncmds, sizeofcmds = struct.unpack_from(endian + "II", raw, 16)
+    if ncmds > 65536 or sizeofcmds > len(raw) - 32:
+        fail("checker-process-identity-unavailable", "held Mach-O load command table is invalid")
+    command_offset = 32
+    command_end = command_offset + sizeofcmds
+    signatures: list[tuple[int, int]] = []
+    for _ in range(ncmds):
+        if command_offset + 8 > command_end:
+            fail("checker-process-identity-unavailable", "held Mach-O load command is truncated")
+        command, command_size = struct.unpack_from(endian + "II", raw, command_offset)
+        if command_size < 8 or command_offset + command_size > command_end:
+            fail("checker-process-identity-unavailable", "held Mach-O load command size is invalid")
+        if command == 0x1D:
+            if command_size < 16:
+                fail("checker-process-identity-unavailable", "held code-signature command is truncated")
+            data_offset, data_size = struct.unpack_from(endian + "II", raw, command_offset + 8)
+            signatures.append((data_offset, data_size))
+        command_offset += command_size
+    if command_offset != command_end or len(signatures) != 1:
+        fail("checker-process-identity-unavailable", "held Mach-O must have one code-signature command")
+    signature_offset, signature_size = signatures[0]
+    if signature_size < 12 or signature_offset > len(raw) - signature_size:
+        fail("checker-process-identity-unavailable", "held Mach-O code signature is out of bounds")
+    signature = raw[signature_offset : signature_offset + signature_size]
+    magic, super_length, count = struct.unpack_from(">III", signature, 0)
+    if magic != 0xFADE0CC0 or super_length > len(signature) or 12 + count * 8 > super_length:
+        fail("checker-process-identity-unavailable", "held Mach-O superblob is invalid")
+    candidates: list[bytes] = []
+    for index in range(count):
+        _slot_type, blob_offset = struct.unpack_from(">II", signature, 12 + index * 8)
+        if blob_offset > super_length - 8:
+            fail("checker-process-identity-unavailable", "held code-directory offset is invalid")
+        blob_magic, blob_length = struct.unpack_from(">II", signature, blob_offset)
+        if blob_length < 40 or blob_offset > super_length - blob_length:
+            fail("checker-process-identity-unavailable", "held code-directory length is invalid")
+        if blob_magic != 0xFADE0C02:
+            continue
+        blob = signature[blob_offset : blob_offset + blob_length]
+        if blob[37] == 2:
+            candidates.append(blob)
+    if len(candidates) != 1:
+        fail("checker-process-identity-unavailable", "held Mach-O must have one SHA-256 CodeDirectory")
+    return sha256_bytes(candidates[0])
+
+
 def codesign_identity(target: str) -> str:
     try:
         metadata = CODESIGN_PATH.lstat()
@@ -478,20 +687,38 @@ def codesign_identity(target: str) -> str:
         or metadata.st_mode & 0o111 == 0
     ):
         fail("checker-process-identity-unavailable", "the fixed system codesign tool is unavailable")
+    process = None
+    capture = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [str(CODESIGN_PATH), "-dvvv", target],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=False,
             env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
-            timeout=CODESIGN_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired):
+        capture = BoundedProcessCapture(
+            process,
+            CODESIGN_MAX_OUTPUT_BYTES,
+            CODESIGN_MAX_OUTPUT_BYTES,
+            CODESIGN_MAX_OUTPUT_BYTES,
+        )
+        stdout, stderr, returncode = capture.finish(
+            None,
+            CODESIGN_TIMEOUT_SECONDS,
+            "checker-identity-probe-output-limit-exceeded",
+            "checker-identity-probe-deadline-exceeded",
+            "checker-process-identity-unavailable",
+        )
+    except OSError:
         fail("checker-process-identity-unavailable", "codesign identity probe did not complete")
-    output = completed.stdout + completed.stderr
-    if completed.returncode != 0 or len(output) > CODESIGN_MAX_OUTPUT_BYTES:
+    finally:
+        if capture is not None:
+            capture.close()
+        elif process is not None:
+            stop_owned_checker(process)
+    output = stdout + stderr
+    if returncode != 0:
         fail("checker-process-identity-unavailable", "codesign identity probe failed closed")
     matches = CDHASH_FULL_RE.findall(output)
     if len(matches) != 1:
@@ -499,9 +726,9 @@ def codesign_identity(target: str) -> str:
     return "sha256:" + matches[0].decode("ascii")
 
 
-def expected_checker_execution_identity(copied_path: Path, checker_digest: str) -> tuple[str, str]:
+def expected_checker_execution_identity(checker_raw: bytes, checker_digest: str) -> tuple[str, str]:
     if sys.platform == "darwin":
-        return "darwin-codesign-cdhash-full-sha256", codesign_identity(str(copied_path))
+        return "darwin-held-macho-codedirectory-sha256", macho_code_directory_sha256(checker_raw)
     if sys.platform.startswith("linux"):
         return "linux-proc-exe-sha256", checker_digest
     fail("checker-process-identity-unavailable", "the host has no supported process-image identity probe")
@@ -554,8 +781,10 @@ def invoke_core_checker(
     raw_inputs: dict[str, bytes],
     *,
     before_spawn=None,
+    after_process_spawn=None,
     after_spawn=None,
-) -> tuple[dict, str, str, str]:
+    checker_timeout_seconds=CHECKER_TIMEOUT_SECONDS,
+) -> tuple[dict, str, str, str, str]:
     if not checker.is_absolute() or checker.resolve() != checker:
         fail("checker-invalid", "--checker must be an absolute canonical path")
     metadata = checker.lstat()
@@ -599,6 +828,7 @@ def invoke_core_checker(
             copied_path = Path(private_root) / "checker"
             copied_fd = os.open(copied_path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
             process = None
+            capture = None
             try:
                 offset = 0
                 while offset < len(checker_raw):
@@ -607,8 +837,8 @@ def invoke_core_checker(
                 os.fsync(copied_fd)
                 copied_before = os.fstat(copied_fd)
                 verify_private_checker_path(copied_path, copied_before, checker_raw)
-                identity_method, expected_execution_identity = expected_checker_execution_identity(
-                    copied_path, checker_digest
+                expected_identity_method, expected_execution_identity = expected_checker_execution_identity(
+                    checker_raw, checker_digest
                 )
                 verify_private_checker_path(copied_path, copied_before, checker_raw)
                 if before_spawn is not None:
@@ -618,13 +848,21 @@ def invoke_core_checker(
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    text=True,
                     env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
                 )
+                capture = BoundedProcessCapture(
+                    process,
+                    CHECKER_STDOUT_MAX_BYTES,
+                    CHECKER_STDERR_MAX_BYTES,
+                    CHECKER_TOTAL_OUTPUT_MAX_BYTES,
+                )
+                if after_process_spawn is not None:
+                    after_process_spawn(copied_path, process)
                 actual_method, actual_execution_identity = actual_checker_execution_identity(process)
-                if actual_method != identity_method or not hmac.compare_digest(
-                    actual_execution_identity, expected_execution_identity
-                ):
+                capture.fault_before_input(
+                    "checker-output-limit-exceeded", "checker-execution-failed"
+                )
+                if not hmac.compare_digest(actual_execution_identity, expected_execution_identity):
                     fail(
                         "checker-process-identity-mismatch",
                         "running checker image differs from the identity derived before spawn",
@@ -632,19 +870,26 @@ def invoke_core_checker(
                 if after_spawn is not None:
                     after_spawn(copied_path, process)
                 verify_private_checker_path(copied_path, copied_before, checker_raw)
-                stdout, stderr = process.communicate(
-                    input=json.dumps(
-                        envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-                    ),
-                    timeout=CHECKER_TIMEOUT_SECONDS,
+                capture.fault_before_input(
+                    "checker-output-limit-exceeded", "checker-execution-failed"
                 )
-                completed_returncode = process.returncode
+                stdout, stderr, completed_returncode = capture.finish(
+                    json.dumps(
+                        envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8"),
+                    checker_timeout_seconds,
+                    "checker-output-limit-exceeded",
+                    "checker-deadline-exceeded",
+                    "checker-execution-failed",
+                )
                 copied_after = os.fstat(copied_fd)
                 if checker_stat_identity(copied_before) != checker_stat_identity(copied_after):
                     fail("checker-changed-during-execution", "private checker inode changed during execution")
                 verify_private_checker_path(copied_path, copied_before, checker_raw)
             finally:
-                if process is not None:
+                if capture is not None:
+                    capture.close()
+                elif process is not None:
                     stop_owned_checker(process)
                 os.close(copied_fd)
     except (OSError, subprocess.TimeoutExpired) as error:
@@ -652,12 +897,18 @@ def invoke_core_checker(
     finally:
         os.close(checker_fd)
     stream = stdout if completed_returncode == 0 else stderr
-    payload = parse_json(stream.encode("utf-8"), "core checker output")
+    payload = parse_json(stream, "core checker output")
     if completed_returncode != 0:
         fail(payload.get("reasonCode", "core-checker-rejected"), "production Qoder checker rejected evidence")
     if set(payload) != {"status", "reasonCode", "identity", "observation"} or payload.get("status") != "pass":
         fail("checker-output-invalid", "core checker returned an open or invalid output")
-    return payload, checker_digest, identity_method, actual_execution_identity
+    return (
+        payload,
+        checker_digest,
+        expected_identity_method,
+        actual_method,
+        actual_execution_identity,
+    )
 
 
 def run(arguments: argparse.Namespace) -> dict:
@@ -674,15 +925,20 @@ def run(arguments: argparse.Namespace) -> dict:
     validate_schema_instance(manifest, schema, schema)
 
     raw_inputs, digests = load_inputs(root, manifest)
-    core, checker_digest, execution_identity_method, execution_identity = invoke_core_checker(
-        Path(arguments.checker), manifest["subject"], raw_inputs
-    )
+    (
+        core,
+        checker_digest,
+        expected_execution_identity_method,
+        actual_execution_identity_method,
+        execution_identity,
+    ) = invoke_core_checker(Path(arguments.checker), manifest["subject"], raw_inputs)
     manifest_digest = sha256_bytes(manifest_raw)
     validator_digest = sha256_bytes(Path(__file__).read_bytes())
     implementation_digests = {
         "checkerExecutable": checker_digest,
         "checkerExecutionIdentity": execution_identity,
-        "checkerExecutionIdentityMethod": execution_identity_method,
+        "checkerExecutionExpectedIdentityMethod": expected_execution_identity_method,
+        "checkerExecutionActualIdentityMethod": actual_execution_identity_method,
         "operatorSchema": sha256_bytes(schema_raw),
         "validator": validator_digest,
         "profile": digests["profile"],
