@@ -277,6 +277,65 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
                 self.write_pair(task_path, task, manifest_path, manifest)
                 self.assert_failure(self.invoke(root), "prompt-literal-unmapped")
 
+    def test_prompt_projection_rejects_core_unsafe_categories_for_every_work_field(self) -> None:
+        cases = (
+            ("objective-newline", "objective", "\n"),
+            ("objective-nul", "objective", "\u0000"),
+            ("context-tab", "context", "\t"),
+            ("context-unit-separator", "context", "\u001f"),
+            ("constraints-del", "constraints", "\u007f"),
+            ("constraints-format", "constraints", "\u200b"),
+            ("non-goals-line-separator", "nonGoals", "\u2028"),
+            ("non-goals-paragraph-separator", "nonGoals", "\u2029"),
+        )
+        for name, field, marker in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root, fixtures = self.copied_fixtures(directory)
+                task_path, task, manifest_path, manifest = self.load_pair(fixtures)
+                if field == "objective":
+                    task["work"][field] += marker
+                else:
+                    task["work"][field][0] += marker
+                self.write_pair(task_path, task, manifest_path, manifest)
+                completed = self.invoke(root)
+                self.assert_failure(completed, "prompt-projection-unsafe")
+                self.assertIn(f"work.{field}", completed.stderr)
+                self.assertIn(f"U+{ord(marker):04X}", completed.stderr)
+
+    def test_prompt_projection_accepts_safe_unicode_in_every_work_field(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.copied_fixtures(directory)
+            task_path, task, manifest_path, manifest = self.load_pair(fixtures)
+            safe = " 中文 emoji=\U0001f680 combining=e\u0301 no-break=\u00a0"
+            task["work"]["objective"] += safe
+            for field in ("context", "constraints", "nonGoals"):
+                task["work"][field][0] += safe
+            self.write_pair(task_path, task, manifest_path, manifest)
+            completed = self.invoke(root)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_prompt_projection_category_set_matches_core_rule(self) -> None:
+        self.assertEqual(
+            VALIDATOR_MODULE.UNSAFE_PROMPT_CATEGORIES,
+            {"Cc", "Cf", "Zl", "Zp"},
+        )
+        unsafe = (
+            tuple(chr(code_point) for code_point in range(0x20))
+            + tuple(chr(code_point) for code_point in range(0x7F, 0xA0))
+            + ("\u00ad", "\u200b", "\u202e", "\ufeff", "\u2028", "\u2029")
+        )
+        for marker in unsafe:
+            with self.subTest(code_point=f"U+{ord(marker):04X}"):
+                with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+                    VALIDATOR_MODULE.validate_prompt_projection_string(marker, "work.objective")
+                self.assertEqual(raised.exception.reason_code, "prompt-projection-unsafe")
+        for safe in ("ASCII", "中文", "\U0001f680", "e\u0301", "\u00a0"):
+            with self.subTest(safe=safe):
+                self.assertEqual(
+                    VALIDATOR_MODULE.validate_prompt_projection_string(safe, "work.objective"),
+                    safe,
+                )
+
     def test_one_item_equivalence_group_is_schema_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root, fixtures = self.copied_fixtures(directory)
