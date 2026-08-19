@@ -157,6 +157,30 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
         self.assertEqual(receipt["issues"], expected)
         self.assertEqual(receipt["issueCount"], len(expected))
 
+    def test_enum_rejects_numerically_equivalent_nested_values(self) -> None:
+        schemas = (
+            '{"type":"number","enum":[1,1.0,1e0]}',
+            '{"type":"array","items":{"type":"number"},'
+            '"enum":[[1,{"a":2.0,"b":[3]}],[1.0,{"b":[3e0],"a":2e0}]]}',
+        )
+        for schema in schemas:
+            with self.subTest(schema=schema), tempfile.TemporaryDirectory() as directory:
+                root = self.temporary_inputs(directory)
+                (root / "schema.json").write_text(schema)
+                completed = self.invoke(root, "schema.json", "profile.json")
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                receipt = json.loads(completed.stderr)
+                self.assertEqual(
+                    receipt["issues"],
+                    [
+                        {
+                            "code": "enum-shape-invalid",
+                            "jsonPointer": "/enum",
+                            "keyword": "enum",
+                        }
+                    ],
+                )
+
     def test_unknown_keyword_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.temporary_inputs(directory)

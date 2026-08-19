@@ -182,6 +182,27 @@ func TestProviderSchemaAllowedKeywordValuesAreClosedRegardlessOfApplicability(t 
 	}
 }
 
+func TestProviderSchemaEnumRejectsNumericallyEquivalentValues(t *testing.T) {
+	profile := readProviderFixture(t, providerProfileFixturePath())
+	for _, schema := range []string{
+		`{"type":"number","enum":[1,1.0,1e0]}`,
+		`{"type":"array","items":{"type":"number"},"enum":[[1,{"a":2.0,"b":[3]}],[1.0,{"b":[3e0],"a":2e0}]]}`,
+	} {
+		result, err := CheckProviderSchemaCompatibility([]byte(schema), profile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != "fail" || result.ReasonCode != providerSchemaIncompatible {
+			t.Fatalf("result = %#v, want incompatible", result)
+		}
+		if len(result.Issues) != 1 || result.Issues[0] != (ProviderSchemaIssue{
+			Code: "enum-shape-invalid", JSONPointer: "/enum", Keyword: "enum",
+		}) {
+			t.Fatalf("issues = %#v, want enum-shape-invalid at /enum", result.Issues)
+		}
+	}
+}
+
 func TestRunRejectsIncompatibleProviderSchemaBeforeClaimsOrLaunch(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "launched")
 	fixture := newRunFixture(t, supportedVersionOutput, "touch "+shellQuote(marker))

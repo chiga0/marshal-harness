@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"reflect"
 	"sort"
 	"strconv"
@@ -540,9 +541,68 @@ func valueMatchesProviderType(value any, schemaType string) bool {
 }
 
 func canonicalValueKey(value any) (string, bool) {
-	raw, err := json.Marshal(value)
-	if err != nil {
+	var result strings.Builder
+	if !appendCanonicalValue(&result, value) {
 		return "", false
 	}
-	return string(raw), true
+	return result.String(), true
+}
+
+func appendCanonicalValue(result *strings.Builder, value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		result.WriteString("n;")
+	case bool:
+		if typed {
+			result.WriteString("b1;")
+		} else {
+			result.WriteString("b0;")
+		}
+	case json.Number:
+		var number big.Rat
+		if _, ok := number.SetString(string(typed)); !ok {
+			return false
+		}
+		appendCanonicalPart(result, 'd', number.RatString())
+	case string:
+		appendCanonicalPart(result, 's', typed)
+	case []any:
+		result.WriteByte('a')
+		result.WriteString(strconv.Itoa(len(typed)))
+		result.WriteByte(':')
+		for _, item := range typed {
+			var child strings.Builder
+			if !appendCanonicalValue(&child, item) {
+				return false
+			}
+			appendCanonicalPart(result, 'v', child.String())
+		}
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		result.WriteByte('o')
+		result.WriteString(strconv.Itoa(len(keys)))
+		result.WriteByte(':')
+		for _, key := range keys {
+			appendCanonicalPart(result, 'k', key)
+			var child strings.Builder
+			if !appendCanonicalValue(&child, typed[key]) {
+				return false
+			}
+			appendCanonicalPart(result, 'v', child.String())
+		}
+	default:
+		return false
+	}
+	return true
+}
+
+func appendCanonicalPart(result *strings.Builder, marker byte, value string) {
+	result.WriteByte(marker)
+	result.WriteString(strconv.Itoa(len(value)))
+	result.WriteByte(':')
+	result.WriteString(value)
 }
