@@ -47,6 +47,14 @@
       "status": "pass",
       "summary": "negative regression command passed",
       "evidence": ["artifact://evidence:observed-patch"]
+    },
+    {
+      "id": "gate-unbound-pass",
+      "category": "command",
+      "required": true,
+      "status": "pass",
+      "summary": "pass status without digest-bound verifier evidence",
+      "evidence": ["fixture"]
     }
   ],
   "startedAt": "2026-08-20T00:00:00Z",

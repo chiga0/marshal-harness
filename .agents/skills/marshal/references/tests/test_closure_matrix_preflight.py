@@ -377,25 +377,63 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root, fixtures = self.prepared(directory)
             manifest = self.load(fixtures, "manifest.json")
+            manifest["findings"][0]["requiredOutcome"]["verificationRefs"] = [
+                {"kind": "gate", "id": "gate-unbound-pass"}
+            ]
+            write_json(fixtures / "manifest.json", manifest)
+            self.assert_failure(self.invoke(root, fixtures), "verification-ref-missing")
+        with tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.prepared(directory)
+            manifest = self.load(fixtures, "manifest.json")
             manifest["findings"][0]["observableDefect"]["evidenceRefs"] = [
                 {"kind": "artifact", "id": "absent-verifier-artifact"}
             ]
             write_json(fixtures / "manifest.json", manifest)
             self.assert_failure(self.invoke(root, fixtures), "verification-ref-missing")
 
+    def test_raw_patch_requires_matching_validated_artifact_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.prepared(directory)
+            artifacts = self.load(fixtures, "artifact-manifest.json")
+            artifacts["artifacts"][0]["digest"] = "sha256:" + "0" * 64
+            write_json(fixtures / "artifact-manifest.json", artifacts)
+            artifact_digest = VALIDATOR_MODULE.core_probe(
+                [], [fixtures / "artifact-manifest.json"], []
+            )["jcs"][0]
+            packet = self.load(fixtures, "review-packet.json")
+            packet["artifactManifestDigest"] = artifact_digest
+            write_json(fixtures / "review-packet.json", packet)
+            packet_digest = VALIDATOR_MODULE.core_probe(
+                [], [fixtures / "review-packet.json"], []
+            )["jcs"][0]
+            manifest = self.load(fixtures, "manifest.json")
+            manifest["freshness"]["artifactManifestDigest"] = artifact_digest
+            manifest["freshness"]["reviewPacketDigest"] = packet_digest
+            manifest["freshness"]["fingerprintDigest"] = VALIDATOR_MODULE.canonical_digest(
+                {key: value for key, value in manifest["freshness"].items() if key != "fingerprintDigest"}
+            )
+            write_json(fixtures / "manifest.json", manifest)
+            decision = self.load(fixtures, "review-decision.json")
+            decision["artifactManifestDigest"] = artifact_digest
+            decision["reviewPacketDigest"] = packet_digest
+            write_json(fixtures / "review-decision.json", decision)
+            self.assert_failure(self.invoke(root, fixtures), "patch-artifact-mismatch")
+
     def test_negative_fixture_receipt_is_execution_bound(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root, fixtures = self.prepared(directory)
-            manifest = self.load(fixtures, "manifest.json")
-            manifest["negativeFixtures"][0]["receipt"]["outputDigest"] = "sha256:" + "0" * 64
-            write_json(fixtures / "manifest.json", manifest)
-            self.assert_failure(self.invoke(root, fixtures), "negative-fixture-receipt-invalid")
-        with tempfile.TemporaryDirectory() as directory:
-            root, fixtures = self.prepared(directory)
-            manifest = self.load(fixtures, "manifest.json")
-            manifest["negativeFixtures"][0]["receipt"]["argv"][1] = "-E"
-            write_json(fixtures / "manifest.json", manifest)
-            self.assert_failure(self.invoke(root, fixtures), "negative-fixture-receipt-invalid")
+        cases = (
+            (lambda receipt: receipt.update(outputDigest="sha256:" + "0" * 64), "negative-fixture-receipt-invalid"),
+            (lambda receipt: receipt.update(inputDigest="sha256:" + "0" * 64), "negative-fixture-receipt-invalid"),
+            (lambda receipt: receipt.update(exitCode=2), "negative-fixture-receipt-invalid"),
+            (lambda receipt: receipt.update(reasonCode="wrong-reason"), "negative-fixture-wrong-reason"),
+            (lambda receipt: receipt["argv"].__setitem__(1, "-E"), "negative-fixture-receipt-invalid"),
+        )
+        for mutate, reason in cases:
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
+                root, fixtures = self.prepared(directory)
+                manifest = self.load(fixtures, "manifest.json")
+                mutate(manifest["negativeFixtures"][0]["receipt"])
+                write_json(fixtures / "manifest.json", manifest)
+                self.assert_failure(self.invoke(root, fixtures), reason)
 
     def test_p0_cannot_be_non_blocking(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
