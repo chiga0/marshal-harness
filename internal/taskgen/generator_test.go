@@ -47,6 +47,12 @@ func TestGenerateDefaultsAndPreservesExplicitOrder(t *testing.T) {
 	if !reflect.DeepEqual(override.Fallback, []string{"pi", "qwen", "qoder"}) {
 		t.Fatalf("Generate mutated override: %+v", override)
 	}
+
+	generated, err = Generate(marshalDraft(t, overrideDraft), &Selection{Preferred: "qwen"}, validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWorkerOrder(t, generated, "qwen", []string{})
 }
 
 func TestGenerateRejectsOpenCodeAndIncompleteOrders(t *testing.T) {
@@ -76,6 +82,12 @@ func TestGenerateRejectsOpenCodeAndIncompleteOrders(t *testing.T) {
 		if _, err := Generate(marshalDraft(t, draft), nil, validator); !errors.Is(err, ErrIncompleteOrder) {
 			t.Fatalf("missing %s error = %v, want ErrIncompleteOrder", missing, err)
 		}
+	}
+
+	nullFallback := taskDraft(t)
+	nullFallback["worker"].(map[string]any)["fallbackAdapters"] = nil
+	if _, err := Generate(marshalDraft(t, nullFallback), nil, validator); !errors.Is(err, ErrInvalidDraft) {
+		t.Fatalf("null fallbackAdapters error = %v, want ErrInvalidDraft", err)
 	}
 }
 
