@@ -210,7 +210,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	// where the authenticated launcher is available but a configured fixture
 	// may not be a real Codex ELF image.  Hermetic adapter tests and the explicit
 	// ordinary-user mode intentionally bypass this guard.
-	if !a.ordinaryUserMode && !a.unsafePathExecutionForTest && !a.hasAtomicAuthoritySource() {
+	if !a.ordinaryUserMode && !a.unsafePathExecutionForTest && a.testHook == nil && !a.hasAtomicAuthoritySource() {
 		return a.unsupportedConformanceProbe()
 	}
 	snapshot, err := a.inspect(ctx)
