@@ -1765,7 +1765,7 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 		t.Fatalf("transcript = %s err=%v", transcript, err)
 	}
 	metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qoder-transcript-meta.json"))
-	if err != nil || !strings.Contains(string(metadata), `"eventCount": 3`) || !strings.Contains(string(metadata), `"permissionDenied": false`) || !strings.Contains(string(metadata), `"denialsBenign": 0`) || !strings.Contains(string(metadata), `"denialsFatal": 0`) {
+	if err != nil || !strings.Contains(string(metadata), `"eventCount": 4`) || !strings.Contains(string(metadata), `"permissionDenied": false`) || !strings.Contains(string(metadata), `"denialsBenign": 0`) || !strings.Contains(string(metadata), `"denialsFatal": 0`) || !strings.Contains(string(metadata), `"workerResultTeeAttempts": 1`) || !strings.Contains(string(metadata), `"workerResultTeeSuccesses": 1`) || !strings.Contains(string(metadata), `"workerResultTeeLast": true`) {
 		t.Fatalf("metadata = %s err=%v", metadata, err)
 	}
 }
@@ -1780,10 +1780,12 @@ func TestRunUsesColonFreeWorkerResultStagingFile(t *testing.T) {
 	// absolute output path, so this fake writes through the worktree-local
 	// staging file. The adapter reads it through a held descriptor, removes
 	// that exact inode, validates it, and only then publishes to control output.
+	events := successfulWorkerResultTeeEvents("tool-result")
 	body := emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[]}}`,
+		events[0],
 	) + "\nprintf '%s' " + shellQuote(string(declared)) + " | tee marshal-worker-result.json >/dev/null\n" + emitLines(
+		events[1],
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":5}}`,
 	)
 	fixture := newRunFixtureWithResult(t, supportedBinary, body, nil)
@@ -1804,6 +1806,77 @@ func TestRunUsesColonFreeWorkerResultStagingFile(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(renamedControlRoot, "output", "worker-result.json")); err != nil {
 		t.Fatalf("held WorkerResult missing: %v", err)
+	}
+}
+
+func TestRunRejectsPostTeeWorkerResultToolSequencesAsPermanentProtocolFailures(t *testing.T) {
+	toolUse := func(id, name, input string) string {
+		return `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"` + name + `","input":` + input + `}]}}`
+	}
+	toolResult := func(id, content string) string {
+		encoded, _ := json.Marshal(content)
+		return `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":` + string(encoded) + `}]}}`
+	}
+	tee := successfulWorkerResultTeeEvents("tee-1")
+	corrected := successfulWorkerResultTeeEvents("tee-2")
+	tests := map[string][]string{
+		// Sanitized from the real R7 Attempt 2 shape: the Read observes the
+		// same staging bytes, but post-tee access is invalid independent of
+		// whether the held inode or content changed.
+		"tee-read-unchanged": append(append([]string{}, tee...),
+			toolUse("read-1", "Read", `{"file_path":"marshal-worker-result.json"}`), toolResult("read-1", "unchanged declaration")),
+		"tee-read-edit": append(append([]string{}, tee...),
+			toolUse("read-1", "Read", `{"file_path":"marshal-worker-result.json"}`), toolResult("read-1", "summary contains a typo"),
+			toolUse("edit-1", "Edit", `{"file_path":"marshal-worker-result.json","old_string":"typo","new_string":"fixed"}`), toolResult("edit-1", "updated")),
+		"tee-extra-bash": append(append([]string{}, tee...),
+			toolUse("bash-2", "Bash", `{"command":"git diff --name-only"}`), toolResult("bash-2", "file.go")),
+		"tee-second-tee": append(append([]string{}, tee...), corrected...),
+		"invalid-then-corrected": append([]string{
+			toolUse("tee-invalid", "Bash", `{"command":"printf invalid | tee ./marshal-worker-result.json"}`), toolResult("tee-invalid", "invalid"),
+		}, corrected...),
+	}
+	for name, sequence := range tests {
+		t.Run(name, func(t *testing.T) {
+			events := []string{`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`}
+			events = append(events, sequence...)
+			events = append(events, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"finished"}]}}`)
+			events = append(events, `{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`)
+			fixture := newRunFixture(t, supportedBinary, emitLines(events...))
+			_, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"maxOutputBytes": 64 << 10}))
+			failure, ok := port.AsAdapterFailure(err)
+			if !errors.Is(err, ErrProtocol) || !ok || failure.Adapter != port.AdapterIDQoder || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+				t.Fatalf("error = %v, want qoder protocol-invalid/do-not-retry", err)
+			}
+			metadata, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qoder-transcript-meta.json"))
+			if readErr != nil || !strings.Contains(string(metadata), `"failureKind": "protocol-invalid"`) || !strings.Contains(string(metadata), `"retryDisposition": "do-not-retry"`) || strings.Contains(string(metadata), `"workerResultTeeLast": true`) {
+				t.Fatalf("metadata = %s err=%v", metadata, readErr)
+			}
+			published, statErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "worker-result.json"))
+			if statErr != nil || len(published) != 0 {
+				t.Fatalf("semantic WorkerResult was published after invalid transport sequence: bytes=%d err=%v", len(published), statErr)
+			}
+		})
+	}
+}
+
+func TestRunRejectsStagedWorkerResultWithoutTranscriptTeeDeclaration(t *testing.T) {
+	body := "printf '%s' changed > file.txt\n" + emitLines(
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"completed successfully"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`,
+	)
+	// newRunFixture writes a Schema-valid staging declaration after the fake
+	// transcript and exits zero. Neither those bytes, the worktree diff, nor
+	// final prose may substitute for the missing transcript transport event.
+	fixture := newRunFixture(t, supportedBinary, body)
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	failure, ok := port.AsAdapterFailure(err)
+	if !errors.Is(err, ErrProtocol) || !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+		t.Fatalf("error = %v, want protocol-invalid/do-not-retry", err)
+	}
+	published, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "worker-result.json"))
+	if readErr != nil || len(published) != 0 {
+		t.Fatalf("missing tee produced semantic WorkerResult: bytes=%d err=%v", len(published), readErr)
 	}
 }
 
@@ -1975,7 +2048,7 @@ func TestRunRejectsPreexistingResultStagingBeforeWorkerLaunch(t *testing.T) {
 func TestRunPersistsQoderPermissionDenialAndReturnsPermanentFailure(t *testing.T) {
 	body := emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
+		workerResultTeeToolUseEvent("tool-1"),
 		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`,
 	)
@@ -1983,7 +2056,8 @@ func TestRunPersistsQoderPermissionDenialAndReturnsPermanentFailure(t *testing.T
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	typed, ok := port.AsAdapterFailure(err)
 	if !ok || typed.Kind != port.FailureKindProviderTerminal || typed.Disposition != port.RetryDispositionDoNotRetry {
-		t.Fatalf("error = %v, want provider-terminal/do-not-retry", err)
+		metadata, _ := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qoder-transcript-meta.json"))
+		t.Fatalf("error = %v, want provider-terminal/do-not-retry; metadata=%s", err, metadata)
 	}
 	if strings.Contains(err.Error(), "Permission confirmation") || strings.Contains(err.Error(), "interactive handler") {
 		t.Fatalf("typed error leaked provider text: %v", err)
@@ -2005,7 +2079,7 @@ func TestRunPersistsQoderPermissionDenialAndReturnsPermanentFailure(t *testing.T
 func TestRunWritesDenialLogThroughHeldOutputDirectory(t *testing.T) {
 	body := emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
+		workerResultTeeToolUseEvent("tool-1"),
 		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false}`,
 	) + `
@@ -2031,7 +2105,7 @@ func TestRunFailsTypedWhenWorkerPreclaimsDenialLog(t *testing.T) {
 printf '%s' 'forged' > "$marshal_root/output/denials.jsonl"
 ` + emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
+		workerResultTeeToolUseEvent("tool-1"),
 		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false}`,
 	)

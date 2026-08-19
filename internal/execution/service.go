@@ -2307,7 +2307,7 @@ func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, 
 		// while reading or resolving the old symlink exposed the colon-bearing
 		// control path to its safety checker. Marshal now pre-creates a non-hidden
 		// worktree staging file; one Bash tee write is the measured transport.
-		b.WriteString("Qoder 特殊规则：上述路径是 Marshal 预先创建的 worktree staging 普通文件，与 control output 不是同一 inode；不要 Read、Write、ls、cat 重定向或探测它。完成其它工作后，仅使用一次 Bash tee 将最终 WorkerResult JSON 写入该相对路径；若该次写入被拒绝，不得换工具或再次尝试同一路径。\n")
+		b.WriteString("Qoder 特殊规则：上述路径是 Marshal 预先创建的 worktree staging 普通文件，与 control output 不是同一 inode；不要 Read、Write、ls、cat 重定向或探测它。先在内存中完成完整的最终 WorkerResult payload，并让 summary 保持简短且不依赖实现符号的精确拼写；完成其它全部工作后，仅使用一次 Bash tee 将 payload 写入该相对路径。Bash command 必须采用形如 `cat <<'MARSHAL_RESULT' | tee ./marshal-worker-result.json > /dev/null` 的单一 quoted-heredoc 形态，结束 delimiter 必须是最后一行；不要改用 printf、重定向直写或在 delimiter 后追加命令。唯一一次成功 tee 必须是整个 Attempt 的最后一个 tool call；收到成功 tool_result 后立即 end_turn，禁止再调用 Read、Edit、Write、Bash 或任何其它工具，也禁止检查、纠错、替换或第二次 tee。即使随后发现 summary 中有自由文本 typo，也保留原声明，不得回改 staging。若该次写入被拒绝或失败，不得换工具或再次尝试同一路径。\n")
 	}
 	fmt.Fprintf(&b, "其中 taskId=%s、runId=%s、attemptId=%s、adapter.id=%s。\n", state.TaskID, state.RunID, attemptID, adapterID)
 	b.WriteString("adapter.executable、adapter.version、startedAt、completedAt 必须逐字复制下文模板中的固定 sentinel；禁止为填写它们运行任何宿主探测（例如 which、--version、date、env 或读取环境变量）；Marshal 会以实际观测值覆盖这些不可信字段。\n\n")

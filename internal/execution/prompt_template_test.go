@@ -233,7 +233,7 @@ func TestRenderPromptProjectsSelfContainedWorkerView(t *testing.T) {
 			"executionProfile": "workspace-write", "sessionPolicy": "ephemeral",
 		}
 		qoderPrompt := renderFixturePromptForAdapter(t, spec, "qoder")
-		for _, anchor := range []string{"./marshal-worker-result.json", "Qoder 特殊规则", "worktree staging", "不是同一 inode", "仅使用一次 Bash tee", "不得换工具或再次尝试"} {
+		for _, anchor := range []string{"./marshal-worker-result.json", "Qoder 特殊规则", "worktree staging", "不是同一 inode", "仅使用一次 Bash tee", "单一 quoted-heredoc 形态", "结束 delimiter 必须是最后一行", "不要改用 printf", "最后一个 tool call", "成功 tool_result 后立即 end_turn", "自由文本 typo", "禁止检查、纠错、替换或第二次 tee", "不得换工具或再次尝试"} {
 			if !strings.Contains(qoderPrompt, anchor) {
 				t.Fatalf("Qoder prompt is missing %q:\n%s", anchor, qoderPrompt)
 			}

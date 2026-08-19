@@ -491,12 +491,29 @@ func emitLines(lines ...string) string {
 	return "printf '%s\\n' " + strings.Join(quoted, " ")
 }
 
+const testWorkerResultTeeCommand = "cat <<'MARSHAL_RESULT' | tee ./marshal-worker-result.json > /dev/null\n{}\nMARSHAL_RESULT"
+
+func workerResultTeeToolUseEvent(id string) string {
+	command, _ := json.Marshal(testWorkerResultTeeCommand)
+	return `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":` + string(command) + `}}]}}`
+}
+
+func successfulWorkerResultTeeEvents(id string) []string {
+	return []string{
+		workerResultTeeToolUseEvent(id),
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":""}]}}`,
+	}
+}
+
 func successEvents(model string) string {
-	return emitLines(
-		`{"type":"system","subtype":"init","session_id":"sess-1","model":"`+model+`","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[]}}`,
+	events := []string{
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"` + model + `","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+	}
+	events = append(events, successfulWorkerResultTeeEvents("tool-result")...)
+	events = append(events,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":5}}`,
 	)
+	return emitLines(events...)
 }
 
 func errorEvents(reason string) string {

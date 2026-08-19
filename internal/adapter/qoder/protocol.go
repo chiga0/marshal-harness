@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/adapter/denials"
@@ -35,14 +36,31 @@ type captureResult struct {
 	denials         []denials.RawDenial
 	toolNames       []string
 	pendingTools    map[string]pendingToolCall
+	resultTransport resultTransportSequence
 	terminal        terminalOutcome
 	limitExceeded   bool
 	err             error
 }
 
 type pendingToolCall struct {
-	tool  string
-	input json.RawMessage
+	tool                 string
+	input                json.RawMessage
+	ordinal              int
+	resultTransport      bool
+	validResultTransport bool
+}
+
+// resultTransportSequence records only the closed WorkerResult transport
+// protocol projected by Marshal. The staging bytes remain untrusted and are
+// separately consumed through held descriptors, validated against Schema and
+// rebound to the request identity. This sequence is evidence that Qoder used
+// exactly one reviewed Bash tee and made no later tool call; it never derives
+// a semantic WorkerResult from exit status, git diff, or assistant prose.
+type resultTransportSequence struct {
+	attempts          int
+	successes         int
+	successfulOrdinal int
+	invalidAccess     bool
 }
 
 // terminalOutcome is the single terminal `result` event that ends a Qoder
@@ -283,8 +301,19 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			if _, duplicate := result.pendingTools[part.ID]; duplicate {
 				return fmt.Errorf("%w: duplicate assistant tool_use id", ErrProtocol)
 			}
-			result.pendingTools[part.ID] = pendingToolCall{tool: normalizeQoderToolName(part.Name), input: append(json.RawMessage(nil), part.Input...)}
+			tool := normalizeQoderToolName(part.Name)
 			result.toolCalls++
+			transportAccess, validTransport := classifyWorkerResultTransportTool(tool, part.Input)
+			if transportAccess {
+				result.resultTransport.attempts++
+				if !validTransport {
+					result.resultTransport.invalidAccess = true
+				}
+			}
+			result.pendingTools[part.ID] = pendingToolCall{
+				tool: tool, input: append(json.RawMessage(nil), part.Input...), ordinal: result.toolCalls,
+				resultTransport: transportAccess, validResultTransport: validTransport,
+			}
 		}
 		result.assistantCount++
 	case "user":
@@ -329,6 +358,10 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			if part.IsError != nil && *part.IsError {
 				continue
 			}
+			if pending.resultTransport && pending.validResultTransport {
+				result.resultTransport.successes++
+				result.resultTransport.successfulOrdinal = pending.ordinal
+			}
 			result.toolNames = append(result.toolNames, pending.tool)
 		}
 		return nil
@@ -365,6 +398,89 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		return fmt.Errorf("%w: unrecognized stream-json event type", ErrProtocol)
 	}
 	return nil
+}
+
+// classifyWorkerResultTransportTool recognizes the one reviewed Qoder 1.1.23
+// transport shape without interpreting arbitrary shell. Any tool input that
+// names the staging leaf is transport access. Only Bash with a terminal
+// `cat <<'DELIMITER' | tee ./marshal-worker-result.json [> /dev/null]`
+// command is valid; Read/Edit/Write, a different shell shape, or commands
+// after the heredoc terminator are permanently invalid protocol attempts.
+func classifyWorkerResultTransportTool(tool string, input json.RawMessage) (access, valid bool) {
+	if !bytes.Contains(input, []byte(workerResultStagingName)) {
+		return false, false
+	}
+	if tool != "bash" {
+		return true, false
+	}
+	var value struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(input, &value); err != nil || value.Command == "" {
+		return true, false
+	}
+	return true, validWorkerResultTeeCommand(value.Command)
+}
+
+func validWorkerResultTeeCommand(command string) bool {
+	if strings.ContainsAny(command, "\r\x00") {
+		return false
+	}
+	firstLine, body, hasBody := strings.Cut(command, "\n")
+	const target = "./" + workerResultStagingName
+	marker := " | tee " + target
+	if strings.Count(firstLine, marker) != 1 || strings.Contains(firstLine, "tee "+workerResultStagingName) {
+		return false
+	}
+	prefix, suffix, found := strings.Cut(firstLine, marker)
+	if !found || !strings.HasPrefix(prefix, "cat <<'") || strings.TrimSpace(suffix) != "" && strings.TrimSpace(suffix) != "> /dev/null" && strings.TrimSpace(suffix) != ">/dev/null" {
+		return false
+	}
+	delimiterStart := len("cat <<'")
+	delimiterEnd := strings.IndexByte(prefix[delimiterStart:], '\'')
+	if delimiterEnd <= 0 {
+		return false
+	}
+	delimiterEnd += delimiterStart
+	delimiter := prefix[delimiterStart:delimiterEnd]
+	if strings.TrimSpace(prefix[delimiterEnd+1:]) != "" || strings.ContainsAny(delimiter, " \t'\"") || !hasBody {
+		return false
+	}
+	lines := strings.Split(body, "\n")
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) < 2 || lines[len(lines)-1] != delimiter {
+		return false
+	}
+	for _, line := range lines[:len(lines)-1] {
+		if line == delimiter {
+			return false
+		}
+	}
+	return true
+}
+
+// validateWorkerResultTransportSequence is called only for an otherwise
+// successful attempt. It requires exactly one successful reviewed tee and
+// makes its tool_use ordinal the final tool call. A failed/invalid first
+// declaration followed by a corrected declaration therefore remains invalid
+// rather than accepting the final staging bytes.
+func validateWorkerResultTransportSequence(result captureResult) error {
+	sequence := result.resultTransport
+	if workerResultTransportSequenceViolation(result) || sequence.attempts != 1 || sequence.successes != 1 {
+		return ErrProtocol
+	}
+	return nil
+}
+
+// workerResultTransportSequenceViolation distinguishes a structural sequence
+// breach from a single tee that was denied or failed. Structural breaches are
+// protocol-invalid even if a later provider/process failure is also present;
+// one denied final tee keeps its truthful provider-terminal classification.
+func workerResultTransportSequenceViolation(result captureResult) bool {
+	sequence := result.resultTransport
+	return sequence.invalidAccess || sequence.attempts > 1 || sequence.successes > 1 || sequence.successes == 1 && sequence.successfulOrdinal != result.toolCalls
 }
 
 func normalizeQoderToolName(name string) string {

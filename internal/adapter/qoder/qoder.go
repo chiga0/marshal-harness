@@ -741,6 +741,17 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
 	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: worktree, ControlRoot: controlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
+	// The reviewed result command begins with `cat`, so the shared generic
+	// execute-denial classifier would otherwise treat it as read-only
+	// introspection. Qoder's staging declaration is an execute/write transport:
+	// denial is always fatal and must never be retried as a benign probe.
+	for index := range denialRecords {
+		if access, _ := classifyWorkerResultTransportTool(capture.denials[index].Tool, capture.denials[index].Input); access {
+			denialRecords[index].Grade = string(denials.Fatal)
+			denialRecords[index].Kind = string(denials.KindExecute)
+			denialRecords[index].Reason = "Qoder WorkerResult transport 拒绝一律 FATAL"
+		}
+	}
 	fatalDenials := denials.CountFatal(denialRecords)
 	if len(denialRecords) > 0 {
 		denialLeaf, claimErr := claim(denials.LogFileName, "denial log")
@@ -766,6 +777,16 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if transportErr != nil && runCtx.Err() == nil && !capture.limitExceeded {
 		resolved = qoderProtocolInvalid("worker result staging identity or content is invalid", a.now())
 	}
+	// A post-tee tool call or repeated/invalid declaration is structural even
+	// when Qoder also reports a provider/process failure. Cancellation and
+	// bounded-output truncation retain their explicit outer-bound precedence;
+	// malformed transcript already resolves to the same typed protocol class.
+	if runCtx.Err() == nil && !capture.limitExceeded && capture.err == nil && workerResultTransportSequenceViolation(capture) {
+		resolved = qoderProtocolInvalid("worker result transport tool sequence is invalid", a.now())
+	}
+	if resolved == nil && validateWorkerResultTransportSequence(capture) != nil {
+		resolved = qoderProtocolInvalid("worker result transport tool sequence is invalid", a.now())
+	}
 	if resolved == nil && (capture.cliVersion != identity.version || capture.protocolVersion != qoderProtocolVersion || capture.permissionMode != qoderPermissionMode) {
 		resolved = qoderProtocolInvalid("system contract does not match the bound Qoder protocol", a.now())
 	}
@@ -783,7 +804,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		"sessionId": capture.sessionID, "model": capture.model,
 		"qodercliVersion": capture.cliVersion, "protocolVersion": capture.protocolVersion, "permissionMode": capture.permissionMode,
 		"eventCount": capture.eventCount, "assistantMessages": capture.assistantCount, "toolCalls": capture.toolCalls,
-		"inputTokens": capture.inputTokens, "outputTokens": capture.outputTokens,
+		"workerResultTeeAttempts": capture.resultTransport.attempts, "workerResultTeeSuccesses": capture.resultTransport.successes,
+		"workerResultTeeLast": capture.resultTransport.attempts == 1 && capture.resultTransport.successes == 1 && capture.resultTransport.successfulOrdinal == capture.toolCalls && !capture.resultTransport.invalidAccess,
+		"inputTokens":         capture.inputTokens, "outputTokens": capture.outputTokens,
 		"capturedBytes": len(capture.raw), "outputTruncated": capture.limitExceeded,
 		"permissionDenied": fatalDenials > 0,
 		"denialsBenign":    len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials,

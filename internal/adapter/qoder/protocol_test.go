@@ -267,6 +267,78 @@ func TestDecodeEventLineAcceptsObservedMissingIsErrorSuccess(t *testing.T) {
 	}
 }
 
+func TestWorkerResultTransportSequenceAcceptsExactlyOneFinalSuccessfulTee(t *testing.T) {
+	events := []string{`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`}
+	events = append(events, successfulWorkerResultTeeEvents("tool-result")...)
+	events = append(events, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`)
+	events = append(events, `{"type":"result","subtype":"success","is_error":false}`)
+	result := decodeTranscript([]byte(strings.Join(events, "\n") + "\n"))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if err := validateWorkerResultTransportSequence(result); err != nil {
+		t.Fatalf("valid final tee rejected: %v; sequence=%+v tools=%d", err, result.resultTransport, result.toolCalls)
+	}
+}
+
+func TestWorkerResultTeeCommandRejectsCommandsAfterHeredocTerminator(t *testing.T) {
+	command := "cat <<'RESULT' | tee ./marshal-worker-result.json > /dev/null\n{}\nRESULT\ngit status\nRESULT"
+	if validWorkerResultTeeCommand(command) {
+		t.Fatal("tee command accepted executable shell input after the heredoc terminator")
+	}
+}
+
+func TestDeniedFinalWorkerResultTeeIsNotARepeatedSequenceViolation(t *testing.T) {
+	events := []string{
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		workerResultTeeToolUseEvent("tee-denied"),
+		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tee-denied","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tee-denied","is_error":true,"content":"denied"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false}`,
+	}
+	result := decodeTranscript([]byte(strings.Join(events, "\n") + "\n"))
+	if result.err != nil || len(result.denials) != 1 || result.resultTransport.attempts != 1 || result.resultTransport.successes != 0 || result.resultTransport.invalidAccess || workerResultTransportSequenceViolation(result) {
+		t.Fatalf("denied final tee sequence = %+v denials=%d err=%v", result.resultTransport, len(result.denials), result.err)
+	}
+}
+
+func TestWorkerResultTransportSequenceRejectsNonFinalAndRepeatedAccess(t *testing.T) {
+	toolUse := func(id, name, input string) string {
+		return `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"` + name + `","input":` + input + `}]}}`
+	}
+	toolResult := func(id string) string {
+		return `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":"ok"}]}}`
+	}
+	tee := successfulWorkerResultTeeEvents("tee-1")
+	corrected := successfulWorkerResultTeeEvents("tee-2")
+	tests := map[string][]string{
+		"tee-read": append(append([]string{}, tee...),
+			toolUse("read-1", "Read", `{"file_path":"marshal-worker-result.json"}`), toolResult("read-1")),
+		"tee-read-edit": append(append([]string{}, tee...),
+			toolUse("read-1", "Read", `{"file_path":"marshal-worker-result.json"}`), toolResult("read-1"),
+			toolUse("edit-1", "Edit", `{"file_path":"marshal-worker-result.json","old_string":"typo","new_string":"fixed"}`), toolResult("edit-1")),
+		"tee-extra-bash": append(append([]string{}, tee...),
+			toolUse("bash-2", "Bash", `{"command":"git diff --name-only"}`), toolResult("bash-2")),
+		"tee-second-tee": append(append([]string{}, tee...), corrected...),
+		"invalid-then-corrected": append([]string{
+			toolUse("tee-invalid", "Bash", `{"command":"printf broken | tee ./marshal-worker-result.json"}`), toolResult("tee-invalid"),
+		}, corrected...),
+	}
+	for name, sequence := range tests {
+		t.Run(name, func(t *testing.T) {
+			events := []string{`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`}
+			events = append(events, sequence...)
+			events = append(events, `{"type":"result","subtype":"success","is_error":false}`)
+			result := decodeTranscript([]byte(strings.Join(events, "\n") + "\n"))
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			if err := validateWorkerResultTransportSequence(result); !errors.Is(err, ErrProtocol) {
+				t.Fatalf("sequence accepted: %+v", result.resultTransport)
+			}
+		})
+	}
+}
+
 func TestDecodeEventLineRecordsErrorTerminalCode(t *testing.T) {
 	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 {"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"connection_failed"}
