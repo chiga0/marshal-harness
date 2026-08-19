@@ -693,6 +693,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, err
 	}
 	defer claimedResult.close()
+	removeResultAlias, err := bindWorkerResultAlias(worktree, resultPath)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	defer removeResultAlias()
 	transcriptLeaf, err := claim("qoder-transcript.jsonl", "transcript")
 	if err != nil {
 		return domain.Record{}, err
@@ -788,6 +793,33 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, qoderProtocolInvalid("output directory binding changed before result publication", a.now())
 	}
 	return domain.Record{Kind: domain.KindWorkerResult, Data: data}, nil
+}
+
+// bindWorkerResultAlias gives ordinary-user Qoder a colon-free path to the
+// already-claimed Marshal result inode. Run attempt directories contain a
+// colon (for example attempt:<id>), and Qoder's shell safety checker rejects
+// such absolute paths before it can perform the one permitted final write.
+// The alias is created only when the worktree path is unused, points at the
+// held result path, and is removed only if the worker leaves that binding
+// intact. A worker that replaces/removes the alias cannot escape the trusted
+// control output; the held descriptor remains the sole authoritative source.
+func bindWorkerResultAlias(worktree, resultPath string) (func(), error) {
+	alias := filepath.Join(worktree, ".marshal-worker-result.json")
+	if info, err := os.Lstat(alias); err == nil {
+		return nil, fmt.Errorf("worker result alias already exists: %s", info.Mode())
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect worker result alias: %w", err)
+	}
+	if err := os.Symlink(resultPath, alias); err != nil {
+		return nil, fmt.Errorf("bind worker result alias: %w", err)
+	}
+	cleanup := func() {
+		target, err := os.Readlink(alias)
+		if err == nil && target == resultPath {
+			_ = os.Remove(alias)
+		}
+	}
+	return cleanup, nil
 }
 
 // resolveAttemptFailure orders terminal conditions before the WorkerResult is

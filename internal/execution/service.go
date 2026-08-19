@@ -2161,6 +2161,13 @@ func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, 
 		return "", fmt.Errorf("prompt projection: decode TaskSpec: %w", err)
 	}
 	workerResultPath := filepath.Join(controlRoot, "output", "worker-result.json")
+	if adapterID == "qoder" {
+		// Qoder's ordinary-user shell guard rejects absolute paths containing a
+		// colon. Attempt directories use an `attempt:<id>` component, so expose
+		// a relative, worktree-local alias instead; the adapter binds that alias
+		// to the held Marshal output inode before launch.
+		workerResultPath = "./.marshal-worker-result.json"
+	}
 	identity := []projectionField{
 		{"taskId", state.TaskID},
 		{"runId", state.RunID},

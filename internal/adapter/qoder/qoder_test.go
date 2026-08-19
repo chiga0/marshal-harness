@@ -1762,6 +1762,37 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 	}
 }
 
+func TestRunUsesColonFreeWorkerResultAlias(t *testing.T) {
+	declared, err := json.Marshal(validDeclaredResult("/worker/claim"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Real Marshal attempt directories contain `attempt:<id>`. Qoder's
+	// ordinary-user shell guard rejects that colon when it appears in an
+	// absolute output path, so this fake writes through the worktree-local
+	// alias that the adapter binds to the held result inode.
+	body := successEvents("provider/model") + "\nprintf '%s' " + shellQuote(string(declared)) + " > .marshal-worker-result.json"
+	fixture := newRunFixture(t, supportedBinary, body)
+	parent := t.TempDir()
+	renamedControlRoot := filepath.Join(parent, "control:root")
+	if err := os.Rename(fixture.controlRoot, renamedControlRoot); err != nil {
+		t.Fatal(err)
+	}
+	record, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"controlRoot": renamedControlRoot}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.validator.Validate(domain.KindWorkerResult, record.Data); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(fixture.worktree, ".marshal-worker-result.json")); !os.IsNotExist(err) {
+		t.Fatalf("worker result alias leaked after attempt: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(renamedControlRoot, "output", "worker-result.json")); err != nil {
+		t.Fatalf("held WorkerResult missing: %v", err)
+	}
+}
+
 func TestRunRejectsUnsupportedVersionBeforeWorkerLaunch(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "launched")
 	fixture := newRunFixture(t, "9.9.9", "touch "+shellQuote(marker))
