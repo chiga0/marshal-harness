@@ -663,9 +663,15 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// Bind the Marshal-managed, isolated config dir before launching anything:
 	// user/project/local settings must never influence the attempt, and a
 	// symlink, escape, or abnormal permission must fail closed up front.
-	configDir, err := managedConfigDir(controlRoot)
-	if err != nil {
-		return domain.Record{}, err
+	// Ordinary-user mode skips the managed dir and leaves configDir empty so
+	// the ambient account config (e.g. an existing login) can be used; the
+	// hardened mode is unchanged.
+	var configDir string
+	if !a.ordinaryUserMode {
+		configDir, err = managedConfigDir(controlRoot)
+		if err != nil {
+			return domain.Record{}, err
+		}
 	}
 	task, err := readTaskProjection(controlRoot, request.TaskSpecPath)
 	if err != nil {

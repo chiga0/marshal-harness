@@ -323,16 +323,20 @@ func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arg
 // --setting-sources set so user/project/local settings never influence the
 // attempt, and rebinds HOME/XDG to the managed config dir as the only
 // remaining config source. --output-format and the JSONL event schema are
-// frozen pending live conformance and never authorize a run on their own.
+// frozen pending live conformance and never authorize a run on their own. In
+// ordinary-user mode configDir is empty, so the CLI receives ambient account
+// config instead of an empty Marshal-managed login store.
 func hardeningFlags(configDir string) []string {
-	return []string{
+	flags := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--permission-mode", "accept_edits",
 		"--no-session-persistence",
-		"--config-dir", configDir,
-		"--setting-sources", "",
 	}
+	if configDir != "" {
+		flags = append(flags, "--config-dir", configDir, "--setting-sources", "")
+	}
+	return flags
 }
 
 // buildArgs produces the exact hardened argv for a non-interactive qoder
@@ -380,13 +384,36 @@ func contextError(ctx context.Context) string {
 	return ""
 }
 
-// workerEnvironment fully replaces the ambient environment with a fixed
-// benign allowlist plus Marshal isolation variables. Credentials, ambient
-// HOME, user identity, and XDG config directories never reach the worker
-// process. HOME is explicitly rebound to the Marshal-managed config dir so
-// Node/Qoder cannot fall back to the system account home (os.homedir()) when
-// HOME is unset, and user/project/local settings are never read.
+// workerEnvironment replaces the ambient environment with a fixed benign
+// allowlist plus Marshal isolation variables in hardened mode. Ordinary-user
+// mode intentionally inherits HOME and the four XDG base directories so the
+// real account login can be read; it still retains PATH/LANG/TMPDIR, CI, git
+// isolation and PWD controls.
 func workerEnvironment(worktree, configDir string) []string {
+	if configDir == "" {
+		allowed := map[string]bool{
+			"LANG": true, "LC_ALL": true, "LC_CTYPE": true,
+			"PATH": true, "TERM": true, "TMPDIR": true, "TMP": true, "TEMP": true,
+			"HOME": true, "XDG_CONFIG_HOME": true, "XDG_CACHE_HOME": true,
+			"XDG_DATA_HOME": true, "XDG_STATE_HOME": true,
+		}
+		environment := make([]string, 0, len(allowed)+6)
+		for _, entry := range os.Environ() {
+			key, _, ok := strings.Cut(entry, "=")
+			if ok && allowed[key] {
+				environment = append(environment, entry)
+			}
+		}
+		return append(environment,
+			"CI=1",
+			"GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_CONFIG_NOSYSTEM=1",
+			"GIT_TERMINAL_PROMPT=0",
+			"GIT_SSH_COMMAND=ssh -oBatchMode=yes",
+			"PWD="+worktree,
+		)
+	}
+
 	allowed := map[string]bool{
 		"LANG": true, "LC_ALL": true, "LC_CTYPE": true,
 		"PATH": true, "TERM": true, "TMPDIR": true, "TMP": true, "TEMP": true,
