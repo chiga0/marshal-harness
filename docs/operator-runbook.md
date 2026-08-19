@@ -382,3 +382,11 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 - mergePolicy=never 或 Core 不支持 merge 时，必须在**首次发现**即报告为外部/治理阻塞，并按 §10.7 记入当轮记录，不得静默视为"已完成"。
 - 不得连续派发依赖该 PR 的 stale-base successor：后续任务的 base 依赖未合并变更时，先等待合并或显式声明阻塞，避免 base 漂移造成连锁 rework。
 - 不得把此类 PR 计为 milestone 完成；milestone 以实际进入主干的交付计数。
+
+### 11.6 预检摘要复用与结构性失败裁决
+
+为减少 Qoder/Codex/Qwen 在多个 Run 中重复消耗 token，Lead 可复用最近一次 Mac live preflight，但必须同时匹配当前 `sourceHead`、平台/架构、held executable digest、裸 `--version`、协议/Schema、权限模式和 WorkerResult transport。任一项变化（包括结果路径、inode/digest 或 adapter 配置变化）都使摘要失效，必须重新做一次 live preflight；摘要只能证明预检，不替代本 Run 的独立审查和 acceptance gates。
+
+`result-missing`、path/protocol/identity/version drift、旧 artifact/base、`worktree evidence changed after verification` 属于结构性失败。同一类别只裁决一次：记录 failure digest，停止原 Run 的盲目重试，修复 adapter/契约后从当前 local main 创建 fresh-base successor。只有预检摘要仍匹配且确认为 provider timeout、DNS、rate-limit 或短暂 transport 背压时，才允许在原 `taskId` 上进行有限 operational retry，并记录 attempt、预算和 backoff。
+
+`REVIEW_PENDING` 的 packet 缺失、旧 manifest、旧 base 或证据变更，执行一次 intervention finding 并准备 successor；不要跨 heartbeat 重复调用同一 `task review`。任何复用或 intervention 都不得手写 `.marshal`、伪造 digest 或绕过 Core 生命周期。
