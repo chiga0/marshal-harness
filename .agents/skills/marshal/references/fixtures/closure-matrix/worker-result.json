@@ -1,0 +1,16 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "WorkerResult",
+  "taskId": "TASK-closure",
+  "runId": "run-closure-01",
+  "attemptId": "attempt-02",
+  "adapter": { "id": "qoder", "executable": "/usr/local/bin/qoder", "version": "1.1.23" },
+  "status": "completed",
+  "summary": "fixture result",
+  "declaredChangedFiles": ["internal/example.go"],
+  "declaredArtifacts": [],
+  "declaredCommands": [],
+  "declaredRisks": [],
+  "startedAt": "2026-08-20T00:00:00Z",
+  "completedAt": "2026-08-20T00:00:01Z"
+}

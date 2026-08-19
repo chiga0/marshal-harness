@@ -16,11 +16,16 @@ import stat
 import subprocess
 import sys
 import tempfile
+from typing import NamedTuple
 import unicodedata
 
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+SOURCE_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
+MAX_PROTECTED_TREE_ENTRIES = 20_000
+MAX_PROTECTED_TREE_BYTES = 256 * 1024 * 1024
 NORMALIZERS = {"nfkc-casefold", "markdown-backtick-strip+nfkc-casefold"}
+UNSAFE_PROMPT_CATEGORIES = {"Cc", "Cf", "Zl", "Zp"}
 COMMAND_FIELDS = {
     "id",
     "argv",
@@ -63,6 +68,18 @@ PYTHON_RESERVED_PACKAGE_DIRS = {
     "unicodedata",
     "usercustomize",
 }
+READ_CHUNK_BYTES = 1024 * 1024
+
+
+class TreeEntry(NamedTuple):
+    path: Path
+    relative: str
+    device: int
+    inode: int
+    mode: int
+    size: int
+    modified_ns: int
+    changed_ns: int
 
 
 class PreflightError(Exception):
@@ -138,6 +155,33 @@ def require_digest(value: object, label: str) -> str:
     if not DIGEST_RE.fullmatch(digest):
         fail("manifest-shape-invalid", f"{label} must be a lowercase sha256 digest")
     return digest
+
+
+def validate_prompt_projection_string(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        fail("task-spec-shape-invalid", f"TaskSpec {label} must be a string")
+    for character in value:
+        if unicodedata.category(character) in UNSAFE_PROMPT_CATEGORIES:
+            fail(
+                "prompt-projection-unsafe",
+                f"TaskSpec {label} contains unsafe code point U+{ord(character):04X}",
+            )
+    return value
+
+
+def validate_work_prompt_projection(task_spec: dict) -> None:
+    work = task_spec.get("work")
+    if not isinstance(work, dict):
+        fail("task-spec-shape-invalid", "TaskSpec work must be an object")
+    validate_prompt_projection_string(work.get("objective"), "work.objective")
+    for field in ("context", "constraints", "nonGoals"):
+        raw = work.get(field)
+        if raw is None:
+            continue
+        if not isinstance(raw, list):
+            fail("task-spec-shape-invalid", f"TaskSpec work.{field} must be an array of strings")
+        for index, item in enumerate(raw):
+            validate_prompt_projection_string(item, f"work.{field}[{index}]")
 
 
 def clean_relative_path(value: object, label: str) -> str:
@@ -642,23 +686,312 @@ def reject_protected_references(argv: list[str], protected_roots: list[Path]) ->
             fail("protected-root-reference", "content command embeds a protected-root path")
 
 
+def validate_protected_root_carrier(root: Path) -> None:
+    runtime_marker = root / ".marshal"
+    if root.name == ".marshal" or runtime_marker.exists() or runtime_marker.is_symlink():
+        fail(
+            "protected-root-runtime-state",
+            "protected root must not be .marshal or contain live .marshal runtime state",
+        )
+    git_marker = root / ".git"
+    if git_marker.is_dir():
+        fail(
+            "protected-root-live-repository",
+            "primary Git repository roots are unbounded; use a compact clean linked worktree",
+        )
+    if git_marker.is_symlink():
+        fail("protected-root-unreadable", f"symbolic .git marker below protected root {root}")
+    if git_marker.exists() and not git_marker.is_file():
+        fail("protected-root-unreadable", f"unsupported .git marker below protected root {root}")
+
+
+def git_output(root: Path, arguments: list[str], reason_code: str) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        fail(reason_code, f"cannot inspect protected Git worktree {root}: {error}")
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "git command failed"
+        fail(reason_code, f"cannot inspect protected Git worktree {root}: {detail}")
+    return completed.stdout.strip()
+
+
+def bind_explicit_protected_roots_to_source_head(
+    explicit_protected_roots: list[Path], source_head: str
+) -> None:
+    if not SOURCE_HEAD_RE.fullmatch(source_head):
+        fail("source-head-invalid", "sourceHead must be a lowercase 40-character Git object id")
+    if not explicit_protected_roots:
+        fail(
+            "protected-root-source-unbound",
+            "at least one explicit protected root is required",
+        )
+    for root in explicit_protected_roots:
+        validate_protected_root_carrier(root)
+        git_marker = root / ".git"
+        try:
+            marker_metadata = git_marker.lstat()
+        except OSError as error:
+            fail(
+                "protected-root-source-unbound",
+                f"explicit protected root lacks a top-level .git marker: {root}: {error}",
+            )
+        if not stat.S_ISREG(marker_metadata.st_mode):
+            fail(
+                "protected-root-source-unbound",
+                f"explicit protected root must have a regular nofollow linked-worktree .git marker: {root}",
+            )
+        actual_head = git_output(
+            root,
+            ["rev-parse", "--verify", "HEAD"],
+            "protected-root-source-unbound",
+        )
+        if actual_head != source_head:
+            fail(
+                "protected-root-source-head-mismatch",
+                f"protected worktree HEAD {actual_head} does not match locked sourceHead {source_head}",
+            )
+        dirty = git_output(
+            root,
+            ["status", "--porcelain=v1", "--untracked-files=all", "--ignored=no"],
+            "protected-root-source-unbound",
+        )
+        if dirty:
+            fail("protected-root-not-clean", f"protected Git worktree is not clean: {root}")
+
+
+def metadata_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def entry_identity(entry: TreeEntry) -> tuple[int, int, int, int, int, int]:
+    return (
+        entry.device,
+        entry.inode,
+        entry.mode,
+        entry.size,
+        entry.modified_ns,
+        entry.changed_ns,
+    )
+
+
+def bounded_tree_entries(root: Path) -> list[TreeEntry]:
+    entries: list[TreeEntry] = []
+    pending = [root]
+    total_bytes = 0
+    try:
+        while pending:
+            parent = pending.pop()
+            with os.scandir(parent) as iterator:
+                for item in iterator:
+                    path = Path(item.path)
+                    metadata = item.stat(follow_symlinks=False)
+                    relative = path.relative_to(root).as_posix()
+                    if item.name == ".marshal":
+                        fail(
+                            "protected-root-runtime-state",
+                            f"protected tree contains nested .marshal runtime state: {path}",
+                        )
+                    entries.append(
+                        TreeEntry(
+                            path=path,
+                            relative=relative,
+                            device=metadata.st_dev,
+                            inode=metadata.st_ino,
+                            mode=metadata.st_mode,
+                            size=metadata.st_size,
+                            modified_ns=metadata.st_mtime_ns,
+                            changed_ns=metadata.st_ctime_ns,
+                        )
+                    )
+                    if len(entries) > MAX_PROTECTED_TREE_ENTRIES:
+                        fail(
+                            "protected-root-too-large",
+                            f"protected tree exceeds {MAX_PROTECTED_TREE_ENTRIES} entries: {root}",
+                        )
+                    if stat.S_ISDIR(metadata.st_mode):
+                        pending.append(path)
+                    elif stat.S_ISREG(metadata.st_mode):
+                        total_bytes += metadata.st_size
+                        if total_bytes > MAX_PROTECTED_TREE_BYTES:
+                            fail(
+                                "protected-root-too-large",
+                                f"protected tree exceeds {MAX_PROTECTED_TREE_BYTES} bytes: {root}",
+                            )
+                    elif not stat.S_ISLNK(metadata.st_mode):
+                        fail("fixture-type-invalid", f"unsupported entry below protected root: {path}")
+    except PreflightError:
+        raise
+    except (OSError, UnicodeError) as error:
+        fail("protected-root-unreadable", f"cannot enumerate protected tree {root}: {error}")
+    return sorted(entries, key=lambda item: item.relative)
+
+
+def open_parent_nofollow(root_fd: int, relative: str) -> tuple[int, str]:
+    parts = Path(relative).parts
+    parent_fd = os.dup(root_fd)
+    try:
+        for component in parts[:-1]:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+            os.close(parent_fd)
+            parent_fd = next_fd
+        return parent_fd, parts[-1]
+    except OSError:
+        os.close(parent_fd)
+        raise
+
+
+def changed_during_hash(root: Path, entry: TreeEntry, detail: str) -> None:
+    fail(
+        "protected-root-changed-during-hash",
+        f"protected entry changed during hash ({detail}): {root / entry.relative}",
+    )
+
+
+def assert_entry_identity(root: Path, entry: TreeEntry, metadata: os.stat_result) -> None:
+    if metadata_identity(metadata) != entry_identity(entry):
+        changed_during_hash(root, entry, "identity-or-size")
+
+
+def hash_regular_entry(
+    hasher: "hashlib._Hash", root: Path, root_fd: int, entry: TreeEntry, actual_bytes: int
+) -> int:
+    parent_fd = -1
+    file_fd = -1
+    try:
+        parent_fd, leaf = open_parent_nofollow(root_fd, entry.relative)
+        file_fd = os.open(
+            leaf,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+        assert_entry_identity(root, entry, os.fstat(file_fd))
+        file_bytes = 0
+        while True:
+            chunk = os.read(file_fd, READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            file_bytes += len(chunk)
+            actual_bytes += len(chunk)
+            if actual_bytes > MAX_PROTECTED_TREE_BYTES:
+                fail(
+                    "protected-root-too-large",
+                    f"protected tree exceeds {MAX_PROTECTED_TREE_BYTES} bytes while hashing: {root}",
+                )
+            if file_bytes > entry.size:
+                changed_during_hash(root, entry, "grew-while-reading")
+            hasher.update(chunk)
+        assert_entry_identity(root, entry, os.fstat(file_fd))
+        if file_bytes != entry.size:
+            changed_during_hash(root, entry, "short-read")
+        return actual_bytes
+    except PreflightError:
+        raise
+    except OSError as error:
+        changed_during_hash(root, entry, f"nofollow-open:{error.errno}")
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+    raise AssertionError("unreachable")
+
+
+def hash_directory_entry(hasher: "hashlib._Hash", root: Path, root_fd: int, entry: TreeEntry) -> None:
+    parent_fd = -1
+    directory_fd = -1
+    try:
+        parent_fd, leaf = open_parent_nofollow(root_fd, entry.relative)
+        directory_fd = os.open(
+            leaf,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+        assert_entry_identity(root, entry, os.fstat(directory_fd))
+        hasher.update(b"dir\0")
+    except PreflightError:
+        raise
+    except OSError as error:
+        changed_during_hash(root, entry, f"nofollow-open:{error.errno}")
+    finally:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
+def hash_symlink_entry(hasher: "hashlib._Hash", root: Path, root_fd: int, entry: TreeEntry) -> None:
+    parent_fd = -1
+    try:
+        parent_fd, leaf = open_parent_nofollow(root_fd, entry.relative)
+        before = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+        assert_entry_identity(root, entry, before)
+        target = os.readlink(leaf, dir_fd=parent_fd)
+        after = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+        assert_entry_identity(root, entry, after)
+        hasher.update(b"link\0" + target.encode("utf-8"))
+    except PreflightError:
+        raise
+    except (OSError, UnicodeError) as error:
+        detail = f"nofollow-readlink:{getattr(error, 'errno', None)}"
+        changed_during_hash(root, entry, detail)
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
 def tree_digest(root: Path) -> str:
     hasher = hashlib.sha256()
+    entries = bounded_tree_entries(root)
+    root_fd = -1
     try:
-        for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
-            relative = path.relative_to(root).as_posix().encode("utf-8")
-            mode = path.lstat().st_mode
-            hasher.update(relative + b"\0" + str(stat.S_IMODE(mode)).encode("ascii") + b"\0")
-            if path.is_symlink():
-                hasher.update(b"link\0" + os.readlink(path).encode("utf-8"))
-            elif path.is_file():
-                hasher.update(b"file\0" + path.read_bytes())
-            elif path.is_dir():
-                hasher.update(b"dir\0")
+        root_fd = os.open(
+            root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        actual_bytes = 0
+        for entry in entries:
+            relative = entry.relative.encode("utf-8")
+            hasher.update(relative + b"\0" + str(stat.S_IMODE(entry.mode)).encode("ascii") + b"\0")
+            if stat.S_ISLNK(entry.mode):
+                hash_symlink_entry(hasher, root, root_fd, entry)
+            elif stat.S_ISREG(entry.mode):
+                hasher.update(b"file\0")
+                actual_bytes = hash_regular_entry(hasher, root, root_fd, entry, actual_bytes)
+            elif stat.S_ISDIR(entry.mode):
+                hash_directory_entry(hasher, root, root_fd, entry)
             else:
-                fail("fixture-type-invalid", f"unsupported entry below protected root: {path}")
+                fail("fixture-type-invalid", f"unsupported entry below protected root: {entry.path}")
+        if bounded_tree_entries(root) != entries:
+            fail(
+                "protected-root-changed-during-hash",
+                f"protected tree membership changed during hash: {root}",
+            )
+    except PreflightError:
+        raise
     except (OSError, UnicodeError) as error:
         fail("protected-root-unreadable", f"cannot hash protected tree {root}: {error}")
+    finally:
+        if root_fd >= 0:
+            os.close(root_fd)
     return "sha256:" + hasher.hexdigest()
 
 
@@ -767,6 +1100,7 @@ def validate(
     root: Path,
     schema_path: Path,
     extra_protected_roots: list[Path],
+    source_head: str,
 ) -> dict:
     root = root.resolve()
     schema = load_json(schema_path, "manifest schema")
@@ -777,6 +1111,7 @@ def validate(
 
     if file_digest(task_spec_path) != manifest["taskSpecDigest"]:
         fail("task-spec-digest-mismatch", "taskSpecDigest does not match TaskSpec bytes")
+    validate_work_prompt_projection(task_spec)
     selected = task_command(task_spec, manifest["command"]["id"])
     validate_command_binding(manifest["command"], selected)
     extracted = extract_content_gate(selected["argv"])
@@ -798,11 +1133,16 @@ def validate(
     reject_python_import_shadow_paths(manifest_gate, selected["cwd"])
     validate_prompt_literals(manifest, task_spec)
 
-    protected_roots = [root]
+    validate_protected_root_carrier(root)
+    explicit_protected_roots: list[Path] = []
     for candidate in extra_protected_roots:
         resolved = candidate.resolve()
         if not resolved.is_dir():
             fail("protected-root-unreadable", f"protected root is not a directory: {candidate}")
+        explicit_protected_roots.append(resolved)
+    bind_explicit_protected_roots_to_source_head(explicit_protected_roots, source_head)
+    protected_roots = [root]
+    for resolved in explicit_protected_roots:
         if resolved not in protected_roots:
             protected_roots.append(resolved)
     reject_protected_references(selected["argv"], protected_roots)
@@ -869,6 +1209,7 @@ def main() -> int:
         default=Path(__file__).with_name("acceptance-semantic-manifest.schema.json"),
     )
     parser.add_argument("--protected-root", action="append", default=[], type=Path)
+    parser.add_argument("--source-head", required=True)
     arguments = parser.parse_args()
     try:
         result = validate(
@@ -877,6 +1218,7 @@ def main() -> int:
             arguments.root,
             arguments.schema,
             arguments.protected_root,
+            arguments.source_head,
         )
     except PreflightError as error:
         print(

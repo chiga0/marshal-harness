@@ -1,0 +1,100 @@
+{
+  "manifestVersion": "marshal-operator-closure-matrix/v1",
+  "freshness": {
+    "taskId": "TASK-closure",
+    "runId": "run-closure-01",
+    "attemptId": "attempt-02",
+    "sourceHead": "0000000000000000000000000000000000000000",
+    "reviewRound": 2,
+    "specDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "verificationDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "artifactManifestDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "evidenceDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "reviewPacketDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "snapshotDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "diffDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "candidateDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "fingerprintDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "findings": [
+    {
+      "id": "F-000000000000000000000000",
+      "severity": "P1",
+      "title": "identity tuple misses attemptId",
+      "classification": "continuation",
+      "disposition": "blocking-rework",
+      "domainKey": "review-freshness",
+      "ruleId": "identity-tuple",
+      "outcomeKey": "O-000000000000000000000000",
+      "parentFindingId": "F-000000000000000000000000",
+      "subject": "reviewer-fingerprint",
+      "location": { "kind": "source", "locator": "internal/example.go", "line": 10 },
+      "observableDefect": {
+        "kind": "identity",
+        "observedFacts": ["fingerprint omits attemptId"],
+        "expectedFacts": ["fingerprint contains attemptId"],
+        "evidenceRefs": [{ "kind": "artifact", "id": "evidence:observed-patch" }]
+      },
+      "requiredOutcome": {
+        "kind": "identity-tuple",
+        "assertions": [{ "subject": "fingerprint fields", "operator": "contains-all", "expected": ["attemptId", "sourceHead", "reviewRound"] }],
+        "verificationRefs": [{ "kind": "gate", "id": "gate-identity-closure" }],
+        "negativeFixtureRefs": ["negative-continuation"]
+      }
+    },
+    {
+      "id": "F-111111111111111111111111",
+      "severity": "P2",
+      "title": "same domain negative case is absent",
+      "classification": "newly-discovered",
+      "disposition": "blocking-rework",
+      "domainKey": "review-freshness",
+      "ruleId": "negative-case",
+      "outcomeKey": "O-111111111111111111111111",
+      "subject": "stale-fingerprint-regression",
+      "location": { "kind": "gate", "locator": "gate-regression" },
+      "observableDefect": {
+        "kind": "behavior",
+        "observedFacts": ["stale fingerprint fixture is absent"],
+        "expectedFacts": ["stale fingerprint fixture returns freshness-fingerprint-mismatch"],
+        "evidenceRefs": [{ "kind": "artifact", "id": "evidence:observed-patch" }]
+      },
+      "requiredOutcome": {
+        "kind": "reason-code",
+        "assertions": [{ "subject": "stale fingerprint", "operator": "returns-reason-code", "expected": ["freshness-fingerprint-mismatch"] }],
+        "verificationRefs": [{ "kind": "gate", "id": "gate-regression-closure" }],
+        "negativeFixtureRefs": ["negative-same-domain-p2"]
+      }
+    }
+  ],
+  "negativeFixtures": [
+    {
+      "id": "negative-continuation",
+      "path": ".agents/skills/marshal/references/fixtures/closure-matrix/negative-continuation.json",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "expectedReasonCode": "identity-mismatch",
+      "findingId": "F-000000000000000000000000",
+      "receipt": {
+        "argv": ["/ABSOLUTE/PATH/TO/python3", "-I", "-B", ".agents/skills/marshal/references/closure_matrix_negative_fixture.py", "--input", ".agents/skills/marshal/references/fixtures/closure-matrix/negative-continuation.json"],
+        "inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "outputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "exitCode": 1,
+        "reasonCode": "identity-mismatch"
+      }
+    },
+    {
+      "id": "negative-same-domain-p2",
+      "path": ".agents/skills/marshal/references/fixtures/closure-matrix/negative-same-domain-p2.json",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "expectedReasonCode": "missing-regression-case",
+      "findingId": "F-111111111111111111111111",
+      "receipt": {
+        "argv": ["/ABSOLUTE/PATH/TO/python3", "-I", "-B", ".agents/skills/marshal/references/closure_matrix_negative_fixture.py", "--input", ".agents/skills/marshal/references/fixtures/closure-matrix/negative-same-domain-p2.json"],
+        "inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "outputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "exitCode": 1,
+        "reasonCode": "missing-regression-case"
+      }
+    }
+  ]
+}
