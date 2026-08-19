@@ -5,9 +5,67 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestDurableLaunchCoordinatorHydratesPendingTransaction(t *testing.T) {
+	dir := t.TempDir()
+	journalDir := filepath.Join(dir, "journal")
+	if err := os.Mkdir(journalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := OpenDurableLaunchJournal(filepath.Join(journalDir, "launch.journal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	effects := &coordinatorEffects{}
+	coordinator, err := NewDurableLaunchCoordinator(effects, journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := defaultPeer(PrincipalConsumer)
+	prepare := validRequest(OperationPrepareLaunch, peer)
+	prepare.CommandID = "durable-prepare"
+	if _, err := coordinator.HandleControl(context.Background(), mustSeal(t, prepare), peer, fixtureNow, validFDs(OperationPrepareLaunch)); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenDurableLaunchJournal(filepath.Join(journalDir, "launch.journal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	recovered, err := NewDurableLaunchCoordinator(&coordinatorEffects{}, reopened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.ProviderSequence() != 0 {
+		t.Fatalf("recovered provider sequence = %d", recovered.ProviderSequence())
+	}
+	var payload PrepareLaunchPayload
+	if err := json.Unmarshal(prepare.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	inspect := validRequest(OperationInspectLaunch, peer)
+	inspect.CommandID = "durable-inspect"
+	inspect.Payload = mustJSON(InspectLaunchPayload{AttemptID: payload.AttemptID, LaunchNonce: payload.LaunchNonce, APAPLaunchRequestDigest: payload.APAPLaunchRequestDigest, ProfileRequestDigest: payload.ProfileRequestDigest})
+	response, err := recovered.HandleControl(context.Background(), mustSeal(t, inspect), peer, fixtureNow, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeControlRequest(mustSeal(t, inspect), peer, fixtureNow, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := DecodeControlResponse(response, decoded, 0); err != nil || result.SafeCode != CodeOK {
+		t.Fatalf("recovered inspect = %#v, %v", result, err)
+	}
+}
 
 type coordinatorEffects struct {
 	prepareCalls int

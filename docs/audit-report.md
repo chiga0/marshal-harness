@@ -497,7 +497,9 @@ Qoder 与 Codex 的 production consumer 实现复核进一步证明：两个 Ada
 
 随后补入 `LaunchCoordinator` 作为可复用的确定性 reducer：prepare/commit/abort/inspect 统一串行化，command replay 精确绑定 request digest 与 peer identity，重复 transaction/错 receipt/陈旧 CAS fail closed，lost response 只能通过 Inspect 收敛。只有 `CommitLaunch` 的 release linearization point 前进 provider sequence；prepare/abort/inspect 不前进。实际 OS stopped-child、kill/wait、receipt signing 与平台 principal 仍由外部 `LaunchEffects` 实现，coordinator 不保存 FD、不读取 credential、不执行 pathname，也不能单独启用生产 registry。
 
-该 reducer 的记录当前是进程内实现，不能冒充 crash-durable journal；生产 APAP 必须由独立 state/anchor service 持久化相同 transaction identity，并在重启后通过 Inspect 恢复，才能关闭 ADR 0038 的 launch durability 前置条件。
+本轮继续补入 provider-owned `DurableLaunchJournal`：记录以 canonical JSONL 追加、`sequence`/`providerSequence` 双序列、CRC 之外的 SHA-256 digest chain、严格 transition allowlist、`fsync` durable-before-return 与重启 hydration；非 canonical、尾部截断、链断裂、重复 transaction、状态回退、provider sequence 越界均 fail closed。`NewDurableLaunchCoordinator` 在接受请求前从该 journal 恢复 pending/released/aborted 事实，副作用成功但 journal 写失败保持 `launch-outcome-ambiguous`，不能把内存状态当作已提交。
+
+该 journal 仍只是 provider state 的持久化 seam，不能冒充 ADR 0038 所需的外部不可回滚 monotonic anchor、signed receipt authority、root-owned stopped-child launcher、kill/wait 或 credentialed isolation。故本切片关闭了 launch transaction 的本地 crash-hydration 缺口，但 Qoder/Codex 生产 registry 仍保持 `unsupported`，直至外部 authority provision 与独立 conformance 证据齐备。
 
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 

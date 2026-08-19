@@ -90,6 +90,7 @@ func NewLaunchEffectError(code SafeCode, err error) error {
 type LaunchCoordinator struct {
 	mu       sync.Mutex
 	effects  LaunchEffects
+	journal  LaunchJournal
 	sequence uint64
 	records  map[string]LaunchTransaction
 	replay   map[string]launchReplay
@@ -103,10 +104,39 @@ type launchReplay struct {
 }
 
 func NewLaunchCoordinator(effects LaunchEffects, initialSequence uint64) (*LaunchCoordinator, error) {
+	return newLaunchCoordinator(effects, initialSequence, nil)
+}
+
+// NewDurableLaunchCoordinator hydrates the reducer from the provider-owned
+// journal. Journal facts are applied before serving requests; any malformed or
+// conflicting history fails closed and no launch operation is admitted.
+func NewDurableLaunchCoordinator(effects LaunchEffects, journal LaunchJournal) (*LaunchCoordinator, error) {
+	if journal == nil {
+		return nil, errors.New("launch journal is unavailable")
+	}
+	snapshot, err := journal.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	coordinator, err := newLaunchCoordinator(effects, snapshot.ProviderSequence, journal)
+	if err != nil {
+		return nil, err
+	}
+	for _, transaction := range snapshot.Transactions {
+		key := launchAttemptKey(transaction.AttemptID, transaction.LaunchNonce)
+		if _, exists := coordinator.records[key]; exists {
+			return nil, errors.New("launch journal contains duplicate transaction")
+		}
+		coordinator.records[key] = transaction
+	}
+	return coordinator, nil
+}
+
+func newLaunchCoordinator(effects LaunchEffects, initialSequence uint64, journal LaunchJournal) (*LaunchCoordinator, error) {
 	if effects == nil {
 		return nil, errors.New("launch coordinator effects are unavailable")
 	}
-	return &LaunchCoordinator{effects: effects, sequence: initialSequence, records: map[string]LaunchTransaction{}, replay: map[string]launchReplay{}}, nil
+	return &LaunchCoordinator{effects: effects, journal: journal, sequence: initialSequence, records: map[string]LaunchTransaction{}, replay: map[string]launchReplay{}}, nil
 }
 
 func (coordinator *LaunchCoordinator) ProviderSequence() uint64 {
@@ -190,7 +220,13 @@ func (coordinator *LaunchCoordinator) prepareLocked(ctx context.Context, request
 			return coordinator.cacheFailureLocked(request, peer, CodeIdentityMismatch)
 		}
 	}
-	coordinator.records[key] = LaunchTransaction{LaunchTransactionID: result.LaunchTransactionID, TaskID: payload.TaskID, RunID: payload.RunID, AttemptID: payload.AttemptID, AuthorityNamespaceID: payload.AuthorityNamespaceID, LaunchNonce: payload.LaunchNonce, APAPLaunchRequestDigest: payload.APAPLaunchRequestDigest, ProfileRequestDigest: payload.ProfileRequestDigest, LaunchReceiptDigest: result.LaunchReceiptDigest, ReleaseIdentity: result.ReleaseIdentity, CandidateExecutableIdentityDigest: payload.CandidateExecutableIdentityDigest, AuthorityRootIdentityDigest: payload.AuthorityRootIdentityDigest, FenceRootIdentityDigest: payload.FenceRootIdentityDigest, WorktreeIdentityDigest: payload.WorktreeIdentityDigest, ControlRootIdentityDigest: payload.ControlRootIdentityDigest, ControlInputIdentityDigest: payload.ControlInputIdentityDigest, ControlOutputIdentityDigest: payload.ControlOutputIdentityDigest, MountNamespaceIdentityDigest: payload.MountNamespaceIdentityDigest, Status: LaunchPending}
+	transaction := LaunchTransaction{LaunchTransactionID: result.LaunchTransactionID, TaskID: payload.TaskID, RunID: payload.RunID, AttemptID: payload.AttemptID, AuthorityNamespaceID: payload.AuthorityNamespaceID, LaunchNonce: payload.LaunchNonce, APAPLaunchRequestDigest: payload.APAPLaunchRequestDigest, ProfileRequestDigest: payload.ProfileRequestDigest, LaunchReceiptDigest: result.LaunchReceiptDigest, ReleaseIdentity: result.ReleaseIdentity, CandidateExecutableIdentityDigest: payload.CandidateExecutableIdentityDigest, AuthorityRootIdentityDigest: payload.AuthorityRootIdentityDigest, FenceRootIdentityDigest: payload.FenceRootIdentityDigest, WorktreeIdentityDigest: payload.WorktreeIdentityDigest, ControlRootIdentityDigest: payload.ControlRootIdentityDigest, ControlInputIdentityDigest: payload.ControlInputIdentityDigest, ControlOutputIdentityDigest: payload.ControlOutputIdentityDigest, MountNamespaceIdentityDigest: payload.MountNamespaceIdentityDigest, Status: LaunchPending}
+	if coordinator.journal != nil {
+		if err := coordinator.journal.Append("prepared", transaction, coordinator.sequence); err != nil {
+			return coordinator.cacheFailureLocked(request, peer, CodeLaunchOutcomeAmbiguous)
+		}
+	}
+	coordinator.records[key] = transaction
 	return coordinator.cacheLocked(request, peer, response)
 }
 
@@ -215,6 +251,12 @@ func (coordinator *LaunchCoordinator) commitLocked(ctx context.Context, request 
 		return coordinator.cacheFailureLocked(request, peer, CodeLaunchReceiptInvalid)
 	}
 	transaction.Status = LaunchReleased
+	if coordinator.journal != nil {
+		transaction.Status = LaunchReleased
+		if err := coordinator.journal.Append("committed", transaction, coordinator.sequence+1); err != nil {
+			return coordinator.cacheFailureLocked(request, peer, CodeLaunchOutcomeAmbiguous)
+		}
+	}
 	coordinator.records[key] = transaction
 	coordinator.sequence++
 	return coordinator.cacheLocked(request, peer, response)
@@ -238,6 +280,15 @@ func (coordinator *LaunchCoordinator) abortLocked(ctx context.Context, request A
 		return coordinator.cacheFailureLocked(request, peer, CodeLaunchReceiptInvalid)
 	}
 	transaction.Status = LaunchStatus(result.Status)
+	if coordinator.journal != nil {
+		event := "aborted"
+		if transaction.Status == LaunchExited {
+			event = "exited"
+		}
+		if err := coordinator.journal.Append(event, transaction, coordinator.sequence); err != nil {
+			return coordinator.cacheFailureLocked(request, peer, CodeLaunchOutcomeAmbiguous)
+		}
+	}
 	coordinator.records[key] = transaction
 	return coordinator.cacheLocked(request, peer, response)
 }
@@ -266,6 +317,15 @@ func (coordinator *LaunchCoordinator) inspectLocked(ctx context.Context, request
 	}
 	if ok && result.Status != string(transaction.Status) {
 		transaction.Status = LaunchStatus(result.Status)
+		if coordinator.journal != nil {
+			event := result.Status
+			if event != "aborted" && event != "exited" {
+				return coordinator.cacheFailureLocked(request, peer, CodeLaunchReceiptInvalid)
+			}
+			if err := coordinator.journal.Append(event, transaction, coordinator.sequence); err != nil {
+				return coordinator.cacheFailureLocked(request, peer, CodeLaunchOutcomeAmbiguous)
+			}
+		}
 		coordinator.records[launchAttemptKey(payload.AttemptID, payload.LaunchNonce)] = transaction
 	}
 	return coordinator.cacheLocked(request, peer, response)
