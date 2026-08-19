@@ -501,6 +501,8 @@ Qoder 与 Codex 的 production consumer 实现复核进一步证明：两个 Ada
 
 该 journal 仍只是 provider state 的持久化 seam，不能冒充 ADR 0038 所需的外部不可回滚 monotonic anchor、signed receipt authority、root-owned stopped-child launcher、kill/wait 或 credentialed isolation。故本切片关闭了 launch transaction 的本地 crash-hydration 缺口，但 Qoder/Codex 生产 registry 仍保持 `unsupported`，直至外部 authority provision 与独立 conformance 证据齐备。
 
+Darwin stream transport 同步收紧帧边界：发送端拒绝零长度/超 64 KiB payload，接收端在 header 与 payload 两段都拒绝 `MSG_CTRUNC`/`MSG_TRUNC`，不会把丢失的 SCM_RIGHTS 或截断字节当作可验证请求。该改动只增强 ADR 0041 提案中的 framing 负向边界，不改变 `SOCK_STREAM` 的外部 peer authentication、root-owned endpoint、signed launcher、credential ingress 与独立 verifier 前置条件。
+
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 
 Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Verifier 虽能在命令后观察到 Candidate worktree 变化并把 Gate 标为失败，却让污染字节留在受管 worktree；随后 Review 的 current-observation guard 正确拒绝变化后的字节，Run 因而无法生成绑定原 Candidate 的 ReviewPacket。该问题不是新生命周期或 Schema 缺口：ADR 0027 已冻结 command 写作用域默认为 `none`、未声明写入 fail closed、Candidate 与 Evidence 不可被覆盖；缺失的是实现级 command 隔离。

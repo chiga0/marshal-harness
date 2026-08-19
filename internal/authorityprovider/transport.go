@@ -34,6 +34,9 @@ func (connection controlConnection) read() ([]byte, []byte, int, error) {
 }
 
 func writeStreamFrame(connection *net.UnixConn, payload, oob []byte) error {
+	if len(payload) == 0 || len(payload) > maxControlPacketBytes {
+		return unix.EMSGSIZE
+	}
 	frame := make([]byte, 4+len(payload))
 	frame[0] = byte(len(payload) >> 24)
 	frame[1] = byte(len(payload) >> 16)
@@ -71,6 +74,9 @@ func readStreamFrame(connection *net.UnixConn) ([]byte, []byte, int, error) {
 		if err != nil {
 			return nil, nil, 0, err
 		}
+		if readFlags&(unix.MSG_CTRUNC|unix.MSG_TRUNC) != 0 {
+			return nil, nil, readFlags, unix.EMSGSIZE
+		}
 		if length == 0 {
 			return nil, nil, 0, unix.ECONNRESET
 		}
@@ -92,6 +98,9 @@ func readStreamFrame(connection *net.UnixConn) ([]byte, []byte, int, error) {
 		lengthRead, oobLength, readFlags, _, err := connection.ReadMsgUnix(chunk, oobBuffer)
 		if err != nil {
 			return nil, nil, 0, err
+		}
+		if readFlags&(unix.MSG_CTRUNC|unix.MSG_TRUNC) != 0 {
+			return nil, nil, readFlags, unix.EMSGSIZE
 		}
 		if lengthRead == 0 {
 			return nil, nil, 0, unix.ECONNRESET
