@@ -1,0 +1,100 @@
+# Admission 与 Acceptance
+
+> **何时必须读取：** 新建或修改 TaskSpec、执行 `task plan`/`approve`/`run`、准备 successor、设计 acceptance/verifier、处理 planning/admission/`verifier-worktree-mutated`/零测试匹配，或交付自然语言内容时，必须在动作前完整读取。
+
+## TaskSpec 与 plan
+
+- `work.context` 必须自包含，Worker 看不到对话历史；scope 仅列必要路径，acceptance 命令按任务裁剪。constraints 固定写明：“若某操作被 permission 拒绝，不得重试该路径，改用允许路径内的等价输入”。
+- 新 TaskSpec 必须先执行 `marshal task scaffold --draft DRAFT.json > TASK.json`，再完成 Schema admission，之后才能交给 `task plan`。Planning 只消费冻结后的显式 Adapter 顺序，不在运行时插入或重排。
+- 通用 scaffold 的兼容默认是 `qoder → codex → qwen → pi`。使用 `templates/research-task.json` 时必须显式传 `--preferred-adapter ID`，默认不传 `--fallback-adapter`，把 fallback 冻结为空；只有当前 doctor/admission receipt 逐一证明候选 eligible 且用户明确需要 fallback 时才显式加入。scaffold 对 OpenCode 硬拒绝。
+- `templates/research-task.json` 是单 Attempt、零 rework、无 fallback 的降耗起点，不得硬编码 WorkerResult 路径、shell 写入 primitive 或 Provider 私有 transport；这些只由 Adapter prompt 投影。
+- `task run` 报“缺少当前有效 plan 审批”或等价错误是 Core admission 阻断，不是 Worker/Provider failure。先重建当前 plan/approval 并核对 digest，未修复前不得重复 `task run` 或计入 retry。
+
+## 零 Attempt admission
+
+`task run` 前逐项关闭以下条件；任何未知或失败都只记录 admission finding，不启动 Worker、不消费 Attempt/retry：
+
+1. `task status` 精确为 `READY`，plan/approval 与当前 `specDigest`、`policyDigest`、`capabilityDigest` 相符。
+2. doctor 证明所选 Adapter `configured=true`、`compatibility=supported`；普通用户 mode 显式且与真实 env/argv 一致。
+3. source/base、worktree、scope 与单写入者绑定准确；并行 scope 不重叠。
+4. watchdog 表明有容量、压力 `ok`，Provider 没有已观察到的背压。
+5. acceptance 在 Worker 权限内可运行，结果路径确实可写，父目录/输入已存在，context 自包含，独立 verifier 可以执行。
+6. required command 不写工作树，selector 至少匹配一个既有测试，内容型规则与 prompt 一一映射。
+
+缺 plan approval、`configured=false`、缺失/陈旧 ReviewPacket、结构性 Adapter failure 必须使用不同 finding 类别；不得把 admission finding 伪装成 Worker/provider failure，也不得靠新 Run 清除。
+
+## Admission receipt
+
+从 `templates/admission-receipt.json` 生成短寿命 operator-local receipt。它不是 `marshal.dev` contract，不得写入 `.marshal` 或冒充 Core authority。Receipt 必须绑定：
+
+- 当前 source/spec/policy/capability/base/state/approval；
+- host OS/arch、Adapter config、精确 executable path/digest/device/inode；
+- permission/result-path identity、worktree/scope；
+- doctor、capacity、backpressure 的摘要观测。
+
+有效期最多 60 秒。执行前重采所有时变证据并逐项比较，然后运行：
+
+```bash
+jq -e -f .agents/skills/marshal/references/validate-admission-receipt.jq RECEIPT.json
+```
+
+任一 tuple、sequence、digest 或时效改变立即失效。复用的是证据摘要，不是 Core 状态副作用。
+
+## Acceptance purity
+
+- plan 前做 purity lint：保守拒绝 shell wrapper/重定向、会在 worktree 生成 cache/profile/coverage 的命令，以及没有逐字使用 `python3 -I -B -c` 的 Python 内容验收。
+- 无法静态证明纯只读时，用 verifier 的真实 argv/env/cwd 在临时副本 dry-run，比较前后树摘要；普通宿主副作用探测不是恶意代码 sandbox。
+- `verifier-worktree-mutated` 即使命令退出 0 也是结构性 Required Gate failure。先隔离 cache/temp 或修 acceptance，再由 Core/CLI 建 fresh-base successor；不得归因成 Worker rework。
+- acceptance 故障注入必须位于它声称验证的 effect/cache/persist 边界之后，并断言相同 key、相同 outcome、effect exactly-once。副作用前断开只能证明普通首次执行，不能关闭 replay/idempotency finding。
+
+## 内容型 acceptance semantic preflight
+
+从 verifier 机械抽取 `required_all`、`required_any`、`forbidden`、精确路径、最小数量/行数、最大 UTF-8 字节数和 normalizer，并与 `work.context` 的输出要求逐项一一映射。
+
+- 自然语言默认使用 `casefold` 后的稳定 token 和显式等价词组；只有协议字段、命令、路径等确需逐字时才用单一 literal，并在 Worker prompt 明写“逐字包含 `<literal>`”。
+- 多种表述可接受时用 `required_any`；已知错误术语、过度声明和自相矛盾句进入 `forbidden`，prompt 同时解释正确替代语义。
+- Required Gate 已通过后 reviewer 不得追加 TaskSpec 中不存在的字面要求。无法建立 verifier ↔ context 一一映射时不得 plan。
+
+从 `templates/acceptance-semantic-manifest.json` 生成 operator-local manifest；它不是 Core contract。先验证完整 TaskSpec：
+
+```bash
+./bin/marshal contract validate --schema task-spec TASK.json
+```
+
+把 manifest、TaskSpec、fixtures 放入紧凑的 `FIXTURE_ROOT`；从锁定 `SOURCE_HEAD` 创建无 `.marshal`、无未提交文件的 detached/linked `CLEAN_WORKTREE`，再执行：
+
+```bash
+python3 -B .agents/skills/marshal/references/validate-acceptance-semantic-preflight.py \
+  --root FIXTURE_ROOT \
+  --manifest MANIFEST.json \
+  --task-spec TASK.json \
+  --protected-root CLEAN_WORKTREE \
+  --source-head SOURCE_HEAD
+```
+
+禁止把 live repo root、`.marshal` 或 primary `.git` 作为 root/protected-root。每个 protected root 顶层必须有 regular nofollow `.git` linked-worktree marker，并独立满足 exact HEAD/clean；子目录不能借用其它 root 的绑定。
+
+Validator 的 machine truth 由相邻 Draft 2020-12 Schema 和实现定义，不在本文复制。Operator 必须确认其绑定 TaskSpec 原始摘要、required command 完整 canonical tuple（`id/argv/cwd/timeoutSeconds/required=true/baselinePolicy/maxLogBytes`）、相对 cwd/精确 deliverable、最小数量/行数/最大字节数、封闭 normalizer、所有内容规则、逐字 context 映射及每个 fixture 原始摘要。
+
+它必须拒绝 `.marshal`、symlink、路径逃逸、绝对路径、`..`、Python startup/import 保留名、未知/额外 AST 语句、normalizer drift、规则遗漏/额外项和受保护树替换/增长；对受保护树有 entry/byte hard limit，并以逐级 nofollow dirfd、`fstat` identity/size 复核和有界分块读取拒绝枚举后替换/增长。Fixture 使用绑定的真实 cwd/timeout 在临时副本运行。误传大树固定 fail closed，不重复扫描运行态。任一失败原样保留固定 `reasonCode`，先修 TaskSpec/acceptance，不启动 Worker。
+
+## 正反 fixture
+
+内容型 verifier 必须在不写目标 worktree 的临时样本中证明：
+
+- 代表性正确输出通过；
+- 分别缺少一个 `required_all`、缺少一个 `required_any` 组、命中一个 `forbidden`、低于最小值或超过大小边界时失败；
+- 执行前后 fixture root 和 protected clean worktree 摘要相同；isolated Python 不加载本地模块遮蔽 canary。
+
+最近的语义等价正确报告可复制到临时目录作为 positive fixture，禁止为验证 acceptance 再启动 Worker。代码型 verifier 使用任务自己的正反测试，不强套报告 fixture。
+
+## 代码型 acceptance
+
+- 优先断言可观察行为、错误分类、状态转换或协议输出。测试函数名、未导出 helper、局部变量、注释措辞默认不是契约。
+- 稳定符号确是外部契约时，在 `work.objective/context` 明写“逐字使用 `<symbol>`”并由 preflight 一一映射；否则用包级行为测试或接受语义等价符号集合。
+- 使用 `go test -run` 前先 `go test -list` 枚举并证明 selector 至少匹配一个派发前已存在的测试，再证明实际执行数非零；退出 0 的零匹配不算通过。
+- 扫描 Python/grep 类源码 gate 中的 token；未映射的非契约 token 是 TaskSpec defect，先修 acceptance，不得转为 Worker rework。
+
+## Admission 失败的止损
+
+TaskSpec/acceptance/verifier、路径、identity、protocol、version、旧 base/artifact 或证据变化属于结构性问题。同一稳定输入摘要和 `reasonCode` 只裁决一次：保留证据、修 operator/Core/Adapter 输入，然后从当前权威 main 通过 Core/CLI 建 successor。只有 Core 持久化的 typed transient provider failure 且 admission 仍匹配时，才按 Policy 做有限 operational retry。
