@@ -43,6 +43,31 @@ func TestDecodeEventLineRecordsErrorTerminalCode(t *testing.T) {
 	}
 }
 
+func TestDecodeEventLineRecordsErrorTerminalWithSuccessSubtype(t *testing.T) {
+	// Real qodercli 1.1.23 emits an error result with subtype=success and an
+	// `error` code; the adapter must classify it as a provider error rather
+	// than a contradictory protocol violation, and must not leak the code.
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[]}}
+{"type":"result","subtype":"success","is_error":true,"terminal_reason":"completed","error":"authentication_failed"}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.terminal.seen || result.terminal.success || result.terminal.code != "authentication_failed" {
+		t.Fatalf("terminal = %+v, want error terminal with code authentication_failed", result.terminal)
+	}
+	failure := classifyTerminalFailure(result.terminal.code, classifyNow)
+	typed, ok := port.AsAdapterFailure(failure)
+	if !ok || typed.Kind != port.FailureKindProviderTerminal || typed.Disposition != port.RetryDispositionDoNotRetry {
+		t.Fatalf("classification = %v, want provider-terminal/do-not-retry", failure)
+	}
+	if strings.Contains(failure.Error(), "authentication_failed") {
+		t.Fatalf("Error() leaked the provider error code: %s", failure.Error())
+	}
+}
+
 func TestDecodeEventLineRejectsMalformedAndBlank(t *testing.T) {
 	for _, input := range []string{"not-json\n", "\n", "   \n"} {
 		result := decodeTranscript([]byte(input))
@@ -69,9 +94,9 @@ func TestDecodeEventLineRejectsDuplicateAndUnrecognizedTerminal(t *testing.T) {
 			t.Fatalf("error = %v, want event-after-terminal error", result.err)
 		}
 	})
-	t.Run("unrecognized-status", func(t *testing.T) {
+	t.Run("contradictory-status", func(t *testing.T) {
 		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
-{"type":"result","subtype":"success","is_error":true,"terminal_reason":"weird"}
+{"type":"result","subtype":"error_during_execution","is_error":false,"terminal_reason":"completed"}
 `
 		result := decodeTranscript([]byte(stream))
 		if result.err == nil || !strings.Contains(result.err.Error(), "contradictory") {
@@ -129,5 +154,98 @@ func TestClassifyTerminalFailureReturnsPermanentDefault(t *testing.T) {
 	}
 	if strings.Contains(failure.Error(), "mystery") {
 		t.Fatalf("Error() leaked unknown provider input: %s", failure.Error())
+	}
+}
+
+func TestDecodeEventLineAcceptsObservedHookFramesBeforeInit(t *testing.T) {
+	// Real qodercli 1.1.23 emits hook_started/hook_progress/hook_response
+	// system frames before system init; they are non-semantic and must not
+	// fail the transcript or disturb the init/assistant/result sequence.
+	stream := `{"type":"system","subtype":"hook_started"}
+{"type":"system","subtype":"hook_progress"}
+{"type":"system","subtype":"hook_response"}
+{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[]}}
+{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":5}}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result.sessionID != "sess-1" || result.model != "provider/model" || result.assistantCount != 1 || result.eventCount != 6 {
+		t.Fatalf("result = %+v", result)
+	}
+	if !result.terminal.seen || !result.terminal.success {
+		t.Fatalf("terminal = %+v, want success terminal after hook frames", result.terminal)
+	}
+}
+
+func TestDecodeEventLineRejectsUnknownSystemSubtypeAndDuplicateInit(t *testing.T) {
+	t.Run("unknown-subtype", func(t *testing.T) {
+		stream := `{"type":"system","subtype":"mystery"}
+{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+`
+		result := decodeTranscript([]byte(stream))
+		if result.err == nil || !strings.Contains(result.err.Error(), "unrecognized system event subtype") {
+			t.Fatalf("error = %v, want unrecognized system event subtype error", result.err)
+		}
+	})
+	t.Run("duplicate-init", func(t *testing.T) {
+		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+`
+		result := decodeTranscript([]byte(stream))
+		if result.err == nil || !strings.Contains(result.err.Error(), "invalid or duplicate system init event") {
+			t.Fatalf("error = %v, want duplicate init error", result.err)
+		}
+	})
+	t.Run("session-change", func(t *testing.T) {
+		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[]},"session_id":"sess-2"}
+`
+		result := decodeTranscript([]byte(stream))
+		if result.err == nil || !strings.Contains(result.err.Error(), "session id changed") {
+			t.Fatalf("error = %v, want session change error", result.err)
+		}
+	})
+	t.Run("hook-after-terminal", func(t *testing.T) {
+		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[]}}
+{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
+{"type":"system","subtype":"hook_response"}
+`
+		result := decodeTranscript([]byte(stream))
+		if result.err == nil || !strings.Contains(result.err.Error(), "follows terminal") {
+			t.Fatalf("error = %v, want event-after-terminal error", result.err)
+		}
+	})
+}
+
+func TestDecodeEventLineAcceptsSuccessWithoutTerminalReason(t *testing.T) {
+	// Real logged-in qodercli 1.1.23 may emit a success result without a
+	// terminal_reason field; success must not require it as long as the
+	// session, subtype and at least one assistant message are present.
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[]}}
+{"type":"result","subtype":"success","is_error":false}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.terminal.seen || !result.terminal.success {
+		t.Fatalf("terminal = %+v, want success terminal without terminal_reason", result.terminal)
+	}
+}
+
+func TestDecodeEventLineRejectsErrorTerminalWithoutCode(t *testing.T) {
+	// An error terminal must still yield a fixed classification via `error`
+	// or terminal_reason; with neither it is an incomplete protocol event.
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"result","subtype":"error_during_execution","is_error":true}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err == nil || !strings.Contains(result.err.Error(), "error terminal has no code") {
+		t.Fatalf("error = %v, want error terminal no code error", result.err)
 	}
 }

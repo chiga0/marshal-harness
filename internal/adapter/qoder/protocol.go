@@ -15,7 +15,7 @@ import (
 // captureResult aggregates the bounded, decoded JSONL transcript of one
 // non-interactive attempt. The fields mirror Qoder 1.1.23 stream-json frames:
 // system.session_id/model, assistant.message, and result subtype/is_error/
-// terminal_reason/usage. The adapter still stays fail-closed at unsupported
+// terminal_reason/error/usage. The adapter still stays fail-closed at unsupported
 // until an independent credentialed live run binds a conformance receipt.
 // Provider free text such as item content never reaches authorization or
 // budgets; it survives only inside the raw transcript evidence.
@@ -58,6 +58,7 @@ type qoderEvent struct {
 	Message         json.RawMessage `json:"message"`
 	IsError         *bool           `json:"is_error"`
 	TerminalReason  string          `json:"terminal_reason"`
+	Error           string          `json:"error"`
 	Usage           struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
@@ -189,8 +190,15 @@ func decodeTranscript(raw []byte) captureResult {
 
 // decodeEventLine folds one JSONL event line into the capture aggregate and
 // returns a protocol error for malformed or blank lines, duplicate terminals,
-// and unrecognized terminal statuses. It never classifies a terminal error
-// into a failure kind; Run performs that classification after capture.
+// and contradictory terminal statuses. The observed hook_started/
+// hook_progress/hook_response system frames are ignored as non-semantic.
+// An error terminal is recognized by is_error regardless of subtype; its code
+// comes from the `error` field, falling back to terminal_reason, and an error
+// terminal with neither is a protocol violation. A success terminal only
+// requires a valid session, is_error=false, subtype=success and at least one
+// assistant message; terminal_reason is optional. It never classifies a
+// terminal error into a failure kind; Run performs that classification after
+// capture.
 func (result *captureResult) decodeEventLine(line []byte) error {
 	if len(bytes.TrimSpace(line)) == 0 {
 		return fmt.Errorf("%w: blank JSONL event", ErrProtocol)
@@ -208,18 +216,28 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 	}
 	switch event.Type {
 	case "system":
-		if result.sessionID != "" || event.Subtype != "init" || event.SessionID == "" || event.Model == "" || event.QoderCLIVersion == "" || event.ProtocolVersion == "" || event.PermissionMode == "" {
-			return fmt.Errorf("%w: invalid or duplicate system init event", ErrProtocol)
+		switch event.Subtype {
+		case "hook_started", "hook_progress", "hook_response":
+			// Observed qodercli 1.1.23 system frames emitted before init; they
+			// carry no session or terminal state and are ignored, while every
+			// other system subtype stays fail-closed.
+			return nil
+		case "init":
+			if result.sessionID != "" || event.SessionID == "" || event.Model == "" || event.QoderCLIVersion == "" || event.ProtocolVersion == "" || event.PermissionMode == "" {
+				return fmt.Errorf("%w: invalid or duplicate system init event", ErrProtocol)
+			}
+			result.sessionID, result.model = event.SessionID, event.Model
+			result.cliVersion, result.protocolVersion, result.permissionMode = event.QoderCLIVersion, event.ProtocolVersion, event.PermissionMode
+		default:
+			return fmt.Errorf("%w: unrecognized system event subtype", ErrProtocol)
 		}
-		result.sessionID, result.model = event.SessionID, event.Model
-		result.cliVersion, result.protocolVersion, result.permissionMode = event.QoderCLIVersion, event.ProtocolVersion, event.PermissionMode
 	case "assistant":
 		if result.sessionID == "" || len(bytes.TrimSpace(event.Message)) == 0 || bytes.Equal(bytes.TrimSpace(event.Message), []byte("null")) {
 			return fmt.Errorf("%w: invalid assistant message event", ErrProtocol)
 		}
 		result.assistantCount++
 	case "result":
-		if result.sessionID == "" || event.IsError == nil || event.TerminalReason == "" {
+		if result.sessionID == "" || event.IsError == nil {
 			return fmt.Errorf("%w: incomplete terminal result event", ErrProtocol)
 		}
 		result.terminal.seen = true
@@ -228,13 +246,19 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			return fmt.Errorf("%w: terminal usage is negative", ErrProtocol)
 		}
 		switch {
-		case event.Subtype == "success" && !*event.IsError:
+		case *event.IsError:
+			if event.Error == "" && event.TerminalReason == "" {
+				return fmt.Errorf("%w: error terminal has no code", ErrProtocol)
+			}
+			result.terminal.code = event.Error
+			if result.terminal.code == "" {
+				result.terminal.code = event.TerminalReason
+			}
+		case event.Subtype == "success":
 			if result.assistantCount == 0 {
 				return fmt.Errorf("%w: successful result has no assistant message", ErrProtocol)
 			}
 			result.terminal.success = true
-		case event.Subtype != "success" && *event.IsError:
-			result.terminal.code = event.TerminalReason
 		default:
 			return fmt.Errorf("%w: contradictory terminal result event", ErrProtocol)
 		}
