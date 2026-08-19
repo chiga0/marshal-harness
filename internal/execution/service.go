@@ -403,19 +403,19 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	workerResult, runErr := input.Adapter.Run(ctx, domain.Record{Kind: domain.KindWorkerRequest, Data: requestData})
 	if runErr != nil {
-		failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, runErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
+		failedState, reportedErr, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, runErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
 		if persistErr != nil {
-			return Result{State: failedState, AttemptID: attemptID}, errors.Join(runErr, persistErr)
+			return Result{State: failedState, AttemptID: attemptID}, errors.Join(reportedErr, persistErr)
 		}
-		return Result{State: failedState, AttemptID: attemptID}, runErr
+		return Result{State: failedState, AttemptID: attemptID}, reportedErr
 	}
 	if workerResult.Kind != domain.KindWorkerResult || input.Validator.Validate(domain.KindWorkerResult, workerResult.Data) != nil {
 		protocolErr := adapterProtocolFailure(selectedAdapterID, "adapter returned an invalid WorkerResult", time.Now().UTC())
-		failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, protocolErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
+		failedState, reportedErr, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, protocolErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
 		if persistErr != nil {
-			return Result{State: failedState, AttemptID: attemptID}, errors.Join(protocolErr, persistErr)
+			return Result{State: failedState, AttemptID: attemptID}, errors.Join(reportedErr, persistErr)
 		}
-		return Result{State: failedState, AttemptID: attemptID}, protocolErr
+		return Result{State: failedState, AttemptID: attemptID}, reportedErr
 	}
 	var resultIdentity struct {
 		TaskID    string `json:"taskId"`
@@ -436,11 +436,11 @@ func Run(ctx context.Context, input Input) (Result, error) {
 				protocolErr = fmt.Errorf("%w: stale fencing quarantine failed: %v", protocolErr, quarantineErr)
 			}
 		}
-		failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, protocolErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
+		failedState, reportedErr, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, protocolErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
 		if persistErr != nil {
-			return Result{State: failedState, AttemptID: attemptID}, errors.Join(protocolErr, persistErr)
+			return Result{State: failedState, AttemptID: attemptID}, errors.Join(reportedErr, persistErr)
 		}
-		return Result{State: failedState, AttemptID: attemptID}, protocolErr
+		return Result{State: failedState, AttemptID: attemptID}, reportedErr
 	}
 	// Typed-edge result acceptance gate (M9-b): when a dispatch context is
 	// bound, the accepted WorkerResult rechecks its DispatchResultCapability
@@ -452,11 +452,11 @@ func Run(ctx context.Context, input Input) (Result, error) {
 			if quarantineErr := quarantineRejectedWorkerResult(runDir, attemptID, workerResult.Data, err); quarantineErr != nil {
 				err = fmt.Errorf("%w; quarantine failed: %v", err, quarantineErr)
 			}
-			failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, err, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
+			failedState, reportedErr, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, err, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
 			if persistErr != nil {
-				return Result{State: failedState, AttemptID: attemptID}, errors.Join(err, persistErr)
+				return Result{State: failedState, AttemptID: attemptID}, errors.Join(reportedErr, persistErr)
 			}
-			return Result{State: failedState, AttemptID: attemptID}, err
+			return Result{State: failedState, AttemptID: attemptID}, reportedErr
 		}
 	}
 	if err := atomicWrite(filepath.Join(attemptDir, "worker-result.json"), append(workerResult.Data, '\n'), 0o600); err != nil {
@@ -749,9 +749,30 @@ func validateStructuralFailureTerminal(events []domain.RunEvent, state domain.Ru
 	}
 	kind := port.FailureKind(payloadString(terminal.Payload, "failureKind"))
 	disposition := port.RetryDisposition(payloadString(terminal.Payload, "retryDisposition"))
-	expectedDisposition, knownKind := port.DispositionFor(kind)
-	if !knownKind || disposition != expectedDisposition || disposition == port.RetryDispositionRetryable {
-		return errors.New("structural failure event has an invalid typed disposition")
+	retryAfter, hasRetryAfter, err := payloadOptionalPositiveDuration(terminal.Payload, "retryAfterNanoseconds")
+	if err != nil {
+		return err
+	}
+	notBefore, hasNotBefore, err := payloadOptionalTime(terminal.Payload, "notBefore")
+	if err != nil {
+		return err
+	}
+	var retryAfterPointer *time.Duration
+	if hasRetryAfter {
+		retryAfterPointer = &retryAfter
+	}
+	var notBeforePointer *time.Time
+	if hasNotBefore {
+		notBeforePointer = &notBefore
+	}
+	normalized, err := port.NewAdapterFailure(port.AdapterID(adapterID), kind, disposition, retryAfterPointer, notBeforePointer, terminal.Timestamp.UTC())
+	if err != nil || normalized.Disposition == port.RetryDispositionRetryable {
+		return errors.New("structural failure event has an invalid normalized typed failure")
+	}
+	if summary := payloadString(terminal.Payload, "error"); summary != normalized.Error() {
+		return errors.New("structural failure summary does not match its normalized typed failure")
+	} else if err := validateSafeWorkerFailureSummary(summary); err != nil {
+		return err
 	}
 	wantReason := "adapter-" + string(kind)
 	if payloadString(terminal.Payload, "terminalReason") != wantReason || state.TerminalReason != wantReason {
@@ -765,6 +786,34 @@ func validateStructuralFailureTerminal(events []domain.RunEvent, state domain.Ru
 		return errors.New("structural failure signature does not match the frozen planning authority")
 	}
 	return nil
+}
+
+func payloadOptionalPositiveDuration(payload map[string]any, key string) (time.Duration, bool, error) {
+	raw, exists := payload[key]
+	if !exists {
+		return 0, false, nil
+	}
+	value, ok := raw.(float64)
+	if !ok || value <= 0 || value > float64(port.MaxRetryHintWindow.Nanoseconds()) || value != float64(int64(value)) {
+		return 0, true, errors.New("structural failure retry-after hint is invalid")
+	}
+	return time.Duration(int64(value)), true, nil
+}
+
+func payloadOptionalTime(payload map[string]any, key string) (time.Time, bool, error) {
+	raw, exists := payload[key]
+	if !exists {
+		return time.Time{}, false, nil
+	}
+	text, ok := raw.(string)
+	if !ok {
+		return time.Time{}, true, errors.New("structural failure not-before hint is invalid")
+	}
+	value, err := time.Parse(time.RFC3339, text)
+	if err != nil || text != value.UTC().Format(time.RFC3339) {
+		return time.Time{}, true, errors.New("structural failure not-before hint is invalid")
+	}
+	return value, true, nil
 }
 
 func reconcileRetryPendingQuarantine(store *runstore.Store, lease *runstore.Lease, state domain.RunState) error {
@@ -1987,6 +2036,7 @@ type classifiedWorkerFailure struct {
 	notBefore      time.Time
 	signature      string
 	safeSummary    string
+	reportedCause  error
 	terminal       bool
 	terminalReason string
 }
@@ -2010,7 +2060,7 @@ func adapterProtocolFailure(adapterID, summary string, now time.Time) error {
 // frozen inputs, not a Core-global cross-Run deny-list. A repaired TaskSpec,
 // source head, Policy or whole CapabilitySnapshot (including executable and
 // protocol authority) invalidates it.
-func classifyWorkerFailure(state domain.RunState, selectedAdapterID string, cause error) (classifiedWorkerFailure, error) {
+func classifyWorkerFailure(state domain.RunState, selectedAdapterID string, cause error, observedAt time.Time) (classifiedWorkerFailure, error) {
 	classification := classifiedWorkerFailure{
 		adapterID:      selectedAdapterID,
 		kind:           port.FailureKindProviderTerminal,
@@ -2019,9 +2069,13 @@ func classifyWorkerFailure(state domain.RunState, selectedAdapterID string, caus
 		terminal:       true,
 		terminalReason: "adapter-provider-terminal",
 	}
-	if failure, ok := port.AsAdapterFailure(cause); ok {
-		if string(failure.Adapter) != selectedAdapterID {
-			return classifiedWorkerFailure{}, errors.New("worker failure adapter identity does not match the selected adapter")
+	if failure, found, normalizeErr := port.NormalizeAdapterFailure(cause, observedAt); found {
+		if normalizeErr != nil || string(failure.Adapter) != selectedAdapterID {
+			protocol, protocolErr := port.NewAdapterFailure(port.AdapterID(selectedAdapterID), port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry, nil, nil, observedAt)
+			if protocolErr != nil {
+				return classifiedWorkerFailure{}, errors.New("worker failure adapter identity cannot be normalized")
+			}
+			failure = protocol
 		}
 		classification.adapterID = string(failure.Adapter)
 		classification.kind = failure.Kind
@@ -2029,6 +2083,10 @@ func classifyWorkerFailure(state domain.RunState, selectedAdapterID string, caus
 		classification.retryAfter = failure.RetryAfter
 		classification.notBefore = failure.NotBefore
 		classification.safeSummary = failure.Error()
+		if err := validateSafeWorkerFailureSummary(classification.safeSummary); err != nil {
+			return classifiedWorkerFailure{}, err
+		}
+		classification.reportedCause = failure
 		classification.terminal = failure.Disposition != port.RetryDispositionRetryable
 		if classification.terminal {
 			classification.terminalReason = "adapter-" + string(failure.Kind)
@@ -2043,10 +2101,12 @@ func classifyWorkerFailure(state domain.RunState, selectedAdapterID string, caus
 		classification.kind = port.FailureKindConnectionFailure
 		classification.disposition = port.RetryDispositionRetryable
 		classification.safeSummary = "unclassified retryable worker failure"
+		classification.reportedCause = cause
 		classification.terminal = false
 		classification.terminalReason = ""
 	} else {
 		classification.safeSummary = "permanent worker failure"
+		classification.reportedCause = errors.New(classification.safeSummary)
 	}
 
 	signature, err := workerFailureSignature(workerFailureSignatureContext{
@@ -2057,6 +2117,18 @@ func classifyWorkerFailure(state domain.RunState, selectedAdapterID string, caus
 	}
 	classification.signature = signature
 	return classification, nil
+}
+
+func validateSafeWorkerFailureSummary(summary string) error {
+	if len(summary) == 0 || len([]byte(summary)) > 512 || !utf8.ValidString(summary) {
+		return errors.New("worker failure summary is not bounded valid UTF-8")
+	}
+	for _, r := range summary {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return errors.New("worker failure summary contains an unsafe code point")
+		}
+	}
+	return nil
 }
 
 func workerFailureSignature(context workerFailureSignatureContext, adapterID string, kind port.FailureKind, disposition port.RetryDisposition) (string, error) {
@@ -2105,11 +2177,11 @@ func knownWorkerTerminalReason(reason string) bool {
 	return false
 }
 
-func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, attemptID, selectedAdapterID string, task domain.TaskSpec, cause error, afterQuarantine, afterTerminalAppend func() error) (domain.RunState, error) {
-	classification, classificationErr := classifyWorkerFailure(state, selectedAdapterID, cause)
+func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, attemptID, selectedAdapterID string, task domain.TaskSpec, cause error, afterQuarantine, afterTerminalAppend func() error) (domain.RunState, error, error) {
+	eventAt := time.Now().UTC()
+	classification, classificationErr := classifyWorkerFailure(state, selectedAdapterID, cause, eventAt)
 	if classificationErr != nil {
-		cause = port.Permanent(classificationErr)
-		classification, _ = classifyWorkerFailure(state, selectedAdapterID, cause)
+		return state, errors.New("worker failure admission rejected"), classificationErr
 	}
 	target := domain.StateBlocked
 	guard := lifecycle.Guard{LeaseHeld: true}
@@ -2126,7 +2198,6 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 	if !classification.notBefore.IsZero() {
 		payload["notBefore"] = classification.notBefore.UTC().Format(time.RFC3339)
 	}
-	eventAt := time.Now().UTC()
 	if !classification.terminal && state.OperationalRetriesUsed < uint(task.Budgets.MaxOperationalRetries) && state.AttemptsUsed < uint(task.Budgets.MaxAttempts) {
 		target, guard.BudgetAvailable = domain.StateRetryPending, true
 	} else {
@@ -2142,15 +2213,15 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 		}
 		staleSince, err := attemptStartedAt(store, lease, attemptID)
 		if err != nil {
-			return state, fmt.Errorf("terminal worker failure identity: %w", err)
+			return state, classification.reportedCause, fmt.Errorf("terminal worker failure identity: %w", err)
 		}
 		quarantine, err := quarantineAttemptOutputs(lease, attemptID, staleSince)
 		if err != nil {
-			return state, fmt.Errorf("terminal worker failure quarantine: %w", err)
+			return state, classification.reportedCause, fmt.Errorf("terminal worker failure quarantine: %w", err)
 		}
 		if afterQuarantine != nil {
 			if err := afterQuarantine(); err != nil {
-				return state, fmt.Errorf("terminal worker failure: injected post-quarantine failure: %w", err)
+				return state, classification.reportedCause, fmt.Errorf("terminal worker failure: injected post-quarantine failure: %w", err)
 			}
 		}
 		payload["terminalReason"] = reason
@@ -2164,51 +2235,51 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 	}
 	event, next, err := transition(state, attemptID, "worker.failed", target, eventAt, payload, guard)
 	if err != nil {
-		return state, err
+		return state, classification.reportedCause, err
 	}
 	var prepared *review.PreparedOutcomeRecords
 	if target == domain.StateBlocked {
 		outcome, err := budgetOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), event)
 		if err != nil {
-			return state, err
+			return state, classification.reportedCause, err
 		}
 		outcomeAuthority, authorityErr := runstore.OpenRunAuthority(lease)
 		if authorityErr != nil {
-			return state, authorityErr
+			return state, classification.reportedCause, authorityErr
 		}
 		prepared, err = review.PrepareOutcomeAt(outcomeAuthority, outcome)
 		_ = outcomeAuthority.Close()
 		if err != nil {
-			return state, err
+			return state, classification.reportedCause, err
 		}
 	}
 	if err := store.Append(lease, event, state.Sequence); err != nil {
 		if prepared != nil {
 			prepared.Abort()
 		}
-		return state, err
+		return state, classification.reportedCause, err
 	}
 	if prepared != nil {
 		if afterTerminalAppend != nil {
 			if err := afterTerminalAppend(); err != nil {
-				return next, fmt.Errorf("terminal worker failure: injected post-append failure: %w", err)
+				return next, classification.reportedCause, fmt.Errorf("terminal worker failure: injected post-append failure: %w", err)
 			}
 		}
 		commitAuthority, err := runstore.OpenRunAuthority(lease)
 		if err != nil {
 			prepared.Abort()
-			return next, err
+			return next, classification.reportedCause, err
 		}
 		err = prepared.CommitAt(commitAuthority)
 		_ = commitAuthority.Close()
 		if err != nil {
-			return next, err
+			return next, classification.reportedCause, err
 		}
 	}
 	if err := store.WriteSnapshot(lease, next); err != nil {
-		return next, err
+		return next, classification.reportedCause, err
 	}
-	return next, nil
+	return next, classification.reportedCause, nil
 }
 
 func attemptStartedAt(store *runstore.Store, lease *runstore.Lease, attemptID string) (time.Time, error) {

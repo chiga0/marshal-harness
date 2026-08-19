@@ -700,7 +700,7 @@ const (
 )
 
 // declaredResultError 携带失败阶段，使 Run 能把缺失/不可读/非法声明统一
-// 归为 result-missing/retryable，而不回显底层错误文本。
+// 归为 result-missing/do-not-retry，而不回显底层错误文本。
 type declaredResultError struct {
 	stage declaredResultStage
 	err   error
