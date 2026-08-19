@@ -1,23 +1,39 @@
 {
-  "attestationDigest": "sha256:145f55f871c2fd46c8ae26eff04238011dc11aad134fa2e504beac5bcfe302ea",
+  "attestationDigest": "sha256:cd7c84516c86e6f4e864fdb7f002b833cb9bd60fba2f58a4d7688dff945efcf9",
+  "coreIdentity": {
+    "adapterVersion": "0.1.4",
+    "eventContract": "qoder-stream-json-1.2.0-v5",
+    "profileVersion": "qoder-v5-transcript-attestation-v2",
+    "workerResultTransportDigest": "sha256:a8868a7f8e9cfc2d126d324204502caacc5462946405ab0835627fca8a121d48"
+  },
+  "implementationDigests": {
+    "checkerExecutable": "sha256:3d12d900013a073e67669cc23461fb75171b4dbb0d4b3270009e8f4d37fac04f",
+    "operatorSchema": "sha256:715bb30d4405dfc3a44b2ec90fe5c79a2c6c3a82f0bf322cb04d22603057fd89",
+    "profile": "sha256:d29264ba6693a6c8abeaf34fcca67f33612aee3e42817bd2e92702093303e4ef",
+    "validator": "sha256:d81db34b6b0af709d4c97c1c4d41a7c0dc4eb1616ac1d33a39ada926c8b03326"
+  },
   "inputDigests": {
+    "capabilitySnapshot": "sha256:c17f0351f729eff0fea457ef2bf6b5ea8f2cd23a8f8440c069a460fdaff64ed8",
+    "profile": "sha256:d29264ba6693a6c8abeaf34fcca67f33612aee3e42817bd2e92702093303e4ef",
     "taskSpec": "sha256:fca60511a30335b05c1dcb4ee4784a71500e5c4e7caabc60dc40e9cc1abe665f",
     "transcript": "sha256:03e24d8d340250c15a5a47b2004b3cbb19255201a17dbe79a60ae003488402b9",
     "transcriptMeta": "sha256:9e7e4cd5e136895743812f4dcb7388784efc8c0463214d5c445433c74f83df1f",
     "workerRequest": "sha256:788c7f087b13e6afba88aab713c15a0d24bea44d6e462bf3850c22295a93a22d",
     "workerResult": "sha256:26fbf7a5ec4149bfea4c5b9167a9b1df209e078467862e46b418ceea9be943c1"
   },
-  "manifestDigest": "sha256:a42e32632262a8f4cb7ee71b8788e6293ebe11cb6b5a567cc22765c671575351",
+  "manifestDigest": "sha256:7f0122ddc989e46cc4f8cc74183e236c665592111a2ea9fe88f0f811652aee1b",
   "observation": {
+    "admissionEvidenceDigest": "sha256:c17f0351f729eff0fea457ef2bf6b5ea8f2cd23a8f8440c069a460fdaff64ed8",
+    "assistantMessages": 7,
+    "capabilityDigest": "sha256:c17f0351f729eff0fea457ef2bf6b5ea8f2cd23a8f8440c069a460fdaff64ed8",
     "commandCalls": 0,
+    "commands": [],
     "eventCount": 18,
+    "executableDigest": "sha256:b09566c33df68f8ee3e82783120f6eb885fbd9aeb5bc35beb4a85a3ea2d4219a",
+    "profileDigest": "sha256:cb0e224d9c5a478d69639a1675e596bf8857868665d63d9aa45e5498b7ee4d0f",
     "toolCalls": 2,
-    "toolNames": [
-      "bash",
-      "write"
-    ],
     "workerResultTeeLast": true,
-    "workerResultTeeSuccesses": 1
+    "workerResultTransportDigest": "sha256:a8868a7f8e9cfc2d126d324204502caacc5462946405ab0835627fca8a121d48"
   },
   "reasonCode": "transcript-attestation-pass",
   "status": "pass",

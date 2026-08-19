@@ -276,6 +276,16 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             if required != "python3":
                 self.assertIn(required, source)
 
+    def test_real_mac_r3_receipt_is_current_and_sanitized(self):
+        receipt_path = FIXTURES / "mac-qoder-v5-conformance-r3-receipt.json"
+        receipt = json.loads(receipt_path.read_text())
+        self.assertEqual(receipt["status"], "pass")
+        self.assertEqual(receipt["reasonCode"], "transcript-attestation-pass")
+        self.assertEqual(receipt["attestationDigest"], "sha256:cd7c84516c86e6f4e864fdb7f002b833cb9bd60fba2f58a4d7688dff945efcf9")
+        serialized = json.dumps(receipt, ensure_ascii=False)
+        for secret_or_free_text in ("/Users/", '"prompt"', '"message"', '"description"'):
+            self.assertNotIn(secret_or_free_text, serialized)
+
     def test_core_contracts_and_draft_schema(self):
         for schema_name, filename in (("task-spec","task-spec.json"),("worker-request","worker-request.json"),("worker-result","worker-result.json"),("capability-snapshot","capability-snapshot.json")):
             completed = subprocess.run([str(self.marshal), "contract", "validate", "--schema", schema_name, str(FIXTURES / filename)], cwd=REPOSITORY_ROOT, capture_output=True, text=True)

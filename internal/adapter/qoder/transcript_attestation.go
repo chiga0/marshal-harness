@@ -124,6 +124,19 @@ type attestationMeta struct {
 	WorkerResultTeeAttempts  int      `json:"workerResultTeeAttempts"`
 	WorkerResultTeeLast      bool     `json:"workerResultTeeLast"`
 	WorkerResultTeeSuccesses int      `json:"workerResultTeeSuccesses"`
+	ContextError             string   `json:"contextError"`
+	DenialsBenign            int      `json:"denialsBenign"`
+	DenialsFatal             int      `json:"denialsFatal"`
+	FailureKind              string   `json:"failureKind"`
+	InputTokens              int      `json:"inputTokens"`
+	Model                    string   `json:"model"`
+	OutputTokens             int      `json:"outputTokens"`
+	PermissionDenied         bool     `json:"permissionDenied"`
+	RetryDisposition         string   `json:"retryDisposition"`
+	SessionID                string   `json:"sessionId"`
+	Signal                   string   `json:"signal"`
+	StderrBytes              int      `json:"stderrBytes"`
+	StderrTruncated          bool     `json:"stderrTruncated"`
 }
 
 func ValidateTranscriptAttestation(input TranscriptAttestationInput) (TranscriptAttestationObservation, error) {
@@ -214,7 +227,7 @@ func ValidateTranscriptAttestation(input TranscriptAttestationInput) (Transcript
 	if capture.cliVersion != s.BinaryVersion || capture.protocolVersion != s.ProtocolVersion || capture.permissionMode != s.PermissionMode {
 		return observation, errors.New("transcript-identity-mismatch")
 	}
-	if meta.CapturedBytes != len(input.Transcript) || meta.EventCount != capture.eventCount || meta.AssistantMessages != capture.assistantCount || meta.ToolCalls != capture.toolCalls || meta.QoderCLIVersion != capture.cliVersion || meta.ProtocolVersion != capture.protocolVersion || meta.PermissionMode != capture.permissionMode || meta.OutputTruncated || meta.ExitCode != 0 || meta.WorkerResultTeeAttempts != capture.resultTransport.attempts || meta.WorkerResultTeeSuccesses != capture.resultTransport.successes || !meta.WorkerResultTeeLast {
+	if meta.CapturedBytes != len(input.Transcript) || meta.EventCount != capture.eventCount || meta.AssistantMessages != capture.assistantCount || meta.ToolCalls != capture.toolCalls || meta.QoderCLIVersion != capture.cliVersion || meta.ProtocolVersion != capture.protocolVersion || meta.PermissionMode != capture.permissionMode || meta.SessionID != capture.sessionID || meta.Model != capture.model || meta.InputTokens != capture.inputTokens || meta.OutputTokens != capture.outputTokens || meta.OutputTruncated || meta.StderrTruncated || meta.ExitCode != 0 || meta.Signal != "" || meta.ContextError != "" || meta.FailureKind != "" || meta.RetryDisposition != "" || meta.PermissionDenied || meta.DenialsBenign != 0 || meta.DenialsFatal != 0 || meta.WorkerResultTeeAttempts != capture.resultTransport.attempts || meta.WorkerResultTeeSuccesses != capture.resultTransport.successes || !meta.WorkerResultTeeLast {
 		return observation, errors.New("transcript-meta-mismatch")
 	}
 	if len(capture.observedTools) == 0 || !capture.observedTools[len(capture.observedTools)-1].resultTransportExplicit(capture) {

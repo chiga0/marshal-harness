@@ -14,11 +14,11 @@
   },
   "inputs": {
     "transcript": {"path": "transcript-negative-undeclared-wc.jsonl", "sha256": "sha256:1363b7f433359658fc8f1ae219cfa9391da8711f61abf2f198a3733f922e3586", "maxBytes": 8388608},
-    "transcriptMeta": {"path": "transcript-negative-undeclared-wc-meta.json", "sha256": "sha256:9313cfb944d309fb72c6ba0200a3cb25d69e8cf13dec13d0929d214b078f3c70", "maxBytes": 131072},
+    "transcriptMeta": {"path": "transcript-negative-undeclared-wc-meta.json", "sha256": "sha256:80ada22194d974c4e9caa91edb4fe1cce31015e85e34790dc61ecb0f517df22e", "maxBytes": 131072},
     "workerResult": {"path": "worker-result.json", "sha256": "sha256:b95ab6fcb07f57d83e3f83755837921b7cbf15d5baae27847243b50a04cdd0d3", "maxBytes": 262144},
     "workerRequest": {"path": "worker-request.json", "sha256": "sha256:fbbca62c7fa39deb7fbb975ab5d8a1da2ffd26d732f13e4fecc05e28a0047c21", "maxBytes": 524288},
     "taskSpec": {"path": "task-spec.json", "sha256": "sha256:40ee788815a8e696b7c748d3da734125c88302ec5a6579bebe8448f27627938a", "maxBytes": 2097152},
     "capabilitySnapshot": {"path": "capability-snapshot.json", "sha256": "sha256:9ba2a850cc3f98d3aad7d65bec2f96af2d47b0276a1564f434c98740a11de189", "maxBytes": 524288},
-    "profile": {"path": "transcript-attestation-profile.json", "sha256": "sha256:527441b38866a69d0668a002938eb799953c582d054a4d8cced3dacf9311e593", "maxBytes": 262144}
+    "profile": {"path": "transcript-attestation-profile.json", "sha256": "sha256:d29264ba6693a6c8abeaf34fcca67f33612aee3e42817bd2e92702093303e4ef", "maxBytes": 262144}
   }
 }

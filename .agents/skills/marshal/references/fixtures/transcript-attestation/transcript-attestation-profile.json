@@ -7,9 +7,6 @@
   "permissionMode": "acceptEdits",
   "defaultAllowedTools": ["read", "edit", "write", "grep", "glob", "bash"],
   "forbiddenCommandWords": ["wc", "python", "python3", "git", "ls", "find", "mkdir", "pwd"],
-  "requiredConstraints": [
-    "WorkerResult final tee 必须是最后一个 tool call，成功后立即 end_turn。",
-    "除 final tee 外没有任何开发或自测命令，因此 declaredCommands 必须为空。"
-  ],
+  "requiredConstraints": [],
   "commands": []
 }
