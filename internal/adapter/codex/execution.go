@@ -430,8 +430,13 @@ func expandProviderSchemaRefs(node any, definitions map[string]any) any {
 func stripRejectedSchemaKeywords(node any) {
 	switch value := node.(type) {
 	case map[string]any:
+		delete(value, "$schema")
+		delete(value, "$id")
+		delete(value, "title")
 		delete(value, "not")
 		delete(value, "oneOf")
+		delete(value, "format")
+		delete(value, "pattern")
 		if constant, ok := value["const"]; ok {
 			value["type"] = providerSchemaType(constant)
 			value["enum"] = []any{constant}
