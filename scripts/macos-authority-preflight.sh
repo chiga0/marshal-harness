@@ -55,6 +55,12 @@ check_root_private_socket() {
     esac
 }
 
+check_launchd_binding() {
+    output=$(launchctl print "system/$plist_label" 2>/dev/null) || return 1
+    printf '%s\n' "$output" | grep -Fq "$apap_service" || return 1
+    printf '%s\n' "$output" | grep -Fq "$launcher"
+}
+
 check_binary_identity() {
     binary=$1
     expected_version=$2
@@ -85,6 +91,7 @@ check "APAP service managed Team ID" check_signed_team "$apap_service"
 check "launcher managed Team ID" check_signed_team "$launcher"
 check "APAP endpoint root/private socket" check_root_private_socket "$apap_endpoint"
 check "root launchd service" launchctl print "system/$plist_label"
+check "root launchd exact service+launcher binding" check_launchd_binding
 check "noninteractive sudo" sudo -n true
 
 if [ "$failures" -ne 0 ]; then

@@ -31,6 +31,8 @@ MARSHAL_SIGNING_TEAM_ID=TEAMID scripts/macos-authority-preflight.sh
 
 预检还会对两个固定 executable 执行 `--version` 与 SHA-256 精确比对：Qoder 必须是 `1.1.23`，默认摘要为 `b09566c33df68f8ee3e82783120f6eb885fbd9aeb5bc35beb4a85a3ea2d4219a`；Codex 必须输出 `codex-cli 0.145.0`，默认摘要为 `1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590`。如管理员分发了同版本但不同构建，必须显式传入 `MARSHAL_QODER_SHA256` 或 `MARSHAL_CODEX_SHA256`，并重新取得对应独立 verifier/conformance 证据；不能把 PATH 中的同名 CLI 当作替代品。
 
+预检不会只检查 launchd label 是否存在；它还要求 `launchctl print system/$MARSHAL_APAP_LABEL` 的实际投影同时包含精确 APAP service 与 launcher 路径。label 存在但 Program/ProgramArguments 指向其他文件时仍保持 `BLOCKED`。
+
 `MARSHAL_SIGNING_TEAM_ID` 只作为签名身份比对输入，不是 secret；未提供时脚本会拒绝通过 Team ID 检查。ad-hoc 签名即使能被 `codesign --verify` 接受，也会被预检拒绝。
 
 以下命令只读，不会安装、签名、bootstrap 或修改 Marshal 状态：
