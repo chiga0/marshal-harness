@@ -71,12 +71,14 @@
         },
         "oneOf": [
           {
+            "type": "object",
             "required": ["path"],
-            "not": { "required": ["uri"] }
+            "not": { "type": "object", "required": ["uri"] }
           },
           {
+            "type": "object",
             "required": ["uri"],
-            "not": { "required": ["path"] }
+            "not": { "type": "object", "required": ["path"] }
           }
         ]
       }
@@ -130,11 +132,11 @@
       "maxLength": 1024,
       "not": {
         "anyOf": [
-          { "pattern": "^/" },
-          { "pattern": "^[A-Za-z]:[\\\\/]" },
-          { "pattern": "(^|/)\\.\\.(/|$)" },
-          { "pattern": "\\\\" },
-          { "pattern": "\\u0000" }
+          { "type": "string", "pattern": "^/" },
+          { "type": "string", "pattern": "^[A-Za-z]:[\\\\/]" },
+          { "type": "string", "pattern": "(^|/)\\.\\.(/|$)" },
+          { "type": "string", "pattern": "\\\\" },
+          { "type": "string", "pattern": "\\u0000" }
         ]
       }
     }
