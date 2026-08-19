@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 
@@ -97,8 +98,9 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
         self.write_json(meta_path, meta)
         self.refresh_manifest(root, manifest)
 
-    def invoke(self, root: Path, manifest: str = "manifest-positive.json", env=None):
-        return subprocess.run([sys.executable, "-I", "-B", str(VALIDATOR), "--root", str(root), "--manifest", manifest, "--checker", str(self.checker)], capture_output=True, text=True, env=env)
+    def invoke(self, root: Path, manifest: str = "manifest-positive.json", env=None, checker=None):
+        checker = checker or self.checker
+        return subprocess.run([sys.executable, "-I", "-B", str(VALIDATOR), "--root", str(root), "--manifest", manifest, "--checker", str(checker)], capture_output=True, text=True, env=env)
 
     def assert_failure(self, completed, *reasons: str) -> None:
         self.assertNotEqual(completed.returncode, 0, completed.stdout)
@@ -228,6 +230,51 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             completed = self.invoke(root, env=env)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertFalse(marker.exists())
+
+    def test_checker_symlink_and_oversize_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, manifest_path, manifest = self.prepare(directory); self.write_json(manifest_path, manifest)
+            symlink = (Path(directory) / "checker-link").resolve(strict=False)
+            symlink.symlink_to(self.checker)
+            self.assert_failure(self.invoke(root, checker=symlink), "checker-invalid")
+            oversized = (Path(directory) / "oversized-checker").resolve()
+            with oversized.open("wb") as stream:
+                stream.seek(64 * 1024 * 1024)
+                stream.write(b"x")
+            oversized.chmod(0o700)
+            self.assert_failure(self.invoke(root, checker=oversized), "checker-invalid")
+
+    def test_checker_leaf_replace_or_growth_never_runs_unbound_bytes(self):
+        for mutation in ("replace", "grow"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root, manifest_path, manifest = self.prepare(directory); self.write_json(manifest_path, manifest)
+                candidate = (Path(directory) / "checker").resolve(); shutil.copy2(self.checker, candidate); candidate.chmod(0o700)
+                started = threading.Event()
+                def mutate():
+                    started.wait()
+                    try:
+                        if mutation == "replace":
+                            replacement = candidate.with_suffix(".replacement")
+                            shutil.copy2("/usr/bin/false", replacement); replacement.chmod(0o700); os.replace(replacement, candidate)
+                        else:
+                            with candidate.open("ab", buffering=0) as stream: stream.write(b"growth")
+                    except OSError:
+                        pass
+                thread = threading.Thread(target=mutate); thread.start(); started.set()
+                completed = self.invoke(root, checker=candidate); thread.join()
+                if completed.returncode == 0:
+                    self.assertEqual(json.loads(completed.stdout)["reasonCode"], "transcript-attestation-pass")
+                else:
+                    reason = json.loads(completed.stderr)["reasonCode"]
+                    self.assertIn(reason, {"checker-invalid", "checker-changed-during-read", "checker-changed-during-execution", "checker-execution-failed", "invalid-json"})
+
+    def test_python_bridge_contains_no_tool_or_event_semantic_parser(self):
+        source = VALIDATOR.read_text()
+        for forbidden in ("def parse_jsonl", "def validate_transcript", "tool_use", "tool_result", "TEE_FIRST_LINE", "TASK_TOOL_NAMES"):
+            self.assertNotIn(forbidden, source)
+        for required in ("O_NOFOLLOW", "O_EXCL", "CHECKER_MAX_BYTES", "TemporaryDirectory", 'python3'):
+            if required != "python3":
+                self.assertIn(required, source)
 
     def test_core_contracts_and_draft_schema(self):
         for schema_name, filename in (("task-spec","task-spec.json"),("worker-request","worker-request.json"),("worker-result","worker-result.json"),("capability-snapshot","capability-snapshot.json")):

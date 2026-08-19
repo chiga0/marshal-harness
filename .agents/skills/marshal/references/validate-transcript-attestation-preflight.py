@@ -13,16 +13,15 @@ import re
 import stat
 import subprocess
 import sys
-import unicodedata
+import tempfile
 
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-TEE_FIRST_LINE = "cat <<'MARSHAL_RESULT' | tee /dev/null > /dev/null"
-TEE_DELIMITER = "MARSHAL_RESULT"
 SCHEMA_NAME = "transcript-attestation-preflight.schema.json"
 READ_CHUNK_BYTES = 1024 * 1024
 MANIFEST_MAX_BYTES = 1024 * 1024
 SCHEMA_MAX_BYTES = 1024 * 1024
+CHECKER_MAX_BYTES = 64 * 1024 * 1024
 INPUT_HARD_LIMITS = {
     "transcript": 8 * 1024 * 1024,
     "transcriptMeta": 128 * 1024,
@@ -32,15 +31,6 @@ INPUT_HARD_LIMITS = {
     "capabilitySnapshot": 512 * 1024,
     "profile": 256 * 1024,
 }
-TASK_TOOL_NAMES = {
-    "Read": "read",
-    "Edit": "edit",
-    "Write": "write",
-    "Grep": "grep",
-    "Glob": "find",
-    "Bash": "bash",
-}
-UNSAFE_TEXT_CATEGORIES = {"Cc", "Cf", "Zl", "Zp"}
 
 
 class PreflightError(Exception):
@@ -379,314 +369,6 @@ def validate_schema_instance(value: object, node: object, root: dict, location: 
             fail("manifest-schema-invalid", f"{location} exceeds its maximum")
 
 
-def parse_jsonl(raw: bytes) -> list[dict]:
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeError as error:
-        fail("transcript-invalid", f"transcript is not UTF-8: {error}")
-    if not text:
-        fail("transcript-invalid", "transcript is empty")
-    events: list[dict] = []
-    for index, line in enumerate(text.splitlines(), start=1):
-        if not line:
-            fail("transcript-invalid", f"transcript line {index} is empty")
-        events.append(parse_json(line.encode("utf-8"), f"transcript line {index}"))
-    return events
-
-
-def extract_content(event: dict) -> list[dict]:
-    message = event.get("message")
-    if not isinstance(message, dict):
-        return []
-    content = message.get("content")
-    if not isinstance(content, list):
-        return []
-    return [item for item in content if isinstance(item, dict)]
-
-
-def tool_result_status(event: dict, item: dict) -> str:
-    if item.get("is_error") is True:
-        return "failed"
-    transport = event.get("tool_use_result")
-    if isinstance(transport, dict):
-        if transport.get("isHardFailure") is True or transport.get("interrupted") is True:
-            return "failed"
-        exit_code = transport.get("exitCode")
-        if isinstance(exit_code, int) and not isinstance(exit_code, bool):
-            return "passed" if exit_code == 0 else "failed"
-        if transport.get("kind") == "completed":
-            return "passed"
-    metadata = event.get("tool_result_meta")
-    if isinstance(metadata, list):
-        tool_id = item.get("tool_use_id")
-        if any(
-            isinstance(entry, dict)
-            and entry.get("id") == tool_id
-            and entry.get("non_execution_kind") == "permission-rule"
-            for entry in metadata
-        ):
-            return "failed"
-    return "passed"
-
-
-def validate_safe_description(value: object) -> None:
-    if not isinstance(value, str) or not value or len(value.encode("utf-8")) > 512:
-        fail("transport-command-invalid", "tee description must be non-empty and at most 512 UTF-8 bytes")
-    for character in value:
-        if unicodedata.category(character) in UNSAFE_TEXT_CATEGORIES:
-            fail("transport-command-invalid", "tee description contains an unsafe code point")
-
-
-def parse_tee_payload(tool: dict) -> dict | None:
-    if tool["name"] != "Bash":
-        return None
-    payload = tool["input"]
-    if not isinstance(payload, dict):
-        fail("tool-input-invalid", f"Bash tool {tool['id']} input must be an object")
-    command = payload.get("command")
-    if not isinstance(command, str):
-        fail("tool-input-invalid", f"Bash tool {tool['id']} command must be a string")
-    resembles_tee = TEE_DELIMITER in command or "tee /dev/null" in command
-    lines = command.split("\n")
-    exact = len(lines) >= 3 and lines[0] == TEE_FIRST_LINE and lines[-1] == TEE_DELIMITER
-    if not exact:
-        if resembles_tee:
-            fail("transport-command-invalid", "WorkerResult tee command is not the canonical closed envelope")
-        return None
-    if set(payload) != {"command", "description"}:
-        fail("transport-command-invalid", "WorkerResult tee input must contain only command and description")
-    validate_safe_description(payload.get("description"))
-    raw_payload = "\n".join(lines[1:-1]).encode("utf-8")
-    return parse_json(raw_payload, "WorkerResult tee payload")
-
-
-def command_contains_word(command: str, word: str) -> bool:
-    boundary = r"[A-Za-z0-9._+-]"
-    return re.search(rf"(?<!{boundary}){re.escape(word)}(?!{boundary})", command) is not None
-
-
-def validate_subject(
-    subject: dict, task_spec: dict, worker_request: dict, worker_result: dict, meta: dict, task_spec_digest: str
-) -> None:
-    expected = {
-        "taskId": subject["taskId"],
-        "runId": subject["runId"],
-        "attemptId": subject["attemptId"],
-    }
-    for field, value in expected.items():
-        if worker_result.get(field) != value:
-            fail("subject-mismatch", f"WorkerResult {field} does not match manifest subject")
-        if worker_request.get(field) != value:
-            fail("subject-mismatch", f"WorkerRequest {field} does not match manifest subject")
-    adapter = worker_result.get("adapter")
-    if not isinstance(adapter, dict) or adapter.get("id") != subject["adapterId"]:
-        fail("subject-mismatch", "WorkerResult adapter id does not match manifest subject")
-    if adapter.get("version") != subject["binaryVersion"]:
-        fail("subject-mismatch", "WorkerResult adapter version does not match manifest subject")
-    if worker_request.get("adapterId") != subject["adapterId"]:
-        fail("subject-mismatch", "WorkerRequest adapterId does not match manifest subject")
-    if worker_request.get("baseSha") != subject["sourceHead"]:
-        fail("source-head-mismatch", "WorkerRequest baseSha does not match manifest sourceHead")
-    if worker_request.get("specDigest") != task_spec_digest:
-        fail("subject-mismatch", "WorkerRequest specDigest does not match TaskSpec raw bytes")
-    metadata = task_spec.get("metadata")
-    worker = task_spec.get("worker")
-    if not isinstance(metadata, dict) or metadata.get("id") != subject["taskId"]:
-        fail("subject-mismatch", "TaskSpec metadata.id does not match manifest taskId")
-    if not isinstance(worker, dict) or worker.get("preferredAdapter") != subject["adapterId"]:
-        fail("subject-mismatch", "TaskSpec preferredAdapter does not match manifest adapter")
-    meta_fields = {
-        "qodercliVersion": subject["binaryVersion"],
-        "protocolVersion": subject["protocolVersion"],
-        "permissionMode": subject["permissionMode"],
-    }
-    for field, value in meta_fields.items():
-        if meta.get(field) != value:
-            fail("subject-mismatch", f"transcript metadata {field} does not match manifest subject")
-
-
-def validate_constraints(task_spec: dict, literals: list[str]) -> None:
-    work = task_spec.get("work")
-    constraints = work.get("constraints") if isinstance(work, dict) else None
-    if not isinstance(constraints, list) or not all(isinstance(item, str) for item in constraints):
-        fail("task-constraint-mismatch", "TaskSpec work.constraints must be a string array")
-    missing = [literal for literal in literals if literal not in constraints]
-    if missing:
-        fail("task-constraint-mismatch", "TaskSpec is missing an exact required transport constraint")
-
-
-def validate_transcript(
-    events: list[dict], transcript_raw: bytes, meta: dict, task_spec: dict, worker_result: dict, policy: dict
-) -> dict:
-    tools: list[dict] = []
-    results: dict[str, dict] = {}
-    for event_index, event in enumerate(events):
-        for item in extract_content(event):
-            if item.get("type") == "tool_use":
-                tool_id = item.get("id")
-                name = item.get("name")
-                if not isinstance(tool_id, str) or not tool_id or not isinstance(name, str) or not name:
-                    fail("transcript-invalid", "tool_use must carry non-empty id and name")
-                if any(existing["id"] == tool_id for existing in tools):
-                    fail("transcript-invalid", f"duplicate tool_use id {tool_id}")
-                tools.append(
-                    {
-                        "id": tool_id,
-                        "name": name,
-                        "input": item.get("input"),
-                        "eventIndex": event_index,
-                    }
-                )
-            elif item.get("type") == "tool_result":
-                tool_id = item.get("tool_use_id")
-                if not isinstance(tool_id, str) or not tool_id or tool_id in results:
-                    fail("transcript-invalid", "tool_result must bind one unique tool_use id")
-                results[tool_id] = {
-                    "status": tool_result_status(event, item),
-                    "eventIndex": event_index,
-                }
-    tool_ids = {tool["id"] for tool in tools}
-    if set(results) != tool_ids:
-        fail("transcript-invalid", "every tool_use must have exactly one matching tool_result")
-
-    allowed = set(policy["allowedToolNames"])
-    forbidden = set(policy["forbiddenToolNames"])
-    if allowed & forbidden:
-        fail("policy-invalid", "allowedToolNames and forbiddenToolNames overlap")
-    for tool in tools:
-        if tool["name"] in forbidden:
-            fail("forbidden-tool-executed", f"forbidden tool {tool['name']} was executed")
-        if tool["name"] not in allowed:
-            fail("tool-not-allowed", f"tool {tool['name']} is outside the attested allowlist")
-
-    worker_tools = task_spec.get("worker", {}).get("tools")
-    if worker_tools is not None:
-        if not isinstance(worker_tools, list):
-            fail("task-tool-policy-mismatch", "TaskSpec worker.tools must be an array")
-        for tool in tools:
-            mapped = TASK_TOOL_NAMES.get(tool["name"])
-            if mapped is None or mapped not in worker_tools:
-                fail("task-tool-policy-mismatch", f"tool {tool['name']} is outside TaskSpec worker.tools")
-
-    tee_calls: list[tuple[dict, dict]] = []
-    command_calls: list[dict] = []
-    for tool in tools:
-        tee_payload = parse_tee_payload(tool)
-        if tee_payload is not None:
-            tee_calls.append((tool, tee_payload))
-            continue
-        if tool["name"] == "Bash":
-            if not isinstance(tool["input"], dict) or not isinstance(tool["input"].get("command"), str):
-                fail("tool-input-invalid", f"Bash tool {tool['id']} lacks a string command")
-            command = tool["input"]["command"]
-            for word in policy["forbiddenCommandWords"]:
-                if command_contains_word(command, word):
-                    fail("forbidden-command-executed", f"forbidden command word {word!r} was executed")
-            command_calls.append(
-                {
-                    "toolUseId": tool["id"],
-                    "commandDigest": sha256_bytes(command.encode("utf-8")),
-                    "status": results[tool["id"]]["status"],
-                }
-            )
-
-    if len(tee_calls) != 1:
-        fail("result-tee-count-invalid", "transcript must contain exactly one canonical WorkerResult tee")
-    tee_tool, tee_payload = tee_calls[0]
-    if results[tee_tool["id"]]["status"] != "passed":
-        fail("result-tee-failed", "the unique WorkerResult tee did not succeed")
-    tee_result_index = results[tee_tool["id"]]["eventIndex"]
-    if any(tool["eventIndex"] > tee_result_index for tool in tools):
-        fail("post-result-tool-use", "a tool_use occurred after the successful WorkerResult tee result")
-    if tee_tool is not tools[-1]:
-        fail("result-tee-not-last", "the WorkerResult tee was not the final tool_use")
-
-    if not events or events[-1].get("type") != "result":
-        fail("terminal-event-invalid", "transcript must end with a terminal result event")
-    terminal = events[-1]
-    if (
-        terminal.get("subtype") != "success"
-        or terminal.get("is_error") is not False
-        or terminal.get("stop_reason") != "end_turn"
-    ):
-        fail("terminal-event-invalid", "terminal result must be success/end_turn")
-
-    bindings = policy["commandBindings"]
-    binding_by_tool: dict[str, dict] = {}
-    command_ids: set[str] = set()
-    for binding in bindings:
-        if binding["toolUseId"] in binding_by_tool or binding["commandId"] in command_ids:
-            fail("policy-invalid", "commandBindings must have unique toolUseId and commandId")
-        binding_by_tool[binding["toolUseId"]] = binding
-        command_ids.add(binding["commandId"])
-    if command_calls and not bindings:
-        fail("undeclared-command-executed", "non-transport Bash commands ran without command bindings")
-    if {call["toolUseId"] for call in command_calls} != set(binding_by_tool):
-        fail("undeclared-command-executed", "actual Bash command set differs from commandBindings")
-    expected_declarations: list[dict] = []
-    for call in command_calls:
-        binding = binding_by_tool[call["toolUseId"]]
-        if binding["commandDigest"] != call["commandDigest"]:
-            fail("command-binding-mismatch", "command binding raw digest does not match transcript command")
-        expected_declarations.append({"commandId": binding["commandId"], "status": call["status"]})
-
-    declared = worker_result.get("declaredCommands")
-    if not isinstance(declared, list):
-        fail("worker-result-invalid", "WorkerResult declaredCommands must be an array")
-    normalized_declared: list[dict] = []
-    for item in declared:
-        if not isinstance(item, dict) or not isinstance(item.get("commandId"), str):
-            fail("worker-result-invalid", "declaredCommands entries must contain commandId")
-        if item.get("status") not in {"passed", "failed"}:
-            fail("declared-command-mismatch", "executed commands must be declared passed or failed")
-        normalized_declared.append({"commandId": item["commandId"], "status": item["status"]})
-    if normalized_declared != expected_declarations:
-        fail("declared-command-mismatch", "WorkerResult declaredCommands differ from actual transcript commands")
-
-    tee_fields = (
-        "apiVersion",
-        "kind",
-        "taskId",
-        "runId",
-        "attemptId",
-        "status",
-        "summary",
-        "declaredChangedFiles",
-        "declaredArtifacts",
-        "declaredCommands",
-        "declaredRisks",
-    )
-    for field in tee_fields:
-        if tee_payload.get(field) != worker_result.get(field):
-            fail("tee-payload-mismatch", f"tee payload {field} differs from accepted WorkerResult")
-
-    expected_meta = {
-        "capturedBytes": len(transcript_raw),
-        "eventCount": len(events),
-        "toolCalls": len(tools),
-        "workerResultTeeAttempts": 1,
-        "workerResultTeeSuccesses": 1,
-        "workerResultTeeLast": True,
-    }
-    for field, expected in expected_meta.items():
-        if meta.get(field) != expected:
-            fail("transcript-meta-mismatch", f"transcript metadata {field} does not match raw transcript")
-    actual_names = sorted({tool["name"].lower() for tool in tools})
-    if meta.get("toolNames") != actual_names:
-        fail("transcript-meta-mismatch", "transcript metadata toolNames differs from actual tools")
-    if meta.get("outputTruncated") is not False or meta.get("exitCode") != 0:
-        fail("transcript-meta-mismatch", "transcript metadata must show untruncated exit 0")
-
-    return {
-        "eventCount": len(events),
-        "toolCalls": len(tools),
-        "toolNames": actual_names,
-        "commandCalls": len(command_calls),
-        "workerResultTeeSuccesses": 1,
-        "workerResultTeeLast": True,
-    }
-
-
 def load_inputs(root: Path, manifest: dict) -> tuple[dict[str, bytes], dict[str, str]]:
     raw_inputs: dict[str, bytes] = {}
     digests: dict[str, str] = {}
@@ -731,21 +413,90 @@ def invoke_core_checker(checker: Path, subject: dict, raw_inputs: dict[str, byte
     if not checker.is_absolute() or checker.resolve() != checker:
         fail("checker-invalid", "--checker must be an absolute canonical path")
     metadata = checker.lstat()
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o111 == 0:
         fail("checker-invalid", "--checker must be a non-symlink regular file")
-    checker_raw = checker.read_bytes()
-    envelope = {"subject": subject}
-    envelope.update(
-        {label: base64.b64encode(raw_inputs[label]).decode("ascii") for label in INPUT_HARD_LIMITS}
-    )
-    completed = subprocess.run(
-        [str(checker)],
-        input=json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-        capture_output=True,
-        text=True,
-        check=False,
-        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
-    )
+    if metadata.st_size <= 0 or metadata.st_size > CHECKER_MAX_BYTES:
+        fail("checker-invalid", "--checker exceeds its closed size bound")
+    try:
+        checker_fd = os.open(
+            checker,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+        )
+    except OSError as error:
+        fail("checker-invalid", f"cannot open checker without following links: {error}")
+    try:
+        before = os.fstat(checker_fd)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_mode & 0o111 == 0
+            or before.st_size <= 0
+            or before.st_size > CHECKER_MAX_BYTES
+            or (before.st_dev, before.st_ino) != (metadata.st_dev, metadata.st_ino)
+        ):
+            fail("checker-invalid", "checker identity changed before held open")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(checker_fd, min(READ_CHUNK_BYTES, CHECKER_MAX_BYTES + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > CHECKER_MAX_BYTES:
+                fail("checker-invalid", "checker grew beyond its closed size bound")
+        after = os.fstat(checker_fd)
+        identity_before = (before.st_dev, before.st_ino, before.st_mode, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        identity_after = (after.st_dev, after.st_ino, after.st_mode, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+        checker_raw = b"".join(chunks)
+        if identity_before != identity_after or len(checker_raw) != after.st_size:
+            fail("checker-changed-during-read", "checker changed during bounded held read")
+        envelope = {"subject": subject}
+        envelope.update(
+            {label: base64.b64encode(raw_inputs[label]).decode("ascii") for label in INPUT_HARD_LIMITS}
+        )
+        # Darwin cannot portably fexecve a held descriptor from Python. Copy
+        # the already-held, bounded bytes to one O_EXCL inode in a fresh 0700
+        # directory, keep that inode open, and verify it around execution.
+        with tempfile.TemporaryDirectory(prefix="marshal-attestation-checker-") as private_root:
+            copied_path = Path(private_root) / "checker"
+            copied_fd = os.open(copied_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+            try:
+                offset = 0
+                while offset < len(checker_raw):
+                    offset += os.write(copied_fd, checker_raw[offset:])
+                os.fchmod(copied_fd, 0o700)
+                os.fsync(copied_fd)
+                copied_before = os.fstat(copied_fd)
+                completed = subprocess.run(
+                    [str(copied_path)],
+                    input=json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+                    timeout=120,
+                )
+                copied_after = os.fstat(copied_fd)
+                if (
+                    copied_before.st_dev,
+                    copied_before.st_ino,
+                    copied_before.st_size,
+                    copied_before.st_mtime_ns,
+                    copied_before.st_ctime_ns,
+                ) != (
+                    copied_after.st_dev,
+                    copied_after.st_ino,
+                    copied_after.st_size,
+                    copied_after.st_mtime_ns,
+                    copied_after.st_ctime_ns,
+                ):
+                    fail("checker-changed-during-execution", "private checker inode changed during execution")
+            finally:
+                os.close(copied_fd)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        fail("checker-execution-failed", f"held checker execution failed: {type(error).__name__}")
+    finally:
+        os.close(checker_fd)
     stream = completed.stdout if completed.returncode == 0 else completed.stderr
     payload = parse_json(stream.encode("utf-8"), "core checker output")
     if completed.returncode != 0:
