@@ -6,6 +6,8 @@ set -eu
 
 qoder_path=${MARSHAL_QODER_PATH:-/Users/gawain/.qoder/bin/qodercli/qodercli-1.1.23}
 codex_path=${MARSHAL_CODEX_PATH:-/opt/homebrew/Caskroom/codex/0.145.0/codex-aarch64-apple-darwin}
+qoder_sha256=${MARSHAL_QODER_SHA256:-b09566c33df68f8ee3e82783120f6eb885fbd9aeb5bc35beb4a85a3ea2d4219a}
+codex_sha256=${MARSHAL_CODEX_SHA256:-1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590}
 apap_service=${MARSHAL_APAP_SERVICE_PATH:-/Library/PrivilegedHelperTools/marshal-apap}
 launcher=${MARSHAL_DARWIN_LAUNCHER_PATH:-/Library/PrivilegedHelperTools/marshal-darwin-launcher}
 apap_endpoint=${MARSHAL_APAP_ENDPOINT:-/private/var/run/marshal-apap.sock}
@@ -53,13 +55,25 @@ check_root_private_socket() {
     esac
 }
 
+check_binary_identity() {
+    binary=$1
+    expected_version=$2
+    expected_sha256=$3
+    version=$("$binary" --version 2>/dev/null) || return 1
+    [ "$version" = "$expected_version" ] || return 1
+    actual_sha256=$(shasum -a 256 "$binary" 2>/dev/null | awk '{print $1}') || return 1
+    [ "$actual_sha256" = "$expected_sha256" ]
+}
+
 if [ "$(uname -s)" != "Darwin" ]; then
     printf 'BLOCKED platform: Darwin required\n'
     exit 2
 fi
 
 check "qoder executable" test -x "$qoder_path"
+check "qoder held identity (version+sha256)" check_binary_identity "$qoder_path" "1.1.23" "$qoder_sha256"
 check "codex executable" test -x "$codex_path"
+check "codex held identity (version+sha256)" check_binary_identity "$codex_path" "codex-cli 0.145.0" "$codex_sha256"
 check "APAP service exists" test -f "$apap_service"
 check "signed launcher exists" test -f "$launcher"
 check "APAP service root/private" check_root_private_file "$apap_service"

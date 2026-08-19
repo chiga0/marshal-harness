@@ -509,6 +509,8 @@ Darwin stream transport 同步收紧帧边界：发送端拒绝零长度/超 64 
 
 预检进一步要求 APAP service、launcher 与 endpoint socket 由 root 持有且禁止 group/other write；仅“文件存在”或“launchd label 存在”不再被视为部署就绪。该检查仍是只读输入，不改变 registry admission。
 
+本轮收紧预检的 executable identity 门禁：固定 Qoder/Codex 候选必须分别通过精确 `--version` 与 SHA-256 比对，默认绑定当前 Mac 上已核验的 `qodercli 1.1.23` 与 `codex-cli 0.145.0` 摘要；管理员若提供同版本的不同构建，必须显式覆盖摘要并重新取得独立 verifier/conformance 证据。该检查仍不签名、不安装、不读取 credential，也不把版本/摘要通过误判为 authority 或 production support；PATH 中的同名候选继续与 held identity 隔离。
+
 本切片将 `internal/darwin` 的严格 held-executable 观察抽象为 launcher 与 Qoder/Codex candidate 共用的 `OpenHeldExecutable`/`OpenHeldCandidate`。路径逐级通过 `openat` + `O_NOFOLLOW` 固定，外部 authority 可通过 `Duplicate` 取得同一 inode 的 SCM_RIGHTS 描述符，而原始 held descriptor 继续由 owner 持有；包内不提供 pathname exec 或普通子进程 fallback。该 seam 只关闭 candidate descriptor 交付与父路径替换缺口，不产生签名 receipt、OS isolation 或 registry enablement。
 
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
