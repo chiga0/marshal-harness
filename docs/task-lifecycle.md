@@ -36,7 +36,7 @@ Retry 表示基础设施或 Provider 执行失败，因此创建新 Attempt。Re
 
 `ACCEPTED`、`REJECTED`、`BLOCKED`、`ABORTED`、`NO_CHANGE` 是 Run 终态。解决 Blocker 或改变终态决策必须创建关联到旧 Run 的新 Run。
 
-终态不可复活存在唯一命名例外（[ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) typed reconciliation）：发布后误入 `BLOCKED` 的 Run，在 PR 已被合并且 merged head 的 required checks 全绿时，可经 `marshal task reconcile` 以不可变 `SCMMergeReceipt` + append-only `PublicationReconcileRecord` + current-ledger recheck 共同门禁，安全迁移 `BLOCKED → ACCEPTED`（事件 `publication.reconciled`，actor `system/marshal-reconciliation`）。该例外仅限 accept-after-merge：不开放其他终态、其他状态组合或其他 reconcile 类型，不绕过 required checks 与 ReviewDecision，也不改写既有 PublicationRecord 或 ReviewDecision。
+终态不可复活存在唯一命名例外（[ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md) typed reconciliation）：发布后误入 `BLOCKED` 的 Run，在 PR 已被合并且 merged head 的 required checks 全绿时，可经 `marshal task reconcile` 以不可变 `SCMMergeReceipt` + append-only `PublicationReconcileRecord` + current-ledger recheck 共同门禁，安全迁移 `BLOCKED → ACCEPTED`（事件 `publication.reconciled`，actor `system/marshal-reconciliation`）。该例外仅限 accept-after-merge：不开放其他终态、其他状态组合或其他 reconcile 类型，不绕过 required checks 与 ReviewDecision，也不改写既有 PublicationRecord 或 ReviewDecision。若原 block 原因为 `ci-deadline-exceeded`、`ci-completed-at-missing`、`ci-completed-at-exceeds-deadline` 或 `ci-completed-at-inconsistent`，还必须先持久化 fresh identity-bound RemoteCheckRecord，并以全部 required checks 的可信 `completedAt` 证明及时完成；非 CI 时间原因的历史 block 保持 ADR 0026 兼容语义。
 
 M13 的长周期人工等待不改变本表：根据 [ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)，等待输入、策略或预算审批由 Goal `PAUSED` 承担；Run 不新增 `WAITING_HUMAN_APPROVAL`。Goal resume 可以创建关联的新 Run，但不能复活或改写已终态 Run。
 
@@ -63,7 +63,7 @@ M13 的长周期人工等待不改变本表：根据 [ADR 0019](adr/0019-determi
 | `PUBLISHING` | `BLOCKED` | 凭据、授权或远程策略失败且不可重试 |
 | `PUBLISHED` | `CI_PENDING` | TaskSpec 要求远程检查 |
 | `PUBLISHED` | `ACCEPTED` | 无需远程检查 |
-| `CI_PENDING` | `ACCEPTED` | 当前发布 head SHA 的必需检查通过 |
+| `CI_PENDING` | `ACCEPTED` | 当前发布 head SHA 的必需检查全部通过，且每项可信 `completedAt` 位于 `publishedAt − 300s` 至冻结 `ciDeadline + 300s` 区间 |
 | `CI_PENDING` | `REWORK_REQUESTED` | 检查失败、预算尚存且可通过代码修复 |
 | `CI_PENDING` | `BLOCKED` | 失败来自外部或需要维护者操作 |
 | `RETRY_PENDING` | `BLOCKED` | 显式 abort（`run.aborted`，ADR 0012）：human actor、LeaseHeld、写终态 Outcome；v1 不启用 `ABORTED` 状态 |
@@ -122,6 +122,7 @@ Worker Attempt、Verifier 或 Publisher 在同一时间只能有一个持有 wor
 - `maxOperationalRetries`：Provider、协议或进程失败的重试次数。
 - `maxReworkRounds`：Verification 或 Review 导致的实现循环次数。
 - `runTimeoutSeconds`：Run 总 wall time。
+- `ciObserveTimeoutSeconds`：可选的 CI 观察阶段预算；声明时从 `publishedAt` 起算并在 publish 时冻结为 PublicationRecord `ciDeadline`，缺失时严格回退 `CreatedAt + runTimeoutSeconds`。
 - `attemptTimeoutSeconds`：单次 Worker 调用时间。
 
 以最先耗尽的预算为准。无法满足代码契约时进入 `REJECTED`；外部容量或授权阻止正常尝试时进入 `BLOCKED`。
@@ -137,6 +138,10 @@ Worker Attempt、Verifier 或 Publisher 在同一时间只能有一个持有 wor
 ## 发布后的 CI
 
 CI 结果必须绑定精确的 published head SHA。旧 commit 的绿色检查不能满足门禁。Rework 更新 branch 后，旧检查失效，生命周期重新经过 Verification、Review、Publishing 与 `CI_PENDING`。
+
+当前 CI 时间裁决遵循 [ADR 0028](adr/0028-ci-deadline-phased-observation.md) 的“先观察、后裁决”：无论本地 `now` 是否已达到冻结 `ciDeadline`，Core 都先调用 observer，并在 Schema 与 `(taskId, runId, repositoryId, requestId, headSha)` identity 通过后持久化 RemoteCheckRecord。远端仍为 `pending` 且 `now ≥ ciDeadline` 时以 `ci-deadline-exceeded` 进入 `BLOCKED`；远端为 `pass` 时 required check 集合必须精确相等、无重复、每项 `completedAt` 非零，并满足 `publishedAt − 300s ≤ completedAt ≤ ciDeadline + 300s`。缺失、超上界与低于下界分别以 `ci-completed-at-missing`、`ci-completed-at-exceeds-deadline`、`ci-completed-at-inconsistent` fail closed。本地 `observedAt` 不替代或修改 provider 完成时间裁决。
+
+controlled merge 使用同一套时间证明，并在任何 `SCMMerger` 调用前完成 fresh observation、内容寻址留证与裁决；deadline 后观察到 provider 已及时完成仍可继续，pending 到期或证明不完整时不得触发 ready/merge mutation。四种 CI 时间原因导致的 `BLOCKED` 在 reconcile 时都必须重新取得并先持久化 fresh timely proof；失败保持 `BLOCKED`，不写 receipt、reconcile event 或新 Outcome。
 
 当前实现（current behavior）：`CI_PENDING` 的失败观察只把 `headSha` 写入 `publication.checks-failed` 事件并进入 `REWORK_REQUESTED`，下一 Attempt 得不到任何 review findings；`REWORK_REQUESTED` 的 CI origin 没有 ReviewPacket/ReviewDecision 入口。目标契约（target contract）见下节（[ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)，Proposed，未实现）。
 

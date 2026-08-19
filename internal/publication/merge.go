@@ -124,14 +124,11 @@ func Merge(ctx context.Context, input MergeInput) (MergeResult, error) {
 	if deadlineErr != nil {
 		return MergeResult{}, deadlineErr
 	}
-	if now.Compare(ciDeadline) >= 0 {
-		return MergeResult{}, errCIDeadlineExceeded
-	}
 
 	// M10: fresh all-green required checks bound to the current head. This
 	// runs for both initial and recovery binding (ADR 0032 §2); its digest is
 	// frozen into a NEW intent only.
-	checkDigest, err := observeFreshChecks(ctx, input, admission, state, runDir)
+	checkDigest, err := observeFreshChecks(ctx, input, admission, state, runDir, ciDeadline, now)
 	if err != nil {
 		if port.IsPermanent(err) {
 			result, blockedErr := block(store, lease, state, runDir, err)
@@ -175,7 +172,7 @@ func Merge(ctx context.Context, input MergeInput) (MergeResult, error) {
 			return MergeResult{State: result.State}, blockedErr
 		}
 		intent = existing
-		if err := bindPersistedRemoteChecks(runDir, input.Validator, intent, admission.publication, admission.task.Publication.RequiredChecks, state); err != nil {
+		if err := bindPersistedRemoteChecksTimely(runDir, input.Validator, intent, admission.publication, admission.task.Publication.RequiredChecks, state, ciDeadline); err != nil {
 			result, blockedErr := block(store, lease, state, runDir, err)
 			return MergeResult{State: result.State}, blockedErr
 		}
@@ -540,7 +537,7 @@ func authorizeMergeApproval(records []runstore.ControlRecord, state domain.RunSt
 // observeFreshChecks enforces M10: a schema-valid fresh RemoteCheckRecord
 // whose identity binds the current run/publication and whose required-checks
 // set exactly matches the frozen set with every required check green.
-func observeFreshChecks(ctx context.Context, input MergeInput, admission mergeAdmission, state domain.RunState, runDir string) (string, error) {
+func observeFreshChecks(ctx context.Context, input MergeInput, admission mergeAdmission, state domain.RunState, runDir string, ciDeadline, now time.Time) (string, error) {
 	checkRecord, err := input.CheckObserver.ObserveChecks(ctx, domain.Record{Kind: domain.KindPublicationRecord, Data: admission.publicationData}, admission.task.Publication.RequiredChecks)
 	if err != nil {
 		return "", err
@@ -556,18 +553,18 @@ func observeFreshChecks(ctx context.Context, input MergeInput, admission mergeAd
 		checks.RequestID != admission.publication.Request.ID || checks.HeadSHA != admission.publication.HeadSHA {
 		return "", port.Permanent(errors.New("RemoteCheckRecord identity mismatch"))
 	}
-	if checks.Status != domain.CheckStatusPass {
-		return "", fmt.Errorf("required checks are not all green: %s", checks.Status)
-	}
-	if !requiredChecksMatch(checks.Checks, admission.task.Publication.RequiredChecks) {
-		return "", port.Permanent(errors.New("RemoteCheckRecord requiredChecks set does not match the frozen identity"))
-	}
-	digest, err := canonical.DigestJSON(checkRecord.Data)
+	digest, err := persistFreshRemoteCheckEvidence(runDir, checkRecord.Data)
 	if err != nil {
 		return "", err
 	}
-	if err := persistRemoteCheckRecord(runDir, digest, checkRecord.Data); err != nil {
-		return "", err
+	if checks.Status == domain.CheckStatusPending && !now.Before(ciDeadline) {
+		return "", port.Permanent(errCIDeadlineExceeded)
+	}
+	if checks.Status != domain.CheckStatusPass {
+		return "", fmt.Errorf("required checks are not all green: %s", checks.Status)
+	}
+	if err := adjudicateTimelyCompletion(checks, admission.task.Publication.RequiredChecks, ciDeadline, admission.publication.PublishedAt); err != nil {
+		return "", port.Permanent(err)
 	}
 	return digest, nil
 }

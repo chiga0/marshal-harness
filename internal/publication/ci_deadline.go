@@ -88,10 +88,10 @@ func adjudicateTimelyCompletion(checks domain.RemoteCheckRecord, requiredChecks 
 	for _, check := range checks.Checks {
 		_, wanted := expected[check.Name]
 		if !wanted {
-			if check.Required {
-				return errCICompletedAtInconsistent
-			}
-			continue
+			// The observer is required to return the exact frozen check set.
+			// Even an optional extra identity is not part of the adjudication
+			// input authorized by PublicationRecord and therefore fails closed.
+			return errCICompletedAtInconsistent
 		}
 		if !check.Required || check.Status != domain.CheckStatusPass {
 			return errCICompletedAtInconsistent
@@ -112,9 +112,6 @@ func adjudicateTimelyCompletion(checks domain.RemoteCheckRecord, requiredChecks 
 		if completedAt.After(ciDeadline.Add(ciClockSkewTolerance)) {
 			return errCICompletedAtExceedsDeadline
 		}
-		if !checks.ObservedAt.IsZero() && completedAt.After(checks.ObservedAt.UTC().Add(ciClockSkewTolerance)) {
-			return errCICompletedAtInconsistent
-		}
 	}
 	if len(seen) != len(expected) {
 		return errCICompletedAtMissing
@@ -123,8 +120,9 @@ func adjudicateTimelyCompletion(checks domain.RemoteCheckRecord, requiredChecks 
 }
 
 // runBlockedByCIDeadline reports whether the run's terminal BLOCKED state was
-// produced by the CI deadline adjudication: the journal's publication.blocked
-// event carries the fixed ci-deadline-exceeded reason code. The sentinel
+// produced by any ADR 0028 CI timing adjudication. All four negative timing
+// reasons require a fresh positive timely-completion proof before typed
+// reconciliation may recover the Run. The ci-deadline-exceeded sentinel
 // shares its name and meaning with the legacy deadline block, so runs blocked
 // before this change are recognized too.
 func runBlockedByCIDeadline(store *runstore.Store, runID string) (bool, error) {
@@ -138,7 +136,12 @@ func runBlockedByCIDeadline(store *runstore.Store, runID string) (bool, error) {
 			continue
 		}
 		reason, _ := event.Payload["error"].(string)
-		return reason == errCIDeadlineExceeded.Error(), nil
+		switch reason {
+		case errCIDeadlineExceeded.Error(), errCICompletedAtMissing.Error(), errCICompletedAtExceedsDeadline.Error(), errCICompletedAtInconsistent.Error():
+			return true, nil
+		default:
+			return false, nil
+		}
 	}
 	return false, nil
 }

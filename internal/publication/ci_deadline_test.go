@@ -79,9 +79,6 @@ func deadlineAdjudicationInput() (domain.RemoteCheckRecord, time.Time, time.Time
 		HeadSHA: fabricatedSHA("2"), Status: domain.CheckStatusPass,
 		Checks: []domain.RemoteCheck{
 			{Name: "ci/test", Required: true, Status: domain.CheckStatusPass},
-			// A non-required pending check never participates in the
-			// timely-completion proof.
-			{Name: "optional/lint", Required: false, Status: domain.CheckStatusPending},
 		},
 		ObservedAt: time.Date(2026, 8, 4, 11, 30, 0, 0, time.UTC),
 	}
@@ -122,6 +119,19 @@ func TestAdjudicateTimelyCompletion(t *testing.T) {
 				t.Fatalf("adjudication = %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+func TestAdjudicateTimelyCompletionRejectsUnexpectedOptionalIdentity(t *testing.T) {
+	checks, ciDeadline, publishedAt := deadlineAdjudicationInput()
+	checks.Checks[0].CompletedAt = timePointer(ciDeadline.Add(-time.Minute))
+	checks.Checks = append(checks.Checks, domain.RemoteCheck{
+		Name: "optional/lint", Required: false, Status: domain.CheckStatusPending,
+	})
+
+	err := adjudicateTimelyCompletion(checks, []string{"ci/test"}, ciDeadline, publishedAt)
+	if !errors.Is(err, errCICompletedAtInconsistent) {
+		t.Fatalf("adjudication = %v, want exact-set rejection %v", err, errCICompletedAtInconsistent)
 	}
 }
 
@@ -448,13 +458,15 @@ func deadlineFixtureInstants() (createdAt, publishedAt, legacyDeadline, ciDeadli
 
 func TestRunBlockedByCIDeadlineDetection(t *testing.T) {
 	createdAt, publishedAt, _, _ := deadlineFixtureInstants()
-	t.Run("deadline block recognized", func(t *testing.T) {
-		fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
-		blocked, err := runBlockedByCIDeadline(fixture.store, fixture.runID)
-		if err != nil || !blocked {
-			t.Fatalf("deadline-blocked run not recognized: blocked=%v err=%v", blocked, err)
-		}
-	})
+	for _, reason := range []error{errCIDeadlineExceeded, errCICompletedAtMissing, errCICompletedAtExceedsDeadline, errCICompletedAtInconsistent} {
+		t.Run(reason.Error()+" recognized", func(t *testing.T) {
+			fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: reason.Error()})
+			blocked, err := runBlockedByCIDeadline(fixture.store, fixture.runID)
+			if err != nil || !blocked {
+				t.Fatalf("CI-timing-blocked run not recognized: blocked=%v err=%v", blocked, err)
+			}
+		})
+	}
 	t.Run("other block not recognized", func(t *testing.T) {
 		fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: "remote PR head or identity changed"})
 		blocked, err := runBlockedByCIDeadline(fixture.store, fixture.runID)

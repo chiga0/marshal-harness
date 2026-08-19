@@ -1,6 +1,7 @@
 package publication
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -411,6 +412,12 @@ func countJournalEvents(t *testing.T, fixture *publicationFixture, eventType str
 func TestReconcileMigratesBlockedRunToAcceptedAfterMerge(t *testing.T) {
 	fixture := blockedPostPublicationFixture(t, fixtureOptions{maxReworkRounds: 1})
 	harness := newReconcileHarness(t, fixture)
+	// A historical non-timing ADR 0026 block keeps its compatibility path:
+	// green required checks remain sufficient even when the optional ADR 0028
+	// completion timestamp is absent.
+	harness.checkObserver.mutate = func(checks *domain.RemoteCheckRecord) {
+		checks.Checks[0].CompletedAt = nil
+	}
 	_, publicationDigest := fixturePublicationBytes(t, fixture)
 
 	result, err := harness.reconcile(t)
@@ -894,8 +901,11 @@ func TestReconcileRejectsIneligibleRuns(t *testing.T) {
 				if state := fixture.inspect(t); state.State != domain.StateBlocked {
 					t.Fatalf("state = %+v", state)
 				}
-				if _, statErr := os.Stat(filepath.Join(fixture.runDirectory, "remote-check-record.json")); !os.IsNotExist(statErr) {
-					t.Fatal("rejected checks must not materialize a check record")
+				if _, statErr := os.Stat(filepath.Join(fixture.runDirectory, "remote-check-record.json")); statErr != nil {
+					t.Fatalf("trusted-identity rejected checks must retain their observation: %v", statErr)
+				}
+				if _, statErr := os.Stat(filepath.Join(fixture.runDirectory, "scm-merge-receipt.json")); !os.IsNotExist(statErr) {
+					t.Fatal("rejected checks must not persist a merge receipt")
 				}
 				if count := countJournalEvents(t, fixture, lifecycle.PublicationReconcileEventType); count != 0 {
 					t.Fatal("rejected checks must not append a reconcile event")
@@ -1259,6 +1269,122 @@ func TestReconcileDeadlineRecoveryAfterCIDeadlineFailsClosed(t *testing.T) {
 	}
 	if count := countJournalEvents(t, fixture, lifecycle.PublicationReconcileEventType); count != 0 {
 		t.Fatalf("rejected recovery appended %d reconcile events", count)
+	}
+}
+
+func TestReconcileAllCITimingBlockReasonsRequireFreshTimelyProof(t *testing.T) {
+	createdAt, publishedAt, legacyDeadline, _ := deadlineFixtureInstants()
+	for _, reason := range []error{errCIDeadlineExceeded, errCICompletedAtMissing, errCICompletedAtExceedsDeadline, errCICompletedAtInconsistent} {
+		t.Run(reason.Error(), func(t *testing.T) {
+			fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: reason.Error()})
+			harness := newReconcileHarness(t, fixture)
+			harness.now = legacyDeadline.Add(30 * time.Minute)
+
+			result, err := harness.reconcile(t)
+			if err != nil {
+				t.Fatalf("fresh timely proof rejected for %s: %v", reason, err)
+			}
+			if result.State.State != domain.StateAccepted || result.Record.ReconcileReason != ReconcileReasonCIDeadlineReconciled {
+				t.Fatalf("result = %+v", result)
+			}
+		})
+	}
+}
+
+func TestReconcileCITimingFailuresPersistFreshEvidenceBeforeFailClosed(t *testing.T) {
+	createdAt, publishedAt, _, ciDeadline := deadlineFixtureInstants()
+	proofs := []struct {
+		name   string
+		want   error
+		mutate func(*domain.RemoteCheckRecord)
+	}{
+		{name: "missing", want: errCICompletedAtMissing, mutate: func(checks *domain.RemoteCheckRecord) {
+			checks.Checks[0].CompletedAt = nil
+		}},
+		{name: "late", want: errCICompletedAtExceedsDeadline, mutate: func(checks *domain.RemoteCheckRecord) {
+			checks.Checks[0].CompletedAt = timePointer(ciDeadline.Add(ciClockSkewTolerance + time.Second))
+		}},
+		{name: "prepublication", want: errCICompletedAtInconsistent, mutate: func(checks *domain.RemoteCheckRecord) {
+			checks.Checks[0].CompletedAt = timePointer(publishedAt.Add(-ciClockSkewTolerance - time.Second))
+		}},
+		{name: "duplicate", want: errCICompletedAtInconsistent, mutate: func(checks *domain.RemoteCheckRecord) {
+			checks.Checks = append(checks.Checks, checks.Checks[0])
+		}},
+	}
+	for _, blockReason := range []error{errCIDeadlineExceeded, errCICompletedAtMissing, errCICompletedAtExceedsDeadline, errCICompletedAtInconsistent} {
+		for _, proof := range proofs {
+			t.Run(blockReason.Error()+"/"+proof.name, func(t *testing.T) {
+				fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: blockReason.Error()})
+				before := fixture.inspect(t)
+				beforeOutcome, err := os.ReadFile(filepath.Join(fixture.runDirectory, "outcome.json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				harness := newReconcileHarness(t, fixture)
+				harness.now = ciDeadline.Add(10 * time.Minute)
+				harness.checkObserver.mutate = proof.mutate
+
+				_, err = harness.reconcile(t)
+				if !errors.Is(err, proof.want) {
+					t.Fatalf("err = %v, want %v", err, proof.want)
+				}
+				after := fixture.inspect(t)
+				if after.State != domain.StateBlocked || after.Sequence != before.Sequence {
+					t.Fatalf("failed recovery mutated the run: %+v", after)
+				}
+				assertRejectedReconcileWroteOnlyCheckEvidence(t, fixture, beforeOutcome)
+			})
+		}
+	}
+}
+
+func TestReconcileCheckEvidenceCrashCutReplayIsIdempotent(t *testing.T) {
+	createdAt, publishedAt, legacyDeadline, _ := deadlineFixtureInstants()
+	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCICompletedAtMissing.Error()})
+	harness := newReconcileHarness(t, fixture)
+	harness.now = legacyDeadline.Add(30 * time.Minute)
+	checkRecord, err := harness.checkObserver.ObserveChecks(context.Background(), harness.publicationRecord(t), []string{"ci/test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistFreshRemoteCheckEvidence(fixture.runDirectory, checkRecord.Data); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := harness.reconcile(t)
+	if err != nil {
+		t.Fatalf("evidence crash-cut replay failed: %v", err)
+	}
+	if result.State.State != domain.StateAccepted || countJournalEvents(t, fixture, lifecycle.PublicationReconcileEventType) != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	entries, err := os.ReadDir(filepath.Join(fixture.runDirectory, "remote-check-records"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("content-addressed check evidence duplicated: entries=%d err=%v", len(entries), err)
+	}
+}
+
+func assertRejectedReconcileWroteOnlyCheckEvidence(t *testing.T, fixture *publicationFixture, beforeOutcome []byte) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(fixture.runDirectory, "remote-check-record.json")); err != nil {
+		t.Fatalf("fresh RemoteCheckRecord was not materialized before adjudication: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(fixture.runDirectory, "remote-check-records"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("fresh content-addressed evidence missing: entries=%d err=%v", len(entries), err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDirectory, "scm-merge-receipt.json")); !os.IsNotExist(err) {
+		t.Fatalf("rejected recovery persisted a receipt: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(fixture.runDirectory, "publication-reconcile-records")); !os.IsNotExist(err) {
+		t.Fatalf("rejected recovery created reconcile records: %v", err)
+	}
+	if count := countJournalEvents(t, fixture, lifecycle.PublicationReconcileEventType); count != 0 {
+		t.Fatalf("rejected recovery appended %d reconcile events", count)
+	}
+	afterOutcome, err := os.ReadFile(filepath.Join(fixture.runDirectory, "outcome.json"))
+	if err != nil || !bytes.Equal(afterOutcome, beforeOutcome) {
+		t.Fatalf("rejected recovery rewrote the BLOCKED Outcome: err=%v", err)
 	}
 }
 
