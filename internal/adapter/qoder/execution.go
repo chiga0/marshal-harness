@@ -78,14 +78,11 @@ func runBoundedVersionProbe(ctx context.Context, executable, configDir string, e
 	}
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
-	groupID, groupErr := syscall.Getpgid(command.Process.Pid)
-	if groupErr != nil {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		_ = stdout.Close()
-		_ = stderr.Close()
-		return nil, errors.New("acquire qoder version probe process group")
-	}
+	// Setpgid with the zero-value Pgid makes the child lead a process group
+	// whose id is its pid. Start reports child-side setup failures, so freeze
+	// that configured identity directly instead of racing a fast child exit
+	// with a parent-side Getpgid lookup on Darwin.
+	groupID := command.Process.Pid
 	var killDirectOnce, killGroupOnce, closeOnce sync.Once
 	killDirect := func() {
 		killDirectOnce.Do(func() { _ = command.Process.Kill() })
@@ -237,18 +234,14 @@ func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arg
 	// Only the child process tree may retain the writer ends after Start.
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
-	groupID, groupErr := syscall.Getpgid(command.Process.Pid)
-	if groupErr != nil {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		_ = stdout.Close()
-		_ = stderr.Close()
-		return attemptObservation{}, errors.New("acquire qoder process group")
-	}
-	// Capture the group identity while the direct child is alive. Never query
-	// Getpgid after Wait has reaped that PID: it may already name an unrelated
-	// process. The captured PGID remains owned while any same-group descendant
-	// survives and is the only process-tree target used below.
+	// Setpgid with the zero-value Pgid makes the child lead a process group
+	// whose id is its pid. Start reports child-side setup failures, so freeze
+	// that configured identity directly instead of racing a fast child exit
+	// with a parent-side Getpgid lookup on Darwin. Never query Getpgid after
+	// Wait has reaped that PID: it may already name an unrelated process. The
+	// captured PGID remains owned while any same-group descendant survives and
+	// is the only process-tree target used below.
+	groupID := command.Process.Pid
 	var killDirectOnce, killGroupOnce, closeOnce sync.Once
 	killDirect := func() {
 		killDirectOnce.Do(func() { _ = command.Process.Kill() })
