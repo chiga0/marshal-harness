@@ -1803,6 +1803,32 @@ func validDeclaredResultJSON() string {
 	return `{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"TASK-1","runId":"run-1","attemptId":"attempt-1","adapter":{"id":"codex","executable":"claimed-by-worker","version":"worker-claim"},"session":{"id":"thread-1","resumable":true},"status":"completed","summary":"fixture completed","declaredChangedFiles":["file.txt"],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"2026-08-17T00:00:00Z","completedAt":"2026-08-17T00:00:01Z"}`
 }
 
+func TestNormalizeProviderOptionalFieldsRemovesEmptyStrictValues(t *testing.T) {
+	data := []byte(`{"adapter":{"id":"codex","executable":"x","version":"y","model":""},"session":{"id":"","resumable":false},"usage":{"currency":""},"declaredArtifacts":[{"id":"a","kind":"documentation","path":"report.md","uri":""}],"blocker":""}`)
+	normalized := normalizeProviderOptionalFields(data)
+	var document map[string]any
+	if err := json.Unmarshal(normalized, &document); err != nil {
+		t.Fatal(err)
+	}
+	adapter := document["adapter"].(map[string]any)
+	if _, ok := adapter["model"]; ok {
+		t.Fatal("empty adapter.model was not removed")
+	}
+	if _, ok := document["session"]; ok {
+		t.Fatal("empty session was not removed")
+	}
+	if _, ok := document["usage"].(map[string]any)["currency"]; ok {
+		t.Fatal("empty usage.currency was not removed")
+	}
+	artifact := document["declaredArtifacts"].([]any)[0].(map[string]any)
+	if _, ok := artifact["uri"]; ok {
+		t.Fatal("empty artifact.uri was not removed")
+	}
+	if _, ok := document["blocker"]; ok {
+		t.Fatal("empty blocker was not removed")
+	}
+}
+
 // successTranscriptLines 是按 0.145.0 真实 JSONL smoke 冻结的成功事件
 // 序列：turn.started 不携带 turn_id，终态型 agent_message 直接发出
 // item.completed，最终以 turn.completed 收口。

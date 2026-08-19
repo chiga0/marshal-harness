@@ -905,6 +905,16 @@ func normalizeProviderOptionalFields(data []byte) []byte {
 	if blocker, ok := document["blocker"].(string); ok && blocker == "" {
 		delete(document, "blocker")
 	}
+	if adapter, ok := document["adapter"].(map[string]any); ok {
+		if model, ok := adapter["model"].(string); ok && model == "" {
+			delete(adapter, "model")
+		}
+	}
+	if session, ok := document["session"].(map[string]any); ok {
+		if id, ok := session["id"].(string); ok && id == "" {
+			delete(document, "session")
+		}
+	}
 	if artifacts, ok := document["declaredArtifacts"].([]any); ok {
 		for _, item := range artifacts {
 			if artifact, ok := item.(map[string]any); ok {
