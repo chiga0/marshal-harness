@@ -1,0 +1,15 @@
+{
+  "assistantMessages": 3,
+  "capturedBytes": 1979,
+  "eventCount": 8,
+  "exitCode": 0,
+  "outputTruncated": false,
+  "permissionMode": "acceptEdits",
+  "protocolVersion": "1.2.0",
+  "qodercliVersion": "1.1.23",
+  "toolCalls": 3,
+  "toolNames": ["bash", "write"],
+  "workerResultTeeAttempts": 1,
+  "workerResultTeeLast": true,
+  "workerResultTeeSuccesses": 1
+}

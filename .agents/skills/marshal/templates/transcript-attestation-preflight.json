@@ -1,0 +1,52 @@
+{
+  "apiVersion": "marshal.operator/v1alpha1",
+  "kind": "TranscriptAttestationPreflight",
+  "subject": {
+    "sourceHead": "0000000000000000000000000000000000000000",
+    "taskId": "TASK-ID",
+    "runId": "run-id",
+    "attemptId": "attempt:id",
+    "adapterId": "qoder",
+    "binaryVersion": "1.1.23",
+    "protocolVersion": "1.2.0",
+    "eventContract": "qoder-stream-json-1.2.0-v5",
+    "permissionMode": "acceptEdits"
+  },
+  "inputs": {
+    "transcript": {
+      "path": "qoder-transcript.jsonl",
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "maxBytes": 8388608
+    },
+    "transcriptMeta": {
+      "path": "qoder-transcript-meta.json",
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "maxBytes": 131072
+    },
+    "workerResult": {
+      "path": "worker-result.json",
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "maxBytes": 262144
+    },
+    "workerRequest": {
+      "path": "worker-request.json",
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "maxBytes": 524288
+    },
+    "taskSpec": {
+      "path": "task-spec.json",
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "maxBytes": 2097152
+    }
+  },
+  "policy": {
+    "allowedToolNames": ["Write", "Bash"],
+    "forbiddenToolNames": ["Agent", "Read", "Edit", "Glob", "Grep"],
+    "forbiddenCommandWords": ["wc", "python", "python3", "git", "ls", "find", "mkdir", "pwd"],
+    "requiredConstraintLiterals": [
+      "WorkerResult final tee 必须是最后一个 tool call，成功后立即 end_turn。",
+      "除 final tee 外没有任何开发或自测命令，因此 declaredCommands 必须为空。"
+    ],
+    "commandBindings": []
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "apiVersion": "marshal.operator/v1alpha1",
+  "kind": "TranscriptAttestationPreflight",
+  "subject": {
+    "sourceHead": "1eb476f7e323fe590534b7ee8b533f077424db2d",
+    "taskId": "TA-POSITIVE",
+    "runId": "ta-positive-r1",
+    "attemptId": "attempt:positive",
+    "adapterId": "qoder",
+    "binaryVersion": "1.1.23",
+    "protocolVersion": "1.2.0",
+    "eventContract": "qoder-stream-json-1.2.0-v5",
+    "permissionMode": "acceptEdits"
+  },
+  "inputs": {
+    "transcript": {
+      "path": "transcript-positive.jsonl",
+      "sha256": "sha256:a49a076b13a50f3e92a6092dfc574a2962bde983fb11bfb0720fc474c2f503bd",
+      "maxBytes": 8388608
+    },
+    "transcriptMeta": {
+      "path": "transcript-positive-meta.json",
+      "sha256": "sha256:049f4b5e11850de6f1db5269f3150d5dc622e7760cc4c72ea38044be60c433a3",
+      "maxBytes": 131072
+    },
+    "workerResult": {
+      "path": "worker-result.json",
+      "sha256": "sha256:b95ab6fcb07f57d83e3f83755837921b7cbf15d5baae27847243b50a04cdd0d3",
+      "maxBytes": 262144
+    },
+    "workerRequest": {
+      "path": "worker-request.json",
+      "sha256": "sha256:1256bc8726f37635cfa43b9eb56c163a96e2402519d02c1c4114cf3034e41b78",
+      "maxBytes": 524288
+    },
+    "taskSpec": {
+      "path": "task-spec.json",
+      "sha256": "sha256:40ee788815a8e696b7c748d3da734125c88302ec5a6579bebe8448f27627938a",
+      "maxBytes": 2097152
+    }
+  },
+  "policy": {
+    "allowedToolNames": ["Write", "Bash"],
+    "forbiddenToolNames": ["Agent", "Read", "Edit", "Glob", "Grep"],
+    "forbiddenCommandWords": ["wc", "python", "python3", "git", "ls", "find", "mkdir", "pwd"],
+    "requiredConstraintLiterals": [
+      "WorkerResult final tee 必须是最后一个 tool call，成功后立即 end_turn。",
+      "除 final tee 外没有任何开发或自测命令，因此 declaredCommands 必须为空。"
+    ],
+    "commandBindings": []
+  }
+}

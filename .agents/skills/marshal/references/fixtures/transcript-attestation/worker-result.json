@@ -1,0 +1,22 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "WorkerResult",
+  "taskId": "TA-POSITIVE",
+  "runId": "ta-positive-r1",
+  "attemptId": "attempt:positive",
+  "adapter": {
+    "id": "qoder",
+    "executable": "/fixture/qodercli-1.1.23",
+    "version": "1.1.23",
+    "model": "Performance"
+  },
+  "status": "completed",
+  "summary": "Created report.md without extra commands.",
+  "declaredChangedFiles": ["report.md"],
+  "declaredArtifacts": [],
+  "declaredCommands": [],
+  "declaredRisks": [],
+  "outputTruncated": false,
+  "startedAt": "2026-08-20T00:00:00Z",
+  "completedAt": "2026-08-20T00:00:01Z"
+}

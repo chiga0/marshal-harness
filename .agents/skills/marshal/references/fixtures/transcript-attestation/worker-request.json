@@ -1,0 +1,23 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "WorkerRequest",
+  "taskId": "TA-POSITIVE",
+  "runId": "ta-positive-r1",
+  "attemptId": "attempt:positive",
+  "attemptNumber": 1,
+  "specDigest": "sha256:40ee788815a8e696b7c748d3da734125c88302ec5a6579bebe8448f27627938a",
+  "policyDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "capabilityDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "baseSha": "1eb476f7e323fe590534b7ee8b533f077424db2d",
+  "worktreePath": "/fixture/repository",
+  "controlRoot": "/fixture/control",
+  "taskSpecPath": "input/task-spec.json",
+  "promptPath": "input/prompt.md",
+  "resultPath": "output/worker-result.json",
+  "adapterId": "qoder",
+  "executionProfile": "workspace-write",
+  "sessionPolicy": "ephemeral",
+  "attemptTimeoutSeconds": 300,
+  "maxOutputBytes": 1048576,
+  "reviewFindings": []
+}
