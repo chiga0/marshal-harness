@@ -2162,11 +2162,11 @@ func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, 
 	}
 	workerResultPath := filepath.Join(controlRoot, "output", "worker-result.json")
 	if adapterID == "qoder" {
-		// Qoder's ordinary-user shell guard rejects absolute paths containing a
-		// colon. Attempt directories use an `attempt:<id>` component, so expose
-		// a relative, worktree-local staging file instead. It is a distinct inode
-		// from control output and is consumed through held descriptors.
-		workerResultPath = "./marshal-worker-result.json"
+		// Qoder receives no WorkerResult pathname or descriptor. Its final
+		// declaration tees only to /dev/null; after transcript validation the
+		// Adapter copies the payload into an unlinked held inode. This avoids the
+		// colon-bearing control path and removes shell pathname access entirely.
+		workerResultPath = "Qoder adapter-held result channel (no filesystem path)"
 	}
 	identity := []projectionField{
 		{"taskId", state.TaskID},
@@ -2291,8 +2291,13 @@ func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, 
 	b.WriteString("\n")
 	b.WriteString(promptFixedRules)
 	b.WriteString("## WorkerResult 输出要求\n\n")
-	fmt.Fprintf(&b, "完成后必须将符合 WorkerResult JSON Schema 的 JSON 写入：%s\n", workerResultPath)
-	b.WriteString("该路径是禁止读取、搜索、grep、glob、列举或修改 .marshal 规则之外唯一允许的例外，且只允许最终写入一次。\n")
+	if adapterID == "qoder" {
+		fmt.Fprintf(&b, "完成后必须通过以下受控通道声明符合 WorkerResult JSON Schema 的 JSON：%s\n", workerResultPath)
+		b.WriteString("该通道不暴露任何 staging 路径或文件描述符；不得创建、猜测、搜索、glob 或访问 WorkerResult staging 文件。\n")
+	} else {
+		fmt.Fprintf(&b, "完成后必须将符合 WorkerResult JSON Schema 的 JSON 写入：%s\n", workerResultPath)
+		b.WriteString("该路径是禁止读取、搜索、grep、glob、列举或修改 .marshal 规则之外唯一允许的例外，且只允许最终写入一次。\n")
+	}
 	if adapterID == "codex" {
 		// Codex 0.145.0 persists the final structured response through its
 		// held --output-last-message fd. Repeating a shell write to the
@@ -2303,11 +2308,10 @@ func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, 
 		b.WriteString("Codex 特殊规则：不要通过 shell 或工具再次写入上述绝对路径；Codex 的最终结构化响应会由 Marshal 绑定的 output-last-message fd 持久化为 WorkerResult。目标交付物完成后，直接在最终响应中返回 WorkerResult JSON，并将 status 设为 completed。\n")
 	}
 	if adapterID == "qoder" {
-		// Qoder 1.1.23's Write tool requires a prior read for existing files,
-		// while reading or resolving the old symlink exposed the colon-bearing
-		// control path to its safety checker. Marshal now pre-creates a non-hidden
-		// worktree staging file; one Bash tee write is the measured transport.
-		b.WriteString("Qoder 特殊规则：上述路径是 Marshal 预先创建的 worktree staging 普通文件，与 control output 不是同一 inode；不要 Read、Write、ls、cat 重定向或探测它。先在内存中完成完整的最终 WorkerResult payload，并让 summary 保持简短且不依赖实现符号的精确拼写；完成其它全部工作后，仅使用一次 Bash tee 将 payload 写入该相对路径。Bash command 必须采用形如 `cat <<'MARSHAL_RESULT' | tee ./marshal-worker-result.json > /dev/null` 的单一 quoted-heredoc 形态，结束 delimiter 必须是最后一行；不要改用 printf、重定向直写或在 delimiter 后追加命令。唯一一次成功 tee 必须是整个 Attempt 的最后一个 tool call；收到成功 tool_result 后立即 end_turn，禁止再调用 Read、Edit、Write、Bash 或任何其它工具，也禁止检查、纠错、替换或第二次 tee。即使随后发现 summary 中有自由文本 typo，也保留原声明，不得回改 staging。若该次写入被拒绝或失败，不得换工具或再次尝试同一路径。\n")
+		// The fixed /dev/null tee is only a provider-visible declaration event.
+		// Marshal parses its payload and commits it through an unlinked held inode;
+		// no shell-accessible staging path participates in the authority boundary.
+		b.WriteString("Qoder 特殊规则：先在内存中完成完整的最终 WorkerResult payload，并让 summary 保持简短且不依赖实现符号的精确拼写；完成其它全部工作后，仅使用一次 Bash tee 声明 payload。Bash command 必须逐字采用首行 `cat <<'MARSHAL_RESULT' | tee /dev/null > /dev/null`，随后是完整 JSON payload，最后一行逐字为 `MARSHAL_RESULT`；结束 delimiter 后不得有换行、空白或任何字节。不要拆分或 glob `cat`/`tee`/`/dev/null`，不要增加 shell 变量、fd、管道、重定向、后台任务、额外 JSON tool-input 字段或其它命令。唯一一次成功 tee 必须是整个 Attempt 的最后一个 tool call；收到成功 tool_result 后立即 end_turn，禁止再调用 Read、Edit、Write、Bash 或任何其它工具，也禁止检查、纠错、替换或第二次 tee。即使随后发现 summary 中有自由文本 typo，也保留原声明，不得回改。若该次声明被拒绝或失败，不得换工具或再次尝试。\n")
 	}
 	fmt.Fprintf(&b, "其中 taskId=%s、runId=%s、attemptId=%s、adapter.id=%s。\n", state.TaskID, state.RunID, attemptID, adapterID)
 	b.WriteString("adapter.executable、adapter.version、startedAt、completedAt 必须逐字复制下文模板中的固定 sentinel；禁止为填写它们运行任何宿主探测（例如 which、--version、date、env 或读取环境变量）；Marshal 会以实际观测值覆盖这些不可信字段。\n\n")

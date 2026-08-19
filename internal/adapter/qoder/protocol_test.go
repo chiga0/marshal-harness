@@ -281,10 +281,48 @@ func TestWorkerResultTransportSequenceAcceptsExactlyOneFinalSuccessfulTee(t *tes
 	}
 }
 
-func TestWorkerResultTeeCommandRejectsCommandsAfterHeredocTerminator(t *testing.T) {
-	command := "cat <<'RESULT' | tee ./marshal-worker-result.json > /dev/null\n{}\nRESULT\ngit status\nRESULT"
-	if validWorkerResultTeeCommand(command) {
-		t.Fatal("tee command accepted executable shell input after the heredoc terminator")
+func TestWorkerResultTeeCommandUsesClosedGrammar(t *testing.T) {
+	valid := workerResultTeeCommand([]byte(`{"status":"completed"}`))
+	if payload, ok := parseWorkerResultTeeCommand(valid); !ok || string(payload) != `{"status":"completed"}` {
+		t.Fatalf("valid declaration = %q, %t", payload, ok)
+	}
+	for name, command := range map[string]string{
+		"command-after-delimiter": valid + "\ngit status",
+		"trailing-newline":        valid + "\n",
+		"trailing-blank-line":     valid + "\n\n",
+		"split-tee":               strings.Replace(valid, " | tee ", " | t''ee ", 1),
+		"glob-tee":                strings.Replace(valid, " | tee ", " | t?? ", 1),
+		"background-fd":           strings.Replace(valid, " > /dev/null\n", " 9>/dev/null &\n", 1),
+		"alternate-sink":          strings.Replace(valid, "tee /dev/null", "tee ./marshal-worker-result.json", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if validWorkerResultTeeCommand(command) {
+				t.Fatal("closed declaration grammar accepted alternate shell semantics")
+			}
+		})
+	}
+}
+
+func TestWorkerResultTransportRejectsNonCanonicalJSONInput(t *testing.T) {
+	valid := workerResultTeeCommand([]byte(`{"status":"completed"}`))
+	canonical, err := json.Marshal(struct {
+		Command string `json:"command"`
+	}{Command: valid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]json.RawMessage{
+		"unicode-semantic-equivalent": json.RawMessage(strings.Replace(string(canonical), `cat`, `\u0063at`, 1)),
+		"extra-field":                 json.RawMessage(strings.TrimSuffix(string(canonical), "}") + `,"other":true}`),
+		"leading-whitespace":          append(json.RawMessage(" "), canonical...),
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			access, accepted, payload := classifyWorkerResultTransportTool("bash", input)
+			if !access || accepted || len(payload) != 0 {
+				t.Fatalf("classification = access:%t accepted:%t payload:%q", access, accepted, payload)
+			}
+		})
 	}
 }
 
@@ -320,7 +358,7 @@ func TestWorkerResultTransportSequenceRejectsNonFinalAndRepeatedAccess(t *testin
 			toolUse("bash-2", "Bash", `{"command":"git diff --name-only"}`), toolResult("bash-2")),
 		"tee-second-tee": append(append([]string{}, tee...), corrected...),
 		"invalid-then-corrected": append([]string{
-			toolUse("tee-invalid", "Bash", `{"command":"printf broken | tee ./marshal-worker-result.json"}`), toolResult("tee-invalid"),
+			toolUse("tee-invalid", "Bash", `{"command":"cat <<'MARSHAL_RESULT' | t''ee /dev/null > /dev/null\n{}\nMARSHAL_RESULT"}`), toolResult("tee-invalid"),
 		}, corrected...),
 	}
 	for name, sequence := range tests {

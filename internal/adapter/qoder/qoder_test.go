@@ -1770,22 +1770,20 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 	}
 }
 
-func TestRunUsesColonFreeWorkerResultStagingFile(t *testing.T) {
+func TestRunUsesAdapterHeldWorkerResultChannel(t *testing.T) {
 	declared, err := json.Marshal(validDeclaredResult("/worker/claim"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Real Marshal attempt directories contain `attempt:<id>`. Qoder's
-	// ordinary-user shell guard rejects that colon when it appears in an
-	// absolute output path, so this fake writes through the worktree-local
-	// staging file. The adapter reads it through a held descriptor, removes
-	// that exact inode, validates it, and only then publishes to control output.
-	events := successfulWorkerResultTeeEvents("tool-result")
+	// ordinary-user shell guard rejects that colon in an absolute output path,
+	// so the declaration tees only to /dev/null. The Adapter extracts the
+	// closed transcript payload into its unlinked held inode, validates it, and
+	// only then publishes to control output.
 	body := emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
-		events[0],
-	) + "\nprintf '%s' " + shellQuote(string(declared)) + " | tee marshal-worker-result.json >/dev/null\n" + emitLines(
-		events[1],
+		workerResultTeeToolUseEventWithPayload("tool-result", declared),
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-result","content":""}]}}`,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":5}}`,
 	)
 	fixture := newRunFixtureWithResult(t, supportedBinary, body, nil)
@@ -1817,8 +1815,14 @@ func TestRunRejectsPostTeeWorkerResultToolSequencesAsPermanentProtocolFailures(t
 		encoded, _ := json.Marshal(content)
 		return `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":` + string(encoded) + `}]}}`
 	}
+	inputForCommand := func(command string) string {
+		encoded, _ := json.Marshal(command)
+		return `{"command":` + string(encoded) + `}`
+	}
 	tee := successfulWorkerResultTeeEvents("tee-1")
 	corrected := successfulWorkerResultTeeEvents("tee-2")
+	validCommand := workerResultTeeCommand([]byte("{}"))
+	canonicalInput := inputForCommand(validCommand)
 	tests := map[string][]string{
 		// Sanitized from the real R7 Attempt 2 shape: the Read observes the
 		// same staging bytes, but post-tee access is invalid independent of
@@ -1832,7 +1836,19 @@ func TestRunRejectsPostTeeWorkerResultToolSequencesAsPermanentProtocolFailures(t
 			toolUse("bash-2", "Bash", `{"command":"git diff --name-only"}`), toolResult("bash-2", "file.go")),
 		"tee-second-tee": append(append([]string{}, tee...), corrected...),
 		"invalid-then-corrected": append([]string{
-			toolUse("tee-invalid", "Bash", `{"command":"printf invalid | tee ./marshal-worker-result.json"}`), toolResult("tee-invalid", "invalid"),
+			toolUse("tee-invalid", "Bash", `{"command":"cat <<'MARSHAL_RESULT' | tee ./marshal-worker-result.json > /dev/null\n{}\nMARSHAL_RESULT"}`), toolResult("tee-invalid", "invalid"),
+		}, corrected...),
+		"split-then-corrected": append([]string{
+			toolUse("tee-split", "Bash", inputForCommand(strings.Replace(validCommand, " | tee ", " | t''ee ", 1))), toolResult("tee-split", "invalid"),
+		}, corrected...),
+		"glob-then-corrected": append([]string{
+			toolUse("tee-glob", "Bash", inputForCommand(strings.Replace(validCommand, " | tee ", " | t?? ", 1))), toolResult("tee-glob", "invalid"),
+		}, corrected...),
+		"background-fd-then-corrected": append([]string{
+			toolUse("tee-background", "Bash", inputForCommand(strings.Replace(validCommand, " > /dev/null\n", " 9>/dev/null &\n", 1))), toolResult("tee-background", "invalid"),
+		}, corrected...),
+		"unicode-equivalent-then-corrected": append([]string{
+			toolUse("tee-unicode", "Bash", strings.Replace(canonicalInput, "cat", `\u0063at`, 1)), toolResult("tee-unicode", "invalid"),
 		}, corrected...),
 	}
 	for name, sequence := range tests {
@@ -1859,15 +1875,15 @@ func TestRunRejectsPostTeeWorkerResultToolSequencesAsPermanentProtocolFailures(t
 	}
 }
 
-func TestRunRejectsStagedWorkerResultWithoutTranscriptTeeDeclaration(t *testing.T) {
+func TestRunRejectsExitZeroDiffAndProseWithoutTranscriptTeeDeclaration(t *testing.T) {
 	body := "printf '%s' changed > file.txt\n" + emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"completed successfully"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`,
 	)
-	// newRunFixture writes a Schema-valid staging declaration after the fake
-	// transcript and exits zero. Neither those bytes, the worktree diff, nor
-	// final prose may substitute for the missing transcript transport event.
+	// The fake exits zero after changing the worktree and emitting successful
+	// final prose. Neither process status, diff nor prose may substitute for the
+	// missing closed transcript declaration.
 	fixture := newRunFixture(t, supportedBinary, body)
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	failure, ok := port.AsAdapterFailure(err)
@@ -1891,74 +1907,45 @@ func TestWorkerResultTransportUsesSeparateStagingInodeAndCleansIt(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer transport.close()
-	staging := filepath.Join(worktree, workerResultStagingName)
-	stagingInfo, err := os.Stat(staging)
-	if err != nil {
-		t.Fatal(err)
-	}
 	controlInfo, err := os.Stat(control)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if os.SameFile(stagingInfo, controlInfo) {
+	controlStat, ok := controlInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("control result has no syscall identity")
+	}
+	if uint64(transport.stat.Dev) == uint64(controlStat.Dev) && uint64(transport.stat.Ino) == uint64(controlStat.Ino) {
 		t.Fatal("worktree staging file unexpectedly aliases the control result inode")
 	}
-	if err := os.WriteFile(staging, []byte("result"), 0o600); err != nil {
+	if _, err := os.Lstat(filepath.Join(worktree, workerResultStagingName)); !os.IsNotExist(err) {
+		t.Fatalf("staging inode remained shell-addressable after bind: %v", err)
+	}
+	if err := transport.commit([]byte("result"), 64); err != nil {
 		t.Fatal(err)
 	}
 	data, err := transport.consume(64)
 	if err != nil || string(data) != "result" {
 		t.Fatalf("consume = %q, %v", data, err)
 	}
-	if _, err := os.Lstat(staging); !os.IsNotExist(err) {
-		t.Fatalf("staging leaf remains after consume: %v", err)
-	}
 	if data, err := os.ReadFile(control); err != nil || len(data) != 0 {
 		t.Fatalf("control result was modified through staging: %q, %v", data, err)
 	}
 }
 
-func TestWorkerResultTransportFailsClosedOnHardlinkAndReplacement(t *testing.T) {
-	t.Run("extra-hardlink", func(t *testing.T) {
+func TestWorkerResultTransportFailsClosedOnIdentityAndPathReplacement(t *testing.T) {
+	t.Run("reserved-name-reappears", func(t *testing.T) {
 		worktree := t.TempDir()
 		transport, err := bindWorkerResultTransport(worktree)
 		if err != nil {
 			t.Fatal(err)
 		}
 		staging := filepath.Join(worktree, workerResultStagingName)
-		extra := filepath.Join(worktree, "retained-result-link")
-		if err := os.Link(staging, extra); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := transport.consume(64); err == nil {
-			t.Fatal("transport accepted a multi-link staging inode")
-		}
-		if err := transport.close(); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Lstat(staging); !os.IsNotExist(err) {
-			t.Fatalf("exact staging name was not cleaned: %v", err)
-		}
-		if _, err := os.Lstat(extra); err != nil {
-			t.Fatalf("cleanup unexpectedly removed the attacker's other name: %v", err)
-		}
-	})
-	t.Run("rename-and-replacement", func(t *testing.T) {
-		worktree := t.TempDir()
-		transport, err := bindWorkerResultTransport(worktree)
-		if err != nil {
-			t.Fatal(err)
-		}
-		staging := filepath.Join(worktree, workerResultStagingName)
-		moved := filepath.Join(worktree, "moved-staging")
-		if err := os.Rename(staging, moved); err != nil {
-			t.Fatal(err)
-		}
 		if err := os.WriteFile(staging, []byte("replacement"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := transport.consume(64); err == nil {
-			t.Fatal("transport accepted a replaced staging name")
+		if err := transport.commit([]byte("result"), 64); err == nil {
+			t.Fatal("transport accepted a replacement at the reserved name")
 		}
 		if err := transport.close(); err != nil {
 			t.Fatal(err)
@@ -1967,8 +1954,20 @@ func TestWorkerResultTransportFailsClosedOnHardlinkAndReplacement(t *testing.T) 
 		if err != nil || string(data) != "replacement" {
 			t.Fatalf("cleanup deleted or changed replacement candidate: %q, %v", data, err)
 		}
-		if _, err := os.Lstat(moved); err != nil {
-			t.Fatalf("renamed original unexpectedly removed: %v", err)
+	})
+	t.Run("held-mode-drift", func(t *testing.T) {
+		transport, err := bindWorkerResultTransport(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := transport.file.Chmod(0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := transport.commit([]byte("result"), 64); err == nil {
+			t.Fatal("transport accepted held inode mode drift")
+		}
+		if err := transport.close(); err != nil {
+			t.Fatal(err)
 		}
 	})
 	t.Run("worktree-path-swap", func(t *testing.T) {
@@ -1992,7 +1991,7 @@ func TestWorkerResultTransportFailsClosedOnHardlinkAndReplacement(t *testing.T) 
 		if err := os.WriteFile(replacement, []byte("replacement"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := transport.consume(64); err == nil {
+		if err := transport.commit([]byte("result"), 64); err == nil {
 			t.Fatal("transport accepted a replaced worktree pathname")
 		}
 		if err := transport.close(); err != nil {
@@ -2003,7 +2002,7 @@ func TestWorkerResultTransportFailsClosedOnHardlinkAndReplacement(t *testing.T) 
 			t.Fatalf("cleanup changed replacement worktree: %q, %v", data, err)
 		}
 		if _, err := os.Lstat(filepath.Join(held, workerResultStagingName)); !os.IsNotExist(err) {
-			t.Fatalf("held original staging name was not cleaned: %v", err)
+			t.Fatalf("held original staging name unexpectedly reappeared: %v", err)
 		}
 	})
 }

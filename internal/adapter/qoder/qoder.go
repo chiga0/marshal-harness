@@ -746,7 +746,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// introspection. Qoder's staging declaration is an execute/write transport:
 	// denial is always fatal and must never be retried as a benign probe.
 	for index := range denialRecords {
-		if access, _ := classifyWorkerResultTransportTool(capture.denials[index].Tool, capture.denials[index].Input); access {
+		if access, _, _ := classifyWorkerResultTransportTool(capture.denials[index].Tool, capture.denials[index].Input); access {
 			denialRecords[index].Grade = string(denials.Fatal)
 			denialRecords[index].Kind = string(denials.KindExecute)
 			denialRecords[index].Reason = "Qoder WorkerResult transport 拒绝一律 FATAL"
@@ -769,14 +769,6 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		}
 	}
 	resolved := resolveAttemptFailure(capture, observation, runCtx, fatalDenials, a.now())
-	stagedResult, transportErr := resultTransport.consume(int64(maxResultBytes))
-	// Cancellation and output truncation are the explicit outer bounds. A
-	// simultaneous staging anomaly stays recorded by cleanup but does not
-	// replace those outcomes; every other transport anomaly is a permanent
-	// protocol-integrity failure.
-	if transportErr != nil && runCtx.Err() == nil && !capture.limitExceeded {
-		resolved = qoderProtocolInvalid("worker result staging identity or content is invalid", a.now())
-	}
 	// A post-tee tool call or repeated/invalid declaration is structural even
 	// when Qoder also reports a provider/process failure. Cancellation and
 	// bounded-output truncation retain their explicit outer-bound precedence;
@@ -789,6 +781,22 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if resolved == nil && (capture.cliVersion != identity.version || capture.protocolVersion != qoderProtocolVersion || capture.permissionMode != qoderPermissionMode) {
 		resolved = qoderProtocolInvalid("system contract does not match the bound Qoder protocol", a.now())
+	}
+	// Only the Adapter commits the declaration payload, and only after the
+	// transcript, terminal contract and tee-last sequence all pass. The Worker
+	// never receives the unlinked held inode or any pathname that names it.
+	if resolved == nil {
+		if commitErr := resultTransport.commit(capture.resultTransport.payload, int64(maxResultBytes)); commitErr != nil {
+			resolved = qoderProtocolInvalid("worker result staging identity or content is invalid", a.now())
+		}
+	}
+	stagedResult, transportErr := resultTransport.consume(int64(maxResultBytes))
+	// Cancellation and output truncation are the explicit outer bounds. A
+	// simultaneous staging anomaly stays recorded by cleanup but does not
+	// replace those outcomes; every other transport anomaly is a permanent
+	// protocol-integrity failure.
+	if transportErr != nil && runCtx.Err() == nil && !capture.limitExceeded {
+		resolved = qoderProtocolInvalid("worker result staging identity or content is invalid", a.now())
 	}
 	if bindingErr := trustedOutput.verifyPathBinding(); bindingErr != nil {
 		resolved = qoderProtocolInvalid("output directory binding changed during execution", a.now())

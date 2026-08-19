@@ -226,20 +226,20 @@ func TestRenderPromptProjectsSelfContainedWorkerView(t *testing.T) {
 		}
 	})
 
-	t.Run("qoder uses one measured staging result transport", func(t *testing.T) {
+	t.Run("qoder uses one adapter-held result transport", func(t *testing.T) {
 		spec := promptFixtureSpec()
 		spec["worker"] = map[string]any{
 			"preferredAdapter": "qoder", "fallbackAdapters": []string{},
 			"executionProfile": "workspace-write", "sessionPolicy": "ephemeral",
 		}
 		qoderPrompt := renderFixturePromptForAdapter(t, spec, "qoder")
-		for _, anchor := range []string{"./marshal-worker-result.json", "Qoder 特殊规则", "worktree staging", "不是同一 inode", "仅使用一次 Bash tee", "单一 quoted-heredoc 形态", "结束 delimiter 必须是最后一行", "不要改用 printf", "最后一个 tool call", "成功 tool_result 后立即 end_turn", "自由文本 typo", "禁止检查、纠错、替换或第二次 tee", "不得换工具或再次尝试"} {
+		for _, anchor := range []string{"Qoder adapter-held result channel (no filesystem path)", "Qoder 特殊规则", "不暴露任何 staging 路径或文件描述符", "仅使用一次 Bash tee", "cat <<'MARSHAL_RESULT' | tee /dev/null > /dev/null", "结束 delimiter 后不得有换行、空白或任何字节", "不要拆分或 glob", "不要增加 shell 变量、fd、管道、重定向、后台任务", "最后一个 tool call", "成功 tool_result 后立即 end_turn", "自由文本 typo", "禁止检查、纠错、替换或第二次 tee", "不得换工具或再次尝试"} {
 			if !strings.Contains(qoderPrompt, anchor) {
 				t.Fatalf("Qoder prompt is missing %q:\n%s", anchor, qoderPrompt)
 			}
 		}
-		if strings.Contains(qoderPrompt, "./.marshal-worker-result.json") {
-			t.Fatalf("Qoder prompt retained the rejected hidden alias:\n%s", qoderPrompt)
+		if strings.Contains(qoderPrompt, "marshal-worker-result.json") {
+			t.Fatalf("Qoder prompt exposed a shell-addressable staging path:\n%s", qoderPrompt)
 		}
 	})
 }

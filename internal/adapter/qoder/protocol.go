@@ -48,6 +48,7 @@ type pendingToolCall struct {
 	ordinal              int
 	resultTransport      bool
 	validResultTransport bool
+	resultPayload        []byte
 }
 
 // resultTransportSequence records only the closed WorkerResult transport
@@ -61,6 +62,7 @@ type resultTransportSequence struct {
 	successes         int
 	successfulOrdinal int
 	invalidAccess     bool
+	payload           []byte
 }
 
 // terminalOutcome is the single terminal `result` event that ends a Qoder
@@ -303,7 +305,7 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			}
 			tool := normalizeQoderToolName(part.Name)
 			result.toolCalls++
-			transportAccess, validTransport := classifyWorkerResultTransportTool(tool, part.Input)
+			transportAccess, validTransport, resultPayload := classifyWorkerResultTransportTool(tool, part.Input)
 			if transportAccess {
 				result.resultTransport.attempts++
 				if !validTransport {
@@ -312,7 +314,7 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			}
 			result.pendingTools[part.ID] = pendingToolCall{
 				tool: tool, input: append(json.RawMessage(nil), part.Input...), ordinal: result.toolCalls,
-				resultTransport: transportAccess, validResultTransport: validTransport,
+				resultTransport: transportAccess, validResultTransport: validTransport, resultPayload: resultPayload,
 			}
 		}
 		result.assistantCount++
@@ -361,6 +363,7 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			if pending.resultTransport && pending.validResultTransport {
 				result.resultTransport.successes++
 				result.resultTransport.successfulOrdinal = pending.ordinal
+				result.resultTransport.payload = append([]byte(nil), pending.resultPayload...)
 			}
 			result.toolNames = append(result.toolNames, pending.tool)
 		}
@@ -401,64 +404,96 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 }
 
 // classifyWorkerResultTransportTool recognizes the one reviewed Qoder 1.1.23
-// transport shape without interpreting arbitrary shell. Any tool input that
-// names the staging leaf is transport access. Only Bash with a terminal
-// `cat <<'DELIMITER' | tee ./marshal-worker-result.json [> /dev/null]`
-// command is valid; Read/Edit/Write, a different shell shape, or commands
-// after the heredoc terminator are permanently invalid protocol attempts.
-func classifyWorkerResultTransportTool(tool string, input json.RawMessage) (access, valid bool) {
-	if !bytes.Contains(input, []byte(workerResultStagingName)) {
-		return false, false
+// declaration primitive after decoding the tool input as JSON. The Worker is
+// never given a staging pathname or descriptor: the command tees only to
+// /dev/null, and Marshal copies the strictly parsed payload into its unlinked
+// held inode after the transcript and terminal result pass. Consequently no
+// arbitrary shell expression can name the authority-bearing staging object.
+//
+// A declaration input is closed as well: exactly one canonical `command`
+// field and one fixed quoted-heredoc grammar. Split words, globs, background
+// jobs, alternate sinks, extra JSON fields/whitespace and unicode-escaped
+// spellings cannot become a second spelling of the primitive.
+func classifyWorkerResultTransportTool(tool string, input json.RawMessage) (access, valid bool, payload []byte) {
+	command, canonical := decodeCanonicalQoderBashInput(input)
+	if !workerResultDeclarationCandidate(command) {
+		return false, false, nil
 	}
-	if tool != "bash" {
-		return true, false
+	if tool != "bash" || !canonical {
+		return true, false, nil
 	}
+	payload, valid = parseWorkerResultTeeCommand(command)
+	return true, valid, payload
+}
+
+func decodeCanonicalQoderBashInput(input json.RawMessage) (string, bool) {
 	var value struct {
 		Command string `json:"command"`
 	}
+	// Decode once without the closed-field check so a declaration candidate
+	// with an extra field is still classified as an invalid attempt instead of
+	// disappearing into the ordinary Bash stream.
 	if err := json.Unmarshal(input, &value); err != nil || value.Command == "" {
-		return true, false
+		return "", false
 	}
-	return true, validWorkerResultTeeCommand(value.Command)
+	decoder := json.NewDecoder(bytes.NewReader(input))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&struct {
+		Command string `json:"command"`
+	}{}); err != nil {
+		return value.Command, false
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return value.Command, false
+	}
+	var canonical bytes.Buffer
+	encoder := json.NewEncoder(&canonical)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return value.Command, false
+	}
+	noHTMLEscapes := bytes.TrimSuffix(canonical.Bytes(), []byte{'\n'})
+	defaultEscapes, err := json.Marshal(value)
+	if err != nil {
+		return value.Command, false
+	}
+	return value.Command, bytes.Equal(input, noHTMLEscapes) || bytes.Equal(input, defaultEscapes)
+}
+
+const workerResultTeeFirstLine = "cat <<'MARSHAL_RESULT' | tee /dev/null > /dev/null"
+
+func workerResultDeclarationCandidate(command string) bool {
+	firstLine, _, _ := strings.Cut(command, "\n")
+	return strings.HasPrefix(firstLine, "cat <<'MARSHAL_RESULT'")
 }
 
 func validWorkerResultTeeCommand(command string) bool {
-	if strings.ContainsAny(command, "\r\x00") {
-		return false
+	_, valid := parseWorkerResultTeeCommand(command)
+	return valid
+}
+
+func parseWorkerResultTeeCommand(command string) ([]byte, bool) {
+	if strings.ContainsAny(command, "\r\x00") || strings.HasSuffix(command, "\n") {
+		return nil, false
 	}
 	firstLine, body, hasBody := strings.Cut(command, "\n")
-	const target = "./" + workerResultStagingName
-	marker := " | tee " + target
-	if strings.Count(firstLine, marker) != 1 || strings.Contains(firstLine, "tee "+workerResultStagingName) {
-		return false
+	if !hasBody || firstLine != workerResultTeeFirstLine {
+		return nil, false
 	}
-	prefix, suffix, found := strings.Cut(firstLine, marker)
-	if !found || !strings.HasPrefix(prefix, "cat <<'") || strings.TrimSpace(suffix) != "" && strings.TrimSpace(suffix) != "> /dev/null" && strings.TrimSpace(suffix) != ">/dev/null" {
-		return false
+	const finalDelimiter = "\nMARSHAL_RESULT"
+	if !strings.HasSuffix(body, finalDelimiter) {
+		return nil, false
 	}
-	delimiterStart := len("cat <<'")
-	delimiterEnd := strings.IndexByte(prefix[delimiterStart:], '\'')
-	if delimiterEnd <= 0 {
-		return false
+	payload := strings.TrimSuffix(body, finalDelimiter)
+	if payload == "" {
+		return nil, false
 	}
-	delimiterEnd += delimiterStart
-	delimiter := prefix[delimiterStart:delimiterEnd]
-	if strings.TrimSpace(prefix[delimiterEnd+1:]) != "" || strings.ContainsAny(delimiter, " \t'\"") || !hasBody {
-		return false
-	}
-	lines := strings.Split(body, "\n")
-	for len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
-	if len(lines) < 2 || lines[len(lines)-1] != delimiter {
-		return false
-	}
-	for _, line := range lines[:len(lines)-1] {
-		if line == delimiter {
-			return false
+	for _, line := range strings.Split(payload, "\n") {
+		if line == "MARSHAL_RESULT" {
+			return nil, false
 		}
 	}
-	return true
+	return []byte(payload), true
 }
 
 // validateWorkerResultTransportSequence is called only for an otherwise
