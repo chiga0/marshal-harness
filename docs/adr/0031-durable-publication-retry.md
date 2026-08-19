@@ -1,7 +1,7 @@
 # ADR 0031：Typed Durable Publication Retry（Core-owned PublicationRetryLedger、approval lineage 与 CI_PENDING re-observation）
 
 - 状态：提议（Proposed）——本 ADR 为草案，须经维护者 ApprovalRecord 接受后生效；接受人与接受时间另行记录，不改写本文。接受前，下文全部契约内容仅为草案提议，不构成已冻结契约、已实现能力、已关闭缺口或任何实现完成、可上线、conformance 通过的声明：publication retry 尚未耐久化，CI_PENDING 死角尚未修复，M10/M11/M12/M13 状态不发生任何变化
-- 日期：2026-08-17
+- 日期：2026-08-19
 - 决策来源：公开 [Issue #54](https://github.com/chiga0/marshal-harness/issues/54)——为 publication 路径反复出现的 git/gh 瞬态失败、ambiguous/lost response，以及首次 publication 后 CI_PENDING 无法重新签发 publish approval、因而不能合法再观察 checks 的死角，冻结一条 Core-owned、append-only、可 crash replay 的 typed durable publication retry 契约。本 ADR 只做契约设计，不实现代码或 Schema
 - 关联：[ADR 0003](0003-separate-worker-and-publisher.md)（Worker 与 Publisher 分权）、[ADR 0007](0007-intent-first-publication.md)（先记录意图的受控发布与远端对账）、[ADR 0010](0010-controlled-autonomy-and-intervention.md)（受控自治、审批 Gate 与人工介入）、[ADR 0018](0018-control-plane-and-provider-ports.md)（Control Plane 权威/actor 双键空间、PublicationAuthorization 与 DurableExecutionEngine 单一权威 seam）、[ADR 0019](0019-deterministic-control-plane-typed-execution-and-goal-admission.md)（确定性控制面、typed execution 与 append-only SideEffect 对账）、[ADR 0026](0026-scm-merge-receipt-and-publication-reconcile.md)（SCMMergeReceipt 与 PublicationReconcileRecord）、[ADR 0028](0028-ci-deadline-phased-observation.md)（CI deadline 分阶段观察与可信完成时间裁决）、[ADR 0029](0029-pre-attempt-abort.md)（无 Attempt Run 的显式 abort 出口）、[任务生命周期](../task-lifecycle.md)、[故障与恢复](../failure-and-recovery.md)
 
