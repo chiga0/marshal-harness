@@ -14,5 +14,5 @@ type AuthorityEndpointIdentity struct {
 }
 
 func InspectAuthorityEndpoint(string, uint32) (AuthorityEndpointIdentity, error) {
-	return AuthorityEndpointIdentity{}, errors.New("Darwin authority endpoint is unavailable on this platform")
+	return AuthorityEndpointIdentity{}, errors.New("darwin authority endpoint is unavailable on this platform")
 }

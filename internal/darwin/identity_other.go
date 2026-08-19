@@ -16,5 +16,5 @@ type ExecutableIdentity struct {
 }
 
 func InspectExecutable(*os.File, string) (ExecutableIdentity, error) {
-	return ExecutableIdentity{}, errors.New("Darwin executable identity is unavailable on this platform")
+	return ExecutableIdentity{}, errors.New("darwin executable identity is unavailable on this platform")
 }
