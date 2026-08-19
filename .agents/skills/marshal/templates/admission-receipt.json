@@ -1,0 +1,65 @@
+{
+  "format": "marshal-skill/operator-admission-receipt-v1",
+  "authority": "operator-local-non-core",
+  "taskId": "<TASK-ID>",
+  "runId": "<RUN-ID>",
+  "observationSequence": 0,
+  "stateEventSequence": 0,
+  "observedAt": "<RFC3339-Z>",
+  "validUntil": "<RFC3339-Z, no more than 60 seconds after observedAt>",
+  "bindings": {
+    "sourceHead": "<40-hex-sha>",
+    "baseSha": "<40-hex-sha>",
+    "specDigest": "sha256:<64-hex>",
+    "policyDigest": "sha256:<64-hex>",
+    "capabilityDigest": "sha256:<64-hex>",
+    "runStateDigest": "sha256:<64-hex>",
+    "planApprovalDigest": "sha256:<64-hex>",
+    "adapterConfigDigest": "sha256:<64-hex>",
+    "eventContractDigest": "sha256:<64-hex>",
+    "resultTransportDigest": "sha256:<64-hex>",
+    "permissionProfileDigest": "sha256:<64-hex>"
+  },
+  "host": {
+    "os": "<darwin|linux>",
+    "arch": "<arm64|amd64>",
+    "fingerprintDigest": "sha256:<64-hex>"
+  },
+  "adapter": {
+    "id": "<qoder|codex|qwen|pi>",
+    "mode": "<ordinary-user|strict>",
+    "binaryVersion": "<exact-version>",
+    "permissionMode": "<exact-mode>",
+    "resultPathIdentityDigest": "sha256:<64-hex>",
+    "executable": {
+      "canonicalPath": "<absolute-path>",
+      "digest": "sha256:<64-hex>",
+      "device": 0,
+      "inode": 0
+    }
+  },
+  "worktree": {
+    "canonicalPath": "<absolute-path>",
+    "headSha": "<40-hex-sha>",
+    "statusDigest": "sha256:<64-hex>",
+    "scopeLeaseDigest": "sha256:<64-hex>"
+  },
+  "dynamicEvidence": {
+    "doctorDigest": "sha256:<64-hex>",
+    "capacityDigest": "sha256:<64-hex>",
+    "providerBackpressureDigest": "sha256:<64-hex>"
+  },
+  "checks": {
+    "stateReady": false,
+    "currentPlanApproved": false,
+    "doctorConfigured": false,
+    "doctorSupported": false,
+    "worktreeClean": false,
+    "scopeExclusive": false,
+    "capacityAvailable": false,
+    "providerBackpressureAbsent": false,
+    "acceptancePure": false
+  },
+  "decision": "deny",
+  "reasonCode": "unverified"
+}

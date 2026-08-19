@@ -389,6 +389,10 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 
 `marshal doctor` 返回 `configured=false` 时是硬 admission 阻断；discovery 候选或 PATH 同名程序不构成可派发证据。必须先注入精确绝对路径并重新核对 held digest、版本和真实 `--help`，再把 Adapter 放入 Worker 顺序。
 
+`task run` 前用 `.agents/skills/marshal/templates/admission-receipt.json` 记录一次零 Attempt admission：绑定 source/spec/policy/capability/base/state/approval、host OS/arch、Adapter config、精确 executable path/digest/device/inode、permission/result-path identity、worktree/scope，以及 doctor、容量、Provider 背压的观测摘要。Receipt 使用 `marshal-skill/operator-admission-receipt-v1`，不是 Core API/Schema，不进入 `.marshal` authority chain；有效期最多 60 秒。执行前重新采集时变证据并逐项比对，然后执行 `jq -e -f .agents/skills/marshal/references/validate-admission-receipt.jq RECEIPT.json`；全部为真且 `decision=admit` 才启动 Worker。
+
+派 reviewer 前计算 freshness fingerprint：`currentAttempt + sourceHead + reviewRound + packet/spec/verification/artifact/evidence digest`。任一缺失或不一致时按固定 reasonCode 阻断；相同 stale fingerprint 只裁决一次，不跨 heartbeat 重复 `task review` 或重复派 reviewer。
+
 `result-missing`、path/protocol/identity/version drift、旧 artifact/base、`worktree evidence changed after verification` 属于结构性失败。同一类别只裁决一次：记录 failure digest，停止原 Run 的盲目重试，修复 adapter/契约后从当前 local main 创建 fresh-base successor。只有预检摘要仍匹配且确认为 provider timeout、DNS、rate-limit 或短暂 transport 背压时，才允许在原 `taskId` 上进行有限 operational retry，并记录 attempt、预算和 backoff。
 
 `REVIEW_PENDING` 的 packet 缺失、旧 manifest、旧 base 或证据变更，执行一次 intervention finding 并准备 successor；不要跨 heartbeat 重复调用同一 `task review`。任何复用或 intervention 都不得手写 `.marshal`、伪造 digest 或绕过 Core 生命周期。
@@ -401,3 +405,4 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 - acceptance 若声称验证 crash/replay/idempotency，故障注入必须发生在 effect/cache/persist 边界之后，并同时断言相同 key、相同 outcome 与 effect exactly-once。在副作用前断开连接只证明普通首次执行，不能关闭 replay finding。
 - `verifier-worktree-mutated` 是结构性 Required Gate 失败，不因命令退出码为 0 而降级。先把 cache/temp/生成物移出受验 worktree 或修复验收命令，再创建 fresh-base successor。
 - CapabilitySnapshot、doctor、ReviewPacket 和人工报告必须与真实 env/argv 一致。`ordinary-user` 继承宿主 `HOME/XDG` 时，不得沿用 strict authority 的 managed HOME、禁用宿主配置源或 signed authority 文案。
+- plan 前执行 acceptance purity lint：拒绝 shell wrapper/重定向、工作区 cache/profile/coverage 输出和未带 `-B` 的 Python 验收；无法静态证明纯只读时，在临时副本 dry-run 并比较前后 digest。`.agents/skills/marshal/references/` 中的 Provider manifest 仅是无正文的人工审查基线；协议机械门禁由版本化 Adapter parser 与 typed failure 承担，禁止在真实产品 Attempt 中猜字段或把手工 shape diff 当成 authority。

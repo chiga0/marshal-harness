@@ -1,0 +1,16 @@
+{
+  "adapterId": "codex",
+  "binaryVersion": "0.145.0",
+  "adapterVersion": "0.1.0",
+  "protocolVersion": "0.145",
+  "eventContract": "codex-exec-json-0.145-v1",
+  "structuredOutput": "jsonl",
+  "firstEvent": "thread.started",
+  "successTerminal": "turn.completed",
+  "failureTerminal": "turn.failed",
+  "itemEvents": ["item.started", "item.updated", "item.completed"],
+  "resultChannel": "output-last-message",
+  "resultSchemaMode": "strict-adapter-generated",
+  "unknownEventDisposition": "protocol-invalid-do-not-retry",
+  "trailingEventDisposition": "protocol-invalid-do-not-retry"
+}
