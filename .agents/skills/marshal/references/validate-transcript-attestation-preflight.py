@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import subprocess
 import sys
 import unicodedata
 
@@ -27,6 +29,8 @@ INPUT_HARD_LIMITS = {
     "workerResult": 256 * 1024,
     "workerRequest": 512 * 1024,
     "taskSpec": 2 * 1024 * 1024,
+    "capabilitySnapshot": 512 * 1024,
+    "profile": 256 * 1024,
 }
 TASK_TOOL_NAMES = {
     "Read": "read",
@@ -61,7 +65,10 @@ def clean_relative_path(value: object, label: str) -> str:
     path = PurePosixPath(value)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         fail("path-boundary-invalid", f"{label} must be a clean relative path")
-    return path.as_posix()
+    canonical = path.as_posix()
+    if canonical != value:
+        fail("path-boundary-invalid", f"{label} must use its byte-for-byte canonical spelling")
+    return canonical
 
 
 def open_root_nofollow(root: Path) -> int:
@@ -83,7 +90,9 @@ def open_root_nofollow(root: Path) -> int:
     return descriptor
 
 
-def read_relative_nofollow(root: Path, relative: object, maximum: int, label: str) -> bytes:
+def read_relative_nofollow_with_identity(
+    root: Path, relative: object, maximum: int, label: str
+) -> tuple[bytes, tuple[int, int]]:
     path = clean_relative_path(relative, label)
     root_fd = open_root_nofollow(root)
     directory_fd = root_fd
@@ -192,13 +201,18 @@ def read_relative_nofollow(root: Path, relative: object, maximum: int, label: st
                     os.close(recheck_file)
                 for descriptor in reversed(recheck_directories):
                     os.close(descriptor)
-            return raw
+            return raw, (before.st_dev, before.st_ino)
         finally:
             os.close(file_fd)
     finally:
         for descriptor in reversed(opened_directories):
             os.close(descriptor)
         os.close(root_fd)
+
+
+def read_relative_nofollow(root: Path, relative: object, maximum: int, label: str) -> bytes:
+    raw, _ = read_relative_nofollow_with_identity(root, relative, maximum, label)
+    return raw
 
 
 def parse_json(raw: bytes, label: str) -> dict:
@@ -211,7 +225,11 @@ def parse_json(raw: bytes, label: str) -> dict:
         return result
 
     try:
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=reject_duplicates,
+            parse_constant=lambda token: fail("invalid-json", f"{label} contains a non-finite number"),
+        )
     except PreflightError:
         raise
     except (UnicodeError, json.JSONDecodeError) as error:
@@ -672,12 +690,18 @@ def validate_transcript(
 def load_inputs(root: Path, manifest: dict) -> tuple[dict[str, bytes], dict[str, str]]:
     raw_inputs: dict[str, bytes] = {}
     digests: dict[str, str] = {}
+    identities: set[tuple[int, int]] = set()
     for label, hard_limit in INPUT_HARD_LIMITS.items():
         descriptor = manifest["inputs"][label]
         maximum = descriptor["maxBytes"]
         if maximum > hard_limit:
             fail("input-bound-invalid", f"{label} maxBytes exceeds the validator hard limit")
-        raw = read_relative_nofollow(root, descriptor["path"], maximum, label)
+        raw, identity = read_relative_nofollow_with_identity(
+            root, descriptor["path"], maximum, label
+        )
+        if identity in identities:
+            fail("input-path-invalid", "input files must have unique inode identities")
+        identities.add(identity)
         digest = sha256_bytes(raw)
         if digest != descriptor["sha256"]:
             fail("input-digest-mismatch", f"{label} raw byte digest does not match manifest")
@@ -688,11 +712,47 @@ def load_inputs(root: Path, manifest: dict) -> tuple[dict[str, bytes], dict[str,
     return raw_inputs, digests
 
 
-def attestation_digest(manifest_digest: str, input_digests: dict[str, str]) -> str:
-    frames = [b"marshal-transcript-attestation-v1\n", manifest_digest.encode("ascii"), b"\n"]
+def attestation_digest(
+    manifest_digest: str,
+    input_digests: dict[str, str],
+    implementation_digests: dict[str, str],
+    core_output_digest: str,
+) -> str:
+    frames = [b"marshal-transcript-attestation-v2\n", manifest_digest.encode("ascii"), b"\n"]
     for label in sorted(input_digests):
         frames.extend([label.encode("ascii"), b"\0", input_digests[label].encode("ascii"), b"\n"])
+    for label in sorted(implementation_digests):
+        frames.extend([label.encode("ascii"), b"\0", implementation_digests[label].encode("ascii"), b"\n"])
+    frames.extend([b"coreOutput\0", core_output_digest.encode("ascii"), b"\n"])
     return sha256_bytes(b"".join(frames))
+
+
+def invoke_core_checker(checker: Path, subject: dict, raw_inputs: dict[str, bytes]) -> tuple[dict, str]:
+    if not checker.is_absolute() or checker.resolve() != checker:
+        fail("checker-invalid", "--checker must be an absolute canonical path")
+    metadata = checker.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        fail("checker-invalid", "--checker must be a non-symlink regular file")
+    checker_raw = checker.read_bytes()
+    envelope = {"subject": subject}
+    envelope.update(
+        {label: base64.b64encode(raw_inputs[label]).decode("ascii") for label in INPUT_HARD_LIMITS}
+    )
+    completed = subprocess.run(
+        [str(checker)],
+        input=json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        capture_output=True,
+        text=True,
+        check=False,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+    )
+    stream = completed.stdout if completed.returncode == 0 else completed.stderr
+    payload = parse_json(stream.encode("utf-8"), "core checker output")
+    if completed.returncode != 0:
+        fail(payload.get("reasonCode", "core-checker-rejected"), "production Qoder checker rejected evidence")
+    if set(payload) != {"status", "reasonCode", "identity", "observation"} or payload.get("status") != "pass":
+        fail("checker-output-invalid", "core checker returned an open or invalid output")
+    return payload, sha256_bytes(checker_raw)
 
 
 def run(arguments: argparse.Namespace) -> dict:
@@ -709,37 +769,28 @@ def run(arguments: argparse.Namespace) -> dict:
     validate_schema_instance(manifest, schema, schema)
 
     raw_inputs, digests = load_inputs(root, manifest)
-    task_spec = parse_json(raw_inputs["taskSpec"], "TaskSpec")
-    worker_result = parse_json(raw_inputs["workerResult"], "WorkerResult")
-    worker_request = parse_json(raw_inputs["workerRequest"], "WorkerRequest")
-    meta = parse_json(raw_inputs["transcriptMeta"], "transcript metadata")
-    events = parse_jsonl(raw_inputs["transcript"])
-    validate_subject(
-        manifest["subject"],
-        task_spec,
-        worker_request,
-        worker_result,
-        meta,
-        digests["taskSpec"],
-    )
-    validate_constraints(task_spec, manifest["policy"]["requiredConstraintLiterals"])
-    observation = validate_transcript(
-        events,
-        raw_inputs["transcript"],
-        meta,
-        task_spec,
-        worker_result,
-        manifest["policy"],
-    )
+    core, checker_digest = invoke_core_checker(Path(arguments.checker), manifest["subject"], raw_inputs)
     manifest_digest = sha256_bytes(manifest_raw)
+    validator_digest = sha256_bytes(Path(__file__).read_bytes())
+    implementation_digests = {
+        "checkerExecutable": checker_digest,
+        "operatorSchema": sha256_bytes(schema_raw),
+        "validator": validator_digest,
+        "profile": digests["profile"],
+    }
+    core_output_digest = sha256_bytes(
+        json.dumps(core, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
     return {
         "status": "pass",
         "reasonCode": "transcript-attestation-pass",
         "subject": manifest["subject"],
         "manifestDigest": manifest_digest,
         "inputDigests": digests,
-        "observation": observation,
-        "attestationDigest": attestation_digest(manifest_digest, digests),
+        "implementationDigests": implementation_digests,
+        "coreIdentity": core["identity"],
+        "observation": core["observation"],
+        "attestationDigest": attestation_digest(manifest_digest, digests, implementation_digests, core_output_digest),
     }
 
 
@@ -747,6 +798,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, help="absolute compact input root")
     parser.add_argument("--manifest", required=True, help="manifest path relative to --root")
+    parser.add_argument("--checker", required=True, help="absolute prebuilt production Go checker")
     arguments = parser.parse_args()
     try:
         payload = run(arguments)
