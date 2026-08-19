@@ -513,6 +513,8 @@ Darwin stream transport 同步收紧帧边界：发送端拒绝零长度/超 64 
 
 同一预检切片进一步核对 `launchctl print` 的实际 service 投影，要求其中同时出现精确 APAP service 与 signed launcher 路径；仅 label 存在、或 label 指向错误二进制时均保持 `BLOCKED`。该检查仍只读，不执行 bootstrap 或 registry enablement。
 
+最终宿主审计（2026-08-19）仍返回 Qoder/Codex identity 两项 `PASS`，其余 13 项 `BLOCKED`：APAP service、signed launcher、两者 root/private ownership、codesigning identity、两者 signature、两者 managed Team ID、root/private endpoint socket、root launchd label、launchd exact service+launcher binding、noninteractive sudo。`security find-identity -v -p codesigning` 返回 `0 valid identities found`，三个固定系统对象均不存在。该结果满足外部阻塞判据；在管理员提供受管 signing identity、root-owned launchd/APAP、credential authority 与独立 verifier/conformance 证据前，Qoder/Codex registry 必须继续 `unsupported`。
+
 随后将 CapabilitySnapshot 中已有的 `executableDigest` 透传到 `marshal doctor --json` 的 Worker 投影，并以 Qoder/Codex 的支持态单测锁定该字段。doctor 只输出摘要，不输出 executable 路径、环境值或 credential；该字段用于审计精确身份，不能单独改变 `unsupported`/registry admission。
 
 本切片将 `internal/darwin` 的严格 held-executable 观察抽象为 launcher 与 Qoder/Codex candidate 共用的 `OpenHeldExecutable`/`OpenHeldCandidate`。路径逐级通过 `openat` + `O_NOFOLLOW` 固定，外部 authority 可通过 `Duplicate` 取得同一 inode 的 SCM_RIGHTS 描述符，而原始 held descriptor 继续由 owner 持有；包内不提供 pathname exec 或普通子进程 fallback。该 seam 只关闭 candidate descriptor 交付与父路径替换缺口，不产生签名 receipt、OS isolation 或 registry enablement。
