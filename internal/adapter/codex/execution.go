@@ -398,14 +398,44 @@ func providerSchemaDocument(schemaDocument []byte) ([]byte, error) {
 	if err := json.Unmarshal(schemaDocument, &doc); err != nil {
 		return nil, err
 	}
+	if root, ok := doc.(map[string]any); ok {
+		if definitions, ok := root["$defs"].(map[string]any); ok {
+			delete(root, "$defs")
+			doc = expandProviderSchemaRefs(root, definitions)
+		}
+	}
 	stripRejectedSchemaKeywords(doc)
 	return json.Marshal(doc)
+}
+
+func expandProviderSchemaRefs(node any, definitions map[string]any) any {
+	switch value := node.(type) {
+	case map[string]any:
+		if reference, ok := value["$ref"].(string); ok && strings.HasPrefix(reference, "#/$defs/") {
+			if target, found := definitions[strings.TrimPrefix(reference, "#/$defs/")]; found {
+				return expandProviderSchemaRefs(target, definitions)
+			}
+		}
+		for name, child := range value {
+			value[name] = expandProviderSchemaRefs(child, definitions)
+		}
+	case []any:
+		for index, child := range value {
+			value[index] = expandProviderSchemaRefs(child, definitions)
+		}
+	}
+	return node
 }
 
 func stripRejectedSchemaKeywords(node any) {
 	switch value := node.(type) {
 	case map[string]any:
 		delete(value, "not")
+		if constant, ok := value["const"]; ok {
+			value["type"] = providerSchemaType(constant)
+			value["enum"] = []any{constant}
+			delete(value, "const")
+		}
 		if properties, ok := value["properties"].(map[string]any); ok {
 			required := make([]string, 0, len(properties))
 			for name := range properties {
@@ -421,6 +451,21 @@ func stripRejectedSchemaKeywords(node any) {
 		for _, child := range value {
 			stripRejectedSchemaKeywords(child)
 		}
+	}
+}
+
+func providerSchemaType(value any) string {
+	switch value.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case float64:
+		return "number"
+	case nil:
+		return "null"
+	default:
+		return "string"
 	}
 }
 
