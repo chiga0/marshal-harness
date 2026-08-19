@@ -1401,7 +1401,7 @@ func TestParseQoderVersionRejectsMalformedOutput(t *testing.T) {
 
 func TestBuildArgsFreezesRealNonInteractiveArgv(t *testing.T) {
 	args := buildArgs("provider/model", "/managed/config", "/worktree", false)
-	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--config-dir", "/managed/config", "--setting-sources", "", "--cwd", "/worktree", "--model", "provider/model"}
+	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--disallowed-tools", "Agent", "--config-dir", "/managed/config", "--setting-sources", "", "--cwd", "/worktree", "--model", "provider/model"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v", args)
 	}
@@ -1428,6 +1428,9 @@ func TestBuildArgsRejectsFabricatedRunSandboxArgv(t *testing.T) {
 	// never a fabricated managed source or a bait source.
 	if !containsSequence(args, "--setting-sources", "") {
 		t.Fatalf("argv missing empty setting-sources set: %#v", args)
+	}
+	if !containsSequence(args, "--disallowed-tools", "Agent") {
+		t.Fatalf("argv missing provider child-worker denial: %#v", args)
 	}
 	for _, bait := range []string{"managed", "user", "project", "local"} {
 		if containsSequence(args, "--setting-sources", bait) {

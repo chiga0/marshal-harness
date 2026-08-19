@@ -110,7 +110,7 @@ func TestRunPassesFrozenArgvToWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--config-dir", filepath.Join(resolved, "config", "qoder"), "--setting-sources", "", "--cwd", resolvedWorktree, "--model", "provider/model"}
+	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--disallowed-tools", "Agent", "--config-dir", filepath.Join(resolved, "config", "qoder"), "--setting-sources", "", "--cwd", resolvedWorktree, "--model", "provider/model"}
 	if strings.Join(argv, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("argv = %#v, want %#v", argv, want)
 	}

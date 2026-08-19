@@ -240,7 +240,7 @@ func expectedProbeEnvironmentDigest() string {
 }
 
 func expectedProbeToolPolicyDigest() string {
-	data, _ := json.Marshal(map[string]any{"namedWorkerTools": []string{}, "providerPermissionMode": qoderPermissionMode, "repositoryScope": "isolated-scratch-worktree"})
+	data, _ := json.Marshal(map[string]any{"namedWorkerTools": []string{}, "providerPermissionMode": qoderPermissionMode, "providerDisallowedTools": []string{"Agent"}, "repositoryScope": "isolated-scratch-worktree"})
 	return digestBytes(data)
 }
 

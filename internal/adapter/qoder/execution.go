@@ -332,6 +332,10 @@ func hardeningFlags(configDir string) []string {
 		"--output-format", "stream-json",
 		"--permission-mode", "accept_edits",
 		"--no-session-persistence",
+		// Marshal owns Worker fan-out. Qoder's Agent tool would create a
+		// provider-side child Worker outside the Run lease and violate the
+		// frozen allowWorkerSubagents=false policy.
+		"--disallowed-tools", "Agent",
 	}
 	if configDir != "" {
 		flags = append(flags, "--config-dir", configDir, "--setting-sources", "")
