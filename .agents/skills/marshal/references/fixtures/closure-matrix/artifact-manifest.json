@@ -1,0 +1,24 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "ArtifactManifest",
+  "taskId": "TASK-closure",
+  "runId": "run-closure-01",
+  "artifacts": [
+    {
+      "id": "artifact-review-evidence",
+      "kind": "review-evidence",
+      "producer": "verifier",
+      "required": true,
+      "status": "validated",
+      "pathRoot": "run",
+      "relativePath": "verification-report.json",
+      "byteSize": 1,
+      "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "createdAt": "2026-08-20T00:00:01Z",
+      "redacted": false,
+      "truncated": false,
+      "relatedGates": ["gate-identity", "gate-regression"]
+    }
+  ],
+  "generatedAt": "2026-08-20T00:00:01Z"
+}
