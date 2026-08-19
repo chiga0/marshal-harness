@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -405,6 +406,14 @@ func stripRejectedSchemaKeywords(node any) {
 	switch value := node.(type) {
 	case map[string]any:
 		delete(value, "not")
+		if properties, ok := value["properties"].(map[string]any); ok {
+			required := make([]string, 0, len(properties))
+			for name := range properties {
+				required = append(required, name)
+			}
+			sort.Strings(required)
+			value["required"] = required
+		}
 		for _, child := range value {
 			stripRejectedSchemaKeywords(child)
 		}
