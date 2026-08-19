@@ -535,13 +535,12 @@ func newRunFixtureWithResult(t *testing.T, version, body string, result map[stri
 	t.Helper()
 	worktree := t.TempDir()
 	controlRoot := t.TempDir()
-	resultPath := filepath.Join(controlRoot, "output", "worker-result.json")
 	if result != nil {
 		data, err := json.Marshal(result)
 		if err != nil {
 			t.Fatal(err)
 		}
-		body += "\nmkdir -p " + shellQuote(filepath.Dir(resultPath)) + "\nprintf '%s' " + shellQuote(string(data)) + " > " + shellQuote(resultPath)
+		body += "\nprintf '%s' " + shellQuote(string(data)) + " > " + shellQuote(workerResultStagingName)
 	}
 	executable := fakeExecutable(t, version, body)
 	validator := newValidator(t)

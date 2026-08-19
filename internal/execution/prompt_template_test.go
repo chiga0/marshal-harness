@@ -225,6 +225,23 @@ func TestRenderPromptProjectsSelfContainedWorkerView(t *testing.T) {
 			t.Fatalf("Codex prompt is missing held output-last-message guidance:\n%s", codexPrompt)
 		}
 	})
+
+	t.Run("qoder uses one measured staging result transport", func(t *testing.T) {
+		spec := promptFixtureSpec()
+		spec["worker"] = map[string]any{
+			"preferredAdapter": "qoder", "fallbackAdapters": []string{},
+			"executionProfile": "workspace-write", "sessionPolicy": "ephemeral",
+		}
+		qoderPrompt := renderFixturePromptForAdapter(t, spec, "qoder")
+		for _, anchor := range []string{"./marshal-worker-result.json", "Qoder 特殊规则", "worktree staging", "不是同一 inode", "仅使用一次 Bash tee", "不得换工具或再次尝试"} {
+			if !strings.Contains(qoderPrompt, anchor) {
+				t.Fatalf("Qoder prompt is missing %q:\n%s", anchor, qoderPrompt)
+			}
+		}
+		if strings.Contains(qoderPrompt, "./.marshal-worker-result.json") {
+			t.Fatalf("Qoder prompt retained the rejected hidden alias:\n%s", qoderPrompt)
+		}
+	})
 }
 
 func TestRenderPromptHidesVerifierAndControlInputs(t *testing.T) {

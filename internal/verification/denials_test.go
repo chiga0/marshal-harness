@@ -31,7 +31,7 @@ func TestDenialSummaryGateReportsBenignCounts(t *testing.T) {
 	input := fixture.input()
 	attempt := newDenialAttemptFixture(t, input.RunDirectory, "attempt:old", 1)
 	writeDenialLog(t, filepath.Join(attempt, "control", "output"), denialRecord(1, "read", "read", "/x/source.go", string(denials.Benign)))
-	writeTranscriptMeta(t, filepath.Join(attempt, "control", "output"), false)
+	writeTranscriptMeta(t, filepath.Join(attempt, "control", "output"), false, 1, 0)
 	result, err := New().Verify(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestDenialSummaryGateFailsOnFatalDenials(t *testing.T) {
 	input := fixture.input()
 	attempt := newDenialAttemptFixture(t, input.RunDirectory, "attempt:fatal", 1)
 	writeDenialLog(t, filepath.Join(attempt, "control", "output"), denialRecord(1, "bash", "execute", "curl http://evil.example", string(denials.Fatal)))
-	writeTranscriptMeta(t, filepath.Join(attempt, "control", "output"), true)
+	writeTranscriptMeta(t, filepath.Join(attempt, "control", "output"), true, 0, 1)
 	result, err := New().Verify(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
@@ -83,13 +83,42 @@ func TestDenialSummaryGateFailsOnInconsistentPermissionState(t *testing.T) {
 	input := fixture.input()
 	attempt := newDenialAttemptFixture(t, input.RunDirectory, "attempt:inconsistent", 1)
 	writeDenialLog(t, filepath.Join(attempt, "control", "output"), denialRecord(1, "read", "read", "/x/source.go", string(denials.Benign)))
-	writeTranscriptMeta(t, filepath.Join(attempt, "control", "output"), true)
+	writeTranscriptMeta(t, filepath.Join(attempt, "control", "output"), true, 0, 1)
 	result, err := New().Verify(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if gateStatus(result.Report.Gates, denialGateID) != "fail" || result.Report.Status != "fail" {
 		t.Fatalf("inconsistent permissionDenied state must fail: gate=%s report=%s", gateStatus(result.Report.Gates, denialGateID), result.Report.Status)
+	}
+}
+
+func TestDenialSummaryGateErrorsWhenTranscriptClaimsDenialWithoutLog(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	input := fixture.input()
+	attempt := newDenialAttemptFixture(t, input.RunDirectory, "attempt:missing-log", 1)
+	writeTranscriptMeta(t, filepath.Join(attempt, "control", "output"), true, 0, 1)
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gateStatus(result.Report.Gates, denialGateID) != "error" || result.Report.Status != "error" {
+		t.Fatalf("missing denial log must error when transcript claims a denial: gate=%s report=%s", gateStatus(result.Report.Gates, denialGateID), result.Report.Status)
+	}
+}
+
+func TestDenialSummaryGateFailsOnCountMismatch(t *testing.T) {
+	fixture := newVerificationFixture(t)
+	input := fixture.input()
+	attempt := newDenialAttemptFixture(t, input.RunDirectory, "attempt:count-mismatch", 1)
+	writeDenialLog(t, filepath.Join(attempt, "control", "output"), denialRecord(1, "read", "read", "/x/source.go", string(denials.Benign)))
+	writeTranscriptMeta(t, filepath.Join(attempt, "control", "output"), false, 2, 0)
+	result, err := New().Verify(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gateStatus(result.Report.Gates, denialGateID) != "fail" || result.Report.Status != "fail" {
+		t.Fatalf("denial count mismatch must fail: gate=%s report=%s", gateStatus(result.Report.Gates, denialGateID), result.Report.Status)
 	}
 }
 
@@ -118,10 +147,10 @@ func TestDenialSummaryGateReadsOnlyTheNewestAttempt(t *testing.T) {
 	input := fixture.input()
 	superseded := newDenialAttemptFixture(t, input.RunDirectory, "attempt:one", 1)
 	writeDenialLog(t, filepath.Join(superseded, "control", "output"), denialRecord(1, "bash", "execute", "sudo true", string(denials.Fatal)))
-	writeTranscriptMeta(t, filepath.Join(superseded, "control", "output"), true)
+	writeTranscriptMeta(t, filepath.Join(superseded, "control", "output"), true, 0, 1)
 	current := newDenialAttemptFixture(t, input.RunDirectory, "attempt:two", 2)
 	writeDenialLog(t, filepath.Join(current, "control", "output"), denialRecord(1, "read", "read", "/x/inside.go", string(denials.Benign)))
-	writeTranscriptMeta(t, filepath.Join(current, "control", "output"), false)
+	writeTranscriptMeta(t, filepath.Join(current, "control", "output"), false, 1, 0)
 	result, err := New().Verify(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
@@ -158,9 +187,14 @@ func writeDenialLog(t *testing.T, outputDir string, records ...denials.Record) {
 	}
 }
 
-func writeTranscriptMeta(t *testing.T, outputDir string, permissionDenied bool) {
+func writeTranscriptMeta(t *testing.T, outputDir string, permissionDenied bool, benign, fatal int) {
 	t.Helper()
-	meta, err := json.Marshal(map[string]any{"eventCount": 1, "permissionDenied": permissionDenied})
+	meta, err := json.Marshal(map[string]any{
+		"eventCount":       1,
+		"permissionDenied": permissionDenied,
+		"denialsBenign":    benign,
+		"denialsFatal":     fatal,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

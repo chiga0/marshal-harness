@@ -43,6 +43,19 @@ func assessDenialSummary(runDirectory string, createdAt time.Time) (denialAssess
 	raw, err := os.ReadFile(logPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			metas, metaErr := readDenialMetadata(outputDir)
+			if metaErr != nil {
+				gate.Status = "error"
+				gate.Summary = "读取 denial transcript 元数据失败：" + metaErr.Error()
+				return denialAssessment{Gate: gate}, nil
+			}
+			for _, meta := range metas {
+				if *meta.PermissionDenied || *meta.DenialsBenign != 0 || *meta.DenialsFatal != 0 {
+					gate.Status = "error"
+					gate.Summary = "transcript 声明存在 permission 拒绝，但 denial log 缺失"
+					return denialAssessment{Gate: gate}, nil
+				}
+			}
 			gate.Summary = "无 permission 拒绝记录"
 			return denialAssessment{Gate: gate}, nil
 		}
@@ -59,7 +72,7 @@ func assessDenialSummary(runDirectory string, createdAt time.Time) (denialAssess
 	summary := denials.Summarize(records)
 	gate.Summary = fmt.Sprintf("denial-summary：benign=%d，fatal=%d", summary.Benign, summary.Fatal)
 	assessment := denialAssessment{Gate: gate, Benign: summary.Benign, Fatal: summary.Fatal, Present: true}
-	if consistent, detail := permissionStateConsistent(outputDir, summary.Fatal > 0); !consistent {
+	if consistent, detail := permissionStateConsistent(outputDir, summary); !consistent {
 		assessment.Gate.Status = "fail"
 		assessment.Gate.Summary = detail
 		return assessment, nil
@@ -128,28 +141,55 @@ func attemptNumber(attemptDir string) int {
 	return request.AttemptNumber
 }
 
-// permissionStateConsistent cross-checks the denial grading against the
-// adapter's transcript metadata: fatal>0 must coincide with
-// permissionDenied=true, and benign-only grading with permissionDenied=false.
-// Adapters without a permissionDenied field are skipped.
-func permissionStateConsistent(outputDir string, fatalObserved bool) (bool, string) {
+type denialMetadata struct {
+	PermissionDenied *bool `json:"permissionDenied"`
+	DenialsBenign    *int  `json:"denialsBenign"`
+	DenialsFatal     *int  `json:"denialsFatal"`
+}
+
+func readDenialMetadata(outputDir string) ([]denialMetadata, error) {
 	metas, err := filepath.Glob(filepath.Join(outputDir, "*-transcript-meta.json"))
 	if err != nil {
-		return false, "枚举 transcript 元数据失败：" + err.Error()
+		return nil, fmt.Errorf("枚举 transcript 元数据：%w", err)
 	}
+	result := make([]denialMetadata, 0, len(metas))
 	for _, metaPath := range metas {
 		data, err := os.ReadFile(metaPath)
 		if err != nil {
-			return false, "读取 transcript 元数据失败：" + err.Error()
+			return nil, fmt.Errorf("读取 transcript 元数据：%w", err)
 		}
-		var meta struct {
-			PermissionDenied *bool `json:"permissionDenied"`
+		var meta denialMetadata
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return nil, fmt.Errorf("解析 transcript 元数据：%w", err)
 		}
-		if json.Unmarshal(data, &meta) != nil || meta.PermissionDenied == nil {
+		if meta.PermissionDenied == nil && meta.DenialsBenign == nil && meta.DenialsFatal == nil {
 			continue
 		}
-		if *meta.PermissionDenied != fatalObserved {
-			return false, fmt.Sprintf("denial 证据与 transcript permissionDenied=%v 状态不一致（fatal 观测=%v）", *meta.PermissionDenied, fatalObserved)
+		if meta.PermissionDenied == nil || meta.DenialsBenign == nil || meta.DenialsFatal == nil {
+			return nil, errors.New("transcript denial 元数据字段不完整")
+		}
+		if *meta.DenialsBenign < 0 || *meta.DenialsFatal < 0 {
+			return nil, errors.New("transcript denial 计数为负数")
+		}
+		result = append(result, meta)
+	}
+	return result, nil
+}
+
+// permissionStateConsistent cross-checks the complete denial grading against
+// transcript metadata. A present denial log without complete metadata fails
+// closed; counts and permissionDenied must agree exactly.
+func permissionStateConsistent(outputDir string, observed denials.Summary) (bool, string) {
+	metas, err := readDenialMetadata(outputDir)
+	if err != nil {
+		return false, "读取 denial transcript 元数据失败：" + err.Error()
+	}
+	if len(metas) == 0 {
+		return false, "denial log 存在但 transcript denial 元数据缺失"
+	}
+	for _, meta := range metas {
+		if *meta.PermissionDenied != (observed.Fatal > 0) || *meta.DenialsBenign != observed.Benign || *meta.DenialsFatal != observed.Fatal {
+			return false, fmt.Sprintf("denial 证据与 transcript 元数据不一致（log benign=%d fatal=%d；meta benign=%d fatal=%d permissionDenied=%v）", observed.Benign, observed.Fatal, *meta.DenialsBenign, *meta.DenialsFatal, *meta.PermissionDenied)
 		}
 	}
 	return true, ""

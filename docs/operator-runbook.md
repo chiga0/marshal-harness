@@ -392,3 +392,12 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 `result-missing`、path/protocol/identity/version drift、旧 artifact/base、`worktree evidence changed after verification` 属于结构性失败。同一类别只裁决一次：记录 failure digest，停止原 Run 的盲目重试，修复 adapter/契约后从当前 local main 创建 fresh-base successor。只有预检摘要仍匹配且确认为 provider timeout、DNS、rate-limit 或短暂 transport 背压时，才允许在原 `taskId` 上进行有限 operational retry，并记录 attempt、预算和 backoff。
 
 `REVIEW_PENDING` 的 packet 缺失、旧 manifest、旧 base 或证据变更，执行一次 intervention finding 并准备 successor；不要跨 heartbeat 重复调用同一 `task review`。任何复用或 intervention 都不得手写 `.marshal`、伪造 digest 或绕过 Core 生命周期。
+
+### 11.7 防 rework 的真实性预检
+
+- WorkerResult transport 摘要不仅绑定结果路径，还必须绑定 staging basename、single-link regular-file、staging/control 不同 inode、held dirfd 的 exact-inode consume/cleanup、唯一允许的写入 primitive 与 argv、权限拒绝提取器版本和 transcript event contract。任一项变化都要求重新做一次 Mac live preflight。Fake fixture 必须只通过被测 transport 产生结果；若同时直接写 control output，会制造 `result-missing` 路径的假阳性。
+- Provider event parser 必须先从真实 transcript 机械提取精确工具词表、字段存在性与 JSON shape，再冻结大小写敏感映射。不得用任意 `lower/trim` 把未知工具变成已审工具，也不得扫描 raw JSON serialization 猜 permission marker；argv 明确禁用的工具（例如 Qoder `Agent`）若仍成功执行，必须在 Adapter 层固定为 typed `protocol-invalid/do-not-retry`，不能依赖可选的 verifier allowlist；协议漂移和 denial 状态冲突同样 fail closed。
+- 不向无法机械限制读取范围的 Provider 下发“只看相关小段”等定性约束。应列出精确文件并使用 Provider 真实工具能执行的数字化行数/字节上限；若工具不支持该限制，就明确允许整文件，或在零 Attempt 预检中阻断该任务。
+- acceptance 若声称验证 crash/replay/idempotency，故障注入必须发生在 effect/cache/persist 边界之后，并同时断言相同 key、相同 outcome 与 effect exactly-once。在副作用前断开连接只证明普通首次执行，不能关闭 replay finding。
+- `verifier-worktree-mutated` 是结构性 Required Gate 失败，不因命令退出码为 0 而降级。先把 cache/temp/生成物移出受验 worktree 或修复验收命令，再创建 fresh-base successor。
+- CapabilitySnapshot、doctor、ReviewPacket 和人工报告必须与真实 env/argv 一致。`ordinary-user` 继承宿主 `HOME/XDG` 时，不得沿用 strict authority 的 managed HOME、禁用宿主配置源或 signed authority 文案。

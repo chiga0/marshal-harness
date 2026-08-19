@@ -2164,9 +2164,9 @@ func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, 
 	if adapterID == "qoder" {
 		// Qoder's ordinary-user shell guard rejects absolute paths containing a
 		// colon. Attempt directories use an `attempt:<id>` component, so expose
-		// a relative, worktree-local alias instead; the adapter binds that alias
-		// to the held Marshal output inode before launch.
-		workerResultPath = "./.marshal-worker-result.json"
+		// a relative, worktree-local staging file instead. It is a distinct inode
+		// from control output and is consumed through held descriptors.
+		workerResultPath = "./marshal-worker-result.json"
 	}
 	identity := []projectionField{
 		{"taskId", state.TaskID},
@@ -2301,6 +2301,13 @@ func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, 
 		// truthful task being downgraded to status=blocked merely because the
 		// model attempted the forbidden duplicate write.
 		b.WriteString("Codex 特殊规则：不要通过 shell 或工具再次写入上述绝对路径；Codex 的最终结构化响应会由 Marshal 绑定的 output-last-message fd 持久化为 WorkerResult。目标交付物完成后，直接在最终响应中返回 WorkerResult JSON，并将 status 设为 completed。\n")
+	}
+	if adapterID == "qoder" {
+		// Qoder 1.1.23's Write tool requires a prior read for existing files,
+		// while reading or resolving the old symlink exposed the colon-bearing
+		// control path to its safety checker. Marshal now pre-creates a non-hidden
+		// worktree staging file; one Bash tee write is the measured transport.
+		b.WriteString("Qoder 特殊规则：上述路径是 Marshal 预先创建的 worktree staging 普通文件，与 control output 不是同一 inode；不要 Read、Write、ls、cat 重定向或探测它。完成其它工作后，仅使用一次 Bash tee 将最终 WorkerResult JSON 写入该相对路径；若该次写入被拒绝，不得换工具或再次尝试同一路径。\n")
 	}
 	fmt.Fprintf(&b, "其中 taskId=%s、runId=%s、attemptId=%s、adapter.id=%s。\n", state.TaskID, state.RunID, attemptID, adapterID)
 	b.WriteString("adapter.executable、adapter.version、startedAt、completedAt 必须逐字复制下文模板中的固定 sentinel；禁止为填写它们运行任何宿主探测（例如 which、--version、date、env 或读取环境变量）；Marshal 会以实际观测值覆盖这些不可信字段。\n\n")

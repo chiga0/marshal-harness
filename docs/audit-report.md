@@ -523,6 +523,18 @@ Darwin stream transport 同步收紧帧边界：发送端拒绝零长度/超 64 
 
 本切片将 `internal/darwin` 的严格 held-executable 观察抽象为 launcher 与 Qoder/Codex candidate 共用的 `OpenHeldExecutable`/`OpenHeldCandidate`。路径逐级通过 `openat` + `O_NOFOLLOW` 固定，外部 authority 可通过 `Duplicate` 取得同一 inode 的 SCM_RIGHTS 描述符，而原始 held descriptor 继续由 owner 持有；包内不提供 pathname exec 或普通子进程 fallback。该 seam 只关闭 candidate descriptor 交付与父路径替换缺口，不产生签名 receipt、OS isolation 或 registry enablement。
 
+## Qoder ordinary-user 结果传输与 denial 证据审计增补（2026-08-19）
+
+Qoder 1.1.23 的真实 Mac ordinary-user smoke 暴露三项实现缺陷：旧隐藏 symlink 别名会被 Provider 的路径安全检查拒绝；stream-json parser 丢弃 `assistant/tool_use` 与 `user/tool_result`，导致权限拒绝未进入 ADR 0013 denial log；ordinary-user CapabilitySnapshot 仍沿用 strict managed HOME/config 文案。旧测试同时直接向 control result path 注入 WorkerResult，形成 transport 假阳性，因此此前的 fixture 通过不能证明真实别名可写。
+
+本切片把 Qoder adapter 升为 `0.1.1` 并更新 event contract：WorkerResult 改为 worktree 内非隐藏 single-link regular staging file，与 control result 始终为不同 inode；adapter 通过 held worktree dirfd、`openat(O_NOFOLLOW)` 与 exact-inode consume/unlink/fsync 收取有界声明，再写入 held control leaf，Worker 从不取得 control inode 的 pathname 或 hard-link capability。prompt 只允许一次 `Bash tee`，拒绝后不得换工具重试；parser 以 tool-use ID 关联结果，并按 9 份真实 Qoder 1.1.23 transcript 冻结大小写敏感工具词表与 string content shape，完整记录 toolCalls/toolNames/permission denial；fatal denial 固定为 typed do-not-retry，协议冲突固定为 `protocol-invalid/do-not-retry`。denial log 经 held output dirfd claim/write，并与 transcript metadata 的 benign/fatal 计数双向 fail-closed 校验。ordinary-user 能力说明同步为真实的宿主 `HOME/XDG` allowlist 继承，不再声称 managed config 或禁用宿主配置源。
+
+| ID | 级别 | 状态 | 关闭条件 |
+| --- | --- | --- | --- |
+| `QODER-ORDINARY-RESULT-DENIAL-P1` | P1 | `IMPLEMENTED-REVIEWED-PENDING-LIVE-SMOKE` | 独立 reviewer 已确认 P0/P1/P2 均为 0；真实 Qoder 1.1.23 仍须只经新 staging transport 完成 fresh current-main smoke，并复核 denial fixture、protocol 关联、held-fd attack matrix、metadata/log 一致性与 current-main 身份后才可置为 `CLOSED`。 |
+
+该修复不新增 authority、credential、sandbox 或发布权限，不改变 ADR 0042 的降级边界；严格 authority 的旧 `adapterVersion/eventContract` 证据因版本变化自动失效，必须重新取得独立 conformance evidence，不能迁移旧摘要。
+
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 
 Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Verifier 虽能在命令后观察到 Candidate worktree 变化并把 Gate 标为失败，却让污染字节留在受管 worktree；随后 Review 的 current-observation guard 正确拒绝变化后的字节，Run 因而无法生成绑定原 Candidate 的 ReviewPacket。该问题不是新生命周期或 Schema 缺口：ADR 0027 已冻结 command 写作用域默认为 `none`、未声明写入 fail closed、Candidate 与 Evidence 不可被覆盖；缺失的是实现级 command 隔离。

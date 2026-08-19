@@ -1,11 +1,15 @@
 package qoder
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/port"
 )
 
@@ -27,6 +31,196 @@ func TestDecodeEventLineExtractsSessionUsageAndTerminal(t *testing.T) {
 	}
 	if !result.terminal.seen || !result.terminal.success {
 		t.Fatalf("terminal = %+v, want a success terminal", result.terminal)
+	}
+}
+
+func TestDecodeEventLineAssociatesToolResultsAndCapturesPermissionDenials(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
+{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result.toolCalls != 1 || len(result.denials) != 1 || len(result.toolNames) != 0 {
+		t.Fatalf("capture = %+v, want one denied tool call and no successful tool", result)
+	}
+	if result.denials[0].Tool != "bash" {
+		t.Fatalf("denial tool = %q, want bash", result.denials[0].Tool)
+	}
+	var input map[string]string
+	if err := json.Unmarshal(result.denials[0].Input, &input); err != nil || input["command"] != "tee marshal-worker-result.json" {
+		t.Fatalf("denial input = %s err=%v", result.denials[0].Input, err)
+	}
+}
+
+func TestObservedQoderReadDenialInsideWorktreeGradesBenign(t *testing.T) {
+	worktree := t.TempDir()
+	target := worktree + "/README.md"
+	if err := os.WriteFile(target, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input, err := json.Marshal(map[string]string{"filePath": target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":` + string(input) + `}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
+{"type":"result","subtype":"success","is_error":false}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil || len(result.denials) != 1 {
+		t.Fatalf("capture = %+v, want one bound denial", result)
+	}
+	records := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: worktree, ControlRoot: t.TempDir(), TempDir: os.TempDir()}, result.denials, func() time.Time { return classifyNow })
+	if len(records) != 1 || records[0].Tool != "read" || records[0].Grade != string(denials.Benign) {
+		t.Fatalf("records = %+v, want benign Qoder Read denial", records)
+	}
+}
+
+func TestDecodeEventLineDistinguishesSuccessfulAndNonPermissionToolResults(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"filePath":"/tmp/a"}},{"type":"tool_use","id":"tool-2","name":"Grep","input":{"path":"/tmp"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":false,"content":"ok"},{"type":"tool_result","tool_use_id":"tool-2","is_error":true,"content":"file not found"}]}}
+{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.denials) != 0 || strings.Join(result.toolNames, ",") != "read" {
+		t.Fatalf("capture = %+v, want only the successful read call", result)
+	}
+}
+
+func TestNormalizeQoderToolNameUsesExactFrozenVocabulary(t *testing.T) {
+	want := map[string]string{
+		"Agent": "agent", "Bash": "bash", "Edit": "edit", "Glob": "glob", "Grep": "grep",
+		"Read": "read", "TaskCreate": "task_create", "TaskUpdate": "task_update", "Write": "write",
+	}
+	for raw, normalized := range want {
+		if got := normalizeQoderToolName(raw); got != normalized {
+			t.Fatalf("normalizeQoderToolName(%q) = %q, want %q", raw, got, normalized)
+		}
+	}
+	for _, raw := range []string{"rEaD", " read", "Read ", "Unknown", ""} {
+		if got := normalizeQoderToolName(raw); got != "qoder-unknown" {
+			t.Fatalf("unreviewed tool %q normalized to %q", raw, got)
+		}
+	}
+}
+
+func TestCaseVariantQoderToolDenialRemainsFatalUnknown(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"rEaD","input":{"filePath":"/tmp/a"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
+{"type":"result","subtype":"success","is_error":false}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil || len(result.denials) != 1 || result.denials[0].Tool != "qoder-unknown" {
+		t.Fatalf("capture = %+v, want one unknown denial", result)
+	}
+	records := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: t.TempDir(), ControlRoot: t.TempDir(), TempDir: os.TempDir()}, result.denials, func() time.Time { return classifyNow })
+	if len(records) != 1 || records[0].Kind != string(denials.KindUnknown) || records[0].Grade != string(denials.Fatal) {
+		t.Fatalf("records = %+v, want fatal unknown", records)
+	}
+}
+
+func TestSuccessfulQoderAgentToolIsProtocolInvalid(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Agent","input":{"description":"child"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"completed"}]}}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err == nil || !errors.Is(result.err, ErrProtocol) || len(result.toolNames) != 0 {
+		t.Fatalf("result = %+v, want forbidden Agent protocol failure", result)
+	}
+}
+
+func TestDeniedQoderAgentToolRemainsFatalDenial(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Agent","input":{"description":"child"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
+{"type":"result","subtype":"success","is_error":false}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil || len(result.denials) != 1 || result.denials[0].Tool != "agent" {
+		t.Fatalf("capture = %+v, want one Agent denial", result)
+	}
+	records := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: t.TempDir(), ControlRoot: t.TempDir(), TempDir: os.TempDir()}, result.denials, func() time.Time { return classifyNow })
+	if len(records) != 1 || records[0].Kind != string(denials.KindUnknown) || records[0].Grade != string(denials.Fatal) {
+		t.Fatalf("records = %+v, want fatal Agent denial", records)
+	}
+}
+
+func TestDecodeEventLineFailsClosedOnUnboundToolResults(t *testing.T) {
+	init := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`
+	t.Run("unknown-result-id", func(t *testing.T) {
+		stream := init + "\n" + `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"missing","is_error":false,"content":"ok"}]}}` + "\n"
+		result := decodeTranscript([]byte(stream))
+		if result.err == nil || !strings.Contains(result.err.Error(), "no matching tool_use") {
+			t.Fatalf("error = %v, want unbound tool_result rejection", result.err)
+		}
+	})
+	t.Run("unresolved-at-terminal", func(t *testing.T) {
+		stream := init + "\n" + `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"filePath":"/tmp/a"}}]}}` + "\n" + `{"type":"result","subtype":"success","is_error":false}` + "\n"
+		result := decodeTranscript([]byte(stream))
+		if result.err == nil || !strings.Contains(result.err.Error(), "unresolved tool_use") {
+			t.Fatalf("error = %v, want unresolved tool_use rejection", result.err)
+		}
+	})
+}
+
+func TestQoderPermissionMarkersStayBoundToErrorToolResults(t *testing.T) {
+	if !isQoderPermissionError("Suspicious Windows syntax may bypass security checks") {
+		t.Fatal("observed Qoder path-safety marker was not classified as a permission denial")
+	}
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Permission confirmation required, but no interactive handler is available"}]}}
+{"type":"result","subtype":"success","is_error":false}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil || len(result.denials) != 0 {
+		t.Fatalf("ordinary assistant text created a denial: result=%+v", result)
+	}
+}
+
+func TestDecodeEventLineFailsClosedOnPermissionMarkerStatusConflict(t *testing.T) {
+	for _, status := range []string{"", `,"is_error":false`} {
+		stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1"` + status + `,"content":"Permission confirm\u0061tion required, but no interactive handler is available"}]}}
+`
+		result := decodeTranscript([]byte(stream))
+		if result.err == nil || !errors.Is(result.err, ErrProtocol) || len(result.denials) != 1 {
+			t.Fatalf("status %q result = %+v, want captured denial plus protocol conflict", status, result)
+		}
+	}
+}
+
+func TestDecodeEventLineRejectsStructuredToolResultContent(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"filePath":"/tmp/a"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":{"text":"ok"}}]}}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err == nil || !errors.Is(result.err, ErrProtocol) || !strings.Contains(result.err.Error(), "JSON string") {
+		t.Fatalf("result = %+v, want structured content rejection", result)
+	}
+}
+
+func TestDecodeEventLineAcceptsObservedMissingIsErrorSuccess(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"filePath":"/tmp/a"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}
+{"type":"result","subtype":"success","is_error":false}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil || strings.Join(result.toolNames, ",") != "read" {
+		t.Fatalf("result = %+v, want observed missing-is_error success", result)
 	}
 }
 
@@ -154,6 +348,51 @@ func TestClassifyTerminalFailureReturnsPermanentDefault(t *testing.T) {
 	}
 	if strings.Contains(failure.Error(), "mystery") {
 		t.Fatalf("Error() leaked unknown provider input: %s", failure.Error())
+	}
+}
+
+func TestResolveAttemptFailureKeepsFatalDenialPermanentAcrossConflicts(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		capture     captureResult
+		observation attemptObservation
+		wantKind    port.FailureKind
+	}{
+		{
+			name:        "nonzero-process",
+			capture:     captureResult{sessionID: "s", model: "m", terminal: terminalOutcome{seen: true, success: true}},
+			observation: attemptObservation{processFailed: true, exitCode: 7},
+			wantKind:    port.FailureKindProviderTerminal,
+		},
+		{
+			name:     "retryable-terminal",
+			capture:  captureResult{sessionID: "s", model: "m", terminal: terminalOutcome{seen: true, code: "connection_failed"}},
+			wantKind: port.FailureKindProviderTerminal,
+		},
+		{
+			name:     "transcript-conflict",
+			capture:  captureResult{err: ErrProtocol},
+			wantKind: port.FailureKindProtocolInvalid,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := resolveAttemptFailure(test.capture, test.observation, context.Background(), 1, classifyNow)
+			failure, ok := port.AsAdapterFailure(err)
+			if !ok || failure.Kind != test.wantKind || failure.Disposition != port.RetryDispositionDoNotRetry {
+				t.Fatalf("error = %v, want %s/do-not-retry", err, test.wantKind)
+			}
+		})
+	}
+}
+
+func TestResolveAttemptFailureKeepsCancellationAndOutputLimitPrecedence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := resolveAttemptFailure(captureResult{}, attemptObservation{}, ctx, 1, classifyNow); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want cancellation", err)
+	}
+	if err := resolveAttemptFailure(captureResult{limitExceeded: true}, attemptObservation{}, context.Background(), 1, classifyNow); !errors.Is(err, ErrOutputLimit) {
+		t.Fatalf("error = %v, want output limit", err)
 	}
 }
 

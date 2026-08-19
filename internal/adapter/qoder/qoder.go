@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
@@ -21,7 +22,7 @@ import (
 
 const (
 	adapterID      = "qoder"
-	adapterVersion = "0.1.0"
+	adapterVersion = "0.1.1"
 	// supportedBinary is the minimum verified patch in the compatible 1.1.x
 	// line. Other minor/major lines and older patches fail closed.
 	supportedBinary          = "1.1.23"
@@ -32,7 +33,7 @@ const (
 	versionOutputLimit       = 4 << 10
 	versionStderrLimit       = 4 << 10
 	probeTimeout             = 10 * time.Second
-	conformanceEventContract = "qoder-stream-json-1.2.0-v1"
+	conformanceEventContract = "qoder-stream-json-1.2.0-v2"
 	qoderProtocolVersion     = "1.2.0"
 	qoderPermissionMode      = "acceptEdits"
 
@@ -176,9 +177,13 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 func (a *Adapter) capabilities() map[string]any {
 	capabilities := expectedCapabilities()
 	if a.ordinaryUserMode {
-		notes := capabilities["notes"].([]string)
-		notes = append(notes, "当前为 ordinary-user：无签名 authority、APAP 凭据或恶意代码沙箱保证。")
-		capabilities["notes"] = notes
+		capabilities["notes"] = []string{
+			"由 Marshal 实施 wall-time 与 output-bytes 上限。",
+			"Qoder 非交互模式不是恶意代码隔离边界。",
+			"当前为 ordinary-user：无签名 authority、APAP 凭据或恶意代码沙箱保证。",
+			"ordinary-user 仅继承 allowlist 中的宿主 HOME/XDG 以复用现有登录；不绑定 Marshal managed config，也不禁用宿主账户配置源。",
+			"仅在 executable realpath、digest、version 与显式 ordinary-user mode 均匹配时声明 supported。",
+		}
 	}
 	return capabilities
 }
@@ -693,11 +698,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, err
 	}
 	defer claimedResult.close()
-	removeResultAlias, err := bindWorkerResultAlias(worktree, resultPath)
+	resultTransport, err := bindWorkerResultTransport(worktree)
 	if err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, qoderProtocolInvalid("worker result staging admission failed", a.now())
 	}
-	defer removeResultAlias()
+	defer resultTransport.close()
 	transcriptLeaf, err := claim("qoder-transcript.jsonl", "transcript")
 	if err != nil {
 		return domain.Record{}, err
@@ -735,7 +740,32 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := stderrLeaf.write(observation.stderr.data); err != nil {
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
-	resolved := resolveAttemptFailure(capture, observation, runCtx, a.now())
+	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: worktree, ControlRoot: controlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
+	fatalDenials := denials.CountFatal(denialRecords)
+	if len(denialRecords) > 0 {
+		denialLeaf, claimErr := claim(denials.LogFileName, "denial log")
+		if claimErr != nil {
+			return domain.Record{}, qoderProtocolInvalid("denial log claim failed", a.now())
+		}
+		denialData, encodeErr := encodeDenialLog(denialRecords)
+		writeErr := error(nil)
+		if encodeErr == nil {
+			writeErr = denialLeaf.write(denialData)
+		}
+		closeErr := denialLeaf.close()
+		if err := errors.Join(encodeErr, writeErr, closeErr); err != nil {
+			return domain.Record{}, qoderProtocolInvalid("denial log persistence failed", a.now())
+		}
+	}
+	resolved := resolveAttemptFailure(capture, observation, runCtx, fatalDenials, a.now())
+	stagedResult, transportErr := resultTransport.consume(int64(maxResultBytes))
+	// Cancellation and output truncation are the explicit outer bounds. A
+	// simultaneous staging anomaly stays recorded by cleanup but does not
+	// replace those outcomes; every other transport anomaly is a permanent
+	// protocol-integrity failure.
+	if transportErr != nil && runCtx.Err() == nil && !capture.limitExceeded {
+		resolved = qoderProtocolInvalid("worker result staging identity or content is invalid", a.now())
+	}
 	if resolved == nil && (capture.cliVersion != identity.version || capture.protocolVersion != qoderProtocolVersion || capture.permissionMode != qoderPermissionMode) {
 		resolved = qoderProtocolInvalid("system contract does not match the bound Qoder protocol", a.now())
 	}
@@ -744,7 +774,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	var declared declaredResult
 	if resolved == nil {
-		declared, resolved = resolveDeclaredResultLeaf(claimedResult, request, capture.sessionID, a.validator, a.now())
+		declared, resolved = resolveDeclaredResultData(stagedResult, request, capture.sessionID, a.validator, a.now())
 	}
 	if resolved == nil && task.model != "" && capture.model != task.model {
 		resolved = qoderProtocolInvalid("system model does not match requested model", a.now())
@@ -752,10 +782,13 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	metadata, err := json.MarshalIndent(map[string]any{
 		"sessionId": capture.sessionID, "model": capture.model,
 		"qodercliVersion": capture.cliVersion, "protocolVersion": capture.protocolVersion, "permissionMode": capture.permissionMode,
-		"eventCount": capture.eventCount, "assistantMessages": capture.assistantCount,
+		"eventCount": capture.eventCount, "assistantMessages": capture.assistantCount, "toolCalls": capture.toolCalls,
 		"inputTokens": capture.inputTokens, "outputTokens": capture.outputTokens,
 		"capturedBytes": len(capture.raw), "outputTruncated": capture.limitExceeded,
-		"exitCode": observation.exitCode, "signal": observation.signal,
+		"permissionDenied": fatalDenials > 0,
+		"denialsBenign":    len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials,
+		"toolNames": denials.SortedToolNames(capture.toolNames),
+		"exitCode":  observation.exitCode, "signal": observation.signal,
 		"stderrBytes": len(observation.stderr.data), "stderrTruncated": observation.stderr.truncated,
 		"contextError": contextError(runCtx),
 		"failureKind":  failureKindOf(resolved), "retryDisposition": retryDispositionOf(resolved),
@@ -795,31 +828,17 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	return domain.Record{Kind: domain.KindWorkerResult, Data: data}, nil
 }
 
-// bindWorkerResultAlias gives ordinary-user Qoder a colon-free path to the
-// already-claimed Marshal result inode. Run attempt directories contain a
-// colon (for example attempt:<id>), and Qoder's shell safety checker rejects
-// such absolute paths before it can perform the one permitted final write.
-// The alias is created only when the worktree path is unused, points at the
-// held result path, and is removed only if the worker leaves that binding
-// intact. A worker that replaces/removes the alias cannot escape the trusted
-// control output; the held descriptor remains the sole authoritative source.
-func bindWorkerResultAlias(worktree, resultPath string) (func(), error) {
-	alias := filepath.Join(worktree, ".marshal-worker-result.json")
-	if info, err := os.Lstat(alias); err == nil {
-		return nil, fmt.Errorf("worker result alias already exists: %s", info.Mode())
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("inspect worker result alias: %w", err)
-	}
-	if err := os.Symlink(resultPath, alias); err != nil {
-		return nil, fmt.Errorf("bind worker result alias: %w", err)
-	}
-	cleanup := func() {
-		target, err := os.Readlink(alias)
-		if err == nil && target == resultPath {
-			_ = os.Remove(alias)
+func encodeDenialLog(records []denials.Record) ([]byte, error) {
+	var data []byte
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			return nil, err
 		}
+		data = append(data, line...)
+		data = append(data, '\n')
 	}
-	return cleanup, nil
+	return data, nil
 }
 
 // resolveAttemptFailure orders terminal conditions before the WorkerResult is
@@ -827,7 +846,7 @@ func bindWorkerResultAlias(worktree, resultPath string) (func(), error) {
 // a terminal provider failure, and process failure all fail closed in fixed
 // precedence; a successful run must then carry a session id and a success
 // terminal before the declaration is trusted.
-func resolveAttemptFailure(capture captureResult, observation attemptObservation, runCtx context.Context, now time.Time) error {
+func resolveAttemptFailure(capture captureResult, observation attemptObservation, runCtx context.Context, fatalDenials int, now time.Time) error {
 	if err := runCtx.Err(); err != nil {
 		return err
 	}
@@ -836,6 +855,12 @@ func resolveAttemptFailure(capture captureResult, observation attemptObservation
 	}
 	if capture.err != nil {
 		return qoderProtocolInvalid("malformed or inconsistent stream-json transcript", now)
+	}
+	// A confirmed FATAL denial is permanent even when Qoder also exits
+	// non-zero or emits an error terminal. This prevents retryable transport
+	// symptoms from masking a provider permission refusal.
+	if fatalDenials > 0 {
+		return newQoderFailure(port.FailureKindProviderTerminal, "permission denial observed", now)
 	}
 	if capture.terminal.seen && !capture.terminal.success {
 		return classifyTerminalFailure(capture.terminal.code, now)
@@ -855,11 +880,7 @@ func resolveAttemptFailure(capture captureResult, observation attemptObservation
 	return nil
 }
 
-func resolveDeclaredResultLeaf(leaf *claimedLeaf, request workerRequest, sessionID string, validator *contract.Validator, now time.Time) (declaredResult, error) {
-	data, err := leaf.readBounded(int64(maxResultBytes))
-	if err != nil {
-		return declaredResult{}, newQoderFailure(port.FailureKindResultMissing, "WorkerResult declaration missing or unreadable", now)
-	}
+func resolveDeclaredResultData(data []byte, request workerRequest, sessionID string, validator *contract.Validator, now time.Time) (declaredResult, error) {
 	declared, err := decodeDeclaredResult(data, validator)
 	if err != nil {
 		return declaredResult{}, newQoderFailure(port.FailureKindResultMissing, "WorkerResult declaration missing or unreadable", now)

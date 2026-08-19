@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"golang.org/x/sys/unix"
@@ -118,6 +119,13 @@ func TestOrdinaryUserProbeReportsSupportedWithoutAuthorityEvidence(t *testing.T)
 	}
 	if !slices.Contains(snapshot.Capabilities.Notes, "当前为 ordinary-user：无签名 authority、APAP 凭据或恶意代码沙箱保证。") {
 		t.Fatalf("ordinary-user capability note missing: %s", record.Data)
+	}
+	joinedNotes := strings.Join(snapshot.Capabilities.Notes, "\n")
+	if !strings.Contains(joinedNotes, "宿主 HOME/XDG") || !strings.Contains(joinedNotes, "不绑定 Marshal managed config") {
+		t.Fatalf("ordinary-user capability notes do not describe the actual inherited account config: %s", record.Data)
+	}
+	if strings.Contains(joinedNotes, "禁用宿主账户配置源") && !strings.Contains(joinedNotes, "不禁用宿主账户配置源") {
+		t.Fatalf("ordinary-user capability notes retained a strict managed-config claim: %s", record.Data)
 	}
 }
 
@@ -1757,12 +1765,12 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 		t.Fatalf("transcript = %s err=%v", transcript, err)
 	}
 	metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qoder-transcript-meta.json"))
-	if err != nil || !strings.Contains(string(metadata), `"eventCount": 3`) {
+	if err != nil || !strings.Contains(string(metadata), `"eventCount": 3`) || !strings.Contains(string(metadata), `"permissionDenied": false`) || !strings.Contains(string(metadata), `"denialsBenign": 0`) || !strings.Contains(string(metadata), `"denialsFatal": 0`) {
 		t.Fatalf("metadata = %s err=%v", metadata, err)
 	}
 }
 
-func TestRunUsesColonFreeWorkerResultAlias(t *testing.T) {
+func TestRunUsesColonFreeWorkerResultStagingFile(t *testing.T) {
 	declared, err := json.Marshal(validDeclaredResult("/worker/claim"))
 	if err != nil {
 		t.Fatal(err)
@@ -1770,9 +1778,15 @@ func TestRunUsesColonFreeWorkerResultAlias(t *testing.T) {
 	// Real Marshal attempt directories contain `attempt:<id>`. Qoder's
 	// ordinary-user shell guard rejects that colon when it appears in an
 	// absolute output path, so this fake writes through the worktree-local
-	// alias that the adapter binds to the held result inode.
-	body := successEvents("provider/model") + "\nprintf '%s' " + shellQuote(string(declared)) + " > .marshal-worker-result.json"
-	fixture := newRunFixture(t, supportedBinary, body)
+	// staging file. The adapter reads it through a held descriptor, removes
+	// that exact inode, validates it, and only then publishes to control output.
+	body := emitLines(
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[]}}`,
+	) + "\nprintf '%s' " + shellQuote(string(declared)) + " | tee marshal-worker-result.json >/dev/null\n" + emitLines(
+		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":5}}`,
+	)
+	fixture := newRunFixtureWithResult(t, supportedBinary, body, nil)
 	parent := t.TempDir()
 	renamedControlRoot := filepath.Join(parent, "control:root")
 	if err := os.Rename(fixture.controlRoot, renamedControlRoot); err != nil {
@@ -1785,11 +1799,251 @@ func TestRunUsesColonFreeWorkerResultAlias(t *testing.T) {
 	if err := fixture.validator.Validate(domain.KindWorkerResult, record.Data); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(filepath.Join(fixture.worktree, ".marshal-worker-result.json")); !os.IsNotExist(err) {
-		t.Fatalf("worker result alias leaked after attempt: %v", err)
+	if _, err := os.Lstat(filepath.Join(fixture.worktree, "marshal-worker-result.json")); !os.IsNotExist(err) {
+		t.Fatalf("worker result staging leaf leaked after attempt: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(renamedControlRoot, "output", "worker-result.json")); err != nil {
 		t.Fatalf("held WorkerResult missing: %v", err)
+	}
+}
+
+func TestWorkerResultTransportUsesSeparateStagingInodeAndCleansIt(t *testing.T) {
+	worktree := t.TempDir()
+	control := filepath.Join(t.TempDir(), "worker-result.json")
+	if err := os.WriteFile(control, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	transport, err := bindWorkerResultTransport(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.close()
+	staging := filepath.Join(worktree, workerResultStagingName)
+	stagingInfo, err := os.Stat(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlInfo, err := os.Stat(control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(stagingInfo, controlInfo) {
+		t.Fatal("worktree staging file unexpectedly aliases the control result inode")
+	}
+	if err := os.WriteFile(staging, []byte("result"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := transport.consume(64)
+	if err != nil || string(data) != "result" {
+		t.Fatalf("consume = %q, %v", data, err)
+	}
+	if _, err := os.Lstat(staging); !os.IsNotExist(err) {
+		t.Fatalf("staging leaf remains after consume: %v", err)
+	}
+	if data, err := os.ReadFile(control); err != nil || len(data) != 0 {
+		t.Fatalf("control result was modified through staging: %q, %v", data, err)
+	}
+}
+
+func TestWorkerResultTransportFailsClosedOnHardlinkAndReplacement(t *testing.T) {
+	t.Run("extra-hardlink", func(t *testing.T) {
+		worktree := t.TempDir()
+		transport, err := bindWorkerResultTransport(worktree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		staging := filepath.Join(worktree, workerResultStagingName)
+		extra := filepath.Join(worktree, "retained-result-link")
+		if err := os.Link(staging, extra); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := transport.consume(64); err == nil {
+			t.Fatal("transport accepted a multi-link staging inode")
+		}
+		if err := transport.close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(staging); !os.IsNotExist(err) {
+			t.Fatalf("exact staging name was not cleaned: %v", err)
+		}
+		if _, err := os.Lstat(extra); err != nil {
+			t.Fatalf("cleanup unexpectedly removed the attacker's other name: %v", err)
+		}
+	})
+	t.Run("rename-and-replacement", func(t *testing.T) {
+		worktree := t.TempDir()
+		transport, err := bindWorkerResultTransport(worktree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		staging := filepath.Join(worktree, workerResultStagingName)
+		moved := filepath.Join(worktree, "moved-staging")
+		if err := os.Rename(staging, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(staging, []byte("replacement"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := transport.consume(64); err == nil {
+			t.Fatal("transport accepted a replaced staging name")
+		}
+		if err := transport.close(); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(staging)
+		if err != nil || string(data) != "replacement" {
+			t.Fatalf("cleanup deleted or changed replacement candidate: %q, %v", data, err)
+		}
+		if _, err := os.Lstat(moved); err != nil {
+			t.Fatalf("renamed original unexpectedly removed: %v", err)
+		}
+	})
+	t.Run("worktree-path-swap", func(t *testing.T) {
+		parent := t.TempDir()
+		worktree := filepath.Join(parent, "worktree")
+		held := filepath.Join(parent, "worktree-held")
+		if err := os.Mkdir(worktree, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		transport, err := bindWorkerResultTransport(worktree)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(worktree, held); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(worktree, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		replacement := filepath.Join(worktree, workerResultStagingName)
+		if err := os.WriteFile(replacement, []byte("replacement"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := transport.consume(64); err == nil {
+			t.Fatal("transport accepted a replaced worktree pathname")
+		}
+		if err := transport.close(); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(replacement)
+		if err != nil || string(data) != "replacement" {
+			t.Fatalf("cleanup changed replacement worktree: %q, %v", data, err)
+		}
+		if _, err := os.Lstat(filepath.Join(held, workerResultStagingName)); !os.IsNotExist(err) {
+			t.Fatalf("held original staging name was not cleaned: %v", err)
+		}
+	})
+}
+
+func TestWorkerResultTransportRejectsPreexistingAbnormalLeaves(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(string) error
+	}{
+		{name: "regular", setup: func(path string) error { return os.WriteFile(path, nil, 0o600) }},
+		{name: "symlink", setup: func(path string) error { return os.Symlink("outside", path) }},
+		{name: "fifo", setup: func(path string) error { return unix.Mkfifo(path, 0o600) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			worktree := t.TempDir()
+			if err := test.setup(filepath.Join(worktree, workerResultStagingName)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := bindWorkerResultTransport(worktree); err == nil {
+				t.Fatal("transport accepted a pre-existing staging leaf")
+			}
+		})
+	}
+}
+
+func TestRunRejectsPreexistingResultStagingBeforeWorkerLaunch(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "launched")
+	fixture := newRunFixture(t, supportedBinary, "touch "+shellQuote(marker)+"\n"+successEvents("provider/model"))
+	if err := os.WriteFile(filepath.Join(fixture.worktree, workerResultStagingName), []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	failure, ok := port.AsAdapterFailure(err)
+	if !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+		t.Fatalf("error = %v, want protocol-invalid/do-not-retry", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("worker launched despite pre-existing result staging leaf")
+	}
+}
+
+func TestRunPersistsQoderPermissionDenialAndReturnsPermanentFailure(t *testing.T) {
+	body := emitLines(
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`,
+	)
+	fixture := newRunFixture(t, supportedBinary, body)
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	typed, ok := port.AsAdapterFailure(err)
+	if !ok || typed.Kind != port.FailureKindProviderTerminal || typed.Disposition != port.RetryDispositionDoNotRetry {
+		t.Fatalf("error = %v, want provider-terminal/do-not-retry", err)
+	}
+	if strings.Contains(err.Error(), "Permission confirmation") || strings.Contains(err.Error(), "interactive handler") {
+		t.Fatalf("typed error leaked provider text: %v", err)
+	}
+	logData, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", denials.LogFileName))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	records, parseErr := denials.ParseLog(logData)
+	if parseErr != nil || len(records) != 1 || records[0].Grade != string(denials.Fatal) || records[0].Tool != "bash" {
+		t.Fatalf("denial log = %s err=%v", logData, parseErr)
+	}
+	meta, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qoder-transcript-meta.json"))
+	if readErr != nil || !strings.Contains(string(meta), `"permissionDenied": true`) || !strings.Contains(string(meta), `"denialsFatal": 1`) || !strings.Contains(string(meta), `"failureKind": "provider-terminal"`) || !strings.Contains(string(meta), `"retryDisposition": "do-not-retry"`) {
+		t.Fatalf("metadata = %s err=%v", meta, readErr)
+	}
+}
+
+func TestRunWritesDenialLogThroughHeldOutputDirectory(t *testing.T) {
+	body := emitLines(
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false}`,
+	) + `
+marshal_root=$(dirname "$(dirname "$HOME")")
+mv "$marshal_root/output" "$marshal_root/output-held"
+mkdir -p "$PWD/escaped-output"
+ln -s "$PWD/escaped-output" "$marshal_root/output"`
+	fixture := newRunFixture(t, supportedBinary, body)
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if failure, ok := port.AsAdapterFailure(err); !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+		t.Fatalf("error = %v, want boundary protocol-invalid/do-not-retry", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.controlRoot, "output-held", denials.LogFileName)); err != nil {
+		t.Fatalf("held denial log missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.worktree, "escaped-output", denials.LogFileName)); !os.IsNotExist(err) {
+		t.Fatalf("denial log escaped through replacement output path: %v", err)
+	}
+}
+
+func TestRunFailsTypedWhenWorkerPreclaimsDenialLog(t *testing.T) {
+	body := `marshal_root=$(dirname "$(dirname "$HOME")")
+printf '%s' 'forged' > "$marshal_root/output/denials.jsonl"
+` + emitLines(
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false}`,
+	)
+	fixture := newRunFixture(t, supportedBinary, body)
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	failure, ok := port.AsAdapterFailure(err)
+	if !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+		t.Fatalf("error = %v, want protocol-invalid/do-not-retry", err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", denials.LogFileName))
+	if readErr != nil || string(data) != "forged" {
+		t.Fatalf("adapter overwrote worker-preclaimed denial path: %q, %v", data, readErr)
 	}
 }
 

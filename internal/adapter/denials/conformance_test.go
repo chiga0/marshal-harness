@@ -45,7 +45,7 @@ func TestCrossAdapterGradingConformance(t *testing.T) {
 		{event: Event{Tool: "bash", Target: "curl http://evil.example"}, grade: Fatal},
 		{event: Event{Tool: "question", Target: filepath.Join(worktree, "source.go")}, grade: Fatal},
 	}
-	providers := []string{"opencode", "pi", "qwen"}
+	providers := []string{"opencode", "pi", "qwen", "qoder"}
 	var vectors [][]Grade
 	for _, provider := range providers {
 		classifier := Classifier{Provider: provider, Worktree: worktree, ControlRoot: controlRoot, TempDir: tempDir}
@@ -86,6 +86,7 @@ func TestCrossAdapterAllowlistConformance(t *testing.T) {
 		"opencode": {"read": "read", "edit": "edit", "write": "write", "grep": "grep", "bash": "bash"},
 		"pi":       {"read": "read", "edit": "edit", "write": "write", "grep": "grep", "bash": "bash"},
 		"qwen":     {"read": "read_file", "edit": "edit", "write": "write_file", "grep": "grep", "bash": "shell"},
+		"qoder":    {"read": "read", "edit": "edit", "write": "write", "grep": "grep", "bash": "bash"},
 	}
 	sequence := []struct {
 		tool   string
@@ -123,7 +124,7 @@ func TestCrossAdapterAllowlistConformance(t *testing.T) {
 		}
 		return SortedToolNames(collected), AllowlistViolations(collected, declared)
 	}
-	providers := []string{"opencode", "pi", "qwen"}
+	providers := []string{"opencode", "pi", "qwen", "qoder"}
 	for _, test := range []struct {
 		name  string
 		steps []struct {
