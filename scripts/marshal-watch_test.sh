@@ -102,6 +102,9 @@ with open(sys.argv[1]) as f:
 errors = []
 if "generatedAt" not in data:
     errors.append("缺少 generatedAt")
+capacity = data.get("capacity")
+if not isinstance(capacity, dict):
+    errors.append("capacity 不是对象")
 items = data.get("items")
 if not isinstance(items, list):
     errors.append("items 不是数组")
@@ -152,6 +155,32 @@ then
   ok "JSON schema、排序、终态过滤与动作映射"
 else
   bad "JSON schema、排序、终态过滤或动作映射不符"
+fi
+
+note "1b) 每次心跳读取内存并给出并发槽位建议"
+CAPACITY_JSON="$TMP/capacity.json"
+if MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((3 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_WORKER_RESERVE_BYTES=$((1024 * 1024 * 1024)) \
+   timeout_run 30 "$CAPACITY_JSON" run_watch --once --json; then
+  if python3 - "$CAPACITY_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    capacity = json.load(f).get("capacity", {})
+if capacity.get("memoryAvailableBytes") != 3 * 1024 * 1024 * 1024:
+    print("memoryAvailableBytes 未使用测试覆盖: %r" % capacity.get("memoryAvailableBytes"))
+    sys.exit(1)
+if capacity.get("slotsAvailable") != 3 or capacity.get("concurrencyAction") != "increase-concurrency":
+    print("并发槽位建议不符: %r" % capacity)
+    sys.exit(1)
+print("memory probe + concurrency recommendation OK")
+PYEOF
+  then
+    ok "内存探测与并发槽位建议"
+  else
+    bad "内存探测或并发槽位建议不符"
+  fi
+else
+  bad "capacity 心跳输出异常"
 fi
 
 note "2) REVIEW_PENDING 优先于 RETRY_PENDING/READY/CI_PENDING（首位断言）"
