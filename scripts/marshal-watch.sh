@@ -170,12 +170,15 @@ def memory_available_bytes():
             match = re.match(r"Pages? ([^:]+):\s+(\d+)", line)
             if match:
                 pages[match.group(1).strip().lower()] = int(match.group(2))
-        # Purgeable/speculative pages are reclaimable; include them so a
-        # healthy host is not needlessly serialized, but keep the reserve
-        # budget conservative (2 GiB per additional Worker by default).
-        available = sum(pages.get(key, 0) for key in ("free", "purgeable", "speculative")) * page_size
+        # Free, inactive, purgeable and speculative pages are reclaimable by
+        # macOS.  The previous probe omitted inactive pages and could report
+        # zero slots while `memory_pressure -Q` still showed substantial
+        # reclaimable capacity, needlessly serializing Mac-first work.  Keep
+        # the per-Worker reserve conservative (2 GiB by default); this probe
+        # only reports admission capacity and never starts a Worker.
+        available = sum(pages.get(key, 0) for key in ("free", "inactive", "purgeable", "speculative")) * page_size
         if available > 0:
-            return available, "darwin-vm_stat"
+            return available, "darwin-vm_stat-reclaimable"
         try:
             return int(total_text), "darwin-total-fallback"
         except ValueError:
