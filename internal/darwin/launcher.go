@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -58,9 +59,9 @@ func OpenHeldExecutable(path string, policy ExecutablePolicy) (*HeldExecutable, 
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
 		return nil, errors.New("darwin launcher path must be absolute and clean")
 	}
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	fd, err := openExecutablePathNoFollow(path)
 	if err != nil {
-		return nil, errors.New("open Darwin launcher")
+		return nil, errors.New("open Darwin executable")
 	}
 	file := os.NewFile(uintptr(fd), filepath.Base(path))
 	closeOnError := true
@@ -78,6 +79,46 @@ func OpenHeldExecutable(path string, policy ExecutablePolicy) (*HeldExecutable, 
 	}
 	closeOnError = false
 	return &HeldExecutable{file: file, identity: identity}, nil
+}
+
+// openExecutablePathNoFollow pins every directory edge before opening the
+// final executable. O_NOFOLLOW on only the leaf would still allow a replaced
+// parent directory to redirect a privileged launcher or candidate.
+func openExecutablePathNoFollow(path string) (int, error) {
+	parts := strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator))
+	if len(parts) < 2 {
+		return -1, errors.New("darwin executable path has no parent")
+	}
+	rootFD, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, err
+	}
+	parents := []int{rootFD}
+	closeParents := func() {
+		for _, parent := range parents {
+			_ = unix.Close(parent)
+		}
+	}
+	for _, part := range parts[:len(parts)-1] {
+		if part == "" || part == "." || part == ".." {
+			closeParents()
+			return -1, errors.New("darwin executable path component is invalid")
+		}
+		parent, err := unix.Openat(parents[len(parents)-1], part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			closeParents()
+			return -1, err
+		}
+		parents = append(parents, parent)
+	}
+	leaf := parts[len(parts)-1]
+	if leaf == "" || leaf == "." || leaf == ".." {
+		closeParents()
+		return -1, errors.New("darwin executable leaf is invalid")
+	}
+	fd, err := unix.Openat(parents[len(parents)-1], leaf, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	closeParents()
+	return fd, err
 }
 
 // OpenHeldLauncher opens the externally deployed privileged launcher. It is

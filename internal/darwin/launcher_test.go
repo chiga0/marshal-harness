@@ -2,6 +2,7 @@ package darwin
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -64,5 +65,23 @@ func TestHeldExecutableDuplicateKeepsOriginalHeld(t *testing.T) {
 	}
 	if _, err := duplicate.Stat(); err != nil {
 		t.Fatalf("transport duplicate became unusable after owner close: %v", err)
+	}
+}
+
+func TestOpenHeldCandidateRejectsSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
+	}
+	_, err := OpenHeldCandidate(filepath.Join(link, "candidate"), ExecutablePolicy{
+		SHA256: "sha", TeamID: "team", CDHash: "cdhash", Identifier: "candidate",
+	})
+	if err == nil {
+		t.Fatal("symlinked parent was accepted")
 	}
 }
