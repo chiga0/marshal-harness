@@ -123,25 +123,42 @@ def secure_file(root: Path, value: object, label: str) -> Path:
     return current
 
 
-def jcs_file_digests(paths: list[Path]) -> list[str]:
-    helper = Path(__file__).with_name("tests") / "closure_matrix_jcs_digest.go"
+def core_probe(
+    validations: list[tuple[str, Path]],
+    jcs_paths: list[Path],
+    raw_paths: list[Path],
+) -> dict:
+    helper = Path(__file__).with_name("closure_matrix_core_probe.go")
     module_root = Path(__file__).resolve().parents[4]
+    arguments = ["go", "run", str(helper)]
+    for kind, path in validations:
+        arguments.extend(("validate", kind, str(path)))
+    for path in jcs_paths:
+        arguments.extend(("jcs", str(path)))
+    for path in raw_paths:
+        arguments.extend(("raw", str(path)))
     completed = subprocess.run(
-        ["go", "run", str(helper), *(str(path) for path in paths)],
+        arguments,
         cwd=module_root,
         check=False,
         capture_output=True,
         text=True,
     )
     if completed.returncode != 0:
-        fail("core-contract-invalid", "Core JCS digest helper rejected an evidence document")
+        fail("core-contract-invalid", "Core contract/JCS probe rejected an evidence document")
     try:
-        digests = json.loads(completed.stdout)
+        result = json.loads(completed.stdout)
     except json.JSONDecodeError:
-        fail("core-contract-invalid", "Core JCS digest helper returned invalid output")
-    if not isinstance(digests, list) or len(digests) != len(paths) or any(not isinstance(item, str) or not DIGEST_RE.fullmatch(item) for item in digests):
-        fail("core-contract-invalid", "Core JCS digest helper returned an invalid digest set")
-    return digests
+        fail("core-contract-invalid", "Core contract/JCS probe returned invalid output")
+    if not isinstance(result, dict) or result.get("validated") != len(validations):
+        fail("core-contract-invalid", "Core contract/JCS probe returned an invalid validation count")
+    for field, expected in (("jcs", len(jcs_paths)), ("raw", len(raw_paths))):
+        values = result.get(field)
+        if not isinstance(values, list) or len(values) != expected or any(
+            not isinstance(item, str) or not DIGEST_RE.fullmatch(item) for item in values
+        ):
+            fail("core-contract-invalid", f"Core contract/JCS probe returned an invalid {field} digest set")
+    return result
 
 
 def require_digest(value: object, label: str) -> str:
@@ -166,13 +183,23 @@ def walk_strings(value: object):
             yield from walk_strings(item)
 
 
+def outcome_key(finding: dict) -> str:
+    identity = {
+        "domainKey": finding["domainKey"],
+        "requiredOutcome": {
+            "kind": finding["requiredOutcome"]["kind"],
+            "assertions": finding["requiredOutcome"]["assertions"],
+        },
+        "ruleId": finding["ruleId"],
+    }
+    return "O-" + hashlib.sha256(canonical_bytes(identity)).hexdigest()[:24]
+
+
 def stable_identity(finding: dict) -> dict:
-    location = finding["location"]
     return {
         "domainKey": finding["domainKey"],
+        "outcomeKey": finding["outcomeKey"],
         "ruleId": finding["ruleId"],
-        "subject": finding["subject"],
-        "location": {"kind": location["kind"], "locator": location["locator"]},
     }
 
 
@@ -181,11 +208,25 @@ def stable_finding_id(finding: dict) -> str:
     return "F-" + digest[:24]
 
 
+def projected_payload(value: object, prefix: str, label: str) -> dict:
+    if not isinstance(value, str) or not value.startswith(prefix):
+        fail("previous-finding-lineage-mismatch", f"{label} lacks the structured closure projection")
+    try:
+        payload = json.loads(value[len(prefix):])
+    except json.JSONDecodeError:
+        fail("previous-finding-lineage-mismatch", f"{label} has an invalid closure projection")
+    if not isinstance(payload, dict):
+        fail("previous-finding-lineage-mismatch", f"{label} closure projection is not an object")
+    return payload
+
+
 def projected_finding(finding: dict) -> dict:
     description = {
         "classification": finding["classification"],
         "domainKey": finding["domainKey"],
         "observableDefect": finding["observableDefect"],
+        "outcomeKey": finding["outcomeKey"],
+        "parentFindingId": finding.get("parentFindingId"),
         "ruleId": finding["ruleId"],
         "subject": finding["subject"],
     }
@@ -242,18 +283,34 @@ def validate_outcome(finding: dict) -> None:
         fail("required-outcome-open-ended", f"finding {finding_id} contains open-ended wording")
 
 
-def validate_refs(finding: dict, gate_ids: set[str], artifact_ids: set[str], fixtures: dict[str, dict]) -> None:
+def validate_refs(
+    finding: dict,
+    gates: dict[str, dict],
+    artifact_ids: set[str],
+    validated_artifact_ids: set[str],
+    fixtures: dict[str, dict],
+) -> None:
     finding_id = finding["id"]
     location = finding["location"]
-    if location["kind"] == "gate" and location["locator"] not in gate_ids:
+    if location["kind"] == "gate" and location["locator"] not in gates:
         fail("finding-location-imprecise", f"finding {finding_id} names an absent gate location")
     if location["kind"] == "artifact" and location["locator"] not in artifact_ids:
         fail("finding-location-imprecise", f"finding {finding_id} names an absent artifact location")
     for group in (finding["observableDefect"]["evidenceRefs"], finding["requiredOutcome"]["verificationRefs"]):
         for reference in group:
-            available = gate_ids if reference["kind"] == "gate" else artifact_ids
-            if reference["id"] not in available:
-                fail("verification-ref-missing", f"finding {finding_id} references absent {reference['kind']}")
+            if reference["kind"] == "gate":
+                gate = gates.get(reference["id"])
+                if gate is None or gate.get("required") is not True or gate.get("status") != "pass":
+                    fail("verification-ref-missing", f"finding {finding_id} requires a required passing gate")
+                evidence_ids = {
+                    value.removeprefix("artifact://")
+                    for value in gate.get("evidence", [])
+                    if isinstance(value, str) and value.startswith("artifact://")
+                }
+                if not evidence_ids.intersection(validated_artifact_ids):
+                    fail("verification-ref-missing", f"finding {finding_id} gate lacks digest-bound verifier evidence")
+            elif reference["id"] not in validated_artifact_ids:
+                fail("verification-ref-missing", f"finding {finding_id} requires a validated verifier artifact")
     refs = finding["requiredOutcome"]["negativeFixtureRefs"]
     if not refs:
         fail("negative-fixture-ref-missing", f"finding {finding_id} has no negative fixture")
@@ -272,20 +329,70 @@ def input_document(run_root: Path, packet: dict, key: str, label: str) -> tuple[
     return path, load_json(path, label)
 
 
+def validate_negative_fixture(root: Path, fixture: dict, path: Path) -> None:
+    receipt = fixture["receipt"]
+    argv = receipt["argv"]
+    script_relative = ".agents/skills/marshal/references/closure_matrix_negative_fixture.py"
+    if (
+        len(argv) != 6
+        or not Path(argv[0]).is_absolute()
+        or argv[1:5] != ["-I", "-B", script_relative, "--input"]
+        or argv[5] != fixture["path"]
+    ):
+        fail("negative-fixture-receipt-invalid", "negative fixture argv is outside the closed execution grammar")
+    executable = Path(argv[0])
+    try:
+        if not executable.resolve(strict=True).is_file():
+            raise OSError
+    except OSError:
+        fail("negative-fixture-receipt-invalid", "negative fixture Python executable is unavailable")
+    secure_file(root, script_relative, "negative fixture probe")
+    if receipt["inputDigest"] != fixture["digest"]:
+        fail("negative-fixture-receipt-invalid", "negative fixture receipt inputDigest differs")
+    completed = subprocess.run(
+        argv,
+        cwd=root,
+        check=False,
+        capture_output=True,
+        timeout=10,
+        env={"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+    )
+    if completed.returncode != receipt["exitCode"]:
+        fail("negative-fixture-receipt-invalid", "negative fixture exit code differs from receipt")
+    output_digest = "sha256:" + hashlib.sha256(completed.stdout).hexdigest()
+    if output_digest != receipt["outputDigest"]:
+        fail("negative-fixture-receipt-invalid", "negative fixture output digest differs from receipt")
+    try:
+        output = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        fail("negative-fixture-receipt-invalid", "negative fixture output is not JSON")
+    if (
+        set(output) != {"reasonCode"}
+        or output["reasonCode"] != fixture["expectedReasonCode"]
+        or receipt["reasonCode"] != fixture["expectedReasonCode"]
+    ):
+        fail("negative-fixture-wrong-reason", "negative fixture reasonCode differs from receipt")
+
+
 def validate_freshness(
     manifest: dict,
     packet: dict,
     decision: dict,
     run_state: dict,
-    packet_path: Path,
-    run_root: Path,
     source_root: Path,
+    core_result: dict,
+    task_spec: dict,
+    verification: dict,
+    artifacts: dict,
+    workers: list[dict],
 ) -> tuple[dict, dict]:
     fresh = manifest["freshness"]
     without_fingerprint = {key: value for key, value in fresh.items() if key != "fingerprintDigest"}
     if canonical_digest(without_fingerprint) != fresh["fingerprintDigest"]:
         fail("freshness-fingerprint-mismatch", "freshness fingerprint does not match its tuple")
-    if jcs_file_digests([packet_path])[0] != fresh["reviewPacketDigest"]:
+    jcs_digests = core_result["jcs"]
+    raw_patch_digest = core_result["raw"][0]
+    if jcs_digests[0] != fresh["reviewPacketDigest"]:
         fail("packet-digest-mismatch", "reviewPacketDigest does not match canonical ReviewPacket")
     if run_state.get("state") != "REVIEW_PENDING":
         fail("stale-review-packet", "RunState is not REVIEW_PENDING")
@@ -311,23 +418,22 @@ def validate_freshness(
     if fresh["sourceHead"] != completed.stdout.strip():
         fail("stale-review-packet", "freshness sourceHead differs from worktree HEAD")
 
-    verification_path, verification = input_document(run_root, packet, "verificationReport", "VerificationReport")
-    artifact_path, artifacts = input_document(run_root, packet, "artifactManifest", "ArtifactManifest")
-    worker_paths = packet.get("inputs", {}).get("workerResults", [])
-    worker_digests = packet.get("workerResultDigests", [])
-    attempts: set[str] = set()
-    worker_files: list[Path] = []
-    for index, relative in enumerate(worker_paths):
-        path = secure_file(run_root, relative, f"ReviewPacket.inputs.workerResults[{index}]")
-        worker = load_json(path, f"WorkerResult[{index}]")
-        attempts.add(worker.get("attemptId", ""))
-        worker_files.append(path)
-    observed = jcs_file_digests([verification_path, artifact_path, *worker_files])
-    if observed[0] != packet["verificationDigest"] or observed[1] != packet["artifactManifestDigest"]:
+    if jcs_digests[1] != packet["specDigest"]:
+        fail("stale-digest", "TaskSpec JCS digest differs from ReviewPacket specDigest")
+    if jcs_digests[2] != packet["verificationDigest"] or jcs_digests[3] != packet["artifactManifestDigest"]:
         fail("stale-digest", "packet input digest does not match current input bytes")
-    observed_digests = observed[2:]
-    if observed_digests != worker_digests or fresh["attemptId"] not in attempts:
+    if raw_patch_digest != packet["diffDigest"] or verification.get("observed", {}).get("diffDigest") != raw_patch_digest:
+        fail("patch-digest-mismatch", "raw patch bytes are not bound to packet and VerificationReport")
+    observed_digests = jcs_digests[4:]
+    attempts = {worker.get("attemptId", "") for worker in workers}
+    if observed_digests != packet.get("workerResultDigests", []) or fresh["attemptId"] not in attempts:
         fail("stale-review-packet", "current attempt is not exactly bound by workerResults")
+    for document in (task_spec, verification, artifacts, *workers):
+        if document.get("taskId", document.get("metadata", {}).get("id")) != fresh["taskId"]:
+            fail("stale-review-packet", "packet input taskId differs from freshness tuple")
+    for document in (verification, artifacts, *workers):
+        if document.get("runId") != fresh["runId"]:
+            fail("stale-review-packet", "packet input runId differs from freshness tuple")
     decision_bindings = (
         "taskId", "runId", "reviewRound", "specDigest", "reviewPacketDigest",
         "verificationDigest", "artifactManifestDigest", "evidenceDigest",
@@ -363,9 +469,69 @@ def validate(
     packet = load_json(review_packet_path, "ReviewPacket")
     decision = load_json(review_decision_path, "ReviewDecision")
     run_state = load_json(run_state_path, "RunState")
-    verification, artifacts = validate_freshness(
-        manifest, packet, decision, run_state, review_packet_path, run_root.resolve(), source_root.resolve()
+    run_root = run_root.resolve()
+    source_root = source_root.resolve()
+    task_spec_path, task_spec = input_document(run_root, packet, "taskSpec", "TaskSpec")
+    try:
+        patch_relative = packet["inputs"]["patch"]
+    except (KeyError, TypeError):
+        fail("core-contract-invalid", "ReviewPacket lacks patch input")
+    patch_path = secure_file(run_root, patch_relative, "ReviewPacket.inputs.patch")
+    verification_path, verification = input_document(run_root, packet, "verificationReport", "VerificationReport")
+    artifact_path, artifacts = input_document(run_root, packet, "artifactManifest", "ArtifactManifest")
+    worker_paths: list[Path] = []
+    workers: list[dict] = []
+    for index, relative in enumerate(packet.get("inputs", {}).get("workerResults", [])):
+        path = secure_file(run_root, relative, f"ReviewPacket.inputs.workerResults[{index}]")
+        worker_paths.append(path)
+        workers.append(load_json(path, f"WorkerResult[{index}]"))
+    artifact_evidence: list[tuple[str, dict, Path]] = []
+    for index, artifact in enumerate(artifacts.get("artifacts", [])):
+        if (
+            isinstance(artifact, dict)
+            and artifact.get("producer") == "verifier"
+            and artifact.get("status") == "validated"
+            and isinstance(artifact.get("relativePath"), str)
+        ):
+            evidence_root = run_root if artifact.get("pathRoot") == "run" else source_root
+            evidence_path = secure_file(evidence_root, artifact["relativePath"], f"ArtifactManifest.artifacts[{index}]")
+            artifact_evidence.append((artifact.get("id", ""), artifact, evidence_path))
+    validations = [
+        ("ReviewPacket", review_packet_path),
+        ("ReviewDecision", review_decision_path),
+        ("RunState", run_state_path),
+        ("Task", task_spec_path),
+        ("VerificationReport", verification_path),
+        ("ArtifactManifest", artifact_path),
+        *(("WorkerResult", path) for path in worker_paths),
+    ]
+    core_result = core_probe(
+        validations,
+        [review_packet_path, task_spec_path, verification_path, artifact_path, *worker_paths],
+        [patch_path, *(entry[2] for entry in artifact_evidence)],
     )
+    verification, artifacts = validate_freshness(
+        manifest, packet, decision, run_state, source_root, core_result,
+        task_spec, verification, artifacts, workers,
+    )
+
+    validated_artifact_ids: set[str] = set()
+    for (artifact_id, artifact, evidence_path), digest in zip(artifact_evidence, core_result["raw"][1:]):
+        if artifact.get("digest") == digest and artifact.get("byteSize") == evidence_path.stat().st_size:
+            validated_artifact_ids.add(artifact_id)
+    observed_patch = next((item for item in artifacts.get("artifacts", []) if item.get("id") == "evidence:observed-patch"), None)
+    if (
+        observed_patch is None
+        or observed_patch.get("producer") != "verifier"
+        or observed_patch.get("required") is not True
+        or observed_patch.get("status") != "validated"
+        or observed_patch.get("pathRoot") != "run"
+        or observed_patch.get("relativePath") != patch_relative
+        or observed_patch.get("digest") != core_result["raw"][0]
+        or observed_patch.get("byteSize") != patch_path.stat().st_size
+        or "evidence:observed-patch" not in validated_artifact_ids
+    ):
+        fail("patch-artifact-mismatch", "raw patch lacks the exact validated verifier artifact binding")
 
     fixture_by_id: dict[str, dict] = {}
     for fixture in manifest["negativeFixtures"]:
@@ -374,12 +540,10 @@ def validate(
         path = secure_file(root.resolve(), fixture["path"], f"negative fixture {fixture['id']}")
         if file_digest(path) != fixture["digest"]:
             fail("fixture-digest-mismatch", f"negative fixture {fixture['id']} digest differs")
-        payload = load_json(path, f"negative fixture {fixture['id']}")
-        if set(payload) != {"reasonCode"} or payload["reasonCode"] != fixture["expectedReasonCode"]:
-            fail("negative-fixture-wrong-reason", f"negative fixture {fixture['id']} does not prove its reasonCode")
+        validate_negative_fixture(root.resolve(), fixture, path)
         fixture_by_id[fixture["id"]] = fixture
 
-    gate_ids = {gate.get("id") for gate in verification.get("gates", []) if isinstance(gate, dict)}
+    gates = {gate.get("id"): gate for gate in verification.get("gates", []) if isinstance(gate, dict)}
     artifact_ids = {item.get("id") for item in artifacts.get("artifacts", []) if isinstance(item, dict)}
     referenced_fixture_ids = {
         fixture_id
@@ -407,23 +571,41 @@ def validate(
             fail("finding-split", f"closure identity for {finding_id} was duplicated or split")
         seen_identity.add(identity)
         validate_location(finding["location"], finding_id)
+        validate_outcome(finding)
+        if outcome_key(finding) != finding["outcomeKey"]:
+            fail("finding-id-unstable", f"finding {finding_id} outcomeKey does not match its closed outcome")
         if not FINDING_ID_RE.fullmatch(finding_id) or stable_finding_id(finding) != finding_id:
             fail("finding-id-unstable", f"finding {finding_id} does not match its stable identity")
-        validate_outcome(finding)
-        validate_refs(finding, gate_ids, artifact_ids, fixture_by_id)
+        validate_refs(finding, gates, artifact_ids, validated_artifact_ids, fixture_by_id)
         is_previous = finding_id in previous
         classification = finding["classification"]
         disposition = finding["disposition"]
         if is_previous:
             manifest_previous.add(finding_id)
+            old = previous[finding_id]
             if classification not in {"continuation", "closed-previous"}:
                 fail("previous-finding-lineage-mismatch", f"previous finding {finding_id} has invalid lineage")
+            if finding.get("parentFindingId") != finding_id:
+                fail("previous-finding-lineage-mismatch", f"previous finding {finding_id} lacks its exact parentFindingId")
+            old_description = projected_payload(old.get("description"), DEFECT_PREFIX, f"previous finding {finding_id} description")
+            old_outcome = projected_payload(old.get("requiredOutcome"), OUTCOME_PREFIX, f"previous finding {finding_id} requiredOutcome")
+            old_identity = {
+                "domainKey": old_description.get("domainKey"),
+                "ruleId": old_description.get("ruleId"),
+                "requiredOutcome": {"kind": old_outcome.get("kind"), "assertions": old_outcome.get("assertions")},
+            }
+            old_outcome_key = "O-" + hashlib.sha256(canonical_bytes(old_identity)).hexdigest()[:24]
+            if (
+                old_outcome_key != finding["outcomeKey"]
+                or old_description.get("subject") != finding["subject"]
+                or old.get("severity") != finding["severity"]
+            ):
+                fail("previous-finding-lineage-mismatch", f"previous finding {finding_id} changed identity, subject, or severity")
             if classification == "continuation" and disposition != "blocking-rework":
                 fail("previous-finding-lineage-mismatch", f"continued finding {finding_id} must remain blocking")
             if classification == "closed-previous":
                 if disposition != "closed-previous":
                     fail("previous-finding-lineage-mismatch", f"closed finding {finding_id} has invalid disposition")
-                old = previous[finding_id]
                 changed = (
                     old.get("candidateDigest") != packet.get("candidateDigest")
                     if old.get("candidateDigest") and packet.get("candidateDigest")
@@ -437,7 +619,9 @@ def validate(
                 fail("previous-finding-lineage-mismatch", f"new finding {finding_id} lacks explicit discovery class")
             if disposition == "closed-previous":
                 fail("previous-finding-lineage-mismatch", f"new finding {finding_id} cannot be closed-previous")
-        if finding["severity"] in {"P0", "P1"} and disposition != "blocking-rework":
+            if "parentFindingId" in finding:
+                fail("previous-finding-lineage-mismatch", f"new finding {finding_id} cannot claim a parentFindingId")
+        if finding["severity"] in {"P0", "P1"} and disposition != "blocking-rework" and classification != "closed-previous":
             fail("blocking-finding-omitted", f"{finding['severity']} finding {finding_id} is not blocking")
         if disposition == "blocking-rework":
             blocking.append(projected_finding(finding))
@@ -448,7 +632,11 @@ def validate(
     if missing_previous:
         fail("previous-finding-lineage-mismatch", "a previous finding is neither continued nor explicitly closed")
     for finding in manifest["findings"]:
-        if finding["severity"] == "P2" and finding["domainKey"] in blocking_domains and finding["disposition"] != "blocking-rework":
+        if (
+            finding["severity"] == "P2"
+            and finding["domainKey"] in blocking_domains
+            and finding["disposition"] not in {"blocking-rework", "closed-previous"}
+        ):
             fail("blocking-finding-omitted", f"same-domain P2 finding {finding['id']} must be closed in this rework")
     if decision.get("blockingFindings") != blocking or decision.get("nonBlockingFindings") != nonblocking:
         manifest_ids = {item["id"] for item in blocking + nonblocking}

@@ -31,6 +31,22 @@
       "status": "fail",
       "summary": "negative case missing",
       "evidence": ["fixture"]
+    },
+    {
+      "id": "gate-identity-closure",
+      "category": "command",
+      "required": true,
+      "status": "pass",
+      "summary": "identity closure command passed",
+      "evidence": ["artifact://evidence:observed-patch"]
+    },
+    {
+      "id": "gate-regression-closure",
+      "category": "command",
+      "required": true,
+      "status": "pass",
+      "summary": "negative regression command passed",
+      "evidence": ["artifact://evidence:observed-patch"]
     }
   ],
   "startedAt": "2026-08-20T00:00:00Z",

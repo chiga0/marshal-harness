@@ -43,6 +43,10 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
         fixtures = root / FIXTURE_RELATIVE
         fixtures.parent.mkdir(parents=True)
         shutil.copytree(FIXTURES, fixtures)
+        shutil.copy2(
+            SKILL_ROOT / "references/closure_matrix_negative_fixture.py",
+            root / ".agents/skills/marshal/references/closure_matrix_negative_fixture.py",
+        )
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
         subprocess.run(["git", "add", "."], cwd=root, check=True)
         subprocess.run(
@@ -59,16 +63,44 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
         packet = json.loads(packet_path.read_text())
         manifest = json.loads(manifest_path.read_text())
         decision = json.loads(decision_path.read_text())
+        state = json.loads(state_path.read_text())
+        task_path = fixtures / "task-spec.json"
+        verification_path = fixtures / "verification-report.json"
+        artifact_path = fixtures / "artifact-manifest.json"
+        worker_path = fixtures / "worker-result.json"
+        patch_path = fixtures / "observed.patch"
+        task = json.loads(task_path.read_text())
+        verification = json.loads(verification_path.read_text())
+        artifacts = json.loads(artifact_path.read_text())
+
+        initial = VALIDATOR_MODULE.core_probe([], [task_path], [patch_path])
+        spec_digest = initial["jcs"][0]
+        patch_digest = initial["raw"][0]
+        verification["specDigest"] = spec_digest
+        verification["observed"]["diffDigest"] = patch_digest
+        artifacts["artifacts"][0]["digest"] = patch_digest
+        artifacts["artifacts"][0]["byteSize"] = patch_path.stat().st_size
+        write_json(verification_path, verification)
+        write_json(artifact_path, artifacts)
 
         for finding in manifest["findings"]:
+            finding["outcomeKey"] = VALIDATOR_MODULE.outcome_key(finding)
             finding["id"] = VALIDATOR_MODULE.stable_finding_id(finding)
         first_id, second_id = (finding["id"] for finding in manifest["findings"])
-        packet["previousBlockingFindings"][0]["id"] = first_id
-        evidence_digests = VALIDATOR_MODULE.jcs_file_digests([
-            fixtures / "verification-report.json",
-            fixtures / "artifact-manifest.json",
-            fixtures / "worker-result.json",
-        ])
+        manifest["findings"][0]["parentFindingId"] = first_id
+        previous = VALIDATOR_MODULE.projected_finding(manifest["findings"][0])
+        previous.update({
+            "evidenceDigest": "sha256:" + "a" * 64,
+            "snapshotDigest": "sha256:" + "b" * 64,
+            "verificationDigest": "sha256:" + "c" * 64,
+            "candidateDigest": "sha256:" + "d" * 64,
+        })
+        packet["previousBlockingFindings"] = [previous]
+        evidence_digests = VALIDATOR_MODULE.core_probe(
+            [], [verification_path, artifact_path, worker_path], []
+        )["jcs"]
+        packet["specDigest"] = spec_digest
+        packet["diffDigest"] = patch_digest
         packet["verificationDigest"] = evidence_digests[0]
         packet["artifactManifestDigest"] = evidence_digests[1]
         packet["workerResultDigests"] = [evidence_digests[2]]
@@ -77,9 +109,11 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
         fresh = manifest["freshness"]
         fresh.update({
             "sourceHead": head,
+            "specDigest": spec_digest,
+            "diffDigest": patch_digest,
             "verificationDigest": packet["verificationDigest"],
             "artifactManifestDigest": packet["artifactManifestDigest"],
-            "reviewPacketDigest": VALIDATOR_MODULE.jcs_file_digests([packet_path])[0],
+            "reviewPacketDigest": VALIDATOR_MODULE.core_probe([], [packet_path], [])["jcs"][0],
         })
         fresh["fingerprintDigest"] = VALIDATOR_MODULE.canonical_digest(
             {key: value for key, value in fresh.items() if key != "fingerprintDigest"}
@@ -88,7 +122,17 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
         manifest["negativeFixtures"][1]["findingId"] = second_id
         for fixture in manifest["negativeFixtures"]:
             fixture["digest"] = VALIDATOR_MODULE.file_digest(root / fixture["path"])
+            receipt = fixture["receipt"]
+            receipt["argv"][0] = sys.executable
+            receipt["inputDigest"] = fixture["digest"]
+            receipt["reasonCode"] = fixture["expectedReasonCode"]
+            completed = subprocess.run(receipt["argv"], cwd=root, check=False, capture_output=True)
+            receipt["exitCode"] = completed.returncode
+            receipt["outputDigest"] = "sha256:" + hashlib.sha256(completed.stdout).hexdigest()
         write_json(manifest_path, manifest)
+
+        state["specDigest"] = spec_digest
+        write_json(state_path, state)
 
         for key in (
             "taskId", "runId", "reviewRound", "specDigest", "reviewPacketDigest",
@@ -146,6 +190,24 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
             payload = json.loads(completed.stdout)
             self.assertEqual(payload["blockingFindings"], 2)
 
+    def test_previous_p1_can_close_with_fresh_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.prepared(directory)
+            manifest = self.load(fixtures, "manifest.json")
+            manifest["findings"][0]["classification"] = "closed-previous"
+            manifest["findings"][0]["disposition"] = "closed-previous"
+            write_json(fixtures / "manifest.json", manifest)
+            decision = self.load(fixtures, "review-decision.json")
+            decision["blockingFindings"] = [
+                VALIDATOR_MODULE.projected_finding(manifest["findings"][1])
+            ]
+            write_json(fixtures / "review-decision.json", decision)
+            completed = self.invoke(root, fixtures)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["closedPreviousFindings"], 1)
+            self.assertEqual(payload["blockingFindings"], 1)
+
     def test_p1_omission_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root, fixtures = self.prepared(directory)
@@ -180,6 +242,7 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
             manifest = self.load(fixtures, "manifest.json")
             duplicate = json.loads(json.dumps(manifest["findings"][1]))
             duplicate["id"] = "F-aaaaaaaaaaaaaaaaaaaaaaaa"
+            duplicate["subject"] = "renamed-subject-must-not-split-outcome"
             manifest["findings"].append(duplicate)
             write_json(fixtures / "manifest.json", manifest)
             self.assert_failure(self.invoke(root, fixtures), "finding-split")
@@ -231,6 +294,14 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
             manifest = self.load(fixtures, "manifest.json")
             manifest["findings"][0]["subject"] = "renamed-subject"
             write_json(fixtures / "manifest.json", manifest)
+            self.assert_failure(self.invoke(root, fixtures), "previous-finding-lineage-mismatch")
+
+    def test_outcome_key_is_bound_to_closed_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.prepared(directory)
+            manifest = self.load(fixtures, "manifest.json")
+            manifest["findings"][1]["outcomeKey"] = "O-aaaaaaaaaaaaaaaaaaaaaaaa"
+            write_json(fixtures / "manifest.json", manifest)
             self.assert_failure(self.invoke(root, fixtures), "finding-id-unstable")
 
     def test_changed_packet_input_is_stale_digest(self) -> None:
@@ -240,6 +311,91 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
             verification["gates"][0]["summary"] = "changed after packet generation"
             write_json(fixtures / "verification-report.json", verification)
             self.assert_failure(self.invoke(root, fixtures), "stale-digest")
+
+    def test_every_packet_input_is_nofollow_and_digest_bound(self) -> None:
+        mutations = (
+            ("task-spec.json", lambda value: value["metadata"].update(title="mutated"), "stale-digest"),
+            ("verification-report.json", lambda value: value["gates"][0].update(summary="mutated"), "stale-digest"),
+            ("artifact-manifest.json", lambda value: value.update(generatedAt="2026-08-20T00:00:02Z"), "stale-digest"),
+            ("worker-result.json", lambda value: value.update(summary="mutated"), "stale-review-packet"),
+        )
+        for name, mutate, reason in mutations:
+            with self.subTest(mode="mutation", input=name), tempfile.TemporaryDirectory() as directory:
+                root, fixtures = self.prepared(directory)
+                value = self.load(fixtures, name)
+                mutate(value)
+                write_json(fixtures / name, value)
+                self.assert_failure(self.invoke(root, fixtures), reason)
+        with self.subTest(mode="mutation", input="observed.patch"), tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.prepared(directory)
+            (fixtures / "observed.patch").write_bytes(b"mutated patch\n")
+            self.assert_failure(self.invoke(root, fixtures), "patch-digest-mismatch")
+
+        for name in (
+            "task-spec.json", "observed.patch", "verification-report.json",
+            "artifact-manifest.json", "worker-result.json",
+        ):
+            with self.subTest(mode="missing", input=name), tempfile.TemporaryDirectory() as directory:
+                root, fixtures = self.prepared(directory)
+                (fixtures / name).unlink()
+                self.assert_failure(self.invoke(root, fixtures), "fixture-unreadable")
+
+        with self.subTest(mode="symlink"), tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.prepared(directory)
+            task_path = fixtures / "task-spec.json"
+            target_path = fixtures / "task-spec-target.json"
+            task_path.rename(target_path)
+            task_path.symlink_to(target_path.name)
+            self.assert_failure(self.invoke(root, fixtures), "path-symlink-rejected")
+
+    def test_every_core_evidence_contract_is_validated(self) -> None:
+        cases = (
+            ("review-packet.json", "generatedAt"),
+            ("review-decision.json", "summary"),
+            ("run-state.json", "sequence"),
+            ("verification-report.json", "status"),
+            ("artifact-manifest.json", "generatedAt"),
+            ("worker-result.json", "status"),
+        )
+        for name, required_field in cases:
+            with self.subTest(kind=name, missing=required_field), tempfile.TemporaryDirectory() as directory:
+                root, fixtures = self.prepared(directory)
+                value = self.load(fixtures, name)
+                del value[required_field]
+                write_json(fixtures / name, value)
+                self.assert_failure(self.invoke(root, fixtures), "core-contract-invalid")
+
+    def test_closure_refs_require_passing_digest_bound_verifier_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.prepared(directory)
+            manifest = self.load(fixtures, "manifest.json")
+            manifest["findings"][0]["requiredOutcome"]["verificationRefs"] = [
+                {"kind": "gate", "id": "gate-identity"}
+            ]
+            write_json(fixtures / "manifest.json", manifest)
+            self.assert_failure(self.invoke(root, fixtures), "verification-ref-missing")
+        with tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.prepared(directory)
+            manifest = self.load(fixtures, "manifest.json")
+            manifest["findings"][0]["observableDefect"]["evidenceRefs"] = [
+                {"kind": "artifact", "id": "absent-verifier-artifact"}
+            ]
+            write_json(fixtures / "manifest.json", manifest)
+            self.assert_failure(self.invoke(root, fixtures), "verification-ref-missing")
+
+    def test_negative_fixture_receipt_is_execution_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.prepared(directory)
+            manifest = self.load(fixtures, "manifest.json")
+            manifest["negativeFixtures"][0]["receipt"]["outputDigest"] = "sha256:" + "0" * 64
+            write_json(fixtures / "manifest.json", manifest)
+            self.assert_failure(self.invoke(root, fixtures), "negative-fixture-receipt-invalid")
+        with tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.prepared(directory)
+            manifest = self.load(fixtures, "manifest.json")
+            manifest["negativeFixtures"][0]["receipt"]["argv"][1] = "-E"
+            write_json(fixtures / "manifest.json", manifest)
+            self.assert_failure(self.invoke(root, fixtures), "negative-fixture-receipt-invalid")
 
     def test_p0_cannot_be_non_blocking(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -275,7 +431,9 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
             manifest = self.load(fixtures, "manifest.json")
             manifest["findings"][0]["classification"] = "closed-previous"
             manifest["findings"][0]["disposition"] = "closed-previous"
-            manifest["freshness"]["reviewPacketDigest"] = VALIDATOR_MODULE.jcs_file_digests([fixtures / "review-packet.json"])[0]
+            manifest["freshness"]["reviewPacketDigest"] = VALIDATOR_MODULE.core_probe(
+                [], [fixtures / "review-packet.json"], []
+            )["jcs"][0]
             manifest["freshness"]["fingerprintDigest"] = VALIDATOR_MODULE.canonical_digest(
                 {key: value for key, value in manifest["freshness"].items() if key != "fingerprintDigest"}
             )

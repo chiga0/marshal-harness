@@ -153,7 +153,7 @@
       "additionalProperties": false,
       "required": [
         "id", "severity", "title", "classification", "disposition",
-        "domainKey", "ruleId", "subject", "location", "observableDefect",
+        "domainKey", "ruleId", "outcomeKey", "subject", "location", "observableDefect",
         "requiredOutcome"
       ],
       "properties": {
@@ -164,6 +164,8 @@
         "disposition": { "enum": ["blocking-rework", "non-blocking", "closed-previous"] },
         "domainKey": { "$ref": "#/$defs/id" },
         "ruleId": { "$ref": "#/$defs/id" },
+        "outcomeKey": { "type": "string", "pattern": "^O-[0-9a-f]{24}$" },
+        "parentFindingId": { "type": "string", "pattern": "^F-[0-9a-f]{24}$" },
         "subject": { "type": "string", "minLength": 1 },
         "location": { "$ref": "#/$defs/location" },
         "observableDefect": { "$ref": "#/$defs/observableDefect" },
@@ -173,13 +175,30 @@
     "negativeFixture": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "path", "digest", "expectedReasonCode", "findingId"],
+      "required": ["id", "path", "digest", "expectedReasonCode", "findingId", "receipt"],
       "properties": {
         "id": { "$ref": "#/$defs/id" },
         "path": { "$ref": "#/$defs/relativePath" },
         "digest": { "$ref": "#/$defs/digest" },
         "expectedReasonCode": { "$ref": "#/$defs/id" },
-        "findingId": { "type": "string", "pattern": "^F-[0-9a-f]{24}$" }
+        "findingId": { "type": "string", "pattern": "^F-[0-9a-f]{24}$" },
+        "receipt": { "$ref": "#/$defs/negativeReceipt" }
+      }
+    },
+    "negativeReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["argv", "inputDigest", "outputDigest", "exitCode", "reasonCode"],
+      "properties": {
+        "argv": {
+          "type": "array",
+          "minItems": 6,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "inputDigest": { "$ref": "#/$defs/digest" },
+        "outputDigest": { "$ref": "#/$defs/digest" },
+        "exitCode": { "type": "integer", "minimum": 1 },
+        "reasonCode": { "$ref": "#/$defs/id" }
       }
     }
   }

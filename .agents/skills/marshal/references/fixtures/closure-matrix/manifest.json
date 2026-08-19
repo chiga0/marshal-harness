@@ -25,18 +25,20 @@
       "disposition": "blocking-rework",
       "domainKey": "review-freshness",
       "ruleId": "identity-tuple",
+      "outcomeKey": "O-000000000000000000000000",
+      "parentFindingId": "F-000000000000000000000000",
       "subject": "reviewer-fingerprint",
       "location": { "kind": "source", "locator": "internal/example.go", "line": 10 },
       "observableDefect": {
         "kind": "identity",
         "observedFacts": ["fingerprint omits attemptId"],
         "expectedFacts": ["fingerprint contains attemptId"],
-        "evidenceRefs": [{ "kind": "gate", "id": "gate-identity" }]
+        "evidenceRefs": [{ "kind": "artifact", "id": "evidence:observed-patch" }]
       },
       "requiredOutcome": {
         "kind": "identity-tuple",
         "assertions": [{ "subject": "fingerprint fields", "operator": "contains-all", "expected": ["attemptId", "sourceHead", "reviewRound"] }],
-        "verificationRefs": [{ "kind": "gate", "id": "gate-identity" }],
+        "verificationRefs": [{ "kind": "gate", "id": "gate-identity-closure" }],
         "negativeFixtureRefs": ["negative-continuation"]
       }
     },
@@ -48,18 +50,19 @@
       "disposition": "blocking-rework",
       "domainKey": "review-freshness",
       "ruleId": "negative-case",
+      "outcomeKey": "O-111111111111111111111111",
       "subject": "stale-fingerprint-regression",
       "location": { "kind": "gate", "locator": "gate-regression" },
       "observableDefect": {
         "kind": "behavior",
         "observedFacts": ["stale fingerprint fixture is absent"],
         "expectedFacts": ["stale fingerprint fixture returns freshness-fingerprint-mismatch"],
-        "evidenceRefs": [{ "kind": "gate", "id": "gate-regression" }]
+        "evidenceRefs": [{ "kind": "artifact", "id": "evidence:observed-patch" }]
       },
       "requiredOutcome": {
         "kind": "reason-code",
         "assertions": [{ "subject": "stale fingerprint", "operator": "returns-reason-code", "expected": ["freshness-fingerprint-mismatch"] }],
-        "verificationRefs": [{ "kind": "gate", "id": "gate-regression" }],
+        "verificationRefs": [{ "kind": "gate", "id": "gate-regression-closure" }],
         "negativeFixtureRefs": ["negative-same-domain-p2"]
       }
     }
@@ -70,14 +73,28 @@
       "path": ".agents/skills/marshal/references/fixtures/closure-matrix/negative-continuation.json",
       "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "expectedReasonCode": "identity-mismatch",
-      "findingId": "F-000000000000000000000000"
+      "findingId": "F-000000000000000000000000",
+      "receipt": {
+        "argv": ["python3", "-I", "-B", ".agents/skills/marshal/references/closure_matrix_negative_fixture.py", "--input", ".agents/skills/marshal/references/fixtures/closure-matrix/negative-continuation.json"],
+        "inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "outputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "exitCode": 1,
+        "reasonCode": "identity-mismatch"
+      }
     },
     {
       "id": "negative-same-domain-p2",
       "path": ".agents/skills/marshal/references/fixtures/closure-matrix/negative-same-domain-p2.json",
       "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "expectedReasonCode": "missing-regression-case",
-      "findingId": "F-111111111111111111111111"
+      "findingId": "F-111111111111111111111111",
+      "receipt": {
+        "argv": ["python3", "-I", "-B", ".agents/skills/marshal/references/closure_matrix_negative_fixture.py", "--input", ".agents/skills/marshal/references/fixtures/closure-matrix/negative-same-domain-p2.json"],
+        "inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "outputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "exitCode": 1,
+        "reasonCode": "missing-regression-case"
+      }
     }
   ]
 }

@@ -25,6 +25,7 @@
       "disposition": "blocking-rework",
       "domainKey": "DOMAIN-ID",
       "ruleId": "RULE-ID",
+      "outcomeKey": "O-000000000000000000000000",
       "subject": "stable-subject",
       "location": { "kind": "source", "locator": "path/to/file.go", "line": 1 },
       "observableDefect": {
@@ -49,7 +50,14 @@
       "path": "path/to/negative-fixture.json",
       "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "expectedReasonCode": "expected-reason-code",
-      "findingId": "F-000000000000000000000000"
+      "findingId": "F-000000000000000000000000",
+      "receipt": {
+        "argv": ["python3", "-I", "-B", ".agents/skills/marshal/references/closure_matrix_negative_fixture.py", "--input", "path/to/negative-fixture.json"],
+        "inputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "outputDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "exitCode": 1,
+        "reasonCode": "expected-reason-code"
+      }
     }
   ]
 }
