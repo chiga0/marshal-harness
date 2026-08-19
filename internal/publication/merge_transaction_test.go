@@ -42,6 +42,38 @@ func TestMergeAuthorityTransactionRejectsPublisherAndUnknownField(t *testing.T) 
 	}
 }
 
+func TestMergeAuthorityTransactionReplayIdentityAndEventStatusAreBound(t *testing.T) {
+	prepared := validMergeAuthorityTransactionFixture(t, "prepared")
+	preparedIdentity, err := prepared.ReplayIdentity(mergeAuthorityPreparedEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoked := prepared
+	revoked.Status = "revoked"
+	revoked.RevocationGeneration = 1
+	revoked.JournalSequence = 10
+	revoked.ExpectedPreviousJournalSeq = 9
+	revoked.PreviousTransactionDigest = prepared.TransactionDigest
+	revoked.RevokedAt = "2026-08-19T00:01:00Z"
+	revoked.TransactionDigest, err = revoked.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokedIdentity, err := revoked.ReplayIdentity(mergeAuthorityRevokedEvent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preparedIdentity == revokedIdentity {
+		t.Fatal("prepared and revoked transactions share replay identity")
+	}
+	if err := ValidateMergeAuthorityEvent(mergeAuthorityRevokedEvent, mergeCoreActorType, mergeCoreActorID, ciPendingState, ciPendingState, prepared, 9, 8); err == nil {
+		t.Fatal("accepted prepared transaction under revoked event type")
+	}
+	if err := ValidateMergeAuthorityEvent(mergeAuthorityPreparedEvent, mergeCoreActorType, mergeCoreActorID, ciPendingState, ciPendingState, revoked, 10, 9); err == nil {
+		t.Fatal("accepted revoked transaction under prepared event type")
+	}
+}
+
 func validMergeAuthorityTransactionFixture(t *testing.T, status string) MergeAuthorityTransaction {
 	t.Helper()
 	transaction := MergeAuthorityTransaction{
