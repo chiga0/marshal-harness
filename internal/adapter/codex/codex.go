@@ -881,6 +881,7 @@ func readDeclaredResultFile(file *os.File, limit int64, validator *contract.Vali
 		return declaredResult{}, fmt.Errorf("read WorkerResult declaration: %w", err)
 	}
 	data = pi.NormalizeDeclaredWorkerResult(data)
+	data = normalizeProviderOptionalFields(data)
 	if err := validator.Validate(domain.KindWorkerResult, data); err != nil {
 		return declaredResult{}, fmt.Errorf("validate WorkerResult declaration: %w", err)
 	}
@@ -889,4 +890,40 @@ func readDeclaredResultFile(file *os.File, limit int64, validator *contract.Vali
 		return result, err
 	}
 	return result, nil
+}
+
+// normalizeProviderOptionalFields removes empty values emitted only because
+// Codex strict response schemas require every property to be present. The
+// durable schema remains authoritative: non-empty values and all required
+// fields are untouched, while empty optional path/uri/blocker/currency fields
+// are treated as absent before validation.
+func normalizeProviderOptionalFields(data []byte) []byte {
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil || document == nil {
+		return data
+	}
+	if blocker, ok := document["blocker"].(string); ok && blocker == "" {
+		delete(document, "blocker")
+	}
+	if artifacts, ok := document["declaredArtifacts"].([]any); ok {
+		for _, item := range artifacts {
+			if artifact, ok := item.(map[string]any); ok {
+				for _, name := range []string{"path", "uri"} {
+					if value, ok := artifact[name].(string); ok && value == "" {
+						delete(artifact, name)
+					}
+				}
+			}
+		}
+	}
+	if usage, ok := document["usage"].(map[string]any); ok {
+		if currency, ok := usage["currency"].(string); ok && currency == "" {
+			delete(usage, "currency")
+		}
+	}
+	normalized, err := json.Marshal(document)
+	if err != nil {
+		return data
+	}
+	return normalized
 }
