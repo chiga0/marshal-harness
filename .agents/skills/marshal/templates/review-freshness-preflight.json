@@ -16,6 +16,8 @@
     "eventsPath": "events.jsonl",
     "packetPath": "review-packet.json",
     "taskSpecPath": "task-spec.json",
+    "verificationReportPath": "verification-report.json",
+    "artifactManifestPath": "artifact-manifest.json",
     "policySnapshotPath": "policy-snapshot.json",
     "capabilitySnapshotPath": "capability-snapshot.json",
     "controlRecordsPath": "control/records.jsonl",

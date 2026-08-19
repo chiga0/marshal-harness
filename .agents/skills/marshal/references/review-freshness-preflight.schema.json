@@ -26,12 +26,14 @@
     "files": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["statePath", "eventsPath", "packetPath", "taskSpecPath", "policySnapshotPath", "capabilitySnapshotPath", "controlRecordsPath", "historyPath"],
+      "required": ["statePath", "eventsPath", "packetPath", "taskSpecPath", "verificationReportPath", "artifactManifestPath", "policySnapshotPath", "capabilitySnapshotPath", "controlRecordsPath", "historyPath"],
       "properties": {
         "statePath": { "$ref": "#/$defs/relativePath" },
         "eventsPath": { "$ref": "#/$defs/relativePath" },
         "packetPath": { "$ref": "#/$defs/relativePath" },
         "taskSpecPath": { "$ref": "#/$defs/relativePath" },
+        "verificationReportPath": { "$ref": "#/$defs/relativePath" },
+        "artifactManifestPath": { "$ref": "#/$defs/relativePath" },
         "policySnapshotPath": { "$ref": "#/$defs/relativePath" },
         "capabilitySnapshotPath": { "$ref": "#/$defs/relativePath" },
         "controlRecordsPath": { "$ref": "#/$defs/relativePath" },

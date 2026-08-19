@@ -127,7 +127,7 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         (self.operator_root / "review-freshness-history.json").write_bytes(json_bytes({"apiVersion": "marshal.operator/v1alpha1", "kind": "ReviewFreshnessHistory", "claims": []}))
 
     def manifest(self) -> dict:
-        return {"apiVersion": "marshal.operator/v1alpha1", "kind": "ReviewFreshnessPreflight", "expected": {"taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1", "state": "REVIEW_PENDING", "stateSequence": 7, "currentAttemptId": "attempt:fixture-01", "sourceHead": self.head, "baseSha": self.head, "reviewRound": 2}, "files": {"statePath": "state.json", "eventsPath": "events.jsonl", "packetPath": "review-packet.json", "taskSpecPath": "task-spec.json", "policySnapshotPath": "policy-snapshot.json", "capabilitySnapshotPath": "capability-snapshot.json", "controlRecordsPath": "control/records.jsonl", "historyPath": "review-freshness-history.json"}}
+        return {"apiVersion": "marshal.operator/v1alpha1", "kind": "ReviewFreshnessPreflight", "expected": {"taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1", "state": "REVIEW_PENDING", "stateSequence": 7, "currentAttemptId": "attempt:fixture-01", "sourceHead": self.head, "baseSha": self.head, "reviewRound": 2}, "files": {"statePath": "state.json", "eventsPath": "events.jsonl", "packetPath": "review-packet.json", "taskSpecPath": "task-spec.json", "verificationReportPath": "verification-report.json", "artifactManifestPath": "artifact-manifest.json", "policySnapshotPath": "policy-snapshot.json", "capabilitySnapshotPath": "capability-snapshot.json", "controlRecordsPath": "control/records.jsonl", "historyPath": "review-freshness-history.json"}}
 
     def enable_candidate(self) -> None:
         candidate = {"apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate", "taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1", "attemptId": "attempt:fixture-01", "authorityNamespaceId": "authority:fixture", "baseSha": self.head, "contentDigest": digest_bytes(b""), "producerKind": "worker", "producer": "worker:fixture", "createdAt": "2026-08-20T00:00:30Z"}
@@ -195,6 +195,28 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         (self.run_root / "review-packet.json").unlink()
         (self.worktree / "README").write_text("dirty\n")
         self.assert_reason("packet-missing-worktree-not-clean")
+        history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
+        self.assertEqual(history["claims"], [])
+
+    def test_missing_packet_report_tamper_never_claims(self) -> None:
+        (self.run_root / "review-packet.json").unlink()
+        report_path = self.run_root / "verification-report.json"
+        report = json.loads(report_path.read_text())
+        report["summary"] = "tampered"
+        report_path.write_bytes(json_bytes(report))
+        code, result = self.invoke()
+        self.assertNotEqual(code, 0, result)
+        history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
+        self.assertEqual(history["claims"], [])
+
+    def test_missing_packet_manifest_tamper_never_claims(self) -> None:
+        (self.run_root / "review-packet.json").unlink()
+        manifest_path = self.run_root / "artifact-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["artifacts"][0]["description"] = "tampered"
+        manifest_path.write_bytes(json_bytes(manifest))
+        code, result = self.invoke()
+        self.assertNotEqual(code, 0, result)
         history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
         self.assertEqual(history["claims"], [])
 

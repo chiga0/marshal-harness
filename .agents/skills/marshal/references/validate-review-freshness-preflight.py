@@ -471,7 +471,7 @@ def validate_manifest(manifest: dict) -> tuple[dict, dict]:
         fail("manifest-shape-invalid")
     if isinstance(expected["reviewRound"], bool) or not isinstance(expected["reviewRound"], int) or expected["reviewRound"] < 1:
         fail("manifest-shape-invalid")
-    names = {"statePath", "eventsPath", "packetPath", "taskSpecPath", "policySnapshotPath", "capabilitySnapshotPath", "controlRecordsPath", "historyPath"}
+    names = {"statePath", "eventsPath", "packetPath", "taskSpecPath", "verificationReportPath", "artifactManifestPath", "policySnapshotPath", "capabilitySnapshotPath", "controlRecordsPath", "historyPath"}
     files = exact_keys(manifest["files"], names, names)
     for value in files.values():
         clean_relative(value)
@@ -741,6 +741,18 @@ def run(arguments: argparse.Namespace) -> dict:
     control_digests = validate_control_records(script, control_raw)
     events_raw = load(run_root, files["eventsPath"], "events-unreadable", 32 << 20)
     event_digests, frozen_verification_digest, frozen_artifact_digest = validate_events(script, events_raw, state)
+    frozen_report_raw = load(run_root, files["verificationReportPath"], "verification-report-unreadable", 16 << 20)
+    frozen_manifest_raw = load(run_root, files["artifactManifestPath"], "artifact-manifest-unreadable", 16 << 20)
+    current_verification_digest = core_validate_bytes(script, "VerificationReport", frozen_report_raw)
+    current_artifact_digest = core_validate_bytes(script, "ArtifactManifest", frozen_manifest_raw)
+    frozen_report = parse_json(frozen_report_raw, "verification-report-invalid-json")
+    frozen_manifest = parse_json(frozen_manifest_raw, "artifact-manifest-invalid-json")
+    if frozen_report.get("taskId") != state["taskId"] or frozen_report.get("runId") != state["runId"] or frozen_report.get("specDigest") != state["specDigest"] or frozen_report.get("baseSha") != state["baseSha"]:
+        fail("verification-binding-mismatch")
+    if frozen_manifest.get("taskId") != state["taskId"] or frozen_manifest.get("runId") != state["runId"]:
+        fail("packet-input-identity-mismatch")
+    if current_verification_digest != frozen_verification_digest or current_artifact_digest != frozen_artifact_digest:
+        fail("verification-event-binding-mismatch")
     history_authority = HeldRelativeParent(operator_root, files["historyPath"])
     history_raw, history_identity = history_authority.read("history-unreadable", 4 << 20)
     validate_operator_schema(script, "review-freshness-history.schema.json", history_raw)
@@ -755,7 +767,7 @@ def run(arguments: argparse.Namespace) -> dict:
         packet = parse_json(packet_raw, "packet-invalid-json")
         if packet.get("taskId") != state["taskId"] or packet.get("runId") != state["runId"] or packet.get("reviewRound") != state["reviewRound"] or packet.get("baseSha") != state["baseSha"] or packet.get("specDigest") != state["specDigest"]:
             fail("packet-identity-mismatch")
-        if packet.get("inputs", {}).get("taskSpec") != files["taskSpecPath"]:
+        if packet.get("inputs", {}).get("taskSpec") != files["taskSpecPath"] or packet.get("inputs", {}).get("verificationReport") != files["verificationReportPath"] or packet.get("inputs", {}).get("artifactManifest") != files["artifactManifestPath"]:
             fail("packet-input-path-mismatch")
         input_bindings, packet_records = validate_packet_inputs(script, run_root, packet, state, worktree)
         if input_bindings.get("verificationDigest") != frozen_verification_digest or input_bindings.get("artifactManifestDigest") != frozen_artifact_digest:
@@ -767,7 +779,11 @@ def run(arguments: argparse.Namespace) -> dict:
         missing_observation = observe(script, worktree, state["baseSha"])
         if missing_observation.get("diffDigest") != raw_digest(b"") or missing_observation.get("changedFileCount") != 0 or missing_observation.get("hasUntrackedFiles") is not False:
             fail("packet-missing-worktree-not-clean")
-        input_bindings = {"missingPacketWorktreeObservation": missing_observation}
+        input_bindings = {
+            "missingPacketWorktreeObservation": missing_observation,
+            "verificationDigest": current_verification_digest,
+            "artifactManifestDigest": current_artifact_digest,
+        }
         action, reason = "generate-review-packet", "packet-missing-generation-claimed"
 
     identity = {
@@ -779,7 +795,10 @@ def run(arguments: argparse.Namespace) -> dict:
         "capabilityRawDigest": raw_digest(capability_raw), "controlRecordsRawDigest": raw_digest(control_raw),
         "controlRecordDigests": control_digests, "eventsRawDigest": raw_digest(events_raw),
         "eventRecordDigests": event_digests, "frozenVerificationDigest": frozen_verification_digest,
-        "frozenArtifactManifestDigest": frozen_artifact_digest, "packetPresence": "present" if packet_present else "missing",
+        "frozenArtifactManifestDigest": frozen_artifact_digest,
+        "verificationReportRawDigest": raw_digest(frozen_report_raw),
+        "artifactManifestRawDigest": raw_digest(frozen_manifest_raw),
+        "packetPresence": "present" if packet_present else "missing",
         "reviewPacketDigest": packet_digest, "packetInputBindings": input_bindings,
     }
     fingerprint = core_digest_value(script, identity)
