@@ -5,6 +5,7 @@
     "id": "deliverable-check",
     "argv": [
       "python3",
+      "-I",
       "-B",
       "-c",
       "from pathlib import Path; import unicodedata; p=Path('reports/example.md'); s=p.read_text(encoding='utf-8'); n=unicodedata.normalize('NFKC',s.replace('`','')).casefold(); required_all=['required token']; required_any=[['equivalent a','equivalent b']]; forbidden=['forbidden token']; assert len(s.splitlines()) >= 4; assert len(s.encode('utf-8')) <= 4096; assert not [x for x in required_all if x not in n]; assert not [g for g in required_any if not any(x in n for x in g)]; assert not [x for x in forbidden if x in n]"
@@ -14,8 +15,8 @@
     "required": true,
     "baselinePolicy": "none",
     "maxLogBytes": 10000,
-    "argvDigest": "sha256:b73a1853a6cdd0a750aefbeb1778910ff310c6c4d597d72b77237869ed9b6793",
-    "tupleDigest": "sha256:d1e2e9e88e354580983ad58fa4a7a984dca0a80098ac722bde77dd660c04f5eb"
+    "argvDigest": "sha256:cd4d840a4500dafe56cb413a8d43f3a5f9906ed724648fe81a96d1eeb919381a",
+    "tupleDigest": "sha256:393fc13fdf54d61dd643aef5351463e95d8735655118473cc20f9d4c9b84f9a2"
   },
   "contentGate": {
     "commandPath": "reports/example.md",

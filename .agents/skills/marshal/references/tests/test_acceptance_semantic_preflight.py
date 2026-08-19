@@ -171,7 +171,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             root, fixtures = self.copied_fixtures(directory)
             task_path, task, manifest_path, manifest = self.load_pair(fixtures)
             command = task["acceptance"]["commands"][0]
-            command["argv"][3] = command["argv"][3].replace(
+            command["argv"][4] = command["argv"][4].replace(
                 "['reviewdecision binds digest','four-dimensional gate']",
                 "['reviewdecision binds digest']",
             )
@@ -183,7 +183,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             root, fixtures = self.copied_fixtures(directory)
             task_path, task, manifest_path, manifest = self.load_pair(fixtures)
             command = task["acceptance"]["commands"][0]
-            command["argv"][3] = command["argv"][3].replace(
+            command["argv"][4] = command["argv"][4].replace(
                 "['unsafe override']", "['unsafe override','extra forbidden']"
             )
             self.write_pair(task_path, task, manifest_path, manifest, bind_command=True)
@@ -194,7 +194,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             root, fixtures = self.copied_fixtures(directory)
             task_path, task, manifest_path, manifest = self.load_pair(fixtures)
             command = task["acceptance"]["commands"][0]
-            command["argv"][3] = command["argv"][3].replace("s.replace('`','')", "s")
+            command["argv"][4] = command["argv"][4].replace("s.replace('`','')", "s")
             self.write_pair(task_path, task, manifest_path, manifest, bind_command=True)
             self.assert_failure(self.invoke(root), "normalizer-drift")
 
@@ -202,9 +202,33 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root, fixtures = self.copied_fixtures(directory)
             task_path, task, manifest_path, manifest = self.load_pair(fixtures)
-            task["acceptance"]["commands"][0]["argv"][3] += "; print('extra')"
+            task["acceptance"]["commands"][0]["argv"][4] += "; print('extra')"
             self.write_pair(task_path, task, manifest_path, manifest, bind_command=True)
             self.assert_failure(self.invoke(root), "unsupported-content-gate-grammar")
+
+    def test_missing_isolated_mode_is_rejected_with_fixed_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.copied_fixtures(directory)
+            task_path, task, manifest_path, manifest = self.load_pair(fixtures)
+            task["acceptance"]["commands"][0]["argv"].remove("-I")
+            self.write_pair(task_path, task, manifest_path, manifest, bind_command=True)
+            self.assert_failure(self.invoke(root), "python-isolation-required")
+
+    def test_local_module_shadow_canary_is_not_loaded_and_gate_still_passes(
+        self,
+    ) -> None:
+        command = json.loads((FIXTURES / "task-spec-r2.json").read_text())["acceptance"]["commands"][0]
+        fixture = FIXTURES / "report-positive.md"
+        protected_before = VALIDATOR_MODULE.snapshot_protected_roots([REPOSITORY_ROOT])
+        self.assertEqual(
+            VALIDATOR_MODULE.run_command(
+                command,
+                "reports/adr-0035.md",
+                fixture,
+                protected_before,
+            ),
+            0,
+        )
 
     def test_prompt_required_any_literal_is_mandatory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -256,7 +280,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             root, fixtures = self.copied_fixtures(directory)
             task_path, task, manifest_path, manifest = self.load_pair(fixtures)
             command = task["acceptance"]["commands"][0]
-            command["argv"][3] = command["argv"][3].replace(
+            command["argv"][4] = command["argv"][4].replace(
                 "Path('reports/adr-0035.md')", "Path('/tmp/adr-0035.md')"
             )
             self.write_pair(task_path, task, manifest_path, manifest, bind_command=True)
@@ -267,11 +291,90 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             root, fixtures = self.copied_fixtures(directory)
             task_path, task, manifest_path, manifest = self.load_pair(fixtures)
             command = task["acceptance"]["commands"][0]
-            command["argv"][3] = command["argv"][3].replace(
+            command["argv"][4] = command["argv"][4].replace(
                 "Path('reports/adr-0035.md')", "Path('../adr-0035.md')"
             )
             self.write_pair(task_path, task, manifest_path, manifest, bind_command=True)
             self.assert_failure(self.invoke(root), "path-boundary-invalid")
+
+    def test_python_startup_and_import_reserved_paths_are_rejected(self) -> None:
+        cases = (
+            (".", "pathlib.py", "pathlib.py"),
+            (".", "sitecustomize/report.md", "sitecustomize/report.md"),
+            ("unicodedata", "report.md", "unicodedata/report.md"),
+            (".", "usercustomize.py", "usercustomize.py"),
+        )
+        for cwd, command_path, deliverable_path in cases:
+            with self.subTest(path=deliverable_path), tempfile.TemporaryDirectory() as directory:
+                root, fixtures = self.copied_fixtures(directory)
+                task_path, task, manifest_path, manifest = self.load_pair(fixtures)
+                command = task["acceptance"]["commands"][0]
+                command["cwd"] = cwd
+                command["argv"][4] = command["argv"][4].replace(
+                    "Path('reports/adr-0035.md')", f"Path({command_path!r})"
+                )
+                task["deliverables"][0]["pathGlob"] = deliverable_path
+                task["work"]["context"][0] = task["work"]["context"][0].replace(
+                    "commandPath=`reports/adr-0035.md`", f"commandPath=`{command_path}`"
+                ).replace(
+                    "deliverablePath=`reports/adr-0035.md`", f"deliverablePath=`{deliverable_path}`"
+                )
+                manifest["contentGate"]["commandPath"] = command_path
+                manifest["contentGate"]["deliverablePath"] = deliverable_path
+                for mapping in manifest["prompt_literals"]:
+                    if mapping["rule"] == "commandPath":
+                        mapping["literal"] = command_path
+                    elif mapping["rule"] == "deliverablePath":
+                        mapping["literal"] = deliverable_path
+                self.write_pair(task_path, task, manifest_path, manifest, bind_command=True)
+                self.assert_failure(self.invoke(root), "python-import-shadow-path")
+
+    def test_internal_fixture_symlink_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, fixtures = self.copied_fixtures(directory)
+            fixture = fixtures / "report-positive.md"
+            target = fixtures / "report-positive-target.md"
+            fixture.rename(target)
+            fixture.symlink_to(target.name)
+            self.assert_failure(self.invoke(root), "path-symlink-rejected")
+
+    def test_external_fixture_symlink_is_rejected(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            tempfile.TemporaryDirectory() as external_directory,
+        ):
+            root, fixtures = self.copied_fixtures(directory)
+            fixture = fixtures / "report-positive.md"
+            external = Path(external_directory) / "report-positive.md"
+            external.write_bytes(fixture.read_bytes())
+            fixture.unlink()
+            fixture.symlink_to(external)
+            self.assert_failure(self.invoke(root), "path-symlink-rejected")
+
+    def test_fixture_chain_swap_to_symlink_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            parent = root / "fixtures"
+            parent.mkdir()
+            fixture = parent / "report.md"
+            fixture.write_text("valid", encoding="utf-8")
+            real_parent = root / "fixtures-real"
+            original_lstat = Path.lstat
+            swapped = False
+
+            def swapping_lstat(path: Path):
+                nonlocal swapped
+                metadata = original_lstat(path)
+                if path == fixture and not swapped:
+                    parent.rename(real_parent)
+                    parent.symlink_to(real_parent.name, target_is_directory=True)
+                    swapped = True
+                return metadata
+
+            with mock.patch.object(Path, "lstat", autospec=True, side_effect=swapping_lstat):
+                with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+                    VALIDATOR_MODULE.relative_file(root, "fixtures/report.md", "fixture.path")
+            self.assertEqual(raised.exception.reason_code, "path-symlink-rejected")
 
     def test_embedded_protected_root_reference_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -279,7 +382,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             task_path, task, manifest_path, manifest = self.load_pair(fixtures)
             protected_token = str(root.resolve()).casefold()
             command = task["acceptance"]["commands"][0]
-            command["argv"][3] = command["argv"][3].replace(
+            command["argv"][4] = command["argv"][4].replace(
                 "['unsafe override']", repr(["unsafe override", protected_token])
             )
             manifest["contentGate"]["forbidden"].append(protected_token)
@@ -293,7 +396,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             root, fixtures = self.copied_fixtures(directory)
             task_path, task, manifest_path, manifest = self.load_pair(fixtures)
             external = root / "external-write"
-            task["acceptance"]["commands"][0]["argv"][3] += f"; Path({str(external)!r}).write_text('x')"
+            task["acceptance"]["commands"][0]["argv"][4] += f"; Path({str(external)!r}).write_text('x')"
             self.write_pair(task_path, task, manifest_path, manifest, bind_command=True)
             self.assert_failure(self.invoke(root), "purity-side-effect-rejected")
             self.assertFalse(external.exists())

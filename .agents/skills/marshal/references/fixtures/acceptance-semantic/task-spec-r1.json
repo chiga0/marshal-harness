@@ -41,6 +41,7 @@
         "id": "content-check",
         "argv": [
           "python3",
+          "-I",
           "-B",
           "-c",
           "from pathlib import Path; import unicodedata; p=Path('reports/adr-0035.md'); s=p.read_text(encoding='utf-8'); n=unicodedata.normalize('NFKC',s).casefold(); required_all=['reviewdecision binds digest','four-dimensional gate']; required_any=[['authority boundary','trust boundary']]; forbidden=['unsafe override']; assert len(s.splitlines()) >= 4; assert len(s.encode('utf-8')) <= 4096; assert not [x for x in required_all if x not in n]; assert not [g for g in required_any if not any(x in n for x in g)]; assert not [x for x in forbidden if x in n]"

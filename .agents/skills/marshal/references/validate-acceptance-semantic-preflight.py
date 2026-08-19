@@ -51,6 +51,18 @@ BASE_NEGATIVE_REASONS = {
     "missing-required-any",
     "forbidden-present",
 }
+PYTHON_RESERVED_MODULE_FILES = {
+    "pathlib.py",
+    "sitecustomize.py",
+    "unicodedata.py",
+    "usercustomize.py",
+}
+PYTHON_RESERVED_PACKAGE_DIRS = {
+    "pathlib",
+    "sitecustomize",
+    "unicodedata",
+    "usercustomize",
+}
 
 
 class PreflightError(Exception):
@@ -146,12 +158,38 @@ def relative_file(root: Path, value: object, label: str) -> Path:
     raw = clean_relative_path(value, label)
     if raw == ".":
         fail("path-boundary-invalid", f"{label} must name a file")
-    resolved = (root / raw).resolve()
+    lexical = root / raw
+    identities: list[tuple[Path, tuple[int, int, int]]] = []
+    current = root
+    for component in Path(raw).parts:
+        current = current / component
+        try:
+            metadata = current.lstat()
+        except OSError as error:
+            fail("fixture-unreadable", f"cannot lstat {label}: {error}")
+        if stat.S_ISLNK(metadata.st_mode):
+            fail("path-symlink-rejected", f"{label} contains a symbolic link")
+        identities.append((current, (metadata.st_dev, metadata.st_ino, metadata.st_mode)))
+    try:
+        resolved = lexical.resolve(strict=True)
+    except OSError as error:
+        fail("fixture-unreadable", f"cannot resolve {label}: {error}")
     try:
         resolved.relative_to(root)
     except ValueError:
         fail("path-boundary-invalid", f"{label} escapes the declared root")
-    return resolved
+    # Recheck the lexical chain after resolution. This rejects a path swapped
+    # to a link between the first nofollow walk and resolve instead of trusting
+    # the resolved target. Callers still perform the regular-file check.
+    for path, identity in identities:
+        try:
+            metadata = path.lstat()
+        except OSError as error:
+            fail("path-symlink-rejected", f"{label} changed during nofollow validation: {error}")
+        current_identity = (metadata.st_dev, metadata.st_ino, metadata.st_mode)
+        if stat.S_ISLNK(metadata.st_mode) or current_identity != identity:
+            fail("path-symlink-rejected", f"{label} changed during nofollow validation")
+    return lexical
 
 
 def normalize(text: str, normalizer: str) -> str:
@@ -373,13 +411,13 @@ def reject_side_effect_ast(tree: ast.AST) -> None:
 
 
 def extract_content_gate(argv: list[str]) -> dict:
-    if len(argv) != 4 or argv[:3] != ["python3", "-B", "-c"]:
+    if len(argv) != 5 or argv[:4] != ["python3", "-I", "-B", "-c"]:
         fail(
-            "unsupported-content-gate-grammar",
-            "content gate must use canonical python3 -B -c argv without a shell wrapper",
+            "python-isolation-required",
+            "content gate must use canonical python3 -I -B -c argv without a shell wrapper",
         )
     try:
-        tree = ast.parse(argv[3], mode="exec")
+        tree = ast.parse(argv[4], mode="exec")
     except SyntaxError as error:
         fail("unsupported-content-gate-grammar", f"content gate is not valid Python: {error}")
     reject_side_effect_ast(tree)
@@ -578,6 +616,25 @@ def validate_deliverable(task_spec: dict, gate: dict, cwd: str) -> None:
         fail("deliverable-binding-invalid", "single-file content gate requires minimumDeliverableCount=1")
 
 
+def reject_python_import_shadow_paths(gate: dict, cwd: str) -> None:
+    clean_cwd = clean_relative_path(cwd, "command.cwd")
+    command_path = clean_relative_path(gate["commandPath"], "contentGate.commandPath")
+    deliverable_path = clean_relative_path(
+        gate["deliverablePath"], "contentGate.deliverablePath"
+    )
+    combined = Path(command_path) if clean_cwd == "." else Path(clean_cwd) / command_path
+    for label, candidate in (
+        ("command.cwd", Path(clean_cwd)),
+        ("contentGate.commandPath", Path(command_path)),
+        ("contentGate.deliverablePath", Path(deliverable_path)),
+        ("cwd-resolved command path", combined),
+    ):
+        for component in candidate.parts:
+            folded = component.casefold()
+            if folded in PYTHON_RESERVED_MODULE_FILES or folded in PYTHON_RESERVED_PACKAGE_DIRS:
+                fail("python-import-shadow-path", f"{label} contains a Python startup/import reserved name")
+
+
 def reject_protected_references(argv: list[str], protected_roots: list[Path]) -> None:
     for root in protected_roots:
         needle = str(root).casefold()
@@ -636,6 +693,13 @@ def run_command(
         }
         (fixture_root / ".home").mkdir()
         (fixture_root / ".tmp").mkdir()
+        # A side-effect-free canary proves that isolated mode did not import a
+        # local startup hook or shadow the two allowlisted standard modules.
+        # Any import executes SystemExit and makes the otherwise-valid positive
+        # gate fail; the canary itself never writes outside the temporary tree.
+        canary = "raise SystemExit('marshal-local-module-shadow-canary-executed')\n"
+        for name in sorted(PYTHON_RESERVED_MODULE_FILES):
+            (execution_cwd / name).write_text(canary, encoding="utf-8")
         before_fixture = tree_digest(fixture_root)
         argv = list(command["argv"])
         executable = shutil.which(argv[0], path=environment["PATH"])
@@ -731,6 +795,7 @@ def validate(
         if extracted[field] != manifest_gate[field]:
             fail("semantic-manifest-mismatch", f"content command and manifest differ at {field}")
     validate_deliverable(task_spec, manifest_gate, selected["cwd"])
+    reject_python_import_shadow_paths(manifest_gate, selected["cwd"])
     validate_prompt_literals(manifest, task_spec)
 
     protected_roots = [root]
