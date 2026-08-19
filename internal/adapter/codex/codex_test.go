@@ -1348,7 +1348,7 @@ func TestRunResultFailClosed(t *testing.T) {
 			} else if strings.Contains(test.name, "mismatch") {
 				assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
 			} else {
-				assertCodexFailure(t, err, port.FailureKindResultMissing, port.RetryDispositionRetryable)
+				assertCodexFailure(t, err, port.FailureKindResultMissing, port.RetryDispositionDoNotRetry)
 			}
 		})
 	}

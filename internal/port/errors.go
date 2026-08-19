@@ -93,14 +93,15 @@ var AdapterIDs = []AdapterID{
 }
 
 // dispositionForKey 冻结唯一合法配对：quota=blocked；
-// rate/DNS/connection/result-missing=retryable；
-// protocol/provider-terminal=do-not-retry。
+// rate/DNS/connection=retryable；protocol/result-missing/provider-terminal=
+// do-not-retry。WorkerResult 缺失是协议/transport 的结构性失败，不能用
+// 另一个 Worker Attempt 猜测性重跑。
 var dispositionForKey = map[FailureKind]RetryDisposition{
 	FailureKindQuotaExhausted:    RetryDispositionBlocked,
 	FailureKindRateLimited:       RetryDispositionRetryable,
 	FailureKindDNSFailure:        RetryDispositionRetryable,
 	FailureKindConnectionFailure: RetryDispositionRetryable,
-	FailureKindResultMissing:     RetryDispositionRetryable,
+	FailureKindResultMissing:     RetryDispositionDoNotRetry,
 	FailureKindProtocolInvalid:   RetryDispositionDoNotRetry,
 	FailureKindProviderTerminal:  RetryDispositionDoNotRetry,
 }
@@ -219,4 +220,82 @@ func AsAdapterFailure(err error) (AdapterFailure, bool) {
 		return failure, true
 	}
 	return AdapterFailure{}, false
+}
+
+// NormalizeAdapterFailure extracts exactly one concrete AdapterFailure from
+// an error graph and rebuilds it through the closed constructor. A single
+// carrier may be wrapped arbitrarily; joined graphs containing zero or more
+// than one concrete carrier are distinguished so Core can reject ambiguous
+// authority instead of trusting errors.As traversal order. Custom As-only
+// projections are rejected because they have no concrete replayable carrier.
+func NormalizeAdapterFailure(err error, now time.Time) (AdapterFailure, bool, error) {
+	carriers, hasProjection, walkErr := concreteAdapterFailures(err)
+	if walkErr != nil {
+		return AdapterFailure{}, true, walkErr
+	}
+	if len(carriers) == 0 && !hasProjection {
+		return AdapterFailure{}, false, nil
+	}
+	if now.IsZero() {
+		return AdapterFailure{}, true, errors.New("adapter failure: normalization reference time is required")
+	}
+	if hasProjection || len(carriers) != 1 {
+		return AdapterFailure{}, true, errors.New("adapter failure: ambiguous typed carrier graph")
+	}
+	failure := carriers[0]
+	var retryAfter *time.Duration
+	if failure.RetryAfter != 0 {
+		retryAfter = &failure.RetryAfter
+	}
+	var notBefore *time.Time
+	if !failure.NotBefore.IsZero() {
+		value := failure.NotBefore.UTC()
+		notBefore = &value
+	}
+	normalized, normalizeErr := NewAdapterFailure(failure.Adapter, failure.Kind, failure.Disposition, retryAfter, notBefore, now.UTC())
+	if normalizeErr != nil {
+		return AdapterFailure{}, true, normalizeErr
+	}
+	return normalized, true, nil
+}
+
+const maxAdapterFailureGraphNodes = 64
+
+func concreteAdapterFailures(root error) ([]AdapterFailure, bool, error) {
+	pending := []error{root}
+	carriers := make([]AdapterFailure, 0, 1)
+	hasProjection := false
+	visited := 0
+	for len(pending) > 0 {
+		visited++
+		if visited > maxAdapterFailureGraphNodes || len(pending) > maxAdapterFailureGraphNodes {
+			return nil, hasProjection, errors.New("adapter failure: typed carrier graph exceeds the bounded node limit")
+		}
+		current := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if current == nil {
+			continue
+		}
+		switch typed := current.(type) {
+		case AdapterFailure:
+			carriers = append(carriers, typed)
+			continue
+		case *AdapterFailure:
+			if typed == nil {
+				return nil, hasProjection, errors.New("adapter failure: nil typed carrier")
+			}
+			carriers = append(carriers, *typed)
+			continue
+		}
+		if _, ok := current.(interface{ As(any) bool }); ok {
+			hasProjection = true
+		}
+		switch wrapped := current.(type) {
+		case interface{ Unwrap() []error }:
+			pending = append(pending, wrapped.Unwrap()...)
+		case interface{ Unwrap() error }:
+			pending = append(pending, wrapped.Unwrap())
+		}
+	}
+	return carriers, hasProjection, nil
 }
