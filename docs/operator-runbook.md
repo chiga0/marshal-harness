@@ -387,6 +387,8 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 
 为减少 Qoder/Codex/Qwen 在多个 Run 中重复消耗 token，Lead 可复用最近一次 Mac live preflight，但必须同时匹配当前 `sourceHead`、平台/架构、held executable digest、裸 `--version`、协议/Schema、权限模式和 WorkerResult transport。任一项变化（包括结果路径、inode/digest 或 adapter 配置变化）都使摘要失效，必须重新做一次 live preflight；摘要只能证明预检，不替代本 Run 的独立审查和 acceptance gates。
 
+`marshal doctor` 返回 `configured=false` 时是硬 admission 阻断；discovery 候选或 PATH 同名程序不构成可派发证据。必须先注入精确绝对路径并重新核对 held digest、版本和真实 `--help`，再把 Adapter 放入 Worker 顺序。
+
 `result-missing`、path/protocol/identity/version drift、旧 artifact/base、`worktree evidence changed after verification` 属于结构性失败。同一类别只裁决一次：记录 failure digest，停止原 Run 的盲目重试，修复 adapter/契约后从当前 local main 创建 fresh-base successor。只有预检摘要仍匹配且确认为 provider timeout、DNS、rate-limit 或短暂 transport 背压时，才允许在原 `taskId` 上进行有限 operational retry，并记录 attempt、预算和 backoff。
 
 `REVIEW_PENDING` 的 packet 缺失、旧 manifest、旧 base 或证据变更，执行一次 intervention finding 并准备 successor；不要跨 heartbeat 重复调用同一 `task review`。任何复用或 intervention 都不得手写 `.marshal`、伪造 digest 或绕过 Core 生命周期。
