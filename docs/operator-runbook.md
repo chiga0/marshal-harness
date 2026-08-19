@@ -34,12 +34,15 @@ marshal task approve --run RUN_ID --gate plan --actor USER_ID
 marshal task run --run RUN_ID
 marshal task verify --run RUN_ID
 marshal task review --run RUN_ID --decision REVIEW.json
+# review 后先读取状态：ACCEPTED/NO_CHANGE/REJECTED/BLOCKED 到此停止
+# 只有 PUBLISHING 才执行 publish approval 与 publish
 marshal task approve --run RUN_ID --gate publish --actor USER_ID
 marshal task publish --run RUN_ID
+# publish 后重新读取状态：ACCEPTED 到此停止；仅 CI_PENDING 调用 accept
 marshal task accept --run RUN_ID
 ```
 
-每一步都应先检查退出码；自动化调用建议同时使用 `--json`。`review` 要审查真实 diff 与独立验证证据，不能只复述 Worker 的总结。`publish` 只创建或更新 Draft PR；Marshal不自动 merge。
+每一步都应先检查退出码与返回状态；自动化调用建议同时使用 `--json`。`review` 要审查真实 diff 与独立验证证据，不能只复述 Worker 的总结。ReviewDecision 导入后，`ACCEPTED`、`NO_CHANGE`、`REJECTED` 与 `BLOCKED` 都是终态，应读取 Outcome 并停止；只有 `PUBLISHING` 进入发布流程。publish 后若已直接 `ACCEPTED` 同样停止，`task accept` 只处理精确处于 `CI_PENDING` 的 Run。`publish` 只创建或更新 Draft PR；Marshal不自动 merge。
 
 ## 3. 观察与介入决策
 

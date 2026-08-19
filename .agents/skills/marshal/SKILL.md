@@ -40,7 +40,11 @@ description: 使用 Marshal Harness 编排 Coding Agent、执行证据门禁审�
    marshal task review --run RUN_ID --decision REVIEW_DECISION.json --json
    ```
 
-7. 终态读取 `outcome.json` 与中文 `outcome.md`；非终态继续由 Core 驱动下一轮。
+7. 导入后立即读取返回的 `targetState` 与当前 `task status`，完全按状态分支：
+   - `ACCEPTED`、`NO_CHANGE`、`REJECTED` 或 `BLOCKED`：读取 Outcome 后停止，**不得**再调用 publish 或 `task accept`。
+   - `PUBLISHING`：完成 publish approval 与 `task publish` 后重新读取状态；若已进入 `ACCEPTED` 就停止，只有精确为 `CI_PENDING` 才继续 `task accept`。
+   - `CI_PENDING`：调用 `marshal task accept --run RUN_ID` 检查冻结 required checks。
+   - 其他非终态继续由 Core 驱动下一轮；绝不根据 verdict 或 `publication.required` 猜测下一条命令。
 
 ## 审查输出
 
@@ -50,6 +54,7 @@ Decision 必须绑定 `taskId`、`runId`、`reviewRound`、`specDigest`、`revie
 
 - Worker Adapter 通过 `MARSHAL_OPENCODE_PATH`、`MARSHAL_QWEN_PATH`、`MARSHAL_PI_PATH` 的绝对路径配置；发布需要绝对 `MARSHAL_GH_PATH` 与独立 `MARSHAL_GH_CONFIG_DIR`。
 - `task run`、`task verify`、`task publish` 是长耗时命令，使用 `nohup ... > log 2>&1 < /dev/null & disown` 脱离运行；被意外中断后先用 `marshal doctor --run RUN_ID --json` 对账，再幂等重跑同一命令。
+- `task accept` 是 `CI_PENDING` 的远端 checks 验收命令，不是 ReviewDecision `verdict=accept` 的通用后续步骤。若 `task review --decision` 已返回 `targetState=ACCEPTED`，再次调用 `task accept` 只会产生确定性的状态错误，必须停止并读取 Outcome。
 - **事件驱动监控**：用 `tail -f .marshal/runs/RUN_ID/events.jsonl`（或 ≤ 2 分钟短周期）监听 `worker.completed` 并立即触发 verify；禁止 8–15 分钟粒度的长 sleep 轮询（实测多 Run 累计空转 30–50 分钟）。
 - **心跳 watchdog 与行动队列（后台必备）**：后台 `task run` 必须同时起 `nohup scripts/marshal-watch.sh 600 &`（marshal-harness runbook §11）作轮间兜底；Lead 每轮先运行 `MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json` 消费行动队列（items 按 priority 升序，字段 runId/state/priority/action/ageSeconds/processOwnership），再决定本轮动作。`RUNNING` 以**进程存活**判 active/DEAD?（opencode 长 attempt 无事件是正常的，禁止用事件年龄判死）；`processOwnership=not-found`（action=doctor-dead）必须先 `marshal doctor --run RUN_ID --json` 对账，再幂等重跑。
 - **每轮有限动作（反空转）**：每个 heartbeat 必须处理行动队列中最高优先级项，并至少完成一个安全有限动作——审查并导入 ReviewDecision、导入 rework、恢复 driver、publish、检查 CI、准备互斥 successor；仅当所有 Run 都有可证明的活进程（`owned-active`）或存在明确外部阻塞时才允许本轮不动作。连续多个 heartbeat 只报告状态而不推进交付属于空转事故。
