@@ -95,10 +95,11 @@ var (
 // 同版本内容漂移与替换。pinned 为空时 Run 首次使用即钉住（fail closed
 // 的版本闭集校验在此之前完成），因此漂移比较永远有确定基准。
 type Adapter struct {
-	executable string
-	validator  *contract.Validator
-	now        func() time.Time
-	authority  *AuthorityEvidenceStore
+	executable       string
+	validator        *contract.Validator
+	now              func() time.Time
+	authority        *AuthorityEvidenceStore
+	ordinaryUserMode bool
 
 	mu          sync.Mutex
 	pinned      *executableIdentity
@@ -128,6 +129,18 @@ var _ port.WorkerAdapter = (*Adapter)(nil)
 // 钉住可执行普通文件。Marshal 从不按相似名字或隐式回退解析 provider 可执行文件。
 func New(executable string, validator *contract.Validator) (*Adapter, error) {
 	return NewWithConformanceAuthority(executable, validator, nil)
+}
+
+// NewOrdinaryUser enables the explicit Mac ordinary-user mode. The adapter
+// still pins path/version/digest and validates WorkerResult, but it does not
+// claim signed authority, APAP credentials, or a malicious-code sandbox.
+func NewOrdinaryUser(executable string, validator *contract.Validator) (*Adapter, error) {
+	adapter, err := New(executable, validator)
+	if err != nil {
+		return nil, err
+	}
+	adapter.ordinaryUserMode = true
+	return adapter, nil
 }
 
 // NewWithConformanceAuthority 绑定只读、签名验证的 conformance authority。
@@ -188,7 +201,7 @@ func (a *Adapter) ID() string { return adapterID }
 // 返回 typed/stable error。能力声明保持 truthful：nativeBudgets 不虚报
 // Codex 原生保障，普通宿主子进程不是恶意代码 sandbox。
 func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
-	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest {
+	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest && !a.ordinaryUserMode {
 		return a.unsupportedPlatformProbe()
 	}
 	snapshot, err := a.inspect(ctx)
@@ -198,6 +211,28 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	defer snapshot.close()
 	identity := snapshot.identity
 	a.pinIdentity(identity)
+	if a.ordinaryUserMode {
+		failure := ""
+		if !isSupportedBinary(identity.version) {
+			failure = "Codex CLI version is outside the ordinary-user compatibility line"
+		}
+		status := "supported"
+		probeErrors := []string{}
+		if failure != "" {
+			status = "unsupported"
+			probeErrors = []string{failure}
+		}
+		capability := map[string]any{
+			"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
+			"adapterId": adapterID, "adapterVersion": adapterVersion,
+			"executable": identity.path, "executableDigest": identity.digest,
+			"binaryVersion": identity.version, "probeStatus": status,
+			"capabilities": a.capabilities(), "probeErrors": probeErrors,
+			"probedAt": a.now().UTC().Format(time.RFC3339Nano),
+		}
+		capability["authorityMode"] = "ordinary-user"
+		return a.capabilityRecord(capability)
+	}
 	if a.hasAtomicAuthoritySource() {
 		authority, failure := a.consumeFreshAuthority(ctx, snapshot, "probe")
 		if failure != nil {
@@ -206,7 +241,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 				"adapterId": adapterID, "adapterVersion": adapterVersion,
 				"executable": identity.path, "executableDigest": identity.digest,
 				"binaryVersion": identity.version, "probeStatus": "unsupported",
-				"capabilities": expectedCapabilities(), "probeErrors": []string{failure.SafeMessage}, "adapterFailure": failure,
+				"capabilities": a.capabilities(), "probeErrors": []string{failure.SafeMessage}, "adapterFailure": failure,
 				"probedAt": a.now().UTC().Format(time.RFC3339Nano),
 			}
 			return a.capabilityRecord(capability)
@@ -216,7 +251,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 			"adapterId": adapterID, "adapterVersion": adapterVersion,
 			"executable": identity.path, "executableDigest": identity.digest,
 			"binaryVersion": identity.version, "probeStatus": "supported",
-			"capabilities": expectedCapabilities(), "probeErrors": []string{}, "codexAuthority": authority.metadata,
+			"capabilities": a.capabilities(), "probeErrors": []string{}, "codexAuthority": authority.metadata,
 			"conformanceEvidenceDigest": authority.metadata.EvidenceDigest, "conformanceTrustRootKeyId": authority.metadata.TrustRootKeyID,
 			"conformanceProbeProfileDigest": authority.metadata.ProfileDigest, "conformanceValidUntil": authority.metadata.ValidUntil,
 			"conformanceHostFingerprint": authority.metadata.HostIdentityDigest, "conformanceAuthorityGeneration": authority.metadata.AuthorityGeneration,
@@ -236,7 +271,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
 		"executable": identity.path, "executableDigest": identity.digest,
 		"binaryVersion": identity.version, "probeStatus": "unsupported",
-		"capabilities": expectedCapabilities(),
+		"capabilities": a.capabilities(),
 		"probeErrors":  []string{failure.SafeMessage}, "adapterFailure": failure, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
 	return a.capabilityRecord(capability)
@@ -292,6 +327,16 @@ func expectedCapabilities() map[string]any {
 	}
 }
 
+func (a *Adapter) capabilities() map[string]any {
+	capabilities := expectedCapabilities()
+	if a.ordinaryUserMode {
+		notes := capabilities["notes"].([]string)
+		notes = append(notes, "当前为 ordinary-user：无签名 authority、APAP 凭据或恶意代码沙箱保证。")
+		capabilities["notes"] = notes
+	}
+	return capabilities
+}
+
 func expectedCapabilitiesDigest() string {
 	data, _ := json.Marshal(expectedCapabilities())
 	return digestBytes(data)
@@ -307,7 +352,7 @@ type boundConformance struct {
 // inspect 每次重新钉住可执行文件身份：realpath、SHA-256 digest 与
 // 受限 probe 环境下执行 `--version` 解析出的版本，防止 Probe 后替换。
 func (a *Adapter) inspect(ctx context.Context) (*executableSnapshot, error) {
-	return snapshotExecutable(ctx, a.executable, a.callTestHook, a.unsafePathExecutionForTest)
+	return snapshotExecutable(ctx, a.executable, a.callTestHook, a.unsafePathExecutionForTest || a.ordinaryUserMode)
 }
 
 func (a *Adapter) callTestHook(stage string) {
@@ -331,10 +376,10 @@ func (a *Adapter) pinIdentity(identity executableIdentity) {
 // BindConformance 只接受 authority store 中内容寻址、独立签名的 evidence。
 // 调用者不能通过传入自造结构或 CapabilitySnapshot 获得执行授权。
 func (a *Adapter) BindConformance(ctx context.Context, evidenceDigest string) error {
-	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest {
+	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest && !a.ordinaryUserMode {
 		return port.Permanent(fmt.Errorf("%w: %s", ErrPlatformUnsupported, secureFDPublicReason))
 	}
-	if !a.unsafePathExecutionForTest && !a.legacyAuthorityForTest {
+	if !a.unsafePathExecutionForTest && !a.legacyAuthorityForTest && !a.ordinaryUserMode {
 		return port.Permanent(ErrConformancePending)
 	}
 	if a.authority == nil {
@@ -379,7 +424,7 @@ func (a *Adapter) verifyPinnedIdentity(identity executableIdentity) error {
 	if a.pinned.path != identity.path || a.pinned.digest != identity.digest {
 		return fmt.Errorf("%w: executable content changed since the identity was pinned", ErrIdentityDrift)
 	}
-	if (a.unsafePathExecutionForTest || a.legacyAuthorityForTest) && (a.conformance == nil || a.conformance.identity != identity || !a.now().UTC().Before(a.conformance.validUntil)) {
+	if !a.ordinaryUserMode && (a.unsafePathExecutionForTest || a.legacyAuthorityForTest) && (a.conformance == nil || a.conformance.identity != identity || !a.now().UTC().Before(a.conformance.validUntil)) {
 		return port.Permanent(ErrConformancePending)
 	}
 	return nil
@@ -496,7 +541,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if record.Kind != domain.KindWorkerRequest {
 		return domain.Record{}, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
 	}
-	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest {
+	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest && !a.ordinaryUserMode {
 		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrPlatformUnsupported, secureFDPublicReason, a.now())
 	}
 	request, err := decodeRequest(record.Data, a.validator)
@@ -588,7 +633,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// the launch boundary. The worktree descriptor remains pinned across Start;
 	// the path must name that same inode both before and after the child's chdir.
 	a.callTestHook("before-command-start")
-	if !a.unsafePathExecutionForTest && !a.legacyAuthorityForTest {
+	if !a.unsafePathExecutionForTest && !a.legacyAuthorityForTest && !a.ordinaryUserMode {
 		if _, failure := a.consumeFreshAuthority(ctx, snapshot, "run"); failure != nil {
 			return domain.Record{}, failure
 		}
@@ -619,7 +664,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	launcher := ""
 	target := ""
 	extraFiles := []*os.File{evidence.schema, evidence.result, worktree.file}
-	if a.unsafePathExecutionForTest {
+	if a.ordinaryUserMode || a.unsafePathExecutionForTest {
 		launcher, err = os.Executable()
 		if err != nil {
 			return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrProcessFailed, "test launcher is unavailable", a.now())

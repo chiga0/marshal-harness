@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -90,6 +91,33 @@ func TestProbeIsFailClosedUntilConformance(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOrdinaryUserProbeReportsSupportedWithoutAuthorityEvidence(t *testing.T) {
+	adapter, err := NewOrdinaryUser(fakeExecutable(t, supportedBinary, "exit 0"), newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		ProbeStatus  string   `json:"probeStatus"`
+		ProbeErrors  []string `json:"probeErrors"`
+		Capabilities struct {
+			Notes []string `json:"notes"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ProbeStatus != "supported" || len(snapshot.ProbeErrors) != 0 {
+		t.Fatalf("ordinary-user snapshot = %s", record.Data)
+	}
+	if !slices.Contains(snapshot.Capabilities.Notes, "当前为 ordinary-user：无签名 authority、APAP 凭据或恶意代码沙箱保证。") {
+		t.Fatalf("ordinary-user capability note missing: %s", record.Data)
 	}
 }
 

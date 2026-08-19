@@ -132,6 +132,8 @@ go run ./cmd/marshal contract schema --all --out /tmp/marshal-schemas
 | `MARSHAL_OPENCODE_PATH` | OpenCode Worker 可执行文件绝对路径 | Adapter 注册 |
 | `MARSHAL_QWEN_PATH` | Qwen Code Worker 可执行文件绝对路径 | Adapter 注册 |
 | `MARSHAL_QODER_PATH` | Qoder CLI Worker 可执行文件绝对路径；仅设置此变量不会通过 live conformance 门禁 | Adapter 注册候选 |
+| `MARSHAL_QODER_MODE` | 仅接受显式值 `ordinary-user`；在 Mac 上按普通用户子进程运行 Qoder，不提供 signed authority | 显式降级能力 |
+| `MARSHAL_CODEX_MODE` | 仅接受显式值 `ordinary-user`；在 Mac 上按普通用户子进程运行 Codex，不提供 signed authority | 显式降级能力 |
 | `MARSHAL_PI_PATH` | Pi Worker 可执行文件绝对路径 | Adapter 注册 |
 | `MARSHAL_GH_PATH` | Publisher 的 `gh` 可执行文件绝对路径 | 发布凭据边界 |
 | `MARSHAL_GH_CONFIG_DIR` | Publisher 独立凭据目录（不复用 ambient 配置） | 发布凭据边界 |
@@ -186,6 +188,18 @@ marshal doctor --json
 ```
 
 确认对应 Adapter 的 `workers` 条目 `outcome=registered`，并按该 Adapter 的独立门禁检查 `compatibility`；此时该 Adapter 不再出现在 `discovery` 段。对已有 production-supported Adapter，`compatibility=unsupported` 表示版本或能力门禁未通过，doctor 会如实报告但不会因此放行。Qoder 的特殊门禁如下，发现或注册候选都不等于 `supported`。
+
+Mac 普通用户模式（用户明确授权）可在不具备 root/signing/APAP 的主机上使用已固定的 Qoder/Codex：
+
+```bash
+export MARSHAL_QODER_PATH=/Users/me/.qoder/bin/qodercli/qodercli-1.1.23
+export MARSHAL_QODER_MODE=ordinary-user
+export MARSHAL_CODEX_PATH=/opt/homebrew/Caskroom/codex/0.145.0/codex-aarch64-apple-darwin
+export MARSHAL_CODEX_MODE=ordinary-user
+marshal doctor --json
+```
+
+doctor 的 `workers` 会标记 `authorityMode=ordinary-user`，并以 `compatibility=supported` 表示版本/协议路径可用；这不表示 signed authority、APAP 凭据、恶意代码 sandbox 或 credentialed conformance。未设置 mode 时仍走严格 authority 路径并保持 fail closed。普通用户模式不得与对应 `*_AUTHORITY_CONFIG` 同时设置。
 
 Qoder 额外设计了独立 Conformance authority 门禁。只配置
 `MARSHAL_QODER_PATH` 会完成注册，但 `compatibility` 必须保持

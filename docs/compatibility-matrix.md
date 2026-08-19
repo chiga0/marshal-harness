@@ -9,7 +9,7 @@
 - `marshal doctor` Live Probe：冻结 executable realpath、SHA-256 与精确版本；未知版本默认拒绝，只有显式 Experimental Policy 才能运行并在 Outcome 标记。
 - 受监督 cmux Pilot（2026-08-05）：真实 Qwen TUI 通过 `terminal.StartPrepared`、密封 `LaunchEnvelope` 与 digest-bound 映射启动，完成屏幕观察、任务产物精确校验、Pause/Resume、InterruptStep 与 Terminate。
 - Pi 0.84.1 精确兼容升级（2026-08-11，从锁定 main 独立实现）：Adapter `0.2.0` 保持 session protocol v3 与 raw JSONL 审计语义；上游真实最小 wire（`assistantMessageEvent` 内的 `text_delta`/`contentIndex`/`delta`）由具名协议 fixture 锁定并经独立 Verification。该证据是协议级 Verification，不是真实 Pi 0.84.1 captured Live E2E。
-- Qoder CLI 候选机制：代码只允许裸 semver `>=1.1.23 <1.2.0` 进入独立 conformance 判定，但每个实际二进制仍须以自身 realpath、SHA256 digest、精确版本和当前 host 取得独立 signer 签发的真实 credentialed live evidence。hermetic fixture、版本范围命中和建议式 discovery 都不是 production 准入证据。
+- Qoder CLI 候选机制：代码只允许裸 semver `>=1.1.23 <1.2.0` 进入独立 conformance 判定，但每个实际二进制仍须以自身 realpath、SHA256 digest、精确版本和当前 host 取得独立 signer 签发的真实 credentialed live evidence。hermetic fixture、版本范围命中和建议式 discovery 都不是严格 authority 准入证据。Mac 可显式设置 `MARSHAL_QODER_MODE=ordinary-user`（Codex 对应 `MARSHAL_CODEX_MODE=ordinary-user`）按普通用户模式运行；该模式不提供 signed authority、APAP 或恶意代码 sandbox，doctor 必须标记 `authorityMode=ordinary-user`。
 
 ## 版本锁定
 
@@ -17,9 +17,9 @@
 | --- | --- | --- | --- | --- |
 | `opencode` | `0.1.0` | OpenCode `1.18.13` | `MARSHAL_OPENCODE_PATH` | `supported` |
 | `qwen` | `0.1.0` | Qwen Code `0.21.5` | `MARSHAL_QWEN_PATH` | `supported` |
-| `qoder` | `0.1.0` | Qoder CLI `>=1.1.23 <1.2.0`（逐 binary evidence） | `MARSHAL_QODER_PATH` | `pending live evidence`；当前 production 不支持 |
+| `qoder` | `0.1.0` | Qoder CLI `>=1.1.23 <1.2.0`（逐 binary evidence） | `MARSHAL_QODER_PATH` | 严格模式 `pending live evidence`；显式 Mac `ordinary-user` 可用但不提供 hardened authority |
 | `pi` | `0.2.0` | Pi `0.84.1` | `MARSHAL_PI_PATH` | 代码锁定 `supported`；Live Probe 未执行 |
-| `codex` | `0.1.0` | Codex CLI `0.145.x` | 待正式注册 | Linux 仅在 `/proc/self/fd` 的 authenticated fd-exec 可用时具备进入 conformance 的代码路径；Darwin 明确 `unsupported` |
+| `codex` | `0.1.0` | Codex CLI `0.145.x` | `MARSHAL_CODEX_PATH` | 严格模式待 authenticated fd-exec；显式 Mac `ordinary-user` 可用但不提供 hardened authority |
 
 已注册的三个 Adapter 都只接受显式绝对 executable 路径；注册不搜索 `PATH`，不回退同名或近似命令。Probe 后二进制身份变化会以 `binary-replaced` fail-closed。OpenCode、Qwen Code 与 Pi 继续使用精确版本锁；Qoder 是唯一采用兼容 semver 范围的候选 Adapter，范围固定为 `>=1.1.23 <1.2.0`，但命中范围不会继承其他 patch 的证据。Qoder 的每个实际二进制必须以自身 realpath、SHA256 digest、精确版本和当前 host 重新完成真实 credentialed live probe 并取得新 evidence；当前尚无 production live evidence，不能报告 `supported`。所有 Adapter 都拒绝前缀匹配与隐式 fallback，并在门禁不满足时于 Worker 进程启动前 fail closed。
 

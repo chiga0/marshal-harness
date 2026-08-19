@@ -66,6 +66,7 @@ type Adapter struct {
 	executable          string
 	validator           *contract.Validator
 	now                 func() time.Time
+	ordinaryUserMode    bool
 	authorityConfigPath string
 	authorityFenceRoot  string
 	beforeLaunchGuard   func()
@@ -102,6 +103,18 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 	return &Adapter{executable: realPath, validator: validator, now: time.Now}, nil
 }
 
+// NewOrdinaryUser enables the explicit Mac ordinary-user mode. It keeps the
+// same path, version and identity checks as New, but does not claim signed
+// authority or APAP credentials; callers must opt in via the Worker registry.
+func NewOrdinaryUser(executable string, validator *contract.Validator) (*Adapter, error) {
+	adapter, err := New(executable, validator)
+	if err != nil {
+		return nil, err
+	}
+	adapter.ordinaryUserMode = true
+	return adapter, nil
+}
+
 func (a *Adapter) ID() string { return adapterID }
 
 // Probe pins the executable identity and reports a CapabilitySnapshot. It is
@@ -120,7 +133,10 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Qoder %s，实际为 %s", supportedBinaryRange, identity.version))
 	}
 	status := "unsupported"
-	if !a.isConformant(identity) {
+	if a.ordinaryUserMode && isSupportedBinaryVersion(identity.version) {
+		status = "supported"
+		probeErrors = []string{}
+	} else if !a.isConformant(identity) {
 		probeErrors = append(probeErrors, conformancePendingReason)
 	} else if isSupportedBinaryVersion(identity.version) {
 		status = "supported"
@@ -130,10 +146,13 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
 		"executable": identity.path, "executableDigest": identity.digest,
 		"binaryVersion": identity.version, "probeStatus": status,
-		"capabilities": expectedCapabilities(),
+		"capabilities": a.capabilities(),
 		"probeErrors":  probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
-	if status == "supported" {
+	if a.ordinaryUserMode {
+		snapshot["authorityMode"] = "ordinary-user"
+	}
+	if status == "supported" && !a.ordinaryUserMode {
 		a.mu.Lock()
 		bound := *a.conformance
 		a.mu.Unlock()
@@ -152,6 +171,16 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		return domain.Record{}, fmt.Errorf("validate CapabilitySnapshot: %w", err)
 	}
 	return domain.Record{Kind: domain.KindCapabilitySnapshot, Data: data}, nil
+}
+
+func (a *Adapter) capabilities() map[string]any {
+	capabilities := expectedCapabilities()
+	if a.ordinaryUserMode {
+		notes := capabilities["notes"].([]string)
+		notes = append(notes, "当前为 ordinary-user：无签名 authority、APAP 凭据或恶意代码沙箱保证。")
+		capabilities["notes"] = notes
+	}
+	return capabilities
 }
 
 func expectedCapabilities() map[string]any {
@@ -272,7 +301,7 @@ func (a *Adapter) isConformant(identity executableIdentity) bool {
 func (a *Adapter) hasConformanceCandidate() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.conformance != nil || a.authorityConfigPath != ""
+	return a.ordinaryUserMode || a.conformance != nil || a.authorityConfigPath != ""
 }
 
 func (a *Adapter) refreshConfiguredConformance(ctx context.Context) error {
@@ -394,6 +423,18 @@ func (a *Adapter) verifyExecutionIdentity(identity executableIdentity) error {
 		return fmt.Errorf("%w: executable changed after capability probe", ErrIdentityDrift)
 	}
 	a.mu.Unlock()
+	if a.ordinaryUserMode {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if a.pinned == nil {
+			pinned := identity
+			a.pinned = &pinned
+		}
+		if *a.pinned != identity {
+			return fmt.Errorf("%w: executable changed after capability probe", ErrIdentityDrift)
+		}
+		return nil
+	}
 	if err := a.revalidateConformance(context.Background(), identity); err != nil {
 		return err
 	}

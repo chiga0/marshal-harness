@@ -43,6 +43,9 @@ type WorkerConfiguration struct {
 	// AuthorityDeploymentStatus is diagnostic only; it never changes registry
 	// admission or the adapter's fail-closed probe result.
 	AuthorityDeploymentStatus string `json:"authorityDeploymentStatus,omitempty"`
+	// AuthorityMode is explicit capability metadata. ordinary-user is an
+	// opt-in Darwin mode and never implies authenticated provider authority.
+	AuthorityMode string `json:"authorityMode,omitempty"`
 }
 
 // workerBinding freezes the only adapter-to-environment mapping Marshal
@@ -56,6 +59,7 @@ type workerBinding struct {
 	binaryNames         []string
 	identify            func(executable string) (version, digest string, err error)
 	requiresAuthority   bool
+	ordinaryModeEnv     string
 	construct           func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error)
 }
 
@@ -84,8 +88,15 @@ var workerBindings = []workerBinding{
 		binaryNames:         []string{"qodercli"},
 		identify:            qoder.Identify,
 		requiresAuthority:   true,
+		ordinaryModeEnv:     "MARSHAL_QODER_MODE",
 		construct: func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error) {
 			config := getenv("MARSHAL_QODER_CONFORMANCE_CONFIG")
+			if getenv("MARSHAL_QODER_MODE") == "ordinary-user" {
+				if config != "" {
+					return nil, port.Permanentf("qoder ordinary-user mode cannot combine authority config")
+				}
+				return qoder.NewOrdinaryUser(executable, validator)
+			}
 			if config == "" {
 				// Registration is not support admission. Without an authority
 				// config Probe remains unsupported.
@@ -100,8 +111,15 @@ var workerBindings = []workerBinding{
 		binaryNames:         []string{"codex"},
 		identify:            codex.Identify,
 		requiresAuthority:   true,
+		ordinaryModeEnv:     "MARSHAL_CODEX_MODE",
 		construct: func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error) {
 			config := getenv("MARSHAL_CODEX_AUTHORITY_CONFIG")
+			if getenv("MARSHAL_CODEX_MODE") == "ordinary-user" {
+				if config != "" {
+					return nil, port.Permanentf("codex ordinary-user mode cannot combine authority config")
+				}
+				return codex.NewOrdinaryUser(executable, validator)
+			}
 			if config == "" {
 				// Registration only makes the fail-closed Probe observable. It
 				// does not admit Codex as supported without ADR 0037 authority.
@@ -124,9 +142,8 @@ var workerBindings = []workerBinding{
 // WorkerRuntime assembles the provider-neutral local Worker runtime shared by
 // `task plan`, `task run`, and `doctor`. It constructs concrete adapters from
 // explicit environment values and never searches PATH, reads os.Environ, or
-// writes files. Codex authority configuration is hard-disabled before any
-// authority read until the credentialed provider is implemented; the caller
-// supplies the environment lookup.
+// writes files. Qoder/Codex authority configuration remains fail-closed; an
+// explicit ordinary-user mode is a separate, visibly downgraded constructor.
 type WorkerRuntime struct {
 	validator      *contract.Validator
 	registry       *adapter.Registry
@@ -164,6 +181,15 @@ func NewWorkerRuntime(getenv func(string) string) (*WorkerRuntime, error) {
 		if binding.requiresAuthority {
 			configuration.AuthorityEndpointStatus = darwin.InspectAuthorityEndpointStatus(getenv("MARSHAL_APAP_ENDPOINT"))
 			configuration.AuthorityDeploymentStatus = darwin.InspectLaunchdDeploymentConfigStatus(getenv("MARSHAL_DARWIN_LAUNCHD_CONFIG"))
+		}
+		if binding.ordinaryModeEnv != "" {
+			mode := getenv(binding.ordinaryModeEnv)
+			if mode != "" && mode != "ordinary-user" {
+				configuration.Outcome = WorkerOutcomeInvalidConfiguration
+				configurations = append(configurations, configuration)
+				continue
+			}
+			configuration.AuthorityMode = mode
 		}
 		worker, constructErr := binding.construct(executable, validator, getenv)
 		if constructErr != nil {

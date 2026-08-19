@@ -158,6 +158,7 @@ type doctorWorker struct {
 	Outcome                        string          `json:"outcome"`
 	AuthorityEndpointStatus        string          `json:"authorityEndpointStatus,omitempty"`
 	AuthorityDeploymentStatus      string          `json:"authorityDeploymentStatus,omitempty"`
+	AuthorityMode                  string          `json:"authorityMode,omitempty"`
 	Compatibility                  string          `json:"compatibility"`
 	AdapterVersion                 string          `json:"adapterVersion,omitempty"`
 	BinaryVersion                  string          `json:"binaryVersion,omitempty"`
@@ -178,6 +179,7 @@ type doctorSnapshotIdentity struct {
 	BinaryVersion                  string          `json:"binaryVersion"`
 	ExecutableDigest               string          `json:"executableDigest"`
 	ProbeStatus                    string          `json:"probeStatus"`
+	AuthorityMode                  string          `json:"authorityMode"`
 	ConformanceEvidenceDigest      string          `json:"conformanceEvidenceDigest"`
 	ConformanceTrustRootKeyID      string          `json:"conformanceTrustRootKeyId"`
 	ConformanceProbeProfileDigest  string          `json:"conformanceProbeProfileDigest"`
@@ -310,6 +312,9 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		if worker.AuthorityDeploymentStatus != "" {
 			fmt.Fprintf(stdout, " / deployment=%s", worker.AuthorityDeploymentStatus)
 		}
+		if worker.AuthorityMode != "" {
+			fmt.Fprintf(stdout, " / mode=%s", worker.AuthorityMode)
+		}
 		if worker.BinaryVersion != "" {
 			fmt.Fprintf(stdout, " (%s)", worker.BinaryVersion)
 		}
@@ -359,6 +364,7 @@ func doctorWorkers(ctx context.Context, runtime *app.WorkerRuntime) []doctorWork
 			Outcome:                   configuration.Outcome,
 			AuthorityEndpointStatus:   configuration.AuthorityEndpointStatus,
 			AuthorityDeploymentStatus: configuration.AuthorityDeploymentStatus,
+			AuthorityMode:             configuration.AuthorityMode,
 			Compatibility:             "not-probed",
 		}
 		if !configuration.Registered || ctx.Err() != nil {
@@ -397,6 +403,16 @@ func applyDoctorSnapshotIdentity(result *doctorWorker, identity doctorSnapshotId
 	result.AdapterVersion = identity.AdapterVersion
 	result.BinaryVersion = identity.BinaryVersion
 	result.ExecutableDigest = identity.ExecutableDigest
+	if identity.AuthorityMode == "ordinary-user" {
+		if identity.AdapterID != "qoder" && identity.AdapterID != "codex" {
+			result.Compatibility = "probe-failed"
+			return
+		}
+		if identity.ProbeStatus != "supported" || len(identity.AdapterFailure) != 0 || len(identity.CodexAuthority) != 0 || identity.ConformanceEvidenceDigest != "" {
+			result.Compatibility = "probe-failed"
+		}
+		return
+	}
 	if identity.AdapterID == "codex" {
 		if identity.ProbeStatus == "supported" {
 			if len(identity.CodexAuthority) == 0 || len(identity.AdapterFailure) != 0 {

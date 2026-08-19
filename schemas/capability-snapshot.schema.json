@@ -24,6 +24,7 @@
     "executableDigest": { "$ref": "#/$defs/digest" },
     "binaryVersion": { "type": "string", "minLength": 1, "maxLength": 512 },
     "probeStatus": { "type": "string", "enum": ["supported", "experimental", "unsupported"] },
+    "authorityMode": { "type": "string", "enum": ["ordinary-user"] },
     "capabilities": {
       "type": "object",
       "additionalProperties": false,
@@ -92,13 +93,23 @@
         "required": ["adapterId", "probeStatus"]
       },
       "then": {
-        "required": [
-          "conformanceEvidenceDigest",
-          "conformanceTrustRootKeyId",
-          "conformanceProbeProfileDigest",
-          "conformanceValidUntil",
-          "conformanceHostFingerprint",
-          "conformanceAuthorityGeneration"
+        "oneOf": [
+          {
+            "properties": { "authorityMode": { "const": "ordinary-user" } },
+            "required": ["authorityMode"],
+            "not": { "required": ["conformanceEvidenceDigest"] }
+          },
+          {
+            "required": [
+              "conformanceEvidenceDigest",
+              "conformanceTrustRootKeyId",
+              "conformanceProbeProfileDigest",
+              "conformanceValidUntil",
+              "conformanceHostFingerprint",
+              "conformanceAuthorityGeneration"
+            ],
+            "properties": { "authorityMode": false }
+          }
         ]
       }
     },
@@ -118,37 +129,57 @@
               "required": ["probeStatus"]
             },
             "then": {
-              "required": [
-                "codexAuthority",
-                "conformanceEvidenceDigest",
-                "conformanceTrustRootKeyId",
-                "conformanceProbeProfileDigest",
-                "conformanceValidUntil",
-                "conformanceHostFingerprint",
-                "conformanceAuthorityGeneration"
-              ],
-              "properties": {
-                "adapterFailure": false,
-                "probeErrors": { "maxItems": 0 }
-              },
               "oneOf": [
                 {
                   "properties": {
-                    "capabilities": { "properties": { "executionProfiles": { "const": ["read-only"] } } },
-                    "codexAuthority": { "properties": { "executionProfiles": { "const": ["read-only"] } } }
-                  }
+                    "authorityMode": { "const": "ordinary-user" },
+                    "codexAuthority": false,
+                    "conformanceEvidenceDigest": false,
+                    "conformanceTrustRootKeyId": false,
+                    "conformanceProbeProfileDigest": false,
+                    "conformanceValidUntil": false,
+                    "conformanceHostFingerprint": false,
+                    "conformanceAuthorityGeneration": false,
+                    "adapterFailure": false,
+                    "probeErrors": { "maxItems": 0 }
+                  },
+                  "required": ["authorityMode"]
                 },
                 {
+                  "required": [
+                    "codexAuthority",
+                    "conformanceEvidenceDigest",
+                    "conformanceTrustRootKeyId",
+                    "conformanceProbeProfileDigest",
+                    "conformanceValidUntil",
+                    "conformanceHostFingerprint",
+                    "conformanceAuthorityGeneration"
+                  ],
                   "properties": {
-                    "capabilities": { "properties": { "executionProfiles": { "const": ["workspace-write"] } } },
-                    "codexAuthority": { "properties": { "executionProfiles": { "const": ["workspace-write"] } } }
-                  }
-                },
-                {
-                  "properties": {
-                    "capabilities": { "properties": { "executionProfiles": { "const": ["read-only", "workspace-write"] } } },
-                    "codexAuthority": { "properties": { "executionProfiles": { "const": ["read-only", "workspace-write"] } } }
-                  }
+                    "authorityMode": false,
+                    "adapterFailure": false,
+                    "probeErrors": { "maxItems": 0 }
+                  },
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "capabilities": { "properties": { "executionProfiles": { "const": ["read-only"] } } },
+                        "codexAuthority": { "properties": { "executionProfiles": { "const": ["read-only"] } } }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "capabilities": { "properties": { "executionProfiles": { "const": ["workspace-write"] } } },
+                        "codexAuthority": { "properties": { "executionProfiles": { "const": ["workspace-write"] } } }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "capabilities": { "properties": { "executionProfiles": { "const": ["read-only", "workspace-write"] } } },
+                        "codexAuthority": { "properties": { "executionProfiles": { "const": ["read-only", "workspace-write"] } } }
+                      }
+                    }
+                  ]
                 }
               ]
             },

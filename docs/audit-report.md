@@ -467,6 +467,10 @@ Qoder 与 Codex 的 production consumer 实现复核进一步证明：两个 Ada
 
 上述 finding 是 Issue #136/#137 production enablement 的共同前置阻塞，不改变 M10 在途及 M11–M13 `PLANNED` 状态。只有 shared Port conformance 与对应 profile conformance、当前宿主 doctor、撤销/rollback/kill 演练、required CI 和 secret scan 全绿后，才能分别提交 Qoder 或 Codex 的独立 registry enablement 变更。
 
+## Mac 普通用户模式审计（2026-08-19）
+
+用户明确授权先按 Qwen/OpenCode 同级普通用户模式使用 Qoder 1.1.23 与 Codex 0.145.0。实现采用 `MARSHAL_QODER_MODE=ordinary-user` 与 `MARSHAL_CODEX_MODE=ordinary-user` 的显式 opt-in；未设置时严格 authority 路径仍 fail closed。普通模式继续固定 absolute path、realpath、SHA-256、版本、超时、输出、环境、worktree 边界与 WorkerResult 校验，但不宣称 signed authority、APAP credential、child barrier 或恶意代码 sandbox。doctor 输出 `authorityMode=ordinary-user`，因此该能力不会与严格 production authority 证据混淆。
+
 ## Darwin APAP transport 实机审计增补（2026-08-19）
 
 当前 macOS 宿主对 `AF_UNIX/SOCK_SEQPACKET` 返回 `protocol not supported`，导致原 APAP client 即使 endpoint 存在也无法连接。实现已加入 Darwin 专用四字节大端长度帧 `SOCK_STREAM` 与 `SCM_RIGHTS` 累积接收，并以实机 payload+held-FD 测试、race、vet、staticcheck 与 Darwin 交叉编译验证。该变更只关闭 transport 可达性缺口；[ADR 0041](adr/0041-darwin-apap-stream-transport.md) 仍为 Proposed，root-owned APAP provider、签名 launcher、独立 verifier、credentialed live probe 与 registry enablement 继续保持 `unsupported`。

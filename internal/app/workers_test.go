@@ -110,6 +110,62 @@ func TestQoderRegistrationRemainsUnsupportedWithoutAuthorityEvidence(t *testing.
 	}
 }
 
+func TestMacOrdinaryUserModeRegistersQoderAndCodexWithExplicitLabel(t *testing.T) {
+	qoderPath := writeExecutable(t, "qodercli")
+	if err := os.WriteFile(qoderPath, []byte("#!/bin/sh\nprintf '1.1.23\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	codexPath := writeExecutable(t, "codex")
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nprintf 'codex-cli 0.145.0\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtimeValue, err := NewWorkerRuntime(staticEnv(map[string]string{
+		"MARSHAL_QODER_PATH": qoderPath, "MARSHAL_QODER_MODE": "ordinary-user",
+		"MARSHAL_CODEX_PATH": codexPath, "MARSHAL_CODEX_MODE": "ordinary-user",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"qoder", "codex"} {
+		configuration := configurationByID(t, runtimeValue, id)
+		if !configuration.Registered || configuration.Outcome != WorkerOutcomeRegistered || configuration.AuthorityMode != "ordinary-user" {
+			t.Fatalf("%s configuration = %+v", id, configuration)
+		}
+		worker, err := runtimeValue.Registry().Resolve(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := worker.Probe(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var snapshot struct {
+			ProbeStatus string   `json:"probeStatus"`
+			ProbeErrors []string `json:"probeErrors"`
+		}
+		if err := json.Unmarshal(record.Data, &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if snapshot.ProbeStatus != "supported" || len(snapshot.ProbeErrors) != 0 {
+			t.Fatalf("%s ordinary-user snapshot = %s", id, record.Data)
+		}
+	}
+}
+
+func TestOrdinaryUserModeRejectsUnknownValue(t *testing.T) {
+	path := writeExecutable(t, "qodercli")
+	runtimeValue, err := NewWorkerRuntime(staticEnv(map[string]string{
+		"MARSHAL_QODER_PATH": path, "MARSHAL_QODER_MODE": "unsafe",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := configurationByID(t, runtimeValue, "qoder")
+	if configuration.Registered || configuration.Outcome != WorkerOutcomeInvalidConfiguration {
+		t.Fatalf("unknown mode configuration = %+v", configuration)
+	}
+}
+
 func TestMacAuthorityEndpointStatusIsDiagnosticOnly(t *testing.T) {
 	qoderPath := filepath.Join(t.TempDir(), "qodercli")
 	if err := os.WriteFile(qoderPath, []byte("#!/bin/sh\nprintf '1.1.23\\n'\n"), 0o755); err != nil {
