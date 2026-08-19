@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,14 +24,14 @@ const (
 // when the service is absent.
 type ControlClient struct {
 	endpoint string
-	dial     func(context.Context, string) (*net.UnixConn, error)
+	dial     func(context.Context, string) (controlConnection, error)
 }
 
 func NewControlClient(endpoint string) (*ControlClient, error) {
 	if !filepath.IsAbs(endpoint) || filepath.Clean(endpoint) != endpoint || endpoint == string(filepath.Separator) {
 		return nil, errors.New("APAP endpoint must be an absolute clean path")
 	}
-	return &ControlClient{endpoint: endpoint, dial: dialUnixPacket}, nil
+	return &ControlClient{endpoint: endpoint, dial: dialControl}, nil
 }
 
 // ControlResponse is the raw APAP response plus descriptors returned by the
@@ -100,11 +99,12 @@ func (client *ControlClient) RoundTrip(ctx context.Context, payload []byte, file
 	if ctx == nil {
 		return ControlResponse{}, errors.New("APAP control context is nil")
 	}
-	conn, err := client.dial(ctx, client.endpoint)
+	connection, err := client.dial(ctx, client.endpoint)
 	if err != nil {
 		return ControlResponse{}, errors.New("connect APAP control socket")
 	}
-	defer conn.Close()
+	defer connection.conn.Close()
+	conn := connection.conn
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	} else {
@@ -117,17 +117,14 @@ func (client *ControlClient) RoundTrip(ctx context.Context, payload []byte, file
 		}
 		fdNumbers = append(fdNumbers, int(file.Fd()))
 	}
-	oob := unix.UnixRights(fdNumbers...)
-	written, _, err := conn.WriteMsgUnix(payload, oob, nil)
-	if err != nil || written != len(payload) {
+	if err := connection.write(payload, unix.UnixRights(fdNumbers...)); err != nil {
 		return ControlResponse{}, errors.New("send APAP control packet")
 	}
-	buffer := make([]byte, maxControlPacketBytes+1)
-	oobBuffer := make([]byte, unix.CmsgSpace(maxControlPacketFDs*4))
-	length, oobLength, flags, _, err := conn.ReadMsgUnix(buffer, oobBuffer)
+	buffer, oobBuffer, flags, err := connection.read()
 	if err != nil {
 		return ControlResponse{}, errors.New("receive APAP control packet")
 	}
+	length, oobLength := len(buffer), len(oobBuffer)
 	if length == 0 || length > maxControlPacketBytes || flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 {
 		return ControlResponse{}, errors.New("APAP control response exceeds bounds")
 	}
@@ -147,17 +144,4 @@ func (client *ControlClient) RoundTrip(ctx context.Context, payload []byte, file
 		}
 	}
 	return response, nil
-}
-
-func dialUnixPacket(ctx context.Context, endpoint string) (*net.UnixConn, error) {
-	connection, err := (&net.Dialer{}).DialContext(ctx, "unixpacket", endpoint)
-	if err != nil {
-		return nil, err
-	}
-	unixConnection, ok := connection.(*net.UnixConn)
-	if !ok {
-		_ = connection.Close()
-		return nil, errors.New("APAP transport is not a Unix packet connection")
-	}
-	return unixConnection, nil
 }
