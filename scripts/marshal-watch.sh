@@ -112,16 +112,26 @@ ACTIONABLE = {
     "VERIFYING": (50, "verify-or-doctor"),
     "PUBLISHING": (60, "publish-or-doctor"),
     "READY": (70, "run-now"),
-    "APPROVED": (70, "run-now"),
     "CI_PENDING": (80, "check-ci"),
 }
 # 终态 ACCEPTED/REJECTED/BLOCKED/ABORTED/NO_CHANGE 不在 ACTIONABLE 中，
 # 因此默认不进入行动队列（只保留在文本模式的状态行里）。
 MARSHAL_SUBCOMMANDS = ("run", "verify", "publish", "supervise")
 ADAPTER_BINARIES = {"qwen", "codex", "qoder", "opencode", "pi"}
+STATE_VALUES = {"CREATED", "PLANNED", "READY", "RUNNING", "RETRY_PENDING",
+                "VERIFYING", "REVIEW_PENDING", "REWORK_REQUESTED", "PUBLISHING",
+                "PUBLISHED", "CI_PENDING", "ACCEPTED", "REJECTED", "BLOCKED",
+                "ABORTED", "NO_CHANGE"}
 DEFAULT_WORKER_RESERVE_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_CURRENT_WINDOW_SECONDS = 24 * 60 * 60
 DEFAULT_PROVIDER_FAILURE_HOLD_SECONDS = 5 * 60
+MAX_RETRY_HINT_SECONDS = 24 * 60 * 60
+MAX_STATE_BYTES = 1024 * 1024
+MAX_TASK_SPEC_BYTES = 1024 * 1024
+MAX_OWNER_BYTES = 64 * 1024
+MAX_JOURNAL_BYTES = 16 * 1024 * 1024
+MAX_REVIEW_PACKET_BYTES = 8 * 1024 * 1024
+MAX_CONTROL_JOURNAL_BYTES = 16 * 1024 * 1024
 TYPED_FAILURE_PAIRS = {
     "quota-exhausted": "blocked",
     "rate-limited": "retryable",
@@ -148,7 +158,10 @@ def owner_present(line, run_id):
     named = False
     for index, token in enumerate(tokens):
         base = token.rsplit("/", 1)[-1]
-        if base in ADAPTER_BINARIES:
+        adapter_name = (base in ADAPTER_BINARIES or base == "qwen-code" or
+                        re.fullmatch(r"qodercli(?:-[0-9]+(?:\.[0-9]+){1,3})?", base) is not None or
+                        re.fullmatch(r"codex-(?:aarch64|x86_64)-(?:apple-darwin|unknown-linux-gnu)", base) is not None)
+        if adapter_name:
             named = True
             break
         if base == "marshal":
@@ -179,10 +192,56 @@ def _float_env(name):
     except (TypeError, ValueError):
         return None
 
-def _read_regular_json(path, limit=1024 * 1024):
-    """Read a small single-link regular JSON file without following symlinks."""
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags)
+DIR_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
+FILE_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+def _open_directory_path_nofollow(path):
+    """Open every directory component without following symlinks and hold the chain."""
+    if not isinstance(path, str) or not path:
+        raise ValueError("directory path is required")
+    canonical = os.path.realpath(path)
+    if not os.path.isabs(canonical):
+        raise ValueError("canonical directory path must be absolute")
+    fd = os.open("/", DIR_FLAGS)
+    try:
+        for component in canonical.split("/"):
+            if component in ("", "."):
+                continue
+            if component == "..":
+                raise ValueError("parent traversal is forbidden")
+            next_fd = os.open(component, DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        held = os.fstat(fd)
+        if not stat.S_ISDIR(held.st_mode):
+            raise ValueError("path is not a directory")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+def _open_child_directory_bound(parent_fd, name):
+    if not isinstance(name, str) or not name or name in (".", "..") or "/" in name:
+        raise ValueError("invalid directory entry")
+    before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(before.st_mode):
+        raise ValueError("entry is not a directory")
+    fd = os.open(name, DIR_FLAGS, dir_fd=parent_fd)
+    try:
+        held = os.fstat(fd)
+        after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_mode)
+        if identity(before) != identity(held) or identity(held) != identity(after):
+            raise ValueError("directory entry identity changed")
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+def _read_regular_bytes_at(parent_fd, name, limit):
+    if not isinstance(name, str) or not name or name in (".", "..") or "/" in name:
+        raise ValueError("invalid file entry")
+    fd = os.open(name, FILE_FLAGS, dir_fd=parent_fd)
     try:
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > limit:
@@ -196,11 +255,27 @@ def _read_regular_json(path, limit=1024 * 1024):
             size += len(chunk)
         raw = b"".join(chunks)
         after = os.fstat(fd)
-        if len(raw) > limit or (before.st_dev, before.st_ino, before.st_size, before.st_mode, before.st_nlink) != (after.st_dev, after.st_ino, after.st_size, after.st_mode, after.st_nlink):
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mode, value.st_nlink)
+        if len(raw) > limit or len(raw) != before.st_size or identity(before) != identity(after):
             raise ValueError("file identity changed")
-        return json.loads(raw.decode("utf-8"), parse_constant=lambda value: (_ for _ in ()).throw(ValueError("non-finite JSON number")))
+        return raw
     finally:
         os.close(fd)
+
+def _decode_json(raw):
+    return json.loads(raw.decode("utf-8"), parse_constant=lambda value: (_ for _ in ()).throw(ValueError("non-finite JSON number")))
+
+def _read_regular_json_at(parent_fd, name, limit=1024 * 1024):
+    return _decode_json(_read_regular_bytes_at(parent_fd, name, limit))
+
+def _read_regular_json(path, limit=1024 * 1024):
+    """Read a small JSON file through a fully nofollow parent dirfd chain."""
+    parent, name = os.path.split(path)
+    parent_fd = _open_directory_path_nofollow(parent or ".")
+    try:
+        return _read_regular_json_at(parent_fd, name, limit)
+    finally:
+        os.close(parent_fd)
 
 def _command_output(argv):
     try:
@@ -381,13 +456,11 @@ def _load_lease_fixture():
 
 LEASE_FIXTURE = _load_lease_fixture()
 
-def lease_observation(run_dir, run_id):
+def lease_observation(run_fd, run_id):
     if LEASE_FIXTURE is not None:
         return LEASE_FIXTURE.get(run_id, LEASE_FIXTURE.get("*", "not-held")), "fixture"
-    lock_path = os.path.join(run_dir, "lease.lock")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(lock_path, flags)
+        fd = os.open("lease.lock", FILE_FLAGS, dir_fd=run_fd)
     except FileNotFoundError:
         return "not-held", "marshal-lease"
     except OSError:
@@ -408,16 +481,21 @@ def lease_observation(run_dir, run_id):
         if not held:
             return "not-held", "marshal-lease"
         try:
-            owner = _read_regular_json(os.path.join(run_dir, "lease.lock.owner"), 64 * 1024)
-            if not isinstance(owner, dict) or not isinstance(owner.get("pid"), int) or owner["pid"] <= 1:
+            owner = _read_regular_json_at(run_fd, "lease.lock.owner", MAX_OWNER_BYTES)
+            pid = owner.get("pid") if isinstance(owner, dict) else None
+            device = owner.get("device") if isinstance(owner, dict) else None
+            inode = owner.get("inode") if isinstance(owner, dict) else None
+            if (not isinstance(owner, dict) or isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1 or
+                    isinstance(device, bool) or not isinstance(device, int) or
+                    isinstance(inode, bool) or not isinstance(inode, int)):
                 return "unknown", "marshal-lease"
-            if "device" in owner and "inode" in owner and (owner["device"], owner["inode"]) != (lock_stat.st_dev, lock_stat.st_ino):
+            if (device, inode) != (lock_stat.st_dev, lock_stat.st_ino):
                 return "unknown", "marshal-lease"
             for field in ("token", "processStartedAt", "acquiredAt", "heartbeatAt"):
                 if not isinstance(owner.get(field), str) or not owner[field]:
                     return "unknown", "marshal-lease"
             try:
-                os.kill(owner["pid"], 0)
+                os.kill(pid, 0)
             except ProcessLookupError:
                 return "unknown", "marshal-lease"
             except PermissionError:
@@ -503,15 +581,29 @@ def parse_timestamp(stamp):
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+    return parsed.astimezone(timezone.utc)
 
-def age_seconds(state_path, data):
+def strict_timestamp(stamp):
+    if not isinstance(stamp, str) or not stamp or stamp != stamp.strip():
+        return None
+    cleaned = stamp.replace("Z", "+00:00")
+    cleaned = re.sub(r"\.(\d{6})\d+", r".\1", cleaned)
+    try:
+        parsed = datetime.fromisoformat(cleaned)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+def age_seconds(run_fd, data):
     parsed = parse_timestamp(data.get("updatedAt") if isinstance(data, dict) else None)
     if parsed is not None:
         seconds = int((now_utc - parsed).total_seconds())
         return seconds if seconds > 0 else 0
     try:
-        mtime = os.path.getmtime(state_path)
+        state_stat = os.stat("state.json", dir_fd=run_fd, follow_symlinks=False)
+        mtime = state_stat.st_mtime
     except OSError:
         return 0
     seconds = int(now_utc.timestamp() - mtime)
@@ -524,60 +616,46 @@ def timestamp_age_seconds(stamp):
     seconds = int((now_utc - parsed).total_seconds())
     return seconds if seconds > 0 else 0
 
-def file_digest(path):
-    """返回可读文件内容摘要；缺失时保持稳定的 missing 标记。"""
+def file_digest_at(parent_fd, name, limit):
+    """Bounded digest; unsafe, oversized or changing evidence has one stable marker."""
     try:
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(path, flags)
-        try:
-            before = os.fstat(fd)
-            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-                return "invalid"
-            digest = hashlib.sha256()
-            while True:
-                chunk = os.read(fd, 64 * 1024)
-                if not chunk:
-                    break
-                digest.update(chunk)
-            after = os.fstat(fd)
-            if (before.st_dev, before.st_ino, before.st_size, before.st_mode, before.st_nlink) != (after.st_dev, after.st_ino, after.st_size, after.st_mode, after.st_nlink):
-                return "changed"
-            return digest.hexdigest()
-        finally:
-            os.close(fd)
-    except OSError:
+        return hashlib.sha256(_read_regular_bytes_at(parent_fd, name, limit)).hexdigest()
+    except FileNotFoundError:
         return "missing"
+    except (OSError, ValueError):
+        return "unknown"
 
-def journal_observation(run_dir):
-    path = os.path.join(run_dir, "events.jsonl")
+def evidence_digests(run_fd):
+    review = file_digest_at(run_fd, "review-packet.json", MAX_REVIEW_PACKET_BYTES)
     try:
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(path, flags)
+        control_fd = _open_child_directory_bound(run_fd, "control")
+    except FileNotFoundError:
+        control = "missing"
+    except (OSError, ValueError):
+        control = "unknown"
+    else:
         try:
-            before = os.fstat(fd)
-            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 16 * 1024 * 1024:
-                raise ValueError("invalid journal file")
-            chunks, size = [], 0
-            while size <= 16 * 1024 * 1024:
-                chunk = os.read(fd, 64 * 1024)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                size += len(chunk)
-            raw = b"".join(chunks)
-            after = os.fstat(fd)
-            if len(raw) > 16 * 1024 * 1024 or (before.st_dev, before.st_ino, before.st_size, before.st_mode, before.st_nlink) != (after.st_dev, after.st_ino, after.st_size, after.st_mode, after.st_nlink):
-                raise ValueError("journal changed")
+            control = file_digest_at(control_fd, "records.jsonl", MAX_CONTROL_JOURNAL_BYTES)
         finally:
-            os.close(fd)
+            os.close(control_fd)
+    status = "unknown" if "unknown" in (review, control) else "ok"
+    return review, control, status
+
+def unknown_journal(marker=b"invalid"):
+    return {"status": "unknown", "sequence": 0,
+            "phaseDigest": "sha256:" + hashlib.sha256(marker).hexdigest(),
+            "adapterId": None, "adapterStatus": "unknown",
+            "typedFailure": None, "lastSignal": None}
+
+def journal_observation(run_fd, run_id):
+    try:
+        raw = _read_regular_bytes_at(run_fd, "events.jsonl", MAX_JOURNAL_BYTES)
     except FileNotFoundError:
         return {"status": "missing", "sequence": 0,
                 "phaseDigest": "sha256:" + hashlib.sha256(b"missing").hexdigest(),
                 "adapterId": None, "typedFailure": None, "lastSignal": None}
     except (OSError, ValueError):
-        return {"status": "unknown", "sequence": 0,
-                "phaseDigest": "sha256:" + hashlib.sha256(b"invalid").hexdigest(),
-                "adapterId": None, "typedFailure": None, "lastSignal": None}
+        return unknown_journal()
     try:
         events = []
         previous = 0
@@ -590,12 +668,23 @@ def journal_observation(run_dir):
             sequence = event.get("sequence")
             if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= previous:
                 raise ValueError("non-monotonic journal")
+            if not isinstance(event.get("type"), str) or not event["type"]:
+                raise ValueError("journal event type is invalid")
+            if strict_timestamp(event.get("timestamp")) is None:
+                raise ValueError("journal event timestamp is invalid")
+            if not isinstance(event.get("payload"), dict):
+                raise ValueError("journal event payload is invalid")
+            if "runId" in event and event["runId"] != run_id:
+                raise ValueError("journal run identity mismatch")
+            if "attemptId" in event and not isinstance(event["attemptId"], str):
+                raise ValueError("journal attempt identity is invalid")
+            for state_field in ("stateFrom", "stateTo"):
+                if state_field in event and event[state_field] not in STATE_VALUES:
+                    raise ValueError("journal state is invalid")
             previous = sequence
             events.append(event)
     except (UnicodeError, ValueError, TypeError):
-        return {"status": "unknown", "sequence": 0,
-                "phaseDigest": "sha256:" + hashlib.sha256(raw).hexdigest(),
-                "adapterId": None, "typedFailure": None, "lastSignal": None}
+        return unknown_journal(raw)
     if not events:
         return {"status": "ok", "sequence": 0,
                 "phaseDigest": "sha256:" + hashlib.sha256(b"empty").hexdigest(),
@@ -603,52 +692,63 @@ def journal_observation(run_dir):
     adapter_id = None
     typed_failure = None
     last_signal = None
+    journal_valid = True
     for event in events:
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        payload = event["payload"]
         candidate_adapter = payload.get("adapterId")
-        if isinstance(candidate_adapter, str) and candidate_adapter in ADAPTER_BINARIES:
+        if candidate_adapter is not None and candidate_adapter not in ADAPTER_BINARIES:
+            journal_valid = False
+        if candidate_adapter in ADAPTER_BINARIES:
             adapter_id = candidate_adapter
         event_type = event.get("type")
-        if event_type == "worker.failed" and candidate_adapter in ADAPTER_BINARIES:
+        if event_type == "worker.failed" and (candidate_adapter is not None or "failureKind" in payload or "retryDisposition" in payload):
             kind = payload.get("failureKind")
             disposition = payload.get("retryDisposition")
             if kind is not None or disposition is not None:
-                valid = isinstance(kind, str) and TYPED_FAILURE_PAIRS.get(kind) == disposition
-                failure = {"adapterId": candidate_adapter, "kind": kind if isinstance(kind, str) else "invalid",
+                event_time = strict_timestamp(event.get("timestamp"))
+                valid = candidate_adapter in ADAPTER_BINARIES and isinstance(kind, str) and TYPED_FAILURE_PAIRS.get(kind) == disposition and event_time is not None
+                failure = {"adapterId": candidate_adapter if candidate_adapter in ADAPTER_BINARIES else "invalid", "kind": kind if isinstance(kind, str) else "invalid",
                            "disposition": disposition if isinstance(disposition, str) else "invalid"}
                 retry_after = payload.get("retryAfterNanoseconds")
                 not_before = payload.get("notBefore")
                 if retry_after is not None:
-                    valid = valid and not isinstance(retry_after, bool) and isinstance(retry_after, int) and 0 < retry_after <= 24 * 60 * 60 * 1000000000
+                    valid = valid and not isinstance(retry_after, bool) and isinstance(retry_after, int) and 0 < retry_after <= MAX_RETRY_HINT_SECONDS * 1000000000
                     if not isinstance(retry_after, bool) and isinstance(retry_after, int):
                         failure["retryAfterNanoseconds"] = retry_after
                 if not_before is not None:
-                    valid = valid and parse_timestamp(not_before) is not None
+                    not_before_time = strict_timestamp(not_before)
+                    delta = (not_before_time - event_time).total_seconds() if not_before_time is not None and event_time is not None else None
+                    valid = valid and delta is not None and 0 < delta <= MAX_RETRY_HINT_SECONDS
                     if isinstance(not_before, str):
                         failure["notBefore"] = not_before
                 if retry_after is not None and not_before is not None:
                     valid = False
                 failure["valid"] = valid
+                journal_valid = journal_valid and valid
                 typed_failure = failure
-                last_signal = {"type": event_type, "timestamp": event.get("timestamp"), "failure": failure,
+                last_signal = {"type": event_type, "timestamp": event.get("timestamp"), "moment": event_time, "failure": failure,
                                "sequence": event["sequence"]}
-        elif event_type == "worker.completed" and candidate_adapter in ADAPTER_BINARIES:
-            typed_failure = None
-            last_signal = {"type": event_type, "timestamp": event.get("timestamp"), "failure": None,
-                           "sequence": event["sequence"]}
+        elif event_type == "worker.completed":
+            if candidate_adapter not in ADAPTER_BINARIES:
+                journal_valid = False
+            else:
+                typed_failure = None
+                last_signal = {"type": event_type, "timestamp": event.get("timestamp"),
+                               "moment": strict_timestamp(event.get("timestamp")), "failure": None,
+                               "sequence": event["sequence"]}
     last = events[-1]
     payload_digest = hashlib.sha256(json.dumps(last.get("payload", {}), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
     phase = {"sequence": last["sequence"], "type": last.get("type"), "stateFrom": last.get("stateFrom"),
              "stateTo": last.get("stateTo"), "attemptId": last.get("attemptId"), "payloadDigest": "sha256:" + payload_digest}
     phase_digest = "sha256:" + hashlib.sha256(json.dumps(phase, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
-    return {"status": "ok", "sequence": last["sequence"], "phaseDigest": phase_digest,
+    return {"status": "ok" if journal_valid else "unknown", "sequence": last["sequence"], "phaseDigest": phase_digest,
             "adapterId": adapter_id, "typedFailure": typed_failure, "lastSignal": last_signal}
 
-def task_adapter_observation(run_dir, journal):
+def task_adapter_observation(run_fd, journal):
     if journal.get("adapterId") is not None:
         return journal["adapterId"], "journal"
     try:
-        task = _read_regular_json(os.path.join(run_dir, "task-spec.json"), 1024 * 1024)
+        task = _read_regular_json_at(run_fd, "task-spec.json", MAX_TASK_SPEC_BYTES)
         worker = task.get("worker") if isinstance(task, dict) else None
         adapter_id = worker.get("preferredAdapter") if isinstance(worker, dict) else None
         if adapter_id not in ADAPTER_BINARIES:
@@ -657,7 +757,7 @@ def task_adapter_observation(run_dir, journal):
     except (OSError, UnicodeError, ValueError, TypeError):
         return None, "unknown"
 
-def decision_key(run_id, data, state, run_dir, action, ownership, journal):
+def decision_key(run_id, data, state, action, ownership, journal, review_digest, control_digest):
     """为同一动作上下文生成稳定键，避免重复消费且不抑制合法恢复。"""
     fields = [
         run_id,
@@ -675,10 +775,29 @@ def decision_key(run_id, data, state, run_dir, action, ownership, journal):
         str(journal.get("sequence", 0)),
         str(journal.get("phaseDigest", "")),
         json.dumps(journal.get("typedFailure"), sort_keys=True, separators=(",", ":")),
-        file_digest(os.path.join(run_dir, "review-packet.json")),
-        file_digest(os.path.join(run_dir, "control", "records.jsonl")),
+        review_digest,
+        control_digest,
     ]
     return "sha256:" + hashlib.sha256("\x1f".join(fields).encode("utf-8")).hexdigest()
+
+def validate_state_data(data, run_id):
+    if not isinstance(data, dict) or data.get("runId") != run_id:
+        raise ValueError("state run identity is invalid")
+    state = data.get("state")
+    if not isinstance(state, str) or state not in STATE_VALUES:
+        raise ValueError("state enumeration is invalid")
+    sequence = data.get("sequence")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+        raise ValueError("state sequence is invalid")
+    if strict_timestamp(data.get("createdAt")) is None or strict_timestamp(data.get("updatedAt")) is None:
+        raise ValueError("state timestamps are invalid")
+    for field in ("taskId", "specDigest", "policyDigest", "capabilityDigest", "baseSha", "currentAttemptId"):
+        if field in data and not isinstance(data[field], str):
+            raise ValueError("state string field is invalid")
+    for field in ("reviewRound", "reworkRoundsUsed"):
+        if field in data and (isinstance(data[field], bool) or not isinstance(data[field], int) or data[field] < 0):
+            raise ValueError("state counter is invalid")
+    return state
 
 def provider_snapshot(items, observations, provisional_slots):
     required_adapters = {observations[item["runId"]]["adapterId"] for item in items
@@ -695,8 +814,10 @@ def provider_snapshot(items, observations, provisional_slots):
             signal = observation.get("lastSignal")
             if observation.get("adapterId") != adapter_id or signal is None:
                 continue
-            stamp = parse_timestamp(signal.get("timestamp"))
-            key = (stamp or datetime.min.replace(tzinfo=timezone.utc), signal.get("sequence", 0))
+            stamp = signal.get("moment")
+            if not isinstance(stamp, datetime):
+                return {"providerSlotsAvailable": 0, "providerStatus": "unknown", "providerSignals": signals + [{"adapterId": adapter_id, "status": "unknown"}]}
+            key = (stamp, signal.get("sequence", 0))
             if latest is None or key > latest[0]:
                 latest = (key, signal)
         if latest is None or latest[1]["type"] == "worker.completed":
@@ -709,13 +830,13 @@ def provider_snapshot(items, observations, provisional_slots):
         if kind not in PROVIDER_CAPACITY_FAILURES:
             signals.append({"adapterId": adapter_id, "status": "available"})
             continue
-        event_time = parse_timestamp(latest[1].get("timestamp"))
+        event_time = latest[1].get("moment")
         until = None
         if isinstance(failure.get("notBefore"), str):
-            until = parse_timestamp(failure["notBefore"])
-        elif isinstance(failure.get("retryAfterNanoseconds"), int) and event_time is not None:
+            until = strict_timestamp(failure["notBefore"])
+        elif isinstance(failure.get("retryAfterNanoseconds"), int) and isinstance(event_time, datetime):
             until = event_time + timedelta(microseconds=failure["retryAfterNanoseconds"] / 1000)
-        elif event_time is not None:
+        elif isinstance(event_time, datetime):
             hold = _integer_env("MARSHAL_WATCH_PROVIDER_FAILURE_HOLD_SECONDS")
             until = event_time + timedelta(seconds=hold if hold is not None else DEFAULT_PROVIDER_FAILURE_HOLD_SECONDS)
         if kind == "quota-exhausted" or until is None or until > now_utc:
@@ -732,26 +853,52 @@ explicit_cohort, cohort = _cohort_configuration()
 items, historical_items, text_tokens = [], [], []
 owned_runs = set()
 observations = {}
-for run_id in sorted(os.listdir(runs_dir)):
-    run_dir = os.path.join(runs_dir, run_id)
-    state_path = os.path.join(run_dir, "state.json")
+runs_fd = _open_directory_path_nofollow(runs_dir)
+try:
+    run_names = sorted(os.listdir(runs_fd))
+except Exception:
+    os.close(runs_fd)
+    raise
+for run_id in run_names:
+    run_fd = None
+    run_path_status = "ok"
     try:
-        data = _read_regular_json(state_path, 1024 * 1024)
-        state = data["state"]
-        if data.get("runId") not in (None, run_id):
-            continue
-    except (OSError, ValueError, KeyError, TypeError):
-        continue
-    journal = journal_observation(run_dir)
-    journal["adapterId"], journal["adapterStatus"] = task_adapter_observation(run_dir, journal)
+        run_fd = _open_child_directory_bound(runs_fd, run_id)
+    except (OSError, ValueError):
+        run_path_status = "unknown"
+    data = {}
+    state = "UNKNOWN"
+    state_status = "unknown"
+    if run_fd is not None:
+        try:
+            data = _read_regular_json_at(run_fd, "state.json", MAX_STATE_BYTES)
+            state = validate_state_data(data, run_id)
+            state_status = "ok"
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            data = {}
+    if run_fd is None:
+        journal = unknown_journal(b"run-path")
+        lease_fact, lease_source = "unknown", "marshal-lease"
+        review_digest, control_digest, evidence_status = "unknown", "unknown", "unknown"
+    else:
+        journal = journal_observation(run_fd, run_id)
+        journal["adapterId"], journal["adapterStatus"] = task_adapter_observation(run_fd, journal)
+        lease_fact, lease_source = lease_observation(run_fd, run_id)
+        review_digest, control_digest, evidence_status = evidence_digests(run_fd)
     observations[run_id] = journal
-    lease_fact, lease_source = lease_observation(run_dir, run_id)
     argv_matched = any(owner_present(line, run_id) for line in procs)
     owned = lease_fact == "held-alive"
-    if owned and state in {"RUNNING", "VERIFYING", "PUBLISHING"}:
+    if owned and state_status == "ok" and state in {"RUNNING", "VERIFYING", "PUBLISHING"}:
         owned_runs.add(run_id)
     item = None
-    if state == "RUNNING":
+    if run_path_status == "unknown":
+        item = {"runId": run_id, "state": "UNKNOWN", "priority": 2,
+                "action": "hold-run-path-unknown", "processOwnership": "unknown"}
+    elif state_status == "unknown":
+        journal["status"] = "unknown"
+        item = {"runId": run_id, "state": "UNKNOWN", "priority": 3,
+                "action": "hold-run-invalid", "processOwnership": "unknown"}
+    elif state == "RUNNING":
         if lease_fact == "held-alive":
             item = {"runId": run_id, "state": state, "priority": 90,
                     "action": "monitor", "processOwnership": "owned-active"}
@@ -765,7 +912,7 @@ for run_id in sorted(os.listdir(runs_dir)):
         priority, action = ACTIONABLE[state]
         item = {"runId": run_id, "state": state, "priority": priority,
                 "action": action, "processOwnership": "not-applicable"}
-        if state == "REVIEW_PENDING" and not os.path.isfile(os.path.join(run_dir, "review-packet.json")):
+        if state == "REVIEW_PENDING" and review_digest in {"missing", "unknown"}:
             # A missing packet means `task review` cannot yet bind a
             # ReviewDecision. Surface this as an intervention instead of
             # repeatedly asking the lead to rerun the same doomed review.
@@ -773,7 +920,7 @@ for run_id in sorted(os.listdir(runs_dir)):
             item["action"] = "review-intervention"
     # 终态与其他未映射状态一律不进入行动队列。
     if item is not None:
-        age = age_seconds(state_path, data)
+        age = age_seconds(run_fd, data) if run_fd is not None and state_status == "ok" else 0
         created_age = timestamp_age_seconds(data.get("createdAt") if isinstance(data, dict) else None)
         item["ageSeconds"] = age
         item["ownershipSource"] = lease_source
@@ -781,11 +928,13 @@ for run_id in sorted(os.listdir(runs_dir)):
         item["journalSequence"] = journal["sequence"]
         item["phaseProgressDigest"] = journal["phaseDigest"]
         item["journalStatus"] = journal["status"]
+        item["evidenceStatus"] = evidence_status
         if journal.get("typedFailure") is not None:
             failure = journal["typedFailure"]
             item["typedFailure"] = {key: failure[key] for key in ("adapterId", "kind", "disposition", "retryAfterNanoseconds", "notBefore") if key in failure}
         item["dedupeKey"] = decision_key(
-            run_id, data, state, run_dir, item["action"], item["processOwnership"], journal
+            run_id, data, state, item["action"], item["processOwnership"], journal,
+            review_digest, control_digest
         )
         if explicit_cohort is not None:
             current = run_id in explicit_cohort
@@ -801,6 +950,10 @@ for run_id in sorted(os.listdir(runs_dir)):
             text_tokens.append("%s=%s" % (run_id, "RUNNING(active)" if owned else "DEAD?"))
         else:
             text_tokens.append("%s=%s" % (run_id, state))
+    if run_fd is not None:
+        os.close(run_fd)
+
+os.close(runs_fd)
 
 items.sort(key=lambda entry: (entry["priority"], entry["runId"]))
 historical_items.sort(key=lambda entry: (entry["priority"], entry["runId"]))
@@ -808,7 +961,7 @@ cpu = cpu_snapshot(len(owned_runs))
 provider = provider_snapshot(items, observations, cpu["cpuSlotsAvailable"])
 if cohort["source"] == "invalid-explicit-cohort":
     provider = {"providerSlotsAvailable": 0, "providerStatus": "unknown", "providerSignals": []}
-queue_signal_status = "unknown" if any(item["journalStatus"] == "unknown" or item["processOwnership"] == "unknown" for item in items) else "ok"
+queue_signal_status = "unknown" if any(item["journalStatus"] == "unknown" or item["processOwnership"] == "unknown" or item["evidenceStatus"] == "unknown" for item in items) else "ok"
 capacity = capacity_snapshot(len(owned_runs), cpu, provider, queue_signal_status)
 if mode == "text":
     print("[%s] %s capacity=%s slots=%s current=%s historical=%s" % (datetime.now().strftime("%m-%d %H:%M:%S"), " ".join(text_tokens), capacity["pressure"], capacity["slotsAvailable"], len(items), len(historical_items)))

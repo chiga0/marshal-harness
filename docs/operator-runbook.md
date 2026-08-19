@@ -349,11 +349,19 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 
 每个 item 保留原有 `runId`、`state`、`priority`、`action`、`ageSeconds`、
 `processOwnership`、`dedupeKey`，并增加 `queueBucket`、`ownershipSource`、
-`argvMatched`、`journalStatus`、`journalSequence`、`phaseProgressDigest`，以及存在时的
+`argvMatched`、`journalStatus`、`evidenceStatus`、`journalSequence`、
+`phaseProgressDigest`，以及存在时的
 封闭 `typedFailure`。`dedupeKey` 绑定 RunState sequence、journal sequence、当前 phase
 progress digest、typed failure（含 `notBefore`/`retryAfterNanoseconds`）、ReviewPacket
 和 control journal digest；只有真实进展变化才刷新。输出不写入 secret、环境变量值、
 完整命令行参数或绝对路径。
+
+每个 Run 目录从 canonical `runs` 根的 held dirfd 枚举，并逐级使用 `O_NOFOLLOW`
+绑定目录与文件；Run 目录 symlink/替换、state 的非对象或非封闭 state、journal 的
+非对象 event/非对象 payload/非法时间或类型只把该 Run 标为 `unknown`，不会让整轮
+watchdog 崩溃。ReviewPacket 和 control journal 分别有 8 MiB、16 MiB 硬上限，均以
+bounded chunk 读取并比较前后 dev/inode/size/mode/nlink；超限、增长、替换或 symlink
+统一产生稳定 `unknown` marker，并令当前队列 `hold-concurrency`。
 
 动作映射（priority 越小越优先）：
 
@@ -365,7 +373,7 @@ progress digest、typed failure（含 `notBefore`/`retryAfterNanoseconds`）、R
 | RETRY_PENDING | — | retry-or-abort | 40 |
 | VERIFYING | — | verify-or-doctor | 50 |
 | PUBLISHING | — | publish-or-doctor | 60 |
-| READY / APPROVED | — | run-now | 70 |
+| READY | — | run-now | 70 |
 | CI_PENDING | — | check-ci | 80 |
 | RUNNING | 有可证明归属活进程 | monitor | 90 |
 
@@ -376,7 +384,11 @@ progress digest、typed failure（含 `notBefore`/`retryAfterNanoseconds`）、R
 或 `not-applicable`（非 RUNNING 状态）。动作所有权只由 Marshal `lease.lock` 与
 `lease.lock.owner` 的只读事实决定；进程 argv 仅输出布尔 `argvMatched` 供诊断，
 即使出现精确 runId 也不能把未持 lease 的进程升级为 owner，反之无 argv 但 held lease
-仍是 `owned-active`。不得以事件年龄单独判定 RUNNING 死亡；`not-found` 输出
+仍是 `owned-active`。owner 必须包含与 held `lease.lock` 完全一致的 `device`/`inode`，
+且 Run parent 已由 canonical nofollow dirfd 链绑定；字段缺失或身份不一致一律
+`unknown`。argv 诊断识别 `qodercli`、版本化 `qodercli-1.1.23` 与平台化
+`codex-aarch64-apple-darwin` 等真实 basename，但这些名字仍不构成 authority。
+不得以事件年龄单独判定 RUNNING 死亡；`not-found` 输出
 `doctor-dead`，`unknown` 输出 `hold-ownership-unknown`，均由操作者先用
 `marshal doctor --run RUN_ID --json` 对账。
 
@@ -385,7 +397,10 @@ cores、1 分钟 load average 与 `activeOwnedWorkers`（同时限制 load headr
 headroom），Provider 使用当前 cohort Adapter 的
 封闭 typed failure。`rate-limited`、`dns-failure`、`connection-failure` 在有效
 `notBefore`/`retryAfterNanoseconds` 窗口内暂停新增槽位，`quota-exhausted` 持续暂停到同
-Adapter 出现更新的成功事实；未知或非法 typed failure fail closed。最终
+Adapter 出现更新的成功事实。`notBefore` 必须严格相对对应 `worker.failed.timestamp`
+落在 `(0,24h]`，与 Core `MaxRetryHintWindow` 一致；远期、过去/相等、缺失事件时间或
+类型错误只产生该 Run 的 `unknown`，不会被解释为永久 Provider backpressure。
+未知或非法 typed failure fail closed。最终
 `slotsAvailable=min(memorySlotsAvailable,cpuSlotsAvailable,providerSlotsAvailable)`；
 待派发 Run 无法从 journal 或锁定 TaskSpec 确认 Adapter identity 时 Provider 也视为
 `unknown`。memory pressure、CPU、Provider 或当前队列/ownership 任一关键 signal 为 `unknown` 时固定

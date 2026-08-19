@@ -690,6 +690,31 @@ then
 else
   bad "生产 lease/owner 探针失败"
 fi
+python3 - "$ROOT/runs/run-real-lease/lease.lock.owner" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    owner = json.load(handle)
+owner.pop("device", None)
+owner.pop("inode", None)
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(owner, handle)
+PYEOF
+OUT_REAL_LEASE_MISSING_ID="$TMP/out_real_lease_missing_identity.json"
+if run_watch_real_lease --once --json > "$OUT_REAL_LEASE_MISSING_ID" && \
+   python3 - "$OUT_REAL_LEASE_MISSING_ID" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    item = json.load(handle)["items"][0]
+if item.get("processOwnership") != "unknown" or item.get("action") != "hold-ownership-unknown":
+    raise SystemExit("owner without exact dev/inode was trusted: %r" % item)
+print("owner without exact dev/inode fails closed")
+PYEOF
+then
+  ok "held owner 缺 exact dev/inode 时 fail closed"
+else
+  bad "held owner 缺 exact dev/inode 仍被信任"
+fi
 kill "$LEASE_HOLDER_PID" 2>/dev/null || true
 wait "$LEASE_HOLDER_PID" 2>/dev/null || true
 LEASE_HOLDER_PID=""
@@ -805,14 +830,26 @@ make_run current-review REVIEW_PENDING 60
 printf '%s\n' '{}' > "$ROOT/runs/current-review/review-packet.json"
 make_run current-ready READY 30
 
+EVENT_TS=$(python3 - <<'PYEOF'
+import datetime
+print(datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+PYEOF
+)
+VALID_NOT_BEFORE=$(python3 - "$EVENT_TS" <<'PYEOF'
+import datetime, sys
+stamp = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+print((stamp + datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z"))
+PYEOF
+)
+
 note "6) dedupe 绑定 journal sequence、phase progress、typed failure 与 notBefore"
-cat > "$ROOT/runs/current-ready/events.jsonl" <<'EOF'
-{"sequence":1,"type":"planning.inputs-frozen","timestamp":"2026-08-20T00:00:00Z","payload":{"adapterId":"qwen"}}
+cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
+{"sequence":1,"type":"planning.inputs-frozen","timestamp":"$EVENT_TS","payload":{"adapterId":"qwen"}}
 EOF
 OUT_PROGRESS_1="$TMP/out_progress_1.json"
 MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$OUT_PROGRESS_1"
-cat >> "$ROOT/runs/current-ready/events.jsonl" <<'EOF'
-{"sequence":2,"type":"worker.failed","timestamp":"2026-08-20T00:01:00Z","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","notBefore":"2099-01-01T00:00:00Z"}}
+cat >> "$ROOT/runs/current-ready/events.jsonl" <<EOF
+{"sequence":2,"type":"worker.failed","timestamp":"$EVENT_TS","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","notBefore":"$VALID_NOT_BEFORE"}}
 EOF
 OUT_PROGRESS_2="$TMP/out_progress_2.json"
 MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$OUT_PROGRESS_2"
@@ -827,7 +864,7 @@ if a["dedupeKey"] == b["dedupeKey"]:
 if b.get("journalSequence") != 2 or not b.get("phaseProgressDigest", "").startswith("sha256:"):
     raise SystemExit("journal progress identity missing: %r" % b)
 failure = b.get("typedFailure", {})
-if failure.get("kind") != "rate-limited" or failure.get("notBefore") != "2099-01-01T00:00:00Z":
+if failure.get("kind") != "rate-limited" or not isinstance(failure.get("notBefore"), str):
     raise SystemExit("typed failure/notBefore missing: %r" % failure)
 print("journal + phase + typed failure dedupe binding OK")
 PYEOF
@@ -869,11 +906,11 @@ for provider_case in 'dns-failure retryable' 'connection-failure retryable' 'quo
   if [ "$failure_kind" = "quota-exhausted" ]; then
     hint=''
   else
-    hint=',"notBefore":"2099-01-01T00:00:00Z"'
+    hint=',"notBefore":"'$VALID_NOT_BEFORE'"'
   fi
   cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
-{"sequence":1,"type":"planning.inputs-frozen","timestamp":"2026-08-20T00:00:00Z","payload":{"adapterId":"qwen"}}
-{"sequence":2,"type":"worker.failed","timestamp":"2026-08-20T00:01:00Z","payload":{"adapterId":"qwen","failureKind":"$failure_kind","retryDisposition":"$disposition"$hint}}
+{"sequence":1,"type":"planning.inputs-frozen","timestamp":"$EVENT_TS","payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$EVENT_TS","payload":{"adapterId":"qwen","failureKind":"$failure_kind","retryDisposition":"$disposition"$hint}}
 EOF
   PROVIDER_KIND_JSON="$TMP/provider_${failure_kind}.json"
   if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$PROVIDER_KIND_JSON" && \
@@ -895,8 +932,8 @@ PYEOF
   fi
 done
 
-cat >> "$ROOT/runs/current-ready/events.jsonl" <<'EOF'
-{"sequence":3,"type":"worker.completed","timestamp":"2099-01-01T00:01:00Z","payload":{"adapterId":"qwen"}}
+cat >> "$ROOT/runs/current-ready/events.jsonl" <<EOF
+{"sequence":3,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","payload":{"adapterId":"qwen"}}
 EOF
 PROVIDER_RECOVERED_JSON="$TMP/provider_recovered.json"
 if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" \
@@ -982,6 +1019,189 @@ then
   ok "Adapter identity unknown 时 Provider hold"
 else
   bad "Adapter identity unknown 未 fail closed"
+fi
+
+note "8) notBefore 严格相对 worker.failed timestamp 落在 (0,24h]"
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run retry-hint READY 10
+cat > "$COHORTFILE" <<'EOF'
+{"goalId":"goal:retry-hint","runIds":["retry-hint"]}
+EOF
+python3 - "$EVENT_TS" "$TMP/retry-times.json" <<'PYEOF'
+import datetime, json, sys
+stamp = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+def render(value):
+    return value.isoformat().replace("+00:00", "Z")
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump({"exact24h": render(stamp + datetime.timedelta(hours=24)),
+               "over24h": render(stamp + datetime.timedelta(hours=24, seconds=1)),
+               "equal": render(stamp)}, handle)
+PYEOF
+EXACT_24H=$(jq -r .exact24h "$TMP/retry-times.json")
+OVER_24H=$(jq -r .over24h "$TMP/retry-times.json")
+EQUAL_TS=$(jq -r .equal "$TMP/retry-times.json")
+check_retry_hint() {
+  local case_name="$1" event_timestamp="$2" not_before_json="$3" expected="$4"
+  cat > "$ROOT/runs/retry-hint/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":$event_timestamp,"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","notBefore":$not_before_json}}
+EOF
+  local output="$TMP/retry_hint_${case_name}.json"
+  if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$output" && \
+     python3 - "$output" "$expected" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    data = json.load(handle)
+item = data["items"][0]
+capacity = data["capacity"]
+if sys.argv[2] == "valid":
+    if item.get("journalStatus") != "ok" or capacity.get("providerStatus") != "backpressure":
+        raise SystemExit("valid exact-bound hint rejected: %r %r" % (item, capacity))
+else:
+    if item.get("journalStatus") != "unknown" or capacity.get("providerStatus") != "unknown" or capacity.get("slotsAvailable") != 0:
+        raise SystemExit("invalid hint did not become run-level unknown: %r %r" % (item, capacity))
+print("retry hint case OK: " + sys.argv[2])
+PYEOF
+  then
+    ok "retry hint $case_name => $expected"
+  else
+    bad "retry hint $case_name 未按 $expected 处理"
+  fi
+}
+check_retry_hint exact24h "\"$EVENT_TS\"" "\"$EXACT_24H\"" valid
+check_retry_hint over24h "\"$EVENT_TS\"" "\"$OVER_24H\"" unknown
+check_retry_hint equal "\"$EVENT_TS\"" "\"$EQUAL_TS\"" unknown
+check_retry_hint far_future "\"$EVENT_TS\"" '"2099-01-01T00:00:00Z"' unknown
+check_retry_hint missing_timestamp null "\"$VALID_NOT_BEFORE\"" unknown
+check_retry_hint wrong_timestamp_type '[]' "\"$VALID_NOT_BEFORE\"" unknown
+check_retry_hint wrong_notbefore_type "\"$EVENT_TS\"" '[]' unknown
+
+note "9) 畸形 state/journal 只污染对应 Run，不崩整轮"
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run bad-state READY 10
+make_run bad-journal READY 10
+make_run good-ready READY 10
+python3 - "$ROOT/runs/bad-state/state.json" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+data["state"] = {}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(data, handle)
+PYEOF
+cat > "$ROOT/runs/bad-journal/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$EVENT_TS","payload":[]}
+EOF
+cat > "$COHORTFILE" <<'EOF'
+{"goalId":"goal:malformed-runs","runIds":["bad-state","bad-journal","good-ready"]}
+EOF
+MALFORMED_JSON="$TMP/malformed_runs.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$MALFORMED_JSON" && \
+   python3 - "$MALFORMED_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    data = json.load(handle)
+by_id = {item["runId"]: item for item in data["items"]}
+if set(by_id) != {"bad-state", "bad-journal", "good-ready"}:
+    raise SystemExit("malformed run disappeared or contaminated peers: %r" % by_id)
+if by_id["bad-state"].get("action") != "hold-run-invalid" or by_id["bad-state"].get("journalStatus") != "unknown":
+    raise SystemExit("bad state not isolated as unknown: %r" % by_id["bad-state"])
+if by_id["bad-journal"].get("journalStatus") != "unknown":
+    raise SystemExit("bad journal not isolated as unknown: %r" % by_id["bad-journal"])
+if by_id["good-ready"].get("journalStatus") == "unknown":
+    raise SystemExit("good peer contaminated: %r" % by_id["good-ready"])
+print("malformed state/journal isolation OK")
+PYEOF
+then
+  ok "畸形 state/journal 按 Run 隔离"
+else
+  bad "畸形 state/journal 导致漏项或整轮崩溃"
+fi
+
+note "10) run parent nofollow + bounded evidence digest"
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs" "$TMP/external-run"
+make_run bounded-review REVIEW_PENDING 10
+printf '%s\n' '{}' > "$ROOT/runs/bounded-review/review-packet.json"
+cp "$ROOT/runs/bounded-review/state.json" "$TMP/external-run/state.json"
+cp "$ROOT/runs/bounded-review/task-spec.json" "$TMP/external-run/task-spec.json"
+python3 - "$TMP/external-run/state.json" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+data["runId"] = "symlink-run"
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(data, handle)
+PYEOF
+ln -s "$TMP/external-run" "$ROOT/runs/symlink-run"
+python3 - "$ROOT/runs/bounded-review/review-packet.json" <<'PYEOF'
+import sys
+with open(sys.argv[1], "wb") as handle:
+    handle.truncate(8 * 1024 * 1024 + 1)
+PYEOF
+cat > "$COHORTFILE" <<'EOF'
+{"goalId":"goal:path-bounds","runIds":["bounded-review","symlink-run"]}
+EOF
+BOUNDED_JSON_1="$TMP/bounded_1.json"
+MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$BOUNDED_JSON_1"
+python3 - "$ROOT/runs/bounded-review/review-packet.json" <<'PYEOF'
+import sys
+with open(sys.argv[1], "wb") as handle:
+    handle.write(b"x" * (8 * 1024 * 1024 + 1))
+PYEOF
+BOUNDED_JSON_2="$TMP/bounded_2.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$BOUNDED_JSON_2" && \
+   python3 - "$BOUNDED_JSON_1" "$BOUNDED_JSON_2" <<'PYEOF'
+import json, sys
+def by_id(path):
+    with open(path) as handle:
+        return {item["runId"]: item for item in json.load(handle)["items"]}
+first, second = by_id(sys.argv[1]), by_id(sys.argv[2])
+if first.get("symlink-run", {}).get("action") != "hold-run-path-unknown":
+    raise SystemExit("symlink run parent was followed: %r" % first.get("symlink-run"))
+bounded = first.get("bounded-review", {})
+if bounded.get("evidenceStatus") != "unknown" or bounded.get("action") != "review-intervention":
+    raise SystemExit("oversized review evidence not bounded: %r" % bounded)
+if bounded.get("dedupeKey") != second.get("bounded-review", {}).get("dedupeKey"):
+    raise SystemExit("oversized evidence marker is content-dependent")
+print("nofollow run parent + stable bounded evidence marker OK")
+PYEOF
+then
+  ok "run parent nofollow 且超限证据 stable unknown"
+else
+  bad "run parent 或 evidence digest 边界失效"
+fi
+
+note "11) Qoder/Codex 真实 basename 仅影响 argvMatched 诊断"
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run argv-qoder RUNNING 10
+make_run argv-qoder-version RUNNING 10
+make_run argv-codex-platform RUNNING 10
+cat > "$LEASEFILE" <<'EOF'
+{"argv-qoder":"not-held","argv-qoder-version":"not-held","argv-codex-platform":"not-held"}
+EOF
+cat > "$PROCFILE" <<'EOF'
+100 /opt/tools/qodercli --run argv-qoder
+101 /opt/tools/qodercli-1.1.23 --run argv-qoder-version
+102 /opt/tools/codex-aarch64-apple-darwin --run argv-codex-platform
+EOF
+ARGV_REAL_JSON="$TMP/argv_real_basenames.json"
+if run_watch --once --json > "$ARGV_REAL_JSON" && \
+   python3 - "$ARGV_REAL_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    items = json.load(handle)["items"]
+for item in items:
+    if item.get("argvMatched") is not True or item.get("processOwnership") != "not-found" or item.get("action") != "doctor-dead":
+        raise SystemExit("argv diagnostic changed authority or missed basename: %r" % item)
+print("real adapter basenames are diagnostic-only")
+PYEOF
+then
+  ok "真实 Qoder/Codex basename 命中且不提升 authority"
+else
+  bad "真实 basename 诊断遗漏或污染 authority"
 fi
 
 printf '\n# 汇总: %d 通过, %d 失败\n' "$PASS" "$FAIL"
