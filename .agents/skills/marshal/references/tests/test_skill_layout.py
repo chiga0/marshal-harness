@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import re
+import unittest
+from pathlib import Path
+
+
+SKILL_ROOT = Path(__file__).resolve().parents[2]
+SKILL = SKILL_ROOT / "SKILL.md"
+REQUIRED_REFERENCES = {
+    "admission-and-acceptance.md": (
+        "零 Attempt admission",
+        "validate-acceptance-semantic-preflight.py",
+        "verifier-worktree-mutated",
+        "id/argv/cwd/timeoutSeconds/required=true/baselinePolicy/maxLogBytes",
+        "fstat",
+    ),
+    "review-and-rework.md": (
+        "historyClaimed=true",
+        "action=dispatch-reviewer",
+        "action=generate-review-packet",
+        "reasonCode",
+        "validate-closure-matrix-preflight.py",
+        "O_EXCL",
+        "attemptId",
+    ),
+    "adapter-promotion-and-mac.md": (
+        "authorityMode=ordinary-user",
+        "transcript-attestation-pass",
+        "protocol-invalid/do-not-retry",
+        "WorkerResult",
+        "codex-provider-schema-compatible",
+        "status=fail",
+    ),
+    "watchdog-and-capacity.md": (
+        "memoryAvailableBytes",
+        "slotsAvailable",
+        "processOwnership",
+        "dedupeKey",
+    ),
+    "publication-and-reconcile.md": (
+        "ObserveChecks",
+        "RemoteCheckRecord",
+        "PUBLISHING",
+        "CI_PENDING",
+        "pendingRemoteSync",
+    ),
+    "engineering-and-release.md": (
+        "sourceHead",
+        "localMergeSha",
+        "make check",
+        "git merge-tree",
+    ),
+}
+LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+
+
+class SkillLayoutTest(unittest.TestCase):
+    def test_top_level_has_bounded_default_read_cost(self) -> None:
+        data = SKILL.read_bytes()
+        self.assertLessEqual(len(data), 12_288)
+        self.assertEqual(data.decode("utf-8").encode("utf-8"), data)
+
+    def test_routes_every_required_reference(self) -> None:
+        content = SKILL.read_text(encoding="utf-8")
+        for name in REQUIRED_REFERENCES:
+            with self.subTest(reference=name):
+                self.assertIn(f"](references/{name})", content)
+                reference = SKILL_ROOT / "references" / name
+                self.assertTrue(reference.is_file())
+                first_lines = "\n".join(reference.read_text(encoding="utf-8").splitlines()[:5])
+                self.assertIn("何时必须读取：", first_lines)
+
+    def test_moved_contract_anchors_remain_machine_checked(self) -> None:
+        for name, anchors in REQUIRED_REFERENCES.items():
+            content = (SKILL_ROOT / "references" / name).read_text(encoding="utf-8")
+            for anchor in anchors:
+                with self.subTest(reference=name, anchor=anchor):
+                    self.assertIn(anchor, content)
+
+    def test_top_level_keeps_authority_lifecycle_and_truthful_boundary(self) -> None:
+        content = SKILL.read_text(encoding="utf-8")
+        for anchor in (
+            "明确要求“使用 Marshal”",
+            "主 Agent（pi、Codex 等编码 Agent）",
+            "不要绕过 Core",
+            "marshal task review",
+            "Worker 不能为自己的工作提供权威验证",
+            "PUBLISHING",
+            "CI_PENDING",
+            "ACCEPTED",
+            "NO_CHANGE",
+            "REJECTED",
+            "BLOCKED",
+            "authorityMode=ordinary-user",
+            "不得称为 hardened authority、APAP、sandbox",
+            "historyClaimed=true",
+            "action=dispatch-reviewer",
+            "action=generate-review-packet",
+            "reasonCode",
+        ):
+            with self.subTest(anchor=anchor):
+                self.assertIn(anchor, content)
+
+    def test_all_relative_markdown_links_exist(self) -> None:
+        documents = [SKILL, SKILL_ROOT / "references" / "skill-rule-migration.md"]
+        documents.extend(SKILL_ROOT / "references" / name for name in REQUIRED_REFERENCES)
+        for document in documents:
+            content = document.read_text(encoding="utf-8")
+            for raw_target in LINK.findall(content):
+                target = raw_target.split("#", 1)[0]
+                if not target or "://" in target or target.startswith("mailto:"):
+                    continue
+                resolved = (document.parent / target).resolve()
+                with self.subTest(document=document.name, target=raw_target):
+                    self.assertTrue(resolved.exists(), f"missing Markdown target: {resolved}")
+
+    def test_migration_map_covers_every_route(self) -> None:
+        migration = (SKILL_ROOT / "references" / "skill-rule-migration.md").read_text(encoding="utf-8")
+        for name in REQUIRED_REFERENCES:
+            with self.subTest(reference=name):
+                self.assertIn(f"`{name}`", migration)
+
+
+if __name__ == "__main__":
+    unittest.main()
