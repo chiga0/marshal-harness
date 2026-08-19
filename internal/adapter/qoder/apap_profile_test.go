@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func newQoderAPAPFixture(t *testing.T) qoderAPAPFixture {
 	}
 	host := exactRootedHostIdentity(t, osFixture.now, "host-1", 1, osFixture.keys["host-1"])
 	executable, evidenceRoot := exactHeldObjects(t)
-	evidence := QoderConformanceEvidenceExact{APIVersion: exactAuthorityAPIVersion, Kind: "QoderConformanceEvidence", SchemaVersion: 1, ObservationDigest: digest("a"), ProbeRunID: "run-1", RunnerID: "runner-1", RunnerVersion: "1", ObservedAt: candidateExactTimestamp(osFixture.now.Add(-time.Minute)), ValidUntil: candidateExactTimestamp(osFixture.now.Add(time.Hour)), AdapterVersion: adapterVersion, CandidateExecutableIdentity: candidateExecutableReceiptIdentity(executable, supportedBinary), HostIdentity: host, AuthorityGeneration: 1, SuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("c"), ProbeRunChallengeDigest: digest("e"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProfileDigest: expectedProbeProfileDigest(), VariantInvocationManifests: exactEvidenceManifests(t, osFixture.now, osFixture.keys["credential-0"]), ToolPolicyDigest: expectedProbeToolPolicyDigest(), EventContract: conformanceEventContract, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode, TranscriptDigest: digest("3"), ReceiptDigests: []string{digest("4"), digest("5"), digest("6"), digest("7")}, AggregateReceiptDigest: digest("8"), CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true, ReceiptTrustLedgerTailDigest: trust.TailDigest, VerifierTrustLedgerTailDigest: trust.TailDigest, EvidenceTrustLedgerTailDigest: trust.TailDigest, OSTrustRootLedgerTailDigest: osState.RootRecordDigest, EvidenceAuthorityKeyID: "evidence-0", SignatureAlgorithm: exactSignatureAlgorithm, SignatureEncoding: exactSignatureEncoding}
+	evidence := QoderConformanceEvidenceExact{APIVersion: exactAuthorityAPIVersion, Kind: "QoderConformanceEvidence", SchemaVersion: 1, ObservationDigest: digest("a"), ProbeRunID: "run-1", RunnerID: "runner-1", RunnerVersion: "1", ObservedAt: candidateExactTimestamp(osFixture.now.Add(-time.Minute)), ValidUntil: candidateExactTimestamp(osFixture.now.Add(time.Hour)), AdapterVersion: adapterVersion, CandidateExecutableIdentity: candidateExecutableReceiptIdentity(executable, supportedBinary), HostIdentity: host, AuthorityGeneration: 1, SuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("c"), ProbeRunChallengeDigest: digest("e"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProfileDigest: expectedProbeProfileDigest(), VariantInvocationManifests: exactEvidenceManifests(t, osFixture.now, osFixture.keys["credential-0"]), ToolPolicyDigest: expectedProbeToolPolicyDigest(), WorkerResultTransportDigest: expectedWorkerResultTransportDigest(), EventContract: conformanceEventContract, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode, TranscriptDigest: digest("3"), ReceiptDigests: []string{digest("4"), digest("5"), digest("6"), digest("7")}, AggregateReceiptDigest: digest("8"), CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true, ReceiptTrustLedgerTailDigest: trust.TailDigest, VerifierTrustLedgerTailDigest: trust.TailDigest, EvidenceTrustLedgerTailDigest: trust.TailDigest, OSTrustRootLedgerTailDigest: osState.RootRecordDigest, EvidenceAuthorityKeyID: "evidence-0", SignatureAlgorithm: exactSignatureAlgorithm, SignatureEncoding: exactSignatureEncoding}
 	resignExactEvidence(&evidence, probe.keys["evidence-0"])
 	config := QoderAuthorityConfigExact{APIVersion: exactAuthorityAPIVersion, Kind: "QoderAuthorityConfig", SchemaVersion: 1, RepositoryIdentity: "repo-1", AuthorityGeneration: 1, HostIdentityDigest: host.RecordDigest, EvidenceRootIdentity: candidateRootIdentity(evidenceRoot.Identity), CurrentEvidenceDigest: evidence.EvidenceDigest, ProbeArtifactDigest: evidence.ProbeArtifactDigest, ProbeRunChallengeDigest: evidence.ProbeRunChallengeDigest, RevokedEvidenceDigests: []string{}, TrustPolicyDigest: digest("a"), ReceiptTrustLedgerTailDigest: trust.TailDigest, VerifierTrustLedgerTailDigest: trust.TailDigest, EvidenceTrustLedgerTailDigest: trust.TailDigest, OSTrustRootLedgerTailDigest: osState.RootRecordDigest, ConsumerFenceProviderIdentity: "fence-provider"}
 	config.ConfigDigest = digestRecordWithoutFields(config, "configDigest")
@@ -169,6 +170,20 @@ func TestQoderAPAPReceiptMapsExactADR0034Object(t *testing.T) {
 	document, _ := json.Marshal(receipt)
 	document, _ = canonical.JSON(document)
 	bridge.now = func() time.Time { return time.Now().UTC().Add(time.Second) }
+	_, receiptTrust, err := validateQoderAPAPAuthority(fixture.authority, bridge.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transportMismatch := receipt
+	transportMismatch.WorkerResultTransportDigest = digest("b")
+	transportMismatch.RecordDigest, _ = transportMismatch.digest()
+	transportMessage, _ := transportMismatch.signingBytes()
+	transportMismatch.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(fixture.receiptPrivate, transportMessage))
+	transportDocument, _ := json.Marshal(transportMismatch)
+	transportDocument, _ = canonical.JSON(transportDocument)
+	if _, err := bindQoderAPAPReceipt(session, transportDocument, receiptTrust, bridge.now()); err == nil || !strings.Contains(err.Error(), "runtime contract") {
+		t.Fatalf("fresh correctly re-signed v4 receipt with only transport digest replaced was not rejected by runtime contract: %v", err)
+	}
 	if _, err := bridge.BindReceipt(session, document); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +219,7 @@ func TestQoderAPAPReceiptMapsExactADR0034Object(t *testing.T) {
 			changed.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(fixture.receiptPrivate, message))
 			changedDocument, _ := json.Marshal(changed)
 			changedDocument, _ = canonical.JSON(changedDocument)
-			if _, err := bridge.BindReceipt(session, changedDocument); err == nil {
+			if _, err := bindQoderAPAPReceipt(session, changedDocument, receiptTrust, bridge.now()); err == nil {
 				t.Fatal("trusted re-signing widened the frozen receipt contract")
 			}
 		})

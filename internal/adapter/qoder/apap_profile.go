@@ -204,7 +204,7 @@ func bindQoderAPAPReceipt(session QoderAPAPProbeSession, document []byte, trust 
 	if capabilityErr != nil || manifestErr != nil || !candidateManifestsEqual(receipt.InvocationManifest, expectedManifest) {
 		return QoderAPAPReceiptBinding{}, errors.New("qoder APAP receipt invocation manifest is invalid")
 	}
-	if receipt.IsolationProfileDigest != candidateObservedProfileDigest() || receipt.ProtocolVersion != qoderProtocolVersion || receipt.PermissionMode != qoderPermissionMode || receipt.EventContract != conformanceEventContract {
+	if receipt.IsolationProfileDigest != candidateObservedProfileDigest() || receipt.ProtocolVersion != qoderProtocolVersion || receipt.PermissionMode != qoderPermissionMode || receipt.EventContract != conformanceEventContract || receipt.WorkerResultTransportDigest != expectedWorkerResultTransportDigest() {
 		return QoderAPAPReceiptBinding{}, errors.New("qoder APAP receipt runtime contract is invalid")
 	}
 	started, startErr := time.Parse(time.RFC3339Nano, receipt.StartedAt)

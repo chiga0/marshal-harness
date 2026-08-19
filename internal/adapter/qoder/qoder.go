@@ -22,7 +22,7 @@ import (
 
 const (
 	adapterID      = "qoder"
-	adapterVersion = "0.1.2"
+	adapterVersion = "0.1.3"
 	// supportedBinary is the minimum verified patch in the compatible 1.1.x
 	// line. Other minor/major lines and older patches fail closed.
 	supportedBinary          = "1.1.23"
@@ -33,9 +33,10 @@ const (
 	versionOutputLimit       = 4 << 10
 	versionStderrLimit       = 4 << 10
 	probeTimeout             = 10 * time.Second
-	conformanceEventContract = "qoder-stream-json-1.2.0-v3"
+	conformanceEventContract = "qoder-stream-json-1.2.0-v4"
 	qoderProtocolVersion     = "1.2.0"
 	qoderPermissionMode      = "acceptEdits"
+	qoderDenialExtractor     = "qoder-1.1.23-tool-result-metadata-v1"
 
 	// conformancePendingReason is the fixed, searchable reason Probe reports
 	// "unsupported" until an independent, credentialed live run verifies the
@@ -249,8 +250,73 @@ func expectedProbeToolPolicyDigest() string {
 	return digestBytes(data)
 }
 
+// workerResultTransportContract is the closed, deterministic description of
+// the authority-bearing WorkerResult transport. Every security-relevant
+// field is scalar so a contract mutation cannot disappear through ordering or
+// normalization. The live observation, each execution receipt and both
+// evidence consumers bind its digest; changing any field therefore requires
+// a new Adapter/event contract and fresh live conformance.
+type workerResultTransportContract struct {
+	StagingBasename          string `json:"stagingBasename"`
+	StagingFileType          string `json:"stagingFileType"`
+	StagingMode              string `json:"stagingMode"`
+	CreationFlags            string `json:"creationFlags"`
+	UnlinkBeforeLaunch       bool   `json:"unlinkBeforeLaunch"`
+	UnlinkedLinkCount        uint64 `json:"unlinkedLinkCount"`
+	WorkerPathExposure       string `json:"workerPathExposure"`
+	WorkerDescriptorExposure string `json:"workerDescriptorExposure"`
+	ControlInodeRelationship string `json:"controlInodeRelationship"`
+	HeldDirectoryBinding     string `json:"heldDirectoryBinding"`
+	HeldInodeCommit          string `json:"heldInodeCommit"`
+	HeldInodeConsume         string `json:"heldInodeConsume"`
+	HeldInodeCleanup         string `json:"heldInodeCleanup"`
+	ToolName                 string `json:"toolName"`
+	ToolInputContract        string `json:"toolInputContract"`
+	CanonicalCommand         string `json:"canonicalCommand"`
+	TeeSequence              string `json:"teeSequence"`
+	DenialExtractor          string `json:"denialExtractor"`
+	TranscriptEventContract  string `json:"transcriptEventContract"`
+}
+
+func expectedWorkerResultTransportContract() workerResultTransportContract {
+	return workerResultTransportContract{
+		StagingBasename:          workerResultStagingName,
+		StagingFileType:          "regular-file",
+		StagingMode:              "0600",
+		CreationFlags:            "O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC",
+		UnlinkBeforeLaunch:       true,
+		UnlinkedLinkCount:        0,
+		WorkerPathExposure:       "none",
+		WorkerDescriptorExposure: "none",
+		ControlInodeRelationship: "must-be-distinct",
+		HeldDirectoryBinding:     "held-dirfd-exact-worktree-no-symlink",
+		HeldInodeCommit:          "post-terminal-post-tee-last-exact-inode",
+		HeldInodeConsume:         "held-fd-bounded-exact-inode",
+		HeldInodeCleanup:         "close-already-unlinked-held-fd-and-dirfd",
+		ToolName:                 "Bash",
+		ToolInputContract:        "canonical-json-single-command-field-no-extra-members",
+		CanonicalCommand:         workerResultTeeFirstLine + "\n<CANONICAL_WORKER_RESULT_JSON>\nMARSHAL_RESULT",
+		TeeSequence:              "exactly-one-successful-tee-as-final-tool-call",
+		DenialExtractor:          qoderDenialExtractor,
+		TranscriptEventContract:  conformanceEventContract,
+	}
+}
+
+func workerResultTransportContractDigest(contract workerResultTransportContract) string {
+	data, _ := json.Marshal(contract)
+	return digestBytes(data)
+}
+
+func expectedWorkerResultTransportDigest() string {
+	return workerResultTransportContractDigest(expectedWorkerResultTransportContract())
+}
+
 func expectedProbeSuiteDigest() string {
-	data, _ := json.Marshal(map[string]any{"adapterId": adapterID, "adapterVersion": adapterVersion, "argvDigest": expectedProbeArgvDigest(), "environmentDigest": expectedProbeEnvironmentDigest(), "profileDigest": expectedProbeProfileDigest(), "toolPolicyDigest": expectedProbeToolPolicyDigest(), "eventContract": conformanceEventContract, "protocolVersion": qoderProtocolVersion})
+	return probeSuiteDigestForWorkerResultTransport(expectedWorkerResultTransportDigest())
+}
+
+func probeSuiteDigestForWorkerResultTransport(transportDigest string) string {
+	data, _ := json.Marshal(map[string]any{"adapterId": adapterID, "adapterVersion": adapterVersion, "argvDigest": expectedProbeArgvDigest(), "environmentDigest": expectedProbeEnvironmentDigest(), "profileDigest": expectedProbeProfileDigest(), "toolPolicyDigest": expectedProbeToolPolicyDigest(), "workerResultTransportDigest": transportDigest, "eventContract": conformanceEventContract, "protocolVersion": qoderProtocolVersion})
 	return digestBytes(data)
 }
 
@@ -741,6 +807,17 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
 	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: worktree, ControlRoot: controlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
+	// The reviewed result command begins with `cat`, so the shared generic
+	// execute-denial classifier would otherwise treat it as read-only
+	// introspection. Qoder's staging declaration is an execute/write transport:
+	// denial is always fatal and must never be retried as a benign probe.
+	for index := range denialRecords {
+		if access, _, _ := classifyWorkerResultTransportTool(capture.denials[index].Tool, capture.denials[index].Input); access {
+			denialRecords[index].Grade = string(denials.Fatal)
+			denialRecords[index].Kind = string(denials.KindExecute)
+			denialRecords[index].Reason = "Qoder WorkerResult transport 拒绝一律 FATAL"
+		}
+	}
 	fatalDenials := denials.CountFatal(denialRecords)
 	if len(denialRecords) > 0 {
 		denialLeaf, claimErr := claim(denials.LogFileName, "denial log")
@@ -758,6 +835,27 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		}
 	}
 	resolved := resolveAttemptFailure(capture, observation, runCtx, fatalDenials, a.now())
+	// A post-tee tool call or repeated/invalid declaration is structural even
+	// when Qoder also reports a provider/process failure. Cancellation and
+	// bounded-output truncation retain their explicit outer-bound precedence;
+	// malformed transcript already resolves to the same typed protocol class.
+	if runCtx.Err() == nil && !capture.limitExceeded && capture.err == nil && workerResultTransportSequenceViolation(capture) {
+		resolved = qoderProtocolInvalid("worker result transport tool sequence is invalid", a.now())
+	}
+	if resolved == nil && validateWorkerResultTransportSequence(capture) != nil {
+		resolved = qoderProtocolInvalid("worker result transport tool sequence is invalid", a.now())
+	}
+	if resolved == nil && (capture.cliVersion != identity.version || capture.protocolVersion != qoderProtocolVersion || capture.permissionMode != qoderPermissionMode) {
+		resolved = qoderProtocolInvalid("system contract does not match the bound Qoder protocol", a.now())
+	}
+	// Only the Adapter commits the declaration payload, and only after the
+	// transcript, terminal contract and tee-last sequence all pass. The Worker
+	// never receives the unlinked held inode or any pathname that names it.
+	if resolved == nil {
+		if commitErr := resultTransport.commit(capture.resultTransport.payload, int64(maxResultBytes)); commitErr != nil {
+			resolved = qoderProtocolInvalid("worker result staging identity or content is invalid", a.now())
+		}
+	}
 	stagedResult, transportErr := resultTransport.consume(int64(maxResultBytes))
 	// Cancellation and output truncation are the explicit outer bounds. A
 	// simultaneous staging anomaly stays recorded by cleanup but does not
@@ -765,9 +863,6 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	// protocol-integrity failure.
 	if transportErr != nil && runCtx.Err() == nil && !capture.limitExceeded {
 		resolved = qoderProtocolInvalid("worker result staging identity or content is invalid", a.now())
-	}
-	if resolved == nil && (capture.cliVersion != identity.version || capture.protocolVersion != qoderProtocolVersion || capture.permissionMode != qoderPermissionMode) {
-		resolved = qoderProtocolInvalid("system contract does not match the bound Qoder protocol", a.now())
 	}
 	if bindingErr := trustedOutput.verifyPathBinding(); bindingErr != nil {
 		resolved = qoderProtocolInvalid("output directory binding changed during execution", a.now())
@@ -783,7 +878,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		"sessionId": capture.sessionID, "model": capture.model,
 		"qodercliVersion": capture.cliVersion, "protocolVersion": capture.protocolVersion, "permissionMode": capture.permissionMode,
 		"eventCount": capture.eventCount, "assistantMessages": capture.assistantCount, "toolCalls": capture.toolCalls,
-		"inputTokens": capture.inputTokens, "outputTokens": capture.outputTokens,
+		"workerResultTeeAttempts": capture.resultTransport.attempts, "workerResultTeeSuccesses": capture.resultTransport.successes,
+		"workerResultTeeLast": capture.resultTransport.attempts == 1 && capture.resultTransport.successes == 1 && capture.resultTransport.successfulOrdinal == capture.toolCalls && !capture.resultTransport.invalidAccess,
+		"inputTokens":         capture.inputTokens, "outputTokens": capture.outputTokens,
 		"capturedBytes": len(capture.raw), "outputTruncated": capture.limitExceeded,
 		"permissionDenied": fatalDenials > 0,
 		"denialsBenign":    len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials,

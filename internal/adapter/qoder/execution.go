@@ -723,18 +723,20 @@ type claimedLeaf struct {
 
 const workerResultStagingName = "marshal-worker-result.json"
 
-// workerResultTransport is an untrusted, worktree-local staging file. It is
-// deliberately a different inode from the Marshal-controlled WorkerResult:
-// ordinary-user Qoder may write this file, but never receives a pathname or
-// hard-link capability to the control root. The adapter keeps both the
-// worktree directory and staging file descriptors open across execution.
+// workerResultTransport is an Adapter-owned, unlinked staging inode. It is
+// deliberately different from the Marshal-controlled WorkerResult. Qoder is
+// given neither a pathname nor a descriptor for it: after a valid terminal
+// transcript the Adapter copies the declaration payload into this held inode,
+// then performs the existing Schema/identity normalization into control
+// output. The worktree directory descriptor remains held so a path swap still
+// fails closed, while unlink-before-launch removes the shell pathname attack
+// surface entirely.
 type workerResultTransport struct {
 	directoryPath string
 	directory     *os.File
 	directoryInfo os.FileInfo
 	file          *os.File
 	stat          unix.Stat_t
-	removed       bool
 }
 
 func bindWorkerResultTransport(worktree string) (*workerResultTransport, error) {
@@ -772,6 +774,22 @@ func bindWorkerResultTransport(worktree string) (*workerResultTransport, error) 
 		_ = directory.Close()
 		return nil, err
 	}
+	if err := unix.Unlinkat(directoryFD, workerResultStagingName, 0); err != nil {
+		_ = file.Close()
+		_ = directory.Close()
+		return nil, fmt.Errorf("unlink worker result staging leaf before launch: %w", err)
+	}
+	if err := directory.Sync(); err != nil {
+		_ = file.Close()
+		_ = directory.Close()
+		return nil, err
+	}
+	var unlinked unix.Stat_t
+	if err := unix.Fstat(fileFD, &unlinked); err != nil || unlinked.Dev != stat.Dev || unlinked.Ino != stat.Ino || unlinked.Nlink != 0 {
+		_ = file.Close()
+		_ = directory.Close()
+		return nil, errors.New("worker result staging inode was not sealed by unlink")
+	}
 	return &workerResultTransport{directoryPath: worktree, directory: directory, directoryInfo: directoryInfo, file: file, stat: stat}, nil
 }
 
@@ -784,28 +802,56 @@ func (transport *workerResultTransport) verifyDirectoryBinding() error {
 }
 
 func (transport *workerResultTransport) verifyLeafBinding() error {
-	if transport.removed {
-		return errors.New("worker result staging leaf was already removed")
-	}
-	var descriptor, named unix.Stat_t
+	var descriptor unix.Stat_t
 	if err := unix.Fstat(int(transport.file.Fd()), &descriptor); err != nil {
 		return err
 	}
-	if err := unix.Fstatat(int(transport.directory.Fd()), workerResultStagingName, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-		return err
-	}
-	if descriptor.Dev != transport.stat.Dev || descriptor.Ino != transport.stat.Ino || named.Dev != transport.stat.Dev || named.Ino != transport.stat.Ino ||
-		descriptor.Mode&unix.S_IFMT != unix.S_IFREG || named.Mode&unix.S_IFMT != unix.S_IFREG ||
-		descriptor.Mode&0o7777 != 0o600 || named.Mode&0o7777 != 0o600 ||
-		descriptor.Uid != uint32(os.Getuid()) || named.Uid != uint32(os.Getuid()) || descriptor.Nlink != 1 || named.Nlink != 1 {
+	if descriptor.Dev != transport.stat.Dev || descriptor.Ino != transport.stat.Ino ||
+		descriptor.Mode&unix.S_IFMT != unix.S_IFREG || descriptor.Mode&0o7777 != 0o600 ||
+		descriptor.Uid != uint32(os.Getuid()) || descriptor.Nlink != 0 {
 		return errors.New("worker result staging leaf identity is unsafe or changed")
 	}
-	return transport.verifyDirectoryBinding()
+	if err := transport.verifyDirectoryBinding(); err != nil {
+		return err
+	}
+	var replacement unix.Stat_t
+	if err := unix.Fstatat(int(transport.directory.Fd()), workerResultStagingName, &replacement, unix.AT_SYMLINK_NOFOLLOW); err == nil || !errors.Is(err, unix.ENOENT) {
+		return errors.New("reserved worker result staging name appeared after admission")
+	}
+	return nil
 }
 
-// consume reads bounded untrusted bytes from the held staging descriptor,
-// then removes exactly the originally claimed inode before returning them.
-// Validation of the WorkerResult happens only after this capability is closed.
+// commit copies the strictly parsed transcript payload into the unlinked held
+// inode. It is called only after terminal and tee-last protocol validation.
+func (transport *workerResultTransport) commit(data []byte, limit int64) error {
+	if int64(len(data)) > limit {
+		return errors.New("worker result declaration exceeds byte limit")
+	}
+	if err := transport.verifyLeafBinding(); err != nil {
+		return err
+	}
+	if err := transport.file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := transport.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	written, err := transport.file.Write(data)
+	if err != nil {
+		return err
+	}
+	if written != len(data) {
+		return io.ErrShortWrite
+	}
+	if err := transport.file.Sync(); err != nil {
+		return err
+	}
+	return transport.verifyLeafBinding()
+}
+
+// consume reads bounded untrusted declaration bytes from the exact unlinked
+// staging descriptor. Validation of the WorkerResult still happens only after
+// this capability is read through the held identity.
 func (transport *workerResultTransport) consume(limit int64) ([]byte, error) {
 	if err := transport.verifyLeafBinding(); err != nil {
 		return nil, err
@@ -820,16 +866,9 @@ func (transport *workerResultTransport) consume(limit int64) ([]byte, error) {
 	if err := transport.verifyLeafBinding(); err != nil {
 		return nil, err
 	}
-	if err := unix.Unlinkat(int(transport.directory.Fd()), workerResultStagingName, 0); err != nil {
-		return nil, err
-	}
-	transport.removed = true
-	if err := transport.directory.Sync(); err != nil {
-		return nil, err
-	}
 	var descriptor unix.Stat_t
 	if err := unix.Fstat(int(transport.file.Fd()), &descriptor); err != nil || descriptor.Dev != transport.stat.Dev || descriptor.Ino != transport.stat.Ino || descriptor.Nlink != 0 {
-		return nil, errors.New("worker result staging inode remained linked after cleanup")
+		return nil, errors.New("worker result staging inode identity changed before consume")
 	}
 	if int64(len(data)) > limit {
 		return nil, errors.New("worker result staging file exceeds byte limit")
@@ -837,22 +876,10 @@ func (transport *workerResultTransport) consume(limit int64) ([]byte, error) {
 	return data, nil
 }
 
-// close performs best-effort cleanup without ever deleting a replacement
-// candidate. Only the exact originally claimed inode may be unlinked.
+// close releases only the already-unlinked held inode and directory. It never
+// removes a pathname that may have been created by the Worker or another
+// process after admission.
 func (transport *workerResultTransport) close() error {
-	var cleanupErr error
-	if !transport.removed && transport.directory != nil && transport.file != nil {
-		var descriptor, named unix.Stat_t
-		fdErr := unix.Fstat(int(transport.file.Fd()), &descriptor)
-		nameErr := unix.Fstatat(int(transport.directory.Fd()), workerResultStagingName, &named, unix.AT_SYMLINK_NOFOLLOW)
-		if fdErr == nil && nameErr == nil && descriptor.Dev == transport.stat.Dev && descriptor.Ino == transport.stat.Ino && named.Dev == transport.stat.Dev && named.Ino == transport.stat.Ino && named.Mode&unix.S_IFMT == unix.S_IFREG {
-			cleanupErr = unix.Unlinkat(int(transport.directory.Fd()), workerResultStagingName, 0)
-			if cleanupErr == nil {
-				transport.removed = true
-				cleanupErr = transport.directory.Sync()
-			}
-		}
-	}
 	var fileErr, directoryErr error
 	if transport.file != nil {
 		fileErr = transport.file.Close()
@@ -860,7 +887,7 @@ func (transport *workerResultTransport) close() error {
 	if transport.directory != nil {
 		directoryErr = transport.directory.Close()
 	}
-	return errors.Join(cleanupErr, fileErr, directoryErr)
+	return errors.Join(fileErr, directoryErr)
 }
 
 func openTrustedOutputDirectory(path string) (*trustedOutputDirectory, error) {

@@ -222,6 +222,7 @@ type CandidateExecutionReceipt struct {
 	ProtocolVersion             string                             `json:"protocolVersion"`
 	PermissionMode              string                             `json:"permissionMode"`
 	EventContract               string                             `json:"eventContract"`
+	WorkerResultTransportDigest string                             `json:"workerResultTransportDigest"`
 	TranscriptDigest            string                             `json:"transcriptDigest"`
 	MarkerDigest                string                             `json:"markerDigest"`
 	StartedAt                   string                             `json:"startedAt"`
@@ -428,7 +429,7 @@ func (verifier *CandidateLiveVerifier) Verify(ctx context.Context, request Candi
 		AdapterVersion: adapterVersion, Executable: handles.executable.CanonicalPath, ExecutableDigest: candidateExecutableDigest(handles.executable), BinaryVersion: binaryVersion, QoderCLIVersion: binaryVersion,
 		HostOS: runtime.GOOS, HostArch: runtime.GOARCH, HostFingerprint: hostFingerprint, AuthorityGeneration: request.AuthorityGeneration,
 		ProbeSuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: request.ProbeArtifactDigest, ChallengeDigest: request.ChallengeDigest,
-		CapabilitiesDigest: digestObservedCandidateCapabilities(), ProbeProfileDigest: candidateObservedProfileDigest(), ArgvDigest: observedArgvDigest, EnvironmentDigest: observedEnvironmentDigest, ToolPolicyDigest: candidateObservedToolPolicyDigest(),
+		CapabilitiesDigest: digestObservedCandidateCapabilities(), ProbeProfileDigest: candidateObservedProfileDigest(), ArgvDigest: observedArgvDigest, EnvironmentDigest: observedEnvironmentDigest, ToolPolicyDigest: candidateObservedToolPolicyDigest(), WorkerResultTransportDigest: expectedWorkerResultTransportDigest(),
 		TranscriptDigest: digestBytes(transcriptSet), ExecutionReceiptDigest: digestBytes(receiptSet), EvidenceClass: candidateEvidenceClassLive,
 		ExecutionReceiptDigests: append([]string(nil), receiptDigests...), ExecutionReceipts: receiptDocuments,
 		ReceiptAuthorityKeyID: verifier.policy.receiptKeyID, ReceiptAuthorityPublicKeyDigest: digestBytes(verifier.policy.receiptPublicKey), VerifierKeyID: verifier.policy.verifierKeyID, VerifierPublicKeyDigest: digestBytes(verifier.policy.verifierPublicKey),
@@ -582,7 +583,7 @@ func (verifier *CandidateLiveVerifier) verifyExecutionReceipt(document []byte, i
 	capability, capabilityErr := credentialCapabilityFromManifest(receipt.InvocationManifest.EnvironmentManifest)
 	expectedManifest, manifestErr := candidateInvocationManifest(invocation, capability)
 	capabilityAuthorityErr := verifyCandidateCredentialCapability(capability, verifier.policy)
-	if receipt.ProbeRunID != invocation.ProbeRunID || receipt.ReceiptSequence != uint64(invocation.ReceiptSequence) || receipt.VariantID != candidateVariantID(invocation.VariantIndex) || receipt.ProbeRunChallengeDigest != invocation.ProbeRunChallengeDigest || receipt.VariantChallengeDigest != invocation.ChallengeDigest || !previousOK || receipt.CandidateExecutableIdentity != executable || receipt.ScratchRootIdentity != scratchRoot || receipt.CredentialRootIdentity != credentialRoot || !equalCandidateRootIdentities(receipt.BusinessRootIdentities, businessRoots) || capabilityErr != nil || capabilityAuthorityErr != nil || manifestErr != nil || !candidateManifestsEqual(receipt.InvocationManifest, expectedManifest) || receipt.IsolationProfileDigest != candidateObservedProfileDigest() || receipt.TopologyDigest != invocation.ExpectedTopologyDigest || !validSHA256Digest(receipt.HostIdentityDigest) || receipt.TranscriptDigest != digestBytes(result.Transcript) || receipt.SessionID != capture.sessionID || receipt.ModelID != capture.model || receipt.CandidateExecutableIdentity.BinaryVersion != capture.cliVersion || receipt.ProtocolVersion != capture.protocolVersion || receipt.PermissionMode != capture.permissionMode || receipt.EventContract != conformanceEventContract || receipt.MarkerDigest != markerDigest {
+	if receipt.ProbeRunID != invocation.ProbeRunID || receipt.ReceiptSequence != uint64(invocation.ReceiptSequence) || receipt.VariantID != candidateVariantID(invocation.VariantIndex) || receipt.ProbeRunChallengeDigest != invocation.ProbeRunChallengeDigest || receipt.VariantChallengeDigest != invocation.ChallengeDigest || !previousOK || receipt.CandidateExecutableIdentity != executable || receipt.ScratchRootIdentity != scratchRoot || receipt.CredentialRootIdentity != credentialRoot || !equalCandidateRootIdentities(receipt.BusinessRootIdentities, businessRoots) || capabilityErr != nil || capabilityAuthorityErr != nil || manifestErr != nil || !candidateManifestsEqual(receipt.InvocationManifest, expectedManifest) || receipt.IsolationProfileDigest != candidateObservedProfileDigest() || receipt.TopologyDigest != invocation.ExpectedTopologyDigest || !validSHA256Digest(receipt.HostIdentityDigest) || receipt.TranscriptDigest != digestBytes(result.Transcript) || receipt.SessionID != capture.sessionID || receipt.ModelID != capture.model || receipt.CandidateExecutableIdentity.BinaryVersion != capture.cliVersion || receipt.ProtocolVersion != capture.protocolVersion || receipt.PermissionMode != capture.permissionMode || receipt.EventContract != conformanceEventContract || receipt.WorkerResultTransportDigest != expectedWorkerResultTransportDigest() || receipt.MarkerDigest != markerDigest {
 		return CandidateExecutionReceipt{}, "", errors.New("qoder candidate live probe receipt does not bind actual execution")
 	}
 	if validateCandidateReceiptIsolationAudit(receipt.IsolationAudit, len(businessRoots), receipt.TopologyDigest) != nil {
@@ -1253,7 +1254,7 @@ func validateCandidateExactReceipt(receipt CandidateExecutionReceipt) error {
 		!validSHA256Digest(receipt.IsolationProfileDigest) || !validSHA256Digest(receipt.TopologyDigest) ||
 		!validSHA256Digest(receipt.HostIdentityDigest) || !validSHA256Digest(receipt.TranscriptDigest) || !validSHA256Digest(receipt.MarkerDigest) ||
 		!validCandidateASCII(receipt.SessionID) || !validCandidateASCII(receipt.ModelID) ||
-		!validCandidateASCII(receipt.ProtocolVersion) || !validCandidateASCII(receipt.PermissionMode) || !validCandidateASCII(receipt.EventContract) ||
+		!validCandidateASCII(receipt.ProtocolVersion) || !validCandidateASCII(receipt.PermissionMode) || !validCandidateASCII(receipt.EventContract) || !validSHA256Digest(receipt.WorkerResultTransportDigest) ||
 		!validCandidateTimestamp(receipt.StartedAt) || !validCandidateTimestamp(receipt.CompletedAt) ||
 		!validCandidateASCII(receipt.ReceiptAuthorityKeyID) || receipt.ReceiptAuthorityKeyEpoch > candidateMaxJSONInteger ||
 		!validCandidateASCII(receipt.SignatureAlgorithm) || receipt.SignatureAlgorithm != candidateSignatureAlgorithm ||

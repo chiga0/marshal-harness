@@ -160,7 +160,7 @@ func TestRunEnforcesOutputCap(t *testing.T) {
 	large := strings.Repeat("x", 1800)
 	body := emitLines(`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model"}`, `{"type":"assistant","session_id":"sess-1","message":{"extra":"`+large+`"}}`, `{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","session_id":"sess-1"}`)
 	fixture := newRunFixture(t, supportedBinary, body)
-	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrOutputLimit) {
+	if _, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"maxOutputBytes": 1024})); !errors.Is(err, ErrOutputLimit) {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -491,12 +491,35 @@ func emitLines(lines ...string) string {
 	return "printf '%s\\n' " + strings.Join(quoted, " ")
 }
 
+func workerResultTeeCommand(payload []byte) string {
+	return workerResultTeeFirstLine + "\n" + string(payload) + "\nMARSHAL_RESULT"
+}
+
+func workerResultTeeToolUseEvent(id string) string {
+	return workerResultTeeToolUseEventWithPayload(id, []byte("{}"))
+}
+
+func workerResultTeeToolUseEventWithPayload(id string, payload []byte) string {
+	command, _ := json.Marshal(workerResultTeeCommand(payload))
+	return `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":` + string(command) + `}}]}}`
+}
+
+func successfulWorkerResultTeeEvents(id string) []string {
+	return []string{
+		workerResultTeeToolUseEvent(id),
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":""}]}}`,
+	}
+}
+
 func successEvents(model string) string {
-	return emitLines(
-		`{"type":"system","subtype":"init","session_id":"sess-1","model":"`+model+`","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[]}}`,
+	events := []string{
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"` + model + `","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+	}
+	events = append(events, successfulWorkerResultTeeEvents("tool-result")...)
+	events = append(events,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":5}}`,
 	)
+	return emitLines(events...)
 }
 
 func errorEvents(reason string) string {
@@ -540,7 +563,9 @@ func newRunFixtureWithResult(t *testing.T, version, body string, result map[stri
 		if err != nil {
 			t.Fatal(err)
 		}
-		body += "\nprintf '%s' " + shellQuote(string(data)) + " > " + shellQuote(workerResultStagingName)
+		defaultEvent := workerResultTeeToolUseEvent("tool-result")
+		declaredEvent := workerResultTeeToolUseEventWithPayload("tool-result", data)
+		body = strings.Replace(body, shellQuote(defaultEvent), shellQuote(declaredEvent), 1)
 	}
 	executable := fakeExecutable(t, version, body)
 	validator := newValidator(t)
@@ -561,7 +586,7 @@ func newRunFixtureWithResult(t *testing.T, version, body string, result map[stri
 		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerRequest", "taskId": "TASK-1", "runId": "run-1", "attemptId": "attempt-1", "attemptNumber": 1,
 		"specDigest": digest("a"), "policyDigest": digest("b"), "capabilityDigest": digest("c"), "baseSha": strings.Repeat("1", 40),
 		"worktreePath": worktree, "controlRoot": controlRoot, "taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
-		"adapterId": "qoder", "executionProfile": "workspace-write", "sessionPolicy": "ephemeral", "attemptTimeoutSeconds": 5, "maxOutputBytes": 1024, "reviewFindings": []any{},
+		"adapterId": "qoder", "executionProfile": "workspace-write", "sessionPolicy": "ephemeral", "attemptTimeoutSeconds": 5, "maxOutputBytes": 64 << 10, "reviewFindings": []any{},
 	}
 	requestBytes, _ := json.Marshal(requestData)
 	return runFixture{adapter, validator, adapter.executable, worktree, controlRoot, domain.Record{Kind: domain.KindWorkerRequest, Data: requestBytes}}

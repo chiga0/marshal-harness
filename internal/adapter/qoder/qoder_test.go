@@ -795,7 +795,7 @@ func TestSealConformanceEvidenceFreezesProbeProfile(t *testing.T) {
 	observation := LiveConformanceObservation{
 		RunnerID: "independent-qoder-verifier", RunnerVersion: "1", ObservedAt: now.Add(-time.Minute), ValidUntil: now.Add(time.Hour),
 		AdapterVersion: adapterVersion, Executable: "/opt/qoder/qodercli", ExecutableDigest: digest("e"), BinaryVersion: supportedBinary, QoderCLIVersion: supportedBinary, HostOS: runtime.GOOS, HostArch: runtime.GOARCH, HostFingerprint: digest("d"), AuthorityGeneration: 1,
-		ProbeSuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), ArgvDigest: expectedProbeArgvDigest(), EnvironmentDigest: expectedProbeEnvironmentDigest(), ToolPolicyDigest: expectedProbeToolPolicyDigest(), TranscriptDigest: digest("b"), ExecutionReceiptDigest: digest("e"), ExecutionReceiptDigests: []string{digest("a"), digest("b"), digest("c"), digest("d")}, ExecutionReceipts: []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`)}, EvidenceClass: candidateEvidenceClassLive, ReceiptAuthorityKeyID: "receipt-root", ReceiptAuthorityPublicKeyDigest: digest("a"), VerifierKeyID: "verifier-root", VerifierPublicKeyDigest: digest("b"), VerifierSignature: base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)),
+		ProbeSuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), ArgvDigest: expectedProbeArgvDigest(), EnvironmentDigest: expectedProbeEnvironmentDigest(), ToolPolicyDigest: expectedProbeToolPolicyDigest(), WorkerResultTransportDigest: expectedWorkerResultTransportDigest(), TranscriptDigest: digest("b"), ExecutionReceiptDigest: digest("e"), ExecutionReceiptDigests: []string{digest("a"), digest("b"), digest("c"), digest("d")}, ExecutionReceipts: []json.RawMessage{json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`)}, EvidenceClass: candidateEvidenceClassLive, ReceiptAuthorityKeyID: "receipt-root", ReceiptAuthorityPublicKeyDigest: digest("a"), VerifierKeyID: "verifier-root", VerifierPublicKeyDigest: digest("b"), VerifierSignature: base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)),
 		CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true, EventContract: conformanceEventContract, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode, TrustRootKeyID: "root-1",
 	}
 	document, observationDigest, err := EncodeLiveConformanceObservation(observation)
@@ -1149,7 +1149,7 @@ func TestSignedEvidenceRejectsEveryFieldSubstitution(t *testing.T) {
 		"adapterVersion": "replacement-adapter", "executable": "/replacement/qodercli", "executableDigest": digest("f"), "binaryVersion": "1.1.24", "qodercliVersion": "1.1.24",
 		"hostOs": "replacement-os", "hostArch": "replacement-arch", "hostFingerprint": digest("f"), "authorityGeneration": float64(2),
 		"probeSuiteDigest": digest("f"), "probeArtifactDigest": digest("f"), "challengeDigest": digest("f"), "capabilitiesDigest": digest("f"), "probeProfileDigest": digest("f"),
-		"argvDigest": digest("f"), "environmentDigest": digest("f"), "toolPolicyDigest": digest("f"), "transcriptDigest": digest("f"),
+		"argvDigest": digest("f"), "environmentDigest": digest("f"), "toolPolicyDigest": digest("f"), "workerResultTransportDigest": digest("f"), "transcriptDigest": digest("f"),
 		"credentialVerified": false, "liveProtocolVerified": false, "workspaceWriteVerified": false,
 		"eventContract": "replacement-event", "protocolVersion": "replacement-protocol", "permissionMode": "replacement-permission", "trustRootKeyId": "replacement-root",
 	}
@@ -1227,7 +1227,7 @@ func signedTestAuthorityWindowGeneration(t *testing.T, identity executableIdenti
 	evidence := ConformanceEvidence{
 		RunnerID: "marshal-conformance", RunnerVersion: "1", ObservedAt: observedAt.Format(time.RFC3339Nano), ValidUntil: validUntil.Format(time.RFC3339Nano),
 		AdapterVersion: adapterVersion, Executable: identity.path, ExecutableDigest: identity.digest, BinaryVersion: identity.version, HostOS: runtime.GOOS, HostArch: runtime.GOARCH, HostFingerprint: hostFingerprint, AuthorityGeneration: generation,
-		ProbeSuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), ArgvDigest: expectedProbeArgvDigest(), EnvironmentDigest: expectedProbeEnvironmentDigest(), ToolPolicyDigest: expectedProbeToolPolicyDigest(), TranscriptDigest: digest("b"), ExecutionReceiptDigest: digest("e"), ExecutionReceiptDigests: []string{digest("a"), digest("b"), digest("c"), digest("d")}, EvidenceClass: candidateEvidenceClassLive, ReceiptAuthorityKeyID: "receipt-root", ReceiptAuthorityPublicKeyDigest: digest("a"), VerifierKeyID: "verifier-root", VerifierPublicKeyDigest: digest("b"), CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true,
+		ProbeSuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("a"), ChallengeDigest: digest("c"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProbeProfileDigest: expectedProbeProfileDigest(), ArgvDigest: expectedProbeArgvDigest(), EnvironmentDigest: expectedProbeEnvironmentDigest(), ToolPolicyDigest: expectedProbeToolPolicyDigest(), WorkerResultTransportDigest: expectedWorkerResultTransportDigest(), TranscriptDigest: digest("b"), ExecutionReceiptDigest: digest("e"), ExecutionReceiptDigests: []string{digest("a"), digest("b"), digest("c"), digest("d")}, EvidenceClass: candidateEvidenceClassLive, ReceiptAuthorityKeyID: "receipt-root", ReceiptAuthorityPublicKeyDigest: digest("a"), VerifierKeyID: "verifier-root", VerifierPublicKeyDigest: digest("b"), CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true,
 		EventContract: conformanceEventContract, QoderCLIVersion: identity.version, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode,
 		TrustRootKeyID: "test-root",
 	}
@@ -1765,25 +1765,25 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 		t.Fatalf("transcript = %s err=%v", transcript, err)
 	}
 	metadata, err := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qoder-transcript-meta.json"))
-	if err != nil || !strings.Contains(string(metadata), `"eventCount": 3`) || !strings.Contains(string(metadata), `"permissionDenied": false`) || !strings.Contains(string(metadata), `"denialsBenign": 0`) || !strings.Contains(string(metadata), `"denialsFatal": 0`) {
+	if err != nil || !strings.Contains(string(metadata), `"eventCount": 4`) || !strings.Contains(string(metadata), `"permissionDenied": false`) || !strings.Contains(string(metadata), `"denialsBenign": 0`) || !strings.Contains(string(metadata), `"denialsFatal": 0`) || !strings.Contains(string(metadata), `"workerResultTeeAttempts": 1`) || !strings.Contains(string(metadata), `"workerResultTeeSuccesses": 1`) || !strings.Contains(string(metadata), `"workerResultTeeLast": true`) {
 		t.Fatalf("metadata = %s err=%v", metadata, err)
 	}
 }
 
-func TestRunUsesColonFreeWorkerResultStagingFile(t *testing.T) {
+func TestRunUsesAdapterHeldWorkerResultChannel(t *testing.T) {
 	declared, err := json.Marshal(validDeclaredResult("/worker/claim"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Real Marshal attempt directories contain `attempt:<id>`. Qoder's
-	// ordinary-user shell guard rejects that colon when it appears in an
-	// absolute output path, so this fake writes through the worktree-local
-	// staging file. The adapter reads it through a held descriptor, removes
-	// that exact inode, validates it, and only then publishes to control output.
+	// ordinary-user shell guard rejects that colon in an absolute output path,
+	// so the declaration tees only to /dev/null. The Adapter extracts the
+	// closed transcript payload into its unlinked held inode, validates it, and
+	// only then publishes to control output.
 	body := emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[]}}`,
-	) + "\nprintf '%s' " + shellQuote(string(declared)) + " | tee marshal-worker-result.json >/dev/null\n" + emitLines(
+		workerResultTeeToolUseEventWithPayload("tool-result", declared),
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-result","content":""}]}}`,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":5}}`,
 	)
 	fixture := newRunFixtureWithResult(t, supportedBinary, body, nil)
@@ -1807,6 +1807,95 @@ func TestRunUsesColonFreeWorkerResultStagingFile(t *testing.T) {
 	}
 }
 
+func TestRunRejectsPostTeeWorkerResultToolSequencesAsPermanentProtocolFailures(t *testing.T) {
+	toolUse := func(id, name, input string) string {
+		return `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"` + id + `","name":"` + name + `","input":` + input + `}]}}`
+	}
+	toolResult := func(id, content string) string {
+		encoded, _ := json.Marshal(content)
+		return `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + id + `","content":` + string(encoded) + `}]}}`
+	}
+	inputForCommand := func(command string) string {
+		encoded, _ := json.Marshal(command)
+		return `{"command":` + string(encoded) + `}`
+	}
+	tee := successfulWorkerResultTeeEvents("tee-1")
+	corrected := successfulWorkerResultTeeEvents("tee-2")
+	validCommand := workerResultTeeCommand([]byte("{}"))
+	canonicalInput := inputForCommand(validCommand)
+	tests := map[string][]string{
+		// Sanitized from the real R7 Attempt 2 shape: the Read observes the
+		// same staging bytes, but post-tee access is invalid independent of
+		// whether the held inode or content changed.
+		"tee-read-unchanged": append(append([]string{}, tee...),
+			toolUse("read-1", "Read", `{"file_path":"marshal-worker-result.json"}`), toolResult("read-1", "unchanged declaration")),
+		"tee-read-edit": append(append([]string{}, tee...),
+			toolUse("read-1", "Read", `{"file_path":"marshal-worker-result.json"}`), toolResult("read-1", "summary contains a typo"),
+			toolUse("edit-1", "Edit", `{"file_path":"marshal-worker-result.json","old_string":"typo","new_string":"fixed"}`), toolResult("edit-1", "updated")),
+		"tee-extra-bash": append(append([]string{}, tee...),
+			toolUse("bash-2", "Bash", `{"command":"git diff --name-only"}`), toolResult("bash-2", "file.go")),
+		"tee-second-tee": append(append([]string{}, tee...), corrected...),
+		"invalid-then-corrected": append([]string{
+			toolUse("tee-invalid", "Bash", `{"command":"cat <<'MARSHAL_RESULT' | tee ./marshal-worker-result.json > /dev/null\n{}\nMARSHAL_RESULT"}`), toolResult("tee-invalid", "invalid"),
+		}, corrected...),
+		"split-then-corrected": append([]string{
+			toolUse("tee-split", "Bash", inputForCommand(strings.Replace(validCommand, " | tee ", " | t''ee ", 1))), toolResult("tee-split", "invalid"),
+		}, corrected...),
+		"glob-then-corrected": append([]string{
+			toolUse("tee-glob", "Bash", inputForCommand(strings.Replace(validCommand, " | tee ", " | t?? ", 1))), toolResult("tee-glob", "invalid"),
+		}, corrected...),
+		"background-fd-then-corrected": append([]string{
+			toolUse("tee-background", "Bash", inputForCommand(strings.Replace(validCommand, " > /dev/null\n", " 9>/dev/null &\n", 1))), toolResult("tee-background", "invalid"),
+		}, corrected...),
+		"unicode-equivalent-then-corrected": append([]string{
+			toolUse("tee-unicode", "Bash", strings.Replace(canonicalInput, "cat", `\u0063at`, 1)), toolResult("tee-unicode", "invalid"),
+		}, corrected...),
+	}
+	for name, sequence := range tests {
+		t.Run(name, func(t *testing.T) {
+			events := []string{`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`}
+			events = append(events, sequence...)
+			events = append(events, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"finished"}]}}`)
+			events = append(events, `{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`)
+			fixture := newRunFixture(t, supportedBinary, emitLines(events...))
+			_, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"maxOutputBytes": 64 << 10}))
+			failure, ok := port.AsAdapterFailure(err)
+			if !errors.Is(err, ErrProtocol) || !ok || failure.Adapter != port.AdapterIDQoder || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+				t.Fatalf("error = %v, want qoder protocol-invalid/do-not-retry", err)
+			}
+			metadata, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qoder-transcript-meta.json"))
+			if readErr != nil || !strings.Contains(string(metadata), `"failureKind": "protocol-invalid"`) || !strings.Contains(string(metadata), `"retryDisposition": "do-not-retry"`) || strings.Contains(string(metadata), `"workerResultTeeLast": true`) {
+				t.Fatalf("metadata = %s err=%v", metadata, readErr)
+			}
+			published, statErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "worker-result.json"))
+			if statErr != nil || len(published) != 0 {
+				t.Fatalf("semantic WorkerResult was published after invalid transport sequence: bytes=%d err=%v", len(published), statErr)
+			}
+		})
+	}
+}
+
+func TestRunRejectsExitZeroDiffAndProseWithoutTranscriptTeeDeclaration(t *testing.T) {
+	body := "printf '%s' changed > file.txt\n" + emitLines(
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"completed successfully"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`,
+	)
+	// The fake exits zero after changing the worktree and emitting successful
+	// final prose. Neither process status, diff nor prose may substitute for the
+	// missing closed transcript declaration.
+	fixture := newRunFixture(t, supportedBinary, body)
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	failure, ok := port.AsAdapterFailure(err)
+	if !errors.Is(err, ErrProtocol) || !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+		t.Fatalf("error = %v, want protocol-invalid/do-not-retry", err)
+	}
+	published, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "worker-result.json"))
+	if readErr != nil || len(published) != 0 {
+		t.Fatalf("missing tee produced semantic WorkerResult: bytes=%d err=%v", len(published), readErr)
+	}
+}
+
 func TestWorkerResultTransportUsesSeparateStagingInodeAndCleansIt(t *testing.T) {
 	worktree := t.TempDir()
 	control := filepath.Join(t.TempDir(), "worker-result.json")
@@ -1818,74 +1907,45 @@ func TestWorkerResultTransportUsesSeparateStagingInodeAndCleansIt(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer transport.close()
-	staging := filepath.Join(worktree, workerResultStagingName)
-	stagingInfo, err := os.Stat(staging)
-	if err != nil {
-		t.Fatal(err)
-	}
 	controlInfo, err := os.Stat(control)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if os.SameFile(stagingInfo, controlInfo) {
+	controlStat, ok := controlInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatal("control result has no syscall identity")
+	}
+	if uint64(transport.stat.Dev) == uint64(controlStat.Dev) && uint64(transport.stat.Ino) == uint64(controlStat.Ino) {
 		t.Fatal("worktree staging file unexpectedly aliases the control result inode")
 	}
-	if err := os.WriteFile(staging, []byte("result"), 0o600); err != nil {
+	if _, err := os.Lstat(filepath.Join(worktree, workerResultStagingName)); !os.IsNotExist(err) {
+		t.Fatalf("staging inode remained shell-addressable after bind: %v", err)
+	}
+	if err := transport.commit([]byte("result"), 64); err != nil {
 		t.Fatal(err)
 	}
 	data, err := transport.consume(64)
 	if err != nil || string(data) != "result" {
 		t.Fatalf("consume = %q, %v", data, err)
 	}
-	if _, err := os.Lstat(staging); !os.IsNotExist(err) {
-		t.Fatalf("staging leaf remains after consume: %v", err)
-	}
 	if data, err := os.ReadFile(control); err != nil || len(data) != 0 {
 		t.Fatalf("control result was modified through staging: %q, %v", data, err)
 	}
 }
 
-func TestWorkerResultTransportFailsClosedOnHardlinkAndReplacement(t *testing.T) {
-	t.Run("extra-hardlink", func(t *testing.T) {
+func TestWorkerResultTransportFailsClosedOnIdentityAndPathReplacement(t *testing.T) {
+	t.Run("reserved-name-reappears", func(t *testing.T) {
 		worktree := t.TempDir()
 		transport, err := bindWorkerResultTransport(worktree)
 		if err != nil {
 			t.Fatal(err)
 		}
 		staging := filepath.Join(worktree, workerResultStagingName)
-		extra := filepath.Join(worktree, "retained-result-link")
-		if err := os.Link(staging, extra); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := transport.consume(64); err == nil {
-			t.Fatal("transport accepted a multi-link staging inode")
-		}
-		if err := transport.close(); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := os.Lstat(staging); !os.IsNotExist(err) {
-			t.Fatalf("exact staging name was not cleaned: %v", err)
-		}
-		if _, err := os.Lstat(extra); err != nil {
-			t.Fatalf("cleanup unexpectedly removed the attacker's other name: %v", err)
-		}
-	})
-	t.Run("rename-and-replacement", func(t *testing.T) {
-		worktree := t.TempDir()
-		transport, err := bindWorkerResultTransport(worktree)
-		if err != nil {
-			t.Fatal(err)
-		}
-		staging := filepath.Join(worktree, workerResultStagingName)
-		moved := filepath.Join(worktree, "moved-staging")
-		if err := os.Rename(staging, moved); err != nil {
-			t.Fatal(err)
-		}
 		if err := os.WriteFile(staging, []byte("replacement"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := transport.consume(64); err == nil {
-			t.Fatal("transport accepted a replaced staging name")
+		if err := transport.commit([]byte("result"), 64); err == nil {
+			t.Fatal("transport accepted a replacement at the reserved name")
 		}
 		if err := transport.close(); err != nil {
 			t.Fatal(err)
@@ -1894,8 +1954,20 @@ func TestWorkerResultTransportFailsClosedOnHardlinkAndReplacement(t *testing.T) 
 		if err != nil || string(data) != "replacement" {
 			t.Fatalf("cleanup deleted or changed replacement candidate: %q, %v", data, err)
 		}
-		if _, err := os.Lstat(moved); err != nil {
-			t.Fatalf("renamed original unexpectedly removed: %v", err)
+	})
+	t.Run("held-mode-drift", func(t *testing.T) {
+		transport, err := bindWorkerResultTransport(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := transport.file.Chmod(0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := transport.commit([]byte("result"), 64); err == nil {
+			t.Fatal("transport accepted held inode mode drift")
+		}
+		if err := transport.close(); err != nil {
+			t.Fatal(err)
 		}
 	})
 	t.Run("worktree-path-swap", func(t *testing.T) {
@@ -1919,7 +1991,7 @@ func TestWorkerResultTransportFailsClosedOnHardlinkAndReplacement(t *testing.T) 
 		if err := os.WriteFile(replacement, []byte("replacement"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := transport.consume(64); err == nil {
+		if err := transport.commit([]byte("result"), 64); err == nil {
 			t.Fatal("transport accepted a replaced worktree pathname")
 		}
 		if err := transport.close(); err != nil {
@@ -1930,7 +2002,7 @@ func TestWorkerResultTransportFailsClosedOnHardlinkAndReplacement(t *testing.T) 
 			t.Fatalf("cleanup changed replacement worktree: %q, %v", data, err)
 		}
 		if _, err := os.Lstat(filepath.Join(held, workerResultStagingName)); !os.IsNotExist(err) {
-			t.Fatalf("held original staging name was not cleaned: %v", err)
+			t.Fatalf("held original staging name unexpectedly reappeared: %v", err)
 		}
 	})
 }
@@ -1975,7 +2047,7 @@ func TestRunRejectsPreexistingResultStagingBeforeWorkerLaunch(t *testing.T) {
 func TestRunPersistsQoderPermissionDenialAndReturnsPermanentFailure(t *testing.T) {
 	body := emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
+		workerResultTeeToolUseEvent("tool-1"),
 		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`,
 	)
@@ -1983,7 +2055,8 @@ func TestRunPersistsQoderPermissionDenialAndReturnsPermanentFailure(t *testing.T
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	typed, ok := port.AsAdapterFailure(err)
 	if !ok || typed.Kind != port.FailureKindProviderTerminal || typed.Disposition != port.RetryDispositionDoNotRetry {
-		t.Fatalf("error = %v, want provider-terminal/do-not-retry", err)
+		metadata, _ := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qoder-transcript-meta.json"))
+		t.Fatalf("error = %v, want provider-terminal/do-not-retry; metadata=%s", err, metadata)
 	}
 	if strings.Contains(err.Error(), "Permission confirmation") || strings.Contains(err.Error(), "interactive handler") {
 		t.Fatalf("typed error leaked provider text: %v", err)
@@ -2005,7 +2078,7 @@ func TestRunPersistsQoderPermissionDenialAndReturnsPermanentFailure(t *testing.T
 func TestRunWritesDenialLogThroughHeldOutputDirectory(t *testing.T) {
 	body := emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
+		workerResultTeeToolUseEvent("tool-1"),
 		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false}`,
 	) + `
@@ -2031,7 +2104,7 @@ func TestRunFailsTypedWhenWorkerPreclaimsDenialLog(t *testing.T) {
 printf '%s' 'forged' > "$marshal_root/output/denials.jsonl"
 ` + emitLines(
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}`,
+		workerResultTeeToolUseEvent("tool-1"),
 		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false}`,
 	)

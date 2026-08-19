@@ -217,7 +217,7 @@ func TestExactAuthorityBindingPinsFourTailsAndCurrentEvidence(t *testing.T) {
 	}
 	host := exactRootedHostIdentity(t, f.now, "host-1", 1, osFixture.keys["host-1"])
 	executable, evidenceRoot := exactHeldObjects(t)
-	evidence := QoderConformanceEvidenceExact{APIVersion: exactAuthorityAPIVersion, Kind: "QoderConformanceEvidence", SchemaVersion: 1, ObservationDigest: digest("a"), ProbeRunID: "run-1", RunnerID: "runner-1", RunnerVersion: "1", ObservedAt: candidateExactTimestamp(f.now.Add(-time.Minute)), ValidUntil: candidateExactTimestamp(f.now.Add(time.Hour)), AdapterVersion: adapterVersion, CandidateExecutableIdentity: candidateExecutableReceiptIdentity(executable, supportedBinary), HostIdentity: host, AuthorityGeneration: 1, SuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("c"), ProbeRunChallengeDigest: digest("e"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProfileDigest: expectedProbeProfileDigest(), VariantInvocationManifests: exactEvidenceManifests(t, f.now, osFixture.keys["credential-0"]), ToolPolicyDigest: expectedProbeToolPolicyDigest(), EventContract: conformanceEventContract, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode, TranscriptDigest: digest("3"), ReceiptDigests: []string{digest("4"), digest("5"), digest("6"), digest("7")}, AggregateReceiptDigest: digest("8"), CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true, ReceiptTrustLedgerTailDigest: trust.TailDigest, VerifierTrustLedgerTailDigest: trust.TailDigest, EvidenceTrustLedgerTailDigest: trust.TailDigest, OSTrustRootLedgerTailDigest: osState.RootRecordDigest, EvidenceAuthorityKeyID: "evidence-0", SignatureAlgorithm: exactSignatureAlgorithm, SignatureEncoding: exactSignatureEncoding}
+	evidence := QoderConformanceEvidenceExact{APIVersion: exactAuthorityAPIVersion, Kind: "QoderConformanceEvidence", SchemaVersion: 1, ObservationDigest: digest("a"), ProbeRunID: "run-1", RunnerID: "runner-1", RunnerVersion: "1", ObservedAt: candidateExactTimestamp(f.now.Add(-time.Minute)), ValidUntil: candidateExactTimestamp(f.now.Add(time.Hour)), AdapterVersion: adapterVersion, CandidateExecutableIdentity: candidateExecutableReceiptIdentity(executable, supportedBinary), HostIdentity: host, AuthorityGeneration: 1, SuiteDigest: expectedProbeSuiteDigest(), ProbeArtifactDigest: digest("c"), ProbeRunChallengeDigest: digest("e"), CapabilitiesDigest: expectedCapabilitiesDigest(), ProfileDigest: expectedProbeProfileDigest(), VariantInvocationManifests: exactEvidenceManifests(t, f.now, osFixture.keys["credential-0"]), ToolPolicyDigest: expectedProbeToolPolicyDigest(), WorkerResultTransportDigest: expectedWorkerResultTransportDigest(), EventContract: conformanceEventContract, ProtocolVersion: qoderProtocolVersion, PermissionMode: qoderPermissionMode, TranscriptDigest: digest("3"), ReceiptDigests: []string{digest("4"), digest("5"), digest("6"), digest("7")}, AggregateReceiptDigest: digest("8"), CredentialVerified: true, LiveProtocolVerified: true, WorkspaceWriteVerified: true, ReceiptTrustLedgerTailDigest: trust.TailDigest, VerifierTrustLedgerTailDigest: trust.TailDigest, EvidenceTrustLedgerTailDigest: trust.TailDigest, OSTrustRootLedgerTailDigest: osState.RootRecordDigest, EvidenceAuthorityKeyID: "evidence-0", SignatureAlgorithm: exactSignatureAlgorithm, SignatureEncoding: exactSignatureEncoding}
 	resignExactEvidence(&evidence, f.keys["evidence-0"])
 	config := QoderAuthorityConfigExact{APIVersion: exactAuthorityAPIVersion, Kind: "QoderAuthorityConfig", SchemaVersion: 1, RepositoryIdentity: "repo-1", AuthorityGeneration: 1, HostIdentityDigest: host.RecordDigest, EvidenceRootIdentity: candidateRootIdentity(evidenceRoot.Identity), CurrentEvidenceDigest: evidence.EvidenceDigest, ProbeArtifactDigest: evidence.ProbeArtifactDigest, ProbeRunChallengeDigest: evidence.ProbeRunChallengeDigest, RevokedEvidenceDigests: []string{}, TrustPolicyDigest: digest("a"), ReceiptTrustLedgerTailDigest: trust.TailDigest, VerifierTrustLedgerTailDigest: trust.TailDigest, EvidenceTrustLedgerTailDigest: trust.TailDigest, OSTrustRootLedgerTailDigest: osState.RootRecordDigest, ConsumerFenceProviderIdentity: "fence-provider"}
 	config.ConfigDigest = digestRecordWithoutFields(config, "configDigest")
@@ -225,6 +225,30 @@ func TestExactAuthorityBindingPinsFourTailsAndCurrentEvidence(t *testing.T) {
 	current := QoderExactAuthorityCurrent{OSTrustRecords: osFixture.records, OSTrustReceipts: osFixture.receipts, OSAnchorProviderIdentity: "os-anchor", OSAnchorProviderKeyID: "anchor-key", OSAnchorProviderPublicKey: osFixture.providerPublic, ProbeTrustRecords: f.records, HostIdentity: host, FenceRequest: fenceRequest, FenceReceipt: exactFenceAdvanceReceipt(t, f.now, fenceRequest, "fence-0", 0, osFixture.keys["fence-0"]), CredentialProviderIdentity: "credential-provider", Executable: executable, ExecutableVersion: supportedBinary, EvidenceRoot: evidenceRoot}
 	if err := ValidateExactAuthorityBinding(config, evidence, current, f.now); err != nil {
 		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*QoderConformanceEvidenceExact){
+		"adapter 0.1.2": func(v *QoderConformanceEvidenceExact) { v.AdapterVersion = "0.1.2" },
+		"event contract v3": func(v *QoderConformanceEvidenceExact) {
+			v.EventContract = "qoder-stream-json-1.2.0-v3"
+		},
+		"worker result transport": func(v *QoderConformanceEvidenceExact) {
+			v.WorkerResultTransportDigest = digest("b")
+		},
+	} {
+		t.Run("old exact evidence "+name, func(t *testing.T) {
+			changedEvidence := evidence
+			mutate(&changedEvidence)
+			resignExactEvidence(&changedEvidence, f.keys["evidence-0"])
+			changedConfig := config
+			changedConfig.CurrentEvidenceDigest = changedEvidence.EvidenceDigest
+			changedConfig.ConfigDigest = digestRecordWithoutFields(changedConfig, "configDigest")
+			changedCurrent := current
+			changedCurrent.FenceRequest.ConfigDigest = changedConfig.ConfigDigest
+			changedCurrent.FenceReceipt = exactFenceAdvanceReceipt(t, f.now, changedCurrent.FenceRequest, "fence-0", 0, osFixture.keys["fence-0"])
+			if err := ValidateExactAuthorityBinding(changedConfig, changedEvidence, changedCurrent, f.now); err == nil {
+				t.Fatal("old or mutated exact evidence was accepted")
+			}
+		})
 	}
 	for name, mutate := range map[string]func(*QoderAuthorityConfigExact){"receipt tail": func(v *QoderAuthorityConfigExact) { v.ReceiptTrustLedgerTailDigest = digest("b") }, "OS tail": func(v *QoderAuthorityConfigExact) { v.OSTrustRootLedgerTailDigest = digest("c") }, "host rotation": func(v *QoderAuthorityConfigExact) { v.HostIdentityDigest = digest("d") }, "current evidence": func(v *QoderAuthorityConfigExact) { v.CurrentEvidenceDigest = digest("e") }} {
 		t.Run(name, func(t *testing.T) {

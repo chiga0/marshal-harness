@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/adapter/denials"
@@ -35,14 +36,33 @@ type captureResult struct {
 	denials         []denials.RawDenial
 	toolNames       []string
 	pendingTools    map[string]pendingToolCall
+	resultTransport resultTransportSequence
 	terminal        terminalOutcome
 	limitExceeded   bool
 	err             error
 }
 
 type pendingToolCall struct {
-	tool  string
-	input json.RawMessage
+	tool                 string
+	input                json.RawMessage
+	ordinal              int
+	resultTransport      bool
+	validResultTransport bool
+	resultPayload        []byte
+}
+
+// resultTransportSequence records only the closed WorkerResult transport
+// protocol projected by Marshal. The staging bytes remain untrusted and are
+// separately consumed through held descriptors, validated against Schema and
+// rebound to the request identity. This sequence is evidence that Qoder used
+// exactly one reviewed Bash tee and made no later tool call; it never derives
+// a semantic WorkerResult from exit status, git diff, or assistant prose.
+type resultTransportSequence struct {
+	attempts          int
+	successes         int
+	successfulOrdinal int
+	invalidAccess     bool
+	payload           []byte
 }
 
 // terminalOutcome is the single terminal `result` event that ends a Qoder
@@ -283,8 +303,19 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			if _, duplicate := result.pendingTools[part.ID]; duplicate {
 				return fmt.Errorf("%w: duplicate assistant tool_use id", ErrProtocol)
 			}
-			result.pendingTools[part.ID] = pendingToolCall{tool: normalizeQoderToolName(part.Name), input: append(json.RawMessage(nil), part.Input...)}
+			tool := normalizeQoderToolName(part.Name)
 			result.toolCalls++
+			transportAccess, validTransport, resultPayload := classifyWorkerResultTransportTool(tool, part.Input)
+			if transportAccess {
+				result.resultTransport.attempts++
+				if !validTransport {
+					result.resultTransport.invalidAccess = true
+				}
+			}
+			result.pendingTools[part.ID] = pendingToolCall{
+				tool: tool, input: append(json.RawMessage(nil), part.Input...), ordinal: result.toolCalls,
+				resultTransport: transportAccess, validResultTransport: validTransport, resultPayload: resultPayload,
+			}
 		}
 		result.assistantCount++
 	case "user":
@@ -329,6 +360,11 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			if part.IsError != nil && *part.IsError {
 				continue
 			}
+			if pending.resultTransport && pending.validResultTransport {
+				result.resultTransport.successes++
+				result.resultTransport.successfulOrdinal = pending.ordinal
+				result.resultTransport.payload = append([]byte(nil), pending.resultPayload...)
+			}
 			result.toolNames = append(result.toolNames, pending.tool)
 		}
 		return nil
@@ -365,6 +401,121 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		return fmt.Errorf("%w: unrecognized stream-json event type", ErrProtocol)
 	}
 	return nil
+}
+
+// classifyWorkerResultTransportTool recognizes the one reviewed Qoder 1.1.23
+// declaration primitive after decoding the tool input as JSON. The Worker is
+// never given a staging pathname or descriptor: the command tees only to
+// /dev/null, and Marshal copies the strictly parsed payload into its unlinked
+// held inode after the transcript and terminal result pass. Consequently no
+// arbitrary shell expression can name the authority-bearing staging object.
+//
+// A declaration input is closed as well: exactly one canonical `command`
+// field and one fixed quoted-heredoc grammar. Split words, globs, background
+// jobs, alternate sinks, extra JSON fields/whitespace and unicode-escaped
+// spellings cannot become a second spelling of the primitive.
+func classifyWorkerResultTransportTool(tool string, input json.RawMessage) (access, valid bool, payload []byte) {
+	command, canonical := decodeCanonicalQoderBashInput(input)
+	if !workerResultDeclarationCandidate(command) {
+		return false, false, nil
+	}
+	if tool != "bash" || !canonical {
+		return true, false, nil
+	}
+	payload, valid = parseWorkerResultTeeCommand(command)
+	return true, valid, payload
+}
+
+func decodeCanonicalQoderBashInput(input json.RawMessage) (string, bool) {
+	var value struct {
+		Command string `json:"command"`
+	}
+	// Decode once without the closed-field check so a declaration candidate
+	// with an extra field is still classified as an invalid attempt instead of
+	// disappearing into the ordinary Bash stream.
+	if err := json.Unmarshal(input, &value); err != nil || value.Command == "" {
+		return "", false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(input))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&struct {
+		Command string `json:"command"`
+	}{}); err != nil {
+		return value.Command, false
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return value.Command, false
+	}
+	var canonical bytes.Buffer
+	encoder := json.NewEncoder(&canonical)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return value.Command, false
+	}
+	noHTMLEscapes := bytes.TrimSuffix(canonical.Bytes(), []byte{'\n'})
+	defaultEscapes, err := json.Marshal(value)
+	if err != nil {
+		return value.Command, false
+	}
+	return value.Command, bytes.Equal(input, noHTMLEscapes) || bytes.Equal(input, defaultEscapes)
+}
+
+const workerResultTeeFirstLine = "cat <<'MARSHAL_RESULT' | tee /dev/null > /dev/null"
+
+func workerResultDeclarationCandidate(command string) bool {
+	firstLine, _, _ := strings.Cut(command, "\n")
+	return strings.HasPrefix(firstLine, "cat <<'MARSHAL_RESULT'")
+}
+
+func validWorkerResultTeeCommand(command string) bool {
+	_, valid := parseWorkerResultTeeCommand(command)
+	return valid
+}
+
+func parseWorkerResultTeeCommand(command string) ([]byte, bool) {
+	if strings.ContainsAny(command, "\r\x00") || strings.HasSuffix(command, "\n") {
+		return nil, false
+	}
+	firstLine, body, hasBody := strings.Cut(command, "\n")
+	if !hasBody || firstLine != workerResultTeeFirstLine {
+		return nil, false
+	}
+	const finalDelimiter = "\nMARSHAL_RESULT"
+	if !strings.HasSuffix(body, finalDelimiter) {
+		return nil, false
+	}
+	payload := strings.TrimSuffix(body, finalDelimiter)
+	if payload == "" {
+		return nil, false
+	}
+	for _, line := range strings.Split(payload, "\n") {
+		if line == "MARSHAL_RESULT" {
+			return nil, false
+		}
+	}
+	return []byte(payload), true
+}
+
+// validateWorkerResultTransportSequence is called only for an otherwise
+// successful attempt. It requires exactly one successful reviewed tee and
+// makes its tool_use ordinal the final tool call. A failed/invalid first
+// declaration followed by a corrected declaration therefore remains invalid
+// rather than accepting the final staging bytes.
+func validateWorkerResultTransportSequence(result captureResult) error {
+	sequence := result.resultTransport
+	if workerResultTransportSequenceViolation(result) || sequence.attempts != 1 || sequence.successes != 1 {
+		return ErrProtocol
+	}
+	return nil
+}
+
+// workerResultTransportSequenceViolation distinguishes a structural sequence
+// breach from a single tee that was denied or failed. Structural breaches are
+// protocol-invalid even if a later provider/process failure is also present;
+// one denied final tee keeps its truthful provider-terminal classification.
+func workerResultTransportSequenceViolation(result captureResult) bool {
+	sequence := result.resultTransport
+	return sequence.invalidAccess || sequence.attempts > 1 || sequence.successes > 1 || sequence.successes == 1 && sequence.successfulOrdinal != result.toolCalls
 }
 
 func normalizeQoderToolName(name string) string {
