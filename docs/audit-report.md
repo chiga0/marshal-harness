@@ -487,6 +487,12 @@ Qoder 与 Codex 的 production consumer 实现复核进一步证明：两个 Ada
 
 本轮宿主只读核查还确认：`security find-identity -v -p codesigning` 返回 `0 valid identities found`；`/Library/PrivilegedHelperTools`、`/usr/local/libexec` 和 `/opt/homebrew/bin` 没有现成 Marshal/APAP launcher；`MARSHAL_APAP_*`、`MARSHAL_DARWIN_*`、Qoder/Codex authority 环境变量均未配置。该证据支持当前外部 signer/root provisioning 阻塞判断，但不改变任何 registry 状态。
 
+## APAP launch-control typed slice 审计增补（2026-08-19）
+
+共享 `authorityprovider` 现把 ADR 0038 的 `PrepareLaunch`、`CommitLaunch`、`AbortLaunch` 与 `InspectLaunch` 纳入已注册控制面，并为请求、receipt、release identity、状态和 digest 提供封闭 typed payload 校验。`PrepareLaunch` 强制八项 held-FD 角色、完整 identity/config/fence digest、nonce 与 deadline 绑定；commit/abort/inspect 不接受 credential FD，receipt 必须是 canonical 非空对象，未知状态和成功状态的 receipt 组合均 fail closed。Fake provider 仅用于协议与重放/负向矩阵测试，不执行真实 child release，也不产生 signer、OS isolation audit 或 credential authority。
+
+本切片通过 authorityprovider 定向、race、vet、staticcheck、Darwin/Linux 编译与 `git diff --check` 后，仅关闭 typed protocol 缺口；root-owned launchd/APAP provisioning、独立 signed launcher/verifier、真实 credentialed probe/conformance 与 Qoder/Codex registry enablement 仍保持 `unsupported`。
+
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 
 Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Verifier 虽能在命令后观察到 Candidate worktree 变化并把 Gate 标为失败，却让污染字节留在受管 worktree；随后 Review 的 current-observation guard 正确拒绝变化后的字节，Run 因而无法生成绑定原 Candidate 的 ReviewPacket。该问题不是新生命周期或 Schema 缺口：ADR 0027 已冻结 command 写作用域默认为 `none`、未声明写入 fail closed、Candidate 与 Evidence 不可被覆盖；缺失的是实现级 command 隔离。

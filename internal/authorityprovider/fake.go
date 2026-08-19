@@ -1,6 +1,7 @@
 package authorityprovider
 
 import (
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -147,6 +148,26 @@ func fakeControlPayload(request APAPRequestEnvelopeV1) ([]byte, error) {
 			digests[i] = staged.OrderedLeafDescriptors[i].Digest
 		}
 		return marshalCanonical(StageBundleLeafBatchSuccessPayload{BundleTransactionID: staged.BundleTransactionID, StagedLeafDigests: digests, StagingReceiptDigest: stableDigest("staging", request.RequestEnvelopeDigest)})
+	case OperationPrepareLaunch:
+		var launch PrepareLaunchPayload
+		if err := decodeClosed(request.Payload, &launch); err != nil {
+			return nil, err
+		}
+		return marshalCanonical(PrepareLaunchSuccessPayload{
+			LaunchTransactionID:     "launch-" + request.CommandID,
+			APAPLaunchRequestDigest: launch.APAPLaunchRequestDigest,
+			ProfileRequestDigest:    launch.ProfileRequestDigest,
+			LaunchReceiptDigest:     stableDigest("launch-receipt", request.RequestEnvelopeDigest),
+			LaunchReceipt:           json.RawMessage(`{"status":"prepared"}`),
+			ReleaseIdentity:         stableDigest("release-identity", request.RequestEnvelopeDigest),
+			Deadline:                request.ExpiresAt,
+		})
+	case OperationCommitLaunch:
+		return marshalCanonical(CommitLaunchSuccessPayload{Status: "released", ReleaseReceiptDigest: stableDigest("release-receipt", request.RequestEnvelopeDigest), ReleaseReceipt: json.RawMessage(`{"status":"released"}`)})
+	case OperationAbortLaunch:
+		return marshalCanonical(AbortLaunchSuccessPayload{Status: "aborted", AbortReceiptDigest: stableDigest("abort-receipt", request.RequestEnvelopeDigest), AbortReceipt: json.RawMessage(`{"status":"aborted"}`)})
+	case OperationInspectLaunch:
+		return marshalCanonical(InspectLaunchSuccessPayload{Status: "unknown"})
 	default:
 		return nil, protocolError(CodeIdentityMismatch, "operation-unsupported")
 	}

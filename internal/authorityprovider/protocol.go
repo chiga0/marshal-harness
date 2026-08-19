@@ -66,6 +66,7 @@ const (
 // rejected before authorization or side effects.
 var controlOperations = map[Operation]struct{}{
 	OperationDescribe: {}, OperationBeginProbe: {},
+	OperationPrepareLaunch: {}, OperationCommitLaunch: {}, OperationAbortLaunch: {}, OperationInspectLaunch: {},
 }
 
 func (op Operation) validControl() bool { _, ok := controlOperations[op]; return ok }
@@ -97,8 +98,12 @@ const (
 )
 
 var operationPrincipals = map[Operation]map[Principal]struct{}{
-	OperationDescribe:   setOf(PrincipalConsumer, PrincipalVerifierController),
-	OperationBeginProbe: setOf(PrincipalVerifierController),
+	OperationDescribe:      setOf(PrincipalConsumer, PrincipalVerifierController),
+	OperationBeginProbe:    setOf(PrincipalVerifierController),
+	OperationPrepareLaunch: setOf(PrincipalConsumer),
+	OperationCommitLaunch:  setOf(PrincipalConsumer),
+	OperationAbortLaunch:   setOf(PrincipalConsumer),
+	OperationInspectLaunch: setOf(PrincipalConsumer),
 }
 
 func setOf(values ...Principal) map[Principal]struct{} {
@@ -268,6 +273,84 @@ type CredentialIngressSuccessPayload struct {
 	InstallReceiptDigest  string `json:"installReceiptDigest"`
 }
 
+// PrepareLaunchPayload is the shared, non-secret launch projection. Every
+// identity digest is derived from a held descriptor; the authority provider
+// must still verify the corresponding FD table before creating a stopped child.
+type PrepareLaunchPayload struct {
+	TaskID                            string    `json:"taskId"`
+	RunID                             string    `json:"runId"`
+	AttemptID                         string    `json:"attemptId"`
+	AuthorityNamespaceID              string    `json:"authorityNamespaceId"`
+	LaunchNonce                       string    `json:"launchNonce"`
+	APAPLaunchRequestDigest           string    `json:"apapLaunchRequestDigest"`
+	ProfileRequestDigest              string    `json:"profileRequestDigest"`
+	BundleDigest                      string    `json:"bundleDigest"`
+	EvidenceDigest                    string    `json:"evidenceDigest"`
+	ConfigDigest                      string    `json:"configDigest"`
+	FenceDigest                       string    `json:"fenceDigest"`
+	CandidateExecutableIdentityDigest string    `json:"candidateExecutableIdentityDigest"`
+	AuthorityRootIdentityDigest       string    `json:"authorityRootIdentityDigest"`
+	FenceRootIdentityDigest           string    `json:"fenceRootIdentityDigest"`
+	WorktreeIdentityDigest            string    `json:"worktreeIdentityDigest"`
+	ControlRootIdentityDigest         string    `json:"controlRootIdentityDigest"`
+	ControlInputIdentityDigest        string    `json:"controlInputIdentityDigest"`
+	ControlOutputIdentityDigest       string    `json:"controlOutputIdentityDigest"`
+	MountNamespaceIdentityDigest      string    `json:"mountNamespaceIdentityDigest"`
+	ArgvDigest                        string    `json:"argvDigest"`
+	EnvironmentDigest                 string    `json:"environmentDigest"`
+	Deadline                          time.Time `json:"deadline"`
+}
+
+type PrepareLaunchSuccessPayload struct {
+	LaunchTransactionID     string          `json:"launchTransactionId"`
+	APAPLaunchRequestDigest string          `json:"apapLaunchRequestDigest"`
+	ProfileRequestDigest    string          `json:"profileRequestDigest"`
+	LaunchReceiptDigest     string          `json:"launchReceiptDigest"`
+	LaunchReceipt           json.RawMessage `json:"launchReceipt"`
+	ReleaseIdentity         string          `json:"releaseIdentity"`
+	Deadline                time.Time       `json:"deadline"`
+}
+
+type CommitLaunchPayload struct {
+	LaunchTransactionID string `json:"launchTransactionId"`
+	LaunchReceiptDigest string `json:"launchReceiptDigest"`
+	ReleaseIdentity     string `json:"releaseIdentity"`
+	DurableAcceptDigest string `json:"durableAcceptDigest"`
+}
+
+type CommitLaunchSuccessPayload struct {
+	Status               string          `json:"status"`
+	ReleaseReceiptDigest string          `json:"releaseReceiptDigest"`
+	ReleaseReceipt       json.RawMessage `json:"releaseReceipt"`
+}
+
+type AbortLaunchPayload struct {
+	LaunchTransactionID string `json:"launchTransactionId"`
+	ReasonCode          string `json:"reasonCode"`
+}
+
+type AbortLaunchSuccessPayload struct {
+	Status             string          `json:"status"`
+	AbortReceiptDigest string          `json:"abortReceiptDigest"`
+	AbortReceipt       json.RawMessage `json:"abortReceipt"`
+}
+
+type InspectLaunchPayload struct {
+	AttemptID               string `json:"attemptId"`
+	LaunchNonce             string `json:"launchNonce"`
+	APAPLaunchRequestDigest string `json:"apapLaunchRequestDigest"`
+	ProfileRequestDigest    string `json:"profileRequestDigest"`
+}
+
+type InspectLaunchSuccessPayload struct {
+	Status               string `json:"status"`
+	LaunchTransactionID  string `json:"launchTransactionId"`
+	ChildIdentityDigest  string `json:"childIdentityDigest"`
+	LaunchReceiptDigest  string `json:"launchReceiptDigest"`
+	ReleaseReceiptDigest string `json:"releaseReceiptDigest"`
+	AbortReceiptDigest   string `json:"abortReceiptDigest"`
+}
+
 var noncePattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{8,128}$`)
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -429,11 +512,53 @@ func validateControlPayload(request APAPRequestEnvelopeV1, peer PeerIdentity, fd
 			}
 			previous = key
 		}
+	case OperationPrepareLaunch:
+		var payload PrepareLaunchPayload
+		if decodeClosed(request.Payload, &payload) != nil || !validPrepareLaunchPayload(payload, request) {
+			return protocolError(CodeIdentityMismatch, "payload-invalid")
+		}
+	case OperationCommitLaunch:
+		var payload CommitLaunchPayload
+		if decodeClosed(request.Payload, &payload) != nil || !validID(payload.LaunchTransactionID) || !validDigest(payload.LaunchReceiptDigest) || !validDigest(payload.ReleaseIdentity) || !validDigest(payload.DurableAcceptDigest) {
+			return protocolError(CodeIdentityMismatch, "payload-invalid")
+		}
+	case OperationAbortLaunch:
+		var payload AbortLaunchPayload
+		if decodeClosed(request.Payload, &payload) != nil || !validID(payload.LaunchTransactionID) || !validID(payload.ReasonCode) {
+			return protocolError(CodeIdentityMismatch, "payload-invalid")
+		}
+	case OperationInspectLaunch:
+		var payload InspectLaunchPayload
+		if decodeClosed(request.Payload, &payload) != nil || !validID(payload.AttemptID) || !validNonce(payload.LaunchNonce) || !validDigest(payload.APAPLaunchRequestDigest) || !validDigest(payload.ProfileRequestDigest) {
+			return protocolError(CodeIdentityMismatch, "payload-invalid")
+		}
 	default:
 		return protocolError(CodeIdentityMismatch, "operation-unsupported")
 	}
 	return nil
 }
+
+func validPrepareLaunchPayload(payload PrepareLaunchPayload, request APAPRequestEnvelopeV1) bool {
+	if !validID(payload.TaskID) || !validID(payload.RunID) || !validID(payload.AttemptID) || !validID(payload.AuthorityNamespaceID) || !validNonce(payload.LaunchNonce) || !payload.Deadline.Equal(request.ExpiresAt) {
+		return false
+	}
+	for _, digest := range []string{
+		payload.APAPLaunchRequestDigest, payload.ProfileRequestDigest, payload.BundleDigest,
+		payload.EvidenceDigest, payload.ConfigDigest, payload.FenceDigest,
+		payload.CandidateExecutableIdentityDigest, payload.AuthorityRootIdentityDigest,
+		payload.FenceRootIdentityDigest, payload.WorktreeIdentityDigest,
+		payload.ControlRootIdentityDigest, payload.ControlInputIdentityDigest,
+		payload.ControlOutputIdentityDigest, payload.MountNamespaceIdentityDigest,
+		payload.ArgvDigest, payload.EnvironmentDigest,
+	} {
+		if !validDigest(digest) {
+			return false
+		}
+	}
+	return true
+}
+
+func validNonce(value string) bool { return noncePattern.MatchString(value) }
 
 func updateKindAuthorized(kind UpdateKind, role Principal) bool {
 	switch role {
@@ -713,9 +838,41 @@ func validateControlResponsePayload(response APAPResponseEnvelopeV1, request APA
 			}
 		}
 		return true
+	case OperationPrepareLaunch:
+		var payload PrepareLaunchSuccessPayload
+		return decodeClosed(response.Payload, &payload) == nil && validID(payload.LaunchTransactionID) && validDigest(payload.APAPLaunchRequestDigest) && validDigest(payload.ProfileRequestDigest) && validDigest(payload.LaunchReceiptDigest) && validReceiptObject(payload.LaunchReceipt) && validDigest(payload.ReleaseIdentity) && payload.Deadline.Equal(request.ExpiresAt)
+	case OperationCommitLaunch:
+		var payload CommitLaunchSuccessPayload
+		return decodeClosed(response.Payload, &payload) == nil && payload.Status == "released" && validDigest(payload.ReleaseReceiptDigest) && validReceiptObject(payload.ReleaseReceipt)
+	case OperationAbortLaunch:
+		var payload AbortLaunchSuccessPayload
+		return decodeClosed(response.Payload, &payload) == nil && (payload.Status == "aborted" || payload.Status == "exited") && validDigest(payload.AbortReceiptDigest) && validReceiptObject(payload.AbortReceipt)
+	case OperationInspectLaunch:
+		var payload InspectLaunchSuccessPayload
+		if decodeClosed(response.Payload, &payload) != nil || payload.Status != "pending" && payload.Status != "released" && payload.Status != "aborted" && payload.Status != "exited" && payload.Status != "unknown" {
+			return false
+		}
+		if payload.Status == "unknown" {
+			return payload.LaunchReceiptDigest == "" && payload.ReleaseReceiptDigest == "" && payload.AbortReceiptDigest == ""
+		}
+		if !validID(payload.LaunchTransactionID) || !validDigest(payload.ChildIdentityDigest) || !validDigest(payload.LaunchReceiptDigest) {
+			return false
+		}
+		if payload.Status == "released" {
+			return validDigest(payload.ReleaseReceiptDigest) && payload.AbortReceiptDigest == ""
+		}
+		if payload.Status == "aborted" {
+			return validDigest(payload.AbortReceiptDigest) && payload.ReleaseReceiptDigest == ""
+		}
+		return payload.ReleaseReceiptDigest == "" && payload.AbortReceiptDigest == ""
 	default:
 		return false
 	}
+}
+
+func validReceiptObject(raw json.RawMessage) bool {
+	var object map[string]json.RawMessage
+	return decodeClosed(raw, &object) == nil && len(object) > 0
 }
 
 func validateIngressResponsePayload(response CredentialIngressResponseV1) bool {

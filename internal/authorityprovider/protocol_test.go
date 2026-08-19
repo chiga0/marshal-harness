@@ -69,6 +69,14 @@ func validRequest(operation Operation, p PeerIdentity) APAPRequestEnvelopeV1 {
 			kind = UpdateRevocation
 		}
 		payload = mustJSON(StageBundleLeafBatchPayload{BundleTransactionID: "txn-1", UpdateKind: kind, OrderedLeafDescriptors: []BundleLeafDescriptor{{LeafKind: "a", Digest: testDigest("leaf-a"), Size: 10, MediaType: "application/json"}}})
+	case OperationPrepareLaunch:
+		payload = mustJSON(validPrepareLaunchPayloadForTest(fixtureNow.Add(time.Minute)))
+	case OperationCommitLaunch:
+		payload = mustJSON(CommitLaunchPayload{LaunchTransactionID: "launch-txn-1", LaunchReceiptDigest: testDigest("launch-receipt"), ReleaseIdentity: testDigest("release-identity"), DurableAcceptDigest: testDigest("durable-accept")})
+	case OperationAbortLaunch:
+		payload = mustJSON(AbortLaunchPayload{LaunchTransactionID: "launch-txn-1", ReasonCode: "timeout"})
+	case OperationInspectLaunch:
+		payload = mustJSON(InspectLaunchPayload{AttemptID: "attempt-1", LaunchNonce: "launch-nonce-0001", APAPLaunchRequestDigest: testDigest("launch-request"), ProfileRequestDigest: testDigest("profile-request")})
 	}
 	return APAPRequestEnvelopeV1{SchemaVersion: RequestSchema, ProtocolFamily: ControlFamily, ProtocolVersion: ProtocolVersion, Audience: ControlAudience, RequestID: "request-1", CommandID: "command-1", CallerPrincipalDigest: p.PrincipalDigest, ProviderInstanceID: "provider-1", AuthorityProfile: ProfileQoder, Operation: operation, IssuedAt: fixtureNow.Add(-time.Second), ExpiresAt: fixtureNow.Add(time.Minute), Nonce: "nonce-0001", ExpectedProviderSequence: expected, Payload: payload}
 }
@@ -91,7 +99,18 @@ func validFDs(operation Operation) []FDRef {
 	if operation == OperationStageBundleLeafBatch {
 		return []FDRef{{Role: FDBundleLeaf}}
 	}
+	if operation == OperationPrepareLaunch {
+		return []FDRef{{Role: FDCandidateExecutable}, {Role: FDAuthorityRoot}, {Role: FDFenceRoot}, {Role: FDWorktree}, {Role: FDControlRoot}, {Role: FDControlInput}, {Role: FDControlOutput}, {Role: FDMountNamespace}}
+	}
 	return nil
+}
+
+func validPrepareLaunchPayloadForTest(deadline time.Time) PrepareLaunchPayload {
+	return PrepareLaunchPayload{
+		TaskID: "task-1", RunID: "run-1", AttemptID: "attempt-1", AuthorityNamespaceID: "authority-1", LaunchNonce: "launch-nonce-0001",
+		APAPLaunchRequestDigest: testDigest("launch-request"), ProfileRequestDigest: testDigest("profile-request"), BundleDigest: testDigest("bundle"), EvidenceDigest: testDigest("evidence"), ConfigDigest: testDigest("config"), FenceDigest: testDigest("fence"),
+		CandidateExecutableIdentityDigest: testDigest("candidate-executable"), AuthorityRootIdentityDigest: testDigest("authority-root"), FenceRootIdentityDigest: testDigest("fence-root"), WorktreeIdentityDigest: testDigest("worktree"), ControlRootIdentityDigest: testDigest("control-root"), ControlInputIdentityDigest: testDigest("control-input"), ControlOutputIdentityDigest: testDigest("control-output"), MountNamespaceIdentityDigest: testDigest("mount-namespace"), ArgvDigest: testDigest("argv"), EnvironmentDigest: testDigest("environment"), Deadline: deadline,
+	}
 }
 
 func TestRegisteredOperationAuthorizationAndUnsupportedSurface(t *testing.T) {
@@ -103,7 +122,7 @@ func TestRegisteredOperationAuthorizationAndUnsupportedSurface(t *testing.T) {
 			}
 		}
 	}
-	for _, operation := range []Operation{OperationStageBundleLeafBatch, OperationPrepareLaunch, OperationCommitBundleUpdate, OperationWatchEpoch, OperationRunProbeVariant} {
+	for _, operation := range []Operation{OperationStageBundleLeafBatch, OperationCommitBundleUpdate, OperationWatchEpoch, OperationRunProbeVariant} {
 		p := defaultPeer(PrincipalConsumer)
 		request := validRequest(OperationDescribe, p)
 		request.Operation = operation
@@ -134,6 +153,44 @@ func TestFDRoleExactValidation(t *testing.T) {
 	}
 	if err := ValidateControlFDRoles(OperationDescribe, []FDRef{{Role: FDCredentialCapability}}); err == nil || ErrorCode(err) != CodeSecretBoundaryViolation {
 		t.Fatal("credential fd crossed control boundary")
+	}
+}
+
+func TestLaunchControlTypedResponsesAndNegativeBoundary(t *testing.T) {
+	p := defaultPeer(PrincipalConsumer)
+	for _, operation := range []Operation{OperationPrepareLaunch, OperationCommitLaunch, OperationAbortLaunch, OperationInspectLaunch} {
+		request := validRequest(operation, p)
+		raw := mustSeal(t, request)
+		fds := validFDs(operation)
+		decoded, err := DecodeControlRequest(raw, p, fixtureNow, fds)
+		if err != nil {
+			t.Fatalf("%s request: %v", operation, err)
+		}
+		response, err := NewFakeProvider(7).HandleControl(raw, p, fixtureNow, fds)
+		if err != nil {
+			t.Fatalf("%s response: %v", operation, err)
+		}
+		if _, err := DecodeControlResponse(response, decoded, 7); err != nil {
+			t.Fatalf("%s response validation: %v", operation, err)
+		}
+	}
+
+	prepare := validRequest(OperationPrepareLaunch, p)
+	var payload PrepareLaunchPayload
+	if err := json.Unmarshal(prepare.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload.EnvironmentDigest = "sha256:bad"
+	prepare.Payload = mustJSON(payload)
+	if _, err := DecodeControlRequest(mustSeal(t, prepare), p, fixtureNow, validFDs(OperationPrepareLaunch)); err == nil {
+		t.Fatal("invalid prepare digest accepted")
+	}
+	if _, err := DecodeControlRequest(mustSeal(t, validRequest(OperationPrepareLaunch, p)), p, fixtureNow, validFDs(OperationPrepareLaunch)[:7]); err == nil {
+		t.Fatal("short prepare fd table accepted")
+	}
+	inspect := validRequest(OperationInspectLaunch, p)
+	if _, err := DecodeControlRequest(mustSeal(t, inspect), p, fixtureNow, []FDRef{{Role: FDControlRoot}}); err == nil {
+		t.Fatal("inspect accepted a control fd")
 	}
 }
 
