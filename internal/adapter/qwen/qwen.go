@@ -574,6 +574,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	capture, captureSettled := joinCaptureResult(stdoutDone, killSignal)
 	stderrCapture, stderrSettled := joinStreamCapture(stderrDone, killSignal)
 	waitErr := command.Wait()
+	// Freeze the context outcome at the same observation boundary as Wait.
+	// A provider terminal and a cancellation/deadline that both completed by
+	// this point are competing terminal authorities even when the platform's
+	// shell reports exit 0, so the conflict must not depend on waitErr timing.
+	attemptContextErr := runCtx.Err()
 	close(processFinished)
 	completed := a.now().UTC()
 	if !captureSettled {
@@ -597,9 +602,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	fatalDenials := denials.CountFatal(denialRecords)
 	// typed 终止失败先于一切后续判定与 WorkerResult 读取；terminal/process
 	// 冲突与 capture 协议违规优先于 context canceled/deadline exceeded。
-	resolved := resolveAttemptFailure(capture, waitErr, command, runCtx, request, fatalDenials, a.now())
+	resolved := resolveAttemptFailure(capture, waitErr, command, attemptContextErr, request, fatalDenials, a.now())
 	metaPath := filepath.Join(filepath.Dir(resultPath), "qwen-transcript-meta.json")
-	if err := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(runCtx), resolved); err != nil {
+	if err := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(attemptContextErr), resolved); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript metadata: %w", err)
 	}
 	if err := denials.AppendLog(filepath.Join(filepath.Dir(resultPath), denials.LogFileName), denialRecords); err != nil {
@@ -621,21 +626,21 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 			}
 		}
 		failure := newQwenFailure(port.FailureKindResultMissing, detail, nil, nil, a.now())
-		if persistErr := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(runCtx), failure); persistErr != nil {
+		if persistErr := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(attemptContextErr), failure); persistErr != nil {
 			return domain.Record{}, fmt.Errorf("write transcript metadata: %w", persistErr)
 		}
 		return domain.Record{}, failure
 	}
 	if declared.TaskID != request.TaskID || declared.RunID != request.RunID || declared.AttemptID != request.AttemptID || declared.Adapter.ID != adapterID {
 		failure := qwenProtocolInvalid("WorkerResult identity does not match WorkerRequest", a.now())
-		if persistErr := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(runCtx), failure); persistErr != nil {
+		if persistErr := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(attemptContextErr), failure); persistErr != nil {
 			return domain.Record{}, fmt.Errorf("write transcript metadata: %w", persistErr)
 		}
 		return domain.Record{}, failure
 	}
 	if declared.Session != nil && declared.Session.ID != "" && declared.Session.ID != capture.sessionID {
 		failure := qwenProtocolInvalid("WorkerResult session does not match transcript", a.now())
-		if persistErr := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(runCtx), failure); persistErr != nil {
+		if persistErr := persistTranscriptMetadata(metaPath, capture, stderrCapture, exitCode, signalName, denialRecords, fatalDenials, contextError(attemptContextErr), failure); persistErr != nil {
 			return domain.Record{}, fmt.Errorf("write transcript metadata: %w", persistErr)
 		}
 		return domain.Record{}, failure
@@ -1040,8 +1045,8 @@ func processOutcome(command *exec.Cmd) (int, string) {
 	return exitCode, ""
 }
 
-func contextError(ctx context.Context) string {
-	if err := ctx.Err(); err != nil {
+func contextError(err error) string {
+	if err != nil {
 		return err.Error()
 	}
 	return ""
@@ -1245,14 +1250,15 @@ func joinStreamCapture(done <-chan streamCapture, killSignal <-chan struct{}) (s
 }
 
 // resolveAttemptFailure 按冻结优先级合并本次 attempt 的失败：capture 协议
-// 违规与 typed 终止失败最高，其次 context 取消/超时、输出上限、进程失败与
-// 权限拒绝。terminal/process 冲突与 capture 协议违规优先于 context
-// canceled/deadline exceeded；exitCode=0 不能掩盖 structured failure。
-func resolveAttemptFailure(capture captureResult, waitErr error, command *exec.Cmd, runCtx context.Context, request workerRequest, fatalDenials int, now time.Time) error {
+// 违规与 typed 终止冲突最高，其次 context 取消/超时、输出上限、进程失败与
+// 权限拒绝。structured terminal 与 process 失败或已冻结的 context 终止
+// 任一共存都是 protocol-invalid/do-not-retry；exitCode=0 不能让取消冲突
+// 退化成 provider retry。
+func resolveAttemptFailure(capture captureResult, waitErr error, command *exec.Cmd, attemptContextErr error, request workerRequest, fatalDenials int, now time.Time) error {
 	// terminalSeen 之后的 trailing/重复 terminal/success-error 共存等 capture
 	// 协议违规优先于终止分类；它们本身就是 protocol-invalid/do-not-retry。
 	streamErr := capture.err
-	if capture.missingTerminal && (runCtx.Err() != nil || waitErr != nil || capture.limitExceeded) {
+	if capture.missingTerminal && (attemptContextErr != nil || waitErr != nil || capture.limitExceeded) {
 		// 取消、进程组终止或输出上限造成的截断不是 provider 协议违规。
 		streamErr = nil
 	}
@@ -1260,18 +1266,18 @@ func resolveAttemptFailure(capture captureResult, waitErr error, command *exec.C
 		return streamErr
 	}
 	terminal := capture.terminalFailure
-	if terminal != nil && waitErr != nil {
-		// structured failure 与 nonzero exitCode/signal 共存是证据冲突，
+	if terminal != nil && (waitErr != nil || attemptContextErr != nil) {
+		// structured failure 与 process/context 终止共存是证据冲突，
 		// 统一归 protocol-invalid/do-not-retry。
 		if failure, ok := port.AsAdapterFailure(terminal); ok && failure.Kind != port.FailureKindProtocolInvalid {
-			terminal = qwenProtocolInvalid("structured terminal failure conflicts with process outcome", now)
+			terminal = qwenProtocolInvalid("structured terminal failure conflicts with attempt termination", now)
 		}
 	}
 	if terminal != nil {
 		return terminal
 	}
-	if runCtx.Err() != nil {
-		return runCtx.Err()
+	if attemptContextErr != nil {
+		return attemptContextErr
 	}
 	if capture.limitExceeded {
 		return ErrOutputLimit
