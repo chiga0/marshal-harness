@@ -746,10 +746,10 @@ func DecodeControlResponse(raw []byte, request APAPRequestEnvelopeV1, expectedOb
 	if hasNullMember(raw, "observedProviderSequence", "safeMessage") {
 		return response, protocolError(CodeIdentityMismatch, "response-null-scalar")
 	}
-	if response.SchemaVersion != ResponseSchema || response.ProtocolFamily != ControlFamily || response.ProtocolVersion != ProtocolVersion || response.Audience != ControlAudience || response.RequestID != request.RequestID || response.CommandID != request.CommandID || response.ProviderInstanceID != request.ProviderInstanceID || response.AuthorityProfile != request.AuthorityProfile || response.Operation != request.Operation || response.ObservedProviderSequence != expectedObservedSequence {
+	if response.SchemaVersion != ResponseSchema || response.ProtocolFamily != ControlFamily || response.ProtocolVersion != ProtocolVersion || response.Audience != ControlAudience || response.RequestID != request.RequestID || response.CommandID != request.CommandID || response.ProviderInstanceID != request.ProviderInstanceID || response.AuthorityProfile != request.AuthorityProfile || response.Operation != request.Operation {
 		return response, protocolError(CodeIdentityMismatch, "response-identity-invalid")
 	}
-	if request.ExpectedProviderSequence != nil && response.ObservedProviderSequence != *request.ExpectedProviderSequence {
+	if !controlResponseSequenceAllowed(request, response.SafeCode, response.ObservedProviderSequence, expectedObservedSequence) {
 		return response, protocolError(CodeIdentityMismatch, "response-sequence-invalid")
 	}
 	if err := response.SafeCode.Validate(); err != nil {
@@ -763,6 +763,33 @@ func DecodeControlResponse(raw []byte, request APAPRequestEnvelopeV1, expectedOb
 		return response, protocolError(CodeIdentityMismatch, "response-digest-invalid")
 	}
 	return response, nil
+}
+
+// controlResponseSequenceAllowed keeps the request CAS sequence visible on
+// every response. Launch release is the one operation whose linearization
+// point advances the provider sequence; its response therefore reports the
+// next sequence, while prepare/abort (and all existing operations) report the
+// sequence they successfully compared against. The caller still supplies the
+// expected observed sequence so a stale response cannot be accepted.
+func controlResponseSequenceAllowed(request APAPRequestEnvelopeV1, safeCode SafeCode, observed, expected uint64) bool {
+	if observed != expected {
+		return false
+	}
+	// A typed failure reports the provider's current observation even when the
+	// request CAS was stale; callers may safely inspect that observation and
+	// retry/reconcile without treating the failure as a successful mutation.
+	// The safe code is validated by the caller immediately after framing.
+	if safeCode != CodeOK {
+		return true
+	}
+	if request.ExpectedProviderSequence == nil {
+		return true
+	}
+	current := *request.ExpectedProviderSequence
+	if request.Operation == OperationCommitLaunch {
+		return current != ^uint64(0) && observed == current+1
+	}
+	return observed == current
 }
 
 func DecodeCredentialIngressResponse(raw []byte, request CredentialIngressRequestV1) (CredentialIngressResponseV1, error) {
@@ -853,7 +880,7 @@ func validateControlResponsePayload(response APAPResponseEnvelopeV1, request APA
 			return false
 		}
 		if payload.Status == "unknown" {
-			return payload.LaunchReceiptDigest == "" && payload.ReleaseReceiptDigest == "" && payload.AbortReceiptDigest == ""
+			return payload.LaunchTransactionID == "" && payload.ChildIdentityDigest == "" && payload.LaunchReceiptDigest == "" && payload.ReleaseReceiptDigest == "" && payload.AbortReceiptDigest == ""
 		}
 		if !validID(payload.LaunchTransactionID) || !validDigest(payload.ChildIdentityDigest) || !validDigest(payload.LaunchReceiptDigest) {
 			return false

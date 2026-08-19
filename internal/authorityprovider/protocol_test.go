@@ -170,7 +170,11 @@ func TestLaunchControlTypedResponsesAndNegativeBoundary(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s response: %v", operation, err)
 		}
-		if _, err := DecodeControlResponse(response, decoded, 7); err != nil {
+		expectedSequence := uint64(7)
+		if operation == OperationCommitLaunch {
+			expectedSequence++
+		}
+		if _, err := DecodeControlResponse(response, decoded, expectedSequence); err != nil {
 			t.Fatalf("%s response validation: %v", operation, err)
 		}
 	}

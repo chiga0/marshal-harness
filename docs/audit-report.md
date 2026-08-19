@@ -495,6 +495,10 @@ Qoder 与 Codex 的 production consumer 实现复核进一步证明：两个 Ada
 
 本切片通过 authorityprovider 定向、race、vet、staticcheck、Darwin/Linux 编译与 `git diff --check` 后，仅关闭 typed protocol 缺口；root-owned launchd/APAP provisioning、独立 signed launcher/verifier、真实 credentialed probe/conformance 与 Qoder/Codex registry enablement 仍保持 `unsupported`。
 
+随后补入 `LaunchCoordinator` 作为可复用的确定性 reducer：prepare/commit/abort/inspect 统一串行化，command replay 精确绑定 request digest 与 peer identity，重复 transaction/错 receipt/陈旧 CAS fail closed，lost response 只能通过 Inspect 收敛。只有 `CommitLaunch` 的 release linearization point 前进 provider sequence；prepare/abort/inspect 不前进。实际 OS stopped-child、kill/wait、receipt signing 与平台 principal 仍由外部 `LaunchEffects` 实现，coordinator 不保存 FD、不读取 credential、不执行 pathname，也不能单独启用生产 registry。
+
+该 reducer 的记录当前是进程内实现，不能冒充 crash-durable journal；生产 APAP 必须由独立 state/anchor service 持久化相同 transaction identity，并在重启后通过 Inspect 恢复，才能关闭 ADR 0038 的 launch durability 前置条件。
+
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 
 Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Verifier 虽能在命令后观察到 Candidate worktree 变化并把 Gate 标为失败，却让污染字节留在受管 worktree；随后 Review 的 current-observation guard 正确拒绝变化后的字节，Run 因而无法生成绑定原 Candidate 的 ReviewPacket。该问题不是新生命周期或 Schema 缺口：ADR 0027 已冻结 command 写作用域默认为 `none`、未声明写入 fail closed、Candidate 与 Evidence 不可被覆盖；缺失的是实现级 command 隔离。

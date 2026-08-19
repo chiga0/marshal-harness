@@ -87,7 +87,15 @@ func (f *FakeProvider) HandleControl(raw []byte, peer PeerIdentity, now time.Tim
 	if err != nil {
 		return nil, err
 	}
-	response := APAPResponseEnvelopeV1{SchemaVersion: ResponseSchema, ProtocolFamily: ControlFamily, ProtocolVersion: ProtocolVersion, Audience: ControlAudience, RequestID: request.RequestID, CommandID: request.CommandID, ProviderInstanceID: request.ProviderInstanceID, AuthorityProfile: request.AuthorityProfile, Operation: request.Operation, ObservedProviderSequence: f.sequence, SafeCode: CodeOK, SafeMessage: SafeMessageFor(CodeOK), Payload: payload}
+	observedSequence := f.sequence
+	if request.Operation == OperationCommitLaunch {
+		if f.sequence == ^uint64(0) {
+			return nil, protocolError(CodeIdentityMismatch, "provider sequence exhausted")
+		}
+		f.sequence++
+		observedSequence = f.sequence
+	}
+	response := APAPResponseEnvelopeV1{SchemaVersion: ResponseSchema, ProtocolFamily: ControlFamily, ProtocolVersion: ProtocolVersion, Audience: ControlAudience, RequestID: request.RequestID, CommandID: request.CommandID, ProviderInstanceID: request.ProviderInstanceID, AuthorityProfile: request.AuthorityProfile, Operation: request.Operation, ObservedProviderSequence: observedSequence, SafeCode: CodeOK, SafeMessage: SafeMessageFor(CodeOK), Payload: payload}
 	encoded, err := SealControlResponse(response)
 	if err != nil {
 		return nil, err
