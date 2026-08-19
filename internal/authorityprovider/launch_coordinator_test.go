@@ -5,18 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
 func TestDurableLaunchCoordinatorHydratesPendingTransaction(t *testing.T) {
-	dir := t.TempDir()
-	journalDir := filepath.Join(dir, "journal")
-	if err := os.Mkdir(journalDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	journalDir := privateJournalDir(t)
 	journal, err := OpenDurableLaunchJournal(filepath.Join(journalDir, "launch.journal"))
 	if err != nil {
 		t.Fatal(err)

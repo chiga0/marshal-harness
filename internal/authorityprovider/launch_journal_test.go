@@ -7,6 +7,19 @@ import (
 	"testing"
 )
 
+func privateJournalDir(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "journal")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func journalTransaction(status LaunchStatus) LaunchTransaction {
 	return LaunchTransaction{
 		LaunchTransactionID: "launch-txn-journal", AttemptID: "attempt-journal", LaunchNonce: "nonce-journal", Status: status,
@@ -14,11 +27,7 @@ func journalTransaction(status LaunchStatus) LaunchTransaction {
 }
 
 func TestDurableLaunchJournalHydratesAndChains(t *testing.T) {
-	dir := t.TempDir()
-	dir = filepath.Join(dir, "journal")
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	dir := privateJournalDir(t)
 	path := filepath.Join(dir, "launch.journal")
 	journal, err := OpenDurableLaunchJournal(path)
 	if err != nil {
@@ -52,11 +61,7 @@ func TestDurableLaunchJournalHydratesAndChains(t *testing.T) {
 }
 
 func TestDurableLaunchJournalRejectsInvalidHistory(t *testing.T) {
-	dir := t.TempDir()
-	dir = filepath.Join(dir, "journal")
-	if err := os.Mkdir(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	dir := privateJournalDir(t)
 	path := filepath.Join(dir, "launch.journal")
 	journal, err := OpenDurableLaunchJournal(path)
 	if err != nil {
@@ -84,5 +89,20 @@ func TestDurableLaunchJournalRejectsInvalidHistory(t *testing.T) {
 	}
 	if _, err := OpenDurableLaunchJournal(path); err == nil {
 		t.Fatal("partial journal was accepted")
+	}
+}
+
+func TestDurableLaunchJournalRejectsSymlinkedParent(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenDurableLaunchJournal(filepath.Join(link, "launch.journal")); err == nil {
+		t.Fatal("journal followed a symlinked parent")
 	}
 }

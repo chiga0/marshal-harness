@@ -17,10 +17,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"golang.org/x/sys/unix"
@@ -68,17 +66,9 @@ func OpenDurableLaunchJournal(path string) (*DurableLaunchJournal, error) {
 	if err := validateJournalPath(path); err != nil {
 		return nil, err
 	}
-	parent := filepath.Dir(path)
-	if err := validateJournalDirectory(parent); err != nil {
-		return nil, err
-	}
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE|unix.O_NOFOLLOW, 0o600)
+	file, err := openJournalFileNoSymlink(path)
 	if err != nil {
 		return nil, fmt.Errorf("open launch journal: %w", err)
-	}
-	if err := validateJournalFile(file); err != nil {
-		_ = file.Close()
-		return nil, err
 	}
 	journal := &DurableLaunchJournal{file: file, path: path, transactions: map[string]LaunchTransaction{}}
 	if err := journal.replayLocked(); err != nil {
@@ -258,23 +248,69 @@ func validateJournalPath(path string) error {
 	return nil
 }
 
-func validateJournalDirectory(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
-		return errors.New("launch journal directory must be a private real directory")
+func openJournalFileNoSymlink(path string) (*os.File, error) {
+	parts := strings.Split(strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)), string(filepath.Separator))
+	if len(parts) < 2 {
+		return nil, errors.New("launch journal path must include a private directory")
 	}
-	if runtime.GOOS != "windows" && info.Sys() != nil {
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok && uint32(stat.Uid) != uint32(os.Getuid()) && uint32(stat.Uid) != 0 {
-			return errors.New("launch journal directory owner is not trusted")
+	directoryFD, err := unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, errors.New("open launch journal root")
+	}
+	defer func() { _ = unix.Close(directoryFD) }()
+	for index, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil, errors.New("launch journal path contains an invalid component")
 		}
+		last := index == len(parts)-1
+		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+		if last {
+			flags = unix.O_RDWR | unix.O_APPEND | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_CREAT
+		} else {
+			flags |= unix.O_DIRECTORY
+		}
+		fd, openErr := unix.Openat(directoryFD, part, flags, 0o600)
+		if openErr != nil {
+			return nil, errors.New("open launch journal component")
+		}
+		if last {
+			file := os.NewFile(uintptr(fd), filepath.Base(path))
+			if err := validateJournalFileFD(fd); err != nil {
+				_ = file.Close()
+				return nil, err
+			}
+			return file, nil
+		}
+		if index == len(parts)-2 {
+			if err := validateJournalDirectoryFD(fd); err != nil {
+				_ = unix.Close(fd)
+				return nil, err
+			}
+		}
+		_ = unix.Close(directoryFD)
+		directoryFD = fd
+	}
+	return nil, errors.New("open launch journal failed")
+}
+
+func validateJournalDirectoryFD(fd int) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o077 != 0 {
+		return errors.New("launch journal directory must be private")
+	}
+	if stat.Uid != uint32(os.Getuid()) && stat.Uid != 0 {
+		return errors.New("launch journal directory owner is not trusted")
 	}
 	return nil
 }
 
-func validateJournalFile(file *os.File) error {
-	info, err := file.Stat()
-	if err != nil || info.Mode()&0o077 != 0 || !info.Mode().IsRegular() {
+func validateJournalFileFD(fd int) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o077 != 0 {
 		return errors.New("launch journal must be a private regular file")
+	}
+	if stat.Uid != uint32(os.Getuid()) && stat.Uid != 0 {
+		return errors.New("launch journal file owner is not trusted")
 	}
 	return nil
 }
