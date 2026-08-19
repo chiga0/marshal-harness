@@ -22,7 +22,7 @@ import (
 
 const (
 	adapterID      = "qoder"
-	adapterVersion = "0.1.2"
+	adapterVersion = "0.1.3"
 	// supportedBinary is the minimum verified patch in the compatible 1.1.x
 	// line. Other minor/major lines and older patches fail closed.
 	supportedBinary          = "1.1.23"
@@ -33,9 +33,10 @@ const (
 	versionOutputLimit       = 4 << 10
 	versionStderrLimit       = 4 << 10
 	probeTimeout             = 10 * time.Second
-	conformanceEventContract = "qoder-stream-json-1.2.0-v3"
+	conformanceEventContract = "qoder-stream-json-1.2.0-v4"
 	qoderProtocolVersion     = "1.2.0"
 	qoderPermissionMode      = "acceptEdits"
+	qoderDenialExtractor     = "qoder-1.1.23-tool-result-metadata-v1"
 
 	// conformancePendingReason is the fixed, searchable reason Probe reports
 	// "unsupported" until an independent, credentialed live run verifies the
@@ -249,8 +250,73 @@ func expectedProbeToolPolicyDigest() string {
 	return digestBytes(data)
 }
 
+// workerResultTransportContract is the closed, deterministic description of
+// the authority-bearing WorkerResult transport. Every security-relevant
+// field is scalar so a contract mutation cannot disappear through ordering or
+// normalization. The live observation, each execution receipt and both
+// evidence consumers bind its digest; changing any field therefore requires
+// a new Adapter/event contract and fresh live conformance.
+type workerResultTransportContract struct {
+	StagingBasename          string `json:"stagingBasename"`
+	StagingFileType          string `json:"stagingFileType"`
+	StagingMode              string `json:"stagingMode"`
+	CreationFlags            string `json:"creationFlags"`
+	UnlinkBeforeLaunch       bool   `json:"unlinkBeforeLaunch"`
+	UnlinkedLinkCount        uint64 `json:"unlinkedLinkCount"`
+	WorkerPathExposure       string `json:"workerPathExposure"`
+	WorkerDescriptorExposure string `json:"workerDescriptorExposure"`
+	ControlInodeRelationship string `json:"controlInodeRelationship"`
+	HeldDirectoryBinding     string `json:"heldDirectoryBinding"`
+	HeldInodeCommit          string `json:"heldInodeCommit"`
+	HeldInodeConsume         string `json:"heldInodeConsume"`
+	HeldInodeCleanup         string `json:"heldInodeCleanup"`
+	ToolName                 string `json:"toolName"`
+	ToolInputContract        string `json:"toolInputContract"`
+	CanonicalCommand         string `json:"canonicalCommand"`
+	TeeSequence              string `json:"teeSequence"`
+	DenialExtractor          string `json:"denialExtractor"`
+	TranscriptEventContract  string `json:"transcriptEventContract"`
+}
+
+func expectedWorkerResultTransportContract() workerResultTransportContract {
+	return workerResultTransportContract{
+		StagingBasename:          workerResultStagingName,
+		StagingFileType:          "regular-file",
+		StagingMode:              "0600",
+		CreationFlags:            "O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC",
+		UnlinkBeforeLaunch:       true,
+		UnlinkedLinkCount:        0,
+		WorkerPathExposure:       "none",
+		WorkerDescriptorExposure: "none",
+		ControlInodeRelationship: "must-be-distinct",
+		HeldDirectoryBinding:     "held-dirfd-exact-worktree-no-symlink",
+		HeldInodeCommit:          "post-terminal-post-tee-last-exact-inode",
+		HeldInodeConsume:         "held-fd-bounded-exact-inode",
+		HeldInodeCleanup:         "close-already-unlinked-held-fd-and-dirfd",
+		ToolName:                 "Bash",
+		ToolInputContract:        "canonical-json-single-command-field-no-extra-members",
+		CanonicalCommand:         workerResultTeeFirstLine + "\n<CANONICAL_WORKER_RESULT_JSON>\nMARSHAL_RESULT",
+		TeeSequence:              "exactly-one-successful-tee-as-final-tool-call",
+		DenialExtractor:          qoderDenialExtractor,
+		TranscriptEventContract:  conformanceEventContract,
+	}
+}
+
+func workerResultTransportContractDigest(contract workerResultTransportContract) string {
+	data, _ := json.Marshal(contract)
+	return digestBytes(data)
+}
+
+func expectedWorkerResultTransportDigest() string {
+	return workerResultTransportContractDigest(expectedWorkerResultTransportContract())
+}
+
 func expectedProbeSuiteDigest() string {
-	data, _ := json.Marshal(map[string]any{"adapterId": adapterID, "adapterVersion": adapterVersion, "argvDigest": expectedProbeArgvDigest(), "environmentDigest": expectedProbeEnvironmentDigest(), "profileDigest": expectedProbeProfileDigest(), "toolPolicyDigest": expectedProbeToolPolicyDigest(), "eventContract": conformanceEventContract, "protocolVersion": qoderProtocolVersion})
+	return probeSuiteDigestForWorkerResultTransport(expectedWorkerResultTransportDigest())
+}
+
+func probeSuiteDigestForWorkerResultTransport(transportDigest string) string {
+	data, _ := json.Marshal(map[string]any{"adapterId": adapterID, "adapterVersion": adapterVersion, "argvDigest": expectedProbeArgvDigest(), "environmentDigest": expectedProbeEnvironmentDigest(), "profileDigest": expectedProbeProfileDigest(), "toolPolicyDigest": expectedProbeToolPolicyDigest(), "workerResultTransportDigest": transportDigest, "eventContract": conformanceEventContract, "protocolVersion": qoderProtocolVersion})
 	return digestBytes(data)
 }
 
