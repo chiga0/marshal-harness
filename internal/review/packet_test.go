@@ -553,6 +553,65 @@ func TestPacketBindsCodexEligibilityIdentity(t *testing.T) {
 	}
 }
 
+func TestPacketAllowsCodexOrdinaryUserWithoutEligibilityBinding(t *testing.T) {
+	fixture := newCodexReviewFixture(t, "codex")
+	stripCodexFixtureArtifacts(t, &fixture)
+
+	capabilityPath := filepath.Join(fixture.directory, "capability-snapshot.json")
+	capabilityData, err := os.ReadFile(capabilityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capability map[string]any
+	if err := json.Unmarshal(capabilityData, &capability); err != nil {
+		t.Fatal(err)
+	}
+	capability["authorityMode"] = "ordinary-user"
+	for _, key := range []string{
+		"codexAuthority", "conformanceEvidenceDigest", "conformanceTrustRootKeyId",
+		"conformanceProbeProfileDigest", "conformanceValidUntil", "conformanceHostFingerprint",
+		"conformanceAuthorityGeneration",
+	} {
+		delete(capability, key)
+	}
+	capabilityData, err = json.Marshal(capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capabilityPath, capabilityData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	capabilityDigest, err := canonical.DigestJSON(capabilityData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(fixture.directory, "state.json")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["capabilityDigest"] = capabilityDigest
+	stateData, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, stateData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	packet, err := buildCodexFixture(fixture)
+	if err != nil {
+		t.Fatalf("ordinary-user Codex review packet rejected: %v", err)
+	}
+	if packet.CodexEligibilityBinding != nil {
+		t.Fatalf("ordinary-user Codex packet unexpectedly received authority binding: %+v", packet.CodexEligibilityBinding)
+	}
+}
+
 func addHistoricalWorkerResult(t *testing.T, fixture *reviewFixture, attemptID, adapterID string) {
 	t.Helper()
 	source, err := os.ReadFile(filepath.Join(fixture.directory, "attempts/attempt-01/worker-result.json"))

@@ -85,6 +85,23 @@ func renderFixturePrompt(t *testing.T, spec map[string]any, findings []map[strin
 	return prompt
 }
 
+func renderFixturePromptForAdapter(t *testing.T, spec map[string]any, adapterID string) string {
+	t.Helper()
+	taskData, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var task domain.TaskSpec
+	if err := json.Unmarshal(taskData, &task); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := renderPrompt(taskData, task, promptFixtureState(), "attempt-1", promptFixtureControlRoot, adapterID, nil)
+	if err != nil {
+		t.Fatalf("renderPrompt failed: %v", err)
+	}
+	return prompt
+}
+
 func jsonStringLiteral(t *testing.T, value string) string {
 	t.Helper()
 	var buf bytes.Buffer
@@ -194,6 +211,18 @@ func TestRenderPromptProjectsSelfContainedWorkerView(t *testing.T) {
 			if !strings.Contains(readOnlyPrompt, anchor) {
 				t.Fatalf("read-only prompt is missing %q:\n%s", anchor, readOnlyPrompt)
 			}
+		}
+	})
+
+	t.Run("codex uses held output-last-message persistence", func(t *testing.T) {
+		spec := promptFixtureSpec()
+		spec["worker"] = map[string]any{
+			"preferredAdapter": "codex", "fallbackAdapters": []string{},
+			"executionProfile": "workspace-write", "sessionPolicy": "ephemeral",
+		}
+		codexPrompt := renderFixturePromptForAdapter(t, spec, "codex")
+		if !strings.Contains(codexPrompt, "Codex 特殊规则：不要通过 shell 或工具再次写入上述绝对路径") {
+			t.Fatalf("Codex prompt is missing held output-last-message guidance:\n%s", codexPrompt)
 		}
 	})
 }

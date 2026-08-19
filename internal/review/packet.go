@@ -256,6 +256,7 @@ func (b *PacketBuilder) deriveCodexEligibilityBinding(report verification.Report
 	var capability struct {
 		AdapterID      string `json:"adapterId"`
 		ProbeStatus    string `json:"probeStatus"`
+		AuthorityMode  string `json:"authorityMode"`
 		CodexAuthority *struct {
 			EvidenceDigest       string `json:"evidenceDigest"`
 			ConfigDigest         string `json:"configDigest"`
@@ -268,7 +269,18 @@ func (b *PacketBuilder) deriveCodexEligibilityBinding(report verification.Report
 	if err := json.Unmarshal(capabilityData, &capability); err != nil {
 		return nil, "", fmt.Errorf("decode frozen Codex capability snapshot: %w", err)
 	}
-	if capability.AdapterID != "codex" || capability.ProbeStatus != "supported" || capability.CodexAuthority == nil {
+	if capability.AdapterID != "codex" || capability.ProbeStatus != "supported" {
+		return nil, "", errors.New("codex WorkerResult is not backed by a supported Codex capability authority")
+	}
+	// ADR 0042 explicitly permits Mac ordinary-user mode at the same
+	// trust level as Qwen/OpenCode. It has no signed authority, launch
+	// receipt, or eligibility artifacts, so it must not enter the Codex
+	// production eligibility binding path. The capability snapshot remains
+	// visibly downgraded via authorityMode=ordinary-user.
+	if capability.CodexAuthority == nil {
+		if capability.AuthorityMode == "ordinary-user" {
+			return nil, "", nil
+		}
 		return nil, "", errors.New("codex WorkerResult is not backed by a supported Codex capability authority")
 	}
 
