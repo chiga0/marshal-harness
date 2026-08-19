@@ -105,6 +105,9 @@ func buildTaskSpecPromptProjectionCatalog() []catalogEntry {
 	c = append(c, catalogEntry{"/worker/fallbackAdapters/*", hidden})
 	c = append(c, catalogEntry{"/worker/model", hidden})
 	c = append(c, catalogEntry{"/worker/reasoning", hidden})
+	// ciObserveTimeoutSeconds controls Publisher-side remote check observation;
+	// it grants no capability and is irrelevant to Worker execution.
+	c = append(c, catalogEntry{"/budgets/ciObserveTimeoutSeconds", hidden})
 	// worker.tools is consumed by the adapter enforcement layer (provider
 	// call-layer allowlists) and the Verification tool-allowlist gate; the
 	// prompt already carries constraints free text, so the declaration is
