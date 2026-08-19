@@ -9,6 +9,8 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/port"
@@ -410,10 +412,11 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 // held inode after the transcript and terminal result pass. Consequently no
 // arbitrary shell expression can name the authority-bearing staging object.
 //
-// A declaration input is closed as well: exactly one canonical `command`
-// field and one fixed quoted-heredoc grammar. Split words, globs, background
-// jobs, alternate sinks, extra JSON fields/whitespace and unicode-escaped
-// spellings cannot become a second spelling of the primitive.
+// A declaration input is closed as well: one canonical `command`, Qoder's
+// observed non-authoritative bounded `description`, and one fixed
+// quoted-heredoc grammar. Split words, globs, background jobs, alternate
+// sinks, unknown JSON fields/whitespace and unicode-escaped spellings cannot
+// become a second spelling of the primitive.
 func classifyWorkerResultTransportTool(tool string, input json.RawMessage) (access, valid bool, payload []byte) {
 	command, canonical := decodeCanonicalQoderBashInput(input)
 	if !workerResultDeclarationCandidate(command) {
@@ -427,20 +430,26 @@ func classifyWorkerResultTransportTool(tool string, input json.RawMessage) (acce
 }
 
 func decodeCanonicalQoderBashInput(input json.RawMessage) (string, bool) {
-	var value struct {
-		Command string `json:"command"`
+	type bashInput struct {
+		Command     string `json:"command"`
+		Description string `json:"description,omitempty"`
 	}
 	// Decode once without the closed-field check so a declaration candidate
 	// with an extra field is still classified as an invalid attempt instead of
 	// disappearing into the ordinary Bash stream.
-	if err := json.Unmarshal(input, &value); err != nil || value.Command == "" {
+	var candidate struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(input, &candidate); err != nil || candidate.Command == "" {
 		return "", false
+	}
+	var value bashInput
+	if err := json.Unmarshal(input, &value); err != nil || !validQoderBashDescription(value.Description) {
+		return candidate.Command, false
 	}
 	decoder := json.NewDecoder(bytes.NewReader(input))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&struct {
-		Command string `json:"command"`
-	}{}); err != nil {
+	if err := decoder.Decode(&bashInput{}); err != nil {
 		return value.Command, false
 	}
 	if decoder.Decode(&struct{}{}) != io.EOF {
@@ -458,6 +467,23 @@ func decodeCanonicalQoderBashInput(input json.RawMessage) (string, bool) {
 		return value.Command, false
 	}
 	return value.Command, bytes.Equal(input, noHTMLEscapes) || bytes.Equal(input, defaultEscapes)
+}
+
+const (
+	qoderBashDescriptionMinBytes = 1
+	qoderBashDescriptionMaxBytes = 512
+)
+
+func validQoderBashDescription(value string) bool {
+	if len(value) < qoderBashDescriptionMinBytes || len(value) > qoderBashDescriptionMaxBytes || !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 const workerResultTeeFirstLine = "cat <<'MARSHAL_RESULT' | tee /dev/null > /dev/null"
