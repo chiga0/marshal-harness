@@ -431,6 +431,7 @@ func stripRejectedSchemaKeywords(node any) {
 	switch value := node.(type) {
 	case map[string]any:
 		delete(value, "not")
+		delete(value, "oneOf")
 		if constant, ok := value["const"]; ok {
 			value["type"] = providerSchemaType(constant)
 			value["enum"] = []any{constant}
