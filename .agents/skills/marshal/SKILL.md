@@ -64,6 +64,7 @@ Decision 必须绑定 `taskId`、`runId`、`reviewRound`、`specDigest`、`revie
   4. `result-missing`、protocol/identity、path-boundary、version drift 属于结构性失败：先修 adapter/contract，再以当前 local main 创建 fresh-base successor；只有明确 provider timeout/transient transport 且结构性 preflight 已通过时才重试同一 `taskId`。
   5. 验证分层：先跑受影响包的 `go test`、`vet`、`staticcheck` 与必要的 `-race`，再跑 `make check`/全仓 race；门禁失败必须记录精确 gate、版本、命令摘要与 digest，禁止用“重跑一次”替代根因修复。
   6. 若 ReviewPacket 因旧 artifact manifest、旧 base 或缺失证据无法生成，不伪造 Decision；通过 Core 允许的 intervention/cleanup 路径标记历史阻塞并准备 fresh successor，避免陈旧 Run 长期占据 `REVIEW_PENDING` 队列。
+  7. `marshal supervise --once` 不是只读巡检：它可能启动全局 `READY/REWORK_REQUESTED` Run。Heartbeat 只读检查使用 watchdog JSON、`task status`、`doctor` 和事件尾部；只有完成容量、scope、lease admission 后，才允许显式调用会启动 Worker 的 supervise/driver 路径。
 
 用户明确授权的 Harness 适配修复可在 local main 直接完成，但仍必须保留独立 reviewer、精确验证摘要、`localMergeSha/sourceHead/pendingRemoteSync` 记录；产品 Run 生命周期、Worker 启动与发布权限仍只能由 Marshal Core/CLI 改变。
 - TaskSpec 的 `work.context` 必须自包含（Worker 看不到对话历史）；acceptance 命令按任务裁剪；constraints 中固定“若某操作被 permission 拒绝，不得重试该路径，改用允许路径内的等价输入”。
