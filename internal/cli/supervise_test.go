@@ -164,6 +164,34 @@ func waitForArgvFile(t *testing.T, path string) []string {
 	return nil
 }
 
+// waitForLeaseReleased proves that the detached fake child reached the
+// readiness point observed by the supervisor and then finished releasing its
+// Run lease. Tests must not return while that child can still write below a
+// t.TempDir-backed state root, otherwise cleanup can race with the lease owner.
+func waitForLeaseReleased(t *testing.T, stateRoot, runID string) {
+	t.Helper()
+	store := runstore.New(stateRoot)
+	held, err := store.LeaseHeld(runID)
+	if err != nil {
+		t.Fatalf("probe lease for %s: %v", runID, err)
+	}
+	if !held {
+		t.Fatalf("lease for %s was not held after detached driver readiness", runID)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		held, err = store.LeaseHeld(runID)
+		if err != nil {
+			t.Fatalf("probe lease release for %s: %v", runID, err)
+		}
+		if !held {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("detached fake child did not release lease for %s", runID)
+}
+
 // assertNoArgvFile fails the test if the fake marshal binary records argv
 // within a short grace period after the supervise round returned.
 func assertNoArgvFile(t *testing.T, path string) {
@@ -189,6 +217,7 @@ func TestSuperviseOnceDispatchesReadyRunToWorker(t *testing.T) {
 	if exit != ExitOK {
 		t.Fatalf("supervise --once exit = %d, stderr = %s", exit, stderr.String())
 	}
+	waitForLeaseReleased(t, stateRoot, runID)
 	gotArgv := waitForArgvFile(t, argvFile)
 	wantArgv := []string{"task", "run", "--run", runID, "--through-verify", "--json"}
 	if !reflect.DeepEqual(gotArgv, wantArgv) {
@@ -218,6 +247,7 @@ func TestSuperviseOnceRetriesPublishForDeadDriver(t *testing.T) {
 	if exit != ExitOK {
 		t.Fatalf("supervise --once exit = %d, stderr = %s", exit, stderr.String())
 	}
+	waitForLeaseReleased(t, stateRoot, runID)
 	gotArgv := waitForArgvFile(t, argvFile)
 	wantArgv := []string{"task", "publish", "--run", runID, "--json"}
 	if !reflect.DeepEqual(gotArgv, wantArgv) {
@@ -243,6 +273,7 @@ func TestSuperviseOnceReturnsDeadRunningRunToCore(t *testing.T) {
 	if exit != ExitOK {
 		t.Fatalf("supervise --once exit = %d, stderr = %s", exit, stderr.String())
 	}
+	waitForLeaseReleased(t, stateRoot, runID)
 	gotArgv := waitForArgvFile(t, argvFile)
 	wantArgv := []string{"task", "run", "--run", runID, "--through-verify", "--recover-dead-driver", "--json"}
 	if !reflect.DeepEqual(gotArgv, wantArgv) {
@@ -336,6 +367,7 @@ func TestSuperviseOnceJSONCarriesCompleteDecisionFields(t *testing.T) {
 	if exit != ExitOK {
 		t.Fatalf("supervise --once --json exit = %d, stderr = %s", exit, stderr.String())
 	}
+	waitForLeaseReleased(t, stateRoot, runID)
 	var raw []map[string]json.RawMessage
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		t.Fatalf("decode supervise JSON: %v\n%s", err, stdout.String())
