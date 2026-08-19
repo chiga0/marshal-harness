@@ -57,7 +57,7 @@ func TestAdapterFailureContract(t *testing.T) {
 			FailureKindRateLimited:       RetryDispositionRetryable,
 			FailureKindDNSFailure:        RetryDispositionRetryable,
 			FailureKindConnectionFailure: RetryDispositionRetryable,
-			FailureKindResultMissing:     RetryDispositionRetryable,
+			FailureKindResultMissing:     RetryDispositionDoNotRetry,
 			FailureKindProtocolInvalid:   RetryDispositionDoNotRetry,
 			FailureKindProviderTerminal:  RetryDispositionDoNotRetry,
 		}
@@ -145,6 +145,73 @@ func TestAdapterFailureContract(t *testing.T) {
 			t.Fatal("nil error must not surface as AdapterFailure")
 		}
 	})
+}
+
+type projectedAdapterFailureError struct{ failure AdapterFailure }
+
+func (e projectedAdapterFailureError) Error() string { return "free-text projection" }
+
+func (e projectedAdapterFailureError) As(target any) bool {
+	pointer, ok := target.(*AdapterFailure)
+	if ok {
+		*pointer = e.failure
+	}
+	return ok
+}
+
+type cyclicAdapterFailureError struct{}
+
+func (*cyclicAdapterFailureError) Error() string   { return "cyclic typed graph" }
+func (e *cyclicAdapterFailureError) Unwrap() error { return e }
+
+func TestNormalizeAdapterFailureRejectsForgedAndAmbiguousCarriers(t *testing.T) {
+	valid, err := NewAdapterFailure(AdapterIDQwen, FailureKindConnectionFailure, RetryDispositionRetryable, durationPtr(time.Minute), nil, contractNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized, found, err := NormalizeAdapterFailure(fmt.Errorf("fixed wrapper: %w", valid), contractNow)
+	if err != nil || !found || normalized != valid || normalized.Error() != valid.Error() {
+		t.Fatalf("normalized = %+v found=%t err=%v", normalized, found, err)
+	}
+	if _, found, err := NormalizeAdapterFailure(errors.New("plain"), contractNow); found || err != nil {
+		t.Fatalf("plain error = found=%t err=%v", found, err)
+	}
+
+	for _, test := range []struct {
+		name    string
+		failure AdapterFailure
+	}{
+		{name: "unknown adapter", failure: AdapterFailure{Adapter: AdapterID("bad\nfree-text"), Kind: FailureKindProtocolInvalid, Disposition: RetryDispositionDoNotRetry}},
+		{name: "unknown kind", failure: AdapterFailure{Adapter: AdapterIDQwen, Kind: FailureKind("bad\nfree-text"), Disposition: RetryDispositionDoNotRetry}},
+		{name: "invalid pair", failure: AdapterFailure{Adapter: AdapterIDQwen, Kind: FailureKindProtocolInvalid, Disposition: RetryDispositionRetryable}},
+		{name: "negative hint", failure: AdapterFailure{Adapter: AdapterIDQwen, Kind: FailureKindRateLimited, Disposition: RetryDispositionRetryable, RetryAfter: -time.Second}},
+		{name: "over-bound hint", failure: AdapterFailure{Adapter: AdapterIDQwen, Kind: FailureKindRateLimited, Disposition: RetryDispositionRetryable, RetryAfter: MaxRetryHintWindow + time.Second}},
+		{name: "past not-before", failure: AdapterFailure{Adapter: AdapterIDQwen, Kind: FailureKindRateLimited, Disposition: RetryDispositionRetryable, NotBefore: contractNow.Add(-time.Second)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, found, err := NormalizeAdapterFailure(test.failure, contractNow); !found || err == nil {
+				t.Fatalf("forged carrier accepted: found=%t err=%v", found, err)
+			}
+		})
+	}
+
+	second, err := NewAdapterFailure(AdapterIDQoder, FailureKindProtocolInvalid, RetryDispositionDoNotRetry, nil, nil, contractNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := NormalizeAdapterFailure(errors.Join(valid, second), contractNow); !found || err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous carriers accepted: found=%t err=%v", found, err)
+	}
+	if _, found, err := NormalizeAdapterFailure(projectedAdapterFailureError{failure: valid}, contractNow); !found || err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("As-only projection accepted: found=%t err=%v", found, err)
+	}
+	var nilCarrier *AdapterFailure
+	if _, found, err := NormalizeAdapterFailure(nilCarrier, contractNow); !found || err == nil || !strings.Contains(err.Error(), "nil typed carrier") {
+		t.Fatalf("nil carrier accepted: found=%t err=%v", found, err)
+	}
+	if _, found, err := NormalizeAdapterFailure(&cyclicAdapterFailureError{}, contractNow); !found || err == nil || !strings.Contains(err.Error(), "bounded node limit") {
+		t.Fatalf("cyclic carrier graph accepted: found=%t err=%v", found, err)
+	}
 }
 
 // TestAdapterFailureHintsStayBounded 冻结 hint 验证：冲突、零、负、过去、

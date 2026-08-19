@@ -398,6 +398,8 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 
 `result-missing`、path/protocol/identity/version drift、旧 artifact/base、`worktree evidence changed after verification` 属于结构性失败。同一类别只裁决一次：记录 failure digest，停止原 Run 的盲目重试，修复 adapter/契约后从当前 local main 创建 fresh-base successor。只有预检摘要仍匹配且确认为 provider timeout、DNS、rate-limit 或短暂 transport 背压时，才允许在原 `taskId` 上进行有限 operational retry，并记录 attempt、预算和 backoff。
 
+Core 只接受唯一、可重放且通过闭合构造器重新校验的 `AdapterFailure` carrier。权威映射固定为：`quota-exhausted → blocked`；`rate-limited`、`dns-failure`、`connection-failure → retryable`；`protocol-invalid`、`result-missing`、`provider-terminal → do-not-retry`。未知枚举、kind/disposition 错配、负数或超过 24h 的 hint、冲突 hint、Adapter identity 错配、仅靠自定义 `As` 投影或 joined graph 中存在多个 carrier，均按安全的 `protocol-invalid/do-not-retry` 处理，不把原始 cause、路径、credential 或控制字符写入事件、Outcome 或返回错误。
+
 `REVIEW_PENDING` 的 packet 缺失、旧 manifest、旧 base 或证据变更，执行一次 intervention finding 并准备 successor；不要跨 heartbeat 重复调用同一 `task review`。任何复用或 intervention 都不得手写 `.marshal`、伪造 digest 或绕过 Core 生命周期。
 
 ### 11.7 防 rework 的真实性预检

@@ -376,7 +376,7 @@ func TestRunTerminalFailureReturnsBeforeReadingDeclaredResult(t *testing.T) {
 }
 
 // TestRunResultMissingMetadataMatchesFailure 冻结 success 之后 WorkerResult
-// 缺失或不可读的 result-missing/retryable 语义，metadata 投影必须与最终
+// 缺失或不可读的 result-missing/do-not-retry 语义，metadata 投影必须与最终
 // returned error 完全一致。
 func TestRunResultMissingMetadataMatchesFailure(t *testing.T) {
 	successBody := strings.Join([]string{initEvent("session-1", supportedBinary), resultEvent("success", 1, 1)}, "\n")
@@ -384,14 +384,14 @@ func TestRunResultMissingMetadataMatchesFailure(t *testing.T) {
 		t.Helper()
 		_, err := fixture.adapter.Run(context.Background(), fixture.request)
 		failure, ok := port.AsAdapterFailure(err)
-		if !ok || failure.Kind != port.FailureKindResultMissing || failure.Disposition != port.RetryDispositionRetryable || failure.Adapter != port.AdapterIDQwen {
-			t.Fatalf("err = %v, want typed result-missing/retryable", err)
+		if !ok || failure.Kind != port.FailureKindResultMissing || failure.Disposition != port.RetryDispositionDoNotRetry || failure.Adapter != port.AdapterIDQwen {
+			t.Fatalf("err = %v, want typed result-missing/do-not-retry", err)
 		}
 		metadata, metaErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qwen-transcript-meta.json"))
 		if metaErr != nil {
 			t.Fatal(metaErr)
 		}
-		if !strings.Contains(string(metadata), `"failureKind": "result-missing"`) || !strings.Contains(string(metadata), `"retryDisposition": "retryable"`) {
+		if !strings.Contains(string(metadata), `"failureKind": "result-missing"`) || !strings.Contains(string(metadata), `"retryDisposition": "do-not-retry"`) {
 			t.Fatalf("metadata must stay consistent with the returned error: %s", metadata)
 		}
 	}
@@ -418,14 +418,14 @@ func TestRunResultMissingMetadataMatchesFailure(t *testing.T) {
 		fixture.writeDeclared(t, map[string]any{"status": "weird"})
 		_, err := fixture.adapter.Run(context.Background(), fixture.request)
 		failure, ok := port.AsAdapterFailure(err)
-		if !ok || failure.Kind != port.FailureKindResultMissing || !strings.Contains(err.Error(), "validate WorkerResult declaration") {
+		if !ok || failure.Kind != port.FailureKindResultMissing || failure.Disposition != port.RetryDispositionDoNotRetry || !strings.Contains(err.Error(), "validate WorkerResult declaration") {
 			t.Fatalf("err = %v, want typed result-missing for schema-invalid declaration", err)
 		}
 		metadata, metaErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qwen-transcript-meta.json"))
 		if metaErr != nil {
 			t.Fatal(metaErr)
 		}
-		if !strings.Contains(string(metadata), `"failureKind": "result-missing"`) || !strings.Contains(string(metadata), `"retryDisposition": "retryable"`) {
+		if !strings.Contains(string(metadata), `"failureKind": "result-missing"`) || !strings.Contains(string(metadata), `"retryDisposition": "do-not-retry"`) {
 			t.Fatalf("metadata must stay consistent with the returned error: %s", metadata)
 		}
 	})
@@ -981,9 +981,13 @@ func TestRunCancellationConflictReturnsDeterministically(t *testing.T) {
 		body := strings.Join([]string{
 			initEvent("session-1", supportedBinary),
 			terminalLine(terminal),
+			// Keep one background fd holder while replacing the top-level shell
+			// with sleep. The process-group kill must therefore converge both
+			// processes and Wait must observe SIGKILL rather than a shell-specific
+			// zero exit from the wait builtin.
 			"sleep 30 &",
 			"touch " + shellQuote(ready),
-			"wait",
+			"exec sleep 30",
 		}, "\n")
 		fixture := newRunFixture(t, supportedBinary, body)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1020,6 +1024,31 @@ func TestRunCancellationConflictReturnsDeterministically(t *testing.T) {
 			t.Fatalf("iteration %d: Run did not converge after cancellation", iteration)
 		}
 		cancel()
+	}
+}
+
+// TestResolveAttemptFailureCancellationConflictDoesNotDependOnWaitError
+// freezes the macOS race where a canceled shell can be reaped with waitErr=nil.
+// The frozen context outcome remains an independent terminal authority, so a
+// structured provider failure cannot become retryable merely because Wait's
+// platform-specific projection reported exit 0.
+func TestResolveAttemptFailureCancellationConflictDoesNotDependOnWaitError(t *testing.T) {
+	terminal := newQwenFailure(port.FailureKindDNSFailure, "", nil, nil, time.Now())
+	err := resolveAttemptFailure(
+		captureResult{terminalFailure: terminal},
+		nil,
+		nil,
+		context.Canceled,
+		workerRequest{},
+		0,
+		time.Now(),
+	)
+	failure, ok := port.AsAdapterFailure(err)
+	if !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry || !errors.Is(err, ErrProtocol) {
+		t.Fatalf("err = %v, want cancellation conflict protocol-invalid independent of waitErr", err)
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("conflict must not degrade to context.Canceled: %v", err)
 	}
 }
 
