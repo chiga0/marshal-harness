@@ -25,6 +25,7 @@ SOURCE_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 MAX_PROTECTED_TREE_ENTRIES = 20_000
 MAX_PROTECTED_TREE_BYTES = 256 * 1024 * 1024
 NORMALIZERS = {"nfkc-casefold", "markdown-backtick-strip+nfkc-casefold"}
+UNSAFE_PROMPT_CATEGORIES = {"Cc", "Cf", "Zl", "Zp"}
 COMMAND_FIELDS = {
     "id",
     "argv",
@@ -154,6 +155,33 @@ def require_digest(value: object, label: str) -> str:
     if not DIGEST_RE.fullmatch(digest):
         fail("manifest-shape-invalid", f"{label} must be a lowercase sha256 digest")
     return digest
+
+
+def validate_prompt_projection_string(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        fail("task-spec-shape-invalid", f"TaskSpec {label} must be a string")
+    for character in value:
+        if unicodedata.category(character) in UNSAFE_PROMPT_CATEGORIES:
+            fail(
+                "prompt-projection-unsafe",
+                f"TaskSpec {label} contains unsafe code point U+{ord(character):04X}",
+            )
+    return value
+
+
+def validate_work_prompt_projection(task_spec: dict) -> None:
+    work = task_spec.get("work")
+    if not isinstance(work, dict):
+        fail("task-spec-shape-invalid", "TaskSpec work must be an object")
+    validate_prompt_projection_string(work.get("objective"), "work.objective")
+    for field in ("context", "constraints", "nonGoals"):
+        raw = work.get(field)
+        if raw is None:
+            continue
+        if not isinstance(raw, list):
+            fail("task-spec-shape-invalid", f"TaskSpec work.{field} must be an array of strings")
+        for index, item in enumerate(raw):
+            validate_prompt_projection_string(item, f"work.{field}[{index}]")
 
 
 def clean_relative_path(value: object, label: str) -> str:
@@ -1083,6 +1111,7 @@ def validate(
 
     if file_digest(task_spec_path) != manifest["taskSpecDigest"]:
         fail("task-spec-digest-mismatch", "taskSpecDigest does not match TaskSpec bytes")
+    validate_work_prompt_projection(task_spec)
     selected = task_command(task_spec, manifest["command"]["id"])
     validate_command_binding(manifest["command"], selected)
     extracted = extract_content_gate(selected["argv"])
