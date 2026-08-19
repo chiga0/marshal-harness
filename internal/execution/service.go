@@ -185,12 +185,12 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		return Result{}, errors.New("run snapshot identity does not match the requested run")
 	}
 	if state.State == domain.StateBlocked {
-		recovered, recoverErr := recoverBudgetTerminalOutcome(store, lease, runDir, state)
+		recovered, recoverErr := recoverWorkerTerminalOutcome(store, lease, runDir, state)
 		if recoverErr != nil {
 			return Result{State: state, AttemptID: state.CurrentAttemptID}, recoverErr
 		}
 		if recovered {
-			return Result{State: state, AttemptID: state.CurrentAttemptID}, errors.New("orphan recovery requires operator intervention: retry budget exhausted")
+			return Result{State: state, AttemptID: state.CurrentAttemptID}, errors.New("worker failure requires operator intervention")
 		}
 	}
 	if state.State == domain.StateRetryPending {
@@ -403,19 +403,19 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	workerResult, runErr := input.Adapter.Run(ctx, domain.Record{Kind: domain.KindWorkerRequest, Data: requestData})
 	if runErr != nil {
-		failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, task, runErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
+		failedState, reportedErr, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, runErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
 		if persistErr != nil {
-			return Result{State: failedState, AttemptID: attemptID}, errors.Join(runErr, persistErr)
+			return Result{State: failedState, AttemptID: attemptID}, errors.Join(reportedErr, persistErr)
 		}
-		return Result{State: failedState, AttemptID: attemptID}, runErr
+		return Result{State: failedState, AttemptID: attemptID}, reportedErr
 	}
 	if workerResult.Kind != domain.KindWorkerResult || input.Validator.Validate(domain.KindWorkerResult, workerResult.Data) != nil {
-		protocolErr := errors.New("adapter returned an invalid WorkerResult")
-		failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, task, protocolErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
+		protocolErr := adapterProtocolFailure(selectedAdapterID, "adapter returned an invalid WorkerResult", time.Now().UTC())
+		failedState, reportedErr, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, protocolErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
 		if persistErr != nil {
-			return Result{State: failedState, AttemptID: attemptID}, errors.Join(protocolErr, persistErr)
+			return Result{State: failedState, AttemptID: attemptID}, errors.Join(reportedErr, persistErr)
 		}
-		return Result{State: failedState, AttemptID: attemptID}, protocolErr
+		return Result{State: failedState, AttemptID: attemptID}, reportedErr
 	}
 	var resultIdentity struct {
 		TaskID    string `json:"taskId"`
@@ -426,7 +426,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		} `json:"adapter"`
 	}
 	if err := json.Unmarshal(workerResult.Data, &resultIdentity); err != nil || resultIdentity.TaskID != state.TaskID || resultIdentity.RunID != state.RunID || resultIdentity.AttemptID != attemptID || resultIdentity.Adapter.ID != selectedAdapterID {
-		protocolErr := errors.New("WorkerResult identity does not match the active attempt")
+		protocolErr := adapterProtocolFailure(selectedAdapterID, "WorkerResult identity does not match the active attempt", time.Now().UTC())
 		// A WorkerResult that claims a superseded attempt of this run carries
 		// a stale fencing generation: isolate it as diagnostic material before
 		// the fail-closed protocol rejection so it can never enter the
@@ -436,11 +436,11 @@ func Run(ctx context.Context, input Input) (Result, error) {
 				protocolErr = fmt.Errorf("%w: stale fencing quarantine failed: %v", protocolErr, quarantineErr)
 			}
 		}
-		failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, task, protocolErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
+		failedState, reportedErr, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, protocolErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
 		if persistErr != nil {
-			return Result{State: failedState, AttemptID: attemptID}, errors.Join(protocolErr, persistErr)
+			return Result{State: failedState, AttemptID: attemptID}, errors.Join(reportedErr, persistErr)
 		}
-		return Result{State: failedState, AttemptID: attemptID}, protocolErr
+		return Result{State: failedState, AttemptID: attemptID}, reportedErr
 	}
 	// Typed-edge result acceptance gate (M9-b): when a dispatch context is
 	// bound, the accepted WorkerResult rechecks its DispatchResultCapability
@@ -452,11 +452,11 @@ func Run(ctx context.Context, input Input) (Result, error) {
 			if quarantineErr := quarantineRejectedWorkerResult(runDir, attemptID, workerResult.Data, err); quarantineErr != nil {
 				err = fmt.Errorf("%w; quarantine failed: %v", err, quarantineErr)
 			}
-			failedState, persistErr := recordFailure(store, lease, runDir, next, attemptID, task, err, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
+			failedState, reportedErr, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, err, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
 			if persistErr != nil {
-				return Result{State: failedState, AttemptID: attemptID}, errors.Join(err, persistErr)
+				return Result{State: failedState, AttemptID: attemptID}, errors.Join(reportedErr, persistErr)
 			}
-			return Result{State: failedState, AttemptID: attemptID}, err
+			return Result{State: failedState, AttemptID: attemptID}, reportedErr
 		}
 	}
 	if err := atomicWrite(filepath.Join(attemptDir, "worker-result.json"), append(workerResult.Data, '\n'), 0o600); err != nil {
@@ -639,7 +639,7 @@ func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir stri
 	return next, orphanAttemptID, errors.New("orphan recovery requires operator intervention: operational retry budget exhausted")
 }
 
-func recoverBudgetTerminalOutcome(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState) (bool, error) {
+func recoverWorkerTerminalOutcome(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState) (bool, error) {
 	events, _, err := store.ReadEventsUnderLease(lease)
 	if err != nil || len(events) == 0 {
 		return false, err
@@ -649,29 +649,38 @@ func recoverBudgetTerminalOutcome(store *runstore.Store, lease *runstore.Lease, 
 		return false, nil
 	}
 	reason, _ := last.Payload["terminalReason"].(string)
-	if reason != "orphan-attempt-budget-exhausted" && reason != "orphan-operational-retry-budget-exhausted" && reason != "attempt-budget-exhausted" && reason != "operational-retry-budget-exhausted" {
+	if !knownWorkerTerminalReason(reason) {
 		return false, nil
 	}
 	orphaned, _ := last.Payload["orphaned"].(bool)
 	budgetTerminal, _ := last.Payload["budgetTerminal"].(bool)
-	if !orphaned && !budgetTerminal {
-		return false, errors.New("budget recovery: terminal event lacks authority binding")
+	failureTerminal, _ := last.Payload["failureTerminal"].(bool)
+	if !orphaned && !budgetTerminal && !failureTerminal {
+		return false, errors.New("worker terminal recovery: terminal event lacks authority binding")
+	}
+	if failureTerminal {
+		if orphaned || budgetTerminal {
+			return false, errors.New("worker terminal recovery: structural failure authority binding conflicts with another terminal class")
+		}
+		if err := validateStructuralFailureTerminal(events, state, last); err != nil {
+			return false, fmt.Errorf("worker terminal recovery: %w", err)
+		}
 	}
 	staleText, _ := last.Payload["staleSince"].(string)
 	staleSince, err := time.Parse(time.RFC3339, staleText)
 	if err != nil {
-		return false, errors.New("orphan recovery: terminal event lacks valid staleSince")
+		return false, errors.New("worker terminal recovery: terminal event lacks valid staleSince")
 	}
 	want, err := quarantineBindingFromPayload(last.Payload)
 	if err != nil {
-		return false, fmt.Errorf("orphan recovery: terminal event quarantine binding: %w", err)
+		return false, fmt.Errorf("worker terminal recovery: terminal event quarantine binding: %w", err)
 	}
 	actual, err := quarantineAttemptOutputs(lease, last.AttemptID, staleSince)
 	if err != nil {
-		return false, fmt.Errorf("orphan recovery: compensate quarantine: %w", err)
+		return false, fmt.Errorf("worker terminal recovery: compensate quarantine: %w", err)
 	}
 	if !reflect.DeepEqual(actual, want) {
-		return false, errors.New("orphan recovery: terminal event quarantine transaction does not equal durable transaction")
+		return false, errors.New("worker terminal recovery: terminal event quarantine transaction does not equal durable transaction")
 	}
 	outcome, err := budgetOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), last)
 	if err != nil {
@@ -679,17 +688,132 @@ func recoverBudgetTerminalOutcome(store *runstore.Store, lease *runstore.Lease, 
 	}
 	outcomeAuthority, err := runstore.OpenRunAuthority(lease)
 	if err != nil {
-		return false, fmt.Errorf("orphan recovery: open terminal outcome authority: %w", err)
+		return false, fmt.Errorf("worker terminal recovery: open terminal outcome authority: %w", err)
 	}
 	err = review.EnsureOutcomeAt(outcomeAuthority, outcome)
 	_ = outcomeAuthority.Close()
 	if err != nil {
-		return false, fmt.Errorf("orphan recovery: compensate terminal outcome: %w", err)
+		return false, fmt.Errorf("worker terminal recovery: compensate terminal outcome: %w", err)
 	}
 	if err := store.WriteSnapshot(lease, state); err != nil {
-		return false, fmt.Errorf("orphan recovery: compensate terminal snapshot: %w", err)
+		return false, fmt.Errorf("worker terminal recovery: compensate terminal snapshot: %w", err)
 	}
 	return true, nil
+}
+
+// validateStructuralFailureTerminal binds restart compensation to the
+// append-only planning authority and the exact typed failure signature. It
+// intentionally does not create a cross-Run deny-list: the signature is
+// durable audit/admission evidence, while cross-Run lifecycle authority
+// remains outside this bounded implementation and would require an explicit
+// persistence/admission contract.
+func validateStructuralFailureTerminal(events []domain.RunEvent, state domain.RunState, terminal domain.RunEvent) error {
+	if terminal.RunID != state.RunID || terminal.AttemptID == "" || terminal.AttemptID != state.CurrentAttemptID || terminal.Sequence != state.Sequence {
+		return errors.New("structural failure event does not match the blocked snapshot identity")
+	}
+	if !actorIs(terminal.Actor, "system", "marshal-worker-runner") {
+		return errors.New("structural failure event producer authority is invalid")
+	}
+	var frozen *domain.RunEvent
+	for index := range events {
+		if events[index].Type != "planning.inputs-frozen" {
+			continue
+		}
+		if frozen != nil {
+			return errors.New("structural failure journal has duplicate planning authority")
+		}
+		frozen = &events[index]
+	}
+	if frozen == nil || !actorIs(frozen.Actor, "system", "marshal-planning") {
+		return errors.New("structural failure journal lacks planning authority")
+	}
+	context := workerFailureSignatureContext{
+		baseSHA:          payloadString(frozen.Payload, "baseSha"),
+		specDigest:       payloadString(frozen.Payload, "specDigest"),
+		policyDigest:     payloadString(frozen.Payload, "policyDigest"),
+		capabilityDigest: payloadString(frozen.Payload, "capabilityDigest"),
+	}
+	if context.baseSHA != state.BaseSHA || context.specDigest != state.SpecDigest || context.policyDigest != state.PolicyDigest || context.capabilityDigest != state.CapabilityDigest {
+		return errors.New("structural failure planning authority does not match the blocked snapshot")
+	}
+	adapterID := payloadString(terminal.Payload, "adapterId")
+	knownAdapter := false
+	for _, candidate := range port.AdapterIDs {
+		if adapterID == string(candidate) {
+			knownAdapter = true
+			break
+		}
+	}
+	if !knownAdapter {
+		return errors.New("structural failure event has an unknown adapter identity")
+	}
+	kind := port.FailureKind(payloadString(terminal.Payload, "failureKind"))
+	disposition := port.RetryDisposition(payloadString(terminal.Payload, "retryDisposition"))
+	retryAfter, hasRetryAfter, err := payloadOptionalPositiveDuration(terminal.Payload, "retryAfterNanoseconds")
+	if err != nil {
+		return err
+	}
+	notBefore, hasNotBefore, err := payloadOptionalTime(terminal.Payload, "notBefore")
+	if err != nil {
+		return err
+	}
+	var retryAfterPointer *time.Duration
+	if hasRetryAfter {
+		retryAfterPointer = &retryAfter
+	}
+	var notBeforePointer *time.Time
+	if hasNotBefore {
+		notBeforePointer = &notBefore
+	}
+	normalized, err := port.NewAdapterFailure(port.AdapterID(adapterID), kind, disposition, retryAfterPointer, notBeforePointer, terminal.Timestamp.UTC())
+	if err != nil || normalized.Disposition == port.RetryDispositionRetryable {
+		return errors.New("structural failure event has an invalid normalized typed failure")
+	}
+	if summary := payloadString(terminal.Payload, "error"); summary != normalized.Error() {
+		return errors.New("structural failure summary does not match its normalized typed failure")
+	} else if err := validateSafeWorkerFailureSummary(summary); err != nil {
+		return err
+	}
+	wantReason := "adapter-" + string(kind)
+	if payloadString(terminal.Payload, "terminalReason") != wantReason || state.TerminalReason != wantReason {
+		return errors.New("structural failure terminal reason is not bound to its typed kind")
+	}
+	wantSignature, err := workerFailureSignature(context, adapterID, kind, disposition)
+	if err != nil {
+		return err
+	}
+	if signature := payloadString(terminal.Payload, "failureSignature"); !isCanonicalSHA256(signature) || signature != wantSignature {
+		return errors.New("structural failure signature does not match the frozen planning authority")
+	}
+	return nil
+}
+
+func payloadOptionalPositiveDuration(payload map[string]any, key string) (time.Duration, bool, error) {
+	raw, exists := payload[key]
+	if !exists {
+		return 0, false, nil
+	}
+	value, ok := raw.(float64)
+	if !ok || value <= 0 || value > float64(port.MaxRetryHintWindow.Nanoseconds()) || value != float64(int64(value)) {
+		return 0, true, errors.New("structural failure retry-after hint is invalid")
+	}
+	return time.Duration(int64(value)), true, nil
+}
+
+func payloadOptionalTime(payload map[string]any, key string) (time.Time, bool, error) {
+	raw, exists := payload[key]
+	if !exists {
+		return time.Time{}, false, nil
+	}
+	text, ok := raw.(string)
+	if !ok {
+		return time.Time{}, true, errors.New("structural failure not-before hint is invalid")
+	}
+	value, err := time.Parse(time.RFC3339, text)
+	if err != nil || text != value.UTC().Format(time.RFC3339) {
+		return time.Time{}, true, errors.New("structural failure not-before hint is invalid")
+	}
+	return value, true, nil
 }
 
 func reconcileRetryPendingQuarantine(store *runstore.Store, lease *runstore.Lease, state domain.RunState) error {
@@ -1904,32 +2028,202 @@ func transition(state domain.RunState, attemptID, eventType string, target domai
 	return event, next, err
 }
 
-func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, attemptID string, task domain.TaskSpec, cause error, afterQuarantine, afterTerminalAppend func() error) (domain.RunState, error) {
+type classifiedWorkerFailure struct {
+	adapterID      string
+	kind           port.FailureKind
+	disposition    port.RetryDisposition
+	retryAfter     time.Duration
+	notBefore      time.Time
+	signature      string
+	safeSummary    string
+	reportedCause  error
+	terminal       bool
+	terminalReason string
+}
+
+type workerFailureSignatureContext struct {
+	baseSHA, specDigest, policyDigest, capabilityDigest string
+}
+
+func adapterProtocolFailure(adapterID, summary string, now time.Time) error {
+	failure, err := port.NewAdapterFailure(port.AdapterID(adapterID), port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry, nil, nil, now)
+	if err != nil {
+		return port.Permanent(errors.New(summary))
+	}
+	return errors.Join(errors.New(summary), failure)
+}
+
+// classifyWorkerFailure is the single Core admission point for Adapter
+// failure disposition. The signature intentionally excludes task/run/attempt
+// identities and wall-clock values, but includes every frozen authority
+// digest. It is therefore a stable audit key across Runs with the exact same
+// frozen inputs, not a Core-global cross-Run deny-list. A repaired TaskSpec,
+// source head, Policy or whole CapabilitySnapshot (including executable and
+// protocol authority) invalidates it.
+func classifyWorkerFailure(state domain.RunState, selectedAdapterID string, cause error, observedAt time.Time) (classifiedWorkerFailure, error) {
+	classification := classifiedWorkerFailure{
+		adapterID:      selectedAdapterID,
+		kind:           port.FailureKindProviderTerminal,
+		disposition:    port.RetryDispositionDoNotRetry,
+		safeSummary:    "unclassified worker failure",
+		terminal:       true,
+		terminalReason: "adapter-provider-terminal",
+	}
+	if failure, found, normalizeErr := port.NormalizeAdapterFailure(cause, observedAt); found {
+		if normalizeErr != nil || string(failure.Adapter) != selectedAdapterID {
+			protocol, protocolErr := port.NewAdapterFailure(port.AdapterID(selectedAdapterID), port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry, nil, nil, observedAt)
+			if protocolErr != nil {
+				return classifiedWorkerFailure{}, errors.New("worker failure adapter identity cannot be normalized")
+			}
+			failure = protocol
+		}
+		classification.adapterID = string(failure.Adapter)
+		classification.kind = failure.Kind
+		classification.disposition = failure.Disposition
+		classification.retryAfter = failure.RetryAfter
+		classification.notBefore = failure.NotBefore
+		classification.safeSummary = failure.Error()
+		if err := validateSafeWorkerFailureSummary(classification.safeSummary); err != nil {
+			return classifiedWorkerFailure{}, err
+		}
+		classification.reportedCause = failure
+		classification.terminal = failure.Disposition != port.RetryDispositionRetryable
+		if classification.terminal {
+			classification.terminalReason = "adapter-" + string(failure.Kind)
+		} else {
+			classification.terminalReason = ""
+		}
+	} else if !port.IsPermanent(cause) {
+		// Untyped Adapter errors keep the pre-existing retryable behavior for
+		// backwards compatibility. Adapters must emit AdapterFailure (or an
+		// explicitly Permanent error) to authorize a structural short-circuit;
+		// Core never infers do-not-retry from provider free text.
+		classification.kind = port.FailureKindConnectionFailure
+		classification.disposition = port.RetryDispositionRetryable
+		classification.safeSummary = "unclassified retryable worker failure"
+		classification.reportedCause = cause
+		classification.terminal = false
+		classification.terminalReason = ""
+	} else {
+		classification.safeSummary = "permanent worker failure"
+		classification.reportedCause = errors.New(classification.safeSummary)
+	}
+
+	signature, err := workerFailureSignature(workerFailureSignatureContext{
+		baseSHA: state.BaseSHA, specDigest: state.SpecDigest, policyDigest: state.PolicyDigest, capabilityDigest: state.CapabilityDigest,
+	}, classification.adapterID, classification.kind, classification.disposition)
+	if err != nil {
+		return classifiedWorkerFailure{}, err
+	}
+	classification.signature = signature
+	return classification, nil
+}
+
+func validateSafeWorkerFailureSummary(summary string) error {
+	if len(summary) == 0 || len([]byte(summary)) > 512 || !utf8.ValidString(summary) {
+		return errors.New("worker failure summary is not bounded valid UTF-8")
+	}
+	for _, r := range summary {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return errors.New("worker failure summary contains an unsafe code point")
+		}
+	}
+	return nil
+}
+
+func workerFailureSignature(context workerFailureSignatureContext, adapterID string, kind port.FailureKind, disposition port.RetryDisposition) (string, error) {
+	evidenceData, err := json.Marshal(map[string]any{
+		"adapterId":        adapterID,
+		"failureKind":      string(kind),
+		"retryDisposition": string(disposition),
+	})
+	if err != nil {
+		return "", fmt.Errorf("classify worker failure evidence: encode: %w", err)
+	}
+	evidenceDigest, err := canonical.DigestJSON(evidenceData)
+	if err != nil {
+		return "", fmt.Errorf("classify worker failure evidence: %w", err)
+	}
+	signatureData, err := json.Marshal(map[string]any{
+		"version":               1,
+		"sourceHead":            context.baseSHA,
+		"specDigest":            context.specDigest,
+		"policyDigest":          context.policyDigest,
+		"capabilityDigest":      context.capabilityDigest,
+		"adapterId":             adapterID,
+		"failureKind":           string(kind),
+		"failureEvidenceDigest": evidenceDigest,
+	})
+	if err != nil {
+		return "", fmt.Errorf("classify worker failure signature: encode: %w", err)
+	}
+	signature, err := canonical.DigestJSON(signatureData)
+	if err != nil {
+		return "", fmt.Errorf("classify worker failure signature: %w", err)
+	}
+	return signature, nil
+}
+
+func knownWorkerTerminalReason(reason string) bool {
+	switch reason {
+	case "orphan-attempt-budget-exhausted", "orphan-operational-retry-budget-exhausted", "attempt-budget-exhausted", "operational-retry-budget-exhausted":
+		return true
+	}
+	for _, kind := range port.FailureKinds {
+		if reason == "adapter-"+string(kind) {
+			return true
+		}
+	}
+	return false
+}
+
+func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, attemptID, selectedAdapterID string, task domain.TaskSpec, cause error, afterQuarantine, afterTerminalAppend func() error) (domain.RunState, error, error) {
+	eventAt := time.Now().UTC()
+	classification, classificationErr := classifyWorkerFailure(state, selectedAdapterID, cause, eventAt)
+	if classificationErr != nil {
+		return state, errors.New("worker failure admission rejected"), classificationErr
+	}
 	target := domain.StateBlocked
 	guard := lifecycle.Guard{LeaseHeld: true}
-	payload := map[string]any{"error": cause.Error()}
-	eventAt := time.Now().UTC()
-	if state.OperationalRetriesUsed < uint(task.Budgets.MaxOperationalRetries) && state.AttemptsUsed < uint(task.Budgets.MaxAttempts) {
+	payload := map[string]any{
+		"error":            classification.safeSummary,
+		"adapterId":        classification.adapterID,
+		"failureKind":      string(classification.kind),
+		"retryDisposition": string(classification.disposition),
+		"failureSignature": classification.signature,
+	}
+	if classification.retryAfter > 0 {
+		payload["retryAfterNanoseconds"] = classification.retryAfter.Nanoseconds()
+	}
+	if !classification.notBefore.IsZero() {
+		payload["notBefore"] = classification.notBefore.UTC().Format(time.RFC3339)
+	}
+	if !classification.terminal && state.OperationalRetriesUsed < uint(task.Budgets.MaxOperationalRetries) && state.AttemptsUsed < uint(task.Budgets.MaxAttempts) {
 		target, guard.BudgetAvailable = domain.StateRetryPending, true
 	} else {
-		reason := "operational-retry-budget-exhausted"
-		if state.AttemptsUsed >= uint(task.Budgets.MaxAttempts) {
-			reason = "attempt-budget-exhausted"
+		reason := classification.terminalReason
+		if !classification.terminal {
+			reason = "operational-retry-budget-exhausted"
+			if state.AttemptsUsed >= uint(task.Budgets.MaxAttempts) {
+				reason = "attempt-budget-exhausted"
+			}
+			payload["budgetTerminal"] = true
+		} else {
+			payload["failureTerminal"] = true
 		}
 		staleSince, err := attemptStartedAt(store, lease, attemptID)
 		if err != nil {
-			return state, fmt.Errorf("terminal worker failure identity: %w", err)
+			return state, classification.reportedCause, fmt.Errorf("terminal worker failure identity: %w", err)
 		}
 		quarantine, err := quarantineAttemptOutputs(lease, attemptID, staleSince)
 		if err != nil {
-			return state, fmt.Errorf("terminal worker failure quarantine: %w", err)
+			return state, classification.reportedCause, fmt.Errorf("terminal worker failure quarantine: %w", err)
 		}
 		if afterQuarantine != nil {
 			if err := afterQuarantine(); err != nil {
-				return state, fmt.Errorf("terminal worker failure: injected post-quarantine failure: %w", err)
+				return state, classification.reportedCause, fmt.Errorf("terminal worker failure: injected post-quarantine failure: %w", err)
 			}
 		}
-		payload["budgetTerminal"] = true
 		payload["terminalReason"] = reason
 		payload["quarantinedOutputs"] = quarantine.Files
 		payload["quarantineTransaction"] = quarantine
@@ -1941,51 +2235,51 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 	}
 	event, next, err := transition(state, attemptID, "worker.failed", target, eventAt, payload, guard)
 	if err != nil {
-		return state, err
+		return state, classification.reportedCause, err
 	}
 	var prepared *review.PreparedOutcomeRecords
 	if target == domain.StateBlocked {
 		outcome, err := budgetOutcomeFromEvent(state.TaskID, max(1, state.ReviewRound), event)
 		if err != nil {
-			return state, err
+			return state, classification.reportedCause, err
 		}
 		outcomeAuthority, authorityErr := runstore.OpenRunAuthority(lease)
 		if authorityErr != nil {
-			return state, authorityErr
+			return state, classification.reportedCause, authorityErr
 		}
 		prepared, err = review.PrepareOutcomeAt(outcomeAuthority, outcome)
 		_ = outcomeAuthority.Close()
 		if err != nil {
-			return state, err
+			return state, classification.reportedCause, err
 		}
 	}
 	if err := store.Append(lease, event, state.Sequence); err != nil {
 		if prepared != nil {
 			prepared.Abort()
 		}
-		return state, err
+		return state, classification.reportedCause, err
 	}
 	if prepared != nil {
 		if afterTerminalAppend != nil {
 			if err := afterTerminalAppend(); err != nil {
-				return next, fmt.Errorf("terminal worker failure: injected post-append failure: %w", err)
+				return next, classification.reportedCause, fmt.Errorf("terminal worker failure: injected post-append failure: %w", err)
 			}
 		}
 		commitAuthority, err := runstore.OpenRunAuthority(lease)
 		if err != nil {
 			prepared.Abort()
-			return next, err
+			return next, classification.reportedCause, err
 		}
 		err = prepared.CommitAt(commitAuthority)
 		_ = commitAuthority.Close()
 		if err != nil {
-			return next, err
+			return next, classification.reportedCause, err
 		}
 	}
 	if err := store.WriteSnapshot(lease, next); err != nil {
-		return next, err
+		return next, classification.reportedCause, err
 	}
-	return next, nil
+	return next, classification.reportedCause, nil
 }
 
 func attemptStartedAt(store *runstore.Store, lease *runstore.Lease, attemptID string) (time.Time, error) {

@@ -146,13 +146,13 @@ func TestRunRetriableFailureReturnsRetryable(t *testing.T) {
 	}
 }
 
-func TestRunResultMissingReturnsRetryable(t *testing.T) {
+func TestRunResultMissingReturnsDoNotRetry(t *testing.T) {
 	body := successEvents("provider/model") + "\nexit 0"
 	fixture := newRunFixtureWithResult(t, supportedBinary, body, nil)
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	failure, ok := port.AsAdapterFailure(err)
-	if !ok || failure.Adapter != port.AdapterIDQoder || failure.Kind != port.FailureKindResultMissing || failure.Disposition != port.RetryDispositionRetryable {
-		t.Fatalf("err = %v, want typed result-missing/retryable", err)
+	if !ok || failure.Adapter != port.AdapterIDQoder || failure.Kind != port.FailureKindResultMissing || failure.Disposition != port.RetryDispositionDoNotRetry {
+		t.Fatalf("err = %v, want typed result-missing/do-not-retry", err)
 	}
 }
 
