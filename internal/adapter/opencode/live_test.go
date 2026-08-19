@@ -253,7 +253,7 @@ func TestLiveProbeGateExemption(t *testing.T) {
 	})
 	t.Run("exemption-never-widens-closed-supported-set", func(t *testing.T) {
 		t.Setenv(liveProbeExemptionEnv, "1")
-		locked := []string{"1.18.13", "1.18.16"}
+		locked := []string{"1.18.13", "1.18.16", "1.18.18"}
 		if !slices.Equal(supportedBinaries, locked) {
 			t.Fatalf("supportedBinaries drifted under exemption: %v", supportedBinaries)
 		}

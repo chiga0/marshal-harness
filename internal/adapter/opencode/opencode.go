@@ -40,7 +40,7 @@ const (
 
 // supportedBinaries is the closed set of OpenCode versions this adapter
 // supports; any version outside the set fails closed.
-var supportedBinaries = []string{"1.18.13", "1.18.16"}
+var supportedBinaries = []string{"1.18.13", "1.18.16", "1.18.18"}
 
 // isSupportedBinary reports whether the probed version belongs to the
 // supported set.

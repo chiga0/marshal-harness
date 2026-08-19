@@ -93,7 +93,7 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 		return raw
 	}
 	for _, test := range []struct{ version, status string }{
-		{"1.18.13", "supported"}, {"1.18.16", "supported"},
+		{"1.18.13", "supported"}, {"1.18.16", "supported"}, {"1.18.18", "supported"},
 		{"1.19.0", "unsupported"}, {"9.9.9", "unsupported"},
 	} {
 		t.Run(test.version, func(t *testing.T) {
