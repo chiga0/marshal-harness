@@ -29,6 +29,8 @@ run_watch() {
   MARSHAL_WATCH_ROOT="$ROOT" \
   MARSHAL_WATCH_PROCESS_FILE="$PROCFILE" \
   MARSHAL_WATCH_NOTIFY=0 \
+  MARSHAL_WATCH_SWAP_USED_BYTES="${MARSHAL_WATCH_SWAP_USED_BYTES-0}" \
+  MARSHAL_WATCH_PRESSURE_FREE_PERCENT="${MARSHAL_WATCH_PRESSURE_FREE_PERCENT-80}" \
   MARSHAL_WATCH_LOG="$TMP/watch.log" \
   bash "$WATCH" "$@"
 }
@@ -242,6 +244,243 @@ PYEOF
   fi
 else
   bad "capacity 心跳输出异常"
+fi
+
+note "1e) 当前内存压力控制并发；历史 swap 不阻止压力恢复后的扩容"
+PRESSURE_JSON="$TMP/current_pressure.json"
+if MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((8 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_SWAP_USED_BYTES=$((3 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_PRESSURE_FREE_PERCENT=10 \
+   MARSHAL_WATCH_WORKER_RESERVE_BYTES=$((2 * 1024 * 1024 * 1024)) \
+   timeout_run 30 "$PRESSURE_JSON" run_watch --once --json; then
+  if python3 - "$PRESSURE_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    capacity = json.load(f)["capacity"]
+if capacity.get("swapUsedBytes") != 3 * 1024 * 1024 * 1024:
+    print("swapUsedBytes 不符: %r" % capacity)
+    sys.exit(1)
+if capacity.get("slotsAvailable") != 0 or capacity.get("concurrencyAction") != "hold-concurrency":
+    print("当前高压力未停止新增并发: %r" % capacity)
+    sys.exit(1)
+if capacity.get("pressure") != "critical" or capacity.get("pressureFreePercent") != 10:
+    print("当前压力分类不符: %r" % capacity)
+    sys.exit(1)
+print("current pressure gate OK")
+PYEOF
+  then
+    ok "当前高压力停止新增并发"
+  else
+    bad "当前高压力并发门禁不符"
+  fi
+else
+  bad "当前高压力场景 watchdog 异常"
+fi
+
+PRESSURE_RECOVERED_JSON="$TMP/pressure_recovered.json"
+if MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((8 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_SWAP_USED_BYTES=$((3 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_PRESSURE_FREE_PERCENT=60 \
+   MARSHAL_WATCH_WORKER_RESERVE_BYTES=$((2 * 1024 * 1024 * 1024)) \
+   timeout_run 30 "$PRESSURE_RECOVERED_JSON" run_watch --once --json; then
+  if python3 - "$PRESSURE_RECOVERED_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    capacity = json.load(f)["capacity"]
+if capacity.get("swapUsedBytes") != 3 * 1024 * 1024 * 1024:
+    print("swapUsedBytes 不符: %r" % capacity)
+    sys.exit(1)
+if capacity.get("slotsAvailable") != 4 or capacity.get("concurrencyAction") != "increase-concurrency":
+    print("压力恢复后未重新开放并发: %r" % capacity)
+    sys.exit(1)
+if capacity.get("pressure") != "ok" or capacity.get("pressureFreePercent") != 60:
+    print("压力恢复分类不符: %r" % capacity)
+    sys.exit(1)
+print("pressure recovery reopens capacity OK")
+PYEOF
+  then
+    ok "压力恢复后即使 swap 仍高也重新开放并发"
+  else
+    bad "压力恢复后未重新开放并发"
+  fi
+else
+  bad "压力恢复场景 watchdog 异常"
+fi
+
+PRESSURE_UNKNOWN_JSON="$TMP/pressure_unknown.json"
+if MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((8 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_SWAP_USED_BYTES=$((3 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_PRESSURE_FREE_PERCENT=unavailable \
+   MARSHAL_WATCH_WORKER_RESERVE_BYTES=$((2 * 1024 * 1024 * 1024)) \
+   timeout_run 30 "$PRESSURE_UNKNOWN_JSON" run_watch --once --json; then
+  if python3 - "$PRESSURE_UNKNOWN_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    capacity = json.load(f)["capacity"]
+if capacity.get("slotsAvailable") != 0 or capacity.get("concurrencyAction") != "hold-concurrency":
+    print("压力信号缺失未 fail closed: %r" % capacity)
+    sys.exit(1)
+if capacity.get("pressure") != "unknown":
+    print("压力信号缺失分类不符: %r" % capacity)
+    sys.exit(1)
+if capacity.get("pressureSource") != "unavailable" or capacity.get("swapSource") != "override":
+    print("探针不可用来源不符: %r" % capacity)
+    sys.exit(1)
+print("unavailable pressure probe fails closed OK")
+PYEOF
+  then
+    ok "压力探针不可用时 fail closed"
+  else
+    bad "压力探针不可用时未 fail closed"
+  fi
+else
+  bad "压力探针不可用场景 watchdog 异常"
+fi
+
+SWAP_UNKNOWN_JSON="$TMP/swap_unknown.json"
+if MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((8 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_SWAP_USED_BYTES=unavailable \
+   MARSHAL_WATCH_PRESSURE_FREE_PERCENT=60 \
+   MARSHAL_WATCH_WORKER_RESERVE_BYTES=$((2 * 1024 * 1024 * 1024)) \
+   timeout_run 30 "$SWAP_UNKNOWN_JSON" run_watch --once --json; then
+  if python3 - "$SWAP_UNKNOWN_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    capacity = json.load(f)["capacity"]
+if capacity.get("slotsAvailable") != 4 or capacity.get("concurrencyAction") != "increase-concurrency":
+    print("非权威 swap 探针缺失错误冻结并发: %r" % capacity)
+    sys.exit(1)
+if capacity.get("pressure") != "ok" or capacity.get("pressureSource") != "override":
+    print("有效实时压力未保持权威: %r" % capacity)
+    sys.exit(1)
+if capacity.get("swapSource") != "unavailable":
+    print("swap 探针来源不符: %r" % capacity)
+    sys.exit(1)
+print("swap probe is informational when current pressure is available OK")
+PYEOF
+  then
+    ok "swap 探针单独不可用不冻结实时压力已知的并发"
+  else
+    bad "swap 探针单独不可用错误影响并发"
+  fi
+else
+  bad "swap 探针单独不可用场景 watchdog 异常"
+fi
+
+RAW_PROBE_JSON="$TMP/raw_probe.json"
+if MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((8 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_SWAP_USED_BYTES= \
+   MARSHAL_WATCH_PRESSURE_FREE_PERCENT= \
+   MARSHAL_WATCH_SWAP_OUTPUT='total = 8.00G  used = 3.25G  free = 4.75G' \
+   MARSHAL_WATCH_PRESSURE_OUTPUT='System-wide memory free percentage: 61%' \
+   MARSHAL_WATCH_WORKER_RESERVE_BYTES=$((2 * 1024 * 1024 * 1024)) \
+   timeout_run 30 "$RAW_PROBE_JSON" run_watch --once --json; then
+  if python3 - "$RAW_PROBE_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    capacity = json.load(f)["capacity"]
+if capacity.get("swapUsedBytes") != int(3.25 * 1024 ** 3):
+    print("vm.swapusage 原始输出解析不符: %r" % capacity)
+    sys.exit(1)
+if capacity.get("pressureFreePercent") != 61 or capacity.get("pressure") != "ok":
+    print("memory_pressure 原始输出解析不符: %r" % capacity)
+    sys.exit(1)
+if capacity.get("swapSource") != "fixture-vm.swapusage" or capacity.get("pressureSource") != "fixture-memory_pressure":
+    print("原始探针 fixture 来源不符: %r" % capacity)
+    sys.exit(1)
+print("raw Darwin probe parsing OK")
+PYEOF
+  then
+    ok "Darwin 原始探针输出解析"
+  else
+    bad "Darwin 原始探针输出解析失败"
+  fi
+else
+  bad "Darwin 原始探针 fixture 场景 watchdog 异常"
+fi
+
+RAW_PROBE_BAD_JSON="$TMP/raw_probe_bad.json"
+if MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((8 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_SWAP_USED_BYTES= \
+   MARSHAL_WATCH_PRESSURE_FREE_PERCENT= \
+   MARSHAL_WATCH_SWAP_OUTPUT='format changed' \
+   MARSHAL_WATCH_PRESSURE_OUTPUT='format changed' \
+   timeout_run 30 "$RAW_PROBE_BAD_JSON" run_watch --once --json; then
+  if python3 - "$RAW_PROBE_BAD_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    capacity = json.load(f)["capacity"]
+if capacity.get("pressure") != "unknown" or capacity.get("slotsAvailable") != 0:
+    print("格式漂移未 fail closed: %r" % capacity)
+    sys.exit(1)
+if capacity.get("pressureSource") != "unavailable" or capacity.get("swapSource") != "unavailable":
+    print("格式漂移来源不符: %r" % capacity)
+    sys.exit(1)
+print("raw probe format drift fails closed OK")
+PYEOF
+  then
+    ok "原始探针格式漂移时 fail closed"
+  else
+    bad "原始探针格式漂移时未 fail closed"
+  fi
+else
+  bad "原始探针格式漂移场景 watchdog 异常"
+fi
+
+RAW_PROBE_MALFORMED_JSON="$TMP/raw_probe_malformed.json"
+if MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((8 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_SWAP_USED_BYTES= \
+   MARSHAL_WATCH_PRESSURE_FREE_PERCENT= \
+   MARSHAL_WATCH_SWAP_OUTPUT='used = 1..2G' \
+   MARSHAL_WATCH_PRESSURE_OUTPUT='System-wide memory free percentage: 1000%' \
+   timeout_run 30 "$RAW_PROBE_MALFORMED_JSON" run_watch --once --json; then
+  if python3 - "$RAW_PROBE_MALFORMED_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    capacity = json.load(f)["capacity"]
+if capacity.get("pressure") != "unknown" or capacity.get("slotsAvailable") != 0:
+    print("畸形数值未 fail closed: %r" % capacity)
+    sys.exit(1)
+if capacity.get("pressureSource") != "unavailable" or capacity.get("swapSource") != "unavailable":
+    print("畸形数值来源不符: %r" % capacity)
+    sys.exit(1)
+print("malformed numeric probe fails closed with stable JSON OK")
+PYEOF
+  then
+    ok "畸形探针数值稳定输出 JSON 并 fail closed"
+  else
+    bad "畸形探针数值未稳定 fail closed"
+  fi
+else
+  bad "畸形探针数值导致 watchdog 非零退出"
+fi
+
+RAW_PROBE_OVERFLOW_JSON="$TMP/raw_probe_overflow.json"
+if MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((8 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_SWAP_USED_BYTES= \
+   MARSHAL_WATCH_PRESSURE_FREE_PERCENT= \
+   MARSHAL_WATCH_SWAP_OUTPUT='used = 9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999G' \
+   MARSHAL_WATCH_PRESSURE_OUTPUT='format changed' \
+   timeout_run 30 "$RAW_PROBE_OVERFLOW_JSON" run_watch --once --json; then
+  if python3 - "$RAW_PROBE_OVERFLOW_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    capacity = json.load(f)["capacity"]
+if capacity.get("pressure") != "unknown" or capacity.get("slotsAvailable") != 0:
+    print("超大探针数值未 fail closed: %r" % capacity)
+    sys.exit(1)
+if capacity.get("swapSource") != "unavailable":
+    print("超大 swap 数值未标记 unavailable: %r" % capacity)
+    sys.exit(1)
+print("overflow numeric probe fails closed with stable JSON OK")
+PYEOF
+  then
+    ok "超大探针数值稳定输出 JSON 并 fail closed"
+  else
+    bad "超大探针数值未稳定 fail closed"
+  fi
+else
+  bad "超大探针数值导致 watchdog 非零退出"
 fi
 
 note "2) REVIEW_PENDING 优先于 RETRY_PENDING/READY/CI_PENDING（首位断言）"

@@ -29,6 +29,11 @@
 #   MARSHAL_WATCH_PROCESS_FILE  进程 fixture 文件（每行 "<pid> <command>"）；
 #                               设置后进程归属只按该文件内容判定，不触碰真实进程。
 #   MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES  覆盖可用内存（仅测试/诊断）；
+#   MARSHAL_WATCH_SWAP_USED_BYTES         覆盖已用 swap（仅测试/诊断）；
+#   MARSHAL_WATCH_SWAP_OUTPUT             覆盖 vm.swapusage 原始输出（仅测试）；
+#   MARSHAL_WATCH_PRESSURE_FREE_PERCENT   覆盖当前 free percentage；值
+#                                         unavailable 用于 fail-closed 测试；
+#   MARSHAL_WATCH_PRESSURE_OUTPUT         覆盖 memory_pressure 原始输出（仅测试）；
 #   MARSHAL_WATCH_WORKER_RESERVE_BYTES   每个新增 Worker 的保守内存预算，默认 2 GiB。
 cd "$(dirname "$0")/.." || exit 1
 
@@ -85,7 +90,7 @@ process_snapshot() {
 }
 
 PY_PROG='
-import json, os, re, sys
+import json, math, os, re, sys
 import hashlib
 from datetime import datetime, timezone
 
@@ -195,16 +200,116 @@ def memory_available_bytes():
     except (OSError, ValueError):
         return 0, "unavailable"
 
+def _parse_swap_used_bytes(text):
+    match = re.search(r"used\s*=\s*([0-9]+(?:\.[0-9]+)?)([KMGTP])(?:\s|$)", text)
+    if not match:
+        return None
+    scale = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3,
+             "T": 1024 ** 4, "P": 1024 ** 5}[match.group(2)]
+    try:
+        value = float(match.group(1))
+        if not math.isfinite(value):
+            return None
+        return int(value * scale)
+    except (OverflowError, ValueError):
+        return None
+
+def swap_used_bytes():
+    raw_override = os.environ.get("MARSHAL_WATCH_SWAP_USED_BYTES", "")
+    if raw_override == "unavailable":
+        return 0, "unavailable"
+    override = _integer_env("MARSHAL_WATCH_SWAP_USED_BYTES")
+    if override is not None:
+        return override, "override"
+    raw_fixture = os.environ.get("MARSHAL_WATCH_SWAP_OUTPUT")
+    if raw_fixture is not None:
+        parsed = _parse_swap_used_bytes(raw_fixture)
+        return (parsed, "fixture-vm.swapusage") if parsed is not None else (0, "unavailable")
+    if sys.platform == "darwin":
+        text = _command_output(["sysctl", "-n", "vm.swapusage"])
+        parsed = _parse_swap_used_bytes(text)
+        if parsed is None:
+            return 0, "unavailable"
+        return parsed, "darwin-vm.swapusage"
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+            values = {}
+            for line in handle:
+                key, _, rest = line.partition(":")
+                if key in ("SwapTotal", "SwapFree"):
+                    values[key] = int(rest.strip().split()[0]) * 1024
+            return max(0, values.get("SwapTotal", 0) - values.get("SwapFree", 0)), "proc-meminfo"
+    except (OSError, ValueError):
+        return 0, "unavailable"
+
+def _parse_pressure_free_percent(text):
+    match = re.search(r"System-wide memory free percentage:\s*([0-9]{1,3})%(?:\s|$)", text)
+    if not match:
+        return None
+    value = int(match.group(1))
+    return value if value <= 100 else None
+
+def pressure_free_percent():
+    raw_override = os.environ.get("MARSHAL_WATCH_PRESSURE_FREE_PERCENT", "")
+    if raw_override == "unavailable":
+        return None, "unavailable"
+    override = _integer_env("MARSHAL_WATCH_PRESSURE_FREE_PERCENT")
+    if override is not None and override <= 100:
+        return override, "override"
+    raw_fixture = os.environ.get("MARSHAL_WATCH_PRESSURE_OUTPUT")
+    if raw_fixture is not None:
+        parsed = _parse_pressure_free_percent(raw_fixture)
+        return (parsed, "fixture-memory_pressure") if parsed is not None else (None, "unavailable")
+    if sys.platform == "darwin":
+        text = _command_output(["memory_pressure", "-Q"])
+        parsed = _parse_pressure_free_percent(text)
+        if parsed is not None:
+            return parsed, "darwin-memory_pressure"
+        return None, "unavailable"
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+            values = {}
+            for line in handle:
+                key, _, rest = line.partition(":")
+                if key in ("MemAvailable", "MemTotal"):
+                    values[key] = int(rest.strip().split()[0])
+            total = values.get("MemTotal", 0)
+            available = values.get("MemAvailable", 0)
+            if total > 0:
+                return min(100, max(0, available * 100 // total)), "proc-meminfo-ratio"
+    except (OSError, ValueError):
+        pass
+    return None, "unavailable"
+
 def capacity_snapshot(active_owned):
     available, source = memory_available_bytes()
+    swap_used, swap_source = swap_used_bytes()
+    free_percent, pressure_source = pressure_free_percent()
     reserve = _integer_env("MARSHAL_WATCH_WORKER_RESERVE_BYTES")
     if reserve is None or reserve == 0:
         reserve = DEFAULT_WORKER_RESERVE_BYTES
     slots = available // reserve if reserve > 0 else 0
     pressure = "critical" if available < reserve // 2 else ("constrained" if available < reserve else "ok")
+    # swapUsed 是历史/现状观测，不是当前 thrash 速率；macOS 在压力解除后
+    # 也可能长期保留 swap。实际 admission 使用当前 memory_pressure 或
+    # Linux MemAvailable/MemTotal 比例。信号缺失 fail closed，避免把未知
+    # 错当作零压力；压力恢复后即使 swap 仍高也会重新开放槽位。
+    if free_percent is None:
+        slots = 0
+        pressure = "unknown"
+    elif free_percent < 15:
+        slots = 0
+        pressure = "critical"
+    elif free_percent < 25:
+        slots = 0
+        pressure = "constrained"
     return {
         "memoryAvailableBytes": available,
         "memorySource": source,
+        "swapUsedBytes": swap_used,
+        "swapSource": swap_source,
+        "pressureFreePercent": free_percent,
+        "pressureSource": pressure_source,
         "workerReserveBytes": reserve,
         "activeOwnedWorkers": active_owned,
         "slotsAvailable": slots,
@@ -342,7 +447,7 @@ if [ "$ONCE" = "1" ]; then
   else
     run_pass text ""
   fi
-  exit 0
+  exit $?
 fi
 
 SUMMARY_FILE="${TMPDIR:-/tmp}/marshal-watch.$$.summary"
