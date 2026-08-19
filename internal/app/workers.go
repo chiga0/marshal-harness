@@ -15,6 +15,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/adapter/qoder"
 	"github.com/chiga0/marshal-harness/internal/adapter/qwen"
 	"github.com/chiga0/marshal-harness/internal/contract"
+	"github.com/chiga0/marshal-harness/internal/darwin"
 	"github.com/chiga0/marshal-harness/internal/port"
 )
 
@@ -36,6 +37,9 @@ type WorkerConfiguration struct {
 	Configured          bool   `json:"configured"`
 	Registered          bool   `json:"registered"`
 	Outcome             string `json:"outcome"`
+	// AuthorityEndpointStatus is diagnostic only; it never changes registry
+	// admission or the adapter's fail-closed probe result.
+	AuthorityEndpointStatus string `json:"authorityEndpointStatus,omitempty"`
 }
 
 // workerBinding freezes the only adapter-to-environment mapping Marshal
@@ -48,6 +52,7 @@ type workerBinding struct {
 	environmentVariable string
 	binaryNames         []string
 	identify            func(executable string) (version, digest string, err error)
+	requiresAuthority   bool
 	construct           func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error)
 }
 
@@ -75,6 +80,7 @@ var workerBindings = []workerBinding{
 		environmentVariable: "MARSHAL_QODER_PATH",
 		binaryNames:         []string{"qodercli"},
 		identify:            qoder.Identify,
+		requiresAuthority:   true,
 		construct: func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error) {
 			config := getenv("MARSHAL_QODER_CONFORMANCE_CONFIG")
 			if config == "" {
@@ -90,6 +96,7 @@ var workerBindings = []workerBinding{
 		environmentVariable: "MARSHAL_CODEX_PATH",
 		binaryNames:         []string{"codex"},
 		identify:            codex.Identify,
+		requiresAuthority:   true,
 		construct: func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error) {
 			config := getenv("MARSHAL_CODEX_AUTHORITY_CONFIG")
 			if config == "" {
@@ -151,6 +158,9 @@ func NewWorkerRuntime(getenv func(string) string) (*WorkerRuntime, error) {
 			continue
 		}
 		configuration.Configured = true
+		if binding.requiresAuthority {
+			configuration.AuthorityEndpointStatus = darwin.InspectAuthorityEndpointStatus(getenv("MARSHAL_APAP_ENDPOINT"))
+		}
 		worker, constructErr := binding.construct(executable, validator, getenv)
 		if constructErr != nil {
 			// Deliberately discard the executable, the environment value, and

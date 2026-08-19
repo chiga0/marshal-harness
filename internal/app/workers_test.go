@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -106,6 +107,52 @@ func TestQoderRegistrationRemainsUnsupportedWithoutAuthorityEvidence(t *testing.
 	}
 	if snapshot.ProbeStatus != "unsupported" {
 		t.Fatalf("qoder without authority evidence = %q, want unsupported", snapshot.ProbeStatus)
+	}
+}
+
+func TestMacAuthorityEndpointStatusIsDiagnosticOnly(t *testing.T) {
+	qoderPath := filepath.Join(t.TempDir(), "qodercli")
+	if err := os.WriteFile(qoderPath, []byte("#!/bin/sh\nprintf '1.1.23\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	codexPath := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nprintf 'codex-cli 0.145.0\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtimeValue, err := NewWorkerRuntime(staticEnv(map[string]string{
+		"MARSHAL_QODER_PATH":    qoderPath,
+		"MARSHAL_CODEX_PATH":    codexPath,
+		"MARSHAL_APAP_ENDPOINT": "/private/var/run/marshal-apap.sock",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"qoder", "codex"} {
+		status := configurationByID(t, runtimeValue, id).AuthorityEndpointStatus
+		if runtime.GOOS == "darwin" {
+			if status != "unavailable" {
+				t.Fatalf("%s authority status = %q, want unavailable", id, status)
+			}
+		} else if status != "unsupported-platform" {
+			t.Fatalf("%s authority status = %q, want unsupported-platform", id, status)
+		}
+	}
+	qoder, err := runtimeValue.Registry().Resolve("qoder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := qoder.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var probe struct {
+		ProbeStatus string `json:"probeStatus"`
+	}
+	if err := json.Unmarshal(snapshot.Data, &probe); err != nil {
+		t.Fatal(err)
+	}
+	if probe.ProbeStatus != "unsupported" {
+		t.Fatalf("endpoint status must not admit qoder: %q", probe.ProbeStatus)
 	}
 }
 

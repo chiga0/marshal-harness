@@ -156,6 +156,7 @@ type doctorWorker struct {
 	Configured                     bool            `json:"configured"`
 	Registered                     bool            `json:"registered"`
 	Outcome                        string          `json:"outcome"`
+	AuthorityEndpointStatus        string          `json:"authorityEndpointStatus,omitempty"`
 	Compatibility                  string          `json:"compatibility"`
 	AdapterVersion                 string          `json:"adapterVersion,omitempty"`
 	BinaryVersion                  string          `json:"binaryVersion,omitempty"`
@@ -300,6 +301,9 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	fmt.Fprintf(stdout, "状态：%s\nSchema：%d 份已编译\n已注册 Worker Adapter：%d\n", report.Status, report.ContractSchemas, report.WorkerAdapters)
 	for _, worker := range report.Workers {
 		fmt.Fprintf(stdout, "Worker %s：%s / %s", worker.AdapterID, worker.Outcome, worker.Compatibility)
+		if worker.AuthorityEndpointStatus != "" {
+			fmt.Fprintf(stdout, " / authority=%s", worker.AuthorityEndpointStatus)
+		}
 		if worker.BinaryVersion != "" {
 			fmt.Fprintf(stdout, " (%s)", worker.BinaryVersion)
 		}
@@ -342,12 +346,13 @@ func doctorWorkers(ctx context.Context, runtime *app.WorkerRuntime) []doctorWork
 	workers := make([]doctorWorker, 0, len(configurations))
 	for _, configuration := range configurations {
 		result := doctorWorker{
-			AdapterID:           configuration.AdapterID,
-			EnvironmentVariable: configuration.EnvironmentVariable,
-			Configured:          configuration.Configured,
-			Registered:          configuration.Registered,
-			Outcome:             configuration.Outcome,
-			Compatibility:       "not-probed",
+			AdapterID:               configuration.AdapterID,
+			EnvironmentVariable:     configuration.EnvironmentVariable,
+			Configured:              configuration.Configured,
+			Registered:              configuration.Registered,
+			Outcome:                 configuration.Outcome,
+			AuthorityEndpointStatus: configuration.AuthorityEndpointStatus,
+			Compatibility:           "not-probed",
 		}
 		if !configuration.Registered || ctx.Err() != nil {
 			workers = append(workers, result)
