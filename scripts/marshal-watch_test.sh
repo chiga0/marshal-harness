@@ -76,6 +76,7 @@ if bash -n "$0"; then ok "marshal-watch_test.sh 语法通过"; else bad "marshal
 
 note "1) 优先级排序、终态过滤、动作映射与 JSON schema"
 make_run run-review  REVIEW_PENDING   120
+printf '%s\n' '{}' > "$ROOT/runs/run-review/review-packet.json"
 make_run run-rework  REWORK_REQUESTED 110
 make_run run-retry   RETRY_PENDING    100
 make_run run-verify  VERIFYING         90
@@ -155,6 +156,29 @@ then
   ok "JSON schema、排序、终态过滤与动作映射"
 else
   bad "JSON schema、排序、终态过滤或动作映射不符"
+fi
+
+note "1c) 缺失 ReviewPacket 进入干预队列，避免重复失败审查"
+rm -f "$ROOT/runs/run-review/review-packet.json"
+OUT_INTERVENTION="$TMP/out_intervention.json"
+if timeout_run 30 "$OUT_INTERVENTION" run_watch --once --json; then
+  if python3 - "$OUT_INTERVENTION" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    items = json.load(f)["items"]
+review = next((it for it in items if it.get("runId") == "run-review"), {})
+if review.get("action") != "review-intervention" or review.get("priority") != 5:
+    print("缺失 ReviewPacket 未进入 review-intervention: %r" % review)
+    sys.exit(1)
+print("缺失 ReviewPacket 干预动作 OK")
+PYEOF
+  then
+    ok "缺失 ReviewPacket 进入 review-intervention"
+  else
+    bad "缺失 ReviewPacket 未进入 review-intervention"
+  fi
+else
+  bad "缺失 ReviewPacket 场景 watchdog 异常"
 fi
 
 note "1b) 每次心跳读取内存并给出并发槽位建议"

@@ -238,7 +238,8 @@ procs = process_lines()
 items, text_tokens = [], []
 owned_runs = set()
 for run_id in sorted(os.listdir(runs_dir)):
-    state_path = os.path.join(runs_dir, run_id, "state.json")
+    run_dir = os.path.join(runs_dir, run_id)
+    state_path = os.path.join(run_dir, "state.json")
     if not os.path.isfile(state_path):
         continue
     try:
@@ -262,6 +263,12 @@ for run_id in sorted(os.listdir(runs_dir)):
         priority, action = ACTIONABLE[state]
         item = {"runId": run_id, "state": state, "priority": priority,
                 "action": action, "processOwnership": "not-applicable"}
+        if state == "REVIEW_PENDING" and not os.path.isfile(os.path.join(run_dir, "review-packet.json")):
+            # A missing packet means `task review` cannot yet bind a
+            # ReviewDecision. Surface this as an intervention instead of
+            # repeatedly asking the lead to rerun the same doomed review.
+            item["priority"] = 5
+            item["action"] = "review-intervention"
     # 终态与其他未映射状态一律不进入行动队列。
     if item is not None:
         item["ageSeconds"] = age_seconds(state_path, data)
