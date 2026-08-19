@@ -1,0 +1,20 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "ReviewDecision",
+  "taskId": "TASK-closure",
+  "runId": "run-closure-01",
+  "reviewRound": 2,
+  "reviewer": { "type": "lead-agent", "id": "independent-reviewer" },
+  "specDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "reviewPacketDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "verificationDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "artifactManifestDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "evidenceDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  "verdict": "rework",
+  "summary": "closure matrix fixture",
+  "blockingFindings": [],
+  "nonBlockingFindings": [],
+  "publicationRecommendation": "do-not-publish",
+  "mergeRecommendation": "do-not-merge",
+  "decidedAt": "2026-08-20T00:00:03Z"
+}
