@@ -338,9 +338,22 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 
 ### 11.2 JSON 行动队列契约
 
-输出包含 `generatedAt` 与按 priority 升序的 `items`；每个 item 含
-`runId`、`state`、`priority`、`action`、`ageSeconds`、`processOwnership`。
-不写入 secret、环境变量值、完整命令行参数、绝对路径。
+输出版本为 `marshal-watch/v2`，并固定 `advisoryOnly=true`：watchdog 只给建议，
+不会启动、retry、terminate 或 kill 任何 Worker。`items` 只包含当前 Goal/cohort，
+`topAction` 只从该数组取首项；旧 Run 的非终态待办保留在 `historicalItems`，不会再
+挤占当前交付的最高优先级。推荐把 operator-local `MARSHAL_WATCH_COHORT_FILE` 指向
+`{"goalId":"goal:...","runIds":[...]}`；文件缺失时兼容旧调用，按最近 24 小时
+创建或当前持有 lease 的 Run 自动分桶，并在 `cohort.source` 标明 fallback。历史 Run
+即使因 doctor/reconcile 刷新 `updatedAt` 也不会回到当前队列。
+显式 cohort 文件无效时 fail closed，不把历史 Run 猜成当前 Run。
+
+每个 item 保留原有 `runId`、`state`、`priority`、`action`、`ageSeconds`、
+`processOwnership`、`dedupeKey`，并增加 `queueBucket`、`ownershipSource`、
+`argvMatched`、`journalStatus`、`journalSequence`、`phaseProgressDigest`，以及存在时的
+封闭 `typedFailure`。`dedupeKey` 绑定 RunState sequence、journal sequence、当前 phase
+progress digest、typed failure（含 `notBefore`/`retryAfterNanoseconds`）、ReviewPacket
+和 control journal digest；只有真实进展变化才刷新。输出不写入 secret、环境变量值、
+完整命令行参数或绝对路径。
 
 动作映射（priority 越小越优先）：
 
@@ -358,19 +371,35 @@ MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 
 终态（ACCEPTED/REJECTED/BLOCKED/ABORTED/NO_CHANGE）默认不进入行动队列。
 
-`processOwnership` 只有三种取值：`owned-active`（有可证明归属的活进程）、`not-found`
-（RUNNING 但找不到归属进程，需 doctor-dead）、`not-applicable`（非 RUNNING 状态）。
-进程匹配覆盖 `marshal task run/verify/publish/supervise` 与 qwen/codex/qoder/opencode/pi，
-且必须绑定**精确 runId**——同名进程不等于本 Run 所有者。不得以事件年龄单独判定 RUNNING
-死亡（opencode 单 attempt 可能 20–40 分钟无事件）；无法证明归属时输出 doctor-dead，
-由操作者用 `marshal doctor --run RUN_ID --json` 对账后幂等重跑。
+`processOwnership` 取值为 `owned-active`（OS lock 与 owner 事实一致）、`not-found`
+（RUNNING 但 Marshal lease 未持有）、`unknown`（lease/owner 无法安全读取，fail closed）
+或 `not-applicable`（非 RUNNING 状态）。动作所有权只由 Marshal `lease.lock` 与
+`lease.lock.owner` 的只读事实决定；进程 argv 仅输出布尔 `argvMatched` 供诊断，
+即使出现精确 runId 也不能把未持 lease 的进程升级为 owner，反之无 argv 但 held lease
+仍是 `owned-active`。不得以事件年龄单独判定 RUNNING 死亡；`not-found` 输出
+`doctor-dead`，`unknown` 输出 `hold-ownership-unknown`，均由操作者先用
+`marshal doctor --run RUN_ID --json` 对账。
+
+`capacity` 每轮重新采集三类上限：memory 使用可用字节/当前 pressure，CPU 使用 logical
+cores、1 分钟 load average 与 `activeOwnedWorkers`（同时限制 load headroom 和 owner
+headroom），Provider 使用当前 cohort Adapter 的
+封闭 typed failure。`rate-limited`、`dns-failure`、`connection-failure` 在有效
+`notBefore`/`retryAfterNanoseconds` 窗口内暂停新增槽位，`quota-exhausted` 持续暂停到同
+Adapter 出现更新的成功事实；未知或非法 typed failure fail closed。最终
+`slotsAvailable=min(memorySlotsAvailable,cpuSlotsAvailable,providerSlotsAvailable)`；
+待派发 Run 无法从 journal 或锁定 TaskSpec 确认 Adapter identity 时 Provider 也视为
+`unknown`。memory pressure、CPU、Provider 或当前队列/ownership 任一关键 signal 为 `unknown` 时固定
+`hold-concurrency`。这仍是 admission 建议，不替代 scope、doctor、plan approval 或 Core lease。
 
 ### 11.3 环境变量
 
 - `MARSHAL_WATCH_ROOT`：含 runs 目录的根，默认 `.marshal`；测试可指向 fixture 根目录。
 - `MARSHAL_WATCH_NOTIFY=0`：禁用 osascript 通知（heartbeat 消费 JSON 时必设）。
 - `MARSHAL_WATCH_LOG`：循环模式日志，默认 `/tmp/marshal-watch.log`。
-- `MARSHAL_WATCH_PROCESS_FILE`：进程 fixture 文件（每行 `<pid> <command>`），设置后归属判定只按文件内容，不触碰真实进程。
+- `MARSHAL_WATCH_PROCESS_FILE`：进程 argv fixture（每行 `<pid> <command>`），只产生 `argvMatched` 诊断，不参与动作所有权。
+- `MARSHAL_WATCH_COHORT_FILE`：operator-local 当前 Goal/cohort JSON；只读，不进入 `.marshal` 权威链。
+- `MARSHAL_WATCH_LEASE_FACTS_FILE`：仅确定性测试使用的 lease/owner 事实 JSON；生产不得设置。
+- `MARSHAL_WATCH_LOGICAL_CPUS` / `MARSHAL_WATCH_LOAD1M`：仅测试/诊断覆盖；生产默认读取宿主实时值。
 
 ### 11.4 每轮有限动作（反空转纪律）
 

@@ -2,8 +2,9 @@
 # scripts/marshal-watch.sh 的确定性测试（operator-runbook §11）。
 # 只使用临时 MARSHAL_WATCH_ROOT 与 MARSHAL_WATCH_PROCESS_FILE fixture：
 # 不读取/删除/改写真实 .marshal，不依赖网络、osascript 或真实 Worker 进程。
-# 覆盖：行动队列优先级排序、终态过滤、--once 不 sleep、JSON schema 基本字段、
-#       RUNNING owned-active 与 doctor-dead 两种分支、精确 runId 绑定。
+# 覆盖：行动队列优先级/Goal cohort 分桶、终态过滤、--once 不 sleep、v2 JSON、
+#       lease/owner 权威、argv 仅诊断、journal/typed-failure dedupe 与
+#       slots=min(memory,cpu,provider) 的 fail-closed 建议。
 set -u
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -16,19 +17,43 @@ bad()  { FAIL=$((FAIL + 1)); printf 'FAIL - %s\n' "$1" >&2; }
 note() { printf '# %s\n' "$1"; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/marshal-watch-test.XXXXXX")"
-cleanup() { rm -rf "$TMP"; }
+LEASE_HOLDER_PID=""
+cleanup() {
+  if [ -n "$LEASE_HOLDER_PID" ]; then
+    kill "$LEASE_HOLDER_PID" 2>/dev/null || true
+    wait "$LEASE_HOLDER_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TMP"
+}
 trap cleanup EXIT
 
 ROOT="$TMP/root"
 PROCFILE="$TMP/procs.txt"
+LEASEFILE="$TMP/lease-facts.json"
 mkdir -p "$ROOT/runs"
 : > "$PROCFILE"
+printf '%s\n' '{}' > "$LEASEFILE"
 
 # 统一以 fixture 根与受控进程文件运行，禁用通知，避免触碰真实环境。
 run_watch() {
   MARSHAL_WATCH_ROOT="$ROOT" \
   MARSHAL_WATCH_PROCESS_FILE="$PROCFILE" \
+  MARSHAL_WATCH_LEASE_FACTS_FILE="$LEASEFILE" \
   MARSHAL_WATCH_NOTIFY=0 \
+  MARSHAL_WATCH_LOGICAL_CPUS="${MARSHAL_WATCH_LOGICAL_CPUS-8}" \
+  MARSHAL_WATCH_LOAD1M="${MARSHAL_WATCH_LOAD1M-0}" \
+  MARSHAL_WATCH_SWAP_USED_BYTES="${MARSHAL_WATCH_SWAP_USED_BYTES-0}" \
+  MARSHAL_WATCH_PRESSURE_FREE_PERCENT="${MARSHAL_WATCH_PRESSURE_FREE_PERCENT-80}" \
+  MARSHAL_WATCH_LOG="$TMP/watch.log" \
+  bash "$WATCH" "$@"
+}
+
+run_watch_real_lease() {
+  MARSHAL_WATCH_ROOT="$ROOT" \
+  MARSHAL_WATCH_PROCESS_FILE="$PROCFILE" \
+  MARSHAL_WATCH_NOTIFY=0 \
+  MARSHAL_WATCH_LOGICAL_CPUS="${MARSHAL_WATCH_LOGICAL_CPUS-8}" \
+  MARSHAL_WATCH_LOAD1M="${MARSHAL_WATCH_LOAD1M-0}" \
   MARSHAL_WATCH_SWAP_USED_BYTES="${MARSHAL_WATCH_SWAP_USED_BYTES-0}" \
   MARSHAL_WATCH_PRESSURE_FREE_PERCENT="${MARSHAL_WATCH_PRESSURE_FREE_PERCENT-80}" \
   MARSHAL_WATCH_LOG="$TMP/watch.log" \
@@ -50,6 +75,9 @@ PYEOF
   )
   cat > "$dir/state.json" <<EOF
 {"apiVersion":"marshal.dev/v1alpha1","kind":"RunState","taskId":"task-$rid","runId":"$rid","state":"$state","sequence":1,"specDigest":"sha256:spec-$rid","policyDigest":"sha256:policy-$rid","capabilityDigest":"sha256:capability-$rid","baseSha":"base-$rid","reviewRound":0,"attemptsUsed":0,"operationalRetriesUsed":0,"reworkRoundsUsed":0,"createdAt":"$ts","updatedAt":"$ts"}
+EOF
+  cat > "$dir/task-spec.json" <<'EOF'
+{"worker":{"preferredAdapter":"qwen","fallbackAdapters":[]}}
 EOF
 }
 
@@ -517,6 +545,9 @@ cat > "$PROCFILE" <<EOF
 67890 opencode some-args run-alive
 11111 marshal task run --run run-decoy
 EOF
+cat > "$LEASEFILE" <<'EOF'
+{"run-alive":"held-alive","run-dead":"not-held","run-al":"not-held"}
+EOF
 
 OUT_RUN="$TMP/out_run.json"
 if timeout_run 30 "$OUT_RUN" run_watch --once --json; then
@@ -534,6 +565,9 @@ with open(sys.argv[1]) as f:
 PYEOF
 )
 : > "$PROCFILE"
+cat > "$LEASEFILE" <<'EOF'
+{"run-alive":"not-held","run-dead":"not-held","run-al":"not-held"}
+EOF
 OUT_OWNERSHIP_CHANGED="$TMP/out_ownership_changed.json"
 run_watch --once --json > "$OUT_OWNERSHIP_CHANGED"
 if python3 - "$OUT_OWNERSHIP_CHANGED" "$ALIVE_KEY" <<'PYEOF'
@@ -582,6 +616,84 @@ else
   bad "RUNNING 归属分支或精确绑定不符"
 fi
 
+note "3b) argv 仅作诊断，Marshal lease/owner 才是动作所有权权威"
+cat > "$PROCFILE" <<'EOF'
+12345 marshal task run --run run-dead
+EOF
+cat > "$LEASEFILE" <<'EOF'
+{"run-alive":"held-alive","run-dead":"not-held","run-al":"unknown"}
+EOF
+OUT_AUTHORITY="$TMP/out_authority.json"
+run_watch --once --json > "$OUT_AUTHORITY"
+if python3 - "$OUT_AUTHORITY" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    by_id = {item["runId"]: item for item in json.load(f)["items"]}
+alive = by_id["run-alive"]
+dead = by_id["run-dead"]
+unknown = by_id["run-al"]
+if alive.get("processOwnership") != "owned-active" or alive.get("argvMatched") is not False:
+    raise SystemExit("held lease without argv must remain owned-active: %r" % alive)
+if dead.get("processOwnership") != "not-found" or dead.get("action") != "doctor-dead" or dead.get("argvMatched") is not True:
+    raise SystemExit("argv without held lease must remain doctor-dead: %r" % dead)
+if unknown.get("processOwnership") != "unknown" or unknown.get("action") != "hold-ownership-unknown":
+    raise SystemExit("unknown lease fact must fail closed: %r" % unknown)
+print("lease authority wins; argv remains diagnostic")
+PYEOF
+then
+  ok "Marshal lease/owner 优先于 argv 诊断"
+else
+  bad "动作所有权仍被 argv 诊断污染"
+fi
+
+note "3c) 生产路径直接探测 held lease + owner，不依赖 fixture/argv"
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run run-real-lease RUNNING 10
+: > "$PROCFILE"
+READYFILE="$TMP/lease-holder-ready"
+python3 - "$ROOT/runs/run-real-lease" "$READYFILE" <<'PYEOF' &
+import datetime, fcntl, json, os, sys, time
+run_dir, ready = sys.argv[1:]
+lock_path = os.path.join(run_dir, "lease.lock")
+fd = os.open(lock_path, os.O_RDONLY | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+st = os.fstat(fd)
+now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+owner = {"token":"fixture-token","pid":os.getpid(),"processStartedAt":now,
+         "acquiredAt":now,"heartbeatAt":now,"device":st.st_dev,"inode":st.st_ino}
+with open(os.path.join(run_dir, "lease.lock.owner"), "w", encoding="utf-8") as handle:
+    json.dump(owner, handle)
+with open(ready, "w", encoding="utf-8") as handle:
+    handle.write("ready")
+while True:
+    time.sleep(1)
+PYEOF
+LEASE_HOLDER_PID=$!
+waited=0
+while [ ! -f "$READYFILE" ] && [ "$waited" -lt 30 ]; do
+  sleep 0.1
+  waited=$((waited + 1))
+done
+OUT_REAL_LEASE="$TMP/out_real_lease.json"
+if run_watch_real_lease --once --json > "$OUT_REAL_LEASE" && \
+   python3 - "$OUT_REAL_LEASE" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    item = json.load(f)["items"][0]
+if item.get("runId") != "run-real-lease" or item.get("processOwnership") != "owned-active" or item.get("ownershipSource") != "marshal-lease" or item.get("argvMatched") is not False:
+    raise SystemExit("real lease probe did not establish ownership: %r" % item)
+print("real held lease + owner probe OK")
+PYEOF
+then
+  ok "生产 lease/owner 探针建立动作所有权"
+else
+  bad "生产 lease/owner 探针失败"
+fi
+kill "$LEASE_HOLDER_PID" 2>/dev/null || true
+wait "$LEASE_HOLDER_PID" 2>/dev/null || true
+LEASE_HOLDER_PID=""
+
 note "4) doctor-dead 优先级高于一般 monitor 且低于审查/重作"
 if python3 - "$OUT_RUN" <<'PYEOF'
 import json, sys
@@ -604,6 +716,272 @@ then
   ok "RUNNING 优先级映射"
 else
   bad "RUNNING 优先级映射不符"
+fi
+
+note "5) current Goal/cohort 与 historical backlog 分桶，历史不占 top actions"
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run current-review REVIEW_PENDING 60
+printf '%s\n' '{}' > "$ROOT/runs/current-review/review-packet.json"
+make_run current-ready READY 30
+make_run historical-review REVIEW_PENDING 120
+printf '%s\n' '{}' > "$ROOT/runs/historical-review/review-packet.json"
+make_run historical-dead RUNNING 120
+cat > "$LEASEFILE" <<'EOF'
+{"historical-dead":"not-held"}
+EOF
+COHORTFILE="$TMP/cohort.json"
+cat > "$COHORTFILE" <<'EOF'
+{"goalId":"goal:marshal-v1","runIds":["current-review","current-ready"]}
+EOF
+OUT_COHORT="$TMP/out_cohort.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$OUT_COHORT" && \
+   python3 - "$OUT_COHORT" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+if data.get("queueVersion") != "marshal-watch/v2":
+    raise SystemExit("missing v2 version: %r" % data.get("queueVersion"))
+if data.get("advisoryOnly") is not True:
+    raise SystemExit("watchdog must remain advisory-only: %r" % data.get("advisoryOnly"))
+if [item["runId"] for item in data["items"]] != ["current-review", "current-ready"]:
+    raise SystemExit("current items incorrect: %r" % data["items"])
+if {item["runId"] for item in data["historicalItems"]} != {"historical-review", "historical-dead"}:
+    raise SystemExit("historical bucket incorrect: %r" % data["historicalItems"])
+if data.get("topAction", {}).get("runId") != "current-review":
+    raise SystemExit("historical backlog displaced current top action: %r" % data.get("topAction"))
+cohort = data.get("cohort", {})
+if cohort.get("source") != "explicit-goal-cohort" or cohort.get("goalId") != "goal:marshal-v1":
+    raise SystemExit("cohort identity missing: %r" % cohort)
+print("current/historical queue partition OK")
+PYEOF
+then
+  ok "current cohort 优先且 historical backlog 保留"
+else
+  bad "current/historical 分桶失败"
+fi
+
+note "5b) fallback 只按 createdAt/held lease 识别当前 Run，近期 updatedAt 不复活历史"
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run fallback-current READY 60
+make_run fallback-old REVIEW_PENDING 60
+printf '%s\n' '{}' > "$ROOT/runs/fallback-old/review-packet.json"
+python3 - "$ROOT/runs/fallback-old/state.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    data = json.load(handle)
+data["createdAt"] = "2020-01-01T00:00:00Z"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(data, handle, separators=(",", ":"))
+PYEOF
+OUT_FALLBACK="$TMP/out_fallback.json"
+if run_watch --once --json > "$OUT_FALLBACK" && \
+   python3 - "$OUT_FALLBACK" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    data = json.load(handle)
+if data.get("cohort", {}).get("source") != "recent-created-fallback":
+    raise SystemExit("unexpected fallback source: %r" % data.get("cohort"))
+if [item["runId"] for item in data["items"]] != ["fallback-current"]:
+    raise SystemExit("fallback current bucket incorrect: %r" % data["items"])
+if [item["runId"] for item in data["historicalItems"]] != ["fallback-old"]:
+    raise SystemExit("recent updatedAt revived historical run: %r" % data["historicalItems"])
+if data.get("topAction", {}).get("runId") != "fallback-current":
+    raise SystemExit("historical run displaced current top action: %r" % data.get("topAction"))
+print("createdAt fallback does not revive historical backlog")
+PYEOF
+then
+  ok "fallback 不会因近期 updatedAt 复活历史 Run"
+else
+  bad "fallback 错把历史 Run 纳入当前 cohort"
+fi
+
+# 后续 journal/provider 测试继续使用显式 cohort fixture。
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run current-review REVIEW_PENDING 60
+printf '%s\n' '{}' > "$ROOT/runs/current-review/review-packet.json"
+make_run current-ready READY 30
+
+note "6) dedupe 绑定 journal sequence、phase progress、typed failure 与 notBefore"
+cat > "$ROOT/runs/current-ready/events.jsonl" <<'EOF'
+{"sequence":1,"type":"planning.inputs-frozen","timestamp":"2026-08-20T00:00:00Z","payload":{"adapterId":"qwen"}}
+EOF
+OUT_PROGRESS_1="$TMP/out_progress_1.json"
+MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$OUT_PROGRESS_1"
+cat >> "$ROOT/runs/current-ready/events.jsonl" <<'EOF'
+{"sequence":2,"type":"worker.failed","timestamp":"2026-08-20T00:01:00Z","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","notBefore":"2099-01-01T00:00:00Z"}}
+EOF
+OUT_PROGRESS_2="$TMP/out_progress_2.json"
+MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$OUT_PROGRESS_2"
+if python3 - "$OUT_PROGRESS_1" "$OUT_PROGRESS_2" <<'PYEOF'
+import json, sys
+def item(path):
+    with open(path) as f:
+        return next(x for x in json.load(f)["items"] if x["runId"] == "current-ready")
+a, b = item(sys.argv[1]), item(sys.argv[2])
+if a["dedupeKey"] == b["dedupeKey"]:
+    raise SystemExit("journal progress did not refresh dedupeKey")
+if b.get("journalSequence") != 2 or not b.get("phaseProgressDigest", "").startswith("sha256:"):
+    raise SystemExit("journal progress identity missing: %r" % b)
+failure = b.get("typedFailure", {})
+if failure.get("kind") != "rate-limited" or failure.get("notBefore") != "2099-01-01T00:00:00Z":
+    raise SystemExit("typed failure/notBefore missing: %r" % failure)
+print("journal + phase + typed failure dedupe binding OK")
+PYEOF
+then
+  ok "dedupe 绑定 journal/phase/typed failure/notBefore"
+else
+  bad "dedupe 未绑定完整进展事实"
+fi
+
+note "7) slots=min(memory,cpu,provider)，任一关键 signal unknown 即 hold"
+CPU_JSON="$TMP/cpu_capacity.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" \
+   MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((16 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_WORKER_RESERVE_BYTES=$((2 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_LOGICAL_CPUS=8 MARSHAL_WATCH_LOAD1M=6.2 \
+   run_watch --once --json > "$CPU_JSON" && \
+   python3 - "$CPU_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    c = json.load(f)["capacity"]
+if c.get("memorySlotsAvailable") != 8 or c.get("cpuSlotsAvailable") != 1:
+    raise SystemExit("memory/cpu slots wrong: %r" % c)
+if c.get("slotsAvailable") != 0 or c.get("providerSlotsAvailable") != 0:
+    raise SystemExit("future provider notBefore must hold all new slots: %r" % c)
+if c.get("concurrencyAction") != "hold-concurrency":
+    raise SystemExit("provider backpressure did not hold: %r" % c)
+print("provider is limiting min(memory,cpu,provider) OK")
+PYEOF
+then
+  ok "provider notBefore 限制并发槽位"
+else
+  bad "provider capacity 未参与最小值"
+fi
+
+for provider_case in 'dns-failure retryable' 'connection-failure retryable' 'quota-exhausted blocked'; do
+  set -- $provider_case
+  failure_kind="$1"
+  disposition="$2"
+  if [ "$failure_kind" = "quota-exhausted" ]; then
+    hint=''
+  else
+    hint=',"notBefore":"2099-01-01T00:00:00Z"'
+  fi
+  cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
+{"sequence":1,"type":"planning.inputs-frozen","timestamp":"2026-08-20T00:00:00Z","payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"2026-08-20T00:01:00Z","payload":{"adapterId":"qwen","failureKind":"$failure_kind","retryDisposition":"$disposition"$hint}}
+EOF
+  PROVIDER_KIND_JSON="$TMP/provider_${failure_kind}.json"
+  if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$PROVIDER_KIND_JSON" && \
+     python3 - "$PROVIDER_KIND_JSON" "$failure_kind" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    capacity = json.load(f)["capacity"]
+signal = capacity.get("providerSignals", [{}])[-1]
+if capacity.get("providerSlotsAvailable") != 0 or capacity.get("slotsAvailable") != 0:
+    raise SystemExit("provider failure did not hold: %r" % capacity)
+if signal.get("failureKind") != sys.argv[2]:
+    raise SystemExit("provider failure identity missing: %r" % signal)
+print("provider failure gate OK: " + sys.argv[2])
+PYEOF
+  then
+    ok "$failure_kind Provider 背压/额度门禁"
+  else
+    bad "$failure_kind 未参与 Provider 容量"
+  fi
+done
+
+cat >> "$ROOT/runs/current-ready/events.jsonl" <<'EOF'
+{"sequence":3,"type":"worker.completed","timestamp":"2099-01-01T00:01:00Z","payload":{"adapterId":"qwen"}}
+EOF
+PROVIDER_RECOVERED_JSON="$TMP/provider_recovered.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" \
+   MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((16 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_LOGICAL_CPUS=8 MARSHAL_WATCH_LOAD1M=6.2 \
+   run_watch --once --json > "$PROVIDER_RECOVERED_JSON" && \
+   python3 - "$PROVIDER_RECOVERED_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    capacity = json.load(f)["capacity"]
+if capacity.get("providerStatus") != "ok" or capacity.get("providerSlotsAvailable") != 1 or capacity.get("slotsAvailable") != 1:
+    raise SystemExit("newer successful provider signal did not recover slots: %r" % capacity)
+print("newer provider success recovers capacity OK")
+PYEOF
+then
+  ok "较新 worker.completed 恢复 Provider 容量"
+else
+  bad "Provider 恢复信号未解除旧背压"
+fi
+
+CPU_UNKNOWN_JSON="$TMP/cpu_unknown.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" \
+   MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((16 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_LOGICAL_CPUS=unavailable MARSHAL_WATCH_LOAD1M=0 \
+   run_watch --once --json > "$CPU_UNKNOWN_JSON" && \
+   python3 - "$CPU_UNKNOWN_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    c = json.load(f)["capacity"]
+if c.get("cpuStatus") != "unknown" or c.get("slotsAvailable") != 0 or c.get("concurrencyAction") != "hold-concurrency":
+    raise SystemExit("unknown CPU signal did not fail closed: %r" % c)
+print("unknown critical capacity signal holds concurrency OK")
+PYEOF
+then
+  ok "关键 CPU signal unknown 时 hold"
+else
+  bad "关键 signal unknown 未 fail closed"
+fi
+
+note "7b) CPU 同时考虑 logical cores、1m load 与 owned workers"
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run cpu-owned RUNNING 10
+cat > "$LEASEFILE" <<'EOF'
+{"cpu-owned":"held-alive"}
+EOF
+CPU_OWNED_JSON="$TMP/cpu_owned.json"
+if MARSHAL_WATCH_LOGICAL_CPUS=4 MARSHAL_WATCH_LOAD1M=0 \
+   run_watch --once --json > "$CPU_OWNED_JSON" && \
+   python3 - "$CPU_OWNED_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    capacity = json.load(handle)["capacity"]
+if capacity.get("activeOwnedWorkers") != 1 or capacity.get("ownedWorkerHeadroom") != 3 or capacity.get("cpuSlotsAvailable") != 3:
+    raise SystemExit("owned workers not reflected in CPU capacity: %r" % capacity)
+print("logical cores + load + owned workers CPU capacity OK")
+PYEOF
+then
+  ok "CPU 容量纳入 owned workers"
+else
+  bad "CPU 容量遗漏 owned workers"
+fi
+
+note "7c) 待派发 Run 缺失 Adapter identity 时 Provider signal unknown 并 hold"
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run provider-unknown READY 10
+rm -f "$ROOT/runs/provider-unknown/task-spec.json"
+cat > "$COHORTFILE" <<'EOF'
+{"goalId":"goal:provider-unknown","runIds":["provider-unknown"]}
+EOF
+PROVIDER_UNKNOWN_JSON="$TMP/provider_unknown.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$PROVIDER_UNKNOWN_JSON" && \
+   python3 - "$PROVIDER_UNKNOWN_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    capacity = json.load(handle)["capacity"]
+if capacity.get("providerStatus") != "unknown" or capacity.get("slotsAvailable") != 0 or capacity.get("concurrencyAction") != "hold-concurrency":
+    raise SystemExit("unknown adapter identity did not fail closed: %r" % capacity)
+print("unknown adapter identity holds provider capacity OK")
+PYEOF
+then
+  ok "Adapter identity unknown 时 Provider hold"
+else
+  bad "Adapter identity unknown 未 fail closed"
 fi
 
 printf '\n# 汇总: %d 通过, %d 失败\n' "$PASS" "$FAIL"

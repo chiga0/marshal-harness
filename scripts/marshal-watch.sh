@@ -9,15 +9,16 @@
 #
 # 一次性模式（heartbeat 机器可读，执行一次立即退出，不 sleep）:
 #   scripts/marshal-watch.sh --once --json
-#   --json 输出按优先级排序的行动队列：generatedAt、capacity 与 items，
-#   capacity 每次心跳重新读取 Mac/Linux 可用内存，并给出可安全增加的
-#   Worker 槽位；watchdog 只报告建议，实际 task run 仍由 Core 按 scope/lease
-#   门禁派发，避免 watchdog 越权改变 Run 生命周期。
-#   只输出稳定状态、动作、runId、年龄与归属判定；不含 secret、命令行、绝对路径。
+#   --json 输出 v2 行动队列：current items/topAction 与 historicalItems 分桶；
+#   capacity 每次心跳重新读取 Mac/Linux 内存、CPU 与 Provider typed failure，
+#   slots=min(memory,cpu,provider)。watchdog 只报告建议，实际 task run 仍由
+#   Core 按 scope/lease 门禁派发，避免 watchdog 越权改变 Run 生命周期。
+#   dedupeKey 绑定 journal sequence/phase digest/typed failure/notBefore；只输出
+#   稳定状态、动作、runId、年龄与归属判定，不含 secret、命令行或绝对路径。
 #
 # 动作映射（priority 越小越优先）:
 #   REVIEW_PENDING=review-now(10)  REWORK_REQUESTED=run-rework-now(20)
-#   RUNNING 无可证明归属进程=doctor-dead(30)  RETRY_PENDING=retry-or-abort(40)
+#   RUNNING 无 held lease=doctor-dead(30)  RETRY_PENDING=retry-or-abort(40)
 #   VERIFYING=verify-or-doctor(50)  PUBLISHING=publish-or-doctor(60)
 #   READY/APPROVED=run-now(70)  CI_PENDING=check-ci(80)  RUNNING(active)=monitor(90)
 #   终态（ACCEPTED/REJECTED/BLOCKED/ABORTED/NO_CHANGE）不进入行动队列。
@@ -27,7 +28,11 @@
 #   MARSHAL_WATCH_NOTIFY=0      禁用 osascript 通知
 #   MARSHAL_WATCH_LOG           循环模式日志，默认 /tmp/marshal-watch.log
 #   MARSHAL_WATCH_PROCESS_FILE  进程 fixture 文件（每行 "<pid> <command>"）；
-#                               设置后进程归属只按该文件内容判定，不触碰真实进程。
+#                               仅用于 argv 诊断，不是动作所有权权威。
+#   MARSHAL_WATCH_LEASE_FACTS_FILE  仅测试使用的 lease/owner 事实 JSON；生产
+#                               默认直接探测 Marshal lease.lock/owner。
+#   MARSHAL_WATCH_COHORT_FILE   当前 Goal/cohort JSON：goalId + runIds；未设置时
+#                               自动把最近 24h 创建或持有 lease 的 Run 归为当前。
 #   MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES  覆盖可用内存（仅测试/诊断）；
 #   MARSHAL_WATCH_SWAP_USED_BYTES         覆盖已用 swap（仅测试/诊断）；
 #   MARSHAL_WATCH_SWAP_OUTPUT             覆盖 vm.swapusage 原始输出（仅测试）；
@@ -35,6 +40,7 @@
 #                                         unavailable 用于 fail-closed 测试；
 #   MARSHAL_WATCH_PRESSURE_OUTPUT         覆盖 memory_pressure 原始输出（仅测试）；
 #   MARSHAL_WATCH_WORKER_RESERVE_BYTES   每个新增 Worker 的保守内存预算，默认 2 GiB。
+#   MARSHAL_WATCH_LOGICAL_CPUS / MARSHAL_WATCH_LOAD1M  CPU 探针覆盖（仅测试/诊断）。
 cd "$(dirname "$0")/.." || exit 1
 
 usage() {
@@ -46,7 +52,7 @@ usage() {
   interval_sec  循环模式轮询间隔秒数，默认 600（向后兼容旧入口）
 
 环境变量: MARSHAL_WATCH_ROOT / MARSHAL_WATCH_NOTIFY / MARSHAL_WATCH_LOG /
-          MARSHAL_WATCH_PROCESS_FILE（见脚本头部注释）
+          MARSHAL_WATCH_COHORT_FILE / MARSHAL_WATCH_PROCESS_FILE（见脚本头部注释）
 EOF
 }
 
@@ -90,9 +96,9 @@ process_snapshot() {
 }
 
 PY_PROG='
-import json, math, os, re, sys
+import fcntl, json, math, os, re, stat, sys
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 runs_dir, mode = sys.argv[1], sys.argv[2]
 summary_path = sys.argv[3] if len(sys.argv) > 3 else ""
@@ -114,6 +120,18 @@ ACTIONABLE = {
 MARSHAL_SUBCOMMANDS = ("run", "verify", "publish", "supervise")
 ADAPTER_BINARIES = {"qwen", "codex", "qoder", "opencode", "pi"}
 DEFAULT_WORKER_RESERVE_BYTES = 2 * 1024 * 1024 * 1024
+DEFAULT_CURRENT_WINDOW_SECONDS = 24 * 60 * 60
+DEFAULT_PROVIDER_FAILURE_HOLD_SECONDS = 5 * 60
+TYPED_FAILURE_PAIRS = {
+    "quota-exhausted": "blocked",
+    "rate-limited": "retryable",
+    "dns-failure": "retryable",
+    "connection-failure": "retryable",
+    "protocol-invalid": "do-not-retry",
+    "result-missing": "do-not-retry",
+    "provider-terminal": "do-not-retry",
+}
+PROVIDER_CAPACITY_FAILURES = {"quota-exhausted", "rate-limited", "dns-failure", "connection-failure"}
 
 def process_lines():
     lines = []
@@ -150,6 +168,39 @@ def _integer_env(name):
         return value if value >= 0 else None
     except (TypeError, ValueError):
         return None
+
+def _float_env(name):
+    raw = os.environ.get(name, "")
+    if raw == "unavailable":
+        return None
+    try:
+        value = float(raw)
+        return value if math.isfinite(value) and value >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+def _read_regular_json(path, limit=1024 * 1024):
+    """Read a small single-link regular JSON file without following symlinks."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > limit:
+            raise ValueError("not a bounded single-link regular file")
+        chunks, size = [], 0
+        while size <= limit:
+            chunk = os.read(fd, min(64 * 1024, limit + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(fd)
+        if len(raw) > limit or (before.st_dev, before.st_ino, before.st_size, before.st_mode, before.st_nlink) != (after.st_dev, after.st_ino, after.st_size, after.st_mode, after.st_nlink):
+            raise ValueError("file identity changed")
+        return json.loads(raw.decode("utf-8"), parse_constant=lambda value: (_ for _ in ()).throw(ValueError("non-finite JSON number")))
+    finally:
+        os.close(fd)
 
 def _command_output(argv):
     try:
@@ -281,29 +332,147 @@ def pressure_free_percent():
         pass
     return None, "unavailable"
 
-def capacity_snapshot(active_owned):
+def cpu_snapshot(active_owned):
+    raw_cpus = os.environ.get("MARSHAL_WATCH_LOGICAL_CPUS", "")
+    if raw_cpus == "unavailable":
+        logical = None
+        logical_source = "unavailable"
+    else:
+        override = _integer_env("MARSHAL_WATCH_LOGICAL_CPUS")
+        logical = override if override and override > 0 else os.cpu_count()
+        logical_source = "override" if override and override > 0 else ("os.cpu_count" if logical else "unavailable")
+    raw_load = os.environ.get("MARSHAL_WATCH_LOAD1M", "")
+    if raw_load == "unavailable":
+        load = None
+        load_source = "unavailable"
+    else:
+        override_load = _float_env("MARSHAL_WATCH_LOAD1M")
+        if raw_load != "" and override_load is not None:
+            load, load_source = override_load, "override"
+        else:
+            try:
+                load, load_source = float(os.getloadavg()[0]), "os.getloadavg"
+            except (AttributeError, OSError, ValueError):
+                load, load_source = None, "unavailable"
+    if logical is None or load is None:
+        return {"logicalCores": logical, "logicalCoresSource": logical_source,
+                "load1m": load, "load1mSource": load_source,
+                "cpuSlotsAvailable": 0, "cpuStatus": "unknown"}
+    load_headroom = max(0, int(math.floor(logical - load)))
+    ownership_headroom = max(0, logical - active_owned)
+    slots = min(load_headroom, ownership_headroom)
+    return {"logicalCores": logical, "logicalCoresSource": logical_source,
+            "load1m": load, "load1mSource": load_source,
+            "ownedWorkerHeadroom": ownership_headroom,
+            "cpuSlotsAvailable": slots,
+            "cpuStatus": "ok" if slots > 0 else "constrained"}
+
+def _load_lease_fixture():
+    path = os.environ.get("MARSHAL_WATCH_LEASE_FACTS_FILE", "")
+    if not path:
+        return None
+    try:
+        data = _read_regular_json(path, 64 * 1024)
+        if not isinstance(data, dict) or any(not isinstance(key, str) or value not in {"held-alive", "not-held", "unknown"} for key, value in data.items()):
+            return {"*": "unknown"}
+        return data
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return {"*": "unknown"}
+
+LEASE_FIXTURE = _load_lease_fixture()
+
+def lease_observation(run_dir, run_id):
+    if LEASE_FIXTURE is not None:
+        return LEASE_FIXTURE.get(run_id, LEASE_FIXTURE.get("*", "not-held")), "fixture"
+    lock_path = os.path.join(run_dir, "lease.lock")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(lock_path, flags)
+    except FileNotFoundError:
+        return "not-held", "marshal-lease"
+    except OSError:
+        return "unknown", "marshal-lease"
+    try:
+        lock_stat = os.fstat(fd)
+        if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_nlink != 1:
+            return "unknown", "marshal-lease"
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            held = True
+        except OSError:
+            return "unknown", "marshal-lease"
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            held = False
+        if not held:
+            return "not-held", "marshal-lease"
+        try:
+            owner = _read_regular_json(os.path.join(run_dir, "lease.lock.owner"), 64 * 1024)
+            if not isinstance(owner, dict) or not isinstance(owner.get("pid"), int) or owner["pid"] <= 1:
+                return "unknown", "marshal-lease"
+            if "device" in owner and "inode" in owner and (owner["device"], owner["inode"]) != (lock_stat.st_dev, lock_stat.st_ino):
+                return "unknown", "marshal-lease"
+            for field in ("token", "processStartedAt", "acquiredAt", "heartbeatAt"):
+                if not isinstance(owner.get(field), str) or not owner[field]:
+                    return "unknown", "marshal-lease"
+            try:
+                os.kill(owner["pid"], 0)
+            except ProcessLookupError:
+                return "unknown", "marshal-lease"
+            except PermissionError:
+                pass
+            return "held-alive", "marshal-lease"
+        except (OSError, UnicodeError, ValueError, TypeError):
+            return "unknown", "marshal-lease"
+    finally:
+        os.close(fd)
+
+def _cohort_configuration():
+    path = os.environ.get("MARSHAL_WATCH_COHORT_FILE", "")
+    if not path:
+        window = _integer_env("MARSHAL_WATCH_CURRENT_WINDOW_SECONDS")
+        if window is None or window == 0:
+            window = DEFAULT_CURRENT_WINDOW_SECONDS
+        return None, {"source": "recent-created-fallback", "goalId": None, "windowSeconds": window}
+    try:
+        data = _read_regular_json(path, 256 * 1024)
+        goal_id = data.get("goalId")
+        run_ids = data.get("runIds")
+        pattern = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
+        if not isinstance(goal_id, str) or not pattern.fullmatch(goal_id) or not isinstance(run_ids, list) or len(run_ids) != len(set(run_ids)) or any(not isinstance(run_id, str) or not pattern.fullmatch(run_id) for run_id in run_ids):
+            raise ValueError("invalid cohort")
+        return set(run_ids), {"source": "explicit-goal-cohort", "goalId": goal_id, "runCount": len(run_ids)}
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return set(), {"source": "invalid-explicit-cohort", "goalId": None, "runCount": 0}
+
+def capacity_snapshot(active_owned, cpu, provider, queue_signal_status):
     available, source = memory_available_bytes()
     swap_used, swap_source = swap_used_bytes()
     free_percent, pressure_source = pressure_free_percent()
     reserve = _integer_env("MARSHAL_WATCH_WORKER_RESERVE_BYTES")
     if reserve is None or reserve == 0:
         reserve = DEFAULT_WORKER_RESERVE_BYTES
-    slots = available // reserve if reserve > 0 else 0
+    memory_slots = available // reserve if reserve > 0 else 0
     pressure = "critical" if available < reserve // 2 else ("constrained" if available < reserve else "ok")
     # swapUsed 是历史/现状观测，不是当前 thrash 速率；macOS 在压力解除后
     # 也可能长期保留 swap。实际 admission 使用当前 memory_pressure 或
     # Linux MemAvailable/MemTotal 比例。信号缺失 fail closed，避免把未知
     # 错当作零压力；压力恢复后即使 swap 仍高也会重新开放槽位。
     if free_percent is None:
-        slots = 0
+        memory_slots = 0
         pressure = "unknown"
     elif free_percent < 15:
-        slots = 0
+        memory_slots = 0
         pressure = "critical"
     elif free_percent < 25:
-        slots = 0
+        memory_slots = 0
         pressure = "constrained"
-    return {
+    cpu_slots = cpu["cpuSlotsAvailable"]
+    provider_slots = provider["providerSlotsAvailable"]
+    critical_unknown = pressure == "unknown" or cpu["cpuStatus"] == "unknown" or provider["providerStatus"] == "unknown" or queue_signal_status == "unknown"
+    slots = 0 if critical_unknown else min(memory_slots, cpu_slots, provider_slots)
+    result = {
         "memoryAvailableBytes": available,
         "memorySource": source,
         "swapUsedBytes": swap_used,
@@ -312,11 +481,16 @@ def capacity_snapshot(active_owned):
         "pressureSource": pressure_source,
         "workerReserveBytes": reserve,
         "activeOwnedWorkers": active_owned,
+        "queueSignalStatus": queue_signal_status,
+        "memorySlotsAvailable": memory_slots,
+        **cpu,
+        **provider,
         "slotsAvailable": slots,
         "recommendedMaxWorkers": active_owned + slots,
         "concurrencyAction": "increase-concurrency" if slots > 0 else "hold-concurrency",
         "pressure": pressure,
     }
+    return result
 
 def parse_timestamp(stamp):
     if not isinstance(stamp, str):
@@ -343,15 +517,147 @@ def age_seconds(state_path, data):
     seconds = int(now_utc.timestamp() - mtime)
     return seconds if seconds > 0 else 0
 
+def timestamp_age_seconds(stamp):
+    parsed = parse_timestamp(stamp)
+    if parsed is None:
+        return None
+    seconds = int((now_utc - parsed).total_seconds())
+    return seconds if seconds > 0 else 0
+
 def file_digest(path):
     """返回可读文件内容摘要；缺失时保持稳定的 missing 标记。"""
     try:
-        with open(path, "rb") as handle:
-            return hashlib.sha256(handle.read()).hexdigest()
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                return "invalid"
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(fd, 64 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            after = os.fstat(fd)
+            if (before.st_dev, before.st_ino, before.st_size, before.st_mode, before.st_nlink) != (after.st_dev, after.st_ino, after.st_size, after.st_mode, after.st_nlink):
+                return "changed"
+            return digest.hexdigest()
+        finally:
+            os.close(fd)
     except OSError:
         return "missing"
 
-def decision_key(run_id, data, state, run_dir, action, ownership):
+def journal_observation(run_dir):
+    path = os.path.join(run_dir, "events.jsonl")
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > 16 * 1024 * 1024:
+                raise ValueError("invalid journal file")
+            chunks, size = [], 0
+            while size <= 16 * 1024 * 1024:
+                chunk = os.read(fd, 64 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            raw = b"".join(chunks)
+            after = os.fstat(fd)
+            if len(raw) > 16 * 1024 * 1024 or (before.st_dev, before.st_ino, before.st_size, before.st_mode, before.st_nlink) != (after.st_dev, after.st_ino, after.st_size, after.st_mode, after.st_nlink):
+                raise ValueError("journal changed")
+        finally:
+            os.close(fd)
+    except FileNotFoundError:
+        return {"status": "missing", "sequence": 0,
+                "phaseDigest": "sha256:" + hashlib.sha256(b"missing").hexdigest(),
+                "adapterId": None, "typedFailure": None, "lastSignal": None}
+    except (OSError, ValueError):
+        return {"status": "unknown", "sequence": 0,
+                "phaseDigest": "sha256:" + hashlib.sha256(b"invalid").hexdigest(),
+                "adapterId": None, "typedFailure": None, "lastSignal": None}
+    try:
+        events = []
+        previous = 0
+        for raw_line in raw.decode("utf-8").splitlines():
+            if not raw_line.strip():
+                continue
+            event = json.loads(raw_line, parse_constant=lambda value: (_ for _ in ()).throw(ValueError("non-finite JSON number")))
+            if not isinstance(event, dict):
+                raise ValueError("journal event is not an object")
+            sequence = event.get("sequence")
+            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= previous:
+                raise ValueError("non-monotonic journal")
+            previous = sequence
+            events.append(event)
+    except (UnicodeError, ValueError, TypeError):
+        return {"status": "unknown", "sequence": 0,
+                "phaseDigest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "adapterId": None, "typedFailure": None, "lastSignal": None}
+    if not events:
+        return {"status": "ok", "sequence": 0,
+                "phaseDigest": "sha256:" + hashlib.sha256(b"empty").hexdigest(),
+                "adapterId": None, "typedFailure": None, "lastSignal": None}
+    adapter_id = None
+    typed_failure = None
+    last_signal = None
+    for event in events:
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        candidate_adapter = payload.get("adapterId")
+        if isinstance(candidate_adapter, str) and candidate_adapter in ADAPTER_BINARIES:
+            adapter_id = candidate_adapter
+        event_type = event.get("type")
+        if event_type == "worker.failed" and candidate_adapter in ADAPTER_BINARIES:
+            kind = payload.get("failureKind")
+            disposition = payload.get("retryDisposition")
+            if kind is not None or disposition is not None:
+                valid = isinstance(kind, str) and TYPED_FAILURE_PAIRS.get(kind) == disposition
+                failure = {"adapterId": candidate_adapter, "kind": kind if isinstance(kind, str) else "invalid",
+                           "disposition": disposition if isinstance(disposition, str) else "invalid"}
+                retry_after = payload.get("retryAfterNanoseconds")
+                not_before = payload.get("notBefore")
+                if retry_after is not None:
+                    valid = valid and not isinstance(retry_after, bool) and isinstance(retry_after, int) and 0 < retry_after <= 24 * 60 * 60 * 1000000000
+                    if not isinstance(retry_after, bool) and isinstance(retry_after, int):
+                        failure["retryAfterNanoseconds"] = retry_after
+                if not_before is not None:
+                    valid = valid and parse_timestamp(not_before) is not None
+                    if isinstance(not_before, str):
+                        failure["notBefore"] = not_before
+                if retry_after is not None and not_before is not None:
+                    valid = False
+                failure["valid"] = valid
+                typed_failure = failure
+                last_signal = {"type": event_type, "timestamp": event.get("timestamp"), "failure": failure,
+                               "sequence": event["sequence"]}
+        elif event_type == "worker.completed" and candidate_adapter in ADAPTER_BINARIES:
+            typed_failure = None
+            last_signal = {"type": event_type, "timestamp": event.get("timestamp"), "failure": None,
+                           "sequence": event["sequence"]}
+    last = events[-1]
+    payload_digest = hashlib.sha256(json.dumps(last.get("payload", {}), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+    phase = {"sequence": last["sequence"], "type": last.get("type"), "stateFrom": last.get("stateFrom"),
+             "stateTo": last.get("stateTo"), "attemptId": last.get("attemptId"), "payloadDigest": "sha256:" + payload_digest}
+    phase_digest = "sha256:" + hashlib.sha256(json.dumps(phase, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+    return {"status": "ok", "sequence": last["sequence"], "phaseDigest": phase_digest,
+            "adapterId": adapter_id, "typedFailure": typed_failure, "lastSignal": last_signal}
+
+def task_adapter_observation(run_dir, journal):
+    if journal.get("adapterId") is not None:
+        return journal["adapterId"], "journal"
+    try:
+        task = _read_regular_json(os.path.join(run_dir, "task-spec.json"), 1024 * 1024)
+        worker = task.get("worker") if isinstance(task, dict) else None
+        adapter_id = worker.get("preferredAdapter") if isinstance(worker, dict) else None
+        if adapter_id not in ADAPTER_BINARIES:
+            raise ValueError("unknown preferred adapter")
+        return adapter_id, "task-spec"
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None, "unknown"
+
+def decision_key(run_id, data, state, run_dir, action, ownership, journal):
     """为同一动作上下文生成稳定键，避免重复消费且不抑制合法恢复。"""
     fields = [
         run_id,
@@ -363,38 +669,98 @@ def decision_key(run_id, data, state, run_dir, action, ownership):
         str(data.get("capabilityDigest", "")),
         str(data.get("baseSha", "")),
         str(data.get("currentAttemptId", "")),
+        str(data.get("sequence", 0)),
         str(data.get("reviewRound", 0)),
         str(data.get("reworkRoundsUsed", 0)),
+        str(journal.get("sequence", 0)),
+        str(journal.get("phaseDigest", "")),
+        json.dumps(journal.get("typedFailure"), sort_keys=True, separators=(",", ":")),
         file_digest(os.path.join(run_dir, "review-packet.json")),
         file_digest(os.path.join(run_dir, "control", "records.jsonl")),
     ]
     return "sha256:" + hashlib.sha256("\x1f".join(fields).encode("utf-8")).hexdigest()
 
+def provider_snapshot(items, observations, provisional_slots):
+    required_adapters = {observations[item["runId"]]["adapterId"] for item in items
+                         if item["action"] in {"run-now", "run-rework-now", "retry-or-abort"}
+                         and observations[item["runId"]]["adapterId"] is not None}
+    malformed_required = any(observations[item["runId"]]["status"] == "unknown" or observations[item["runId"]]["adapterStatus"] == "unknown" for item in items
+                             if item["action"] in {"run-now", "run-rework-now", "retry-or-abort"})
+    if malformed_required:
+        return {"providerSlotsAvailable": 0, "providerStatus": "unknown", "providerSignals": []}
+    signals = []
+    for adapter_id in sorted(required_adapters):
+        latest = None
+        for observation in observations.values():
+            signal = observation.get("lastSignal")
+            if observation.get("adapterId") != adapter_id or signal is None:
+                continue
+            stamp = parse_timestamp(signal.get("timestamp"))
+            key = (stamp or datetime.min.replace(tzinfo=timezone.utc), signal.get("sequence", 0))
+            if latest is None or key > latest[0]:
+                latest = (key, signal)
+        if latest is None or latest[1]["type"] == "worker.completed":
+            signals.append({"adapterId": adapter_id, "status": "available"})
+            continue
+        failure = latest[1].get("failure")
+        if not isinstance(failure, dict) or not failure.get("valid"):
+            return {"providerSlotsAvailable": 0, "providerStatus": "unknown", "providerSignals": signals + [{"adapterId": adapter_id, "status": "unknown"}]}
+        kind = failure["kind"]
+        if kind not in PROVIDER_CAPACITY_FAILURES:
+            signals.append({"adapterId": adapter_id, "status": "available"})
+            continue
+        event_time = parse_timestamp(latest[1].get("timestamp"))
+        until = None
+        if isinstance(failure.get("notBefore"), str):
+            until = parse_timestamp(failure["notBefore"])
+        elif isinstance(failure.get("retryAfterNanoseconds"), int) and event_time is not None:
+            until = event_time + timedelta(microseconds=failure["retryAfterNanoseconds"] / 1000)
+        elif event_time is not None:
+            hold = _integer_env("MARSHAL_WATCH_PROVIDER_FAILURE_HOLD_SECONDS")
+            until = event_time + timedelta(seconds=hold if hold is not None else DEFAULT_PROVIDER_FAILURE_HOLD_SECONDS)
+        if kind == "quota-exhausted" or until is None or until > now_utc:
+            entry = {"adapterId": adapter_id, "status": "blocked" if kind == "quota-exhausted" else "backpressure", "failureKind": kind}
+            if until is not None:
+                entry["notBefore"] = until.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            signals.append(entry)
+            return {"providerSlotsAvailable": 0, "providerStatus": entry["status"], "providerSignals": signals}
+        signals.append({"adapterId": adapter_id, "status": "available", "failureKind": kind})
+    return {"providerSlotsAvailable": provisional_slots, "providerStatus": "ok", "providerSignals": signals}
+
 procs = process_lines()
-items, text_tokens = [], []
+explicit_cohort, cohort = _cohort_configuration()
+items, historical_items, text_tokens = [], [], []
 owned_runs = set()
+observations = {}
 for run_id in sorted(os.listdir(runs_dir)):
     run_dir = os.path.join(runs_dir, run_id)
     state_path = os.path.join(run_dir, "state.json")
-    if not os.path.isfile(state_path):
-        continue
     try:
-        with open(state_path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
+        data = _read_regular_json(state_path, 1024 * 1024)
         state = data["state"]
+        if data.get("runId") not in (None, run_id):
+            continue
     except (OSError, ValueError, KeyError, TypeError):
         continue
-    owned = any(owner_present(line, run_id) for line in procs)
+    journal = journal_observation(run_dir)
+    journal["adapterId"], journal["adapterStatus"] = task_adapter_observation(run_dir, journal)
+    observations[run_id] = journal
+    lease_fact, lease_source = lease_observation(run_dir, run_id)
+    argv_matched = any(owner_present(line, run_id) for line in procs)
+    owned = lease_fact == "held-alive"
     if owned and state in {"RUNNING", "VERIFYING", "PUBLISHING"}:
         owned_runs.add(run_id)
     item = None
     if state == "RUNNING":
-        if owned:
+        if lease_fact == "held-alive":
             item = {"runId": run_id, "state": state, "priority": 90,
                     "action": "monitor", "processOwnership": "owned-active"}
-        else:
+        elif lease_fact == "not-held":
             item = {"runId": run_id, "state": state, "priority": 30,
                     "action": "doctor-dead", "processOwnership": "not-found"}
+        else:
+            item = {"runId": run_id, "state": state, "priority": 4,
+                    "action": "hold-ownership-unknown", "processOwnership": "unknown"}
     elif state in ACTIONABLE:
         priority, action = ACTIONABLE[state]
         item = {"runId": run_id, "state": state, "priority": priority,
@@ -407,11 +773,29 @@ for run_id in sorted(os.listdir(runs_dir)):
             item["action"] = "review-intervention"
     # 终态与其他未映射状态一律不进入行动队列。
     if item is not None:
-        item["ageSeconds"] = age_seconds(state_path, data)
+        age = age_seconds(state_path, data)
+        created_age = timestamp_age_seconds(data.get("createdAt") if isinstance(data, dict) else None)
+        item["ageSeconds"] = age
+        item["ownershipSource"] = lease_source
+        item["argvMatched"] = argv_matched
+        item["journalSequence"] = journal["sequence"]
+        item["phaseProgressDigest"] = journal["phaseDigest"]
+        item["journalStatus"] = journal["status"]
+        if journal.get("typedFailure") is not None:
+            failure = journal["typedFailure"]
+            item["typedFailure"] = {key: failure[key] for key in ("adapterId", "kind", "disposition", "retryAfterNanoseconds", "notBefore") if key in failure}
         item["dedupeKey"] = decision_key(
-            run_id, data, state, run_dir, item["action"], item["processOwnership"]
+            run_id, data, state, run_dir, item["action"], item["processOwnership"], journal
         )
-        items.append(item)
+        if explicit_cohort is not None:
+            current = run_id in explicit_cohort
+        else:
+            # updatedAt 会因 doctor/reconcile 等历史维护动作刷新，不能据此把旧 Run
+            # 重新提升为当前工作。兼容 fallback 只承认近期创建或仍持有 lease 的 Run；
+            # createdAt 缺失/非法时 fail closed 到 historical。
+            current = owned or (created_age is not None and created_age <= cohort["windowSeconds"])
+        item["queueBucket"] = "current" if current else "historical"
+        (items if current else historical_items).append(item)
     if mode == "text":
         if state == "RUNNING":
             text_tokens.append("%s=%s" % (run_id, "RUNNING(active)" if owned else "DEAD?"))
@@ -419,20 +803,29 @@ for run_id in sorted(os.listdir(runs_dir)):
             text_tokens.append("%s=%s" % (run_id, state))
 
 items.sort(key=lambda entry: (entry["priority"], entry["runId"]))
-capacity = capacity_snapshot(len(owned_runs))
+historical_items.sort(key=lambda entry: (entry["priority"], entry["runId"]))
+cpu = cpu_snapshot(len(owned_runs))
+provider = provider_snapshot(items, observations, cpu["cpuSlotsAvailable"])
+if cohort["source"] == "invalid-explicit-cohort":
+    provider = {"providerSlotsAvailable": 0, "providerStatus": "unknown", "providerSignals": []}
+queue_signal_status = "unknown" if any(item["journalStatus"] == "unknown" or item["processOwnership"] == "unknown" for item in items) else "ok"
+capacity = capacity_snapshot(len(owned_runs), cpu, provider, queue_signal_status)
 if mode == "text":
-    print("[%s] %s capacity=%s slots=%s" % (datetime.now().strftime("%m-%d %H:%M:%S"), " ".join(text_tokens), capacity["pressure"], capacity["slotsAvailable"]))
+    print("[%s] %s capacity=%s slots=%s current=%s historical=%s" % (datetime.now().strftime("%m-%d %H:%M:%S"), " ".join(text_tokens), capacity["pressure"], capacity["slotsAvailable"], len(items), len(historical_items)))
 else:
-    print(json.dumps({"generatedAt": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), "capacity": capacity, "items": items},
+    print(json.dumps({"queueVersion": "marshal-watch/v2", "advisoryOnly": True,
+                      "generatedAt": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "cohort": cohort, "capacity": capacity, "topAction": items[0] if items else None,
+                      "items": items, "historicalItems": historical_items},
                      ensure_ascii=False))
 if summary_path:
     try:
         with open(summary_path, "w", encoding="utf-8") as handle:
             if items:
                 top = items[0]
-                handle.write("行动队列 %d 项，最高优先级 %s=%s" % (len(items), top["runId"], top["action"]))
+                handle.write("当前行动队列 %d 项，历史 %d 项，最高优先级 %s=%s" % (len(items), len(historical_items), top["runId"], top["action"]))
             else:
-                handle.write("行动队列无待办行动项")
+                handle.write("当前行动队列无待办，历史 %d 项" % len(historical_items))
     except OSError:
         pass
 '
