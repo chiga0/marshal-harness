@@ -46,3 +46,4 @@
 | [0034](0034-qoder-cli-live-conformance-authority.md) | Qoder CLI 独立 live conformance authority、host/profile 精确绑定、短期可撤销准入与 doctor evidence 可观察性 | 接受（Accepted，2026-08-18；未获得真实 credentialed evidence，不表示当前部署 supported） |
 | [0037](0037-codex-cli-production-authority.md) | Codex CLI production authority、TPM-backed host identity、authenticated fd-exec 与可撤销准入 | 接受（Accepted，2026-08-18；未实现且未获得真实 credentialed live evidence，不表示当前部署 supported） |
 | [0039](0039-apap-peer-exec-barrier.md) | APAP control peer USER_NOTIF 单次初始 fd-exec、永久 exec deny、双对象签名与 helper bootstrap | 已接受（Accepted，2026-08-18；接受只冻结合同，未实现前不得启用） |
+| [0040](0040-darwin-codex-authenticated-launcher.md) | Darwin Codex authenticated launcher、Mach-O held identity、child barrier 与 Mac-first conformance | 提议（Proposed，2026-08-19；未经接受与真实 evidence 不得启用） |
