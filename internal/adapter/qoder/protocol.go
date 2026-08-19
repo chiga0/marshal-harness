@@ -37,6 +37,7 @@ type captureResult struct {
 	outputTokens    int
 	denials         []denials.RawDenial
 	toolNames       []string
+	observedTools   []observedToolCall
 	pendingTools    map[string]pendingToolCall
 	resultTransport resultTransportSequence
 	terminal        terminalOutcome
@@ -51,6 +52,19 @@ type pendingToolCall struct {
 	resultTransport      bool
 	validResultTransport bool
 	resultPayload        []byte
+}
+
+// observedToolCall is the closed, provider-structured projection consumed by
+// transcript attestation. It deliberately excludes provider prose and tool
+// output content.
+type observedToolCall struct {
+	id              string
+	tool            string
+	input           json.RawMessage
+	ordinal         int
+	status          string
+	explicitSuccess bool
+	resultTransport bool
 }
 
 // resultTransportSequence records only the closed WorkerResult transport
@@ -92,7 +106,10 @@ type qoderEvent struct {
 	TerminalReason  string          `json:"terminal_reason"`
 	Error           string          `json:"error"`
 	ToolUseResult   struct {
-		IsHardFailure *bool `json:"isHardFailure"`
+		Kind          string `json:"kind"`
+		ExitCode      *int   `json:"exitCode"`
+		Interrupted   *bool  `json:"interrupted"`
+		IsHardFailure *bool  `json:"isHardFailure"`
 	} `json:"tool_use_result"`
 	ToolResultMeta []struct {
 		ID               string `json:"id"`
@@ -296,8 +313,17 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			result.pendingTools = map[string]pendingToolCall{}
 		}
 		for _, part := range message.Content {
-			if part.Type != "tool_use" {
+			if part.Type == "tool_use" && len(result.pendingTools) != 0 {
+				return fmt.Errorf("%w: tool_use precedes prior tool_result", ErrProtocol)
+			}
+		}
+		for _, part := range message.Content {
+			switch part.Type {
+			case "thinking", "text":
 				continue
+			case "tool_use":
+			default:
+				return fmt.Errorf("%w: unrecognized assistant message part", ErrProtocol)
 			}
 			if part.ID == "" || part.Name == "" || len(bytes.TrimSpace(part.Input)) == 0 || bytes.Equal(bytes.TrimSpace(part.Input), []byte("null")) {
 				return fmt.Errorf("%w: incomplete assistant tool_use", ErrProtocol)
@@ -318,6 +344,7 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 				tool: tool, input: append(json.RawMessage(nil), part.Input...), ordinal: result.toolCalls,
 				resultTransport: transportAccess, validResultTransport: validTransport, resultPayload: resultPayload,
 			}
+			result.observedTools = append(result.observedTools, observedToolCall{id: part.ID, tool: tool, input: append(json.RawMessage(nil), part.Input...), ordinal: result.toolCalls, resultTransport: transportAccess})
 		}
 		result.assistantCount++
 	case "user":
@@ -334,7 +361,7 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		}
 		for _, part := range message.Content {
 			if part.Type != "tool_result" {
-				continue
+				return fmt.Errorf("%w: unrecognized user message part", ErrProtocol)
 			}
 			pending, ok := result.pendingTools[part.ToolUseID]
 			if part.ToolUseID == "" || !ok {
@@ -347,6 +374,7 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			}
 			_, permissionDenied := permissionDeniedIDs[part.ToolUseID]
 			if permissionDenied {
+				result.setObservedToolStatus(part.ToolUseID, "denied")
 				result.denials = append(result.denials, denials.RawDenial{Tool: pending.tool, Input: pending.input})
 				if part.IsError == nil || !*part.IsError {
 					return fmt.Errorf("%w: permission denial marker contradicts is_error", ErrProtocol)
@@ -360,13 +388,17 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			// frames. An explicit non-permission error remains a failed call and
 			// must never enter the successful toolNames side channel.
 			if part.IsError != nil && *part.IsError {
+				result.setObservedToolStatus(part.ToolUseID, "failed")
 				continue
 			}
+			explicitSuccess := event.ToolUseResult.Kind == "completed" && event.ToolUseResult.ExitCode != nil && *event.ToolUseResult.ExitCode == 0 && event.ToolUseResult.Interrupted != nil && !*event.ToolUseResult.Interrupted
+			result.setObservedToolExplicitSuccess(part.ToolUseID, explicitSuccess)
 			if pending.resultTransport && pending.validResultTransport {
 				result.resultTransport.successes++
 				result.resultTransport.successfulOrdinal = pending.ordinal
 				result.resultTransport.payload = append([]byte(nil), pending.resultPayload...)
 			}
+			result.setObservedToolStatus(part.ToolUseID, "passed")
 			result.toolNames = append(result.toolNames, pending.tool)
 		}
 		return nil
@@ -403,6 +435,24 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		return fmt.Errorf("%w: unrecognized stream-json event type", ErrProtocol)
 	}
 	return nil
+}
+
+func (result *captureResult) setObservedToolStatus(id, status string) {
+	for index := range result.observedTools {
+		if result.observedTools[index].id == id {
+			result.observedTools[index].status = status
+			return
+		}
+	}
+}
+
+func (result *captureResult) setObservedToolExplicitSuccess(id string, success bool) {
+	for index := range result.observedTools {
+		if result.observedTools[index].id == id {
+			result.observedTools[index].explicitSuccess = success
+			return
+		}
+	}
 }
 
 // classifyWorkerResultTransportTool recognizes the one reviewed Qoder 1.1.23
