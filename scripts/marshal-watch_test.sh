@@ -1238,7 +1238,88 @@ else
   bad "真实 basename 诊断遗漏或污染 authority"
 fi
 
-note "12) authority root/runs symlink 拒绝，run entry swap 只污染该 Run"
+note "12) 相对 authority root 与 basename cohort/lease 从 / nofollow 打开"
+RELATIVE_WS="$TMP/relative-workspace"
+mkdir -p "$RELATIVE_WS/scripts" "$RELATIVE_WS/relative-root/runs"
+cp "$WATCH" "$RELATIVE_WS/scripts/marshal-watch.sh"
+for relative_case in relative-ready relative-peer relative-running; do
+  relative_state=READY
+  [ "$relative_case" = "relative-running" ] && relative_state=RUNNING
+  mkdir -p "$RELATIVE_WS/relative-root/runs/$relative_case"
+  cat > "$RELATIVE_WS/relative-root/runs/$relative_case/state.json" <<EOF
+{"apiVersion":"marshal.dev/v1alpha1","kind":"RunState","taskId":"task-$relative_case","runId":"$relative_case","state":"$relative_state","sequence":1,"specDigest":"sha256:spec-$relative_case","policyDigest":"sha256:policy-$relative_case","capabilityDigest":"sha256:capability-$relative_case","baseSha":"base-$relative_case","reviewRound":0,"attemptsUsed":0,"operationalRetriesUsed":0,"reworkRoundsUsed":0,"createdAt":"$EVENT_TS","updatedAt":"$EVENT_TS"}
+EOF
+  cat > "$RELATIVE_WS/relative-root/runs/$relative_case/task-spec.json" <<'EOF'
+{"worker":{"preferredAdapter":"qwen","fallbackAdapters":[]}}
+EOF
+done
+cat > "$RELATIVE_WS/cohort.json" <<'EOF'
+{"goalId":"goal:relative-authority","runIds":["relative-ready","relative-peer","relative-running"]}
+EOF
+cat > "$RELATIVE_WS/facts.json" <<'EOF'
+{"relative-ready":"not-held","relative-peer":"not-held","relative-running":"not-held"}
+EOF
+run_relative_watch() {
+  (cd "$RELATIVE_WS" && \
+    MARSHAL_WATCH_ROOT="${MARSHAL_WATCH_ROOT-relative-root}" \
+    MARSHAL_WATCH_COHORT_FILE="${MARSHAL_WATCH_COHORT_FILE-cohort.json}" \
+    MARSHAL_WATCH_LEASE_FACTS_FILE="${MARSHAL_WATCH_LEASE_FACTS_FILE-facts.json}" \
+    MARSHAL_WATCH_PROCESS_FILE="$PROCFILE" MARSHAL_WATCH_NOTIFY=0 \
+    MARSHAL_WATCH_LOGICAL_CPUS=8 MARSHAL_WATCH_LOAD1M=0 \
+    MARSHAL_WATCH_SWAP_USED_BYTES=0 MARSHAL_WATCH_PRESSURE_FREE_PERCENT=80 \
+    MARSHAL_WATCH_TESTING="${MARSHAL_WATCH_TESTING-}" \
+    MARSHAL_WATCH_TEST_RUN_ENTRY_HOOK="${MARSHAL_WATCH_TEST_RUN_ENTRY_HOOK-}" \
+    bash scripts/marshal-watch.sh "$@")
+}
+RELATIVE_JSON="$TMP/relative_authority.json"
+if run_relative_watch --once --json > "$RELATIVE_JSON" && \
+   python3 - "$RELATIVE_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    data = json.load(handle)
+by_id = {item["runId"]: item for item in data["items"]}
+if data.get("cohort", {}).get("source") != "explicit-goal-cohort":
+    raise SystemExit("basename cohort not loaded: %r" % data.get("cohort"))
+for run_id in ("relative-ready", "relative-peer"):
+    if by_id.get(run_id, {}).get("action") != "run-now" or by_id[run_id].get("ownershipSource") != "fixture":
+        raise SystemExit("relative authority positive failed: %s=%r" % (run_id, by_id.get(run_id)))
+running = by_id.get("relative-running", {})
+if running.get("action") != "doctor-dead" or running.get("ownershipSource") != "fixture":
+    raise SystemExit("basename lease facts not loaded: %r" % running)
+print("relative root and basename authority files OK")
+PYEOF
+then
+  ok "相对 root 与 basename cohort/lease 正常工作"
+else
+  bad "相对 root 或 basename authority 文件失效"
+fi
+
+ln -s relative-root "$RELATIVE_WS/relative-root-link"
+if MARSHAL_WATCH_ROOT=relative-root-link run_relative_watch --once --json > "$TMP/relative_root_link.out" 2>/dev/null; then
+  bad "相对 authority root symlink 未 fail closed"
+else
+  ok "相对 authority root symlink fail closed"
+fi
+RELATIVE_SWAP_JSON="$TMP/relative_swap.json"
+if MARSHAL_WATCH_TESTING=1 MARSHAL_WATCH_TEST_RUN_ENTRY_HOOK=relative-ready \
+   run_relative_watch --once --json > "$RELATIVE_SWAP_JSON" && \
+   python3 - "$RELATIVE_SWAP_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    by_id = {item["runId"]: item for item in json.load(handle)["items"]}
+if by_id.get("relative-ready", {}).get("action") != "hold-run-path-unknown":
+    raise SystemExit("relative run race did not fail closed: %r" % by_id.get("relative-ready"))
+if by_id.get("relative-peer", {}).get("action") != "run-now":
+    raise SystemExit("relative run race contaminated peer: %r" % by_id.get("relative-peer"))
+print("relative run race isolated")
+PYEOF
+then
+  ok "相对 authority run race 按 Run 隔离"
+else
+  bad "相对 authority run race 未隔离"
+fi
+
+note "12b) authority root/runs symlink 拒绝，run entry swap 只污染该 Run"
 ROOT_LINK="$TMP/root-link"
 ln -s "$ROOT" "$ROOT_LINK"
 ROOT_LINK_OUT="$TMP/root_link.out"

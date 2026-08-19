@@ -199,13 +199,21 @@ def _open_directory_path_nofollow(path):
     """Open every directory component without following symlinks and hold the chain."""
     if not isinstance(path, str) or not path:
         raise ValueError("directory path is required")
-    absolute = os.path.isabs(path)
-    components = path.split("/")
-    if absolute:
-        components = components[1:]
-    if not components or any(component in ("", ".", "..") for component in components):
+    raw_components = path.split("/")
+    absolute_input = os.path.isabs(path)
+    if any(component == "" and not (absolute_input and index == 0)
+           for index, component in enumerate(raw_components)):
+        raise ValueError("empty path component is forbidden")
+    if any(component == ".." for component in raw_components):
+        raise ValueError("parent traversal is forbidden")
+    absolute_path = os.path.abspath(path)
+    if not os.path.isabs(absolute_path):
+        raise ValueError("absolute lexical path is required")
+    lexical_components = absolute_path.split("/")
+    if lexical_components[0] != "" or any(component in ("", "..") for component in lexical_components[1:]):
         raise ValueError("directory path contains a forbidden component")
-    fd = os.open("/" if absolute else ".", DIR_FLAGS)
+    components = [component for component in lexical_components[1:] if component != "."]
+    fd = os.open("/", DIR_FLAGS)
     try:
         for component in components:
             next_fd = os.open(component, DIR_FLAGS, dir_fd=fd)

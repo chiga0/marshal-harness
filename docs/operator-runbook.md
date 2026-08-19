@@ -357,8 +357,9 @@ progress digest、typed failure（含 `notBefore`/`retryAfterNanoseconds`）、R
 完整命令行参数或绝对路径。
 
 authority root、`runs` 与每个 Run 目录都从调用方给出的精确路径逐 component 打开：
-绝对路径从 held `/` dirfd 起步，相对路径从 held 当前目录 dirfd 起步，全程使用
-`O_DIRECTORY|O_NOFOLLOW`，禁止 `realpath` 或其他 pathname-follow。每个 Run 从 held
+输入先用 `abspath` 生成绝对词法路径（只消除 `.`，拒绝 `..`；禁止 `realpath`、
+`readlink` 或解析 symlink），再固定从 held `/` dirfd 起步，全程使用
+`O_DIRECTORY|O_NOFOLLOW`。每个 Run 从 held
 `runs` dirfd 枚举，后续状态、journal、lease、owner 与证据读取也只使用 held dirfd
 绑定目录与文件；Run 目录 symlink/替换、state 的非对象或非封闭 state、journal 的
 非对象 event/非对象 payload/非法时间或类型只把该 Run 标为 `unknown`，不会让整轮
