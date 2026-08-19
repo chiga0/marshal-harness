@@ -62,6 +62,7 @@ var nonLeakOracle = []string{
 	"/acceptance/commands/*/timeoutSeconds",
 	"/admission/status",
 	"/apiVersion",
+	"/budgets/ciObserveTimeoutSeconds",
 	"/dependsOn/*/baseSha",
 	"/dependsOn/*/kind",
 	"/dependsOn/*/requiredState",
@@ -519,6 +520,7 @@ func TestRenderPromptProjectionV1VerifierOnlyAndHiddenValuesDoNotLeak(t *testing
 	// sentinel is deliberately not a closed vocabulary word; renderPrompt
 	// never schema-validates the fixture, so a leak would surface verbatim.
 	spec["worker"].(map[string]any)["tools"] = []string{"nl-tools-sentinel"}
+	spec["budgets"].(map[string]any)["ciObserveTimeoutSeconds"] = 424242
 	spec["publication"].(map[string]any)["required"] = true
 	spec["publication"].(map[string]any)["provider"] = "nl-provider"
 	spec["publication"].(map[string]any)["mode"] = "nl-mode"
@@ -547,6 +549,7 @@ func TestRenderPromptProjectionV1VerifierOnlyAndHiddenValuesDoNotLeak(t *testing
 		"nl-baseline", "99", "8888",
 		"allowNoChange",
 		"nl-api-version", "nl-kind", "nl-meta-title", "nl-meta-desc",
+		"424242",
 		"nl-label-key", "nl-label-value", "nl-repo-path", "nl-base-ref", "nl-remote",
 		"nl-expected-url", "nl-preferred", "nl-fallback", "nl-model",
 		"nl-reasoning", "nl-tools-sentinel", "nl-provider", "nl-mode", "nl-pub-remote",
