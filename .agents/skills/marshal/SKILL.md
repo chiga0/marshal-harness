@@ -65,6 +65,11 @@ Decision 必须绑定 `taskId`、`runId`、`reviewRound`、`specDigest`、`revie
   5. 验证分层：先跑受影响包的 `go test`、`vet`、`staticcheck` 与必要的 `-race`，再跑 `make check`/全仓 race；门禁失败必须记录精确 gate、版本、命令摘要与 digest，禁止用“重跑一次”替代根因修复。
   6. 若 ReviewPacket 因旧 artifact manifest、旧 base、缺失证据或 `worktree evidence changed after verification` 无法生成/导入，不伪造 Decision；通过 Core 允许的 intervention/cleanup 路径标记历史阻塞并准备 fresh successor，避免陈旧 Run 长期占据 `REVIEW_PENDING` 队列。
   7. `marshal supervise --once` 不是只读巡检：它可能启动全局 `READY/REWORK_REQUESTED` Run。Heartbeat 只读检查使用 watchdog JSON、`task status`、`doctor` 和事件尾部；只有完成容量、scope、lease admission 后，才允许显式调用会启动 Worker 的 supervise/driver 路径。
+  8. **预检证据复用与单次失败裁决**：为减少同一适配器在多个 Run 中重复消耗 token，Lead 应优先查找最近一次与当前 `sourceHead`、平台/架构、held executable digest、裸 `--version`、协议版本、权限模式及 WorkerResult transport **完全匹配**的已验证摘要。全部匹配时只复用该预检结论，运行任务特有的 acceptance/gates；不得把旧摘要带入新 base、换二进制、换协议或换结果路径的 Run。下列任一变化立即使摘要失效并要求一次新的 Mac live preflight：`sourceHead`、可执行文件 inode/digest、OS/架构、adapter 配置、协议/Schema、结果落盘路径或权限模式。
+     - 同一结构性失败（`result-missing`、path/protocol/identity/version drift、旧 artifact/base、`worktree evidence changed after verification`）只允许**一次**裁决：记录失败类别和 digest，停止原 Run 的盲目重试，修复 adapter/契约后从当前 local main 创建 fresh-base successor；不得用“再跑一次”清除该 finding。
+     - 仅有明确的 provider timeout、DNS/rate-limit 或短暂 transport 背压，且预检摘要仍匹配时，才允许在原 `taskId` 上做有限 operational retry；重试前记录 attempt、预算和 backoff，超过预算转 `blocked/reject`，不再派发同一失败路径。
+     - `REVIEW_PENDING` 的 triage 也只做一次：有完整且身份匹配的 packet 就在本 heartbeat 导入 Decision；缺 packet/旧 manifest/旧 base/证据变更则产出 intervention finding 并准备 successor，禁止跨 heartbeat 反复执行同一 `task review`。
+     - 复用的是证据摘要而不是状态副作用；不得手写 `.marshal`、伪造 digest 或把复用摘要当作本次 Run 的独立 reviewer 结论。
 
 用户明确授权的 Harness 适配修复可在 local main 直接完成，但仍必须保留独立 reviewer、精确验证摘要、`localMergeSha/sourceHead/pendingRemoteSync` 记录；产品 Run 生命周期、Worker 启动与发布权限仍只能由 Marshal Core/CLI 改变。
 - TaskSpec 的 `work.context` 必须自包含（Worker 看不到对话历史）；acceptance 命令按任务裁剪；constraints 中固定“若某操作被 permission 拒绝，不得重试该路径，改用允许路径内的等价输入”。
