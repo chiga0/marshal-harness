@@ -1,0 +1,48 @@
+{
+  "manifestVersion": "marshal-operator-acceptance-preflight/v1",
+  "taskSpecDigest": "sha256:<TaskSpec 原始字节摘要>",
+  "command": {
+    "id": "<内容型 required command id>",
+    "argvDigest": "sha256:<argv 的 UTF-8 canonical JSON 摘要>"
+  },
+  "deliverablePath": "<精确相对交付路径>",
+  "normalizer": "markdown-backtick-strip+nfkc-casefold",
+  "required_all": ["<必须逐字投影到 prompt 的稳定 token>"],
+  "required_any": [["<等义表述 A>", "<等义表述 B>"]],
+  "forbidden": ["<已知错误或过度声明>"],
+  "prompt_literals": [
+    {
+      "rule": "required_all[0]",
+      "literal": "<必须逐字投影到 prompt 的稳定 token>"
+    }
+  ],
+  "fixtures": {
+    "positive": [
+      {
+        "id": "positive-complete",
+        "path": "<positive fixture 相对仓库根路径>",
+        "digest": "sha256:<fixture 原始字节摘要>"
+      }
+    ],
+    "negative": [
+      {
+        "id": "negative-missing-required-all",
+        "path": "<negative fixture 相对仓库根路径>",
+        "digest": "sha256:<fixture 原始字节摘要>",
+        "expectedReason": "missing-required-all"
+      },
+      {
+        "id": "negative-missing-required-any",
+        "path": "<negative fixture 相对仓库根路径>",
+        "digest": "sha256:<fixture 原始字节摘要>",
+        "expectedReason": "missing-required-any"
+      },
+      {
+        "id": "negative-forbidden",
+        "path": "<negative fixture 相对仓库根路径>",
+        "digest": "sha256:<fixture 原始字节摘要>",
+        "expectedReason": "forbidden-present"
+      }
+    ]
+  }
+}

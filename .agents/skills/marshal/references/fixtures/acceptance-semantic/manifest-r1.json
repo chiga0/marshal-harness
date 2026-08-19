@@ -1,0 +1,46 @@
+{
+  "manifestVersion": "marshal-operator-acceptance-preflight/v1",
+  "taskSpecDigest": "sha256:50ae725788a8a2df13981872e6bd2e98623ef9124f2bb83376eb38b3f24b3425",
+  "command": {
+    "id": "content-check",
+    "argvDigest": "sha256:ec8ac0372ed5c2ebacadc5eb17eca408b18e4157a21faccd80d986402cab0a50"
+  },
+  "deliverablePath": "reports/adr-0035.md",
+  "normalizer": "nfkc-casefold",
+  "required_all": ["ReviewDecision binds digest", "four-dimensional gate"],
+  "required_any": [["authority boundary", "trust boundary"]],
+  "forbidden": ["unsafe override"],
+  "prompt_literals": [
+    { "rule": "required_all[0]", "literal": "ReviewDecision binds digest" },
+    { "rule": "required_all[1]", "literal": "four-dimensional gate" }
+  ],
+  "fixtures": {
+    "positive": [
+      {
+        "id": "positive-complete",
+        "path": ".agents/skills/marshal/references/fixtures/acceptance-semantic/report-positive.md",
+        "digest": "sha256:5e9a78090a0e0b190f8027e360b5a74503b1f0dbbb7608e29af3762438095198"
+      }
+    ],
+    "negative": [
+      {
+        "id": "negative-missing-required-all",
+        "path": ".agents/skills/marshal/references/fixtures/acceptance-semantic/report-missing-required-all.md",
+        "digest": "sha256:a934c7a7a9cc0fe9c3b194a676cf271a57c6ca623f055ba18300bf37886a80d2",
+        "expectedReason": "missing-required-all"
+      },
+      {
+        "id": "negative-missing-required-any",
+        "path": ".agents/skills/marshal/references/fixtures/acceptance-semantic/report-missing-required-any.md",
+        "digest": "sha256:059b211218a8deb53008afc18d656926c16a9adb593cbd1bfe4581fa31efd7a1",
+        "expectedReason": "missing-required-any"
+      },
+      {
+        "id": "negative-forbidden",
+        "path": ".agents/skills/marshal/references/fixtures/acceptance-semantic/report-forbidden.md",
+        "digest": "sha256:e1a36e2bcc8c985f0f4db634a32e215c01b3fb7d50fbda66fb74968b32f1f062",
+        "expectedReason": "forbidden-present"
+      }
+    ]
+  }
+}

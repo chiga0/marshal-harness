@@ -1,0 +1,27 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "Task",
+  "metadata": { "id": "ADR0035-R2" },
+  "work": {
+    "context": [
+      "只输出 reports/adr-0035.md。逐字包含 `ReviewDecision binds digest`。逐字包含 `four-dimensional gate`。等义内容使用 authority boundary 或 trust boundary；不得写 unsafe override。"
+    ]
+  },
+  "deliverables": [
+    { "id": "report", "kind": "report", "pathGlob": "reports/adr-0035.md", "required": true }
+  ],
+  "acceptance": {
+    "commands": [
+      {
+        "id": "content-check",
+        "argv": [
+          "python3",
+          "-B",
+          "-c",
+          "from pathlib import Path; s=Path('reports/adr-0035.md').read_text(); n=s.replace(chr(96),'').casefold(); required_all=['reviewdecision binds digest','four-dimensional gate']; required_any=[['authority boundary','trust boundary']]; forbidden=['unsafe override']; assert not [x for x in required_all if x not in n]; assert not [g for g in required_any if not any(x in n for x in g)]; assert not [x for x in forbidden if x in n]"
+        ],
+        "required": true
+      }
+    ]
+  }
+}
