@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,6 +200,44 @@ func TestOnlyDescribeAndBeginProbeRegistered(t *testing.T) {
 		if _, err := ValidateControlRequest(raw, nil, now); err == nil {
 			t.Fatalf("unregistered operation %q accepted", op)
 		}
+	}
+}
+
+func TestCurrentBundlePayloadBoundaryIsStrictButNotRegistered(t *testing.T) {
+	request := canonicalValue(t, map[string]any{"minProviderSequence": uint64(7)})
+	got, err := ValidateReadCurrentBundleRequestPayload(request)
+	if err != nil || got.MinProviderSequence != 7 {
+		t.Fatalf("current bundle request rejected: %+v, %v", got, err)
+	}
+	manifest := canonicalValue(t, map[string]any{"providerSequence": uint64(8), "profile": "qoder-cli-adr0034-v1"})
+	response := canonicalValue(t, map[string]any{
+		"bundleDigest": d, "manifest": json.RawMessage(manifest),
+		"detachedSignature": json.RawMessage(`{"signature":"opaque"}`),
+		"anchorReceipt":     json.RawMessage(`{"receiptDigest":"` + d + `"}`),
+	})
+	if _, err := ValidateReadCurrentBundleResponsePayload(response, 7); err != nil {
+		t.Fatalf("current bundle response rejected: %v", err)
+	}
+	for name, raw := range map[string][]byte{
+		"request-leading-zero":   []byte(`{"minProviderSequence":07}`),
+		"response-extra":         append(response[:len(response)-1], []byte(`,"extra":true}`)...),
+		"response-null-manifest": bytes.Replace(response, manifest, []byte("null"), 1),
+		"response-below-minimum": func() []byte {
+			low := canonicalValue(t, map[string]any{"providerSequence": uint64(6), "profile": "qoder-cli-adr0034-v1"})
+			return bytes.Replace(response, manifest, low, 1)
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if strings.HasPrefix(name, "request") {
+				if _, err := ValidateReadCurrentBundleRequestPayload(raw); err == nil {
+					t.Fatal("invalid current bundle request accepted")
+				}
+				return
+			}
+			if _, err := ValidateReadCurrentBundleResponsePayload(raw, 7); err == nil {
+				t.Fatal("invalid current bundle response accepted")
+			}
+		})
 	}
 }
 
