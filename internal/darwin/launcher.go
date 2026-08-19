@@ -8,25 +8,30 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// LauncherPolicy is the authority-owned identity of a deployed Darwin
-// launcher. Every field is required: a team identifier alone is not an
+// ExecutablePolicy is the authority-owned identity of a deployed Darwin
+// executable. Every field is required: a team identifier alone is not an
 // executable identity, and a code-signature observation is not sufficient
-// without the exact held-file digest.
-type LauncherPolicy struct {
+// without the exact held-file digest. The same policy shape is used for the
+// privileged launcher and for a candidate Qoder/Codex binary handed to it.
+type ExecutablePolicy struct {
 	SHA256     string `json:"sha256"`
 	TeamID     string `json:"teamId"`
 	CDHash     string `json:"cdHash"`
 	Identifier string `json:"identifier"`
 }
 
-func (policy LauncherPolicy) validateShape() error {
+// LauncherPolicy is retained as the descriptive name used by the launchd
+// deployment manifest. It is an alias, not a weaker policy.
+type LauncherPolicy = ExecutablePolicy
+
+func (policy ExecutablePolicy) validateShape() error {
 	if policy.SHA256 == "" || policy.TeamID == "" || policy.CDHash == "" || policy.Identifier == "" {
 		return errors.New("darwin launcher policy is incomplete")
 	}
 	return nil
 }
 
-func (policy LauncherPolicy) validate(identity ExecutableIdentity) error {
+func (policy ExecutablePolicy) validate(identity ExecutableIdentity) error {
 	if err := policy.validateShape(); err != nil {
 		return err
 	}
@@ -36,18 +41,20 @@ func (policy LauncherPolicy) validate(identity ExecutableIdentity) error {
 	return nil
 }
 
-// HeldLauncher owns the descriptor that was verified. Callers may use the
+// HeldExecutable owns the descriptor that was verified. Callers may use the
 // identity for an authority request, but cannot replace the descriptor with a
 // pathname after admission. Execution is intentionally not provided here:
 // Darwin needs a separately deployed, signed launcher to cross that boundary.
-type HeldLauncher struct {
+type HeldExecutable struct {
 	file     *os.File
 	identity ExecutableIdentity
 }
 
-// OpenHeldLauncher opens one absolute, non-symlink path and verifies the
+// OpenHeldExecutable opens one absolute, non-symlink path and verifies the
 // exact held Mach-O identity. It never resolves PATH or a mutable symlink.
-func OpenHeldLauncher(path string, policy LauncherPolicy) (*HeldLauncher, error) {
+// The returned descriptor is suitable for an externally deployed authority to
+// receive via SCM_RIGHTS; this package deliberately provides no exec method.
+func OpenHeldExecutable(path string, policy ExecutablePolicy) (*HeldExecutable, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
 		return nil, errors.New("darwin launcher path must be absolute and clean")
 	}
@@ -70,17 +77,45 @@ func OpenHeldLauncher(path string, policy LauncherPolicy) (*HeldLauncher, error)
 		return nil, err
 	}
 	closeOnError = false
-	return &HeldLauncher{file: file, identity: identity}, nil
+	return &HeldExecutable{file: file, identity: identity}, nil
 }
 
-func (launcher *HeldLauncher) Identity() (ExecutableIdentity, error) {
+// OpenHeldLauncher opens the externally deployed privileged launcher. It is
+// a descriptive wrapper around the same strict held-executable operation.
+func OpenHeldLauncher(path string, policy LauncherPolicy) (*HeldExecutable, error) {
+	return OpenHeldExecutable(path, policy)
+}
+
+// OpenHeldCandidate opens a Qoder/Codex candidate for delivery to the
+// external launcher. Candidate admission remains authority-owned; this call
+// only verifies and retains the exact executable inode.
+func OpenHeldCandidate(path string, policy ExecutablePolicy) (*HeldExecutable, error) {
+	return OpenHeldExecutable(path, policy)
+
+}
+
+func (launcher *HeldExecutable) Identity() (ExecutableIdentity, error) {
 	if launcher == nil || launcher.file == nil {
-		return ExecutableIdentity{}, errors.New("darwin launcher is closed")
+		return ExecutableIdentity{}, errors.New("darwin executable is closed")
 	}
 	return launcher.identity, nil
 }
 
-func (launcher *HeldLauncher) Close() error {
+// Duplicate returns a separate descriptor for SCM_RIGHTS delivery while the
+// original held descriptor remains owned by this value. The duplicate is not
+// an execution API and the caller must close it after transport handoff.
+func (launcher *HeldExecutable) Duplicate() (*os.File, error) {
+	if launcher == nil || launcher.file == nil {
+		return nil, errors.New("darwin executable is closed")
+	}
+	fd, err := unix.Dup(int(launcher.file.Fd()))
+	if err != nil {
+		return nil, errors.New("duplicate Darwin executable descriptor")
+	}
+	return os.NewFile(uintptr(fd), "darwin-held-executable-duplicate"), nil
+}
+
+func (launcher *HeldExecutable) Close() error {
 	if launcher == nil || launcher.file == nil {
 		return nil
 	}

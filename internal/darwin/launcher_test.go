@@ -1,6 +1,9 @@
 package darwin
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestLauncherPolicyRequiresExactIdentity(t *testing.T) {
 	identity := ExecutableIdentity{SHA256: "sha", TeamID: "team", CDHash: "cdhash", Identifier: "launcher"}
@@ -28,5 +31,38 @@ func TestLauncherPolicyDoesNotAuthorizeObservationAlone(t *testing.T) {
 	identity := ExecutableIdentity{SHA256: "sha", TeamID: "team", CDHash: "cdhash", Identifier: "launcher"}
 	if err := (LauncherPolicy{}).validate(identity); err == nil {
 		t.Fatal("empty authority policy was accepted")
+	}
+}
+
+func TestHeldExecutableDuplicateKeepsOriginalHeld(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "candidate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Chmod(0o500); err != nil {
+		t.Fatal(err)
+	}
+	held := &HeldExecutable{file: file}
+	duplicate, err := held.Duplicate()
+	if err != nil {
+		t.Fatalf("Duplicate() error = %v", err)
+	}
+	defer duplicate.Close()
+	originalInfo, err := file.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateInfo, err := duplicate.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(originalInfo, duplicateInfo) {
+		t.Fatal("duplicate descriptor does not reference the held inode")
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := duplicate.Stat(); err != nil {
+		t.Fatalf("transport duplicate became unusable after owner close: %v", err)
 	}
 }

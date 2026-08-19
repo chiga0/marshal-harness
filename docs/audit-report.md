@@ -507,6 +507,8 @@ Darwin stream transport 同步收紧帧边界：发送端拒绝零长度/超 64 
 
 本轮新增 `scripts/macos-authority-preflight.sh` 只读预检，将固定 Qoder/Codex 可执行文件、签名 launcher、受管 Team ID、root launchd、codesigning identity 与非交互 sudo 等外部前置条件转换为稳定的 `PASS`/`BLOCKED` 输出和非零退出码。脚本拒绝 ad-hoc 签名，且不安装、签名、bootstrap、读取 credential 或修改 `.marshal/`；本机实测两个 CLI 文件存在，但外部 authority 前置条件仍为 `BLOCKED`，因此 registry 与 doctor 继续保持 `unsupported`。
 
+本切片将 `internal/darwin` 的严格 held-executable 观察抽象为 launcher 与 Qoder/Codex candidate 共用的 `OpenHeldExecutable`/`OpenHeldCandidate`。外部 authority 可通过 `Duplicate` 取得同一 inode 的 SCM_RIGHTS 描述符，而原始 held descriptor 继续由 owner 持有；包内不提供 pathname exec 或普通子进程 fallback。该 seam 只关闭 candidate descriptor 交付缺口，不产生签名 receipt、OS isolation 或 registry enablement。
+
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
 
 Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Verifier 虽能在命令后观察到 Candidate worktree 变化并把 Gate 标为失败，却让污染字节留在受管 worktree；随后 Review 的 current-observation guard 正确拒绝变化后的字节，Run 因而无法生成绑定原 Candidate 的 ReviewPacket。该问题不是新生命周期或 Schema 缺口：ADR 0027 已冻结 command 写作用域默认为 `none`、未声明写入 fail closed、Candidate 与 Evidence 不可被覆盖；缺失的是实现级 command 隔离。
