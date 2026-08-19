@@ -19,10 +19,10 @@ var launchdLabelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]{0,127}$`
 // LaunchdAuthoritySpec is the non-secret deployment projection for the
 // root-owned APAP daemon. It does not sign, install or enable a service.
 type LaunchdAuthoritySpec struct {
-	Label          string
-	ServiceBinary  string
-	LauncherBinary string
-	Endpoint       string
+	Label          string `json:"label"`
+	ServiceBinary  string `json:"serviceBinary"`
+	LauncherBinary string `json:"launcherBinary"`
+	Endpoint       string `json:"endpoint"`
 }
 
 func (spec LaunchdAuthoritySpec) validate() error {

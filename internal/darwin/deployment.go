@@ -6,9 +6,9 @@ import "errors"
 // to externally supplied authority observations. The policy is data-only;
 // this package never creates, signs, installs or bootstraps launchd state.
 type LaunchdDeploymentPolicy struct {
-	Service  LauncherPolicy
-	Launcher LauncherPolicy
-	OwnerUID uint32
+	Service  LauncherPolicy `json:"service"`
+	Launcher LauncherPolicy `json:"launcher"`
+	OwnerUID uint32         `json:"ownerUid"`
 }
 
 // LaunchdDeploymentIdentity is a non-secret snapshot produced while each

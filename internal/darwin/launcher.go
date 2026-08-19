@@ -13,15 +13,22 @@ import (
 // executable identity, and a code-signature observation is not sufficient
 // without the exact held-file digest.
 type LauncherPolicy struct {
-	SHA256     string
-	TeamID     string
-	CDHash     string
-	Identifier string
+	SHA256     string `json:"sha256"`
+	TeamID     string `json:"teamId"`
+	CDHash     string `json:"cdHash"`
+	Identifier string `json:"identifier"`
+}
+
+func (policy LauncherPolicy) validateShape() error {
+	if policy.SHA256 == "" || policy.TeamID == "" || policy.CDHash == "" || policy.Identifier == "" {
+		return errors.New("darwin launcher policy is incomplete")
+	}
+	return nil
 }
 
 func (policy LauncherPolicy) validate(identity ExecutableIdentity) error {
-	if policy.SHA256 == "" || policy.TeamID == "" || policy.CDHash == "" || policy.Identifier == "" {
-		return errors.New("darwin launcher policy is incomplete")
+	if err := policy.validateShape(); err != nil {
+		return err
 	}
 	if identity.SHA256 != policy.SHA256 || identity.TeamID != policy.TeamID || identity.CDHash != policy.CDHash || identity.Identifier != policy.Identifier {
 		return errors.New("darwin launcher identity does not match authority policy")

@@ -479,6 +479,10 @@ Qoder 与 Codex 的 production consumer 实现复核进一步证明：两个 Ada
 
 共享 provider seam 现加入独立 `CredentialIngress` server：只接受已认证 `SecretProvider` peer、精确一个 `credentialCapability` held fd，并在 handler 返回 typed `CredentialIngressResponseV1` 后立即关闭该 fd。APAP control server 不接收 capability，response 不返回 credential bytes 或 capability fd；Mac 实机 roundtrip、race、vet、staticcheck、交叉编译和 secret scan 通过。该实现只提供 transport/protocol custody，不产生 capability、receipt signing、isolation audit 或 credential authority；因此真实 credentialed live probe 与 registry enablement 仍保持 `unsupported`。
 
+## Darwin launchd 配置记录审计增补（2026-08-19）
+
+`internal/darwin` 现提供严格的 `marshal.darwin.launchd-deployment.v1` 配置读取器：配置文件必须是当前用户或 root 所有、owner-only 私有普通文件、RFC 8785 canonical JSON，并通过逐级 `openat` + `O_NOFOLLOW` 拒绝路径组件替换；未知字段、尾随数据、非 root APAP endpoint policy、缺失身份字段和非法路径均 fail closed。该读取器只产生部署预检输入，不携带签名私钥、credential 或 capability，也不安装、签名、bootstrap launchd；因此不能单独改变 Qoder/Codex 的 registry admission，外部 root provisioning、signed launcher、独立 verifier 和 credential authority 仍是未关闭前置条件。
+
 本轮宿主只读核查还确认：`security find-identity -v -p codesigning` 返回 `0 valid identities found`；`/Library/PrivilegedHelperTools`、`/usr/local/libexec` 和 `/opt/homebrew/bin` 没有现成 Marshal/APAP launcher；`MARSHAL_APAP_*`、`MARSHAL_DARWIN_*`、Qoder/Codex authority 环境变量均未配置。该证据支持当前外部 signer/root provisioning 阻塞判断，但不改变任何 registry 状态。
 
 ## Issue #138 Verifier worktree mutation 审计增补（2026-08-18）
