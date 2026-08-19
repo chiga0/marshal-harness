@@ -570,6 +570,14 @@ Python acceptance command 生成 `__pycache__/*.pyc` 的 dogfood 证明：旧 Ve
 
 后续 implementation successor 记录：本增补只做契约设计与审计定位，不实现代码/Schema；implementation successor 由维护者另行创建 TaskSpec，其范围以 ADR 0030 实施切片与测试矩阵为准。本增补不改变权威 [Roadmap 状态](roadmap-status.md)：M7–M9 `PASSED`、M10 在途、M11–M13 `PLANNED`；不改变 Local MVP `APPROVED_FOR_IMPLEMENTATION` / `USABLE` 结论，也不改变任何已冻结的信任边界、持久化契约或发布权限。
 
+## Adapter 结构性失败准入审计增补（2026-08-20）
+
+Core 曾忽略 `AdapterFailure.retryDisposition`：即使 Adapter 已把 `protocol-invalid` 或 `provider-terminal` 标为 `do-not-retry`，`execution` 仍只按剩余预算进入 `RETRY_PENDING`，导致同一 Run 启动没有信息增益的下一 Attempt。修复后，Core 统一消费 typed disposition：`retryable` 继续受双预算约束，`blocked` 与 `do-not-retry` 立即进入 `BLOCKED`，生成 Outcome，并把封闭 `adapterId`、`failureKind`、`retryDisposition` 与 `failureSignature` 记录到 append-only `worker.failed`。WorkerResult Schema/身份错误由 Core 明确转换为 `protocol-invalid/do-not-retry`；未升级到 typed contract 的旧 Adapter 错误保持原有可重试行为，Core 不解析 provider 自由文本推断终态。
+
+`failureSignature` 排除 Run/Attempt/时间身份，但绑定 `baseSha`、`specDigest`、`policyDigest`、完整 `capabilityDigest`、Adapter 与 typed failure；因此相同冻结输入可得到稳定审计键，而 executable、协议/transport authority 或其它 CapabilitySnapshot 内容变化会通过完整 capability digest 使旧键失效。崩溃恢复会把该签名重新绑定到 append-only `planning.inputs-frozen` 权威、blocked snapshot、terminal reason 与 quarantine transaction；不匹配时 fail closed，且不会再次启动 Worker。
+
+本切片不建立 Core 全局跨 Run deny-list，也不声称实现跨 Run 自动查重。跨 Run 自动拒绝需要先冻结全局索引、失效、并发、保留期与人工解除的持久化/生命周期权威，属于后续 ADR 范围。当前变更只是落实 [ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 与现有 lifecycle/failure recovery 文档已经冻结的映射：可恢复 Operational failure 进入 `RETRY_PENDING`，不可恢复协议/Provider failure 进入 `BLOCKED`；没有改变状态集合、转换、信任边界、发布权限或既有持久化记录类型，因此不新增 ADR。
+
 ## Issue #25 发布合并后 head reconcile 审计增补（2026-08-12）
 
 公开 [Issue #25](https://github.com/chiga0/marshal-harness/issues/25) 与 [PR #24](https://github.com/chiga0/marshal-harness/pull/24) 暴露：当全部 required checks 成功且 PR 已合并进入 main 后，现有 `marshal task accept` 仍要求 PR 处于 OPEN/Draft，会把 Run 永久置为 terminal `BLOCKED`。head branch 删除不是权威 head SHA 丢失——GitHub PR 节点在 merge 后仍保留原 head OID、base OID 与 merge commit。本节记录该问题的审计定位，区分 implementation bug 与 contract gap。

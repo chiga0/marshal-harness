@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,23 +22,34 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	marshalrepo "github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
 type fixtureAdapter struct {
+	id          string
 	capability  []byte
 	fail        bool
+	failure     error
 	breakGit    bool
 	badIdentity bool
 }
 
-func (a *fixtureAdapter) ID() string { return "fixture" }
+func (a *fixtureAdapter) ID() string {
+	if a.id != "" {
+		return a.id
+	}
+	return "fixture"
+}
 func (a *fixtureAdapter) Probe(context.Context) (domain.Record, error) {
 	return domain.Record{Kind: domain.KindCapabilitySnapshot, Data: a.capability}, nil
 }
 func (a *fixtureAdapter) Run(_ context.Context, request domain.Record) (domain.Record, error) {
+	if a.failure != nil {
+		return domain.Record{}, a.failure
+	}
 	if a.fail {
 		return domain.Record{}, os.ErrDeadlineExceeded
 	}
@@ -55,7 +67,7 @@ func (a *fixtureAdapter) Run(_ context.Context, request domain.Record) (domain.R
 	}
 	result := map[string]any{
 		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerResult", "taskId": input.TaskID, "runId": input.RunID, "attemptId": input.AttemptID,
-		"adapter": map[string]any{"id": "fixture", "executable": "/fixture", "version": "1"}, "status": "completed", "summary": "done",
+		"adapter": map[string]any{"id": a.ID(), "executable": "/fixture", "version": "1"}, "status": "completed", "summary": "done",
 		"declaredChangedFiles": []string{"change.txt"}, "declaredArtifacts": []any{}, "declaredCommands": []any{}, "declaredRisks": []string{},
 		"startedAt": "2026-08-04T00:00:00Z", "completedAt": "2026-08-04T00:00:01Z",
 	}
@@ -97,6 +109,246 @@ func TestRunClassifiesOperationalFailureAndConsumesRetryBudget(t *testing.T) {
 	}
 }
 
+func TestRunConsumesTypedAdapterFailureDisposition(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name              string
+		kind              port.FailureKind
+		disposition       port.RetryDisposition
+		wantState         domain.State
+		wantRetries       uint
+		wantTerminal      string
+		wantSecondRunCall bool
+	}{
+		{name: "transient transport", kind: port.FailureKindConnectionFailure, disposition: port.RetryDispositionRetryable, wantState: domain.StateRetryPending, wantRetries: 1, wantSecondRunCall: true},
+		{name: "protocol structural", kind: port.FailureKindProtocolInvalid, disposition: port.RetryDispositionDoNotRetry, wantState: domain.StateBlocked, wantTerminal: "adapter-protocol-invalid", wantSecondRunCall: false},
+		{name: "quota blocked", kind: port.FailureKindQuotaExhausted, disposition: port.RetryDispositionBlocked, wantState: domain.StateBlocked, wantTerminal: "adapter-quota-exhausted", wantSecondRunCall: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+				preferredAdapter: "fake", fallbackAdapters: []string{}, capabilityAdapterID: "fake",
+				maxAttempts: 3, maxOperationalRetries: 2,
+			})
+			fixture.input.Adapter.(*fixtureAdapter).id = "fake"
+			failure, err := port.NewAdapterFailure(port.AdapterIDFake, test.kind, test.disposition, nil, nil, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.input.Adapter.(*fixtureAdapter).failure = failure
+			adapter := &countingAdapter{delegate: fixture.input.Adapter.(*fixtureAdapter)}
+			fixture.input.Adapter = adapter
+
+			result, err := Run(context.Background(), fixture.input)
+			if err == nil {
+				t.Fatal("typed adapter failure was accepted")
+			}
+			if result.State.State != test.wantState || result.State.OperationalRetriesUsed != test.wantRetries {
+				t.Fatalf("state = %+v", result.State)
+			}
+			if adapter.runs != 1 {
+				t.Fatalf("worker calls = %d, want one", adapter.runs)
+			}
+			events, _, readErr := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			last := events[len(events)-1]
+			if last.Type != "worker.failed" || last.Payload["failureKind"] != string(test.kind) || last.Payload["retryDisposition"] != string(test.disposition) {
+				t.Fatalf("typed failure event = %+v", last)
+			}
+			signature, _ := last.Payload["failureSignature"].(string)
+			if !strings.HasPrefix(signature, "sha256:") || len(signature) != len("sha256:")+64 {
+				t.Fatalf("failureSignature = %q", signature)
+			}
+
+			beforeCalls := adapter.runs
+			second, secondErr := Run(context.Background(), fixture.input)
+			if secondErr == nil {
+				t.Fatal("second run unexpectedly succeeded")
+			}
+			if test.wantSecondRunCall {
+				if adapter.runs != beforeCalls+1 {
+					t.Fatalf("retryable failure did not start the bounded next attempt: calls=%d", adapter.runs)
+				}
+			} else {
+				if adapter.runs != beforeCalls {
+					t.Fatalf("structural failure started another worker: calls=%d", adapter.runs)
+				}
+				if second.State.State != domain.StateBlocked || second.State.TerminalReason != test.wantTerminal {
+					t.Fatalf("terminal replay = %+v err=%v", second, secondErr)
+				}
+				if _, statErr := os.Stat(filepath.Join(fixture.runDir, "outcome.json")); statErr != nil {
+					t.Fatalf("typed terminal Outcome missing: %v", statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestStructuralFailureSignatureIgnoresRunAndAttemptIdentity(t *testing.T) {
+	failure, err := port.NewAdapterFailure(port.AdapterIDQoder, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry, nil, nil, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := domain.RunState{RunID: "run-one", CurrentAttemptID: "attempt-one", SpecDigest: "sha256:" + strings.Repeat("a", 64), PolicyDigest: "sha256:" + strings.Repeat("b", 64), CapabilityDigest: "sha256:" + strings.Repeat("c", 64), BaseSHA: strings.Repeat("d", 40)}
+	second := first
+	second.RunID, second.CurrentAttemptID = "run-two", "attempt-nine"
+	a, err := classifyWorkerFailure(first, "qoder", failure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := classifyWorkerFailure(second, "qoder", failure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.signature == "" || a.signature != b.signature {
+		t.Fatalf("structural signature changed across Run/Attempt identity: %q != %q", a.signature, b.signature)
+	}
+	second.CapabilityDigest = "sha256:" + strings.Repeat("e", 64)
+	c, err := classifyWorkerFailure(second, "qoder", failure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.signature == a.signature {
+		t.Fatal("adapter/capability repair did not invalidate the structural signature")
+	}
+	second = first
+	second.BaseSHA = strings.Repeat("f", 40)
+	d, err := classifyWorkerFailure(second, "qoder", failure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.signature == a.signature {
+		t.Fatal("source repair did not invalidate the structural signature")
+	}
+}
+
+func TestStructuralFailureRestartCompensationDoesNotRelaunchWorker(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+		preferredAdapter: "fake", fallbackAdapters: []string{}, capabilityAdapterID: "fake", maxAttempts: 3, maxOperationalRetries: 2,
+	})
+	failure, err := port.NewAdapterFailure(port.AdapterIDFake, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry, nil, nil, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegate := fixture.input.Adapter.(*fixtureAdapter)
+	delegate.id, delegate.failure = "fake", failure
+	adapter := &countingAdapter{delegate: delegate}
+	fixture.input.Adapter = adapter
+	fixture.input.AfterWorkerTerminalAppend = func() error { return errors.New("structural terminal crash") }
+
+	first, err := Run(context.Background(), fixture.input)
+	if err == nil || !strings.Contains(err.Error(), "post-append failure") || first.State.State != domain.StateBlocked {
+		t.Fatalf("crash result = %+v err=%v", first, err)
+	}
+	if adapter.runs != 1 {
+		t.Fatalf("worker calls = %d, want one", adapter.runs)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "outcome.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Outcome committed before restart compensation: %v", err)
+	}
+	fixture.input.AfterWorkerTerminalAppend = nil
+	recovered, err := Run(context.Background(), fixture.input)
+	if err == nil || !strings.Contains(err.Error(), "operator intervention") || recovered.State.State != domain.StateBlocked {
+		t.Fatalf("restart result = %+v err=%v", recovered, err)
+	}
+	if adapter.runs != 1 {
+		t.Fatalf("restart relaunched Worker: calls=%d", adapter.runs)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "outcome.json")); err != nil {
+		t.Fatalf("restart did not compensate Outcome: %v", err)
+	}
+}
+
+func TestStructuralFailureRestartRejectsTamperedPersistentSignature(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+		preferredAdapter: "fake", fallbackAdapters: []string{}, capabilityAdapterID: "fake", maxAttempts: 3, maxOperationalRetries: 2,
+	})
+	failure, err := port.NewAdapterFailure(port.AdapterIDFake, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry, nil, nil, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegate := fixture.input.Adapter.(*fixtureAdapter)
+	delegate.id, delegate.failure = "fake", failure
+	adapter := &countingAdapter{delegate: delegate}
+	fixture.input.Adapter = adapter
+	fixture.input.AfterWorkerTerminalAppend = func() error { return errors.New("structural terminal crash") }
+	if result, err := Run(context.Background(), fixture.input); err == nil || result.State.State != domain.StateBlocked {
+		t.Fatalf("crash result = %+v err=%v", result, err)
+	}
+
+	journalPath := filepath.Join(fixture.runDir, "events.jsonl")
+	raw, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSuffix(raw, []byte("\n")), []byte("\n"))
+	var terminal domain.RunEvent
+	if err := json.Unmarshal(lines[len(lines)-1], &terminal); err != nil {
+		t.Fatal(err)
+	}
+	terminal.Payload["failureSignature"] = "sha256:" + strings.Repeat("0", 64)
+	lines[len(lines)-1], err = json.Marshal(terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(journalPath, append(bytes.Join(lines, []byte("\n")), '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.input.AfterWorkerTerminalAppend = nil
+	if _, err := Run(context.Background(), fixture.input); err == nil || !strings.Contains(err.Error(), "signature") {
+		t.Fatalf("tampered structural signature was accepted: %v", err)
+	}
+	if adapter.runs != 1 {
+		t.Fatalf("tampered restart relaunched Worker: calls=%d", adapter.runs)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "outcome.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("tampered authority received Outcome: %v", err)
+	}
+}
+
+func TestStructuralFailureRunLeasePreventsConcurrentRelaunch(t *testing.T) {
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+		preferredAdapter: "fake", fallbackAdapters: []string{}, capabilityAdapterID: "fake", maxAttempts: 3, maxOperationalRetries: 2,
+	})
+	failure, err := port.NewAdapterFailure(port.AdapterIDFake, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry, nil, nil, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &blockingFailureAdapter{
+		delegate: fixture.input.Adapter.(*fixtureAdapter), failure: failure,
+		started: make(chan struct{}), release: make(chan struct{}),
+	}
+	adapter.delegate.id = "fake"
+	fixture.input.Adapter = adapter
+	firstResult := make(chan Result, 1)
+	firstErr := make(chan error, 1)
+	go func() {
+		result, runErr := Run(context.Background(), fixture.input)
+		firstResult <- result
+		firstErr <- runErr
+	}()
+	<-adapter.started
+	if _, err := Run(context.Background(), fixture.input); err == nil || !strings.Contains(err.Error(), "lease") {
+		t.Fatalf("concurrent Run was not rejected by the run lease: %v", err)
+	}
+	if got := adapter.runs.Load(); got != 1 {
+		t.Fatalf("concurrent admission launched %d Workers", got)
+	}
+	close(adapter.release)
+	result, err := <-firstResult, <-firstErr
+	if err == nil || result.State.State != domain.StateBlocked {
+		t.Fatalf("first result = %+v err=%v", result, err)
+	}
+	if _, err := Run(context.Background(), fixture.input); err == nil {
+		t.Fatal("blocked Run unexpectedly relaunched")
+	}
+	if got := adapter.runs.Load(); got != 1 {
+		t.Fatalf("blocked replay launched %d Workers", got)
+	}
+}
+
 func TestRunBlocksWhenPostWorkerEvidenceCannotBeRecorded(t *testing.T) {
 	fixture := newExecutionFixture(t, false)
 	fixture.input.Adapter.(*fixtureAdapter).breakGit = true
@@ -118,10 +370,11 @@ func TestRunBlocksWhenPostWorkerEvidenceCannotBeRecorded(t *testing.T) {
 
 func TestRunRejectsWorkerResultIdentityAndAttemptBudget(t *testing.T) {
 	t.Run("identity", func(t *testing.T) {
-		fixture := newExecutionFixture(t, false)
+		fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{preferredAdapter: "fake", fallbackAdapters: []string{}, capabilityAdapterID: "fake"})
+		fixture.input.Adapter.(*fixtureAdapter).id = "fake"
 		fixture.input.Adapter.(*fixtureAdapter).badIdentity = true
 		result, err := Run(context.Background(), fixture.input)
-		if err == nil || result.State.State != domain.StateRetryPending {
+		if err == nil || result.State.State != domain.StateBlocked || result.State.TerminalReason != "adapter-protocol-invalid" || result.State.OperationalRetriesUsed != 0 {
 			t.Fatalf("result=%+v err=%v", result, err)
 		}
 	})
@@ -484,6 +737,28 @@ type countingAdapter struct {
 	delegate *fixtureAdapter
 	probes   int
 	runs     int
+}
+
+type blockingFailureAdapter struct {
+	delegate *fixtureAdapter
+	failure  error
+	started  chan struct{}
+	release  chan struct{}
+	runs     atomic.Int32
+}
+
+func (a *blockingFailureAdapter) ID() string { return a.delegate.ID() }
+
+func (a *blockingFailureAdapter) Probe(ctx context.Context) (domain.Record, error) {
+	return a.delegate.Probe(ctx)
+}
+
+func (a *blockingFailureAdapter) Run(context.Context, domain.Record) (domain.Record, error) {
+	if a.runs.Add(1) == 1 {
+		close(a.started)
+	}
+	<-a.release
+	return domain.Record{}, a.failure
 }
 
 func (a *countingAdapter) ID() string { return a.delegate.ID() }
@@ -2233,7 +2508,11 @@ func (a *staleFencingAdapter) Run(ctx context.Context, request domain.Record) (d
 }
 
 func TestOrphanedRecoveryIsolatesStaleFencingWorkerResult(t *testing.T) {
-	fixture := newExecutionFixtureWithOptions(t, false, reworkBudgetOptions(2))
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+		preferredAdapter: "fake", fallbackAdapters: []string{}, capabilityAdapterID: "fake",
+		maxAttempts: 5, maxOperationalRetries: 2, maxReworkRounds: 1,
+	})
+	fixture.input.Adapter.(*fixtureAdapter).id = "fake"
 	appendRetrySegment(t, fixture, "attempt-superseded")
 	attemptDir := filepath.Join(fixture.runDir, "attempts", "attempt-superseded")
 	if err := os.MkdirAll(attemptDir, 0o700); err != nil {
@@ -2246,7 +2525,7 @@ func TestOrphanedRecoveryIsolatesStaleFencingWorkerResult(t *testing.T) {
 	input := fixture.input
 	input.Adapter = &staleFencingAdapter{fixtureAdapter: input.Adapter.(*fixtureAdapter), claimedAttemptID: "attempt-superseded"}
 	result, err := Run(context.Background(), input)
-	if err == nil || result.State.State != domain.StateRetryPending {
+	if err == nil || result.State.State != domain.StateBlocked || result.State.TerminalReason != "adapter-protocol-invalid" || result.State.OperationalRetriesUsed != 1 {
 		t.Fatalf("stale fencing WorkerResult accepted: state=%+v err=%v", result.State, err)
 	}
 	quarantined, readErr := os.ReadFile(filepath.Join(attemptDir, "diagnostics", "quarantined-late-worker-result.json"))
