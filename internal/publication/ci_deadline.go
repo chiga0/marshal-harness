@@ -1,7 +1,6 @@
 package publication
 
 import (
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -19,15 +18,6 @@ import (
 // required checks passed on time is accepted instead of being terminally
 // blocked by the observation instant alone.
 //
-// R1 scope note: the ADR's schema-level fields (TaskSpec
-// ciObserveTimeoutSeconds, PublicationRecord ciDeadline, RemoteCheckRecord
-// checks[].completedAt) are frozen contracts that the embedded Draft
-// 2020-12 schemas do not admit yet, so this implementation derives the
-// identical values from the digest-anchored immutable inputs and parses
-// completedAt facts tolerantly. Every adjudication rule is written against
-// those values directly, so the schema extension activates without further
-// changes here.
-
 // ciClockSkewTolerance is the fixed provider/Marshal clock skew tolerance
 // Δskew frozen by ADR 0028 (contract-recommended value 300 seconds; the
 // implementation freezes it as a constant and asserts it by test).
@@ -44,31 +34,30 @@ var (
 	errCICompletedAtInconsistent    = errors.New("ci-completed-at-inconsistent")
 )
 
-// frozenCIDeadline derives the immutable CI adjudication basis of one
-// publication generation. ADR 0028 plan B freezes ciDeadline at publish time
-// and forbids regenerating it from mutable state (no recomputation from the
-// current instant, no re-derivation from a different spec). Until the
-// PublicationRecord schema admits a ciDeadline member, the frozen value is
-// derived deterministically from the facts that exist at publish time and
-// never change afterwards: the Run's createdAt, the PublicationRecord's
-// publishedAt (both anchored by the frozen publication.completed digest) and
-// the frozen TaskSpec budgets.
-//
-// The CI budget is the existing runTimeoutSeconds value anchored at the
-// publication instant: Worker, review and publish durations no longer erode
-// the CI window, so runTimeoutSeconds stops swallowing the CI budget from
-// the Run creation instant (Issue #30 expectation 4). The createdAt lower
-// bound keeps the deadline monotone for lineages whose publishedAt precedes
-// the Run creation (fabricated or clock-anomalous records) and preserves the
-// legacy CreatedAt-anchored value exactly for them; in real lineages
-// publishedAt never precedes createdAt, so the deadline is anchored purely
-// at publication.
+// frozenCIDeadline computes the value that publication freezes into a new
+// PublicationRecord. New TaskSpecs with an explicit CI budget are anchored at
+// publication. A TaskSpec without that optional field keeps ADR 0028's exact
+// legacy fallback: CreatedAt + runTimeoutSeconds.
 func frozenCIDeadline(createdAt, publishedAt time.Time, budgets domain.TaskBudgets) time.Time {
-	anchor := createdAt.UTC()
-	if publishedAt.UTC().After(anchor) {
-		anchor = publishedAt.UTC()
+	if budgets.CIObserveTimeoutSeconds > 0 {
+		return publishedAt.UTC().Add(time.Duration(budgets.CIObserveTimeoutSeconds) * time.Second)
 	}
-	return anchor.Add(time.Duration(budgets.RunTimeoutSeconds) * time.Second)
+	return createdAt.UTC().Add(time.Duration(budgets.RunTimeoutSeconds) * time.Second)
+}
+
+// publicationCIDeadline resolves the immutable adjudication basis. A record
+// that already carries ciDeadline is authoritative because its bytes are
+// bound by publication.completed. Only a legacy record may derive the exact
+// backward-compatible fallback from the frozen TaskSpec and Run CreatedAt.
+func publicationCIDeadline(createdAt time.Time, published domain.PublicationRecord, budgets domain.TaskBudgets) (time.Time, error) {
+	if published.CIDeadline != nil {
+		deadline := published.CIDeadline.UTC()
+		if deadline.IsZero() {
+			return time.Time{}, errCICompletedAtInconsistent
+		}
+		return deadline, nil
+	}
+	return frozenCIDeadline(createdAt, published.PublishedAt, domain.TaskBudgets{RunTimeoutSeconds: budgets.RunTimeoutSeconds}), nil
 }
 
 // adjudicateTimelyCompletion decides whether an all-required-pass remote
@@ -77,73 +66,60 @@ func frozenCIDeadline(createdAt, publishedAt time.Time, budgets domain.TaskBudge
 //
 // Proof order per required check that passed:
 //
-//  1. a trusted provider completedAt inside the consistency window
+//  1. every required passing check has a trusted provider completedAt inside
+//     the consistency window
 //     [publishedAt − Δskew, ciDeadline + Δskew] proves timely completion
 //     even when the local observation happens after the deadline — the
 //     remote fact stands and the local observation instant does not erase
 //     it;
-//  2. an observation strictly before the frozen ciDeadline proves
-//     completion on time by causal order: a check can only be observed
-//     passing after it completed, so completion ≤ observation < ciDeadline;
 //
-// every other shape fails closed with a fixed reason code and no presumption
-// favors acceptance: completedAt missing where a trusted completion time is
-// required (ci-completed-at-missing), completedAt later than ciDeadline +
-// Δskew (ci-completed-at-exceeds-deadline), completedAt earlier than
-// publishedAt − Δskew, which is impossible for the published head
-// (ci-completed-at-inconsistent).
-func adjudicateTimelyCompletion(checks domain.RemoteCheckRecord, completions map[string]time.Time, ciDeadline, publishedAt, observedAt time.Time) error {
-	ciDeadline, publishedAt, observedAt = ciDeadline.UTC(), publishedAt.UTC(), observedAt.UTC()
-	for _, check := range checks.Checks {
-		if !check.Required || check.Status != domain.CheckStatusPass {
-			continue
+// Every other shape fails closed. In particular, local observation time is
+// never substituted for a missing provider completion time.
+func adjudicateTimelyCompletion(checks domain.RemoteCheckRecord, requiredChecks []string, ciDeadline, publishedAt time.Time) error {
+	ciDeadline, publishedAt = ciDeadline.UTC(), publishedAt.UTC()
+	expected := make(map[string]struct{}, len(requiredChecks))
+	for _, name := range requiredChecks {
+		if _, duplicate := expected[name]; duplicate {
+			return errCICompletedAtInconsistent
 		}
-		completedAt, present := completions[check.Name]
-		if !present {
-			if observedAt.Compare(ciDeadline) >= 0 {
-				return errCICompletedAtMissing
+		expected[name] = struct{}{}
+	}
+	seen := make(map[string]struct{})
+	for _, check := range checks.Checks {
+		_, wanted := expected[check.Name]
+		if !wanted {
+			if check.Required {
+				return errCICompletedAtInconsistent
 			}
 			continue
 		}
+		if !check.Required || check.Status != domain.CheckStatusPass {
+			return errCICompletedAtInconsistent
+		}
+		if check.CompletedAt == nil || check.CompletedAt.IsZero() {
+			return errCICompletedAtMissing
+		}
+		completedAt := check.CompletedAt.UTC()
+		if _, duplicate := seen[check.Name]; duplicate {
+			// A duplicate identity is conflicting evidence even when its two
+			// timestamp values happen to compare equal.
+			return errCICompletedAtInconsistent
+		}
+		seen[check.Name] = struct{}{}
 		if completedAt.Before(publishedAt.Add(-ciClockSkewTolerance)) {
 			return errCICompletedAtInconsistent
 		}
 		if completedAt.After(ciDeadline.Add(ciClockSkewTolerance)) {
 			return errCICompletedAtExceedsDeadline
 		}
+		if !checks.ObservedAt.IsZero() && completedAt.After(checks.ObservedAt.UTC().Add(ciClockSkewTolerance)) {
+			return errCICompletedAtInconsistent
+		}
+	}
+	if len(seen) != len(expected) {
+		return errCICompletedAtMissing
 	}
 	return nil
-}
-
-// parseCheckCompletionTimes extracts the optional provider completedAt facts
-// from raw RemoteCheckRecord bytes (the ADR 0028 trusted completion times).
-// The frozen RemoteCheckRecord schema does not yet admit a completedAt
-// member, so observer records validated today carry none and this yields an
-// empty map; the parsing contract is wired end-to-end so the ADR's schema
-// extension activates the completion-time rules above without further
-// changes. Any decode failure or malformed, zero or unnamed timestamp drops
-// the fact: a dropped fact is indistinguishable from a missing one and fails
-// closed wherever a trusted completion time is required — no presumption, no
-// backfill (ADR 0028 backward compatibility).
-func parseCheckCompletionTimes(recordData []byte) map[string]time.Time {
-	completions := map[string]time.Time{}
-	var side struct {
-		Checks []struct {
-			Name        string     `json:"name"`
-			Required    bool       `json:"required"`
-			CompletedAt *time.Time `json:"completedAt"`
-		} `json:"checks"`
-	}
-	if err := json.Unmarshal(recordData, &side); err != nil {
-		return completions
-	}
-	for _, check := range side.Checks {
-		if !check.Required || check.Name == "" || check.CompletedAt == nil || check.CompletedAt.IsZero() {
-			continue
-		}
-		completions[check.Name] = check.CompletedAt.UTC()
-	}
-	return completions
 }
 
 // runBlockedByCIDeadline reports whether the run's terminal BLOCKED state was

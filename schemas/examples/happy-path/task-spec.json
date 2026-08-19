@@ -66,6 +66,7 @@
   },
   "budgets": {
     "runTimeoutSeconds": 3600,
+    "ciObserveTimeoutSeconds": 3600,
     "attemptTimeoutSeconds": 1200,
     "maxAttempts": 4,
     "maxOperationalRetries": 1,

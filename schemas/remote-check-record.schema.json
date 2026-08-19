@@ -23,7 +23,8 @@
           "name": { "type": "string", "minLength": 1, "maxLength": 512 },
           "required": { "type": "boolean" },
           "status": { "type": "string", "enum": ["pending", "pass", "fail", "missing", "skipping", "cancel"] },
-          "url": { "type": "string", "format": "uri", "maxLength": 2048 }
+          "url": { "type": "string", "format": "uri", "maxLength": 2048 },
+          "completedAt": { "type": "string", "format": "date-time" }
         }
       }
     },

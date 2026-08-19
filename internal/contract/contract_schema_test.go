@@ -102,6 +102,72 @@ func TestTaskSpecSchemaWorkerToolsClosedVocabulary(t *testing.T) {
 	}
 }
 
+func TestADR0028OptionalDeadlineFieldsStayClosedAndBackwardCompatible(t *testing.T) {
+	t.Parallel()
+	validator := mustValidator(t)
+
+	t.Run("task budget bounds and legacy absence", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			value any
+			valid bool
+		}{
+			{name: "absent", value: nil, valid: true},
+			{name: "minimum", value: float64(1), valid: true},
+			{name: "maximum", value: float64(604800), valid: true},
+			{name: "zero", value: float64(0)},
+			{name: "over maximum", value: float64(604801)},
+		}
+		for _, test := range tests {
+			data := mutateFixture(t, "examples/happy-path/task-spec.json", func(document map[string]any) {
+				budgets := document["budgets"].(map[string]any)
+				if test.value == nil {
+					delete(budgets, "ciObserveTimeoutSeconds")
+				} else {
+					budgets["ciObserveTimeoutSeconds"] = test.value
+				}
+			})
+			err := validator.Validate(domain.KindTask, data)
+			if test.valid && err != nil {
+				t.Fatalf("%s: %v", test.name, err)
+			}
+			if !test.valid && err == nil {
+				t.Fatalf("%s: invalid budget accepted", test.name)
+			}
+		}
+	})
+
+	t.Run("publication deadline optional date-time", func(t *testing.T) {
+		legacy := mutateFixture(t, "examples/happy-path/publication-record.json", func(document map[string]any) {
+			delete(document, "ciDeadline")
+		})
+		if err := validator.Validate(domain.KindPublicationRecord, legacy); err != nil {
+			t.Fatalf("legacy PublicationRecord rejected: %v", err)
+		}
+		invalid := mutateFixture(t, "examples/happy-path/publication-record.json", func(document map[string]any) {
+			document["ciDeadline"] = "not-a-time"
+		})
+		if err := validator.Validate(domain.KindPublicationRecord, invalid); err == nil {
+			t.Fatal("malformed ciDeadline accepted")
+		}
+	})
+
+	t.Run("remote completion optional date-time", func(t *testing.T) {
+		legacy := mutateFixture(t, "examples/happy-path/remote-check-record.json", func(document map[string]any) {
+			delete(document["checks"].([]any)[0].(map[string]any), "completedAt")
+		})
+		if err := validator.Validate(domain.KindRemoteCheckRecord, legacy); err != nil {
+			t.Fatalf("legacy RemoteCheckRecord rejected: %v", err)
+		}
+		invalid := mutateFixture(t, "examples/happy-path/remote-check-record.json", func(document map[string]any) {
+			document["checks"].([]any)[0].(map[string]any)["completedAt"] = "not-a-time"
+		})
+		if err := validator.Validate(domain.KindRemoteCheckRecord, invalid); err == nil {
+			t.Fatal("malformed completedAt accepted")
+		}
+	})
+}
+
 // TestTaskSpecSchemaWorkerToolsEnumMatchesVocabulary pins the schema enum to
 // the exact frozen vocabulary in schema order, so a vocabulary drift is a
 // visible schema change rather than a silent table edit.

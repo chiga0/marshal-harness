@@ -1232,14 +1232,17 @@ func TestReconcileDeadlineRecoveryIsIdempotent(t *testing.T) {
 // TestReconcileDeadlineRecoveryAfterCIDeadlineFailsClosed covers the
 // missing-completion-time matrix cell at the reconcile boundary: a
 // re-observation at or after the frozen ciDeadline carries no trusted
-// completedAt proof under the frozen RemoteCheckRecord schema, so the
-// recovery fails closed with the run kept in BLOCKED and zero writes.
+// completedAt proof, so the recovery fails closed with the run kept in
+// BLOCKED and zero writes.
 func TestReconcileDeadlineRecoveryAfterCIDeadlineFailsClosed(t *testing.T) {
 	createdAt, publishedAt, _, ciDeadline := deadlineFixtureInstants()
 	fixture := newCIDeadlineFixture(t, deadlineFixtureConfig{createdAt: createdAt, publishedAt: publishedAt, runTimeout: 3600, blockError: errCIDeadlineExceeded.Error()})
 	before := fixture.inspect(t)
 	harness := newReconcileHarness(t, fixture)
 	harness.now = ciDeadline.Add(10 * time.Minute)
+	harness.checkObserver.mutate = func(checks *domain.RemoteCheckRecord) {
+		checks.Checks[0].CompletedAt = nil
+	}
 	_, err := harness.reconcile(t)
 	if !errors.Is(err, errCICompletedAtMissing) {
 		t.Fatalf("err = %v, want ci-completed-at-missing fail closed", err)

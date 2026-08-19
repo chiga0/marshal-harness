@@ -213,8 +213,11 @@ func Reconcile(ctx context.Context, input ReconcileInput) (ReconcileResult, erro
 		return ReconcileResult{}, deadlineErr
 	}
 	if deadlineBlocked {
-		ciDeadline := frozenCIDeadline(state.CreatedAt, publication.PublishedAt, task.Budgets)
-		if adjudicationErr := adjudicateTimelyCompletion(checks, parseCheckCompletionTimes(checkRecord.Data), ciDeadline, publication.PublishedAt, now); adjudicationErr != nil {
+		ciDeadline, deadlineResolveErr := publicationCIDeadline(state.CreatedAt, publication, task.Budgets)
+		if deadlineResolveErr != nil {
+			return ReconcileResult{}, deadlineResolveErr
+		}
+		if adjudicationErr := adjudicateTimelyCompletion(checks, task.Publication.RequiredChecks, ciDeadline, publication.PublishedAt); adjudicationErr != nil {
 			return ReconcileResult{}, adjudicationErr
 		}
 		reconcileReason = ReconcileReasonCIDeadlineReconciled

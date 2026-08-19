@@ -118,12 +118,13 @@ type TaskDeliverable struct {
 
 // TaskBudgets caps the time, attempts, retries and output a Task may consume.
 type TaskBudgets struct {
-	RunTimeoutSeconds     int64 `json:"runTimeoutSeconds"`
-	AttemptTimeoutSeconds int64 `json:"attemptTimeoutSeconds"`
-	MaxAttempts           int   `json:"maxAttempts"`
-	MaxOperationalRetries int   `json:"maxOperationalRetries"`
-	MaxReworkRounds       int   `json:"maxReworkRounds"`
-	MaxOutputBytes        int64 `json:"maxOutputBytes"`
+	RunTimeoutSeconds       int64 `json:"runTimeoutSeconds"`
+	CIObserveTimeoutSeconds int64 `json:"ciObserveTimeoutSeconds,omitempty"`
+	AttemptTimeoutSeconds   int64 `json:"attemptTimeoutSeconds"`
+	MaxAttempts             int   `json:"maxAttempts"`
+	MaxOperationalRetries   int   `json:"maxOperationalRetries"`
+	MaxReworkRounds         int   `json:"maxReworkRounds"`
+	MaxOutputBytes          int64 `json:"maxOutputBytes"`
 }
 
 // TaskAdmission declares the machine-executable admission status of the

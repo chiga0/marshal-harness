@@ -13,6 +13,7 @@
       "name": "test",
       "required": true,
       "status": "pass",
+      "completedAt": "2026-08-04T05:02:30Z",
       "url": "https://github.com/example-org/example-repo/actions/runs/1"
     }
   ],

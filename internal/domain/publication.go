@@ -80,6 +80,7 @@ type PublicationRecord struct {
 	Request              PullRequestRecord     `json:"request"`
 	Actor                string                `json:"actor"`
 	PublishedAt          time.Time             `json:"publishedAt"`
+	CIDeadline           *time.Time            `json:"ciDeadline,omitempty"`
 	UpdatedAt            time.Time             `json:"updatedAt"`
 }
 
@@ -114,8 +115,9 @@ type RemoteCheckRecord struct {
 }
 
 type RemoteCheck struct {
-	Name     string `json:"name"`
-	Required bool   `json:"required"`
-	Status   string `json:"status"`
-	URL      string `json:"url,omitempty"`
+	Name        string     `json:"name"`
+	Required    bool       `json:"required"`
+	Status      string     `json:"status"`
+	URL         string     `json:"url,omitempty"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
 }

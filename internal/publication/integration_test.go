@@ -127,7 +127,12 @@ func (o *fakeObserver) ObserveChecks(_ context.Context, record domain.Record, re
 		ObservedAt: time.Date(2026, 8, 4, 12, 30, 0, 0, time.UTC),
 	}
 	for _, name := range required {
-		checks.Checks = append(checks.Checks, domain.RemoteCheck{Name: name, Required: true, Status: entryStatus})
+		var completedAt *time.Time
+		if entryStatus == domain.CheckStatusPass {
+			completed := published.PublishedAt.Add(time.Minute).UTC()
+			completedAt = &completed
+		}
+		checks.Checks = append(checks.Checks, domain.RemoteCheck{Name: name, Required: true, Status: entryStatus, CompletedAt: completedAt})
 	}
 	if o.mutate != nil {
 		o.mutate(&checks)
@@ -143,6 +148,7 @@ type fixtureOptions struct {
 	maxReworkRounds  int
 	reworkRoundsUsed uint
 	noRequiredChecks bool
+	ciObserveTimeout int64
 	noExpectedRemote bool
 	policyMerge      bool
 }
@@ -294,7 +300,7 @@ func newPublicationFixture(t *testing.T, opts fixtureOptions) *publicationFixtur
 			{ID: "pull-request", Kind: "publication", Required: true, PathGlob: "docs/*.md", MediaType: "text/markdown", MinimumCount: 1},
 		},
 		Worker:  domain.TaskWorker{PreferredAdapter: "fake", FallbackAdapters: []string{}, ExecutionProfile: "workspace-write", SessionPolicy: "ephemeral"},
-		Budgets: domain.TaskBudgets{RunTimeoutSeconds: 120, AttemptTimeoutSeconds: 60, MaxAttempts: 3, MaxOperationalRetries: 1, MaxReworkRounds: opts.maxReworkRounds, MaxOutputBytes: 100000},
+		Budgets: domain.TaskBudgets{RunTimeoutSeconds: 120, CIObserveTimeoutSeconds: opts.ciObserveTimeout, AttemptTimeoutSeconds: 60, MaxAttempts: 3, MaxOperationalRetries: 1, MaxReworkRounds: opts.maxReworkRounds, MaxOutputBytes: 100000},
 		Publication: domain.TaskPublication{
 			Required: true, Provider: "github", Mode: "draft", Remote: "origin",
 			BaseBranch: "main", MergePolicy: mergePolicy, MergeMethod: mergeMethod, RequiredChecks: requiredChecks,
@@ -702,6 +708,14 @@ func TestPublishCreatesControlledCommitAndAdvancesToCIPending(t *testing.T) {
 	if err := fixture.validator.Validate(domain.KindPublicationRecord, recordData); err != nil {
 		t.Fatalf("publication record failed schema validation: %v", err)
 	}
+	var frozenPublication domain.PublicationRecord
+	if err := json.Unmarshal(recordData, &frozenPublication); err != nil {
+		t.Fatal(err)
+	}
+	wantLegacyDeadline := fixture.inspect(t).CreatedAt.Add(120 * time.Second)
+	if frozenPublication.CIDeadline == nil || !frozenPublication.CIDeadline.Equal(wantLegacyDeadline) {
+		t.Fatalf("legacy ciDeadline = %v, want frozen fallback %s", frozenPublication.CIDeadline, wantLegacyDeadline)
+	}
 	assertControlledCommit(t, fixture, intent.CommitSHA)
 	state := fixture.inspect(t)
 	if state.State != domain.StateCIPending || state.Sequence != 8 {
@@ -719,6 +733,33 @@ func TestPublishCreatesControlledCommitAndAdvancesToCIPending(t *testing.T) {
 	}
 	if len(events) != 8 || events[6].Type != "publication.completed" || events[7].Type != "publication.checks-requested" {
 		t.Fatalf("journal tail = %+v", events[6:])
+	}
+}
+
+func TestPublishFreezesExplicitCIObserveDeadlineIntoPublicationDigest(t *testing.T) {
+	fixture := newPublicationFixture(t, fixtureOptions{maxReworkRounds: 1, ciObserveTimeout: 900})
+	result, err := fixture.publish(t, newFakePublisher(fakePublishOK))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := result.Publication.PublishedAt.Add(900 * time.Second)
+	if result.Publication.CIDeadline == nil || !result.Publication.CIDeadline.Equal(want) {
+		t.Fatalf("ciDeadline = %v, want %s", result.Publication.CIDeadline, want)
+	}
+	data, err := os.ReadFile(filepath.Join(fixture.runDirectory, "publication-record.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := canonical.DigestJSON(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, _, err := fixture.store.ReadEvents(fixture.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := events[6].Payload["publicationDigest"].(string); got != digest {
+		t.Fatalf("publication.completed digest = %q, want %q", got, digest)
 	}
 }
 
@@ -1683,7 +1724,7 @@ func fixtureRunDeadline(t *testing.T, fixture *publicationFixture) time.Time {
 func assertCIDeadlineBlocked(t *testing.T, fixture *publicationFixture, result CheckResult, observeErr error, observer *fakeObserver) {
 	t.Helper()
 	if observeErr == nil {
-		t.Fatal("expected frozen run deadline to block remote check observation")
+		t.Fatal("expected pending remote checks to fail deadline adjudication")
 	}
 	if observeErr.Error() != "ci-deadline-exceeded" {
 		t.Fatalf("error = %q, want fixed code ci-deadline-exceeded", observeErr.Error())
@@ -1691,8 +1732,8 @@ func assertCIDeadlineBlocked(t *testing.T, fixture *publicationFixture, result C
 	if result.State.State != domain.StateBlocked {
 		t.Fatalf("result state = %s, want BLOCKED", result.State.State)
 	}
-	if observer.calls != 0 {
-		t.Fatalf("observer calls after run deadline = %d, want 0", observer.calls)
+	if observer.calls != 1 {
+		t.Fatalf("observer calls after run deadline = %d, want 1", observer.calls)
 	}
 	state := fixture.inspect(t)
 	if state.State != domain.StateBlocked || state.TerminalReason == "" {
@@ -1790,7 +1831,7 @@ func TestObserveChecksRunDeadlineBlockIsNotAppendedTwice(t *testing.T) {
 	if state := fixture.inspect(t); state.State != domain.StateBlocked {
 		t.Fatalf("state = %s, want BLOCKED", state.State)
 	}
-	if observer.calls != 0 {
-		t.Fatalf("observer calls = %d, want 0", observer.calls)
+	if observer.calls != 1 {
+		t.Fatalf("observer calls = %d, want only the initial observe-before-adjudication call", observer.calls)
 	}
 }

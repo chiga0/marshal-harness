@@ -120,7 +120,10 @@ func Merge(ctx context.Context, input MergeInput) (MergeResult, error) {
 		}
 		return MergeResult{}, err
 	}
-	ciDeadline := frozenCIDeadline(state.CreatedAt, admission.publication.PublishedAt, admission.task.Budgets)
+	ciDeadline, deadlineErr := publicationCIDeadline(state.CreatedAt, admission.publication, admission.task.Budgets)
+	if deadlineErr != nil {
+		return MergeResult{}, deadlineErr
+	}
 	if now.Compare(ciDeadline) >= 0 {
 		return MergeResult{}, errCIDeadlineExceeded
 	}
