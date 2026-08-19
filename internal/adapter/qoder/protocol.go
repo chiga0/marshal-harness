@@ -236,6 +236,11 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			return fmt.Errorf("%w: invalid assistant message event", ErrProtocol)
 		}
 		result.assistantCount++
+	case "user":
+		// Qoder 1.1.23 emits user/tool-result frames after tool calls. They
+		// are transcript evidence only; protocol accounting remains bound to
+		// system init, assistant messages, and the single terminal result.
+		return nil
 	case "result":
 		if result.sessionID == "" || event.IsError == nil {
 			return fmt.Errorf("%w: incomplete terminal result event", ErrProtocol)
