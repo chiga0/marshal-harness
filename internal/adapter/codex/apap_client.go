@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"sync"
 	"time"
 
@@ -48,6 +49,25 @@ func newCodexAPAPProfileBridge(authority CodexAPAPAuthority, now func() time.Tim
 
 func (bridge *CodexAPAPProfileBridge) DescribeRequest(ctx context.Context, requestID, commandID, nonce string, issuedAt, expiresAt time.Time) (authorityprovider.APAPRequestEnvelopeV1, []byte, error) {
 	return bridge.newRequest(ctx, authorityprovider.OperationDescribe, requestID, commandID, nonce, issuedAt, expiresAt, nil)
+}
+
+// Exchange sends one sealed request to the external APAP service and returns
+// only its signed profile response. The bridge still performs all profile
+// identity, replay and signature checks through Validate* methods.
+func (bridge *CodexAPAPProfileBridge) Exchange(ctx context.Context, client *authorityprovider.ControlClient, request []byte, files ...*os.File) (CodexAPAPSignedResponse, error) {
+	if bridge == nil || client == nil {
+		return CodexAPAPSignedResponse{}, errors.New("codex APAP exchange is unavailable")
+	}
+	response, err := client.RoundTrip(ctx, request, files...)
+	if err != nil {
+		return CodexAPAPSignedResponse{}, err
+	}
+	defer response.Close()
+	envelope, err := authorityprovider.DecodeSignedResponseEnvelope(response.Payload)
+	if err != nil {
+		return CodexAPAPSignedResponse{}, err
+	}
+	return CodexAPAPSignedResponse{Document: append([]byte(nil), envelope.Document...), Signature: envelope.Signature}, nil
 }
 
 func (bridge *CodexAPAPProfileBridge) BeginProbeRequest(ctx context.Context, input CodexAPAPBeginInput) (authorityprovider.APAPRequestEnvelopeV1, []byte, []authorityprovider.FDRef, error) {

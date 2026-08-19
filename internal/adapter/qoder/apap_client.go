@@ -1,8 +1,10 @@
 package qoder
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"sync"
 	"time"
 
@@ -86,6 +88,26 @@ func (bridge *QoderAPAPProfileBridge) DescribeRequest(requestID, commandID, nonc
 		return authorityprovider.APAPRequestEnvelopeV1{}, nil, err
 	}
 	return decoded, raw, nil
+}
+
+// Exchange sends one sealed request to an externally deployed APAP service
+// and returns only its signed profile response. Descriptor custody stays in
+// the transport response and is closed before returning; Qoder validation
+// remains the caller's responsibility.
+func (bridge *QoderAPAPProfileBridge) Exchange(ctx context.Context, client *authorityprovider.ControlClient, request []byte, files ...*os.File) (QoderAPAPSignedResponse, error) {
+	if bridge == nil || client == nil {
+		return QoderAPAPSignedResponse{}, errors.New("qoder APAP exchange is unavailable")
+	}
+	response, err := client.RoundTrip(ctx, request, files...)
+	if err != nil {
+		return QoderAPAPSignedResponse{}, err
+	}
+	defer response.Close()
+	envelope, err := authorityprovider.DecodeSignedResponseEnvelope(response.Payload)
+	if err != nil {
+		return QoderAPAPSignedResponse{}, err
+	}
+	return QoderAPAPSignedResponse{Document: append([]byte(nil), envelope.Document...), Signature: envelope.Signature}, nil
 }
 
 func (bridge *QoderAPAPProfileBridge) BeginProbeRequest(input QoderAPAPBeginInput) (authorityprovider.APAPRequestEnvelopeV1, []byte, []authorityprovider.FDRef, error) {
