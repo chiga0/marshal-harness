@@ -23,7 +23,7 @@
 
 ## 管理员交接后的只读核验
 
-交接前可先运行仓库内的只读预检；它只报告缺口，任何失败都会保持 fail-closed，不会安装、签名、bootstrap 或修改 `.marshal/`：
+交接前可先运行仓库内的只读预检；它只报告缺口，额外检查 service、launcher、APAP socket 的 root ownership 与 group/other write 位，任何失败都会保持 fail-closed，不会安装、签名、bootstrap 或修改 `.marshal/`：
 
 ```sh
 MARSHAL_SIGNING_TEAM_ID=TEAMID scripts/macos-authority-preflight.sh
