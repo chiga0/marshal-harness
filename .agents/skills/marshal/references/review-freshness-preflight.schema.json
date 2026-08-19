@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.local/schemas/review-freshness-preflight.schema.json",
+  "title": "Marshal operator-local review freshness preflight input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "expected", "files"],
+  "properties": {
+    "apiVersion": { "const": "marshal.operator/v1alpha1" },
+    "kind": { "const": "ReviewFreshnessPreflight" },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId", "runId", "state", "stateSequence", "currentAttemptId", "sourceHead", "baseSha", "reviewRound"],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/id" },
+        "runId": { "$ref": "#/$defs/id" },
+        "state": { "const": "REVIEW_PENDING" },
+        "stateSequence": { "type": "integer", "minimum": 1 },
+        "currentAttemptId": { "$ref": "#/$defs/id" },
+        "sourceHead": { "$ref": "#/$defs/gitSha" },
+        "baseSha": { "$ref": "#/$defs/gitSha" },
+        "reviewRound": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statePath", "eventsPath", "packetPath", "taskSpecPath", "verificationReportPath", "artifactManifestPath", "policySnapshotPath", "capabilitySnapshotPath", "controlRecordsPath", "historyPath"],
+      "properties": {
+        "statePath": { "$ref": "#/$defs/relativePath" },
+        "eventsPath": { "$ref": "#/$defs/relativePath" },
+        "packetPath": { "$ref": "#/$defs/relativePath" },
+        "taskSpecPath": { "$ref": "#/$defs/relativePath" },
+        "verificationReportPath": { "$ref": "#/$defs/relativePath" },
+        "artifactManifestPath": { "$ref": "#/$defs/relativePath" },
+        "policySnapshotPath": { "$ref": "#/$defs/relativePath" },
+        "capabilitySnapshotPath": { "$ref": "#/$defs/relativePath" },
+        "controlRecordsPath": { "$ref": "#/$defs/relativePath" },
+        "historyPath": { "$ref": "#/$defs/relativePath" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^[^/\\\\\\x00][^\\\\\\x00]*$",
+      "allOf": [
+        { "not": { "pattern": "(^|/)\\.{1,2}(/|$)" } },
+        { "not": { "pattern": "//|/$" } }
+      ]
+    }
+  }
+}
