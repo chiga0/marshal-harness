@@ -487,6 +487,8 @@ Qoder 与 Codex 的 production consumer 实现复核进一步证明：两个 Ada
 
 本轮宿主只读核查还确认：`security find-identity -v -p codesigning` 返回 `0 valid identities found`；`/Library/PrivilegedHelperTools`、`/usr/local/libexec` 和 `/opt/homebrew/bin` 没有现成 Marshal/APAP launcher；`MARSHAL_APAP_*`、`MARSHAL_DARWIN_*`、Qoder/Codex authority 环境变量均未配置。该证据支持当前外部 signer/root provisioning 阻塞判断，但不改变任何 registry 状态。
 
+同轮再次以固定绝对路径读取并执行版本探针：Qoder `/Users/gawain/.qoder/bin/qodercli/qodercli-1.1.23` 输出 `1.1.23`、SHA-256 为 `sha256:b09566c33df68f8ee3e82783120f6eb885fbd9aeb5bc35beb4a85a3ea2d4219a`；Codex `/opt/homebrew/Caskroom/codex/0.145.0/codex-aarch64-apple-darwin` 输出 `codex-cli 0.145.0`、SHA-256 为 `sha256:1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590`。这只证明 held executable 可读取且版本正确，不构成 authority、隔离或生产准入证据；PATH 中其它 Qoder identity 不得混入该证据。
+
 ## APAP launch-control typed slice 审计增补（2026-08-19）
 
 共享 `authorityprovider` 现把 ADR 0038 的 `PrepareLaunch`、`CommitLaunch`、`AbortLaunch` 与 `InspectLaunch` 纳入已注册控制面，并为请求、receipt、release identity、状态和 digest 提供封闭 typed payload 校验。`PrepareLaunch` 强制八项 held-FD 角色、完整 identity/config/fence digest、nonce 与 deadline 绑定；commit/abort/inspect 不接受 credential FD，receipt 必须是 canonical 非空对象，未知状态和成功状态的 receipt 组合均 fail closed。Fake provider 仅用于协议与重放/负向矩阵测试，不执行真实 child release，也不产生 signer、OS isolation audit 或 credential authority。
