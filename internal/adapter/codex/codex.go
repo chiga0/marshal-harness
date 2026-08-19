@@ -204,6 +204,15 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	if !secureFDExecutionAvailable() && !a.unsafePathExecutionForTest && !a.ordinaryUserMode {
 		return a.unsupportedPlatformProbe()
 	}
+	// Strict production mode has no reason to execute or inspect a candidate
+	// until a credentialed authority source is bound.  Apart from being
+	// fail-closed, this keeps registration-only probes deterministic on Linux,
+	// where the authenticated launcher is available but a configured fixture
+	// may not be a real Codex ELF image.  Hermetic adapter tests and the explicit
+	// ordinary-user mode intentionally bypass this guard.
+	if !a.ordinaryUserMode && !a.unsafePathExecutionForTest && !a.hasAtomicAuthoritySource() {
+		return a.unsupportedConformanceProbe()
+	}
 	snapshot, err := a.inspect(ctx)
 	if err != nil {
 		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, errors.Join(ErrIdentityInvalid, err), "executable identity probe failed", a.now())
@@ -271,6 +280,23 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
 		"executable": identity.path, "executableDigest": identity.digest,
 		"binaryVersion": identity.version, "probeStatus": "unsupported",
+		"capabilities": a.capabilities(),
+		"probeErrors":  []string{failure.SafeMessage}, "adapterFailure": failure, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
+	}
+	return a.capabilityRecord(capability)
+}
+
+func (a *Adapter) unsupportedConformanceProbe() (domain.Record, error) {
+	digest, err := digestConfiguredExecutable(a.executable)
+	if err != nil {
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, errors.Join(ErrIdentityInvalid, err), "platform capability probe could not bind executable digest", a.now())
+	}
+	failure := newAuthorityFailure("probe", "codex_conformance_pending", conformancePendingReason, AuthorityFailureDetails{}, ErrCodexConformancePending, a.now())
+	capability := map[string]any{
+		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
+		"adapterId": adapterID, "adapterVersion": adapterVersion,
+		"executable": a.executable, "executableDigest": digest,
+		"binaryVersion": "unavailable", "probeStatus": "unsupported",
 		"capabilities": a.capabilities(),
 		"probeErrors":  []string{failure.SafeMessage}, "adapterFailure": failure, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
