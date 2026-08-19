@@ -82,6 +82,10 @@ Decision 必须绑定 `taskId`、`runId`、`reviewRound`、`specDigest`、`revie
       - 每个独立失败签名最多消耗一次 Worker Attempt。失败分类只消费 Core 已持久化的 typed failure/Outcome；watchdog 与 doctor 仅提供诊断证据，不是 failure/retry authority。Core 尚无 typed failure 或分类未知时 fail closed，不重试。只有 Core 判定的 transient provider failure 才可按 Policy 在原 taskId 做有限 operational retry；其余类别先修 Core/Adapter/TaskSpec，再由 Core/CLI 建 fresh-base successor。
       - successor 不重置同一路径的人工失败预算：Lead 以 `sourceHead + adapter executable digest + authority mode + protocol/result transport digest + Core failure kind/evidence digest` 形成稳定 failure signature 并跨 Run 去重；签名未变化不得再次派发。该签名只用于 operator admission，不能替代 Core 的 retry/rework 状态与 Policy。
       - 写任务在派发前做 pre-mortem：检查 acceptance 是否能在 Worker 权限内执行、结果路径是否真实可写、任务上下文是否自包含、scope 是否只覆盖必要路径、验证命令是否由独立 verifier 执行。任一项未知就先补 TaskSpec 或只读 probe，避免把 reviewer 的确定性 P1 变成第二轮 Worker rework。
+      - WorkerResult transport 的可复用摘要必须额外绑定 staging basename、文件类型、staging/control 不同 inode 证明、held dirfd 的 exact-inode consume/cleanup、唯一允许的写入 primitive 与 argv、权限拒绝提取器版本及 transcript event contract。任一字段变化都使旧摘要失效；fixture 必须只经该 transport 写入，禁止同时从 control path 注入结果造成假阳性。
+      - 不要给无法机械限制读取范围的 Provider 写“只读相关小段”这类定性约束。TaskSpec 要么列出精确文件并给出真实工具支持的数字化行数/字节上限，要么明确允许整文件；无法在 Provider 真实工具上执行的约束必须在零 Attempt 预检时拦截。
+      - acceptance 的故障注入位置必须位于其声称验证的 effect/cache/persist 边界之后，并断言相同 key、相同 outcome 与 effect exactly-once。若连接在副作用前断开，该用例只能证明普通首次执行，不得关闭幂等或 replay finding。
+      - `verifier-worktree-mutated` 即使命令退出码为 0 仍是结构性 Required Gate 失败；先隔离测试 cache/temp 或修正验收，再派 fresh-base successor。普通用户 CapabilitySnapshot、doctor 和报告还必须与真实 env/argv 一致，不得沿用 strict managed-config 文案。
       - 首个真实任务通过后立即派一个独立只读 conformance 任务验证同一 sourceHead；二者证据一致才由 Lead 在后续 admission 中把 Adapter 提升为默认 Worker。发现 identity/version drift 时，Lead 停止该 Adapter 的新派发并回到 live-probe 阶段，不沿用旧证据或继续 fan-out；这不是当前 Core 已实现的自动状态机。
 
 用户明确授权的 Harness 适配修复可在 local main 直接完成，但仍必须保留独立 reviewer、精确验证摘要、`localMergeSha/sourceHead/pendingRemoteSync` 记录；产品 Run 生命周期、Worker 启动与发布权限仍只能由 Marshal Core/CLI 改变。

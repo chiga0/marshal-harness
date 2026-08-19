@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/port"
 )
 
@@ -28,11 +30,20 @@ type captureResult struct {
 	permissionMode  string
 	eventCount      int
 	assistantCount  int
+	toolCalls       int
 	inputTokens     int
 	outputTokens    int
+	denials         []denials.RawDenial
+	toolNames       []string
+	pendingTools    map[string]pendingToolCall
 	terminal        terminalOutcome
 	limitExceeded   bool
 	err             error
+}
+
+type pendingToolCall struct {
+	tool  string
+	input json.RawMessage
 }
 
 // terminalOutcome is the single terminal `result` event that ends a Qoder
@@ -63,6 +74,20 @@ type qoderEvent struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
+}
+
+type qoderMessage struct {
+	Content []qoderMessagePart `json:"content"`
+}
+
+type qoderMessagePart struct {
+	Type      string          `json:"type"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"`
+	IsError   *bool           `json:"is_error"`
+	Content   json.RawMessage `json:"content"`
 }
 
 // qoderTerminalCodes maps a qoder terminal `code` literal to a closed
@@ -235,15 +260,74 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		if result.sessionID == "" || len(bytes.TrimSpace(event.Message)) == 0 || bytes.Equal(bytes.TrimSpace(event.Message), []byte("null")) {
 			return fmt.Errorf("%w: invalid assistant message event", ErrProtocol)
 		}
+		var message qoderMessage
+		if err := json.Unmarshal(event.Message, &message); err != nil {
+			return fmt.Errorf("%w: malformed assistant message", ErrProtocol)
+		}
+		if result.pendingTools == nil {
+			result.pendingTools = map[string]pendingToolCall{}
+		}
+		for _, part := range message.Content {
+			if part.Type != "tool_use" {
+				continue
+			}
+			if part.ID == "" || part.Name == "" || len(bytes.TrimSpace(part.Input)) == 0 || bytes.Equal(bytes.TrimSpace(part.Input), []byte("null")) {
+				return fmt.Errorf("%w: incomplete assistant tool_use", ErrProtocol)
+			}
+			if _, duplicate := result.pendingTools[part.ID]; duplicate {
+				return fmt.Errorf("%w: duplicate assistant tool_use id", ErrProtocol)
+			}
+			result.pendingTools[part.ID] = pendingToolCall{tool: normalizeQoderToolName(part.Name), input: append(json.RawMessage(nil), part.Input...)}
+			result.toolCalls++
+		}
 		result.assistantCount++
 	case "user":
-		// Qoder 1.1.23 emits user/tool-result frames after tool calls. They
-		// are transcript evidence only; protocol accounting remains bound to
-		// system init, assistant messages, and the single terminal result.
+		if result.sessionID == "" || len(bytes.TrimSpace(event.Message)) == 0 || bytes.Equal(bytes.TrimSpace(event.Message), []byte("null")) {
+			return fmt.Errorf("%w: invalid user message event", ErrProtocol)
+		}
+		var message qoderMessage
+		if err := json.Unmarshal(event.Message, &message); err != nil {
+			return fmt.Errorf("%w: malformed user message", ErrProtocol)
+		}
+		for _, part := range message.Content {
+			if part.Type != "tool_result" {
+				continue
+			}
+			pending, ok := result.pendingTools[part.ToolUseID]
+			if part.ToolUseID == "" || !ok {
+				return fmt.Errorf("%w: user tool_result has no matching tool_use", ErrProtocol)
+			}
+			delete(result.pendingTools, part.ToolUseID)
+			content, contentErr := decodeQoderToolResultContent(part.Content)
+			if contentErr != nil {
+				return contentErr
+			}
+			permissionDenied := isQoderPermissionError(content)
+			if permissionDenied {
+				result.denials = append(result.denials, denials.RawDenial{Tool: pending.tool, Input: pending.input})
+				if part.IsError == nil || !*part.IsError {
+					return fmt.Errorf("%w: permission denial marker contradicts is_error", ErrProtocol)
+				}
+				continue
+			}
+			if pending.tool == "qoder-unknown" || pending.tool == "agent" {
+				return fmt.Errorf("%w: tool_result references an unreviewed or forbidden Qoder tool", ErrProtocol)
+			}
+			// Real Qoder 1.1.23 omits is_error on successful tool_result
+			// frames. An explicit non-permission error remains a failed call and
+			// must never enter the successful toolNames side channel.
+			if part.IsError != nil && *part.IsError {
+				continue
+			}
+			result.toolNames = append(result.toolNames, pending.tool)
+		}
 		return nil
 	case "result":
 		if result.sessionID == "" || event.IsError == nil {
 			return fmt.Errorf("%w: incomplete terminal result event", ErrProtocol)
+		}
+		if len(result.pendingTools) != 0 {
+			return fmt.Errorf("%w: terminal result has unresolved tool_use", ErrProtocol)
 		}
 		result.terminal.seen = true
 		result.inputTokens, result.outputTokens = event.Usage.InputTokens, event.Usage.OutputTokens
@@ -271,6 +355,56 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		return fmt.Errorf("%w: unrecognized stream-json event type", ErrProtocol)
 	}
 	return nil
+}
+
+func normalizeQoderToolName(name string) string {
+	// Frozen from credentialed Qoder CLI 1.1.23 stream-json evidence. Matching
+	// is deliberately case-sensitive: arbitrary case folding would turn an
+	// unreviewed provider tool into a known authorization primitive.
+	switch name {
+	case "Agent":
+		return "agent"
+	case "Bash":
+		return "bash"
+	case "Edit":
+		return "edit"
+	case "Glob":
+		return "glob"
+	case "Grep":
+		return "grep"
+	case "Read":
+		return "read"
+	case "TaskCreate":
+		return "task_create"
+	case "TaskUpdate":
+		return "task_update"
+	case "Write":
+		return "write"
+	default:
+		return "qoder-unknown"
+	}
+}
+
+func decodeQoderToolResultContent(raw json.RawMessage) (string, error) {
+	var content string
+	if len(bytes.TrimSpace(raw)) == 0 || json.Unmarshal(raw, &content) != nil {
+		return "", fmt.Errorf("%w: tool_result content is not a JSON string", ErrProtocol)
+	}
+	return content, nil
+}
+
+func isQoderPermissionError(text string) bool {
+	if denials.IsPermissionError(text) {
+		return true
+	}
+	// Qoder 1.1.23 reports its fixed path-safety denial without the word
+	// "permission". Keep this provider-specific marker closed and exact enough
+	// that ordinary tool errors cannot be misclassified as security denials.
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "permission confirmation required") && strings.Contains(lower, "no interactive handler") {
+		return true
+	}
+	return strings.Contains(lower, "suspicious windows syntax") && strings.Contains(lower, "bypass security checks")
 }
 
 type streamCapture struct {
