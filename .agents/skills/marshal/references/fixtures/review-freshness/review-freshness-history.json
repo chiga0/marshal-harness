@@ -1,0 +1,6 @@
+{
+  "apiVersion": "marshal.operator/v1alpha1",
+  "kind": "ReviewFreshnessHistory",
+  "generationAttempts": [],
+  "reviewerDispatches": []
+}

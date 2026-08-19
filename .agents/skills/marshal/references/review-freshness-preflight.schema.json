@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.local/schemas/review-freshness-preflight.schema.json",
+  "title": "Marshal operator-local review freshness preflight",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "dedupeKey", "expected", "files", "freshnessFingerprint"],
+  "properties": {
+    "apiVersion": { "const": "marshal.operator/v1alpha1" },
+    "kind": { "const": "ReviewFreshnessPreflight" },
+    "dedupeKey": { "$ref": "#/$defs/digest" },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskId", "runId", "state", "stateSequence", "currentAttemptId",
+        "sourceHead", "baseSha", "reviewRound", "specDigest"
+      ],
+      "properties": {
+        "taskId": { "$ref": "#/$defs/id" },
+        "runId": { "$ref": "#/$defs/id" },
+        "state": { "const": "REVIEW_PENDING" },
+        "stateSequence": { "type": "integer", "minimum": 1 },
+        "currentAttemptId": { "$ref": "#/$defs/id" },
+        "sourceHead": { "$ref": "#/$defs/gitSha" },
+        "baseSha": { "$ref": "#/$defs/gitSha" },
+        "reviewRound": { "type": "integer", "minimum": 1 },
+        "specDigest": { "$ref": "#/$defs/digest" },
+        "packetBindings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "verificationDigest", "artifactManifestDigest", "evidenceDigest",
+            "candidateDigest", "workerCandidateDigest", "workerResultDigests"
+          ],
+          "properties": {
+            "verificationDigest": { "$ref": "#/$defs/digest" },
+            "artifactManifestDigest": { "$ref": "#/$defs/digest" },
+            "evidenceDigest": { "$ref": "#/$defs/digest" },
+            "candidateDigest": { "$ref": "#/$defs/digest" },
+            "workerCandidateDigest": { "$ref": "#/$defs/digest" },
+            "workerResultDigests": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/digest" }
+            }
+          }
+        }
+      }
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statePath", "stateRawDigest", "packetPath", "packetPresence", "historyPath", "historyRawDigest"],
+      "properties": {
+        "statePath": { "$ref": "#/$defs/relativePath" },
+        "stateRawDigest": { "$ref": "#/$defs/digest" },
+        "packetPath": { "$ref": "#/$defs/relativePath" },
+        "packetPresence": { "enum": ["present", "missing"] },
+        "packetRawDigest": { "$ref": "#/$defs/digest" },
+        "packetCanonicalDigest": { "$ref": "#/$defs/digest" },
+        "historyPath": { "$ref": "#/$defs/relativePath" },
+        "historyRawDigest": { "$ref": "#/$defs/digest" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "packetPresence": { "const": "present" } } },
+          "then": { "required": ["packetRawDigest", "packetCanonicalDigest"] },
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["packetRawDigest"] },
+                { "required": ["packetCanonicalDigest"] }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "freshnessFingerprint": { "$ref": "#/$defs/digest" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "files": {
+            "properties": { "packetPresence": { "const": "present" } },
+            "required": ["packetPresence"]
+          }
+        }
+      },
+      "then": {
+        "properties": { "expected": { "required": ["packetBindings"] } }
+      },
+      "else": {
+        "properties": {
+          "expected": { "not": { "required": ["packetBindings"] } }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "^[A-Za-z]:[\\\\/]" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "(^|/)\\.(/|$)" }
+        ]
+      }
+    }
+  }
+}

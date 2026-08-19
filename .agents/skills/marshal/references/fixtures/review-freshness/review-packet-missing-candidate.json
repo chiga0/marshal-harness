@@ -1,0 +1,27 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "ReviewPacket",
+  "taskId": "REVIEW-FRESHNESS-FIXTURE",
+  "runId": "review-freshness-fixture-r1",
+  "reviewRound": 2,
+  "specDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "baseSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "snapshotDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "diffDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "verificationDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "artifactManifestDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "workerResultDigests": [
+    "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+  ],
+  "evidenceDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  "workerCandidateDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "inputs": {
+    "taskSpec": "task-spec.json",
+    "patch": "observed.patch",
+    "verificationReport": "verification-report.json",
+    "artifactManifest": "artifact-manifest.json",
+    "workerResults": ["attempts/attempt-fixture-01/worker-result.json"]
+  },
+  "previousBlockingFindings": [],
+  "generatedAt": "2026-08-20T00:01:00Z"
+}

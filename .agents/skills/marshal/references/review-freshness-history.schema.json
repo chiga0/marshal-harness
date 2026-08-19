@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.local/schemas/review-freshness-history.schema.json",
+  "title": "Marshal operator-local review freshness action history",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "generationAttempts", "reviewerDispatches"],
+  "properties": {
+    "apiVersion": { "const": "marshal.operator/v1alpha1" },
+    "kind": { "const": "ReviewFreshnessHistory" },
+    "generationAttempts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dedupeKey"],
+        "properties": {
+          "dedupeKey": { "$ref": "#/$defs/digest" }
+        }
+      }
+    },
+    "reviewerDispatches": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["freshnessFingerprint"],
+        "properties": {
+          "freshnessFingerprint": { "$ref": "#/$defs/digest" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}
