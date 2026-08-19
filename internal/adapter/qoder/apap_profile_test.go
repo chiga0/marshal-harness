@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,6 +170,20 @@ func TestQoderAPAPReceiptMapsExactADR0034Object(t *testing.T) {
 	document, _ := json.Marshal(receipt)
 	document, _ = canonical.JSON(document)
 	bridge.now = func() time.Time { return time.Now().UTC().Add(time.Second) }
+	_, receiptTrust, err := validateQoderAPAPAuthority(fixture.authority, bridge.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transportMismatch := receipt
+	transportMismatch.WorkerResultTransportDigest = digest("b")
+	transportMismatch.RecordDigest, _ = transportMismatch.digest()
+	transportMessage, _ := transportMismatch.signingBytes()
+	transportMismatch.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(fixture.receiptPrivate, transportMessage))
+	transportDocument, _ := json.Marshal(transportMismatch)
+	transportDocument, _ = canonical.JSON(transportDocument)
+	if _, err := bindQoderAPAPReceipt(session, transportDocument, receiptTrust, bridge.now()); err == nil || !strings.Contains(err.Error(), "runtime contract") {
+		t.Fatalf("fresh correctly re-signed v4 receipt with only transport digest replaced was not rejected by runtime contract: %v", err)
+	}
 	if _, err := bridge.BindReceipt(session, document); err != nil {
 		t.Fatal(err)
 	}
@@ -186,9 +201,6 @@ func TestQoderAPAPReceiptMapsExactADR0034Object(t *testing.T) {
 		"protocol":       func(v *CandidateExecutionReceipt) { v.ProtocolVersion = "substitute" },
 		"permission":     func(v *CandidateExecutionReceipt) { v.PermissionMode = "substitute" },
 		"event contract": func(v *CandidateExecutionReceipt) { v.EventContract = "substitute" },
-		"worker result transport": func(v *CandidateExecutionReceipt) {
-			v.WorkerResultTransportDigest = digest("b")
-		},
 		"scratch root": func(v *CandidateExecutionReceipt) {
 			v.ScratchRootIdentity = candidateRootIdentity(CandidateObjectIdentity{Device: 90, Inode: 90})
 		},
@@ -207,7 +219,7 @@ func TestQoderAPAPReceiptMapsExactADR0034Object(t *testing.T) {
 			changed.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(fixture.receiptPrivate, message))
 			changedDocument, _ := json.Marshal(changed)
 			changedDocument, _ = canonical.JSON(changedDocument)
-			if _, err := bridge.BindReceipt(session, changedDocument); err == nil {
+			if _, err := bindQoderAPAPReceipt(session, changedDocument, receiptTrust, bridge.now()); err == nil {
 				t.Fatal("trusted re-signing widened the frozen receipt contract")
 			}
 		})
