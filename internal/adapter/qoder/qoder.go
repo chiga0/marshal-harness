@@ -22,7 +22,7 @@ import (
 
 const (
 	adapterID      = "qoder"
-	adapterVersion = "0.1.1"
+	adapterVersion = "0.1.2"
 	// supportedBinary is the minimum verified patch in the compatible 1.1.x
 	// line. Other minor/major lines and older patches fail closed.
 	supportedBinary          = "1.1.23"
@@ -33,7 +33,7 @@ const (
 	versionOutputLimit       = 4 << 10
 	versionStderrLimit       = 4 << 10
 	probeTimeout             = 10 * time.Second
-	conformanceEventContract = "qoder-stream-json-1.2.0-v2"
+	conformanceEventContract = "qoder-stream-json-1.2.0-v3"
 	qoderProtocolVersion     = "1.2.0"
 	qoderPermissionMode      = "acceptEdits"
 

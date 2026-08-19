@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-更新时间：2026-08-18。本矩阵由共享 Conformance Suite、Live Probe 与受监督 Pilot 证据生成，只记录已验证事实；未验证组合一律不承诺。
+更新时间：2026-08-19。本矩阵由共享 Conformance Suite、Live Probe 与受监督 Pilot 证据生成，只记录已验证事实；未验证组合一律不承诺。
 
 ## 证据来源
 
@@ -17,7 +17,7 @@
 | --- | --- | --- | --- | --- |
 | `opencode` | `0.1.0` | OpenCode `1.18.13` | `MARSHAL_OPENCODE_PATH` | `supported` |
 | `qwen` | `0.1.0` | Qwen Code `0.21.5` | `MARSHAL_QWEN_PATH` | `supported` |
-| `qoder` | `0.1.1` | Qoder CLI `>=1.1.23 <1.2.0`（逐 binary evidence） | `MARSHAL_QODER_PATH` | 严格模式 `pending live evidence`；显式 Mac `ordinary-user` 可用但不提供 hardened authority；旧 event contract 证据失效 |
+| `qoder` | `0.1.2` | Qoder CLI `>=1.1.23 <1.2.0`（逐 binary evidence） | `MARSHAL_QODER_PATH` | 严格模式 `pending live evidence`；显式 Mac `ordinary-user` 可用但不提供 hardened authority；`v3` 以前的 event contract 证据失效 |
 | `pi` | `0.2.0` | Pi `0.84.1` | `MARSHAL_PI_PATH` | 代码锁定 `supported`；Live Probe 未执行 |
 | `codex` | `0.1.0` | Codex CLI `0.145.x` | `MARSHAL_CODEX_PATH` | 严格模式待 authenticated fd-exec；显式 Mac `ordinary-user` 可用但不提供 hardened authority |
 
