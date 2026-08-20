@@ -559,12 +559,12 @@ func readTaskProjection(controlRoot, relative string) (taskProjection, error) {
 	if err := json.Unmarshal(data, &task); err != nil {
 		return taskProjection{}, fmt.Errorf("decode TaskSpec: %w", err)
 	}
-	tools, err := denials.ParseDeclaredWorkerTools(data)
+	tools, err := denials.ProjectDeclaredWorkerTools(data, false)
 	if err != nil {
+		if errors.Is(err, denials.ErrNamedWorkerToolsUnsupported) {
+			return taskProjection{}, fmt.Errorf("%w: named worker.tools cannot be mapped to a verified Qoder built-in tool identifier", ErrUnsupportedWorkerTools)
+		}
 		return taskProjection{}, fmt.Errorf("worker tools: %w", err)
-	}
-	if len(tools) > 0 {
-		return taskProjection{}, fmt.Errorf("%w: named worker.tools cannot be mapped to a verified Qoder built-in tool identifier", ErrUnsupportedWorkerTools)
 	}
 	return taskProjection{model: task.Worker.Model, disableAllTools: tools != nil}, nil
 }

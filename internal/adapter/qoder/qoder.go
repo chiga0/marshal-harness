@@ -778,6 +778,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	task, err := readTaskProjection(controlRoot, request.TaskSpecPath)
 	if err != nil {
+		if errors.Is(err, ErrUnsupportedWorkerTools) {
+			return domain.Record{}, fmt.Errorf("%w: %w", qoderProtocolInvalid("named worker tools unsupported", a.now()), ErrUnsupportedWorkerTools)
+		}
 		return domain.Record{}, err
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(request.AttemptTimeoutSeconds)*time.Second)

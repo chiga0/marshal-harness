@@ -51,6 +51,7 @@ python3 -I -B .agents/skills/marshal/references/validate-codex-provider-schema-p
 - failure/retry 分类只消费 Core 已持久化 typed failure/Outcome；watchdog/doctor 是诊断证据，不是 retry authority。Core 没有 typed failure或类别未知时 fail closed。
 - 只有 Core 判断为 transient provider timeout、DNS/rate-limit 或 transport backpressure 且 preflight 仍匹配，才按 Policy 在原 taskId 做有限 operational retry；记录 attempt、预算和 backoff。
 - `result-missing`、path/protocol/identity/version drift、旧 artifact/base、verification 后 worktree 变化属于结构性 `protocol-invalid/do-not-retry` 路径：同一稳定 failure signature 只消费一次裁决，修 Adapter/Core/TaskSpec 后通过 CLI 建 fresh-base successor。
+- Qoder/Codex 的冻结 argv 当前不能表达非空 named `worker.tools`。plan pre-mortem 必须先以 `adapter-named-worker-tools-unsupported` 阻断；即使绕过该 operator gate，Adapter `Run` 仍返回 typed `protocol-invalid/do-not-retry` 并保留各自 `ErrUnsupportedWorkerTools` identity，禁止归为 `connection-failure/retryable`。缺省和显式空数组继续使用各 Adapter 已冻结的既有投影语义。
 - successor 不重置人工预算。稳定签名绑定 `sourceHead + executable digest + authority mode + protocol/result transport digest + Core failure kind/evidence digest`；签名未变不得再次派发。签名仅供 operator admission，不能替代 Core retry/rework/Policy。
 
 ## WorkerResult transport

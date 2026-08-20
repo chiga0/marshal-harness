@@ -2,12 +2,50 @@ package denials
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestProjectDeclaredWorkerToolsPreservesAbsenceAndEmptyAndRejectsUnsupportedNamed(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		raw           string
+		supportsNamed bool
+		wantNil       bool
+		want          []string
+		wantErr       error
+	}{
+		{name: "absent", raw: `{"worker":{}}`, wantNil: true},
+		{name: "explicit-empty", raw: `{"worker":{"tools":[]}}`, want: []string{}},
+		{name: "named-unsupported", raw: `{"worker":{"tools":["read","write"]}}`, wantErr: ErrNamedWorkerToolsUnsupported},
+		{name: "named-supported", raw: `{"worker":{"tools":["read","write"]}}`, supportsNamed: true, want: []string{"read", "write"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := ProjectDeclaredWorkerTools([]byte(test.raw), test.supportsNamed)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("error = %v, want %v", err, test.wantErr)
+			}
+			if test.wantErr != nil {
+				return
+			}
+			if test.wantNil != (got == nil) {
+				t.Fatalf("tools = %#v, want nil=%v", got, test.wantNil)
+			}
+			if len(got) != len(test.want) {
+				t.Fatalf("tools = %#v, want %#v", got, test.want)
+			}
+			for index := range got {
+				if got[index] != test.want[index] {
+					t.Fatalf("tools = %#v, want %#v", got, test.want)
+				}
+			}
+		})
+	}
+}
 
 func TestIsPermissionErrorUsesFixedKeywordsOnly(t *testing.T) {
 	for _, text := range []string{

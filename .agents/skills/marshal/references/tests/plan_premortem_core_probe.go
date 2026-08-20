@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/adapter"
+	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
@@ -121,6 +122,14 @@ func main() {
 	}
 	if !eligibleSelectedAdapter(input.SelectedAdapter, effective) {
 		emitFail("selected-adapter-policy-mismatch")
+	}
+	if input.SelectedAdapter == "qoder" || input.SelectedAdapter == "codex" {
+		if _, err := denials.ProjectDeclaredWorkerTools(taskRaw, false); err != nil {
+			if errors.Is(err, denials.ErrNamedWorkerToolsUnsupported) {
+				emitFail("adapter-named-worker-tools-unsupported")
+			}
+			emitFail("task-spec-contract-invalid")
+		}
 	}
 	if input.SelectedAdapter == "qoder" {
 		if reason := qoderDeliverableParents(task); reason != "" {
