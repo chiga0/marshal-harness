@@ -819,7 +819,6 @@ func digestBytes(data []byte) string {
 
 type taskProjection struct {
 	model string
-	tools []string
 }
 
 // readTaskProjection 对冻结 TaskSpec 只做一次受限读取；model 与 tools 从
@@ -844,11 +843,14 @@ func readTaskProjection(controlRoot *os.File, relative, expectedDigest string, v
 	if err := json.Unmarshal(data, &task); err != nil {
 		return taskProjection{}, fmt.Errorf("parse TaskSpec: %w", err)
 	}
-	tools, err := denials.ParseDeclaredWorkerTools(data)
+	_, err = denials.ProjectDeclaredWorkerTools(data, false)
 	if err != nil {
+		if errors.Is(err, denials.ErrNamedWorkerToolsUnsupported) {
+			return taskProjection{}, fmt.Errorf("%w: named worker.tools cannot be mapped to the frozen Codex argv", ErrUnsupportedWorkerTools)
+		}
 		return taskProjection{}, fmt.Errorf("worker tools: %w", err)
 	}
-	return taskProjection{model: task.Worker.Model, tools: tools}, nil
+	return taskProjection{model: task.Worker.Model}, nil
 }
 
 // readInputFileAt 从钉住的 controlRoot dirfd 开始逐组件 openat，拒绝

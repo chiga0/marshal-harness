@@ -2415,6 +2415,11 @@ func TestRunRejectsNamedWorkerToolsBeforeLaunch(t *testing.T) {
 	writeJSON(t, filepath.Join(fixture.controlRoot, "input", "task-spec.json"), map[string]any{"worker": map[string]any{"model": "provider/model", "tools": []string{"read"}}})
 	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrUnsupportedWorkerTools) {
 		t.Fatalf("error = %v, want unsupported worker tools", err)
+	} else {
+		failure, ok := port.AsAdapterFailure(err)
+		if !errors.Is(err, ErrProtocol) || !ok || failure.Adapter != port.AdapterIDQoder || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+			t.Fatalf("error = %v, want typed qoder protocol-invalid/do-not-retry preserving sentinels", err)
+		}
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("worker launched with an unverified named tool mapping")

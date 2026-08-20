@@ -630,14 +630,12 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	defer evidenceDir.close()
 	projection, err := readTaskProjection(controlRoot.file, request.TaskSpecPath, request.SpecDigest, a.validator)
 	if err != nil {
+		if errors.Is(err, ErrUnsupportedWorkerTools) {
+			return domain.Record{}, newCodexFailure(port.FailureKindProtocolInvalid, ErrUnsupportedWorkerTools, "named worker tools unsupported", a.now())
+		}
 		return domain.Record{}, err
 	}
 	a.callTestHook("after-task-projection")
-	// 本切片的冻结 argv 无法机械表达逐工具 allowlist；非空声明在启动前
-	// fail closed，绝不静默扩大工具面。
-	if len(projection.tools) > 0 {
-		return domain.Record{}, fmt.Errorf("%w: the frozen codex argv cannot express a per-tool allowlist", ErrUnsupportedWorkerTools)
-	}
 	schemaDocument, err := contract.SchemaDocument("worker-result")
 	if err != nil {
 		return domain.Record{}, codexProtocolFailure("durable output schema is unavailable", a.now())

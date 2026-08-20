@@ -1124,6 +1124,8 @@ func TestRunRejectsDeclaredWorkerToolsBeforeLaunch(t *testing.T) {
 		fixture.replaceTaskSpec(t, "provider/model", []string{"read"})
 		if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrUnsupportedWorkerTools) {
 			t.Fatalf("err = %v, want ErrUnsupportedWorkerTools", err)
+		} else {
+			assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
 		}
 		if _, err := os.Stat(marker); !os.IsNotExist(err) {
 			t.Fatal("worker process was launched despite a declared tool allowlist")

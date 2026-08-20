@@ -139,8 +139,8 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         environment.update({
             "MARSHAL_OPENCODE_PATH": "", "MARSHAL_QWEN_PATH": "", "MARSHAL_PI_PATH": "",
             "MARSHAL_QODER_PATH": str(self.qoder), "MARSHAL_QODER_MODE": "ordinary-user",
-            "MARSHAL_QODER_CONFORMANCE_CONFIG": "", "MARSHAL_CODEX_PATH": "",
-            "MARSHAL_CODEX_MODE": "", "MARSHAL_CODEX_AUTHORITY_CONFIG": "",
+            "MARSHAL_QODER_CONFORMANCE_CONFIG": "", "MARSHAL_CODEX_PATH": str(self.codex),
+            "MARSHAL_CODEX_MODE": "ordinary-user", "MARSHAL_CODEX_AUTHORITY_CONFIG": "",
         })
         completed = subprocess.run(
             [sys.executable, "-I", "-B", str(VALIDATOR), "--root", str(self.operator), "--manifest", "manifest.json", "--checker", str(self.checker)],
@@ -162,6 +162,16 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         self.assertEqual(result["authorityMode"], "ordinary-user")
         self.assertEqual(result["selectedAdapter"], "qoder")
         self.assertFalse(self.worker_marker.exists())
+
+    def test_qoder_explicit_empty_worker_tools_passes(self) -> None:
+        self.task["worker"]["tools"] = []
+        code, result = self.invoke()
+        self.assertEqual((code, result["reasonCode"]), (0, "plan-premortem-pass"))
+        self.assertFalse(self.worker_marker.exists())
+
+    def test_qoder_named_worker_tools_fail_before_probe(self) -> None:
+        self.task["worker"]["tools"] = ["read", "write"]
+        self.assert_reason("adapter-named-worker-tools-unsupported")
 
     def test_missing_required_acceptance_command_fails_before_probe(self) -> None:
         self.task["acceptance"]["commands"][0]["required"] = False
@@ -191,32 +201,26 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         self.task["worker"]["preferredAdapter"] = "codex"
         self.policy["effective"]["allowedAdapters"] = ["codex"]
         self.policy = self.seal_policy(self.policy)
-        task_raw = compact(self.task)
-        policy_raw = compact(self.policy)
-        (self.operator / "task-spec.json").write_bytes(task_raw)
-        (self.operator / "policy-snapshot.json").write_bytes(policy_raw)
-        manifest = {
-            "apiVersion": "marshal.operator/v1alpha1", "kind": "PlanPremortemPreflight",
-            "runId": "run-premortem-1", "selectedAdapter": "codex", "sourceHead": self.source_head,
-            "taskSpec": {"path": "task-spec.json", "digest": digest(task_raw)},
-            "policySnapshot": {"path": "policy-snapshot.json", "digest": digest(policy_raw)},
-        }
-        (self.operator / "manifest.json").write_bytes(compact(manifest))
-        environment = os.environ.copy()
-        environment.update({
-            "MARSHAL_OPENCODE_PATH": "", "MARSHAL_QWEN_PATH": "", "MARSHAL_PI_PATH": "",
-            "MARSHAL_QODER_PATH": "", "MARSHAL_QODER_MODE": "", "MARSHAL_QODER_CONFORMANCE_CONFIG": "",
-            "MARSHAL_CODEX_PATH": str(self.codex), "MARSHAL_CODEX_MODE": "ordinary-user",
-            "MARSHAL_CODEX_AUTHORITY_CONFIG": "",
-        })
-        completed = subprocess.run(
-            [sys.executable, "-I", "-B", str(VALIDATOR), "--root", str(self.operator), "--manifest", "manifest.json", "--checker", str(self.checker)],
-            cwd=REPOSITORY, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stdout)
-        result = json.loads(completed.stdout)
+        code, result = self.invoke()
+        self.assertEqual(code, 0, result)
         self.assertEqual((result["selectedAdapter"], result["authorityMode"]), ("codex", "ordinary-user"))
         self.assertFalse(self.worker_marker.exists())
+
+    def test_codex_explicit_empty_worker_tools_passes(self) -> None:
+        self.task["worker"]["preferredAdapter"] = "codex"
+        self.task["worker"]["tools"] = []
+        self.policy["effective"]["allowedAdapters"] = ["codex"]
+        self.policy = self.seal_policy(self.policy)
+        code, result = self.invoke()
+        self.assertEqual((code, result["reasonCode"]), (0, "plan-premortem-pass"))
+        self.assertFalse(self.worker_marker.exists())
+
+    def test_codex_named_worker_tools_fail_before_probe(self) -> None:
+        self.task["worker"]["preferredAdapter"] = "codex"
+        self.task["worker"]["tools"] = ["read", "write"]
+        self.policy["effective"]["allowedAdapters"] = ["codex"]
+        self.policy = self.seal_policy(self.policy)
+        self.assert_reason("adapter-named-worker-tools-unsupported")
 
     def test_template_validates_against_draft_2020_12_schema(self) -> None:
         probe = self.build / "schema-probe"

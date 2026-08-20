@@ -8,6 +8,7 @@ package denials
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,12 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrNamedWorkerToolsUnsupported means the selected adapter cannot project a
+// non-empty TaskSpec worker.tools allowlist onto its verified provider argv.
+// Callers wrap this shared projection sentinel in the adapter-specific typed
+// protocol failure; plan pre-mortem uses the same function before launch.
+var ErrNamedWorkerToolsUnsupported = errors.New("named worker tools unsupported")
 
 // Grade is the binary verdict for one denial event.
 type Grade string
@@ -136,6 +143,22 @@ func ParseDeclaredWorkerTools(taskSpecData []byte) ([]string, error) {
 	}
 	if err := ValidateAllowlist(tools); err != nil {
 		return nil, err
+	}
+	return tools, nil
+}
+
+// ProjectDeclaredWorkerTools parses the frozen declaration and applies the
+// selected adapter's named-tool capability without losing the distinction
+// between an absent declaration (nil) and an explicit empty declaration.
+// Qoder and Codex pass supportsNamed=false because their verified argv cannot
+// express per-tool allowlists; adapters with a reviewed mapping pass true.
+func ProjectDeclaredWorkerTools(taskSpecData []byte, supportsNamed bool) ([]string, error) {
+	tools, err := ParseDeclaredWorkerTools(taskSpecData)
+	if err != nil {
+		return nil, err
+	}
+	if len(tools) > 0 && !supportsNamed {
+		return nil, ErrNamedWorkerToolsUnsupported
 	}
 	return tools, nil
 }

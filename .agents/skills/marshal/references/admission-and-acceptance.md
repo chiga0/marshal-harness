@@ -76,6 +76,7 @@ python3 -I -B .agents/skills/marshal/references/validate-plan-premortem-prefligh
 - `policy-approval-gates-conflict`：Policy 的 approval gates 与控制语义冲突；
 - `policy-publication-merge-conflict`：publication/merge 开关、provider、method 或 required checks 不一致；
 - `adapter-ordinary-user-execution-profile-unsupported`：所选普通用户 Adapter 不支持 TaskSpec 的 `executionProfile`；不得把 ordinary-user 能力升级描述成 delegated authority；
+- `adapter-named-worker-tools-unsupported`：所选 Qoder/Codex 的已验证 argv 无法表达非空 `worker.tools`；缺省或显式空数组可继续，named allowlist 必须先从 TaskSpec 移除或改选具备已验证映射的 Adapter；
 - `qoder-deliverable-parent-missing`：Qoder required path deliverable 的父目录在锁定 Git tree 中不存在；先修 TaskSpec 或在基线中建立父目录，不把结构性错误转成 Worker rework。
 
 其它 contract、路径、摘要、Adapter 配置/选择或 capability 失败也以稳定 `reasonCode` fail closed。wrapper 逐级 nofollow、有界读取并复核输入 fd identity，把已持有的精确字节复制到私有临时目录后调用一次 probe；输出不包含 executable、仓库、输入文件或临时目录路径。该工具是减少确定性 rework 的前置过滤器，不能替代后续 doctor、admission、独立 reviewer 或 Core 生命周期命令。
