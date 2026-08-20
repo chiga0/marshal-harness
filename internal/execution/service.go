@@ -2810,7 +2810,7 @@ const workerResultTemplateSection = `## WorkerResult 输出模板
 ` + "```\n\n" + `模板填写规则：
 
 1. session 为可选字段：ephemeral 会话一律省略整个 session 字段，不得虚构，也不得填写空字符串。
-2. declaredChangedFiles、declaredArtifacts、declaredCommands、declaredRisks 可为空数组，但必须存在，不得省略整个字段。declaredChangedFiles 与 declaredRisks 的数组元素必须是字符串；declaredCommands 的数组元素必须是形如 {"commandId": "<id>", "status": "passed|failed|not-run|unknown", "summary": "<可选摘要>"} 的对象；declaredArtifacts 的数组元素必须是形如 {"id": "<id>", "kind": "<kind>", "path": "<相对路径>"} 的对象。无内容可申报时一律留空数组。
+2. declaredChangedFiles、declaredArtifacts、declaredCommands、declaredRisks 可为空数组，但必须存在，不得省略整个字段。declaredChangedFiles 与 declaredRisks 的数组元素必须是字符串；declaredCommands 的数组元素必须是形如 {"commandId": "<稳定短 ID>", "status": "passed|failed|not-run|unknown", "summary": "<可选摘要>"} 的对象。commandId 只能是 1–128 个 ASCII 字符 [A-Za-z0-9._:-] 且首字符必须为字母或数字（例如 go-test-provider、diff-check）；完整 shell 命令、路径、空格、引号和环境变量只能放入 summary，不能放入 commandId。declaredArtifacts 的数组元素必须是形如 {"id": "<稳定短 ID>", "kind": "<kind>", "path": "<相对路径>"} 的对象；id 同样只能使用上述稳定短 ID 规则。无内容可申报时一律留空数组。
 3. adapter.executable、adapter.version、startedAt、completedAt 这四个字段一律逐字复制模板中的固定 sentinel：executable 与 version 复制 "provided-by-marshal-adapter"，startedAt 与 completedAt 复制 "2000-01-01T00:00:00Z"（合法 RFC3339 时间）。Marshal 会以实际观测值覆盖这些不可信的运行元数据；Worker 不得为填写它们执行任何宿主探测（例如 which、--version、date 或读取环境变量），也不得虚构其它值。
 4. declaredCommands 必须如实申报本 Attempt 实际执行的所有开发与自测命令及其结果，不得申报未执行的命令，也不得用笼统摘要隐藏额外 executable；read/edit/write 类工具调用不需要逐条申报。
 `
