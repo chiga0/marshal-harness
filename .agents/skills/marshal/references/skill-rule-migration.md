@@ -9,7 +9,7 @@
 | frontmatter、显式/隐式触发、Core authority、不可绕过边界 | `SKILL.md` |
 | plan→approve→run→verify→review、terminal/PUBLISHING/CI_PENDING 分支、最短命令 | `SKILL.md`；发布细节在 `publication-and-reconcile.md` |
 | Decision 身份摘要、verdict、Required Gate、Blocking Finding | `SKILL.md`；完整审查在 `review-and-rework.md` |
-| TaskSpec scaffold、自包含 context、acceptance purity/semantic preflight、正反 fixture、零匹配 selector | `admission-and-acceptance.md` |
+| TaskSpec scaffold、自包含 context、统一 `--phase plan` 入口、acceptance purity/semantic preflight、正反 fixture、零匹配 selector | `admission-and-acceptance.md` |
 | admission receipt、plan approval/digest、scope/worktree/pre-mortem、结构性 finding 分类 | `admission-and-acceptance.md` |
 | REVIEW_PENDING 一 heartbeat、rework 归因、closure matrix、negative receipt、freshness 原子 claim | `review-and-rework.md` |
 | executable/config、Mac 实证复用、ordinary-user、Qoder transcript attestation、Adapter 晋升阶梯、failure signature/预算 | `adapter-promotion-and-mac.md` |

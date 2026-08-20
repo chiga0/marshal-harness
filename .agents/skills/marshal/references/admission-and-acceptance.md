@@ -10,6 +10,27 @@
 - `templates/research-task.json` 是单 Attempt、零 rework、无 fallback 的降耗起点，不得硬编码 WorkerResult 路径、shell 写入 primitive 或 Provider 私有 transport；这些只由 Adapter prompt 投影。
 - `task run` 报“缺少当前有效 plan 审批”或等价错误是 Core admission 阻断，不是 Worker/Provider failure。先重建当前 plan/approval 并核对 digest，未修复前不得重复 `task run` 或计入 retry。
 
+## 统一 plan phase preflight
+
+正常 operator 工作流只使用 `marshal-fastpath-preflight.py --phase plan` 这一入口，不分别手工拼接 semantic acceptance 与 plan pre-mortem。先显式声明 `--task-kind content` 或 `--task-kind non-content`；content 必须提供 semantic manifest、正反 fixtures 与 clean linked worktree，non-content 必须省略 semantic manifest，并在 receipt 中留下 `status=not-applicable`、`reasonCode=non-content-task-declared`。Required `documentation`/`report` deliverable、`other`/`diagnostic` 的明确文本 `mediaType` 或 canonical content gate 被声明成 non-content 时固定以 `content-task-semantic-manifest-required` fail closed，不能静默跳过。
+
+```bash
+go build -o "$OPERATOR_ROOT/plan-premortem-core-probe" \
+  .agents/skills/marshal/references/tests/plan_premortem_core_probe.go
+python3 -I -B .agents/skills/marshal/references/marshal-fastpath-preflight.py \
+  --phase plan \
+  --task-kind content \
+  --root "$OPERATOR_ROOT" \
+  --plan-manifest plan-premortem-preflight.json \
+  --acceptance-manifest acceptance-semantic-manifest.json \
+  --protected-root "$CLEAN_WORKTREE" \
+  --checker "$OPERATOR_ROOT/plan-premortem-core-probe"
+```
+
+统一入口对 content 先执行 semantic acceptance，再执行 plan pre-mortem；只有两者都 pass，且两份证据绑定同一 raw `taskSpecDigest` 与 `sourceHead`，才输出 `reasonCode=combined-plan-preflight-pass` 和 `combinedDigest`。semantic child 对每个 fixture 只读取一次，同一份 held bytes 同时用于语义判断、临时命令与 receipt 的 `semanticManifestDigest`/`fixtureAggregateDigest`；wrapper 复核 child 与外部前后证据，拒绝 ABA。任一 fixture bytes 变化都会产生不同 receipt。两个 child phase 分别使用有上限的 timeout；超时只终止本入口创建的进程组，grace 后检查并以 `SIGKILL` 清理仍存活成员，复核进程组消失，再稳定返回 `acceptance-semantic-timeout` 或 `plan-premortem-timeout`。任一 component failure 原样保留固定 `reasonCode` 与 `stage`，在 `task plan` 前止损。non-content 分支仍执行 plan pre-mortem，并把显式不适用裁决纳入同一个 `combinedDigest`。
+
+此 combined receipt 仍是 operator-local 证据，不是 plan approval、Run admission 或 Core authority。本切片不修改 admission receipt、production validator 或 Schema；下一独立切片再评估 admission receipt 是否需要绑定 `combinedDigest`，如需扩大生产 validator/Schema，必须重新做治理与兼容门禁。
+
 ## 零 Attempt admission
 
 `task run` 前逐项关闭以下条件；任何未知或失败都只记录 admission finding，不启动 Worker、不消费 Attempt/retry：
@@ -58,7 +79,7 @@ python3 -I -B .agents/skills/marshal/references/validate-admission-receipt.py \
 
 在 `task plan` 前，对拟使用的 TaskSpec、PolicySnapshot、锁定 `sourceHead` 和所选 Adapter 只运行一次 operator-local pre-mortem。它直接复用 Core 的 TaskSpec/PolicySnapshot/CapabilitySnapshot Schema、`ValidateTaskSpecAcceptanceFloor`、`ValidatePolicy`、`WorkerRuntime.Selector.Probe` 与 `ValidateCapability`；只执行 Adapter 的 version/capability probe，不调用 `Worker.Run`、不创建 Attempt、不读写 `.marshal`，也不产生 Core authority。
 
-从 `templates/plan-premortem-preflight.json` 复制 manifest，把 TaskSpec 与 PolicySnapshot 放入同一紧凑 operator root，填入两份文件的原始 `sha256:` 摘要、锁定的 40 位 commit、`runId` 和本次唯一所选 Adapter。operator root 必须在 `.marshal` 外，所有绑定路径必须是无 symlink 的相对 regular file。先从当前锁定源码构建相邻只读 Core probe，再运行 wrapper：
+从 `templates/plan-premortem-preflight.json` 复制 manifest，把 TaskSpec 与 PolicySnapshot 放入同一紧凑 operator root，填入两份文件的原始 `sha256:` 摘要、锁定的 40 位 commit、`runId` 和本次唯一所选 Adapter。operator root 必须在 `.marshal` 外，所有绑定路径必须是无 symlink 的相对 regular file。正常 plan 由上面的统一入口调用本 component；仅开发或诊断 validator 时才单独运行：
 
 ```bash
 OPERATOR_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
@@ -102,7 +123,7 @@ python3 -I -B .agents/skills/marshal/references/validate-plan-premortem-prefligh
 ./bin/marshal contract validate --schema task-spec TASK.json
 ```
 
-把 manifest、TaskSpec、fixtures 放入紧凑的 `FIXTURE_ROOT`；从锁定 `SOURCE_HEAD` 创建无 `.marshal`、无未提交文件的 detached/linked `CLEAN_WORKTREE`，再执行：
+把 manifest、TaskSpec、fixtures 放入紧凑的 `FIXTURE_ROOT`；从锁定 `SOURCE_HEAD` 创建无 `.marshal`、无未提交文件的 detached/linked `CLEAN_WORKTREE`。正常 plan 由统一入口调用本 component；仅开发或诊断 validator 时才单独执行：
 
 ```bash
 python3 -B .agents/skills/marshal/references/validate-acceptance-semantic-preflight.py \

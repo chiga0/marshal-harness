@@ -140,6 +140,31 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
         self.assertEqual(payload["normalizer"], "markdown-backtick-strip+nfkc-casefold")
         self.assertEqual(payload["positiveFixtures"], 1)
         self.assertEqual(payload["negativeFixtures"], 5)
+        self.assertEqual(payload["fixtureCount"], 6)
+        self.assertRegex(payload["semanticManifestDigest"], r"^sha256:[0-9a-f]{64}$")
+        self.assertRegex(payload["fixtureAggregateDigest"], r"^sha256:[0-9a-f]{64}$")
+
+    def test_nfkc_fullwidth_colon_covers_all_semantic_rule_paths(self) -> None:
+        gate = {
+            "normalizer": "nfkc-casefold",
+            "minimumLineCount": 1,
+            "maximumBytes": 4096,
+            "required_all": ["heading: value"],
+            "required_any": [["authority: boundary", "trust: boundary"]],
+            "forbidden": ["unsafe: override"],
+        }
+        cases = (
+            ("required_all", "heading： value; authority: boundary", None),
+            ("required_any", "heading: value; authority： boundary", None),
+            (
+                "forbidden",
+                "heading: value; authority: boundary; unsafe： override",
+                "forbidden-present",
+            ),
+        )
+        for rule, document, expected in cases:
+            with self.subTest(rule=rule):
+                self.assertEqual(VALIDATOR_MODULE.semantic_reason(document, gate), expected)
 
     def test_fixture_tasks_are_real_contract_valid_taskspecs(self) -> None:
         for name in ("task-spec-r1.json", "task-spec-r2.json"):
@@ -235,7 +260,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             VALIDATOR_MODULE.run_command(
                 command,
                 "reports/adr-0035.md",
-                fixture,
+                fixture.read_bytes(),
                 protected_before,
             ),
             0,
@@ -487,7 +512,12 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
 
             with mock.patch.object(VALIDATOR_MODULE.subprocess, "run", side_effect=mutate):
                 with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
-                    VALIDATOR_MODULE.run_command(command, "reports/adr-0035.md", fixture, before)
+                    VALIDATOR_MODULE.run_command(
+                        command,
+                        "reports/adr-0035.md",
+                        fixture.read_bytes(),
+                        before,
+                    )
             self.assertEqual(raised.exception.reason_code, "protected-root-side-effect")
 
     def test_live_runtime_root_is_rejected_before_tree_walk(self) -> None:
