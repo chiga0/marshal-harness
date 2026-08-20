@@ -16,7 +16,7 @@
         "required": ["action", "reasonCode", "dedupeKey", "freshnessFingerprint", "previousHistoryRawDigest"],
         "properties": {
           "action": { "enum": ["generate-review-packet", "dispatch-reviewer"] },
-          "reasonCode": { "enum": ["packet-missing-generation-claimed", "fresh-review-packet-claimed"] },
+          "reasonCode": { "enum": ["packet-missing-generation-claimed", "previous-round-packet-generation-claimed", "fresh-review-packet-claimed"] },
           "dedupeKey": { "$ref": "#/$defs/digest" },
           "freshnessFingerprint": { "$ref": "#/$defs/digest" },
           "previousHistoryRawDigest": { "$ref": "#/$defs/digest" }
