@@ -335,9 +335,10 @@ func TestRunClassifiesStructuredProviderTerminalFailures(t *testing.T) {
 
 // TestRunPreInitTerminalProtocolMatrix freezes the provider-observed startup
 // shape where Qwen can report a terminal failure before emitting system/init.
-// Only a failure terminal may bypass init: malformed/trailing/duplicate/process
-// conflict evidence remains structural and the established initialized flows
-// keep their existing outcomes.
+// Only a failure terminal may bypass init: its following nonzero exit/signal is
+// the same terminal fact, while malformed/trailing/duplicate evidence remains
+// structural and the established initialized flows keep their existing
+// outcomes.
 func TestRunPreInitTerminalProtocolMatrix(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -422,9 +423,19 @@ func TestRunPreInitTerminalProtocolMatrix(t *testing.T) {
 				terminalLine(`{"type":"result","subtype":"error_during_execution"}`),
 				"exit 3",
 			}, "\n"),
-			kind:        port.FailureKindProtocolInvalid,
+			kind:        port.FailureKindProviderTerminal,
 			disposition: port.RetryDispositionDoNotRetry,
-			detail:      "structured terminal failure conflicts with attempt termination",
+			detail:      "provider reported a terminal error before init",
+		},
+		{
+			name: "pre-init-terminal-signal-is-same-terminal-fact",
+			body: strings.Join([]string{
+				terminalLine(`{"type":"result","subtype":"error_during_execution","is_error":true,"error":{"message":"redacted"}}`),
+				"kill -9 $$",
+			}, "\n"),
+			kind:        port.FailureKindProviderTerminal,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "provider reported a terminal error before init",
 		},
 		{
 			name:        "initialized-provider-terminal",
@@ -483,6 +494,31 @@ func TestRunPreInitTerminalProtocolMatrix(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunPreInitTerminalCannotAbsorbMarshalOutputLimit(t *testing.T) {
+	body := strings.Join([]string{
+		terminalLine(`{"type":"result","subtype":"error_during_execution","is_error":true,"error":{"message":"redacted"}}`),
+		"printf '%4096s' x",
+	}, "\n")
+	fixture := newRunFixtureWith(t, supportedBinary, body, 1024)
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	failure, ok := port.AsAdapterFailure(err)
+	if !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry || !errors.Is(err, ErrProtocol) {
+		t.Fatalf("err = %v, want output-limit conflict protocol-invalid/do-not-retry", err)
+	}
+	if errors.Is(err, ErrOutputLimit) || failure.Kind == port.FailureKindProviderTerminal {
+		t.Fatalf("Marshal output-limit kill was absorbed by provider terminal: %v", err)
+	}
+	metadata, metaErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qwen-transcript-meta.json"))
+	if metaErr != nil {
+		t.Fatal(metaErr)
+	}
+	for _, want := range []string{`"outputTruncated": true`, `"failureKind": "protocol-invalid"`, `"retryDisposition": "do-not-retry"`} {
+		if !strings.Contains(string(metadata), want) {
+			t.Fatalf("metadata missing %s: %s", want, metadata)
+		}
 	}
 }
 

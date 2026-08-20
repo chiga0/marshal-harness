@@ -1,6 +1,7 @@
 package qwen
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -160,6 +161,12 @@ func containsArgument(arguments []string, target string) bool {
 }
 
 func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	settingsPath := filepath.Join(home, ".qwen", "settings.json")
+	writeJSON(t, settingsPath, map[string]any{
+		"security": map[string]any{"auth": map[string]any{"selectedType": "qwen-oauth"}},
+	})
 	for _, test := range []struct {
 		version, status string
 		expectErrors    bool
@@ -175,6 +182,7 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			setAuthSettingsPaths(adapter, settingsPath)
 			record, err := adapter.Probe(context.Background())
 			if err != nil {
 				t.Fatal(err)
@@ -221,6 +229,7 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		setAuthSettingsPaths(adapter, settingsPath)
 		record, err := adapter.Probe(context.Background())
 		if err != nil {
 			t.Fatal(err)
@@ -243,10 +252,210 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		setAuthSettingsPaths(adapter, settingsPath)
 		if _, err := adapter.Probe(context.Background()); err == nil || !strings.Contains(err.Error(), "unrecognized version") {
 			t.Fatalf("err = %v", err)
 		}
 	})
+}
+
+func TestProbeFailsClosedWhenNonInteractiveAuthTypeIsMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	secret := "must-not-leak-qwen-credential"
+	settingsPath := filepath.Join(home, ".qwen", "settings.json")
+	writeJSON(t, settingsPath, map[string]any{
+		"modelProviders": map[string]any{"provider": map[string]any{"apiKey": secret}},
+	})
+	adapter, err := New(fakeExecutable(t, supportedBinary, "", "", "exit 0"), newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setAuthSettingsPaths(adapter, settingsPath)
+	record, err := adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(record.Data), secret) {
+		t.Fatalf("CapabilitySnapshot leaked a credential: %s", record.Data)
+	}
+	var snapshot struct {
+		ProbeStatus string   `json:"probeStatus"`
+		ProbeErrors []string `json:"probeErrors"`
+	}
+	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ProbeStatus != "unsupported" || len(snapshot.ProbeErrors) != 1 || !strings.Contains(snapshot.ProbeErrors[0], "未选择 auth type") {
+		t.Fatalf("snapshot = %+v, want auth-not-ready unsupported", snapshot)
+	}
+}
+
+func TestProbeAcceptsSelectedAuthTypeFromCommentedSettingsWithoutCredentialProjection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	secret := "must-not-leak-commented-credential"
+	settingsPath := filepath.Join(home, ".qwen", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings := "{\n  // ordinary-user selection\n  \"security\": {\"auth\": {\"selectedType\": \"openai\"}},\n  \"modelProviders\": {\"provider\": {\"baseUrl\": \"https://example.invalid/v1\", \"apiKey\": \"" + secret + "\"}}\n}\n"
+	if err := os.WriteFile(settingsPath, []byte(settings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := New(fakeExecutable(t, supportedBinary, "", "", "exit 0"), newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setAuthSettingsPaths(adapter, settingsPath)
+	record, err := adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(record.Data), secret) {
+		t.Fatalf("CapabilitySnapshot leaked a credential: %s", record.Data)
+	}
+	var snapshot struct {
+		ProbeStatus string   `json:"probeStatus"`
+		ProbeErrors []string `json:"probeErrors"`
+	}
+	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ProbeStatus != "supported" || len(snapshot.ProbeErrors) != 0 {
+		t.Fatalf("snapshot = %+v, want supported auth readiness", snapshot)
+	}
+}
+
+func TestAuthSettingsPrecedenceAndFailureMatrix(t *testing.T) {
+	selected := []byte(`{"security":{"auth":{"selectedType":"openai"}}}`)
+	emptySelection := []byte(`{"security":{"auth":{"selectedType":""}}}`)
+	empty := []byte(`{}`)
+	commented := []byte("{/* block */\n\"security\":{\"auth\":{\"selectedType\":\"openai\"}},\"note\":\"https://example.invalid/a/*literal*/b//c\"}")
+	for _, test := range []struct {
+		name                         string
+		systemDefaults, user, system []byte
+		workspace                    []byte
+		readError                    bool
+		wantReady                    bool
+	}{
+		{name: "system-defaults-selected", systemDefaults: selected, user: empty, system: empty, wantReady: true},
+		{name: "user-clears-system-defaults", systemDefaults: selected, user: emptySelection, system: empty, wantReady: false},
+		{name: "user-overrides-empty-system-defaults", systemDefaults: emptySelection, user: selected, system: empty, wantReady: true},
+		{name: "system-clears-user", systemDefaults: selected, user: selected, system: emptySelection, wantReady: false},
+		{name: "system-overrides-empty-user", systemDefaults: emptySelection, user: emptySelection, system: selected, wantReady: true},
+		{name: "all-missing", wantReady: false},
+		{name: "unreadable", readError: true, wantReady: false},
+		{name: "malformed", user: []byte(`{"security":`), wantReady: false},
+		{name: "oversize", user: bytes.Repeat([]byte(" "), maxSettingsBytes+1), wantReady: false},
+		{name: "workspace-selection-is-not-authority", workspace: selected, wantReady: false},
+		{name: "comments-and-string-comment-markers", user: commented, wantReady: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			defaultsPath := filepath.Join(root, "fixed-system-defaults.json")
+			userPath := filepath.Join(root, "fixed-user.json")
+			systemPath := filepath.Join(root, "fixed-system.json")
+			workspacePath := filepath.Join(root, "workspace", ".qwen", "settings.json")
+			for path, data := range map[string][]byte{defaultsPath: test.systemDefaults, userPath: test.user, systemPath: test.system, workspacePath: test.workspace} {
+				if data == nil {
+					continue
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			invocations := filepath.Join(root, "invocations")
+			adapter, err := New(fakeExecutable(t, supportedBinary, invocations, "", "exit 0"), newValidator(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			setAuthSettingsPaths(adapter, defaultsPath, userPath, systemPath)
+			if test.readError {
+				adapter.readAuthSettings = func(string, int64) ([]byte, error) {
+					return nil, errors.New("fixture unreadable marker")
+				}
+			}
+			err = adapter.requireSelectedAuthType()
+			if test.wantReady {
+				if err != nil {
+					t.Fatalf("readiness error = %v, want ready", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrAuthNotReady) || !port.IsPermanent(err) || err.Error() != ErrAuthNotReady.Error() {
+				t.Fatalf("readiness error = %v, want fixed permanent ErrAuthNotReady", err)
+			}
+			record, probeErr := adapter.Probe(context.Background())
+			if probeErr != nil {
+				t.Fatal(probeErr)
+			}
+			serialized := string(record.Data)
+			for _, forbidden := range []string{root, workspacePath, "fixture unreadable marker", "openai", "example.invalid"} {
+				if strings.Contains(serialized, forbidden) {
+					t.Fatalf("Probe leaked forbidden settings material %q: %s", forbidden, serialized)
+				}
+			}
+			if _, statErr := os.Stat(invocations + ".invocations"); !os.IsNotExist(statErr) {
+				t.Fatalf("Probe invoked executable for failed readiness: %v", statErr)
+			}
+		})
+	}
+}
+
+func TestAuthReadinessBlocksBeforeAnyExecutableInvocation(t *testing.T) {
+	for _, failure := range []string{"missing", "unreadable"} {
+		for _, operation := range []string{"probe", "prepare-terminal", "run"} {
+			t.Run(failure+"/"+operation, func(t *testing.T) {
+				fixture := newRunFixture(t, supportedBinary, strings.Join([]string{initEvent("session-1", supportedBinary), resultEvent("success", 1, 1)}, "\n"))
+				setAuthSettingsPaths(fixture.adapter, filepath.Join(t.TempDir(), "missing-settings.json"))
+				if failure == "unreadable" {
+					fixture.adapter.readAuthSettings = func(string, int64) ([]byte, error) {
+						return nil, errors.New("fixture unreadable marker")
+					}
+				}
+
+				switch operation {
+				case "probe":
+					record, err := fixture.adapter.Probe(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					var snapshot struct {
+						ProbeStatus string   `json:"probeStatus"`
+						ProbeErrors []string `json:"probeErrors"`
+					}
+					if err := json.Unmarshal(record.Data, &snapshot); err != nil {
+						t.Fatal(err)
+					}
+					if snapshot.ProbeStatus != "unsupported" || len(snapshot.ProbeErrors) != 1 || snapshot.ProbeErrors[0] != "Qwen Code 非交互认证未就绪：未选择 auth type。" {
+						t.Fatalf("snapshot = %+v, want fixed auth readiness projection", snapshot)
+					}
+				case "prepare-terminal":
+					_, err := fixture.adapter.PrepareTerminal(context.Background(), fixture.request)
+					if !errors.Is(err, ErrAuthNotReady) || !port.IsPermanent(err) {
+						t.Fatalf("PrepareTerminal() error = %v, want permanent ErrAuthNotReady", err)
+					}
+				case "run":
+					for attempt := 0; attempt < 2; attempt++ {
+						_, err := fixture.adapter.Run(context.Background(), fixture.request)
+						if !errors.Is(err, ErrAuthNotReady) || !port.IsPermanent(err) {
+							t.Fatalf("Run() %d error = %v, want permanent ErrAuthNotReady", attempt+1, err)
+						}
+					}
+					if _, statErr := os.Stat(filepath.Join(fixture.controlRoot, "output", "qwen-transcript-meta.json")); !os.IsNotExist(statErr) {
+						t.Fatalf("attempt evidence was created despite permanent readiness rejection: %v", statErr)
+					}
+				}
+				if _, statErr := os.Stat(fixture.invocationsPath); !os.IsNotExist(statErr) {
+					t.Fatalf("qwen executable was invoked despite auth rejection: %v", statErr)
+				}
+			})
+		}
+	}
 }
 
 func TestBuildArgsLocksHardeningFlagsAndNeverGrantsYolo(t *testing.T) {
@@ -1200,12 +1409,12 @@ func assertDenialLog(t *testing.T, controlRoot string, want map[string]any) {
 }
 
 type runFixture struct {
-	adapter                           *Adapter
-	validator                         *contract.Validator
-	executable, worktree, controlRoot string
-	argsPath, envPath                 string
-	requestData                       map[string]any
-	request                           domain.Record
+	adapter                            *Adapter
+	validator                          *contract.Validator
+	executable, worktree, controlRoot  string
+	argsPath, envPath, invocationsPath string
+	requestData                        map[string]any
+	request                            domain.Record
 }
 
 func newRunFixture(t *testing.T, version, body string) runFixture {
@@ -1215,6 +1424,11 @@ func newRunFixture(t *testing.T, version, body string) runFixture {
 
 func newRunFixtureWith(t *testing.T, version, body string, maxOutputBytes int) runFixture {
 	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeJSON(t, filepath.Join(home, ".qwen", "settings.json"), map[string]any{
+		"security": map[string]any{"auth": map[string]any{"selectedType": "qwen-oauth"}},
+	})
 	logDir := t.TempDir()
 	argsPath := filepath.Join(logDir, "args.log")
 	envPath := filepath.Join(logDir, "env.log")
@@ -1224,6 +1438,7 @@ func newRunFixtureWith(t *testing.T, version, body string, maxOutputBytes int) r
 	if err != nil {
 		t.Fatal(err)
 	}
+	setAuthSettingsPaths(adapter, filepath.Join(home, ".qwen", "settings.json"))
 	worktree, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1247,7 +1462,7 @@ func newRunFixtureWith(t *testing.T, version, body string, maxOutputBytes int) r
 		"worktreePath": worktree, "controlRoot": controlRoot, "taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
 		"adapterId": adapterID, "executionProfile": "workspace-write", "sessionPolicy": "ephemeral", "attemptTimeoutSeconds": 5, "maxOutputBytes": maxOutputBytes, "reviewFindings": []any{},
 	}
-	return runFixture{adapter, validator, adapter.executable, worktree, controlRoot, argsPath, envPath, requestData, fixtureRequest(requestData)}
+	return runFixture{adapter, validator, adapter.executable, worktree, controlRoot, argsPath, envPath, argsPath + ".invocations", requestData, fixtureRequest(requestData)}
 }
 
 func (f runFixture) requestWith(overrides map[string]any) domain.Record {
@@ -1316,7 +1531,11 @@ func resultEvent(subtype string, inputTokens, outputTokens int) string {
 func fakeExecutable(t *testing.T, version, argsPath, envPath, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "qwen")
-	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' " + shellQuote(version) + "; exit 0; fi\n"
+	script := "#!/bin/sh\n"
+	if argsPath != "" {
+		script += "printf '%s\\n' \"$1\" >> " + shellQuote(argsPath+".invocations") + "\n"
+	}
+	script += "if [ \"$1\" = \"--version\" ]; then printf '%s\\n' " + shellQuote(version) + "; exit 0; fi\n"
 	if argsPath != "" {
 		script += "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > " + shellQuote(argsPath) + "\n"
 	}
@@ -1328,6 +1547,11 @@ func fakeExecutable(t *testing.T, version, argsPath, envPath, body string) strin
 		t.Fatal(err)
 	}
 	return path
+}
+
+func setAuthSettingsPaths(adapter *Adapter, paths ...string) {
+	frozen := append([]string(nil), paths...)
+	adapter.authSettingsPaths = func() []string { return append([]string(nil), frozen...) }
 }
 
 func newValidator(t *testing.T) *contract.Validator {

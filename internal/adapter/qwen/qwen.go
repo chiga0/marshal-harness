@@ -30,11 +30,12 @@ import (
 )
 
 const (
-	adapterID      = "qwen"
-	adapterVersion = "0.1.0"
-	maxPromptBytes = 256 << 10
-	maxResultBytes = 4 << 20
-	stderrLimit    = 64 << 10
+	adapterID        = "qwen"
+	adapterVersion   = "0.1.0"
+	maxPromptBytes   = 256 << 10
+	maxResultBytes   = 4 << 20
+	maxSettingsBytes = 4 << 20
+	stderrLimit      = 64 << 10
 
 	budgetToolCalls    = 200
 	budgetSessionTurns = 60
@@ -233,14 +234,17 @@ var (
 	ErrProtocol           = errors.New("invalid qwen protocol")
 	ErrPermissionDenied   = errors.New("qwen permission denied")
 	ErrProcessFailed      = errors.New("qwen process failed")
+	ErrAuthNotReady       = errors.New("qwen non-interactive auth type is not selected")
 )
 
 var versionPattern = regexp.MustCompile(`\d+\.\d+\.\d+`)
 
 type Adapter struct {
-	executable string
-	validator  *contract.Validator
-	now        func() time.Time
+	executable        string
+	validator         *contract.Validator
+	now               func() time.Time
+	authSettingsPaths func() []string
+	readAuthSettings  func(string, int64) ([]byte, error)
 }
 
 var _ port.TerminalLaunchAdapter = (*Adapter)(nil)
@@ -265,7 +269,13 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("qwen executable must be an executable regular file")
 	}
-	return &Adapter{executable: realPath, validator: validator, now: time.Now}, nil
+	return &Adapter{
+		executable:        realPath,
+		validator:         validator,
+		now:               time.Now,
+		authSettingsPaths: defaultAuthSettingsPaths,
+		readAuthSettings:  readBounded,
+	}, nil
 }
 
 func (a *Adapter) ID() string { return adapterID }
@@ -283,6 +293,9 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	}
 	if request.AdapterID != adapterID || (request.ExecutionProfile != "workspace-write" && request.ExecutionProfile != "read-only") {
 		return port.TerminalLaunchSpec{}, errors.New("WorkerRequest does not match the qwen adapter execution profile")
+	}
+	if err := a.requireSelectedAuthType(); err != nil {
+		return port.TerminalLaunchSpec{}, err
 	}
 	identity, err := a.inspect(ctx)
 	if err != nil {
@@ -333,6 +346,9 @@ func resolveTerminalInput(request workerRequest) (string, string, []byte, error)
 }
 
 func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
+	if err := a.requireSelectedAuthType(); err != nil {
+		return a.capabilitySnapshot(executableIdentity{path: a.executable, version: "unprobed"}, "unsupported", []string{"Qwen Code 非交互认证未就绪：未选择 auth type。"})
+	}
 	identity, err := a.inspect(ctx)
 	if err != nil {
 		return domain.Record{}, err
@@ -343,10 +359,14 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		status = "unsupported"
 		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Qwen Code %s，实际为 %s", strings.Join(supportedBinaries, "、"), identity.version))
 	}
+	return a.capabilitySnapshot(identity, status, probeErrors)
+}
+
+func (a *Adapter) capabilitySnapshot(identity executableIdentity, status string, probeErrors []string) (domain.Record, error) {
 	snapshot := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
-		"executable": identity.path, "executableDigest": identity.digest,
+		"executable":    identity.path,
 		"binaryVersion": identity.version, "probeStatus": status,
 		"capabilities": map[string]any{
 			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
@@ -363,6 +383,9 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		},
 		"probeErrors": probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
+	if identity.digest != "" {
+		snapshot["executableDigest"] = identity.digest
+	}
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return domain.Record{}, err
@@ -371,6 +394,150 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		return domain.Record{}, fmt.Errorf("validate CapabilitySnapshot: %w", err)
 	}
 	return domain.Record{Kind: domain.KindCapabilitySnapshot, Data: data}, nil
+}
+
+// defaultAuthSettingsPaths freezes Qwen's Mac ordinary-user precedence. The
+// adapter intentionally excludes workspace settings because Qwen may ignore
+// them under folder-trust policy, so they cannot serve as readiness authority.
+func defaultAuthSettingsPaths() []string {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" || !filepath.IsAbs(home) {
+		return nil
+	}
+	return []string{
+		filepath.Join("/Library/Application Support/QwenCode", "system-defaults.json"),
+		filepath.Join(home, ".qwen", "settings.json"),
+		filepath.Join("/Library/Application Support/QwenCode", "settings.json"),
+	}
+}
+
+// requireSelectedAuthType proves only that Qwen's effective ordinary-user
+// configuration selected a non-empty auth type. It deliberately decodes no
+// credential field and never projects the selected value. Marshal's Qwen
+// worker environment strips provider credential variables and QWEN_HOME, so
+// only the frozen system/user settings are admitted.
+func (a *Adapter) requireSelectedAuthType() error {
+	if a == nil || a.authSettingsPaths == nil || a.readAuthSettings == nil {
+		return port.Permanent(ErrAuthNotReady)
+	}
+	paths := a.authSettingsPaths()
+	if len(paths) == 0 {
+		return port.Permanent(ErrAuthNotReady)
+	}
+	selected := false
+	for _, path := range paths {
+		value, present, err := a.selectedAuthTypeSetting(path)
+		if err != nil {
+			return port.Permanent(ErrAuthNotReady)
+		}
+		if present {
+			selected = value
+		}
+	}
+	if !selected {
+		return port.Permanent(ErrAuthNotReady)
+	}
+	return nil
+}
+
+// selectedAuthTypeSetting performs a bounded partial decode. Unknown fields,
+// including provider credentials, are discarded by encoding/json and are
+// never retained, returned, logged, hashed, or included in an error.
+func (a *Adapter) selectedAuthTypeSetting(path string) (selected bool, present bool, err error) {
+	data, err := a.readAuthSettings(path, maxSettingsBytes)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	var settings struct {
+		Security struct {
+			Auth struct {
+				SelectedType json.RawMessage `json:"selectedType"`
+			} `json:"auth"`
+		} `json:"security"`
+	}
+	data, err = stripJSONComments(data)
+	if err != nil {
+		return false, false, err
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return false, false, err
+	}
+	raw := settings.Security.Auth.SelectedType
+	if len(raw) == 0 {
+		return false, false, nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false, true, err
+	}
+	return strings.TrimSpace(value) != "", true, nil
+}
+
+// stripJSONComments mirrors the JSON-with-comments surface accepted by Qwen
+// settings. Comment bytes become spaces (newlines are preserved), while JSON
+// strings and escapes remain byte-for-byte intact. The result stays local to
+// the readiness check and is never emitted.
+func stripJSONComments(data []byte) ([]byte, error) {
+	result := append([]byte(nil), data...)
+	inString := false
+	escaped := false
+	for index := 0; index < len(result); index++ {
+		current := result[index]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if current == '\\' {
+				escaped = true
+				continue
+			}
+			if current == '"' {
+				inString = false
+			}
+			continue
+		}
+		if current == '"' {
+			inString = true
+			continue
+		}
+		if current != '/' || index+1 >= len(result) {
+			continue
+		}
+		switch result[index+1] {
+		case '/':
+			result[index], result[index+1] = ' ', ' '
+			index += 2
+			for index < len(result) && result[index] != '\n' && result[index] != '\r' {
+				result[index] = ' '
+				index++
+			}
+			index--
+		case '*':
+			result[index], result[index+1] = ' ', ' '
+			index += 2
+			closed := false
+			for index < len(result) {
+				if index+1 < len(result) && result[index] == '*' && result[index+1] == '/' {
+					result[index], result[index+1] = ' ', ' '
+					index++
+					closed = true
+					break
+				}
+				if result[index] != '\n' && result[index] != '\r' {
+					result[index] = ' '
+				}
+				index++
+			}
+			if !closed {
+				return nil, errors.New("unterminated JSON comment")
+			}
+		}
+	}
+	return result, nil
 }
 
 type executableIdentity struct{ path, digest, version string }
@@ -486,6 +653,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if request.AdapterID != adapterID || (request.ExecutionProfile != "workspace-write" && request.ExecutionProfile != "read-only") {
 		return domain.Record{}, errors.New("WorkerRequest does not match the qwen adapter execution profile")
+	}
+	if err := a.requireSelectedAuthType(); err != nil {
+		return domain.Record{}, err
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(request.AttemptTimeoutSeconds)*time.Second)
 	defer cancel()
@@ -745,6 +915,9 @@ type captureResult struct {
 	terminalFailure error
 	// terminalSeen 冻结事件流："result" 或 "error"；终止后不再处理任何事件。
 	terminalSeen string
+	// preInitFailureTerminal 标记 Qwen 在 system/init 前发出的合法 failure
+	// terminal；它随后对应的非零退出或 signal 是同一终止事实的进程投影。
+	preInitFailureTerminal bool
 	// missingTerminal 标记“流结束但没有终止事件”，被取消/进程组终止/输出
 	// 上限导致的截断在 Run 里不视为协议违规。
 	missingTerminal bool
@@ -857,6 +1030,7 @@ func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit 
 				}
 				if preInitFailureTerminal {
 					result.terminalSeen = event.Type
+					result.preInitFailureTerminal = true
 					result.terminalFailure = newQwenFailure(port.FailureKindProviderTerminal, "provider reported a terminal error before init", nil, nil, now())
 					continue
 				}
@@ -1274,9 +1448,17 @@ func resolveAttemptFailure(capture captureResult, waitErr error, command *exec.C
 		return streamErr
 	}
 	terminal := capture.terminalFailure
-	if terminal != nil && (waitErr != nil || attemptContextErr != nil) {
+	if terminal != nil && capture.limitExceeded {
+		// Marshal's output-limit kill is an independent terminal authority. A
+		// provider terminal observed before init cannot absorb that kill merely
+		// because the process also exits nonzero or by signal.
+		terminal = qwenProtocolInvalid("structured terminal failure conflicts with output limit", now)
+	}
+	if terminal != nil && (attemptContextErr != nil || waitErr != nil && !capture.preInitFailureTerminal) {
 		// structured failure 与 process/context 终止共存是证据冲突，
-		// 统一归 protocol-invalid/do-not-retry。
+		// 统一归 protocol-invalid/do-not-retry。唯一例外是 provider 在 init
+		// 前发出的合法 failure terminal：Qwen 随后以非零状态或 signal 退出
+		// 是同一终止事实的进程投影，不构成第二权威；context 终止仍冲突。
 		if failure, ok := port.AsAdapterFailure(terminal); ok && failure.Kind != port.FailureKindProtocolInvalid {
 			terminal = qwenProtocolInvalid("structured terminal failure conflicts with attempt termination", now)
 		}
