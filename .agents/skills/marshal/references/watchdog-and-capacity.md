@@ -10,6 +10,14 @@
 MARSHAL_WATCH_NOTIFY=0 scripts/marshal-watch.sh --once --json
 ```
 
+review rework lineage 的 ReviewDecision 必须通过同源 Marshal Core 的
+`contract validate --schema review-decision`（含 semantic validation）。脚本优先使用
+`./bin/marshal`，否则使用 `PATH` 中的 `marshal`；需要锁定其它同源构建时显式设置
+`MARSHAL_WATCH_MARSHAL_BIN`。Validator 缺失、执行失败或执行期间 identity 漂移时，
+相关 lineage 一律 fail closed，不回退到 watchdog 自行复制的规则。
+
+正在推进 Goal 时应显式提供 `MARSHAL_WATCH_COHORT_FILE`（`goalId + runIds`）。未提供时 watchdog 不从 `createdAt`/`updatedAt` 或“最近 24h”猜测当前工作：只有 `held-alive` Run 进入 `items` 并可产生 `topAction`，其余非终态进入 `unscopedItems`。显式 cohort 之外的 Run 仍进入 `historicalItems`；显式 cohort 无效时 fail closed 为 historical-only，禁止回退到无 cohort 或时间窗逻辑。
+
 按 `items` 的 priority 升序处理最高项，并结合：
 
 ```bash
@@ -72,9 +80,15 @@ Watchdog action 的只读 `dedupeKey` 应绑定：
 
 `runId + state + action/processOwnership + spec/policy/capability/base + attempt/review/rework round + current ReviewPacket/control-record content digest`。
 
+`RETRY_PENDING` 只有在 snapshot sequence 与 append-only journal 一致，且当前 Attempt lineage 严格满足 Core 的相邻 business-event 规则时才建议 `retry-or-abort`：最新 business event 必须是 `system/marshal-worker-runner` 写入的 `worker.failed RUNNING→RETRY_PENDING`，其前一 business event 必须是同 run、同 actor、同 `attemptId` 的 `worker.started →RUNNING`；每个 retry segment 的 Attempt 不得复用，最终 failure 的 `attemptId` 必须等于 snapshot 的 `currentAttemptId`。`REWORK_REQUESTED` origin 还必须紧邻并精确绑定：review 路径只接受 `system/marshal-review` 的 `review.rework REVIEW_PENDING→REWORK_REQUESTED`；其 `reviewRound` 必须由从 `CREATED` 开始、状态连续且 producer-authority 合法的 lifecycle replay 得出，round-bound ReviewDecision 则经 nofollow/限长读取、同源 Core Schema+semantic validation、JCS digest 与 task/run/spec/round/verdict/evidence 全匹配后才可接纳；CI 路径只接受 `publisher/marshal-github-publisher` 的 `publication.checks-failed CI_PENDING→REWORK_REQUESTED`，且 `headSha` 等于 snapshot 冻结 publication。任意 `stateTo=REVIEW_PENDING` 的计数、重复 finding ID、伪造 predecessor/actor 或其它 origin 均拒绝。同时 `adapterId`/`failureKind`/`retryDisposition` 组合必须属于封闭分类表，`failureSignature` 可从当前冻结 `baseSha`/`specDigest`/`policyDigest`/`capabilityDigest` 精确重算匹配，disposition 必须为 `retryable`。legacy free-text、缺字段、非法组合、错误 actor/run/origin、缺失/不相邻 started、successor started、snapshot/journal 漂移、Attempt 复用、signature/Attempt 不匹配或 journal 不可验证时统一进入 `retry-intervention`，禁止把旧 failure 升格成新 Worker 调度建议。
+
+watchdog 可同时投影当前 operational-retry lineage 的 `rootFailure` 与 `latestFailure`，并将两者绑定到 `dedupeKey`。`RETRY_PENDING→RUNNING` 保留 root；`READY`/`REWORK_REQUESTED` 等新 origin 的 `worker.started` 必须重置 root/latest，防止前一 lineage 的背压或失败标识污染新工作。
+
+`worker.started` 只证明 Attempt 已启动，绝不是 Provider 成功/恢复信号；rate-limit/quota/connection failure 后即使出现 retry started，也必须保留原 backpressure 到 `notBefore`/hold 到期，或等到合法 `worker.completed`。Core 的 completed payload 不要求 `adapterId`，watchdog 只能从紧邻的、同 run/Attempt、`system/marshal-worker-runner` 写入且 `stateFrom` 属于 `READY`/`RETRY_PENDING`/`REWORK_REQUESTED`、`stateTo=RUNNING` 的 `worker.started` 继承 Adapter，并与冻结 TaskSpec 的 `preferredAdapter` 一致后才把 completed 视为 Provider success；错误 actor/run/state、Attempt 不匹配或缺合法 started 一律 fail closed 为 unknown。
+
 只有 `dedupeKey`、拟执行 action、doctor/admission 和外部 blocker 事实全不变时，后续 heartbeat 才只报告/等待。出现新 plan/approval、fresh base、new Attempt、Packet/control bytes、process ownership、Adapter doctor/config 或 Provider backpressure 变化时必须重新判断。
 
-`dedupeKey` 是去重提示，不是 Core authority，不能单独阻止合法恢复。缺 plan、Adapter unconfigured、stale packet 和结构性 failure 分开分类；相同结构性 signature 不重复执行或重复派 reviewer。
+`dedupeKey` 是去重提示，不是 Core authority，不能单独阻止合法恢复。缺 plan、Adapter unconfigured、stale packet 和结构性 failure 分开分类；相同结构性 signature 不重复执行或重复派 reviewer。`unscopedItems`/`historicalItems` 只是诊断投影，必须先显式归属 Goal/cohort 并重读 Core authority，不得直接消费其 action。
 
 ## REVIEW_PENDING 与历史噪声
 

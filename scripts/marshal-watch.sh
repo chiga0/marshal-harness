@@ -9,16 +9,18 @@
 #
 # 一次性模式（heartbeat 机器可读，执行一次立即退出，不 sleep）:
 #   scripts/marshal-watch.sh --once --json
-#   --json 输出 v2 行动队列：current items/topAction 与 historicalItems 分桶；
+#   --json 输出 v2 行动队列：current items/topAction、unscopedItems
+#   与 historicalItems 分桶；
 #   capacity 每次心跳重新读取 Mac/Linux 内存、CPU 与 Provider typed failure，
 #   slots=min(memory,cpu,provider)。watchdog 只报告建议，实际 task run 仍由
 #   Core 按 scope/lease 门禁派发，避免 watchdog 越权改变 Run 生命周期。
-#   dedupeKey 绑定 journal sequence/phase digest/typed failure/notBefore；只输出
+#   dedupeKey 绑定 journal sequence/phase digest/root+latest typed failure/notBefore；只输出
 #   稳定状态、动作、runId、年龄与归属判定，不含 secret、命令行或绝对路径。
 #
 # 动作映射（priority 越小越优先）:
 #   REVIEW_PENDING=review-now(10)  REWORK_REQUESTED=run-rework-now(20)
-#   RUNNING 无 held lease=doctor-dead(30)  RETRY_PENDING=retry-or-abort(40)
+#   RUNNING 无 held lease=doctor-dead(30)  RETRY_PENDING 仅当前 typed
+#   lineage=retry-or-abort(40)，否则 retry-intervention(6)
 #   VERIFYING=verify-or-doctor(50)  PUBLISHING=publish-or-doctor(60)
 #   READY/APPROVED=run-now(70)  CI_PENDING=check-ci(80)  RUNNING(active)=monitor(90)
 #   终态（ACCEPTED/REJECTED/BLOCKED/ABORTED/NO_CHANGE）不进入行动队列。
@@ -32,7 +34,8 @@
 #   MARSHAL_WATCH_LEASE_FACTS_FILE  仅测试使用的 lease/owner 事实 JSON；生产
 #                               默认直接探测 Marshal lease.lock/owner。
 #   MARSHAL_WATCH_COHORT_FILE   当前 Goal/cohort JSON：goalId + runIds；未设置时
-#                               自动把最近 24h 创建或持有 lease 的 Run 归为当前。
+#                               只有 held-alive Run 归为 current，其余非终态进
+#                               unscopedItems，不产生 topAction。
 #   MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES  覆盖可用内存（仅测试/诊断）；
 #   MARSHAL_WATCH_SWAP_USED_BYTES         覆盖已用 swap（仅测试/诊断）；
 #   MARSHAL_WATCH_SWAP_OUTPUT             覆盖 vm.swapusage 原始输出（仅测试）；
@@ -74,6 +77,18 @@ RUNS_DIR="$ROOT/runs"
 [ -d "$RUNS_DIR" ] || { echo "找不到 runs 目录: $RUNS_DIR（用 MARSHAL_WATCH_ROOT 指向含 runs 的根）" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "缺少依赖: python3" >&2; exit 1; }
 
+# ReviewDecision 的契约与 semantic 规则只由 Marshal Core 维护。watchdog
+# 不复制这套规则；找不到可执行的同源 Marshal CLI 时，仅相关 review
+# rework lineage fail closed，其他只读观察仍继续。
+CONTRACT_VALIDATOR_BIN="${MARSHAL_WATCH_MARSHAL_BIN:-}"
+if [ -z "$CONTRACT_VALIDATOR_BIN" ]; then
+  if [ -x ./bin/marshal ]; then
+    CONTRACT_VALIDATOR_BIN="$PWD/bin/marshal"
+  else
+    CONTRACT_VALIDATOR_BIN=$(command -v marshal 2>/dev/null || true)
+  fi
+fi
+
 NOTIFY_ENABLED=1
 [ "${MARSHAL_WATCH_NOTIFY:-1}" = "0" ] && NOTIFY_ENABLED=0
 LOG="${MARSHAL_WATCH_LOG:-/tmp/marshal-watch.log}"
@@ -96,12 +111,13 @@ process_snapshot() {
 }
 
 PY_PROG='
-import fcntl, json, math, os, re, stat, sys
+import fcntl, json, math, os, re, stat, subprocess, sys
 import hashlib
 from datetime import datetime, timedelta, timezone
 
 runs_dir, mode = sys.argv[1], sys.argv[2]
 summary_path = sys.argv[3] if len(sys.argv) > 3 else ""
+contract_validator_bin = sys.argv[4] if len(sys.argv) > 4 else ""
 now_utc = datetime.now(timezone.utc)
 
 # 可行动状态 -> (priority, action)；数字越小优先级越高。
@@ -122,8 +138,42 @@ STATE_VALUES = {"CREATED", "PLANNED", "READY", "RUNNING", "RETRY_PENDING",
                 "VERIFYING", "REVIEW_PENDING", "REWORK_REQUESTED", "PUBLISHING",
                 "PUBLISHED", "CI_PENDING", "ACCEPTED", "REJECTED", "BLOCKED",
                 "ABORTED", "NO_CHANGE"}
+LIFECYCLE_TRANSITIONS = {
+    "CREATED": {"PLANNED"},
+    "PLANNED": {"READY"},
+    "READY": {"RUNNING"},
+    "RUNNING": {"VERIFYING", "RETRY_PENDING", "BLOCKED"},
+    "RETRY_PENDING": {"RUNNING", "BLOCKED"},
+    "VERIFYING": {"REVIEW_PENDING"},
+    "REVIEW_PENDING": {"REWORK_REQUESTED", "REJECTED", "BLOCKED", "NO_CHANGE", "PUBLISHING", "ACCEPTED"},
+    "REWORK_REQUESTED": {"RUNNING"},
+    "PUBLISHING": {"PUBLISHED", "BLOCKED"},
+    "PUBLISHED": {"CI_PENDING", "ACCEPTED"},
+    "CI_PENDING": {"ACCEPTED", "REWORK_REQUESTED", "BLOCKED"},
+}
+EVENT_AUTHORITY = {
+    "planning.spec-accepted": ("system", "marshal-planning"),
+    "planning.inputs-frozen": ("system", "marshal-planning"),
+    "worker.started": ("system", "marshal-worker-runner"),
+    "worker.completed": ("system", "marshal-worker-runner"),
+    "worker.failed": ("system", "marshal-worker-runner"),
+    "worker.evidence-failed": ("system", "marshal-worker-runner"),
+    "verification.completed": ("system", "marshal-verifier"),
+    "review.accept": ("system", "marshal-review"),
+    "review.reject": ("system", "marshal-review"),
+    "review.blocked": ("system", "marshal-review"),
+    "review.rework": ("system", "marshal-review"),
+    "review.no-change": ("system", "marshal-review"),
+    "review.rework-budget-exhausted": ("system", "marshal-review"),
+    "publication.completed": ("publisher", "marshal-github-publisher"),
+    "publication.checks-requested": ("publisher", "marshal-github-publisher"),
+    "publication.checks-passed": ("publisher", "marshal-github-publisher"),
+    "publication.checks-failed": ("publisher", "marshal-github-publisher"),
+    "publication.accepted": ("publisher", "marshal-github-publisher"),
+    "publication.blocked": ("publisher", "marshal-github-publisher"),
+    "reconciliation.snapshot-repaired": ("system", "marshal-reconciliation"),
+}
 DEFAULT_WORKER_RESERVE_BYTES = 2 * 1024 * 1024 * 1024
-DEFAULT_CURRENT_WINDOW_SECONDS = 24 * 60 * 60
 DEFAULT_PROVIDER_FAILURE_HOLD_SECONDS = 5 * 60
 MAX_RETRY_HINT_SECONDS = 24 * 60 * 60
 MAX_STATE_BYTES = 1024 * 1024
@@ -131,6 +181,7 @@ MAX_TASK_SPEC_BYTES = 1024 * 1024
 MAX_OWNER_BYTES = 64 * 1024
 MAX_JOURNAL_BYTES = 16 * 1024 * 1024
 MAX_REVIEW_PACKET_BYTES = 8 * 1024 * 1024
+MAX_REVIEW_DECISION_BYTES = 8 * 1024 * 1024
 MAX_CONTROL_JOURNAL_BYTES = 16 * 1024 * 1024
 TYPED_FAILURE_PAIRS = {
     "quota-exhausted": "blocked",
@@ -516,10 +567,7 @@ def lease_observation(run_fd, run_id):
 def _cohort_configuration():
     path = os.environ.get("MARSHAL_WATCH_COHORT_FILE", "")
     if not path:
-        window = _integer_env("MARSHAL_WATCH_CURRENT_WINDOW_SECONDS")
-        if window is None or window == 0:
-            window = DEFAULT_CURRENT_WINDOW_SECONDS
-        return None, {"source": "recent-created-fallback", "goalId": None, "windowSeconds": window}
+        return None, {"source": "owned-active-only", "goalId": None}
     try:
         data = _read_regular_json(path, 256 * 1024)
         goal_id = data.get("goalId")
@@ -616,13 +664,6 @@ def age_seconds(run_fd, data):
     seconds = int(now_utc.timestamp() - mtime)
     return seconds if seconds > 0 else 0
 
-def timestamp_age_seconds(stamp):
-    parsed = parse_timestamp(stamp)
-    if parsed is None:
-        return None
-    seconds = int((now_utc - parsed).total_seconds())
-    return seconds if seconds > 0 else 0
-
 def file_digest_at(parent_fd, name, limit):
     """Bounded digest; unsafe, oversized or changing evidence has one stable marker."""
     try:
@@ -652,7 +693,84 @@ def unknown_journal(marker=b"invalid"):
     return {"status": "unknown", "sequence": 0,
             "phaseDigest": "sha256:" + hashlib.sha256(marker).hexdigest(),
             "adapterId": None, "adapterStatus": "unknown",
-            "typedFailure": None, "lastSignal": None}
+            "typedFailure": None, "rootFailure": None, "latestFailure": None,
+            "failureShape": "unknown", "lastSignal": None, "events": []}
+
+def _public_failure(failure):
+    if not isinstance(failure, dict):
+        return None
+    if failure.get("valid") is not True:
+        sequence = failure.get("sequence")
+        return {"status": "invalid", "sequence": sequence if isinstance(sequence, int) else 0}
+    keys = ("adapterId", "kind", "disposition", "failureSignature",
+            "retryAfterNanoseconds", "notBefore", "attemptId", "sequence")
+    return {key: failure[key] for key in keys if key in failure}
+
+def _actor_is(event, actor_type, actor_id):
+    actor = event.get("actor") if isinstance(event, dict) else None
+    return (isinstance(actor, dict) and actor.get("type") == actor_type and
+            actor.get("id") == actor_id)
+
+def _strict_json_document(raw):
+    def object_without_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON member")
+            result[key] = value
+        return result
+    return json.loads(
+        raw.decode("utf-8"), object_pairs_hook=object_without_duplicates,
+        parse_constant=lambda value: (_ for _ in ()).throw(ValueError("non-finite JSON number")))
+
+def _canonical_json_digest(document):
+    encoded = json.dumps(document, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+def _review_decision_contract_valid(raw):
+    if not contract_validator_bin:
+        return False
+    executable = os.path.realpath(contract_validator_bin)
+    try:
+        before = os.stat(executable, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o111 == 0:
+            return False
+        completed = subprocess.run(
+            [executable, "contract", "validate", "--schema", "review-decision", "-"],
+            input=raw, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=10, check=False)
+        after = os.stat(executable, follow_symlinks=False)
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            return False
+        return completed.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+def _round_bound_decision(run_fd, data, round_number, expected_digest):
+    decisions_fd = None
+    try:
+        decisions_fd = _open_child_directory_bound(run_fd, "decisions")
+        raw = _read_regular_bytes_at(decisions_fd, "decision-%03d.json" % round_number,
+                                     MAX_REVIEW_DECISION_BYTES)
+        decision = _strict_json_document(raw)
+        if not _review_decision_contract_valid(raw):
+            return None
+        if _canonical_json_digest(decision) != expected_digest:
+            return None
+        if (decision.get("taskId") != data.get("taskId") or
+                decision.get("runId") != data.get("runId") or
+                decision.get("specDigest") != data.get("specDigest") or
+                decision.get("reviewRound") != round_number or
+                decision.get("verdict") != "rework"):
+            return None
+        return decision
+    except (OSError, UnicodeError, ValueError, TypeError, OverflowError):
+        return None
+    finally:
+        if decisions_fd is not None:
+            os.close(decisions_fd)
 
 def journal_observation(run_fd, run_id):
     try:
@@ -660,7 +778,9 @@ def journal_observation(run_fd, run_id):
     except FileNotFoundError:
         return {"status": "missing", "sequence": 0,
                 "phaseDigest": "sha256:" + hashlib.sha256(b"missing").hexdigest(),
-                "adapterId": None, "typedFailure": None, "lastSignal": None}
+                "adapterId": None, "typedFailure": None, "rootFailure": None,
+                "latestFailure": None, "failureShape": "none", "lastSignal": None,
+                "events": []}
     except (OSError, ValueError):
         return unknown_journal()
     try:
@@ -669,12 +789,12 @@ def journal_observation(run_fd, run_id):
         for raw_line in raw.decode("utf-8").splitlines():
             if not raw_line.strip():
                 continue
-            event = json.loads(raw_line, parse_constant=lambda value: (_ for _ in ()).throw(ValueError("non-finite JSON number")))
+            event = _strict_json_document(raw_line.encode("utf-8"))
             if not isinstance(event, dict):
                 raise ValueError("journal event is not an object")
             sequence = event.get("sequence")
-            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= previous:
-                raise ValueError("non-monotonic journal")
+            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence != previous + 1:
+                raise ValueError("non-contiguous journal")
             if not isinstance(event.get("type"), str) or not event["type"]:
                 raise ValueError("journal event type is invalid")
             if strict_timestamp(event.get("timestamp")) is None:
@@ -695,10 +815,16 @@ def journal_observation(run_fd, run_id):
     if not events:
         return {"status": "ok", "sequence": 0,
                 "phaseDigest": "sha256:" + hashlib.sha256(b"empty").hexdigest(),
-                "adapterId": None, "typedFailure": None, "lastSignal": None}
+                "adapterId": None, "typedFailure": None, "rootFailure": None,
+                "latestFailure": None, "failureShape": "none", "lastSignal": None,
+                "events": []}
     adapter_id = None
     typed_failure = None
+    root_failure = None
+    latest_failure = None
+    failure_shape = "none"
     last_signal = None
+    previous_business = None
     journal_valid = True
     for event in events:
         payload = event["payload"]
@@ -710,14 +836,37 @@ def journal_observation(run_fd, run_id):
         if candidate_adapter_valid:
             adapter_id = candidate_adapter
         event_type = event.get("type")
-        if event_type == "worker.failed" and (candidate_adapter is not None or "failureKind" in payload or "retryDisposition" in payload):
+        if event_type == "worker.started":
+            # RETRY_PENDING -> RUNNING 属于同一 operational-retry lineage；
+            # READY/REWORK_REQUESTED 等新 origin 必须重置 root failure。
+            if event.get("stateFrom") != "RETRY_PENDING":
+                root_failure = None
+                latest_failure = None
+                failure_shape = "none"
+            typed_failure = None
+            # started only says an Attempt was admitted.  It is neither a
+            # provider success nor evidence that an earlier capacity failure
+            # recovered, so preserve the last failure signal until completion
+            # (or until its bounded hold expires).
+        elif event_type == "worker.failed":
             kind = payload.get("failureKind")
             disposition = payload.get("retryDisposition")
-            if kind is not None or disposition is not None:
+            typed_fields_present = any(key in payload for key in ("adapterId", "failureKind", "retryDisposition", "failureSignature"))
+            if typed_fields_present:
                 event_time = strict_timestamp(event.get("timestamp"))
-                valid = candidate_adapter_valid and isinstance(kind, str) and TYPED_FAILURE_PAIRS.get(kind) == disposition and event_time is not None
+                signature = payload.get("failureSignature")
+                attempt_id = event.get("attemptId")
+                valid = (candidate_adapter_valid and isinstance(kind, str) and
+                         TYPED_FAILURE_PAIRS.get(kind) == disposition and event_time is not None and
+                         isinstance(signature, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", signature) is not None and
+                         isinstance(attempt_id, str) and
+                         re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", attempt_id) is not None)
                 failure = {"adapterId": candidate_adapter if candidate_adapter_valid else "invalid", "kind": kind if isinstance(kind, str) else "invalid",
-                           "disposition": disposition if isinstance(disposition, str) else "invalid"}
+                           "disposition": disposition if isinstance(disposition, str) else "invalid",
+                           "failureSignature": signature if isinstance(signature, str) else "invalid",
+                           "attemptId": attempt_id if isinstance(attempt_id, str) else "invalid",
+                           "sequence": event["sequence"], "valid": valid,
+                           "stateFrom": event.get("stateFrom"), "stateTo": event.get("stateTo")}
                 retry_after = payload.get("retryAfterNanoseconds")
                 not_before = payload.get("notBefore")
                 if retry_after is not None:
@@ -735,34 +884,70 @@ def journal_observation(run_fd, run_id):
                 failure["valid"] = valid
                 journal_valid = journal_valid and valid
                 typed_failure = failure
+                latest_failure = failure
+                if root_failure is None:
+                    root_failure = failure
+                failure_shape = "typed" if valid else "invalid"
                 last_signal = {"type": event_type, "timestamp": event.get("timestamp"), "moment": event_time, "failure": failure,
                                "sequence": event["sequence"]}
+            else:
+                # Legacy free-text failure is retained as evidence but never
+                # upgraded into a retry recommendation by the watchdog.
+                typed_failure = None
+                latest_failure = None
+                failure_shape = "legacy"
+                last_signal = {"type": event_type, "timestamp": event.get("timestamp"),
+                               "moment": strict_timestamp(event.get("timestamp")), "failure": None,
+                               "sequence": event["sequence"]}
         elif event_type == "worker.completed":
-            if not candidate_adapter_valid:
+            started = previous_business
+            started_payload = started.get("payload") if isinstance(started, dict) else None
+            started_adapter = started_payload.get("adapterId") if isinstance(started_payload, dict) else None
+            completion_valid = (
+                isinstance(started, dict) and started.get("type") == "worker.started" and
+                started.get("runId") == run_id and event.get("runId") == run_id and
+                started.get("stateFrom") in {"READY", "RETRY_PENDING", "REWORK_REQUESTED"} and
+                started.get("stateTo") == "RUNNING" and
+                _actor_is(started, "system", "marshal-worker-runner") and
+                isinstance(started_adapter, str) and started_adapter in ADAPTER_BINARIES and
+                event.get("stateFrom") == "RUNNING" and event.get("stateTo") == "VERIFYING" and
+                _actor_is(event, "system", "marshal-worker-runner") and
+                isinstance(event.get("attemptId"), str) and event.get("attemptId") != "" and
+                event.get("attemptId") == started.get("attemptId") and
+                (not adapter_present or candidate_adapter == started_adapter)
+            )
+            if not completion_valid:
                 journal_valid = False
             else:
+                adapter_id = started_adapter
                 typed_failure = None
                 last_signal = {"type": event_type, "timestamp": event.get("timestamp"),
                                "moment": strict_timestamp(event.get("timestamp")), "failure": None,
                                "sequence": event["sequence"]}
+        if event_type != "reconciliation.snapshot-repaired":
+            previous_business = event
     last = events[-1]
     payload_digest = hashlib.sha256(json.dumps(last.get("payload", {}), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
     phase = {"sequence": last["sequence"], "type": last.get("type"), "stateFrom": last.get("stateFrom"),
              "stateTo": last.get("stateTo"), "attemptId": last.get("attemptId"), "payloadDigest": "sha256:" + payload_digest}
     phase_digest = "sha256:" + hashlib.sha256(json.dumps(phase, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
     return {"status": "ok" if journal_valid else "unknown", "sequence": last["sequence"], "phaseDigest": phase_digest,
-            "adapterId": adapter_id, "typedFailure": typed_failure, "lastSignal": last_signal}
+            "adapterId": adapter_id, "typedFailure": typed_failure,
+            "rootFailure": root_failure, "latestFailure": latest_failure,
+            "failureShape": failure_shape, "lastSignal": last_signal,
+            "events": events}
 
 def task_adapter_observation(run_fd, journal):
-    if journal.get("adapterId") is not None:
-        return journal["adapterId"], "journal"
     try:
         task = _read_regular_json_at(run_fd, "task-spec.json", MAX_TASK_SPEC_BYTES)
         worker = task.get("worker") if isinstance(task, dict) else None
         adapter_id = worker.get("preferredAdapter") if isinstance(worker, dict) else None
         if adapter_id not in ADAPTER_BINARIES:
             raise ValueError("unknown preferred adapter")
-        return adapter_id, "task-spec"
+        journal_adapter = journal.get("adapterId")
+        if journal_adapter is not None and journal_adapter != adapter_id:
+            raise ValueError("journal adapter does not match frozen task adapter")
+        return adapter_id, "journal+task-spec" if journal_adapter is not None else "task-spec"
     except (OSError, UnicodeError, ValueError, TypeError):
         return None, "unknown"
 
@@ -796,10 +981,188 @@ def decision_key(run_id, data, state, action, ownership, journal, review_digest,
         str(journal.get("sequence", 0)),
         str(journal.get("phaseDigest", "")),
         json.dumps(journal.get("typedFailure"), sort_keys=True, separators=(",", ":")),
+        json.dumps(journal.get("rootFailure"), sort_keys=True, separators=(",", ":")),
+        json.dumps(journal.get("latestFailure"), sort_keys=True, separators=(",", ":")),
+        str(journal.get("failureShape", "")),
         review_digest,
         control_digest,
     ]
     return "sha256:" + hashlib.sha256("\x1f".join(fields).encode("utf-8")).hexdigest()
+
+def failure_signature_matches_state(data, failure):
+    """Recompute the Core v1 signature from frozen state; never trust shape alone."""
+    if not isinstance(data, dict) or not isinstance(failure, dict):
+        return False
+    digest_pattern = re.compile(r"sha256:[0-9a-f]{64}")
+    if (not isinstance(data.get("baseSha"), str) or
+            re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", data["baseSha"]) is None or
+            any(not isinstance(data.get(field), str) or digest_pattern.fullmatch(data[field]) is None
+                for field in ("specDigest", "policyDigest", "capabilityDigest"))):
+        return False
+    evidence = {
+        "adapterId": failure.get("adapterId"),
+        "failureKind": failure.get("kind"),
+        "retryDisposition": failure.get("disposition"),
+    }
+    evidence_bytes = json.dumps(evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    evidence_digest = "sha256:" + hashlib.sha256(evidence_bytes).hexdigest()
+    signature_data = {
+        "version": 1,
+        "sourceHead": data["baseSha"],
+        "specDigest": data["specDigest"],
+        "policyDigest": data["policyDigest"],
+        "capabilityDigest": data["capabilityDigest"],
+        "adapterId": failure.get("adapterId"),
+        "failureKind": failure.get("kind"),
+        "failureEvidenceDigest": evidence_digest,
+    }
+    signature_bytes = json.dumps(signature_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    expected = "sha256:" + hashlib.sha256(signature_bytes).hexdigest()
+    return failure.get("failureSignature") == expected
+
+def _replayed_review_round(data, journal, origin):
+    """Replay the authoritative prefix exactly enough to derive reviewRound.
+
+    Core derives roundAfter only after full transition and producer-authority
+    replay.  A count of arbitrary stateTo values is not evidence.  This
+    read-only projection therefore rejects any unknown producer, broken state
+    chain, non-CREATED prefix, or missing/duplicate inputs-frozen event.
+    """
+    events = journal.get("events")
+    run_id = data.get("runId")
+    if not isinstance(events, list) or not events:
+        return None
+    current = "CREATED"
+    review_round = 0
+    frozen_count = 0
+    origin_seen = False
+    for index, event in enumerate(events):
+        if not isinstance(event, dict) or event.get("runId") != run_id:
+            return None
+        event_type = event.get("type")
+        required_actor = EVENT_AUTHORITY.get(event_type)
+        if required_actor is None or not _actor_is(event, required_actor[0], required_actor[1]):
+            return None
+        state_from, state_to = event.get("stateFrom"), event.get("stateTo")
+        if index == 0 and (event_type != "planning.spec-accepted" or
+                           state_from != "CREATED" or state_to != "PLANNED"):
+            return None
+        if event_type == "reconciliation.snapshot-repaired":
+            if state_from != current or state_to != current:
+                return None
+        else:
+            if (state_from != current or state_to not in LIFECYCLE_TRANSITIONS.get(current, set())):
+                return None
+            current = state_to
+            if state_to == "REVIEW_PENDING":
+                review_round += 1
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        if event_type == "planning.spec-accepted" and payload.get("specDigest") != data.get("specDigest"):
+            return None
+        if event_type == "planning.inputs-frozen":
+            frozen_count += 1
+            for key in ("specDigest", "policyDigest", "capabilityDigest", "baseSha"):
+                if payload.get(key) != data.get(key):
+                    return None
+        if event is origin:
+            origin_seen = True
+            break
+    if not origin_seen or frozen_count != 1 or current != "REWORK_REQUESTED":
+        return None
+    return review_round
+
+def _rework_origin_matches_state(data, journal, run_fd, origin):
+    if not isinstance(origin, dict) or origin.get("runId") != data.get("runId"):
+        return False
+    payload = origin.get("payload")
+    if not isinstance(payload, dict) or origin.get("attemptId", "") != "":
+        return False
+    if origin.get("type") == "review.rework":
+        if (origin.get("stateFrom") != "REVIEW_PENDING" or
+                origin.get("stateTo") != "REWORK_REQUESTED" or
+                not _actor_is(origin, "system", "marshal-review") or
+                payload.get("verdict") != "rework"):
+            return False
+        decision_digest = payload.get("decisionDigest")
+        evidence_digest = payload.get("evidenceDigest")
+        digest_pattern = re.compile(r"sha256:[0-9a-f]{64}")
+        if (not isinstance(decision_digest, str) or digest_pattern.fullmatch(decision_digest) is None or
+                not isinstance(evidence_digest, str) or digest_pattern.fullmatch(evidence_digest) is None):
+            return False
+        round_number = _replayed_review_round(data, journal, origin)
+        if (not isinstance(round_number, int) or round_number < 1 or
+                data.get("reviewRound") != round_number):
+            return False
+        decision = _round_bound_decision(run_fd, data, round_number, decision_digest)
+        return isinstance(decision, dict) and decision.get("evidenceDigest") == evidence_digest
+    if origin.get("type") == "publication.checks-failed":
+        publication = data.get("publication")
+        head_sha = payload.get("headSha")
+        return (origin.get("stateFrom") == "CI_PENDING" and
+                origin.get("stateTo") == "REWORK_REQUESTED" and
+                _actor_is(origin, "publisher", "marshal-github-publisher") and
+                isinstance(head_sha, str) and head_sha != "" and
+                isinstance(publication, dict) and publication.get("headSha") == head_sha)
+    return False
+
+def retry_lineage_matches_state(data, journal, run_fd):
+    """Mirror Core adjacent business-event retry lineage fail-closed checks."""
+    if (not isinstance(data, dict) or not isinstance(journal, dict) or
+            data.get("sequence") != journal.get("sequence")):
+        return False
+    business = [event for event in journal.get("events", [])
+                if isinstance(event, dict) and
+                event.get("type") != "reconciliation.snapshot-repaired"]
+    if not business:
+        return False
+    position = len(business) - 1
+    seen_attempts = set()
+    current_attempt = data.get("currentAttemptId")
+    run_id = data.get("runId")
+    latest_failure = journal.get("latestFailure")
+    while True:
+        failed = business[position]
+        attempt_id = failed.get("attemptId")
+        if (failed.get("type") != "worker.failed" or
+                failed.get("stateFrom") != "RUNNING" or
+                failed.get("stateTo") != "RETRY_PENDING" or
+                failed.get("runId") != run_id or
+                not _actor_is(failed, "system", "marshal-worker-runner") or
+                not isinstance(attempt_id, str) or not attempt_id):
+            return False
+        if position == len(business) - 1 and attempt_id != current_attempt:
+            return False
+        if (position == len(business) - 1 and
+                (not isinstance(latest_failure, dict) or latest_failure.get("sequence") != failed.get("sequence"))):
+            return False
+        if attempt_id in seen_attempts:
+            return False
+        seen_attempts.add(attempt_id)
+        start_position = position - 1
+        if start_position < 0:
+            return False
+        started = business[start_position]
+        if (started.get("type") != "worker.started" or
+                started.get("runId") != run_id or
+                started.get("stateTo") != "RUNNING" or
+                not _actor_is(started, "system", "marshal-worker-runner") or
+                started.get("attemptId") != attempt_id):
+            return False
+        origin = started.get("stateFrom")
+        if origin == "READY":
+            return True
+        if origin == "REWORK_REQUESTED":
+            if start_position == 0:
+                return False
+            return _rework_origin_matches_state(
+                data, journal, run_fd, business[start_position - 1])
+        if origin != "RETRY_PENDING":
+            return False
+        position = start_position - 1
+        if position < 0:
+            return False
 
 def validate_state_data(data, run_id):
     if not isinstance(data, dict) or data.get("runId") != run_id:
@@ -841,7 +1204,7 @@ def provider_snapshot(items, observations, provisional_slots):
             key = (stamp, signal.get("sequence", 0))
             if latest is None or key > latest[0]:
                 latest = (key, signal)
-        if latest is None or latest[1]["type"] == "worker.completed":
+        if latest is None or latest[1]["type"] in {"worker.started", "worker.completed"}:
             signals.append({"adapterId": adapter_id, "status": "available"})
             continue
         failure = latest[1].get("failure")
@@ -871,7 +1234,7 @@ def provider_snapshot(items, observations, provisional_slots):
 
 procs = process_lines()
 explicit_cohort, cohort = _cohort_configuration()
-items, historical_items, text_tokens = [], [], []
+items, historical_items, unscoped_items, text_tokens = [], [], [], []
 owned_runs = set()
 observations = {}
 runs_fd = _open_directory_path_nofollow(runs_dir)
@@ -937,10 +1300,25 @@ for run_id in run_names:
             # repeatedly asking the lead to rerun the same doomed review.
             item["priority"] = 5
             item["action"] = "review-intervention"
+        elif state == "RETRY_PENDING":
+            failure = journal.get("latestFailure")
+            current_attempt = data.get("currentAttemptId")
+            retry_lineage_valid = (
+                journal.get("status") == "ok" and journal.get("failureShape") == "typed" and
+                isinstance(failure, dict) and failure.get("valid") is True and
+                failure.get("disposition") == "retryable" and
+                failure_signature_matches_state(data, failure) and
+                retry_lineage_matches_state(data, journal, run_fd) and
+                failure.get("attemptId") == current_attempt and
+                failure.get("stateFrom") == "RUNNING" and failure.get("stateTo") == "RETRY_PENDING"
+            )
+            if not retry_lineage_valid:
+                item["priority"] = 6
+                item["action"] = "retry-intervention"
+                item["interventionReason"] = "typed-retry-lineage-required"
     # 终态与其他未映射状态一律不进入行动队列。
     if item is not None:
         age = age_seconds(run_fd, data) if run_fd is not None and state_status == "ok" else 0
-        created_age = timestamp_age_seconds(data.get("createdAt") if isinstance(data, dict) else None)
         item["ageSeconds"] = age
         item["ownershipSource"] = lease_source
         item["argvMatched"] = argv_matched
@@ -949,21 +1327,24 @@ for run_id in run_names:
         item["journalStatus"] = journal["status"]
         item["evidenceStatus"] = evidence_status
         if journal.get("typedFailure") is not None:
-            failure = journal["typedFailure"]
-            item["typedFailure"] = {key: failure[key] for key in ("adapterId", "kind", "disposition", "retryAfterNanoseconds", "notBefore") if key in failure}
+            item["typedFailure"] = _public_failure(journal["typedFailure"])
+        if journal.get("rootFailure") is not None:
+            item["rootFailure"] = _public_failure(journal["rootFailure"])
+        if journal.get("latestFailure") is not None:
+            item["latestFailure"] = _public_failure(journal["latestFailure"])
+        item["failureShape"] = journal.get("failureShape", "unknown")
         item["dedupeKey"] = decision_key(
             run_id, data, state, item["action"], item["processOwnership"], journal,
             review_digest, control_digest
         )
         if explicit_cohort is not None:
             current = run_id in explicit_cohort
+            item["queueBucket"] = "current" if current else "historical"
+            (items if current else historical_items).append(item)
         else:
-            # updatedAt 会因 doctor/reconcile 等历史维护动作刷新，不能据此把旧 Run
-            # 重新提升为当前工作。兼容 fallback 只承认近期创建或仍持有 lease 的 Run；
-            # createdAt 缺失/非法时 fail closed 到 historical。
-            current = owned or (created_age is not None and created_age <= cohort["windowSeconds"])
-        item["queueBucket"] = "current" if current else "historical"
-        (items if current else historical_items).append(item)
+            current = owned
+            item["queueBucket"] = "current" if current else "unscoped"
+            (items if current else unscoped_items).append(item)
     if mode == "text":
         if state == "RUNNING":
             text_tokens.append("%s=%s" % (run_id, "RUNNING(active)" if owned else "DEAD?"))
@@ -976,6 +1357,7 @@ os.close(runs_fd)
 
 items.sort(key=lambda entry: (entry["priority"], entry["runId"]))
 historical_items.sort(key=lambda entry: (entry["priority"], entry["runId"]))
+unscoped_items.sort(key=lambda entry: (entry["priority"], entry["runId"]))
 cpu = cpu_snapshot(len(owned_runs))
 provider = provider_snapshot(items, observations, cpu["cpuSlotsAvailable"])
 if cohort["source"] == "invalid-explicit-cohort":
@@ -983,27 +1365,28 @@ if cohort["source"] == "invalid-explicit-cohort":
 queue_signal_status = "unknown" if any(item["journalStatus"] == "unknown" or item["processOwnership"] == "unknown" or item["evidenceStatus"] == "unknown" for item in items) else "ok"
 capacity = capacity_snapshot(len(owned_runs), cpu, provider, queue_signal_status)
 if mode == "text":
-    print("[%s] %s capacity=%s slots=%s current=%s historical=%s" % (datetime.now().strftime("%m-%d %H:%M:%S"), " ".join(text_tokens), capacity["pressure"], capacity["slotsAvailable"], len(items), len(historical_items)))
+    print("[%s] %s capacity=%s slots=%s current=%s unscoped=%s historical=%s" % (datetime.now().strftime("%m-%d %H:%M:%S"), " ".join(text_tokens), capacity["pressure"], capacity["slotsAvailable"], len(items), len(unscoped_items), len(historical_items)))
 else:
     print(json.dumps({"queueVersion": "marshal-watch/v2", "advisoryOnly": True,
                       "generatedAt": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
                       "cohort": cohort, "capacity": capacity, "topAction": items[0] if items else None,
-                      "items": items, "historicalItems": historical_items},
+                      "items": items, "unscopedItems": unscoped_items,
+                      "historicalItems": historical_items},
                      ensure_ascii=False))
 if summary_path:
     try:
         with open(summary_path, "w", encoding="utf-8") as handle:
             if items:
                 top = items[0]
-                handle.write("当前行动队列 %d 项，历史 %d 项，最高优先级 %s=%s" % (len(items), len(historical_items), top["runId"], top["action"]))
+                handle.write("当前行动队列 %d 项，未归属 %d 项，历史 %d 项，最高优先级 %s=%s" % (len(items), len(unscoped_items), len(historical_items), top["runId"], top["action"]))
             else:
-                handle.write("当前行动队列无待办，历史 %d 项" % len(historical_items))
+                handle.write("当前行动队列无待办，未归属 %d 项，历史 %d 项" % (len(unscoped_items), len(historical_items)))
     except OSError:
         pass
 '
 
 run_pass() {
-  process_snapshot | python3 -c "$PY_PROG" "$RUNS_DIR" "$1" "${2:-}"
+  process_snapshot | python3 -c "$PY_PROG" "$RUNS_DIR" "$1" "${2:-}" "$CONTRACT_VALIDATOR_BIN"
 }
 
 if [ "$ONCE" = "1" ]; then
