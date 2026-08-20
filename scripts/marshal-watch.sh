@@ -77,6 +77,18 @@ RUNS_DIR="$ROOT/runs"
 [ -d "$RUNS_DIR" ] || { echo "找不到 runs 目录: $RUNS_DIR（用 MARSHAL_WATCH_ROOT 指向含 runs 的根）" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "缺少依赖: python3" >&2; exit 1; }
 
+# ReviewDecision 的契约与 semantic 规则只由 Marshal Core 维护。watchdog
+# 不复制这套规则；找不到可执行的同源 Marshal CLI 时，仅相关 review
+# rework lineage fail closed，其他只读观察仍继续。
+CONTRACT_VALIDATOR_BIN="${MARSHAL_WATCH_MARSHAL_BIN:-}"
+if [ -z "$CONTRACT_VALIDATOR_BIN" ]; then
+  if [ -x ./bin/marshal ]; then
+    CONTRACT_VALIDATOR_BIN="$PWD/bin/marshal"
+  else
+    CONTRACT_VALIDATOR_BIN=$(command -v marshal 2>/dev/null || true)
+  fi
+fi
+
 NOTIFY_ENABLED=1
 [ "${MARSHAL_WATCH_NOTIFY:-1}" = "0" ] && NOTIFY_ENABLED=0
 LOG="${MARSHAL_WATCH_LOG:-/tmp/marshal-watch.log}"
@@ -99,12 +111,13 @@ process_snapshot() {
 }
 
 PY_PROG='
-import fcntl, json, math, os, re, stat, sys
+import fcntl, json, math, os, re, stat, subprocess, sys
 import hashlib
 from datetime import datetime, timedelta, timezone
 
 runs_dir, mode = sys.argv[1], sys.argv[2]
 summary_path = sys.argv[3] if len(sys.argv) > 3 else ""
+contract_validator_bin = sys.argv[4] if len(sys.argv) > 4 else ""
 now_utc = datetime.now(timezone.utc)
 
 # 可行动状态 -> (priority, action)；数字越小优先级越高。
@@ -125,6 +138,41 @@ STATE_VALUES = {"CREATED", "PLANNED", "READY", "RUNNING", "RETRY_PENDING",
                 "VERIFYING", "REVIEW_PENDING", "REWORK_REQUESTED", "PUBLISHING",
                 "PUBLISHED", "CI_PENDING", "ACCEPTED", "REJECTED", "BLOCKED",
                 "ABORTED", "NO_CHANGE"}
+LIFECYCLE_TRANSITIONS = {
+    "CREATED": {"PLANNED"},
+    "PLANNED": {"READY"},
+    "READY": {"RUNNING"},
+    "RUNNING": {"VERIFYING", "RETRY_PENDING", "BLOCKED"},
+    "RETRY_PENDING": {"RUNNING", "BLOCKED"},
+    "VERIFYING": {"REVIEW_PENDING"},
+    "REVIEW_PENDING": {"REWORK_REQUESTED", "REJECTED", "BLOCKED", "NO_CHANGE", "PUBLISHING", "ACCEPTED"},
+    "REWORK_REQUESTED": {"RUNNING"},
+    "PUBLISHING": {"PUBLISHED", "BLOCKED"},
+    "PUBLISHED": {"CI_PENDING", "ACCEPTED"},
+    "CI_PENDING": {"ACCEPTED", "REWORK_REQUESTED", "BLOCKED"},
+}
+EVENT_AUTHORITY = {
+    "planning.spec-accepted": ("system", "marshal-planning"),
+    "planning.inputs-frozen": ("system", "marshal-planning"),
+    "worker.started": ("system", "marshal-worker-runner"),
+    "worker.completed": ("system", "marshal-worker-runner"),
+    "worker.failed": ("system", "marshal-worker-runner"),
+    "worker.evidence-failed": ("system", "marshal-worker-runner"),
+    "verification.completed": ("system", "marshal-verifier"),
+    "review.accept": ("system", "marshal-review"),
+    "review.reject": ("system", "marshal-review"),
+    "review.blocked": ("system", "marshal-review"),
+    "review.rework": ("system", "marshal-review"),
+    "review.no-change": ("system", "marshal-review"),
+    "review.rework-budget-exhausted": ("system", "marshal-review"),
+    "publication.completed": ("publisher", "marshal-github-publisher"),
+    "publication.checks-requested": ("publisher", "marshal-github-publisher"),
+    "publication.checks-passed": ("publisher", "marshal-github-publisher"),
+    "publication.checks-failed": ("publisher", "marshal-github-publisher"),
+    "publication.accepted": ("publisher", "marshal-github-publisher"),
+    "publication.blocked": ("publisher", "marshal-github-publisher"),
+    "reconciliation.snapshot-repaired": ("system", "marshal-reconciliation"),
+}
 DEFAULT_WORKER_RESERVE_BYTES = 2 * 1024 * 1024 * 1024
 DEFAULT_PROVIDER_FAILURE_HOLD_SECONDS = 5 * 60
 MAX_RETRY_HINT_SECONDS = 24 * 60 * 60
@@ -680,66 +728,25 @@ def _canonical_json_digest(document):
                          ensure_ascii=False, allow_nan=False).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
-def _review_decision_valid(decision):
-    required = {
-        "apiVersion", "kind", "taskId", "runId", "reviewRound", "reviewer",
-        "specDigest", "reviewPacketDigest", "verificationDigest",
-        "artifactManifestDigest", "evidenceDigest", "verdict", "summary",
-        "blockingFindings", "nonBlockingFindings", "publicationRecommendation",
-        "mergeRecommendation", "decidedAt",
-    }
-    if not isinstance(decision, dict) or not required.issubset(decision) or set(decision) - (required | {"blockerOwner"}):
+def _review_decision_contract_valid(raw):
+    if not contract_validator_bin:
         return False
-    digest = re.compile(r"sha256:[0-9a-f]{64}")
-    identifier = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
-    if (decision.get("apiVersion") != "marshal.dev/v1alpha1" or
-            decision.get("kind") != "ReviewDecision" or
-            any(not isinstance(decision.get(key), str) or identifier.fullmatch(decision[key]) is None
-                for key in ("taskId", "runId")) or
-            isinstance(decision.get("reviewRound"), bool) or
-            not isinstance(decision.get("reviewRound"), int) or
-            not 1 <= decision["reviewRound"] <= (1 << 64) - 1 or
-            any(not isinstance(decision.get(key), str) or digest.fullmatch(decision[key]) is None
-                for key in ("specDigest", "reviewPacketDigest", "verificationDigest",
-                            "artifactManifestDigest", "evidenceDigest")) or
-            decision.get("verdict") not in {"accept", "rework", "reject", "blocked", "no_change"} or
-            not isinstance(decision.get("summary"), str) or not 1 <= len(decision["summary"]) <= 12000 or
-            decision.get("publicationRecommendation") not in {"publish", "do-not-publish", "not-applicable"} or
-            decision.get("mergeRecommendation") not in {"do-not-merge", "eligible-after-policy", "not-applicable"} or
-            strict_timestamp(decision.get("decidedAt")) is None):
-        return False
-    reviewer = decision.get("reviewer")
-    if (not isinstance(reviewer, dict) or set(reviewer) - {"type", "id", "model"} or
-            not {"type", "id"}.issubset(reviewer) or reviewer.get("type") not in {"lead-agent", "human"} or
-            not isinstance(reviewer.get("id"), str) or not 1 <= len(reviewer["id"]) <= 512 or
-            ("model" in reviewer and (not isinstance(reviewer["model"], str) or not 1 <= len(reviewer["model"]) <= 512))):
-        return False
-    if "blockerOwner" in decision and (not isinstance(decision["blockerOwner"], str) or not 1 <= len(decision["blockerOwner"]) <= 512):
-        return False
-    finding_allowed = {"id", "severity", "title", "description", "requiredOutcome",
-                       "file", "line", "gateId", "artifactId"}
-    for collection in (decision.get("blockingFindings"), decision.get("nonBlockingFindings")):
-        if not isinstance(collection, list):
+    executable = os.path.realpath(contract_validator_bin)
+    try:
+        before = os.stat(executable, follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o111 == 0:
             return False
-        for finding in collection:
-            if (not isinstance(finding, dict) or
-                    not {"id", "severity", "title", "description"}.issubset(finding) or
-                    set(finding) - finding_allowed or
-                    not isinstance(finding.get("id"), str) or identifier.fullmatch(finding["id"]) is None or
-                    finding.get("severity") not in {"P0", "P1", "P2", "P3"} or
-                    not isinstance(finding.get("title"), str) or not 1 <= len(finding["title"]) <= 300 or
-                    not isinstance(finding.get("description"), str) or not 1 <= len(finding["description"]) <= 8000):
-                return False
-            for key, limit in (("requiredOutcome", 4000), ("file", 2048)):
-                if key in finding and (not isinstance(finding[key], str) or not 1 <= len(finding[key]) <= limit):
-                    return False
-            if "line" in finding and (isinstance(finding["line"], bool) or not isinstance(finding["line"], int) or
-                                       not 1 <= finding["line"] <= (1 << 63) - 1):
-                return False
-            for key in ("gateId", "artifactId"):
-                if key in finding and (not isinstance(finding[key], str) or identifier.fullmatch(finding[key]) is None):
-                    return False
-    return True
+        completed = subprocess.run(
+            [executable, "contract", "validate", "--schema", "review-decision", "-"],
+            input=raw, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=10, check=False)
+        after = os.stat(executable, follow_symlinks=False)
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+            return False
+        return completed.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 def _round_bound_decision(run_fd, data, round_number, expected_digest):
     decisions_fd = None
@@ -748,7 +755,7 @@ def _round_bound_decision(run_fd, data, round_number, expected_digest):
         raw = _read_regular_bytes_at(decisions_fd, "decision-%03d.json" % round_number,
                                      MAX_REVIEW_DECISION_BYTES)
         decision = _strict_json_document(raw)
-        if not _review_decision_valid(decision):
+        if not _review_decision_contract_valid(raw):
             return None
         if _canonical_json_digest(decision) != expected_digest:
             return None
@@ -1013,6 +1020,59 @@ def failure_signature_matches_state(data, failure):
     expected = "sha256:" + hashlib.sha256(signature_bytes).hexdigest()
     return failure.get("failureSignature") == expected
 
+def _replayed_review_round(data, journal, origin):
+    """Replay the authoritative prefix exactly enough to derive reviewRound.
+
+    Core derives roundAfter only after full transition and producer-authority
+    replay.  A count of arbitrary stateTo values is not evidence.  This
+    read-only projection therefore rejects any unknown producer, broken state
+    chain, non-CREATED prefix, or missing/duplicate inputs-frozen event.
+    """
+    events = journal.get("events")
+    run_id = data.get("runId")
+    if not isinstance(events, list) or not events:
+        return None
+    current = "CREATED"
+    review_round = 0
+    frozen_count = 0
+    origin_seen = False
+    for index, event in enumerate(events):
+        if not isinstance(event, dict) or event.get("runId") != run_id:
+            return None
+        event_type = event.get("type")
+        required_actor = EVENT_AUTHORITY.get(event_type)
+        if required_actor is None or not _actor_is(event, required_actor[0], required_actor[1]):
+            return None
+        state_from, state_to = event.get("stateFrom"), event.get("stateTo")
+        if index == 0 and (event_type != "planning.spec-accepted" or
+                           state_from != "CREATED" or state_to != "PLANNED"):
+            return None
+        if event_type == "reconciliation.snapshot-repaired":
+            if state_from != current or state_to != current:
+                return None
+        else:
+            if (state_from != current or state_to not in LIFECYCLE_TRANSITIONS.get(current, set())):
+                return None
+            current = state_to
+            if state_to == "REVIEW_PENDING":
+                review_round += 1
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        if event_type == "planning.spec-accepted" and payload.get("specDigest") != data.get("specDigest"):
+            return None
+        if event_type == "planning.inputs-frozen":
+            frozen_count += 1
+            for key in ("specDigest", "policyDigest", "capabilityDigest", "baseSha"):
+                if payload.get(key) != data.get(key):
+                    return None
+        if event is origin:
+            origin_seen = True
+            break
+    if not origin_seen or frozen_count != 1 or current != "REWORK_REQUESTED":
+        return None
+    return review_round
+
 def _rework_origin_matches_state(data, journal, run_fd, origin):
     if not isinstance(origin, dict) or origin.get("runId") != data.get("runId"):
         return False
@@ -1031,15 +1091,8 @@ def _rework_origin_matches_state(data, journal, run_fd, origin):
         if (not isinstance(decision_digest, str) or digest_pattern.fullmatch(decision_digest) is None or
                 not isinstance(evidence_digest, str) or digest_pattern.fullmatch(evidence_digest) is None):
             return False
-        round_number = 0
-        origin_seen = False
-        for event in journal.get("events", []):
-            if event.get("type") != "reconciliation.snapshot-repaired" and event.get("stateTo") == "REVIEW_PENDING":
-                round_number += 1
-            if event is origin:
-                origin_seen = True
-                break
-        if (not origin_seen or round_number < 1 or
+        round_number = _replayed_review_round(data, journal, origin)
+        if (not isinstance(round_number, int) or round_number < 1 or
                 data.get("reviewRound") != round_number):
             return False
         decision = _round_bound_decision(run_fd, data, round_number, decision_digest)
@@ -1333,7 +1386,7 @@ if summary_path:
 '
 
 run_pass() {
-  process_snapshot | python3 -c "$PY_PROG" "$RUNS_DIR" "$1" "${2:-}"
+  process_snapshot | python3 -c "$PY_PROG" "$RUNS_DIR" "$1" "${2:-}" "$CONTRACT_VALIDATOR_BIN"
 }
 
 if [ "$ONCE" = "1" ]; then

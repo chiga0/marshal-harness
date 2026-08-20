@@ -32,10 +32,15 @@ trap cleanup EXIT
 ROOT="$TMP/root"
 PROCFILE="$TMP/procs.txt"
 LEASEFILE="$TMP/lease-facts.json"
+CONTRACT_VALIDATOR="$TMP/marshal-contract-validator"
 mkdir -p "$ROOT/runs"
 : > "$PROCFILE"
 printf '%s\n' '{}' > "$LEASEFILE"
 FAILURE_SIGNATURE="sha256:1111111111111111111111111111111111111111111111111111111111111111"
+if ! go build -o "$CONTRACT_VALIDATOR" ./cmd/marshal; then
+  printf 'FAIL - 无法构建同源 Marshal Core contract validator\n' >&2
+  exit 1
+fi
 
 default_cohort_file() {
   local path="$TMP/default-cohort.json"
@@ -62,6 +67,7 @@ run_watch() {
   MARSHAL_WATCH_PROCESS_FILE="$PROCFILE" \
   MARSHAL_WATCH_LEASE_FACTS_FILE="$LEASEFILE" \
   MARSHAL_WATCH_COHORT_FILE="$cohort_file" \
+  MARSHAL_WATCH_MARSHAL_BIN="$CONTRACT_VALIDATOR" \
   MARSHAL_WATCH_NOTIFY=0 \
   MARSHAL_WATCH_LOGICAL_CPUS="${MARSHAL_WATCH_LOGICAL_CPUS-8}" \
   MARSHAL_WATCH_LOAD1M="${MARSHAL_WATCH_LOAD1M-0}" \
@@ -81,6 +87,7 @@ run_watch_real_lease() {
   MARSHAL_WATCH_ROOT="$ROOT" \
   MARSHAL_WATCH_PROCESS_FILE="$PROCFILE" \
   MARSHAL_WATCH_COHORT_FILE="$cohort_file" \
+  MARSHAL_WATCH_MARSHAL_BIN="$CONTRACT_VALIDATOR" \
   MARSHAL_WATCH_NOTIFY=0 \
   MARSHAL_WATCH_LOGICAL_CPUS="${MARSHAL_WATCH_LOGICAL_CPUS-8}" \
   MARSHAL_WATCH_LOAD1M="${MARSHAL_WATCH_LOAD1M-0}" \
@@ -168,12 +175,13 @@ PYEOF
 }
 
 make_rework_decision() {
-  python3 - "$ROOT/runs/$1/state.json" "$ROOT/runs/$1" "$2" "${3:-}" <<'PYEOF'
+  python3 - "$ROOT/runs/$1/state.json" "$ROOT/runs/$1" "$2" "${3:-}" "${4:-}" <<'PYEOF'
 import hashlib, json, os, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     state = json.load(handle)
 round_number = int(sys.argv[3])
 evidence = sys.argv[4] or "sha256:" + "4" * 64
+mode = sys.argv[5]
 decision = {
     "apiVersion":"marshal.dev/v1alpha1", "kind":"ReviewDecision",
     "taskId":state["taskId"], "runId":state["runId"], "reviewRound":round_number,
@@ -187,6 +195,8 @@ decision = {
     "nonBlockingFindings":[], "publicationRecommendation":"do-not-publish",
     "mergeRecommendation":"do-not-merge", "decidedAt":"2026-08-20T00:00:00Z"
 }
+if mode == "duplicate-finding-id":
+    decision["nonBlockingFindings"] = [dict(decision["blockingFindings"][0])]
 encoded = json.dumps(decision, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 os.makedirs(os.path.join(sys.argv[2], "decisions"), exist_ok=True)
 with open(os.path.join(sys.argv[2], "decisions", "decision-%03d.json" % round_number), "wb") as handle:
@@ -551,16 +561,20 @@ fi
 
 note "1f) REWORK_REQUESTED origin 必须 exact 绑定 ReviewDecision 或 publication"
 make_run retry-review-origin RETRY_PENDING 10
-set_current_attempt retry-review-origin attempt:review-origin 4
+set_current_attempt retry-review-origin attempt:review-origin 8
 set_review_round retry-review-origin 1
 REVIEW_EVIDENCE="sha256:4444444444444444444444444444444444444444444444444444444444444444"
 REVIEW_DECISION_DIGEST=$(make_rework_decision retry-review-origin 1 "$REVIEW_EVIDENCE")
 REVIEW_ORIGIN_SIGNATURE=$(failure_signature retry-review-origin rate-limited retryable)
 cat > "$ROOT/runs/retry-review-origin/events.jsonl" <<EOF
-{"sequence":1,"type":"verification.completed","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"VERIFYING","stateTo":"REVIEW_PENDING","actor":{"type":"system","id":"marshal-verifier"},"payload":{}}
-{"sequence":2,"type":"review.rework","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REVIEW_PENDING","stateTo":"REWORK_REQUESTED","actor":{"type":"system","id":"marshal-review"},"payload":{"verdict":"rework","decisionDigest":"$REVIEW_DECISION_DIGEST","evidenceDigest":"$REVIEW_EVIDENCE"}}
-{"sequence":3,"type":"worker.started","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REWORK_REQUESTED","stateTo":"RUNNING","attemptId":"attempt:review-origin","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
-{"sequence":4,"type":"worker.failed","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:review-origin","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$REVIEW_ORIGIN_SIGNATURE"}}
+{"sequence":1,"type":"planning.spec-accepted","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"CREATED","stateTo":"PLANNED","actor":{"type":"system","id":"marshal-planning"},"payload":{"specDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}}
+{"sequence":2,"type":"planning.inputs-frozen","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"PLANNED","stateTo":"READY","actor":{"type":"system","id":"marshal-planning"},"payload":{"specDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","policyDigest":"sha256:2222222222222222222222222222222222222222222222222222222222222222","capabilityDigest":"sha256:3333333333333333333333333333333333333333333333333333333333333333","baseSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+{"sequence":3,"type":"worker.started","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:review-origin-initial","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":4,"type":"worker.completed","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:review-origin-initial","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{}}
+{"sequence":5,"type":"verification.completed","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"VERIFYING","stateTo":"REVIEW_PENDING","actor":{"type":"system","id":"marshal-verifier"},"payload":{}}
+{"sequence":6,"type":"review.rework","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REVIEW_PENDING","stateTo":"REWORK_REQUESTED","actor":{"type":"system","id":"marshal-review"},"payload":{"verdict":"rework","decisionDigest":"$REVIEW_DECISION_DIGEST","evidenceDigest":"$REVIEW_EVIDENCE"}}
+{"sequence":7,"type":"worker.started","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REWORK_REQUESTED","stateTo":"RUNNING","attemptId":"attempt:review-origin","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":8,"type":"worker.failed","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:review-origin","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$REVIEW_ORIGIN_SIGNATURE"}}
 EOF
 
 make_run retry-ci-origin RETRY_PENDING 10
@@ -604,14 +618,18 @@ write_review_retry_tail() {
   local rid="$1" origin="$2" signature
   signature=$(failure_signature "$rid" rate-limited retryable)
   cat > "$ROOT/runs/$rid/events.jsonl" <<EOF
-{"sequence":1,"type":"verification.completed","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"VERIFYING","stateTo":"REVIEW_PENDING","actor":{"type":"system","id":"marshal-verifier"},"payload":{}}
+{"sequence":1,"type":"planning.spec-accepted","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"CREATED","stateTo":"PLANNED","actor":{"type":"system","id":"marshal-planning"},"payload":{"specDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}}
+{"sequence":2,"type":"planning.inputs-frozen","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"PLANNED","stateTo":"READY","actor":{"type":"system","id":"marshal-planning"},"payload":{"specDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","policyDigest":"sha256:2222222222222222222222222222222222222222222222222222222222222222","capabilityDigest":"sha256:3333333333333333333333333333333333333333333333333333333333333333","baseSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+{"sequence":3,"type":"worker.started","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:$rid-initial","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":4,"type":"worker.completed","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:$rid-initial","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{}}
+{"sequence":5,"type":"verification.completed","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"VERIFYING","stateTo":"REVIEW_PENDING","actor":{"type":"system","id":"marshal-verifier"},"payload":{}}
 $origin
-{"sequence":3,"type":"worker.started","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REWORK_REQUESTED","stateTo":"RUNNING","attemptId":"attempt:$rid","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
-{"sequence":4,"type":"worker.failed","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:$rid","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$signature"}}
+{"sequence":7,"type":"worker.started","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REWORK_REQUESTED","stateTo":"RUNNING","attemptId":"attempt:$rid","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":8,"type":"worker.failed","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:$rid","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$signature"}}
 EOF
 }
 
-FORGED_ORIGIN_RUNS="retry-origin-unknown retry-origin-review-actor retry-origin-review-state retry-origin-review-attempt retry-origin-review-digest retry-origin-review-evidence retry-origin-review-identity retry-origin-ci-actor retry-origin-ci-head retry-origin-ci-publication"
+FORGED_ORIGIN_RUNS="retry-origin-unknown retry-origin-review-actor retry-origin-review-state retry-origin-review-attempt retry-origin-review-digest retry-origin-review-evidence retry-origin-review-identity retry-origin-review-duplicate-id retry-origin-review-invalid-replay retry-origin-ci-actor retry-origin-ci-head retry-origin-ci-publication"
 for rid in $FORGED_ORIGIN_RUNS; do
   make_run "$rid" RETRY_PENDING 10
   set_current_attempt "$rid" "attempt:$rid" 3
@@ -620,25 +638,25 @@ done
 write_rework_retry_tail retry-origin-unknown \
   "{\"sequence\":1,\"type\":\"verification.completed\",\"runId\":\"retry-origin-unknown\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-verifier\"},\"payload\":{}}"
 
-for rid in retry-origin-review-actor retry-origin-review-state retry-origin-review-attempt retry-origin-review-digest retry-origin-review-evidence retry-origin-review-identity; do
-  set_current_attempt "$rid" "attempt:$rid" 4
+for rid in retry-origin-review-actor retry-origin-review-state retry-origin-review-attempt retry-origin-review-digest retry-origin-review-evidence retry-origin-review-identity retry-origin-review-duplicate-id retry-origin-review-invalid-replay; do
+  set_current_attempt "$rid" "attempt:$rid" 8
   set_review_round "$rid" 1
 done
 ACTOR_DIGEST=$(make_rework_decision retry-origin-review-actor 1 "$REVIEW_EVIDENCE")
 write_review_retry_tail retry-origin-review-actor \
-  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-actor\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"forged-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$ACTOR_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+  "{\"sequence\":6,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-actor\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"forged-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$ACTOR_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
 STATE_DIGEST=$(make_rework_decision retry-origin-review-state 1 "$REVIEW_EVIDENCE")
 write_review_retry_tail retry-origin-review-state \
-  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-state\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"VERIFYING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$STATE_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+  "{\"sequence\":6,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-state\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"VERIFYING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$STATE_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
 ATTEMPT_DIGEST=$(make_rework_decision retry-origin-review-attempt 1 "$REVIEW_EVIDENCE")
 write_review_retry_tail retry-origin-review-attempt \
-  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-attempt\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"attemptId\":\"attempt:forged\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$ATTEMPT_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+  "{\"sequence\":6,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-attempt\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"attemptId\":\"attempt:forged\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$ATTEMPT_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
 make_rework_decision retry-origin-review-digest 1 "$REVIEW_EVIDENCE" >/dev/null
 write_review_retry_tail retry-origin-review-digest \
-  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-digest\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+  "{\"sequence\":6,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-digest\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
 EVIDENCE_DIGEST=$(make_rework_decision retry-origin-review-evidence 1 "$REVIEW_EVIDENCE")
 write_review_retry_tail retry-origin-review-evidence \
-  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-evidence\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$EVIDENCE_DIGEST\",\"evidenceDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\"}}"
+  "{\"sequence\":6,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-evidence\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$EVIDENCE_DIGEST\",\"evidenceDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\"}}"
 IDENTITY_DIGEST=$(make_rework_decision retry-origin-review-identity 1 "$REVIEW_EVIDENCE")
 python3 - "$ROOT/runs/retry-origin-review-identity/decisions/decision-001.json" "$TMP/identity-digest" <<'PYEOF'
 import hashlib, json, sys
@@ -653,7 +671,23 @@ with open(sys.argv[2], "w", encoding="utf-8") as handle:
 PYEOF
 IDENTITY_DIGEST=$(cat "$TMP/identity-digest")
 write_review_retry_tail retry-origin-review-identity \
-  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-identity\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$IDENTITY_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+  "{\"sequence\":6,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-identity\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$IDENTITY_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+
+DUPLICATE_ID_DIGEST=$(make_rework_decision retry-origin-review-duplicate-id 1 "$REVIEW_EVIDENCE" duplicate-finding-id)
+write_review_retry_tail retry-origin-review-duplicate-id \
+  "{\"sequence\":6,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-duplicate-id\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$DUPLICATE_ID_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+
+INVALID_REPLAY_DIGEST=$(make_rework_decision retry-origin-review-invalid-replay 1 "$REVIEW_EVIDENCE")
+INVALID_REPLAY_SIGNATURE=$(failure_signature retry-origin-review-invalid-replay rate-limited retryable)
+cat > "$ROOT/runs/retry-origin-review-invalid-replay/events.jsonl" <<EOF
+{"sequence":1,"type":"planning.spec-accepted","runId":"retry-origin-review-invalid-replay","timestamp":"$INITIAL_EVENT_TS","stateFrom":"CREATED","stateTo":"PLANNED","actor":{"type":"system","id":"marshal-planning"},"payload":{"specDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}}
+{"sequence":2,"type":"planning.inputs-frozen","runId":"retry-origin-review-invalid-replay","timestamp":"$INITIAL_EVENT_TS","stateFrom":"PLANNED","stateTo":"READY","actor":{"type":"system","id":"marshal-planning"},"payload":{"specDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","policyDigest":"sha256:2222222222222222222222222222222222222222222222222222222222222222","capabilityDigest":"sha256:3333333333333333333333333333333333333333333333333333333333333333","baseSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+{"sequence":3,"type":"verification.completed","runId":"retry-origin-review-invalid-replay","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"REVIEW_PENDING","actor":{"type":"system","id":"marshal-verifier"},"payload":{}}
+{"sequence":4,"type":"review.rework","runId":"retry-origin-review-invalid-replay","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REVIEW_PENDING","stateTo":"REWORK_REQUESTED","actor":{"type":"system","id":"marshal-review"},"payload":{"verdict":"rework","decisionDigest":"$INVALID_REPLAY_DIGEST","evidenceDigest":"$REVIEW_EVIDENCE"}}
+{"sequence":5,"type":"worker.started","runId":"retry-origin-review-invalid-replay","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REWORK_REQUESTED","stateTo":"RUNNING","attemptId":"attempt:retry-origin-review-invalid-replay","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":6,"type":"worker.failed","runId":"retry-origin-review-invalid-replay","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-origin-review-invalid-replay","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$INVALID_REPLAY_SIGNATURE"}}
+EOF
+set_current_attempt retry-origin-review-invalid-replay attempt:retry-origin-review-invalid-replay 6
 
 set_publication_head retry-origin-ci-actor "$CI_HEAD"
 write_rework_retry_tail retry-origin-ci-actor \
