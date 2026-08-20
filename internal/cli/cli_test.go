@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -269,6 +270,7 @@ func TestDoctorRunReconcilesEvidenceAndBlocksCorruption(t *testing.T) {
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf '0.21.11\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	configureQwenAuthFixture(t)
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", executable)
 	t.Setenv("MARSHAL_PI_PATH", "")
@@ -514,6 +516,7 @@ func TestTaskPlanEndToEndFreezesSelectedAdapter(t *testing.T) {
 	if err := os.WriteFile(executable, []byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '0.21.11\\n'; exit 0; fi\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	hostSystemRead := configureQwenAuthFixture(t)
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", executable)
 	t.Setenv("MARSHAL_PI_PATH", "")
@@ -551,6 +554,9 @@ func TestTaskPlanEndToEndFreezesSelectedAdapter(t *testing.T) {
 	}
 	if err := json.Unmarshal(capability, &identity); err != nil || identity.AdapterID != "qwen" {
 		t.Fatalf("frozen capability adapter = %q, err = %v", identity.AdapterID, err)
+	}
+	if hostSystemRead.Load() {
+		t.Fatal("CLI Qwen fixture read a hostile host system auth setting")
 	}
 }
 
@@ -687,6 +693,7 @@ func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 	// truthful probes are unsupported and selection continues to Qwen.
 	// OpenCode is configured to prove it is never injected into the explicit
 	// production candidate chain.
+	configureQwenAuthFixture(t)
 	t.Setenv("MARSHAL_QODER_PATH", writeVersionExecutable("qodercli", "1.1.23"))
 	t.Setenv("MARSHAL_QODER_CONFORMANCE_CONFIG", "")
 	t.Setenv("MARSHAL_CODEX_PATH", writeVersionExecutable("codex", "0.145.0"))
@@ -1058,6 +1065,42 @@ func writeCLIFixture(t *testing.T, path string, value any) {
 	}
 }
 
+func configureQwenAuthFixture(t *testing.T) *atomic.Bool {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	settingsPath := filepath.Join(home, ".qwen", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFixture(t, settingsPath, map[string]any{
+		"security": map[string]any{"auth": map[string]any{"selectedType": "qwen-oauth"}},
+	})
+	hostSystemRead := &atomic.Bool{}
+	previous := newWorkerRuntime
+	newWorkerRuntime = func(getenv func(string) string) (*app.WorkerRuntime, error) {
+		return app.NewWorkerRuntimeWithQwenAuthSettingsForTesting(getenv, []string{settingsPath}, func(path string, maxBytes int64) ([]byte, error) {
+			if strings.HasPrefix(path, "/Library/Application Support/QwenCode/") {
+				hostSystemRead.Store(true)
+				return []byte(`{"security":{"auth":{"selectedType":`), nil
+			}
+			if path != settingsPath {
+				return nil, os.ErrNotExist
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			if int64(len(data)) > maxBytes {
+				return nil, fmt.Errorf("qwen auth fixture exceeds bounded input")
+			}
+			return data, nil
+		})
+	}
+	t.Cleanup(func() { newWorkerRuntime = previous })
+	return hostSystemRead
+}
+
 func writeVersionExecutableForCLI(t *testing.T, name, version string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
@@ -1256,6 +1299,7 @@ func newAutoFlowSetup(t *testing.T) autoFlowSetup {
 	if exit := Run([]string{"init"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
 		t.Fatalf("init exit = %d, stderr = %s", exit, stderr.String())
 	}
+	configureQwenAuthFixture(t)
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", autoFlowWorkerExecutable(t))
 	t.Setenv("MARSHAL_PI_PATH", "")
