@@ -54,6 +54,32 @@ python3 -I -B .agents/skills/marshal/references/validate-admission-receipt.py \
 
 任一 tuple、sequence、digest、工具 identity、时效、容量、背压或 state/control identity 改变立即 fail closed；固定 `reasonCode` 原样保存，不重复 `task run`。复用的是证据摘要，不是 Core 状态副作用。`scopeLeaseDigest`、acceptance purity 等非动态门禁仍须在生成 receipt 前各自完成；Python validator 不把它们的自报布尔值升级成 Core authority。
 
+## 单次 plan pre-mortem
+
+在 `task plan` 前，对拟使用的 TaskSpec、PolicySnapshot、锁定 `sourceHead` 和所选 Adapter 只运行一次 operator-local pre-mortem。它直接复用 Core 的 TaskSpec/PolicySnapshot/CapabilitySnapshot Schema、`ValidateTaskSpecAcceptanceFloor`、`ValidatePolicy`、`WorkerRuntime.Selector.Probe` 与 `ValidateCapability`；只执行 Adapter 的 version/capability probe，不调用 `Worker.Run`、不创建 Attempt、不读写 `.marshal`，也不产生 Core authority。
+
+从 `templates/plan-premortem-preflight.json` 复制 manifest，把 TaskSpec 与 PolicySnapshot 放入同一紧凑 operator root，填入两份文件的原始 `sha256:` 摘要、锁定的 40 位 commit、`runId` 和本次唯一所选 Adapter。operator root 必须在 `.marshal` 外，所有绑定路径必须是无 symlink 的相对 regular file。先从当前锁定源码构建相邻只读 Core probe，再运行 wrapper：
+
+```bash
+OPERATOR_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
+go build -o "$OPERATOR_ROOT/plan-premortem-core-probe" \
+  .agents/skills/marshal/references/tests/plan_premortem_core_probe.go
+python3 -I -B .agents/skills/marshal/references/validate-plan-premortem-preflight.py \
+  --root "$OPERATOR_ROOT" \
+  --manifest plan-premortem-preflight.json \
+  --checker "$OPERATOR_ROOT/plan-premortem-core-probe"
+```
+
+只有 exit 0、`status=pass` 且 `reasonCode=plan-premortem-pass` 才继续 plan。pass receipt 绑定 TaskSpec/PolicySnapshot 原始摘要、`sourceHead`、所选 Adapter、`authorityMode` 与 capability JCS 摘要；它仍不是 plan approval 或 Run admission receipt。任一失败必须在启动 Worker 前止损，原样保留固定 `reasonCode`，修正输入后才允许对新摘要再执行一次：
+
+- `acceptance-required-command-missing`：TaskSpec 或 Policy 的 required acceptance floor 为空、没有 required command 或 argv 无效；
+- `policy-approval-gates-conflict`：Policy 的 approval gates 与控制语义冲突；
+- `policy-publication-merge-conflict`：publication/merge 开关、provider、method 或 required checks 不一致；
+- `adapter-ordinary-user-execution-profile-unsupported`：所选普通用户 Adapter 不支持 TaskSpec 的 `executionProfile`；不得把 ordinary-user 能力升级描述成 delegated authority；
+- `qoder-deliverable-parent-missing`：Qoder required path deliverable 的父目录在锁定 Git tree 中不存在；先修 TaskSpec 或在基线中建立父目录，不把结构性错误转成 Worker rework。
+
+其它 contract、路径、摘要、Adapter 配置/选择或 capability 失败也以稳定 `reasonCode` fail closed。wrapper 逐级 nofollow、有界读取并复核输入 fd identity，把已持有的精确字节复制到私有临时目录后调用一次 probe；输出不包含 executable、仓库、输入文件或临时目录路径。该工具是减少确定性 rework 的前置过滤器，不能替代后续 doctor、admission、独立 reviewer 或 Core 生命周期命令。
+
 ## Acceptance purity
 
 - plan 前做 purity lint：保守拒绝 shell wrapper/重定向、会在 worktree 生成 cache/profile/coverage 的命令，以及没有逐字使用 `python3 -I -B -c` 的 Python 内容验收。

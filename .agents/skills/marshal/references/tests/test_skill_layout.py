@@ -14,6 +14,9 @@ REQUIRED_REFERENCES = {
         "verifier-worktree-mutated",
         "id/argv/cwd/timeoutSeconds/required=true/baselinePolicy/maxLogBytes",
         "fstat",
+        "validate-plan-premortem-preflight.py",
+        "adapter-ordinary-user-execution-profile-unsupported",
+        "qoder-deliverable-parent-missing",
     ),
     "review-and-rework.md": (
         "historyClaimed=true",
