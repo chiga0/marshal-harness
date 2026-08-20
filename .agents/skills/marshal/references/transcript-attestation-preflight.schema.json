@@ -4,7 +4,7 @@
   "title": "Marshal operator-local transcript attestation preflight",
   "type": "object",
   "additionalProperties": false,
-  "required": ["apiVersion", "kind", "subject", "inputs"],
+  "required": ["apiVersion", "kind", "subject", "marshal", "inputs"],
   "properties": {
     "apiVersion": { "const": "marshal.operator/v1alpha1" },
     "kind": { "const": "TranscriptAttestationPreflight" },
@@ -32,6 +32,17 @@
         "protocolVersion": { "const": "1.2.0" },
         "eventContract": { "const": "qoder-stream-json-1.2.0-v7" },
         "permissionMode": { "const": "acceptEdits" }
+      }
+    },
+    "marshal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceHead", "executableSha256", "version", "internalCommandVersion"],
+      "properties": {
+        "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "executableSha256": { "$ref": "#/$defs/digest" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9._+-]+$" },
+        "internalCommandVersion": { "const": "qoder-transcript-check/v1" }
       }
     },
     "inputs": {

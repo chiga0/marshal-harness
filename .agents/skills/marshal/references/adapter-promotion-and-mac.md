@@ -87,19 +87,19 @@ Qoder 真实只读 live probe、首个低风险写任务和独立 conformance �
 allow/deny tool、required constraint、forbidden command、实际 tool/command、`declaredCommands` 和 command digest 只从已验证 TaskSpec/profile/Adapter transcript 机械导出；manifest 不维护人工副本。禁止读取/提交 prompt，禁止把 raw transcript、WorkerResult 自由文本或绝对用户路径带入仓库。
 
 ```bash
-go build -o "$OPERATOR_DIR/transcript-attestation-checker" \
-  .agents/skills/marshal/references/tests/transcript_attestation_core_probe.go
-python3 -I -B .agents/skills/marshal/references/validate-transcript-attestation-preflight.py \
+make build COMMIT="$(git rev-parse HEAD)"
+env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  /usr/bin/python3 -I -B .agents/skills/marshal/references/validate-transcript-attestation-preflight.py \
   --root "$ATTESTATION_DIR" \
   --manifest transcript-attestation-preflight.json \
-  --checker "$OPERATOR_DIR/transcript-attestation-checker"
+  --marshal "$REPOSITORY_ROOT/bin/marshal"
 ```
 
 只有 exit 0、`status=pass`、`reasonCode=transcript-attestation-pass` 且 subject 等于当前 Attempt，才能继续 freshness/reviewer。
 
-Validator 必须先让 checker 在 stdin 未发送时保持阻塞。Mac expected identity 从复制前持有的 raw bytes 解析 thin 64-bit Mach-O 唯一 SHA-256 CodeDirectory，actual 用固定 `/usr/bin/codesign -dvvv +PID` 获取 full SHA-256 CDHash；Linux CI 用 `/proc/PID/exe` raw SHA-256。只有 exact match 才发送 evidence。pathname/inode 复核只是防御纵深，不得说成实际执行 identity。
+Validator 只调用用户显式传入、已构建且稳定路径的 Marshal 二进制内部命令 `marshal internal qoder-transcript-check`，不得再构建、复制或执行随机临时 checker。它必须先让该内部命令在 stdin 未发送时保持阻塞。Mac expected identity 从 held Marshal raw bytes 解析 thin 64-bit Mach-O 唯一 SHA-256 CodeDirectory，actual 用固定 `/usr/bin/codesign -dvvv +PID` 获取 full SHA-256 CDHash；Linux CI 用 `/proc/PID/exe` raw SHA-256。只有固定路径、held device/inode/raw digest、expected/actual process identity 全部 exact match 才发送 evidence。pathname/inode 复核只是防御纵深，不得说成 held-fd execution 或实际执行 identity。
 
-Checker/codesign stdout、stderr 和 combined 都增量读取并有硬上限；overflow/deadline 固定 fail closed，只 terminate/wait/kill/reap validator 自己创建的 `Popen`。只保存脱敏 identity/digest/observation/reasonCode 摘要，并绑定 validator/schema/checker/profile、expected/actual process identity method/digest、Qoder event contract、transport、Capability admission 与 executable digest。
+Marshal 内部命令/codesign stdout、stderr 和 combined 都增量读取并有硬上限；子进程使用等价 `env -i` 的封闭环境，overflow/deadline 固定 fail closed，只 terminate/wait/kill/reap validator 自己创建的 `Popen`。只保存脱敏 identity/digest/observation/reasonCode 摘要，并绑定 validator/schema/Marshal raw digest/internal-command digest/profile、expected/actual process identity method/digest、Qoder event contract、transport、Capability admission 与 executable digest。
 
 Attestation 是 pre-review operator-local gate，只核对实际 tool/command、`declaredCommands`、TaskSpec 和 final tee 纪律；不是 Worker 自证，不替代 Core 生命周期/持久化/failure/retry/ReviewPacket/Decision/freshness，不写 `.marshal` 或改 Run 状态。任一非零退出或 `status=fail` 都原样保存固定 `reasonCode` 并阻断 reviewer。
 

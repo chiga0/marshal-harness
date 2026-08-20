@@ -102,6 +102,8 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return runTask(ctx, args[1:], stdin, stdout, stderr)
 	case "supervise":
 		return runSupervise(ctx, args[1:], stdout, stderr)
+	case "internal":
+		return runInternal(args[1:], stdin, stdout, stderr)
 	case "__launch":
 		return runInternalLaunch(args[1:], stderr)
 	case "__detach":
@@ -109,6 +111,20 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	default:
 		fmt.Fprintf(stderr, "未知命令 %q。\n", args[0])
 		writeUsage(stderr)
+		return ExitUsage
+	}
+}
+
+func runInternal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "内部调用无效。")
+		return ExitUsage
+	}
+	switch args[0] {
+	case "qoder-transcript-check":
+		return runInternalQoderTranscriptCheck(args[1:], stdin, stdout, stderr)
+	default:
+		fmt.Fprintln(stderr, "内部调用无效。")
 		return ExitUsage
 	}
 }
