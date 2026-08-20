@@ -70,6 +70,8 @@ var taskCommands = []string{
 	"migrate-outcomes",
 }
 
+var newWorkerRuntime = app.NewWorkerRuntime
+
 // Run executes one CLI invocation without granting Worker or Publisher
 // capabilities to the CLI boundary itself.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -265,7 +267,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		fmt.Fprintln(stderr, "doctor 失败：应用初始化失败。")
 		return ExitFailure
 	}
-	runtime, err := app.NewWorkerRuntime(os.Getenv)
+	runtime, err := newWorkerRuntime(os.Getenv)
 	if err != nil {
 		fmt.Fprintln(stderr, "doctor 失败：Worker Runtime 初始化失败。")
 		return ExitFailure
@@ -1707,7 +1709,7 @@ func runTaskPlan(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		fmt.Fprintf(stderr, "规划失败：读取 PolicySnapshot：%v\n", err)
 		return ExitFailure
 	}
-	runtime, err := app.NewWorkerRuntime(os.Getenv)
+	runtime, err := newWorkerRuntime(os.Getenv)
 	if err != nil {
 		fmt.Fprintln(stderr, "规划失败：Worker Runtime 初始化失败。")
 		return ExitFailure
@@ -1998,7 +2000,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "运行失败：%v\n", err)
 		return ExitFailure
 	}
-	runtime, err := app.NewWorkerRuntime(os.Getenv)
+	runtime, err := newWorkerRuntime(os.Getenv)
 	if err != nil {
 		fmt.Fprintln(stderr, "运行失败：Worker Runtime 初始化失败。")
 		return ExitFailure

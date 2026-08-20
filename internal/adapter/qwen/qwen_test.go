@@ -118,6 +118,36 @@ func TestNewRequiresExactExecutableAndValidator(t *testing.T) {
 	}
 }
 
+func TestDefaultAuthSettingsPathsRemainFixed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	want := []string{
+		filepath.Join("/Library/Application Support/QwenCode", "system-defaults.json"),
+		filepath.Join(home, ".qwen", "settings.json"),
+		filepath.Join("/Library/Application Support/QwenCode", "settings.json"),
+	}
+	if got := defaultAuthSettingsPaths(); !slices.Equal(got, want) {
+		t.Fatalf("default auth settings paths = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewWithAuthSettingsForTestingFreezesCompleteSource(t *testing.T) {
+	paths := []string{filepath.Join(t.TempDir(), "settings.json")}
+	adapter, err := NewWithAuthSettingsForTesting(fakeExecutable(t, supportedBinary, "", "", "exit 0"), newValidator(t), paths, readBounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths[0] = filepath.Join(t.TempDir(), "mutated.json")
+	got := adapter.authSettingsPaths()
+	if len(got) != 1 || got[0] == paths[0] {
+		t.Fatalf("test auth settings source was not frozen: %#v", got)
+	}
+	got[0] = filepath.Join(t.TempDir(), "mutated-again.json")
+	if next := adapter.authSettingsPaths(); len(next) != 1 || next[0] == got[0] {
+		t.Fatalf("test auth settings source leaked mutable storage: %#v", next)
+	}
+}
+
 func TestPrepareTerminalFreezesNativeTUIWithoutPromptOrCapturedMode(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "publisher-secret")
 	fixture := newRunFixture(t, supportedBinary, "exit 0")

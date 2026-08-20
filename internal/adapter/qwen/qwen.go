@@ -278,6 +278,29 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 	}, nil
 }
 
+// NewWithAuthSettingsForTesting constructs the production adapter while
+// replacing its complete auth-settings source with a frozen test fixture.
+// Production registration must use New so the fixed system/user precedence
+// cannot be changed by environment or runtime configuration.
+func NewWithAuthSettingsForTesting(executable string, validator *contract.Validator, paths []string, read func(string, int64) ([]byte, error)) (*Adapter, error) {
+	if len(paths) == 0 || read == nil {
+		return nil, errors.New("qwen test auth settings source is required")
+	}
+	frozen := append([]string(nil), paths...)
+	for _, path := range frozen {
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+			return nil, errors.New("qwen test auth settings path must be absolute and clean")
+		}
+	}
+	adapter, err := New(executable, validator)
+	if err != nil {
+		return nil, err
+	}
+	adapter.authSettingsPaths = func() []string { return append([]string(nil), frozen...) }
+	adapter.readAuthSettings = read
+	return adapter, nil
+}
+
 func (a *Adapter) ID() string { return adapterID }
 
 // PrepareTerminal freezes a native Qwen TUI launch. It preserves the same

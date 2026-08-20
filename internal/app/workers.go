@@ -60,8 +60,10 @@ type workerBinding struct {
 	identify            func(executable string) (version, digest string, err error)
 	requiresAuthority   bool
 	ordinaryModeEnv     string
-	construct           func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error)
+	construct           workerConstructor
 }
+
+type workerConstructor func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error)
 
 var workerBindings = []workerBinding{
 	{
@@ -157,6 +159,20 @@ type WorkerRuntime struct {
 // explicit fallback can continue; only base initialization or invariant errors
 // abort construction, always with a fixed, non-leaking message.
 func NewWorkerRuntime(getenv func(string) string) (*WorkerRuntime, error) {
+	return newWorkerRuntime(getenv, nil)
+}
+
+// NewWorkerRuntimeWithQwenAuthSettingsForTesting builds the same runtime as
+// NewWorkerRuntime but replaces Qwen's complete auth-settings source with a
+// frozen test fixture. Production callers must use NewWorkerRuntime, whose
+// Qwen constructor always preserves the fixed system/user precedence.
+func NewWorkerRuntimeWithQwenAuthSettingsForTesting(getenv func(string) string, paths []string, read func(string, int64) ([]byte, error)) (*WorkerRuntime, error) {
+	return newWorkerRuntime(getenv, func(executable string, validator *contract.Validator, _ func(string) string) (port.WorkerAdapter, error) {
+		return qwen.NewWithAuthSettingsForTesting(executable, validator, paths, read)
+	})
+}
+
+func newWorkerRuntime(getenv func(string) string, qwenConstructor workerConstructor) (*WorkerRuntime, error) {
 	if getenv == nil {
 		return nil, port.Permanentf("worker runtime: nil environment lookup")
 	}
@@ -191,7 +207,11 @@ func NewWorkerRuntime(getenv func(string) string) (*WorkerRuntime, error) {
 			}
 			configuration.AuthorityMode = mode
 		}
-		worker, constructErr := binding.construct(executable, validator, getenv)
+		construct := binding.construct
+		if binding.adapterID == "qwen" && qwenConstructor != nil {
+			construct = qwenConstructor
+		}
+		worker, constructErr := construct(executable, validator, getenv)
 		if constructErr != nil {
 			// Deliberately discard the executable, the environment value, and
 			// the underlying error: none may be stored or echoed.
