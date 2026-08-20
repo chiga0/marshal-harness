@@ -34,6 +34,72 @@ func TestDecodeEventLineExtractsSessionUsageAndTerminal(t *testing.T) {
 	}
 }
 
+func TestDecodeTranscriptAcceptsFragmentedSameMessageToolUses(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":null,"content":[{"type":"thinking","thinking":"opaque"}]}}
+{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":null,"content":[{"type":"text","text":"opaque"}]}}
+{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":null,"content":[{"type":"tool_use","id":"tool-read","name":"Read","input":{"filePath":"README.md"}}]}}
+{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-grep","name":"Grep","input":{"path":"internal"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-read","content":"ok"},{"type":"tool_result","tool_use_id":"tool-grep","content":"ok"}]}}
+{"type":"assistant","message":{"id":"message-2","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"opaque"}]}}
+{"type":"result","subtype":"success","is_error":false}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result.eventCount != 8 || result.assistantCount != 5 || result.toolCalls != 2 {
+		t.Fatalf("counts = events %d assistant %d tools %d", result.eventCount, result.assistantCount, result.toolCalls)
+	}
+	if got := strings.Join(result.toolNames, ","); got != "read,grep" {
+		t.Fatalf("toolNames = %q, want read,grep", got)
+	}
+	if !result.terminal.seen || !result.terminal.success || len(result.pendingTools) != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestDecodeTranscriptFoldsExactToolReplayWithinFragmentedMessage(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":null,"content":[{"type":"tool_use","id":"tool-read","name":"Read","input":{"filePath":"README.md"}}]}}
+{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-read","name":"Read","input":{"filePath":"README.md"}},{"type":"tool_use","id":"tool-grep","name":"Grep","input":{"path":"internal"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-read","content":"ok"},{"type":"tool_result","tool_use_id":"tool-grep","content":"ok"}]}}
+{"type":"result","subtype":"success","is_error":false}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result.toolCalls != 2 || len(result.observedTools) != 2 {
+		t.Fatalf("tool projection duplicated: calls=%d observed=%d", result.toolCalls, len(result.observedTools))
+	}
+}
+
+func TestDecodeTranscriptRejectsFragmentedMessageBoundaryDrift(t *testing.T) {
+	init := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`
+	toolA := `{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":null,"content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"filePath":"README.md"}}]}}`
+	tests := map[string]string{
+		"message id changed":             init + "\n" + toolA + "\n" + `{"type":"assistant","message":{"id":"message-2","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-2","name":"Grep","input":{"path":"internal"}}]}}` + "\n",
+		"message id disappeared":         init + "\n" + toolA + "\n" + `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-2","name":"Grep","input":{"path":"internal"}}]}}` + "\n",
+		"conflicting replay":             init + "\n" + toolA + "\n" + `{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"filePath":"OTHER.md"}}]}}` + "\n",
+		"result before stop":             init + "\n" + toolA + "\n" + `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}` + "\n",
+		"terminal before stop":           init + "\n" + `{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":null,"content":[{"type":"text","text":"opaque"}]}}` + "\n" + `{"type":"result","subtype":"success","is_error":false}` + "\n",
+		"post final frame":               init + "\n" + `{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"opaque"}]}}` + "\n" + `{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":"end_turn","content":[]}}` + "\n",
+		"post final different id":        init + "\n" + `{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"opaque"}]}}` + "\n" + `{"type":"assistant","message":{"id":"message-2","role":"assistant","stop_reason":"end_turn","content":[]}}` + "\n",
+		"duplicate replay member":        init + "\n" + `{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":null,"content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"filePath":"README.md","filePath":"OTHER.md"}}]}}` + "\n" + `{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"filePath":"OTHER.md"}}]}}` + "\n",
+		"nested duplicate replay member": init + "\n" + `{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":null,"content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"options":{"path":"README.md","path":"OTHER.md"}}}]}}` + "\n" + `{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"options":{"path":"OTHER.md"}}}]}}` + "\n",
+		"unknown stop reason":            init + "\n" + `{"type":"assistant","message":{"id":"message-1","role":"assistant","stop_reason":"future_reason","content":[{"type":"text","text":"opaque"}]}}` + "\n",
+	}
+	for name, stream := range tests {
+		t.Run(name, func(t *testing.T) {
+			result := decodeTranscript([]byte(stream))
+			if !errors.Is(result.err, ErrProtocol) {
+				t.Fatalf("err = %v, want ErrProtocol", result.err)
+			}
+		})
+	}
+}
+
 func TestDecodeEventLineAssociatesToolResultsAndCapturesPermissionDenials(t *testing.T) {
 	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"tee marshal-worker-result.json"}}]}}

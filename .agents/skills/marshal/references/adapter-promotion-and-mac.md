@@ -69,7 +69,9 @@ Qoder 的受控 `tee` 是 Worker-side final-declaration 纪律：Worker 在内�
 
 若 live probe 出现“deliverable 已生成、Provider exit 0，但 transport protocol-invalid”，不得复制 TaskSpec 再跑。比较 Adapter 保存的 transcript/meta 中真实 `tool_use.input` 与冻结 envelope fixture，区分执行语义和 Provider 自动元数据；仅把真实观察、类型封闭、canonical 编码且不影响执行的字段加入版本化 envelope。Envelope 变化同步 bump Adapter/event contract、transport digest 和 fresh live evidence；未知字段继续拒绝。
 
-## Qoder v6 transcript attestation
+## Qoder v7 transcript attestation
+
+当前只接受 `qoder-stream-json-1.2.0-v7` 与 `qoder-v7-transcript-attestation-v4`；v5/v6 evidence、receipt、profile 或摘要均为历史材料，不得迁移到当前 promotion。
 
 Qoder 真实只读 live probe、首个低风险写任务和独立 conformance 必须分别通过 transcript attestation，并把 subject/input/attestation digest 纳入脱敏级别摘要。缺失、失败或 identity 不符不得晋升或复用。
 

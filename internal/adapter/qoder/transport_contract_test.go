@@ -19,15 +19,30 @@ func TestReviewedEventContractReferenceMatchesCurrentTransportIdentity(t *testin
 		t.Fatal(err)
 	}
 	var reference struct {
-		AdapterVersion              string `json:"adapterVersion"`
-		EventContract               string `json:"eventContract"`
-		WorkerResultTransportDigest string `json:"workerResultTransportDigest"`
+		AdapterVersion                      string   `json:"adapterVersion"`
+		EventContract                       string   `json:"eventContract"`
+		WorkerResultTransportDigest         string   `json:"workerResultTransportDigest"`
+		AssistantMessageIdentityField       string   `json:"assistantMessageIdentityField"`
+		AssistantMessageFragmentPolicy      string   `json:"assistantMessageFragmentPolicy"`
+		AssistantMessageExactReplayPolicy   string   `json:"assistantMessageExactReplayPolicy"`
+		AssistantMessageConflictDisposition string   `json:"assistantMessageConflictDisposition"`
+		AssistantMessageClosedOnStopReasons []string `json:"assistantMessageClosedOnStopReasons"`
+		AssistantMessageCrossIDDisposition  string   `json:"assistantMessageCrossIdBeforeCloseDisposition"`
 	}
 	if err := json.Unmarshal(data, &reference); err != nil {
 		t.Fatal(err)
 	}
 	if reference.AdapterVersion != adapterVersion || reference.EventContract != conformanceEventContract || reference.WorkerResultTransportDigest != expectedWorkerResultTransportDigest() {
 		t.Fatalf("reference identity = %+v, want adapter=%s event=%s transport=%s", reference, adapterVersion, conformanceEventContract, expectedWorkerResultTransportDigest())
+	}
+	if reference.AssistantMessageIdentityField != "message.id" ||
+		reference.AssistantMessageFragmentPolicy != "same-id-cumulative-distinct-tool-use" ||
+		reference.AssistantMessageExactReplayPolicy != "same-id-same-tool-id-name-canonical-input-fold-once" ||
+		reference.AssistantMessageConflictDisposition != "protocol-invalid-do-not-retry" ||
+		reference.AssistantMessageCrossIDDisposition != "protocol-invalid-do-not-retry" ||
+		len(reference.AssistantMessageClosedOnStopReasons) != 2 ||
+		reference.AssistantMessageClosedOnStopReasons[0] != "tool_use" || reference.AssistantMessageClosedOnStopReasons[1] != "end_turn" {
+		t.Fatalf("reference assistant fragmentation contract = %+v", reference)
 	}
 }
 
@@ -109,9 +124,11 @@ func TestOldQoderConformanceIdentityIsRejected(t *testing.T) {
 		"adapter 0.1.2":     func(v *LiveConformanceObservation) { v.AdapterVersion = "0.1.2" },
 		"adapter 0.1.3":     func(v *LiveConformanceObservation) { v.AdapterVersion = "0.1.3" },
 		"adapter 0.1.4":     func(v *LiveConformanceObservation) { v.AdapterVersion = "0.1.4" },
+		"adapter 0.1.5":     func(v *LiveConformanceObservation) { v.AdapterVersion = "0.1.5" },
 		"event contract v3": func(v *LiveConformanceObservation) { v.EventContract = "qoder-stream-json-1.2.0-v3" },
 		"event contract v4": func(v *LiveConformanceObservation) { v.EventContract = "qoder-stream-json-1.2.0-v4" },
 		"event contract v5": func(v *LiveConformanceObservation) { v.EventContract = "qoder-stream-json-1.2.0-v5" },
+		"event contract v6": func(v *LiveConformanceObservation) { v.EventContract = "qoder-stream-json-1.2.0-v6" },
 	} {
 		t.Run("observation "+name, func(t *testing.T) {
 			observation := validWorkerResultTransportObservation(now)
@@ -153,9 +170,11 @@ func TestOldQoderConformanceIdentityIsRejected(t *testing.T) {
 		"adapter 0.1.2":     func(v *ConformanceEvidence) { v.AdapterVersion = "0.1.2" },
 		"adapter 0.1.3":     func(v *ConformanceEvidence) { v.AdapterVersion = "0.1.3" },
 		"adapter 0.1.4":     func(v *ConformanceEvidence) { v.AdapterVersion = "0.1.4" },
+		"adapter 0.1.5":     func(v *ConformanceEvidence) { v.AdapterVersion = "0.1.5" },
 		"event contract v3": func(v *ConformanceEvidence) { v.EventContract = "qoder-stream-json-1.2.0-v3" },
 		"event contract v4": func(v *ConformanceEvidence) { v.EventContract = "qoder-stream-json-1.2.0-v4" },
 		"event contract v5": func(v *ConformanceEvidence) { v.EventContract = "qoder-stream-json-1.2.0-v5" },
+		"event contract v6": func(v *ConformanceEvidence) { v.EventContract = "qoder-stream-json-1.2.0-v6" },
 		"v4 transport identity": func(v *ConformanceEvidence) {
 			v.AdapterVersion = "0.1.3"
 			v.EventContract = "qoder-stream-json-1.2.0-v4"

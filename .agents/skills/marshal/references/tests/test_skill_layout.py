@@ -40,6 +40,8 @@ REQUIRED_REFERENCES = {
         "WorkerResult",
         "codex-provider-schema-compatible",
         "status=fail",
+        "Qoder v7 transcript attestation",
+        "qoder-stream-json-1.2.0-v7",
     ),
     "watchdog-and-capacity.md": (
         "memoryAvailableBytes",
@@ -110,6 +112,13 @@ class SkillLayoutTest(unittest.TestCase):
         ):
             with self.subTest(anchor=anchor):
                 self.assertIn(anchor, content)
+
+    def test_qoder_transcript_reference_tracks_current_v7_contract(self) -> None:
+        content = (SKILL_ROOT / "references" / "transcript-attestation-preflight.md").read_text(encoding="utf-8")
+        self.assertIn("Qoder v7", content)
+        self.assertIn("qoder-stream-json-1.2.0-v7", content)
+        self.assertIn("v7 尚须取得 fresh Mac evidence", content)
+        self.assertNotIn("当前实现只支持版本化冻结的 Qoder v6", content)
 
     def test_all_relative_markdown_links_exist(self) -> None:
         documents = [SKILL, SKILL_ROOT / "references" / "skill-rule-migration.md"]

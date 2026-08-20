@@ -1,9 +1,9 @@
 {
-  "profileVersion": "qoder-v6-transcript-attestation-v3",
+  "profileVersion": "qoder-v7-transcript-attestation-v4",
   "adapterId": "qoder",
   "binaryVersion": "1.1.23",
   "protocolVersion": "1.2.0",
-  "eventContract": "qoder-stream-json-1.2.0-v6",
+  "eventContract": "qoder-stream-json-1.2.0-v7",
   "permissionMode": "acceptEdits",
   "defaultAllowedTools": ["read", "edit", "write", "grep", "glob", "bash"],
   "forbiddenCommandWords": ["wc", "python", "python3", "git", "ls", "find", "mkdir", "pwd"],

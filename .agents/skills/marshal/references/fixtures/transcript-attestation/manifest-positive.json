@@ -9,7 +9,7 @@
     "adapterId": "qoder",
     "binaryVersion": "1.1.23",
     "protocolVersion": "1.2.0",
-    "eventContract": "qoder-stream-json-1.2.0-v6",
+    "eventContract": "qoder-stream-json-1.2.0-v7",
     "permissionMode": "acceptEdits"
   },
   "inputs": {
