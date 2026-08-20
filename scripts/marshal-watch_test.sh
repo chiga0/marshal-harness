@@ -112,11 +112,13 @@ EOF
 }
 
 set_current_attempt() {
-  python3 - "$ROOT/runs/$1/state.json" "$2" <<'PYEOF'
+  python3 - "$ROOT/runs/$1/state.json" "$2" "${3:-}" <<'PYEOF'
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     data = json.load(handle)
 data["currentAttemptId"] = sys.argv[2]
+if sys.argv[3]:
+    data["sequence"] = int(sys.argv[3])
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump(data, handle, separators=(",", ":"))
 PYEOF
@@ -170,7 +172,7 @@ make_run run-review  REVIEW_PENDING   120
 printf '%s\n' '{}' > "$ROOT/runs/run-review/review-packet.json"
 make_run run-rework  REWORK_REQUESTED 110
 make_run run-retry   RETRY_PENDING    100
-set_current_attempt run-retry attempt:run-retry
+set_current_attempt run-retry attempt:run-retry 2
 FAILURE_SIGNATURE=$(failure_signature run-retry rate-limited retryable)
 INITIAL_EVENT_TS=$(python3 - <<'PYEOF'
 import datetime
@@ -179,7 +181,8 @@ print(stamp.replace(microsecond=0).isoformat().replace("+00:00", "Z"))
 PYEOF
 )
 cat > "$ROOT/runs/run-retry/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:run-retry","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE"}}
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:run-retry","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:run-retry","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE"}}
 EOF
 make_run run-verify  VERIFYING         90
 make_run run-publish PUBLISHING        80
@@ -322,14 +325,14 @@ fi
 
 note "1e) RETRY_PENDING 仅当前 typed lineage 可重试，root/latest 绑定并在新 origin 重置"
 make_run retry-lineage RETRY_PENDING 10
-set_current_attempt retry-lineage attempt:retry-2
+set_current_attempt retry-lineage attempt:retry-2 4
 ROOT_SIGNATURE=$(failure_signature retry-lineage rate-limited retryable)
 LATEST_SIGNATURE=$(failure_signature retry-lineage connection-failure retryable)
 cat > "$ROOT/runs/retry-lineage/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:retry-1","payload":{"adapterId":"qwen"}}
-{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-1","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$ROOT_SIGNATURE"}}
-{"sequence":3,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RETRY_PENDING","stateTo":"RUNNING","attemptId":"attempt:retry-2","payload":{"adapterId":"qwen"}}
-{"sequence":4,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-2","payload":{"adapterId":"qwen","failureKind":"connection-failure","retryDisposition":"retryable","failureSignature":"$LATEST_SIGNATURE"}}
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:retry-1","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-1","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$ROOT_SIGNATURE"}}
+{"sequence":3,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RETRY_PENDING","stateTo":"RUNNING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":4,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"connection-failure","retryDisposition":"retryable","failureSignature":"$LATEST_SIGNATURE"}}
 EOF
 OUT_RETRY_LINEAGE="$TMP/out_retry_lineage.json"
 run_watch --once --json > "$OUT_RETRY_LINEAGE"
@@ -341,22 +344,74 @@ cat > "$ROOT/runs/retry-legacy/events.jsonl" <<EOF
 EOF
 
 make_run retry-mismatch RETRY_PENDING 10
-set_current_attempt retry-mismatch attempt:new
+set_current_attempt retry-mismatch attempt:new 2
 MISMATCH_SIGNATURE=$(failure_signature retry-mismatch rate-limited retryable)
 cat > "$ROOT/runs/retry-mismatch/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:old","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$MISMATCH_SIGNATURE"}}
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:old","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:old","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$MISMATCH_SIGNATURE"}}
 EOF
 
 make_run retry-invalid RETRY_PENDING 10
-set_current_attempt retry-invalid attempt:invalid
+set_current_attempt retry-invalid attempt:invalid 2
 cat > "$ROOT/runs/retry-invalid/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:invalid","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"not-a-digest"}}
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:invalid","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:invalid","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"not-a-digest"}}
 EOF
 
 make_run retry-wrongsig RETRY_PENDING 10
-set_current_attempt retry-wrongsig attempt:wrongsig
+set_current_attempt retry-wrongsig attempt:wrongsig 2
 cat > "$ROOT/runs/retry-wrongsig/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:wrongsig","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:wrongsig","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:wrongsig","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+EOF
+
+for rid in retry-wrong-actor retry-missing-started retry-nonadjacent retry-successor-started retry-snapshot-drift retry-attempt-reuse; do
+  make_run "$rid" RETRY_PENDING 10
+done
+
+set_current_attempt retry-wrong-actor attempt:wrong-actor 2
+WRONG_ACTOR_SIGNATURE=$(failure_signature retry-wrong-actor rate-limited retryable)
+cat > "$ROOT/runs/retry-wrong-actor/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:wrong-actor","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:wrong-actor","actor":{"type":"system","id":"forged-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$WRONG_ACTOR_SIGNATURE"}}
+EOF
+
+set_current_attempt retry-missing-started attempt:missing 1
+MISSING_STARTED_SIGNATURE=$(failure_signature retry-missing-started rate-limited retryable)
+cat > "$ROOT/runs/retry-missing-started/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:missing","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$MISSING_STARTED_SIGNATURE"}}
+EOF
+
+set_current_attempt retry-nonadjacent attempt:nonadjacent 3
+NONADJACENT_SIGNATURE=$(failure_signature retry-nonadjacent rate-limited retryable)
+cat > "$ROOT/runs/retry-nonadjacent/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:nonadjacent","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"planning.inputs-frozen","timestamp":"$INITIAL_EVENT_TS","actor":{"type":"system","id":"marshal-planning"},"payload":{"adapterId":"qwen"}}
+{"sequence":3,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:nonadjacent","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$NONADJACENT_SIGNATURE"}}
+EOF
+
+set_current_attempt retry-successor-started attempt:successor 3
+SUCCESSOR_SIGNATURE=$(failure_signature retry-successor-started rate-limited retryable)
+cat > "$ROOT/runs/retry-successor-started/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:failed","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:failed","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$SUCCESSOR_SIGNATURE"}}
+{"sequence":3,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RETRY_PENDING","stateTo":"RUNNING","attemptId":"attempt:successor","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+EOF
+
+set_current_attempt retry-snapshot-drift attempt:drift 1
+DRIFT_SIGNATURE=$(failure_signature retry-snapshot-drift rate-limited retryable)
+cat > "$ROOT/runs/retry-snapshot-drift/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:drift","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:drift","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$DRIFT_SIGNATURE"}}
+EOF
+
+set_current_attempt retry-attempt-reuse attempt:reuse 4
+REUSE_SIGNATURE=$(failure_signature retry-attempt-reuse rate-limited retryable)
+cat > "$ROOT/runs/retry-attempt-reuse/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:reuse","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:reuse","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$REUSE_SIGNATURE"}}
+{"sequence":3,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RETRY_PENDING","stateTo":"RUNNING","attemptId":"attempt:reuse","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":4,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:reuse","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$REUSE_SIGNATURE"}}
 EOF
 OUT_RETRY_CLOSED="$TMP/out_retry_closed.json"
 run_watch --once --json > "$OUT_RETRY_CLOSED"
@@ -373,7 +428,9 @@ if lineage.get("rootFailure", {}).get("failureSignature") != sys.argv[3]:
     raise SystemExit("root failure projection wrong: %r" % lineage)
 if lineage.get("latestFailure", {}).get("failureSignature") != sys.argv[4] or lineage.get("latestFailure", {}).get("attemptId") != "attempt:retry-2":
     raise SystemExit("latest failure projection wrong: %r" % lineage)
-for run_id in ("retry-legacy", "retry-mismatch", "retry-invalid", "retry-wrongsig"):
+for run_id in ("retry-legacy", "retry-mismatch", "retry-invalid", "retry-wrongsig",
+               "retry-wrong-actor", "retry-missing-started", "retry-nonadjacent",
+               "retry-successor-started", "retry-snapshot-drift", "retry-attempt-reuse"):
     item = second[run_id]
     if item.get("action") != "retry-intervention" or item.get("interventionReason") != "typed-retry-lineage-required":
         raise SystemExit("%s did not fail closed: %r" % (run_id, item))
@@ -386,9 +443,10 @@ else
 fi
 
 ORIGIN_SIGNATURE=$(failure_signature retry-lineage dns-failure retryable)
+set_current_attempt retry-lineage attempt:retry-2 2
 cat > "$ROOT/runs/retry-lineage/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REWORK_REQUESTED","stateTo":"RUNNING","attemptId":"attempt:retry-2","payload":{"adapterId":"qwen"}}
-{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-2","payload":{"adapterId":"qwen","failureKind":"dns-failure","retryDisposition":"retryable","failureSignature":"$ORIGIN_SIGNATURE"}}
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"dns-failure","retryDisposition":"retryable","failureSignature":"$ORIGIN_SIGNATURE"}}
 EOF
 OUT_RETRY_ORIGIN_RESET="$TMP/out_retry_origin_reset.json"
 run_watch --once --json > "$OUT_RETRY_ORIGIN_RESET"
@@ -409,7 +467,9 @@ then
 else
   bad "新 origin 污染了 failure lineage 或 dedupe"
 fi
-rm -rf "$ROOT/runs/retry-lineage" "$ROOT/runs/retry-legacy" "$ROOT/runs/retry-mismatch" "$ROOT/runs/retry-invalid" "$ROOT/runs/retry-wrongsig"
+rm -rf "$ROOT/runs/retry-lineage" "$ROOT/runs/retry-legacy" "$ROOT/runs/retry-mismatch" "$ROOT/runs/retry-invalid" "$ROOT/runs/retry-wrongsig" \
+  "$ROOT/runs/retry-wrong-actor" "$ROOT/runs/retry-missing-started" "$ROOT/runs/retry-nonadjacent" \
+  "$ROOT/runs/retry-successor-started" "$ROOT/runs/retry-snapshot-drift" "$ROOT/runs/retry-attempt-reuse"
 
 note "1b) 每次心跳读取内存并给出并发槽位建议"
 CAPACITY_JSON="$TMP/capacity.json"
@@ -1148,8 +1208,29 @@ PYEOF
   fi
 done
 
+cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
+{"sequence":1,"type":"planning.inputs-frozen","timestamp":"$EVENT_TS","actor":{"type":"system","id":"marshal-planning"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:provider-1","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE","notBefore":"$VALID_NOT_BEFORE"}}
+{"sequence":3,"type":"worker.started","timestamp":"$EVENT_TS","stateFrom":"RETRY_PENDING","stateTo":"RUNNING","attemptId":"attempt:provider-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+EOF
+PROVIDER_STARTED_JSON="$TMP/provider_started.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$PROVIDER_STARTED_JSON" && \
+   python3 - "$PROVIDER_STARTED_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    capacity = json.load(handle)["capacity"]
+if capacity.get("providerStatus") != "backpressure" or capacity.get("providerSlotsAvailable") != 0:
+    raise SystemExit("worker.started incorrectly cleared provider failure: %r" % capacity)
+print("worker.started preserves provider backpressure OK")
+PYEOF
+then
+  ok "worker.started 不冒充 Provider success"
+else
+  bad "worker.started 错误解除 Provider 背压"
+fi
+
 cat >> "$ROOT/runs/current-ready/events.jsonl" <<EOF
-{"sequence":3,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","payload":{"adapterId":"qwen"}}
+{"sequence":4,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:provider-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
 EOF
 PROVIDER_RECOVERED_JSON="$TMP/provider_recovered.json"
 if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" \
@@ -1168,6 +1249,66 @@ then
   ok "较新 worker.completed 恢复 Provider 容量"
 else
   bad "Provider 恢复信号未解除旧背压"
+fi
+
+for completion_case in wrong_actor wrong_attempt missing_started; do
+  case "$completion_case" in
+    wrong_actor)
+      cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","timestamp":"$EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:completion","actor":{"type":"system","id":"forged-runner"},"payload":{"result":"ok"}}
+EOF
+      ;;
+    wrong_attempt)
+      cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","timestamp":"$EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:other","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
+EOF
+      ;;
+    missing_started)
+      cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
+{"sequence":1,"type":"planning.inputs-frozen","timestamp":"$EVENT_TS","actor":{"type":"system","id":"marshal-planning"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
+EOF
+      ;;
+  esac
+  COMPLETION_INVALID_JSON="$TMP/completion_${completion_case}.json"
+  if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$COMPLETION_INVALID_JSON" && \
+     python3 - "$COMPLETION_INVALID_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    data = json.load(handle)
+item = next(item for item in data["items"] if item["runId"] == "current-ready")
+capacity = data["capacity"]
+if item.get("journalStatus") != "unknown" or capacity.get("providerStatus") != "unknown" or capacity.get("slotsAvailable") != 0:
+    raise SystemExit("invalid completion did not fail closed: %r %r" % (item, capacity))
+print("invalid worker.completed lineage fails closed OK")
+PYEOF
+  then
+    ok "worker.completed $completion_case fail closed"
+  else
+    bad "worker.completed $completion_case 未 fail closed"
+  fi
+done
+
+cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","timestamp":"$EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"codex"}}
+{"sequence":2,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
+EOF
+COMPLETION_ADAPTER_MISMATCH_JSON="$TMP/completion_adapter_mismatch.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$COMPLETION_ADAPTER_MISMATCH_JSON" && \
+   python3 - "$COMPLETION_ADAPTER_MISMATCH_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    capacity = json.load(handle)["capacity"]
+if capacity.get("providerStatus") != "unknown" or capacity.get("slotsAvailable") != 0:
+    raise SystemExit("completion adapter drift did not fail closed: %r" % capacity)
+print("completed adapter remains bound to frozen TaskSpec OK")
+PYEOF
+then
+  ok "worker.completed Adapter 漂移 fail closed"
+else
+  bad "worker.completed 未绑定冻结 TaskSpec Adapter"
 fi
 
 CPU_UNKNOWN_JSON="$TMP/cpu_unknown.json"

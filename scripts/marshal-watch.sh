@@ -645,7 +645,7 @@ def unknown_journal(marker=b"invalid"):
             "phaseDigest": "sha256:" + hashlib.sha256(marker).hexdigest(),
             "adapterId": None, "adapterStatus": "unknown",
             "typedFailure": None, "rootFailure": None, "latestFailure": None,
-            "failureShape": "unknown", "lastSignal": None}
+            "failureShape": "unknown", "lastSignal": None, "events": []}
 
 def _public_failure(failure):
     if not isinstance(failure, dict):
@@ -657,6 +657,11 @@ def _public_failure(failure):
             "retryAfterNanoseconds", "notBefore", "attemptId", "sequence")
     return {key: failure[key] for key in keys if key in failure}
 
+def _actor_is(event, actor_type, actor_id):
+    actor = event.get("actor") if isinstance(event, dict) else None
+    return (isinstance(actor, dict) and actor.get("type") == actor_type and
+            actor.get("id") == actor_id)
+
 def journal_observation(run_fd, run_id):
     try:
         raw = _read_regular_bytes_at(run_fd, "events.jsonl", MAX_JOURNAL_BYTES)
@@ -664,7 +669,8 @@ def journal_observation(run_fd, run_id):
         return {"status": "missing", "sequence": 0,
                 "phaseDigest": "sha256:" + hashlib.sha256(b"missing").hexdigest(),
                 "adapterId": None, "typedFailure": None, "rootFailure": None,
-                "latestFailure": None, "failureShape": "none", "lastSignal": None}
+                "latestFailure": None, "failureShape": "none", "lastSignal": None,
+                "events": []}
     except (OSError, ValueError):
         return unknown_journal()
     try:
@@ -700,13 +706,15 @@ def journal_observation(run_fd, run_id):
         return {"status": "ok", "sequence": 0,
                 "phaseDigest": "sha256:" + hashlib.sha256(b"empty").hexdigest(),
                 "adapterId": None, "typedFailure": None, "rootFailure": None,
-                "latestFailure": None, "failureShape": "none", "lastSignal": None}
+                "latestFailure": None, "failureShape": "none", "lastSignal": None,
+                "events": []}
     adapter_id = None
     typed_failure = None
     root_failure = None
     latest_failure = None
     failure_shape = "none"
     last_signal = None
+    previous_business = None
     journal_valid = True
     for event in events:
         payload = event["payload"]
@@ -726,9 +734,10 @@ def journal_observation(run_fd, run_id):
                 latest_failure = None
                 failure_shape = "none"
             typed_failure = None
-            last_signal = {"type": event_type, "timestamp": event.get("timestamp"),
-                           "moment": strict_timestamp(event.get("timestamp")), "failure": None,
-                           "sequence": event["sequence"]}
+            # started only says an Attempt was admitted.  It is neither a
+            # provider success nor evidence that an earlier capacity failure
+            # recovered, so preserve the last failure signal until completion
+            # (or until its bounded hold expires).
         elif event_type == "worker.failed":
             kind = payload.get("failureKind")
             disposition = payload.get("retryDisposition")
@@ -781,13 +790,30 @@ def journal_observation(run_fd, run_id):
                                "moment": strict_timestamp(event.get("timestamp")), "failure": None,
                                "sequence": event["sequence"]}
         elif event_type == "worker.completed":
-            if not candidate_adapter_valid:
+            started = previous_business
+            started_payload = started.get("payload") if isinstance(started, dict) else None
+            started_adapter = started_payload.get("adapterId") if isinstance(started_payload, dict) else None
+            completion_valid = (
+                isinstance(started, dict) and started.get("type") == "worker.started" and
+                started.get("stateTo") == "RUNNING" and
+                _actor_is(started, "system", "marshal-worker-runner") and
+                isinstance(started_adapter, str) and started_adapter in ADAPTER_BINARIES and
+                event.get("stateFrom") == "RUNNING" and event.get("stateTo") == "VERIFYING" and
+                _actor_is(event, "system", "marshal-worker-runner") and
+                isinstance(event.get("attemptId"), str) and event.get("attemptId") != "" and
+                event.get("attemptId") == started.get("attemptId") and
+                (not adapter_present or candidate_adapter == started_adapter)
+            )
+            if not completion_valid:
                 journal_valid = False
             else:
+                adapter_id = started_adapter
                 typed_failure = None
                 last_signal = {"type": event_type, "timestamp": event.get("timestamp"),
                                "moment": strict_timestamp(event.get("timestamp")), "failure": None,
                                "sequence": event["sequence"]}
+        if event_type != "reconciliation.snapshot-repaired":
+            previous_business = event
     last = events[-1]
     payload_digest = hashlib.sha256(json.dumps(last.get("payload", {}), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
     phase = {"sequence": last["sequence"], "type": last.get("type"), "stateFrom": last.get("stateFrom"),
@@ -796,18 +822,20 @@ def journal_observation(run_fd, run_id):
     return {"status": "ok" if journal_valid else "unknown", "sequence": last["sequence"], "phaseDigest": phase_digest,
             "adapterId": adapter_id, "typedFailure": typed_failure,
             "rootFailure": root_failure, "latestFailure": latest_failure,
-            "failureShape": failure_shape, "lastSignal": last_signal}
+            "failureShape": failure_shape, "lastSignal": last_signal,
+            "events": events}
 
 def task_adapter_observation(run_fd, journal):
-    if journal.get("adapterId") is not None:
-        return journal["adapterId"], "journal"
     try:
         task = _read_regular_json_at(run_fd, "task-spec.json", MAX_TASK_SPEC_BYTES)
         worker = task.get("worker") if isinstance(task, dict) else None
         adapter_id = worker.get("preferredAdapter") if isinstance(worker, dict) else None
         if adapter_id not in ADAPTER_BINARIES:
             raise ValueError("unknown preferred adapter")
-        return adapter_id, "task-spec"
+        journal_adapter = journal.get("adapterId")
+        if journal_adapter is not None and journal_adapter != adapter_id:
+            raise ValueError("journal adapter does not match frozen task adapter")
+        return adapter_id, "journal+task-spec" if journal_adapter is not None else "task-spec"
     except (OSError, UnicodeError, ValueError, TypeError):
         return None, "unknown"
 
@@ -879,6 +907,57 @@ def failure_signature_matches_state(data, failure):
     signature_bytes = json.dumps(signature_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     expected = "sha256:" + hashlib.sha256(signature_bytes).hexdigest()
     return failure.get("failureSignature") == expected
+
+def retry_lineage_matches_state(data, journal):
+    """Mirror Core adjacent business-event retry lineage fail-closed checks."""
+    if (not isinstance(data, dict) or not isinstance(journal, dict) or
+            data.get("sequence") != journal.get("sequence")):
+        return False
+    business = [event for event in journal.get("events", [])
+                if isinstance(event, dict) and
+                event.get("type") != "reconciliation.snapshot-repaired"]
+    if not business:
+        return False
+    position = len(business) - 1
+    seen_attempts = set()
+    current_attempt = data.get("currentAttemptId")
+    while True:
+        failed = business[position]
+        attempt_id = failed.get("attemptId")
+        if (failed.get("type") != "worker.failed" or
+                failed.get("stateFrom") != "RUNNING" or
+                failed.get("stateTo") != "RETRY_PENDING" or
+                not _actor_is(failed, "system", "marshal-worker-runner") or
+                not isinstance(attempt_id, str) or not attempt_id):
+            return False
+        if position == len(business) - 1 and attempt_id != current_attempt:
+            return False
+        if attempt_id in seen_attempts:
+            return False
+        seen_attempts.add(attempt_id)
+        start_position = position - 1
+        if start_position < 0:
+            return False
+        started = business[start_position]
+        if (started.get("type") != "worker.started" or
+                started.get("stateTo") != "RUNNING" or
+                not _actor_is(started, "system", "marshal-worker-runner") or
+                started.get("attemptId") != attempt_id):
+            return False
+        origin = started.get("stateFrom")
+        if origin == "READY":
+            return True
+        if origin == "REWORK_REQUESTED":
+            # Core performs deeper ReviewDecision/publication binding.  The
+            # watchdog is only a read-only recommendation layer, but it must
+            # at least require the same adjacent origin rather than searching
+            # globally or accepting a truncated lineage.
+            return start_position > 0
+        if origin != "RETRY_PENDING":
+            return False
+        position = start_position - 1
+        if position < 0:
+            return False
 
 def validate_state_data(data, run_id):
     if not isinstance(data, dict) or data.get("runId") != run_id:
@@ -1024,6 +1103,7 @@ for run_id in run_names:
                 isinstance(failure, dict) and failure.get("valid") is True and
                 failure.get("disposition") == "retryable" and
                 failure_signature_matches_state(data, failure) and
+                retry_lineage_matches_state(data, journal) and
                 failure.get("attemptId") == current_attempt and
                 failure.get("stateFrom") == "RUNNING" and failure.get("stateTo") == "RETRY_PENDING"
             )
