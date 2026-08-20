@@ -357,9 +357,9 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         history = json.loads((self.operator_root / "review-freshness-history.json").read_text()); self.assertEqual(history["claims"], [])
 
     def test_missing_and_directory_packet_inputs_fail_closed(self) -> None:
-        (self.run_root / "verification-report.json").unlink(); self.assert_reason("packet-input-unreadable")
+        (self.run_root / "verification-report.json").unlink(); self.assert_reason("verification-report-unreadable")
         self._write_fixture(); (self.run_root / "artifact-manifest.json").unlink(); (self.run_root / "artifact-manifest.json").mkdir()
-        self.assert_reason("packet-input-unreadable")
+        self.assert_reason("artifact-manifest-unreadable")
 
     def test_source_and_state_sequence_drift_fail_closed(self) -> None:
         manifest = self.manifest(); manifest["expected"]["sourceHead"] = "f" * 40; self.assert_reason("source-head-mismatch", manifest)
