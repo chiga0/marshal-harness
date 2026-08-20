@@ -146,6 +146,115 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         events[-1]["payload"]["artifactManifestDigest"] = artifact_digest
         events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
 
+    def make_previous_round_stale_packet(self) -> dict:
+        for relative in ("review-packets", "decisions", "candidates", "attempts/attempt:fixture-02"):
+            path = self.run_root / relative
+            if path.exists():
+                shutil.rmtree(path)
+        packet_path = self.run_root / "review-packet.json"
+        stale_packet = json.loads(packet_path.read_text())
+        stale_packet["reviewRound"] = 1
+        stale_packet_raw = json_bytes(stale_packet)
+        stale_packet_digest = self.core_digest(stale_packet, "ReviewPacket")
+        packet_path.write_bytes(stale_packet_raw)
+        archive_dir = self.run_root / "review-packets"
+        archive_dir.mkdir()
+        (archive_dir / "packet-001.json").write_bytes(stale_packet_raw)
+
+        decision = self.example("review-decision")
+        decision.update({
+            "taskId": stale_packet["taskId"], "runId": stale_packet["runId"], "reviewRound": 1,
+            "specDigest": stale_packet["specDigest"], "reviewPacketDigest": stale_packet_digest,
+            "verificationDigest": stale_packet["verificationDigest"],
+            "artifactManifestDigest": stale_packet["artifactManifestDigest"],
+            "evidenceDigest": stale_packet["evidenceDigest"], "verdict": "rework",
+            "blockingFindings": [], "nonBlockingFindings": [],
+            "publicationRecommendation": "do-not-publish", "mergeRecommendation": "do-not-merge",
+        })
+        decision_digest = self.core_digest(decision, "ReviewDecision")
+        decision_dir = self.run_root / "decisions"
+        decision_dir.mkdir()
+        (decision_dir / "decision-001.json").write_bytes(json_bytes(decision))
+
+        prior_worker_path = self.run_root / "attempts" / "attempt:fixture-01" / "worker-result.json"
+        current_worker = json.loads(prior_worker_path.read_text())
+        current_worker["attemptId"] = "attempt:fixture-02"
+        current_worker_path = self.run_root / "attempts" / "attempt:fixture-02" / "worker-result.json"
+        current_worker_path.parent.mkdir()
+        current_worker_path.write_bytes(json_bytes(current_worker))
+
+        report_path = self.run_root / "verification-report.json"
+        report = json.loads(report_path.read_text())
+        report["summary"] = "current round verification"
+        report["completedAt"] = "2026-08-20T00:02:00Z"
+        candidate = {
+            "apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate",
+            "taskId": stale_packet["taskId"], "runId": stale_packet["runId"],
+            "attemptId": "attempt:fixture-02", "authorityNamespaceId": "authority:fixture",
+            "baseSha": self.head, "contentDigest": digest_bytes(b""), "producerKind": "worker",
+            "producer": "worker:fixture", "createdAt": "2026-08-20T00:01:30Z",
+        }
+        candidate_digest = self.core_digest(candidate)
+        candidate["candidateDigest"] = candidate_digest
+        self.core_digest(candidate, "Candidate")
+        candidate_dir = self.run_root / "candidates"
+        candidate_dir.mkdir()
+        (candidate_dir / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
+        report["candidateDigest"] = candidate_digest
+        report["workerCandidateDigest"] = candidate_digest
+        report_path.write_bytes(json_bytes(report))
+        current_report_digest = self.core_digest(report, "VerificationReport")
+
+        artifact_path = self.run_root / "artifact-manifest.json"
+        artifacts = json.loads(artifact_path.read_text())
+        artifacts["artifacts"][0]["candidateDigest"] = candidate_digest
+        artifact_path.write_bytes(json_bytes(artifacts))
+        current_artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+
+        state_path = self.run_root / "state.json"
+        state = json.loads(state_path.read_text())
+        state.update({"sequence": 9, "currentAttemptId": "attempt:fixture-02", "reviewRound": 2, "attemptsUsed": 2, "reworkRoundsUsed": 1})
+        state_path.write_bytes(json_bytes(state))
+        self.core_digest(state, "RunState")
+
+        events = []
+        for sequence in range(1, 5):
+            events.append({"apiVersion": "marshal.dev/v1alpha1", "kind": "RunEvent", "eventId": f"event:fixture-{sequence}", "runId": stale_packet["runId"], "sequence": sequence, "type": "fixture.step", "timestamp": f"2026-08-20T00:00:0{sequence}Z", "payload": {}})
+        events.extend([
+            {"apiVersion": "marshal.dev/v1alpha1", "kind": "RunEvent", "eventId": "event:fixture-5", "runId": stale_packet["runId"], "sequence": 5, "type": "verification.completed", "stateFrom": "VERIFYING", "stateTo": "REVIEW_PENDING", "timestamp": "2026-08-20T00:00:05Z", "actor": {"type": "system", "id": "marshal-verifier"}, "payload": {"reportDigest": stale_packet["verificationDigest"], "artifactManifestDigest": stale_packet["artifactManifestDigest"], "status": "fail"}},
+            {"apiVersion": "marshal.dev/v1alpha1", "kind": "RunEvent", "eventId": "event:fixture-6", "runId": stale_packet["runId"], "sequence": 6, "type": "review.rework", "stateFrom": "REVIEW_PENDING", "stateTo": "REWORK_REQUESTED", "timestamp": "2026-08-20T00:00:06Z", "actor": {"type": "system", "id": "marshal-review"}, "payload": {"decisionDigest": decision_digest, "evidenceDigest": stale_packet["evidenceDigest"], "verdict": "rework"}},
+            {"apiVersion": "marshal.dev/v1alpha1", "kind": "RunEvent", "eventId": "event:fixture-7", "runId": stale_packet["runId"], "sequence": 7, "type": "worker.started", "stateFrom": "REWORK_REQUESTED", "stateTo": "RUNNING", "timestamp": "2026-08-20T00:01:00Z", "attemptId": "attempt:fixture-02", "actor": {"type": "system", "id": "marshal-worker-runner"}, "payload": {"adapterId": "fake", "fencingGeneration": 2}},
+            {"apiVersion": "marshal.dev/v1alpha1", "kind": "RunEvent", "eventId": "event:fixture-8", "runId": stale_packet["runId"], "sequence": 8, "type": "worker.completed", "stateFrom": "RUNNING", "stateTo": "VERIFYING", "timestamp": "2026-08-20T00:01:30Z", "attemptId": "attempt:fixture-02", "actor": {"type": "system", "id": "marshal-worker-runner"}, "payload": {"diffDigest": digest_bytes(b""), "snapshotDigest": digest_bytes(b"null")}},
+            {"apiVersion": "marshal.dev/v1alpha1", "kind": "RunEvent", "eventId": "event:fixture-9", "runId": stale_packet["runId"], "sequence": 9, "type": "verification.completed", "stateFrom": "VERIFYING", "stateTo": "REVIEW_PENDING", "timestamp": "2026-08-20T00:02:00Z", "actor": {"type": "system", "id": "marshal-verifier"}, "payload": {"reportDigest": current_report_digest, "artifactManifestDigest": current_artifact_digest, "status": report["status"]}},
+        ])
+        (self.run_root / "events.jsonl").write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+        manifest = self.manifest()
+        manifest["expected"].update({"stateSequence": 9, "currentAttemptId": "attempt:fixture-02", "reviewRound": 2})
+        return manifest
+
+    def insert_round_repair_audit(self, manifest: dict, mutate=None) -> None:
+        events_path = self.run_root / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        repair = {
+            "apiVersion": "marshal.dev/v1alpha1", "kind": "RunEvent",
+            "eventId": "event:fixture-repair-7", "runId": "review-freshness-fixture-r1",
+            "sequence": 7, "type": "reconciliation.snapshot-repaired",
+            "stateFrom": "REWORK_REQUESTED", "stateTo": "REWORK_REQUESTED",
+            "timestamp": "2026-08-20T00:00:30Z",
+            "actor": {"type": "system", "id": "marshal-reconciliation"},
+            "payload": {"repairKind": "snapshot-rebuild", "sourceJournalSequence": 6},
+        }
+        if mutate is not None:
+            mutate(repair)
+        for event in events[6:]:
+            event["sequence"] += 1
+            event["eventId"] += "-shifted"
+        events.insert(6, repair)
+        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+        state_path = self.run_root / "state.json"
+        state = json.loads(state_path.read_text()); state["sequence"] = 10; state_path.write_bytes(json_bytes(state))
+        manifest["expected"]["stateSequence"] = 10
+
     def invoke(self, manifest: dict | None = None) -> tuple[int, dict]:
         self.manifest_path.write_bytes(json_bytes(manifest or self.manifest()))
         result = subprocess.run(["python3", "-I", "-B", str(VALIDATOR), "--run-root", str(self.run_root), "--operator-root", str(self.operator_root), "--manifest", str(self.manifest_path), "--worktree", str(self.worktree)], cwd=REPOSITORY, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
@@ -190,6 +299,69 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         (self.run_root / "review-packet.json").unlink()
         code, result = self.invoke(); self.assertEqual(code, 0, result); self.assertEqual(result["action"], "generate-review-packet")
         self.assert_reason("action-already-claimed")
+
+    def test_committed_previous_round_packet_claims_current_generation(self) -> None:
+        manifest = self.make_previous_round_stale_packet()
+        code, result = self.invoke(manifest)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"], "generate-review-packet")
+        self.assertEqual(result["reasonCode"], "previous-round-packet-generation-claimed")
+        self.assertTrue(result["historyClaimed"])
+
+    def test_valid_repair_audit_is_the_only_skippable_lineage_event(self) -> None:
+        manifest = self.make_previous_round_stale_packet()
+        self.insert_round_repair_audit(manifest)
+        code, result = self.invoke(manifest)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"], "generate-review-packet")
+
+    def test_previous_round_packet_requires_exact_archive_decision_and_event(self) -> None:
+        attacks = (
+            ("archive-bytes", "previous-round-packet-archive-mismatch"),
+            ("decision-binding", "previous-round-decision-binding-mismatch"),
+            ("event-actor", "previous-round-review-event-invalid"),
+            ("event-attempt", "previous-round-review-event-invalid"),
+            ("rogue-business", "current-round-event-lineage-invalid"),
+            ("forged-repair", "repair-audit-event-invalid"),
+            ("worker-completed-digests", "current-round-worker-completed-binding-mismatch"),
+            ("current-attempt", "previous-round-current-attempt-conflict"),
+            ("current-candidate", "candidate-record-core-invalid"),
+        )
+        for attack, reason in attacks:
+            with self.subTest(attack=attack):
+                self._write_fixture()
+                manifest = self.make_previous_round_stale_packet()
+                if attack == "archive-bytes":
+                    archive = self.run_root / "review-packets" / "packet-001.json"
+                    value = json.loads(archive.read_text()); value["generatedAt"] = "2026-08-20T00:00:59Z"; archive.write_bytes(json_bytes(value))
+                elif attack == "decision-binding":
+                    decision_path = self.run_root / "decisions" / "decision-001.json"
+                    value = json.loads(decision_path.read_text()); value["evidenceDigest"] = "sha256:" + "f" * 64; decision_path.write_bytes(json_bytes(value))
+                elif attack == "event-actor":
+                    events_path = self.run_root / "events.jsonl"
+                    values = [json.loads(line) for line in events_path.read_text().splitlines()]; values[5]["actor"]["id"] = "forged"; events_path.write_bytes(b"".join(json.dumps(value, separators=(",", ":")).encode() + b"\n" for value in values))
+                elif attack == "event-attempt":
+                    events_path = self.run_root / "events.jsonl"
+                    values = [json.loads(line) for line in events_path.read_text().splitlines()]; values[5]["attemptId"] = "attempt:forged"; events_path.write_bytes(b"".join(json.dumps(value, separators=(",", ":")).encode() + b"\n" for value in values))
+                elif attack == "rogue-business":
+                    self.insert_round_repair_audit(manifest, lambda event: event.update({"type": "fixture.step", "actor": {"type": "system", "id": "fixture"}, "payload": {}}))
+                elif attack == "forged-repair":
+                    self.insert_round_repair_audit(manifest, lambda event: event["actor"].update({"id": "forged"}))
+                elif attack == "worker-completed-digests":
+                    events_path = self.run_root / "events.jsonl"
+                    values = [json.loads(line) for line in events_path.read_text().splitlines()]
+                    values[7]["payload"].update({"snapshotDigest": "sha256:" + "f" * 64, "diffDigest": "sha256:" + "e" * 64})
+                    events_path.write_bytes(b"".join(json.dumps(value, separators=(",", ":")).encode() + b"\n" for value in values))
+                elif attack == "current-attempt":
+                    packet_path = self.run_root / "review-packet.json"
+                    value = json.loads(packet_path.read_text()); value["inputs"]["workerResults"] = ["attempts/attempt:fixture-02/worker-result.json"]; packet_path.write_bytes(json_bytes(value))
+                    (self.run_root / "review-packets" / "packet-001.json").write_bytes(json_bytes(value))
+                else:
+                    candidate_path = next((self.run_root / "candidates").iterdir())
+                    value = json.loads(candidate_path.read_text()); value["attemptId"] = "attempt:fixture-01"; candidate_path.write_bytes(json_bytes(value))
+                self.assert_reason(reason, manifest)
+                history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
+                self.assertEqual(history["claims"], [])
 
     def test_missing_packet_dirty_worktree_never_consumes_generation_claim(self) -> None:
         (self.run_root / "review-packet.json").unlink()

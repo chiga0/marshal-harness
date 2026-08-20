@@ -30,7 +30,7 @@ MAX_FILE_BYTES = 128 << 20
 CORE_KINDS = {
     "RunState", "ReviewPacket", "Task", "PolicySnapshot",
     "CapabilitySnapshot", "VerificationReport", "ArtifactManifest",
-    "WorkerResult", "Candidate", "RunEvent", "ApprovalRecord", "InterventionRecord",
+    "WorkerResult", "Candidate", "ReviewDecision", "RunEvent", "ApprovalRecord", "InterventionRecord",
 }
 _CORE_BINARY: Path | None = None
 _CORE_PROCESS: subprocess.Popen[str] | None = None
@@ -491,7 +491,7 @@ def validate_control_records(script: Path, raw: bytes) -> list[str]:
     return digests
 
 
-def validate_events(script: Path, raw: bytes, state: dict) -> tuple[list[str], str, str]:
+def validate_events(script: Path, raw: bytes, state: dict) -> tuple[list[str], list[dict], str, str]:
     events: list[dict] = []
     digests: list[str] = []
     seen: set[str] = set()
@@ -524,8 +524,228 @@ def validate_events(script: Path, raw: bytes, state: dict) -> tuple[list[str], s
         artifact_digest = payload.get("artifactManifestDigest")
         if not isinstance(report_digest, str) or not DIGEST_RE.fullmatch(report_digest) or not isinstance(artifact_digest, str) or not DIGEST_RE.fullmatch(artifact_digest):
             fail("verification-event-digests-missing")
-        return digests, report_digest, artifact_digest
+        return digests, events, report_digest, artifact_digest
     fail("verification-event-missing")
+
+
+def business_events(events: list[dict], initial_state: str | None = None) -> list[dict]:
+    """Skip only Core's exact snapshot-repair audit; retain every business event."""
+    result: list[dict] = []
+    current_state = initial_state
+    for event in events:
+        if event.get("type") != "reconciliation.snapshot-repaired":
+            if current_state is not None and event.get("stateFrom") != current_state:
+                fail("business-event-state-lineage-invalid")
+            result.append(event)
+            current_state = event.get("stateTo")
+            continue
+        payload = event.get("payload")
+        source = payload.get("sourceJournalSequence") if isinstance(payload, dict) else None
+        if (
+            event.get("stateFrom") != event.get("stateTo")
+            or (current_state is not None and event.get("stateFrom") != current_state)
+            or event.get("attemptId", "") != ""
+            or event.get("actor") != {"type": "system", "id": "marshal-reconciliation"}
+            or not isinstance(payload, dict)
+            or set(payload) != {"repairKind", "sourceJournalSequence"}
+            or payload.get("repairKind") != "snapshot-rebuild"
+            or isinstance(source, bool)
+            or not isinstance(source, int)
+            or source != event.get("sequence", 0) - 1
+        ):
+            fail("repair-audit-event-invalid")
+    return result
+
+
+def validate_current_generation_inputs(
+    script: Path,
+    run_root: Path,
+    state: dict,
+    worktree: Path,
+    task: dict,
+    task_digest: str,
+    report: dict,
+    verification_digest: str,
+    artifacts: dict,
+    artifact_digest: str,
+) -> tuple[dict, list[tuple[str, bytes, tuple[int, int, int, int]]]]:
+    """Recompute the inputs Core will use when it replaces/generates a packet."""
+    records: list[tuple[str, bytes, tuple[int, int, int, int]]] = []
+    if task.get("metadata", {}).get("id") != state["taskId"] or task_digest != state["specDigest"]:
+        fail("task-spec-binding-mismatch")
+    if report.get("taskId") != state["taskId"] or report.get("runId") != state["runId"] or report.get("specDigest") != state["specDigest"] or report.get("baseSha") != state["baseSha"]:
+        fail("verification-binding-mismatch")
+    if artifacts.get("taskId") != state["taskId"] or artifacts.get("runId") != state["runId"]:
+        fail("packet-input-identity-mismatch")
+
+    patch, patch_identity = read_regular(run_root, "observed.patch", "packet-input-unreadable")
+    records.append(("observed.patch", patch, patch_identity))
+    patch_digest = raw_digest(patch)
+    observed_artifact = [item for item in artifacts.get("artifacts", []) if item.get("relativePath") == "observed.patch"]
+    if len(observed_artifact) != 1 or observed_artifact[0].get("producer") != "verifier" or observed_artifact[0].get("status") != "validated" or observed_artifact[0].get("digest") != patch_digest or observed_artifact[0].get("byteSize") != len(patch):
+        fail("observed-patch-binding-mismatch")
+
+    persisted_workers = enumerate_worker_results(run_root)
+    if not persisted_workers:
+        fail("worker-result-set-mismatch")
+    worker_digests: list[str] = []
+    worker_attempt_ids: list[str] = []
+    for worker_path in sorted(persisted_workers):
+        parts = Path(worker_path).parts
+        if len(parts) != 3 or parts[0] != "attempts" or parts[2] != "worker-result.json":
+            fail("worker-result-path-invalid")
+        data, identity = persisted_workers[worker_path]
+        worker = parse_json(data, "packet-input-invalid-json")
+        if worker.get("taskId") != state["taskId"] or worker.get("runId") != state["runId"] or worker.get("attemptId") != parts[1]:
+            fail("worker-result-identity-mismatch")
+        worker_attempt_ids.append(parts[1])
+        worker_digests.append(core_validate_bytes(script, "WorkerResult", data))
+        records.append((worker_path, data, identity))
+    if state["currentAttemptId"] not in worker_attempt_ids or len(set(worker_attempt_ids)) != len(worker_attempt_ids):
+        fail("worker-result-attempt-set-mismatch")
+
+    observation = observe(script, worktree, state["baseSha"])
+    report_observed = report.get("observed", {})
+    if observation.get("snapshotDigest") != report_observed.get("snapshotDigest") or observation.get("diffDigest") != report_observed.get("diffDigest") or observation.get("diffDigest") != patch_digest:
+        fail("worktree-evidence-changed-after-verification")
+
+    candidate = report.get("candidateDigest", "")
+    worker_candidate = report.get("workerCandidateDigest", "")
+    if bool(candidate) != bool(worker_candidate):
+        fail("legacy-candidate-partial-requires-migration")
+    if not candidate:
+        fail("current-round-candidate-missing")
+    if candidate:
+        candidate_records: dict[str, dict] = {}
+        for digest in {candidate, worker_candidate}:
+            path = f"candidates/{digest}.json"
+            data, identity = read_regular(run_root, path, "candidate-record-unreadable")
+            recomputed = core_validate_candidate(script, data)
+            record = parse_json(data, "candidate-record-invalid-json")
+            if record.get("candidateDigest") != digest or recomputed != digest:
+                fail("candidate-record-digest-mismatch")
+            if record.get("taskId") != state["taskId"] or record.get("runId") != state["runId"] or record.get("attemptId") != state["currentAttemptId"] or record.get("baseSha") != state["baseSha"]:
+                fail("candidate-record-identity-mismatch")
+            candidate_records[digest] = record
+            records.append((path, data, identity))
+        worker_record = candidate_records[worker_candidate]
+        head_record = candidate_records[candidate]
+        if worker_record.get("producerKind") != "worker" or worker_record.get("predecessorCandidateDigest"):
+            fail("candidate-chain-mismatch")
+        if candidate != worker_candidate and (head_record.get("producerKind") != "normalizer" or head_record.get("predecessorCandidateDigest") != worker_candidate):
+            fail("candidate-chain-mismatch")
+        if head_record.get("contentDigest") != patch_digest:
+            fail("candidate-content-mismatch")
+        for artifact in artifacts.get("artifacts", []):
+            if artifact.get("relativePath") == "observed.patch" and artifact.get("candidateDigest") != candidate:
+                fail("candidate-artifact-binding-mismatch")
+            if artifact.get("relativePath") == "worker.patch" and artifact.get("candidateDigest") != worker_candidate:
+                fail("candidate-artifact-binding-mismatch")
+
+    return {
+        "specDigest": task_digest,
+        "verificationDigest": verification_digest,
+        "artifactManifestDigest": artifact_digest,
+        "workerResultDigests": worker_digests,
+        "patchDigest": patch_digest,
+        "snapshotDigest": observation.get("snapshotDigest"),
+        "candidateDigest": candidate,
+        "workerCandidateDigest": worker_candidate,
+    }, records
+
+
+def validate_previous_round_lineage(
+    script: Path,
+    run_root: Path,
+    packet_raw: bytes,
+    packet: dict,
+    packet_digest: str,
+    state: dict,
+    events: list[dict],
+) -> tuple[dict, list[tuple[str, bytes, tuple[int, int, int, int]]]]:
+    """Prove a live stale packet is the committed predecessor, never an orphan."""
+    previous_round = state["reviewRound"] - 1
+    if previous_round < 1 or packet.get("reviewRound") != previous_round:
+        fail("packet-identity-mismatch")
+    if packet.get("taskId") != state["taskId"] or packet.get("runId") != state["runId"] or packet.get("baseSha") != state["baseSha"] or packet.get("specDigest") != state["specDigest"]:
+        fail("packet-identity-mismatch")
+    inputs = exact_keys(packet.get("inputs"), {"taskSpec", "patch", "verificationReport", "artifactManifest", "workerResults"}, {"taskSpec", "patch", "verificationReport", "artifactManifest", "workerResults"}, "packet-inputs-invalid")
+    if not isinstance(inputs["workerResults"], list) or not inputs["workerResults"]:
+        fail("packet-inputs-invalid")
+    prior_attempts: list[str] = []
+    for path in inputs["workerResults"]:
+        parts = Path(clean_relative(path)).parts
+        if len(parts) != 3 or parts[0] != "attempts" or parts[2] != "worker-result.json":
+            fail("worker-result-path-invalid")
+        prior_attempts.append(parts[1])
+    if state["currentAttemptId"] in prior_attempts:
+        fail("previous-round-current-attempt-conflict")
+
+    packet_path = f"review-packets/packet-{previous_round:03d}.json"
+    decision_path = f"decisions/decision-{previous_round:03d}.json"
+    archived_packet_raw, archived_packet_identity = read_regular(run_root, packet_path, "previous-round-packet-unreadable", 4 << 20)
+    decision_raw, decision_identity = read_regular(run_root, decision_path, "previous-round-decision-unreadable", 4 << 20)
+    if archived_packet_raw != packet_raw or core_validate_bytes(script, "ReviewPacket", archived_packet_raw) != packet_digest:
+        fail("previous-round-packet-archive-mismatch")
+    decision_digest = core_validate_bytes(script, "ReviewDecision", decision_raw)
+    decision = parse_json(decision_raw, "previous-round-decision-invalid-json")
+    exact = {
+        "taskId": state["taskId"], "runId": state["runId"], "reviewRound": previous_round,
+        "specDigest": state["specDigest"], "reviewPacketDigest": packet_digest,
+        "verificationDigest": packet.get("verificationDigest"),
+        "artifactManifestDigest": packet.get("artifactManifestDigest"),
+        "evidenceDigest": packet.get("evidenceDigest"), "verdict": "rework",
+    }
+    if any(decision.get(key) != value for key, value in exact.items()):
+        fail("previous-round-decision-binding-mismatch")
+
+    matching_rework = []
+    for index, event in enumerate(events):
+        if event.get("type") != "review.rework":
+            continue
+        payload = event.get("payload", {})
+        if payload.get("decisionDigest") == decision_digest and payload.get("evidenceDigest") == packet.get("evidenceDigest") and payload.get("verdict") == "rework":
+            matching_rework.append(index)
+    if len(matching_rework) != 1:
+        fail("previous-round-review-event-missing")
+    rework_index = matching_rework[0]
+    rework_event = events[rework_index]
+    if rework_event.get("actor") != {"type": "system", "id": "marshal-review"} or rework_event.get("stateFrom") != "REVIEW_PENDING" or rework_event.get("stateTo") != "REWORK_REQUESTED" or rework_event.get("attemptId", "") != "":
+        fail("previous-round-review-event-invalid")
+    prior_business = business_events(events[:rework_index])
+    if not prior_business or prior_business[-1].get("type") != "verification.completed":
+        fail("previous-round-verification-event-missing")
+    prior_verification = prior_business[-1]
+    prior_index = max(index for index, event in enumerate(events[:rework_index]) if event.get("type") != "reconciliation.snapshot-repaired")
+    business_events(events[prior_index:rework_index], prior_verification.get("stateFrom"))
+    prior_payload = prior_verification.get("payload", {})
+    if prior_verification.get("actor") != {"type": "system", "id": "marshal-verifier"} or prior_verification.get("stateFrom") != "VERIFYING" or prior_verification.get("stateTo") != "REVIEW_PENDING" or prior_payload.get("reportDigest") != packet.get("verificationDigest") or prior_payload.get("artifactManifestDigest") != packet.get("artifactManifestDigest"):
+        fail("previous-round-verification-event-invalid")
+
+    successor = business_events(events[rework_index + 1:], "REWORK_REQUESTED")
+    if len(successor) != 3:
+        fail("current-round-event-lineage-invalid")
+    started, completed, verified = successor
+    if started.get("type") != "worker.started" or started.get("stateFrom") != "REWORK_REQUESTED" or started.get("stateTo") != "RUNNING" or started.get("attemptId") != state["currentAttemptId"] or started.get("actor") != {"type": "system", "id": "marshal-worker-runner"}:
+        fail("current-round-event-lineage-invalid")
+    if completed.get("type") != "worker.completed" or completed.get("stateFrom") != "RUNNING" or completed.get("stateTo") != "VERIFYING" or completed.get("attemptId") != state["currentAttemptId"] or completed.get("actor") != {"type": "system", "id": "marshal-worker-runner"}:
+        fail("current-round-event-lineage-invalid")
+    if verified.get("type") != "verification.completed" or verified.get("stateFrom") != "VERIFYING" or verified.get("stateTo") != "REVIEW_PENDING" or verified.get("actor") != {"type": "system", "id": "marshal-verifier"}:
+        fail("current-round-event-lineage-invalid")
+    if verified.get("payload", {}).get("reportDigest") == packet.get("verificationDigest"):
+        fail("current-round-verification-not-new")
+    return {
+        "previousReviewRound": previous_round,
+        "previousPacketDigest": packet_digest,
+        "previousDecisionDigest": decision_digest,
+        "previousReviewEventSequence": rework_event.get("sequence"),
+        "previousAttemptIds": prior_attempts,
+        "currentWorkerCompletedSnapshotDigest": completed.get("payload", {}).get("snapshotDigest"),
+        "currentWorkerCompletedDiffDigest": completed.get("payload", {}).get("diffDigest"),
+    }, [
+        (packet_path, archived_packet_raw, archived_packet_identity),
+        (decision_path, decision_raw, decision_identity),
+    ]
 
 
 def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: dict, worktree: Path) -> tuple[dict, list[tuple[str, bytes, tuple[int, int, int, int]]]]:
@@ -735,12 +955,14 @@ def run(arguments: argparse.Namespace) -> dict:
     policy_raw = load(run_root, files["policySnapshotPath"], "policy-unreadable", 4 << 20)
     capability_raw = load(run_root, files["capabilitySnapshotPath"], "capability-unreadable", 4 << 20)
     task_raw = load(run_root, files["taskSpecPath"], "task-spec-unreadable", 4 << 20)
-    if core_validate_bytes(script, "PolicySnapshot", policy_raw) != state.get("policyDigest") or core_validate_bytes(script, "CapabilitySnapshot", capability_raw) != state.get("capabilityDigest") or core_validate_bytes(script, "Task", task_raw) != state.get("specDigest"):
+    task_digest = core_validate_bytes(script, "Task", task_raw)
+    task = parse_json(task_raw, "task-spec-invalid-json")
+    if core_validate_bytes(script, "PolicySnapshot", policy_raw) != state.get("policyDigest") or core_validate_bytes(script, "CapabilitySnapshot", capability_raw) != state.get("capabilityDigest") or task_digest != state.get("specDigest"):
         fail("frozen-input-digest-mismatch")
     control_raw = load(run_root, files["controlRecordsPath"], "control-records-unreadable", 16 << 20)
     control_digests = validate_control_records(script, control_raw)
     events_raw = load(run_root, files["eventsPath"], "events-unreadable", 32 << 20)
-    event_digests, frozen_verification_digest, frozen_artifact_digest = validate_events(script, events_raw, state)
+    event_digests, events, frozen_verification_digest, frozen_artifact_digest = validate_events(script, events_raw, state)
     frozen_report_raw = load(run_root, files["verificationReportPath"], "verification-report-unreadable", 16 << 20)
     frozen_manifest_raw = load(run_root, files["artifactManifestPath"], "artifact-manifest-unreadable", 16 << 20)
     current_verification_digest = core_validate_bytes(script, "VerificationReport", frozen_report_raw)
@@ -761,20 +983,39 @@ def run(arguments: argparse.Namespace) -> dict:
     packet_present = regular_presence(run_root, files["packetPath"])
     packet_digest = ""
     input_bindings: dict = {}
+    current_generation_bindings: dict = {}
+    missing_observation: dict = {}
     if packet_present:
         packet_raw = load(run_root, files["packetPath"], "packet-unreadable", 4 << 20)
         packet_digest = core_validate_bytes(script, "ReviewPacket", packet_raw)
         packet = parse_json(packet_raw, "packet-invalid-json")
-        if packet.get("taskId") != state["taskId"] or packet.get("runId") != state["runId"] or packet.get("reviewRound") != state["reviewRound"] or packet.get("baseSha") != state["baseSha"] or packet.get("specDigest") != state["specDigest"]:
+        if packet.get("taskId") != state["taskId"] or packet.get("runId") != state["runId"] or packet.get("baseSha") != state["baseSha"] or packet.get("specDigest") != state["specDigest"]:
             fail("packet-identity-mismatch")
-        if packet.get("inputs", {}).get("taskSpec") != files["taskSpecPath"] or packet.get("inputs", {}).get("verificationReport") != files["verificationReportPath"] or packet.get("inputs", {}).get("artifactManifest") != files["artifactManifestPath"]:
-            fail("packet-input-path-mismatch")
-        input_bindings, packet_records = validate_packet_inputs(script, run_root, packet, state, worktree)
-        if input_bindings.get("verificationDigest") != frozen_verification_digest or input_bindings.get("artifactManifestDigest") != frozen_artifact_digest:
-            fail("verification-event-binding-mismatch")
-        for relative, data, identity in packet_records:
-            tracked.append((run_root, relative, data, identity))
-        action, reason = "dispatch-reviewer", "fresh-review-packet-claimed"
+        if packet.get("reviewRound") == state["reviewRound"]:
+            if packet.get("inputs", {}).get("taskSpec") != files["taskSpecPath"] or packet.get("inputs", {}).get("verificationReport") != files["verificationReportPath"] or packet.get("inputs", {}).get("artifactManifest") != files["artifactManifestPath"]:
+                fail("packet-input-path-mismatch")
+            input_bindings, packet_records = validate_packet_inputs(script, run_root, packet, state, worktree)
+            if input_bindings.get("verificationDigest") != frozen_verification_digest or input_bindings.get("artifactManifestDigest") != frozen_artifact_digest:
+                fail("verification-event-binding-mismatch")
+            for relative, data, identity in packet_records:
+                tracked.append((run_root, relative, data, identity))
+            action, reason = "dispatch-reviewer", "fresh-review-packet-claimed"
+        else:
+            previous_bindings, previous_records = validate_previous_round_lineage(script, run_root, packet_raw, packet, packet_digest, state, events)
+            for relative, data, identity in previous_records:
+                tracked.append((run_root, relative, data, identity))
+            current_generation_bindings, generation_records = validate_current_generation_inputs(
+                script, run_root, state, worktree, task, task_digest, frozen_report,
+                current_verification_digest, frozen_manifest, current_artifact_digest,
+            )
+            if current_generation_bindings["verificationDigest"] != frozen_verification_digest or current_generation_bindings["artifactManifestDigest"] != frozen_artifact_digest:
+                fail("verification-event-binding-mismatch")
+            if previous_bindings["currentWorkerCompletedSnapshotDigest"] != current_generation_bindings["snapshotDigest"] or previous_bindings["currentWorkerCompletedDiffDigest"] != current_generation_bindings["patchDigest"]:
+                fail("current-round-worker-completed-binding-mismatch")
+            for relative, data, identity in generation_records:
+                tracked.append((run_root, relative, data, identity))
+            input_bindings = {"previousRoundLineage": previous_bindings, "currentGeneration": current_generation_bindings}
+            action, reason = "generate-review-packet", "previous-round-packet-generation-claimed"
     else:
         missing_observation = observe(script, worktree, state["baseSha"])
         if missing_observation.get("diffDigest") != raw_digest(b"") or missing_observation.get("changedFileCount") != 0 or missing_observation.get("hasUntrackedFiles") is not False:
@@ -815,10 +1056,12 @@ def run(arguments: argparse.Namespace) -> dict:
     if regular_presence(run_root, files["packetPath"]) != packet_present or git_head(worktree) != expected["sourceHead"]:
         fail("authority-changed-during-preflight")
     final_observation = observe(script, worktree, state["baseSha"])
-    if packet_present:
+    if action == "dispatch-reviewer":
         if final_observation.get("snapshotDigest") != packet.get("snapshotDigest") or final_observation.get("diffDigest") != packet.get("diffDigest"):
             fail("worktree-changed-during-preflight")
-    elif final_observation != input_bindings["missingPacketWorktreeObservation"]:
+    elif packet_present and (final_observation.get("snapshotDigest") != current_generation_bindings.get("snapshotDigest") or final_observation.get("diffDigest") != current_generation_bindings.get("patchDigest")):
+        fail("worktree-changed-during-preflight")
+    elif not packet_present and final_observation != missing_observation:
         fail("worktree-changed-during-preflight")
 
     claim_history(script, history_authority, history_raw, history_identity, action, reason, dedupe, fingerprint)
