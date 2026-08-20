@@ -49,7 +49,7 @@ description: 使用 Marshal Harness 编排 Coding Agent、执行证据门禁审�
 
 ## 核心生命周期状态机
 
-新任务先 `marshal task scaffold --draft DRAFT.json > TASK.json`，完成 Schema/admission，再 `plan → approve → run → verify → review`；publish 仅在 Core 状态要求时发生。
+新任务先 `marshal task scaffold --draft DRAFT.json > TASK.json`，完成 Schema 和 `marshal-fastpath-preflight.py --phase plan`，再 `plan → approve → run → verify → review`；publish 仅在 Core 状态要求时发生。
 
 | 当前/返回状态 | 唯一允许的下一步 |
 | --- | --- |

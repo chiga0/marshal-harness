@@ -141,6 +141,28 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
         self.assertEqual(payload["positiveFixtures"], 1)
         self.assertEqual(payload["negativeFixtures"], 5)
 
+    def test_nfkc_fullwidth_colon_covers_all_semantic_rule_paths(self) -> None:
+        gate = {
+            "normalizer": "nfkc-casefold",
+            "minimumLineCount": 1,
+            "maximumBytes": 4096,
+            "required_all": ["heading: value"],
+            "required_any": [["authority: boundary", "trust: boundary"]],
+            "forbidden": ["unsafe: override"],
+        }
+        cases = (
+            ("required_all", "heading： value; authority: boundary", None),
+            ("required_any", "heading: value; authority： boundary", None),
+            (
+                "forbidden",
+                "heading: value; authority: boundary; unsafe： override",
+                "forbidden-present",
+            ),
+        )
+        for rule, document, expected in cases:
+            with self.subTest(rule=rule):
+                self.assertEqual(VALIDATOR_MODULE.semantic_reason(document, gate), expected)
+
     def test_fixture_tasks_are_real_contract_valid_taskspecs(self) -> None:
         for name in ("task-spec-r1.json", "task-spec-r2.json"):
             completed = subprocess.run(
