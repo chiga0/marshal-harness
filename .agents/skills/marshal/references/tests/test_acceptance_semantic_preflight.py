@@ -6,10 +6,10 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
-import types
 import unittest
 from unittest import mock
 
@@ -326,6 +326,80 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             0,
         )
 
+    def timeout_command(self, script: str, timeout_seconds: float = 0.15) -> dict:
+        command = json.loads((FIXTURES / "task-spec-r2.json").read_text())["acceptance"]["commands"][0]
+        command["argv"] = [sys.executable, "-I", "-B", "-c", script]
+        command["timeoutSeconds"] = timeout_seconds
+        return command
+
+    def run_timeout_command(self, command: dict) -> int:
+        fixture = FIXTURES / "report-positive.md"
+        protected_before = VALIDATOR_MODULE.snapshot_protected_roots([self.protected_root])
+        return VALIDATOR_MODULE.run_command(
+            command,
+            "reports/adr-0035.md",
+            fixture.read_bytes(),
+            protected_before,
+        )
+
+    def assert_acceptance_timeout(self, command: dict) -> None:
+        with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+            self.run_timeout_command(command)
+        self.assertEqual(raised.exception.reason_code, "acceptance-command-timeout")
+
+    def test_direct_child_timeout_has_stable_reason(self) -> None:
+        self.assert_acceptance_timeout(
+            self.timeout_command("import time; time.sleep(5)")
+        )
+
+    def test_timeout_kills_stubborn_grandchild_without_harming_unrelated_canary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "grandchild.pid"
+            grandchild = (
+                "import os,signal,time; "
+                f"open({str(pid_file)!r},'w').write(str(os.getpid())); "
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+                "time.sleep(30)"
+            )
+            leader = (
+                "import subprocess,sys,time; "
+                f"subprocess.Popen([sys.executable,'-I','-B','-c',{grandchild!r}]); "
+                "time.sleep(30)"
+            )
+            canary = subprocess.Popen(
+                [sys.executable, "-I", "-B", "-c", "import time; time.sleep(30)"],
+                start_new_session=True,
+            )
+            try:
+                self.assert_acceptance_timeout(self.timeout_command(leader, 0.3))
+                grandchild_pid = int(pid_file.read_text(encoding="utf-8"))
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(grandchild_pid, 0)
+                self.assertIsNone(canary.poll())
+                self.assertEqual(os.getpgid(canary.pid), canary.pid)
+            finally:
+                if canary.poll() is None:
+                    os.killpg(canary.pid, signal.SIGTERM)
+                canary.wait(timeout=2)
+
+    def test_timeout_cleans_leader_early_exit_with_inherited_pipes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "grandchild.pid"
+            grandchild = (
+                "import os,signal,time; "
+                f"open({str(pid_file)!r},'w').write(str(os.getpid())); "
+                "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+                "time.sleep(30)"
+            )
+            leader = (
+                "import subprocess,sys; "
+                f"subprocess.Popen([sys.executable,'-I','-B','-c',{grandchild!r}])"
+            )
+            self.assert_acceptance_timeout(self.timeout_command(leader, 0.3))
+            grandchild_pid = int(pid_file.read_text(encoding="utf-8"))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(grandchild_pid, 0)
+
     def test_prompt_required_any_literal_is_mandatory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root, fixtures = self.copied_fixtures(directory)
@@ -568,9 +642,11 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
 
             def mutate(*_args, **_kwargs):
                 marker.write_text("after")
-                return types.SimpleNamespace(returncode=0)
+                return 0
 
-            with mock.patch.object(VALIDATOR_MODULE.subprocess, "run", side_effect=mutate):
+            with mock.patch.object(
+                VALIDATOR_MODULE, "run_owned_process_group", side_effect=mutate
+            ):
                 with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
                     VALIDATOR_MODULE.run_command(
                         command,
