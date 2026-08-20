@@ -1770,6 +1770,117 @@ func TestRunNormalizesResultAndPersistsBoundedTranscript(t *testing.T) {
 	}
 }
 
+// TestRunAcceptsObservedDeclarationWithoutAdapterRuntimeMetadata freezes the
+// sanitized shape observed from the real Qoder 1.1.23 final tee: Worker-owned
+// semantics and exact task/run/attempt/adapter.id are present, while the
+// Adapter-owned executable and version are omitted. Only those two fields are
+// supplied from the held executable identity before full Schema validation.
+func TestRunAcceptsObservedDeclarationWithoutAdapterRuntimeMetadata(t *testing.T) {
+	declared := validDeclaredResultWithoutAdapterRuntimeMetadata()
+	data, err := json.Marshal(declared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := newRunFixtureWithResult(t, supportedBinary, successEventsWithDeclaredPayload("provider/model", data), nil)
+	record, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result declaredResult
+	if err := json.Unmarshal(record.Data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Adapter.ID != adapterID || result.Adapter.Executable != fixture.executable || result.Adapter.Version != supportedBinary {
+		t.Fatalf("normalized adapter = %+v", result.Adapter)
+	}
+}
+
+func TestRunDiscardsUntrustedAdapterRuntimeMetadataBeforeSchemaValidation(t *testing.T) {
+	declared := validDeclaredResultWithoutAdapterRuntimeMetadata()
+	adapter := declared["adapter"].(map[string]any)
+	adapter["executable"] = map[string]any{"untrusted": true}
+	adapter["version"] = nil
+	data, err := json.Marshal(declared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := newRunFixtureWithResult(t, supportedBinary, successEventsWithDeclaredPayload("provider/model", data), nil)
+	record, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result declaredResult
+	if err := json.Unmarshal(record.Data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Adapter.Executable != fixture.executable || result.Adapter.Version != supportedBinary {
+		t.Fatalf("normalized adapter = %+v", result.Adapter)
+	}
+}
+
+func TestRunRejectsInvalidWorkerResultDeclarationsAsPermanentProtocolFailures(t *testing.T) {
+	valid := validDeclaredResultWithoutAdapterRuntimeMetadata()
+	validData, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string][]byte{}
+	encode := func(value map[string]any) []byte {
+		t.Helper()
+		data, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		return data
+	}
+
+	missingSummary := validDeclaredResultWithoutAdapterRuntimeMetadata()
+	delete(missingSummary, "summary")
+	tests["missing worker semantic field"] = encode(missingSummary)
+
+	missingAdapterID := validDeclaredResultWithoutAdapterRuntimeMetadata()
+	delete(missingAdapterID["adapter"].(map[string]any), "id")
+	tests["missing adapter identity"] = encode(missingAdapterID)
+
+	unknownRoot := validDeclaredResultWithoutAdapterRuntimeMetadata()
+	unknownRoot["unexpected"] = true
+	tests["unknown root member"] = encode(unknownRoot)
+
+	unknownAdapter := validDeclaredResultWithoutAdapterRuntimeMetadata()
+	unknownAdapter["adapter"].(map[string]any)["unexpected"] = true
+	tests["unknown adapter member"] = encode(unknownAdapter)
+
+	tests["duplicate root member"] = append([]byte(`{"status":"completed",`), validData[1:]...)
+	tests["duplicate adapter member"] = []byte(strings.Replace(string(validData), `"adapter":{"id":"qoder"}`, `"adapter":{"id":"qoder","id":"qoder"}`, 1))
+	tests["empty declaration"] = nil
+
+	for name, mutate := range map[string]func(map[string]any){
+		"wrong task identity":    func(value map[string]any) { value["taskId"] = "OTHER" },
+		"wrong run identity":     func(value map[string]any) { value["runId"] = "other-run" },
+		"wrong attempt identity": func(value map[string]any) { value["attemptId"] = "other-attempt" },
+		"wrong adapter identity": func(value map[string]any) { value["adapter"].(map[string]any)["id"] = "qwen" },
+	} {
+		value := validDeclaredResultWithoutAdapterRuntimeMetadata()
+		mutate(value)
+		tests[name] = encode(value)
+	}
+
+	for name, payload := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixture := newRunFixtureWithResult(t, supportedBinary, successEventsWithDeclaredPayload("provider/model", payload), nil)
+			_, err := fixture.adapter.Run(context.Background(), fixture.request)
+			failure, ok := port.AsAdapterFailure(err)
+			if !errors.Is(err, ErrProtocol) || !ok || failure.Adapter != port.AdapterIDQoder || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+				t.Fatalf("error = %v, want qoder protocol-invalid/do-not-retry", err)
+			}
+			published, readErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "worker-result.json"))
+			if readErr != nil || len(published) != 0 {
+				t.Fatalf("invalid declaration published semantic WorkerResult: bytes=%d err=%v", len(published), readErr)
+			}
+		})
+	}
+}
+
 func TestRunUsesAdapterHeldWorkerResultChannel(t *testing.T) {
 	declared, err := json.Marshal(validDeclaredResult("/worker/claim"))
 	if err != nil {

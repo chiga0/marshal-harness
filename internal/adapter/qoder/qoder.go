@@ -893,7 +893,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	var declared declaredResult
 	if resolved == nil {
-		declared, resolved = resolveDeclaredResultData(stagedResult, request, capture.sessionID, a.validator, a.now())
+		declared, resolved = resolveDeclaredResultData(stagedResult, request, capture.sessionID, identity.path, identity.version, a.validator, a.now())
 	}
 	if resolved == nil && task.model != "" && capture.model != task.model {
 		resolved = qoderProtocolInvalid("system model does not match requested model", a.now())
@@ -1001,10 +1001,10 @@ func resolveAttemptFailure(capture captureResult, observation attemptObservation
 	return nil
 }
 
-func resolveDeclaredResultData(data []byte, request workerRequest, sessionID string, validator *contract.Validator, now time.Time) (declaredResult, error) {
-	declared, err := decodeDeclaredResult(data, validator)
+func resolveDeclaredResultData(data []byte, request workerRequest, sessionID, executable, version string, validator *contract.Validator, now time.Time) (declaredResult, error) {
+	declared, err := decodeDeclaredResult(data, executable, version, validator)
 	if err != nil {
-		return declaredResult{}, newQoderFailure(port.FailureKindResultMissing, "WorkerResult declaration missing or unreadable", now)
+		return declaredResult{}, qoderProtocolInvalid("WorkerResult declaration is missing or invalid", now)
 	}
 	if declared.TaskID != request.TaskID || declared.RunID != request.RunID || declared.AttemptID != request.AttemptID || declared.Adapter.ID != adapterID {
 		return declaredResult{}, qoderProtocolInvalid("WorkerResult identity does not match WorkerRequest", now)
@@ -1062,12 +1062,45 @@ type declaredSession struct {
 	Resumable bool   `json:"resumable"`
 }
 
-func decodeDeclaredResult(data []byte, validator *contract.Validator) (declaredResult, error) {
-	if err := validator.Validate(domain.KindWorkerResult, data); err != nil {
+func decodeDeclaredResult(data []byte, executable, version string, validator *contract.Validator) (declaredResult, error) {
+	// The Qoder declaration carries Worker-owned semantics plus two runtime
+	// metadata fields that only the Adapter can know authoritatively. Reject
+	// malformed JSON and duplicate members before touching the document, then
+	// replace only adapter.executable and adapter.version with the already-held
+	// executable identity. The complete WorkerResult Schema still runs after
+	// this normalization, so unknown members, missing semantic fields and all
+	// task/run/attempt/adapter.id identity requirements remain fail closed.
+	if err := rejectDuplicateJSONMembers(data); err != nil {
+		return declaredResult{}, err
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil || document == nil {
+		return declaredResult{}, errors.New("WorkerResult declaration is not an object")
+	}
+	adapterData, ok := document["adapter"]
+	if !ok {
+		return declaredResult{}, errors.New("WorkerResult declaration has no adapter")
+	}
+	var adapter map[string]json.RawMessage
+	if err := json.Unmarshal(adapterData, &adapter); err != nil || adapter == nil {
+		return declaredResult{}, errors.New("WorkerResult declaration adapter is not an object")
+	}
+	adapter["executable"], _ = json.Marshal(executable)
+	adapter["version"], _ = json.Marshal(version)
+	normalizedAdapter, err := json.Marshal(adapter)
+	if err != nil {
+		return declaredResult{}, err
+	}
+	document["adapter"] = normalizedAdapter
+	normalized, err := json.Marshal(document)
+	if err != nil {
+		return declaredResult{}, err
+	}
+	if err := validator.Validate(domain.KindWorkerResult, normalized); err != nil {
 		return declaredResult{}, fmt.Errorf("validate WorkerResult declaration: %w", err)
 	}
 	var result declaredResult
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := json.Unmarshal(normalized, &result); err != nil {
 		return result, err
 	}
 	return result, nil
