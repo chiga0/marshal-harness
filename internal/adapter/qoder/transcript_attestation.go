@@ -397,8 +397,13 @@ func attestObservedToolPath(worktree string, task domain.TaskSpec, tool string, 
 		return err
 	}
 	switch tool {
-	case "read", "grep", "glob":
+	case "read":
 		if err := attestReadToolPath(relative, task.Scope.DenyPaths); err != nil {
+			return err
+		}
+		return nil
+	case "grep", "glob":
+		if err := attestSearchToolPath(worktree, relative, task.Scope.DenyPaths); err != nil {
 			return err
 		}
 		return nil
@@ -428,6 +433,35 @@ func attestReadToolPath(relative string, denyPaths []string) error {
 		}
 	}
 	return nil
+}
+
+func attestSearchToolPath(worktree, relative string, denyPaths []string) error {
+	info, err := os.Lstat(filepath.Join(worktree, filepath.FromSlash(relative)))
+	if err != nil {
+		return errors.New("tool-path-out-of-scope")
+	}
+	if info.Mode().IsRegular() {
+		return attestReadToolPath(relative, denyPaths)
+	}
+	if !info.IsDir() {
+		return errors.New("tool-path-out-of-scope")
+	}
+	restricted := append(append([]string(nil), denyPaths...), ".marshal/**")
+	for _, pattern := range restricted {
+		if !doublestar.ValidatePattern(pattern) {
+			return errors.New("tool-path-out-of-scope")
+		}
+		base, _ := doublestar.SplitPattern(pattern)
+		base = filepath.ToSlash(filepath.Clean(filepath.FromSlash(base)))
+		if base == "." || base == "" || filepath.IsAbs(base) || base == ".." || strings.HasPrefix(base, "../") || searchDomainsOverlap(relative, base) {
+			return errors.New("tool-path-out-of-scope")
+		}
+	}
+	return nil
+}
+
+func searchDomainsOverlap(left, right string) bool {
+	return left == "." || right == "." || left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
 }
 
 func attestToolPath(worktree string, raw json.RawMessage) (string, error) {

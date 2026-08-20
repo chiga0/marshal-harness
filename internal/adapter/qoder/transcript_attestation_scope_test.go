@@ -23,12 +23,57 @@ func TestAttestObservedToolPathAllowsCanaryReadsAndScopedWrite(t *testing.T) {
 		path string
 	}{
 		{tool: "read", key: "file_path", path: filepath.Join(worktree, "README.md")},
-		{tool: "grep", key: "path", path: "internal/adapter/qoder/transcript_attestation.go"},
+		{tool: "read", key: "file_path", path: "internal/adapter/qoder/transcript_attestation.go"},
 		{tool: "write", key: "file_path", path: filepath.Join(worktree, "report.md")},
 	} {
 		if err := attestObservedToolPath(worktree, task, call.tool, attestationToolInput(t, call.key, call.path), declared); err != nil {
 			t.Fatalf("%s %q rejected: %v", call.tool, call.path, err)
 		}
+	}
+}
+
+func TestAttestObservedSearchToolPathRequiresDisjointSearchDomain(t *testing.T) {
+	worktree := canonicalTestWorktree(t)
+	mustWriteAttestationFixture(t, worktree, "docs/public/input.md")
+	mustWriteAttestationFixture(t, worktree, "docs/hidden/secret.txt")
+	mustWriteAttestationFixture(t, worktree, "private/secret.txt")
+	mustWriteAttestationFixture(t, worktree, ".marshal/state.json")
+	task := attestationScopeTask("workspace-write", []string{"report.md"}, []string{"private/**", "docs/hidden/**"})
+
+	for _, tool := range []string{"grep", "glob"} {
+		t.Run(tool+"-non-deny-subtree", func(t *testing.T) {
+			if err := attestObservedToolPath(worktree, task, tool, attestationToolInput(t, "path", "docs/public"), nil); err != nil {
+				t.Fatalf("non-deny subtree rejected: %v", err)
+			}
+		})
+		for _, tc := range []struct {
+			name string
+			path string
+		}{
+			{name: "worktree-root", path: worktree},
+			{name: "deny-parent", path: "docs"},
+			{name: "deny-ancestor", path: "private"},
+			{name: "marshal-root", path: ".marshal"},
+		} {
+			t.Run(tool+"-"+tc.name, func(t *testing.T) {
+				if err := attestObservedToolPath(worktree, task, tool, attestationToolInput(t, "path", tc.path), nil); err == nil || err.Error() != "tool-path-out-of-scope" {
+					t.Fatalf("search err = %v, want tool-path-out-of-scope", err)
+				}
+			})
+		}
+	}
+}
+
+func TestAttestObservedSearchToolPathRejectsUnboundedOrInvalidDenyPattern(t *testing.T) {
+	worktree := canonicalTestWorktree(t)
+	mustWriteAttestationFixture(t, worktree, "docs/public/input.md")
+	for _, pattern := range []string{"**/*.secret", "["} {
+		t.Run(pattern, func(t *testing.T) {
+			task := attestationScopeTask("workspace-write", []string{"report.md"}, []string{pattern})
+			if err := attestObservedToolPath(worktree, task, "grep", attestationToolInput(t, "path", "docs/public"), nil); err == nil || err.Error() != "tool-path-out-of-scope" {
+				t.Fatalf("search err = %v, want tool-path-out-of-scope", err)
+			}
+		})
 	}
 }
 
