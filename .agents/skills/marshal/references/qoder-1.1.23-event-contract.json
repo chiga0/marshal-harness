@@ -4,7 +4,7 @@
   "adapterVersion": "0.1.6",
   "protocolVersion": "1.2.0",
   "eventContract": "qoder-stream-json-1.2.0-v7",
-  "workerResultTransportDigest": "sha256:bbab998870c492da1d4b4bbf6496cd3620ffc83e6e881bc76615b2b1fae6e10a",
+  "workerResultTransportDigest": "sha256:1a9876633aa16e2f7423ab3f748db0343f20ea81585239c6677bfa66721731a3",
   "productionPromotion": "fresh-mac-live-conformance-required",
   "hardenedAuthorityUpgrade": false,
   "priorProviderTranscriptEvidenceSetDigest": "sha256:d7e09b901a69383230b2827c2e2f0940e67b480bd794b5dc85f35444eea7bc2f",

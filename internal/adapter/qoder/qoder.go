@@ -319,7 +319,7 @@ func expectedWorkerResultTransportContract() workerResultTransportContract {
 		ToolInputDescriptionControls:        "forbidden",
 		ToolInputCanonicalMemberOrder:       "command,description",
 		ToolInputUnknownMembers:             "forbidden",
-		CanonicalCommand:                    workerResultTeeFirstLine + "\n<CANONICAL_WORKER_RESULT_JSON>\nMARSHAL_RESULT",
+		CanonicalCommand:                    workerResultTeeFirstLine + "\n<CANONICAL_WORKER_RESULT_JSON>\nMARSHAL_RESULT (optional one final LF)",
 		TeeSequence:                         "exactly-one-successful-tee-as-final-tool-call",
 		DeclarationRuntimeMetadataAuthority: "adapter-overwrites-adapter.executable-and-adapter.version-from-held-identity-before-schema",
 		DeclarationSemanticSynthesis:        "forbidden",
