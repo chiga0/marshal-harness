@@ -751,8 +751,9 @@ type captureResult struct {
 }
 
 // captureStreamJSONL enforces the measured Qwen Code 0.21.5 stream-json
-// contract: the first non-empty event must be system/init bound to this
-// worktree, and the last non-empty event must be result/success.
+// contract: a successful stream starts with system/init bound to this
+// worktree and ends with result/success. Qwen may instead emit type=error or
+// exactly result/error_during_execution before init when provider startup fails.
 func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit func(), binaryVersion string, excludedTools map[string]bool, now func() time.Time) captureResult {
 	capacity := 64 << 10
 	if limit < int64(capacity) {
@@ -833,7 +834,9 @@ func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit 
 					fail(qwenProtocolInvalid("non-tool event carries tool identity fields", now()))
 					continue
 				}
-				if result.eventCount == 1 {
+				preInitFailureTerminal := result.eventCount == 1 &&
+					(event.Type == "error" || (event.Type == "result" && event.Subtype == "error_during_execution"))
+				if result.eventCount == 1 && !preInitFailureTerminal {
 					if event.Type != "system" || event.Subtype != "init" {
 						fail(qwenProtocolInvalid("first event must be system/init", now()))
 						continue
@@ -851,6 +854,11 @@ func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit 
 						continue
 					}
 					result.sessionID = event.SessionID
+				}
+				if preInitFailureTerminal {
+					result.terminalSeen = event.Type
+					result.terminalFailure = newQwenFailure(port.FailureKindProviderTerminal, "provider reported a terminal error before init", nil, nil, now())
+					continue
 				}
 				switch event.Type {
 				case "tool":
