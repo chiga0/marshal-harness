@@ -1,6 +1,14 @@
 # 设计审计报告
 
 - 审计日期：2026-08-04（2026-08-10 增补 Runtime 架构重置记录、首次 Sandbox SPI dogfood reject 增补记录与 Round 2 关闭记录；2026-08-11 增补 Control Plane 与 Provider Port 边界冻结记录，含 Round 4 独立评审八项 P1 关闭记录、Round 5 复核四项残留关闭记录、Round 6 复核两项残留——Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge——关闭记录与 Round 7 复核三项残留——双键空间残留清除（权威对象 authorityNamespaceId 独占拥有、registration/snapshot/evidence authority ledger 事实、接纳关系归 authority ledger、controlPlaneId 逻辑权威身份）、Core-only typed edge 生命周期细化（issuer/source/target/operation/expiry/digest/revocation/replay/current-ledger recheck，issuer 恒为 Core 且不等于业务流 sourceActor、sourceActor/targetActor 按 edge 类型绑定，派生 token/handle 不得成为第二权威）、Public API 幂等/SSE/对象 key 修正为 authorityNamespaceId——关闭记录与 Round 8 复核一项残留——typed edge 跨域例外与适用范围（三类 typed edge 明确为 Provider actor 跨信任域访问默认拒绝的唯一 allowlist 例外，Public API/SSE 与 Core 内部权威引用无需 Provider typed edge）——与 Round 9 复核两项残留——跨域 fail closed 表述精确化（删除会无条件拒绝 MaterialAccessGrant 等合法 typed edge 的宽泛表述）、非 edge Port 与同域不自动授权（provider-registration/control 经 transport identity/该 Port AuthN/AuthZ/registration protocol 由 Core 写 authority ledger；securityDomainId 相同只是 provenance/partition 条件，不构成授权）——关闭记录；2026-08-12 增补 Issue #25 发布合并后 head reconcile 审计记录；2026-08-13 该 finding 随 typed reconciliation 实现合入关闭；2026-08-14 增补 Issue #53 CI 失败 rework 注入设计缺口审计记录，目标契约由 [ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)（Proposed，草案已提出/待接受）给出（接受后方冻结），实现待后续 implementation successor）
+
+## Issue #130 lease owner 与 orphan recovery 审计增补（2026-08-21）
+
+审计确认当前 owner record 存在真实 legacy 5-field/7-field shape，PID/heartbeat/事件年龄诊断与 OS descriptor lock authority 的边界需要收敛；owner acquisition epoch 与 Attempt generation 尚缺独立的 successor/high-water 合同，`SupervisorDispatcher` orphan recovery 也需要把 late `WorkerResult`、quarantine、预算裁决和 `Outcome` 绑定到同一个 crash-safe append-only transaction。
+
+[ADR 0035](adr/0035-supervisor-lease-owner-v2-and-orphan-recovery.md)（Proposed）提出 `LeaseOwnerRecordV2` exact closed schema、同一 descriptor authority 下的 legacy v1 fail-closed migration、epoch+digest high-water rollback/ABA fencing，以及 `prepare → fence-consumed → inspect/reconcile → resolved` 的 append-only durable transaction。所有 unknown 统一进入 intervention、zero side effect，Core 只追加 typed `Outcome`，不得静默写 `BLOCKED`。
+
+该 finding 保持 `OPEN`：ADR 尚未接受，owner v2、migration、共享 eligibility predicate、exact-run dispatcher 与 orphan transaction 均未实现或验证。此记录不表示 Issue #130 完成，不改变 M10–M13 状态，也不授权生产启用自动 orphan recovery。
 - 范围：当前文档与 `v1alpha1` Schema 描述的 Local CLI MVP（Runtime/Sandbox 契约部分为分层状态，见下）
 - 结论（分层）：
   - Local MVP（Milestone 0–6）：**`APPROVED_FOR_IMPLEMENTATION`** / `USABLE`，行为与门禁不变；

@@ -16,6 +16,8 @@
 
 2026-08-20，维护者接受 ADR 0036：只有合法 typed `AdapterFailure` 能从 `Adapter.Run` 边界授权 operational retry；普通 error 固定归一化为 `protocol-invalid/do-not-retry`，legacy `port.Permanent` 固定归一化为 `provider-terminal/do-not-retry`。该规则只作用于 `Adapter.Run` 返回边界，不改变 Core 其它 `recordFailure` 来源的既有语义；历史终态不重写、不复活。
 
+2026-08-21，针对 Issue #130 起草 ADR 0035（Proposed）：提议冻结 `LeaseOwnerRecordV2` 的 legacy v1 fail-closed migration、descriptor-bound acquisition epoch 与 epoch+digest high-water successor chain，以及 `SupervisorDispatcher` orphan recovery 的 append-only durable transaction。该提案统一 unknown 为 intervention、zero side effect 与 Core 追加 typed `Outcome`，仅记录待审设计，不接受 ADR、不启用实现，也不表示 Issue #130 完成。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -46,6 +48,7 @@
 | [0032](0032-controlled-policy-merge.md) | Policy 显式授权的受控 Task Merge（SCMMergeIntent、独立 SCMMerger、SCMMergeReceipt 与 ACCEPTED 收敛） | 已接受（Accepted，2026-08-17；接受证据绑定真实 publish ApprovalRecord 与 PR #152；authority/delivery 实现解释由 ADR 0033 部分取代，未注册为 supported） |
 | [0033](0033-journal-bound-merge-authority-and-delivery.md) | Journal-bound MergeAuthorityTransaction、MergeDeliveryAnchor、pending→fence-consumed→inspect/reconcile→resolved 恢复与 executable snapshot TOCTOU 关闭 | 提议（Proposed，2026-08-17；契约/负向矩阵第一切片，未实现） |
 | [0034](0034-qoder-cli-live-conformance-authority.md) | Qoder CLI 独立 live conformance authority、host/profile 精确绑定、短期可撤销准入与 doctor evidence 可观察性 | 接受（Accepted，2026-08-18；未获得真实 credentialed evidence，不表示当前部署 supported） |
+| [0035](0035-supervisor-lease-owner-v2-and-orphan-recovery.md) | `LeaseOwnerRecordV2` legacy migration、descriptor-bound owner acquisition epoch/high-water 与 `SupervisorDispatcher` append-only orphan recovery | 提议（Proposed，2026-08-21；仅契约设计，未实现） |
 | [0036](0036-adapter-run-boundary-fail-closed.md) | `Adapter.Run` 边界无类型错误确定性归一化为 typed `do-not-retry`，不授权盲目 operational retry | 已接受（Accepted，2026-08-20） |
 | [0037](0037-codex-cli-production-authority.md) | Codex CLI production authority、TPM-backed host identity、authenticated fd-exec 与可撤销准入 | 接受（Accepted，2026-08-18；未实现且未获得真实 credentialed live evidence，不表示当前部署 supported） |
 | [0039](0039-apap-peer-exec-barrier.md) | APAP control peer USER_NOTIF 单次初始 fd-exec、永久 exec deny、双对象签名与 helper bootstrap | 已接受（Accepted，2026-08-18；接受只冻结合同，未实现前不得启用） |
