@@ -193,11 +193,6 @@ func Run(ctx context.Context, input Input) (Result, error) {
 			return Result{State: state, AttemptID: state.CurrentAttemptID}, errors.New("worker failure requires operator intervention")
 		}
 	}
-	if state.State == domain.StateRetryPending {
-		if err := reconcileRetryPendingQuarantine(store, lease, state); err != nil {
-			return Result{State: state, AttemptID: state.CurrentAttemptID}, err
-		}
-	}
 	// RUNNING is held for the orphan recovery decision below instead of being
 	// rejected here: a RUNNING run whose current attempt shows no live driver
 	// evidence re-enters through the existing RETRY_PENDING channel, while a
@@ -282,6 +277,17 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	reviewFindings, err := loadReviewFindings(store, runDir, state, input.Validator, selectedAdapterID)
 	if err != nil {
 		return Result{}, err
+	}
+	// Retry compensation is a side effect and therefore follows the complete
+	// journal/lineage/typed-failure admission above. Malformed, future-held or
+	// non-retryable authority must not create quarantine artifacts or rewrite
+	// the snapshot merely because its payload claims to be orphaned. A valid,
+	// ready orphan retry can now finish its exact durable transaction before any
+	// new Attempt identity, dispatch binding or Adapter call is created.
+	if state.State == domain.StateRetryPending {
+		if err := reconcileRetryPendingQuarantine(store, lease, state); err != nil {
+			return Result{State: state, AttemptID: state.CurrentAttemptID}, err
+		}
 	}
 	if err := assertProfileNotEscalated(runDir, task.Worker.ExecutionProfile); err != nil {
 		return Result{}, err
@@ -820,8 +826,8 @@ func payloadOptionalTime(payload map[string]any, key string) (time.Time, bool, e
 	if !ok {
 		return time.Time{}, true, errors.New("structural failure not-before hint is invalid")
 	}
-	value, err := time.Parse(time.RFC3339, text)
-	if err != nil || text != value.UTC().Format(time.RFC3339) {
+	value, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil || text != value.UTC().Format(time.RFC3339Nano) {
 		return time.Time{}, true, errors.New("structural failure not-before hint is invalid")
 	}
 	return value, true, nil
@@ -2320,7 +2326,7 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 		payload["retryAfterNanoseconds"] = classification.retryAfter.Nanoseconds()
 	}
 	if !classification.notBefore.IsZero() {
-		payload["notBefore"] = classification.notBefore.UTC().Format(time.RFC3339)
+		payload["notBefore"] = classification.notBefore.UTC().Format(time.RFC3339Nano)
 	}
 	if !classification.terminal && state.OperationalRetriesUsed < uint(task.Budgets.MaxOperationalRetries) && state.AttemptsUsed < uint(task.Budgets.MaxAttempts) {
 		target, guard.BudgetAvailable = domain.StateRetryPending, true

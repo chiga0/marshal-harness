@@ -195,8 +195,15 @@ func TestRetryPendingAdmissionHonorsTypedRetryGate(t *testing.T) {
 	})
 
 	t.Run("future not-before is a zero-side-effect hold", func(t *testing.T) {
-		notBefore := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+		notBefore := time.Now().UTC().Add(time.Hour).Truncate(time.Second).Add(123456789 * time.Nanosecond)
 		fixture := setupPersistedTypedRetryFailure(t, nil, &notBefore)
+		events, _, err := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := payloadString(events[len(events)-1].Payload, "notBefore"); got != notBefore.Format(time.RFC3339Nano) {
+			t.Fatalf("persisted notBefore = %q, want lossless %q", got, notBefore.Format(time.RFC3339Nano))
+		}
 		requireFailsBeforeProbe(t, fixture, "retry admission", "not ready")
 		requireFailsBeforeProbe(t, fixture, "retry admission", "not ready")
 	})
@@ -353,6 +360,13 @@ func TestRetryPendingAdmissionRejectsMalformedOrNonRetryableAuthority(t *testing
 			name: "noncanonical not-before",
 			mutate: func(event *domain.RunEvent, _ domain.RunState) {
 				event.Payload["notBefore"] = event.Timestamp.Add(time.Hour).Format("2006-01-02T15:04:05+00:00")
+			},
+			fragments: []string{"retry admission", "not-before"},
+		},
+		{
+			name: "noncanonical padded fractional not-before",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["notBefore"] = event.Timestamp.Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
 			},
 			fragments: []string{"retry admission", "not-before"},
 		},
@@ -1130,6 +1144,68 @@ type journalFingerprint struct {
 	raw     string
 }
 
+type persistedPathFingerprint struct {
+	info os.FileInfo
+	raw  []byte
+}
+
+func capturePersistedPath(t *testing.T, path string) persistedPathFingerprint {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	if info.Mode().IsRegular() {
+		raw, err = os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return persistedPathFingerprint{info: info, raw: raw}
+}
+
+func capturePersistedTree(t *testing.T, root string) map[string]persistedPathFingerprint {
+	t.Helper()
+	result := map[string]persistedPathFingerprint{}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		result[relative] = capturePersistedPath(t, path)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func requirePersistedPathUnchanged(t *testing.T, label string, before, after persistedPathFingerprint) {
+	t.Helper()
+	if !os.SameFile(before.info, after.info) || before.info.Mode() != after.info.Mode() || before.info.Size() != after.info.Size() || !before.info.ModTime().Equal(after.info.ModTime()) || !bytes.Equal(before.raw, after.raw) {
+		t.Fatalf("%s identity, metadata or bytes changed across fail-closed admission", label)
+	}
+}
+
+func requirePersistedTreeUnchanged(t *testing.T, root string, before map[string]persistedPathFingerprint) {
+	t.Helper()
+	after := capturePersistedTree(t, root)
+	if len(after) != len(before) {
+		t.Fatalf("persisted tree membership changed across fail-closed admission: before=%v after=%v", reflect.ValueOf(before).MapKeys(), reflect.ValueOf(after).MapKeys())
+	}
+	for relative, beforePath := range before {
+		afterPath, ok := after[relative]
+		if !ok {
+			t.Fatalf("persisted tree path %q disappeared across fail-closed admission", relative)
+		}
+		requirePersistedPathUnchanged(t, filepath.Join(root, relative), beforePath, afterPath)
+	}
+}
+
 func captureJournal(t *testing.T, fixture executionFixture) journalFingerprint {
 	t.Helper()
 	events, _, _ := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
@@ -1248,7 +1324,7 @@ func persistedFailurePayload(t *testing.T, state domain.RunState, adapterID port
 	}
 	if notBefore != nil {
 		failure.NotBefore = notBefore.UTC()
-		payload["notBefore"] = notBefore.UTC().Format(time.RFC3339)
+		payload["notBefore"] = notBefore.UTC().Format(time.RFC3339Nano)
 	}
 	payload["error"] = failure.Error()
 	return payload
@@ -1289,7 +1365,10 @@ func setupHistoricalNotBeforeRetryFailure(t *testing.T) executionFixture {
 	// appendRunEvents deterministically records worker.started at t=102 and
 	// worker.failed at t=103 for a fresh fixture. The bounded not-before is
 	// valid relative to the failure event but has elapsed relative to now.
-	notBefore := time.Unix(103, 0).UTC().Add(time.Hour)
+	// The failure event below is recorded at exactly t=103. Preserve a
+	// same-second fractional not-before so persistence round-trip loss would
+	// collapse it to the terminal timestamp and permanently reject this retry.
+	notBefore := time.Unix(103, 500000123).UTC()
 	payload := persistedFailurePayload(t, state, port.AdapterIDFake, port.FailureKindConnectionFailure, port.RetryDispositionRetryable, nil, &notBefore)
 	appendRunEvents(t, fixture,
 		step("worker.started", domain.StateRunning, workerRunnerActor(), "attempt-historical-not-before", map[string]any{"adapterId": "fake"}),
@@ -2561,6 +2640,107 @@ func TestRetryPendingOrphanQuarantineReconcilesAfterEventAppendCrash(t *testing.
 	result, err = Run(context.Background(), fixture.input)
 	if err != nil || result.State.State != domain.StateVerifying {
 		t.Fatalf("retry restart = %+v err=%v", result, err)
+	}
+}
+
+func TestRetryPendingOrphanAuthorityRejectsBeforeAnyCompensationOrDispatchSideEffect(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*domain.RunEvent, domain.RunState)
+		fragments []string
+	}{
+		{
+			name: "legacy untyped authority",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				for _, key := range []string{"adapterId", "failureKind", "retryDisposition", "failureSignature"} {
+					delete(event.Payload, key)
+				}
+				event.Payload["error"] = "legacy failure"
+			},
+			fragments: []string{"retry admission", "typed failure"},
+		},
+		{
+			name: "signature mismatch",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["failureSignature"] = "sha256:" + strings.Repeat("0", 64)
+			},
+			fragments: []string{"retry admission", "signature"},
+		},
+		{
+			name: "future not-before hold",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				notBefore := time.Now().UTC().Add(time.Hour).Truncate(time.Second).Add(987654321 * time.Nanosecond)
+				failure := port.AdapterFailure{Adapter: port.AdapterID("fixture"), Kind: port.FailureKindConnectionFailure, Disposition: port.RetryDispositionRetryable, NotBefore: notBefore}
+				event.Payload["notBefore"] = notBefore.Format(time.RFC3339Nano)
+				event.Payload["error"] = failure.Error()
+			},
+			fragments: []string{"retry admission", "not ready"},
+		},
+		{
+			name: "nonretryable authority",
+			mutate: func(event *domain.RunEvent, state domain.RunState) {
+				for key, value := range persistedFailurePayload(t, state, port.AdapterID("fixture"), port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry, nil, nil) {
+					event.Payload[key] = value
+				}
+			},
+			fragments: []string{"retry admission", "not retryable"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+				preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture", maxAttempts: 3, maxOperationalRetries: 2,
+			})
+			fixture.input.OrphanStalenessThreshold = time.Second
+			appendWorkerStartedAt(t, fixture, "attempt-orphan-authority-hold", time.Unix(200, 0).UTC())
+			fixture.input.AfterOrphanRetryAppend = func() error { return errors.New("retry append crash") }
+			result, err := Run(context.Background(), fixture.input)
+			if err == nil || !strings.Contains(err.Error(), "retry post-append failure") || result.State.State != domain.StateRetryPending {
+				t.Fatalf("orphan crash seed = %+v err=%v", result, err)
+			}
+			fixture.input.AfterOrphanRetryAppend = nil
+			state := inspectState(t, fixture)
+			mutateLastWorkerFailure(t, fixture, func(event *domain.RunEvent) { test.mutate(event, state) })
+
+			attemptsRoot := filepath.Join(fixture.runDir, "attempts")
+			diagnostics := filepath.Join(attemptsRoot, state.CurrentAttemptID, "diagnostics")
+			if err := os.RemoveAll(diagnostics); err != nil {
+				t.Fatal(err)
+			}
+			beforeAttempts := capturePersistedTree(t, attemptsRoot)
+			statePath := filepath.Join(fixture.runDir, "state.json")
+			journalPath := filepath.Join(fixture.runDir, "events.jsonl")
+			beforeState := capturePersistedPath(t, statePath)
+			beforeJournal := capturePersistedPath(t, journalPath)
+
+			adapter := &countingAdapter{delegate: fixture.input.Adapter.(*fixtureAdapter)}
+			input := fixture.input
+			input.Adapter = adapter
+			binderCalls := 0
+			input.DispatchBinder = dispatchBinderFunc(func(context.Context, string, string, string, domain.SandboxRequirements) (*DispatchBinding, error) {
+				binderCalls++
+				return nil, errors.New("dispatch binder must not run")
+			})
+			_, err = Run(context.Background(), input)
+			if err == nil {
+				t.Fatal("orphan retry authority unexpectedly admitted")
+			}
+			for _, fragment := range test.fragments {
+				if !strings.Contains(err.Error(), fragment) {
+					t.Fatalf("rejection %q does not contain %q", err, fragment)
+				}
+			}
+			if binderCalls != 0 || adapter.probes != 0 || adapter.runs != 0 {
+				t.Fatalf("rejected authority crossed dispatch/adapter boundary: binder=%d probes=%d runs=%d", binderCalls, adapter.probes, adapter.runs)
+			}
+			requirePersistedPathUnchanged(t, "state snapshot", beforeState, capturePersistedPath(t, statePath))
+			requirePersistedPathUnchanged(t, "journal", beforeJournal, capturePersistedPath(t, journalPath))
+			requirePersistedTreeUnchanged(t, attemptsRoot, beforeAttempts)
+			if _, err := os.Stat(diagnostics); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("rejected authority recreated quarantine diagnostics: %v", err)
+			}
+		})
 	}
 }
 
