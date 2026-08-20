@@ -352,14 +352,28 @@ func TestRunPreInitTerminalProtocolMatrix(t *testing.T) {
 			body:        terminalLine(`{"type":"result","subtype":"error_during_execution"}`),
 			kind:        port.FailureKindProviderTerminal,
 			disposition: port.RetryDispositionDoNotRetry,
-			detail:      "result subtype is not success",
+			detail:      "provider reported a terminal error before init",
 		},
 		{
 			name:        "error-before-init",
 			body:        terminalLine(`{"type":"error"}`),
 			kind:        port.FailureKindProviderTerminal,
 			disposition: port.RetryDispositionDoNotRetry,
-			detail:      "provider reported a terminal error",
+			detail:      "provider reported a terminal error before init",
+		},
+		{
+			name:        "result-mystery-before-init-stays-structural",
+			body:        terminalLine(`{"type":"result","subtype":"mystery"}`),
+			kind:        port.FailureKindProtocolInvalid,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "first event must be system/init",
+		},
+		{
+			name:        "result-missing-subtype-before-init-stays-structural",
+			body:        terminalLine(`{"type":"result"}`),
+			kind:        port.FailureKindProtocolInvalid,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "first event must be system/init",
 		},
 		{
 			name:        "success-before-init-stays-structural",
@@ -367,6 +381,20 @@ func TestRunPreInitTerminalProtocolMatrix(t *testing.T) {
 			kind:        port.FailureKindProtocolInvalid,
 			disposition: port.RetryDispositionDoNotRetry,
 			detail:      "first event must be system/init",
+		},
+		{
+			name:        "pre-init-error-does-not-inherit-dns-or-retry-hint",
+			body:        terminalLine(`{"type":"error","code":"ENOTFOUND","retry_after":77}`),
+			kind:        port.FailureKindProviderTerminal,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "provider reported a terminal error before init",
+		},
+		{
+			name:        "pre-init-error-does-not-inherit-quota",
+			body:        terminalLine(`{"type":"error","error":{"code":"ResourceExhausted"}}`),
+			kind:        port.FailureKindProviderTerminal,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "provider reported a terminal error before init",
 		},
 		{
 			name: "malformed-before-pre-init-terminal",
@@ -406,6 +434,12 @@ func TestRunPreInitTerminalProtocolMatrix(t *testing.T) {
 			detail:      "result subtype is not success",
 		},
 		{
+			name:        "initialized-dns-classification-is-unchanged",
+			body:        strings.Join([]string{initEvent("session-1", supportedBinary), terminalLine(`{"type":"error","error":{"code":"ENOTFOUND"}}`)}, "\n"),
+			kind:        port.FailureKindDNSFailure,
+			disposition: port.RetryDispositionRetryable,
+		},
+		{
 			name:        "initialized-success",
 			body:        strings.Join([]string{initEvent("session-1", supportedBinary), resultEvent("success", 1, 1)}, "\n"),
 			wantSuccess: true,
@@ -429,19 +463,71 @@ func TestRunPreInitTerminalProtocolMatrix(t *testing.T) {
 			if test.kind == port.FailureKindProtocolInvalid && !errors.Is(err, ErrProtocol) {
 				t.Fatalf("protocol-invalid must keep ErrProtocol identity: %v", err)
 			}
-			if !strings.Contains(err.Error(), test.detail) {
+			if test.detail != "" && !strings.Contains(err.Error(), test.detail) {
 				t.Fatalf("err = %v, want fixed detail %q", err, test.detail)
+			}
+			if test.kind == port.FailureKindProviderTerminal && (failure.RetryAfter != 0 || !failure.NotBefore.IsZero()) {
+				t.Fatalf("provider-terminal inherited a retry hint: %+v", failure)
 			}
 			metadata, metaErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qwen-transcript-meta.json"))
 			if metaErr != nil {
 				t.Fatal(metaErr)
 			}
-			for _, want := range []string{`"failureKind": "` + string(test.kind) + `"`, `"retryDisposition": "` + string(test.disposition) + `"`} {
+			metadataWants := []string{`"failureKind": "` + string(test.kind) + `"`, `"retryDisposition": "` + string(test.disposition) + `"`}
+			if test.kind == port.FailureKindProviderTerminal {
+				metadataWants = append(metadataWants, `"retryAfterSeconds": 0`, `"notBefore": ""`)
+			}
+			for _, want := range metadataWants {
 				if !strings.Contains(string(metadata), want) {
 					t.Fatalf("metadata missing %s: %s", want, metadata)
 				}
 			}
 		})
+	}
+}
+
+// TestRunPreInitTerminalContextConflict freezes the resolution priority when a
+// valid pre-init terminal races with attempt cancellation: the independent
+// terminal authorities must converge to protocol-invalid/do-not-retry.
+func TestRunPreInitTerminalContextConflict(t *testing.T) {
+	for iteration := 0; iteration < conflictRepetitions/2; iteration++ {
+		ready := filepath.Join(t.TempDir(), "ready")
+		body := strings.Join([]string{
+			terminalLine(`{"type":"result","subtype":"error_during_execution"}`),
+			"touch " + shellQuote(ready),
+			"exec sleep 30",
+		}, "\n")
+		fixture := newRunFixture(t, supportedBinary, body)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := fixture.adapter.Run(ctx, fixture.requestWith(map[string]any{"attemptTimeoutSeconds": 30}))
+			done <- err
+		}()
+		waitForFile(t, ready)
+		cancel()
+		select {
+		case err := <-done:
+			failure, ok := port.AsAdapterFailure(err)
+			if !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry || !errors.Is(err, ErrProtocol) {
+				t.Fatalf("iteration %d: err = %v, want context conflict protocol-invalid/do-not-retry", iteration, err)
+			}
+			if errors.Is(err, context.Canceled) {
+				t.Fatalf("iteration %d: context masked the structured terminal: %v", iteration, err)
+			}
+			metadata, metaErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qwen-transcript-meta.json"))
+			if metaErr != nil {
+				t.Fatal(metaErr)
+			}
+			for _, want := range []string{`"contextError": "context canceled"`, `"failureKind": "protocol-invalid"`, `"retryDisposition": "do-not-retry"`} {
+				if !strings.Contains(string(metadata), want) {
+					t.Fatalf("iteration %d: metadata missing %s: %s", iteration, want, metadata)
+				}
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: Run did not converge after cancellation", iteration)
+		}
+		cancel()
 	}
 }
 
