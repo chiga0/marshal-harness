@@ -92,7 +92,40 @@ def fail(reason_code: str, message: str) -> None:
     raise PreflightError(reason_code, message)
 
 
-def load_json(path: Path, label: str) -> dict:
+def read_regular_bytes(path: Path, label: str, reason_code: str) -> bytes:
+    descriptor = -1
+    try:
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            fail(reason_code, f"{label} must be a regular non-symlink file")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_PROTECTED_TREE_BYTES:
+            fail(reason_code, f"{label} is not a bounded regular file")
+        chunks: list[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, READ_CHUNK_BYTES))
+            if not chunk:
+                fail(reason_code, f"{label} changed while reading")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            fail(reason_code, f"{label} grew while reading")
+        after = os.fstat(descriptor)
+        if metadata_identity(before) != metadata_identity(after):
+            fail(reason_code, f"{label} changed while reading")
+        return b"".join(chunks)
+    except PreflightError:
+        raise
+    except OSError as error:
+        fail(reason_code, f"cannot read {label}: {error}")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def parse_json_bytes(raw: bytes, label: str) -> dict:
     def reject_duplicates(pairs: list[tuple[str, object]]) -> dict:
         result: dict = {}
         for key, value in pairs:
@@ -102,7 +135,7 @@ def load_json(path: Path, label: str) -> dict:
         return result
 
     try:
-        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
     except PreflightError:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -110,6 +143,15 @@ def load_json(path: Path, label: str) -> dict:
     if not isinstance(value, dict):
         fail("invalid-json", f"{label} must be a JSON object")
     return value
+
+
+def load_json_with_raw(path: Path, label: str) -> tuple[dict, bytes]:
+    raw = read_regular_bytes(path, label, "invalid-json")
+    return parse_json_bytes(raw, label), raw
+
+
+def load_json(path: Path, label: str) -> dict:
+    return load_json_with_raw(path, label)[0]
 
 
 def canonical_digest(value: object) -> str:
@@ -120,16 +162,15 @@ def canonical_digest(value: object) -> str:
 
 
 def file_digest(path: Path) -> str:
-    try:
-        return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError as error:
-        fail("fixture-unreadable", f"cannot read {path}: {error}")
+    return "sha256:" + hashlib.sha256(
+        read_regular_bytes(path, str(path), "fixture-unreadable")
+    ).hexdigest()
 
 
-def read_fixture_text(path: Path) -> str:
+def read_fixture_text(raw: bytes, path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
+        return raw.decode("utf-8")
+    except UnicodeError as error:
         fail("fixture-unreadable", f"cannot read UTF-8 fixture {path}: {error}")
 
 
@@ -1008,14 +1049,14 @@ def assert_protected_roots_unchanged(before: dict[Path, str]) -> None:
 def run_command(
     command: dict,
     deliverable_path: str,
-    fixture: Path,
+    fixture_raw: bytes,
     protected_before: dict[Path, str],
 ) -> int:
     with tempfile.TemporaryDirectory(prefix="marshal-acceptance-preflight-") as directory:
         fixture_root = Path(directory)
         target = fixture_root / deliverable_path
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(fixture, target)
+        target.write_bytes(fixture_raw)
         execution_cwd = fixture_root / command["cwd"]
         execution_cwd.mkdir(parents=True, exist_ok=True)
         environment = {
@@ -1076,7 +1117,9 @@ def semantic_reason(document: str, gate: dict) -> str | None:
     return None
 
 
-def validate_fixture_entry(entry: object, label: str, root: Path) -> tuple[Path, str | None]:
+def validate_fixture_entry(
+    entry: object, label: str, root: Path
+) -> tuple[Path, str | None, bytes]:
     if not isinstance(entry, dict):
         fail("manifest-shape-invalid", f"{label} must be an object")
     required = {"id", "path", "digest"}
@@ -1086,12 +1129,14 @@ def validate_fixture_entry(entry: object, label: str, root: Path) -> tuple[Path,
     path = relative_file(root, entry["path"], f"{label}.path")
     if not path.is_file() or path.is_symlink():
         fail("fixture-unreadable", f"{label}.path must be a regular non-symlink file")
-    if file_digest(path) != require_digest(entry["digest"], f"{label}.digest"):
+    raw = read_regular_bytes(path, f"{label}.path", "fixture-unreadable")
+    raw_digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if raw_digest != require_digest(entry["digest"], f"{label}.digest"):
         fail("fixture-digest-mismatch", f"{label} digest does not match bytes")
     expected_reason = entry.get("expectedReason")
     if expected_reason is not None:
         require_nonempty_string(expected_reason, f"{label}.expectedReason")
-    return path, expected_reason
+    return path, expected_reason, raw
 
 
 def validate(
@@ -1105,11 +1150,11 @@ def validate(
     root = root.resolve()
     schema = load_json(schema_path, "manifest schema")
     validate_schema_document(schema)
-    manifest = load_json(manifest_path, "manifest")
+    manifest, manifest_raw = load_json_with_raw(manifest_path, "manifest")
     validate_schema_instance(manifest, schema, schema)
-    task_spec = load_json(task_spec_path, "TaskSpec")
+    task_spec, task_spec_raw = load_json_with_raw(task_spec_path, "TaskSpec")
 
-    if file_digest(task_spec_path) != manifest["taskSpecDigest"]:
+    if "sha256:" + hashlib.sha256(task_spec_raw).hexdigest() != manifest["taskSpecDigest"]:
         fail("task-spec-digest-mismatch", "taskSpecDigest does not match TaskSpec bytes")
     validate_work_prompt_projection(task_spec)
     selected = task_command(task_spec, manifest["command"]["id"])
@@ -1149,36 +1194,59 @@ def validate(
     protected_before = snapshot_protected_roots(protected_roots)
 
     fixture_ids: set[str] = set()
+    fixture_evidence: list[dict] = []
     positive_count = 0
     for index, entry in enumerate(manifest["fixtures"]["positive"]):
-        path, expected_reason = validate_fixture_entry(entry, f"fixtures.positive[{index}]", root)
+        path, expected_reason, fixture_raw = validate_fixture_entry(
+            entry, f"fixtures.positive[{index}]", root
+        )
         fixture_id = entry["id"]
         if fixture_id in fixture_ids:
             fail("manifest-shape-invalid", f"duplicate fixture id {fixture_id!r}")
         fixture_ids.add(fixture_id)
         if expected_reason is not None:
             fail("manifest-shape-invalid", "positive fixture cannot declare expectedReason")
-        reason = semantic_reason(read_fixture_text(path), manifest_gate)
+        fixture_evidence.append(
+            {
+                "class": "positive",
+                "index": index,
+                "id": fixture_id,
+                "path": entry["path"],
+                "rawDigest": "sha256:" + hashlib.sha256(fixture_raw).hexdigest(),
+            }
+        )
+        reason = semantic_reason(read_fixture_text(fixture_raw, path), manifest_gate)
         if reason is not None:
             fail("positive-fixture-failed", f"{fixture_id} failed semantic rule {reason}")
-        if run_command(selected, manifest_gate["deliverablePath"], path, protected_before) != 0:
+        if run_command(selected, manifest_gate["deliverablePath"], fixture_raw, protected_before) != 0:
             fail("positive-command-failed", f"{fixture_id} was rejected by the bound command")
         positive_count += 1
 
     observed_negative_reasons: set[str] = set()
     negative_count = 0
     for index, entry in enumerate(manifest["fixtures"]["negative"]):
-        path, expected_reason = validate_fixture_entry(entry, f"fixtures.negative[{index}]", root)
+        path, expected_reason, fixture_raw = validate_fixture_entry(
+            entry, f"fixtures.negative[{index}]", root
+        )
         fixture_id = entry["id"]
         if fixture_id in fixture_ids:
             fail("manifest-shape-invalid", f"duplicate fixture id {fixture_id!r}")
         fixture_ids.add(fixture_id)
         if expected_reason not in BASE_NEGATIVE_REASONS:
             fail("negative-reason-invalid", f"{fixture_id} has unsupported expectedReason")
-        reason = semantic_reason(read_fixture_text(path), manifest_gate)
+        fixture_evidence.append(
+            {
+                "class": "negative",
+                "index": index,
+                "id": fixture_id,
+                "path": entry["path"],
+                "rawDigest": "sha256:" + hashlib.sha256(fixture_raw).hexdigest(),
+            }
+        )
+        reason = semantic_reason(read_fixture_text(fixture_raw, path), manifest_gate)
         if reason != expected_reason:
             fail("negative-fixture-wrong-reason", f"{fixture_id} produced {reason!r}, expected {expected_reason!r}")
-        if run_command(selected, manifest_gate["deliverablePath"], path, protected_before) == 0:
+        if run_command(selected, manifest_gate["deliverablePath"], fixture_raw, protected_before) == 0:
             fail("negative-command-passed", f"{fixture_id} was accepted by the bound command")
         observed_negative_reasons.add(expected_reason)
         negative_count += 1
@@ -1195,6 +1263,9 @@ def validate(
         "normalizer": manifest_gate["normalizer"],
         "positiveFixtures": positive_count,
         "negativeFixtures": negative_count,
+        "semanticManifestDigest": "sha256:" + hashlib.sha256(manifest_raw).hexdigest(),
+        "fixtureAggregateDigest": canonical_digest(fixture_evidence),
+        "fixtureCount": len(fixture_evidence),
     }
 
 

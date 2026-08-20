@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -397,6 +398,54 @@ class MarshalFastpathPreflightTest(unittest.TestCase):
                     VALIDATOR_MODULE.run_child(sleeper, stage, 0.05)
                 self.assertEqual(raised.exception.stage, stage)
                 self.assertEqual(raised.exception.reason_code, f"{stage}-timeout")
+
+    def test_child_b_then_external_a_aba_is_rejected(self) -> None:
+        evidence_a = {
+            "semanticManifestDigest": "sha256:" + "a" * 64,
+            "fixtureAggregateDigest": "sha256:" + "1" * 64,
+            "fixtureCount": 6,
+        }
+        child_b = {
+            "semanticManifestDigest": "sha256:" + "b" * 64,
+            "fixtureAggregateDigest": "sha256:" + "2" * 64,
+            "fixtureCount": 6,
+        }
+        with self.assertRaises(VALIDATOR_MODULE.FastpathError) as raised:
+            VALIDATOR_MODULE.cross_check_semantic_evidence(
+                evidence_a,
+                child_b,
+                evidence_a,
+            )
+        self.assertEqual(raised.exception.stage, "acceptance-semantic")
+        self.assertEqual(raised.exception.reason_code, "semantic-input-drift")
+
+    def test_timeout_kills_ignore_term_grandchild_after_leader_exits(self) -> None:
+        grandchild = self.root / "ignore-term-grandchild.py"
+        pid_file = self.root / "ignore-term-grandchild.pid"
+        grandchild.write_text(
+            "import os, signal, sys, time\n"
+            "from pathlib import Path\n"
+            "Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "os.close(0); os.close(1); os.close(2)\n"
+            "while True: time.sleep(1)\n",
+            encoding="utf-8",
+        )
+        leader = (
+            "import subprocess, sys, time; "
+            f"subprocess.Popen([sys.executable,'-I','-B',{str(grandchild)!r},{str(pid_file)!r}]); "
+            "time.sleep(5)"
+        )
+        with self.assertRaises(VALIDATOR_MODULE.FastpathError) as raised:
+            VALIDATOR_MODULE.run_child(
+                [sys.executable, "-I", "-B", "-c", leader],
+                "plan-premortem",
+                0.2,
+            )
+        self.assertEqual(raised.exception.reason_code, "plan-premortem-timeout")
+        grandchild_pid = int(pid_file.read_text(encoding="utf-8"))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(grandchild_pid, 0)
 
 
 if __name__ == "__main__":

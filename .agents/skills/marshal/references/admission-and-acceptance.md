@@ -27,7 +27,7 @@ python3 -I -B .agents/skills/marshal/references/marshal-fastpath-preflight.py \
   --checker "$OPERATOR_ROOT/plan-premortem-core-probe"
 ```
 
-统一入口对 content 先执行 semantic acceptance，再执行 plan pre-mortem；只有两者都 pass，且两份证据绑定同一 raw `taskSpecDigest` 与 `sourceHead`，才输出 `reasonCode=combined-plan-preflight-pass` 和 `combinedDigest`。`combinedDigest` 同时绑定 semantic manifest 原始摘要及全部正反 fixture 的原始摘要聚合，任一 fixture bytes 变化都会产生不同 receipt。两个 child phase 分别使用有上限的 timeout；超时只终止本入口创建的进程组，并稳定返回 `acceptance-semantic-timeout` 或 `plan-premortem-timeout`。任一 component failure 原样保留固定 `reasonCode` 与 `stage`，在 `task plan` 前止损。non-content 分支仍执行 plan pre-mortem，并把显式不适用裁决纳入同一个 `combinedDigest`。
+统一入口对 content 先执行 semantic acceptance，再执行 plan pre-mortem；只有两者都 pass，且两份证据绑定同一 raw `taskSpecDigest` 与 `sourceHead`，才输出 `reasonCode=combined-plan-preflight-pass` 和 `combinedDigest`。semantic child 对每个 fixture 只读取一次，同一份 held bytes 同时用于语义判断、临时命令与 receipt 的 `semanticManifestDigest`/`fixtureAggregateDigest`；wrapper 复核 child 与外部前后证据，拒绝 ABA。任一 fixture bytes 变化都会产生不同 receipt。两个 child phase 分别使用有上限的 timeout；超时只终止本入口创建的进程组，grace 后检查并以 `SIGKILL` 清理仍存活成员，复核进程组消失，再稳定返回 `acceptance-semantic-timeout` 或 `plan-premortem-timeout`。任一 component failure 原样保留固定 `reasonCode` 与 `stage`，在 `task plan` 前止损。non-content 分支仍执行 plan pre-mortem，并把显式不适用裁决纳入同一个 `combinedDigest`。
 
 此 combined receipt 仍是 operator-local 证据，不是 plan approval、Run admission 或 Core authority。本切片不修改 admission receipt、production validator 或 Schema；下一独立切片再评估 admission receipt 是否需要绑定 `combinedDigest`，如需扩大生产 validator/Schema，必须重新做治理与兼容门禁。
 

@@ -13,6 +13,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 
 
 MAX_INPUT_BYTES = 2 << 20
@@ -25,6 +26,8 @@ DEFAULT_SEMANTIC_TIMEOUT_SECONDS = 180
 DEFAULT_PREMORTEM_TIMEOUT_SECONDS = 30
 MAX_SEMANTIC_TIMEOUT_SECONDS = 600
 MAX_PREMORTEM_TIMEOUT_SECONDS = 120
+TERMINATION_GRACE_SECONDS = 0.25
+TERMINATION_VERIFY_SECONDS = 1.0
 
 
 class FastpathError(Exception):
@@ -220,6 +223,17 @@ def semantic_evidence(root: Path, manifest_relative: str) -> dict:
     }
 
 
+def cross_check_semantic_evidence(before: dict, child_receipt: dict, after: dict) -> dict:
+    child = {
+        "semanticManifestDigest": child_receipt.get("semanticManifestDigest"),
+        "fixtureAggregateDigest": child_receipt.get("fixtureAggregateDigest"),
+        "fixtureCount": child_receipt.get("fixtureCount"),
+    }
+    if before != child or child != after:
+        fail("semantic-input-drift", "acceptance-semantic")
+    return child
+
+
 def content_signals(task_spec: dict) -> list[str]:
     signals: list[str] = []
     deliverables = task_spec.get("deliverables")
@@ -277,6 +291,61 @@ def child_payload(completed: subprocess.CompletedProcess[bytes], stage: str) -> 
     return payload
 
 
+def process_group_exists(group_id: int) -> bool:
+    try:
+        os.killpg(group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        try:
+            completed = subprocess.run(
+                ["/bin/ps", "-axo", "pgid="],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=1,
+                check=False,
+                text=True,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return True
+        return completed.returncode != 0 or any(
+            value.strip().isdigit() and int(value.strip()) == group_id
+            for value in completed.stdout.splitlines()
+        )
+
+
+def terminate_owned_process_group(process: subprocess.Popen[bytes], stage: str) -> None:
+    group_id = process.pid
+    try:
+        os.killpg(group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    grace_deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
+    while process_group_exists(group_id) and time.monotonic() < grace_deadline:
+        process.poll()
+        time.sleep(0.01)
+    if process_group_exists(group_id):
+        try:
+            os.killpg(group_id, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        process.communicate(timeout=TERMINATION_VERIFY_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(group_id, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        process.communicate()
+    verify_deadline = time.monotonic() + TERMINATION_VERIFY_SECONDS
+    while process_group_exists(group_id) and time.monotonic() < verify_deadline:
+        time.sleep(0.01)
+    if process_group_exists(group_id):
+        fail("preflight-process-group-survived", stage)
+
+
 def run_child(argv: list[str], stage: str, timeout_seconds: int | float) -> dict:
     try:
         process = subprocess.Popen(
@@ -291,18 +360,7 @@ def run_child(argv: list[str], stage: str, timeout_seconds: int | float) -> dict
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            process.communicate(timeout=1)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.communicate()
+        terminate_owned_process_group(process, stage)
         fail(f"{stage}-timeout", stage)
     completed = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
     if completed.stdout and completed.stderr:
@@ -358,8 +416,9 @@ def run_plan(arguments: argparse.Namespace) -> dict:
         semantic_after = semantic_evidence(
             root, clean_relative_file(arguments.acceptance_manifest)
         )
-        if semantic_before != semantic_after:
-            fail("semantic-input-drift", "acceptance-semantic")
+        semantic_child = cross_check_semantic_evidence(
+            semantic_before, acceptance_receipt, semantic_after
+        )
         if acceptance_receipt.get("taskSpecDigest") != task_digest:
             fail("acceptance-semantic-binding-mismatch", "acceptance-semantic")
         acceptance_projection = {
@@ -371,7 +430,7 @@ def run_plan(arguments: argparse.Namespace) -> dict:
             "normalizer": acceptance_receipt.get("normalizer"),
             "positiveFixtures": acceptance_receipt.get("positiveFixtures"),
             "negativeFixtures": acceptance_receipt.get("negativeFixtures"),
-            **semantic_after,
+            **semantic_child,
         }
     else:
         acceptance_projection = {
