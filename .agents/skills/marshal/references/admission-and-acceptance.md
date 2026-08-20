@@ -12,7 +12,7 @@
 
 ## 统一 plan phase preflight
 
-正常 operator 工作流只使用 `marshal-fastpath-preflight.py --phase plan` 这一入口，不分别手工拼接 semantic acceptance 与 plan pre-mortem。先显式声明 `--task-kind content` 或 `--task-kind non-content`；content 必须提供 semantic manifest、正反 fixtures 与 clean linked worktree，non-content 必须省略 semantic manifest并在 receipt 中留下 `status=not-applicable`、`reasonCode=non-content-task-declared`。Required `documentation`/`report` deliverable 或 canonical content gate 被声明成 non-content 时固定以 `content-task-semantic-manifest-required` fail closed，不能静默跳过。
+正常 operator 工作流只使用 `marshal-fastpath-preflight.py --phase plan` 这一入口，不分别手工拼接 semantic acceptance 与 plan pre-mortem。先显式声明 `--task-kind content` 或 `--task-kind non-content`；content 必须提供 semantic manifest、正反 fixtures 与 clean linked worktree，non-content 必须省略 semantic manifest，并在 receipt 中留下 `status=not-applicable`、`reasonCode=non-content-task-declared`。Required `documentation`/`report` deliverable、`other`/`diagnostic` 的明确文本 `mediaType` 或 canonical content gate 被声明成 non-content 时固定以 `content-task-semantic-manifest-required` fail closed，不能静默跳过。
 
 ```bash
 go build -o "$OPERATOR_ROOT/plan-premortem-core-probe" \
@@ -27,7 +27,7 @@ python3 -I -B .agents/skills/marshal/references/marshal-fastpath-preflight.py \
   --checker "$OPERATOR_ROOT/plan-premortem-core-probe"
 ```
 
-统一入口对 content 先执行 semantic acceptance，再执行 plan pre-mortem；只有两者都 pass，且两份证据绑定同一 raw `taskSpecDigest` 与 `sourceHead`，才输出 `reasonCode=combined-plan-preflight-pass` 和 `combinedDigest`。任一 component failure 原样保留固定 `reasonCode` 与 `stage`，在 `task plan` 前止损。non-content 分支仍执行 plan pre-mortem，并把显式不适用裁决纳入同一个 `combinedDigest`。
+统一入口对 content 先执行 semantic acceptance，再执行 plan pre-mortem；只有两者都 pass，且两份证据绑定同一 raw `taskSpecDigest` 与 `sourceHead`，才输出 `reasonCode=combined-plan-preflight-pass` 和 `combinedDigest`。`combinedDigest` 同时绑定 semantic manifest 原始摘要及全部正反 fixture 的原始摘要聚合，任一 fixture bytes 变化都会产生不同 receipt。两个 child phase 分别使用有上限的 timeout；超时只终止本入口创建的进程组，并稳定返回 `acceptance-semantic-timeout` 或 `plan-premortem-timeout`。任一 component failure 原样保留固定 `reasonCode` 与 `stage`，在 `task plan` 前止损。non-content 分支仍执行 plan pre-mortem，并把显式不适用裁决纳入同一个 `combinedDigest`。
 
 此 combined receipt 仍是 operator-local 证据，不是 plan approval、Run admission 或 Core authority。本切片不修改 admission receipt、production validator 或 Schema；下一独立切片再评估 admission receipt 是否需要绑定 `combinedDigest`，如需扩大生产 validator/Schema，必须重新做治理与兼容门禁。
 

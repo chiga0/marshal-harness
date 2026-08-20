@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -13,6 +14,18 @@ import unittest
 REFERENCES = Path(__file__).resolve().parents[1]
 REPOSITORY = REFERENCES.parents[3]
 VALIDATOR = REFERENCES / "marshal-fastpath-preflight.py"
+
+
+def load_validator_module():
+    spec = importlib.util.spec_from_file_location("marshal_fastpath_preflight", VALIDATOR)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load fastpath validator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+VALIDATOR_MODULE = load_validator_module()
 
 
 def compact(value: object) -> bytes:
@@ -284,10 +297,40 @@ class MarshalFastpathPreflightTest(unittest.TestCase):
         self.assertEqual(receipt["acceptanceSemantic"]["status"], "pass")
         self.assertEqual(receipt["acceptanceSemantic"]["positiveFixtures"], 1)
         self.assertEqual(receipt["acceptanceSemantic"]["negativeFixtures"], 5)
+        self.assertEqual(receipt["acceptanceSemantic"]["fixtureCount"], 6)
+        self.assertRegex(
+            receipt["acceptanceSemantic"]["semanticManifestDigest"],
+            r"^sha256:[0-9a-f]{64}$",
+        )
+        self.assertRegex(
+            receipt["acceptanceSemantic"]["fixtureAggregateDigest"],
+            r"^sha256:[0-9a-f]{64}$",
+        )
         combined = dict(receipt)
         combined_digest = combined.pop("combinedDigest")
         self.assertEqual(combined_digest, digest_object(combined))
         self.assertTrue(self.checker_marker.exists())
+
+    def test_combined_digest_changes_with_fixture_raw_bytes(self) -> None:
+        first_code, first = self.invoke("content")
+        self.assertEqual(first_code, 0)
+        fixture = self.operator / "fixtures/positive.md"
+        fixture.write_text(fixture.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        manifest_path = self.operator / "acceptance.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["fixtures"]["positive"][0]["digest"] = digest_bytes(fixture.read_bytes())
+        manifest_path.write_bytes(compact(manifest))
+        second_code, second = self.invoke("content")
+        self.assertEqual(second_code, 0)
+        self.assertNotEqual(first["combinedDigest"], second["combinedDigest"])
+        self.assertNotEqual(
+            first["acceptanceSemantic"]["fixtureAggregateDigest"],
+            second["acceptanceSemantic"]["fixtureAggregateDigest"],
+        )
+        self.assertNotEqual(
+            first["acceptanceSemantic"]["semanticManifestDigest"],
+            second["acceptanceSemantic"]["semanticManifestDigest"],
+        )
 
     def test_content_plan_without_semantic_manifest_fails_before_premortem(self) -> None:
         code, receipt = self.invoke("content", include_acceptance=False)
@@ -301,6 +344,26 @@ class MarshalFastpathPreflightTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(receipt["reasonCode"], "content-task-semantic-manifest-required")
         self.assertFalse(self.checker_marker.exists())
+
+    def test_explicit_text_carriers_cannot_be_declared_non_content(self) -> None:
+        original = copy.deepcopy(self.task)
+        for kind in ("other", "diagnostic"):
+            with self.subTest(kind=kind):
+                self.task = copy.deepcopy(original)
+                self.task["deliverables"][0]["kind"] = kind
+                self.task["deliverables"][0]["mediaType"] = "text/markdown; charset=utf-8"
+                self.task["acceptance"]["commands"][0]["argv"] = [
+                    "test",
+                    "-f",
+                    "reports/result.md",
+                ]
+                self.write_inputs()
+                code, receipt = self.invoke("non-content", include_acceptance=False)
+                self.assertEqual(code, 1)
+                self.assertEqual(
+                    receipt["reasonCode"], "content-task-semantic-manifest-required"
+                )
+                self.assertFalse(self.checker_marker.exists())
 
     def test_non_content_branch_is_explicit_in_receipt(self) -> None:
         self.task["deliverables"][0]["kind"] = "code"
@@ -325,6 +388,15 @@ class MarshalFastpathPreflightTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(receipt["reasonCode"], "plan-premortem-binding-mismatch")
         self.assertEqual(receipt["stage"], "plan-premortem")
+
+    def test_child_timeouts_are_phase_specific_and_stable(self) -> None:
+        sleeper = [sys.executable, "-I", "-B", "-c", "import time; time.sleep(5)"]
+        for stage in ("acceptance-semantic", "plan-premortem"):
+            with self.subTest(stage=stage):
+                with self.assertRaises(VALIDATOR_MODULE.FastpathError) as raised:
+                    VALIDATOR_MODULE.run_child(sleeper, stage, 0.05)
+                self.assertEqual(raised.exception.stage, stage)
+                self.assertEqual(raised.exception.reason_code, f"{stage}-timeout")
 
 
 if __name__ == "__main__":

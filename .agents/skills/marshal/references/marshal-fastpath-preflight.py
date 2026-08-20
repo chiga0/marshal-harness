@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -17,7 +18,13 @@ import sys
 MAX_INPUT_BYTES = 2 << 20
 MAX_OUTPUT_BYTES = 64 << 10
 CONTENT_DELIVERABLE_KINDS = {"documentation", "report"}
+TEXT_CARRIER_KINDS = {"diagnostic", "other"}
+TEXT_APPLICATION_MEDIA_TYPES = {"application/markdown", "application/xml", "application/xhtml+xml"}
 SOURCE_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
+DEFAULT_SEMANTIC_TIMEOUT_SECONDS = 180
+DEFAULT_PREMORTEM_TIMEOUT_SECONDS = 30
+MAX_SEMANTIC_TIMEOUT_SECONDS = 600
+MAX_PREMORTEM_TIMEOUT_SECONDS = 120
 
 
 class FastpathError(Exception):
@@ -168,6 +175,51 @@ def plan_inputs(root: Path, plan_manifest_relative: str) -> tuple[dict, str, byt
     return manifest, task_relative, task_raw
 
 
+def semantic_evidence(root: Path, manifest_relative: str) -> dict:
+    try:
+        descriptor = open_root(root)
+        try:
+            manifest_raw = read_relative(descriptor, manifest_relative)
+            manifest = parse_json(manifest_raw)
+            fixtures = manifest.get("fixtures")
+            if not isinstance(fixtures, dict) or set(fixtures) != {"positive", "negative"}:
+                fail("semantic-manifest-shape-invalid")
+            records: list[dict] = []
+            for fixture_class in ("positive", "negative"):
+                entries = fixtures.get(fixture_class)
+                if not isinstance(entries, list) or not entries:
+                    fail("semantic-manifest-shape-invalid")
+                for index, entry in enumerate(entries):
+                    if not isinstance(entry, dict):
+                        fail("semantic-manifest-shape-invalid")
+                    fixture_id = entry.get("id")
+                    if not isinstance(fixture_id, str) or not fixture_id:
+                        fail("semantic-manifest-shape-invalid")
+                    relative = clean_relative_file(entry.get("path"))
+                    raw = read_relative(descriptor, relative)
+                    raw_digest = digest_bytes(raw)
+                    if entry.get("digest") != raw_digest:
+                        fail("fixture-digest-mismatch")
+                    records.append(
+                        {
+                            "class": fixture_class,
+                            "index": index,
+                            "id": fixture_id,
+                            "path": relative,
+                            "rawDigest": raw_digest,
+                        }
+                    )
+        finally:
+            os.close(descriptor)
+    except FastpathError as error:
+        raise FastpathError(error.reason_code, "acceptance-semantic") from error
+    return {
+        "semanticManifestDigest": digest_bytes(manifest_raw),
+        "fixtureAggregateDigest": digest_object(records),
+        "fixtureCount": len(records),
+    }
+
+
 def content_signals(task_spec: dict) -> list[str]:
     signals: list[str] = []
     deliverables = task_spec.get("deliverables")
@@ -178,6 +230,19 @@ def content_signals(task_spec: dict) -> list[str]:
         for item in deliverables
     ):
         signals.append("required-content-deliverable")
+    if isinstance(deliverables, list) and any(
+        isinstance(item, dict)
+        and item.get("required") is True
+        and item.get("kind") in TEXT_CARRIER_KINDS
+        and isinstance(item.get("mediaType"), str)
+        and (
+            item["mediaType"].split(";", 1)[0].strip().casefold().startswith("text/")
+            or item["mediaType"].split(";", 1)[0].strip().casefold()
+            in TEXT_APPLICATION_MEDIA_TYPES
+        )
+        for item in deliverables
+    ):
+        signals.append("required-text-carrier")
     acceptance = task_spec.get("acceptance")
     commands = acceptance.get("commands") if isinstance(acceptance, dict) else None
     if isinstance(commands, list):
@@ -212,17 +277,34 @@ def child_payload(completed: subprocess.CompletedProcess[bytes], stage: str) -> 
     return payload
 
 
-def run_child(argv: list[str], stage: str) -> dict:
+def run_child(argv: list[str], stage: str, timeout_seconds: int | float) -> dict:
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=False,
+            start_new_session=True,
         )
     except OSError:
         fail("preflight-unavailable", stage)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+        fail(f"{stage}-timeout", stage)
+    completed = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
     if completed.stdout and completed.stderr:
         fail("preflight-output-invalid", stage)
     return child_payload(completed, stage)
@@ -248,6 +330,9 @@ def run_plan(arguments: argparse.Namespace) -> dict:
         fail("source-head-invalid")
 
     if arguments.task_kind == "content":
+        semantic_before = semantic_evidence(
+            root, clean_relative_file(arguments.acceptance_manifest)
+        )
         acceptance_validator = Path(__file__).with_name("validate-acceptance-semantic-preflight.py")
         acceptance_argv = [
             sys.executable,
@@ -265,7 +350,16 @@ def run_plan(arguments: argparse.Namespace) -> dict:
         ]
         for protected_root in arguments.protected_root:
             acceptance_argv.extend(["--protected-root", protected_root])
-        acceptance_receipt = run_child(acceptance_argv, "acceptance-semantic")
+        acceptance_receipt = run_child(
+            acceptance_argv,
+            "acceptance-semantic",
+            arguments.semantic_timeout_seconds,
+        )
+        semantic_after = semantic_evidence(
+            root, clean_relative_file(arguments.acceptance_manifest)
+        )
+        if semantic_before != semantic_after:
+            fail("semantic-input-drift", "acceptance-semantic")
         if acceptance_receipt.get("taskSpecDigest") != task_digest:
             fail("acceptance-semantic-binding-mismatch", "acceptance-semantic")
         acceptance_projection = {
@@ -277,6 +371,7 @@ def run_plan(arguments: argparse.Namespace) -> dict:
             "normalizer": acceptance_receipt.get("normalizer"),
             "positiveFixtures": acceptance_receipt.get("positiveFixtures"),
             "negativeFixtures": acceptance_receipt.get("negativeFixtures"),
+            **semantic_after,
         }
     else:
         acceptance_projection = {
@@ -302,6 +397,7 @@ def run_plan(arguments: argparse.Namespace) -> dict:
             arguments.checker,
         ],
         "plan-premortem",
+        arguments.premortem_timeout_seconds,
     )
     if plan_receipt.get("taskSpecDigest") != task_digest or plan_receipt.get("sourceHead") != source_head:
         fail("plan-premortem-binding-mismatch", "plan-premortem")
@@ -333,6 +429,19 @@ def emit(value: dict) -> None:
     print(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
+def bounded_timeout(maximum: int):
+    def parse(value: str) -> int:
+        try:
+            result = int(value)
+        except ValueError as error:
+            raise argparse.ArgumentTypeError("timeout must be an integer") from error
+        if not 1 <= result <= maximum:
+            raise argparse.ArgumentTypeError(f"timeout must be between 1 and {maximum} seconds")
+        return result
+
+    return parse
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", required=True, choices=("plan",))
@@ -342,6 +451,16 @@ def main() -> int:
     parser.add_argument("--checker", required=True, help="absolute prebuilt Core plan pre-mortem probe")
     parser.add_argument("--acceptance-manifest", help="content semantic manifest relative to --root")
     parser.add_argument("--protected-root", action="append", default=[], help="clean linked worktree bound to sourceHead")
+    parser.add_argument(
+        "--semantic-timeout-seconds",
+        type=bounded_timeout(MAX_SEMANTIC_TIMEOUT_SECONDS),
+        default=DEFAULT_SEMANTIC_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--premortem-timeout-seconds",
+        type=bounded_timeout(MAX_PREMORTEM_TIMEOUT_SECONDS),
+        default=DEFAULT_PREMORTEM_TIMEOUT_SECONDS,
+    )
     arguments = parser.parse_args()
     try:
         result = run_plan(arguments)
