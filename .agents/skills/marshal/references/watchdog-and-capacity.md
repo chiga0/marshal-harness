@@ -16,7 +16,7 @@ review rework lineage 的 ReviewDecision 必须通过同源 Marshal Core 的
 `MARSHAL_WATCH_MARSHAL_BIN`。Validator 缺失、执行失败或执行期间 identity 漂移时，
 相关 lineage 一律 fail closed，不回退到 watchdog 自行复制的规则。
 
-正在推进 Goal 时应显式提供 `MARSHAL_WATCH_COHORT_FILE`（`goalId + runIds`）。未提供时 watchdog 不从 `createdAt`/`updatedAt` 或“最近 24h”猜测当前工作：只有 `held-alive` Run 进入 `items` 并可产生 `topAction`，其余非终态进入 `unscopedItems`。显式 cohort 之外的 Run 仍进入 `historicalItems`；显式 cohort 无效时 fail closed 为 historical-only，禁止回退到无 cohort 或时间窗逻辑。
+正在推进 Goal 时应显式提供 `MARSHAL_WATCH_COHORT_FILE`（`goalId + runIds`）。未提供时 watchdog 不从 `createdAt`/`updatedAt` 或“最近 24h”猜测当前工作：只有 `held-alive` Run 进入 `items` 并可产生 `topAction`，其余非终态进入 `unscopedItems`。显式 cohort 之外的 Run 仍进入 `historicalItems`；显式 cohort 无效时 fail closed 为 historical-only，禁止回退到无 cohort 或时间窗逻辑。Provider signal 也只从当前 `items` 对应 Run 推导：`historicalItems`/`unscopedItems` 中同 Adapter 的旧失败仅作诊断，不得污染当前 admission；当前 cohort 内同 Adapter 的有效背压与畸形证据仍分别保持 hold 或 fail closed。
 
 按 `items` 的 priority 升序处理最高项，并结合：
 

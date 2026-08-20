@@ -118,6 +118,17 @@ EOF
 EOF
 }
 
+set_preferred_adapter() {
+  python3 - "$ROOT/runs/$1/task-spec.json" "$2" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+data["worker"]["preferredAdapter"] = sys.argv[2]
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(data, handle, separators=(",", ":"))
+PYEOF
+}
+
 set_current_attempt() {
   python3 - "$ROOT/runs/$1/state.json" "$2" "${3:-}" <<'PYEOF'
 import json, sys
@@ -1367,6 +1378,123 @@ stamp = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
 print((stamp + datetime.timedelta(hours=1)).isoformat().replace("+00:00", "Z"))
 PYEOF
 )
+
+note "5d) Provider signal 只消费 current cohort；历史同 Adapter 噪声不得污染"
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run cohort-qoder-ready READY 10
+set_preferred_adapter cohort-qoder-ready qoder
+make_run historical-qoder READY 10
+set_preferred_adapter historical-qoder qoder
+cat > "$COHORTFILE" <<'EOF'
+{"goalId":"goal:provider-cohort","runIds":["cohort-qoder-ready"]}
+EOF
+for external_case in typed legacy malformed; do
+  case "$external_case" in
+    typed)
+      cat > "$ROOT/runs/historical-qoder/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$EVENT_TS","attemptId":"attempt:historical","payload":{"adapterId":"qoder","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE","notBefore":"$VALID_NOT_BEFORE"}}
+EOF
+      ;;
+    legacy)
+      cat > "$ROOT/runs/historical-qoder/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$EVENT_TS","attemptId":"attempt:historical","payload":{"message":"legacy qoder failure"}}
+EOF
+      ;;
+    malformed)
+      cat > "$ROOT/runs/historical-qoder/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$EVENT_TS","attemptId":"attempt:historical","payload":{"adapterId":"qoder","failureKind":"rate-limited","retryDisposition":"terminal","failureSignature":"$FAILURE_SIGNATURE"}}
+EOF
+      ;;
+  esac
+  PROVIDER_EXTERNAL_JSON="$TMP/provider_external_${external_case}.json"
+  if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" \
+     MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((16 * 1024 * 1024 * 1024)) \
+     MARSHAL_WATCH_LOGICAL_CPUS=8 MARSHAL_WATCH_LOAD1M=0 \
+     run_watch --once --json > "$PROVIDER_EXTERNAL_JSON" && \
+     python3 - "$PROVIDER_EXTERNAL_JSON" "$external_case" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    data = json.load(handle)
+capacity = data["capacity"]
+signals = capacity.get("providerSignals", [])
+if capacity.get("providerStatus") != "ok" or capacity.get("providerSlotsAvailable", 0) < 1:
+    raise SystemExit("historical %s qoder failure polluted current provider: %r" % (sys.argv[2], capacity))
+if signals != [{"adapterId": "qoder", "status": "available"}]:
+    raise SystemExit("current qoder availability missing: %r" % signals)
+if [item["runId"] for item in data.get("items", [])] != ["cohort-qoder-ready"]:
+    raise SystemExit("current cohort changed unexpectedly: %r" % data.get("items"))
+if [item["runId"] for item in data.get("historicalItems", [])] != ["historical-qoder"]:
+    raise SystemExit("historical qoder diagnostic missing: %r" % data.get("historicalItems"))
+print("historical %s qoder signal is isolated" % sys.argv[2])
+PYEOF
+  then
+    ok "cohort 外 $external_case Qoder failure 不污染 current Provider"
+  else
+    bad "cohort 外 $external_case Qoder failure 污染 current Provider"
+  fi
+done
+
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run cohort-qoder-failure READY 10
+set_preferred_adapter cohort-qoder-failure qoder
+cat > "$COHORTFILE" <<'EOF'
+{"goalId":"goal:provider-cohort-failure","runIds":["cohort-qoder-failure"]}
+EOF
+for internal_case in backpressure blocked legacy malformed; do
+  case "$internal_case" in
+    backpressure)
+      expected=backpressure
+      cat > "$ROOT/runs/cohort-qoder-failure/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$EVENT_TS","attemptId":"attempt:current","payload":{"adapterId":"qoder","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE","notBefore":"$VALID_NOT_BEFORE"}}
+EOF
+      ;;
+    blocked)
+      expected=blocked
+      cat > "$ROOT/runs/cohort-qoder-failure/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$EVENT_TS","attemptId":"attempt:current","payload":{"adapterId":"qoder","failureKind":"quota-exhausted","retryDisposition":"blocked","failureSignature":"$FAILURE_SIGNATURE"}}
+EOF
+      ;;
+    legacy)
+      expected=unknown
+      cat > "$ROOT/runs/cohort-qoder-failure/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$EVENT_TS","attemptId":"attempt:current","payload":{"message":"legacy qoder failure"}}
+EOF
+      ;;
+    malformed)
+      expected=unknown
+      cat > "$ROOT/runs/cohort-qoder-failure/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$EVENT_TS","attemptId":"attempt:current","payload":{"adapterId":"qoder","failureKind":"quota-exhausted","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE"}}
+EOF
+      ;;
+  esac
+  PROVIDER_INTERNAL_JSON="$TMP/provider_internal_${internal_case}.json"
+  if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$PROVIDER_INTERNAL_JSON" && \
+     python3 - "$PROVIDER_INTERNAL_JSON" "$expected" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    capacity = json.load(handle)["capacity"]
+if capacity.get("providerStatus") != sys.argv[2] or capacity.get("providerSlotsAvailable") != 0:
+    raise SystemExit("current qoder failure did not hold: %r" % capacity)
+print("current qoder failure remains %s" % sys.argv[2])
+PYEOF
+  then
+    ok "cohort 内 $internal_case Qoder failure 保持 $expected"
+  else
+    bad "cohort 内 $internal_case Qoder failure 未保持 $expected"
+  fi
+done
+
+# 恢复后续 journal/provider 测试的原始 current cohort fixture。
+rm -rf "$ROOT/runs"
+mkdir -p "$ROOT/runs"
+make_run current-review REVIEW_PENDING 60
+printf '%s\n' '{}' > "$ROOT/runs/current-review/review-packet.json"
+make_run current-ready READY 30
+cat > "$COHORTFILE" <<'EOF'
+{"goalId":"goal:marshal-v1","runIds":["current-review","current-ready"]}
+EOF
 
 note "6) dedupe 绑定 journal sequence、phase progress、typed failure 与 notBefore"
 cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF

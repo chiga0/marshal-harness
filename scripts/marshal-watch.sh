@@ -1184,6 +1184,7 @@ def validate_state_data(data, run_id):
     return state
 
 def provider_snapshot(items, observations, provisional_slots):
+    current_observations = [observations[item["runId"]] for item in items]
     required_adapters = {observations[item["runId"]]["adapterId"] for item in items
                          if item["action"] in {"run-now", "run-rework-now", "retry-or-abort"}
                          and observations[item["runId"]]["adapterId"] is not None}
@@ -1194,7 +1195,7 @@ def provider_snapshot(items, observations, provisional_slots):
     signals = []
     for adapter_id in sorted(required_adapters):
         latest = None
-        for observation in observations.values():
+        for observation in current_observations:
             signal = observation.get("lastSignal")
             if observation.get("adapterId") != adapter_id or signal is None:
                 continue
