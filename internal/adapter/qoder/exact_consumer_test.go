@@ -228,8 +228,19 @@ func TestExactAuthorityBindingPinsFourTailsAndCurrentEvidence(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*QoderConformanceEvidenceExact){
 		"adapter 0.1.2": func(v *QoderConformanceEvidenceExact) { v.AdapterVersion = "0.1.2" },
+		"adapter 0.1.4": func(v *QoderConformanceEvidenceExact) { v.AdapterVersion = "0.1.4" },
 		"event contract v3": func(v *QoderConformanceEvidenceExact) {
 			v.EventContract = "qoder-stream-json-1.2.0-v3"
+		},
+		"event contract v5": func(v *QoderConformanceEvidenceExact) {
+			v.EventContract = "qoder-stream-json-1.2.0-v5"
+		},
+		"v5 transport identity": func(v *QoderConformanceEvidenceExact) {
+			v.AdapterVersion = "0.1.4"
+			v.EventContract = "qoder-stream-json-1.2.0-v5"
+			v.ProfileDigest = probeProfileDigestForEventContract(v.EventContract)
+			v.WorkerResultTransportDigest = "sha256:a8868a7f8e9cfc2d126d324204502caacc5462946405ab0835627fca8a121d48"
+			v.SuiteDigest = probeSuiteDigestForIdentity(v.AdapterVersion, v.EventContract, v.ProfileDigest, v.WorkerResultTransportDigest)
 		},
 		"worker result transport": func(v *QoderConformanceEvidenceExact) {
 			v.WorkerResultTransportDigest = digest("b")

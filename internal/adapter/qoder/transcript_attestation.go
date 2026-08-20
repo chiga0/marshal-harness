@@ -17,7 +17,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/verification"
 )
 
-const TranscriptAttestationProfileVersion = "qoder-v5-transcript-attestation-v2"
+const TranscriptAttestationProfileVersion = "qoder-v6-transcript-attestation-v3"
 
 type TranscriptAttestationSubject struct {
 	SourceHead      string `json:"sourceHead"`
@@ -222,7 +222,7 @@ func ValidateTranscriptAttestation(input TranscriptAttestationInput) (Transcript
 	}
 	capture := decodeTranscript(input.Transcript)
 	if capture.err != nil || !capture.terminal.seen || !capture.terminal.success || validateWorkerResultTransportSequence(capture) != nil {
-		return observation, errors.New("qoder-v5-transcript-invalid")
+		return observation, errors.New("qoder-v6-transcript-invalid")
 	}
 	if capture.cliVersion != s.BinaryVersion || capture.protocolVersion != s.ProtocolVersion || capture.permissionMode != s.PermissionMode {
 		return observation, errors.New("transcript-identity-mismatch")

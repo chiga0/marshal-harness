@@ -22,7 +22,7 @@ import (
 
 const (
 	adapterID      = "qoder"
-	adapterVersion = "0.1.4"
+	adapterVersion = "0.1.5"
 	// supportedBinary is the minimum verified patch in the compatible 1.1.x
 	// line. Other minor/major lines and older patches fail closed.
 	supportedBinary          = "1.1.23"
@@ -33,7 +33,7 @@ const (
 	versionOutputLimit       = 4 << 10
 	versionStderrLimit       = 4 << 10
 	probeTimeout             = 10 * time.Second
-	conformanceEventContract = "qoder-stream-json-1.2.0-v5"
+	conformanceEventContract = "qoder-stream-json-1.2.0-v6"
 	qoderProtocolVersion     = "1.2.0"
 	qoderPermissionMode      = "acceptEdits"
 	qoderDenialExtractor     = "qoder-1.1.23-tool-result-metadata-v1"
@@ -261,64 +261,72 @@ func expectedProbeToolPolicyDigest() string {
 // evidence consumers bind its digest; changing any field therefore requires
 // a new Adapter/event contract and fresh live conformance.
 type workerResultTransportContract struct {
-	StagingBasename                  string `json:"stagingBasename"`
-	StagingFileType                  string `json:"stagingFileType"`
-	StagingMode                      string `json:"stagingMode"`
-	CreationFlags                    string `json:"creationFlags"`
-	UnlinkBeforeLaunch               bool   `json:"unlinkBeforeLaunch"`
-	UnlinkedLinkCount                uint64 `json:"unlinkedLinkCount"`
-	WorkerPathExposure               string `json:"workerPathExposure"`
-	WorkerDescriptorExposure         string `json:"workerDescriptorExposure"`
-	ControlInodeRelationship         string `json:"controlInodeRelationship"`
-	HeldDirectoryBinding             string `json:"heldDirectoryBinding"`
-	HeldInodeCommit                  string `json:"heldInodeCommit"`
-	HeldInodeConsume                 string `json:"heldInodeConsume"`
-	HeldInodeCleanup                 string `json:"heldInodeCleanup"`
-	ToolName                         string `json:"toolName"`
-	ToolInputContract                string `json:"toolInputContract"`
-	ToolInputDescriptionRequired     bool   `json:"toolInputDescriptionRequired"`
-	ToolInputDescriptionAuthority    string `json:"toolInputDescriptionAuthority"`
-	ToolInputDescriptionMinBytes     uint64 `json:"toolInputDescriptionMinBytes"`
-	ToolInputDescriptionMaxBytes     uint64 `json:"toolInputDescriptionMaxBytes"`
-	ToolInputDescriptionUTF8Required bool   `json:"toolInputDescriptionUtf8Required"`
-	ToolInputDescriptionControls     string `json:"toolInputDescriptionControls"`
-	ToolInputCanonicalMemberOrder    string `json:"toolInputCanonicalMemberOrder"`
-	ToolInputUnknownMembers          string `json:"toolInputUnknownMembers"`
-	CanonicalCommand                 string `json:"canonicalCommand"`
-	TeeSequence                      string `json:"teeSequence"`
-	DenialExtractor                  string `json:"denialExtractor"`
-	TranscriptEventContract          string `json:"transcriptEventContract"`
+	StagingBasename                     string `json:"stagingBasename"`
+	StagingFileType                     string `json:"stagingFileType"`
+	StagingMode                         string `json:"stagingMode"`
+	CreationFlags                       string `json:"creationFlags"`
+	UnlinkBeforeLaunch                  bool   `json:"unlinkBeforeLaunch"`
+	UnlinkedLinkCount                   uint64 `json:"unlinkedLinkCount"`
+	WorkerPathExposure                  string `json:"workerPathExposure"`
+	WorkerDescriptorExposure            string `json:"workerDescriptorExposure"`
+	ControlInodeRelationship            string `json:"controlInodeRelationship"`
+	HeldDirectoryBinding                string `json:"heldDirectoryBinding"`
+	HeldInodeCommit                     string `json:"heldInodeCommit"`
+	HeldInodeConsume                    string `json:"heldInodeConsume"`
+	HeldInodeCleanup                    string `json:"heldInodeCleanup"`
+	ToolName                            string `json:"toolName"`
+	ToolInputContract                   string `json:"toolInputContract"`
+	ToolInputDescriptionRequired        bool   `json:"toolInputDescriptionRequired"`
+	ToolInputDescriptionAuthority       string `json:"toolInputDescriptionAuthority"`
+	ToolInputDescriptionMinBytes        uint64 `json:"toolInputDescriptionMinBytes"`
+	ToolInputDescriptionMaxBytes        uint64 `json:"toolInputDescriptionMaxBytes"`
+	ToolInputDescriptionUTF8Required    bool   `json:"toolInputDescriptionUtf8Required"`
+	ToolInputDescriptionControls        string `json:"toolInputDescriptionControls"`
+	ToolInputCanonicalMemberOrder       string `json:"toolInputCanonicalMemberOrder"`
+	ToolInputUnknownMembers             string `json:"toolInputUnknownMembers"`
+	CanonicalCommand                    string `json:"canonicalCommand"`
+	TeeSequence                         string `json:"teeSequence"`
+	DeclarationRuntimeMetadataAuthority string `json:"declarationRuntimeMetadataAuthority"`
+	DeclarationSemanticSynthesis        string `json:"declarationSemanticSynthesis"`
+	DeclarationIdentityBinding          string `json:"declarationIdentityBinding"`
+	InvalidDeclarationDisposition       string `json:"invalidDeclarationDisposition"`
+	DenialExtractor                     string `json:"denialExtractor"`
+	TranscriptEventContract             string `json:"transcriptEventContract"`
 }
 
 func expectedWorkerResultTransportContract() workerResultTransportContract {
 	return workerResultTransportContract{
-		StagingBasename:                  workerResultStagingName,
-		StagingFileType:                  "regular-file",
-		StagingMode:                      "0600",
-		CreationFlags:                    "O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC",
-		UnlinkBeforeLaunch:               true,
-		UnlinkedLinkCount:                0,
-		WorkerPathExposure:               "none",
-		WorkerDescriptorExposure:         "none",
-		ControlInodeRelationship:         "must-be-distinct",
-		HeldDirectoryBinding:             "held-dirfd-exact-worktree-no-symlink",
-		HeldInodeCommit:                  "post-terminal-post-tee-last-exact-inode",
-		HeldInodeConsume:                 "held-fd-bounded-exact-inode",
-		HeldInodeCleanup:                 "close-already-unlinked-held-fd-and-dirfd",
-		ToolName:                         "Bash",
-		ToolInputContract:                "canonical-json-command-plus-bounded-description-no-extra-members",
-		ToolInputDescriptionRequired:     true,
-		ToolInputDescriptionAuthority:    "non-authoritative",
-		ToolInputDescriptionMinBytes:     qoderBashDescriptionMinBytes,
-		ToolInputDescriptionMaxBytes:     qoderBashDescriptionMaxBytes,
-		ToolInputDescriptionUTF8Required: true,
-		ToolInputDescriptionControls:     "forbidden",
-		ToolInputCanonicalMemberOrder:    "command,description",
-		ToolInputUnknownMembers:          "forbidden",
-		CanonicalCommand:                 workerResultTeeFirstLine + "\n<CANONICAL_WORKER_RESULT_JSON>\nMARSHAL_RESULT",
-		TeeSequence:                      "exactly-one-successful-tee-as-final-tool-call",
-		DenialExtractor:                  qoderDenialExtractor,
-		TranscriptEventContract:          conformanceEventContract,
+		StagingBasename:                     workerResultStagingName,
+		StagingFileType:                     "regular-file",
+		StagingMode:                         "0600",
+		CreationFlags:                       "O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC",
+		UnlinkBeforeLaunch:                  true,
+		UnlinkedLinkCount:                   0,
+		WorkerPathExposure:                  "none",
+		WorkerDescriptorExposure:            "none",
+		ControlInodeRelationship:            "must-be-distinct",
+		HeldDirectoryBinding:                "held-dirfd-exact-worktree-no-symlink",
+		HeldInodeCommit:                     "post-terminal-post-tee-last-exact-inode",
+		HeldInodeConsume:                    "held-fd-bounded-exact-inode",
+		HeldInodeCleanup:                    "close-already-unlinked-held-fd-and-dirfd",
+		ToolName:                            "Bash",
+		ToolInputContract:                   "canonical-json-command-plus-bounded-description-no-extra-members",
+		ToolInputDescriptionRequired:        true,
+		ToolInputDescriptionAuthority:       "non-authoritative",
+		ToolInputDescriptionMinBytes:        qoderBashDescriptionMinBytes,
+		ToolInputDescriptionMaxBytes:        qoderBashDescriptionMaxBytes,
+		ToolInputDescriptionUTF8Required:    true,
+		ToolInputDescriptionControls:        "forbidden",
+		ToolInputCanonicalMemberOrder:       "command,description",
+		ToolInputUnknownMembers:             "forbidden",
+		CanonicalCommand:                    workerResultTeeFirstLine + "\n<CANONICAL_WORKER_RESULT_JSON>\nMARSHAL_RESULT",
+		TeeSequence:                         "exactly-one-successful-tee-as-final-tool-call",
+		DeclarationRuntimeMetadataAuthority: "adapter-overwrites-adapter.executable-and-adapter.version-from-held-identity-before-schema",
+		DeclarationSemanticSynthesis:        "forbidden",
+		DeclarationIdentityBinding:          "taskId,runId,attemptId,adapter.id=exact-declaration-match",
+		InvalidDeclarationDisposition:       "protocol-invalid-do-not-retry",
+		DenialExtractor:                     qoderDenialExtractor,
+		TranscriptEventContract:             conformanceEventContract,
 	}
 }
 

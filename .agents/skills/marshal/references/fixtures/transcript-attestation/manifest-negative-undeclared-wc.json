@@ -9,7 +9,7 @@
     "adapterId": "qoder",
     "binaryVersion": "1.1.23",
     "protocolVersion": "1.2.0",
-    "eventContract": "qoder-stream-json-1.2.0-v5",
+    "eventContract": "qoder-stream-json-1.2.0-v6",
     "permissionMode": "acceptEdits"
   },
   "inputs": {
@@ -18,7 +18,7 @@
     "workerResult": {"path": "worker-result.json", "sha256": "sha256:b95ab6fcb07f57d83e3f83755837921b7cbf15d5baae27847243b50a04cdd0d3", "maxBytes": 262144},
     "workerRequest": {"path": "worker-request.json", "sha256": "sha256:fbbca62c7fa39deb7fbb975ab5d8a1da2ffd26d732f13e4fecc05e28a0047c21", "maxBytes": 524288},
     "taskSpec": {"path": "task-spec.json", "sha256": "sha256:40ee788815a8e696b7c748d3da734125c88302ec5a6579bebe8448f27627938a", "maxBytes": 2097152},
-    "capabilitySnapshot": {"path": "capability-snapshot.json", "sha256": "sha256:9ba2a850cc3f98d3aad7d65bec2f96af2d47b0276a1564f434c98740a11de189", "maxBytes": 524288},
-    "profile": {"path": "transcript-attestation-profile.json", "sha256": "sha256:d29264ba6693a6c8abeaf34fcca67f33612aee3e42817bd2e92702093303e4ef", "maxBytes": 262144}
+    "capabilitySnapshot": {"path": "capability-snapshot.json", "sha256": "sha256:ff95c3b33907afcdc8b3033503a0baea8277322f35fa848ab129181f9345c7f8", "maxBytes": 524288},
+    "profile": {"path": "transcript-attestation-profile.json", "sha256": "sha256:83ae31b68d9eb6f7a92dde05b62c4f786da4835aaa8461e50193ecbbb53dc54f", "maxBytes": 262144}
   }
 }
