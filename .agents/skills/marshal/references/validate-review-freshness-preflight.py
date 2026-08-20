@@ -100,6 +100,54 @@ class HeldRelativeParent:
             os.close(self.fds.pop())
 
 
+class HeldAbsoluteDirectory:
+    """Hold and later revalidate every component of an absolute directory."""
+
+    def __init__(self, path: Path):
+        self.path = absolute_clean(path)
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        self.fds = [os.open(self.path.anchor, flags)]
+        try:
+            for component in self.path.parts[1:]:
+                self.fds.append(os.open(component, flags, dir_fd=self.fds[-1]))
+        except OSError:
+            self.close()
+            fail("authority-namespace-derivation-invalid")
+        self.identities = [self._identity(descriptor) for descriptor in self.fds]
+        atexit.register(self.close)
+
+    @staticmethod
+    def _identity(descriptor: int) -> tuple[int, int, int]:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            fail("authority-namespace-derivation-invalid")
+        return metadata.st_dev, metadata.st_ino, metadata.st_mode
+
+    def verify(self, reason: str) -> None:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            current_root = os.open(self.path.anchor, flags)
+        except OSError:
+            fail(reason)
+        try:
+            if self._identity(current_root) != self.identities[0]:
+                fail(reason)
+        finally:
+            os.close(current_root)
+        for index, component in enumerate(self.path.parts[1:]):
+            try:
+                metadata = os.stat(component, dir_fd=self.fds[index], follow_symlinks=False)
+            except OSError:
+                fail(reason)
+            identity = (metadata.st_dev, metadata.st_ino, metadata.st_mode)
+            if stat.S_ISLNK(metadata.st_mode) or identity != self.identities[index + 1]:
+                fail(reason)
+
+    def close(self) -> None:
+        while getattr(self, "fds", []):
+            os.close(self.fds.pop())
+
+
 def fail(reason_code: str) -> None:
     raise PreflightError(reason_code)
 
@@ -420,22 +468,25 @@ def core_validate_candidate(script: Path, data: bytes) -> str:
         path.unlink(missing_ok=True)
 
 
-def git_repository_identity(path: Path) -> tuple[str, str]:
+def git_repository_identity(path: Path, reason: str = "authority-namespace-derivation-invalid") -> tuple[str, str]:
     absolute_clean(path)
     descriptor = open_dir_nofollow(path)
     os.close(descriptor)
-    result = subprocess.run(
-        ["/usr/bin/git", "-c", "core.fsmonitor=false", "-c", "gc.auto=0", "rev-parse", "--show-toplevel", "--git-common-dir"],
-        cwd=path, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"},
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        timeout=5, check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["/usr/bin/git", "-c", "core.fsmonitor=false", "-c", "gc.auto=0", "rev-parse", "--show-toplevel", "--git-common-dir"],
+            cwd=path, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"},
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        fail(reason)
     try:
         lines = result.stdout.decode("utf-8").splitlines()
     except UnicodeError:
-        fail("authority-namespace-derivation-invalid")
+        fail(reason)
     if result.returncode or len(lines) != 2:
-        fail("authority-namespace-derivation-invalid")
+        fail(reason)
     root = Path(os.path.realpath(lines[0]))
     common = Path(lines[1])
     if not common.is_absolute():
@@ -443,24 +494,46 @@ def git_repository_identity(path: Path) -> tuple[str, str]:
     common = Path(os.path.realpath(common))
     try:
         if not root.is_dir() or not common.is_dir():
-            fail("authority-namespace-derivation-invalid")
+            fail(reason)
     except OSError:
-        fail("authority-namespace-derivation-invalid")
+        fail(reason)
     return str(root), str(common)
 
 
-def core_derive_authority_namespace(script: Path, repository_identity: dict, worktree: Path) -> str:
+class AuthorityPathBinding:
+    """Bind repository/worktree membership and every directory-path inode."""
+
+    def __init__(self, repository_path: Path, worktree: Path):
+        self.repository_path = repository_path
+        self.worktree_path = worktree
+        self.repository_hold = HeldAbsoluteDirectory(repository_path)
+        self.worktree_hold = HeldAbsoluteDirectory(worktree)
+        repository_git_root, repository_common = git_repository_identity(repository_path)
+        worktree_git_root, worktree_common = git_repository_identity(worktree)
+        if repository_git_root != str(repository_path) or worktree_git_root != str(worktree) or repository_common != worktree_common:
+            fail("authority-namespace-derivation-invalid")
+        self.receipt = (repository_git_root, repository_common, worktree_git_root, worktree_common)
+        self.common_hold = HeldAbsoluteDirectory(Path(repository_common))
+        self.verify("authority-namespace-derivation-invalid")
+
+    def verify(self, reason: str = "authority-changed-during-preflight") -> None:
+        self.repository_hold.verify(reason)
+        self.worktree_hold.verify(reason)
+        self.common_hold.verify(reason)
+        current = (*git_repository_identity(self.repository_path, reason), *git_repository_identity(self.worktree_path, reason))
+        if current != self.receipt:
+            fail(reason)
+
+
+def core_derive_authority_namespace(script: Path, repository_identity: dict, worktree: Path) -> tuple[str, AuthorityPathBinding]:
     exact_keys(repository_identity, {"apiVersion", "kind", "repositoryRoot"}, {"apiVersion", "kind", "repositoryRoot"}, "repository-identity-invalid")
     repository_root = repository_identity.get("repositoryRoot")
     if repository_identity.get("apiVersion") != "marshal.dev/v1alpha1" or repository_identity.get("kind") != "RepositoryIdentity" or not isinstance(repository_root, str) or not repository_root:
         fail("repository-identity-invalid")
     try:
         repository_path = absolute_clean(Path(repository_root))
-        repository_git_root, repository_common = git_repository_identity(repository_path)
-        worktree_git_root, worktree_common = git_repository_identity(worktree)
+        binding = AuthorityPathBinding(repository_path, worktree)
     except (OSError, ValueError):
-        fail("authority-namespace-derivation-invalid")
-    if repository_git_root != repository_root or repository_common != worktree_common or worktree_git_root != str(worktree):
         fail("authority-namespace-derivation-invalid")
     path = write_temp_json({"tenantNamespace": "local", "controlPlaneId": "default", "authorityScopeId": repository_root})
     try:
@@ -469,7 +542,7 @@ def core_derive_authority_namespace(script: Path, repository_identity: dict, wor
         path.unlink(missing_ok=True)
     if not DIGEST_RE.fullmatch(digest):
         fail("authority-namespace-derivation-invalid")
-    return digest
+    return digest, binding
 
 
 def validate_operator_schema(script: Path, schema_name: str, data: bytes) -> None:
@@ -952,7 +1025,7 @@ def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: di
     return bindings, records
 
 
-def claim_history(script: Path, authority: HeldRelativeParent, initial_raw: bytes, initial_identity: tuple[int, int, int, int], action: str, reason: str, dedupe: str, fingerprint: str) -> None:
+def claim_history(script: Path, authority: HeldRelativeParent, initial_raw: bytes, initial_identity: tuple[int, int, int, int], action: str, reason: str, dedupe: str, fingerprint: str, final_authority_check) -> None:
     lock_leaf = authority.leaf + ".claim.lock"
     temporary_leaf = authority.leaf + f".pending.{os.getpid()}"
     authority.verify()
@@ -974,6 +1047,7 @@ def claim_history(script: Path, authority: HeldRelativeParent, initial_raw: byte
             fail("history-invalid")
         if any(entry.get("dedupeKey") == dedupe or entry.get("freshnessFingerprint") == fingerprint for entry in claims if isinstance(entry, dict)):
             fail("action-already-claimed")
+        final_authority_check()
         claims.append({"action": action, "reasonCode": reason, "dedupeKey": dedupe, "freshnessFingerprint": fingerprint, "previousHistoryRawDigest": raw_digest(initial_raw)})
         payload = json.dumps(history, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
         validate_operator_schema(script, "review-freshness-history.schema.json", payload)
@@ -992,6 +1066,7 @@ def claim_history(script: Path, authority: HeldRelativeParent, initial_raw: byte
         finally:
             os.close(fd)
         authority.verify()
+        final_authority_check()
         os.replace(temporary_leaf, authority.leaf, src_dir_fd=authority.parent_fd, dst_dir_fd=authority.parent_fd)
         authority.verify()
         os.fsync(authority.parent_fd)
@@ -1034,7 +1109,7 @@ def run(arguments: argparse.Namespace) -> dict:
     state_root = run_root.parent.parent
     repository_identity_raw = load(state_root, "repo.json", "repository-identity-unreadable", 4 << 20)
     repository_identity = parse_json(repository_identity_raw, "repository-identity-invalid")
-    expected_authority_namespace = core_derive_authority_namespace(script, repository_identity, worktree)
+    expected_authority_namespace, authority_binding = core_derive_authority_namespace(script, repository_identity, worktree)
 
     state_raw = load(run_root, files["statePath"], "state-unreadable", 4 << 20)
     state_digest = core_validate_bytes(script, "RunState", state_raw)
@@ -1192,7 +1267,7 @@ def run(arguments: argparse.Namespace) -> dict:
     elif not packet_present and final_observation != missing_observation:
         fail("worktree-changed-during-preflight")
 
-    claim_history(script, history_authority, history_raw, history_identity, action, reason, dedupe, fingerprint)
+    claim_history(script, history_authority, history_raw, history_identity, action, reason, dedupe, fingerprint, authority_binding.verify)
     history_authority.close()
     return {"ok": True, "action": action, "reasonCode": reason, "dedupeKey": dedupe, "freshnessFingerprint": fingerprint, "reviewPacketDigest": packet_digest or None, "historyClaimed": True}
 

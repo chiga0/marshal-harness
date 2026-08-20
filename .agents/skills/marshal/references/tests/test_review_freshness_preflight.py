@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 
 
@@ -54,18 +55,20 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         self.state_root = self.temp / "state"
         self.run_root = self.state_root / "runs" / "review-freshness-fixture-r1"
         self.operator_root = self.temp / "operator"
+        self.repository = self.temp / "repository"
         self.worktree = self.temp / "worktree"
-        self.run_root.mkdir(parents=True); self.operator_root.mkdir(); self.worktree.mkdir()
-        subprocess.run(["/usr/bin/git", "init", "-q"], cwd=self.worktree, check=True)
-        subprocess.run(["/usr/bin/git", "config", "user.name", "Fixture"], cwd=self.worktree, check=True)
-        subprocess.run(["/usr/bin/git", "config", "user.email", "fixture@example.invalid"], cwd=self.worktree, check=True)
-        (self.worktree / "README").write_text("fixture\n", encoding="utf-8")
-        subprocess.run(["/usr/bin/git", "add", "README"], cwd=self.worktree, check=True)
-        subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture"], cwd=self.worktree, check=True)
-        self.head = subprocess.check_output(["/usr/bin/git", "rev-parse", "HEAD"], cwd=self.worktree, text=True).strip()
+        self.run_root.mkdir(parents=True); self.operator_root.mkdir(); self.repository.mkdir()
+        subprocess.run(["/usr/bin/git", "init", "-q"], cwd=self.repository, check=True)
+        subprocess.run(["/usr/bin/git", "config", "user.name", "Fixture"], cwd=self.repository, check=True)
+        subprocess.run(["/usr/bin/git", "config", "user.email", "fixture@example.invalid"], cwd=self.repository, check=True)
+        (self.repository / "README").write_text("fixture\n", encoding="utf-8")
+        subprocess.run(["/usr/bin/git", "add", "README"], cwd=self.repository, check=True)
+        subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture"], cwd=self.repository, check=True)
+        self.head = subprocess.check_output(["/usr/bin/git", "rev-parse", "HEAD"], cwd=self.repository, text=True).strip()
+        subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "worktree", "add", "-q", "-b", "fixture-worktree", str(self.worktree), self.head], cwd=self.repository, check=True)
         (self.state_root / "repo.json").write_bytes(json_bytes({
             "apiVersion": "marshal.dev/v1alpha1", "kind": "RepositoryIdentity",
-            "repositoryRoot": str(self.worktree),
+            "repositoryRoot": str(self.repository),
         }))
         self.manifest_path = self.operator_root / "manifest.json"
         self._write_fixture()
@@ -96,7 +99,7 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
     def core_authority(self) -> str:
         return self.core_digest({
             "tenantNamespace": "local", "controlPlaneId": "default",
-            "authorityScopeId": str(self.worktree),
+            "authorityScopeId": str(self.repository),
         })
 
     def observed_patch(self) -> bytes:
@@ -472,6 +475,45 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         self.enable_missing_packet_candidate(untracked=True)
         self.reseal_single_candidate(lambda candidate: candidate.update({"authorityNamespaceId": "sha256:" + "f" * 64}))
         self.assert_reason("candidate-record-identity-mismatch")
+
+    def test_linked_worktree_rejects_foreign_repository_common_dir(self) -> None:
+        foreign = self.temp / "foreign-repository"
+        subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "clone", "-q", "--no-hardlinks", str(self.repository), str(foreign)], check=True)
+        (self.state_root / "repo.json").write_bytes(json_bytes({
+            "apiVersion": "marshal.dev/v1alpha1", "kind": "RepositoryIdentity",
+            "repositoryRoot": str(foreign),
+        }))
+        self.assert_reason("authority-namespace-derivation-invalid")
+
+    def test_linked_worktree_common_dir_swap_fails_final_cas(self) -> None:
+        replacement = self.temp / "foreign-replacement"
+        subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "clone", "-q", "--no-hardlinks", str(self.repository), str(replacement)], check=True)
+        self.manifest_path.write_bytes(json_bytes(self.manifest()))
+        original_validate = PREFLIGHT.validate_packet_inputs
+        swapped = False
+
+        def validate_then_swap(*args, **kwargs):
+            nonlocal swapped
+            result = original_validate(*args, **kwargs)
+            self.assertFalse(swapped)
+            (self.worktree / ".git").write_text(f"gitdir: {replacement / '.git'}\n", encoding="utf-8")
+            swapped = True
+            return result
+
+        PREFLIGHT.validate_packet_inputs = validate_then_swap
+        try:
+            arguments = SimpleNamespace(
+                run_root=str(self.run_root), operator_root=str(self.operator_root),
+                manifest=str(self.manifest_path), worktree=str(self.worktree),
+            )
+            with self.assertRaises(PREFLIGHT.PreflightError) as raised:
+                PREFLIGHT.run(arguments)
+            self.assertEqual(raised.exception.reason_code, "authority-changed-during-preflight")
+            self.assertTrue(swapped)
+        finally:
+            PREFLIGHT.validate_packet_inputs = original_validate
+        history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
+        self.assertEqual(history["claims"], [])
 
     def test_missing_packet_candidate_rejects_foreign_producer(self) -> None:
         self.enable_missing_packet_candidate(untracked=True)
