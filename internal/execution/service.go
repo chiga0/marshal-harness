@@ -409,6 +409,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	workerResult, runErr := input.Adapter.Run(ctx, domain.Record{Kind: domain.KindWorkerRequest, Data: requestData})
 	if runErr != nil {
+		runErr = failClosedUntypedAdapterFailure(selectedAdapterID, runErr, time.Now().UTC())
 		failedState, reportedErr, persistErr := recordFailure(store, lease, runDir, next, attemptID, selectedAdapterID, task, runErr, input.AfterWorkerQuarantine, input.AfterWorkerTerminalAppend)
 		if persistErr != nil {
 			return Result{State: failedState, AttemptID: attemptID}, errors.Join(reportedErr, persistErr)
@@ -2183,6 +2184,21 @@ func adapterProtocolFailure(adapterID, summary string, now time.Time) error {
 	return errors.Join(errors.New(summary), failure)
 }
 
+func failClosedUntypedAdapterFailure(adapterID string, cause error, observedAt time.Time) error {
+	if _, found, _ := port.NormalizeAdapterFailure(cause, observedAt); found {
+		return cause
+	}
+	kind := port.FailureKindProtocolInvalid
+	if port.IsPermanent(cause) {
+		kind = port.FailureKindProviderTerminal
+	}
+	failure, err := port.NewAdapterFailure(port.AdapterID(adapterID), kind, port.RetryDispositionDoNotRetry, nil, nil, observedAt)
+	if err != nil {
+		return port.Permanent(errors.New("adapter failure identity cannot be normalized"))
+	}
+	return failure
+}
+
 // classifyWorkerFailure is the single Core admission point for Adapter
 // failure disposition. The signature intentionally excludes task/run/attempt
 // identities and wall-clock values, but includes every frozen authority
@@ -2224,10 +2240,10 @@ func classifyWorkerFailure(state domain.RunState, selectedAdapterID string, caus
 			classification.terminalReason = ""
 		}
 	} else if !port.IsPermanent(cause) {
-		// Untyped Adapter errors keep the pre-existing retryable behavior for
-		// backwards compatibility. Adapters must emit AdapterFailure (or an
-		// explicitly Permanent error) to authorize a structural short-circuit;
-		// Core never infers do-not-retry from provider free text.
+		// Core-originated failures that reuse this persistence path keep their
+		// existing retry semantics. Adapter.Run is normalized at its boundary
+		// before reaching this classifier, so an untyped Adapter error can never
+		// enter this branch.
 		classification.kind = port.FailureKindConnectionFailure
 		classification.disposition = port.RetryDispositionRetryable
 		classification.safeSummary = "unclassified retryable worker failure"

@@ -99,13 +99,85 @@ func TestRunPersistsAttemptAndRequiresIndependentVerification(t *testing.T) {
 }
 
 func TestRunClassifiesOperationalFailureAndConsumesRetryBudget(t *testing.T) {
-	fixture := newExecutionFixture(t, true)
+	fixture := newTypedTransientFailureFixture(t, executionFixtureOptions{})
 	result, err := Run(context.Background(), fixture.input)
 	if err == nil {
 		t.Fatal("worker failure was accepted")
 	}
 	if result.State.State != domain.StateRetryPending || result.State.OperationalRetriesUsed != 1 {
 		t.Fatalf("state = %+v", result.State)
+	}
+}
+
+func TestRunUntypedAdapterFailureFailsClosedWithoutRetry(t *testing.T) {
+	const rawCause = "provider secret=do-not-persist path=/Users/private/credential"
+	for _, test := range []struct {
+		name     string
+		cause    error
+		wantKind port.FailureKind
+	}{
+		{name: "plain failure is a protocol violation", cause: errors.New(rawCause), wantKind: port.FailureKindProtocolInvalid},
+		{name: "permanent compatibility remains terminal", cause: port.Permanent(errors.New(rawCause)), wantKind: port.FailureKindProviderTerminal},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+				preferredAdapter: "fake", fallbackAdapters: []string{}, capabilityAdapterID: "fake",
+				maxAttempts: 3, maxOperationalRetries: 2,
+			})
+			delegate := fixture.input.Adapter.(*fixtureAdapter)
+			delegate.id = "fake"
+			delegate.failure = test.cause
+			adapter := &countingAdapter{delegate: delegate}
+			fixture.input.Adapter = adapter
+
+			result, err := Run(context.Background(), fixture.input)
+			if err == nil || result.State.State != domain.StateBlocked || result.State.AttemptsUsed != 1 || result.State.OperationalRetriesUsed != 0 {
+				t.Fatalf("untyped failure result = %+v err=%v", result, err)
+			}
+			if adapter.probes != 1 || adapter.runs != 1 {
+				t.Fatalf("first failure calls = probes:%d runs:%d, want one each", adapter.probes, adapter.runs)
+			}
+			if strings.Contains(err.Error(), rawCause) {
+				t.Fatalf("returned error leaked raw Adapter cause: %q", err)
+			}
+
+			events, _, readErr := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			last := events[len(events)-1]
+			wantFailure, failureErr := port.NewAdapterFailure(port.AdapterIDFake, test.wantKind, port.RetryDispositionDoNotRetry, nil, nil, last.Timestamp)
+			if failureErr != nil {
+				t.Fatal(failureErr)
+			}
+			if last.Type != "worker.failed" || last.StateTo != domain.StateBlocked || last.Payload["failureKind"] != string(test.wantKind) || last.Payload["retryDisposition"] != string(port.RetryDispositionDoNotRetry) || last.Payload["error"] != wantFailure.Error() {
+				t.Fatalf("terminal failure event = %+v", last)
+			}
+			if signature, _ := last.Payload["failureSignature"].(string); !isCanonicalSHA256(signature) {
+				t.Fatalf("failureSignature = %q", signature)
+			}
+
+			journal, journalErr := os.ReadFile(filepath.Join(fixture.runDir, "events.jsonl"))
+			outcomeJSON, outcomeErr := os.ReadFile(filepath.Join(fixture.runDir, "outcome.json"))
+			outcomeMarkdown, markdownErr := os.ReadFile(filepath.Join(fixture.runDir, "outcome.md"))
+			if journalErr != nil || outcomeErr != nil || markdownErr != nil {
+				t.Fatalf("read terminal evidence: journal=%v outcome=%v markdown=%v", journalErr, outcomeErr, markdownErr)
+			}
+			for name, evidence := range map[string][]byte{"journal": journal, "outcome.json": outcomeJSON, "outcome.md": outcomeMarkdown} {
+				if bytes.Contains(evidence, []byte(rawCause)) {
+					t.Fatalf("%s leaked raw Adapter cause", name)
+				}
+			}
+
+			beforeProbes, beforeRuns := adapter.probes, adapter.runs
+			restarted, restartErr := Run(context.Background(), fixture.input)
+			if restartErr == nil || restarted.State.State != domain.StateBlocked || restarted.State.TerminalReason != "adapter-"+string(test.wantKind) {
+				t.Fatalf("terminal restart = %+v err=%v", restarted, restartErr)
+			}
+			if adapter.probes != beforeProbes || adapter.runs != beforeRuns {
+				t.Fatalf("terminal restart crossed Adapter boundary: probes=%d runs=%d", adapter.probes, adapter.runs)
+			}
+		})
 	}
 }
 
@@ -930,6 +1002,37 @@ func newExecutionFixture(t *testing.T, fail bool) executionFixture {
 	return newExecutionFixtureWithOptions(t, fail, executionFixtureOptions{preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture"})
 }
 
+func newTypedTransientFailureFixture(t *testing.T, options executionFixtureOptions) executionFixture {
+	t.Helper()
+	fixture := newFakeExecutionFixture(t, options)
+	fixture.input.Adapter.(*fixtureAdapter).failure = newTypedTransientFailure(t)
+	return fixture
+}
+
+func newFakeExecutionFixture(t *testing.T, options executionFixtureOptions) executionFixture {
+	t.Helper()
+	options.preferredAdapter = string(port.AdapterIDFake)
+	options.fallbackAdapters = []string{}
+	options.capabilityAdapterID = string(port.AdapterIDFake)
+	fixture := newExecutionFixtureWithOptions(t, false, options)
+	fixture.input.Adapter.(*fixtureAdapter).id = string(port.AdapterIDFake)
+	return fixture
+}
+
+func newTypedTransientFailureFixtureAdapter(t *testing.T, capability []byte) *fixtureAdapter {
+	t.Helper()
+	return &fixtureAdapter{id: string(port.AdapterIDFake), capability: capability, failure: newTypedTransientFailure(t)}
+}
+
+func newTypedTransientFailure(t *testing.T) error {
+	t.Helper()
+	failure, err := port.NewAdapterFailure(port.AdapterIDFake, port.FailureKindConnectionFailure, port.RetryDispositionRetryable, nil, nil, time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return failure
+}
+
 func newExecutionFixtureWithOptions(t *testing.T, fail bool, options executionFixtureOptions) executionFixture {
 	t.Helper()
 	repository := t.TempDir()
@@ -1636,7 +1739,7 @@ func appendRawJournalBytes(t *testing.T, fixture executionFixture, extra string)
 }
 
 func TestRunReviewReworkOperationalRetryPersistsFindingsAfterRestart(t *testing.T) {
-	fixture := newExecutionFixtureWithOptions(t, false, reworkBudgetOptions(1))
+	fixture := newFakeExecutionFixture(t, reworkBudgetOptions(1))
 	first, err := Run(context.Background(), fixture.input)
 	if err != nil || first.State.State != domain.StateVerifying {
 		t.Fatalf("first attempt: state=%+v err=%v", first.State, err)
@@ -1651,7 +1754,7 @@ func TestRunReviewReworkOperationalRetryPersistsFindingsAfterRestart(t *testing.
 
 	capability := fixture.input.Adapter.(*fixtureAdapter).capability
 	failInput := fixture.input
-	failInput.Adapter = &fixtureAdapter{capability: capability, fail: true}
+	failInput.Adapter = newTypedTransientFailureFixtureAdapter(t, capability)
 	second, err := Run(context.Background(), failInput)
 	if err == nil {
 		t.Fatal("rework attempt operational failure was accepted")
@@ -1672,7 +1775,7 @@ func TestRunReviewReworkOperationalRetryPersistsFindingsAfterRestart(t *testing.
 	if freshState.State != domain.StateRetryPending || freshState.ReviewRound != 1 || freshState.CurrentAttemptID != second.AttemptID {
 		t.Fatalf("fresh inspect after restart = %+v", freshState)
 	}
-	restartInput := Input{StateRoot: fixture.input.StateRoot, RepositoryRoot: fixture.input.RepositoryRoot, RunID: fixture.input.RunID, Adapter: &fixtureAdapter{capability: capability}, Validator: freshValidator}
+	restartInput := Input{StateRoot: fixture.input.StateRoot, RepositoryRoot: fixture.input.RepositoryRoot, RunID: fixture.input.RunID, Adapter: &fixtureAdapter{id: string(port.AdapterIDFake), capability: capability}, Validator: freshValidator}
 	third, err := Run(context.Background(), restartInput)
 	if err != nil {
 		t.Fatalf("restart after operational retry of a rework attempt: %v", err)
@@ -1738,7 +1841,7 @@ func TestRunInvalidReworkAuthorityFailsBeforeWorkerStart(t *testing.T) {
 }
 
 func TestRunCIFailureReworkAndOperationalRetryDoesNotRequireReworkDecision(t *testing.T) {
-	fixture := newExecutionFixtureWithOptions(t, false, reworkBudgetOptions(1))
+	fixture := newFakeExecutionFixture(t, reworkBudgetOptions(1))
 	first, err := Run(context.Background(), fixture.input)
 	if err != nil || first.State.State != domain.StateVerifying {
 		t.Fatalf("first attempt: state=%+v err=%v", first.State, err)
@@ -1750,7 +1853,7 @@ func TestRunCIFailureReworkAndOperationalRetryDoesNotRequireReworkDecision(t *te
 
 	capability := fixture.input.Adapter.(*fixtureAdapter).capability
 	failInput := fixture.input
-	failInput.Adapter = &fixtureAdapter{capability: capability, fail: true}
+	failInput.Adapter = newTypedTransientFailureFixtureAdapter(t, capability)
 	second, err := Run(context.Background(), failInput)
 	if err == nil {
 		t.Fatal("ci-origin rework attempt failure was accepted")
@@ -1759,7 +1862,7 @@ func TestRunCIFailureReworkAndOperationalRetryDoesNotRequireReworkDecision(t *te
 		t.Fatalf("state = %+v", second.State)
 	}
 	restartInput := fixture.input
-	restartInput.Adapter = &fixtureAdapter{capability: capability}
+	restartInput.Adapter = &fixtureAdapter{id: string(port.AdapterIDFake), capability: capability}
 	third, err := Run(context.Background(), restartInput)
 	if err != nil {
 		t.Fatalf("operational retry after ci-origin rework: %v", err)
@@ -1793,7 +1896,7 @@ func TestLoadReviewFindingsRejectsDecisionDigestMismatchBeforeWorkerStart(t *tes
 }
 
 func TestLoadReviewFindingsInitialRetryHasNoDecision(t *testing.T) {
-	fixture := newExecutionFixture(t, true)
+	fixture := newTypedTransientFailureFixture(t, executionFixtureOptions{})
 	result, err := Run(context.Background(), fixture.input)
 	if err == nil {
 		t.Fatal("worker failure was accepted")
@@ -2872,7 +2975,7 @@ func TestOrdinaryWorkerFailureBudgetClosureAndRestartCompensation(t *testing.T) 
 		{name: "operational", maxAttempts: 3, maxOperational: 1, wantReason: "operational-retry-budget-exhausted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fixture := newExecutionFixtureWithOptions(t, true, executionFixtureOptions{
+			fixture := newTypedTransientFailureFixture(t, executionFixtureOptions{
 				preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture",
 				maxAttempts: tc.maxAttempts, maxOperationalRetries: tc.maxOperational,
 			})
@@ -2922,7 +3025,7 @@ func TestOrdinaryWorkerFailureBudgetClosureAndRestartCompensation(t *testing.T) 
 }
 
 func TestOrdinaryTerminalQuarantineRecoversBeforeEventAppend(t *testing.T) {
-	fixture := newExecutionFixtureWithOptions(t, true, executionFixtureOptions{
+	fixture := newTypedTransientFailureFixture(t, executionFixtureOptions{
 		preferredAdapter: "fixture", fallbackAdapters: []string{}, capabilityAdapterID: "fixture",
 		maxAttempts: 2, maxOperationalRetries: 1,
 	})

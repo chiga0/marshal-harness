@@ -449,6 +449,8 @@ Adapter 出现更新的成功事实。`notBefore` 必须严格相对对应 `work
 
 Core 只接受唯一、可重放且通过闭合构造器重新校验的 `AdapterFailure` carrier。权威映射固定为：`quota-exhausted → blocked`；`rate-limited`、`dns-failure`、`connection-failure → retryable`；`protocol-invalid`、`result-missing`、`provider-terminal → do-not-retry`。未知枚举、kind/disposition 错配、负数或超过 24h 的 hint、冲突 hint、Adapter identity 错配、仅靠自定义 `As` 投影或 joined graph 中存在多个 carrier，均按安全的 `protocol-invalid/do-not-retry` 处理，不把原始 cause、路径、credential 或控制字符写入事件、Outcome 或返回错误。
 
+按 [ADR 0036](adr/0036-adapter-run-boundary-fail-closed.md)，`Adapter.Run` 返回普通 error 时不得在原 Run 盲目 retry：非 `port.Permanent` 固定为 `protocol-invalid/do-not-retry`，legacy `port.Permanent` 固定为 `provider-terminal/do-not-retry`，首个失败 Attempt 进入 `BLOCKED`。重启该 Run 必须在 Adapter `Probe`/`Run` 前短路。操作者应检查封闭 `worker.failed`/Outcome 的 kind、disposition 与 signature，修复 Adapter 使确实可恢复的失败显式返回合法 typed `retryable`，再从当前权威基线创建新 Run；不得重写 journal、复活旧终态或依赖原始 cause 文本。该规则只覆盖 `Adapter.Run` 返回边界，不能用于改变 Core 内部其它 `recordFailure` 来源的既有 operational retry。
+
 `REVIEW_PENDING` 的 packet 缺失、旧 manifest、旧 base 或证据变更，执行一次 intervention finding 并准备 successor；不要跨 heartbeat 重复调用同一 `task review`。任何复用或 intervention 都不得手写 `.marshal`、伪造 digest 或绕过 Core 生命周期。
 
 ### 11.7 防 rework 的真实性预检
