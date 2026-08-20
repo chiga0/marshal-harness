@@ -51,10 +51,11 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temp = Path(tempfile.mkdtemp(prefix="review-freshness.", dir="/private/tmp"))
-        self.run_root = self.temp / "run"
+        self.state_root = self.temp / "state"
+        self.run_root = self.state_root / "runs" / "review-freshness-fixture-r1"
         self.operator_root = self.temp / "operator"
         self.worktree = self.temp / "worktree"
-        self.run_root.mkdir(); self.operator_root.mkdir(); self.worktree.mkdir()
+        self.run_root.mkdir(parents=True); self.operator_root.mkdir(); self.worktree.mkdir()
         subprocess.run(["/usr/bin/git", "init", "-q"], cwd=self.worktree, check=True)
         subprocess.run(["/usr/bin/git", "config", "user.name", "Fixture"], cwd=self.worktree, check=True)
         subprocess.run(["/usr/bin/git", "config", "user.email", "fixture@example.invalid"], cwd=self.worktree, check=True)
@@ -62,6 +63,10 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         subprocess.run(["/usr/bin/git", "add", "README"], cwd=self.worktree, check=True)
         subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture"], cwd=self.worktree, check=True)
         self.head = subprocess.check_output(["/usr/bin/git", "rev-parse", "HEAD"], cwd=self.worktree, text=True).strip()
+        (self.state_root / "repo.json").write_bytes(json_bytes({
+            "apiVersion": "marshal.dev/v1alpha1", "kind": "RepositoryIdentity",
+            "repositoryRoot": str(self.worktree),
+        }))
         self.manifest_path = self.operator_root / "manifest.json"
         self._write_fixture()
 
@@ -87,6 +92,12 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         response = json.loads(self.core_process.stdout.readline())
         self.assertTrue(response["ok"], response)
         return json.loads(response["digest"])
+
+    def core_authority(self) -> str:
+        return self.core_digest({
+            "tenantNamespace": "local", "controlPlaneId": "default",
+            "authorityScopeId": str(self.worktree),
+        })
 
     def observed_patch(self) -> bytes:
         environment = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"}
@@ -157,14 +168,25 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
     def manifest(self) -> dict:
         return {"apiVersion": "marshal.operator/v1alpha1", "kind": "ReviewFreshnessPreflight", "expected": {"taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1", "state": "REVIEW_PENDING", "stateSequence": 7, "currentAttemptId": "attempt:fixture-01", "sourceHead": self.head, "baseSha": self.head, "reviewRound": 2}, "files": {"statePath": "state.json", "eventsPath": "events.jsonl", "packetPath": "review-packet.json", "taskSpecPath": "task-spec.json", "verificationReportPath": "verification-report.json", "artifactManifestPath": "artifact-manifest.json", "policySnapshotPath": "policy-snapshot.json", "capabilitySnapshotPath": "capability-snapshot.json", "controlRecordsPath": "control/records.jsonl", "historyPath": "review-freshness-history.json"}}
 
+    def worker_patch_artifact(self, patch: bytes, candidate_digest: str) -> dict:
+        return {
+            "id": "evidence:worker-patch", "kind": "patch", "mediaType": "text/x-diff",
+            "producer": "verifier", "required": True, "status": "validated",
+            "pathRoot": "run", "relativePath": "worker.patch", "byteSize": len(patch),
+            "digest": digest_bytes(patch), "candidateDigest": candidate_digest,
+            "createdAt": "2026-08-20T00:01:00Z", "redacted": False, "truncated": False,
+            "relatedGates": ["scope"],
+        }
+
     def enable_candidate(self) -> None:
-        candidate = {"apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate", "taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1", "attemptId": "attempt:fixture-01", "authorityNamespaceId": "authority:fixture", "baseSha": self.head, "contentDigest": digest_bytes(b""), "producerKind": "worker", "producer": "worker:fixture", "createdAt": "2026-08-20T00:00:30Z"}
+        candidate = {"apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate", "taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1", "attemptId": "attempt:fixture-01", "authorityNamespaceId": self.core_authority(), "baseSha": self.head, "contentDigest": digest_bytes(b""), "producerKind": "worker", "producer": "worker", "createdAt": "2026-08-20T00:00:30Z"}
         candidate_digest = self.core_digest(candidate)
         candidate["candidateDigest"] = candidate_digest
         self.core_digest(candidate, "Candidate")
         candidate_dir = self.run_root / "candidates"; candidate_dir.mkdir(exist_ok=True); (candidate_dir / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
         report_path = self.run_root / "verification-report.json"; report = json.loads(report_path.read_text()); report["candidateDigest"] = candidate_digest; report["workerCandidateDigest"] = candidate_digest; report_path.write_bytes(json_bytes(report)); report_digest = self.core_digest(report, "VerificationReport")
-        artifact_path = self.run_root / "artifact-manifest.json"; artifacts = json.loads(artifact_path.read_text()); artifacts["artifacts"][0]["candidateDigest"] = candidate_digest; artifact_path.write_bytes(json_bytes(artifacts)); artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+        (self.run_root / "worker.patch").write_bytes(b"")
+        artifact_path = self.run_root / "artifact-manifest.json"; artifacts = json.loads(artifact_path.read_text()); artifacts["artifacts"][0]["candidateDigest"] = candidate_digest; artifacts["artifacts"].append(self.worker_patch_artifact(b"", candidate_digest)); artifact_path.write_bytes(json_bytes(artifacts)); artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
         packet_path = self.run_root / "review-packet.json"; packet = json.loads(packet_path.read_text()); packet["candidateDigest"] = candidate_digest; packet["workerCandidateDigest"] = candidate_digest; packet["verificationDigest"] = report_digest; packet["artifactManifestDigest"] = artifact_digest
         evidence = {"specDigest": packet["specDigest"], "patchDigest": packet["diffDigest"], "verificationDigest": report_digest, "artifactManifestDigest": artifact_digest, "workerResultDigests": packet["workerResultDigests"], "previousBlockingFindings": [], "candidateDigest": candidate_digest, "workerCandidateDigest": candidate_digest}
         packet["evidenceDigest"] = self.core_digest(evidence); packet_path.write_bytes(json_bytes(packet)); self.core_digest(packet, "ReviewPacket")
@@ -188,9 +210,9 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         candidate = {
             "apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate",
             "taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1",
-            "attemptId": "attempt:fixture-01", "authorityNamespaceId": "authority:fixture",
+            "attemptId": "attempt:fixture-01", "authorityNamespaceId": self.core_authority(),
             "baseSha": self.head, "contentDigest": observation["diffDigest"],
-            "producerKind": "worker", "producer": "worker:fixture",
+            "producerKind": "worker", "producer": "worker",
             "createdAt": "2026-08-20T00:00:30Z",
         }
         candidate_digest = self.core_digest(candidate)
@@ -199,6 +221,7 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         candidate_dir = self.run_root / "candidates"
         candidate_dir.mkdir(exist_ok=True)
         (candidate_dir / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
+        (self.run_root / "worker.patch").write_bytes(patch)
 
         report_path = self.run_root / "verification-report.json"
         report = json.loads(report_path.read_text())
@@ -214,6 +237,42 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
             "byteSize": len(patch), "digest": observation["diffDigest"],
             "candidateDigest": candidate_digest,
         })
+        artifacts["artifacts"].append(self.worker_patch_artifact(patch, candidate_digest))
+        artifact_path.write_bytes(json_bytes(artifacts))
+        artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+
+        events_path = self.run_root / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        events[-1]["payload"]["reportDigest"] = report_digest
+        events[-1]["payload"]["artifactManifestDigest"] = artifact_digest
+        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+
+    def reseal_single_candidate(self, mutate) -> None:
+        candidate_dir = self.run_root / "candidates"
+        paths = list(candidate_dir.glob("*.json"))
+        self.assertEqual(len(paths), 1)
+        path = paths[0]
+        candidate = json.loads(path.read_text())
+        old_digest = candidate.pop("candidateDigest")
+        mutate(candidate)
+        candidate_digest = self.core_digest(candidate)
+        candidate["candidateDigest"] = candidate_digest
+        self.core_digest(candidate, "Candidate")
+        path.unlink()
+        (candidate_dir / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
+
+        report_path = self.run_root / "verification-report.json"
+        report = json.loads(report_path.read_text())
+        report["candidateDigest"] = candidate_digest
+        report["workerCandidateDigest"] = candidate_digest
+        report_path.write_bytes(json_bytes(report))
+        report_digest = self.core_digest(report, "VerificationReport")
+
+        artifact_path = self.run_root / "artifact-manifest.json"
+        artifacts = json.loads(artifact_path.read_text())
+        for artifact in artifacts["artifacts"]:
+            if artifact.get("candidateDigest") == old_digest:
+                artifact["candidateDigest"] = candidate_digest
         artifact_path.write_bytes(json_bytes(artifacts))
         artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
 
@@ -267,9 +326,9 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         candidate = {
             "apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate",
             "taskId": stale_packet["taskId"], "runId": stale_packet["runId"],
-            "attemptId": "attempt:fixture-02", "authorityNamespaceId": "authority:fixture",
+            "attemptId": "attempt:fixture-02", "authorityNamespaceId": self.core_authority(),
             "baseSha": self.head, "contentDigest": digest_bytes(b""), "producerKind": "worker",
-            "producer": "worker:fixture", "createdAt": "2026-08-20T00:01:30Z",
+            "producer": "worker", "createdAt": "2026-08-20T00:01:30Z",
         }
         candidate_digest = self.core_digest(candidate)
         candidate["candidateDigest"] = candidate_digest
@@ -277,6 +336,7 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         candidate_dir = self.run_root / "candidates"
         candidate_dir.mkdir()
         (candidate_dir / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
+        (self.run_root / "worker.patch").write_bytes(b"")
         report["candidateDigest"] = candidate_digest
         report["workerCandidateDigest"] = candidate_digest
         report_path.write_bytes(json_bytes(report))
@@ -285,6 +345,7 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         artifact_path = self.run_root / "artifact-manifest.json"
         artifacts = json.loads(artifact_path.read_text())
         artifacts["artifacts"][0]["candidateDigest"] = candidate_digest
+        artifacts["artifacts"].append(self.worker_patch_artifact(b"", candidate_digest))
         artifact_path.write_bytes(json_bytes(artifacts))
         current_artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
 
@@ -401,36 +462,31 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
 
     def test_missing_packet_candidate_rejects_identity_mismatch(self) -> None:
         self.enable_missing_packet_candidate(untracked=True)
-        candidate_path = next((self.run_root / "candidates").iterdir())
-        candidate = json.loads(candidate_path.read_text())
-        candidate["attemptId"] = "attempt:other"
-        del candidate["candidateDigest"]
-        candidate_digest = self.core_digest(candidate)
-        candidate["candidateDigest"] = candidate_digest
-        self.core_digest(candidate, "Candidate")
-        candidate_path.unlink()
-        (candidate_path.parent / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
-
-        report_path = self.run_root / "verification-report.json"
-        report = json.loads(report_path.read_text())
-        report["candidateDigest"] = candidate_digest
-        report["workerCandidateDigest"] = candidate_digest
-        report_path.write_bytes(json_bytes(report))
-        report_digest = self.core_digest(report, "VerificationReport")
-        artifact_path = self.run_root / "artifact-manifest.json"
-        artifacts = json.loads(artifact_path.read_text())
-        artifacts["artifacts"][0]["candidateDigest"] = candidate_digest
-        artifact_path.write_bytes(json_bytes(artifacts))
-        artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
-        events_path = self.run_root / "events.jsonl"
-        events = [json.loads(line) for line in events_path.read_text().splitlines()]
-        events[-1]["payload"]["reportDigest"] = report_digest
-        events[-1]["payload"]["artifactManifestDigest"] = artifact_digest
-        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+        self.reseal_single_candidate(lambda candidate: candidate.update({"attemptId": "attempt:other"}))
 
         self.assert_reason("candidate-record-identity-mismatch")
         history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
         self.assertEqual(history["claims"], [])
+
+    def test_missing_packet_candidate_rejects_foreign_authority(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        self.reseal_single_candidate(lambda candidate: candidate.update({"authorityNamespaceId": "sha256:" + "f" * 64}))
+        self.assert_reason("candidate-record-identity-mismatch")
+
+    def test_missing_packet_candidate_rejects_foreign_producer(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        self.reseal_single_candidate(lambda candidate: candidate.update({"producer": "worker:forged"}))
+        self.assert_reason("candidate-chain-mismatch")
+
+    def test_missing_packet_candidate_rejects_allocation_generation(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        self.reseal_single_candidate(lambda candidate: candidate.update({"allocationId": "allocation:foreign", "generation": 1}))
+        self.assert_reason("candidate-allocation-generation-mismatch")
+
+    def test_missing_packet_candidate_rejects_worker_patch_tamper(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        (self.run_root / "worker.patch").write_bytes(b"tampered\n")
+        self.assert_reason("worker-candidate-content-mismatch")
 
     def test_missing_packet_candidate_concurrent_claim_is_exactly_once(self) -> None:
         self.enable_missing_packet_candidate(untracked=True)
