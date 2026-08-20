@@ -30,15 +30,29 @@
 - 当前 source/spec/policy/capability/base/state/approval；
 - host OS/arch、Adapter config、精确 executable path/digest/device/inode；
 - permission/result-path identity、worktree/scope；
-- doctor、capacity、backpressure 的摘要观测。
+- doctor、capacity、backpressure 的稳定 admission 投影摘要；
+- 精确 plan `ApprovalRecord`、Core state/control 相对路径、机械 validator 使用的 Marshal/Watch 工具 identity；
+- 显式 launch env 的排序 key allowlist 和 canonical key/value digest。Receipt、validator 输出和日志都不得记录这些 env 的值、路径或 secret。
 
-有效期最多 60 秒。执行前重采所有时变证据并逐项比较，然后运行：
+有效期最多 60 秒。`jq` 只做低成本形状 lint，不提供最终 admit：
 
 ```bash
 jq -e -f .agents/skills/marshal/references/validate-admission-receipt.jq RECEIPT.json
 ```
 
-任一 tuple、sequence、digest 或时效改变立即失效。复用的是证据摘要，不是 Core 状态副作用。
+最终 admit 必须由相邻 Python validator 在同一显式 env 下重新执行 fresh `doctor --run` 和一次 watchdog 采样，并在命令前后复核 state/control/receipt identity：
+
+```bash
+python3 -I -B .agents/skills/marshal/references/validate-admission-receipt.py \
+  --operator-root OPERATOR_ROOT \
+  --receipt admission-receipt.json \
+  --run-root RUN_ROOT \
+  --workspace-root WORKSPACE_ROOT
+```
+
+只有 exit 0、`status=pass` 且 `reasonCode=admission-receipt-valid` 才允许立刻执行一次 `task run`。Validator 逐级 nofollow、有界读取并重算 Adapter executable device/inode/raw digest、worktree HEAD/clean/status、READY state、plan approval binding、host identity；Adapter/Marshal/Watch regular file 与 worktree directory 的 exact fd 必须持有到所有动态命令结束，随后重新逐级 nofollow 打开 pathname 并比较 device/inode/size/mtime/raw digest，worktree 还须重采 HEAD 与 porcelain-z status。fresh doctor 必须证明 `configured=true`、`registered=true`、`compatibility=supported`、精确 `authorityMode`/binary identity，watchdog 必须证明 `pressure/cpu/provider/queueSignalStatus=ok`、`slotsAvailable>=1` 且所选 Adapter `status=available`。`dynamicEvidence` 的 digest 分别绑定 doctor 的选中 Adapter/Run 稳定投影、capacity admission 分类投影和所选 Provider signal 投影，不绑定会自然波动的原始内存/load 数值。
+
+任一 tuple、sequence、digest、工具 identity、时效、容量、背压或 state/control identity 改变立即 fail closed；固定 `reasonCode` 原样保存，不重复 `task run`。复用的是证据摘要，不是 Core 状态副作用。`scopeLeaseDigest`、acceptance purity 等非动态门禁仍须在生成 receipt 前各自完成；Python validator 不把它们的自报布尔值升级成 Core authority。
 
 ## Acceptance purity
 
