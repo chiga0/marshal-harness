@@ -2,7 +2,7 @@
   "apiVersion": "marshal.dev/v1alpha1",
   "kind": "CapabilitySnapshot",
   "adapterId": "qoder",
-  "adapterVersion": "0.1.5",
+  "adapterVersion": "0.1.6",
   "executable": "/fixture/qodercli-1.1.23",
   "executableDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
   "binaryVersion": "1.1.23",

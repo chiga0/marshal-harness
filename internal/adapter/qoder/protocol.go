@@ -39,6 +39,8 @@ type captureResult struct {
 	toolNames       []string
 	observedTools   []observedToolCall
 	pendingTools    map[string]pendingToolCall
+	assistantTurn   assistantTurnState
+	closedTurns     map[string]struct{}
 	resultTransport resultTransportSequence
 	terminal        terminalOutcome
 	limitExceeded   bool
@@ -52,6 +54,14 @@ type pendingToolCall struct {
 	resultTransport      bool
 	validResultTransport bool
 	resultPayload        []byte
+}
+
+// assistantTurnState binds fragmented stream-json frames to one logical
+// assistant message. Qoder 1.1.23 may emit multiple distinct tool_use blocks
+// for the same message id before returning their results.
+type assistantTurnState struct {
+	id     string
+	closed bool
 }
 
 // observedToolCall is the closed, provider-structured projection consumed by
@@ -122,7 +132,10 @@ type qoderEvent struct {
 }
 
 type qoderMessage struct {
-	Content []qoderMessagePart `json:"content"`
+	ID         string             `json:"id"`
+	Role       string             `json:"role"`
+	StopReason *string            `json:"stop_reason"`
+	Content    []qoderMessagePart `json:"content"`
 }
 
 type qoderMessagePart struct {
@@ -309,14 +322,13 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		if err := json.Unmarshal(event.Message, &message); err != nil {
 			return fmt.Errorf("%w: malformed assistant message", ErrProtocol)
 		}
+		if err := result.beginAssistantFrame(message); err != nil {
+			return err
+		}
 		if result.pendingTools == nil {
 			result.pendingTools = map[string]pendingToolCall{}
 		}
-		for _, part := range message.Content {
-			if part.Type == "tool_use" && len(result.pendingTools) != 0 {
-				return fmt.Errorf("%w: tool_use precedes prior tool_result", ErrProtocol)
-			}
-		}
+		frameToolIDs := map[string]struct{}{}
 		for _, part := range message.Content {
 			switch part.Type {
 			case "thinking", "text":
@@ -328,10 +340,20 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			if part.ID == "" || part.Name == "" || len(bytes.TrimSpace(part.Input)) == 0 || bytes.Equal(bytes.TrimSpace(part.Input), []byte("null")) {
 				return fmt.Errorf("%w: incomplete assistant tool_use", ErrProtocol)
 			}
-			if _, duplicate := result.pendingTools[part.ID]; duplicate {
+			if _, duplicate := frameToolIDs[part.ID]; duplicate {
 				return fmt.Errorf("%w: duplicate assistant tool_use id", ErrProtocol)
 			}
+			frameToolIDs[part.ID] = struct{}{}
 			tool := normalizeQoderToolName(part.Name)
+			if pending, duplicate := result.pendingTools[part.ID]; duplicate {
+				if message.ID == "" || pending.tool != tool || !canonicalJSONEqual(pending.input, part.Input) {
+					return fmt.Errorf("%w: duplicate assistant tool_use id", ErrProtocol)
+				}
+				continue
+			}
+			if result.hasObservedToolID(part.ID) {
+				return fmt.Errorf("%w: reused assistant tool_use id", ErrProtocol)
+			}
 			result.toolCalls++
 			transportAccess, validTransport, resultPayload := classifyWorkerResultTransportTool(tool, part.Input)
 			if transportAccess {
@@ -346,6 +368,9 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			}
 			result.observedTools = append(result.observedTools, observedToolCall{id: part.ID, tool: tool, input: append(json.RawMessage(nil), part.Input...), ordinal: result.toolCalls, resultTransport: transportAccess})
 		}
+		if err := result.finishAssistantFrame(message); err != nil {
+			return err
+		}
 		result.assistantCount++
 	case "user":
 		if result.sessionID == "" || len(bytes.TrimSpace(event.Message)) == 0 || bytes.Equal(bytes.TrimSpace(event.Message), []byte("null")) {
@@ -354,6 +379,9 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		var message qoderMessage
 		if err := json.Unmarshal(event.Message, &message); err != nil {
 			return fmt.Errorf("%w: malformed user message", ErrProtocol)
+		}
+		if result.assistantTurn.id != "" && !result.assistantTurn.closed {
+			return fmt.Errorf("%w: tool_result precedes assistant stop_reason", ErrProtocol)
 		}
 		permissionDeniedIDs, err := qoderPermissionDeniedIDs(event, message)
 		if err != nil {
@@ -401,6 +429,13 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			result.setObservedToolStatus(part.ToolUseID, "passed")
 			result.toolNames = append(result.toolNames, pending.tool)
 		}
+		if result.assistantTurn.id != "" && len(result.pendingTools) == 0 {
+			if result.closedTurns == nil {
+				result.closedTurns = map[string]struct{}{}
+			}
+			result.closedTurns[result.assistantTurn.id] = struct{}{}
+			result.assistantTurn = assistantTurnState{}
+		}
 		return nil
 	case "result":
 		if result.sessionID == "" || event.IsError == nil {
@@ -408,6 +443,9 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		}
 		if len(result.pendingTools) != 0 {
 			return fmt.Errorf("%w: terminal result has unresolved tool_use", ErrProtocol)
+		}
+		if result.assistantTurn.id != "" && !result.assistantTurn.closed {
+			return fmt.Errorf("%w: terminal result has unresolved assistant message", ErrProtocol)
 		}
 		result.terminal.seen = true
 		result.inputTokens, result.outputTokens = event.Usage.InputTokens, event.Usage.OutputTokens
@@ -435,6 +473,89 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		return fmt.Errorf("%w: unrecognized stream-json event type", ErrProtocol)
 	}
 	return nil
+}
+
+func (result *captureResult) beginAssistantFrame(message qoderMessage) error {
+	if message.ID == "" {
+		if result.assistantTurn.id != "" {
+			return fmt.Errorf("%w: assistant message id disappeared", ErrProtocol)
+		}
+		for _, part := range message.Content {
+			if part.Type == "tool_use" && len(result.pendingTools) != 0 {
+				return fmt.Errorf("%w: tool_use precedes prior tool_result", ErrProtocol)
+			}
+		}
+		return nil
+	}
+	if message.Role != "assistant" {
+		return fmt.Errorf("%w: assistant message role mismatch", ErrProtocol)
+	}
+	if _, duplicate := result.closedTurns[message.ID]; duplicate {
+		return fmt.Errorf("%w: assistant message follows closed turn", ErrProtocol)
+	}
+	switch {
+	case result.assistantTurn.id == "":
+		if len(result.pendingTools) != 0 {
+			return fmt.Errorf("%w: assistant message precedes prior tool_result", ErrProtocol)
+		}
+		result.assistantTurn = assistantTurnState{id: message.ID}
+	case result.assistantTurn.id == message.ID:
+		if result.assistantTurn.closed {
+			return fmt.Errorf("%w: assistant frame follows stop_reason", ErrProtocol)
+		}
+	default:
+		if !result.assistantTurn.closed {
+			return fmt.Errorf("%w: assistant message id changed before stop_reason", ErrProtocol)
+		}
+		if len(result.pendingTools) != 0 {
+			return fmt.Errorf("%w: assistant message precedes prior tool_result", ErrProtocol)
+		}
+		if result.closedTurns == nil {
+			result.closedTurns = map[string]struct{}{}
+		}
+		result.closedTurns[result.assistantTurn.id] = struct{}{}
+		result.assistantTurn = assistantTurnState{id: message.ID}
+	}
+	return nil
+}
+
+func (result *captureResult) finishAssistantFrame(message qoderMessage) error {
+	if message.ID == "" || message.StopReason == nil {
+		return nil
+	}
+	switch *message.StopReason {
+	case "tool_use":
+		if len(result.pendingTools) == 0 {
+			return fmt.Errorf("%w: tool_use stop_reason has no pending tool", ErrProtocol)
+		}
+	case "end_turn":
+		if len(result.pendingTools) != 0 {
+			return fmt.Errorf("%w: end_turn has unresolved tool_use", ErrProtocol)
+		}
+	default:
+		return fmt.Errorf("%w: unrecognized assistant stop_reason", ErrProtocol)
+	}
+	result.assistantTurn.closed = true
+	return nil
+}
+
+func canonicalJSONEqual(left, right json.RawMessage) bool {
+	var leftValue, rightValue any
+	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
+		return false
+	}
+	leftCanonical, leftErr := json.Marshal(leftValue)
+	rightCanonical, rightErr := json.Marshal(rightValue)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftCanonical, rightCanonical)
+}
+
+func (result *captureResult) hasObservedToolID(id string) bool {
+	for _, tool := range result.observedTools {
+		if tool.id == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (result *captureResult) setObservedToolStatus(id, status string) {
