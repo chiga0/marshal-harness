@@ -330,6 +330,14 @@ func hardeningFlags(configDir string) []string {
 		// frozen allowWorkerSubagents=false policy.
 		"--disallowed-tools", "Agent",
 	}
+	// Some high-sensitivity ordinary-user tasks deliberately forbid search
+	// tools because Qoder may otherwise emit a path-less Grep/Glob call before
+	// it has a canonical worktree path.  The transcript gate still remains the
+	// authority; this flag only narrows the provider tool surface and is opt-in
+	// per launch so existing tasks retain their historical tool set.
+	if os.Getenv("MARSHAL_QODER_DISABLE_SEARCH") == "1" {
+		flags = append(flags, "--disallowed-tools", "Grep", "--disallowed-tools", "Glob")
+	}
 	if configDir != "" {
 		flags = append(flags, "--config-dir", configDir, "--setting-sources", "")
 	}

@@ -1408,10 +1408,19 @@ func TestParseQoderVersionRejectsMalformedOutput(t *testing.T) {
 }
 
 func TestBuildArgsFreezesRealNonInteractiveArgv(t *testing.T) {
+	t.Setenv("MARSHAL_QODER_DISABLE_SEARCH", "")
 	args := buildArgs("provider/model", "/managed/config", "/worktree", false)
 	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--disallowed-tools", "Agent", "--config-dir", "/managed/config", "--setting-sources", "", "--cwd", "/worktree", "--model", "provider/model"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v", args)
+	}
+}
+
+func TestHardeningFlagsCanDisableSearchToolsPerLaunch(t *testing.T) {
+	t.Setenv("MARSHAL_QODER_DISABLE_SEARCH", "1")
+	args := hardeningFlags("/managed/config")
+	if !containsSequence(args, "--disallowed-tools", "Agent") || !containsSequence(args, "--disallowed-tools", "Grep") || !containsSequence(args, "--disallowed-tools", "Glob") {
+		t.Fatalf("search-deny launch must retain Agent denial and add Grep/Glob denial: %#v", args)
 	}
 }
 
