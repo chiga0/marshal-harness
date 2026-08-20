@@ -105,7 +105,7 @@ func liveProbeGate(t *testing.T) {
 		}
 		executable = resolved
 	}
-	snapshot, err := probeCapabilitySnapshot(executable)
+	snapshot, err := probeCapabilitySnapshot(t, executable)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,14 @@ func liveProbeGate(t *testing.T) {
 // probeCapabilitySnapshot constructs the adapter for executable and returns
 // its validated CapabilitySnapshot. Executability and version-parse failures
 // surface here and are never exempted by MARSHAL_SKIP_LIVE_PROBE.
-func probeCapabilitySnapshot(executable string) (map[string]any, error) {
+func probeCapabilitySnapshot(t *testing.T, executable string) (map[string]any, error) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	settingsPath := filepath.Join(home, ".qwen", "settings.json")
+	writeJSON(t, settingsPath, map[string]any{
+		"security": map[string]any{"auth": map[string]any{"selectedType": "qwen-oauth"}},
+	})
 	validator, err := contract.NewValidator()
 	if err != nil {
 		return nil, err
@@ -129,6 +136,7 @@ func probeCapabilitySnapshot(executable string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	setAuthSettingsPaths(adapter, settingsPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	record, err := adapter.Probe(ctx)
@@ -226,7 +234,7 @@ func TestLiveProbeGateExemption(t *testing.T) {
 		}
 	})
 	t.Run("non-exempted-unsupported-binary-keeps-frozen-failure", func(t *testing.T) {
-		snapshot, err := probeCapabilitySnapshot(fakeExecutable(t, "9.9.9", "", "", "exit 0"))
+		snapshot, err := probeCapabilitySnapshot(t, fakeExecutable(t, "9.9.9", "", "", "exit 0"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -242,10 +250,10 @@ func TestLiveProbeGateExemption(t *testing.T) {
 		if err := os.WriteFile(notExecutable, []byte("data"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := probeCapabilitySnapshot(notExecutable); err == nil || !strings.Contains(err.Error(), "executable regular file") {
+		if _, err := probeCapabilitySnapshot(t, notExecutable); err == nil || !strings.Contains(err.Error(), "executable regular file") {
 			t.Fatalf("non-executable binary must fail despite the exemption: %v", err)
 		}
-		if _, err := probeCapabilitySnapshot(fakeExecutable(t, "garbage-output", "", "", "exit 0")); err == nil || !strings.Contains(err.Error(), "unrecognized version") {
+		if _, err := probeCapabilitySnapshot(t, fakeExecutable(t, "garbage-output", "", "", "exit 0")); err == nil || !strings.Contains(err.Error(), "unrecognized version") {
 			t.Fatalf("unparseable version must fail despite the exemption: %v", err)
 		}
 	})
