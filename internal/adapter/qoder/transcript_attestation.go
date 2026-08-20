@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -257,23 +258,14 @@ func ValidateTranscriptAttestation(input TranscriptAttestationInput) (Transcript
 	if err != nil {
 		return observation, errors.New("worktree-invalid")
 	}
-	scope, _, _ := verification.PolicyFromTask(task)
 	for _, call := range capture.observedTools {
 		if !allowed[call.tool] {
 			return observation, errors.New("tool-not-allowed")
 		}
 		switch call.tool {
 		case "read", "write", "edit", "grep", "glob":
-			relative, err := attestToolPath(worktree, call.input)
-			if err != nil {
+			if err := attestObservedToolPath(worktree, task, call.tool, call.input, declaredChanged); err != nil {
 				return observation, err
-			}
-			gate := verification.EvaluateScope(verification.Observation{ChangedFileCount: 1, Changes: []verification.Change{{Path: relative}}}, scope)
-			if gate.Status != "pass" {
-				return observation, errors.New("tool-path-out-of-scope")
-			}
-			if (call.tool == "write" || call.tool == "edit") && !declaredChanged[relative] {
-				return observation, errors.New("write-path-not-declared")
 			}
 		case "bash":
 			if call.resultTransport {
@@ -397,6 +389,79 @@ func canonicalDirectory(path string) (string, error) {
 		return "", errors.New("not-directory")
 	}
 	return actual, nil
+}
+
+func attestObservedToolPath(worktree string, task domain.TaskSpec, tool string, rawInput json.RawMessage, declaredChanged map[string]bool) error {
+	relative, err := attestToolPath(worktree, rawInput)
+	if err != nil {
+		return err
+	}
+	switch tool {
+	case "read":
+		if err := attestReadToolPath(relative, task.Scope.DenyPaths); err != nil {
+			return err
+		}
+		return nil
+	case "grep", "glob":
+		if err := attestSearchToolPath(worktree, relative, task.Scope.DenyPaths); err != nil {
+			return err
+		}
+		return nil
+	case "write", "edit":
+	default:
+		return errors.New("unreviewed-tool")
+	}
+	scope, _, _ := verification.PolicyFromTask(task)
+	gate := verification.EvaluateScope(verification.Observation{ChangedFileCount: 1, Changes: []verification.Change{{Path: relative}}}, scope)
+	if gate.Status != "pass" {
+		return errors.New("tool-path-out-of-scope")
+	}
+	if (tool == "write" || tool == "edit") && !declaredChanged[relative] {
+		return errors.New("write-path-not-declared")
+	}
+	return nil
+}
+
+func attestReadToolPath(relative string, denyPaths []string) error {
+	if relative == ".marshal" || strings.HasPrefix(relative, ".marshal/") {
+		return errors.New("tool-path-out-of-scope")
+	}
+	for _, pattern := range denyPaths {
+		denied, err := doublestar.Match(pattern, relative)
+		if err != nil || denied {
+			return errors.New("tool-path-out-of-scope")
+		}
+	}
+	return nil
+}
+
+func attestSearchToolPath(worktree, relative string, denyPaths []string) error {
+	info, err := os.Lstat(filepath.Join(worktree, filepath.FromSlash(relative)))
+	if err != nil {
+		return errors.New("tool-path-out-of-scope")
+	}
+	if info.Mode().IsRegular() {
+		return attestReadToolPath(relative, denyPaths)
+	}
+	if !info.IsDir() {
+		return errors.New("tool-path-out-of-scope")
+	}
+	restricted := append(append([]string(nil), denyPaths...), ".marshal/**")
+	for _, pattern := range restricted {
+		if !doublestar.ValidatePattern(pattern) {
+			return errors.New("tool-path-out-of-scope")
+		}
+		base, _ := doublestar.SplitPattern(pattern)
+		base = filepath.ToSlash(filepath.Clean(filepath.FromSlash(base)))
+		if base == "." || base == "" || filepath.IsAbs(base) || base == ".." || strings.HasPrefix(base, "../") || searchDomainsOverlap(relative, base) {
+			return errors.New("tool-path-out-of-scope")
+		}
+	}
+	return nil
+}
+
+func searchDomainsOverlap(left, right string) bool {
+	return left == "." || right == "." || left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
 }
 
 func attestToolPath(worktree string, raw json.RawMessage) (string, error) {

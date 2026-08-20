@@ -19,7 +19,7 @@ Validator 逐级使用 nofollow `dirfd` 打开文件，以硬上限分块读取�
 
 - manifest 精确声明 `qoder-stream-json-1.2.0-v7`，其它 Adapter 或事件版本 fail closed；
 - `TaskSpec`、`WorkerRequest`、`WorkerResult` 与 `CapabilitySnapshot` 全部通过 Core Draft 2020-12/语义契约，JCS digest、task/run/attempt/base/版本身份一致；
-- 实际 tool 名称由冻结 profile 默认值或 `TaskSpec.worker.tools` 机械导出；file tool 的规范化路径必须留在精确 worktree、满足 `TaskSpec.scope` 且 Write/Edit 出现在 `declaredChangedFiles`，绝对越界、`..`、denyPath 与 symlink 逃逸全部 fail closed；
+- 实际 tool 名称由冻结 profile 默认值或 `TaskSpec.worker.tools` 机械导出；`Read` 只核对其精确目标位于 worktree 且不命中 `denyPaths`/`.marshal`；`Grep`/`Glob` 除路径边界外还必须证明整个搜索根与每个 `denyPaths`/`.marshal` 域不相交，搜索 worktree 根、deny 祖先、无界或无效 glob 及不可确定搜索域一律 fail closed；`Write`/`Edit` 仍须同时命中 `scope.allowPaths` 且出现在 `declaredChangedFiles`。所有 file tool 的绝对越界、`..` 与 symlink 逃逸均 fail closed；
 - 每个非 transport `Bash` 都绑定冻结 profile 的原始 command digest，并与 `declaredCommands` 的安全 `commandId/digest/status` 序列一一对应；
 - final tee 使用唯一的 closed envelope，恰好成功一次且是最后一个 tool call；对应 `tool_result` 必须显式为 `kind=completed/exitCode=0/interrupted=false`，成功后没有任何事件，terminal 唯一；
 - metadata 的字节数、事件数、tool 数、tool 名集合和 tee 统计与原始 transcript 一致。
