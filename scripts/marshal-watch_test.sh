@@ -2,8 +2,9 @@
 # scripts/marshal-watch.sh 的确定性测试（operator-runbook §11）。
 # 只使用临时 MARSHAL_WATCH_ROOT 与 MARSHAL_WATCH_PROCESS_FILE fixture：
 # 不读取/删除/改写真实 .marshal，不依赖网络、osascript 或真实 Worker 进程。
-# 覆盖：行动队列优先级/Goal cohort 分桶、终态过滤、--once 不 sleep、v2 JSON、
-#       lease/owner 权威、argv 仅诊断、journal/typed-failure dedupe 与
+# 覆盖：行动队列优先级/Goal cohort/unscoped 分桶、终态过滤、
+#       --once 不 sleep、v2 JSON、lease/owner 权威、argv 仅诊断、
+#       typed retry lineage/root+latest failure/dedupe 与
 #       slots=min(memory,cpu,provider) 的 fail-closed 建议。
 set -u
 
@@ -34,12 +35,33 @@ LEASEFILE="$TMP/lease-facts.json"
 mkdir -p "$ROOT/runs"
 : > "$PROCFILE"
 printf '%s\n' '{}' > "$LEASEFILE"
+FAILURE_SIGNATURE="sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+default_cohort_file() {
+  local path="$TMP/default-cohort.json"
+  python3 - "$ROOT/runs" "$path" <<'PYEOF'
+import json, os, sys
+run_ids = sorted(name for name in os.listdir(sys.argv[1])
+                 if os.path.isdir(os.path.join(sys.argv[1], name)))
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump({"goalId": "goal:test-default", "runIds": run_ids}, handle,
+              separators=(",", ":"))
+PYEOF
+  printf '%s\n' "$path"
+}
 
 # 统一以 fixture 根与受控进程文件运行，禁用通知，避免触碰真实环境。
 run_watch() {
+  local cohort_file
+  if [ "${MARSHAL_WATCH_COHORT_FILE+x}" = x ]; then
+    cohort_file="$MARSHAL_WATCH_COHORT_FILE"
+  else
+    cohort_file=$(default_cohort_file)
+  fi
   MARSHAL_WATCH_ROOT="$ROOT" \
   MARSHAL_WATCH_PROCESS_FILE="$PROCFILE" \
   MARSHAL_WATCH_LEASE_FACTS_FILE="$LEASEFILE" \
+  MARSHAL_WATCH_COHORT_FILE="$cohort_file" \
   MARSHAL_WATCH_NOTIFY=0 \
   MARSHAL_WATCH_LOGICAL_CPUS="${MARSHAL_WATCH_LOGICAL_CPUS-8}" \
   MARSHAL_WATCH_LOAD1M="${MARSHAL_WATCH_LOAD1M-0}" \
@@ -50,8 +72,15 @@ run_watch() {
 }
 
 run_watch_real_lease() {
+  local cohort_file
+  if [ "${MARSHAL_WATCH_COHORT_FILE+x}" = x ]; then
+    cohort_file="$MARSHAL_WATCH_COHORT_FILE"
+  else
+    cohort_file=$(default_cohort_file)
+  fi
   MARSHAL_WATCH_ROOT="$ROOT" \
   MARSHAL_WATCH_PROCESS_FILE="$PROCFILE" \
+  MARSHAL_WATCH_COHORT_FILE="$cohort_file" \
   MARSHAL_WATCH_NOTIFY=0 \
   MARSHAL_WATCH_LOGICAL_CPUS="${MARSHAL_WATCH_LOGICAL_CPUS-8}" \
   MARSHAL_WATCH_LOAD1M="${MARSHAL_WATCH_LOAD1M-0}" \
@@ -75,11 +104,42 @@ print(now.strftime("%Y-%m-%dT%H:%M:%SZ"))
 PYEOF
   )
   cat > "$dir/state.json" <<EOF
-{"apiVersion":"marshal.dev/v1alpha1","kind":"RunState","taskId":"task-$rid","runId":"$rid","state":"$state","sequence":1,"specDigest":"sha256:spec-$rid","policyDigest":"sha256:policy-$rid","capabilityDigest":"sha256:capability-$rid","baseSha":"base-$rid","reviewRound":0,"attemptsUsed":0,"operationalRetriesUsed":0,"reworkRoundsUsed":0,"createdAt":"$ts","updatedAt":"$ts"}
+{"apiVersion":"marshal.dev/v1alpha1","kind":"RunState","taskId":"task-$rid","runId":"$rid","state":"$state","sequence":1,"specDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","policyDigest":"sha256:2222222222222222222222222222222222222222222222222222222222222222","capabilityDigest":"sha256:3333333333333333333333333333333333333333333333333333333333333333","baseSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reviewRound":0,"attemptsUsed":0,"operationalRetriesUsed":0,"reworkRoundsUsed":0,"createdAt":"$ts","updatedAt":"$ts"}
 EOF
   cat > "$dir/task-spec.json" <<'EOF'
 {"worker":{"preferredAdapter":"qwen","fallbackAdapters":[]}}
 EOF
+}
+
+set_current_attempt() {
+  python3 - "$ROOT/runs/$1/state.json" "$2" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+data["currentAttemptId"] = sys.argv[2]
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(data, handle, separators=(",", ":"))
+PYEOF
+}
+
+failure_signature() {
+  python3 - "$ROOT/runs/$1/state.json" "$2" "$3" <<'PYEOF'
+import hashlib, json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    state = json.load(handle)
+evidence = {"adapterId": "qwen", "failureKind": sys.argv[2],
+            "retryDisposition": sys.argv[3]}
+encoded = json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()
+evidence_digest = "sha256:" + hashlib.sha256(encoded).hexdigest()
+signature = {"version": 1, "sourceHead": state["baseSha"],
+             "specDigest": state["specDigest"],
+             "policyDigest": state["policyDigest"],
+             "capabilityDigest": state["capabilityDigest"],
+             "adapterId": "qwen", "failureKind": sys.argv[2],
+             "failureEvidenceDigest": evidence_digest}
+encoded = json.dumps(signature, sort_keys=True, separators=(",", ":")).encode()
+print("sha256:" + hashlib.sha256(encoded).hexdigest())
+PYEOF
 }
 
 # 以超时守护运行命令，输出写入 $2；超时杀进程并返回 124。
@@ -110,6 +170,17 @@ make_run run-review  REVIEW_PENDING   120
 printf '%s\n' '{}' > "$ROOT/runs/run-review/review-packet.json"
 make_run run-rework  REWORK_REQUESTED 110
 make_run run-retry   RETRY_PENDING    100
+set_current_attempt run-retry attempt:run-retry
+FAILURE_SIGNATURE=$(failure_signature run-retry rate-limited retryable)
+INITIAL_EVENT_TS=$(python3 - <<'PYEOF'
+import datetime
+stamp = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=10)
+print(stamp.replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+PYEOF
+)
+cat > "$ROOT/runs/run-retry/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:run-retry","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE"}}
+EOF
 make_run run-verify  VERIFYING         90
 make_run run-publish PUBLISHING        80
 make_run run-ready   READY             70
@@ -248,6 +319,97 @@ fi
 else
   bad "缺失 ReviewPacket 场景 watchdog 异常"
 fi
+
+note "1e) RETRY_PENDING 仅当前 typed lineage 可重试，root/latest 绑定并在新 origin 重置"
+make_run retry-lineage RETRY_PENDING 10
+set_current_attempt retry-lineage attempt:retry-2
+ROOT_SIGNATURE=$(failure_signature retry-lineage rate-limited retryable)
+LATEST_SIGNATURE=$(failure_signature retry-lineage connection-failure retryable)
+cat > "$ROOT/runs/retry-lineage/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:retry-1","payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-1","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$ROOT_SIGNATURE"}}
+{"sequence":3,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RETRY_PENDING","stateTo":"RUNNING","attemptId":"attempt:retry-2","payload":{"adapterId":"qwen"}}
+{"sequence":4,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-2","payload":{"adapterId":"qwen","failureKind":"connection-failure","retryDisposition":"retryable","failureSignature":"$LATEST_SIGNATURE"}}
+EOF
+OUT_RETRY_LINEAGE="$TMP/out_retry_lineage.json"
+run_watch --once --json > "$OUT_RETRY_LINEAGE"
+
+make_run retry-legacy RETRY_PENDING 10
+set_current_attempt retry-legacy attempt:legacy
+cat > "$ROOT/runs/retry-legacy/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:legacy","payload":{"error":"legacy free text"}}
+EOF
+
+make_run retry-mismatch RETRY_PENDING 10
+set_current_attempt retry-mismatch attempt:new
+MISMATCH_SIGNATURE=$(failure_signature retry-mismatch rate-limited retryable)
+cat > "$ROOT/runs/retry-mismatch/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:old","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$MISMATCH_SIGNATURE"}}
+EOF
+
+make_run retry-invalid RETRY_PENDING 10
+set_current_attempt retry-invalid attempt:invalid
+cat > "$ROOT/runs/retry-invalid/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:invalid","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"not-a-digest"}}
+EOF
+
+make_run retry-wrongsig RETRY_PENDING 10
+set_current_attempt retry-wrongsig attempt:wrongsig
+cat > "$ROOT/runs/retry-wrongsig/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:wrongsig","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+EOF
+OUT_RETRY_CLOSED="$TMP/out_retry_closed.json"
+run_watch --once --json > "$OUT_RETRY_CLOSED"
+if python3 - "$OUT_RETRY_LINEAGE" "$OUT_RETRY_CLOSED" "$ROOT_SIGNATURE" "$LATEST_SIGNATURE" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    first = {item["runId"]: item for item in json.load(handle)["items"]}
+with open(sys.argv[2]) as handle:
+    second = {item["runId"]: item for item in json.load(handle)["items"]}
+lineage = first["retry-lineage"]
+if lineage.get("action") != "retry-or-abort":
+    raise SystemExit("valid typed lineage was not retryable: %r" % lineage)
+if lineage.get("rootFailure", {}).get("failureSignature") != sys.argv[3]:
+    raise SystemExit("root failure projection wrong: %r" % lineage)
+if lineage.get("latestFailure", {}).get("failureSignature") != sys.argv[4] or lineage.get("latestFailure", {}).get("attemptId") != "attempt:retry-2":
+    raise SystemExit("latest failure projection wrong: %r" % lineage)
+for run_id in ("retry-legacy", "retry-mismatch", "retry-invalid", "retry-wrongsig"):
+    item = second[run_id]
+    if item.get("action") != "retry-intervention" or item.get("interventionReason") != "typed-retry-lineage-required":
+        raise SystemExit("%s did not fail closed: %r" % (run_id, item))
+print("typed retry lineage and fail-closed intervention OK")
+PYEOF
+then
+  ok "typed retry lineage 投影与 legacy/invalid/mismatch fail closed"
+else
+  bad "RETRY_PENDING 错误建议重试或 root/latest 投影错误"
+fi
+
+ORIGIN_SIGNATURE=$(failure_signature retry-lineage dns-failure retryable)
+cat > "$ROOT/runs/retry-lineage/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REWORK_REQUESTED","stateTo":"RUNNING","attemptId":"attempt:retry-2","payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-2","payload":{"adapterId":"qwen","failureKind":"dns-failure","retryDisposition":"retryable","failureSignature":"$ORIGIN_SIGNATURE"}}
+EOF
+OUT_RETRY_ORIGIN_RESET="$TMP/out_retry_origin_reset.json"
+run_watch --once --json > "$OUT_RETRY_ORIGIN_RESET"
+if python3 - "$OUT_RETRY_LINEAGE" "$OUT_RETRY_ORIGIN_RESET" "$ORIGIN_SIGNATURE" <<'PYEOF'
+import json, sys
+def get(path):
+    with open(path) as handle:
+        return next(item for item in json.load(handle)["items"] if item["runId"] == "retry-lineage")
+before, after = get(sys.argv[1]), get(sys.argv[2])
+if after.get("rootFailure", {}).get("failureSignature") != sys.argv[3] or after.get("latestFailure", {}).get("failureSignature") != sys.argv[3]:
+    raise SystemExit("new origin did not reset root/latest: %r" % after)
+if before.get("dedupeKey") == after.get("dedupeKey"):
+    raise SystemExit("root/latest origin reset did not change dedupeKey")
+print("new origin resets root/latest and dedupe identity OK")
+PYEOF
+then
+  ok "新 origin 重置 root/latest failure 并刷新 dedupe"
+else
+  bad "新 origin 污染了 failure lineage 或 dedupe"
+fi
+rm -rf "$ROOT/runs/retry-lineage" "$ROOT/runs/retry-legacy" "$ROOT/runs/retry-mismatch" "$ROOT/runs/retry-invalid" "$ROOT/runs/retry-wrongsig"
 
 note "1b) 每次心跳读取内存并给出并发槽位建议"
 CAPACITY_JSON="$TMP/capacity.json"
@@ -820,41 +982,61 @@ else
   bad "current/historical 分桶失败"
 fi
 
-note "5b) fallback 只按 createdAt/held lease 识别当前 Run，近期 updatedAt 不复活历史"
+note "5b) 无显式 cohort 时只有 held-alive 进 current，其余进 unscoped"
 rm -rf "$ROOT/runs"
 mkdir -p "$ROOT/runs"
-make_run fallback-current READY 60
-make_run fallback-old REVIEW_PENDING 60
+make_run fallback-held RUNNING 60
+make_run fallback-recent READY 10
+make_run fallback-old REVIEW_PENDING 999999
 printf '%s\n' '{}' > "$ROOT/runs/fallback-old/review-packet.json"
-python3 - "$ROOT/runs/fallback-old/state.json" <<'PYEOF'
-import json, sys
-path = sys.argv[1]
-with open(path, encoding="utf-8") as handle:
-    data = json.load(handle)
-data["createdAt"] = "2020-01-01T00:00:00Z"
-with open(path, "w", encoding="utf-8") as handle:
-    json.dump(data, handle, separators=(",", ":"))
-PYEOF
-OUT_FALLBACK="$TMP/out_fallback.json"
-if run_watch --once --json > "$OUT_FALLBACK" && \
-   python3 - "$OUT_FALLBACK" <<'PYEOF'
+cat > "$LEASEFILE" <<'EOF'
+{"fallback-held":"held-alive"}
+EOF
+OUT_UNSCOPED="$TMP/out_unscoped.json"
+if MARSHAL_WATCH_COHORT_FILE= run_watch --once --json > "$OUT_UNSCOPED" && \
+   python3 - "$OUT_UNSCOPED" <<'PYEOF'
 import json, sys
 with open(sys.argv[1]) as handle:
     data = json.load(handle)
-if data.get("cohort", {}).get("source") != "recent-created-fallback":
-    raise SystemExit("unexpected fallback source: %r" % data.get("cohort"))
-if [item["runId"] for item in data["items"]] != ["fallback-current"]:
-    raise SystemExit("fallback current bucket incorrect: %r" % data["items"])
-if [item["runId"] for item in data["historicalItems"]] != ["fallback-old"]:
-    raise SystemExit("recent updatedAt revived historical run: %r" % data["historicalItems"])
-if data.get("topAction", {}).get("runId") != "fallback-current":
-    raise SystemExit("historical run displaced current top action: %r" % data.get("topAction"))
-print("createdAt fallback does not revive historical backlog")
+if data.get("cohort", {}).get("source") != "owned-active-only":
+    raise SystemExit("unexpected no-cohort source: %r" % data.get("cohort"))
+if [item["runId"] for item in data["items"]] != ["fallback-held"]:
+    raise SystemExit("held-alive current bucket incorrect: %r" % data["items"])
+if {item["runId"] for item in data.get("unscopedItems", [])} != {"fallback-recent", "fallback-old"}:
+    raise SystemExit("unscoped bucket incorrect: %r" % data.get("unscopedItems"))
+if data.get("historicalItems") != []:
+    raise SystemExit("no-cohort path fell back to historical: %r" % data["historicalItems"])
+if data.get("topAction", {}).get("runId") != "fallback-held":
+    raise SystemExit("unscoped run displaced held top action: %r" % data.get("topAction"))
+print("no-cohort owned-only current + unscoped partition OK")
 PYEOF
 then
-  ok "fallback 不会因近期 updatedAt 复活历史 Run"
+  ok "无 cohort 时 held-alive 与 unscoped 严格分桶"
 else
-  bad "fallback 错把历史 Run 纳入当前 cohort"
+  bad "无 cohort 时错误推断 current/topAction"
+fi
+
+note "5c) invalid 显式 cohort fail closed 到 historical，不回退 unscoped/current"
+INVALID_COHORT="$TMP/invalid-cohort.json"
+printf '%s\n' '{"goalId":"goal:bad","runIds":["duplicate","duplicate"]}' > "$INVALID_COHORT"
+OUT_INVALID_COHORT="$TMP/out_invalid_cohort.json"
+if MARSHAL_WATCH_COHORT_FILE="$INVALID_COHORT" run_watch --once --json > "$OUT_INVALID_COHORT" && \
+   python3 - "$OUT_INVALID_COHORT" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    data = json.load(handle)
+if data.get("cohort", {}).get("source") != "invalid-explicit-cohort":
+    raise SystemExit("invalid cohort source missing: %r" % data.get("cohort"))
+if data.get("items") or data.get("unscopedItems") or data.get("topAction") is not None:
+    raise SystemExit("invalid cohort unexpectedly produced current/unscoped action: %r" % data)
+if {item["runId"] for item in data.get("historicalItems", [])} != {"fallback-held", "fallback-recent", "fallback-old"}:
+    raise SystemExit("invalid cohort historical bucket wrong: %r" % data.get("historicalItems"))
+print("invalid explicit cohort remains historical-only")
+PYEOF
+then
+  ok "invalid 显式 cohort historical-only fail closed"
+else
+  bad "invalid 显式 cohort 产生了回退行动"
 fi
 
 # 后续 journal/provider 测试继续使用显式 cohort fixture。
@@ -883,7 +1065,7 @@ EOF
 OUT_PROGRESS_1="$TMP/out_progress_1.json"
 MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$OUT_PROGRESS_1"
 cat >> "$ROOT/runs/current-ready/events.jsonl" <<EOF
-{"sequence":2,"type":"worker.failed","timestamp":"$EVENT_TS","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","notBefore":"$VALID_NOT_BEFORE"}}
+{"sequence":2,"type":"worker.failed","timestamp":"$EVENT_TS","attemptId":"attempt:provider-1","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE","notBefore":"$VALID_NOT_BEFORE"}}
 EOF
 OUT_PROGRESS_2="$TMP/out_progress_2.json"
 MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$OUT_PROGRESS_2"
@@ -944,7 +1126,7 @@ for provider_case in 'dns-failure retryable' 'connection-failure retryable' 'quo
   fi
   cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
 {"sequence":1,"type":"planning.inputs-frozen","timestamp":"$EVENT_TS","payload":{"adapterId":"qwen"}}
-{"sequence":2,"type":"worker.failed","timestamp":"$EVENT_TS","payload":{"adapterId":"qwen","failureKind":"$failure_kind","retryDisposition":"$disposition"$hint}}
+{"sequence":2,"type":"worker.failed","timestamp":"$EVENT_TS","attemptId":"attempt:provider-1","payload":{"adapterId":"qwen","failureKind":"$failure_kind","retryDisposition":"$disposition","failureSignature":"$FAILURE_SIGNATURE"$hint}}
 EOF
   PROVIDER_KIND_JSON="$TMP/provider_${failure_kind}.json"
   if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$PROVIDER_KIND_JSON" && \
@@ -1078,7 +1260,7 @@ EQUAL_TS=$(jq -r .equal "$TMP/retry-times.json")
 check_retry_hint() {
   local case_name="$1" event_timestamp="$2" not_before_json="$3" expected="$4"
   cat > "$ROOT/runs/retry-hint/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.failed","timestamp":$event_timestamp,"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","notBefore":$not_before_json}}
+{"sequence":1,"type":"worker.failed","timestamp":$event_timestamp,"attemptId":"attempt:retry-hint","payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE","notBefore":$not_before_json}}
 EOF
   local output="$TMP/retry_hint_${case_name}.json"
   if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$output" && \
