@@ -1,5 +1,5 @@
 {
-  "format": "marshal-skill/operator-admission-receipt-v1",
+  "format": "marshal-skill/operator-admission-receipt-v2",
   "authority": "operator-local-non-core",
   "taskId": "<TASK-ID>",
   "runId": "<RUN-ID>",
@@ -43,6 +43,35 @@
     "headSha": "<40-hex-sha>",
     "statusDigest": "sha256:<64-hex>",
     "scopeLeaseDigest": "sha256:<64-hex>"
+  },
+  "files": {
+    "statePath": "state.json",
+    "controlRecordsPath": "control/records.jsonl"
+  },
+  "planApproval": {
+    "recordId": "<APPROVAL-RECORD-ID>",
+    "controlSequence": 0
+  },
+  "launchEnvironment": {
+    "keys": [
+      "<SELECTED-ADAPTER-MODE-ENV-IF-APPLICABLE>",
+      "<SELECTED-ADAPTER-PATH-ENV>",
+      "MARSHAL_WATCH_NOTIFY",
+      "PATH"
+    ],
+    "digest": "sha256:<canonical JSON object of allowlisted key/value pairs>"
+  },
+  "tooling": {
+    "marshalExecutable": {
+      "digest": "sha256:<64-hex>",
+      "device": 0,
+      "inode": 0
+    },
+    "watchScript": {
+      "digest": "sha256:<64-hex>",
+      "device": 0,
+      "inode": 0
+    }
   },
   "dynamicEvidence": {
     "doctorDigest": "sha256:<64-hex>",
