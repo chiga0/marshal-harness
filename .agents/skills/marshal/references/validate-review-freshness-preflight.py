@@ -568,6 +568,7 @@ def validate_current_generation_inputs(
     verification_digest: str,
     artifacts: dict,
     artifact_digest: str,
+    require_candidate: bool = True,
 ) -> tuple[dict, list[tuple[str, bytes, tuple[int, int, int, int]]]]:
     """Recompute the inputs Core will use when it replaces/generates a packet."""
     records: list[tuple[str, bytes, tuple[int, int, int, int]]] = []
@@ -606,14 +607,18 @@ def validate_current_generation_inputs(
 
     observation = observe(script, worktree, state["baseSha"])
     report_observed = report.get("observed", {})
-    if observation.get("snapshotDigest") != report_observed.get("snapshotDigest") or observation.get("diffDigest") != report_observed.get("diffDigest") or observation.get("diffDigest") != patch_digest:
+    observed_fields = (
+        "snapshotDigest", "diffDigest", "changedFiles", "changedFileCount",
+        "diffBytes", "hasUntrackedFiles",
+    )
+    if any(observation.get(field) != report_observed.get(field) for field in observed_fields) or observation.get("diffDigest") != patch_digest:
         fail("worktree-evidence-changed-after-verification")
 
     candidate = report.get("candidateDigest", "")
     worker_candidate = report.get("workerCandidateDigest", "")
     if bool(candidate) != bool(worker_candidate):
         fail("legacy-candidate-partial-requires-migration")
-    if not candidate:
+    if not candidate and require_candidate:
         fail("current-round-candidate-missing")
     if candidate:
         candidate_records: dict[str, dict] = {}
@@ -641,6 +646,8 @@ def validate_current_generation_inputs(
                 fail("candidate-artifact-binding-mismatch")
             if artifact.get("relativePath") == "worker.patch" and artifact.get("candidateDigest") != worker_candidate:
                 fail("candidate-artifact-binding-mismatch")
+    elif any(artifact.get("candidateDigest") for artifact in artifacts.get("artifacts", [])):
+        fail("legacy-candidate-partial-requires-migration")
 
     return {
         "specDigest": task_digest,
@@ -649,6 +656,10 @@ def validate_current_generation_inputs(
         "workerResultDigests": worker_digests,
         "patchDigest": patch_digest,
         "snapshotDigest": observation.get("snapshotDigest"),
+        "changedFiles": observation.get("changedFiles"),
+        "changedFileCount": observation.get("changedFileCount"),
+        "diffBytes": observation.get("diffBytes"),
+        "hasUntrackedFiles": observation.get("hasUntrackedFiles"),
         "candidateDigest": candidate,
         "workerCandidateDigest": worker_candidate,
     }, records
@@ -1017,13 +1028,42 @@ def run(arguments: argparse.Namespace) -> dict:
             input_bindings = {"previousRoundLineage": previous_bindings, "currentGeneration": current_generation_bindings}
             action, reason = "generate-review-packet", "previous-round-packet-generation-claimed"
     else:
-        missing_observation = observe(script, worktree, state["baseSha"])
-        if missing_observation.get("diffDigest") != raw_digest(b"") or missing_observation.get("changedFileCount") != 0 or missing_observation.get("hasUntrackedFiles") is not False:
+        report_candidate = frozen_report.get("candidateDigest", "")
+        report_worker_candidate = frozen_report.get("workerCandidateDigest", "")
+        if not report_candidate and not report_worker_candidate:
+            legacy_observation = observe(script, worktree, state["baseSha"])
+            if (
+                legacy_observation.get("diffDigest") != raw_digest(b"")
+                or legacy_observation.get("changedFileCount") != 0
+                or legacy_observation.get("hasUntrackedFiles") is not False
+            ):
+                fail("packet-missing-worktree-not-clean")
+        current_generation_bindings, generation_records = validate_current_generation_inputs(
+            script, run_root, state, worktree, task, task_digest, frozen_report,
+            current_verification_digest, frozen_manifest, current_artifact_digest,
+            require_candidate=False,
+        )
+        if current_generation_bindings["verificationDigest"] != frozen_verification_digest or current_generation_bindings["artifactManifestDigest"] != frozen_artifact_digest:
+            fail("verification-event-binding-mismatch")
+        for relative, data, identity in generation_records:
+            tracked.append((run_root, relative, data, identity))
+        missing_observation = {
+            field: current_generation_bindings[field]
+            for field in (
+                "snapshotDigest", "patchDigest", "changedFiles", "changedFileCount",
+                "diffBytes", "hasUntrackedFiles",
+            )
+        }
+        missing_observation["diffDigest"] = missing_observation.pop("patchDigest")
+        if not current_generation_bindings["candidateDigest"] and (
+            missing_observation.get("diffDigest") != raw_digest(b"")
+            or missing_observation.get("changedFileCount") != 0
+            or missing_observation.get("hasUntrackedFiles") is not False
+        ):
             fail("packet-missing-worktree-not-clean")
         input_bindings = {
             "missingPacketWorktreeObservation": missing_observation,
-            "verificationDigest": current_verification_digest,
-            "artifactManifestDigest": current_artifact_digest,
+            "currentGeneration": current_generation_bindings,
         }
         action, reason = "generate-review-packet", "packet-missing-generation-claimed"
 

@@ -79,6 +79,34 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         self.assertTrue(response["ok"], response)
         return response["digest"]
 
+    def core_observe(self) -> dict:
+        self.assertIsNotNone(self.core_process.stdin); self.assertIsNotNone(self.core_process.stdout)
+        request = {"mode": "observe", "kindOrSchema": self.head, "path": str(self.worktree)}
+        self.core_process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+        self.core_process.stdin.flush()
+        response = json.loads(self.core_process.stdout.readline())
+        self.assertTrue(response["ok"], response)
+        return json.loads(response["digest"])
+
+    def observed_patch(self) -> bytes:
+        environment = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"}
+        patch = subprocess.check_output(
+            ["/usr/bin/git", "diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", self.head, "--"],
+            cwd=self.worktree, env=environment,
+        )
+        untracked = subprocess.check_output(
+            ["/usr/bin/git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=self.worktree, env=environment,
+        )
+        for relative in sorted(path.decode() for path in untracked.split(b"\x00") if path):
+            result = subprocess.run(
+                ["/usr/bin/git", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--", "/dev/null", relative],
+                cwd=self.worktree, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr.decode(errors="replace"))
+            patch += result.stdout
+        return patch
+
     def example(self, name: str) -> dict:
         return json.loads((EXAMPLES / f"{name}.json").read_text())
 
@@ -140,6 +168,55 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         packet_path = self.run_root / "review-packet.json"; packet = json.loads(packet_path.read_text()); packet["candidateDigest"] = candidate_digest; packet["workerCandidateDigest"] = candidate_digest; packet["verificationDigest"] = report_digest; packet["artifactManifestDigest"] = artifact_digest
         evidence = {"specDigest": packet["specDigest"], "patchDigest": packet["diffDigest"], "verificationDigest": report_digest, "artifactManifestDigest": artifact_digest, "workerResultDigests": packet["workerResultDigests"], "previousBlockingFindings": [], "candidateDigest": candidate_digest, "workerCandidateDigest": candidate_digest}
         packet["evidenceDigest"] = self.core_digest(evidence); packet_path.write_bytes(json_bytes(packet)); self.core_digest(packet, "ReviewPacket")
+        events_path = self.run_root / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        events[-1]["payload"]["reportDigest"] = report_digest
+        events[-1]["payload"]["artifactManifestDigest"] = artifact_digest
+        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+
+    def enable_missing_packet_candidate(self, *, untracked: bool) -> None:
+        (self.run_root / "review-packet.json").unlink()
+        if untracked:
+            (self.worktree / "deliverable.md").write_text("candidate deliverable\n", encoding="utf-8")
+        else:
+            (self.worktree / "README").write_text("tracked candidate\n", encoding="utf-8")
+        observation = self.core_observe()
+        patch = self.observed_patch()
+        self.assertEqual(observation["diffDigest"], digest_bytes(patch))
+        (self.run_root / "observed.patch").write_bytes(patch)
+
+        candidate = {
+            "apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate",
+            "taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1",
+            "attemptId": "attempt:fixture-01", "authorityNamespaceId": "authority:fixture",
+            "baseSha": self.head, "contentDigest": observation["diffDigest"],
+            "producerKind": "worker", "producer": "worker:fixture",
+            "createdAt": "2026-08-20T00:00:30Z",
+        }
+        candidate_digest = self.core_digest(candidate)
+        candidate["candidateDigest"] = candidate_digest
+        self.core_digest(candidate, "Candidate")
+        candidate_dir = self.run_root / "candidates"
+        candidate_dir.mkdir(exist_ok=True)
+        (candidate_dir / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
+
+        report_path = self.run_root / "verification-report.json"
+        report = json.loads(report_path.read_text())
+        report["observed"] = observation
+        report["candidateDigest"] = candidate_digest
+        report["workerCandidateDigest"] = candidate_digest
+        report_path.write_bytes(json_bytes(report))
+        report_digest = self.core_digest(report, "VerificationReport")
+
+        artifact_path = self.run_root / "artifact-manifest.json"
+        artifacts = json.loads(artifact_path.read_text())
+        artifacts["artifacts"][0].update({
+            "byteSize": len(patch), "digest": observation["diffDigest"],
+            "candidateDigest": candidate_digest,
+        })
+        artifact_path.write_bytes(json_bytes(artifacts))
+        artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+
         events_path = self.run_root / "events.jsonl"
         events = [json.loads(line) for line in events_path.read_text().splitlines()]
         events[-1]["payload"]["reportDigest"] = report_digest
@@ -299,6 +376,73 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         (self.run_root / "review-packet.json").unlink()
         code, result = self.invoke(); self.assertEqual(code, 0, result); self.assertEqual(result["action"], "generate-review-packet")
         self.assert_reason("action-already-claimed")
+
+    def test_missing_packet_tracked_candidate_claims_generation(self) -> None:
+        self.enable_missing_packet_candidate(untracked=False)
+        code, result = self.invoke()
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"], "generate-review-packet")
+        self.assertEqual(result["reasonCode"], "packet-missing-generation-claimed")
+        self.assertTrue(result["historyClaimed"])
+
+    def test_missing_packet_untracked_candidate_claims_generation(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        code, result = self.invoke()
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"], "generate-review-packet")
+        self.assertTrue(result["historyClaimed"])
+
+    def test_missing_packet_candidate_rejects_extra_worktree_drift(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        (self.worktree / "extra.txt").write_text("not verified\n", encoding="utf-8")
+        self.assert_reason("worktree-evidence-changed-after-verification")
+        history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
+        self.assertEqual(history["claims"], [])
+
+    def test_missing_packet_candidate_rejects_identity_mismatch(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        candidate_path = next((self.run_root / "candidates").iterdir())
+        candidate = json.loads(candidate_path.read_text())
+        candidate["attemptId"] = "attempt:other"
+        del candidate["candidateDigest"]
+        candidate_digest = self.core_digest(candidate)
+        candidate["candidateDigest"] = candidate_digest
+        self.core_digest(candidate, "Candidate")
+        candidate_path.unlink()
+        (candidate_path.parent / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
+
+        report_path = self.run_root / "verification-report.json"
+        report = json.loads(report_path.read_text())
+        report["candidateDigest"] = candidate_digest
+        report["workerCandidateDigest"] = candidate_digest
+        report_path.write_bytes(json_bytes(report))
+        report_digest = self.core_digest(report, "VerificationReport")
+        artifact_path = self.run_root / "artifact-manifest.json"
+        artifacts = json.loads(artifact_path.read_text())
+        artifacts["artifacts"][0]["candidateDigest"] = candidate_digest
+        artifact_path.write_bytes(json_bytes(artifacts))
+        artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+        events_path = self.run_root / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        events[-1]["payload"]["reportDigest"] = report_digest
+        events[-1]["payload"]["artifactManifestDigest"] = artifact_digest
+        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+
+        self.assert_reason("candidate-record-identity-mismatch")
+        history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
+        self.assertEqual(history["claims"], [])
+
+    def test_missing_packet_candidate_concurrent_claim_is_exactly_once(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        self.manifest_path.write_bytes(json_bytes(self.manifest()))
+        command = ["python3", "-I", "-B", str(VALIDATOR), "--run-root", str(self.run_root), "--operator-root", str(self.operator_root), "--manifest", str(self.manifest_path), "--worktree", str(self.worktree)]
+        first = subprocess.Popen(command, cwd=REPOSITORY, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        second = subprocess.Popen(command, cwd=REPOSITORY, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        results = [first.communicate(timeout=120), second.communicate(timeout=120)]
+        self.assertEqual([first.returncode, second.returncode].count(0), 1, results)
+        history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
+        self.assertEqual(len(history["claims"]), 1)
+        self.assertEqual(history["claims"][0]["action"], "generate-review-packet")
 
     def test_committed_previous_round_packet_claims_current_generation(self) -> None:
         manifest = self.make_previous_round_stale_packet()
