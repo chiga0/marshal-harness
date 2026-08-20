@@ -181,6 +181,17 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
             "relatedGates": ["scope"],
         }
 
+    def write_worker_snapshot(self, attempt_id: str, observation: dict) -> None:
+        path = self.run_root / "attempts" / attempt_id / "worktree-snapshot.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(json_bytes({
+            field: observation[field]
+            for field in (
+                "snapshotDigest", "diffDigest", "changedFiles", "changedFileCount",
+                "diffBytes", "hasUntrackedFiles",
+            )
+        }))
+
     def enable_candidate(self) -> None:
         candidate = {"apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate", "taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1", "attemptId": "attempt:fixture-01", "authorityNamespaceId": self.core_authority(), "baseSha": self.head, "contentDigest": digest_bytes(b""), "producerKind": "worker", "producer": "worker", "createdAt": "2026-08-20T00:00:30Z"}
         candidate_digest = self.core_digest(candidate)
@@ -321,6 +332,11 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         current_worker_path = self.run_root / "attempts" / "attempt:fixture-02" / "worker-result.json"
         current_worker_path.parent.mkdir()
         current_worker_path.write_bytes(json_bytes(current_worker))
+        self.write_worker_snapshot("attempt:fixture-02", {
+            "snapshotDigest": digest_bytes(b"null"), "diffDigest": digest_bytes(b""),
+            "changedFiles": [], "changedFileCount": 0, "diffBytes": 0,
+            "hasUntrackedFiles": False,
+        })
 
         report_path = self.run_root / "verification-report.json"
         report = json.loads(report_path.read_text())
@@ -372,6 +388,126 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         manifest = self.manifest()
         manifest["expected"].update({"stateSequence": 9, "currentAttemptId": "attempt:fixture-02", "reviewRound": 2})
         return manifest
+
+    def make_previous_round_normalized_candidate(self) -> tuple[dict, dict]:
+        manifest = self.make_previous_round_stale_packet()
+        source = self.worktree / "normalized.go"
+        source.write_text("package fixture\n\nfunc Value( )int{return 1}\n", encoding="utf-8")
+        worker_observation = self.core_observe()
+        worker_patch = self.observed_patch()
+        self.assertEqual(worker_observation["diffDigest"], digest_bytes(worker_patch))
+        (self.run_root / "worker.patch").write_bytes(worker_patch)
+        self.write_worker_snapshot("attempt:fixture-02", worker_observation)
+
+        gofmt = shutil.which("gofmt")
+        self.assertIsNotNone(gofmt)
+        subprocess.run([str(gofmt), "-w", str(source)], cwd=self.worktree, check=True)
+        final_observation = self.core_observe()
+        final_patch = self.observed_patch()
+        self.assertEqual(final_observation["diffDigest"], digest_bytes(final_patch))
+        self.assertNotEqual(worker_observation["diffDigest"], final_observation["diffDigest"])
+        self.assertNotEqual(worker_observation["snapshotDigest"], final_observation["snapshotDigest"])
+        (self.run_root / "observed.patch").write_bytes(final_patch)
+
+        candidate_dir = self.run_root / "candidates"
+        for path in candidate_dir.iterdir():
+            path.unlink()
+        worker_candidate = {
+            "apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate",
+            "taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1",
+            "attemptId": "attempt:fixture-02", "authorityNamespaceId": self.core_authority(),
+            "baseSha": self.head, "contentDigest": worker_observation["diffDigest"],
+            "producerKind": "worker", "producer": "worker",
+            "createdAt": "2026-08-20T00:01:30Z",
+        }
+        worker_digest = self.core_digest(worker_candidate)
+        worker_candidate["candidateDigest"] = worker_digest
+        self.core_digest(worker_candidate, "Candidate")
+        (candidate_dir / f"{worker_digest}.json").write_bytes(json_bytes(worker_candidate))
+
+        normalizer_candidate = {
+            "apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate",
+            "taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1",
+            "attemptId": "attempt:fixture-02", "authorityNamespaceId": self.core_authority(),
+            "baseSha": self.head, "contentDigest": final_observation["diffDigest"],
+            "producerKind": "normalizer", "producer": "verifier:format-normalize",
+            "predecessorCandidateDigest": worker_digest,
+            "createdAt": "2026-08-20T00:01:31Z",
+        }
+        head_digest = self.core_digest(normalizer_candidate)
+        normalizer_candidate["candidateDigest"] = head_digest
+        self.core_digest(normalizer_candidate, "Candidate")
+        (candidate_dir / f"{head_digest}.json").write_bytes(json_bytes(normalizer_candidate))
+
+        report_path = self.run_root / "verification-report.json"
+        report = json.loads(report_path.read_text())
+        report["observed"] = final_observation
+        report["workerCandidateDigest"] = worker_digest
+        report["candidateDigest"] = head_digest
+        report_path.write_bytes(json_bytes(report))
+        report_digest = self.core_digest(report, "VerificationReport")
+
+        artifact_path = self.run_root / "artifact-manifest.json"
+        artifacts = json.loads(artifact_path.read_text())
+        artifacts["artifacts"] = [
+            {
+                "id": "evidence:observed-patch", "kind": "patch", "mediaType": "text/x-diff",
+                "producer": "verifier", "required": True, "status": "validated",
+                "pathRoot": "run", "relativePath": "observed.patch", "byteSize": len(final_patch),
+                "digest": digest_bytes(final_patch), "candidateDigest": head_digest,
+                "createdAt": "2026-08-20T00:02:00Z", "redacted": False, "truncated": False,
+                "relatedGates": ["scope"],
+            },
+            self.worker_patch_artifact(worker_patch, worker_digest),
+        ]
+        artifact_path.write_bytes(json_bytes(artifacts))
+        artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+
+        events_path = self.run_root / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        events[7]["payload"] = {
+            "snapshotDigest": worker_observation["snapshotDigest"],
+            "diffDigest": worker_observation["diffDigest"],
+        }
+        events[8]["payload"].update({
+            "reportDigest": report_digest, "artifactManifestDigest": artifact_digest,
+        })
+        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+        return manifest, {
+            "workerDigest": worker_digest, "headDigest": head_digest,
+            "workerObservation": worker_observation, "finalObservation": final_observation,
+        }
+
+    def reseal_normalizer_predecessor(self, predecessor: str) -> None:
+        candidate_dir = self.run_root / "candidates"
+        path = next(path for path in candidate_dir.iterdir() if json.loads(path.read_text())["producerKind"] == "normalizer")
+        candidate = json.loads(path.read_text())
+        old_digest = candidate.pop("candidateDigest")
+        candidate["predecessorCandidateDigest"] = predecessor
+        new_digest = self.core_digest(candidate)
+        candidate["candidateDigest"] = new_digest
+        self.core_digest(candidate, "Candidate")
+        path.unlink()
+        (candidate_dir / f"{new_digest}.json").write_bytes(json_bytes(candidate))
+
+        report_path = self.run_root / "verification-report.json"
+        report = json.loads(report_path.read_text())
+        report["candidateDigest"] = new_digest
+        report_path.write_bytes(json_bytes(report))
+        report_digest = self.core_digest(report, "VerificationReport")
+        artifact_path = self.run_root / "artifact-manifest.json"
+        artifacts = json.loads(artifact_path.read_text())
+        for artifact in artifacts["artifacts"]:
+            if artifact.get("candidateDigest") == old_digest:
+                artifact["candidateDigest"] = new_digest
+        artifact_path.write_bytes(json_bytes(artifacts))
+        artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+        events_path = self.run_root / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        events[8]["payload"].update({
+            "reportDigest": report_digest, "artifactManifestDigest": artifact_digest,
+        })
+        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
 
     def insert_round_repair_audit(self, manifest: dict, mutate=None) -> None:
         events_path = self.run_root / "events.jsonl"
@@ -549,6 +685,84 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         self.assertEqual(result["action"], "generate-review-packet")
         self.assertEqual(result["reasonCode"], "previous-round-packet-generation-claimed")
         self.assertTrue(result["historyClaimed"])
+
+    def test_previous_round_normalizer_mutation_binds_worker_and_head_observations(self) -> None:
+        manifest, evidence = self.make_previous_round_normalized_candidate()
+        code, result = self.invoke(manifest)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"], "generate-review-packet")
+        self.assertNotEqual(evidence["workerDigest"], evidence["headDigest"])
+        self.assertNotEqual(evidence["workerObservation"]["snapshotDigest"], evidence["finalObservation"]["snapshotDigest"])
+        self.assertNotEqual(evidence["workerObservation"]["diffDigest"], evidence["finalObservation"]["diffDigest"])
+
+    def test_previous_round_normalizer_rejects_forged_worker_event_digests(self) -> None:
+        for field in ("snapshotDigest", "diffDigest"):
+            with self.subTest(field=field):
+                self._write_fixture()
+                manifest, _ = self.make_previous_round_normalized_candidate()
+                events_path = self.run_root / "events.jsonl"
+                events = [json.loads(line) for line in events_path.read_text().splitlines()]
+                events[7]["payload"][field] = "sha256:" + "f" * 64
+                events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+                self.assert_reason("current-round-worker-completed-binding-mismatch", manifest)
+
+    def test_previous_round_normalizer_rejects_changed_file_identity_without_consuming_claim(self) -> None:
+        manifest, evidence = self.make_previous_round_normalized_candidate()
+        snapshot_path = self.run_root / "attempts" / "attempt:fixture-02" / "worktree-snapshot.json"
+        snapshot = json.loads(snapshot_path.read_text())
+        snapshot["changedFiles"] = ["forged.go"]
+        snapshot["changedFileCount"] = 1
+        snapshot_path.write_bytes(json_bytes(snapshot))
+
+        self.assert_reason("current-round-normalization-binding-mismatch", manifest)
+        history_path = self.operator_root / "review-freshness-history.json"
+        self.assertEqual(json.loads(history_path.read_text())["claims"], [])
+
+        self.write_worker_snapshot("attempt:fixture-02", evidence["workerObservation"])
+        code, result = self.invoke(manifest)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"], "generate-review-packet")
+        self.assertEqual(len(json.loads(history_path.read_text())["claims"]), 1)
+
+    def test_previous_round_normalizer_rejects_tracking_identity_without_consuming_claim(self) -> None:
+        manifest, evidence = self.make_previous_round_normalized_candidate()
+        snapshot_path = self.run_root / "attempts" / "attempt:fixture-02" / "worktree-snapshot.json"
+        snapshot = json.loads(snapshot_path.read_text())
+        snapshot["hasUntrackedFiles"] = not snapshot["hasUntrackedFiles"]
+        snapshot_path.write_bytes(json_bytes(snapshot))
+
+        self.assert_reason("current-round-normalization-binding-mismatch", manifest)
+        history_path = self.operator_root / "review-freshness-history.json"
+        self.assertEqual(json.loads(history_path.read_text())["claims"], [])
+
+        self.write_worker_snapshot("attempt:fixture-02", evidence["workerObservation"])
+        code, result = self.invoke(manifest)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"], "generate-review-packet")
+        self.assertEqual(len(json.loads(history_path.read_text())["claims"]), 1)
+
+    def test_previous_round_normalizer_rejects_wrong_predecessor(self) -> None:
+        manifest, _ = self.make_previous_round_normalized_candidate()
+        self.reseal_normalizer_predecessor("sha256:" + "f" * 64)
+        self.assert_reason("candidate-chain-mismatch", manifest)
+
+    def test_previous_round_normalizer_rejects_missing_worker_candidate(self) -> None:
+        manifest, evidence = self.make_previous_round_normalized_candidate()
+        (self.run_root / "candidates" / f"{evidence['workerDigest']}.json").unlink()
+        self.assert_reason("candidate-record-unreadable", manifest)
+
+    def test_previous_round_normalizer_rejects_partial_candidate_binding(self) -> None:
+        manifest, _ = self.make_previous_round_normalized_candidate()
+        report_path = self.run_root / "verification-report.json"
+        report = json.loads(report_path.read_text())
+        report.pop("workerCandidateDigest")
+        report_path.write_bytes(json_bytes(report))
+        report_digest = self.core_digest(report, "VerificationReport")
+        events_path = self.run_root / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        events[8]["payload"]["reportDigest"] = report_digest
+        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+        self.assert_reason("legacy-candidate-partial-requires-migration", manifest)
 
     def test_valid_repair_audit_is_the_only_skippable_lineage_event(self) -> None:
         manifest = self.make_previous_round_stale_packet()

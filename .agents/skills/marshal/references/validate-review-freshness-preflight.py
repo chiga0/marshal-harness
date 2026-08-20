@@ -695,7 +695,7 @@ def validate_current_generation_inputs(
     artifact_digest: str,
     expected_authority_namespace: str,
     require_candidate: bool = True,
-) -> tuple[dict, list[tuple[str, bytes, tuple[int, int, int, int]]]]:
+) -> tuple[dict, list[tuple[str, bytes, tuple[int, int, int, int]]], dict]:
     """Recompute the inputs Core will use when it replaces/generates a packet."""
     records: list[tuple[str, bytes, tuple[int, int, int, int]]] = []
     if task.get("metadata", {}).get("id") != state["taskId"] or task_digest != state["specDigest"]:
@@ -746,8 +746,9 @@ def validate_current_generation_inputs(
         fail("legacy-candidate-partial-requires-migration")
     if not candidate and require_candidate:
         fail("current-round-candidate-missing")
+    candidate_chain: dict = {}
     if candidate:
-        validate_candidate_chain(
+        candidate_chain = validate_candidate_chain(
             script, run_root, state, artifacts, candidate, worker_candidate,
             "observed.patch", patch_digest, expected_authority_namespace, records,
         )
@@ -767,7 +768,7 @@ def validate_current_generation_inputs(
         "hasUntrackedFiles": observation.get("hasUntrackedFiles"),
         "candidateDigest": candidate,
         "workerCandidateDigest": worker_candidate,
-    }, records
+    }, records, candidate_chain
 
 
 def validate_candidate_chain(
@@ -781,7 +782,7 @@ def validate_candidate_chain(
     observed_patch_digest: str,
     expected_authority_namespace: str,
     records: list[tuple[str, bytes, tuple[int, int, int, int]]],
-) -> dict[str, dict]:
+) -> dict:
     candidate_records: dict[str, dict] = {}
     for digest in sorted({candidate, worker_candidate}):
         path = f"candidates/{digest}.json"
@@ -835,7 +836,97 @@ def validate_candidate_chain(
         or worker_artifacts[0].get("candidateDigest") != worker_candidate
     ):
         fail("worker-patch-artifact-binding-mismatch")
-    return candidate_records
+    return {
+        "candidateRecords": candidate_records,
+        "workerPatchDigest": worker_patch_digest,
+        "workerPatchByteSize": len(worker_patch),
+        "normalizationApplied": candidate != worker_candidate,
+    }
+
+
+def validate_current_worker_completion_binding(
+    run_root: Path,
+    state: dict,
+    previous_bindings: dict,
+    current_bindings: dict,
+    candidate_chain: dict,
+) -> tuple[dict, tuple[str, bytes, tuple[int, int, int, int]]]:
+    """Bind worker.completed to the pre-normalization Worker observation.
+
+    Verification may deterministically normalize the worktree after
+    worker.completed.  The event therefore binds the current attempt's
+    immutable worker Candidate/worker.patch observation, while the current
+    VerificationReport and live worktree bind the head Candidate separately.
+    """
+    attempt_id = clean_relative(state["currentAttemptId"])
+    relative = f"attempts/{attempt_id}/worktree-snapshot.json"
+    snapshot_raw, snapshot_identity = read_regular(
+        run_root, relative, "current-round-worker-snapshot-unreadable", 4 << 20,
+    )
+    snapshot = parse_json(snapshot_raw, "current-round-worker-snapshot-invalid")
+    fields = {
+        "snapshotDigest", "diffDigest", "changedFiles", "changedFileCount",
+        "diffBytes", "hasUntrackedFiles",
+    }
+    exact_keys(snapshot, fields, fields, "current-round-worker-snapshot-invalid")
+    if not DIGEST_RE.fullmatch(str(snapshot.get("snapshotDigest", ""))) or not DIGEST_RE.fullmatch(str(snapshot.get("diffDigest", ""))):
+        fail("current-round-worker-snapshot-invalid")
+    changed_files = snapshot.get("changedFiles")
+    if (
+        not isinstance(changed_files, list)
+        or any(not isinstance(path, str) for path in changed_files)
+        or changed_files != sorted(set(changed_files))
+    ):
+        fail("current-round-worker-snapshot-invalid")
+    for path in changed_files:
+        clean_relative(path)
+    changed_count = snapshot.get("changedFileCount")
+    diff_bytes = snapshot.get("diffBytes")
+    if (
+        isinstance(changed_count, bool)
+        or not isinstance(changed_count, int)
+        or changed_count != len(changed_files)
+        or isinstance(diff_bytes, bool)
+        or not isinstance(diff_bytes, int)
+        or diff_bytes < 0
+        or not isinstance(snapshot.get("hasUntrackedFiles"), bool)
+    ):
+        fail("current-round-worker-snapshot-invalid")
+
+    worker_patch_digest = candidate_chain.get("workerPatchDigest")
+    worker_patch_size = candidate_chain.get("workerPatchByteSize")
+    if (
+        not DIGEST_RE.fullmatch(str(worker_patch_digest or ""))
+        or snapshot["diffDigest"] != worker_patch_digest
+        or snapshot["diffBytes"] != worker_patch_size
+    ):
+        fail("current-round-worker-snapshot-binding-mismatch")
+    if (
+        previous_bindings["currentWorkerCompletedSnapshotDigest"] != snapshot["snapshotDigest"]
+        or previous_bindings["currentWorkerCompletedDiffDigest"] != snapshot["diffDigest"]
+    ):
+        fail("current-round-worker-completed-binding-mismatch")
+
+    final_fields = (
+        "snapshotDigest", "patchDigest", "changedFiles", "changedFileCount",
+        "diffBytes", "hasUntrackedFiles",
+    )
+    if candidate_chain.get("normalizationApplied"):
+        if (
+            snapshot["diffDigest"] == current_bindings["patchDigest"]
+            or snapshot["snapshotDigest"] == current_bindings["snapshotDigest"]
+            or snapshot["changedFiles"] != current_bindings["changedFiles"]
+            or snapshot["changedFileCount"] != current_bindings["changedFileCount"]
+            or snapshot["hasUntrackedFiles"] != current_bindings["hasUntrackedFiles"]
+        ):
+            fail("current-round-normalization-binding-mismatch")
+    else:
+        worker_as_final = dict(snapshot)
+        worker_as_final["patchDigest"] = worker_as_final.pop("diffDigest")
+        if any(worker_as_final[field] != current_bindings[field] for field in final_fields):
+            fail("current-round-worker-snapshot-binding-mismatch")
+
+    return snapshot, (relative, snapshot_raw, snapshot_identity)
 
 
 def validate_previous_round_lineage(
@@ -1176,15 +1267,20 @@ def run(arguments: argparse.Namespace) -> dict:
             previous_bindings, previous_records = validate_previous_round_lineage(script, run_root, packet_raw, packet, packet_digest, state, events)
             for relative, data, identity in previous_records:
                 tracked.append((run_root, relative, data, identity))
-            current_generation_bindings, generation_records = validate_current_generation_inputs(
+            current_generation_bindings, generation_records, candidate_chain = validate_current_generation_inputs(
                 script, run_root, state, worktree, task, task_digest, frozen_report,
                 current_verification_digest, frozen_manifest, current_artifact_digest,
                 expected_authority_namespace,
             )
             if current_generation_bindings["verificationDigest"] != frozen_verification_digest or current_generation_bindings["artifactManifestDigest"] != frozen_artifact_digest:
                 fail("verification-event-binding-mismatch")
-            if previous_bindings["currentWorkerCompletedSnapshotDigest"] != current_generation_bindings["snapshotDigest"] or previous_bindings["currentWorkerCompletedDiffDigest"] != current_generation_bindings["patchDigest"]:
-                fail("current-round-worker-completed-binding-mismatch")
+            worker_observation, worker_observation_record = validate_current_worker_completion_binding(
+                run_root, state, previous_bindings, current_generation_bindings, candidate_chain,
+            )
+            if candidate_chain.get("normalizationApplied"):
+                current_generation_bindings["workerObservation"] = worker_observation
+            relative, data, identity = worker_observation_record
+            tracked.append((run_root, relative, data, identity))
             for relative, data, identity in generation_records:
                 tracked.append((run_root, relative, data, identity))
             input_bindings = {"previousRoundLineage": previous_bindings, "currentGeneration": current_generation_bindings}
@@ -1200,7 +1296,7 @@ def run(arguments: argparse.Namespace) -> dict:
                 or legacy_observation.get("hasUntrackedFiles") is not False
             ):
                 fail("packet-missing-worktree-not-clean")
-        current_generation_bindings, generation_records = validate_current_generation_inputs(
+        current_generation_bindings, generation_records, _candidate_chain = validate_current_generation_inputs(
             script, run_root, state, worktree, task, task_digest, frozen_report,
             current_verification_digest, frozen_manifest, current_artifact_digest,
             expected_authority_namespace,
