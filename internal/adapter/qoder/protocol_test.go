@@ -378,10 +378,18 @@ func TestWorkerResultTeeCommandUsesClosedGrammar(t *testing.T) {
 	if payload, ok := parseWorkerResultTeeCommand(valid); !ok || string(payload) != `{"status":"completed"}` {
 		t.Fatalf("valid declaration = %q, %t", payload, ok)
 	}
+	if payload, ok := parseWorkerResultTeeCommand(valid + "\n"); !ok || string(payload) != `{"status":"completed"}` {
+		t.Fatalf("canonical declaration with one trailing LF = %q, %t", payload, ok)
+	}
 	for name, command := range map[string]string{
 		"command-after-delimiter": valid + "\ngit status",
-		"trailing-newline":        valid + "\n",
 		"trailing-blank-line":     valid + "\n\n",
+		"trailing-cr":             valid + "\r",
+		"trailing-nul":            valid + "\x00",
+		"trailing-space":          valid + " ",
+		"trailing-tab":            valid + "\t",
+		"cr-before-delimiter":     strings.Replace(valid, "\nMARSHAL_RESULT", "\r\nMARSHAL_RESULT", 1),
+		"duplicate-delimiter":     valid + "\nMARSHAL_RESULT",
 		"split-tee":               strings.Replace(valid, " | tee ", " | t''ee ", 1),
 		"glob-tee":                strings.Replace(valid, " | tee ", " | t?? ", 1),
 		"background-fd":           strings.Replace(valid, " > /dev/null\n", " 9>/dev/null &\n", 1),

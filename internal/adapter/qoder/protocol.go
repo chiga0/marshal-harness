@@ -663,8 +663,17 @@ func validWorkerResultTeeCommand(command string) bool {
 }
 
 func parseWorkerResultTeeCommand(command string) ([]byte, bool) {
-	if strings.ContainsAny(command, "\r\x00") || strings.HasSuffix(command, "\n") {
+	if strings.ContainsAny(command, "\r\x00") {
 		return nil, false
+	}
+	// Qoder 1.1.23 emits the canonical heredoc with one line-feed after the
+	// closing delimiter. Accept that one transport newline, but keep the
+	// grammar fail-closed for a blank line or any other trailing whitespace.
+	if strings.HasSuffix(command, "\n") {
+		command = strings.TrimSuffix(command, "\n")
+		if strings.HasSuffix(command, "\n") {
+			return nil, false
+		}
 	}
 	firstLine, body, hasBody := strings.Cut(command, "\n")
 	if !hasBody || firstLine != workerResultTeeFirstLine {
