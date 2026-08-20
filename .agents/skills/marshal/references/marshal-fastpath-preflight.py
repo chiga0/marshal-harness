@@ -16,6 +16,9 @@ import sys
 import time
 
 
+sys.dont_write_bytecode = True
+
+
 MAX_INPUT_BYTES = 2 << 20
 MAX_OUTPUT_BYTES = 64 << 10
 CONTENT_DELIVERABLE_KINDS = {"documentation", "report"}
@@ -347,9 +350,12 @@ def terminate_owned_process_group(process: subprocess.Popen[bytes], stage: str) 
 
 
 def run_child(argv: list[str], stage: str, timeout_seconds: int | float) -> dict:
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         process = subprocess.Popen(
             argv,
+            env=environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -423,6 +429,7 @@ def run_plan(arguments: argparse.Namespace) -> dict:
             fail("acceptance-semantic-binding-mismatch", "acceptance-semantic")
         acceptance_projection = {
             "status": "pass",
+            "timeoutSeconds": arguments.semantic_timeout_seconds,
             "taskSpecDigest": task_digest,
             "sourceHead": source_head,
             "receiptDigest": digest_object(acceptance_receipt),
@@ -435,6 +442,7 @@ def run_plan(arguments: argparse.Namespace) -> dict:
     else:
         acceptance_projection = {
             "status": "not-applicable",
+            "timeoutSeconds": arguments.semantic_timeout_seconds,
             "reasonCode": "non-content-task-declared",
             "contentSignals": [],
             "taskSpecDigest": task_digest,
@@ -472,6 +480,7 @@ def run_plan(arguments: argparse.Namespace) -> dict:
         "acceptanceSemantic": acceptance_projection,
         "planPremortem": {
             "status": "pass",
+            "timeoutSeconds": arguments.premortem_timeout_seconds,
             "taskSpecDigest": task_digest,
             "sourceHead": source_head,
             "receiptDigest": digest_object(plan_receipt),

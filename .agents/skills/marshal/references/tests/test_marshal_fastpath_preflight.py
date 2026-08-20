@@ -83,9 +83,11 @@ class MarshalFastpathPreflightTest(unittest.TestCase):
 
     def write_checker(self, wrong_task_digest: bool = False) -> None:
         override = "'sha256:' + 'f' * 64" if wrong_task_digest else "manifest['taskSpec']['digest']"
+        (self.root / "checker_helper.py").write_text("VALUE = 'helper-loaded'\n", encoding="utf-8")
         self.checker.write_text(
             "#!/usr/bin/env python3\n"
             "import argparse, json\n"
+            "import checker_helper\n"
             "from pathlib import Path\n"
             "p=argparse.ArgumentParser()\n"
             "p.add_argument('--manifest', required=True)\n"
@@ -259,11 +261,21 @@ class MarshalFastpathPreflightTest(unittest.TestCase):
         }
         (self.operator / "plan.json").write_bytes(compact(plan))
 
-    def invoke(self, task_kind: str, include_acceptance: bool = True) -> tuple[int, dict]:
+    def invoke(
+        self,
+        task_kind: str,
+        include_acceptance: bool = True,
+        semantic_timeout: str | int | None = None,
+        premortem_timeout: str | int | None = None,
+        bytecode_flag: bool = True,
+    ) -> tuple[int, dict]:
         argv = [
             sys.executable,
             "-I",
-            "-B",
+        ]
+        if bytecode_flag:
+            argv.append("-B")
+        argv.extend([
             str(VALIDATOR),
             "--phase",
             "plan",
@@ -277,12 +289,19 @@ class MarshalFastpathPreflightTest(unittest.TestCase):
             str(self.checker),
             "--protected-root",
             str(self.protected),
-        ]
+        ])
         if include_acceptance:
             argv.extend(["--acceptance-manifest", "acceptance.json"])
+        if semantic_timeout is not None:
+            argv.extend(["--semantic-timeout-seconds", str(semantic_timeout)])
+        if premortem_timeout is not None:
+            argv.extend(["--premortem-timeout-seconds", str(premortem_timeout)])
+        environment = os.environ.copy()
+        environment.pop("PYTHONDONTWRITEBYTECODE", None)
         completed = subprocess.run(
             argv,
             cwd=REPOSITORY,
+            env=environment,
             check=False,
             text=True,
             stdout=subprocess.PIPE,
@@ -299,6 +318,8 @@ class MarshalFastpathPreflightTest(unittest.TestCase):
         self.assertEqual(receipt["acceptanceSemantic"]["positiveFixtures"], 1)
         self.assertEqual(receipt["acceptanceSemantic"]["negativeFixtures"], 5)
         self.assertEqual(receipt["acceptanceSemantic"]["fixtureCount"], 6)
+        self.assertEqual(receipt["acceptanceSemantic"]["timeoutSeconds"], 180)
+        self.assertEqual(receipt["planPremortem"]["timeoutSeconds"], 30)
         self.assertRegex(
             receipt["acceptanceSemantic"]["semanticManifestDigest"],
             r"^sha256:[0-9a-f]{64}$",
@@ -311,6 +332,37 @@ class MarshalFastpathPreflightTest(unittest.TestCase):
         combined_digest = combined.pop("combinedDigest")
         self.assertEqual(combined_digest, digest_object(combined))
         self.assertTrue(self.checker_marker.exists())
+
+    def test_phase_timeout_values_are_exact_digest_bound_and_phase_stable(self) -> None:
+        default_code, default = self.invoke("content")
+        semantic_code, semantic = self.invoke("content", semantic_timeout=181)
+        premortem_code, premortem = self.invoke("content", premortem_timeout=31)
+        self.assertEqual((default_code, semantic_code, premortem_code), (0, 0, 0))
+        self.assertEqual(semantic["acceptanceSemantic"]["timeoutSeconds"], 181)
+        self.assertEqual(semantic["planPremortem"], default["planPremortem"])
+        self.assertEqual(premortem["planPremortem"]["timeoutSeconds"], 31)
+        self.assertEqual(premortem["acceptanceSemantic"], default["acceptanceSemantic"])
+        self.assertNotEqual(default["combinedDigest"], semantic["combinedDigest"])
+        self.assertNotEqual(default["combinedDigest"], premortem["combinedDigest"])
+
+    def test_timeout_cli_boundaries_fail_closed(self) -> None:
+        cases = (
+            ("semantic", VALIDATOR_MODULE.MAX_SEMANTIC_TIMEOUT_SECONDS),
+            ("premortem", VALIDATOR_MODULE.MAX_PREMORTEM_TIMEOUT_SECONDS),
+        )
+        for label, maximum in cases:
+            parse = VALIDATOR_MODULE.bounded_timeout(maximum)
+            with self.subTest(label=label, value="maximum"):
+                self.assertEqual(parse(str(maximum)), maximum)
+            for value in ("0", str(maximum + 1), "1.5"):
+                with self.subTest(label=label, value=value):
+                    with self.assertRaises(VALIDATOR_MODULE.argparse.ArgumentTypeError):
+                        parse(value)
+
+    def test_wrapper_forces_no_bytecode_for_nested_checker(self) -> None:
+        code, receipt = self.invoke("content", bytecode_flag=False)
+        self.assertEqual(code, 0, receipt)
+        self.assertFalse((self.root / "__pycache__").exists())
 
     def test_combined_digest_changes_with_fixture_raw_bytes(self) -> None:
         first_code, first = self.invoke("content")
@@ -380,6 +432,7 @@ class MarshalFastpathPreflightTest(unittest.TestCase):
                 "sourceHead": self.source_head,
                 "status": "not-applicable",
                 "taskSpecDigest": receipt["taskSpecDigest"],
+                "timeoutSeconds": 180,
             },
         )
 

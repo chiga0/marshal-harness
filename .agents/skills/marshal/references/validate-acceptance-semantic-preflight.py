@@ -12,10 +12,12 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 from typing import NamedTuple
 import unicodedata
 
@@ -69,6 +71,8 @@ PYTHON_RESERVED_PACKAGE_DIRS = {
     "usercustomize",
 }
 READ_CHUNK_BYTES = 1024 * 1024
+TERMINATION_GRACE_SECONDS = 0.25
+TERMINATION_VERIFY_SECONDS = 1.0
 
 
 class TreeEntry(NamedTuple):
@@ -1046,6 +1050,103 @@ def assert_protected_roots_unchanged(before: dict[Path, str]) -> None:
             fail("protected-root-side-effect", f"acceptance command changed protected root {root}")
 
 
+def process_group_exists(group_id: int) -> bool:
+    try:
+        os.killpg(group_id, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        try:
+            completed = subprocess.run(
+                ["/bin/ps", "-axo", "pgid="],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=1,
+                check=False,
+                text=True,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return True
+        return completed.returncode != 0 or any(
+            value.strip().isdigit() and int(value.strip()) == group_id
+            for value in completed.stdout.splitlines()
+        )
+
+
+def terminate_owned_process_group(process: subprocess.Popen[bytes]) -> None:
+    group_id = process.pid
+    try:
+        os.killpg(group_id, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    grace_deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
+    while process_group_exists(group_id) and time.monotonic() < grace_deadline:
+        process.poll()
+        time.sleep(0.01)
+    if process_group_exists(group_id):
+        try:
+            os.killpg(group_id, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        process.wait(timeout=TERMINATION_VERIFY_SECONDS)
+    except subprocess.TimeoutExpired:
+        if process.poll() is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        try:
+            process.wait(timeout=TERMINATION_VERIFY_SECONDS)
+        except subprocess.TimeoutExpired:
+            fail(
+                "acceptance-command-process-group-survived",
+                "acceptance command leader could not be reaped",
+            )
+    verify_deadline = time.monotonic() + TERMINATION_VERIFY_SECONDS
+    while process_group_exists(group_id) and time.monotonic() < verify_deadline:
+        time.sleep(0.01)
+    if process_group_exists(group_id):
+        fail(
+            "acceptance-command-process-group-survived",
+            "acceptance command owned process group survived timeout cleanup",
+        )
+
+
+def run_owned_process_group(
+    argv: list[str],
+    execution_cwd: Path,
+    environment: dict[str, str],
+    timeout_seconds: int | float,
+) -> int:
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=execution_cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as error:
+        fail("command-execution-failed", f"acceptance command could not start: {error}")
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        return_code = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        terminate_owned_process_group(process)
+        fail("acceptance-command-timeout", "acceptance command exceeded timeoutSeconds")
+    while process_group_exists(process.pid):
+        if time.monotonic() >= deadline:
+            terminate_owned_process_group(process)
+            fail("acceptance-command-timeout", "acceptance command exceeded timeoutSeconds")
+        time.sleep(0.01)
+    return return_code
+
+
 def run_command(
     command: dict,
     deliverable_path: str,
@@ -1080,23 +1181,16 @@ def run_command(
         if executable is None:
             fail("command-execution-failed", f"cannot resolve executable {argv[0]!r}")
         argv[0] = executable
-        try:
-            completed = subprocess.run(
-                argv,
-                cwd=execution_cwd,
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=command["timeoutSeconds"],
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            fail("command-execution-failed", f"acceptance command could not finish: {error}")
+        return_code = run_owned_process_group(
+            argv,
+            execution_cwd,
+            environment,
+            command["timeoutSeconds"],
+        )
         assert_protected_roots_unchanged(protected_before)
         if tree_digest(fixture_root) != before_fixture:
             fail("fixture-tree-side-effect", "acceptance command changed its temporary fixture tree")
-        return completed.returncode
+        return return_code
 
 
 def semantic_reason(document: str, gate: dict) -> str | None:
