@@ -366,7 +366,11 @@ func TestRetryPendingAdmissionRejectsMalformedOrNonRetryableAuthority(t *testing
 		{
 			name: "noncanonical padded fractional not-before",
 			mutate: func(event *domain.RunEvent, _ domain.RunState) {
-				event.Payload["notBefore"] = event.Timestamp.Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
+				// Force a whole-second value so the fixed-width fractional form
+				// always contains redundant zero padding. Using the event's live
+				// nanoseconds can accidentally produce canonical RFC3339Nano when
+				// the final digit is non-zero, making this fixture platform-dependent.
+				event.Payload["notBefore"] = event.Timestamp.Truncate(time.Second).Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
 			},
 			fragments: []string{"retry admission", "not-before"},
 		},
