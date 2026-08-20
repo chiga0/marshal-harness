@@ -59,15 +59,40 @@ def clean_relative_file(value: object) -> str:
 
 
 def open_root(root: Path) -> int:
-    if not root.is_absolute() or ".marshal" in root.parts:
+    if not root.is_absolute():
         fail("operator-root-invalid")
+    components = root.parts[1:]
+    if not components or any(component in {"", ".", "..", ".marshal"} for component in components):
+        fail("operator-root-invalid")
+    current: int | None = None
     try:
-        metadata = root.lstat()
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        current = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for component in components:
+            following = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=current,
+            )
+            os.close(current)
+            current = following
+        metadata = os.fstat(current)
+        if not stat.S_ISDIR(metadata.st_mode):
             fail("operator-root-invalid")
-        return os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        result = current
+        current = None
+        return result
+    except PreflightError:
+        raise
     except OSError:
         fail("operator-root-invalid")
+    finally:
+        if current is not None:
+            os.close(current)
+
+
+def root_identity(descriptor: int) -> tuple[int, int, int, int]:
+    metadata = os.fstat(descriptor)
+    return metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_nlink
 
 
 def read_relative(root_descriptor: int, relative: str) -> bytes:
@@ -150,12 +175,19 @@ def checked_checker(value: str) -> Path:
 def run_preflight(root: Path, manifest_relative: str, checker: Path) -> dict:
     root_descriptor = open_root(root)
     try:
+        identity_before = root_identity(root_descriptor)
         manifest_raw = read_relative(root_descriptor, manifest_relative)
         manifest = parse_json(manifest_raw)
         task_relative, task_digest = binding(manifest, "taskSpec")
         policy_relative, policy_digest = binding(manifest, "policySnapshot")
         task_raw = read_relative(root_descriptor, task_relative)
         policy_raw = read_relative(root_descriptor, policy_relative)
+        reopened = open_root(root)
+        try:
+            if root_identity(reopened) != identity_before:
+                fail("operator-root-drift")
+        finally:
+            os.close(reopened)
     finally:
         os.close(root_descriptor)
     if raw_digest(task_raw) != task_digest or raw_digest(policy_raw) != policy_digest:

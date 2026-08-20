@@ -46,7 +46,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="marshal-plan-premortem-test.")
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.repository = self.root / "repository"
         self.operator = self.root / "operator"
         self.repository.mkdir()
@@ -224,6 +224,28 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         subprocess.run(["go", "build", "-o", str(probe), str(source)], cwd=REPOSITORY, check=True)
         completed = subprocess.run([str(probe), str(SCHEMA), str(TEMPLATE)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_operator_root_parent_symlink_into_repository_marshal_is_rejected(self) -> None:
+        marshal_operator = self.repository / ".marshal" / "operator"
+        marshal_operator.mkdir(parents=True)
+        linked_parent = self.root / "linked-parent"
+        linked_parent.symlink_to(self.repository / ".marshal", target_is_directory=True)
+        completed = subprocess.run(
+            [
+                sys.executable, "-I", "-B", str(VALIDATOR),
+                "--root", str(linked_parent / "operator"),
+                "--manifest", "manifest.json", "--checker", str(self.checker),
+            ],
+            cwd=REPOSITORY,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 1)
+        self.assertEqual(json.loads(completed.stdout), {"reasonCode": "operator-root-invalid", "status": "fail"})
+        self.assertEqual(completed.stderr, "")
+        self.assertFalse(self.worker_marker.exists())
 
 
 if __name__ == "__main__":
