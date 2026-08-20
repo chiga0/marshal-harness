@@ -37,6 +37,8 @@ type attemptObservation struct {
 
 type processGroupSignal func(int, syscall.Signal) error
 
+const qoderSystemPromptAppend = "Marshal execution contract: every Read, Grep, Glob, Edit, and Write tool call must include a canonical absolute file_path or path inside the active worktree and an explicit target; never search the worktree root or any denied domain. Do not execute git, ls, find, pwd, wc, python, or python3 in Bash; acceptance verification is owned by Marshal. If a search target cannot be named canonically, use Read on an allowlisted file or stop and report a blocker."
+
 // signalOwnedProcessGroup is deliberately total over the exit-observation
 // result: only a successful non-reaping observation proves the leader PID is
 // still allocated and the captured PGID cannot have been reused. Every error
@@ -325,6 +327,7 @@ func hardeningFlags(configDir string) []string {
 		"--output-format", "stream-json",
 		"--permission-mode", "accept_edits",
 		"--no-session-persistence",
+		"--append-system-prompt", qoderSystemPromptAppend,
 		// Marshal owns Worker fan-out. Qoder's Agent tool would create a
 		// provider-side child Worker outside the Run lease and violate the
 		// frozen allowWorkerSubagents=false policy.

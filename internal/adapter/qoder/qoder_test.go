@@ -1410,7 +1410,7 @@ func TestParseQoderVersionRejectsMalformedOutput(t *testing.T) {
 func TestBuildArgsFreezesRealNonInteractiveArgv(t *testing.T) {
 	t.Setenv("MARSHAL_QODER_DISABLE_SEARCH", "")
 	args := buildArgs("provider/model", "/managed/config", "/worktree", false)
-	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--disallowed-tools", "Agent", "--config-dir", "/managed/config", "--setting-sources", "", "--cwd", "/worktree", "--model", "provider/model"}
+	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--append-system-prompt", qoderSystemPromptAppend, "--disallowed-tools", "Agent", "--config-dir", "/managed/config", "--setting-sources", "", "--cwd", "/worktree", "--model", "provider/model"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v", args)
 	}
@@ -1440,6 +1440,9 @@ func TestBuildArgsRejectsFabricatedRunSandboxArgv(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("argv missing hardened flag %q: %#v", want, args)
 		}
+	}
+	if !containsSequence(args, "--append-system-prompt", qoderSystemPromptAppend) {
+		t.Fatalf("argv missing canonical-path system contract: %#v", args)
 	}
 	// --setting-sources must carry the empty set (disable user/project/local),
 	// never a fabricated managed source or a bait source.
