@@ -186,6 +186,227 @@ func TestRunConsumesTypedAdapterFailureDisposition(t *testing.T) {
 	}
 }
 
+func TestRetryPendingAdmissionHonorsTypedRetryGate(t *testing.T) {
+	t.Run("future retry-after is a zero-side-effect hold", func(t *testing.T) {
+		retryAfter := time.Hour
+		fixture := setupPersistedTypedRetryFailure(t, &retryAfter, nil)
+		requireFailsBeforeProbe(t, fixture, "retry admission", "not ready")
+		requireFailsBeforeProbe(t, fixture, "retry admission", "not ready")
+	})
+
+	t.Run("future not-before is a zero-side-effect hold", func(t *testing.T) {
+		notBefore := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+		fixture := setupPersistedTypedRetryFailure(t, nil, &notBefore)
+		requireFailsBeforeProbe(t, fixture, "retry admission", "not ready")
+		requireFailsBeforeProbe(t, fixture, "retry admission", "not ready")
+	})
+
+	for _, test := range []struct {
+		name       string
+		retryAfter *time.Duration
+	}{
+		{name: "no hint retries immediately"},
+		{name: "elapsed retry-after retries once", retryAfter: durationPointer(time.Nanosecond)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := setupPersistedTypedRetryFailure(t, test.retryAfter, nil)
+			before, _, err := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldFailure := before[len(before)-1]
+			adapter := &countingAdapter{delegate: fixture.input.Adapter.(*fixtureAdapter)}
+			input := fixture.input
+			input.Adapter = adapter
+
+			result, err := Run(context.Background(), input)
+			if err != nil || result.State.State != domain.StateVerifying {
+				t.Fatalf("retry result = %+v err=%v", result, err)
+			}
+			if adapter.probes != 1 || adapter.runs != 1 {
+				t.Fatalf("retry adapter calls = probes:%d runs:%d, want exactly one each", adapter.probes, adapter.runs)
+			}
+			if result.State.AttemptsUsed != 2 || result.State.OperationalRetriesUsed != 1 || result.AttemptID == oldFailure.AttemptID {
+				t.Fatalf("retry counters/identity = %+v oldAttempt=%s", result.State, oldFailure.AttemptID)
+			}
+			after, _, err := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var preserved *domain.RunEvent
+			for index := range after {
+				if after[index].EventID == oldFailure.EventID {
+					preserved = &after[index]
+					break
+				}
+			}
+			if preserved == nil || !reflect.DeepEqual(*preserved, oldFailure) {
+				t.Fatalf("prior typed failure evidence changed: before=%+v after=%+v", oldFailure, preserved)
+			}
+		})
+	}
+
+	t.Run("elapsed not-before retries once", func(t *testing.T) {
+		fixture := setupHistoricalNotBeforeRetryFailure(t)
+		oldState := inspectState(t, fixture)
+		adapter := &countingAdapter{delegate: fixture.input.Adapter.(*fixtureAdapter)}
+		input := fixture.input
+		input.Adapter = adapter
+		result, err := Run(context.Background(), input)
+		if err != nil || result.State.State != domain.StateVerifying {
+			t.Fatalf("historical not-before retry = %+v err=%v", result, err)
+		}
+		if adapter.probes != 1 || adapter.runs != 1 || result.State.AttemptsUsed != oldState.AttemptsUsed+1 || result.State.OperationalRetriesUsed != oldState.OperationalRetriesUsed {
+			t.Fatalf("historical not-before retry calls/state = probes:%d runs:%d old=%+v new=%+v", adapter.probes, adapter.runs, oldState, result.State)
+		}
+	})
+}
+
+func TestRetryPendingAdmissionRejectsMalformedOrNonRetryableAuthority(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*domain.RunEvent, domain.RunState)
+		fragments []string
+	}{
+		{
+			name: "blocked disposition",
+			mutate: func(event *domain.RunEvent, state domain.RunState) {
+				setPersistedFailurePayload(t, event, state, port.AdapterIDFake, port.FailureKindQuotaExhausted, port.RetryDispositionBlocked, nil, nil)
+			},
+			fragments: []string{"retry admission", "not retryable"},
+		},
+		{
+			name: "do-not-retry disposition",
+			mutate: func(event *domain.RunEvent, state domain.RunState) {
+				setPersistedFailurePayload(t, event, state, port.AdapterIDFake, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry, nil, nil)
+			},
+			fragments: []string{"retry admission", "not retryable"},
+		},
+		{
+			name: "legacy untyped record",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				for _, key := range []string{"adapterId", "failureKind", "retryDisposition", "failureSignature"} {
+					delete(event.Payload, key)
+				}
+				event.Payload["error"] = "legacy failure"
+			},
+			fragments: []string{"retry admission", "typed failure"},
+		},
+		{
+			name: "unknown kind",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["failureKind"] = "provider-secret"
+			},
+			fragments: []string{"retry admission", "unknown failure kind"},
+		},
+		{
+			name: "unknown disposition",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["retryDisposition"] = "guess"
+			},
+			fragments: []string{"retry admission", "disposition"},
+		},
+		{
+			name: "illegal kind disposition pairing",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["retryDisposition"] = string(port.RetryDispositionDoNotRetry)
+			},
+			fragments: []string{"retry admission", "disposition"},
+		},
+		{
+			name: "adapter mismatch",
+			mutate: func(event *domain.RunEvent, state domain.RunState) {
+				setPersistedFailurePayload(t, event, state, port.AdapterIDQwen, port.FailureKindConnectionFailure, port.RetryDispositionRetryable, nil, nil)
+			},
+			fragments: []string{"retry admission", "adapter"},
+		},
+		{
+			name: "signature mismatch",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["failureSignature"] = "sha256:" + strings.Repeat("0", 64)
+			},
+			fragments: []string{"retry admission", "signature"},
+		},
+		{
+			name: "negative retry-after",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["retryAfterNanoseconds"] = float64(-1)
+			},
+			fragments: []string{"retry admission", "retry-after"},
+		},
+		{
+			name: "overbound retry-after",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["retryAfterNanoseconds"] = float64((port.MaxRetryHintWindow + time.Second).Nanoseconds())
+			},
+			fragments: []string{"retry admission", "retry-after"},
+		},
+		{
+			name: "conflicting hints",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["retryAfterNanoseconds"] = float64(time.Second.Nanoseconds())
+				event.Payload["notBefore"] = event.Timestamp.Add(time.Hour).UTC().Format(time.RFC3339)
+			},
+			fragments: []string{"retry admission", "conflict"},
+		},
+		{
+			name: "noncanonical not-before",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["notBefore"] = event.Timestamp.Add(time.Hour).Format("2006-01-02T15:04:05+00:00")
+			},
+			fragments: []string{"retry admission", "not-before"},
+		},
+		{
+			name: "past not-before",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["notBefore"] = event.Timestamp.Add(-time.Second).UTC().Format(time.RFC3339)
+			},
+			fragments: []string{"retry admission", "not-before"},
+		},
+		{
+			name: "overbound not-before",
+			mutate: func(event *domain.RunEvent, _ domain.RunState) {
+				event.Payload["notBefore"] = event.Timestamp.Add(port.MaxRetryHintWindow + time.Second).UTC().Format(time.RFC3339)
+			},
+			fragments: []string{"retry admission", "not-before"},
+		},
+		{
+			name:      "wrong attempt identity",
+			mutate:    func(event *domain.RunEvent, _ domain.RunState) { event.AttemptID = "attempt-other" },
+			fragments: []string{"retry"},
+		},
+		{
+			name:      "wrong run identity",
+			mutate:    func(event *domain.RunEvent, _ domain.RunState) { event.RunID = "run-other" },
+			fragments: []string{"run"},
+		},
+		{
+			name:      "wrong producer authority",
+			mutate:    func(event *domain.RunEvent, _ domain.RunState) { event.Actor = planningActor() },
+			fragments: []string{"worker.failed"},
+		},
+		{
+			name:      "wrong transition state",
+			mutate:    func(event *domain.RunEvent, _ domain.RunState) { event.StateFrom = domain.StateReady },
+			fragments: []string{"journal"},
+		},
+		{
+			name:      "wrong sequence",
+			mutate:    func(event *domain.RunEvent, _ domain.RunState) { event.Sequence++ },
+			fragments: []string{"sequence"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := setupPersistedTypedRetryFailure(t, nil, nil)
+			state := inspectState(t, fixture)
+			mutateLastWorkerFailure(t, fixture, func(event *domain.RunEvent) { test.mutate(event, state) })
+			requireFailsBeforeProbe(t, fixture, test.fragments...)
+		})
+	}
+}
+
 func TestQwenQoderCodexResultMissingStopsAtCore(t *testing.T) {
 	for _, adapterID := range []port.AdapterID{port.AdapterIDQwen, port.AdapterIDQoder, port.AdapterIDCodex} {
 		t.Run(string(adapterID), func(t *testing.T) {
@@ -929,6 +1150,11 @@ func requireFailsBeforeProbe(t *testing.T, fixture executionFixture, fragments .
 	input := fixture.input
 	input.Adapter = adapter
 	before := captureJournal(t, fixture)
+	statePath := filepath.Join(fixture.runDir, "state.json")
+	beforeState, stateErr := os.ReadFile(statePath)
+	if stateErr != nil {
+		t.Fatal(stateErr)
+	}
 	attempts := attemptDirCount(t, fixture)
 	_, err := Run(context.Background(), input)
 	if err == nil {
@@ -947,6 +1173,13 @@ func requireFailsBeforeProbe(t *testing.T, fixture executionFixture, fragments .
 	}
 	if after := captureJournal(t, fixture); after != before {
 		t.Fatal("journal sequence or raw bytes advanced despite the fail-closed rejection")
+	}
+	afterState, stateErr := os.ReadFile(statePath)
+	if stateErr != nil {
+		t.Fatal(stateErr)
+	}
+	if !bytes.Equal(afterState, beforeState) {
+		t.Fatalf("run state or counters advanced despite the fail-closed rejection: before=%s after=%s", beforeState, afterState)
 	}
 }
 
@@ -985,9 +1218,106 @@ func setupReviewPendingFixture(t *testing.T, attemptID string) executionFixture 
 
 func appendRetrySegment(t *testing.T, fixture executionFixture, attemptID string) {
 	t.Helper()
+	state := inspectState(t, fixture)
+	payload := persistedFailurePayload(t, state, port.AdapterID(fixture.input.Adapter.ID()), port.FailureKindConnectionFailure, port.RetryDispositionRetryable, nil, nil)
 	appendRunEvents(t, fixture,
 		step("worker.started", domain.StateRunning, workerRunnerActor(), attemptID, map[string]any{"adapterId": "fixture"}),
-		step("worker.failed", domain.StateRetryPending, workerRunnerActor(), attemptID, map[string]any{"error": "boom"}))
+		step("worker.failed", domain.StateRetryPending, workerRunnerActor(), attemptID, payload))
+}
+
+func durationPointer(value time.Duration) *time.Duration { return &value }
+
+func persistedFailurePayload(t *testing.T, state domain.RunState, adapterID port.AdapterID, kind port.FailureKind, disposition port.RetryDisposition, retryAfter *time.Duration, notBefore *time.Time) map[string]any {
+	t.Helper()
+	signature, err := workerFailureSignature(workerFailureSignatureContext{
+		baseSHA: state.BaseSHA, specDigest: state.SpecDigest, policyDigest: state.PolicyDigest, capabilityDigest: state.CapabilityDigest,
+	}, string(adapterID), kind, disposition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := port.AdapterFailure{Adapter: adapterID, Kind: kind, Disposition: disposition}
+	payload := map[string]any{
+		"adapterId":        string(adapterID),
+		"failureKind":      string(kind),
+		"retryDisposition": string(disposition),
+		"failureSignature": signature,
+	}
+	if retryAfter != nil {
+		failure.RetryAfter = *retryAfter
+		payload["retryAfterNanoseconds"] = float64(retryAfter.Nanoseconds())
+	}
+	if notBefore != nil {
+		failure.NotBefore = notBefore.UTC()
+		payload["notBefore"] = notBefore.UTC().Format(time.RFC3339)
+	}
+	payload["error"] = failure.Error()
+	return payload
+}
+
+func setPersistedFailurePayload(t *testing.T, event *domain.RunEvent, state domain.RunState, adapterID port.AdapterID, kind port.FailureKind, disposition port.RetryDisposition, retryAfter *time.Duration, notBefore *time.Time) {
+	t.Helper()
+	event.Payload = persistedFailurePayload(t, state, adapterID, kind, disposition, retryAfter, notBefore)
+}
+
+func setupPersistedTypedRetryFailure(t *testing.T, retryAfter *time.Duration, notBefore *time.Time) executionFixture {
+	t.Helper()
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+		preferredAdapter: "fake", fallbackAdapters: []string{}, capabilityAdapterID: "fake", maxAttempts: 3, maxOperationalRetries: 2,
+	})
+	delegate := fixture.input.Adapter.(*fixtureAdapter)
+	delegate.id = "fake"
+	failure, err := port.NewAdapterFailure(port.AdapterIDFake, port.FailureKindConnectionFailure, port.RetryDispositionRetryable, retryAfter, notBefore, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	delegate.failure = failure
+	result, err := Run(context.Background(), fixture.input)
+	if err == nil || result.State.State != domain.StateRetryPending || result.State.AttemptsUsed != 1 || result.State.OperationalRetriesUsed != 1 {
+		t.Fatalf("seed typed retry failure = %+v err=%v", result, err)
+	}
+	delegate.failure = nil
+	return fixture
+}
+
+func setupHistoricalNotBeforeRetryFailure(t *testing.T) executionFixture {
+	t.Helper()
+	fixture := newExecutionFixtureWithOptions(t, false, executionFixtureOptions{
+		preferredAdapter: "fake", fallbackAdapters: []string{}, capabilityAdapterID: "fake", maxAttempts: 3, maxOperationalRetries: 2,
+	})
+	fixture.input.Adapter.(*fixtureAdapter).id = "fake"
+	state := inspectState(t, fixture)
+	// appendRunEvents deterministically records worker.started at t=102 and
+	// worker.failed at t=103 for a fresh fixture. The bounded not-before is
+	// valid relative to the failure event but has elapsed relative to now.
+	notBefore := time.Unix(103, 0).UTC().Add(time.Hour)
+	payload := persistedFailurePayload(t, state, port.AdapterIDFake, port.FailureKindConnectionFailure, port.RetryDispositionRetryable, nil, &notBefore)
+	appendRunEvents(t, fixture,
+		step("worker.started", domain.StateRunning, workerRunnerActor(), "attempt-historical-not-before", map[string]any{"adapterId": "fake"}),
+		step("worker.failed", domain.StateRetryPending, workerRunnerActor(), "attempt-historical-not-before", payload))
+	return fixture
+}
+
+func mutateLastWorkerFailure(t *testing.T, fixture executionFixture, mutate func(*domain.RunEvent)) {
+	t.Helper()
+	mutateRawJournalLines(t, fixture, func(lines []string) {
+		for index := len(lines) - 1; index >= 0; index-- {
+			var event domain.RunEvent
+			if err := json.Unmarshal([]byte(lines[index]), &event); err != nil {
+				t.Fatal(err)
+			}
+			if event.Type != "worker.failed" {
+				continue
+			}
+			mutate(&event)
+			data, err := json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines[index] = string(data)
+			return
+		}
+		t.Fatal("journal has no worker.failed event")
+	})
 }
 
 func setupRetryPendingFixture(t *testing.T, attemptID string) executionFixture {
@@ -2003,6 +2333,12 @@ func TestOrphanedRunningAttemptRecoveryIsFencingCapable(t *testing.T) {
 			}
 			if orphanFailed.Payload["orphaned"] != true || orphanFailed.Payload["fencingGeneration"] != float64(1) {
 				t.Fatalf("orphan worker.failed payload = %+v", orphanFailed.Payload)
+			}
+			if orphanFailed.Payload["adapterId"] != "fixture" || orphanFailed.Payload["failureKind"] != string(port.FailureKindConnectionFailure) || orphanFailed.Payload["retryDisposition"] != string(port.RetryDispositionRetryable) {
+				t.Fatalf("orphan retry lacks typed failure authority: %+v", orphanFailed.Payload)
+			}
+			if signature, _ := orphanFailed.Payload["failureSignature"].(string); !isCanonicalSHA256(signature) {
+				t.Fatalf("orphan retry failureSignature = %q", signature)
 			}
 			if recoveredStarted == nil || recoveredStarted.StateFrom != domain.StateRetryPending {
 				t.Fatalf("recovered worker.started event = %+v", recoveredStarted)
