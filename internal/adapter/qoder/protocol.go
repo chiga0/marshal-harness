@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/chiga0/marshal-harness/internal/adapter/denials"
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/port"
 )
 
@@ -504,17 +505,10 @@ func (result *captureResult) beginAssistantFrame(message qoderMessage) error {
 			return fmt.Errorf("%w: assistant frame follows stop_reason", ErrProtocol)
 		}
 	default:
-		if !result.assistantTurn.closed {
-			return fmt.Errorf("%w: assistant message id changed before stop_reason", ErrProtocol)
+		if result.assistantTurn.closed {
+			return fmt.Errorf("%w: assistant message follows closed turn", ErrProtocol)
 		}
-		if len(result.pendingTools) != 0 {
-			return fmt.Errorf("%w: assistant message precedes prior tool_result", ErrProtocol)
-		}
-		if result.closedTurns == nil {
-			result.closedTurns = map[string]struct{}{}
-		}
-		result.closedTurns[result.assistantTurn.id] = struct{}{}
-		result.assistantTurn = assistantTurnState{id: message.ID}
+		return fmt.Errorf("%w: assistant message id changed before stop_reason", ErrProtocol)
 	}
 	return nil
 }
@@ -540,13 +534,12 @@ func (result *captureResult) finishAssistantFrame(message qoderMessage) error {
 }
 
 func canonicalJSONEqual(left, right json.RawMessage) bool {
-	var leftValue, rightValue any
-	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
+	leftCanonical, leftErr := canonical.JSON(left)
+	if leftErr != nil {
 		return false
 	}
-	leftCanonical, leftErr := json.Marshal(leftValue)
-	rightCanonical, rightErr := json.Marshal(rightValue)
-	return leftErr == nil && rightErr == nil && bytes.Equal(leftCanonical, rightCanonical)
+	rightCanonical, rightErr := canonical.JSON(right)
+	return rightErr == nil && bytes.Equal(leftCanonical, rightCanonical)
 }
 
 func (result *captureResult) hasObservedToolID(id string) bool {
