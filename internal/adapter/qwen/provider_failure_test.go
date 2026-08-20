@@ -333,6 +333,118 @@ func TestRunClassifiesStructuredProviderTerminalFailures(t *testing.T) {
 	})
 }
 
+// TestRunPreInitTerminalProtocolMatrix freezes the provider-observed startup
+// shape where Qwen can report a terminal failure before emitting system/init.
+// Only a failure terminal may bypass init: malformed/trailing/duplicate/process
+// conflict evidence remains structural and the established initialized flows
+// keep their existing outcomes.
+func TestRunPreInitTerminalProtocolMatrix(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		kind        port.FailureKind
+		disposition port.RetryDisposition
+		wantSuccess bool
+		detail      string
+	}{
+		{
+			name:        "result-error-during-execution-before-init",
+			body:        terminalLine(`{"type":"result","subtype":"error_during_execution"}`),
+			kind:        port.FailureKindProviderTerminal,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "result subtype is not success",
+		},
+		{
+			name:        "error-before-init",
+			body:        terminalLine(`{"type":"error"}`),
+			kind:        port.FailureKindProviderTerminal,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "provider reported a terminal error",
+		},
+		{
+			name:        "success-before-init-stays-structural",
+			body:        resultEvent("success", 1, 1),
+			kind:        port.FailureKindProtocolInvalid,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "first event must be system/init",
+		},
+		{
+			name: "malformed-before-pre-init-terminal",
+			body: strings.Join([]string{
+				`printf '%s\n' 'not-json'`,
+				terminalLine(`{"type":"result","subtype":"error_during_execution"}`),
+			}, "\n"),
+			kind:        port.FailureKindProtocolInvalid,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "malformed JSONL",
+		},
+		{
+			name: "duplicate-pre-init-terminal",
+			body: strings.Join([]string{
+				terminalLine(`{"type":"result","subtype":"error_during_execution"}`),
+				terminalLine(`{"type":"error"}`),
+			}, "\n"),
+			kind:        port.FailureKindProtocolInvalid,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "duplicate terminal event",
+		},
+		{
+			name: "pre-init-terminal-process-conflict",
+			body: strings.Join([]string{
+				terminalLine(`{"type":"result","subtype":"error_during_execution"}`),
+				"exit 3",
+			}, "\n"),
+			kind:        port.FailureKindProtocolInvalid,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "structured terminal failure conflicts with attempt termination",
+		},
+		{
+			name:        "initialized-provider-terminal",
+			body:        strings.Join([]string{initEvent("session-1", supportedBinary), resultEvent("error_during_execution", 0, 0)}, "\n"),
+			kind:        port.FailureKindProviderTerminal,
+			disposition: port.RetryDispositionDoNotRetry,
+			detail:      "result subtype is not success",
+		},
+		{
+			name:        "initialized-success",
+			body:        strings.Join([]string{initEvent("session-1", supportedBinary), resultEvent("success", 1, 1)}, "\n"),
+			wantSuccess: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRunFixture(t, supportedBinary, test.body)
+			_, err := fixture.adapter.Run(context.Background(), fixture.request)
+			if test.wantSuccess {
+				if err != nil {
+					t.Fatalf("Run() error = %v, want success", err)
+				}
+				return
+			}
+			failure, ok := port.AsAdapterFailure(err)
+			if !ok || failure.Adapter != port.AdapterIDQwen || failure.Kind != test.kind || failure.Disposition != test.disposition {
+				t.Fatalf("err = %v, want typed qwen %s/%s", err, test.kind, test.disposition)
+			}
+			if test.kind == port.FailureKindProtocolInvalid && !errors.Is(err, ErrProtocol) {
+				t.Fatalf("protocol-invalid must keep ErrProtocol identity: %v", err)
+			}
+			if !strings.Contains(err.Error(), test.detail) {
+				t.Fatalf("err = %v, want fixed detail %q", err, test.detail)
+			}
+			metadata, metaErr := os.ReadFile(filepath.Join(fixture.controlRoot, "output", "qwen-transcript-meta.json"))
+			if metaErr != nil {
+				t.Fatal(metaErr)
+			}
+			for _, want := range []string{`"failureKind": "` + string(test.kind) + `"`, `"retryDisposition": "` + string(test.disposition) + `"`} {
+				if !strings.Contains(string(metadata), want) {
+					t.Fatalf("metadata missing %s: %s", want, metadata)
+				}
+			}
+		})
+	}
+}
+
 // TestRunTerminalFailureReturnsBeforeReadingDeclaredResult 用预置诱饵与不可读
 // 声明证明：typed 终止失败先于 WorkerResult 读取，声明不被读取、规范化、
 // 改写或伪造。
