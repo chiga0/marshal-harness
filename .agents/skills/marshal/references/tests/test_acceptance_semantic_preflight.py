@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -32,6 +33,48 @@ def canonical_digest(value: object) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def create_exact_head_clean_worktree(
+    repository_root: Path, source_head: str, container: Path
+) -> Path:
+    container.mkdir(parents=True, exist_ok=True)
+    source = container / "source"
+    protected = container / "protected"
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "clone",
+            "--quiet",
+            "--shared",
+            "--no-checkout",
+            "--",
+            str(repository_root),
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "worktree",
+            "add",
+            "--detach",
+            str(protected),
+            source_head,
+        ],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return protected
+
+
 def load_validator_module():
     spec = importlib.util.spec_from_file_location("acceptance_semantic_preflight", VALIDATOR)
     if spec is None or spec.loader is None:
@@ -48,6 +91,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls._binary_directory = tempfile.TemporaryDirectory()
+        cls._protected_worktree_directory = tempfile.TemporaryDirectory()
         cls.marshal_binary = Path(cls._binary_directory.name) / "marshal"
         completed = subprocess.run(
             ["go", "build", "-o", str(cls.marshal_binary), "./cmd/marshal"],
@@ -65,10 +109,18 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             capture_output=True,
             text=True,
         ).stdout.strip()
+        cls.protected_root = create_exact_head_clean_worktree(
+            REPOSITORY_ROOT,
+            cls.source_head,
+            Path(cls._protected_worktree_directory.name),
+        )
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls._binary_directory.cleanup()
+        try:
+            cls._protected_worktree_directory.cleanup()
+        finally:
+            cls._binary_directory.cleanup()
 
     def invoke(self, root: Path, manifest_name: str = "manifest-r2.json", task_name: str = "task-spec-r2.json") -> subprocess.CompletedProcess[str]:
         fixtures = root / FIXTURE_RELATIVE
@@ -86,7 +138,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
                 "--task-spec",
                 str(fixtures / task_name),
                 "--protected-root",
-                str(REPOSITORY_ROOT),
+                str(self.protected_root),
                 "--source-head",
                 self.source_head,
             ],
@@ -129,20 +181,28 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
 
     def test_adr0035_r1_without_markdown_backtick_normalizer_fails(self) -> None:
-        completed = self.invoke(REPOSITORY_ROOT, "manifest-r1.json", "task-spec-r1.json")
-        self.assert_failure(completed, "positive-fixture-failed")
-        self.assertIn("missing-required-all", completed.stderr)
+        with tempfile.TemporaryDirectory() as directory:
+            root, _fixtures = self.copied_fixtures(directory)
+            completed = self.invoke(root, "manifest-r1.json", "task-spec-r1.json")
+            self.assert_failure(completed, "positive-fixture-failed")
+            self.assertIn("missing-required-all", completed.stderr)
 
     def test_adr0035_r2_passes_all_semantic_and_boundary_negatives(self) -> None:
-        completed = self.invoke(REPOSITORY_ROOT)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        payload = json.loads(completed.stdout)
-        self.assertEqual(payload["normalizer"], "markdown-backtick-strip+nfkc-casefold")
-        self.assertEqual(payload["positiveFixtures"], 1)
-        self.assertEqual(payload["negativeFixtures"], 5)
-        self.assertEqual(payload["fixtureCount"], 6)
-        self.assertRegex(payload["semanticManifestDigest"], r"^sha256:[0-9a-f]{64}$")
-        self.assertRegex(payload["fixtureAggregateDigest"], r"^sha256:[0-9a-f]{64}$")
+        with tempfile.TemporaryDirectory() as directory:
+            root, _fixtures = self.copied_fixtures(directory)
+            completed = self.invoke(root)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["normalizer"], "markdown-backtick-strip+nfkc-casefold")
+            self.assertEqual(payload["positiveFixtures"], 1)
+            self.assertEqual(payload["negativeFixtures"], 5)
+            self.assertEqual(payload["fixtureCount"], 6)
+            self.assertRegex(
+                payload["semanticManifestDigest"], r"^sha256:[0-9a-f]{64}$"
+            )
+            self.assertRegex(
+                payload["fixtureAggregateDigest"], r"^sha256:[0-9a-f]{64}$"
+            )
 
     def test_nfkc_fullwidth_colon_covers_all_semantic_rule_paths(self) -> None:
         gate = {
@@ -255,7 +315,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
     ) -> None:
         command = json.loads((FIXTURES / "task-spec-r2.json").read_text())["acceptance"]["commands"][0]
         fixture = FIXTURES / "report-positive.md"
-        protected_before = VALIDATOR_MODULE.snapshot_protected_roots([REPOSITORY_ROOT])
+        protected_before = VALIDATOR_MODULE.snapshot_protected_roots([self.protected_root])
         self.assertEqual(
             VALIDATOR_MODULE.run_command(
                 command,
@@ -533,6 +593,112 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
                     VALIDATOR_MODULE.validate_protected_root_carrier(root)
             self.assertEqual(raised.exception.reason_code, "protected-root-runtime-state")
 
+    def test_runtime_state_source_is_isolated_from_clean_linked_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "primary"
+            source.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            (source / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=source, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Marshal Test",
+                    "-c",
+                    "user.email=marshal@example.invalid",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "-qm",
+                    "base",
+                ],
+                cwd=source,
+                check=True,
+            )
+            source_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=source,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            (source / ".marshal").mkdir()
+            protected = create_exact_head_clean_worktree(
+                source, source_head, root / "carrier"
+            )
+
+            with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
+                VALIDATOR_MODULE.validate_protected_root_carrier(source)
+            self.assertEqual(
+                raised.exception.reason_code, "protected-root-runtime-state"
+            )
+            self.assertFalse((protected / ".marshal").exists())
+            VALIDATOR_MODULE.bind_explicit_protected_roots_to_source_head(
+                [protected], source_head
+            )
+
+    def test_clean_linked_worktree_does_not_execute_host_git_hooks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "primary"
+            source.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            (source / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=source, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Marshal Test",
+                    "-c",
+                    "user.email=marshal@example.invalid",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "-qm",
+                    "base",
+                ],
+                cwd=source,
+                check=True,
+            )
+            source_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=source,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            hooks = root / "host-hooks"
+            hooks.mkdir()
+            hook_marker = root / "host-hook-ran"
+            post_checkout = hooks / "post-checkout"
+            post_checkout.write_text(
+                f"#!/bin/sh\n: > {str(hook_marker)!r}\n",
+                encoding="utf-8",
+            )
+            post_checkout.chmod(0o755)
+            global_config = root / "host.gitconfig"
+            global_config.write_text(
+                f"[core]\n\thooksPath = {hooks}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {"GIT_CONFIG_GLOBAL": str(global_config)},
+                clear=False,
+            ):
+                protected = create_exact_head_clean_worktree(
+                    source, source_head, root / "carrier"
+                )
+
+            self.assertFalse(hook_marker.exists())
+            VALIDATOR_MODULE.bind_explicit_protected_roots_to_source_head(
+                [protected], source_head
+            )
+
     def test_dangling_runtime_symlink_is_rejected_before_tree_walk(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -554,7 +720,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
     def test_locked_source_head_mismatch_is_rejected(self) -> None:
         with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
             VALIDATOR_MODULE.bind_explicit_protected_roots_to_source_head(
-                [REPOSITORY_ROOT], "0" * 40
+                [self.protected_root], "0" * 40
             )
         self.assertEqual(raised.exception.reason_code, "protected-root-source-head-mismatch")
 
@@ -563,14 +729,14 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             non_git_root = Path(directory)
             with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
                 VALIDATOR_MODULE.bind_explicit_protected_roots_to_source_head(
-                    [REPOSITORY_ROOT, non_git_root], self.source_head
+                    [self.protected_root, non_git_root], self.source_head
                 )
             self.assertEqual(raised.exception.reason_code, "protected-root-source-unbound")
 
     def test_protected_subdirectory_cannot_borrow_parent_git_identity(self) -> None:
         with self.assertRaises(VALIDATOR_MODULE.PreflightError) as raised:
             VALIDATOR_MODULE.bind_explicit_protected_roots_to_source_head(
-                [REPOSITORY_ROOT, REPOSITORY_ROOT / ".agents"], self.source_head
+                [self.protected_root, self.protected_root / ".agents"], self.source_head
             )
         self.assertEqual(raised.exception.reason_code, "protected-root-source-unbound")
 
@@ -704,7 +870,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
                     "--task-spec",
                     str(fixtures / "task-spec-r2.json"),
                     "--protected-root",
-                    str(REPOSITORY_ROOT),
+                    str(self.protected_root),
                     "--source-head",
                     self.source_head,
                 ],
