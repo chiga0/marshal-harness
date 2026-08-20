@@ -528,6 +528,35 @@ def validate_events(script: Path, raw: bytes, state: dict) -> tuple[list[str], l
     fail("verification-event-missing")
 
 
+def business_events(events: list[dict], initial_state: str | None = None) -> list[dict]:
+    """Skip only Core's exact snapshot-repair audit; retain every business event."""
+    result: list[dict] = []
+    current_state = initial_state
+    for event in events:
+        if event.get("type") != "reconciliation.snapshot-repaired":
+            if current_state is not None and event.get("stateFrom") != current_state:
+                fail("business-event-state-lineage-invalid")
+            result.append(event)
+            current_state = event.get("stateTo")
+            continue
+        payload = event.get("payload")
+        source = payload.get("sourceJournalSequence") if isinstance(payload, dict) else None
+        if (
+            event.get("stateFrom") != event.get("stateTo")
+            or (current_state is not None and event.get("stateFrom") != current_state)
+            or event.get("attemptId", "") != ""
+            or event.get("actor") != {"type": "system", "id": "marshal-reconciliation"}
+            or not isinstance(payload, dict)
+            or set(payload) != {"repairKind", "sourceJournalSequence"}
+            or payload.get("repairKind") != "snapshot-rebuild"
+            or isinstance(source, bool)
+            or not isinstance(source, int)
+            or source != event.get("sequence", 0) - 1
+        ):
+            fail("repair-audit-event-invalid")
+    return result
+
+
 def validate_current_generation_inputs(
     script: Path,
     run_root: Path,
@@ -681,20 +710,22 @@ def validate_previous_round_lineage(
         fail("previous-round-review-event-missing")
     rework_index = matching_rework[0]
     rework_event = events[rework_index]
-    if rework_event.get("actor") != {"type": "system", "id": "marshal-review"} or rework_event.get("stateFrom") != "REVIEW_PENDING" or rework_event.get("stateTo") != "REWORK_REQUESTED":
+    if rework_event.get("actor") != {"type": "system", "id": "marshal-review"} or rework_event.get("stateFrom") != "REVIEW_PENDING" or rework_event.get("stateTo") != "REWORK_REQUESTED" or rework_event.get("attemptId", "") != "":
         fail("previous-round-review-event-invalid")
-    prior_verifications = [event for event in events[:rework_index] if event.get("type") == "verification.completed"]
-    if not prior_verifications:
+    prior_business = business_events(events[:rework_index])
+    if not prior_business or prior_business[-1].get("type") != "verification.completed":
         fail("previous-round-verification-event-missing")
-    prior_verification = prior_verifications[-1]
+    prior_verification = prior_business[-1]
+    prior_index = max(index for index, event in enumerate(events[:rework_index]) if event.get("type") != "reconciliation.snapshot-repaired")
+    business_events(events[prior_index:rework_index], prior_verification.get("stateFrom"))
     prior_payload = prior_verification.get("payload", {})
     if prior_verification.get("actor") != {"type": "system", "id": "marshal-verifier"} or prior_verification.get("stateFrom") != "VERIFYING" or prior_verification.get("stateTo") != "REVIEW_PENDING" or prior_payload.get("reportDigest") != packet.get("verificationDigest") or prior_payload.get("artifactManifestDigest") != packet.get("artifactManifestDigest"):
         fail("previous-round-verification-event-invalid")
 
-    successor = events[rework_index + 1:]
-    if len(successor) < 3 or any(str(event.get("type", "")).startswith("review.") for event in successor[:-3]):
+    successor = business_events(events[rework_index + 1:], "REWORK_REQUESTED")
+    if len(successor) != 3:
         fail("current-round-event-lineage-invalid")
-    started, completed, verified = successor[-3:]
+    started, completed, verified = successor
     if started.get("type") != "worker.started" or started.get("stateFrom") != "REWORK_REQUESTED" or started.get("stateTo") != "RUNNING" or started.get("attemptId") != state["currentAttemptId"] or started.get("actor") != {"type": "system", "id": "marshal-worker-runner"}:
         fail("current-round-event-lineage-invalid")
     if completed.get("type") != "worker.completed" or completed.get("stateFrom") != "RUNNING" or completed.get("stateTo") != "VERIFYING" or completed.get("attemptId") != state["currentAttemptId"] or completed.get("actor") != {"type": "system", "id": "marshal-worker-runner"}:
@@ -709,6 +740,8 @@ def validate_previous_round_lineage(
         "previousDecisionDigest": decision_digest,
         "previousReviewEventSequence": rework_event.get("sequence"),
         "previousAttemptIds": prior_attempts,
+        "currentWorkerCompletedSnapshotDigest": completed.get("payload", {}).get("snapshotDigest"),
+        "currentWorkerCompletedDiffDigest": completed.get("payload", {}).get("diffDigest"),
     }, [
         (packet_path, archived_packet_raw, archived_packet_identity),
         (decision_path, decision_raw, decision_identity),
@@ -977,6 +1010,8 @@ def run(arguments: argparse.Namespace) -> dict:
             )
             if current_generation_bindings["verificationDigest"] != frozen_verification_digest or current_generation_bindings["artifactManifestDigest"] != frozen_artifact_digest:
                 fail("verification-event-binding-mismatch")
+            if previous_bindings["currentWorkerCompletedSnapshotDigest"] != current_generation_bindings["snapshotDigest"] or previous_bindings["currentWorkerCompletedDiffDigest"] != current_generation_bindings["patchDigest"]:
+                fail("current-round-worker-completed-binding-mismatch")
             for relative, data, identity in generation_records:
                 tracked.append((run_root, relative, data, identity))
             input_bindings = {"previousRoundLineage": previous_bindings, "currentGeneration": current_generation_bindings}
