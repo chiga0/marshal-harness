@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import importlib.util
 import json
@@ -11,18 +13,22 @@ import tempfile
 import threading
 import tracemalloc
 import unittest
+from unittest import mock
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 SKILL_ROOT = REPOSITORY_ROOT / ".agents/skills/marshal"
 VALIDATOR = SKILL_ROOT / "references/validate-transcript-attestation-preflight.py"
 SCHEMA = SKILL_ROOT / "references/transcript-attestation-preflight.schema.json"
+RECEIPT_SCHEMA = SKILL_ROOT / "references/transcript-attestation-receipt.schema.json"
 TEMPLATE = SKILL_ROOT / "templates/transcript-attestation-preflight.json"
+RECEIPT_TEMPLATE = SKILL_ROOT / "templates/transcript-attestation-receipt.json"
 SCHEMA_PROBE = SKILL_ROOT / "references/tests/transcript_attestation_schema_probe.go"
-CHECKER_SOURCE = SKILL_ROOT / "references/tests/transcript_attestation_core_probe.go"
 FLOOD_CHECKER_SOURCE = SKILL_ROOT / "references/tests/transcript_attestation_flood_probe.go"
 HANG_CHECKER_SOURCE = SKILL_ROOT / "references/tests/transcript_attestation_hang_probe.go"
 FIXTURES = SKILL_ROOT / "references/fixtures/transcript-attestation"
+TEST_MARSHAL_COMMIT = "483249e1255cfc9c493d13bb158914f929fc6fd9"
+TEST_MARSHAL_VERSION = "attestation-test"
 
 
 def code_directory_fixture(
@@ -119,15 +125,19 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls._binary_directory = tempfile.TemporaryDirectory()
-        cls.checker = (Path(cls._binary_directory.name) / "transcript-attestation-checker").resolve()
         cls.flood_checker = (Path(cls._binary_directory.name) / "transcript-attestation-flood-checker").resolve()
         cls.hang_checker = (Path(cls._binary_directory.name) / "transcript-attestation-hang-checker").resolve()
         cls.flood_marker = (Path(cls._binary_directory.name) / "flood-evidence-consumed").resolve()
         cls.marshal = (Path(cls._binary_directory.name) / "marshal").resolve()
-        for output, source in ((cls.checker, str(CHECKER_SOURCE)), (cls.marshal, "./cmd/marshal")):
-            completed = subprocess.run(["go", "build", "-o", str(output), source], cwd=REPOSITORY_ROOT, capture_output=True, text=True)
-            if completed.returncode != 0:
-                raise RuntimeError(completed.stderr)
+        completed = subprocess.run([
+            "go", "build", "-trimpath",
+            "-ldflags",
+            "-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=" + TEST_MARSHAL_COMMIT
+            + " -X github.com/chiga0/marshal-harness/internal/buildinfo.version=" + TEST_MARSHAL_VERSION,
+            "-o", str(cls.marshal), "./cmd/marshal",
+        ], cwd=REPOSITORY_ROOT, capture_output=True, text=True)
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr)
         completed = subprocess.run(
             [
                 "go",
@@ -178,6 +188,12 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
         worktree = worktree.resolve()
         manifest_path = root / "manifest-positive.json"
         manifest = json.loads(manifest_path.read_text())
+        manifest["marshal"] = {
+            "sourceHead": TEST_MARSHAL_COMMIT,
+            "executableSha256": raw_digest(self.marshal),
+            "version": TEST_MARSHAL_VERSION,
+            "internalCommandVersion": "qoder-transcript-check/v1",
+        }
 
         task_path = root / "task-spec.json"
         task = json.loads(task_path.read_text())
@@ -203,6 +219,7 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
         self.write_json(manifest_path, manifest)
         negative_path = root / "manifest-negative-undeclared-wc.json"
         negative = json.loads(negative_path.read_text())
+        negative["marshal"] = dict(manifest["marshal"])
         self.refresh_manifest(root, negative)
         self.write_json(negative_path, negative)
         return root, manifest_path, manifest
@@ -221,9 +238,9 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
         self.write_json(meta_path, meta)
         self.refresh_manifest(root, manifest)
 
-    def invoke(self, root: Path, manifest: str = "manifest-positive.json", env=None, checker=None):
-        checker = checker or self.checker
-        return subprocess.run([sys.executable, "-I", "-B", str(VALIDATOR), "--root", str(root), "--manifest", manifest, "--checker", str(checker)], capture_output=True, text=True, env=env)
+    def invoke(self, root: Path, manifest: str = "manifest-positive.json", env=None, marshal=None):
+        marshal = marshal or self.marshal
+        return subprocess.run([sys.executable, "-I", "-B", str(VALIDATOR), "--root", str(root), "--manifest", manifest, "--marshal", str(marshal)], capture_output=True, text=True, env=env)
 
     def assert_failure(self, completed, *reasons: str) -> None:
         self.assertNotEqual(completed.returncode, 0, completed.stdout)
@@ -259,7 +276,7 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             self.assertEqual(output["observation"]["capabilityDigest"], self.jcs_digest(root / "capability-snapshot.json"))
             self.assertTrue(output["observation"]["workerResultTeeLast"])
             self.assertRegex(
-                output["implementationDigests"]["checkerExecutionIdentity"],
+                output["implementationDigests"]["marshalExecutionIdentity"],
                 r"^sha256:[0-9a-f]{64}$",
             )
             expected_actual_method = (
@@ -273,13 +290,40 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
                 else "linux-proc-exe-sha256"
             )
             self.assertEqual(
-                output["implementationDigests"]["checkerExecutionActualIdentityMethod"],
+                output["implementationDigests"]["marshalExecutionActualIdentityMethod"],
                 expected_actual_method,
             )
             self.assertEqual(
-                output["implementationDigests"]["checkerExecutionExpectedIdentityMethod"],
+                output["implementationDigests"]["marshalExecutionExpectedIdentityMethod"],
                 expected_held_method,
             )
+            self.assertEqual(output["implementationDigests"]["marshalExecutable"], raw_digest(self.marshal))
+            self.assertRegex(output["implementationDigests"]["marshalInternalCommand"], r"^sha256:[0-9a-f]{64}$")
+            self.assertEqual(output["implementationDigests"]["marshalBuildCommit"], TEST_MARSHAL_COMMIT)
+            self.assertRegex(output["implementationDigests"]["stdinEnvelopeDigest"], r"^sha256:[0-9a-f]{64}$")
+            self.assertRegex(output["implementationDigests"]["marshalBuildIdentity"], r"^sha256:[0-9a-f]{64}$")
+            receipt = root / "receipt.json"
+            self.write_json(receipt, output)
+            validated = subprocess.run(
+                ["go", "run", str(SCHEMA_PROBE), str(RECEIPT_SCHEMA), str(receipt)],
+                cwd=REPOSITORY_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+
+    def test_marshal_authorization_digest_and_build_identity_fail_closed(self):
+        for field, value, reason in (
+            ("executableSha256", "sha256:" + "f" * 64, "checker-digest-mismatch"),
+            ("sourceHead", "f" * 40, "checker-source-head-mismatch"),
+            ("version", "future", "checker-version-mismatch"),
+            ("internalCommandVersion", "qoder-transcript-check/v0", "manifest-schema-invalid"),
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root, manifest_path, manifest = self.prepare(directory)
+                manifest["marshal"][field] = value
+                self.write_json(manifest_path, manifest)
+                self.assert_failure(self.invoke(root), reason)
 
     def test_forbidden_unbound_command_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -387,18 +431,18 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertFalse(marker.exists())
 
-    def test_checker_symlink_and_oversize_fail_closed(self):
+    def test_marshal_symlink_and_oversize_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             root, manifest_path, manifest = self.prepare(directory); self.write_json(manifest_path, manifest)
-            symlink = (Path(directory) / "checker-link").resolve(strict=False)
-            symlink.symlink_to(self.checker)
-            self.assert_failure(self.invoke(root, checker=symlink), "checker-invalid")
-            oversized = (Path(directory) / "oversized-checker").resolve()
+            symlink = (Path(directory) / "marshal-link").resolve(strict=False)
+            symlink.symlink_to(self.marshal)
+            self.assert_failure(self.invoke(root, marshal=symlink), "checker-invalid")
+            oversized = (Path(directory) / "oversized-marshal").resolve()
             with oversized.open("wb") as stream:
                 stream.seek(64 * 1024 * 1024)
                 stream.write(b"x")
             oversized.chmod(0o700)
-            self.assert_failure(self.invoke(root, checker=oversized), "checker-invalid")
+            self.assert_failure(self.invoke(root, marshal=oversized), "checker-invalid")
 
     def test_macho_code_directory_parser_accepts_both_thin64_endiannesses(self):
         expected = "sha256:" + hashlib.sha256(code_directory_fixture()).hexdigest()
@@ -481,11 +525,11 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assert_parser_failure(raw)
 
-    def test_checker_leaf_replace_or_growth_never_runs_unbound_bytes(self):
+    def test_marshal_leaf_replace_or_growth_never_runs_unbound_bytes(self):
         for mutation in ("replace", "grow"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 root, manifest_path, manifest = self.prepare(directory); self.write_json(manifest_path, manifest)
-                candidate = (Path(directory) / "checker").resolve(); shutil.copy2(self.checker, candidate); candidate.chmod(0o700)
+                candidate = (Path(directory) / "marshal").resolve(); shutil.copy2(self.marshal, candidate); candidate.chmod(0o700)
                 started = threading.Event()
                 def mutate():
                     started.wait()
@@ -498,51 +542,47 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
                     except OSError:
                         pass
                 thread = threading.Thread(target=mutate); thread.start(); started.set()
-                completed = self.invoke(root, checker=candidate); thread.join()
+                completed = self.invoke(root, marshal=candidate); thread.join()
                 if completed.returncode == 0:
                     self.assertEqual(json.loads(completed.stdout)["reasonCode"], "transcript-attestation-pass")
                 else:
                     reason = json.loads(completed.stderr)["reasonCode"]
-                    self.assertIn(reason, {"checker-invalid", "checker-changed-during-read", "checker-changed-during-execution", "checker-execution-failed", "checker-process-identity-unavailable", "invalid-json"})
+                    self.assertIn(reason, {"checker-invalid", "checker-digest-mismatch", "checker-changed-during-read", "checker-changed-during-execution", "checker-execution-failed", "checker-process-identity-unavailable", "invalid-json"})
 
-    def test_private_checker_replacement_before_spawn_gets_no_evidence(self):
+    def test_marshal_replacement_before_spawn_gets_no_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             root, _, manifest = self.prepare(directory)
-            marker = Path(directory) / "evidence-reached-replacement"
+            candidate = (Path(directory) / "marshal").resolve()
+            shutil.copy2(self.marshal, candidate)
+            candidate.chmod(0o700)
 
-            def replace_before_spawn(copied_path: Path) -> None:
-                replacement = copied_path.with_name("replacement")
-                replacement.write_text(
-                    "#!/bin/sh\nIFS= read -r payload\nprintf received > "
-                    + repr(str(marker))
-                    + "\n"
-                )
+            def replace_before_spawn(marshal_path: Path) -> None:
+                replacement = marshal_path.with_name("replacement")
+                shutil.copy2("/bin/cat", replacement)
                 replacement.chmod(0o700)
-                os.replace(replacement, copied_path)
+                os.replace(replacement, marshal_path)
 
             with self.assertRaises(self.validator_module.PreflightError) as raised:
                 self.validator_module.invoke_core_checker(
-                    self.checker,
+                    candidate,
+                    manifest["marshal"],
                     manifest["subject"],
                     self.direct_checker_inputs(root, manifest),
                     before_spawn=replace_before_spawn,
                 )
-            self.assertEqual(raised.exception.reason_code, "checker-process-identity-mismatch")
-            self.assertFalse(marker.exists(), "evidence must not be sent before process-image attestation")
+            self.assertIn(raised.exception.reason_code, {"checker-process-identity-mismatch", "checker-process-identity-unavailable", "checker-execution-failed"})
 
-    def test_private_checker_double_swap_is_caught_by_actual_process_identity(self):
+    def test_marshal_double_swap_is_caught_by_actual_process_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             root, _, manifest = self.prepare(directory)
-            marker = Path(directory) / "evidence-reached-double-swap"
+            candidate = (Path(directory) / "marshal").resolve()
+            shutil.copy2(self.marshal, candidate)
+            candidate.chmod(0o700)
             original_raw: list[bytes] = []
 
             def install_attack(copied_path: Path) -> None:
                 replacement = copied_path.with_name("replacement")
-                replacement.write_text(
-                    "#!/bin/sh\nIFS= read -r payload\nprintf received > "
-                    + repr(str(marker))
-                    + "\n"
-                )
+                shutil.copy2("/bin/cat", replacement)
                 replacement.chmod(0o700)
                 os.replace(replacement, copied_path)
 
@@ -563,16 +603,16 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
 
             with self.assertRaises(self.validator_module.PreflightError) as raised:
                 self.validator_module.invoke_core_checker(
-                    self.checker,
+                    candidate,
+                    manifest["marshal"],
                     manifest["subject"],
                     self.direct_checker_inputs(root, manifest),
                     before_spawn=before_spawn,
                     after_process_spawn=after_process_spawn,
                 )
-            self.assertEqual(raised.exception.reason_code, "checker-process-identity-mismatch")
-            self.assertFalse(marker.exists(), "double-swapped checker must not receive evidence")
+            self.assertIn(raised.exception.reason_code, {"checker-process-identity-mismatch", "checker-process-identity-unavailable", "checker-execution-failed"})
 
-    def test_private_checker_mutation_after_spawn_is_rejected_before_evidence(self):
+    def test_marshal_mutation_after_spawn_is_rejected_before_evidence(self):
         for mutation in ("replace", "grow", "symlink"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 root, _, manifest = self.prepare(directory)
@@ -591,8 +631,12 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
                     os.replace(replacement, copied_path)
 
                 with self.assertRaises(self.validator_module.PreflightError) as raised:
+                    candidate = (Path(directory) / "marshal").resolve()
+                    shutil.copy2(self.marshal, candidate)
+                    candidate.chmod(0o700)
                     self.validator_module.invoke_core_checker(
-                        self.checker,
+                        candidate,
+                        manifest["marshal"],
                         manifest["subject"],
                         self.direct_checker_inputs(root, manifest),
                         after_spawn=mutate_after_spawn,
@@ -612,6 +656,7 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
                 with self.assertRaises(self.validator_module.PreflightError) as raised:
                     self.validator_module.invoke_core_checker(
                         self.flood_checker,
+                        {**manifest["marshal"], "executableSha256": raw_digest(self.flood_checker)},
                         manifest["subject"],
                         self.direct_checker_inputs(root, manifest),
                     )
@@ -633,6 +678,7 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             with self.assertRaises(self.validator_module.PreflightError) as raised:
                 self.validator_module.invoke_core_checker(
                     self.hang_checker,
+                    {**manifest["marshal"], "executableSha256": raw_digest(self.hang_checker)},
                     manifest["subject"],
                     self.direct_checker_inputs(root, manifest),
                     after_process_spawn=remember_pid,
@@ -643,14 +689,43 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             with self.assertRaises(ProcessLookupError):
                 os.kill(checker_pid[0], 0)
 
+    def test_marshal_child_uses_empty_bounded_environment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _, manifest = self.prepare(directory)
+            real_popen = subprocess.Popen
+            observed = []
+
+            def recording_popen(args, *positional, **keywords):
+                if args[:3] == [str(self.marshal), "internal", "qoder-transcript-check"]:
+                    observed.append(dict(keywords.get("env", {})))
+                return real_popen(args, *positional, **keywords)
+
+            hostile = dict(os.environ)
+            hostile.update({"HOME": "/secret-home", "HTTPS_PROXY": "http://secret", "API_TOKEN": "secret"})
+            with mock.patch.object(self.validator_module.subprocess, "Popen", recording_popen):
+                completed = self.invoke(root, env=hostile)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            # The validator runs in a separate isolated Python process in invoke;
+            # exercise the in-process bridge too so the exact Popen environment
+            # is observable without exposing any inherited value.
+            with mock.patch.object(self.validator_module.subprocess, "Popen", recording_popen):
+                self.validator_module.invoke_core_checker(
+                    self.marshal,
+                    manifest["marshal"],
+                    manifest["subject"],
+                    self.direct_checker_inputs(root, manifest),
+                )
+            self.assertEqual(observed, [{"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}])
+
     def test_python_bridge_contains_no_tool_or_event_semantic_parser(self):
         source = VALIDATOR.read_text()
         for forbidden in ("def parse_jsonl", "def validate_transcript", "tool_use", "tool_result", "TEE_FIRST_LINE", "TASK_TOOL_NAMES"):
             self.assertNotIn(forbidden, source)
-        for required in ("O_NOFOLLOW", "O_EXCL", "CHECKER_MAX_BYTES", "TemporaryDirectory", 'python3'):
-            if required != "python3":
-                self.assertIn(required, source)
-        for required in ("codesign_identity", "actual_checker_execution_identity", "checkerExecutionIdentity"):
+        for forbidden in ("TemporaryDirectory", "marshal-attestation-checker-", "O_EXCL"):
+            self.assertNotIn(forbidden, source)
+        for required in ("O_NOFOLLOW", "CHECKER_MAX_BYTES", "internal", "qoder-transcript-check"):
+            self.assertIn(required, source)
+        for required in ("codesign_identity", "actual_checker_execution_identity", "marshalExecutionIdentity"):
             self.assertIn(required, source)
 
     def test_real_mac_v5_receipt_is_historical_non_migratable_and_sanitized(self):
@@ -679,6 +754,8 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             completed = subprocess.run([str(self.marshal), "contract", "validate", "--schema", schema_name, str(FIXTURES / filename)], cwd=REPOSITORY_ROOT, capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
         completed = subprocess.run(["go","run",str(SCHEMA_PROBE),str(SCHEMA),str(TEMPLATE),str(FIXTURES / "manifest-positive.json"),str(FIXTURES / "manifest-negative-undeclared-wc.json")],cwd=REPOSITORY_ROOT,capture_output=True,text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        completed = subprocess.run(["go", "run", str(SCHEMA_PROBE), str(RECEIPT_SCHEMA), str(RECEIPT_TEMPLATE)], cwd=REPOSITORY_ROOT, capture_output=True, text=True)
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
 

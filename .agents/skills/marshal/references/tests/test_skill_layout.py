@@ -118,6 +118,11 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertIn("Qoder v7", content)
         self.assertIn("qoder-stream-json-1.2.0-v7", content)
         self.assertIn("v7 尚须取得 fresh Mac evidence", content)
+        self.assertIn("internal qoder-transcript-check", content)
+        self.assertIn("--marshal /ABSOLUTE/REPOSITORY/bin/marshal", content)
+        self.assertIn("marshal-transcript-attestation-v3", content)
+        self.assertNotIn("transcript-attestation-checker", content)
+        self.assertNotIn("--checker /ABSOLUTE/OPERATOR/DIR/transcript-attestation-checker", content)
         self.assertNotIn("当前实现只支持版本化冻结的 Qoder v6", content)
 
     def test_all_relative_markdown_links_exist(self) -> None:

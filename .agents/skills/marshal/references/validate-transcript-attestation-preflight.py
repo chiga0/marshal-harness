@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed operator-local Qoder v5 transcript attestation preflight."""
+"""Fail-closed operator-local Qoder v7 transcript attestation preflight."""
 
 from __future__ import annotations
 
@@ -15,13 +15,13 @@ import stat
 import struct
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 SCHEMA_NAME = "transcript-attestation-preflight.schema.json"
+RECEIPT_SCHEMA_NAME = "transcript-attestation-receipt.schema.json"
 READ_CHUNK_BYTES = 1024 * 1024
 MANIFEST_MAX_BYTES = 1024 * 1024
 SCHEMA_MAX_BYTES = 1024 * 1024
@@ -32,6 +32,7 @@ CHECKER_TIMEOUT_SECONDS = 120
 CHECKER_STDOUT_MAX_BYTES = 1024 * 1024
 CHECKER_STDERR_MAX_BYTES = 256 * 1024
 CHECKER_TOTAL_OUTPUT_MAX_BYTES = 5 * 1024 * 1024 // 4
+CHECKER_STDIN_MAX_BYTES = 32 * 1024 * 1024
 PROCESS_IO_CHUNK_BYTES = 16 * 1024
 CODESIGN_PATH = Path("/usr/bin/codesign")
 CDHASH_FULL_RE = re.compile(rb"(?m)^CandidateCDHashFull sha256=([0-9a-f]{64})$")
@@ -421,7 +422,7 @@ def attestation_digest(
     implementation_digests: dict[str, str],
     core_output_digest: str,
 ) -> str:
-    frames = [b"marshal-transcript-attestation-v2\n", manifest_digest.encode("ascii"), b"\n"]
+    frames = [b"marshal-transcript-attestation-v3\n", manifest_digest.encode("ascii"), b"\n"]
     for label in sorted(input_digests):
         frames.extend([label.encode("ascii"), b"\0", input_digests[label].encode("ascii"), b"\n"])
     for label in sorted(implementation_digests):
@@ -463,20 +464,20 @@ def read_open_checker(descriptor: int, maximum: int, reason_code: str) -> tuple[
     return raw, after
 
 
-def verify_private_checker_path(copied_path: Path, held: os.stat_result, expected_raw: bytes) -> None:
+def verify_marshal_path(marshal_path: Path, held: os.stat_result, expected_raw: bytes) -> None:
     try:
         descriptor = os.open(
-            copied_path,
+            marshal_path,
             os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
         )
     except OSError:
-        fail("checker-private-path-changed", "private checker path is no longer the held regular file")
+        fail("checker-private-path-changed", "Marshal path is no longer the held regular file")
     try:
         raw, opened = read_open_checker(descriptor, CHECKER_MAX_BYTES, "checker-private-path-changed")
         if (opened.st_dev, opened.st_ino) != (held.st_dev, held.st_ino):
-            fail("checker-private-path-changed", "private checker path inode differs from held copy")
+            fail("checker-private-path-changed", "Marshal path inode differs from the held executable")
         if not hmac.compare_digest(hashlib.sha256(raw).digest(), hashlib.sha256(expected_raw).digest()):
-            fail("checker-private-path-changed", "private checker path bytes differ from held copy")
+            fail("checker-private-path-changed", "Marshal path bytes differ from the held executable")
     finally:
         os.close(descriptor)
 
@@ -876,7 +877,8 @@ def stop_owned_checker(process: subprocess.Popen) -> None:
 
 
 def invoke_core_checker(
-    checker: Path,
+    marshal_executable: Path,
+    expected_marshal: dict,
     subject: dict,
     raw_inputs: dict[str, bytes],
     *,
@@ -885,16 +887,19 @@ def invoke_core_checker(
     after_spawn=None,
     checker_timeout_seconds=CHECKER_TIMEOUT_SECONDS,
 ) -> tuple[dict, str, str, str, str]:
-    if not checker.is_absolute() or checker.resolve() != checker:
-        fail("checker-invalid", "--checker must be an absolute canonical path")
-    metadata = checker.lstat()
+    if not marshal_executable.is_absolute() or marshal_executable.resolve() != marshal_executable:
+        fail("checker-invalid", "--marshal must be an absolute canonical path")
+    try:
+        metadata = marshal_executable.lstat()
+    except OSError:
+        fail("checker-invalid", "--marshal is unavailable")
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o111 == 0:
-        fail("checker-invalid", "--checker must be a non-symlink regular file")
+        fail("checker-invalid", "--marshal must be a non-symlink regular file")
     if metadata.st_size <= 0 or metadata.st_size > CHECKER_MAX_BYTES:
-        fail("checker-invalid", "--checker exceeds its closed size bound")
+        fail("checker-invalid", "--marshal exceeds its closed size bound")
     try:
         checker_fd = os.open(
-            checker,
+            marshal_executable,
             os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
         )
     except OSError as error:
@@ -915,93 +920,113 @@ def invoke_core_checker(
         if checker_stat_identity(before) != checker_stat_identity(after):
             fail("checker-changed-during-read", "checker changed during bounded held read")
         checker_digest = sha256_bytes(checker_raw)
+        if checker_digest != expected_marshal["executableSha256"]:
+            fail("checker-digest-mismatch", "Marshal raw digest differs from the authorized manifest")
         envelope = {"subject": subject}
         envelope.update(
             {label: base64.b64encode(raw_inputs[label]).decode("ascii") for label in INPUT_HARD_LIMITS}
         )
-        # Darwin cannot portably fexecve a held descriptor from Python. Copy
-        # the already-held bytes to a private inode, derive its expected code
-        # identity, then attest the blocked child process image before sending
-        # any evidence. Path/inode checks remain defense in depth, not the
-        # claim that proves which image actually ran.
-        with tempfile.TemporaryDirectory(prefix="marshal-attestation-checker-") as private_root:
-            copied_path = Path(private_root) / "checker"
-            copied_fd = os.open(copied_path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
-            process = None
-            capture = None
-            try:
-                offset = 0
-                while offset < len(checker_raw):
-                    offset += os.write(copied_fd, checker_raw[offset:])
-                os.fchmod(copied_fd, 0o700)
-                os.fsync(copied_fd)
-                copied_before = os.fstat(copied_fd)
-                verify_private_checker_path(copied_path, copied_before, checker_raw)
-                expected_identity_method, expected_execution_identity = expected_checker_execution_identity(
-                    checker_raw, checker_digest
+        envelope_raw = json.dumps(
+            envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        if len(envelope_raw) > CHECKER_STDIN_MAX_BYTES:
+            fail("checker-input-too-large", "Marshal internal command input exceeds its closed bound")
+        envelope_digest = sha256_bytes(envelope_raw)
+        # The caller supplies the stable Marshal executable that it already
+        # permits. Keep its file descriptor and raw bytes held, derive the
+        # expected process-image identity from those bytes, and start only its
+        # hidden internal subcommand. The child remains blocked on stdin until
+        # PID/CDHash (Darwin) or /proc/PID/exe (Linux), path, inode and digest
+        # checks all match. No executable is copied into a random temp path.
+        expected_identity_method, expected_execution_identity = expected_checker_execution_identity(
+            checker_raw, checker_digest
+        )
+        verify_marshal_path(marshal_executable, before, checker_raw)
+        if before_spawn is not None:
+            before_spawn(marshal_executable)
+        process = None
+        capture = None
+        try:
+            process = subprocess.Popen(
+                [str(marshal_executable), "internal", "qoder-transcript-check"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+            )
+            capture = BoundedProcessCapture(
+                process,
+                CHECKER_STDOUT_MAX_BYTES,
+                CHECKER_STDERR_MAX_BYTES,
+                CHECKER_TOTAL_OUTPUT_MAX_BYTES,
+            )
+            if after_process_spawn is not None:
+                after_process_spawn(marshal_executable, process)
+            actual_method, actual_execution_identity = actual_checker_execution_identity(process)
+            capture.fault_before_input(
+                "checker-output-limit-exceeded", "checker-execution-failed"
+            )
+            if process.poll() is not None:
+                fail("checker-process-identity-unavailable", "Marshal exited after identity probe")
+            if not hmac.compare_digest(actual_execution_identity, expected_execution_identity):
+                fail(
+                    "checker-process-identity-mismatch",
+                    "running Marshal image differs from the identity derived before spawn",
                 )
-                verify_private_checker_path(copied_path, copied_before, checker_raw)
-                if before_spawn is not None:
-                    before_spawn(copied_path)
-                process = subprocess.Popen(
-                    [str(copied_path)],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
-                )
-                capture = BoundedProcessCapture(
-                    process,
-                    CHECKER_STDOUT_MAX_BYTES,
-                    CHECKER_STDERR_MAX_BYTES,
-                    CHECKER_TOTAL_OUTPUT_MAX_BYTES,
-                )
-                if after_process_spawn is not None:
-                    after_process_spawn(copied_path, process)
-                actual_method, actual_execution_identity = actual_checker_execution_identity(process)
-                capture.fault_before_input(
-                    "checker-output-limit-exceeded", "checker-execution-failed"
-                )
-                if not hmac.compare_digest(actual_execution_identity, expected_execution_identity):
-                    fail(
-                        "checker-process-identity-mismatch",
-                        "running checker image differs from the identity derived before spawn",
-                    )
-                if after_spawn is not None:
-                    after_spawn(copied_path, process)
-                verify_private_checker_path(copied_path, copied_before, checker_raw)
-                capture.fault_before_input(
-                    "checker-output-limit-exceeded", "checker-execution-failed"
-                )
-                stdout, stderr, completed_returncode = capture.finish(
-                    json.dumps(
-                        envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-                    ).encode("utf-8"),
-                    checker_timeout_seconds,
-                    "checker-output-limit-exceeded",
-                    "checker-deadline-exceeded",
-                    "checker-execution-failed",
-                )
-                copied_after = os.fstat(copied_fd)
-                if checker_stat_identity(copied_before) != checker_stat_identity(copied_after):
-                    fail("checker-changed-during-execution", "private checker inode changed during execution")
-                verify_private_checker_path(copied_path, copied_before, checker_raw)
-            finally:
-                if capture is not None:
-                    capture.close()
-                elif process is not None:
-                    stop_owned_checker(process)
-                os.close(copied_fd)
+            if after_spawn is not None:
+                after_spawn(marshal_executable, process)
+            verify_marshal_path(marshal_executable, before, checker_raw)
+            capture.fault_before_input(
+                "checker-output-limit-exceeded", "checker-execution-failed"
+            )
+            stdout, stderr, completed_returncode = capture.finish(
+                envelope_raw,
+                checker_timeout_seconds,
+                "checker-output-limit-exceeded",
+                "checker-deadline-exceeded",
+                "checker-execution-failed",
+            )
+            held_after = os.fstat(checker_fd)
+            if checker_stat_identity(before) != checker_stat_identity(held_after):
+                fail("checker-changed-during-execution", "held Marshal executable changed during execution")
+            verify_marshal_path(marshal_executable, before, checker_raw)
+        finally:
+            if capture is not None:
+                capture.close()
+            elif process is not None:
+                stop_owned_checker(process)
     except (OSError, subprocess.TimeoutExpired) as error:
         fail("checker-execution-failed", f"held checker execution failed: {type(error).__name__}")
     finally:
         os.close(checker_fd)
+    if completed_returncode == 0 and stderr:
+        fail("checker-output-invalid", "Marshal internal command emitted stderr on success")
+    if completed_returncode != 0 and stdout:
+        fail("checker-output-invalid", "Marshal internal command emitted stdout on failure")
     stream = stdout if completed_returncode == 0 else stderr
     payload = parse_json(stream, "core checker output")
     if completed_returncode != 0:
-        fail(payload.get("reasonCode", "core-checker-rejected"), "production Qoder checker rejected evidence")
-    if set(payload) != {"status", "reasonCode", "identity", "observation"} or payload.get("status") != "pass":
+        if set(payload) != {"status", "reasonCode"} or payload.get("status") != "fail":
+            fail("checker-output-invalid", "Marshal internal command returned an open failure output")
+        reason = payload.get("reasonCode")
+        if not isinstance(reason, str) or not re.fullmatch(r"[a-z0-9-]{1,128}", reason):
+            fail("checker-output-invalid", "Marshal internal command returned an invalid reason code")
+        fail(reason, "production Qoder checker rejected evidence")
+    if set(payload) != {"status", "reasonCode", "identity", "marshal", "observation"} or payload.get("status") != "pass":
         fail("checker-output-invalid", "core checker returned an open or invalid output")
+    marshal_identity = payload.get("marshal")
+    if not isinstance(marshal_identity, dict) or set(marshal_identity) != {
+        "version", "commit", "internalCommandVersion", "inputDigest"
+    }:
+        fail("checker-output-invalid", "Marshal internal command identity is invalid")
+    if marshal_identity.get("inputDigest") != envelope_digest:
+        fail("checker-input-digest-mismatch", "Marshal internal command did not bind the exact stdin")
+    if marshal_identity.get("commit") != expected_marshal["sourceHead"]:
+        fail("checker-source-head-mismatch", "Marshal build commit differs from the authorized manifest")
+    if marshal_identity.get("version") != expected_marshal["version"]:
+        fail("checker-version-mismatch", "Marshal build version differs from the authorized manifest")
+    if marshal_identity.get("internalCommandVersion") != expected_marshal["internalCommandVersion"]:
+        fail("checker-command-version-mismatch", "Marshal internal command version differs from the authorized manifest")
     return (
         payload,
         checker_digest,
@@ -1023,6 +1048,12 @@ def run(arguments: argparse.Namespace) -> dict:
     schema = parse_json(schema_raw, "schema")
     validate_schema_document(schema)
     validate_schema_instance(manifest, schema, schema)
+    receipt_schema_path = Path(__file__).resolve().with_name(RECEIPT_SCHEMA_NAME)
+    receipt_schema_raw = read_relative_nofollow(
+        receipt_schema_path.parent, receipt_schema_path.name, SCHEMA_MAX_BYTES, "receipt schema"
+    )
+    receipt_schema = parse_json(receipt_schema_raw, "receipt schema")
+    validate_schema_document(receipt_schema)
 
     raw_inputs, digests = load_inputs(root, manifest)
     (
@@ -1031,22 +1062,29 @@ def run(arguments: argparse.Namespace) -> dict:
         expected_execution_identity_method,
         actual_execution_identity_method,
         execution_identity,
-    ) = invoke_core_checker(Path(arguments.checker), manifest["subject"], raw_inputs)
+    ) = invoke_core_checker(Path(arguments.marshal), manifest["marshal"], manifest["subject"], raw_inputs)
     manifest_digest = sha256_bytes(manifest_raw)
     validator_digest = sha256_bytes(Path(__file__).read_bytes())
     implementation_digests = {
-        "checkerExecutable": checker_digest,
-        "checkerExecutionIdentity": execution_identity,
-        "checkerExecutionExpectedIdentityMethod": expected_execution_identity_method,
-        "checkerExecutionActualIdentityMethod": actual_execution_identity_method,
+        "marshalExecutable": checker_digest,
+        "marshalExecutionIdentity": execution_identity,
+        "marshalExecutionExpectedIdentityMethod": expected_execution_identity_method,
+        "marshalExecutionActualIdentityMethod": actual_execution_identity_method,
+        "marshalInternalCommand": sha256_bytes(b"internal\0qoder-transcript-check"),
+        "marshalBuildCommit": core["marshal"]["commit"],
+        "stdinEnvelopeDigest": core["marshal"]["inputDigest"],
+        "marshalBuildIdentity": sha256_bytes(
+            json.dumps(core["marshal"], ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ),
         "operatorSchema": sha256_bytes(schema_raw),
+        "receiptSchema": sha256_bytes(receipt_schema_raw),
         "validator": validator_digest,
         "profile": digests["profile"],
     }
     core_output_digest = sha256_bytes(
         json.dumps(core, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
-    return {
+    receipt = {
         "status": "pass",
         "reasonCode": "transcript-attestation-pass",
         "subject": manifest["subject"],
@@ -1057,13 +1095,15 @@ def run(arguments: argparse.Namespace) -> dict:
         "observation": core["observation"],
         "attestationDigest": attestation_digest(manifest_digest, digests, implementation_digests, core_output_digest),
     }
+    validate_schema_instance(receipt, receipt_schema, receipt_schema)
+    return receipt
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, help="absolute compact input root")
     parser.add_argument("--manifest", required=True, help="manifest path relative to --root")
-    parser.add_argument("--checker", required=True, help="absolute prebuilt production Go checker")
+    parser.add_argument("--marshal", required=True, help="absolute stable Marshal executable")
     arguments = parser.parse_args()
     try:
         payload = run(arguments)

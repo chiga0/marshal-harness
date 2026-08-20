@@ -12,6 +12,12 @@
     "eventContract": "qoder-stream-json-1.2.0-v7",
     "permissionMode": "acceptEdits"
   },
+  "marshal": {
+    "sourceHead": "0000000000000000000000000000000000000000",
+    "executableSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "version": "dev",
+    "internalCommandVersion": "qoder-transcript-check/v1"
+  },
   "inputs": {
     "transcript": {"path": "transcript-negative-undeclared-wc.jsonl", "sha256": "sha256:1363b7f433359658fc8f1ae219cfa9391da8711f61abf2f198a3733f922e3586", "maxBytes": 8388608},
     "transcriptMeta": {"path": "transcript-negative-undeclared-wc-meta.json", "sha256": "sha256:80ada22194d974c4e9caa91edb4fe1cce31015e85e34790dc61ecb0f517df22e", "maxBytes": 131072},

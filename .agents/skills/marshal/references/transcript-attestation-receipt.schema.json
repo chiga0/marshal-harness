@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/operator-local/transcript-attestation-receipt.schema.json",
+  "title": "Marshal operator-local transcript attestation receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "reasonCode", "subject", "manifestDigest", "inputDigests", "implementationDigests", "coreIdentity", "observation", "attestationDigest"],
+  "properties": {
+    "status": { "const": "pass" },
+    "reasonCode": { "const": "transcript-attestation-pass" },
+    "subject": { "$ref": "#/$defs/subject" },
+    "manifestDigest": { "$ref": "#/$defs/digest" },
+    "attestationDigest": { "$ref": "#/$defs/digest" },
+    "inputDigests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transcript", "transcriptMeta", "workerResult", "workerRequest", "taskSpec", "capabilitySnapshot", "profile"],
+      "properties": {
+        "transcript": { "$ref": "#/$defs/digest" },
+        "transcriptMeta": { "$ref": "#/$defs/digest" },
+        "workerResult": { "$ref": "#/$defs/digest" },
+        "workerRequest": { "$ref": "#/$defs/digest" },
+        "taskSpec": { "$ref": "#/$defs/digest" },
+        "capabilitySnapshot": { "$ref": "#/$defs/digest" },
+        "profile": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "implementationDigests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["marshalExecutable", "marshalExecutionIdentity", "marshalExecutionExpectedIdentityMethod", "marshalExecutionActualIdentityMethod", "marshalInternalCommand", "marshalBuildCommit", "stdinEnvelopeDigest", "marshalBuildIdentity", "operatorSchema", "receiptSchema", "validator", "profile"],
+      "properties": {
+        "marshalExecutable": { "$ref": "#/$defs/digest" },
+        "marshalExecutionIdentity": { "$ref": "#/$defs/digest" },
+        "marshalExecutionExpectedIdentityMethod": { "enum": ["darwin-held-macho-codedirectory-sha256", "linux-proc-exe-sha256"] },
+        "marshalExecutionActualIdentityMethod": { "enum": ["darwin-codesign-cdhash-full-sha256", "linux-proc-exe-sha256"] },
+        "marshalInternalCommand": { "$ref": "#/$defs/digest" },
+        "marshalBuildCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "stdinEnvelopeDigest": { "$ref": "#/$defs/digest" },
+        "marshalBuildIdentity": { "$ref": "#/$defs/digest" },
+        "operatorSchema": { "$ref": "#/$defs/digest" },
+        "receiptSchema": { "$ref": "#/$defs/digest" },
+        "validator": { "$ref": "#/$defs/digest" },
+        "profile": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "coreIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapterVersion", "eventContract", "profileVersion", "workerResultTransportDigest"],
+      "properties": {
+        "adapterVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "eventContract": { "const": "qoder-stream-json-1.2.0-v7" },
+        "profileVersion": { "const": "qoder-v7-transcript-attestation-v4" },
+        "workerResultTransportDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eventCount", "assistantMessages", "toolCalls", "commandCalls", "workerResultTeeLast", "commands", "capabilityDigest", "admissionEvidenceDigest", "executableDigest", "workerResultTransportDigest", "profileDigest"],
+      "properties": {
+        "eventCount": { "type": "integer", "minimum": 0 },
+        "assistantMessages": { "type": "integer", "minimum": 0 },
+        "toolCalls": { "type": "integer", "minimum": 0 },
+        "commandCalls": { "type": "integer", "minimum": 0 },
+        "workerResultTeeLast": { "type": "boolean" },
+        "commands": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["commandId", "commandDigest", "status"],
+            "properties": {
+              "commandId": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "commandDigest": { "$ref": "#/$defs/digest" },
+              "status": { "type": "string", "minLength": 1, "maxLength": 64 }
+            }
+          }
+        },
+        "capabilityDigest": { "$ref": "#/$defs/digest" },
+        "admissionEvidenceDigest": { "$ref": "#/$defs/digest" },
+        "executableDigest": { "$ref": "#/$defs/digest" },
+        "workerResultTransportDigest": { "$ref": "#/$defs/digest" },
+        "profileDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceHead", "taskId", "runId", "attemptId", "adapterId", "binaryVersion", "protocolVersion", "eventContract", "permissionMode"],
+      "properties": {
+        "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "taskId": { "$ref": "#/$defs/id" },
+        "runId": { "$ref": "#/$defs/id" },
+        "attemptId": { "$ref": "#/$defs/id" },
+        "adapterId": { "const": "qoder" },
+        "binaryVersion": { "const": "1.1.23" },
+        "protocolVersion": { "const": "1.2.0" },
+        "eventContract": { "const": "qoder-stream-json-1.2.0-v7" },
+        "permissionMode": { "const": "acceptEdits" }
+      }
+    }
+  }
+}
