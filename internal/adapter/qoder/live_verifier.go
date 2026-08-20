@@ -607,7 +607,7 @@ func decodeCandidateExecutionReceipt(document []byte) (CandidateExecutionReceipt
 	if len(document) == 0 || len(document) > candidateReceiptLimit {
 		return CandidateExecutionReceipt{}, errors.New("qoder candidate live probe receipt is empty or oversized")
 	}
-	if err := rejectCandidateDuplicateMembers(document); err != nil {
+	if err := rejectDuplicateJSONMembers(document); err != nil {
 		return CandidateExecutionReceipt{}, errors.New("qoder candidate live probe receipt has duplicate members")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(document))
@@ -627,7 +627,7 @@ func decodeCandidateExecutionReceipt(document []byte) (CandidateExecutionReceipt
 	return receipt, nil
 }
 
-func rejectCandidateDuplicateMembers(document []byte) error {
+func rejectDuplicateJSONMembers(document []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(document))
 	var walk func() error
 	walk = func() error {

@@ -49,33 +49,37 @@ func TestWorkerResultTransportContractMutationChangesSuiteAndIsRejected(t *testi
 	baseDigest := expectedWorkerResultTransportDigest()
 	baseSuite := expectedProbeSuiteDigest()
 	mutations := map[string]func(*workerResultTransportContract){
-		"staging basename":           func(v *workerResultTransportContract) { v.StagingBasename += ".changed" },
-		"staging file type":          func(v *workerResultTransportContract) { v.StagingFileType = "fifo" },
-		"staging mode":               func(v *workerResultTransportContract) { v.StagingMode = "0644" },
-		"creation flags":             func(v *workerResultTransportContract) { v.CreationFlags = "O_RDWR|O_CREAT" },
-		"unlink before launch":       func(v *workerResultTransportContract) { v.UnlinkBeforeLaunch = false },
-		"unlinked link count":        func(v *workerResultTransportContract) { v.UnlinkedLinkCount = 1 },
-		"worker path exposure":       func(v *workerResultTransportContract) { v.WorkerPathExposure = "staging-path" },
-		"worker descriptor exposure": func(v *workerResultTransportContract) { v.WorkerDescriptorExposure = "staging-fd" },
-		"control inode relationship": func(v *workerResultTransportContract) { v.ControlInodeRelationship = "may-alias" },
-		"held directory binding":     func(v *workerResultTransportContract) { v.HeldDirectoryBinding = "path-reopen" },
-		"held inode commit":          func(v *workerResultTransportContract) { v.HeldInodeCommit = "pre-terminal" },
-		"held inode consume":         func(v *workerResultTransportContract) { v.HeldInodeConsume = "path-read" },
-		"held inode cleanup":         func(v *workerResultTransportContract) { v.HeldInodeCleanup = "unlink-current-path" },
-		"tool name":                  func(v *workerResultTransportContract) { v.ToolName = "bash" },
-		"tool input contract":        func(v *workerResultTransportContract) { v.ToolInputContract = "unknown-fields-allowed" },
-		"description required":       func(v *workerResultTransportContract) { v.ToolInputDescriptionRequired = false },
-		"description authority":      func(v *workerResultTransportContract) { v.ToolInputDescriptionAuthority = "authoritative" },
-		"description min bytes":      func(v *workerResultTransportContract) { v.ToolInputDescriptionMinBytes++ },
-		"description max bytes":      func(v *workerResultTransportContract) { v.ToolInputDescriptionMaxBytes++ },
-		"description utf8":           func(v *workerResultTransportContract) { v.ToolInputDescriptionUTF8Required = false },
-		"description controls":       func(v *workerResultTransportContract) { v.ToolInputDescriptionControls = "allowed" },
-		"canonical member order":     func(v *workerResultTransportContract) { v.ToolInputCanonicalMemberOrder = "description,command" },
-		"unknown members":            func(v *workerResultTransportContract) { v.ToolInputUnknownMembers = "allowed" },
-		"canonical command":          func(v *workerResultTransportContract) { v.CanonicalCommand += "\n" },
-		"tee sequence":               func(v *workerResultTransportContract) { v.TeeSequence = "at-least-once" },
-		"denial extractor":           func(v *workerResultTransportContract) { v.DenialExtractor += "-changed" },
-		"transcript event contract":  func(v *workerResultTransportContract) { v.TranscriptEventContract = "qoder-stream-json-1.2.0-v3" },
+		"staging basename":                       func(v *workerResultTransportContract) { v.StagingBasename += ".changed" },
+		"staging file type":                      func(v *workerResultTransportContract) { v.StagingFileType = "fifo" },
+		"staging mode":                           func(v *workerResultTransportContract) { v.StagingMode = "0644" },
+		"creation flags":                         func(v *workerResultTransportContract) { v.CreationFlags = "O_RDWR|O_CREAT" },
+		"unlink before launch":                   func(v *workerResultTransportContract) { v.UnlinkBeforeLaunch = false },
+		"unlinked link count":                    func(v *workerResultTransportContract) { v.UnlinkedLinkCount = 1 },
+		"worker path exposure":                   func(v *workerResultTransportContract) { v.WorkerPathExposure = "staging-path" },
+		"worker descriptor exposure":             func(v *workerResultTransportContract) { v.WorkerDescriptorExposure = "staging-fd" },
+		"control inode relationship":             func(v *workerResultTransportContract) { v.ControlInodeRelationship = "may-alias" },
+		"held directory binding":                 func(v *workerResultTransportContract) { v.HeldDirectoryBinding = "path-reopen" },
+		"held inode commit":                      func(v *workerResultTransportContract) { v.HeldInodeCommit = "pre-terminal" },
+		"held inode consume":                     func(v *workerResultTransportContract) { v.HeldInodeConsume = "path-read" },
+		"held inode cleanup":                     func(v *workerResultTransportContract) { v.HeldInodeCleanup = "unlink-current-path" },
+		"tool name":                              func(v *workerResultTransportContract) { v.ToolName = "bash" },
+		"tool input contract":                    func(v *workerResultTransportContract) { v.ToolInputContract = "unknown-fields-allowed" },
+		"description required":                   func(v *workerResultTransportContract) { v.ToolInputDescriptionRequired = false },
+		"description authority":                  func(v *workerResultTransportContract) { v.ToolInputDescriptionAuthority = "authoritative" },
+		"description min bytes":                  func(v *workerResultTransportContract) { v.ToolInputDescriptionMinBytes++ },
+		"description max bytes":                  func(v *workerResultTransportContract) { v.ToolInputDescriptionMaxBytes++ },
+		"description utf8":                       func(v *workerResultTransportContract) { v.ToolInputDescriptionUTF8Required = false },
+		"description controls":                   func(v *workerResultTransportContract) { v.ToolInputDescriptionControls = "allowed" },
+		"canonical member order":                 func(v *workerResultTransportContract) { v.ToolInputCanonicalMemberOrder = "description,command" },
+		"unknown members":                        func(v *workerResultTransportContract) { v.ToolInputUnknownMembers = "allowed" },
+		"canonical command":                      func(v *workerResultTransportContract) { v.CanonicalCommand += "\n" },
+		"tee sequence":                           func(v *workerResultTransportContract) { v.TeeSequence = "at-least-once" },
+		"declaration runtime metadata authority": func(v *workerResultTransportContract) { v.DeclarationRuntimeMetadataAuthority = "worker-authoritative" },
+		"declaration semantic synthesis":         func(v *workerResultTransportContract) { v.DeclarationSemanticSynthesis = "allowed" },
+		"declaration identity binding":           func(v *workerResultTransportContract) { v.DeclarationIdentityBinding = "adapter-synthesized" },
+		"invalid declaration disposition":        func(v *workerResultTransportContract) { v.InvalidDeclarationDisposition = "retryable" },
+		"denial extractor":                       func(v *workerResultTransportContract) { v.DenialExtractor += "-changed" },
+		"transcript event contract":              func(v *workerResultTransportContract) { v.TranscriptEventContract = "qoder-stream-json-1.2.0-v3" },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
@@ -104,8 +108,10 @@ func TestOldQoderConformanceIdentityIsRejected(t *testing.T) {
 	for name, mutate := range map[string]func(*LiveConformanceObservation){
 		"adapter 0.1.2":     func(v *LiveConformanceObservation) { v.AdapterVersion = "0.1.2" },
 		"adapter 0.1.3":     func(v *LiveConformanceObservation) { v.AdapterVersion = "0.1.3" },
+		"adapter 0.1.4":     func(v *LiveConformanceObservation) { v.AdapterVersion = "0.1.4" },
 		"event contract v3": func(v *LiveConformanceObservation) { v.EventContract = "qoder-stream-json-1.2.0-v3" },
 		"event contract v4": func(v *LiveConformanceObservation) { v.EventContract = "qoder-stream-json-1.2.0-v4" },
+		"event contract v5": func(v *LiveConformanceObservation) { v.EventContract = "qoder-stream-json-1.2.0-v5" },
 	} {
 		t.Run("observation "+name, func(t *testing.T) {
 			observation := validWorkerResultTransportObservation(now)
@@ -146,13 +152,22 @@ func TestOldQoderConformanceIdentityIsRejected(t *testing.T) {
 	for name, mutate := range map[string]func(*ConformanceEvidence){
 		"adapter 0.1.2":     func(v *ConformanceEvidence) { v.AdapterVersion = "0.1.2" },
 		"adapter 0.1.3":     func(v *ConformanceEvidence) { v.AdapterVersion = "0.1.3" },
+		"adapter 0.1.4":     func(v *ConformanceEvidence) { v.AdapterVersion = "0.1.4" },
 		"event contract v3": func(v *ConformanceEvidence) { v.EventContract = "qoder-stream-json-1.2.0-v3" },
 		"event contract v4": func(v *ConformanceEvidence) { v.EventContract = "qoder-stream-json-1.2.0-v4" },
+		"event contract v5": func(v *ConformanceEvidence) { v.EventContract = "qoder-stream-json-1.2.0-v5" },
 		"v4 transport identity": func(v *ConformanceEvidence) {
 			v.AdapterVersion = "0.1.3"
 			v.EventContract = "qoder-stream-json-1.2.0-v4"
 			v.ProbeProfileDigest = probeProfileDigestForEventContract(v.EventContract)
 			v.WorkerResultTransportDigest = "sha256:ee5a504d0757447c83d8e7c9dc58ae7985791747e7f591c0f803276e5203ffd7"
+			v.ProbeSuiteDigest = probeSuiteDigestForIdentity(v.AdapterVersion, v.EventContract, v.ProbeProfileDigest, v.WorkerResultTransportDigest)
+		},
+		"v5 transport identity": func(v *ConformanceEvidence) {
+			v.AdapterVersion = "0.1.4"
+			v.EventContract = "qoder-stream-json-1.2.0-v5"
+			v.ProbeProfileDigest = probeProfileDigestForEventContract(v.EventContract)
+			v.WorkerResultTransportDigest = "sha256:a8868a7f8e9cfc2d126d324204502caacc5462946405ab0835627fca8a121d48"
 			v.ProbeSuiteDigest = probeSuiteDigestForIdentity(v.AdapterVersion, v.EventContract, v.ProbeProfileDigest, v.WorkerResultTransportDigest)
 		},
 	} {

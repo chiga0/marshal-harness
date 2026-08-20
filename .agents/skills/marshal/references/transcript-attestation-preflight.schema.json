@@ -30,7 +30,7 @@
         "adapterId": { "const": "qoder" },
         "binaryVersion": { "const": "1.1.23" },
         "protocolVersion": { "const": "1.2.0" },
-        "eventContract": { "const": "qoder-stream-json-1.2.0-v5" },
+        "eventContract": { "const": "qoder-stream-json-1.2.0-v6" },
         "permissionMode": { "const": "acceptEdits" }
       }
     },

@@ -146,13 +146,13 @@ func TestRunRetriableFailureReturnsRetryable(t *testing.T) {
 	}
 }
 
-func TestRunResultMissingReturnsDoNotRetry(t *testing.T) {
+func TestRunEmptyDeclarationReturnsProtocolInvalidDoNotRetry(t *testing.T) {
 	body := successEvents("provider/model") + "\nexit 0"
 	fixture := newRunFixtureWithResult(t, supportedBinary, body, nil)
 	_, err := fixture.adapter.Run(context.Background(), fixture.request)
 	failure, ok := port.AsAdapterFailure(err)
-	if !ok || failure.Adapter != port.AdapterIDQoder || failure.Kind != port.FailureKindResultMissing || failure.Disposition != port.RetryDispositionDoNotRetry {
-		t.Fatalf("err = %v, want typed result-missing/do-not-retry", err)
+	if !errors.Is(err, ErrProtocol) || !ok || failure.Adapter != port.AdapterIDQoder || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+		t.Fatalf("err = %v, want typed protocol-invalid/do-not-retry", err)
 	}
 }
 
@@ -512,10 +512,15 @@ func successfulWorkerResultTeeEvents(id string) []string {
 }
 
 func successEvents(model string) string {
+	return successEventsWithDeclaredPayload(model, []byte("{}"))
+}
+
+func successEventsWithDeclaredPayload(model string, payload []byte) string {
 	events := []string{
 		`{"type":"system","subtype":"init","session_id":"sess-1","model":"` + model + `","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		workerResultTeeToolUseEventWithPayload("tool-result", payload),
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-result","content":""}]}}`,
 	}
-	events = append(events, successfulWorkerResultTeeEvents("tool-result")...)
 	events = append(events,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":5}}`,
 	)
@@ -551,7 +556,7 @@ type runFixture struct {
 }
 
 func newRunFixture(t *testing.T, version, body string) runFixture {
-	return newRunFixtureWithResult(t, version, body, validDeclaredResult("/worker/claim"))
+	return newRunFixtureWithResult(t, version, body, validDeclaredResultWithoutAdapterRuntimeMetadata())
 }
 
 func newRunFixtureWithResult(t *testing.T, version, body string, result map[string]any) runFixture {
@@ -640,6 +645,14 @@ func validDeclaredResult(executable string) map[string]any {
 		"declaredChangedFiles": []string{"file.txt"}, "declaredArtifacts": []any{}, "declaredCommands": []any{}, "declaredRisks": []string{}, "outputTruncated": false,
 		"startedAt": "2026-08-04T00:00:00Z", "completedAt": "2026-08-04T00:00:01Z",
 	}
+}
+
+func validDeclaredResultWithoutAdapterRuntimeMetadata() map[string]any {
+	result := validDeclaredResult("/worker/claim")
+	adapter := result["adapter"].(map[string]any)
+	delete(adapter, "executable")
+	delete(adapter, "version")
+	return result
 }
 
 func newValidator(t *testing.T) *contract.Validator {

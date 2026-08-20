@@ -255,7 +255,7 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
             completed = self.invoke(root)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             output = json.loads(completed.stdout)
-            self.assertEqual(output["coreIdentity"]["profileVersion"], "qoder-v5-transcript-attestation-v2")
+            self.assertEqual(output["coreIdentity"]["profileVersion"], "qoder-v6-transcript-attestation-v3")
             self.assertEqual(output["observation"]["capabilityDigest"], self.jcs_digest(root / "capability-snapshot.json"))
             self.assertTrue(output["observation"]["workerResultTeeLast"])
             self.assertRegex(
@@ -327,7 +327,7 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
                 root, manifest_path, manifest = self.prepare(directory)
                 self.mutate_events(root, manifest, mutation)
                 self.write_json(manifest_path, manifest)
-                self.assert_failure(self.invoke(root), "qoder-v5-transcript-invalid", "transcript-meta-mismatch")
+                self.assert_failure(self.invoke(root), "qoder-v6-transcript-invalid", "transcript-meta-mismatch")
 
     def test_tee_requires_explicit_completed_exit_zero(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -653,11 +653,14 @@ class TranscriptAttestationPreflightTest(unittest.TestCase):
         for required in ("codesign_identity", "actual_checker_execution_identity", "checkerExecutionIdentity"):
             self.assertIn(required, source)
 
-    def test_real_mac_r3_receipt_is_current_and_sanitized(self):
+    def test_real_mac_v5_receipt_is_historical_non_migratable_and_sanitized(self):
         receipt_path = FIXTURES / "mac-qoder-v5-conformance-r3-receipt.json"
         receipt = json.loads(receipt_path.read_text())
         self.assertEqual(receipt["status"], "pass")
         self.assertEqual(receipt["reasonCode"], "transcript-attestation-pass")
+        self.assertEqual(receipt["coreIdentity"]["adapterVersion"], "0.1.4")
+        self.assertEqual(receipt["coreIdentity"]["eventContract"], "qoder-stream-json-1.2.0-v5")
+        self.assertNotEqual(receipt["coreIdentity"]["profileVersion"], "qoder-v6-transcript-attestation-v3")
         self.assertEqual(receipt["attestationDigest"], "sha256:03eb792347e39bec7c4ad1ade2356d3e6448d3e10077ef1674c6ed1fcaea01a1")
         self.assertEqual(
             receipt["implementationDigests"]["checkerExecutionActualIdentityMethod"],

@@ -22,7 +22,7 @@ import (
 
 const (
 	adapterID      = "qoder"
-	adapterVersion = "0.1.4"
+	adapterVersion = "0.1.5"
 	// supportedBinary is the minimum verified patch in the compatible 1.1.x
 	// line. Other minor/major lines and older patches fail closed.
 	supportedBinary          = "1.1.23"
@@ -33,7 +33,7 @@ const (
 	versionOutputLimit       = 4 << 10
 	versionStderrLimit       = 4 << 10
 	probeTimeout             = 10 * time.Second
-	conformanceEventContract = "qoder-stream-json-1.2.0-v5"
+	conformanceEventContract = "qoder-stream-json-1.2.0-v6"
 	qoderProtocolVersion     = "1.2.0"
 	qoderPermissionMode      = "acceptEdits"
 	qoderDenialExtractor     = "qoder-1.1.23-tool-result-metadata-v1"
@@ -261,64 +261,72 @@ func expectedProbeToolPolicyDigest() string {
 // evidence consumers bind its digest; changing any field therefore requires
 // a new Adapter/event contract and fresh live conformance.
 type workerResultTransportContract struct {
-	StagingBasename                  string `json:"stagingBasename"`
-	StagingFileType                  string `json:"stagingFileType"`
-	StagingMode                      string `json:"stagingMode"`
-	CreationFlags                    string `json:"creationFlags"`
-	UnlinkBeforeLaunch               bool   `json:"unlinkBeforeLaunch"`
-	UnlinkedLinkCount                uint64 `json:"unlinkedLinkCount"`
-	WorkerPathExposure               string `json:"workerPathExposure"`
-	WorkerDescriptorExposure         string `json:"workerDescriptorExposure"`
-	ControlInodeRelationship         string `json:"controlInodeRelationship"`
-	HeldDirectoryBinding             string `json:"heldDirectoryBinding"`
-	HeldInodeCommit                  string `json:"heldInodeCommit"`
-	HeldInodeConsume                 string `json:"heldInodeConsume"`
-	HeldInodeCleanup                 string `json:"heldInodeCleanup"`
-	ToolName                         string `json:"toolName"`
-	ToolInputContract                string `json:"toolInputContract"`
-	ToolInputDescriptionRequired     bool   `json:"toolInputDescriptionRequired"`
-	ToolInputDescriptionAuthority    string `json:"toolInputDescriptionAuthority"`
-	ToolInputDescriptionMinBytes     uint64 `json:"toolInputDescriptionMinBytes"`
-	ToolInputDescriptionMaxBytes     uint64 `json:"toolInputDescriptionMaxBytes"`
-	ToolInputDescriptionUTF8Required bool   `json:"toolInputDescriptionUtf8Required"`
-	ToolInputDescriptionControls     string `json:"toolInputDescriptionControls"`
-	ToolInputCanonicalMemberOrder    string `json:"toolInputCanonicalMemberOrder"`
-	ToolInputUnknownMembers          string `json:"toolInputUnknownMembers"`
-	CanonicalCommand                 string `json:"canonicalCommand"`
-	TeeSequence                      string `json:"teeSequence"`
-	DenialExtractor                  string `json:"denialExtractor"`
-	TranscriptEventContract          string `json:"transcriptEventContract"`
+	StagingBasename                     string `json:"stagingBasename"`
+	StagingFileType                     string `json:"stagingFileType"`
+	StagingMode                         string `json:"stagingMode"`
+	CreationFlags                       string `json:"creationFlags"`
+	UnlinkBeforeLaunch                  bool   `json:"unlinkBeforeLaunch"`
+	UnlinkedLinkCount                   uint64 `json:"unlinkedLinkCount"`
+	WorkerPathExposure                  string `json:"workerPathExposure"`
+	WorkerDescriptorExposure            string `json:"workerDescriptorExposure"`
+	ControlInodeRelationship            string `json:"controlInodeRelationship"`
+	HeldDirectoryBinding                string `json:"heldDirectoryBinding"`
+	HeldInodeCommit                     string `json:"heldInodeCommit"`
+	HeldInodeConsume                    string `json:"heldInodeConsume"`
+	HeldInodeCleanup                    string `json:"heldInodeCleanup"`
+	ToolName                            string `json:"toolName"`
+	ToolInputContract                   string `json:"toolInputContract"`
+	ToolInputDescriptionRequired        bool   `json:"toolInputDescriptionRequired"`
+	ToolInputDescriptionAuthority       string `json:"toolInputDescriptionAuthority"`
+	ToolInputDescriptionMinBytes        uint64 `json:"toolInputDescriptionMinBytes"`
+	ToolInputDescriptionMaxBytes        uint64 `json:"toolInputDescriptionMaxBytes"`
+	ToolInputDescriptionUTF8Required    bool   `json:"toolInputDescriptionUtf8Required"`
+	ToolInputDescriptionControls        string `json:"toolInputDescriptionControls"`
+	ToolInputCanonicalMemberOrder       string `json:"toolInputCanonicalMemberOrder"`
+	ToolInputUnknownMembers             string `json:"toolInputUnknownMembers"`
+	CanonicalCommand                    string `json:"canonicalCommand"`
+	TeeSequence                         string `json:"teeSequence"`
+	DeclarationRuntimeMetadataAuthority string `json:"declarationRuntimeMetadataAuthority"`
+	DeclarationSemanticSynthesis        string `json:"declarationSemanticSynthesis"`
+	DeclarationIdentityBinding          string `json:"declarationIdentityBinding"`
+	InvalidDeclarationDisposition       string `json:"invalidDeclarationDisposition"`
+	DenialExtractor                     string `json:"denialExtractor"`
+	TranscriptEventContract             string `json:"transcriptEventContract"`
 }
 
 func expectedWorkerResultTransportContract() workerResultTransportContract {
 	return workerResultTransportContract{
-		StagingBasename:                  workerResultStagingName,
-		StagingFileType:                  "regular-file",
-		StagingMode:                      "0600",
-		CreationFlags:                    "O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC",
-		UnlinkBeforeLaunch:               true,
-		UnlinkedLinkCount:                0,
-		WorkerPathExposure:               "none",
-		WorkerDescriptorExposure:         "none",
-		ControlInodeRelationship:         "must-be-distinct",
-		HeldDirectoryBinding:             "held-dirfd-exact-worktree-no-symlink",
-		HeldInodeCommit:                  "post-terminal-post-tee-last-exact-inode",
-		HeldInodeConsume:                 "held-fd-bounded-exact-inode",
-		HeldInodeCleanup:                 "close-already-unlinked-held-fd-and-dirfd",
-		ToolName:                         "Bash",
-		ToolInputContract:                "canonical-json-command-plus-bounded-description-no-extra-members",
-		ToolInputDescriptionRequired:     true,
-		ToolInputDescriptionAuthority:    "non-authoritative",
-		ToolInputDescriptionMinBytes:     qoderBashDescriptionMinBytes,
-		ToolInputDescriptionMaxBytes:     qoderBashDescriptionMaxBytes,
-		ToolInputDescriptionUTF8Required: true,
-		ToolInputDescriptionControls:     "forbidden",
-		ToolInputCanonicalMemberOrder:    "command,description",
-		ToolInputUnknownMembers:          "forbidden",
-		CanonicalCommand:                 workerResultTeeFirstLine + "\n<CANONICAL_WORKER_RESULT_JSON>\nMARSHAL_RESULT",
-		TeeSequence:                      "exactly-one-successful-tee-as-final-tool-call",
-		DenialExtractor:                  qoderDenialExtractor,
-		TranscriptEventContract:          conformanceEventContract,
+		StagingBasename:                     workerResultStagingName,
+		StagingFileType:                     "regular-file",
+		StagingMode:                         "0600",
+		CreationFlags:                       "O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC",
+		UnlinkBeforeLaunch:                  true,
+		UnlinkedLinkCount:                   0,
+		WorkerPathExposure:                  "none",
+		WorkerDescriptorExposure:            "none",
+		ControlInodeRelationship:            "must-be-distinct",
+		HeldDirectoryBinding:                "held-dirfd-exact-worktree-no-symlink",
+		HeldInodeCommit:                     "post-terminal-post-tee-last-exact-inode",
+		HeldInodeConsume:                    "held-fd-bounded-exact-inode",
+		HeldInodeCleanup:                    "close-already-unlinked-held-fd-and-dirfd",
+		ToolName:                            "Bash",
+		ToolInputContract:                   "canonical-json-command-plus-bounded-description-no-extra-members",
+		ToolInputDescriptionRequired:        true,
+		ToolInputDescriptionAuthority:       "non-authoritative",
+		ToolInputDescriptionMinBytes:        qoderBashDescriptionMinBytes,
+		ToolInputDescriptionMaxBytes:        qoderBashDescriptionMaxBytes,
+		ToolInputDescriptionUTF8Required:    true,
+		ToolInputDescriptionControls:        "forbidden",
+		ToolInputCanonicalMemberOrder:       "command,description",
+		ToolInputUnknownMembers:             "forbidden",
+		CanonicalCommand:                    workerResultTeeFirstLine + "\n<CANONICAL_WORKER_RESULT_JSON>\nMARSHAL_RESULT",
+		TeeSequence:                         "exactly-one-successful-tee-as-final-tool-call",
+		DeclarationRuntimeMetadataAuthority: "adapter-overwrites-adapter.executable-and-adapter.version-from-held-identity-before-schema",
+		DeclarationSemanticSynthesis:        "forbidden",
+		DeclarationIdentityBinding:          "taskId,runId,attemptId,adapter.id=exact-declaration-match",
+		InvalidDeclarationDisposition:       "protocol-invalid-do-not-retry",
+		DenialExtractor:                     qoderDenialExtractor,
+		TranscriptEventContract:             conformanceEventContract,
 	}
 }
 
@@ -893,7 +901,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	var declared declaredResult
 	if resolved == nil {
-		declared, resolved = resolveDeclaredResultData(stagedResult, request, capture.sessionID, a.validator, a.now())
+		declared, resolved = resolveDeclaredResultData(stagedResult, request, capture.sessionID, identity.path, identity.version, a.validator, a.now())
 	}
 	if resolved == nil && task.model != "" && capture.model != task.model {
 		resolved = qoderProtocolInvalid("system model does not match requested model", a.now())
@@ -1001,10 +1009,10 @@ func resolveAttemptFailure(capture captureResult, observation attemptObservation
 	return nil
 }
 
-func resolveDeclaredResultData(data []byte, request workerRequest, sessionID string, validator *contract.Validator, now time.Time) (declaredResult, error) {
-	declared, err := decodeDeclaredResult(data, validator)
+func resolveDeclaredResultData(data []byte, request workerRequest, sessionID, executable, version string, validator *contract.Validator, now time.Time) (declaredResult, error) {
+	declared, err := decodeDeclaredResult(data, executable, version, validator)
 	if err != nil {
-		return declaredResult{}, newQoderFailure(port.FailureKindResultMissing, "WorkerResult declaration missing or unreadable", now)
+		return declaredResult{}, qoderProtocolInvalid("WorkerResult declaration is missing or invalid", now)
 	}
 	if declared.TaskID != request.TaskID || declared.RunID != request.RunID || declared.AttemptID != request.AttemptID || declared.Adapter.ID != adapterID {
 		return declaredResult{}, qoderProtocolInvalid("WorkerResult identity does not match WorkerRequest", now)
@@ -1062,12 +1070,45 @@ type declaredSession struct {
 	Resumable bool   `json:"resumable"`
 }
 
-func decodeDeclaredResult(data []byte, validator *contract.Validator) (declaredResult, error) {
-	if err := validator.Validate(domain.KindWorkerResult, data); err != nil {
+func decodeDeclaredResult(data []byte, executable, version string, validator *contract.Validator) (declaredResult, error) {
+	// The Qoder declaration carries Worker-owned semantics plus two runtime
+	// metadata fields that only the Adapter can know authoritatively. Reject
+	// malformed JSON and duplicate members before touching the document, then
+	// replace only adapter.executable and adapter.version with the already-held
+	// executable identity. The complete WorkerResult Schema still runs after
+	// this normalization, so unknown members, missing semantic fields and all
+	// task/run/attempt/adapter.id identity requirements remain fail closed.
+	if err := rejectDuplicateJSONMembers(data); err != nil {
+		return declaredResult{}, err
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(data, &document); err != nil || document == nil {
+		return declaredResult{}, errors.New("WorkerResult declaration is not an object")
+	}
+	adapterData, ok := document["adapter"]
+	if !ok {
+		return declaredResult{}, errors.New("WorkerResult declaration has no adapter")
+	}
+	var adapter map[string]json.RawMessage
+	if err := json.Unmarshal(adapterData, &adapter); err != nil || adapter == nil {
+		return declaredResult{}, errors.New("WorkerResult declaration adapter is not an object")
+	}
+	adapter["executable"], _ = json.Marshal(executable)
+	adapter["version"], _ = json.Marshal(version)
+	normalizedAdapter, err := json.Marshal(adapter)
+	if err != nil {
+		return declaredResult{}, err
+	}
+	document["adapter"] = normalizedAdapter
+	normalized, err := json.Marshal(document)
+	if err != nil {
+		return declaredResult{}, err
+	}
+	if err := validator.Validate(domain.KindWorkerResult, normalized); err != nil {
 		return declaredResult{}, fmt.Errorf("validate WorkerResult declaration: %w", err)
 	}
 	var result declaredResult
-	if err := json.Unmarshal(data, &result); err != nil {
+	if err := json.Unmarshal(normalized, &result); err != nil {
 		return result, err
 	}
 	return result, nil
