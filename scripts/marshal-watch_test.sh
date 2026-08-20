@@ -144,6 +144,57 @@ print("sha256:" + hashlib.sha256(encoded).hexdigest())
 PYEOF
 }
 
+set_review_round() {
+  python3 - "$ROOT/runs/$1/state.json" "$2" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+data["reviewRound"] = int(sys.argv[2])
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(data, handle, separators=(",", ":"))
+PYEOF
+}
+
+set_publication_head() {
+  python3 - "$ROOT/runs/$1/state.json" "$2" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+data["publication"] = {"provider":"github","repository":"chiga0/marshal-harness",
+                       "headBranch":"feat/test","baseBranch":"main","headSha":sys.argv[2]}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(data, handle, separators=(",", ":"))
+PYEOF
+}
+
+make_rework_decision() {
+  python3 - "$ROOT/runs/$1/state.json" "$ROOT/runs/$1" "$2" "${3:-}" <<'PYEOF'
+import hashlib, json, os, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    state = json.load(handle)
+round_number = int(sys.argv[3])
+evidence = sys.argv[4] or "sha256:" + "4" * 64
+decision = {
+    "apiVersion":"marshal.dev/v1alpha1", "kind":"ReviewDecision",
+    "taskId":state["taskId"], "runId":state["runId"], "reviewRound":round_number,
+    "reviewer":{"type":"lead-agent","id":"watchdog-fixture"},
+    "specDigest":state["specDigest"], "reviewPacketDigest":"sha256:" + "1" * 64,
+    "verificationDigest":"sha256:" + "2" * 64,
+    "artifactManifestDigest":"sha256:" + "3" * 64, "evidenceDigest":evidence,
+    "verdict":"rework", "summary":"rework required",
+    "blockingFindings":[{"id":"finding-1","severity":"P1","title":"gate failed",
+                         "description":"verification gate failed","requiredOutcome":"fix the gate"}],
+    "nonBlockingFindings":[], "publicationRecommendation":"do-not-publish",
+    "mergeRecommendation":"do-not-merge", "decidedAt":"2026-08-20T00:00:00Z"
+}
+encoded = json.dumps(decision, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+os.makedirs(os.path.join(sys.argv[2], "decisions"), exist_ok=True)
+with open(os.path.join(sys.argv[2], "decisions", "decision-%03d.json" % round_number), "wb") as handle:
+    handle.write(encoded)
+print("sha256:" + hashlib.sha256(encoded).hexdigest())
+PYEOF
+}
+
 # 以超时守护运行命令，输出写入 $2；超时杀进程并返回 124。
 timeout_run() {
   local limit="$1" outfile="$2"
@@ -181,8 +232,8 @@ print(stamp.replace(microsecond=0).isoformat().replace("+00:00", "Z"))
 PYEOF
 )
 cat > "$ROOT/runs/run-retry/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:run-retry","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
-{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:run-retry","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE"}}
+{"sequence":1,"type":"worker.started","runId":"run-retry","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:run-retry","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","runId":"run-retry","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:run-retry","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE"}}
 EOF
 make_run run-verify  VERIFYING         90
 make_run run-publish PUBLISHING        80
@@ -329,10 +380,10 @@ set_current_attempt retry-lineage attempt:retry-2 4
 ROOT_SIGNATURE=$(failure_signature retry-lineage rate-limited retryable)
 LATEST_SIGNATURE=$(failure_signature retry-lineage connection-failure retryable)
 cat > "$ROOT/runs/retry-lineage/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:retry-1","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
-{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-1","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$ROOT_SIGNATURE"}}
-{"sequence":3,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RETRY_PENDING","stateTo":"RUNNING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
-{"sequence":4,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"connection-failure","retryDisposition":"retryable","failureSignature":"$LATEST_SIGNATURE"}}
+{"sequence":1,"type":"worker.started","runId":"retry-lineage","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:retry-1","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","runId":"retry-lineage","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-1","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$ROOT_SIGNATURE"}}
+{"sequence":3,"type":"worker.started","runId":"retry-lineage","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RETRY_PENDING","stateTo":"RUNNING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":4,"type":"worker.failed","runId":"retry-lineage","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"connection-failure","retryDisposition":"retryable","failureSignature":"$LATEST_SIGNATURE"}}
 EOF
 OUT_RETRY_LINEAGE="$TMP/out_retry_lineage.json"
 run_watch --once --json > "$OUT_RETRY_LINEAGE"
@@ -365,7 +416,7 @@ cat > "$ROOT/runs/retry-wrongsig/events.jsonl" <<EOF
 {"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:wrongsig","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 EOF
 
-for rid in retry-wrong-actor retry-missing-started retry-nonadjacent retry-successor-started retry-snapshot-drift retry-attempt-reuse; do
+for rid in retry-wrong-actor retry-wrong-run retry-missing-started retry-nonadjacent retry-successor-started retry-snapshot-drift retry-sequence-gap retry-attempt-reuse; do
   make_run "$rid" RETRY_PENDING 10
 done
 
@@ -374,6 +425,13 @@ WRONG_ACTOR_SIGNATURE=$(failure_signature retry-wrong-actor rate-limited retryab
 cat > "$ROOT/runs/retry-wrong-actor/events.jsonl" <<EOF
 {"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:wrong-actor","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
 {"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:wrong-actor","actor":{"type":"system","id":"forged-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$WRONG_ACTOR_SIGNATURE"}}
+EOF
+
+set_current_attempt retry-wrong-run attempt:wrong-run 2
+WRONG_RUN_SIGNATURE=$(failure_signature retry-wrong-run rate-limited retryable)
+cat > "$ROOT/runs/retry-wrong-run/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","runId":"forged-run","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:wrong-run","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","runId":"forged-run","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:wrong-run","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$WRONG_RUN_SIGNATURE"}}
 EOF
 
 set_current_attempt retry-missing-started attempt:missing 1
@@ -405,6 +463,13 @@ cat > "$ROOT/runs/retry-snapshot-drift/events.jsonl" <<EOF
 {"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:drift","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$DRIFT_SIGNATURE"}}
 EOF
 
+set_current_attempt retry-sequence-gap attempt:gap 3
+SEQUENCE_GAP_SIGNATURE=$(failure_signature retry-sequence-gap rate-limited retryable)
+cat > "$ROOT/runs/retry-sequence-gap/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","runId":"retry-sequence-gap","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:gap","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":3,"type":"worker.failed","runId":"retry-sequence-gap","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:gap","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$SEQUENCE_GAP_SIGNATURE"}}
+EOF
+
 set_current_attempt retry-attempt-reuse attempt:reuse 4
 REUSE_SIGNATURE=$(failure_signature retry-attempt-reuse rate-limited retryable)
 cat > "$ROOT/runs/retry-attempt-reuse/events.jsonl" <<EOF
@@ -413,6 +478,22 @@ cat > "$ROOT/runs/retry-attempt-reuse/events.jsonl" <<EOF
 {"sequence":3,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RETRY_PENDING","stateTo":"RUNNING","attemptId":"attempt:reuse","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
 {"sequence":4,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:reuse","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$REUSE_SIGNATURE"}}
 EOF
+python3 - "$ROOT/runs" <<'PYEOF'
+import json, os, sys
+for run_id in ("retry-legacy", "retry-mismatch", "retry-invalid", "retry-wrongsig",
+               "retry-wrong-actor", "retry-missing-started", "retry-nonadjacent",
+               "retry-successor-started", "retry-snapshot-drift", "retry-attempt-reuse"):
+    path = os.path.join(sys.argv[1], run_id, "events.jsonl")
+    events = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            event = json.loads(line)
+            event["runId"] = run_id
+            events.append(event)
+    with open(path, "w", encoding="utf-8") as handle:
+        for event in events:
+            handle.write(json.dumps(event, separators=(",", ":")) + "\n")
+PYEOF
 OUT_RETRY_CLOSED="$TMP/out_retry_closed.json"
 run_watch --once --json > "$OUT_RETRY_CLOSED"
 if python3 - "$OUT_RETRY_LINEAGE" "$OUT_RETRY_CLOSED" "$ROOT_SIGNATURE" "$LATEST_SIGNATURE" <<'PYEOF'
@@ -429,8 +510,8 @@ if lineage.get("rootFailure", {}).get("failureSignature") != sys.argv[3]:
 if lineage.get("latestFailure", {}).get("failureSignature") != sys.argv[4] or lineage.get("latestFailure", {}).get("attemptId") != "attempt:retry-2":
     raise SystemExit("latest failure projection wrong: %r" % lineage)
 for run_id in ("retry-legacy", "retry-mismatch", "retry-invalid", "retry-wrongsig",
-               "retry-wrong-actor", "retry-missing-started", "retry-nonadjacent",
-               "retry-successor-started", "retry-snapshot-drift", "retry-attempt-reuse"):
+               "retry-wrong-actor", "retry-wrong-run", "retry-missing-started", "retry-nonadjacent",
+               "retry-successor-started", "retry-snapshot-drift", "retry-sequence-gap", "retry-attempt-reuse"):
     item = second[run_id]
     if item.get("action") != "retry-intervention" or item.get("interventionReason") != "typed-retry-lineage-required":
         raise SystemExit("%s did not fail closed: %r" % (run_id, item))
@@ -445,8 +526,8 @@ fi
 ORIGIN_SIGNATURE=$(failure_signature retry-lineage dns-failure retryable)
 set_current_attempt retry-lineage attempt:retry-2 2
 cat > "$ROOT/runs/retry-lineage/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.started","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
-{"sequence":2,"type":"worker.failed","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"dns-failure","retryDisposition":"retryable","failureSignature":"$ORIGIN_SIGNATURE"}}
+{"sequence":1,"type":"worker.started","runId":"retry-lineage","timestamp":"$INITIAL_EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.failed","runId":"retry-lineage","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:retry-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"dns-failure","retryDisposition":"retryable","failureSignature":"$ORIGIN_SIGNATURE"}}
 EOF
 OUT_RETRY_ORIGIN_RESET="$TMP/out_retry_origin_reset.json"
 run_watch --once --json > "$OUT_RETRY_ORIGIN_RESET"
@@ -467,9 +548,144 @@ then
 else
   bad "新 origin 污染了 failure lineage 或 dedupe"
 fi
+
+note "1f) REWORK_REQUESTED origin 必须 exact 绑定 ReviewDecision 或 publication"
+make_run retry-review-origin RETRY_PENDING 10
+set_current_attempt retry-review-origin attempt:review-origin 4
+set_review_round retry-review-origin 1
+REVIEW_EVIDENCE="sha256:4444444444444444444444444444444444444444444444444444444444444444"
+REVIEW_DECISION_DIGEST=$(make_rework_decision retry-review-origin 1 "$REVIEW_EVIDENCE")
+REVIEW_ORIGIN_SIGNATURE=$(failure_signature retry-review-origin rate-limited retryable)
+cat > "$ROOT/runs/retry-review-origin/events.jsonl" <<EOF
+{"sequence":1,"type":"verification.completed","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"VERIFYING","stateTo":"REVIEW_PENDING","actor":{"type":"system","id":"marshal-verifier"},"payload":{}}
+{"sequence":2,"type":"review.rework","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REVIEW_PENDING","stateTo":"REWORK_REQUESTED","actor":{"type":"system","id":"marshal-review"},"payload":{"verdict":"rework","decisionDigest":"$REVIEW_DECISION_DIGEST","evidenceDigest":"$REVIEW_EVIDENCE"}}
+{"sequence":3,"type":"worker.started","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REWORK_REQUESTED","stateTo":"RUNNING","attemptId":"attempt:review-origin","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":4,"type":"worker.failed","runId":"retry-review-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:review-origin","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$REVIEW_ORIGIN_SIGNATURE"}}
+EOF
+
+make_run retry-ci-origin RETRY_PENDING 10
+set_current_attempt retry-ci-origin attempt:ci-origin 3
+CI_HEAD="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+set_publication_head retry-ci-origin "$CI_HEAD"
+CI_ORIGIN_SIGNATURE=$(failure_signature retry-ci-origin connection-failure retryable)
+cat > "$ROOT/runs/retry-ci-origin/events.jsonl" <<EOF
+{"sequence":1,"type":"publication.checks-failed","runId":"retry-ci-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"CI_PENDING","stateTo":"REWORK_REQUESTED","actor":{"type":"publisher","id":"marshal-github-publisher"},"payload":{"headSha":"$CI_HEAD"}}
+{"sequence":2,"type":"worker.started","runId":"retry-ci-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REWORK_REQUESTED","stateTo":"RUNNING","attemptId":"attempt:ci-origin","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":3,"type":"worker.failed","runId":"retry-ci-origin","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:ci-origin","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"connection-failure","retryDisposition":"retryable","failureSignature":"$CI_ORIGIN_SIGNATURE"}}
+EOF
+OUT_VALID_REWORK_ORIGINS="$TMP/out_valid_rework_origins.json"
+run_watch --once --json > "$OUT_VALID_REWORK_ORIGINS"
+if python3 - "$OUT_VALID_REWORK_ORIGINS" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    items = {item["runId"]: item for item in json.load(handle)["items"]}
+for run_id in ("retry-review-origin", "retry-ci-origin"):
+    if items[run_id].get("action") != "retry-or-abort":
+        raise SystemExit("valid rework origin rejected: %s %r" % (run_id, items[run_id]))
+print("valid review/CI rework origins accepted OK")
+PYEOF
+then
+  ok "exact ReviewDecision/publication origin 可进入 retry 建议"
+else
+  bad "合法 rework origin 被错误拒绝"
+fi
+
+write_rework_retry_tail() {
+  local rid="$1" origin="$2" signature
+  signature=$(failure_signature "$rid" rate-limited retryable)
+  printf '%s\n' "$origin" > "$ROOT/runs/$rid/events.jsonl"
+  cat >> "$ROOT/runs/$rid/events.jsonl" <<EOF
+{"sequence":2,"type":"worker.started","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REWORK_REQUESTED","stateTo":"RUNNING","attemptId":"attempt:$rid","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":3,"type":"worker.failed","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:$rid","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$signature"}}
+EOF
+}
+
+write_review_retry_tail() {
+  local rid="$1" origin="$2" signature
+  signature=$(failure_signature "$rid" rate-limited retryable)
+  cat > "$ROOT/runs/$rid/events.jsonl" <<EOF
+{"sequence":1,"type":"verification.completed","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"VERIFYING","stateTo":"REVIEW_PENDING","actor":{"type":"system","id":"marshal-verifier"},"payload":{}}
+$origin
+{"sequence":3,"type":"worker.started","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"REWORK_REQUESTED","stateTo":"RUNNING","attemptId":"attempt:$rid","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":4,"type":"worker.failed","runId":"$rid","timestamp":"$INITIAL_EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:$rid","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$signature"}}
+EOF
+}
+
+FORGED_ORIGIN_RUNS="retry-origin-unknown retry-origin-review-actor retry-origin-review-state retry-origin-review-attempt retry-origin-review-digest retry-origin-review-evidence retry-origin-review-identity retry-origin-ci-actor retry-origin-ci-head retry-origin-ci-publication"
+for rid in $FORGED_ORIGIN_RUNS; do
+  make_run "$rid" RETRY_PENDING 10
+  set_current_attempt "$rid" "attempt:$rid" 3
+done
+
+write_rework_retry_tail retry-origin-unknown \
+  "{\"sequence\":1,\"type\":\"verification.completed\",\"runId\":\"retry-origin-unknown\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-verifier\"},\"payload\":{}}"
+
+for rid in retry-origin-review-actor retry-origin-review-state retry-origin-review-attempt retry-origin-review-digest retry-origin-review-evidence retry-origin-review-identity; do
+  set_current_attempt "$rid" "attempt:$rid" 4
+  set_review_round "$rid" 1
+done
+ACTOR_DIGEST=$(make_rework_decision retry-origin-review-actor 1 "$REVIEW_EVIDENCE")
+write_review_retry_tail retry-origin-review-actor \
+  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-actor\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"forged-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$ACTOR_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+STATE_DIGEST=$(make_rework_decision retry-origin-review-state 1 "$REVIEW_EVIDENCE")
+write_review_retry_tail retry-origin-review-state \
+  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-state\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"VERIFYING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$STATE_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+ATTEMPT_DIGEST=$(make_rework_decision retry-origin-review-attempt 1 "$REVIEW_EVIDENCE")
+write_review_retry_tail retry-origin-review-attempt \
+  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-attempt\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"attemptId\":\"attempt:forged\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$ATTEMPT_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+make_rework_decision retry-origin-review-digest 1 "$REVIEW_EVIDENCE" >/dev/null
+write_review_retry_tail retry-origin-review-digest \
+  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-digest\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+EVIDENCE_DIGEST=$(make_rework_decision retry-origin-review-evidence 1 "$REVIEW_EVIDENCE")
+write_review_retry_tail retry-origin-review-evidence \
+  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-evidence\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$EVIDENCE_DIGEST\",\"evidenceDigest\":\"sha256:9999999999999999999999999999999999999999999999999999999999999999\"}}"
+IDENTITY_DIGEST=$(make_rework_decision retry-origin-review-identity 1 "$REVIEW_EVIDENCE")
+python3 - "$ROOT/runs/retry-origin-review-identity/decisions/decision-001.json" "$TMP/identity-digest" <<'PYEOF'
+import hashlib, json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    decision = json.load(handle)
+decision["runId"] = "forged-run"
+encoded = json.dumps(decision, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+with open(sys.argv[1], "wb") as handle:
+    handle.write(encoded)
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    handle.write("sha256:" + hashlib.sha256(encoded).hexdigest())
+PYEOF
+IDENTITY_DIGEST=$(cat "$TMP/identity-digest")
+write_review_retry_tail retry-origin-review-identity \
+  "{\"sequence\":2,\"type\":\"review.rework\",\"runId\":\"retry-origin-review-identity\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"REVIEW_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"verdict\":\"rework\",\"decisionDigest\":\"$IDENTITY_DIGEST\",\"evidenceDigest\":\"$REVIEW_EVIDENCE\"}}"
+
+set_publication_head retry-origin-ci-actor "$CI_HEAD"
+write_rework_retry_tail retry-origin-ci-actor \
+  "{\"sequence\":1,\"type\":\"publication.checks-failed\",\"runId\":\"retry-origin-ci-actor\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"CI_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"system\",\"id\":\"marshal-review\"},\"payload\":{\"headSha\":\"$CI_HEAD\"}}"
+set_publication_head retry-origin-ci-head "$CI_HEAD"
+write_rework_retry_tail retry-origin-ci-head \
+  "{\"sequence\":1,\"type\":\"publication.checks-failed\",\"runId\":\"retry-origin-ci-head\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"CI_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"publisher\",\"id\":\"marshal-github-publisher\"},\"payload\":{\"headSha\":\"cccccccccccccccccccccccccccccccccccccccc\"}}"
+write_rework_retry_tail retry-origin-ci-publication \
+  "{\"sequence\":1,\"type\":\"publication.checks-failed\",\"runId\":\"retry-origin-ci-publication\",\"timestamp\":\"$INITIAL_EVENT_TS\",\"stateFrom\":\"CI_PENDING\",\"stateTo\":\"REWORK_REQUESTED\",\"actor\":{\"type\":\"publisher\",\"id\":\"marshal-github-publisher\"},\"payload\":{\"headSha\":\"$CI_HEAD\"}}"
+
+OUT_FORGED_ORIGINS="$TMP/out_forged_origins.json"
+run_watch --once --json > "$OUT_FORGED_ORIGINS"
+if python3 - "$OUT_FORGED_ORIGINS" $FORGED_ORIGIN_RUNS <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    items = {item["runId"]: item for item in json.load(handle)["items"]}
+for run_id in sys.argv[2:]:
+    item = items[run_id]
+    if item.get("action") != "retry-intervention" or item.get("interventionReason") != "typed-retry-lineage-required":
+        raise SystemExit("forged origin did not fail closed: %s %r" % (run_id, item))
+print("forged review/CI origin matrix fails closed OK")
+PYEOF
+then
+  ok "forged rework-origin table 全部 fail closed"
+else
+  bad "伪造 rework origin 被提升为 retry"
+fi
 rm -rf "$ROOT/runs/retry-lineage" "$ROOT/runs/retry-legacy" "$ROOT/runs/retry-mismatch" "$ROOT/runs/retry-invalid" "$ROOT/runs/retry-wrongsig" \
   "$ROOT/runs/retry-wrong-actor" "$ROOT/runs/retry-missing-started" "$ROOT/runs/retry-nonadjacent" \
-  "$ROOT/runs/retry-successor-started" "$ROOT/runs/retry-snapshot-drift" "$ROOT/runs/retry-attempt-reuse"
+  "$ROOT/runs/retry-wrong-run" "$ROOT/runs/retry-successor-started" "$ROOT/runs/retry-snapshot-drift" "$ROOT/runs/retry-sequence-gap" "$ROOT/runs/retry-attempt-reuse" \
+  "$ROOT/runs/retry-review-origin" "$ROOT/runs/retry-ci-origin"
+for rid in $FORGED_ORIGIN_RUNS; do rm -rf "$ROOT/runs/$rid"; done
 
 note "1b) 每次心跳读取内存并给出并发槽位建议"
 CAPACITY_JSON="$TMP/capacity.json"
@@ -1211,7 +1427,7 @@ done
 cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
 {"sequence":1,"type":"planning.inputs-frozen","timestamp":"$EVENT_TS","actor":{"type":"system","id":"marshal-planning"},"payload":{"adapterId":"qwen"}}
 {"sequence":2,"type":"worker.failed","timestamp":"$EVENT_TS","stateFrom":"RUNNING","stateTo":"RETRY_PENDING","attemptId":"attempt:provider-1","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen","failureKind":"rate-limited","retryDisposition":"retryable","failureSignature":"$FAILURE_SIGNATURE","notBefore":"$VALID_NOT_BEFORE"}}
-{"sequence":3,"type":"worker.started","timestamp":"$EVENT_TS","stateFrom":"RETRY_PENDING","stateTo":"RUNNING","attemptId":"attempt:provider-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":3,"type":"worker.started","runId":"current-ready","timestamp":"$EVENT_TS","stateFrom":"RETRY_PENDING","stateTo":"RUNNING","attemptId":"attempt:provider-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
 EOF
 PROVIDER_STARTED_JSON="$TMP/provider_started.json"
 if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$PROVIDER_STARTED_JSON" && \
@@ -1230,7 +1446,7 @@ else
 fi
 
 cat >> "$ROOT/runs/current-ready/events.jsonl" <<EOF
-{"sequence":4,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:provider-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
+{"sequence":4,"type":"worker.completed","runId":"current-ready","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:provider-2","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
 EOF
 PROVIDER_RECOVERED_JSON="$TMP/provider_recovered.json"
 if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" \
@@ -1251,24 +1467,36 @@ else
   bad "Provider 恢复信号未解除旧背压"
 fi
 
-for completion_case in wrong_actor wrong_attempt missing_started; do
+for completion_case in wrong_actor wrong_run wrong_attempt missing_started illegal_origin; do
   case "$completion_case" in
     wrong_actor)
       cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.started","timestamp":"$EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
-{"sequence":2,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:completion","actor":{"type":"system","id":"forged-runner"},"payload":{"result":"ok"}}
+{"sequence":1,"type":"worker.started","runId":"current-ready","timestamp":"$EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.completed","runId":"current-ready","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:completion","actor":{"type":"system","id":"forged-runner"},"payload":{"result":"ok"}}
+EOF
+      ;;
+    wrong_run)
+      cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","runId":"forged-run","timestamp":"$EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.completed","runId":"forged-run","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
 EOF
       ;;
     wrong_attempt)
       cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.started","timestamp":"$EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
-{"sequence":2,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:other","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
+{"sequence":1,"type":"worker.started","runId":"current-ready","timestamp":"$EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.completed","runId":"current-ready","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:other","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
 EOF
       ;;
     missing_started)
       cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
 {"sequence":1,"type":"planning.inputs-frozen","timestamp":"$EVENT_TS","actor":{"type":"system","id":"marshal-planning"},"payload":{"adapterId":"qwen"}}
-{"sequence":2,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
+{"sequence":2,"type":"worker.completed","runId":"current-ready","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
+EOF
+      ;;
+    illegal_origin)
+      cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
+{"sequence":1,"type":"worker.started","runId":"current-ready","timestamp":"$EVENT_TS","stateFrom":"BLOCKED","stateTo":"RUNNING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"qwen"}}
+{"sequence":2,"type":"worker.completed","runId":"current-ready","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
 EOF
       ;;
   esac
@@ -1292,8 +1520,8 @@ PYEOF
 done
 
 cat > "$ROOT/runs/current-ready/events.jsonl" <<EOF
-{"sequence":1,"type":"worker.started","timestamp":"$EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"codex"}}
-{"sequence":2,"type":"worker.completed","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
+{"sequence":1,"type":"worker.started","runId":"current-ready","timestamp":"$EVENT_TS","stateFrom":"READY","stateTo":"RUNNING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"adapterId":"codex"}}
+{"sequence":2,"type":"worker.completed","runId":"current-ready","timestamp":"$VALID_NOT_BEFORE","stateFrom":"RUNNING","stateTo":"VERIFYING","attemptId":"attempt:completion","actor":{"type":"system","id":"marshal-worker-runner"},"payload":{"result":"ok"}}
 EOF
 COMPLETION_ADAPTER_MISMATCH_JSON="$TMP/completion_adapter_mismatch.json"
 if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" run_watch --once --json > "$COMPLETION_ADAPTER_MISMATCH_JSON" && \

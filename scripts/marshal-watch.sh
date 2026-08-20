@@ -133,6 +133,7 @@ MAX_TASK_SPEC_BYTES = 1024 * 1024
 MAX_OWNER_BYTES = 64 * 1024
 MAX_JOURNAL_BYTES = 16 * 1024 * 1024
 MAX_REVIEW_PACKET_BYTES = 8 * 1024 * 1024
+MAX_REVIEW_DECISION_BYTES = 8 * 1024 * 1024
 MAX_CONTROL_JOURNAL_BYTES = 16 * 1024 * 1024
 TYPED_FAILURE_PAIRS = {
     "quota-exhausted": "blocked",
@@ -662,6 +663,108 @@ def _actor_is(event, actor_type, actor_id):
     return (isinstance(actor, dict) and actor.get("type") == actor_type and
             actor.get("id") == actor_id)
 
+def _strict_json_document(raw):
+    def object_without_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON member")
+            result[key] = value
+        return result
+    return json.loads(
+        raw.decode("utf-8"), object_pairs_hook=object_without_duplicates,
+        parse_constant=lambda value: (_ for _ in ()).throw(ValueError("non-finite JSON number")))
+
+def _canonical_json_digest(document):
+    encoded = json.dumps(document, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+def _review_decision_valid(decision):
+    required = {
+        "apiVersion", "kind", "taskId", "runId", "reviewRound", "reviewer",
+        "specDigest", "reviewPacketDigest", "verificationDigest",
+        "artifactManifestDigest", "evidenceDigest", "verdict", "summary",
+        "blockingFindings", "nonBlockingFindings", "publicationRecommendation",
+        "mergeRecommendation", "decidedAt",
+    }
+    if not isinstance(decision, dict) or not required.issubset(decision) or set(decision) - (required | {"blockerOwner"}):
+        return False
+    digest = re.compile(r"sha256:[0-9a-f]{64}")
+    identifier = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
+    if (decision.get("apiVersion") != "marshal.dev/v1alpha1" or
+            decision.get("kind") != "ReviewDecision" or
+            any(not isinstance(decision.get(key), str) or identifier.fullmatch(decision[key]) is None
+                for key in ("taskId", "runId")) or
+            isinstance(decision.get("reviewRound"), bool) or
+            not isinstance(decision.get("reviewRound"), int) or
+            not 1 <= decision["reviewRound"] <= (1 << 64) - 1 or
+            any(not isinstance(decision.get(key), str) or digest.fullmatch(decision[key]) is None
+                for key in ("specDigest", "reviewPacketDigest", "verificationDigest",
+                            "artifactManifestDigest", "evidenceDigest")) or
+            decision.get("verdict") not in {"accept", "rework", "reject", "blocked", "no_change"} or
+            not isinstance(decision.get("summary"), str) or not 1 <= len(decision["summary"]) <= 12000 or
+            decision.get("publicationRecommendation") not in {"publish", "do-not-publish", "not-applicable"} or
+            decision.get("mergeRecommendation") not in {"do-not-merge", "eligible-after-policy", "not-applicable"} or
+            strict_timestamp(decision.get("decidedAt")) is None):
+        return False
+    reviewer = decision.get("reviewer")
+    if (not isinstance(reviewer, dict) or set(reviewer) - {"type", "id", "model"} or
+            not {"type", "id"}.issubset(reviewer) or reviewer.get("type") not in {"lead-agent", "human"} or
+            not isinstance(reviewer.get("id"), str) or not 1 <= len(reviewer["id"]) <= 512 or
+            ("model" in reviewer and (not isinstance(reviewer["model"], str) or not 1 <= len(reviewer["model"]) <= 512))):
+        return False
+    if "blockerOwner" in decision and (not isinstance(decision["blockerOwner"], str) or not 1 <= len(decision["blockerOwner"]) <= 512):
+        return False
+    finding_allowed = {"id", "severity", "title", "description", "requiredOutcome",
+                       "file", "line", "gateId", "artifactId"}
+    for collection in (decision.get("blockingFindings"), decision.get("nonBlockingFindings")):
+        if not isinstance(collection, list):
+            return False
+        for finding in collection:
+            if (not isinstance(finding, dict) or
+                    not {"id", "severity", "title", "description"}.issubset(finding) or
+                    set(finding) - finding_allowed or
+                    not isinstance(finding.get("id"), str) or identifier.fullmatch(finding["id"]) is None or
+                    finding.get("severity") not in {"P0", "P1", "P2", "P3"} or
+                    not isinstance(finding.get("title"), str) or not 1 <= len(finding["title"]) <= 300 or
+                    not isinstance(finding.get("description"), str) or not 1 <= len(finding["description"]) <= 8000):
+                return False
+            for key, limit in (("requiredOutcome", 4000), ("file", 2048)):
+                if key in finding and (not isinstance(finding[key], str) or not 1 <= len(finding[key]) <= limit):
+                    return False
+            if "line" in finding and (isinstance(finding["line"], bool) or not isinstance(finding["line"], int) or
+                                       not 1 <= finding["line"] <= (1 << 63) - 1):
+                return False
+            for key in ("gateId", "artifactId"):
+                if key in finding and (not isinstance(finding[key], str) or identifier.fullmatch(finding[key]) is None):
+                    return False
+    return True
+
+def _round_bound_decision(run_fd, data, round_number, expected_digest):
+    decisions_fd = None
+    try:
+        decisions_fd = _open_child_directory_bound(run_fd, "decisions")
+        raw = _read_regular_bytes_at(decisions_fd, "decision-%03d.json" % round_number,
+                                     MAX_REVIEW_DECISION_BYTES)
+        decision = _strict_json_document(raw)
+        if not _review_decision_valid(decision):
+            return None
+        if _canonical_json_digest(decision) != expected_digest:
+            return None
+        if (decision.get("taskId") != data.get("taskId") or
+                decision.get("runId") != data.get("runId") or
+                decision.get("specDigest") != data.get("specDigest") or
+                decision.get("reviewRound") != round_number or
+                decision.get("verdict") != "rework"):
+            return None
+        return decision
+    except (OSError, UnicodeError, ValueError, TypeError, OverflowError):
+        return None
+    finally:
+        if decisions_fd is not None:
+            os.close(decisions_fd)
+
 def journal_observation(run_fd, run_id):
     try:
         raw = _read_regular_bytes_at(run_fd, "events.jsonl", MAX_JOURNAL_BYTES)
@@ -679,12 +782,12 @@ def journal_observation(run_fd, run_id):
         for raw_line in raw.decode("utf-8").splitlines():
             if not raw_line.strip():
                 continue
-            event = json.loads(raw_line, parse_constant=lambda value: (_ for _ in ()).throw(ValueError("non-finite JSON number")))
+            event = _strict_json_document(raw_line.encode("utf-8"))
             if not isinstance(event, dict):
                 raise ValueError("journal event is not an object")
             sequence = event.get("sequence")
-            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence <= previous:
-                raise ValueError("non-monotonic journal")
+            if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence != previous + 1:
+                raise ValueError("non-contiguous journal")
             if not isinstance(event.get("type"), str) or not event["type"]:
                 raise ValueError("journal event type is invalid")
             if strict_timestamp(event.get("timestamp")) is None:
@@ -795,6 +898,8 @@ def journal_observation(run_fd, run_id):
             started_adapter = started_payload.get("adapterId") if isinstance(started_payload, dict) else None
             completion_valid = (
                 isinstance(started, dict) and started.get("type") == "worker.started" and
+                started.get("runId") == run_id and event.get("runId") == run_id and
+                started.get("stateFrom") in {"READY", "RETRY_PENDING", "REWORK_REQUESTED"} and
                 started.get("stateTo") == "RUNNING" and
                 _actor_is(started, "system", "marshal-worker-runner") and
                 isinstance(started_adapter, str) and started_adapter in ADAPTER_BINARIES and
@@ -908,7 +1013,48 @@ def failure_signature_matches_state(data, failure):
     expected = "sha256:" + hashlib.sha256(signature_bytes).hexdigest()
     return failure.get("failureSignature") == expected
 
-def retry_lineage_matches_state(data, journal):
+def _rework_origin_matches_state(data, journal, run_fd, origin):
+    if not isinstance(origin, dict) or origin.get("runId") != data.get("runId"):
+        return False
+    payload = origin.get("payload")
+    if not isinstance(payload, dict) or origin.get("attemptId", "") != "":
+        return False
+    if origin.get("type") == "review.rework":
+        if (origin.get("stateFrom") != "REVIEW_PENDING" or
+                origin.get("stateTo") != "REWORK_REQUESTED" or
+                not _actor_is(origin, "system", "marshal-review") or
+                payload.get("verdict") != "rework"):
+            return False
+        decision_digest = payload.get("decisionDigest")
+        evidence_digest = payload.get("evidenceDigest")
+        digest_pattern = re.compile(r"sha256:[0-9a-f]{64}")
+        if (not isinstance(decision_digest, str) or digest_pattern.fullmatch(decision_digest) is None or
+                not isinstance(evidence_digest, str) or digest_pattern.fullmatch(evidence_digest) is None):
+            return False
+        round_number = 0
+        origin_seen = False
+        for event in journal.get("events", []):
+            if event.get("type") != "reconciliation.snapshot-repaired" and event.get("stateTo") == "REVIEW_PENDING":
+                round_number += 1
+            if event is origin:
+                origin_seen = True
+                break
+        if (not origin_seen or round_number < 1 or
+                data.get("reviewRound") != round_number):
+            return False
+        decision = _round_bound_decision(run_fd, data, round_number, decision_digest)
+        return isinstance(decision, dict) and decision.get("evidenceDigest") == evidence_digest
+    if origin.get("type") == "publication.checks-failed":
+        publication = data.get("publication")
+        head_sha = payload.get("headSha")
+        return (origin.get("stateFrom") == "CI_PENDING" and
+                origin.get("stateTo") == "REWORK_REQUESTED" and
+                _actor_is(origin, "publisher", "marshal-github-publisher") and
+                isinstance(head_sha, str) and head_sha != "" and
+                isinstance(publication, dict) and publication.get("headSha") == head_sha)
+    return False
+
+def retry_lineage_matches_state(data, journal, run_fd):
     """Mirror Core adjacent business-event retry lineage fail-closed checks."""
     if (not isinstance(data, dict) or not isinstance(journal, dict) or
             data.get("sequence") != journal.get("sequence")):
@@ -921,16 +1067,22 @@ def retry_lineage_matches_state(data, journal):
     position = len(business) - 1
     seen_attempts = set()
     current_attempt = data.get("currentAttemptId")
+    run_id = data.get("runId")
+    latest_failure = journal.get("latestFailure")
     while True:
         failed = business[position]
         attempt_id = failed.get("attemptId")
         if (failed.get("type") != "worker.failed" or
                 failed.get("stateFrom") != "RUNNING" or
                 failed.get("stateTo") != "RETRY_PENDING" or
+                failed.get("runId") != run_id or
                 not _actor_is(failed, "system", "marshal-worker-runner") or
                 not isinstance(attempt_id, str) or not attempt_id):
             return False
         if position == len(business) - 1 and attempt_id != current_attempt:
+            return False
+        if (position == len(business) - 1 and
+                (not isinstance(latest_failure, dict) or latest_failure.get("sequence") != failed.get("sequence"))):
             return False
         if attempt_id in seen_attempts:
             return False
@@ -940,6 +1092,7 @@ def retry_lineage_matches_state(data, journal):
             return False
         started = business[start_position]
         if (started.get("type") != "worker.started" or
+                started.get("runId") != run_id or
                 started.get("stateTo") != "RUNNING" or
                 not _actor_is(started, "system", "marshal-worker-runner") or
                 started.get("attemptId") != attempt_id):
@@ -948,11 +1101,10 @@ def retry_lineage_matches_state(data, journal):
         if origin == "READY":
             return True
         if origin == "REWORK_REQUESTED":
-            # Core performs deeper ReviewDecision/publication binding.  The
-            # watchdog is only a read-only recommendation layer, but it must
-            # at least require the same adjacent origin rather than searching
-            # globally or accepting a truncated lineage.
-            return start_position > 0
+            if start_position == 0:
+                return False
+            return _rework_origin_matches_state(
+                data, journal, run_fd, business[start_position - 1])
         if origin != "RETRY_PENDING":
             return False
         position = start_position - 1
@@ -1103,7 +1255,7 @@ for run_id in run_names:
                 isinstance(failure, dict) and failure.get("valid") is True and
                 failure.get("disposition") == "retryable" and
                 failure_signature_matches_state(data, failure) and
-                retry_lineage_matches_state(data, journal) and
+                retry_lineage_matches_state(data, journal, run_fd) and
                 failure.get("attemptId") == current_attempt and
                 failure.get("stateFrom") == "RUNNING" and failure.get("stateTo") == "RETRY_PENDING"
             )
