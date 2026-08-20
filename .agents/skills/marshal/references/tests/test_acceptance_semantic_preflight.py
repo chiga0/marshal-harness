@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import resource
 import shutil
 import signal
 import subprocess
@@ -382,7 +383,7 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
                     os.killpg(canary.pid, signal.SIGTERM)
                 canary.wait(timeout=2)
 
-    def test_timeout_cleans_leader_early_exit_with_inherited_pipes(self) -> None:
+    def test_timeout_cleans_leader_early_exit_with_inherited_descendant(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pid_file = Path(directory) / "grandchild.pid"
             grandchild = (
@@ -399,6 +400,26 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
             grandchild_pid = int(pid_file.read_text(encoding="utf-8"))
             with self.assertRaises(ProcessLookupError):
                 os.kill(grandchild_pid, 0)
+
+    def test_noisy_child_output_does_not_accumulate_in_parent_memory(self) -> None:
+        command = self.timeout_command(
+            "import os\n"
+            "chunk = b'x' * 65536\n"
+            "for _ in range(1024):\n"
+            "    os.write(1, chunk)\n"
+            "    os.write(2, chunk)\n",
+            5,
+        )
+        command["maxLogBytes"] = 1024
+        before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        self.assertEqual(self.run_timeout_command(command), 0)
+        after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        scale = 1 if sys.platform == "darwin" else 1024
+        self.assertLess(
+            (after - before) * scale,
+            16 * 1024 * 1024,
+            "128 MiB of child output must not be accumulated by the parent",
+        )
 
     def test_prompt_required_any_literal_is_mandatory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

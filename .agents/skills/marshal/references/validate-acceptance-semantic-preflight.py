@@ -1091,11 +1091,8 @@ def terminate_owned_process_group(process: subprocess.Popen[bytes]) -> None:
         except (ProcessLookupError, PermissionError):
             pass
     try:
-        process.communicate(timeout=TERMINATION_VERIFY_SECONDS)
+        process.wait(timeout=TERMINATION_VERIFY_SECONDS)
     except subprocess.TimeoutExpired:
-        for pipe in (process.stdout, process.stderr):
-            if pipe is not None:
-                pipe.close()
         if process.poll() is None:
             try:
                 process.kill()
@@ -1130,15 +1127,15 @@ def run_owned_process_group(
             cwd=execution_cwd,
             env=environment,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
     except OSError as error:
         fail("command-execution-failed", f"acceptance command could not start: {error}")
     deadline = time.monotonic() + timeout_seconds
     try:
-        process.communicate(timeout=timeout_seconds)
+        return_code = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         terminate_owned_process_group(process)
         fail("acceptance-command-timeout", "acceptance command exceeded timeoutSeconds")
@@ -1147,7 +1144,7 @@ def run_owned_process_group(
             terminate_owned_process_group(process)
             fail("acceptance-command-timeout", "acceptance command exceeded timeoutSeconds")
         time.sleep(0.01)
-    return process.returncode
+    return return_code
 
 
 def run_command(
