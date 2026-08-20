@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -41,6 +42,8 @@ def create_exact_head_clean_worktree(
     subprocess.run(
         [
             "git",
+            "-c",
+            "core.hooksPath=/dev/null",
             "clone",
             "--quiet",
             "--shared",
@@ -54,7 +57,16 @@ def create_exact_head_clean_worktree(
         text=True,
     )
     subprocess.run(
-        ["git", "worktree", "add", "--detach", str(protected), source_head],
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "worktree",
+            "add",
+            "--detach",
+            str(protected),
+            source_head,
+        ],
         cwd=source,
         check=True,
         capture_output=True,
@@ -623,6 +635,66 @@ class AcceptanceSemanticPreflightTest(unittest.TestCase):
                 raised.exception.reason_code, "protected-root-runtime-state"
             )
             self.assertFalse((protected / ".marshal").exists())
+            VALIDATOR_MODULE.bind_explicit_protected_roots_to_source_head(
+                [protected], source_head
+            )
+
+    def test_clean_linked_worktree_does_not_execute_host_git_hooks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "primary"
+            source.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            (source / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=source, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Marshal Test",
+                    "-c",
+                    "user.email=marshal@example.invalid",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "-qm",
+                    "base",
+                ],
+                cwd=source,
+                check=True,
+            )
+            source_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=source,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            hooks = root / "host-hooks"
+            hooks.mkdir()
+            hook_marker = root / "host-hook-ran"
+            post_checkout = hooks / "post-checkout"
+            post_checkout.write_text(
+                f"#!/bin/sh\n: > {str(hook_marker)!r}\n",
+                encoding="utf-8",
+            )
+            post_checkout.chmod(0o755)
+            global_config = root / "host.gitconfig"
+            global_config.write_text(
+                f"[core]\n\thooksPath = {hooks}\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {"GIT_CONFIG_GLOBAL": str(global_config)},
+                clear=False,
+            ):
+                protected = create_exact_head_clean_worktree(
+                    source, source_head, root / "carrier"
+                )
+
+            self.assertFalse(hook_marker.exists())
             VALIDATOR_MODULE.bind_explicit_protected_roots_to_source_head(
                 [protected], source_head
             )
