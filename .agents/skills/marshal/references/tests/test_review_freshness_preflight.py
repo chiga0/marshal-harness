@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 
 
@@ -51,17 +52,24 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temp = Path(tempfile.mkdtemp(prefix="review-freshness.", dir="/private/tmp"))
-        self.run_root = self.temp / "run"
+        self.state_root = self.temp / "state"
+        self.run_root = self.state_root / "runs" / "review-freshness-fixture-r1"
         self.operator_root = self.temp / "operator"
+        self.repository = self.temp / "repository"
         self.worktree = self.temp / "worktree"
-        self.run_root.mkdir(); self.operator_root.mkdir(); self.worktree.mkdir()
-        subprocess.run(["/usr/bin/git", "init", "-q"], cwd=self.worktree, check=True)
-        subprocess.run(["/usr/bin/git", "config", "user.name", "Fixture"], cwd=self.worktree, check=True)
-        subprocess.run(["/usr/bin/git", "config", "user.email", "fixture@example.invalid"], cwd=self.worktree, check=True)
-        (self.worktree / "README").write_text("fixture\n", encoding="utf-8")
-        subprocess.run(["/usr/bin/git", "add", "README"], cwd=self.worktree, check=True)
-        subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture"], cwd=self.worktree, check=True)
-        self.head = subprocess.check_output(["/usr/bin/git", "rev-parse", "HEAD"], cwd=self.worktree, text=True).strip()
+        self.run_root.mkdir(parents=True); self.operator_root.mkdir(); self.repository.mkdir()
+        subprocess.run(["/usr/bin/git", "init", "-q"], cwd=self.repository, check=True)
+        subprocess.run(["/usr/bin/git", "config", "user.name", "Fixture"], cwd=self.repository, check=True)
+        subprocess.run(["/usr/bin/git", "config", "user.email", "fixture@example.invalid"], cwd=self.repository, check=True)
+        (self.repository / "README").write_text("fixture\n", encoding="utf-8")
+        subprocess.run(["/usr/bin/git", "add", "README"], cwd=self.repository, check=True)
+        subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture"], cwd=self.repository, check=True)
+        self.head = subprocess.check_output(["/usr/bin/git", "rev-parse", "HEAD"], cwd=self.repository, text=True).strip()
+        subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "worktree", "add", "-q", "-b", "fixture-worktree", str(self.worktree), self.head], cwd=self.repository, check=True)
+        (self.state_root / "repo.json").write_bytes(json_bytes({
+            "apiVersion": "marshal.dev/v1alpha1", "kind": "RepositoryIdentity",
+            "repositoryRoot": str(self.repository),
+        }))
         self.manifest_path = self.operator_root / "manifest.json"
         self._write_fixture()
 
@@ -78,6 +86,40 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         response = json.loads(self.core_process.stdout.readline())
         self.assertTrue(response["ok"], response)
         return response["digest"]
+
+    def core_observe(self) -> dict:
+        self.assertIsNotNone(self.core_process.stdin); self.assertIsNotNone(self.core_process.stdout)
+        request = {"mode": "observe", "kindOrSchema": self.head, "path": str(self.worktree)}
+        self.core_process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+        self.core_process.stdin.flush()
+        response = json.loads(self.core_process.stdout.readline())
+        self.assertTrue(response["ok"], response)
+        return json.loads(response["digest"])
+
+    def core_authority(self) -> str:
+        return self.core_digest({
+            "tenantNamespace": "local", "controlPlaneId": "default",
+            "authorityScopeId": str(self.repository),
+        })
+
+    def observed_patch(self) -> bytes:
+        environment = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"}
+        patch = subprocess.check_output(
+            ["/usr/bin/git", "diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--find-renames", self.head, "--"],
+            cwd=self.worktree, env=environment,
+        )
+        untracked = subprocess.check_output(
+            ["/usr/bin/git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=self.worktree, env=environment,
+        )
+        for relative in sorted(path.decode() for path in untracked.split(b"\x00") if path):
+            result = subprocess.run(
+                ["/usr/bin/git", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--", "/dev/null", relative],
+                cwd=self.worktree, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr.decode(errors="replace"))
+            patch += result.stdout
+        return patch
 
     def example(self, name: str) -> dict:
         return json.loads((EXAMPLES / f"{name}.json").read_text())
@@ -129,17 +171,114 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
     def manifest(self) -> dict:
         return {"apiVersion": "marshal.operator/v1alpha1", "kind": "ReviewFreshnessPreflight", "expected": {"taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1", "state": "REVIEW_PENDING", "stateSequence": 7, "currentAttemptId": "attempt:fixture-01", "sourceHead": self.head, "baseSha": self.head, "reviewRound": 2}, "files": {"statePath": "state.json", "eventsPath": "events.jsonl", "packetPath": "review-packet.json", "taskSpecPath": "task-spec.json", "verificationReportPath": "verification-report.json", "artifactManifestPath": "artifact-manifest.json", "policySnapshotPath": "policy-snapshot.json", "capabilitySnapshotPath": "capability-snapshot.json", "controlRecordsPath": "control/records.jsonl", "historyPath": "review-freshness-history.json"}}
 
+    def worker_patch_artifact(self, patch: bytes, candidate_digest: str) -> dict:
+        return {
+            "id": "evidence:worker-patch", "kind": "patch", "mediaType": "text/x-diff",
+            "producer": "verifier", "required": True, "status": "validated",
+            "pathRoot": "run", "relativePath": "worker.patch", "byteSize": len(patch),
+            "digest": digest_bytes(patch), "candidateDigest": candidate_digest,
+            "createdAt": "2026-08-20T00:01:00Z", "redacted": False, "truncated": False,
+            "relatedGates": ["scope"],
+        }
+
     def enable_candidate(self) -> None:
-        candidate = {"apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate", "taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1", "attemptId": "attempt:fixture-01", "authorityNamespaceId": "authority:fixture", "baseSha": self.head, "contentDigest": digest_bytes(b""), "producerKind": "worker", "producer": "worker:fixture", "createdAt": "2026-08-20T00:00:30Z"}
+        candidate = {"apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate", "taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1", "attemptId": "attempt:fixture-01", "authorityNamespaceId": self.core_authority(), "baseSha": self.head, "contentDigest": digest_bytes(b""), "producerKind": "worker", "producer": "worker", "createdAt": "2026-08-20T00:00:30Z"}
         candidate_digest = self.core_digest(candidate)
         candidate["candidateDigest"] = candidate_digest
         self.core_digest(candidate, "Candidate")
         candidate_dir = self.run_root / "candidates"; candidate_dir.mkdir(exist_ok=True); (candidate_dir / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
         report_path = self.run_root / "verification-report.json"; report = json.loads(report_path.read_text()); report["candidateDigest"] = candidate_digest; report["workerCandidateDigest"] = candidate_digest; report_path.write_bytes(json_bytes(report)); report_digest = self.core_digest(report, "VerificationReport")
-        artifact_path = self.run_root / "artifact-manifest.json"; artifacts = json.loads(artifact_path.read_text()); artifacts["artifacts"][0]["candidateDigest"] = candidate_digest; artifact_path.write_bytes(json_bytes(artifacts)); artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+        (self.run_root / "worker.patch").write_bytes(b"")
+        artifact_path = self.run_root / "artifact-manifest.json"; artifacts = json.loads(artifact_path.read_text()); artifacts["artifacts"][0]["candidateDigest"] = candidate_digest; artifacts["artifacts"].append(self.worker_patch_artifact(b"", candidate_digest)); artifact_path.write_bytes(json_bytes(artifacts)); artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
         packet_path = self.run_root / "review-packet.json"; packet = json.loads(packet_path.read_text()); packet["candidateDigest"] = candidate_digest; packet["workerCandidateDigest"] = candidate_digest; packet["verificationDigest"] = report_digest; packet["artifactManifestDigest"] = artifact_digest
         evidence = {"specDigest": packet["specDigest"], "patchDigest": packet["diffDigest"], "verificationDigest": report_digest, "artifactManifestDigest": artifact_digest, "workerResultDigests": packet["workerResultDigests"], "previousBlockingFindings": [], "candidateDigest": candidate_digest, "workerCandidateDigest": candidate_digest}
         packet["evidenceDigest"] = self.core_digest(evidence); packet_path.write_bytes(json_bytes(packet)); self.core_digest(packet, "ReviewPacket")
+        events_path = self.run_root / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        events[-1]["payload"]["reportDigest"] = report_digest
+        events[-1]["payload"]["artifactManifestDigest"] = artifact_digest
+        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+
+    def enable_missing_packet_candidate(self, *, untracked: bool) -> None:
+        (self.run_root / "review-packet.json").unlink()
+        if untracked:
+            (self.worktree / "deliverable.md").write_text("candidate deliverable\n", encoding="utf-8")
+        else:
+            (self.worktree / "README").write_text("tracked candidate\n", encoding="utf-8")
+        observation = self.core_observe()
+        patch = self.observed_patch()
+        self.assertEqual(observation["diffDigest"], digest_bytes(patch))
+        (self.run_root / "observed.patch").write_bytes(patch)
+
+        candidate = {
+            "apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate",
+            "taskId": "REVIEW-FRESHNESS-FIXTURE", "runId": "review-freshness-fixture-r1",
+            "attemptId": "attempt:fixture-01", "authorityNamespaceId": self.core_authority(),
+            "baseSha": self.head, "contentDigest": observation["diffDigest"],
+            "producerKind": "worker", "producer": "worker",
+            "createdAt": "2026-08-20T00:00:30Z",
+        }
+        candidate_digest = self.core_digest(candidate)
+        candidate["candidateDigest"] = candidate_digest
+        self.core_digest(candidate, "Candidate")
+        candidate_dir = self.run_root / "candidates"
+        candidate_dir.mkdir(exist_ok=True)
+        (candidate_dir / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
+        (self.run_root / "worker.patch").write_bytes(patch)
+
+        report_path = self.run_root / "verification-report.json"
+        report = json.loads(report_path.read_text())
+        report["observed"] = observation
+        report["candidateDigest"] = candidate_digest
+        report["workerCandidateDigest"] = candidate_digest
+        report_path.write_bytes(json_bytes(report))
+        report_digest = self.core_digest(report, "VerificationReport")
+
+        artifact_path = self.run_root / "artifact-manifest.json"
+        artifacts = json.loads(artifact_path.read_text())
+        artifacts["artifacts"][0].update({
+            "byteSize": len(patch), "digest": observation["diffDigest"],
+            "candidateDigest": candidate_digest,
+        })
+        artifacts["artifacts"].append(self.worker_patch_artifact(patch, candidate_digest))
+        artifact_path.write_bytes(json_bytes(artifacts))
+        artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+
+        events_path = self.run_root / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        events[-1]["payload"]["reportDigest"] = report_digest
+        events[-1]["payload"]["artifactManifestDigest"] = artifact_digest
+        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+
+    def reseal_single_candidate(self, mutate) -> None:
+        candidate_dir = self.run_root / "candidates"
+        paths = list(candidate_dir.glob("*.json"))
+        self.assertEqual(len(paths), 1)
+        path = paths[0]
+        candidate = json.loads(path.read_text())
+        old_digest = candidate.pop("candidateDigest")
+        mutate(candidate)
+        candidate_digest = self.core_digest(candidate)
+        candidate["candidateDigest"] = candidate_digest
+        self.core_digest(candidate, "Candidate")
+        path.unlink()
+        (candidate_dir / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
+
+        report_path = self.run_root / "verification-report.json"
+        report = json.loads(report_path.read_text())
+        report["candidateDigest"] = candidate_digest
+        report["workerCandidateDigest"] = candidate_digest
+        report_path.write_bytes(json_bytes(report))
+        report_digest = self.core_digest(report, "VerificationReport")
+
+        artifact_path = self.run_root / "artifact-manifest.json"
+        artifacts = json.loads(artifact_path.read_text())
+        for artifact in artifacts["artifacts"]:
+            if artifact.get("candidateDigest") == old_digest:
+                artifact["candidateDigest"] = candidate_digest
+        artifact_path.write_bytes(json_bytes(artifacts))
+        artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+
         events_path = self.run_root / "events.jsonl"
         events = [json.loads(line) for line in events_path.read_text().splitlines()]
         events[-1]["payload"]["reportDigest"] = report_digest
@@ -190,9 +329,9 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         candidate = {
             "apiVersion": "marshal.dev/v1alpha1", "kind": "Candidate",
             "taskId": stale_packet["taskId"], "runId": stale_packet["runId"],
-            "attemptId": "attempt:fixture-02", "authorityNamespaceId": "authority:fixture",
+            "attemptId": "attempt:fixture-02", "authorityNamespaceId": self.core_authority(),
             "baseSha": self.head, "contentDigest": digest_bytes(b""), "producerKind": "worker",
-            "producer": "worker:fixture", "createdAt": "2026-08-20T00:01:30Z",
+            "producer": "worker", "createdAt": "2026-08-20T00:01:30Z",
         }
         candidate_digest = self.core_digest(candidate)
         candidate["candidateDigest"] = candidate_digest
@@ -200,6 +339,7 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         candidate_dir = self.run_root / "candidates"
         candidate_dir.mkdir()
         (candidate_dir / f"{candidate_digest}.json").write_bytes(json_bytes(candidate))
+        (self.run_root / "worker.patch").write_bytes(b"")
         report["candidateDigest"] = candidate_digest
         report["workerCandidateDigest"] = candidate_digest
         report_path.write_bytes(json_bytes(report))
@@ -208,6 +348,7 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         artifact_path = self.run_root / "artifact-manifest.json"
         artifacts = json.loads(artifact_path.read_text())
         artifacts["artifacts"][0]["candidateDigest"] = candidate_digest
+        artifacts["artifacts"].append(self.worker_patch_artifact(b"", candidate_digest))
         artifact_path.write_bytes(json_bytes(artifacts))
         current_artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
 
@@ -299,6 +440,107 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         (self.run_root / "review-packet.json").unlink()
         code, result = self.invoke(); self.assertEqual(code, 0, result); self.assertEqual(result["action"], "generate-review-packet")
         self.assert_reason("action-already-claimed")
+
+    def test_missing_packet_tracked_candidate_claims_generation(self) -> None:
+        self.enable_missing_packet_candidate(untracked=False)
+        code, result = self.invoke()
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"], "generate-review-packet")
+        self.assertEqual(result["reasonCode"], "packet-missing-generation-claimed")
+        self.assertTrue(result["historyClaimed"])
+
+    def test_missing_packet_untracked_candidate_claims_generation(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        code, result = self.invoke()
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"], "generate-review-packet")
+        self.assertTrue(result["historyClaimed"])
+
+    def test_missing_packet_candidate_rejects_extra_worktree_drift(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        (self.worktree / "extra.txt").write_text("not verified\n", encoding="utf-8")
+        self.assert_reason("worktree-evidence-changed-after-verification")
+        history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
+        self.assertEqual(history["claims"], [])
+
+    def test_missing_packet_candidate_rejects_identity_mismatch(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        self.reseal_single_candidate(lambda candidate: candidate.update({"attemptId": "attempt:other"}))
+
+        self.assert_reason("candidate-record-identity-mismatch")
+        history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
+        self.assertEqual(history["claims"], [])
+
+    def test_missing_packet_candidate_rejects_foreign_authority(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        self.reseal_single_candidate(lambda candidate: candidate.update({"authorityNamespaceId": "sha256:" + "f" * 64}))
+        self.assert_reason("candidate-record-identity-mismatch")
+
+    def test_linked_worktree_rejects_foreign_repository_common_dir(self) -> None:
+        foreign = self.temp / "foreign-repository"
+        subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "clone", "-q", "--no-hardlinks", str(self.repository), str(foreign)], check=True)
+        (self.state_root / "repo.json").write_bytes(json_bytes({
+            "apiVersion": "marshal.dev/v1alpha1", "kind": "RepositoryIdentity",
+            "repositoryRoot": str(foreign),
+        }))
+        self.assert_reason("authority-namespace-derivation-invalid")
+
+    def test_linked_worktree_common_dir_swap_fails_final_cas(self) -> None:
+        replacement = self.temp / "foreign-replacement"
+        subprocess.run(["/usr/bin/git", "-c", "core.hooksPath=/dev/null", "clone", "-q", "--no-hardlinks", str(self.repository), str(replacement)], check=True)
+        self.manifest_path.write_bytes(json_bytes(self.manifest()))
+        original_validate = PREFLIGHT.validate_packet_inputs
+        swapped = False
+
+        def validate_then_swap(*args, **kwargs):
+            nonlocal swapped
+            result = original_validate(*args, **kwargs)
+            self.assertFalse(swapped)
+            (self.worktree / ".git").write_text(f"gitdir: {replacement / '.git'}\n", encoding="utf-8")
+            swapped = True
+            return result
+
+        PREFLIGHT.validate_packet_inputs = validate_then_swap
+        try:
+            arguments = SimpleNamespace(
+                run_root=str(self.run_root), operator_root=str(self.operator_root),
+                manifest=str(self.manifest_path), worktree=str(self.worktree),
+            )
+            with self.assertRaises(PREFLIGHT.PreflightError) as raised:
+                PREFLIGHT.run(arguments)
+            self.assertEqual(raised.exception.reason_code, "authority-changed-during-preflight")
+            self.assertTrue(swapped)
+        finally:
+            PREFLIGHT.validate_packet_inputs = original_validate
+        history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
+        self.assertEqual(history["claims"], [])
+
+    def test_missing_packet_candidate_rejects_foreign_producer(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        self.reseal_single_candidate(lambda candidate: candidate.update({"producer": "worker:forged"}))
+        self.assert_reason("candidate-chain-mismatch")
+
+    def test_missing_packet_candidate_rejects_allocation_generation(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        self.reseal_single_candidate(lambda candidate: candidate.update({"allocationId": "allocation:foreign", "generation": 1}))
+        self.assert_reason("candidate-allocation-generation-mismatch")
+
+    def test_missing_packet_candidate_rejects_worker_patch_tamper(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        (self.run_root / "worker.patch").write_bytes(b"tampered\n")
+        self.assert_reason("worker-candidate-content-mismatch")
+
+    def test_missing_packet_candidate_concurrent_claim_is_exactly_once(self) -> None:
+        self.enable_missing_packet_candidate(untracked=True)
+        self.manifest_path.write_bytes(json_bytes(self.manifest()))
+        command = ["python3", "-I", "-B", str(VALIDATOR), "--run-root", str(self.run_root), "--operator-root", str(self.operator_root), "--manifest", str(self.manifest_path), "--worktree", str(self.worktree)]
+        first = subprocess.Popen(command, cwd=REPOSITORY, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        second = subprocess.Popen(command, cwd=REPOSITORY, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        results = [first.communicate(timeout=120), second.communicate(timeout=120)]
+        self.assertEqual([first.returncode, second.returncode].count(0), 1, results)
+        history = json.loads((self.operator_root / "review-freshness-history.json").read_text())
+        self.assertEqual(len(history["claims"]), 1)
+        self.assertEqual(history["claims"][0]["action"], "generate-review-packet")
 
     def test_committed_previous_round_packet_claims_current_generation(self) -> None:
         manifest = self.make_previous_round_stale_packet()

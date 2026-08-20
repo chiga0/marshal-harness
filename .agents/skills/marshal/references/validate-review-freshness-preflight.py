@@ -100,6 +100,54 @@ class HeldRelativeParent:
             os.close(self.fds.pop())
 
 
+class HeldAbsoluteDirectory:
+    """Hold and later revalidate every component of an absolute directory."""
+
+    def __init__(self, path: Path):
+        self.path = absolute_clean(path)
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        self.fds = [os.open(self.path.anchor, flags)]
+        try:
+            for component in self.path.parts[1:]:
+                self.fds.append(os.open(component, flags, dir_fd=self.fds[-1]))
+        except OSError:
+            self.close()
+            fail("authority-namespace-derivation-invalid")
+        self.identities = [self._identity(descriptor) for descriptor in self.fds]
+        atexit.register(self.close)
+
+    @staticmethod
+    def _identity(descriptor: int) -> tuple[int, int, int]:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            fail("authority-namespace-derivation-invalid")
+        return metadata.st_dev, metadata.st_ino, metadata.st_mode
+
+    def verify(self, reason: str) -> None:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            current_root = os.open(self.path.anchor, flags)
+        except OSError:
+            fail(reason)
+        try:
+            if self._identity(current_root) != self.identities[0]:
+                fail(reason)
+        finally:
+            os.close(current_root)
+        for index, component in enumerate(self.path.parts[1:]):
+            try:
+                metadata = os.stat(component, dir_fd=self.fds[index], follow_symlinks=False)
+            except OSError:
+                fail(reason)
+            identity = (metadata.st_dev, metadata.st_ino, metadata.st_mode)
+            if stat.S_ISLNK(metadata.st_mode) or identity != self.identities[index + 1]:
+                fail(reason)
+
+    def close(self) -> None:
+        while getattr(self, "fds", []):
+            os.close(self.fds.pop())
+
+
 def fail(reason_code: str) -> None:
     raise PreflightError(reason_code)
 
@@ -420,6 +468,83 @@ def core_validate_candidate(script: Path, data: bytes) -> str:
         path.unlink(missing_ok=True)
 
 
+def git_repository_identity(path: Path, reason: str = "authority-namespace-derivation-invalid") -> tuple[str, str]:
+    absolute_clean(path)
+    descriptor = open_dir_nofollow(path)
+    os.close(descriptor)
+    try:
+        result = subprocess.run(
+            ["/usr/bin/git", "-c", "core.fsmonitor=false", "-c", "gc.auto=0", "rev-parse", "--show-toplevel", "--git-common-dir"],
+            cwd=path, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0"},
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        fail(reason)
+    try:
+        lines = result.stdout.decode("utf-8").splitlines()
+    except UnicodeError:
+        fail(reason)
+    if result.returncode or len(lines) != 2:
+        fail(reason)
+    root = Path(os.path.realpath(lines[0]))
+    common = Path(lines[1])
+    if not common.is_absolute():
+        common = path / common
+    common = Path(os.path.realpath(common))
+    try:
+        if not root.is_dir() or not common.is_dir():
+            fail(reason)
+    except OSError:
+        fail(reason)
+    return str(root), str(common)
+
+
+class AuthorityPathBinding:
+    """Bind repository/worktree membership and every directory-path inode."""
+
+    def __init__(self, repository_path: Path, worktree: Path):
+        self.repository_path = repository_path
+        self.worktree_path = worktree
+        self.repository_hold = HeldAbsoluteDirectory(repository_path)
+        self.worktree_hold = HeldAbsoluteDirectory(worktree)
+        repository_git_root, repository_common = git_repository_identity(repository_path)
+        worktree_git_root, worktree_common = git_repository_identity(worktree)
+        if repository_git_root != str(repository_path) or worktree_git_root != str(worktree) or repository_common != worktree_common:
+            fail("authority-namespace-derivation-invalid")
+        self.receipt = (repository_git_root, repository_common, worktree_git_root, worktree_common)
+        self.common_hold = HeldAbsoluteDirectory(Path(repository_common))
+        self.verify("authority-namespace-derivation-invalid")
+
+    def verify(self, reason: str = "authority-changed-during-preflight") -> None:
+        self.repository_hold.verify(reason)
+        self.worktree_hold.verify(reason)
+        self.common_hold.verify(reason)
+        current = (*git_repository_identity(self.repository_path, reason), *git_repository_identity(self.worktree_path, reason))
+        if current != self.receipt:
+            fail(reason)
+
+
+def core_derive_authority_namespace(script: Path, repository_identity: dict, worktree: Path) -> tuple[str, AuthorityPathBinding]:
+    exact_keys(repository_identity, {"apiVersion", "kind", "repositoryRoot"}, {"apiVersion", "kind", "repositoryRoot"}, "repository-identity-invalid")
+    repository_root = repository_identity.get("repositoryRoot")
+    if repository_identity.get("apiVersion") != "marshal.dev/v1alpha1" or repository_identity.get("kind") != "RepositoryIdentity" or not isinstance(repository_root, str) or not repository_root:
+        fail("repository-identity-invalid")
+    try:
+        repository_path = absolute_clean(Path(repository_root))
+        binding = AuthorityPathBinding(repository_path, worktree)
+    except (OSError, ValueError):
+        fail("authority-namespace-derivation-invalid")
+    path = write_temp_json({"tenantNamespace": "local", "controlPlaneId": "default", "authorityScopeId": repository_root})
+    try:
+        digest = core_probe(script, "canonical", "-", path)
+    finally:
+        path.unlink(missing_ok=True)
+    if not DIGEST_RE.fullmatch(digest):
+        fail("authority-namespace-derivation-invalid")
+    return digest, binding
+
+
 def validate_operator_schema(script: Path, schema_name: str, data: bytes) -> None:
     descriptor, name = tempfile.mkstemp(prefix="marshal-review-schema.", suffix=".json", dir="/private/tmp")
     try:
@@ -568,6 +693,8 @@ def validate_current_generation_inputs(
     verification_digest: str,
     artifacts: dict,
     artifact_digest: str,
+    expected_authority_namespace: str,
+    require_candidate: bool = True,
 ) -> tuple[dict, list[tuple[str, bytes, tuple[int, int, int, int]]]]:
     """Recompute the inputs Core will use when it replaces/generates a packet."""
     records: list[tuple[str, bytes, tuple[int, int, int, int]]] = []
@@ -606,41 +733,26 @@ def validate_current_generation_inputs(
 
     observation = observe(script, worktree, state["baseSha"])
     report_observed = report.get("observed", {})
-    if observation.get("snapshotDigest") != report_observed.get("snapshotDigest") or observation.get("diffDigest") != report_observed.get("diffDigest") or observation.get("diffDigest") != patch_digest:
+    observed_fields = (
+        "snapshotDigest", "diffDigest", "changedFiles", "changedFileCount",
+        "diffBytes", "hasUntrackedFiles",
+    )
+    if any(observation.get(field) != report_observed.get(field) for field in observed_fields) or observation.get("diffDigest") != patch_digest:
         fail("worktree-evidence-changed-after-verification")
 
     candidate = report.get("candidateDigest", "")
     worker_candidate = report.get("workerCandidateDigest", "")
     if bool(candidate) != bool(worker_candidate):
         fail("legacy-candidate-partial-requires-migration")
-    if not candidate:
+    if not candidate and require_candidate:
         fail("current-round-candidate-missing")
     if candidate:
-        candidate_records: dict[str, dict] = {}
-        for digest in {candidate, worker_candidate}:
-            path = f"candidates/{digest}.json"
-            data, identity = read_regular(run_root, path, "candidate-record-unreadable")
-            recomputed = core_validate_candidate(script, data)
-            record = parse_json(data, "candidate-record-invalid-json")
-            if record.get("candidateDigest") != digest or recomputed != digest:
-                fail("candidate-record-digest-mismatch")
-            if record.get("taskId") != state["taskId"] or record.get("runId") != state["runId"] or record.get("attemptId") != state["currentAttemptId"] or record.get("baseSha") != state["baseSha"]:
-                fail("candidate-record-identity-mismatch")
-            candidate_records[digest] = record
-            records.append((path, data, identity))
-        worker_record = candidate_records[worker_candidate]
-        head_record = candidate_records[candidate]
-        if worker_record.get("producerKind") != "worker" or worker_record.get("predecessorCandidateDigest"):
-            fail("candidate-chain-mismatch")
-        if candidate != worker_candidate and (head_record.get("producerKind") != "normalizer" or head_record.get("predecessorCandidateDigest") != worker_candidate):
-            fail("candidate-chain-mismatch")
-        if head_record.get("contentDigest") != patch_digest:
-            fail("candidate-content-mismatch")
-        for artifact in artifacts.get("artifacts", []):
-            if artifact.get("relativePath") == "observed.patch" and artifact.get("candidateDigest") != candidate:
-                fail("candidate-artifact-binding-mismatch")
-            if artifact.get("relativePath") == "worker.patch" and artifact.get("candidateDigest") != worker_candidate:
-                fail("candidate-artifact-binding-mismatch")
+        validate_candidate_chain(
+            script, run_root, state, artifacts, candidate, worker_candidate,
+            "observed.patch", patch_digest, expected_authority_namespace, records,
+        )
+    elif any(artifact.get("candidateDigest") for artifact in artifacts.get("artifacts", [])):
+        fail("legacy-candidate-partial-requires-migration")
 
     return {
         "specDigest": task_digest,
@@ -649,9 +761,81 @@ def validate_current_generation_inputs(
         "workerResultDigests": worker_digests,
         "patchDigest": patch_digest,
         "snapshotDigest": observation.get("snapshotDigest"),
+        "changedFiles": observation.get("changedFiles"),
+        "changedFileCount": observation.get("changedFileCount"),
+        "diffBytes": observation.get("diffBytes"),
+        "hasUntrackedFiles": observation.get("hasUntrackedFiles"),
         "candidateDigest": candidate,
         "workerCandidateDigest": worker_candidate,
     }, records
+
+
+def validate_candidate_chain(
+    script: Path,
+    run_root: Path,
+    state: dict,
+    artifacts: dict,
+    candidate: str,
+    worker_candidate: str,
+    observed_patch_path: str,
+    observed_patch_digest: str,
+    expected_authority_namespace: str,
+    records: list[tuple[str, bytes, tuple[int, int, int, int]]],
+) -> dict[str, dict]:
+    candidate_records: dict[str, dict] = {}
+    for digest in sorted({candidate, worker_candidate}):
+        path = f"candidates/{digest}.json"
+        data, identity = read_regular(run_root, path, "candidate-record-unreadable")
+        recomputed = core_validate_candidate(script, data)
+        record = parse_json(data, "candidate-record-invalid-json")
+        if record.get("candidateDigest") != digest or recomputed != digest:
+            fail("candidate-record-digest-mismatch")
+        exact = {
+            "taskId": state["taskId"], "runId": state["runId"],
+            "attemptId": state["currentAttemptId"], "baseSha": state["baseSha"],
+            "authorityNamespaceId": expected_authority_namespace,
+        }
+        if any(record.get(field) != value for field, value in exact.items()):
+            fail("candidate-record-identity-mismatch")
+        # The local verifier's frozen Candidate builder does not project a
+        # provider allocation lease.  Presence of either optional field is
+        # therefore a foreign identity, including an explicit zero.
+        if "allocationId" in record or "generation" in record:
+            fail("candidate-allocation-generation-mismatch")
+        candidate_records[digest] = record
+        records.append((path, data, identity))
+
+    worker_record = candidate_records[worker_candidate]
+    head_record = candidate_records[candidate]
+    if worker_record.get("producerKind") != "worker" or worker_record.get("producer") != "worker" or worker_record.get("predecessorCandidateDigest"):
+        fail("candidate-chain-mismatch")
+    if candidate != worker_candidate:
+        if head_record.get("producerKind") != "normalizer" or head_record.get("producer") != "verifier:format-normalize" or head_record.get("predecessorCandidateDigest") != worker_candidate:
+            fail("candidate-chain-mismatch")
+    elif head_record != worker_record:
+        fail("candidate-chain-mismatch")
+    if head_record.get("contentDigest") != observed_patch_digest:
+        fail("candidate-content-mismatch")
+
+    worker_patch, worker_patch_identity = read_regular(run_root, "worker.patch", "worker-patch-unreadable")
+    records.append(("worker.patch", worker_patch, worker_patch_identity))
+    worker_patch_digest = raw_digest(worker_patch)
+    if worker_record.get("contentDigest") != worker_patch_digest:
+        fail("worker-candidate-content-mismatch")
+    observed_artifacts = [artifact for artifact in artifacts.get("artifacts", []) if artifact.get("relativePath") == observed_patch_path]
+    worker_artifacts = [artifact for artifact in artifacts.get("artifacts", []) if artifact.get("relativePath") == "worker.patch"]
+    if len(observed_artifacts) != 1 or observed_artifacts[0].get("candidateDigest") != candidate:
+        fail("candidate-artifact-binding-mismatch")
+    if (
+        len(worker_artifacts) != 1
+        or worker_artifacts[0].get("producer") != "verifier"
+        or worker_artifacts[0].get("status") != "validated"
+        or worker_artifacts[0].get("digest") != worker_patch_digest
+        or worker_artifacts[0].get("byteSize") != len(worker_patch)
+        or worker_artifacts[0].get("candidateDigest") != worker_candidate
+    ):
+        fail("worker-patch-artifact-binding-mismatch")
+    return candidate_records
 
 
 def validate_previous_round_lineage(
@@ -748,7 +932,7 @@ def validate_previous_round_lineage(
     ]
 
 
-def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: dict, worktree: Path) -> tuple[dict, list[tuple[str, bytes, tuple[int, int, int, int]]]]:
+def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: dict, worktree: Path, expected_authority_namespace: str) -> tuple[dict, list[tuple[str, bytes, tuple[int, int, int, int]]]]:
     inputs = exact_keys(packet.get("inputs"), {"taskSpec", "patch", "verificationReport", "artifactManifest", "workerResults"}, {"taskSpec", "patch", "verificationReport", "artifactManifest", "workerResults"}, "packet-inputs-invalid")
     if not isinstance(inputs["workerResults"], list) or not inputs["workerResults"]:
         fail("packet-inputs-invalid")
@@ -812,31 +996,10 @@ def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: di
     if candidate:
         if report.get("candidateDigest") != candidate or report.get("workerCandidateDigest") != worker_candidate:
             fail("candidate-binding-mismatch")
-        candidate_records: dict[str, dict] = {}
-        for digest in {candidate, worker_candidate}:
-            path = f"candidates/{digest}.json"
-            data, identity = read_regular(run_root, path, "candidate-record-unreadable")
-            recomputed_candidate_digest = core_validate_candidate(script, data)
-            record = parse_json(data, "candidate-record-invalid-json")
-            if record.get("candidateDigest") != digest or recomputed_candidate_digest != digest:
-                fail("candidate-record-digest-mismatch")
-            if record.get("taskId") != state["taskId"] or record.get("runId") != state["runId"] or record.get("attemptId") != state["currentAttemptId"] or record.get("baseSha") != state["baseSha"]:
-                fail("candidate-record-identity-mismatch")
-            candidate_records[digest] = record
-            records.append((path, data, identity))
-        worker_record = candidate_records[worker_candidate]
-        head_record = candidate_records[candidate]
-        if worker_record.get("producerKind") != "worker" or worker_record.get("predecessorCandidateDigest"):
-            fail("candidate-chain-mismatch")
-        if candidate != worker_candidate and (head_record.get("producerKind") != "normalizer" or head_record.get("predecessorCandidateDigest") != worker_candidate):
-            fail("candidate-chain-mismatch")
-        if head_record.get("contentDigest") != patch_digest:
-            fail("candidate-content-mismatch")
-        for artifact in artifacts.get("artifacts", []):
-            if artifact.get("relativePath") == inputs["patch"] and artifact.get("candidateDigest") != candidate:
-                fail("candidate-artifact-binding-mismatch")
-            if artifact.get("relativePath") == "worker.patch" and artifact.get("candidateDigest") != worker_candidate:
-                fail("candidate-artifact-binding-mismatch")
+        validate_candidate_chain(
+            script, run_root, state, artifacts, candidate, worker_candidate,
+            clean_relative(inputs["patch"]), patch_digest, expected_authority_namespace, records,
+        )
     elif report.get("candidateDigest") or report.get("workerCandidateDigest"):
         fail("legacy-candidate-partial-requires-migration")
     observation = observe(script, worktree, state["baseSha"])
@@ -862,7 +1025,7 @@ def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: di
     return bindings, records
 
 
-def claim_history(script: Path, authority: HeldRelativeParent, initial_raw: bytes, initial_identity: tuple[int, int, int, int], action: str, reason: str, dedupe: str, fingerprint: str) -> None:
+def claim_history(script: Path, authority: HeldRelativeParent, initial_raw: bytes, initial_identity: tuple[int, int, int, int], action: str, reason: str, dedupe: str, fingerprint: str, final_authority_check) -> None:
     lock_leaf = authority.leaf + ".claim.lock"
     temporary_leaf = authority.leaf + f".pending.{os.getpid()}"
     authority.verify()
@@ -884,6 +1047,7 @@ def claim_history(script: Path, authority: HeldRelativeParent, initial_raw: byte
             fail("history-invalid")
         if any(entry.get("dedupeKey") == dedupe or entry.get("freshnessFingerprint") == fingerprint for entry in claims if isinstance(entry, dict)):
             fail("action-already-claimed")
+        final_authority_check()
         claims.append({"action": action, "reasonCode": reason, "dedupeKey": dedupe, "freshnessFingerprint": fingerprint, "previousHistoryRawDigest": raw_digest(initial_raw)})
         payload = json.dumps(history, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
         validate_operator_schema(script, "review-freshness-history.schema.json", payload)
@@ -902,6 +1066,7 @@ def claim_history(script: Path, authority: HeldRelativeParent, initial_raw: byte
         finally:
             os.close(fd)
         authority.verify()
+        final_authority_check()
         os.replace(temporary_leaf, authority.leaf, src_dir_fd=authority.parent_fd, dst_dir_fd=authority.parent_fd)
         authority.verify()
         os.fsync(authority.parent_fd)
@@ -938,6 +1103,13 @@ def run(arguments: argparse.Namespace) -> dict:
         data, identity = read_regular(root, relative, reason, limit)
         tracked.append((root, clean_relative(relative), data, identity))
         return data
+
+    if run_root.parent.name != "runs":
+        fail("state-root-layout-invalid")
+    state_root = run_root.parent.parent
+    repository_identity_raw = load(state_root, "repo.json", "repository-identity-unreadable", 4 << 20)
+    repository_identity = parse_json(repository_identity_raw, "repository-identity-invalid")
+    expected_authority_namespace, authority_binding = core_derive_authority_namespace(script, repository_identity, worktree)
 
     state_raw = load(run_root, files["statePath"], "state-unreadable", 4 << 20)
     state_digest = core_validate_bytes(script, "RunState", state_raw)
@@ -994,7 +1166,7 @@ def run(arguments: argparse.Namespace) -> dict:
         if packet.get("reviewRound") == state["reviewRound"]:
             if packet.get("inputs", {}).get("taskSpec") != files["taskSpecPath"] or packet.get("inputs", {}).get("verificationReport") != files["verificationReportPath"] or packet.get("inputs", {}).get("artifactManifest") != files["artifactManifestPath"]:
                 fail("packet-input-path-mismatch")
-            input_bindings, packet_records = validate_packet_inputs(script, run_root, packet, state, worktree)
+            input_bindings, packet_records = validate_packet_inputs(script, run_root, packet, state, worktree, expected_authority_namespace)
             if input_bindings.get("verificationDigest") != frozen_verification_digest or input_bindings.get("artifactManifestDigest") != frozen_artifact_digest:
                 fail("verification-event-binding-mismatch")
             for relative, data, identity in packet_records:
@@ -1007,6 +1179,7 @@ def run(arguments: argparse.Namespace) -> dict:
             current_generation_bindings, generation_records = validate_current_generation_inputs(
                 script, run_root, state, worktree, task, task_digest, frozen_report,
                 current_verification_digest, frozen_manifest, current_artifact_digest,
+                expected_authority_namespace,
             )
             if current_generation_bindings["verificationDigest"] != frozen_verification_digest or current_generation_bindings["artifactManifestDigest"] != frozen_artifact_digest:
                 fail("verification-event-binding-mismatch")
@@ -1017,13 +1190,43 @@ def run(arguments: argparse.Namespace) -> dict:
             input_bindings = {"previousRoundLineage": previous_bindings, "currentGeneration": current_generation_bindings}
             action, reason = "generate-review-packet", "previous-round-packet-generation-claimed"
     else:
-        missing_observation = observe(script, worktree, state["baseSha"])
-        if missing_observation.get("diffDigest") != raw_digest(b"") or missing_observation.get("changedFileCount") != 0 or missing_observation.get("hasUntrackedFiles") is not False:
+        report_candidate = frozen_report.get("candidateDigest", "")
+        report_worker_candidate = frozen_report.get("workerCandidateDigest", "")
+        if not report_candidate and not report_worker_candidate:
+            legacy_observation = observe(script, worktree, state["baseSha"])
+            if (
+                legacy_observation.get("diffDigest") != raw_digest(b"")
+                or legacy_observation.get("changedFileCount") != 0
+                or legacy_observation.get("hasUntrackedFiles") is not False
+            ):
+                fail("packet-missing-worktree-not-clean")
+        current_generation_bindings, generation_records = validate_current_generation_inputs(
+            script, run_root, state, worktree, task, task_digest, frozen_report,
+            current_verification_digest, frozen_manifest, current_artifact_digest,
+            expected_authority_namespace,
+            require_candidate=False,
+        )
+        if current_generation_bindings["verificationDigest"] != frozen_verification_digest or current_generation_bindings["artifactManifestDigest"] != frozen_artifact_digest:
+            fail("verification-event-binding-mismatch")
+        for relative, data, identity in generation_records:
+            tracked.append((run_root, relative, data, identity))
+        missing_observation = {
+            field: current_generation_bindings[field]
+            for field in (
+                "snapshotDigest", "patchDigest", "changedFiles", "changedFileCount",
+                "diffBytes", "hasUntrackedFiles",
+            )
+        }
+        missing_observation["diffDigest"] = missing_observation.pop("patchDigest")
+        if not current_generation_bindings["candidateDigest"] and (
+            missing_observation.get("diffDigest") != raw_digest(b"")
+            or missing_observation.get("changedFileCount") != 0
+            or missing_observation.get("hasUntrackedFiles") is not False
+        ):
             fail("packet-missing-worktree-not-clean")
         input_bindings = {
             "missingPacketWorktreeObservation": missing_observation,
-            "verificationDigest": current_verification_digest,
-            "artifactManifestDigest": current_artifact_digest,
+            "currentGeneration": current_generation_bindings,
         }
         action, reason = "generate-review-packet", "packet-missing-generation-claimed"
 
@@ -1064,7 +1267,7 @@ def run(arguments: argparse.Namespace) -> dict:
     elif not packet_present and final_observation != missing_observation:
         fail("worktree-changed-during-preflight")
 
-    claim_history(script, history_authority, history_raw, history_identity, action, reason, dedupe, fingerprint)
+    claim_history(script, history_authority, history_raw, history_identity, action, reason, dedupe, fingerprint, authority_binding.verify)
     history_authority.close()
     return {"ok": True, "action": action, "reasonCode": reason, "dedupeKey": dedupe, "freshnessFingerprint": fingerprint, "reviewPacketDigest": packet_digest or None, "historyClaimed": True}
 
