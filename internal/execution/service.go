@@ -193,11 +193,6 @@ func Run(ctx context.Context, input Input) (Result, error) {
 			return Result{State: state, AttemptID: state.CurrentAttemptID}, errors.New("worker failure requires operator intervention")
 		}
 	}
-	if state.State == domain.StateRetryPending {
-		if err := reconcileRetryPendingQuarantine(store, lease, state); err != nil {
-			return Result{State: state, AttemptID: state.CurrentAttemptID}, err
-		}
-	}
 	// RUNNING is held for the orphan recovery decision below instead of being
 	// rejected here: a RUNNING run whose current attempt shows no live driver
 	// evidence re-enters through the existing RETRY_PENDING channel, while a
@@ -269,7 +264,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	// live RUNNING run keeps the fail-closed state gate rejection.
 	supersededAttemptID := ""
 	if state.State == domain.StateRunning {
-		recovered, orphanAttemptID, recoverErr := recoverOrphanedRunningAttempt(store, lease, runDir, state, task, input.OrphanStalenessThreshold, input.AfterOrphanTerminalAppend, input.AfterOrphanQuarantine, input.AfterOrphanRetryAppend)
+		recovered, orphanAttemptID, recoverErr := recoverOrphanedRunningAttempt(store, lease, runDir, state, task, selectedAdapterID, input.OrphanStalenessThreshold, input.AfterOrphanTerminalAppend, input.AfterOrphanQuarantine, input.AfterOrphanRetryAppend)
 		if recoverErr != nil {
 			if recovered.RunID != "" {
 				return Result{State: recovered, AttemptID: orphanAttemptID}, recoverErr
@@ -282,6 +277,17 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	reviewFindings, err := loadReviewFindings(store, runDir, state, input.Validator, selectedAdapterID)
 	if err != nil {
 		return Result{}, err
+	}
+	// Retry compensation is a side effect and therefore follows the complete
+	// journal/lineage/typed-failure admission above. Malformed, future-held or
+	// non-retryable authority must not create quarantine artifacts or rewrite
+	// the snapshot merely because its payload claims to be orphaned. A valid,
+	// ready orphan retry can now finish its exact durable transaction before any
+	// new Attempt identity, dispatch binding or Adapter call is created.
+	if state.State == domain.StateRetryPending {
+		if err := reconcileRetryPendingQuarantine(store, lease, state); err != nil {
+			return Result{State: state, AttemptID: state.CurrentAttemptID}, err
+		}
 	}
 	if err := assertProfileNotEscalated(runDir, task.Worker.ExecutionProfile); err != nil {
 		return Result{}, err
@@ -509,7 +515,7 @@ const defaultOrphanStalenessThreshold = lifecycle.DefaultDriverStalenessThreshol
 // the state gate sentinel. Either exhausted retry budget is closed through a
 // durable BLOCKED event, quarantine transaction and restart-compensated
 // Outcome instead of leaving a non-terminal RUNNING orphan behind.
-func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, threshold time.Duration, afterTerminalAppend, afterQuarantine, afterRetryAppend func() error) (domain.RunState, string, error) {
+func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, selectedAdapterID string, threshold time.Duration, afterTerminalAppend, afterQuarantine, afterRetryAppend func() error) (domain.RunState, string, error) {
 	gateReject := func(reason string) (domain.RunState, string, error) {
 		return domain.RunState{}, "", fmt.Errorf("run state %s cannot start a worker attempt: %s", state.State, reason)
 	}
@@ -540,8 +546,19 @@ func recoverOrphanedRunningAttempt(store *runstore.Store, lease *runstore.Lease,
 	if err != nil {
 		return domain.RunState{}, "", fmt.Errorf("orphan recovery: quarantine stale outputs: %w", err)
 	}
+	kind, disposition := port.FailureKindConnectionFailure, port.RetryDispositionRetryable
+	signature, err := workerFailureSignature(workerFailureSignatureContext{
+		baseSHA: state.BaseSHA, specDigest: state.SpecDigest, policyDigest: state.PolicyDigest, capabilityDigest: state.CapabilityDigest,
+	}, selectedAdapterID, kind, disposition)
+	if err != nil {
+		return domain.RunState{}, "", fmt.Errorf("orphan recovery: typed retry authority: %w", err)
+	}
 	payload := map[string]any{
-		"error":                 fmt.Sprintf("orphaned attempt: no live driver evidence since %s", last.Timestamp.UTC().Format(time.RFC3339)),
+		"error":                 (port.AdapterFailure{Adapter: port.AdapterID(selectedAdapterID), Kind: kind, Disposition: disposition}).Error(),
+		"adapterId":             selectedAdapterID,
+		"failureKind":           string(kind),
+		"retryDisposition":      string(disposition),
+		"failureSignature":      signature,
 		"orphaned":              true,
 		"fencingGeneration":     state.AttemptsUsed,
 		"staleSince":            last.Timestamp.UTC().Format(time.RFC3339),
@@ -809,8 +826,8 @@ func payloadOptionalTime(payload map[string]any, key string) (time.Time, bool, e
 	if !ok {
 		return time.Time{}, true, errors.New("structural failure not-before hint is invalid")
 	}
-	value, err := time.Parse(time.RFC3339, text)
-	if err != nil || text != value.UTC().Format(time.RFC3339) {
+	value, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil || text != value.UTC().Format(time.RFC3339Nano) {
 		return time.Time{}, true, errors.New("structural failure not-before hint is invalid")
 	}
 	return value, true, nil
@@ -1448,7 +1465,120 @@ func loadReviewFindings(store *runstore.Store, runDir string, state domain.RunSt
 	if state.State == domain.StateReady {
 		return []map[string]string{}, nil
 	}
-	return resolveRetryLineage(runDir, state, journal, validator)
+	findings, err := resolveRetryLineage(runDir, state, journal, validator)
+	if err != nil {
+		return nil, err
+	}
+	if state.State == domain.StateRetryPending {
+		if err := admitRetryPendingFailure(journal, state, adapterID, time.Now().UTC()); err != nil {
+			return nil, err
+		}
+	}
+	return findings, nil
+}
+
+// admitRetryPendingFailure is the Core-owned retry eligibility gate. The
+// journal has already survived raw admission, Schema validation, authority
+// replay, snapshot reconciliation, planning-input binding and adjacent retry
+// lineage validation. This final gate binds the latest business failure to
+// those authorities and refuses to create a new Attempt until its typed,
+// stable retry disposition authorizes one. Historical records without typed
+// authority remain readable, but are never guessed retryable.
+func admitRetryPendingFailure(journal verifiedJournal, state domain.RunState, adapterID string, now time.Time) error {
+	if state.State != domain.StateRetryPending {
+		return errors.New("retry admission: run is not RETRY_PENDING")
+	}
+	if now.IsZero() {
+		return errors.New("retry admission: current time is required")
+	}
+	var terminal *domain.RunEvent
+	for index := len(journal.events) - 1; index >= 0; index-- {
+		if journal.events[index].Type == lifecycle.RepairAuditEventType {
+			continue
+		}
+		terminal = &journal.events[index]
+		break
+	}
+	if terminal == nil || terminal.Type != "worker.failed" || terminal.StateFrom != domain.StateRunning || terminal.StateTo != domain.StateRetryPending {
+		return errors.New("retry admission: final business event is not worker.failed RUNNING->RETRY_PENDING")
+	}
+	if terminal.RunID != state.RunID || terminal.AttemptID == "" || terminal.AttemptID != state.CurrentAttemptID || !actorIs(terminal.Actor, "system", "marshal-worker-runner") {
+		return errors.New("retry admission: final worker failure authority is not bound to the current run and attempt")
+	}
+
+	persistedAdapterID := payloadString(terminal.Payload, "adapterId")
+	kindText := payloadString(terminal.Payload, "failureKind")
+	dispositionText := payloadString(terminal.Payload, "retryDisposition")
+	signature := payloadString(terminal.Payload, "failureSignature")
+	if persistedAdapterID == "" || kindText == "" || dispositionText == "" || signature == "" {
+		return errors.New("retry admission: worker.failed lacks complete typed failure authority")
+	}
+	if persistedAdapterID != adapterID {
+		return errors.New("retry admission: failure adapter does not match the frozen selected adapter")
+	}
+	kind := port.FailureKind(kindText)
+	disposition := port.RetryDisposition(dispositionText)
+	expectedDisposition, knownKind := port.DispositionFor(kind)
+	if !knownKind {
+		return errors.New("retry admission: typed failure has an unknown failure kind")
+	}
+	if disposition != expectedDisposition {
+		return errors.New("retry admission: failure kind and retry disposition disagree")
+	}
+
+	retryAfter, hasRetryAfter, err := payloadOptionalPositiveDuration(terminal.Payload, "retryAfterNanoseconds")
+	if err != nil {
+		return fmt.Errorf("retry admission: %w", err)
+	}
+	notBefore, hasNotBefore, err := payloadOptionalTime(terminal.Payload, "notBefore")
+	if err != nil {
+		return fmt.Errorf("retry admission: %w", err)
+	}
+	if hasRetryAfter && hasNotBefore {
+		return errors.New("retry admission: retry hints conflict")
+	}
+	if hasNotBefore {
+		if !notBefore.After(terminal.Timestamp) || notBefore.After(terminal.Timestamp.Add(port.MaxRetryHintWindow)) {
+			return errors.New("retry admission: structural failure not-before hint is outside the bounded future window")
+		}
+	}
+	persisted := port.AdapterFailure{Adapter: port.AdapterID(persistedAdapterID), Kind: kind, Disposition: disposition}
+	if hasRetryAfter {
+		persisted.RetryAfter = retryAfter
+	}
+	if hasNotBefore {
+		persisted.NotBefore = notBefore
+	}
+	summary := payloadString(terminal.Payload, "error")
+	coreTypedFallbackSummary := kind == port.FailureKindConnectionFailure && disposition == port.RetryDispositionRetryable && !hasRetryAfter && !hasNotBefore && summary == "unclassified retryable worker failure"
+	if summary != persisted.Error() && !coreTypedFallbackSummary {
+		return errors.New("retry admission: failure summary does not match the normalized typed failure")
+	} else if err := validateSafeWorkerFailureSummary(summary); err != nil {
+		return fmt.Errorf("retry admission: %w", err)
+	}
+	wantSignature, err := workerFailureSignature(workerFailureSignatureContext{
+		baseSHA: state.BaseSHA, specDigest: state.SpecDigest, policyDigest: state.PolicyDigest, capabilityDigest: state.CapabilityDigest,
+	}, persistedAdapterID, kind, disposition)
+	if err != nil {
+		return fmt.Errorf("retry admission: %w", err)
+	}
+	if !isCanonicalSHA256(signature) || signature != wantSignature {
+		return errors.New("retry admission: failure signature does not match the frozen planning authority")
+	}
+	if disposition != port.RetryDispositionRetryable {
+		return errors.New("retry admission: typed failure is not retryable")
+	}
+
+	effectiveNotBefore := time.Time{}
+	if hasRetryAfter {
+		effectiveNotBefore = terminal.Timestamp.Add(retryAfter)
+	} else if hasNotBefore {
+		effectiveNotBefore = notBefore
+	}
+	if !effectiveNotBefore.IsZero() && now.Before(effectiveNotBefore) {
+		return fmt.Errorf("retry admission: retry is not ready until %s", effectiveNotBefore.UTC().Format(time.RFC3339Nano))
+	}
+	return nil
 }
 
 type verifiedJournal struct {
@@ -2196,7 +2326,7 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 		payload["retryAfterNanoseconds"] = classification.retryAfter.Nanoseconds()
 	}
 	if !classification.notBefore.IsZero() {
-		payload["notBefore"] = classification.notBefore.UTC().Format(time.RFC3339)
+		payload["notBefore"] = classification.notBefore.UTC().Format(time.RFC3339Nano)
 	}
 	if !classification.terminal && state.OperationalRetriesUsed < uint(task.Budgets.MaxOperationalRetries) && state.AttemptsUsed < uint(task.Budgets.MaxAttempts) {
 		target, guard.BudgetAvailable = domain.StateRetryPending, true
