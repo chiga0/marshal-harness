@@ -72,3 +72,13 @@ Worker 环境无 Publisher 凭据；凭据仅经独立 `MARSHAL_GH_CONFIG_DIR` �
 - OpenCode 与 Pi 的原生 TUI Pilot（冻结 `TerminalLaunchSpec` 已就绪，未承诺本阶段执行）；
 - Pi `message_update` 转录本归一化（若后续大任务证明需要）；
 - iterm2/ghostty/terminal/tmux Observer Backend（接口已保留，未承诺实现）。
+
+## 后续兼容性证据增补（2026-08-21）
+
+本增补不重新打开 Milestone 6，也不改变其 `PASSED` 状态；它记录 M6 之后的 Mac-first Adapter 兼容性事实：
+
+- Qoder CLI `1.1.27` 已通过当前 macOS ordinary-user registry/doctor 探测，但尚未完成该版本 fresh live Worker smoke、transcript attestation 与独立 conformance；不得把 doctor 结果写成 production authority。
+- Codex `0.145.0` 的两个 Mac ordinary-user smoke 已由同一独立 reviewer 分别审查并进入 `ACCEPTED`。它们是诊断证据，不产生产品代码、Draft PR 或远端 merge。
+- Qwen Code `0.21.11` 本地命令可执行，但当前 Marshal doctor 仍为 `unsupported/unprobed`，因此不计入新的 Adapter 晋升证据。
+
+这些事实只更新兼容性与审计记录，不提前升级 M10–M13 或 v1.0 状态。

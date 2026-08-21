@@ -7,7 +7,7 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 当前版本适合在 macOS 或 Linux 上，由单个用户把本地 Git 仓库任务交给 Coding Agent：
 
 - 初始化独立的 Marshal 工作目录，不污染主 checkout；
-- 使用 OpenCode、Qwen Code 或 Pi 执行编码任务；
+- 使用 OpenCode 或 Pi 执行编码任务；Qwen Code 是否可调度以当前 `marshal doctor` 的 `supported` admission 为准；
 - 为每个写任务创建独立工作区，避免直接修改用户当前工作目录；
 - 在 Agent 结束后独立运行测试和交付物检查；
 - 根据真实代码差异和检查结果进行审查与返工；
@@ -16,6 +16,14 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 - 对中断任务进行状态检查、恢复和安全清理。
 
 这套本地能力已经通过真实 Agent、真实 GitHub Draft PR、Linux 与 macOS CI 验证，可以作为早期可用版本试用。
+
+## Mac-first Adapter 现状（2026-08-21）
+
+- Qoder CLI `1.1.27` 已在固定路径完成 registry/doctor 身份探测，并报告 macOS `ordinary-user`、`supported`；这不是 hardened authority，也不是 production conformance 的替代品。首次使用该版本仍需 fresh live Worker smoke、transcript attestation 与独立 conformance。
+- Codex `0.145.0` 已完成两次独立 Mac ordinary-user smoke 审查并进入 `ACCEPTED`。这些 smoke 验证了 Worker、transcript、WorkerResult、路径身份和产物绑定，但没有产品代码变更，也没有远端发布或合并。
+- Qwen Code `0.21.11` 的本地命令可执行，但当前 Marshal admission 仍为 `unsupported/unprobed`。在 doctor 取得新鲜 `supported` 证据前，Marshal 不会直接调度它。
+
+因此，“本地 CLI 能运行”与“Marshal 可安全调度该 Adapter”是两个不同结论；文档只采用后者作为生产可用依据。
 
 ## 正在建设
 

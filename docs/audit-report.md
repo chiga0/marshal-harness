@@ -607,3 +607,17 @@ Core 入场不再直接信任第一个 `errors.As` 命中：错误图必须恰�
 Qoder v7 operator-local transcript attestation 不再构建或复制随机临时 checker。生产语义校验现由固定 `marshal` 二进制的隐藏 `internal qoder-transcript-check` 子命令承载；Python validator 只接受用户显式传入的 absolute canonical Marshal 路径，并在发送 evidence 前绑定 held device/inode/raw SHA-256、Mac PID/CDHash 或 Linux `/proc/PID/exe` 身份、内部命令摘要、独立 Marshal build commit/version 与七项输入摘要。Attempt `subject.sourceHead` 和 checker build `marshal.sourceHead` 是两个独立字段，不互相替代；实际发送给内部命令的 canonical envelope raw SHA-256 由 Python 与 Go 双端精确比对。子进程采用等价 `env -i` 的封闭环境，有界 stdin/stdout/stderr、deadline 与 owned-process 回收；任何路径、build、stdin 或进程身份漂移继续 fail closed。Receipt shape 新增 Draft 2020-12 Schema/template 并把 framing 升为 `marshal-transcript-attestation-v3`，历史 v2/v5/v6 receipt 保持只读且不可迁移。
 
 本切片不新增 ADR：它只替换既有 `mac-ordinary-user-operator-local` pre-review gate 的 executable delivery，未改变 Core 生命周期、持久化契约、发布权限、authority claim 或 Qoder transcript machine semantics。`internal` 子命令不出现在普通用户 help 中，也不写 `.marshal` 或改变 Run 状态。
+
+## 2026-08-21：Mac-first Adapter 当前证据与未决问题
+
+本次审计以 local main `16c18546dd771cbafc46d10a84bb447b590083e4` 为权威基线，`origin/main` 为 `91186161c734ceff4831d3f03e8734c0a24f36fd`，远端同步尚未完成（`pendingRemoteSync=true`）。本节只记录事实，不把局部 ordinary-user 证据外推为 production authority 或 Milestone 完成。
+
+| 识别项 | 级别 | 状态 | 当前事实与关闭条件 |
+| --- | --- | --- | --- |
+| `QODER-MAC-1.1.27-LIVE-SMOKE` | P1 | `OPEN` | Qoder `1.1.27` 固定 executable 已通过 doctor registry/compatibility probe，digest 为 `sha256:fd36420ae0e740f7f3fb7f62e9df23aa70df400aad55fc7e7e48e0edc0ce8e2`。仍需用同一绝对路径完成 fresh live Worker、transcript attestation、WorkerResult 与独立 conformance；在此之前不得宣称 production ready。 |
+| `QWEN-MAC-ADMISSION` | P1 | `OPEN` | Qwen `0.21.11` 的本地 `--version` 可执行，但当前 `marshal doctor` 为 `unsupported/unprobed`，认证命令已移除且未形成可绑定的认证选择器/凭据证据。需只读 `/doctor`/认证探针形成新鲜 `supported` capability；禁止静默降级启动。 |
+| `CODEX-SMOKE-SPEC-COPY` | P2 | `NON_BLOCKING` | R19/R20 已独立复审并 `ACCEPTED`，运行证据无 P0/P1；TaskSpec 仍引用 `r15` 路径，Markdown 产物的 `mediaType` 标注不准确。后续 successor 一次性修正文案，不重做已通过运行。 |
+
+R19/R20 的共同边界：它们证明 Codex `0.145.0` macOS `ordinary-user` Worker 的路径、digest、session、transcript、WorkerResult、verification、artifact、candidate、scope 与 base 绑定；不证明 hardened authority、Linux authority、sandbox 或远端发布。当前 watchdog 暂停新 Worker 调度；容量恢复时也必须先满足 fresh provider signal、scope 互斥、独立 worktree 与 admission receipt。
+
+本次文档增补不改变信任边界、持久化契约、生命周期或发布权限，因此不新增 ADR；也不关闭 `AGENT-AUTHORITY-*`、Qoder live conformance、Qwen admission、Issue #53/#138 等既有开放项。
