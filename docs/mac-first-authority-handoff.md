@@ -45,8 +45,11 @@ launchctl print system/com.marshal.apap
 
 MARSHAL_QODER_PATH=/Users/gawain/.qoder/bin/qodercli/qodercli-1.1.23 \
 MARSHAL_CODEX_PATH=/opt/homebrew/Caskroom/codex/0.145.0/codex-aarch64-apple-darwin \
-go run ./cmd/marshal doctor --json
+make build COMMIT="$(git rev-parse HEAD)" && \
+./bin/marshal doctor --json
 ```
+
+Mac operator commands must use the stable `bin/marshal` identity; `go run ./cmd/marshal` is intentionally not used because it can execute an anonymous temporary Go binary.
 
 只有当独立 verifier 能证明 service/launcher/endpoint/peer/credential ingress/anchor/receipt/barrier 全部满足 ADR 0038–0041，且 Qoder 与 Codex 各自的 conformance 证据绑定到精确 executable identity 后，才允许维护者单独启用对应 registry。任一项缺失都必须保持 `platform-unsupported` 或 `profile-unsupported`，不得把“二进制存在”解释为生产可用。
 

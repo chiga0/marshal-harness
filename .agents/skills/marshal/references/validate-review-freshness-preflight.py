@@ -3,9 +3,9 @@
 
 Marshal Run data is read only.  The only write is an operator-local history
 claim, committed with an O_EXCL lock, raw-history CAS and atomic rename before
-the selected action is returned.  Marshal Core remains the JSON authority:
-the adjacent Go probe imports internal/canonical, internal/contract and the
-real verification observer.
+the selected action is returned. Marshal Core remains the JSON authority;
+the fixed `bin/marshal internal review-freshness-check` command imports the
+canonical, contract, domain and verification implementations directly.
 """
 
 from __future__ import annotations
@@ -13,15 +13,16 @@ from __future__ import annotations
 import argparse
 import atexit
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import selectors
-import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -34,6 +35,11 @@ CORE_KINDS = {
 }
 _CORE_BINARY: Path | None = None
 _CORE_PROCESS: subprocess.Popen[str] | None = None
+_CORE_HELD = None
+_CORE_STDERR_LIMIT = 64 << 10
+_CORE_STDERR = bytearray()
+_CORE_STDERR_OVERFLOW = False
+_CORE_STDERR_THREAD: threading.Thread | None = None
 
 
 class PreflightError(Exception):
@@ -42,13 +48,23 @@ class PreflightError(Exception):
         self.reason_code = reason_code
 
 
+def load_stable_marshal_module():
+    path = Path(__file__).with_name("stable_marshal.py")
+    spec = importlib.util.spec_from_file_location("marshal_stable_marshal", path)
+    if spec is None or spec.loader is None:
+        fail("core-probe-unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class HeldRelativeParent:
     """Hold every directory in a relative parent chain for atomic leaf I/O."""
 
     def __init__(self, root: Path, relative: object):
         clean = clean_relative(relative)
         parts = Path(clean).parts
-        self.root = root
+        self.root = absolute_clean(root)
         self.leaf = parts[-1]
         self.components = list(parts[:-1])
         self.fds = [open_dir_nofollow(root)]
@@ -190,13 +206,19 @@ def clean_relative(value: object) -> str:
 
 
 def absolute_clean(path: Path) -> Path:
-    if not path.is_absolute() or path != Path(os.path.abspath(path)) or ".." in path.parts:
+    if not path.is_absolute() or ".." in path.parts or "\x00" in str(path):
         fail("path-boundary-invalid")
-    return path
+    # macOS exposes /var as a compatibility symlink to /private/var. Resolve
+    # that alias once, then hold every real component with O_NOFOLLOW. This
+    # preserves the anti-swap invariant without rejecting a legal system path.
+    resolved = Path(os.path.realpath(path))
+    if not resolved.is_absolute() or ".." in resolved.parts:
+        fail("path-boundary-invalid")
+    return resolved
 
 
 def open_dir_nofollow(path: Path) -> int:
-    absolute_clean(path)
+    path = absolute_clean(path)
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path.anchor, flags)
     try:
@@ -343,35 +365,28 @@ def exact_keys(value: object, required: set[str], allowed: set[str], reason: str
     return value
 
 
+def checked_stable_marshal(value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute() or path.resolve() != path:
+        fail("core-probe-unavailable")
+    try:
+        metadata = path.lstat()
+    except OSError:
+        fail("core-probe-unavailable")
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o111 == 0:
+        fail("core-probe-unavailable")
+    return path
+
+
 def core_binary(script: Path) -> Path:
     global _CORE_BINARY
     if _CORE_BINARY is not None:
         return _CORE_BINARY
-    repository = script.parents[4]
-    probe = script.with_name("tests") / "review_freshness_core_probe.go"
-    go = shutil.which("go")
-    if not go or not Path(go).is_absolute():
-        fail("core-probe-unavailable")
-    environment = os.environ.copy()
-    environment.update({"PATH": str(Path(go).parent) + ":/usr/local/go/bin:/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C", "GOTOOLCHAIN": "local"})
-    descriptor, name = tempfile.mkstemp(prefix="marshal-review-core-probe.", dir="/private/tmp")
-    os.close(descriptor)
-    output = Path(name)
-    output.unlink()
-    result = subprocess.run(
-        [go, "build", "-o", str(output), str(probe)],
-        cwd=repository, env=environment, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=90, check=False,
-    )
-    if result.returncode != 0:
-        fail("core-probe-unavailable")
-    _CORE_BINARY = output
-    atexit.register(output.unlink, missing_ok=True)
-    return output
+    fail("core-probe-unavailable")
 
 
 def close_core_process() -> None:
-    global _CORE_PROCESS
+    global _CORE_PROCESS, _CORE_HELD, _CORE_STDERR_THREAD
     if _CORE_PROCESS is None:
         return
     if _CORE_PROCESS.stdin is not None:
@@ -382,16 +397,64 @@ def close_core_process() -> None:
         _CORE_PROCESS.terminate()
         _CORE_PROCESS.wait(timeout=2)
     _CORE_PROCESS = None
+    if _CORE_STDERR_THREAD is not None:
+        _CORE_STDERR_THREAD.join(timeout=2)
+        _CORE_STDERR_THREAD = None
+    if _CORE_HELD is not None:
+        _CORE_HELD.close()
+        _CORE_HELD = None
+
+
+def _drain_core_stderr(stream) -> None:
+    global _CORE_STDERR_OVERFLOW
+    try:
+        while True:
+            chunk = os.read(stream.fileno(), 8192)
+            if not chunk:
+                return
+            if len(_CORE_STDERR) < _CORE_STDERR_LIMIT:
+                _CORE_STDERR.extend(chunk[: _CORE_STDERR_LIMIT - len(_CORE_STDERR)])
+            if len(_CORE_STDERR) + len(chunk) > _CORE_STDERR_LIMIT:
+                _CORE_STDERR_OVERFLOW = True
+    except OSError:
+        return
+
+
+def _assert_core_stderr_clean() -> None:
+    if _CORE_STDERR_OVERFLOW or _CORE_STDERR:
+        close_core_process()
+        fail("core-probe-output-invalid")
 
 
 def core_process(script: Path) -> subprocess.Popen[str]:
-    global _CORE_PROCESS
+    global _CORE_PROCESS, _CORE_HELD, _CORE_STDERR, _CORE_STDERR_OVERFLOW, _CORE_STDERR_THREAD
     if _CORE_PROCESS is not None and _CORE_PROCESS.poll() is None:
         return _CORE_PROCESS
-    _CORE_PROCESS = subprocess.Popen(
-        [str(core_binary(script)), "serve"], stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
-    )
+    command = [str(core_binary(script)), "internal", "review-freshness-check", "--attestation-ready"]
+    environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"}
+    identity = load_stable_marshal_module()
+    try:
+        _CORE_HELD = identity.hold(core_binary(script))
+        _CORE_STDERR = bytearray()
+        _CORE_STDERR_OVERFLOW = False
+        _CORE_PROCESS = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, env=environment)
+        assert _CORE_PROCESS.stderr is not None
+        _CORE_STDERR_THREAD = threading.Thread(target=_drain_core_stderr, args=(_CORE_PROCESS.stderr,), daemon=True)
+        _CORE_STDERR_THREAD.start()
+        identity.attest(_CORE_HELD, _CORE_PROCESS)
+        if _CORE_PROCESS.stdin is None:
+            fail("core-probe-unavailable")
+        _CORE_PROCESS.stdin.write("\0")
+        _CORE_PROCESS.stdin.flush()
+    except Exception:
+        if _CORE_PROCESS is not None:
+            _CORE_PROCESS.terminate()
+            _CORE_PROCESS.wait(timeout=2)
+            _CORE_PROCESS = None
+        if _CORE_HELD is not None:
+            _CORE_HELD.close()
+            _CORE_HELD = None
+        fail("core-probe-unavailable")
     atexit.register(close_core_process)
     return _CORE_PROCESS
 
@@ -410,7 +473,10 @@ def core_probe(script: Path, mode: str, kind_or_schema: str, path: Path) -> str:
                 fail("core-probe-timeout")
         finally:
             selector.close()
-        line = process.stdout.readline()
+        line = process.stdout.readline(64 << 10)
+        if len(line) > 64 << 10:
+            fail("core-probe-output-invalid")
+        _assert_core_stderr_clean()
         response = json.loads(line)
     except (BrokenPipeError, OSError, UnicodeError, json.JSONDecodeError):
         fail("core-probe-unavailable")
@@ -469,7 +535,7 @@ def core_validate_candidate(script: Path, data: bytes) -> str:
 
 
 def git_repository_identity(path: Path, reason: str = "authority-namespace-derivation-invalid") -> tuple[str, str]:
-    absolute_clean(path)
+    path = absolute_clean(path)
     descriptor = open_dir_nofollow(path)
     os.close(descriptor)
     try:
@@ -504,8 +570,8 @@ class AuthorityPathBinding:
     """Bind repository/worktree membership and every directory-path inode."""
 
     def __init__(self, repository_path: Path, worktree: Path):
-        self.repository_path = repository_path
-        self.worktree_path = worktree
+        self.repository_path = absolute_clean(repository_path)
+        self.worktree_path = absolute_clean(worktree)
         self.repository_hold = HeldAbsoluteDirectory(repository_path)
         self.worktree_hold = HeldAbsoluteDirectory(worktree)
         repository_git_root, repository_common = git_repository_identity(repository_path)
@@ -559,7 +625,7 @@ def validate_operator_schema(script: Path, schema_name: str, data: bytes) -> Non
 
 
 def git_head(worktree: Path) -> str:
-    absolute_clean(worktree)
+    worktree = absolute_clean(worktree)
     descriptor = open_dir_nofollow(worktree)
     os.close(descriptor)
     result = subprocess.run(
@@ -1173,6 +1239,11 @@ def claim_history(script: Path, authority: HeldRelativeParent, initial_raw: byte
 
 
 def run(arguments: argparse.Namespace) -> dict:
+    global _CORE_BINARY
+    marshal = getattr(arguments, "marshal", None)
+    if not marshal:
+        fail("core-probe-unavailable")
+    _CORE_BINARY = checked_stable_marshal(marshal)
     script = Path(__file__).absolute()
     run_root, operator_root, worktree, manifest_path = map(Path, (arguments.run_root, arguments.operator_root, arguments.worktree, arguments.manifest))
     for root in (run_root, operator_root, worktree):
@@ -1374,8 +1445,11 @@ def main() -> int:
     parser.add_argument("--operator-root", required=True)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--worktree", required=True)
+    parser.add_argument("--marshal", help="absolute stable Marshal executable")
     arguments = parser.parse_args()
     try:
+        if not arguments.marshal:
+            fail("core-probe-unavailable")
         result = run(arguments)
     except PreflightError as error:
         print(json.dumps({"ok": False, "action": "intervention", "reasonCode": error.reason_code}, separators=(",", ":")))

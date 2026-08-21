@@ -125,6 +125,14 @@ func runInternal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "qoder-transcript-check":
 		return runInternalQoderTranscriptCheck(args[1:], stdin, stdout, stderr)
+	case "plan-premortem-check":
+		return runInternalPlanPremortemCheck(args[1:], stdin, stdout, stderr)
+	case "review-freshness-check":
+		return runInternalReviewFreshnessCheck(args[1:], stdin, stdout, stderr)
+	case "codex-provider-schema-check":
+		return runInternalCodexSchemaCheck(args[1:], stdin, stdout, stderr)
+	case "closure-matrix-check":
+		return runInternalClosureMatrixCheck(args[1:], stdin, stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "内部调用无效。")
 		return ExitUsage

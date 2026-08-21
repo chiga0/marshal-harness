@@ -15,7 +15,6 @@ import unittest
 REFERENCES = Path(__file__).resolve().parents[1]
 REPOSITORY = REFERENCES.parents[3]
 VALIDATOR = REFERENCES / "validate-plan-premortem-preflight.py"
-PROBE = Path(__file__).with_name("plan_premortem_core_probe.go")
 SCHEMA = REFERENCES / "plan-premortem-preflight.schema.json"
 TEMPLATE = REFERENCES.parent / "templates" / "plan-premortem-preflight.json"
 
@@ -37,8 +36,13 @@ class PlanPremortemPreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.build = Path(tempfile.mkdtemp(prefix="marshal-plan-premortem-build.")).resolve()
-        cls.checker = cls.build / "plan-premortem-core-probe"
-        subprocess.run(["go", "build", "-o", str(cls.checker), str(PROBE)], cwd=REPOSITORY, check=True)
+        cls.marshal = cls.build / "marshal"
+        commit = run(["git", "rev-parse", "HEAD"], REPOSITORY)
+        subprocess.run(
+            ["go", "build", "-ldflags", f"-X github.com/chiga0/marshal-harness/internal/buildinfo.commit={commit}", "-o", str(cls.marshal), "./cmd/marshal"],
+            cwd=REPOSITORY,
+            check=True,
+        )
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -143,7 +147,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
             "MARSHAL_CODEX_MODE": "ordinary-user", "MARSHAL_CODEX_AUTHORITY_CONFIG": "",
         })
         completed = subprocess.run(
-            [sys.executable, "-I", "-B", str(VALIDATOR), "--root", str(self.operator), "--manifest", "manifest.json", "--checker", str(self.checker)],
+            [sys.executable, "-I", "-B", str(VALIDATOR), "--root", str(self.operator), "--manifest", "manifest.json", "--marshal", str(self.marshal)],
             cwd=REPOSITORY, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         self.assertEqual(completed.stderr, "")
@@ -161,6 +165,13 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         self.assertEqual(result["reasonCode"], "plan-premortem-pass")
         self.assertEqual(result["authorityMode"], "ordinary-user")
         self.assertEqual(result["selectedAdapter"], "qoder")
+        self.assertFalse(self.worker_marker.exists())
+
+    def test_internal_command_passes_with_stable_marshal(self) -> None:
+        code, result = self.invoke()
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["reasonCode"], "plan-premortem-pass")
+        self.assertEqual(result["marshal"]["internalCommandVersion"], "plan-premortem-check/v1")
         self.assertFalse(self.worker_marker.exists())
 
     def test_qoder_explicit_empty_worker_tools_passes(self) -> None:
@@ -238,7 +249,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
             [
                 sys.executable, "-I", "-B", str(VALIDATOR),
                 "--root", str(linked_parent / "operator"),
-                "--manifest", "manifest.json", "--checker", str(self.checker),
+                "--manifest", "manifest.json", "--marshal", str(self.marshal),
             ],
             cwd=REPOSITORY,
             text=True,

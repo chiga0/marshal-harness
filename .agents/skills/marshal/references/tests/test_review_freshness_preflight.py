@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -41,6 +42,9 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         cls.core_build_dir = Path(tempfile.mkdtemp(prefix="review-freshness-core.", dir="/private/tmp"))
         cls.core_binary = cls.core_build_dir / "probe"
         subprocess.run(["go", "build", "-o", str(cls.core_binary), str(CORE)], cwd=REPOSITORY, check=True)
+        cls.marshal_binary = cls.core_build_dir / "marshal"
+        commit = subprocess.check_output(["/usr/bin/git", "rev-parse", "HEAD"], cwd=REPOSITORY, text=True).strip()
+        subprocess.run(["go", "build", "-ldflags", f"-X github.com/chiga0/marshal-harness/internal/buildinfo.commit={commit}", "-o", str(cls.marshal_binary), "./cmd/marshal"], cwd=REPOSITORY, check=True)
         cls.core_process = subprocess.Popen([str(cls.core_binary), "serve"], cwd=REPOSITORY, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     @classmethod
@@ -72,6 +76,15 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         }))
         self.manifest_path = self.operator_root / "manifest.json"
         self._write_fixture()
+
+    def test_macos_var_alias_is_resolved_before_nofollow_traversal(self) -> None:
+        if os.path.realpath("/var") == "/var":
+            self.skipTest("/var is not a compatibility symlink on this host")
+        descriptor = PREFLIGHT.open_dir_nofollow(Path("/var"))
+        try:
+            self.assertTrue(os.fstat(descriptor).st_mode & 0o170000 == 0o040000)
+        finally:
+            os.close(descriptor)
 
     def tearDown(self) -> None:
         shutil.rmtree(self.temp)
@@ -532,11 +545,17 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         state = json.loads(state_path.read_text()); state["sequence"] = 10; state_path.write_bytes(json_bytes(state))
         manifest["expected"]["stateSequence"] = 10
 
-    def invoke(self, manifest: dict | None = None) -> tuple[int, dict]:
+    def invoke(self, manifest: dict | None = None, stable_marshal: bool = False) -> tuple[int, dict]:
         self.manifest_path.write_bytes(json_bytes(manifest or self.manifest()))
-        result = subprocess.run(["python3", "-I", "-B", str(VALIDATOR), "--run-root", str(self.run_root), "--operator-root", str(self.operator_root), "--manifest", str(self.manifest_path), "--worktree", str(self.worktree)], cwd=REPOSITORY, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        command = ["python3", "-I", "-B", str(VALIDATOR), "--run-root", str(self.run_root), "--operator-root", str(self.operator_root), "--manifest", str(self.manifest_path), "--worktree", str(self.worktree), "--marshal", str(self.marshal_binary)]
+        result = subprocess.run(command, cwd=REPOSITORY, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         self.assertEqual(result.stderr, "")
         return result.returncode, json.loads(result.stdout)
+
+    def test_fixed_marshal_internal_command_claims_fresh_packet(self) -> None:
+        code, result = self.invoke(stable_marshal=True)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"], "dispatch-reviewer")
 
     def assert_reason(self, reason: str, manifest: dict | None = None) -> None:
         code, result = self.invoke(manifest)
@@ -640,7 +659,7 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         try:
             arguments = SimpleNamespace(
                 run_root=str(self.run_root), operator_root=str(self.operator_root),
-                manifest=str(self.manifest_path), worktree=str(self.worktree),
+                manifest=str(self.manifest_path), worktree=str(self.worktree), marshal=str(self.marshal_binary),
             )
             with self.assertRaises(PREFLIGHT.PreflightError) as raised:
                 PREFLIGHT.run(arguments)
@@ -669,7 +688,7 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
     def test_missing_packet_candidate_concurrent_claim_is_exactly_once(self) -> None:
         self.enable_missing_packet_candidate(untracked=True)
         self.manifest_path.write_bytes(json_bytes(self.manifest()))
-        command = ["python3", "-I", "-B", str(VALIDATOR), "--run-root", str(self.run_root), "--operator-root", str(self.operator_root), "--manifest", str(self.manifest_path), "--worktree", str(self.worktree)]
+        command = ["python3", "-I", "-B", str(VALIDATOR), "--run-root", str(self.run_root), "--operator-root", str(self.operator_root), "--manifest", str(self.manifest_path), "--worktree", str(self.worktree), "--marshal", str(self.marshal_binary)]
         first = subprocess.Popen(command, cwd=REPOSITORY, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         second = subprocess.Popen(command, cwd=REPOSITORY, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         results = [first.communicate(timeout=120), second.communicate(timeout=120)]
@@ -861,7 +880,7 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
 
     def test_concurrent_barrier_allows_exactly_one_dispatch(self) -> None:
         self.manifest_path.write_bytes(json_bytes(self.manifest()))
-        command = ["python3", "-I", "-B", str(VALIDATOR), "--run-root", str(self.run_root), "--operator-root", str(self.operator_root), "--manifest", str(self.manifest_path), "--worktree", str(self.worktree)]
+        command = ["python3", "-I", "-B", str(VALIDATOR), "--run-root", str(self.run_root), "--operator-root", str(self.operator_root), "--manifest", str(self.manifest_path), "--worktree", str(self.worktree), "--marshal", str(self.marshal_binary)]
         first = subprocess.Popen(command, cwd=REPOSITORY, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         second = subprocess.Popen(command, cwd=REPOSITORY, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         results = [first.communicate(timeout=120), second.communicate(timeout=120)]

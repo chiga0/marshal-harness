@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -17,6 +18,16 @@ import tempfile
 MAX_INPUT_BYTES = 2 << 20
 MAX_CHECKER_BYTES = 64 << 20
 MAX_OUTPUT_BYTES = 64 << 10
+
+
+def load_stable_marshal_module():
+    path = Path(__file__).with_name("stable_marshal.py")
+    spec = importlib.util.spec_from_file_location("marshal_stable_marshal", path)
+    if spec is None or spec.loader is None:
+        fail("core-probe-invalid")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class PreflightError(Exception):
@@ -157,22 +168,22 @@ def raw_digest(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def checked_checker(value: str) -> Path:
-    checker = Path(value)
-    if not checker.is_absolute() or checker.resolve() != checker:
+def checked_marshal(value: str) -> Path:
+    marshal = Path(value)
+    if not marshal.is_absolute() or marshal.resolve() != marshal:
         fail("core-probe-invalid")
     try:
-        metadata = checker.lstat()
+        metadata = marshal.lstat()
     except OSError:
         fail("core-probe-invalid")
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or not metadata.st_mode & 0o111:
         fail("core-probe-invalid")
     if metadata.st_size < 1 or metadata.st_size > MAX_CHECKER_BYTES:
         fail("core-probe-invalid")
-    return checker
+    return marshal
 
 
-def run_preflight(root: Path, manifest_relative: str, checker: Path) -> dict:
+def run_preflight(root: Path, manifest_relative: str, marshal: Path) -> dict:
     root_descriptor = open_root(root)
     try:
         identity_before = root_identity(root_descriptor)
@@ -222,29 +233,79 @@ def run_preflight(root: Path, manifest_relative: str, checker: Path) -> dict:
                 os.close(descriptor)
             paths[name] = path
         try:
-            completed = subprocess.run(
-                [
-                    str(checker),
-                    "--manifest", str(paths["manifest"]),
-                    "--task-spec", str(paths["task"]),
-                    "--policy-snapshot", str(paths["policy"]),
-                    "--schema", str(paths["schema"]),
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=20,
-                check=False,
-                env=os.environ.copy(),
-            )
+            before = marshal.lstat()
+            with marshal.open("rb") as executable:
+                marshal_raw = executable.read(MAX_CHECKER_BYTES + 1)
+            if len(marshal_raw) != before.st_size:
+                fail("core-probe-invalid")
+            marshal_digest = raw_digest(marshal_raw)
+            command = [
+                str(marshal),
+                "internal",
+                "plan-premortem-check",
+                "--attestation-ready",
+            ]
+            command.extend([
+                "--manifest", str(paths["manifest"]),
+                "--task-spec", str(paths["task"]),
+                "--policy-snapshot", str(paths["policy"]),
+                "--schema", str(paths["schema"]),
+            ])
+            environment = {
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "LC_ALL": "C",
+                **{
+                    key: os.environ[key]
+                    for key in (
+                        "MARSHAL_QODER_PATH", "MARSHAL_QODER_MODE",
+                        "MARSHAL_QODER_CONFORMANCE_CONFIG",
+                        "MARSHAL_CODEX_PATH", "MARSHAL_CODEX_MODE",
+                        "MARSHAL_CODEX_AUTHORITY_CONFIG",
+                        "MARSHAL_QWEN_PATH", "MARSHAL_QWEN_MODE",
+                        "MARSHAL_PI_PATH", "MARSHAL_PI_MODE",
+                    )
+                    if key in os.environ
+                },
+            }
+            identity = load_stable_marshal_module()
+            try:
+                held = identity.hold(marshal)
+            except Exception:
+                fail("core-probe-invalid")
+            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
+            try:
+                stdout, stderr, returncode = identity.execute(held, process, b"\0", 20, MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES, MAX_OUTPUT_BYTES * 2)
+            except Exception:
+                fail("core-probe-unavailable")
+            finally:
+                held.close()
+            completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
         except (OSError, subprocess.TimeoutExpired):
             fail("core-probe-unavailable")
-    if len(completed.stdout) > MAX_OUTPUT_BYTES:
+    try:
+        after = marshal.lstat()
+        with marshal.open("rb") as executable:
+            after_raw = executable.read(MAX_CHECKER_BYTES + 1)
+    except OSError:
+        fail("core-probe-invalid")
+    if (
+        stat.S_ISLNK(after.st_mode)
+        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+        or raw_digest(after_raw) != marshal_digest
+    ):
+        fail("core-probe-changed-during-execution")
+    if completed.returncode == 0 and completed.stderr:
         fail("core-probe-output-invalid")
-    response = parse_json(completed.stdout)
+    if completed.returncode != 0 and completed.stdout:
+        fail("core-probe-output-invalid")
+    output = completed.stdout if completed.returncode == 0 else completed.stderr
+    if len(output) > MAX_OUTPUT_BYTES:
+        fail("core-probe-output-invalid")
+    response = parse_json(output)
     allowed = {
         "status", "reasonCode", "taskSpecDigest", "policySnapshotDigest",
-        "sourceHead", "selectedAdapter", "authorityMode", "capabilityDigest",
+        "sourceHead", "selectedAdapter", "authorityMode", "capabilityDigest", "marshal",
     }
     if set(response) - allowed or response.get("status") not in {"pass", "fail"}:
         fail("core-probe-output-invalid")
@@ -254,6 +315,16 @@ def run_preflight(root: Path, manifest_relative: str, checker: Path) -> dict:
     if response["status"] == "pass":
         if completed.returncode != 0 or reason != "plan-premortem-pass":
             fail("core-probe-output-invalid")
+        identity = response.get("marshal")
+        if not isinstance(identity, dict) or set(identity) != {"version", "commit", "internalCommandVersion", "inputDigest"}:
+            fail("core-probe-output-invalid")
+        if not isinstance(identity.get("commit"), str) or len(identity["commit"]) != 40 or any(ch not in "0123456789abcdef" for ch in identity["commit"]):
+            fail("core-probe-output-invalid")
+        expected_input_digest = raw_digest(manifest_raw + task_raw + policy_raw + schema_raw)
+        if identity.get("inputDigest") != expected_input_digest:
+            fail("core-probe-input-digest-mismatch")
+        if identity.get("internalCommandVersion") != "plan-premortem-check/v1":
+            fail("core-probe-command-version-mismatch")
     elif completed.returncode != 1:
         fail("core-probe-output-invalid")
     return response
@@ -267,12 +338,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True, help="absolute compact operator root outside .marshal")
     parser.add_argument("--manifest", required=True, help="manifest path relative to --root")
-    parser.add_argument("--checker", required=True, help="absolute prebuilt Core probe")
+    parser.add_argument("--marshal", required=True, help="absolute stable Marshal executable")
     arguments = parser.parse_args()
     try:
         root = Path(arguments.root)
-        checker = checked_checker(arguments.checker)
-        response = run_preflight(root, clean_relative_file(arguments.manifest), checker)
+        marshal = checked_marshal(arguments.marshal)
+        response = run_preflight(
+            root,
+            clean_relative_file(arguments.manifest),
+            marshal,
+        )
     except PreflightError as error:
         emit({"status": "fail", "reasonCode": error.reason_code})
         return 1

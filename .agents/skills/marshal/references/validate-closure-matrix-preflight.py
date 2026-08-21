@@ -36,6 +36,16 @@ def fail(reason_code: str, message: str) -> None:
     raise PreflightError(reason_code, message)
 
 
+def load_stable_marshal_module():
+    path = Path(__file__).with_name("stable_marshal.py")
+    spec = importlib.util.spec_from_file_location("marshal_stable_marshal", path)
+    if spec is None or spec.loader is None:
+        fail("core-contract-invalid", "stable Marshal identity implementation unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def load_support_module(path: Path):
     spec = importlib.util.spec_from_file_location("marshal_acceptance_preflight_support", path)
     if spec is None or spec.loader is None:
@@ -127,24 +137,38 @@ def core_probe(
     validations: list[tuple[str, Path]],
     jcs_paths: list[Path],
     raw_paths: list[Path],
+    marshal: Path,
 ) -> dict:
-    helper = Path(__file__).with_name("closure_matrix_core_probe.go")
     module_root = Path(__file__).resolve().parents[4]
-    arguments = ["go", "run", str(helper)]
+    marshal = checked_stable_marshal(str(marshal))
+    before = marshal_stat(marshal)
+    arguments = [str(marshal), "internal", "closure-matrix-check", "--attestation-ready"]
+    environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"}
     for kind, path in validations:
         arguments.extend(("validate", kind, str(path)))
     for path in jcs_paths:
         arguments.extend(("jcs", str(path)))
     for path in raw_paths:
         arguments.extend(("raw", str(path)))
-    completed = subprocess.run(
-        arguments,
-        cwd=module_root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
+    argv_bytes = sum(len(item.encode("utf-8")) + 1 for item in arguments)
+    if argv_bytes > 64 << 10:
+        fail("core-contract-invalid", "closure matrix checker arguments exceed the closed bound")
+    identity = load_stable_marshal_module()
+    try:
+        held = identity.hold(marshal)
+    except Exception:
+        fail("core-contract-invalid", "stable Marshal identity attestation failed")
+    try:
+        process = subprocess.Popen(arguments, cwd=module_root, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
+        stdout, stderr, returncode = identity.execute(held, process, b"\0", 60, 64 << 10, 64 << 10, 128 << 10)
+    except Exception as error:
+        fail("core-contract-invalid", f"closure matrix checker did not complete: {type(error).__name__}")
+    finally:
+        held.close()
+    completed = subprocess.CompletedProcess(arguments, returncode, stdout, stderr)
+    if marshal_stat(marshal) != before:
+        fail("core-contract-invalid", "stable Marshal executable changed during execution")
+    if completed.returncode != 0 or completed.stderr:
         fail("core-contract-invalid", "Core contract/JCS probe rejected an evidence document")
     try:
         result = json.loads(completed.stdout)
@@ -158,7 +182,35 @@ def core_probe(
             not isinstance(item, str) or not DIGEST_RE.fullmatch(item) for item in values
         ):
             fail("core-contract-invalid", f"Core contract/JCS probe returned an invalid {field} digest set")
+    identity = result.get("marshal")
+    if not isinstance(identity, dict) or identity.get("internalCommandVersion") != "closure-matrix-check/v1":
+        fail("core-contract-invalid", "stable Marshal checker identity is missing")
     return result
+
+
+def checked_stable_marshal(value: str) -> Path:
+    path = Path(value)
+    if not path.is_absolute() or path.resolve() != path:
+        fail("core-probe-unavailable", "stable Marshal path must be absolute and clean")
+    try:
+        metadata = path.lstat()
+    except OSError:
+        fail("core-probe-unavailable", "stable Marshal path is unavailable")
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o111 == 0:
+        fail("core-probe-unavailable", "stable Marshal path must be an executable regular file")
+    return path
+
+
+def marshal_stat(path: Path) -> tuple[int, int, int, int, int, int]:
+    metadata = path.lstat()
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
 def require_digest(value: object, label: str) -> str:
@@ -454,6 +506,7 @@ def validate(
     run_root: Path,
     source_root: Path,
     schema_path: Path,
+    marshal: Path | None = None,
 ) -> dict:
     support = load_support_module(Path(__file__).with_name("validate-acceptance-semantic-preflight.py"))
     schema = load_json(schema_path, "manifest schema")
@@ -509,6 +562,7 @@ def validate(
         validations,
         [review_packet_path, task_spec_path, verification_path, artifact_path, *worker_paths],
         [patch_path, *(entry[2] for entry in artifact_evidence)],
+        marshal,
     )
     verification, artifacts = validate_freshness(
         manifest, packet, decision, run_state, source_root, core_result,
@@ -671,12 +725,13 @@ def main() -> int:
     parser.add_argument(
         "--schema", type=Path, default=Path(__file__).with_name("closure-matrix-preflight.schema.json")
     )
+    parser.add_argument("--marshal", required=True, type=Path, help="绝对稳定 Marshal 可执行文件")
     arguments = parser.parse_args()
     try:
         result = validate(
             arguments.manifest, arguments.review_packet, arguments.review_decision,
             arguments.run_state, arguments.root, arguments.run_root,
-            arguments.source_root, arguments.schema,
+            arguments.source_root, arguments.schema, arguments.marshal,
         )
     except PreflightError as error:
         print(json.dumps({"status": "fail", "reasonCode": error.reason_code, "message": str(error)}, ensure_ascii=False, sort_keys=True), file=sys.stderr)
