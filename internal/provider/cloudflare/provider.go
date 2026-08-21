@@ -85,10 +85,12 @@ type allocationEntry struct {
 // travels only as the opaque bridgeLocator mapping and the SPI allocationId,
 // and Marshal Core never interprets them (ADR 0016 §4).
 type Provider struct {
-	client          *Client
-	evidenceRef     string
-	store           *FileStateStore
-	locatorResolver func(sandbox.Locator) ([]byte, error)
+	client           *Client
+	evidenceRef      string
+	store            *FileStateStore
+	locatorResolver  func(sandbox.Locator) ([]byte, error)
+	effectSink       EffectAuthoritySink
+	authorityContext AuthorityContext
 
 	mu          sync.Mutex
 	allocations map[string]*allocationEntry
@@ -222,7 +224,12 @@ func (p *Provider) Provision(ctx context.Context, request sandbox.ProvisionReque
 		return nil, err
 	}
 	if entry, ok := p.allocations[candidate.AllocationId]; ok && entry.meta.Generation == candidate.Generation && entry.meta.State == sandbox.AllocationActive {
-		// Idempotent replay of an already committed outcome.
+		// Idempotent replay of an already committed outcome. Re-persist the
+		// observation so it stays durable even when an earlier observation
+		// write was lost; the sink coalesces the identical effect id.
+		if err := p.recordEffect(entry.meta, entry.role, entry.bridgeLocator, request.Identity.CommandId, sandbox.OperationProvision); err != nil {
+			return nil, err
+		}
 		return &sandbox.ProvisionReceipt{Allocation: entry.meta}, nil
 	}
 	replayKey, err := request.Identity.ReplayKey()
@@ -239,7 +246,10 @@ func (p *Provider) Provision(ctx context.Context, request sandbox.ProvisionReque
 	if err := p.store.RecordIntent(intent); err != nil {
 		return nil, err
 	}
-	bridgeLocator, err := p.client.CreateSandbox(ctx, replayKey)
+	// The remote create runs under the layered external HTTP-safe
+	// idempotency key (allocation-derived), while the durable intent stays
+	// keyed by the internal phase key (replayKey).
+	bridgeLocator, err := p.client.CreateSandbox(ctx, httpIdempotencyKey(candidate.AllocationId, "create"))
 	if err != nil {
 		// A definitive refusal (conflict, capacity, credential, semantic
 		// 4xx) clears the intent; an exhausted retry budget is ambiguous —
@@ -270,6 +280,9 @@ func (p *Provider) Provision(ctx context.Context, request sandbox.ProvisionReque
 		meta:          candidate,
 		role:          request.Identity.WorkloadRole,
 		bridgeLocator: bridgeLocator,
+	}
+	if err := p.recordEffect(candidate, request.Identity.WorkloadRole, bridgeLocator, request.Identity.CommandId, sandbox.OperationProvision); err != nil {
+		return nil, err
 	}
 	return &sandbox.ProvisionReceipt{Allocation: candidate}, nil
 }
@@ -647,7 +660,7 @@ func (p *Provider) restoreReplacement(ctx context.Context, previous *allocationE
 	if err := p.store.RecordIntent(intent); err != nil {
 		return nil, err
 	}
-	bridgeLocator, err := p.client.CreateSandbox(ctx, createKey)
+	bridgeLocator, err := p.client.CreateSandbox(ctx, httpIdempotencyKey(next.AllocationId, "create"))
 	if err != nil {
 		if !ambiguousCreateError(err) {
 			_ = p.store.ClearIntent(createKey)
@@ -661,11 +674,11 @@ func (p *Provider) restoreReplacement(ctx context.Context, previous *allocationE
 	if err := p.store.RecordBridgeLocator(next.AllocationId, bridgeLocator); err != nil {
 		return nil, err
 	}
-	if err := p.client.Hydrate(ctx, bridgeLocator, checkpoint.tar, subKey("hydrate")); err != nil {
+	if err := p.client.Hydrate(ctx, bridgeLocator, checkpoint.tar, httpIdempotencyKey(next.AllocationId, "hydrate")); err != nil {
 		if !ambiguousCreateError(err) {
 			// Deterministic failure: compensate by destroying the
 			// half-hydrated replacement sandbox and resolve the intent.
-			if destroyErr := p.client.Destroy(ctx, bridgeLocator, subKey("cleanup")); destroyErr != nil {
+			if destroyErr := p.client.Destroy(ctx, bridgeLocator, httpIdempotencyKey(next.AllocationId, "cleanup")); destroyErr != nil {
 				p.recordDiagnostic(sandbox.OperationRestore, next.AllocationId, "post-failure cleanup of the replacement sandbox failed: "+destroyErr.Error())
 			}
 			_ = p.store.ClearIntent(createKey)
@@ -674,7 +687,7 @@ func (p *Provider) restoreReplacement(ctx context.Context, previous *allocationE
 		// reconcile reports the unknown remote side effect, never clean.
 		return nil, err
 	}
-	if err := p.client.Destroy(ctx, previous.bridgeLocator, subKey("destroy")); err != nil {
+	if err := p.client.Destroy(ctx, previous.bridgeLocator, httpIdempotencyKey(previous.meta.AllocationId, "destroy")); err != nil {
 		// The replacement is fully hydrated; a failed destroy of the
 		// previous sandbox is a leak for the reconcile/leak-scan path, not
 		// a reason to roll back the restore.
@@ -707,8 +720,13 @@ func (p *Provider) restoreReplacement(ctx context.Context, previous *allocationE
 }
 
 // Terminate implements sandbox.SandboxProvider over the Bridge destroy
-// endpoint. Terminating a terminated or replaced allocation is idempotent
-// and performs no further Bridge call.
+// endpoint with the durable prepared/delivered protocol. A durable terminate
+// intent is written before the destroy (prepared), the destroy runs under
+// the layered external HTTP-safe idempotency key, and the terminal state is
+// installed atomically with the intent resolution (delivered). A crash at
+// any write point converges on reopen: the destroy is idempotent and the
+// terminal state and observation are durable. Terminating an already
+// terminal allocation is idempotent and performs no further Bridge call.
 func (p *Provider) Terminate(ctx context.Context, request sandbox.TerminateRequest) (*sandbox.TerminateReceipt, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -735,15 +753,38 @@ func (p *Provider) Terminate(ctx context.Context, request sandbox.TerminateReque
 		p.recordDiagnostic(sandbox.OperationTerminate, request.AllocationId, fmt.Sprintf("stale generation %d rejected: the allocation carries generation %d", request.Identity.Generation, entry.meta.Generation))
 		return nil, fmt.Errorf("%w: the identity carries generation %d, the allocation carries generation %d", sandbox.ErrStaleAllocationGeneration, request.Identity.Generation, entry.meta.Generation)
 	}
-	if entry.meta.State == sandbox.AllocationTerminated || entry.meta.State == sandbox.AllocationReplaced {
-		// Already terminal: an idempotent observation, no further Bridge call.
+	if entry.meta.State == sandbox.AllocationTerminated {
+		// Already terminated: an idempotent observation. Re-persist the
+		// observation so it stays durable even when an earlier observation
+		// write was lost; the sink coalesces the identical effect id.
+		if err := p.recordEffect(entry.meta, entry.role, entry.bridgeLocator, request.Identity.CommandId, sandbox.OperationTerminate); err != nil {
+			return nil, err
+		}
 		return &sandbox.TerminateReceipt{State: entry.meta.State}, nil
 	}
-	replayKey, err := request.Identity.ReplayKey()
-	if err != nil {
+	if entry.meta.State == sandbox.AllocationReplaced {
+		// Already replaced: an idempotent observation of the replaced state.
+		return &sandbox.TerminateReceipt{State: entry.meta.State}, nil
+	}
+
+	// Prepared: a durable terminate intent written before the destroy. The
+	// intent stays pending on any ambiguous destroy failure so reconcile
+	// never reports clean while the remote side effect is unknown.
+	terminateKey := terminateIntentKey(request.AllocationId, entry.meta.Generation)
+	if err := p.store.RecordIntent(CreateIntent{
+		ReplayKey:    terminateKey,
+		AllocationId: request.AllocationId,
+		RunId:        entry.meta.RunId,
+		AttemptId:    entry.meta.AttemptId,
+		Generation:   entry.meta.Generation,
+	}); err != nil {
 		return nil, err
 	}
-	if err := p.client.Destroy(ctx, entry.bridgeLocator, replayKey); err != nil {
+
+	// Delivered: the idempotent destroy under the layered external key. A
+	// definitive not-found/lost observation is the terminal transition; any
+	// other failure is ambiguous and leaves the prepared intent pending.
+	if err := p.client.Destroy(ctx, entry.bridgeLocator, httpIdempotencyKey(request.AllocationId, "destroy")); err != nil {
 		switch {
 		case errors.Is(err, ErrSandboxNotFound):
 			p.recordDiagnostic(sandbox.OperationTerminate, request.AllocationId, "the bridge no longer knew the sandbox; the platform reclaimed it silently")
@@ -753,13 +794,23 @@ func (p *Provider) Terminate(ctx context.Context, request sandbox.TerminateReque
 			return nil, err
 		}
 	}
+
+	// Delivered: install the terminal state and resolve the prepared intent
+	// in one failure-atomic mutation.
 	entry.meta.State = sandbox.AllocationTerminated
 	entry.sessionId = ""
-	_ = p.store.UpdateAllocation(AllocationRecord{
+	if err := p.store.CommitTerminateOutcome(terminateKey, AllocationRecord{
 		Meta:          entry.meta,
 		Role:          entry.role,
 		BridgeLocator: entry.bridgeLocator,
-	})
+	}); err != nil {
+		// The remote destroy already happened while the durable terminal
+		// write failed; the caller must discard this provider instance.
+		return nil, err
+	}
+	if err := p.recordEffect(entry.meta, entry.role, entry.bridgeLocator, request.Identity.CommandId, sandbox.OperationTerminate); err != nil {
+		return nil, err
+	}
 	return &sandbox.TerminateReceipt{State: entry.meta.State}, nil
 }
 
@@ -829,7 +880,11 @@ func (p *Provider) Reconcile(ctx context.Context, request sandbox.ReconcileReque
 		}
 		report.OrphanAllocationIds = append(report.OrphanAllocationIds, intent.AllocationId)
 		drift = true
-		p.recordDiagnostic(sandbox.OperationReconcile, intent.AllocationId, "a create intent has no committed outcome; the remote side effect is unknown")
+		if isTerminateIntent(intent) {
+			p.recordDiagnostic(sandbox.OperationReconcile, intent.AllocationId, "a terminate intent has no committed terminal outcome; the destroy outcome is unknown")
+		} else {
+			p.recordDiagnostic(sandbox.OperationReconcile, intent.AllocationId, "a create intent has no committed outcome; the remote side effect is unknown")
+		}
 	}
 	sort.Strings(report.ActiveAllocationIds)
 	sort.Strings(report.OrphanAllocationIds)
