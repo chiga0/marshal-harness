@@ -24,17 +24,20 @@ const (
 
 // captureResult 聚合一次有界 JSONL 捕获的结构化结果。
 type captureResult struct {
-	raw            []byte
-	threadID       string
-	eventCount     int
-	turnCount      int
-	itemCount      int
-	inputTokens    int
-	outputTokens   int
-	sawTerminal    bool
-	phase          protocolPhase
-	itemActive     bool
-	activeItemType string
+	raw          []byte
+	threadID     string
+	eventCount   int
+	turnCount    int
+	itemCount    int
+	inputTokens  int
+	outputTokens int
+	sawTerminal  bool
+	phase        protocolPhase
+	// Codex 0.145.0 may execute multiple tool items concurrently. Track each
+	// item by its provider id instead of treating the turn as single-threaded.
+	// Events from older fixtures without an id use one bounded legacy slot.
+	activeItems    map[string]string
+	completedItems map[string]string
 	limitExceeded  bool
 	err            error
 }
@@ -89,6 +92,7 @@ type codexEvent struct {
 	Type     string  `json:"type"`
 	ThreadID *string `json:"thread_id"`
 	Item     struct {
+		ID   string `json:"id"`
 		Type string `json:"type"`
 	} `json:"item"`
 	Usage struct {
@@ -132,7 +136,11 @@ func captureJSONL(reader io.Reader, limit int64, onLimit func()) captureResult {
 	if capacity < 0 {
 		capacity = 0
 	}
-	result := captureResult{raw: make([]byte, 0, capacity)}
+	result := captureResult{
+		raw:            make([]byte, 0, capacity),
+		activeItems:    make(map[string]string),
+		completedItems: make(map[string]string),
+	}
 	buffered := bufio.NewReaderSize(reader, 64<<10)
 	terminated := false
 	terminate := func() {
@@ -241,19 +249,30 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 	// item 事件收紧为 0.145.0 已证实的精确闭集：item.started/item.updated/
 	// item.completed；其他任何 item.* 与未知类型一律 fail closed。
 	case "item.started":
-		if result.phase != phaseInTurn || result.itemActive {
+		if result.phase != phaseInTurn {
 			return fmt.Errorf("%w: item.started is out of order", ErrProtocol)
 		}
 		if !supportedItemType(event.Item.Type) {
 			return fmt.Errorf("%w: item.started carries an unknown item type", ErrProtocol)
 		}
-		result.itemActive = true
-		result.activeItemType = event.Item.Type
+		itemID := eventItemID(event)
+		if _, exists := result.activeItems[itemID]; exists {
+			return fmt.Errorf("%w: item.started duplicated an active item", ErrProtocol)
+		}
+		if _, exists := result.completedItems[itemID]; exists {
+			return fmt.Errorf("%w: item.started reused a completed item", ErrProtocol)
+		}
+		result.activeItems[itemID] = event.Item.Type
 	case "item.updated":
-		if result.phase != phaseInTurn || !result.itemActive {
+		if result.phase != phaseInTurn {
 			return fmt.Errorf("%w: item.updated is out of order", ErrProtocol)
 		}
-		if event.Item.Type != result.activeItemType {
+		itemID := eventItemID(event)
+		activeType, exists := result.activeItems[itemID]
+		if !exists {
+			return fmt.Errorf("%w: item.updated has no active item", ErrProtocol)
+		}
+		if event.Item.Type != activeType {
 			return fmt.Errorf("%w: item.updated changed the active item type", ErrProtocol)
 		}
 	case "item.completed":
@@ -262,14 +281,31 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		if result.phase != phaseInTurn {
 			return fmt.Errorf("%w: item.completed is out of order", ErrProtocol)
 		}
-		if !supportedItemType(event.Item.Type) || (result.itemActive && event.Item.Type != result.activeItemType) {
+		if !supportedItemType(event.Item.Type) {
 			return fmt.Errorf("%w: item.completed carries an unknown or changed item type", ErrProtocol)
 		}
-		result.itemActive = false
-		result.activeItemType = ""
+		itemID := eventItemID(event)
+		if activeType, exists := result.activeItems[itemID]; exists {
+			if event.Item.Type != activeType {
+				return fmt.Errorf("%w: item.completed changed the active item type", ErrProtocol)
+			}
+			delete(result.activeItems, itemID)
+			result.completedItems[itemID] = activeType
+		} else {
+			if _, exists := result.completedItems[itemID]; exists {
+				return fmt.Errorf("%w: item.completed replayed a completed item", ErrProtocol)
+			}
+			// The provider can emit an agent_message terminal directly without a
+			// preceding item.started. Other identified item kinds must have an
+			// active start; accepting them would allow orphaned work to be counted.
+			if event.Item.Type != "agent_message" {
+				return fmt.Errorf("%w: item.completed has no active item", ErrProtocol)
+			}
+			result.completedItems[itemID] = event.Item.Type
+		}
 		result.itemCount++
 	case "turn.completed":
-		if result.phase != phaseInTurn || result.itemActive {
+		if result.phase != phaseInTurn || len(result.activeItems) != 0 {
 			return fmt.Errorf("%w: turn.completed is out of order", ErrProtocol)
 		}
 		if event.Usage.InputTokens < 0 || event.Usage.OutputTokens < 0 {
@@ -288,6 +324,16 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 		return fmt.Errorf("%w: unknown event type", ErrProtocol)
 	}
 	return nil
+}
+
+// eventItemID returns a bounded compatibility key for item events. Real
+// Codex events carry item.id; legacy fixtures without one retain the prior
+// single-item semantics through the lone legacy slot.
+func eventItemID(event codexEvent) string {
+	if event.Item.ID != "" {
+		return event.Item.ID
+	}
+	return "__legacy_item__"
 }
 
 // supportedItemType is the closed item-kind set observed and frozen for the

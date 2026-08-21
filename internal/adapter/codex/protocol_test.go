@@ -86,6 +86,26 @@ func TestCaptureJSONLAcceptsItemUpdatedInClosedSet(t *testing.T) {
 	}
 }
 
+func TestCaptureJSONLAcceptsConcurrentItemsByProviderID(t *testing.T) {
+	input := strings.Join([]string{
+		`{"type":"thread.started","thread_id":"thread-concurrent"}`,
+		`{"type":"turn.started","thread_id":"thread-concurrent"}`,
+		`{"type":"item.started","item":{"id":"item-a","type":"command_execution"}}`,
+		`{"type":"item.started","item":{"id":"item-b","type":"command_execution"}}`,
+		`{"type":"item.updated","item":{"id":"item-b","type":"command_execution"}}`,
+		`{"type":"item.completed","item":{"id":"item-a","type":"command_execution"}}`,
+		`{"type":"item.completed","item":{"id":"item-b","type":"command_execution"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":3}}`,
+	}, "\n") + "\n"
+	result, terminations := captureForTest(t, input, 65536)
+	if result.err != nil || terminations != 0 {
+		t.Fatalf("err = %v terminations = %d", result.err, terminations)
+	}
+	if len(result.activeItems) != 0 || result.itemCount != 2 || !result.sawTerminal {
+		t.Fatalf("capture = %+v", result)
+	}
+}
+
 func TestCaptureJSONLToleratesBlankLines(t *testing.T) {
 	lines := successTranscriptLines()
 	input := lines[0] + "\n\n   \n" + strings.Join(lines[1:], "\n") + "\n\n"
@@ -132,6 +152,10 @@ func TestCaptureJSONLFailClosedMatrix(t *testing.T) {
 		{name: "unknown-item-cancelled", input: first + "\n" + `{"type":"item.cancelled","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
 		{name: "missing-item-kind", input: first + "\n" + turnStarted + "\n" + `{"type":"item.completed","item":{}}` + "\n", sentinel: ErrProtocol},
 		{name: "unknown-item-kind", input: first + "\n" + turnStarted + "\n" + `{"type":"item.completed","item":{"type":"future_kind"}}` + "\n", sentinel: ErrProtocol},
+		{name: "orphan-command-completion", input: first + "\n" + turnStarted + "\n" + `{"type":"item.completed","item":{"id":"orphan","type":"command_execution"}}` + "\n", sentinel: ErrProtocol},
+		{name: "orphan-legacy-command-completion", input: first + "\n" + turnStarted + "\n" + `{"type":"item.completed","item":{"type":"command_execution"}}` + "\n", sentinel: ErrProtocol},
+		{name: "replayed-completion", input: first + "\n" + turnStarted + "\n" + `{"type":"item.completed","item":{"id":"message","type":"agent_message"}}` + "\n" + `{"type":"item.completed","item":{"id":"message","type":"agent_message"}}` + "\n", sentinel: ErrProtocol},
+		{name: "reused-start-id", input: first + "\n" + turnStarted + "\n" + `{"type":"item.started","item":{"id":"reused","type":"command_execution"}}` + "\n" + `{"type":"item.completed","item":{"id":"reused","type":"command_execution"}}` + "\n" + `{"type":"item.started","item":{"id":"reused","type":"command_execution"}}` + "\n", sentinel: ErrProtocol},
 		{name: "changed-item-kind", input: first + "\n" + turnStarted + "\n" + `{"type":"item.started","item":{"type":"command_execution"}}` + "\n" + `{"type":"item.updated","item":{"type":"reasoning"}}` + "\n", sentinel: ErrProtocol},
 		{name: "missing-terminal", input: first + "\n" + `{"type":"item.completed","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
 		{name: "trailing-after-terminal", input: first + "\n" + turnStarted + "\n" + terminal + "\n" + `{"type":"item.completed","thread_id":"thread-1"}` + "\n", sentinel: ErrProtocol},
