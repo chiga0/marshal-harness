@@ -37,7 +37,7 @@ type attemptObservation struct {
 
 type processGroupSignal func(int, syscall.Signal) error
 
-const qoderSystemPromptAppend = "Marshal execution contract: every Read, Grep, Glob, Edit, and Write tool call must include a canonical absolute file_path or path inside the active worktree and an explicit target; never search the worktree root or any denied domain. Do not execute git, ls, find, pwd, wc, python, or python3 in Bash; acceptance verification is owned by Marshal. If a search target cannot be named canonically, use Read on an allowlisted file or stop and report a blocker."
+const qoderSystemPromptAppend = "Marshal execution contract: every Read, Edit, and Write tool call must include a canonical absolute file_path inside the active worktree and an explicit target; use Read only on files explicitly listed by the TaskSpec scope allowPaths. Never call Grep or Glob, never search the worktree root or any denied domain, and never access a path outside allowPaths. Do not use Bash for inspection, builds, tests, or any other self-check; Bash is reserved for exactly one final WorkerResult tee and must be the last tool call. Do not execute git, ls, find, pwd, wc, mkdir, python, or python3. Acceptance verification is owned by Marshal. If a required file is not an allowlisted path, stop and report a blocker."
 
 // signalOwnedProcessGroup is deliberately total over the exit-observation
 // result: only a successful non-reaping observation proves the leader PID is
