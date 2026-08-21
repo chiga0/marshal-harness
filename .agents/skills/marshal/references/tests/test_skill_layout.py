@@ -23,6 +23,8 @@ REQUIRED_REFERENCES = {
         "plan-premortem-timeout",
         "adapter-ordinary-user-execution-profile-unsupported",
         "qoder-deliverable-parent-missing",
+        "bin/marshal internal plan-premortem-check",
+        "临时目录只承载输入文件",
     ),
     "review-and-rework.md": (
         "historyClaimed=true",
@@ -32,6 +34,7 @@ REQUIRED_REFERENCES = {
         "validate-closure-matrix-preflight.py",
         "O_EXCL",
         "attemptId",
+        "--marshal \"$REPOSITORY_ROOT/bin/marshal\"",
     ),
     "adapter-promotion-and-mac.md": (
         "authorityMode=ordinary-user",
@@ -42,6 +45,8 @@ REQUIRED_REFERENCES = {
         "status=fail",
         "Qoder v7 transcript attestation",
         "qoder-stream-json-1.2.0-v7",
+        "codex-provider-schema-check",
+        "review-freshness-check",
     ),
     "watchdog-and-capacity.md": (
         "memoryAvailableBytes",
@@ -124,6 +129,42 @@ class SkillLayoutTest(unittest.TestCase):
         self.assertNotIn("transcript-attestation-checker", content)
         self.assertNotIn("--checker /ABSOLUTE/OPERATOR/DIR/transcript-attestation-checker", content)
         self.assertNotIn("当前实现只支持版本化冻结的 Qoder v6", content)
+
+    def test_plan_and_provider_references_forbid_anonymous_production_checkers(self) -> None:
+        admission = (SKILL_ROOT / "references" / "admission-and-acceptance.md").read_text(encoding="utf-8")
+        adapter = (SKILL_ROOT / "references" / "adapter-promotion-and-mac.md").read_text(encoding="utf-8")
+        self.assertIn("--marshal \"$REPOSITORY_ROOT/bin/marshal\"", admission)
+        self.assertNotIn("go build -o \"$OPERATOR_ROOT/plan-premortem-core-probe\"", admission)
+        self.assertIn("codex-provider-schema-check", adapter)
+        self.assertNotIn('go build -o "$OPERATOR_DIR/codex-provider-schema-checker"', adapter)
+        closure = (SKILL_ROOT / "references" / "review-and-rework.md").read_text(encoding="utf-8")
+        self.assertIn("--marshal \"$REPOSITORY_ROOT/bin/marshal\"", closure)
+        self.assertNotIn("go run", closure)
+        closure_validator = (SKILL_ROOT / "references" / "validate-closure-matrix-preflight.py").read_text(encoding="utf-8")
+        self.assertNotIn("go run", closure_validator)
+        self.assertIn("closure-matrix-check", closure_validator)
+        for filename in (
+            "validate-plan-premortem-preflight.py",
+            "validate-codex-provider-schema-preflight.py",
+            "validate-review-freshness-preflight.py",
+            "validate-closure-matrix-preflight.py",
+            "marshal-fastpath-preflight.py",
+        ):
+            content = (SKILL_ROOT / "references" / filename).read_text(encoding="utf-8")
+            with self.subTest(filename=filename):
+                self.assertNotIn("--checker", content)
+                self.assertNotIn("go run", content)
+                self.assertNotIn("go build -o", content)
+
+    def test_operator_commands_and_installer_use_stable_marshal_path(self) -> None:
+        for filename in ("docs/development.md", "docs/en/quick-start.md", "docs/mac-first-authority-handoff.md"):
+            content = (SKILL_ROOT.parents[2] / filename).read_text(encoding="utf-8")
+            with self.subTest(filename=filename):
+                self.assertEqual(content.count("go run ./cmd/marshal"), 1)
+                self.assertIn("bin/marshal", content)
+        installer = (SKILL_ROOT.parents[2] / "scripts/install.sh").read_text(encoding="utf-8")
+        self.assertIn(".marshal-staging", installer)
+        self.assertNotIn('"${TMP_DIR}/${BIN_NAME}" ./cmd/marshal', installer)
 
     def test_all_relative_markdown_links_exist(self) -> None:
         documents = [SKILL, SKILL_ROOT / "references" / "skill-rule-migration.md"]

@@ -67,6 +67,8 @@ The two user-facing installation paths (one-line script and source build) are de
 - otherwise falls back to a source build `go build -trimpath ./cmd/marshal` (the Go version must satisfy the `go` directive in `go.mod`); without a local checkout it shallow-clones `https://github.com/chiga0/marshal-harness.git` first (cloning the tag when a release tag is known);
 - installs to `~/.local/bin` by default, never requests sudo, and prints next steps (`marshal init` / `marshal doctor`) when done.
 
+During installation, the binary is built or downloaded only at the stable `${MARSHAL_INSTALL_DIR}/.marshal-staging/marshal` path, verified, copied to the final `marshal` path, and then removed from staging; no anonymous executable is generated or executed under a random `/tmp` path.
+
 Environment variables: `MARSHAL_INSTALL_DIR` (install directory), `MARSHAL_REPO` (default `chiga0/marshal-harness`), `MARSHAL_TAG` (pin a release tag, skipping the latest-release lookup), `MARSHAL_FORCE_SOURCE=1` (skip the release and build from source directly).
 
 ### Release asset naming conventions
@@ -111,11 +113,14 @@ marshal task <COMMAND>
 Examples:
 
 ```bash
-go run ./cmd/marshal doctor --json
-go run ./cmd/marshal contract validate --schema task-spec schemas/examples/happy-path/task-spec.json
-go run ./cmd/marshal contract schema
-go run ./cmd/marshal contract schema --all --out /tmp/marshal-schemas
+make build COMMIT="$(git rev-parse HEAD)"
+./bin/marshal doctor --json
+./bin/marshal contract validate --schema task-spec schemas/examples/happy-path/task-spec.json
+./bin/marshal contract schema
+./bin/marshal contract schema --all --out /tmp/marshal-schemas
 ```
+
+Development and operator examples deliberately use the stable `bin/marshal` path. Do not use `go run ./cmd/marshal`: Go may create an anonymous executable in its cache or a temporary directory, preventing stable Marshal identity reuse.
 
 ## Contract self-description
 

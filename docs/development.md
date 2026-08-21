@@ -65,6 +65,8 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 - 否则回退源码构建 `go build -trimpath ./cmd/marshal`（Go 版本须满足 `go.mod` 的 `go` 指令）；无本地 checkout 时先浅克隆 `https://github.com/chiga0/marshal-harness.git`（release tag 已知时克隆该 tag）；
 - 安装到 `~/.local/bin`（默认），全程不请求 sudo，完成后输出下一步指引（`marshal init` / `marshal doctor`）。
 
+安装阶段的二进制只写入安装目录下固定的 `.marshal-staging/marshal`，校验后复制到目标 `marshal` 并清理暂存文件；不会在随机 `/tmp` 路径生成或执行匿名 Marshal 可执行文件。
+
 环境变量：`MARSHAL_INSTALL_DIR`（安装目录）、`MARSHAL_REPO`（默认 `chiga0/marshal-harness`）、`MARSHAL_TAG`（固定 release tag，跳过 latest release 查询）、`MARSHAL_FORCE_SOURCE=1`（跳过 release 直接源码构建）。
 
 ### Release 资产命名约定
@@ -109,11 +111,14 @@ marshal task <COMMAND>
 示例：
 
 ```bash
-go run ./cmd/marshal doctor --json
-go run ./cmd/marshal contract validate --schema task-spec schemas/examples/happy-path/task-spec.json
-go run ./cmd/marshal contract schema
-go run ./cmd/marshal contract schema --all --out /tmp/marshal-schemas
+make build COMMIT="$(git rev-parse HEAD)"
+./bin/marshal doctor --json
+./bin/marshal contract validate --schema task-spec schemas/examples/happy-path/task-spec.json
+./bin/marshal contract schema
+./bin/marshal contract schema --all --out /tmp/marshal-schemas
 ```
+
+开发与操作示例固定调用 `bin/marshal`；不要用 `go run ./cmd/marshal`，因为 Go 会在缓存或临时目录生成匿名可执行文件，无法复用 Marshal 的稳定路径身份。
 
 ## 契约自描述
 

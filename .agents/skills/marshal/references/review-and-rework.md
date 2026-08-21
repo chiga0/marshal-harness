@@ -31,7 +31,8 @@ python3 -I -B .agents/skills/marshal/references/validate-review-freshness-prefli
   --run-root "$REPO/.marshal/runs/$RUN_ID" \
   --operator-root "$OPERATOR_DIR" \
   --manifest "$OPERATOR_DIR/review-freshness-preflight.json" \
-  --worktree "$TASK_WORKTREE"
+  --worktree "$TASK_WORKTREE" \
+  --marshal "$REPOSITORY_ROOT/bin/marshal"
 ```
 
 只有返回 `historyClaimed=true` 且 `action=dispatch-reviewer` 才派 reviewer；只有 `action=generate-review-packet` 才调用一次：
@@ -66,7 +67,8 @@ python3 -B .agents/skills/marshal/references/validate-closure-matrix-preflight.p
   --manifest MANIFEST.json \
   --review-packet REVIEW_PACKET.json \
   --review-decision REVIEW_DECISION.json \
-  --run-state RUN_STATE.json
+  --run-state RUN_STATE.json \
+  --marshal "$REPOSITORY_ROOT/bin/marshal"
 ```
 
 只有 `status=pass` 才导入：

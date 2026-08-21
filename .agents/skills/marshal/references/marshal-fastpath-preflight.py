@@ -450,8 +450,7 @@ def run_plan(arguments: argparse.Namespace) -> dict:
         }
 
     plan_validator = Path(__file__).with_name("validate-plan-premortem-preflight.py")
-    plan_receipt = run_child(
-        [
+    plan_command = [
             sys.executable,
             "-I",
             "-B",
@@ -460,9 +459,10 @@ def run_plan(arguments: argparse.Namespace) -> dict:
             str(root),
             "--manifest",
             plan_manifest_relative,
-            "--checker",
-            arguments.checker,
-        ],
+        ]
+    plan_command.extend(["--marshal", arguments.marshal])
+    plan_receipt = run_child(
+        plan_command,
         "plan-premortem",
         arguments.premortem_timeout_seconds,
     )
@@ -516,7 +516,7 @@ def main() -> int:
     parser.add_argument("--task-kind", required=True, choices=("content", "non-content"))
     parser.add_argument("--root", required=True, help="absolute compact operator root outside .marshal")
     parser.add_argument("--plan-manifest", required=True, help="plan pre-mortem manifest relative to --root")
-    parser.add_argument("--checker", required=True, help="absolute prebuilt Core plan pre-mortem probe")
+    parser.add_argument("--marshal", required=True, help="absolute stable Marshal executable")
     parser.add_argument("--acceptance-manifest", help="content semantic manifest relative to --root")
     parser.add_argument("--protected-root", action="append", default=[], help="clean linked worktree bound to sourceHead")
     parser.add_argument(

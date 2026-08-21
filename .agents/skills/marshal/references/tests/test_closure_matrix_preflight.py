@@ -38,6 +38,20 @@ def write_json(path: Path, value: object) -> None:
 
 
 class ClosureMatrixPreflightTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.build_directory = Path(tempfile.mkdtemp(prefix="closure-matrix-marshal.")).resolve()
+        cls.marshal = cls.build_directory / "marshal"
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, check=True, capture_output=True, text=True).stdout.strip()
+        subprocess.run(
+            ["go", "build", "-ldflags", f"-X github.com/chiga0/marshal-harness/internal/buildinfo.commit={commit}", "-o", str(cls.marshal), "./cmd/marshal"],
+            cwd=REPOSITORY_ROOT, check=True,
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.build_directory)
+
     def prepared(self, directory: str) -> tuple[Path, Path]:
         root = Path(directory)
         fixtures = root / FIXTURE_RELATIVE
@@ -73,7 +87,7 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
         verification = json.loads(verification_path.read_text())
         artifacts = json.loads(artifact_path.read_text())
 
-        initial = VALIDATOR_MODULE.core_probe([], [task_path], [patch_path])
+        initial = VALIDATOR_MODULE.core_probe([], [task_path], [patch_path], self.marshal)
         spec_digest = initial["jcs"][0]
         patch_digest = initial["raw"][0]
         verification["specDigest"] = spec_digest
@@ -97,7 +111,7 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
         })
         packet["previousBlockingFindings"] = [previous]
         evidence_digests = VALIDATOR_MODULE.core_probe(
-            [], [verification_path, artifact_path, worker_path], []
+            [], [verification_path, artifact_path, worker_path], [], self.marshal
         )["jcs"]
         packet["specDigest"] = spec_digest
         packet["diffDigest"] = patch_digest
@@ -113,7 +127,7 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
             "diffDigest": patch_digest,
             "verificationDigest": packet["verificationDigest"],
             "artifactManifestDigest": packet["artifactManifestDigest"],
-            "reviewPacketDigest": VALIDATOR_MODULE.core_probe([], [packet_path], [])["jcs"][0],
+            "reviewPacketDigest": VALIDATOR_MODULE.core_probe([], [packet_path], [], self.marshal)["jcs"][0],
         })
         fresh["fingerprintDigest"] = VALIDATOR_MODULE.canonical_digest(
             {key: value for key, value in fresh.items() if key != "fingerprintDigest"}
@@ -158,6 +172,7 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
                 "--review-decision", str(fixtures / "review-decision.json"),
                 "--run-state", str(fixtures / "run-state.json"),
                 "--schema", str(SCHEMA),
+                "--marshal", str(self.marshal),
             ],
             check=False,
             capture_output=True,
@@ -398,13 +413,13 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
             artifacts["artifacts"][0]["digest"] = "sha256:" + "0" * 64
             write_json(fixtures / "artifact-manifest.json", artifacts)
             artifact_digest = VALIDATOR_MODULE.core_probe(
-                [], [fixtures / "artifact-manifest.json"], []
+                [], [fixtures / "artifact-manifest.json"], [], self.marshal
             )["jcs"][0]
             packet = self.load(fixtures, "review-packet.json")
             packet["artifactManifestDigest"] = artifact_digest
             write_json(fixtures / "review-packet.json", packet)
             packet_digest = VALIDATOR_MODULE.core_probe(
-                [], [fixtures / "review-packet.json"], []
+                [], [fixtures / "review-packet.json"], [], self.marshal
             )["jcs"][0]
             manifest = self.load(fixtures, "manifest.json")
             manifest["freshness"]["artifactManifestDigest"] = artifact_digest
@@ -470,7 +485,7 @@ class ClosureMatrixPreflightTest(unittest.TestCase):
             manifest["findings"][0]["classification"] = "closed-previous"
             manifest["findings"][0]["disposition"] = "closed-previous"
             manifest["freshness"]["reviewPacketDigest"] = VALIDATOR_MODULE.core_probe(
-                [], [fixtures / "review-packet.json"], []
+                [], [fixtures / "review-packet.json"], [], self.marshal
             )["jcs"][0]
             manifest["freshness"]["fingerprintDigest"] = VALIDATOR_MODULE.canonical_digest(
                 {key: value for key, value in manifest["freshness"].items() if key != "fingerprintDigest"}

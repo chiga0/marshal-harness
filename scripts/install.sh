@@ -32,6 +32,8 @@ OS=""
 ARCH=""
 TAG=""
 TMP_DIR=""
+STABLE_STAGE_DIR=""
+STABLE_STAGE_BIN=""
 
 info()  { printf '[install] %s\n' "$*"; }
 warn()  { printf '[install] 警告: %s\n' "$*" >&2; }
@@ -110,7 +112,7 @@ verify_sha256() {
   fi
   expected="${line%%[[:space:]]*}"
   expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
-  if ! actual="$(sha256_of "${TMP_DIR}/${BIN_NAME}")"; then
+  if ! actual="$(sha256_of "${STABLE_STAGE_BIN}")"; then
     fatal "缺少 sha256sum/shasum，无法完成校验"
   fi
   if [ "$actual" != "$expected" ]; then
@@ -132,7 +134,7 @@ try_release() {
   version_no_v="${TAG#v}"
   asset="marshal_${version_no_v}_${OS}_${ARCH}"
   info "下载 release 资产 ${asset} ..."
-  if ! curl -fsSL -o "${TMP_DIR}/${BIN_NAME}" "${base}/${asset}"; then
+  if ! curl -fsSL -o "${STABLE_STAGE_BIN}" "${base}/${asset}"; then
     warn "release 无 ${OS}/${ARCH} 匹配资产，回退源码构建"
     return 1
   fi
@@ -180,7 +182,7 @@ build_source() {
   if [ -n "$TAG" ]; then
     ldflags="${ldflags} -X ${BUILDINFO_PKG}.version=${TAG}"
   fi
-  if ! ( cd "$root" && go build -trimpath -ldflags "$ldflags" -o "${TMP_DIR}/${BIN_NAME}" ./cmd/marshal ); then
+  if ! ( cd "$root" && go build -trimpath -ldflags "$ldflags" -o "${STABLE_STAGE_BIN}" ./cmd/marshal ); then
     fatal "go build 失败；构建需联网下载模块，受限环境请先 go mod download（见 docs/development.md）"
   fi
 }
@@ -199,10 +201,21 @@ clone_build() {
 }
 
 install_binary() {
-  mkdir -p "$INSTALL_DIR" || fatal "无法创建安装目录 ${INSTALL_DIR}"
-  install -m 0755 "${TMP_DIR}/${BIN_NAME}" "${INSTALL_DIR}/${BIN_NAME}" \
+  install -m 0755 "${STABLE_STAGE_BIN}" "${INSTALL_DIR}/${BIN_NAME}" \
     || fatal "安装到 ${INSTALL_DIR} 失败"
   info "已安装 ${INSTALL_DIR}/${BIN_NAME}"
+}
+
+cleanup() {
+  if [ -n "$TMP_DIR" ]; then
+    rm -rf "$TMP_DIR"
+  fi
+  if [ -n "$STABLE_STAGE_BIN" ]; then
+    rm -f "$STABLE_STAGE_BIN"
+  fi
+  if [ -n "$STABLE_STAGE_DIR" ]; then
+    rmdir "$STABLE_STAGE_DIR" 2>/dev/null || true
+  fi
 }
 
 print_next_steps() {
@@ -237,7 +250,11 @@ EOF
 main() {
   detect_platform
   TMP_DIR="$(mktemp -d)"
-  trap 'rm -rf "$TMP_DIR"' EXIT
+  mkdir -p "$INSTALL_DIR" || fatal "无法创建安装目录 ${INSTALL_DIR}"
+  STABLE_STAGE_DIR="${INSTALL_DIR}/.marshal-staging"
+  STABLE_STAGE_BIN="${STABLE_STAGE_DIR}/${BIN_NAME}"
+  mkdir -p "$STABLE_STAGE_DIR" || fatal "无法创建稳定构建暂存目录 ${STABLE_STAGE_DIR}"
+  trap cleanup EXIT
 
   local mode="source"
   if [ -n "$FORCE_SOURCE" ]; then

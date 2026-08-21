@@ -14,16 +14,15 @@
 
 ### Codex 0.145.x provider schema preflight
 
-Codex 0.145.x 首次/升级真实 probe 前，从真实 provider 输出复制 schema 和冻结 profile 到 source worktree、`.marshal` 外的紧凑 operator root；不读取 prompt/secret。构建 production checker并运行：
+Codex 0.145.x 首次/升级真实 probe 前，从真实 provider 输出复制 schema 和冻结 profile 到 source worktree、`.marshal` 外的紧凑 operator root；不读取 prompt/secret。构建固定 `bin/marshal` 并运行：
 
 ```bash
-go build -o "$OPERATOR_DIR/codex-provider-schema-checker" \
-  .agents/skills/marshal/references/codex_provider_schema_checker.go
+make build COMMIT="$(git rev-parse HEAD)"
 python3 -I -B .agents/skills/marshal/references/validate-codex-provider-schema-preflight.py \
   --root "$PREFLIGHT_ROOT" \
   --schema RELATIVE_PROVIDER_SCHEMA.json \
   --profile .agents/skills/marshal/references/codex-0.145-provider-schema-profile.json \
-  --checker "$OPERATOR_DIR/codex-provider-schema-checker"
+  --marshal "$REPOSITORY_ROOT/bin/marshal"
 ```
 
 只接受 exit 0、`status=pass`、`reasonCode=codex-provider-schema-compatible`。Receipt 从 `templates/codex-provider-schema-preflight-receipt.json` 的字段形状生成，以相邻 receipt Schema/Core probe 验证；它是 `mac-ordinary-user-operator-local` 且 `authorityClaim=none`，不得冒充 authority。Schema/profile 必须 clean relative、nofollow、bounded；不兼容或 malformed issue 固定 fail closed，停止 Codex 新派发，先修 Adapter/profile 后重新做一次真实 probe。
@@ -97,7 +96,7 @@ env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin \
 
 只有 exit 0、`status=pass`、`reasonCode=transcript-attestation-pass` 且 subject 等于当前 Attempt，才能继续 freshness/reviewer。
 
-Validator 只调用用户显式传入、已构建且稳定路径的 Marshal 二进制内部命令 `marshal internal qoder-transcript-check`，不得再构建、复制或执行随机临时 checker。它必须先让该内部命令在 stdin 未发送时保持阻塞。Mac expected identity 从 held Marshal raw bytes 解析 thin 64-bit Mach-O 唯一 SHA-256 CodeDirectory，actual 用固定 `/usr/bin/codesign -dvvv +PID` 获取 full SHA-256 CDHash；Linux CI 用 `/proc/PID/exe` raw SHA-256。只有固定路径、held device/inode/raw digest、expected/actual process identity 全部 exact match 才发送 evidence。pathname/inode 复核只是防御纵深，不得说成 held-fd execution 或实际执行 identity。
+Validator 只调用用户显式传入、已构建且稳定路径的 Marshal 二进制内部命令（`qoder-transcript-check`、`plan-premortem-check`、`codex-provider-schema-check`、`review-freshness-check`、`closure-matrix-check`），不得再构建、复制或执行随机临时 checker。流式命令必须先让内部命令在 stdin 未发送时保持阻塞；参数式命令必须在发送受限参数后返回（均按各自协议）；Mac expected identity 从 held Marshal raw bytes 解析 thin 64-bit Mach-O 唯一 SHA-256 CodeDirectory，actual 用固定 `/usr/bin/codesign -dvvv +PID` 获取 full SHA-256 CDHash；Linux CI 用 `/proc/PID/exe` raw SHA-256。只有固定路径、held device/inode/raw digest、expected/actual process identity 全部 exact match 才发送 evidence。pathname/inode 复核只是防御纵深，不得说成 held-fd execution 或实际执行 identity。
 
 Marshal 内部命令/codesign stdout、stderr 和 combined 都增量读取并有硬上限；子进程使用等价 `env -i` 的封闭环境，overflow/deadline 固定 fail closed，只 terminate/wait/kill/reap validator 自己创建的 `Popen`。只保存脱敏 identity/digest/observation/reasonCode 摘要，并绑定 validator/schema/Marshal raw digest/internal-command digest/profile、expected/actual process identity method/digest、Qoder event contract、transport、Capability admission 与 executable digest。
 

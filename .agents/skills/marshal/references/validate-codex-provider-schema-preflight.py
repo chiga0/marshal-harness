@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -53,6 +54,16 @@ class PreflightError(Exception):
     def __init__(self, reason_code: str, message: str):
         super().__init__(message)
         self.reason_code = reason_code
+
+
+def load_stable_marshal_module():
+    path = Path(__file__).with_name("stable_marshal.py")
+    spec = importlib.util.spec_from_file_location("marshal_stable_marshal", path)
+    if spec is None or spec.loader is None:
+        fail("codex-provider-checker-failed", "stable Marshal identity implementation unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def fail(reason_code: str, message: str) -> None:
@@ -183,7 +194,7 @@ def read_regular_file_at(
             os.close(descriptor)
 
 
-def checker_argv(explicit: str) -> tuple[list[str], Path]:
+def marshal_argv(explicit: str) -> tuple[list[str], Path]:
     repository_root = Path(__file__).resolve().parents[4]
     path = Path(explicit)
     if not path.is_absolute() or path != Path(os.path.normpath(path)):
@@ -194,11 +205,18 @@ def checker_argv(explicit: str) -> tuple[list[str], Path]:
         fail("codex-provider-checker-unavailable", "checker is unavailable")
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode) or not os.access(path, os.X_OK):
         fail("codex-provider-checker-unavailable", "checker must be an executable regular file")
-    return [str(path)], repository_root
+    return [str(path), "internal", "codex-provider-schema-check", "--attestation-ready"], repository_root
 
 
 def invoke_checker(schema: ReadResult, profile: ReadResult, explicit: str) -> dict:
-    argv, cwd = checker_argv(explicit)
+    argv, cwd = marshal_argv(explicit)
+    try:
+        before = Path(explicit).lstat()
+        with Path(explicit).open("rb") as executable:
+            marshal_raw = executable.read(MAX_SCHEMA_BYTES * 16 + 1)
+    except OSError:
+        fail("codex-provider-checker-failed", "stable Marshal path changed before execution")
+    marshal_digest = sha256_digest(marshal_raw)
     request = json.dumps(
         {
             "schema": base64.b64encode(schema.raw).decode("ascii"),
@@ -208,20 +226,39 @@ def invoke_checker(schema: ReadResult, profile: ReadResult, explicit: str) -> di
         separators=(",", ":"),
     )
     try:
-        completed = subprocess.run(
-            argv,
-            cwd=cwd,
-            input=request,
-            text=True,
-            capture_output=True,
-            timeout=CHECKER_TIMEOUT_SECONDS,
-            check=False,
-            env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"}
+        identity = load_stable_marshal_module()
+        try:
+            held = identity.hold(Path(explicit))
+        except Exception:
+            fail("codex-provider-checker-failed", "stable Marshal identity attestation failed")
+        process = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
+        try:
+            stdout, stderr, returncode = identity.execute(
+                held, process, b"\0" + request.encode("utf-8"), CHECKER_TIMEOUT_SECONDS,
+                64 << 10, 64 << 10, 128 << 10,
+            )
+        finally:
+            held.close()
+        completed = subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+    except Exception:
         fail("codex-provider-checker-failed", "production checker did not complete")
+    try:
+        after = Path(explicit).lstat()
+        with Path(explicit).open("rb") as executable:
+            after_raw = executable.read(MAX_SCHEMA_BYTES * 16 + 1)
+    except OSError:
+        fail("codex-provider-checker-failed", "stable Marshal path changed")
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or sha256_digest(after_raw) != marshal_digest:
+        fail("codex-provider-checker-failed", "stable Marshal executable changed during execution")
     result = None
-    for line in (completed.stdout + "\n" + completed.stderr).splitlines():
+    stdout_text = completed.stdout.decode("utf-8", errors="replace") if isinstance(completed.stdout, bytes) else completed.stdout
+    stderr_text = completed.stderr.decode("utf-8", errors="replace") if isinstance(completed.stderr, bytes) else completed.stderr
+    if completed.returncode == 0 and stderr_text:
+        fail("codex-provider-checker-failed", "production checker emitted stderr on success")
+    if completed.returncode == 2 and stdout_text:
+        fail("codex-provider-checker-failed", "production checker emitted stdout on failure")
+    for line in (stdout_text + "\n" + stderr_text).splitlines():
         try:
             candidate = json.loads(line)
         except json.JSONDecodeError:
@@ -297,7 +334,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", required=True, help="trusted real directory root")
     parser.add_argument("--schema", required=True, help="clean relative provider schema path")
     parser.add_argument("--profile", default=PROFILE_RELATIVE, help="clean relative frozen profile path")
-    parser.add_argument("--checker", required=True, help="absolute prebuilt production checker")
+    parser.add_argument("--marshal", required=True, help="absolute stable Marshal executable")
     return parser.parse_args()
 
 
@@ -320,7 +357,7 @@ def main() -> int:
             too_large_reason="codex-provider-schema-too-large",
             changed_reason="codex-provider-schema-identity-changed",
         )
-        result = invoke_checker(schema, profile, args.checker)
+        result = invoke_checker(schema, profile, args.marshal)
         receipt = build_receipt(args.schema, schema, result)
         stream = sys.stdout if result["status"] == "pass" else sys.stderr
         print(json.dumps(receipt, ensure_ascii=False, sort_keys=True), file=stream)

@@ -41,10 +41,11 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.checker_directory = tempfile.TemporaryDirectory()
-        cls.checker = Path(cls.checker_directory.name) / "codex-provider-schema-checker"
+        cls.marshal = (Path(cls.checker_directory.name) / "marshal").resolve()
         cls.receipt_probe = Path(cls.checker_directory.name) / "codex-provider-schema-receipt-probe"
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
         completed = subprocess.run(
-            ["go", "build", "-o", str(cls.checker), str(SKILL_ROOT / "references/codex_provider_schema_checker.go")],
+            ["go", "build", "-ldflags", f"-X github.com/chiga0/marshal-harness/internal/buildinfo.commit={commit}", "-o", str(cls.marshal), "./cmd/marshal"],
             cwd=REPOSITORY_ROOT,
             check=False,
             capture_output=True,
@@ -86,8 +87,8 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
                 profile,
                 "--schema",
                 schema,
-                "--checker",
-                str(self.checker),
+                "--marshal",
+                str(self.marshal),
             ],
             cwd=REPOSITORY_ROOT,
             check=False,
@@ -95,6 +96,13 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
             text=True,
             timeout=30,
         )
+
+    def test_fixed_marshal_internal_command_passes(self) -> None:
+        relative = VALID.relative_to(REPOSITORY_ROOT).as_posix()
+        completed = self.invoke(REPOSITORY_ROOT, relative)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        receipt = json.loads(completed.stdout)
+        self.assertEqual(receipt["reasonCode"], "codex-provider-schema-compatible")
 
     def assert_fatal(self, completed: subprocess.CompletedProcess[str], reason: str) -> dict:
         self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
