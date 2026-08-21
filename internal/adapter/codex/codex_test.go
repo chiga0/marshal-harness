@@ -287,6 +287,52 @@ func TestOrdinaryUserProbeReportsSupportedWithoutAuthorityEvidence(t *testing.T)
 	}
 }
 
+func TestOrdinaryUserSnapshotKeepsConfiguredExecutablePathStable(t *testing.T) {
+	executable := fakeExecutable(t, supportedVersionOutput, "exit 0")
+	adapter, err := NewOrdinaryUser(executable, newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.path != adapter.executable {
+		t.Fatalf("ordinary-user snapshot path = %q, want registered path %q", snapshot.path, adapter.executable)
+	}
+	if snapshot.dir != "" || strings.Contains(snapshot.path, ".marshal-codex-executable-") {
+		t.Fatalf("ordinary-user snapshot selected an anonymous executable path: path=%q dir=%q", snapshot.path, snapshot.dir)
+	}
+	if snapshot.source == nil {
+		t.Fatal("ordinary-user snapshot did not retain the configured executable identity")
+	}
+	snapshot.close()
+}
+
+func TestOrdinaryUserRunRejectsPathMutationAtLaunchBoundary(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "replacement-worker-ran")
+	fixture := newRunFixture(t, supportedVersionOutput, successBodyWithResult(validDeclaredResultJSON()))
+	fixture.adapter.ordinaryUserMode = true
+	fixture.adapter.testHook = func(stage string) {
+		if stage != "after-identity-verify" {
+			return
+		}
+		// Mutate the configured inode after the first identity check. The
+		// launch-adjacent stable-path check must reject it before exec.
+		if err := os.WriteFile(fixture.executable, []byte(fakeScript(supportedVersionOutput, "touch "+shellQuote(marker)+"; exit 9")), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fixture.adapter.Run(context.Background(), fixture.request); !errors.Is(err, ErrIdentityDrift) {
+		t.Fatalf("err = %v, want launch-boundary ErrIdentityDrift", err)
+	} else {
+		assertCodexFailure(t, err, port.FailureKindProtocolInvalid, port.RetryDispositionDoNotRetry)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("replacement executable ran after launch-boundary identity drift")
+	}
+}
+
 func TestProbeVersionOutputHasStrictByteLimit(t *testing.T) {
 	adapter, err := New(fakeExecutable(t, strings.Repeat("x", maxVersionBytes+1), "exit 0"), newValidator(t))
 	if err != nil {

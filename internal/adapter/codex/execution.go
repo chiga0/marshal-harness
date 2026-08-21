@@ -109,11 +109,12 @@ func runLauncherTestGate(directory string) error {
 }
 
 type executableSnapshot struct {
-	identity executableIdentity
-	path     string
-	dir      string
-	source   *os.File
-	file     *os.File
+	identity   executableIdentity
+	path       string
+	dir        string
+	source     *os.File
+	file       *os.File
+	stablePath bool
 }
 
 // pinnedDirectory keeps a directory inode open for the whole attempt.  All
@@ -212,6 +213,99 @@ func snapshotExecutable(ctx context.Context, configured string, hook func(string
 		return snapshotExecutableByFD(ctx, configured, hook)
 	}
 	return snapshotExecutableByPathForTest(ctx, configured, hook)
+}
+
+// snapshotExecutableByStablePath is the Mac ordinary-user counterpart to the
+// Linux authenticated fd-exec path. It never creates or executes a temporary
+// binary: the exact configured path is probed and later passed to the child.
+// The opened source file is retained until the attempt ends so digest/version
+// evidence is tied to one inode; Run still performs the normal pre-launch
+// identity recheck and ordinary-user mode remains explicitly non-hardened.
+func snapshotExecutableByStablePath(ctx context.Context, configured string, hook func(string)) (*executableSnapshot, error) {
+	if !filepath.IsAbs(configured) || filepath.Clean(configured) != configured {
+		return nil, errors.New("codex executable must be an absolute clean path")
+	}
+	source, err := os.OpenFile(configured, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = source.Close()
+		}
+	}()
+	info, err := source.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return nil, errors.New("configured codex executable is unavailable")
+	}
+	digest, err := digestOpenFile(source)
+	if err != nil {
+		return nil, err
+	}
+	if hook != nil {
+		hook("after-executable-digest")
+	}
+	version, err := readBinaryVersion(ctx, configured)
+	if err != nil {
+		return nil, err
+	}
+	// The version probe executes by pathname because Mac ordinary-user mode
+	// has no authenticated fd-exec primitive. Re-open and compare both the
+	// retained source inode and bytes after that probe so a replacement or
+	// in-place mutation cannot mix old digest evidence with new version
+	// evidence. The same check is repeated immediately before launch.
+	snapshot := &executableSnapshot{
+		identity:   executableIdentity{path: configured, digest: digest, version: version},
+		path:       configured,
+		source:     source,
+		stablePath: true,
+	}
+	if err := snapshot.verifyStablePathIdentity(); err != nil {
+		return nil, err
+	}
+	failed = false
+	return snapshot, nil
+}
+
+// verifyStablePathIdentity is the ordinary-user launch-boundary defense. The
+// configured pathname is not an authenticated execution primitive, so keep
+// the original descriptor held and require the pathname to resolve to the
+// same regular-file inode and exact bytes before any version/launch result is
+// trusted. Callers in ordinary-user mode map drift to protocol-invalid and do
+// not retry the attempt.
+func (s *executableSnapshot) verifyStablePathIdentity() error {
+	if s == nil || s.source == nil || !s.stablePath {
+		return nil
+	}
+	if !filepath.IsAbs(s.path) || filepath.Clean(s.path) != s.path || s.identity.path != s.path {
+		return fmt.Errorf("%w: configured executable path is not stable", ErrIdentityDrift)
+	}
+	sourceInfo, err := s.source.Stat()
+	if err != nil || !sourceInfo.Mode().IsRegular() {
+		return fmt.Errorf("%w: retained executable inode is unavailable", ErrIdentityDrift)
+	}
+	sourceDigest, err := digestOpenFile(s.source)
+	if err != nil {
+		return fmt.Errorf("%w: retained executable bytes could not be read", ErrIdentityDrift)
+	}
+	if sourceDigest != s.identity.digest {
+		return fmt.Errorf("%w: retained executable bytes changed", ErrIdentityDrift)
+	}
+	current, err := os.OpenFile(s.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("%w: configured executable path is unavailable", ErrIdentityDrift)
+	}
+	defer current.Close()
+	currentInfo, err := current.Stat()
+	if err != nil || !currentInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, currentInfo) {
+		return fmt.Errorf("%w: configured executable inode changed", ErrIdentityDrift)
+	}
+	currentDigest, err := digestOpenFile(current)
+	if err != nil || currentDigest != sourceDigest {
+		return fmt.Errorf("%w: configured executable bytes changed", ErrIdentityDrift)
+	}
+	return nil
 }
 
 // snapshotExecutableByFD binds digest, version probe and the later worker exec

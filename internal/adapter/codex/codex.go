@@ -382,6 +382,15 @@ type boundConformance struct {
 // inspect 每次重新钉住可执行文件身份：realpath、SHA-256 digest 与
 // 受限 probe 环境下执行 `--version` 解析出的版本，防止 Probe 后替换。
 func (a *Adapter) inspect(ctx context.Context) (*executableSnapshot, error) {
+	// Mac ordinary-user mode has no authenticated fd-exec primitive. Keep the
+	// configured, already-registered executable path stable instead of copying
+	// it into a random temporary pathname that Gatekeeper treats as a new
+	// program identity. The stable-path implementation still holds the source
+	// inode while probing and rechecks the pinned digest before launch; it is
+	// intentionally ordinary-user (not hardened authority) semantics.
+	if a.ordinaryUserMode {
+		return snapshotExecutableByStablePath(ctx, a.executable, a.callTestHook)
+	}
 	return snapshotExecutable(ctx, a.executable, a.callTestHook, a.unsafePathExecutionForTest || a.ordinaryUserMode)
 }
 
@@ -681,6 +690,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if err := evidence.verifyLeaves(); err != nil {
 		return domain.Record{}, codexProtocolFailure("attempt evidence containment changed before provider launch", a.now())
+	}
+	if err := snapshot.verifyStablePathIdentity(); err != nil {
+		return domain.Record{}, newCodexFailure(port.FailureKindProtocolInvalid, ErrIdentityDrift, "configured executable changed before provider launch", a.now())
 	}
 	// Schema/result 通过继承 fd 暴露给 child，避免 provider 按可替换路径
 	// 重新打开叶子；父进程始终持有同一 inode 直至最终验证完成。
