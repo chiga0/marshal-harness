@@ -1988,7 +1988,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if *detach {
 		return detachTaskCommand(stdout, stderr, detachRequest{
 			RunID: *runID, JSON: *jsonOutput, LogPath: *logPath, LogErrPath: *logErrPath,
-			FinalArgs: taskRunDetachedArgs(*runID, *throughVerify, *jsonOutput),
+			FinalArgs: taskRunDetachedArgs(*runID, *throughVerify, *recoverDeadDriver, *jsonOutput),
 		})
 	}
 	location, err := repository.Discover(".")

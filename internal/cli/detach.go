@@ -147,11 +147,16 @@ func canonicalDetachLogPath(path string) (string, error) {
 }
 
 // taskRunDetachedArgs rebuilds the exact driver argv for `task run` without
-// any detach flags.
-func taskRunDetachedArgs(runID string, throughVerify, jsonOutput bool) []string {
+// any detach flags. Recovery is part of the semantic command and must be
+// preserved across the double-fork boundary; dropping it would turn an
+// explicitly proven dead-driver recovery into a normal stale-window run.
+func taskRunDetachedArgs(runID string, throughVerify, recoverDeadDriver, jsonOutput bool) []string {
 	args := []string{"task", "run", "--run", runID}
 	if throughVerify {
 		args = append(args, "--through-verify")
+	}
+	if recoverDeadDriver {
+		args = append(args, "--recover-dead-driver")
 	}
 	if jsonOutput {
 		args = append(args, "--json")

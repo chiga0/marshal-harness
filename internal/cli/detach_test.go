@@ -183,11 +183,14 @@ func TestDetachLogPathResolution(t *testing.T) {
 }
 
 func TestDetachDriverArgBuilders(t *testing.T) {
-	if got := taskRunDetachedArgs("run-1", false, false); !reflect.DeepEqual(got, []string{"task", "run", "--run", "run-1"}) {
+	if got := taskRunDetachedArgs("run-1", false, false, false); !reflect.DeepEqual(got, []string{"task", "run", "--run", "run-1"}) {
 		t.Fatalf("task run args = %v", got)
 	}
-	if got := taskRunDetachedArgs("run-1", true, true); !reflect.DeepEqual(got, []string{"task", "run", "--run", "run-1", "--through-verify", "--json"}) {
+	if got := taskRunDetachedArgs("run-1", true, false, true); !reflect.DeepEqual(got, []string{"task", "run", "--run", "run-1", "--through-verify", "--json"}) {
 		t.Fatalf("task run args with flags = %v", got)
+	}
+	if got := taskRunDetachedArgs("run-1", true, true, true); !reflect.DeepEqual(got, []string{"task", "run", "--run", "run-1", "--through-verify", "--recover-dead-driver", "--json"}) {
+		t.Fatalf("task run args with recovery = %v", got)
 	}
 	if got := taskPublishDetachedArgs("run-1", false); !reflect.DeepEqual(got, []string{"task", "publish", "--run", "run-1"}) {
 		t.Fatalf("task publish args = %v", got)
