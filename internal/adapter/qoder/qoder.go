@@ -21,21 +21,21 @@ import (
 )
 
 const (
-	adapterID      = "qoder"
+	adapterID = "qoder"
 	// adapterVersion is bumped to 0.1.7 for the system frame tolerance change
 	// (ADPT-02): unknown system subtypes are now ignored as non-semantic
 	// notifications rather than treated as protocol violations.
 	adapterVersion = "0.1.7"
 	// supportedBinary is the minimum verified patch in the compatible 1.1.x
 	// line. Other minor/major lines and older patches fail closed.
-	supportedBinary          = "1.1.23"
-	supportedBinaryRange     = ">=1.1.23 <1.2.0"
-	maxPromptBytes           = 256 << 10
-	maxResultBytes           = 4 << 20
-	stderrLimit              = 64 << 10
-	versionOutputLimit       = 4 << 10
-	versionStderrLimit       = 4 << 10
-	probeTimeout             = 10 * time.Second
+	supportedBinary      = "1.1.23"
+	supportedBinaryRange = ">=1.1.23 <1.2.0"
+	maxPromptBytes       = 256 << 10
+	maxResultBytes       = 4 << 20
+	stderrLimit          = 64 << 10
+	versionOutputLimit   = 4 << 10
+	versionStderrLimit   = 4 << 10
+	probeTimeout         = 10 * time.Second
 	// conformanceEventContract covers transport semantics (staging/tee
 	// discipline, tool sequence validation, terminal outcome contract). It
 	// remains at v7 after ADPT-02 because the system frame tolerance change

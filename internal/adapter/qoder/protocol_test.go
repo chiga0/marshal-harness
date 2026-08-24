@@ -898,7 +898,7 @@ func TestDecodeEventLineStrictValidationNotRegressed(t *testing.T) {
 			errMatch: "event session id changed",
 		},
 		"invalid duplicate init": {
-			stream: init + "\n" + init + "\n",
+			stream:   init + "\n" + init + "\n",
 			errMatch: "invalid or duplicate system init event",
 		},
 		"blank JSONL line": {
