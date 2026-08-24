@@ -720,6 +720,139 @@ func TestAdmissionStep6Budget(t *testing.T) {
 	})
 }
 
+// The exit-gate fixture builders each prepare one authority state, policy and
+// proposal carrying exactly one ADR 0019 §4 exit-gate violation.
+
+func danglingEdgeFixture(t *testing.T) (AuthorityState, AdmissionPolicy, GoalPlanProposal) {
+	proposal := validProposal()
+	proposal.Edges = []GoalEdge{{From: "n1", To: "ghost", Kind: EdgeKindDependsOn}}
+	return testAuthorityState(t), testPolicy(), proposal
+}
+
+func selfEdgeFixture(t *testing.T) (AuthorityState, AdmissionPolicy, GoalPlanProposal) {
+	proposal := validProposal()
+	proposal.Edges = []GoalEdge{{From: "n1", To: "n1", Kind: EdgeKindDependsOn}}
+	return testAuthorityState(t), testPolicy(), proposal
+}
+
+func duplicateEdgeFixture(t *testing.T) (AuthorityState, AdmissionPolicy, GoalPlanProposal) {
+	proposal := validProposal()
+	proposal.Nodes = []GoalNode{validNode("n1"), validNode("n2")}
+	edge := GoalEdge{From: "n1", To: "n2", Kind: EdgeKindDependsOn}
+	proposal.Edges = []GoalEdge{edge, edge}
+	return testAuthorityState(t), testPolicy(), proposal
+}
+
+func nodeIdentitySubstitutionFixture(t *testing.T) (AuthorityState, AdmissionPolicy, GoalPlanProposal) {
+	state := testAuthorityState(t)
+	policy := testPolicy()
+	base := acceptInitialPlan(t, state, policy)
+	proposal := replanProposal(t, base)
+	replacement := base.Nodes[1]
+	replacement.Title = "node n2 substituted"
+	proposal.Nodes[1] = replacement
+	return replanState(state, base, nil), policy, proposal
+}
+
+func disallowedExecutorKindFixture(t *testing.T) (AuthorityState, AdmissionPolicy, GoalPlanProposal) {
+	policy := testPolicy()
+	policy.ExecutorKinds = []ExecutorKind{ExecutorKindImplement}
+	proposal := validProposal()
+	proposal.Nodes[0].ExecutorKind = ExecutorKindPublish
+	return testAuthorityState(t), policy, proposal
+}
+
+func disallowedRepositoryFixture(t *testing.T) (AuthorityState, AdmissionPolicy, GoalPlanProposal) {
+	proposal := validProposal()
+	proposal.Nodes[0].Repository = "repo-b"
+	return testAuthorityState(t), testPolicy(), proposal
+}
+
+func disallowedSideEffectClassFixture(t *testing.T) (AuthorityState, AdmissionPolicy, GoalPlanProposal) {
+	proposal := validProposal()
+	proposal.Nodes[0].SideEffectClasses = []string{"external-notify"}
+	return testAuthorityState(t), testPolicy(), proposal
+}
+
+// TestAdmissionExitGateNegativeFixtures is the dedicated negative fixture
+// matrix for the ADR 0019 §4 exit gate: every scenario the gate must reject
+// fails closed at the corresponding admission step with the corresponding
+// reason, and the rejection record binds the proposal digest and the
+// offending subject.
+func TestAdmissionExitGateNegativeFixtures(t *testing.T) {
+	fixtures := []struct {
+		name    string
+		prepare func(t *testing.T) (AuthorityState, AdmissionPolicy, GoalPlanProposal)
+		step    AdmissionStep
+		reason  string
+		subject string
+	}{
+		{
+			name:    "dangling edge",
+			prepare: danglingEdgeFixture,
+			step:    AdmissionStepGraphStructure,
+			reason:  ReasonDanglingEdge,
+			subject: "n1->ghost",
+		},
+		{
+			name:    "self edge",
+			prepare: selfEdgeFixture,
+			step:    AdmissionStepGraphStructure,
+			reason:  ReasonSelfEdge,
+			subject: "n1->n1",
+		},
+		{
+			name:    "duplicate edge",
+			prepare: duplicateEdgeFixture,
+			step:    AdmissionStepGraphStructure,
+			reason:  ReasonDuplicateEdge,
+			subject: "n1->n2",
+		},
+		{
+			name:    "node identity digest substitution",
+			prepare: nodeIdentitySubstitutionFixture,
+			step:    AdmissionStepNodeEdgeIntegrity,
+			reason:  ReasonNodeIdentityConflict,
+			subject: "n2",
+		},
+		{
+			name:    "executor kind outside the policy allowlist",
+			prepare: disallowedExecutorKindFixture,
+			step:    AdmissionStepAllowlist,
+			reason:  ReasonExecutorKindNotAllowed,
+			subject: "n1",
+		},
+		{
+			name:    "repository outside the policy allowlist",
+			prepare: disallowedRepositoryFixture,
+			step:    AdmissionStepAllowlist,
+			reason:  ReasonRepositoryNotAllowed,
+			subject: "n1",
+		},
+		{
+			name:    "side effect class outside the policy allowlist",
+			prepare: disallowedSideEffectClassFixture,
+			step:    AdmissionStepAllowlist,
+			reason:  ReasonSideEffectClassNotAllowed,
+			subject: "n1",
+		},
+	}
+
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			state, policy, proposal := fixture.prepare(t)
+			decision := Evaluate(proposalBytes(t, proposal), state, policy)
+			rejection := expectRejection(t, decision, fixture.step, fixture.reason)
+			if rejection.Subject != fixture.subject {
+				t.Fatalf("rejection subject = %q, want %q", rejection.Subject, fixture.subject)
+			}
+			if rejection.ProposalDigest == "" {
+				t.Fatal("rejection must bind the proposal digest when canonicalization succeeded")
+			}
+		})
+	}
+}
+
 func TestEvaluatorAuditAppendsAcceptedAndRejectedEntries(t *testing.T) {
 	state := testAuthorityState(t)
 	evaluator, err := NewEvaluator(testPolicy(), nil)
