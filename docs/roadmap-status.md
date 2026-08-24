@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-更新时间：2026-08-21
+更新时间：2026-08-24
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
@@ -22,15 +22,15 @@ embedded/local 先行实现的 Local MVP 定义达成：标记 `USABLE`。
 
 接受本 ADR 不改变 Roadmap 状态，也不表示 Qoder 或 Codex 已可生产调度。Linux 只有在对应 profile 的平台机制、真实 credentialed probe 与独立 conformance 全部通过后才是候选；Darwin 的 Qoder/Codex profile 在等价强制机制与后续合同通过前保持 `unsupported`。关闭条件见[设计审计报告](audit-report.md)中的 `AGENT-AUTHORITY-*` open findings。
 
-## Mac-first Adapter 阶段性证据（2026-08-21）
+## Mac-first Adapter 阶段性证据（2026-08-24）
 
-本节只记录当前宿主的 ordinary-user 证据，不改变 M6 已通过结论，也不把 M10–M13 或 v1.0 标记为完成。所有证据均绑定 local main `16c18546dd771cbafc46d10a84bb447b590083e4`；远端 `origin/main` 为 `91186161c734ceff4831d3f03e8734c0a24f36fd`，当前 `pendingRemoteSync=true`。
+本节只记录当前宿主的 ordinary-user 证据，不改变 M6 已通过结论，也不把 M10–M13 或 v1.0 标记为完成。Qoder 与 Qwen 两行证据分别绑定 commit `9410e75`（fix(adapter/qoder)：未知 system 帧从 fail-closed 改为非语义忽略，adapterVersion bump 到 `0.1.7`，conformanceEventContract 保持 `v7`）与 commit `2c67e7e`（feat(adapter/qwen)：版本策略从精确锁改为 semver 范围 `>=0.21.5 <0.22.0`，`0.21.15` 现在 supported）。
 
 | Adapter | 当前事实 | 结论 |
 | --- | --- | --- |
-| Qoder CLI `1.1.27` | `marshal doctor` 在 macOS ordinary-user profile 下报告 `configured=true`、`registered=true`、`compatibility=supported`；固定 executable `/Users/gawain/.qoder/bin/qodercli/qodercli-1.1.27`，digest `sha256:fd36420ae0e740f7f3fb7f62e9df23aa70df400aad55fc7e7e48e0edc0ce8e2`。 | 已完成 registry/doctor 身份证据；仍需以该版本完成 fresh live Worker smoke、transcript attestation 与独立 conformance，未宣称 production authority。 |
+| Qoder CLI `1.1.27` | `marshal doctor` 在 macOS ordinary-user profile 下报告 `configured=true`、`registered=true`、`compatibility=supported`、`adapterVersion=0.1.7`；conformanceEventContract 保持 `v7`；固定 executable `/Users/gawain/.qoder/bin/qodercli/qodercli-1.1.27`，digest `sha256:fd36420ae0e740f7f3fb7f62e9df23aa70df400aad55fc7e7e48e0edc0ce8e2`。 | 已完成 registry/doctor 身份与 adapterVersion `0.1.7` 证据；仍需以该版本完成 fresh live Worker smoke、transcript attestation 与独立 conformance，未宣称 production authority。 |
 | Codex `0.145.0` | `mac-codex-ordinary-smoke-r19-20260821` 与 `mac-codex-ordinary-smoke-r20-20260821` 各由唯一独立 reviewer 审查并进入 `ACCEPTED`；路径 `/opt/homebrew/Caskroom/codex/0.145.0/codex-aarch64-apple-darwin`，digest `sha256:1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590`。 | Mac ordinary-user 运行证据已收敛；两个 smoke 仅为诊断任务，不产生产品代码 diff、发布或合并。 |
-| Qwen Code `0.21.11` | 本地 executable 与 `--version` 可用；当前 `marshal doctor` 仍报告 `compatibility=unsupported`、`binaryVersion=unprobed`。`qwen auth` 已移除，当前宿主未形成可供 Marshal 绑定的认证选择器/凭据证据。 | 不启动 Worker、不静默绕过 admission；需完成只读 `/doctor`/认证配置探针并重新取得 `supported` capability 后才能调度。 |
+| Qwen Code `0.21.15` | `marshal doctor` 报告 `configured=true`、`registered=true`、`compatibility=supported`、`adapterVersion=0.1.0`、`binaryVersion=0.21.15`；版本策略为 semver 范围 `>=0.21.5 <0.22.0`，`0.21.15` 命中范围即 supported，minor 边界 `0.22.0` 及以上仍 fail closed。 | 范围准入证据已闭环，可调度普通 Worker；不升级为 hardened authority。 |
 
 当前阶段的非阻断问题是两个 Codex smoke TaskSpec 文案仍引用 `r15` 路径，且 Markdown 产物声明为 `application/json`；后续 successor 应一次性修正文案，不为此逐项轮转 rework。普通用户模式不等于 hardened authority、APAP、sandbox 或 Linux authority。
 
