@@ -2,6 +2,24 @@
 
 - 审计日期：2026-08-04（2026-08-10 增补 Runtime 架构重置记录、首次 Sandbox SPI dogfood reject 增补记录与 Round 2 关闭记录；2026-08-11 增补 Control Plane 与 Provider Port 边界冻结记录，含 Round 4 独立评审八项 P1 关闭记录、Round 5 复核四项残留关闭记录、Round 6 复核两项残留——Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge——关闭记录与 Round 7 复核三项残留——双键空间残留清除（权威对象 authorityNamespaceId 独占拥有、registration/snapshot/evidence authority ledger 事实、接纳关系归 authority ledger、controlPlaneId 逻辑权威身份）、Core-only typed edge 生命周期细化（issuer/source/target/operation/expiry/digest/revocation/replay/current-ledger recheck，issuer 恒为 Core 且不等于业务流 sourceActor、sourceActor/targetActor 按 edge 类型绑定，派生 token/handle 不得成为第二权威）、Public API 幂等/SSE/对象 key 修正为 authorityNamespaceId——关闭记录与 Round 8 复核一项残留——typed edge 跨域例外与适用范围（三类 typed edge 明确为 Provider actor 跨信任域访问默认拒绝的唯一 allowlist 例外，Public API/SSE 与 Core 内部权威引用无需 Provider typed edge）——与 Round 9 复核两项残留——跨域 fail closed 表述精确化（删除会无条件拒绝 MaterialAccessGrant 等合法 typed edge 的宽泛表述）、非 edge Port 与同域不自动授权（provider-registration/control 经 transport identity/该 Port AuthN/AuthZ/registration protocol 由 Core 写 authority ledger；securityDomainId 相同只是 provenance/partition 条件，不构成授权）——关闭记录；2026-08-12 增补 Issue #25 发布合并后 head reconcile 审计记录；2026-08-13 该 finding 随 typed reconciliation 实现合入关闭；2026-08-14 增补 Issue #53 CI 失败 rework 注入设计缺口审计记录，目标契约由 [ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)（Proposed，草案已提出/待接受）给出（接受后方冻结），实现待后续 implementation successor）
 
+## 行业协议收敛跟踪（2026-08-21 基线）
+
+外部背景（公开行业资料转述，未做在线核验）：agent 相关协议正沿三条轴在 Linux Foundation 轨道收敛——MCP（agent→工具/数据轴）进入 AAIF 并成为事实标准；A2A（agent↔agent 轴）由 Google 捐赠至 Linux Foundation 并获 100+ 背书；ACP（客户端↔agent 轴，LSP 式协议）已被 Gemini CLI、Neovim、JetBrains 等客户端采用。行业判断是自研私有 agent 协议的兼容性税持续上升。
+
+对 Marshal 的分层结论：
+
+- Public API 与 Provider remote transport 是控制面契约，不是 agent 协议；versioned HTTP/JSON + OpenAPI + SSE 的自持契约不在收敛压力范围内，保持现状；
+- 三条标准协议与 Marshal 正交：MCP 属 agent 工具层（Worker 自行使用，Marshal 经工具策略治理，不实现 MCP server）；ACP 属客户端↔agent 轴（正确形态是 ACP facade 作为 Public API client，或作为某一 AgentAdapter 的 transport）；A2A 属 agent↔agent 委托轴（正确形态是外部 gateway 作为 Public API client；Core 内多 Agent 协作仍按 ADR 0019 禁止 P2P 第二权威）；
+- 既有立场（ACP 只可作为 AgentAdapter transport、A2A 只作为未来外部 gateway 候选、MCP 属延后阶段、三者不阻塞核心路线，见[实施计划](implementation-plan.md)）仍然成立；缺口不在方向，而在“何时必须接”此前缺决策记录。
+
+跟踪机制：每季度复核一次（下一次 2026-11），更新三轴协议采用状态并检查触发条件；满足任一触发条件时先新增或替代 ADR 再实施，不在触发前抢先实现协议面：
+
+1. ACP：客户端生态覆盖 JetBrains、Zed 与 Neovim/Gemini CLI 中至少两者，且出现真实用户请求从这些客户端驱动 Marshal 任务——实现 ACP facade 作为 Public API client，不引入任何 Core 改动；
+2. A2A：出现真实外部委托场景（外部 agent 系统向 Marshal 提交任务或消费 Outcome）——评估 A2A gateway 作为 Public API client，Core 语义不变；
+3. MCP：既有工具策略（tool allowlist 等）无法表达的 Worker 工具面治理需求，或 Data/Capability 域材料授予需要标准化互操作——评估 MCP 形态，仍不得承载 raw credential（ADR 0018 §3 边界不变）。
+
+本节是跟踪记录与触发条件登记，不是架构变更：不改变任何 ADR、Milestone 状态或信任边界；接入边界的集中重申见[Runtime 架构](runtime-architecture.md)“部署形态与 Public API”节。
+
 ## Issue #130 lease owner 与 orphan recovery 审计增补（2026-08-21）
 
 审计确认当前 owner record 存在真实 legacy 5-field/7-field shape，PID/heartbeat/事件年龄诊断与 OS descriptor lock authority 的边界需要收敛；owner acquisition epoch 与 Attempt generation 尚缺独立的 successor/high-water 合同，`SupervisorDispatcher` orphan recovery 也需要把 late `WorkerResult`、quarantine、预算裁决和 `Outcome` 绑定到同一个 crash-safe append-only transaction。

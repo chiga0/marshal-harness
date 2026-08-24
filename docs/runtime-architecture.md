@@ -153,6 +153,7 @@ Provider 注册、版本与信任域（ADR 0018 §2/§5）：
 
 - 生产终态采用 C/S：Control Plane 运行于常驻 `marshal-server` 进程，Execution Plane 与 Control Plane 分离、可远程；单二进制 embedded/local 模式长期保留，与 C/S 形态共享同一生命周期守卫与证据规则；
 - CLI、Web Dashboard、GitHub App、CI 一律是 Public API client，经同一 TaskSubmission/Run Public API 接入，不得绕过 Public API 直接读写业务状态；Core 不退化成任意插件 HTTP Server，插件表面只有版本化 Provider Protocol；
+- 标准 agent 协议（MCP、A2A、ACP 等）的接入边界集中重申为三个位置：作为 Public API client（含未来 ACP/A2A facade、IM bot、webhook、定时触发器等入口形态，它们与 CLI/Web/GitHub App/CI 同级、均经 TaskSubmission/Run Public API 接入，此处仅为定位声明而非实现承诺）、作为某一 AgentAdapter 的 transport（如 ACP transport）、或作为所属 Provider Port 的 transport adapter；任何标准协议实现不得进入 Core 权威边界或改写权威对象语义，Core 不因此新增插件协议表面；此类接入启用前必须另行 ADR。本条是既有结论的集中重申（Public API client 定位与“Core 不退化成任意插件 HTTP Server”见本节；ACP 只可作为 AgentAdapter transport、A2A 只作为未来外部 gateway 候选、MCP 属延后阶段、启用前另行 ADR，见[实施计划](implementation-plan.md) M12 与延后阶段），不构成新的信任边界变更；协议收敛状态按季度在[设计审计报告](audit-report.md)“行业协议收敛跟踪”节复核；
 - embedded CLI 经 in-process adapter 调同一 Public application Port，不直写 store；server client 经 HTTP transport；两种形态共用同一应用 Port，不允许第二条写路径（ADR 0017 §10）。
 
 Wire Contract（M9 首版冻结，ADR 0017 §10）：

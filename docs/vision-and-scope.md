@@ -10,6 +10,18 @@ Marshal 让 Agent 工作成为受控工程执行，而不是无结构的终端�
 
 长期目标已由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（2026-08-10 接受）正式重置：从“本地单次 CLI 编排”升级为**长寿命 Runtime/Control Plane 持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。执行沙箱可插拔，Cloudflare Sandbox 仅作为首个可替换远程 Provider。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 进一步冻结：Supervisor 是确定性 Core，不是 LLM；LLM 只执行 typed semantic workload；Goal plan 必须先 proposal、后由 Core 确定性接纳。目标架构与路线见 [Runtime 架构](runtime-architecture.md) 与 [实施计划](implementation-plan.md) M7–M13。
 
+## 竞争定位与差异化
+
+2026 年的行业形态：编码 Agent 已进入 best-of-breed 竞争，开发者忠于明显更好的独立工具，而非绑定最深的平台；入口与执行环境正在商品化，Agent 的多面存在、快速供给的远程沙箱与异步委托都已成为独立品类；厂商级产品正在收敛到“控制面 + 云端执行”架构。当模型、入口与执行环境都商品化后，可防守的资产集中在控制面：治理、审批、审计、身份与可验证证据。
+
+Marshal 在这张地图上的差异化不是“更好的 harness”或“更全的入口”，而是三条结构性差异：
+
+1. **开源自托管与数据不出域**：Marshal 可完整运行在自有基础设施上，事件账本、Evidence、凭据与审计不依赖任何外部托管控制面；这是企业采用的硬条件，也是托管产品无法让渡的性质；
+2. **证据法学级的治理深度**：Worker 不自证、独立验证、ReviewDecision 绑定精确证据摘要、ConformanceEvidence 的敌对拓扑签发、跨信任域默认拒绝（仅三条 Core-only typed cross-domain edge 例外）——托管控制面通常受自家 Agent 体验约束，难以选择这个严格度；对 Marshal 而言这正是产品本体；
+3. **Provider 中立**：核心生命周期不根据 Provider 名称分叉，更换 Agent、Sandbox 或 durable backend 不改变任务含义与验收标准；当最好的 Agent 快速换代时，中立控制面是跨周期资产。
+
+因此 Marshal 不与通用编码 Agent 竞争编码体验，也不把入口当护城河：CLI、Web、IM bot、webhook、定时触发器等入口都是可替换的 Public API client（定位声明，非实现承诺），执行环境是可插拔 Provider；竞争发生在“治理深度 × Provider 中立 × 自托管”这一层。垂直领域的 Agent 平台可以作为 Public API client 构建在 Marshal 之上，也可以独立存在——Marshal 服务的是跨领域的治理底座本身。
+
 ## 问题定义
 
 Agent 驱动的软件工程系统面临两类相互关联的问题。
