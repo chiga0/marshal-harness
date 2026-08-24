@@ -1,6 +1,6 @@
 # ADR 0044：DRC-bound ResultIngress 与冷热双路径
 
-- 状态：提议（Proposed，2026-08-24）；未经维护者接受，不构成实现或状态声明
+- 状态：已接受（Accepted，2026-08-24）；接受证据：独立 reviewer 对 R0 产物审查 verdict=accept 且 P0/P1 清零（仅 P2/P3 finding，已随接受同批修复）；接受只冻结合同，未实现，不升级任何 milestone 状态
 - 关联：ADR 0018（DRC/current-ledger recheck/quarantine）、ADR 0019（append-only 补偿）、ADR 0027（Candidate 一等记录）、ADR 0043、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)、[Issue #187](https://github.com/chiga0/marshal-harness/issues/187)、Planning Baseline v3（R1/R2）
 
 ## 背景
@@ -10,7 +10,7 @@ Issue #186 Final Review 指出（I186-P1-3）：当前外部结果接纳未全�
 ## 决策
 
 1. **ResultIngress 是唯一外部结果接纳路径**。WorkerResult、Candidate、Evidence ref、checkpoint/heartbeat、Assessment、Receipt 等一切来自 Control Plane 外部的结果对象，必须经 ResultIngress 校验后才能成为 authority ledger 事实；任何组件直接写 Store/ledger 接纳外部结果的路径在 R2 收口时删除或 hard-fail。
-2. **接纳前必须 DRC-bound current-ledger recheck**，核验集合对齐 ADR 0018：actor/target、attempt、allocation、lease、generation、fencing、registration、snapshot、evidence、operation、digest、expiry、replay。DRC 沿用 ADR 0018 的 DispatchResultCapability 定义（Core 独占签发、correlationId 绑定 attemptId+allocationId+generation），不引入第二种结果授权。
+2. **接纳前必须 DRC-bound current-ledger recheck**，核验集合对齐 ADR 0018：actor/target、attempt、allocation、lease、generation、fencing、registration、snapshot、evidence、operation、digest、expiry、replay。DRC 沿用 ADR 0018 的 DispatchResultCapability 冻结定义：issuer 固定为 Core，sourceActor 为 dispatch-bound Execution workload，targetAudience 固定为 Core result-ingress，绑定 authorityNamespaceId、taskId/runId/attemptId/allocationId、leaseId、generation、fencingToken、封闭 operation 枚举、expiry/revocation 与 commandId/idempotencyKey/requestDigest/nonce 幂等字段，每次使用按当前 ledger 重判；本 ADR 不新增任何 DRC 字段，不引入第二种结果授权。
 3. **失败分级与 quarantine**：
    - 合法 replay（digest/sequence 一致的重复投递）幂等返回既有接纳事实，不重复推进；
    - 伪造、已撤销、晚到（lease/generation 已过期或被替代）、digest 不符的结果一律 fail closed，进入 quarantine namespace 留档，附 typed 拒绝原因；quarantine 对象不进入业务推导，只供恢复与审计消费。

@@ -44,5 +44,5 @@
 ## 3. 使用规则
 
 - R1–R6 每个 exit gate 必须引用本矩阵中至少一行能力的级别提升，并附独立证据；级别提升不得由同一故障域的自证产生。
-- 任何 `production` 声明必须由独立 reviewer 清零 P0/P1 且维护者显式接受，才允许写入 [roadmap-status.md](roadmap-status.md)。
+- 任何 `production` 声明必须由独立 reviewer 清零 P0/P1 且维护者显式接受，才允许写入 [roadmap-status.md](../roadmap-status.md)。
 - 本清单的缺口关闭顺序即 R1→R4 的实施顺序；新增缺口必须带稳定 ID 并归入对应 R 阶段。

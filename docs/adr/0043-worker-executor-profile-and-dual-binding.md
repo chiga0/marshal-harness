@@ -1,6 +1,6 @@
 # ADR 0043：WorkerExecutor、WorkerRuntimeProfile 与 Agent/Sandbox 双 binding
 
-- 状态：提议（Proposed，2026-08-24）；未经维护者接受，不构成实现或状态声明
+- 状态：已接受（Accepted，2026-08-24）；接受证据：独立 reviewer 对 R0 产物审查 verdict=accept 且 P0/P1 清零；接受只冻结合同，未实现，不升级任何 milestone 状态
 - 关联：ADR 0016、ADR 0017、ADR 0018、ADR 0019、ADR 0038、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)、[Issue #187](https://github.com/chiga0/marshal-harness/issues/187)、Planning Baseline v3（R0 步骤 4）
 
 ## 背景

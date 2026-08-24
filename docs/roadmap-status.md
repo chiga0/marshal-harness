@@ -4,7 +4,7 @@
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
-> **2026-08-24 路线修订（[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)）**：架构审计跟踪改为纵切优先的收敛路线 `I186-R0→R6`（rebaseline + ADR → 最薄 Agent-in-Sandbox walking skeleton → Command/Result authority 收敛 → Agent/Sandbox 双 Provider binding → 单一恢复模型 + explain → strangler cutover → conformance/Roadmap replan）。M0–M9 历史 `PASSED` 结论与代码资产保留，不推倒重写；M10–M13 暂停直接推进，等待 `I186-R6 DONE` 后由真实证据重新排期。当前推进点为 `I186-R0: DESIGNING`；可执行规格见 [Planning Baseline v3](https://github.com/chiga0/marshal-harness/issues/186#issuecomment-5393394613)。本修订不改变 M0–M9 已记录的证据与状态取值定义。
+> **2026-08-24 路线修订（[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)）**：架构审计跟踪改为纵切优先的收敛路线 `I186-R0→R6`（rebaseline + ADR → 最薄 Agent-in-Sandbox walking skeleton → Command/Result authority 收敛 → Agent/Sandbox 双 Provider binding → 单一恢复模型 + explain → strangler cutover → conformance/Roadmap replan）。M0–M9 历史 `PASSED` 结论与代码资产保留，不推倒重写；M10–M13 暂停直接推进，等待 `I186-R6 DONE` 后由真实证据重新排期。当前推进点为 `I186-R0: DONE`（产物见 [i186-r0-baseline-report.md](research/i186-r0-baseline-report.md)；增量 ADR 0043–0045 于 2026-08-24 接受，接受只冻结合同、未实现）；可执行规格见 [Planning Baseline v3](https://github.com/chiga0/marshal-harness/issues/186#issuecomment-5393394613)，下一步 `I186-R1`。本修订不改变 M0–M9 已记录的证据与状态取值定义。
 
 | Milestone | 状态 | 证据 |
 | --- | --- | --- |

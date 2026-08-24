@@ -34,8 +34,16 @@ Local MVP 保持 `USABLE`。M0–M6 的历史 `PASSED` 结论与证据链（见 
 | Qwen Code `0.21.15` | adapter `0.1.0`，semver 范围 `>=0.21.5 <0.22.0` | 见 doctor 报告 | 范围准入证据闭环，可调度普通 Worker |
 | Pi / OpenCode | 未配置 | — | `not-probed` |
 
-## 4. 冻结语义
+## 4. Child Issue index
+
+| child Issue | 阶段 | 覆盖缺口 | 收口条件（Exit Gate 摘要） |
+| --- | --- | --- | --- |
+| [#187](https://github.com/chiga0/marshal-harness/issues/187) | I186-R0 | 无新增缺口；冻结现状与收敛设计 | 现状可复现；ADR accepted；M0–M9 历史未篡改；独立 reviewer 无 P0/P1 |
+
+R1–R6 的 child Issue 在各阶段启动时创建并补入本表；每行必须引用 [i186-r0-maturity-matrix.md](i186-r0-maturity-matrix.md) failure inventory 中的稳定缺口 ID。
+
+## 5. 冻结语义
 
 - 本报告冻结的是**事实快照**：R1 起的纵切实现与本 baseline 对比产生 normalized trace diff；任何声称「保持 Local MVP 零回退」的 cutover 必须重放第 2 节回归并引用本 commit。
 - M10–M13 的代码切片（含 Run `run-m10-wire-02-r2` 的产物）在 `I186-R6 DONE` 前不进入 main production 路径，仅作为 R4/R6 的 recovery/conformance fixture 素材。
-- 本报告不新增 ADR、不改变信任边界；增量 ADR 见 [ADR 0043](../adr/0043-worker-executor-profile-and-dual-binding.md)、[ADR 0044](../adr/0044-result-ingress-and-cold-hot-paths.md)、[ADR 0045](../adr/0045-strangler-cutover-and-single-recovery.md)（Proposed，待维护者接受）。
+- 本报告不新增 ADR、不改变信任边界；增量 ADR 见 [ADR 0043](../adr/0043-worker-executor-profile-and-dual-binding.md)、[ADR 0044](../adr/0044-result-ingress-and-cold-hot-paths.md)、[ADR 0045](../adr/0045-strangler-cutover-and-single-recovery.md)（已接受，2026-08-24；接受只冻结合同，未实现，不升级 milestone 状态）。

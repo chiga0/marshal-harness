@@ -58,7 +58,7 @@ CLI `marshal task run --run RUN_ID`
   "allocation": {"sandboxProvider": "none", "allocationId": null},
   "agentRegistration": {"adapterId": "qoder", "registrationId": null, "capabilityDigest": "sha256:…"},
   "sandboxRegistration": {"providerId": null, "registrationId": null},
-  "resultCapability": {"drcId": null, "correlationId": null},
+  "resultCapability": {"drcId": null, "drcBinding": null},
   "digests": {"spec": "…", "diff": "…", "verification": "…", "decision": "…"},
   "sequence": 3,
   "timestamp": "2026-08-22T…Z"
@@ -80,7 +80,7 @@ R1 纵切完成后，同一条 business chain 必须投影为：
   "allocation": {"sandboxProvider": "local", "allocationId": "alloc:…", "stageDigest": "sha256:…"},
   "agentRegistration": {"providerId": "agent:qoder", "registrationId": "reg:…", "capabilityDigest": "sha256:…", "attestationDigest": "sha256:…"},
   "sandboxRegistration": {"providerId": "sandbox:local", "registrationId": "reg:…", "snapshotDigest": "sha256:…"},
-  "resultCapability": {"drcId": "drc:…", "correlationId": "attemptId+allocationId+generation"},
+  "resultCapability": {"drcId": "sha256:…", "drcBinding": {"attemptId": "…", "allocationId": "…", "leaseId": "…", "generation": 2}},
   "digests": {"spec": "…", "diff": "…", "verification": "…", "decision": "…"},
   "sequence": 3,
   "timestamp": "…Z"
@@ -90,7 +90,7 @@ R1 纵切完成后，同一条 business chain 必须投影为：
 对比规则（R5 cutover 使用）：
 
 1. `taskId/runId/attemptId/sequence/digests` 在 old/new 必须逐字段相等（业务事实不变）；
-2. `command.commandId`、`allocation.allocationId`、`resultCapability.drcId` 从 null 变为非空且可 current-ledger recheck；
+2. `command.commandId`、`allocation.allocationId`、`resultCapability.drcId` 从 null 变为非空且可 current-ledger recheck；`resultCapability.drcBinding` 是 ADR 0018 DispatchResultCapability 冻结绑定集合（attemptId/allocationId/leaseId/generation 等）的投影，归一化字段集在 R1 实现时冻结；
 3. `agentRegistration` 与 `sandboxRegistration` 必须是两条独立 registration，相同 trustDomainKind 不自动授权；
 4. old/new 任一字段语义变化必须显式列入 trace diff 报告，未解释 diff 阻断 cutover。
 
