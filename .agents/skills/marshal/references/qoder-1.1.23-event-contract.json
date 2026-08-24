@@ -1,6 +1,8 @@
 {
   "adapterId": "qoder",
   "binaryVersion": "1.1.23",
+  "minimumBinaryVersion": "1.1.27",
+  "supportedBinaryRange": ">=1.1.27 <1.2.0",
   "adapterVersion": "0.1.8",
   "protocolVersion": "1.2.0",
   "eventContract": "qoder-stream-json-1.2.0-v7",
