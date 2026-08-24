@@ -763,7 +763,7 @@ func decodeQoderToolResultContent(raw json.RawMessage) (string, error) {
 	return content, nil
 }
 
-// qoderPermissionDeniedIDs consumes only Qoder 1.1.23's structured denial
+// qoderPermissionDeniedIDs consumes only Qoder's structured denial
 // metadata. Tool-result content is arbitrary Worker-visible data: Read may
 // legitimately return source code containing permission-related text, so
 // scanning it would let ordinary file bytes forge a denial and abort a valid
@@ -772,6 +772,18 @@ func decodeQoderToolResultContent(raw json.RawMessage) (string, error) {
 // refusal through tool_use_result.isHardFailure. Metadata is bound to the
 // exact tool_result id in the same event. The event-global hard-failure bit is
 // accepted only for an unambiguous single-result event.
+//
+// Qoder CLI 1.1.27 widened isHardFailure beyond permission refusals: an
+// ordinary tool parameter validation failure ("Edit tool parameter validation
+// failed: No changes to make: old_string and new_string are exactly the
+// same.") also carries isHardFailure=true and would otherwise terminate a
+// healthy attempt as a write-class denial. A hard failure therefore proves a
+// permission denial only when the qodercli-generated error text also carries
+// Qoder's permission-refusal wording (1.1.23 evidence: "Permission
+// confirmation required, but no interactive handler is available"); any other
+// hard-failed result stays a plain failed call and never enters the denial
+// log. Only isHardFailure tool results reach this wording check, so ordinary
+// file bytes returned by successful reads still cannot forge a denial.
 func qoderPermissionDeniedIDs(event qoderEvent, message qoderMessage) (map[string]struct{}, error) {
 	resultIDs := make(map[string]struct{})
 	for _, part := range message.Content {
@@ -810,11 +822,33 @@ func qoderPermissionDeniedIDs(event qoderEvent, message qoderMessage) (map[strin
 		if len(resultIDs) != 1 {
 			return nil, fmt.Errorf("%w: ambiguous structured hard failure", ErrProtocol)
 		}
-		for id := range resultIDs {
-			deniedIDs[id] = struct{}{}
+		for _, part := range message.Content {
+			if part.Type != "tool_result" {
+				continue
+			}
+			content, contentErr := decodeQoderToolResultContent(part.Content)
+			if contentErr != nil {
+				return nil, contentErr
+			}
+			if qoderPermissionRefusalWording(content) {
+				deniedIDs[part.ToolUseID] = struct{}{}
+			}
 		}
 	}
 	return deniedIDs, nil
+}
+
+// qoderPermissionRefusalWording reports whether a hard-failed tool result's
+// qodercli-generated error text carries Qoder's permission-refusal wording.
+// Every hard refusal observed on 1.1.23 and every permission denial wording
+// reused by later patch releases spells out the word "permission" ("Permission
+// confirmation required, but no interactive handler is available"), while
+// 1.1.27's ordinary parameter validation failures never do. Unknown hard
+// failure wording without the marker grades as a plain failed call; the
+// provider itself still refuses to execute the denied operation, so this
+// never widens Worker permissions.
+func qoderPermissionRefusalWording(content string) bool {
+	return strings.Contains(strings.ToLower(content), "permission")
 }
 
 type streamCapture struct {

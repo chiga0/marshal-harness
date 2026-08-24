@@ -122,6 +122,58 @@ func TestDecodeEventLineAssociatesToolResultsAndCapturesPermissionDenials(t *tes
 	}
 }
 
+func TestHardFailureWithoutPermissionWordingIsPlainFailedCall(t *testing.T) {
+	// Qoder CLI 1.1.27 marks ordinary tool parameter validation failures with
+	// isHardFailure=true. Captured live evidence: a worker Edit whose old_string
+	// equals new_string failed with "Edit tool parameter validation failed:
+	// No changes to make: old_string and new_string are exactly the same." and
+	// must not terminate the attempt as a write-class permission denial.
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.27","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Edit","input":{"file_path":"/tmp/a","old_string":"same","new_string":"same"}}]}}
+{"type":"user","tool_use_result":{"isHardFailure":true},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Edit tool parameter validation failed: No changes to make: old_string and new_string are exactly the same."}]}}
+{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.denials) != 0 || len(result.toolNames) != 0 {
+		t.Fatalf("capture = %+v, want no denial and no successful tool", result)
+	}
+	if status := observedStatus(result, "tool-1"); status != "failed" {
+		t.Fatalf("tool status = %q, want failed", status)
+	}
+}
+
+func TestHardFailureWithPermissionWordingStillCapturesDenial(t *testing.T) {
+	// The 1.1.23 hard-refusal evidence must keep grading as a permission
+	// denial after the 1.1.27 isHardFailure widening fix.
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.27","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Edit","input":{"file_path":"/tmp/a","old_string":"a","new_string":"b"}}]}}
+{"type":"user","tool_use_result":{"isHardFailure":true},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}
+{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.denials) != 1 || result.denials[0].Tool != "edit" {
+		t.Fatalf("capture = %+v, want one edit denial", result)
+	}
+	if status := observedStatus(result, "tool-1"); status != "denied" {
+		t.Fatalf("tool status = %q, want denied", status)
+	}
+}
+
+func observedStatus(result captureResult, id string) string {
+	for _, tool := range result.observedTools {
+		if tool.id == id {
+			return tool.status
+		}
+	}
+	return ""
+}
+
 func TestObservedQoderReadDenialInsideWorktreeGradesBenign(t *testing.T) {
 	worktree := t.TempDir()
 	target := worktree + "/README.md"
