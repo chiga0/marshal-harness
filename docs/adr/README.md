@@ -18,6 +18,8 @@
 
 2026-08-21，针对 Issue #130 起草 ADR 0035（Proposed）：提议冻结 `LeaseOwnerRecordV2` 的 legacy v1 fail-closed migration、descriptor-bound acquisition epoch 与 epoch+digest high-water successor chain，以及 `SupervisorDispatcher` orphan recovery 的 append-only durable transaction。该提案统一 unknown 为 intervention、zero side effect 与 Core 追加 typed `Outcome`，仅记录待审设计，不接受 ADR、不启用实现，也不表示 Issue #130 完成。
 
+2026-08-24，按 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) Planning Baseline v3 的 R0 步骤 4 起草三份增量 ADR（均为 Proposed）：ADR 0043 冻结 WorkerExecutor、WorkerRuntimeProfile 与 Agent/Sandbox 双 binding（per-Attempt binding set 分别 current-ledger recheck，任一 binding revoke/expire/replace 停止旧组合接纳，production profile 禁止宿主 bypass）；ADR 0044 冻结 DRC-bound ResultIngress 为唯一外部结果接纳路径与冷热双路径（合法 replay 幂等，伪造/撤销/晚到结果 fail closed 入 quarantine，接纳事务与 authority fact/outbox 原子提交）；ADR 0045 冻结 strangler cutover 判定合同（normalized business trace 逐字段对比为唯一等价性证据、canary 分级推进、legacy 降级后删除 host bypass、Local MVP 零回退门禁）并把单一恢复模型（resume/fence/new Attempt 与 `marshal explain`）指向 R4。DRC 沿用 ADR 0018，不重新定义。三份提案均为 R0 设计产物，未经维护者接受，不升级 M0–M9 状态、不解除 M10–M13 暂停，相关现状事实见 [i186-r0-baseline-report.md](../research/i186-r0-baseline-report.md)。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -54,3 +56,6 @@
 | [0039](0039-apap-peer-exec-barrier.md) | APAP control peer USER_NOTIF 单次初始 fd-exec、永久 exec deny、双对象签名与 helper bootstrap | 已接受（Accepted，2026-08-18；接受只冻结合同，未实现前不得启用） |
 | [0040](0040-darwin-codex-authenticated-launcher.md) | Darwin Codex authenticated launcher、Mach-O held identity、child barrier 与 Mac-first conformance | 提议（Proposed，2026-08-19；未经接受与真实 evidence 不得启用） |
 | [0042](0042-mac-ordinary-user-adapter-mode.md) | Mac 上 Qoder/Codex 显式 opt-in 普通用户模式（不提供 hardened authority） | 用户明确授权实现；严格 authority 默认关闭 |
+| [0043](0043-worker-executor-profile-and-dual-binding.md) | WorkerExecutor、WorkerRuntimeProfile 与 Agent/Sandbox 双 binding（per-Attempt binding set 分别 current-ledger recheck、AgentLaunchSpec immutable、production profile 禁止宿主 bypass，Issue #186/#187） | 提议（Proposed，2026-08-24；R0 设计产物，未实现） |
+| [0044](0044-result-ingress-and-cold-hot-paths.md) | DRC-bound ResultIngress 唯一外部结果接纳路径与冷热双路径（replay 幂等、伪造/撤销/晚到 fail closed 入 quarantine、接纳事务原子提交，Issue #186/#187） | 提议（Proposed，2026-08-24；R0 设计产物，未实现） |
+| [0045](0045-strangler-cutover-and-single-recovery.md) | Strangler cutover 判定合同（normalized trace 对比、canary 分级、host bypass 删除、Local MVP 零回退）与单一恢复模型指向（resume/fence/new Attempt + explain，Issue #186/#187） | 提议（Proposed，2026-08-24；R0 设计产物，未实现） |
