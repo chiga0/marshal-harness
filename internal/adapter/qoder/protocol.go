@@ -274,8 +274,11 @@ func decodeTranscript(raw []byte) captureResult {
 
 // decodeEventLine folds one JSONL event line into the capture aggregate and
 // returns a protocol error for malformed or blank lines, duplicate terminals,
-// and contradictory terminal statuses. The observed hook_started/
-// hook_progress/hook_response system frames are ignored as non-semantic.
+// and contradictory terminal statuses. System frames are CLI-side non-semantic
+// notifications: hook_started/hook_progress/hook_response and init are handled
+// explicitly; all other system subtypes are silently ignored because new CLI
+// releases may introduce additional notification frames at any time and those
+// frames never carry WorkerResult transport, tool call, or terminal semantics.
 // An error terminal is recognized by is_error regardless of subtype; its code
 // comes from the `error` field, falling back to terminal_reason, and an error
 // terminal with neither is a protocol violation. A success terminal only
@@ -300,11 +303,18 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 	}
 	switch event.Type {
 	case "system":
+		// System frames are CLI-side non-semantic notifications (hook progress,
+		// model queue status, session lifecycle hints, etc.). They never carry
+		// WorkerResult transport, tool call, or terminal outcome semantics.
+		// The known subtypes (hook_started, hook_progress, hook_response, init)
+		// are handled explicitly below; any unrecognized subtype is safely
+		// ignored rather than treated as a protocol violation, because new CLI
+		// releases may introduce additional notification frames at any time.
+		// The raw bytes of every system frame (recognized or not) remain in the
+		// capture transcript for post-hoc diagnostics. Strict validation on
+		// semantic frames (assistant, user, result) is unchanged.
 		switch event.Subtype {
 		case "hook_started", "hook_progress", "hook_response":
-			// Observed qodercli 1.1.23 system frames emitted before init; they
-			// carry no session or terminal state and are ignored, while every
-			// other system subtype stays fail-closed.
 			return nil
 		case "init":
 			if result.sessionID != "" || event.SessionID == "" || event.Model == "" || event.QoderCLIVersion == "" || event.ProtocolVersion == "" || event.PermissionMode == "" {
@@ -313,7 +323,7 @@ func (result *captureResult) decodeEventLine(line []byte) error {
 			result.sessionID, result.model = event.SessionID, event.Model
 			result.cliVersion, result.protocolVersion, result.permissionMode = event.QoderCLIVersion, event.ProtocolVersion, event.PermissionMode
 		default:
-			return fmt.Errorf("%w: unrecognized system event subtype", ErrProtocol)
+			return nil
 		}
 	case "assistant":
 		if result.sessionID == "" || len(bytes.TrimSpace(event.Message)) == 0 || bytes.Equal(bytes.TrimSpace(event.Message), []byte("null")) {

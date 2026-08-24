@@ -1,7 +1,7 @@
 {
   "adapterId": "qoder",
   "binaryVersion": "1.1.23",
-  "adapterVersion": "0.1.6",
+  "adapterVersion": "0.1.7",
   "protocolVersion": "1.2.0",
   "eventContract": "qoder-stream-json-1.2.0-v7",
   "workerResultTransportDigest": "sha256:1a9876633aa16e2f7423ab3f748db0343f20ea81585239c6677bfa66721731a3",

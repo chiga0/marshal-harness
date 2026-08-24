@@ -37,7 +37,7 @@
     "profile": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   },
   "coreIdentity": {
-    "adapterVersion": "0.1.6",
+    "adapterVersion": "0.1.7",
     "eventContract": "qoder-stream-json-1.2.0-v7",
     "profileVersion": "qoder-v7-transcript-attestation-v4",
     "workerResultTransportDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"

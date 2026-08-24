@@ -690,14 +690,19 @@ func TestDecodeEventLineAcceptsObservedHookFramesBeforeInit(t *testing.T) {
 	}
 }
 
-func TestDecodeEventLineRejectsUnknownSystemSubtypeAndDuplicateInit(t *testing.T) {
+func TestDecodeEventLineSystemSubtypeAndInitValidation(t *testing.T) {
 	t.Run("unknown-subtype", func(t *testing.T) {
+		// ADPT-02: unknown system subtypes are ignored as non-semantic
+		// notifications; the subsequent init event must still parse normally.
 		stream := `{"type":"system","subtype":"mystery"}
 {"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
 `
 		result := decodeTranscript([]byte(stream))
-		if result.err == nil || !strings.Contains(result.err.Error(), "unrecognized system event subtype") {
-			t.Fatalf("error = %v, want unrecognized system event subtype error", result.err)
+		if result.err != nil {
+			t.Fatalf("error = %v, want unknown system subtype to be ignored", result.err)
+		}
+		if result.sessionID != "sess-1" || result.model != "provider/model" {
+			t.Fatalf("session = %q model = %q, want sess-1/provider/model after init", result.sessionID, result.model)
 		}
 	})
 	t.Run("duplicate-init", func(t *testing.T) {
@@ -757,5 +762,107 @@ func TestDecodeEventLineRejectsErrorTerminalWithoutCode(t *testing.T) {
 	result := decodeTranscript([]byte(stream))
 	if result.err == nil || !strings.Contains(result.err.Error(), "error terminal has no code") {
 		t.Fatalf("error = %v, want error terminal no code error", result.err)
+	}
+}
+
+// TestDecodeEventLineIgnoresModelQueueStatusSystemFrame exercises the
+// documented incident: Qoder CLI 1.1.27 emitted system/model_queue_status
+// mid-stream while the worker was performing tool calls, and the strict
+// whitelist treated it as ErrProtocol and killed the process group. After the
+// ADPT-02 fix, any unrecognized system subtype is ignored as a non-semantic
+// notification; the rest of the transcript continues to parse normally and
+// the terminal success result is accepted.
+func TestDecodeEventLineIgnoresModelQueueStatusSystemFrame(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"filePath":"/tmp/a"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}
+{"type":"system","subtype":"model_queue_status","status":"queued","request_id":"req-1","model_key":"auto","queue_type":"slow","queue_count":0,"queue_max_wait_ms":3600000,"service_available":true,"uuid":"u-1","session_id":"sess-1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}
+{"type":"result","subtype":"success","is_error":false}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatalf("system/model_queue_status must be ignored; got err=%v", result.err)
+	}
+	if result.eventCount != 6 {
+		t.Fatalf("eventCount = %d, want 6 (init, assistant, user, system, assistant, result)", result.eventCount)
+	}
+	if result.toolCalls != 1 || strings.Join(result.toolNames, ",") != "read" {
+		t.Fatalf("tool state = calls:%d names:%v, want one read call", result.toolCalls, result.toolNames)
+	}
+	if !result.terminal.seen || !result.terminal.success {
+		t.Fatalf("terminal = %+v, want success terminal", result.terminal)
+	}
+}
+
+// TestDecodeEventLineIgnoresArbitraryUnknownSystemSubtype ensures that the
+// tolerance fix is not limited to the known model_queue_status incident: any
+// future CLI notification frame with an unrecognized system subtype is also
+// ignored as non-semantic, so new CLI releases cannot break Marshal by
+// introducing additional notification frames.
+func TestDecodeEventLineIgnoresArbitraryUnknownSystemSubtype(t *testing.T) {
+	stream := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}
+{"type":"system","subtype":"foo_bar","arbitrary_field":"some-value"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"filePath":"/tmp/a"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}
+{"type":"result","subtype":"success","is_error":false}
+`
+	result := decodeTranscript([]byte(stream))
+	if result.err != nil {
+		t.Fatalf("unknown system subtype must be ignored; got err=%v", result.err)
+	}
+	if result.eventCount != 5 {
+		t.Fatalf("eventCount = %d, want 5", result.eventCount)
+	}
+	if !result.terminal.seen || !result.terminal.success {
+		t.Fatalf("terminal = %+v, want success terminal", result.terminal)
+	}
+}
+
+// TestDecodeEventLineStrictValidationNotRegressed guards the invariant that
+// the system frame tolerance change (ADPT-02) does not weaken any other
+// protocol check. Malformed JSONL, event-follows-terminal, session id drift
+// and invalid/duplicate init must all still produce ErrProtocol.
+func TestDecodeEventLineStrictValidationNotRegressed(t *testing.T) {
+	init := `{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`
+	tests := map[string]struct {
+		stream   string
+		errMatch string
+	}{
+		"malformed JSONL": {
+			stream:   init + "\n" + `{"type":"assistant","message":not-valid-json}` + "\n",
+			errMatch: "malformed JSONL",
+		},
+		"event follows terminal": {
+			stream: init + "\n" +
+				`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}` + "\n" +
+				`{"type":"result","subtype":"success","is_error":false}` + "\n" +
+				`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"late"}]}}` + "\n",
+			errMatch: "event follows terminal result",
+		},
+		"session id changed": {
+			stream: init + "\n" +
+				`{"type":"assistant","session_id":"sess-2","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}` + "\n",
+			errMatch: "event session id changed",
+		},
+		"invalid duplicate init": {
+			stream: init + "\n" + init + "\n",
+			errMatch: "invalid or duplicate system init event",
+		},
+		"blank JSONL line": {
+			stream:   init + "\n" + "   \n",
+			errMatch: "blank JSONL event",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			result := decodeTranscript([]byte(tc.stream))
+			if !errors.Is(result.err, ErrProtocol) {
+				t.Fatalf("err = %v, want ErrProtocol (%q)", result.err, tc.errMatch)
+			}
+			if !strings.Contains(result.err.Error(), tc.errMatch) {
+				t.Fatalf("err = %v, want substring %q", result.err, tc.errMatch)
+			}
+		})
 	}
 }
