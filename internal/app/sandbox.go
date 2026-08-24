@@ -113,7 +113,42 @@ type EmbeddedSandboxRuntime struct {
 // embeddedRuntimeConfig carries the construction seams of the embedded
 // runtime.
 type embeddedRuntimeConfig struct {
-	localOptions []local.Option
+	localOptions     []local.Option
+	providerOverride *ProviderOverride
+}
+
+// ProviderOverride carries the injection seams for a non-Local sandbox
+// provider: the provider instance, the registration builder, the snapshot
+// builder and the optional provider security domain. When no override is
+// supplied, the embedded runtime defaults to the Local runner with its
+// frozen registration and snapshot, completely unchanged.
+type ProviderOverride struct {
+	// Provider is the sandbox provider instance behind the
+	// port.SandboxProvider port.
+	Provider port.SandboxProvider
+	// ProviderDomain is the execution actor security domain of the injected
+	// provider; when zero-valued, the Local default (host-process) is used.
+	ProviderDomain authority.SecurityDomainId
+	// BuildRegistration builds the provider registration bound to the
+	// runtime authority namespace and the provider security domain. The
+	// returned registration's providerId, type, name, version and
+	// attestation must come from the injection side, never from the
+	// frozen Local constants.
+	BuildRegistration func(authority.AuthorityNamespaceId, authority.SecurityDomainId) (provider.ProviderRegistration, error)
+	// BuildSnapshot captures the capability snapshot aligned with the
+	// stored registration. The capabilities and conformance evidence
+	// description must come from the injection side.
+	BuildSnapshot func(provider.ProviderRegistration) (provider.ProviderCapabilitySnapshot, error)
+}
+
+// WithProviderOverride injects a non-Local sandbox provider and its
+// corresponding registration/snapshot construction into the embedded
+// runtime. The default path (no override) keeps the Local runner and
+// its frozen registration and snapshot completely unchanged.
+func WithProviderOverride(override ProviderOverride) EmbeddedOption {
+	return func(config *embeddedRuntimeConfig) {
+		config.providerOverride = &override
+	}
 }
 
 // EmbeddedOption customizes the embedded runtime construction; it exists as
@@ -148,6 +183,17 @@ func NewEmbeddedSandboxRuntime(stateRoot string, now func() time.Time, options .
 	for _, option := range options {
 		option(&config)
 	}
+	if config.providerOverride != nil {
+		if config.providerOverride.Provider == nil {
+			return nil, errors.New("app: embedded sandbox runtime: provider override: the provider must not be nil")
+		}
+		if config.providerOverride.BuildRegistration == nil {
+			return nil, errors.New("app: embedded sandbox runtime: provider override: the registration builder must not be nil")
+		}
+		if config.providerOverride.BuildSnapshot == nil {
+			return nil, errors.New("app: embedded sandbox runtime: provider override: the snapshot builder must not be nil")
+		}
+	}
 	repositoryIdentity, err := embeddedRepositoryIdentity(stateRoot)
 	if err != nil {
 		return nil, fmt.Errorf("app: embedded sandbox runtime: %w", err)
@@ -162,6 +208,9 @@ func NewEmbeddedSandboxRuntime(stateRoot string, now func() time.Time, options .
 		TrustDomainKind:   authority.TrustDomainKindExecution,
 		IsolationDomainId: "host-process",
 	}
+	if config.providerOverride != nil && config.providerOverride.ProviderDomain.IsolationDomainId != "" {
+		providerDomain = config.providerOverride.ProviderDomain
+	}
 	resultIngress := authority.SecurityDomainId{
 		TenantNamespace:   embeddedTenantNamespace,
 		TrustDomainKind:   authority.TrustDomainKindDataCapability,
@@ -175,9 +224,15 @@ func NewEmbeddedSandboxRuntime(stateRoot string, now func() time.Time, options .
 	if err != nil {
 		return nil, fmt.Errorf("app: embedded sandbox runtime: typed-edge runtime: %w", err)
 	}
-	runner, err := local.NewLocalRunner(filepath.Join(stateRoot, "sandbox"), now, config.localOptions...)
-	if err != nil {
-		return nil, fmt.Errorf("app: embedded sandbox runtime: local runner: %w", err)
+	var sandboxProvider port.SandboxProvider
+	if config.providerOverride != nil {
+		sandboxProvider = config.providerOverride.Provider
+	} else {
+		runner, err := local.NewLocalRunner(filepath.Join(stateRoot, "sandbox"), now, config.localOptions...)
+		if err != nil {
+			return nil, fmt.Errorf("app: embedded sandbox runtime: local runner: %w", err)
+		}
+		sandboxProvider = runner
 	}
 	runtime := &EmbeddedSandboxRuntime{
 		stateRoot:      stateRoot,
@@ -187,22 +242,38 @@ func NewEmbeddedSandboxRuntime(stateRoot string, now func() time.Time, options .
 		resultIngress:  resultIngress,
 		store:          store,
 		edgeRuntime:    edgeRuntime,
-		provider:       runner,
+		provider:       sandboxProvider,
 		claims:         map[string]dispatch.DispatchLease{},
 		principals:     map[string]map[sandbox.WorkloadRole]string{},
 		allocations:    map[string][]string{},
 	}
-	registration, err := embeddedLocalRegistration(namespace, providerDomain)
-	if err != nil {
-		return nil, fmt.Errorf("app: embedded sandbox runtime: build local registration: %w", err)
+	var registration provider.ProviderRegistration
+	if config.providerOverride != nil {
+		registration, err = config.providerOverride.BuildRegistration(namespace, providerDomain)
+		if err != nil {
+			return nil, fmt.Errorf("app: embedded sandbox runtime: build provider registration: %w", err)
+		}
+	} else {
+		registration, err = embeddedLocalRegistration(namespace, providerDomain)
+		if err != nil {
+			return nil, fmt.Errorf("app: embedded sandbox runtime: build local registration: %w", err)
+		}
 	}
 	stored, err := store.Put(registration)
 	if err != nil {
 		return nil, fmt.Errorf("app: embedded sandbox runtime: registration submission: %w", err)
 	}
-	snapshot, err := embeddedLocalSnapshot(stored)
-	if err != nil {
-		return nil, fmt.Errorf("app: embedded sandbox runtime: build capability snapshot: %w", err)
+	var snapshot provider.ProviderCapabilitySnapshot
+	if config.providerOverride != nil {
+		snapshot, err = config.providerOverride.BuildSnapshot(stored)
+		if err != nil {
+			return nil, fmt.Errorf("app: embedded sandbox runtime: build capability snapshot: %w", err)
+		}
+	} else {
+		snapshot, err = embeddedLocalSnapshot(stored)
+		if err != nil {
+			return nil, fmt.Errorf("app: embedded sandbox runtime: build capability snapshot: %w", err)
+		}
 	}
 	if err := snapshot.ValidateAgainstRegistration(stored); err != nil {
 		return nil, fmt.Errorf("app: embedded sandbox runtime: capability snapshot alignment: %w", err)
