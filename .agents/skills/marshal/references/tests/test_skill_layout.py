@@ -156,6 +156,32 @@ class SkillLayoutTest(unittest.TestCase):
                 self.assertNotIn("go run", content)
                 self.assertNotIn("go build -o", content)
 
+    def test_test_binaries_are_built_inside_repository(self) -> None:
+        # macOS host security policies may refuse to execute freshly built
+        # unsigned binaries from the per-user system temp directory; every
+        # compiled test helper must land under the repository's gitignored
+        # bin/ tree instead of an anonymous temp directory.
+        tests_root = SKILL_ROOT / "references" / "tests"
+        for path in sorted(tests_root.glob("test_*.py")):
+            content = path.read_text(encoding="utf-8")
+            if '"go", "build"' not in content and '"make", "build"' not in content:
+                continue
+            with self.subTest(filename=path.name):
+                self.assertTrue(
+                    '"bin" / "test"' in content or '"bin/marshal"' in content,
+                    f"{path.name} builds a binary outside the repository bin/ tree",
+                )
+        repository_root = SKILL_ROOT.parents[2]
+        for path in sorted(repository_root.rglob("*_test.go")):
+            parts = path.relative_to(repository_root).parts
+            if parts and parts[0] in (".git", ".marshal", "bin"):
+                continue
+            content = path.read_text(encoding="utf-8")
+            if '"go", "build"' not in content:
+                continue
+            with self.subTest(filename=path.relative_to(repository_root).as_posix()):
+                self.assertIn('"bin", "test"', content)
+
     def test_operator_commands_and_installer_use_stable_marshal_path(self) -> None:
         for filename in ("docs/development.md", "docs/en/quick-start.md", "docs/mac-first-authority-handoff.md"):
             content = (SKILL_ROOT.parents[2] / filename).read_text(encoding="utf-8")

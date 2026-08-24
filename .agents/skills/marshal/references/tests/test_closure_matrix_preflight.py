@@ -12,6 +12,10 @@ import unittest
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
+# macOS host security policies may refuse to execute freshly built unsigned
+# binaries from the per-user system temp directory. Test binaries are built
+# inside the repository's gitignored bin/test directory instead.
+TEST_BUILD_ROOT = REPOSITORY_ROOT / "bin" / "test"
 SKILL_ROOT = REPOSITORY_ROOT / ".agents/skills/marshal"
 VALIDATOR = SKILL_ROOT / "references/validate-closure-matrix-preflight.py"
 SCHEMA = SKILL_ROOT / "references/closure-matrix-preflight.schema.json"
@@ -40,7 +44,8 @@ def write_json(path: Path, value: object) -> None:
 class ClosureMatrixPreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.build_directory = Path(tempfile.mkdtemp(prefix="closure-matrix-marshal.")).resolve()
+        TEST_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
+        cls.build_directory = Path(tempfile.mkdtemp(prefix="closure-matrix-marshal.", dir=TEST_BUILD_ROOT)).resolve()
         cls.marshal = cls.build_directory / "marshal"
         commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, check=True, capture_output=True, text=True).stdout.strip()
         subprocess.run(

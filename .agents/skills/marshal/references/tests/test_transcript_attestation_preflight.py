@@ -17,6 +17,10 @@ from unittest import mock
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
+# macOS host security policies may refuse to execute freshly built unsigned
+# binaries from the per-user system temp directory. Test binaries are built
+# inside the repository's gitignored bin/test directory instead.
+TEST_BUILD_ROOT = REPOSITORY_ROOT / "bin" / "test"
 SKILL_ROOT = REPOSITORY_ROOT / ".agents/skills/marshal"
 VALIDATOR = SKILL_ROOT / "references/validate-transcript-attestation-preflight.py"
 SCHEMA = SKILL_ROOT / "references/transcript-attestation-preflight.schema.json"
@@ -124,7 +128,8 @@ def raw_digest(path: Path) -> str:
 class TranscriptAttestationPreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls._binary_directory = tempfile.TemporaryDirectory()
+        TEST_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
+        cls._binary_directory = tempfile.TemporaryDirectory(dir=TEST_BUILD_ROOT)
         cls.flood_checker = (Path(cls._binary_directory.name) / "transcript-attestation-flood-checker").resolve()
         cls.hang_checker = (Path(cls._binary_directory.name) / "transcript-attestation-hang-checker").resolve()
         cls.flood_marker = (Path(cls._binary_directory.name) / "flood-evidence-consumed").resolve()

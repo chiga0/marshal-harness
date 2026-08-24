@@ -50,7 +50,19 @@ func TestLiveCMUXTerminalSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	launcherExecutable := filepath.Join(t.TempDir(), "marshal")
+	// macOS host security policies may refuse to execute freshly built
+	// unsigned binaries from the per-user temp directory, so the launcher is
+	// built inside the repository's gitignored bin/test directory.
+	buildRoot := filepath.Join(repositoryRoot, "bin", "test")
+	if err := os.MkdirAll(buildRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	buildDir, err := os.MkdirTemp(buildRoot, "cmux-live.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(buildDir) })
+	launcherExecutable := filepath.Join(buildDir, "marshal")
 	build := exec.Command("go", "build", "-o", launcherExecutable, "./cmd/marshal")
 	build.Dir = repositoryRoot
 	if output, buildErr := build.CombinedOutput(); buildErr != nil {

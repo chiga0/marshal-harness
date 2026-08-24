@@ -14,6 +14,10 @@ from unittest import mock
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
+# macOS host security policies may refuse to execute freshly built unsigned
+# binaries from the per-user system temp directory. Test binaries are built
+# inside the repository's gitignored bin/test directory instead.
+TEST_BUILD_ROOT = REPOSITORY_ROOT / "bin" / "test"
 SKILL_ROOT = REPOSITORY_ROOT / ".agents/skills/marshal"
 VALIDATOR = SKILL_ROOT / "references/validate-codex-provider-schema-preflight.py"
 PROFILE = SKILL_ROOT / "references/codex-0.145-provider-schema-profile.json"
@@ -40,7 +44,8 @@ VALIDATOR_MODULE = load_validator_module()
 class CodexProviderSchemaPreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.checker_directory = tempfile.TemporaryDirectory()
+        TEST_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
+        cls.checker_directory = tempfile.TemporaryDirectory(dir=TEST_BUILD_ROOT)
         cls.marshal = (Path(cls.checker_directory.name) / "marshal").resolve()
         cls.receipt_probe = Path(cls.checker_directory.name) / "codex-provider-schema-receipt-probe"
         commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()

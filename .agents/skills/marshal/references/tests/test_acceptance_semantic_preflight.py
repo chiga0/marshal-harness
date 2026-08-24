@@ -16,6 +16,10 @@ from unittest import mock
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
+# macOS host security policies may refuse to execute freshly built unsigned
+# binaries from the per-user system temp directory. Test binaries are built
+# inside the repository's gitignored bin/test directory instead.
+TEST_BUILD_ROOT = REPOSITORY_ROOT / "bin" / "test"
 SKILL_ROOT = REPOSITORY_ROOT / ".agents/skills/marshal"
 VALIDATOR = SKILL_ROOT / "references/validate-acceptance-semantic-preflight.py"
 SCHEMA = SKILL_ROOT / "references/acceptance-semantic-manifest.schema.json"
@@ -91,7 +95,8 @@ VALIDATOR_MODULE = load_validator_module()
 class AcceptanceSemanticPreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls._binary_directory = tempfile.TemporaryDirectory()
+        TEST_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
+        cls._binary_directory = tempfile.TemporaryDirectory(dir=TEST_BUILD_ROOT)
         cls._protected_worktree_directory = tempfile.TemporaryDirectory()
         cls.marshal_binary = Path(cls._binary_directory.name) / "marshal"
         completed = subprocess.run(

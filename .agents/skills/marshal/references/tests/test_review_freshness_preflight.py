@@ -18,6 +18,10 @@ import unittest
 HERE = Path(__file__).resolve().parent
 REFERENCES = HERE.parent
 REPOSITORY = REFERENCES.parents[3]
+# macOS host security policies may refuse to execute freshly built unsigned
+# binaries from the per-user system temp directory. Test binaries are built
+# inside the repository's gitignored bin/test directory instead.
+TEST_BUILD_ROOT = REPOSITORY / "bin" / "test"
 EXAMPLES = REPOSITORY / "schemas" / "examples" / "happy-path"
 VALIDATOR = REFERENCES / "validate-review-freshness-preflight.py"
 CORE = HERE / "review_freshness_core_probe.go"
@@ -39,7 +43,8 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
     maxDiff = None
     @classmethod
     def setUpClass(cls) -> None:
-        cls.core_build_dir = Path(tempfile.mkdtemp(prefix="review-freshness-core.", dir="/private/tmp"))
+        TEST_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
+        cls.core_build_dir = Path(tempfile.mkdtemp(prefix="review-freshness-core.", dir=TEST_BUILD_ROOT))
         cls.core_binary = cls.core_build_dir / "probe"
         subprocess.run(["go", "build", "-o", str(cls.core_binary), str(CORE)], cwd=REPOSITORY, check=True)
         cls.marshal_binary = cls.core_build_dir / "marshal"

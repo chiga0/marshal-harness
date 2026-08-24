@@ -1964,7 +1964,18 @@ func main() {
     fmt.Println(%q)
 }
 `, supportedVersionOutput, validDeclaredResultJSON(), successTranscriptLines()[0], successTranscriptLines()[1], successTranscriptLines()[2], successTranscriptLines()[3])
-	directory := t.TempDir()
+	// macOS host security policies may refuse to execute freshly built
+	// unsigned binaries from the per-user temp directory, so the native
+	// fixture is built inside the repository's gitignored bin/test directory.
+	buildRoot := filepath.Join("..", "..", "..", "bin", "test")
+	if err := os.MkdirAll(buildRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := os.MkdirTemp(buildRoot, "codex-native.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
 	sourcePath := filepath.Join(directory, "main.go")
 	executable := filepath.Join(directory, "codex-native")
 	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
