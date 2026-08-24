@@ -110,7 +110,7 @@ func TestRunPassesFrozenArgvToWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--append-system-prompt", qoderSystemPromptAppend, "--disallowed-tools", "Agent", "--config-dir", filepath.Join(resolved, "config", "qoder"), "--setting-sources", "", "--cwd", resolvedWorktree, "--model", "provider/model"}
+	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--append-system-prompt", qoderSystemPromptAppend, "--disallowed-tools", "Agent", "--allowed-tools", "Bash", "--config-dir", filepath.Join(resolved, "config", "qoder"), "--setting-sources", "", "--cwd", resolvedWorktree, "--model", "provider/model"}
 	if strings.Join(argv, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("argv = %#v, want %#v", argv, want)
 	}
@@ -517,7 +517,7 @@ func successEvents(model string) string {
 
 func successEventsWithDeclaredPayload(model string, payload []byte) string {
 	events := []string{
-		`{"type":"system","subtype":"init","session_id":"sess-1","model":"` + model + `","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"` + model + `","qodercli_version":"1.1.27","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		workerResultTeeToolUseEventWithPayload("tool-result", payload),
 		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-result","content":""}]}}`,
 	}
@@ -529,7 +529,7 @@ func successEventsWithDeclaredPayload(model string, payload []byte) string {
 
 func errorEvents(reason string) string {
 	return emitLines(
-		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.27","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		`{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"`+reason+`","usage":{"input_tokens":1,"output_tokens":0}}`,
 	)
 }

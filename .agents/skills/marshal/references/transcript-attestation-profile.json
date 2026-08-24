@@ -1,7 +1,7 @@
 {
   "profileVersion": "qoder-v7-transcript-attestation-v4",
   "adapterId": "qoder",
-  "binaryVersion": "1.1.23",
+  "binaryVersion": "1.1.27",
   "protocolVersion": "1.2.0",
   "eventContract": "qoder-stream-json-1.2.0-v7",
   "permissionMode": "acceptEdits",

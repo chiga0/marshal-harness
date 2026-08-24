@@ -17,11 +17,11 @@
 | --- | --- | --- | --- | --- |
 | `opencode` | `0.1.0` | OpenCode `1.18.13` | `MARSHAL_OPENCODE_PATH` | `supported` |
 | `qwen` | `0.1.0` | Qwen Code `>=0.21.5 <0.22.0` | `MARSHAL_QWEN_PATH` | `supported` |
-| `qoder` | `0.1.7` | Qoder CLI `>=1.1.23 <1.2.0`（逐 binary evidence） | `MARSHAL_QODER_PATH` | 严格模式 `pending live evidence`；显式 Mac `ordinary-user` 可配置但新 `v7` transport 尚待真实 conformance，不能迁移 `0.1.2/v3`、`0.1.3/v4`、`0.1.4/v5` 或 `0.1.5/v6` 摘要，也不提供 hardened authority |
+| `qoder` | `0.1.8` | Qoder CLI `>=1.1.27 <1.2.0`（逐 binary evidence） | `MARSHAL_QODER_PATH` | 严格模式 `pending live evidence`；显式 Mac `ordinary-user` 可配置但新 `v7` transport 尚待真实 conformance，不能迁移 `0.1.2/v3`、`0.1.3/v4`、`0.1.4/v5`、`0.1.5/v6`、`0.1.6/v7` 或 `0.1.7/v7` 摘要，也不提供 hardened authority |
 | `pi` | `0.2.0` | Pi `0.84.1` | `MARSHAL_PI_PATH` | 代码锁定 `supported`；Live Probe 未执行 |
 | `codex` | `0.1.0` | Codex CLI `0.145.x` | `MARSHAL_CODEX_PATH` | 严格模式待 authenticated fd-exec；显式 Mac `ordinary-user` 可用但不提供 hardened authority |
 
-已注册的三个 Adapter 都只接受显式绝对 executable 路径；注册不搜索 `PATH`，不回退同名或近似命令。Probe 后二进制身份变化会以 `binary-replaced` fail-closed。OpenCode 与 Pi 继续使用精确版本锁；Qwen Code 与 Qoder 均已改为兼容 semver 范围准入（Qwen 为 `>=0.21.5 <0.22.0`，与 Qoder 同模式，范围命中即 supported，minor 边界 0.22.0 及以上仍 fail closed）。Qoder 是唯一额外要求逐 binary credentialed live evidence 的候选 Adapter，命中范围不会继承其他 patch 的证据。Qoder 的每个实际二进制必须以自身 realpath、SHA256 digest、精确版本、当前 host、authority mode、event contract 与 WorkerResult transport digest 重新完成真实 live probe 并取得新 evidence；当前 `0.1.7/v7` 尚无 production live evidence，不能从旧 `0.1.2/v3`、`0.1.3/v4`、`0.1.4/v5`、`0.1.5/v6`、`0.1.6/v7` evidence、receipt 或人工摘要推导 `supported`。Mac ordinary-user 也必须为新 transport 补做真实 conformance 才能晋升为默认 Worker；这项验证只证明普通用户兼容性，不升级为 hardened authority。所有 Adapter 都拒绝前缀匹配与隐式 fallback，并在门禁不满足时于 Worker 进程启动前 fail closed。
+已注册的三个 Adapter 都只接受显式绝对 executable 路径；注册不搜索 `PATH`，不回退同名或近似命令。Probe 后二进制身份变化会以 `binary-replaced` fail-closed。OpenCode 与 Pi 继续使用精确版本锁；Qwen Code 与 Qoder 均已改为兼容 semver 范围准入（Qwen 为 `>=0.21.5 <0.22.0`，与 Qoder 同模式，范围命中即 supported，minor 边界 0.22.0 及以上仍 fail closed）。Qoder 是唯一额外要求逐 binary credentialed live evidence 的候选 Adapter，命中范围不会继承其他 patch 的证据。Qoder 的每个实际二进制必须以自身 realpath、SHA256 digest、精确版本、当前 host、authority mode、event contract 与 WorkerResult transport digest 重新完成真实 live probe 并取得新 evidence；当前 `0.1.8/v7`（ADPT-03：argv 预授权 Bash 工具并把版本下限升至 `1.1.27`）尚无 production live evidence，不能从旧 `0.1.2/v3`、`0.1.3/v4`、`0.1.4/v5`、`0.1.5/v6`、`0.1.6/v7`、`0.1.7/v7` evidence、receipt 或人工摘要推导 `supported`。Mac ordinary-user 也必须为新 transport 补做真实 conformance 才能晋升为默认 Worker；这项验证只证明普通用户兼容性，不升级为 hardened authority。所有 Adapter 都拒绝前缀匹配与隐式 fallback，并在门禁不满足时于 Worker 进程启动前 fail closed。
 
 Codex Adapter #136 仍处于开放状态，不属于上述已注册集合。其 patch 版本门禁为 `0.145.x`，但版本兼容不等于平台执行边界通过：Linux 实现把当前 launcher 与 Codex 源 inode 复制到加入 write/grow/shrink/seal 封印的匿名 `memfd`，digest/version probe 与 Worker exec 全部使用同一持有 FD；Darwin 缺少 `fexecve`/`execveat`，且 `/dev/fd/N` 不能执行，因此 Probe 返回带稳定原因的 `unsupported`，BindConformance 与 Run 均永久拒绝。不得通过同 UID 可 `chmod`/replace 的私有 pathname 快照规避该门禁。Darwin 后续支持需要独立的 signed/privileged launcher 设计及 ADR；在该工作完成并取得独立 conformance 证据前，不关闭 #136、不宣称 Codex Worker ready。
 
@@ -29,7 +29,7 @@ Pi Adapter `0.2.0` 与 Pi `0.84.1` 的升级保持 session protocol 版本精确
 
 ## 能力矩阵
 
-| 能力 | opencode 1.18.13 | qwen >=0.21.5 <0.22.0 | qoder >=1.1.23 <1.2.0 | pi 0.84.1 | codex 0.145.x |
+| 能力 | opencode 1.18.13 | qwen >=0.21.5 <0.22.0 | qoder >=1.1.27 <1.2.0 | pi 0.84.1 | codex 0.145.x |
 | --- | --- | --- | --- | --- | --- |
 | captured transport | 已验收 | 已验收 | hermetic fixture 已验证；真实 credentialed Live E2E 待完成 | 协议 fixture 与单元测试已验证；0.84.1 Live E2E 未执行 | Linux fd-exec 代码路径待独立 Live Conformance；Darwin 不支持 |
 | 结构化输出 | JSONL Event | JSONL Event | `stream-json` 候选合同；production evidence 待完成 | JSONL Event | JSONL Event 契约 fixture 已验证，尚未注册 |
@@ -49,7 +49,7 @@ Pi Adapter `0.2.0` 与 Pi `0.84.1` 的升级保持 session protocol 版本精确
 | --- | --- | --- |
 | opencode | `opencode run --pure --format json` | 环境 allowlist、独立 Temp/Home/Config 与 fail-closed permission 配置；声明 `worker.tools` 时为最小 permission 配置并经 `debug config` 回读校验 |
 | qwen | `qwen --safe-mode --approval-mode auto-edit --exclude-tools ...` | 按名排除 shell、sub-agent、web/network 与 computer-use 工具；`--safe-mode` 关闭 hooks、extensions、skills、MCP 与 QWEN.md；声明 `worker.tools` 时反向排除未声明工具 |
-| qoder | `qodercli --print --output-format stream-json --permission-mode accept_edits --no-session-persistence --config-dir ... --setting-sources "" --cwd ...` | 候选合同使用完整替换环境、独立 config 与隔离 scratch；真实 credentialed live evidence 尚未完成，当前 production 不支持 |
+| qoder | `qodercli --print --output-format stream-json --permission-mode accept_edits --no-session-persistence --allowed-tools Bash --config-dir ... --setting-sources "" --cwd ...` | 候选合同使用完整替换环境、独立 config 与隔离 scratch；Qoder 1.1.28 起 accept_edits 下对 Bash 调用新增 permission 询问（非交互无 handler 会拒发 WorkerResult tee），argv 以 `--allowed-tools Bash` 预授权恢复 1.1.23-1.1.27 既有放行语义，版本下限随之升至 1.1.27；真实 credentialed live evidence 尚未完成，当前 production 不支持 |
 | pi | `pi --mode json --print` 加无 shell 工具 allowlist | `--no-approve`、`--no-extensions`、`--no-skills`、`--no-prompt-templates`、`--no-themes`、`--no-context-files` 等硬化 Flag；声明 `worker.tools` 时 `--tools` 收敛为声明集与工具面的精确交集 |
 | codex | Linux：经 authenticated fd launcher 执行 `codex exec --json --ephemeral`；Darwin：不启动 | `approval=never`、`workspace-write`、显式关闭网络、忽略用户配置/rules；尚未完成独立 Live Conformance 与正式注册 |
 

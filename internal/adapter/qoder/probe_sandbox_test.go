@@ -753,7 +753,7 @@ func candidateTranscript(invocation CandidateProbeInvocation, model string) []by
 }
 
 func candidateTranscriptValues(session, model, challenge string) []byte {
-	return []byte(fmt.Sprintf("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":%q,\"model\":%q,\"qodercli_version\":\"1.1.23\",\"protocol_version\":\"1.2.0\",\"permissionMode\":\"acceptEdits\"}\n{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"challengeDigest\":%q}]}}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"terminal_reason\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n", session, model, challenge))
+	return []byte(fmt.Sprintf("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":%q,\"model\":%q,\"qodercli_version\":\"%s\",\"protocol_version\":\"1.2.0\",\"permissionMode\":\"acceptEdits\"}\n{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"challengeDigest\":%q}]}}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"terminal_reason\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n", session, model, supportedBinary, challenge))
 }
 
 func writeMarkerAt(t *testing.T, directory *os.File, data []byte) {

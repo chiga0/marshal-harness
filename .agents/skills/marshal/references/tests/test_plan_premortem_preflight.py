@@ -14,6 +14,10 @@ import unittest
 
 REFERENCES = Path(__file__).resolve().parents[1]
 REPOSITORY = REFERENCES.parents[3]
+# macOS host security policies may refuse to execute freshly built unsigned
+# binaries from the per-user system temp directory. Test binaries are built
+# inside the repository's gitignored bin/test directory instead.
+TEST_BUILD_ROOT = REPOSITORY / "bin" / "test"
 VALIDATOR = REFERENCES / "validate-plan-premortem-preflight.py"
 SCHEMA = REFERENCES / "plan-premortem-preflight.schema.json"
 TEMPLATE = REFERENCES.parent / "templates" / "plan-premortem-preflight.json"
@@ -35,7 +39,8 @@ def run(command: list[str], cwd: Path) -> str:
 class PlanPremortemPreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.build = Path(tempfile.mkdtemp(prefix="marshal-plan-premortem-build.")).resolve()
+        TEST_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
+        cls.build = Path(tempfile.mkdtemp(prefix="marshal-plan-premortem-build.", dir=TEST_BUILD_ROOT)).resolve()
         cls.marshal = cls.build / "marshal"
         commit = run(["git", "rev-parse", "HEAD"], REPOSITORY)
         subprocess.run(
@@ -64,7 +69,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         run(["git", "commit", "-qm", "base"], self.repository)
         self.source_head = run(["git", "rev-parse", "HEAD"], self.repository)
         self.worker_marker = self.root / "worker-launched"
-        self.qoder = self.fake_executable("qoder", "1.1.23")
+        self.qoder = self.fake_executable("qoder", "1.1.27")
         self.codex = self.fake_executable("codex", "codex-cli 0.145.0")
         self.task = self.task_fixture()
         self.policy = self.policy_fixture()

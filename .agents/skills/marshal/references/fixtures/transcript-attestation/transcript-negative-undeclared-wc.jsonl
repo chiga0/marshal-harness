@@ -1,4 +1,4 @@
-{"type":"system","subtype":"init","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits","session_id":"fixture-session","model":"Performance"}
+{"type":"system","subtype":"init","qodercli_version":"1.1.27","protocol_version":"1.2.0","permissionMode":"acceptEdits","session_id":"fixture-session","model":"Performance"}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"write-1","name":"Write","input":{"file_path":"/fixture/repository/report.md","content":"fixture\n"}}]}}
 {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"write-1","content":"File created"}]}}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"wc-1","name":"Bash","input":{"command":"wc -c < /fixture/repository/report.md","description":"Check report size"}}]}}

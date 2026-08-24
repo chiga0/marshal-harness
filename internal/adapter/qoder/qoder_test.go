@@ -1349,12 +1349,12 @@ func TestConformanceExpiryAtLaunchBoundaryPreventsWorkerStart(t *testing.T) {
 }
 
 func TestSupportedBinaryVersionAllowsCompatiblePatchOnly(t *testing.T) {
-	for _, version := range []string{"1.1.23", "1.1.24", "1.1.999"} {
+	for _, version := range []string{"1.1.27", "1.1.28", "1.1.999"} {
 		if !isSupportedBinaryVersion(version) {
 			t.Fatalf("compatible patch %s rejected", version)
 		}
 	}
-	for _, version := range []string{"1.1.22", "1.0.99", "1.2.0", "2.1.23", "malformed"} {
+	for _, version := range []string{"1.1.26", "1.1.23", "1.0.99", "1.2.0", "2.1.23", "malformed"} {
 		if isSupportedBinaryVersion(version) {
 			t.Fatalf("incompatible version %s accepted", version)
 		}
@@ -1367,10 +1367,10 @@ func TestParseQoderVersionNormalizesBareOutput(t *testing.T) {
 		output  string
 		version string
 	}{
-		{"real", "1.1.23\n", supportedBinary},
-		{"trailing-newline", "1.1.23\n", supportedBinary},
-		{"extra-whitespace", "  1.1.23  \n", supportedBinary},
-		{"unsupported-patch", "1.1.24\n", "1.1.24"},
+		{"real", "1.1.27\n", supportedBinary},
+		{"trailing-newline", "1.1.27\n", supportedBinary},
+		{"extra-whitespace", "  1.1.27  \n", supportedBinary},
+		{"below-floor-patch", "1.1.23\n", "1.1.23"},
 		{"unsupported-minor", "1.2.0\n", "1.2.0"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1410,7 +1410,7 @@ func TestParseQoderVersionRejectsMalformedOutput(t *testing.T) {
 func TestBuildArgsFreezesRealNonInteractiveArgv(t *testing.T) {
 	t.Setenv("MARSHAL_QODER_DISABLE_SEARCH", "")
 	args := buildArgs("provider/model", "/managed/config", "/worktree", false)
-	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--append-system-prompt", qoderSystemPromptAppend, "--disallowed-tools", "Agent", "--config-dir", "/managed/config", "--setting-sources", "", "--cwd", "/worktree", "--model", "provider/model"}
+	want := []string{"--print", "--output-format", "stream-json", "--permission-mode", "accept_edits", "--no-session-persistence", "--append-system-prompt", qoderSystemPromptAppend, "--disallowed-tools", "Agent", "--allowed-tools", "Bash", "--config-dir", "/managed/config", "--setting-sources", "", "--cwd", "/worktree", "--model", "provider/model"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v", args)
 	}
@@ -1557,7 +1557,7 @@ for arg in "$@"; do
     test -d "$HOME" && test -w "$HOME" || exit 9
     printf '%s' "$HOME" > ` + shellQuote(capture) + `
     : > "$HOME/probe-write"
-    printf '%s\n' '1.1.23'
+    printf '%s\n' '1.1.27'
     exit 0
   fi
 done
@@ -1621,7 +1621,7 @@ for arg in "$@"; do
     sleep 60 &
     child=$!
     printf '%s' "$child" > ` + shellQuote(pidPath) + `
-    printf '1.1.23\n'
+    printf '1.1.27\n'
     exit 0
   fi
 done
@@ -1904,7 +1904,7 @@ func TestRunUsesAdapterHeldWorkerResultChannel(t *testing.T) {
 	// closed transcript payload into its unlinked held inode, validates it, and
 	// only then publishes to control output.
 	body := emitLines(
-		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.27","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		workerResultTeeToolUseEventWithPayload("tool-result", declared),
 		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-result","content":""}]}}`,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","usage":{"input_tokens":10,"output_tokens":5}}`,
@@ -1976,7 +1976,7 @@ func TestRunRejectsPostTeeWorkerResultToolSequencesAsPermanentProtocolFailures(t
 	}
 	for name, sequence := range tests {
 		t.Run(name, func(t *testing.T) {
-			events := []string{`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`}
+			events := []string{`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.27","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`}
 			events = append(events, sequence...)
 			events = append(events, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"finished"}]}}`)
 			events = append(events, `{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`)
@@ -2000,7 +2000,7 @@ func TestRunRejectsPostTeeWorkerResultToolSequencesAsPermanentProtocolFailures(t
 
 func TestRunRejectsExitZeroDiffAndProseWithoutTranscriptTeeDeclaration(t *testing.T) {
 	body := "printf '%s' changed > file.txt\n" + emitLines(
-		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.27","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"completed successfully"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`,
 	)
@@ -2169,7 +2169,7 @@ func TestRunRejectsPreexistingResultStagingBeforeWorkerLaunch(t *testing.T) {
 
 func TestRunPersistsQoderPermissionDenialAndReturnsPermanentFailure(t *testing.T) {
 	body := emitLines(
-		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.27","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		workerResultTeeToolUseEvent("tool-1"),
 		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed"}`,
@@ -2200,7 +2200,7 @@ func TestRunPersistsQoderPermissionDenialAndReturnsPermanentFailure(t *testing.T
 
 func TestRunWritesDenialLogThroughHeldOutputDirectory(t *testing.T) {
 	body := emitLines(
-		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.27","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		workerResultTeeToolUseEvent("tool-1"),
 		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false}`,
@@ -2226,7 +2226,7 @@ func TestRunFailsTypedWhenWorkerPreclaimsDenialLog(t *testing.T) {
 	body := `marshal_root=$(dirname "$(dirname "$HOME")")
 printf '%s' 'forged' > "$marshal_root/output/denials.jsonl"
 ` + emitLines(
-		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.23","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
+		`{"type":"system","subtype":"init","session_id":"sess-1","model":"provider/model","qodercli_version":"1.1.27","protocol_version":"1.2.0","permissionMode":"acceptEdits"}`,
 		workerResultTeeToolUseEvent("tool-1"),
 		`{"type":"user","tool_use_result":{"isHardFailure":true},"tool_result_meta":[{"id":"tool-1","non_execution_kind":"permission-rule"}],"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":true,"content":"Permission confirmation required, but no interactive handler is available"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false}`,
@@ -2339,7 +2339,7 @@ printf '%s' 'forged replacement' > "$marshal_root/output/worker-result.json"`
 
 func TestRunRejectsRealProtocolContractDrift(t *testing.T) {
 	for _, drift := range []struct{ old, replacement string }{
-		{`"qodercli_version":"1.1.23"`, `"qodercli_version":"1.1.24"`},
+		{`"qodercli_version":"1.1.27"`, `"qodercli_version":"1.1.24"`},
 		{`"protocol_version":"1.2.0"`, `"protocol_version":"1.3.0"`},
 		{`"permissionMode":"acceptEdits"`, `"permissionMode":"bypassPermissions"`},
 	} {

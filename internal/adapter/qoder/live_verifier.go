@@ -1358,7 +1358,7 @@ func candidateObservedProfileDigest() string {
 	return digestBytes(data)
 }
 func candidateObservedToolPolicyDigest() string {
-	data, _ := json.Marshal(map[string]any{"namedWorkerTools": []string{}, "providerPermissionMode": qoderPermissionMode, "providerDisallowedTools": []string{"Agent"}, "repositoryScope": "isolated-scratch-worktree"})
+	data, _ := json.Marshal(map[string]any{"namedWorkerTools": []string{}, "providerAllowedTools": []string{"Bash"}, "providerPermissionMode": qoderPermissionMode, "providerDisallowedTools": []string{"Agent"}, "repositoryScope": "isolated-scratch-worktree"})
 	return digestBytes(data)
 }
 func digestObservedCandidateCapabilities() string {

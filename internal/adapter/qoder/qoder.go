@@ -22,14 +22,19 @@ import (
 
 const (
 	adapterID = "qoder"
-	// adapterVersion is bumped to 0.1.7 for the system frame tolerance change
-	// (ADPT-02): unknown system subtypes are now ignored as non-semantic
-	// notifications rather than treated as protocol violations.
-	adapterVersion = "0.1.7"
+	// adapterVersion is bumped to 0.1.8 for the Qoder 1.1.28 permission
+	// drift fix (ADPT-03): the hardened argv now pre-authorizes the Bash
+	// tool via --allowed-tools because 1.1.28 started asking a permission
+	// question for Bash calls under accept_edits, which fatally refused the
+	// WorkerResult tee in non-interactive runs.
+	adapterVersion = "0.1.8"
 	// supportedBinary is the minimum verified patch in the compatible 1.1.x
-	// line. Other minor/major lines and older patches fail closed.
-	supportedBinary      = "1.1.23"
-	supportedBinaryRange = ">=1.1.23 <1.2.0"
+	// line. Other minor/major lines and older patches fail closed. The floor
+	// moved from 1.1.23 to 1.1.27 with ADPT-03: the hardened argv now depends
+	// on --allowed-tools, which was verified against real 1.1.27+ help and
+	// cannot be confirmed for 1.1.23-1.1.26.
+	supportedBinary      = "1.1.27"
+	supportedBinaryRange = ">=1.1.27 <1.2.0"
 	maxPromptBytes       = 256 << 10
 	maxResultBytes       = 4 << 20
 	stderrLimit          = 64 << 10
@@ -39,8 +44,10 @@ const (
 	// conformanceEventContract covers transport semantics (staging/tee
 	// discipline, tool sequence validation, terminal outcome contract). It
 	// remains at v7 after ADPT-02 because the system frame tolerance change
-	// only affects the non-semantic system frame ignore policy, which is not
-	// bound by the transport contract digest.
+	// only affects the non-semantic system frame ignore policy, and after
+	// ADPT-03 because the Bash pre-authorization changes only the argv tool
+	// surface, which is bound by the argv and tool-policy digests inside the
+	// probe suite digest; neither is part of the transport contract digest.
 	conformanceEventContract = "qoder-stream-json-1.2.0-v7"
 	qoderProtocolVersion     = "1.2.0"
 	qoderPermissionMode      = "acceptEdits"
@@ -48,7 +55,7 @@ const (
 
 	// conformancePendingReason is the fixed, searchable reason Probe reports
 	// "unsupported" until an independent, credentialed live run verifies the
-	// frozen 1.1.23 argv and stream-json event contract. Hermetic fixtures and
+	// frozen 1.1.27+ argv and stream-json event contract. Hermetic fixtures and
 	// unauthenticated help/version probes never flip this gate.
 	conformancePendingReason = "credentialed live conformance pending: independent runner evidence is not bound to the Qoder CLI identity and stream-json contract"
 )
@@ -258,7 +265,7 @@ func expectedProbeEnvironmentDigest() string {
 }
 
 func expectedProbeToolPolicyDigest() string {
-	data, _ := json.Marshal(map[string]any{"namedWorkerTools": []string{}, "providerPermissionMode": qoderPermissionMode, "providerDisallowedTools": []string{"Agent"}, "repositoryScope": "isolated-scratch-worktree"})
+	data, _ := json.Marshal(map[string]any{"namedWorkerTools": []string{}, "providerAllowedTools": []string{"Bash"}, "providerPermissionMode": qoderPermissionMode, "providerDisallowedTools": []string{"Agent"}, "repositoryScope": "isolated-scratch-worktree"})
 	return digestBytes(data)
 }
 
@@ -647,7 +654,7 @@ func isSupportedBinaryVersion(version string) bool {
 	if _, err := fmt.Sscanf(version, "%d.%d.%d", &major, &minor, &patch); err != nil {
 		return false
 	}
-	return major == 1 && minor == 1 && patch >= 23
+	return major == 1 && minor == 1 && patch >= 27
 }
 
 // Identify pins the version and SHA256 digest of an absolute candidate

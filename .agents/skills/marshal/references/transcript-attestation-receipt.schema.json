@@ -100,7 +100,7 @@
         "runId": { "$ref": "#/$defs/id" },
         "attemptId": { "$ref": "#/$defs/id" },
         "adapterId": { "const": "qoder" },
-        "binaryVersion": { "const": "1.1.23" },
+        "binaryVersion": { "const": "1.1.27" },
         "protocolVersion": { "const": "1.2.0" },
         "eventContract": { "const": "qoder-stream-json-1.2.0-v7" },
         "permissionMode": { "const": "acceptEdits" }

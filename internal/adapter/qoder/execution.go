@@ -332,6 +332,15 @@ func hardeningFlags(configDir string) []string {
 		// provider-side child Worker outside the Run lease and violate the
 		// frozen allowWorkerSubagents=false policy.
 		"--disallowed-tools", "Agent",
+		// Qoder 1.1.28 started asking a permission question for Bash tool
+		// calls under accept_edits (observed live: a WorkerResult tee
+		// heredoc was refused with non_execution_kind="permission-rule"
+		// because a non-interactive run has no handler). Pre-authorizing the
+		// Bash tool restores the 1.1.23-1.1.27 pass-through semantics for
+		// every Bash call; the Marshal transcript gate (tee-last, denial
+		// grading, tool sequence validation) remains the authority and is
+		// unchanged.
+		"--allowed-tools", "Bash",
 	}
 	// Some high-sensitivity ordinary-user tasks deliberately forbid search
 	// tools because Qoder may otherwise emit a path-less Grep/Glob call before

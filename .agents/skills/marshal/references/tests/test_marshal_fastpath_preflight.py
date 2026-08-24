@@ -82,7 +82,7 @@ class MarshalFastpathPreflightTest(unittest.TestCase):
             "#!/bin/sh\n"
             "for arg in \"$@\"; do\n"
             "  if [ \"$arg\" = \"--version\" ]; then\n"
-            "    printf '1.1.23\\n'\n"
+            "    printf '1.1.27\\n'\n"
             "    exit 0\n"
             "  fi\n"
             "done\n"

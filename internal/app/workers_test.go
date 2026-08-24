@@ -83,7 +83,7 @@ func TestNewWorkerRuntimeAllUnconfigured(t *testing.T) {
 
 func TestQoderRegistrationRemainsUnsupportedWithoutAuthorityEvidence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qodercli")
-	script := "#!/bin/sh\nfor arg in \"$@\"; do if [ \"$arg\" = \"--version\" ]; then printf '1.1.23\\n'; exit 0; fi; done\nexit 1\n"
+	script := "#!/bin/sh\nfor arg in \"$@\"; do if [ \"$arg\" = \"--version\" ]; then printf '1.1.27\\n'; exit 0; fi; done\nexit 1\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestQoderRegistrationRemainsUnsupportedWithoutAuthorityEvidence(t *testing.
 
 func TestMacOrdinaryUserModeRegistersQoderAndCodexWithExplicitLabel(t *testing.T) {
 	qoderPath := writeExecutable(t, "qodercli")
-	if err := os.WriteFile(qoderPath, []byte("#!/bin/sh\nprintf '1.1.23\\n'\n"), 0o755); err != nil {
+	if err := os.WriteFile(qoderPath, []byte("#!/bin/sh\nprintf '1.1.27\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	codexPath := writeExecutable(t, "codex")
@@ -168,7 +168,7 @@ func TestOrdinaryUserModeRejectsUnknownValue(t *testing.T) {
 
 func TestMacAuthorityEndpointStatusIsDiagnosticOnly(t *testing.T) {
 	qoderPath := filepath.Join(t.TempDir(), "qodercli")
-	if err := os.WriteFile(qoderPath, []byte("#!/bin/sh\nprintf '1.1.23\\n'\n"), 0o755); err != nil {
+	if err := os.WriteFile(qoderPath, []byte("#!/bin/sh\nprintf '1.1.27\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	codexPath := filepath.Join(t.TempDir(), "codex")
@@ -223,7 +223,7 @@ func TestMacAuthorityEndpointStatusIsDiagnosticOnly(t *testing.T) {
 
 func TestQoderAuthorityConfigCannotActivateWhileADR0034Proposed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "qodercli")
-	script := "#!/bin/sh\nprintf '1.1.23\\n'\n"
+	script := "#!/bin/sh\nprintf '1.1.27\\n'\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
