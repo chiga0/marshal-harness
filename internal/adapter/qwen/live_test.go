@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -151,14 +150,13 @@ func probeCapabilitySnapshot(t *testing.T, executable string) (map[string]any, e
 }
 
 // supportedVersionGateFailure returns the probe-only live gate failure for a
-// probed snapshot, or nil when the probed version belongs to the closed
-// supported set and the probe reported no errors. Its messages are the
-// frozen gate messages.
+// probed snapshot, or nil when the probed version falls within the supported
+// range and the probe reported no errors.
 func supportedVersionGateFailure(snapshot map[string]any) error {
 	status, _ := snapshot["probeStatus"].(string)
 	version, _ := snapshot["binaryVersion"].(string)
-	if status != "supported" || !slices.Contains(supportedBinaries, version) {
-		return fmt.Errorf("live probe = %s/%s, want a supported version inside %v", status, version, supportedBinaries)
+	if status != "supported" || !isSupportedBinary(version) {
+		return fmt.Errorf("live probe = %s/%s, want a supported version in %s", status, version, supportedBinaryRange)
 	}
 	probeErrors, _ := snapshot["probeErrors"].([]any)
 	if len(probeErrors) != 0 {
@@ -239,7 +237,7 @@ func TestLiveProbeGateExemption(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := supportedVersionGateFailure(snapshot)
-		want := fmt.Sprintf("live probe = unsupported/9.9.9, want a supported version inside %v", supportedBinaries)
+		want := fmt.Sprintf("live probe = unsupported/9.9.9, want a supported version in %s", supportedBinaryRange)
 		if got == nil || got.Error() != want {
 			t.Fatalf("gate failure = %v, want frozen message %q", got, want)
 		}
@@ -257,20 +255,16 @@ func TestLiveProbeGateExemption(t *testing.T) {
 			t.Fatalf("unparseable version must fail despite the exemption: %v", err)
 		}
 	})
-	t.Run("exemption-never-widens-closed-supported-set", func(t *testing.T) {
+	t.Run("exemption-never-widens-range-boundary", func(t *testing.T) {
 		t.Setenv(liveProbeExemptionEnv, "1")
-		locked := []string{"0.21.5", "0.21.10", "0.21.11"}
-		if !slices.Equal(supportedBinaries, locked) {
-			t.Fatalf("supportedBinaries drifted under exemption: %v", supportedBinaries)
-		}
-		for _, version := range locked {
+		for _, version := range []string{"0.21.5", "0.21.10", "0.21.11"} {
 			if !isSupportedBinary(version) {
 				t.Fatalf("supported version %s lost membership under exemption", version)
 			}
 		}
-		for _, version := range []string{"0.21.4", "0.21.12", "9.9.9"} {
+		for _, version := range []string{"0.21.4", "0.22.0", "9.9.9"} {
 			if isSupportedBinary(version) {
-				t.Fatalf("version %s must stay outside the closed set under exemption", version)
+				t.Fatalf("version %s must stay outside the supported range under exemption", version)
 			}
 		}
 	})

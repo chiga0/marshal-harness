@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,14 +40,21 @@ const (
 	budgetSessionTurns = 60
 )
 
-// supportedBinaries is the closed set of Qwen Code versions this adapter
-// supports; any version outside the set fails closed.
-var supportedBinaries = []string{"0.21.5", "0.21.10", "0.21.11"}
+// supportedBinaryRange is the semver range admitted by this adapter.
+// 0.21.x patch line is protocol-stable; minor boundary 0.22.0 and above
+// remain fail closed pending independent evidence.
+const supportedBinaryRange = ">=0.21.5 <0.22.0"
 
-// isSupportedBinary reports whether the probed version belongs to the
-// supported set.
+// isSupportedBinary reports whether the probed version falls within the
+// supported range. Non-three-segment or unparseable input fails closed.
+// 0.21.x patch line is protocol-stable; minor boundary (0.22.0) and above
+// remain fail closed.
 func isSupportedBinary(version string) bool {
-	return slices.Contains(supportedBinaries, version)
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(version, "%d.%d.%d", &major, &minor, &patch); err != nil {
+		return false
+	}
+	return major == 0 && minor == 21 && patch >= 5
 }
 
 // liveProbeExemptionEnv names the environment variable that deterministically
@@ -380,7 +386,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	probeErrors := []string{}
 	if !isSupportedBinary(identity.version) {
 		status = "unsupported"
-		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Qwen Code %s，实际为 %s", strings.Join(supportedBinaries, "、"), identity.version))
+		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Qwen Code %s，实际为 %s", supportedBinaryRange, identity.version))
 	}
 	return a.capabilitySnapshot(identity, status, probeErrors)
 }

@@ -20,9 +20,8 @@ import (
 	"github.com/chiga0/marshal-harness/internal/port"
 )
 
-// supportedBinary pins the fixture default to the first member of the
-// supported set; Probe coverage iterates the whole set explicitly.
-var supportedBinary = supportedBinaries[0]
+// supportedBinary pins the fixture default to a known-supported version.
+var supportedBinary = "0.21.5"
 
 func TestNewRequiresExactExecutableAndValidator(t *testing.T) {
 	validator := newValidator(t)
@@ -204,7 +203,10 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 		{"0.21.5", "supported", false},
 		{"0.21.10", "supported", false},
 		{"0.21.11", "supported", false},
+		{"0.21.15", "supported", false},
+		{"0.21.99", "supported", false},
 		{"0.21.4", "unsupported", true},
+		{"0.22.0", "unsupported", true},
 		{"9.9.9", "unsupported", true},
 	} {
 		t.Run(test.version, func(t *testing.T) {
@@ -244,10 +246,8 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 				if !strings.Contains(message, test.version) {
 					t.Fatalf("probeErrors must report the actual version: %v", probeErrors)
 				}
-				for _, supported := range supportedBinaries {
-					if !strings.Contains(message, supported) {
-						t.Fatalf("probeErrors must list supported version %s: %v", supported, probeErrors)
-					}
+				if !strings.Contains(message, supportedBinaryRange) {
+					t.Fatalf("probeErrors must contain the supported range %s: %v", supportedBinaryRange, probeErrors)
 				}
 			} else if len(probeErrors) != 0 {
 				t.Fatalf("probeErrors = %v", probeErrors)
