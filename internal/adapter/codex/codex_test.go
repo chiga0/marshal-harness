@@ -1967,7 +1967,12 @@ func main() {
 	// macOS host security policies may refuse to execute freshly built
 	// unsigned binaries from the per-user temp directory, so the native
 	// fixture is built inside the repository's gitignored bin/test directory.
-	buildRoot := filepath.Join("..", "..", "..", "bin", "test")
+	// The root must resolve to an absolute path: Linux authority checks
+	// reject any executable path that is not absolute and clean.
+	buildRoot, err := filepath.Abs(filepath.Join("..", "..", "..", "bin", "test"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(buildRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
