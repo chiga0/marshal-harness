@@ -218,7 +218,7 @@ flowchart LR
 - dissent 和 open assumptions 不能只写在会消失的汇总散文中；
 - 事实投影、因果分析与流程建议必须分开。
 
-详细设计见[前期研讨、复盘与受控协作](agent-collaboration-and-learning.md)。
+详细合同提案只在 [ADR 0046](https://github.com/chiga0/marshal-harness/blob/main/docs/adr/0046-governed-agent-decision-inputs.md) 维护，避免与用户导读形成两个事实源。
 
 ## 常见名词速查
 
@@ -264,7 +264,7 @@ flowchart LR
 ## 继续阅读
 
 - [快速开始](getting-started.md)
-- [前期研讨、复盘与受控协作](agent-collaboration-and-learning.md)
+- [ADR 0046：Agent 生成决策输入治理](https://github.com/chiga0/marshal-harness/blob/main/docs/adr/0046-governed-agent-decision-inputs.md)（Proposed）
 - [整体架构](https://github.com/chiga0/marshal-harness/blob/main/docs/architecture.md)
 - [当前可用能力](current-status.md)
 - [Roadmap](https://github.com/chiga0/marshal-harness/blob/main/docs/roadmap-status.md)

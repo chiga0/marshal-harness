@@ -23,7 +23,6 @@
 - [Runtime 架构](runtime-architecture.md)：确定性 Control Plane 的规范设计；M7–M13 是其交付路线。
 - [任务生命周期](task-lifecycle.md)：Run 状态、转换和预算。
 - [安全模型](security-model.md)：信任边界、威胁与验收要求。
-- [前期研讨、复盘与受控协作](agent-collaboration-and-learning.md)：Stage 0 Pilot、跨阶段输入治理和延期条件。
 
 ## 契约与执行
 

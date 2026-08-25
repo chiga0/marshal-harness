@@ -336,7 +336,7 @@ L 级、架构、安全或高成本任务在实现前先运行研讨 Pilot。该
 
 当前不自动把复盘内容注入未来 Goal。跨 Goal 学习需等待 ResourceEnvelope、Provider-independent failure attribution、冻结 knowledge snapshot digest 与重复任务 ROI；planning/execution 内禁止 live knowledge query。也不要为了复盘把 `worker|verifier` role 临时放宽或复活旧 Agent 会话；产品化 retrospective workload 需要独立 ADR、principal 和 allowlisted/redacted evidence packet。
 
-Worker 间遇到局部问题时继续由 Lead 升级，或通过已接纳计划中的 immutable Artifact ref 单向同步；当前不使用 mailbox、自由 P2P chat 或 A2A 群聊。完整设计与状态边界见[前期研讨、复盘与受控协作](agent-collaboration-and-learning.md)。
+Worker 间遇到局部问题时继续由 Lead 升级，或通过已接纳计划中的 immutable Artifact ref 单向同步；当前不使用 mailbox、自由 P2P chat 或 A2A 群聊。设计边界只在 [ADR 0046](adr/0046-governed-agent-decision-inputs.md)（Proposed）维护。
 
 ## 11. 心跳 watchdog 与行动队列（防"挂了毫无感知"与"持续报告无交付动作"）
 

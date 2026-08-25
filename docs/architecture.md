@@ -155,7 +155,7 @@ bounded typed payload
 - 跨 Goal 自动学习等待 ResourceEnvelope、故障域外 failure attribution、冻结 knowledge snapshot 和重复任务 ROI；
 - 不实施 Worker mailbox；当前只通过已接纳计划中的 immutable Artifact ref 做单向协作。
 
-以上除 Stage 0/closeout 操作约定外均不是当前产品能力，也不得抢占 Issue #186 R3–R6 的 P0/P1 收敛。详细风险、触发条件和退出门禁见[前期研讨、复盘与受控协作](agent-collaboration-and-learning.md)。
+以上除 Stage 0/closeout 操作约定外均不是当前产品能力，也不得抢占 Issue #186 R3–R6 的 P0/P1 收敛。详细风险、触发条件和退出门禁仅在 Proposed [ADR 0046](adr/0046-governed-agent-decision-inputs.md) 维护，避免多份设计文档漂移。
 
 ## 权威与身份
 
@@ -258,7 +258,7 @@ Rework 会创建新的 Evidence 与 ReviewDecision 绑定；旧 Evidence 不会�
 ## 阅读下一层
 
 - 面向人的分层解释：[十分钟理解 Marshal 架构](architecture-in-10-minutes.md)
-- 前期研讨、复盘与协作边界：[前期研讨、复盘与受控协作](agent-collaboration-and-learning.md)
+- 前期研讨、复盘与协作提案：[ADR 0046](adr/0046-governed-agent-decision-inputs.md)（Proposed）
 - 字段、租约、恢复、SideEffect 和 Goal admission：[Runtime 架构](runtime-architecture.md)
 - 威胁模型与安全验收：[安全模型](security-model.md)
 - Run 状态机：[任务生命周期](task-lifecycle.md)

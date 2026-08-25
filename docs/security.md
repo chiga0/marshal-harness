@@ -13,12 +13,6 @@ Marshal 会运行能够读取代码、修改文件和执行测试的 Agent，因
 - 默认只创建 Draft PR，不自动合并；
 - 失败和中断同样留下结果记录。
 
-## Agent 之间的信息也可能是攻击面
-
-来自另一个 Agent 的调研报告、回答或历史经验仍可能包含错误、过期内容或 Prompt Injection。Marshal 不把“Agent 生成”当作可信来源，也不允许 Worker 通过自然语言转交 credential、lease、DRC 或其它 capability。
-
-当前不会开放自由 Worker mailbox。跨 Worker 只使用已接纳计划中的不可变 Artifact ref；下游显式选择精确 digest，并把内容作为数据而不是指令。未来若让调研、复盘或历史知识进入新 Goal，还必须绑定 producer provenance、purpose/audience 和冻结版本，执行期间不做 live knowledge query。该演进边界仍处于 [ADR 0046](https://github.com/chiga0/marshal-harness/blob/main/docs/adr/0046-governed-agent-decision-inputs.md) Proposed 状态。
-
 ## 当前本地版本能保证什么
 
 本地版本主要防止误操作和流程绕过：它隔离任务工作区、过滤传给 Agent 的环境变量、分离执行与发布凭据，并在发布前检查真实代码和测试结果。

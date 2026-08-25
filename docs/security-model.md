@@ -33,7 +33,7 @@ Marshal 是长期运行并持续调度 Agent 工作负载的确定性 Control Pl
 
 ### 语义边界
 
-TaskSpec 与 Repository Policy 优先于 Worker Prompt 和自动发现的仓库指令。Prompt Injection 不能扩大路径、启用发布、暴露凭据或豁免 Gate。另一个 Agent 的调研报告、回答、复盘或历史经验仍是不可信语义输入；“由 Agent 生成”不构成可信来源。
+TaskSpec 与 Repository Policy 优先于 Worker Prompt 和自动发现的仓库指令。Prompt Injection 不能扩大路径、启用发布、暴露凭据或豁免 Gate。
 
 ### 文件系统边界
 
@@ -83,7 +83,6 @@ Repository Policy 选择最低要求。Adapter 不能满足时必须在 `READY` 
 | Worker 虚报测试通过 | Marshal 重跑精确命令 | 测试本身可能不完整或 Flaky |
 | Worker Push 或开 PR | 移除凭据、禁止发布 Tool、Publisher 分权 | 未 Hardened 时仍可能访问 Ambient Credential |
 | Repository Prompt Injection | 冻结 TaskSpec 优先、记录指令摘要、禁止放宽 Policy | 模型仍可能在允许范围内写出错误代码 |
-| 跨 Worker / 跨 Goal 语义注入 | 当前禁用自由 mailbox 与自动 transcript/知识注入；使用 immutable Artifact ref、producer provenance、显式下游引用 | 内容本身仍可能错误，需要独立 Evidence 与 Review |
 | 恶意 Test/Build Script | Hardened Profile、显式命令、Network/Resource Limit | `workspace-write` 无法隔离恶意脚本 |
 | Secret 写入日志 | Environment Allowlist、有界捕获、Redaction、限制文件权限 | 无法识别所有 Secret |
 | Symlink/Path Traversal | Canonicalization、禁止 `..`、Root Check、禁止逃逸采集 | 平台特有 Race 需要测试 |
@@ -193,7 +192,6 @@ Secret 仅在需要它的授权组件内 Just-in-time 解析。Publisher Credent
 - Provider 观测边界（ADR 0017）：Provider 不得自行宣布 ReviewDecision 或 safe-to-publish；Verification Provider 只能执行独立验证 workload，不得决定 gate/ReviewDecision。
 - Planner 越权与任务爆炸（ADR 0019）：Planner 输出是不可信 `GoalPlanProposal`，不能直接写 ledger、创建 Run 或执行 side effect；Core 必须校验 scope/allowlist、完整 effective DAG、跨 revision cycle 与整个 Goal 的累计节点、并发、Attempt、wall time、compute、token/成本和 Artifact 预算，并在 dispatch 前原子 reservation；
 - Prompt injection 不能扩权：仓库内容、上游 Artifact、Agent transcript 与 Review 文本都不是 Policy 或授权；它们不能改变 repository/scope、executor kind、side-effect class、credential、budget 或 gate；
-- Agent 生成决策输入治理（[ADR 0046](adr/0046-governed-agent-decision-inputs.md)，Proposed）：跨阶段、Worker 或 Goal 的语义内容应先成为 immutable、content-addressed、digest-bound、带 provenance 与 purpose/audience 的有界对象，由下游显式 admission 并冻结引用，始终作为数据而非指令消费；禁止自动 transcript 注入、capability 文本转授和 planning/execution live knowledge query。该条在 ADR 0046 接受前只是演进门槛，不表示 mailbox、Discovery/Retrospective role 或跨 Goal learning 已实现；
 - Evidence 适用性：Evidence bytes 不可变，当前 eligibility 从 subject/base/environment/Policy/Verifier capability/upstream Artifact/有效期依赖派生；依赖变化追加 ineligibility/supersession event，强制 gate 失败不能被 LLM Assessment 覆盖；
 - 副作用与补偿：失败不回滚 authority ledger；cleanup/compensation 是新副作用并重新走 intent/receipt/reconcile。自动执行只限精确 target identity 与冻结 Policy 明确授权；ambiguous、不可逆、高权限或身份冲突均 fail closed；
 - Goal 人工控制：Goal `PAUSED` 停止新 dispatch，resume 以 expectedSequence 写 ledger 并重新校验预算、Evidence、Provider eligibility 与 Policy；暂停期间按 Policy 释放 lease/sandbox，取消 active workload 必须 generation bump/fence。Run 不新增无限等待状态。

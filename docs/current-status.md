@@ -44,7 +44,7 @@ Issue #186 正在把已经存在的组件收敛成唯一 Command/Result 主链�
 - Worker 之间只通过已接纳计划中的不可变 Artifact ref 单向同步，不开放 mailbox 或自由 P2P chat；
 - 复盘内容不会自动注入未来 Goal；跨 Goal 学习和知识快照仍待依赖与审计。
 
-具体边界见[前期研讨、复盘与受控协作](agent-collaboration-and-learning.md)。
+用户解释见[十分钟理解 Marshal 架构](architecture-in-10-minutes.md)；完整合同只在 Proposed [ADR 0046](https://github.com/chiga0/marshal-harness/blob/main/docs/adr/0046-governed-agent-decision-inputs.md) 维护。
 
 ## 能力不会被混淆
 

@@ -82,7 +82,7 @@ marshal doctor --run my-first-run --json
 
 发生中断时先运行这两个只读命令，不要手工删除 `.marshal/` 或任务工作区。更多恢复和清理方法见[日常使用](usage.md)。
 
-第一次接触完整 Control Plane 时，建议先读[十分钟理解 Marshal 架构](architecture-in-10-minutes.md)。大型、模糊或高风险任务在直接编码前，可按[前期研讨、复盘与受控协作](agent-collaboration-and-learning.md)和操作手册执行 Stage 0 调研 Pilot；这仍是人工操作约定，不代表 Goal 编排或 Worker mailbox 已实现。
+第一次接触完整 Control Plane 时，建议先读[十分钟理解 Marshal 架构](architecture-in-10-minutes.md)。大型、模糊或高风险任务的 Stage 0 调研 Pilot 见仓库 [Operator Runbook §10](https://github.com/chiga0/marshal-harness/blob/main/docs/operator-runbook.md#10-多-agent-fan-out-协作模式v02)；它仍是人工操作约定，不代表 Goal 编排或 Worker mailbox 已实现。
 
 ## 当前限制
 

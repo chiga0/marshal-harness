@@ -54,4 +54,4 @@ Marshal 不要求所有 Provider 具有相同能力。系统会在执行前检�
 
 因此，本地进程、容器和云端 Sandbox 可以提供不同强度的隔离，但都必须如实声明并接受相应检查。
 
-完整分层见[十分钟理解 Marshal 架构](architecture-in-10-minutes.md)；前期研讨、复盘和 Worker 协作的取舍见[前期研讨、复盘与受控协作](agent-collaboration-and-learning.md)。
+完整分层，以及前期研讨、复盘和 Worker 协作的取舍，见[十分钟理解 Marshal 架构](architecture-in-10-minutes.md)。
