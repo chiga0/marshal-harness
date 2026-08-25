@@ -24,7 +24,10 @@ const (
 // Validate 拒绝封闭枚举之外的任何值。
 func (kind ApplicationCommandKind) Validate() error {
 	switch kind {
-	case ApplicationCommandKindAttemptStart:
+	case ApplicationCommandKindAttemptStart,
+		ApplicationCommandKindAttemptCancel,
+		ApplicationCommandKindWatchdogTick,
+		ApplicationCommandKindPublicationIntent:
 		return nil
 	default:
 		return fmt.Errorf("command: unknown application command kind %q", string(kind))
@@ -34,21 +37,29 @@ func (kind ApplicationCommandKind) Validate() error {
 // kindMapping 是 ApplicationCommandKind → engine.CommandKind 的封闭映射表。
 // 新增映射必须在此表中显式登记，未登记 kind 一律 fail closed。
 var kindMapping = map[ApplicationCommandKind]engine.CommandKind{
-	ApplicationCommandKindAttemptStart: engine.CommandKindDispatch,
+	ApplicationCommandKindAttemptStart:      engine.CommandKindDispatch,
+	ApplicationCommandKindAttemptCancel:     engine.CommandKindSignal,
+	ApplicationCommandKindWatchdogTick:      engine.CommandKindTimer,
+	ApplicationCommandKindPublicationIntent: engine.CommandKindSideEffect,
 }
 
 // ApplicationCommand 是不可变的应用命令请求对象：携带封闭 kind 枚举、
-// sha256 摘要形式的 requestDigest 与正整数 expectedSequence。
+// sha256 摘要形式的 requestDigest、正整数 expectedSequence，以及按 kind
+// 分支校验的 kind 级 payload 字段（SignalReason/TimerFireAt/SideEffectIntentDigest）。
 type ApplicationCommand struct {
-	Kind             ApplicationCommandKind `json:"kind"`
-	RequestDigest    string                 `json:"requestDigest"`
-	ExpectedSequence int64                  `json:"expectedSequence"`
+	Kind                   ApplicationCommandKind `json:"kind"`
+	RequestDigest          string                 `json:"requestDigest"`
+	ExpectedSequence       int64                  `json:"expectedSequence"`
+	SignalReason           SignalReason           `json:"signalReason,omitempty"`
+	TimerFireAt            string                 `json:"timerFireAt,omitempty"`
+	SideEffectIntentDigest string                 `json:"sideEffectIntentDigest,omitempty"`
 }
 
 // Validate 对全部字段 fail closed 校验：
 //   - kind 必须属于封闭枚举
 //   - requestDigest 必须携带 sha256: 前缀且为 64 位小写十六进制
 //   - expectedSequence 必须 >= 1
+//   - kind 级 payload 字段按 kind 分支校验（见 validateKindPayload）
 func (cmd ApplicationCommand) Validate() error {
 	if err := cmd.Kind.Validate(); err != nil {
 		return err
@@ -59,7 +70,7 @@ func (cmd ApplicationCommand) Validate() error {
 	if cmd.ExpectedSequence < 1 {
 		return fmt.Errorf("command: expectedSequence must be a positive integer")
 	}
-	return nil
+	return validateKindPayload(cmd)
 }
 
 // DeriveDurableCommand 把一条已提交 authority ledger fact 与一条
