@@ -66,8 +66,11 @@ func matchesCompatibilityLine(version, compatibilityLine string) bool {
 		semverComponentPattern.MatchString(parts[2])
 }
 
-func ordinaryUserCompatibilityLine(version string) (string, bool) {
+func ordinaryUserCompatibilityLine(goos, version string) (string, bool) {
 	for _, compatibilityLine := range [...]string{supportedCompatibilityLine, ordinaryUserCompatibilityLine0149} {
+		if compatibilityLine == ordinaryUserCompatibilityLine0149 && goos != "darwin" {
+			continue
+		}
 		if matchesCompatibilityLine(version, compatibilityLine) {
 			return compatibilityLine, true
 		}
@@ -113,6 +116,9 @@ type Adapter struct {
 	now              func() time.Time
 	authority        *AuthorityEvidenceStore
 	ordinaryUserMode bool
+	// platform is frozen from runtime.GOOS by every production constructor.
+	// Tests may replace it only to prove the closed platform matrix on one host.
+	platform string
 
 	mu          sync.Mutex
 	pinned      *executableIdentity
@@ -142,7 +148,7 @@ type Adapter struct {
 
 func (a *Adapter) supportsBinary(version string) bool {
 	if a.ordinaryUserMode {
-		_, supported := ordinaryUserCompatibilityLine(version)
+		_, supported := ordinaryUserCompatibilityLine(a.platform, version)
 		return supported
 	}
 	return isSupportedBinary(version)
@@ -150,7 +156,7 @@ func (a *Adapter) supportsBinary(version string) bool {
 
 func (a *Adapter) schemaCompatibilityLine(version string) (string, bool) {
 	if a.ordinaryUserMode {
-		return ordinaryUserCompatibilityLine(version)
+		return ordinaryUserCompatibilityLine(a.platform, version)
 	}
 	return supportedCompatibilityLine, isSupportedBinary(version)
 }
@@ -195,7 +201,7 @@ func NewWithConformanceAuthority(executable string, validator *contract.Validato
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("codex executable must be an executable regular file")
 	}
-	return &Adapter{executable: realPath, validator: validator, now: time.Now, authority: authority, unsafePathExecutionForTest: unsafePathExecutionForTests}, nil
+	return &Adapter{executable: realPath, validator: validator, now: time.Now, authority: authority, platform: runtime.GOOS, unsafePathExecutionForTest: unsafePathExecutionForTests}, nil
 }
 
 // Identify collects advisory candidate identity for discovery. It never
@@ -254,8 +260,19 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	a.pinIdentity(identity)
 	if a.ordinaryUserMode {
 		failure := ""
+		var adapterFailure *AuthorityFailure
 		if !a.supportsBinary(identity.version) {
 			failure = "Codex CLI version is outside the ordinary-user compatibility line"
+			code := "codex_evidence_contract_mismatch"
+			cause := ErrUnsupportedVersion
+			details := AuthorityFailureDetails{}
+			if matchesCompatibilityLine(identity.version, ordinaryUserCompatibilityLine0149) && a.platform != "darwin" {
+				failure = "Codex CLI ordinary-user compatibility line is unsupported on this platform"
+				code = "codex_platform_unsupported"
+				cause = ErrPlatformUnsupported
+				details.Platform = a.platform
+			}
+			adapterFailure = newAuthorityFailure("probe", code, failure, details, cause, a.now())
 		}
 		status := "supported"
 		probeErrors := []string{}
@@ -272,6 +289,9 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 			"probedAt": a.now().UTC().Format(time.RFC3339Nano),
 		}
 		capability["authorityMode"] = "ordinary-user"
+		if adapterFailure != nil {
+			capability["adapterFailure"] = adapterFailure
+		}
 		return a.capabilityRecord(capability)
 	}
 	if a.hasAtomicAuthoritySource() {

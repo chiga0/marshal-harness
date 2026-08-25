@@ -184,7 +184,11 @@ func TestMacOrdinaryUserModeRegistersAndProbesCodex01491(t *testing.T) {
 	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.BinaryVersion != "0.149.1" || snapshot.ProbeStatus != "supported" || snapshot.AuthorityMode != "ordinary-user" {
+	wantStatus := "unsupported"
+	if runtime.GOOS == "darwin" {
+		wantStatus = "supported"
+	}
+	if snapshot.BinaryVersion != "0.149.1" || snapshot.ProbeStatus != wantStatus || snapshot.AuthorityMode != "ordinary-user" {
 		t.Fatalf("codex 0.149.1 snapshot = %s", record.Data)
 	}
 }
