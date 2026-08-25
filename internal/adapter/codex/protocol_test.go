@@ -53,6 +53,27 @@ func TestCaptureJSONLAcceptsCodex01450RealSmokeSequence(t *testing.T) {
 	}
 }
 
+func TestCaptureJSONLAcceptsCodex01491RealSmokeSequence(t *testing.T) {
+	// 固定 identity 的 0.149.1 Mac ordinary-user probe 保持 0.145 的
+	// event/result transport；新增 usage 字段不参与 Marshal 的授权判断。
+	input := strings.Join([]string{
+		`{"type":"thread.started","thread_id":"01a0387b-6958-7af1-92f2-880cc0365b4e"}`,
+		`{"type":"turn.started"}`,
+		`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"status\":\"ok\"}"}}`,
+		`{"type":"turn.completed","usage":{"input_tokens":20672,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":182,"reasoning_output_tokens":0}}`,
+	}, "\n") + "\n"
+	result, terminations := captureForTest(t, input, 65536)
+	if result.err != nil || terminations != 0 {
+		t.Fatalf("err=%v terminations=%d", result.err, terminations)
+	}
+	if result.threadID == "" || !result.sawTerminal || result.turnCount != 1 || result.itemCount != 1 || result.inputTokens != 20672 || result.outputTokens != 182 {
+		t.Fatalf("capture = %+v", result)
+	}
+	if got := string(result.raw); got != input {
+		t.Fatalf("raw stdout lost byte fidelity: got %q want %q", got, input)
+	}
+}
+
 func TestCaptureJSONLAcceptsRealSequenceWithoutUsage(t *testing.T) {
 	// usage 计数只从已知字段提取且可缺省：缺省保持零值而不是失败。
 	input := `{"type":"thread.started","thread_id":"thread-3"}` + "\n" +

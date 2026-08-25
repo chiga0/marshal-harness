@@ -23,6 +23,10 @@ func providerProfileFixturePath() string {
 	return filepath.Join("..", "..", "..", ".agents", "skills", "marshal", "references", "codex-0.145-provider-schema-profile.json")
 }
 
+func providerProfile0149FixturePath() string {
+	return filepath.Join("..", "..", "..", ".agents", "skills", "marshal", "references", "codex-0.149-provider-schema-profile.json")
+}
+
 func readProviderFixture(t *testing.T, path string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -55,6 +59,33 @@ func TestProviderSchemaCompatibilityMatchesCurrentProjectionAndR16Fixture(t *tes
 	}
 	if result.Status != "pass" || result.ReasonCode != providerSchemaCompatible || result.IssueCount != 0 || len(result.Issues) != 0 {
 		t.Fatalf("compatibility = %+v", result)
+	}
+}
+
+func TestProviderSchemaCompatibilityBindsCodex0149Profile(t *testing.T) {
+	durable, err := contract.SchemaDocument("worker-result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, err := providerSchemaDocument(durable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := readProviderFixture(t, providerProfile0149FixturePath())
+	result, err := CheckProviderSchemaCompatibility(projected, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "pass" || result.ReasonCode != providerSchemaCompatible || result.CLICompatibilityLine != ordinaryUserCompatibilityLine0149 || result.IssueCount != 0 {
+		t.Fatalf("0.149 compatibility = %+v", result)
+	}
+	generated, err := frozenProviderSchemaProfileDocumentForLine(ordinaryUserCompatibilityLine0149)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generatedProfile, fixtureProfile providerSchemaProfile
+	if json.Unmarshal(generated, &generatedProfile) != nil || json.Unmarshal(profile, &fixtureProfile) != nil || !reflect.DeepEqual(generatedProfile, fixtureProfile) {
+		t.Fatal("0.149 operator profile differs from the production profile")
 	}
 }
 
@@ -124,6 +155,24 @@ func TestProviderSchemaProfileDriftFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile["allowedKeywords"] = append(profile["allowedKeywords"].([]any), "description")
+	drifted, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = CheckProviderSchemaCompatibility([]byte(`{"type":"string"}`), drifted)
+	var checkErr *ProviderSchemaCheckError
+	if !errors.As(err, &checkErr) || checkErr.ReasonCode != providerProfileInvalid {
+		t.Fatalf("err = %v, want %s", err, providerProfileInvalid)
+	}
+}
+
+func TestProviderSchemaUnknownCompatibilityLineFailsClosed(t *testing.T) {
+	profileRaw := readProviderFixture(t, providerProfile0149FixturePath())
+	var profile map[string]any
+	if err := json.Unmarshal(profileRaw, &profile); err != nil {
+		t.Fatal(err)
+	}
+	profile["cliCompatibilityLine"] = "0.150.x"
 	drifted, err := json.Marshal(profile)
 	if err != nil {
 		t.Fatal(err)

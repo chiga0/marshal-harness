@@ -60,10 +60,27 @@ type providerSchemaEvidence struct {
 	Observation string `json:"observation"`
 }
 
-func frozenProviderSchemaProfile() providerSchemaProfile {
+func frozenProviderSchemaProfileForLine(compatibilityLine string) (providerSchemaProfile, bool) {
+	var evidence []providerSchemaEvidence
+	switch compatibilityLine {
+	case supportedCompatibilityLine:
+		evidence = []providerSchemaEvidence{
+			{Source: "internal/adapter/codex/execution.go:providerSchemaDocument", Observation: "当前 provider 投影展开 $ref，删除 provider 已拒绝的关键字，把 const 投影为 type+enum，并把全部 object properties 排序后写入 required。"},
+			{Source: "mac-codex-ordinary-smoke-r1-r10-20260819", Observation: "真实 Codex CLI 0.145 普通用户链路依次暴露缺 type、not、required、oneOf、format=uri 与 uniqueItems；本 profile 用单次离线遍历聚合这些结构。"},
+			{Source: "mac-codex-ordinary-smoke-r16-20260819", Observation: "真实成功投影只使用本 profile 的封闭关键字子集；该证据不构成 Codex 官方 JSON Schema 契约。"},
+		}
+	case ordinaryUserCompatibilityLine0149:
+		evidence = []providerSchemaEvidence{
+			{Source: "internal/adapter/codex/execution.go:providerSchemaDocument", Observation: "当前 provider 投影展开 $ref，删除 provider 已拒绝的关键字，把 const 投影为 type+enum，并把全部 object properties 排序后写入 required。"},
+			{Source: "codex-cli-0.149.1-mac-ordinary-user-20260825", Observation: "固定 SHA-256 identity 的真实 CLI 接受冻结 argv 与完整 WorkerResult provider schema，并保持 output-last-message 结果传输。"},
+			{Source: "codex-cli-0.149.1-stream-json-20260825", Observation: "真实 JSONL 保持 thread.started、turn.started、item.completed(agent_message)、turn.completed；新增 usage 计数不参与授权判断。"},
+		}
+	default:
+		return providerSchemaProfile{}, false
+	}
 	return providerSchemaProfile{
 		ProfileVersion: providerSchemaProfileVersion,
-		AdapterID:      adapterID, CLICompatibilityLine: supportedCompatibilityLine,
+		AdapterID:      adapterID, CLICompatibilityLine: compatibilityLine,
 		AuthorityScope: providerSchemaAuthorityScope, AuthorityClaim: providerSchemaAuthorityClaim,
 		MaxSchemaBytes:      providerSchemaMaxBytes,
 		AllowedTypes:        append([]string(nil), providerAllowedTypes...),
@@ -71,16 +88,16 @@ func frozenProviderSchemaProfile() providerSchemaProfile {
 		UnsupportedKeywords: append([]string(nil), providerUnsupportedKeywords...),
 		ObjectPolicy:        providerSchemaObjectPolicy{AdditionalProperties: false, RequiredMustEqualSortedPropertyNames: true},
 		ArrayPolicy:         providerSchemaArrayPolicy{ItemsSchemaRequired: true},
-		Evidence: []providerSchemaEvidence{
-			{Source: "internal/adapter/codex/execution.go:providerSchemaDocument", Observation: "当前 provider 投影展开 $ref，删除 provider 已拒绝的关键字，把 const 投影为 type+enum，并把全部 object properties 排序后写入 required。"},
-			{Source: "mac-codex-ordinary-smoke-r1-r10-20260819", Observation: "真实 Codex CLI 0.145 普通用户链路依次暴露缺 type、not、required、oneOf、format=uri 与 uniqueItems；本 profile 用单次离线遍历聚合这些结构。"},
-			{Source: "mac-codex-ordinary-smoke-r16-20260819", Observation: "真实成功投影只使用本 profile 的封闭关键字子集；该证据不构成 Codex 官方 JSON Schema 契约。"},
-		},
-	}
+		Evidence:            evidence,
+	}, true
 }
 
-func frozenProviderSchemaProfileDocument() ([]byte, error) {
-	return json.Marshal(frozenProviderSchemaProfile())
+func frozenProviderSchemaProfileDocumentForLine(compatibilityLine string) ([]byte, error) {
+	profile, ok := frozenProviderSchemaProfileForLine(compatibilityLine)
+	if !ok {
+		return nil, &ProviderSchemaCheckError{ReasonCode: providerProfileInvalid}
+	}
+	return json.Marshal(profile)
 }
 
 // ProviderSchemaIssue is the stable, aggregate compatibility finding emitted
@@ -217,7 +234,11 @@ func decodeProviderProfile(raw []byte) (providerSchemaProfile, error) {
 	decoder := json.NewDecoder(bytes.NewReader(normalized))
 	decoder.DisallowUnknownFields()
 	var profile providerSchemaProfile
-	if err := decoder.Decode(&profile); err != nil || !reflect.DeepEqual(profile, frozenProviderSchemaProfile()) {
+	if err := decoder.Decode(&profile); err != nil {
+		return providerSchemaProfile{}, &ProviderSchemaCheckError{ReasonCode: providerProfileInvalid}
+	}
+	expected, supported := frozenProviderSchemaProfileForLine(profile.CLICompatibilityLine)
+	if !supported || !reflect.DeepEqual(profile, expected) {
 		return providerSchemaProfile{}, &ProviderSchemaCheckError{ReasonCode: providerProfileInvalid}
 	}
 	return profile, nil

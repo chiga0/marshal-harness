@@ -152,6 +152,47 @@ func TestMacOrdinaryUserModeRegistersQoderAndCodexWithExplicitLabel(t *testing.T
 	}
 }
 
+func TestMacOrdinaryUserModeRegistersAndProbesCodex01491(t *testing.T) {
+	codexPath := writeExecutable(t, "codex")
+	if err := os.WriteFile(codexPath, []byte("#!/bin/sh\nprintf 'codex-cli 0.149.1\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtimeValue, err := NewWorkerRuntime(staticEnv(map[string]string{
+		"MARSHAL_CODEX_PATH": codexPath,
+		"MARSHAL_CODEX_MODE": "ordinary-user",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := configurationByID(t, runtimeValue, "codex")
+	if !configuration.Registered || configuration.Outcome != WorkerOutcomeRegistered || configuration.AuthorityMode != "ordinary-user" {
+		t.Fatalf("codex configuration = %+v", configuration)
+	}
+	worker, err := runtimeValue.Registry().Resolve("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := worker.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		BinaryVersion string `json:"binaryVersion"`
+		ProbeStatus   string `json:"probeStatus"`
+		AuthorityMode string `json:"authorityMode"`
+	}
+	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus := "unsupported"
+	if runtime.GOOS == "darwin" {
+		wantStatus = "supported"
+	}
+	if snapshot.BinaryVersion != "0.149.1" || snapshot.ProbeStatus != wantStatus || snapshot.AuthorityMode != "ordinary-user" {
+		t.Fatalf("codex 0.149.1 snapshot = %s", record.Data)
+	}
+}
+
 func TestOrdinaryUserModeRejectsUnknownValue(t *testing.T) {
 	path := writeExecutable(t, "qodercli")
 	runtimeValue, err := NewWorkerRuntime(staticEnv(map[string]string{
