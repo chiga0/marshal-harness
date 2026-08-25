@@ -20,6 +20,8 @@
 
 2026-08-24，按 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) Planning Baseline v3 的 R0 步骤 4 起草并接受三份增量 ADR（均 Accepted，接受证据：独立 reviewer 对 R0 产物审查 verdict=accept 且 P0/P1 清零，仅 P2/P3 finding 已随接受同批修复）：ADR 0043 冻结 WorkerExecutor、WorkerRuntimeProfile 与 Agent/Sandbox 双 binding（per-Attempt binding set 分别 current-ledger recheck，任一 binding revoke/expire/replace 停止旧组合接纳，production profile 禁止宿主 bypass）；ADR 0044 冻结 DRC-bound ResultIngress 为唯一外部结果接纳路径与冷热双路径（合法 replay 幂等，伪造/撤销/晚到结果 fail closed 入 quarantine，接纳事务与 authority fact/outbox 原子提交）；ADR 0045 冻结 strangler cutover 判定合同（normalized business trace 逐字段对比为唯一等价性证据、canary 分级推进、legacy 降级后删除 host bypass、Local MVP 零回退门禁）并把单一恢复模型（resume/fence/new Attempt 与 `marshal explain`）指向 R4。DRC 沿用 ADR 0018 冻结定义，不新增字段。三份 ADR 接受只冻结合同，未实现，不升级 M0–M9 状态、不解除 M10–M13 暂停，相关现状事实见 [i186-r0-baseline-report.md](../research/i186-r0-baseline-report.md)。
 
+2026-08-25，针对编码前研讨、复盘学习和 Worker 协作提出 ADR 0046（Proposed）：提议冻结 Agent 生成语义内容跨阶段/Worker/Goal 前的 immutable、content-addressed、digest-bound、provenance-bearing、purpose/audience-bound 与显式 admission 规则；接受 Stage 0 研讨和事实 closeout 的操作 Pilot，延后跨 Goal 学习，并在没有可测瓶颈前拒绝实施 Worker mailbox。该 ADR 尚未接受，不新增 Core 状态、`WorkloadRole`、Provider Port、credential 或 production path，也不改变 I186-R3–R6 排期。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -59,3 +61,4 @@
 | [0043](0043-worker-executor-profile-and-dual-binding.md) | WorkerExecutor、WorkerRuntimeProfile 与 Agent/Sandbox 双 binding（per-Attempt binding set 分别 current-ledger recheck、AgentLaunchSpec immutable、production profile 禁止宿主 bypass，Issue #186/#187） | 已接受（Accepted，2026-08-24；接受只冻结合同，未实现，不升级 milestone 状态） |
 | [0044](0044-result-ingress-and-cold-hot-paths.md) | DRC-bound ResultIngress 唯一外部结果接纳路径与冷热双路径（replay 幂等、伪造/撤销/晚到 fail closed 入 quarantine、接纳事务原子提交，Issue #186/#187） | 已接受（Accepted，2026-08-24；接受只冻结合同，未实现，不升级 milestone 状态） |
 | [0045](0045-strangler-cutover-and-single-recovery.md) | Strangler cutover 判定合同（normalized trace 对比、canary 分级、host bypass 删除、Local MVP 零回退）与单一恢复模型指向（resume/fence/new Attempt + explain，Issue #186/#187） | 已接受（Accepted，2026-08-24；接受只冻结合同，未实现，不升级 milestone 状态） |
+| [0046](0046-governed-agent-decision-inputs.md) | Agent 生成决策输入治理、Stage 0 研讨、复盘三段分离、冻结知识快照与 Worker mailbox 延期条件 | 提议（Proposed，2026-08-25；未接受，不构成实现授权或当前产品能力） |

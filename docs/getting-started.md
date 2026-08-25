@@ -82,6 +82,8 @@ marshal doctor --run my-first-run --json
 
 发生中断时先运行这两个只读命令，不要手工删除 `.marshal/` 或任务工作区。更多恢复和清理方法见[日常使用](usage.md)。
 
+第一次接触完整 Control Plane 时，建议先读[十分钟理解 Marshal 架构](architecture-in-10-minutes.md)。大型、模糊或高风险任务在直接编码前，可按[前期研讨、复盘与受控协作](agent-collaboration-and-learning.md)和操作手册执行 Stage 0 调研 Pilot；这仍是人工操作约定，不代表 Goal 编排或 Worker mailbox 已实现。
+
 ## 当前限制
 
 这个安装得到的是本地单用户版本，不包含常驻 `marshal-server`、远程 Sandbox、Web UI 或复杂 Goal 编排。最新进展见[当前可用能力](current-status.md)。

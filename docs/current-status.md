@@ -27,7 +27,7 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 ## 正在建设
 
-以下能力已有明确设计，但当前发行版还不能提供：
+Issue #186 正在把已经存在的组件收敛成唯一 Command/Result 主链。R0–R2 已完成，R3-A/R3-B 已接纳，当前推进 per-Attempt Agent/Sandbox 双 binding recheck；之后仍需恢复/explain、strangler cutover 和 conformance。下列能力虽然有设计或局部组件，当前发行版仍不能作为完整受支持能力提供：
 
 - 常驻的 `marshal-server` 和面向客户端的网络接口；
 - 远程任务队列与分布式执行；
@@ -36,6 +36,15 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 - 多用户身份、项目级权限和完整的服务端审计；
 - 跨多个任务推进复杂目标、动态重规划和累计预算控制；
 - Web 控制台和完整的 Provider SDK。
+
+## 可以试行、但不是产品能力
+
+- L 级或高风险任务可在编码前使用多个 `publication:none` 调研 Run，由 Lead 人工汇总后再进入 plan/admission；
+- 大型或异常任务结束后可生成事实 closeout，并把因果解释和改进建议标为不可信 Assessment/Proposal；
+- Worker 之间只通过已接纳计划中的不可变 Artifact ref 单向同步，不开放 mailbox 或自由 P2P chat；
+- 复盘内容不会自动注入未来 Goal；跨 Goal 学习和知识快照仍待依赖与审计。
+
+具体边界见[前期研讨、复盘与受控协作](agent-collaboration-and-learning.md)。
 
 ## 能力不会被混淆
 
@@ -47,10 +56,10 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 近期建设顺序是：
 
-1. 把现有本地能力迁移到统一的 Runtime 基座；
-2. 提供常驻服务和远程任务分发；
-3. 接入 Cloudflare Sandbox，并验证执行环境可以替换；
-4. 完成生产存储、高可用、自托管部署和长时间稳定性测试；
-5. 在稳定平台上增加复杂 Goal 编排。
+1. 完成 Agent/Sandbox 双 Provider binding 与执行位置证据；
+2. 收敛单一恢复模型和 `marshal explain`；
+3. 通过 strangler cutover 删除 production host bypass；
+4. 完成多拓扑 conformance、性能与 soak，再重排远程平台路线；
+5. R6 后先评估 bounded Scheduler 和 Minimal Goal，再决定生态协议、复杂 Goal 与学习能力。
 
 详细的工程 Milestone、协议和验收记录保留在 GitHub 仓库中，供贡献者和维护者使用，不属于用户站点的默认阅读内容。

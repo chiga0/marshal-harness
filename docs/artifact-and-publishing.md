@@ -57,6 +57,20 @@ Failure Report、Crash 信息、Provider Error、Blocker 与 No-change Analysis�
 
 Path 必须明确相对 Run Bundle 还是 Repository Root。Portable Report 默认不包含绝对宿主机路径。
 
+## Agent 生成的决策输入（Proposed）
+
+调研报告、dissent、open assumption、复盘分析与候选经验若要影响另一个阶段、Worker 或 Goal，不能只存在于聊天记录中。按 Proposed [ADR 0046](adr/0046-governed-agent-decision-inputs.md)，它们还必须声明：
+
+- canonical content digest 与不可变版本；
+- producer principal、Goal/Run/Attempt 和输入 provenance；
+- purpose、target audience、适用 scope 与时效；
+- fact / inference / assessment / proposal 分类；
+- supersession 关系和明确的下游引用。
+
+下游按精确 digest 显式消费，并把引用加入冻结输入；内容始终作为不可信数据，不能携带或转授 credential、DRC、lease、capability 或 Policy。当前 `ArtifactManifest` 主要是 Run-level 交付合同；它并不自动构成跨 Run/Goal 的 durable handoff、知识注入或 Worker mailbox。上述能力在 ADR/Schema/接线完成前保持 Proposed。
+
+当前 Worker 协作只采用 Artifact-mediated 单向模式：producer 发布不可变对象，下游按已接纳计划消费，Core 在 fan-in 重新核对来源、scope、依赖和 digest。共享可变目录、自动 transcript 注入和自由 P2P chat 不属于受支持路径。
+
 ## 成功 Coding Task 的交付物
 
 除非 TaskSpec 缩小范围，Published Coding Change 应包含：
