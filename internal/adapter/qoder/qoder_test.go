@@ -2268,6 +2268,179 @@ func TestRunRejectsExecutableDriftAfterConformance(t *testing.T) {
 	}
 }
 
+func TestOrdinaryUserKeepsConfiguredExecutablePathStable(t *testing.T) {
+	fixture := newRunFixture(t, supportedBinary, "exit 0")
+	fixture.adapter.ordinaryUserMode = true
+	identity, err := fixture.adapter.inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stable, err := openStableOrdinaryExecutable(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stable.close()
+	if stable.path != fixture.executable || stable.path != fixture.adapter.executable {
+		t.Fatalf("ordinary launch path = %q, want configured realpath %q", stable.path, fixture.executable)
+	}
+	if stable.source == nil || identity.path != fixture.executable || !validSHA256Digest(identity.digest) || identity.device == 0 || identity.inode == 0 || identity.version != supportedBinary {
+		t.Fatalf("ordinary held identity is incomplete: identity=%+v source=%v", identity, stable.source)
+	}
+	if strings.Contains(stable.path, "marshal-qoder-exec-") {
+		t.Fatalf("ordinary-user selected an anonymous executable: %q", stable.path)
+	}
+}
+
+func TestOrdinaryUserIdentityClosureMatrix(t *testing.T) {
+	type mutation struct {
+		name  string
+		apply func(*testing.T, string, string)
+	}
+	mutations := []mutation{
+		{name: "in-place-digest", apply: func(t *testing.T, path, _ string) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, append(data, []byte("\n# in-place drift\n")...), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "rename-same-bytes-new-inode", apply: func(t *testing.T, path, _ string) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replacement := path + "-same-bytes"
+			if err := os.WriteFile(replacement, data, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(replacement, path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "symlink", apply: func(t *testing.T, path, _ string) {
+			held := path + "-held"
+			if err := os.Rename(path, held); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(held, path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "delete", apply: func(t *testing.T, path, _ string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "chmod", apply: func(t *testing.T, path, _ string) {
+			if err := os.Chmod(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "fifo", apply: func(t *testing.T, path, _ string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := unix.Mkfifo(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "unsupported-version", apply: func(t *testing.T, path, body string) {
+			if err := os.WriteFile(path, []byte(fakeScript("1.2.0", body)), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, phase := range []string{"probe-to-run", "pre-start", "post-start"} {
+		for _, mutation := range mutations {
+			t.Run(phase+"/"+mutation.name, func(t *testing.T) {
+				marker := filepath.Join(t.TempDir(), "drifted-worker-ran")
+				body := "sleep 5\ntouch " + shellQuote(marker) + "\n" + successEvents("provider/model")
+				fixture := newRunFixture(t, supportedBinary, body)
+				fixture.adapter.ordinaryUserMode = true
+				if _, err := fixture.adapter.Probe(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+
+				var unrelated *exec.Cmd
+				if phase == "post-start" && mutation.name == "rename-same-bytes-new-inode" {
+					unrelated = exec.Command("/bin/sh", "-c", "sleep 30")
+					if err := unrelated.Start(); err != nil {
+						t.Fatal(err)
+					}
+					defer func() {
+						_ = unrelated.Process.Kill()
+						_ = unrelated.Wait()
+					}()
+				}
+				apply := func() { mutation.apply(t, fixture.executable, body) }
+				switch phase {
+				case "probe-to-run":
+					apply()
+				case "pre-start":
+					fixture.adapter.beforeLaunchGuard = apply
+				case "post-start":
+					fixture.adapter.afterStartGuard = apply
+				}
+
+				started := time.Now()
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_, err := fixture.adapter.Run(ctx, fixture.request)
+				cancel()
+				failure, ok := port.AsAdapterFailure(err)
+				if !errors.Is(err, ErrIdentityDrift) || !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+					t.Fatalf("error = %v, want ErrIdentityDrift protocol-invalid/do-not-retry", err)
+				}
+				if elapsed := time.Since(started); elapsed >= 2*time.Second {
+					t.Fatalf("identity closure was not bounded: %s", elapsed)
+				}
+				if _, err := os.Stat(marker); !os.IsNotExist(err) {
+					t.Fatal("drifted owned process group survived closure")
+				}
+				if unrelated != nil {
+					if err := unrelated.Process.Signal(syscall.Signal(0)); err != nil {
+						t.Fatalf("unrelated process was terminated: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestOrdinaryUserFirstUnsupportedVersionRemainsUnsupported(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "unsupported-ran")
+	fixture := newRunFixture(t, "9.9.9", "touch "+shellQuote(marker))
+	fixture.adapter.ordinaryUserMode = true
+	fixture.adapter.mu.Lock()
+	fixture.adapter.pinned = nil
+	fixture.adapter.conformance = nil
+	fixture.adapter.mu.Unlock()
+	_, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if !errors.Is(err, ErrUnsupportedVersion) || errors.Is(err, ErrIdentityDrift) {
+		t.Fatalf("error = %v, want first-observation ErrUnsupportedVersion only", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("unsupported first-observation executable ran")
+	}
+}
+
+func TestOrdinaryUserRunReportsStableExecutableIdentity(t *testing.T) {
+	fixture := newRunFixture(t, supportedBinary, successEvents("provider/model"))
+	fixture.adapter.ordinaryUserMode = true
+	record, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result declaredResult
+	if err := json.Unmarshal(record.Data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Adapter.Executable != fixture.executable || strings.Contains(result.Adapter.Executable, "marshal-qoder-exec-") {
+		t.Fatalf("ordinary WorkerResult executable = %q, want configured stable realpath %q", result.Adapter.Executable, fixture.executable)
+	}
+}
+
 func TestLaunchSnapshotSurvivesConfiguredExecutableReplacement(t *testing.T) {
 	oldMarker, newMarker := filepath.Join(t.TempDir(), "old"), filepath.Join(t.TempDir(), "new")
 	executable := fakeExecutable(t, supportedBinary, "touch "+shellQuote(oldMarker))
@@ -2282,6 +2455,9 @@ func TestLaunchSnapshotSurvivesConfiguredExecutableReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
+	if snapshot == executable || !strings.Contains(snapshot, "marshal-qoder-exec-") {
+		t.Fatalf("hardened launch stopped using its immutable snapshot: %q", snapshot)
+	}
 	if err := os.WriteFile(executable, []byte(fakeScript(supportedBinary, "touch "+shellQuote(newMarker))), 0o700); err != nil {
 		t.Fatal(err)
 	}

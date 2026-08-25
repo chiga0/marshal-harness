@@ -188,7 +188,7 @@ func captureProbeStream(reader io.Reader, limit int64, onLimit func()) streamCap
 // process: process group, cancellation/timeout kill, and bounded stdout/stderr
 // capture. It owns local process semantics only and never interprets the
 // qoder protocol payload.
-func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arguments []string, prompt []byte, workingDirectory string, environment []string, outputLimit int64, launchGuard func() error) (attemptObservation, error) {
+func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arguments []string, prompt []byte, workingDirectory string, environment []string, outputLimit int64, launchGuard, postStartGuard func() error) (attemptObservation, error) {
 	command := exec.Command(executable, arguments...)
 	command.Dir = workingDirectory
 	command.Env = environment
@@ -232,6 +232,24 @@ func (a *Adapter) runLocalAttempt(runCtx context.Context, executable string, arg
 		_ = stderr.Close()
 		_ = stderrWriter.Close()
 		return attemptObservation{}, fmt.Errorf("start qoder: %w", err)
+	}
+	// Mac ordinary-user mode executes the configured stable pathname rather
+	// than an anonymous snapshot. Recheck that pathname immediately after
+	// Start as well as immediately before it. If it drifted, terminate only
+	// the process group created by this command while its leader remains
+	// waitable; never signal a numeric group after reaping it.
+	if postStartGuard != nil {
+		if err := postStartGuard(); err != nil {
+			_ = stdoutWriter.Close()
+			_ = stderrWriter.Close()
+			_ = command.Process.Kill()
+			observationErr := waitProcessExitNoReap(command.Process.Pid)
+			signalOwnedProcessGroup(observationErr, command.Process.Pid, syscall.Kill)
+			_ = command.Wait()
+			_ = stdout.Close()
+			_ = stderr.Close()
+			return attemptObservation{}, err
+		}
 	}
 	// Only the child process tree may retain the writer ends after Start.
 	_ = stdoutWriter.Close()
@@ -653,7 +671,7 @@ func lexicalPathWithin(root, relative string) (string, error) {
 }
 
 func digestFile(path string) (string, error) {
-	file, err := os.Open(path)
+	file, err := openExecutablePathNoFollow(path)
 	if err != nil {
 		return "", err
 	}
@@ -663,6 +681,24 @@ func digestFile(path string) (string, error) {
 		return "", err
 	}
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// openExecutablePathNoFollow is the only pathname opener used for Qoder
+// executable bytes. O_NONBLOCK makes a hostile FIFO replacement bounded;
+// O_NOFOLLOW and the immediate fstat reject symlinks and every non-regular
+// object before any read or version probe can consume it.
+func openExecutablePathNoFollow(path string) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	info, statErr := file.Stat()
+	if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		_ = file.Close()
+		return nil, errors.New("qoder executable must be an executable regular file")
+	}
+	return file, nil
 }
 
 func digestBytes(data []byte) string {
@@ -676,6 +712,109 @@ func validSHA256Digest(value string) bool {
 	}
 	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
 	return err == nil
+}
+
+// stableOrdinaryExecutable retains the source inode used to establish the
+// ordinary-user identity while launching the configured realpath directly.
+// This avoids creating a new anonymous executable identity on every Mac run.
+// It is deliberately not an authenticated or hardened execution primitive.
+type stableOrdinaryExecutable struct {
+	path     string
+	source   *os.File
+	identity executableIdentity
+}
+
+func openStableOrdinaryExecutable(identity executableIdentity) (*stableOrdinaryExecutable, error) {
+	if !filepath.IsAbs(identity.path) || filepath.Clean(identity.path) != identity.path {
+		return nil, fmt.Errorf("%w: configured executable path is not absolute and clean", ErrIdentityDrift)
+	}
+	real, err := filepath.EvalSymlinks(identity.path)
+	if err != nil || real != identity.path {
+		return nil, fmt.Errorf("%w: configured executable realpath changed", ErrIdentityDrift)
+	}
+	source, err := openExecutablePathNoFollow(identity.path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: configured executable path is unavailable", ErrIdentityDrift)
+	}
+	stable := &stableOrdinaryExecutable{path: identity.path, source: source, identity: identity}
+	if err := stable.verify(); err != nil {
+		_ = source.Close()
+		return nil, err
+	}
+	return stable, nil
+}
+
+func (stable *stableOrdinaryExecutable) close() {
+	if stable != nil && stable.source != nil {
+		_ = stable.source.Close()
+		stable.source = nil
+	}
+}
+
+// verify binds the retained source and current pathname to the inspected raw
+// SHA-256, device/inode and executable mode. The exact raw digest also binds
+// the already-observed version output to these bytes; no second executable is
+// introduced merely to repeat --version at the launch boundary.
+func (stable *stableOrdinaryExecutable) verify() error {
+	if stable == nil || stable.source == nil {
+		return fmt.Errorf("%w: retained executable identity is unavailable", ErrIdentityDrift)
+	}
+	if stable.path != stable.identity.path || stable.identity.version == "" ||
+		!filepath.IsAbs(stable.path) || filepath.Clean(stable.path) != stable.path {
+		return fmt.Errorf("%w: configured executable identity is incomplete", ErrIdentityDrift)
+	}
+	sourceInfo, err := stable.source.Stat()
+	if err != nil || !sourceInfo.Mode().IsRegular() || sourceInfo.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("%w: retained executable inode is unavailable", ErrIdentityDrift)
+	}
+	device, inode, ok := executableDeviceInode(sourceInfo)
+	if !ok || device != stable.identity.device || inode != stable.identity.inode {
+		return fmt.Errorf("%w: retained executable inode changed", ErrIdentityDrift)
+	}
+	sourceDigest, err := digestOpenExecutable(stable.source)
+	if err != nil || sourceDigest != stable.identity.digest {
+		return fmt.Errorf("%w: retained executable bytes changed", ErrIdentityDrift)
+	}
+	current, err := openExecutablePathNoFollow(stable.path)
+	if err != nil {
+		return fmt.Errorf("%w: configured executable path is unavailable", ErrIdentityDrift)
+	}
+	defer current.Close()
+	currentInfo, err := current.Stat()
+	if err != nil || !currentInfo.Mode().IsRegular() || currentInfo.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("%w: configured executable path is unsafe", ErrIdentityDrift)
+	}
+	currentDevice, currentInode, ok := executableDeviceInode(currentInfo)
+	if !ok || currentDevice != device || currentInode != inode || !os.SameFile(sourceInfo, currentInfo) {
+		return fmt.Errorf("%w: configured executable pathname changed", ErrIdentityDrift)
+	}
+	currentDigest, err := digestOpenExecutable(current)
+	if err != nil || currentDigest != sourceDigest {
+		return fmt.Errorf("%w: configured executable bytes changed", ErrIdentityDrift)
+	}
+	return nil
+}
+
+func executableDeviceInode(info os.FileInfo) (uint64, uint64, bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Ino == 0 {
+		return 0, 0, false
+	}
+	return uint64(stat.Dev), uint64(stat.Ino), true
+}
+
+func digestOpenExecutable(file *os.File) (string, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 // snapshotExecutable copies the inspected executable into a private immutable
@@ -692,7 +831,7 @@ func snapshotExecutable(ctx context.Context, identity executableIdentity) (strin
 		cleanup()
 		return "", nil, err
 	}
-	source, err := os.Open(identity.path)
+	source, err := openExecutablePathNoFollow(identity.path)
 	if err != nil {
 		cleanup()
 		return "", nil, err
