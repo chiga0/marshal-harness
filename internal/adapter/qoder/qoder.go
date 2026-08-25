@@ -87,6 +87,8 @@ type Adapter struct {
 	authorityConfigPath string
 	authorityFenceRoot  string
 	beforeLaunchGuard   func()
+	afterStartGuard     func()
+	beforeVersionProbe  func()
 
 	mu                           sync.Mutex
 	pinned                       *executableIdentity
@@ -142,7 +144,12 @@ func (a *Adapter) ID() string { return adapterID }
 func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	identity, err := a.inspect(ctx)
 	if err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, a.ordinaryIdentityDrift(err)
+	}
+	if a.ordinaryUserMode {
+		if err := a.verifyExecutionIdentity(identity); err != nil {
+			return domain.Record{}, a.ordinaryIdentityDrift(err)
+		}
 	}
 	a.pinIdentity(identity)
 	probeErrors := []string{}
@@ -380,7 +387,10 @@ func currentHostFingerprint() (string, error) {
 // the external verifier and the production consumer.
 func CurrentHostFingerprint() (string, error) { return currentHostFingerprint() }
 
-type executableIdentity struct{ path, digest, version string }
+type executableIdentity struct {
+	path, digest, version string
+	device, inode         uint64
+}
 
 // boundConformance retains the authority evidence freshness boundary as well
 // as the executable identity. Keeping only the identity would turn a
@@ -399,7 +409,7 @@ type boundConformance struct {
 func (a *Adapter) pinIdentity(identity executableIdentity) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.conformance != nil {
+	if a.conformance != nil || a.pinned != nil {
 		return
 	}
 	pinned := identity
@@ -574,26 +584,42 @@ func (a *Adapter) verifyExecutionIdentity(identity executableIdentity) error {
 // inspect pins the executable identity through realpath and SHA256 and reads
 // the binary version for the patch-compatible gate applied by Probe and Run.
 func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
-	info, err := os.Stat(a.executable)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return executableIdentity{}, errors.New("configured qoder executable is unavailable")
+	source, err := openExecutablePathNoFollow(a.executable)
+	if err != nil {
+		if structuralExecutablePathError(err) {
+			return executableIdentity{}, fmt.Errorf("%w: configured qoder executable is unavailable", errExecutableIdentityUnavailable)
+		}
+		return executableIdentity{}, fmt.Errorf("inspect configured qoder executable: %w", err)
 	}
-	digest, err := digestFile(a.executable)
+	defer source.Close()
+	info, err := source.Stat()
+	if err != nil {
+		return executableIdentity{}, fmt.Errorf("stat configured qoder executable: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return executableIdentity{}, fmt.Errorf("%w: configured qoder executable is unavailable", errExecutableIdentityUnavailable)
+	}
+	device, inode, ok := executableDeviceInode(info)
+	if !ok {
+		return executableIdentity{}, fmt.Errorf("%w: configured qoder executable device/inode is unavailable", errExecutableIdentityUnavailable)
+	}
+	digest, err := digestOpenExecutable(source)
 	if err != nil {
 		return executableIdentity{}, err
+	}
+	if a.beforeVersionProbe != nil {
+		a.beforeVersionProbe()
 	}
 	version, err := readBinaryVersion(ctx, a.executable)
 	if err != nil {
 		return executableIdentity{}, err
 	}
-	confirmedDigest, err := digestFile(a.executable)
-	if err != nil {
-		return executableIdentity{}, err
+	identity := executableIdentity{path: a.executable, digest: digest, version: version, device: device, inode: inode}
+	stable := &stableOrdinaryExecutable{path: a.executable, source: source, identity: identity}
+	if err := stable.verify(); err != nil {
+		return executableIdentity{}, fmt.Errorf("%w: executable changed during identity inspection", err)
 	}
-	if confirmedDigest != digest {
-		return executableIdentity{}, fmt.Errorf("%w: executable changed during identity inspection", ErrIdentityDrift)
-	}
-	return executableIdentity{a.executable, digest, version}, nil
+	return identity, nil
 }
 
 // readBinaryVersion runs `<executable> --version` inside the sanitized probe
@@ -741,17 +767,29 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	identity, err := a.inspect(ctx)
 	if err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, a.ordinaryIdentityDrift(err)
+	}
+	if err := a.verifyExecutionIdentity(identity); err != nil {
+		return domain.Record{}, a.ordinaryIdentityDrift(err)
 	}
 	if !isSupportedBinaryVersion(identity.version) {
 		return domain.Record{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
 	}
-	if err := a.verifyExecutionIdentity(identity); err != nil {
-		return domain.Record{}, err
-	}
-	launchExecutable, cleanupExecutable, err := snapshotExecutable(ctx, identity)
-	if err != nil {
-		return domain.Record{}, err
+	var launchExecutable string
+	var stableExecutable *stableOrdinaryExecutable
+	var cleanupExecutable func()
+	if a.ordinaryUserMode {
+		stableExecutable, err = openStableOrdinaryExecutable(identity)
+		if err != nil {
+			return domain.Record{}, a.ordinaryIdentityDrift(err)
+		}
+		launchExecutable = stableExecutable.path
+		cleanupExecutable = stableExecutable.close
+	} else {
+		launchExecutable, cleanupExecutable, err = snapshotExecutable(ctx, identity)
+		if err != nil {
+			return domain.Record{}, err
+		}
 	}
 	defer cleanupExecutable()
 	worktree, err := filepath.EvalSymlinks(request.WorktreePath)
@@ -844,8 +882,25 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if a.beforeLaunchGuard != nil {
 		a.beforeLaunchGuard()
 	}
-	launchGuard := func() error { return a.verifyExecutionIdentity(identity) }
-	observation, err := a.runLocalAttempt(runCtx, launchExecutable, buildArgs(task.model, configDir, worktree, task.disableAllTools), prompt, worktree, workerEnvironment(worktree, configDir), int64(request.MaxOutputBytes), launchGuard)
+	launchGuard := func() error {
+		if err := a.verifyExecutionIdentity(identity); err != nil {
+			return a.ordinaryIdentityDrift(err)
+		}
+		if stableExecutable != nil {
+			return a.ordinaryIdentityDrift(stableExecutable.verify())
+		}
+		return nil
+	}
+	var postStartGuard func() error
+	if stableExecutable != nil {
+		postStartGuard = func() error {
+			if a.afterStartGuard != nil {
+				a.afterStartGuard()
+			}
+			return a.ordinaryIdentityDrift(stableExecutable.verify())
+		}
+	}
+	observation, err := a.runLocalAttempt(runCtx, launchExecutable, buildArgs(task.model, configDir, worktree, task.disableAllTools), prompt, worktree, workerEnvironment(worktree, configDir), int64(request.MaxOutputBytes), launchGuard, postStartGuard)
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -973,6 +1028,22 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, qoderProtocolInvalid("output directory binding changed before result publication", a.now())
 	}
 	return domain.Record{Kind: domain.KindWorkerResult, Data: data}, nil
+}
+
+func (a *Adapter) ordinaryIdentityDrift(err error) error {
+	if err == nil || !a.ordinaryUserMode {
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	a.mu.Lock()
+	pinned := a.pinned != nil
+	a.mu.Unlock()
+	if !errors.Is(err, ErrIdentityDrift) && !(pinned && errors.Is(err, errExecutableIdentityUnavailable)) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", qoderProtocolInvalid("configured ordinary-user executable identity drift", a.now()), ErrIdentityDrift)
 }
 
 func encodeDenialLog(records []denials.Record) ([]byte, error) {
