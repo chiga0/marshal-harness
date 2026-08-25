@@ -113,19 +113,7 @@ func (s AgentLaunchSpec) Validate() error {
 // Digest returns the deterministic sha256 digest of the canonical JSON
 // representation of this spec.
 func (s AgentLaunchSpec) Digest() (string, error) {
-	raw, err := json.Marshal(specJSON{
-		AdapterID:           s.AdapterID,
-		AdapterVersion:      s.AdapterVersion,
-		RunID:               s.RunID,
-		AttemptID:           s.AttemptID,
-		Executable:          s.Executable,
-		ExecutableDigest:    s.ExecutableDigest,
-		WorkingDirectory:    s.WorkingDirectory,
-		Arguments:           s.Arguments,
-		Environment:         s.Environment,
-		ProfileDigest:       s.ProfileDigest,
-		MigrationProvenance: s.MigrationProvenance,
-	})
+	raw, err := json.Marshal(specJSON(s))
 	if err != nil {
 		return "", fmt.Errorf("agentruntime: spec serialisation failed: %w", err)
 	}
