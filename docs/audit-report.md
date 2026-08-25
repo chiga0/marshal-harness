@@ -639,34 +639,3 @@ Qoder v7 operator-local transcript attestation 不再构建或复制随机临时
 R19/R20 的共同边界：它们证明 Codex `0.145.0` macOS `ordinary-user` Worker 的路径、digest、session、transcript、WorkerResult、verification、artifact、candidate、scope 与 base 绑定；不证明 hardened authority、Linux authority、sandbox 或远端发布。当前 watchdog 暂停新 Worker 调度；容量恢复时也必须先满足 fresh provider signal、scope 互斥、独立 worktree 与 admission receipt。
 
 本次文档增补不改变信任边界、持久化契约、生命周期或发布权限，因此不新增 ADR；也不关闭 `AGENT-AUTHORITY-*`、Qoder live conformance、Qwen admission、Issue #53/#138 等既有开放项。
-
-## Issue #186：用户可理解性、研讨、协作与学习闭环审计（2026-08-25）
-
-Issue #186 的 WorkerExecutor、双 Provider binding、ResultIngress 与 strangler 路线解决了主执行链的权威和恢复问题，但用户复核指出：架构术语已经超过普通使用者的理解负担；完整 Goal 也不能只呈现为 Lead 直接派发 Worker，还需覆盖编码前的调研/方案审计、执行中的 Worker 协作，以及结束后的复盘与知识沉淀。本轮将这些问题显式登记，避免它们作为聊天建议游离在 Roadmap 之外。
-
-| ID | 级别 | 状态 | 问题与处置 / 关闭条件 |
-| --- | --- | --- | --- |
-| `I186-DOC-HUMAN-MODEL` | P1 | `CLOSED-DOCS` | 新增《十分钟理解 Marshal 架构》，以软件工厂心智模型解释每层职责、WorkerRuntimeProfile、Agent/Sandbox 分权、ResultIngress、冷热路径和 ACP/A2A/MCP；首页、快速开始、总体架构和主导航建立入口，并逐项标注当前能力与目标设计。该关闭只解决可读性，不表示目标能力已实现。 |
-| `I186-PRE-EXEC-DELIBERATION` | P1 | `OPEN-DESIGN` | 当前 Run 主链和 Goal proposal 合同未把 Intake/Discovery/Deliberation 产品化；现阶段按 Runbook `publication:none` 调研队人工执行。关闭要求在 I186-R6 后的 Minimal Goal 评估中冻结 `ResearchFinding`/`OptionProposal`、只读 profile、dissent 处置、计划接纳和 replan 回路，并以 Schema、negative fixture 与真实大型任务证明。 |
-| `I186-WORKER-COORDINATION` | P1 | `OPEN-DESIGN` | 当前无 Core-mediated Worker mailbox；开放自由 P2P 会形成隐式状态机、authority/capability 泄漏和不可审计循环。关闭要求先 ADR 冻结封闭消息类型、scope/plan/budget 升级规则、消息配额、crash/replay/revoke、不可变 Artifact ref 和 explain 投影；Worker 消息始终为 observation，禁止 credential/DRC/lease 转授。当前继续由 Lead 中转并使用独立 worktree/报告。 |
-| `I186-RETROSPECTIVE-LEARNING` | P1 | `OPEN-DESIGN` | 当前有 Outcome、Evidence 和人工审计材料，但没有 Goal Retrospective 与跨 Goal 知识治理。关闭要求冻结 `RetrospectiveReport`/`LessonCandidate`/change proposal、强制触发条件、provenance/confidence/applicability/freshness/expiry、批准与测效链；复盘不得直接修改 Policy 或自动把原始 Worker 消息注入未来可信上下文。现阶段 Runbook 要求大型/异常任务保存轻量复盘。 |
-
-2026-08-25 随后两轮独立复审又指出 ADR 0043–0045 与 R1 出口内部的授权和可测性缺口。其总体 verdict 接受 R0/R1 证据和架构方向，但以下 finding 保持开放；它们是对既有路线的增量 hardening，不回滚 R1 的已通过运行证据，也不能因“文档已记录”视为关闭：
-
-| ID | 级别 | 状态 | 问题与处置 / 关闭条件 |
-| --- | --- | --- | --- |
-| `I186-ARCH-LOCATION-ATTESTATION` | P0 | `OPEN-CONTRACT` | ADR 0043 把执行位置 evidence 的产出职责写给 SandboxProvider，存在被证明方自证。必须区分 `provider-asserted location claim` 与故障域外产生的 `authority-verified location fact`；只有后者可支撑 production assurance/publication。需 ADR amendment、Schema source 标注、Local Kernel-held pid/cgroup/VM handle 或独立 attestation，以及伪造位置 claim 的负向 fixture。 |
-| `I186-ARCH-EFFECT-SINK-FENCING` | P1 | `OPEN-CONTRACT` | binding/result admission recheck 只保护 ledger，不能阻止已撤销 Worker 先产生外部效果。ADR 0043 必须明确它是必要不充分条件；SCM、Artifact、Secret 与其他 effect sink 在 mutation/使用前各自执行 current generation/fencing/authorization/target recheck，并覆盖 revoke→effect 竞态。 |
-| `I186-ARCH-HOT-PATH-AUTHORITY` | P1 | `OPEN-CONTRACT` | ADR 0044 热路径描述可能允许 heartbeat 就地续 lease，checkpoint 也可能未经完整校验进入 Restore。合同必须冻结：热路径永不延长 lease/generation、永不决定 fencing、永不产生冷路径不可复现的 authority；checkpoint 只有经过冷路径完整校验后才可 Restore。 |
-| `I186-ARCH-DUAL-BINDING-RECHECK` | P1 | `OPEN-TEST` | 既有 DRC 不直接携带 profile/AgentBinding 摘要，正确性依赖 `attemptId → immutable profile` 解析。R2 ResultIngress 必须分别核对 AgentBinding 与 SandboxBinding registration/snapshot digest，并增加仅一侧 revoked/replaced 的双向负向 fixture。 |
-| `I186-ARCH-CUTOVER-EQUIVALENCE` | P1 | `OPEN-DESIGN` | ADR 0045 要求 old/new 的全部 digest 相等，对真实非确定 Agent 不可满足。R5 前必须把门禁拆成真实 Agent 也必须相等的 authority trace invariants，以及只适用于 deterministic Fake 的 content digest equality；真实 Agent 内容质量使用不劣化统计和 resource envelope 解释，不允许人工“解释掉”硬差异。 |
-| `I186-ARCH-RESOURCE-CLASSIFICATION-AUTHORITY` | P1 | `OPEN-CONTRACT` | `ResourceEnvelope.observedPeak`、termination reason 与 `infra-failure` 分类权尚未明确。能够豁免 semantic rework budget 或放宽 retry 的结论必须由 workload/Provider 故障域外 observation 推导；Provider 声明只能用于诊断或收紧自己的权限。R2 contract cleanup 需冻结 source、digest 和分类方向性并做伪造 infra-failure 负测。 |
-| `I186-ARCH-JIT-ADMISSION-RECHECK` | P1 | `OPEN-CONTRACT` | JIT provision 消除了空 allocation，却扩大 admission→provision 时间窗。Provision 前必须重新检查 AdmissionDecision `validUntil`、registration/snapshot generation 和当前 Policy；该门禁进入 R2 早期，不留到 R6。 |
-| `I186-ARCH-PROTOCOL-REVISION-MIGRATION` | P1 | `OPEN-CONTRACT` | `acp → acp/v1` 等封闭枚举升级会改变历史 snapshot 的解释。历史 snapshot/digest 不重写、不重新解释，只能 Supersede 生成新 snapshot；unversioned 历史值不满足需要 pinned revision 的 admission。R2 contract cleanup 冻结迁移规则，即使 ACP required path 仍保持关闭。 |
-| `I186-ARCH-CANDIDATE-IDENTITY` | P1 | `OPEN-CONTRACT` | 当前 Candidate identity 仍强绑定 Attempt，可能把 Attempt→Candidate 1:1 固化为未来破坏性约束。R2 contract cleanup 至少证明 Candidate 具有不从 attemptId 派生的独立 identity，Evidence 绑定 Candidate identity；本项不提前启用多 Candidate fan-out。 |
-
-ADR 0045 的 `marshal explain run` 已经位于 R4 Exit Gate，不另开 finding；实现与非作者故障矩阵仍是关闭证据。上述 P0/P1 需要新的 disposition、owner/milestone、合同修订与独立 reviewer verdict，Issue 评论本身不关闭任何一项。
-
-目标生命周期收敛为 `Intake → Discovery → Deliberation → Plan Proposal → Admission → Execute → Verify/Review → Publish → Retrospective → Knowledge Governance`。复杂度按 Fast/Standard/Deliberative 分级，不能让全部任务支付最重协议成本。完整设计见[前期研讨、Worker 协作与复盘](agent-collaboration-and-learning.md)。
-
-本轮只增加解释层、当前操作纪律和开放设计 finding，不新增 Core 状态、Provider Port、credential、发布权限或持久化 Schema，因此不新增 ADR，也不改变 I186-R0→R6 顺序。后三项在实现前分别需要 ADR；未经该步骤，不得把外部群聊、共享可变目录或自动知识注入接入 production 路径。

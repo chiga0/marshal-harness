@@ -77,7 +77,6 @@ nav:
   - 开始:
       - 首页: index.md
       - Marshal 是什么: concepts.md
-      - 十分钟理解架构: architecture-in-10-minutes.md
       - 当前可用能力: current-status.md
       - 快速开始: getting-started.md
   - 使用 Marshal:
@@ -85,5 +84,4 @@ nav:
       - 在 Codex 中使用: marshal-skill.md
   - 了解设计:
       - 工作原理: how-it-works.md
-      - Agent 协作与复盘: agent-collaboration-and-learning.md
       - 安全与隐私: security.md

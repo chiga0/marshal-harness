@@ -17,13 +17,11 @@
 
 ## 核心规范
 
-- [十分钟理解 Marshal 架构](architecture-in-10-minutes.md)：面向使用者和新贡献者的架构心智模型与术语导读。
 - [愿景与范围](vision-and-scope.md)：产品目标、非目标与成功标准。
 - [总体架构](architecture.md)：Marshal 终态产品架构及当前交付映射。
-- [Runtime 架构](runtime-architecture.md)：确定性 Control Plane 的规范设计；当前按 Issue #186 的 I186-R0→R6 纵切路线先收敛主执行链，再重排 M10–M13。
+- [Runtime 架构](runtime-architecture.md)：确定性 Control Plane 的规范设计；M7–M13 是其交付路线。
 - [任务生命周期](task-lifecycle.md)：Run 状态、转换和预算。
 - [安全模型](security-model.md)：信任边界、威胁与验收要求。
-- [前期研讨、Worker 协作与复盘](agent-collaboration-and-learning.md)：复杂 Goal 的讨论、协作、Artifact 同步和知识治理目标设计。
 
 ## 契约与执行
 
