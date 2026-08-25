@@ -20,6 +20,8 @@
 
 2026-08-24，按 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) Planning Baseline v3 的 R0 步骤 4 起草并接受三份增量 ADR（均 Accepted，接受证据：独立 reviewer 对 R0 产物审查 verdict=accept 且 P0/P1 清零，仅 P2/P3 finding 已随接受同批修复）：ADR 0043 冻结 WorkerExecutor、WorkerRuntimeProfile 与 Agent/Sandbox 双 binding（per-Attempt binding set 分别 current-ledger recheck，任一 binding revoke/expire/replace 停止旧组合接纳，production profile 禁止宿主 bypass）；ADR 0044 冻结 DRC-bound ResultIngress 为唯一外部结果接纳路径与冷热双路径（合法 replay 幂等，伪造/撤销/晚到结果 fail closed 入 quarantine，接纳事务与 authority fact/outbox 原子提交）；ADR 0045 冻结 strangler cutover 判定合同（normalized business trace 逐字段对比为唯一等价性证据、canary 分级推进、legacy 降级后删除 host bypass、Local MVP 零回退门禁）并把单一恢复模型（resume/fence/new Attempt 与 `marshal explain`）指向 R4。DRC 沿用 ADR 0018 冻结定义，不新增字段。三份 ADR 接受只冻结合同，未实现，不升级 M0–M9 状态、不解除 M10–M13 暂停，相关现状事实见 [i186-r0-baseline-report.md](../research/i186-r0-baseline-report.md)。
 
+2026-08-26，针对 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 起草 ADR 0047（Proposed）：提议冻结 Marshal 自身在 Darwin 上的 `darwin-adhoc-build`、`darwin-managed-development`、`darwin-notarized-release` 三种封闭 profile、稳定 identifier/trust anchor、版本化安装收据、CLI pre-mutation gate、升级/回滚以及 signing/notarization/release 分权。该提案把外部 provision 的 certificate/企业 allowlist、不可回滚 current receipt/high-water authority 和新鲜 policy observation 定为不可由仓库代码替代的前置；artifact/release 与 deployment/install receipt signer 必须为不同 principal/key，只有纯进程内 `version`、`help`、bootstrap `doctor --self` 可在身份无效时诊断。Apple notarization 与企业 EDR policy 是两条独立门禁。ADR 尚未接受、未实现，不表示 Issue #212 已关闭或当前 Marshal binary 可用于产品 Run。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -59,3 +61,4 @@
 | [0043](0043-worker-executor-profile-and-dual-binding.md) | WorkerExecutor、WorkerRuntimeProfile 与 Agent/Sandbox 双 binding（per-Attempt binding set 分别 current-ledger recheck、AgentLaunchSpec immutable、production profile 禁止宿主 bypass，Issue #186/#187） | 已接受（Accepted，2026-08-24；接受只冻结合同，未实现，不升级 milestone 状态） |
 | [0044](0044-result-ingress-and-cold-hot-paths.md) | DRC-bound ResultIngress 唯一外部结果接纳路径与冷热双路径（replay 幂等、伪造/撤销/晚到 fail closed 入 quarantine、接纳事务原子提交，Issue #186/#187） | 已接受（Accepted，2026-08-24；接受只冻结合同，未实现，不升级 milestone 状态） |
 | [0045](0045-strangler-cutover-and-single-recovery.md) | Strangler cutover 判定合同（normalized trace 对比、canary 分级、host bypass 删除、Local MVP 零回退）与单一恢复模型指向（resume/fence/new Attempt + explain，Issue #186/#187） | 已接受（Accepted，2026-08-24；接受只冻结合同，未实现，不升级 milestone 状态） |
+| [0047](0047-marshal-darwin-self-identity-and-release-signing.md) | Marshal Darwin 自身执行身份、安装收据/current high-water、CLI pre-mutation gate 与 release/deployment signer 分权（Issue #212） | 提议（Proposed，2026-08-26；未接受、未实现，外部 certificate/allowlist/current authority 尚需部署者 provision） |
