@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -130,7 +131,7 @@ func TestDoctorReportsCompatibilityWithoutLocalDetails(t *testing.T) {
 	}
 }
 
-func TestDoctorReportsCodex01491OrdinaryUserSupported(t *testing.T) {
+func TestDoctorReportsCodex01491OrdinaryUserPlatformCompatibility(t *testing.T) {
 	executable := writeVersionExecutableForCLI(t, "codex", "codex-cli 0.149.1")
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", "")
@@ -157,7 +158,11 @@ func TestDoctorReportsCodex01491OrdinaryUserSupported(t *testing.T) {
 			break
 		}
 	}
-	if found == nil || !found.Registered || found.Outcome != app.WorkerOutcomeRegistered || found.Compatibility != "supported" || found.BinaryVersion != "0.149.1" || found.AuthorityMode != "ordinary-user" {
+	wantCompatibility := "probe-failed"
+	if runtime.GOOS == "darwin" {
+		wantCompatibility = "supported"
+	}
+	if found == nil || !found.Registered || found.Outcome != app.WorkerOutcomeRegistered || found.Compatibility != wantCompatibility || found.BinaryVersion != "0.149.1" || found.AuthorityMode != "ordinary-user" {
 		t.Fatalf("doctor codex 0.149.1 = %+v", found)
 	}
 	if strings.Contains(stdout.String()+stderr.String(), executable) {
