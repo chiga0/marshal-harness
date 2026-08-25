@@ -84,4 +84,5 @@ nav:
       - 在 Codex 中使用: marshal-skill.md
   - 了解设计:
       - 工作原理: how-it-works.md
+      - 十分钟理解架构: architecture-in-10-minutes.md
       - 安全与隐私: security.md

@@ -1,6 +1,6 @@
 # 整体架构
 
-> 规范状态：Marshal 终态整体架构，更新于 2026-08-11；依据已接受的 [ADR 0016–0019](adr/README.md)。当前实现与计划状态以 [Roadmap](roadmap-status.md) 为准。
+> 规范状态：Marshal 终态整体架构，更新于 2026-08-25；依据已接受的 [ADR 0016–0019、0043–0045](adr/README.md)。Agent 生成决策输入的治理边界由 [ADR 0046](adr/0046-governed-agent-decision-inputs.md) 提议，尚未接受，本文会显式标为 Proposed。当前实现与计划状态以 [Roadmap](roadmap-status.md) 为准。
 
 本文定义 Marshal 的整体产品架构：系统由哪些部分组成、权威在哪里、Executor 如何协作，以及 embedded/local 与 C/S 如何共享同一业务语义。Local MVP 仅在“当前交付映射”中说明，不定义系统边界。字段级契约与故障语义见 [Runtime 架构](runtime-architecture.md)。
 
@@ -14,6 +14,7 @@ Marshal 的目标不是让一个 Agent 或进程连续运行数月，而是提�
 - LLM、Worker、Verifier、Reviewer、Provider 和 durable backend 只能提供输入或传输；
 - Sandbox、Agent 和 Runtime 进程可以丢弃，权威账本不能依赖它们；
 - 安全与质量来自确定性门禁、独立 Evidence、最小权限和可重放状态，而不是 Agent 自我声明；
+- Agent 生成的调研、消息、复盘和历史经验不能自动成为后续上下文、Policy 或 authority；
 - Cloudflare Sandbox、Temporal、OpenHands、ACP 或 A2A 都只能是可替换集成，不成为 Core 定义。
 
 ## 当前交付映射
@@ -22,8 +23,9 @@ Marshal 的目标不是让一个 Agent 或进程连续运行数月，而是提�
 | --- | --- | --- |
 | Local MVP（M0–M6） | `USABLE` | CLI-first 模块化单体、独立 worktree、Worker Adapter、Verification、Review/Rework、GitHub Draft Publisher、恢复与审计 |
 | Runtime 设计（M7） | `PASSED` | C/S、SandboxProvider、Provider Port、权威/actor 分离、Typed Execution 与 Goal admission 已冻结 |
-| Runtime 平台（M8–M12） | `PLANNED` | Sandbox SPI、`marshal-server`、远程 Provider、HA、SDK 与 soak 尚未实现 |
-| Goal orchestration（M13） | `PLANNED` | Goal DAG、Planner admission、跨 Run Evidence、预算和人工暂停尚未实现 |
+| Runtime 基础（M8–M9） | `PASSED`（组件门禁） | Sandbox SPI、`marshal-server`、Provider registration、transport 与 durable engine 切片已交付；不表示唯一 production 主链已闭环 |
+| Issue #186 收敛（R0–R6） | `IMPLEMENTING` | R0–R2 已完成；R3-A/R3-B 已接纳，R3-C 及后续双 binding、恢复、cutover/conformance 仍在进行 |
+| 远程平台与 Goal（M10–M13） | `PAUSED / PLANNED` | 等待 R6 真实证据后重排；完整 Goal controller、HA、SDK 与生态协议尚未交付 |
 
 上表只把已交付代码映射到终态架构，不以当前实现反向定义产品。本文不会把 `PLANNED` 能力描述成已交付；实时状态以 [Roadmap](roadmap-status.md) 为准。
 
@@ -130,6 +132,31 @@ Plan、Implement、Verify、Review 和 Publish 可以共享 queue、deadline、h
 
 Provider 的 `completed` 只表示一次执行或观察结束，不等于 Run `ACCEPTED` 或 safe-to-publish。
 
+## 跨阶段语义输入治理（Proposed）
+
+调研结论、Worker 回答、复盘分析和历史经验都是 Agent 生成的语义内容。它们可以帮助计划和执行，但不能通过 transcript、mailbox 或实时知识检索自动流入下游。ADR 0046 提议统一采用：
+
+```text
+bounded typed payload
+→ canonical digest
+→ producer provenance
+→ declared purpose / audience
+→ explicit selection or admission
+→ frozen downstream reference
+→ consumed as untrusted data
+```
+
+该边界只治理输入身份和 replay，不证明内容正确，也不取代 Goal admission、ResultIngress、Evidence gate 或 effect authorization。修订产生新对象和 supersession，不覆盖历史；planning/execution 路径不允许 live knowledge query。
+
+近期处置保持克制：
+
+- 编码前研讨只以 `publication:none` 调研 Run + Lead 人工综合做 Stage 0 pilot；
+- Run/Goal 结束后可生成事实 closeout，并把因果分析明确标为不可信 Assessment；
+- 跨 Goal 自动学习等待 ResourceEnvelope、故障域外 failure attribution、冻结 knowledge snapshot 和重复任务 ROI；
+- 不实施 Worker mailbox；当前只通过已接纳计划中的 immutable Artifact ref 做单向协作。
+
+以上除 Stage 0/closeout 操作约定外均不是当前产品能力，也不得抢占 Issue #186 R3–R6 的 P0/P1 收敛。详细风险、触发条件和退出门禁仅在 Proposed [ADR 0046](adr/0046-governed-agent-decision-inputs.md) 维护，避免多份设计文档漂移。
+
 ## 权威与身份
 
 Control Plane 权威对象由：
@@ -221,14 +248,17 @@ Rework 会创建新的 Evidence 与 ReviewDecision 绑定；旧 Evidence 不会�
 
 ## 可插拔边界
 
-- `AgentAdapter` 只处理 Agent prepare/decode/capability；
+- `AgentProvider` 提供 Agent runtime registration/capability/protocol/result semantics；Model Provider/ModelRoute 只是其内部依赖，不进入 Kernel domain schema；
 - `SandboxProvider` 只处理执行环境生命周期；
+- `WorkerExecutor` 是 Core-owned 编排器，`WorkerRuntimeProfile` 是 Agent/Sandbox 双 binding 的不可变组合；`WorkerProvider` 不成为第七个权威 Port；
 - 每个 Provider Port 拥有独立 protocol family、AuthZ、Schema 和 conformance；
 - embedded、Push HTTP 和 Pull runner 只是同一 Port 的 transport/topology adapter；
 - ACP 可以作为 AgentAdapter transport，A2A 可以作为未来外部 gateway，OpenHands 可以作为 Agent Provider；它们都不能绕过 Core admission。
 
 ## 阅读下一层
 
+- 面向人的分层解释：[十分钟理解 Marshal 架构](architecture-in-10-minutes.md)
+- 前期研讨、复盘与协作提案：[ADR 0046](adr/0046-governed-agent-decision-inputs.md)（Proposed）
 - 字段、租约、恢复、SideEffect 和 Goal admission：[Runtime 架构](runtime-architecture.md)
 - 威胁模型与安全验收：[安全模型](security-model.md)
 - Run 状态机：[任务生命周期](task-lifecycle.md)

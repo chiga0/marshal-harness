@@ -39,6 +39,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 | 马上在本地试用 | [快速开始](getting-started.md) |
 | 日常执行和排错 | [日常使用](usage.md) |
 | 系统大体怎样工作 | [工作原理](how-it-works.md) |
+| 用人类语言理解完整分层 | [十分钟理解 Marshal 架构](architecture-in-10-minutes.md) |
 | 安全边界和数据处理 | [安全与隐私](security.md) |
 
 ## 当前边界

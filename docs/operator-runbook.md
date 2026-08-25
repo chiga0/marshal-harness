@@ -310,6 +310,34 @@ Lead 的汇总必须产出三份清单并可回溯：**共识**（多 Agent 独�
 - **度量纪律**：每次 fan-out 必须记录：任务族 ID、agent 数、墙钟时间（并行 vs 串行估计）、token/工具成本、冲突数、findings 数与处置分布、人工分钟数。没有度量记录，不得扩大 fan-out 使用面；
 - **并发 admission 记录**：每次并发决策（首次 fan-out、加派、排队、降载、回升）都必须随 fan-out 度量人工记录，至少包含：**策略来源**——用户显式并发策略（最高优先）还是 Lead 推断，还是因信号缺失而默认保守；**决策时并发数**与本次动作对象（taskId/runId/attemptId）；**容量样本与观察**——可实际取得的宿主 CPU（load average）/可用内存/磁盘 I/O 读数、Provider/API 明示的 rate limit 与容量限制观察、背压观察（超时率、事件延迟），取得不到的项如实标注"未取得"，不得虚构；**动作与时间**——排队/降载/回升动作及发生时间（RFC3339）；**编排与进程所有权标识**——归属编排会话及进程归属判据，确保降载/回升只触碰本编排进程。M12 的自动 admission queue 与 backpressure 控制器尚未实现，当前这些人工记录是并发决策可回溯的唯一手段；没有 admission 记录，不得扩大并发度。
 
+### 10.8 编码前研讨 Stage 0（操作 Pilot）
+
+L 级、架构、安全或高成本任务在实现前先运行研讨 Pilot。该流程是操作约定，不表示 Discovery 状态机或 Goal controller 已实现：
+
+1. Lead 冻结共同 Problem Brief：目标、成功条件、禁止项、已知事实、未知项、证据标准和输出模板；
+2. 按 §10.2 建立 `publication:none` 调研 Run，每个 Run 只负责一个视角并写互斥报告路径；
+3. finding 必须标记 `fact|inference`、confidence、适用范围与 evidence/artifact ref；
+4. Lead 逐项记录 `accepted|rejected_with_reason|duplicate|needs_verification|human_escalation`；
+5. 汇总必须同时保留共识、dissent 与 open assumptions，不得用多数票抹掉 P0/P1 少数意见；
+6. 汇总内容形成不可变文件并计算 digest；只有显式 TaskSpec/plan proposal 进入现有 admission，调研报告不能直接创建 Run、扩大 scope、增加预算或修改 Policy；
+7. 记录 Agent 数、墙钟时间、token/工具成本、人工分钟数、finding 采纳率和预计避免的返工，作为 R6 后是否产品化的依据。
+
+不得把完整 Agent transcript 自动注入后续 Worker。需要引用调研结论时，只给出精确文件/digest、producer provenance、purpose 和 audience，并明确它是不可信数据。当前没有 durable handoff carrier 的产品合同，人工文件/digest 只是 Pilot 证据，不能伪造为 Core authority fact。
+
+### 10.9 任务结束后的 Closeout / Retrospective Pilot
+
+普通小任务只保存 Outcome；L 级、P0/P1、发生明显 retry/rework/replan、预算偏差、人工接管、Provider incident、ambiguous side effect 或用户不接受结果时，增加轻量复盘：
+
+1. **Fact projection**：列出 ledger/Outcome、Candidate、Evidence、Assessment、Receipt、时间线、预算与 required gate；每项绑定原始 ref/digest；
+2. **Analysis assessment**：参与者分别写原因解释、失效假设和 confidence。没有故障域外证据时，不得把 Provider 声明升级为 `infra-failure` 权威分类；
+3. **Change proposal**：把流程、Policy、测试或架构建议登记到对应 Issue/ADR/runbook owner；复盘不能自行修改系统；
+4. **Dissent**：记录尚未解决的异议和下一阶段必须验证的假设；
+5. **Metrics**：记录 lead time、等待、first-pass success、retry/rework/replan、预算偏差和人工分钟数。
+
+当前不自动把复盘内容注入未来 Goal。跨 Goal 学习需等待 ResourceEnvelope、Provider-independent failure attribution、冻结 knowledge snapshot digest 与重复任务 ROI；planning/execution 内禁止 live knowledge query。也不要为了复盘把 `worker|verifier` role 临时放宽或复活旧 Agent 会话；产品化 retrospective workload 需要独立 ADR、principal 和 allowlisted/redacted evidence packet。
+
+Worker 间遇到局部问题时继续由 Lead 升级，或通过已接纳计划中的 immutable Artifact ref 单向同步；当前不使用 mailbox、自由 P2P chat 或 A2A 群聊。设计边界只在 [ADR 0046](adr/0046-governed-agent-decision-inputs.md)（Proposed）维护。
+
 ## 11. 心跳 watchdog 与行动队列（防"挂了毫无感知"与"持续报告无交付动作"）
 
 后台 `task run` 期间 Lead 与操作者都可能失去可见性（opencode 长 attempt 很少发事件，`events.jsonl`
