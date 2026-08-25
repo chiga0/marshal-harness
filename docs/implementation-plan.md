@@ -2,11 +2,13 @@
 
 本计划用于把当前 embedded/local 先行实现逐步收敛到[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Milestone 是交付顺序，不是产品定位。
 
+> **当前权威路线（2026-08-26）**：实施顺序以仓库根目录 `AGENTS.md`、[Roadmap 状态](roadmap-status.md)与 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 为准，按纵切优先的 `I186-R0→R6` 收敛；Milestone 0–9 的历史结论与代码资产保留，M10–M13 暂停直接推进，等待 `I186-R6 DONE` 后依据真实证据重新排期。当前 `I186-R0/R1/R2: DONE`，`I186-R3-A/B/C: DONE`，R3-D/E/F 尚未完成；[Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 是当前 pre-CLI blocker。本文后续 M0–M13 章节保留历史交付目标，不得据此绕过上述权威路线或提前升级实现状态。
+
 ## 门禁
 
 本文 Local MVP 部分（Milestone 0–6）已由维护者授权实施；M7–M13 部分于 2026-08-10 随 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 接受而授权（M7–M12 为耐久 Runtime 平台阶段，M13 为 Goal 编排阶段）。M8–M13 还必须遵守 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)、[ADR 0018](adr/0018-control-plane-and-provider-ports.md) 与 [ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)：确定性 Core 是唯一 Supervisor；Typed Execution 不形成通用 Provider 协议；副作用采用 append-only 对账/补偿；Goal plan 先 proposal、后 deterministic admission。ADR 的接受只冻结设计，不提前升级实现与 conformance 状态。本文只是实施计划：信任边界、持久化契约、生命周期或发布权限的改变仍必须先新增或替代 ADR。
 
-当前状态：Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`（2026-08-07）；M7（架构与契约）已于 2026-08-11 通过退出门禁（当时 ADR 0016/0017/0018 已接受、文档口径一致、Local MVP 回归与本仓库 CI 全绿；证据：Marshal Run `m7-control-provider-boundary-adr-r15-20260811` `ACCEPTED`，[Draft PR #13](https://github.com/chiga0/marshal-harness/pull/13) 与 GitHub Actions CI run `31449333738` 全绿）。同日接受的 ADR 0019 是 M7 后设计增补，不改写原验收证据。M8（Sandbox SPI/Fake/Local conformance + embedded/local 纵切）已于 2026-08-13 通过退出门禁，更新为 `PASSED`（六个硬门禁 gate 全部合入 main 且各 PR 远端 CI 全绿；各 gate 尚未整体接入最终 Runtime 执行路径），M9–M13 保持 `PLANNED`；状态取值定义与验收证据见 [Roadmap 状态](roadmap-status.md)，目标架构见 [Runtime 架构](runtime-architecture.md)。
+当前状态：Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`（2026-08-07）；M7（架构与契约）已于 2026-08-11 通过退出门禁（当时 ADR 0016/0017/0018 已接受、文档口径一致、Local MVP 回归与本仓库 CI 全绿；证据：Marshal Run `m7-control-provider-boundary-adr-r15-20260811` `ACCEPTED`，[Draft PR #13](https://github.com/chiga0/marshal-harness/pull/13) 与 GitHub Actions CI run `31449333738` 全绿）。同日接受的 ADR 0019 是 M7 后设计增补，不改写原验收证据。M8（Sandbox SPI/Fake/Local conformance + embedded/local 纵切）已于 2026-08-13 通过退出门禁，更新为 `PASSED`（六个硬门禁 gate 全部合入 main 且各 PR 远端 CI 全绿；各 gate 尚未整体接入最终 Runtime 执行路径）；M9 于 2026-08-14 通过退出门禁，更新为 `PASSED`（七项交付均合入 main 且远端 CI 全绿，不表示 conformance 终态）；M10–M13 保持 `PLANNED`，但自 2026-08-24 起暂停直接推进，等待 `I186-R6 DONE` 后重新排期。状态取值定义与验收证据见 [Roadmap 状态](roadmap-status.md)，目标架构见 [Runtime 架构](runtime-architecture.md)。
 
 ## 交付策略
 
