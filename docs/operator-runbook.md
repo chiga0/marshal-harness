@@ -310,6 +310,34 @@ Lead 的汇总必须产出三份清单并可回溯：**共识**（多 Agent 独�
 - **度量纪律**：每次 fan-out 必须记录：任务族 ID、agent 数、墙钟时间（并行 vs 串行估计）、token/工具成本、冲突数、findings 数与处置分布、人工分钟数。没有度量记录，不得扩大 fan-out 使用面；
 - **并发 admission 记录**：每次并发决策（首次 fan-out、加派、排队、降载、回升）都必须随 fan-out 度量人工记录，至少包含：**策略来源**——用户显式并发策略（最高优先）还是 Lead 推断，还是因信号缺失而默认保守；**决策时并发数**与本次动作对象（taskId/runId/attemptId）；**容量样本与观察**——可实际取得的宿主 CPU（load average）/可用内存/磁盘 I/O 读数、Provider/API 明示的 rate limit 与容量限制观察、背压观察（超时率、事件延迟），取得不到的项如实标注"未取得"，不得虚构；**动作与时间**——排队/降载/回升动作及发生时间（RFC3339）；**编排与进程所有权标识**——归属编排会话及进程归属判据，确保降载/回升只触碰本编排进程。M12 的自动 admission queue 与 backpressure 控制器尚未实现，当前这些人工记录是并发决策可回溯的唯一手段；没有 admission 记录，不得扩大并发度。
 
+### 10.8 Worker 沟通与 Artifact 同步的当前纪律
+
+当前 Marshal 没有 Core-mediated Worker mailbox，也没有一等的 Worker-to-Worker 协作状态。不得把外部 Agent 群聊、共享聊天上下文或共享可变工作区描述成 Marshal 已支持的 P2P 能力。
+
+- 简单问题由 Lead 中转，或由参与者写入各自结构化报告；消息只作为 observation，不改变 TaskSpec、scope、budget、lease、approval 或 lifecycle；
+- Artifact 通过独立 worktree 中的报告、冻结契约摘要或 content digest/ref 交接；禁止两个写 Worker 共同编辑同一工作区；
+- 依赖 Worker 只能消费已在计划/TaskSpec 中声明的上游产物；依赖或契约变化必须回到 Lead 重新拆解；
+- Worker 不得转交 credential、DispatchResultCapability、lease、publication authorization 或其他 authority token；
+- 集成后必须全量重新 verify，不复用子 Run 的证据宣称集成结果正确。
+
+目标协作模型、允许的消息类型和升级边界见[前期研讨、Worker 协作与复盘](agent-collaboration-and-learning.md)。其实施会触及 Goal 生命周期和权威边界，必须先有 ADR、Schema、配额、crash/replay 与越权负向测试。
+
+### 10.9 大任务结束后的轻量复盘
+
+在 Goal 级 Retrospective 尚未产品化前，L 级、发生 P0/P1、达到多轮 retry/rework、明显超预算、人工接管、Provider incident 或 ambiguous side effect 的任务族，Lead 必须在最后一个 Run 稳定终态后保存一份复盘报告。
+
+最小内容：
+
+1. 目标、最终 Outcome 和用户是否接受；
+2. 账本时间线、Candidate/Evidence/Receipt 与关键 Artifact 引用；
+3. 共识、分歧、未验证假设和重复 finding；
+4. Candidate / infra / provider / policy / process 失败分类；
+5. wall time、预算偏差、retry/rework/replan 和人工分钟数；
+6. `LessonCandidate`、流程修改建议、架构 finding 与 owner；
+7. 每项建议的处置：`accepted`、`rejected_with_reason`、`needs_evidence`、`issue` 或 `adr_required`。
+
+可以让 Implementer、Verifier、Reviewer 以冻结 evidence packet 进行独立只读复盘，再由 Lead 汇总；不要复活过期 Worker 会话或让复盘参与者直接修改 Policy。只有经过维护者 review 的结论才能进入 runbook、模板、测试、Issue 或 ADR，原始 Agent 总结不得自动注入未来任务作为可信指令。
+
 ## 11. 心跳 watchdog 与行动队列（防"挂了毫无感知"与"持续报告无交付动作"）
 
 后台 `task run` 期间 Lead 与操作者都可能失去可见性（opencode 长 attempt 很少发事件，`events.jsonl`

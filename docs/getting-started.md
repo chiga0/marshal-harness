@@ -1,5 +1,7 @@
 # 快速开始
 
+第一次接触 Marshal 时，不需要先掌握 lease、DRC 或 fencing 才能完成本页操作。如果你想先理解这些机制为什么存在，可以阅读[十分钟理解 Marshal 架构](architecture-in-10-minutes.md)；如果你准备组织大型、多 Agent 任务，再阅读[前期研讨、Worker 协作与复盘](agent-collaboration-and-learning.md)。
+
 本页帮助你安装当前本地版本，并确认 Marshal 和 Coding Agent 可以正常工作。当前版本支持 macOS 与 Linux。
 
 ## 1. 安装

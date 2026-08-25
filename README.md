@@ -10,7 +10,7 @@ Marshal 是一个可自托管的任务控制系统。它持续接收新的开发
 
 当前版本已经可以在本地完成 Coding Agent 的执行、独立验证、审查和 GitHub Draft PR 发布。常驻云端服务、远程 Sandbox 和跨任务 Goal 编排正在建设中。
 
-[阅读文档](https://chiga0.github.io/marshal-harness/) · [查看当前能力](https://chiga0.github.io/marshal-harness/current-status/) · [快速开始](https://chiga0.github.io/marshal-harness/getting-started/)
+[阅读文档](https://chiga0.github.io/marshal-harness/) · [十分钟理解架构](https://chiga0.github.io/marshal-harness/architecture-in-10-minutes/) · [查看当前能力](https://chiga0.github.io/marshal-harness/current-status/) · [快速开始](https://chiga0.github.io/marshal-harness/getting-started/)
 
 ## 为什么需要 Marshal
 
