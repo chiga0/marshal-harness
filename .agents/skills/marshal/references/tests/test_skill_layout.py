@@ -23,6 +23,8 @@ REQUIRED_REFERENCES = {
         "plan-premortem-timeout",
         "adapter-ordinary-user-execution-profile-unsupported",
         "qoder-deliverable-parent-missing",
+        "不得为此单独提交空目录或骨架",
+        "能创建父目录的 Adapter",
         "bin/marshal internal plan-premortem-check",
         "临时目录只承载输入文件",
     ),
@@ -34,6 +36,8 @@ REQUIRED_REFERENCES = {
         "validate-closure-matrix-preflight.py",
         "O_EXCL",
         "attemptId",
+        "maxReworkRounds=1",
+        "一次 aggregate rework",
         "--marshal \"$REPOSITORY_ROOT/bin/marshal\"",
     ),
     "adapter-promotion-and-mac.md": (
@@ -54,6 +58,17 @@ REQUIRED_REFERENCES = {
         "processOwnership",
         "dedupeKey",
     ),
+    "delivery-supervision.md": (
+        "Supervisor 是 Lead 控制面的只读观察职责",
+        "continue",
+        "freeze-fanout",
+        "replan",
+        "intervene",
+        "production dependency graph",
+        "Lead + 最多 2 authors + 1 shared reviewer",
+        "默认禁止 skeleton-only commit",
+        "同 signature 第二次出现",
+    ),
     "publication-and-reconcile.md": (
         "ObserveChecks",
         "RemoteCheckRecord",
@@ -66,6 +81,9 @@ REQUIRED_REFERENCES = {
         "localMergeSha",
         "make check",
         "git merge-tree",
+        "同一未变化候选",
+        "纯 Markdown/Skill 机械变更",
+        "release candidate",
     ),
 }
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
@@ -114,6 +132,19 @@ class SkillLayoutTest(unittest.TestCase):
             "action=dispatch-reviewer",
             "action=generate-review-packet",
             "reasonCode",
+        ):
+            with self.subTest(anchor=anchor):
+                self.assertIn(anchor, content)
+
+    def test_reference_routing_is_just_in_time(self) -> None:
+        content = SKILL.read_text(encoding="utf-8")
+        for anchor in (
+            "Just-in-time",
+            "下一项具体动作",
+            "禁止为了未来可能进入的 lifecycle",
+            "只读审计",
+            "维护者本地机械小修",
+            "本次实际受影响的 reference",
         ):
             with self.subTest(anchor=anchor):
                 self.assertIn(anchor, content)

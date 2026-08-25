@@ -52,11 +52,6 @@ func (s LifecycleState) validate() error {
 	}
 }
 
-// terminal returns true for states that cannot transition to any other state.
-func (s LifecycleState) terminal() bool {
-	return s == LifecycleStateRevoked || s == LifecycleStateReplaced || s == LifecycleStateExpired
-}
-
 // ── AgentRegistration ─────────────────────────────────────────────────────────
 
 // AgentRegistration is the durable, closed identity record for an AgentProvider.

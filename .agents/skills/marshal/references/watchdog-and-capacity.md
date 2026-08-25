@@ -2,6 +2,8 @@
 
 > **何时必须读取：** 每个 heartbeat、后台 `task run`、Run 卡住/无响应/driver 中断、需要 supervise/recovery、增加或降低并发、fan-out、多编排并存或判断进程归属时，必须完整读取。
 
+本 reference 只提供 Run/进程/容量的 operational signals，不决定交付方向。多 Worker 交付、review 队列或纵切/exit criterion 对齐由 [delivery-supervision.md](delivery-supervision.md) 的只读 Supervisor 映射；合并场景在当前动作需要两类判断时才 Just-in-time 读取两者。
+
 ## 每轮顺序
 
 先运行只读 watchdog：
@@ -99,3 +101,5 @@ watchdog 可同时投影当前 operational-retry lineage 的 `rootFailure` 与 `
 ## Fan-out
 
 L 级复杂或探索任务可做调研队、评审团、跨仓库并行和仓库内 scope 互斥拆分。先从 `templates/research-task.json` 生成单 Attempt、零 rework、无 fallback 的自包含任务；评审 Worker 只提供材料，ReviewDecision 责任仍在 Lead。完整模式、分级和汇总纪律见 `docs/operator-runbook.md` §9、§10。
+
+默认交付 WIP 为 `Lead + 最多 2 authors + 1 shared reviewer`；只读 Supervisor 由 Lead 控制面承担或在额外只读槽可用时委派，不能挤占独立 reviewer。review queue 已有待处理项或 Supervisor 给出 `freeze-fanout` 时不新增 author；容量允许只是必要条件，不是必须扩容的充分条件。

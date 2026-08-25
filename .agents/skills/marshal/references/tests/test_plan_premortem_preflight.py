@@ -69,8 +69,16 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         run(["git", "commit", "-qm", "base"], self.repository)
         self.source_head = run(["git", "rev-parse", "HEAD"], self.repository)
         self.worker_marker = self.root / "worker-launched"
+        self.home = self.root / "home"
+        (self.home / ".qwen").mkdir(parents=True)
+        (self.home / ".qwen" / "settings.json").write_text(
+            json.dumps({"security": {"auth": {"selectedType": "qwen-oauth"}}}),
+            encoding="utf-8",
+        )
+        self.environment_home = str(self.home)
         self.qoder = self.fake_executable("qoder", "1.1.27")
         self.codex = self.fake_executable("codex", "codex-cli 0.145.0")
+        self.qwen = self.fake_executable("qwen", "0.21.5")
         self.task = self.task_fixture()
         self.policy = self.policy_fixture()
 
@@ -146,7 +154,8 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         (self.operator / "manifest.json").write_bytes(compact(manifest))
         environment = os.environ.copy()
         environment.update({
-            "MARSHAL_OPENCODE_PATH": "", "MARSHAL_QWEN_PATH": "", "MARSHAL_PI_PATH": "",
+            "HOME": self.environment_home,
+            "MARSHAL_OPENCODE_PATH": "", "MARSHAL_QWEN_PATH": str(self.qwen), "MARSHAL_PI_PATH": "",
             "MARSHAL_QODER_PATH": str(self.qoder), "MARSHAL_QODER_MODE": "ordinary-user",
             "MARSHAL_QODER_CONFORMANCE_CONFIG": "", "MARSHAL_CODEX_PATH": str(self.codex),
             "MARSHAL_CODEX_MODE": "ordinary-user", "MARSHAL_CODEX_AUTHORITY_CONFIG": "",
@@ -212,6 +221,20 @@ class PlanPremortemPreflightTest(unittest.TestCase):
     def test_qoder_missing_locked_tree_parent_fails_before_probe(self) -> None:
         self.task["deliverables"][0]["pathGlob"] = "missing/result.md"
         self.assert_reason("qoder-deliverable-parent-missing")
+
+    def test_qwen_ordinary_user_forwards_home_for_user_config_capability(self) -> None:
+        self.task["worker"]["preferredAdapter"] = "qwen"
+        self.policy["effective"]["allowedAdapters"] = ["qwen"]
+        self.policy = self.seal_policy(self.policy)
+        code, result = self.invoke()
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["selectedAdapter"], "qwen")
+        self.assertNotIn("authorityMode", result)
+        self.assertFalse(self.worker_marker.exists())
+
+    def test_unclean_home_fails_closed_before_core_probe(self) -> None:
+        self.environment_home = str(self.home) + "/"
+        self.assert_reason("core-probe-environment-invalid")
 
     def test_codex_ordinary_user_uses_same_core_capability_path(self) -> None:
         self.task["worker"]["preferredAdapter"] = "codex"

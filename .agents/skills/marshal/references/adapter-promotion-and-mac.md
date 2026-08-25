@@ -10,18 +10,18 @@
 - Mac 普通用户必须显式 `MARSHAL_QODER_MODE=ordinary-user` 或 `MARSHAL_CODEX_MODE=ordinary-user`；doctor 必须证明 `configured=true`、`compatibility=supported`、`authorityMode=ordinary-user`。
 - ordinary-user 只证明当前普通用户 argv/env/权限；不得称为 hardened authority、APAP、sandbox、Linux authority 或恶意代码隔离。CapabilitySnapshot、doctor 和报告必须使用 ordinary-user 真实文案，不能沿用 strict managed-config。
 
-`references/qoder-1.1.23-event-contract.json`、`references/codex-0.145.0-result-contract.json` 和 `references/codex-0.145-provider-schema-profile.json` 是无自由文本的人工审查/预检基线，不是 Core lifecycle authority。真实漂移由 Adapter parser、typed failure 和版本化 contract fail closed；禁止用手工 shape diff 冒充 admission。
+`references/qoder-1.1.23-event-contract.json`、`references/codex-0.145.0-result-contract.json`、`references/codex-0.145-provider-schema-profile.json` 和 `references/codex-0.149-provider-schema-profile.json` 是无自由文本的人工审查/预检基线，不是 Core lifecycle authority。真实漂移由 Adapter parser、typed failure 和版本化 contract fail closed；禁止用手工 shape diff 冒充 admission。Codex 0.149.x 只在显式 Mac ordinary-user 模式进入支持闭集；strict authority/APAP 仍只接受 0.145.x。
 
-### Codex 0.145.x provider schema preflight
+### Codex 0.145.x / 0.149.x provider schema preflight
 
-Codex 0.145.x 首次/升级真实 probe 前，从真实 provider 输出复制 schema 和冻结 profile 到 source worktree、`.marshal` 外的紧凑 operator root；不读取 prompt/secret。构建固定 `bin/marshal` 并运行：
+Codex 0.145.x 或 0.149.x 首次/升级真实 probe 前，从真实 provider 输出复制 schema 和对应冻结 profile 到 source worktree、`.marshal` 外的紧凑 operator root；不读取 prompt/secret。`--profile` 必须与实际 `--version` 的 major.minor 精确对应，禁止拿 0.145 profile 为 0.149 identity 出证。构建固定 `bin/marshal` 并运行：
 
 ```bash
 make build COMMIT="$(git rev-parse HEAD)"
 python3 -I -B .agents/skills/marshal/references/validate-codex-provider-schema-preflight.py \
   --root "$PREFLIGHT_ROOT" \
   --schema RELATIVE_PROVIDER_SCHEMA.json \
-  --profile .agents/skills/marshal/references/codex-0.145-provider-schema-profile.json \
+  --profile .agents/skills/marshal/references/codex-0.149-provider-schema-profile.json \
   --marshal "$REPOSITORY_ROOT/bin/marshal"
 ```
 

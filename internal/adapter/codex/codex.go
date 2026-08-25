@@ -47,19 +47,35 @@ const (
 	secureFDPublicReason     = "authenticated Codex fd-exec is unavailable"
 )
 
-// supportedCompatibilityLine 冻结已经通过真实 argv、JSONL 与结果契约
-// conformance 的 Codex CLI major.minor 线。仅 patch 更新可兼容；major、
-// minor、pre-release、build metadata 或无法严格解析的版本全部 fail closed。
-// 这样 z 位安全修订不需要重复接线，同时不会把接口可能变化的 minor 更新
-// 静默视为兼容。
+// supportedCompatibilityLine remains the only strict authority/APAP line.
+// Ordinary-user admission is deliberately separate: adding a Mac-observed
+// CLI line must never expand the signed authority contract by accident.
 const supportedCompatibilityLine = "0.145.x"
+
+const ordinaryUserCompatibilityLine0149 = "0.149.x"
 
 // isSupportedBinary 仅接受已验证 major.minor 线内的稳定三段 semver。
 func isSupportedBinary(version string) bool {
+	return matchesCompatibilityLine(version, supportedCompatibilityLine)
+}
+
+func matchesCompatibilityLine(version, compatibilityLine string) bool {
 	parts := strings.Split(version, ".")
-	compatibility := strings.TrimSuffix(supportedCompatibilityLine, ".x")
+	compatibility := strings.TrimSuffix(compatibilityLine, ".x")
 	return len(parts) == 3 && parts[0]+"."+parts[1] == compatibility &&
 		semverComponentPattern.MatchString(parts[2])
+}
+
+func ordinaryUserCompatibilityLine(goos, version string) (string, bool) {
+	for _, compatibilityLine := range [...]string{supportedCompatibilityLine, ordinaryUserCompatibilityLine0149} {
+		if compatibilityLine == ordinaryUserCompatibilityLine0149 && goos != "darwin" {
+			continue
+		}
+		if matchesCompatibilityLine(version, compatibilityLine) {
+			return compatibilityLine, true
+		}
+	}
+	return "", false
 }
 
 var (
@@ -100,6 +116,9 @@ type Adapter struct {
 	now              func() time.Time
 	authority        *AuthorityEvidenceStore
 	ordinaryUserMode bool
+	// platform is frozen from runtime.GOOS by every production constructor.
+	// Tests may replace it only to prove the closed platform matrix on one host.
+	platform string
 
 	mu          sync.Mutex
 	pinned      *executableIdentity
@@ -125,6 +144,21 @@ type Adapter struct {
 	// native launcher tests. No production constructor or public method can set
 	// it, so legacy BindConformance can never grant production execution.
 	legacyAuthorityForTest bool
+}
+
+func (a *Adapter) supportsBinary(version string) bool {
+	if a.ordinaryUserMode {
+		_, supported := ordinaryUserCompatibilityLine(a.platform, version)
+		return supported
+	}
+	return isSupportedBinary(version)
+}
+
+func (a *Adapter) schemaCompatibilityLine(version string) (string, bool) {
+	if a.ordinaryUserMode {
+		return ordinaryUserCompatibilityLine(a.platform, version)
+	}
+	return supportedCompatibilityLine, isSupportedBinary(version)
 }
 
 var _ port.WorkerAdapter = (*Adapter)(nil)
@@ -167,7 +201,7 @@ func NewWithConformanceAuthority(executable string, validator *contract.Validato
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("codex executable must be an executable regular file")
 	}
-	return &Adapter{executable: realPath, validator: validator, now: time.Now, authority: authority, unsafePathExecutionForTest: unsafePathExecutionForTests}, nil
+	return &Adapter{executable: realPath, validator: validator, now: time.Now, authority: authority, platform: runtime.GOOS, unsafePathExecutionForTest: unsafePathExecutionForTests}, nil
 }
 
 // Identify collects advisory candidate identity for discovery. It never
@@ -226,8 +260,19 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	a.pinIdentity(identity)
 	if a.ordinaryUserMode {
 		failure := ""
-		if !isSupportedBinary(identity.version) {
+		var adapterFailure *AuthorityFailure
+		if !a.supportsBinary(identity.version) {
 			failure = "Codex CLI version is outside the ordinary-user compatibility line"
+			code := "codex_evidence_contract_mismatch"
+			cause := ErrUnsupportedVersion
+			details := AuthorityFailureDetails{}
+			if matchesCompatibilityLine(identity.version, ordinaryUserCompatibilityLine0149) && a.platform != "darwin" {
+				failure = "Codex CLI ordinary-user compatibility line is unsupported on this platform"
+				code = "codex_platform_unsupported"
+				cause = ErrPlatformUnsupported
+				details.Platform = a.platform
+			}
+			adapterFailure = newAuthorityFailure("probe", code, failure, details, cause, a.now())
 		}
 		status := "supported"
 		probeErrors := []string{}
@@ -244,6 +289,9 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 			"probedAt": a.now().UTC().Format(time.RFC3339Nano),
 		}
 		capability["authorityMode"] = "ordinary-user"
+		if adapterFailure != nil {
+			capability["adapterFailure"] = adapterFailure
+		}
 		return a.capabilityRecord(capability)
 	}
 	if a.hasAtomicAuthoritySource() {
@@ -276,7 +324,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	// The legacy conformance store remains usable by hermetic execution tests,
 	// but it cannot promote a production CapabilitySnapshot to supported.
 	failure := newAuthorityFailure("probe", "codex_conformance_pending", conformancePendingReason, AuthorityFailureDetails{}, ErrCodexConformancePending, a.now())
-	if !isSupportedBinary(identity.version) {
+	if !a.supportsBinary(identity.version) {
 		failure = newAuthorityFailure("probe", "codex_evidence_contract_mismatch", "Codex CLI version is outside the admitted compatibility line", AuthorityFailureDetails{}, ErrUnsupportedVersion, a.now())
 	}
 	capability := map[string]any{
@@ -605,7 +653,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	defer snapshot.close()
 	identity := snapshot.identity
-	if !isSupportedBinary(identity.version) {
+	if !a.supportsBinary(identity.version) {
 		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrUnsupportedVersion, "binary version is outside the compatible line", a.now())
 	}
 	// 启动前把重新解析的身份与钉住身份比较，防止 Probe 后替换、
@@ -649,7 +697,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, codexProtocolFailure("durable output schema is unavailable", a.now())
 	}
-	evidence, err := prepareAttemptEvidence(evidenceDir, resultName, schemaDocument, a.providerSchemaMutationForTest)
+	compatibilityLine, supported := a.schemaCompatibilityLine(identity.version)
+	if !supported {
+		return domain.Record{}, newCodexFailure(port.FailureKindProviderTerminal, ErrUnsupportedVersion, "binary version has no provider schema profile", a.now())
+	}
+	evidence, err := prepareAttemptEvidence(evidenceDir, resultName, schemaDocument, compatibilityLine, a.providerSchemaMutationForTest)
 	if err != nil {
 		var claimErr *leafClaimError
 		if errors.As(err, &claimErr) {
