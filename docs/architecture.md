@@ -1,6 +1,6 @@
 # 整体架构
 
-> 规范状态：Marshal 终态整体架构，更新于 2026-08-11；依据已接受的 [ADR 0016–0019](adr/README.md)。当前实现与计划状态以 [Roadmap](roadmap-status.md) 为准。
+> 规范状态：Marshal 终态整体架构，更新于 2026-08-24；依据已接受的 [ADR 0016–0019](adr/README.md) 与 [ADR 0043–0045](adr/README.md)。标注 **Proposed** 的组件尚无 ADR 出处，不构成合同，也不进入 required path。当前实现与计划状态以 [Roadmap](roadmap-status.md) 为准。
 
 本文定义 Marshal 的整体产品架构：系统由哪些部分组成、权威在哪里、Executor 如何协作，以及 embedded/local 与 C/S 如何共享同一业务语义。Local MVP 仅在“当前交付映射”中说明，不定义系统边界。字段级契约与故障语义见 [Runtime 架构](runtime-architecture.md)。
 
@@ -30,24 +30,76 @@ Marshal 的目标不是让一个 Agent 或进程连续运行数月，而是提�
 ## 系统上下文
 
 ```mermaid
-flowchart LR
-    User["维护者 / API Client / Lead Agent"] --> API["Public application Port"]
-    API --> Core["Marshal Core\n确定性 Control Plane"]
+flowchart TB
+    subgraph Client["Client / Interaction Plane"]
+        User["维护者 / API Client / Lead Agent"]
+        API["Public application Port"]
+        User --> API
+    end
 
-    Core --> Engine["DurableExecutionEngine"]
-    Core --> Exec["Execution Plane"]
-    Core --> Data["Data / Capability Plane"]
-    Core --> Pub["Publication Plane"]
+    subgraph Control["Deterministic Control Plane"]
+        Core["Marshal Core\n唯一业务权威"]
+        Policy["Policy / Admission / Budget"]
+        Engine["DurableExecutionEngine\ndelivery / timer / recovery"]
+        Registry["Provider Registry\nCapabilitySnapshot / ConformanceEvidence"]
+        ResultIngress["Core Result Ingress\ncapability + current-ledger recheck"]
+        WorkerPort["WorkerExecutor\nCore-owned orchestration seam"]
+        Composed["WorkerRuntimeComposer (Proposed)\nWorkerRuntimeProfile"]
+        Ledger[("Authority Ledger")]
+        Objects[("Content-addressed Objects")]
 
-    Exec --> Agent["Agent Provider"]
-    Exec --> Sandbox["Sandbox Provider"]
-    Exec --> Verify["Verification Provider"]
-    Data --> Artifact["Artifact Provider"]
-    Data --> Secret["Secret Provider"]
-    Pub --> Forge["SCM / Publisher Provider"]
+        Core --> Policy
+        Core --> Engine
+        Core --> Registry
+        Core --> Ledger
+        Core --> Objects
+        Engine -->|"ledger-derived command"| WorkerPort
+        WorkerPort -->|"selected runtime profile"| Composed
+    end
 
-    Core --> Ledger[("Authority Ledger")]
-    Core --> Objects[("Content-addressed Objects")]
+    subgraph Execution["Execution Plane"]
+        Remote["RemoteWorkerGateway (Proposed)\nlogical Agent + Sandbox identities"]
+        Agent["AgentProvider\nprepare / decode / capability"]
+        Sandbox["SandboxProvider\nprovision / stage / exec / restore"]
+        Verify["VerificationProvider\nindependent verification workload"]
+        ImplementWorkload["Implement Workload\nallocation + lease + actor identity"]
+        VerifierWorkload["Verifier Workload\nindependent allocation + actor identity"]
+
+        WorkerPort -->|"gateway runtime profile"| Remote
+        Composed -->|"dispatch-bound Agent lease / per-Port AuthZ"| Agent
+        Composed -->|"dispatch-bound Sandbox lease / per-Port AuthZ"| Sandbox
+        Remote -->|"registered Agent identity"| Agent
+        Remote -->|"registered Sandbox identity"| Sandbox
+        Agent -->|"invoke"| ImplementWorkload
+        Sandbox -->|"host / isolate"| ImplementWorkload
+        Verify -->|"independent verifier lease / per-Port AuthZ"| VerifierWorkload
+        Sandbox -->|"host / isolate"| VerifierWorkload
+    end
+
+    subgraph Data["Data / Capability Plane"]
+        Artifact["ArtifactProvider"]
+        Secret["SecretProvider"]
+    end
+
+    subgraph Publication["Publication Plane"]
+        Publisher["SCM / PublisherProvider\n独立 principal 与 credential"]
+    end
+
+    API --> Core
+    Engine -->|"independent verify command"| Verify
+    Core -->|"issue MaterialAccessGrant"| ImplementWorkload
+    Core -->|"issue MaterialAccessGrant"| VerifierWorkload
+    Core -->|"issue DispatchResultCapability"| ImplementWorkload
+    Core -->|"issue DispatchResultCapability"| VerifierWorkload
+    ImplementWorkload -->|"scoped material access"| Artifact
+    ImplementWorkload -->|"scoped secret access"| Secret
+    VerifierWorkload -->|"scoped material access"| Artifact
+    VerifierWorkload -->|"scoped secret access"| Secret
+    Core -->|"PublicationAuthorization"| Publisher
+    ImplementWorkload -->|"Candidate / WorkerResult + DispatchResultCapability"| ResultIngress
+    VerifierWorkload -->|"Evidence + DispatchResultCapability"| ResultIngress
+    ResultIngress -->|"admitted identity-preserving observation"| Core
+    Publisher -->|"Receipt / remote observation"| Core
 ```
 
 Local MVP 中，Public application Port、Core 和多数 Adapter 编译在同一 `marshal` 进程；Worker 与验证命令是受控子进程。目标 C/S 中，同一 Core 常驻于 `marshal-server`，CLI、Web、CI 或 GitHub App 只是客户端，Execution Plane 和 Provider 可以远程运行。
@@ -73,6 +125,8 @@ Marshal Core 独占：
 - ReviewDecision、SideEffectIntent 与 PublicationAuthorization；
 - append-only authority ledger、幂等和审计。
 
+`WorkerExecutor` 是 Control Plane 内 Attempt 执行的唯一编排 seam：它只消费 Kernel transaction 产生的 durable command，并按冻结的 runtime profile 跨 Port 驱动 Agent 与 Sandbox。`WorkerRuntimeComposer` 是 **Proposed** 的 Core-owned profile 组合组件，尚无 ADR 出处、不构成合同；两者都不注册 Provider 身份，也不形成可远程部署的第二权威。
+
 “Supervisor”只是 Core 的产品心智模型，不是一个维护全局聊天上下文的 LLM。
 
 ### 3. Durable Execution 层
@@ -85,11 +139,12 @@ backend 不创建业务 Attempt，不决定 retry/rework，不宣布 ReviewDecis
 
 Execution Plane 执行有界 workload：
 
-- Agent Provider 运行 Implement Worker；
-- Sandbox Provider 管理 Provision/Stage/Exec/Inspect/Checkpoint/Restore/Terminate/Reconcile；
+- Agent Provider 只处理 Agent prepare/decode/capability，可以独立接入 Codex、Qoder、Qwen、OpenCode 或 A2A Agent；
+- Sandbox Provider 只管理 Provision/Stage/Exec/Inspect/Checkpoint/Restore/Terminate/Reconcile，可以独立接入 Local、Aone、Cloudflare 或 Kubernetes；
+- 完全托管、物理实现上无法拆分 Agent 与 Sandbox 的外部 Worker 通过 `RemoteWorkerGateway`（**Proposed，尚无 ADR 出处，不构成合同**；它与 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 冻结边界 1「WorkerProvider 不是第七 Port」的关系必须由 ADR 论证后才能进入 required path）接入，但必须映射为 Agent 与 Sandbox 两类逻辑 Provider registration，并分别提供 allocation、security domain、capability、conformance 与 result transport 证据；
 - Verification Provider 运行独立验证 workload。
 
-现有 Sandbox `workloadRole` 只允许 `worker|verifier`。Planner、Reviewer 和 Publisher 不会被塞入该枚举。
+这些 workload 只接收 Control Plane 通过 `WorkerExecutor` 或 Verification command 投影出的有界操作；它们不拥有 lifecycle、retry/rework、ReviewDecision 或发布权威。Agent、Sandbox 与 Verification 仍是 ADR 0018 冻结的独立 Provider Port；相同 `securityDomainId` 不自动授权，每次调用仍须匹配各自 Port 的 principal、registration、scope、operation 与 DispatchLease。现有 Sandbox `workloadRole` 只允许 `worker|verifier`。Planner、Reviewer 和 Publisher 不会被塞入该枚举。
 
 ### 5. Data / Capability Plane
 
@@ -221,11 +276,14 @@ Rework 会创建新的 Evidence 与 ReviewDecision 绑定；旧 Evidence 不会�
 
 ## 可插拔边界
 
-- `AgentAdapter` 只处理 Agent prepare/decode/capability；
+- `WorkerExecutor` 是 Core-owned 的 Implement workload 编排 seam，不是 Provider Port；下游 Provider 的 `completed` 只表示执行或观察结束；
+- `WorkerRuntimeComposer`（Proposed）通过不可变 `WorkerRuntimeProfile` 绑定 `agentBindingDigest + sandboxBindingDigest + compatibilityDigest` 并派生 `profileDigest`，随 `DispatchLease` 一起冻结；binding digest 覆盖 registration 与 snapshot 身份，与 capability 内容摘要不是同一对象；
+- `AgentProvider` 只处理 Agent prepare/decode/capability；当前 Local MVP 的 legacy `WorkerAdapter` 仅可作为迁移期 compatibility source 映射到这些操作，不等同于 production `AgentProvider`，也不具备 durable AgentProvider registration、attestation、conformance 或 production eligibility；上述资格必须等待 R3 Exit Gate；
 - `SandboxProvider` 只处理执行环境生命周期；
-- 每个 Provider Port 拥有独立 protocol family、AuthZ、Schema 和 conformance；
+- 接入新 Agent 时只实现 `AgentProvider` 并复用既有 Sandbox；接入新执行环境时只实现 `SandboxProvider` 并复用既有 Agent；完全托管的 Worker 通过 `RemoteWorkerGateway`（Proposed）映射到两类既有逻辑 Provider registration；
+- 下层六类 Provider Port 各自拥有独立 protocol family、AuthZ、Schema 和 conformance；`WorkerExecutor` 仅编排这些 Port，不单独注册 Provider 身份或签发能力；
 - embedded、Push HTTP 和 Pull runner 只是同一 Port 的 transport/topology adapter；
-- ACP 可以作为 AgentAdapter transport，A2A 可以作为未来外部 gateway，OpenHands 可以作为 Agent Provider；它们都不能绕过 Core admission。
+- ACP 可以作为 AgentProvider transport，A2A 可以作为 `RemoteWorkerGateway`（Proposed）transport，OpenHands 可以映射为 Agent Provider 与 Sandbox Provider 的组合实现；它们都不能绕过 Core admission。
 
 ## 阅读下一层
 
