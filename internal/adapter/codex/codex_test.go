@@ -287,6 +287,57 @@ func TestOrdinaryUserProbeReportsSupportedWithoutAuthorityEvidence(t *testing.T)
 	}
 }
 
+func TestOrdinaryUserVersionMatrixKeepsStrictAuthorityClosed(t *testing.T) {
+	for _, version := range []string{"0.145.0", "0.145.27", "0.149.0", "0.149.1", "0.149.99"} {
+		if _, supported := ordinaryUserCompatibilityLine(version); !supported {
+			t.Fatalf("ordinary-user version %s is not admitted", version)
+		}
+	}
+	for _, version := range []string{"0.144.9", "0.146.0", "0.148.9", "0.149.01", "0.149.1-beta.1", "0.150.0", "1.149.1"} {
+		if _, supported := ordinaryUserCompatibilityLine(version); supported {
+			t.Fatalf("ordinary-user version %s escaped the closed set", version)
+		}
+	}
+	if isSupportedBinary("0.149.1") {
+		t.Fatal("ordinary-user 0.149 admission expanded strict authority/APAP support")
+	}
+}
+
+func TestOrdinaryUserProbeSupportsCodex01491(t *testing.T) {
+	adapter, err := NewOrdinaryUser(fakeExecutable(t, "codex-cli 0.149.1", "exit 0"), newValidator(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := adapter.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		BinaryVersion string   `json:"binaryVersion"`
+		ProbeStatus   string   `json:"probeStatus"`
+		ProbeErrors   []string `json:"probeErrors"`
+		AuthorityMode string   `json:"authorityMode"`
+	}
+	if err := json.Unmarshal(record.Data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.BinaryVersion != "0.149.1" || snapshot.ProbeStatus != "supported" || len(snapshot.ProbeErrors) != 0 || snapshot.AuthorityMode != "ordinary-user" {
+		t.Fatalf("0.149.1 ordinary-user snapshot = %s", record.Data)
+	}
+}
+
+func TestOrdinaryUserRunSupportsCodex01491WithoutExpandingStrictMode(t *testing.T) {
+	fixture := newRunFixture(t, "codex-cli 0.149.1", successBodyWithResult(validDeclaredResultJSON()))
+	fixture.adapter.ordinaryUserMode = true
+	record, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(record.Data), `"version":"0.149.1"`) {
+		t.Fatalf("normalized WorkerResult did not bind 0.149.1: %s", record.Data)
+	}
+}
+
 func TestOrdinaryUserSnapshotKeepsConfiguredExecutablePathStable(t *testing.T) {
 	executable := fakeExecutable(t, supportedVersionOutput, "exit 0")
 	adapter, err := NewOrdinaryUser(executable, newValidator(t))

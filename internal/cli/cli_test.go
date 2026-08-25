@@ -130,6 +130,41 @@ func TestDoctorReportsCompatibilityWithoutLocalDetails(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsCodex01491OrdinaryUserSupported(t *testing.T) {
+	executable := writeVersionExecutableForCLI(t, "codex", "codex-cli 0.149.1")
+	t.Setenv("MARSHAL_OPENCODE_PATH", "")
+	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_QODER_PATH", "")
+	t.Setenv("MARSHAL_CODEX_PATH", executable)
+	t.Setenv("MARSHAL_CODEX_MODE", "ordinary-user")
+	t.Setenv("MARSHAL_CODEX_AUTHORITY_CONFIG", "")
+	t.Setenv("MARSHAL_PI_PATH", "")
+
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"doctor", "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("doctor exit = %d, stderr = %s", exit, stderr.String())
+	}
+	var report struct {
+		Workers []doctorWorker `json:"workers"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	var found *doctorWorker
+	for index := range report.Workers {
+		if report.Workers[index].AdapterID == "codex" {
+			found = &report.Workers[index]
+			break
+		}
+	}
+	if found == nil || !found.Registered || found.Outcome != app.WorkerOutcomeRegistered || found.Compatibility != "supported" || found.BinaryVersion != "0.149.1" || found.AuthorityMode != "ordinary-user" {
+		t.Fatalf("doctor codex 0.149.1 = %+v", found)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), executable) {
+		t.Fatalf("doctor leaked configured executable path: %s", stdout.String()+stderr.String())
+	}
+}
+
 func TestDoctorBindsSupportedQoderConformanceMetadata(t *testing.T) {
 	identity := doctorSnapshotIdentity{
 		AdapterID: "qoder", AdapterVersion: "0.1.0", BinaryVersion: "1.1.23", ExecutableDigest: "sha256:" + strings.Repeat("d", 64), ProbeStatus: "supported",
