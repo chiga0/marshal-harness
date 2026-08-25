@@ -15,12 +15,14 @@
 | executable/config、Mac 实证复用、ordinary-user、Qoder transcript attestation、Adapter 晋升阶梯、failure signature/预算 | `adapter-promotion-and-mac.md` |
 | WorkerResult transport、Qoder final tee、envelope、路径/目录/读取约束、Codex/Qwen/Pi/OpenCode 特例 | `adapter-promotion-and-mac.md` |
 | event/watchdog、有限动作、交互权、容量/背压、dedupeKey、supervise 风险、fan-out/进程所有权 | `watchdog-and-capacity.md` |
+| 多 Worker 交付监督、完整纵切/WIP、重复 failure、review 队列、production dependency graph/exit criterion 对齐、continue/freeze/replan/intervene | `delivery-supervision.md` |
 | publish approval、CI checks、accept/reconcile、merge 与远端同步事实 | `publication-and-reconcile.md` |
-| 用户授权的 Harness 本地闭环、工程测试、Web、cleanup、SemVer/release、覆盖率、milestone 声明 | `engineering-and-release.md` |
+| 用户授权的 Harness 本地闭环、纵切交付、按风险去重的工程测试、Web、cleanup、SemVer/release、覆盖率、milestone 声明 | `engineering-and-release.md` |
 
 ## 维护纪律
 
 - 新规则先判定触发域；只进入一个主要 reference，跨域处用链接或短摘要，避免重复维护。
 - 顶层只增加“每次动作都必须知道”的边界、状态分支或路由；细节必须进入按需 reference。
+- reference 按下一项具体动作 Just-in-time 读取；只读审计和维护者本地机械小修不得预读未来 lifecycle/review/publication 阶段。
 - 删除规则前必须在本表标出替代的机器契约或新位置，并让 layout test 覆盖相应路由/锚点。
 - 改变语义时按 `AGENTS.md` 判断 ADR；仅重排文字且语义不变不新增 ADR。

@@ -17,9 +17,11 @@ description: 使用 Marshal Harness 编排 Coding Agent、执行证据门禁审�
 - 只管理本编排拥有的进程；禁止 blanket kill。`marshal supervise --once` 可能启动 Worker，不是只读巡检。
 - 信任边界、持久化、生命周期或发布权限变化必须先新增/替代 ADR。Harness 适配修复只有在用户明确授权时才可走维护者本地闭环，仍须唯一独立 reviewer、精确验证摘要和 `sourceHead/localMergeSha/pendingRemoteSync`；产品 Run 仍只走 Core/CLI。
 
-## Reference 读取路由（强制）
+## Reference 读取路由（强制、Just-in-time）
 
-完整读完本文件后，执行动作前按触发条件读取所有匹配 reference；多项命中就全部读取，不凭记忆替代。每个 reference 首段定义“何时必须读取”。
+完整读完本文件后，先确定**下一项具体动作**，只在该动作执行前完整读取当前命中的 reference；动作变化时重新路由。禁止为了未来可能进入的 lifecycle、review、publication 或 release 阶段预读 reference。当前动作同时命中多项才全部读取，不凭记忆替代。
+
+只读审计若不改变 Run、远端或仓库，只读 `AGENTS.md`、本文件和审计对象所需文档；不预读 lifecycle reference。用户已授权的维护者本地机械小修，只读 engineering、修改 Skill 时的 migration，以及本次真实受影响的 reference；不因“以后可能 review/publish”预读 admission、review 或 publication。
 
 | 触发条件 | 必须读取 |
 | --- | --- |
@@ -27,13 +29,21 @@ description: 使用 Marshal Harness 编排 Coding Agent、执行证据门禁审�
 | `REVIEW_PENDING`、生成/派发 reviewer、ReviewDecision、rework/reject/blocked/no_change、freshness 或 closure | [review-and-rework.md](references/review-and-rework.md) |
 | Adapter 注册/升级/选择、doctor、真实 probe/conformance、Qoder/Codex/Qwen/Pi/OpenCode、普通用户权限或 WorkerResult | [adapter-promotion-and-mac.md](references/adapter-promotion-and-mac.md) |
 | heartbeat、后台 Run、watchdog、卡住/恢复、容量/背压、fan-out 或进程归属 | [watchdog-and-capacity.md](references/watchdog-and-capacity.md) |
+| 多 Worker 交付监督、并发 WIP、重复失败、review 队列、纵切/依赖图/exit criterion 对齐或流程效率复盘 | [delivery-supervision.md](references/delivery-supervision.md) |
 | `PUBLISHING`、`CI_PENDING`、checks、publish/accept/reconcile/merge、PR/CI | [publication-and-reconcile.md](references/publication-and-reconcile.md) |
 | 修改 Harness/Skill、工程门禁、清理、Web、版本、release 或 milestone 完成声明 | [engineering-and-release.md](references/engineering-and-release.md) |
-| 修改本 Skill 或上述路由/细则 | [skill-rule-migration.md](references/skill-rule-migration.md) 以及受影响的全部 reference |
+| 修改本 Skill 或上述路由/细则 | [skill-rule-migration.md](references/skill-rule-migration.md) 以及本次实际受影响的 reference |
+
+## 交付吞吐默认值
+
+- release/product 工作默认交付可运行、可观察的完整纵切并绑定明确 exit criterion；禁止只提交未接入 production dependency graph 的 skeleton。ADR、研究或 contract-first 前置件只有本身就是已批准交付物且能直接解锁下一纵切时才可独立。
+- 默认 WIP 为 `Lead + 最多 2 authors + 1 shared reviewer`。写 scope 必须互斥；review 队列积压时先清队列，不把全部槽位都给 author。
+- 代码/内容任务默认 `maxReworkRounds=1`，research/canary 为 0。唯一 reviewer 首轮一次聚合全部 P0/P1；同一 reviewer 只复审一次 aggregate rework，仍有 P0/P1 就终止切片并 replan。
+- 验证按风险与集成点去重：先跑相关门禁；同一未变化候选不重复跑全仓 gate。release gate 不降低，具体矩阵见 engineering reference。
 
 ## 每轮 fast path
 
-1. 读取 `AGENTS.md`、本文件和命中的 reference；确认 local main、`origin/main`、工作树、active Run、进程归属与远端同步事实。
+1. 读取 `AGENTS.md`、本文件和当前动作命中的 reference；确认 local main、`origin/main`、工作树、active Run、进程归属与远端同步事实。
 2. 先做只读巡检：
 
    ```bash
