@@ -183,6 +183,21 @@ def checked_marshal(value: str) -> Path:
     return marshal
 
 
+def checked_inherited_home() -> str | None:
+    value = os.environ.get("HOME")
+    if value is None:
+        return None
+    if not value or "\x00" in value or not Path(value).is_absolute() or os.path.normpath(value) != value:
+        fail("core-probe-environment-invalid")
+    try:
+        metadata = Path(value).stat()
+    except OSError:
+        fail("core-probe-environment-invalid")
+    if not stat.S_ISDIR(metadata.st_mode):
+        fail("core-probe-environment-invalid")
+    return value
+
+
 def run_preflight(root: Path, manifest_relative: str, marshal: Path) -> dict:
     root_descriptor = open_root(root)
     try:
@@ -254,6 +269,7 @@ def run_preflight(root: Path, manifest_relative: str, marshal: Path) -> dict:
             environment = {
                 "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
                 "LC_ALL": "C",
+                **({"HOME": home} if (home := checked_inherited_home()) is not None else {}),
                 **{
                     key: os.environ[key]
                     for key in (
