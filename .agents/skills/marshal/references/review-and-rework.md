@@ -98,6 +98,8 @@ marshal task status --run RUN_ID --json
 ## 减少 rework
 
 - reviewer 派发前一次性完成 pre-mortem：TaskSpec、scope、acceptance、permissions、result transport、negative matrix 和 verification 能否实际执行。
+- 代码/内容 TaskSpec/Policy 默认 `maxReworkRounds=1`，research/canary 为 0。唯一 reviewer 首轮必须一次聚合所有 P0/P1 和可同域关闭的 P2；作者只做一次 aggregate rework，同一 reviewer 只复审一次。复审仍有 P0/P1 时终止本 slice、归档根因并回到 plan，不逐项滚动 rework。
 - 同一结构性 failure signature 或 freshness fingerprint 只裁决一次；修根因前禁止新 Attempt、原 Run retry 或重复 reviewer。
 - Required Gate 已覆盖的行为不得再添加未写入 TaskSpec 的字面或实现细节要求。
 - 独立 reviewer 的材料不是 Lead 结论；Lead 只对 fresh、完整、identity-bound 的证据作最终 Decision。
+- 为减少 packet 生成成本而跨 round 复用或重绑 `sourceHead`/evidence identity 属于 Core/Schema/validator 设计候选；现行流程不得实现静默复用，也不得放宽 freshness 或 exact identity 门禁。
