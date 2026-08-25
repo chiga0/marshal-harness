@@ -7,5 +7,5 @@ import "embed"
 
 // FS contains all v1alpha1 schemas and their contract fixtures.
 //
-//go:embed *.schema.json examples/happy-path/*.json examples/invalid/*.json
+//go:embed *.schema.json examples/happy-path/*.json examples/invalid/*.json selfidentity/*.schema.json
 var FS embed.FS
