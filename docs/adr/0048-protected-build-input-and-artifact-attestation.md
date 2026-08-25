@@ -47,6 +47,14 @@ canonical source manifest 至少绑定：
 
 manifest 必须采用 versioned closed schema、canonical encoding 和 domain-separated digest。未知或重复成员、尾随 bytes、绝对路径、重复路径、大小写/Unicode 归一化冲突、越界 symlink、无法物化的 submodule/LFS、未声明 generator 或 ambient module/workspace 输入全部拒绝。
 
+生成步骤完成后的 compile root 必须由独立的 `CompileRootManifestV1` 绑定，不能只传一个调用者自报摘要。该对象是 exact closed object，最小字段固定为：
+
+- `schemaVersion`、`manifestId`、`repository`、`sourceHead`、`sourceManifestDigest`、`generatedSourceStageDigest|null`；
+- `entries`：每项包含规范相对路径、封闭 `entryType=regular|directory|symlink`、mode、长度、SHA-256，以及 symlink target 与边界判定；
+- `rootDigest`、`producerObservationIdentity`、`manifestDigest`。
+
+`rootDigest=sha256(JCS(entries))`，`manifestDigest=sha256(JCS(manifestWithoutManifestDigest))`。entries 必须按规范路径稳定排序；路径、Unicode/case-fold、重复成员、尾随 bytes 与 symlink 边界规则和 canonical source manifest 相同。没有 generator 时仍须产生该对象，并以 `generatedSourceStageDigest=null` 明确证明 source stage 到 compile root 的 materialization；有 generator 时必须把 generator 输出而非可变工作目录重新枚举进 entries。artifact signer 必须重新计算 manifest/root digest 并观察对应 sealed root；只有 digest、没有可复核对象或 sealed root 时固定拒绝。
+
 #### External build material manifest
 
 所有允许从 compile root 外读取的 bytes 必须先物化到 sealed external material roots，并由一个或多个 exact closed `ExternalBuildMaterialManifestV1` 绑定。最小字段为：
@@ -63,17 +71,31 @@ module source 不能只记录 module path/version 或 resolved graph。producer 
 
 generator executable、CGO header/library、`pkg-config` data/tool 和其它外部 build tool 都按实际 bytes 进入 material manifest。动态或系统库若不能锁定精确对象与内容，当前 profile 不得产生权威 attestation。policy allowlist 与 observed material manifest 使用不同字段和 digest；任一方缺失、错配或 observation 后替换均拒绝。
 
-### 4. `MarshalArtifactBuildAttestationV1`
+### 4. `MarshalArtifactBuildRecordV1`
+
+builder 到 artifact/release signer 之间只能传 immutable、content-addressed 的 `MarshalArtifactBuildRecordV1`，不得传自由 JSON、可变 pathname 或调用者自报摘要。该 record 是 exact closed object，最小字段固定为：
+
+- `schemaVersion`、`recordId`、`createdAt`、`buildProfile`、`repository`、`sourceHead`；
+- `sourceBundleDigest`、`sourceManifestDigest`、`compileRootManifestDigest`、`externalMaterialManifestDigests`；
+- `buildInvocationDigest`、`environmentPolicyDigest`、`toolchainMaterialDigest`、`moduleGraphDigest`；
+- `builderPrincipalId`、`builderWorkflowIdentity`、`builderIsolationProfile`；
+- closed `unsignedArtifact`：`rawSHA256`、`fileSize`、`goBuildId`、`os`、`arch`、`version`、`buildDate`；
+- `recordDigest`。
+
+`recordDigest=sha256(JCS(recordWithoutRecordDigest))`。`externalMaterialManifestDigests` 必须去重并按 lowercase digest 排序；空数组精确表示没有 compile root 外材料，`null` 或省略字段固定拒绝。record 的 `builderPrincipalId/workflow/isolation` 是受保护 builder 的观察事实，不授予 artifact authority；artifact/release signer 必须从按 digest 解析的 immutable record 重新验证 source/compile/external manifests、builder workflow fact 与 unsigned artifact bytes，且任一对象不可得、摘要漂移或 record 由调用者选择未知 producer 时拒绝。builder 可以产出 record，但不能签最终 artifact attestation、持有 code-signing key或把自身 record 当作 release verdict。
+
+### 5. `MarshalArtifactBuildAttestationV1`
 
 `MarshalArtifactBuildAttestationV1` 是 immutable、content-addressed、signed object，最小字段为：
 
 - `schemaVersion`、`attestationId`、`issuedAt`、`buildProfile`；
-- `repository`、`sourceHead`、`sourceBundleDigest`、`sourceManifestDigest`、`compileRootManifestDigest`；
+- `repository`、`sourceHead`、`sourceBundleDigest`、`sourceManifestDigest`、`compileRootManifestDigest`、`buildRecordDigest`；
 - `submodulePolicyDigest`、`lfsPolicyDigest`、`generatedSourceStageDigest|null`；
 - `buildInvocationDigest`、`environmentPolicyDigest`、`externalMaterialManifestDigests`、`toolchainMaterialDigest`、`moduleGraphDigest`；
 - `builderPrincipalId`、`builderWorkflowIdentity`、`builderIsolationProfile`；
 - `artifactAttestationProducerPrincipalId`、`artifactAttestationWorkflowIdentity`；
 - unsigned build output 的 raw SHA-256 与 file size，以及完成 code signing 后 final artifact 的 raw SHA-256、file size、Go build ID、OS、arch、version、build date；
+- closed `codeSignature` observation：`observedFinalRawSHA256`、`observedFileSize`、`observedAt`、`observerWorkflowIdentity`、`signatureKind`、`identifier`、`teamIdentifier|null`、`cdHash`、`designatedRequirement`、`leafCertificateSHA256|null`、`certificateChainSHA256|null`、`hardenedRuntime`、`secureTimestamp`；
 - `attestationDigest` 与 `signedObjectEnvelope`。
 
 `attestationDigest=sha256(JCS(attestationWithoutAttestationDigestAndSignedObjectEnvelope))`，并且必须等于 `signedObjectEnvelope.objectDigest`。
@@ -84,24 +106,26 @@ parent object 的 `builderPrincipalId` 只记录 builder，不是签名 producer
 
 机器观察事实与 policy verdict 必须分离：manifest/digest/builder/output 字段记录可复核事实；是否允许进入 managed-development、release、signing 或 install 由调用方 policy 根据 profile 与 current ledger 决定，不能把 `allowed=true` 写成 artifact 自证字段。
 
-### 5. Producer 与 signer 分权
+`codeSignature.observedFinalRawSHA256/observedFileSize` 必须分别等于 parent final artifact 字段，且 observation 必须由 `artifactAttestationWorkflowIdentity` 对同一 immutable final object 产生；identifier 固定为 ADR 0047 的 `com.github.chiga0.marshal`，其它签名字段按 profile policy 验证。缺 observation、receipt 后补 identity、错 CDHash/Team ID/requirement/certificate chain、签名后 bytes swap 或 observer workflow 不匹配均拒绝。该 attestation 的职责止于 code-signing 后 artifact identity；notarization 与目标 deployment policy observation 继续由 ADR 0047 的 immutable release record 和 `MarshalInstallReceiptV1` 独立接纳，不能静默塞入本对象或由本对象冒充。
+
+### 6. Producer 与 signer 分权
 
 1. source/materialization producer 解析 canonical repository 并产出 sealed bundle；普通调用者不能自报 bundle digest。
 2. builder 在受保护环境中消费 sealed bundle，并产出 unsigned artifact 与 build record；builder 不能持有 code-signing key，也不能签最终 artifact attestation。
-3. artifact/release authority 必须先独立验证 immutable source/compile/external-material manifest、builder identity、build record 与 unsigned artifact bytes，再对精确对象执行 Apple code signing；随后重新观察签名后 final artifact bytes 与 code-signature identity，最后使用专属 attestation key usage 签 `MarshalArtifactBuildAttestationV1`。它不得只消费调用者提供的 `sourceHead` 或摘要。Apple code-signing operation 与 artifact-attestation operation 可以由同一受保护 artifact/release authority 控制，但必须使用不同 operation identity/key usage 并分别记录 workflow identity；二者都不能与 builder 或 deployment/install signer 合并。
+3. artifact/release authority 必须按 `buildRecordDigest` 解析 immutable `MarshalArtifactBuildRecordV1`，独立验证 source/compile/external-material manifest、builder workflow fact、record digest 与 unsigned artifact bytes，再对精确对象执行 Apple code signing；随后重新观察签名后 final artifact bytes 与 closed `codeSignature` identity，最后使用专属 attestation key usage 签 `MarshalArtifactBuildAttestationV1`。它不得只消费调用者提供的 `sourceHead`、record 字段或摘要。Apple code-signing operation 与 artifact-attestation operation 可以由同一受保护 artifact/release authority 控制，但必须使用不同 operation identity/key usage 并分别记录 workflow identity；二者都不能与 builder 或 deployment/install signer 合并。
 4. deployment/install signer 只能消费已签 artifact attestation，独立观察目标安装对象、policy/current transaction 后签 `MarshalInstallReceiptV1`；不得修改、补签或重新解释 artifact attestation。
 5. artifact/release signer 与 deployment/install signer 沿用 ADR 0047 的不同 principal、identity 和 private key 要求。任何角色合并、调用者自签或同一 key 复用均 fail closed。
 
-### 6. 签名、安装与 replay
+### 7. 签名、安装与 replay
 
 - code signing 只能作用于精确匹配 builder record 中 unsigned digest 的 immutable artifact；签名会改变 Mach-O bytes，因此 attestation 必须同时绑定 unsigned digest 与签名后 final digest，且只允许安装 final digest 对应对象。签名前后都须重新观察 raw bytes 与 identity，出现替换即拒绝。
-- `MarshalInstallReceiptV1.artifactAttestation` 必须精确绑定本合同的 attestation digest、producer principal、key identity 与 current key epoch。
+- `MarshalInstallReceiptV1.artifactAttestation` 必须精确绑定本合同的 attestation digest、producer principal、key identity 与 current key epoch；receipt 的 `codeSignature` 必须与 attestation 内 closed `codeSignature` 逐字段一致，并由 installer 对目标 held object 重新观察，不能只复制 attestation 字段。
 - artifact attestation verifier 每次消费时都必须重新读取 producer principal 的 current keyset/revocation fact；Apple code-signing identity 不能代替 artifact-attestation key usage，artifact attestation 也不能代替 ADR 0047 的 code-signature 与 deployment policy observation。
 - 相同 source manifest 不保证相同 binary；每个 artifact 必须有独立 output digest 与 attestation。相同 tag/version 不能覆盖既有 attestation。
 - 旧 attestation、旧 key epoch、已撤销 builder/signer、降级 sourceHead/profile/toolchain 或与 current release policy 不匹配的 replay 均拒绝。
 - build、artifact signing、code signing/notarization、install/current 推进和 publication 之间不得以可变 pathname 或自由文本传递 authority；只传 immutable object identity、digest 与独立 observation。
 
-### 7. 必须通过的 hostile matrix
+### 8. 必须通过的 hostile matrix
 
 实现进入 managed-development 或 release 前，至少验证：
 
@@ -119,6 +143,9 @@ parent object 的 `builderPrincipalId` 只记录 builder，不是签名 producer
 12. revoked key、旧 epoch、旧 policy、旧 attestation、profile/source/toolchain downgrade 与 tag overwrite 必须失败。
 13. module graph 相同但 extracted module/dependency embed bytes 不同、同 generator argv 但 executable bytes 不同、同 CGO allowlist 但 header/library/`pkg-config`/tool bytes 不同必须失败；
 14. artifact attestation 的错 producer、错 key usage/domain、旧或未来 epoch、revoke 后签名、Apple code-signing key 冒充 attestation key，以及 artifact/install 两角色复用同 key 必须失败。
+15. 缺失或伪造 `MarshalArtifactBuildRecordV1`、record 与 sealed manifest/unsigned artifact 摘要不一致、调用者替换 builder workflow fact 或 signer 只信 record 字段必须失败；
+16. 缺失或伪造 `CompileRootManifestV1`、生成输出未重新枚举、source/compile manifest 交叉拼接或 compile-root sealed object 不可得必须失败；
+17. attestation 缺少 closed `codeSignature`、final digest/size 与 observation 不一致、错 identifier/CDHash/Team ID/designated requirement/certificate chain、observer workflow 漂移，以及 receipt 后补或改写 signature identity 必须失败。
 
 这些测试必须覆盖 production producer chain，不得只测试摘要纯函数或测试 seam。hostile fixture 不执行随机临时 Mach-O，也不要求关闭宿主安全策略。
 
@@ -140,8 +167,8 @@ parent object 的 `builderPrincipalId` 只记录 builder，不是签名 producer
 ## 实施顺序与退出条件
 
 1. 接受本 ADR；在此之前不得把候选实现描述为 authority；
-2. 定义 source manifest 与 `MarshalArtifactBuildAttestationV1` schema、canonical encoder/validator 和 hostile fixtures；
-3. 建立 source materializer → sealed compile root → builder record → artifact signer 的最短纵切；
+2. 定义 source manifest、`CompileRootManifestV1`、`ExternalBuildMaterialManifestV1`、`MarshalArtifactBuildRecordV1` 与 `MarshalArtifactBuildAttestationV1` schema、canonical encoder/validator 和 hostile fixtures；
+3. 建立 source materializer → sealed compile root → closed build record → artifact signer/code-sign observation 的最短纵切；
 4. 让 code-sign/release 与 `MarshalInstallReceiptV1` 精确消费 attestation；
 5. 外部 provision certificate/allowlist/current authority 后，在固定安装路径完成 canary；
 6. 连续通过 `version`、`doctor --self`、完整 `doctor`、`task scaffold`，再恢复真实 R3-D scaffold/plan preflight。
