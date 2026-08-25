@@ -1,7 +1,7 @@
 # ADR 0048：受保护构建输入与 Marshal Artifact Attestation
 
 - 状态：已接受（Accepted，2026-08-26）；接受证据绑定 sourceHead `5de09997f5260c672f297496290b567815162bb1` 的同一独立 reviewer 复审结论 `ACCEPT`（一次聚合返工后 P0/P1=0）与已合入 PR #215；接受只冻结合同，不构成实现、签名授权、外部 provision、Issue #212 关闭或 R3-D/E/F 完成证据
-- 修订状态：提议（Amendment Proposed，2026-08-26）；下述 `CompileRootManifestV1`、authenticated `MarshalArtifactBuildRecordV1`、共享 `CodeSignatureIdentityV1` 与跨对象相等关系尚未被原 sourceHead/PR #215 审查或接受，须经本轮独立复审和维护者单独接受后才冻结
+- 修订状态：已接受（Amendment Accepted，2026-08-26）；修订证据绑定 sourceHead `b76a53007ba6a07a3bd944fb34d496c47befb289` 的同一独立 reviewer 聚合返工复审 `ACCEPT`（P0/P1/P2/P3=0）；修订冻结 `CompileRootManifestV1`、authenticated `MarshalArtifactBuildRecordV1`、共享 `CodeSignatureIdentityV1` 与跨对象相等关系，但不构成实现、外部 provision、Issue #212 关闭或 R3-D/E/F 完成证据
 - 关联：[ADR 0003](0003-separate-worker-and-publisher.md)、[ADR 0004](0004-independent-verification.md)、[ADR 0038](0038-agent-production-authority-provider.md)、[ADR 0047](0047-marshal-darwin-self-identity-and-release-signing.md)、[Issue #212](https://github.com/chiga0/marshal-harness/issues/212)
 
 ## 背景
