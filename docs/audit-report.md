@@ -640,6 +640,16 @@ R19/R20 的共同边界：它们证明 Codex `0.145.0` macOS `ordinary-user` Wor
 
 本次文档增补不改变信任边界、持久化契约、生命周期或发布权限，因此不新增 ADR；也不关闭 `AGENT-AUTHORITY-*`、Qoder live conformance、Qwen admission、Issue #53/#138 等既有开放项。
 
+## Issue #212：Marshal Darwin 自身执行身份阻塞（2026-08-26）
+
+[Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 记录：基线 `5391b466dbb046c78411b1a491adcd81ea6d5900` 构建的固定 Marshal Mach-O 为 ad-hoc signature、`Identifier=a.out`、无 Team ID，`spctl --assess --type execute` 返回 rejected；`version --json` 与 `task scaffold` 均约 10.8 秒后以 exit 137 终止且无 stdout/stderr。故障时宿主 memory pressure 与 CPU 状态正常。exit 137 证明进程收到 `SIGKILL`，但具体发出者仍需部署者用宿主安全日志按时间、PID/CDHash 归因；本报告不把未归因信号直接等同为 Gatekeeper 或某一 EDR 产品结论。
+
+| ID | 级别 | 状态 | 当前事实与关闭条件 |
+| --- | --- | --- | --- |
+| `MARSHAL-DARWIN-SELF-IDENTITY` | P1 | `CONTRACT-ACCEPTED/EXTERNAL-OPEN` | 固定 pathname 已消除随机 helper，但当前 build/install/release 没有稳定受管签名身份、安装收据/current high-water 或 CLI pre-mutation gate，所有产品 CLI 生命周期仍被阻断。ADR 0047 已在唯一 aggregate rework 后经独立 reviewer `ACCEPT` 且 P0/P1/P2=0，于 2026-08-26 [Accepted](adr/0047-marshal-darwin-self-identity-and-release-signing.md)；接受仅冻结三类 profile、外部 certificate/allowlist/current authority 前置、receipt/trust anchor 与 release/deployment signer 分权合同。实现与外部 provision 仍 OPEN，当前 Keychain 仍无有效 code-signing identity。关闭必须同时满足：部署者 provision certificate/企业 allowlist、外部不可回滚 current/high-water、新鲜 policy observation 与不同 principal/key 的 artifact/release、deployment/install signer；固定安装对象连续执行纯进程内 `version`、bootstrap `doctor --self`、完整 `doctor`、`task scaffold` 无逐次人工批准；binary/receipt/current/path/policy 漂移 fail closed；真实 R3-D scaffold/plan preflight 与独立审查通过。`spctl accepted`、ADR 接受或代码存在任一单项都不足以关闭。 |
+
+该 finding 与 Agent/Sandbox production authority 分离：签名 Marshal 不会把 ADR 0042 ordinary-user Adapter 升级为 hardened authority。Apple notarization 与企业 Endpoint Security/EDR allowlist 也分别判断；禁止通过删除 provenance、关闭安全软件、ad-hoc/随机 executable、`go run` 或伪造生命周期证据绕过。
+
 ## Issue #186：架构复审 Finding 稳定登记（2026-08-25）
 
 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的多轮复审接受了 WorkerExecutor、Agent/Sandbox 双 binding、ResultIngress 与 strangler 收敛方向，同时发现若干不能只留在 Issue 评论中的合同缺口。本文只建立稳定 ID、当前证据、关闭条件和 milestone 落点；**登记不等于修复，Issue disposition 不等于 ADR 接受，代码或测试存在也不等于 finding 已关闭**。关闭任一 P0/P1 仍需相应合同/实现、正反证据和独立 reviewer verdict。
