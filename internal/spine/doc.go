@@ -3,7 +3,7 @@
 // AgentLaunchSpec → WorkerExecutor（internal/agentruntime，FakeProvider +
 // FakeAgent 驱动 Sandbox Stage→Exec→Inspect→Terminate）产出的 untrusted
 // WorkloadResult 组装为 Candidate/WorkerResult 投递信封与 DRC
-//（internal/resultingress，绑定 Sandbox allocation 的 allocationId/
+// （internal/resultingress，绑定 Sandbox allocation 的 allocationId/
 // generation），最终经 ResultIngress.Admit 完成 DRC-bound current-ledger
 // recheck 接纳。Candidate 必须可机械证明来自绑定的 Sandbox allocation；
 // 本包只做确定性链路打通与证据绑定，不接线生产路径，内容正确性权威仍归
