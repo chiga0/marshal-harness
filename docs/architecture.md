@@ -43,6 +43,8 @@ flowchart TB
         Engine["DurableExecutionEngine\ndelivery / timer / recovery"]
         Registry["Provider Registry\nCapabilitySnapshot / ConformanceEvidence"]
         ResultIngress["Core Result Ingress\ncapability + current-ledger recheck"]
+        WorkerPort["WorkerExecutor\nCore-owned orchestration seam"]
+        Composed["WorkerRuntimeComposer (Proposed)\nWorkerRuntimeProfile"]
         Ledger[("Authority Ledger")]
         Objects[("Content-addressed Objects")]
 
@@ -51,11 +53,11 @@ flowchart TB
         Core --> Registry
         Core --> Ledger
         Core --> Objects
+        Engine -->|"ledger-derived command"| WorkerPort
+        WorkerPort -->|"selected runtime profile"| Composed
     end
 
     subgraph Execution["Execution Plane"]
-        WorkerPort["WorkerExecutor\nCore-owned orchestration seam"]
-        Composed["WorkerRuntimeComposer (Proposed)\nWorkerRuntimeProfile"]
         Remote["RemoteWorkerGateway (Proposed)\nlogical Agent + Sandbox identities"]
         Agent["AgentProvider\nprepare / decode / capability"]
         Sandbox["SandboxProvider\nprovision / stage / exec / restore"]
@@ -63,7 +65,6 @@ flowchart TB
         ImplementWorkload["Implement Workload\nallocation + lease + actor identity"]
         VerifierWorkload["Verifier Workload\nindependent allocation + actor identity"]
 
-        WorkerPort -->|"selected runtime profile"| Composed
         WorkerPort -->|"gateway runtime profile"| Remote
         Composed -->|"dispatch-bound Agent lease / per-Port AuthZ"| Agent
         Composed -->|"dispatch-bound Sandbox lease / per-Port AuthZ"| Sandbox
@@ -85,7 +86,6 @@ flowchart TB
     end
 
     API --> Core
-    Engine -->|"ledger-derived command"| WorkerPort
     Engine -->|"independent verify command"| Verify
     Core -->|"issue MaterialAccessGrant"| ImplementWorkload
     Core -->|"issue MaterialAccessGrant"| VerifierWorkload
@@ -125,6 +125,8 @@ Marshal Core 独占：
 - ReviewDecision、SideEffectIntent 与 PublicationAuthorization；
 - append-only authority ledger、幂等和审计。
 
+`WorkerExecutor` 是 Control Plane 内 Attempt 执行的唯一编排 seam：它只消费 Kernel transaction 产生的 durable command，并按冻结的 runtime profile 跨 Port 驱动 Agent 与 Sandbox。`WorkerRuntimeComposer` 是 **Proposed** 的 Core-owned profile 组合组件，尚无 ADR 出处、不构成合同；两者都不注册 Provider 身份，也不形成可远程部署的第二权威。
+
 “Supervisor”只是 Core 的产品心智模型，不是一个维护全局聊天上下文的 LLM。
 
 ### 3. Durable Execution 层
@@ -137,14 +139,12 @@ backend 不创建业务 Attempt，不决定 retry/rework，不宣布 ReviewDecis
 
 Execution Plane 执行有界 workload：
 
-- `WorkerExecutor` 是 Core-owned、非 Provider 的 Implement workload 编排 seam，只负责把权威 command 投影为 dispatch、inspect、cancel 与 reconcile；它不拥有 lifecycle、retry/rework、Verification、ReviewDecision 或发布权威；
-- `WorkerRuntimeComposer`（**Proposed，尚无 ADR 出处，不构成合同**）通过冻结的 `WorkerRuntimeProfile` 组合已经独立注册的 `AgentProvider + SandboxProvider`，避免 Agent × Sandbox 的组合爆炸；
 - Agent Provider 只处理 Agent prepare/decode/capability，可以独立接入 Codex、Qoder、Qwen、OpenCode 或 A2A Agent；
 - Sandbox Provider 只管理 Provision/Stage/Exec/Inspect/Checkpoint/Restore/Terminate/Reconcile，可以独立接入 Local、Aone、Cloudflare 或 Kubernetes；
 - 完全托管、物理实现上无法拆分 Agent 与 Sandbox 的外部 Worker 通过 `RemoteWorkerGateway`（**Proposed，尚无 ADR 出处，不构成合同**；它与 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 冻结边界 1「WorkerProvider 不是第七 Port」的关系必须由 ADR 论证后才能进入 required path）接入，但必须映射为 Agent 与 Sandbox 两类逻辑 Provider registration，并分别提供 allocation、security domain、capability、conformance 与 result transport 证据；
 - Verification Provider 运行独立验证 workload。
 
-`WorkerExecutor` 与 `WorkerRuntimeComposer`（后者仍为 Proposed）都是 Core-owned 编排组件，不注册 Provider 身份，也不新增 trust domain、authority、Provider Port 或第二个 Run 状态机。Agent、Sandbox 与 Verification 仍是 ADR 0018 冻结的独立 Provider Port；相同 `securityDomainId` 不自动授权，每次调用仍须匹配各自 Port 的 principal、registration、scope、operation 与 DispatchLease。现有 Sandbox `workloadRole` 只允许 `worker|verifier`。Planner、Reviewer 和 Publisher 不会被塞入该枚举。
+这些 workload 只接收 Control Plane 通过 `WorkerExecutor` 或 Verification command 投影出的有界操作；它们不拥有 lifecycle、retry/rework、ReviewDecision 或发布权威。Agent、Sandbox 与 Verification 仍是 ADR 0018 冻结的独立 Provider Port；相同 `securityDomainId` 不自动授权，每次调用仍须匹配各自 Port 的 principal、registration、scope、operation 与 DispatchLease。现有 Sandbox `workloadRole` 只允许 `worker|verifier`。Planner、Reviewer 和 Publisher 不会被塞入该枚举。
 
 ### 5. Data / Capability Plane
 
@@ -278,7 +278,7 @@ Rework 会创建新的 Evidence 与 ReviewDecision 绑定；旧 Evidence 不会�
 
 - `WorkerExecutor` 是 Core-owned 的 Implement workload 编排 seam，不是 Provider Port；下游 Provider 的 `completed` 只表示执行或观察结束；
 - `WorkerRuntimeComposer`（Proposed）通过不可变 `WorkerRuntimeProfile` 绑定 `agentBindingDigest + sandboxBindingDigest + compatibilityDigest` 并派生 `profileDigest`，随 `DispatchLease` 一起冻结；binding digest 覆盖 registration 与 snapshot 身份，与 capability 内容摘要不是同一对象；
-- `AgentProvider`（当前 Local MVP 代码中的 `AgentAdapter`）只处理 Agent prepare/decode/capability；
+- `AgentProvider` 只处理 Agent prepare/decode/capability；当前 Local MVP 的 legacy `WorkerAdapter` 仅可作为迁移期 compatibility source 映射到这些操作，不等同于 production `AgentProvider`，也不具备 durable AgentProvider registration、attestation、conformance 或 production eligibility；上述资格必须等待 R3 Exit Gate；
 - `SandboxProvider` 只处理执行环境生命周期；
 - 接入新 Agent 时只实现 `AgentProvider` 并复用既有 Sandbox；接入新执行环境时只实现 `SandboxProvider` 并复用既有 Agent；完全托管的 Worker 通过 `RemoteWorkerGateway`（Proposed）映射到两类既有逻辑 Provider registration；
 - 下层六类 Provider Port 各自拥有独立 protocol family、AuthZ、Schema 和 conformance；`WorkerExecutor` 仅编排这些 Port，不单独注册 Provider 身份或签发能力；
