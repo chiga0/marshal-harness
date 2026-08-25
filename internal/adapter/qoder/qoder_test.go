@@ -2425,6 +2425,51 @@ func TestOrdinaryUserFirstUnsupportedVersionRemainsUnsupported(t *testing.T) {
 	}
 }
 
+func TestOrdinaryUserPreservesCancellationAfterIdentityPin(t *testing.T) {
+	for _, operation := range []string{"probe", "run"} {
+		t.Run(operation, func(t *testing.T) {
+			fixture := newRunFixture(t, supportedBinary, successEvents("provider/model"))
+			fixture.adapter.ordinaryUserMode = true
+			if _, err := fixture.adapter.Probe(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			var err error
+			if operation == "probe" {
+				_, err = fixture.adapter.Probe(ctx)
+			} else {
+				_, err = fixture.adapter.Run(ctx, fixture.request)
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("error = %v, want context.Canceled", err)
+			}
+			if failure, ok := port.AsAdapterFailure(err); ok && failure.Kind == port.FailureKindProtocolInvalid {
+				t.Fatalf("cancellation was misclassified as permanent identity drift: %v", err)
+			}
+		})
+	}
+}
+
+func TestOrdinaryUserClassifiesVersionProbePathRaceAsIdentityDrift(t *testing.T) {
+	fixture := newRunFixture(t, supportedBinary, successEvents("provider/model"))
+	fixture.adapter.ordinaryUserMode = true
+	if _, err := fixture.adapter.Probe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fixture.adapter.beforeVersionProbe = func() {
+		fixture.adapter.beforeVersionProbe = nil
+		if err := os.Remove(fixture.executable); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := fixture.adapter.Probe(context.Background())
+	failure, ok := port.AsAdapterFailure(err)
+	if !errors.Is(err, ErrIdentityDrift) || !ok || failure.Kind != port.FailureKindProtocolInvalid || failure.Disposition != port.RetryDispositionDoNotRetry {
+		t.Fatalf("error = %v, want version-probe path race as ErrIdentityDrift protocol-invalid/do-not-retry", err)
+	}
+}
+
 func TestOrdinaryUserRunReportsStableExecutableIdentity(t *testing.T) {
 	fixture := newRunFixture(t, supportedBinary, successEvents("provider/model"))
 	fixture.adapter.ordinaryUserMode = true

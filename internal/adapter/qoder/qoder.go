@@ -88,6 +88,7 @@ type Adapter struct {
 	authorityFenceRoot  string
 	beforeLaunchGuard   func()
 	afterStartGuard     func()
+	beforeVersionProbe  func()
 
 	mu                           sync.Mutex
 	pinned                       *executableIdentity
@@ -585,20 +586,29 @@ func (a *Adapter) verifyExecutionIdentity(identity executableIdentity) error {
 func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
 	source, err := openExecutablePathNoFollow(a.executable)
 	if err != nil {
-		return executableIdentity{}, errors.New("configured qoder executable is unavailable")
+		if structuralExecutablePathError(err) {
+			return executableIdentity{}, fmt.Errorf("%w: configured qoder executable is unavailable", errExecutableIdentityUnavailable)
+		}
+		return executableIdentity{}, fmt.Errorf("inspect configured qoder executable: %w", err)
 	}
 	defer source.Close()
 	info, err := source.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return executableIdentity{}, errors.New("configured qoder executable is unavailable")
+	if err != nil {
+		return executableIdentity{}, fmt.Errorf("stat configured qoder executable: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return executableIdentity{}, fmt.Errorf("%w: configured qoder executable is unavailable", errExecutableIdentityUnavailable)
 	}
 	device, inode, ok := executableDeviceInode(info)
 	if !ok {
-		return executableIdentity{}, errors.New("configured qoder executable identity is unavailable")
+		return executableIdentity{}, fmt.Errorf("%w: configured qoder executable device/inode is unavailable", errExecutableIdentityUnavailable)
 	}
 	digest, err := digestOpenExecutable(source)
 	if err != nil {
 		return executableIdentity{}, err
+	}
+	if a.beforeVersionProbe != nil {
+		a.beforeVersionProbe()
 	}
 	version, err := readBinaryVersion(ctx, a.executable)
 	if err != nil {
@@ -1024,10 +1034,13 @@ func (a *Adapter) ordinaryIdentityDrift(err error) error {
 	if err == nil || !a.ordinaryUserMode {
 		return err
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 	a.mu.Lock()
 	pinned := a.pinned != nil
 	a.mu.Unlock()
-	if !pinned && !errors.Is(err, ErrIdentityDrift) {
+	if !errors.Is(err, ErrIdentityDrift) && !(pinned && errors.Is(err, errExecutableIdentityUnavailable)) {
 		return err
 	}
 	return fmt.Errorf("%w: %w", qoderProtocolInvalid("configured ordinary-user executable identity drift", a.now()), ErrIdentityDrift)
