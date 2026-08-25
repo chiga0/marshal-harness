@@ -639,3 +639,42 @@ Qoder v7 operator-local transcript attestation 不再构建或复制随机临时
 R19/R20 的共同边界：它们证明 Codex `0.145.0` macOS `ordinary-user` Worker 的路径、digest、session、transcript、WorkerResult、verification、artifact、candidate、scope 与 base 绑定；不证明 hardened authority、Linux authority、sandbox 或远端发布。当前 watchdog 暂停新 Worker 调度；容量恢复时也必须先满足 fresh provider signal、scope 互斥、独立 worktree 与 admission receipt。
 
 本次文档增补不改变信任边界、持久化契约、生命周期或发布权限，因此不新增 ADR；也不关闭 `AGENT-AUTHORITY-*`、Qoder live conformance、Qwen admission、Issue #53/#138 等既有开放项。
+
+## Issue #186：架构复审 Finding 稳定登记（2026-08-25）
+
+[Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的多轮复审接受了 WorkerExecutor、Agent/Sandbox 双 binding、ResultIngress 与 strangler 收敛方向，同时发现若干不能只留在 Issue 评论中的合同缺口。本文只建立稳定 ID、当前证据、关闭条件和 milestone 落点；**登记不等于修复，Issue disposition 不等于 ADR 接受，代码或测试存在也不等于 finding 已关闭**。关闭任一 P0/P1 仍需相应合同/实现、正反证据和独立 reviewer verdict。
+
+### 主执行链 hardening
+
+| ID | 级别 | 状态 | 当前证据与关闭条件 | 建议落点 |
+| --- | --- | --- | --- | --- |
+| `I186-ARCH-LOCATION-ATTESTATION` | P0 | `OPEN-CONTRACT` | ADR 0043 把执行位置 evidence 的产出职责写给 SandboxProvider，仍可能由被证明方自证。必须区分 `provider-asserted location claim` 与故障域外产生的 `authority-verified location fact`；只有后者可支撑 production assurance/publication。关闭需要 ADR amendment、来源标注、Local Kernel-held pid/cgroup/VM handle 或独立 attestation，以及伪造位置 claim 的负向 fixture。 | `I186-R3` Exit Gate |
+| `I186-ARCH-EFFECT-SINK-FENCING` | P1 | `OPEN-CONTRACT` | ResultIngress recheck 只能保护 ledger，不能撤销已经发生的外部效果。SCM、Artifact、Secret 与其它 effect sink 必须在 mutation/secret use 前独立执行 current generation、fencing、authorization 与 target recheck，并覆盖 revoke→effect 竞态。 | R3 后、R5 cutover 前 |
+| `I186-ARCH-HOT-PATH-AUTHORITY` | P1 | `OPEN-CONTRACT` | 当前 `internal/resultingress` 把 checkpoint/heartbeat/log 归为 hot path 并跳过 registration/snapshot/evidence eligibility recheck；checkpoint 可能在未完成冷路径校验时被 Restore 消费。合同与实现必须冻结：热路径永不延长 lease/generation、永不决定 fencing、永不产生冷路径不可复现的 authority；只有冷路径完整接纳的 checkpoint 才可 Restore。 | `I186-R2.5` contract cleanup |
+| `I186-ARCH-DUAL-BINDING-RECHECK` | P1 | `OPEN-IMPLEMENTATION` | R2 ResultIngress 当前只有单组 registration/snapshot/evidence binding；R3-B 已冻结 `WorkerRuntimeProfile`，但 per-Attempt profile 的 AgentBinding 与 SandboxBinding 分别 current-ledger recheck 尚未完成。关闭需要单侧 revoke/replace 的双向负向 fixture。 | `I186-R3-C` |
+| `I186-ARCH-CUTOVER-EQUIVALENCE` | P1 | `OPEN-DESIGN` | ADR 0045 的 old/new 全 digest 相等对真实非确定 Agent 不可满足。R5 前必须拆成真实 Agent 必须相等的 authority-trace invariants，以及只适用于 deterministic Fake 的 content digest equality；真实 Agent 使用资源归一化后的不劣化统计，不能人工解释掉 authority diff。 | `I186-R5` |
+| `I186-ARCH-RESOURCE-CLASSIFICATION-AUTHORITY` | P1 | `OPEN-CONTRACT` | `ResourceEnvelope.observedPeak`、termination reason 与 `infra-failure` 分类权未冻结。能够放宽 retry/预算或豁免 semantic rework 的分类必须来自 workload/Provider 故障域外 observation；Provider 声明只能诊断或收紧权限。关闭需要 source/digest/方向性合同与伪造 `infra-failure` 负测。 | `I186-R3` 合同，R4 恢复消费 |
+| `I186-ARCH-JIT-ADMISSION-RECHECK` | P1 | `OPEN-CONTRACT` | JIT provision 扩大 admission→provision 时间窗。Provision 前必须重验 AdmissionDecision `validUntil`、registration/snapshot generation 与 current Policy；不得顺延到 R6。 | `I186-R2.5` contract cleanup |
+| `I186-ARCH-PROTOCOL-REVISION-MIGRATION` | P1 | `OPEN-CONTRACT` | `acp → acp/v1` 等协议枚举升级不得重写或重新解释历史 snapshot/digest；只能 Supersede 为新 snapshot，unversioned 历史值不能满足 pinned revision admission。 | `I186-R2.5` contract cleanup |
+| `I186-ARCH-CANDIDATE-IDENTITY` | P1 | `OPEN-CONTRACT` | 当前已有独立 `candidateDigest`，但 identity slot 和链仍强约束于 Attempt，尚未以合同证明不会把 Attempt→Candidate 1:1 固化为未来破坏性约束。关闭需要 Candidate 独立 identity、Evidence 绑定该 identity，以及兼容迁移/负测；本项不提前启用多 Candidate fan-out。 | `I186-R2.5` contract cleanup |
+
+R2（#189）已关闭，不得把上表中原先口头指派给 R2 的 finding 视为随之关闭。`I186-R2.5` 是补齐合同与负测的建议 child milestone，不回滚 R2 已接纳的运行证据；在 child Issue 建立前，上述条目保持开放。`I186-ARCH-LOCATION-ATTESTATION` 必须进入 #191 的显式 Exit Gate，避免 R3 在位置仍由 Provider 自证时被错误关闭。
+
+### 前期研讨、复盘与 Worker 协作
+
+三类能力的共同风险是：Agent 生成的语义内容会影响另一个阶段、另一个 Worker 或未来 Goal。复审采用统一判据：跨越该边界的内容必须先成为 immutable、content-addressed、digest-bound、带 producer provenance 的对象，明确 purpose/audience，并由下游显式选择为 **untrusted input**；禁止自动注入 transcript、自由文本消息或 live knowledge query。该判据需要 Proposed ADR 和独立审计，本文不把它提前标为已接受合同。
+
+| ID | 级别 | 状态 | 问题与处置 / 关闭条件 |
+| --- | --- | --- | --- |
+| `I186-ARCH-DECISION-INPUT-BOUNDARY` | P1 | `OPEN-PROPOSED-ADR` | 需要冻结统一的跨阶段语义输入门禁：canonical digest、provenance、purpose/audience、大小/类型边界、显式 admission、supersession、冻结下游引用，以及“作为数据而非指令”呈现。现有 Artifact/Goal proposal 可复用，但不存在可绕过 admission 的通用上下文流。 |
+| `I186-PRE-EXEC-DELIBERATION` | P1 | `OPERATIONAL-PILOT` | Stage 0 立即使用 `publication:none` 调研 Run、互斥报告路径、人工综合与显式 proposal，不新增 Core 状态。产品化 Discovery 推迟到 R6 后；关闭前还需 typed finding/option、只读 workload profile、网络/来源治理、dissent carrier、Goal controller 与负测。 |
+| `I186-ARCH-DISSENT-CARRIER` | P1 | `OPEN-DESIGN` | dissent 与 open assumption 若只写进汇总散文，会在计划接纳时丢失。需要 versioned、content-addressed、digest-bound 的 durable handoff carrier，并在后续 ReviewPacket 中显式引用；Issue 中 `ACCEPT_P1` 只代表方向处置，不等于已有 ADR/Schema/实现。 |
+| `I186-RETROSPECTIVE-RECORD` | P1 | `OPERATIONAL-PILOT` | 现在可生成 ledger/Outcome/Evidence 的事实投影与轻量 closeout；因果解释、失败归因和改进建议必须作为带 provenance 的 assessment/proposal，与机械事实分开，不能伪装成“纯投影”。 |
+| `I186-ARCH-DISCOVERY-RETRO-ROLE` | P1 | `DEFERRED-R6` | `sandbox.WorkloadRole` 当前封闭为 `worker|verifier`。产品化 Discovery/Retrospective workload 不得冒充 verifier；新增 role/profile 将改变持久化合同，必须先有独立 ADR、principal、最小权限与负测。Stage 0 人工流程不声称该能力已实现。 |
+| `I186-ARCH-RETRO-EVIDENCE-PROJECTION` | P1 | `DEFERRED-R6` | 未来 retrospective evidence packet 必须是 allowlisted + redacted 的冻结投影，并使用独立 principal；禁止把 raw ledger、credential、宿主路径或未筛选 transcript 原样交给复盘 Agent。 |
+| `I186-ARCH-KNOWLEDGE-SNAPSHOT-REPLAY` | P1 | `DEFERRED-DEPENDENCY` | 跨 Goal 学习在 `ResourceEnvelope`、Provider-independent failure attribution 与重复任务 ROI 证据出现前不实施。未来知识只能作为 immutable versioned snapshot 被引用，其 digest 进入 Attempt 冻结输入集；planning/execution 决策路径禁止 live 查询。 |
+| `I186-WORKER-COORDINATION` | P1 | `REJECT-IMPLEMENTATION-FOR-NOW` | 当前没有可测量的 Lead 转发瓶颈，不建设 mailbox/A2A 群聊。现阶段只允许 Artifact-mediated 单向协作：发布不可变 ref，下游按已接纳计划显式消费 digest，Core 在 fan-in 复核。若未来重提 mailbox，必须先提交非规范 RFC 和瓶颈数据，再审计配额、deadline、crash/replay、撤销、循环与同 Goal prompt injection。 |
+| `I186-ARCH-DEPENDENCY-HINT-AUTHORITY` | P1 | `DEFERRED-WITH-MAILBOX` | 未来若存在 `DependencyReady`，它最多是可丢失的唤醒提示；Core 在完全没有 Worker 消息时也必须能从 ledger/Artifact refs 独立判断依赖满足，消息不得成为 correctness 或 liveness 的唯一条件。 |
+| `I186-DOC-HUMAN-MODEL` | P1 | `OPEN-DOCS` | 需要一份人类友好的分层导读，解释“当前能力 / Accepted 目标合同 / Proposed 演进”三种状态，并说明前期研讨、复盘记录和不实施 mailbox 的原因。文档合入且链接/构建检查通过后可关闭为 `CLOSED-DOCS`，但不升级任何产品能力状态。 |
+
+优先级冻结为：`前期研讨 Stage 0 >> 复盘记录 > 复盘学习 >> Worker mailbox`。其中只有 Stage 0 与轻量 closeout 可在 R3–R6 期间作为操作约定试行；其余不得抢占主执行链 P0/P1，不新增 required production path。所有 pilot 都应记录成本、等待时间、finding 质量、返工变化和人工分钟数，R6 后再基于证据决定保留、修改或删除。
