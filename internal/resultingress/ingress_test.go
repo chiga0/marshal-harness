@@ -26,18 +26,24 @@ var (
 	testCommandID = "cmd-1"
 	testIdemKey   = "idem-key-1"
 	testNonce     = "nonce-1"
+	testRegID     = "reg-1"
+	testSnapshot  = fixedDigest("snapshot-1")
+	testEvidence  = fixedDigest("evidence-1")
 	futureExpiry  = time.Now().Add(24 * time.Hour)
 )
 
 func validBinding() LedgerBinding {
 	return LedgerBinding{
-		LeaseID:      testLeaseID,
-		Generation:   1,
-		FencingToken: testFencing,
-		AttemptID:    testAttemptID,
-		AllocationID: testAllocID,
-		Expiry:       futureExpiry,
-		Revoked:      false,
+		LeaseID:        testLeaseID,
+		Generation:     1,
+		FencingToken:   testFencing,
+		AttemptID:      testAttemptID,
+		AllocationID:   testAllocID,
+		Expiry:         futureExpiry,
+		Revoked:        false,
+		RegistrationID: testRegID,
+		SnapshotDigest: testSnapshot,
+		EvidenceDigest: testEvidence,
 	}
 }
 
@@ -56,6 +62,10 @@ func validDRC(resultDigest string) DRC {
 		RequestDigest:        resultDigest,
 		Nonce:                testNonce,
 		Expiry:               futureExpiry,
+		Operation:            OpResult,
+		RegistrationID:       testRegID,
+		SnapshotDigest:       testSnapshot,
+		EvidenceDigest:       testEvidence,
 	}
 }
 
@@ -227,12 +237,12 @@ func TestAdmit_StaleLease_DRCExpired(t *testing.T) {
 	drc.Expiry = time.Now().Add(-time.Hour) // DRC expired
 
 	_, err := ing.Admit(context.Background(), drc, validEnvelope(digest, 1))
-	if !errors.Is(err, ErrStaleLease) {
-		t.Fatalf("expected ErrStaleLease got %v", err)
+	if !errors.Is(err, ErrExpired) {
+		t.Fatalf("expected ErrExpired got %v", err)
 	}
 	q := ing.Quarantine()
-	if len(q) != 1 || q[0].Reason != ReasonStaleLease {
-		t.Fatalf("expected 1 quarantine record with reason %q; got %v", ReasonStaleLease, q)
+	if len(q) != 1 || q[0].Reason != ReasonExpired {
+		t.Fatalf("expected 1 quarantine record with reason %q; got %v", ReasonExpired, q)
 	}
 }
 
@@ -267,8 +277,12 @@ func TestAdmit_MalformedEnvelope_UnknownKind(t *testing.T) {
 	env := ResultEnvelope{Kind: "invalid-kind", ResultDigest: digest, Sequence: 1}
 
 	_, err := ing.Admit(context.Background(), validDRC(digest), env)
-	if !errors.Is(err, ErrMalformedEnvelope) {
-		t.Fatalf("expected ErrMalformedEnvelope got %v", err)
+	if !errors.Is(err, ErrUnknownKind) {
+		t.Fatalf("expected ErrUnknownKind got %v", err)
+	}
+	q := ing.Quarantine()
+	if len(q) != 1 || q[0].Reason != ReasonUnknownKind {
+		t.Fatalf("expected 1 quarantine record with reason %q; got %v", ReasonUnknownKind, q)
 	}
 }
 
@@ -346,6 +360,10 @@ func TestDRC_Validate_FailClosed(t *testing.T) {
 			RequestDigest:        fixedDigest("x"),
 			Nonce:                testNonce,
 			Expiry:               futureExpiry,
+			Operation:            OpResult,
+			RegistrationID:       testRegID,
+			SnapshotDigest:       testSnapshot,
+			EvidenceDigest:       testEvidence,
 		}
 	}
 	tests := []struct {
@@ -364,6 +382,11 @@ func TestDRC_Validate_FailClosed(t *testing.T) {
 		{"empty Nonce", func(d *DRC) { d.Nonce = "" }},
 		{"bad RequestDigest", func(d *DRC) { d.RequestDigest = "notadigest" }},
 		{"zero Expiry", func(d *DRC) { d.Expiry = time.Time{} }},
+		{"empty Operation", func(d *DRC) { d.Operation = "" }},
+		{"invalid Operation", func(d *DRC) { d.Operation = "bogus" }},
+		{"empty RegistrationID", func(d *DRC) { d.RegistrationID = "" }},
+		{"bad SnapshotDigest", func(d *DRC) { d.SnapshotDigest = "notadigest" }},
+		{"bad EvidenceDigest", func(d *DRC) { d.EvidenceDigest = "notadigest" }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -414,6 +437,9 @@ func TestNewIngress_FailClosed(t *testing.T) {
 		{"empty AttemptID", func(b *LedgerBinding) { b.AttemptID = "" }},
 		{"empty AllocationID", func(b *LedgerBinding) { b.AllocationID = "" }},
 		{"empty FencingToken", func(b *LedgerBinding) { b.FencingToken = "" }},
+		{"empty RegistrationID", func(b *LedgerBinding) { b.RegistrationID = "" }},
+		{"bad SnapshotDigest", func(b *LedgerBinding) { b.SnapshotDigest = "notadigest" }},
+		{"bad EvidenceDigest", func(b *LedgerBinding) { b.EvidenceDigest = "notadigest" }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -494,6 +520,7 @@ func TestAdmit_CandidateKindAccepted(t *testing.T) {
 	ing := newTestIngress(t)
 	digest := fixedDigest("candidate-payload")
 	drc := validDRC(digest)
+	drc.Operation = OpCandidate
 	env := ResultEnvelope{Kind: KindCandidate, ResultDigest: digest, Sequence: 1}
 	_, err := ing.Admit(context.Background(), drc, env)
 	if err != nil {

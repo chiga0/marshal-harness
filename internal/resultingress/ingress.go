@@ -31,17 +31,29 @@ type EnvelopeKind string
 const (
 	KindWorkerResult EnvelopeKind = "worker-result"
 	KindCandidate    EnvelopeKind = "candidate"
+	KindEvidenceRef  EnvelopeKind = "evidence-ref"
+	KindCheckpoint   EnvelopeKind = "checkpoint"
+	KindHeartbeat    EnvelopeKind = "heartbeat"
+	KindReceipt      EnvelopeKind = "receipt"
+	KindLog          EnvelopeKind = "log"
+	KindAssessment   EnvelopeKind = "assessment"
 )
 
 // RejectionReason is the closed set of quarantine rejection labels.
 type RejectionReason string
 
 const (
-	ReasonDigestMismatch  RejectionReason = "digest-mismatch"
-	ReasonRevoked         RejectionReason = "revoked"
-	ReasonStaleGeneration RejectionReason = "stale-generation"
-	ReasonStaleLease      RejectionReason = "stale-lease"
-	ReasonMalformed       RejectionReason = "malformed"
+	ReasonDigestMismatch         RejectionReason = "digest-mismatch"
+	ReasonRevoked                RejectionReason = "revoked"
+	ReasonStaleGeneration        RejectionReason = "stale-generation"
+	ReasonStaleLease             RejectionReason = "stale-lease"
+	ReasonMalformed              RejectionReason = "malformed"
+	ReasonExpired                RejectionReason = "expired"
+	ReasonUnknownKind            RejectionReason = "unknown-kind"
+	ReasonOperationMismatch      RejectionReason = "operation-mismatch"
+	ReasonIneligibleRegistration RejectionReason = "ineligible-registration"
+	ReasonIneligibleSnapshot     RejectionReason = "ineligible-snapshot"
+	ReasonIneligibleEvidence     RejectionReason = "ineligible-evidence"
 )
 
 // ── DRC ───────────────────────────────────────────────────────────────────────
@@ -63,6 +75,10 @@ type DRC struct {
 	RequestDigest        string // sha256:<64-hex>
 	Nonce                string
 	Expiry               time.Time
+	Operation            Operation // ADR 0018 frozen closed enum
+	RegistrationID       string
+	SnapshotDigest       string // sha256:<64-hex>
+	EvidenceDigest       string // sha256:<64-hex>
 }
 
 // Validate checks all fields fail-closed.
@@ -103,6 +119,21 @@ func (d DRC) Validate() error {
 	if d.Expiry.IsZero() {
 		return fmt.Errorf("%w: Expiry is zero", ErrMalformedDRC)
 	}
+	if string(d.Operation) == "" {
+		return fmt.Errorf("%w: Operation empty", ErrMalformedDRC)
+	}
+	if !isValidOperation(d.Operation) {
+		return fmt.Errorf("%w: Operation %q not in closed set", ErrMalformedDRC, d.Operation)
+	}
+	if strings.TrimSpace(d.RegistrationID) == "" {
+		return fmt.Errorf("%w: RegistrationID empty", ErrMalformedDRC)
+	}
+	if err := requireDigest("SnapshotDigest", d.SnapshotDigest); err != nil {
+		return fmt.Errorf("%w: SnapshotDigest: %v", ErrMalformedDRC, err)
+	}
+	if err := requireDigest("EvidenceDigest", d.EvidenceDigest); err != nil {
+		return fmt.Errorf("%w: EvidenceDigest: %v", ErrMalformedDRC, err)
+	}
 	return nil
 }
 
@@ -121,6 +152,10 @@ type drcJSON struct {
 	RequestDigest        string `json:"requestDigest"`
 	Nonce                string `json:"nonce"`
 	ExpiryUnixSec        int64  `json:"expiryUnixSec"`
+	Operation            string `json:"operation"`
+	RegistrationID       string `json:"registrationId"`
+	SnapshotDigest       string `json:"snapshotDigest"`
+	EvidenceDigest       string `json:"evidenceDigest"`
 }
 
 // Digest returns the sha256 digest of the canonical JSON form of the DRC.
@@ -140,6 +175,10 @@ func (d DRC) Digest() (string, error) {
 		RequestDigest:        d.RequestDigest,
 		Nonce:                d.Nonce,
 		ExpiryUnixSec:        d.Expiry.Unix(),
+		Operation:            string(d.Operation),
+		RegistrationID:       d.RegistrationID,
+		SnapshotDigest:       d.SnapshotDigest,
+		EvidenceDigest:       d.EvidenceDigest,
 	})
 	if err != nil {
 		return "", fmt.Errorf("resultingress: DRC serialisation failed: %w", err)
@@ -152,13 +191,16 @@ func (d DRC) Digest() (string, error) {
 // LedgerBinding is a fake current-ledger view for this walking skeleton.
 // It represents the authority ledger's current knowledge for a given attempt.
 type LedgerBinding struct {
-	LeaseID      string
-	Generation   uint64
-	FencingToken string
-	AttemptID    string
-	AllocationID string
-	Expiry       time.Time
-	Revoked      bool
+	LeaseID        string
+	Generation     uint64
+	FencingToken   string
+	AttemptID      string
+	AllocationID   string
+	Expiry         time.Time
+	Revoked        bool
+	RegistrationID string
+	SnapshotDigest string // sha256:<64-hex>
+	EvidenceDigest string // sha256:<64-hex>
 }
 
 // ── ResultEnvelope ─────────────────────────────────────────────────────────────
@@ -172,10 +214,8 @@ type ResultEnvelope struct {
 
 // Validate checks all fields fail-closed.
 func (e ResultEnvelope) Validate() error {
-	switch e.Kind {
-	case KindWorkerResult, KindCandidate:
-	default:
-		return fmt.Errorf("%w: unknown kind %q", ErrMalformedEnvelope, e.Kind)
+	if _, ok := kindToOperation(e.Kind); !ok {
+		return fmt.Errorf("%w: unknown kind %q", ErrUnknownKind, e.Kind)
 	}
 	if err := requireDigest("ResultDigest", e.ResultDigest); err != nil {
 		return fmt.Errorf("%w: ResultDigest: %v", ErrMalformedEnvelope, err)
@@ -244,6 +284,15 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 	if strings.TrimSpace(binding.FencingToken) == "" {
 		return nil, errors.New("resultingress: LedgerBinding.FencingToken must not be empty")
 	}
+	if strings.TrimSpace(binding.RegistrationID) == "" {
+		return nil, errors.New("resultingress: LedgerBinding.RegistrationID must not be empty")
+	}
+	if err := requireDigest("SnapshotDigest", binding.SnapshotDigest); err != nil {
+		return nil, fmt.Errorf("resultingress: LedgerBinding.SnapshotDigest: %v", err)
+	}
+	if err := requireDigest("EvidenceDigest", binding.EvidenceDigest); err != nil {
+		return nil, fmt.Errorf("resultingress: LedgerBinding.EvidenceDigest: %v", err)
+	}
 	return &Ingress{
 		ledger:   binding,
 		admitted: make(map[string]admittedEntry),
@@ -273,7 +322,11 @@ func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (
 	}
 	if err := envelope.Validate(); err != nil {
 		drcDigest, _ := drc.Digest()
-		i.recordQuarantine(ReasonMalformed, drcDigest, "", now)
+		if errors.Is(err, ErrUnknownKind) {
+			i.recordQuarantine(ReasonUnknownKind, drcDigest, "", now)
+		} else {
+			i.recordQuarantine(ReasonMalformed, drcDigest, "", now)
+		}
 		return AdmissionFact{}, err
 	}
 
@@ -283,13 +336,21 @@ func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (
 		return AdmissionFact{}, fmt.Errorf("resultingress: DRC digest failed: %w", err)
 	}
 
-	// ── 2. Revocation check ───────────────────────────────────────────────────
+	// ── 2. Kind→operation mapping check (ADR 0044 R2) ─────────────────────────
+	expectedOp, _ := kindToOperation(envelope.Kind)
+	if drc.Operation != expectedOp {
+		i.recordQuarantine(ReasonOperationMismatch, drcDigest, envelope.ResultDigest, now)
+		return AdmissionFact{}, fmt.Errorf("%w: kind %q maps to operation %q but DRC has %q",
+			ErrOperationMismatch, envelope.Kind, expectedOp, drc.Operation)
+	}
+
+	// ── 3. Revocation check ───────────────────────────────────────────────────
 	if i.ledger.Revoked {
 		i.recordQuarantine(ReasonRevoked, drcDigest, envelope.ResultDigest, now)
 		return AdmissionFact{}, fmt.Errorf("%w: DRC has been revoked", ErrDRCRevoked)
 	}
 
-	// ── 3. Actor/target binding checks ───────────────────────────────────────
+	// ── 4. Actor/target binding checks ───────────────────────────────────────
 	if drc.AttemptID != i.ledger.AttemptID {
 		i.recordQuarantine(ReasonMalformed, drcDigest, envelope.ResultDigest, now)
 		return AdmissionFact{}, fmt.Errorf("%w: attemptId mismatch: got %q want %q",
@@ -309,24 +370,24 @@ func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (
 		return AdmissionFact{}, fmt.Errorf("%w: fencingToken mismatch", ErrStaleGeneration)
 	}
 
-	// ── 4. Generation check ───────────────────────────────────────────────────
+	// ── 5. Generation check ───────────────────────────────────────────────────
 	if drc.Generation < i.ledger.Generation {
 		i.recordQuarantine(ReasonStaleGeneration, drcDigest, envelope.ResultDigest, now)
 		return AdmissionFact{}, fmt.Errorf("%w: generation %d < current %d",
 			ErrStaleGeneration, drc.Generation, i.ledger.Generation)
 	}
 
-	// ── 5. Lease expiry check ─────────────────────────────────────────────────
+	// ── 6. Lease expiry check ─────────────────────────────────────────────────
 	if !i.ledger.Expiry.IsZero() && now.After(i.ledger.Expiry) {
 		i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
 		return AdmissionFact{}, fmt.Errorf("%w: lease expired at %v", ErrStaleLease, i.ledger.Expiry)
 	}
 	if now.After(drc.Expiry) {
-		i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
-		return AdmissionFact{}, fmt.Errorf("%w: DRC expired at %v", ErrStaleLease, drc.Expiry)
+		i.recordQuarantine(ReasonExpired, drcDigest, envelope.ResultDigest, now)
+		return AdmissionFact{}, fmt.Errorf("%w: DRC expired at %v", ErrExpired, drc.Expiry)
 	}
 
-	// ── 6. Digest check ───────────────────────────────────────────────────────
+	// ── 7. Digest check ───────────────────────────────────────────────────────
 	// RequestDigest on the DRC must match the envelope resultDigest.
 	if drc.RequestDigest != envelope.ResultDigest {
 		i.recordQuarantine(ReasonDigestMismatch, drcDigest, envelope.ResultDigest, now)
@@ -334,7 +395,18 @@ func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (
 			ErrDigestMismatch, drc.RequestDigest, envelope.ResultDigest)
 	}
 
-	// ── 7. Idempotent replay detection ────────────────────────────────────────
+	// ── 8. Cold path eligibility recheck (ADR 0018 current-ledger recheck) ─────
+	// Hot path kinds (checkpoint, heartbeat, log) skip eligibility recheck;
+	// cold path kinds (worker-result, candidate, evidence-ref, assessment,
+	// receipt) must carry RegistrationID/SnapshotDigest/EvidenceDigest matching
+	// the current ledger binding.
+	if !isHotPathKind(envelope.Kind) {
+		if err := i.recheckCold(drc, drcDigest, envelope.ResultDigest, now); err != nil {
+			return AdmissionFact{}, err
+		}
+	}
+
+	// ── 9. Idempotent replay detection ────────────────────────────────────────
 	key := drc.IdempotencyKey
 	if prior, ok := i.admitted[key]; ok {
 		if prior.envelopeDigest == envelope.ResultDigest {
@@ -349,7 +421,7 @@ func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (
 			ErrDigestMismatch, key)
 	}
 
-	// ── 8. Admit ──────────────────────────────────────────────────────────────
+	// ── 10. Admit ─────────────────────────────────────────────────────────────
 	i.ledgerSequence++
 	factInput, _ := json.Marshal(struct {
 		DRCDigest      string `json:"drcDigest"`

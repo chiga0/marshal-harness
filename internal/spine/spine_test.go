@@ -101,6 +101,9 @@ func validInput(t *testing.T) Input {
 		IdempotencyKey:       "idem-spine",
 		Nonce:                "nonce-spine",
 		Expiry:               time.Now().Add(24 * time.Hour),
+		RegistrationID:       "reg-spine",
+		SnapshotDigest:       fixedDigest("snapshot-spine"),
+		EvidenceDigest:       fixedDigest("evidence-spine"),
 		EnvelopeSequence:     1,
 		ExpectedAllocationID: expectedAllocID,
 		ExpectedGeneration:   1,
@@ -203,12 +206,15 @@ func TestRun_IdempotentReplay(t *testing.T) {
 	input := validInput(t)
 
 	binding := resultingress.LedgerBinding{
-		LeaseID:      input.LeaseID,
-		Generation:   uint64(input.ExpectedGeneration),
-		FencingToken: input.FencingToken,
-		AttemptID:    input.AttemptID,
-		AllocationID: input.ExpectedAllocationID,
-		Expiry:       input.Expiry,
+		LeaseID:        input.LeaseID,
+		Generation:     uint64(input.ExpectedGeneration),
+		FencingToken:   input.FencingToken,
+		AttemptID:      input.AttemptID,
+		AllocationID:   input.ExpectedAllocationID,
+		Expiry:         input.Expiry,
+		RegistrationID: input.RegistrationID,
+		SnapshotDigest: input.SnapshotDigest,
+		EvidenceDigest: input.EvidenceDigest,
 	}
 	ingress, err := resultingress.NewIngress(binding)
 	if err != nil {

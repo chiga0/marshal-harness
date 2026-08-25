@@ -104,12 +104,15 @@ func TestFaultInjection_CrashWindows(t *testing.T) {
 			input := validInput(t)
 
 			binding := resultingress.LedgerBinding{
-				LeaseID:      input.LeaseID,
-				Generation:   uint64(input.ExpectedGeneration),
-				FencingToken: input.FencingToken,
-				AttemptID:    input.AttemptID,
-				AllocationID: input.ExpectedAllocationID,
-				Expiry:       input.Expiry,
+				LeaseID:        input.LeaseID,
+				Generation:     uint64(input.ExpectedGeneration),
+				FencingToken:   input.FencingToken,
+				AttemptID:      input.AttemptID,
+				AllocationID:   input.ExpectedAllocationID,
+				Expiry:         input.Expiry,
+				RegistrationID: input.RegistrationID,
+				SnapshotDigest: input.SnapshotDigest,
+				EvidenceDigest: input.EvidenceDigest,
 			}
 			ingress, err := resultingress.NewIngress(binding)
 			if err != nil {
@@ -191,12 +194,15 @@ func TestFaultInjection_PartialOutput(t *testing.T) {
 	// No admission: ingress is clean.
 	input := validInput(t)
 	binding := resultingress.LedgerBinding{
-		LeaseID:      input.LeaseID,
-		Generation:   uint64(input.ExpectedGeneration),
-		FencingToken: input.FencingToken,
-		AttemptID:    input.AttemptID,
-		AllocationID: input.ExpectedAllocationID,
-		Expiry:       input.Expiry,
+		LeaseID:        input.LeaseID,
+		Generation:     uint64(input.ExpectedGeneration),
+		FencingToken:   input.FencingToken,
+		AttemptID:      input.AttemptID,
+		AllocationID:   input.ExpectedAllocationID,
+		Expiry:         input.Expiry,
+		RegistrationID: input.RegistrationID,
+		SnapshotDigest: input.SnapshotDigest,
+		EvidenceDigest: input.EvidenceDigest,
 	}
 	ingress, err := resultingress.NewIngress(binding)
 	if err != nil {
@@ -235,12 +241,15 @@ func TestFaultInjection_QuarantineAudit(t *testing.T) {
 	input := validInput(t)
 
 	binding := resultingress.LedgerBinding{
-		LeaseID:      input.LeaseID,
-		Generation:   uint64(input.ExpectedGeneration),
-		FencingToken: input.FencingToken,
-		AttemptID:    input.AttemptID,
-		AllocationID: input.ExpectedAllocationID,
-		Expiry:       input.Expiry,
+		LeaseID:        input.LeaseID,
+		Generation:     uint64(input.ExpectedGeneration),
+		FencingToken:   input.FencingToken,
+		AttemptID:      input.AttemptID,
+		AllocationID:   input.ExpectedAllocationID,
+		Expiry:         input.Expiry,
+		RegistrationID: input.RegistrationID,
+		SnapshotDigest: input.SnapshotDigest,
+		EvidenceDigest: input.EvidenceDigest,
 	}
 	ingress, err := resultingress.NewIngress(binding)
 	if err != nil {

@@ -48,6 +48,10 @@ type Input struct {
 	Nonce                string
 	Expiry               time.Time
 
+	RegistrationID string
+	SnapshotDigest string
+	EvidenceDigest string
+
 	EnvelopeSequence uint64
 
 	ExpectedAllocationID string
@@ -154,17 +158,24 @@ func Run(ctx context.Context, eng *engine.DurableExecutionEngine, fact engine.Le
 		RequestDigest:        envelopeDigest,
 		Nonce:                input.Nonce,
 		Expiry:               input.Expiry,
+		Operation:            resultingress.OpCandidate,
+		RegistrationID:       input.RegistrationID,
+		SnapshotDigest:       input.SnapshotDigest,
+		EvidenceDigest:       input.EvidenceDigest,
 	}
 
 	ingress := input.Ingress
 	if ingress == nil {
 		binding := resultingress.LedgerBinding{
-			LeaseID:      input.LeaseID,
-			Generation:   genUint,
-			FencingToken: input.FencingToken,
-			AttemptID:    input.AttemptID,
-			AllocationID: outcome.AllocationId,
-			Expiry:       input.Expiry,
+			LeaseID:        input.LeaseID,
+			Generation:     genUint,
+			FencingToken:   input.FencingToken,
+			AttemptID:      input.AttemptID,
+			AllocationID:   outcome.AllocationId,
+			Expiry:         input.Expiry,
+			RegistrationID: input.RegistrationID,
+			SnapshotDigest: input.SnapshotDigest,
+			EvidenceDigest: input.EvidenceDigest,
 		}
 		ingress, err = resultingress.NewIngress(binding)
 		if err != nil {
