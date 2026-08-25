@@ -30,7 +30,7 @@
       ]
     },
     "adapterId": { "const": "codex" },
-    "cliCompatibilityLine": { "const": "0.145.x" },
+    "cliCompatibilityLine": { "enum": ["0.145.x", "0.149.x"] },
     "authorityScope": { "const": "mac-ordinary-user-operator-local" },
     "authorityClaim": { "const": "none" },
     "profileVersion": { "const": "marshal-operator-codex-provider-schema-profile/v1" },

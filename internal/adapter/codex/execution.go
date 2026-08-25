@@ -581,7 +581,7 @@ func (e *providerSchemaCompatibilityError) Error() string { return e.reasonCode 
 // prepareAttemptEvidence 打开并钉住 evidence directory inode，然后只经
 // openat(O_EXCL|O_NOFOLLOW) 占用全部 attempt 叶子。后续 worker I/O 与
 // Adapter 落盘都使用这些持续打开的 fd，不再按可被替换的路径重新打开。
-func prepareAttemptEvidence(dir *pinnedDescendantDirectory, resultName string, schemaDocument []byte, mutateForTest func([]byte) []byte) (*attemptEvidence, error) {
+func prepareAttemptEvidence(dir *pinnedDescendantDirectory, resultName string, schemaDocument []byte, compatibilityLine string, mutateForTest func([]byte) []byte) (*attemptEvidence, error) {
 	evidence := &attemptEvidence{
 		dir: dir, resultName: resultName, schemaName: "codex-output-schema.json",
 		transcriptName: "codex-transcript.jsonl", stderrName: "codex-stderr.log",
@@ -594,7 +594,7 @@ func prepareAttemptEvidence(dir *pinnedDescendantDirectory, resultName string, s
 	if mutateForTest != nil {
 		providerSchema = mutateForTest(append([]byte(nil), providerSchema...))
 	}
-	profileDocument, err := frozenProviderSchemaProfileDocument()
+	profileDocument, err := frozenProviderSchemaProfileDocumentForLine(compatibilityLine)
 	if err != nil {
 		return nil, &providerSchemaCompatibilityError{reasonCode: providerProfileInvalid}
 	}

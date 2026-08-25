@@ -21,6 +21,7 @@ TEST_BUILD_ROOT = REPOSITORY_ROOT / "bin" / "test"
 SKILL_ROOT = REPOSITORY_ROOT / ".agents/skills/marshal"
 VALIDATOR = SKILL_ROOT / "references/validate-codex-provider-schema-preflight.py"
 PROFILE = SKILL_ROOT / "references/codex-0.145-provider-schema-profile.json"
+PROFILE_0149 = SKILL_ROOT / "references/codex-0.149-provider-schema-profile.json"
 RECEIPT_SCHEMA = SKILL_ROOT / "references/codex-provider-schema-preflight-receipt.schema.json"
 RECEIPT_PROBE = SKILL_ROOT / "references/tests/codex_provider_schema_receipt_probe.go"
 TEMPLATE = SKILL_ROOT / "templates/codex-provider-schema-preflight-receipt.json"
@@ -145,6 +146,20 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
         self.assertTrue(receipt["schema"]["boundedRead"])
         self.assertEqual(receipt["issueCount"], 0)
         self.assertEqual(receipt["issues"], [])
+
+    def test_real_provider_schema_passes_with_codex_0149_profile(self) -> None:
+        relative = VALID.relative_to(REPOSITORY_ROOT).as_posix()
+        profile = PROFILE_0149.relative_to(REPOSITORY_ROOT).as_posix()
+        completed = self.invoke(REPOSITORY_ROOT, relative, profile)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        receipt = json.loads(completed.stdout)
+        self.assertEqual(receipt["status"], "pass")
+        self.assertEqual(receipt["reasonCode"], "codex-provider-schema-compatible")
+        self.assertEqual(receipt["cliCompatibilityLine"], "0.149.x")
+        self.assertEqual(
+            receipt["profileDigest"],
+            "sha256:" + hashlib.sha256(PROFILE_0149.read_bytes()).hexdigest(),
+        )
 
     def test_one_invocation_aggregates_every_r1_to_r10_schema_failure(self) -> None:
         relative = INVALID_AGGREGATE.relative_to(REPOSITORY_ROOT).as_posix()
@@ -406,13 +421,18 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
         valid_relative = VALID.relative_to(REPOSITORY_ROOT).as_posix()
         invalid_relative = INVALID_AGGREGATE.relative_to(REPOSITORY_ROOT).as_posix()
         passed = self.invoke(REPOSITORY_ROOT, valid_relative)
+        profile_0149 = PROFILE_0149.relative_to(REPOSITORY_ROOT).as_posix()
+        passed_0149 = self.invoke(REPOSITORY_ROOT, valid_relative, profile_0149)
         failed = self.invoke(REPOSITORY_ROOT, invalid_relative)
         self.assertEqual(passed.returncode, 0, passed.stderr)
+        self.assertEqual(passed_0149.returncode, 0, passed_0149.stderr)
         self.assertEqual(failed.returncode, 1, failed.stdout + failed.stderr)
         with tempfile.TemporaryDirectory() as directory:
             pass_receipt = Path(directory) / "pass.json"
+            pass_receipt_0149 = Path(directory) / "pass-0149.json"
             fail_receipt = Path(directory) / "fail.json"
             pass_receipt.write_text(passed.stdout)
+            pass_receipt_0149.write_text(passed_0149.stdout)
             fail_receipt.write_text(failed.stderr)
             completed = subprocess.run(
                 [
@@ -420,6 +440,7 @@ class CodexProviderSchemaPreflightTest(unittest.TestCase):
                     str(RECEIPT_SCHEMA),
                     str(TEMPLATE),
                     str(pass_receipt),
+                    str(pass_receipt_0149),
                     str(fail_receipt),
                 ],
                 cwd=REPOSITORY_ROOT,
