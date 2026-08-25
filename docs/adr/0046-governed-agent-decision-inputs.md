@@ -136,4 +136,3 @@ Stage 0 不新增 Core 状态，不声明 Discovery 已产品化。R6 后若产�
 - 代价：跨阶段内容不能直接“塞进上下文”，需要显式存储、引用和 admission；Lead 仍承担语义综合责任。
 - 复杂度控制：近期只增加文档和操作 pilot，不增加 runtime 组件；Worker mailbox 与自动知识注入保持关闭。
 - 兼容性：不改变 ADR 0018 的权威边界、ADR 0044 ResultIngress、现有 `worker|verifier` 枚举或 R0–R6 milestone 状态。
-
