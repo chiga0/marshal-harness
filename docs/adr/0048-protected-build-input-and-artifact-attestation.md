@@ -1,6 +1,6 @@
 # ADR 0048：受保护构建输入与 Marshal Artifact Attestation
 
-- 状态：提议（Proposed，2026-08-26）；未经维护者接受，不构成实现、签名授权或 Issue #212 关闭证据
+- 状态：已接受（Accepted，2026-08-26）；接受证据绑定 sourceHead `5de09997f5260c672f297496290b567815162bb1` 的同一独立 reviewer 复审结论 `ACCEPT`（一次聚合返工后 P0/P1=0）与已合入 PR #215；接受只冻结合同，不构成实现、签名授权、外部 provision、Issue #212 关闭或 R3-D/E/F 完成证据
 - 关联：[ADR 0003](0003-separate-worker-and-publisher.md)、[ADR 0004](0004-independent-verification.md)、[ADR 0038](0038-agent-production-authority-provider.md)、[ADR 0047](0047-marshal-darwin-self-identity-and-release-signing.md)、[Issue #212](https://github.com/chiga0/marshal-harness/issues/212)
 
 ## 背景
@@ -155,4 +155,4 @@ parent object 的 `builderPrincipalId` 只记录 builder，不是签名 producer
 - 不要求通用 compiler syscall trace，也不以未实现的“完整依赖发现”作安全声明；
 - 不自签证书、不修改 Gatekeeper/SIP/EDR、不删除 provenance、不执行随机临时 Mach-O；
 - 不借本 ADR 重构 R3–R6、Adapter/Sandbox authority、能力 schema 或生命周期；
-- 不把 Proposed ADR、测试存在、CI 通过或 `spctl accepted` 任一单项描述为 production ready。
+- 不把 Accepted ADR、测试存在、CI 通过或 `spctl accepted` 任一单项描述为 production ready。
