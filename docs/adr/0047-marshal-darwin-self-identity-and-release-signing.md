@@ -1,6 +1,6 @@
 # ADR 0047：Marshal Darwin 自身执行身份、安装收据与发布签名
 
-- 状态：提议（Proposed，2026-08-26；未经维护者接受，不实施、不启用生命周期门禁）
+- 状态：已接受（Accepted，2026-08-26）；接受证据：独立 reviewer 在唯一 aggregate rework 后 verdict=`ACCEPT`，P0/P1/P2=0；接受仅冻结合同，不表示已实现、Issue #212 已关闭或外部 certificate/allowlist/current authority 已 provision
 - 关联：[ADR 0003](0003-separate-worker-and-publisher.md)、[ADR 0007](0007-intent-first-publication.md)、[ADR 0014](0014-read-only-execution-profile.md)、[ADR 0038](0038-agent-production-authority-provider.md)、[ADR 0042](0042-mac-ordinary-user-adapter-mode.md)、[Issue #212](https://github.com/chiga0/marshal-harness/issues/212)
 
 ## 背景
@@ -13,7 +13,7 @@ Issue #212 记录的固定 Marshal Mach-O 只有 linker ad-hoc signature，`Iden
 
 本 ADR 约束的是 **Marshal 自身 executable**，不是 Agent、Sandbox 或 APAP 的 production authority。一个已签名的 Marshal 仍不能把 ADR 0042 的 ordinary-user Qoder/Codex 子进程升级为 hardened sandbox 或 credentialed production authority。
 
-## 决策（提案）
+## 决策
 
 ### 1. 仓库外前置条件
 
@@ -135,7 +135,7 @@ reason 的 safe message 不得包含用户名、Keychain 内容、证书私钥�
 
 本 ADR 的签名、Team ID、CDHash、designated requirement、`spctl` 与 notarization 合同只适用于 Darwin。Linux 构建必须投影显式非 Darwin profile，不得填充伪造的 Mac identity 字段，也不得因为没有 Mac receipt 而被自动标为不可信。
 
-本提案不替 Linux 定义包签名、fs-verity、IMA、发行版 repository trust 或 production host authority。Linux 当前行为保持不变；未来若要求等价 self identity，必须按 Linux 的 trust anchor、安装与发布机制另立 ADR，不能复制 Darwin 字段冒充等价保证。
+本 ADR 不替 Linux 定义包签名、fs-verity、IMA、发行版 repository trust 或 production host authority。Linux 当前行为保持不变；未来若要求等价 self identity，必须按 Linux 的 trust anchor、安装与发布机制另立 ADR，不能复制 Darwin 字段冒充等价保证。
 
 ### 10. 非目标
 
@@ -150,7 +150,7 @@ reason 的 safe message 不得包含用户名、Keychain 内容、证书私钥�
 ## 实施与迁移顺序
 
 1. **外部 provision（可与 ADR 审查并行，但不能由后续代码替代）**：部署者准备 managed-development certificate、彼此分离的 artifact/release 与 deployment/install signer、外部不可回滚 current/high-water authority、policy observation issuer 与企业 allowlist，并用宿主日志归因 exit 137；release owner 另行准备 Developer ID/notarization authority。
-2. 维护者独立审查并接受或拒绝本 ADR。Proposed 状态不授权改变 trust boundary、持久化或 publication authority。
+2. 维护者已在独立 reviewer 的唯一 aggregate rework 后 P0/P1/P2 清零时接受本 ADR；接受只冻结 trust boundary、持久化与 publication authority 合同，不产生实现或 deployment authority。
 3. 冻结 `MarshalInstallReceiptV1`、`MarshalInstallCurrentV1`、policy observation、profile policy 与 build metadata；实现 held self-observation、纯进程内 bootstrap `doctor --self`、pre-mutation gate 和 hostile/ABA/path/signature/receipt/high-water negative matrix。此步保持 ad-hoc lifecycle fail closed。
 4. 改造 build/install：固定 identifier、受管 staging、签名/assessment、install transaction、upgrade/rollback 与不执行随机 Mach-O 的测试；在收据和最终对象逐字段一致后才激活。
 5. 以 `darwin-managed-development` 完成本机 canary：同一稳定安装连续运行纯进程内 `version`、bootstrap `doctor --self`、通过门禁后的完整 `doctor` 与 `task scaffold`，无需逐次人工批准；替换 binary/receipt/current high-water/path/policy observation 后必须 fail closed。完成独立 reviewer 之前不恢复被 #212 阻断的产品 Run。
@@ -159,7 +159,7 @@ reason 的 safe message 不得包含用户名、Keychain 内容、证书私钥�
 
 ## 后果与门禁
 
-- 该提案新增 Marshal 自身的 Darwin trust boundary、版本化安装收据和 lifecycle pre-mutation gate，并改变 signing/release authority，因此在 ADR 接受前不得实现或启用。
+- 本 ADR 接受后冻结 Marshal 自身的 Darwin trust boundary、版本化安装收据、lifecycle pre-mutation gate 与 signing/release authority 合同；接受本身不实现或启用这些能力。
 - managed-development 能缩短当前 Mac dogfood 闭环，但安全声明严格受限于该主机的外部 certificate/allowlist；它不是公开生产 release。
 - notarized-release 提供稳定 Apple 分发身份，但企业 policy 仍是独立门禁；两者都必须在 receipt 和 doctor 中可观察。
 - 当外部证书/allowlist、分权 signer 或不可回滚 current/high-water authority 任一尚未 provision 时，Issue #212 保持 blocker；实现不得用 ad-hoc、随机 executable 或静默降级换取表面可用性。
