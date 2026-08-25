@@ -642,7 +642,9 @@ def strict_timestamp(stamp):
     if not isinstance(stamp, str) or not stamp or stamp != stamp.strip():
         return None
     cleaned = stamp.replace("Z", "+00:00")
-    cleaned = re.sub(r"\.(\d{6})\d+", r".\1", cleaned)
+    # Go RFC3339Nano 会裁掉尾零，可能产生 1–9 位小数秒；Python 3.9 的
+    # fromisoformat 只接受 3 或 6 位，统一规范为 6 位再解析。
+    cleaned = re.sub(r"\.(\d+)(?=[+-])", lambda m: "." + m.group(1)[:6].ljust(6, "0"), cleaned)
     try:
         parsed = datetime.fromisoformat(cleaned)
     except ValueError:
