@@ -657,6 +657,14 @@ R3-D 真实 Run `i186-r3-d-shadow-s3-pi-20260826` 在 79,812 个事件、26,336,
 
 Adapter `0.4.0` 将失败候选延迟到 `agent_settled`/EOF 提交，并显式验证 compaction reason、start/end 配对、success/aborted/failed outcome shape、usage、summarization retry、overflow 单次恢复与 continuation 顺序；未知、重复、乱序或未闭合事件继续 fail closed。该修复仅演进 Pi AgentAdapter 的版本化 decode/completion contract，不新增 Core 状态、Attempt/retry 语义、持久化字段、信任边界或发布权限，因此不新增 ADR；若未来把 compaction 暴露为 Core 生命周期或持久 authority，则必须先有新 ADR。
 
+## 2026-08-26：post-worker abort 缺口与最小合同
+
+真实 CAP-3 dogfood 出现多次相同结构性失败：Worker 与 Verifier 已完成，Run 已进入 `REVIEW_PENDING`，但 TaskSpec、acceptance 或 ReviewPacket 的上游缺陷使 current ReviewDecision 无法安全生成；该失败不属于 Worker 行为缺陷，继续 rework 会错误消费预算，手工修改 `.marshal` 又会绕过 authority journal。
+
+| ID | 级别 | 状态 | 当前事实与关闭条件 |
+| --- | --- | --- | --- |
+| `POST-WORKER-REVIEW-PENDING-ABORT` | P1 | `CONTRACT-PROPOSED/IMPLEMENTATION-OPEN` | ADR 0050 提议仅开放 human 通过固定 CLI 发起的 `run.aborted REVIEW_PENDING → BLOCKED`，复用现有 Outcome/result/journal/snapshot 恢复，并以 current sequence/Attempt、已完成 verifier lineage、owned child 已退出、无 publication/SideEffect 与 Run Lease 组成 `PostWorkerAbortSafe`。原先新增 `ABORTED`、独立事件家族、carrier/ledger/projection Schema 和 supervisor 写权限的候选方案已因过度设计与 R3 循环依赖被否决。关闭需要 ADR 接受、实现正反/崩溃/并发矩阵、固定 Marshal 真实演练与独立 reviewer P0/P1 清零；Proposed 文档不表示命令可用，也不阻塞 R3-D/E/F。 |
+
 ## Issue #186：架构复审 Finding 稳定登记（2026-08-25）
 
 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的多轮复审接受了 WorkerExecutor、Agent/Sandbox 双 binding、ResultIngress 与 strangler 收敛方向，同时发现若干不能只留在 Issue 评论中的合同缺口。本文只建立稳定 ID、当前证据、关闭条件和 milestone 落点；**登记不等于修复，Issue disposition 不等于 ADR 接受，代码或测试存在也不等于 finding 已关闭**。关闭任一 P0/P1 仍需相应合同/实现、正反证据和独立 reviewer verdict。
