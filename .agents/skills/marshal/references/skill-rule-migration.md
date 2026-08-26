@@ -12,7 +12,7 @@
 | TaskSpec scaffold、自包含 context、统一 `--phase plan` 入口、acceptance purity/semantic preflight、执行面/证据面同构、正反 fixture、零匹配 selector | `admission-and-acceptance.md` |
 | admission receipt、plan approval/digest、scope/worktree/pre-mortem、结构性 finding 分类 | `admission-and-acceptance.md` |
 | REVIEW_PENDING 一 heartbeat、rework 归因、closure matrix、negative receipt、freshness 原子 claim | `review-and-rework.md` |
-| executable/config、Mac 实证复用、ordinary-user、Qoder transcript attestation、Adapter 晋升阶梯、failure signature/预算 | `adapter-promotion-and-mac.md` |
+| executable/config、Mac 实证复用、ordinary-user 诊断与 strict/exact Qoder transcript attestation 分流、Adapter 晋升阶梯、failure signature/预算 | `adapter-promotion-and-mac.md` |
 | WorkerResult transport、Qoder final tee、envelope、路径/目录/读取约束、Codex/Qwen/Pi/OpenCode 特例 | `adapter-promotion-and-mac.md` |
 | event/watchdog、有限动作、交互权、容量/背压、dedupeKey、supervise 风险、fan-out/进程所有权 | `watchdog-and-capacity.md` |
 | 多 Worker 交付监督、完整纵切/WIP、Attempt/rework/machine escape 记账、重复 failure、review 队列、production dependency graph/exit criterion 对齐、continue/freeze/replan/intervene | `delivery-supervision.md` |

@@ -42,14 +42,20 @@ python3 -I -B .agents/skills/marshal/references/marshal-fastpath-preflight.py \
 
 ### 执行面与证据面同构
 
-对要求 post-worker command/tool attestation 的 profile family，在消费 Attempt 前必须由同一个 machine preflight 比较独立冻结的 Worker execution projection、所选 Adapter 实际 launch projection 与该 Adapter evidence profile。比较对象至少包括 Adapter/version/authority mode、允许与禁止的 tool、Worker shell command policy、result transport、transcript protocol 及仅含 key name 的 launch env；禁止分别维护三份人工“看起来一致”的清单。TaskSpec acceptance 的 required commands 属于独立 verifier，只检查 verifier 自身可执行性与 purity，不进入 Worker transcript command 的 allow/deny 交集。
+对要求 post-worker command/tool attestation 的 **strict/exact profile family**，只有 Core/Adapter 已在 Attempt 前产生不可变的 Worker launch/execution projection，且同一固定 Marshal 二进制已在当前 production 调用链完成一次正向端到端验证时，才允许启用同构 preflight。该 preflight 比较 Core/Adapter 真实 producer 生成的 Worker execution projection、所选 Adapter 实际 launch projection 与 evidence profile；比较对象至少包括 Adapter/version/authority mode、允许与禁止的 tool、Worker shell command policy、result transport、transcript protocol 及仅含 key name 的 launch env。禁止由 operator、TaskSpec 自由文本或可省略的 manifest 自行补写 projection，也禁止分别维护三份人工“看起来一致”的清单。TaskSpec acceptance 的 required commands 属于独立 verifier，只检查 verifier 自身可执行性与 purity，不进入 Worker transcript command 的 allow/deny 交集。
+
+Mac `ordinary-user` profile 是 local/non-production dogfood，不因 strict/exact producer 尚未接线而阻断普通任务。它可以保留 Adapter 真实生成的 WorkerResult、transcript/meta、transport 与 identity 摘要作为诊断证据，但不得把这些材料称为 exact command attestation、hardened authority 或 release evidence。若 strict checker 对该模式返回 `execution-evidence-policy-unrepresentable` 或等价 producer 缺口，只记录一次 architecture/operator finding，固定 `workerReworkAllowed=false`；不运行第二次 checker、不重试 Worker、不请求 candidate rework。strict/exact profile 仍 fail closed，必须先完成真实 producer 与正向端到端验证。
 
 - 后置 checker 使用封闭 `commands` 时，派发前必须证明 Worker 计划内的 command surface 是它的子集。`commands=[]` 只在 shell/Bash 同时禁用且任务不需要 command 时成立；否则固定为 `execution-evidence-command-policy-empty`，不得启动 Worker。
 - `forbiddenCommandWords` 与已冻结的 Worker command family 或 Adapter prompt 允许的必要动作有交集时，固定为 `execution-evidence-forbidden-command-conflict`。不能等 transcript 生成后再发现，也不能要求 Worker 猜测未进入 Worker execution projection 的隐藏禁词。
-- 当前 contract/producer 未提供足以独立冻结 Worker command surface 的机器字段，而后置 checker 又要求 exact command binding 时，缺口归 `task-spec-profile-producer`/`adapter-profile-producer`，固定为 `execution-evidence-policy-unrepresentable`。先修 producer/contract；不得用自然语言 prompt、人工 receipt 或放宽 checker 静默绕过。
+- 当前 contract/producer 未提供足以独立冻结 Worker command surface 的机器字段，而 strict/exact 后置 checker 又要求 exact command binding 时，缺口归 `task-spec-profile-producer`/`adapter-profile-producer`，固定为 `execution-evidence-policy-unrepresentable`。先修 producer/contract；不得用自然语言 prompt、人工 receipt 或放宽 checker 静默绕过。ordinary-user 按上段退回诊断证据路径，不能因此升级 authority claim。
 - result transport 或 transcript contract 与真实 argv/permission/tool projection 不一致时归 Adapter producer；identity、digest 或 sourceHead 不一致时归 evidence producer。所有这些 failure 的 `workerReworkAllowed=false`、`disposition=pre-attempt-block`。
 
-以上 `reasonCode`、owner 与 disposition 是待 Harness validator 固化的 operator-local proposal，当前 Core 不会产生这些字段，也不得人工自报 machine `pass`。在 validator 落地前，只冻结已经命中稳定 `forbidden-command-executed`/`command-binding-mismatch` 的相同 Qoder exact-binding spec/profile family；Codex、其它 Adapter 及不要求该 attestation 的 Qoder family 不被连带阻断。后续若把 execution/evidence profile 或 receipt digest 持久化并用于 Core admission，会改变持久化与 trust boundary，必须先新增或替代 ADR。
+以上 `reasonCode`、owner 与 disposition 是待 Harness validator 固化的 operator-local proposal，当前 Core 不会产生这些字段，也不得人工自报 machine `pass`。在 validator 落地前，只冻结已经命中稳定 `forbidden-command-executed`/`command-binding-mismatch` 的相同 Qoder strict/exact spec/profile family；ordinary-user、Codex、其它 Adapter 及不要求该 attestation 的 Qoder family 不被连带阻断。后续若把 execution/evidence profile 或 receipt digest 持久化并用于 Core admission，会改变持久化与 trust boundary，必须先新增或替代 ADR。
+
+### 新 preflight 的正向路径门禁
+
+新增或扩大 selector、preflight、receipt/manifest producer 前，先用当前 production entry、固定 Marshal 二进制和一个可达的最小合法输入证明完整正向端到端 `pass`，再补负向 fixture 和进入 reviewer。只直接调用新 helper、validator 内部函数或测试 seam 的单元测试不能证明 production 可达；若正向路径在当前 Core/Adapter selector 中不可达，候选固定 `replan`，先修 producer/调用链，不允许用 reviewer 或 aggregate rework 推进该候选。
 
 缺 plan approval、`configured=false`、缺失/陈旧 ReviewPacket、结构性 Adapter failure 必须使用不同 finding 类别；不得把 admission finding 伪装成 Worker/provider failure，也不得靠新 Run 清除。
 

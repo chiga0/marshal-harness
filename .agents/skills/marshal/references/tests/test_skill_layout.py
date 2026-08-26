@@ -10,6 +10,7 @@ SKILL = SKILL_ROOT / "SKILL.md"
 REQUIRED_REFERENCES = {
     "admission-and-acceptance.md": (
         "零 Attempt admission",
+        "新 preflight 的正向路径门禁",
         "validate-acceptance-semantic-preflight.py",
         "verifier-worktree-mutated",
         "id/argv/cwd/timeoutSeconds/required=true/baselinePolicy/maxLogBytes",
@@ -42,6 +43,8 @@ REQUIRED_REFERENCES = {
     ),
     "adapter-promotion-and-mac.md": (
         "authorityMode=ordinary-user",
+        "Ordinary-user 诊断路径",
+        "Strict/exact 晋升路径",
         "transcript-attestation-pass",
         "protocol-invalid/do-not-retry",
         "WorkerResult",
@@ -60,6 +63,7 @@ REQUIRED_REFERENCES = {
     ),
     "delivery-supervision.md": (
         "Supervisor 是 Lead 控制面的只读观察职责",
+        "正向路径先行",
         "continue",
         "freeze-fanout",
         "replan",
