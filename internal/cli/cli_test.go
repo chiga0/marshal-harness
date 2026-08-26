@@ -195,7 +195,7 @@ func TestDoctorReportsPi0843Compatibility(t *testing.T) {
 			break
 		}
 	}
-	if found == nil || !found.Registered || found.Outcome != app.WorkerOutcomeRegistered || found.Compatibility != "supported" || found.AdapterVersion != "0.3.0" || found.BinaryVersion != "0.84.3" {
+	if found == nil || !found.Registered || found.Outcome != app.WorkerOutcomeRegistered || found.Compatibility != "supported" || found.AdapterVersion != "0.4.0" || found.BinaryVersion != "0.84.3" {
 		t.Fatalf("doctor pi 0.84.3 = %+v", found)
 	}
 	if strings.Contains(stdout.String()+stderr.String(), executable) {
