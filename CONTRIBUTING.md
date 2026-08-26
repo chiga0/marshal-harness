@@ -16,9 +16,9 @@
 
 ## 开发环境
 
-- Go 版本以 `go.mod` 为准（`go mod download` 后无需额外依赖）；
+- Go 版本以 `go.mod` 为准；`make check` 还需要 Python 3 运行仓库内的确定性架构检查（均不需要额外安装第三方包）；
 - 常用目标：
-  - `make check`：format-check + vet + staticcheck + 全仓 race 测试 + build（提交前必须通过）；
+  - `make check`：format-check + package-layer architecture-check + vet + staticcheck + 全仓 race 测试 + build（提交前必须通过）；
   - `make vuln`：govulncheck；
   - `make test` / `make build`：单独执行。
 - 仓库的本地运行态位于被 Git 忽略的 `.marshal/`，不会进入你的提交。
