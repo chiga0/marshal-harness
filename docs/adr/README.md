@@ -26,6 +26,8 @@
 
 2026-08-26，真实 dogfood 证明 `REVIEW_PENDING` Run 在 Worker/Verifier 已退出、但上游结构性门禁阻止 ReviewDecision 时缺少合法终止出口。ADR 0050（Proposed）仅提议复用现有 `task abort → run.aborted → BLOCKED` 工具链并增加 `PostWorkerAbortSafe` 守卫；不新增状态、事件家族、持久化协议或 supervisor 写权限，也不阻塞 R3-D/E/F。提议不表示命令已支持该状态。
 
+2026-08-26，Issue #212 审计发现本地 CLI 可执行性与 managed/release authority 被错误地串成同一个 R3 前置。ADR 0051（Proposed）提议增加显式 `darwin-local-dogfood` profile：只在 trusted single-user、固定 executable、`publication:none`、ordinary-user/workspace-write/non-production 边界内运行本地生命周期；Publisher、Forge、credentialed SideEffect、remote Provider、production conformance 与跨 profile 晋升全部机械拒绝。提议保留 fixed-object local-exec viability 作为 R3 pre-CLI gate，把 ADR 0047/0048 的完整受管构建、签名、安装、current/high-water 与 notarization 保留为 R6/release gate；不表示宿主已允许当前 binary、R3 已解除阻塞或 v1.0 可发布。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -68,3 +70,4 @@
 | [0047](0047-marshal-darwin-self-identity-and-release-signing.md) | Marshal Darwin 自身执行身份、安装收据/current high-water、CLI pre-mutation gate 与 release/deployment signer 分权（Issue #212） | 已接受（Accepted，2026-08-26；独立复审 P0/P1/P2=0；仅冻结合同，未实现，外部 certificate/allowlist/current authority 尚未 provision） |
 | [0048](0048-protected-build-input-and-artifact-attestation.md) | 受保护构建输入、sealed source/compile/external-material manifest、authenticated build record 与 code-sign observation（Issue #212） | 原合同与 amendment 均已接受（Accepted，2026-08-26；独立复审 P0/P1/P2/P3=0；未实现，外部 provision、Issue #212 与 R3-D/E/F 仍开放） |
 | [0050](0050-review-pending-explicit-abort.md) | `REVIEW_PENDING` Run 的最小显式 abort 出口（复用 `run.aborted → BLOCKED`） | 提议（Proposed，2026-08-26；仅冻结候选合同，未实现，不阻塞 R3） |
+| [0051](0051-darwin-local-dogfood-profile.md) | Darwin 本地 dogfood 执行 profile 与 managed/release authority 分流（Issue #212） | 提议（Proposed，2026-08-26；未实现；local-exec viability 仍是 R3 pre-CLI，完整受管权威仍是 R6/release gate） |
