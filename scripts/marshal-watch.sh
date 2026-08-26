@@ -44,6 +44,9 @@
 #   MARSHAL_WATCH_PRESSURE_OUTPUT         覆盖 memory_pressure 原始输出（仅测试）；
 #   MARSHAL_WATCH_WORKER_RESERVE_BYTES   每个新增 Worker 的保守内存预算，默认 2 GiB。
 #   MARSHAL_WATCH_LOGICAL_CPUS / MARSHAL_WATCH_LOAD1M  CPU 探针覆盖（仅测试/诊断）。
+#   MARSHAL_WATCH_CPU_IDLE_PERCENT  当前 CPU idle 百分比覆盖（仅测试/诊断）；
+#                                   Mac 生产探针使用 Mach HOST_CPU_LOAD_INFO
+#                                   短窗采样；与高 load 冲突时最多救援 1 槽。
 cd "$(dirname "$0")/.." || exit 1
 
 usage() {
@@ -467,6 +470,49 @@ def pressure_free_percent():
         pass
     return None, "unavailable"
 
+def _darwin_cpu_idle_percent():
+    raw = os.environ.get("MARSHAL_WATCH_CPU_IDLE_PERCENT", "")
+    if raw == "unavailable":
+        return None, "unavailable"
+    if raw != "":
+        override = _float_env("MARSHAL_WATCH_CPU_IDLE_PERCENT")
+        if override is not None and override <= 100:
+            return override, "override"
+        return None, "unavailable"
+    if sys.platform != "darwin":
+        return None, "not-applicable"
+    try:
+        import ctypes
+        import time
+
+        libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        libsystem.mach_host_self.restype = ctypes.c_uint
+        libsystem.host_statistics.argtypes = [
+            ctypes.c_uint, ctypes.c_int, ctypes.POINTER(ctypes.c_uint32),
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        libsystem.host_statistics.restype = ctypes.c_int
+        host = libsystem.mach_host_self()
+        snapshots = []
+        for index in range(3):
+            ticks = (ctypes.c_uint32 * 4)()
+            count = ctypes.c_uint32(4)
+            if libsystem.host_statistics(host, 3, ticks, ctypes.byref(count)) != 0 or count.value < 4:
+                return None, "unavailable"
+            snapshots.append(tuple(int(ticks[item]) for item in range(4)))
+            if index < 2:
+                time.sleep(0.1)
+        idle_samples = []
+        for before, after in zip(snapshots, snapshots[1:]):
+            deltas = [((after[item] - before[item]) & 0xFFFFFFFF) for item in range(4)]
+            total = sum(deltas)
+            if total <= 0:
+                return None, "unavailable"
+            idle_samples.append(100.0 * deltas[2] / total)
+        return min(idle_samples), "darwin-mach-host-cpu-load"
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None, "unavailable"
+
 def cpu_snapshot(active_owned):
     raw_cpus = os.environ.get("MARSHAL_WATCH_LOGICAL_CPUS", "")
     if raw_cpus == "unavailable":
@@ -489,15 +535,38 @@ def cpu_snapshot(active_owned):
                 load, load_source = float(os.getloadavg()[0]), "os.getloadavg"
             except (AttributeError, OSError, ValueError):
                 load, load_source = None, "unavailable"
-    if logical is None or load is None:
+
+    idle, idle_source = _darwin_cpu_idle_percent()
+    idle_required = sys.platform == "darwin" or os.environ.get("MARSHAL_WATCH_CPU_IDLE_PERCENT", "") != ""
+    if logical is None or load is None or (idle_required and idle is None):
         return {"logicalCores": logical, "logicalCoresSource": logical_source,
                 "load1m": load, "load1mSource": load_source,
+                "cpuIdlePercent": idle, "cpuIdleSource": idle_source,
+                "cpuAdmissionMode": "unknown",
                 "cpuSlotsAvailable": 0, "cpuStatus": "unknown"}
     load_headroom = max(0, int(math.floor(logical - load)))
+    if idle is not None:
+        # One logical CPU remains reserved for the host. When macOS load1m is
+        # inflated by runnable/uninterruptible security or event tasks but the
+        # short-window CPU counters still prove real idle, admit at most one
+        # rescue Worker. Normal-load admission remains the conservative min of
+        # queue and current-idle headroom.
+        idle_headroom = max(0, int(math.floor(logical * idle / 100.0)) - 1)
+        if load_headroom > 0:
+            signal_headroom = min(load_headroom, idle_headroom)
+            admission_mode = "load-and-idle"
+        else:
+            signal_headroom = 1 if idle_headroom >= 1 else 0
+            admission_mode = "idle-rescue" if signal_headroom == 1 else "idle-hold"
+    else:
+        signal_headroom = load_headroom
+        admission_mode = "load1m"
     ownership_headroom = max(0, logical - active_owned)
-    slots = min(load_headroom, ownership_headroom)
+    slots = min(signal_headroom, ownership_headroom)
     return {"logicalCores": logical, "logicalCoresSource": logical_source,
             "load1m": load, "load1mSource": load_source,
+            "cpuIdlePercent": idle, "cpuIdleSource": idle_source,
+            "cpuAdmissionMode": admission_mode,
             "ownedWorkerHeadroom": ownership_headroom,
             "cpuSlotsAvailable": slots,
             "cpuStatus": "ok" if slots > 0 else "constrained"}

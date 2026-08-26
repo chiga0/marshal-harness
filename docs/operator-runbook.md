@@ -397,9 +397,13 @@ bounded chunk 读取并比较前后 dev/inode/size/mode/nlink；超限、增长�
 `doctor-dead`，`unknown` 输出 `hold-ownership-unknown`，均由操作者先用
 `marshal doctor --run RUN_ID --json` 对账。
 
-`capacity` 每轮重新采集三类上限：memory 使用可用字节/当前 pressure，CPU 使用 logical
-cores、1 分钟 load average 与 `activeOwnedWorkers`（同时限制 load headroom 和 owner
-headroom），Provider 使用当前 cohort Adapter 的
+`capacity` 每轮重新采集三类上限：memory 使用可用字节/当前 pressure；CPU 使用 logical
+cores、1 分钟 load average、`activeOwnedWorkers`，并在 Mac 额外使用固定 `libSystem` 的
+`HOST_CPU_LOAD_INFO` 短窗 idle 采样。Mac load average 表示 runnable/uninterruptible queue，
+不直接等于 CPU utilization：正常 load 时取 load/idle/owner headroom 的保守最小值；
+`load1m >= logicalCores` 但短窗 idle 扣除一个系统保留核后仍有余量时，
+`cpuAdmissionMode=idle-rescue` 最多只开放一个槽；idle 探针缺失或余量不足继续 fail
+closed。Linux 当前仍以 load/owner headroom 为准。Provider 使用当前 cohort Adapter 的
 封闭 typed failure。`rate-limited`、`dns-failure`、`connection-failure` 在有效
 `notBefore`/`retryAfterNanoseconds` 窗口内暂停新增槽位，`quota-exhausted` 持续暂停到同
 Adapter 出现更新的成功事实。`notBefore` 必须严格相对对应 `worker.failed.timestamp`
@@ -408,7 +412,9 @@ Adapter 出现更新的成功事实。`notBefore` 必须严格相对对应 `work
 未知或非法 typed failure fail closed。最终
 `slotsAvailable=min(memorySlotsAvailable,cpuSlotsAvailable,providerSlotsAvailable)`；
 待派发 Run 无法从 journal 或锁定 TaskSpec 确认 Adapter identity 时 Provider 也视为
-`unknown`。memory pressure、CPU、Provider 或当前队列/ownership 任一关键 signal 为 `unknown` 时固定
+`unknown`。`providerSlotsAvailable` 使用 provisional CPU 槽形成最终数量，因此数字为 0
+不等于 Provider 未配置；配置/背压以 `providerStatus` 和对应 `providerSignals` 联合判断。
+memory pressure、CPU、Provider 或当前队列/ownership 任一关键 signal 为 `unknown` 时固定
 `hold-concurrency`。这仍是 admission 建议，不替代 scope、doctor、plan approval 或 Core lease。
 
 ### 11.3 环境变量
@@ -420,6 +426,7 @@ Adapter 出现更新的成功事实。`notBefore` 必须严格相对对应 `work
 - `MARSHAL_WATCH_COHORT_FILE`：operator-local 当前 Goal/cohort JSON；只读，不进入 `.marshal` 权威链。
 - `MARSHAL_WATCH_LEASE_FACTS_FILE`：仅确定性测试使用的 lease/owner 事实 JSON；生产不得设置。
 - `MARSHAL_WATCH_LOGICAL_CPUS` / `MARSHAL_WATCH_LOAD1M`：仅测试/诊断覆盖；生产默认读取宿主实时值。
+- `MARSHAL_WATCH_CPU_IDLE_PERCENT`：仅测试/诊断覆盖；Mac 生产不得设置，默认读取 Mach CPU ticks。
 
 ### 11.4 每轮有限动作（反空转纪律）
 
