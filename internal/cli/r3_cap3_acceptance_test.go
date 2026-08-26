@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -32,6 +33,9 @@ type cap3RunResult struct {
 // and deny changes to this file: the locked baseline must fail because the
 // real task-run JSON has no capabilityShadow, while the candidate must expose
 // a deterministic, observe-only projection without changing the Run outcome.
+// Independent Runs may freeze capability snapshots with different probedAt
+// values, so input-bound capability/observation digests may differ while the
+// remaining canonical projection must stay stable.
 func TestTaskRunAgentMatchShadowEmitsDeterministicObservation(t *testing.T) {
 	setup := newAutoFlowSetup(t)
 	const taskID = "r3-cap3-shadow-task"
@@ -75,11 +79,106 @@ func TestTaskRunAgentMatchShadowEmitsDeterministicObservation(t *testing.T) {
 	}
 	assertCAP3WorkerResultShape(t, off.WorkerResult, first.WorkerResult, second.WorkerResult)
 
-	firstBody := assertCAP3Observation(t, setup.repositoryRoot, first.CapabilityShadow)
-	secondBody := assertCAP3Observation(t, setup.repositoryRoot, second.CapabilityShadow)
-	if !bytes.Equal(firstBody, secondBody) {
-		t.Fatalf("capabilityShadow canonical body is not deterministic")
+	assertCAP3Observation(t, setup.repositoryRoot, first.CapabilityShadow)
+	assertCAP3Observation(t, setup.repositoryRoot, second.CapabilityShadow)
+	if err := compareCAP3CrossRunObservations(first.CapabilityShadow, second.CapabilityShadow); err != nil {
+		t.Fatal(err)
 	}
+}
+
+func TestCAP3CrossRunObservationDeterminismHelper(t *testing.T) {
+	digest := func(value byte) string {
+		return "sha256:" + strings.Repeat(string(value), 64)
+	}
+	fixture := func(capabilityDigest, observationDigest string) map[string]any {
+		return map[string]any{
+			"capabilityDigest":  capabilityDigest,
+			"mode":              "shadow-observe-only",
+			"observationDigest": observationDigest,
+			"shadowMatched":     true,
+		}
+	}
+	clone := func(source map[string]any) map[string]any {
+		cloned := make(map[string]any, len(source))
+		for key, value := range source {
+			cloned[key] = value
+		}
+		return cloned
+	}
+
+	base := fixture(digest('a'), digest('1'))
+	tests := []struct {
+		name    string
+		second  map[string]any
+		wantErr bool
+	}{
+		{name: "same input keeps observation digest", second: clone(base)},
+		{name: "different input changes observation digest", second: fixture(digest('b'), digest('2'))},
+		{name: "stable body drift is rejected", second: func() map[string]any {
+			value := clone(base)
+			value["shadowMatched"] = false
+			return value
+		}(), wantErr: true},
+		{name: "same input with different observation digest is rejected", second: fixture(digest('a'), digest('2')), wantErr: true},
+		{name: "different input with reused observation digest is rejected", second: fixture(digest('b'), digest('1')), wantErr: true},
+		{name: "missing input digest is rejected", second: fixture("", digest('1')), wantErr: true},
+		{name: "missing observation digest is rejected", second: fixture(digest('a'), ""), wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := compareCAP3CrossRunObservations(base, test.second)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("compareCAP3CrossRunObservations() error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func compareCAP3CrossRunObservations(first, second map[string]any) error {
+	firstStable, err := canonicalCAP3StableObservationBody(first)
+	if err != nil {
+		return fmt.Errorf("first capabilityShadow stable body: %w", err)
+	}
+	secondStable, err := canonicalCAP3StableObservationBody(second)
+	if err != nil {
+		return fmt.Errorf("second capabilityShadow stable body: %w", err)
+	}
+	if !bytes.Equal(firstStable, secondStable) {
+		return fmt.Errorf("capabilityShadow stable canonical body changed across Runs")
+	}
+
+	firstCapability, firstCapabilityOK := first["capabilityDigest"].(string)
+	secondCapability, secondCapabilityOK := second["capabilityDigest"].(string)
+	firstObservation, firstObservationOK := first["observationDigest"].(string)
+	secondObservation, secondObservationOK := second["observationDigest"].(string)
+	if !firstCapabilityOK || !secondCapabilityOK || firstCapability == "" || secondCapability == "" {
+		return fmt.Errorf("capabilityShadow capabilityDigest is missing or invalid")
+	}
+	if !firstObservationOK || !secondObservationOK || firstObservation == "" || secondObservation == "" {
+		return fmt.Errorf("capabilityShadow observationDigest is missing or invalid")
+	}
+	if firstCapability == secondCapability && firstObservation != secondObservation {
+		return fmt.Errorf("identical capabilityDigest produced different observationDigest values")
+	}
+	if firstCapability != secondCapability && firstObservation == secondObservation {
+		return fmt.Errorf("different capabilityDigest values reused one observationDigest")
+	}
+	return nil
+}
+
+func canonicalCAP3StableObservationBody(observation map[string]any) ([]byte, error) {
+	body := make(map[string]any, len(observation))
+	for key, value := range observation {
+		if key != "capabilityDigest" && key != "observationDigest" {
+			body[key] = value
+		}
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	return canonical.JSON(raw)
 }
 
 func assertCAP3WorkerResultShape(t *testing.T, results ...json.RawMessage) {
@@ -101,7 +200,7 @@ func assertCAP3WorkerResultShape(t *testing.T, results ...json.RawMessage) {
 	}
 }
 
-func assertCAP3Observation(t *testing.T, repositoryRoot string, observation map[string]any) []byte {
+func assertCAP3Observation(t *testing.T, repositoryRoot string, observation map[string]any) {
 	t.Helper()
 	expectedKeys := []string{
 		"capabilityDigest",
@@ -192,7 +291,6 @@ func assertCAP3Observation(t *testing.T, repositoryRoot string, observation map[
 	if got := canonical.DigestBytes(canonicalBody); got != reported {
 		t.Fatalf("observationDigest does not bind the canonical closed observation body")
 	}
-	return canonicalBody
 }
 
 func assertCAP3SHA256(t *testing.T, key string, value any) {
