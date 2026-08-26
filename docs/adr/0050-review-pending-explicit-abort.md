@@ -31,20 +31,21 @@ REVIEW_PENDING -- run.aborted / human --> BLOCKED
 
 ### 2. `PostWorkerAbortSafe` 守卫
 
-仅当以下条件全部可由 current authority 肯定证明时允许转换；未知、不可读或不一致一律 fail closed 且 zero-write：
+首版只接纳 `legacy-local` Run。仅当以下条件全部可由 current authority 肯定证明时允许转换；未知、不可读或不一致一律 fail closed，且除既有 Run Lease owner 操作记录外，不产生 lifecycle/control/publication/Outcome/`result.md`/snapshot authority 写入：
 
 1. current RunState 与 journal 都是同一 `REVIEW_PENDING` sequence；
-2. `currentAttemptId` 唯一，最新执行 lineage 是该 Attempt 的权威 `verification.completed`；
-3. 不存在 active owned Worker、Verifier、driver 或其它本 Run 子进程；进程归属未知同样拒绝，且不得 Signal 或 kill 非本编排进程；
+2. 在同一 held Run Lease 下重放得到唯一且闭合的 legacy-local execution lineage：exact `currentAttemptId` 的 `worker.started → worker.completed → verification.completed` 相邻业务事实分别具有固定 actor、状态与 payload binding，之后不存在任何 execution event；
+3. Core 在 append 前、与 mutation 相邻地再次重放并要求第 2 项完全不变。该闭合 lineage 是首版唯一 quiescence authority；禁止用 OS-wide、PID-only 或 `ps` 负扫描证明子进程不存在，也不得 Signal 或 kill 任何非本编排进程；
 4. 不存在 PublicationIntent、PublicationRecord、SCMMergeIntent、SideEffect 或未决 publication transaction；
-5. caller 持有 Run Lease，并以 expected sequence 追加事件。
+5. 不存在未决的 lifecycle-mutating `InterventionRecord`、effectful control request 或 control transaction；查询失败同样拒绝，避免两个 terminal intent；
+6. caller 持有 Run Lease，并以 expected sequence 追加事件。
 
-Candidate、ReviewPacket 或验收材料可以缺失、陈旧或结构性无效，因为 abort 不接纳其内容；已有字节必须原样保留。registration、AgentBinding、SandboxBinding 或 ResultIngress 不要求继续 current，它们不是安全终止已完成 Attempt 的必要条件，也不得被 abort 升级为 production/hardened 证据。
+Candidate、ReviewPacket 或验收材料可以缺失、陈旧或结构性无效，因为 abort 不接纳其内容；已有字节必须原样保留。registration、AgentBinding、SandboxBinding 或 ResultIngress 不要求继续 current，它们不是 legacy-local 安全终止已完成 Attempt 的必要条件，也不得被 abort 升级为 production/hardened 证据。production profile 不在首版源集合；未来若开放，必须先冻结故障域外 quiescence authority，不得复用本节的 legacy-local 结论。
 
 ### 3. reducer 与恢复边界
 
 - `DecisionCurrent` 只对 exact `run.aborted REVIEW_PENDING → BLOCKED` 例外；其它 `REVIEW_PENDING` 出边仍必须绑定 current ReviewDecision；
-- 先追加权威 `run.aborted`，再按现有 terminal-abort authority 幂等补齐 Outcome、`result.md` 与 snapshot；
+- 全部 guard 通过后可以按现有实现预制不具 authority 的 pending Outcome/`result.md`；`run.aborted` 必须是首个 committed business fact，随后再幂等 commit Outcome、`result.md` 与 snapshot。event 前 crash 的 pending 文件必须可忽略或清理，event 后任一阶段 crash 必须从 exact event 恢复；
 - 相同 actor/reason 的 lost-response replay 复用现有 abort authority；并发请求只有一个 expected-sequence 赢家；
 - 不删除或修改 worktree、Candidate、Evidence、transcript、branch、PR 或历史 ReviewPacket；终态不可复活，后续工作必须创建 successor Run。
 
@@ -63,13 +64,14 @@ Candidate、ReviewPacket 或验收材料可以缺失、陈旧或结构性无效�
 接受本 ADR 只冻结合同，不表示功能已完成。实现至少证明：
 
 1. 正向 `REVIEW_PENDING → BLOCKED` 产生唯一 `run.aborted`、Outcome、`result.md` 与一致 snapshot；
-2. forged producer、stale sequence、Lease 未持有、active/unknown child、publication/SideEffect 存在时全部 zero-write；
+2. forged producer、stale sequence、Lease 未持有、legacy-local lineage 非唯一/不相邻/追加了 execution event、publication/SideEffect 存在时全部拒绝，且除 Lease owner 操作记录外零 authority/business 写入；
 3. `RUNNING`、`VERIFYING`、`REWORK_REQUESTED`、publication 状态和全部终态固定拒绝；
 4. `DecisionCurrent` 例外仅命中本 ADR 的 exact event/transition；
-5. event 后各 crash window 可幂等恢复，并发请求只有一个赢家；
-6. abort 前后原 worktree 与 Evidence 字节不变；
-7. 定向测试、相关 race、staticcheck/vet、Schema/diff/secret scan 与 merge-tree 全绿，独立 reviewer 对 exact sourceHead 的 P0/P1 清零；
-8. 固定 Marshal 二进制对一个真实 legacy-local `REVIEW_PENDING` Run 完成演练，且没有 Worker、Publisher或远端副作用。
+5. 未决 effectful control/InterventionRecord 固定拒绝；覆盖 control record 已追加但 terminal event 未追加的 crash window，不产生第二 terminal intent；
+6. event 前 pending projection crash 可安全忽略/清理，event 后各 commit crash window可幂等恢复，并发请求只有一个赢家；
+7. abort 前后原 worktree 与 Evidence 字节不变；
+8. 定向测试、相关 race、staticcheck/vet、Schema/diff/secret scan 与 merge-tree 全绿，独立 reviewer 对 exact sourceHead 的 P0/P1 清零；
+9. 固定 Marshal 二进制对一个真实 legacy-local `REVIEW_PENDING` Run 完成演练，且没有 Worker、Publisher或远端副作用。
 
 ## 后果
 
