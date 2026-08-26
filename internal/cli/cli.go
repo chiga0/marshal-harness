@@ -671,13 +671,14 @@ func applyDoctorSnapshotIdentity(result *doctorWorker, identity doctorSnapshotId
 	result.BinaryVersion = identity.BinaryVersion
 	result.ExecutableDigest = identity.ExecutableDigest
 	if identity.AuthorityMode == "ordinary-user" {
-		if identity.AdapterID != "qoder" && identity.AdapterID != "codex" {
+		if identity.AdapterID != "qoder" && identity.AdapterID != "codex" && identity.AdapterID != "qwen" && identity.AdapterID != "pi" {
 			result.Compatibility = "probe-failed"
 			return
 		}
 		if identity.ProbeStatus != "supported" || len(identity.AdapterFailure) != 0 || len(identity.CodexAuthority) != 0 || identity.ConformanceEvidenceDigest != "" {
 			result.Compatibility = "probe-failed"
 		}
+		result.AuthorityMode = identity.AuthorityMode
 		return
 	}
 	if identity.AdapterID == "codex" {
@@ -2848,7 +2849,7 @@ func runTaskStatus(ctx context.Context, args []string, stdout, stderr io.Writer)
 		var output any = state
 		if observation != nil {
 			output = struct {
-				State        domain.RunState                              `json:"state"`
+				domain.RunState
 				SelfIdentity *selfidentity.LocalSelfIdentityObservationV1 `json:"selfIdentity"`
 				Assurance    string                                       `json:"assurance"`
 				Execution    string                                       `json:"execution"`

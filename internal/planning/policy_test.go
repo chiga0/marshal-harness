@@ -246,6 +246,13 @@ func TestLocalDogfoodSurfaceRejectsPublicationAuthority(t *testing.T) {
 	if err := validateLocalDogfoodSurface(effective, defaultTask(), &observation); err == nil || err.Error() != ErrPolicyLocalSurface {
 		t.Fatalf("publication grant err=%v, want %q", err, ErrPolicyLocalSurface)
 	}
+	effective.AllowPublication = false
+	hardened := defaultTask()
+	hardened.Worker.ExecutionProfile = "hardened"
+	effective.ExecutionProfile = "hardened"
+	if err := validateLocalDogfoodSurface(effective, hardened, &observation); err == nil || err.Error() != ErrPolicyLocalSurface {
+		t.Fatalf("hardened local surface err=%v, want %q", err, ErrPolicyLocalSurface)
+	}
 }
 
 func TestValidatePolicySchemaInvalid(t *testing.T) {

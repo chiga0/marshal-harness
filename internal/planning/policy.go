@@ -49,6 +49,7 @@ const (
 	ErrPolicyLocalBindingCrossProfile = "validate policy: local dogfood environment binding crossed profiles"
 	ErrPolicyLocalBindingMismatch     = "validate policy: local dogfood environment binding does not match current identity"
 	ErrPolicyLocalSurface             = "validate policy: local dogfood policy grants a prohibited surface"
+	ErrPolicyLocalCapabilityAuthority = "validate policy: local dogfood capability authority is not ordinary-user"
 )
 
 // Acceptance floor errors (issue #87): a control-regime PolicySnapshot is
@@ -434,7 +435,8 @@ func validateLocalDogfoodSurface(effective EffectivePolicy, task domain.TaskSpec
 	if observation == nil {
 		return nil
 	}
-	if effective.AllowPublication || task.Publication.Required || task.Publication.MergePolicy != domain.MergePolicyNever ||
+	if task.Worker.ExecutionProfile != "workspace-write" || effective.ExecutionProfile != "workspace-write" ||
+		effective.AllowPublication || task.Publication.Required || task.Publication.MergePolicy != domain.MergePolicyNever ||
 		slices.Contains(effective.RequiredApprovals, domain.ApprovalGatePublish) {
 		return port.Permanentf("%s", ErrPolicyLocalSurface)
 	}

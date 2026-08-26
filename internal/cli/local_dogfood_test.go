@@ -14,6 +14,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
@@ -236,6 +237,19 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	exit = RunContext(context.Background(), []string{"task", "status", "--run", runID, "--json"}, strings.NewReader(""), &statusOutput, &statusError)
 	if exit != ExitOK || !strings.Contains(statusOutput.String(), `"currentMatch": true`) || !strings.Contains(statusOutput.String(), `"production": false`) {
 		t.Fatalf("local task status exit=%d stdout=%s stderr=%s", exit, statusOutput.String(), statusError.String())
+	}
+	var statusShape map[string]json.RawMessage
+	if err := json.Unmarshal(statusOutput.Bytes(), &statusShape); err != nil {
+		t.Fatal(err)
+	}
+	var statusName string
+	if err := json.Unmarshal(statusShape["state"], &statusName); err != nil || statusName != string(domain.StateReady) {
+		t.Fatalf("local status .state changed shape: raw=%s value=%q err=%v", statusShape["state"], statusName, err)
+	}
+	for _, field := range []string{"runId", "taskId", "selfIdentity", "assurance", "execution", "production", "publication", "currentMatch"} {
+		if _, ok := statusShape[field]; !ok {
+			t.Fatalf("local status omitted top-level %q: %s", field, statusOutput.String())
+		}
 	}
 	var approveOutput, approveError bytes.Buffer
 	exit = RunContext(context.Background(), []string{"task", "approve", "--run", runID, "--gate", "plan", "--json"}, strings.NewReader(""), &approveOutput, &approveError)

@@ -205,6 +205,9 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 	if adapterID != selection.Adapter.ID() {
 		return Result{SelectionAttempts: selection.Attempts}, errors.New(errCapabilityAdapterMismatch)
 	}
+	if err := validateLocalDogfoodCapabilityAuthority(selection.Capability.Data, input.LocalSelfIdentity); err != nil {
+		return Result{SelectionAttempts: selection.Attempts}, err
+	}
 
 	// 10. Canonicalize the three frozen artifacts and compute their digests.
 	// The policy digest covers the whole frozen policy document, not the
@@ -353,6 +356,35 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 	}
 
 	return Result{State: readyState, Adapter: selection.Adapter, SelectionAttempts: selection.Attempts}, nil
+}
+
+// validateLocalDogfoodCapabilityAuthority binds the selected adapter fact to
+// the same ordinary-user claim as the frozen policy. It runs after schema and
+// provider-neutral capability validation but before worktree, lease, journal,
+// or frozen-artifact side effects. Strict/conformance evidence cannot be
+// reinterpreted as a Darwin ordinary-user capability.
+func validateLocalDogfoodCapabilityAuthority(data []byte, observation *selfidentity.LocalSelfIdentityObservationV1) error {
+	if observation == nil {
+		return nil
+	}
+	var capability struct {
+		AuthorityMode                  string          `json:"authorityMode"`
+		ConformanceEvidenceDigest      string          `json:"conformanceEvidenceDigest"`
+		ConformanceTrustRootKeyID      string          `json:"conformanceTrustRootKeyId"`
+		ConformanceProbeProfileDigest  string          `json:"conformanceProbeProfileDigest"`
+		ConformanceValidUntil          string          `json:"conformanceValidUntil"`
+		ConformanceHostFingerprint     string          `json:"conformanceHostFingerprint"`
+		ConformanceAuthorityGeneration uint64          `json:"conformanceAuthorityGeneration"`
+		CodexAuthority                 json.RawMessage `json:"codexAuthority"`
+	}
+	if err := json.Unmarshal(data, &capability); err != nil || capability.AuthorityMode != "ordinary-user" ||
+		capability.ConformanceEvidenceDigest != "" || capability.ConformanceTrustRootKeyID != "" ||
+		capability.ConformanceProbeProfileDigest != "" || capability.ConformanceValidUntil != "" ||
+		capability.ConformanceHostFingerprint != "" || capability.ConformanceAuthorityGeneration != 0 ||
+		len(capability.CodexAuthority) != 0 {
+		return port.Permanentf("%s", ErrPolicyLocalCapabilityAuthority)
+	}
+	return nil
 }
 
 // runExists reports whether the Run already has a journal or snapshot.

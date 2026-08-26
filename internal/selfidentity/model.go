@@ -66,7 +66,9 @@ type BuildIdentity struct {
 	SelfProfile string
 }
 
-// LocalDogfoodScopeV1 is deliberately closed to the first LD-1 surfaces.
+// LocalDogfoodScopeV1 is deliberately closed to the currently admitted local
+// dogfood surfaces; later phases must extend it explicitly rather than infer
+// authority from a profile name.
 type LocalDogfoodScopeV1 struct {
 	Network                 string   `json:"network"`
 	Publication             string   `json:"publication"`

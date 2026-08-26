@@ -41,7 +41,8 @@ type observationDigestInput struct {
 // Admit validates an operator activation and, only on success, produces a
 // current-path object observation for the running process. Rejections return a
 // closed typed error and no versioned observation. The successful observation
-// is in-memory; LD-1 deliberately does not write Run/Attempt lineage.
+// is in-memory; self-identity admission deliberately does not write
+// Run/Attempt lineage.
 func Admit(activationPath, commandClass, workingDirectory string, build BuildIdentity, now time.Time) (LocalSelfIdentityObservationV1, error) {
 	executablePath, err := currentExecutablePath()
 	if err != nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 type planningTestWorker struct {
@@ -659,6 +660,149 @@ func planningCapabilityFixture(t *testing.T, adapterID string) []byte {
 		"probeErrors": []any{},
 		"probedAt":    "2026-08-04T12:00:00Z",
 	})
+}
+
+func TestLocalDogfoodPlanRejectsProfileAndStrictAuthorityWithoutRunSideEffects(t *testing.T) {
+	const remoteURL = "https://example.invalid/repository.git"
+	observation := localDogfoodObservationFixture()
+
+	for _, test := range []struct {
+		name             string
+		adapterID        string
+		executionProfile string
+		capability       func(*testing.T, string) []byte
+		wantError        string
+		wantAttempts     int
+	}{
+		{
+			name: "hardened task is rejected before selection", adapterID: "qwen", executionProfile: "hardened",
+			capability: ordinaryUserCapabilityFixture, wantError: ErrPolicyLocalSurface, wantAttempts: 0,
+		},
+		{
+			name: "strict qoder capability is not ordinary user", adapterID: "qoder", executionProfile: "workspace-write",
+			capability: strictQoderCapabilityFixture, wantError: ErrPolicyLocalCapabilityAuthority, wantAttempts: 1,
+		},
+		{
+			name: "strict codex capability is not ordinary user", adapterID: "codex", executionProfile: "workspace-write",
+			capability: strictCodexCapabilityFixture, wantError: ErrPolicyLocalCapabilityAuthority, wantAttempts: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repositoryRoot, baseSHA := planningGitFixture(t)
+			planningGit(t, repositoryRoot, "remote", "add", "origin", remoteURL)
+			stateRoot := filepath.Join(repositoryRoot, ".marshal")
+			taskID, runID := "task-local-authority", "run-local-authority"
+
+			var task map[string]any
+			if err := json.Unmarshal(planningTaskFixture(t, repositoryRoot, taskID, test.adapterID, remoteURL, baseSHA), &task); err != nil {
+				t.Fatal(err)
+			}
+			task["worker"].(map[string]any)["executionProfile"] = test.executionProfile
+
+			var policy map[string]any
+			if err := json.Unmarshal(planningPolicyFixture(t, taskID, runID, test.adapterID), &policy); err != nil {
+				t.Fatal(err)
+			}
+			policy["control"].(map[string]any)["requiredApprovals"] = []any{ApprovalGatePlan}
+			policy["environmentBinding"] = map[string]any{
+				"schemaVersion":         LocalDogfoodEnvironmentBindingSchema,
+				"selfProfile":           selfidentity.LocalProfile,
+				"activationDigest":      observation.ActivationDigest,
+				"identitySubjectDigest": observation.IdentitySubjectDigest,
+				"assurance":             "ordinary-user", "execution": "workspace-write",
+				"production": false, "publication": "none",
+			}
+
+			worker := &planningTestWorker{
+				id:         test.adapterID,
+				capability: domain.Record{Kind: domain.KindCapabilitySnapshot, Data: test.capability(t, test.adapterID)},
+			}
+			result, err := Plan(context.Background(), Input{
+				StateRoot: stateRoot, RepositoryRoot: repositoryRoot, RunID: runID,
+				TaskSpec: mustMarshal(t, task), PolicySnapshot: sealPolicyDocument(t, policy),
+				Selector: planningSelector(t, worker), Validator: newValidator(t),
+				Now: time.Date(2026, 8, 27, 0, 0, 0, 0, time.UTC), LocalSelfIdentity: &observation,
+			})
+			if err == nil || err.Error() != test.wantError {
+				t.Fatalf("Plan() err=%v, want %q", err, test.wantError)
+			}
+			if len(result.SelectionAttempts) != test.wantAttempts {
+				t.Fatalf("selection attempts=%d, want %d", len(result.SelectionAttempts), test.wantAttempts)
+			}
+			if _, statErr := os.Stat(filepath.Join(stateRoot, "runs", runID)); !os.IsNotExist(statErr) {
+				t.Fatalf("rejected local plan left Run artifacts: %v", statErr)
+			}
+			worktreeList := planningGitOutput(t, repositoryRoot, "worktree", "list", "--porcelain")
+			if strings.Count(worktreeList, "worktree ") != 1 {
+				t.Fatalf("rejected local plan changed worktrees: %s", worktreeList)
+			}
+		})
+	}
+}
+
+func ordinaryUserCapabilityFixture(t *testing.T, adapterID string) []byte {
+	t.Helper()
+	var capability map[string]any
+	if err := json.Unmarshal(planningCapabilityFixture(t, adapterID), &capability); err != nil {
+		t.Fatal(err)
+	}
+	capability["authorityMode"] = "ordinary-user"
+	return mustMarshal(t, capability)
+}
+
+func strictQoderCapabilityFixture(t *testing.T, adapterID string) []byte {
+	t.Helper()
+	var capability map[string]any
+	if err := json.Unmarshal(planningCapabilityFixture(t, adapterID), &capability); err != nil {
+		t.Fatal(err)
+	}
+	addStrictConformanceFixture(capability)
+	return mustMarshal(t, capability)
+}
+
+func strictCodexCapabilityFixture(t *testing.T, adapterID string) []byte {
+	t.Helper()
+	var capability map[string]any
+	if err := json.Unmarshal(planningCapabilityFixture(t, adapterID), &capability); err != nil {
+		t.Fatal(err)
+	}
+	capability["binaryVersion"] = "0.145.0"
+	digest := "sha256:" + strings.Repeat("d", 64)
+	nativeBudgetsDigest, err := canonical.DigestJSON(mustMarshal(t, []any{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability["codexAuthority"] = map[string]any{
+		"schemaVersion": "marshal.codex.authority-metadata.v1", "codexVersion": "0.145.0",
+		"binaryIdentityDigest": digest, "hostIdentityDigest": digest, "platform": "linux",
+		"launcherKind": "linux-execveat-sealed-memfd-ptrace-v1", "evidenceDigest": digest,
+		"configDigest": digest, "keysetDigest": digest, "fenceDigest": digest, "suiteDigest": digest,
+		"profileDigest": digest, "argvMatrixDigest": digest, "environmentDigest": digest,
+		"eventContractDigest": digest, "permissionContractDigest": digest, "toolPolicyDigest": digest,
+		"resultContractDigest": digest, "outputLimitDigest": digest, "nativeBudgetsDigest": nativeBudgetsDigest,
+		"trustRootKeyId": "trust-root", "evidenceSignerKeyId": "signer", "trustRootGeneration": 1,
+		"authorityGeneration": 1, "revocationSetDigest": digest,
+		"observedAt": "2026-08-27T00:00:00Z", "validUntil": "2026-08-27T01:00:00Z",
+		"executionProfiles": []any{"workspace-write"},
+		"isolationClaim":    "cooperative-host-process-not-malicious-code-sandbox",
+	}
+	capability["conformanceEvidenceDigest"] = digest
+	capability["conformanceTrustRootKeyId"] = "trust-root"
+	capability["conformanceProbeProfileDigest"] = digest
+	capability["conformanceValidUntil"] = "2026-08-27T01:00:00Z"
+	capability["conformanceHostFingerprint"] = digest
+	capability["conformanceAuthorityGeneration"] = 1
+	return mustMarshal(t, capability)
+}
+
+func addStrictConformanceFixture(capability map[string]any) {
+	digest := "sha256:" + strings.Repeat("c", 64)
+	capability["conformanceEvidenceDigest"] = digest
+	capability["conformanceTrustRootKeyId"] = "trust-root"
+	capability["conformanceProbeProfileDigest"] = digest
+	capability["conformanceValidUntil"] = "2026-08-27T01:00:00Z"
+	capability["conformanceHostFingerprint"] = digest
+	capability["conformanceAuthorityGeneration"] = 1
 }
 
 func planningSelector(t *testing.T, workers ...*planningTestWorker) *adapter.Selector {

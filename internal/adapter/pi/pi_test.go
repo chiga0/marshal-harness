@@ -164,7 +164,7 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 			implementation, _ := raw["adapterVersion"].(string)
 			digest, _ := raw["executableDigest"].(string)
 			executable, _ := raw["executable"].(string)
-			if status != test.status || implementation != adapterVersion || version != test.version || !strings.HasPrefix(digest, "sha256:") || !filepath.IsAbs(executable) {
+			if status != test.status || implementation != adapterVersion || version != test.version || raw["authorityMode"] != "ordinary-user" || !strings.HasPrefix(digest, "sha256:") || !filepath.IsAbs(executable) {
 				t.Fatalf("snapshot = %s/%s/%s/%s/%s", status, implementation, version, digest, executable)
 			}
 			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {

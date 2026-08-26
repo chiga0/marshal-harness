@@ -156,7 +156,7 @@ Darwin 上 `unprofiled` 或尚未实现自身 gate 的 profile 不能进入上�
 | 变量 | 用途 | 性质 |
 | --- | --- | --- |
 | `MARSHAL_STATE_DIR` | 覆盖默认 `.marshal/` 状态目录（绝对路径；仓库内则必须等于默认目录） | 运行配置 |
-| `MARSHAL_LOCAL_DOGFOOD_ACTIVATION` | Darwin LD-1 operator-owned canonical activation 绝对路径；仅对 `darwin-local-dogfood` profile 生效 | 本地自身份 opt-in |
+| `MARSHAL_LOCAL_DOGFOOD_ACTIVATION` | Darwin local-dogfood operator-owned canonical activation 绝对路径；仅对 `darwin-local-dogfood` profile 生效 | 本地自身份 opt-in |
 | `MARSHAL_OPENCODE_PATH` | OpenCode Worker 可执行文件绝对路径 | Adapter 注册 |
 | `MARSHAL_QWEN_PATH` | Qwen Code Worker 可执行文件绝对路径 | Adapter 注册 |
 | `MARSHAL_QODER_PATH` | Qoder CLI Worker 可执行文件绝对路径；仅设置此变量不会通过 live conformance 门禁 | Adapter 注册候选 |
