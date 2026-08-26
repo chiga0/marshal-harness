@@ -24,6 +24,8 @@
 
 2026-08-26，Issue #212 的第四个实现候选独立审查发现：Make 解析阶段的 `HEAD/status/HEAD` 不能绑定 Go 实际编译输入，ignored `.go`/embed、观察后 mutation 与 linked worktree administrative graph ABA 均可使合法 `sourceHead` 与 artifact bytes 脱节。维护者在 sourceHead `5de09997f5260c672f297496290b567815162bb1` 经同一独立 reviewer 一次聚合返工后复审 `ACCEPT`（P0/P1=0），且 [PR #215](https://github.com/chiga0/marshal-harness/pull/215) 合入后接受 ADR 0048 原合同：冻结 protected builder、sealed source/compile/external-material manifest、`MarshalArtifactBuildAttestationV1` 与 signer 分权。随后审计发现原合同没有冻结 compile-root object、authenticated build-record carrier 与 code-sign observation；amendment 在 sourceHead `b76a53007ba6a07a3bd944fb34d496c47befb289` 经同一独立 reviewer 聚合返工复审 `ACCEPT`（P0/P1/P2/P3=0）后由维护者接受，补充 `CompileRootManifestV1`、signed `MarshalArtifactBuildRecordV1`、shared `CodeSignatureIdentityV1` 及跨对象相等关系。原合同与 amendment 均只冻结合同，不构成实现、签名授权、外部 provision、Issue #212 关闭或 R3-D/E/F 完成证据。
 
+2026-08-26，真实 dogfood 证明 `REVIEW_PENDING` Run 在 Worker/Verifier 已退出、但上游结构性门禁阻止 ReviewDecision 时缺少合法终止出口。ADR 0050（Proposed）仅提议复用现有 `task abort → run.aborted → BLOCKED` 工具链并增加 `PostWorkerAbortSafe` 守卫；不新增状态、事件家族、持久化协议或 supervisor 写权限，也不阻塞 R3-D/E/F。提议不表示命令已支持该状态。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -65,3 +67,4 @@
 | [0045](0045-strangler-cutover-and-single-recovery.md) | Strangler cutover 判定合同（normalized trace 对比、canary 分级、host bypass 删除、Local MVP 零回退）与单一恢复模型指向（resume/fence/new Attempt + explain，Issue #186/#187） | 已接受（Accepted，2026-08-24；接受只冻结合同，未实现，不升级 milestone 状态） |
 | [0047](0047-marshal-darwin-self-identity-and-release-signing.md) | Marshal Darwin 自身执行身份、安装收据/current high-water、CLI pre-mutation gate 与 release/deployment signer 分权（Issue #212） | 已接受（Accepted，2026-08-26；独立复审 P0/P1/P2=0；仅冻结合同，未实现，外部 certificate/allowlist/current authority 尚未 provision） |
 | [0048](0048-protected-build-input-and-artifact-attestation.md) | 受保护构建输入、sealed source/compile/external-material manifest、authenticated build record 与 code-sign observation（Issue #212） | 原合同与 amendment 均已接受（Accepted，2026-08-26；独立复审 P0/P1/P2/P3=0；未实现，外部 provision、Issue #212 与 R3-D/E/F 仍开放） |
+| [0050](0050-review-pending-explicit-abort.md) | `REVIEW_PENDING` Run 的最小显式 abort 出口（复用 `run.aborted → BLOCKED`） | 提议（Proposed，2026-08-26；仅冻结候选合同，未实现，不阻塞 R3） |
