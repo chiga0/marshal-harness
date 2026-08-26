@@ -9,29 +9,32 @@ import "runtime"
 const Milestone = "6"
 
 var (
-	version   = "dev"
-	commit    = "unknown"
-	buildDate = "unknown"
+	version     = "dev"
+	commit      = "unknown"
+	buildDate   = "unknown"
+	selfProfile = "unprofiled"
 )
 
 // Info describes the running marshal binary.
 type Info struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit"`
-	BuildDate string `json:"buildDate"`
-	GoVersion string `json:"goVersion"`
-	OS        string `json:"os"`
-	Arch      string `json:"arch"`
+	Version     string `json:"version"`
+	Commit      string `json:"commit"`
+	BuildDate   string `json:"buildDate"`
+	GoVersion   string `json:"goVersion"`
+	OS          string `json:"os"`
+	Arch        string `json:"arch"`
+	SelfProfile string `json:"selfProfile"`
 }
 
 // Current returns this binary's build information.
 func Current() Info {
 	return Info{
-		Version:   version,
-		Commit:    commit,
-		BuildDate: buildDate,
-		GoVersion: runtime.Version(),
-		OS:        runtime.GOOS,
-		Arch:      runtime.GOARCH,
+		Version:     version,
+		Commit:      commit,
+		BuildDate:   buildDate,
+		GoVersion:   runtime.Version(),
+		OS:          runtime.GOOS,
+		Arch:        runtime.GOARCH,
+		SelfProfile: selfProfile,
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -38,6 +39,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/supervisor"
 	"github.com/chiga0/marshal-harness/internal/taskgen"
 	"github.com/chiga0/marshal-harness/internal/verification"
@@ -72,6 +74,12 @@ var taskCommands = []string{
 
 var newWorkerRuntime = app.NewWorkerRuntime
 
+var (
+	localBuildInfo             = buildinfo.Current
+	localNow                   = func() time.Time { return time.Now().UTC() }
+	localDogfoodGateTestBypass = func(buildinfo.Info) bool { return false }
+)
+
 // Run executes one CLI invocation without granting Worker or Publisher
 // capabilities to the CLI boundary itself.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -84,6 +92,9 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	if len(args) == 0 {
 		writeUsage(stderr)
 		return ExitUsage
+	}
+	if exitCode, gated := applyLocalDogfoodGate(args, stderr); gated {
+		return exitCode
 	}
 
 	switch args[0] {
@@ -114,6 +125,72 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		fmt.Fprintf(stderr, "未知命令 %q。\n", args[0])
 		writeUsage(stderr)
 		return ExitUsage
+	}
+}
+
+func applyLocalDogfoodGate(args []string, stderr io.Writer) (int, bool) {
+	build := localBuildInfo()
+	if localDogfoodBootstrapCommand(args) || runtime.GOOS != "darwin" {
+		return ExitOK, false
+	}
+	// The default production seam is always false. Package tests replace it
+	// only for their legacy unknown/unprofiled in-process fixture; a built
+	// Darwin marshal, including Makefile's default unprofiled binary, reaches
+	// the fail-closed profile check below.
+	if localDogfoodGateTestBypass(build) {
+		return ExitOK, false
+	}
+	if build.SelfProfile != selfidentity.LocalProfile {
+		fmt.Fprintf(stderr, "Marshal local dogfood gate 拒绝：%s。\n", selfidentity.ReasonProfileMismatch)
+		return ExitUnavailable, true
+	}
+	commandClass, denial := localDogfoodCommandClass(args)
+	if denial != "" {
+		fmt.Fprintf(stderr, "Marshal local dogfood gate 拒绝：%s。\n", denial)
+		return ExitUnavailable, true
+	}
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(stderr, "Marshal local dogfood gate 拒绝：%s。\n", selfidentity.ReasonObjectMismatch)
+		return ExitUnavailable, true
+	}
+	_, err = selfidentity.Admit(os.Getenv(selfidentity.ActivationEnv), commandClass, workingDirectory,
+		selfidentity.BuildIdentity{SourceHead: build.Commit, SelfProfile: build.SelfProfile}, localNow())
+	if err != nil {
+		fmt.Fprintf(stderr, "Marshal local dogfood gate 拒绝：%s。\n", selfidentity.ReasonCode(err))
+		return ExitUnavailable, true
+	}
+	return ExitOK, false
+}
+
+func localDogfoodBootstrapCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" || args[0] == "version" {
+		return true
+	}
+	return args[0] == "doctor" && slices.Contains(args[1:], "--self")
+}
+
+func localDogfoodCommandClass(args []string) (string, string) {
+	switch args[0] {
+	case "doctor":
+		return selfidentity.CommandDoctor, ""
+	case "task":
+		if len(args) > 1 && args[1] == "scaffold" {
+			return selfidentity.CommandTaskScaffold, ""
+		}
+		if len(args) > 1 && (args[1] == "publish" || args[1] == "accept" || args[1] == "reconcile") {
+			return "", selfidentity.ReasonPublicationDenied
+		}
+		return "", selfidentity.ReasonCommandDenied
+	case "serve", "web":
+		return "", selfidentity.ReasonRemoteSurfaceDenied
+	case "internal", "__launch", "__detach":
+		return "", selfidentity.ReasonCredentialedEffectDenied
+	default:
+		return "", selfidentity.ReasonCommandDenied
 	}
 }
 
@@ -247,12 +324,57 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	runID := flags.String("run", "", "核验指定 Run 的本地证据")
 	repair := flags.Bool("repair", false, "显式修复可证明的本地 Snapshot")
 	printEnv := flags.Bool("print-env", false, "仅打印建议式发现的 export 行，供用户粘贴")
+	self := flags.Bool("self", false, "只输出 canonical LocalDogfoodActivationV1")
+	repositoryRoot := flags.String("repository-root", ".", "本地 dogfood activation 的 canonical 仓库根")
+	activationID := flags.String("activation-id", "", "可选 activation ID；缺失时随机生成")
+	issuedAtText := flags.String("issued-at", "", "可选 RFC3339 UTC 签发时间")
+	validUntilText := flags.String("valid-until", "", "可选 RFC3339 UTC 失效时间")
+	validFor := flags.Duration("valid-for", 8*time.Hour, "未显式给出时间时的 freshness（最大 24h）")
 	if err := flags.Parse(args); err != nil {
 		return ExitUsage
 	}
 	if flags.NArg() != 0 {
 		fmt.Fprintln(stderr, "doctor 不接受位置参数。")
 		return ExitUsage
+	}
+	if *self {
+		if *runID != "" || *repair || *printEnv || *validFor <= 0 {
+			fmt.Fprintln(stderr, "doctor --self 参数无效。")
+			return ExitUsage
+		}
+		now := localNow().UTC().Truncate(time.Second)
+		issuedAt := now
+		validUntil := now.Add(*validFor)
+		if (*issuedAtText == "") != (*validUntilText == "") {
+			fmt.Fprintln(stderr, "doctor --self 的 --issued-at 与 --valid-until 必须同时提供。")
+			return ExitUsage
+		}
+		if *issuedAtText != "" {
+			var parseErr error
+			issuedAt, parseErr = time.Parse(time.RFC3339, *issuedAtText)
+			if parseErr == nil {
+				validUntil, parseErr = time.Parse(time.RFC3339, *validUntilText)
+			}
+			if parseErr != nil {
+				fmt.Fprintln(stderr, "doctor --self 时间无效。")
+				return ExitUsage
+			}
+		}
+		build := localBuildInfo()
+		activation, err := selfidentity.RenderActivation(selfidentity.BootstrapOptions{
+			RepositoryRoot: *repositoryRoot, ActivationID: *activationID,
+			IssuedAt: issuedAt, ValidUntil: validUntil,
+			Build: selfidentity.BuildIdentity{SourceHead: build.Commit, SelfProfile: build.SelfProfile},
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "doctor --self 失败：%s。\n", selfidentity.ReasonCode(err))
+			return ExitUnavailable
+		}
+		if _, err := stdout.Write(activation); err != nil {
+			fmt.Fprintln(stderr, "doctor --self 输出失败。")
+			return ExitFailure
+		}
+		return ExitOK
 	}
 	if *runID != "" {
 		if err := domain.ValidateID(*runID); err != nil {
@@ -2670,6 +2792,7 @@ func writeUsage(output io.Writer) {
 用法：
   marshal version [--json]
   marshal doctor [--run RUN_ID] [--repair] [--print-env] [--json]
+  marshal doctor --self [--repository-root PATH] [--activation-id ID] [--valid-for DURATION]
   marshal init [--json]
   marshal supervise [--once] [--interval DURATION] [--marshal-binary PATH] [--revive-retry-pending] [--json]
   marshal contract validate [--schema NAME] <PATH|->
