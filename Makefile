@@ -11,13 +11,17 @@ LDFLAGS := -s -w \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.buildDate=$(BUILD_DATE) \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=$(SELF_PROFILE)
 
-.PHONY: format format-check vet lint test build vuln check ci
+.PHONY: format format-check architecture-check vet lint test build vuln check ci
 
 format:
 	gofmt -w $(GO_FILES)
 
 format-check:
 	@test -z "$$(gofmt -l $(GO_FILES))"
+
+architecture-check:
+	python3 -B scripts/architecture_check_test.py
+	python3 -B scripts/architecture_check.py --go "$(GO)"
 
 vet:
 	$(GO) vet ./...
@@ -34,6 +38,6 @@ build:
 vuln:
 	$(GO) tool govulncheck ./...
 
-check: format-check vet lint test build
+check: format-check architecture-check vet lint test build
 
 ci: check vuln
