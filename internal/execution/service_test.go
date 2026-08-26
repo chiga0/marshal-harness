@@ -1157,7 +1157,10 @@ func TestStructuralFailureRunLeasePreventsConcurrentRelaunch(t *testing.T) {
 
 func TestRunBlocksWhenPostWorkerEvidenceCannotBeRecorded(t *testing.T) {
 	fixture := newExecutionFixture(t, false)
-	fixture.input.Adapter.(*fixtureAdapter).breakGit = true
+	delegate := fixture.input.Adapter.(*fixtureAdapter)
+	delegate.breakGit = true
+	adapter := &countingAdapter{delegate: delegate}
+	fixture.input.Adapter = adapter
 	result, err := Run(context.Background(), fixture.input)
 	if err == nil {
 		t.Fatal("observation failure was accepted")
@@ -1171,6 +1174,27 @@ func TestRunBlocksWhenPostWorkerEvidenceCannotBeRecorded(t *testing.T) {
 	}
 	if events[len(events)-1].Type != "worker.evidence-failed" {
 		t.Fatalf("last event = %+v", events[len(events)-1])
+	}
+	before := result.State
+	restarted, restartErr := Run(context.Background(), fixture.input)
+	if restartErr == nil || !strings.Contains(restartErr.Error(), "cannot start a worker attempt") ||
+		strings.Contains(restartErr.Error(), selfidentity.ReasonCrossProfileEvidence) {
+		t.Fatalf("non-local evidence re-entry changed reason: result=%+v err=%v", restarted, restartErr)
+	}
+	if adapter.probes != 1 || adapter.runs != 1 {
+		t.Fatalf("non-local evidence re-entry relaunched Adapter: probes=%d runs=%d", adapter.probes, adapter.runs)
+	}
+	after, inspectErr := runstore.New(fixture.input.StateRoot).Inspect(fixture.input.RunID)
+	if inspectErr != nil {
+		t.Fatal(inspectErr)
+	}
+	if after.State != before.State || after.Sequence != before.Sequence || after.AttemptsUsed != before.AttemptsUsed ||
+		after.OperationalRetriesUsed != before.OperationalRetriesUsed || after.ReviewRound != before.ReviewRound {
+		t.Fatalf("non-local evidence re-entry mutated authority: before=%+v after=%+v", before, after)
+	}
+	afterEvents, _, readErr := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if readErr != nil || len(afterEvents) != len(events) {
+		t.Fatalf("non-local evidence re-entry changed journal: before=%d after=%d err=%v", len(events), len(afterEvents), readErr)
 	}
 }
 

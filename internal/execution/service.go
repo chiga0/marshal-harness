@@ -1043,7 +1043,7 @@ func recoverWorkerTerminalOutcome(store *runstore.Store, lease *runstore.Lease, 
 		return false, err
 	}
 	last := events[len(events)-1]
-	if last.Type == "worker.evidence-failed" {
+	if last.Type == "worker.evidence-failed" && payloadString(last.Payload, "failureDomain") == "marshal-self-identity" {
 		recovered, recoverErr := recoverLocalSelfIdentityTerminalOutcome(store, lease, state, last)
 		if recoverErr == nil && recovered {
 			// The caller surfaces only the closed structural reason code after
