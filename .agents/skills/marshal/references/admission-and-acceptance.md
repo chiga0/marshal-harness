@@ -174,3 +174,5 @@ Validator 的 machine truth 由相邻 Draft 2020-12 Schema 和实现定义，不
 ## Admission 失败的止损
 
 TaskSpec/acceptance/verifier、路径、identity、protocol、version、旧 base/artifact 或证据变化属于结构性问题。同一稳定输入摘要和 `reasonCode` 只裁决一次：保留证据、修 operator/Core/Adapter 输入，然后从当前权威 main 通过 Core/CLI 建 successor。只有 Core 持久化的 typed transient provider failure 且 admission 仍匹配时，才按 Policy 做有限 operational retry。
+
+进入 reviewer 前必须完成 defect-owner routing：TaskSpec、Policy、acceptance/verifier、Adapter identity、旧 base/依赖漂移和 architecture gap 都属于 plan/operator/Adapter/baseline/governance owner，固定走 `replan` 或 fresh successor，不导入 `verdict=rework`，因此不消费 Worker rework round。architecture gap 若改变 trust boundary、persistence、lifecycle 或 publication authority，先补 ADR 再派 successor。只有冻结输入与基线均正确、缺陷局限于当前候选实现 diff 时，才允许唯一 reviewer 给出一次 aggregate rework；详细 owner 表和 first-pass WIP 止损见 [delivery-supervision.md](delivery-supervision.md)。

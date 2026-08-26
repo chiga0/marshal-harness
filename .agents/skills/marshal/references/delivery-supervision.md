@@ -26,6 +26,8 @@ Supervisor 是 Lead 控制面的只读观察职责，可由独立只读 Agent �
 
 “有进程”不等于“有进展”。Progress 必须是可观察状态/证据变化、预期产物增量、测试结果或明确 blocker；固定状态和相同 failure signature 连续出现只算停滞。
 
+Stop-loss 的时间与停滞判定遵循 [watchdog-and-capacity.md](watchdog-and-capacity.md)：只消费 numeric seconds/JSON；watchdog JSON 的 `RUNNING + processOwnership=owned-active + ownershipSource=marshal-lease + argvMatched=true` 继续 `monitor`，`ErrLeaseHeld` 路由给 owner，停滞摘要使用 `phaseProgressDigest`。Supervisor 不得人工解析 `ps etime`，也不得把 intervention 建议执行成外部 kill 或重复 abort。
+
 ## 四类只读建议
 
 | 建议 | 触发条件 | Lead 的预期响应 |
@@ -37,9 +39,25 @@ Supervisor 是 Lead 控制面的只读观察职责，可由独立只读 Agent �
 
 同一 `reasonCode + gate + adapter + spec family` 第二次出现就标记 repeated failure 并 `freeze-fanout`；修复确定性 preflight 或重做 plan 前，不允许第三次原样派发。不能用事件年龄单独判断 dead，也不能因 CPU/内存空闲就跳过 scope、依赖、review 或 Provider admission。
 
+## Reviewer 前的 defect-owner routing
+
+候选进入唯一 reviewer 前，Lead/Supervisor 先依据机器 preflight 与 exact diff 把缺陷归属一次；不得用 reviewer/rework 代替本可在 admission 捕获的结构性问题：
+
+| defect owner | 典型问题 | 固定路由 |
+| --- | --- | --- |
+| plan/operator | TaskSpec、Policy、acceptance/verifier 不一致或不可执行 | `replan`，修正输入并从当前权威 main 建 successor；不计 Worker rework |
+| Adapter/identity | executable、version、protocol、authority mode 或 evidence identity 不匹配 | 修 Adapter/admission 后建 fresh successor；不计 Worker rework |
+| baseline/integration | old base、调用链漂移、依赖边尚未满足 | 更新依赖图并从 fresh main 重建 successor；不审陈旧候选，不计 Worker rework |
+| architecture/governance | production seam 或架构缺口；需要但缺 ADR | `replan`；触发 trust/persistence/lifecycle/publication 变化时先 ADR，再派 successor |
+| candidate-local | 锁定 TaskSpec/Policy/base 正确，缺陷仅存在于当前候选实现 diff | 才允许唯一 reviewer 一次聚合 P0/P1，并消费最多一次 aggregate rework |
+
+同一候选同时命中多类时先关闭上游结构性 owner，禁止把它们包装成 candidate-local finding。Reviewer 若首次发现机器可检的非 candidate-local 问题，仍按上表终止 slice/replan，不开启 Worker rework；复盘时把缺失检查前移到 admission/preflight。
+
 ## 纵切和 WIP
 
 - 默认四槽为 `Lead + 最多 2 authors + 1 shared reviewer`。Lead 承担 Supervisor 控制面；有额外只读槽时可以委派观察，但它不能替代 reviewer，也计入真实宿主容量。
+- `first-pass` 只统计已经到达 fresh exact-diff reviewer、非 research/canary、且没有外部 Provider/平台 blocker 的 eligible release slice；首轮 reviewer `P0/P1=0` 才算通过。当前 Goal 有 eligible slice 时，按最近最多 10 个计算（不足 10 个取全部）；比率低于 50% 立即收缩为 `Lead + 1 release writer + 1 preflight/ADR lane + 1 shared reviewer`：第二条 lane 只关闭当前 release blocker 的机器 preflight、producer-chain 证据或必需 ADR，不得成为第二个 release writer 或无关 Harness 微修。
+- 收缩后只有连续 3 个新的 eligible release slice 都首轮 `P0/P1=0`，才恢复最多 2 个 release writers；任一首轮失败重新从零计数。CPU/内存/Provider 容量始终只是扩容必要条件，不能覆盖 first-pass、依赖、scope 或 review queue 的止损结果；preflight/ADR lane 暂无合格任务时宁可空闲或协助只读证据，不提前恢复第二 writer。
 - author 必须有互斥 worktree/scope。至少一个 author 直接推进当前最高优先级 release/product exit criterion；Harness/Skill 修复只有阻断当前主线或同 failure 已重复时插队。
 - 默认禁止 skeleton-only commit。完整纵切至少从一个真实 production entry 经过本 slice 改变的实现，到一个可由 acceptance 观察的结果，并说明它关闭哪个 dependency edge。孤立 interface/package、只有 fake test、未接线 helper 或为缺目录单独建空骨架都不算纵切。
 - `AGENTS.md`/已接受 ADR 明确要求的 deterministic Fake 前置、ADR、研究或 contract-first 可独立交付，仅当它本身是当前批准的 exit criterion，且写明直接解锁的下一完整纵切；不得把“以后会接线”当完成证据。
