@@ -213,7 +213,7 @@ nohup marshal task run --run RUN_ID --json > run.log 2>&1 < /dev/null & disown
 
 ### 9.5 Adapter 预算建议
 
-- **pi**（Pi Adapter `0.2.0` / Pi `0.84.1`）：0.84.1 的 `message_update` 事件仍携带 `assistantMessageEvent`，但其 `text_delta` 只含 `contentIndex` 与线性增量 `delta`（不含消息标识字段），顶层不再有累积 `message` 快照，也没有 `partial`，转录本随增量近似线性增长；历史版本 0.83.0 的累积全量消息与近似二次方增长仅作历史说明，当前不受 Marshal 支持。Marshal 实施的 wall-time 与 output-bytes 上限仍然生效，大任务仍建议 `maxOutputBytes >= 16000000`，否则可能触发 `pi output limit exceeded`。另：pi 有时会在 WorkerResult 里写空 `session.id`（ephemeral 会话下 Worker 无从得知）导致 schema 拒绝；在 TaskSpec context 中内嵌 WorkerResult 逐字模板（字段清单 + 占位说明）可规避；
+- **pi**（Pi Adapter `0.3.0` / Pi `0.84.1` 或 `0.84.3`）：两个精确版本的 `message_update` 事件仍携带 `assistantMessageEvent`，但其 `text_delta` 只含 `contentIndex` 与线性增量 `delta`（不含消息标识字段），顶层不再有累积 `message` 快照，也没有 `partial`，转录本随增量近似线性增长；历史版本 0.83.0 的累积全量消息与近似二次方增长仅作历史说明，当前不受 Marshal 支持。Marshal 实施的 wall-time 与 output-bytes 上限仍然生效，大任务仍建议 `maxOutputBytes >= 16000000`，否则可能触发 `pi output limit exceeded`。另：pi 有时会在 WorkerResult 里写空 `session.id`（ephemeral 会话下 Worker 无从得知）导致 schema 拒绝；在 TaskSpec context 中内嵌 WorkerResult 逐字模板（字段清单 + 占位说明）可规避；
 - **opencode**：较大 TaskSpec context 会被写入 `$TMPDIR/opencode/work-context.txt` 并引导模型读取；该路径被外部路径策略正确拒绝，不影响任务完成（模型可改读 control/input/task-spec.json），不要把这类拒绝当作故障。**绝对路径零容忍**：opencode 对任何绝对路径的工具调用都会拒绝——即使路径在 worktree 内部；而 Worker 会模仿 Marshal prompt 中出现的绝对路径。因此读密集/调研类任务的 constraints 必须强制“所有读写操作一律相对路径，提示词中的绝对路径仅供理解”；读符号链接外部源码用 `sources/<repo>/...` 相对路径 + bash 简单命令；
 - **qwen**：captured 模式无特殊预算要求；原生 TUI 受监督模式注意第 8 节的 Enter 粘贴竞态。
 

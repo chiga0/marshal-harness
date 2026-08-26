@@ -28,9 +28,10 @@ import (
 )
 
 const (
-	adapterID       = "pi"
-	adapterVersion  = "0.2.0"
-	supportedBinary = "0.84.1"
+	adapterID          = "pi"
+	adapterVersion     = "0.3.0"
+	supportedBinary    = "0.84.1"
+	supportedBinary843 = "0.84.3"
 	// supportedSessionVersion is the exact pi session event protocol version
 	// Marshal accepts. Any other header version is a protocol violation.
 	supportedSessionVersion = 3
@@ -38,6 +39,14 @@ const (
 	maxResultBytes          = 4 << 20
 	stderrLimit             = 64 << 10
 )
+
+// isSupportedBinary is deliberately an exact closed set. Pi's JSON event
+// protocol is versioned independently from the CLI package, so a new CLI
+// version is admitted only after its real argv/help and JSONL stream have
+// been checked against the frozen session v3 contract.
+func isSupportedBinary(version string) bool {
+	return version == supportedBinary || version == supportedBinary843
+}
 
 // workerTools is the frozen tool allowlist. bash is never granted and the
 // list never grows implicitly: Marshal passes it via direct argv only.
@@ -174,7 +183,7 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
 	}
-	if identity.version != supportedBinary {
+	if !isSupportedBinary(identity.version) {
 		return port.TerminalLaunchSpec{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
 	}
 	worktree, controlRoot, prompt, err := resolveTerminalInput(request)
@@ -225,9 +234,9 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 	}
 	status := "supported"
 	probeErrors := []string{}
-	if identity.version != supportedBinary {
+	if !isSupportedBinary(identity.version) {
 		status = "unsupported"
-		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Pi %s，实际为 %s", supportedBinary, identity.version))
+		probeErrors = append(probeErrors, fmt.Sprintf("仅支持 Pi %s 或 %s，实际为 %s", supportedBinary, supportedBinary843, identity.version))
 	}
 	snapshot := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
@@ -386,7 +395,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if identity.version != supportedBinary {
+	if !isSupportedBinary(identity.version) {
 		return domain.Record{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
 	}
 	worktree, err := filepath.EvalSymlinks(request.WorktreePath)

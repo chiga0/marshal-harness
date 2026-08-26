@@ -107,6 +107,8 @@ M4 冻结并实测 OpenCode `1.18.12`，M6 在本机自动更新到 `1.18.13` �
 
 MVP 使用 one-shot JSON。只有测量证明需要 Session Steering 或降低启动耗时后，才增加 RPC。
 
+Pi Adapter `0.3.0` 当前精确闭集支持 Pi CLI `0.84.1` 与 `0.84.3`。`0.84.3` 在 2026-08-26 的 Mac 真实非交互 canary 中，候选 executable digest 为 `sha256:1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a`；`env -i` 仅显式保留 Node bin `PATH` 与必要宿主变量时，冻结 argv 表面保持有效，实际 stdout 以 session JSONL v3 开始，并以 `agent_end(willRetry=false)` 及单次 `agent_settled` 闭合。其他版本继续在 Worker 启动前 fail closed。该结论只是普通宿主进程兼容性，不构成恶意代码隔离或新的权威边界。
+
 参考：[Pi Coding Agent README](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/README.md)。
 
 ## 权限归一化
