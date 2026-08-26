@@ -195,6 +195,54 @@ func TestDarwinActivationStrictAndIdentityNegativeMatrix(t *testing.T) {
 	})
 }
 
+func TestDarwinRejectionsReturnOnlyTypedError(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin current-path observation")
+	}
+	root := canonicalTempDir(t)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := renderTestActivation(t, root, executable)
+	activation, err := DecodeActivation(raw, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activationPath := writeActivation(t, canonicalTempDir(t), raw)
+
+	tests := []struct {
+		name       string
+		path       string
+		build      BuildIdentity
+		activation *LocalDogfoodActivationV1
+		wantReason string
+	}{
+		{name: "opt-in missing", path: filepath.Join(root, "missing.json"), build: BuildIdentity{SourceHead: testSourceHead, SelfProfile: LocalProfile}, wantReason: ReasonOptInMissing},
+		{name: "profile mismatch", path: activationPath, build: BuildIdentity{SourceHead: testSourceHead, SelfProfile: "unprofiled"}, wantReason: ReasonProfileMismatch},
+		{name: "object mismatch", build: BuildIdentity{SourceHead: testSourceHead, SelfProfile: LocalProfile}, activation: &activation, wantReason: ReasonObjectMismatch},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := test.path
+			if test.activation != nil {
+				candidate := *test.activation
+				candidate.ExpectedSize++
+				path = writeActivation(t, canonicalTempDir(t), marshalActivation(t, candidate))
+			}
+			observation, err := admit(path, CommandDoctor, root, executable, test.build, testNow, nil)
+			assertReason(t, err, test.wantReason)
+			if observation != (LocalSelfIdentityObservationV1{}) {
+				t.Fatalf("rejection returned a versioned observation: %+v", observation)
+			}
+		})
+	}
+}
+
 func renderTestActivation(t *testing.T, root, executable string) []byte {
 	t.Helper()
 	raw, err := RenderActivation(BootstrapOptions{

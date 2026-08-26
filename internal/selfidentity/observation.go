@@ -38,56 +38,57 @@ type observationDigestInput struct {
 	IdentitySubjectDigest   string              `json:"identitySubjectDigest"`
 }
 
-// Admit validates an operator activation and produces a current-path object
-// observation for the running process. The returned observation is in-memory;
-// LD-1 deliberately does not write Run/Attempt lineage.
+// Admit validates an operator activation and, only on success, produces a
+// current-path object observation for the running process. Rejections return a
+// closed typed error and no versioned observation. The successful observation
+// is in-memory; LD-1 deliberately does not write Run/Attempt lineage.
 func Admit(activationPath, commandClass, workingDirectory string, build BuildIdentity, now time.Time) (LocalSelfIdentityObservationV1, error) {
 	executablePath, err := currentExecutablePath()
 	if err != nil {
-		return failedObservation(build, now, ReasonObjectMismatch), reject(ReasonObjectMismatch)
+		return LocalSelfIdentityObservationV1{}, reject(ReasonObjectMismatch)
 	}
 	return admit(activationPath, commandClass, workingDirectory, executablePath, build, now, nil)
 }
 
 func admit(activationPath, commandClass, workingDirectory, executablePath string, build BuildIdentity, now time.Time, afterObjectRead func()) (LocalSelfIdentityObservationV1, error) {
 	if build.SelfProfile != LocalProfile {
-		return failedObservation(build, now, ReasonProfileMismatch), reject(ReasonProfileMismatch)
+		return LocalSelfIdentityObservationV1{}, reject(ReasonProfileMismatch)
 	}
 	if !platformSupported() {
-		return failedObservation(build, now, ReasonProfileMismatch), reject(ReasonProfileMismatch)
+		return LocalSelfIdentityObservationV1{}, reject(ReasonProfileMismatch)
 	}
 	raw, err := readActivation(activationPath)
 	if err != nil {
-		return failedObservation(build, now, reason(err)), err
+		return LocalSelfIdentityObservationV1{}, err
 	}
 	activation, err := DecodeActivation(raw, now)
 	if err != nil {
-		return failedObservation(build, now, reason(err)), err
+		return LocalSelfIdentityObservationV1{}, err
 	}
 	if !activation.permits(commandClass) {
-		return failedObservation(build, now, ReasonCommandDenied), reject(ReasonCommandDenied)
+		return LocalSelfIdentityObservationV1{}, reject(ReasonCommandDenied)
 	}
 	if activation.ExpectedSourceHead != build.SourceHead {
-		return failedObservation(build, now, ReasonSourceMismatch), reject(ReasonSourceMismatch)
+		return LocalSelfIdentityObservationV1{}, reject(ReasonSourceMismatch)
 	}
 	if activation.ExpectedSelfProfile != build.SelfProfile {
-		return failedObservation(build, now, ReasonProfileMismatch), reject(ReasonProfileMismatch)
+		return LocalSelfIdentityObservationV1{}, reject(ReasonProfileMismatch)
 	}
 	if !workingDirectoryWithinRoot(workingDirectory, activation.CanonicalRepositoryRoot) {
-		return failedObservation(build, now, ReasonObjectMismatch), reject(ReasonObjectMismatch)
+		return LocalSelfIdentityObservationV1{}, reject(ReasonObjectMismatch)
 	}
 	processPath, err := canonicalRegularPath(executablePath)
 	if err != nil || processPath != activation.CanonicalExecutablePath {
-		return failedObservation(build, now, ReasonObjectMismatch), reject(ReasonObjectMismatch)
+		return LocalSelfIdentityObservationV1{}, reject(ReasonObjectMismatch)
 	}
 	object, err := observeCurrentPath(processPath, afterObjectRead)
 	if err != nil {
-		return failedObservation(build, now, reason(err)), err
+		return LocalSelfIdentityObservationV1{}, err
 	}
 	if object.CanonicalPath != activation.CanonicalExecutablePath || object.Device != activation.ExpectedDevice ||
 		object.Inode != activation.ExpectedInode || object.Size != activation.ExpectedSize ||
 		object.RawSHA256 != activation.ExpectedRawSHA256 || !object.PathRechecked {
-		return failedObservation(build, now, ReasonObjectMismatch), reject(ReasonObjectMismatch)
+		return LocalSelfIdentityObservationV1{}, reject(ReasonObjectMismatch)
 	}
 	observation := LocalSelfIdentityObservationV1{
 		SchemaVersion: ActivationToObservationSchema(), ActivationDigest: activation.ActivationDigest,
@@ -98,11 +99,11 @@ func admit(activationPath, commandClass, workingDirectory, executablePath string
 	}
 	observation.IdentitySubjectDigest, err = digestIdentitySubject(observation)
 	if err != nil {
-		return failedObservation(build, now, ReasonObjectMismatch), reject(ReasonObjectMismatch)
+		return LocalSelfIdentityObservationV1{}, reject(ReasonObjectMismatch)
 	}
 	observation.ObservationDigest, err = digestObservation(observation)
 	if err != nil {
-		return failedObservation(build, now, ReasonObjectMismatch), reject(ReasonObjectMismatch)
+		return LocalSelfIdentityObservationV1{}, reject(ReasonObjectMismatch)
 	}
 	return observation, nil
 }
@@ -110,14 +111,6 @@ func admit(activationPath, commandClass, workingDirectory, executablePath string
 // ActivationToObservationSchema keeps the schema name use at the producer
 // boundary explicit rather than relying on a zero-value literal.
 func ActivationToObservationSchema() string { return ObservationSchema }
-
-func failedObservation(build BuildIdentity, now time.Time, reasonCode string) LocalSelfIdentityObservationV1 {
-	return LocalSelfIdentityObservationV1{
-		SchemaVersion: ObservationSchema, ProcessID: os.Getpid(), SourceHead: build.SourceHead,
-		SelfProfile: build.SelfProfile, ObservedAt: now.UTC().Truncate(time.Second).Format(time.RFC3339),
-		Status: "fail", ReasonCode: reasonCode,
-	}
-}
 
 func digestIdentitySubject(observation LocalSelfIdentityObservationV1) (string, error) {
 	input := identitySubjectDigestInput{

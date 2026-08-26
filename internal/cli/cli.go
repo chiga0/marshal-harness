@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -93,7 +94,15 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		writeUsage(stderr)
 		return ExitUsage
 	}
-	if exitCode, gated := applyLocalDogfoodGate(args, stderr); gated {
+	var doctor *doctorOptions
+	if args[0] == "doctor" {
+		parsed, ok := parseDoctorOptions(args[1:], stderr)
+		if !ok {
+			return ExitUsage
+		}
+		doctor = &parsed
+	}
+	if exitCode, gated := applyLocalDogfoodGate(args, doctor, stderr); gated {
 		return exitCode
 	}
 
@@ -104,7 +113,7 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	case "version":
 		return runVersion(args[1:], stdout, stderr)
 	case "doctor":
-		return runDoctor(ctx, args[1:], stdout, stderr)
+		return runDoctor(ctx, *doctor, stdout, stderr)
 	case "init":
 		return runInit(args[1:], stdout, stderr)
 	case "contract":
@@ -128,9 +137,9 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	}
 }
 
-func applyLocalDogfoodGate(args []string, stderr io.Writer) (int, bool) {
+func applyLocalDogfoodGate(args []string, doctor *doctorOptions, stderr io.Writer) (int, bool) {
 	build := localBuildInfo()
-	if localDogfoodBootstrapCommand(args) || runtime.GOOS != "darwin" {
+	if localDogfoodBootstrapCommand(args, doctor) || runtime.GOOS != "darwin" {
 		return ExitOK, false
 	}
 	// The default production seam is always false. Package tests replace it
@@ -144,7 +153,7 @@ func applyLocalDogfoodGate(args []string, stderr io.Writer) (int, bool) {
 		fmt.Fprintf(stderr, "Marshal local dogfood gate 拒绝：%s。\n", selfidentity.ReasonProfileMismatch)
 		return ExitUnavailable, true
 	}
-	commandClass, denial := localDogfoodCommandClass(args)
+	commandClass, denial := localDogfoodCommandClass(args, doctor)
 	if denial != "" {
 		fmt.Fprintf(stderr, "Marshal local dogfood gate 拒绝：%s。\n", denial)
 		return ExitUnavailable, true
@@ -163,19 +172,23 @@ func applyLocalDogfoodGate(args []string, stderr io.Writer) (int, bool) {
 	return ExitOK, false
 }
 
-func localDogfoodBootstrapCommand(args []string) bool {
+func localDogfoodBootstrapCommand(args []string, doctor *doctorOptions) bool {
 	if len(args) == 0 {
 		return false
 	}
 	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" || args[0] == "version" {
 		return true
 	}
-	return args[0] == "doctor" && slices.Contains(args[1:], "--self")
+	return args[0] == "doctor" && doctor != nil && doctor.self && doctor.runID == "" &&
+		!doctor.repair && !doctor.printEnv && doctor.validFor > 0
 }
 
-func localDogfoodCommandClass(args []string) (string, string) {
+func localDogfoodCommandClass(args []string, doctor *doctorOptions) (string, string) {
 	switch args[0] {
 	case "doctor":
+		if doctor == nil || doctor.repair {
+			return "", selfidentity.ReasonCommandDenied
+		}
 		return selfidentity.CommandDoctor, ""
 	case "task":
 		if len(args) > 1 && args[1] == "scaffold" {
@@ -317,43 +330,87 @@ type doctorReport struct {
 	Repair            *reconciliation.RepairResult `json:"repair,omitempty"`
 }
 
-func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+type doctorOptions struct {
+	jsonOutput     bool
+	runID          string
+	repair         bool
+	printEnv       bool
+	self           bool
+	repositoryRoot string
+	activationID   string
+	issuedAtText   string
+	validUntilText string
+	validFor       time.Duration
+}
+
+type singleBoolFlag struct {
+	seen  bool
+	value bool
+}
+
+func (value *singleBoolFlag) Set(raw string) error {
+	if value.seen {
+		return errors.New("布尔参数不得重复")
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return err
+	}
+	value.seen = true
+	value.value = parsed
+	return nil
+}
+
+func (*singleBoolFlag) IsBoolFlag() bool { return true }
+
+func (value *singleBoolFlag) String() string {
+	return strconv.FormatBool(value.value)
+}
+
+func parseDoctorOptions(args []string, stderr io.Writer) (doctorOptions, bool) {
+	var options doctorOptions
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	jsonOutput := flags.Bool("json", false, "以 JSON 输出")
-	runID := flags.String("run", "", "核验指定 Run 的本地证据")
-	repair := flags.Bool("repair", false, "显式修复可证明的本地 Snapshot")
-	printEnv := flags.Bool("print-env", false, "仅打印建议式发现的 export 行，供用户粘贴")
-	self := flags.Bool("self", false, "只输出 canonical LocalDogfoodActivationV1")
-	repositoryRoot := flags.String("repository-root", ".", "本地 dogfood activation 的 canonical 仓库根")
-	activationID := flags.String("activation-id", "", "可选 activation ID；缺失时随机生成")
-	issuedAtText := flags.String("issued-at", "", "可选 RFC3339 UTC 签发时间")
-	validUntilText := flags.String("valid-until", "", "可选 RFC3339 UTC 失效时间")
-	validFor := flags.Duration("valid-for", 8*time.Hour, "未显式给出时间时的 freshness（最大 24h）")
+	flags.BoolVar(&options.jsonOutput, "json", false, "以 JSON 输出")
+	flags.StringVar(&options.runID, "run", "", "核验指定 Run 的本地证据")
+	flags.BoolVar(&options.repair, "repair", false, "显式修复可证明的本地 Snapshot")
+	flags.BoolVar(&options.printEnv, "print-env", false, "仅打印建议式发现的 export 行，供用户粘贴")
+	var self singleBoolFlag
+	flags.Var(&self, "self", "只输出 canonical LocalDogfoodActivationV1")
+	flags.StringVar(&options.repositoryRoot, "repository-root", ".", "本地 dogfood activation 的 canonical 仓库根")
+	flags.StringVar(&options.activationID, "activation-id", "", "可选 activation ID；缺失时随机生成")
+	flags.StringVar(&options.issuedAtText, "issued-at", "", "可选 RFC3339 UTC 签发时间")
+	flags.StringVar(&options.validUntilText, "valid-until", "", "可选 RFC3339 UTC 失效时间")
+	flags.DurationVar(&options.validFor, "valid-for", 8*time.Hour, "未显式给出时间时的 freshness（最大 24h）")
 	if err := flags.Parse(args); err != nil {
-		return ExitUsage
+		return doctorOptions{}, false
 	}
 	if flags.NArg() != 0 {
 		fmt.Fprintln(stderr, "doctor 不接受位置参数。")
-		return ExitUsage
+		return doctorOptions{}, false
 	}
-	if *self {
-		if *runID != "" || *repair || *printEnv || *validFor <= 0 {
+	options.self = self.value
+	return options, true
+}
+
+func runDoctor(ctx context.Context, options doctorOptions, stdout, stderr io.Writer) int {
+	if options.self {
+		if options.runID != "" || options.repair || options.printEnv || options.validFor <= 0 {
 			fmt.Fprintln(stderr, "doctor --self 参数无效。")
 			return ExitUsage
 		}
 		now := localNow().UTC().Truncate(time.Second)
 		issuedAt := now
-		validUntil := now.Add(*validFor)
-		if (*issuedAtText == "") != (*validUntilText == "") {
+		validUntil := now.Add(options.validFor)
+		if (options.issuedAtText == "") != (options.validUntilText == "") {
 			fmt.Fprintln(stderr, "doctor --self 的 --issued-at 与 --valid-until 必须同时提供。")
 			return ExitUsage
 		}
-		if *issuedAtText != "" {
+		if options.issuedAtText != "" {
 			var parseErr error
-			issuedAt, parseErr = time.Parse(time.RFC3339, *issuedAtText)
+			issuedAt, parseErr = time.Parse(time.RFC3339, options.issuedAtText)
 			if parseErr == nil {
-				validUntil, parseErr = time.Parse(time.RFC3339, *validUntilText)
+				validUntil, parseErr = time.Parse(time.RFC3339, options.validUntilText)
 			}
 			if parseErr != nil {
 				fmt.Fprintln(stderr, "doctor --self 时间无效。")
@@ -362,7 +419,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		}
 		build := localBuildInfo()
 		activation, err := selfidentity.RenderActivation(selfidentity.BootstrapOptions{
-			RepositoryRoot: *repositoryRoot, ActivationID: *activationID,
+			RepositoryRoot: options.repositoryRoot, ActivationID: options.activationID,
 			IssuedAt: issuedAt, ValidUntil: validUntil,
 			Build: selfidentity.BuildIdentity{SourceHead: build.Commit, SelfProfile: build.SelfProfile},
 		})
@@ -376,17 +433,17 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		}
 		return ExitOK
 	}
-	if *runID != "" {
-		if err := domain.ValidateID(*runID); err != nil {
+	if options.runID != "" {
+		if err := domain.ValidateID(options.runID); err != nil {
 			fmt.Fprintln(stderr, "doctor 失败：Run ID 无效。")
 			return ExitUsage
 		}
 	}
-	if *repair && *runID == "" {
+	if options.repair && options.runID == "" {
 		fmt.Fprintln(stderr, "doctor --repair 必须同时指定 --run RUN_ID。")
 		return ExitUsage
 	}
-	if *printEnv {
+	if options.printEnv {
 		for _, entry := range doctorDiscovery(ctx) {
 			if entry.SuggestedEnv != "" {
 				fmt.Fprintf(stdout, "export %s=%s\n", entry.EnvironmentVariable, entry.SuggestedEnv)
@@ -415,14 +472,14 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		Discovery:         doctorDiscovery(ctx),
 		TimeoutCandidates: doctorTimeoutCandidates(ctx, time.Now().UTC()),
 	}
-	if *runID != "" {
+	if options.runID != "" {
 		location, err := repository.Discover(".")
 		if err != nil || location.ValidateIdentity() != nil {
 			fmt.Fprintln(stderr, "doctor 失败：无法验证仓库身份。")
 			return ExitFailure
 		}
-		input := reconciliation.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Validator: runtime.Validator()}
-		if *repair {
+		input := reconciliation.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: options.runID, Validator: runtime.Validator()}
+		if options.repair {
 			repairResult, err := reconciliation.Repair(ctx, input, time.Now().UTC())
 			if err != nil {
 				fmt.Fprintln(stderr, "doctor 失败：本地 Run 修复未完成。")
@@ -446,7 +503,7 @@ func runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if report.Run != nil && report.Run.Status == "blocked" {
 		exitCode = ExitFailure
 	}
-	if *jsonOutput {
+	if options.jsonOutput {
 		if err := writeJSON(stdout, report); err != nil {
 			fmt.Fprintf(stderr, "输出 doctor 报告失败：%v\n", err)
 			return ExitFailure

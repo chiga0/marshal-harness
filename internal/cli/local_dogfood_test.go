@@ -75,6 +75,30 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	if err != nil || !bytes.Equal(canonicalRaw, activationRaw) || bytes.HasSuffix(activationRaw, []byte("\n")) {
 		t.Fatalf("doctor --self did not emit exact canonical activation: err=%v", err)
 	}
+	var bypassOutput, bypassError bytes.Buffer
+	exit = RunContext(context.Background(), []string{"doctor", "--self", "--self=false", "--json"},
+		strings.NewReader(""), &bypassOutput, &bypassError)
+	if exit != ExitUsage || bypassOutput.Len() != 0 || !strings.Contains(bypassError.String(), "布尔参数不得重复") {
+		t.Fatalf("conflicting --self exit=%d stdout=%q stderr=%q", exit, bypassOutput.String(), bypassError.String())
+	}
+	for _, test := range []struct {
+		name   string
+		args   []string
+		reason string
+	}{
+		{"self false", []string{"doctor", "--self=false", "--json"}, selfidentity.ReasonOptInMissing},
+		{"self with run", []string{"doctor", "--self", "--run", "local-run", "--json"}, selfidentity.ReasonOptInMissing},
+		{"self with print env", []string{"doctor", "--self", "--print-env"}, selfidentity.ReasonOptInMissing},
+		{"self with repair", []string{"doctor", "--self", "--run", "local-run", "--repair", "--json"}, selfidentity.ReasonCommandDenied},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output, denied bytes.Buffer
+			got := RunContext(context.Background(), test.args, strings.NewReader(""), &output, &denied)
+			if got != ExitUnavailable || output.Len() != 0 || !strings.Contains(denied.String(), test.reason) {
+				t.Fatalf("exit=%d stdout=%q stderr=%q, want reason %q", got, output.String(), denied.String(), test.reason)
+			}
+		})
+	}
 	activationPath := filepath.Join(root, "activation.json")
 	if err := os.WriteFile(activationPath, activationRaw, 0o600); err != nil {
 		t.Fatal(err)
@@ -109,6 +133,18 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	}
 	if !json.Valid(taskOutput.Bytes()) {
 		t.Fatalf("task scaffold output is not JSON: %s", taskOutput.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, ".marshal")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected state root before denied repair: %v", err)
+	}
+	var repairOutput, repairError bytes.Buffer
+	exit = RunContext(context.Background(), []string{"doctor", "--run", "local-run", "--repair", "--json"},
+		strings.NewReader(""), &repairOutput, &repairError)
+	if exit != ExitUnavailable || repairOutput.Len() != 0 || !strings.Contains(repairError.String(), selfidentity.ReasonCommandDenied) {
+		t.Fatalf("denied repair exit=%d stdout=%q stderr=%q", exit, repairOutput.String(), repairError.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, ".marshal")); !os.IsNotExist(err) {
+		t.Fatalf("denied repair changed state root: %v", err)
 	}
 
 	for _, test := range []struct {
