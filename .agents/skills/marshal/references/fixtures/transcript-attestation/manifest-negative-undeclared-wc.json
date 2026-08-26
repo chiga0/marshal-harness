@@ -16,7 +16,7 @@
     "sourceHead": "0000000000000000000000000000000000000000",
     "executableSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
     "version": "dev",
-    "internalCommandVersion": "qoder-transcript-check/v1"
+    "internalCommandVersion": "qoder-transcript-check/v2"
   },
   "inputs": {
     "transcript": {"path": "transcript-negative-undeclared-wc.jsonl", "sha256": "sha256:1363b7f433359658fc8f1ae219cfa9391da8711f61abf2f198a3733f922e3586", "maxBytes": 8388608},

@@ -43,7 +43,7 @@ Schema 变化必须验证 JSON 语法、Draft 2020-12 metaschema、示例和 `gi
 
 ## Skill 修改
 
-Skill 顶层受 `references/tests/test_skill_layout.py` 的 UTF-8 12KiB、routing、relative-link 和关键 anchor 门禁约束。修改前先读 `skill-rule-migration.md` 和本次实际受影响的 reference；规则细节进入 Just-in-time reference，顶层只保留每次动作必需的边界、状态机和路由，不预读未来 lifecycle 阶段。Mac preflight 只复用固定 `bin/marshal internal *-check --attestation-ready` 的封闭只读 primitive；不得回退到新 worktree 或 `/tmp` 下的匿名可执行文件。
+Skill 顶层受 `references/tests/test_skill_layout.py` 的 UTF-8 12KiB、routing、relative-link 和关键 anchor 门禁约束。修改前先读 `skill-rule-migration.md` 和本次实际受影响的 reference；规则细节进入 Just-in-time reference，顶层只保留每次动作必需的边界、状态机和路由，不预读未来 lifecycle 阶段。Mac preflight 只复用固定 `bin/marshal internal *-check --attestation-ready` 中无 Core/仓库持久副作用的有界 primitive；plan checker 可以执行受限 Adapter version/capability probe。不得回退到新 worktree 或 `/tmp` 下的匿名可执行文件。
 
 跨 Attempt/round 复用或重绑 `sourceHead`、ReviewPacket 或 evidence identity 只能登记为后续 Core 设计评估；除非 Schema/validator/Core 与所需 ADR 同步落地，Skill 不得以效率为由实现或暗示复用。
 

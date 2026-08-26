@@ -948,7 +948,7 @@ def invoke_core_checker(
         capture = None
         try:
             process = subprocess.Popen(
-                [str(marshal_executable), "internal", "qoder-transcript-check"],
+                [str(marshal_executable), "internal", "qoder-transcript-check", "--attestation-ready"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -980,7 +980,7 @@ def invoke_core_checker(
                 "checker-output-limit-exceeded", "checker-execution-failed"
             )
             stdout, stderr, completed_returncode = capture.finish(
-                envelope_raw,
+                b"\0" + envelope_raw,
                 checker_timeout_seconds,
                 "checker-output-limit-exceeded",
                 "checker-deadline-exceeded",
@@ -1070,7 +1070,7 @@ def run(arguments: argparse.Namespace) -> dict:
         "marshalExecutionIdentity": execution_identity,
         "marshalExecutionExpectedIdentityMethod": expected_execution_identity_method,
         "marshalExecutionActualIdentityMethod": actual_execution_identity_method,
-        "marshalInternalCommand": sha256_bytes(b"internal\0qoder-transcript-check"),
+        "marshalInternalCommand": sha256_bytes(b"internal\0qoder-transcript-check\0--attestation-ready"),
         "marshalBuildCommit": core["marshal"]["commit"],
         "stdinEnvelopeDigest": core["marshal"]["inputDigest"],
         "marshalBuildIdentity": sha256_bytes(

@@ -160,6 +160,19 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		localDogfoodBootstrapCommand([]string{"internal", "unknown-check", "--attestation-ready"}, nil) {
 		t.Fatal("internal checker bootstrap admitted a missing handshake or unknown command")
 	}
+	for _, check := range []string{
+		"artifact-attestation-check", "qoder-transcript-check", "plan-premortem-check",
+		"review-freshness-check", "codex-provider-schema-check", "closure-matrix-check",
+	} {
+		t.Run("bootstrap reaches "+check, func(t *testing.T) {
+			var output, checkError bytes.Buffer
+			exit := RunContext(context.Background(), []string{"internal", check, "--attestation-ready"},
+				strings.NewReader("\x00{}"), &output, &checkError)
+			if exit == ExitUnavailable || strings.Contains(checkError.String(), "Marshal local dogfood gate 拒绝") {
+				t.Fatalf("checker did not reach its handler: exit=%d stdout=%q stderr=%q", exit, output.String(), checkError.String())
+			}
+		})
+	}
 
 	for _, test := range []struct {
 		name   string

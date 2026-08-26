@@ -12,13 +12,18 @@ import (
 )
 
 const qoderTranscriptCheckMaxInputBytes int64 = 32 << 20
-const qoderTranscriptCheckCommandVersion = "qoder-transcript-check/v1"
+const qoderTranscriptCheckCommandVersion = "qoder-transcript-check/v2"
 
 // runInternalQoderTranscriptCheck is an intentionally hidden operator-local
 // bridge to the production Qoder transcript validator. The public validator
 // invokes this command through the already-built Marshal executable so macOS
 // sees one stable executable identity rather than a newly built helper.
 func runInternalQoderTranscriptCheck(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	var err error
+	args, err = consumeQoderStableAttestation(args, stdin)
+	if err != nil {
+		return writeQoderTranscriptCheckFailure(stderr, "checker-handshake-invalid", ExitFailure)
+	}
 	if len(args) != 0 {
 		return writeQoderTranscriptCheckFailure(stderr, "checker-arguments-invalid", ExitUsage)
 	}
@@ -80,6 +85,17 @@ func runInternalQoderTranscriptCheck(args []string, stdin io.Reader, stdout, std
 		return ExitFailure
 	}
 	return ExitOK
+}
+
+func consumeQoderStableAttestation(args []string, stdin io.Reader) ([]string, error) {
+	if len(args) == 0 || args[0] != "--attestation-ready" {
+		return args, nil
+	}
+	var token [1]byte
+	if _, err := io.ReadFull(stdin, token[:]); err != nil || token[0] != 0 {
+		return nil, fmt.Errorf("qoder transcript checker handshake is invalid")
+	}
+	return args[1:], nil
 }
 
 func isLowerHexCommit(value string) bool {
