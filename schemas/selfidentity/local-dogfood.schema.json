@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.dev/schemas/selfidentity/local-dogfood.schema.json",
+  "title": "Marshal Darwin local dogfood self identity",
+  "oneOf": [
+    { "$ref": "#/$defs/activation" },
+    { "$ref": "#/$defs/observation" }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" },
+    "decimal": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network", "publication", "adapterAuthority", "lifecycleCommandClasses"],
+      "properties": {
+        "network": { "const": "local-loopback" },
+        "publication": { "const": "none" },
+        "adapterAuthority": { "const": "ordinary-user" },
+        "lifecycleCommandClasses": {
+          "const": ["doctor", "task-scaffold"]
+        }
+      }
+    },
+    "currentPathObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonicalPath", "device", "inode", "size", "rawSHA256", "pathRechecked", "observationKind"],
+      "properties": {
+        "canonicalPath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+        "device": { "$ref": "#/$defs/decimal" },
+        "inode": { "$ref": "#/$defs/decimal" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 268435456 },
+        "rawSHA256": { "$ref": "#/$defs/digest" },
+        "pathRechecked": { "const": true },
+        "observationKind": { "const": "darwin-current-path-fd-object" }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "activationId", "issuedAt", "validUntil", "repositoryIdentity", "canonicalRepositoryRoot", "canonicalExecutablePath", "expectedDevice", "expectedInode", "expectedSize", "expectedRawSHA256", "expectedSourceHead", "expectedSelfProfile", "scope", "activationDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.local-dogfood-activation.v1" },
+        "activationId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "issuedAt": { "type": "string", "format": "date-time" },
+        "validUntil": { "type": "string", "format": "date-time" },
+        "repositoryIdentity": { "$ref": "#/$defs/digest" },
+        "canonicalRepositoryRoot": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+        "canonicalExecutablePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+        "expectedDevice": { "$ref": "#/$defs/decimal" },
+        "expectedInode": { "$ref": "#/$defs/decimal" },
+        "expectedSize": { "type": "integer", "minimum": 1, "maximum": 268435456 },
+        "expectedRawSHA256": { "$ref": "#/$defs/digest" },
+        "expectedSourceHead": { "$ref": "#/$defs/sourceHead" },
+        "expectedSelfProfile": { "const": "darwin-local-dogfood" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "activationDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "activationDigest", "processId", "processExecutablePath", "repositoryIdentity", "canonicalRepositoryRoot", "currentPathObject", "sourceHead", "selfProfile", "observedAt", "status", "reasonCode", "identitySubjectDigest", "observationDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.local-self-identity-observation.v1" },
+        "activationDigest": { "$ref": "#/$defs/digest" },
+        "processId": { "type": "integer", "minimum": 1 },
+        "processExecutablePath": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+        "repositoryIdentity": { "$ref": "#/$defs/digest" },
+        "canonicalRepositoryRoot": { "type": "string", "pattern": "^/", "maxLength": 4096 },
+        "currentPathObject": { "$ref": "#/$defs/currentPathObject" },
+        "sourceHead": { "$ref": "#/$defs/sourceHead" },
+        "selfProfile": { "const": "darwin-local-dogfood" },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "status": { "const": "pass" },
+        "reasonCode": { "const": "self-local-identity-observed" },
+        "identitySubjectDigest": { "$ref": "#/$defs/digest" },
+        "observationDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

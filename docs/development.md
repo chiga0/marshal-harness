@@ -90,6 +90,7 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 ```bash
 marshal version [--json]
 marshal doctor [--run RUN_ID] [--repair] [--print-env] [--json]
+marshal doctor --self [--repository-root PATH] [--activation-id ID] [--valid-for DURATION]
 marshal contract validate [--schema NAME] <PATH|->
 marshal contract schema [--all [--out DIR]] [--schema NAME] [--json]
 marshal init [--json]
@@ -120,6 +121,23 @@ make build COMMIT="$(git rev-parse HEAD)"
 
 开发与操作示例固定调用 `bin/marshal`；不要用 `go run ./cmd/marshal`，因为 Go 会在缓存或临时目录生成匿名可执行文件，无法复用 Marshal 的稳定路径身份。
 
+### Darwin 本地 dogfood 自身份
+
+LD-1 只为开发机上的固定 `bin/marshal` 提供低保证、普通用户级 opt-in，不代表 managed/release authority，也不提供恶意代码 sandbox。构建时必须显式冻结 profile 与 source head；`doctor --self` 仅把 canonical activation 输出到 stdout，activation 文件由 operator 创建，Marshal 不写该文件：
+
+```bash
+make build COMMIT="$(git rev-parse HEAD)" SELF_PROFILE=darwin-local-dogfood
+install -d -m 700 .marshal/bootstrap
+umask 077
+./bin/marshal doctor --self --repository-root "$(pwd -P)" \
+  > .marshal/bootstrap/local-dogfood-activation.json
+chmod 600 .marshal/bootstrap/local-dogfood-activation.json
+export MARSHAL_LOCAL_DOGFOOD_ACTIVATION="$(pwd -P)/.marshal/bootstrap/local-dogfood-activation.json"
+./bin/marshal doctor --json
+```
+
+activation 最长有效 24 小时（默认 8 小时），严格绑定 canonical repository root、当前固定 executable 的路径对象与 SHA-256、`sourceHead` 和 `selfProfile`；Schema 位于 `schemas/selfidentity/local-dogfood.schema.json`。LD-1 仅放行完整 `doctor` 与 `task scaffold`，`help`、`version` 和 `doctor --self` 属于 bootstrap surface；publication、remote、credentialed/internal、Worker launch 与其余未接 lineage 的 lifecycle 一律 fail closed。Darwin 上 `unprofiled` 或尚未实现自身 gate 的 profile 也不能进入这些 surface；非 Darwin 构建保持既有行为。
+
 ## 契约自描述
 
 `marshal contract schema` 从二进制内嵌的 Schema 目录（`schemas/` Embedded FS）导出契约自描述，供 Agent 与外部工具零先验消费，导出字节与内嵌内容逐字节一致：
@@ -134,6 +152,7 @@ make build COMMIT="$(git rev-parse HEAD)"
 | 变量 | 用途 | 性质 |
 | --- | --- | --- |
 | `MARSHAL_STATE_DIR` | 覆盖默认 `.marshal/` 状态目录（绝对路径；仓库内则必须等于默认目录） | 运行配置 |
+| `MARSHAL_LOCAL_DOGFOOD_ACTIVATION` | Darwin LD-1 operator-owned canonical activation 绝对路径；仅对 `darwin-local-dogfood` profile 生效 | 本地自身份 opt-in |
 | `MARSHAL_OPENCODE_PATH` | OpenCode Worker 可执行文件绝对路径 | Adapter 注册 |
 | `MARSHAL_QWEN_PATH` | Qwen Code Worker 可执行文件绝对路径 | Adapter 注册 |
 | `MARSHAL_QODER_PATH` | Qoder CLI Worker 可执行文件绝对路径；仅设置此变量不会通过 live conformance 门禁 | Adapter 注册候选 |
