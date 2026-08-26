@@ -37,6 +37,12 @@ type Validator struct {
 	schemas map[string]*jsonschema.Schema
 }
 
+type verifiedBuildRecordState struct {
+	chain    VerifiedBuildRecordChain
+	external map[string]ExternalBuildMaterialManifestV1
+	buildKey KeyRecord
+}
+
 func NewValidator() (*Validator, error) {
 	data, err := marshalSchemas.FS.ReadFile("selfidentity/artifact-attestation.schema.json")
 	if err != nil {
@@ -71,12 +77,29 @@ func NewValidator() (*Validator, error) {
 	return &Validator{schemas: compiled}, nil
 }
 
+// ValidateBuildRecordChain validates the immutable pre-sign chain. It has no
+// filesystem, process, network, signing, or final-attestation side effects.
+func (v *Validator) ValidateBuildRecordChain(raw RawBuildRecordSet, policy BuildRecordValidationPolicy) (VerifiedBuildRecordChain, error) {
+	if v == nil || !withinBuildRecordBudgets(raw) || !withinBuildRecordPolicyBudgets(policy) {
+		return VerifiedBuildRecordChain{}, ErrRejected
+	}
+	raw = snapshotBuildRecordRaw(raw)
+	policy = snapshotBuildRecordValidationPolicy(policy)
+	if !validBuildRecordValidationPolicy(policy) {
+		return VerifiedBuildRecordChain{}, ErrRejected
+	}
+	state, err := v.validateBuildRecordChain(raw, policy)
+	if err != nil {
+		return VerifiedBuildRecordChain{}, ErrRejected
+	}
+	return state.chain, nil
+}
+
 // ValidateArtifactChain validates a complete, already-resolved immutable
-// protected-build chain. It has no filesystem, process, network, or signing
-// side effects and can be called directly by the next artifact signer or
-// installer consumer.
+// protected-build chain. It reuses the exact pre-sign semantic kernel before
+// evaluating the final artifact attestation.
 func (v *Validator) ValidateArtifactChain(raw RawObjectSet, policy ValidationPolicy) (VerifiedChain, error) {
-	if v == nil || !withinBudgets(raw) || !withinPolicyBudgets(policy) {
+	if v == nil || len(raw.BuildAttestation) == 0 || !withinBudgets(raw) || !withinPolicyBudgets(policy) {
 		return VerifiedChain{}, ErrRejected
 	}
 	raw = snapshotRaw(raw)
@@ -84,33 +107,29 @@ func (v *Validator) ValidateArtifactChain(raw RawObjectSet, policy ValidationPol
 	if !validValidationPolicy(policy) {
 		return VerifiedChain{}, ErrRejected
 	}
-	var result VerifiedChain
-	if err := v.admit("sourceManifest", raw.SourceManifest, &result.SourceManifest); err != nil {
+	state, err := v.validateBuildRecordChain(projectBuildRecordRaw(raw), projectBuildRecordPolicy(policy))
+	if err != nil {
 		return VerifiedChain{}, ErrRejected
 	}
-	if err := v.admit("compileRootManifest", raw.CompileRootManifest, &result.CompileRootManifest); err != nil {
-		return VerifiedChain{}, ErrRejected
-	}
-	if len(raw.GeneratedSourceStage) > 0 {
-		var stage GeneratedSourceStageV1
-		if err := v.admit("generatedSourceStage", raw.GeneratedSourceStage, &stage); err != nil {
-			return VerifiedChain{}, ErrRejected
-		}
-		result.GeneratedSourceStage = &stage
-	}
-	result.ExternalMaterials = make([]ExternalBuildMaterialManifestV1, len(raw.ExternalMaterialManifests))
-	for i := range raw.ExternalMaterialManifests {
-		if err := v.admit("externalMaterialManifest", raw.ExternalMaterialManifests[i], &result.ExternalMaterials[i]); err != nil {
-			return VerifiedChain{}, ErrRejected
-		}
-	}
-	if err := v.admit("buildRecord", raw.BuildRecord, &result.BuildRecord); err != nil {
-		return VerifiedChain{}, ErrRejected
+	result := VerifiedChain{
+		SourceManifest:       state.chain.SourceManifest,
+		CompileRootManifest:  state.chain.CompileRootManifest,
+		GeneratedSourceStage: state.chain.GeneratedSourceStage,
+		ExternalMaterials:    state.chain.ExternalMaterials,
+		BuildRecord:          state.chain.BuildRecord,
 	}
 	if err := v.admit("buildAttestation", raw.BuildAttestation, &result.BuildAttestation); err != nil {
 		return VerifiedChain{}, ErrRejected
 	}
-	if err := validateChain(raw, &result, policy); err != nil {
+	if result.BuildAttestation.Repository != policy.ExpectedRepository || result.BuildAttestation.SourceHead != policy.ExpectedSourceHead || result.BuildAttestation.BuildProfile != policy.ExpectedBuildProfile || !artifactAuthorityFactsMatchPolicy(&result, policy) || !validAttestation(raw.BuildAttestation, &result.BuildAttestation) || !attestationMatchesChain(&result) {
+		return VerifiedChain{}, ErrRejected
+	}
+	issuedAt, ok := canonicalTime(result.BuildAttestation.IssuedAt)
+	if !ok {
+		return VerifiedChain{}, ErrRejected
+	}
+	attestationKey, err := verifyEnvelope(raw.BuildAttestation, []string{"attestationDigest", "signedObjectEnvelope"}, result.BuildAttestation.AttestationDigest, result.BuildAttestation.SignedObjectEnvelope, BuildAttestationDomain, BuildAttestationUsage, result.BuildAttestation.ArtifactAttestationProducerPrincipalID, issuedAt, policy.Trust.BuildAttestation)
+	if err != nil || result.BuildRecord.BuilderPrincipalID == result.BuildAttestation.ArtifactAttestationProducerPrincipalID || sameSigningKey(state.buildKey, attestationKey) {
 		return VerifiedChain{}, ErrRejected
 	}
 	return result, nil
@@ -134,62 +153,70 @@ func (v *Validator) admit(name string, raw []byte, destination any) error {
 	return nil
 }
 
-func validateChain(raw RawObjectSet, c *VerifiedChain, policy ValidationPolicy) error {
-	if c.SourceManifest.Repository != policy.ExpectedRepository || c.SourceManifest.SourceHead != policy.ExpectedSourceHead || c.SourceManifest.BuildProfile != policy.ExpectedBuildProfile || c.SourceManifest.SourceBundleDigest != policy.ExpectedSourceBundleDigest || c.SourceManifest.ManifestDigest != policy.ExpectedSourceManifestDigest || c.CompileRootManifest.ManifestDigest != policy.ExpectedCompileRootManifestDigest || !reflect.DeepEqual(c.SourceManifest.GoModDigest, policy.ExpectedGoModDigest) || !reflect.DeepEqual(c.SourceManifest.GoSumDigest, policy.ExpectedGoSumDigest) || !reflect.DeepEqual(c.SourceManifest.Submodules, policy.ExpectedSubmodules) || !reflect.DeepEqual(c.SourceManifest.LFSObjects, policy.ExpectedLFSObjects) || c.SourceManifest.DependencyMode != policy.ExpectedDependencyMode || c.SourceManifest.ModuleGraphDigest != policy.ExpectedModuleGraphDigest || c.SourceManifest.BuildInvocationDigest != policy.ExpectedBuildInvocationDigest || c.SourceManifest.EnvironmentPolicyDigest != policy.ExpectedEnvironmentPolicyDigest || c.SourceManifest.ToolchainDistributionDigest != policy.ExpectedToolchainMaterialDigest || c.SourceManifest.TargetArch != policy.ExpectedTargetArch || c.SourceManifest.GoVersion != policy.ExpectedGoVersion || c.SourceManifest.SubmodulePolicyDigest != policy.ExpectedSubmodulePolicyDigest || c.SourceManifest.LFSPolicyDigest != policy.ExpectedLFSPolicyDigest ||
-		c.BuildRecord.Repository != policy.ExpectedRepository || c.BuildRecord.SourceHead != policy.ExpectedSourceHead || c.BuildRecord.BuildProfile != policy.ExpectedBuildProfile ||
-		c.BuildAttestation.Repository != policy.ExpectedRepository || c.BuildAttestation.SourceHead != policy.ExpectedSourceHead || c.BuildAttestation.BuildProfile != policy.ExpectedBuildProfile {
-		return ErrRejected
+func (v *Validator) validateBuildRecordChain(raw RawBuildRecordSet, policy BuildRecordValidationPolicy) (verifiedBuildRecordState, error) {
+	var result VerifiedBuildRecordChain
+	if err := v.admit("sourceManifest", raw.SourceManifest, &result.SourceManifest); err != nil {
+		return verifiedBuildRecordState{}, ErrRejected
 	}
-	if !authorityFactsMatchPolicy(c, policy) {
-		return ErrRejected
+	if err := v.admit("compileRootManifest", raw.CompileRootManifest, &result.CompileRootManifest); err != nil {
+		return verifiedBuildRecordState{}, ErrRejected
 	}
-	if !validSourceManifest(raw.SourceManifest, &c.SourceManifest) || !sourceMaterialClosure(c.SourceManifest, policy) || !validCompileRoot(raw.CompileRootManifest, &c.CompileRootManifest) {
-		return ErrRejected
+	if len(raw.GeneratedSourceStage) > 0 {
+		var stage GeneratedSourceStageV1
+		if err := v.admit("generatedSourceStage", raw.GeneratedSourceStage, &stage); err != nil {
+			return verifiedBuildRecordState{}, ErrRejected
+		}
+		result.GeneratedSourceStage = &stage
 	}
-	if c.CompileRootManifest.Repository != c.SourceManifest.Repository || c.CompileRootManifest.SourceHead != c.SourceManifest.SourceHead || c.CompileRootManifest.SourceManifestDigest != c.SourceManifest.ManifestDigest {
-		return ErrRejected
+	result.ExternalMaterials = make([]ExternalBuildMaterialManifestV1, len(raw.ExternalMaterialManifests))
+	for i := range raw.ExternalMaterialManifests {
+		if err := v.admit("externalMaterialManifest", raw.ExternalMaterialManifests[i], &result.ExternalMaterials[i]); err != nil {
+			return verifiedBuildRecordState{}, ErrRejected
+		}
 	}
-	if err := validateGenerated(raw.GeneratedSourceStage, c, policy); err != nil {
-		return err
+	if err := v.admit("buildRecord", raw.BuildRecord, &result.BuildRecord); err != nil {
+		return verifiedBuildRecordState{}, ErrRejected
 	}
-	externalByDigest := make(map[string]ExternalBuildMaterialManifestV1, len(c.ExternalMaterials))
+	if result.SourceManifest.Repository != policy.ExpectedRepository || result.SourceManifest.SourceHead != policy.ExpectedSourceHead || result.SourceManifest.BuildProfile != policy.ExpectedBuildProfile || result.SourceManifest.SourceBundleDigest != policy.ExpectedSourceBundleDigest || result.SourceManifest.ManifestDigest != policy.ExpectedSourceManifestDigest || result.CompileRootManifest.ManifestDigest != policy.ExpectedCompileRootManifestDigest || !reflect.DeepEqual(result.SourceManifest.GoModDigest, policy.ExpectedGoModDigest) || !reflect.DeepEqual(result.SourceManifest.GoSumDigest, policy.ExpectedGoSumDigest) || !reflect.DeepEqual(result.SourceManifest.Submodules, policy.ExpectedSubmodules) || !reflect.DeepEqual(result.SourceManifest.LFSObjects, policy.ExpectedLFSObjects) || result.SourceManifest.DependencyMode != policy.ExpectedDependencyMode || result.SourceManifest.ModuleGraphDigest != policy.ExpectedModuleGraphDigest || result.SourceManifest.BuildInvocationDigest != policy.ExpectedBuildInvocationDigest || result.SourceManifest.EnvironmentPolicyDigest != policy.ExpectedEnvironmentPolicyDigest || result.SourceManifest.ToolchainDistributionDigest != policy.ExpectedToolchainMaterialDigest || result.SourceManifest.TargetArch != policy.ExpectedTargetArch || result.SourceManifest.GoVersion != policy.ExpectedGoVersion || result.SourceManifest.SubmodulePolicyDigest != policy.ExpectedSubmodulePolicyDigest || result.SourceManifest.LFSPolicyDigest != policy.ExpectedLFSPolicyDigest ||
+		result.BuildRecord.Repository != policy.ExpectedRepository || result.BuildRecord.SourceHead != policy.ExpectedSourceHead || result.BuildRecord.BuildProfile != policy.ExpectedBuildProfile || !buildRecordAuthorityFactsMatchPolicy(&result, policy) {
+		return verifiedBuildRecordState{}, ErrRejected
+	}
+	if !validSourceManifest(raw.SourceManifest, &result.SourceManifest) || !sourceMaterialClosure(result.SourceManifest, policy) || !validCompileRoot(raw.CompileRootManifest, &result.CompileRootManifest) {
+		return verifiedBuildRecordState{}, ErrRejected
+	}
+	if result.CompileRootManifest.Repository != result.SourceManifest.Repository || result.CompileRootManifest.SourceHead != result.SourceManifest.SourceHead || result.CompileRootManifest.SourceManifestDigest != result.SourceManifest.ManifestDigest {
+		return verifiedBuildRecordState{}, ErrRejected
+	}
+	if err := validateGenerated(raw.GeneratedSourceStage, &result, policy); err != nil {
+		return verifiedBuildRecordState{}, err
+	}
+	externalByDigest := make(map[string]ExternalBuildMaterialManifestV1, len(result.ExternalMaterials))
 	logicalContent := make(map[string]string)
-	for i := range c.ExternalMaterials {
-		material := &c.ExternalMaterials[i]
+	for i := range result.ExternalMaterials {
+		material := &result.ExternalMaterials[i]
 		if !validExternalManifest(raw.ExternalMaterialManifests[i], material, logicalContent) {
-			return ErrRejected
+			return verifiedBuildRecordState{}, ErrRejected
 		}
 		if _, duplicate := externalByDigest[material.ManifestDigest]; duplicate {
-			return ErrRejected
+			return verifiedBuildRecordState{}, ErrRejected
 		}
 		externalByDigest[material.ManifestDigest] = *material
 	}
-	if !externalMaterialsMatchPolicy(c.ExternalMaterials, externalByDigest, policy) {
-		return ErrRejected
+	if !externalMaterialsMatchPolicy(result.ExternalMaterials, externalByDigest, policy) {
+		return verifiedBuildRecordState{}, ErrRejected
 	}
-	if !validBuildRecord(raw.BuildRecord, &c.BuildRecord, externalByDigest) {
-		return ErrRejected
+	if !validBuildRecord(raw.BuildRecord, &result.BuildRecord, externalByDigest) || !buildRecordMatchesChain(&result, externalByDigest) {
+		return verifiedBuildRecordState{}, ErrRejected
 	}
-	createdAt, ok := canonicalTime(c.BuildRecord.CreatedAt)
+	createdAt, ok := canonicalTime(result.BuildRecord.CreatedAt)
 	if !ok {
-		return ErrRejected
+		return verifiedBuildRecordState{}, ErrRejected
 	}
-	buildKey, err := verifyEnvelope(raw.BuildRecord, []string{"recordDigest", "signedObjectEnvelope"}, c.BuildRecord.RecordDigest, c.BuildRecord.SignedObjectEnvelope, BuildRecordDomain, BuildRecordKeyUsage, c.BuildRecord.BuilderPrincipalID, createdAt, policy.Trust.BuildRecord)
+	buildKey, err := verifyEnvelope(raw.BuildRecord, []string{"recordDigest", "signedObjectEnvelope"}, result.BuildRecord.RecordDigest, result.BuildRecord.SignedObjectEnvelope, BuildRecordDomain, BuildRecordKeyUsage, result.BuildRecord.BuilderPrincipalID, createdAt, policy.Trust)
 	if err != nil {
-		return err
+		return verifiedBuildRecordState{}, err
 	}
-	if !validAttestation(raw.BuildAttestation, &c.BuildAttestation) || !attestationMatchesChain(c, externalByDigest) {
-		return ErrRejected
-	}
-	issuedAt, ok := canonicalTime(c.BuildAttestation.IssuedAt)
-	if !ok {
-		return ErrRejected
-	}
-	attestationKey, err := verifyEnvelope(raw.BuildAttestation, []string{"attestationDigest", "signedObjectEnvelope"}, c.BuildAttestation.AttestationDigest, c.BuildAttestation.SignedObjectEnvelope, BuildAttestationDomain, BuildAttestationUsage, c.BuildAttestation.ArtifactAttestationProducerPrincipalID, issuedAt, policy.Trust.BuildAttestation)
-	if err != nil || c.BuildRecord.BuilderPrincipalID == c.BuildAttestation.ArtifactAttestationProducerPrincipalID || sameSigningKey(buildKey, attestationKey) {
-		return ErrRejected
-	}
-	return nil
+	return verifiedBuildRecordState{chain: result, external: externalByDigest, buildKey: buildKey}, nil
 }
 
 func validSourceManifest(raw []byte, source *SourceManifestV1) bool {
@@ -203,7 +230,7 @@ func validCompileRoot(raw []byte, compile *CompileRootManifestV1) bool {
 	return compile.SchemaVersion == CompileRootManifestSchema && validEntries(compile.Entries) && digestOf(compile.Entries) == compile.RootDigest && digestExcluding(raw, "manifestDigest") == compile.ManifestDigest
 }
 
-func validateGenerated(raw []byte, c *VerifiedChain, policy ValidationPolicy) error {
+func validateGenerated(raw []byte, c *VerifiedBuildRecordChain, policy BuildRecordValidationPolicy) error {
 	compile := c.CompileRootManifest
 	if compile.GeneratedSourceStageDigest == nil {
 		if policy.ExpectedGenerated || c.GeneratedSourceStage != nil || c.SourceManifest.GeneratedSourcePolicy != nil || compile.RootDigest != c.SourceManifest.RootDigest || !reflect.DeepEqual(compile.Entries, c.SourceManifest.Entries) {
@@ -276,6 +303,26 @@ func validBuildRecord(raw []byte, record *MarshalArtifactBuildRecordV1, external
 	return ok && toolchain.MaterialKind == "go-toolchain"
 }
 
+func buildRecordMatchesChain(c *VerifiedBuildRecordChain, external map[string]ExternalBuildMaterialManifestV1) bool {
+	s, r := c.SourceManifest, c.BuildRecord
+	if r.SourceBundleDigest != s.SourceBundleDigest || r.SourceManifestDigest != s.ManifestDigest || r.CompileRootManifestDigest != c.CompileRootManifest.ManifestDigest || r.BuildInvocationDigest != s.BuildInvocationDigest || r.EnvironmentPolicyDigest != s.EnvironmentPolicyDigest || r.ModuleGraphDigest != s.ModuleGraphDigest || r.ToolchainMaterialDigest != s.ToolchainDistributionDigest ||
+		s.TargetOS != r.UnsignedArtifact.OS || s.TargetArch != r.UnsignedArtifact.Arch {
+		return false
+	}
+	if material, ok := external[r.ToolchainMaterialDigest]; !ok || material.MaterialKind != "go-toolchain" {
+		return false
+	}
+	if c.GeneratedSourceStage != nil {
+		if material, ok := external[c.GeneratedSourceStage.GeneratorMaterialDigest]; !ok || material.MaterialKind != "generator-tool" {
+			return false
+		}
+		if material, ok := external[c.GeneratedSourceStage.GeneratorToolchainDigest]; !ok || material.MaterialKind != "go-toolchain" {
+			return false
+		}
+	}
+	return true
+}
+
 func validAttestation(raw []byte, attestation *MarshalArtifactBuildAttestationV1) bool {
 	if attestation.SchemaVersion != BuildAttestationSchema || !sortedUnique(attestation.ExternalMaterialManifestDigests) || digestExcluding(raw, "attestationDigest", "signedObjectEnvelope") != attestation.AttestationDigest || attestation.SignedObjectEnvelope.ObjectDigest != attestation.AttestationDigest || !validArtifact(attestation.UnsignedArtifact) || !validArtifact(attestation.FinalArtifact) {
 		return false
@@ -297,7 +344,7 @@ func validAttestation(raw []byte, attestation *MarshalArtifactBuildAttestationV1
 	}
 }
 
-func attestationMatchesChain(c *VerifiedChain, external map[string]ExternalBuildMaterialManifestV1) bool {
+func attestationMatchesChain(c *VerifiedChain) bool {
 	s, r, a := c.SourceManifest, c.BuildRecord, c.BuildAttestation
 	if a.BuildRecordDigest != r.RecordDigest || a.SourceManifestDigest != s.ManifestDigest || a.CompileRootManifestDigest != c.CompileRootManifest.ManifestDigest || a.SubmodulePolicyDigest != s.SubmodulePolicyDigest || a.LFSPolicyDigest != s.LFSPolicyDigest ||
 		a.Repository != r.Repository || a.SourceHead != r.SourceHead || a.SourceBundleDigest != r.SourceBundleDigest || a.BuildProfile != r.BuildProfile || a.BuildInvocationDigest != r.BuildInvocationDigest || a.EnvironmentPolicyDigest != r.EnvironmentPolicyDigest || a.ToolchainMaterialDigest != r.ToolchainMaterialDigest || a.ModuleGraphDigest != r.ModuleGraphDigest ||
@@ -313,22 +360,8 @@ func attestationMatchesChain(c *VerifiedChain, external map[string]ExternalBuild
 	observedAt, observedOK := canonicalTime(a.CodeSignatureObservation.ObservedAt)
 	if !createdOK || !issuedOK || !observedOK || observedAt.Before(createdAt) || issuedAt.Before(observedAt) ||
 		a.FinalArtifact.GoBuildID != a.UnsignedArtifact.GoBuildID || a.FinalArtifact.OS != a.UnsignedArtifact.OS || a.FinalArtifact.Arch != a.UnsignedArtifact.Arch || a.FinalArtifact.Version != a.UnsignedArtifact.Version || a.FinalArtifact.BuildDate != a.UnsignedArtifact.BuildDate ||
-		s.TargetOS != r.UnsignedArtifact.OS || s.TargetArch != r.UnsignedArtifact.Arch {
+		s.TargetOS != a.UnsignedArtifact.OS || s.TargetArch != a.UnsignedArtifact.Arch {
 		return false
-	}
-	if r.SourceBundleDigest != s.SourceBundleDigest || r.SourceManifestDigest != s.ManifestDigest || r.CompileRootManifestDigest != c.CompileRootManifest.ManifestDigest || r.BuildInvocationDigest != s.BuildInvocationDigest || r.EnvironmentPolicyDigest != s.EnvironmentPolicyDigest || r.ModuleGraphDigest != s.ModuleGraphDigest || r.ToolchainMaterialDigest != s.ToolchainDistributionDigest {
-		return false
-	}
-	if material, ok := external[r.ToolchainMaterialDigest]; !ok || material.MaterialKind != "go-toolchain" {
-		return false
-	}
-	if c.GeneratedSourceStage != nil {
-		if material, ok := external[c.GeneratedSourceStage.GeneratorMaterialDigest]; !ok || material.MaterialKind != "generator-tool" {
-			return false
-		}
-		if material, ok := external[c.GeneratedSourceStage.GeneratorToolchainDigest]; !ok || material.MaterialKind != "go-toolchain" {
-			return false
-		}
 	}
 	return true
 }
@@ -494,14 +527,13 @@ func sameSigningKey(left, right KeyRecord) bool {
 	return bytes.Equal(left.PublicKey, right.PublicKey)
 }
 
-func validValidationPolicy(policy ValidationPolicy) bool {
+func validBuildRecordValidationPolicy(policy BuildRecordValidationPolicy) bool {
 	if policy.ExpectedRepository == "" || policy.ExpectedSourceHead == "" || policy.ExpectedBuildProfile == "" ||
 		policy.ExpectedSourceBundleDigest == "" || policy.ExpectedSourceManifestDigest == "" || policy.ExpectedCompileRootManifestDigest == "" ||
 		policy.ExpectedDependencyMode == "" || policy.ExpectedModuleGraphDigest == "" || policy.ExpectedBuildInvocationDigest == "" ||
 		policy.ExpectedEnvironmentPolicyDigest == "" || policy.ExpectedToolchainMaterialDigest == "" || policy.ExpectedTargetArch == "" ||
 		policy.ExpectedGoVersion == "" || policy.ExpectedSubmodulePolicyDigest == "" || policy.ExpectedLFSPolicyDigest == "" ||
 		policy.ExpectedBuilderPrincipalID == "" || policy.ExpectedBuilderWorkflowIdentity == "" || policy.ExpectedBuilderIsolationProfile == "" ||
-		policy.ExpectedArtifactAttestationProducerPrincipalID == "" || policy.ExpectedCodeSigningWorkflowIdentity == "" || policy.ExpectedArtifactAttestationWorkflowIdentity == "" ||
 		len(policy.ExpectedExternalMaterials) == 0 || len(policy.ExpectedExternalMaterials) > maxExternalManifests {
 		return false
 	}
@@ -528,9 +560,7 @@ func validValidationPolicy(policy ValidationPolicy) bool {
 	if !materialKindsMatchMode(policy.ExpectedDependencyMode, kinds) {
 		return false
 	}
-	if policy.Trust.BuildRecord.ProducerPrincipalID != policy.ExpectedBuilderPrincipalID || policy.Trust.BuildAttestation.ProducerPrincipalID != policy.ExpectedArtifactAttestationProducerPrincipalID ||
-		policy.ExpectedBuilderPrincipalID == policy.ExpectedArtifactAttestationProducerPrincipalID || policy.ExpectedBuilderWorkflowIdentity == policy.ExpectedCodeSigningWorkflowIdentity || policy.ExpectedBuilderWorkflowIdentity == policy.ExpectedArtifactAttestationWorkflowIdentity || policy.ExpectedCodeSigningWorkflowIdentity == policy.ExpectedArtifactAttestationWorkflowIdentity ||
-		!validExpectedCodeSignatureIdentity(policy.ExpectedCodeSignatureIdentity, policy.ExpectedBuildProfile) {
+	if policy.Trust.ProducerPrincipalID != policy.ExpectedBuilderPrincipalID {
 		return false
 	}
 	toolchain, ok := policy.ExpectedExternalMaterials[policy.ExpectedToolchainMaterialDigest]
@@ -548,10 +578,24 @@ func validValidationPolicy(policy ValidationPolicy) bool {
 	return policy.ExpectedGeneratedStageDigest == "" && policy.ExpectedGeneratorInvocationDigest == "" && policy.ExpectedGeneratorInputDigest == "" && policy.ExpectedGeneratorMaterialDigest == "" && policy.ExpectedGeneratorToolchainDigest == ""
 }
 
-func authorityFactsMatchPolicy(c *VerifiedChain, policy ValidationPolicy) bool {
-	r, a := c.BuildRecord, c.BuildAttestation
-	return r.BuilderPrincipalID == policy.ExpectedBuilderPrincipalID && r.BuilderWorkflowIdentity == policy.ExpectedBuilderWorkflowIdentity && r.BuilderIsolationProfile == policy.ExpectedBuilderIsolationProfile &&
-		a.BuilderPrincipalID == policy.ExpectedBuilderPrincipalID && a.BuilderWorkflowIdentity == policy.ExpectedBuilderWorkflowIdentity && a.BuilderIsolationProfile == policy.ExpectedBuilderIsolationProfile &&
+func validValidationPolicy(policy ValidationPolicy) bool {
+	if !validBuildRecordValidationPolicy(projectBuildRecordPolicy(policy)) || policy.ExpectedArtifactAttestationProducerPrincipalID == "" || policy.ExpectedCodeSigningWorkflowIdentity == "" || policy.ExpectedArtifactAttestationWorkflowIdentity == "" ||
+		policy.Trust.BuildAttestation.ProducerPrincipalID != policy.ExpectedArtifactAttestationProducerPrincipalID ||
+		policy.ExpectedBuilderPrincipalID == policy.ExpectedArtifactAttestationProducerPrincipalID || policy.ExpectedBuilderWorkflowIdentity == policy.ExpectedCodeSigningWorkflowIdentity || policy.ExpectedBuilderWorkflowIdentity == policy.ExpectedArtifactAttestationWorkflowIdentity || policy.ExpectedCodeSigningWorkflowIdentity == policy.ExpectedArtifactAttestationWorkflowIdentity ||
+		!validExpectedCodeSignatureIdentity(policy.ExpectedCodeSignatureIdentity, policy.ExpectedBuildProfile) {
+		return false
+	}
+	return true
+}
+
+func buildRecordAuthorityFactsMatchPolicy(c *VerifiedBuildRecordChain, policy BuildRecordValidationPolicy) bool {
+	r := c.BuildRecord
+	return r.BuilderPrincipalID == policy.ExpectedBuilderPrincipalID && r.BuilderWorkflowIdentity == policy.ExpectedBuilderWorkflowIdentity && r.BuilderIsolationProfile == policy.ExpectedBuilderIsolationProfile
+}
+
+func artifactAuthorityFactsMatchPolicy(c *VerifiedChain, policy ValidationPolicy) bool {
+	a := c.BuildAttestation
+	return a.BuilderPrincipalID == policy.ExpectedBuilderPrincipalID && a.BuilderWorkflowIdentity == policy.ExpectedBuilderWorkflowIdentity && a.BuilderIsolationProfile == policy.ExpectedBuilderIsolationProfile &&
 		a.ArtifactAttestationProducerPrincipalID == policy.ExpectedArtifactAttestationProducerPrincipalID && a.CodeSigningWorkflowIdentity == policy.ExpectedCodeSigningWorkflowIdentity && a.ArtifactAttestationWorkflowIdentity == policy.ExpectedArtifactAttestationWorkflowIdentity &&
 		reflect.DeepEqual(a.CodeSignatureIdentity, policy.ExpectedCodeSignatureIdentity)
 }
@@ -610,6 +654,10 @@ var productionPolicyBudgetLimits = policyBudgetLimits{
 
 func withinPolicyBudgets(policy ValidationPolicy) bool {
 	return withinPolicyBudgetsWithLimits(policy, productionPolicyBudgetLimits)
+}
+
+func withinBuildRecordPolicyBudgets(policy BuildRecordValidationPolicy) bool {
+	return withinPolicyBudgetsWithLimits(buildRecordPolicyBudgetView(policy), productionPolicyBudgetLimits)
 }
 
 func withinPolicyBudgetsWithLimits(policy ValidationPolicy, limits policyBudgetLimits) bool {
@@ -715,6 +763,27 @@ func snapshotRaw(raw RawObjectSet) RawObjectSet {
 	return result
 }
 
+func projectBuildRecordRaw(raw RawObjectSet) RawBuildRecordSet {
+	return RawBuildRecordSet{
+		SourceManifest:            raw.SourceManifest,
+		CompileRootManifest:       raw.CompileRootManifest,
+		GeneratedSourceStage:      raw.GeneratedSourceStage,
+		ExternalMaterialManifests: raw.ExternalMaterialManifests,
+		BuildRecord:               raw.BuildRecord,
+	}
+}
+
+func snapshotBuildRecordRaw(raw RawBuildRecordSet) RawBuildRecordSet {
+	full := snapshotRaw(RawObjectSet{
+		SourceManifest:            raw.SourceManifest,
+		CompileRootManifest:       raw.CompileRootManifest,
+		GeneratedSourceStage:      raw.GeneratedSourceStage,
+		ExternalMaterialManifests: raw.ExternalMaterialManifests,
+		BuildRecord:               raw.BuildRecord,
+	})
+	return projectBuildRecordRaw(full)
+}
+
 func snapshotValidationPolicy(policy ValidationPolicy) ValidationPolicy {
 	result := policy
 	result.ExpectedGoModDigest = copyStringPointer(policy.ExpectedGoModDigest)
@@ -733,6 +802,42 @@ func snapshotValidationPolicy(policy ValidationPolicy) ValidationPolicy {
 	result.Trust.BuildRecord = snapshotCurrentKeyPolicy(policy.Trust.BuildRecord)
 	result.Trust.BuildAttestation = snapshotCurrentKeyPolicy(policy.Trust.BuildAttestation)
 	return result
+}
+
+func projectBuildRecordPolicy(policy ValidationPolicy) BuildRecordValidationPolicy {
+	return BuildRecordValidationPolicy{
+		ExpectedRepository: policy.ExpectedRepository, ExpectedSourceHead: policy.ExpectedSourceHead, ExpectedBuildProfile: policy.ExpectedBuildProfile,
+		ExpectedSourceBundleDigest: policy.ExpectedSourceBundleDigest, ExpectedSourceManifestDigest: policy.ExpectedSourceManifestDigest, ExpectedCompileRootManifestDigest: policy.ExpectedCompileRootManifestDigest,
+		ExpectedGoModDigest: policy.ExpectedGoModDigest, ExpectedGoSumDigest: policy.ExpectedGoSumDigest,
+		ExpectedBuildInvocationDigest: policy.ExpectedBuildInvocationDigest, ExpectedEnvironmentPolicyDigest: policy.ExpectedEnvironmentPolicyDigest, ExpectedToolchainMaterialDigest: policy.ExpectedToolchainMaterialDigest,
+		ExpectedModuleGraphDigest: policy.ExpectedModuleGraphDigest, ExpectedTargetArch: policy.ExpectedTargetArch, ExpectedGoVersion: policy.ExpectedGoVersion,
+		ExpectedSubmodulePolicyDigest: policy.ExpectedSubmodulePolicyDigest, ExpectedLFSPolicyDigest: policy.ExpectedLFSPolicyDigest, ExpectedDependencyMode: policy.ExpectedDependencyMode,
+		ExpectedSubmodules: policy.ExpectedSubmodules, ExpectedLFSObjects: policy.ExpectedLFSObjects, ExpectedExternalMaterials: policy.ExpectedExternalMaterials,
+		ExpectedGenerated: policy.ExpectedGenerated, ExpectedGeneratedStageDigest: policy.ExpectedGeneratedStageDigest, ExpectedGeneratorInvocationDigest: policy.ExpectedGeneratorInvocationDigest,
+		ExpectedGeneratorInputDigest: policy.ExpectedGeneratorInputDigest, ExpectedGeneratorMaterialDigest: policy.ExpectedGeneratorMaterialDigest, ExpectedGeneratorToolchainDigest: policy.ExpectedGeneratorToolchainDigest,
+		ExpectedBuilderPrincipalID: policy.ExpectedBuilderPrincipalID, ExpectedBuilderWorkflowIdentity: policy.ExpectedBuilderWorkflowIdentity, ExpectedBuilderIsolationProfile: policy.ExpectedBuilderIsolationProfile,
+		Trust: policy.Trust.BuildRecord,
+	}
+}
+
+func buildRecordPolicyBudgetView(policy BuildRecordValidationPolicy) ValidationPolicy {
+	return ValidationPolicy{
+		ExpectedRepository: policy.ExpectedRepository, ExpectedSourceHead: policy.ExpectedSourceHead, ExpectedBuildProfile: policy.ExpectedBuildProfile,
+		ExpectedSourceBundleDigest: policy.ExpectedSourceBundleDigest, ExpectedSourceManifestDigest: policy.ExpectedSourceManifestDigest, ExpectedCompileRootManifestDigest: policy.ExpectedCompileRootManifestDigest,
+		ExpectedGoModDigest: policy.ExpectedGoModDigest, ExpectedGoSumDigest: policy.ExpectedGoSumDigest,
+		ExpectedBuildInvocationDigest: policy.ExpectedBuildInvocationDigest, ExpectedEnvironmentPolicyDigest: policy.ExpectedEnvironmentPolicyDigest, ExpectedToolchainMaterialDigest: policy.ExpectedToolchainMaterialDigest,
+		ExpectedModuleGraphDigest: policy.ExpectedModuleGraphDigest, ExpectedTargetArch: policy.ExpectedTargetArch, ExpectedGoVersion: policy.ExpectedGoVersion,
+		ExpectedSubmodulePolicyDigest: policy.ExpectedSubmodulePolicyDigest, ExpectedLFSPolicyDigest: policy.ExpectedLFSPolicyDigest, ExpectedDependencyMode: policy.ExpectedDependencyMode,
+		ExpectedSubmodules: policy.ExpectedSubmodules, ExpectedLFSObjects: policy.ExpectedLFSObjects, ExpectedExternalMaterials: policy.ExpectedExternalMaterials,
+		ExpectedGenerated: policy.ExpectedGenerated, ExpectedGeneratedStageDigest: policy.ExpectedGeneratedStageDigest, ExpectedGeneratorInvocationDigest: policy.ExpectedGeneratorInvocationDigest,
+		ExpectedGeneratorInputDigest: policy.ExpectedGeneratorInputDigest, ExpectedGeneratorMaterialDigest: policy.ExpectedGeneratorMaterialDigest, ExpectedGeneratorToolchainDigest: policy.ExpectedGeneratorToolchainDigest,
+		ExpectedBuilderPrincipalID: policy.ExpectedBuilderPrincipalID, ExpectedBuilderWorkflowIdentity: policy.ExpectedBuilderWorkflowIdentity, ExpectedBuilderIsolationProfile: policy.ExpectedBuilderIsolationProfile,
+		Trust: TrustPolicies{BuildRecord: policy.Trust},
+	}
+}
+
+func snapshotBuildRecordValidationPolicy(policy BuildRecordValidationPolicy) BuildRecordValidationPolicy {
+	return projectBuildRecordPolicy(snapshotValidationPolicy(buildRecordPolicyBudgetView(policy)))
 }
 
 func snapshotCodeSignatureIdentity(identity CodeSignatureIdentityV1) CodeSignatureIdentityV1 {
@@ -780,7 +885,7 @@ func materialKindsMatchMode(mode string, kinds map[string]bool) bool {
 	}
 }
 
-func sourceMaterialClosure(source SourceManifestV1, policy ValidationPolicy) bool {
+func sourceMaterialClosure(source SourceManifestV1, policy BuildRecordValidationPolicy) bool {
 	// The materializer is responsible for observing submodule trees and LFS
 	// objects. ADR 0048 does not define a subtree digest algorithm here, so this
 	// consumer enforces the caller's exact observations without inventing a new
@@ -813,7 +918,7 @@ func sourceMaterialClosure(source SourceManifestV1, policy ValidationPolicy) boo
 	return true
 }
 
-func externalMaterialsMatchPolicy(materials []ExternalBuildMaterialManifestV1, byDigest map[string]ExternalBuildMaterialManifestV1, policy ValidationPolicy) bool {
+func externalMaterialsMatchPolicy(materials []ExternalBuildMaterialManifestV1, byDigest map[string]ExternalBuildMaterialManifestV1, policy BuildRecordValidationPolicy) bool {
 	if len(materials) != len(policy.ExpectedExternalMaterials) || len(byDigest) != len(policy.ExpectedExternalMaterials) {
 		return false
 	}
@@ -854,4 +959,14 @@ func withinBudgets(raw RawObjectSet) bool {
 		total = next
 	}
 	return true
+}
+
+func withinBuildRecordBudgets(raw RawBuildRecordSet) bool {
+	return withinBudgets(RawObjectSet{
+		SourceManifest:            raw.SourceManifest,
+		CompileRootManifest:       raw.CompileRootManifest,
+		GeneratedSourceStage:      raw.GeneratedSourceStage,
+		ExternalMaterialManifests: raw.ExternalMaterialManifests,
+		BuildRecord:               raw.BuildRecord,
+	})
 }

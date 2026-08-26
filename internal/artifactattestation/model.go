@@ -235,85 +235,133 @@ type MarshalArtifactBuildAttestationV1 struct {
 // protected artifact consumer must resolve before it can accept an
 // attestation. The validator never resolves mutable pathnames.
 type RawObjectSet struct {
-	SourceManifest            []byte
-	CompileRootManifest       []byte
-	GeneratedSourceStage      []byte
-	ExternalMaterialManifests [][]byte
-	BuildRecord               []byte
-	BuildAttestation          []byte
+	SourceManifest            []byte   `json:"sourceManifest"`
+	CompileRootManifest       []byte   `json:"compileRootManifest"`
+	GeneratedSourceStage      []byte   `json:"generatedSourceStage"`
+	ExternalMaterialManifests [][]byte `json:"externalMaterialManifests"`
+	BuildRecord               []byte   `json:"buildRecord"`
+	BuildAttestation          []byte   `json:"buildAttestation"`
+}
+
+// RawBuildRecordSet is the pre-sign portion of RawObjectSet. It deliberately
+// cannot carry a build attestation: the artifact signer must validate the
+// immutable build-record chain before a final artifact or attestation exists.
+type RawBuildRecordSet struct {
+	SourceManifest            []byte   `json:"sourceManifest"`
+	CompileRootManifest       []byte   `json:"compileRootManifest"`
+	GeneratedSourceStage      []byte   `json:"generatedSourceStage"`
+	ExternalMaterialManifests [][]byte `json:"externalMaterialManifests"`
+	BuildRecord               []byte   `json:"buildRecord"`
 }
 
 // KeyRecord is externally provisioned verification material. It is deliberately
 // separate from the candidate object so an object cannot select its own trust
 // root, current epoch, usage, validity, or revocation state.
 type KeyRecord struct {
-	KeyID      string
-	KeyEpoch   uint64
-	Usage      string
-	PublicKey  ed25519.PublicKey
-	ValidFrom  time.Time
-	ValidUntil time.Time
-	RevokedAt  *time.Time
+	KeyID      string            `json:"keyId"`
+	KeyEpoch   uint64            `json:"keyEpoch"`
+	Usage      string            `json:"usage"`
+	PublicKey  ed25519.PublicKey `json:"publicKey"`
+	ValidFrom  time.Time         `json:"validFrom"`
+	ValidUntil time.Time         `json:"validUntil"`
+	RevokedAt  *time.Time        `json:"revokedAt"`
 }
 
 // CurrentKeyPolicy is the authenticated current projection supplied by the
 // builder or artifact authority's external key service.
 type CurrentKeyPolicy struct {
-	ProducerPrincipalID string
-	CurrentKeyEpoch     uint64
-	Keys                []KeyRecord
+	ProducerPrincipalID string      `json:"producerPrincipalId"`
+	CurrentKeyEpoch     uint64      `json:"currentKeyEpoch"`
+	Keys                []KeyRecord `json:"keys"`
 }
 
 type TrustPolicies struct {
-	BuildRecord      CurrentKeyPolicy
-	BuildAttestation CurrentKeyPolicy
+	BuildRecord      CurrentKeyPolicy `json:"buildRecord"`
+	BuildAttestation CurrentKeyPolicy `json:"buildAttestation"`
 }
 
 // ValidationPolicy is resolved by the release consumer, never by the
 // candidate object. Exact repository/head/profile matching prevents a valid
 // signature from being replayed into a different release decision.
 type ValidationPolicy struct {
-	ExpectedRepository                             string
-	ExpectedSourceHead                             string
-	ExpectedBuildProfile                           string
-	ExpectedSourceBundleDigest                     string
-	ExpectedSourceManifestDigest                   string
-	ExpectedCompileRootManifestDigest              string
-	ExpectedGoModDigest                            *string
-	ExpectedGoSumDigest                            *string
-	ExpectedBuildInvocationDigest                  string
-	ExpectedEnvironmentPolicyDigest                string
-	ExpectedToolchainMaterialDigest                string
-	ExpectedModuleGraphDigest                      string
-	ExpectedTargetArch                             string
-	ExpectedGoVersion                              string
-	ExpectedSubmodulePolicyDigest                  string
-	ExpectedLFSPolicyDigest                        string
-	ExpectedDependencyMode                         string
-	ExpectedSubmodules                             []SubmoduleV1
-	ExpectedLFSObjects                             []LFSObjectV1
-	ExpectedExternalMaterials                      map[string]ExternalMaterialExpectation
-	ExpectedGenerated                              bool
-	ExpectedGeneratedStageDigest                   string
-	ExpectedGeneratorInvocationDigest              string
-	ExpectedGeneratorInputDigest                   string
-	ExpectedGeneratorMaterialDigest                string
-	ExpectedGeneratorToolchainDigest               string
-	ExpectedBuilderPrincipalID                     string
-	ExpectedBuilderWorkflowIdentity                string
-	ExpectedBuilderIsolationProfile                string
-	ExpectedArtifactAttestationProducerPrincipalID string
-	ExpectedCodeSigningWorkflowIdentity            string
-	ExpectedArtifactAttestationWorkflowIdentity    string
-	ExpectedCodeSignatureIdentity                  CodeSignatureIdentityV1
-	Trust                                          TrustPolicies
+	ExpectedRepository                             string                                 `json:"expectedRepository"`
+	ExpectedSourceHead                             string                                 `json:"expectedSourceHead"`
+	ExpectedBuildProfile                           string                                 `json:"expectedBuildProfile"`
+	ExpectedSourceBundleDigest                     string                                 `json:"expectedSourceBundleDigest"`
+	ExpectedSourceManifestDigest                   string                                 `json:"expectedSourceManifestDigest"`
+	ExpectedCompileRootManifestDigest              string                                 `json:"expectedCompileRootManifestDigest"`
+	ExpectedGoModDigest                            *string                                `json:"expectedGoModDigest"`
+	ExpectedGoSumDigest                            *string                                `json:"expectedGoSumDigest"`
+	ExpectedBuildInvocationDigest                  string                                 `json:"expectedBuildInvocationDigest"`
+	ExpectedEnvironmentPolicyDigest                string                                 `json:"expectedEnvironmentPolicyDigest"`
+	ExpectedToolchainMaterialDigest                string                                 `json:"expectedToolchainMaterialDigest"`
+	ExpectedModuleGraphDigest                      string                                 `json:"expectedModuleGraphDigest"`
+	ExpectedTargetArch                             string                                 `json:"expectedTargetArch"`
+	ExpectedGoVersion                              string                                 `json:"expectedGoVersion"`
+	ExpectedSubmodulePolicyDigest                  string                                 `json:"expectedSubmodulePolicyDigest"`
+	ExpectedLFSPolicyDigest                        string                                 `json:"expectedLFSPolicyDigest"`
+	ExpectedDependencyMode                         string                                 `json:"expectedDependencyMode"`
+	ExpectedSubmodules                             []SubmoduleV1                          `json:"expectedSubmodules"`
+	ExpectedLFSObjects                             []LFSObjectV1                          `json:"expectedLFSObjects"`
+	ExpectedExternalMaterials                      map[string]ExternalMaterialExpectation `json:"expectedExternalMaterials"`
+	ExpectedGenerated                              bool                                   `json:"expectedGenerated"`
+	ExpectedGeneratedStageDigest                   string                                 `json:"expectedGeneratedStageDigest"`
+	ExpectedGeneratorInvocationDigest              string                                 `json:"expectedGeneratorInvocationDigest"`
+	ExpectedGeneratorInputDigest                   string                                 `json:"expectedGeneratorInputDigest"`
+	ExpectedGeneratorMaterialDigest                string                                 `json:"expectedGeneratorMaterialDigest"`
+	ExpectedGeneratorToolchainDigest               string                                 `json:"expectedGeneratorToolchainDigest"`
+	ExpectedBuilderPrincipalID                     string                                 `json:"expectedBuilderPrincipalId"`
+	ExpectedBuilderWorkflowIdentity                string                                 `json:"expectedBuilderWorkflowIdentity"`
+	ExpectedBuilderIsolationProfile                string                                 `json:"expectedBuilderIsolationProfile"`
+	ExpectedArtifactAttestationProducerPrincipalID string                                 `json:"expectedArtifactAttestationProducerPrincipalId"`
+	ExpectedCodeSigningWorkflowIdentity            string                                 `json:"expectedCodeSigningWorkflowIdentity"`
+	ExpectedArtifactAttestationWorkflowIdentity    string                                 `json:"expectedArtifactAttestationWorkflowIdentity"`
+	ExpectedCodeSignatureIdentity                  CodeSignatureIdentityV1                `json:"expectedCodeSignatureIdentity"`
+	Trust                                          TrustPolicies                          `json:"trust"`
+}
+
+// BuildRecordValidationPolicy is trusted caller input for the pre-sign
+// boundary. It contains only facts that must already exist before code signing;
+// future artifact-attestation producers and code-signature observations cannot
+// be selected or anticipated by the candidate build record.
+type BuildRecordValidationPolicy struct {
+	ExpectedRepository                string                                 `json:"expectedRepository"`
+	ExpectedSourceHead                string                                 `json:"expectedSourceHead"`
+	ExpectedBuildProfile              string                                 `json:"expectedBuildProfile"`
+	ExpectedSourceBundleDigest        string                                 `json:"expectedSourceBundleDigest"`
+	ExpectedSourceManifestDigest      string                                 `json:"expectedSourceManifestDigest"`
+	ExpectedCompileRootManifestDigest string                                 `json:"expectedCompileRootManifestDigest"`
+	ExpectedGoModDigest               *string                                `json:"expectedGoModDigest"`
+	ExpectedGoSumDigest               *string                                `json:"expectedGoSumDigest"`
+	ExpectedBuildInvocationDigest     string                                 `json:"expectedBuildInvocationDigest"`
+	ExpectedEnvironmentPolicyDigest   string                                 `json:"expectedEnvironmentPolicyDigest"`
+	ExpectedToolchainMaterialDigest   string                                 `json:"expectedToolchainMaterialDigest"`
+	ExpectedModuleGraphDigest         string                                 `json:"expectedModuleGraphDigest"`
+	ExpectedTargetArch                string                                 `json:"expectedTargetArch"`
+	ExpectedGoVersion                 string                                 `json:"expectedGoVersion"`
+	ExpectedSubmodulePolicyDigest     string                                 `json:"expectedSubmodulePolicyDigest"`
+	ExpectedLFSPolicyDigest           string                                 `json:"expectedLFSPolicyDigest"`
+	ExpectedDependencyMode            string                                 `json:"expectedDependencyMode"`
+	ExpectedSubmodules                []SubmoduleV1                          `json:"expectedSubmodules"`
+	ExpectedLFSObjects                []LFSObjectV1                          `json:"expectedLFSObjects"`
+	ExpectedExternalMaterials         map[string]ExternalMaterialExpectation `json:"expectedExternalMaterials"`
+	ExpectedGenerated                 bool                                   `json:"expectedGenerated"`
+	ExpectedGeneratedStageDigest      string                                 `json:"expectedGeneratedStageDigest"`
+	ExpectedGeneratorInvocationDigest string                                 `json:"expectedGeneratorInvocationDigest"`
+	ExpectedGeneratorInputDigest      string                                 `json:"expectedGeneratorInputDigest"`
+	ExpectedGeneratorMaterialDigest   string                                 `json:"expectedGeneratorMaterialDigest"`
+	ExpectedGeneratorToolchainDigest  string                                 `json:"expectedGeneratorToolchainDigest"`
+	ExpectedBuilderPrincipalID        string                                 `json:"expectedBuilderPrincipalId"`
+	ExpectedBuilderWorkflowIdentity   string                                 `json:"expectedBuilderWorkflowIdentity"`
+	ExpectedBuilderIsolationProfile   string                                 `json:"expectedBuilderIsolationProfile"`
+	Trust                             CurrentKeyPolicy                       `json:"trust"`
 }
 
 // ExternalMaterialExpectation is trusted caller policy, never parsed from a
 // candidate artifact object. Every field is required for an expected digest.
 type ExternalMaterialExpectation struct {
-	MaterialKind string
-	Entries      map[string][]string
+	MaterialKind string              `json:"materialKind"`
+	Entries      map[string][]string `json:"entries"`
 }
 
 type VerifiedChain struct {
@@ -323,4 +371,15 @@ type VerifiedChain struct {
 	ExternalMaterials    []ExternalBuildMaterialManifestV1
 	BuildRecord          MarshalArtifactBuildRecordV1
 	BuildAttestation     MarshalArtifactBuildAttestationV1
+}
+
+// VerifiedBuildRecordChain is a verified pre-sign result. It carries no final
+// artifact or attestation verdict and therefore cannot be confused with a
+// complete release-chain decision.
+type VerifiedBuildRecordChain struct {
+	SourceManifest       SourceManifestV1
+	CompileRootManifest  CompileRootManifestV1
+	GeneratedSourceStage *GeneratedSourceStageV1
+	ExternalMaterials    []ExternalBuildMaterialManifestV1
+	BuildRecord          MarshalArtifactBuildRecordV1
 }
