@@ -1,5 +1,5 @@
 {
-  "format": "marshal-skill/operator-admission-receipt-v2",
+  "format": "marshal-skill/operator-admission-receipt-v3",
   "authority": "operator-local-non-core",
   "taskId": "<TASK-ID>",
   "runId": "<RUN-ID>",
@@ -14,23 +14,16 @@
     "policyDigest": "sha256:<64-hex>",
     "capabilityDigest": "sha256:<64-hex>",
     "runStateDigest": "sha256:<64-hex>",
-    "planApprovalDigest": "sha256:<64-hex>",
-    "adapterConfigDigest": "sha256:<64-hex>",
-    "eventContractDigest": "sha256:<64-hex>",
-    "resultTransportDigest": "sha256:<64-hex>",
-    "permissionProfileDigest": "sha256:<64-hex>"
+    "planApprovalDigest": "sha256:<64-hex>"
   },
   "host": {
     "os": "<darwin|linux>",
-    "arch": "<arm64|amd64>",
-    "fingerprintDigest": "sha256:<64-hex>"
+    "arch": "<arm64|amd64>"
   },
   "adapter": {
     "id": "<qoder|codex|qwen|pi>",
-    "mode": "<ordinary-user|strict>",
+    "mode": "<host-user|ordinary-user>",
     "binaryVersion": "<exact-version>",
-    "permissionMode": "<exact-mode>",
-    "resultPathIdentityDigest": "sha256:<64-hex>",
     "executable": {
       "canonicalPath": "<absolute-path>",
       "digest": "sha256:<64-hex>",
@@ -41,8 +34,7 @@
   "worktree": {
     "canonicalPath": "<absolute-path>",
     "headSha": "<40-hex-sha>",
-    "statusDigest": "sha256:<64-hex>",
-    "scopeLeaseDigest": "sha256:<64-hex>"
+    "statusDigest": "sha256:<64-hex>"
   },
   "files": {
     "statePath": "state.json",
@@ -84,11 +76,9 @@
     "doctorConfigured": false,
     "doctorSupported": false,
     "worktreeClean": false,
-    "scopeExclusive": false,
     "capacityAvailable": false,
-    "providerBackpressureAbsent": false,
-    "acceptancePure": false
+    "providerBackpressureAbsent": false
   },
-  "decision": "deny",
-  "reasonCode": "unverified"
+  "decision": "observe",
+  "reasonCode": "operator-sampled"
 }

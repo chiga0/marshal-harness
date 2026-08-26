@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://marshal.local/schemas/admission-receipt.schema.json",
-  "title": "Marshal operator-local mechanical admission receipt",
+  "title": "Marshal non-authoritative operator admission observation",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,7 +11,7 @@
     "tooling", "dynamicEvidence", "checks", "decision", "reasonCode"
   ],
   "properties": {
-    "format": { "const": "marshal-skill/operator-admission-receipt-v2" },
+    "format": { "const": "marshal-skill/operator-admission-receipt-v3" },
     "authority": { "const": "operator-local-non-core" },
     "taskId": { "$ref": "#/$defs/id" },
     "runId": { "$ref": "#/$defs/id" },
@@ -21,7 +21,7 @@
     "validUntil": { "type": "string", "format": "date-time" },
     "bindings": {
       "type": "object", "additionalProperties": false,
-      "required": ["sourceHead", "baseSha", "specDigest", "policyDigest", "capabilityDigest", "runStateDigest", "planApprovalDigest", "adapterConfigDigest", "eventContractDigest", "resultTransportDigest", "permissionProfileDigest"],
+      "required": ["sourceHead", "baseSha", "specDigest", "policyDigest", "capabilityDigest", "runStateDigest", "planApprovalDigest"],
       "properties": {
         "sourceHead": { "$ref": "#/$defs/gitSha" },
         "baseSha": { "$ref": "#/$defs/gitSha" },
@@ -29,42 +29,34 @@
         "policyDigest": { "$ref": "#/$defs/digest" },
         "capabilityDigest": { "$ref": "#/$defs/digest" },
         "runStateDigest": { "$ref": "#/$defs/digest" },
-        "planApprovalDigest": { "$ref": "#/$defs/digest" },
-        "adapterConfigDigest": { "$ref": "#/$defs/digest" },
-        "eventContractDigest": { "$ref": "#/$defs/digest" },
-        "resultTransportDigest": { "$ref": "#/$defs/digest" },
-        "permissionProfileDigest": { "$ref": "#/$defs/digest" }
+        "planApprovalDigest": { "$ref": "#/$defs/digest" }
       }
     },
     "host": {
       "type": "object", "additionalProperties": false,
-      "required": ["os", "arch", "fingerprintDigest"],
+      "required": ["os", "arch"],
       "properties": {
         "os": { "enum": ["darwin", "linux"] },
-        "arch": { "enum": ["arm64", "amd64"] },
-        "fingerprintDigest": { "$ref": "#/$defs/digest" }
+        "arch": { "enum": ["arm64", "amd64"] }
       }
     },
     "adapter": {
       "type": "object", "additionalProperties": false,
-      "required": ["id", "mode", "binaryVersion", "permissionMode", "resultPathIdentityDigest", "executable"],
+      "required": ["id", "mode", "binaryVersion", "executable"],
       "properties": {
         "id": { "enum": ["qoder", "codex", "qwen", "pi"] },
-        "mode": { "enum": ["ordinary-user", "strict"] },
+        "mode": { "enum": ["host-user", "ordinary-user"] },
         "binaryVersion": { "type": "string", "minLength": 1, "maxLength": 256 },
-        "permissionMode": { "type": "string", "minLength": 1, "maxLength": 256 },
-        "resultPathIdentityDigest": { "$ref": "#/$defs/digest" },
         "executable": { "$ref": "#/$defs/executableIdentity" }
       }
     },
     "worktree": {
       "type": "object", "additionalProperties": false,
-      "required": ["canonicalPath", "headSha", "statusDigest", "scopeLeaseDigest"],
+      "required": ["canonicalPath", "headSha", "statusDigest"],
       "properties": {
         "canonicalPath": { "$ref": "#/$defs/absolutePath" },
         "headSha": { "$ref": "#/$defs/gitSha" },
-        "statusDigest": { "$ref": "#/$defs/digest" },
-        "scopeLeaseDigest": { "$ref": "#/$defs/digest" }
+        "statusDigest": { "$ref": "#/$defs/digest" }
       }
     },
     "files": {
@@ -113,17 +105,16 @@
     },
     "checks": {
       "type": "object", "additionalProperties": false,
-      "required": ["stateReady", "currentPlanApproved", "doctorConfigured", "doctorSupported", "worktreeClean", "scopeExclusive", "capacityAvailable", "providerBackpressureAbsent", "acceptancePure"],
+      "required": ["stateReady", "currentPlanApproved", "doctorConfigured", "doctorSupported", "worktreeClean", "capacityAvailable", "providerBackpressureAbsent"],
       "properties": {
         "stateReady": { "const": true }, "currentPlanApproved": { "const": true },
         "doctorConfigured": { "const": true }, "doctorSupported": { "const": true },
-        "worktreeClean": { "const": true }, "scopeExclusive": { "const": true },
-        "capacityAvailable": { "const": true }, "providerBackpressureAbsent": { "const": true },
-        "acceptancePure": { "const": true }
+        "worktreeClean": { "const": true }, "capacityAvailable": { "const": true },
+        "providerBackpressureAbsent": { "const": true }
       }
     },
-    "decision": { "const": "admit" },
-    "reasonCode": { "const": "admitted" }
+    "decision": { "const": "observe" },
+    "reasonCode": { "const": "operator-sampled" }
   },
   "$defs": {
     "id": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },

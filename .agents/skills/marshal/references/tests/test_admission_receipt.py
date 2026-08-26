@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 REFERENCES = HERE.parent
 REPOSITORY = REFERENCES.parents[3]
 VALIDATOR = REFERENCES / "validate-admission-receipt.py"
+GENERATOR = REFERENCES / "create-admission-receipt.py"
 JQ = REFERENCES / "validate-admission-receipt.jq"
 SCHEMA = REFERENCES / "admission-receipt.schema.json"
 SCHEMA_PROBE = HERE / "admission_receipt_schema_probe.go"
@@ -68,10 +69,14 @@ class AdmissionReceiptTest(unittest.TestCase):
         self.adapter.chmod(0o700)
         self.launch_env = {
             "HOME": str(self.temp / "home-private-value"),
+            "LANG": "C",
+            "LC_ALL": "C",
             "MARSHAL_QODER_MODE": "ordinary-user",
             "MARSHAL_QODER_PATH": str(self.adapter),
+            "MARSHAL_WATCH_COHORT_FILE": str(self.temp / "cohort.json"),
             "MARSHAL_WATCH_NOTIFY": "0",
             "PATH": "/usr/bin:/bin",
+            "TMPDIR": str(self.temp),
         }
         now = datetime.now(timezone.utc)
         self.observed = now - timedelta(seconds=1)
@@ -195,24 +200,20 @@ class AdmissionReceiptTest(unittest.TestCase):
         empty_digest = digest(b"")
         sha = digest(b"fixture")
         return {
-            "format": "marshal-skill/operator-admission-receipt-v2",
+            "format": "marshal-skill/operator-admission-receipt-v3",
             "authority": "operator-local-non-core", "taskId": self.state["taskId"],
             "runId": self.state["runId"], "observationSequence": 2, "stateEventSequence": 2,
             "observedAt": self.observed.isoformat().replace("+00:00", "Z"),
             "validUntil": self.valid_until.isoformat().replace("+00:00", "Z"),
             "bindings": {"sourceHead": self.head, "baseSha": self.head,
                          "specDigest": sha, "policyDigest": sha, "capabilityDigest": sha,
-                         "runStateDigest": digest(self.state), "planApprovalDigest": digest(self.approval),
-                         "adapterConfigDigest": sha, "eventContractDigest": sha,
-                         "resultTransportDigest": sha, "permissionProfileDigest": sha},
+                         "runStateDigest": digest(self.state), "planApprovalDigest": digest(self.approval)},
             "host": {"os": platform.system().lower(),
-                     "arch": "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "amd64",
-                     "fingerprintDigest": sha},
+                     "arch": "arm64" if platform.machine().lower() in {"arm64", "aarch64"} else "amd64"},
             "adapter": {"id": "qoder", "mode": "ordinary-user", "binaryVersion": "1.1.23",
-                        "permissionMode": "ordinary-user", "resultPathIdentityDigest": sha,
                         "executable": {"canonicalPath": str(self.adapter), **adapter_identity}},
             "worktree": {"canonicalPath": str(self.worktree), "headSha": self.head,
-                         "statusDigest": empty_digest, "scopeLeaseDigest": sha},
+                         "statusDigest": empty_digest},
             "files": {"statePath": "state.json", "controlRecordsPath": "control/records.jsonl"},
             "planApproval": {"recordId": self.approval["recordId"], "controlSequence": 1},
             "launchEnvironment": {"keys": sorted(self.launch_env), "digest": digest(self.launch_env)},
@@ -222,9 +223,9 @@ class AdmissionReceiptTest(unittest.TestCase):
                                 "capacityDigest": digest(self.capacity_projection()),
                                 "providerBackpressureDigest": digest(self.watch_capacity["providerSignals"][0])},
             "checks": {key: True for key in ("stateReady", "currentPlanApproved", "doctorConfigured",
-                       "doctorSupported", "worktreeClean", "scopeExclusive", "capacityAvailable",
-                       "providerBackpressureAbsent", "acceptancePure")},
-            "decision": "admit", "reasonCode": "admitted",
+                       "doctorSupported", "worktreeClean", "capacityAvailable",
+                       "providerBackpressureAbsent")},
+            "decision": "observe", "reasonCode": "operator-sampled",
         }
 
     def refresh_tooling(self) -> None:
@@ -253,11 +254,123 @@ class AdmissionReceiptTest(unittest.TestCase):
     def test_valid_receipt_re_samples_and_redacts(self) -> None:
         code, result, stderr = self.invoke()
         self.assertEqual((code, stderr), (0, ""), result)
-        self.assertEqual(result["reasonCode"], "admission-receipt-valid")
+        self.assertEqual(result["reasonCode"], "operator-receipt-valid")
         rendered = json.dumps(result)
         for secret_or_path in (self.launch_env["HOME"], self.launch_env["MARSHAL_QODER_PATH"], self.launch_env["PATH"]):
             self.assertNotIn(secret_or_path, rendered)
         self.assertNotIn(str(self.adapter), rendered)
+
+    def test_generator_creates_and_immediately_validates_receipt(self) -> None:
+        self.launch_env = {
+            "HOME": str(self.temp / "home-private-value"),
+            "LANG": "C",
+            "LC_ALL": "C",
+            "MARSHAL_PI_PATH": str(self.adapter),
+            "MARSHAL_WATCH_COHORT_FILE": str(self.temp / "cohort.json"),
+            "MARSHAL_WATCH_NOTIFY": "0",
+            "PATH": "/usr/bin:/bin",
+            "TMPDIR": str(self.temp),
+        }
+        self.doctor_worker.update({"adapterId": "pi", "environmentVariable": "MARSHAL_PI_PATH"})
+        self.doctor_worker.pop("authorityMode")
+        self.watch_capacity["providerSignals"] = [{"adapterId": "pi", "status": "available"}]
+        self.write_tools()
+        outside = self.temp / "outside-receipt-target"
+        outside.write_text("sentinel\n")
+        (self.operator / "generated.json").symlink_to(outside)
+        completed = subprocess.run(
+            ["/usr/bin/python3", "-I", "-B", str(GENERATOR),
+             "--operator-root", str(self.operator),
+             "--receipt", "generated.json", "--run-root", str(self.run_root),
+             "--workspace-root", str(self.workspace), "--adapter-id", "pi",
+             "--adapter-mode", "host-user"],
+            cwd=REPOSITORY, env=self.launch_env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        result = json.loads(completed.stdout)
+        self.assertEqual((completed.returncode, completed.stderr), (0, ""), result)
+        self.assertEqual(result["reasonCode"], "operator-receipt-created-and-valid")
+        generated = json.loads((self.operator / "generated.json").read_text())
+        self.assertFalse((self.operator / "generated.json").is_symlink())
+        self.assertEqual(outside.read_text(), "sentinel\n")
+        self.assertEqual(generated["format"], "marshal-skill/operator-admission-receipt-v3")
+        self.assertNotIn("scopeExclusive", generated["checks"])
+        self.assertNotIn("acceptancePure", generated["checks"])
+        rendered = json.dumps(result)
+        for secret_or_path in (self.launch_env["HOME"], self.launch_env["MARSHAL_PI_PATH"], self.launch_env["PATH"]):
+            self.assertNotIn(secret_or_path, rendered)
+
+    def test_generator_rejects_host_user_for_qoder(self) -> None:
+        completed = subprocess.run(
+            ["/usr/bin/python3", "-I", "-B", str(GENERATOR),
+             "--operator-root", str(self.operator),
+             "--receipt", "generated.json", "--run-root", str(self.run_root),
+             "--workspace-root", str(self.workspace), "--adapter-id", "qoder",
+             "--adapter-mode", "host-user"],
+            cwd=REPOSITORY, env=self.launch_env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(json.loads(completed.stdout), {"reasonCode": "launch-authority-mode-mismatch", "status": "fail"})
+
+    def test_generator_rejects_symlink_output_parent(self) -> None:
+        self.launch_env = {
+            "HOME": str(self.temp / "home-private-value"), "LANG": "C", "LC_ALL": "C",
+            "MARSHAL_PI_PATH": str(self.adapter),
+            "MARSHAL_WATCH_COHORT_FILE": str(self.temp / "cohort.json"),
+            "MARSHAL_WATCH_NOTIFY": "0", "PATH": "/usr/bin:/bin", "TMPDIR": str(self.temp),
+        }
+        self.doctor_worker.update({"adapterId": "pi", "environmentVariable": "MARSHAL_PI_PATH"})
+        self.doctor_worker.pop("authorityMode")
+        self.watch_capacity["providerSignals"] = [{"adapterId": "pi", "status": "available"}]
+        self.write_tools()
+        outside = self.temp / "outside-output-parent"
+        outside.mkdir()
+        (self.operator / "linked-parent").symlink_to(outside, target_is_directory=True)
+        completed = subprocess.run(
+            ["/usr/bin/python3", "-I", "-B", str(GENERATOR),
+             "--operator-root", str(self.operator),
+             "--receipt", "linked-parent/generated.json", "--run-root", str(self.run_root),
+             "--workspace-root", str(self.workspace), "--adapter-id", "pi",
+             "--adapter-mode", "host-user"],
+            cwd=REPOSITORY, env=self.launch_env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(json.loads(completed.stdout), {"reasonCode": "path-symlink-rejected", "status": "fail"})
+        self.assertFalse((outside / "generated.json").exists())
+
+    def test_generator_rejects_unselected_adapter_environment(self) -> None:
+        changed = dict(self.launch_env)
+        changed["MARSHAL_CODEX_PATH"] = str(self.adapter)
+        completed = subprocess.run(
+            ["/usr/bin/python3", "-I", "-B", str(GENERATOR),
+             "--operator-root", str(self.operator),
+             "--receipt", "generated.json", "--run-root", str(self.run_root),
+             "--workspace-root", str(self.workspace), "--adapter-id", "qoder",
+             "--adapter-mode", "ordinary-user"],
+            cwd=REPOSITORY, env=changed, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(json.loads(completed.stdout), {"reasonCode": "launch-environment-invalid", "status": "fail"})
+
+    def test_generator_rejects_symlink_adapter_with_fixed_reason(self) -> None:
+        link = self.temp / "qoder-link"
+        link.symlink_to(self.adapter)
+        changed = dict(self.launch_env)
+        changed["MARSHAL_QODER_PATH"] = str(link)
+        completed = subprocess.run(
+            ["/usr/bin/python3", "-I", "-B", str(GENERATOR),
+             "--operator-root", str(self.operator),
+             "--receipt", "generated.json", "--run-root", str(self.run_root),
+             "--workspace-root", str(self.workspace), "--adapter-id", "qoder",
+             "--adapter-mode", "ordinary-user"],
+            cwd=REPOSITORY, env=changed, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(json.loads(completed.stdout), {"reasonCode": "adapter-executable-invalid", "status": "fail"})
 
     def test_jq_is_shape_lint_not_final_admit(self) -> None:
         lint = subprocess.run(["jq", "-e", "-f", str(JQ), str(self.receipt_path)], stdout=subprocess.DEVNULL)
@@ -374,11 +487,11 @@ class AdmissionReceiptTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("draft-2020-12-schema-and-instance-ok", completed.stdout)
 
-    def test_reference_makes_mechanical_validator_the_only_final_admit(self) -> None:
+    def test_reference_keeps_core_as_the_only_admission_authority(self) -> None:
         reference = (REFERENCES / "admission-and-acceptance.md").read_text(encoding="utf-8")
-        for anchor in ("jq` 只做低成本形状 lint", "validate-admission-receipt.py",
-                       "reasonCode=admission-receipt-valid", "slotsAvailable>=1",
-                       "不得记录这些 env 的值、路径或 secret"):
+        for anchor in ("Core 的 `task run` 是唯一 admission authority", "可选诊断",
+                       "validate-admission-receipt.py", "reasonCode=operator-receipt-valid",
+                       "slotsAvailable>=1", "stdout、validator 输出和日志不得回显这些路径"):
             self.assertIn(anchor, reference)
 
 
