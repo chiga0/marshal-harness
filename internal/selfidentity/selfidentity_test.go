@@ -66,6 +66,25 @@ func TestDarwinActivationAndObservationPositivePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	validateSchemaDocument(t, observationRaw)
+	canonicalObservation, err := canonical.JSON(observationRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeObservation(canonicalObservation)
+	if err != nil || decoded.ObservationDigest != observation.ObservationDigest {
+		t.Fatalf("observation JCS round-trip = %+v err=%v", decoded, err)
+	}
+	if _, err := DecodeObservation(append(canonicalObservation, '\n')); ReasonCode(err) != ReasonObjectMismatch {
+		t.Fatalf("non-JCS observation reason = %q", ReasonCode(err))
+	}
+	binding, err := BindingForObservation(observation)
+	if err != nil || ValidateBinding(binding, observation) != nil {
+		t.Fatalf("observation binding = %+v err=%v", binding, err)
+	}
+	if _, err := admit(activationPath, CommandTaskRun, root, executable,
+		BuildIdentity{SourceHead: testSourceHead, SelfProfile: LocalProfile}, testNow, nil); err != nil {
+		t.Fatalf("task-run is not in the closed activation: %v", err)
+	}
 }
 
 func TestDarwinActivationStrictAndIdentityNegativeMatrix(t *testing.T) {

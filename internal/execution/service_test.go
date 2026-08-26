@@ -26,6 +26,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/provider"
 	marshalrepo "github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 type fixtureAdapter struct {
@@ -93,8 +94,375 @@ func TestRunPersistsAttemptAndRequiresIndependentVerification(t *testing.T) {
 			t.Fatalf("missing %s: %v", path, err)
 		}
 	}
+	legacyRequest, err := os.ReadFile(filepath.Join(attempt, "worker-request.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(legacyRequest, []byte("localSelfIdentityBinding")) {
+		t.Fatalf("non-local WorkerRequest gained local lineage: %s", legacyRequest)
+	}
+	events, _, err := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events[len(events)-2:] {
+		if _, present := event.Payload["dispatchObservationDigest"]; present {
+			t.Fatalf("non-local event gained local dispatch digest: %+v", event)
+		}
+	}
 	if _, err := os.Stat(filepath.Join(fixture.repository, "change.txt")); !os.IsNotExist(err) {
 		t.Fatalf("worker edit leaked into main checkout: %v", err)
+	}
+}
+
+func TestLocalSelfIdentityAttemptLineagePositive(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	observations := bindLocalSelfIdentityFixture(t, &fixture, "activation-a")
+	result, err := Run(context.Background(), fixture.input)
+	if err != nil || result.State.State != domain.StateVerifying {
+		t.Fatalf("local Run = %+v err=%v", result, err)
+	}
+	attemptDir := filepath.Join(fixture.runDir, "attempts", result.AttemptID)
+	for _, name := range []string{"local-self-identity-dispatch.json", "local-self-identity-ingress.json"} {
+		raw, err := os.ReadFile(filepath.Join(attemptDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := selfidentity.DecodeObservation(raw); err != nil {
+			t.Fatalf("%s is not exact JCS: %v", name, err)
+		}
+	}
+	requestRaw, err := os.ReadFile(filepath.Join(attemptDir, "worker-request.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Binding *selfidentity.LocalSelfIdentityBindingV1 `json:"localSelfIdentityBinding"`
+	}
+	if err := json.Unmarshal(requestRaw, &request); err != nil || request.Binding == nil || request.Binding.DispatchObservationDigest != observations[2].ObservationDigest {
+		t.Fatalf("request binding = %+v err=%v", request.Binding, err)
+	}
+	events, _, err := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, completed := events[len(events)-2], events[len(events)-1]
+	if payloadString(started.Payload, "dispatchObservationDigest") != observations[2].ObservationDigest ||
+		payloadString(completed.Payload, "dispatchObservationDigest") != observations[2].ObservationDigest ||
+		payloadString(completed.Payload, "ingressObservationDigest") != observations[3].ObservationDigest {
+		t.Fatalf("local event lineage: started=%+v completed=%+v", started.Payload, completed.Payload)
+	}
+}
+
+func TestLocalSelfIdentityFailsBeforeProbeWithoutFrozenPolicyBinding(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	entry := localTestObservation(t, "activation-a", time.Unix(10, 0).UTC())
+	fixture.input.EntryLocalSelfIdentity = &entry
+	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV1, error) { return entry, nil }
+	requireFailsBeforeProbe(t, fixture, selfidentity.ReasonObjectMismatch)
+}
+
+func TestLocalSelfIdentityIngressDriftIsCoreEvidenceFailure(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	bindLocalSelfIdentityFixture(t, &fixture, "activation-a")
+	calls := 0
+	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV1, error) {
+		calls++
+		activation := "activation-a"
+		if calls == 3 {
+			activation = "activation-b"
+		}
+		return localTestObservation(t, activation, time.Unix(int64(10+calls), 0).UTC()), nil
+	}
+	result, err := Run(context.Background(), fixture.input)
+	if err == nil || result.State.State != domain.StateBlocked {
+		t.Fatalf("identity drift = %+v err=%v", result, err)
+	}
+	events, _, readErr := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	last := events[len(events)-1]
+	if last.Type != "worker.evidence-failed" || last.Payload["failureDomain"] != "marshal-self-identity" || last.Payload["workerFault"] != false || last.Payload["reworkEligible"] != false {
+		t.Fatalf("structural event = %+v", last)
+	}
+	attemptDir := filepath.Join(fixture.runDir, "attempts", result.AttemptID)
+	if _, err := os.Stat(filepath.Join(attemptDir, "worker-result.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected result entered evidence: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(attemptDir, "diagnostics", "quarantined-local-self-identity-worker-result.json")); err != nil {
+		t.Fatalf("rejected result was not quarantined: %v", err)
+	}
+}
+
+func TestLocalSelfIdentityDispatchCrashLeavesNoAttemptAuthority(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	bindLocalSelfIdentityFixture(t, &fixture, "activation-a")
+	adapter := &countingAdapter{delegate: fixture.input.Adapter.(*fixtureAdapter)}
+	fixture.input.Adapter = adapter
+	injected := errors.New("secret=/Users/private/dispatch-observation")
+	fixture.input.AfterLocalDispatchObservation = func(string) error { return injected }
+	if _, err := Run(context.Background(), fixture.input); err == nil {
+		t.Fatal("dispatch observation crash was accepted")
+	} else if err.Error() != selfidentity.ReasonObjectMismatch || !errors.Is(err, injected) {
+		t.Fatalf("dispatch observation failure is not typed and closed: %q", err)
+	}
+	if adapter.probes != 0 || adapter.runs != 0 {
+		t.Fatalf("crash crossed Adapter boundary: probes=%d runs=%d", adapter.probes, adapter.runs)
+	}
+	entries, err := os.ReadDir(filepath.Join(fixture.runDir, "attempts"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("attempt diagnostic dirs = %d err=%v", len(entries), err)
+	}
+	orphan := filepath.Join(fixture.runDir, "attempts", entries[0].Name())
+	if number, profile := attemptIdentity(orphan); number != 0 || profile != "" {
+		t.Fatalf("observation-only directory became Attempt authority: number=%d profile=%q", number, profile)
+	}
+	fixture.input.AfterLocalDispatchObservation = nil
+	result, err := Run(context.Background(), fixture.input)
+	if err != nil || result.State.State != domain.StateVerifying || adapter.runs != 1 {
+		t.Fatalf("fresh attempt after orphan diagnostic = %+v err=%v runs=%d", result, err, adapter.runs)
+	}
+}
+
+func TestLocalSelfIdentityRejectsPersistedLineageReplayAndSymlink(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "dispatch observation replay",
+			mutate: func(t *testing.T, attemptDir string) {
+				replayed := localTestObservation(t, "activation-replayed", time.Unix(99, 0).UTC())
+				raw, err := json.Marshal(replayed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw, err = canonical.JSON(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(attemptDir, "local-self-identity-dispatch.json")
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, raw, 0o400); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "WorkerRequest symlink substitution",
+			mutate: func(t *testing.T, attemptDir string) {
+				path := filepath.Join(attemptDir, "worker-request.json")
+				backup := path + ".replayed"
+				if err := os.Rename(path, backup); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(backup, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newExecutionFixture(t, false)
+			bindLocalSelfIdentityFixture(t, &fixture, "activation-a")
+			fixture.input.BeforeLocalResultIngress = func(attemptDir string) error {
+				test.mutate(t, attemptDir)
+				return nil
+			}
+			result, err := Run(context.Background(), fixture.input)
+			if err == nil || result.State.State != domain.StateBlocked {
+				t.Fatalf("persisted lineage attack = %+v err=%v", result, err)
+			}
+			events, _, readErr := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			last := events[len(events)-1]
+			if last.Type != "worker.evidence-failed" || last.Payload["failureDomain"] != "marshal-self-identity" {
+				t.Fatalf("attack terminal event = %+v", last)
+			}
+		})
+	}
+}
+
+func TestLocalSelfIdentityRejectsPersistedIngressReplacementSymlinkReplayAndABA(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{
+			name: "write after install",
+			mutate: func(t *testing.T, path string) {
+				if err := os.Chmod(path, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(`{}`), 0o400); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "symlink replacement",
+			mutate: func(t *testing.T, path string) {
+				backup := path + ".original"
+				if err := os.Rename(path, backup); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(backup, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "replayed observation",
+			mutate: func(t *testing.T, path string) {
+				replayed := localTestObservation(t, "activation-replayed", time.Unix(99, 0).UTC())
+				raw, err := json.Marshal(replayed)
+				if err == nil {
+					raw, err = canonical.JSON(raw)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, raw, 0o400); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "same bytes ABA replacement",
+			mutate: func(t *testing.T, path string) {
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, raw, 0o400); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newExecutionFixture(t, false)
+			bindLocalSelfIdentityFixture(t, &fixture, "activation-a")
+			fixture.input.AfterLocalIngressObservation = func(attemptDir string) error {
+				test.mutate(t, filepath.Join(attemptDir, "local-self-identity-ingress.json"))
+				return nil
+			}
+			result, err := Run(context.Background(), fixture.input)
+			if err == nil || result.State.State != domain.StateBlocked {
+				t.Fatalf("ingress object attack = %+v err=%v", result, err)
+			}
+			assertLocalSelfIdentityTerminal(t, fixture, result.AttemptID)
+		})
+	}
+}
+
+func TestLocalSelfIdentityDriftOutranksRetryableAdapterFailure(t *testing.T) {
+	fixture := newTypedTransientFailureFixture(t, executionFixtureOptions{maxAttempts: 3, maxOperationalRetries: 2})
+	observations := bindLocalSelfIdentityFixture(t, &fixture, "activation-a")
+	calls := 0
+	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV1, error) {
+		calls++
+		if calls == 3 {
+			return localTestObservation(t, "activation-drift", time.Unix(13, 0).UTC()), nil
+		}
+		return observations[calls], nil
+	}
+	result, err := Run(context.Background(), fixture.input)
+	if err == nil || result.State.State != domain.StateBlocked || result.State.OperationalRetriesUsed != 0 {
+		t.Fatalf("identity drift did not outrank retryable Adapter error: result=%+v err=%v", result, err)
+	}
+	assertLocalSelfIdentityTerminal(t, fixture, result.AttemptID)
+}
+
+func TestLocalSelfIdentityTerminalTransactionCompensatesCrashesAndQuarantineFailure(t *testing.T) {
+	const injectedSecret = "secret=/Users/private/token"
+	for _, test := range []struct {
+		name   string
+		inject func(*testing.T, *executionFixture)
+	}{
+		{
+			name: "journal durable before Outcome commit",
+			inject: func(_ *testing.T, fixture *executionFixture) {
+				fixture.input.AfterWorkerTerminalAppend = func() error { return errors.New(injectedSecret) }
+			},
+		},
+		{
+			name: "Outcome durable before snapshot",
+			inject: func(_ *testing.T, fixture *executionFixture) {
+				fixture.input.AfterLocalIdentityOutcomeCommit = func() error { return errors.New(injectedSecret) }
+			},
+		},
+		{
+			name: "diagnostic quarantine failure",
+			inject: func(t *testing.T, fixture *executionFixture) {
+				fixture.input.BeforeLocalResultIngress = func(attemptDir string) error {
+					if err := os.WriteFile(filepath.Join(attemptDir, "diagnostics"), []byte(injectedSecret), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					return errors.New(injectedSecret)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newExecutionFixture(t, false)
+			bindLocalSelfIdentityFixture(t, &fixture, "activation-a")
+			if test.name != "diagnostic quarantine failure" {
+				fixture.input.AfterLocalIngressObservation = func(string) error { return errors.New(injectedSecret) }
+			}
+			test.inject(t, &fixture)
+			first, err := Run(context.Background(), fixture.input)
+			if err == nil || first.State.State != domain.StateBlocked || strings.Contains(err.Error(), injectedSecret) {
+				t.Fatalf("first terminal result=%+v err=%v", first, err)
+			}
+			fixture.input.AfterWorkerTerminalAppend = nil
+			fixture.input.AfterLocalIdentityOutcomeCommit = nil
+			fixture.input.BeforeLocalResultIngress = nil
+			fixture.input.AfterLocalIngressObservation = nil
+			second, secondErr := Run(context.Background(), fixture.input)
+			if secondErr == nil || second.State.State != domain.StateBlocked {
+				t.Fatalf("re-entry did not converge: result=%+v err=%v", second, secondErr)
+			}
+			assertLocalSelfIdentityTerminal(t, fixture, first.AttemptID)
+			for _, name := range []string{"events.jsonl", "outcome.json", "outcome.md"} {
+				raw, readErr := os.ReadFile(filepath.Join(fixture.runDir, name))
+				if readErr != nil || bytes.Contains(raw, []byte(injectedSecret)) {
+					t.Fatalf("%s missing or leaked injected cause: err=%v data=%s", name, readErr, raw)
+				}
+			}
+		})
+	}
+}
+
+func assertLocalSelfIdentityTerminal(t *testing.T, fixture executionFixture, attemptID string) {
+	t.Helper()
+	events, _, err := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, event := range events {
+		if event.Type == "worker.evidence-failed" {
+			count++
+			if event.AttemptID != attemptID || payloadString(event.Payload, "reasonCode") != selfidentity.ReasonCrossProfileEvidence ||
+				event.Payload["workerFault"] != false || event.Payload["reworkEligible"] != false {
+				t.Fatalf("invalid local terminal event: %+v", event)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("worker.evidence-failed count=%d, want 1", count)
 	}
 }
 
@@ -789,7 +1157,10 @@ func TestStructuralFailureRunLeasePreventsConcurrentRelaunch(t *testing.T) {
 
 func TestRunBlocksWhenPostWorkerEvidenceCannotBeRecorded(t *testing.T) {
 	fixture := newExecutionFixture(t, false)
-	fixture.input.Adapter.(*fixtureAdapter).breakGit = true
+	delegate := fixture.input.Adapter.(*fixtureAdapter)
+	delegate.breakGit = true
+	adapter := &countingAdapter{delegate: delegate}
+	fixture.input.Adapter = adapter
 	result, err := Run(context.Background(), fixture.input)
 	if err == nil {
 		t.Fatal("observation failure was accepted")
@@ -803,6 +1174,27 @@ func TestRunBlocksWhenPostWorkerEvidenceCannotBeRecorded(t *testing.T) {
 	}
 	if events[len(events)-1].Type != "worker.evidence-failed" {
 		t.Fatalf("last event = %+v", events[len(events)-1])
+	}
+	before := result.State
+	restarted, restartErr := Run(context.Background(), fixture.input)
+	if restartErr == nil || !strings.Contains(restartErr.Error(), "cannot start a worker attempt") ||
+		strings.Contains(restartErr.Error(), selfidentity.ReasonCrossProfileEvidence) {
+		t.Fatalf("non-local evidence re-entry changed reason: result=%+v err=%v", restarted, restartErr)
+	}
+	if adapter.probes != 1 || adapter.runs != 1 {
+		t.Fatalf("non-local evidence re-entry relaunched Adapter: probes=%d runs=%d", adapter.probes, adapter.runs)
+	}
+	after, inspectErr := runstore.New(fixture.input.StateRoot).Inspect(fixture.input.RunID)
+	if inspectErr != nil {
+		t.Fatal(inspectErr)
+	}
+	if after.State != before.State || after.Sequence != before.Sequence || after.AttemptsUsed != before.AttemptsUsed ||
+		after.OperationalRetriesUsed != before.OperationalRetriesUsed || after.ReviewRound != before.ReviewRound {
+		t.Fatalf("non-local evidence re-entry mutated authority: before=%+v after=%+v", before, after)
+	}
+	afterEvents, _, readErr := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if readErr != nil || len(afterEvents) != len(events) {
+		t.Fatalf("non-local evidence re-entry changed journal: before=%d after=%d err=%v", len(events), len(afterEvents), readErr)
 	}
 }
 
@@ -995,6 +1387,123 @@ type executionFixtureOptions struct {
 	maxAttempts           int
 	maxOperationalRetries int
 	maxReworkRounds       int
+}
+
+func localTestObservation(t *testing.T, activation string, observedAt time.Time) selfidentity.LocalSelfIdentityObservationV1 {
+	t.Helper()
+	observation := selfidentity.LocalSelfIdentityObservationV1{
+		SchemaVersion: selfidentity.ObservationSchema, ActivationDigest: digestLiteral(t, activation),
+		ProcessID: 42, ProcessExecutablePath: "/stable/marshal",
+		RepositoryIdentity: digestLiteral(t, "repository"), CanonicalRepositoryRoot: "/repository",
+		CurrentPathObject: selfidentity.CurrentPathObjectV1{
+			CanonicalPath: "/stable/marshal", Device: "1", Inode: "2", Size: 3,
+			RawSHA256: digestLiteral(t, "executable"), PathRechecked: true, ObservationKind: "darwin-current-path-fd-object",
+		},
+		SourceHead: strings.Repeat("a", 40), SelfProfile: selfidentity.LocalProfile,
+		ObservedAt: observedAt.UTC().Format(time.RFC3339), Status: "pass", ReasonCode: selfidentity.ReasonObserved,
+	}
+	subjectRaw := mustJSON(t, map[string]any{
+		"activationDigest": observation.ActivationDigest, "repositoryIdentity": observation.RepositoryIdentity,
+		"canonicalRepositoryRoot": observation.CanonicalRepositoryRoot, "canonicalExecutablePath": observation.CurrentPathObject.CanonicalPath,
+		"device": observation.CurrentPathObject.Device, "inode": observation.CurrentPathObject.Inode,
+		"size": observation.CurrentPathObject.Size, "rawSHA256": observation.CurrentPathObject.RawSHA256,
+		"sourceHead": observation.SourceHead, "selfProfile": observation.SelfProfile,
+	})
+	observation.IdentitySubjectDigest, _ = canonical.DigestJSON(subjectRaw)
+	digestRaw := mustJSON(t, map[string]any{
+		"schemaVersion": observation.SchemaVersion, "activationDigest": observation.ActivationDigest,
+		"processId": observation.ProcessID, "processExecutablePath": observation.ProcessExecutablePath,
+		"repositoryIdentity": observation.RepositoryIdentity, "canonicalRepositoryRoot": observation.CanonicalRepositoryRoot,
+		"currentPathObject": observation.CurrentPathObject, "sourceHead": observation.SourceHead,
+		"selfProfile": observation.SelfProfile, "observedAt": observation.ObservedAt,
+		"status": observation.Status, "reasonCode": observation.ReasonCode,
+		"identitySubjectDigest": observation.IdentitySubjectDigest,
+	})
+	observation.ObservationDigest, _ = canonical.DigestJSON(digestRaw)
+	if err := selfidentity.ValidateObservation(observation); err != nil {
+		t.Fatal(err)
+	}
+	return observation
+}
+
+func digestLiteral(t *testing.T, value string) string {
+	t.Helper()
+	digest, err := canonical.DigestJSON(mustJSON(t, map[string]string{"value": value}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
+func bindLocalSelfIdentityFixture(t *testing.T, fixture *executionFixture, activation string) []selfidentity.LocalSelfIdentityObservationV1 {
+	t.Helper()
+	observations := []selfidentity.LocalSelfIdentityObservationV1{
+		localTestObservation(t, activation, time.Unix(10, 0).UTC()),
+		localTestObservation(t, activation, time.Unix(11, 0).UTC()),
+		localTestObservation(t, activation, time.Unix(12, 0).UTC()),
+		localTestObservation(t, activation, time.Unix(13, 0).UTC()),
+	}
+	policyPath := filepath.Join(fixture.runDir, "policy-snapshot.json")
+	policyRaw, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var policy map[string]any
+	if err := json.Unmarshal(policyRaw, &policy); err != nil {
+		t.Fatal(err)
+	}
+	policy["environmentBinding"] = map[string]any{
+		"schemaVersion": "marshal.local-dogfood-environment-binding.v1", "selfProfile": selfidentity.LocalProfile,
+		"activationDigest": observations[0].ActivationDigest, "identitySubjectDigest": observations[0].IdentitySubjectDigest,
+		"assurance": "ordinary-user", "execution": "workspace-write", "production": false, "publication": "none",
+	}
+	policyRaw = mustJSON(t, policy)
+	if err := fixture.input.Validator.Validate(domain.KindPolicySnapshot, policyRaw); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(policyPath, policyRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	policyDigest, err := canonical.DigestJSON(policyRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := runstore.New(fixture.input.StateRoot)
+	state, err := store.Inspect(fixture.input.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.PolicyDigest = policyDigest
+	lease, err := store.Acquire(fixture.input.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteSnapshot(lease, state); err != nil {
+		_ = lease.Release()
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+	mutateRawJournalLines(t, *fixture, func(lines []string) {
+		var event domain.RunEvent
+		if err := json.Unmarshal([]byte(lines[1]), &event); err != nil {
+			t.Fatal(err)
+		}
+		event.Payload["policyDigest"] = policyDigest
+		lines[1] = string(mustJSON(t, event))
+	})
+	fixture.input.EntryLocalSelfIdentity = &observations[0]
+	next := 1
+	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV1, error) {
+		if next >= len(observations) {
+			return observations[len(observations)-1], nil
+		}
+		value := observations[next]
+		next++
+		return value, nil
+	}
+	return observations
 }
 
 func newExecutionFixture(t *testing.T, fail bool) executionFixture {

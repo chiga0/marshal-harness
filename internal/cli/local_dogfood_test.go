@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,6 +17,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/planning"
+	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
@@ -182,7 +184,9 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		{"publication", []string{"task", "publish", "--run", "run-1"}, selfidentity.ReasonPublicationDenied},
 		{"remote", []string{"serve"}, selfidentity.ReasonRemoteSurfaceDenied},
 		{"internal", []string{"internal", "plan-premortem-check"}, selfidentity.ReasonCredentialedEffectDenied},
-		{"worker lifecycle remains LD3", []string{"task", "run", "--run", "local-run"}, selfidentity.ReasonCommandDenied},
+		{"detached worker denied", []string{"task", "run", "--run", "local-run", "--detach"}, selfidentity.ReasonCommandDenied},
+		{"through verify denied", []string{"task", "run", "--run", "local-run", "--through-verify"}, selfidentity.ReasonCommandDenied},
+		{"dead driver recovery denied", []string{"task", "run", "--run", "local-run", "--recover-dead-driver"}, selfidentity.ReasonCommandDenied},
 		{"publish approval", []string{"task", "approve", "--run", "local-run", "--gate", "publish"}, selfidentity.ReasonPublicationDenied},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -213,7 +217,8 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		t.Fatalf("local init exit=%d stderr=%s", exit, initError.String())
 	}
 	configureQwenAuthFixture(t)
-	t.Setenv("MARSHAL_QWEN_PATH", writeVersionExecutableForCLI(t, "qwen", "0.21.11"))
+	trackedQwen, qwenInvocations := trackedLocalDogfoodWorkerExecutable(t)
+	t.Setenv("MARSHAL_QWEN_PATH", trackedQwen)
 	t.Setenv("MARSHAL_QODER_PATH", "")
 	t.Setenv("MARSHAL_CODEX_PATH", "")
 	t.Setenv("MARSHAL_PI_PATH", "")
@@ -306,12 +311,159 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		t.Fatalf("replacement activation approve exit=%d stdout=%s stderr=%s", exit, approveOutput.String(), approveError.String())
 	}
 
+	// Restore the exact frozen activation and cross the real foreground
+	// production entry with the existing deterministic ordinary-user qwen
+	// producer. This exercises CLI discovery, approval, Adapter protocol and
+	// the complete dispatch/result ingress lineage through VERIFYING.
+	t.Setenv(selfidentity.ActivationEnv, activationPath)
+	const executionRunID = "local-dogfood-execution-run"
+	executionPolicy := cliPlanningPolicy(t, taskID, executionRunID)
+	executionPolicy["control"].(map[string]any)["requiredApprovals"] = []any{"plan"}
+	executionPolicy["environmentBinding"] = doctor.PolicyEnvironmentBinding
+	cliStampPolicyDigest(t, executionPolicy)
+	executionPolicyPath := filepath.Join(root, "execution-policy.json")
+	writeCLIFixture(t, executionPolicyPath, executionPolicy)
+	var executionPlanOutput, executionPlanError bytes.Buffer
+	if got := RunContext(context.Background(), []string{"task", "plan", "--task", taskPath, "--policy", executionPolicyPath, "--run", executionRunID, "--json"}, strings.NewReader(""), &executionPlanOutput, &executionPlanError); got != ExitOK {
+		t.Fatalf("execution plan exit=%d stderr=%s", got, executionPlanError.String())
+	}
+	var executionApproveOutput, executionApproveError bytes.Buffer
+	if got := RunContext(context.Background(), []string{"task", "approve", "--run", executionRunID, "--gate", "plan", "--json"}, strings.NewReader(""), &executionApproveOutput, &executionApproveError); got != ExitOK {
+		t.Fatalf("execution approval exit=%d stderr=%s", got, executionApproveError.String())
+	}
+	var runOutput, runError bytes.Buffer
+	runContext, cancelRun := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelRun()
+	exit = RunContext(runContext, []string{"task", "run", "--run", executionRunID, "--json"}, strings.NewReader(""), &runOutput, &runError)
+	if exit != ExitOK {
+		t.Fatalf("foreground task run exit=%d stdout=%s stderr=%s", exit, runOutput.String(), runError.String())
+	}
+	var executionResult struct {
+		State domain.RunState `json:"state"`
+	}
+	if err := json.Unmarshal(runOutput.Bytes(), &executionResult); err != nil || executionResult.State.State != domain.StateVerifying {
+		t.Fatalf("foreground task run did not reach VERIFYING: result=%+v err=%v", executionResult, err)
+	}
+	attemptsRoot := filepath.Join(root, ".marshal", "runs", executionRunID, "attempts")
+	attempts, err := os.ReadDir(attemptsRoot)
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("foreground task run exit=%d attempts=%d err=%v stdout=%s stderr=%s", exit, len(attempts), err, runOutput.String(), runError.String())
+	}
+	attemptDir := filepath.Join(attemptsRoot, attempts[0].Name())
+	dispatchRaw, err := os.ReadFile(filepath.Join(attemptDir, "local-self-identity-dispatch.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchObservation, err := selfidentity.DecodeObservation(dispatchRaw)
+	if err != nil {
+		t.Fatalf("production dispatch observation: %v", err)
+	}
+	ingressRaw, err := os.ReadFile(filepath.Join(attemptDir, "local-self-identity-ingress.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingressObservation, err := selfidentity.DecodeObservation(ingressRaw)
+	if err != nil {
+		t.Fatalf("production ingress observation: %v", err)
+	}
+	requestRaw, err := os.ReadFile(filepath.Join(attemptDir, "worker-request.json"))
+	var request struct {
+		Binding *selfidentity.LocalSelfIdentityBindingV1 `json:"localSelfIdentityBinding"`
+	}
+	if err != nil || json.Unmarshal(requestRaw, &request) != nil || request.Binding == nil ||
+		request.Binding.DispatchObservationDigest != dispatchObservation.ObservationDigest {
+		t.Fatalf("production WorkerRequest lacks exact local binding: err=%v data=%s", err, requestRaw)
+	}
+	events, _, err := runstore.New(filepath.Join(root, ".marshal")).ReadEvents(executionRunID)
+	if err != nil || len(events) < 2 {
+		t.Fatalf("read production task run events: count=%d err=%v", len(events), err)
+	}
+	started, completed := events[len(events)-2], events[len(events)-1]
+	if started.Type != "worker.started" || completed.Type != "worker.completed" ||
+		started.Payload["dispatchObservationDigest"] != dispatchObservation.ObservationDigest ||
+		completed.Payload["dispatchObservationDigest"] != dispatchObservation.ObservationDigest ||
+		completed.Payload["ingressObservationDigest"] != ingressObservation.ObservationDigest {
+		t.Fatalf("production task run lineage: started=%+v completed=%+v", started.Payload, completed.Payload)
+	}
+
+	// A fresh local Run whose Attempt root cannot become a directory must be
+	// rejected before Adapter Probe/Run without projecting the absolute state
+	// path or the underlying OS cause through the real CLI boundary.
+	const rejectedRunID = "local-dogfood-dispatch-persist-rejected"
+	rejectedPolicy := cliPlanningPolicy(t, taskID, rejectedRunID)
+	rejectedPolicy["control"].(map[string]any)["requiredApprovals"] = []any{"plan"}
+	rejectedPolicy["environmentBinding"] = doctor.PolicyEnvironmentBinding
+	cliStampPolicyDigest(t, rejectedPolicy)
+	rejectedPolicyPath := filepath.Join(root, "rejected-policy.json")
+	writeCLIFixture(t, rejectedPolicyPath, rejectedPolicy)
+	var rejectedPlanOutput, rejectedPlanError bytes.Buffer
+	if got := RunContext(context.Background(), []string{"task", "plan", "--task", taskPath, "--policy", rejectedPolicyPath, "--run", rejectedRunID, "--json"}, strings.NewReader(""), &rejectedPlanOutput, &rejectedPlanError); got != ExitOK {
+		t.Fatalf("rejected fixture plan exit=%d stderr=%s", got, rejectedPlanError.String())
+	}
+	var rejectedApproveOutput, rejectedApproveError bytes.Buffer
+	if got := RunContext(context.Background(), []string{"task", "approve", "--run", rejectedRunID, "--gate", "plan", "--json"}, strings.NewReader(""), &rejectedApproveOutput, &rejectedApproveError); got != ExitOK {
+		t.Fatalf("rejected fixture approval exit=%d stderr=%s", got, rejectedApproveError.String())
+	}
+	stateRoot := filepath.Join(root, ".marshal")
+	rejectedBefore, err := runstore.New(stateRoot).Inspect(rejectedRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocationsBefore, err := os.ReadFile(qwenInvocations)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	attemptsPath := filepath.Join(stateRoot, "runs", rejectedRunID, "attempts")
+	if err := os.Mkdir(attemptsPath, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(attemptsPath, 0o700) })
+	var rejectedRunOutput, rejectedRunError bytes.Buffer
+	got := RunContext(context.Background(), []string{"task", "run", "--run", rejectedRunID, "--json"}, strings.NewReader(""), &rejectedRunOutput, &rejectedRunError)
+	if got != ExitFailure || rejectedRunOutput.Len() != 0 || !strings.Contains(rejectedRunError.String(), selfidentity.ReasonObjectMismatch) {
+		t.Fatalf("dispatch persistence rejection exit=%d stdout=%q stderr=%q", got, rejectedRunOutput.String(), rejectedRunError.String())
+	}
+	for _, forbidden := range []string{root, attemptsPath, "cause-sentinel-do-not-leak", "not a directory"} {
+		if strings.Contains(rejectedRunError.String(), forbidden) || strings.Contains(rejectedRunOutput.String(), forbidden) {
+			t.Fatalf("dispatch persistence rejection leaked %q: stdout=%q stderr=%q", forbidden, rejectedRunOutput.String(), rejectedRunError.String())
+		}
+	}
+	invocationsAfter, err := os.ReadFile(qwenInvocations)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(invocationsBefore, invocationsAfter) {
+		t.Fatalf("dispatch persistence rejection reached Adapter: before=%q after=%q", invocationsBefore, invocationsAfter)
+	}
+	rejectedAfter, err := runstore.New(stateRoot).Inspect(rejectedRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejectedAfter.State != rejectedBefore.State || rejectedAfter.Sequence != rejectedBefore.Sequence ||
+		rejectedAfter.AttemptsUsed != rejectedBefore.AttemptsUsed || rejectedAfter.OperationalRetriesUsed != rejectedBefore.OperationalRetriesUsed ||
+		rejectedAfter.ReviewRound != rejectedBefore.ReviewRound {
+		t.Fatalf("dispatch persistence rejection consumed Run authority: before=%+v after=%+v", rejectedBefore, rejectedAfter)
+	}
+
 	t.Setenv(selfidentity.ActivationEnv, filepath.Join(root, "missing.json"))
 	var stdout, missing bytes.Buffer
 	if got := RunContext(context.Background(), []string{"task", "scaffold", "--draft", draftPath}, strings.NewReader(""), &stdout, &missing); got != ExitUnavailable ||
 		!strings.Contains(missing.String(), selfidentity.ReasonOptInMissing) {
 		t.Fatalf("missing activation exit=%d stderr=%q", got, missing.String())
 	}
+}
+
+func trackedLocalDogfoodWorkerExecutable(t *testing.T) (string, string) {
+	t.Helper()
+	delegate := autoFlowWorkerExecutable(t)
+	directory := t.TempDir()
+	path := filepath.Join(directory, "qwen")
+	invocations := filepath.Join(directory, "invocations.log")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> %q\nexec %q \"$@\"\n", invocations, delegate)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path, invocations
 }
 
 func TestDarwinUnprofiledBuildFailsClosedAtProductionEntry(t *testing.T) {

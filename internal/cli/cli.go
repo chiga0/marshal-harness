@@ -239,6 +239,8 @@ func localDogfoodCommandClass(args []string, doctor *doctorOptions) (string, str
 			return selfidentity.CommandTaskPlan, ""
 		case "status":
 			return selfidentity.CommandTaskStatus, ""
+		case "run":
+			return selfidentity.CommandTaskRun, ""
 		case "approve":
 			gate, ok := localDogfoodApprovalGate(args[2:])
 			if gate == domain.ApprovalGatePublish {
@@ -2251,6 +2253,11 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "用法：marshal task run --run RUN_ID [--through-verify] [--json] [--detach [--log PATH] [--log-err PATH]]")
 		return ExitUsage
 	}
+	entryObservation := localDogfoodObservation(ctx)
+	if entryObservation != nil && (*detach || *throughVerify || *recoverDeadDriver) {
+		fmt.Fprintf(stderr, "运行失败：local dogfood task run 仅允许 foreground Worker；%s。\n", selfidentity.ReasonCommandDenied)
+		return ExitUnavailable
+	}
 	if (*logPath != "" || *logErrPath != "") && !*detach {
 		fmt.Fprintln(stderr, "运行失败：--log/--log-err 只能与 --detach 一起使用。")
 		return ExitUsage
@@ -2273,6 +2280,20 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	if err := location.ValidateIdentity(); err != nil {
 		fmt.Fprintf(stderr, "运行失败：%v\n", err)
 		return ExitFailure
+	}
+	var observeLocalSelfIdentity execution.LocalSelfIdentityObserver
+	if entryObservation != nil {
+		activationPath := os.Getenv(selfidentity.ActivationEnv)
+		build := localBuildInfo()
+		workingDirectory, workingDirectoryErr := os.Getwd()
+		if workingDirectoryErr != nil {
+			fmt.Fprintf(stderr, "运行失败：local dogfood identity 无法重新观察；%s。\n", selfidentity.ReasonObjectMismatch)
+			return ExitUnavailable
+		}
+		observeLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV1, error) {
+			return selfidentity.Admit(activationPath, selfidentity.CommandTaskRun, workingDirectory,
+				selfidentity.BuildIdentity{SourceHead: build.Commit, SelfProfile: build.SelfProfile}, localNow())
+		}
 	}
 	runtime, err := newWorkerRuntime(os.Getenv)
 	if err != nil {
@@ -2306,7 +2327,10 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return ExitFailure
 	}
 	if state.State == domain.StateReady {
-		if err := controlplane.Require(controlplane.ApprovalInput{StateRoot: location.StateRoot, RunID: *runID, Gate: domain.ApprovalGatePlan, Validator: runtime.Validator()}); err != nil {
+		if err := controlplane.Require(controlplane.ApprovalInput{
+			StateRoot: location.StateRoot, RunID: *runID, Gate: domain.ApprovalGatePlan,
+			Validator: runtime.Validator(), LocalSelfIdentity: entryObservation,
+		}); err != nil {
 			fmt.Fprintln(stderr, "运行失败：缺少当前有效的 plan 审批。")
 			return ExitFailure
 		}
@@ -2349,7 +2373,12 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}
 		dispatchBinder = embeddedRuntime
 	}
-	result, err := execution.Run(ctx, execution.Input{StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID, Adapter: worker, Validator: runtime.Validator(), DispatchBinder: dispatchBinder, OrphanStalenessThreshold: orphanStalenessThreshold})
+	result, err := execution.Run(ctx, execution.Input{
+		StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID,
+		Adapter: worker, Validator: runtime.Validator(), DispatchBinder: dispatchBinder,
+		OrphanStalenessThreshold: orphanStalenessThreshold,
+		EntryLocalSelfIdentity:   entryObservation, ObserveLocalSelfIdentity: observeLocalSelfIdentity,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败（Attempt %s，状态 %s）：%v\n", result.AttemptID, result.State.State, err)
 		return ExitFailure

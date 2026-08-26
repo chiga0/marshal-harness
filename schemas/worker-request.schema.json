@@ -69,6 +69,18 @@
           "requiredOutcome": { "type": "string", "minLength": 1, "maxLength": 4000 }
         }
       }
+    },
+    "localSelfIdentityBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "selfProfile", "activationDigest", "identitySubjectDigest", "dispatchObservationDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.local-self-identity-binding.v1" },
+        "selfProfile": { "const": "darwin-local-dogfood" },
+        "activationDigest": { "$ref": "#/$defs/digest" },
+        "identitySubjectDigest": { "$ref": "#/$defs/digest" },
+        "dispatchObservationDigest": { "$ref": "#/$defs/digest" }
+      }
     }
   },
   "$defs": {
