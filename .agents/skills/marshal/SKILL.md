@@ -39,6 +39,9 @@ description: 使用 Marshal Harness 编排 Coding Agent、执行证据门禁审�
 - release/product 工作默认交付可运行、可观察的完整纵切并绑定明确 exit criterion；禁止只提交未接入 production dependency graph 的 skeleton。ADR、研究或 contract-first 前置件只有本身就是已批准交付物且能直接解锁下一纵切时才可独立。
 - 默认 WIP 为 `Lead + 最多 2 authors + 1 shared reviewer`。写 scope 必须互斥；review 队列积压时先清队列，不把全部槽位都给 author。
 - 代码/内容任务默认 `maxReworkRounds=1`，research/canary 为 0。唯一 reviewer 首轮一次聚合全部 P0/P1；同一 reviewer 只复审一次 aggregate rework，仍有 P0/P1 就终止切片并 replan。
+- 每个 phase 只能有一个面向 operator 的机器化 verdict 入口。Schema、canonical digest、Candidate 与 worktree observation 等已有语义优先复用 Core/固定 `bin/marshal internal ...-check` primitive；phase preflight 可以组合这些 primitive、完整 identity/lineage/path 检查和一次性 action claim，但必须独占该 phase 的 closed `action/reasonCode`，Skill 不复制第二份字段合同。
+- Skill 规则采用替换预算：只有同一稳定 signature 已复发，或能预防明确的高成本安全事故，才提升为全局规则；新增规则必须同时删除/替代已有重复规则并给出可执行 reason code/测试归属。禁止为一次 incident 追加永久 checklist、manifest 或 reviewer 轮次。
+- 结构性失败按 defect-owner 先归属 `plan/operator|adapter/identity|baseline/integration|architecture/governance`；这些失败在 Worker 启动或 reviewer 派发前终止并 replan，不消费 Worker rework。只有当前 candidate diff 内的缺陷归 `candidate-local`，可进入唯一 reviewer 的一次 aggregate rework。
 - 对要求 post-worker command/tool attestation 的 profile family，`task run` 前必须证明冻结的 Worker execution projection、所选 Adapter launch profile 与 evidence profile 接受同一工具、命令和 result transport 表面；若后置机器门禁按冻结输入必然拒绝 Worker 被允许或需要执行的动作，只冻结该相同 family，禁止把失败事后归入 reviewer 或 Worker rework。
 - 验证按风险与集成点去重：先跑相关门禁；同一未变化候选不重复跑全仓 gate。release gate 不降低，具体矩阵见 engineering reference。
 

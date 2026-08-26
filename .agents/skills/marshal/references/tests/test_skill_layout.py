@@ -153,6 +153,39 @@ class SkillLayoutTest(unittest.TestCase):
             with self.subTest(anchor=anchor):
                 self.assertIn(anchor, content)
 
+    def test_efficiency_contract_has_truthful_single_verdict_and_rule_budget(self) -> None:
+        skill = SKILL.read_text(encoding="utf-8")
+        supervision = (SKILL_ROOT / "references" / "delivery-supervision.md").read_text(encoding="utf-8")
+        review = (SKILL_ROOT / "references" / "review-and-rework.md").read_text(encoding="utf-8")
+        migration = (SKILL_ROOT / "references" / "skill-rule-migration.md").read_text(encoding="utf-8")
+
+        for anchor in (
+            "一个面向 operator 的机器化 verdict 入口",
+            "Skill 规则采用替换预算",
+            "按 defect-owner 先归属",
+            "唯一 reviewer 的一次 aggregate rework",
+        ):
+            with self.subTest(document="SKILL.md", anchor=anchor):
+                self.assertIn(anchor, skill)
+        for anchor in (
+            "Python preflight 可以作为该 phase 的唯一 operator verdict 入口",
+            "新增 reviewer 代替唯一独立 reviewer",
+        ):
+            with self.subTest(document="delivery-supervision.md", anchor=anchor):
+                self.assertIn(anchor, supervision)
+        for anchor in (
+            "validate-review-freshness-preflight.py` 是当前 review freshness phase 的唯一 operator verdict 入口",
+            "固定 internal command 当前只返回 `{ok,digest}` primitive",
+        ):
+            with self.subTest(document="review-and-rework.md", anchor=anchor):
+                self.assertIn(anchor, review)
+        self.assertIn("当前 review freshness operator verdict 位于 Python preflight", migration)
+
+        # Guard against again documenting the fixed primitive as if it owned
+        # the wrapper's complete identity/lineage/action verdict.
+        self.assertNotIn("Operator 只检查固定命令返回的 closed", review)
+        self.assertNotIn("固定 Marshal 内部命令/Core package 是字段级语义的唯一实现", supervision)
+
     def test_qoder_transcript_reference_tracks_current_v7_contract(self) -> None:
         content = (SKILL_ROOT / "references" / "transcript-attestation-preflight.md").read_text(encoding="utf-8")
         self.assertIn("Qoder v7", content)
