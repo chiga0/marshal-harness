@@ -2,7 +2,7 @@
 
 本计划用于把当前 embedded/local 先行实现逐步收敛到[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Milestone 是交付顺序，不是产品定位。
 
-> **当前权威路线（2026-08-26）**：实施顺序以仓库根目录 `AGENTS.md`、[Roadmap 状态](roadmap-status.md)与 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 为准，按纵切优先的 `I186-R0→R6` 收敛；Milestone 0–9 的历史结论与代码资产保留，M10–M13 暂停直接推进，等待 `I186-R6 DONE` 后依据真实证据重新排期。当前 `I186-R0/R1/R2: DONE`，`I186-R3-A/B/C: DONE`，R3-D/E/F 尚未完成；[Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 是当前 pre-CLI blocker。本文后续 M0–M13 章节保留历史交付目标，不得据此绕过上述权威路线或提前升级实现状态。
+> **当前权威路线（2026-08-27）**：实施顺序以仓库根目录 `AGENTS.md`、[Roadmap 状态](roadmap-status.md)与 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 为准，按纵切优先的 `I186-R0→R6` 收敛；Milestone 0–9 的历史结论与代码资产保留，M10–M13 暂停直接推进，等待 `I186-R6 DONE` 后依据真实证据重新排期。当前 `I186-R0/R1/R2: DONE`，`I186-R3-A/B/C: DONE`，R3-D/E/F 尚未完成。ADR 0051 已把 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 分流：fixed-object local-exec viability 仍是当前 R3 pre-CLI blocker；ADR 0047/0048 的完整 managed/release producer、签名、安装、current/high-water 与 notarization 是 R6/release gate。本文后续 M0–M13 章节保留历史交付目标，不得据此绕过上述权威路线或提前升级实现状态。
 
 ## 门禁
 

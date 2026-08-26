@@ -1,10 +1,10 @@
 # Roadmap 状态
 
-更新时间：2026-08-26
+更新时间：2026-08-27
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
-> **2026-08-24 路线修订（[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)）**：架构审计跟踪改为纵切优先的收敛路线 `I186-R0→R6`（rebaseline + ADR → 最薄 Agent-in-Sandbox walking skeleton → Command/Result authority 收敛 → Agent/Sandbox 双 Provider binding → 单一恢复模型 + explain → strangler cutover → conformance/Roadmap replan）。M0–M9 历史 `PASSED` 结论与代码资产保留，不推倒重写；M10–M13 继续暂停直接推进，等待 `I186-R6 DONE` 后由真实证据重新排期。当前状态为 `I186-R0/R1/R2: DONE`、`I186-R3: IMPLEMENTING`：`I186-R3-A/B/C: DONE`，R3-D1/D2 两组 successor 均终态 `REJECTED` 并回到 plan，R3-E/F 尚未完成；Issue #209 与 PR #211 已闭环，Issue #210 首个 Harness 实现切片独立评审未通过，已回到 plan，Issue #212 是当前 pre-CLI blocker。R0 产物见 [i186-r0-baseline-report.md](research/i186-r0-baseline-report.md)，可执行规格见 [Planning Baseline v3](https://github.com/chiga0/marshal-harness/issues/186#issuecomment-5393394613)；本同步不改变架构、门禁、优先级、M0–M9 证据或状态取值定义。
+> **2026-08-24 路线修订（[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)）**：架构审计跟踪改为纵切优先的收敛路线 `I186-R0→R6`（rebaseline + ADR → 最薄 Agent-in-Sandbox walking skeleton → Command/Result authority 收敛 → Agent/Sandbox 双 Provider binding → 单一恢复模型 + explain → strangler cutover → conformance/Roadmap replan）。M0–M9 历史 `PASSED` 结论与代码资产保留，不推倒重写；M10–M13 继续暂停直接推进，等待 `I186-R6 DONE` 后由真实证据重新排期。当前状态为 `I186-R0/R1/R2: DONE`、`I186-R3: IMPLEMENTING`：`I186-R3-A/B/C: DONE`，R3-D1/D2 两组 successor 均终态 `REJECTED` 并回到 plan，R3-E/F 尚未完成；Issue #209 与 PR #211 已闭环，Issue #210 首个 Harness 实现切片独立评审未通过，已回到 plan。2026-08-27 接受 ADR 0051：Issue #212 的 fixed-object local-exec viability 仍是当前 R3 pre-CLI blocker，完整 managed/release producer、签名、安装、current/high-water 与 notarization 是 R6/release gate；该分流不关闭 Issue #212、不升级 R3 或发布状态。R0 产物见 [i186-r0-baseline-report.md](research/i186-r0-baseline-report.md)，可执行规格见 [Planning Baseline v3](https://github.com/chiga0/marshal-harness/issues/186#issuecomment-5393394613)；本同步不改变 M0–M9 证据或状态取值定义。
 
 | Milestone | 状态 | 证据 |
 | --- | --- | --- |

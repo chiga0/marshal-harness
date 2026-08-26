@@ -1,6 +1,6 @@
 # ADR 0051：Darwin 本地 Dogfood 执行 Profile 与受管发布权威分流
 
-- 状态：提议（Proposed，2026-08-26）；仅冻结候选合同，未实现，不表示 Issue #212、I186-R3 或 Marshal v1.0 已关闭
+- 状态：已接受（Accepted，2026-08-27）；接受证据绑定提案 sourceHead `e38a94887352cd0ba00f7c7183209d6a6a3ef339` 的独立 reviewer 结论 `ACCEPT`（P0/P1=0；唯一 P2 措辞在接受同步中关闭）；接受只冻结本地 dogfood 与 managed/release 的分流合同，未实现，不表示 Issue #212、I186-R3 或 Marshal v1.0 已关闭
 - 关联：[ADR 0003](0003-separate-worker-and-publisher.md)、[ADR 0014](0014-read-only-execution-profile.md)、[ADR 0042](0042-mac-ordinary-user-adapter-mode.md)、[ADR 0047](0047-marshal-darwin-self-identity-and-release-signing.md)、[ADR 0048](0048-protected-build-input-and-artifact-attestation.md)、[Issue #191](https://github.com/chiga0/marshal-harness/issues/191)、[Issue #212](https://github.com/chiga0/marshal-harness/issues/212)
 
 ## 背景
@@ -20,7 +20,14 @@ Issue #212 的真实阻塞首先属于第 1 类；R3-D/E/F 的本地开发与 `p
 
 ### 0. 对既有 ADR 的取代范围
 
-若本 ADR 被接受，则仅部分取代 ADR 0047 §1、§2、§6 中“所有 Darwin lifecycle profile 都必须先获得 external managed/release provision”以及“三个封闭 profile”的冲突条款，使 `darwin-local-dogfood` 可以按本文的低保证合同运行。ADR 0047 对 `darwin-managed-development`、`darwin-notarized-release`、installer/release、current/high-water、signer 分权、notarization、部署 policy 与禁止绕过宿主安全软件的其余条款全部保持有效；ADR 0048 不被取代。
+本 ADR 接受后，仅对 `darwin-local-dogfood` 部分取代 ADR 0047 的下列冲突条款：
+
+- §1、§2、§6 中“所有 Darwin lifecycle profile 都必须先获得 external managed/release provision”、三个 profile 封闭集合，以及 lifecycle 必须先通过 managed install receipt/current/policy 的要求；
+- §3.2 中“canonical object 必须由 install receipt 绑定”的部分，改由本文 `LocalDogfoodActivationV1` 绑定；canonical fixed regular file、禁止 `$PATH`/symlink 作为 trust anchor 的原则仍保留；
+- §3.3 对所有 lifecycle profile 强制完整 code-signature、certificate、deployment-policy 与 install-receipt 字段的部分，local profile 改用本文固定的 path/device/inode/size/raw SHA-256/sourceHead/selfProfile/activation 低保证字段；
+- §3.5 对所有 lifecycle profile 强制 current process/held-object attestation 的部分，local profile 改用本文如实命名的 current-path fd object observation，并明确不产生同 UID 对抗保证。
+
+ADR 0047 对 `darwin-managed-development`、`darwin-notarized-release`、installer/release、current/high-water、signer 分权、notarization、部署 policy 与禁止绕过宿主安全软件的其余条款全部保持有效；其 §3 对 managed/release profile 完整生效。ADR 0048 不被取代。
 
 本 ADR 不回写或改写 ADR 0047 的历史文本。接受状态、取代关系与当前权威解释只在 ADR 索引和路线文档中追加记录。
 
@@ -145,7 +152,7 @@ unknown、观察超时、对象漂移、Schema 不可表达或 profile 不一致
 实现至少覆盖：
 
 1. pathname 相同但 inode/digest/sourceHead 改变；
-2. symlink、rename、held object 与 pathname 对象不一致；
+2. symlink、rename、current-path fd object 与 pathname 对象不一致；
 3. managed/release gate 失败后尝试自动降级 local；
 4. local Evidence replay 到 managed/release 或 publication；
 5. local artifact 补签或补 receipt 后尝试晋升；
