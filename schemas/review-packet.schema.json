@@ -43,6 +43,7 @@
     "candidateDigest": { "$ref": "#/$defs/digest" },
     "workerCandidateDigest": { "$ref": "#/$defs/digest" },
     "codexEligibilityBinding": { "$ref": "#/$defs/codexEligibilityBinding" },
+    "localSelfIdentityBinding": { "$ref": "#/$defs/localReviewBinding" },
     "inputs": {
       "type": "object",
       "additionalProperties": false,
@@ -127,6 +128,32 @@
         "fenceDigest": { "$ref": "#/$defs/digest" },
         "launchReceiptDigest": { "$ref": "#/$defs/digest" },
         "launchAcceptTopologyDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "localReviewBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "selfProfile", "activationDigest", "identitySubjectDigest", "attemptId", "reviewRound", "verificationBindingDigest", "verificationObservationDigest", "reviewObservationDigest", "applicability"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.local-self-identity-review-binding.v1" },
+        "selfProfile": { "const": "darwin-local-dogfood" },
+        "activationDigest": { "$ref": "#/$defs/digest" },
+        "identitySubjectDigest": { "$ref": "#/$defs/digest" },
+        "attemptId": { "$ref": "#/$defs/id" },
+        "reviewRound": { "type": "integer", "minimum": 1 },
+        "verificationBindingDigest": { "$ref": "#/$defs/digest" },
+        "verificationObservationDigest": { "$ref": "#/$defs/digest" },
+        "reviewObservationDigest": { "$ref": "#/$defs/digest" },
+        "applicability": { "$ref": "#/$defs/localApplicability" }
+      }
+    },
+    "localApplicability": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "selfProfile", "activationDigest", "identitySubjectDigest", "assurance", "execution", "production", "publication"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.local-dogfood-environment-binding.v1" }, "selfProfile": { "const": "darwin-local-dogfood" },
+        "activationDigest": { "$ref": "#/$defs/digest" }, "identitySubjectDigest": { "$ref": "#/$defs/digest" },
+        "assurance": { "const": "ordinary-user" }, "execution": { "const": "workspace-write" }, "production": { "const": false }, "publication": { "const": "none" }
       }
     },
     "relativePath": {

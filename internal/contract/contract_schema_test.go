@@ -59,6 +59,47 @@ func TestEmbeddedSchemasAreValidDraft202012Documents(t *testing.T) {
 	}
 }
 
+func TestLocalApplicabilityProjectionIsClosedAcrossEvidenceAndOutcome(t *testing.T) {
+	validator := mustValidator(t)
+	tests := []struct {
+		name       string
+		kind       domain.Kind
+		path       string
+		bindingKey string
+	}{
+		{"verification", domain.KindVerificationReport, "examples/local-dogfood/verification-report.json", "localSelfIdentityBinding"},
+		{"manifest", domain.KindArtifactManifest, "examples/local-dogfood/artifact-manifest.json", "localSelfIdentityBinding"},
+		{"packet", domain.KindReviewPacket, "examples/local-dogfood/review-packet.json", "localSelfIdentityBinding"},
+		{"outcome", domain.KindOutcome, "examples/local-dogfood/outcome.json", ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, mutation := range []struct {
+				name  string
+				apply func(map[string]any)
+			}{
+				{"missing", func(value map[string]any) { delete(value, "applicability") }},
+				{"production", func(value map[string]any) { value["applicability"].(map[string]any)["production"] = true }},
+				{"publication", func(value map[string]any) { value["applicability"].(map[string]any)["publication"] = "remote" }},
+				{"unknown", func(value map[string]any) { value["applicability"].(map[string]any)["extra"] = "forged" }},
+			} {
+				t.Run(mutation.name, func(t *testing.T) {
+					data := mutateFixture(t, test.path, func(document map[string]any) {
+						target := document
+						if test.bindingKey != "" {
+							target = document[test.bindingKey].(map[string]any)
+						}
+						mutation.apply(target)
+					})
+					if err := validator.Validate(test.kind, data); err == nil {
+						t.Fatal("invalid local applicability projection was accepted")
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestTaskSpecSchemaWorkerToolsClosedVocabulary pins the worker.tools field
 // introduced for issue #37: optional, uniqueItems, closed vocabulary, and
 // mechanically enforced by the schema.

@@ -241,6 +241,10 @@ func localDogfoodCommandClass(args []string, doctor *doctorOptions) (string, str
 			return selfidentity.CommandTaskStatus, ""
 		case "run":
 			return selfidentity.CommandTaskRun, ""
+		case "verify":
+			return selfidentity.CommandTaskVerify, ""
+		case "review":
+			return selfidentity.CommandTaskReview, ""
 		case "approve":
 			gate, ok := localDogfoodApprovalGate(args[2:])
 			if gate == domain.ApprovalGatePublish {
@@ -2451,7 +2455,7 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 		return ExitFailure
 	}
 	defer lease.Release()
-	state, err := store.Inspect(runID)
+	state, err := runstore.InspectUnderLease(lease)
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：%v\n", err)
 		return ExitFailure
@@ -2480,7 +2484,7 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 		}
 		authorityNamespaceID = derived
 	}
-	taskData, err := readInput(filepath.Join(runDirectory, "task-spec.json"), strings.NewReader(""))
+	taskData, err := runstore.ReadFileUnderLease(lease, 2<<20, "task-spec.json")
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：读取冻结 TaskSpec：%v\n", err)
 		return ExitFailure
@@ -2514,6 +2518,16 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 		fmt.Fprintln(stderr, "验证失败：TaskSpec Repository 与当前仓库身份不一致。")
 		return ExitFailure
 	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：%v\n", err)
+		return ExitFailure
+	}
+	localVerificationInput, err := prepareLocalVerificationBinding(ctx, lease, state, localDogfoodObservation(ctx), validator)
+	if err != nil {
+		fmt.Fprintf(stderr, "验证失败：%v\n", err)
+		return ExitFailure
+	}
 	repositoryIdentity, err := gitworktree.Open(location.RepositoryRoot)
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：%v\n", err)
@@ -2538,7 +2552,7 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 	}
 	verificationContext, cancelVerification := context.WithTimeout(ctx, time.Duration(task.Budgets.RunTimeoutSeconds)*time.Second)
 	defer cancelVerification()
-	result, err := verification.New().Verify(verificationContext, verification.Input{TaskID: state.TaskID, RunID: state.RunID, AttemptID: attemptID, AuthorityNamespaceID: authorityNamespaceID, SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, Worktree: state.WorktreePath, ExpectedCommonDir: repositoryIdentity.CommonDir, RunDirectory: runDirectory, Scope: scope, Deliverables: deliverables, Commands: commands, BaselinePath: baselinePath, PatchCaptureBytes: patchCaptureLimit(scope.MaxDiffBytes)})
+	result, err := verification.New().Verify(verificationContext, verification.Input{TaskID: state.TaskID, RunID: state.RunID, AttemptID: attemptID, AuthorityNamespaceID: authorityNamespaceID, SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, Worktree: state.WorktreePath, ExpectedCommonDir: repositoryIdentity.CommonDir, RunDirectory: runDirectory, Scope: scope, Deliverables: deliverables, Commands: commands, BaselinePath: baselinePath, PatchCaptureBytes: patchCaptureLimit(scope.MaxDiffBytes), LocalSelfIdentity: localVerificationInput})
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：%v\n", err)
 		return ExitFailure
@@ -2568,7 +2582,16 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 		fmt.Fprintf(stderr, "验证失败：生成事件 ID：%v\n", err)
 		return ExitFailure
 	}
-	event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: eventID, RunID: state.RunID, Sequence: state.Sequence + 1, Type: "verification.completed", StateFrom: state.State, StateTo: domain.StateReviewPending, Timestamp: result.Report.CompletedAt, Actor: &domain.Actor{Type: "system", ID: "marshal-verifier"}, Payload: map[string]any{"reportDigest": reportDigest, "artifactManifestDigest": manifestDigest, "status": result.Report.Status}}
+	eventPayload := map[string]any{"reportDigest": reportDigest, "artifactManifestDigest": manifestDigest, "status": result.Report.Status}
+	if result.Report.LocalSelfIdentityBinding != nil {
+		bindingDigest, digestErr := selfidentity.DigestVerificationBinding(*result.Report.LocalSelfIdentityBinding)
+		if digestErr != nil {
+			fmt.Fprintf(stderr, "验证失败：%v\n", localPhaseRejected())
+			return ExitFailure
+		}
+		eventPayload["localSelfIdentityBindingDigest"] = bindingDigest
+	}
+	event := domain.RunEvent{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunEvent, EventID: eventID, RunID: state.RunID, Sequence: state.Sequence + 1, Type: "verification.completed", StateFrom: state.State, StateTo: domain.StateReviewPending, Timestamp: result.Report.CompletedAt, Actor: &domain.Actor{Type: "system", ID: "marshal-verifier"}, Payload: eventPayload}
 	nextState, err := lifecycle.Reduce(state, event, lifecycle.Guard{LeaseHeld: true, EvidenceCurrent: true, ReportComplete: true})
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：生命周期转换：%v\n", err)
@@ -2649,7 +2672,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return ExitFailure
 	}
 	defer lease.Release()
-	state, err := store.Inspect(*runID)
+	state, err := runstore.InspectUnderLease(lease)
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
@@ -2659,7 +2682,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return ExitFailure
 	}
 	runDirectory := filepath.Join(location.StateRoot, "runs", *runID)
-	taskData, err := readInput(filepath.Join(runDirectory, "task-spec.json"), strings.NewReader(""))
+	taskData, err := runstore.ReadFileUnderLease(lease, 2<<20, "task-spec.json")
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：读取冻结 TaskSpec：%v\n", err)
 		return ExitFailure
@@ -2683,7 +2706,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "审查失败：TaskSpec 与 Run 身份不一致。")
 		return ExitFailure
 	}
-	verificationData, err := readInput(filepath.Join(runDirectory, "verification-report.json"), strings.NewReader(""))
+	verificationData, err := runstore.ReadFileUnderLease(lease, 8<<20, "verification-report.json")
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：读取 VerificationReport：%v\n", err)
 		return ExitFailure
@@ -2697,7 +2720,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
 	}
-	manifestData, err := readInput(filepath.Join(runDirectory, "artifact-manifest.json"), strings.NewReader(""))
+	manifestData, err := runstore.ReadFileUnderLease(lease, 8<<20, "artifact-manifest.json")
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：读取 ArtifactManifest：%v\n", err)
 		return ExitFailure
@@ -2711,7 +2734,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
 	}
-	frozenReportDigest, frozenManifestDigest, err := frozenVerificationDigests(store, state.RunID)
+	frozenReportDigest, frozenManifestDigest, err := frozenVerificationDigests(lease)
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
@@ -2724,6 +2747,16 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 	currentManifestDigest, err := canonical.DigestJSON(manifestData)
 	if err != nil || currentManifestDigest != frozenManifestDigest {
 		fmt.Fprintln(stderr, "审查失败：ArtifactManifest 与 verification.completed 冻结摘要不一致。")
+		return ExitFailure
+	}
+	validator, err := contract.NewValidator()
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
+		return ExitFailure
+	}
+	localReviewBinding, err := prepareLocalReviewBinding(ctx, lease, state, localDogfoodObservation(ctx), validator, report, manifest, *decisionPath == "")
+	if err != nil {
+		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
 	}
 	repositoryIdentity, err := gitworktree.Open(location.RepositoryRoot)
@@ -2746,14 +2779,9 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
 	}
-	validator, err := contract.NewValidator()
-	if err != nil {
-		fmt.Fprintf(stderr, "审查失败：%v\n", err)
-		return ExitFailure
-	}
 	if *decisionPath == "" {
 		builder := review.PacketBuilder{RunDirectory: runDirectory, Validator: validator}
-		packet, packetDigest, err := builder.Build(review.PacketBuildInput{Task: task, TaskData: taskData, Report: report, ReportData: verificationData, Manifest: manifest, ManifestData: manifestData, TaskID: state.TaskID, RunID: state.RunID, SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, ReviewRound: state.ReviewRound, AttemptsUsed: state.AttemptsUsed})
+		packet, packetDigest, err := builder.Build(review.PacketBuildInput{Task: task, TaskData: taskData, Report: report, ReportData: verificationData, Manifest: manifest, ManifestData: manifestData, TaskID: state.TaskID, RunID: state.RunID, SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, ReviewRound: state.ReviewRound, AttemptsUsed: state.AttemptsUsed, LocalSelfIdentityBinding: localReviewBinding})
 		if err != nil {
 			fmt.Fprintf(stderr, "审查失败：生成 ReviewPacket：%v\n", err)
 			return ExitFailure
@@ -2774,7 +2802,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return ExitOK
 	}
 	importer := review.DecisionImporter{RunDirectory: runDirectory, Validator: validator}
-	result, err := importer.Import(review.DecisionInput{Path: *decisionPath, Task: task, TaskID: state.TaskID, RunID: state.RunID, SpecDigest: state.SpecDigest, ReviewRound: state.ReviewRound, AttemptsUsed: state.AttemptsUsed, ReworkRoundsUsed: state.ReworkRoundsUsed, Report: report, Manifest: manifest})
+	result, err := importer.Import(review.DecisionInput{Path: *decisionPath, Task: task, TaskID: state.TaskID, RunID: state.RunID, SpecDigest: state.SpecDigest, ReviewRound: state.ReviewRound, AttemptsUsed: state.AttemptsUsed, ReworkRoundsUsed: state.ReworkRoundsUsed, Report: report, Manifest: manifest, LocalSelfIdentityBinding: localReviewBinding})
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：导入 Decision：%v\n", err)
 		return ExitFailure
@@ -2790,6 +2818,9 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		eventType = "review.rework-budget-exhausted"
 	}
 	payload := map[string]any{"verdict": result.Decision.Verdict, "decisionDigest": result.DecisionDigest, "evidenceDigest": result.Decision.EvidenceDigest}
+	if result.Decision.LocalSelfIdentityBindingDigest != "" {
+		payload["localSelfIdentityBindingDigest"] = result.Decision.LocalSelfIdentityBindingDigest
+	}
 	if result.TargetState.Terminal() {
 		reason := result.Decision.Summary
 		if result.BudgetExhausted && result.Decision.Verdict == "rework" {
@@ -2839,8 +2870,8 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return ExitOK
 }
 
-func frozenVerificationDigests(store *runstore.Store, runID string) (string, string, error) {
-	events, _, err := store.ReadEvents(runID)
+func frozenVerificationDigests(lease *runstore.Lease) (string, string, error) {
+	events, _, err := runstore.ReadEventsUnderLease(lease)
 	if err != nil {
 		return "", "", fmt.Errorf("读取验证事件：%w", err)
 	}

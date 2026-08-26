@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
+	"github.com/chiga0/marshal-harness/internal/verification"
 )
 
 func TestMain(m *testing.M) {
@@ -386,6 +388,267 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		t.Fatalf("production task run lineage: started=%+v completed=%+v", started.Payload, completed.Payload)
 	}
 
+	// LD-3B must be reachable through the same production entry rather than
+	// through verifier/review helpers. A no-change ordinary-user result leaves
+	// a deterministic diagnostic artifact for the final NO_CHANGE decision.
+	const reviewTaskID, reviewRunID = "local-dogfood-review-task", "local-dogfood-review-run"
+	reviewTask := cliPlanningTask(t, root, reviewTaskID, remoteURL)
+	reviewTask["scope"] = map[string]any{"allowPaths": []any{"README.md"}, "denyPaths": []any{}, "allowSubmodules": false, "maxChangedFiles": float64(2), "maxDiffBytes": float64(4096)}
+	reviewTask["acceptance"] = map[string]any{"allowNoChange": true, "commands": []any{map[string]any{"id": "no-change-check", "argv": []any{"sh", "-c", "true"}, "cwd": ".", "timeoutSeconds": float64(5), "required": true, "baselinePolicy": "none", "maxLogBytes": float64(4096)}}}
+	reviewTask["deliverables"] = []any{map[string]any{"id": "diagnostic", "kind": "diagnostic", "required": true, "pathGlob": "README.md", "minimumCount": float64(1)}}
+	reviewTaskPath := filepath.Join(root, "review-task.json")
+	writeCLIFixture(t, reviewTaskPath, reviewTask)
+	reviewPolicy := cliPlanningPolicy(t, reviewTaskID, reviewRunID)
+	reviewPolicy["control"].(map[string]any)["requiredApprovals"] = []any{"plan"}
+	reviewPolicy["environmentBinding"] = doctor.PolicyEnvironmentBinding
+	cliStampPolicyDigest(t, reviewPolicy)
+	reviewPolicyPath := filepath.Join(root, "review-policy.json")
+	writeCLIFixture(t, reviewPolicyPath, reviewPolicy)
+	noChangeQwen := localDogfoodNoChangeWorkerExecutable(t)
+	t.Setenv("MARSHAL_QWEN_PATH", noChangeQwen)
+	var reviewStdout, reviewStderr bytes.Buffer
+	if got := RunContext(context.Background(), []string{"task", "plan", "--task", reviewTaskPath, "--policy", reviewPolicyPath, "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
+		t.Fatalf("review fixture plan exit=%d stderr=%s", got, reviewStderr.String())
+	}
+	reviewStdout.Reset()
+	reviewStderr.Reset()
+	if got := RunContext(context.Background(), []string{"task", "approve", "--run", reviewRunID, "--gate", "plan", "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
+		t.Fatalf("review fixture approval exit=%d stderr=%s", got, reviewStderr.String())
+	}
+	reviewStdout.Reset()
+	reviewStderr.Reset()
+	if got := RunContext(context.Background(), []string{"task", "run", "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
+		t.Fatalf("review fixture run exit=%d stderr=%s", got, reviewStderr.String())
+	}
+	preVerifyState, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preVerifyAttemptDir := filepath.Join(root, ".marshal", "runs", reviewRunID, "attempts", preVerifyState.CurrentAttemptID)
+	dispatchPath := filepath.Join(preVerifyAttemptDir, "local-self-identity-dispatch.json")
+	ingressPath := filepath.Join(preVerifyAttemptDir, "local-self-identity-ingress.json")
+	dispatchFixture, err := os.ReadFile(dispatchPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingressFixture, err := os.ReadFile(ingressPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hostile := range []struct {
+		name string
+		path string
+		raw  []byte
+	}{
+		{name: "missing dispatch", path: dispatchPath, raw: nil},
+		{name: "tampered ingress", path: ingressPath, raw: []byte("{}")},
+	} {
+		t.Run(hostile.name, func(t *testing.T) {
+			original := dispatchFixture
+			if hostile.path == ingressPath {
+				original = ingressFixture
+			}
+			replaceImmutableFixture(t, hostile.path, hostile.raw)
+			defer replaceImmutableFixture(t, hostile.path, original)
+			var deniedOut, deniedErr bytes.Buffer
+			got := RunContext(context.Background(), []string{"task", "verify", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedOut, &deniedErr)
+			assertLocalPhaseDenied(t, got, deniedOut.String(), deniedErr.String(), root)
+			unchanged, inspectErr := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID)
+			if inspectErr != nil || !reflect.DeepEqual(unchanged, preVerifyState) {
+				t.Fatalf("identity rejection consumed verify state: before=%+v after=%+v err=%v", preVerifyState, unchanged, inspectErr)
+			}
+			if _, statErr := os.Stat(filepath.Join(root, ".marshal", "runs", reviewRunID, "verification-report.json")); !os.IsNotExist(statErr) {
+				t.Fatalf("identity rejection reached verifier persistence: %v", statErr)
+			}
+		})
+	}
+	reviewStdout.Reset()
+	reviewStderr.Reset()
+	now = now.Add(time.Second)
+	if got := RunContext(context.Background(), []string{"task", "verify", "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
+		t.Fatalf("local task verify exit=%d stdout=%s stderr=%s", got, reviewStdout.String(), reviewStderr.String())
+	}
+	if state, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID); err != nil || state.State != domain.StateReviewPending {
+		t.Fatalf("local task verify state=%+v err=%v", state, err)
+	}
+	reviewState, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewAttemptDir := filepath.Join(root, ".marshal", "runs", reviewRunID, "attempts", reviewState.CurrentAttemptID)
+	var report verification.Report
+	reportRaw, err := os.ReadFile(filepath.Join(root, ".marshal", "runs", reviewRunID, "verification-report.json"))
+	if err != nil || json.Unmarshal(reportRaw, &report) != nil || report.LocalSelfIdentityBinding == nil ||
+		report.LocalSelfIdentityBinding.VerificationObservationDigest == "" {
+		t.Fatalf("verification report lacks local binding: err=%v report=%s", err, reportRaw)
+	}
+	verificationName, err := selfidentity.VersionedPhaseObservationName("verification", report.LocalSelfIdentityBinding.VerificationObservationDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verificationPath := filepath.Join(reviewAttemptDir, verificationName)
+	verificationObservation, err := selfidentity.ReadPhaseObservation(verificationPath)
+	if err != nil || report.LocalSelfIdentityBinding.VerificationObservationDigest != verificationObservation.ObservationDigest {
+		t.Fatalf("read production verification observation: observation=%+v err=%v", verificationObservation, err)
+	}
+	var manifest verification.ArtifactManifest
+	manifestRaw, err := os.ReadFile(filepath.Join(root, ".marshal", "runs", reviewRunID, "artifact-manifest.json"))
+	if err != nil || json.Unmarshal(manifestRaw, &manifest) != nil || !reflect.DeepEqual(report.LocalSelfIdentityBinding, manifest.LocalSelfIdentityBinding) {
+		t.Fatalf("artifact manifest lacks exact local binding: err=%v manifest=%s", err, manifestRaw)
+	}
+	verificationFixture, err := os.ReadFile(verificationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewPendingBefore, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(selfidentity.ActivationEnv, replacementPath)
+	var deniedReviewOut, deniedReviewErr bytes.Buffer
+	crossGot := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedReviewOut, &deniedReviewErr)
+	assertLocalPhaseDenied(t, crossGot, deniedReviewOut.String(), deniedReviewErr.String(), root)
+	t.Setenv(selfidentity.ActivationEnv, activationPath)
+	if _, err := os.Stat(filepath.Join(root, ".marshal", "runs", reviewRunID, "review-packet.json")); !os.IsNotExist(err) {
+		t.Fatalf("cross-generation review reached packet persistence: %v", err)
+	}
+	replaceImmutableFixture(t, verificationPath, []byte("{}"))
+	deniedReviewOut.Reset()
+	deniedReviewErr.Reset()
+	crossGot = RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedReviewOut, &deniedReviewErr)
+	assertLocalPhaseDenied(t, crossGot, deniedReviewOut.String(), deniedReviewErr.String(), root)
+	replaceImmutableFixture(t, verificationPath, verificationFixture)
+	if unchanged, inspectErr := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID); inspectErr != nil || !reflect.DeepEqual(unchanged, reviewPendingBefore) {
+		t.Fatalf("review identity rejection consumed state: before=%+v after=%+v err=%v", reviewPendingBefore, unchanged, inspectErr)
+	}
+	malformedPacketPath := filepath.Join(root, ".marshal", "runs", reviewRunID, "review-packet.json")
+	if err := os.WriteFile(malformedPacketPath, []byte("{malformed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeReviewRecords, err := filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deniedReviewOut.Reset()
+	deniedReviewErr.Reset()
+	malformedGot := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedReviewOut, &deniedReviewErr)
+	assertLocalPhaseDenied(t, malformedGot, deniedReviewOut.String(), deniedReviewErr.String(), root)
+	afterReviewRecords, err := filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
+	if err != nil || !reflect.DeepEqual(beforeReviewRecords, afterReviewRecords) {
+		t.Fatalf("malformed existing packet created review observation: before=%v after=%v err=%v", beforeReviewRecords, afterReviewRecords, err)
+	}
+	if err := os.Remove(malformedPacketPath); err != nil {
+		t.Fatal(err)
+	}
+	reviewStdout.Reset()
+	reviewStderr.Reset()
+	now = now.Add(time.Second)
+	if got := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
+		t.Fatalf("local task review packet exit=%d stdout=%s stderr=%s", got, reviewStdout.String(), reviewStderr.String())
+	}
+	var packetResult struct {
+		PacketDigest string               `json:"packetDigest"`
+		Packet       *domain.ReviewPacket `json:"packet"`
+	}
+	if err := json.Unmarshal(reviewStdout.Bytes(), &packetResult); err != nil || packetResult.Packet == nil || packetResult.Packet.LocalSelfIdentityBinding == nil {
+		t.Fatalf("local review packet missing binding: err=%v output=%s", err, reviewStdout.String())
+	}
+	firstPacketDigest := packetResult.PacketDigest
+	canonicalPacket, err := os.ReadFile(malformedPacketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, canonicalPacket); err != nil {
+		t.Fatal(err)
+	}
+	replaceImmutableFixture(t, malformedPacketPath, compact.Bytes())
+	beforeReviewRecords, _ = filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
+	deniedReviewOut.Reset()
+	deniedReviewErr.Reset()
+	noncanonicalGot := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedReviewOut, &deniedReviewErr)
+	assertLocalPhaseDenied(t, noncanonicalGot, deniedReviewOut.String(), deniedReviewErr.String(), root)
+	afterReviewRecords, _ = filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
+	if !reflect.DeepEqual(beforeReviewRecords, afterReviewRecords) {
+		t.Fatalf("noncanonical existing packet created review observation: before=%v after=%v", beforeReviewRecords, afterReviewRecords)
+	}
+	replaceImmutableFixture(t, malformedPacketPath, canonicalPacket)
+	reviewStdout.Reset()
+	reviewStderr.Reset()
+	now = now.Add(time.Second)
+	if got := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
+		t.Fatalf("local review packet replay exit=%d stdout=%s stderr=%s", got, reviewStdout.String(), reviewStderr.String())
+	}
+	if err := json.Unmarshal(reviewStdout.Bytes(), &packetResult); err != nil || packetResult.PacketDigest != firstPacketDigest {
+		t.Fatalf("local review packet replay drift: first=%s next=%s err=%v", firstPacketDigest, packetResult.PacketDigest, err)
+	}
+	reviewName, err := selfidentity.VersionedPhaseObservationName("review-1", packetResult.Packet.LocalSelfIdentityBinding.ReviewObservationDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewObservationPath := filepath.Join(reviewAttemptDir, reviewName)
+	reviewObservation, err := selfidentity.ReadPhaseObservation(reviewObservationPath)
+	if err != nil || packetResult.Packet.LocalSelfIdentityBinding.ReviewObservationDigest != reviewObservation.ObservationDigest {
+		t.Fatalf("local review observation binding mismatch: err=%v packet=%+v", err, packetResult.Packet.LocalSelfIdentityBinding)
+	}
+	bindingDigest, err := selfidentity.DigestReviewBinding(*packetResult.Packet.LocalSelfIdentityBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := domain.ReviewDecision{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindReviewDecision,
+		TaskID: reviewTaskID, RunID: reviewRunID, ReviewRound: 1,
+		Reviewer:   domain.Reviewer{Type: "lead-agent", ID: "local-dogfood-reviewer"},
+		SpecDigest: packetResult.Packet.SpecDigest, ReviewPacketDigest: packetResult.PacketDigest,
+		VerificationDigest: packetResult.Packet.VerificationDigest, ArtifactManifestDigest: packetResult.Packet.ArtifactManifestDigest,
+		EvidenceDigest: packetResult.Packet.EvidenceDigest, LocalSelfIdentityBindingDigest: bindingDigest,
+		Verdict: "no_change", Summary: "本地 no-change 诊断已独立验证。",
+		BlockingFindings: []domain.Finding{}, NonBlockingFindings: []domain.Finding{},
+		PublicationRecommendation: "not-applicable", MergeRecommendation: "do-not-merge", DecidedAt: now,
+	}
+	decisionPath := filepath.Join(root, "review-decision.json")
+	reviewObservationFixture, err := os.ReadFile(reviewObservationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCLIFixture(t, decisionPath, decision)
+	replaceImmutableFixture(t, reviewObservationPath, []byte("{}"))
+	var deniedDecisionOut, deniedDecisionErr bytes.Buffer
+	decisionGot := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--decision", decisionPath, "--json"}, strings.NewReader(""), &deniedDecisionOut, &deniedDecisionErr)
+	assertLocalPhaseDenied(t, decisionGot, deniedDecisionOut.String(), deniedDecisionErr.String(), root)
+	replaceImmutableFixture(t, reviewObservationPath, reviewObservationFixture)
+	for _, hostileDigest := range []string{"", canonical.DigestBytes([]byte("cross-generation"))} {
+		hostileDecision := decision
+		hostileDecision.LocalSelfIdentityBindingDigest = hostileDigest
+		writeCLIFixture(t, decisionPath, hostileDecision)
+		deniedDecisionOut.Reset()
+		deniedDecisionErr.Reset()
+		decisionGot = RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--decision", decisionPath, "--json"}, strings.NewReader(""), &deniedDecisionOut, &deniedDecisionErr)
+		assertLocalPhaseDenied(t, decisionGot, deniedDecisionOut.String(), deniedDecisionErr.String(), root)
+	}
+	if unchanged, inspectErr := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID); inspectErr != nil || !reflect.DeepEqual(unchanged, reviewPendingBefore) {
+		t.Fatalf("decision identity rejection consumed state: before=%+v after=%+v err=%v", reviewPendingBefore, unchanged, inspectErr)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".marshal", "runs", reviewRunID, "outcome.json")); !os.IsNotExist(err) {
+		t.Fatalf("decision identity rejection reached Outcome persistence: %v", err)
+	}
+	writeCLIFixture(t, decisionPath, decision)
+	reviewStdout.Reset()
+	reviewStderr.Reset()
+	if got := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--decision", decisionPath, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
+		t.Fatalf("local task review decision exit=%d stdout=%s stderr=%s", got, reviewStdout.String(), reviewStderr.String())
+	}
+	terminal, err := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID)
+	if err != nil || terminal.State != domain.StateNoChange {
+		t.Fatalf("local review terminal state=%+v err=%v", terminal, err)
+	}
+	var outcome domain.OutcomeBundle
+	outcomeRaw, err := os.ReadFile(filepath.Join(root, ".marshal", "runs", reviewRunID, "outcome.json"))
+	if err != nil || json.Unmarshal(outcomeRaw, &outcome) != nil || outcome.LocalSelfIdentityBindingDigest != bindingDigest ||
+		outcome.Applicability == nil || !reflect.DeepEqual(*outcome.Applicability, packetResult.Packet.LocalSelfIdentityBinding.Applicability) {
+		t.Fatalf("local Outcome lacks review binding: err=%v outcome=%s", err, outcomeRaw)
+	}
+
 	// A fresh local Run whose Attempt root cannot become a directory must be
 	// rejected before Adapter Probe/Run without projecting the absolute state
 	// path or the underlying OS cause through the real CLI boundary.
@@ -464,6 +727,54 @@ func trackedLocalDogfoodWorkerExecutable(t *testing.T) (string, string) {
 		t.Fatal(err)
 	}
 	return path, invocations
+}
+
+func localDogfoodNoChangeWorkerExecutable(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "qwen")
+	script := `#!/bin/sh
+if [ "$1" = "--version" ]; then printf '0.21.11\n'; exit 0; fi
+for last; do :; done
+result_path=$(printf '%s\n' "$last" | sed -n 's/.*写入：\([^[:space:]]*\).*/\1/p')
+task_id=$(printf '%s\n' "$last" | sed -n 's/.*taskId=\(.*\)、runId=.*/\1/p')
+run_id=$(printf '%s\n' "$last" | sed -n 's/.*runId=\(.*\)、attemptId=.*/\1/p')
+attempt_id=$(printf '%s\n' "$last" | sed -n 's/.*attemptId=\(.*\)、adapter\.id=.*/\1/p')
+cat > "$result_path" <<EOF
+{"apiVersion":"marshal.dev/v1alpha1","kind":"WorkerResult","taskId":"$task_id","runId":"$run_id","attemptId":"$attempt_id","adapter":{"id":"qwen","executable":"/fixture/qwen","version":"fixture"},"status":"completed","summary":"no change","declaredChangedFiles":[],"declaredArtifacts":[],"declaredCommands":[],"declaredRisks":[],"outputTruncated":false,"startedAt":"2026-08-27T09:00:00Z","completedAt":"2026-08-27T09:00:01Z"}
+EOF
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"session-local-no-change","cwd":"'"$PWD"'","qwen_code_version":"0.21.11"}'
+printf '%s\n' '{"type":"result","subtype":"success","usage":{"input_tokens":1,"output_tokens":1}}'
+exit 0
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func replaceImmutableFixture(t *testing.T, path string, raw []byte) {
+	t.Helper()
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if raw == nil {
+		return
+	}
+	if err := os.WriteFile(path, raw, 0o400); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertLocalPhaseDenied(t *testing.T, exit int, stdout, stderr, secretPath string) {
+	t.Helper()
+	if exit != ExitFailure || stdout != "" || !strings.Contains(stderr, selfidentity.ReasonCrossProfileEvidence) {
+		t.Fatalf("local phase rejection exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	for _, forbidden := range []string{secretPath, "permission denied", "no such file", "invalid character", "cause-sentinel"} {
+		if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
+			t.Fatalf("local phase rejection leaked %q: stdout=%q stderr=%q", forbidden, stdout, stderr)
+		}
+	}
 }
 
 func TestDarwinUnprofiledBuildFailsClosedAtProductionEntry(t *testing.T) {

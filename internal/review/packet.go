@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/verification"
 )
 
@@ -21,18 +23,19 @@ type PacketBuilder struct {
 }
 
 type PacketBuildInput struct {
-	Task         domain.TaskSpec
-	TaskData     []byte
-	Report       verification.Report
-	ReportData   []byte
-	Manifest     verification.ArtifactManifest
-	ManifestData []byte
-	TaskID       string
-	RunID        string
-	SpecDigest   string
-	BaseSHA      string
-	ReviewRound  uint
-	AttemptsUsed uint
+	Task                     domain.TaskSpec
+	TaskData                 []byte
+	Report                   verification.Report
+	ReportData               []byte
+	Manifest                 verification.ArtifactManifest
+	ManifestData             []byte
+	TaskID                   string
+	RunID                    string
+	SpecDigest               string
+	BaseSHA                  string
+	ReviewRound              uint
+	AttemptsUsed             uint
+	LocalSelfIdentityBinding *selfidentity.LocalReviewBindingV1
 }
 
 const (
@@ -62,9 +65,10 @@ type evidenceIdentity struct {
 	// Candidate adoption leave both empty; the omitempty tags then keep them
 	// out of the canonical serialization entirely, so legacy evidenceDigest
 	// recomputation stays byte-identical (§5.1/§7.5).
-	CandidateDigest          string `json:"candidateDigest,omitempty"`
-	WorkerCandidateDigest    string `json:"workerCandidateDigest,omitempty"`
-	EligibilityBindingDigest string `json:"eligibilityBindingDigest,omitempty"`
+	CandidateDigest                string `json:"candidateDigest,omitempty"`
+	WorkerCandidateDigest          string `json:"workerCandidateDigest,omitempty"`
+	EligibilityBindingDigest       string `json:"eligibilityBindingDigest,omitempty"`
+	LocalSelfIdentityBindingDigest string `json:"localSelfIdentityBindingDigest,omitempty"`
 }
 
 func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, string, error) {
@@ -116,11 +120,27 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 	if err != nil {
 		return nil, "", err
 	}
+	localBindingDigest := ""
+	if input.LocalSelfIdentityBinding != nil {
+		if input.Report.LocalSelfIdentityBinding == nil || input.Manifest.LocalSelfIdentityBinding == nil ||
+			!reflect.DeepEqual(input.Report.LocalSelfIdentityBinding, input.Manifest.LocalSelfIdentityBinding) {
+			return nil, "", &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+		}
+		if err := selfidentity.ValidateReviewBindingProjection(*input.LocalSelfIdentityBinding, input.Report.LocalSelfIdentityBinding.AttemptID, input.ReviewRound, *input.Report.LocalSelfIdentityBinding); err != nil {
+			return nil, "", &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+		}
+		localBindingDigest, err = selfidentity.DigestReviewBinding(*input.LocalSelfIdentityBinding)
+		if err != nil {
+			return nil, "", &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+		}
+	} else if input.Report.LocalSelfIdentityBinding != nil || input.Manifest.LocalSelfIdentityBinding != nil {
+		return nil, "", &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+	}
 	eligibilityBinding, eligibilityBindingDigest, err := b.deriveCodexEligibilityBinding(input.Report, input.Manifest, workerIdentities, input.TaskID, input.RunID)
 	if err != nil {
 		return nil, "", err
 	}
-	identity := evidenceIdentity{SpecDigest: input.SpecDigest, PatchDigest: canonical.DigestBytes(patchData), VerificationDigest: verificationDigest, ArtifactManifestDigest: manifestDigest, WorkerResultDigests: workerDigests, PreviousFindings: previous, CandidateDigest: input.Report.CandidateDigest, WorkerCandidateDigest: input.Report.WorkerCandidateDigest, EligibilityBindingDigest: eligibilityBindingDigest}
+	identity := evidenceIdentity{SpecDigest: input.SpecDigest, PatchDigest: canonical.DigestBytes(patchData), VerificationDigest: verificationDigest, ArtifactManifestDigest: manifestDigest, WorkerResultDigests: workerDigests, PreviousFindings: previous, CandidateDigest: input.Report.CandidateDigest, WorkerCandidateDigest: input.Report.WorkerCandidateDigest, EligibilityBindingDigest: eligibilityBindingDigest, LocalSelfIdentityBindingDigest: localBindingDigest}
 	identityData, err := json.Marshal(identity)
 	if err != nil {
 		return nil, "", err
@@ -138,6 +158,7 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 		WorkerResultDigests: workerDigests, EvidenceDigest: evidenceDigest,
 		WorkerCandidateDigest: input.Report.WorkerCandidateDigest, CandidateDigest: input.Report.CandidateDigest,
 		CodexEligibilityBinding:  eligibilityBinding,
+		LocalSelfIdentityBinding: input.LocalSelfIdentityBinding,
 		Inputs:                   domain.PacketInputs{TaskSpec: "task-spec.json", Patch: "observed.patch", VerificationReport: "verification-report.json", ArtifactManifest: "artifact-manifest.json", WorkerResults: workerPaths},
 		PreviousBlockingFindings: previous, GeneratedAt: input.Report.CompletedAt.UTC(),
 	}

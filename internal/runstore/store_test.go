@@ -715,3 +715,124 @@ func decodeNotifyPayload(t *testing.T, data []byte) map[string]any {
 	}
 	return payload
 }
+
+func TestDescriptorRelativeRunFilesRejectAncestorSwapSymlinkHardlinkAndABA(t *testing.T) {
+	newFixture := func(t *testing.T) (*Lease, string, string) {
+		t.Helper()
+		root := t.TempDir()
+		store := New(root)
+		lease, err := store.Acquire("run-authority")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = lease.Release() })
+		bound, err := OpenOrCreateDirectoryUnderLease(lease, "attempts", "attempt-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bound.Close(); err != nil {
+			t.Fatal(err)
+		}
+		runPath := filepath.Join(root, "runs", "run-authority")
+		leaf := filepath.Join(runPath, "attempts", "attempt-1", "lineage.json")
+		if err := os.WriteFile(leaf, []byte("bound"), 0o400); err != nil {
+			t.Fatal(err)
+		}
+		return lease, runPath, leaf
+	}
+
+	t.Run("leaf symlink", func(t *testing.T) {
+		lease, _, leaf := newFixture(t)
+		if err := os.Rename(leaf, leaf+".target"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("lineage.json.target", leaf); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadFileUnderLease(lease, 64, "attempts", "attempt-1", "lineage.json"); err == nil {
+			t.Fatal("leaf symlink was accepted")
+		}
+	})
+
+	t.Run("same bytes hardlink", func(t *testing.T) {
+		lease, _, leaf := newFixture(t)
+		if err := os.Link(leaf, leaf+".alias"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadFileUnderLease(lease, 64, "attempts", "attempt-1", "lineage.json"); err == nil {
+			t.Fatal("multi-link leaf was accepted")
+		}
+	})
+
+	t.Run("ancestor symlink", func(t *testing.T) {
+		lease, runPath, _ := newFixture(t)
+		attempts := filepath.Join(runPath, "attempts")
+		if err := os.Rename(attempts, attempts+".held"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("attempts.held", attempts); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadFileUnderLease(lease, 64, "attempts", "attempt-1", "lineage.json"); err == nil {
+			t.Fatal("ancestor symlink was accepted")
+		}
+	})
+
+	t.Run("ancestor rename ABA", func(t *testing.T) {
+		lease, runPath, _ := newFixture(t)
+		attempts := filepath.Join(runPath, "attempts")
+		replacement := filepath.Join(runPath, "attempts.replacement")
+		if err := os.Mkdir(replacement, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		_, err := readFileUnderLease(lease, 64, func() {
+			if renameErr := os.Rename(attempts, attempts+".held"); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+			if renameErr := os.Rename(replacement, attempts); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+		}, "attempts", "attempt-1", "lineage.json")
+		if err == nil {
+			t.Fatal("ancestor rename ABA was accepted")
+		}
+	})
+
+	t.Run("run root swap", func(t *testing.T) {
+		lease, runPath, _ := newFixture(t)
+		replacement := runPath + ".replacement"
+		if err := os.Mkdir(replacement, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		_, err := readFileUnderLease(lease, 64, func() {
+			if renameErr := os.Rename(runPath, runPath+".held"); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+			if renameErr := os.Rename(replacement, runPath); renameErr != nil {
+				t.Fatal(renameErr)
+			}
+		}, "attempts", "attempt-1", "lineage.json")
+		if err == nil {
+			t.Fatal("run root swap was accepted")
+		}
+	})
+
+	t.Run("worker request immutable crash replay", func(t *testing.T) {
+		lease, _, _ := newFixture(t)
+		attempt, err := OpenDirectoryUnderLease(lease, "attempts", "attempt-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer attempt.Close()
+		request := []byte("{\"kind\":\"WorkerRequest\"}\n")
+		if err := WriteFileInDirectory(attempt, "worker-request.json", request, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteFileInDirectory(attempt, "worker-request.json", request, 0o600); err != nil {
+			t.Fatalf("exact crash replay was rejected: %v", err)
+		}
+		if err := WriteFileInDirectory(attempt, "worker-request.json", []byte("{\"kind\":\"forged\"}\n"), 0o600); err == nil {
+			t.Fatal("different crash replay replaced immutable WorkerRequest")
+		}
+	})
+}

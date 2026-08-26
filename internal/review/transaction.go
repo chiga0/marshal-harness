@@ -308,5 +308,10 @@ func TerminalOutcome(taskID, runID string, state domain.State, result DecisionRe
 	if !state.Terminal() {
 		return nil
 	}
-	return &OutcomeData{TaskID: taskID, RunID: runID, TerminalState: state, Verdict: result.Decision.Verdict, FinalReviewRound: result.Decision.ReviewRound, FinalReviewDigest: result.DecisionDigest, FinalEvidenceDigest: result.Decision.EvidenceDigest, Summary: result.Decision.Summary, FindingCount: uint(len(result.Decision.BlockingFindings) + len(result.Decision.NonBlockingFindings)), GeneratedAt: now}
+	outcome := &OutcomeData{TaskID: taskID, RunID: runID, TerminalState: state, Verdict: result.Decision.Verdict, FinalReviewRound: result.Decision.ReviewRound, FinalReviewDigest: result.DecisionDigest, FinalEvidenceDigest: result.Decision.EvidenceDigest, Summary: result.Decision.Summary, FindingCount: uint(len(result.Decision.BlockingFindings) + len(result.Decision.NonBlockingFindings)), GeneratedAt: now, LocalSelfIdentityBindingDigest: result.Decision.LocalSelfIdentityBindingDigest}
+	if result.Packet.LocalSelfIdentityBinding != nil {
+		applicability := result.Packet.LocalSelfIdentityBinding.Applicability
+		outcome.Applicability = &applicability
+	}
+	return outcome
 }

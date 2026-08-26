@@ -1,0 +1,21 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "ReviewDecision",
+  "taskId": "LD-3B",
+  "runId": "local-run-1",
+  "reviewRound": 1,
+  "reviewer": {"type": "lead-agent", "id": "local-reviewer"},
+  "specDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "reviewPacketDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "verificationDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "artifactManifestDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "evidenceDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  "localSelfIdentityBindingDigest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+  "verdict": "no_change",
+  "summary": "本地 no-change 已独立复核。",
+  "blockingFindings": [],
+  "nonBlockingFindings": [],
+  "publicationRecommendation": "not-applicable",
+  "mergeRecommendation": "do-not-merge",
+  "decidedAt": "2026-08-27T10:00:03Z"
+}

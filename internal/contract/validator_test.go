@@ -49,6 +49,30 @@ func TestEmbeddedContractFixtures(t *testing.T) {
 	}
 }
 
+func TestLocalDogfoodLineageExamples(t *testing.T) {
+	t.Parallel()
+	validator := mustValidator(t)
+	for _, test := range []struct {
+		name string
+		kind domain.Kind
+	}{
+		{name: "verification-report", kind: domain.KindVerificationReport},
+		{name: "artifact-manifest", kind: domain.KindArtifactManifest},
+		{name: "review-packet", kind: domain.KindReviewPacket},
+		{name: "review-decision", kind: domain.KindReviewDecision},
+		{name: "outcome", kind: domain.KindOutcome},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			data := readFixture(t, "examples/local-dogfood/"+test.name+".json")
+			if err := validator.Validate(test.kind, data); err != nil {
+				t.Fatalf("local dogfood fixture failed: %v", err)
+			}
+		})
+	}
+}
+
 func TestFormatAssertionsAreEnabled(t *testing.T) {
 	t.Parallel()
 

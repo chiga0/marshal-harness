@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/verification"
 )
 
@@ -18,16 +20,17 @@ type DecisionImporter struct {
 }
 
 type DecisionInput struct {
-	Path             string
-	Task             domain.TaskSpec
-	TaskID           string
-	RunID            string
-	SpecDigest       string
-	ReviewRound      uint
-	AttemptsUsed     uint
-	ReworkRoundsUsed uint
-	Report           verification.Report
-	Manifest         verification.ArtifactManifest
+	Path                     string
+	Task                     domain.TaskSpec
+	TaskID                   string
+	RunID                    string
+	SpecDigest               string
+	ReviewRound              uint
+	AttemptsUsed             uint
+	ReworkRoundsUsed         uint
+	Report                   verification.Report
+	Manifest                 verification.ArtifactManifest
+	LocalSelfIdentityBinding *selfidentity.LocalReviewBindingV1
 }
 
 type DecisionResult struct {
@@ -78,6 +81,24 @@ func (d *DecisionImporter) Import(input DecisionInput) (DecisionResult, error) {
 	}
 	if decision.ReviewPacketDigest != packetDigest || decision.VerificationDigest != packet.VerificationDigest || decision.ArtifactManifestDigest != packet.ArtifactManifestDigest || decision.EvidenceDigest != packet.EvidenceDigest {
 		return DecisionResult{}, errors.New("review decision references stale evidence")
+	}
+	if packet.LocalSelfIdentityBinding == nil {
+		if input.LocalSelfIdentityBinding != nil || decision.LocalSelfIdentityBindingDigest != "" {
+			return DecisionResult{}, &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+		}
+	} else {
+		if input.LocalSelfIdentityBinding == nil || !reflect.DeepEqual(packet.LocalSelfIdentityBinding, input.LocalSelfIdentityBinding) {
+			return DecisionResult{}, &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+		}
+		if input.Report.LocalSelfIdentityBinding == nil || input.Manifest.LocalSelfIdentityBinding == nil ||
+			!reflect.DeepEqual(input.Report.LocalSelfIdentityBinding, input.Manifest.LocalSelfIdentityBinding) ||
+			selfidentity.ValidateReviewBindingProjection(*packet.LocalSelfIdentityBinding, input.Report.LocalSelfIdentityBinding.AttemptID, input.ReviewRound, *input.Report.LocalSelfIdentityBinding) != nil {
+			return DecisionResult{}, &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+		}
+		bindingDigest, digestErr := selfidentity.DigestReviewBinding(*packet.LocalSelfIdentityBinding)
+		if digestErr != nil || decision.LocalSelfIdentityBindingDigest != bindingDigest {
+			return DecisionResult{}, &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+		}
 	}
 	if err := validateVerdict(input, decision, packet); err != nil {
 		return DecisionResult{}, err

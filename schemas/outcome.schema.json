@@ -7,7 +7,9 @@
   "required": ["apiVersion", "kind", "taskId", "runId", "terminalState", "verdict", "finalReviewRound", "finalReviewDigest", "finalEvidenceDigest", "summary", "findingCount", "retentionPolicy", "generatedAt"],
   "dependentRequired": {
     "intentDigest": ["receiptDigest"],
-    "receiptDigest": ["intentDigest"]
+    "receiptDigest": ["intentDigest"],
+    "localSelfIdentityBindingDigest": ["applicability"],
+    "applicability": ["localSelfIdentityBindingDigest"]
   },
   "properties": {
     "apiVersion": { "const": "marshal.dev/v1alpha1" },
@@ -24,10 +26,21 @@
     "retentionPolicy": { "type": "string", "minLength": 1, "maxLength": 256 },
     "generatedAt": { "type": "string", "format": "date-time" },
     "intentDigest": { "$ref": "#/$defs/digest" },
-    "receiptDigest": { "$ref": "#/$defs/digest" }
+    "receiptDigest": { "$ref": "#/$defs/digest" },
+    "localSelfIdentityBindingDigest": { "$ref": "#/$defs/digest" },
+    "applicability": { "$ref": "#/$defs/applicability" }
   },
   "$defs": {
     "id": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
-    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "applicability": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "selfProfile", "activationDigest", "identitySubjectDigest", "assurance", "execution", "production", "publication"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.local-dogfood-environment-binding.v1" }, "selfProfile": { "const": "darwin-local-dogfood" },
+        "activationDigest": { "$ref": "#/$defs/digest" }, "identitySubjectDigest": { "$ref": "#/$defs/digest" },
+        "assurance": { "const": "ordinary-user" }, "execution": { "const": "workspace-write" }, "production": { "const": false }, "publication": { "const": "none" }
+      }
+    }
   }
 }

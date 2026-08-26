@@ -102,36 +102,19 @@ type EffectivePolicy struct {
 	EnvironmentBinding    *LocalDogfoodEnvironmentBinding
 }
 
-const LocalDogfoodEnvironmentBindingSchema = "marshal.local-dogfood-environment-binding.v1"
+const LocalDogfoodEnvironmentBindingSchema = selfidentity.LocalApplicabilitySchema
 
 // LocalDogfoodEnvironmentBinding is the closed, policy-owned applicability
 // binding for ADR 0051. RunState and ApprovalRecord keep referring to it only
 // through PolicyDigest, so this remains the single durable source of truth.
-type LocalDogfoodEnvironmentBinding struct {
-	SchemaVersion         string `json:"schemaVersion"`
-	SelfProfile           string `json:"selfProfile"`
-	ActivationDigest      string `json:"activationDigest"`
-	IdentitySubjectDigest string `json:"identitySubjectDigest"`
-	Assurance             string `json:"assurance"`
-	Execution             string `json:"execution"`
-	Production            bool   `json:"production"`
-	Publication           string `json:"publication"`
-}
+type LocalDogfoodEnvironmentBinding = selfidentity.LocalApplicabilityV1
 
 // LocalDogfoodEnvironmentBindingForObservation projects one admitted
 // Core-owned observation into the closed fields a policy issuer must copy and
 // reseal. It does not issue or mutate a PolicySnapshot.
 func LocalDogfoodEnvironmentBindingForObservation(observation selfidentity.LocalSelfIdentityObservationV1) LocalDogfoodEnvironmentBinding {
-	return LocalDogfoodEnvironmentBinding{
-		SchemaVersion:         LocalDogfoodEnvironmentBindingSchema,
-		SelfProfile:           selfidentity.LocalProfile,
-		ActivationDigest:      observation.ActivationDigest,
-		IdentitySubjectDigest: observation.IdentitySubjectDigest,
-		Assurance:             "ordinary-user",
-		Execution:             "workspace-write",
-		Production:            false,
-		Publication:           "none",
-	}
+	binding, _ := selfidentity.ApplicabilityForObservation(observation)
+	return binding
 }
 
 // SelectionRequest builds the exact adapter.SelectionRequest for the Selector:
@@ -400,14 +383,29 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 // in that profile the mere presence of a local binding is contamination and
 // fails closed. It performs no writes and emits only stable reason strings.
 func ValidateLocalDogfoodEnvironmentBinding(data []byte, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV1) error {
+	_, err := LocalDogfoodApplicability(data, validator, observation)
+	return err
+}
+
+// LocalDogfoodApplicability returns the exact closed projection produced by
+// the frozen Policy after validating it against the current Core observation.
+// Downstream Run/evidence producers must copy this value, never reconstruct it.
+func LocalDogfoodApplicability(data []byte, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV1) (*LocalDogfoodEnvironmentBinding, error) {
 	if validator == nil || validator.Validate(domain.KindPolicySnapshot, data) != nil {
-		return port.Permanentf("%s", ErrPolicySchemaInvalid)
+		return nil, port.Permanentf("%s", ErrPolicySchemaInvalid)
 	}
 	var snapshot policySnapshot
 	if json.Unmarshal(data, &snapshot) != nil {
-		return port.Permanentf("%s", ErrPolicyMalformed)
+		return nil, port.Permanentf("%s", ErrPolicyMalformed)
 	}
-	return validateLocalDogfoodBinding(snapshot.EnvironmentBinding, observation)
+	if err := validateLocalDogfoodBinding(snapshot.EnvironmentBinding, observation); err != nil {
+		return nil, err
+	}
+	if snapshot.EnvironmentBinding == nil {
+		return nil, nil
+	}
+	copy := *snapshot.EnvironmentBinding
+	return &copy, nil
 }
 
 func validateLocalDogfoodBinding(binding *LocalDogfoodEnvironmentBinding, observation *selfidentity.LocalSelfIdentityObservationV1) error {

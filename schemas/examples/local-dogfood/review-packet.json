@@ -1,0 +1,40 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "ReviewPacket",
+  "taskId": "LD-3B",
+  "runId": "local-run-1",
+  "reviewRound": 1,
+  "specDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "baseSha": "1111111111111111111111111111111111111111",
+  "snapshotDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "diffDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "verificationDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "artifactManifestDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "workerResultDigests": ["sha256:7777777777777777777777777777777777777777777777777777777777777777"],
+  "evidenceDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  "localSelfIdentityBinding": {
+    "schemaVersion": "marshal.local-self-identity-review-binding.v1",
+    "selfProfile": "darwin-local-dogfood",
+    "activationDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identitySubjectDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "attemptId": "attempt-1",
+    "reviewRound": 1,
+    "verificationBindingDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "verificationObservationDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "reviewObservationDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "applicability": {
+      "schemaVersion": "marshal.local-dogfood-environment-binding.v1", "selfProfile": "darwin-local-dogfood",
+      "activationDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "identitySubjectDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "assurance": "ordinary-user", "execution": "workspace-write", "production": false, "publication": "none"
+    }
+  },
+  "inputs": {
+    "taskSpec": "task-spec.json",
+    "patch": "observed.patch",
+    "verificationReport": "verification-report.json",
+    "artifactManifest": "artifact-manifest.json",
+    "workerResults": ["attempts/attempt-1/worker-result.json"]
+  },
+  "previousBlockingFindings": [],
+  "generatedAt": "2026-08-27T10:00:02Z"
+}
