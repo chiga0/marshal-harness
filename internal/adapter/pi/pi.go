@@ -29,7 +29,7 @@ import (
 
 const (
 	adapterID          = "pi"
-	adapterVersion     = "0.3.0"
+	adapterVersion     = "0.4.0"
 	supportedBinary    = "0.84.1"
 	supportedBinary843 = "0.84.3"
 	// supportedSessionVersion is the exact pi session event protocol version
@@ -674,25 +674,30 @@ type captureResult struct {
 // ignored on purpose; protocol decisions rely solely on type, version, id,
 // cwd, the explicit agent_end willRetry flag, and the auto_retry attempt
 // bookkeeping, including the declared backoff delayMs that the capture paces
-// as a cancellable wait. Free-text fields such as errorMessage are never
-// decoded here: they only survive inside the raw transcript evidence and
-// never reach authorization, budgets, or diagnostics.
+// as a cancellable wait. Free-text errorMessage is decoded only to validate
+// required/non-empty wire shape; its contents remain confined to the raw
+// transcript and never reach authorization, budgets, or diagnostics.
 type piEvent struct {
-	Type        string          `json:"type"`
-	Version     *int            `json:"version"`
-	ID          string          `json:"id"`
-	Cwd         string          `json:"cwd"`
-	ToolName    string          `json:"toolName"`
-	ToolCallID  string          `json:"toolCallId"`
-	Args        json.RawMessage `json:"args"`
-	IsError     *bool           `json:"isError"`
-	Error       string          `json:"error"`
-	WillRetry   *bool           `json:"willRetry"`
-	Attempt     *int            `json:"attempt"`
-	MaxAttempts *int            `json:"maxAttempts"`
-	DelayMs     json.Number     `json:"delayMs"`
-	Success     *bool           `json:"success"`
-	Messages    []piMessage     `json:"messages"`
+	Type         string          `json:"type"`
+	Version      *int            `json:"version"`
+	ID           string          `json:"id"`
+	Cwd          string          `json:"cwd"`
+	ToolName     string          `json:"toolName"`
+	ToolCallID   string          `json:"toolCallId"`
+	Args         json.RawMessage `json:"args"`
+	IsError      *bool           `json:"isError"`
+	Error        string          `json:"error"`
+	ErrorMessage *string         `json:"errorMessage"`
+	WillRetry    *bool           `json:"willRetry"`
+	Attempt      *int            `json:"attempt"`
+	MaxAttempts  *int            `json:"maxAttempts"`
+	DelayMs      json.Number     `json:"delayMs"`
+	Success      *bool           `json:"success"`
+	Reason       string          `json:"reason"`
+	Source       string          `json:"source"`
+	Aborted      *bool           `json:"aborted"`
+	Result       json.RawMessage `json:"result"`
+	Messages     []piMessage     `json:"messages"`
 }
 
 type piMessage struct {
@@ -702,11 +707,34 @@ type piMessage struct {
 }
 
 type piUsage struct {
-	Input      int       `json:"input"`
-	Output     int       `json:"output"`
-	CacheRead  int       `json:"cacheRead"`
-	CacheWrite int       `json:"cacheWrite"`
-	Cost       usageCost `json:"cost"`
+	Input        int       `json:"input"`
+	Output       int       `json:"output"`
+	CacheRead    int       `json:"cacheRead"`
+	CacheWrite   int       `json:"cacheWrite"`
+	CacheWrite1h *int      `json:"cacheWrite1h,omitempty"`
+	Reasoning    *int      `json:"reasoning,omitempty"`
+	TotalTokens  int       `json:"totalTokens"`
+	Cost         usageCost `json:"cost"`
+}
+
+type piCompactionResult struct {
+	Summary              *string            `json:"summary"`
+	FirstKeptEntryID     *string            `json:"firstKeptEntryId"`
+	TokensBefore         *int               `json:"tokensBefore"`
+	EstimatedTokensAfter *int               `json:"estimatedTokensAfter,omitempty"`
+	Usage                *piCompactionUsage `json:"usage,omitempty"`
+	Details              json.RawMessage    `json:"details,omitempty"`
+}
+
+type piCompactionUsage struct {
+	Input        *int       `json:"input"`
+	Output       *int       `json:"output"`
+	CacheRead    *int       `json:"cacheRead"`
+	CacheWrite   *int       `json:"cacheWrite"`
+	CacheWrite1h *int       `json:"cacheWrite1h,omitempty"`
+	Reasoning    *int       `json:"reasoning,omitempty"`
+	TotalTokens  *int       `json:"totalTokens"`
+	Cost         *usageCost `json:"cost"`
 }
 
 // usageCost accepts the two cost encodings emitted by the pinned Pi protocol:
@@ -808,6 +836,38 @@ func finiteNonNegativeCost(number json.Number) (float64, error) {
 
 func isFinite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
 
+func decodeCompactionResult(raw json.RawMessage) (*piCompactionResult, bool, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, false, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	var result piCompactionResult
+	if err := decoder.Decode(&result); err != nil {
+		return nil, false, fmt.Errorf("decode compaction result: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, false, errors.New("compaction result contains trailing data")
+	}
+	if result.Summary == nil || strings.TrimSpace(*result.Summary) == "" ||
+		result.FirstKeptEntryID == nil || strings.TrimSpace(*result.FirstKeptEntryID) == "" ||
+		result.TokensBefore == nil || *result.TokensBefore < 0 ||
+		(result.EstimatedTokensAfter != nil && *result.EstimatedTokensAfter < 0) {
+		return nil, false, errors.New("compaction result is missing required bounded metadata")
+	}
+	if usage := result.Usage; usage != nil {
+		if usage.Input == nil || usage.Output == nil || usage.CacheRead == nil || usage.CacheWrite == nil ||
+			usage.TotalTokens == nil || usage.Cost == nil || *usage.Input < 0 || *usage.Output < 0 ||
+			*usage.CacheRead < 0 || *usage.CacheWrite < 0 || *usage.TotalTokens < 0 ||
+			(usage.CacheWrite1h != nil && *usage.CacheWrite1h < 0) || (usage.Reasoning != nil && *usage.Reasoning < 0) {
+			return nil, false, errors.New("compaction usage is incomplete or negative")
+		}
+	}
+	return &result, true, nil
+}
+
 // captureState is one node of the explicit closed state machine that
 // authorizes every Pi session event during capture. Each event kind is
 // authorized in exactly one state; unknown, duplicate, or out-of-order
@@ -821,9 +881,11 @@ const (
 	stateRetryActive
 	stateAwaitingFinalAgentEnd
 	stateAwaitingRetryFailureEnd
-	stateTerminalAgentEnd
+	statePostAgentEnd
+	stateCompacting
+	stateAwaitingCompactionContinuation
+	stateTerminalProviderFailure
 	stateTerminalSettled
-	stateRetryFailed
 )
 
 func (s captureState) String() string {
@@ -838,12 +900,16 @@ func (s captureState) String() string {
 		return "awaiting-final-agent-end"
 	case stateAwaitingRetryFailureEnd:
 		return "awaiting-retry-failure-end"
-	case stateTerminalAgentEnd:
-		return "terminal-agent-end"
+	case statePostAgentEnd:
+		return "post-agent-end"
+	case stateCompacting:
+		return "compacting"
+	case stateAwaitingCompactionContinuation:
+		return "awaiting-compaction-continuation"
+	case stateTerminalProviderFailure:
+		return "terminal-provider-failure"
 	case stateTerminalSettled:
 		return "terminal-settled"
-	case stateRetryFailed:
-		return "retry-failed"
 	default:
 		return "unspecified"
 	}
@@ -852,7 +918,7 @@ func (s captureState) String() string {
 // closed reports whether EOF completes the stream successfully in this state.
 func (s captureState) closed() bool {
 	switch s {
-	case stateTerminalAgentEnd, stateTerminalSettled, stateRetryFailed:
+	case statePostAgentEnd, stateTerminalProviderFailure, stateTerminalSettled:
 		return true
 	default:
 		return false
@@ -862,6 +928,15 @@ func (s captureState) closed() bool {
 // agentFailureStopReasons are the final-invocation stop reasons that turn a
 // syntactically complete stream into a stable Provider failure.
 var agentFailureStopReasons = map[string]bool{"error": true, "aborted": true, "length": true}
+
+var activeWorkEvents = map[string]bool{
+	"agent_start": true, "turn_start": true, "turn_end": true,
+	"message_start": true, "message_update": true, "message_end": true,
+	"bash_execution_update": true,
+	"tool_execution_start":  true, "tool_execution_update": true, "tool_execution_end": true,
+	"queue_update": true, "entry_appended": true, "session_info_changed": true,
+	"thinking_level_changed": true, "extension_error": true,
+}
 
 // addUsageCount rejects negative usage counters first and accumulates with an
 // explicit overflow decision instead of wrapping.
@@ -902,6 +977,10 @@ func eofClosureError(state captureState) error {
 		return fmt.Errorf("%w: stream ended before the final agent_end", ErrProtocol)
 	case stateAwaitingRetryFailureEnd:
 		return fmt.Errorf("%w: stream ended before the auto_retry_end failure closure", ErrProtocol)
+	case stateCompacting:
+		return fmt.Errorf("%w: stream ended before compaction_end", ErrProtocol)
+	case stateAwaitingCompactionContinuation:
+		return fmt.Errorf("%w: stream ended before the compaction continuation", ErrProtocol)
 	default:
 		return fmt.Errorf("%w: stream ended without terminal agent_end in state %s", ErrProtocol, state)
 	}
@@ -932,10 +1011,14 @@ const maxBackoffDelayMs = int64(math.MaxInt64 / int64(time.Millisecond))
 //     context and the backoff timer, so a cancellation ends the wait and the
 //     capture immediately with the context error instead of idling out the
 //     window, while an intact window admits every later byte unchanged;
-//   - termination is the complete closed stream (terminal agent_end, complete
-//     retry-failed closure, then at most one agent_settled); any further
-//     event or any non-LF tail fails closed, admits no later byte, and
-//     terminates the process group exactly once.
+//   - agent_end closes only one low-level run. A non-retrying agent_end may be
+//     followed by an ordered automatic compaction and continuation; only EOF
+//     or agent_settled closes the session. Compaction reason, nesting,
+//     aborted/willRetry flags, and continuation ordering are validated rather
+//     than ignored;
+//   - termination is the complete closed stream; any further event or any
+//     non-LF tail fails closed, admits no later byte, and terminates the
+//     process group exactly once.
 //
 // Output is bounded; exceeding the limit keeps raw exactly equal to the first
 // limit input bytes and terminates exactly once without fabricating a
@@ -955,6 +1038,13 @@ func captureJSONL(ctx context.Context, reader io.Reader, worktree string, limit 
 	state := stateActive
 	retryAttempt := 0
 	retryMaxAttempts := 0
+	pendingProviderFailure := false
+	pendingStopReason := ""
+	compactionReason := ""
+	overflowRecoverySeen := false
+	summarizationRetryAttempt := 0
+	summarizationRetryMaxAttempts := 0
+	summarizationRetryPhase := 0
 	pending := map[string]json.RawMessage{}
 	terminated := false
 	terminate := func() {
@@ -994,33 +1084,39 @@ func captureJSONL(ctx context.Context, reader io.Reader, worktree string, limit 
 			terminate()
 		}
 	}
+	accumulateOneUsage := func(inputDelta, outputDelta, cacheReadDelta int, costDelta float64) bool {
+		input, err := addUsageCount(result.inputTokens, inputDelta)
+		if err != nil {
+			fail(err)
+			return false
+		}
+		output, err := addUsageCount(result.outputTokens, outputDelta)
+		if err != nil {
+			fail(err)
+			return false
+		}
+		cacheRead, err := addUsageCount(result.cachedInputTokens, cacheReadDelta)
+		if err != nil {
+			fail(err)
+			return false
+		}
+		nextCost := result.cost + costDelta
+		if !isFinite(nextCost) {
+			fail(fmt.Errorf("%w: usage cost sum is not finite", ErrProtocol))
+			return false
+		}
+		result.inputTokens, result.outputTokens, result.cachedInputTokens = input, output, cacheRead
+		result.cost = nextCost
+		return true
+	}
 	accumulateUsage := func(messages []piMessage) bool {
 		for _, message := range messages {
 			if message.Role != "assistant" || message.Usage == nil {
 				continue
 			}
-			input, err := addUsageCount(result.inputTokens, message.Usage.Input)
-			if err != nil {
-				fail(err)
+			if !accumulateOneUsage(message.Usage.Input, message.Usage.Output, message.Usage.CacheRead, message.Usage.Cost.value) {
 				return false
 			}
-			output, err := addUsageCount(result.outputTokens, message.Usage.Output)
-			if err != nil {
-				fail(err)
-				return false
-			}
-			cacheRead, err := addUsageCount(result.cachedInputTokens, message.Usage.CacheRead)
-			if err != nil {
-				fail(err)
-				return false
-			}
-			nextCost := result.cost + message.Usage.Cost.value
-			if !isFinite(nextCost) {
-				fail(fmt.Errorf("%w: usage cost sum is not finite", ErrProtocol))
-				return false
-			}
-			result.inputTokens, result.outputTokens, result.cachedInputTokens = input, output, cacheRead
-			result.cost = nextCost
 		}
 		return true
 	}
@@ -1055,16 +1151,19 @@ func captureJSONL(ctx context.Context, reader io.Reader, worktree string, limit 
 		failingStop := explicit && agentFailureStopReasons[stopReason]
 		switch state {
 		case stateActive, stateAwaitingFinalAgentEnd:
-			state = stateTerminalAgentEnd
-			if failingStop {
-				result.providerFailed = true
+			pendingProviderFailure = failingStop
+			pendingStopReason = stopReason
+			if !failingStop {
+				overflowRecoverySeen = false
 			}
+			state = statePostAgentEnd
 		case stateRetryActive:
 			if !failingStop {
 				fail(fmt.Errorf("%w: retry-active success closure requires a matching auto_retry_end first", ErrProtocol))
 				return
 			}
-			result.providerFailed = true
+			pendingProviderFailure = true
+			pendingStopReason = stopReason
 			state = stateAwaitingRetryFailureEnd
 		default:
 			unauthorized()
@@ -1130,7 +1229,141 @@ func captureJSONL(ctx context.Context, reader io.Reader, worktree string, limit 
 			unauthorized()
 			return
 		}
-		state = stateRetryFailed
+		state = statePostAgentEnd
+	}
+	acceptCompactionStart := func(event *piEvent) {
+		if event.Reason != "threshold" && event.Reason != "overflow" {
+			fail(fmt.Errorf("%w: automatic compaction reason must be threshold or overflow", ErrProtocol))
+			return
+		}
+		if compactionReason != "" {
+			fail(fmt.Errorf("%w: compaction_start cannot be nested or repeated", ErrProtocol))
+			return
+		}
+		compactionReason = event.Reason
+		summarizationRetryAttempt = 0
+		summarizationRetryMaxAttempts = 0
+		summarizationRetryPhase = 0
+		state = stateCompacting
+	}
+	acceptSummarizationRetryScheduled := func(event *piEvent) {
+		if (summarizationRetryPhase != 0 && summarizationRetryPhase != 2) || event.Attempt == nil || event.MaxAttempts == nil {
+			fail(fmt.Errorf("%w: summarization retry schedule is incomplete or overlapping", ErrProtocol))
+			return
+		}
+		if event.ErrorMessage == nil || strings.TrimSpace(*event.ErrorMessage) == "" {
+			fail(fmt.Errorf("%w: summarization retry errorMessage is required", ErrProtocol))
+			return
+		}
+		attempt, maxAttempts := *event.Attempt, *event.MaxAttempts
+		if attempt != summarizationRetryAttempt+1 || maxAttempts < 1 || maxAttempts > 3 || attempt > maxAttempts ||
+			(summarizationRetryMaxAttempts != 0 && maxAttempts != summarizationRetryMaxAttempts) {
+			fail(fmt.Errorf("%w: summarization retry budget is inconsistent", ErrProtocol))
+			return
+		}
+		if event.DelayMs == "" {
+			fail(fmt.Errorf("%w: summarization retry delayMs is required", ErrProtocol))
+			return
+		}
+		delay, err := strconv.ParseInt(string(event.DelayMs), 10, 64)
+		if err != nil || delay < 0 || delay > maxBackoffDelayMs {
+			fail(fmt.Errorf("%w: summarization retry delayMs must be a bounded non-negative integer", ErrProtocol))
+			return
+		}
+		summarizationRetryAttempt, summarizationRetryMaxAttempts = attempt, maxAttempts
+		summarizationRetryPhase = 1
+	}
+	acceptSummarizationRetryStart := func(event *piEvent) {
+		if summarizationRetryPhase != 1 || event.Source != "compaction" || event.Reason != compactionReason {
+			fail(fmt.Errorf("%w: summarization retry start does not match the active compaction", ErrProtocol))
+			return
+		}
+		summarizationRetryPhase = 2
+	}
+	acceptSummarizationRetryFinished := func() {
+		if summarizationRetryPhase != 2 {
+			fail(fmt.Errorf("%w: summarization retry finished without an active retry", ErrProtocol))
+			return
+		}
+		summarizationRetryPhase = 0
+	}
+	acceptCompactionEnd := func(event *piEvent, paired bool) {
+		if event.Aborted == nil || event.WillRetry == nil {
+			fail(fmt.Errorf("%w: compaction_end requires explicit aborted and willRetry flags", ErrProtocol))
+			return
+		}
+		if paired {
+			if summarizationRetryPhase != 0 {
+				fail(fmt.Errorf("%w: compaction ended before summarization retry settled", ErrProtocol))
+				return
+			}
+			if event.Reason != compactionReason {
+				fail(fmt.Errorf("%w: compaction_end reason does not match compaction_start", ErrProtocol))
+				return
+			}
+		} else if event.Reason != "overflow" || !overflowRecoverySeen || !pendingProviderFailure {
+			fail(fmt.Errorf("%w: unpaired compaction_end is not an overflow recovery closure", ErrProtocol))
+			return
+		}
+		compactionResult, hasResult, decodeErr := decodeCompactionResult(event.Result)
+		if decodeErr != nil {
+			fail(fmt.Errorf("%w: invalid compaction result", ErrProtocol))
+			return
+		}
+		hasError := event.ErrorMessage != nil && strings.TrimSpace(*event.ErrorMessage) != ""
+		if !paired && (hasResult || *event.Aborted || *event.WillRetry || !hasError ||
+			(pendingStopReason != "length" && pendingStopReason != "error")) {
+			fail(fmt.Errorf("%w: unpaired overflow recovery closure has invalid outcome fields", ErrProtocol))
+			return
+		}
+		if *event.Aborted && *event.WillRetry {
+			fail(fmt.Errorf("%w: aborted compaction cannot retry", ErrProtocol))
+			return
+		}
+		switch {
+		case hasResult:
+			if *event.Aborted || hasError {
+				fail(fmt.Errorf("%w: successful compaction has contradictory outcome fields", ErrProtocol))
+				return
+			}
+		case *event.Aborted:
+			if hasError || *event.WillRetry {
+				fail(fmt.Errorf("%w: aborted compaction has contradictory outcome fields", ErrProtocol))
+				return
+			}
+			pendingProviderFailure = true
+		default:
+			if !hasError || *event.WillRetry {
+				fail(fmt.Errorf("%w: failed compaction requires a stable non-retrying error closure", ErrProtocol))
+				return
+			}
+			pendingProviderFailure = true
+		}
+		if *event.WillRetry && (event.Reason != "overflow" || *event.Aborted ||
+			(pendingStopReason != "length" && pendingStopReason != "error")) {
+			fail(fmt.Errorf("%w: compaction retry requires a completed overflow compaction", ErrProtocol))
+			return
+		}
+		if hasResult && compactionResult.Usage != nil {
+			usage := compactionResult.Usage
+			if !accumulateOneUsage(*usage.Input, *usage.Output, *usage.CacheRead, usage.Cost.value) {
+				return
+			}
+		}
+		if paired && event.Reason == "overflow" && *event.WillRetry {
+			overflowRecoverySeen = true
+		}
+		compactionReason = ""
+		if *event.WillRetry {
+			state = stateAwaitingCompactionContinuation
+			return
+		}
+		if !paired {
+			overflowRecoverySeen = false
+			state = stateTerminalProviderFailure
+			return
+		}
+		state = statePostAgentEnd
 	}
 	handle := func(fragment []byte) {
 		trimmed := bytes.TrimSpace(fragment)
@@ -1197,10 +1430,12 @@ func captureJSONL(ctx context.Context, reader io.Reader, worktree string, limit 
 					// recorded by name; state transitions never change.
 					result.toolNames = append(result.toolNames, tool)
 				}
-			case "session", "agent_settled", "auto_retry_start":
+			case "session", "agent_settled", "auto_retry_start", "compaction_start", "compaction_end":
 				unauthorized()
 			default:
-				// Ordinary supported agent work events stay in the current state.
+				if !activeWorkEvents[event.Type] {
+					unauthorized()
+				}
 			}
 		case stateAwaitingAutoRetryStart:
 			if event.Type != "auto_retry_start" {
@@ -1220,11 +1455,54 @@ func captureJSONL(ctx context.Context, reader io.Reader, worktree string, limit 
 				return
 			}
 			acceptAutoRetryEnd(&event)
-		case stateTerminalAgentEnd, stateRetryFailed:
+		case statePostAgentEnd:
+			switch event.Type {
+			case "agent_settled":
+				result.providerFailed = pendingProviderFailure
+				state = stateTerminalSettled
+			case "compaction_start":
+				acceptCompactionStart(&event)
+			case "compaction_end":
+				acceptCompactionEnd(&event, false)
+			case "agent_start":
+				pendingProviderFailure = false
+				pendingStopReason = ""
+				state = stateActive
+			case "queue_update":
+				// A compaction_end extension may queue the continuation before
+				// Pi emits its next agent_start.
+			default:
+				unauthorized()
+			}
+		case stateCompacting:
+			switch event.Type {
+			case "compaction_end":
+				acceptCompactionEnd(&event, true)
+			case "summarization_retry_scheduled":
+				acceptSummarizationRetryScheduled(&event)
+			case "summarization_retry_attempt_start":
+				acceptSummarizationRetryStart(&event)
+			case "summarization_retry_finished":
+				acceptSummarizationRetryFinished()
+			case "entry_appended":
+				// The successful compaction entry may be persisted before end.
+			default:
+				unauthorized()
+			}
+		case stateAwaitingCompactionContinuation:
+			if event.Type != "agent_start" {
+				unauthorized()
+				return
+			}
+			pendingProviderFailure = false
+			pendingStopReason = ""
+			state = stateActive
+		case stateTerminalProviderFailure:
 			if event.Type != "agent_settled" {
 				unauthorized()
 				return
 			}
+			result.providerFailed = true
 			state = stateTerminalSettled
 		case stateTerminalSettled:
 			unauthorized()
@@ -1270,6 +1548,8 @@ func captureJSONL(ctx context.Context, reader io.Reader, worktree string, limit 
 					fail(fmt.Errorf("%w: final fragment is not LF-terminated", ErrProtocol))
 				case !state.closed():
 					fail(eofClosureError(state))
+				case state == statePostAgentEnd || state == stateTerminalProviderFailure:
+					result.providerFailed = pendingProviderFailure
 				}
 			}
 			return result
