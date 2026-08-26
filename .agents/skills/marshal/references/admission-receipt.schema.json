@@ -17,8 +17,8 @@
     "runId": { "$ref": "#/$defs/id" },
     "observationSequence": { "type": "integer", "minimum": 1 },
     "stateEventSequence": { "type": "integer", "minimum": 1 },
-    "observedAt": { "type": "string", "format": "date-time" },
-    "validUntil": { "type": "string", "format": "date-time" },
+    "observedAt": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$" },
+    "validUntil": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$" },
     "bindings": {
       "type": "object", "additionalProperties": false,
       "required": ["sourceHead", "baseSha", "specDigest", "policyDigest", "capabilityDigest", "runStateDigest", "planApprovalDigest"],

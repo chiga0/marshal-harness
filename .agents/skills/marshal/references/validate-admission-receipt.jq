@@ -1,6 +1,7 @@
 def sha256: type == "string" and test("^sha256:[0-9a-f]{64}$");
 def sha40: type == "string" and test("^[0-9a-f]{40}$");
 def positive_integer: type == "number" and floor == . and . >= 1;
+def nonnegative_integer: type == "number" and floor == . and . >= 0;
 def ztime: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$");
 def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 
@@ -26,8 +27,8 @@ def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 (.adapter.binaryVersion | type == "string" and length > 0) and
 (.adapter.executable.canonicalPath | type == "string" and startswith("/")) and
 (.adapter.executable.digest | sha256) and
-(.adapter.executable.device | positive_integer) and
-(.adapter.executable.inode | positive_integer) and
+(.adapter.executable.device | nonnegative_integer) and
+(.adapter.executable.inode | nonnegative_integer) and
 (.worktree.canonicalPath | type == "string" and startswith("/")) and
 (.worktree.headSha | sha40) and
 (.worktree.statusDigest | sha256) and
@@ -43,7 +44,7 @@ def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 (.tooling | type == "object" and keys == ["marshalExecutable", "watchScript"]) and
 ([.tooling.marshalExecutable, .tooling.watchScript] | all(.[];
   type == "object" and keys == ["device", "digest", "inode"] and
-  (.digest | sha256) and (.device | positive_integer) and (.inode | positive_integer))) and
+  (.digest | sha256) and (.device | nonnegative_integer) and (.inode | nonnegative_integer))) and
 ([.dynamicEvidence.doctorDigest, .dynamicEvidence.capacityDigest,
   .dynamicEvidence.providerBackpressureDigest] | all(.[]; sha256)) and
 (.checks | type == "object" and

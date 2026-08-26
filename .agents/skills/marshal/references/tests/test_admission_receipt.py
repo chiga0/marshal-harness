@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,8 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
+import warnings
 
 
 HERE = Path(__file__).resolve().parent
@@ -42,6 +45,21 @@ def file_identity(path: Path) -> dict:
 
 def json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, indent=2).encode() + b"\n"
+
+
+def path_snapshot(path: Path) -> tuple[bytes, tuple[int, int, int, int, int]]:
+    metadata = path.stat()
+    return path.read_bytes(), (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                               metadata.st_mtime_ns, metadata.st_mode)
+
+
+def load_python(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(name)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class AdmissionReceiptTest(unittest.TestCase):
@@ -245,6 +263,39 @@ class AdmissionReceiptTest(unittest.TestCase):
         )
         return completed.returncode, json.loads(completed.stdout), completed.stderr
 
+    def configure_adapter(self, adapter_id: str, mode: str) -> None:
+        path_key = {"qoder": "MARSHAL_QODER_PATH", "codex": "MARSHAL_CODEX_PATH",
+                    "qwen": "MARSHAL_QWEN_PATH", "pi": "MARSHAL_PI_PATH"}[adapter_id]
+        self.launch_env = {
+            "HOME": str(self.temp / "home-private-value"), "LANG": "C", "LC_ALL": "C",
+            path_key: str(self.adapter),
+            "MARSHAL_WATCH_COHORT_FILE": str(self.temp / "cohort.json"),
+            "MARSHAL_WATCH_NOTIFY": "0", "PATH": "/usr/bin:/bin", "TMPDIR": str(self.temp),
+        }
+        if mode == "ordinary-user":
+            self.launch_env[{"qoder": "MARSHAL_QODER_MODE", "codex": "MARSHAL_CODEX_MODE"}[adapter_id]] = "ordinary-user"
+        self.doctor_worker.update({"adapterId": adapter_id, "environmentVariable": path_key})
+        if mode == "ordinary-user":
+            self.doctor_worker["authorityMode"] = "ordinary-user"
+        else:
+            self.doctor_worker.pop("authorityMode", None)
+        self.watch_capacity["providerSignals"] = [{"adapterId": adapter_id, "status": "available"}]
+        self.observed = datetime.now(timezone.utc)
+        self.write_tools()
+
+    def invoke_generator(self, adapter_id: str, mode: str, receipt: str,
+                         env: dict[str, str] | None = None,
+                         operator_root: Path | None = None) -> tuple[int, dict, str]:
+        completed = subprocess.run(
+            ["/usr/bin/python3", "-I", "-B", str(GENERATOR),
+             "--operator-root", str(operator_root or self.operator), "--receipt", receipt,
+             "--run-root", str(self.run_root), "--workspace-root", str(self.workspace),
+             "--adapter-id", adapter_id, "--adapter-mode", mode],
+            cwd=REPOSITORY, env=env or self.launch_env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        return completed.returncode, json.loads(completed.stdout), completed.stderr
+
     def assert_reason(self, reason: str, env: dict[str, str] | None = None) -> None:
         code, result, stderr = self.invoke(env)
         self.assertEqual(stderr, "")
@@ -260,45 +311,38 @@ class AdmissionReceiptTest(unittest.TestCase):
             self.assertNotIn(secret_or_path, rendered)
         self.assertNotIn(str(self.adapter), rendered)
 
-    def test_generator_creates_and_immediately_validates_receipt(self) -> None:
-        self.launch_env = {
-            "HOME": str(self.temp / "home-private-value"),
-            "LANG": "C",
-            "LC_ALL": "C",
-            "MARSHAL_PI_PATH": str(self.adapter),
-            "MARSHAL_WATCH_COHORT_FILE": str(self.temp / "cohort.json"),
-            "MARSHAL_WATCH_NOTIFY": "0",
-            "PATH": "/usr/bin:/bin",
-            "TMPDIR": str(self.temp),
-        }
-        self.doctor_worker.update({"adapterId": "pi", "environmentVariable": "MARSHAL_PI_PATH"})
-        self.doctor_worker.pop("authorityMode")
-        self.watch_capacity["providerSignals"] = [{"adapterId": "pi", "status": "available"}]
-        self.write_tools()
+    def test_generator_success_matrix_is_0600_and_immediately_valid(self) -> None:
+        for adapter_id, mode in (("qoder", "ordinary-user"), ("codex", "ordinary-user"),
+                                 ("qwen", "host-user"), ("pi", "host-user")):
+            with self.subTest(adapter_id=adapter_id):
+                self.configure_adapter(adapter_id, mode)
+                if adapter_id == "qoder":
+                    self.launch_env["MARSHAL_QODER_CONFORMANCE_CONFIG"] = str(self.temp / "qoder-config")
+                elif adapter_id == "codex":
+                    self.launch_env["MARSHAL_CODEX_AUTHORITY_CONFIG"] = str(self.temp / "codex-config")
+                self.write_tools()
+                name = f"generated-{adapter_id}.json"
+                code, result, stderr = self.invoke_generator(adapter_id, mode, name)
+                self.assertEqual((code, stderr), (0, ""), result)
+                self.assertEqual(result["reasonCode"], "operator-receipt-created-and-valid")
+                target = self.operator / name
+                self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+                generated = json.loads(target.read_text())
+                self.assertEqual(generated["adapter"]["id"], adapter_id)
+                self.assertEqual(generated["launchEnvironment"]["keys"], sorted(self.launch_env))
+                self.assertNotIn("scopeExclusive", generated["checks"])
+
+    def test_generator_never_replaces_existing_symlink(self) -> None:
+        self.configure_adapter("pi", "host-user")
         outside = self.temp / "outside-receipt-target"
         outside.write_text("sentinel\n")
-        (self.operator / "generated.json").symlink_to(outside)
-        completed = subprocess.run(
-            ["/usr/bin/python3", "-I", "-B", str(GENERATOR),
-             "--operator-root", str(self.operator),
-             "--receipt", "generated.json", "--run-root", str(self.run_root),
-             "--workspace-root", str(self.workspace), "--adapter-id", "pi",
-             "--adapter-mode", "host-user"],
-            cwd=REPOSITORY, env=self.launch_env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-        )
-        result = json.loads(completed.stdout)
-        self.assertEqual((completed.returncode, completed.stderr), (0, ""), result)
-        self.assertEqual(result["reasonCode"], "operator-receipt-created-and-valid")
-        generated = json.loads((self.operator / "generated.json").read_text())
-        self.assertFalse((self.operator / "generated.json").is_symlink())
+        target = self.operator / "generated.json"
+        target.symlink_to(outside)
+        code, result, stderr = self.invoke_generator("pi", "host-user", target.name)
+        self.assertEqual((code, stderr), (2, ""), result)
+        self.assertEqual(result["reasonCode"], "receipt-output-exists")
+        self.assertTrue(target.is_symlink())
         self.assertEqual(outside.read_text(), "sentinel\n")
-        self.assertEqual(generated["format"], "marshal-skill/operator-admission-receipt-v3")
-        self.assertNotIn("scopeExclusive", generated["checks"])
-        self.assertNotIn("acceptancePure", generated["checks"])
-        rendered = json.dumps(result)
-        for secret_or_path in (self.launch_env["HOME"], self.launch_env["MARSHAL_PI_PATH"], self.launch_env["PATH"]):
-            self.assertNotIn(secret_or_path, rendered)
 
     def test_generator_rejects_host_user_for_qoder(self) -> None:
         completed = subprocess.run(
@@ -355,6 +399,67 @@ class AdmissionReceiptTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertEqual(json.loads(completed.stdout), {"reasonCode": "launch-environment-invalid", "status": "fail"})
 
+    def test_generator_rejects_opencode_and_cross_adapter_configuration(self) -> None:
+        cases = (
+            ("qoder", "ordinary-user", "MARSHAL_CODEX_AUTHORITY_CONFIG"),
+            ("codex", "ordinary-user", "MARSHAL_QODER_CONFORMANCE_CONFIG"),
+            ("qwen", "host-user", "MARSHAL_QODER_FENCE_ROOT"),
+            ("pi", "host-user", "MARSHAL_CODEX_AUTHORITY_CONFIG"),
+            ("pi", "host-user", "MARSHAL_OPENCODE_PATH"),
+        )
+        for adapter_id, mode, polluted_key in cases:
+            with self.subTest(adapter_id=adapter_id, polluted_key=polluted_key):
+                self.configure_adapter(adapter_id, mode)
+                changed = dict(self.launch_env)
+                changed[polluted_key] = str(self.temp / "polluted-private-value")
+                code, result, stderr = self.invoke_generator(adapter_id, mode,
+                                                               f"polluted-{adapter_id}-{polluted_key}.json",
+                                                               changed)
+                self.assertEqual((code, stderr), (2, ""), result)
+                self.assertEqual(result["reasonCode"], "launch-environment-invalid")
+
+    def test_generator_cannot_overwrite_protected_inputs(self) -> None:
+        self.configure_adapter("pi", "host-user")
+        protected = (
+            self.run_root / "state.json", self.run_root / "control/records.jsonl",
+            self.worktree / "README", self.workspace / "bin/marshal",
+            self.workspace / "scripts/marshal-watch.sh", SCHEMA,
+        )
+        snapshots = {path: path_snapshot(path) for path in protected}
+        for path in protected:
+            relative = path.as_posix().lstrip("/")
+            code, result, stderr = self.invoke_generator("pi", "host-user", relative,
+                                                          operator_root=Path("/"))
+            self.assertEqual((code, stderr), (2, ""), result)
+            self.assertEqual(result["reasonCode"], "receipt-output-exists")
+        self.assertEqual({path: path_snapshot(path) for path in protected}, snapshots)
+
+    def test_generator_rejects_new_output_inside_protected_roots(self) -> None:
+        self.configure_adapter("pi", "host-user")
+        for protected_root in (self.run_root, self.workspace, self.worktree):
+            with self.subTest(protected_root=protected_root):
+                name = "must-not-be-created.json"
+                target = protected_root / name
+                code, result, stderr = self.invoke_generator("pi", "host-user", name,
+                                                              operator_root=protected_root)
+                self.assertEqual((code, stderr), (2, ""), result)
+                self.assertEqual(result["reasonCode"], "receipt-output-boundary-invalid")
+                self.assertFalse(target.exists())
+
+    def test_generator_rechecks_ttl_before_creating_output(self) -> None:
+        module = load_python(GENERATOR, "admission_generator_expiry_test")
+        target = module.OutputTarget(self.operator, "expired-generated.json")
+        expired = dict(self.receipt)
+        expired["observedAt"] = (datetime.now(timezone.utc) - timedelta(seconds=3)).isoformat().replace("+00:00", "Z")
+        expired["validUntil"] = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat().replace("+00:00", "Z")
+        try:
+            with self.assertRaises(module.V.AdmissionError) as raised:
+                target.write(expired)
+            self.assertEqual(raised.exception.reason_code, "receipt-expired")
+        finally:
+            target.close()
+        self.assertFalse((self.operator / "expired-generated.json").exists())
+
     def test_generator_rejects_symlink_adapter_with_fixed_reason(self) -> None:
         link = self.temp / "qoder-link"
         link.symlink_to(self.adapter)
@@ -389,6 +494,49 @@ class AdmissionReceiptTest(unittest.TestCase):
         self.assertEqual((code, stderr), (2, ""))
         self.assertEqual(result["reasonCode"], "launch-environment-drift")
         self.assertNotIn(changed["HOME"], json.dumps(result))
+
+    def test_validator_rejects_unlisted_governed_environment_pollution(self) -> None:
+        for key in ("MARSHAL_QODER_CONFORMANCE_CONFIG", "MARSHAL_CODEX_AUTHORITY_CONFIG",
+                    "MARSHAL_OPENCODE_PATH"):
+            with self.subTest(key=key):
+                changed = dict(self.launch_env)
+                changed[key] = str(self.temp / "private-pollution")
+                self.assert_reason("launch-environment-invalid", changed)
+
+    def test_validator_rechecks_ttl_after_dynamic_probes(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.observed = now - timedelta(seconds=1)
+        self.receipt["observedAt"] = self.observed.isoformat().replace("+00:00", "Z")
+        self.receipt["validUntil"] = (now + timedelta(milliseconds=300)).isoformat().replace("+00:00", "Z")
+        self.write_tools(doctor_delay=0.6)
+        self.refresh_tooling()
+        self.write_receipt()
+        self.assert_reason("receipt-expired")
+
+    def test_validator_rechecks_ttl_after_final_identity_checks(self) -> None:
+        module = load_python(VALIDATOR, "admission_validator_final_expiry_test")
+        original = module.validate_receipt_freshness
+        calls = 0
+
+        def freshness(receipt: dict) -> None:
+            nonlocal calls
+            calls += 1
+            original(receipt)
+            if calls == 3:
+                raise module.AdmissionError("receipt-expired")
+
+        module.validate_receipt_freshness = freshness
+        args = type("Args", (), {
+            "operator_root": str(self.operator), "receipt": self.receipt_path.name,
+            "run_root": str(self.run_root), "workspace_root": str(self.workspace),
+        })()
+        with mock.patch.dict(os.environ, self.launch_env, clear=True):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", ResourceWarning)
+                with self.assertRaises(module.AdmissionError) as raised:
+                    module.validate(args)
+        self.assertEqual(raised.exception.reason_code, "receipt-expired")
+        self.assertEqual(calls, 3)
 
     def test_malformed_launch_keys_fail_without_traceback(self) -> None:
         self.receipt["launchEnvironment"]["keys"] = [{}]
@@ -486,6 +634,40 @@ class AdmissionReceiptTest(unittest.TestCase):
         completed = subprocess.run(["go", "run", str(SCHEMA_PROBE), str(SCHEMA), str(self.receipt_path)], cwd=REPOSITORY, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("draft-2020-12-schema-and-instance-ok", completed.stdout)
+
+    def test_schema_python_and_jq_share_time_and_identity_language(self) -> None:
+        module = load_python(VALIDATOR, "admission_validator_language_test")
+        zero_identity = json.loads(json.dumps(self.receipt))
+        for item in (zero_identity["adapter"]["executable"],
+                     zero_identity["tooling"]["marshalExecutable"],
+                     zero_identity["tooling"]["watchScript"]):
+            item["device"] = 0
+            item["inode"] = 0
+        module.validate_receipt_shape(zero_identity)
+        zero_path = self.operator / "zero-identity.json"
+        zero_path.write_bytes(json_bytes(zero_identity))
+        jq_result = subprocess.run(["jq", "-e", "-f", str(JQ), str(zero_path)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(jq_result.returncode, 0, jq_result.stderr)
+        schema_result = subprocess.run(["go", "run", str(SCHEMA_PROBE), str(SCHEMA), str(zero_path)],
+                                       cwd=REPOSITORY, text=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(schema_result.returncode, 0, schema_result.stderr)
+
+        invalid_time = json.loads(json.dumps(self.receipt))
+        invalid_time["observedAt"] = invalid_time["observedAt"].replace("Z", "+00:00")
+        invalid_path = self.operator / "invalid-time.json"
+        invalid_path.write_bytes(json_bytes(invalid_time))
+        with self.assertRaises(module.AdmissionError) as raised:
+            module.parse_time(invalid_time["observedAt"])
+        self.assertEqual(raised.exception.reason_code, "receipt-time-invalid")
+        jq_result = subprocess.run(["jq", "-e", "-f", str(JQ), str(invalid_path)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.assertNotEqual(jq_result.returncode, 0)
+        schema_result = subprocess.run(["go", "run", str(SCHEMA_PROBE), str(SCHEMA), str(invalid_path)],
+                                       cwd=REPOSITORY, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+        self.assertNotEqual(schema_result.returncode, 0)
 
     def test_reference_keeps_core_as_the_only_admission_authority(self) -> None:
         reference = (REFERENCES / "admission-and-acceptance.md").read_text(encoding="utf-8")

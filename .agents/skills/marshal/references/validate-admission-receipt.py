@@ -33,6 +33,7 @@ COMMAND_TIMEOUT_SECONDS = 45
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
+ZTIME_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z$")
 
 ADAPTER_ENV = {
     "qoder": "MARSHAL_QODER_PATH",
@@ -41,23 +42,51 @@ ADAPTER_ENV = {
     "pi": "MARSHAL_PI_PATH",
 }
 MODE_ENV = {"qoder": "MARSHAL_QODER_MODE", "codex": "MARSHAL_CODEX_MODE"}
-ALLOWED_LAUNCH_ENV = {
+COMMON_LAUNCH_ENV = {
     "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL",
-    "MARSHAL_OPENCODE_PATH", "MARSHAL_QWEN_PATH", "MARSHAL_QODER_PATH",
-    "MARSHAL_CODEX_PATH", "MARSHAL_PI_PATH", "MARSHAL_QODER_MODE",
-    "MARSHAL_CODEX_MODE", "MARSHAL_QODER_CONFORMANCE_CONFIG",
-    "MARSHAL_CODEX_AUTHORITY_CONFIG", "MARSHAL_APAP_ENDPOINT",
-    "MARSHAL_DARWIN_LAUNCHD_CONFIG", "MARSHAL_QODER_FENCE_DIGEST",
-    "MARSHAL_QODER_FENCE_GENERATION", "MARSHAL_QODER_FENCE_HELPER",
-    "MARSHAL_QODER_FENCE_ROOT", "MARSHAL_WATCH_NOTIFY",
+    "MARSHAL_WATCH_NOTIFY",
     "MARSHAL_WATCH_COHORT_FILE", "MARSHAL_WATCH_CURRENT_WINDOW_SECONDS",
     "MARSHAL_WATCH_WORKER_RESERVE_BYTES",
     "MARSHAL_WATCH_PROVIDER_FAILURE_HOLD_SECONDS",
 }
-REQUIRED_LAUNCH_ENV = {
+REQUIRED_COMMON_LAUNCH_ENV = {
     "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL",
     "MARSHAL_WATCH_NOTIFY", "MARSHAL_WATCH_COHORT_FILE",
 }
+ADAPTER_OPTIONAL_ENV = {
+    "qoder": {
+        "MARSHAL_QODER_CONFORMANCE_CONFIG", "MARSHAL_APAP_ENDPOINT",
+        "MARSHAL_DARWIN_LAUNCHD_CONFIG", "MARSHAL_QODER_FENCE_DIGEST",
+        "MARSHAL_QODER_FENCE_GENERATION", "MARSHAL_QODER_FENCE_HELPER",
+        "MARSHAL_QODER_FENCE_ROOT",
+    },
+    "codex": {
+        "MARSHAL_CODEX_AUTHORITY_CONFIG", "MARSHAL_APAP_ENDPOINT",
+        "MARSHAL_DARWIN_LAUNCHD_CONFIG",
+    },
+    "qwen": set(),
+    "pi": set(),
+}
+GOVERNED_LAUNCH_ENV = (
+    set(ADAPTER_ENV.values()) | set(MODE_ENV.values())
+    | set().union(*ADAPTER_OPTIONAL_ENV.values()) | {"MARSHAL_OPENCODE_PATH"}
+)
+
+
+def allowed_launch_env(adapter_id: str) -> set[str]:
+    allowed = set(COMMON_LAUNCH_ENV) | {ADAPTER_ENV[adapter_id]} | set(ADAPTER_OPTIONAL_ENV[adapter_id])
+    mode_key = MODE_ENV.get(adapter_id)
+    if mode_key is not None:
+        allowed.add(mode_key)
+    return allowed
+
+
+def required_launch_env(adapter_id: str, mode: str) -> set[str]:
+    required = set(REQUIRED_COMMON_LAUNCH_ENV) | {ADAPTER_ENV[adapter_id]}
+    mode_key = MODE_ENV.get(adapter_id)
+    if mode == "ordinary-user" and mode_key is not None:
+        required.add(mode_key)
+    return required
 
 
 class AdmissionError(Exception):
@@ -220,13 +249,21 @@ def parse_json(data: bytes, reason: str) -> dict:
 
 
 def parse_time(value: object) -> datetime:
-    if not isinstance(value, str) or not value.endswith("Z"):
+    if not isinstance(value, str) or not ZTIME_RE.fullmatch(value):
         fail("receipt-time-invalid")
     try:
         parsed = datetime.fromisoformat(value[:-1] + "+00:00")
     except ValueError:
         fail("receipt-time-invalid")
     return parsed.astimezone(timezone.utc)
+
+
+def validate_receipt_freshness(receipt: dict) -> None:
+    observed = parse_time(receipt["observedAt"])
+    valid_until = parse_time(receipt["validUntil"])
+    now = datetime.now(timezone.utc)
+    if valid_until < observed or (valid_until - observed).total_seconds() > 60 or now < observed or now > valid_until:
+        fail("receipt-expired")
 
 
 def absolute_clean(path: Path) -> Path:
@@ -427,7 +464,7 @@ def validate_receipt_shape(receipt: dict) -> None:
     launch = require_keys(receipt["launchEnvironment"], {"keys", "digest"}, "receipt-shape-invalid")
     if not isinstance(launch["keys"], list) or not launch["keys"] or any(not isinstance(key, str) for key in launch["keys"]):
         fail("launch-environment-invalid")
-    if launch["keys"] != sorted(launch["keys"]) or len(launch["keys"]) != len(set(launch["keys"])) or any(key not in ALLOWED_LAUNCH_ENV for key in launch["keys"]):
+    if launch["keys"] != sorted(launch["keys"]) or len(launch["keys"]) != len(set(launch["keys"])) or any(key not in allowed_launch_env(adapter["id"]) for key in launch["keys"]):
         fail("launch-environment-invalid")
     require_digest(launch["digest"])
     tooling = require_keys(receipt["tooling"], {"marshalExecutable", "watchScript"}, "receipt-shape-invalid")
@@ -508,12 +545,12 @@ def launch_environment(receipt: dict) -> dict[str, str]:
     keys = receipt["launchEnvironment"]["keys"]
     adapter_id = receipt["adapter"]["id"]
     mode = receipt["adapter"]["mode"]
-    required = set(REQUIRED_LAUNCH_ENV) | {ADAPTER_ENV[adapter_id]}
+    required = required_launch_env(adapter_id, mode)
     mode_key = MODE_ENV.get(adapter_id)
-    if mode == "ordinary-user" and mode_key is not None:
-        required.add(mode_key)
-    forbidden = (set(ADAPTER_ENV.values()) - {ADAPTER_ENV[adapter_id]}) | (set(MODE_ENV.values()) - ({mode_key} if mode_key else set()))
-    if not required.issubset(keys) or forbidden.intersection(keys):
+    allowed = allowed_launch_env(adapter_id)
+    polluted = {key for key in GOVERNED_LAUNCH_ENV if key in os.environ and key not in allowed}
+    unbound = {key for key in allowed if key in os.environ and key not in keys}
+    if not required.issubset(keys) or any(key not in allowed for key in keys) or polluted or unbound:
         fail("launch-environment-invalid")
     values: dict[str, str] = {}
     for key in keys:
@@ -628,9 +665,7 @@ def validate(args: argparse.Namespace) -> dict:
     receipt_raw, receipt_identity = read_relative(operator_root, args.receipt, "receipt-unreadable", MAX_RECEIPT_BYTES)
     receipt = parse_json(receipt_raw, "receipt-invalid-json")
     validate_receipt_shape(receipt)
-    observed = parse_time(receipt["observedAt"]); valid_until = parse_time(receipt["validUntil"]); now = datetime.now(timezone.utc)
-    if valid_until < observed or (valid_until - observed).total_seconds() > 60 or now < observed or now > valid_until:
-        fail("receipt-expired")
+    validate_receipt_freshness(receipt)
     system = platform.system().lower(); machine = platform.machine().lower()
     arch = "arm64" if machine in {"arm64", "aarch64"} else "amd64" if machine in {"amd64", "x86_64"} else machine
     if receipt["host"]["os"] != system or receipt["host"]["arch"] != arch:
@@ -679,6 +714,7 @@ def validate(args: argparse.Namespace) -> dict:
             fail("capacity-evidence-drift")
         if canonical_digest(provider_projection) != evidence["providerBackpressureDigest"]:
             fail("provider-evidence-drift")
+        validate_receipt_freshness(receipt)
 
         sample_worktree(receipt, held_worktree, initial_worktree)
         executable.verify_path("adapter-executable-drift")
@@ -689,6 +725,7 @@ def validate(args: argparse.Namespace) -> dict:
         receipt_after, receipt_identity_after = read_relative(operator_root, args.receipt, "receipt-unreadable", MAX_RECEIPT_BYTES)
         if state_after != state_raw or state_identity_after != state_identity or control_after != control_raw or control_identity_after != control_identity or receipt_after != receipt_raw or receipt_identity_after != receipt_identity:
             fail("admission-evidence-drift")
+        validate_receipt_freshness(receipt)
         return {
             "status": "pass", "reasonCode": "operator-receipt-valid",
             "receiptDigest": digest_bytes(receipt_raw), "stateDigest": canonical_digest(state),

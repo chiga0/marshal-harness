@@ -56,9 +56,9 @@ python3 -I -B .agents/skills/marshal/references/create-admission-receipt.py \
   --adapter-mode ADAPTER_MODE
 ```
 
-生成命令本身必须由 `env -i` 启动，只注入 `HOME`、`PATH`、`TMPDIR`、`LANG`、`LC_ALL`、`MARSHAL_WATCH_NOTIFY=0`、`MARSHAL_WATCH_COHORT_FILE`、所选 Adapter path，以及 Qoder/Codex 所需的 mode/config；不得带入未选 Adapter 的 path/mode。`PATH` 必须包含所选 launcher 的精确 runtime 目录（例如 Pi 的 Node 目录），否则 doctor probe 会在 Worker 启动前确定性失败。生成器自动收集当前 allowlist，缺任一必需键或出现未选 Adapter 键都会 fail closed，不能由调用者漏报 `--launch-key`。真正执行 `doctor` 与 `task run` 时必须显式复用同一个 `env -i` 集合和值。
+生成命令本身必须由 `env -i` 启动，只注入 `HOME`、`PATH`、`TMPDIR`、`LANG`、`LC_ALL`、`MARSHAL_WATCH_NOTIFY=0`、`MARSHAL_WATCH_COHORT_FILE`、所选 Adapter path，以及 Qoder/Codex 各自所需的 mode/config；不得带入 OpenCode、未选 Adapter 的 path/mode 或跨 Adapter config。Pi/Qwen 不得携带 authority config，Qoder/Codex 只能携带本 Adapter allowlist 内的 config。`PATH` 必须包含所选 launcher 的精确 runtime 目录（例如 Pi 的 Node 目录），否则 doctor probe 会在 Worker 启动前确定性失败。生成器自动收集所选 Adapter 的精确 allowlist，缺任一必需键或存在任何 governed env 污染都会 fail closed，不能由调用者漏报 `--launch-key`。真正执行 `doctor` 与 `task run` 时必须显式复用同一个 `env -i` 集合和值。
 
-生成器与 validator 复用同一份采样和投影实现，写入 observation 后立即再次完整验证；exit 0、`status=pass` 且 `reasonCode=operator-receipt-created-and-valid` 只表示同一次普通宿主采样内部一致，不能授权、阻止或替代 Core `task run`。生成器不改变 Core state、不启动 Worker、不记录 launch env value。`pi`/`qwen` 没有 authority mode env，必须使用 `--adapter-mode host-user`；Qoder/Codex Mac 普通用户 profile 使用 `ordinary-user`。`host-user` 只陈述普通宿主进程事实，不得解释为 delegated authority、hardened sandbox 或 Linux authority；v3 不接受含混的 `strict` 自报模式。
+生成器与 validator 复用同一份采样和投影实现，写入 observation 后立即再次完整验证；exit 0、`status=pass` 且 `reasonCode=operator-receipt-created-and-valid` 只表示同一次普通宿主采样内部一致，不能授权、阻止或替代 Core `task run`。输出必须是 `.marshal`、run root、state/control、任务 worktree、workspace、固定 `bin/marshal`、watch script、Marshal Skill 与输入之外的全新 0600 regular file；生成器在任何动态 probe 前拒绝既有目标，并持有 nofollow parent identity，以 no-clobber 方式发布，绝不替换 symlink 或既有文件。生成器不改变 Core state、不启动 Worker、不记录 launch env value。`pi`/`qwen` 没有 authority mode env，必须使用 `--adapter-mode host-user`；Qoder/Codex Mac 普通用户 profile 使用 `ordinary-user`。`host-user` 只陈述普通宿主进程事实，不得解释为 delegated authority、hardened sandbox 或 Linux authority；v3 不接受含混的 `strict` 自报模式。
 
 Observation 不是 `marshal.dev` contract，不得写入 `.marshal` 或冒充 Core authority。它仅记录：
 
@@ -69,7 +69,7 @@ Observation 不是 `marshal.dev` contract，不得写入 `.marshal` 或冒充 Co
 - 精确 plan `ApprovalRecord`、Core state/control 相对路径、机械 validator 使用的 Marshal/Watch 工具 identity；
 - 显式 launch env 的排序 key allowlist 和 canonical key/value digest。0600 observation 为了复核 identity 必然包含 canonical Adapter/worktree 路径；stdout、validator 输出和日志不得回显这些路径、env value 或 secret。
 
-有效期最多 60 秒。`jq` 只做低成本形状 lint，不提供 admission：
+时间字段统一使用严格 RFC3339 UTC `Z`（秒后只允许 1–9 位小数），有效期最多 60 秒。生成器在实际写入前重检 TTL；validator 在初读、doctor/watch 动态 probe 后、最终 fd/bytes/identity 复核后各重检一次。device/inode 在 Schema、Python 与 `jq` 中统一为非负整数。`jq` 只做低成本形状 lint，不提供 admission：
 
 ```bash
 jq -e -f .agents/skills/marshal/references/validate-admission-receipt.jq RECEIPT.json

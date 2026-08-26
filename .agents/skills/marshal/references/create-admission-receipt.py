@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import platform
 import secrets
+import stat
 import sys
 
 
@@ -68,13 +69,12 @@ def select_latest_approval(records: list[dict], state: dict) -> dict:
 
 
 def launch_environment(adapter_id: str, adapter_mode: str) -> tuple[list[str], dict[str, str]]:
-    keys = sorted(key for key in V.ALLOWED_LAUNCH_ENV if key in os.environ)
-    required = set(V.REQUIRED_LAUNCH_ENV) | {V.ADAPTER_ENV[adapter_id]}
+    allowed = V.allowed_launch_env(adapter_id)
+    keys = sorted(key for key in allowed if key in os.environ)
+    required = V.required_launch_env(adapter_id, adapter_mode)
     mode_key = V.MODE_ENV.get(adapter_id)
-    if adapter_mode == "ordinary-user" and mode_key is not None:
-        required.add(mode_key)
-    forbidden = (set(V.ADAPTER_ENV.values()) - {V.ADAPTER_ENV[adapter_id]}) | (set(V.MODE_ENV.values()) - ({mode_key} if mode_key else set()))
-    if not required.issubset(keys) or forbidden.intersection(keys):
+    polluted = {key for key in V.GOVERNED_LAUNCH_ENV if key in os.environ and key not in allowed}
+    if not required.issubset(keys) or polluted:
         fail("launch-environment-invalid")
     values: dict[str, str] = {}
     for key in keys:
@@ -96,7 +96,113 @@ def launch_environment(adapter_id: str, adapter_mode: str) -> tuple[list[str], d
     return keys, values
 
 
-def create(args: argparse.Namespace) -> dict:
+class OutputTarget:
+    """Hold a new, nofollow output parent and never replace an existing name."""
+
+    def __init__(self, operator_root: Path, relative: str):
+        relative = V.clean_relative(relative)
+        self.path = operator_root / relative
+        if ".marshal" in self.path.parts:
+            fail("receipt-output-boundary-invalid")
+        self.parent_fd = V.open_dir_nofollow(self.path.parent)
+        self.parent_identity = self._directory_identity(self.parent_fd)
+        try:
+            os.stat(self.path.name, dir_fd=self.parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            self.close()
+            fail("receipt-output-invalid")
+        else:
+            self.close()
+            fail("receipt-output-exists")
+
+    @staticmethod
+    def _directory_identity(descriptor: int) -> tuple[int, int]:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISDIR(metadata.st_mode):
+            fail("receipt-output-invalid")
+        return metadata.st_dev, metadata.st_ino
+
+    @staticmethod
+    def _path_identity(path: Path) -> tuple[int, int]:
+        descriptor = V.open_dir_nofollow(path)
+        try:
+            return OutputTarget._directory_identity(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _verify_parent(self) -> None:
+        if self._directory_identity(self.parent_fd) != self.parent_identity:
+            fail("receipt-output-drift")
+        descriptor = V.open_dir_nofollow(self.path.parent)
+        try:
+            if self._directory_identity(descriptor) != self.parent_identity:
+                fail("receipt-output-drift")
+        finally:
+            os.close(descriptor)
+
+    def assert_isolated(self, *protected_roots: Path) -> None:
+        protected = {self._path_identity(V.absolute_clean(path)) for path in protected_roots}
+        current = self.path.parent
+        while True:
+            if self._path_identity(current) in protected:
+                fail("receipt-output-boundary-invalid")
+            if current == Path(current.anchor):
+                break
+            current = current.parent
+        self._verify_parent()
+
+    def write(self, receipt: dict) -> None:
+        V.validate_receipt_freshness(receipt)
+        self._verify_parent()
+        payload = json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+        if len(payload) > V.MAX_RECEIPT_BYTES:
+            fail("receipt-output-invalid")
+        temporary = "." + self.path.name + "." + secrets.token_hex(8) + ".new"
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600, dir_fd=self.parent_fd,
+            )
+            os.fchmod(descriptor, 0o600)
+            written = 0
+            while written < len(payload):
+                written += os.write(descriptor, payload[written:])
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            self._verify_parent()
+            os.link(temporary, self.path.name, src_dir_fd=self.parent_fd,
+                    dst_dir_fd=self.parent_fd, follow_symlinks=False)
+            os.unlink(temporary, dir_fd=self.parent_fd)
+            temporary = ""
+            os.fsync(self.parent_fd)
+        except V.AdmissionError:
+            raise
+        except OSError:
+            fail("receipt-output-invalid")
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temporary:
+                try:
+                    os.unlink(temporary, dir_fd=self.parent_fd)
+                except OSError:
+                    pass
+
+    def close(self) -> None:
+        descriptor = getattr(self, "parent_fd", -1)
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            self.parent_fd = -1
+
+
+def create(args: argparse.Namespace, output_target: OutputTarget) -> dict:
     operator_root = V.absolute_clean(Path(args.operator_root))
     run_root = V.absolute_clean(Path(args.run_root))
     workspace_root = V.absolute_clean(Path(args.workspace_root))
@@ -113,6 +219,9 @@ def create(args: argparse.Namespace) -> dict:
     launch_keys, env_values = launch_environment(args.adapter_id, args.adapter_mode)
     executable_path = V.absolute_clean(Path(env_values[V.ADAPTER_ENV[args.adapter_id]]))
     worktree_path = V.absolute_clean(Path(state.get("worktreePath", "")))
+    output_target.assert_isolated(
+        run_root, workspace_root, worktree_path, Path(__file__).resolve().parent.parent,
+    )
     held_files: list[object] = []
     held_worktree = None
     try:
@@ -205,48 +314,6 @@ def create(args: argparse.Namespace) -> dict:
             held.close()
 
 
-def write_receipt(operator_root: Path, relative: str, receipt: dict) -> None:
-    relative = V.clean_relative(relative)
-    target = operator_root / relative
-    payload = json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
-    if len(payload) > V.MAX_RECEIPT_BYTES:
-        fail("receipt-output-invalid")
-    parent_fd = V.open_dir_nofollow(target.parent)
-    temporary_path = ""
-    descriptor = -1
-    try:
-        temporary_path = "." + target.name + "." + secrets.token_hex(8) + ".new"
-        descriptor = os.open(
-            temporary_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=parent_fd,
-        )
-        os.fchmod(descriptor, 0o600)
-        written = 0
-        while written < len(payload):
-            written += os.write(descriptor, payload[written:])
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = -1
-        os.replace(
-            temporary_path, target.name,
-            src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
-        )
-        temporary_path = ""
-    except OSError:
-        fail("receipt-output-invalid")
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        if temporary_path:
-            try:
-                os.unlink(temporary_path, dir_fd=parent_fd)
-            except OSError:
-                pass
-        os.close(parent_fd)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--operator-root", required=True)
@@ -258,10 +325,12 @@ def main() -> int:
     parser.add_argument("--state-path", default="state.json")
     parser.add_argument("--control-records-path", default="control/records.jsonl")
     args = parser.parse_args()
+    output_target = None
     try:
         root = V.absolute_clean(Path(args.operator_root))
-        receipt = create(args)
-        write_receipt(root, args.receipt, receipt)
+        output_target = OutputTarget(root, args.receipt)
+        receipt = create(args, output_target)
+        output_target.write(receipt)
         validation = V.validate(argparse.Namespace(
             operator_root=args.operator_root,
             receipt=args.receipt,
@@ -277,6 +346,9 @@ def main() -> int:
     except Exception:
         print(json.dumps({"status": "fail", "reasonCode": "generator-internal-error"}, sort_keys=True, separators=(",", ":")))
         return 2
+    finally:
+        if output_target is not None:
+            output_target.close()
 
 
 if __name__ == "__main__":
