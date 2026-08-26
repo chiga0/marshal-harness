@@ -45,6 +45,75 @@ func TestValidateArtifactChainAcceptsGeneratedSourceChain(t *testing.T) {
 	}
 }
 
+func TestValidateBuildRecordChainAcceptsBothSourceModes(t *testing.T) {
+	t.Parallel()
+	for _, generated := range []bool{false, true} {
+		generated := generated
+		t.Run(map[bool]string{false: "no-generator", true: "generated"}[generated], func(t *testing.T) {
+			t.Parallel()
+			fixture := newChainFixture(t, generated)
+			verified, err := mustValidator(t).ValidateBuildRecordChain(projectBuildRecordRaw(fixture.raw), projectBuildRecordPolicy(fixture.policy))
+			if err != nil {
+				t.Fatalf("ValidateBuildRecordChain: %v", err)
+			}
+			if (verified.GeneratedSourceStage != nil) != generated || verified.BuildRecord.RecordDigest == "" {
+				t.Fatal("verified pre-sign projection is incomplete")
+			}
+		})
+	}
+}
+
+func TestValidateBuildRecordChainRejectsReboundCandidateAndPolicyFacts(t *testing.T) {
+	t.Parallel()
+	cases := map[string]func(*chainFixture){
+		"external-policy": func(f *chainFixture) {
+			f.policy.ExpectedEnvironmentPolicyDigest = digest("other-environment-policy")
+		},
+		"record": func(f *chainFixture) {
+			var record MarshalArtifactBuildRecordV1
+			mustUnmarshal(t, f.raw.BuildRecord, &record)
+			record.BuildInvocationDigest = digest("candidate-selected-invocation")
+			f.raw.BuildRecord = signRecord(t, record, f.recordKey)
+		},
+		"source": func(f *chainFixture) {
+			var source SourceManifestV1
+			mustUnmarshal(t, f.raw.SourceManifest, &source)
+			source.BuildInvocationDigest = digest("candidate-selected-invocation")
+			resignFromSource(t, f, source)
+		},
+		"external-material": func(f *chainFixture) {
+			var material ExternalBuildMaterialManifestV1
+			mustUnmarshal(t, f.raw.ExternalMaterialManifests[0], &material)
+			material.Entries[0].SourceIdentity = "candidate-selected-source"
+			f.raw.ExternalMaterialManifests[0] = marshalWithDigest(t, material, "manifestDigest")
+			rebindExternalChain(t, f, false)
+		},
+		"material-reference": func(f *chainFixture) {
+			for digest, expectation := range f.policy.ExpectedExternalMaterials {
+				for key := range expectation.Entries {
+					expectation.Entries[key] = []string{"candidate-selected-reference"}
+					f.policy.ExpectedExternalMaterials[digest] = expectation
+					return
+				}
+			}
+		},
+		"toolchain": func(f *chainFixture) {
+			f.policy.ExpectedToolchainMaterialDigest = digest("candidate-selected-toolchain")
+		},
+	}
+	for name, mutate := range cases {
+		name, mutate := name, mutate
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newChainFixture(t, false)
+			mutate(&fixture)
+			if _, err := mustValidator(t).ValidateBuildRecordChain(projectBuildRecordRaw(fixture.raw), projectBuildRecordPolicy(fixture.policy)); err == nil {
+				t.Fatal("rebound pre-sign chain escaped external/current policy")
+			}
+		})
+	}
+}
+
 func TestRootSchemaRejectsArbitraryJSON(t *testing.T) {
 	t.Parallel()
 	validator := mustValidator(t)

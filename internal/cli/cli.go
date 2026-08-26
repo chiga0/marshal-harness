@@ -123,6 +123,8 @@ func runInternal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	switch args[0] {
+	case "artifact-attestation-check":
+		return runInternalArtifactAttestationCheck(args[1:], stdin, stdout, stderr)
 	case "qoder-transcript-check":
 		return runInternalQoderTranscriptCheck(args[1:], stdin, stdout, stderr)
 	case "plan-premortem-check":
