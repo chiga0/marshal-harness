@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Fail-closed mechanical validation for an operator-local admission receipt.
+"""Validate a non-authoritative operator-local admission observation.
 
-The receipt is never Core authority.  This program re-samples every mutable
-admission binding immediately before ``task run`` and emits only digests and a
-fixed reason code.  It deliberately does not echo executable paths,
-environment values, subprocess output, or exception text.
+The observation is never Core authority and cannot close hostile pathname ABA
+on an ordinary host. This program re-samples mutable bindings and emits only
+digests and a fixed reason code. It deliberately does not echo executable
+paths, environment values, subprocess output, or exception text.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ COMMAND_TIMEOUT_SECONDS = 45
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
+ZTIME_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z$")
 
 ADAPTER_ENV = {
     "qoder": "MARSHAL_QODER_PATH",
@@ -41,19 +42,51 @@ ADAPTER_ENV = {
     "pi": "MARSHAL_PI_PATH",
 }
 MODE_ENV = {"qoder": "MARSHAL_QODER_MODE", "codex": "MARSHAL_CODEX_MODE"}
-ALLOWED_LAUNCH_ENV = {
+COMMON_LAUNCH_ENV = {
     "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL",
-    "MARSHAL_OPENCODE_PATH", "MARSHAL_QWEN_PATH", "MARSHAL_QODER_PATH",
-    "MARSHAL_CODEX_PATH", "MARSHAL_PI_PATH", "MARSHAL_QODER_MODE",
-    "MARSHAL_CODEX_MODE", "MARSHAL_QODER_CONFORMANCE_CONFIG",
-    "MARSHAL_CODEX_AUTHORITY_CONFIG", "MARSHAL_APAP_ENDPOINT",
-    "MARSHAL_DARWIN_LAUNCHD_CONFIG", "MARSHAL_QODER_FENCE_DIGEST",
-    "MARSHAL_QODER_FENCE_GENERATION", "MARSHAL_QODER_FENCE_HELPER",
-    "MARSHAL_QODER_FENCE_ROOT", "MARSHAL_WATCH_NOTIFY",
+    "MARSHAL_WATCH_NOTIFY",
     "MARSHAL_WATCH_COHORT_FILE", "MARSHAL_WATCH_CURRENT_WINDOW_SECONDS",
     "MARSHAL_WATCH_WORKER_RESERVE_BYTES",
     "MARSHAL_WATCH_PROVIDER_FAILURE_HOLD_SECONDS",
 }
+REQUIRED_COMMON_LAUNCH_ENV = {
+    "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL",
+    "MARSHAL_WATCH_NOTIFY", "MARSHAL_WATCH_COHORT_FILE",
+}
+ADAPTER_OPTIONAL_ENV = {
+    "qoder": {
+        "MARSHAL_QODER_CONFORMANCE_CONFIG", "MARSHAL_APAP_ENDPOINT",
+        "MARSHAL_DARWIN_LAUNCHD_CONFIG", "MARSHAL_QODER_FENCE_DIGEST",
+        "MARSHAL_QODER_FENCE_GENERATION", "MARSHAL_QODER_FENCE_HELPER",
+        "MARSHAL_QODER_FENCE_ROOT",
+    },
+    "codex": {
+        "MARSHAL_CODEX_AUTHORITY_CONFIG", "MARSHAL_APAP_ENDPOINT",
+        "MARSHAL_DARWIN_LAUNCHD_CONFIG",
+    },
+    "qwen": set(),
+    "pi": set(),
+}
+GOVERNED_LAUNCH_ENV = (
+    set(ADAPTER_ENV.values()) | set(MODE_ENV.values())
+    | set().union(*ADAPTER_OPTIONAL_ENV.values()) | {"MARSHAL_OPENCODE_PATH"}
+)
+
+
+def allowed_launch_env(adapter_id: str) -> set[str]:
+    allowed = set(COMMON_LAUNCH_ENV) | {ADAPTER_ENV[adapter_id]} | set(ADAPTER_OPTIONAL_ENV[adapter_id])
+    mode_key = MODE_ENV.get(adapter_id)
+    if mode_key is not None:
+        allowed.add(mode_key)
+    return allowed
+
+
+def required_launch_env(adapter_id: str, mode: str) -> set[str]:
+    required = set(REQUIRED_COMMON_LAUNCH_ENV) | {ADAPTER_ENV[adapter_id]}
+    mode_key = MODE_ENV.get(adapter_id)
+    if mode == "ordinary-user" and mode_key is not None:
+        required.add(mode_key)
+    return required
 
 
 class AdmissionError(Exception):
@@ -77,11 +110,16 @@ class HeldRegular:
         try:
             self.fd = os.open(self.path.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=self.parent_fd)
             self.identity, self.digest = self._sample_fd(self.fd)
-        except Exception:
+        except AdmissionError:
             if hasattr(self, "fd"):
                 os.close(self.fd)
             os.close(self.parent_fd)
             raise
+        except OSError:
+            if hasattr(self, "fd"):
+                os.close(self.fd)
+            os.close(self.parent_fd)
+            fail(self.reason)
 
     def _sample_fd(self, descriptor: int) -> tuple[tuple[int, int, int, int, int], str]:
         try:
@@ -211,13 +249,21 @@ def parse_json(data: bytes, reason: str) -> dict:
 
 
 def parse_time(value: object) -> datetime:
-    if not isinstance(value, str) or not value.endswith("Z"):
+    if not isinstance(value, str) or not ZTIME_RE.fullmatch(value):
         fail("receipt-time-invalid")
     try:
         parsed = datetime.fromisoformat(value[:-1] + "+00:00")
     except ValueError:
         fail("receipt-time-invalid")
     return parsed.astimezone(timezone.utc)
+
+
+def validate_receipt_freshness(receipt: dict) -> None:
+    observed = parse_time(receipt["observedAt"])
+    valid_until = parse_time(receipt["validUntil"])
+    now = datetime.now(timezone.utc)
+    if valid_until < observed or (valid_until - observed).total_seconds() > 60 or now < observed or now > valid_until:
+        fail("receipt-expired")
 
 
 def absolute_clean(path: Path) -> Path:
@@ -375,7 +421,7 @@ def validate_receipt_shape(receipt: dict) -> None:
         "adapter", "worktree", "files", "planApproval", "launchEnvironment",
         "tooling", "dynamicEvidence", "checks", "decision", "reasonCode",
     }, "receipt-shape-invalid")
-    if receipt["format"] != "marshal-skill/operator-admission-receipt-v2" or receipt["authority"] != "operator-local-non-core":
+    if receipt["format"] != "marshal-skill/operator-admission-receipt-v3" or receipt["authority"] != "operator-local-non-core":
         fail("receipt-shape-invalid")
     if not all(isinstance(receipt[field], str) and ID_RE.fullmatch(receipt[field]) for field in ("taskId", "runId")):
         fail("receipt-shape-invalid")
@@ -384,33 +430,30 @@ def validate_receipt_shape(receipt: dict) -> None:
             fail("receipt-shape-invalid")
     bindings = require_keys(receipt["bindings"], {
         "sourceHead", "baseSha", "specDigest", "policyDigest", "capabilityDigest",
-        "runStateDigest", "planApprovalDigest", "adapterConfigDigest",
-        "eventContractDigest", "resultTransportDigest", "permissionProfileDigest",
+        "runStateDigest", "planApprovalDigest",
     }, "receipt-shape-invalid")
     require_sha(bindings["sourceHead"]); require_sha(bindings["baseSha"])
     for field in set(bindings) - {"sourceHead", "baseSha"}:
         require_digest(bindings[field])
-    host = require_keys(receipt["host"], {"os", "arch", "fingerprintDigest"}, "receipt-shape-invalid")
+    host = require_keys(receipt["host"], {"os", "arch"}, "receipt-shape-invalid")
     if host["os"] not in {"darwin", "linux"} or host["arch"] not in {"arm64", "amd64"}:
         fail("receipt-shape-invalid")
-    require_digest(host["fingerprintDigest"])
     adapter = require_keys(receipt["adapter"], {
-        "id", "mode", "binaryVersion", "permissionMode", "resultPathIdentityDigest", "executable",
+        "id", "mode", "binaryVersion", "executable",
     }, "receipt-shape-invalid")
-    if adapter["id"] not in ADAPTER_ENV or adapter["mode"] not in {"ordinary-user", "strict"}:
+    if adapter["id"] not in ADAPTER_ENV or adapter["mode"] not in {"host-user", "ordinary-user"}:
         fail("receipt-shape-invalid")
-    if not isinstance(adapter["binaryVersion"], str) or not adapter["binaryVersion"] or not isinstance(adapter["permissionMode"], str) or not adapter["permissionMode"]:
+    if not isinstance(adapter["binaryVersion"], str) or not adapter["binaryVersion"]:
         fail("receipt-shape-invalid")
-    require_digest(adapter["resultPathIdentityDigest"])
     executable = require_keys(adapter["executable"], {"canonicalPath", "digest", "device", "inode"}, "receipt-shape-invalid")
     absolute_clean(Path(executable["canonicalPath"])) if isinstance(executable["canonicalPath"], str) else fail("receipt-shape-invalid")
     require_digest(executable["digest"])
     for field in ("device", "inode"):
         if isinstance(executable[field], bool) or not isinstance(executable[field], int) or executable[field] < 0:
             fail("receipt-shape-invalid")
-    worktree = require_keys(receipt["worktree"], {"canonicalPath", "headSha", "statusDigest", "scopeLeaseDigest"}, "receipt-shape-invalid")
+    worktree = require_keys(receipt["worktree"], {"canonicalPath", "headSha", "statusDigest"}, "receipt-shape-invalid")
     absolute_clean(Path(worktree["canonicalPath"])) if isinstance(worktree["canonicalPath"], str) else fail("receipt-shape-invalid")
-    require_sha(worktree["headSha"]); require_digest(worktree["statusDigest"]); require_digest(worktree["scopeLeaseDigest"])
+    require_sha(worktree["headSha"]); require_digest(worktree["statusDigest"])
     files = require_keys(receipt["files"], {"statePath", "controlRecordsPath"}, "receipt-shape-invalid")
     clean_relative(files["statePath"]); clean_relative(files["controlRecordsPath"])
     approval = require_keys(receipt["planApproval"], {"recordId", "controlSequence"}, "receipt-shape-invalid")
@@ -421,7 +464,7 @@ def validate_receipt_shape(receipt: dict) -> None:
     launch = require_keys(receipt["launchEnvironment"], {"keys", "digest"}, "receipt-shape-invalid")
     if not isinstance(launch["keys"], list) or not launch["keys"] or any(not isinstance(key, str) for key in launch["keys"]):
         fail("launch-environment-invalid")
-    if launch["keys"] != sorted(launch["keys"]) or len(launch["keys"]) != len(set(launch["keys"])) or any(key not in ALLOWED_LAUNCH_ENV for key in launch["keys"]):
+    if launch["keys"] != sorted(launch["keys"]) or len(launch["keys"]) != len(set(launch["keys"])) or any(key not in allowed_launch_env(adapter["id"]) for key in launch["keys"]):
         fail("launch-environment-invalid")
     require_digest(launch["digest"])
     tooling = require_keys(receipt["tooling"], {"marshalExecutable", "watchScript"}, "receipt-shape-invalid")
@@ -434,10 +477,9 @@ def validate_receipt_shape(receipt: dict) -> None:
     for value in evidence.values(): require_digest(value)
     checks = require_keys(receipt["checks"], {
         "stateReady", "currentPlanApproved", "doctorConfigured", "doctorSupported",
-        "worktreeClean", "scopeExclusive", "capacityAvailable",
-        "providerBackpressureAbsent", "acceptancePure",
+        "worktreeClean", "capacityAvailable", "providerBackpressureAbsent",
     }, "receipt-shape-invalid")
-    if any(value is not True for value in checks.values()) or receipt["decision"] != "admit" or receipt["reasonCode"] != "admitted":
+    if any(value is not True for value in checks.values()) or receipt["decision"] != "observe" or receipt["reasonCode"] != "operator-sampled":
         fail("receipt-self-check-denied")
 
 
@@ -501,6 +543,15 @@ def validate_state(receipt: dict, state: dict) -> None:
 
 def launch_environment(receipt: dict) -> dict[str, str]:
     keys = receipt["launchEnvironment"]["keys"]
+    adapter_id = receipt["adapter"]["id"]
+    mode = receipt["adapter"]["mode"]
+    required = required_launch_env(adapter_id, mode)
+    mode_key = MODE_ENV.get(adapter_id)
+    allowed = allowed_launch_env(adapter_id)
+    polluted = {key for key in GOVERNED_LAUNCH_ENV if key in os.environ and key not in allowed}
+    unbound = {key for key in allowed if key in os.environ and key not in keys}
+    if not required.issubset(keys) or any(key not in allowed for key in keys) or polluted or unbound:
+        fail("launch-environment-invalid")
     values: dict[str, str] = {}
     for key in keys:
         value = os.environ.get(key)
@@ -509,15 +560,14 @@ def launch_environment(receipt: dict) -> dict[str, str]:
         values[key] = value
     if canonical_digest(values) != receipt["launchEnvironment"]["digest"]:
         fail("launch-environment-drift")
-    adapter_id = receipt["adapter"]["id"]
     if values.get(ADAPTER_ENV[adapter_id]) != receipt["adapter"]["executable"]["canonicalPath"]:
         fail("launch-executable-binding-mismatch")
-    mode_key = MODE_ENV.get(adapter_id)
-    if receipt["adapter"]["mode"] == "ordinary-user":
+    if receipt["adapter"]["mode"] == "host-user":
+        if adapter_id not in {"pi", "qwen"} or mode_key is not None:
+            fail("launch-authority-mode-mismatch")
+    elif receipt["adapter"]["mode"] == "ordinary-user":
         if mode_key is None or values.get(mode_key) != "ordinary-user":
             fail("launch-authority-mode-mismatch")
-    elif mode_key is not None and values.get(mode_key, "") != "":
-        fail("launch-authority-mode-mismatch")
     if values.get("MARSHAL_WATCH_NOTIFY") != "0":
         fail("launch-environment-invalid")
     return values
@@ -560,7 +610,8 @@ def projection_doctor(receipt: dict, report: dict, executable_digest: str) -> di
         fail("doctor-not-supported")
     expected_mode = receipt["adapter"]["mode"]
     actual_mode = worker.get("authorityMode", "")
-    if (expected_mode == "ordinary-user" and actual_mode != "ordinary-user") or (expected_mode == "strict" and actual_mode != ""):
+    if ((expected_mode == "ordinary-user" and actual_mode != "ordinary-user")
+            or (expected_mode == "host-user" and actual_mode != "")):
         fail("doctor-authority-mode-mismatch")
     if worker.get("binaryVersion") != receipt["adapter"]["binaryVersion"] or worker.get("executableDigest") != executable_digest or worker.get("environmentVariable") != ADAPTER_ENV[receipt["adapter"]["id"]]:
         fail("doctor-binary-identity-mismatch")
@@ -614,9 +665,7 @@ def validate(args: argparse.Namespace) -> dict:
     receipt_raw, receipt_identity = read_relative(operator_root, args.receipt, "receipt-unreadable", MAX_RECEIPT_BYTES)
     receipt = parse_json(receipt_raw, "receipt-invalid-json")
     validate_receipt_shape(receipt)
-    observed = parse_time(receipt["observedAt"]); valid_until = parse_time(receipt["validUntil"]); now = datetime.now(timezone.utc)
-    if valid_until < observed or (valid_until - observed).total_seconds() > 60 or now < observed or now > valid_until:
-        fail("receipt-expired")
+    validate_receipt_freshness(receipt)
     system = platform.system().lower(); machine = platform.machine().lower()
     arch = "arm64" if machine in {"arm64", "aarch64"} else "amd64" if machine in {"amd64", "x86_64"} else machine
     if receipt["host"]["os"] != system or receipt["host"]["arch"] != arch:
@@ -665,6 +714,7 @@ def validate(args: argparse.Namespace) -> dict:
             fail("capacity-evidence-drift")
         if canonical_digest(provider_projection) != evidence["providerBackpressureDigest"]:
             fail("provider-evidence-drift")
+        validate_receipt_freshness(receipt)
 
         sample_worktree(receipt, held_worktree, initial_worktree)
         executable.verify_path("adapter-executable-drift")
@@ -675,8 +725,9 @@ def validate(args: argparse.Namespace) -> dict:
         receipt_after, receipt_identity_after = read_relative(operator_root, args.receipt, "receipt-unreadable", MAX_RECEIPT_BYTES)
         if state_after != state_raw or state_identity_after != state_identity or control_after != control_raw or control_identity_after != control_identity or receipt_after != receipt_raw or receipt_identity_after != receipt_identity:
             fail("admission-evidence-drift")
+        validate_receipt_freshness(receipt)
         return {
-            "status": "pass", "reasonCode": "admission-receipt-valid",
+            "status": "pass", "reasonCode": "operator-receipt-valid",
             "receiptDigest": digest_bytes(receipt_raw), "stateDigest": canonical_digest(state),
             "approvalDigest": receipt["bindings"]["planApprovalDigest"],
             "executableDigest": executable.digest,

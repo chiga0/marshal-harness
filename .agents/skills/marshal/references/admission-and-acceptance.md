@@ -42,24 +42,40 @@ python3 -I -B .agents/skills/marshal/references/marshal-fastpath-preflight.py \
 
 缺 plan approval、`configured=false`、缺失/陈旧 ReviewPacket、结构性 Adapter failure 必须使用不同 finding 类别；不得把 admission finding 伪装成 Worker/provider failure，也不得靠新 Run 清除。
 
-## Admission receipt
+## Operator-local admission observation（可选诊断）
 
-从 `templates/admission-receipt.json` 生成短寿命 operator-local receipt。它不是 `marshal.dev` contract，不得写入 `.marshal` 或冒充 Core authority。Receipt 必须绑定：
+Core 的 `task run` 是唯一 admission authority。普通 Mac fast path 不要求 operator receipt 才能运行；scope 独占、acceptance purity 与 result-path 可写性仍必须由本章前述独立 preflight 关闭。需要定位路径、版本或容量漂移时，可以使用固定 Python 源文件生成并即时验证短寿命 operator-local observation，禁止手填动态字段：
+
+```bash
+python3 -I -B .agents/skills/marshal/references/create-admission-receipt.py \
+  --operator-root OPERATOR_ROOT \
+  --receipt admission-receipt.json \
+  --run-root RUN_ROOT \
+  --workspace-root WORKSPACE_ROOT \
+  --adapter-id ADAPTER_ID \
+  --adapter-mode ADAPTER_MODE
+```
+
+生成命令本身必须由 `env -i` 启动，只注入 `HOME`、`PATH`、`TMPDIR`、`LANG`、`LC_ALL`、`MARSHAL_WATCH_NOTIFY=0`、`MARSHAL_WATCH_COHORT_FILE`、所选 Adapter path，以及 Qoder/Codex 各自所需的 mode/config；不得带入 OpenCode、未选 Adapter 的 path/mode 或跨 Adapter config。Pi/Qwen 不得携带 authority config，Qoder/Codex 只能携带本 Adapter allowlist 内的 config。`PATH` 必须包含所选 launcher 的精确 runtime 目录（例如 Pi 的 Node 目录），否则 doctor probe 会在 Worker 启动前确定性失败。生成器自动收集所选 Adapter 的精确 allowlist，缺任一必需键或存在任何 governed env 污染都会 fail closed，不能由调用者漏报 `--launch-key`。真正执行 `doctor` 与 `task run` 时必须显式复用同一个 `env -i` 集合和值。
+
+生成器与 validator 复用同一份采样和投影实现，写入 observation 后立即再次完整验证；exit 0、`status=pass` 且 `reasonCode=operator-receipt-created-and-valid` 只表示同一次普通宿主采样内部一致，不能授权、阻止或替代 Core `task run`。输出必须是 `.marshal`、run root、state/control、任务 worktree、workspace、固定 `bin/marshal`、watch script、Marshal Skill 与输入之外的全新 0600 regular file；生成器在任何动态 probe 前拒绝既有目标，并持有 nofollow parent identity，以 no-clobber 方式发布，绝不替换 symlink 或既有文件。生成器不改变 Core state、不启动 Worker、不记录 launch env value。`pi`/`qwen` 没有 authority mode env，必须使用 `--adapter-mode host-user`；Qoder/Codex Mac 普通用户 profile 使用 `ordinary-user`。`host-user` 只陈述普通宿主进程事实，不得解释为 delegated authority、hardened sandbox 或 Linux authority；v3 不接受含混的 `strict` 自报模式。
+
+Observation 不是 `marshal.dev` contract，不得写入 `.marshal` 或冒充 Core authority。它仅记录：
 
 - 当前 source/spec/policy/capability/base/state/approval；
-- host OS/arch、Adapter config、精确 executable path/digest/device/inode；
-- permission/result-path identity、worktree/scope；
+- host OS/arch、精确 Adapter executable path/digest/device/inode；
+- worktree HEAD/clean status；
 - doctor、capacity、backpressure 的稳定 admission 投影摘要；
 - 精确 plan `ApprovalRecord`、Core state/control 相对路径、机械 validator 使用的 Marshal/Watch 工具 identity；
-- 显式 launch env 的排序 key allowlist 和 canonical key/value digest。Receipt、validator 输出和日志都不得记录这些 env 的值、路径或 secret。
+- 显式 launch env 的排序 key allowlist 和 canonical key/value digest。0600 observation 为了复核 identity 必然包含 canonical Adapter/worktree 路径；stdout、validator 输出和日志不得回显这些路径、env value 或 secret。
 
-有效期最多 60 秒。`jq` 只做低成本形状 lint，不提供最终 admit：
+时间字段统一使用严格 RFC3339 UTC `Z`（秒后只允许 1–9 位小数），有效期最多 60 秒。生成器在实际写入前重检 TTL；validator 在初读、doctor/watch 动态 probe 后、最终 fd/bytes/identity 复核后各重检一次。device/inode 在 Schema、Python 与 `jq` 中统一为非负整数。`jq` 只做低成本形状 lint，不提供 admission：
 
 ```bash
 jq -e -f .agents/skills/marshal/references/validate-admission-receipt.jq RECEIPT.json
 ```
 
-最终 admit 必须由相邻 Python validator 在同一显式 env 下重新执行 fresh `doctor --run` 和一次 watchdog 采样，并在命令前后复核 state/control/receipt identity：
+需要诊断动态漂移时，相邻 Python validator 在同一显式 env 下重新执行 fresh `doctor --run` 和一次 watchdog 采样，并在命令前后复核 state/control/observation identity：
 
 ```bash
 python3 -I -B .agents/skills/marshal/references/validate-admission-receipt.py \
@@ -69,9 +85,11 @@ python3 -I -B .agents/skills/marshal/references/validate-admission-receipt.py \
   --workspace-root WORKSPACE_ROOT
 ```
 
-只有 exit 0、`status=pass` 且 `reasonCode=admission-receipt-valid` 才允许立刻执行一次 `task run`。Validator 逐级 nofollow、有界读取并重算 Adapter executable device/inode/raw digest、worktree HEAD/clean/status、READY state、plan approval binding、host identity；Adapter/Marshal/Watch regular file 与 worktree directory 的 exact fd 必须持有到所有动态命令结束，随后重新逐级 nofollow 打开 pathname 并比较 device/inode/size/mtime/raw digest，worktree 还须重采 HEAD 与 porcelain-z status。fresh doctor 必须证明 `configured=true`、`registered=true`、`compatibility=supported`、精确 `authorityMode`/binary identity，watchdog 必须证明 `pressure/cpu/provider/queueSignalStatus=ok`、`slotsAvailable>=1` 且所选 Adapter `status=available`。`dynamicEvidence` 的 digest 分别绑定 doctor 的选中 Adapter/Run 稳定投影、capacity admission 分类投影和所选 Provider signal 投影，不绑定会自然波动的原始内存/load 数值。
+exit 0、`status=pass` 且 `reasonCode=operator-receipt-valid` 仍只是诊断结论。Validator 逐级 nofollow、有界读取并重算 Adapter executable device/inode/raw digest、worktree HEAD/clean/status、READY state、plan approval binding、host identity；Adapter/Marshal/Watch regular file 与 worktree directory 的 exact fd 持有到动态命令结束，再比较 device/inode/size/mtime/raw digest，worktree还会重采 HEAD 与 porcelain-z status。fresh doctor 必须观察到 `configured=true`、`registered=true`、`compatibility=supported`、精确 `authorityMode`/binary identity，watchdog 必须观察到 `pressure/cpu/provider/queueSignalStatus=ok`、`slotsAvailable>=1` 且所选 Adapter `status=available`。`dynamicEvidence` 的 digest 只绑定稳定分类投影，不绑定自然波动的原始内存/load 数值。
 
-任一 tuple、sequence、digest、工具 identity、时效、容量、背压或 state/control identity 改变立即 fail closed；固定 `reasonCode` 原样保存，不重复 `task run`。复用的是证据摘要，不是 Core 状态副作用。`scopeLeaseDigest`、acceptance purity 等非动态门禁仍须在生成 receipt 前各自完成；Python validator 不把它们的自报布尔值升级成 Core authority。
+普通用户进程无法在不引入 OS/Core authority 的前提下证明 hostile pathname ABA 永远没有发生，因此该 observation 不得被升级成最终 gate。正常 fast path 在独立 preflight 通过后，直接以同一显式 `env -i` 依次运行固定稳定路径的 `bin/marshal doctor --run ... --json` 与一次 `bin/marshal task run ...`；Core 在 Attempt admission 时重新校验当前 state、approval 与 Adapter。任何 observation failure 只用于修复输入，不产生 Core 状态，也不得把结构性错误伪装成 Provider failure。
+
+任一 tuple、sequence、digest、工具 identity、时效、容量、背压或 state/control identity 改变会使 observation fail closed；固定 `reasonCode` 原样保存。复用的是诊断摘要，不是 Core 状态副作用。scope 独占、acceptance purity 等门禁必须独立完成；Python validator 不接收这些无法自行机械证明的自报字段。旧 v2 receipt 因包含自报 evidence 且容易形成伪 authority 已退役，不得恢复。
 
 ## 单次 plan pre-mortem
 
