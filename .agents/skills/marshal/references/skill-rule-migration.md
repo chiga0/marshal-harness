@@ -16,6 +16,7 @@
 | WorkerResult transport、Qoder final tee、envelope、路径/目录/读取约束、Codex/Qwen/Pi/OpenCode 特例 | `adapter-promotion-and-mac.md` |
 | event/watchdog、有限动作、交互权、容量/背压、dedupeKey、supervise 风险、fan-out/进程所有权 | `watchdog-and-capacity.md` |
 | 多 Worker 交付监督、完整纵切/WIP、Attempt/rework/machine escape 记账、重复 failure、review 队列、production dependency graph/exit criterion 对齐、continue/freeze/replan/intervene | `delivery-supervision.md` |
+| 单一 operator verdict、规则替换预算、defect-owner routing、Review freshness 的字段级 identity/digest/lineage/原子 claim 细节 | workflow/routing 在 `SKILL.md`、`delivery-supervision.md` 与 `review-and-rework.md`；当前 review freshness operator verdict 位于 Python preflight，固定 internal command 只提供 contract/canonical/Candidate/observation primitive，字段合同由相邻 Schema、实现及其测试拥有 |
 | publish approval、CI checks、accept/reconcile、merge 与远端同步事实 | `publication-and-reconcile.md` |
 | 用户授权的 Harness 本地闭环、纵切交付、按风险去重的工程测试、Web、cleanup、SemVer/release、覆盖率、milestone 声明 | `engineering-and-release.md` |
 

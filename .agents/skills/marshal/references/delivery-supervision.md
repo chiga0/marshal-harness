@@ -80,6 +80,13 @@ Lead 每轮优先消除最高成本的重复 escape，但不得因此把主线�
 
 只把重复出现或能明确预防高成本安全事故的经验提升为 Skill 规则；一次性 provider 细节留在任务证据，避免为每个案例累积全局步骤。优先改确定性 preflight、routing 或默认 WIP，不以新增 reviewer 轮次代替机器检查。
 
+### 规则预算与单一门禁
+
+- 每个 phase 只认一个面向 operator 的机器 verdict。固定 Marshal 内部命令/Core package 拥有它已经实现的 contract、canonical、Candidate 与 observation primitive；Python preflight 可以作为该 phase 的唯一 operator verdict 入口，负责组合这些 primitive、完整 identity/lineage/path 检查、有限 I/O/timeout 和 operator-local claim，但不能另造与 Core 重叠的 Schema 或 digest 语义。
+- 新 reason code、manifest 或检查器必须说明替代哪个旧入口；如果只是覆盖一次 incident，保留为 fixture/issue 证据，不进入 Skill。没有删除或收敛目标的“再加一条检查”默认拒绝。
+- 现有 authority object、typed failure 和 event reason code 能表达的事实，不新增持久 receipt。只有改变 trust boundary、persistence、lifecycle 或 publication authority 时才新建 ADR；普通内部 verdict 保持非权威、纯函数和可重放。
+- reviewer 发现 `machineEscape` 后，按 defect-owner 修复对应 Core/Adapter/preflight test；Skill 最多增加一条 routing 规则。不得把同一字段同时写入 Skill、wrapper、Schema 和 reviewer prompt 四处维护，也不得用新增 reviewer 代替唯一独立 reviewer。
+
 跨 round 复用/重绑 `sourceHead`、ReviewPacket 或 evidence identity 仅登记为 Core 设计候选；Supervisor 不得建议静默复用或降低 freshness/exact identity。改变 trust boundary、persistence、lifecycle 或 publication authority 仍必须先 ADR。
 
 Supervisor 每轮输出应简短且可行动：当前四类建议、命中证据、受阻 exit criterion、review/WIP 状态和 Lead 下一项有限动作。无变化时复用同一 observation digest，不重复制造告警或派新 Worker。
