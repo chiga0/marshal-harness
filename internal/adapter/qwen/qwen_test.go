@@ -234,7 +234,7 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 			if status != test.status || version != test.version || !strings.HasPrefix(digest, "sha256:") || !filepath.IsAbs(executable) {
 				t.Fatalf("snapshot = %s/%s/%s/%s", status, version, digest, executable)
 			}
-			if raw["adapterId"] != adapterID || raw["apiVersion"] != string(domain.APIVersionV1Alpha1) || raw["kind"] != string(domain.KindCapabilitySnapshot) {
+			if raw["adapterId"] != adapterID || raw["apiVersion"] != string(domain.APIVersionV1Alpha1) || raw["kind"] != string(domain.KindCapabilitySnapshot) || raw["authorityMode"] != "ordinary-user" {
 				t.Fatalf("snapshot identity = %v", raw)
 			}
 			probeErrors, _ := raw["probeErrors"].([]any)

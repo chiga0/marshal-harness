@@ -396,7 +396,7 @@ func (a *Adapter) capabilitySnapshot(identity executableIdentity, status string,
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
 		"executable":    identity.path,
-		"binaryVersion": identity.version, "probeStatus": status,
+		"binaryVersion": identity.version, "probeStatus": status, "authorityMode": "ordinary-user",
 		"capabilities": map[string]any{
 			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
 			"sessionPolicies": []string{"ephemeral", "persist", "resume"}, "modelSelection": true,

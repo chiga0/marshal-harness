@@ -16,34 +16,40 @@ import (
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 // Policy validation errors are fixed, categorized strings. They never echo
 // source paths, digests, environment values, or free text from the snapshot,
 // so callers can compare and log them deterministically.
 const (
-	ErrPolicyNilValidator    = "validate policy: nil validator"
-	ErrPolicySchemaInvalid   = "validate policy: schema invalid"
-	ErrPolicyMalformed       = "validate policy: malformed snapshot"
-	ErrPolicyTaskMismatch    = "validate policy: taskId does not match the frozen task"
-	ErrPolicyRunMismatch     = "validate policy: runId does not match the frozen run"
-	ErrPolicyGeneratedAt     = "validate policy: generatedAt is not a valid RFC 3339 timestamp"
-	ErrPolicyDigestMismatch  = "validate policy: policyDigest does not match the detached snapshot digest"
-	ErrPolicySourceDigest    = "validate policy: sources digest is not a valid sha256 digest"
-	ErrPolicyProfileUnknown  = "validate policy: unknown execution profile"
-	ErrPolicyProfile         = "validate policy: task execution profile is below the policy minimum"
-	ErrPolicyPublication     = "validate policy: publication is required but not allowed"
-	ErrPolicyMerge           = "validate policy: merge is not permitted (manual merge is not implemented)"
-	ErrPolicyMergeNotAllowed = "validate policy: merge requires the policy to allow both publication and merge"
-	ErrPolicyMergeProvider   = "validate policy: merge requires provider github and draft mode"
-	ErrPolicyMergeMethod     = "validate policy: merge requires a mergeMethod from the closed merge/squash/rebase enumeration"
-	ErrPolicyMergeChecks     = "validate policy: merge requires non-empty unique requiredChecks"
-	ErrPolicyOpenCode        = "validate policy: OpenCode is ineligible for new tasks"
-	ErrPolicyPreferredEmpty  = "validate policy: task preferredAdapter is empty"
-	ErrPolicyNoAdapters      = "validate policy: allowedAdapters is empty"
-	ErrPolicyNoCandidates    = "validate policy: no explicit task adapter candidate is allowed"
-	ErrPolicyControlGates    = "validate policy: approval gates conflict with autonomy profile"
-	ErrPolicySteering        = "validate policy: mediated steering conflicts with steering round budget"
+	ErrPolicyNilValidator             = "validate policy: nil validator"
+	ErrPolicySchemaInvalid            = "validate policy: schema invalid"
+	ErrPolicyMalformed                = "validate policy: malformed snapshot"
+	ErrPolicyTaskMismatch             = "validate policy: taskId does not match the frozen task"
+	ErrPolicyRunMismatch              = "validate policy: runId does not match the frozen run"
+	ErrPolicyGeneratedAt              = "validate policy: generatedAt is not a valid RFC 3339 timestamp"
+	ErrPolicyDigestMismatch           = "validate policy: policyDigest does not match the detached snapshot digest"
+	ErrPolicySourceDigest             = "validate policy: sources digest is not a valid sha256 digest"
+	ErrPolicyProfileUnknown           = "validate policy: unknown execution profile"
+	ErrPolicyProfile                  = "validate policy: task execution profile is below the policy minimum"
+	ErrPolicyPublication              = "validate policy: publication is required but not allowed"
+	ErrPolicyMerge                    = "validate policy: merge is not permitted (manual merge is not implemented)"
+	ErrPolicyMergeNotAllowed          = "validate policy: merge requires the policy to allow both publication and merge"
+	ErrPolicyMergeProvider            = "validate policy: merge requires provider github and draft mode"
+	ErrPolicyMergeMethod              = "validate policy: merge requires a mergeMethod from the closed merge/squash/rebase enumeration"
+	ErrPolicyMergeChecks              = "validate policy: merge requires non-empty unique requiredChecks"
+	ErrPolicyOpenCode                 = "validate policy: OpenCode is ineligible for new tasks"
+	ErrPolicyPreferredEmpty           = "validate policy: task preferredAdapter is empty"
+	ErrPolicyNoAdapters               = "validate policy: allowedAdapters is empty"
+	ErrPolicyNoCandidates             = "validate policy: no explicit task adapter candidate is allowed"
+	ErrPolicyControlGates             = "validate policy: approval gates conflict with autonomy profile"
+	ErrPolicySteering                 = "validate policy: mediated steering conflicts with steering round budget"
+	ErrPolicyLocalBindingMissing      = "validate policy: local dogfood environment binding is required"
+	ErrPolicyLocalBindingCrossProfile = "validate policy: local dogfood environment binding crossed profiles"
+	ErrPolicyLocalBindingMismatch     = "validate policy: local dogfood environment binding does not match current identity"
+	ErrPolicyLocalSurface             = "validate policy: local dogfood policy grants a prohibited surface"
+	ErrPolicyLocalCapabilityAuthority = "validate policy: local dogfood capability authority is not ordinary-user"
 )
 
 // Acceptance floor errors (issue #87): a control-regime PolicySnapshot is
@@ -93,6 +99,39 @@ type EffectivePolicy struct {
 	DirectPTYPolicy       string
 	MaxSteeringRounds     uint
 	LegacyControl         bool
+	EnvironmentBinding    *LocalDogfoodEnvironmentBinding
+}
+
+const LocalDogfoodEnvironmentBindingSchema = "marshal.local-dogfood-environment-binding.v1"
+
+// LocalDogfoodEnvironmentBinding is the closed, policy-owned applicability
+// binding for ADR 0051. RunState and ApprovalRecord keep referring to it only
+// through PolicyDigest, so this remains the single durable source of truth.
+type LocalDogfoodEnvironmentBinding struct {
+	SchemaVersion         string `json:"schemaVersion"`
+	SelfProfile           string `json:"selfProfile"`
+	ActivationDigest      string `json:"activationDigest"`
+	IdentitySubjectDigest string `json:"identitySubjectDigest"`
+	Assurance             string `json:"assurance"`
+	Execution             string `json:"execution"`
+	Production            bool   `json:"production"`
+	Publication           string `json:"publication"`
+}
+
+// LocalDogfoodEnvironmentBindingForObservation projects one admitted
+// Core-owned observation into the closed fields a policy issuer must copy and
+// reseal. It does not issue or mutate a PolicySnapshot.
+func LocalDogfoodEnvironmentBindingForObservation(observation selfidentity.LocalSelfIdentityObservationV1) LocalDogfoodEnvironmentBinding {
+	return LocalDogfoodEnvironmentBinding{
+		SchemaVersion:         LocalDogfoodEnvironmentBindingSchema,
+		SelfProfile:           selfidentity.LocalProfile,
+		ActivationDigest:      observation.ActivationDigest,
+		IdentitySubjectDigest: observation.IdentitySubjectDigest,
+		Assurance:             "ordinary-user",
+		Execution:             "workspace-write",
+		Production:            false,
+		Publication:           "none",
+	}
 }
 
 // SelectionRequest builds the exact adapter.SelectionRequest for the Selector:
@@ -133,6 +172,7 @@ type policySnapshot struct {
 		DirectPTYPolicy       string   `json:"directPtyPolicy"`
 		MaxSteeringRounds     uint     `json:"maxSteeringRounds"`
 	} `json:"control,omitempty"`
+	EnvironmentBinding *LocalDogfoodEnvironmentBinding `json:"environmentBinding,omitempty"`
 }
 
 // policySource mirrors one sources entry of the PolicySnapshot. Phase 1 only
@@ -297,6 +337,7 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 		RetentionDays:        snapshot.Effective.RetentionDays,
 		AllowPublication:     snapshot.Effective.AllowPublication,
 		NetworkPolicy:        snapshot.Effective.NetworkPolicy,
+		EnvironmentBinding:   snapshot.EnvironmentBinding,
 	}
 	if snapshot.Control == nil {
 		effective.AutonomyProfile = AutonomySupervised
@@ -309,7 +350,7 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 		effective.AllowMediatedSteering = snapshot.Control.AllowMediatedSteering
 		effective.DirectPTYPolicy = snapshot.Control.DirectPTYPolicy
 		effective.MaxSteeringRounds = snapshot.Control.MaxSteeringRounds
-		if !validApprovalGates(effective.AutonomyProfile, effective.RequiredApprovals) {
+		if !validApprovalGates(effective.AutonomyProfile, effective.RequiredApprovals, snapshot.EnvironmentBinding != nil) {
 			return EffectivePolicy{}, port.Permanentf("%s", ErrPolicyControlGates)
 		}
 		if effective.AllowMediatedSteering != (effective.MaxSteeringRounds > 0) {
@@ -354,6 +395,54 @@ func ValidatePolicy(data []byte, task domain.TaskSpec, runID string, validator *
 	return effective, nil
 }
 
+// ValidateLocalDogfoodEnvironmentBinding compares the frozen policy binding
+// with a fresh Core observation. A nil observation denotes a non-local caller:
+// in that profile the mere presence of a local binding is contamination and
+// fails closed. It performs no writes and emits only stable reason strings.
+func ValidateLocalDogfoodEnvironmentBinding(data []byte, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV1) error {
+	if validator == nil || validator.Validate(domain.KindPolicySnapshot, data) != nil {
+		return port.Permanentf("%s", ErrPolicySchemaInvalid)
+	}
+	var snapshot policySnapshot
+	if json.Unmarshal(data, &snapshot) != nil {
+		return port.Permanentf("%s", ErrPolicyMalformed)
+	}
+	return validateLocalDogfoodBinding(snapshot.EnvironmentBinding, observation)
+}
+
+func validateLocalDogfoodBinding(binding *LocalDogfoodEnvironmentBinding, observation *selfidentity.LocalSelfIdentityObservationV1) error {
+	if observation == nil {
+		if binding != nil {
+			return port.Permanentf("%s", ErrPolicyLocalBindingCrossProfile)
+		}
+		return nil
+	}
+	if binding == nil {
+		return port.Permanentf("%s", ErrPolicyLocalBindingMissing)
+	}
+	if observation.SelfProfile != selfidentity.LocalProfile || binding.SelfProfile != selfidentity.LocalProfile ||
+		binding.SchemaVersion != LocalDogfoodEnvironmentBindingSchema || binding.Assurance != "ordinary-user" ||
+		binding.Execution != "workspace-write" || binding.Production || binding.Publication != "none" {
+		return port.Permanentf("%s", ErrPolicyLocalBindingCrossProfile)
+	}
+	if binding.ActivationDigest != observation.ActivationDigest || binding.IdentitySubjectDigest != observation.IdentitySubjectDigest {
+		return port.Permanentf("%s", ErrPolicyLocalBindingMismatch)
+	}
+	return nil
+}
+
+func validateLocalDogfoodSurface(effective EffectivePolicy, task domain.TaskSpec, observation *selfidentity.LocalSelfIdentityObservationV1) error {
+	if observation == nil {
+		return nil
+	}
+	if task.Worker.ExecutionProfile != "workspace-write" || effective.ExecutionProfile != "workspace-write" ||
+		effective.AllowPublication || task.Publication.Required || task.Publication.MergePolicy != domain.MergePolicyNever ||
+		slices.Contains(effective.RequiredApprovals, domain.ApprovalGatePublish) {
+		return port.Permanentf("%s", ErrPolicyLocalSurface)
+	}
+	return nil
+}
+
 func isOpenCode(adapterID string) bool {
 	return strings.EqualFold(strings.TrimSpace(adapterID), "opencode")
 }
@@ -363,11 +452,17 @@ const (
 	ApprovalGatePublish = "publish"
 )
 
-func validApprovalGates(profile string, gates []string) bool {
+func validApprovalGates(profile string, gates []string, localDogfood bool) bool {
 	if profile == AutonomyAutonomous {
 		return len(gates) == 0
 	}
-	if profile != AutonomySupervised && profile != AutonomyBalanced || len(gates) != 2 {
+	if profile != AutonomySupervised && profile != AutonomyBalanced {
+		return false
+	}
+	if localDogfood {
+		return len(gates) == 1 && gates[0] == ApprovalGatePlan
+	}
+	if len(gates) != 2 {
 		return false
 	}
 	return slices.Contains(gates, ApprovalGatePlan) && slices.Contains(gates, ApprovalGatePublish)

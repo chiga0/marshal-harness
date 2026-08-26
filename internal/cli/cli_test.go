@@ -195,7 +195,7 @@ func TestDoctorReportsPi0843Compatibility(t *testing.T) {
 			break
 		}
 	}
-	if found == nil || !found.Registered || found.Outcome != app.WorkerOutcomeRegistered || found.Compatibility != "supported" || found.AdapterVersion != "0.4.0" || found.BinaryVersion != "0.84.3" {
+	if found == nil || !found.Registered || found.Outcome != app.WorkerOutcomeRegistered || found.Compatibility != "supported" || found.AdapterVersion != "0.4.0" || found.BinaryVersion != "0.84.3" || found.AuthorityMode != "ordinary-user" {
 		t.Fatalf("doctor pi 0.84.3 = %+v", found)
 	}
 	if strings.Contains(stdout.String()+stderr.String(), executable) {
@@ -1230,6 +1230,17 @@ func TestInitAndTaskStatusEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"state": "CREATED"`) {
 		t.Fatalf("status output = %s", stdout.String())
+	}
+	var statusShape map[string]json.RawMessage
+	if err := json.Unmarshal(stdout.Bytes(), &statusShape); err != nil {
+		t.Fatal(err)
+	}
+	var statusName string
+	if err := json.Unmarshal(statusShape["state"], &statusName); err != nil || statusName != string(domain.StateCreated) {
+		t.Fatalf("unprofiled status .state changed shape: raw=%s value=%q err=%v", statusShape["state"], statusName, err)
+	}
+	if _, ok := statusShape["selfIdentity"]; ok {
+		t.Fatalf("unprofiled status unexpectedly projected local identity: %s", stdout.String())
 	}
 }
 

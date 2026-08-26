@@ -105,6 +105,30 @@
         "maxSteeringRounds": { "type": "integer", "minimum": 0, "maximum": 100 }
       }
     },
+    "environmentBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "selfProfile",
+        "activationDigest",
+        "identitySubjectDigest",
+        "assurance",
+        "execution",
+        "production",
+        "publication"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "marshal.local-dogfood-environment-binding.v1" },
+        "selfProfile": { "const": "darwin-local-dogfood" },
+        "activationDigest": { "$ref": "#/$defs/digest" },
+        "identitySubjectDigest": { "$ref": "#/$defs/digest" },
+        "assurance": { "const": "ordinary-user" },
+        "execution": { "const": "workspace-write" },
+        "production": { "const": false },
+        "publication": { "const": "none" }
+      }
+    },
     "policyDigest": { "$ref": "#/$defs/digest" },
     "generatedAt": { "type": "string", "format": "date-time" }
   },

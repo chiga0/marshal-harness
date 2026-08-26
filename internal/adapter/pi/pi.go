@@ -242,7 +242,7 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
 		"executable": identity.path, "executableDigest": identity.digest,
-		"binaryVersion": identity.version, "probeStatus": status,
+		"binaryVersion": identity.version, "probeStatus": status, "authorityMode": "ordinary-user",
 		"capabilities": map[string]any{
 			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
 			"sessionPolicies": []string{"ephemeral"}, "modelSelection": true,

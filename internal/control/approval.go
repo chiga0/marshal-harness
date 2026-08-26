@@ -17,6 +17,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 var (
@@ -32,12 +33,13 @@ const maxControlInputBytes int64 = 32 << 20
 // ApprovalInput identifies one exact Run gate. SourceID is required only when
 // creating an ApprovalRecord; Require ignores it.
 type ApprovalInput struct {
-	StateRoot string
-	RunID     string
-	Gate      string
-	SourceID  string
-	Now       time.Time
-	Validator *contract.Validator
+	StateRoot         string
+	RunID             string
+	Gate              string
+	SourceID          string
+	Now               time.Time
+	Validator         *contract.Validator
+	LocalSelfIdentity *selfidentity.LocalSelfIdentityObservationV1
 }
 
 // Approve creates one immutable human ApprovalRecord bound to the current
@@ -183,6 +185,9 @@ func loadApprovalContext(store *runstore.Store, input ApprovalInput) (approvalCo
 	}
 	effective, err := planning.ValidatePolicy(policyData, task, state.RunID, input.Validator)
 	if err != nil {
+		return approvalContext{}, ErrInvalidControlInput
+	}
+	if err := planning.ValidateLocalDogfoodEnvironmentBinding(policyData, input.Validator, input.LocalSelfIdentity); err != nil {
 		return approvalContext{}, ErrInvalidControlInput
 	}
 	return approvalContext{state: state, task: task, policy: effective, runDir: runDir}, nil

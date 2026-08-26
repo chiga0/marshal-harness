@@ -123,7 +123,7 @@ make build COMMIT="$(git rev-parse HEAD)"
 
 ### Darwin 本地 dogfood 自身份
 
-LD-1 只为开发机上的固定 `bin/marshal` 提供低保证、普通用户级 opt-in，不代表 managed/release authority，也不提供恶意代码 sandbox。构建时必须显式冻结 profile 与 source head；`doctor --self` 仅把 canonical activation 输出到 stdout，activation 文件由 operator 创建，Marshal 不写该文件：
+LD-2 为开发机上的固定 `bin/marshal` 提供低保证、普通用户级 opt-in，不代表 managed/release authority，也不提供恶意代码 sandbox。构建时必须显式冻结 profile 与 source head；`doctor --self` 仅把 canonical activation 输出到 stdout，activation 文件由 operator 创建，Marshal 不写该文件：
 
 ```bash
 make build COMMIT="$(git rev-parse HEAD)" SELF_PROFILE=darwin-local-dogfood
@@ -136,7 +136,11 @@ export MARSHAL_LOCAL_DOGFOOD_ACTIVATION="$(pwd -P)/.marshal/bootstrap/local-dogf
 ./bin/marshal doctor --json
 ```
 
-activation 最长有效 24 小时（默认 8 小时），严格绑定 canonical repository root、当前固定 executable 的路径对象与 SHA-256、`sourceHead` 和 `selfProfile`；Schema 位于 `schemas/selfidentity/local-dogfood.schema.json`。LD-1 仅放行完整 `doctor` 与 `task scaffold`，`help`、`version` 和 `doctor --self` 属于 bootstrap surface；publication、remote、credentialed/internal、Worker launch 与其余未接 lineage 的 lifecycle 一律 fail closed。Darwin 上 `unprofiled` 或尚未实现自身 gate 的 profile 也不能进入这些 surface；非 Darwin 构建保持既有行为。
+activation 最长有效 24 小时（默认 8 小时），严格绑定 canonical repository root、当前固定 executable 的路径对象与 SHA-256、`sourceHead` 和 `selfProfile`；Schema 位于 `schemas/selfidentity/local-dogfood.schema.json`。LD-2 放行 `doctor`、`init`、`task scaffold`、`task plan`、`task status` 与 `task approve --gate plan`；`help`、`version` 和 `doctor --self` 属于 bootstrap surface。Worker launch、verify/review 的 Attempt lineage 留在 LD-3；publication、publish approval、remote、credentialed/internal surface 继续机械拒绝。
+
+完整 `doctor --json` 会同时输出 Core-owned `selfIdentity` 和可复制的 `policyEnvironmentBinding` 投影。操作者或上层编排器把该 closed binding 放入本地 Run 的 `PolicySnapshot.environmentBinding`，并按既有规则重新封装 `policyDigest`；Marshal 不静默改写或签发 PolicySnapshot。`task plan` 在任何 repository/Adapter/持久化副作用前要求 binding 与当前 observation 精确一致，随后原样冻结 PolicySnapshot；`task status` 与 `task approve --gate plan` 会重新读取冻结 policy、核对 `PolicyDigest` 和当前身份。activation 被替换、过期或跨 profile 复用时均 fail closed，历史无 binding 的 PolicySnapshot 只能按 non-local/legacy 记录读取，不能升级成 local Run。
+
+Darwin 上 `unprofiled` 或尚未实现自身 gate 的 profile 不能进入上述 surface；非 Darwin 构建保持既有行为。
 
 ## 契约自描述
 
@@ -152,7 +156,7 @@ activation 最长有效 24 小时（默认 8 小时），严格绑定 canonical 
 | 变量 | 用途 | 性质 |
 | --- | --- | --- |
 | `MARSHAL_STATE_DIR` | 覆盖默认 `.marshal/` 状态目录（绝对路径；仓库内则必须等于默认目录） | 运行配置 |
-| `MARSHAL_LOCAL_DOGFOOD_ACTIVATION` | Darwin LD-1 operator-owned canonical activation 绝对路径；仅对 `darwin-local-dogfood` profile 生效 | 本地自身份 opt-in |
+| `MARSHAL_LOCAL_DOGFOOD_ACTIVATION` | Darwin local-dogfood operator-owned canonical activation 绝对路径；仅对 `darwin-local-dogfood` profile 生效 | 本地自身份 opt-in |
 | `MARSHAL_OPENCODE_PATH` | OpenCode Worker 可执行文件绝对路径 | Adapter 注册 |
 | `MARSHAL_QWEN_PATH` | Qwen Code Worker 可执行文件绝对路径 | Adapter 注册 |
 | `MARSHAL_QODER_PATH` | Qoder CLI Worker 可执行文件绝对路径；仅设置此变量不会通过 live conformance 门禁 | Adapter 注册候选 |

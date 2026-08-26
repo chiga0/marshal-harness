@@ -14,8 +14,12 @@ const (
 	LocalProfile      = "darwin-local-dogfood"
 	ActivationEnv     = "MARSHAL_LOCAL_DOGFOOD_ACTIVATION"
 
-	CommandDoctor       = "doctor"
-	CommandTaskScaffold = "task-scaffold"
+	CommandDoctor          = "doctor"
+	CommandInit            = "init"
+	CommandTaskScaffold    = "task-scaffold"
+	CommandTaskPlan        = "task-plan"
+	CommandTaskStatus      = "task-status"
+	CommandTaskApprovePlan = "task-approve-plan"
 
 	ReasonObserved                   = "self-local-identity-observed"
 	ReasonOptInMissing               = "self-local-opt-in-missing"
@@ -62,7 +66,9 @@ type BuildIdentity struct {
 	SelfProfile string
 }
 
-// LocalDogfoodScopeV1 is deliberately closed to the first LD-1 surfaces.
+// LocalDogfoodScopeV1 is deliberately closed to the currently admitted local
+// dogfood surfaces; later phases must extend it explicitly rather than infer
+// authority from a profile name.
 type LocalDogfoodScopeV1 struct {
 	Network                 string   `json:"network"`
 	Publication             string   `json:"publication"`
