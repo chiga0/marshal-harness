@@ -42,7 +42,7 @@ description: 使用 Marshal Harness 编排 Coding Agent、执行证据门禁审�
 - 每个 phase 只能有一个面向 operator 的机器化 verdict 入口。Schema、canonical digest、Candidate 与 worktree observation 等已有语义优先复用 Core/固定 `bin/marshal internal ...-check` primitive；phase preflight 可以组合这些 primitive、完整 identity/lineage/path 检查和一次性 action claim，但必须独占该 phase 的 closed `action/reasonCode`，Skill 不复制第二份字段合同。
 - Skill 规则采用替换预算：只有同一稳定 signature 已复发，或能预防明确的高成本安全事故，才提升为全局规则；新增规则必须同时删除/替代已有重复规则并给出可执行 reason code/测试归属。禁止为一次 incident 追加永久 checklist、manifest 或 reviewer 轮次。
 - 结构性失败按 defect-owner 先归属 `plan/operator|adapter/identity|baseline/integration|architecture/governance`；这些失败在 Worker 启动或 reviewer 派发前终止并 replan，不消费 Worker rework。只有当前 candidate diff 内的缺陷归 `candidate-local`，可进入唯一 reviewer 的一次 aggregate rework。
-- 对要求 post-worker command/tool attestation 的 profile family，`task run` 前必须证明冻结的 Worker execution projection、所选 Adapter launch profile 与 evidence profile 接受同一工具、命令和 result transport 表面；若后置机器门禁按冻结输入必然拒绝 Worker 被允许或需要执行的动作，只冻结该相同 family，禁止把失败事后归入 reviewer 或 Worker rework。
+- 对带 execution/authority binding 或 post-worker attestation 的 profile family，`task run` 前必须由同一机器入口证明 `TaskSpec.executionProfile`、Policy binding/effective profile、所选 `CapabilitySnapshot.authorityMode/executionProfiles`、Adapter launch projection 与 evidence profile 构成闭合交叉矩阵，并接受同一工具、命令和 result transport 表面；任一边不一致只冻结该 family，禁止把确定性矛盾事后归入 reviewer 或 Worker rework。
 - 验证按风险与集成点去重：先跑相关门禁；同一未变化候选不重复跑全仓 gate。release gate 不降低，具体矩阵见 engineering reference。
 
 ## 每轮 fast path

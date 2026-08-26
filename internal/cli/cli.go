@@ -193,8 +193,30 @@ func localDogfoodBootstrapCommand(args []string, doctor *doctorOptions) bool {
 	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" || args[0] == "version" {
 		return true
 	}
+	if localDogfoodBoundedInternalCommand(args) {
+		return true
+	}
 	return args[0] == "doctor" && doctor != nil && doctor.self && doctor.runID == "" &&
 		!doctor.repair && !doctor.printEnv && doctor.validFor > 0
+}
+
+// localDogfoodBoundedInternalCommand keeps operator-local preflights on the
+// fixed Marshal executable without granting lifecycle, credential, remote, or
+// publication authority. Every admitted command has a bounded contract, no
+// Core/repository persistence effect, and enforces the attestation-ready
+// handshake. The plan checker may launch a bounded Adapter capability probe.
+func localDogfoodBoundedInternalCommand(args []string) bool {
+	if len(args) < 3 || args[0] != "internal" || !slices.Contains(args[2:], "--attestation-ready") {
+		return false
+	}
+	return slices.Contains([]string{
+		"artifact-attestation-check",
+		"qoder-transcript-check",
+		"plan-premortem-check",
+		"review-freshness-check",
+		"codex-provider-schema-check",
+		"closure-matrix-check",
+	}, args[1])
 }
 
 func localDogfoodCommandClass(args []string, doctor *doctorOptions) (string, string) {

@@ -205,7 +205,7 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 	if adapterID != selection.Adapter.ID() {
 		return Result{SelectionAttempts: selection.Attempts}, errors.New(errCapabilityAdapterMismatch)
 	}
-	if err := validateLocalDogfoodCapabilityAuthority(selection.Capability.Data, input.LocalSelfIdentity); err != nil {
+	if err := ValidateLocalDogfoodCapabilityProjection(effective, selection.Capability.Data); err != nil {
 		return Result{SelectionAttempts: selection.Attempts}, err
 	}
 
@@ -358,13 +358,15 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 	return Result{State: readyState, Adapter: selection.Adapter, SelectionAttempts: selection.Attempts}, nil
 }
 
-// validateLocalDogfoodCapabilityAuthority binds the selected adapter fact to
+// ValidateLocalDogfoodCapabilityProjection binds the selected adapter fact to
 // the same ordinary-user claim as the frozen policy. It runs after schema and
 // provider-neutral capability validation but before worktree, lease, journal,
 // or frozen-artifact side effects. Strict/conformance evidence cannot be
-// reinterpreted as a Darwin ordinary-user capability.
-func validateLocalDogfoodCapabilityAuthority(data []byte, observation *selfidentity.LocalSelfIdentityObservationV1) error {
-	if observation == nil {
+// reinterpreted as a Darwin ordinary-user capability. Operator-local
+// preflight reuses this pure check; current activation identity remains the
+// production Plan's responsibility.
+func ValidateLocalDogfoodCapabilityProjection(effective EffectivePolicy, data []byte) error {
+	if effective.EnvironmentBinding == nil {
 		return nil
 	}
 	var capability struct {

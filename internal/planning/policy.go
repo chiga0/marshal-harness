@@ -435,6 +435,18 @@ func validateLocalDogfoodSurface(effective EffectivePolicy, task domain.TaskSpec
 	if observation == nil {
 		return nil
 	}
+	return ValidateLocalDogfoodTaskPolicyProjection(effective, task)
+}
+
+// ValidateLocalDogfoodTaskPolicyProjection checks the frozen task/policy
+// cross-product without requiring a live self-identity observation. The
+// production Plan first validates that observation against the binding;
+// operator-local preflight reuses this pure projection check before probing
+// an adapter. Non-local policies remain outside this profile-specific gate.
+func ValidateLocalDogfoodTaskPolicyProjection(effective EffectivePolicy, task domain.TaskSpec) error {
+	if effective.EnvironmentBinding == nil {
+		return nil
+	}
 	if task.Worker.ExecutionProfile != "workspace-write" || effective.ExecutionProfile != "workspace-write" ||
 		effective.AllowPublication || task.Publication.Required || task.Publication.MergePolicy != domain.MergePolicyNever ||
 		slices.Contains(effective.RequiredApprovals, domain.ApprovalGatePublish) {

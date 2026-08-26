@@ -201,6 +201,18 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         result["policyDigest"] = digest(compact(result))
         return result
 
+    def enable_local_binding(self) -> None:
+        self.policy["control"]["requiredApprovals"] = ["plan"]
+        self.policy["environmentBinding"] = {
+            "schemaVersion": "marshal.local-dogfood-environment-binding.v1",
+            "selfProfile": "darwin-local-dogfood",
+            "activationDigest": "sha256:" + "a" * 64,
+            "identitySubjectDigest": "sha256:" + "b" * 64,
+            "assurance": "ordinary-user", "execution": "workspace-write",
+            "production": False, "publication": "none",
+        }
+        self.policy = self.seal_policy(self.policy)
+
     def invoke(self, *, selected_adapter: object | None = None, marshal: Path | None = None) -> tuple[int, dict]:
         task_raw = compact(self.task)
         policy_raw = compact(self.policy)
@@ -249,8 +261,21 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         code, result = self.invoke()
         self.assertEqual(code, 0, result)
         self.assertEqual(result["reasonCode"], "plan-premortem-pass")
-        self.assertEqual(result["marshal"]["internalCommandVersion"], "plan-premortem-check/v1")
+        self.assertEqual(result["marshal"]["internalCommandVersion"], "plan-premortem-check/v2")
         self.assertFalse(self.worker_marker.exists())
+
+    def test_local_binding_cross_product_passes_before_plan(self) -> None:
+        self.enable_local_binding()
+        code, result = self.invoke()
+        self.assertEqual((code, result["reasonCode"]), (0, "plan-premortem-pass"))
+        self.assertEqual(result["authorityMode"], "ordinary-user")
+        self.assertFalse(self.worker_marker.exists())
+
+    def test_local_binding_rejects_hardened_task_before_adapter_probe(self) -> None:
+        self.task["worker"]["executionProfile"] = "hardened"
+        self.policy["effective"]["minimumExecutionProfile"] = "hardened"
+        self.enable_local_binding()
+        self.assert_reason("policy-local-dogfood-surface-conflict")
 
     def test_qoder_explicit_empty_worker_tools_passes(self) -> None:
         self.task["worker"]["tools"] = []
@@ -297,7 +322,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         code, result = self.invoke()
         self.assertEqual(code, 0, result)
         self.assertEqual(result["selectedAdapter"], "qwen")
-        self.assertNotIn("authorityMode", result)
+        self.assertEqual(result["authorityMode"], "ordinary-user")
         self.assertFalse(self.worker_marker.exists())
 
     def test_pi_env_node_probe_uses_only_selected_executable_parent(self) -> None:
@@ -311,6 +336,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         code, result = self.invoke()
         self.assertEqual(code, 0, result)
         self.assertEqual(result["selectedAdapter"], "pi")
+        self.assertEqual(result["authorityMode"], "ordinary-user")
         self.assertFalse(self.worker_marker.exists())
 
     def test_pi_probe_rejects_malformed_executable_paths(self) -> None:

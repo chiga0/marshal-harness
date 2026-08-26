@@ -74,6 +74,26 @@ func TestInternalQoderTranscriptCheckBoundsInputAndArguments(t *testing.T) {
 	}
 }
 
+func TestInternalQoderTranscriptCheckStableHandshake(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		input      string
+		wantReason string
+	}{
+		{"ready token reaches semantic checker", "\x00{}", "checker-build-identity-invalid"},
+		{"missing ready token fails closed", "{}", "checker-handshake-invalid"},
+		{"wrong ready token fails closed", "x{}", "checker-handshake-invalid"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			exit := Run([]string{"internal", "qoder-transcript-check", "--attestation-ready"}, strings.NewReader(test.input), &stdout, &stderr)
+			if exit != ExitFailure || stdout.Len() != 0 || !strings.Contains(stderr.String(), `"reasonCode":"`+test.wantReason+`"`) {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func TestInternalQoderTranscriptCheckRejectsUnknownBuildIdentity(t *testing.T) {
 	input := `{"subject":{},"transcript":"","transcriptMeta":"","workerRequest":"","workerResult":"","taskSpec":"","capabilitySnapshot":"","profile":""}`
 	var stdout, stderr bytes.Buffer

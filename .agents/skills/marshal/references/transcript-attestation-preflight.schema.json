@@ -42,7 +42,7 @@
         "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
         "executableSha256": { "$ref": "#/$defs/digest" },
         "version": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9._+-]+$" },
-        "internalCommandVersion": { "const": "qoder-transcript-check/v1" }
+        "internalCommandVersion": { "const": "qoder-transcript-check/v2" }
       }
     },
     "inputs": {

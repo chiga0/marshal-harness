@@ -136,7 +136,7 @@ export MARSHAL_LOCAL_DOGFOOD_ACTIVATION="$(pwd -P)/.marshal/bootstrap/local-dogf
 ./bin/marshal doctor --json
 ```
 
-activation 最长有效 24 小时（默认 8 小时），严格绑定 canonical repository root、当前固定 executable 的路径对象与 SHA-256、`sourceHead` 和 `selfProfile`；Schema 位于 `schemas/selfidentity/local-dogfood.schema.json`。LD-2 放行 `doctor`、`init`、`task scaffold`、`task plan`、`task status` 与 `task approve --gate plan`；`help`、`version` 和 `doctor --self` 属于 bootstrap surface。Worker launch、verify/review 的 Attempt lineage 留在 LD-3；publication、publish approval、remote、credentialed/internal surface 继续机械拒绝。
+activation 最长有效 24 小时（默认 8 小时），严格绑定 canonical repository root、当前固定 executable 的路径对象与 SHA-256、`sourceHead` 和 `selfProfile`；Schema 位于 `schemas/selfidentity/local-dogfood.schema.json`。LD-2 放行 `doctor`、`init`、`task scaffold`、`task plan`、`task status` 与 `task approve --gate plan`；`help`、`version`、`doctor --self` 以及带 `--attestation-ready` 握手、无 Core/仓库持久副作用的六个有界 `internal *-check` primitive 属于 bootstrap surface，其中 plan checker 会执行受限 Adapter version/capability probe。其它 internal/credentialed、Worker launch、verify/review 的 Attempt lineage 留在 LD-3；publication、publish approval与 remote surface 继续机械拒绝。
 
 完整 `doctor --json` 会同时输出 Core-owned `selfIdentity` 和可复制的 `policyEnvironmentBinding` 投影。操作者或上层编排器把该 closed binding 放入本地 Run 的 `PolicySnapshot.environmentBinding`，并按既有规则重新封装 `policyDigest`；Marshal 不静默改写或签发 PolicySnapshot。`task plan` 在任何 repository/Adapter/持久化副作用前要求 binding 与当前 observation 精确一致，随后原样冻结 PolicySnapshot；`task status` 与 `task approve --gate plan` 会重新读取冻结 policy、核对 `PolicyDigest` 和当前身份。activation 被替换、过期或跨 profile 复用时均 fail closed，历史无 binding 的 PolicySnapshot 只能按 non-local/legacy 记录读取，不能升级成 local Run。
 

@@ -35,7 +35,7 @@
 4. contract/schema/example/diff/link/secret/merge-tree 按实际触发域运行。
 5. release candidate 必须在最终候选上通过 `make check` 和 release-specific gates；候选代码或依赖变化使旧证据失效时，才对新摘要重跑。
 
-失败必须记录精确 gate、版本、命令摘要和证据 digest；禁止用“重跑一次”代替根因诊断。宿主高负载时不并发全仓测试，先完成定向门禁，容量恢复后在选定集成点补 full gate。负载敏感 test 可以用合理宽松 timeout 去 flake，不能削弱断言。
+失败必须记录精确 gate、版本、命令摘要和证据 digest；禁止用“重跑一次”代替根因诊断。宿主高负载时不并发全仓测试，先完成定向门禁，容量恢复后在选定集成点补 full gate。负载敏感 test 可以用合理宽松 timeout 去 flake，不能削弱断言。公开 CLI JSON 变化必须用旧 consumer 仍可解析的 exact-shape 回归证明兼容；既有标量/数组/对象不得换形，只能追加非冲突字段，无法兼容时必须显式版本化。
 
 新命令必须有测试；`make check` 覆盖 format/vet/staticcheck/race/build，release 前必须全绿。覆盖率基线：lifecycle 76%、cleanup 73%、CLI 53%、dashboard 53%；变化时报告真实当前值，不用基线冒充本次结果。
 
@@ -43,7 +43,7 @@ Schema 变化必须验证 JSON 语法、Draft 2020-12 metaschema、示例和 `gi
 
 ## Skill 修改
 
-Skill 顶层受 `references/tests/test_skill_layout.py` 的 UTF-8 12KiB、routing、relative-link 和关键 anchor 门禁约束。修改前先读 `skill-rule-migration.md` 和本次实际受影响的 reference；规则细节进入 Just-in-time reference，顶层只保留每次动作必需的边界、状态机和路由，不预读未来 lifecycle 阶段。
+Skill 顶层受 `references/tests/test_skill_layout.py` 的 UTF-8 12KiB、routing、relative-link 和关键 anchor 门禁约束。修改前先读 `skill-rule-migration.md` 和本次实际受影响的 reference；规则细节进入 Just-in-time reference，顶层只保留每次动作必需的边界、状态机和路由，不预读未来 lifecycle 阶段。Mac preflight 只复用固定 `bin/marshal internal *-check --attestation-ready` 中无 Core/仓库持久副作用的有界 primitive；plan checker 可以执行受限 Adapter version/capability probe。不得回退到新 worktree 或 `/tmp` 下的匿名可执行文件。
 
 跨 Attempt/round 复用或重绑 `sourceHead`、ReviewPacket 或 evidence identity 只能登记为后续 Core 设计评估；除非 Schema/validator/Core 与所需 ADR 同步落地，Skill 不得以效率为由实现或暗示复用。
 

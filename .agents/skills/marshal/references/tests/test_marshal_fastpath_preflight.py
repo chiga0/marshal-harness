@@ -56,9 +56,13 @@ def run(command: list[str], cwd: Path) -> str:
 class MarshalFastpathPreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        commit = run(["git", "rev-parse", "HEAD"], REPOSITORY)
-        subprocess.run(["make", "build", f"COMMIT={commit}"], cwd=REPOSITORY, check=True)
-        cls.marshal = (REPOSITORY / "bin/marshal").resolve()
+        configured = os.environ.get("MARSHAL_TEST_BINARY")
+        if configured:
+            cls.marshal = Path(configured).resolve()
+        else:
+            commit = run(["git", "rev-parse", "HEAD"], REPOSITORY)
+            subprocess.run(["make", "build", f"COMMIT={commit}"], cwd=REPOSITORY, check=True)
+            cls.marshal = (REPOSITORY / "bin/marshal").resolve()
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="marshal-fastpath-plan-test.")
