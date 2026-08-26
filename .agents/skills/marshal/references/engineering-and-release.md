@@ -6,7 +6,7 @@
 
 - 默认本仓库需求仍遵循 `plan → approve → run → verify → review → (publish)`，发现流程问题就修 Harness 并回写 Skill。
 - 用户明确授权的 Harness 适配/Skill 修复可不走产品 Marshal Run，改用维护者最短本地闭环；这不授权绕过 universal 规则，也不改变产品 Run 生命周期。
-- 本地闭环每个独立 slice 只有一个写入者和一个唯一独立 reviewer。作者不得提供权威验证；reviewer 绑定 exact sourceHead/真实 diff，P0/P1 清零后才继续。
+- 本地闭环每个独立 slice 只有一个写入者和一个唯一独立 reviewer。作者不得提供权威验证；reviewer 绑定 exact sourceHead/真实 diff，首轮一次性返回全部 P0/P1 及每项封闭 `required outcome`。若需要 aggregate rework，作者在请求同一 reviewer 复审前必须逐项建立 `finding → changed path → 直接正向测试/真实入口负例 → 结果` 的闭环；任一 finding 缺测试、只由作者口头声称关闭或 required outcome 尚未实际变红再变绿，都不得进入复审。复审仍有 P0/P1 时终止该 slice 并从当前权威 main replan，不开始第二轮 rework。
 - 写任务使用 locked base + 独立 worktree；派发前机械核对路径未被其它作者占用，scope 不重叠。保护用户现有修改、`logs/`、secret/path boundary；不清理或覆盖不属于本 slice 的文件。
 - release/product slice 默认覆盖从真实 production entry 到可观察结果的最短完整纵切，并绑定 roadmap exit criterion 或当前 product blocker。禁止只提交未接入 production dependency graph 的空 package、接口壳、fake-only skeleton 或孤立 helper；`AGENTS.md`/已接受 ADR 明确要求的 deterministic Fake 前置、已批准 ADR、研究或 contract-first 前置件，仅在其本身是明确交付物且直接解锁下一纵切时例外。
 - 改变 trust boundary、persistence、lifecycle 或 publication authority 必须先新增/替代 ADR，并同步 `docs/audit-report.md`。纯 Skill 信息架构重排且语义不变不需要 ADR。
@@ -22,6 +22,8 @@
 - Schema/JSON/Draft 2020-12/example gate（若涉及）通过；
 - `git diff --check`、Markdown link/layout gate、secret scan 通过；
 - merge 后再跑最小高风险回归。
+
+本地闭环不复制产品 Run 的 ReviewDecision/closure manifest。首轮 reviewer 的聚合 finding 列表就是本 slice 的临时 closure inventory；复审前的闭环映射放在作者交接消息中，reviewer 必须从 exact diff 和实际测试输出独立复核。若 finding 暴露的是 TaskSpec/Adapter identity、旧 baseline、架构或治理问题，则立即按 defect owner 终止并 replan，不把结构性缺口包装成本地代码 rework。
 
 记录 `sourceHead`、`localMergeSha`、命令/结果摘要和 `pendingRemoteSync`。Local main 是后续开发锁定基线；GitHub PR/CI 是异步补充证据。只有实际 push/remote merge 后才能声称它发生；远端 divergence 先停推审计，不改写历史。
 
