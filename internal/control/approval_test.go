@@ -13,7 +13,9 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	marshalSchemas "github.com/chiga0/marshal-harness/schemas"
 )
 
@@ -43,6 +45,42 @@ func TestPlanApprovalLifecycle(t *testing.T) {
 	}
 	if err := Require(input); err != nil {
 		t.Fatalf("Require() after approval = %v", err)
+	}
+}
+
+func TestLocalDogfoodPlanApprovalRechecksCurrentIdentity(t *testing.T) {
+	t.Parallel()
+	observation := selfidentity.LocalSelfIdentityObservationV1{
+		SchemaVersion: selfidentity.ObservationSchema, SelfProfile: selfidentity.LocalProfile,
+		ActivationDigest:      "sha256:" + strings.Repeat("a", 64),
+		IdentitySubjectDigest: "sha256:" + strings.Repeat("b", 64),
+	}
+	fixture := newApprovalFixture(t, func(policy map[string]any) {
+		policy["control"].(map[string]any)["requiredApprovals"] = []any{domain.ApprovalGatePlan}
+		policy["environmentBinding"] = map[string]any{
+			"schemaVersion":         planning.LocalDogfoodEnvironmentBindingSchema,
+			"selfProfile":           selfidentity.LocalProfile,
+			"activationDigest":      observation.ActivationDigest,
+			"identitySubjectDigest": observation.IdentitySubjectDigest,
+			"assurance":             "ordinary-user", "execution": "workspace-write", "production": false, "publication": "none",
+		}
+	}, false)
+	input := fixture.input(domain.ApprovalGatePlan)
+	input.LocalSelfIdentity = &observation
+	if _, err := Approve(input); err != nil {
+		t.Fatalf("matching local approval: %v", err)
+	}
+
+	withoutObservation := fixture.input(domain.ApprovalGatePlan)
+	if err := Require(withoutObservation); !errors.Is(err, ErrInvalidControlInput) {
+		t.Fatalf("cross-profile Require() = %v, want ErrInvalidControlInput", err)
+	}
+	mismatch := observation
+	mismatch.ActivationDigest = "sha256:" + strings.Repeat("c", 64)
+	withMismatch := fixture.input(domain.ApprovalGatePlan)
+	withMismatch.LocalSelfIdentity = &mismatch
+	if err := Require(withMismatch); !errors.Is(err, ErrInvalidControlInput) {
+		t.Fatalf("replacement activation Require() = %v, want ErrInvalidControlInput", err)
 	}
 }
 

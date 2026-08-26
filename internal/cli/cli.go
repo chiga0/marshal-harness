@@ -102,8 +102,12 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		}
 		doctor = &parsed
 	}
-	if exitCode, gated := applyLocalDogfoodGate(args, doctor, stderr); gated {
+	observation, exitCode, gated := applyLocalDogfoodGate(args, doctor, stderr)
+	if gated {
 		return exitCode
+	}
+	if observation != nil {
+		ctx = context.WithValue(ctx, localDogfoodObservationContextKey{}, *observation)
 	}
 
 	switch args[0] {
@@ -137,39 +141,49 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	}
 }
 
-func applyLocalDogfoodGate(args []string, doctor *doctorOptions, stderr io.Writer) (int, bool) {
+type localDogfoodObservationContextKey struct{}
+
+func localDogfoodObservation(ctx context.Context) *selfidentity.LocalSelfIdentityObservationV1 {
+	observation, ok := ctx.Value(localDogfoodObservationContextKey{}).(selfidentity.LocalSelfIdentityObservationV1)
+	if !ok {
+		return nil
+	}
+	return &observation
+}
+
+func applyLocalDogfoodGate(args []string, doctor *doctorOptions, stderr io.Writer) (*selfidentity.LocalSelfIdentityObservationV1, int, bool) {
 	build := localBuildInfo()
 	if localDogfoodBootstrapCommand(args, doctor) || runtime.GOOS != "darwin" {
-		return ExitOK, false
+		return nil, ExitOK, false
 	}
 	// The default production seam is always false. Package tests replace it
 	// only for their legacy unknown/unprofiled in-process fixture; a built
 	// Darwin marshal, including Makefile's default unprofiled binary, reaches
 	// the fail-closed profile check below.
 	if localDogfoodGateTestBypass(build) {
-		return ExitOK, false
+		return nil, ExitOK, false
 	}
 	if build.SelfProfile != selfidentity.LocalProfile {
 		fmt.Fprintf(stderr, "Marshal local dogfood gate 拒绝：%s。\n", selfidentity.ReasonProfileMismatch)
-		return ExitUnavailable, true
+		return nil, ExitUnavailable, true
 	}
 	commandClass, denial := localDogfoodCommandClass(args, doctor)
 	if denial != "" {
 		fmt.Fprintf(stderr, "Marshal local dogfood gate 拒绝：%s。\n", denial)
-		return ExitUnavailable, true
+		return nil, ExitUnavailable, true
 	}
 	workingDirectory, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(stderr, "Marshal local dogfood gate 拒绝：%s。\n", selfidentity.ReasonObjectMismatch)
-		return ExitUnavailable, true
+		return nil, ExitUnavailable, true
 	}
-	_, err = selfidentity.Admit(os.Getenv(selfidentity.ActivationEnv), commandClass, workingDirectory,
+	observation, err := selfidentity.Admit(os.Getenv(selfidentity.ActivationEnv), commandClass, workingDirectory,
 		selfidentity.BuildIdentity{SourceHead: build.Commit, SelfProfile: build.SelfProfile}, localNow())
 	if err != nil {
 		fmt.Fprintf(stderr, "Marshal local dogfood gate 拒绝：%s。\n", selfidentity.ReasonCode(err))
-		return ExitUnavailable, true
+		return nil, ExitUnavailable, true
 	}
-	return ExitOK, false
+	return &observation, ExitOK, false
 }
 
 func localDogfoodBootstrapCommand(args []string, doctor *doctorOptions) bool {
@@ -190,11 +204,29 @@ func localDogfoodCommandClass(args []string, doctor *doctorOptions) (string, str
 			return "", selfidentity.ReasonCommandDenied
 		}
 		return selfidentity.CommandDoctor, ""
+	case "init":
+		return selfidentity.CommandInit, ""
 	case "task":
-		if len(args) > 1 && args[1] == "scaffold" {
-			return selfidentity.CommandTaskScaffold, ""
+		if len(args) <= 1 {
+			return "", selfidentity.ReasonCommandDenied
 		}
-		if len(args) > 1 && (args[1] == "publish" || args[1] == "accept" || args[1] == "reconcile") {
+		switch args[1] {
+		case "scaffold":
+			return selfidentity.CommandTaskScaffold, ""
+		case "plan":
+			return selfidentity.CommandTaskPlan, ""
+		case "status":
+			return selfidentity.CommandTaskStatus, ""
+		case "approve":
+			gate, ok := localDogfoodApprovalGate(args[2:])
+			if gate == domain.ApprovalGatePublish {
+				return "", selfidentity.ReasonPublicationDenied
+			}
+			if ok && gate == domain.ApprovalGatePlan {
+				return selfidentity.CommandTaskApprovePlan, ""
+			}
+			return "", selfidentity.ReasonCommandDenied
+		case "publish", "accept", "reconcile":
 			return "", selfidentity.ReasonPublicationDenied
 		}
 		return "", selfidentity.ReasonCommandDenied
@@ -205,6 +237,27 @@ func localDogfoodCommandClass(args []string, doctor *doctorOptions) (string, str
 	default:
 		return "", selfidentity.ReasonCommandDenied
 	}
+}
+
+func localDogfoodApprovalGate(args []string) (string, bool) {
+	gate := ""
+	count := 0
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		switch {
+		case argument == "--gate":
+			if index+1 >= len(args) {
+				return "", false
+			}
+			index++
+			gate = args[index]
+			count++
+		case strings.HasPrefix(argument, "--gate="):
+			gate = strings.TrimPrefix(argument, "--gate=")
+			count++
+		}
+	}
+	return gate, count == 1
 }
 
 func runInternal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -318,16 +371,18 @@ type doctorCodexAuthority struct {
 }
 
 type doctorReport struct {
-	Status            string                       `json:"status"`
-	Build             buildinfo.Info               `json:"build"`
-	ContractSchemas   int                          `json:"contractSchemas"`
-	WorkerAdapters    int                          `json:"workerAdapters"`
-	Milestone         string                       `json:"milestone"`
-	Workers           []doctorWorker               `json:"workers"`
-	Discovery         []app.Discovery              `json:"discovery"`
-	TimeoutCandidates []lifecycle.TimeoutCandidate `json:"timeoutCandidates"`
-	Run               *reconciliation.Report       `json:"run,omitempty"`
-	Repair            *reconciliation.RepairResult `json:"repair,omitempty"`
+	Status                   string                                       `json:"status"`
+	Build                    buildinfo.Info                               `json:"build"`
+	ContractSchemas          int                                          `json:"contractSchemas"`
+	WorkerAdapters           int                                          `json:"workerAdapters"`
+	Milestone                string                                       `json:"milestone"`
+	Workers                  []doctorWorker                               `json:"workers"`
+	Discovery                []app.Discovery                              `json:"discovery"`
+	TimeoutCandidates        []lifecycle.TimeoutCandidate                 `json:"timeoutCandidates"`
+	Run                      *reconciliation.Report                       `json:"run,omitempty"`
+	Repair                   *reconciliation.RepairResult                 `json:"repair,omitempty"`
+	SelfIdentity             *selfidentity.LocalSelfIdentityObservationV1 `json:"selfIdentity,omitempty"`
+	PolicyEnvironmentBinding *planning.LocalDogfoodEnvironmentBinding     `json:"policyEnvironmentBinding,omitempty"`
 }
 
 type doctorOptions struct {
@@ -471,6 +526,11 @@ func runDoctor(ctx context.Context, options doctorOptions, stdout, stderr io.Wri
 		Workers:           workers,
 		Discovery:         doctorDiscovery(ctx),
 		TimeoutCandidates: doctorTimeoutCandidates(ctx, time.Now().UTC()),
+		SelfIdentity:      localDogfoodObservation(ctx),
+	}
+	if report.SelfIdentity != nil {
+		binding := planning.LocalDogfoodEnvironmentBindingForObservation(*report.SelfIdentity)
+		report.PolicyEnvironmentBinding = &binding
 	}
 	if options.runID != "" {
 		location, err := repository.Discover(".")
@@ -1083,10 +1143,10 @@ func runTask(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return runTaskScaffold(args[1:], stdin, stdout, stderr)
 	}
 	if args[0] == "status" {
-		return runTaskStatus(args[1:], stdout, stderr)
+		return runTaskStatus(ctx, args[1:], stdout, stderr)
 	}
 	if args[0] == "approve" {
-		return runTaskApprove(args[1:], stdout, stderr)
+		return runTaskApprove(ctx, args[1:], stdout, stderr)
 	}
 	if args[0] == "verify" {
 		return runTaskVerify(ctx, args[1:], stdout, stderr)
@@ -1904,13 +1964,14 @@ func runTaskPlan(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		return ExitFailure
 	}
 	result, err := planning.Plan(ctx, planning.Input{
-		StateRoot:      location.StateRoot,
-		RepositoryRoot: location.RepositoryRoot,
-		RunID:          *runID,
-		TaskSpec:       taskData,
-		PolicySnapshot: policyData,
-		Selector:       runtime.Selector(),
-		Validator:      runtime.Validator(),
+		StateRoot:         location.StateRoot,
+		RepositoryRoot:    location.RepositoryRoot,
+		RunID:             *runID,
+		TaskSpec:          taskData,
+		PolicySnapshot:    policyData,
+		Selector:          runtime.Selector(),
+		Validator:         runtime.Validator(),
+		LocalSelfIdentity: localDogfoodObservation(ctx),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "规划失败：%v\n", err)
@@ -1931,7 +1992,7 @@ func runTaskPlan(ctx context.Context, args []string, stdout, stderr io.Writer) i
 	return ExitOK
 }
 
-func runTaskApprove(args []string, stdout, stderr io.Writer) int {
+func runTaskApprove(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("task approve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	runID := flags.String("run", "", "Run ID")
@@ -1958,6 +2019,7 @@ func runTaskApprove(args []string, stdout, stderr io.Writer) int {
 	}
 	record, err := controlplane.Approve(controlplane.ApprovalInput{
 		StateRoot: location.StateRoot, RunID: *runID, Gate: *gate, SourceID: *actor, Now: time.Now().UTC(), Validator: validator,
+		LocalSelfIdentity: localDogfoodObservation(ctx),
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "审批失败：当前 Gate 不可批准或 Run 证据无效。")
@@ -2751,7 +2813,7 @@ func frozenVerificationDigests(store *runstore.Store, runID string) (string, str
 	return "", "", errors.New("未找到 verification.completed 事件")
 }
 
-func runTaskStatus(args []string, stdout, stderr io.Writer) int {
+func runTaskStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("task status", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	runID := flags.String("run", "", "Run ID")
@@ -2774,15 +2836,58 @@ func runTaskStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "读取状态失败：%v\n", err)
 		return ExitFailure
 	}
+	observation := localDogfoodObservation(ctx)
+	if observation != nil {
+		validator, validatorErr := contract.NewValidator()
+		if validatorErr != nil || validateFrozenLocalDogfoodBinding(location.StateRoot, *runID, validator, observation) != nil {
+			fmt.Fprintln(stderr, "读取状态失败：本地 Run 身份绑定无效。")
+			return ExitFailure
+		}
+	}
 	if *jsonOutput {
-		if err := writeJSON(stdout, state); err != nil {
+		var output any = state
+		if observation != nil {
+			output = struct {
+				State        domain.RunState                              `json:"state"`
+				SelfIdentity *selfidentity.LocalSelfIdentityObservationV1 `json:"selfIdentity"`
+				Assurance    string                                       `json:"assurance"`
+				Execution    string                                       `json:"execution"`
+				Production   bool                                         `json:"production"`
+				Publication  string                                       `json:"publication"`
+				CurrentMatch bool                                         `json:"currentMatch"`
+			}{state, observation, "ordinary-user", "workspace-write", false, "none", true}
+		}
+		if err := writeJSON(stdout, output); err != nil {
 			fmt.Fprintf(stderr, "输出状态失败：%v\n", err)
 			return ExitFailure
 		}
 	} else {
 		fmt.Fprintf(stdout, "Run：%s\n状态：%s\nSequence：%d\n更新时间：%s\n", state.RunID, state.State, state.Sequence, state.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"))
+		if observation != nil {
+			fmt.Fprintln(stdout, "适用性：ordinary-user / workspace-write / non-production / publication:none / current-match")
+		}
 	}
 	return ExitOK
+}
+
+func validateFrozenLocalDogfoodBinding(stateRoot, runID string, validator *contract.Validator, observation *selfidentity.LocalSelfIdentityObservationV1) error {
+	if err := domain.ValidateID(runID); err != nil {
+		return err
+	}
+	state, err := runstore.New(stateRoot).Inspect(runID)
+	if err != nil {
+		return err
+	}
+	policyPath := filepath.Join(stateRoot, "runs", runID, "policy-snapshot.json")
+	policyData, err := os.ReadFile(policyPath)
+	if err != nil || int64(len(policyData)) > maxContractInputBytes {
+		return errors.New("frozen local policy unavailable")
+	}
+	canonicalPolicy, err := canonical.JSON(policyData)
+	if err != nil || canonical.DigestBytes(canonicalPolicy) != state.PolicyDigest {
+		return errors.New("frozen local policy digest mismatch")
+	}
+	return planning.ValidateLocalDogfoodEnvironmentBinding(policyData, validator, observation)
 }
 
 func readInput(name string, stdin io.Reader) ([]byte, error) {

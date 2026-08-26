@@ -19,7 +19,7 @@
         "publication": { "const": "none" },
         "adapterAuthority": { "const": "ordinary-user" },
         "lifecycleCommandClasses": {
-          "const": ["doctor", "task-scaffold"]
+          "const": ["doctor", "init", "task-scaffold", "task-plan", "task-status", "task-approve-plan"]
         }
       }
     },

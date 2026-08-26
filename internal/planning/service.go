@@ -25,6 +25,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 // Failure errors that carry no dynamic values, so callers can compare and log
@@ -49,6 +50,7 @@ type Input struct {
 	Validator           *contract.Validator
 	Now                 time.Time
 	PythonSyntaxChecker PythonSyntaxChecker
+	LocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV1
 }
 
 // Result reports the final RunState, the adapter actually selected, and the
@@ -114,6 +116,12 @@ func Plan(ctx context.Context, input Input) (result Result, err error) {
 	// precondition or host interpreter spawn.
 	effective, err := ValidatePolicy(input.PolicySnapshot, task, input.RunID, input.Validator)
 	if err != nil {
+		return Result{}, err
+	}
+	if err := validateLocalDogfoodBinding(effective.EnvironmentBinding, input.LocalSelfIdentity); err != nil {
+		return Result{}, err
+	}
+	if err := validateLocalDogfoodSurface(effective, task, input.LocalSelfIdentity); err != nil {
 		return Result{}, err
 	}
 

@@ -117,7 +117,7 @@ func RenderActivation(options BootstrapOptions) ([]byte, error) {
 			Network:                 "local-loopback",
 			Publication:             "none",
 			AdapterAuthority:        "ordinary-user",
-			LifecycleCommandClasses: []string{CommandDoctor, CommandTaskScaffold},
+			LifecycleCommandClasses: localDogfoodLifecycleCommands(),
 		},
 	}
 	activation.ActivationDigest, err = digestActivation(activation)
@@ -179,7 +179,7 @@ func DecodeActivation(raw []byte, now time.Time) (LocalDogfoodActivationV1, erro
 	if activation.SchemaVersion != ActivationSchema || !idPattern.MatchString(activation.ActivationID) ||
 		activation.ExpectedSelfProfile != LocalProfile || activation.Scope.Network != "local-loopback" ||
 		activation.Scope.Publication != "none" || activation.Scope.AdapterAuthority != "ordinary-user" ||
-		!slices.Equal(activation.Scope.LifecycleCommandClasses, []string{CommandDoctor, CommandTaskScaffold}) ||
+		!slices.Equal(activation.Scope.LifecycleCommandClasses, localDogfoodLifecycleCommands()) ||
 		!sourceHeadPattern.MatchString(activation.ExpectedSourceHead) || activation.ExpectedSize <= 0 ||
 		activation.ExpectedSize > maxExecutableBytes || !validDigest(activation.ExpectedRawSHA256) ||
 		!validDigest(activation.RepositoryIdentity) || activation.ExpectedDevice == "" || activation.ExpectedInode == "" {
@@ -209,6 +209,10 @@ func DecodeActivation(raw []byte, now time.Time) (LocalDogfoodActivationV1, erro
 		return LocalDogfoodActivationV1{}, reject(ReasonOptInMissing)
 	}
 	return activation, nil
+}
+
+func localDogfoodLifecycleCommands() []string {
+	return []string{CommandDoctor, CommandInit, CommandTaskScaffold, CommandTaskPlan, CommandTaskStatus, CommandTaskApprovePlan}
 }
 
 func digestActivation(activation LocalDogfoodActivationV1) (string, error) {

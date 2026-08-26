@@ -14,8 +14,12 @@ const (
 	LocalProfile      = "darwin-local-dogfood"
 	ActivationEnv     = "MARSHAL_LOCAL_DOGFOOD_ACTIVATION"
 
-	CommandDoctor       = "doctor"
-	CommandTaskScaffold = "task-scaffold"
+	CommandDoctor          = "doctor"
+	CommandInit            = "init"
+	CommandTaskScaffold    = "task-scaffold"
+	CommandTaskPlan        = "task-plan"
+	CommandTaskStatus      = "task-status"
+	CommandTaskApprovePlan = "task-approve-plan"
 
 	ReasonObserved                   = "self-local-identity-observed"
 	ReasonOptInMissing               = "self-local-opt-in-missing"

@@ -9,6 +9,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 type fixtureEffective struct {
@@ -26,15 +27,40 @@ type fixtureEffective struct {
 }
 
 type fixtureSnapshot struct {
-	APIVersion   string           `json:"apiVersion"`
-	Kind         string           `json:"kind"`
-	TaskID       string           `json:"taskId"`
-	RunID        string           `json:"runId"`
-	Sources      []map[string]any `json:"sources"`
-	Effective    fixtureEffective `json:"effective"`
-	Control      *fixtureControl  `json:"control,omitempty"`
-	PolicyDigest string           `json:"policyDigest"`
-	GeneratedAt  string           `json:"generatedAt"`
+	APIVersion         string                          `json:"apiVersion"`
+	Kind               string                          `json:"kind"`
+	TaskID             string                          `json:"taskId"`
+	RunID              string                          `json:"runId"`
+	Sources            []map[string]any                `json:"sources"`
+	Effective          fixtureEffective                `json:"effective"`
+	Control            *fixtureControl                 `json:"control,omitempty"`
+	EnvironmentBinding *LocalDogfoodEnvironmentBinding `json:"environmentBinding,omitempty"`
+	PolicyDigest       string                          `json:"policyDigest"`
+	GeneratedAt        string                          `json:"generatedAt"`
+}
+
+func localDogfoodObservationFixture() selfidentity.LocalSelfIdentityObservationV1 {
+	return selfidentity.LocalSelfIdentityObservationV1{
+		SchemaVersion:         selfidentity.ObservationSchema,
+		ActivationDigest:      "sha256:" + strings.Repeat("a", 64),
+		IdentitySubjectDigest: "sha256:" + strings.Repeat("b", 64),
+		SelfProfile:           selfidentity.LocalProfile,
+	}
+}
+
+func localDogfoodPolicyFixture() fixtureSnapshot {
+	fixture := defaultFixture()
+	observation := localDogfoodObservationFixture()
+	fixture.Effective.AllowPublication = false
+	fixture.Control.RequiredApprovals = []string{ApprovalGatePlan}
+	fixture.EnvironmentBinding = &LocalDogfoodEnvironmentBinding{
+		SchemaVersion:         LocalDogfoodEnvironmentBindingSchema,
+		SelfProfile:           selfidentity.LocalProfile,
+		ActivationDigest:      observation.ActivationDigest,
+		IdentitySubjectDigest: observation.IdentitySubjectDigest,
+		Assurance:             "ordinary-user", Execution: "workspace-write", Production: false, Publication: "none",
+	}
+	return fixture
 }
 
 type fixtureControl struct {
@@ -159,6 +185,67 @@ func newValidator(t *testing.T) *contract.Validator {
 		t.Fatalf("contract.NewValidator(): %v", err)
 	}
 	return validator
+}
+
+func TestLocalDogfoodEnvironmentBindingIsClosedAndProfileScoped(t *testing.T) {
+	validator := newValidator(t)
+	observation := localDogfoodObservationFixture()
+	fixture := localDogfoodPolicyFixture()
+	sealed := sealPolicyFixture(t, fixture)
+
+	effective, err := ValidatePolicy(sealed, defaultTask(), fixture.RunID, validator)
+	if err != nil {
+		t.Fatalf("ValidatePolicy local binding: %v", err)
+	}
+	if effective.EnvironmentBinding == nil || effective.EnvironmentBinding.IdentitySubjectDigest != observation.IdentitySubjectDigest {
+		t.Fatalf("local environment binding not preserved: %#v", effective.EnvironmentBinding)
+	}
+	if err := ValidateLocalDogfoodEnvironmentBinding(sealed, validator, &observation); err != nil {
+		t.Fatalf("matching local binding rejected: %v", err)
+	}
+	if err := ValidateLocalDogfoodEnvironmentBinding(sealed, validator, nil); err == nil || err.Error() != ErrPolicyLocalBindingCrossProfile {
+		t.Fatalf("non-local caller err=%v, want %q", err, ErrPolicyLocalBindingCrossProfile)
+	}
+
+	mismatch := observation
+	mismatch.IdentitySubjectDigest = "sha256:" + strings.Repeat("c", 64)
+	if err := ValidateLocalDogfoodEnvironmentBinding(sealed, validator, &mismatch); err == nil || err.Error() != ErrPolicyLocalBindingMismatch {
+		t.Fatalf("identity mismatch err=%v, want %q", err, ErrPolicyLocalBindingMismatch)
+	}
+
+	legacy := defaultFixture()
+	legacy.Effective.AllowPublication = false
+	legacyRaw := sealPolicyFixture(t, legacy)
+	if err := ValidateLocalDogfoodEnvironmentBinding(legacyRaw, validator, &observation); err == nil || err.Error() != ErrPolicyLocalBindingMissing {
+		t.Fatalf("missing binding err=%v, want %q", err, ErrPolicyLocalBindingMissing)
+	}
+
+	var partial map[string]any
+	if err := json.Unmarshal(sealed, &partial); err != nil {
+		t.Fatal(err)
+	}
+	delete(partial["environmentBinding"].(map[string]any), "publication")
+	partialRaw := sealPolicyDocument(t, partial)
+	if err := ValidateLocalDogfoodEnvironmentBinding(partialRaw, validator, &observation); err == nil || err.Error() != ErrPolicySchemaInvalid {
+		t.Fatalf("partial binding err=%v, want %q", err, ErrPolicySchemaInvalid)
+	}
+}
+
+func TestLocalDogfoodSurfaceRejectsPublicationAuthority(t *testing.T) {
+	observation := localDogfoodObservationFixture()
+	fixture := localDogfoodPolicyFixture()
+	validator := newValidator(t)
+	effective, err := ValidatePolicy(sealPolicyFixture(t, fixture), defaultTask(), fixture.RunID, validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateLocalDogfoodSurface(effective, defaultTask(), &observation); err != nil {
+		t.Fatalf("publication:none local surface rejected: %v", err)
+	}
+	effective.AllowPublication = true
+	if err := validateLocalDogfoodSurface(effective, defaultTask(), &observation); err == nil || err.Error() != ErrPolicyLocalSurface {
+		t.Fatalf("publication grant err=%v, want %q", err, ErrPolicyLocalSurface)
+	}
 }
 
 func TestValidatePolicySchemaInvalid(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
@@ -155,7 +156,8 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		{"publication", []string{"task", "publish", "--run", "run-1"}, selfidentity.ReasonPublicationDenied},
 		{"remote", []string{"serve"}, selfidentity.ReasonRemoteSurfaceDenied},
 		{"internal", []string{"internal", "plan-premortem-check"}, selfidentity.ReasonCredentialedEffectDenied},
-		{"unlineaged lifecycle", []string{"task", "plan"}, selfidentity.ReasonCommandDenied},
+		{"worker lifecycle remains LD3", []string{"task", "run", "--run", "local-run"}, selfidentity.ReasonCommandDenied},
+		{"publish approval", []string{"task", "approve", "--run", "local-run", "--gate", "publish"}, selfidentity.ReasonPublicationDenied},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, denied bytes.Buffer
@@ -166,6 +168,103 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 				t.Fatalf("stderr=%q, want reason %q", denied.String(), test.reason)
 			}
 		})
+	}
+
+	newWorkerRuntime = originalRuntime
+	runGitCLI(t, root, "init", "-q")
+	runGitCLI(t, root, "config", "user.name", "Marshal Local Test")
+	runGitCLI(t, root, "config", "user.email", "marshal-local@example.invalid")
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("local dogfood\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitCLI(t, root, "add", "README.md")
+	runGitCLI(t, root, "commit", "-q", "-m", "local fixture")
+	const remoteURL = "https://example.invalid/local-dogfood.git"
+	runGitCLI(t, root, "remote", "add", "origin", remoteURL)
+	var initOutput, initError bytes.Buffer
+	exit = RunContext(context.Background(), []string{"init", "--json"}, strings.NewReader(""), &initOutput, &initError)
+	if exit != ExitOK {
+		t.Fatalf("local init exit=%d stderr=%s", exit, initError.String())
+	}
+	configureQwenAuthFixture(t)
+	t.Setenv("MARSHAL_QWEN_PATH", writeVersionExecutableForCLI(t, "qwen", "0.21.11"))
+	t.Setenv("MARSHAL_QODER_PATH", "")
+	t.Setenv("MARSHAL_CODEX_PATH", "")
+	t.Setenv("MARSHAL_PI_PATH", "")
+
+	var doctorOutput, doctorError bytes.Buffer
+	exit = RunContext(context.Background(), []string{"doctor", "--json"}, strings.NewReader(""), &doctorOutput, &doctorError)
+	if exit != ExitOK {
+		t.Fatalf("gated doctor exit=%d stderr=%s", exit, doctorError.String())
+	}
+	var doctor doctorReport
+	if err := json.Unmarshal(doctorOutput.Bytes(), &doctor); err != nil {
+		t.Fatal(err)
+	}
+	if doctor.SelfIdentity == nil || doctor.SelfIdentity.IdentitySubjectDigest == "" || doctor.PolicyEnvironmentBinding == nil {
+		t.Fatalf("doctor omitted Core self observation: %s", doctorOutput.String())
+	}
+
+	const taskID, runID = "local-dogfood-task", "local-dogfood-run"
+	taskPath := filepath.Join(root, "task.json")
+	policyPath := filepath.Join(root, "policy.json")
+	writeCLIFixture(t, taskPath, cliPlanningTask(t, root, taskID, remoteURL))
+	unboundRunID := "local-dogfood-unbound-run"
+	unboundPolicyPath := filepath.Join(root, "unbound-policy.json")
+	unboundPolicy := cliPlanningPolicy(t, taskID, unboundRunID)
+	writeCLIFixture(t, unboundPolicyPath, unboundPolicy)
+	var unboundOutput, unboundError bytes.Buffer
+	exit = RunContext(context.Background(), []string{"task", "plan", "--task", taskPath, "--policy", unboundPolicyPath, "--run", unboundRunID, "--json"}, strings.NewReader(""), &unboundOutput, &unboundError)
+	if exit != ExitFailure || !strings.Contains(unboundError.String(), planning.ErrPolicyLocalBindingMissing) {
+		t.Fatalf("unbound local plan exit=%d stdout=%s stderr=%s", exit, unboundOutput.String(), unboundError.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, ".marshal", "runs", unboundRunID)); !os.IsNotExist(err) {
+		t.Fatalf("unbound local plan left side effects: %v", err)
+	}
+	policy := cliPlanningPolicy(t, taskID, runID)
+	policy["control"].(map[string]any)["requiredApprovals"] = []any{"plan"}
+	policy["environmentBinding"] = doctor.PolicyEnvironmentBinding
+	cliStampPolicyDigest(t, policy)
+	writeCLIFixture(t, policyPath, policy)
+
+	var planOutput, planError bytes.Buffer
+	exit = RunContext(context.Background(), []string{"task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID, "--json"}, strings.NewReader(""), &planOutput, &planError)
+	if exit != ExitOK {
+		t.Fatalf("local task plan exit=%d stderr=%s", exit, planError.String())
+	}
+	var statusOutput, statusError bytes.Buffer
+	exit = RunContext(context.Background(), []string{"task", "status", "--run", runID, "--json"}, strings.NewReader(""), &statusOutput, &statusError)
+	if exit != ExitOK || !strings.Contains(statusOutput.String(), `"currentMatch": true`) || !strings.Contains(statusOutput.String(), `"production": false`) {
+		t.Fatalf("local task status exit=%d stdout=%s stderr=%s", exit, statusOutput.String(), statusError.String())
+	}
+	var approveOutput, approveError bytes.Buffer
+	exit = RunContext(context.Background(), []string{"task", "approve", "--run", runID, "--gate", "plan", "--json"}, strings.NewReader(""), &approveOutput, &approveError)
+	if exit != ExitOK {
+		t.Fatalf("local task approve exit=%d stderr=%s", exit, approveError.String())
+	}
+	replacement, err := selfidentity.RenderActivation(selfidentity.BootstrapOptions{
+		RepositoryRoot: root, ActivationID: "local-production-entry-replacement", IssuedAt: now,
+		ValidUntil: now.Add(time.Hour), Build: selfidentity.BuildIdentity{SourceHead: sourceHead, SelfProfile: selfidentity.LocalProfile},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementPath := filepath.Join(root, "replacement-activation.json")
+	if err := os.WriteFile(replacementPath, replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(selfidentity.ActivationEnv, replacementPath)
+	statusOutput.Reset()
+	statusError.Reset()
+	exit = RunContext(context.Background(), []string{"task", "status", "--run", runID, "--json"}, strings.NewReader(""), &statusOutput, &statusError)
+	if exit != ExitFailure || !strings.Contains(statusError.String(), "本地 Run 身份绑定无效") {
+		t.Fatalf("replacement activation status exit=%d stdout=%s stderr=%s", exit, statusOutput.String(), statusError.String())
+	}
+	approveOutput.Reset()
+	approveError.Reset()
+	exit = RunContext(context.Background(), []string{"task", "approve", "--run", runID, "--gate", "plan", "--json"}, strings.NewReader(""), &approveOutput, &approveError)
+	if exit != ExitFailure || !strings.Contains(approveError.String(), "Run 证据无效") {
+		t.Fatalf("replacement activation approve exit=%d stdout=%s stderr=%s", exit, approveOutput.String(), approveError.String())
 	}
 
 	t.Setenv(selfidentity.ActivationEnv, filepath.Join(root, "missing.json"))
