@@ -67,6 +67,15 @@ Stop-loss 的时间与停滞判定遵循 [watchdog-and-capacity.md](watchdog-and
 
 每次 `replan`/`intervene` 后记录：稳定 failure signature、浪费的 Attempt/rework/等待、根因属于 Core/Adapter/TaskSpec/Skill/外部依赖、已有哪个机器门禁本可提前捕获、下一次最小预防动作。
 
+把效率损失按发生点而不是表面状态记账：
+
+- Worker 启动前被 admission 捕获：`preventedAttempt=1`，不计 retry/rework；
+- Worker 完成后才发现 TaskSpec/profile/Adapter/evidence producer 的确定性矛盾：`wastedAttempt=1`，`workerReworkAllowed=false`，停止 reviewer fan-out并先修 preflight；
+- Reviewer 首次发现可由 schema、静态分析、selector probe、tool/command/profile 对比或 merge-tree 机械发现的问题：记 `machineEscape=1`，不得靠增加 reviewer 轮次补偿；
+- 只有当前 diff 内的行为/设计缺陷才计 `reworkRound`。同一 aggregate rework 后仍有 P0/P1，终止切片并 replan。
+
+Lead 每轮优先消除最高成本的重复 escape，但不得因此把主线改成无限 Harness 清理：只有阻断当前 exit criterion，或同一稳定 signature 已出现第二次，Harness 修复才插队。修复完成后必须用原失败的最小脱敏 fixture 做 forward test，证明它在 Attempt 前以同一稳定 `reasonCode` 短路；没有该证明，不得称为“已吸取教训”。
+
 只把重复出现或能明确预防高成本安全事故的经验提升为 Skill 规则；一次性 provider 细节留在任务证据，避免为每个案例累积全局步骤。优先改确定性 preflight、routing 或默认 WIP，不以新增 reviewer 轮次代替机器检查。
 
 跨 round 复用/重绑 `sourceHead`、ReviewPacket 或 evidence identity 仅登记为 Core 设计候选；Supervisor 不得建议静默复用或降低 freshness/exact identity。改变 trust boundary、persistence、lifecycle 或 publication authority 仍必须先 ADR。
