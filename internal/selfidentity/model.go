@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	ActivationSchema  = "marshal.local-dogfood-activation.v1"
-	ObservationSchema = "marshal.local-self-identity-observation.v1"
-	LocalProfile      = "darwin-local-dogfood"
-	ActivationEnv     = "MARSHAL_LOCAL_DOGFOOD_ACTIVATION"
+	ActivationSchema     = "marshal.local-dogfood-activation.v1"
+	ObservationSchema    = "marshal.local-self-identity-observation.v1"
+	AttemptBindingSchema = "marshal.local-self-identity-binding.v1"
+	LocalProfile         = "darwin-local-dogfood"
+	ActivationEnv        = "MARSHAL_LOCAL_DOGFOOD_ACTIVATION"
 
 	CommandDoctor          = "doctor"
 	CommandInit            = "init"
@@ -20,6 +21,7 @@ const (
 	CommandTaskPlan        = "task-plan"
 	CommandTaskStatus      = "task-status"
 	CommandTaskApprovePlan = "task-approve-plan"
+	CommandTaskRun         = "task-run"
 
 	ReasonObserved                   = "self-local-identity-observed"
 	ReasonOptInMissing               = "self-local-opt-in-missing"
@@ -123,6 +125,17 @@ type LocalSelfIdentityObservationV1 struct {
 	ReasonCode              string              `json:"reasonCode"`
 	IdentitySubjectDigest   string              `json:"identitySubjectDigest"`
 	ObservationDigest       string              `json:"observationDigest"`
+}
+
+// LocalSelfIdentityBindingV1 is the closed projection copied into a local
+// WorkerRequest. It points at Core's persisted dispatch observation; an
+// Adapter cannot mint or refresh any of these fields.
+type LocalSelfIdentityBindingV1 struct {
+	SchemaVersion             string `json:"schemaVersion"`
+	SelfProfile               string `json:"selfProfile"`
+	ActivationDigest          string `json:"activationDigest"`
+	IdentitySubjectDigest     string `json:"identitySubjectDigest"`
+	DispatchObservationDigest string `json:"dispatchObservationDigest"`
 }
 
 func (a LocalDogfoodActivationV1) permits(commandClass string) bool {

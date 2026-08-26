@@ -31,9 +31,11 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/verification"
 	"golang.org/x/sys/unix"
 )
@@ -81,7 +83,22 @@ type Input struct {
 	// and the durable lease ledger are M9 scope and intentionally not
 	// wired here.
 	DispatchBinder DispatchBinder
+	// EntryLocalSelfIdentity is the successful command-entry observation. A
+	// local caller must also provide ObserveLocalSelfIdentity; non-local legacy
+	// callers leave both nil and retain the original WorkerRequest bytes.
+	EntryLocalSelfIdentity   *selfidentity.LocalSelfIdentityObservationV1
+	ObserveLocalSelfIdentity LocalSelfIdentityObserver
+	// AfterLocalDispatchObservation is a deterministic crash/tamper seam after
+	// the immutable dispatch observation is written and before any Adapter
+	// Probe or Run. Production callers leave it nil.
+	AfterLocalDispatchObservation func(string) error
+	// BeforeLocalResultIngress is a deterministic hostile/replay seam after
+	// Adapter.Run returns and before the fresh ingress observation. Production
+	// callers leave it nil.
+	BeforeLocalResultIngress func(string) error
 }
+
+type LocalSelfIdentityObserver func() (selfidentity.LocalSelfIdentityObservationV1, error)
 
 // DispatchBinder binds the dispatch identity of one attempt admission (ADR
 // 0018 §6/§7). The implementation claims — or re-adjudicates — the dispatch
@@ -152,6 +169,215 @@ type Result struct {
 	State        domain.RunState `json:"state"`
 	AttemptID    string          `json:"attemptId"`
 	WorkerResult json.RawMessage `json:"workerResult,omitempty"`
+}
+
+func admitLocalSelfIdentityDispatch(policyData []byte, input Input) (*selfidentity.LocalSelfIdentityObservationV1, *selfidentity.LocalSelfIdentityBindingV1, error) {
+	entry, observer := input.EntryLocalSelfIdentity, input.ObserveLocalSelfIdentity
+	if entry == nil && observer == nil {
+		if err := planning.ValidateLocalDogfoodEnvironmentBinding(policyData, input.Validator, nil); err != nil {
+			return nil, nil, fmt.Errorf("execution: local self-identity policy admission: %w", err)
+		}
+		return nil, nil, nil
+	}
+	if entry == nil || observer == nil {
+		return nil, nil, errors.New("execution: local self-identity entry and observer must be bound together")
+	}
+	fresh, err := observer()
+	if err != nil {
+		return nil, nil, fmt.Errorf("execution: fresh local dispatch observation: %w", err)
+	}
+	if err := selfidentity.SameSubject(*entry, fresh); err != nil {
+		return nil, nil, fmt.Errorf("execution: local entry/dispatch identity drift: %w", err)
+	}
+	if err := planning.ValidateLocalDogfoodEnvironmentBinding(policyData, input.Validator, &fresh); err != nil {
+		return nil, nil, fmt.Errorf("execution: local self-identity policy admission: %w", err)
+	}
+	binding, err := selfidentity.BindingForObservation(fresh)
+	if err != nil {
+		return nil, nil, fmt.Errorf("execution: local dispatch binding: %w", err)
+	}
+	return &fresh, &binding, nil
+}
+
+func refreshLocalSelfIdentityDispatch(policyData []byte, input Input, admitted selfidentity.LocalSelfIdentityObservationV1) (selfidentity.LocalSelfIdentityObservationV1, selfidentity.LocalSelfIdentityBindingV1, error) {
+	fresh, err := input.ObserveLocalSelfIdentity()
+	if err != nil {
+		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, fmt.Errorf("execution: fresh attempt dispatch observation: %w", err)
+	}
+	if err := selfidentity.SameSubject(admitted, fresh); err != nil {
+		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, fmt.Errorf("execution: pre-attempt identity drift: %w", err)
+	}
+	if err := planning.ValidateLocalDogfoodEnvironmentBinding(policyData, input.Validator, &fresh); err != nil {
+		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, fmt.Errorf("execution: pre-attempt policy identity drift: %w", err)
+	}
+	binding, err := selfidentity.BindingForObservation(fresh)
+	if err != nil {
+		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, err
+	}
+	return fresh, binding, nil
+}
+
+const maxLocalSelfIdentityRecordBytes = 64 << 10
+
+func persistLocalObservation(attemptDir, name string, observation selfidentity.LocalSelfIdentityObservationV1) error {
+	if err := selfidentity.ValidateObservation(observation); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(observation)
+	if err != nil {
+		return err
+	}
+	raw, err = canonical.JSON(raw)
+	if err != nil || int64(len(raw)) > maxLocalSelfIdentityRecordBytes {
+		return errors.New("local self-identity observation is not bounded canonical JSON")
+	}
+	if err := os.MkdirAll(attemptDir, 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(attemptDir, ".local-self-identity-*.pending")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	err = temporary.Chmod(0o400)
+	if err == nil {
+		_, err = temporary.Write(raw)
+	}
+	if err == nil {
+		err = temporary.Sync()
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	destination := filepath.Join(attemptDir, name)
+	if err := os.Link(temporaryName, destination); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return errors.New("local self-identity observation already exists")
+		}
+		return err
+	}
+	if err := os.Remove(temporaryName); err != nil {
+		_ = os.Remove(destination)
+		return err
+	}
+	installed, err := readBoundedRegularFile(destination, maxLocalSelfIdentityRecordBytes)
+	if err != nil || !bytes.Equal(installed, raw) {
+		_ = os.Remove(destination)
+		if err == nil {
+			err = errors.New("local self-identity observation install verification failed")
+		}
+		return err
+	}
+	directory, err := os.Open(attemptDir)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+func readBoundedRegularFile(path string, limit int64) ([]byte, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil {
+		return nil, err
+	}
+	if before.Mode&unix.S_IFMT != unix.S_IFREG || before.Size < 0 || before.Size > limit {
+		return nil, errors.New("local self-identity lineage record is not a bounded regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || int64(len(data)) > limit {
+		return nil, errors.New("local self-identity lineage record exceeds its bound")
+	}
+	var after, named unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil {
+		return nil, err
+	}
+	if err := unix.Lstat(path, &named); err != nil {
+		return nil, err
+	}
+	if before.Dev != after.Dev || before.Ino != after.Ino || before.Size != after.Size || before.Mode != after.Mode ||
+		before.Dev != named.Dev || before.Ino != named.Ino || before.Size != named.Size || before.Mode != named.Mode {
+		return nil, errors.New("local self-identity lineage record changed while reading")
+	}
+	return data, nil
+}
+
+func admitLocalSelfIdentityIngress(store *runstore.Store, lease *runstore.Lease, attemptDir string, policyData, requestData []byte, validator *contract.Validator, dispatch, ingress selfidentity.LocalSelfIdentityObservationV1) error {
+	if err := planning.ValidateLocalDogfoodEnvironmentBinding(policyData, validator, &ingress); err != nil {
+		return fmt.Errorf("policy/current observation mismatch: %w", err)
+	}
+	if err := selfidentity.SameSubject(dispatch, ingress); err != nil {
+		return fmt.Errorf("dispatch/ingress identity drift: %w", err)
+	}
+	persistedRaw, err := readBoundedRegularFile(filepath.Join(attemptDir, "local-self-identity-dispatch.json"), maxLocalSelfIdentityRecordBytes)
+	if err != nil {
+		return fmt.Errorf("read persisted dispatch observation: %w", err)
+	}
+	persisted, err := selfidentity.DecodeObservation(persistedRaw)
+	if err != nil || !reflect.DeepEqual(persisted, dispatch) {
+		return errors.New("persisted dispatch observation does not match the admitted dispatch")
+	}
+	storedRequest, err := readBoundedRegularFile(filepath.Join(attemptDir, "worker-request.json"), 2<<20)
+	if err != nil {
+		return fmt.Errorf("read persisted WorkerRequest: %w", err)
+	}
+	storedRequest = bytes.TrimSuffix(storedRequest, []byte{'\n'})
+	if !bytes.Equal(storedRequest, requestData) || validator.Validate(domain.KindWorkerRequest, storedRequest) != nil {
+		return errors.New("persisted WorkerRequest does not match the dispatched request")
+	}
+	var request struct {
+		Binding *selfidentity.LocalSelfIdentityBindingV1 `json:"localSelfIdentityBinding"`
+	}
+	// The complete WorkerRequest has intentionally more fields than this
+	// projection, so strict shape is already enforced by its JSON Schema.
+	if err := json.Unmarshal(storedRequest, &request); err != nil || request.Binding == nil {
+		return errors.New("WorkerRequest lacks the local self-identity binding")
+	}
+	if err := selfidentity.ValidateBinding(*request.Binding, persisted); err != nil {
+		return fmt.Errorf("WorkerRequest local self-identity binding mismatch: %w", err)
+	}
+	events, truncated, err := store.ReadEventsUnderLease(lease)
+	if err != nil || truncated || len(events) == 0 {
+		return errors.New("worker.started authority is unreadable")
+	}
+	started := events[len(events)-1]
+	if started.Type != "worker.started" || started.AttemptID == "" || started.AttemptID != filepath.Base(attemptDir) ||
+		payloadString(started.Payload, "dispatchObservationDigest") != persisted.ObservationDigest {
+		return errors.New("worker.started does not bind the persisted dispatch observation")
+	}
+	return nil
+}
+
+func failLocalSelfIdentityIngress(store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, attemptID string, workerResult []byte) (Result, error) {
+	closed := errors.New("local self-identity lineage rejected")
+	if err := quarantineLocalSelfIdentityRejectedWorkerResult(runDir, attemptID, workerResult); err != nil {
+		return Result{State: state, AttemptID: attemptID}, errors.Join(closed, errors.New("local self-identity rejection quarantine failed"))
+	}
+	payload := map[string]any{
+		"reasonCode":     selfidentity.ReasonCrossProfileEvidence,
+		"failureDomain":  "marshal-self-identity",
+		"workerFault":    false,
+		"reworkEligible": false,
+		"terminalReason": "post-worker evidence could not be persisted",
+	}
+	event, next, err := transition(state, attemptID, "worker.evidence-failed", domain.StateBlocked, time.Now().UTC(), payload, lifecycle.Guard{LeaseHeld: true})
+	if err == nil {
+		err = store.Append(lease, event, state.Sequence)
+	}
+	if err == nil {
+		err = store.WriteSnapshot(lease, next)
+	}
+	return Result{State: next, AttemptID: attemptID}, errors.Join(closed, err)
 }
 
 func Run(ctx context.Context, input Input) (Result, error) {
@@ -240,6 +466,10 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if digest, digestErr := canonical.DigestJSON(policyData); digestErr != nil || digest != state.PolicyDigest {
 		return Result{}, errors.New("PolicySnapshot digest does not match frozen run")
 	}
+	dispatchObservation, dispatchBinding, err := admitLocalSelfIdentityDispatch(policyData, input)
+	if err != nil {
+		return Result{}, err
+	}
 	capabilityData, err := os.ReadFile(filepath.Join(runDir, "capability-snapshot.json"))
 	if err != nil {
 		return Result{}, fmt.Errorf("read frozen CapabilitySnapshot: %w", err)
@@ -296,6 +526,22 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	attemptDir := filepath.Join(runDir, "attempts", attemptID)
+	if dispatchObservation != nil {
+		fresh, binding, err := refreshLocalSelfIdentityDispatch(policyData, input, *dispatchObservation)
+		if err != nil {
+			return Result{}, err
+		}
+		dispatchObservation, dispatchBinding = &fresh, &binding
+		if err := persistLocalObservation(attemptDir, "local-self-identity-dispatch.json", *dispatchObservation); err != nil {
+			return Result{}, fmt.Errorf("execution: persist local dispatch observation: %w", err)
+		}
+		if input.AfterLocalDispatchObservation != nil {
+			if err := input.AfterLocalDispatchObservation(attemptDir); err != nil {
+				return Result{}, fmt.Errorf("execution: injected post-dispatch-observation failure: %w", err)
+			}
+		}
+	}
 	// Dispatch-bound admission (M8 embedded vertical slice): when the attempt
 	// carries a dispatch identity, the lease fencing guard adjudicates it
 	// before Probe. The binder receives the frozen two-dimensional sandbox
@@ -348,7 +594,6 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	defer worktreeLease.Release()
 
-	attemptDir := filepath.Join(runDir, "attempts", attemptID)
 	controlRoot := filepath.Join(attemptDir, "control")
 	attemptNumber := int(state.AttemptsUsed) + 1
 	prompt, err := renderPrompt(taskData, task, state, attemptID, controlRoot, selectedAdapterID, reviewFindings)
@@ -380,6 +625,9 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if supersededAttemptID != "" {
 		requestMap["previousAttemptId"] = supersededAttemptID
 	}
+	if dispatchBinding != nil {
+		requestMap["localSelfIdentityBinding"] = dispatchBinding
+	}
 	requestData, err := json.Marshal(requestMap)
 	if err != nil {
 		return Result{}, err
@@ -393,6 +641,9 @@ func Run(ctx context.Context, input Input) (Result, error) {
 
 	started := time.Now().UTC()
 	startPayload := map[string]any{"adapterId": selectedAdapterID, "fencingGeneration": attemptNumber}
+	if dispatchObservation != nil {
+		startPayload["dispatchObservationDigest"] = dispatchObservation.ObservationDigest
+	}
 	if supersededAttemptID != "" {
 		startPayload["orphanRecovery"] = true
 		startPayload["supersedesAttempt"] = supersededAttemptID
@@ -415,6 +666,25 @@ func Run(ctx context.Context, input Input) (Result, error) {
 			return Result{State: failedState, AttemptID: attemptID}, errors.Join(reportedErr, persistErr)
 		}
 		return Result{State: failedState, AttemptID: attemptID}, reportedErr
+	}
+	var ingressObservation *selfidentity.LocalSelfIdentityObservationV1
+	if dispatchObservation != nil {
+		if input.BeforeLocalResultIngress != nil {
+			if err := input.BeforeLocalResultIngress(attemptDir); err != nil {
+				return failLocalSelfIdentityIngress(store, lease, runDir, next, attemptID, workerResult.Data)
+			}
+		}
+		observed, err := input.ObserveLocalSelfIdentity()
+		if err == nil {
+			err = persistLocalObservation(attemptDir, "local-self-identity-ingress.json", observed)
+		}
+		if err == nil {
+			err = admitLocalSelfIdentityIngress(store, lease, attemptDir, policyData, requestData, input.Validator, *dispatchObservation, observed)
+		}
+		if err != nil {
+			return failLocalSelfIdentityIngress(store, lease, runDir, next, attemptID, workerResult.Data)
+		}
+		ingressObservation = &observed
 	}
 	if workerResult.Kind != domain.KindWorkerResult || input.Validator.Validate(domain.KindWorkerResult, workerResult.Data) != nil {
 		protocolErr := adapterProtocolFailure(selectedAdapterID, "adapter returned an invalid WorkerResult", time.Now().UTC())
@@ -488,7 +758,12 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		return blockAfterWorker(store, lease, next, attemptID, err)
 	}
 	completed := time.Now().UTC()
-	completeEvent, finalState, err := transition(next, attemptID, "worker.completed", domain.StateVerifying, completed, map[string]any{"snapshotDigest": observation.SnapshotDigest, "diffDigest": observation.DiffDigest}, lifecycle.Guard{LeaseHeld: true, WorkerProtocolComplete: true, SnapshotRecorded: true})
+	completePayload := map[string]any{"snapshotDigest": observation.SnapshotDigest, "diffDigest": observation.DiffDigest}
+	if dispatchObservation != nil && ingressObservation != nil {
+		completePayload["dispatchObservationDigest"] = dispatchObservation.ObservationDigest
+		completePayload["ingressObservationDigest"] = ingressObservation.ObservationDigest
+	}
+	completeEvent, finalState, err := transition(next, attemptID, "worker.completed", domain.StateVerifying, completed, completePayload, lifecycle.Guard{LeaseHeld: true, WorkerProtocolComplete: true, SnapshotRecorded: true})
 	if err != nil {
 		return Result{}, err
 	}
@@ -1363,6 +1638,30 @@ func quarantineRejectedWorkerResult(runDir, attemptID string, data []byte, cause
 		return err
 	}
 	return atomicWrite(filepath.Join(diagnosticsDir, "orphan-diagnostics.json"), append(recordData, '\n'), 0o600)
+}
+
+// quarantineLocalSelfIdentityRejectedWorkerResult isolates Adapter output
+// without persisting the path- or input-derived cause. The fixed event and
+// diagnostic reason are Core-owned; WorkerResult never repairs authority.
+func quarantineLocalSelfIdentityRejectedWorkerResult(runDir, attemptID string, data []byte) error {
+	diagnosticsDir := filepath.Join(runDir, "attempts", attemptID, "diagnostics")
+	if err := os.MkdirAll(diagnosticsDir, 0o700); err != nil {
+		return err
+	}
+	if len(data) > 0 {
+		if err := atomicWrite(filepath.Join(diagnosticsDir, "quarantined-local-self-identity-worker-result.json"), append(append([]byte{}, data...), '\n'), 0o600); err != nil {
+			return err
+		}
+	}
+	record := map[string]any{
+		"reason": "local-self-identity-lineage-rejected", "attemptId": attemptID,
+		"note": "the WorkerResult is Adapter output only; it never produces or repairs local self-identity authority",
+	}
+	recordData, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(diagnosticsDir, "local-self-identity-rejection.json"), append(recordData, '\n'), 0o600)
 }
 
 // admitDispatchBinding adjudicates one dispatch binding before Probe fail

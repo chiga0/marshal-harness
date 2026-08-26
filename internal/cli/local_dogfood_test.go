@@ -182,7 +182,9 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		{"publication", []string{"task", "publish", "--run", "run-1"}, selfidentity.ReasonPublicationDenied},
 		{"remote", []string{"serve"}, selfidentity.ReasonRemoteSurfaceDenied},
 		{"internal", []string{"internal", "plan-premortem-check"}, selfidentity.ReasonCredentialedEffectDenied},
-		{"worker lifecycle remains LD3", []string{"task", "run", "--run", "local-run"}, selfidentity.ReasonCommandDenied},
+		{"detached worker denied", []string{"task", "run", "--run", "local-run", "--detach"}, selfidentity.ReasonCommandDenied},
+		{"through verify denied", []string{"task", "run", "--run", "local-run", "--through-verify"}, selfidentity.ReasonCommandDenied},
+		{"dead driver recovery denied", []string{"task", "run", "--run", "local-run", "--recover-dead-driver"}, selfidentity.ReasonCommandDenied},
 		{"publish approval", []string{"task", "approve", "--run", "local-run", "--gate", "publish"}, selfidentity.ReasonPublicationDenied},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -304,6 +306,51 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	exit = RunContext(context.Background(), []string{"task", "approve", "--run", runID, "--gate", "plan", "--json"}, strings.NewReader(""), &approveOutput, &approveError)
 	if exit != ExitFailure || !strings.Contains(approveError.String(), "Run 证据无效") {
 		t.Fatalf("replacement activation approve exit=%d stdout=%s stderr=%s", exit, approveOutput.String(), approveError.String())
+	}
+
+	// Restore the exact frozen activation and cross the real foreground
+	// production entry. The version-only Adapter fixture is expected to fail
+	// its Worker protocol, but Core must first persist the dispatch observation
+	// and copy its binding into the production WorkerRequest.
+	t.Setenv(selfidentity.ActivationEnv, activationPath)
+	const executionRunID = "local-dogfood-execution-run"
+	executionPolicy := cliPlanningPolicy(t, taskID, executionRunID)
+	executionPolicy["control"].(map[string]any)["requiredApprovals"] = []any{"plan"}
+	executionPolicy["environmentBinding"] = doctor.PolicyEnvironmentBinding
+	cliStampPolicyDigest(t, executionPolicy)
+	executionPolicyPath := filepath.Join(root, "execution-policy.json")
+	writeCLIFixture(t, executionPolicyPath, executionPolicy)
+	var executionPlanOutput, executionPlanError bytes.Buffer
+	if got := RunContext(context.Background(), []string{"task", "plan", "--task", taskPath, "--policy", executionPolicyPath, "--run", executionRunID, "--json"}, strings.NewReader(""), &executionPlanOutput, &executionPlanError); got != ExitOK {
+		t.Fatalf("execution plan exit=%d stderr=%s", got, executionPlanError.String())
+	}
+	var executionApproveOutput, executionApproveError bytes.Buffer
+	if got := RunContext(context.Background(), []string{"task", "approve", "--run", executionRunID, "--gate", "plan", "--json"}, strings.NewReader(""), &executionApproveOutput, &executionApproveError); got != ExitOK {
+		t.Fatalf("execution approval exit=%d stderr=%s", got, executionApproveError.String())
+	}
+	var runOutput, runError bytes.Buffer
+	runContext, cancelRun := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelRun()
+	exit = RunContext(runContext, []string{"task", "run", "--run", executionRunID, "--json"}, strings.NewReader(""), &runOutput, &runError)
+	if exit == ExitUnavailable || strings.Contains(runError.String(), "Marshal local dogfood gate 拒绝") {
+		t.Fatalf("foreground task run did not cross production entry: exit=%d stdout=%s stderr=%s", exit, runOutput.String(), runError.String())
+	}
+	attemptsRoot := filepath.Join(root, ".marshal", "runs", executionRunID, "attempts")
+	attempts, err := os.ReadDir(attemptsRoot)
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("foreground task run exit=%d attempts=%d err=%v stdout=%s stderr=%s", exit, len(attempts), err, runOutput.String(), runError.String())
+	}
+	attemptDir := filepath.Join(attemptsRoot, attempts[0].Name())
+	dispatchRaw, err := os.ReadFile(filepath.Join(attemptDir, "local-self-identity-dispatch.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selfidentity.DecodeObservation(dispatchRaw); err != nil {
+		t.Fatalf("production dispatch observation: %v", err)
+	}
+	requestRaw, err := os.ReadFile(filepath.Join(attemptDir, "worker-request.json"))
+	if err != nil || !bytes.Contains(requestRaw, []byte(`"localSelfIdentityBinding"`)) {
+		t.Fatalf("production WorkerRequest lacks local binding: err=%v data=%s", err, requestRaw)
 	}
 
 	t.Setenv(selfidentity.ActivationEnv, filepath.Join(root, "missing.json"))

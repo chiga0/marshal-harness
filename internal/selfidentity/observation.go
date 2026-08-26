@@ -1,7 +1,10 @@
 package selfidentity
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -144,6 +147,95 @@ func digestObservation(observation LocalSelfIdentityObservationV1) (string, erro
 		return "", err
 	}
 	return canonical.DigestJSON(raw)
+}
+
+// BindingForObservation projects one validated Core observation into the
+// only local identity fields an Adapter may receive.
+func BindingForObservation(observation LocalSelfIdentityObservationV1) (LocalSelfIdentityBindingV1, error) {
+	if err := ValidateObservation(observation); err != nil {
+		return LocalSelfIdentityBindingV1{}, err
+	}
+	return LocalSelfIdentityBindingV1{
+		SchemaVersion: AttemptBindingSchema, SelfProfile: LocalProfile,
+		ActivationDigest:          observation.ActivationDigest,
+		IdentitySubjectDigest:     observation.IdentitySubjectDigest,
+		DispatchObservationDigest: observation.ObservationDigest,
+	}, nil
+}
+
+// ValidateObservation recomputes both digests and admits only the closed,
+// successful v1 shape. It is pure and does not turn a persisted observation
+// into installation, location, or publication authority.
+func ValidateObservation(observation LocalSelfIdentityObservationV1) error {
+	if observation.SchemaVersion != ObservationSchema || observation.SelfProfile != LocalProfile ||
+		observation.Status != "pass" || observation.ReasonCode != ReasonObserved ||
+		observation.ProcessID <= 0 || observation.ProcessExecutablePath == "" ||
+		observation.CanonicalRepositoryRoot == "" || observation.RepositoryIdentity == "" ||
+		observation.CurrentPathObject.CanonicalPath == "" || !observation.CurrentPathObject.PathRechecked ||
+		observation.SourceHead == "" || observation.ObservedAt == "" {
+		return reject(ReasonObjectMismatch)
+	}
+	subject, err := digestIdentitySubject(observation)
+	if err != nil || subject != observation.IdentitySubjectDigest {
+		return reject(ReasonObjectMismatch)
+	}
+	digest, err := digestObservation(observation)
+	if err != nil || digest != observation.ObservationDigest {
+		return reject(ReasonObjectMismatch)
+	}
+	return nil
+}
+
+// DecodeObservation admits exact JCS bytes and a closed v1 observation.
+func DecodeObservation(raw []byte) (LocalSelfIdentityObservationV1, error) {
+	canonicalRaw, err := canonical.JSON(raw)
+	if err != nil || !bytes.Equal(raw, canonicalRaw) {
+		return LocalSelfIdentityObservationV1{}, reject(ReasonObjectMismatch)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var observation LocalSelfIdentityObservationV1
+	if err := decoder.Decode(&observation); err != nil {
+		return LocalSelfIdentityObservationV1{}, reject(ReasonObjectMismatch)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return LocalSelfIdentityObservationV1{}, reject(ReasonObjectMismatch)
+	}
+	if err := ValidateObservation(observation); err != nil {
+		return LocalSelfIdentityObservationV1{}, err
+	}
+	return observation, nil
+}
+
+// ValidateBinding requires the exact Core observation projection.
+func ValidateBinding(binding LocalSelfIdentityBindingV1, observation LocalSelfIdentityObservationV1) error {
+	if err := ValidateObservation(observation); err != nil {
+		return err
+	}
+	if binding.SchemaVersion != AttemptBindingSchema || binding.SelfProfile != LocalProfile ||
+		binding.ActivationDigest != observation.ActivationDigest ||
+		binding.IdentitySubjectDigest != observation.IdentitySubjectDigest ||
+		binding.DispatchObservationDigest != observation.ObservationDigest {
+		return reject(ReasonCrossProfileEvidence)
+	}
+	return nil
+}
+
+// SameSubject requires two process observations to describe the same local
+// activation and executable subject. Their observation digests may differ
+// because a fresh observation has a later observedAt.
+func SameSubject(left, right LocalSelfIdentityObservationV1) error {
+	if err := ValidateObservation(left); err != nil {
+		return err
+	}
+	if err := ValidateObservation(right); err != nil {
+		return err
+	}
+	if left.ActivationDigest != right.ActivationDigest || left.IdentitySubjectDigest != right.IdentitySubjectDigest {
+		return reject(ReasonCrossProfileEvidence)
+	}
+	return nil
 }
 
 func executablePathNamesObject(path string, object CurrentPathObjectV1) bool {
