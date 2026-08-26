@@ -2455,7 +2455,7 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 		return ExitFailure
 	}
 	defer lease.Release()
-	state, err := store.Inspect(runID)
+	state, err := runstore.InspectUnderLease(lease)
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：%v\n", err)
 		return ExitFailure
@@ -2484,7 +2484,7 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 		}
 		authorityNamespaceID = derived
 	}
-	taskData, err := readInput(filepath.Join(runDirectory, "task-spec.json"), strings.NewReader(""))
+	taskData, err := runstore.ReadFileUnderLease(lease, 2<<20, "task-spec.json")
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：读取冻结 TaskSpec：%v\n", err)
 		return ExitFailure
@@ -2523,7 +2523,7 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 		fmt.Fprintf(stderr, "验证失败：%v\n", err)
 		return ExitFailure
 	}
-	localVerificationBinding, err := prepareLocalVerificationBinding(ctx, location.StateRoot, state, localDogfoodObservation(ctx), validator)
+	localVerificationInput, err := prepareLocalVerificationBinding(ctx, lease, state, localDogfoodObservation(ctx), validator)
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：%v\n", err)
 		return ExitFailure
@@ -2552,7 +2552,7 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 	}
 	verificationContext, cancelVerification := context.WithTimeout(ctx, time.Duration(task.Budgets.RunTimeoutSeconds)*time.Second)
 	defer cancelVerification()
-	result, err := verification.New().Verify(verificationContext, verification.Input{TaskID: state.TaskID, RunID: state.RunID, AttemptID: attemptID, AuthorityNamespaceID: authorityNamespaceID, SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, Worktree: state.WorktreePath, ExpectedCommonDir: repositoryIdentity.CommonDir, RunDirectory: runDirectory, Scope: scope, Deliverables: deliverables, Commands: commands, BaselinePath: baselinePath, PatchCaptureBytes: patchCaptureLimit(scope.MaxDiffBytes), LocalSelfIdentityBinding: localVerificationBinding})
+	result, err := verification.New().Verify(verificationContext, verification.Input{TaskID: state.TaskID, RunID: state.RunID, AttemptID: attemptID, AuthorityNamespaceID: authorityNamespaceID, SpecDigest: state.SpecDigest, BaseSHA: state.BaseSHA, Worktree: state.WorktreePath, ExpectedCommonDir: repositoryIdentity.CommonDir, RunDirectory: runDirectory, Scope: scope, Deliverables: deliverables, Commands: commands, BaselinePath: baselinePath, PatchCaptureBytes: patchCaptureLimit(scope.MaxDiffBytes), LocalSelfIdentity: localVerificationInput})
 	if err != nil {
 		fmt.Fprintf(stderr, "验证失败：%v\n", err)
 		return ExitFailure
@@ -2583,8 +2583,8 @@ func executeVerify(ctx context.Context, runID string, jsonOutput bool, stdout, s
 		return ExitFailure
 	}
 	eventPayload := map[string]any{"reportDigest": reportDigest, "artifactManifestDigest": manifestDigest, "status": result.Report.Status}
-	if localVerificationBinding != nil {
-		bindingDigest, digestErr := selfidentity.DigestVerificationBinding(*localVerificationBinding)
+	if result.Report.LocalSelfIdentityBinding != nil {
+		bindingDigest, digestErr := selfidentity.DigestVerificationBinding(*result.Report.LocalSelfIdentityBinding)
 		if digestErr != nil {
 			fmt.Fprintf(stderr, "验证失败：%v\n", localPhaseRejected())
 			return ExitFailure
@@ -2672,7 +2672,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return ExitFailure
 	}
 	defer lease.Release()
-	state, err := store.Inspect(*runID)
+	state, err := runstore.InspectUnderLease(lease)
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
@@ -2682,7 +2682,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return ExitFailure
 	}
 	runDirectory := filepath.Join(location.StateRoot, "runs", *runID)
-	taskData, err := readInput(filepath.Join(runDirectory, "task-spec.json"), strings.NewReader(""))
+	taskData, err := runstore.ReadFileUnderLease(lease, 2<<20, "task-spec.json")
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：读取冻结 TaskSpec：%v\n", err)
 		return ExitFailure
@@ -2706,7 +2706,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "审查失败：TaskSpec 与 Run 身份不一致。")
 		return ExitFailure
 	}
-	verificationData, err := readInput(filepath.Join(runDirectory, "verification-report.json"), strings.NewReader(""))
+	verificationData, err := runstore.ReadFileUnderLease(lease, 8<<20, "verification-report.json")
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：读取 VerificationReport：%v\n", err)
 		return ExitFailure
@@ -2720,7 +2720,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
 	}
-	manifestData, err := readInput(filepath.Join(runDirectory, "artifact-manifest.json"), strings.NewReader(""))
+	manifestData, err := runstore.ReadFileUnderLease(lease, 8<<20, "artifact-manifest.json")
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：读取 ArtifactManifest：%v\n", err)
 		return ExitFailure
@@ -2734,7 +2734,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
 	}
-	frozenReportDigest, frozenManifestDigest, err := frozenVerificationDigests(store, state.RunID)
+	frozenReportDigest, frozenManifestDigest, err := frozenVerificationDigests(lease)
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
@@ -2754,7 +2754,7 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
 	}
-	localReviewBinding, err := prepareLocalReviewBinding(ctx, location.StateRoot, state, localDogfoodObservation(ctx), validator, report, manifest, *decisionPath == "")
+	localReviewBinding, err := prepareLocalReviewBinding(ctx, lease, state, localDogfoodObservation(ctx), validator, report, manifest, *decisionPath == "")
 	if err != nil {
 		fmt.Fprintf(stderr, "审查失败：%v\n", err)
 		return ExitFailure
@@ -2870,8 +2870,8 @@ func runTaskReview(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return ExitOK
 }
 
-func frozenVerificationDigests(store *runstore.Store, runID string) (string, string, error) {
-	events, _, err := store.ReadEvents(runID)
+func frozenVerificationDigests(lease *runstore.Lease) (string, string, error) {
+	events, _, err := runstore.ReadEventsUnderLease(lease)
 	if err != nil {
 		return "", "", fmt.Errorf("读取验证事件：%w", err)
 	}

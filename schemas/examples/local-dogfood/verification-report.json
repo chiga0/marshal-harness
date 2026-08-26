@@ -21,7 +21,12 @@
     "attemptId": "attempt-1",
     "dispatchObservationDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
     "ingressObservationDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-    "verificationObservationDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "verificationObservationDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "applicability": {
+      "schemaVersion": "marshal.local-dogfood-environment-binding.v1", "selfProfile": "darwin-local-dogfood",
+      "activationDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "identitySubjectDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "assurance": "ordinary-user", "execution": "workspace-write", "production": false, "publication": "none"
+    }
   },
   "status": "pass",
   "gates": [{

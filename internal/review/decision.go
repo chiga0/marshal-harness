@@ -90,6 +90,11 @@ func (d *DecisionImporter) Import(input DecisionInput) (DecisionResult, error) {
 		if input.LocalSelfIdentityBinding == nil || !reflect.DeepEqual(packet.LocalSelfIdentityBinding, input.LocalSelfIdentityBinding) {
 			return DecisionResult{}, &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
 		}
+		if input.Report.LocalSelfIdentityBinding == nil || input.Manifest.LocalSelfIdentityBinding == nil ||
+			!reflect.DeepEqual(input.Report.LocalSelfIdentityBinding, input.Manifest.LocalSelfIdentityBinding) ||
+			selfidentity.ValidateReviewBindingProjection(*packet.LocalSelfIdentityBinding, input.Report.LocalSelfIdentityBinding.AttemptID, input.ReviewRound, *input.Report.LocalSelfIdentityBinding) != nil {
+			return DecisionResult{}, &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+		}
 		bindingDigest, digestErr := selfidentity.DigestReviewBinding(*packet.LocalSelfIdentityBinding)
 		if digestErr != nil || decision.LocalSelfIdentityBindingDigest != bindingDigest {
 			return DecisionResult{}, &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}

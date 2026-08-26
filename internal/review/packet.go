@@ -126,6 +126,9 @@ func (b *PacketBuilder) Build(input PacketBuildInput) (*domain.ReviewPacket, str
 			!reflect.DeepEqual(input.Report.LocalSelfIdentityBinding, input.Manifest.LocalSelfIdentityBinding) {
 			return nil, "", &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
 		}
+		if err := selfidentity.ValidateReviewBindingProjection(*input.LocalSelfIdentityBinding, input.Report.LocalSelfIdentityBinding.AttemptID, input.ReviewRound, *input.Report.LocalSelfIdentityBinding); err != nil {
+			return nil, "", &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+		}
 		localBindingDigest, err = selfidentity.DigestReviewBinding(*input.LocalSelfIdentityBinding)
 		if err != nil {
 			return nil, "", &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}

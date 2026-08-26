@@ -3,7 +3,7 @@ package domain
 import (
 	"time"
 
-	"github.com/chiga0/marshal-harness/internal/selfidentity"
+	"github.com/chiga0/marshal-harness/internal/evidencebinding"
 )
 
 // ReviewPacket bundles the exact evidence a Reviewer evaluates for one
@@ -36,11 +36,11 @@ type ReviewPacket struct {
 	// CodexEligibilityBinding is the ADR 0037 T4 identity tuple for a Codex
 	// Attempt. It is optional so non-Codex and archived packets preserve their
 	// exact historical wire representation.
-	CodexEligibilityBinding  *CodexEligibilityBindingV1         `json:"codexEligibilityBinding,omitempty"`
-	LocalSelfIdentityBinding *selfidentity.LocalReviewBindingV1 `json:"localSelfIdentityBinding,omitempty"`
-	Inputs                   PacketInputs                       `json:"inputs"`
-	PreviousBlockingFindings []PreviousFinding                  `json:"previousBlockingFindings"`
-	GeneratedAt              time.Time                          `json:"generatedAt"`
+	CodexEligibilityBinding  *CodexEligibilityBindingV1               `json:"codexEligibilityBinding,omitempty"`
+	LocalSelfIdentityBinding *evidencebinding.ReviewIdentityBindingV1 `json:"localSelfIdentityBinding,omitempty"`
+	Inputs                   PacketInputs                             `json:"inputs"`
+	PreviousBlockingFindings []PreviousFinding                        `json:"previousBlockingFindings"`
+	GeneratedAt              time.Time                                `json:"generatedAt"`
 }
 
 // CodexEligibilityBindingV1 binds a Codex review packet to the exact
@@ -150,7 +150,8 @@ type OutcomeBundle struct {
 	// bindings for a controlled merge: only a receipt/intent-bound
 	// publication.merged convergence sets them. Historical outcomes omit
 	// both, keeping their exact legacy serialization (omitempty).
-	IntentDigest                   string `json:"intentDigest,omitempty"`
-	ReceiptDigest                  string `json:"receiptDigest,omitempty"`
-	LocalSelfIdentityBindingDigest string `json:"localSelfIdentityBindingDigest,omitempty"`
+	IntentDigest                   string                                    `json:"intentDigest,omitempty"`
+	ReceiptDigest                  string                                    `json:"receiptDigest,omitempty"`
+	LocalSelfIdentityBindingDigest string                                    `json:"localSelfIdentityBindingDigest,omitempty"`
+	Applicability                  *evidencebinding.ExecutionApplicabilityV1 `json:"applicability,omitempty"`
 }

@@ -21,7 +21,24 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/gitworktree"
 	marshalRepository "github.com/chiga0/marshal-harness/internal/repository"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
+
+func TestVerifierRecomputesLocalBindingBeforeSideEffects(t *testing.T) {
+	runDirectory := filepath.Join(t.TempDir(), "must-not-exist")
+	_, err := New().Verify(context.Background(), Input{
+		AttemptID: "attempt-1", RunDirectory: runDirectory,
+		LocalSelfIdentity: &LocalSelfIdentityInput{
+			Applicability: selfidentity.LocalApplicabilityV1{SchemaVersion: selfidentity.LocalApplicabilitySchema},
+		},
+	})
+	if err == nil || err.Error() != selfidentity.ReasonCrossProfileEvidence {
+		t.Fatalf("forged paired local input error = %v", err)
+	}
+	if _, statErr := os.Stat(runDirectory); !os.IsNotExist(statErr) {
+		t.Fatalf("forged local input reached verifier side effects: %v", statErr)
+	}
+}
 
 func TestVerifierEndToEndPassesWithUntrackedDeliverable(t *testing.T) {
 	fixture := newVerificationFixture(t)

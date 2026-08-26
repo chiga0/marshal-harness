@@ -40,9 +40,17 @@ type Input struct {
 	// mode on (ADR 0027 dual-record chain); an empty AttemptID keeps the
 	// legacy read-compatible path for callers predating ADR 0027.
 	AuthorityNamespaceID string
-	// LocalSelfIdentityBinding is admitted by Core before Verifier side
-	// effects. The Verifier only copies this closed Core-owned projection.
-	LocalSelfIdentityBinding *selfidentity.LocalVerificationBindingV1
+	// LocalSelfIdentity carries Core-owned observations, not a precomputed
+	// binding. The final Verifier consumer recomputes the closed binding before
+	// any verifier side effect so paired forged projections are not trusted.
+	LocalSelfIdentity *LocalSelfIdentityInput
+}
+
+type LocalSelfIdentityInput struct {
+	Applicability selfidentity.LocalApplicabilityV1
+	Dispatch      selfidentity.LocalSelfIdentityObservationV1
+	Ingress       selfidentity.LocalSelfIdentityObservationV1
+	Verification  selfidentity.LocalSelfIdentityObservationV1
 }
 
 type Result struct {
@@ -61,6 +69,14 @@ type Verifier struct {
 func New() *Verifier { return &Verifier{now: time.Now} }
 
 func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
+	var localBinding *selfidentity.LocalVerificationBindingV1
+	if input.LocalSelfIdentity != nil {
+		binding, err := selfidentity.BuildVerificationBinding(input.AttemptID, input.LocalSelfIdentity.Applicability, input.LocalSelfIdentity.Dispatch, input.LocalSelfIdentity.Ingress, input.LocalSelfIdentity.Verification)
+		if err != nil {
+			return Result{}, errors.New(selfidentity.ReasonCrossProfileEvidence)
+		}
+		localBinding = &binding
+	}
 	started := v.now().UTC()
 	empty, err := emptyObservation()
 	if err != nil {
@@ -70,7 +86,7 @@ func (v *Verifier) Verify(ctx context.Context, input Input) (Result, error) {
 	// to JSON null and violate the ArtifactManifest schema's array contract
 	// on every exit path that precedes the first observed artifact, notably
 	// the early repository Gate fail/error returns (issue #142).
-	result := Result{Report: Report{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindVerificationReport, TaskID: input.TaskID, RunID: input.RunID, SpecDigest: input.SpecDigest, BaseSHA: input.BaseSHA, Observed: empty, LocalSelfIdentityBinding: input.LocalSelfIdentityBinding, StartedAt: started}, Manifest: ArtifactManifest{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindArtifactManifest, TaskID: input.TaskID, RunID: input.RunID, LocalSelfIdentityBinding: input.LocalSelfIdentityBinding, Artifacts: []Artifact{}, GeneratedAt: started}}
+	result := Result{Report: Report{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindVerificationReport, TaskID: input.TaskID, RunID: input.RunID, SpecDigest: input.SpecDigest, BaseSHA: input.BaseSHA, Observed: empty, LocalSelfIdentityBinding: localBinding, StartedAt: started}, Manifest: ArtifactManifest{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindArtifactManifest, TaskID: input.TaskID, RunID: input.RunID, LocalSelfIdentityBinding: localBinding, Artifacts: []Artifact{}, GeneratedAt: started}}
 	if err := validateInput(input); err != nil {
 		return result, err
 	}

@@ -277,6 +277,10 @@ func (s *Store) ReadEvents(runID string) ([]domain.RunEvent, bool, error) {
 // ReadEventsUnderLease reads the journal through the exact canonical run
 // authority descriptor validated against lease.
 func (s *Store) ReadEventsUnderLease(lease *Lease) ([]domain.RunEvent, bool, error) {
+	return ReadEventsUnderLease(lease)
+}
+
+func ReadEventsUnderLease(lease *Lease) ([]domain.RunEvent, bool, error) {
 	authority, err := OpenRunAuthority(lease)
 	if err != nil {
 		return nil, false, err
@@ -409,6 +413,18 @@ func (s *Store) Inspect(runID string) (domain.RunState, error) {
 		return state, fmt.Errorf("%w: snapshot state %s differs from journal state %s", ErrConflict, state.State, events[len(events)-1].StateTo)
 	}
 	return state, nil
+}
+
+// InspectUnderLease projects snapshot+journal through the exact descriptor
+// authority already held by the caller. It is the mutation-entry equivalent
+// of Inspect and never reopens the Run by pathname.
+func InspectUnderLease(lease *Lease) (domain.RunState, error) {
+	authority, err := OpenRunAuthority(lease)
+	if err != nil {
+		return domain.RunState{}, err
+	}
+	defer authority.Close()
+	return inspectAt(int(authority.Fd()))
 }
 
 func inspectAt(runFD int) (domain.RunState, error) {

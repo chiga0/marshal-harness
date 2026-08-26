@@ -10,8 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/evidencebinding"
 	"golang.org/x/sys/unix"
 )
 
@@ -24,32 +26,13 @@ const (
 // LocalVerificationBindingV1 freezes the Core-owned observations that make
 // verifier evidence applicable to one local Attempt. WorkerResult is not an
 // input to this record.
-type LocalVerificationBindingV1 struct {
-	SchemaVersion                 string `json:"schemaVersion"`
-	SelfProfile                   string `json:"selfProfile"`
-	ActivationDigest              string `json:"activationDigest"`
-	IdentitySubjectDigest         string `json:"identitySubjectDigest"`
-	AttemptID                     string `json:"attemptId"`
-	DispatchObservationDigest     string `json:"dispatchObservationDigest"`
-	IngressObservationDigest      string `json:"ingressObservationDigest"`
-	VerificationObservationDigest string `json:"verificationObservationDigest"`
-}
+type LocalVerificationBindingV1 = evidencebinding.VerificationIdentityBindingV1
 
 // LocalReviewBindingV1 extends the frozen verification lineage with the
 // Core-owned observation made before a ReviewPacket is produced.
-type LocalReviewBindingV1 struct {
-	SchemaVersion                 string `json:"schemaVersion"`
-	SelfProfile                   string `json:"selfProfile"`
-	ActivationDigest              string `json:"activationDigest"`
-	IdentitySubjectDigest         string `json:"identitySubjectDigest"`
-	AttemptID                     string `json:"attemptId"`
-	ReviewRound                   uint   `json:"reviewRound"`
-	VerificationBindingDigest     string `json:"verificationBindingDigest"`
-	VerificationObservationDigest string `json:"verificationObservationDigest"`
-	ReviewObservationDigest       string `json:"reviewObservationDigest"`
-}
+type LocalReviewBindingV1 = evidencebinding.ReviewIdentityBindingV1
 
-func BuildVerificationBinding(attemptID string, dispatch, ingress, verification LocalSelfIdentityObservationV1) (LocalVerificationBindingV1, error) {
+func BuildVerificationBinding(attemptID string, applicability LocalApplicabilityV1, dispatch, ingress, verification LocalSelfIdentityObservationV1) (LocalVerificationBindingV1, error) {
 	for _, observation := range []LocalSelfIdentityObservationV1{dispatch, ingress, verification} {
 		if err := ValidateObservation(observation); err != nil {
 			return LocalVerificationBindingV1{}, err
@@ -61,16 +44,20 @@ func BuildVerificationBinding(attemptID string, dispatch, ingress, verification 
 	if attemptID == "" {
 		return LocalVerificationBindingV1{}, errors.New("local verification binding requires attempt identity")
 	}
+	if err := ValidateApplicability(applicability, dispatch); err != nil {
+		return LocalVerificationBindingV1{}, err
+	}
 	return LocalVerificationBindingV1{
 		SchemaVersion: VerificationBindingSchema, SelfProfile: LocalProfile,
 		ActivationDigest: dispatch.ActivationDigest, IdentitySubjectDigest: dispatch.IdentitySubjectDigest,
 		AttemptID: attemptID, DispatchObservationDigest: dispatch.ObservationDigest,
 		IngressObservationDigest: ingress.ObservationDigest, VerificationObservationDigest: verification.ObservationDigest,
+		Applicability: applicability,
 	}, nil
 }
 
-func ValidateVerificationBinding(binding LocalVerificationBindingV1, attemptID string, dispatch, ingress, verification LocalSelfIdentityObservationV1) error {
-	expected, err := BuildVerificationBinding(attemptID, dispatch, ingress, verification)
+func ValidateVerificationBinding(binding LocalVerificationBindingV1, attemptID string, applicability LocalApplicabilityV1, dispatch, ingress, verification LocalSelfIdentityObservationV1) error {
+	expected, err := BuildVerificationBinding(attemptID, applicability, dispatch, ingress, verification)
 	if err != nil {
 		return err
 	}
@@ -108,7 +95,28 @@ func BuildReviewBinding(attemptID string, round uint, verificationBinding LocalV
 		AttemptID: attemptID, ReviewRound: round, VerificationBindingDigest: verificationDigest,
 		VerificationObservationDigest: verificationBinding.VerificationObservationDigest,
 		ReviewObservationDigest:       review.ObservationDigest,
+		Applicability:                 verificationBinding.Applicability,
 	}, nil
+}
+
+// ValidateReviewBindingProjection is the final consumer check for a review
+// binding. It recomputes the verification-binding digest and rejects a paired
+// but forged attempt, round, profile or applicability projection.
+func ValidateReviewBindingProjection(binding LocalReviewBindingV1, attemptID string, round uint, verificationBinding LocalVerificationBindingV1) error {
+	verificationDigest, err := DigestVerificationBinding(verificationBinding)
+	if err != nil {
+		return err
+	}
+	if binding.SchemaVersion != ReviewBindingSchema || binding.SelfProfile != LocalProfile ||
+		binding.AttemptID != attemptID || binding.ReviewRound != round ||
+		binding.ActivationDigest != verificationBinding.ActivationDigest ||
+		binding.IdentitySubjectDigest != verificationBinding.IdentitySubjectDigest ||
+		binding.VerificationBindingDigest != verificationDigest ||
+		binding.VerificationObservationDigest != verificationBinding.VerificationObservationDigest ||
+		SameApplicability(binding.Applicability, verificationBinding.Applicability) != nil {
+		return errors.New("local review binding projection is invalid")
+	}
+	return nil
 }
 
 func DigestReviewBinding(binding LocalReviewBindingV1) (string, error) {
@@ -126,26 +134,61 @@ func PersistPhaseObservation(directory, name string, observation LocalSelfIdenti
 	return persistPhaseObservation(directory, name, observation, nil, nil)
 }
 
-// LoadOrPersistPhaseObservation makes a phase observation crash-replay safe.
-// The first successful writer freezes the exact observation. A later process
-// may reuse that record only when its fresh observation proves the same
-// executable/activation subject; it never rewrites the frozen evidence.
-func LoadOrPersistPhaseObservation(directory, name string, fresh LocalSelfIdentityObservationV1) (LocalSelfIdentityObservationV1, error) {
-	if err := ValidateObservation(fresh); err != nil {
+// StableDirectory is implemented by the descriptor chain derived from a held
+// Run lease. Phase evidence uses its descriptor and recheck, never a pathname.
+type StableDirectory interface {
+	File() *os.File
+	Recheck() error
+}
+
+func PersistPhaseObservationIn(directory StableDirectory, name string, observation LocalSelfIdentityObservationV1) (LocalSelfIdentityObservationV1, error) {
+	if directory == nil || directory.File() == nil || directory.Recheck() != nil {
+		return LocalSelfIdentityObservationV1{}, errors.New("local phase observation lacks stable run authority")
+	}
+	return persistPhaseObservationAt(int(directory.File().Fd()), directory.Recheck, name, observation, nil)
+}
+
+func ReadPhaseObservationIn(directory StableDirectory, name string) (LocalSelfIdentityObservationV1, error) {
+	if directory == nil || directory.File() == nil || directory.Recheck() != nil {
+		return LocalSelfIdentityObservationV1{}, errors.New("local phase observation lacks stable run authority")
+	}
+	observation, err := readPhaseObservationAt(int(directory.File().Fd()), name, nil)
+	if err != nil {
 		return LocalSelfIdentityObservationV1{}, err
 	}
-	path := filepath.Join(directory, name)
-	stored, err := ReadPhaseObservation(path)
-	if err == nil {
-		if err := SameSubject(stored, fresh); err != nil {
-			return LocalSelfIdentityObservationV1{}, errors.New("local phase observation replay crossed identity")
+	if err := directory.Recheck(); err != nil {
+		return LocalSelfIdentityObservationV1{}, err
+	}
+	return observation, nil
+}
+
+func VersionedPhaseObservationName(phase, observationDigest string) (string, error) {
+	value := strings.TrimPrefix(observationDigest, "sha256:")
+	if filepath.Base(phase) != phase || phase == "" || len(value) != 64 {
+		return "", errors.New("local versioned phase identity is invalid")
+	}
+	for _, character := range value {
+		if !strings.ContainsRune("0123456789abcdef", character) {
+			return "", errors.New("local versioned phase digest is invalid")
 		}
-		return stored, nil
 	}
-	if !errors.Is(err, unix.ENOENT) {
+	return fmt.Sprintf("local-self-identity-%s-%s.json", phase, value), nil
+}
+
+func PersistVersionedPhaseObservation(directory StableDirectory, phase string, observation LocalSelfIdentityObservationV1) (LocalSelfIdentityObservationV1, error) {
+	name, err := VersionedPhaseObservationName(phase, observation.ObservationDigest)
+	if err != nil {
 		return LocalSelfIdentityObservationV1{}, err
 	}
-	return PersistPhaseObservation(directory, name, fresh)
+	return PersistPhaseObservationIn(directory, name, observation)
+}
+
+func ReadVersionedPhaseObservation(directory StableDirectory, phase, observationDigest string) (LocalSelfIdentityObservationV1, error) {
+	name, err := VersionedPhaseObservationName(phase, observationDigest)
+	if err != nil {
+		return LocalSelfIdentityObservationV1{}, err
+	}
+	return ReadPhaseObservationIn(directory, name)
 }
 
 func persistPhaseObservation(directory, name string, observation LocalSelfIdentityObservationV1, afterParentOpen func(), beforeLink func() error) (LocalSelfIdentityObservationV1, error) {
@@ -170,6 +213,31 @@ func persistPhaseObservation(directory, name string, observation LocalSelfIdenti
 	defer unix.Close(directoryFD)
 	if afterParentOpen != nil {
 		afterParentOpen()
+	}
+	return persistPhaseObservationAt(directoryFD, func() error {
+		return recheckStablePhaseDirectory(directory, directoryFD, directoryIdentity)
+	}, name, observation, beforeLink)
+}
+
+func persistPhaseObservationAt(directoryFD int, recheck func() error, name string, observation LocalSelfIdentityObservationV1, beforeLink func() error) (LocalSelfIdentityObservationV1, error) {
+	if err := ValidateObservation(observation); err != nil {
+		return LocalSelfIdentityObservationV1{}, err
+	}
+	if filepath.Base(name) != name || name == "." || name == "" {
+		return LocalSelfIdentityObservationV1{}, errors.New("local phase observation name is invalid")
+	}
+	raw, err := json.Marshal(observation)
+	if err != nil {
+		return LocalSelfIdentityObservationV1{}, err
+	}
+	raw, err = canonical.JSON(raw)
+	if err != nil || len(raw) > phaseObservationByteLimit {
+		return LocalSelfIdentityObservationV1{}, errors.New("local phase observation is not bounded canonical JSON")
+	}
+	if recheck != nil {
+		if err := recheck(); err != nil {
+			return LocalSelfIdentityObservationV1{}, err
+		}
 	}
 	pending, err := phasePendingName(name)
 	if err != nil {
@@ -212,8 +280,10 @@ func persistPhaseObservation(directory, name string, observation LocalSelfIdenti
 	if syncErr := unix.Fsync(directoryFD); syncErr != nil {
 		return LocalSelfIdentityObservationV1{}, syncErr
 	}
-	if err := recheckStablePhaseDirectory(directory, directoryFD, directoryIdentity); err != nil {
-		return LocalSelfIdentityObservationV1{}, err
+	if recheck != nil {
+		if err := recheck(); err != nil {
+			return LocalSelfIdentityObservationV1{}, err
+		}
 	}
 	stored, err := readPhaseObservationAt(directoryFD, name, nil)
 	if err != nil {
@@ -262,7 +332,7 @@ func readPhaseObservationAt(directoryFD int, name string, afterRead func()) (Loc
 	if err := unix.Fstat(fd, &before); err != nil {
 		return LocalSelfIdentityObservationV1{}, err
 	}
-	if before.Mode&unix.S_IFMT != unix.S_IFREG || before.Size < 0 || before.Size > phaseObservationByteLimit {
+	if before.Mode&unix.S_IFMT != unix.S_IFREG || before.Nlink != 1 || before.Size < 0 || before.Size > phaseObservationByteLimit {
 		return LocalSelfIdentityObservationV1{}, errors.New("local phase observation is not a bounded regular file")
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, phaseObservationByteLimit+1))
@@ -278,8 +348,8 @@ func readPhaseObservationAt(directoryFD int, name string, afterRead func()) (Loc
 	if err := unix.Fstatat(directoryFD, name, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return LocalSelfIdentityObservationV1{}, err
 	}
-	if before.Dev != after.Dev || before.Ino != after.Ino || before.Size != after.Size || before.Mode != after.Mode ||
-		before.Dev != named.Dev || before.Ino != named.Ino || before.Size != named.Size || before.Mode != named.Mode {
+	if before.Dev != after.Dev || before.Ino != after.Ino || before.Size != after.Size || before.Mode != after.Mode || before.Nlink != after.Nlink ||
+		before.Dev != named.Dev || before.Ino != named.Ino || before.Size != named.Size || before.Mode != named.Mode || named.Nlink != 1 {
 		return LocalSelfIdentityObservationV1{}, errors.New("local phase observation changed while reading")
 	}
 	canonicalRaw, err := canonical.JSON(raw)

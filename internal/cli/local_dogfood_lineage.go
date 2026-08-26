@@ -1,12 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 
 	"github.com/chiga0/marshal-harness/internal/contract"
@@ -15,18 +15,19 @@ import (
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/verification"
+	"golang.org/x/sys/unix"
 )
 
 func freshLocalDogfoodObservation(commandClass string) (selfidentity.LocalSelfIdentityObservationV1, error) {
 	workingDirectory, err := os.Getwd()
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+		return selfidentity.LocalSelfIdentityObservationV1{}, localPhaseRejected()
 	}
 	build := localBuildInfo()
 	observation, err := selfidentity.Admit(os.Getenv(selfidentity.ActivationEnv), commandClass, workingDirectory,
 		selfidentity.BuildIdentity{SourceHead: build.Commit, SelfProfile: build.SelfProfile}, localNow())
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
+		return selfidentity.LocalSelfIdentityObservationV1{}, localPhaseRejected()
 	}
 	return observation, nil
 }
@@ -35,58 +36,60 @@ func localPhaseRejected() error {
 	return &selfidentity.GateError{ReasonCode: selfidentity.ReasonCrossProfileEvidence}
 }
 
-func prepareLocalVerificationBinding(_ context.Context, stateRoot string, state domain.RunState, entry *selfidentity.LocalSelfIdentityObservationV1, validator *contract.Validator) (*selfidentity.LocalVerificationBindingV1, error) {
+func prepareLocalVerificationBinding(_ context.Context, lease *runstore.Lease, state domain.RunState, entry *selfidentity.LocalSelfIdentityObservationV1, validator *contract.Validator) (*verification.LocalSelfIdentityInput, error) {
 	if entry == nil {
 		return nil, nil
 	}
-	if state.CurrentAttemptID == "" || validator == nil {
+	if lease == nil || state.CurrentAttemptID == "" || validator == nil {
 		return nil, localPhaseRejected()
 	}
-	runDirectory := filepath.Join(stateRoot, "runs", state.RunID)
-	policyData, err := readInput(filepath.Join(runDirectory, "policy-snapshot.json"), nil)
-	if err != nil || planning.ValidateLocalDogfoodEnvironmentBinding(policyData, validator, entry) != nil {
+	policyData, err := runstore.ReadFileUnderLease(lease, 2<<20, "policy-snapshot.json")
+	if err != nil {
+		return nil, localPhaseRejected()
+	}
+	applicability, err := planning.LocalDogfoodApplicability(policyData, validator, entry)
+	if err != nil || applicability == nil {
 		return nil, localPhaseRejected()
 	}
 	fresh, err := freshLocalDogfoodObservation(selfidentity.CommandTaskVerify)
 	if err != nil || selfidentity.SameSubject(*entry, fresh) != nil || planning.ValidateLocalDogfoodEnvironmentBinding(policyData, validator, &fresh) != nil {
 		return nil, localPhaseRejected()
 	}
-	attemptDirectory := filepath.Join(runDirectory, "attempts", state.CurrentAttemptID)
-	dispatch, err := selfidentity.ReadPhaseObservation(filepath.Join(attemptDirectory, "local-self-identity-dispatch.json"))
+	attempt, err := runstore.OpenDirectoryUnderLease(lease, "attempts", state.CurrentAttemptID)
 	if err != nil {
 		return nil, localPhaseRejected()
 	}
-	ingress, err := selfidentity.ReadPhaseObservation(filepath.Join(attemptDirectory, "local-self-identity-ingress.json"))
+	defer attempt.Close()
+	dispatch, err := selfidentity.ReadPhaseObservationIn(attempt, "local-self-identity-dispatch.json")
+	if err != nil {
+		return nil, localPhaseRejected()
+	}
+	ingress, err := selfidentity.ReadPhaseObservationIn(attempt, "local-self-identity-ingress.json")
 	if err != nil || selfidentity.SameSubject(dispatch, ingress) != nil || selfidentity.SameSubject(ingress, fresh) != nil {
 		return nil, localPhaseRejected()
 	}
-	if err := validateLocalAttemptLineage(stateRoot, state.RunID, state.CurrentAttemptID, attemptDirectory, validator, dispatch, ingress); err != nil {
+	if err := validateLocalAttemptLineage(lease, state.CurrentAttemptID, attempt, validator, dispatch, ingress); err != nil {
 		return nil, localPhaseRejected()
 	}
-	stored, err := selfidentity.LoadOrPersistPhaseObservation(attemptDirectory, "local-self-identity-verification.json", fresh)
+	stored, err := selfidentity.PersistVersionedPhaseObservation(attempt, "verification", fresh)
 	if err != nil {
 		return nil, localPhaseRejected()
 	}
-	binding, err := selfidentity.BuildVerificationBinding(state.CurrentAttemptID, dispatch, ingress, stored)
-	if err != nil {
-		return nil, localPhaseRejected()
-	}
-	return &binding, nil
+	return &verification.LocalSelfIdentityInput{Applicability: *applicability, Dispatch: dispatch, Ingress: ingress, Verification: stored}, nil
 }
 
-func validateLocalAttemptLineage(stateRoot, runID, attemptID, attemptDirectory string, validator *contract.Validator, dispatch, ingress selfidentity.LocalSelfIdentityObservationV1) error {
-	requestData, err := os.ReadFile(filepath.Join(attemptDirectory, "worker-request.json"))
+func validateLocalAttemptLineage(lease *runstore.Lease, attemptID string, attempt *runstore.BoundDirectory, validator *contract.Validator, dispatch, ingress selfidentity.LocalSelfIdentityObservationV1) error {
+	requestData, err := runstore.ReadFileInDirectory(attempt, "worker-request.json", 2<<20)
 	if err != nil || validator.Validate(domain.KindWorkerRequest, requestData) != nil {
 		return errors.New("local WorkerRequest is invalid")
 	}
 	var request struct {
 		Binding *selfidentity.LocalSelfIdentityBindingV1 `json:"localSelfIdentityBinding"`
 	}
-	if json.Unmarshal(requestData, &request) != nil || request.Binding == nil ||
-		selfidentity.ValidateBinding(*request.Binding, dispatch) != nil {
+	if json.Unmarshal(requestData, &request) != nil || request.Binding == nil || selfidentity.ValidateBinding(*request.Binding, dispatch) != nil {
 		return errors.New("local WorkerRequest binding is invalid")
 	}
-	events, truncated, err := runstore.New(stateRoot).ReadEvents(runID)
+	events, truncated, err := runstore.ReadEventsUnderLease(lease)
 	if err != nil || truncated {
 		return errors.New("local Attempt journal is invalid")
 	}
@@ -103,8 +106,7 @@ func validateLocalAttemptLineage(stateRoot, runID, attemptID, attemptDirectory s
 			}
 			startedIndex = index
 		case "worker.completed":
-			if completedIndex >= 0 || event.Actor == nil || event.Actor.Type != "system" || event.Actor.ID != "marshal-worker-runner" ||
-				localPayloadString(event.Payload, "dispatchObservationDigest") != dispatch.ObservationDigest || localPayloadString(event.Payload, "ingressObservationDigest") != ingress.ObservationDigest {
+			if completedIndex >= 0 || event.Actor == nil || event.Actor.Type != "system" || event.Actor.ID != "marshal-worker-runner" || localPayloadString(event.Payload, "dispatchObservationDigest") != dispatch.ObservationDigest || localPayloadString(event.Payload, "ingressObservationDigest") != ingress.ObservationDigest {
 				return errors.New("local worker.completed binding is invalid")
 			}
 			completedIndex = index
@@ -113,57 +115,75 @@ func validateLocalAttemptLineage(stateRoot, runID, attemptID, attemptDirectory s
 	if startedIndex < 0 || completedIndex != startedIndex+1 {
 		return errors.New("local worker event lineage is not adjacent")
 	}
-	return nil
+	return attempt.Recheck()
 }
 
-func prepareLocalReviewBinding(_ context.Context, stateRoot string, state domain.RunState, entry *selfidentity.LocalSelfIdentityObservationV1, validator *contract.Validator, report verification.Report, manifest verification.ArtifactManifest, create bool) (*selfidentity.LocalReviewBindingV1, error) {
+func prepareLocalReviewBinding(_ context.Context, lease *runstore.Lease, state domain.RunState, entry *selfidentity.LocalSelfIdentityObservationV1, validator *contract.Validator, report verification.Report, manifest verification.ArtifactManifest, create bool) (*selfidentity.LocalReviewBindingV1, error) {
 	if entry == nil {
 		if report.LocalSelfIdentityBinding != nil || manifest.LocalSelfIdentityBinding != nil {
 			return nil, localPhaseRejected()
 		}
 		return nil, nil
 	}
-	if state.CurrentAttemptID == "" || report.LocalSelfIdentityBinding == nil || manifest.LocalSelfIdentityBinding == nil ||
-		!reflect.DeepEqual(report.LocalSelfIdentityBinding, manifest.LocalSelfIdentityBinding) {
+	if lease == nil || state.CurrentAttemptID == "" || report.LocalSelfIdentityBinding == nil || manifest.LocalSelfIdentityBinding == nil || !reflect.DeepEqual(report.LocalSelfIdentityBinding, manifest.LocalSelfIdentityBinding) {
 		return nil, localPhaseRejected()
 	}
-	runDirectory := filepath.Join(stateRoot, "runs", state.RunID)
-	policyData, err := readInput(filepath.Join(runDirectory, "policy-snapshot.json"), nil)
-	if err != nil || planning.ValidateLocalDogfoodEnvironmentBinding(policyData, validator, entry) != nil {
+	policyData, err := runstore.ReadFileUnderLease(lease, 2<<20, "policy-snapshot.json")
+	if err != nil {
+		return nil, localPhaseRejected()
+	}
+	applicability, err := planning.LocalDogfoodApplicability(policyData, validator, entry)
+	if err != nil || applicability == nil {
 		return nil, localPhaseRejected()
 	}
 	fresh, err := freshLocalDogfoodObservation(selfidentity.CommandTaskReview)
 	if err != nil || selfidentity.SameSubject(*entry, fresh) != nil || planning.ValidateLocalDogfoodEnvironmentBinding(policyData, validator, &fresh) != nil {
 		return nil, localPhaseRejected()
 	}
-	attemptDirectory := filepath.Join(runDirectory, "attempts", state.CurrentAttemptID)
-	dispatch, err := selfidentity.ReadPhaseObservation(filepath.Join(attemptDirectory, "local-self-identity-dispatch.json"))
+	attempt, err := runstore.OpenDirectoryUnderLease(lease, "attempts", state.CurrentAttemptID)
 	if err != nil {
 		return nil, localPhaseRejected()
 	}
-	ingress, err := selfidentity.ReadPhaseObservation(filepath.Join(attemptDirectory, "local-self-identity-ingress.json"))
+	defer attempt.Close()
+	dispatch, err := selfidentity.ReadPhaseObservationIn(attempt, "local-self-identity-dispatch.json")
 	if err != nil {
 		return nil, localPhaseRejected()
 	}
-	if err := validateLocalAttemptLineage(stateRoot, state.RunID, state.CurrentAttemptID, attemptDirectory, validator, dispatch, ingress); err != nil {
+	ingress, err := selfidentity.ReadPhaseObservationIn(attempt, "local-self-identity-ingress.json")
+	if err != nil || validateLocalAttemptLineage(lease, state.CurrentAttemptID, attempt, validator, dispatch, ingress) != nil {
 		return nil, localPhaseRejected()
 	}
-	verificationObservation, err := selfidentity.ReadPhaseObservation(filepath.Join(attemptDirectory, "local-self-identity-verification.json"))
-	if err != nil || selfidentity.ValidateVerificationBinding(*report.LocalSelfIdentityBinding, state.CurrentAttemptID, dispatch, ingress, verificationObservation) != nil || selfidentity.SameSubject(verificationObservation, fresh) != nil {
+	verificationObservation, err := selfidentity.ReadVersionedPhaseObservation(attempt, "verification", report.LocalSelfIdentityBinding.VerificationObservationDigest)
+	if err != nil || selfidentity.ValidateVerificationBinding(*report.LocalSelfIdentityBinding, state.CurrentAttemptID, *applicability, dispatch, ingress, verificationObservation) != nil || selfidentity.SameSubject(verificationObservation, fresh) != nil {
 		return nil, localPhaseRejected()
 	}
 	verificationBindingDigest, err := selfidentity.DigestVerificationBinding(*report.LocalSelfIdentityBinding)
-	if err != nil || !verificationEventBinds(stateRoot, state.RunID, verificationBindingDigest) {
+	if err != nil || !verificationEventBinds(lease, verificationBindingDigest) {
 		return nil, localPhaseRejected()
 	}
-	reviewPath := filepath.Join(attemptDirectory, fmt.Sprintf("local-self-identity-review-%d.json", state.ReviewRound))
-	var reviewObservation selfidentity.LocalSelfIdentityObservationV1
-	if create {
-		reviewObservation, err = selfidentity.LoadOrPersistPhaseObservation(attemptDirectory, filepath.Base(reviewPath), fresh)
-	} else {
-		reviewObservation, err = selfidentity.ReadPhaseObservation(reviewPath)
+	packet, exists, packetErr := readExistingLocalReviewPacket(lease, validator)
+	if packetErr != nil {
+		return nil, localPhaseRejected()
 	}
-	if err != nil || selfidentity.SameSubject(reviewObservation, fresh) != nil {
+	if exists {
+		if packet.LocalSelfIdentityBinding == nil {
+			return nil, localPhaseRejected()
+		}
+		stored, readErr := selfidentity.ReadVersionedPhaseObservation(attempt, fmt.Sprintf("review-%d", state.ReviewRound), packet.LocalSelfIdentityBinding.ReviewObservationDigest)
+		if readErr != nil || selfidentity.SameSubject(stored, fresh) != nil {
+			return nil, localPhaseRejected()
+		}
+		expected, buildErr := selfidentity.BuildReviewBinding(state.CurrentAttemptID, state.ReviewRound, *report.LocalSelfIdentityBinding, stored)
+		if buildErr != nil || !reflect.DeepEqual(expected, *packet.LocalSelfIdentityBinding) {
+			return nil, localPhaseRejected()
+		}
+		return &expected, nil
+	}
+	if !create {
+		return nil, localPhaseRejected()
+	}
+	reviewObservation, err := selfidentity.PersistVersionedPhaseObservation(attempt, fmt.Sprintf("review-%d", state.ReviewRound), fresh)
+	if err != nil {
 		return nil, localPhaseRejected()
 	}
 	binding, err := selfidentity.BuildReviewBinding(state.CurrentAttemptID, state.ReviewRound, *report.LocalSelfIdentityBinding, reviewObservation)
@@ -173,8 +193,27 @@ func prepareLocalReviewBinding(_ context.Context, stateRoot string, state domain
 	return &binding, nil
 }
 
-func verificationEventBinds(stateRoot, runID, bindingDigest string) bool {
-	events, truncated, err := runstore.New(stateRoot).ReadEvents(runID)
+func readExistingLocalReviewPacket(lease *runstore.Lease, validator *contract.Validator) (domain.ReviewPacket, bool, error) {
+	data, err := runstore.ReadFileUnderLease(lease, 8<<20, "review-packet.json")
+	if errors.Is(err, unix.ENOENT) {
+		return domain.ReviewPacket{}, false, nil
+	}
+	if err != nil || validator.Validate(domain.KindReviewPacket, data) != nil {
+		return domain.ReviewPacket{}, true, errors.New("existing local ReviewPacket is invalid")
+	}
+	var packet domain.ReviewPacket
+	if json.Unmarshal(data, &packet) != nil {
+		return domain.ReviewPacket{}, true, errors.New("existing local ReviewPacket is malformed")
+	}
+	exact, marshalErr := json.MarshalIndent(packet, "", "  ")
+	if marshalErr != nil || !bytes.Equal(append(exact, '\n'), data) {
+		return domain.ReviewPacket{}, true, errors.New("existing local ReviewPacket is not canonical repository spelling")
+	}
+	return packet, true, nil
+}
+
+func verificationEventBinds(lease *runstore.Lease, bindingDigest string) bool {
+	events, truncated, err := runstore.ReadEventsUnderLease(lease)
 	if err != nil || truncated {
 		return false
 	}
@@ -183,8 +222,7 @@ func verificationEventBinds(stateRoot, runID, bindingDigest string) bool {
 		if event.Type != "verification.completed" {
 			continue
 		}
-		return event.Actor != nil && event.Actor.Type == "system" && event.Actor.ID == "marshal-verifier" &&
-			localPayloadString(event.Payload, "localSelfIdentityBindingDigest") == bindingDigest
+		return event.Actor != nil && event.Actor.Type == "system" && event.Actor.ID == "marshal-verifier" && localPayloadString(event.Payload, "localSelfIdentityBindingDigest") == bindingDigest
 	}
 	return false
 }

@@ -464,6 +464,7 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	}
 	reviewStdout.Reset()
 	reviewStderr.Reset()
+	now = now.Add(time.Second)
 	if got := RunContext(context.Background(), []string{"task", "verify", "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
 		t.Fatalf("local task verify exit=%d stdout=%s stderr=%s", got, reviewStdout.String(), reviewStderr.String())
 	}
@@ -475,22 +476,26 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	reviewAttemptDir := filepath.Join(root, ".marshal", "runs", reviewRunID, "attempts", reviewState.CurrentAttemptID)
-	verificationObservation, err := selfidentity.ReadPhaseObservation(filepath.Join(reviewAttemptDir, "local-self-identity-verification.json"))
-	if err != nil {
-		t.Fatalf("read production verification observation: %v", err)
-	}
 	var report verification.Report
 	reportRaw, err := os.ReadFile(filepath.Join(root, ".marshal", "runs", reviewRunID, "verification-report.json"))
 	if err != nil || json.Unmarshal(reportRaw, &report) != nil || report.LocalSelfIdentityBinding == nil ||
-		report.LocalSelfIdentityBinding.VerificationObservationDigest != verificationObservation.ObservationDigest {
+		report.LocalSelfIdentityBinding.VerificationObservationDigest == "" {
 		t.Fatalf("verification report lacks local binding: err=%v report=%s", err, reportRaw)
+	}
+	verificationName, err := selfidentity.VersionedPhaseObservationName("verification", report.LocalSelfIdentityBinding.VerificationObservationDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verificationPath := filepath.Join(reviewAttemptDir, verificationName)
+	verificationObservation, err := selfidentity.ReadPhaseObservation(verificationPath)
+	if err != nil || report.LocalSelfIdentityBinding.VerificationObservationDigest != verificationObservation.ObservationDigest {
+		t.Fatalf("read production verification observation: observation=%+v err=%v", verificationObservation, err)
 	}
 	var manifest verification.ArtifactManifest
 	manifestRaw, err := os.ReadFile(filepath.Join(root, ".marshal", "runs", reviewRunID, "artifact-manifest.json"))
 	if err != nil || json.Unmarshal(manifestRaw, &manifest) != nil || !reflect.DeepEqual(report.LocalSelfIdentityBinding, manifest.LocalSelfIdentityBinding) {
 		t.Fatalf("artifact manifest lacks exact local binding: err=%v manifest=%s", err, manifestRaw)
 	}
-	verificationPath := filepath.Join(reviewAttemptDir, "local-self-identity-verification.json")
 	verificationFixture, err := os.ReadFile(verificationPath)
 	if err != nil {
 		t.Fatal(err)
@@ -516,8 +521,28 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	if unchanged, inspectErr := runstore.New(filepath.Join(root, ".marshal")).Inspect(reviewRunID); inspectErr != nil || !reflect.DeepEqual(unchanged, reviewPendingBefore) {
 		t.Fatalf("review identity rejection consumed state: before=%+v after=%+v err=%v", reviewPendingBefore, unchanged, inspectErr)
 	}
+	malformedPacketPath := filepath.Join(root, ".marshal", "runs", reviewRunID, "review-packet.json")
+	if err := os.WriteFile(malformedPacketPath, []byte("{malformed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeReviewRecords, err := filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deniedReviewOut.Reset()
+	deniedReviewErr.Reset()
+	malformedGot := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedReviewOut, &deniedReviewErr)
+	assertLocalPhaseDenied(t, malformedGot, deniedReviewOut.String(), deniedReviewErr.String(), root)
+	afterReviewRecords, err := filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
+	if err != nil || !reflect.DeepEqual(beforeReviewRecords, afterReviewRecords) {
+		t.Fatalf("malformed existing packet created review observation: before=%v after=%v err=%v", beforeReviewRecords, afterReviewRecords, err)
+	}
+	if err := os.Remove(malformedPacketPath); err != nil {
+		t.Fatal(err)
+	}
 	reviewStdout.Reset()
 	reviewStderr.Reset()
+	now = now.Add(time.Second)
 	if got := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
 		t.Fatalf("local task review packet exit=%d stdout=%s stderr=%s", got, reviewStdout.String(), reviewStderr.String())
 	}
@@ -529,15 +554,40 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		t.Fatalf("local review packet missing binding: err=%v output=%s", err, reviewStdout.String())
 	}
 	firstPacketDigest := packetResult.PacketDigest
+	canonicalPacket, err := os.ReadFile(malformedPacketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, canonicalPacket); err != nil {
+		t.Fatal(err)
+	}
+	replaceImmutableFixture(t, malformedPacketPath, compact.Bytes())
+	beforeReviewRecords, _ = filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
+	deniedReviewOut.Reset()
+	deniedReviewErr.Reset()
+	noncanonicalGot := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &deniedReviewOut, &deniedReviewErr)
+	assertLocalPhaseDenied(t, noncanonicalGot, deniedReviewOut.String(), deniedReviewErr.String(), root)
+	afterReviewRecords, _ = filepath.Glob(filepath.Join(reviewAttemptDir, "local-self-identity-review-*.json"))
+	if !reflect.DeepEqual(beforeReviewRecords, afterReviewRecords) {
+		t.Fatalf("noncanonical existing packet created review observation: before=%v after=%v", beforeReviewRecords, afterReviewRecords)
+	}
+	replaceImmutableFixture(t, malformedPacketPath, canonicalPacket)
 	reviewStdout.Reset()
 	reviewStderr.Reset()
+	now = now.Add(time.Second)
 	if got := RunContext(context.Background(), []string{"task", "review", "--run", reviewRunID, "--json"}, strings.NewReader(""), &reviewStdout, &reviewStderr); got != ExitOK {
 		t.Fatalf("local review packet replay exit=%d stdout=%s stderr=%s", got, reviewStdout.String(), reviewStderr.String())
 	}
 	if err := json.Unmarshal(reviewStdout.Bytes(), &packetResult); err != nil || packetResult.PacketDigest != firstPacketDigest {
 		t.Fatalf("local review packet replay drift: first=%s next=%s err=%v", firstPacketDigest, packetResult.PacketDigest, err)
 	}
-	reviewObservation, err := selfidentity.ReadPhaseObservation(filepath.Join(reviewAttemptDir, "local-self-identity-review-1.json"))
+	reviewName, err := selfidentity.VersionedPhaseObservationName("review-1", packetResult.Packet.LocalSelfIdentityBinding.ReviewObservationDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewObservationPath := filepath.Join(reviewAttemptDir, reviewName)
+	reviewObservation, err := selfidentity.ReadPhaseObservation(reviewObservationPath)
 	if err != nil || packetResult.Packet.LocalSelfIdentityBinding.ReviewObservationDigest != reviewObservation.ObservationDigest {
 		t.Fatalf("local review observation binding mismatch: err=%v packet=%+v", err, packetResult.Packet.LocalSelfIdentityBinding)
 	}
@@ -557,7 +607,6 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		PublicationRecommendation: "not-applicable", MergeRecommendation: "do-not-merge", DecidedAt: now,
 	}
 	decisionPath := filepath.Join(root, "review-decision.json")
-	reviewObservationPath := filepath.Join(reviewAttemptDir, "local-self-identity-review-1.json")
 	reviewObservationFixture, err := os.ReadFile(reviewObservationPath)
 	if err != nil {
 		t.Fatal(err)
@@ -595,7 +644,8 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	}
 	var outcome domain.OutcomeBundle
 	outcomeRaw, err := os.ReadFile(filepath.Join(root, ".marshal", "runs", reviewRunID, "outcome.json"))
-	if err != nil || json.Unmarshal(outcomeRaw, &outcome) != nil || outcome.LocalSelfIdentityBindingDigest != bindingDigest {
+	if err != nil || json.Unmarshal(outcomeRaw, &outcome) != nil || outcome.LocalSelfIdentityBindingDigest != bindingDigest ||
+		outcome.Applicability == nil || !reflect.DeepEqual(*outcome.Applicability, packetResult.Packet.LocalSelfIdentityBinding.Applicability) {
 		t.Fatalf("local Outcome lacks review binding: err=%v outcome=%s", err, outcomeRaw)
 	}
 

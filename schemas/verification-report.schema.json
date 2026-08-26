@@ -83,7 +83,7 @@
     "localVerificationBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "selfProfile", "activationDigest", "identitySubjectDigest", "attemptId", "dispatchObservationDigest", "ingressObservationDigest", "verificationObservationDigest"],
+      "required": ["schemaVersion", "selfProfile", "activationDigest", "identitySubjectDigest", "attemptId", "dispatchObservationDigest", "ingressObservationDigest", "verificationObservationDigest", "applicability"],
       "properties": {
         "schemaVersion": { "const": "marshal.local-self-identity-verification-binding.v1" },
         "selfProfile": { "const": "darwin-local-dogfood" },
@@ -92,7 +92,17 @@
         "attemptId": { "$ref": "#/$defs/id" },
         "dispatchObservationDigest": { "$ref": "#/$defs/digest" },
         "ingressObservationDigest": { "$ref": "#/$defs/digest" },
-        "verificationObservationDigest": { "$ref": "#/$defs/digest" }
+        "verificationObservationDigest": { "$ref": "#/$defs/digest" },
+        "applicability": { "$ref": "#/$defs/localApplicability" }
+      }
+    },
+    "localApplicability": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "selfProfile", "activationDigest", "identitySubjectDigest", "assurance", "execution", "production", "publication"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.local-dogfood-environment-binding.v1" }, "selfProfile": { "const": "darwin-local-dogfood" },
+        "activationDigest": { "$ref": "#/$defs/digest" }, "identitySubjectDigest": { "$ref": "#/$defs/digest" },
+        "assurance": { "const": "ordinary-user" }, "execution": { "const": "workspace-write" }, "production": { "const": false }, "publication": { "const": "none" }
       }
     },
     "relativePath": {
