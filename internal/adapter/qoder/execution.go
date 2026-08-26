@@ -365,12 +365,14 @@ func hardeningFlags(configDir string) []string {
 		// unchanged.
 		"--allowed-tools", "Bash",
 	}
-	// Some high-sensitivity ordinary-user tasks deliberately forbid search
-	// tools because Qoder may otherwise emit a path-less Grep/Glob call before
-	// it has a canonical worktree path.  The transcript gate still remains the
-	// authority; this flag only narrows the provider tool surface and is opt-in
-	// per launch so existing tasks retain their historical tool set.
-	if os.Getenv("MARSHAL_QODER_DISABLE_SEARCH") == "1" {
+	// Ordinary-user mode is represented by an empty configDir. Keep Grep and
+	// Glob out of that fixed profile because Qoder may otherwise emit a
+	// path-less search call before it has a canonical worktree path. This is a
+	// profile property rather than a per-TaskSpec environment knob, so two
+	// ordinary-user launches cannot silently drift. Managed authority profiles
+	// retain the historical surface unless an explicit launch narrows it.
+	// Transcript attestation remains the authority for the actual tool trace.
+	if configDir == "" || os.Getenv("MARSHAL_QODER_DISABLE_SEARCH") == "1" {
 		flags = append(flags, "--disallowed-tools", "Grep", "--disallowed-tools", "Glob")
 	}
 	if configDir != "" {

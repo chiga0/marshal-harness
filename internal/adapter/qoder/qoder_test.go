@@ -1424,6 +1424,17 @@ func TestHardeningFlagsCanDisableSearchToolsPerLaunch(t *testing.T) {
 	}
 }
 
+func TestHardeningFlagsOrdinaryUserAlwaysDisablesSearchTools(t *testing.T) {
+	t.Setenv("MARSHAL_QODER_DISABLE_SEARCH", "")
+	args := hardeningFlags("")
+	if !containsSequence(args, "--disallowed-tools", "Agent") || !containsSequence(args, "--disallowed-tools", "Grep") || !containsSequence(args, "--disallowed-tools", "Glob") {
+		t.Fatalf("ordinary-user profile must retain Agent denial and add Grep/Glob denial: %#v", args)
+	}
+	if containsSequence(args, "--config-dir", "") || containsSequence(args, "--setting-sources", "") {
+		t.Fatalf("ordinary-user profile must keep ambient account config semantics: %#v", args)
+	}
+}
+
 func TestBuildArgsRejectsFabricatedRunSandboxArgv(t *testing.T) {
 	args := buildArgs("", "/isolated/config", "/worktree", false)
 	joined := strings.Join(args, "\x00")
