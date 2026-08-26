@@ -19,18 +19,32 @@ DOMAIN_INTERNAL_ALLOWLIST = {
 }
 
 
-def architecture_layer_inversions(package: str, imports: list[str]) -> list[str]:
-    if package != DOMAIN_PACKAGE:
-        raise ValueError(f"unsupported package: {package}")
+def architecture_layer_inversions(package: dict[str, object]) -> list[str]:
+    module = package.get("Module")
+    if (
+        package.get("ImportPath") != DOMAIN_PACKAGE
+        or not isinstance(module, dict)
+        or module.get("Path") != MODULE
+    ):
+        raise ValueError("domain package identity is invalid")
+    imports = package.get("Imports")
+    dependencies = package.get("Deps")
+    if (
+        not isinstance(imports, list)
+        or not all(isinstance(item, str) for item in imports)
+        or not isinstance(dependencies, list)
+        or not all(isinstance(item, str) for item in dependencies)
+    ):
+        raise ValueError("domain dependency graph is invalid")
     return sorted(
-        imported
-        for imported in imports
-        if imported.startswith(INTERNAL_PREFIX)
-        and imported not in DOMAIN_INTERNAL_ALLOWLIST
+        dependency
+        for dependency in set(imports + dependencies)
+        if dependency.startswith(INTERNAL_PREFIX)
+        and dependency not in DOMAIN_INTERNAL_ALLOWLIST
     )
 
 
-def domain_imports(root: Path, go: str) -> list[str]:
+def domain_package(root: Path, go: str) -> dict[str, object]:
     completed = subprocess.run(
         [go, "list", "-json", "./internal/domain"],
         cwd=root,
@@ -42,10 +56,9 @@ def domain_imports(root: Path, go: str) -> list[str]:
     if completed.returncode != 0:
         raise RuntimeError("go-list-failed")
     value = json.loads(completed.stdout)
-    imports = value.get("Imports") if isinstance(value, dict) else None
-    if not isinstance(imports, list) or not all(isinstance(item, str) for item in imports):
+    if not isinstance(value, dict):
         raise RuntimeError("go-list-output-invalid")
-    return imports
+    return value
 
 
 def emit(payload: dict[str, object], stream) -> None:
@@ -59,8 +72,8 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         root = arguments.root.resolve(strict=True)
-        imports = domain_imports(root, arguments.go)
-        inversions = architecture_layer_inversions(DOMAIN_PACKAGE, imports)
+        package = domain_package(root, arguments.go)
+        inversions = architecture_layer_inversions(package)
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired):
         emit({"status": "fail", "reasonCode": "architecture-check-unavailable"}, sys.stderr)
         return 1
