@@ -18,6 +18,12 @@ import tempfile
 MAX_INPUT_BYTES = 2 << 20
 MAX_CHECKER_BYTES = 64 << 20
 MAX_OUTPUT_BYTES = 64 << 10
+SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+SCRIPT_ADAPTER_PATHS = {
+    "pi": "MARSHAL_PI_PATH",
+    "qwen": "MARSHAL_QWEN_PATH",
+}
+SUPPORTED_ADAPTERS = frozenset({"codex", "opencode", "pi", "qoder", "qwen"})
 
 
 def load_stable_marshal_module():
@@ -198,6 +204,35 @@ def checked_inherited_home() -> str | None:
     return value
 
 
+def checked_probe_path(manifest: dict) -> str:
+    """Return the minimal PATH needed by the selected script adapter probe."""
+    selected = manifest.get("selectedAdapter")
+    if not isinstance(selected, str) or selected not in SUPPORTED_ADAPTERS:
+        fail("manifest-shape-invalid")
+    environment_key = SCRIPT_ADAPTER_PATHS.get(selected)
+    if environment_key is None or environment_key not in os.environ:
+        return SYSTEM_PATH
+    executable = os.environ[environment_key]
+    if (
+        not executable
+        or "\x00" in executable
+        or ":" in executable
+        or "\n" in executable
+        or "\r" in executable
+        or not Path(executable).is_absolute()
+        or os.path.normpath(executable) != executable
+    ):
+        fail("core-probe-environment-invalid")
+    parent = Path(executable).parent
+    try:
+        metadata = parent.stat()
+    except OSError:
+        fail("core-probe-environment-invalid")
+    if not stat.S_ISDIR(metadata.st_mode):
+        fail("core-probe-environment-invalid")
+    return f"{parent}:{SYSTEM_PATH}"
+
+
 def run_preflight(root: Path, manifest_relative: str, marshal: Path) -> dict:
     root_descriptor = open_root(root)
     try:
@@ -267,7 +302,7 @@ def run_preflight(root: Path, manifest_relative: str, marshal: Path) -> dict:
                 "--schema", str(paths["schema"]),
             ])
             environment = {
-                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "PATH": checked_probe_path(manifest),
                 "LC_ALL": "C",
                 **({"HOME": home} if (home := checked_inherited_home()) is not None else {}),
                 **{
