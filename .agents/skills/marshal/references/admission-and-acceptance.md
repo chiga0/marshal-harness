@@ -40,6 +40,17 @@ python3 -I -B .agents/skills/marshal/references/marshal-fastpath-preflight.py \
 5. acceptance 在 Worker 权限内可运行，结果路径确实可写，父目录/输入已存在，context 自包含，独立 verifier 可以执行。
 6. required command 不写工作树，selector 至少匹配一个既有测试，内容型规则与 prompt 一一映射。
 
+### 执行面与证据面同构
+
+对要求 post-worker command/tool attestation 的 profile family，在消费 Attempt 前必须由同一个 machine preflight 比较独立冻结的 Worker execution projection、所选 Adapter 实际 launch projection 与该 Adapter evidence profile。比较对象至少包括 Adapter/version/authority mode、允许与禁止的 tool、Worker shell command policy、result transport、transcript protocol 及仅含 key name 的 launch env；禁止分别维护三份人工“看起来一致”的清单。TaskSpec acceptance 的 required commands 属于独立 verifier，只检查 verifier 自身可执行性与 purity，不进入 Worker transcript command 的 allow/deny 交集。
+
+- 后置 checker 使用封闭 `commands` 时，派发前必须证明 Worker 计划内的 command surface 是它的子集。`commands=[]` 只在 shell/Bash 同时禁用且任务不需要 command 时成立；否则固定为 `execution-evidence-command-policy-empty`，不得启动 Worker。
+- `forbiddenCommandWords` 与已冻结的 Worker command family 或 Adapter prompt 允许的必要动作有交集时，固定为 `execution-evidence-forbidden-command-conflict`。不能等 transcript 生成后再发现，也不能要求 Worker 猜测未进入 Worker execution projection 的隐藏禁词。
+- 当前 contract/producer 未提供足以独立冻结 Worker command surface 的机器字段，而后置 checker 又要求 exact command binding 时，缺口归 `task-spec-profile-producer`/`adapter-profile-producer`，固定为 `execution-evidence-policy-unrepresentable`。先修 producer/contract；不得用自然语言 prompt、人工 receipt 或放宽 checker 静默绕过。
+- result transport 或 transcript contract 与真实 argv/permission/tool projection 不一致时归 Adapter producer；identity、digest 或 sourceHead 不一致时归 evidence producer。所有这些 failure 的 `workerReworkAllowed=false`、`disposition=pre-attempt-block`。
+
+以上 `reasonCode`、owner 与 disposition 是待 Harness validator 固化的 operator-local proposal，当前 Core 不会产生这些字段，也不得人工自报 machine `pass`。在 validator 落地前，只冻结已经命中稳定 `forbidden-command-executed`/`command-binding-mismatch` 的相同 Qoder exact-binding spec/profile family；Codex、其它 Adapter 及不要求该 attestation 的 Qoder family 不被连带阻断。后续若把 execution/evidence profile 或 receipt digest 持久化并用于 Core admission，会改变持久化与 trust boundary，必须先新增或替代 ADR。
+
 缺 plan approval、`configured=false`、缺失/陈旧 ReviewPacket、结构性 Adapter failure 必须使用不同 finding 类别；不得把 admission finding 伪装成 Worker/provider failure，也不得靠新 Run 清除。
 
 ## Operator-local admission observation（可选诊断）
@@ -174,5 +185,7 @@ Validator 的 machine truth 由相邻 Draft 2020-12 Schema 和实现定义，不
 ## Admission 失败的止损
 
 TaskSpec/acceptance/verifier、路径、identity、protocol、version、旧 base/artifact 或证据变化属于结构性问题。同一稳定输入摘要和 `reasonCode` 只裁决一次：保留证据、修 operator/Core/Adapter 输入，然后从当前权威 main 通过 Core/CLI 建 successor。只有 Core 持久化的 typed transient provider failure 且 admission 仍匹配时，才按 Policy 做有限 operational retry。
+
+若上述结构性失败直到 Worker 完成后才由 transcript attestation、freshness 或其它机器 gate 首次发现，仍不得转成 review/rework。记录一个 `wastedAttempt=1`，冻结相同 spec/profile family 的 fan-out，归档能在派发前重放的最小输入和 defect owner；先补 deterministic preflight，再为新摘要建立 successor。Reviewer 只审通过全部前置机器 gate 的候选，不承担发现 producer 自相矛盾的职责。
 
 进入 reviewer 前必须完成 defect-owner routing：TaskSpec、Policy、acceptance/verifier、Adapter identity、旧 base/依赖漂移和 architecture gap 都属于 plan/operator/Adapter/baseline/governance owner，固定走 `replan` 或 fresh successor，不导入 `verdict=rework`，因此不消费 Worker rework round。architecture gap 若改变 trust boundary、persistence、lifecycle 或 publication authority，先补 ADR 再派 successor。只有冻结输入与基线均正确、缺陷局限于当前候选实现 diff 时，才允许唯一 reviewer 给出一次 aggregate rework；详细 owner 表和 first-pass WIP 止损见 [delivery-supervision.md](delivery-supervision.md)。
