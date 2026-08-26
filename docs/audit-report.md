@@ -651,6 +651,12 @@ R19/R20 的共同边界：它们证明 Codex `0.145.0` macOS `ordinary-user` Wor
 
 该 finding 与 Agent/Sandbox production authority 分离：签名 Marshal 不会把 ADR 0042 ordinary-user Adapter 升级为 hardened authority。Apple notarization 与企业 Endpoint Security/EDR allowlist 也分别判断；禁止通过删除 provenance、关闭安全软件、ad-hoc/随机 executable、`go run` 或伪造生命周期证据绕过。
 
+## Pi 0.84.3 长任务 compaction 协议闭合（2026-08-26）
+
+R3-D 真实 Run `i186-r3-d-shadow-s3-pi-20260826` 在 79,812 个事件、26,336,721 bytes 且未触发输出/时间预算时，以 `agent_end(willRetry=false, stopReason=length) → compaction_start(reason=overflow)` 进入 Pi session-v3 的合法自动压缩链。Pi Adapter `0.3.0` 把低层 `agent_end` 误作会话终态并主动终止进程，Core 随后正确以 `protocol-invalid/do-not-retry` 阻断原 Run；该 Run 不恢复、不接受其部分 diff，只保留 Outcome 与 raw transcript 作为根因证据。
+
+Adapter `0.4.0` 将失败候选延迟到 `agent_settled`/EOF 提交，并显式验证 compaction reason、start/end 配对、success/aborted/failed outcome shape、usage、summarization retry、overflow 单次恢复与 continuation 顺序；未知、重复、乱序或未闭合事件继续 fail closed。该修复仅演进 Pi AgentAdapter 的版本化 decode/completion contract，不新增 Core 状态、Attempt/retry 语义、持久化字段、信任边界或发布权限，因此不新增 ADR；若未来把 compaction 暴露为 Core 生命周期或持久 authority，则必须先有新 ADR。
+
 ## Issue #186：架构复审 Finding 稳定登记（2026-08-25）
 
 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的多轮复审接受了 WorkerExecutor、Agent/Sandbox 双 binding、ResultIngress 与 strangler 收敛方向，同时发现若干不能只留在 Issue 评论中的合同缺口。本文只建立稳定 ID、当前证据、关闭条件和 milestone 落点；**登记不等于修复，Issue disposition 不等于 ADR 接受，代码或测试存在也不等于 finding 已关闭**。关闭任一 P0/P1 仍需相应合同/实现、正反证据和独立 reviewer verdict。

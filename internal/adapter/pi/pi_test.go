@@ -1152,6 +1152,171 @@ func TestCaptureJSONLAutoRetryChainSuccessClosure(t *testing.T) {
 	}
 }
 
+func TestCaptureJSONLCompactionContinuationClosure(t *testing.T) {
+	compactionResult := `{"summary":"summary","firstKeptEntryId":"entry-1","tokensBefore":100,"estimatedTokensAfter":20,"usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}`
+	input := jsonLines(
+		captureSessionHeader("session-1"),
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"length","usage":{"input":10,"output":2,"cacheRead":1,"cost":0}}],"willRetry":false}`,
+		`{"type":"compaction_start","reason":"overflow"}`,
+		`{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1,"errorMessage":"transient"}`,
+		`{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`,
+		`{"type":"summarization_retry_finished"}`,
+		`{"type":"compaction_end","reason":"overflow","result":`+compactionResult+`,"aborted":false,"willRetry":true}`,
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","usage":{"input":4,"output":3,"cacheRead":2,"cost":0}}],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+	)
+	terminations := 0
+	result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() { terminations++ })
+	if result.err != nil {
+		t.Fatalf("capture error = %v", result.err)
+	}
+	if result.providerFailed || result.limitExceeded {
+		t.Fatalf("providerFailed=%v limitExceeded=%v", result.providerFailed, result.limitExceeded)
+	}
+	if result.inputTokens != 15 || result.outputTokens != 6 || result.cachedInputTokens != 3 {
+		t.Fatalf("usage = %d/%d/%d, want 15/6/3", result.inputTokens, result.outputTokens, result.cachedInputTokens)
+	}
+	if terminations != 0 {
+		t.Fatalf("terminations = %d, want 0", terminations)
+	}
+}
+
+func TestCaptureJSONLThresholdCompactionWithoutContinuation(t *testing.T) {
+	compactionResult := `{"summary":"summary","firstKeptEntryId":"entry-1","tokensBefore":100}`
+	input := jsonLines(
+		captureSessionHeader("session-1"),
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}],"willRetry":false}`,
+		`{"type":"compaction_start","reason":"threshold"}`,
+		`{"type":"entry_appended","entry":{"type":"compaction"}}`,
+		`{"type":"compaction_end","reason":"threshold","result":`+compactionResult+`,"aborted":false,"willRetry":false}`,
+		`{"type":"queue_update","steering":[],"followUp":[]}`,
+		`{"type":"agent_settled"}`,
+	)
+	result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() {})
+	if result.err != nil {
+		t.Fatalf("capture error = %v", result.err)
+	}
+	if result.providerFailed {
+		t.Fatal("completed threshold compaction must preserve the successful provider result")
+	}
+}
+
+func TestCaptureJSONLOverflowRecoveryExhaustionIsProviderFailure(t *testing.T) {
+	lengthEnd := `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"length"}],"willRetry":false}`
+	compactionResult := `{"summary":"summary","firstKeptEntryId":"entry-1","tokensBefore":100}`
+	events := []string{
+		captureSessionHeader("session-1"),
+		`{"type":"agent_start"}`,
+		lengthEnd,
+		`{"type":"compaction_start","reason":"overflow"}`,
+		`{"type":"compaction_end","reason":"overflow","result":` + compactionResult + `,"aborted":false,"willRetry":true}`,
+		`{"type":"agent_start"}`,
+		lengthEnd,
+		`{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false,"errorMessage":"recovery exhausted"}`,
+	}
+	for _, test := range []struct {
+		name   string
+		suffix []string
+	}{
+		{name: "settled", suffix: []string{`{"type":"agent_settled"}`}},
+		{name: "eof"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := jsonLines(append(append([]string{}, events...), test.suffix...)...)
+			result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() {})
+			if result.err != nil {
+				t.Fatalf("capture error = %v", result.err)
+			}
+			if !result.providerFailed {
+				t.Fatal("exhausted overflow recovery must preserve the final length failure")
+			}
+		})
+	}
+}
+
+func TestCaptureJSONLSummarizationRetriesMayAdvanceBeforeFinished(t *testing.T) {
+	compactionResult := `{"summary":"summary","firstKeptEntryId":"entry-1","tokensBefore":100}`
+	input := jsonLines(
+		captureSessionHeader("session-1"),
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}],"willRetry":false}`,
+		`{"type":"compaction_start","reason":"threshold"}`,
+		`{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":3,"delayMs":1,"errorMessage":"transient-1"}`,
+		`{"type":"summarization_retry_attempt_start","source":"compaction","reason":"threshold"}`,
+		`{"type":"summarization_retry_scheduled","attempt":2,"maxAttempts":3,"delayMs":2,"errorMessage":"transient-2"}`,
+		`{"type":"summarization_retry_attempt_start","source":"compaction","reason":"threshold"}`,
+		`{"type":"summarization_retry_finished"}`,
+		`{"type":"compaction_end","reason":"threshold","result":`+compactionResult+`,"aborted":false,"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+	)
+	result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() {})
+	if result.err != nil {
+		t.Fatalf("capture error = %v", result.err)
+	}
+	if result.providerFailed {
+		t.Fatal("successful compaction after ordered summarization retries must not fail the provider")
+	}
+}
+
+func TestCaptureJSONLCompactionProtocolViolations(t *testing.T) {
+	header := captureSessionHeader("session-1")
+	finalEnd := `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}],"willRetry":false}`
+	lengthEnd := `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"length"}],"willRetry":false}`
+	startOverflow := `{"type":"compaction_start","reason":"overflow"}`
+	endOverflowRetry := `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1},"aborted":false,"willRetry":true}`
+	directOverflowFailure := `{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false,"errorMessage":"recovery exhausted"}`
+	for _, test := range []struct {
+		name   string
+		events []string
+	}{
+		{name: "start-before-agent-end", events: []string{header, startOverflow}},
+		{name: "end-before-agent-end", events: []string{header, `{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false}`}},
+		{name: "manual-start", events: []string{header, finalEnd, `{"type":"compaction_start","reason":"manual"}`}},
+		{name: "duplicate-start", events: []string{header, finalEnd, startOverflow, startOverflow}},
+		{name: "reason-mismatch", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"threshold","aborted":false,"willRetry":false}`}},
+		{name: "missing-flags", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow"}`}},
+		{name: "success-result-missing-fields", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","result":{},"aborted":false,"willRetry":false}`}},
+		{name: "success-with-error", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1},"aborted":false,"willRetry":false,"errorMessage":"contradiction"}`}},
+		{name: "aborted-with-result", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1},"aborted":true,"willRetry":false}`}},
+		{name: "failed-without-error", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false}`}},
+		{name: "negative-compaction-usage", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1,"usage":{"input":-1,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}},"aborted":false,"willRetry":false}`}},
+		{name: "aborted-retry", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","aborted":true,"willRetry":true}`}},
+		{name: "threshold-retry", events: []string{header, finalEnd, `{"type":"compaction_start","reason":"threshold"}`, `{"type":"compaction_end","reason":"threshold","aborted":false,"willRetry":true}`}},
+		{name: "overflow-retry-after-successful-stop", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1},"aborted":false,"willRetry":true}`}},
+		{name: "settled-during-compaction", events: []string{header, finalEnd, startOverflow, `{"type":"agent_settled"}`}},
+		{name: "settled-before-required-continuation", events: []string{header, lengthEnd, startOverflow, endOverflowRetry, `{"type":"agent_settled"}`}},
+		{name: "unpaired-end", events: []string{header, lengthEnd, `{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false}`}},
+		{name: "unpaired-success-end", events: []string{header, lengthEnd, startOverflow, endOverflowRetry, `{"type":"agent_start"}`, lengthEnd, `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1},"aborted":false,"willRetry":false}`}},
+		{name: "summarization-retry-outside-compaction", events: []string{header, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1,"errorMessage":"transient"}`}},
+		{name: "summarization-retry-start-without-schedule", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`}},
+		{name: "summarization-retry-missing-error", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1}`}},
+		{name: "summarization-retry-null-error", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1,"errorMessage":null}`}},
+		{name: "summarization-retry-source-mismatch", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1,"errorMessage":"transient"}`, `{"type":"summarization_retry_attempt_start","source":"branchSummary"}`}},
+		{name: "summarization-retry-attempt-skip", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":2,"maxAttempts":2,"delayMs":1,"errorMessage":"transient"}`}},
+		{name: "summarization-retry-budget-exceeded", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":3,"delayMs":1,"errorMessage":"one"}`, `{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`, `{"type":"summarization_retry_scheduled","attempt":2,"maxAttempts":3,"delayMs":1,"errorMessage":"two"}`, `{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`, `{"type":"summarization_retry_scheduled","attempt":3,"maxAttempts":3,"delayMs":1,"errorMessage":"three"}`, `{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`, `{"type":"summarization_retry_scheduled","attempt":4,"maxAttempts":3,"delayMs":1,"errorMessage":"four"}`}},
+		{name: "summarization-retry-finished-without-start", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_finished"}`}},
+		{name: "compaction-end-before-summarization-retry-finished", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1,"errorMessage":"transient"}`, `{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`, `{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false,"errorMessage":"failed"}`}},
+		{name: "eof-during-compaction", events: []string{header, finalEnd, startOverflow}},
+		{name: "eof-before-required-continuation", events: []string{header, lengthEnd, startOverflow, endOverflowRetry}},
+		{name: "agent-start-after-overflow-exhaustion", events: []string{header, lengthEnd, startOverflow, endOverflowRetry, `{"type":"agent_start"}`, lengthEnd, directOverflowFailure, `{"type":"agent_start"}`}},
+		{name: "duplicate-overflow-exhaustion", events: []string{header, lengthEnd, startOverflow, endOverflowRetry, `{"type":"agent_start"}`, lengthEnd, directOverflowFailure, directOverflowFailure}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			terminations := 0
+			result := captureJSONL(context.Background(), strings.NewReader(jsonLines(test.events...)), "/worktree", 1<<20, func() { terminations++ })
+			if !errors.Is(result.err, ErrProtocol) {
+				t.Fatalf("error = %v, want ErrProtocol", result.err)
+			}
+			if terminations != 1 {
+				t.Fatalf("terminations = %d, want exactly 1", terminations)
+			}
+		})
+	}
+}
+
 func TestCaptureJSONLAutoRetryFailureClosureAndProviderFailure(t *testing.T) {
 	for _, stopReason := range []string{"error", "aborted", "length"} {
 		t.Run(stopReason, func(t *testing.T) {
