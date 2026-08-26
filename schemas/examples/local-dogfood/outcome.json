@@ -1,0 +1,16 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "Outcome",
+  "taskId": "LD-3B",
+  "runId": "local-run-1",
+  "terminalState": "NO_CHANGE",
+  "verdict": "no_change",
+  "finalReviewRound": 1,
+  "finalReviewDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "finalEvidenceDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  "localSelfIdentityBindingDigest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+  "summary": "本地任务无变更。",
+  "findingCount": 0,
+  "retentionPolicy": "default",
+  "generatedAt": "2026-08-27T10:00:04Z"
+}

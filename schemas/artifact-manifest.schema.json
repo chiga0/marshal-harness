@@ -17,6 +17,7 @@
     "kind": { "const": "ArtifactManifest" },
     "taskId": { "$ref": "#/$defs/id" },
     "runId": { "$ref": "#/$defs/id" },
+    "localSelfIdentityBinding": { "$ref": "#/$defs/localVerificationBinding" },
     "artifacts": {
       "type": "array",
       "items": { "$ref": "#/$defs/artifact" }
@@ -46,6 +47,21 @@
           { "pattern": "\\\\" },
           { "pattern": "\\u0000" }
         ]
+      }
+    },
+    "localVerificationBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "selfProfile", "activationDigest", "identitySubjectDigest", "attemptId", "dispatchObservationDigest", "ingressObservationDigest", "verificationObservationDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.local-self-identity-verification-binding.v1" },
+        "selfProfile": { "const": "darwin-local-dogfood" },
+        "activationDigest": { "$ref": "#/$defs/digest" },
+        "identitySubjectDigest": { "$ref": "#/$defs/digest" },
+        "attemptId": { "$ref": "#/$defs/id" },
+        "dispatchObservationDigest": { "$ref": "#/$defs/digest" },
+        "ingressObservationDigest": { "$ref": "#/$defs/digest" },
+        "verificationObservationDigest": { "$ref": "#/$defs/digest" }
       }
     },
     "artifact": {

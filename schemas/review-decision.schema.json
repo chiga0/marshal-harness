@@ -45,6 +45,7 @@
     "verificationDigest": { "$ref": "#/$defs/digest" },
     "artifactManifestDigest": { "$ref": "#/$defs/digest" },
     "evidenceDigest": { "$ref": "#/$defs/digest" },
+    "localSelfIdentityBindingDigest": { "$ref": "#/$defs/digest" },
     "verdict": {
       "type": "string",
       "enum": ["accept", "rework", "reject", "blocked", "no_change"]

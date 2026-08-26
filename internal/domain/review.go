@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
+)
 
 // ReviewPacket bundles the exact evidence a Reviewer evaluates for one
 // Review Round. Its digests bind the ReviewDecision to that evidence.
@@ -32,10 +36,11 @@ type ReviewPacket struct {
 	// CodexEligibilityBinding is the ADR 0037 T4 identity tuple for a Codex
 	// Attempt. It is optional so non-Codex and archived packets preserve their
 	// exact historical wire representation.
-	CodexEligibilityBinding  *CodexEligibilityBindingV1 `json:"codexEligibilityBinding,omitempty"`
-	Inputs                   PacketInputs               `json:"inputs"`
-	PreviousBlockingFindings []PreviousFinding          `json:"previousBlockingFindings"`
-	GeneratedAt              time.Time                  `json:"generatedAt"`
+	CodexEligibilityBinding  *CodexEligibilityBindingV1         `json:"codexEligibilityBinding,omitempty"`
+	LocalSelfIdentityBinding *selfidentity.LocalReviewBindingV1 `json:"localSelfIdentityBinding,omitempty"`
+	Inputs                   PacketInputs                       `json:"inputs"`
+	PreviousBlockingFindings []PreviousFinding                  `json:"previousBlockingFindings"`
+	GeneratedAt              time.Time                          `json:"generatedAt"`
 }
 
 // CodexEligibilityBindingV1 binds a Codex review packet to the exact
@@ -66,25 +71,26 @@ type PacketInputs struct {
 // ReviewDecision is a Reviewer's binding verdict for one Review Round. It
 // must be bound to the exact evidence digests of the reviewed ReviewPacket.
 type ReviewDecision struct {
-	APIVersion                APIVersion `json:"apiVersion"`
-	Kind                      Kind       `json:"kind"`
-	TaskID                    string     `json:"taskId"`
-	RunID                     string     `json:"runId"`
-	ReviewRound               uint       `json:"reviewRound"`
-	Reviewer                  Reviewer   `json:"reviewer"`
-	SpecDigest                string     `json:"specDigest"`
-	ReviewPacketDigest        string     `json:"reviewPacketDigest"`
-	VerificationDigest        string     `json:"verificationDigest"`
-	ArtifactManifestDigest    string     `json:"artifactManifestDigest"`
-	EvidenceDigest            string     `json:"evidenceDigest"`
-	Verdict                   string     `json:"verdict"`
-	Summary                   string     `json:"summary"`
-	BlockingFindings          []Finding  `json:"blockingFindings"`
-	NonBlockingFindings       []Finding  `json:"nonBlockingFindings"`
-	PublicationRecommendation string     `json:"publicationRecommendation"`
-	MergeRecommendation       string     `json:"mergeRecommendation"`
-	BlockerOwner              string     `json:"blockerOwner,omitempty"`
-	DecidedAt                 time.Time  `json:"decidedAt"`
+	APIVersion                     APIVersion `json:"apiVersion"`
+	Kind                           Kind       `json:"kind"`
+	TaskID                         string     `json:"taskId"`
+	RunID                          string     `json:"runId"`
+	ReviewRound                    uint       `json:"reviewRound"`
+	Reviewer                       Reviewer   `json:"reviewer"`
+	SpecDigest                     string     `json:"specDigest"`
+	ReviewPacketDigest             string     `json:"reviewPacketDigest"`
+	VerificationDigest             string     `json:"verificationDigest"`
+	ArtifactManifestDigest         string     `json:"artifactManifestDigest"`
+	EvidenceDigest                 string     `json:"evidenceDigest"`
+	LocalSelfIdentityBindingDigest string     `json:"localSelfIdentityBindingDigest,omitempty"`
+	Verdict                        string     `json:"verdict"`
+	Summary                        string     `json:"summary"`
+	BlockingFindings               []Finding  `json:"blockingFindings"`
+	NonBlockingFindings            []Finding  `json:"nonBlockingFindings"`
+	PublicationRecommendation      string     `json:"publicationRecommendation"`
+	MergeRecommendation            string     `json:"mergeRecommendation"`
+	BlockerOwner                   string     `json:"blockerOwner,omitempty"`
+	DecidedAt                      time.Time  `json:"decidedAt"`
 }
 
 // Reviewer identifies who produced a ReviewDecision.
@@ -144,6 +150,7 @@ type OutcomeBundle struct {
 	// bindings for a controlled merge: only a receipt/intent-bound
 	// publication.merged convergence sets them. Historical outcomes omit
 	// both, keeping their exact legacy serialization (omitempty).
-	IntentDigest  string `json:"intentDigest,omitempty"`
-	ReceiptDigest string `json:"receiptDigest,omitempty"`
+	IntentDigest                   string `json:"intentDigest,omitempty"`
+	ReceiptDigest                  string `json:"receiptDigest,omitempty"`
+	LocalSelfIdentityBindingDigest string `json:"localSelfIdentityBindingDigest,omitempty"`
 }

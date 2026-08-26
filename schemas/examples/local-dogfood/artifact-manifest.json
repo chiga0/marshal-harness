@@ -1,0 +1,18 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "ArtifactManifest",
+  "taskId": "LD-3B",
+  "runId": "local-run-1",
+  "localSelfIdentityBinding": {
+    "schemaVersion": "marshal.local-self-identity-verification-binding.v1",
+    "selfProfile": "darwin-local-dogfood",
+    "activationDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identitySubjectDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "attemptId": "attempt-1",
+    "dispatchObservationDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "ingressObservationDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "verificationObservationDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "artifacts": [],
+  "generatedAt": "2026-08-27T10:00:01Z"
+}

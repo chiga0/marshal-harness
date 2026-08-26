@@ -22,6 +22,8 @@ const (
 	CommandTaskStatus      = "task-status"
 	CommandTaskApprovePlan = "task-approve-plan"
 	CommandTaskRun         = "task-run"
+	CommandTaskVerify      = "task-verify"
+	CommandTaskReview      = "task-review"
 
 	ReasonObserved                   = "self-local-identity-observed"
 	ReasonOptInMissing               = "self-local-opt-in-missing"

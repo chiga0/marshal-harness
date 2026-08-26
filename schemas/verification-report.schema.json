@@ -51,6 +51,7 @@
     },
     "workerCandidateDigest": { "$ref": "#/$defs/digest" },
     "candidateDigest": { "$ref": "#/$defs/digest" },
+    "localSelfIdentityBinding": { "$ref": "#/$defs/localVerificationBinding" },
     "status": {
       "type": "string",
       "enum": ["pass", "fail", "error", "cancelled"]
@@ -78,6 +79,21 @@
     "gitSha": {
       "type": "string",
       "pattern": "^[0-9a-f]{40,64}$"
+    },
+    "localVerificationBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "selfProfile", "activationDigest", "identitySubjectDigest", "attemptId", "dispatchObservationDigest", "ingressObservationDigest", "verificationObservationDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.local-self-identity-verification-binding.v1" },
+        "selfProfile": { "const": "darwin-local-dogfood" },
+        "activationDigest": { "$ref": "#/$defs/digest" },
+        "identitySubjectDigest": { "$ref": "#/$defs/digest" },
+        "attemptId": { "$ref": "#/$defs/id" },
+        "dispatchObservationDigest": { "$ref": "#/$defs/digest" },
+        "ingressObservationDigest": { "$ref": "#/$defs/digest" },
+        "verificationObservationDigest": { "$ref": "#/$defs/digest" }
+      }
     },
     "relativePath": {
       "type": "string",

@@ -1,0 +1,38 @@
+{
+  "apiVersion": "marshal.dev/v1alpha1",
+  "kind": "VerificationReport",
+  "taskId": "LD-3B",
+  "runId": "local-run-1",
+  "specDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "baseSha": "1111111111111111111111111111111111111111",
+  "observed": {
+    "snapshotDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "diffDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "changedFiles": [],
+    "changedFileCount": 0,
+    "diffBytes": 0,
+    "hasUntrackedFiles": false
+  },
+  "localSelfIdentityBinding": {
+    "schemaVersion": "marshal.local-self-identity-verification-binding.v1",
+    "selfProfile": "darwin-local-dogfood",
+    "activationDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "identitySubjectDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "attemptId": "attempt-1",
+    "dispatchObservationDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "ingressObservationDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "verificationObservationDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "status": "pass",
+  "gates": [{
+    "id": "scope:paths",
+    "category": "scope",
+    "required": true,
+    "status": "pass",
+    "summary": "本地 no-change 范围通过。",
+    "evidence": []
+  }],
+  "summary": "本地验证通过。",
+  "startedAt": "2026-08-27T10:00:00Z",
+  "completedAt": "2026-08-27T10:00:01Z"
+}

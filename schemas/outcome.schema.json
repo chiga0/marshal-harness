@@ -24,7 +24,8 @@
     "retentionPolicy": { "type": "string", "minLength": 1, "maxLength": 256 },
     "generatedAt": { "type": "string", "format": "date-time" },
     "intentDigest": { "$ref": "#/$defs/digest" },
-    "receiptDigest": { "$ref": "#/$defs/digest" }
+    "receiptDigest": { "$ref": "#/$defs/digest" },
+    "localSelfIdentityBindingDigest": { "$ref": "#/$defs/digest" }
   },
   "$defs": {
     "id": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },

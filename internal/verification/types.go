@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
 type Change struct {
@@ -68,21 +69,25 @@ type Report struct {
 	// CandidateDigest is the head Candidate record identity: the normalizer
 	// Candidate when normalization changed bytes, otherwise the worker
 	// Candidate. Optional; observed/report/manifest bindings all point at it.
-	CandidateDigest string    `json:"candidateDigest,omitempty"`
-	Status          string    `json:"status"`
-	Gates           []Gate    `json:"gates"`
-	Summary         string    `json:"summary,omitempty"`
-	StartedAt       time.Time `json:"startedAt"`
-	CompletedAt     time.Time `json:"completedAt"`
+	CandidateDigest string `json:"candidateDigest,omitempty"`
+	// LocalSelfIdentityBinding is Core-owned ADR 0051 applicability lineage.
+	// Legacy/non-local reports omit it byte-for-byte.
+	LocalSelfIdentityBinding *selfidentity.LocalVerificationBindingV1 `json:"localSelfIdentityBinding,omitempty"`
+	Status                   string                                   `json:"status"`
+	Gates                    []Gate                                   `json:"gates"`
+	Summary                  string                                   `json:"summary,omitempty"`
+	StartedAt                time.Time                                `json:"startedAt"`
+	CompletedAt              time.Time                                `json:"completedAt"`
 }
 
 type ArtifactManifest struct {
-	APIVersion  domain.APIVersion `json:"apiVersion"`
-	Kind        domain.Kind       `json:"kind"`
-	TaskID      string            `json:"taskId"`
-	RunID       string            `json:"runId"`
-	Artifacts   []Artifact        `json:"artifacts"`
-	GeneratedAt time.Time         `json:"generatedAt"`
+	APIVersion               domain.APIVersion                        `json:"apiVersion"`
+	Kind                     domain.Kind                              `json:"kind"`
+	TaskID                   string                                   `json:"taskId"`
+	RunID                    string                                   `json:"runId"`
+	LocalSelfIdentityBinding *selfidentity.LocalVerificationBindingV1 `json:"localSelfIdentityBinding,omitempty"`
+	Artifacts                []Artifact                               `json:"artifacts"`
+	GeneratedAt              time.Time                                `json:"generatedAt"`
 }
 
 type Artifact struct {

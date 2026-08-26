@@ -10,20 +10,21 @@ import (
 )
 
 type OutcomeData struct {
-	TaskID              string
-	RunID               string
-	TerminalState       domain.State
-	Verdict             string
-	FinalReviewRound    uint
-	FinalReviewDigest   string
-	FinalEvidenceDigest string
-	Summary             string
-	FindingCount        uint
-	GeneratedAt         time.Time
+	TaskID                         string
+	RunID                          string
+	TerminalState                  domain.State
+	Verdict                        string
+	FinalReviewRound               uint
+	FinalReviewDigest              string
+	FinalEvidenceDigest            string
+	Summary                        string
+	FindingCount                   uint
+	LocalSelfIdentityBindingDigest string
+	GeneratedAt                    time.Time
 }
 
 func renderOutcome(data OutcomeData) ([]byte, string, error) {
-	outcome := domain.OutcomeBundle{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindOutcome, TaskID: data.TaskID, RunID: data.RunID, TerminalState: data.TerminalState, Verdict: data.Verdict, FinalReviewRound: data.FinalReviewRound, FinalReviewDigest: data.FinalReviewDigest, FinalEvidenceDigest: data.FinalEvidenceDigest, Summary: data.Summary, FindingCount: data.FindingCount, RetentionPolicy: "default", GeneratedAt: data.GeneratedAt.UTC()}
+	outcome := domain.OutcomeBundle{APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindOutcome, TaskID: data.TaskID, RunID: data.RunID, TerminalState: data.TerminalState, Verdict: data.Verdict, FinalReviewRound: data.FinalReviewRound, FinalReviewDigest: data.FinalReviewDigest, FinalEvidenceDigest: data.FinalEvidenceDigest, Summary: data.Summary, FindingCount: data.FindingCount, RetentionPolicy: "default", GeneratedAt: data.GeneratedAt.UTC(), LocalSelfIdentityBindingDigest: data.LocalSelfIdentityBindingDigest}
 	jsonData, err := json.MarshalIndent(outcome, "", "  ")
 	if err != nil {
 		return nil, "", err
