@@ -65,7 +65,7 @@ func TestPrepareTerminalFreezesNativeTUIWithoutJSONPrintOrPrompt(t *testing.T) {
 	}
 	joinedArgs := strings.Join(spec.Arguments, "\x00")
 	joinedEnv := strings.Join(spec.Environment, "\n")
-	if spec.AdapterID != adapterID || spec.BinaryVersion != supportedBinary || spec.Executable != fixture.executable || !strings.HasPrefix(spec.ExecutableDigest, "sha256:") || spec.WorkingDirectory != expectedWorktree {
+	if spec.AdapterID != adapterID || spec.AdapterVersion != adapterVersion || spec.BinaryVersion != supportedBinary || spec.Executable != fixture.executable || !strings.HasPrefix(spec.ExecutableDigest, "sha256:") || spec.WorkingDirectory != expectedWorktree {
 		t.Fatalf("identity = %+v", spec)
 	}
 	if spec.InitialPrompt != "完成 fixture" || spec.CompletionGate != port.TerminalCompletionSupervisedConfirmation {
@@ -89,6 +89,42 @@ func TestPrepareTerminalFreezesNativeTUIWithoutJSONPrintOrPrompt(t *testing.T) {
 	}
 }
 
+func TestPrepareTerminalVersionMatrix(t *testing.T) {
+	for _, test := range []struct {
+		version   string
+		supported bool
+	}{
+		{version: "0.84.1", supported: true},
+		{version: "0.84.3", supported: true},
+		{version: "0.84.2", supported: false},
+		{version: "0.84.4", supported: false},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "worker-launched")
+			fixture := newRunFixture(t, test.version, "touch "+shellQuote(marker))
+			spec, err := fixture.adapter.PrepareTerminal(context.Background(), fixture.request)
+			if test.supported {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if spec.AdapterVersion != adapterVersion || spec.BinaryVersion != test.version {
+					t.Fatalf("launch identity = %+v", spec)
+				}
+			} else {
+				if !errors.Is(err, ErrUnsupportedVersion) {
+					t.Fatalf("error = %v, want ErrUnsupportedVersion", err)
+				}
+				if spec.AdapterID != "" || spec.AdapterVersion != "" || spec.BinaryVersion != "" || spec.Executable != "" || len(spec.Arguments) != 0 || len(spec.Environment) != 0 {
+					t.Fatalf("unsupported version produced launch spec: %+v", spec)
+				}
+			}
+			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+				t.Fatalf("PrepareTerminal launched worker for %s: %v", test.version, statErr)
+			}
+		})
+	}
+}
+
 func containsArgument(arguments []string, target string) bool {
 	for _, argument := range arguments {
 		if argument == target {
@@ -101,8 +137,11 @@ func containsArgument(arguments []string, target string) bool {
 func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 	for _, test := range []struct{ version, status string }{
 		{"0.84.1", "supported"},
+		{"0.84.3", "supported"},
 		{"0.83.0", "unsupported"},
 		{"0.84.0", "unsupported"},
+		{"0.84.2", "unsupported"},
+		{"0.84.4", "unsupported"},
 		{"0.85.0", "unsupported"},
 		{"unknown", "unsupported"},
 	} {
@@ -122,15 +161,53 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 			}
 			status, _ := raw["probeStatus"].(string)
 			version, _ := raw["binaryVersion"].(string)
+			implementation, _ := raw["adapterVersion"].(string)
 			digest, _ := raw["executableDigest"].(string)
 			executable, _ := raw["executable"].(string)
-			if status != test.status || version != test.version || !strings.HasPrefix(digest, "sha256:") || !filepath.IsAbs(executable) {
-				t.Fatalf("snapshot = %s/%s/%s/%s", status, version, digest, executable)
+			if status != test.status || implementation != adapterVersion || version != test.version || !strings.HasPrefix(digest, "sha256:") || !filepath.IsAbs(executable) {
+				t.Fatalf("snapshot = %s/%s/%s/%s/%s", status, implementation, version, digest, executable)
 			}
 			if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
 				t.Fatalf("probe must never launch a worker process: marker stat = %v", statErr)
 			}
 		})
+	}
+}
+
+func TestRunAcceptsPi0843ObservedSessionV3(t *testing.T) {
+	// This sequence is reduced from the real Pi 0.84.3 Mac non-interactive
+	// canary whose executable digest was
+	// sha256:1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a.
+	// It pins the compatibility-relevant wire facts: session v3,
+	// normalized message updates, structured usage/cost, terminal agent_end,
+	// and the single optional agent_settled closure.
+	body := sessionHeader("session-0843") + "\n" + `printf '%s\n' \
+		'{"type":"agent_start"}' \
+		'{"type":"turn_start"}' \
+		'{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"ok"}}' \
+		'{"type":"agent_end","messages":[{"role":"assistant","usage":{"input":1266,"output":48,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":1314,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop"}],"willRetry":false}' \
+		'{"type":"agent_settled"}'`
+	fixture := newRunFixture(t, supportedBinary843, body)
+	declared := validDeclaredResult(fixture.executable)
+	declared["session"].(map[string]any)["id"] = "session-0843"
+	writeJSON(t, filepath.Join(fixture.controlRoot, "output", "worker-result.json"), declared)
+	record, err := fixture.adapter.Run(context.Background(), fixture.request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result declaredResult
+	if err := json.Unmarshal(record.Data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Adapter.Version != supportedBinary843 || result.Session == nil || result.Session.ID != "session-0843" {
+		t.Fatalf("0.84.3 normalized result = %+v", result)
+	}
+	var usage map[string]any
+	if err := json.Unmarshal(result.Usage, &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage["inputTokens"] != float64(1266) || usage["outputTokens"] != float64(48) {
+		t.Fatalf("0.84.3 normalized usage = %v", usage)
 	}
 }
 
@@ -671,7 +748,7 @@ func TestRunRejectsPersistAndResumeBeforeWorkerLaunch(t *testing.T) {
 }
 
 func TestRunRejectsUnsupportedVersionBeforeWorkerLaunch(t *testing.T) {
-	for _, version := range []string{"0.83.0", "0.84.0", "0.85.0", "unknown"} {
+	for _, version := range []string{"0.83.0", "0.84.0", "0.84.2", "0.84.4", "0.85.0", "unknown"} {
 		t.Run(version, func(t *testing.T) {
 			marker := filepath.Join(t.TempDir(), "launched")
 			fixture := newRunFixture(t, version, "touch "+shellQuote(marker))
@@ -1070,6 +1147,171 @@ func TestCaptureJSONLAutoRetryChainSuccessClosure(t *testing.T) {
 			}
 			if terminations != 0 {
 				t.Fatalf("terminations = %d, want 0", terminations)
+			}
+		})
+	}
+}
+
+func TestCaptureJSONLCompactionContinuationClosure(t *testing.T) {
+	compactionResult := `{"summary":"summary","firstKeptEntryId":"entry-1","tokensBefore":100,"estimatedTokensAfter":20,"usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}`
+	input := jsonLines(
+		captureSessionHeader("session-1"),
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"length","usage":{"input":10,"output":2,"cacheRead":1,"cost":0}}],"willRetry":false}`,
+		`{"type":"compaction_start","reason":"overflow"}`,
+		`{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1,"errorMessage":"transient"}`,
+		`{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`,
+		`{"type":"summarization_retry_finished"}`,
+		`{"type":"compaction_end","reason":"overflow","result":`+compactionResult+`,"aborted":false,"willRetry":true}`,
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop","usage":{"input":4,"output":3,"cacheRead":2,"cost":0}}],"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+	)
+	terminations := 0
+	result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() { terminations++ })
+	if result.err != nil {
+		t.Fatalf("capture error = %v", result.err)
+	}
+	if result.providerFailed || result.limitExceeded {
+		t.Fatalf("providerFailed=%v limitExceeded=%v", result.providerFailed, result.limitExceeded)
+	}
+	if result.inputTokens != 15 || result.outputTokens != 6 || result.cachedInputTokens != 3 {
+		t.Fatalf("usage = %d/%d/%d, want 15/6/3", result.inputTokens, result.outputTokens, result.cachedInputTokens)
+	}
+	if terminations != 0 {
+		t.Fatalf("terminations = %d, want 0", terminations)
+	}
+}
+
+func TestCaptureJSONLThresholdCompactionWithoutContinuation(t *testing.T) {
+	compactionResult := `{"summary":"summary","firstKeptEntryId":"entry-1","tokensBefore":100}`
+	input := jsonLines(
+		captureSessionHeader("session-1"),
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}],"willRetry":false}`,
+		`{"type":"compaction_start","reason":"threshold"}`,
+		`{"type":"entry_appended","entry":{"type":"compaction"}}`,
+		`{"type":"compaction_end","reason":"threshold","result":`+compactionResult+`,"aborted":false,"willRetry":false}`,
+		`{"type":"queue_update","steering":[],"followUp":[]}`,
+		`{"type":"agent_settled"}`,
+	)
+	result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() {})
+	if result.err != nil {
+		t.Fatalf("capture error = %v", result.err)
+	}
+	if result.providerFailed {
+		t.Fatal("completed threshold compaction must preserve the successful provider result")
+	}
+}
+
+func TestCaptureJSONLOverflowRecoveryExhaustionIsProviderFailure(t *testing.T) {
+	lengthEnd := `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"length"}],"willRetry":false}`
+	compactionResult := `{"summary":"summary","firstKeptEntryId":"entry-1","tokensBefore":100}`
+	events := []string{
+		captureSessionHeader("session-1"),
+		`{"type":"agent_start"}`,
+		lengthEnd,
+		`{"type":"compaction_start","reason":"overflow"}`,
+		`{"type":"compaction_end","reason":"overflow","result":` + compactionResult + `,"aborted":false,"willRetry":true}`,
+		`{"type":"agent_start"}`,
+		lengthEnd,
+		`{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false,"errorMessage":"recovery exhausted"}`,
+	}
+	for _, test := range []struct {
+		name   string
+		suffix []string
+	}{
+		{name: "settled", suffix: []string{`{"type":"agent_settled"}`}},
+		{name: "eof"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := jsonLines(append(append([]string{}, events...), test.suffix...)...)
+			result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() {})
+			if result.err != nil {
+				t.Fatalf("capture error = %v", result.err)
+			}
+			if !result.providerFailed {
+				t.Fatal("exhausted overflow recovery must preserve the final length failure")
+			}
+		})
+	}
+}
+
+func TestCaptureJSONLSummarizationRetriesMayAdvanceBeforeFinished(t *testing.T) {
+	compactionResult := `{"summary":"summary","firstKeptEntryId":"entry-1","tokensBefore":100}`
+	input := jsonLines(
+		captureSessionHeader("session-1"),
+		`{"type":"agent_start"}`,
+		`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}],"willRetry":false}`,
+		`{"type":"compaction_start","reason":"threshold"}`,
+		`{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":3,"delayMs":1,"errorMessage":"transient-1"}`,
+		`{"type":"summarization_retry_attempt_start","source":"compaction","reason":"threshold"}`,
+		`{"type":"summarization_retry_scheduled","attempt":2,"maxAttempts":3,"delayMs":2,"errorMessage":"transient-2"}`,
+		`{"type":"summarization_retry_attempt_start","source":"compaction","reason":"threshold"}`,
+		`{"type":"summarization_retry_finished"}`,
+		`{"type":"compaction_end","reason":"threshold","result":`+compactionResult+`,"aborted":false,"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+	)
+	result := captureJSONL(context.Background(), strings.NewReader(input), "/worktree", 1<<20, func() {})
+	if result.err != nil {
+		t.Fatalf("capture error = %v", result.err)
+	}
+	if result.providerFailed {
+		t.Fatal("successful compaction after ordered summarization retries must not fail the provider")
+	}
+}
+
+func TestCaptureJSONLCompactionProtocolViolations(t *testing.T) {
+	header := captureSessionHeader("session-1")
+	finalEnd := `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}],"willRetry":false}`
+	lengthEnd := `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"length"}],"willRetry":false}`
+	startOverflow := `{"type":"compaction_start","reason":"overflow"}`
+	endOverflowRetry := `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1},"aborted":false,"willRetry":true}`
+	directOverflowFailure := `{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false,"errorMessage":"recovery exhausted"}`
+	for _, test := range []struct {
+		name   string
+		events []string
+	}{
+		{name: "start-before-agent-end", events: []string{header, startOverflow}},
+		{name: "end-before-agent-end", events: []string{header, `{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false}`}},
+		{name: "manual-start", events: []string{header, finalEnd, `{"type":"compaction_start","reason":"manual"}`}},
+		{name: "duplicate-start", events: []string{header, finalEnd, startOverflow, startOverflow}},
+		{name: "reason-mismatch", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"threshold","aborted":false,"willRetry":false}`}},
+		{name: "missing-flags", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow"}`}},
+		{name: "success-result-missing-fields", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","result":{},"aborted":false,"willRetry":false}`}},
+		{name: "success-with-error", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1},"aborted":false,"willRetry":false,"errorMessage":"contradiction"}`}},
+		{name: "aborted-with-result", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1},"aborted":true,"willRetry":false}`}},
+		{name: "failed-without-error", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false}`}},
+		{name: "negative-compaction-usage", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1,"usage":{"input":-1,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}},"aborted":false,"willRetry":false}`}},
+		{name: "aborted-retry", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","aborted":true,"willRetry":true}`}},
+		{name: "threshold-retry", events: []string{header, finalEnd, `{"type":"compaction_start","reason":"threshold"}`, `{"type":"compaction_end","reason":"threshold","aborted":false,"willRetry":true}`}},
+		{name: "overflow-retry-after-successful-stop", events: []string{header, finalEnd, startOverflow, `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1},"aborted":false,"willRetry":true}`}},
+		{name: "settled-during-compaction", events: []string{header, finalEnd, startOverflow, `{"type":"agent_settled"}`}},
+		{name: "settled-before-required-continuation", events: []string{header, lengthEnd, startOverflow, endOverflowRetry, `{"type":"agent_settled"}`}},
+		{name: "unpaired-end", events: []string{header, lengthEnd, `{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false}`}},
+		{name: "unpaired-success-end", events: []string{header, lengthEnd, startOverflow, endOverflowRetry, `{"type":"agent_start"}`, lengthEnd, `{"type":"compaction_end","reason":"overflow","result":{"summary":"s","firstKeptEntryId":"e","tokensBefore":1},"aborted":false,"willRetry":false}`}},
+		{name: "summarization-retry-outside-compaction", events: []string{header, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1,"errorMessage":"transient"}`}},
+		{name: "summarization-retry-start-without-schedule", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`}},
+		{name: "summarization-retry-missing-error", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1}`}},
+		{name: "summarization-retry-null-error", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1,"errorMessage":null}`}},
+		{name: "summarization-retry-source-mismatch", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1,"errorMessage":"transient"}`, `{"type":"summarization_retry_attempt_start","source":"branchSummary"}`}},
+		{name: "summarization-retry-attempt-skip", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":2,"maxAttempts":2,"delayMs":1,"errorMessage":"transient"}`}},
+		{name: "summarization-retry-budget-exceeded", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":3,"delayMs":1,"errorMessage":"one"}`, `{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`, `{"type":"summarization_retry_scheduled","attempt":2,"maxAttempts":3,"delayMs":1,"errorMessage":"two"}`, `{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`, `{"type":"summarization_retry_scheduled","attempt":3,"maxAttempts":3,"delayMs":1,"errorMessage":"three"}`, `{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`, `{"type":"summarization_retry_scheduled","attempt":4,"maxAttempts":3,"delayMs":1,"errorMessage":"four"}`}},
+		{name: "summarization-retry-finished-without-start", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_finished"}`}},
+		{name: "compaction-end-before-summarization-retry-finished", events: []string{header, finalEnd, startOverflow, `{"type":"summarization_retry_scheduled","attempt":1,"maxAttempts":2,"delayMs":1,"errorMessage":"transient"}`, `{"type":"summarization_retry_attempt_start","source":"compaction","reason":"overflow"}`, `{"type":"compaction_end","reason":"overflow","aborted":false,"willRetry":false,"errorMessage":"failed"}`}},
+		{name: "eof-during-compaction", events: []string{header, finalEnd, startOverflow}},
+		{name: "eof-before-required-continuation", events: []string{header, lengthEnd, startOverflow, endOverflowRetry}},
+		{name: "agent-start-after-overflow-exhaustion", events: []string{header, lengthEnd, startOverflow, endOverflowRetry, `{"type":"agent_start"}`, lengthEnd, directOverflowFailure, `{"type":"agent_start"}`}},
+		{name: "duplicate-overflow-exhaustion", events: []string{header, lengthEnd, startOverflow, endOverflowRetry, `{"type":"agent_start"}`, lengthEnd, directOverflowFailure, directOverflowFailure}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			terminations := 0
+			result := captureJSONL(context.Background(), strings.NewReader(jsonLines(test.events...)), "/worktree", 1<<20, func() { terminations++ })
+			if !errors.Is(result.err, ErrProtocol) {
+				t.Fatalf("error = %v, want ErrProtocol", result.err)
+			}
+			if terminations != 1 {
+				t.Fatalf("terminations = %d, want exactly 1", terminations)
 			}
 		})
 	}

@@ -170,6 +170,39 @@ func TestDoctorReportsCodex01491OrdinaryUserPlatformCompatibility(t *testing.T) 
 	}
 }
 
+func TestDoctorReportsPi0843Compatibility(t *testing.T) {
+	executable := writeVersionExecutableForCLI(t, "pi", "0.84.3")
+	t.Setenv("MARSHAL_OPENCODE_PATH", "")
+	t.Setenv("MARSHAL_QWEN_PATH", "")
+	t.Setenv("MARSHAL_QODER_PATH", "")
+	t.Setenv("MARSHAL_CODEX_PATH", "")
+	t.Setenv("MARSHAL_PI_PATH", executable)
+
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"doctor", "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("doctor exit = %d, stderr = %s", exit, stderr.String())
+	}
+	var report struct {
+		Workers []doctorWorker `json:"workers"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	var found *doctorWorker
+	for index := range report.Workers {
+		if report.Workers[index].AdapterID == "pi" {
+			found = &report.Workers[index]
+			break
+		}
+	}
+	if found == nil || !found.Registered || found.Outcome != app.WorkerOutcomeRegistered || found.Compatibility != "supported" || found.AdapterVersion != "0.4.0" || found.BinaryVersion != "0.84.3" {
+		t.Fatalf("doctor pi 0.84.3 = %+v", found)
+	}
+	if strings.Contains(stdout.String()+stderr.String(), executable) {
+		t.Fatalf("doctor leaked configured executable path: %s", stdout.String()+stderr.String())
+	}
+}
+
 func TestDoctorBindsSupportedQoderConformanceMetadata(t *testing.T) {
 	identity := doctorSnapshotIdentity{
 		AdapterID: "qoder", AdapterVersion: "0.1.0", BinaryVersion: "1.1.23", ExecutableDigest: "sha256:" + strings.Repeat("d", 64), ProbeStatus: "supported",
