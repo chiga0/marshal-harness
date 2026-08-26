@@ -110,7 +110,7 @@ exit 0、`status=pass` 且 `reasonCode=operator-receipt-valid` 仍只是诊断�
 
 ## 单次 plan pre-mortem
 
-在 `task plan` 前，对拟使用的 TaskSpec、PolicySnapshot、锁定 `sourceHead` 和所选 Adapter 只运行一次 operator-local pre-mortem。它直接复用 Core 的 TaskSpec/PolicySnapshot/CapabilitySnapshot Schema、`ValidateTaskSpecAcceptanceFloor`、`ValidatePolicy`、`WorkerRuntime.Selector.Probe` 与 `ValidateCapability`；只执行 Adapter 的 version/capability probe，不调用 `Worker.Run`、不创建 Attempt、不读写 `.marshal`，也不产生 Core authority。
+在 `task plan` 前，对拟使用的 TaskSpec、PolicySnapshot、锁定 `sourceHead` 和所选 Adapter 只运行一次 operator-local pre-mortem。它直接复用 Core 的 TaskSpec/PolicySnapshot/CapabilitySnapshot Schema、`ValidateTaskSpecAcceptanceFloor`、`ValidatePolicy`、`ValidateLocalDogfoodTaskPolicyProjection`、`WorkerRuntime.Selector.Probe`、`ValidateCapability` 与 `ValidateLocalDogfoodCapabilityProjection`；因此 local profile 的 TaskSpec execution、Policy binding/effective profile 与 Capability authority/execution 交叉矩阵会在 plan/Worker 前关闭。它只执行 Adapter 的 version/capability probe，不调用 `Worker.Run`、不创建 Attempt、不读写 `.marshal`，也不产生 Core authority。
 
 从 `templates/plan-premortem-preflight.json` 复制 manifest，把 TaskSpec 与 PolicySnapshot 放入同一紧凑 operator root，填入两份文件的原始 `sha256:` 摘要、锁定的 40 位 commit、`runId` 和本次唯一所选 Adapter。operator root 必须在 `.marshal` 外，所有绑定路径必须是无 symlink 的相对 regular file。正常 plan 由上面的统一入口调用本 component；仅开发或诊断 validator 时才单独运行：
 
@@ -128,6 +128,8 @@ python3 -I -B .agents/skills/marshal/references/validate-plan-premortem-prefligh
 - `policy-approval-gates-conflict`：Policy 的 approval gates 与控制语义冲突；
 - `policy-publication-merge-conflict`：publication/merge 开关、provider、method 或 required checks 不一致；
 - `adapter-ordinary-user-execution-profile-unsupported`：所选普通用户 Adapter 不支持 TaskSpec 的 `executionProfile`；不得把 ordinary-user 能力升级描述成 delegated authority；
+- `policy-local-dogfood-surface-conflict`：local binding 与 TaskSpec/effective execution 或 publication surface 不一致；修 TaskSpec/Policy，不启动 selector/Worker；
+- `adapter-local-dogfood-authority-mismatch`：local binding 与所选 Capability 的 `authorityMode`/strict conformance surface 不一致；修 Adapter/选择，不创建 Run 或 Worker rework；
 - `adapter-named-worker-tools-unsupported`：所选 Qoder/Codex 的已验证 argv 无法表达非空 `worker.tools`；缺省或显式空数组可继续，named allowlist 必须先从 TaskSpec 移除或改选具备已验证映射的 Adapter；
 - `qoder-deliverable-parent-missing`：Qoder required path deliverable 的父目录在锁定 Git tree 中不存在；不得为此单独提交空目录或骨架。改选已经实证能创建父目录的 Adapter 完成当前纵切；若必须先改变基线，则该前置提交必须把父目录与同一条完整纵切的真实文件/接线一起交付，后续 Qoder 再锁定新 base。preflight 在输入改变前继续 fail closed，不把结构性错误转成 Worker rework。
 

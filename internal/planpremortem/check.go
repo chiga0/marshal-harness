@@ -32,7 +32,7 @@ import (
 
 const (
 	maxInputBytes  = 2 << 20
-	commandVersion = "plan-premortem-check/v1"
+	commandVersion = "plan-premortem-check/v2"
 )
 
 var sourceHeadPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -130,6 +130,9 @@ func Run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if err != nil {
 		return writeFailure(stderr, policyReason(err), 1)
 	}
+	if err := planning.ValidateLocalDogfoodTaskPolicyProjection(effective, task); err != nil {
+		return writeFailure(stderr, "policy-local-dogfood-surface-conflict", 1)
+	}
 	if !eligibleSelectedAdapter(input.SelectedAdapter, effective) {
 		return writeFailure(stderr, "selected-adapter-policy-mismatch", 1)
 	}
@@ -173,6 +176,9 @@ func Run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			return writeFailure(stderr, "adapter-execution-profile-unsupported", 1)
 		}
 		return writeFailure(stderr, "adapter-capability-incompatible", 1)
+	}
+	if err := planning.ValidateLocalDogfoodCapabilityProjection(effective, selection.Capability.Data); err != nil {
+		return writeFailure(stderr, "adapter-local-dogfood-authority-mismatch", 1)
 	}
 	capabilityDigest, err := canonical.DigestJSON(selection.Capability.Data)
 	if err != nil {

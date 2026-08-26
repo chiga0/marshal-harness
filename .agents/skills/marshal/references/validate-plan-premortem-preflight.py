@@ -374,7 +374,7 @@ def run_preflight(root: Path, manifest_relative: str, marshal: Path) -> dict:
         expected_input_digest = raw_digest(manifest_raw + task_raw + policy_raw + schema_raw)
         if identity.get("inputDigest") != expected_input_digest:
             fail("core-probe-input-digest-mismatch")
-        if identity.get("internalCommandVersion") != "plan-premortem-check/v1":
+        if identity.get("internalCommandVersion") != "plan-premortem-check/v2":
             fail("core-probe-command-version-mismatch")
     elif completed.returncode != 1:
         fail("core-probe-output-invalid")
