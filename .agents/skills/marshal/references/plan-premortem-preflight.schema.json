@@ -18,7 +18,10 @@
     "apiVersion": { "const": "marshal.operator/v1alpha1" },
     "kind": { "const": "PlanPremortemPreflight" },
     "runId": { "$ref": "#/$defs/id" },
-    "selectedAdapter": { "$ref": "#/$defs/id" },
+    "selectedAdapter": {
+      "type": "string",
+      "enum": ["codex", "opencode", "pi", "qoder", "qwen"]
+    },
     "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "taskSpec": { "$ref": "#/$defs/fileBinding" },
     "policySnapshot": { "$ref": "#/$defs/fileBinding" }

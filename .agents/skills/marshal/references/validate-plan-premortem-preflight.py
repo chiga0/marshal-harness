@@ -23,6 +23,7 @@ SCRIPT_ADAPTER_PATHS = {
     "pi": "MARSHAL_PI_PATH",
     "qwen": "MARSHAL_QWEN_PATH",
 }
+SUPPORTED_ADAPTERS = frozenset({"codex", "opencode", "pi", "qoder", "qwen"})
 
 
 def load_stable_marshal_module():
@@ -206,6 +207,8 @@ def checked_inherited_home() -> str | None:
 def checked_probe_path(manifest: dict) -> str:
     """Return the minimal PATH needed by the selected script adapter probe."""
     selected = manifest.get("selectedAdapter")
+    if not isinstance(selected, str) or selected not in SUPPORTED_ADAPTERS:
+        fail("manifest-shape-invalid")
     environment_key = SCRIPT_ADAPTER_PATHS.get(selected)
     if environment_key is None or environment_key not in os.environ:
         return SYSTEM_PATH

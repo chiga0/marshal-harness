@@ -2,22 +2,23 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 REFERENCES = Path(__file__).resolve().parents[1]
 REPOSITORY = REFERENCES.parents[3]
-# macOS host security policies may refuse to execute freshly built unsigned
-# binaries from the per-user system temp directory. Test binaries are built
-# inside the repository's gitignored bin/test directory instead.
-TEST_BUILD_ROOT = REPOSITORY / "bin" / "test"
+# macOS host security policies treat every random executable path as a new
+# identity. Keep test helpers at one stable, gitignored path and permit local
+# runs to reuse an already-approved fixed Marshal binary.
+TEST_BUILD_ROOT = REPOSITORY / "bin" / "test" / "marshal-plan-premortem"
 VALIDATOR = REFERENCES / "validate-plan-premortem-preflight.py"
 SCHEMA = REFERENCES / "plan-premortem-preflight.schema.json"
 TEMPLATE = REFERENCES.parent / "templates" / "plan-premortem-preflight.json"
@@ -40,18 +41,22 @@ class PlanPremortemPreflightTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         TEST_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
-        cls.build = Path(tempfile.mkdtemp(prefix="marshal-plan-premortem-build.", dir=TEST_BUILD_ROOT)).resolve()
-        cls.marshal = cls.build / "marshal"
-        commit = run(["git", "rev-parse", "HEAD"], REPOSITORY)
-        subprocess.run(
-            ["go", "build", "-ldflags", f"-X github.com/chiga0/marshal-harness/internal/buildinfo.commit={commit}", "-o", str(cls.marshal), "./cmd/marshal"],
-            cwd=REPOSITORY,
-            check=True,
-        )
+        cls.build = TEST_BUILD_ROOT.resolve()
+        configured = os.environ.get("MARSHAL_TEST_BINARY")
+        if configured:
+            cls.marshal = Path(configured).resolve()
+        else:
+            cls.marshal = cls.build / "marshal"
+            commit = run(["git", "rev-parse", "HEAD"], REPOSITORY)
+            subprocess.run(
+                ["go", "build", "-ldflags", f"-X github.com/chiga0/marshal-harness/internal/buildinfo.commit={commit}", "-o", str(cls.marshal), "./cmd/marshal"],
+                cwd=REPOSITORY,
+                check=True,
+            )
 
     @classmethod
     def tearDownClass(cls) -> None:
-        shutil.rmtree(cls.build)
+        pass
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="marshal-plan-premortem-test.")
@@ -69,6 +74,8 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         run(["git", "commit", "-qm", "base"], self.repository)
         self.source_head = run(["git", "rev-parse", "HEAD"], self.repository)
         self.worker_marker = self.root / "worker-launched"
+        self.core_probe_marker = self.root / "core-probe-launched"
+        self.environment_path = os.environ.get("PATH", "")
         self.home = self.root / "home"
         (self.home / ".qwen").mkdir(parents=True)
         (self.home / ".qwen" / "settings.json").write_text(
@@ -78,7 +85,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         self.environment_home = str(self.home)
         self.qoder = self.fake_executable("qoder", "1.1.27")
         self.codex = self.fake_executable("codex", "codex-cli 0.145.0")
-        self.qwen = self.fake_executable("qwen", "0.21.5")
+        self.qwen = self.fake_node_executable("qwen", "0.21.5")
         self.pi = self.fake_node_executable("pi", "0.84.1")
         self.task = self.task_fixture()
         self.policy = self.policy_fixture()
@@ -118,6 +125,10 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         executable = directory / name
         executable.write_text(
             "#!/usr/bin/env node\n"
+            "if command -v marshal-path-poison >/dev/null 2>&1; then\n"
+            f"  : > '{self.worker_marker}'\n"
+            "  exit 96\n"
+            "fi\n"
             "for arg in \"$@\"; do\n"
             "  if [ \"$arg\" = \"--version\" ]; then\n"
             f"    printf '%s\\n' '{version}'\n"
@@ -130,6 +141,28 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         )
         executable.chmod(0o700)
         return executable
+
+    def install_path_poison(self, directory: Path) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        poison = directory / "marshal-path-poison"
+        poison.write_text(
+            "#!/bin/sh\n"
+            f": > '{self.worker_marker}'\n"
+            "exit 95\n",
+            encoding="utf-8",
+        )
+        poison.chmod(0o700)
+
+    def fake_core_probe(self) -> Path:
+        executable = self.root / "marshal-probe-spy"
+        executable.write_text(
+            "#!/bin/sh\n"
+            f": > '{self.core_probe_marker}'\n"
+            "exit 94\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o700)
+        return executable.resolve()
 
     def task_fixture(self) -> dict:
         return {
@@ -168,14 +201,15 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         result["policyDigest"] = digest(compact(result))
         return result
 
-    def invoke(self) -> tuple[int, dict]:
+    def invoke(self, *, selected_adapter: object | None = None, marshal: Path | None = None) -> tuple[int, dict]:
         task_raw = compact(self.task)
         policy_raw = compact(self.policy)
         (self.operator / "task-spec.json").write_bytes(task_raw)
         (self.operator / "policy-snapshot.json").write_bytes(policy_raw)
         manifest = {
             "apiVersion": "marshal.operator/v1alpha1", "kind": "PlanPremortemPreflight",
-            "runId": "run-premortem-1", "selectedAdapter": self.task["worker"]["preferredAdapter"],
+            "runId": "run-premortem-1",
+            "selectedAdapter": self.task["worker"]["preferredAdapter"] if selected_adapter is None else selected_adapter,
             "sourceHead": self.source_head,
             "taskSpec": {"path": "task-spec.json", "digest": digest(task_raw)},
             "policySnapshot": {"path": "policy-snapshot.json", "digest": digest(policy_raw)},
@@ -183,6 +217,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         (self.operator / "manifest.json").write_bytes(compact(manifest))
         environment = os.environ.copy()
         environment.update({
+            "PATH": self.environment_path,
             "HOME": self.environment_home,
             "MARSHAL_OPENCODE_PATH": "", "MARSHAL_QWEN_PATH": str(self.qwen), "MARSHAL_PI_PATH": str(self.pi),
             "MARSHAL_QODER_PATH": str(self.qoder), "MARSHAL_QODER_MODE": "ordinary-user",
@@ -190,7 +225,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
             "MARSHAL_CODEX_MODE": "ordinary-user", "MARSHAL_CODEX_AUTHORITY_CONFIG": "",
         })
         completed = subprocess.run(
-            [sys.executable, "-I", "-B", str(VALIDATOR), "--root", str(self.operator), "--manifest", "manifest.json", "--marshal", str(self.marshal)],
+            [sys.executable, "-I", "-B", str(VALIDATOR), "--root", str(self.operator), "--manifest", "manifest.json", "--marshal", str(marshal or self.marshal)],
             cwd=REPOSITORY, env=environment, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         self.assertEqual(completed.stderr, "")
@@ -204,7 +239,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
 
     def test_qoder_ordinary_user_passes_without_launching_worker(self) -> None:
         code, result = self.invoke()
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 0, result)
         self.assertEqual(result["reasonCode"], "plan-premortem-pass")
         self.assertEqual(result["authorityMode"], "ordinary-user")
         self.assertEqual(result["selectedAdapter"], "qoder")
@@ -252,6 +287,10 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         self.assert_reason("qoder-deliverable-parent-missing")
 
     def test_qwen_ordinary_user_forwards_home_for_user_config_capability(self) -> None:
+        poison = self.root / "ambient-poison"
+        self.install_path_poison(poison)
+        self.install_path_poison(self.pi.parent)
+        self.environment_path = f"{poison}:{self.environment_path}"
         self.task["worker"]["preferredAdapter"] = "qwen"
         self.policy["effective"]["allowedAdapters"] = ["qwen"]
         self.policy = self.seal_policy(self.policy)
@@ -262,6 +301,10 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         self.assertFalse(self.worker_marker.exists())
 
     def test_pi_env_node_probe_uses_only_selected_executable_parent(self) -> None:
+        poison = self.root / "ambient-poison"
+        self.install_path_poison(poison)
+        self.install_path_poison(self.qwen.parent)
+        self.environment_path = f"{poison}:{self.environment_path}"
         self.task["worker"]["preferredAdapter"] = "pi"
         self.policy["effective"]["allowedAdapters"] = ["pi"]
         self.policy = self.seal_policy(self.policy)
@@ -270,12 +313,45 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         self.assertEqual(result["selectedAdapter"], "pi")
         self.assertFalse(self.worker_marker.exists())
 
-    def test_pi_probe_rejects_path_separator_in_executable_parent(self) -> None:
-        self.task["worker"]["preferredAdapter"] = "pi"
-        self.policy["effective"]["allowedAdapters"] = ["pi"]
-        self.policy = self.seal_policy(self.policy)
-        self.pi = Path(str(self.pi.parent) + ":forged/pi")
-        self.assert_reason("core-probe-environment-invalid")
+    def test_pi_probe_rejects_malformed_executable_paths(self) -> None:
+        malformed = (
+            "relative/pi",
+            str(self.pi.parent / "nested" / ".." / "pi"),
+            str(self.pi.parent) + ":forged/pi",
+            str(self.pi) + "\nforged",
+            str(self.pi) + "\rforged",
+        )
+        for value in malformed:
+            with self.subTest(value=repr(value)):
+                self.pi = Path(value)
+                self.task["worker"]["preferredAdapter"] = "pi"
+                self.policy["effective"]["allowedAdapters"] = ["pi"]
+                self.policy = self.seal_policy(self.policy)
+                self.assert_reason("core-probe-environment-invalid")
+
+    def test_script_adapter_path_rejects_nul_without_starting_probe(self) -> None:
+        spec = importlib.util.spec_from_file_location("marshal_plan_premortem_validator_test", VALIDATOR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        validator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(validator)
+        inherited = dict(os.environ)
+        inherited["MARSHAL_PI_PATH"] = "/valid/pi\x00forged"
+        with mock.patch.object(validator.os, "environ", inherited):
+            with self.assertRaises(validator.PreflightError) as caught:
+                validator.checked_probe_path({"selectedAdapter": "pi"})
+        self.assertEqual(caught.exception.reason_code, "core-probe-environment-invalid")
+        self.assertFalse(self.core_probe_marker.exists())
+
+    def test_non_string_selected_adapter_fails_closed_before_core_probe(self) -> None:
+        probe = self.fake_core_probe()
+        for selected in ({"forged": "pi"}, ["pi"]):
+            with self.subTest(selected=selected):
+                code, result = self.invoke(selected_adapter=selected, marshal=probe)
+                self.assertEqual(code, 1)
+                self.assertEqual(result, {"reasonCode": "manifest-shape-invalid", "status": "fail"})
+                self.assertFalse(self.core_probe_marker.exists())
+                self.assertFalse(self.worker_marker.exists())
 
     def test_unclean_home_fails_closed_before_core_probe(self) -> None:
         self.environment_home = str(self.home) + "/"
@@ -307,11 +383,24 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         self.assert_reason("adapter-named-worker-tools-unsupported")
 
     def test_template_validates_against_draft_2020_12_schema(self) -> None:
-        probe = self.build / "schema-probe"
-        source = Path(__file__).with_name("acceptance_semantic_schema_probe.go")
-        subprocess.run(["go", "build", "-o", str(probe), str(source)], cwd=REPOSITORY, check=True)
-        completed = subprocess.run([str(probe), str(SCHEMA), str(TEMPLATE)], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        task = self.operator / "template-task.json"
+        policy = self.operator / "template-policy.json"
+        task.write_bytes(compact(self.task))
+        policy.write_bytes(compact(self.policy))
+        completed = subprocess.run(
+            [
+                str(self.marshal), "internal", "plan-premortem-check", "--attestation-ready",
+                "--manifest", str(TEMPLATE), "--task-spec", str(task),
+                "--policy-snapshot", str(policy), "--schema", str(SCHEMA),
+            ],
+            input=b"\0", stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertEqual(completed.returncode, 1)
+        self.assertEqual(completed.stdout, b"")
+        self.assertEqual(
+            json.loads(completed.stderr),
+            {"reasonCode": "input-digest-mismatch", "status": "fail"},
+        )
 
     def test_operator_root_parent_symlink_into_repository_marshal_is_rejected(self) -> None:
         marshal_operator = self.repository / ".marshal" / "operator"
