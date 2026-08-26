@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marshal.local/schemas/selfidentity/artifact-attestation/v1",
+  "oneOf": [
+    { "$ref": "#/$defs/sourceManifest" },
+    { "$ref": "#/$defs/compileRootManifest" },
+    { "$ref": "#/$defs/generatedSourceStage" },
+    { "$ref": "#/$defs/externalMaterialManifest" },
+    { "$ref": "#/$defs/buildRecord" },
+    { "$ref": "#/$defs/buildAttestation" }
+  ],
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "id": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[ -~]+$" },
+    "timestamp": { "type": "string", "format": "date-time", "maxLength": 64 },
+    "profile": { "enum": ["darwin-managed-development", "darwin-notarized-release"] },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "entryType", "mode", "length", "sha256", "symlinkTarget", "symlinkBoundary"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "entryType": { "enum": ["regular", "directory", "symlink"] },
+        "mode": { "type": "integer", "minimum": 0, "maximum": 4095 },
+        "length": { "type": "integer", "minimum": 0 },
+        "sha256": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+        "symlinkTarget": { "oneOf": [{ "type": "string", "minLength": 1, "maxLength": 4096 }, { "type": "null" }] },
+        "symlinkBoundary": { "oneOf": [{ "const": "within-sealed-root" }, { "type": "null" }] }
+      }
+    },
+    "entries": { "type": "array", "minItems": 1, "maxItems": 16384, "items": { "$ref": "#/$defs/entry" } },
+    "generatorPolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["generatedStageId", "generatorMaterialDigest", "generatorToolchainDigest", "generatorInvocationDigest", "generatorInputDigest", "generatorOutputManifestDigest"],
+      "properties": {
+        "generatedStageId": { "$ref": "#/$defs/id" },
+        "generatorMaterialDigest": { "$ref": "#/$defs/digest" },
+        "generatorToolchainDigest": { "$ref": "#/$defs/digest" },
+        "generatorInvocationDigest": { "$ref": "#/$defs/digest" },
+        "generatorInputDigest": { "$ref": "#/$defs/digest" },
+        "generatorOutputManifestDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "submodule": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "pinnedCommit", "materializedTreeDigest"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "pinnedCommit": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" },
+        "materializedTreeDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "lfsObject": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "pointerDigest", "materializedObjectDigest"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "pointerDigest": { "$ref": "#/$defs/digest" },
+        "materializedObjectDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "sourceManifest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "manifestId", "repository", "sourceHead", "gitObjectFormat", "sourceBundleDigest", "entries", "rootDigest", "submodulePolicyDigest", "submodules", "lfsPolicyDigest", "lfsObjects", "generatedSourcePolicy", "goModDigest", "goSumDigest", "dependencyMode", "moduleGraphDigest", "buildInvocationDigest", "environmentPolicyDigest", "toolchainDistributionDigest", "goVersion", "targetOS", "targetArch", "buildProfile", "producerObservationIdentity", "manifestDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.source-manifest.v1" }, "manifestId": { "$ref": "#/$defs/id" },
+        "repository": { "$ref": "#/$defs/id" }, "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" },
+        "gitObjectFormat": { "enum": ["sha1", "sha256"] }, "sourceBundleDigest": { "$ref": "#/$defs/digest" },
+        "entries": { "$ref": "#/$defs/entries" }, "rootDigest": { "$ref": "#/$defs/digest" },
+        "submodulePolicyDigest": { "$ref": "#/$defs/digest" }, "submodules": { "type": "array", "maxItems": 1024, "items": { "$ref": "#/$defs/submodule" } },
+        "lfsPolicyDigest": { "$ref": "#/$defs/digest" }, "lfsObjects": { "type": "array", "maxItems": 16384, "items": { "$ref": "#/$defs/lfsObject" } },
+        "generatedSourcePolicy": { "oneOf": [{ "$ref": "#/$defs/generatorPolicy" }, { "type": "null" }] },
+        "goModDigest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] }, "goSumDigest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+        "dependencyMode": { "enum": ["modules", "vendor", "workspace", "local-replace"] }, "moduleGraphDigest": { "$ref": "#/$defs/digest" },
+        "buildInvocationDigest": { "$ref": "#/$defs/digest" }, "environmentPolicyDigest": { "$ref": "#/$defs/digest" }, "toolchainDistributionDigest": { "$ref": "#/$defs/digest" },
+        "goVersion": { "$ref": "#/$defs/id" }, "targetOS": { "const": "darwin" }, "targetArch": { "$ref": "#/$defs/id" }, "buildProfile": { "$ref": "#/$defs/profile" },
+        "producerObservationIdentity": { "$ref": "#/$defs/id" }, "manifestDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "compileRootManifest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "manifestId", "repository", "sourceHead", "sourceManifestDigest", "generatedSourceStageDigest", "entries", "rootDigest", "producerObservationIdentity", "manifestDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.compile-root-manifest.v1" }, "manifestId": { "$ref": "#/$defs/id" }, "repository": { "$ref": "#/$defs/id" }, "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" },
+        "sourceManifestDigest": { "$ref": "#/$defs/digest" }, "generatedSourceStageDigest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+        "entries": { "$ref": "#/$defs/entries" }, "rootDigest": { "$ref": "#/$defs/digest" }, "producerObservationIdentity": { "$ref": "#/$defs/id" }, "manifestDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "generatedSourceStage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "stageId", "sourceManifestDigest", "generatorMaterialDigest", "generatorToolchainDigest", "generatorInvocationDigest", "generatorInputDigest", "entries", "rootDigest", "producerObservationIdentity", "stageDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.generated-source-stage.v1" }, "stageId": { "$ref": "#/$defs/id" }, "sourceManifestDigest": { "$ref": "#/$defs/digest" },
+        "generatorMaterialDigest": { "$ref": "#/$defs/digest" }, "generatorInvocationDigest": { "$ref": "#/$defs/digest" }, "generatorInputDigest": { "$ref": "#/$defs/digest" },
+        "generatorToolchainDigest": { "$ref": "#/$defs/digest" },
+        "entries": { "$ref": "#/$defs/entries" }, "rootDigest": { "$ref": "#/$defs/digest" }, "producerObservationIdentity": { "$ref": "#/$defs/id" }, "stageDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "externalEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["logicalIdentity", "path", "entryType", "mode", "length", "sha256", "sourceIdentity", "referencedBy"],
+      "properties": {
+        "logicalIdentity": { "$ref": "#/$defs/id" }, "path": { "type": "string", "minLength": 1, "maxLength": 4096 }, "entryType": { "enum": ["regular", "directory"] },
+        "mode": { "type": "integer", "minimum": 0, "maximum": 4095 }, "length": { "type": "integer", "minimum": 0 }, "sha256": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+        "sourceIdentity": { "$ref": "#/$defs/id" }, "referencedBy": { "type": "array", "minItems": 1, "maxItems": 1024, "items": { "$ref": "#/$defs/id" } }
+      }
+    },
+    "externalMaterialManifest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "materialSetId", "materialKind", "producerObservationIdentity", "policyDigest", "entries", "manifestDigest"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.external-build-material-manifest.v1" }, "materialSetId": { "$ref": "#/$defs/id" },
+        "materialKind": { "enum": ["go-module-source", "workspace-module", "local-replace", "vendor-tree", "dependency-embed", "generator-tool", "cgo-header", "cgo-library", "pkg-config-data", "external-build-tool", "go-toolchain"] },
+        "producerObservationIdentity": { "$ref": "#/$defs/id" }, "policyDigest": { "$ref": "#/$defs/digest" },
+        "entries": { "type": "array", "minItems": 1, "maxItems": 16384, "items": { "$ref": "#/$defs/externalEntry" } }, "manifestDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rawSHA256", "fileSize", "goBuildId", "os", "arch", "version", "buildDate"],
+      "properties": {
+        "rawSHA256": { "$ref": "#/$defs/digest" }, "fileSize": { "type": "integer", "minimum": 1 }, "goBuildId": { "$ref": "#/$defs/id" }, "os": { "const": "darwin" }, "arch": { "$ref": "#/$defs/id" }, "version": { "$ref": "#/$defs/id" }, "buildDate": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "signedObjectEnvelope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["objectDigest", "signatureAlgorithm", "signatureEncoding", "keyId", "keyEpoch", "signatureDomain", "signature"],
+      "properties": {
+        "objectDigest": { "$ref": "#/$defs/digest" }, "signatureAlgorithm": { "const": "Ed25519" }, "signatureEncoding": { "const": "base64url-unpadded" },
+        "keyId": { "$ref": "#/$defs/id" }, "keyEpoch": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807 }, "signatureDomain": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]{86}$" }
+      }
+    },
+    "buildRecord": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "recordId", "createdAt", "buildProfile", "repository", "sourceHead", "sourceBundleDigest", "sourceManifestDigest", "compileRootManifestDigest", "externalMaterialManifestDigests", "buildInvocationDigest", "environmentPolicyDigest", "toolchainMaterialDigest", "moduleGraphDigest", "builderPrincipalId", "builderWorkflowIdentity", "builderIsolationProfile", "unsignedArtifact", "recordDigest", "signedObjectEnvelope"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.artifact-build-record.v1" }, "recordId": { "$ref": "#/$defs/id" }, "createdAt": { "$ref": "#/$defs/timestamp" }, "buildProfile": { "$ref": "#/$defs/profile" }, "repository": { "$ref": "#/$defs/id" }, "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" },
+        "sourceBundleDigest": { "$ref": "#/$defs/digest" }, "sourceManifestDigest": { "$ref": "#/$defs/digest" }, "compileRootManifestDigest": { "$ref": "#/$defs/digest" },
+        "externalMaterialManifestDigests": { "type": "array", "minItems": 1, "maxItems": 1024, "items": { "$ref": "#/$defs/digest" } }, "buildInvocationDigest": { "$ref": "#/$defs/digest" }, "environmentPolicyDigest": { "$ref": "#/$defs/digest" }, "toolchainMaterialDigest": { "$ref": "#/$defs/digest" }, "moduleGraphDigest": { "$ref": "#/$defs/digest" },
+        "builderPrincipalId": { "$ref": "#/$defs/id" }, "builderWorkflowIdentity": { "$ref": "#/$defs/id" }, "builderIsolationProfile": { "$ref": "#/$defs/id" }, "unsignedArtifact": { "$ref": "#/$defs/artifact" },
+        "recordDigest": { "$ref": "#/$defs/digest" }, "signedObjectEnvelope": { "$ref": "#/$defs/signedObjectEnvelope" }
+      }
+    },
+    "codeSignatureIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["signatureKind", "identifier", "teamIdentifier", "cdHash", "designatedRequirement", "leafCertificateSHA256", "certificateChainSHA256", "hardenedRuntime", "secureTimestamp"],
+      "properties": {
+        "signatureKind": { "enum": ["managed-development", "developer-id-application"] }, "identifier": { "const": "com.github.chiga0.marshal" },
+        "teamIdentifier": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] }, "cdHash": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" },
+        "designatedRequirement": { "type": "string", "minLength": 1, "maxLength": 4096 }, "leafCertificateSHA256": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] }, "certificateChainSHA256": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+        "hardenedRuntime": { "type": "boolean" }, "secureTimestamp": { "type": "boolean" }
+      }
+    },
+    "codeSignatureObservation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observedFinalRawSHA256", "observedFileSize", "observedAt", "observerWorkflowIdentity"],
+      "properties": {
+        "observedFinalRawSHA256": { "$ref": "#/$defs/digest" }, "observedFileSize": { "type": "integer", "minimum": 1 }, "observedAt": { "$ref": "#/$defs/timestamp" }, "observerWorkflowIdentity": { "$ref": "#/$defs/id" }
+      }
+    },
+    "buildAttestation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "attestationId", "issuedAt", "buildProfile", "repository", "sourceHead", "sourceBundleDigest", "sourceManifestDigest", "compileRootManifestDigest", "buildRecordDigest", "submodulePolicyDigest", "lfsPolicyDigest", "generatedSourceStageDigest", "buildInvocationDigest", "environmentPolicyDigest", "externalMaterialManifestDigests", "toolchainMaterialDigest", "moduleGraphDigest", "builderPrincipalId", "builderWorkflowIdentity", "builderIsolationProfile", "artifactAttestationProducerPrincipalId", "codeSigningWorkflowIdentity", "artifactAttestationWorkflowIdentity", "unsignedArtifact", "finalArtifact", "codeSignatureIdentity", "codeSignatureObservation", "attestationDigest", "signedObjectEnvelope"],
+      "properties": {
+        "schemaVersion": { "const": "marshal.artifact-build-attestation.v1" }, "attestationId": { "$ref": "#/$defs/id" }, "issuedAt": { "$ref": "#/$defs/timestamp" }, "buildProfile": { "$ref": "#/$defs/profile" },
+        "repository": { "$ref": "#/$defs/id" }, "sourceHead": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" }, "sourceBundleDigest": { "$ref": "#/$defs/digest" }, "sourceManifestDigest": { "$ref": "#/$defs/digest" }, "compileRootManifestDigest": { "$ref": "#/$defs/digest" }, "buildRecordDigest": { "$ref": "#/$defs/digest" },
+        "submodulePolicyDigest": { "$ref": "#/$defs/digest" }, "lfsPolicyDigest": { "$ref": "#/$defs/digest" }, "generatedSourceStageDigest": { "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+        "buildInvocationDigest": { "$ref": "#/$defs/digest" }, "environmentPolicyDigest": { "$ref": "#/$defs/digest" }, "externalMaterialManifestDigests": { "type": "array", "minItems": 1, "maxItems": 1024, "items": { "$ref": "#/$defs/digest" } }, "toolchainMaterialDigest": { "$ref": "#/$defs/digest" }, "moduleGraphDigest": { "$ref": "#/$defs/digest" },
+        "builderPrincipalId": { "$ref": "#/$defs/id" }, "builderWorkflowIdentity": { "$ref": "#/$defs/id" }, "builderIsolationProfile": { "$ref": "#/$defs/id" }, "artifactAttestationProducerPrincipalId": { "$ref": "#/$defs/id" }, "codeSigningWorkflowIdentity": { "$ref": "#/$defs/id" }, "artifactAttestationWorkflowIdentity": { "$ref": "#/$defs/id" },
+        "unsignedArtifact": { "$ref": "#/$defs/artifact" }, "finalArtifact": { "$ref": "#/$defs/artifact" }, "codeSignatureIdentity": { "$ref": "#/$defs/codeSignatureIdentity" }, "codeSignatureObservation": { "$ref": "#/$defs/codeSignatureObservation" },
+        "attestationDigest": { "$ref": "#/$defs/digest" }, "signedObjectEnvelope": { "$ref": "#/$defs/signedObjectEnvelope" }
+      }
+    }
+  }
+}
