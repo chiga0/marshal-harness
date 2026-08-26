@@ -16,6 +16,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/planning"
+	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
 
@@ -215,7 +216,7 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		t.Fatalf("local init exit=%d stderr=%s", exit, initError.String())
 	}
 	configureQwenAuthFixture(t)
-	t.Setenv("MARSHAL_QWEN_PATH", writeVersionExecutableForCLI(t, "qwen", "0.21.11"))
+	t.Setenv("MARSHAL_QWEN_PATH", autoFlowWorkerExecutable(t))
 	t.Setenv("MARSHAL_QODER_PATH", "")
 	t.Setenv("MARSHAL_CODEX_PATH", "")
 	t.Setenv("MARSHAL_PI_PATH", "")
@@ -309,9 +310,9 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	}
 
 	// Restore the exact frozen activation and cross the real foreground
-	// production entry. The version-only Adapter fixture is expected to fail
-	// its Worker protocol, but Core must first persist the dispatch observation
-	// and copy its binding into the production WorkerRequest.
+	// production entry with the existing deterministic ordinary-user qwen
+	// producer. This exercises CLI discovery, approval, Adapter protocol and
+	// the complete dispatch/result ingress lineage through VERIFYING.
 	t.Setenv(selfidentity.ActivationEnv, activationPath)
 	const executionRunID = "local-dogfood-execution-run"
 	executionPolicy := cliPlanningPolicy(t, taskID, executionRunID)
@@ -332,8 +333,14 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	runContext, cancelRun := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancelRun()
 	exit = RunContext(runContext, []string{"task", "run", "--run", executionRunID, "--json"}, strings.NewReader(""), &runOutput, &runError)
-	if exit == ExitUnavailable || strings.Contains(runError.String(), "Marshal local dogfood gate 拒绝") {
-		t.Fatalf("foreground task run did not cross production entry: exit=%d stdout=%s stderr=%s", exit, runOutput.String(), runError.String())
+	if exit != ExitOK {
+		t.Fatalf("foreground task run exit=%d stdout=%s stderr=%s", exit, runOutput.String(), runError.String())
+	}
+	var executionResult struct {
+		State domain.RunState `json:"state"`
+	}
+	if err := json.Unmarshal(runOutput.Bytes(), &executionResult); err != nil || executionResult.State.State != domain.StateVerifying {
+		t.Fatalf("foreground task run did not reach VERIFYING: result=%+v err=%v", executionResult, err)
 	}
 	attemptsRoot := filepath.Join(root, ".marshal", "runs", executionRunID, "attempts")
 	attempts, err := os.ReadDir(attemptsRoot)
@@ -345,12 +352,36 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := selfidentity.DecodeObservation(dispatchRaw); err != nil {
+	dispatchObservation, err := selfidentity.DecodeObservation(dispatchRaw)
+	if err != nil {
 		t.Fatalf("production dispatch observation: %v", err)
 	}
+	ingressRaw, err := os.ReadFile(filepath.Join(attemptDir, "local-self-identity-ingress.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingressObservation, err := selfidentity.DecodeObservation(ingressRaw)
+	if err != nil {
+		t.Fatalf("production ingress observation: %v", err)
+	}
 	requestRaw, err := os.ReadFile(filepath.Join(attemptDir, "worker-request.json"))
-	if err != nil || !bytes.Contains(requestRaw, []byte(`"localSelfIdentityBinding"`)) {
-		t.Fatalf("production WorkerRequest lacks local binding: err=%v data=%s", err, requestRaw)
+	var request struct {
+		Binding *selfidentity.LocalSelfIdentityBindingV1 `json:"localSelfIdentityBinding"`
+	}
+	if err != nil || json.Unmarshal(requestRaw, &request) != nil || request.Binding == nil ||
+		request.Binding.DispatchObservationDigest != dispatchObservation.ObservationDigest {
+		t.Fatalf("production WorkerRequest lacks exact local binding: err=%v data=%s", err, requestRaw)
+	}
+	events, _, err := runstore.New(filepath.Join(root, ".marshal")).ReadEvents(executionRunID)
+	if err != nil || len(events) < 2 {
+		t.Fatalf("read production task run events: count=%d err=%v", len(events), err)
+	}
+	started, completed := events[len(events)-2], events[len(events)-1]
+	if started.Type != "worker.started" || completed.Type != "worker.completed" ||
+		started.Payload["dispatchObservationDigest"] != dispatchObservation.ObservationDigest ||
+		completed.Payload["dispatchObservationDigest"] != dispatchObservation.ObservationDigest ||
+		completed.Payload["ingressObservationDigest"] != ingressObservation.ObservationDigest {
+		t.Fatalf("production task run lineage: started=%+v completed=%+v", started.Payload, completed.Payload)
 	}
 
 	t.Setenv(selfidentity.ActivationEnv, filepath.Join(root, "missing.json"))
