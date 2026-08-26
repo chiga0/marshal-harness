@@ -79,6 +79,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         self.qoder = self.fake_executable("qoder", "1.1.27")
         self.codex = self.fake_executable("codex", "codex-cli 0.145.0")
         self.qwen = self.fake_executable("qwen", "0.21.5")
+        self.pi = self.fake_node_executable("pi", "0.84.1")
         self.task = self.task_fixture()
         self.policy = self.policy_fixture()
 
@@ -89,6 +90,34 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         executable = self.root / name
         executable.write_text(
             "#!/bin/sh\n"
+            "for arg in \"$@\"; do\n"
+            "  if [ \"$arg\" = \"--version\" ]; then\n"
+            f"    printf '%s\\n' '{version}'\n"
+            "    exit 0\n"
+            "  fi\n"
+            "done\n"
+            f": > '{self.worker_marker}'\n"
+            "exit 97\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o700)
+        return executable
+
+    def fake_node_executable(self, name: str, version: str) -> Path:
+        directory = self.root / f"{name}-bin"
+        directory.mkdir()
+        node = directory / "node"
+        node.write_text(
+            "#!/bin/sh\n"
+            "script=$1\n"
+            "shift\n"
+            "exec /bin/sh \"$script\" \"$@\"\n",
+            encoding="utf-8",
+        )
+        node.chmod(0o700)
+        executable = directory / name
+        executable.write_text(
+            "#!/usr/bin/env node\n"
             "for arg in \"$@\"; do\n"
             "  if [ \"$arg\" = \"--version\" ]; then\n"
             f"    printf '%s\\n' '{version}'\n"
@@ -155,7 +184,7 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         environment = os.environ.copy()
         environment.update({
             "HOME": self.environment_home,
-            "MARSHAL_OPENCODE_PATH": "", "MARSHAL_QWEN_PATH": str(self.qwen), "MARSHAL_PI_PATH": "",
+            "MARSHAL_OPENCODE_PATH": "", "MARSHAL_QWEN_PATH": str(self.qwen), "MARSHAL_PI_PATH": str(self.pi),
             "MARSHAL_QODER_PATH": str(self.qoder), "MARSHAL_QODER_MODE": "ordinary-user",
             "MARSHAL_QODER_CONFORMANCE_CONFIG": "", "MARSHAL_CODEX_PATH": str(self.codex),
             "MARSHAL_CODEX_MODE": "ordinary-user", "MARSHAL_CODEX_AUTHORITY_CONFIG": "",
@@ -231,6 +260,22 @@ class PlanPremortemPreflightTest(unittest.TestCase):
         self.assertEqual(result["selectedAdapter"], "qwen")
         self.assertNotIn("authorityMode", result)
         self.assertFalse(self.worker_marker.exists())
+
+    def test_pi_env_node_probe_uses_only_selected_executable_parent(self) -> None:
+        self.task["worker"]["preferredAdapter"] = "pi"
+        self.policy["effective"]["allowedAdapters"] = ["pi"]
+        self.policy = self.seal_policy(self.policy)
+        code, result = self.invoke()
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["selectedAdapter"], "pi")
+        self.assertFalse(self.worker_marker.exists())
+
+    def test_pi_probe_rejects_path_separator_in_executable_parent(self) -> None:
+        self.task["worker"]["preferredAdapter"] = "pi"
+        self.policy["effective"]["allowedAdapters"] = ["pi"]
+        self.policy = self.seal_policy(self.policy)
+        self.pi = Path(str(self.pi.parent) + ":forged/pi")
+        self.assert_reason("core-probe-environment-invalid")
 
     def test_unclean_home_fails_closed_before_core_probe(self) -> None:
         self.environment_home = str(self.home) + "/"
