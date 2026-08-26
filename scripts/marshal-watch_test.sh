@@ -71,6 +71,7 @@ run_watch() {
   MARSHAL_WATCH_NOTIFY=0 \
   MARSHAL_WATCH_LOGICAL_CPUS="${MARSHAL_WATCH_LOGICAL_CPUS-8}" \
   MARSHAL_WATCH_LOAD1M="${MARSHAL_WATCH_LOAD1M-0}" \
+  MARSHAL_WATCH_CPU_IDLE_PERCENT="${MARSHAL_WATCH_CPU_IDLE_PERCENT-100}" \
   MARSHAL_WATCH_SWAP_USED_BYTES="${MARSHAL_WATCH_SWAP_USED_BYTES-0}" \
   MARSHAL_WATCH_PRESSURE_FREE_PERCENT="${MARSHAL_WATCH_PRESSURE_FREE_PERCENT-80}" \
   MARSHAL_WATCH_LOG="$TMP/watch.log" \
@@ -91,6 +92,7 @@ run_watch_real_lease() {
   MARSHAL_WATCH_NOTIFY=0 \
   MARSHAL_WATCH_LOGICAL_CPUS="${MARSHAL_WATCH_LOGICAL_CPUS-8}" \
   MARSHAL_WATCH_LOAD1M="${MARSHAL_WATCH_LOAD1M-0}" \
+  MARSHAL_WATCH_CPU_IDLE_PERCENT="${MARSHAL_WATCH_CPU_IDLE_PERCENT-100}" \
   MARSHAL_WATCH_SWAP_USED_BYTES="${MARSHAL_WATCH_SWAP_USED_BYTES-0}" \
   MARSHAL_WATCH_PRESSURE_FREE_PERCENT="${MARSHAL_WATCH_PRESSURE_FREE_PERCENT-80}" \
   MARSHAL_WATCH_LOG="$TMP/watch.log" \
@@ -1742,6 +1744,72 @@ then
   ok "CPU 容量纳入 owned workers"
 else
   bad "CPU 容量遗漏 owned workers"
+fi
+
+note "7b.1) macOS 短窗 idle 与高 load 冲突时只救援一个槽"
+CPU_IDLE_JSON="$TMP/cpu_idle_capacity.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" \
+   MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((16 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_WORKER_RESERVE_BYTES=$((2 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_LOGICAL_CPUS=15 MARSHAL_WATCH_LOAD1M=40 \
+   MARSHAL_WATCH_CPU_IDLE_PERCENT=45 \
+   run_watch --once --json > "$CPU_IDLE_JSON" && \
+   python3 - "$CPU_IDLE_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    capacity = json.load(handle)["capacity"]
+if capacity.get("load1m") != 40 or capacity.get("cpuIdlePercent") != 45:
+    raise SystemExit("CPU observations missing: %r" % capacity)
+if capacity.get("cpuAdmissionMode") != "idle-rescue":
+    raise SystemExit("high-load contradiction did not use rescue mode: %r" % capacity)
+if capacity.get("cpuSlotsAvailable") != 1 or capacity.get("cpuStatus") != "ok":
+    raise SystemExit("high historical load falsely blocked current headroom: %r" % capacity)
+print("high-load/current-idle contradiction admits exactly one rescue slot OK")
+PYEOF
+then
+  ok "短窗 idle 安全解除 load1m 假阻塞"
+else
+  bad "短窗 idle 未安全解除 load1m 假阻塞"
+fi
+
+CPU_IDLE_LOW_JSON="$TMP/cpu_idle_low.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" \
+   MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((16 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_LOGICAL_CPUS=15 MARSHAL_WATCH_LOAD1M=40 \
+   MARSHAL_WATCH_CPU_IDLE_PERCENT=10 \
+   run_watch --once --json > "$CPU_IDLE_LOW_JSON" && \
+   python3 - "$CPU_IDLE_LOW_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    capacity = json.load(handle)["capacity"]
+if capacity.get("cpuSlotsAvailable") != 0 or capacity.get("cpuStatus") != "constrained":
+    raise SystemExit("low current idle incorrectly admitted a rescue slot: %r" % capacity)
+print("high load with low current idle remains constrained OK")
+PYEOF
+then
+  ok "低 idle 不救援并发"
+else
+  bad "低 idle 错误救援并发"
+fi
+
+CPU_IDLE_UNKNOWN_JSON="$TMP/cpu_idle_unknown.json"
+if MARSHAL_WATCH_COHORT_FILE="$COHORTFILE" \
+   MARSHAL_WATCH_MEMORY_AVAILABLE_BYTES=$((16 * 1024 * 1024 * 1024)) \
+   MARSHAL_WATCH_LOGICAL_CPUS=15 MARSHAL_WATCH_LOAD1M=2 \
+   MARSHAL_WATCH_CPU_IDLE_PERCENT=unavailable \
+   run_watch --once --json > "$CPU_IDLE_UNKNOWN_JSON" && \
+   python3 - "$CPU_IDLE_UNKNOWN_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as handle:
+    capacity = json.load(handle)["capacity"]
+if capacity.get("cpuSlotsAvailable") != 0 or capacity.get("cpuStatus") != "unknown":
+    raise SystemExit("missing current idle did not fail closed: %r" % capacity)
+print("missing current idle fails closed OK")
+PYEOF
+then
+  ok "短窗 idle 缺失时 fail closed"
+else
+  bad "短窗 idle 缺失时未 fail closed"
 fi
 
 note "7c) 待派发 Run 缺失 Adapter identity 时 Provider signal unknown 并 hold"

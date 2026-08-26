@@ -64,6 +64,14 @@ osascript -e 'display notification "<run> 到 REVIEW_PENDING"'
 
 `memoryAvailableBytes`、`pressureFreePercent`、`pressureSource`、`swapUsedBytes`、`activeOwnedWorkers`、`slotsAvailable`、`recommendedMaxWorkers`、`concurrencyAction`。
 
+Mac 的 `load1m` 表示 runnable/uninterruptible queue，不等同 CPU utilization。watchdog
+同时用固定 `libSystem` 的 `HOST_CPU_LOAD_INFO` 做短窗 idle 采样并保留一个系统核：正常
+load 时取 load/idle/owner headroom 的保守最小值；`load1m >= logicalCores` 但短窗 idle
+仍证明至少两个 logical-core equivalent 余量时，`cpuAdmissionMode=idle-rescue` 最多只开放
+一个槽。idle 探针不可用或余量不足继续 fail closed。Linux 当前继续使用 load/owner
+headroom。`providerSlotsAvailable=0` 可能只是最终 provisional CPU 槽为零的投影，判断
+Provider 配置与背压必须同时查看 `providerStatus` 和对应 `providerSignals`，不得只看该数字。
+
 只有同时满足以下条件才增加并发：
 
 - `slotsAvailable > 0` 且 pressure=`ok`；
