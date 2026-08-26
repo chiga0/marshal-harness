@@ -18,7 +18,7 @@ review rework lineage 的 ReviewDecision 必须通过同源 Marshal Core 的
 `MARSHAL_WATCH_MARSHAL_BIN`。Validator 缺失、执行失败或执行期间 identity 漂移时，
 相关 lineage 一律 fail closed，不回退到 watchdog 自行复制的规则。
 
-正在推进 Goal 时应显式提供 `MARSHAL_WATCH_COHORT_FILE`（`goalId + runIds`）。未提供时 watchdog 不从 `createdAt`/`updatedAt` 或“最近 24h”猜测当前工作：只有 `held-alive` Run 进入 `items` 并可产生 `topAction`，其余非终态进入 `unscopedItems`。显式 cohort 之外的 Run 仍进入 `historicalItems`；显式 cohort 无效时 fail closed 为 historical-only，禁止回退到无 cohort 或时间窗逻辑。Provider signal 也只从当前 `items` 对应 Run 推导：`historicalItems`/`unscopedItems` 中同 Adapter 的旧失败仅作诊断，不得污染当前 admission；当前 cohort 内同 Adapter 的有效背压与畸形证据仍分别保持 hold 或 fail closed。
+正在推进 Goal 时应显式提供 `MARSHAL_WATCH_COHORT_FILE`（`goalId + runIds`）。未提供时 watchdog 不从 `createdAt`/`updatedAt` 或“最近 24h”猜测当前工作：只有 watchdog JSON 明确置于 `queueBucket=current` 的 lease-owned Run 进入 `items` 并可产生 `topAction`；其中 `RUNNING` 的活跃组合必须是 `processOwnership=owned-active`、`ownershipSource=marshal-lease`、`argvMatched=true`。其余非终态进入 `unscopedItems`。显式 cohort 之外的 Run 仍进入 `historicalItems`；显式 cohort 无效时 fail closed 为 historical-only，禁止回退到无 cohort 或时间窗逻辑。Provider signal 也只从当前 `items` 对应 Run 推导：`historicalItems`/`unscopedItems` 中同 Adapter 的旧失败仅作诊断，不得污染当前 admission；当前 cohort 内同 Adapter 的有效背压与畸形证据仍分别保持 hold 或 fail closed。
 
 按 `items` 的 priority 升序处理最高项，并结合：
 
@@ -45,6 +45,13 @@ nohup scripts/marshal-watch.sh 600 > WATCH_LOG 2>&1 < /dev/null &
 - 只 terminate/wait/kill/reap 本编排创建且 identity 已绑定的进程/进程组；禁止跨编排 blanket kill 或杀非自己编排的进程。误杀常表现为多个 Run 同时 `worker.failed`/`context canceled`，看到这种形状先审计 ownership，不继续 kill/retry。
 - `marshal supervise --once` 会启动全局 `READY/REWORK_REQUESTED` Run，不是只读巡检。只有容量、scope、lease 与 admission 全部通过后才可显式调用 supervise/driver。
 - driver/工具调用被意外中断时先 status/doctor/events 对账；不得因为控制端断连就假定 Worker failure 或另起重复 Attempt。
+
+### Stop-loss 判定
+
+- elapsed/age/phase budget 只消费 watchdog、`task status --json`、`doctor --json` 或冻结 TaskSpec/Policy 中的 numeric seconds；禁止人工解释 `ps etime`、终端渲染时间或自然语言日志。字段缺失、非数字或单位不明确时视为 unknown，继续 monitor，不猜测超时。
+- watchdog JSON 中 `state=RUNNING`、`processOwnership=owned-active`、`ownershipSource=marshal-lease`、`argvMatched=true` 的组合固定为 `action=monitor`，表示 owner 仍持有 lease 且 argv identity 匹配。Core 返回 typed `ErrLeaseHeld` 同样固定路由为 `owner-action-required`；外部 watcher/Supervisor 不得 kill、接管或重复 `abort`。一次 owner action 返回 lease held 后，只有 lease/owner identity、state、sequence 或 Attempt 改变才可重新判断，禁止原样重放。
+- 只有至少连续两个 heartbeat 中，`task status --json` 的 `runId + currentAttemptId + state + sequence` 与 watchdog JSON 的 `phaseProgressDigest` 全部相同，且 watchdog numeric `ageSeconds` 已严格超过冻结的 numeric phase budget，才可向 owner 建议 `intervention`。`phaseProgressDigest` 是 watchdog 已有的只读去重投影，不写入 Core 或新增 mandatory artifact。任一字段变化都重置连续计数；没有明确 phase budget 时不得仅凭 `ageSeconds` 建议 intervention。
+- `intervention` 仍只是给 owner 的止损建议，不等于 abort authority。owner 必须先以 Core/CLI 对账，再执行当前状态允许的动作；外部观察者继续禁止 kill、重复 abort 或制造第二 Attempt。
 
 ## 交互权与事件驱动
 
