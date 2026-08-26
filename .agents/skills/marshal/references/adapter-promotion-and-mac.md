@@ -72,7 +72,15 @@ Qoder 的受控 `tee` 是 Worker-side final-declaration 纪律：Worker 在内�
 
 当前只接受 `qoder-stream-json-1.2.0-v7` 与 `qoder-v7-transcript-attestation-v4`；v5/v6 evidence、receipt、profile 或摘要均为历史材料，不得迁移到当前 promotion。
 
-Qoder 真实只读 live probe、首个低风险写任务和独立 conformance 必须分别通过 transcript attestation，并把 subject/input/attestation digest 纳入脱敏级别摘要。缺失、失败或 identity 不符不得晋升或复用。
+### Ordinary-user 诊断路径
+
+Mac `ordinary-user` 的真实只读 live probe、低风险写任务和独立只读 conformance，必须验证 executable identity、真实 argv/permission、WorkerResult transport、transcript/meta identity、final tee 纪律和任务自身 acceptance。Adapter 已生成的 transcript/meta 可以作为诊断材料，但在 Core/Adapter 尚未于 Attempt 前产出不可变 command/tool launch projection 时，不运行或要求 strict/exact command attestation，不得把普通任务因隐藏或不可表达的 command profile 送入 rework/retry。
+
+ordinary-user 通过上述门禁只允许进入普通本地调度；证据摘要必须写明 `authorityMode=ordinary-user`、`authorityClaim=none`，不得关闭 strict promotion、hardened authority、APAP、release conformance 或恶意代码隔离的 finding。若 operator 误跑 strict checker 并得到 `execution-evidence-policy-unrepresentable`、`command-binding-mismatch` 或等价 producer 缺口，保存一次脱敏诊断和稳定签名，固定 `workerReworkAllowed=false`，停止重复 checker/Worker/reviewer fan-out，回到 R5/R6 producer plan。
+
+### Strict/exact 晋升路径
+
+只有 Core/Adapter 已在 Attempt 前生成不可变 launch/execution projection，并且同一固定 Marshal 二进制在当前 production 调用链完成最小正向端到端 `transcript-attestation-pass` 后，Qoder strict/exact 的真实只读 live probe、首个低风险写任务和独立 conformance 才分别要求 transcript attestation，并把 subject/input/attestation digest 纳入脱敏级别摘要。缺失、失败或 identity 不符不得晋升或复用；operator-local projection、可省略 manifest 或 TaskSpec 自由文本不能充当该 producer。
 
 进程终态后、独立 reviewer 前，从 `templates/transcript-attestation-preflight.json` 生成 operator-local manifest。把当前 Attempt 的以下原始文件复制到 source worktree 和 `.marshal` 外的紧凑临时目录，并填写 raw SHA-256/maxBytes 与 Attempt/Adapter/protocol/permission identity：
 
@@ -100,7 +108,7 @@ Validator 只调用用户显式传入、已构建且稳定路径的 Marshal 二�
 
 Marshal 内部命令/codesign stdout、stderr 和 combined 都增量读取并有硬上限；子进程使用等价 `env -i` 的封闭环境，overflow/deadline 固定 fail closed，只 terminate/wait/kill/reap validator 自己创建的 `Popen`。只保存脱敏 identity/digest/observation/reasonCode 摘要，并绑定 validator/schema/Marshal raw digest/internal-command digest/profile、expected/actual process identity method/digest、Qoder event contract、transport、Capability admission 与 executable digest。
 
-Attestation 是 pre-review operator-local gate，只核对实际 tool/command、`declaredCommands`、TaskSpec 和 final tee 纪律；不是 Worker 自证，不替代 Core 生命周期/持久化/failure/retry/ReviewPacket/Decision/freshness，不写 `.marshal` 或改 Run 状态。任一非零退出或 `status=fail` 都原样保存固定 `reasonCode` 并阻断 reviewer。
+Strict/exact attestation 是 pre-review operator-local gate，只核对实际 tool/command、`declaredCommands`、TaskSpec 和 final tee 纪律；不是 Worker 自证，不替代 Core 生命周期/持久化/failure/retry/ReviewPacket/Decision/freshness，不写 `.marshal` 或改 Run 状态。任一非零退出或 `status=fail` 都原样保存固定 `reasonCode` 并阻断 strict/exact reviewer；ordinary-user 使用前述诊断路径，不把 producer 缺口转成 candidate rework。
 
 失败分类：
 

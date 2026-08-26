@@ -53,6 +53,8 @@ Stop-loss 的时间与停滞判定遵循 [watchdog-and-capacity.md](watchdog-and
 
 同一候选同时命中多类时先关闭上游结构性 owner，禁止把它们包装成 candidate-local finding。Reviewer 若首次发现机器可检的非 candidate-local 问题，仍按上表终止 slice/replan，不开启 Worker rework；复盘时把缺失检查前移到 admission/preflight。
 
+新增 selector/preflight 的候选在派 reviewer 前还必须通过“正向路径先行”：使用当前 production entry、固定 Marshal 二进制和可达合法输入完成一次端到端 `pass`。只验证 helper、测试 seam 或人工 manifest 的单元测试不具备该资格；production selector 不可达时直接 `replan`，不消耗 aggregate rework。
+
 ## 纵切和 WIP
 
 - 默认四槽为 `Lead + 最多 2 authors + 1 shared reviewer`。Lead 承担 Supervisor 控制面；有额外只读槽时可以委派观察，但它不能替代 reviewer，也计入真实宿主容量。
