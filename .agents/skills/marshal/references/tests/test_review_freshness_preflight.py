@@ -18,13 +18,8 @@ import unittest
 HERE = Path(__file__).resolve().parent
 REFERENCES = HERE.parent
 REPOSITORY = REFERENCES.parents[3]
-# macOS host security policies may refuse to execute freshly built unsigned
-# binaries from the per-user system temp directory. Test binaries are built
-# inside the repository's gitignored bin/test directory instead.
-TEST_BUILD_ROOT = REPOSITORY / "bin" / "test"
 EXAMPLES = REPOSITORY / "schemas" / "examples" / "happy-path"
 VALIDATOR = REFERENCES / "validate-review-freshness-preflight.py"
-CORE = HERE / "review_freshness_core_probe.go"
 PREFLIGHT_SPEC = importlib.util.spec_from_file_location("review_freshness_preflight", VALIDATOR)
 assert PREFLIGHT_SPEC is not None and PREFLIGHT_SPEC.loader is not None
 PREFLIGHT = importlib.util.module_from_spec(PREFLIGHT_SPEC)
@@ -43,21 +38,18 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
     maxDiff = None
     @classmethod
     def setUpClass(cls) -> None:
-        TEST_BUILD_ROOT.mkdir(parents=True, exist_ok=True)
-        cls.core_build_dir = Path(tempfile.mkdtemp(prefix="review-freshness-core.", dir=TEST_BUILD_ROOT))
-        cls.core_binary = cls.core_build_dir / "probe"
-        subprocess.run(["go", "build", "-o", str(cls.core_binary), str(CORE)], cwd=REPOSITORY, check=True)
-        cls.marshal_binary = cls.core_build_dir / "marshal"
-        commit = subprocess.check_output(["/usr/bin/git", "rev-parse", "HEAD"], cwd=REPOSITORY, text=True).strip()
-        subprocess.run(["go", "build", "-ldflags", f"-X github.com/chiga0/marshal-harness/internal/buildinfo.commit={commit}", "-o", str(cls.marshal_binary), "./cmd/marshal"], cwd=REPOSITORY, check=True)
-        cls.core_process = subprocess.Popen([str(cls.core_binary), "serve"], cwd=REPOSITORY, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        configured = os.environ.get("MARSHAL_TEST_BINARY")
+        cls.marshal_binary = Path(configured) if configured else REPOSITORY / "bin" / "marshal"
+        if not configured:
+            cls.marshal_binary.parent.mkdir(parents=True, exist_ok=True)
+            commit = subprocess.check_output(["/usr/bin/git", "rev-parse", "HEAD"], cwd=REPOSITORY, text=True).strip()
+            subprocess.run(["go", "build", "-ldflags", f"-X github.com/chiga0/marshal-harness/internal/buildinfo.commit={commit}", "-o", str(cls.marshal_binary), "./cmd/marshal"], cwd=REPOSITORY, check=True)
+        PREFLIGHT._CORE_BINARY = cls.marshal_binary
+        cls.core_process = PREFLIGHT.core_process(VALIDATOR)
 
     @classmethod
     def tearDownClass(cls) -> None:
-        if cls.core_process.stdin is not None:
-            cls.core_process.stdin.close()
-        cls.core_process.wait(timeout=5)
-        shutil.rmtree(cls.core_build_dir)
+        PREFLIGHT.close_core_process()
 
     def setUp(self) -> None:
         self.temp = Path(tempfile.mkdtemp(prefix="review-freshness.", dir="/private/tmp"))
@@ -222,6 +214,122 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
         packet_path = self.run_root / "review-packet.json"; packet = json.loads(packet_path.read_text()); packet["candidateDigest"] = candidate_digest; packet["workerCandidateDigest"] = candidate_digest; packet["verificationDigest"] = report_digest; packet["artifactManifestDigest"] = artifact_digest
         evidence = {"specDigest": packet["specDigest"], "patchDigest": packet["diffDigest"], "verificationDigest": report_digest, "artifactManifestDigest": artifact_digest, "workerResultDigests": packet["workerResultDigests"], "previousBlockingFindings": [], "candidateDigest": candidate_digest, "workerCandidateDigest": candidate_digest}
         packet["evidenceDigest"] = self.core_digest(evidence); packet_path.write_bytes(json_bytes(packet)); self.core_digest(packet, "ReviewPacket")
+        events_path = self.run_root / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        events[-1]["payload"]["reportDigest"] = report_digest
+        events[-1]["payload"]["artifactManifestDigest"] = artifact_digest
+        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+
+    def enable_local_self_identity_binding(self) -> None:
+        activation_digest = "sha256:" + "1" * 64
+        path_object = {
+            "canonicalPath": "/fixed/bin/marshal",
+            "device": "1",
+            "inode": "2",
+            "size": 3,
+            "rawSHA256": "sha256:" + "2" * 64,
+            "pathRechecked": True,
+            "observationKind": "darwin-current-path-fd-object",
+        }
+        identity_subject_digest = self.core_digest({
+            "activationDigest": activation_digest,
+            "repositoryIdentity": "fixture-repository",
+            "canonicalRepositoryRoot": "/fixed/repository",
+            "canonicalExecutablePath": path_object["canonicalPath"],
+            "device": path_object["device"],
+            "inode": path_object["inode"],
+            "size": path_object["size"],
+            "rawSHA256": path_object["rawSHA256"],
+            "sourceHead": self.head,
+            "selfProfile": "darwin-local-dogfood",
+        })
+        observation_body = {
+            "schemaVersion": "marshal.local-self-identity-observation.v1",
+            "activationDigest": activation_digest,
+            "processId": 42,
+            "processExecutablePath": "/fixed/bin/marshal",
+            "repositoryIdentity": "fixture-repository",
+            "canonicalRepositoryRoot": "/fixed/repository",
+            "currentPathObject": path_object,
+            "sourceHead": self.head,
+            "selfProfile": "darwin-local-dogfood",
+            "observedAt": "2026-08-20T00:01:00Z",
+            "status": "pass",
+            "reasonCode": "self-local-identity-observed",
+            "identitySubjectDigest": identity_subject_digest,
+        }
+        observation = dict(observation_body)
+        observation["observationDigest"] = self.core_digest(observation_body)
+        observation_raw = json.dumps(
+            observation, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+        self.assertEqual(digest_bytes(observation_raw), self.core_digest(observation))
+
+        applicability = {
+            "schemaVersion": "marshal.local-dogfood-environment-binding.v1",
+            "selfProfile": "darwin-local-dogfood",
+            "activationDigest": activation_digest,
+            "identitySubjectDigest": identity_subject_digest,
+            "assurance": "ordinary-user",
+            "execution": "workspace-write",
+            "production": False,
+            "publication": "none",
+        }
+        verification_binding = {
+            "schemaVersion": "marshal.local-self-identity-verification-binding.v1",
+            "selfProfile": "darwin-local-dogfood",
+            "activationDigest": activation_digest,
+            "identitySubjectDigest": identity_subject_digest,
+            "attemptId": "attempt:fixture-01",
+            "dispatchObservationDigest": observation["observationDigest"],
+            "ingressObservationDigest": observation["observationDigest"],
+            "verificationObservationDigest": observation["observationDigest"],
+            "applicability": applicability,
+        }
+        report_path = self.run_root / "verification-report.json"
+        report = json.loads(report_path.read_text())
+        report["localSelfIdentityBinding"] = verification_binding
+        report_path.write_bytes(json_bytes(report))
+        report_digest = self.core_digest(report, "VerificationReport")
+
+        artifact_path = self.run_root / "artifact-manifest.json"
+        artifacts = json.loads(artifact_path.read_text())
+        artifacts["localSelfIdentityBinding"] = verification_binding
+        artifact_path.write_bytes(json_bytes(artifacts))
+        artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+
+        packet_path = self.run_root / "review-packet.json"
+        packet = json.loads(packet_path.read_text())
+        binding = {
+            "schemaVersion": "marshal.local-self-identity-review-binding.v1",
+            "selfProfile": "darwin-local-dogfood",
+            "activationDigest": activation_digest,
+            "identitySubjectDigest": identity_subject_digest,
+            "attemptId": "attempt:fixture-01",
+            "reviewRound": 2,
+            "verificationBindingDigest": self.core_digest(verification_binding),
+            "verificationObservationDigest": observation["observationDigest"],
+            "reviewObservationDigest": observation["observationDigest"],
+            "applicability": applicability,
+        }
+        packet["verificationDigest"] = report_digest
+        packet["artifactManifestDigest"] = artifact_digest
+        packet["localSelfIdentityBinding"] = binding
+        evidence = {
+            "specDigest": packet["specDigest"],
+            "patchDigest": packet["diffDigest"],
+            "verificationDigest": packet["verificationDigest"],
+            "artifactManifestDigest": packet["artifactManifestDigest"],
+            "workerResultDigests": packet["workerResultDigests"],
+            "previousBlockingFindings": packet["previousBlockingFindings"],
+            "localSelfIdentityBindingDigest": self.core_digest(binding),
+        }
+        packet["evidenceDigest"] = self.core_digest(evidence)
+        self.core_digest(packet, "ReviewPacket")
+        packet_path.write_bytes(json_bytes(packet))
+        observation_path = self.run_root / "attempts" / "attempt:fixture-01" / f"local-self-identity-review-2-{observation['observationDigest'].removeprefix('sha256:')}.json"
+        observation_path.write_bytes(observation_raw)
+
         events_path = self.run_root / "events.jsonl"
         events = [json.loads(line) for line in events_path.read_text().splitlines()]
         events[-1]["payload"]["reportDigest"] = report_digest
@@ -581,6 +689,64 @@ class ReviewFreshnessPreflightTest(unittest.TestCase):
     def test_complete_candidate_packet_is_accepted(self) -> None:
         self.enable_candidate()
         code, result = self.invoke(); self.assertEqual(code, 0, result); self.assertEqual(result["action"], "dispatch-reviewer")
+
+    def test_local_self_identity_binding_is_in_evidence_identity(self) -> None:
+        self.enable_local_self_identity_binding()
+        code, result = self.invoke()
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"], "dispatch-reviewer")
+
+    def test_local_self_identity_binding_tamper_fails_closed(self) -> None:
+        self.enable_local_self_identity_binding()
+        packet_path = self.run_root / "review-packet.json"
+        packet = json.loads(packet_path.read_text())
+        packet["localSelfIdentityBinding"]["reviewObservationDigest"] = "sha256:" + "6" * 64
+        evidence = {
+            "specDigest": packet["specDigest"],
+            "patchDigest": packet["diffDigest"],
+            "verificationDigest": packet["verificationDigest"],
+            "artifactManifestDigest": packet["artifactManifestDigest"],
+            "workerResultDigests": packet["workerResultDigests"],
+            "previousBlockingFindings": packet["previousBlockingFindings"],
+            "localSelfIdentityBindingDigest": self.core_digest(packet["localSelfIdentityBinding"]),
+        }
+        packet["evidenceDigest"] = self.core_digest(evidence)
+        self.core_digest(packet, "ReviewPacket")
+        packet_path.write_bytes(json_bytes(packet))
+        self.assert_reason("local-self-identity-review-observation-invalid")
+
+    def test_packet_only_local_self_identity_binding_fails_closed(self) -> None:
+        self.enable_local_self_identity_binding()
+        for name, kind in (("verification-report.json", "VerificationReport"), ("artifact-manifest.json", "ArtifactManifest")):
+            path = self.run_root / name
+            document = json.loads(path.read_text())
+            document.pop("localSelfIdentityBinding")
+            path.write_bytes(json_bytes(document))
+        report = json.loads((self.run_root / "verification-report.json").read_text())
+        artifacts = json.loads((self.run_root / "artifact-manifest.json").read_text())
+        report_digest = self.core_digest(report, "VerificationReport")
+        artifact_digest = self.core_digest(artifacts, "ArtifactManifest")
+        packet_path = self.run_root / "review-packet.json"
+        packet = json.loads(packet_path.read_text())
+        packet["verificationDigest"] = report_digest
+        packet["artifactManifestDigest"] = artifact_digest
+        packet["evidenceDigest"] = self.core_digest({
+            "specDigest": packet["specDigest"],
+            "patchDigest": packet["diffDigest"],
+            "verificationDigest": report_digest,
+            "artifactManifestDigest": artifact_digest,
+            "workerResultDigests": packet["workerResultDigests"],
+            "previousBlockingFindings": packet["previousBlockingFindings"],
+            "localSelfIdentityBindingDigest": self.core_digest(packet["localSelfIdentityBinding"]),
+        })
+        self.core_digest(packet, "ReviewPacket")
+        packet_path.write_bytes(json_bytes(packet))
+        events_path = self.run_root / "events.jsonl"
+        events = [json.loads(line) for line in events_path.read_text().splitlines()]
+        events[-1]["payload"]["reportDigest"] = report_digest
+        events[-1]["payload"]["artifactManifestDigest"] = artifact_digest
+        events_path.write_bytes(b"".join(json.dumps(event, separators=(",", ":")).encode() + b"\n" for event in events))
+        self.assert_reason("local-self-identity-binding-presence-mismatch")
 
     def test_candidate_producer_and_body_tampering_use_domain_authority(self) -> None:
         for field, value in (("producer", "worker:tampered"), ("contentDigest", "sha256:" + "f" * 64)):

@@ -96,6 +96,7 @@ marshal task status --run RUN_ID --json
 ## 减少 rework
 
 - reviewer 派发前一次性完成 pre-mortem：TaskSpec、scope、acceptance、permissions、result transport、negative matrix 和 verification 能否实际执行。
+- reviewer 首次发现本可由 Schema、跨产物投影、摘要、路径、round/Attempt 或 producer-chain 确定性判断的问题时，标记为 `preflight-escape`；本轮 aggregate rework 必须先补 hostile fixture 和机器 gate，再修候选并复审。相同 family 在该 gate 通过前不得再次派 reviewer，不能用更多 reviewer 轮次替代机器检查。
 - 代码/内容 TaskSpec/Policy 默认 `maxReworkRounds=1`，research/canary 为 0。唯一 reviewer 首轮必须一次聚合所有 P0/P1 和可同域关闭的 P2；作者只做一次 aggregate rework，同一 reviewer 只复审一次。复审仍有 P0/P1 时终止本 slice、归档根因并回到 plan，不逐项滚动 rework。
 - 同一结构性 failure signature 或 freshness fingerprint 只裁决一次；修根因前禁止新 Attempt、原 Run retry 或重复 reviewer。
 - Required Gate 已覆盖的行为不得再添加未写入 TaskSpec 的字面或实现细节要求。
