@@ -108,6 +108,28 @@ type Input struct {
 
 type LocalSelfIdentityObserver func() (selfidentity.LocalSelfIdentityObservationV1, error)
 
+// localSelfIdentityDispatchError is the sole operator-facing failure shape
+// for local-profile dispatch observation admission. Error deliberately emits
+// only the closed reason code; Unwrap retains the internal cause for in-process
+// diagnostics without allowing CLI's ordinary %v rendering to disclose it.
+type localSelfIdentityDispatchError struct {
+	cause error
+}
+
+func (e *localSelfIdentityDispatchError) Error() string { return selfidentity.ReasonObjectMismatch }
+func (e *localSelfIdentityDispatchError) Unwrap() error { return e.cause }
+
+func closeLocalSelfIdentityDispatchError(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	var closed *localSelfIdentityDispatchError
+	if errors.As(cause, &closed) {
+		return cause
+	}
+	return &localSelfIdentityDispatchError{cause: cause}
+}
+
 // DispatchBinder binds the dispatch identity of one attempt admission (ADR
 // 0018 §6/§7). The implementation claims — or re-adjudicates — the dispatch
 // lease for the exact attempt and returns the binding admission validates;
@@ -188,21 +210,21 @@ func admitLocalSelfIdentityDispatch(policyData []byte, input Input) (*selfidenti
 		return nil, nil, nil
 	}
 	if entry == nil || observer == nil {
-		return nil, nil, errors.New("execution: local self-identity entry and observer must be bound together")
+		return nil, nil, closeLocalSelfIdentityDispatchError(errors.New("execution: local self-identity entry and observer must be bound together"))
 	}
 	fresh, err := observer()
 	if err != nil {
-		return nil, nil, fmt.Errorf("execution: fresh local dispatch observation: %w", err)
+		return nil, nil, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: fresh local dispatch observation: %w", err))
 	}
 	if err := selfidentity.SameSubject(*entry, fresh); err != nil {
-		return nil, nil, fmt.Errorf("execution: local entry/dispatch identity drift: %w", err)
+		return nil, nil, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: local entry/dispatch identity drift: %w", err))
 	}
 	if err := planning.ValidateLocalDogfoodEnvironmentBinding(policyData, input.Validator, &fresh); err != nil {
-		return nil, nil, fmt.Errorf("execution: local self-identity policy admission: %w", err)
+		return nil, nil, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: local self-identity policy admission: %w", err))
 	}
 	binding, err := selfidentity.BindingForObservation(fresh)
 	if err != nil {
-		return nil, nil, fmt.Errorf("execution: local dispatch binding: %w", err)
+		return nil, nil, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: local dispatch binding: %w", err))
 	}
 	return &fresh, &binding, nil
 }
@@ -210,17 +232,17 @@ func admitLocalSelfIdentityDispatch(policyData []byte, input Input) (*selfidenti
 func refreshLocalSelfIdentityDispatch(policyData []byte, input Input, admitted selfidentity.LocalSelfIdentityObservationV1) (selfidentity.LocalSelfIdentityObservationV1, selfidentity.LocalSelfIdentityBindingV1, error) {
 	fresh, err := input.ObserveLocalSelfIdentity()
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, fmt.Errorf("execution: fresh attempt dispatch observation: %w", err)
+		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: fresh attempt dispatch observation: %w", err))
 	}
 	if err := selfidentity.SameSubject(admitted, fresh); err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, fmt.Errorf("execution: pre-attempt identity drift: %w", err)
+		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: pre-attempt identity drift: %w", err))
 	}
 	if err := planning.ValidateLocalDogfoodEnvironmentBinding(policyData, input.Validator, &fresh); err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, fmt.Errorf("execution: pre-attempt policy identity drift: %w", err)
+		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: pre-attempt policy identity drift: %w", err))
 	}
 	binding, err := selfidentity.BindingForObservation(fresh)
 	if err != nil {
-		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, err
+		return selfidentity.LocalSelfIdentityObservationV1{}, selfidentity.LocalSelfIdentityBindingV1{}, closeLocalSelfIdentityDispatchError(err)
 	}
 	return fresh, binding, nil
 }
@@ -607,11 +629,11 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		}
 		dispatchObservation, dispatchBinding = &fresh, &binding
 		if _, err := persistLocalObservation(attemptDir, "local-self-identity-dispatch.json", *dispatchObservation); err != nil {
-			return Result{}, fmt.Errorf("execution: persist local dispatch observation: %w", err)
+			return Result{}, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: persist local dispatch observation: %w", err))
 		}
 		if input.AfterLocalDispatchObservation != nil {
 			if err := input.AfterLocalDispatchObservation(attemptDir); err != nil {
-				return Result{}, fmt.Errorf("execution: injected post-dispatch-observation failure: %w", err)
+				return Result{}, closeLocalSelfIdentityDispatchError(fmt.Errorf("execution: injected post-dispatch-observation failure: %w", err))
 			}
 		}
 	}

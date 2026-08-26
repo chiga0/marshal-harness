@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -216,7 +217,8 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		t.Fatalf("local init exit=%d stderr=%s", exit, initError.String())
 	}
 	configureQwenAuthFixture(t)
-	t.Setenv("MARSHAL_QWEN_PATH", autoFlowWorkerExecutable(t))
+	trackedQwen, qwenInvocations := trackedLocalDogfoodWorkerExecutable(t)
+	t.Setenv("MARSHAL_QWEN_PATH", trackedQwen)
 	t.Setenv("MARSHAL_QODER_PATH", "")
 	t.Setenv("MARSHAL_CODEX_PATH", "")
 	t.Setenv("MARSHAL_PI_PATH", "")
@@ -384,12 +386,84 @@ func TestDarwinLocalDogfoodProductionEntry(t *testing.T) {
 		t.Fatalf("production task run lineage: started=%+v completed=%+v", started.Payload, completed.Payload)
 	}
 
+	// A fresh local Run whose Attempt root cannot become a directory must be
+	// rejected before Adapter Probe/Run without projecting the absolute state
+	// path or the underlying OS cause through the real CLI boundary.
+	const rejectedRunID = "local-dogfood-dispatch-persist-rejected"
+	rejectedPolicy := cliPlanningPolicy(t, taskID, rejectedRunID)
+	rejectedPolicy["control"].(map[string]any)["requiredApprovals"] = []any{"plan"}
+	rejectedPolicy["environmentBinding"] = doctor.PolicyEnvironmentBinding
+	cliStampPolicyDigest(t, rejectedPolicy)
+	rejectedPolicyPath := filepath.Join(root, "rejected-policy.json")
+	writeCLIFixture(t, rejectedPolicyPath, rejectedPolicy)
+	var rejectedPlanOutput, rejectedPlanError bytes.Buffer
+	if got := RunContext(context.Background(), []string{"task", "plan", "--task", taskPath, "--policy", rejectedPolicyPath, "--run", rejectedRunID, "--json"}, strings.NewReader(""), &rejectedPlanOutput, &rejectedPlanError); got != ExitOK {
+		t.Fatalf("rejected fixture plan exit=%d stderr=%s", got, rejectedPlanError.String())
+	}
+	var rejectedApproveOutput, rejectedApproveError bytes.Buffer
+	if got := RunContext(context.Background(), []string{"task", "approve", "--run", rejectedRunID, "--gate", "plan", "--json"}, strings.NewReader(""), &rejectedApproveOutput, &rejectedApproveError); got != ExitOK {
+		t.Fatalf("rejected fixture approval exit=%d stderr=%s", got, rejectedApproveError.String())
+	}
+	stateRoot := filepath.Join(root, ".marshal")
+	rejectedBefore, err := runstore.New(stateRoot).Inspect(rejectedRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocationsBefore, err := os.ReadFile(qwenInvocations)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	attemptsPath := filepath.Join(stateRoot, "runs", rejectedRunID, "attempts")
+	if err := os.Mkdir(attemptsPath, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(attemptsPath, 0o700) })
+	var rejectedRunOutput, rejectedRunError bytes.Buffer
+	got := RunContext(context.Background(), []string{"task", "run", "--run", rejectedRunID, "--json"}, strings.NewReader(""), &rejectedRunOutput, &rejectedRunError)
+	if got != ExitFailure || rejectedRunOutput.Len() != 0 || !strings.Contains(rejectedRunError.String(), selfidentity.ReasonObjectMismatch) {
+		t.Fatalf("dispatch persistence rejection exit=%d stdout=%q stderr=%q", got, rejectedRunOutput.String(), rejectedRunError.String())
+	}
+	for _, forbidden := range []string{root, attemptsPath, "cause-sentinel-do-not-leak", "not a directory"} {
+		if strings.Contains(rejectedRunError.String(), forbidden) || strings.Contains(rejectedRunOutput.String(), forbidden) {
+			t.Fatalf("dispatch persistence rejection leaked %q: stdout=%q stderr=%q", forbidden, rejectedRunOutput.String(), rejectedRunError.String())
+		}
+	}
+	invocationsAfter, err := os.ReadFile(qwenInvocations)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(invocationsBefore, invocationsAfter) {
+		t.Fatalf("dispatch persistence rejection reached Adapter: before=%q after=%q", invocationsBefore, invocationsAfter)
+	}
+	rejectedAfter, err := runstore.New(stateRoot).Inspect(rejectedRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejectedAfter.State != rejectedBefore.State || rejectedAfter.Sequence != rejectedBefore.Sequence ||
+		rejectedAfter.AttemptsUsed != rejectedBefore.AttemptsUsed || rejectedAfter.OperationalRetriesUsed != rejectedBefore.OperationalRetriesUsed ||
+		rejectedAfter.ReviewRound != rejectedBefore.ReviewRound {
+		t.Fatalf("dispatch persistence rejection consumed Run authority: before=%+v after=%+v", rejectedBefore, rejectedAfter)
+	}
+
 	t.Setenv(selfidentity.ActivationEnv, filepath.Join(root, "missing.json"))
 	var stdout, missing bytes.Buffer
 	if got := RunContext(context.Background(), []string{"task", "scaffold", "--draft", draftPath}, strings.NewReader(""), &stdout, &missing); got != ExitUnavailable ||
 		!strings.Contains(missing.String(), selfidentity.ReasonOptInMissing) {
 		t.Fatalf("missing activation exit=%d stderr=%q", got, missing.String())
 	}
+}
+
+func trackedLocalDogfoodWorkerExecutable(t *testing.T) (string, string) {
+	t.Helper()
+	delegate := autoFlowWorkerExecutable(t)
+	directory := t.TempDir()
+	path := filepath.Join(directory, "qwen")
+	invocations := filepath.Join(directory, "invocations.log")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$*\" >> %q\nexec %q \"$@\"\n", invocations, delegate)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path, invocations
 }
 
 func TestDarwinUnprofiledBuildFailsClosedAtProductionEntry(t *testing.T) {

@@ -159,7 +159,7 @@ func TestLocalSelfIdentityFailsBeforeProbeWithoutFrozenPolicyBinding(t *testing.
 	entry := localTestObservation(t, "activation-a", time.Unix(10, 0).UTC())
 	fixture.input.EntryLocalSelfIdentity = &entry
 	fixture.input.ObserveLocalSelfIdentity = func() (selfidentity.LocalSelfIdentityObservationV1, error) { return entry, nil }
-	requireFailsBeforeProbe(t, fixture, "local self-identity policy admission")
+	requireFailsBeforeProbe(t, fixture, selfidentity.ReasonObjectMismatch)
 }
 
 func TestLocalSelfIdentityIngressDriftIsCoreEvidenceFailure(t *testing.T) {
@@ -200,9 +200,12 @@ func TestLocalSelfIdentityDispatchCrashLeavesNoAttemptAuthority(t *testing.T) {
 	bindLocalSelfIdentityFixture(t, &fixture, "activation-a")
 	adapter := &countingAdapter{delegate: fixture.input.Adapter.(*fixtureAdapter)}
 	fixture.input.Adapter = adapter
-	fixture.input.AfterLocalDispatchObservation = func(string) error { return errors.New("crash") }
+	injected := errors.New("secret=/Users/private/dispatch-observation")
+	fixture.input.AfterLocalDispatchObservation = func(string) error { return injected }
 	if _, err := Run(context.Background(), fixture.input); err == nil {
 		t.Fatal("dispatch observation crash was accepted")
+	} else if err.Error() != selfidentity.ReasonObjectMismatch || !errors.Is(err, injected) {
+		t.Fatalf("dispatch observation failure is not typed and closed: %q", err)
 	}
 	if adapter.probes != 0 || adapter.runs != 0 {
 		t.Fatalf("crash crossed Adapter boundary: probes=%d runs=%d", adapter.probes, adapter.runs)
