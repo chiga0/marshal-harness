@@ -12,8 +12,10 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/agentruntime"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
 
@@ -49,11 +51,29 @@ type Outcome struct {
 // 收集已 record 的 attempt 目录，供 SweepRegistered 对账孤儿。
 // transcriptSource 非空时，实现 LaunchCapable 的 Adapter 走 ADR 0052 §1.2
 // allocation-carried 执行路径。
+// authority 非空时，admission 从真实 durable ledger 读取 registration/
+// snapshot/lease/expiry，而非以结果携带 Facts 临时构造（R2/R3 纠偏）。
 type Bridge struct {
 	provider         sandbox.SandboxProvider
 	registry         *allocRegistry
 	now              func() time.Time
 	transcriptSource TranscriptSource
+	authority        DurableAuthority
+}
+
+// DurableAuthority 是 Bridge 在 admission 时读取真实 durable authority 的
+// 接缝：agent registration/snapshot 来自 RegistrationStore（文件型耐久
+// ledger），lease expiry 来自 dispatch 时冻结的 DispatchLease。
+// 未注入时（测试兼容）退化为 seedRegistry/seedSandboxLedger 路径。
+type DurableAuthority interface {
+	// RegistrationStore 返回 durable 文件 ledger（append-only registrations.jsonl）。
+	RegistrationStore() *provider.RegistrationStore
+	// LeaseFor 返回 dispatch 时冻结的 DispatchLease（含 ExpiresAt）。
+	LeaseFor(runID, attemptID string) (dispatch.DispatchLease, bool)
+	// CapabilitySnapshot 返回当前 provider 的冻结 capability snapshot digest。
+	CapabilitySnapshot() provider.ProviderCapabilitySnapshot
+	// Registration 返回当前 provider 的 durable registration。
+	Registration() provider.ProviderRegistration
 }
 
 // NewBridge 构造 Bridge；nil provider fail closed。
@@ -68,6 +88,15 @@ func NewBridge(provider sandbox.SandboxProvider) (*Bridge, error) {
 // Local 形态基于 AllocationDirectory；测试注入等价闭包）。
 func (b *Bridge) WithTranscriptSource(source TranscriptSource) *Bridge {
 	b.transcriptSource = source
+	return b
+}
+
+// WithDurableAuthority 注入真实 durable authority 接缝（R2/R3 纠偏）：
+// admission 从 RegistrationStore + DispatchLease 读取真实 registration/
+// snapshot/lease/expiry，而非以结果携带 Facts 临时构造。未注入时退化为
+// seed 路径（仅测试兼容，生产路径必须注入）。
+func (b *Bridge) WithDurableAuthority(authority DurableAuthority) *Bridge {
+	b.authority = authority
 	return b
 }
 

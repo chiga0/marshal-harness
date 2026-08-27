@@ -5,7 +5,6 @@ package selfidentity
 
 import (
 	"errors"
-	"fmt"
 )
 
 const (
@@ -148,5 +147,3 @@ func (a LocalDogfoodActivationV1) permits(commandClass string) bool {
 	}
 	return false
 }
-
-func decimalIdentity(value uint64) string { return fmt.Sprintf("%d", value) }

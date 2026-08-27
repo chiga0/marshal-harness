@@ -2424,6 +2424,10 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 				return os.ReadFile(filepath.Join(dir, filepath.FromSlash(artifactID)))
 			})
 		}
+		// R2/R3 纠偏：注入真实 durable authority，使 admission 从文件 ledger
+		// 读取 registration/snapshot、从 DispatchLease 读取 dispatch 时冻结
+		// 的 lease expiry，而非以结果携带 Facts 临时构造。
+		bridge.WithDurableAuthority(embeddedRuntime)
 		workerRunner = bridge.RunWorker
 	}
 	result, err := execution.Run(ctx, execution.Input{

@@ -5,8 +5,10 @@ package selfidentity
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"golang.org/x/sys/unix"
 )
@@ -83,4 +85,12 @@ func observePathIdentity(path string) (CurrentPathObjectV1, error) {
 		return CurrentPathObjectV1{}, reject(ReasonObjectMismatch)
 	}
 	return CurrentPathObjectV1{Device: decimalIdentity(uint64(stat.Dev)), Inode: decimalIdentity(stat.Ino), Size: stat.Size}, nil
+}
+
+func decimalIdentity(value uint64) string { return fmt.Sprintf("%d", value) }
+
+func executablePathNamesObject(path string, object CurrentPathObjectV1) bool {
+	current, err := observePathIdentity(path)
+	return err == nil && filepath.Clean(path) == path && current.Device == object.Device &&
+		current.Inode == object.Inode && current.Size == object.Size
 }

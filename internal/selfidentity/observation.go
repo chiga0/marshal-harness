@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -236,10 +235,4 @@ func SameSubject(left, right LocalSelfIdentityObservationV1) error {
 		return reject(ReasonCrossProfileEvidence)
 	}
 	return nil
-}
-
-func executablePathNamesObject(path string, object CurrentPathObjectV1) bool {
-	current, err := observePathIdentity(path)
-	return err == nil && filepath.Clean(path) == path && current.Device == object.Device &&
-		current.Inode == object.Inode && current.Size == object.Size
 }

@@ -88,12 +88,14 @@ jobs:
           echo "::error::稳定 release $TAG_NAME 要求 macOS 签名/notarization secrets（Issue #212 未 provision）。unsigned 构建仅允许 prerelease tag（如 v1.0.0-rc1）。" >&2
           exit 1
 
-      - name: Sign and notarize macOS assets
-        if: steps.signing.outputs.available == 'true'
+      # 签名/notarization 真实实现（codesign + notarytool + spctl 验证）跟随
+      # ADR 0047/0048 与 Issue #212 落地。在真实签名链实现前，即使 secrets
+      # 已配置，仍一律 fail closed——占位输出不得通过为 signed stable release。
+      - name: Block stable release until real signing is implemented
+        if: steps.signing.outputs.prerelease != 'true'
         run: |
-          echo "::notice::macOS 签名 secrets 已配置。签名/notarization 为占位实现，" \
-            "完整 protected build→sign→install 链跟随 ADR 0047/0048 与 Issue #212 落地前，" \
-            "release notes 仍按 unsigned 口径标注。"
+          echo "::error::稳定 release $TAG_NAME 要求真实 codesign + notarization + spctl 验证（ADR 0047/0048）。当前签名步骤仍为占位，不得发布 stable。请使用 prerelease tag（如 v1.0.0-rc1）。" >&2
+          exit 1
 
       - name: Generate release notes
         env:
