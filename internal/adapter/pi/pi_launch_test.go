@@ -61,6 +61,14 @@ func TestPrepareLaunchFreezesArgvEnvironmentAndPathsWithoutSpawn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// PrepareLaunch 返回 provider-neutral sandboxbridge.LaunchPlan；
+	// 测试内部还原为 *LaunchPlan 访问 pi 专有字段。
+	planConcrete, ok := plan.(*LaunchPlan)
+	if !ok || planConcrete == nil {
+		t.Fatalf("PrepareLaunch returned non-pi LaunchPlan: %T", plan)
+	}
+	// 以下断言通过 concrete 访问 pi 专有字段。
+	concrete := planConcrete
 	if spawnCalls != 0 {
 		t.Fatalf("PrepareLaunch started the worker process %d times", spawnCalls)
 	}
@@ -79,33 +87,33 @@ func TestPrepareLaunchFreezesArgvEnvironmentAndPathsWithoutSpawn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.ExecArgv[0] != fixture.executable {
-		t.Fatalf("argv[0] = %q, want inspected executable %q", plan.ExecArgv[0], fixture.executable)
+	if concrete.ExecArgv[0] != fixture.executable {
+		t.Fatalf("argv[0] = %q, want inspected executable %q", concrete.ExecArgv[0], fixture.executable)
 	}
-	if strings.Join(plan.ExecArgv[1:], "\x00") != strings.Join(wantArgs, "\x00") {
-		t.Fatalf("args = %#v, want %#v", plan.ExecArgv[1:], wantArgs)
+	if strings.Join(concrete.ExecArgv[1:], "\x00") != strings.Join(wantArgs, "\x00") {
+		t.Fatalf("args = %#v, want %#v", concrete.ExecArgv[1:], wantArgs)
 	}
 	wantEnvironment := workerEnvironment(expectedWorktree)
-	if strings.Join(plan.Environment, "\n") != strings.Join(wantEnvironment, "\n") {
-		t.Fatalf("environment = %q, want %q", strings.Join(plan.Environment, "\n"), strings.Join(wantEnvironment, "\n"))
+	if strings.Join(concrete.Environment, "\n") != strings.Join(wantEnvironment, "\n") {
+		t.Fatalf("environment = %q, want %q", strings.Join(concrete.Environment, "\n"), strings.Join(wantEnvironment, "\n"))
 	}
 	pathLike := false
-	for _, entry := range plan.Environment {
+	for _, entry := range concrete.Environment {
 		if strings.HasPrefix(entry, "PATH=") {
 			pathLike = true
 		}
 	}
 	if !pathLike {
-		t.Fatalf("environment lacks the allowlisted PATH entry: %q", strings.Join(plan.Environment, "\n"))
+		t.Fatalf("environment lacks the allowlisted PATH entry: %q", strings.Join(concrete.Environment, "\n"))
 	}
-	if plan.WorkingDirectory != expectedWorktree || plan.ControlRoot != expectedControlRoot {
-		t.Fatalf("paths = %q/%q", plan.WorkingDirectory, plan.ControlRoot)
+	if concrete.WorkingDirectory != expectedWorktree || concrete.ControlRoot != expectedControlRoot {
+		t.Fatalf("paths = %q/%q", concrete.WorkingDirectory, concrete.ControlRoot)
 	}
-	if plan.ResultPath != filepath.Join(expectedControlRoot, "output", "worker-result.json") {
-		t.Fatalf("result path = %q", plan.ResultPath)
+	if concrete.ResultPath != filepath.Join(expectedControlRoot, "output", "worker-result.json") {
+		t.Fatalf("result path = %q", concrete.ResultPath)
 	}
-	if plan.AttemptTimeoutSeconds != 5 || plan.MaxOutputBytes != 1024 || plan.SessionPolicy != "ephemeral" {
-		t.Fatalf("budget/policy = %d/%d/%q", plan.AttemptTimeoutSeconds, plan.MaxOutputBytes, plan.SessionPolicy)
+	if concrete.AttemptTimeoutSeconds != 5 || concrete.MaxOutputBytes != 1024 || concrete.SessionPolicy != "ephemeral" {
+		t.Fatalf("budget/policy = %d/%d/%q", concrete.AttemptTimeoutSeconds, concrete.MaxOutputBytes, concrete.SessionPolicy)
 	}
 }
 
@@ -299,6 +307,10 @@ func TestCompleteLaunchFailClosedInputContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	validConcrete, ok := validPlan.(*LaunchPlan)
+	if !ok || validConcrete == nil {
+		t.Fatalf("PrepareLaunch returned non-pi LaunchPlan: %T", validPlan)
+	}
 	fixed := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
 	complete := func(plan *LaunchPlan, started, completed time.Time, exitCode int, signal string, ctxErr error) error {
 		_, err := fixture.adapter.CompleteLaunch(context.Background(), plan, nil, false, nil, started, completed, exitCode, signal, ctxErr)
@@ -307,27 +319,27 @@ func TestCompleteLaunchFailClosedInputContract(t *testing.T) {
 	if err := complete(nil, fixed, fixed, 0, "", nil); err == nil {
 		t.Fatal("nil plan accepted")
 	}
-	if err := complete(&LaunchPlan{ExecArgv: []string{validPlan.ExecArgv[0]}}, fixed, fixed, 0, "", nil); err == nil {
+	if err := complete(&LaunchPlan{ExecArgv: []string{validConcrete.ExecArgv[0]}}, fixed, fixed, 0, "", nil); err == nil {
 		t.Fatal("plan without PrepareLaunch bindings accepted")
 	}
 	for _, exitCode := range []int{-2, 256, 1 << 20} {
-		if err := complete(validPlan, fixed, fixed, exitCode, "", nil); err == nil {
+		if err := complete(validConcrete, fixed, fixed, exitCode, "", nil); err == nil {
 			t.Fatalf("exitCode %d accepted", exitCode)
 		}
 	}
-	if err := complete(validPlan, fixed, fixed, 0, "killed", nil); err == nil {
+	if err := complete(validConcrete, fixed, fixed, 0, "killed", nil); err == nil {
 		t.Fatal("signaled disposition without exitCode -1 accepted")
 	}
-	if err := complete(validPlan, time.Time{}, fixed, 0, "", nil); err == nil {
+	if err := complete(validConcrete, time.Time{}, fixed, 0, "", nil); err == nil {
 		t.Fatal("zero started accepted without context error")
 	}
-	if err := complete(validPlan, fixed, fixed.Add(-time.Second), 0, "", nil); err == nil {
+	if err := complete(validConcrete, fixed, fixed.Add(-time.Second), 0, "", nil); err == nil {
 		t.Fatal("completed before started accepted without context error")
 	}
 	// Missing or unordered timing evidence is only tolerated while the
 	// attempt context error stays authoritative; the completion then returns
 	// that error through the frozen precedence.
-	if err := complete(validPlan, time.Time{}, time.Time{}, 0, "", context.DeadlineExceeded); !errors.Is(err, context.DeadlineExceeded) {
+	if err := complete(validConcrete, time.Time{}, time.Time{}, 0, "", context.DeadlineExceeded); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("context-carrying completion = %v, want DeadlineExceeded", err)
 	}
 }
@@ -358,7 +370,7 @@ func TestCompleteLaunchFailClosedStreamBehaviour(t *testing.T) {
 	}
 	// The executor truncation signal is authoritative over an otherwise
 	// intact stream and stays ahead of the strict decode verdict.
-	valid := `{"type":"session","version":3,"id":"session-stream","timestamp":"2026-08-26T00:00:00.000Z","cwd":"` + plan.WorkingDirectory + `"}` + "\n" +
+	valid := `{"type":"session","version":3,"id":"session-stream","timestamp":"2026-08-26T00:00:00.000Z","cwd":"` + plan.WorkDir() + `"}` + "\n" +
 		`{"type":"agent_start"}` + "\n" +
 		`{"type":"agent_end","messages":[],"willRetry":false}` + "\n" +
 		`{"type":"agent_settled"}` + "\n"

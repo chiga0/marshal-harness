@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chiga0/marshal-harness/internal/adapter/pi"
 	"github.com/chiga0/marshal-harness/internal/agentruntime"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -20,9 +19,11 @@ import (
 // LaunchCapable 是桥对接「Launch 可拆分 Adapter」的最小接口（ADR 0052
 // §1.2 + ADR 0055）：实现者提供不可变启动计划与由外部执行驱动的完成
 // 管线。未实现本接口的 Adapter 由桥自动回退 legacy Run 路径。
+// LaunchPlan 是 provider-neutral 接缝，sandboxbridge 不直接依赖任何
+// 特定 Adapter 的类型。
 type LaunchCapable interface {
-	PrepareLaunch(ctx context.Context, record domain.Record) (*pi.LaunchPlan, error)
-	CompleteLaunch(ctx context.Context, plan *pi.LaunchPlan, transcriptJSONL []byte, stdoutTruncated bool, stderrBytes []byte, started, completed time.Time, exitCode int, signal string, ctxErr error) (domain.Record, error)
+	PrepareLaunch(ctx context.Context, record domain.Record) (LaunchPlan, error)
+	CompleteLaunch(ctx context.Context, plan LaunchPlan, transcriptJSONL []byte, stdoutTruncated bool, stderrBytes []byte, started, completed time.Time, exitCode int, signal string, ctxErr error) (domain.Record, error)
 }
 
 // TranscriptSource 从 provider 形态读取 staged transcript artifact 的原始
@@ -53,7 +54,7 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	if err != nil {
 		return domain.Record{}, err
 	}
-	if err := validatePlanAgainstView(plan, view); err != nil {
+	if err := ValidateLaunchPlan(plan); err != nil {
 		return domain.Record{}, err
 	}
 
@@ -77,8 +78,8 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		Identity:             provisionIdentity,
 		Requirements:         requirements,
 		AllowedStoreIds:      []string{},
-		WorkDirAllowlist:     []string{plan.WorkingDirectory},
-		EnvironmentAllowlist: envKeyAllowlist(plan.Environment),
+		WorkDirAllowlist:     []string{plan.WorkDir()},
+		EnvironmentAllowlist: envKeyAllowlist(plan.EnvBlock()),
 	})
 	if err != nil {
 		return domain.Record{}, fmt.Errorf("sandboxbridge: provision failed: %w", err)
@@ -125,8 +126,8 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 				RunID:                         view.RunID,
 				AttemptID:                     view.AttemptID,
 				AgentAdapterID:                view.AdapterID,
-				AgentExecutable:               plan.ExecArgv[0],
-				AgentProviderVersion:          plan.BinaryVersion(),
+				AgentExecutable:               plan.Argv()[0],
+				AgentProviderVersion:          plan.ProviderVersion(),
 				CapabilityDigest:              capDigest,
 				ExecutionProfile:              view.ExecutionProfile,
 				SandboxProviderRegistrationID: regID,
@@ -149,13 +150,13 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		_, _ = b.provider.Terminate(ctx, sandbox.TerminateRequest{Identity: termIdentity, AllocationId: allocationID})
 	}()
 
-	if err := b.stageControlInputs(ctx, view, request, allocationID, generation, fencingToken, plan.ControlRoot); err != nil {
+	if err := b.stageControlInputs(ctx, view, request, allocationID, generation, fencingToken, plan.ControlRootPath()); err != nil {
 		return domain.Record{}, err
 	}
 
 	// 与 legacy adapter.Run 相同的 attempt 级截止：外部 ctx 由 bridge 叠加，
 	// provider 侧 TimeoutSeconds 为同一数值的保底 kill。
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(plan.AttemptTimeoutSeconds)*time.Second)
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(plan.TimeoutSeconds())*time.Second)
 	defer cancel()
 
 	started := b.now().UTC()
@@ -166,14 +167,14 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	execReceipt, execErr := b.provider.Exec(runCtx, sandbox.ExecRequest{
 		Identity:     execIdentity,
 		AllocationId: allocationID,
-		Command:      append([]string(nil), plan.ExecArgv...),
-		WorkingDir:   plan.WorkingDirectory,
-		Environment:  envMap(plan.Environment),
+		Command:      append([]string(nil), plan.Argv()...),
+		WorkingDir:   plan.WorkDir(),
+		Environment:  envMap(plan.EnvBlock()),
 		TranscriptPolicy: sandbox.TranscriptPolicy{
-			MaxBytes:   plan.MaxOutputBytes,
+			MaxBytes:   plan.MaxOutput(),
 			ArtifactId: transcriptArtifactID,
 		},
-		TimeoutSeconds: plan.AttemptTimeoutSeconds,
+		TimeoutSeconds: plan.TimeoutSeconds(),
 	})
 	completed := b.now().UTC()
 	if execErr != nil && execReceipt == nil {
@@ -259,30 +260,6 @@ func (b *Bridge) stageControlInputs(ctx context.Context, view workerRequestView,
 		Inputs:       inputs,
 	}); err != nil {
 		return fmt.Errorf("sandboxbridge: stage failed: %w", err)
-	}
-	return nil
-}
-
-// validatePlanAgainstView 复核 PrepareLaunch 的私有绑定与冻结请求一致
-// （不放行跨 attempt 复用的 plan）。
-func validatePlanAgainstView(plan *pi.LaunchPlan, view workerRequestView) error {
-	if plan == nil {
-		return errors.New("sandboxbridge: nil launch plan")
-	}
-	if len(plan.ExecArgv) == 0 {
-		return errors.New("sandboxbridge: launch plan has empty argv")
-	}
-	if plan.WorkingDirectory == "" || !filepath.IsAbs(plan.WorkingDirectory) {
-		return fmt.Errorf("sandboxbridge: launch plan working directory %q is not absolute", plan.WorkingDirectory)
-	}
-	if plan.AttemptTimeoutSeconds <= 0 {
-		return fmt.Errorf("sandboxbridge: launch plan timeout %d must be positive", plan.AttemptTimeoutSeconds)
-	}
-	if plan.MaxOutputBytes <= 0 {
-		return fmt.Errorf("sandboxbridge: launch plan max output bytes %d must be positive", plan.MaxOutputBytes)
-	}
-	if strings.TrimSpace(plan.ControlRoot) == "" || !filepath.IsAbs(plan.ControlRoot) {
-		return fmt.Errorf("sandboxbridge: launch plan control root %q is not absolute", plan.ControlRoot)
 	}
 	return nil
 }

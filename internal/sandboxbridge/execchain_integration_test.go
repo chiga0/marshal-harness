@@ -1,4 +1,4 @@
-package sandboxbridge
+package sandboxbridge_test
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/sandbox/local"
+	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 )
 
 // ── scripted pi CLI fixture（in-package，与 internal/adapter/pi 的夹具同构） ──
@@ -50,7 +51,7 @@ type bridgePiFixture struct {
 	controlRoot        string
 	request            domain.Record
 	runner             *local.LocalRunner
-	bridge             *Bridge
+	bridge             *sandboxbridge.Bridge
 	resultDeclaredPath string
 	sessionID          string
 }
@@ -102,7 +103,7 @@ func newBridgePiFixture(t *testing.T) bridgePiFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bridge, err := NewBridge(runner)
+	bridge, err := sandboxbridge.NewBridge(runner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +192,7 @@ func TestRunWorkerExecChainCarriesAgentInAllocation(t *testing.T) {
 		t.Errorf("transcript meta missing: %v", err)
 	}
 
-	rec, ok, err := LoadAllocationRecord(f.attemptDir)
+	rec, ok, err := sandboxbridge.LoadAllocationRecord(f.attemptDir)
 	if err != nil || !ok {
 		t.Fatalf("allocation record must exist at attempt dir: ok=%v err=%v", ok, err)
 	}
@@ -225,7 +226,7 @@ func TestRunWorkerExecChainCarriesAgentInAllocation(t *testing.T) {
 		t.Errorf("anchor fields incomplete: %s", string(anchorRaw))
 	}
 
-	sweep := f.bridge.SweepRegistered(context.Background(), f.runner, NewMapResolver(map[string]bool{"R1": true}), time.Minute, time.Now())
+	sweep := f.bridge.SweepRegistered(context.Background(), f.runner, sandboxbridge.NewMapResolver(map[string]bool{"R1": true}), time.Minute, time.Now())
 	if sweep.Terminated != 1 || len(sweep.Errors) != 0 {
 		t.Errorf("sweep of completed attempt must terminate exactly once, got %+v", sweep)
 	}

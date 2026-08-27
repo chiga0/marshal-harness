@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/chiga0/marshal-harness/internal/adapter/pi"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
@@ -24,7 +23,7 @@ const admissionAnchorName = "sandbox-binding-admission.json"
 // R2/R3 纠偏：当 Bridge 注入了 DurableAuthority 时，从 dispatch 时冻结的
 // immutable AttemptBinding 文件读取 facts（而非以结果携带 Facts 临时构造），
 // 并从真实 RegistrationStore 验证 provider registration 仍 active。
-func (b *Bridge) admitCompletedResult(ctx context.Context, view workerRequestView, plan *pi.LaunchPlan, resultBytes []byte, allocationID string, generation int64, fencingToken string) error {
+func (b *Bridge) admitCompletedResult(ctx context.Context, view workerRequestView, plan LaunchPlan, resultBytes []byte, allocationID string, generation int64, fencingToken string) error {
 	inspectIdentity, err := identity(view, allocationID, generation, fencingToken, "command-inspect-admission")
 	if err != nil {
 		return err
@@ -57,8 +56,8 @@ func (b *Bridge) admitCompletedResult(ctx context.Context, view workerRequestVie
 		RunID:                         view.RunID,
 		AttemptID:                     view.AttemptID,
 		AgentAdapterID:                view.AdapterID,
-		AgentExecutable:               plan.ExecArgv[0],
-		AgentProviderVersion:          plan.BinaryVersion(),
+		AgentExecutable:               plan.Argv()[0],
+		AgentProviderVersion:          plan.ProviderVersion(),
 		CapabilityDigest:              view.CapabilityDigest,
 		ExecutionProfile:              view.ExecutionProfile,
 		SandboxProviderRegistrationID: sandboxProviderRegistrationID,
@@ -101,9 +100,9 @@ func (s bridgeAuthoritySource) ProviderRegistrationActive(registrationID string)
 	return reg.LifecycleState == provider.LifecycleStateActive, nil
 }
 
-func attemptDirFor(view workerRequestView, plan *pi.LaunchPlan) string {
-	if plan != nil && plan.ControlRoot != "" {
-		return filepath.Dir(filepath.Clean(plan.ControlRoot))
+func attemptDirFor(view workerRequestView, plan LaunchPlan) string {
+	if plan != nil && plan.ControlRootPath() != "" {
+		return filepath.Dir(filepath.Clean(plan.ControlRootPath()))
 	}
 	return ""
 }

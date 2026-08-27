@@ -25,6 +25,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 )
 
 const (
@@ -422,7 +423,7 @@ type LaunchPlan struct {
 // resolution, hardened argv construction, and the sanitized worker
 // environment. It never starts the worker process: Run's spawn seam is only
 // consumed after a plan is returned.
-func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (*LaunchPlan, error) {
+func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (sandboxbridge.LaunchPlan, error) {
 	if record.Kind != domain.KindWorkerRequest {
 		return nil, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
 	}
@@ -511,6 +512,18 @@ func (p *LaunchPlan) BinaryVersion() string {
 	return p.identity.version
 }
 
+// ── sandboxbridge.LaunchPlan 接缝实现（provider-neutral） ─────────────────────
+
+func (p *LaunchPlan) Argv() []string            { return p.ExecArgv }
+func (p *LaunchPlan) EnvBlock() []string        { return p.Environment }
+func (p *LaunchPlan) WorkDir() string           { return p.WorkingDirectory }
+func (p *LaunchPlan) TimeoutSeconds() int64     { return p.AttemptTimeoutSeconds }
+func (p *LaunchPlan) ResultFilePath() string    { return p.ResultPath }
+func (p *LaunchPlan) ControlRootPath() string   { return p.ControlRoot }
+func (p *LaunchPlan) SessionPolicyName() string { return p.SessionPolicy }
+func (p *LaunchPlan) MaxOutput() int64          { return p.MaxOutputBytes }
+func (p *LaunchPlan) ProviderVersion() string   { return p.BinaryVersion() }
+
 // executionOutcome carries every observation of one executed attempt that the
 // completion pipeline consumes, independent of how the process was executed:
 // Run feeds the live capture directly, CompleteLaunch reconstructs it from
@@ -566,15 +579,22 @@ type executionOutcome struct {
 //   - started/completed/exitCode/signal are the caller-provided deterministic
 //     substitutes for Run's clock and wait observations and are stamped into
 //     the normalized WorkerResult and metadata verbatim.
-func (a *Adapter) CompleteLaunch(ctx context.Context, plan *LaunchPlan, transcriptJSONL []byte, stdoutTruncated bool, stderrBytes []byte, started, completed time.Time, exitCode int, signal string, ctxErr error) (domain.Record, error) {
-	if err := validateCompletionInput(plan, started, completed, exitCode, signal, ctxErr); err != nil {
+func (a *Adapter) CompleteLaunch(ctx context.Context, plan sandboxbridge.LaunchPlan, transcriptJSONL []byte, stdoutTruncated bool, stderrBytes []byte, started, completed time.Time, exitCode int, signal string, ctxErr error) (domain.Record, error) {
+	// provider-neutral 接缝还原为 pi 专用类型：CompleteLaunch 消费
+	// PrepareLaunch 冻结的私有绑定（request/identity/model/attemptDeadline），
+	// 这些不暴露到 sandboxbridge.LaunchPlan 接缝。
+	concrete, ok := plan.(*LaunchPlan)
+	if !ok || concrete == nil {
+		return domain.Record{}, errors.New("pi: CompleteLaunch received a non-pi LaunchPlan")
+	}
+	if err := validateCompletionInput(concrete, started, completed, exitCode, signal, ctxErr); err != nil {
 		return domain.Record{}, err
 	}
-	capture := decodeTranscript(ctx, transcriptJSONL, plan.WorkingDirectory, plan.MaxOutputBytes)
+	capture := decodeTranscript(ctx, transcriptJSONL, concrete.WorkingDirectory, concrete.MaxOutputBytes)
 	if stdoutTruncated {
 		capture.limitExceeded = true
 	}
-	return a.completeAttempt(plan, executionOutcome{
+	return a.completeAttempt(concrete, executionOutcome{
 		capture:       capture,
 		stderr:        captureStream(bytes.NewReader(stderrBytes), stderrLimit),
 		exitCode:      exitCode,
@@ -726,9 +746,13 @@ func (a *Adapter) completeAttempt(plan *LaunchPlan, outcome executionOutcome) (d
 // Provider/process/protocol failures are returned as errors so Core can apply
 // the operational retry budget.
 func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record, error) {
-	plan, err := a.PrepareLaunch(ctx, record)
+	planIface, err := a.PrepareLaunch(ctx, record)
 	if err != nil {
 		return domain.Record{}, err
+	}
+	plan, ok := planIface.(*LaunchPlan)
+	if !ok || plan == nil {
+		return domain.Record{}, errors.New("pi: PrepareLaunch returned a non-pi LaunchPlan")
 	}
 	runCtx, cancel := context.WithDeadline(ctx, plan.attemptDeadline)
 	defer cancel()
