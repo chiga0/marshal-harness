@@ -670,6 +670,8 @@ Adapter `0.4.0` 将失败候选延迟到 `agent_settled`/EOF 提交，并显式�
 
 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的多轮复审接受了 WorkerExecutor、Agent/Sandbox 双 binding、ResultIngress 与 strangler 收敛方向，同时发现若干不能只留在 Issue 评论中的合同缺口。本文只建立稳定 ID、当前证据、关闭条件和 milestone 落点；**登记不等于修复，Issue disposition 不等于 ADR 接受，代码或测试存在也不等于 finding 已关闭**。关闭任一 P0/P1 仍需相应合同/实现、正反证据和独立 reviewer verdict。
 
+2026-08-27 direct checkpoint：为缩短 R3→R6 主线，维护者停止使用 Marshal skill 的 admission/rework 轮转，改为单 Lead + 多个互斥 Sub-Agent 并行审计、Lead 直接实现与自审。`feat/i186-r3-direct` 已重新实现 R3-D evidence boundary 与 bounded-drain 纯核心：外部只呈现 opaque material ref，权威链由新鲜 material/registration/snapshot 查询闭合，Agent/Sandbox 的 evidence、credential、token 六种跨 Port 复用方向均 fail closed；security revoke 无 drain 窗口，planned upgrade 只允许全新且无别名的 registration/snapshot 并在冻结 deadline 后 fence。定向测试 `go test ./internal/revokedrain` 通过。该 checkpoint 未接线 production authority ledger/ResultIngress，不能关闭 `I186-ARCH-DUAL-BINDING-RECHECK`；R3-E/F 的故障域外位置/资源 observation authority 会改变信任与持久化合同，仍须先新增最小 ADR。详细状态见 [i186-r3-progress.md](research/i186-r3-progress.md)。
+
 ### 主执行链 hardening
 
 | ID | 级别 | 状态 | 当前证据与关闭条件 | 建议落点 |
