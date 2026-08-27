@@ -13,7 +13,7 @@
 | 5 | 可判定 cancel、timeout、retry、terminal 与 Outcome 语义 | `INTEGRATED` | 既有 runstore/cli/execution 回归覆盖。 |
 | 6 | 独立 Verification；发布仅 none / Draft PR，不 auto-merge | `INTEGRATED` | 既有产线路径；merge 默认禁用属 universal 不变量。 |
 | 7 | loopback marshal-server 能 start/cancel/query/restore 真实 Run | `COMPONENT` | API/SSE 套件绿；跨 OS 进程 restart 恢复证据缺口见 [i186-r6-fault-conformance-audit.md](research/i186-r6-fault-conformance-audit.md) TOP#3。 |
-| 8 | kill/restart/lost-response/stale/binding-drift 故障注入与恢复测试 | `OPEN` | 审计盘点已落盘（TOP#1–#5）：真进程中段 kill 经 lease owner 探针恢复、happy-path lost response、server 进程重启、ResultIngress 接入真链后的 stale/replay/伪造负例、新 gate 故障域扩展均未闭合。 |
+| 8 | kill/restart/lost-response/stale/binding-drift 故障注入与恢复测试 | `COMPONENT` | 审计盘点 TOP5 全部闭合（`a202799`+`1f5d088`+`9441f9b`+`5aac2e9`+`0cfbffe`）：gate fault 域扩展（recoveryDecision unavailable + anchor 缺失/损坏/被替换）、exec-chain admission 拒绝矩阵（revoked agent/sandbox + expired lease）、lost-response fixture（worker-result 已 durable 但 journal 未完成 → 隔离+重试）、marshal-server 跨进程 restart recovery、真实 lease 生命周期 kill 恢复。 |
 | 9 | macOS/Linux 稳定安装产物；macOS 须签名/notarization/release identity 门禁 | `OPEN` | install.sh 一行安装 + SHA256SUMS 校验 + 源码回退；`make dist` 四平台资产与 release workflow 就绪（`2392f72`）；**稳定 v1.\* 无签名 secrets 一律 fail closed，unsigned 仅允许 prerelease**（`a06189c`）；macOS 签名/公证受 **Issue #212**（宿主企业策略阻断固定 Mach-O，签名身份未 provision）外部阻塞。 |
 
 ## rc 判定规则
@@ -22,8 +22,8 @@
 - 任何状态切换的条件：真实 composition root 可达 + 证据可复跑；gate-绕过的 test 证据只能支撑 `COMPONENT`，不支撑 `INTEGRATED`（除 R1 纵切已经被维护者认定外）。
 - 本表与 `docs/roadmap-status.md` 的 R6 行互为指针；主线纠偏结论为当前权威基线。
 
-## 当前结论（2026-08-27，R2/R3 收敛后）
+## 当前结论（2026-08-27，R6 TOP5 闭合后）
 
-- `R0: PASSED`；`R1: IN_PROGRESS（INTEGRATED，real Agent in allocation 纵切）`；`R2/R3: IN_PROGRESS（COMPONENT→INTEGRATED，双侧 current-ledger recheck 代码已实现，待故障 conformance 证据闭合）`；`R4: IN_PROGRESS（COMPONENT）`；`R5: IN_PROGRESS（COMPONENT）`；`R6: PLANNED`。
-- 最短剩余路径：R6 故障 conformance TOP5 闭合 → #3/#4 口径升级为 INTEGRATED → #7 跨进程 restart → v1.0-rc prerelease。
+- `R0: PASSED`；`R1: IN_PROGRESS（INTEGRATED，real Agent in allocation 纵切）`；`R2/R3: IN_PROGRESS（COMPONENT→INTEGRATED，双侧 current-ledger recheck 代码已实现 + R6 TOP5 故障 conformance 闭合）`；`R4: IN_PROGRESS（COMPONENT）`；`R5: IN_PROGRESS（COMPONENT）`；`R6: IN_PROGRESS（COMPONENT→INTEGRATED，TOP5 闭合，待 #7 跨进程 restart 证据补齐）`。
+- 最短剩余路径：#3/#4/#8 口径升级为 INTEGRATED → #7 跨进程 restart 补齐 → v1.0-rc prerelease。
 - 外部阻塞：Issue #212（macOS 签名身份，企业策略）；不影响 prerelease 通道。
