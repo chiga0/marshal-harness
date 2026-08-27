@@ -39,7 +39,7 @@
 go test ./internal/revokedrain
 ```
 
-当前 checkpoint 尚缺 drain 的完整表驱动/race 测试，因此只提交为在途实现，不合入权威 `main`，也不宣称 R3-D 完成。
+当前 checkpoint 尚缺 drain 的完整表驱动/race 测试，因此只作为不改变 production wiring 的在途核心合入权威 `main`，不宣称 R3-D 完成；后继提交必须补齐测试与接线后才能关闭对应 Exit Gate。
 
 ## 剩余工作
 
