@@ -60,8 +60,11 @@ jobs:
           cd dist
           sha256sum -c SHA256SUMS
 
-      # macOS 签名/notarization 门禁（占位实现）：
-      # Issue #212 解决前 secrets 未 provision，此时不得声称资产已签名；
+      # macOS 签名/notarization 门禁：
+      # ADR 0052 §1.9 要求 macOS 正式产物签名/notarization/release identity。
+      # Issue #212 未 provision 期间：稳定 tag（v1.* 无 - 后缀）一律 fail
+      # closed；仅含 - 后缀的 prerelease tag（如 v1.0.0-rc1）可产出 unsigned
+      # prerelease，且 release notes 必须明示 unsigned。
       # secrets 检测用 step env 完成（secrets 不能出现在 if 表达式中）。
       - name: Detect macOS signing secrets
         id: signing
@@ -74,6 +77,16 @@ jobs:
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
+          case "$TAG_NAME" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Enforce signing gate for stable releases
+        if: steps.signing.outputs.available != 'true' && steps.signing.outputs.prerelease != 'true'
+        run: |
+          echo "::error::稳定 release $TAG_NAME 要求 macOS 签名/notarization secrets（Issue #212 未 provision）。unsigned 构建仅允许 prerelease tag（如 v1.0.0-rc1）。" >&2
+          exit 1
 
       - name: Sign and notarize macOS assets
         if: steps.signing.outputs.available == 'true'
@@ -85,6 +98,7 @@ jobs:
       - name: Generate release notes
         env:
           SIGNING_AVAILABLE: ${{ steps.signing.outputs.available }}
+          IS_PRERELEASE: ${{ steps.signing.outputs.prerelease }}
         run: |
           {
             printf 'Marshal %s\n\n' "$TAG_NAME"
@@ -94,15 +108,24 @@ jobs:
             else
               printf -- '- **unsigned build（Issue #212 未 provision）**：未配置 macOS 签名/notarization secrets，本 release 全部资产为未签名构建；darwin 用户可能需要在系统设置中放行未知来源二进制，详见 docs/install-and-upgrade.md。\n'
             fi
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              printf -- '- 本 release 为 prerelease（候选/预览），不按 v1.0 正式发布承诺支持（ADR 0052）。\n'
+            fi
             printf -- '- 校验：安装脚本会自动下载并校验 `SHA256SUMS`；离线校验可在资产目录运行 `sha256sum -c SHA256SUMS`（macOS 用 `shasum -a 256 -c SHA256SUMS`）。\n'
           } > release-notes.md
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_PRERELEASE: ${{ steps.signing.outputs.prerelease }}
         run: |
+          args=()
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            args+=(--prerelease)
+          fi
           gh release create "$TAG_NAME" \
             --verify-tag \
             --title "Marshal $TAG_NAME" \
             --notes-file release-notes.md \
+            "${args[@]}" \
             dist/*
