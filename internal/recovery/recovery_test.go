@@ -170,6 +170,47 @@ func TestMatrix_AmbiguousSideEffectLeaseDead(t *testing.T) {
 
 // ── 决策表分支细则 ─────────────────────────────────────────────────────────
 
+// 横切规则回归：partial-artifact/binding-lost 等具名分支同样不得绕过
+// ambiguous side effect 的强制 reconcile（R6 soak iteration 69 发现的缺口）。
+func TestDecide_ReconcileCrossCutting(t *testing.T) {
+	scenarios := map[string]func() RecoveryInput{
+		"partial-artifact": func() RecoveryInput {
+			in := baseInput()
+			in.PartialArtifact = true
+			in.Ledger.SideEffectDeclared = true
+			in.Observation = ObservationUnknown
+			return in
+		},
+		"binding-lost-unreachable": func() RecoveryInput {
+			in := baseInput()
+			in.Bindings.SandboxOK = false
+			in.Ledger.SideEffectDeclared = true
+			in.Observation = ObservationUnreachable
+			return in
+		},
+		"duplicate-with-ambiguous-side-effect": func() RecoveryInput {
+			// 副作用歧义优先于去重（R6 soak iteration 148 发现的缺口）：
+			// duplicate + unknown 观察 + 声明副作用 → fence+new-attempt+reconcile。
+			in := baseInput()
+			in.DuplicateOfAdmitted = true
+			in.Ledger.SideEffectDeclared = true
+			in.Observation = ObservationUnknown
+			return in
+		},
+	}
+	for name, mk := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			d, ex := decide(t, mk())
+			if d.Action != ActionNewAttempt || !d.RequiresReconcile {
+				t.Errorf("cross-cutting reconcile must apply on named branches, got %+v", d)
+			}
+			if !strings.Contains(ex.NextAction, "幂等键对账") {
+				t.Errorf("next action must include idempotency reconcile, got %q", ex.NextAction)
+			}
+		})
+	}
+}
+
 // 账本终态：按既有 Outcome 继续，不得重启。
 func TestDecide_AttemptAlreadyTerminal(t *testing.T) {
 	in := baseInput()

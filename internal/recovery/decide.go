@@ -83,7 +83,10 @@ func Decide(in RecoveryInput) (Decision, Explanation, error) {
 			d.Rationale = RationaleAmbiguousSideEffect
 		}
 
-	case in.DuplicateOfAdmitted:
+	case in.DuplicateOfAdmitted && !(in.Ledger.SideEffectDeclared && ambiguous(in.Observation)):
+		// duplicate delivery：幂等消费既有已接纳事实。例外（R6 soak 发现）：
+		// command 声明副作用且观察无法区分其是否已执行时，副作用歧义优先
+		// 于去重——落回不能证明安全分支以确保 fence+reconcile。
 		d = Decision{Action: ActionResume, Rationale: RationaleDuplicateDelivery}
 
 	case in.Observation == ObservationTerminalSuccess:
@@ -111,6 +114,14 @@ func Decide(in RecoveryInput) (Decision, Explanation, error) {
 		if d.RequiresReconcile {
 			d.Rationale = RationaleAmbiguousSideEffect
 		}
+	}
+
+	// 横切冻结规则（对全部分支生效）：任何 new Attempt 且 command 声明副作用
+	// 且观察为 unknown/unreachable（无法区分副作用是否已发生）→ 强制
+	// RequiresReconcile。partial-artifact/binding-lost 等分支按自身安全驱动
+	// 保留原 rationale；reconcile 是叠加义务，不覆盖主因。
+	if d.Action == ActionNewAttempt && in.Ledger.SideEffectDeclared && ambiguous(in.Observation) {
+		d.RequiresReconcile = true
 	}
 
 	ex.Decision = d
