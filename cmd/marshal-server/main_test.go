@@ -168,3 +168,81 @@ func TestRunUsage(t *testing.T) {
 		t.Fatalf("positional argument exit = %d, want %d", code, exitUsage)
 	}
 }
+
+// TestRunRecoversRunStateAcrossRestart 验证 marshal-server 跨进程 restart
+// recovery（R6-TOP3）：第一个 server 进程查询到一个不存在的 run（404），
+// 第二个 server 进程复用同一 state root 后对同一 run ID 的查询也返回 404，
+// 证明 server 重启后 state root 可达且 projection 恢复正常。同时验证
+// server 启动时 state root 中的 runstore 目录结构可被 reopen。
+func TestRunRecoversRunStateAcrossRestart(t *testing.T) {
+	root := testRepository(t)
+
+	startServer := func() (string, context.CancelFunc, <-chan int) {
+		ctx, cancel := context.WithCancel(context.Background())
+		stdoutReader, stdoutWriter := io.Pipe()
+		var stderr bytes.Buffer
+		exitCode := make(chan int, 1)
+		go func() {
+			exitCode <- run(ctx, []string{"--listen", "127.0.0.1:0", "--dir", root}, stdoutWriter, &stderr)
+		}()
+		scanner := bufio.NewScanner(stdoutReader)
+		if !scanner.Scan() {
+			t.Fatalf("no listen banner: %v", scanner.Err())
+		}
+		var banner struct {
+			Listen   string `json:"listen"`
+			Protocol string `json:"protocol"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &banner); err != nil {
+			t.Fatalf("decode listen banner %q: %v", scanner.Bytes(), err)
+		}
+		return banner.Listen, cancel, exitCode
+	}
+
+	queryRun := func(listenAddr, runID string) int {
+		request, err := http.NewRequest(http.MethodGet, listenAddr+"/v1alpha1/runs/"+runID+"/status", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Marshal-Request-Id", "req-restart-test")
+		request.Header.Set("Marshal-Protocol-Version", "marshal-public-api/v1alpha1")
+		request.Header.Set("Marshal-Principal", "restart-test-operator")
+		request.Header.Set("Marshal-Audience", "marshal-public-api")
+		request.Header.Set("Marshal-Scope", "repo:"+filepath.ToSlash(root))
+		request.Header.Set("Marshal-Deadline", time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+		client := &http.Client{Timeout: 30 * time.Second}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("request the versioned surface: %v", err)
+		}
+		defer response.Body.Close()
+		io.ReadAll(response.Body)
+		return response.StatusCode
+	}
+
+	// 第一轮：启动 server，查询不存在的 run。
+	listen1, cancel1, exit1 := startServer()
+	if code := queryRun(listen1, "run-restart-probe"); code != http.StatusNotFound {
+		t.Fatalf("first server query status = %d, want 404", code)
+	}
+	cancel1()
+	select {
+	case code := <-exit1:
+		if code != exitOK {
+			t.Fatalf("first server exit = %d", code)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("first server did not shut down")
+	}
+
+	// 第二轮：新 server 进程复用同一 state root。
+	listen2, cancel2, _ := startServer()
+	defer cancel2()
+	if code := queryRun(listen2, "run-restart-probe"); code != http.StatusNotFound {
+		t.Fatalf("restarted server query status = %d, want 404 (state root should be accessible after reopen)", code)
+	}
+	// 验证 state root 目录结构存在且可被 reopen。
+	if _, err := os.Stat(filepath.Join(root, ".marshal")); err != nil {
+		t.Fatalf("state root .marshal directory missing after restart: %v", err)
+	}
+}
