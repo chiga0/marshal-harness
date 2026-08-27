@@ -236,7 +236,9 @@ class SkillLayoutTest(unittest.TestCase):
                 continue
             with self.subTest(filename=path.name):
                 self.assertTrue(
-                    '"bin" / "test"' in content or '"bin/marshal"' in content,
+                    '"bin" / "test"' in content
+                    or '"bin" / "marshal"' in content
+                    or '"bin/marshal"' in content,
                     f"{path.name} builds a binary outside the repository bin/ tree",
                 )
         repository_root = SKILL_ROOT.parents[2]

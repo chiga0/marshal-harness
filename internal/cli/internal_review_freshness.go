@@ -7,10 +7,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/verification"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -66,6 +68,14 @@ type reviewFreshnessRequest struct {
 type reviewFreshnessResponse struct {
 	OK     bool   `json:"ok"`
 	Digest string `json:"digest,omitempty"`
+}
+
+type localReviewIdentityChain struct {
+	CurrentAttemptID    string                                      `json:"currentAttemptId"`
+	ReviewRound         uint                                        `json:"reviewRound"`
+	ReviewBinding       selfidentity.LocalReviewBindingV1           `json:"reviewBinding"`
+	VerificationBinding selfidentity.LocalVerificationBindingV1     `json:"verificationBinding"`
+	ReviewObservation   selfidentity.LocalSelfIdentityObservationV1 `json:"reviewObservation"`
 }
 
 func processReviewFreshness(input reviewFreshnessRequest, validator *contract.Validator, schemas map[string]*jsonschema.Schema) (string, error) {
@@ -126,6 +136,29 @@ func processReviewFreshness(input reviewFreshnessRequest, validator *contract.Va
 		}
 		if err := compiled.Validate(document); err != nil {
 			return "", err
+		}
+	case "local-review-chain":
+		var chain localReviewIdentityChain
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&chain); err != nil {
+			return "", err
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			return "", fmt.Errorf("local review identity chain has trailing data")
+		}
+		expected, err := selfidentity.BuildReviewBinding(
+			chain.CurrentAttemptID,
+			chain.ReviewRound,
+			chain.VerificationBinding,
+			chain.ReviewObservation,
+		)
+		if err != nil {
+			return "", err
+		}
+		if !reflect.DeepEqual(chain.ReviewBinding, expected) {
+			return "", fmt.Errorf("local review identity chain does not match Core projection")
 		}
 	case "canonical":
 	default:

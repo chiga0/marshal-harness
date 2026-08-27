@@ -506,6 +506,16 @@ def core_digest_value(script: Path, value: object) -> str:
         path.unlink(missing_ok=True)
 
 
+def core_validate_local_review_chain(script: Path, value: object) -> None:
+    path = write_temp_json(value)
+    try:
+        core_probe(script, "local-review-chain", "-", path)
+    except PreflightError:
+        fail("local-self-identity-binding-projection-mismatch")
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def core_validate_bytes(script: Path, kind: str, data: bytes) -> str:
     if kind not in CORE_KINDS:
         fail("core-contract-kind-invalid")
@@ -1124,6 +1134,38 @@ def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: di
     task, task_digest = loaded["taskSpec"][1], loaded["taskSpec"][2]
     report, verification_digest = loaded["verificationReport"][1], loaded["verificationReport"][2]
     artifacts, artifact_digest = loaded["artifactManifest"][1], loaded["artifactManifest"][2]
+
+    packet_local_binding = packet.get("localSelfIdentityBinding")
+    report_local_binding = report.get("localSelfIdentityBinding")
+    manifest_local_binding = artifacts.get("localSelfIdentityBinding")
+    if packet_local_binding is None:
+        if report_local_binding is not None or manifest_local_binding is not None:
+            fail("local-self-identity-binding-presence-mismatch")
+    else:
+        if report_local_binding is None or manifest_local_binding is None:
+            fail("local-self-identity-binding-presence-mismatch")
+        if report_local_binding != manifest_local_binding:
+            fail("local-self-identity-binding-projection-mismatch")
+        review_digest = packet_local_binding.get("reviewObservationDigest") if isinstance(packet_local_binding, dict) else None
+        attempt_id = state.get("currentAttemptId")
+        review_round = state.get("reviewRound")
+        if not isinstance(attempt_id, str) or not isinstance(review_round, int) or review_round <= 0 or not isinstance(review_digest, str) or DIGEST_RE.fullmatch(review_digest) is None:
+            fail("local-self-identity-binding-projection-mismatch")
+        observation_path = f"attempts/{attempt_id}/local-self-identity-review-{review_round}-{review_digest.removeprefix('sha256:')}.json"
+        observation_raw, observation_identity = read_regular(
+            run_root, observation_path, "local-self-identity-review-observation-invalid"
+        )
+        observation = parse_json(observation_raw, "local-self-identity-review-observation-invalid")
+        if raw_digest(observation_raw) != core_digest_value(script, observation):
+            fail("local-self-identity-review-observation-invalid")
+        core_validate_local_review_chain(script, {
+            "currentAttemptId": attempt_id,
+            "reviewRound": review_round,
+            "reviewBinding": packet_local_binding,
+            "verificationBinding": report_local_binding,
+            "reviewObservation": observation,
+        })
+        records.append((clean_relative(observation_path), observation_raw, observation_identity))
     exact = {
         "taskId": state["taskId"], "runId": state["runId"], "specDigest": state["specDigest"], "baseSha": state["baseSha"],
     }
@@ -1177,6 +1219,10 @@ def validate_packet_inputs(script: Path, run_root: Path, packet: dict, state: di
         evidence["workerCandidateDigest"] = worker_candidate
     if eligibility_digest:
         evidence["eligibilityBindingDigest"] = eligibility_digest
+    if packet_local_binding is not None:
+        evidence["localSelfIdentityBindingDigest"] = core_digest_value(
+            script, packet_local_binding
+        )
     if core_digest_value(script, evidence) != packet.get("evidenceDigest"):
         fail("evidence-digest-recompute-mismatch")
     return bindings, records
