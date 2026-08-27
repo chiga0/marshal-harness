@@ -734,6 +734,8 @@ Pre-R4 contract gate 四项与 R4 单一恢复模型均由快速收敛治理交�
 
 按上述证据 I186-R4 于 2026-08-27 记为 `DONE`（收敛域合同+决策语义层）。
 
+**R4 真实装配与恢复路径消费补证（2026-08-27）**：范围标注中的「`marshal explain run` CLI wiring 与真实 ledger 装配」已由 `6a26012` 交付（`internal/explain` 从权威 journal/snapshot/attempt anchor 装配 `recovery.RecoveryInput`，`marshal explain run RUN_ID [--json]` 渲染恢复时间线/decision/next action，只读不改写状态）；「恢复路径消费单一恢复模型」已由 `2bf4f3e` 交付：`explain.AssembleWithStaleness` 开放 staleness 注入，supervisor 死 driver 分派以自身 driver 死亡窗口装配 `recovery.Decide`，仅 new-attempt 且免幂等键对账才派生 driver；`task run --recover-dead-driver` 逃生舱在 owner 死亡耐用记录证明后走同一 `recoverTakeoverAdmission`（staleness≈0），需对账的 ambiguous side effect 一律 fail closed 并指向 `marshal explain run`。新增 supervisor 分派矩阵与 cli admission 三分矩阵测试；既有 `TestSupervise*` 全量保持绿色。剩余 Provider 侧 Inspect/Reconcile/Cancel/Terminate 接线与 `I186-ARCH-EFFECT-SINK-FENCING`/`I186-ARCH-CUTOVER-EQUIVALENCE` 仍归 R5/R6，不随本补证关闭。
+
 ## I186-R3 收口：快速收敛治理下的 Exit Gate 证据（2026-08-27）
 
 2026-08-27 起维护者授权 I186 快速收敛治理：单 Lead + 多 Sub-Agent 高并发，停用 Marshal skill/admission/ReviewDecision/独立 reviewer/rework 轮转，Lead 直接实现、自审真实 diff 后直接合并；防错误发布、数据破坏与 trust-boundary ADR 三项硬约束保留，dogfood 问题（含 Issue #212 签名身份）另行沉淀不阻塞主线。Issue #191 原 Exit Gate 中「独立 reviewer APPROVE / PR #192 登记前置」两条流程性条件按该授权不再适用；finding 稳定登记继续以本报告为准（不依赖未合入 PR）。
