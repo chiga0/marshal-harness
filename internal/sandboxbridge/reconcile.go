@@ -183,11 +183,16 @@ func (b *Bridge) SweepRegistered(ctx context.Context, provider sandbox.SandboxPr
 }
 
 // controlRootOf 从 request 提取 attempt control root（落盘目录的父目录即
-// attempt 目录）。
+// attempt 目录）。空字段原样返回空——filepath.Clean("") 返回 "."，必须
+// 在 Clean 前判空，否则会把记录错误写到当前工作目录。
 func controlRootOf(data []byte) string {
 	var v struct {
 		ControlRoot string `json:"controlRoot"`
 	}
 	_ = json.Unmarshal(data, &v)
-	return filepath.Clean(strings.TrimSpace(v.ControlRoot))
+	trimmed := strings.TrimSpace(v.ControlRoot)
+	if trimmed == "" {
+		return ""
+	}
+	return filepath.Clean(trimmed)
 }

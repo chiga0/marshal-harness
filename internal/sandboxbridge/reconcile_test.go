@@ -167,3 +167,25 @@ func TestRunWorkerRecordsAllocation(t *testing.T) {
 		t.Errorf("record must carry timestamp")
 	}
 }
+
+func TestRunWorker_NoControlRootNeverWritesCwd(t *testing.T) {
+	// 回归：controlRootOf 对空字段必须返回空——filepath.Clean("") = "."，
+	// 过去会把 sandbox-allocation.json 写进包目录（泄漏到仓库）。
+	if got := controlRootOf([]byte(`{"taskId":"T1"}`)); got != "" {
+		t.Fatalf("empty controlRoot must stay empty, got %q", got)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	leak := filepath.Join(wd, allocationRecordName)
+	_ = os.Remove(leak)
+	provider := sandbox.NewFakeProvider(sandbox.FakeConfig{})
+	bridge, _ := NewBridge(provider)
+	if _, err := bridge.RunWorker(context.Background(), &fakeAdapter{id: "fake"}, validRequest(t)); err != nil {
+		t.Fatalf("RunWorker: %v", err)
+	}
+	if _, err := os.Stat(leak); !os.IsNotExist(err) {
+		t.Fatalf("allocation record must never land in package cwd")
+	}
+}
