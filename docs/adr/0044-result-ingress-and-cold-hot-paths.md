@@ -17,7 +17,7 @@ Issue #186 Final Review 指出（I186-P1-3）：当前外部结果接纳未全�
 4. **冷热双路径**：
    - **热路径**：Attempt 在途的 checkpoint/heartbeat/progress 类高频小对象走 append-only 快速入账，只做最小 fencing/replay 校验，不承担完整 evidence 校验成本；
    - **冷路径**：WorkerResult/Candidate/Evidence ref 等终态或审计对象走完整 current-ledger recheck 与 digest 绑定后入账；
-   - 两路共享同一 authority ledger 与 sequence 语义，热路径条目最终必须可被冷路径核对吸收；热路径不得产生冷路径无法解释的权威事实。
+   - 两路共享同一 authority ledger 与 sequence 语义，热路径条目最终必须可被冷路径核对吸收；热路径不得产生冷路径无法解释的权威事实。本条的「可被冷路径核对吸收」已由 [ADR 0053](0053-pre-r4-contract-gates-and-single-recovery-model.md) 决策 1 细化（2026-08-27）：接纳路径分型为一等事实（`AdmissionLedger` put-if-absent），业务 kind 只允许 cold 入账，authority effect（extend-lease/bump-generation/decide-fencing）只允许作用于 cold 接纳，Restore 只消费 cold 接纳的 checkpoint。
 5. **崩溃语义**：ResultIngress 的接纳事务与 authority fact/outbox 提交保持原子；任一 crash window 恢复后，从 ledger 反推的结论只能是「已接纳（含幂等重放）」或「未接纳（可安全重新投递）」，不允许出现未知中间权威状态。
 6. **恢复链对齐**：结果歧义按 Planning Baseline v3 统一恢复链处理：`ledger state → pending/ambiguous command → Provider Inspect/Reconcile → active binding + lease recheck → resume | fence | new Attempt`；ResultIngress 自身不做业务 retry/rework/terminal 决策（该决策权归 R4 单一恢复模型）。
 
