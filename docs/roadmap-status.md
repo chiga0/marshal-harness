@@ -23,7 +23,7 @@ Milestone 状态与能力成熟度是两个维度：
 | `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Agent（pi）由 Local allocation 承载执行：`local.NewLocalRunner` → `sandboxbridge` exec-chain（`abf80e9`+，`544680b` 起含双 binding 接纳）；`internal/sandboxbridge` 集成证明 + cli `TestTaskRun*` 一致通过；另副侧带外的 macOS dogfood gate 激活 binary 仍受宿主企业策略阻断（固定 Mach-O 致命，go run 不可跨进程绑定 dogfood activation，属 Issue #212/ADR 0051 范畴）。 |
 | `I186-R2` | `IN_PROGRESS` | `COMPONENT` | durable journal/lease 与 ResultIngress 组件可复用；真实结果经文案 `internal/resultbinding` 双 binding + resultingress DRC 接纳（R3 生命面）；尚未构成单一命令级 authority 收敛完成型态。 |
 | `I186-R3` | `IN_PROGRESS` | `INTEGRATED` | 每个 Attempt 的 Agent/Sandbox 双 binding + admission 时刻 live Inspect 回读的 current-ledger recheck 已接入真实执行链（`internal/resultbinding` + bridge admission，sandbox-binding-admission.json anchor 持久化进 attempt 目录；live-terminated/replaced 拒绝面覆盖）；尚未对接 Darwin 侧可信 dogfood 全帧。 |
-| `I186-R4` | `PLANNED` | ` COMPONENT → DESIGN` | `internal/recovery` 为 component 级单一恢复模型（决策表 + explain 渲染）；落地到真实路径与 `marshal explain run` CLI wiring 是下一步主线之一。 |
+| `I186-R4` | `IN_PROGRESS` | `INTEGRATED` | `marshal explain run RUN_ID` 已落地（`internal/explain` 从权威 journal/snapshot/attempt anchor 装配 recovery.Decide，恢复时间线/lease/binding/冲突/决策/下一动作全部可读；cli 全绿）；唯一 recovery decision 到达既有恢复路径（supervisor/abort/retry 消费该 Decide）是剩余主线。 |
 | `I186-R5` | `PLANNED` | `DESIGN` | canary/cutover；真实 Agent 比较 authority invariants，Fake 才要求 exact digest；下一件主线。 |
 | `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、跨平台安装、macOS 签名/notarization、升级/回滚与 release；当前分别受 Issue #212（签名身份未 provision）与宿主策略阻断。 |
 
