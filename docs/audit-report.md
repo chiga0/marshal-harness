@@ -19,6 +19,17 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 
 本修订不降低任何 universal 不变量；Local ordinary-user 的 Core-held process observation 只支持 trusted single-user v1 profile，不能关闭 cloud/hardened 的 location attestation finding。生产 cutover、故障 conformance、签名/notarization 与 release identity 仍必须在 R5/R6 完成。
 
+## 终态职责图复杂度审计（2026-08-27）
+
+本轮复核确认：Kernel、authority ledger、Agent/Sandbox Provider、ResultIngress、独立 Verification、Decision、Effect reconcile 与 Artifact Store 分别对应不同故障或权威边界，作为长期**逻辑职责地图**没有过度设计；风险来自把每个逻辑方框直接实现为独立服务、协议或状态库。
+
+| Finding | 等级 | 状态 | 处置 |
+| --- | --- | --- | --- |
+| `V1-LOGICAL-PHYSICAL-CONFLATION` | P1 | `CLOSED-DOCS` | [整体架构](architecture.md#逻辑职责不等于物理服务)已明确 v1.0 采用单 Control Plane 进程、唯一 file-backed authority ledger、本地内容寻址对象存储和多个有界 Worker/Verifier runtime；职责默认进程内模块化，只有独立 trust boundary、durable lifecycle 或已测量的扩缩容/故障隔离需要才能拆服务。 |
+| `V1-PREMATURE-PLATFORM-GENERALIZATION` | P1 | `CLOSED-DOCS` | [实施计划](implementation-plan.md#v10-复杂度预算)禁止在 R1–R6 主线新建通用 `WorkflowTemplate` DSL、Goal DAG runtime、跨节点 scheduler、独立 GC service、第二 queue 或第二状态库；新增 seam 必须在同一切片接入真实 composition root。 |
+
+该关闭只表示实现与部署口径已经明确，不升级任何 Milestone 或能力成熟度，也不表示 Goal、WorkflowTemplate、远程 Artifact/Knowledge Store 或 GC 已实现。此次修订不改变 trust boundary、持久化语义、生命周期或发布权限，因此不新增 ADR；未来若拆分引入新的权威写路径、持久对象或跨域授权，仍必须先新增或替代 ADR。
+
 ## 行业协议收敛跟踪（2026-08-21 基线）
 
 外部背景（公开行业资料转述，未做在线核验）：agent 相关协议正沿三条轴在 Linux Foundation 轨道收敛——MCP（agent→工具/数据轴）进入 AAIF 并成为事实标准；A2A（agent↔agent 轴）由 Google 捐赠至 Linux Foundation 并获 100+ 背书；ACP（客户端↔agent 轴，LSP 式协议）已被 Gemini CLI、Neovim、JetBrains 等客户端采用。行业判断是自研私有 agent 协议的兼容性税持续上升。

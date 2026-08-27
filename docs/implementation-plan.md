@@ -33,6 +33,19 @@ marshal / loopback marshal-server
 
 Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Provider/SDK 矩阵、Web UI 与复杂 Goal DAG 均延期到 1.x。
 
+### v1.0 复杂度预算
+
+I186-R1→R6 按[整体架构的 v1.0 物理投影](architecture.md#v10-物理投影)实施，终态职责图不直接映射为服务清单：
+
+- Control Plane 默认保持一个 `marshal`/`marshal-server` 进程和一条 authority write path；Kernel、admission、schedule/allocation、ResultIngress、Decision 与 effect reconcile 优先实现为进程内模块；
+- v1.0 不新建通用 `WorkflowTemplate` DSL、Goal DAG runtime、跨节点 scheduler、独立 GC service、第二 queue 或第二状态库；
+- 新增 seam 必须直接关闭当前 R1–R6 exit criterion，或关闭已经在同一生产链复现的确定性故障；仅有未来复用价值不足以插入主线；
+- 每个切片必须在同一变更中接到 `cmd/marshal` 或 loopback `marshal-server` 的真实 composition root 并取得真实路径证据，禁止先铺 package/schema、以后再集成；
+- Provider 扩面必须晚于至少一条真实 Agent-in-Sandbox 纵切闭环；新增 Agent 复用既有 Sandbox，新增 Sandbox 复用既有 Agent，不复制 Core 生命周期；
+- 只有独立 trust boundary、durable lifecycle、已测量的扩缩容/故障隔离需要，才能把模块拆成独立进程；拆分不得产生第二业务权威。
+
+该预算不放宽 Worker 不自证、Worker/Publisher 分权、ResultIngress current-ledger recheck、Evidence 精确绑定、路径/凭据边界或默认不 merge。它只限制实现面的横向铺开，确保 v1.0 用最短纵切验证长期架构。
+
 ## 门禁
 
 本文 Local MVP 部分（Milestone 0–6）已由维护者授权实施；M7–M13 部分于 2026-08-10 随 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 接受而授权（M7–M12 为耐久 Runtime 平台阶段，M13 为 Goal 编排阶段）。M8–M13 还必须遵守 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)、[ADR 0018](adr/0018-control-plane-and-provider-ports.md) 与 [ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)：确定性 Core 是唯一 Supervisor；Typed Execution 不形成通用 Provider 协议；副作用采用 append-only 对账/补偿；Goal plan 先 proposal、后 deterministic admission。ADR 的接受只冻结设计，不提前升级实现与 conformance 状态。本文只是实施计划：信任边界、持久化契约、生命周期或发布权限的改变仍必须先新增或替代 ADR。

@@ -32,6 +32,19 @@ marshal / loopback marshal-server
 
 组件只有在上述真实 composition root 可达、真实 Agent 运行于 allocation、真实结果只经 ResultIngress 且故障 fixture 在同一路径生效时才是 `INTEGRATED`。Cloudflare 完整生产拓扑、HA、多用户、全部 Provider hardened 矩阵和 Goal orchestration 延期到 1.x。
 
+### v1.0 进程与存储拓扑
+
+上方纵切是调用链，不表示每个职责都要成为独立服务。v1.0 的默认物理拓扑是：
+
+- 一个 `marshal` 或 loopback `marshal-server` Control Plane 进程，进程内承载 Kernel、admission、schedule/allocation、ResultIngress、Decision 与 effect reconcile；
+- 一个 file-backed authority ledger 和一个本地 content-addressed object store；二者可以使用不同目录或实现，但只有 ledger 中的接纳关系具有业务权威；
+- 多个有界 Worker/Verifier runtime，由真实 Sandbox allocation 承载，并通过 Provider Adapter 接入；
+- Git、CI、Cloud 等外部系统只经 intent/receipt/reconcile 路径产生副作用。
+
+逻辑上的 Worker/Verifier 分权、Agent/Sandbox 双 binding、ResultIngress current-ledger recheck 和 Publisher 凭据隔离不因同机或同 binary 部署而放宽。进程内模块也必须通过 typed command/result 和 ledger transition 保持边界；反向地，不得仅为表现分层而增加 RPC、第二队列、第二状态库或通用工作流 DSL。
+
+通用 `WorkflowTemplate`、Goal Controller、跨节点 Scheduler/Allocation service、远程 Artifact/Knowledge Store 和独立 GC service 都属于 1.x 演进候选。v1.0 只允许固定、版本化 workflow profile，并优先使用保守 retention。模块拆分条件与终态职责图见[整体架构：逻辑职责不等于物理服务](architecture.md#逻辑职责不等于物理服务)。
+
 ## 组件分层
 
 ```mermaid

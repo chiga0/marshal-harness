@@ -52,6 +52,73 @@ marshal / loopback marshal-server
 
 任何平行 memory-only authority、直接 host `Adapter.Run` bypass 或不经 ResultIngress 的结果写入都不能进入 v1.0 supported path。Local ordinary-user profile 可以受支持，但其 assurance 明确止于 trusted single-user，不宣称 hardened。
 
+## 逻辑职责不等于物理服务
+
+终态架构首先是一张**职责与权威边界地图**，不是要求把每个方框部署成独立服务。Marshal 长期需要保留下图中的职责，因为它们分别关闭陈旧结果、重复副作用、权限越界、崩溃恢复和 Worker 自证等真实故障；但除非存在独立的持久状态、信任边界、故障域或扩缩容需求，否则这些职责默认作为同一进程内的模块实现。
+
+```mermaid
+flowchart TB
+    Client["User / API Client / Skill"] --> API["Public API<br/>GoalSpec + versioned workflow profile"]
+    API --> Kernel["Deterministic Control Kernel"]
+    Kernel --> Ledger[("Append-only Authority Ledger")]
+    Kernel --> Goal["Goal reconcile / budget / critical path<br/>(1.x)"]
+    Goal --> Schedule["Schedule + Allocation"]
+    Schedule --> Sandbox["Sandbox Provider<br/>Local / Container / VM / Remote"]
+    Sandbox --> Runtime["Agent Runtime"]
+    Runtime --> Agent["Agent Provider<br/>Qoder / Qwen / Codex / Pi"]
+    Runtime --> Candidate["Candidate / Transcript / ArtifactRef"]
+    Candidate --> Ingress["ResultIngress<br/>current-ledger recheck"]
+    Ingress --> Verify["Independent Verification"]
+    Verify --> Decision["Decision"]
+    Decision --> Kernel
+    Kernel --> Effect["Effect Reconciler<br/>intent / receipt / reconcile"]
+    Effect --> External["Git / CI / Cloud / other systems"]
+    Ledger --> Projection["Status / Explain / Audit projection"]
+    Ledger --> GC["Retention / GC"]
+    Artifact[("Content-addressed Artifact Store")] <--> Runtime
+    Artifact --> Ingress
+```
+
+图中的边界按以下方式理解：
+
+- `Kernel`、Goal reconcile、Scheduler 与 Allocation 在 v1.0 中属于同一 Control Plane 进程内的确定性模块；Goal DAG 与通用 `WorkflowTemplate` 仍是 1.x 候选，v1.0 只使用少量固定、版本化 workflow profile；
+- `ResultIngress`、Verification 与 Decision 保持不同的输入、身份和权威语义，但不要求成为三个网络服务；Worker 不能验证自己这一不变量保持不变；
+- Status、Explain 与 Audit 直接从 authority ledger 投影，不建设第二套事实数据库；
+- Artifact Store 只保存内容寻址 bytes，Candidate、Transcript、Evidence 与 Knowledge Snapshot 通过 digest 引用进入 ledger；Artifact bytes 或 Agent 自报不能反向改变 authority；
+- Retention/GC 在 v1.0 采用保守保留策略，只有引用关系、终态与审计保留期都可证明时才删除对象。
+
+### v1.0 物理投影
+
+v1.0 默认只形成三类运行单元，而不是按上图拆成微服务：
+
+```mermaid
+flowchart TB
+    Client["CLI / loopback client"] --> Marshal["marshal / marshal-server<br/>single Control Plane process"]
+    Marshal --> Ledger[("file-backed authority ledger")]
+    Marshal --> Objects[("local content-addressed objects")]
+    Marshal --> Workers["N bounded Worker / Verifier runtimes"]
+    Workers --> Providers["Agent + Sandbox adapters"]
+    Workers --> Marshal
+    Marshal --> Effects["GitHub / CI / external effects"]
+```
+
+默认部署规则：
+
+1. 使用一个固定、可发布和可签名的 `marshal`/`marshal-server` binary；Control Plane 模块进程内调用，不为模块边界引入网络协议；
+2. authority ledger 保持唯一，内存结构、queue、registry、SSE 与状态页都只是可重建 projection/cache；
+3. Worker 与 Verifier 可以是多个受控子进程或远程 runtime，但只通过冻结 command 和 ResultIngress 与 Core 交互；
+4. Provider-specific 行为留在 Adapter/Provider 实现内，不能让 Core 按 Qoder、Qwen、Codex 或 Pi 名称分叉；
+5. v1.0 先贯通至少一条真实 `AgentProvider → Sandbox allocation → ResultIngress → Verification → Outcome` 纵切，再增加 Provider 数量或横向平台能力。
+
+只有满足下列至少一项，逻辑模块才允许拆成独立进程或服务：
+
+- 需要独立凭据或隔离才能维持既有 trust boundary；
+- 拥有独立的 durable state、恢复周期或 fencing 生命周期；
+- 已有测量证明其吞吐、故障域或扩缩容需求无法由单体 Control Plane 满足；
+- 拆分后仍能保持一个 authority ledger 和一条写入/接纳路径，不产生第二业务权威。
+
+任何新增抽象都必须说明它关闭的具体故障、拥有的独立生命周期，以及不引入它会破坏的现有不变量。无法回答这三项时，不进入 v1.0 required path。
+
 ## 系统上下文
 
 ```mermaid
