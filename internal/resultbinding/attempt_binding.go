@@ -209,10 +209,13 @@ func AdmitWithDurableAuthority(ctx context.Context, binding *AttemptBinding, res
 	// liveState 来自 ingress 时刻的 Inspect。
 	facts.LiveAllocationState = liveState
 
-	// bindingcheck 仍需 registry/ledger 做 snapshot 一致性与 allocation
-	// generation 校验。registry 从 binding 文件重建（binding 文件本身是
-	// dispatch 时冻结的 authority，篡改已被 digest 检测拦截），但
-	// registration 的 active 状态已在上面从 durable authority 验证。
+	// bindingcheck 的 registry/ledger 是结构化校验的进程内投影，不是
+	// authority 来源。registration 的 active 状态已从 durable authority
+	// 验证（上面的 AgentRegistrationActive + ProviderRegistrationActive），
+	// allocation 的 live state 已从 Inspect 读取。seedRegistry/
+	// seedSandboxLedger 仅用于 bindingcheck 的 snapshot/generation 一致性
+	// 校验——验证 binding 冻结的 capability digest 与 allocation
+	// generation 是否自洽。authority 判定不依赖这些临时构造。
 	registry, err := seedRegistry(facts)
 	if err != nil {
 		return nil, err
