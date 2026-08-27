@@ -2438,7 +2438,12 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		// R2/R3 纠偏：注入真实 durable authority，使 admission 从文件 ledger
 		// 读取 registration/snapshot、从 DispatchLease 读取 dispatch 时冻结
 		// 的 lease expiry，而非以结果携带 Facts 临时构造。
-		bridge.WithDurableAuthority(sharedRuntime)
+		// 仅在 dispatchBinder 也使用同一 runtime 时注入——否则 LeaseFor
+		// 找不到 dispatch 时签发的 lease（dispatch 未走 BindDispatch 路径），
+		// execchain.go 的 fail-closed 会正确拒绝执行。
+		if dispatchBinder != nil {
+			bridge.WithDurableAuthority(sharedRuntime)
+		}
 		// v1.0 production gate：非 LaunchCapable adapter 在 production
 		// profile 中被拒绝（fail closed），不允许静默走 legacy Run。
 		// 通过 MARSHAL_PRODUCTION_GATE=1 显式启用，测试默认不启用。
@@ -2451,7 +2456,9 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// sharedRuntime 的 agentRegistry。此前 agentRegistry 在生产路径始终
 	// 为空，admission 的 AgentRegistrationActive 总是返回 false，导致
 	// 真实 agent 产出的结果在 admission 阶段被拒绝。
-	if sharedRuntime != nil && workerRunner != nil {
+	// 仅在 dispatchBinder 可用时执行——否则 lease 不会签发，admission
+	// 不会触发，注册 agent 无意义。
+	if sharedRuntime != nil && workerRunner != nil && dispatchBinder != nil {
 		probeRecord, probeErr := worker.Probe(ctx)
 		if probeErr != nil {
 			fmt.Fprintf(stderr, "运行失败：adapter probe 失败：%v\n", probeErr)
