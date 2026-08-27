@@ -82,6 +82,27 @@ func TestReadAttemptBindingMissingFileFailClosed(t *testing.T) {
 	}
 }
 
+// TestWriteAttemptBindingCreationOnce 验证 creation-once 语义：
+// 相同 facts 的重复写入是幂等的（安全重放），不同 facts 的写入 fail closed。
+func TestWriteAttemptBindingCreationOnce(t *testing.T) {
+	dir := t.TempDir()
+	facts := testBindingFacts()
+	// 第一次写入应成功。
+	if err := WriteAttemptBinding(dir, facts); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	// 相同 facts 的第二次写入应幂等成功。
+	if err := WriteAttemptBinding(dir, facts); err != nil {
+		t.Fatalf("idempotent rewrite: %v", err)
+	}
+	// 不同 facts 的写入应 fail closed。
+	tampered := facts
+	tampered.AllocationGeneration = facts.AllocationGeneration + 1
+	if err := WriteAttemptBinding(dir, tampered); err == nil || !errors.Is(err, ErrAdmissionRejected) {
+		t.Fatalf("write with different facts: err = %v, want ErrAdmissionRejected", err)
+	}
+}
+
 // fakeAuthoritySource 是测试用的 DurableAuthoritySource stub。
 type fakeAuthoritySource struct {
 	registration provider.ProviderRegistration

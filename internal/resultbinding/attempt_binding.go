@@ -34,6 +34,10 @@ const AttemptBindingFileName = "attempt-binding.json"
 // WriteAttemptBinding 把冻结的 Facts 序列化为 canonical JSON、计算
 // detached digest、写入 attempt 目录。文件是 immutable 的——ingress 时
 // 重新打开并验证 digest，任何篡改 fail closed。
+//
+// Creation-once（R2/R3 深化）：如果 binding 文件已存在且 digest 匹配，
+// 写入是幂等的（同一 attempt 重复 dispatch 的安全重放）；如果文件已
+// 存在但 digest 不匹配，fail closed（binding 被替换或篡改）。
 func WriteAttemptBinding(attemptDir string, facts Facts) error {
 	if attemptDir == "" {
 		return errors.New("resultbinding: attempt directory must not be empty")
@@ -56,6 +60,15 @@ func WriteAttemptBinding(attemptDir string, facts Facts) error {
 		return fmt.Errorf("resultbinding: write binding: %w", err)
 	}
 	path := filepath.Join(attemptDir, AttemptBindingFileName)
+	// Creation-once：如果文件已存在，验证 digest 匹配（幂等重放）。
+	if existing, readErr := os.ReadFile(path); readErr == nil {
+		existingDigest, parseErr := parseBindingDigest(existing)
+		if parseErr != nil || existingDigest != digest {
+			return fmt.Errorf("resultbinding: write binding: %w: attempt binding already exists with different content (creation-once violation)", ErrAdmissionRejected)
+		}
+		// 幂等重放：内容完全一致，不重写。
+		return nil
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
 		return fmt.Errorf("resultbinding: write binding: %w", err)
@@ -65,6 +78,18 @@ func WriteAttemptBinding(attemptDir string, facts Facts) error {
 		return fmt.Errorf("resultbinding: write binding: %w", err)
 	}
 	return nil
+}
+
+// parseBindingDigest 从已有 binding 文件中提取 BindingDigest 字段，
+// 不做完整反序列化（仅用于 creation-once 比较）。
+func parseBindingDigest(raw []byte) (string, error) {
+	var probe struct {
+		BindingDigest string `json:"bindingDigest"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return "", err
+	}
+	return probe.BindingDigest, nil
 }
 
 // ReadAttemptBinding 从 attempt 目录读取 immutable binding 并验证
@@ -100,6 +125,7 @@ func ReadAttemptBinding(attemptDir string) (*AttemptBinding, error) {
 func (b AttemptBinding) digest() (string, error) {
 	detached := b
 	detached.BindingDigest = ""
+	detached.CreatedAt = "" // CreatedAt 是元数据，不参与 authority 绑定
 	raw, err := json.Marshal(detached)
 	if err != nil {
 		return "", err
