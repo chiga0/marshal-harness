@@ -44,6 +44,15 @@ type Input struct {
 	StateRoot, RepositoryRoot, RunID string
 	Adapter                          port.WorkerAdapter
 	Validator                        *contract.Validator
+	// WorkerRunner is the strangler-cutover executor seam (ADR 0045): when
+	// non-nil it replaces the direct Adapter.Run(host) invocation at the
+	// worker execution point, receiving the same adapter and frozen
+	// KindWorkerRequest record. The returned record flows through the
+	// unchanged validation, identity, recheck and persistence chain
+	// downstream, so journal/verification/review/publication semantics are
+	// identical on both paths. A nil WorkerRunner keeps the legacy host
+	// path (explicit local-nonproduction compatibility profile).
+	WorkerRunner func(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error)
 	// OrphanStalenessThreshold bounds how recent the current attempt's last
 	// journal event must be for a RUNNING run to count as driver-live. Zero
 	// selects defaultOrphanStalenessThreshold.
@@ -664,7 +673,14 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if err := store.WriteSnapshot(lease, next); err != nil {
 		return Result{}, err
 	}
-	workerResult, runErr := input.Adapter.Run(ctx, domain.Record{Kind: domain.KindWorkerRequest, Data: requestData})
+	workerRecord := domain.Record{Kind: domain.KindWorkerRequest, Data: requestData}
+	var workerResult domain.Record
+	var runErr error
+	if input.WorkerRunner != nil {
+		workerResult, runErr = input.WorkerRunner(ctx, input.Adapter, workerRecord)
+	} else {
+		workerResult, runErr = input.Adapter.Run(ctx, workerRecord)
+	}
 	var ingressObservation *selfidentity.LocalSelfIdentityObservationV1
 	if dispatchObservation != nil {
 		if input.BeforeLocalResultIngress != nil {

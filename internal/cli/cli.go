@@ -34,12 +34,14 @@ import (
 	"github.com/chiga0/marshal-harness/internal/launcher"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/planning"
+	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/publication"
 	githubpublisher "github.com/chiga0/marshal-harness/internal/publisher/github"
 	"github.com/chiga0/marshal-harness/internal/reconciliation"
 	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/supervisor"
 	"github.com/chiga0/marshal-harness/internal/taskgen"
@@ -2377,9 +2379,28 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}
 		dispatchBinder = embeddedRuntime
 	}
+	// I186-R5 strangler cutover worker executor seam：MARSHAL_WORKER_EXECUTOR=sandbox
+	// 严格 opt-in 时，Worker 经 sandboxbridge 在绑定 allocation/lease 身份的
+	// 执行链中运行；未设置或任何其他取值保持 legacy `Adapter.Run(host)`
+	// 行为完全不变（ADR 0043 决策 7 的 explicit local-nonproduction
+	// compatibility profile）。回滚即移除该环境变量，无状态迁移。
+	var workerRunner func(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error)
+	if os.Getenv("MARSHAL_WORKER_EXECUTOR") == "sandbox" {
+		embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now)
+		if embeddedErr != nil {
+			fmt.Fprintln(stderr, "运行失败：sandbox executor runtime 初始化失败。")
+			return ExitFailure
+		}
+		bridge, bridgeErr := sandboxbridge.NewBridge(embeddedRuntime.Provider())
+		if bridgeErr != nil {
+			fmt.Fprintln(stderr, "运行失败：sandbox executor bridge 初始化失败。")
+			return ExitFailure
+		}
+		workerRunner = bridge.RunWorker
+	}
 	result, err := execution.Run(ctx, execution.Input{
 		StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID,
-		Adapter: worker, Validator: runtime.Validator(), DispatchBinder: dispatchBinder,
+		Adapter: worker, Validator: runtime.Validator(), WorkerRunner: workerRunner, DispatchBinder: dispatchBinder,
 		OrphanStalenessThreshold: orphanStalenessThreshold,
 		EntryLocalSelfIdentity:   entryObservation, ObserveLocalSelfIdentity: observeLocalSelfIdentity,
 	})
