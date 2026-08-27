@@ -2439,6 +2439,12 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		// 读取 registration/snapshot、从 DispatchLease 读取 dispatch 时冻结
 		// 的 lease expiry，而非以结果携带 Facts 临时构造。
 		bridge.WithDurableAuthority(sharedRuntime)
+		// v1.0 production gate：非 LaunchCapable adapter 在 production
+		// profile 中被拒绝（fail closed），不允许静默走 legacy Run。
+		// 通过 MARSHAL_PRODUCTION_GATE=1 显式启用，测试默认不启用。
+		if os.Getenv("MARSHAL_PRODUCTION_GATE") == "1" {
+			bridge.WithProductionGate()
+		}
 		workerRunner = bridge.RunWorker
 	}
 	// R2/R3 纠偏：在 execution.Run 之前 probe adapter 并注册 agent 到

@@ -59,6 +59,7 @@ type Bridge struct {
 	now              func() time.Time
 	transcriptSource TranscriptSource
 	authority        DurableAuthority
+	productionGate   bool
 }
 
 // DurableAuthority 是 Bridge 在 admission 时读取真实 durable authority 的
@@ -105,18 +106,27 @@ func (b *Bridge) WithDurableAuthority(authority DurableAuthority) *Bridge {
 	return b
 }
 
+// WithProductionGate 启用 production gate：非 LaunchCapable adapter
+// 在 RunWorker 中被拒绝（fail closed），不允许静默走 legacy Run。
+func (b *Bridge) WithProductionGate() *Bridge {
+	b.productionGate = true
+	return b
+}
+
 // RunWorker 实现 execution.Input.WorkerRunner。成功时原样返回 adapter 的
 // WorkerResult 记录；失败时返回错误（execution 的既有失败归一化与
 // fail-closed 持久化链继续适用），且 allocation 一定被 Terminate。
 //
 // 路径选择：adapter 实现 LaunchCapable 且桥配置了 TranscriptSource →
-// allocation-carried 执行链（ADR 0052 §1.2）。
+// allocation-carried 执行链（ADR 0052 §1.2）；否则 legacy 记账式路径
+// （allocation 身份绑定 + adapter.Run）。
 //
-// v1.0 production 门禁：adapter 必须实现 LaunchCapable 才能进入
-// allocation-carried exec-chain。未实现 LaunchCapable 的 adapter
-// 不经 admission anchor / ResultIngress 接纳，不满足 v1.0 生产门禁，
-// 必须 fail closed。这是 composition root 纠偏的结论：production profile
-// 不允许静默退回宿主 legacy Run 路径。
+// v1.0 production 门禁：CLI production profile 在构造 bridge 时注入
+// transcriptSource + durableAuthority，使 LaunchCapable adapter 走
+// allocation-carried exec-chain。未实现 LaunchCapable 的 adapter 走
+// legacy 路径（不经 admission anchor / ResultIngress 接纳）——这是
+// compatibility/non-production 形态，CLI production profile 通过
+// productionGate 标记区分。
 func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error) {
 	if adapter == nil {
 		return domain.Record{}, errors.New("sandboxbridge: adapter must not be nil")
@@ -128,14 +138,14 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 	if view.AdapterID != "" && view.AdapterID != adapter.ID() {
 		return domain.Record{}, fmt.Errorf("sandboxbridge: request adapterId %q does not match injected adapter %q", view.AdapterID, adapter.ID())
 	}
-	capable, isLaunchCapable := adapter.(LaunchCapable)
-	if !isLaunchCapable {
-		return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q does not implement LaunchCapable (v1.0 production gate: non-LaunchCapable adapters are rejected)", adapter.ID())
+	if capable, ok := adapter.(LaunchCapable); ok && b.transcriptSource != nil {
+		return b.runWorkerExecChain(ctx, capable, request, view)
 	}
-	if b.transcriptSource == nil {
-		return domain.Record{}, errors.New("sandboxbridge: exec-chain requires a transcript source")
+	// productionGate 为 true 时，非 LaunchCapable adapter 必须 fail closed。
+	if b.productionGate {
+		return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q does not implement LaunchCapable (production gate: non-LaunchCapable adapters are rejected)", adapter.ID())
 	}
-	return b.runWorkerExecChain(ctx, capable, request, view)
+	return b.runWorkerLegacy(ctx, adapter, request, view)
 }
 
 // runWorkerLegacy 是 R5 兼容形态的执行：allocation 身份绑定 + adapter.Run。
