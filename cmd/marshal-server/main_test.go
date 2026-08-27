@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/repository"
+	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
 // testRepository builds one hermetic git repository with a bound Marshal
@@ -170,12 +172,38 @@ func TestRunUsage(t *testing.T) {
 }
 
 // TestRunRecoversRunStateAcrossRestart 验证 marshal-server 跨进程 restart
-// recovery（R6-TOP3）：第一个 server 进程查询到一个不存在的 run（404），
-// 第二个 server 进程复用同一 state root 后对同一 run ID 的查询也返回 404，
-// 证明 server 重启后 state root 可达且 projection 恢复正常。同时验证
-// server 启动时 state root 中的 runstore 目录结构可被 reopen。
+// recovery（审计反馈 #7 修复）：在 state root 中创建一个真实 Run（非终态
+// Ready），启动 server 查询该 Run（应返回 200 + Ready 状态），杀死 server，
+// 新 server 进程复用同一 state root 后查询同一 Run（应返回同样的 200 +
+// Ready 状态），证明 runstore snapshot/journal 跨进程可恢复。
 func TestRunRecoversRunStateAcrossRestart(t *testing.T) {
 	root := testRepository(t)
+	stateRoot := filepath.Join(root, ".marshal")
+
+	// 在 state root 中创建一个真实 Run（非终态 Ready）。
+	const runID = "run-restart-real"
+	store := runstore.New(stateRoot)
+	lease, err := store.Acquire(runID)
+	if err != nil {
+		t.Fatalf("acquire run lease: %v", err)
+	}
+	runState := domain.RunState{
+		APIVersion:       domain.APIVersionV1Alpha1,
+		Kind:             domain.KindRunState,
+		RunID:            runID,
+		TaskID:           "TASK-RESTART",
+		State:            domain.StateReady,
+		Sequence:         0,
+		BaseSHA:          "0000000000000000000000000000000000000000",
+		WorktreePath:     "/tmp/worktree-restart-test",
+		CapabilityDigest: "sha256:" + strings.Repeat("a", 64),
+	}
+	if err := store.WriteSnapshot(lease, runState); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatalf("release lease: %v", err)
+	}
 
 	startServer := func() (string, context.CancelFunc, <-chan int) {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -199,7 +227,7 @@ func TestRunRecoversRunStateAcrossRestart(t *testing.T) {
 		return banner.Listen, cancel, exitCode
 	}
 
-	queryRun := func(listenAddr, runID string) int {
+	queryRun := func(listenAddr, runID string) (int, domain.RunState) {
 		request, err := http.NewRequest(http.MethodGet, listenAddr+"/v1alpha1/runs/"+runID+"/status", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -216,14 +244,20 @@ func TestRunRecoversRunStateAcrossRestart(t *testing.T) {
 			t.Fatalf("request the versioned surface: %v", err)
 		}
 		defer response.Body.Close()
-		io.ReadAll(response.Body)
-		return response.StatusCode
+		body, _ := io.ReadAll(response.Body)
+		var state domain.RunState
+		_ = json.Unmarshal(body, &state)
+		return response.StatusCode, state
 	}
 
-	// 第一轮：启动 server，查询不存在的 run。
+	// 第一轮：启动 server，查询真实 Run——应返回 200 + Ready。
 	listen1, cancel1, exit1 := startServer()
-	if code := queryRun(listen1, "run-restart-probe"); code != http.StatusNotFound {
-		t.Fatalf("first server query status = %d, want 404", code)
+	code1, state1 := queryRun(listen1, runID)
+	if code1 != http.StatusOK {
+		t.Fatalf("first server query status = %d, want 200 (real Run should be found)", code1)
+	}
+	if state1.RunID != runID || state1.State != domain.StateReady {
+		t.Fatalf("first server returned unexpected state: RunID=%q State=%q, want RunID=%q State=%q", state1.RunID, state1.State, runID, domain.StateReady)
 	}
 	cancel1()
 	select {
@@ -235,14 +269,21 @@ func TestRunRecoversRunStateAcrossRestart(t *testing.T) {
 		t.Fatal("first server did not shut down")
 	}
 
-	// 第二轮：新 server 进程复用同一 state root。
+	// 第二轮：新 server 进程复用同一 state root——应返回同样的 200 + Ready。
 	listen2, cancel2, _ := startServer()
 	defer cancel2()
-	if code := queryRun(listen2, "run-restart-probe"); code != http.StatusNotFound {
-		t.Fatalf("restarted server query status = %d, want 404 (state root should be accessible after reopen)", code)
+	code2, state2 := queryRun(listen2, runID)
+	if code2 != http.StatusOK {
+		t.Fatalf("restarted server query status = %d, want 200 (real Run should survive restart)", code2)
 	}
-	// 验证 state root 目录结构存在且可被 reopen。
-	if _, err := os.Stat(filepath.Join(root, ".marshal")); err != nil {
-		t.Fatalf("state root .marshal directory missing after restart: %v", err)
+	if state2.RunID != runID || state2.State != domain.StateReady {
+		t.Fatalf("restarted server returned unexpected state: RunID=%q State=%q, want RunID=%q State=%q", state2.RunID, state2.State, runID, domain.StateReady)
+	}
+	if state1.Sequence != state2.Sequence {
+		t.Errorf("sequence mismatch across restart: first=%d second=%d", state1.Sequence, state2.Sequence)
+	}
+	// 验证 state root 目录结构存在。
+	if _, err := os.Stat(filepath.Join(stateRoot, "runs", runID)); err != nil {
+		t.Fatalf("run directory missing after restart: %v", err)
 	}
 }
