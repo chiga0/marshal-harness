@@ -10,7 +10,7 @@
 
 ## 当前阶段
 
-本仓库已于 2026-08-03 通过实施门禁，ADR 0001–0011 已接受；2026-08-07 增补接受 ADR 0012–0014；2026-08-10 接受 ADR 0016，把长期目标重置为长寿命 Runtime/Control Plane，并冻结 AgentAdapter 与 SandboxProvider 分层及 M7–M13 路线，ADR 0015 未接受即被 ADR 0016 取代；2026-08-11 接受 ADR 0017–0019，依次冻结 Provider-neutral Sandbox、Control Plane/Provider Port，以及确定性 Supervisor、Typed Execution、Goal admission 与 append-only 补偿语义。Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`；M7 设计与契约已通过，M8 于 2026-08-13 通过退出门禁，M9 于 2026-08-14 通过（设计与契约+本 milestone 交付门禁通过；七交付 PR 全部合入 main 且远端 CI 全绿：a lease 持久账本 PR #104、b typed edge 运行时接线 PR #107、c1 marshal-server 常驻 + Public API PR #111、c2 SSE 只读投影 PR #115、c3 远程注册 + TLS 基线 PR #116、e DurableExecutionEngine seam PR #119、d Push/Pull 双拓扑 transport + conformance PR #120），不表示 M10–M13 实现状态变化，也不表示 conformance 终态；状态取值定义见 `docs/roadmap-status.md`。2026-08-24 接受 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 路线修订：架构收敛改为纵切优先的 `I186-R0→R6`（rebaseline + ADR → 最薄 Agent-in-Sandbox 纵切 → Command/Result authority 收敛 → 双 Provider binding → 单一恢复模型 → strangler cutover → conformance/replan）；M0–M9 历史结论与代码资产保留，M10–M13 继续暂停直接推进，等待 `I186-R6 DONE` 后重新排期。当前状态为 `I186-R0/R1/R2: DONE`、`I186-R3: IMPLEMENTING`：`I186-R3-A/B/C: DONE`，R3-D1/D2 两组 successor 均终态 `REJECTED` 并回到 plan，R3-E/F 尚未完成；Issue #209 与 PR #211 已闭环，Issue #210 首个 Harness 实现切片独立评审未通过，已回到 plan。2026-08-27 接受 ADR 0051：Issue #212 的 fixed-object local-exec viability 仍是当前 R3 pre-CLI blocker，完整 managed/release producer、签名、安装、current/high-water 与 notarization 改为 R6/release gate；本地 dogfood 只允许显式 `darwin-local-dogfood`、`publication:none`、ordinary-user/workspace-write/non-production，不能支持发布或 production assurance。后续变更仍须按门禁流程：信任边界/持久化契约/生命周期/发布权限的改变必须新增或替代 ADR。
+本仓库已于 2026-08-03 通过实施门禁，ADR 0001–0011 已接受；2026-08-07 增补接受 ADR 0012–0014；2026-08-10 接受 ADR 0016，把长期目标重置为长寿命 Runtime/Control Plane，并冻结 AgentAdapter 与 SandboxProvider 分层及 M7–M13 路线，ADR 0015 未接受即被 ADR 0016 取代；2026-08-11 接受 ADR 0017–0019，依次冻结 Provider-neutral Sandbox、Control Plane/Provider Port，以及确定性 Supervisor、Typed Execution、Goal admission 与 append-only 补偿语义。Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`；M7 设计与契约已通过；M8/M9 保留当时定义下的 `PASSED` 历史证据，但相关 Runtime 资产尚未整体进入真实生产调用链，不得据此宣称 v1.0 端到端集成完成。2026-08-24 接受 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的 `I186-R0→R6` 纵切路线。2026-08-27 接受 ADR 0051，冻结 `darwin-local-dogfood` 的 ordinary-user/non-production 边界；同日接受 [ADR 0052](docs/adr/0052-v1-release-scope-and-production-reachability.md)，把 v1.0 收敛为单节点、单用户、可信仓库、至少一个真实 AgentProvider 与一个真实 Local/Container SandboxProvider，并增加 `DESIGN→COMPONENT→INTEGRATED→RELEASED` 成熟度和生产可达性门禁。当前权威状态：`I186-R0: PASSED`；`I186-R1: IN_PROGRESS`（已有 component，真实 composition root 尚未贯通）；`I186-R2/R3: PLANNED`（已有可复用 component，但不得标记完成）；`I186-R4–R6: PLANNED`。M10–M13 不再阻塞 v1.0，作为 R6 后 1.x 候选重新排期。后续变更仍须按门禁流程：信任边界/持久化契约/生命周期/发布权限的改变必须新增或替代 ADR。
 
 ## 修改设计前必读
 
@@ -21,7 +21,7 @@
 3. `docs/architecture.md`
 4. `docs/task-lifecycle.md`
 5. `docs/security-model.md`
-6. `docs/runtime-architecture.md`（M7–M13 目标架构）
+6. `docs/runtime-architecture.md`（长期目标架构；v1.0 投影由 ADR 0052 与 I186-R0→R6 定义）
 7. `docs/adr/` 中相关 ADR
 
 ## 不可破坏的不变量（universal）

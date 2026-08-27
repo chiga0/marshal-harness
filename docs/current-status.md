@@ -25,17 +25,19 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 因此，“本地 CLI 能运行”与“Marshal 可安全调度该 Adapter”是两个不同结论；文档只采用后者作为生产可用依据。
 
-## 正在建设
+## v1.0 正在建设
 
-以下能力已有明确设计，但当前发行版还不能提供：
+当前第一优先级不是继续扩展组件数量，而是把已有资产收敛为一条真实可达的生产链：
 
-- 常驻的 `marshal-server` 和面向客户端的网络接口；
-- 远程任务队列与分布式执行；
-- 可替换的远程 Sandbox，包括 Cloudflare Sandbox；
-- 生产级数据库、对象存储、多节点恢复和高可用；
-- 多用户身份、项目级权限和完整的服务端审计；
-- 跨多个任务推进复杂目标、动态重规划和累计预算控制；
-- Web 控制台和完整的 Provider SDK。
+- `marshal` 或 loopback `marshal-server` 进入同一个 durable Run journal；
+- Core-owned `WorkerExecutor` 把真实 Agent 放进 Local/Container allocation；
+- 真实结果只经 `ResultIngress` 接纳，并执行 Agent/Sandbox 双 binding current-ledger recheck；
+- restart、lost response、stale/replayed result、lease/binding drift 都能确定性恢复或拒绝；
+- macOS 与 Linux 产出稳定安装物，macOS 正式包通过签名与 notarization。
+
+这些能力目前处于 `COMPONENT` 或集成中，不能因为 package、测试或 API 已存在就表述为 `INTEGRATED`。
+
+Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Provider SDK、Web UI 与复杂 Goal DAG 已明确延期到 1.x。
 
 ## 能力不会被混淆
 
@@ -45,12 +47,12 @@ Marshal 正在从本地工具演进为长寿命、可自托管的 Runtime。下�
 
 ## 接下来怎么走
 
-近期建设顺序是：
+近期建设顺序以 v1.0 生产可达性为唯一主线：
 
-1. 把现有本地能力迁移到统一的 Runtime 基座；
-2. 提供常驻服务和远程任务分发；
-3. 接入 Cloudflare Sandbox，并验证执行环境可以替换；
-4. 完成生产存储、高可用、自托管部署和长时间稳定性测试；
-5. 在稳定平台上增加复杂 Goal 编排。
+1. 接通真实 Agent-in-Local/Container walking skeleton；
+2. 收敛 command/result authority 与 durable recovery；
+3. 落地 Agent/Sandbox 双 binding 与 Core-held local process observation；
+4. 完成单一恢复模型、strangler cutover 和旧 host bypass 移除；
+5. 通过跨平台故障 conformance、签名/notarization 和 release gate。
 
-详细的工程 Milestone、协议和验收记录保留在 GitHub 仓库中，供贡献者和维护者使用，不属于用户站点的默认阅读内容。
+详细范围见 GitHub 上的 [ADR 0052](https://github.com/chiga0/marshal-harness/blob/main/docs/adr/0052-v1-release-scope-and-production-reachability.md)，实时工程状态见 [Roadmap](https://github.com/chiga0/marshal-harness/blob/main/docs/roadmap-status.md)。

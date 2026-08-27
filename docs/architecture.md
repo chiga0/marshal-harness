@@ -1,6 +1,6 @@
 # 整体架构
 
-> 规范状态：Marshal 终态整体架构，更新于 2026-08-24；依据已接受的 [ADR 0016–0019](adr/README.md) 与 [ADR 0043–0045](adr/README.md)。标注 **Proposed** 的组件尚无 ADR 出处，不构成合同，也不进入 required path。当前实现与计划状态以 [Roadmap](roadmap-status.md) 为准。
+> 规范状态：Marshal 终态整体架构，更新于 2026-08-27；依据已接受的 [ADR 0016–0019](adr/README.md)、[ADR 0043–0045](adr/README.md) 与 [ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md)。标注 **Proposed** 的组件尚无 ADR 出处，不构成合同，也不进入 required path。当前实现与计划状态以 [Roadmap](roadmap-status.md) 为准。
 
 本文定义 Marshal 的整体产品架构：系统由哪些部分组成、权威在哪里、Executor 如何协作，以及 embedded/local 与 C/S 如何共享同一业务语义。Local MVP 仅在“当前交付映射”中说明，不定义系统边界。字段级契约与故障语义见 [Runtime 架构](runtime-architecture.md)。
 
@@ -22,10 +22,35 @@ Marshal 的目标不是让一个 Agent 或进程连续运行数月，而是提�
 | --- | --- | --- |
 | Local MVP（M0–M6） | `USABLE` | CLI-first 模块化单体、独立 worktree、Worker Adapter、Verification、Review/Rework、GitHub Draft Publisher、恢复与审计 |
 | Runtime 设计（M7） | `PASSED` | C/S、SandboxProvider、Provider Port、权威/actor 分离、Typed Execution 与 Goal admission 已冻结 |
-| Runtime 平台（M8–M12） | `PLANNED` | Sandbox SPI、`marshal-server`、远程 Provider、HA、SDK 与 soak 尚未实现 |
-| Goal orchestration（M13） | `PLANNED` | Goal DAG、Planner admission、跨 Run Evidence、预算和人工暂停尚未实现 |
+| Runtime 组件资产（历史 M8/M9） | `PASSED` / `COMPONENT` | 保留当时退出证据；Sandbox SPI、`marshal-server`、lease、transport 与 ResultIngress 相关组件尚未共同进入真实 Agent 生产链 |
+| v1.0 生产纵切（I186-R0→R6） | `IN_PROGRESS` | R0 `PASSED`；R1 `IN_PROGRESS`；R2–R6 `PLANNED`。目标是一条单节点、单用户、可信仓库的可恢复真实执行链 |
+| 1.x 平台扩展（原 M10–M13） | `PLANNED` | Cloudflare 完整生产拓扑、HA、多用户、SDK 与 Goal DAG 在 v1.0 后重排 |
 
 上表只把已交付代码映射到终态架构，不以当前实现反向定义产品。本文不会把 `PLANNED` 能力描述成已交付；实时状态以 [Roadmap](roadmap-status.md) 为准。
+
+### 成熟度与生产可达性
+
+Milestone 状态描述阶段是否通过；能力成熟度描述代码是否真实可用，两者不能混用：
+
+- `DESIGN`：只有合同；
+- `COMPONENT`：实现和测试存在，但真实 composition root 不可达；
+- `INTEGRATED`：`cmd/marshal` 或 `cmd/marshal-server` 可达，真实 Agent 与结果 bytes 穿过该路径；
+- `RELEASED`：该集成路径通过 release gate 并进入受支持产物。
+
+v1.0 的唯一支持链为：
+
+```text
+marshal / loopback marshal-server
+  → durable Run journal
+  → Core-owned WorkerExecutor
+  → Local/Container Sandbox allocation
+  → real AgentRuntime
+  → ResultIngress
+  → independent Verification / Review
+  → Outcome
+```
+
+任何平行 memory-only authority、直接 host `Adapter.Run` bypass 或不经 ResultIngress 的结果写入都不能进入 v1.0 supported path。Local ordinary-user profile 可以受支持，但其 assurance 明确止于 trusted single-user，不宣称 hardened。
 
 ## 系统上下文
 

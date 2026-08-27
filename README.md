@@ -8,7 +8,7 @@
 
 Marshal 是一个可自托管的任务控制系统。它持续接收新的开发任务，把复杂需求拆成有限、可检查的执行步骤，安排不同 Agent 和执行环境完成工作，并保留恢复、验证与审计所需的信息。
 
-当前版本已经可以在本地完成 Coding Agent 的执行、独立验证、审查和 GitHub Draft PR 发布。常驻云端服务、远程 Sandbox 和跨任务 Goal 编排正在建设中。
+当前版本已经可以在本地完成 Coding Agent 的执行、独立验证、审查和 GitHub Draft PR 发布。v1.0 正在把这些组件收敛为一条可恢复的 Agent-in-Sandbox 生产链；常驻云端、多节点 HA 与跨任务 Goal 编排属于后续 1.x。
 
 [阅读文档](https://chiga0.github.io/marshal-harness/) · [查看当前能力](https://chiga0.github.io/marshal-harness/current-status/) · [快速开始](https://chiga0.github.io/marshal-harness/getting-started/)
 
@@ -44,7 +44,13 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 - 使用独立凭据创建 GitHub Draft PR；
 - 中断后的检查、恢复和安全清理。
 
-尚未交付：`marshal-server`、远程任务队列、Cloudflare Sandbox、生产级高可用、多用户服务、Web UI 和复杂 Goal 编排。详细状态见[当前可用能力](https://chiga0.github.io/marshal-harness/current-status/)。
+`marshal-server`、Sandbox SPI、ResultIngress 和恢复组件已经存在，但尚未共同驱动同一条真实 Agent 执行链，因此还不能把它们称为 v1.0 集成完成。详细状态见[当前可用能力](https://chiga0.github.io/marshal-harness/current-status/)。
+
+## v1.0 发布目标
+
+v1.0 只承诺单节点、单用户、可信仓库：至少一个真实 AgentProvider 在真实 Local/Container Sandbox allocation 中运行，命令和结果由同一 durable authority ledger 管理，结果只经 ResultIngress 接纳，并通过重启恢复、双 binding、独立验证和故障注入。发布支持 `publication:none` 与可选 GitHub Draft PR，默认不 merge。
+
+Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、全部 Provider hardened 矩阵、Web UI 与复杂 Goal DAG 延期到 1.x，不阻塞首个正式版本。完整范围见 [ADR 0052](docs/adr/0052-v1-release-scope-and-production-reachability.md) 与 [Roadmap](docs/roadmap-status.md)。
 
 ## 安装
 

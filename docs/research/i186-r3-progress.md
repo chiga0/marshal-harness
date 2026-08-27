@@ -2,9 +2,11 @@
 
 更新时间：2026-08-27
 
+> **2026-08-27 状态重置**：本页保留 R3 component checkpoint 的实现事实，但 [ADR 0052](../adr/0052-v1-release-scope-and-production-reachability.md) 已按 production reachability 重置阶段状态。`I186-R1` 当前为 `IN_PROGRESS`，`I186-R2/R3` 为 `PLANNED`；下文的 R3-A/B/C/D “完成”仅表示组件或纯核心 checkpoint，不表示 R3 stage、真实 production wiring 或 v1.0 集成完成。
+
 ## 当前结论
 
-`I186-R3` 保持 `IMPLEMENTING`，不能标记为 `DONE`。R3-A/B/C 已完成；本轮在锁定基线 `a46211a80b3a04a8f27806ae7ded677a94f2c261` 上建立 `feat/i186-r3-direct`，直接重做 R3-D，不接纳历史 `REJECTED` successor 的提交，只选择性复用其测试思想。
+`I186-R3` 当前为 `PLANNED`，成熟度为 `COMPONENT`，不能标记为 `DONE`。R3-A/B/C 及本页记录的 D 纯核心可作为后续实现资产复用；它们必须在 R1 真实 walking skeleton 和 R2 单一 authority 完成后接入 production ResultIngress，才能重新进入 R3 stage 验收。
 
 为优先完成 v1.0，当前交付策略调整为：单 Lead 负责权威基线、实现、自审、合并与发布；多个 Sub-Agent 只承担互斥只读审计或独立代码切片；不再使用 Marshal skill 的 admission、ReviewDecision 和多轮 rework 流程。仍保留 Git 锁定基线、可复现测试、真实 diff 自审，以及改变信任边界/持久化/生命周期/发布权限前必须有 ADR 的硬约束。
 
@@ -50,7 +52,7 @@ go test ./internal/revokedrain
    - 不修改 ADR 0044 已冻结的 DRC 字段，使用 ledger fact/ref 与 ResultIngress current recheck 绑定。
 3. 实现 `internal/executionobservation` 的 location/resource/failure 合同、分类器与负向矩阵。
 4. 将 R3-D/E/F 接入 production ResultIngress/authority ledger；完成单侧 revoke/replace、位置伪造、infra-failure 伪造和 stale generation 的端到端负测。
-5. 完成 R3 自审、定向测试/race、仓库质量门禁后更新本文件与 Roadmap 为 `DONE`，再进入 R4。
+5. 完成真实 production root 接线、R3 自审、定向测试/race 与仓库质量门禁后，才可把 R3 更新为 `PASSED` 并进入 R4；package test 或纯核心 checkpoint 不足以关闭阶段。
 
 ## 未改变的事实
 

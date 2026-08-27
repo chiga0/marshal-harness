@@ -28,6 +28,8 @@
 
 2026-08-27，维护者基于提案 sourceHead `e38a94887352cd0ba00f7c7183209d6a6a3ef339` 的独立 reviewer `ACCEPT`（P0/P1=0）接受 ADR 0051，并在接受同步的唯一 aggregate rework 中关闭取代范围 P1 与提案 reviewer 唯一 P2 措辞：新增显式 `darwin-local-dogfood` profile，只在 trusted single-user、固定 executable、`publication:none`、ordinary-user/workspace-write/non-production 边界内运行本地生命周期；Publisher、Forge、credentialed SideEffect、remote Provider、production conformance 与跨 profile 晋升全部机械拒绝。ADR 0051 仅对 local profile 部分取代 ADR 0047 §1/§2/§3.2/§3.3/§3.5/§6 中 external managed/release、install-receipt/full code-sign 与 held-object 的冲突条款，改由 activation、固定对象摘要与 current-path fd observation 约束；canonical fixed regular file 原则、ADR 0047 对 managed/release 的全部强门禁及 ADR 0048 均保留。fixed-object local-exec viability 是 R3 pre-CLI gate，完整受管构建、签名、安装、current/high-water 与 notarization 是 R6/release gate；接受不表示实现已完成、宿主已允许当前 binary、R3 已解除阻塞或 v1.0 可发布。
 
+2026-08-27，维护者在生产 import graph、Run/Attempt 结果、Roadmap 与 Issue #186 路线审计后接受 ADR 0052：v1.0 收敛为单节点、单用户、可信仓库、至少一个真实 AgentProvider 与一个真实 Local/Container SandboxProvider；能力必须经过 `DESIGN→COMPONENT→INTEGRATED→RELEASED` 生产可达性门禁，package/test/API 单独存在不能关闭阶段。M0–M9 历史证据保留，但 M8/M9 Runtime 资产当前只记 `COMPONENT`；R0 为 `PASSED`，R1 为 `IN_PROGRESS`，R2–R6 为 `PLANNED`。ADR 0052 同时部分取代 ADR 0045 §1 第 1 项对真实非确定 Agent 的 exact content digest 等价要求：Fake 仍 exact，真实 Agent 比较 authority invariants。M10–M13 改为 R6 后 1.x 候选，不阻塞 v1.0。接受只冻结范围和判定合同，不表示实现已完成。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -71,3 +73,4 @@
 | [0048](0048-protected-build-input-and-artifact-attestation.md) | 受保护构建输入、sealed source/compile/external-material manifest、authenticated build record 与 code-sign observation（Issue #212） | 原合同与 amendment 均已接受（Accepted，2026-08-26；独立复审 P0/P1/P2/P3=0；未实现，外部 provision、Issue #212 与 R3-D/E/F 仍开放） |
 | [0050](0050-review-pending-explicit-abort.md) | `REVIEW_PENDING` Run 的最小显式 abort 出口（复用 `run.aborted → BLOCKED`） | 提议（Proposed，2026-08-26；仅冻结候选合同，未实现，不阻塞 R3） |
 | [0051](0051-darwin-local-dogfood-profile.md) | Darwin 本地 dogfood 执行 profile 与 managed/release authority 分流（Issue #212；仅对 local profile 部分取代 ADR 0047 §1/§2/§3.2/§3.3/§3.5/§6 的冲突条款） | 已接受（Accepted，2026-08-27；独立 reviewer P0/P1=0；接受同步唯一 aggregate rework 关闭取代范围 P1；未实现；local-exec viability 仍是 R3 pre-CLI，完整受管权威仍是 R6/release gate） |
+| [0052](0052-v1-release-scope-and-production-reachability.md) | v1.0 单节点生产纵切范围、`DESIGN→COMPONENT→INTEGRATED→RELEASED` 可达性门禁、单一 authority 收敛与真实 Agent cutover 等价性（部分取代 ADR 0045 §1 第 1 项） | 已接受（Accepted，2026-08-27；接受只冻结范围与判定合同，不表示 R1–R6 已实现或 v1.0 已发布） |

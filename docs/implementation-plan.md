@@ -2,13 +2,42 @@
 
 本计划用于把当前 embedded/local 先行实现逐步收敛到[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Milestone 是交付顺序，不是产品定位。
 
-> **当前权威路线（2026-08-27）**：实施顺序以仓库根目录 `AGENTS.md`、[Roadmap 状态](roadmap-status.md)与 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 为准，按纵切优先的 `I186-R0→R6` 收敛；Milestone 0–9 的历史结论与代码资产保留，M10–M13 暂停直接推进，等待 `I186-R6 DONE` 后依据真实证据重新排期。当前 `I186-R0/R1/R2: DONE`，`I186-R3-A/B/C: DONE`，R3-D/E/F 尚未完成。ADR 0051 已把 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 分流：fixed-object local-exec viability 仍是当前 R3 pre-CLI blocker；ADR 0047/0048 的完整 managed/release producer、签名、安装、current/high-water 与 notarization 是 R6/release gate。本文后续 M0–M13 章节保留历史交付目标，不得据此绕过上述权威路线或提前升级实现状态。
+> **当前权威路线（2026-08-27）**：实施顺序以仓库根目录 `AGENTS.md`、[Roadmap 状态](roadmap-status.md)、[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md) 与 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 为准，按纵切优先的 `I186-R0→R6` 收敛。Milestone 0–9 的历史结论与代码资产保留，但历史 `PASSED` 不自动等于 v1.0 production integration。当前 `I186-R0: PASSED`、`I186-R1: IN_PROGRESS`、`I186-R2–R6: PLANNED`。M10–M13 不再阻塞 v1.0，作为 1.x 候选在 R6 后重新排期。本文后续 M0–M13 章节保留历史目标，不得据此提前升级实现状态。
+
+## v1.0 权威实施表
+
+能力成熟度独立于 Milestone 状态：`DESIGN` 表示只有合同，`COMPONENT` 表示实现/测试存在但 production root 不可达，`INTEGRATED` 表示真实 composition root 与真实 Agent/result bytes 穿过该路径，`RELEASED` 表示 release gate 通过。任何阶段都不得只凭 Fake、package test 或独立 API/transport 测试关闭。
+
+| 阶段 | 状态 | 当前成熟度 | 必须交付的最短纵切 | 退出条件 |
+| --- | --- | --- | --- | --- |
+| `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 0043–0045、baseline report 与 golden trace | 历史证据保留，不重复实施 |
+| `I186-R1` | `IN_PROGRESS` | `COMPONENT` | 在现有 `execution.Service` 唯一 seam 接通真实 Agent-in-Local/Container allocation | `cmd/marshal` 或 loopback server 可达；Agent 实际在 allocation；真实 result bytes 返回 Core |
+| `I186-R2` | `PLANNED` | `COMPONENT` | command/result authority 收敛到现有 durable journal；ResultIngress 事务化接纳 | 重启可恢复；无平行内存真值；stale/replay/lost response fixture 通过 |
+| `I186-R3` | `PLANNED` | `COMPONENT` | per-Attempt Agent/Sandbox 双 binding；Core-held local process observation；立即 revoke/fence/terminate | 任一 binding 漂移均拒绝；Provider claim 不能放宽 gate；真实路径负测通过 |
+| `I186-R4` | `PLANNED` | `DESIGN` | 单一 recovery decision 与 `marshal explain` | kill/restart/cancel/timeout/retry 只有一个可回放结论 |
+| `I186-R5` | `PLANNED` | `DESIGN` | canary/cutover；旧 host Adapter bypass 退出 supported path | Fake exact digest；真实 Agent authority invariants 等价；无重复副作用；旧 bypass 删除或机械拒绝 |
+| `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、稳定安装、签名/notarization、升级/回滚、release | macOS/Linux 发布门禁全绿；能力成熟度升级为 `RELEASED` |
+
+v1.0 的唯一支持链是：
+
+```text
+marshal / loopback marshal-server
+  → durable Run journal
+  → Core-owned WorkerExecutor
+  → Local/Container Sandbox allocation
+  → real AgentRuntime
+  → ResultIngress
+  → independent Verification / Review
+  → Outcome
+```
+
+Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Provider/SDK 矩阵、Web UI 与复杂 Goal DAG 均延期到 1.x。
 
 ## 门禁
 
 本文 Local MVP 部分（Milestone 0–6）已由维护者授权实施；M7–M13 部分于 2026-08-10 随 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 接受而授权（M7–M12 为耐久 Runtime 平台阶段，M13 为 Goal 编排阶段）。M8–M13 还必须遵守 [ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)、[ADR 0018](adr/0018-control-plane-and-provider-ports.md) 与 [ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)：确定性 Core 是唯一 Supervisor；Typed Execution 不形成通用 Provider 协议；副作用采用 append-only 对账/补偿；Goal plan 先 proposal、后 deterministic admission。ADR 的接受只冻结设计，不提前升级实现与 conformance 状态。本文只是实施计划：信任边界、持久化契约、生命周期或发布权限的改变仍必须先新增或替代 ADR。
 
-当前状态：Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`（2026-08-07）；M7（架构与契约）已于 2026-08-11 通过退出门禁（当时 ADR 0016/0017/0018 已接受、文档口径一致、Local MVP 回归与本仓库 CI 全绿；证据：Marshal Run `m7-control-provider-boundary-adr-r15-20260811` `ACCEPTED`，[Draft PR #13](https://github.com/chiga0/marshal-harness/pull/13) 与 GitHub Actions CI run `31449333738` 全绿）。同日接受的 ADR 0019 是 M7 后设计增补，不改写原验收证据。M8（Sandbox SPI/Fake/Local conformance + embedded/local 纵切）已于 2026-08-13 通过退出门禁，更新为 `PASSED`（六个硬门禁 gate 全部合入 main 且各 PR 远端 CI 全绿；各 gate 尚未整体接入最终 Runtime 执行路径）；M9 于 2026-08-14 通过退出门禁，更新为 `PASSED`（七项交付均合入 main 且远端 CI 全绿，不表示 conformance 终态）；M10–M13 保持 `PLANNED`，但自 2026-08-24 起暂停直接推进，等待 `I186-R6 DONE` 后重新排期。状态取值定义与验收证据见 [Roadmap 状态](roadmap-status.md)，目标架构见 [Runtime 架构](runtime-architecture.md)。
+当前状态：Milestone 0–6 已全部通过，Local MVP 标记 `USABLE`（2026-08-07）；M7 的设计与契约阶段已通过。M8/M9 保留当时定义下的 `PASSED` 和 CI 证据，但审计确认其 Runtime 资产当前为 `COMPONENT`：尚未共同进入真实 Agent-in-Sandbox 生产调用链。M10–M13 保持 `PLANNED`，并改为 R6 后的 1.x 候选池。状态取值与证据见 [Roadmap 状态](roadmap-status.md)，目标架构见 [Runtime 架构](runtime-architecture.md)。
 
 ## 交付策略
 

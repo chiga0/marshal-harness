@@ -2,6 +2,23 @@
 
 - 审计日期：2026-08-04（2026-08-10 增补 Runtime 架构重置记录、首次 Sandbox SPI dogfood reject 增补记录与 Round 2 关闭记录；2026-08-11 增补 Control Plane 与 Provider Port 边界冻结记录，含 Round 4 独立评审八项 P1 关闭记录、Round 5 复核四项残留关闭记录、Round 6 复核两项残留——Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge——关闭记录与 Round 7 复核三项残留——双键空间残留清除（权威对象 authorityNamespaceId 独占拥有、registration/snapshot/evidence authority ledger 事实、接纳关系归 authority ledger、controlPlaneId 逻辑权威身份）、Core-only typed edge 生命周期细化（issuer/source/target/operation/expiry/digest/revocation/replay/current-ledger recheck，issuer 恒为 Core 且不等于业务流 sourceActor、sourceActor/targetActor 按 edge 类型绑定，派生 token/handle 不得成为第二权威）、Public API 幂等/SSE/对象 key 修正为 authorityNamespaceId——关闭记录与 Round 8 复核一项残留——typed edge 跨域例外与适用范围（三类 typed edge 明确为 Provider actor 跨信任域访问默认拒绝的唯一 allowlist 例外，Public API/SSE 与 Core 内部权威引用无需 Provider typed edge）——与 Round 9 复核两项残留——跨域 fail closed 表述精确化（删除会无条件拒绝 MaterialAccessGrant 等合法 typed edge 的宽泛表述）、非 edge Port 与同域不自动授权（provider-registration/control 经 transport identity/该 Port AuthN/AuthZ/registration protocol 由 Core 写 authority ledger；securityDomainId 相同只是 provenance/partition 条件，不构成授权）——关闭记录；2026-08-12 增补 Issue #25 发布合并后 head reconcile 审计记录；2026-08-13 该 finding 随 typed reconciliation 实现合入关闭；2026-08-14 增补 Issue #53 CI 失败 rework 注入设计缺口审计记录，目标契约由 [ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)（Proposed，草案已提出/待接受）给出（接受后方冻结），实现待后续 implementation successor）
 
+## v1.0 生产可达性重置（2026-08-27）
+
+本轮综合审计不再以 package、PR 或 historical milestone 数量衡量完成度，而是从真实 composition root 反查生产路径。当前真实写任务主链仍主要是 `cmd/marshal → internal/cli → execution.Run → Adapter.Run`；`spine`、`agentruntime`、`runtimeprofile`、`bindingcheck`、`revokedrain` 与 `resultingress` 等资产分别具有类型、纯核心或测试证据，但尚未共同承载一条真实 Agent-in-Sandbox Run。`spine` 的示例执行仍依赖 FakeAgent，部分 outbox/write-gate/authority 仍为内存形态。
+
+因此，历史 M8/M9 `PASSED` 继续证明当时定义的 gate、PR 与 CI 已通过，但不能推导出 v1.0 production integration。把 R1/R2 或 R3-A/B/C component checkpoint 标为 `DONE` 会导致后续在错误基线上继续横向扩展，属于状态口径走偏。
+
+| Finding | 等级 | 状态 | 处置 |
+| --- | --- | --- | --- |
+| `V1-PRODUCTION-REACHABILITY` | P0 | `OPEN-IMPLEMENTATION` | 只有真实 `marshal`/loopback server → durable journal → WorkerExecutor → Sandbox → AgentRuntime → ResultIngress → Verification/Outcome 全链通过，R1–R3 才能逐阶段关闭。 |
+| `V1-PARALLEL-AUTHORITY` | P1 | `OPEN-IMPLEMENTATION` | v1.0 复用现有 journal/lease/current ledger；内存 Run/lease/outbox 只能是可重建 projection，禁止成为第二真值。 |
+| `V1-CUTOVER-NONDETERMINISM` | P1 | `CLOSED-CONTRACT` | ADR 0052 部分取代 ADR 0045 §1 第 1 项：Fake 比较 exact digest，真实 Agent 比较 authority invariants，内容仍逐次独立验证。 |
+| `V1-SCOPE-UNBOUNDED` | P1 | `CLOSED-CONTRACT` | ADR 0052 把 Cloudflare 完整生产拓扑、HA、多用户、完整 Provider/SDK 矩阵与 Goal DAG 延期到 1.x。 |
+
+Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLANNED/COMPONENT`；R4–R6 `PLANNED/DESIGN`。R3 已有纯核心代码保留并等待依赖满足，不回滚代码，也不提前宣称集成。M10–M13 作为 1.x 候选池，不再阻塞首个正式版本。
+
+本修订不降低任何 universal 不变量；Local ordinary-user 的 Core-held process observation 只支持 trusted single-user v1 profile，不能关闭 cloud/hardened 的 location attestation finding。生产 cutover、故障 conformance、签名/notarization 与 release identity 仍必须在 R5/R6 完成。
+
 ## 行业协议收敛跟踪（2026-08-21 基线）
 
 外部背景（公开行业资料转述，未做在线核验）：agent 相关协议正沿三条轴在 Linux Foundation 轨道收敛——MCP（agent→工具/数据轴）进入 AAIF 并成为事实标准；A2A（agent↔agent 轴）由 Google 捐赠至 Linux Foundation 并获 100+ 背书；ACP（客户端↔agent 轴，LSP 式协议）已被 Gemini CLI、Neovim、JetBrains 等客户端采用。行业判断是自研私有 agent 协议的兼容性税持续上升。

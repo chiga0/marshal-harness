@@ -4,7 +4,30 @@
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
-> **2026-08-24 路线修订（[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)）**：架构审计跟踪改为纵切优先的收敛路线 `I186-R0→R6`（rebaseline + ADR → 最薄 Agent-in-Sandbox walking skeleton → Command/Result authority 收敛 → Agent/Sandbox 双 Provider binding → 单一恢复模型 + explain → strangler cutover → conformance/Roadmap replan）。M0–M9 历史 `PASSED` 结论与代码资产保留，不推倒重写；M10–M13 继续暂停直接推进，等待 `I186-R6 DONE` 后由真实证据重新排期。当前状态为 `I186-R0/R1/R2: DONE`、`I186-R3: IMPLEMENTING`：`I186-R3-A/B/C: DONE`；历史 R3-D1/D2 successor 保持 `REJECTED`，2026-08-27 起由 `feat/i186-r3-direct` 直接交付分支重新实现，已完成 opaque material ref → authority material → registration → current snapshot → trusted target 的 evidence boundary 纯核心，以及 security revoke / planned upgrade bounded drain 纯决策器，`go test ./internal/revokedrain` 通过；该 checkpoint 尚未接入 production ResultIngress，R3-D 未整体关闭，R3-E/F 仍需新的 observation authority ADR 与实现。Issue #209 与 PR #211 已闭环。2026-08-27 接受 ADR 0051：Issue #212 的 fixed-object local-exec viability 仍是当前 R3 pre-CLI blocker，完整 managed/release producer、签名、安装、current/high-water 与 notarization 是 R6/release gate；该分流不关闭 Issue #212、不升级 R3 或发布状态。R0 产物见 [i186-r0-baseline-report.md](research/i186-r0-baseline-report.md)，R3 实时进度见 [i186-r3-progress.md](research/i186-r3-progress.md)，可执行规格见 [Planning Baseline v3](https://github.com/chiga0/marshal-harness/issues/186#issuecomment-5393394613)；本同步不改变 M0–M9 证据或状态取值定义。
+> **2026-08-27 v1.0 路线重置（[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md)）**：继续使用 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的 `I186-R0→R6` 纵切框架，但以 production reachability 重新判定状态。M0–M9 历史 `PASSED` 结论与代码资产保留；M8/M9 的 Runtime 资产当前成熟度为 `COMPONENT`，不表示 v1.0 端到端集成。当前 `I186-R0: PASSED`、`I186-R1: IN_PROGRESS`、`I186-R2–R6: PLANNED`。R3-A/B/C/D 已有类型、纯核心与定向测试可复用，但在真实 composition root、双 binding 与 ResultIngress 接线完成前只能记为 component checkpoint。M10–M13 不再阻塞 v1.0，作为 R6 后的 1.x 候选重新排期。
+
+## v1.0 生产纵切
+
+Milestone 状态与能力成熟度是两个维度：
+
+| 成熟度 | 含义 |
+| --- | --- |
+| `DESIGN` | ADR、Schema 或合同存在，尚无实现。 |
+| `COMPONENT` | Package、类型与测试存在，但真实 composition root 不可达。 |
+| `INTEGRATED` | `cmd/marshal` 或 `cmd/marshal-server` 可达，真实 Agent 与结果 bytes 穿过该路径。 |
+| `RELEASED` | 集成路径通过 v1.0 release gate 并进入受支持产物。 |
+
+| 阶段 | 状态 | 成熟度 | 当前结论 |
+| --- | --- | --- | --- |
+| `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 与 baseline evidence 已完成。 |
+| `I186-R1` | `IN_PROGRESS` | `COMPONENT` | 接通真实 Agent-in-Local/Container allocation；生产 root 尚未贯通。 |
+| `I186-R2` | `PLANNED` | `COMPONENT` | 复用 durable journal/lease 与 ResultIngress 组件，消除平行内存权威。 |
+| `I186-R3` | `PLANNED` | `COMPONENT` | 复用双 binding/revoke 组件；真实路径 current-ledger recheck 尚未完成。 |
+| `I186-R4` | `PLANNED` | `DESIGN` | 单一 recovery decision 与 `marshal explain`。 |
+| `I186-R5` | `PLANNED` | `DESIGN` | canary/cutover；真实 Agent 比较 authority invariants，Fake 才要求 exact digest。 |
+| `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、跨平台安装、macOS 签名/notarization、升级/回滚与 release。 |
+
+v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
 | Milestone | 状态 | 证据 |
 | --- | --- | --- |
@@ -64,10 +87,10 @@ M7–M13（M7–M12：耐久 Runtime 与可插拔 Sandbox Provider；M13：Goal 
 | 7：架构与契约 | `PASSED`（2026-08-11，只表示设计与契约阶段通过） | [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md) 已接受；[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md) 已接受（2026-08-10，接受只关闭设计歧义）；[ADR 0018](adr/0018-control-plane-and-provider-ports.md) 已接受（2026-08-11，接受只冻结设计）；[Runtime 架构](runtime-architecture.md) 同步；Marshal Run `m7-control-provider-boundary-adr-r15-20260811` 完成 M7 最终架构稿并 `ACCEPTED`（reviewRound=2，32/32 required Gates 通过，独立审查无 P0/P1）；[Draft PR #13](https://github.com/chiga0/marshal-harness/pull/13) 通过 Quality (ubuntu-latest)、Quality (macos-latest)、Secret scan 与 GitGuardian 检查（GitHub Actions CI run `31449333738`），2026-08-11 由维护者手工合入 main（merge commit `4b2f3248f24ec2a67642ec77822fe6bb59730df7`） |
 | 8：Sandbox SPI/Fake/Local conformance + embedded/local 纵切 | `PASSED`（2026-08-13，退出门禁通过） | [验收报告](milestone-8-report.md)；六个硬门禁 gate 全部合入 main 且各 PR 远端 CI 全绿：gate-1（authority 双键空间 AuthorityNamespaceId/SecurityDomainId + SideEffect authority-record Schema，PR #42）、gate-2（ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence Schema + attestation 全链绑定，PR #45）、gate-3（legacy fail-closed mapper，PR #48）、gate-4（durable ProviderRegistration store + restart recovery，R2 lineage `m8-durable-registration-store-r2-20260812b`，PR #57）、gate-5（snapshot/evidence validation，PR #47）、gate-6（enable DispatchLease match，PR #60）；embedded 纵切：internal/sandbox SPI 类型 + Fake Provider + conformance 套件（PR #75）、Local SandboxRunner 宿主进程执行 + lease 绑定 + receipt observation（PR #80）、typed cross-domain edge 记录类型 + fixture 矩阵残留（PR #61）。各 gate 尚未整体接入最终 Runtime 执行路径；同期合入基础设施修复见[验收报告](milestone-8-report.md)。见[实施计划](implementation-plan.md) |
 | 9：marshal-server、Public API 与 Durable Runtime | `PASSED`（2026-08-14，设计与契约+本 milestone 交付门禁通过） | 七交付全部合入 main 且各 PR 远端 CI 全绿：a lease 持久账本与 crash recovery（PR #104）、b typed edge 运行时接线（PR #107）、c1 marshal-server 常驻 + Public API（PR #111）、c2 SSE 只读投影（PR #115）、c3 远程注册 + TLS 基线（PR #116）、e DurableExecutionEngine seam（PR #119）、d Push/Pull 双拓扑 transport + outcome/invariant equivalence conformance（PR #120）；任务拆分见[M9 任务拆分设计](m9-vertical-to-server-design.md)。不表示 M10–M13 实现状态变化，不表示 conformance 终态；见[实施计划](implementation-plan.md) |
-| 10：Cloudflare Provider（remote transport） | `PLANNED`（2026-08-24 起暂停直接推进） | 按 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) Planning Baseline v3 决策：M10 暂停 production milestone，等待 `I186-R6 DONE` 后重新排期；已合入的代码切片（binding/live operator 等）保留，作为 R4/R6 recovery/conformance fixture 素材，见[实施计划](implementation-plan.md) |
-| 11：生产级存储、多节点 HA 与身份分离 | `PLANNED`（2026-08-24 起暂停） | 按 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 暂停，等待 `I186-R6 DONE`；HA effect/compensation 单 owner、fencing 与审批审计；见[实施计划](implementation-plan.md) |
-| 12：开源部署、版本化 Provider SDK/协议、多语言 SDK 与长稳验证 | `PLANNED`（2026-08-24 起暂停） | 按 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 暂停，等待 `I186-R6 DONE` 后按真实场景评估；按 Port effect conformance；ACP/A2A/OpenHands 仅为可选生态扩展；见[实施计划](implementation-plan.md) |
-| 13：Goal orchestration | `PLANNED`（2026-08-24 起暂停） | 按 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 暂停完整 Goal DAG；`I186-R6 DONE` 后先评估 Minimal Goal（后置于 bounded Scheduler）；当前无 Goal Schema/控制器实现；见[实施计划](implementation-plan.md) |
+| 10：Cloudflare Provider（remote transport） | `PLANNED`（1.x 候选） | 不阻塞 v1.0；已合入代码保留为 fixture，R6 后按真实远程需求重排。 |
+| 11：生产级存储、多节点 HA 与身份分离 | `PLANNED`（1.x 候选） | 不阻塞 v1.0；v1.0 使用单节点 durable file ledger，HA 与多用户在 R6 后重排。 |
+| 12：Provider SDK/协议、多语言 SDK 与长稳平台扩展 | `PLANNED`（1.x 候选） | v1.0 只保留跨平台安装与 release conformance；完整 SDK/生态矩阵在 R6 后重排。 |
+| 13：Goal orchestration | `PLANNED`（1.x 候选） | 不阻塞 v1.0；复杂 Goal DAG、动态重规划与累计预算在稳定 Runtime 发布后评估。 |
 
 [ADR 0026](adr/0026-scm-merge-receipt-and-publication-reconcile.md)（已接受，2026-08-12；维护者合入 PR #49）冻结已合并 PR 的权威 reconcile 契约（`SCMMergeReceipt` 与 `PublicationReconcileRecord`）；accept-after-merge typed reconciliation 实现（accept 内联 MERGED 识别 + `marshal task reconcile` 补偿命令 + lifecycle 唯一终态例外）已于 2026-08-13 合入，关闭 Issue #25 与审计 finding `PUBLICATION-MERGED-HEAD-RECONCILE-P1`；该实现是 Local MVP 发布流程修复，不升级 M8–M13 实现状态。
 
