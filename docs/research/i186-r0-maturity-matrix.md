@@ -25,7 +25,7 @@
 | ApplicationCommandPort | ✅ | ✅ | ✅ | — | — | R2 DONE（CLI/API/Supervisor 无第二写路径 exit gate） |
 | ResultIngress（DRC-bound 结果接纳） | ✅ | ✅ | 部分 | — | — | resultingress + attemptgate/hotpath/effectsink 合同与门禁完备；ResultIngress→runstore 证据桥、双 binding profile 接线为 R5 诚实缺口 |
 | Agent/Sandbox 双 Provider binding | ✅ | ✅ | 部分 | — | — | R3 全切片 + ADR 0049 收敛域证明；生产 ResultIngress 接线归后续 |
-| 单一恢复模型 + explain | ✅ | ✅ | 部分 | — | — | recovery 决策表 + 10k 原语 soak + explain 渲染模型；`marshal explain run` CLI wiring 与真实 ledger 装配归后续（等价 API 口径见 ADR 0050 决策 5） |
+| 单一恢复模型 + explain | ✅ | ✅ | 部分 | — | — | recovery 决策表 + 10k 原语 soak + explain 渲染模型；`marshal explain run` CLI wiring 与真实 ledger 装配归后续（等价 API 口径见 ADR 0053 决策 5） |
 | 失败分类 authority | ✅ | ✅ | ✅ | — | — | ADR 0049 决策 2 + failureclass + R4 recovery 消费闭环 |
 | Cutover 判定与 worker executor 接线 | ✅ | ✅ | ✅ | 部分 | — | ADR 0045/0051 + cutovereq/cutovercheck golden 判定 + sandboxbridge 默认翻向 + rollback 演练 + cli 全套绿；wall-clock 运维证据待 soak |
 | Cloudflare/远程 Provider | ✅（research） | 部分 | — | — | — | M10 暂停；切片保留为 R4/R6 fixture |

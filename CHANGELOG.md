@@ -4,16 +4,16 @@
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-08-27
+## [Unreleased v1.0-candidate] - 2026-08-27
 
-v1.0：I186 收敛路线（R0–R6）全部完成；Local MVP 能力面升级为新默认执行链。同时增收 0.1.0 之后、1.0.0 之前已合入 main 的交付。
+注意：本节不是 v1.0 发布声明。v1.0 范围与生产可达性门禁已由 [ADR 0052](docs/adr/0052-v1-release-scope-and-production-reachability.md)（2026-08-27 接受）冻结为单节点生产纵切；当前主表状态为 `I186-R0: PASSED`、`I186-R1: IN_PROGRESS`、`I186-R2–R6: PLANNED`，v1.0 未发布。下列为 I186 快速收敛线路（单 Lead + 多 Sub-Agent 高并发）已合入 main 的交付资产（component checkpoint），同时增收 0.1.0 之后已合入交付。
 
 ### 新增
-- Worker executor strangler cutover：`MARSHAL_WORKER_EXECUTOR` 默认走 sandboxbridge 执行链（Provision→Stage→WorkerAdapter.Run→Inspect→Terminate，allocation/lease 身份绑定、frozen 工单 content-addressed 入账）；`=legacy` 显式回到 `Adapter.Run(host)` compatibility profile；rollback 无状态迁移（ADR 0043/0045；等价证据：legacy 与桥路径 journal 事件序列逐条相同、WorkerResult 业务内容逐字节相同）；
+- Worker executor strangler cutover：`MARSHAL_WORKER_EXECUTOR` 默认走 sandboxbridge 执行链（Provision→Stage→WorkerAdapter.Run→Inspect→Terminate，allocation/lease 身份绑定、frozen 工单 content-addressed 入账）；`=legacy` 显式回到 `Adapter.Run(host)` compatibility profile；rollback 无状态迁移（ADR 0043/0045/0054；等价证据：legacy 与桥路径 journal 事件序列逐条相同、WorkerResult 业务内容逐字节相同）；
 - 执行前 allocation 身份落盘 + `SweepOrphans` 孤儿 allocation 幂等终结（bridged 路径 SIGKILL 崩溃窗口对账）；
 - R3 收敛域合同与门禁：per-Attempt 双 Provider binding recheck（attemptgate）、分级撤销处置（revokedrain：security-critical 零 drain / ordinary bounded drain）、执行位置 claim/fact 分型（locationattest）、失败分类 authority（failureclass）、ADR 0049；
-- R4 单一恢复模型（recovery：故障矩阵八类唯一幂等结论 + explain 渲染模型）与 Pre-R4 四项合同（hotpath/jitgate/protocolrev/candidateid）、ADR 0050；
-- R5 cutover 判定（cutovereq 三分判据 + cutovercheck golden trace）与 effect sink pre-mutation fencing（effectsink）、ADR 0051；
+- R4 单一恢复模型（recovery：故障矩阵八类唯一幂等结论 + explain 渲染模型）与 Pre-R4 四项合同（hotpath/jitgate/protocolrev/candidateid）、ADR 0053；
+- R5 cutover 判定（cutovereq 三分判据 + cutovercheck golden trace）与 effect sink pre-mutation fencing（effectsink）、ADR 0054；
 - R6 SLO/性能基线（perfbench：五条热路径 p99 ≤5000µs 冻结阈值与实测基线）、确定性 accelerated soak（soak 10k 迭代 + 5 轮路径级 bridged Run invariant）；
 - herdr TerminalSession 后端 POC（实验分支，ADR 0009/0011 补充）；
 - TaskSpec `worker.tools` 声明式工具 allowlist（封闭枚举 read/edit/write/grep/find/ls/bash，可选，uniqueItems；缺省保持既有 profile 行为，全部既有 TaskSpec 向后兼容）；
