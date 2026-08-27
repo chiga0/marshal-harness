@@ -2389,7 +2389,11 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// publication 语义经端到端等价测试证明相同。
 	var workerRunner func(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error)
 	if os.Getenv("MARSHAL_WORKER_EXECUTOR") != "legacy" {
-		embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now)
+		// worker executor 实例的 per-op 上限：真实 Agent attempt 预算为
+		// attemptTimeoutSeconds（分钟级），runner 默认 30s cap 会立刻 kill；
+		// worker 承载路径提升到 4h（Envelope §4 按 min(requested, cap) 生效，
+		// 不放宽任何 attempt 预算）。
+		embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now, app.WithLocalRunnerOptions(local.WithExecTimeout(4*time.Hour)))
 		if embeddedErr != nil {
 			fmt.Fprintln(stderr, "运行失败：sandbox executor runtime 初始化失败。")
 			return ExitFailure
