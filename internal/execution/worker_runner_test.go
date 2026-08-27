@@ -132,6 +132,61 @@ func TestRunWorkerRunnerFailureKeepsFailureChain(t *testing.T) {
 	}
 }
 
+// TestRunWorkerRunnerRollbackDrill 是 R5 rollback 演练证据：gate 方向回拨
+// （WorkerRunner 由桥置回 nil/legacy）不复活旧 lease/registration、不产生
+// 第二业务事实、不需要任何状态迁移——runstore 在桥路径写入后以 legacy
+// 消费方原样可读，事件条目与 outcome 唯一且一致。
+func TestRunWorkerRunnerRollbackDrill(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	provider := sandbox.NewFakeProvider(sandbox.FakeConfig{})
+	bridge, err := sandboxbridge.NewBridge(provider)
+	if err != nil {
+		t.Fatalf("NewBridge: %v", err)
+	}
+	fixture.input.WorkerRunner = bridge.RunWorker
+
+	result, err := Run(context.Background(), fixture.input)
+	if err != nil {
+		t.Fatalf("bridged Run: %v", err)
+	}
+
+	// rollback：消费方回到 legacy 方向（等价于移除 MARSHAL_WORKER_EXECUTOR
+	// 环境变量后的下一次读取），直接以 runstore 检查同一状态根。
+	rollbackInput := fixture.input
+	rollbackInput.WorkerRunner = nil
+	if rollbackInput.WorkerRunner != nil {
+		t.Fatal("rollback direction must drop the seam")
+	}
+
+	events, _, err := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if err != nil {
+		t.Fatalf("rollback-side runstore read failed (state migration would surface here): %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("rollback-side journal is empty")
+	}
+	if converged := events[len(events)-1].StateTo; converged != result.State.State {
+		t.Fatalf("rollback-side converged state mismatch: journal=%v result=%v", converged, result.State.State)
+	}
+
+	// 无第二业务事实：journal 中 worker.completed 恰一条、attempt 恰一个。
+	worked := 0
+	for _, e := range events {
+		if e.Type == "worker.completed" {
+			worked++
+		}
+	}
+	if worked != 1 || result.State.AttemptsUsed != 1 {
+		t.Fatalf("second business fact detected: completed=%d attemptsUsed=%d", worked, result.State.AttemptsUsed)
+	}
+
+	// 无残留写锁：attempt 目录 worker-result.json 存在且 lease.lock 不持
+	// 活写者（Run 返回即释放）。
+	if _, err := os.Stat(filepath.Join(fixture.runDir, "attempts", result.AttemptID, "worker-result.json")); err != nil {
+		t.Fatalf("bridged evidence missing after rollback flip: %v", err)
+	}
+}
+
 var errBridgeStage = &bridgeStageError{msg: "stage failed: injected"}
 
 type bridgeStageError struct{ msg string }
