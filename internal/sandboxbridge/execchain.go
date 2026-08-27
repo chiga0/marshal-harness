@@ -13,6 +13,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/agentruntime"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
 
@@ -100,6 +101,44 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		}
 		if recErr := recordAllocation(controlRoot, rec); recErr == nil {
 			b.registry.add(filepath.Dir(controlRoot))
+		}
+		// R2/R3 纠偏：dispatch 时持久化 immutable AttemptBinding（含 dispatch
+		// 冻结的 lease expiry），ingress 时从该文件读取而非以结果携带 Facts
+		// 临时构造。binding 文件携带 content digest，篡改 fail closed。
+		if b.authority != nil {
+			leaseExpiry := b.now().UTC().Add(24 * time.Hour)
+			if lease, ok := b.authority.LeaseFor(view.RunID, view.AttemptID); ok {
+				if expiry, parseErr := time.Parse(time.RFC3339, lease.ExpiresAt); parseErr == nil && !expiry.IsZero() {
+					leaseExpiry = expiry.UTC()
+				}
+			}
+			regID := sandboxProviderRegistrationID
+			if reg := b.authority.Registration(); reg.RegistrationId != "" {
+				regID = reg.RegistrationId
+			}
+			capDigest := view.CapabilityDigest
+			if snap := b.authority.CapabilitySnapshot(); snap.ProviderCapabilitySnapshotDigest != "" {
+				capDigest = snap.ProviderCapabilitySnapshotDigest
+			}
+			bindingFacts := resultbinding.Facts{
+				TaskID:                        view.TaskID,
+				RunID:                         view.RunID,
+				AttemptID:                     view.AttemptID,
+				AgentAdapterID:                view.AdapterID,
+				AgentExecutable:               plan.ExecArgv[0],
+				AgentProviderVersion:          plan.BinaryVersion(),
+				CapabilityDigest:              capDigest,
+				ExecutionProfile:              view.ExecutionProfile,
+				SandboxProviderRegistrationID: regID,
+				AllocationID:                  allocationID,
+				AllocationGeneration:          generation,
+				LiveAllocationState:           sandbox.AllocationActive,
+				FencingToken:                  fencingToken,
+				LeaseExpiry:                   leaseExpiry,
+			}
+			if writeErr := resultbinding.WriteAttemptBinding(filepath.Dir(controlRoot), bindingFacts); writeErr != nil {
+				return domain.Record{}, fmt.Errorf("sandboxbridge: write attempt binding: %w", writeErr)
+			}
 		}
 	}
 	defer func() {

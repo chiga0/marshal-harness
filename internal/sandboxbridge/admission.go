@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/adapter/pi"
+	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
@@ -20,9 +21,9 @@ const admissionAnchorName = "sandbox-binding-admission.json"
 // 双 binding recheck + ResultIngress 接纳 → anchor 落盘进 attempt 目录。
 // 任何一侧 fail closed（含 live state 非 active）都以 typed 错误返回。
 //
-// R2/R3 纠偏：当 Bridge 注入了 DurableAuthority 时，agent registration/
-// snapshot 从真实文件 ledger 读取，lease expiry 从 dispatch 时冻结的
-// DispatchLease.ExpiresAt 读取——不再以结果携带 Facts 临时构造。
+// R2/R3 纠偏：当 Bridge 注入了 DurableAuthority 时，从 dispatch 时冻结的
+// immutable AttemptBinding 文件读取 facts（而非以结果携带 Facts 临时构造），
+// 并从真实 RegistrationStore 验证 provider registration 仍 active。
 func (b *Bridge) admitCompletedResult(ctx context.Context, view workerRequestView, plan *pi.LaunchPlan, resultBytes []byte, allocationID string, generation int64, fencingToken string) error {
 	inspectIdentity, err := identity(view, allocationID, generation, fencingToken, "command-inspect-admission")
 	if err != nil {
@@ -33,6 +34,24 @@ func (b *Bridge) admitCompletedResult(ctx context.Context, view workerRequestVie
 		return fmt.Errorf("sandboxbridge: admission inspect failed: %w", err)
 	}
 
+	attemptDir := attemptDirFor(view, plan)
+
+	// R2/R3 纠偏：生产路径从 immutable AttemptBinding + 真实 durable
+	// authority 接纳；退化为 seed 路径仅在无 authority 注入时（测试兼容）。
+	if b.authority != nil && attemptDir != "" {
+		binding, readErr := resultbinding.ReadAttemptBinding(attemptDir)
+		if readErr != nil {
+			return fmt.Errorf("sandboxbridge: admission: %w", readErr)
+		}
+		authSource := bridgeAuthoritySource{authority: b.authority}
+		admission, admitErr := resultbinding.AdmitWithDurableAuthority(ctx, binding, resultBytes, authSource, report.State)
+		if writeErr := writeAdmissionAnchor(attemptDir, admission); writeErr != nil {
+			return fmt.Errorf("sandboxbridge: admission anchor persist failed: %w", writeErr)
+		}
+		return admitErr
+	}
+
+	// 测试兼容路径：无 durable authority 时以 Inspect 时的临时 facts 走 seed。
 	facts := resultbinding.Facts{
 		TaskID:                        view.TaskID,
 		RunID:                         view.RunID,
@@ -49,32 +68,37 @@ func (b *Bridge) admitCompletedResult(ctx context.Context, view workerRequestVie
 		FencingToken:                  fencingToken,
 		LeaseExpiry:                   b.now().UTC().Add(24 * time.Hour),
 	}
-
-	// R2/R3 纠偏：从真实 durable authority 读取 dispatch 时冻结的 lease expiry
-	// 与 provider registration/snapshot，替代 Facts 临时构造的 seed 值。
-	if b.authority != nil {
-		if lease, ok := b.authority.LeaseFor(view.RunID, view.AttemptID); ok {
-			if expiry, parseErr := time.Parse(time.RFC3339, lease.ExpiresAt); parseErr == nil && !expiry.IsZero() {
-				facts.LeaseExpiry = expiry.UTC()
-			}
-			facts.SandboxProviderRegistrationID = lease.RegistrationId
-		}
-		if reg := b.authority.Registration(); reg.RegistrationId != "" {
-			facts.SandboxProviderRegistrationID = reg.RegistrationId
-		}
-		if snap := b.authority.CapabilitySnapshot(); snap.ProviderCapabilitySnapshotDigest != "" {
-			facts.CapabilityDigest = snap.ProviderCapabilitySnapshotDigest
-		}
-	}
-
 	admission, err := resultbinding.AdmitWorkerResult(ctx, facts, resultBytes)
-	if writeErr := writeAdmissionAnchor(attemptDirFor(view, plan), admission); writeErr != nil {
+	if writeErr := writeAdmissionAnchor(attemptDir, admission); writeErr != nil {
 		return fmt.Errorf("sandboxbridge: admission anchor persist failed: %w", writeErr)
 	}
-	if err != nil {
-		return err
+	return err
+}
+
+// bridgeAuthoritySource 适配 Bridge.DurableAuthority 到
+// resultbinding.DurableAuthoritySource。
+type bridgeAuthoritySource struct {
+	authority DurableAuthority
+}
+
+func (s bridgeAuthoritySource) ProviderRegistration() (provider.ProviderRegistration, error) {
+	reg := s.authority.Registration()
+	if reg.RegistrationId == "" {
+		return provider.ProviderRegistration{}, fmt.Errorf("empty registration id from durable authority")
 	}
-	return nil
+	return reg, nil
+}
+
+func (s bridgeAuthoritySource) ProviderRegistrationActive(registrationID string) (bool, error) {
+	store := s.authority.RegistrationStore()
+	if store == nil {
+		return false, fmt.Errorf("nil RegistrationStore from durable authority")
+	}
+	reg, err := store.Get(registrationID)
+	if err != nil {
+		return false, err
+	}
+	return reg.LifecycleState == provider.LifecycleStateActive, nil
 }
 
 func attemptDirFor(view workerRequestView, plan *pi.LaunchPlan) string {

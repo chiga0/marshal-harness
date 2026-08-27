@@ -8,10 +8,8 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/agentregistry"
-	"github.com/chiga0/marshal-harness/internal/attemptgate"
 	"github.com/chiga0/marshal-harness/internal/bindingcheck"
 	"github.com/chiga0/marshal-harness/internal/canonical"
-	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/runtimeprofile"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
@@ -168,6 +166,10 @@ type Admission struct {
 // AdmitWorkerResult 对一个 attempt 的真实 WorkerResult bytes 执行双
 // binding recheck（agent snapshot / sandbox live state 各自复核）+ DRC-bound
 // ResultIngress 接纳。accepted=false 时返回带细节的档案化拒绝，绝不放行。
+//
+// 生产路径应使用 AdmitWithDurableAuthority（从 immutable AttemptBinding +
+// 真实 durable authority 读取）。本函数保留为测试兼容路径（seedRegistry/
+// seedSandboxLedger 以输入 Facts 临时构造）。
 func AdmitWorkerResult(ctx context.Context, facts Facts, resultBytes []byte) (*Admission, error) {
 	if err := facts.validate(); err != nil {
 		return nil, err
@@ -180,117 +182,19 @@ func AdmitWorkerResult(ctx context.Context, facts Facts, resultBytes []byte) (*A
 	if err != nil {
 		return nil, err
 	}
-	checker, err := bindingcheck.NewChecker(registry, ledger)
-	if err != nil {
-		return nil, fmt.Errorf("resultbinding: %w", err)
-	}
-	agentBinding, err := runtimeprofile.NewAgentBinding(AgentRegistrationID(facts.CapabilityDigest), facts.CapabilityDigest, facts.AgentAdapterID, facts.AgentProviderVersion, ProtocolVersion)
-	if err != nil {
-		return nil, fmt.Errorf("resultbinding: agent binding: %w", err)
-	}
-	sandboxBinding, err := runtimeprofile.NewSandboxBinding(facts.SandboxProviderRegistrationID, facts.AllocationID, facts.AllocationGeneration)
-	if err != nil {
-		return nil, fmt.Errorf("resultbinding: sandbox binding: %w", err)
-	}
-	profile, err := runtimeprofile.NewProfile(agentBinding, sandboxBinding, compatibilityDigest(facts))
-	if err != nil {
-		return nil, fmt.Errorf("resultbinding: worker profile: %w", err)
-	}
-	store := attemptgate.NewAttemptProfileStore()
-	if err := store.Bind(facts.AttemptID, profile); err != nil {
-		return nil, fmt.Errorf("resultbinding: bind attempt profile: %w", err)
-	}
-	gate, err := attemptgate.NewGate(store, checker, registry)
-	if err != nil {
-		return nil, fmt.Errorf("resultbinding: %w", err)
-	}
+	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger)
+}
 
-	decision, err := gate.AdmitAttemptResult(facts.AttemptID, facts.CapabilityDigest)
-	admission := &Admission{
-		AttemptID: facts.AttemptID,
-	}
-	if decision.ProfileDigest != "" {
-		admission.ProfileDigest = decision.ProfileDigest
-	}
-	admission.RegistrationID = AgentRegistrationID(facts.CapabilityDigest)
-	admission.AgentOK = decision.Agent.OK
-	admission.SandboxOK = decision.Sandbox.OK
-	for _, r := range decision.Agent.Reasons {
-		admission.AgentReasons = append(admission.AgentReasons, string(r))
-	}
-	for _, r := range decision.Sandbox.Reasons {
-		admission.SandboxReasons = append(admission.SandboxReasons, string(r))
-	}
-	admission.EvidenceOK = decision.EvidenceOK
-	if decision.EvidenceReason != "" {
-		admission.EvidenceReason = string(decision.EvidenceReason)
-	}
-	if err != nil {
-		admission.AdmissionReason = err.Error()
-	}
-	if err != nil || !decision.Accepted {
-		admission.Accepted = false
-		if admission.AdmissionReason == "" {
-			admission.AdmissionReason = "dual-binding-or-evidence-reject"
-		}
-		return admission, fmt.Errorf("resultbinding: %w: %s", ErrAdmissionRejected, admission.AdmissionReason)
-	}
+func newAgentBinding(facts Facts) (runtimeprofile.AgentBinding, error) {
+	return runtimeprofile.NewAgentBinding(AgentRegistrationID(facts.CapabilityDigest), facts.CapabilityDigest, facts.AgentAdapterID, facts.AgentProviderVersion, ProtocolVersion)
+}
 
-	requestDigest := canonical.DigestBytes(resultBytes)
-	envelope := resultingress.ResultEnvelope{Kind: resultingress.KindWorkerResult, ResultDigest: requestDigest, Sequence: 1}
-	expiry := facts.LeaseExpiry
-	ledgerBinding := resultingress.LedgerBinding{
-		LeaseID:        facts.AllocationID,
-		Generation:     uint64(facts.AllocationGeneration),
-		FencingToken:   facts.FencingToken,
-		AttemptID:      facts.AttemptID,
-		AllocationID:   facts.AllocationID,
-		Expiry:         expiry,
-		Revoked:        false,
-		RegistrationID: AgentRegistrationID(facts.CapabilityDigest),
-		SnapshotDigest: facts.CapabilityDigest,
-		EvidenceDigest: facts.CapabilityDigest,
-	}
-	ingress, err := resultingress.NewIngress(ledgerBinding)
-	if err != nil {
-		return nil, fmt.Errorf("resultbinding: construct ingress: %w", err)
-	}
-	drc := resultingress.DRC{
-		AuthorityNamespaceID: AuthorityNamespaceID,
-		TaskID:               facts.TaskID,
-		RunID:                facts.RunID,
-		AttemptID:            facts.AttemptID,
-		AllocationID:         facts.AllocationID,
-		LeaseID:              facts.AllocationID,
-		Generation:           uint64(facts.AllocationGeneration),
-		FencingToken:         facts.FencingToken,
-		CommandID:            "command-result",
-		IdempotencyKey:       "ingress:attempt:" + facts.AttemptID,
-		RequestDigest:        requestDigest,
-		Nonce:                facts.FencingToken,
-		Expiry:               expiry,
-		Operation:            resultingress.OpResult,
-		RegistrationID:       AgentRegistrationID(facts.CapabilityDigest),
-		SnapshotDigest:       facts.CapabilityDigest,
-		EvidenceDigest:       facts.CapabilityDigest,
-	}
-	drcDigest, err := drc.Digest()
-	if err != nil {
-		return nil, fmt.Errorf("resultbinding: %w", err)
-	}
-	fact, err := ingress.Admit(ctx, drc, envelope)
-	if err != nil {
-		admission.Accepted = false
-		admission.AdmissionReason = "resultingress: " + err.Error()
-		admission.DrcDigest = drcDigest
-		admission.EnvelopeDigest = requestDigest
-		return admission, fmt.Errorf("resultbinding: %w: ingress: %v", ErrAdmissionRejected, err)
-	}
-	admission.Accepted = true
-	admission.DrcDigest = drcDigest
-	admission.EnvelopeDigest = requestDigest
-	admission.AdmissionFact = fact.FactDigest
-	return admission, nil
+func newSandboxBinding(facts Facts) (runtimeprofile.SandboxBinding, error) {
+	return runtimeprofile.NewSandboxBinding(facts.SandboxProviderRegistrationID, facts.AllocationID, facts.AllocationGeneration)
+}
+
+func newProfile(agent runtimeprofile.AgentBinding, sandbox runtimeprofile.SandboxBinding, facts Facts) (runtimeprofile.WorkerRuntimeProfile, error) {
+	return runtimeprofile.NewProfile(agent, sandbox, compatibilityDigest(facts))
 }
 
 func compatibilityDigest(facts Facts) string {
