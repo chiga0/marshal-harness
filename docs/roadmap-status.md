@@ -4,7 +4,7 @@
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
-> **2026-08-27 v1.0 路线重置（[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md)）**：继续使用 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的 `I186-R0→R6` 纵切框架，但以 production reachability 重新判定状态。M0–M9 历史 `PASSED` 结论与代码资产保留；M8/M9 的 Runtime 资产当前成熟度为 `COMPONENT`，不表示 v1.0 端到端集成。当前 `I186-R0: PASSED`、`I186-R1: IN_PROGRESS`、`I186-R2–R6: PLANNED`。R3-A/B/C/D 已有类型、纯核心与定向测试可复用，但在真实 composition root、双 binding 与 ResultIngress 接线完成前只能记为 component checkpoint。M10–M13 不再阻塞 v1.0，作为 R6 后的 1.x 候选重新排期。
+> **2026-08-27 v1.0 路线重置（[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md)）**：继续使用 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的 `I186-R0→R6` 纵切框架，但以 production reachability 重新判定状态。M0–M9 历史 `PASSED` 结论与代码资产保留；M8/M9 的 Runtime 资产当前成熟度为 `COMPONENT`，不表示 v1.0 端到端集成。当前 `I186-R0: PASSED`、`I186-R1–R5: IN_PROGRESS`、`I186-R6: PLANNED`。R3-A/B/C/D 已有类型、纯核心与定向测试可复用，但在真实 composition root、双 binding 与 ResultIngress 接线完成前只能记为 component checkpoint。M10–M13 不再阻塞 v1.0，作为 R6 后的 1.x 候选重新排期。
 
 ## v1.0 生产纵切
 
@@ -24,7 +24,7 @@ Milestone 状态与能力成熟度是两个维度：
 | `I186-R2` | `IN_PROGRESS` | `COMPONENT` | durable journal/lease 与 ResultIngress 组件可复用；真实结果经文案 `internal/resultbinding` 双 binding + resultingress DRC 接纳（R3 生命面）；尚未构成单一命令级 authority 收敛完成型态。 |
 | `I186-R3` | `IN_PROGRESS` | `INTEGRATED` | 每个 Attempt 的 Agent/Sandbox 双 binding + admission 时刻 live Inspect 回读的 current-ledger recheck 已接入真实执行链（`internal/resultbinding` + bridge admission，sandbox-binding-admission.json anchor 持久化进 attempt 目录；live-terminated/replaced 拒绝面覆盖）；尚未对接 Darwin 侧可信 dogfood 全帧。 |
 | `I186-R4` | `IN_PROGRESS` | `INTEGRATED` | `marshal explain run RUN_ID` 已落地（`internal/explain` 从权威 journal/snapshot/attempt anchor 装配 recovery.Decide，恢复时间线/lease/binding/冲突/决策/下一动作全部可读；cli 全绿）；唯一 recovery decision 到达既有恢复路径（supervisor/abort/retry 消费该 Decide）是剩余主线。 |
-| `I186-R5` | `PLANNED` | `DESIGN` | canary/cutover；真实 Agent 比较 authority invariants，Fake 才要求 exact digest；下一件主线。 |
+| `I186-R5` | `IN_PROGRESS` | `INTEGRATED` | 真实 pi canary 单轮通过（`3e6ed10` `TestRealPiExecChainCanary`：gated 默认跳过，标准 CLI 纵切经默认 exec-chain + 双 binding admission anchor）；cutovereq 三分判据（ADR 0054，真实 Agent 比较 authority invariants，Fake 才要求 exact digest）随摄回归；real-real canary 多轮对比与远程 trace 归 R6 conformance。 |
 | `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、跨平台安装、macOS 签名/notarization、升级/回滚与 release；当前分别受 Issue #212（签名身份未 provision）与宿主策略阻断。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。

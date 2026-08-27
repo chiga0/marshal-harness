@@ -714,6 +714,8 @@ Exit Gate 对照：**新路径默认启用**（20c5609）；**回滚演练通过
 
 按上述证据 I186-R5 于 2026-08-27 记为 `DONE`（本地纵切片 + 判定/回滚证据层）。
 
+**R5 真实 Agent canary 补证（2026-08-27，`3e6ed10`）**：`TestRealPiExecChainCanary`（`MARSHAL_RUN_PI_CANARY=1`/`MARSHAL_PI_PATH` 双门控、默认跳过）以标准 `scaffold→plan→approve→task run` CLI 纵切驱动真实 pi CLI 经 worker executor 默认 exec-chain 执行，断言 `worker.completed` 恰好入账一次、allocation record 锚点与尝试目录一致、`sandbox-binding-admission.json`（ADR 0052 §1.4 双 binding 接纳锚点）持久化存在、标记文件内容由 acceptance 权威校验通过；随测修复三处测试侧 policy 文档合规缺口（`generatedAt` 必填、control 块五子字段齐全、非 dogfood supervised 双批准门），生产代码零改动。范围标注不变：real-real Agent canary **多轮**对比与 Cloudflare/远程 trace 仍归 R6/后续治理，单轮 canary 不宣称生产 cutover 完成。
+
 ## I186-R4 收口：Pre-R4 四项合同 + 单一恢复模型（2026-08-27）
 
 Pre-R4 contract gate 四项与 R4 单一恢复模型均由快速收敛治理交付，[ADR 0053](adr/0053-pre-r4-contract-gates-and-single-recovery-model.md) 冻结全部合同（并就地修订 ADR 0044 冷热路径条款）：
