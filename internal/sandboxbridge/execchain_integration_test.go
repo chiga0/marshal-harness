@@ -199,6 +199,32 @@ func TestRunWorkerExecChainCarriesAgentInAllocation(t *testing.T) {
 		t.Errorf("allocation record incomplete: %+v", rec)
 	}
 
+	// ADR 0052 §1.4 admission anchor：双 binding + ResultIngress 接纳锚点
+	// 必须持久化在 attempt 目录且可机械复核。
+	anchorRaw, err := os.ReadFile(filepath.Join(f.attemptDir, "sandbox-binding-admission.json"))
+	if err != nil {
+		t.Fatalf("admission anchor missing: %v", err)
+	}
+	var anchor struct {
+		Accepted    bool   `json:"accepted"`
+		AttemptID   string `json:"attemptId"`
+		FactDigest  string `json:"admissionFactDigest"`
+		DrcDigest   string `json:"drcDigest"`
+		AgentOK     bool   `json:"agentSideOk"`
+		SandboxOK   bool   `json:"sandboxSideOk"`
+		EvidenceOK  bool   `json:"evidenceOk"`
+		ReasonField string `json:"admissionReason"`
+	}
+	if err := json.Unmarshal(anchorRaw, &anchor); err != nil {
+		t.Fatalf("admission anchor unreadable: %v", err)
+	}
+	if !anchor.Accepted || !anchor.AgentOK || !anchor.SandboxOK || !anchor.EvidenceOK {
+		t.Errorf("admission anchor rejected: %s", string(anchorRaw))
+	}
+	if anchor.FactDigest == "" || anchor.DrcDigest == "" || anchor.AttemptID != "A1" {
+		t.Errorf("anchor fields incomplete: %s", string(anchorRaw))
+	}
+
 	sweep := f.bridge.SweepRegistered(context.Background(), f.runner, NewMapResolver(map[string]bool{"R1": true}), time.Minute, time.Now())
 	if sweep.Terminated != 1 || len(sweep.Errors) != 0 {
 		t.Errorf("sweep of completed attempt must terminate exactly once, got %+v", sweep)

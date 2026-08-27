@@ -502,6 +502,15 @@ func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (*Lau
 	}, nil
 }
 
+// BinaryVersion 报告由 PrepareLaunch 的版本门验收过的 executable 版本。
+// 仅对 PrepareLaunch 产出的 plan 有意义；零值 plan 返回空串。
+func (p *LaunchPlan) BinaryVersion() string {
+	if p == nil {
+		return ""
+	}
+	return p.identity.version
+}
+
 // executionOutcome carries every observation of one executed attempt that the
 // completion pipeline consumes, independent of how the process was executed:
 // Run feeds the live capture directly, CompleteLaunch reconstructs it from

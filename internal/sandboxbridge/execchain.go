@@ -158,7 +158,18 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	if ctxErr != nil && signal == "" {
 		signal = "timeout"
 	}
-	return capable.CompleteLaunch(ctx, plan, transcript, false, nil, started, completed, exitCode, signal, ctxErr)
+	record, err := capable.CompleteLaunch(ctx, plan, transcript, false, nil, started, completed, exitCode, signal, ctxErr)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	// ADR 0052 §1.4：真实 WorkerResult 接纳前的双 binding + ResultIngress
+	// admission（live allocation state 回读 + anchor 落盘）。任何拒绝以
+	// untyped 错误交给 execution 的 typed 归一化（protocol-invalid /
+	// do-not-retry 正台语义）。
+	if err := b.admitCompletedResult(ctx, view, plan, record.Data, allocationID, generation, fencingToken); err != nil {
+		return domain.Record{}, err
+	}
+	return record, nil
 }
 
 // readAndVerifyTranscript 读取 staged artifact 并与 provider 重算 digest
