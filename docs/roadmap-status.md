@@ -20,12 +20,12 @@ Milestone 状态与能力成熟度是两个维度：
 | 阶段 | 状态 | 成熟度 | 当前结论 |
 | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 与 baseline evidence 已完成。 |
-| `I186-R1` | `IN_PROGRESS` | `COMPONENT` | 接通真实 Agent-in-Local/Container allocation；生产 root 尚未贯通。 |
-| `I186-R2` | `PLANNED` | `COMPONENT` | 复用 durable journal/lease 与 ResultIngress 组件，消除平行内存权威。 |
-| `I186-R3` | `PLANNED` | `COMPONENT` | 复用双 binding/revoke 组件；真实路径 current-ledger recheck 尚未完成。 |
-| `I186-R4` | `PLANNED` | `DESIGN` | 单一 recovery decision 与 `marshal explain`。 |
-| `I186-R5` | `PLANNED` | `DESIGN` | canary/cutover；真实 Agent 比较 authority invariants，Fake 才要求 exact digest。 |
-| `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、跨平台安装、macOS 签名/notarization、升级/回滚与 release。 |
+| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Agent（pi）由 Local allocation 承载执行：`local.NewLocalRunner` → `sandboxbridge` exec-chain（`abf80e9`+，`544680b` 起含双 binding 接纳）；`internal/sandboxbridge` 集成证明 + cli `TestTaskRun*` 一致通过；另副侧带外的 macOS dogfood gate 激活 binary 仍受宿主企业策略阻断（固定 Mach-O 致命，go run 不可跨进程绑定 dogfood activation，属 Issue #212/ADR 0051 范畴）。 |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | durable journal/lease 与 ResultIngress 组件可复用；真实结果经文案 `internal/resultbinding` 双 binding + resultingress DRC 接纳（R3 生命面）；尚未构成单一命令级 authority 收敛完成型态。 |
+| `I186-R3` | `IN_PROGRESS` | `INTEGRATED` | 每个 Attempt 的 Agent/Sandbox 双 binding + admission 时刻 live Inspect 回读的 current-ledger recheck 已接入真实执行链（`internal/resultbinding` + bridge admission，sandbox-binding-admission.json anchor 持久化进 attempt 目录；live-terminated/replaced 拒绝面覆盖）；尚未对接 Darwin 侧可信 dogfood 全帧。 |
+| `I186-R4` | `PLANNED` | ` COMPONENT → DESIGN` | `internal/recovery` 为 component 级单一恢复模型（决策表 + explain 渲染）；落地到真实路径与 `marshal explain run` CLI wiring 是下一步主线之一。 |
+| `I186-R5` | `PLANNED` | `DESIGN` | canary/cutover；真实 Agent 比较 authority invariants，Fake 才要求 exact digest；下一件主线。 |
+| `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、跨平台安装、macOS 签名/notarization、升级/回滚与 release；当前分别受 Issue #212（签名身份未 provision）与宿主策略阻断。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
