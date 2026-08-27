@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/agentregistry"
 	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
@@ -39,6 +40,7 @@ import (
 	githubpublisher "github.com/chiga0/marshal-harness/internal/publisher/github"
 	"github.com/chiga0/marshal-harness/internal/reconciliation"
 	"github.com/chiga0/marshal-harness/internal/repository"
+	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/sandbox/local"
@@ -2380,14 +2382,23 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// other subcommand is affected. Push/Pull transport, heartbeat, the
 	// dispatcher and the durable lease ledger are M9 scope and intentionally
 	// not wired here.
+	//
+	// R2/R3 纠偏（composition root 修复）：只构造一个 EmbeddedSandboxRuntime
+	// 实例——同一个实例同时承担 DispatchBinder、SandboxProvider、Authority
+	// 和 ResultIngressStore。此前构造了两个独立实例，导致第二个 runtime 读
+	// 不到第一个签发的 lease，退回虚构的 now+24h；agent registry 也是空的，
+	// admission 必然拒绝。单实例确保 lease、registration 和 capability
+	// snapshot 在同一 in-memory state 中可查。
 	var dispatchBinder execution.DispatchBinder
+	var sharedRuntime *app.EmbeddedSandboxRuntime
 	if app.EmbeddedSandboxEnabled(os.Getenv) {
-		embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now)
+		embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now, app.WithLocalRunnerOptions(local.WithExecTimeout(4*time.Hour)))
 		if embeddedErr != nil {
 			fmt.Fprintln(stderr, "运行失败：embedded sandbox runtime 初始化失败。")
 			return ExitFailure
 		}
-		dispatchBinder = embeddedRuntime
+		sharedRuntime = embeddedRuntime
+		dispatchBinder = sharedRuntime
 	}
 	// I186-R5 strangler cutover：新路径默认启用。Worker 经 sandboxbridge 在
 	// 绑定 allocation/lease 身份的执行链中运行（Provision→Stage→Adapter.Run
@@ -2398,16 +2409,16 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// publication 语义经端到端等价测试证明相同。
 	var workerRunner func(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error)
 	if os.Getenv("MARSHAL_WORKER_EXECUTOR") != "legacy" {
-		// worker executor 实例的 per-op 上限：真实 Agent attempt 预算为
-		// attemptTimeoutSeconds（分钟级），runner 默认 30s cap 会立刻 kill；
-		// worker 承载路径提升到 4h（Envelope §4 按 min(requested, cap) 生效，
-		// 不放宽任何 attempt 预算）。
-		embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now, app.WithLocalRunnerOptions(local.WithExecTimeout(4*time.Hour)))
-		if embeddedErr != nil {
-			fmt.Fprintln(stderr, "运行失败：sandbox executor runtime 初始化失败。")
-			return ExitFailure
+		if sharedRuntime == nil {
+			// embedded sandbox 未启用时仍需一个 runtime 实例承载 bridge。
+			embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now, app.WithLocalRunnerOptions(local.WithExecTimeout(4*time.Hour)))
+			if embeddedErr != nil {
+				fmt.Fprintln(stderr, "运行失败：sandbox executor runtime 初始化失败。")
+				return ExitFailure
+			}
+			sharedRuntime = embeddedRuntime
 		}
-		bridge, bridgeErr := sandboxbridge.NewBridge(embeddedRuntime.Provider())
+		bridge, bridgeErr := sandboxbridge.NewBridge(sharedRuntime.Provider())
 		if bridgeErr != nil {
 			fmt.Fprintln(stderr, "运行失败：sandbox executor bridge 初始化失败。")
 			return ExitFailure
@@ -2415,7 +2426,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		// ADR 0052 §1.2 + ADR 0055：当 provider 是 Local runner 时注入
 		// staged transcript artifact 回读面，使实现 LaunchCapable 的 Adapter
 		// （当前为 pi）在 allocation 中被承载执行。
-		if runner, ok := embeddedRuntime.Provider().(*local.LocalRunner); ok {
+		if runner, ok := sharedRuntime.Provider().(*local.LocalRunner); ok {
 			bridge.WithTranscriptSource(func(allocationID, artifactID string) ([]byte, error) {
 				dir, err := runner.AllocationDirectory(allocationID)
 				if err != nil {
@@ -2427,8 +2438,52 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		// R2/R3 纠偏：注入真实 durable authority，使 admission 从文件 ledger
 		// 读取 registration/snapshot、从 DispatchLease 读取 dispatch 时冻结
 		// 的 lease expiry，而非以结果携带 Facts 临时构造。
-		bridge.WithDurableAuthority(embeddedRuntime)
+		bridge.WithDurableAuthority(sharedRuntime)
 		workerRunner = bridge.RunWorker
+	}
+	// R2/R3 纠偏：在 execution.Run 之前 probe adapter 并注册 agent 到
+	// sharedRuntime 的 agentRegistry。此前 agentRegistry 在生产路径始终
+	// 为空，admission 的 AgentRegistrationActive 总是返回 false，导致
+	// 真实 agent 产出的结果在 admission 阶段被拒绝。
+	if sharedRuntime != nil && workerRunner != nil {
+		probeRecord, probeErr := worker.Probe(ctx)
+		if probeErr != nil {
+			fmt.Fprintf(stderr, "运行失败：adapter probe 失败：%v\n", probeErr)
+			return ExitFailure
+		}
+		capDigest := canonical.DigestBytes(probeRecord.Data)
+		registrationID := resultbinding.AgentRegistrationID(capDigest)
+		// 提取 adapter 版本用于 registration。
+		var capSnap struct {
+			AdapterVersion string `json:"adapterVersion"`
+			BinaryVersion  string `json:"binaryVersion"`
+		}
+		_ = json.Unmarshal(probeRecord.Data, &capSnap)
+		agentVersion := capSnap.BinaryVersion
+		if agentVersion == "" {
+			agentVersion = capSnap.AdapterVersion
+		}
+		now := time.Now().UTC()
+		agentReg := agentregistry.AgentRegistration{
+			RegistrationID:       registrationID,
+			AuthorityNamespaceID: resultbinding.AuthorityNamespaceID,
+			SecurityDomainID:     "default/execution/embedded-" + worker.ID(),
+			Principal:            "principal:agent:" + worker.ID(),
+			ProviderType:         agentregistry.ProviderTypeAgent,
+			ProviderName:         worker.ID(),
+			ProviderVersion:      agentVersion,
+			ProtocolVersion:      resultbinding.ProtocolVersion,
+			Scope:                "worker",
+			IdempotencyKey:       "cap:" + capDigest,
+			RequestDigest:        capDigest,
+			LifecycleState:       agentregistry.LifecycleStateActive,
+			CreatedAt:            now,
+			UpdatedAt:            now,
+		}
+		if regErr := sharedRuntime.RegisterAgent(agentReg); regErr != nil {
+			fmt.Fprintf(stderr, "运行失败：agent registration 失败：%v\n", regErr)
+			return ExitFailure
+		}
 	}
 	result, err := execution.Run(ctx, execution.Input{
 		StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID,

@@ -12,6 +12,15 @@ import (
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
 
+func mustParseViewRequest(t *testing.T, request domain.Record) workerRequestView {
+	t.Helper()
+	view, err := parseRequest(request)
+	if err != nil {
+		t.Fatalf("mustParseViewRequest: %v", err)
+	}
+	return view
+}
+
 func mustRecord(t *testing.T, runID, allocationID string) AllocationRecord {
 	t.Helper()
 	return AllocationRecord{
@@ -153,8 +162,8 @@ func TestRunWorkerRecordsAllocation(t *testing.T) {
 	}
 	request.Data = raw
 
-	if _, err := bridge.RunWorker(context.Background(), adapter, request); err != nil {
-		t.Fatalf("RunWorker: %v", err)
+	if _, err := bridge.runWorkerLegacy(context.Background(), adapter, request, mustParseViewRequest(t, request)); err != nil {
+		t.Fatalf("runWorkerLegacy: %v", err)
 	}
 	loaded, ok, err := LoadAllocationRecord(filepath.Dir(controlRoot))
 	if err != nil || !ok {
@@ -182,7 +191,7 @@ func TestRunWorker_NoControlRootNeverWritesCwd(t *testing.T) {
 	_ = os.Remove(leak)
 	provider := sandbox.NewFakeProvider(sandbox.FakeConfig{})
 	bridge, _ := NewBridge(provider)
-	if _, err := bridge.RunWorker(context.Background(), &fakeAdapter{id: "fake"}, validRequest(t)); err != nil {
+	if _, err := bridge.runWorkerLegacy(context.Background(), &fakeAdapter{id: "fake"}, validRequest(t), mustParseView(t)); err != nil {
 		t.Fatalf("RunWorker: %v", err)
 	}
 	if _, err := os.Stat(leak); !os.IsNotExist(err) {

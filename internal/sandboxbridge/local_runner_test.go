@@ -19,9 +19,9 @@ func TestRunWorkerAgainstLocalRunner(t *testing.T) {
 		t.Fatalf("NewBridge: %v", err)
 	}
 	adapter := &fakeAdapter{id: "fake"}
-	record, err := bridge.RunWorker(context.Background(), adapter, validRequest(t))
+	record, err := bridge.runWorkerLegacy(context.Background(), adapter, validRequest(t), mustParseView(t))
 	if err != nil {
-		t.Fatalf("RunWorker against LOCAL provider: %v", err)
+		t.Fatalf("runWorkerLegacy against LOCAL provider: %v", err)
 	}
 	_ = record
 }

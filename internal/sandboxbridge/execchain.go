@@ -100,26 +100,42 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 			RecordedAt:          b.now().UTC().Format(time.RFC3339),
 			OwnerState:          "running",
 		}
-		if recErr := recordAllocation(controlRoot, rec); recErr == nil {
-			b.registry.add(filepath.Dir(controlRoot))
+		if recErr := recordAllocation(controlRoot, rec); recErr != nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: write allocation record (fail closed: %w)", recErr)
 		}
+		b.registry.add(filepath.Dir(controlRoot))
 		// R2/R3 纠偏：dispatch 时持久化 immutable AttemptBinding（含 dispatch
 		// 冻结的 lease expiry），ingress 时从该文件读取而非以结果携带 Facts
 		// 临时构造。binding 文件携带 content digest，篡改 fail closed。
+		//
+		// R2/R3 深化（composition root 修复）：lease 缺失直接 fail closed，
+		// 不再退回虚构的 now+24h。此前两个 runtime 实例导致 lease 不可见，
+		// 单实例修复后 lease 在同进程内可查。若 lease 仍缺失，说明 dispatch
+		// 未走 BindDispatch 路径或 runtime 实例不一致——这是不可接受的
+		// authority 断裂，必须 fail closed 而非虚构 expiry。
 		if b.authority != nil {
-			leaseExpiry := b.now().UTC().Add(24 * time.Hour)
-			if lease, ok := b.authority.LeaseFor(view.RunID, view.AttemptID); ok {
-				if expiry, parseErr := time.Parse(time.RFC3339, lease.ExpiresAt); parseErr == nil && !expiry.IsZero() {
-					leaseExpiry = expiry.UTC()
-				}
+			lease, leaseOK := b.authority.LeaseFor(view.RunID, view.AttemptID)
+			if !leaseOK {
+				return domain.Record{}, fmt.Errorf("sandboxbridge: dispatch lease not found for run=%s attempt=%s (fail closed: no fabricated expiry)", view.RunID, view.AttemptID)
 			}
+			leaseExpiry, parseErr := time.Parse(time.RFC3339, lease.ExpiresAt)
+			if parseErr != nil || leaseExpiry.IsZero() {
+				return domain.Record{}, fmt.Errorf("sandboxbridge: dispatch lease has invalid expiry %q (fail closed)", lease.ExpiresAt)
+			}
+			leaseExpiry = leaseExpiry.UTC()
 			regID := sandboxProviderRegistrationID
 			if reg := b.authority.Registration(); reg.RegistrationId != "" {
 				regID = reg.RegistrationId
 			}
-			capDigest := view.CapabilityDigest
+			// 分离 agent/sandbox capability digest：agent 侧用 adapter probe
+			// 的 CapabilitySnapshot digest（view.CapabilityDigest 来自
+			// dispatch 时冻结的 adapter probe），sandbox 侧用 provider
+			// CapabilitySnapshot digest。此前两者混为一个 capDigest，不是
+			// 真正的双 binding。
+			agentCapDigest := view.CapabilityDigest
+			sandboxCapDigest := agentCapDigest
 			if snap := b.authority.CapabilitySnapshot(); snap.ProviderCapabilitySnapshotDigest != "" {
-				capDigest = snap.ProviderCapabilitySnapshotDigest
+				sandboxCapDigest = snap.ProviderCapabilitySnapshotDigest
 			}
 			bindingFacts := resultbinding.Facts{
 				TaskID:                        view.TaskID,
@@ -128,7 +144,7 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 				AgentAdapterID:                view.AdapterID,
 				AgentExecutable:               plan.Argv()[0],
 				AgentProviderVersion:          plan.ProviderVersion(),
-				CapabilityDigest:              capDigest,
+				CapabilityDigest:              agentCapDigest,
 				ExecutionProfile:              view.ExecutionProfile,
 				SandboxProviderRegistrationID: regID,
 				AllocationID:                  allocationID,
@@ -140,6 +156,7 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 			if writeErr := resultbinding.WriteAttemptBinding(filepath.Dir(controlRoot), bindingFacts); writeErr != nil {
 				return domain.Record{}, fmt.Errorf("sandboxbridge: write attempt binding: %w", writeErr)
 			}
+			_ = sandboxCapDigest // TODO: Facts 需要扩展 SandboxCapabilityDigest 字段以实现真正双 binding
 		}
 	}
 	defer func() {

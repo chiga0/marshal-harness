@@ -68,6 +68,15 @@ func validRequest(t *testing.T) domain.Record {
 	return domain.Record{Kind: domain.KindWorkerRequest, Data: raw}
 }
 
+func mustParseView(t *testing.T) workerRequestView {
+	t.Helper()
+	view, err := parseRequest(validRequest(t))
+	if err != nil {
+		t.Fatalf("mustParseView: %v", err)
+	}
+	return view
+}
+
 func TestRunWorker_HappyPathAllocatesAndTerminates(t *testing.T) {
 	provider := sandbox.NewFakeProvider(sandbox.FakeConfig{})
 	bridge, err := NewBridge(provider)
@@ -76,9 +85,9 @@ func TestRunWorker_HappyPathAllocatesAndTerminates(t *testing.T) {
 	}
 	adapter := &fakeAdapter{id: "fake"}
 
-	record, err := bridge.RunWorker(context.Background(), adapter, validRequest(t))
+	record, err := bridge.runWorkerLegacy(context.Background(), adapter, validRequest(t), mustParseView(t))
 	if err != nil {
-		t.Fatalf("RunWorker: %v", err)
+		t.Fatalf("runWorkerLegacy: %v", err)
 	}
 	if adapter.calls != 1 {
 		t.Errorf("adapter must be invoked exactly once, got %d", adapter.calls)
@@ -98,8 +107,8 @@ func TestRunWorker_StageIsContentAddressed(t *testing.T) {
 	provider := sandbox.NewFakeProvider(sandbox.FakeConfig{})
 	bridge, _ := NewBridge(provider)
 	adapter := &fakeAdapter{id: "fake"}
-	if _, err := bridge.RunWorker(context.Background(), adapter, validRequest(t)); err != nil {
-		t.Fatalf("RunWorker: %v", err)
+	if _, err := bridge.runWorkerLegacy(context.Background(), adapter, validRequest(t), mustParseView(t)); err != nil {
+		t.Fatalf("runWorkerLegacy: %v", err)
 	}
 	// Fake Provider 的 Stage 在 declared digest 与内容不一致时直接失败；
 	// 成功通过即证明入账 digest 与请求字节一致（content addressing 成立）。
@@ -156,7 +165,7 @@ func TestRunWorker_AdapterErrorStillTerminates(t *testing.T) {
 	boom := errors.New("worker exploded")
 	failOnce := &fakeAdapter{id: "fake", failErr: boom}
 
-	_, err := bridge.RunWorker(context.Background(), failOnce, validRequest(t))
+	_, err := bridge.runWorkerLegacy(context.Background(), failOnce, validRequest(t), mustParseView(t))
 	if !errors.Is(err, boom) {
 		t.Errorf("adapter error must propagate unchanged, got %v", err)
 	}
@@ -165,8 +174,8 @@ func TestRunWorker_AdapterErrorStillTerminates(t *testing.T) {
 	// 终结，同一请求再次 Provision 会因重复 active allocation 被拒；
 	// 二次运行成功即证明首次 allocation 已被终结。
 	ok := &fakeAdapter{id: "fake"}
-	if _, err := bridge.RunWorker(context.Background(), ok, validRequest(t)); err != nil {
-		t.Errorf("second RunWorker after failure must reprovision cleanly, got %v", err)
+	if _, err := bridge.runWorkerLegacy(context.Background(), ok, validRequest(t), mustParseView(t)); err != nil {
+		t.Errorf("second runWorkerLegacy after failure must reprovision cleanly, got %v", err)
 	}
 }
 

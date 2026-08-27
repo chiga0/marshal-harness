@@ -110,14 +110,13 @@ func (b *Bridge) WithDurableAuthority(authority DurableAuthority) *Bridge {
 // fail-closed 持久化链继续适用），且 allocation 一定被 Terminate。
 //
 // 路径选择：adapter 实现 LaunchCapable 且桥配置了 TranscriptSource →
-// allocation-carried 执行链（ADR 0052 §1.2）；否则 legacy 记账式路径
-// （R5 兼容形态：allocation 身份绑定 + adapter.Run）。
+// allocation-carried 执行链（ADR 0052 §1.2）。
 //
-// v1.0 限制：仅 pi adapter 实现 LaunchCapable。qwen/qoder/codex/opencode
-// 仍走 legacy 路径（不经 allocation-carried exec-chain）。这是已知的
-// adapter 成熟度限制，不是安全缺陷——legacy 路径仍有 allocation 身份
-// 绑定和 lease fencing，但不经 admission anchor / ResultIngress 接纳。
-// 后续 adapter 逐个实现 LaunchCapable 后此限制消除。
+// v1.0 production 门禁：adapter 必须实现 LaunchCapable 才能进入
+// allocation-carried exec-chain。未实现 LaunchCapable 的 adapter
+// 不经 admission anchor / ResultIngress 接纳，不满足 v1.0 生产门禁，
+// 必须 fail closed。这是 composition root 纠偏的结论：production profile
+// 不允许静默退回宿主 legacy Run 路径。
 func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error) {
 	if adapter == nil {
 		return domain.Record{}, errors.New("sandboxbridge: adapter must not be nil")
@@ -129,10 +128,14 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 	if view.AdapterID != "" && view.AdapterID != adapter.ID() {
 		return domain.Record{}, fmt.Errorf("sandboxbridge: request adapterId %q does not match injected adapter %q", view.AdapterID, adapter.ID())
 	}
-	if capable, ok := adapter.(LaunchCapable); ok && b.transcriptSource != nil {
-		return b.runWorkerExecChain(ctx, capable, request, view)
+	capable, isLaunchCapable := adapter.(LaunchCapable)
+	if !isLaunchCapable {
+		return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q does not implement LaunchCapable (v1.0 production gate: non-LaunchCapable adapters are rejected)", adapter.ID())
 	}
-	return b.runWorkerLegacy(ctx, adapter, request, view)
+	if b.transcriptSource == nil {
+		return domain.Record{}, errors.New("sandboxbridge: exec-chain requires a transcript source")
+	}
+	return b.runWorkerExecChain(ctx, capable, request, view)
 }
 
 // runWorkerLegacy 是 R5 兼容形态的执行：allocation 身份绑定 + adapter.Run。
