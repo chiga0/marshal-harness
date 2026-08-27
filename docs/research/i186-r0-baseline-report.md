@@ -39,6 +39,7 @@ Local MVP 保持 `USABLE`。M0–M6 的历史 `PASSED` 结论与证据链（见 
 | child Issue | 阶段 | 覆盖缺口 | 收口条件（Exit Gate 摘要） |
 | --- | --- | --- | --- |
 | [#187](https://github.com/chiga0/marshal-harness/issues/187) | I186-R0 | 无新增缺口；冻结现状与收敛设计 | 现状可复现；ADR accepted；M0–M9 历史未篡改；独立 reviewer 无 P0/P1 |
+| [#186](https://github.com/chiga0/marshal-harness/issues/186) 路线全列与 Roadmap replan（2026-08-27） | I186-R1–R6 | 全部 failure inventory；四项 honest gaps 归后续 | 各阶段收口证据见 [audit-report.md](../audit-report.md) R3/R4/R5/R6 收口节；replan 快照见 [i186-r0-maturity-matrix.md](i186-r0-maturity-matrix.md)；R6 canary Run `run-i186-r6-canary` 独立验证 9 Gate 通过 |
 
 R1–R6 的 child Issue 在各阶段启动时创建并补入本表；每行必须引用 [i186-r0-maturity-matrix.md](i186-r0-maturity-matrix.md) failure inventory 中的稳定缺口 ID。
 

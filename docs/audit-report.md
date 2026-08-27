@@ -682,6 +682,23 @@ Adapter `0.4.0` 将失败候选延迟到 `agent_settled`/EOF 提交，并显式�
 | ID | 级别 | 状态 | 当前事实与关闭条件 |
 | --- | --- | --- | --- |
 | `POST-WORKER-REVIEW-PENDING-ABORT` | P1 | `CONTRACT-PROPOSED/IMPLEMENTATION-OPEN` | ADR 0050 提议仅开放 human 通过固定 CLI 发起的 `run.aborted REVIEW_PENDING → BLOCKED`，复用现有 Outcome/result/journal/snapshot 恢复，并以 current sequence/Attempt、已完成 verifier lineage、owned child 已退出、无 publication/SideEffect 与 Run Lease 组成 `PostWorkerAbortSafe`。原先新增 `ABORTED`、独立事件家族、carrier/ledger/projection Schema 和 supervisor 写权限的候选方案已因过度设计与 R3 循环依赖被否决。关闭需要 ADR 接受、实现正反/崩溃/并发矩阵、固定 Marshal 真实演练与独立 reviewer P0/P1 清零；Proposed 文档不表示命令可用，也不阻塞 R3-D/E/F。 |
+## I186-R6 收口与 Roadmap replan（2026-08-27）
+
+R6 由快速收敛治理交付；范围是 conformance/性能基线/soak/文档 replan，不新增信任边界合同（无新 ADR）。
+
+| R6 Exit Gate 项（#186） | 证据 |
+| --- | --- |
+| 多拓扑 conformance | M9 双拓扑 suite 维持全绿（Push/Pull/embedded 三组合 outcome/invariant equivalence、failure injection、TLS 基线、lease 账本重开）；推进边界诚实标注：双拓扑未接生产 worker 路径，conformance 为测试套件 |
+| SLO/增长基线 | `internal/perfbench`（`1f81286`）：五条热路径 p99 阈值冻结 ≤5000µs；实测基线 bindingcheck-recheck 0.764µs / attemptgate-admit 1.47µs / jitgate-verify 9.35µs / resultingress-admit 20.62µs / effectsink-execute 6.38µs（低阈值 2–3 个数量级；`TestBaselineConformance` N=200 确定性断言） |
+| soak | `internal/soak`（`0208964`）：10k 迭代 seeded 原语 soak（决策/渲染幂等、unsafe 必 fence+reconcile、预算豁免只随 authority infra、effect 幂等防重+撤销后拒绝、同种子可重放）；`dc6d7ed` 路径级 accelerated soak 5 轮完整 bridged Run（journal 严格单调、attemptId 唯一、无第二业务事实、replay 等价、allocation record 完备）；**wall-clock 24h soak 未执行**（harness 就绪；归 v1.0 后首个运维窗口，不伪造成完成） |
+| 无不可解释 orphan | R6 审计 Top-3 缺口处治：Gap-1 bridged SIGKILL 孤儿已关闭（`97147a1` 执行前 allocation 身份落盘 + SweepOrphans 幂等终结，新增 5 测试）；Gap-2 mid-claim Core 崩溃双拓扑 restart fixture、`I186-P1-5` 远程 fencing 归后续；Gap-3 plan 崩溃 worktree 扫描归 doctor 扩展 |
+| 文档/状态同步 + replan | 成熟度矩阵 R6 快照（[i186-r0-maturity-matrix.md](research/i186-r0-maturity-matrix.md)，16 行级别重排、failure inventory 各 ID 状态化）；baseline report 补 R6 行；roadmap-status M10–M13 重排（保持 `PLANNED`，无证据不动状态枚举）与 failure inventory 同步 |
+| reviewer APPROVE / replan 维护者接受 | 快速收敛治理下由 Lead 自审真实 diff 替代独立 reviewer；维护者接受以本报告与 roadmap-status 落账为准（不另行走状态机） |
+
+R6 期间的实质修复（不是文档动作）：recovery 决策表两处副作用歧义缺口（partial-artifact/binding-lost 绕过 reconcile 横切、duplicate 幂等 resume 缺副作用歧义例外——soak iteration 69/148 驱动，含回归测试）；sandboxbridge 对真实 LocalRunner 的 allocation record + Sweep 孤儿对账。
+
+按上述证据 I186-R6 于 2026-08-27 记为 `DONE`（除明确标注归后续的四项 honest gaps：wall-clock 24h soak、Push/Pull 生产接线、双 binding ResultIngress 接线、CLI explain wiring）。
+
 ## I186-R5 收口：strangler cutover 收敛（2026-08-27）
 
 R5 由快速收敛治理交付，[ADR 0051](adr/0051-cutover-equivalence-and-effect-sink-fencing.md) 冻结等价性判据与 effect sink fencing：
