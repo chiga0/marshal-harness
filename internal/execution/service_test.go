@@ -4116,3 +4116,68 @@ func TestRunLocalMVPPathUnchangedWithoutDispatchBinder(t *testing.T) {
 		t.Fatalf("the Local MVP path produced dispatch diagnostics: %v", statErr)
 	}
 }
+
+// TestLostResponseWorkerResultDurableButJournalIncomplete 验证 lost-response
+// 场景的安全恢复行为（R6-TOP2）：worker-result.json 已 durable 但
+// worker.completed 事件未追加（journal tail 仍为 worker.started）时，
+// 恢复路径不直接消费未经证实的 stale result，而是隔离旧输出并以新
+// attempt 重试。这是 fail-closed 安全选择——比盲目消费 unverified result
+// 更安全，因为结果可能是崩溃前写入的不完整或损坏数据。
+//
+// 此测试锁定当前安全行为作为 lost-response 的契约。未来如增加"检测
+// pre-existing result 并经 recheck 后直接消费"的 happy-path 优化，
+// 必须先新增 ADR 并修改此测试。
+func TestLostResponseWorkerResultDurableButJournalIncomplete(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	fixture.input.OrphanStalenessThreshold = time.Second
+	setupOrphanedRunningFixture(t, fixture, "attempt-lost-response")
+
+	// 模拟 lost-response：worker 已产出有效 result 并写入磁盘，但
+	// worker.completed 事件未追加（crash between atomicWrite and Append）。
+	orphanDir := filepath.Join(fixture.runDir, "attempts", "attempt-lost-response")
+	lateResult := mustJSON(t, map[string]any{
+		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerResult",
+		"taskId": "TASK-1", "runId": fixture.input.RunID, "attemptId": "attempt-lost-response",
+		"adapter":              map[string]any{"id": "fixture", "executable": "/fixture", "version": "1"},
+		"status":               "completed",
+		"summary":              "lost-response: result durable but journal incomplete",
+		"declaredChangedFiles": []string{},
+		"declaredArtifacts":    []any{},
+		"declaredCommands":     []any{},
+		"declaredRisks":        []string{},
+		"startedAt":            "2026-08-04T00:00:00Z",
+		"completedAt":          "2026-08-04T00:00:01Z",
+	})
+	if err := os.WriteFile(filepath.Join(orphanDir, "worker-result.json"), lateResult, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 恢复路径必须隔离 stale result，不以 attempt-lost-response 的身份消费它。
+	result, err := Run(context.Background(), fixture.input)
+	if err != nil {
+		t.Fatalf("lost-response recovery failed: %v", err)
+	}
+	if result.State.State != domain.StateVerifying {
+		t.Fatalf("state = %+v, want Verifying (recovered via new attempt)", result.State)
+	}
+	// 新 attempt 的 ID 不等于 lost-response 的 attempt ID。
+	if result.AttemptID == "attempt-lost-response" {
+		t.Fatalf("recovery must not reuse the lost-response attempt; got attemptId=%s", result.AttemptID)
+	}
+	// stale result 被隔离到 diagnostics。
+	quarantined, readErr := os.ReadFile(filepath.Join(orphanDir, "diagnostics", "quarantined-worker-result.json"))
+	if readErr != nil {
+		t.Fatalf("quarantined worker-result missing: %v", readErr)
+	}
+	if !strings.Contains(string(quarantined), "attempt-lost-response") {
+		t.Fatalf("quarantined result must reference the lost-response attempt, got: %s", string(quarantined))
+	}
+	// 新 attempt 的 worker-result 不是 stale 的那份。
+	newResult, readErr := os.ReadFile(filepath.Join(fixture.runDir, "attempts", result.AttemptID, "worker-result.json"))
+	if readErr != nil {
+		t.Fatalf("new attempt worker-result missing: %v", readErr)
+	}
+	if strings.Contains(string(newResult), "lost-response") {
+		t.Fatalf("new attempt must not reuse the stale result")
+	}
+}
