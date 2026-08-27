@@ -2379,13 +2379,15 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}
 		dispatchBinder = embeddedRuntime
 	}
-	// I186-R5 strangler cutover worker executor seam：MARSHAL_WORKER_EXECUTOR=sandbox
-	// 严格 opt-in 时，Worker 经 sandboxbridge 在绑定 allocation/lease 身份的
-	// 执行链中运行；未设置或任何其他取值保持 legacy `Adapter.Run(host)`
-	// 行为完全不变（ADR 0043 决策 7 的 explicit local-nonproduction
-	// compatibility profile）。回滚即移除该环境变量，无状态迁移。
+	// I186-R5 strangler cutover：新路径默认启用。Worker 经 sandboxbridge 在
+	// 绑定 allocation/lease 身份的执行链中运行（Provision→Stage→Adapter.Run
+	// →Inspect→Terminate）；`MARSHAL_WORKER_EXECUTOR=legacy` 显式回到
+	// legacy `Adapter.Run(host)` compatibility profile（ADR 0043 决策 7 的
+	// explicit local-nonproduction）。rollback 即设置该环境变量为 legacy，
+	// 只涉 gate 方向，无状态迁移；两条路径的 journal/verification/review/
+	// publication 语义经端到端等价测试证明相同。
 	var workerRunner func(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error)
-	if os.Getenv("MARSHAL_WORKER_EXECUTOR") == "sandbox" {
+	if os.Getenv("MARSHAL_WORKER_EXECUTOR") != "legacy" {
 		embeddedRuntime, embeddedErr := app.NewEmbeddedSandboxRuntime(location.StateRoot, time.Now)
 		if embeddedErr != nil {
 			fmt.Fprintln(stderr, "运行失败：sandbox executor runtime 初始化失败。")

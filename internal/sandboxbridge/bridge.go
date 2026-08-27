@@ -98,7 +98,15 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 	}
 	requestedAllocation := canonical.DigestBytes([]byte("sandboxbridge:allocation:" + specDigest))
 
-	provisionIdentity, err := identity(view, requestedAllocation, 1, "command-provision")
+	// fencingToken 冻结规则：每个 (attempt, allocation, generation) 派生
+	// 唯一 token，Provision 与后续 Stage/Inspect/Terminate 出示同一值——
+	// Local runner 在 Provision 时把首个 token 封进 sealed lease，后续
+	// 操作的 fencing guard 要求精确匹配（按 command 派生不同 token 会被
+	// 正确拒绝，这正是 fencing guard 的职责）。
+	const attemptGeneration = int64(1)
+	fencingToken := canonical.DigestBytes([]byte(view.AdapterID + ":" + requestedAllocation + ":" + strconv.FormatInt(attemptGeneration, 10)))
+
+	provisionIdentity, err := identity(view, requestedAllocation, attemptGeneration, fencingToken, "command-provision")
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -115,7 +123,7 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 
 	// 资源生命周期：provision 成功即保证 Terminate（幂等）。
 	defer func() {
-		termIdentity, idErr := identity(view, allocationID, generation, "command-terminate")
+		termIdentity, idErr := identity(view, allocationID, generation, fencingToken, "command-terminate")
 		if idErr != nil {
 			return
 		}
@@ -123,7 +131,7 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 	}()
 
 	// 冻结工单原样 content-address 入账：provider 消费前后重算 digest。
-	stageIdentity, err := identity(view, allocationID, generation, "command-stage")
+	stageIdentity, err := identity(view, allocationID, generation, fencingToken, "command-stage")
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -144,7 +152,7 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 
 	// Inspect 观察是 provider-asserted：仅作为诊断/审计材料，不构成
 	// authority（执行位置 attestation 的 claim 侧，LocationFact 归高保证链）。
-	inspectIdentity, idErr := identity(view, allocationID, generation, "command-inspect")
+	inspectIdentity, idErr := identity(view, allocationID, generation, fencingToken, "command-inspect")
 	if idErr == nil {
 		_, _ = b.provider.Inspect(ctx, sandbox.InspectRequest{Identity: inspectIdentity, AllocationId: allocationID})
 	}
@@ -201,11 +209,15 @@ func deriveProfileDigest(view workerRequestView) (string, error) {
 }
 
 // identity 按 sandbox SPI 语义构造 dispatch-bound OperationIdentity。
-func identity(view workerRequestView, allocationID string, generation int64, commandID string) (sandbox.OperationIdentity, error) {
+// fencingToken 由调用方在 attempt 生命周期内固定出示（见 RunWorker 的
+// 冻结规则）。
+func identity(view workerRequestView, allocationID string, generation int64, fencingToken, commandID string) (sandbox.OperationIdentity, error) {
 	if allocationID == "" {
 		return sandbox.OperationIdentity{}, errors.New("sandboxbridge: allocation id must not be empty")
 	}
-	token := canonical.DigestBytes([]byte(view.AdapterID + ":" + allocationID + ":" + strconv.FormatInt(generation, 10) + ":" + commandID))
+	if fencingToken == "" {
+		return sandbox.OperationIdentity{}, errors.New("sandboxbridge: fencing token must not be empty")
+	}
 	return sandbox.OperationIdentity{
 		TaskId:       view.TaskID,
 		RunId:        view.RunID,
@@ -213,7 +225,7 @@ func identity(view workerRequestView, allocationID string, generation int64, com
 		WorkloadRole: sandbox.WorkloadRoleWorker,
 		AllocationId: allocationID,
 		Generation:   generation,
-		FencingToken: token,
+		FencingToken: fencingToken,
 		CommandId:    commandID,
 	}, nil
 }
