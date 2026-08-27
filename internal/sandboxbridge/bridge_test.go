@@ -182,3 +182,11 @@ func TestRunWorker_NilAdapter(t *testing.T) {
 		t.Errorf("nil adapter must fail closed")
 	}
 }
+
+func jsonUnmarshalForTest(raw []byte, v any) error {
+	return json.Unmarshal(raw, v)
+}
+
+func jsonMarshalForTest(v any) ([]byte, error) {
+	return json.Marshal(v)
+}

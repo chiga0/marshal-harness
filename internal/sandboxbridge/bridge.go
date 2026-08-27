@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/agentruntime"
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -43,9 +45,12 @@ type Outcome struct {
 }
 
 // Bridge 把 legacy WorkerAdapter 包在绑定 allocation/lease 身份的执行链中。
-// 每次 RunWorker 新建并终结一个 allocation；并发安全（状态只在方法栈内）。
+// 每次 RunWorker 新建并终结一个 allocation；并发安全。registry 会进程内
+// 收集已 record 的 attempt 目录，供 SweepRegistered 对账孤儿。
 type Bridge struct {
 	provider sandbox.SandboxProvider
+	registry *allocRegistry
+	now      func() time.Time
 }
 
 // NewBridge 构造 Bridge；nil provider fail closed。
@@ -53,7 +58,7 @@ func NewBridge(provider sandbox.SandboxProvider) (*Bridge, error) {
 	if provider == nil {
 		return nil, errors.New("sandboxbridge: NewBridge requires a non-nil SandboxProvider")
 	}
-	return &Bridge{provider: provider}, nil
+	return &Bridge{provider: provider, registry: &allocRegistry{}, now: time.Now}, nil
 }
 
 // RunWorker 实现 execution.Input.WorkerRunner。成功时原样返回 adapter 的
@@ -120,6 +125,27 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 	}
 	allocationID := provisionReceipt.Allocation.AllocationId
 	generation := provisionReceipt.Allocation.Generation
+
+	// 执行前把 allocation 身份落盘（R6 孤儿对账锚点）：driver 崩溃后
+	// reconciler 据此终结残留 allocation。写失败仅降级为现状（无锚点），
+	// 不打断执行。
+	if controlRoot := controlRootOf(request.Data); controlRoot != "" {
+		rec := AllocationRecord{
+			Schema:              allocationRecordSchema,
+			TaskID:              view.TaskID,
+			RunID:               view.RunID,
+			AttemptID:           view.AttemptID,
+			AllocationID:        allocationID,
+			Generation:          generation,
+			FencingToken:        fencingToken,
+			RequirementsProfile: view.ExecutionProfile,
+			RecordedAt:          b.now().UTC().Format(time.RFC3339),
+			OwnerState:          "running",
+		}
+		if recErr := recordAllocation(controlRoot, rec); recErr == nil {
+			b.registry.add(filepath.Dir(controlRoot))
+		}
+	}
 
 	// 资源生命周期：provision 成功即保证 Terminate（幂等）。
 	defer func() {
