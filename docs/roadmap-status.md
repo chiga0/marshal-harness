@@ -34,6 +34,7 @@ v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentPro
 > 以下记录为 Lead 快速收敛治理（单 Lead + 多 Sub-Agent、停用独立 reviewer 轮转、Lead 直并，仅保留防错误发布/数据破坏/trust-boundary ADR 硬约束）下的交付证据。状态判定一率以 ADR 0052 的生产可达性口径为准：这些资产记为 component checkpoint，不另行宣称阶段 DONE。
 
 - R3-D/E/F 快速收敛交付：R3-D `ec13ee7`（internal/revokedrain 撤销分级处置）+ `0a9b3b6`（internal/attemptgate per-Attempt 双 binding recheck + 证据边界负测）、R3-E `c47b4c2`（internal/locationattest claim/fact 分型）、R3-F `d89c65e`（internal/failureclass 失败分类 authority），[ADR 0049](adr/0049-location-attestation-and-failure-classification-authority.md) 冻结 E/F 合同并修订 ADR 0043 §5；Exit Gate 证据对照与 finding 关闭见 [audit-report.md](audit-report.md)；R3-D1/D1b 历史 Marshal Run 的 REJECTED 记录保留，其中 D1b 实现经修复公式后采用。Issue #209 与 PR #211 已闭环；Issue #210/#212 转入 dogfood 沉淀。R0 产物见 [i186-r0-baseline-report.md](research/i186-r0-baseline-report.md)；Pre-R4 contract gate 四项（hot-path authority、JIT admission、protocol migration、Candidate identity）在 R4 启动实现前随 R4 首批切片补齐。
+- R4 快速收敛交付：Pre-R4 四项合同（hotpath `f65cfaf`、jitgate+candidateid `c4c8b69`、protocolrev `ab7b263`）+ 单一恢复模型（recovery `34f70d3`，故障矩阵八类唯一幂等结论 + explain 等价 API），[ADR 0053](adr/0053-pre-r4-contract-gates-and-single-recovery-model.md)（原编号 0050）冻结全部合同并修订 ADR 0044 冷热路径条款；证据与 finding 关闭见 [audit-report.md](audit-report.md)。
 
 | Milestone | 状态 | 证据 |
 | --- | --- | --- |
