@@ -34,7 +34,8 @@ type Facts struct {
 	AgentAdapterID                string // == ProviderName（adapter id 即 provider 名）
 	AgentExecutable               string // 审计字段（不参与门禁）
 	AgentProviderVersion          string
-	CapabilityDigest              string // 冻结 capability snapshot digest + 本 Attempt 的 admission evidence
+	CapabilityDigest              string // 冻结 agent capability snapshot digest + 本 Attempt 的 admission evidence
+	SandboxCapabilityDigest       string // 冻结 sandbox provider capability snapshot digest（双 binding 分离）
 	ExecutionProfile              string
 	SandboxProviderRegistrationID string
 	AllocationID                  string
@@ -59,6 +60,14 @@ func (f Facts) validate() error {
 		}
 	}
 	if err := requireDigest("CapabilityDigest", f.CapabilityDigest); err != nil {
+		return fmt.Errorf("resultbinding: %w: %v", ErrMalformedFacts, err)
+	}
+	// SandboxCapabilityDigest 如果为空，回退到 CapabilityDigest（向后兼容）。
+	// 生产路径必须分离设置——execchain.go 在 dispatch 时分别填充。
+	if f.SandboxCapabilityDigest == "" {
+		f.SandboxCapabilityDigest = f.CapabilityDigest
+	}
+	if err := requireDigest("SandboxCapabilityDigest", f.SandboxCapabilityDigest); err != nil {
 		return fmt.Errorf("resultbinding: %w: %v", ErrMalformedFacts, err)
 	}
 	if f.AllocationGeneration < 1 {
@@ -200,7 +209,7 @@ func newProfile(agent runtimeprofile.AgentBinding, sandbox runtimeprofile.Sandbo
 }
 
 func compatibilityDigest(facts Facts) string {
-	raw, err := canonical.DigestJSON([]byte(facts.CapabilityDigest + "|" + facts.SandboxProviderRegistrationID + "|" + ProtocolVersion))
+	raw, err := canonical.DigestJSON([]byte(facts.CapabilityDigest + "|" + facts.SandboxCapabilityDigest + "|" + facts.SandboxProviderRegistrationID + "|" + ProtocolVersion))
 	if err != nil {
 		return facts.CapabilityDigest
 	}

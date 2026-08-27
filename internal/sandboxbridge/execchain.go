@@ -145,6 +145,7 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 				AgentExecutable:               plan.Argv()[0],
 				AgentProviderVersion:          plan.ProviderVersion(),
 				CapabilityDigest:              agentCapDigest,
+				SandboxCapabilityDigest:       sandboxCapDigest,
 				ExecutionProfile:              view.ExecutionProfile,
 				SandboxProviderRegistrationID: regID,
 				AllocationID:                  allocationID,
@@ -156,7 +157,6 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 			if writeErr := resultbinding.WriteAttemptBinding(filepath.Dir(controlRoot), bindingFacts); writeErr != nil {
 				return domain.Record{}, fmt.Errorf("sandboxbridge: write attempt binding: %w", writeErr)
 			}
-			_ = sandboxCapDigest // TODO: Facts 需要扩展 SandboxCapabilityDigest 字段以实现真正双 binding
 		}
 	}
 	defer func() {
