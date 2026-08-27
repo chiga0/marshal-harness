@@ -112,6 +112,12 @@ func (b *Bridge) WithDurableAuthority(authority DurableAuthority) *Bridge {
 // 路径选择：adapter 实现 LaunchCapable 且桥配置了 TranscriptSource →
 // allocation-carried 执行链（ADR 0052 §1.2）；否则 legacy 记账式路径
 // （R5 兼容形态：allocation 身份绑定 + adapter.Run）。
+//
+// v1.0 限制：仅 pi adapter 实现 LaunchCapable。qwen/qoder/codex/opencode
+// 仍走 legacy 路径（不经 allocation-carried exec-chain）。这是已知的
+// adapter 成熟度限制，不是安全缺陷——legacy 路径仍有 allocation 身份
+// 绑定和 lease fencing，但不经 admission anchor / ResultIngress 接纳。
+// 后续 adapter 逐个实现 LaunchCapable 后此限制消除。
 func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error) {
 	if adapter == nil {
 		return domain.Record{}, errors.New("sandboxbridge: adapter must not be nil")
