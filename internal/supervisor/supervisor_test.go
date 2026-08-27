@@ -1058,3 +1058,61 @@ func TestSuperviseRecoveryGateSkipsSideEffectRunNeedingReconcile(t *testing.T) {
 		t.Fatalf("executor attempts = %d, side-effect orphan must never be spawned", fake.attempts)
 	}
 }
+
+// R6-TOP5: recoveryDecision unavailable（journal 损坏）时 supervisor 必须
+// fail closed 跳过，不 spawn，文案指向 "recovery decision unavailable"。
+// 由于 Scan 自身会经 Inspect replay journal，journal 损坏在 Scan 层就被
+// 拦截（SkipReason="inspect failed"），不可能到达 recoveryDecision。
+// 此测试直接调 recoveryDecision 覆盖函数本身的错误返回路径。
+func TestRecoveryDecisionUnavailableOnCorruptJournal(t *testing.T) {
+	root := t.TempDir()
+	seedRun(t, root, "run-corrupt", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-fixtureStaleAge))
+	// 损坏 events.jsonl 使 ReadEvents 失败。Inspect 用 state.json 快照
+	// replay 可通过（state.json 完好），但 AssembleWithStaleness 的
+	// ReadEvents 会失败 → recoveryDecision 返回 err。
+	eventsPath := filepath.Join(root, "runs", "run-corrupt", "events.jsonl")
+	if err := os.WriteFile(eventsPath, []byte("{not-valid-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	supervisor, _ := newSupervisor(t, root, &fakeExecutor{})
+	_, err := supervisor.recoveryDecision("run-corrupt")
+	if err == nil {
+		t.Fatal("recoveryDecision with corrupt journal must return error")
+	}
+}
+
+// R6-TOP5: binding-lost（anchor 损坏）的孤儿经 recoveryDecision 得到
+// ActionNewAttempt + RequiresFence + RationaleBindingLost。无副作用声明时
+// RequiresReconcile=false，supervisor 放行接管（binding-lost 的 fencing
+// 在新 attempt 的 dispatch binder 中执行）。
+func TestSuperviseRecoveryGateAdmitsBindingLostOrphanWithoutSideEffect(t *testing.T) {
+	root := t.TempDir()
+	seedRun(t, root, "run-orphan-binding-lost", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-fixtureStaleAge))
+	writeTaskSpecFixture(t, root, "run-orphan-binding-lost", []string{"clean/**"})
+	// 写入损坏的 admission anchor → deriveBindings 报告 binding-lost。
+	anchorDir := filepath.Join(root, "runs", "run-orphan-binding-lost", "attempts", "attempt-run-orphan-binding-lost")
+	if err := os.MkdirAll(anchorDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(anchorDir, "sandbox-binding-admission.json"), []byte("{corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeExecutor{}
+	supervisor, _ := newSupervisor(t, root, fake)
+	records, err := supervisor.Supervise(context.Background())
+	if err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %+v, want exactly one record", records)
+	}
+	record := records[0]
+	// binding-lost 无副作用 → ActionNewAttempt + RequiresReconcile=false →
+	// supervisor 放行接管（fencing 在 dispatch 时执行）。
+	if !record.Started || record.SkipReason != "" {
+		t.Fatalf("binding-lost orphan without side effect should be admitted for takeover, got %+v", record)
+	}
+	if fake.attempts != 1 {
+		t.Fatalf("executor attempts = %d, want 1 (binding-lost takeover)", fake.attempts)
+	}
+}
