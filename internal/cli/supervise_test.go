@@ -136,6 +136,11 @@ func seedSuperviseRun(t *testing.T, stateRoot, runID string, path []domain.State
 			Timestamp:  lastEventAt,
 			Payload:    map[string]any{"fixture": "supervise-cli-test"},
 		}
+		// 真实 journal 中 worker.* 事件恒带 attemptId；single recovery
+		// model（ADR 0053 决策 5）装配要求非空。
+		if to == domain.StateRunning || to == domain.StateRetryPending {
+			event.AttemptID = "attempt-" + runID
+		}
 		if err := store.Append(lease, event, uint64(index)); err != nil {
 			t.Fatalf("append event %d for %s: %v", index+1, runID, err)
 		}

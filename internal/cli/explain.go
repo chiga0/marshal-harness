@@ -8,8 +8,28 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/explain"
+	"github.com/chiga0/marshal-harness/internal/recovery"
 	"github.com/chiga0/marshal-harness/internal/repository"
 )
+
+// recoverTakeoverAdmission 是 --recover-dead-driver 逃生舱的单一恢复模型
+// 门禁（ADR 0053 决策 5）：staleness 约零——owner 死亡已由耐用 lease 记录
+// 独立证明之后才调用，失效观测立即成立。仅当 Decision 为 new-attempt 且
+// 不需幂等键对账时允许即时接管；其余决策（对账/binding 损伤/装配失败）
+// 一概 fail closed，并按 `marshal explain run` 指引人工下一步。
+func recoverTakeoverAdmission(stateRoot, runID string, now time.Time) error {
+	x, err := explain.AssembleWithStaleness(stateRoot, runID, now, time.Nanosecond)
+	if x == nil {
+		return fmt.Errorf("无法装配恢复事实：%v", err)
+	}
+	if err != nil {
+		return fmt.Errorf("恢复决策不可用（%v）；按 `marshal explain run %s` 人工判定", err, runID)
+	}
+	if x.Decision.Action != recovery.ActionNewAttempt || x.Decision.RequiresReconcile {
+		return fmt.Errorf("恢复决策禁止立即接管（action=%s rationale=%s）；按 `marshal explain run %s` 完成幂等键对账后重试", x.Decision.Action, x.Decision.Rationale, runID)
+	}
+	return nil
+}
 
 // runExplain 是 `marshal explain run RUN_ID [--json]`：从权威账本装配单一
 // 恢复模型的 decision/explanation 并渲染。只读，不改变任何权威状态。

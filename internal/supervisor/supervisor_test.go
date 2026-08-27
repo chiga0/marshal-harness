@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/recovery"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
@@ -109,6 +110,14 @@ func seedRun(t *testing.T, stateRoot, runID string, path []domain.State, lastEve
 			StateTo:    to,
 			Timestamp:  lastEventAt,
 			Payload:    map[string]any{"fixture": "supervisor-test"},
+		}
+		// 真实 journal 中 worker.* 事件恒带 attemptId；恢复模型装配把
+		// AttemptID 视为必需事实（空则 fail closed），fixture 必须贴合。
+		if to == domain.StateRunning {
+			event.AttemptID = "attempt-" + runID
+		}
+		if to == domain.StateRetryPending {
+			event.AttemptID = "attempt-" + runID
 		}
 		if err := store.Append(lease, event, uint64(index)); err != nil {
 			t.Fatalf("append event %d for %s: %v", index+1, runID, err)
@@ -991,5 +1000,61 @@ func TestSuperviseWriteDomainIgnoresDeadAndTerminalRuns(t *testing.T) {
 	}
 	if records[1].RunID != "run-dead-driver" || records[1].Started || !strings.Contains(records[1].SkipReason, "write-domain conflict") {
 		t.Fatalf("orphan overlap record = %+v, want fail-closed skip", records[1])
+	}
+}
+
+// ADR 0053 决策 5 / I186-R4：死 driver 接管分派唯一经由单一恢复模型
+// （recovery.Decide）判定。无副作用声明（publication.required=false）的
+// 孤儿 RUNNING Run 判 new-attempt 且免 reconcile，允许立即接管；声明副
+// 作用且观察不可区分（unreachable）的判 ambiguous-side-effect + 需幂等
+// 键对账，supervisor 必须 fail closed 跳过并指向 `marshal explain run`。
+func TestSuperviseRecoveryGateAdmitsOrphanWithoutSideEffect(t *testing.T) {
+	root := t.TempDir()
+	seedRun(t, root, "run-orphan-clean", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-fixtureStaleAge))
+	writeTaskSpecFixture(t, root, "run-orphan-clean", []string{"clean/**"})
+	fake := &fakeExecutor{}
+	supervisor, binary := newSupervisor(t, root, fake)
+	records, err := supervisor.Supervise(context.Background())
+	if err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+	if len(records) != 1 || records[0].RunID != "run-orphan-clean" || !records[0].Started || records[0].SkipReason != "" {
+		t.Fatalf("records = %+v, want clean takeover dispatch", records)
+	}
+	wantArgv := []string{binary, "task", "run", "--run", "run-orphan-clean", "--through-verify", "--recover-dead-driver", "--json"}
+	if len(fake.started) != 1 || !reflect.DeepEqual(fake.started[0], wantArgv) {
+		t.Fatalf("started argv = %v, want %v", fake.started, wantArgv)
+	}
+}
+
+func TestSuperviseRecoveryGateSkipsSideEffectRunNeedingReconcile(t *testing.T) {
+	root := t.TempDir()
+	seedRun(t, root, "run-orphan-publish", pathTo(domain.StatePlanned, domain.StateReady, domain.StateRunning), fixtureNow.Add(-fixtureStaleAge))
+	// 声明 publication（副作用）：stale RUNNING 观察为 unreachable，无法
+	// 区分副作用是否已发生——唯一幂等结论是先对账，不是猜测。
+	spec := `{"apiVersion":"marshal.dev/v1alpha1","kind":"Task","metadata":{"id":"task-supervisor-fixture","title":"supervisor fixture"},"scope":{"allowPaths":["publish/**"]},"publication":{"required":true}}`
+	if err := os.WriteFile(filepath.Join(root, "runs", "run-orphan-publish", "task-spec.json"), []byte(spec), 0o600); err != nil {
+		t.Fatalf("write task-spec.json: %v", err)
+	}
+	fake := &fakeExecutor{}
+	supervisor, _ := newSupervisor(t, root, fake)
+	records, err := supervisor.Supervise(context.Background())
+	if err != nil {
+		t.Fatalf("Supervise: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %+v, want exactly one skip record", records)
+	}
+	record := records[0]
+	if record.RunID != "run-orphan-publish" || record.Started || record.Error != "" {
+		t.Fatalf("record = %+v, want dispatched=false and no start error", record)
+	}
+	if !strings.Contains(record.SkipReason, "recovery decision blocks re-dispatch") ||
+		!strings.Contains(record.SkipReason, string(recovery.RationaleAmbiguousSideEffect)) ||
+		!strings.Contains(record.SkipReason, "marshal explain run run-orphan-publish") {
+		t.Fatalf("SkipReason = %q, want reconcile gate pointing at explain", record.SkipReason)
+	}
+	if fake.attempts != 0 {
+		t.Fatalf("executor attempts = %d, side-effect orphan must never be spawned", fake.attempts)
 	}
 }

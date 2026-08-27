@@ -2365,6 +2365,13 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 			fmt.Fprintf(stderr, "运行失败：无法解除孤儿 Worktree 锁：%v\n", repositoryErr)
 			return ExitFailure
 		}
+		// ADR 0053 决策 5：接管前唯一经由单一恢复模型判定（staleness 约零
+		// ——owner 死亡已由耐用记录独立证明，失效观测立即成立）。Ambiguous
+		// side effect 等需幂等键对账的决策一律 fail closed 拒绝即时接管。
+		if admissionErr := recoverTakeoverAdmission(location.StateRoot, *runID, time.Now().UTC()); admissionErr != nil {
+			fmt.Fprintf(stderr, "运行失败：%v\n", admissionErr)
+			return ExitFailure
+		}
 		orphanStalenessThreshold = time.Nanosecond
 	}
 	// Embedded sandbox runtime (M8 vertical slice): strictly opt-in via

@@ -32,6 +32,16 @@ type Experience struct {
 // Assemble 从真实 Run journal/snapshot/attempt 目录把当前处置事实装配成
 // recovery.RecoveryInput 并做 Decide。offline explain 只读不改写任何状态。
 func Assemble(stateRoot, runID string, now time.Time) (*Experience, error) {
+	return AssembleWithStaleness(stateRoot, runID, now, defaultStalenessThreshold)
+}
+
+// AssembleWithStaleness 与 Assemble 同语义，但 staleness 阈值由调用方给定。
+// supervisor/recover 通道必须以自身 driver 死亡判定窗口装配事实，保证
+// 「判 dead → 决策」使用同一观测窗口，恢复结论单调自洽。
+func AssembleWithStaleness(stateRoot, runID string, now time.Time, staleness time.Duration) (*Experience, error) {
+	if staleness <= 0 {
+		staleness = defaultStalenessThreshold
+	}
 	if strings.TrimSpace(stateRoot) == "" || strings.TrimSpace(runID) == "" {
 		return nil, fmt.Errorf("explain: state root and run id must not be empty")
 	}
@@ -63,7 +73,7 @@ func Assemble(stateRoot, runID string, now time.Time) (*Experience, error) {
 		commandDigest = canonical.DigestBytes([]byte("pending-followup:" + pendingCommandID))
 	}
 
-	leaseState, observation := deriveLeaseAndObservation(state, events, now, defaultStalenessThreshold)
+	leaseState, observation := deriveLeaseAndObservation(state, events, now, staleness)
 	bindings := deriveBindings(stateRoot, runID, attemptID)
 	staleResult := anyFileExists(filepath.Join(stateRoot, "runs", runID, "attempts", attemptID, "quarantinedOutputs"))
 	sideEffectDeclared := publicationRequired(filepath.Join(stateRoot, "runs", runID, "task-spec.json"))

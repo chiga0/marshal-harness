@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/explain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
+	"github.com/chiga0/marshal-harness/internal/recovery"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/gofrs/flock"
 )
@@ -358,6 +360,21 @@ func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
 			continue
 		}
 		recoverDeadDriver := action == ActionRunWorker && status.State == domain.StateRunning && !status.DriverAlive && !status.LeaseHeld
+		if recoverDeadDriver {
+			// ADR 0053 决策 5：死 driver 分派唯一经由单一恢复模型判定。
+			// ActionNewAttempt 且无需幂等键对账时才允许立即接管；其余决策
+			// （无效输入、binding 损伤、ambiguous side effect）一律 fail
+			// closed——不派生 driver，把对账交给 `marshal explain run`。
+			if decision, decisionErr := s.recoveryDecision(status.RunID); decisionErr != nil {
+				record.SkipReason = fmt.Sprintf("recovery decision unavailable: %v", decisionErr)
+				records = append(records, record)
+				continue
+			} else if decision.Action != recovery.ActionNewAttempt || decision.RequiresReconcile {
+				record.SkipReason = fmt.Sprintf("recovery decision blocks re-dispatch (action=%s rationale=%s); reconcile via `marshal explain run %s`", decision.Action, decision.Rationale, status.RunID)
+				records = append(records, record)
+				continue
+			}
+		}
 		if startErr := s.executor.Start(ctx, s.commandArgv(action, status.RunID, recoverDeadDriver)); startErr != nil {
 			record.Error = startErr.Error()
 		} else {
@@ -372,6 +389,20 @@ func (s *Supervisor) Supervise(ctx context.Context) ([]DecisionRecord, error) {
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].RunID < records[j].RunID })
 	return records, nil
+}
+
+// recoveryDecision 以 supervisor 自身 staleness 窗口装配权威事实并返回
+// 单一恢复模型的 Decision（ADR 0053 决策 5）。只读，不改写任何 Run 状态；
+// driver 死亡判定与恢复决策必须使用同一观测窗口，结论才单调自洽。
+func (s *Supervisor) recoveryDecision(runID string) (recovery.Decision, error) {
+	x, err := explain.AssembleWithStaleness(s.stateRoot, runID, s.now(), s.stalenessThreshold)
+	if x == nil {
+		return recovery.Decision{}, err
+	}
+	if err != nil {
+		return x.Decision, err
+	}
+	return x.Decision, nil
 }
 
 func (s *Supervisor) acquireCoordinationLock(ctx context.Context) (*flock.Flock, error) {
