@@ -1,10 +1,10 @@
 # Roadmap 状态
 
-更新时间：2026-08-27（主线纠偏后口径）
+更新时间：2026-08-27（composition root 纠偏后口径）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
-> **2026-08-27 主线纠偏（维护者结论，取代此前抢跑口径）**：ADR 0052 的 `R1→R2 单一 authority → R3 双 binding → R4 recovery → R5 cutover` 顺序不可跳越。审计确认 R2 尚未收敛（结果接纳的 recheck 是「以本次结果携带的 Facts 临时构造 registry/ledger 再自验」，不是打开真实 durable authority 的 current-ledger recheck；lease expiry 是接纳时 `now+24h` 生成而非 dispatch 冻结值），因此 **R3–R5 此前标注的 `INTEGRATED` 成熟度全部撤回为 `COMPONENT`，表示生产 authority 语义未完成，并不表示 R1 之后代码倒退**。R5 canary 是 gate 绕过的集成测试证据，不宣称当前 Mac 用户可生产使用。当前唯一主线是：**先把 R2/R3 的真实耐久纵切收敛，再恢复 R4/R5 推进；稳定 v1.\* 正式发布对签名/公证 fail-closed（Issue #212 未 provision 前仅允许 unsigned prerelease）**。M0–M9 历史 `PASSED` 与代码资产保留；M10–M13 不阻塞 v1.0。
+> **2026-08-27 composition root 纠偏（维护者结论，取代此前抢跑口径）**：审计发现 CLI 此前构造两个独立 `EmbeddedSandboxRuntime` 实例，导致 lease 和 agent registry 互不可见，admission 必然失败。已修复为单实例（`33bad5c`）：同一 runtime 同时承担 DispatchBinder + SandboxProvider + Authority + ResultIngressStore；adapter probe 后注册 agent；删除 `now+24h` lease fallback；非 LaunchCapable adapter 在 production profile 中被拒绝。**v1.0 当前不应进入 RC**——composition root 刚修复，真实 pi 全闭环（`TestRealPiStrictE2E`）尚未验证。此前 R2–R5 的 INTEGRATED 口径全部撤回为 COMPONENT。稳定 v1.\* 正式发布对签名/公证 fail-closed（Issue #212 未 provision 前仅允许 unsigned prerelease）。M0–M9 历史 `PASSED` 与代码资产保留；M10–M13 不阻塞 v1.0。
 
 ## v1.0 生产纵切
 
@@ -24,7 +24,7 @@ Milestone 状态与能力成熟度是两个维度：
 | `I186-R2` | `IN_PROGRESS` | `COMPONENT` | durable journal/lease 与 ResultIngress 组件均可复用；结果接纳的 recheck 尚未打开真实 durable authority（主线纠偏发现，优先级最高未完成项）。 |
 | `I186-R3` | `IN_PROGRESS` | `COMPONENT` | bridge/admission/attempt-anchor 接线已接通，但“current-ledger recheck”在当前实现中是输入-facts 临时自洽验证（`seedRegistry`/`seedSandboxLedger`），不构成 authority 证明；lease expiry 未冻结 dispatch 时的权威值。原始 INTEGRATED 口径撤回，production admission 待重做。 |
 | `I186-R4` | `IN_PROGRESS` | `COMPONENT` | `marshal explain run`（`6a26012`）与 supervisor/CLI 恢复消费接线（`2bf4f3e`）已落地，但该链路依赖 R2/R3 的 durable authority 语义成立才构成生产恢复能力；INTEGRATED 口径撤回。 |
-| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | 真实 pi canary（`3e6ed10`）是 gate-绕过的单轮 happy-path 集成测试（`localDogfoodGateTestBypass` + 只跑到 `task run`），不是全闭环 verify/review/outcome 生产证明；cutover 与多轮对比收敛未开始。 |
+| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | 真实 pi canary（`3e6ed10`）是 gate-绕过的集成测试；严格 E2E 测试（`TestRealPiStrictE2E`）已建但未用真实 pi 验证通过——worker.completed 尚未实现。cutover 与多轮对比收敛未开始。 |
 | `I186-R6` | `PLANNED` | `DESIGN` | failure conformance 审计已落盘（`docs/research/i186-r6-fault-conformance-audit.md`）；release workflow 已具备 unsigned-fail-closed 门禁（稳定 v1.\* 阻止，prerelease 允许，`a06189c`）；TOP5 故障缺口（真实 kill/lost-response/server restart/ResultIngress 接入/gate 故障域扩展）未闭合。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
