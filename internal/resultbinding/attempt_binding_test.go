@@ -87,6 +87,7 @@ type fakeAuthoritySource struct {
 	registration provider.ProviderRegistration
 	active       bool
 	getErr       error
+	agentActive  bool
 }
 
 func (f fakeAuthoritySource) ProviderRegistration() (provider.ProviderRegistration, error) {
@@ -98,6 +99,13 @@ func (f fakeAuthoritySource) ProviderRegistrationActive(string) (bool, error) {
 		return false, f.getErr
 	}
 	return f.active, nil
+}
+
+func (f fakeAuthoritySource) AgentRegistrationActive(string) (bool, error) {
+	if f.getErr != nil {
+		return false, f.getErr
+	}
+	return f.agentActive, nil
 }
 
 func TestAdmitWithDurableAuthorityRejectsRevokedRegistration(t *testing.T) {
@@ -121,7 +129,7 @@ func TestAdmitWithDurableAuthorityRejectsRevokedRegistration(t *testing.T) {
 }
 
 func TestAdmitWithDurableAuthorityNilBindingFailClosed(t *testing.T) {
-	auth := fakeAuthoritySource{active: true}
+	auth := fakeAuthoritySource{active: true, agentActive: true}
 	_, err := AdmitWithDurableAuthority(context.Background(), nil, []byte(`{}`), auth, sandbox.AllocationActive)
 	if err == nil {
 		t.Fatal("nil binding must fail closed")
@@ -129,6 +137,26 @@ func TestAdmitWithDurableAuthorityNilBindingFailClosed(t *testing.T) {
 }
 
 // ── R2/R3 负测矩阵：revoke/replace/replay/旧 generation ──────────────────────
+
+func TestAdmitWithDurableAuthorityRejectsRevokedAgentRegistration(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteAttemptBinding(dir, testBindingFacts()); err != nil {
+		t.Fatal(err)
+	}
+	binding, _ := ReadAttemptBinding(dir)
+	auth := fakeAuthoritySource{
+		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
+		active:       true,
+		agentActive:  false, // agent registration revoked
+	}
+	admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{"kind":"WorkerResult"}`), auth, sandbox.AllocationActive)
+	if err == nil || !errors.Is(err, ErrAdmissionRejected) {
+		t.Fatalf("revoked agent registration: err = %v, want ErrAdmissionRejected", err)
+	}
+	if admission != nil && (admission.AgentOK || admission.Accepted) {
+		t.Errorf("revoked agent must not be AgentOK or Accepted: %+v", admission)
+	}
+}
 
 func TestAdmitWithDurableAuthorityRejectsTerminatedAllocation(t *testing.T) {
 	dir := t.TempDir()
@@ -139,6 +167,7 @@ func TestAdmitWithDurableAuthorityRejectsTerminatedAllocation(t *testing.T) {
 	auth := fakeAuthoritySource{
 		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
 		active:       true,
+		agentActive:  true,
 	}
 	// Inspect 回读的 live state 是 terminated → seedSandboxLedger 把它 revoke
 	// → bindingcheck 拒绝（allocation 已终态，不得接纳结果）。
@@ -157,6 +186,7 @@ func TestAdmitWithDurableAuthorityRejectsReplacedAllocation(t *testing.T) {
 	auth := fakeAuthoritySource{
 		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
 		active:       true,
+		agentActive:  true,
 	}
 	// Inspect 回读的 live state 是 replaced → seedSandboxLedger 派生新一代
 	// → bindingcheck 发现 generation mismatch → 拒绝。
@@ -179,6 +209,7 @@ func TestAdmitWithDurableAuthorityRejectsStaleGenerationBinding(t *testing.T) {
 	auth := fakeAuthoritySource{
 		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
 		active:       true,
+		agentActive:  true,
 	}
 	// binding 里 generation=1，但 seedSandboxLedger 以 binding 的 generation
 	// 建 ledger——所以这条路径验证的是 binding 文件被替换为旧 generation
@@ -204,6 +235,7 @@ func TestAdmitWithDurableAuthorityRejectsReplayResult(t *testing.T) {
 	auth := fakeAuthoritySource{
 		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
 		active:       true,
+		agentActive:  true,
 	}
 	resultBytes := []byte(`{"kind":"WorkerResult","status":"completed"}`)
 	// 第一次接纳应成功（binding facts 合法 + active allocation + active registration）。
@@ -241,6 +273,7 @@ func TestAdmitWithDurableAuthorityRejectsExpiredLease(t *testing.T) {
 	auth := fakeAuthoritySource{
 		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
 		active:       true,
+		agentActive:  true,
 	}
 	// 过期 lease → resultingress LedgerBinding.Expiry 已过 → DRC expiry
 	// 检查应拒绝（lease 过期的结果不得接纳）。

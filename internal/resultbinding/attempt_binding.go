@@ -119,12 +119,17 @@ type DurableAuthoritySource interface {
 	// ProviderRegistrationActive 验证 registration 在 durable ledger 中
 	// 仍为 active（未 revoked/expired）。
 	ProviderRegistrationActive(registrationID string) (bool, error)
+	// AgentRegistrationActive 验证 agent adapter registration 在当前
+	// authority 中仍为 active（R2/R3 纠偏：agent 侧 current-ledger recheck，
+	// 替代 seedRegistry 总是构造 active registration 的临时自洽验证）。
+	AgentRegistrationActive(registrationID string) (bool, error)
 }
 
 // AdmitWithDurableAuthority 从 immutable AttemptBinding（dispatch 时冻结）
 // + 真实 durable authority 执行生产 admission。替代 seedRegistry/
-// seedSandboxLedger 路径：agent 侧以 binding 文件的 content digest 为
-// authority；sandbox 侧以 RegistrationStore 的真实 lifecycle 状态为 authority。
+// seedSandboxLedger 路径：agent 侧从 durable authority 验证 registration
+// 当前仍为 active；sandbox 侧以 RegistrationStore 的真实 lifecycle 状态
+// 为 authority，live allocation state 来自 Inspect。
 func AdmitWithDurableAuthority(ctx context.Context, binding *AttemptBinding, resultBytes []byte, authority DurableAuthoritySource, liveState sandbox.AllocationState) (*Admission, error) {
 	if binding == nil {
 		return nil, fmt.Errorf("resultbinding: %w: nil binding", ErrAdmissionRejected)
@@ -154,13 +159,34 @@ func AdmitWithDurableAuthority(ctx context.Context, binding *AttemptBinding, res
 		return admission, fmt.Errorf("resultbinding: %w: provider registration %s not active", ErrAdmissionRejected, reg.RegistrationId)
 	}
 
+	// agent 侧 current-ledger recheck（R2/R3 纠偏）：从 durable authority
+	// 验证 agent adapter registration 当前仍为 active，替代 seedRegistry
+	// 总是构造 active registration 的临时自洽验证。registration 被撤销
+	// 的 agent 不得接纳结果。
+	agentRegID := AgentRegistrationID(facts.CapabilityDigest)
+	agentActive, err := authority.AgentRegistrationActive(agentRegID)
+	if err != nil {
+		return nil, fmt.Errorf("resultbinding: %w: agent registration active check: %v", ErrAdmissionRejected, err)
+	}
+	if !agentActive {
+		admission := &Admission{
+			AttemptID:       facts.AttemptID,
+			Accepted:        false,
+			SandboxOK:       true,
+			AgentOK:         false,
+			AdmissionReason: "agent registration revoked or expired in durable authority",
+		}
+		return admission, fmt.Errorf("resultbinding: %w: agent registration %s not active", ErrAdmissionRejected, agentRegID)
+	}
+
 	// 用 binding 文件冻结的 facts（而非结果携带的临时值）构建 admission。
 	// liveState 来自 ingress 时刻的 Inspect。
 	facts.LiveAllocationState = liveState
 
-	// agent 侧仍用 bindingcheck 验证 capability/snapshot 一致性，
-	// 但 registry 从 binding 文件重建（binding 文件本身是 dispatch 时
-	// 冻结的 authority，篡改已被 digest 检测拦截）。
+	// bindingcheck 仍需 registry/ledger 做 snapshot 一致性与 allocation
+	// generation 校验。registry 从 binding 文件重建（binding 文件本身是
+	// dispatch 时冻结的 authority，篡改已被 digest 检测拦截），但
+	// registration 的 active 状态已在上面从 durable authority 验证。
 	registry, err := seedRegistry(facts)
 	if err != nil {
 		return nil, err

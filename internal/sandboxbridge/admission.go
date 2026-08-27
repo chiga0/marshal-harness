@@ -100,6 +100,10 @@ func (s bridgeAuthoritySource) ProviderRegistrationActive(registrationID string)
 	return reg.LifecycleState == provider.LifecycleStateActive, nil
 }
 
+func (s bridgeAuthoritySource) AgentRegistrationActive(registrationID string) (bool, error) {
+	return s.authority.AgentRegistrationActive(registrationID)
+}
+
 func attemptDirFor(view workerRequestView, plan LaunchPlan) string {
 	if plan != nil && plan.ControlRootPath() != "" {
 		return filepath.Dir(filepath.Clean(plan.ControlRootPath()))

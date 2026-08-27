@@ -168,8 +168,10 @@ type Admission struct {
 // ResultIngress 接纳。accepted=false 时返回带细节的档案化拒绝，绝不放行。
 //
 // 生产路径应使用 AdmitWithDurableAuthority（从 immutable AttemptBinding +
-// 真实 durable authority 读取）。本函数保留为测试兼容路径（seedRegistry/
-// seedSandboxLedger 以输入 Facts 临时构造）。
+// 真实 durable authority 读取：agent 侧 AgentRegistrationActive current-ledger
+// recheck，sandbox 侧 ProviderRegistrationActive + Inspect live state）。
+// 本函数保留为测试兼容路径（seedRegistry/seedSandboxLedger 以输入 Facts
+// 临时构造，不检查 registration 当前 lifecycle 状态）。
 func AdmitWorkerResult(ctx context.Context, facts Facts, resultBytes []byte) (*Admission, error) {
 	if err := facts.validate(); err != nil {
 		return nil, err

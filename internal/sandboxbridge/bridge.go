@@ -62,8 +62,10 @@ type Bridge struct {
 }
 
 // DurableAuthority 是 Bridge 在 admission 时读取真实 durable authority 的
-// 接缝：agent registration/snapshot 来自 RegistrationStore（文件型耐久
-// ledger），lease expiry 来自 dispatch 时冻结的 DispatchLease。
+// 接缝：sandbox provider registration/snapshot 来自 RegistrationStore（文件
+// 型耐久 ledger），agent adapter registration 来自 AgentRegistry（进程内
+// 确定性 ledger，restart 后从 adapter probe 重建），lease expiry 来自
+// dispatch 时冻结的 DispatchLease。
 // 未注入时（测试兼容）退化为 seedRegistry/seedSandboxLedger 路径。
 type DurableAuthority interface {
 	// RegistrationStore 返回 durable 文件 ledger（append-only registrations.jsonl）。
@@ -74,6 +76,9 @@ type DurableAuthority interface {
 	CapabilitySnapshot() provider.ProviderCapabilitySnapshot
 	// Registration 返回当前 provider 的 durable registration。
 	Registration() provider.ProviderRegistration
+	// AgentRegistrationActive 验证 agent adapter registration 当前仍为
+	// active（R2/R3 纠偏：agent 侧 current-ledger recheck）。
+	AgentRegistrationActive(registrationID string) (bool, error)
 }
 
 // NewBridge 构造 Bridge；nil provider fail closed。

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/agentregistry"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -95,6 +96,7 @@ type EmbeddedSandboxRuntime struct {
 	provider       port.SandboxProvider
 	registration   provider.ProviderRegistration
 	snapshot       provider.ProviderCapabilitySnapshot
+	agentRegistry  *agentregistry.Registry
 
 	// mu guards claims, principals and allocations.
 	mu sync.Mutex
@@ -243,6 +245,7 @@ func NewEmbeddedSandboxRuntime(stateRoot string, now func() time.Time, options .
 		store:          store,
 		edgeRuntime:    edgeRuntime,
 		provider:       sandboxProvider,
+		agentRegistry:  agentregistry.NewRegistry(),
 		claims:         map[string]dispatch.DispatchLease{},
 		principals:     map[string]map[sandbox.WorkloadRole]string{},
 		allocations:    map[string][]string{},
@@ -580,6 +583,34 @@ func (rt *EmbeddedSandboxRuntime) LeaseFor(runID, attemptID string) (dispatch.Di
 // binder grants for one worker attempt.
 func (rt *EmbeddedSandboxRuntime) WorkerAllocationID(runID, attemptID string) string {
 	return embeddedAllocationID(runID, attemptID, sandbox.WorkloadRoleWorker)
+}
+
+// AgentRegistrationActive 验证 agent adapter registration 当前仍为 active
+// （R2/R3 纠偏：agent 侧 current-ledger recheck）。未注册的 registrationID
+// fail closed（返回 false）。
+func (rt *EmbeddedSandboxRuntime) AgentRegistrationActive(registrationID string) (bool, error) {
+	reg, err := rt.agentRegistry.Lookup(registrationID)
+	if err != nil {
+		return false, nil
+	}
+	return reg.LifecycleState == agentregistry.LifecycleStateActive, nil
+}
+
+// RegisterAgent 注册一个 agent adapter 到进程内确定性 ledger。在 adapter
+// probe 成功后调用；registration 的 lifecycleState 必须为 active。
+func (rt *EmbeddedSandboxRuntime) RegisterAgent(reg agentregistry.AgentRegistration) error {
+	if _, err := rt.agentRegistry.Register(reg); err != nil {
+		return fmt.Errorf("app: embedded sandbox runtime: register agent: %w", err)
+	}
+	return nil
+}
+
+// RevokeAgent 撤销一个 agent adapter registration（terminal transition）。
+func (rt *EmbeddedSandboxRuntime) RevokeAgent(registrationID string) error {
+	if _, err := rt.agentRegistry.Revoke(registrationID); err != nil {
+		return fmt.Errorf("app: embedded sandbox runtime: revoke agent: %w", err)
+	}
+	return nil
 }
 
 // adjudicateAssurance is the assurance adjudication layer of the embedded
