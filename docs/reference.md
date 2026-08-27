@@ -19,7 +19,7 @@
 
 - [愿景与范围](vision-and-scope.md)：产品目标、非目标与成功标准。
 - [总体架构](architecture.md)：Marshal 终态产品架构及当前交付映射。
-- [Runtime 架构](runtime-architecture.md)：确定性 Control Plane 的规范设计；M7–M13 是其交付路线。
+- [Runtime 架构](runtime-architecture.md)：确定性 Control Plane 的长期规范设计；v1.0 按 `I186-R0→R6` 生产纵切交付，原 M10–M13 属 1.x 候选。
 - [任务生命周期](task-lifecycle.md)：Run 状态、转换和预算。
 - [安全模型](security-model.md)：信任边界、威胁与验收要求。
 
@@ -42,6 +42,7 @@
 - [实施计划](implementation-plan.md)：Milestone 顺序与退出门禁。
 - [设计审计报告](audit-report.md)：已打开和关闭的架构 Finding。
 - [ADR 索引](adr/README.md)：不可被普通文档静默覆盖的架构决策。
+- [ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md)：v1.0 支持范围、成熟度与生产可达性门禁。
 
 ## 历史资料
 

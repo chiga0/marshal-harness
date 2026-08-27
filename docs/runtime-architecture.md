@@ -2,7 +2,7 @@
 
 - 依据：[ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（已接受，2026-08-10）；[ADR 0017](adr/0017-provider-neutral-sandbox-contract.md)（已接受，2026-08-10；接受只关闭设计歧义，不提前升级 M8 实现/conformance 状态）冻结 provider-neutral Sandbox 安全契约：二维权限/隔离模型、ConformanceEvidence 证据拓扑、内容寻址 Stage、workloadRole/principal 身份 fencing 与无双写 Restore、DispatchLease 唯一状态机、DurableExecutionEngine 权威边界与 M9 wire contract，并澄清/部分取代 ADR 0016 的 §4/§5/§6/§7/§9；[ADR 0018](adr/0018-control-plane-and-provider-ports.md)（已接受，2026-08-11；接受只冻结设计，不升级 M8–M13 实现/conformance 状态）冻结 Marshal C/S Control Plane、按信任域分隔的 Provider Port、耐久注册/能力快照与在途 lease 撤销，澄清/部分取代 ADR 0017 §4/§6/§7/§8/§10/§12，显式取代 ADR 0016 §6 经 ADR 0017 承接的 universal 接纳口径，并冻结权威/actor 双键空间（authorityNamespaceId=(tenantNamespace, controlPlaneId, authorityScopeId) 拥有全部 Control Plane 权威对象——submission/Task/Run/Attempt/ledger/DispatchLease/Allocation/ReviewDecision/Evidence graph/Outcome/SideEffectIntent/Receipt reconcile/typed edge/idempotency/outbox/audit/SSE；controlPlaneId 是 HA/灾备中保持稳定的逻辑权威身份，不是进程实例；ProviderRegistration/ProviderCapabilitySnapshot/ConformanceEvidence 也是 authority ledger 事实，仅携带 actor securityDomainId/provenance/eligibility；Artifact/Checkpoint/Candidate/Evidence bytes 的接纳关系归 authority ledger；securityDomainId=(tenantNamespace, trustDomainKind, isolationDomainId) 只标识 Provider actor）、三条 Core 独占签发的 Core-only typed cross-domain edge（DispatchResultCapability/MaterialAccessGrant/PublicationAuthorization，默认拒绝；issuer/source/target（每条 edge 的 issuer 为 Core，issuer 不等于业务流的 sourceActor；sourceActor/targetActor/targetAudience 按 edge 类型绑定）/operation/expiry/digest/revocation/replay/current-ledger recheck 与各自专属绑定，派生 token/handle 不得成为第二权威）、Provider attestation 全链绑定、远程 transport 安全基线（首次 enable 即强制 TLS）、原子 fencing 写入汇、SSE 恢复与再授权、DurableExecutionEngine 单一权威 seam、按 Port 的 versioned protocol family、Push/Pull outcome/invariant equivalence 与失效处置分级（security-critical 立即处置；planned upgrade stop-new + bounded drain）（ADR 0018 §3/§10–§16）
 - 补充依据：[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md)（已接受，2026-08-11）冻结确定性 Supervisor、Typed Execution 的非通用协议边界、Goal 计划接纳、Evidence 依赖适用性与 append-only 补偿语义。
-- 定位：本文是 Marshal 的冻结 Runtime 规范，也是产品实现应持续收敛的目标；M7–M13 是交付这套架构的路线，不是架构本身的有效期。Local MVP（Milestone 0–6，`USABLE`）行为不变；本文新增对象与契约随 M8–M13 逐步落地，落地前不构成已实现能力。
+- 定位：本文是 Marshal 的冻结 Runtime 规范，也是产品实现应持续收敛的长期目标。Local MVP（Milestone 0–6，`USABLE`）行为不变；历史 M8/M9 资产保留，但其 Runtime 成熟度当前为 `COMPONENT`。v1.0 按 ADR 0052 的 `I186-R0→R6` 生产纵切交付；Cloudflare、HA、多用户与 Goal DAG 在 1.x 重排。任何对象与契约在真实 composition root 可达前都不构成已实现能力。
 - 术语约定：中文叙述，协议字段、状态名、CLI 命令与代码标识保留英文，且与 `docs/task-lifecycle.md`、`schemas/` 保持一致。
 
 ## 产品目标
@@ -12,6 +12,25 @@ Marshal 是：**长寿命 Runtime/Control Plane，持续接收、耐久排队、
 - 不是让单个 Task 运行数月：长周期目标由 Project/Goal 驱动一系列有界短 Attempt；M7 只冻结 Project/Goal 的存在性、权威归属与多 Run 原则，完整计划接纳与控制器语义由 ADR 0019 冻结并在 M13 实现；
 - Cloudflare Sandbox 仅作为首个可替换远程 Provider，不是 Core 必选依赖；
 - embedded/local 模式长期保留为部署形态与开发模式，但不构成产品边界。
+
+## v1.0 运行时投影
+
+v1.0 不尝试一次性交付本规范的全部横向能力，而是交付一条完整且可恢复的纵向投影：
+
+```text
+marshal / loopback marshal-server
+  → durable Run journal
+  → Core-owned WorkerExecutor
+  → Local/Container Sandbox allocation
+  → real AgentRuntime
+  → ResultIngress
+  → independent Verification / Review
+  → Outcome
+```
+
+该投影只支持单节点、单用户、可信仓库，至少包含一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。所有 command、lease、binding、result acceptance 与 recovery 使用现有 durable journal/current ledger，不允许平行 memory-only authority。Local ordinary-user profile 的 Core-held process handle/PID/process group/cwd 是当前执行位置 observation；Provider 自报 location/resource/failure 只能诊断或收紧，不能放宽任何 gate。
+
+组件只有在上述真实 composition root 可达、真实 Agent 运行于 allocation、真实结果只经 ResultIngress 且故障 fixture 在同一路径生效时才是 `INTEGRATED`。Cloudflare 完整生产拓扑、HA、多用户、全部 Provider hardened 矩阵和 Goal orchestration 延期到 1.x。
 
 ## 组件分层
 
@@ -286,7 +305,9 @@ Goal 可以进入 `PAUSED`，`pauseReason` 为 `awaiting-input|operator|policy|b
 - Local/Docker/Kubernetes 自托管 Provider 必须能通过同一 conformance/E2E；首个纵切切片验收后，仅替换为 CloudflareSandboxProvider 重跑同一套用例；
 - 不把 Cloudflare（或 Temporal、任何单一基础设施）变成 Core 必选依赖。
 
-## 纵向切片验收（M8–M10 统一口径，ADR 0017 修订）
+## 纵向切片验收（历史 M8–M10 口径）
+
+以下内容保留历史设计与验收上下文。M8/M9 当时的 `PASSED` 证明各自定义的 gate 已通过，不证明组件已经形成 v1.0 生产调用链。现行 v1.0 关闭条件以 ADR 0052 的生产可达性门禁和 `I186-R0→R6` 为准；M10 不再是 v1.0 blocker。
 
 1. **M8 embedded/local 纵切**：单二进制 embedded 模式 in-process 跑通幂等提交（loopback/受信任本地边界）→ 冻结 Run → durable `READY` → scheduler claim + fencing → Local SandboxProvider → AgentAdapter → checkpoint/log/evidence → 独立 Verifier sandbox（业务验证 workload）→ `REVIEW_PENDING`/`ACCEPTED`（暂不自动 publish）；SPI 同时实现二维要求、内容寻址 Stage（消费前后重算 sha256）、workloadRole/principal 身份 fencing 与 replacement allocation Restore；conformance probe 按 ADR 0017 §2 运行在被测 Provider 的 target allocation 内（与业务验证拓扑不同）；M8 实施顺序为硬门禁（ADR 0018 §7）：negative fixtures/event contract → ProviderRegistration/ProviderCapabilitySnapshot Schema → legacy mapper → durable embedded registration + ledger recovery → snapshot/evidence validation → 最后 enable DispatchLease match；
 2. **M9 服务化**：同一套用例切换为 `marshal-server` + TaskSubmission/Run Public API 重跑（versioned HTTP/JSON + OpenAPI，SSE 断线续传，cursor 过期/gap/压缩返回可判定 resync），embedded 模式保持兼容；Push/Pull DispatchLease 按唯一状态机满足 capability matching、ack/heartbeat/deadline/generation/fencing 且两拓扑满足 outcome/invariant equivalence（比较 normalized business trace，不比较逐步 wire trace），绑定 ProviderRegistration（registrationId）、claim 时 active 的 providerCapabilitySnapshotDigest 与 conformanceEvidenceDigests；非 loopback/in-process transport 自首次 enable 起满足 TLS/双向身份/rotation/revocation/replay protection 基线（ADR 0018 §12）；lost-response、concurrent-write、old-generation overwrite、backend 升级 fixture（workflow versioning/build ID、Continue-As-New、payload 外置/上限、activity heartbeat/cancel/retry）与失效处置分级 fixture（security-critical revoke 立即 cancel + generation bump + kill；planned upgrade 旧实例 stop-new + bounded drain，deadline 到期再 fence）通过（ADR 0018 §6/§13/§15）；在 `RUNNING`/`VERIFYING` 期间 kill -9 Runtime：60 秒内 Inspect/Reconcile，旧 execution handle 被 fencing 拒绝，无双写、无丢证据；

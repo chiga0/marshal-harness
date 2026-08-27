@@ -8,7 +8,7 @@ Marshal 让 Agent 工作成为受控工程执行，而不是无结构的终端�
 
 当 Runtime 可以长期稳定接收新任务，且更换 Agent、Sandbox 或 durable backend 不会改变任务含义、验收标准和发布所需证据时，Marshal 才算实现目标。
 
-长期目标已由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（2026-08-10 接受）正式重置：从“本地单次 CLI 编排”升级为**长寿命 Runtime/Control Plane 持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。执行沙箱可插拔，Cloudflare Sandbox 仅作为首个可替换远程 Provider。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 进一步冻结：Supervisor 是确定性 Core，不是 LLM；LLM 只执行 typed semantic workload；Goal plan 必须先 proposal、后由 Core 确定性接纳。目标架构与路线见 [Runtime 架构](runtime-architecture.md) 与 [实施计划](implementation-plan.md) M7–M13。
+长期目标已由 [ADR 0016](adr/0016-durable-runtime-and-sandbox-provider.md)（2026-08-10 接受）正式重置：从“本地单次 CLI 编排”升级为**长寿命 Runtime/Control Plane 持续接收、耐久排队、分发和审计大量有界 Task/Run/Attempt；环境与状态可重建、可恢复、可审计**。执行沙箱可插拔，Cloudflare Sandbox 只是一个可替换远程 Provider。[ADR 0019](adr/0019-deterministic-control-plane-typed-execution-and-goal-admission.md) 进一步冻结：Supervisor 是确定性 Core，不是 LLM；LLM 只执行 typed semantic workload；Goal plan 必须先 proposal、后由 Core 确定性接纳。[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md) 不改变该终态，只把首个正式版本收敛为一条单节点、单用户、可信仓库的真实生产纵切；Cloudflare、HA、多用户与 Goal DAG 延期到 1.x。
 
 ## 竞争定位与差异化
 
@@ -71,6 +71,21 @@ Runtime 长期稳定运行，持续接受新 Task 并分发；Sandbox、Agent �
 ### G8：确定性控制与有界复杂任务
 
 Marshal Core 是唯一 Supervisor 与权威状态机；Plan/Implement/Verify/Review/Publish 作为 typed execution 共享基础调度机制，但不共享权限或通用协议。复杂 Goal 的计划、重规划、预算预留、证据适用性和人工暂停/恢复必须可回放且有界，Planner 不能直接创建权威 Run 或执行副作用。
+
+## v1.0 发布范围
+
+v1.0 用最小但完整的生产纵切证明上述方向可用，而不是交付终态的全部横向能力。它支持单节点、单用户和可信仓库，并要求：
+
+- 至少一个真实 AgentProvider 与一个真实 Local/Container SandboxProvider；
+- Agent 进程实际运行在 allocation 内，真实结果只经 ResultIngress 接纳；
+- CLI 或 loopback `marshal-server`、durable Run journal、WorkerExecutor、Sandbox、AgentRuntime、ResultIngress、独立 Verification 与 Outcome 组成唯一真实调用链；
+- 重启恢复、幂等接纳、generation fencing、Agent/Sandbox 双 binding、cancel/timeout/retry/terminal 均在该链路上生效；
+- 发布仅为 `publication:none` 或可选 GitHub Draft PR，默认不 merge；
+- macOS/Linux 具有稳定发布产物，macOS 正式包通过签名与 notarization。
+
+v1.0 不承诺多节点 HA、多用户/多租户、Cloudflare 完整生产拓扑、全部 Provider hardened 矩阵、Web UI、远程 SDK 全矩阵或复杂 Goal DAG。这些能力属于 1.x。Local ordinary-user 可以是受支持的 trusted profile，但不能宣称 `hardened` 或恶意代码隔离。
+
+能力只有在真实 composition root 可达且真实 Agent/result bytes 穿过时才算 `INTEGRATED`；只有 release gate 通过才算 `RELEASED`。单独的 ADR、Schema、package 或 component test 不能满足 v1.0。
 
 ## 当前交付基线：Local MVP
 
@@ -164,6 +179,10 @@ MVP 包含：
 
 增加可强制执行的容器配置、CI 回调、GitLab Publisher、评测数据、策略路由、遥测和可选服务接口。
 
-### 阶段 4：耐久 Runtime 与可插拔沙箱（M7–M13）
+### 阶段 4：v1.0 生产纵切（I186-R0→R6）
 
-由 ADR 0016–0019 冻结：常驻确定性 Runtime/Control Plane、SandboxProvider 契约与 conformance、耐久调度与恢复/fencing、Cloudflare 远程 Provider、通用副作用对账与补偿、生产存储/HA、开源部署与长稳验证（M7–M12）；M13 承接复杂 Goal，并按“proposal → deterministic admission → accepted plan → 有界 Run DAG”实现计划、重规划、累计预算、依赖驱动 Evidence 适用性与 Goal `PAUSED` 人工控制。M7 只冻结 Project/Goal 的存在性和权威归属，完整控制器语义由 ADR 0019 与 M13 承接。多租户服务化仍属于评估项。
+由 ADR 0052 冻结：先接通最薄 Agent-in-Sandbox walking skeleton，再收敛 command/result authority、双 Provider binding、单一恢复模型与 strangler cutover，最后通过 conformance、跨平台打包和 release gate。M0–M9 历史资产继续复用，但不得把 `COMPONENT` 误报为 `INTEGRATED`。
+
+### 阶段 5：1.x 平台扩展
+
+在 v1.0 发布后，再按真实使用证据重排 Cloudflare 远程 Provider、生产存储/HA、多用户策略、SDK/生态协议与复杂 Goal orchestration。M10–M13 保留为候选池，不再按旧编号顺序阻塞 v1.0。
