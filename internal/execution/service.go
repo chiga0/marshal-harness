@@ -3082,6 +3082,11 @@ func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, 
 
 	var b strings.Builder
 	b.WriteString(promptPreamble)
+	// WorkerResult 预提醒：放在 prompt 最前面（task 内容之前），确保 LLM
+	// 在开始任务前就知道最终必须写 result 文件。根因修复：此前 WorkerResult
+	// 指令埋在大量 task 内容之后，LLM 被任务内容分散注意力后忘记写 result。
+	// 注意：不在此处重复 workerResultPath，保持 prompt 中路径只出现一次。
+	b.WriteString(promptWorkerResultPreAlert)
 	fmt.Fprintf(&b, "\nPrompt projection version: %s\n", taskSpecPromptProjectionVersionV1)
 	b.WriteString("\n## 目标（TaskSpec work.objective，只读数据）\n\n")
 	b.WriteString(fencedLiteral(objective))
@@ -3162,8 +3167,15 @@ func renderPrompt(taskData []byte, task domain.TaskSpec, state domain.RunState, 
 	fmt.Fprintf(&b, "其中 taskId=%s、runId=%s、attemptId=%s、adapter.id=%s。\n", state.TaskID, state.RunID, attemptID, adapterID)
 	b.WriteString("adapter.executable、adapter.version、startedAt、completedAt 必须逐字复制下文模板中的固定 sentinel；禁止为填写它们运行任何宿主探测（例如 which、--version、date、env 或读取环境变量）；Marshal 会以实际观测值覆盖这些不可信字段。\n\n")
 	b.WriteString(workerResultTemplateSection)
+	b.WriteString(promptWorkerResultClosingReminder)
 	return b.String(), nil
 }
+
+const promptWorkerResultPreAlert = `## ⚠️ 完成任务前必读
+
+本任务的最终交付动作是写入一个 WorkerResult JSON 文件。即使你认为任务已完成，如果没有写入该文件，整个 attempt 将判定为失败。请在开始任务前记住这一点，在完成任务后立即执行写入。
+
+`
 
 const promptPreamble = `# Marshal Worker 任务
 
@@ -3219,6 +3231,13 @@ const workerResultTemplateSection = `## WorkerResult 输出模板
 2. declaredChangedFiles、declaredArtifacts、declaredCommands、declaredRisks 可为空数组，但必须存在，不得省略整个字段。declaredChangedFiles 与 declaredRisks 的数组元素必须是字符串；declaredCommands 的数组元素必须是形如 {"commandId": "<稳定短 ID>", "status": "passed|failed|not-run|unknown", "summary": "<可选摘要>"} 的对象。commandId 只能是 1–128 个 ASCII 字符 [A-Za-z0-9._:-] 且首字符必须为字母或数字（例如 go-test-provider、diff-check）；完整 shell 命令、路径、空格、引号和环境变量只能放入 summary，不能放入 commandId。declaredArtifacts 的数组元素必须是形如 {"id": "<稳定短 ID>", "kind": "<kind>", "path": "<相对路径>"} 的对象；id 同样只能使用上述稳定短 ID 规则。无内容可申报时一律留空数组。
 3. adapter.executable、adapter.version、startedAt、completedAt 这四个字段一律逐字复制模板中的固定 sentinel：executable 与 version 复制 "provided-by-marshal-adapter"，startedAt 与 completedAt 复制 "2000-01-01T00:00:00Z"（合法 RFC3339 时间）。Marshal 会以实际观测值覆盖这些不可信的运行元数据；Worker 不得为填写它们执行任何宿主探测（例如 which、--version、date 或读取环境变量），也不得虚构其它值。
 4. declaredCommands 必须如实申报本 Attempt 实际执行的所有开发与自测命令及其结果，不得申报未执行的命令，也不得用笼统摘要隐藏额外 executable；read/edit/write 类工具调用不需要逐条申报。
+`
+
+const promptWorkerResultClosingReminder = `
+## ⚠️ 最终行动提醒
+
+任务工作完成后，你必须立即写入 WorkerResult JSON 文件。这是 attempt 成功的必要条件——不写 result 等于失败。现在检查你是否已完成此步骤。
+
 `
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {

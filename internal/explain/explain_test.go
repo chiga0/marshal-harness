@@ -209,11 +209,11 @@ func TestAssembleAnchorRejectedReportsBindingLost(t *testing.T) {
 		t.Fatal(err)
 	}
 	anchor := map[string]any{
-		"accepted":         false,
-		"attemptId":        "attempt-1",
-		"agentSideOk":      false,
-		"sandboxSideOk":    true,
-		"admissionReason":  "agent registration revoked",
+		"accepted":        false,
+		"attemptId":       "attempt-1",
+		"agentSideOk":     false,
+		"sandboxSideOk":   true,
+		"admissionReason": "agent registration revoked",
 	}
 	data, _ := json.Marshal(anchor)
 	if err := os.WriteFile(filepath.Join(anchorDir, "sandbox-binding-admission.json"), data, 0o600); err != nil {

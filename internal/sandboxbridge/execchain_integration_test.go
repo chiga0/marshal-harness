@@ -249,19 +249,21 @@ func min(a, b int) int {
 
 // fakeDurableAuthority 为 exec-chain admission 注入可控的 DurableAuthority。
 type fakeDurableAuthority struct {
-	registration    provider.ProviderRegistration
-	snapshot        provider.ProviderCapabilitySnapshot
-	store           *provider.RegistrationStore
-	lease           dispatch.DispatchLease
-	leaseOK         bool
-	agentRegActive  bool
+	registration   provider.ProviderRegistration
+	snapshot       provider.ProviderCapabilitySnapshot
+	store          *provider.RegistrationStore
+	lease          dispatch.DispatchLease
+	leaseOK        bool
+	agentRegActive bool
 }
 
 func (f *fakeDurableAuthority) RegistrationStore() *provider.RegistrationStore { return f.store }
 func (f *fakeDurableAuthority) LeaseFor(_, _ string) (dispatch.DispatchLease, bool) {
 	return f.lease, f.leaseOK
 }
-func (f *fakeDurableAuthority) CapabilitySnapshot() provider.ProviderCapabilitySnapshot { return f.snapshot }
+func (f *fakeDurableAuthority) CapabilitySnapshot() provider.ProviderCapabilitySnapshot {
+	return f.snapshot
+}
 func (f *fakeDurableAuthority) Registration() provider.ProviderRegistration { return f.registration }
 func (f *fakeDurableAuthority) AgentRegistrationActive(string) (bool, error) {
 	return f.agentRegActive, nil
