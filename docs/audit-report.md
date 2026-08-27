@@ -683,6 +683,27 @@ Adapter `0.4.0` 将失败候选延迟到 `agent_settled`/EOF 提交，并显式�
 | --- | --- | --- | --- |
 | `POST-WORKER-REVIEW-PENDING-ABORT` | P1 | `CONTRACT-PROPOSED/IMPLEMENTATION-OPEN` | ADR 0050 提议仅开放 human 通过固定 CLI 发起的 `run.aborted REVIEW_PENDING → BLOCKED`，复用现有 Outcome/result/journal/snapshot 恢复，并以 current sequence/Attempt、已完成 verifier lineage、owned child 已退出、无 publication/SideEffect 与 Run Lease 组成 `PostWorkerAbortSafe`。原先新增 `ABORTED`、独立事件家族、carrier/ledger/projection Schema 和 supervisor 写权限的候选方案已因过度设计与 R3 循环依赖被否决。关闭需要 ADR 接受、实现正反/崩溃/并发矩阵、固定 Marshal 真实演练与独立 reviewer P0/P1 清零；Proposed 文档不表示命令可用，也不阻塞 R3-D/E/F。 |
 
+## I186-R3 收口：快速收敛治理下的 Exit Gate 证据（2026-08-27）
+
+2026-08-27 起维护者授权 I186 快速收敛治理：单 Lead + 多 Sub-Agent 高并发，停用 Marshal skill/admission/ReviewDecision/独立 reviewer/rework 轮转，Lead 直接实现、自审真实 diff 后直接合并；防错误发布、数据破坏与 trust-boundary ADR 三项硬约束保留，dogfood 问题（含 Issue #212 签名身份）另行沉淀不阻塞主线。Issue #191 原 Exit Gate 中「独立 reviewer APPROVE / PR #192 登记前置」两条流程性条件按该授权不再适用；finding 稳定登记继续以本报告为准（不依赖未合入 PR）。
+
+R3 Exit Gate 技术条件与证据对照：
+
+| Exit Gate 条件 | 证据 |
+| --- | --- |
+| Agent/Sandbox 可独立替换与撤销；profile 不隐藏底层身份 | `internal/runtimeprofile`（AgentBinding/SandboxBinding 独立 digest、Replace* 互不影响）；R3-C `internal/bindingcheck` 双侧独立 recheck |
+| 任一 binding revoke/expire/replace 后旧组合结果不可接纳 | `internal/attemptgate` 负测：仅 Agent 侧 revoke/replace/snapshot-supersede 与仅 Sandbox 侧 revoke/expire/replace 双向单侧失效均 fail closed 且另一侧不受影响 |
+| 跨 Port credential/token/evidence 复用失败；Agent evidence ≠ Sandbox evidence | `internal/attemptgate/boundary_test.go`：Sandbox 签发 evidence 冒充 Agent 侧、跨 registration 借用、伪造 digest、跨 Port binding 混淆均 fail closed；`EvidenceRecord.ProviderType=sandbox` 类型级拒绝 |
+| ResultIngress 从 Attempt 解析 immutable profile 并分别 current-ledger recheck | `internal/attemptgate`：AttemptProfileStore immutable put-if-absent（同 digest 幂等、冲突 fail closed）+ Gate 双侧 recheck；生产 ResultIngress 接线归 R5 |
+| security-critical revoke 立即生效 / ordinary upgrade 有界排水 | `internal/revokedrain`：零 drain（cancel+bump+kill）/ stop-new + bounded drain + fence；revoke 抢占 drain、fence 后升级 fail closed、double revoke 幂等拒绝 |
+| Provider 自报执行位置只能是 observation；需 authority-verified fact + 来源标注 + 伪造位置负测 | [ADR 0049](adr/0049-location-attestation-and-failure-classification-authority.md) 决策 1 + `internal/locationattest` 负测矩阵 |
+| `infra-failure` 分类来自故障域外 observation；Provider 声明只能诊断/收紧 | [ADR 0049](adr/0049-location-attestation-and-failure-classification-authority.md) 决策 2 + `internal/failureclass` 决策表与伪造负测 |
+
+落地提交：`ec13ee7`（revokedrain）、`0a9b3b6`（attemptgate）、`c47b4c2`（locationattest）、`d89c65e`（failureclass）、`8590c4e`（ADR 0049 + 0043 §5 修订标注）。验收命令：`go test ./internal/revokedrain/... ./internal/attemptgate/... ./internal/locationattest/... ./internal/failureclass/... ./internal/agentregistry/... ./internal/runtimeprofile/... ./internal/bindingcheck/... -count=1` 全绿；`go build ./...` 干净。全仓 `go test ./...` 唯一失败为 `internal/adapter/opencode` 的 live probe（宿主 opencode 1.18.20 超出 adapter 版本表 [1.18.13/1.18.16/1.18.18]），属 dogfood 环境漂移，另行沉淀不阻塞主线。Local MVP 零回退：纯新增包，未修改任何既有包或信任边界目录行为。
+
+按上述证据 I186-R3 于 2026-08-27 记为 `DONE`（收敛域合同+负测层；生产接线归 R5）。Pre-R4 contract gate 四项（hot-path authority、JIT admission、protocol migration、Candidate identity）仍按 #186 在 R4 启动前补齐，不随 R3 关闭。
+>>>>>>> 47f9d19 (docs: I186-R3 收口——Exit Gate 证据对照、finding 状态与 Roadmap 状态更新)
+
 ## Issue #186：架构复审 Finding 稳定登记（2026-08-25）
 
 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的多轮复审接受了 WorkerExecutor、Agent/Sandbox 双 binding、ResultIngress 与 strangler 收敛方向，同时发现若干不能只留在 Issue 评论中的合同缺口。本文只建立稳定 ID、当前证据、关闭条件和 milestone 落点；**登记不等于修复，Issue disposition 不等于 ADR 接受，代码或测试存在也不等于 finding 已关闭**。关闭任一 P0/P1 仍需相应合同/实现、正反证据和独立 reviewer verdict。
@@ -693,12 +714,12 @@ Adapter `0.4.0` 将失败候选延迟到 `agent_settled`/EOF 提交，并显式�
 
 | ID | 级别 | 状态 | 当前证据与关闭条件 | 建议落点 |
 | --- | --- | --- | --- | --- |
-| `I186-ARCH-LOCATION-ATTESTATION` | P0 | `OPEN-CONTRACT` | ADR 0043 把执行位置 evidence 的产出职责写给 SandboxProvider，仍可能由被证明方自证。必须区分 `provider-asserted location claim` 与故障域外产生的 `authority-verified location fact`；只有后者可支撑 production assurance/publication。关闭需要 ADR amendment、来源标注、Local Kernel-held pid/cgroup/VM handle 或独立 attestation，以及伪造位置 claim 的负向 fixture。 | `I186-R3` Exit Gate |
+| `I186-ARCH-LOCATION-ATTESTATION` | P0 | `CLOSED-CONTRACT+CONVERGENCE`（2026-08-27） | ADR 0043 把执行位置 evidence 的产出职责写给 SandboxProvider，仍可能由被证明方自证。必须区分 `provider-asserted location claim` 与故障域外产生的 `authority-verified location fact`；只有后者可支撑 production assurance/publication。关闭证据：[ADR 0049](adr/0049-location-attestation-and-failure-classification-authority.md) 决策 1（claim/fact 分型、自证排除、FactLedger 身份元组 put-if-absent、修订 ADR 0043 决策 5）+ `internal/locationattest` 收敛域实现与负测（digest 篡改、observer 自证排除、跨 allocation/generation 挪用、伪造 claim、身份元组冲突不覆盖原 fact）。Local kernel held handle 采集与 ResultIngress/发布门禁接线归 I186-R5/R6，不从本关闭推断。 | `I186-R3` Exit Gate |
 | `I186-ARCH-EFFECT-SINK-FENCING` | P1 | `OPEN-CONTRACT` | ResultIngress recheck 只能保护 ledger，不能撤销已经发生的外部效果。SCM、Artifact、Secret 与其它 effect sink 必须在 mutation/secret use 前独立执行 current generation、fencing、authorization 与 target recheck，并覆盖 revoke→effect 竞态。 | R3 后、R5 cutover 前 |
 | `I186-ARCH-HOT-PATH-AUTHORITY` | P1 | `OPEN-CONTRACT` | 当前 `internal/resultingress` 把 checkpoint/heartbeat/log 归为 hot path 并跳过 registration/snapshot/evidence eligibility recheck；checkpoint 可能在未完成冷路径校验时被 Restore 消费。合同与实现必须冻结：热路径永不延长 lease/generation、永不决定 fencing、永不产生冷路径不可复现的 authority；只有冷路径完整接纳的 checkpoint 才可 Restore。 | #186 Pre-R4 contract gate |
-| `I186-ARCH-DUAL-BINDING-RECHECK` | P1 | `OPEN-IMPLEMENTATION` | R2 ResultIngress 当前只有单组 registration/snapshot/evidence binding；R3-B 已冻结 `WorkerRuntimeProfile`，但 per-Attempt profile 的 AgentBinding 与 SandboxBinding 分别 current-ledger recheck 尚未完成。关闭需要单侧 revoke/replace 的双向负向 fixture。 | `I186-R3-C` |
+| `I186-ARCH-DUAL-BINDING-RECHECK` | P1 | `CLOSED-CONVERGENCE`（2026-08-27） | R2 ResultIngress 当前只有单组 registration/snapshot/evidence binding；R3-B 已冻结 `WorkerRuntimeProfile`，但 per-Attempt profile 的 AgentBinding 与 SandboxBinding 分别 current-ledger recheck 尚未完成。关闭需要单侧 revoke/replace 的双向负向 fixture。关闭证据：R3-C `internal/bindingcheck`（双侧独立 recheck、七封闭原因）+ R3-D `internal/attemptgate`（AttemptProfileStore immutable put-if-absent 绑定、Gate 从 Attempt 解析 immutable profile 并分别 recheck AgentBinding/SandboxBinding；仅 Agent 侧 revoke/replace/supersede 与仅 Sandbox 侧 revoke/expire/replace 的双向单侧失效互不牵连负测全绿）。生产 ResultIngress 接线归 I186-R5，不从本关闭推断。 | `I186-R3-C/D` |
 | `I186-ARCH-CUTOVER-EQUIVALENCE` | P1 | `OPEN-DESIGN` | ADR 0045 的 old/new 全 digest 相等对真实非确定 Agent 不可满足。R5 前必须拆成真实 Agent 必须相等的 authority-trace invariants，以及只适用于 deterministic Fake 的 content digest equality；真实 Agent 使用资源归一化后的不劣化统计，不能人工解释掉 authority diff。 | `I186-R5` |
-| `I186-ARCH-RESOURCE-CLASSIFICATION-AUTHORITY` | P1 | `OPEN-CONTRACT` | `ResourceEnvelope.observedPeak`、termination reason 与 `infra-failure` 分类权未冻结。能够放宽 retry/预算或豁免 semantic rework 的分类必须来自 workload/Provider 故障域外 observation；Provider 声明只能诊断或收紧权限。关闭需要 source/digest/方向性合同与伪造 `infra-failure` 负测。 | `I186-R3` 合同，R4 恢复消费 |
+| `I186-ARCH-RESOURCE-CLASSIFICATION-AUTHORITY` | P1 | `CLOSED-CONTRACT+CONVERGENCE`（2026-08-27；R4 消费后转全关闭） | `ResourceEnvelope.observedPeak`、termination reason 与 `infra-failure` 分类权未冻结。能够放宽 retry/预算或豁免 semantic rework 的分类必须来自 workload/Provider 故障域外 observation；Provider 声明只能诊断或收紧权限。合同关闭证据：[ADR 0049](adr/0049-location-attestation-and-failure-classification-authority.md) 决策 2（source/digest/方向性冻结）+ `internal/failureclass` 收敛域实现与负测（决策表 8×2 全组合、伪造 infra-failure 放宽恒 false、semantic 抗拒洗白、malformed digest 硬错误、digest echo）。剩余消费边界：R4 恢复模型消费该分类后本 finding 转全关闭。 | `I186-R3` 合同，R4 恢复消费 |
 | `I186-ARCH-JIT-ADMISSION-RECHECK` | P1 | `OPEN-CONTRACT` | JIT provision 扩大 admission→provision 时间窗。Provision 前必须重验 AdmissionDecision `validUntil`、registration/snapshot generation 与 current Policy；不得顺延到 R6。 | #186 Pre-R4 contract gate |
 | `I186-ARCH-PROTOCOL-REVISION-MIGRATION` | P1 | `OPEN-CONTRACT` | `acp → acp/v1` 等协议枚举升级不得重写或重新解释历史 snapshot/digest；只能 Supersede 为新 snapshot，unversioned 历史值不能满足 pinned revision admission。 | #186 Pre-R4 contract gate |
 | `I186-ARCH-CANDIDATE-IDENTITY` | P1 | `OPEN-CONTRACT` | 当前已有独立 `candidateDigest`，但 identity slot 和链仍强约束于 Attempt，尚未以合同证明不会把 Attempt→Candidate 1:1 固化为未来破坏性约束。关闭需要 Candidate 独立 identity、Evidence 绑定该 identity，以及兼容迁移/负测；本项不提前启用多 Candidate fan-out。 | #186 Pre-R4 contract gate |
