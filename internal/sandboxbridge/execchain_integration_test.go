@@ -12,7 +12,9 @@ import (
 	"github.com/chiga0/marshal-harness/internal/adapter/pi"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
+	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/sandbox/local"
 	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 )
@@ -237,4 +239,140 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ── R6-TOP4: ResultIngress 接入真链后的 stale/replay/伪造负例矩阵 ──────────
+//
+// 以下测试在 exec-chain 路径上验证 admission anchor 的拒绝分支：当
+// DurableAuthority 注入时，被撤销的 agent/sandbox registration 或过期
+// lease 的结果必须被拒绝，anchor 落盘 accepted=false。
+
+// fakeDurableAuthority 为 exec-chain admission 注入可控的 DurableAuthority。
+type fakeDurableAuthority struct {
+	registration    provider.ProviderRegistration
+	snapshot        provider.ProviderCapabilitySnapshot
+	store           *provider.RegistrationStore
+	lease           dispatch.DispatchLease
+	leaseOK         bool
+	agentRegActive  bool
+}
+
+func (f *fakeDurableAuthority) RegistrationStore() *provider.RegistrationStore { return f.store }
+func (f *fakeDurableAuthority) LeaseFor(_, _ string) (dispatch.DispatchLease, bool) {
+	return f.lease, f.leaseOK
+}
+func (f *fakeDurableAuthority) CapabilitySnapshot() provider.ProviderCapabilitySnapshot { return f.snapshot }
+func (f *fakeDurableAuthority) Registration() provider.ProviderRegistration { return f.registration }
+func (f *fakeDurableAuthority) AgentRegistrationActive(string) (bool, error) {
+	return f.agentRegActive, nil
+}
+
+// TestExecChainAdmissionRejectsRevokedAgentRegistration 验证当 durable
+// authority 报告 agent registration 已撤销时，admission anchor 落盘
+// accepted=false 且 AgentOK=false。
+func TestExecChainAdmissionRejectsRevokedAgentRegistration(t *testing.T) {
+	f := newBridgePiFixture(t)
+	// 注入 durable authority，agent registration 已撤销。
+	f.bridge.WithDurableAuthority(&fakeDurableAuthority{
+		registration:   provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
+		snapshot:       provider.ProviderCapabilitySnapshot{ProviderCapabilitySnapshotDigest: canonical.DigestBytes([]byte("cap"))},
+		lease:          dispatch.DispatchLease{ExpiresAt: time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)},
+		leaseOK:        true,
+		agentRegActive: false, // revoked
+	})
+
+	record, err := f.bridge.RunWorker(context.Background(), f.adapter.Adapter, f.request)
+	// RunWorker 本身可能在 CompleteLaunch 阶段成功（transcript 解码通过），
+	// 但 admitCompletedResult 会拒绝。检查错误或 anchor 拒绝。
+	if err == nil {
+		// 如果没有返回错误（seed fallback 路径），检查 anchor。
+		anchorPath := filepath.Join(f.attemptDir, "sandbox-binding-admission.json")
+		anchorRaw, readErr := os.ReadFile(anchorPath)
+		if readErr != nil {
+			t.Fatalf("admission anchor missing: %v (err=%v)", readErr, err)
+		}
+		var anchor struct {
+			Accepted bool   `json:"accepted"`
+			AgentOK  bool   `json:"agentSideOk"`
+			Reason   string `json:"admissionReason"`
+		}
+		if json.Unmarshal(anchorRaw, &anchor) != nil {
+			t.Fatalf("admission anchor unreadable: %v", readErr)
+		}
+		if anchor.Accepted || anchor.AgentOK {
+			t.Errorf("revoked agent registration must be rejected, got anchor: %s", string(anchorRaw))
+		}
+		if !strings.Contains(anchor.Reason, "agent registration") {
+			t.Errorf("admission reason must mention agent registration, got %q", anchor.Reason)
+		}
+	}
+	_ = record
+}
+
+// TestExecChainAdmissionRejectsRevokedSandboxRegistration 验证当 durable
+// authority 报告 sandbox provider registration 已撤销时，admission anchor
+// 落盘 accepted=false 且 SandboxOK=false。
+func TestExecChainAdmissionRejectsRevokedSandboxRegistration(t *testing.T) {
+	f := newBridgePiFixture(t)
+	// 使用 nil store + 直接返回 false 的 authority（绕过 RegistrationStore
+	// 构造的 authority 字段要求；测试目标是 admission 逻辑而非 store 本身）。
+	f.bridge.WithDurableAuthority(&fakeDurableAuthority{
+		registration:   provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
+		snapshot:       provider.ProviderCapabilitySnapshot{ProviderCapabilitySnapshotDigest: canonical.DigestBytes([]byte("cap"))},
+		store:          nil, // ProviderRegistrationActive 会返回 false
+		lease:          dispatch.DispatchLease{ExpiresAt: time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)},
+		leaseOK:        true,
+		agentRegActive: true,
+	})
+
+	_, err := f.bridge.RunWorker(context.Background(), f.adapter.Adapter, f.request)
+	if err == nil {
+		anchorPath := filepath.Join(f.attemptDir, "sandbox-binding-admission.json")
+		anchorRaw, readErr := os.ReadFile(anchorPath)
+		if readErr != nil {
+			t.Fatalf("admission anchor missing: %v", readErr)
+		}
+		var anchor struct {
+			Accepted  bool   `json:"accepted"`
+			SandboxOK bool   `json:"sandboxSideOk"`
+			Reason    string `json:"admissionReason"`
+		}
+		if json.Unmarshal(anchorRaw, &anchor) != nil {
+			t.Fatalf("admission anchor unreadable: %v", readErr)
+		}
+		if anchor.Accepted || anchor.SandboxOK {
+			t.Errorf("revoked sandbox registration must be rejected, got anchor: %s", string(anchorRaw))
+		}
+	}
+}
+
+// TestExecChainAdmissionRejectsExpiredLease 验证当 dispatch 冻结的 lease
+// 已过期时，admission anchor 落盘 accepted=false。
+func TestExecChainAdmissionRejectsExpiredLease(t *testing.T) {
+	f := newBridgePiFixture(t)
+	f.bridge.WithDurableAuthority(&fakeDurableAuthority{
+		registration:   provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
+		snapshot:       provider.ProviderCapabilitySnapshot{ProviderCapabilitySnapshotDigest: canonical.DigestBytes([]byte("cap"))},
+		lease:          dispatch.DispatchLease{ExpiresAt: "2020-01-01T00:00:00Z"}, // far past
+		leaseOK:        true,
+		agentRegActive: true,
+	})
+
+	_, err := f.bridge.RunWorker(context.Background(), f.adapter.Adapter, f.request)
+	if err == nil {
+		anchorPath := filepath.Join(f.attemptDir, "sandbox-binding-admission.json")
+		anchorRaw, readErr := os.ReadFile(anchorPath)
+		if readErr != nil {
+			t.Fatalf("admission anchor missing: %v", readErr)
+		}
+		var anchor struct {
+			Accepted bool `json:"accepted"`
+		}
+		if json.Unmarshal(anchorRaw, &anchor) != nil {
+			t.Fatalf("admission anchor unreadable: %v", readErr)
+		}
+		if anchor.Accepted {
+			t.Errorf("expired lease must be rejected, got anchor: %s", string(anchorRaw))
+		}
+	}
 }
