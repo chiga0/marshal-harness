@@ -20,14 +20,6 @@ func writeRunDir(t *testing.T, state domain.RunState, events []domain.RunEvent, 
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	stateBytes, err := json.Marshal(struct {
-		APIVersion domain.APIVersion `json:"apiVersion"`
-		Kind       domain.Kind       `json:"kind"`
-		domain.RunState
-	}{state.APIVersion, state.Kind, state})
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Inspect 的快照一致性：sequence==事件条数避免 replay，state==末事件
 	// StateTo 与 journal 尾对齐。
 	state.Sequence = uint64(len(events))
@@ -35,7 +27,7 @@ func writeRunDir(t *testing.T, state domain.RunState, events []domain.RunEvent, 
 		state.State = events[len(events)-1].StateTo
 		state.UpdatedAt = events[len(events)-1].Timestamp
 	}
-	stateBytes, err = json.Marshal(struct {
+	stateBytes, err := json.Marshal(struct {
 		APIVersion domain.APIVersion `json:"apiVersion"`
 		Kind       domain.Kind       `json:"kind"`
 		domain.RunState

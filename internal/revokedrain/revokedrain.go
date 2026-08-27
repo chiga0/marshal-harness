@@ -25,19 +25,12 @@ const (
 	RevokeReasonCodePlannedUpgrade       RevokeReasonCode = "planned-upgrade"
 )
 
-var (
-	validClasses = map[DispositionClass]struct{}{
-		DispositionClassSecurityCritical: {},
-		DispositionClassPlannedUpgrade:   {},
-		DispositionClassOrdinaryUpgrade:  {},
-	}
-	validReasonCodes = map[RevokeReasonCode]struct{}{
-		RevokeReasonCodeCredentialCompromise: {},
-		RevokeReasonCodeProtocolViolation:    {},
-		RevokeReasonCodeIncompatibleUpgrade:  {},
-		RevokeReasonCodePlannedUpgrade:       {},
-	}
-)
+var validReasonCodes = map[RevokeReasonCode]struct{}{
+	RevokeReasonCodeCredentialCompromise: {},
+	RevokeReasonCodeProtocolViolation:    {},
+	RevokeReasonCodeIncompatibleUpgrade:  {},
+	RevokeReasonCodePlannedUpgrade:       {},
+}
 
 // DispositionEvent 记录一次分级处置事件。
 type DispositionEvent struct {

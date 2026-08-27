@@ -141,9 +141,9 @@ type DrainDecider struct {
 }
 
 var (
-	DrainErrNilResolver     = errors.New("revokedrain: drain resolver is nil")
-	DrainErrInvalidOldLease = errors.New("revokedrain: old drain lease is invalid")
-	DrainErrAuthorityLookup = errors.New("revokedrain: drain authority lookup failed")
+	ErrDrainNilResolver     = errors.New("revokedrain: drain resolver is nil")
+	ErrDrainInvalidOldLease = errors.New("revokedrain: old drain lease is invalid")
+	ErrDrainAuthorityLookup = errors.New("revokedrain: drain authority lookup failed")
 )
 
 // NewDrainDecider pins the complete old lease authority record. Every decision
@@ -151,14 +151,14 @@ var (
 // lookup failure, or content mismatch.
 func NewDrainDecider(oldLeaseRef string, resolver DrainLeaseAuthorityResolver) (*DrainDecider, error) {
 	if resolver == nil {
-		return nil, DrainErrNilResolver
+		return nil, ErrDrainNilResolver
 	}
 	lease, err := resolver.ResolveDrainLease(oldLeaseRef)
 	if err != nil {
-		return nil, DrainErrAuthorityLookup
+		return nil, ErrDrainAuthorityLookup
 	}
 	if !validDrainLease(oldLeaseRef, lease) {
-		return nil, DrainErrInvalidOldLease
+		return nil, ErrDrainInvalidOldLease
 	}
 	return &DrainDecider{resolver: resolver, oldLeaseRef: oldLeaseRef, pinned: lease}, nil
 }

@@ -134,7 +134,7 @@ func NewPinnedRevision(family, version string) (PinnedRevision, error) {
 
 // Revision 返回 pin 的 Revision 视图（必然 Versioned）。
 func (p PinnedRevision) Revision() Revision {
-	return Revision{Family: p.Family, Version: p.Version}
+	return Revision(p)
 }
 
 // String 返回 pin 的 canonical 形态 `family/version`。
@@ -144,7 +144,7 @@ func (p PinnedRevision) String() string {
 
 // pinShapeViolation 返回 pin 的形态违规原因（无违规返回 nil）。
 func pinShapeViolation(p PinnedRevision) error {
-	if reason := revisionShapeViolation(Revision{Family: p.Family, Version: p.Version}); reason != nil {
+	if reason := revisionShapeViolation(Revision(p)); reason != nil {
 		return reason
 	}
 	if p.Version == "" {

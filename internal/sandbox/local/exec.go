@@ -422,13 +422,6 @@ func HostExecutor(ctx context.Context, spec ExecSpec) ExecOutcome {
 	return outcome
 }
 
-// sanitizedEnvironment builds the allow-listed execution environment: only
-// PATH, HOME and TMPDIR survive from the host together with a fixed locale,
-// so credential-carrying variables can never reach the workload.
-func sanitizedEnvironment() []string {
-	return mergedEnvironment(nil)
-}
-
 // hostSignal maps the closed SPI signal enumeration to host signals.
 func hostSignal(name sandbox.SignalName) (syscall.Signal, bool) {
 	switch name {
