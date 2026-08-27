@@ -1,10 +1,10 @@
 # Roadmap 状态
 
-更新时间：2026-08-27
+更新时间：2026-08-27（主线纠偏后口径）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
-> **2026-08-27 v1.0 路线重置（[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md)）**：继续使用 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 的 `I186-R0→R6` 纵切框架，但以 production reachability 重新判定状态。M0–M9 历史 `PASSED` 结论与代码资产保留；M8/M9 的 Runtime 资产当前成熟度为 `COMPONENT`，不表示 v1.0 端到端集成。当前 `I186-R0: PASSED`、`I186-R1–R5: IN_PROGRESS`、`I186-R6: PLANNED`。R3-A/B/C/D 已有类型、纯核心与定向测试可复用，但在真实 composition root、双 binding 与 ResultIngress 接线完成前只能记为 component checkpoint。M10–M13 不再阻塞 v1.0，作为 R6 后的 1.x 候选重新排期。
+> **2026-08-27 主线纠偏（维护者结论，取代此前抢跑口径）**：ADR 0052 的 `R1→R2 单一 authority → R3 双 binding → R4 recovery → R5 cutover` 顺序不可跳越。审计确认 R2 尚未收敛（结果接纳的 recheck 是「以本次结果携带的 Facts 临时构造 registry/ledger 再自验」，不是打开真实 durable authority 的 current-ledger recheck；lease expiry 是接纳时 `now+24h` 生成而非 dispatch 冻结值），因此 **R3–R5 此前标注的 `INTEGRATED` 成熟度全部撤回为 `COMPONENT`，表示生产 authority 语义未完成，并不表示 R1 之后代码倒退**。R5 canary 是 gate 绕过的集成测试证据，不宣称当前 Mac 用户可生产使用。当前唯一主线是：**先把 R2/R3 的真实耐久纵切收敛，再恢复 R4/R5 推进；稳定 v1.\* 正式发布对签名/公证 fail-closed（Issue #212 未 provision 前仅允许 unsigned prerelease）**。M0–M9 历史 `PASSED` 与代码资产保留；M10–M13 不阻塞 v1.0。
 
 ## v1.0 生产纵切
 
@@ -20,12 +20,12 @@ Milestone 状态与能力成熟度是两个维度：
 | 阶段 | 状态 | 成熟度 | 当前结论 |
 | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 与 baseline evidence 已完成。 |
-| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Agent（pi）由 Local allocation 承载执行：`local.NewLocalRunner` → `sandboxbridge` exec-chain（`abf80e9`+，`544680b` 起含双 binding 接纳）；`internal/sandboxbridge` 集成证明 + cli `TestTaskRun*` 一致通过；另副侧带外的 macOS dogfood gate 激活 binary 仍受宿主企业策略阻断（固定 Mach-O 致命，go run 不可跨进程绑定 dogfood activation，属 Issue #212/ADR 0051 范畴）。 |
-| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | durable journal/lease 与 ResultIngress 组件可复用；真实结果经文案 `internal/resultbinding` 双 binding + resultingress DRC 接纳（R3 生命面）；尚未构成单一命令级 authority 收敛完成型态。 |
-| `I186-R3` | `IN_PROGRESS` | `INTEGRATED` | 每个 Attempt 的 Agent/Sandbox 双 binding + admission 时刻 live Inspect 回读的 current-ledger recheck 已接入真实执行链（`internal/resultbinding` + bridge admission，sandbox-binding-admission.json anchor 持久化进 attempt 目录；live-terminated/replaced 拒绝面覆盖）；尚未对接 Darwin 侧可信 dogfood 全帧。 |
-| `I186-R4` | `IN_PROGRESS` | `INTEGRATED` | `marshal explain run RUN_ID`（`6a26012`）+ 恢复路径唯一消费恢复模型（`2bf4f3e`：supervisor 死 driver 分派与 `task run --recover-dead-driver` 逃生舱均唯一装配 `recovery.Decide`，需幂等键对账的 ambiguous side effect 一律 fail closed 指向 explain）；回归除已知 opencode 宿主版本漂移外全绿。 |
-| `I186-R5` | `IN_PROGRESS` | `INTEGRATED` | 真实 pi canary 单轮通过（`3e6ed10` `TestRealPiExecChainCanary`：gated 默认跳过，标准 CLI 纵切经默认 exec-chain + 双 binding admission anchor）；cutovereq 三分判据（ADR 0054，真实 Agent 比较 authority invariants，Fake 才要求 exact digest）随摄回归；real-real canary 多轮对比与远程 trace 归 R6 conformance。 |
-| `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、跨平台安装、macOS 签名/notarization、升级/回滚与 release；当前分别受 Issue #212（签名身份未 provision）与宿主策略阻断。 |
+| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Agent（pi）由 Local allocation 承载执行（`sandboxbridge` exec-chain + cli 测试链真实可达）。口径保留：该纵切在纠偏结论中被认定为**实质进展**；来源于 gate-绕过 test 之外的下游 authority 语义完成度见 R2/R3。 |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | durable journal/lease 与 ResultIngress 组件均可复用；结果接纳的 recheck 尚未打开真实 durable authority（主线纠偏发现，优先级最高未完成项）。 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | bridge/admission/attempt-anchor 接线已接通，但“current-ledger recheck”在当前实现中是输入-facts 临时自洽验证（`seedRegistry`/`seedSandboxLedger`），不构成 authority 证明；lease expiry 未冻结 dispatch 时的权威值。原始 INTEGRATED 口径撤回，production admission 待重做。 |
+| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | `marshal explain run`（`6a26012`）与 supervisor/CLI 恢复消费接线（`2bf4f3e`）已落地，但该链路依赖 R2/R3 的 durable authority 语义成立才构成生产恢复能力；INTEGRATED 口径撤回。 |
+| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | 真实 pi canary（`3e6ed10`）是 gate-绕过的单轮 happy-path 集成测试（`localDogfoodGateTestBypass` + 只跑到 `task run`），不是全闭环 verify/review/outcome 生产证明；cutover 与多轮对比收敛未开始。 |
+| `I186-R6` | `PLANNED` | `DESIGN` | failure conformance 审计已落盘（`docs/research/i186-r6-fault-conformance-audit.md`）；release workflow 已具备 unsigned-fail-closed 门禁（稳定 v1.\* 阻止，prerelease 允许，`a06189c`）；TOP5 故障缺口（真实 kill/lost-response/server restart/ResultIngress 接入/gate 故障域扩展）未闭合。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
