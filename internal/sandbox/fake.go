@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -66,20 +67,30 @@ type FakeConfig struct {
 	ConformanceEvidenceRef string
 }
 
-// fakeAllocation is the in-memory state of one allocation.
+// fakeAllocation is the in-memory state of one allocation. The ADR 0055
+// envelope declarations are recorded exactly as granted at Provision time;
+// the fake provider simulates the symlink-resolved working-root comparison
+// with cleaned absolute paths, since no filesystem participates.
 type fakeAllocation struct {
-	meta        SandboxAllocation
-	staged      map[string][]byte
-	violations  []BoundaryViolation
-	spawnCount  int64
-	log         []string
-	exitCode    int
-	checkpoints int64
+	meta             SandboxAllocation
+	staged           map[string][]byte
+	violations       []BoundaryViolation
+	spawnCount       int64
+	log              []string
+	exitCode         int
+	checkpoints      int64
+	workDirAllowlist []string
+	envAllowlist     []string
 }
 
 // maxLogLines bounds the per-allocation observation log returned by
 // Inspect, keeping the adjudication input bounded.
 const maxLogLines = 32
+
+// fakeTimeoutCapSeconds is the deterministic provider cap the fake provider
+// clamps the ADR 0055 §4 per-op timeout against; no wall clock ever
+// participates, the clamp is recorded in the observation log.
+const fakeTimeoutCapSeconds int64 = 3600
 
 // FakeProvider is a scripted, deterministic implementation of
 // SandboxProvider in the style of internal/adapter/fake: all behavior is
@@ -237,6 +248,18 @@ func (f *FakeProvider) Provision(ctx context.Context, request ProvisionRequest) 
 			return nil, fmt.Errorf("sandbox: provision: %w", err)
 		}
 	}
+	// ADR 0055 §1/§2: the optional envelope declarations are registered
+	// fail closed; credential-semantic environment keys never register.
+	if err := ValidateWorkDirAllowlist(request.WorkDirAllowlist); err != nil {
+		return nil, err
+	}
+	if err := ValidateEnvironmentAllowlist(request.EnvironmentAllowlist); err != nil {
+		return nil, err
+	}
+	workDirAllowlist := make([]string, 0, len(request.WorkDirAllowlist))
+	for _, declared := range request.WorkDirAllowlist {
+		workDirAllowlist = append(workDirAllowlist, filepath.Clean(declared))
+	}
 	candidate := SandboxAllocation{
 		AllocationId:           request.Identity.AllocationId,
 		RunId:                  request.Identity.RunId,
@@ -247,14 +270,18 @@ func (f *FakeProvider) Provision(ctx context.Context, request ProvisionRequest) 
 		AssuranceLevel:         request.Requirements.MinimumAssuranceLevel,
 		ConformanceEvidenceRef: f.config.ConformanceEvidenceRef,
 		AllowedStoreIds:        append([]string(nil), request.AllowedStoreIds...),
+		WorkDirAllowlist:       append([]string(nil), request.WorkDirAllowlist...),
+		EnvironmentAllowlist:   append([]string(nil), request.EnvironmentAllowlist...),
 	}
 	existing := f.allocationsFor(candidate.RunId, candidate.AttemptId)
 	if err := CheckSingleActive(existing, candidate); err != nil {
 		return nil, err
 	}
 	f.allocations[candidate.AllocationId] = &fakeAllocation{
-		meta:   candidate,
-		staged: map[string][]byte{},
+		meta:             candidate,
+		staged:           map[string][]byte{},
+		workDirAllowlist: workDirAllowlist,
+		envAllowlist:     append([]string(nil), request.EnvironmentAllowlist...),
 	}
 	return &ProvisionReceipt{Allocation: candidate}, nil
 }
@@ -345,6 +372,39 @@ func (f *FakeProvider) Exec(ctx context.Context, request ExecRequest) (*ExecRece
 	if err != nil {
 		return nil, err
 	}
+	// Adjudicate the optional ADR 0055 envelope fail closed before any
+	// scripted outcome: the provider-independent shape first, then the
+	// declared bindings recorded on the allocation at Provision time. The
+	// fake performs no filesystem reads: a WorkingDir binding is
+	// adjudicated on cleaned absolute paths, simulating the Local
+	// provider's symlink-resolved comparison.
+	if err := request.ValidateEnvelope(); err != nil {
+		return nil, err
+	}
+	if request.WorkingDir != "" {
+		resolved := filepath.Clean(request.WorkingDir)
+		declared := false
+		for _, root := range allocation.workDirAllowlist {
+			if root == resolved {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			return nil, fmt.Errorf("%w: WorkingDir %q is not declared in the allocation's workDirAllowlist", ErrInvalidWorkDir, request.WorkingDir)
+		}
+		f.appendLog(allocation, "exec cwd: "+resolved)
+	}
+	envOverlays, err := ResolveExecEnvironment(request.Environment, allocation.envAllowlist)
+	if err != nil {
+		return nil, err
+	}
+	if len(envOverlays) > 0 {
+		f.appendLog(allocation, "exec env overlay: "+strings.Join(envOverlays, " "))
+	}
+	if request.TimeoutSeconds > 0 {
+		f.appendLog(allocation, fmt.Sprintf("exec timeout effective: %ds", EffectiveTimeoutSeconds(request.TimeoutSeconds, fakeTimeoutCapSeconds)))
+	}
 	contained := true
 	if fault, active := f.faultFor(OperationExec, request.Identity.CommandId); active && fault == FaultDisableContainment {
 		contained = false
@@ -379,12 +439,32 @@ func (f *FakeProvider) Exec(ctx context.Context, request ExecRequest) (*ExecRece
 	}
 	allocation.exitCode = 0
 	joined := strings.Join(request.Command, "\x00")
-	return &ExecReceipt{
+	stdout := []byte("stdout:" + joined)
+	stderr := []byte("stderr:" + joined)
+	receipt := &ExecReceipt{
 		Status:       ExecutionCompleted,
 		ExitCode:     0,
-		StdoutSHA256: RecomputeSHA256([]byte("stdout:" + joined)),
-		StderrSHA256: RecomputeSHA256([]byte("stderr:" + joined)),
-	}, nil
+		StdoutSHA256: RecomputeSHA256(stdout),
+		StderrSHA256: RecomputeSHA256(stderr),
+	}
+	// The deterministic transcript sink of ADR 0055 §3: an overflowing
+	// capture kills the workload fail closed without any staged artifact or
+	// partial success; a cleanly completing capture is staged in memory and
+	// its digest is recomputed and echoed in the receipt.
+	if !request.TranscriptPolicy.Absent() {
+		if int64(len(stdout)) > request.TranscriptPolicy.MaxBytes {
+			allocation.exitCode = -1
+			receipt.Status = ExecutionKilled
+			receipt.ExitCode = -1
+			f.appendLog(allocation, "transcript bound exceeded: workload killed without partial success")
+			return receipt, fmt.Errorf("%w: artifact %q (bound %d bytes)", ErrTranscriptLimitExceeded, request.TranscriptPolicy.ArtifactId, request.TranscriptPolicy.MaxBytes)
+		}
+		allocation.staged[request.TranscriptPolicy.ArtifactId] = append([]byte(nil), stdout...)
+		receipt.TranscriptDigest = RecomputeSHA256(allocation.staged[request.TranscriptPolicy.ArtifactId])
+		receipt.TranscriptStderrDigest = RecomputeSHA256(stderr)
+		f.appendLog(allocation, "transcript staged: "+request.TranscriptPolicy.ArtifactId)
+	}
+	return receipt, nil
 }
 
 // Inspect implements SandboxProvider and returns the out-of-band

@@ -133,6 +133,21 @@ type Adapter struct {
 	executable string
 	validator  *contract.Validator
 	now        func() time.Time
+	// spawn starts the prepared worker process. It is an injectable seam used
+	// only by Run: tests replace it to prove PrepareLaunch and every
+	// fail-closed gate complete without ever starting a process. The
+	// production default is (*exec.Cmd).Start. PrepareLaunch and
+	// CompleteLaunch never call spawn.
+	spawn func(cmd *exec.Cmd) error
+}
+
+// startCommand starts command through the injectable spawn seam; a nil seam
+// is the production (*exec.Cmd).Start.
+func (a *Adapter) startCommand(command *exec.Cmd) error {
+	if a.spawn != nil {
+		return a.spawn(command)
+	}
+	return command.Start()
 }
 
 var _ port.TerminalLaunchAdapter = (*Adapter)(nil)
@@ -369,111 +384,250 @@ func decodeRequest(data []byte, validator *contract.Validator) (workerRequest, e
 	return workerRequest(raw), nil
 }
 
-// Run executes one non-interactive attempt. Provider/process/protocol failures
-// are returned as errors so Core can apply the operational retry budget.
-func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record, error) {
+// LaunchPlan is the immutable launch plan for one pi attempt. Every field is
+// frozen by PrepareLaunch before any process starts, so an external executor
+// (for example a sandbox allocation) can run the exact argv/env/cwd Marshal
+// would have used and then hand the captured stdout/stderr and exit
+// disposition back to CompleteLaunch.
+type LaunchPlan struct {
+	ExecArgv              []string // executable path + args (argv[0] absolute executable)
+	Environment           []string // complete env block ("K=V") from workerEnvironment semantics
+	WorkingDirectory      string   // resolved worktree absolute path
+	AttemptTimeoutSeconds int64
+	ResultPath            string // declared worker-result path under ControlRoot (absolute, validated)
+	ControlRoot           string // absolute, validated
+	SessionPolicy         string
+	MaxOutputBytes        int64
+
+	// request, model, identity, and attemptDeadline are the private bindings
+	// frozen by PrepareLaunch that CompleteLaunch consumes: the decoded
+	// WorkerRequest (task/run/attempt identity for the result identity
+	// check), the TaskSpec model, the inspected executable identity written
+	// into the normalized WorkerResult, and the attempt deadline whose start
+	// instant matches the historical Run timeout creation point. A plan whose
+	// private bindings are missing or inconsistent was not produced by
+	// PrepareLaunch and is rejected by CompleteLaunch.
+	request         workerRequest
+	model           string
+	identity        executableIdentity
+	attemptDeadline time.Time
+}
+
+// PrepareLaunch performs every precompute Run performed before starting the
+// worker process, and nothing else: WorkerRequest decode and validation,
+// adapter/profile/session-policy fail-closed gates, executable identity
+// inspection with the exact supported-binary version gate (inspect keeps its
+// bounded `<executable> --version` probe and stays cheaply re-runnable),
+// prompt read, result path lexical validation, model read, tool allowlist
+// resolution, hardened argv construction, and the sanitized worker
+// environment. It never starts the worker process: Run's spawn seam is only
+// consumed after a plan is returned.
+func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (*LaunchPlan, error) {
 	if record.Kind != domain.KindWorkerRequest {
-		return domain.Record{}, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
+		return nil, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
 	}
 	request, err := decodeRequest(record.Data, a.validator)
 	if err != nil {
-		return domain.Record{}, err
+		return nil, err
 	}
 	if request.AdapterID != adapterID || (request.ExecutionProfile != "workspace-write" && request.ExecutionProfile != "read-only") {
-		return domain.Record{}, errors.New("WorkerRequest does not match the pi adapter execution profile")
+		return nil, errors.New("WorkerRequest does not match the pi adapter execution profile")
 	}
 	// Fail-closed: persist would write into the user's default pi session
 	// directory (outside the managed state boundary) and WorkerRequest has
 	// no managed sessionDir/mapping, so cross-attempt resume cannot be done
 	// safely. Both are permanent, unsupported errors; never launch a process.
 	if request.SessionPolicy != "ephemeral" {
-		return domain.Record{}, fmt.Errorf("%w: %q is permanently unsupported; only ephemeral sessions are managed by Marshal", ErrUnsupportedSessionPolicy, request.SessionPolicy)
+		return nil, fmt.Errorf("%w: %q is permanently unsupported; only ephemeral sessions are managed by Marshal", ErrUnsupportedSessionPolicy, request.SessionPolicy)
 	}
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(request.AttemptTimeoutSeconds)*time.Second)
+	// The deadline is computed at exactly the point Run historically created
+	// its attempt timeout context (after the session-policy gate, before
+	// inspect), so Run's context.WithDeadline reproduces the legacy
+	// context.WithTimeout coverage byte-for-byte.
+	attemptDeadline := time.Now().Add(time.Duration(request.AttemptTimeoutSeconds) * time.Second)
+	inspectCtx, cancel := context.WithDeadline(ctx, attemptDeadline)
 	defer cancel()
-	identity, err := a.inspect(runCtx)
+	identity, err := a.inspect(inspectCtx)
 	if err != nil {
-		return domain.Record{}, err
+		return nil, err
 	}
 	if !isSupportedBinary(identity.version) {
-		return domain.Record{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
 	}
 	worktree, err := filepath.EvalSymlinks(request.WorktreePath)
 	if err != nil {
-		return domain.Record{}, fmt.Errorf("resolve worktree: %w", err)
+		return nil, fmt.Errorf("resolve worktree: %w", err)
 	}
 	if !filepath.IsAbs(worktree) {
-		return domain.Record{}, errors.New("worktree path must be absolute")
+		return nil, errors.New("worktree path must be absolute")
 	}
 	controlRoot, err := filepath.EvalSymlinks(request.ControlRoot)
 	if err != nil || !filepath.IsAbs(controlRoot) {
-		return domain.Record{}, errors.New("control root must be an existing absolute directory")
+		return nil, errors.New("control root must be an existing absolute directory")
 	}
 	promptPath, err := existingPathWithin(controlRoot, request.PromptPath)
 	if err != nil {
-		return domain.Record{}, fmt.Errorf("resolve prompt: %w", err)
+		return nil, fmt.Errorf("resolve prompt: %w", err)
 	}
 	prompt, err := readBounded(promptPath, maxPromptBytes)
 	if err != nil {
-		return domain.Record{}, fmt.Errorf("read prompt: %w", err)
+		return nil, fmt.Errorf("read prompt: %w", err)
 	}
 	resultPath, err := lexicalPathWithin(controlRoot, request.ResultPath)
 	if err != nil {
-		return domain.Record{}, fmt.Errorf("resolve result: %w", err)
+		return nil, fmt.Errorf("resolve result: %w", err)
 	}
 	model := readModel(controlRoot, request.TaskSpecPath)
 	tools, err := declaredWorkerTools(controlRoot, request.TaskSpecPath)
 	if err != nil {
-		return domain.Record{}, err
+		return nil, err
 	}
 	args, err := buildArgsWithTools(request.ExecutionProfile, model, string(prompt), tools)
 	if err != nil {
+		return nil, err
+	}
+	return &LaunchPlan{
+		ExecArgv:              append([]string{identity.path}, args...),
+		Environment:           workerEnvironment(worktree),
+		WorkingDirectory:      worktree,
+		AttemptTimeoutSeconds: int64(request.AttemptTimeoutSeconds),
+		ResultPath:            resultPath,
+		ControlRoot:           controlRoot,
+		SessionPolicy:         request.SessionPolicy,
+		MaxOutputBytes:        int64(request.MaxOutputBytes),
+		request:               request,
+		model:                 model,
+		identity:              identity,
+		attemptDeadline:       attemptDeadline,
+	}, nil
+}
+
+// executionOutcome carries every observation of one executed attempt that the
+// completion pipeline consumes, independent of how the process was executed:
+// Run feeds the live capture directly, CompleteLaunch reconstructs it from
+// the sandbox-returned transcript and exit disposition.
+type executionOutcome struct {
+	capture       captureResult
+	stderr        streamCapture
+	exitCode      int
+	signal        string
+	processFailed bool // mirrors a non-nil Wait error: nonzero exit or signaled
+	ctxErr        error
+	started       time.Time
+	completed     time.Time
+}
+
+// CompleteLaunch drives the entire post-execution pipeline Run performs after
+// the worker process has started, given the full bounded stdout transcript
+// and the exit disposition reported by an external executor. It writes the
+// same bounded artifacts Run writes (pi-transcript.jsonl, pi-stderr.log,
+// pi-transcript-meta.json, denials.jsonl) at the same paths, grades denials,
+// applies the identical output-limit/context-error/permission-denied/
+// process/provider failure precedence, reads the declared WorkerResult via
+// readDeclaredResult, normalizes it, and returns the final WorkerResult
+// record. It never spawns, signals, or kills a process.
+//
+// Input contract (every violation fails closed before any artifact write):
+//   - plan must be non-nil and produced by PrepareLaunch: absolute argv[0]
+//     equal to the inspected executable, non-empty absolute
+//     WorkingDirectory/ControlRoot/ResultPath, and intact private bindings;
+//   - exitCode must be in [-1, 255], the POSIX wait representation: -1 means
+//     the process did not exit normally; signal must be empty unless
+//     exitCode == -1, because a signaled wait status reports ExitCode() == -1;
+//   - when ctxErr is nil the timing evidence must be complete and ordered:
+//     started and completed non-zero and completed not before started. A
+//     non-nil ctxErr (attempt deadline hit or cancellation) tolerates missing
+//     or unordered timing evidence, mirroring Run where started/completed are
+//     always present but the deadline error stays authoritative either way;
+//   - transcriptJSONL is the full captured stdout already bounded by the
+//     executor to at most plan.MaxOutputBytes. It is re-decoded through the
+//     identical strict session-protocol state machine under the same byte
+//     limit, so a malformed or truncated stream fails closed exactly as Run's
+//     live capture does (an empty transcript of a nominally successful
+//     attempt fails closed with ErrProtocol). Retry backoff declarations are
+//     decoded and validated but never paced: the executor already waited them;
+//   - stdoutTruncated is the executor's authoritative output-limit signal;
+//     the reported truncation is stdoutTruncated OR the decoder's own
+//     limit verdict, so truncation evidence can never be discarded;
+//   - stderrBytes is the raw captured stderr; CompleteLaunch applies the same
+//     bounded captureStream Run applies to the live stream, so a caller that
+//     hands the unbounded stream reproduces Run's stderr artifact and
+//     truncation flag exactly (a caller that pre-truncates to the bound loses
+//     only the truncation flag for streams longer than the bound);
+//   - started/completed/exitCode/signal are the caller-provided deterministic
+//     substitutes for Run's clock and wait observations and are stamped into
+//     the normalized WorkerResult and metadata verbatim.
+func (a *Adapter) CompleteLaunch(ctx context.Context, plan *LaunchPlan, transcriptJSONL []byte, stdoutTruncated bool, stderrBytes []byte, started, completed time.Time, exitCode int, signal string, ctxErr error) (domain.Record, error) {
+	if err := validateCompletionInput(plan, started, completed, exitCode, signal, ctxErr); err != nil {
 		return domain.Record{}, err
 	}
-	command := exec.Command(a.executable, args...)
-	command.Dir = worktree
-	command.Env = workerEnvironment(worktree)
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		return domain.Record{}, err
+	capture := decodeTranscript(ctx, transcriptJSONL, plan.WorkingDirectory, plan.MaxOutputBytes)
+	if stdoutTruncated {
+		capture.limitExceeded = true
 	}
-	stderr, err := command.StderrPipe()
-	if err != nil {
-		return domain.Record{}, err
+	return a.completeAttempt(plan, executionOutcome{
+		capture:       capture,
+		stderr:        captureStream(bytes.NewReader(stderrBytes), stderrLimit),
+		exitCode:      exitCode,
+		signal:        signal,
+		processFailed: exitCode != 0 || signal != "",
+		ctxErr:        ctxErr,
+		started:       started,
+		completed:     completed,
+	})
+}
+
+// validateCompletionInput enforces the CompleteLaunch input contract.
+func validateCompletionInput(plan *LaunchPlan, started, completed time.Time, exitCode int, signal string, ctxErr error) error {
+	if plan == nil {
+		return errors.New("LaunchPlan is nil")
 	}
-	started := a.now().UTC()
-	if err := command.Start(); err != nil {
-		return domain.Record{}, fmt.Errorf("start pi: %w", err)
+	if plan.attemptDeadline.IsZero() || plan.identity.path == "" || plan.request.AttemptID == "" {
+		return errors.New("LaunchPlan was not produced by PrepareLaunch")
 	}
-	var killOnce sync.Once
-	kill := func() { killOnce.Do(func() { terminateGroup(command) }) }
-	stdoutDone := make(chan captureResult, 1)
-	stderrDone := make(chan streamCapture, 1)
-	go func() { stdoutDone <- captureJSONL(runCtx, stdout, worktree, int64(request.MaxOutputBytes), kill) }()
-	go func() { stderrDone <- captureStream(stderr, stderrLimit) }()
-	processFinished := make(chan struct{})
-	go func() {
-		select {
-		case <-runCtx.Done():
-			kill()
-		case <-processFinished:
-		}
-	}()
-	capture := <-stdoutDone
-	stderrCapture := <-stderrDone
-	waitErr := command.Wait()
-	close(processFinished)
-	completed := a.now().UTC()
+	if len(plan.ExecArgv) == 0 || !filepath.IsAbs(plan.ExecArgv[0]) || plan.ExecArgv[0] != plan.identity.path {
+		return errors.New("LaunchPlan argv does not match the inspected executable")
+	}
+	if !filepath.IsAbs(plan.WorkingDirectory) || !filepath.IsAbs(plan.ControlRoot) || !filepath.IsAbs(plan.ResultPath) {
+		return errors.New("LaunchPlan paths must be absolute")
+	}
+	if exitCode < -1 || exitCode > 255 {
+		return fmt.Errorf("exit disposition out of POSIX wait range: exit=%d", exitCode)
+	}
+	if signal != "" && exitCode != -1 {
+		return fmt.Errorf("signaled exit must report exitCode -1, got exit=%d signal=%s", exitCode, signal)
+	}
+	if ctxErr == nil && (started.IsZero() || completed.IsZero() || completed.Before(started)) {
+		return errors.New("timing evidence is incomplete or unordered without an attempt context error")
+	}
+	return nil
+}
+
+// decodeTranscript runs the strict session-protocol state machine over a
+// fully captured transcript without pacing retry backoffs and without a
+// process to terminate (CompleteLaunch never spawns or kills a process).
+func decodeTranscript(ctx context.Context, transcript []byte, worktree string, limit int64) captureResult {
+	return captureTranscript(ctx, bytes.NewReader(transcript), worktree, limit, func() {}, false)
+}
+
+// completeAttempt is the single post-execution pipeline shared by Run and
+// CompleteLaunch: bounded transcript/meta/denial artifacts at the frozen
+// paths, denial grading, and the frozen error precedence that ends in the
+// normalized WorkerResult record.
+func (a *Adapter) completeAttempt(plan *LaunchPlan, outcome executionOutcome) (domain.Record, error) {
+	request := plan.request
+	identity := plan.identity
+	resultPath := plan.ResultPath
+	capture := outcome.capture
+	started, completed := outcome.started, outcome.completed
 	transcriptPath := filepath.Join(filepath.Dir(resultPath), "pi-transcript.jsonl")
 	if err := atomicWrite(transcriptPath, capture.raw); err != nil {
 		return domain.Record{}, fmt.Errorf("write transcript: %w", err)
 	}
-	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "pi-stderr.log"), stderrCapture.data); err != nil {
+	if err := atomicWrite(filepath.Join(filepath.Dir(resultPath), "pi-stderr.log"), outcome.stderr.data); err != nil {
 		return domain.Record{}, fmt.Errorf("write bounded stderr: %w", err)
 	}
-	exitCode, signal := processOutcome(command)
-	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: worktree, ControlRoot: controlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
+	denialRecords := denials.GradeRaw(denials.Classifier{Provider: adapterID, Worktree: plan.WorkingDirectory, ControlRoot: plan.ControlRoot, TempDir: os.TempDir()}, capture.denials, a.now)
 	fatalDenials := denials.CountFatal(denialRecords)
 	metadata, err := json.MarshalIndent(map[string]any{
 		"sessionId": capture.sessionID, "eventCount": capture.eventCount,
@@ -482,8 +636,8 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		"cost": capture.cost, "capturedBytes": len(capture.raw),
 		"outputTruncated": capture.limitExceeded, "permissionDenied": fatalDenials > 0,
 		"denialsBenign": len(denialRecords) - fatalDenials, "denialsFatal": fatalDenials, "toolNames": denials.SortedToolNames(capture.toolNames),
-		"exitCode": exitCode, "signal": signal, "stderrBytes": len(stderrCapture.data), "stderrTruncated": stderrCapture.truncated,
-		"contextError": contextError(runCtx),
+		"exitCode": outcome.exitCode, "signal": outcome.signal, "stderrBytes": len(outcome.stderr.data), "stderrTruncated": outcome.stderr.truncated,
+		"contextError": contextErrorOf(outcome.ctxErr),
 	}, "", "  ")
 	if err != nil {
 		return domain.Record{}, err
@@ -494,8 +648,8 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err := denials.AppendLog(filepath.Join(filepath.Dir(resultPath), denials.LogFileName), denialRecords); err != nil {
 		return domain.Record{}, fmt.Errorf("write denial log: %w", err)
 	}
-	if runCtx.Err() != nil {
-		return domain.Record{}, runCtx.Err()
+	if outcome.ctxErr != nil {
+		return domain.Record{}, outcome.ctxErr
 	}
 	if capture.limitExceeded {
 		return domain.Record{}, ErrOutputLimit
@@ -510,8 +664,8 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if fatalDenials > 0 {
 		return domain.Record{}, ErrPermissionDenied
 	}
-	if waitErr != nil {
-		return domain.Record{}, processFailureError(command)
+	if outcome.processFailed {
+		return domain.Record{}, processFailureError(outcome.exitCode, outcome.signal)
 	}
 	if capture.providerFailed {
 		return domain.Record{}, ErrProviderFailed
@@ -532,8 +686,8 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	declared.Adapter.Executable, declared.Adapter.Version = identity.path, identity.version
 	declared.Session = &declaredSession{ID: capture.sessionID, Resumable: false}
 	declared.StartedAt, declared.CompletedAt = started, completed
-	if model != "" {
-		declared.Adapter.Model = model
+	if plan.model != "" {
+		declared.Adapter.Model = plan.model
 	}
 	if capture.inputTokens > 0 || capture.outputTokens > 0 || capture.cost > 0 {
 		usage := map[string]any{"inputTokens": capture.inputTokens, "outputTokens": capture.outputTokens, "cachedInputTokens": capture.cachedInputTokens}
@@ -555,6 +709,66 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 		return domain.Record{}, fmt.Errorf("write normalized WorkerResult: %w", err)
 	}
 	return domain.Record{Kind: domain.KindWorkerResult, Data: data}, nil
+}
+
+// Run executes one non-interactive attempt as a thin composition of
+// PrepareLaunch, the local spawn/capture (including the process-group kill
+// guarantee, which lives only here), and the shared completion pipeline.
+// Provider/process/protocol failures are returned as errors so Core can apply
+// the operational retry budget.
+func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record, error) {
+	plan, err := a.PrepareLaunch(ctx, record)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	runCtx, cancel := context.WithDeadline(ctx, plan.attemptDeadline)
+	defer cancel()
+	command := exec.Command(plan.ExecArgv[0], plan.ExecArgv[1:]...)
+	command.Dir = plan.WorkingDirectory
+	command.Env = plan.Environment
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return domain.Record{}, err
+	}
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		return domain.Record{}, err
+	}
+	started := a.now().UTC()
+	if err := a.startCommand(command); err != nil {
+		return domain.Record{}, fmt.Errorf("start pi: %w", err)
+	}
+	var killOnce sync.Once
+	kill := func() { killOnce.Do(func() { terminateGroup(command) }) }
+	stdoutDone := make(chan captureResult, 1)
+	stderrDone := make(chan streamCapture, 1)
+	go func() { stdoutDone <- captureJSONL(runCtx, stdout, plan.WorkingDirectory, plan.MaxOutputBytes, kill) }()
+	go func() { stderrDone <- captureStream(stderr, stderrLimit) }()
+	processFinished := make(chan struct{})
+	go func() {
+		select {
+		case <-runCtx.Done():
+			kill()
+		case <-processFinished:
+		}
+	}()
+	capture := <-stdoutDone
+	stderrCapture := <-stderrDone
+	waitErr := command.Wait()
+	close(processFinished)
+	completed := a.now().UTC()
+	exitCode, signal := processOutcome(command)
+	return a.completeAttempt(plan, executionOutcome{
+		capture:       capture,
+		stderr:        stderrCapture,
+		exitCode:      exitCode,
+		signal:        signal,
+		processFailed: waitErr != nil,
+		ctxErr:        runCtx.Err(),
+		started:       started,
+		completed:     completed,
+	})
 }
 
 type declaredResult struct {
@@ -1023,7 +1237,19 @@ const maxBackoffDelayMs = int64(math.MaxInt64 / int64(time.Millisecond))
 // Output is bounded; exceeding the limit keeps raw exactly equal to the first
 // limit input bytes and terminates exactly once without fabricating a
 // protocol success.
+//
+// captureJSONL is the live-capture entrypoint used by Run: it paces declared
+// retry backoffs against the attempt context and terminates the process.
 func captureJSONL(ctx context.Context, reader io.Reader, worktree string, limit int64, onLimit func()) captureResult {
+	return captureTranscript(ctx, reader, worktree, limit, onLimit, true)
+}
+
+// captureTranscript is the shared strict session-protocol machine. When
+// paceBackoff is false (offline decode via CompleteLaunch) declared backoff
+// windows are validated but never waited, because the executor already paced
+// them while the bytes were produced; the decoded result is otherwise
+// identical.
+func captureTranscript(ctx context.Context, reader io.Reader, worktree string, limit int64, onLimit func(), paceBackoff bool) captureResult {
 	capacity := 64 << 10
 	if limit < int64(capacity) {
 		capacity = int(limit)
@@ -1069,7 +1295,7 @@ func captureJSONL(ctx context.Context, reader io.Reader, worktree string, limit 
 	// instead of idling out the delay: the capture records the context error,
 	// terminates the process group exactly once, and stops admitting bytes.
 	waitBackoff := func(delayMs int64) {
-		if delayMs <= 0 {
+		if delayMs <= 0 || !paceBackoff {
 			return
 		}
 		timer := time.NewTimer(time.Duration(delayMs) * time.Millisecond)
@@ -1654,8 +1880,7 @@ func buildTerminalArgsWithTools(profile, model string, tools []string) ([]string
 // separately as a bounded evidence file (pi-stderr.log) but is never
 // concatenated into the returned error, so tokens, secrets, or user content
 // cannot reach Events, CLI output, or Outcome.
-func processFailureError(command *exec.Cmd) error {
-	exitCode, signal := processOutcome(command)
+func processFailureError(exitCode int, signal string) error {
 	if signal != "" {
 		return fmt.Errorf("%w: exit=%d signal=%s", ErrProcessFailed, exitCode, signal)
 	}
@@ -1673,8 +1898,10 @@ func processOutcome(command *exec.Cmd) (int, string) {
 	return exitCode, ""
 }
 
-func contextError(ctx context.Context) string {
-	if err := ctx.Err(); err != nil {
+// contextErrorOf formats the attempt context error for transcript metadata;
+// the empty string reports a clean context.
+func contextErrorOf(err error) string {
+	if err != nil {
 		return err.Error()
 	}
 	return ""

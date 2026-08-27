@@ -63,6 +63,13 @@ type allocation struct {
 	exitCode    int
 	checkpoints int64
 	liveProcess *os.Process
+	// workDirAllowlist records the closed ADR 0055 §1 binding declared at
+	// Provision time: the cleaned absolute paths an Exec WorkingDir may
+	// resolve to. Symlinks are re-evaluated on both sides at Exec time.
+	workDirAllowlist []string
+	// envAllowlist records the closed ADR 0055 §2 environment key
+	// declaration granted at Provision time.
+	envAllowlist []string
 }
 
 // LocalRunner implements sandbox.SandboxProvider as the ordinary host-process
@@ -341,6 +348,22 @@ func (r *LocalRunner) Provision(ctx context.Context, request sandbox.ProvisionRe
 			return nil, fmt.Errorf("local: provision: %w", err)
 		}
 	}
+	// ADR 0055 §1/§2: the optional envelope declarations are registered fail
+	// closed before any host side effect. The working-root entries are
+	// recorded cleaned; their symlink-resolved binding is adjudicated at
+	// Exec time. Credential-semantic environment keys never register.
+	if err := sandbox.ValidateWorkDirAllowlist(request.WorkDirAllowlist); err != nil {
+		r.appendDiagnostic(sandbox.OperationProvision, request.Identity.AllocationId, "workdir allowlist rejected: "+err.Error())
+		return nil, err
+	}
+	if err := sandbox.ValidateEnvironmentAllowlist(request.EnvironmentAllowlist); err != nil {
+		r.appendDiagnostic(sandbox.OperationProvision, request.Identity.AllocationId, "environment allowlist rejected: "+err.Error())
+		return nil, err
+	}
+	workDirAllowlist := make([]string, 0, len(request.WorkDirAllowlist))
+	for _, declared := range request.WorkDirAllowlist {
+		workDirAllowlist = append(workDirAllowlist, filepath.Clean(declared))
+	}
 	candidate := sandbox.SandboxAllocation{
 		AllocationId:           request.Identity.AllocationId,
 		RunId:                  request.Identity.RunId,
@@ -351,6 +374,8 @@ func (r *LocalRunner) Provision(ctx context.Context, request sandbox.ProvisionRe
 		AssuranceLevel:         domain.AssuranceLevelWorkspaceWrite,
 		ConformanceEvidenceRef: "",
 		AllowedStoreIds:        append([]string(nil), request.AllowedStoreIds...),
+		WorkDirAllowlist:       append([]string(nil), request.WorkDirAllowlist...),
+		EnvironmentAllowlist:   append([]string(nil), request.EnvironmentAllowlist...),
 	}
 	if err := sandbox.CheckSingleActive(r.allocationsInScope(candidate.RunId, candidate.AttemptId), candidate); err != nil {
 		r.appendDiagnostic(sandbox.OperationProvision, candidate.AllocationId, "single-active check rejected the provision: "+err.Error())
@@ -361,10 +386,12 @@ func (r *LocalRunner) Provision(ctx context.Context, request sandbox.ProvisionRe
 		return nil, fmt.Errorf("local: provision: allocation directory: %w", err)
 	}
 	r.allocations[candidate.AllocationId] = &allocation{
-		meta:   candidate,
-		role:   request.Identity.WorkloadRole,
-		dir:    dir,
-		staged: map[string]string{},
+		meta:             candidate,
+		role:             request.Identity.WorkloadRole,
+		dir:              dir,
+		staged:           map[string]string{},
+		workDirAllowlist: workDirAllowlist,
+		envAllowlist:     append([]string(nil), request.EnvironmentAllowlist...),
 	}
 	lease, err := r.sealScopeLease(request.Identity, candidate.AllocationId)
 	if err != nil {

@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
@@ -23,6 +26,30 @@ var (
 	// ErrInvalidRequest rejects a malformed provider request after the
 	// operation identity already validated.
 	ErrInvalidRequest = errors.New("sandbox: invalid provider request")
+	// ErrInvalidWorkDir rejects an Exec WorkingDir or a Provision-time
+	// workDirAllowlist entry that is not an absolute path, does not exist
+	// provider side, or resolves outside the declared binding set of the
+	// allocation (ADR 0055 §1).
+	ErrInvalidWorkDir = errors.New("sandbox: invalid working directory")
+	// ErrEnvKeyNotAllowed rejects a per-op environment key outside the
+	// allocation's closed Provision-time environmentAllowlist; providers
+	// must never union unknown keys into the execution environment
+	// (ADR 0055 §2).
+	ErrEnvKeyNotAllowed = errors.New("sandbox: environment key outside the allocation environmentAllowlist")
+	// ErrCredentialKeyRejected rejects any environment key carrying
+	// credential semantics, both at Provision-time allowlist registration
+	// and at exec time (ADR 0055 §2.4, ADR 0018: credentials never flow
+	// through the workload envelope, events or logs).
+	ErrCredentialKeyRejected = errors.New("sandbox: credential semantic environment keys are rejected")
+	// ErrInvalidTranscriptPolicy rejects a malformed bounded transcript
+	// declaration: MaxBytes must be positive and ArtifactId must be a
+	// non-empty relative path inside the allocation (ADR 0055 §3).
+	ErrInvalidTranscriptPolicy = errors.New("sandbox: invalid transcript policy")
+	// ErrTranscriptLimitExceeded freezes the fail-closed transcript bound:
+	// the workload is killed the moment the stdout capture exceeds
+	// MaxBytes and no partial capture is ever reported as a successful
+	// execution (ADR 0055 §3.2).
+	ErrTranscriptLimitExceeded = errors.New("sandbox: transcript capture exceeded the MaxBytes bound, workload killed")
 )
 
 // Operation names of the SPI, used by fault injection and diagnostics.
@@ -111,6 +138,14 @@ type SandboxAllocation struct {
 	AssuranceLevel         domain.AssuranceLevel `json:"assuranceLevel"`
 	ConformanceEvidenceRef string                `json:"conformanceEvidenceRef"`
 	AllowedStoreIds        []string              `json:"allowedStoreIds"`
+	// WorkDirAllowlist snapshots the closed ADR 0055 §1 working-root
+	// declaration granted at Provision time; absent when the attempt never
+	// declared one.
+	WorkDirAllowlist []string `json:"workDirAllowlist,omitempty"`
+	// EnvironmentAllowlist snapshots the closed ADR 0055 §2 environment key
+	// declaration granted at Provision time; absent when the attempt never
+	// declared one.
+	EnvironmentAllowlist []string `json:"environmentAllowlist,omitempty"`
 }
 
 // SandboxProvider is the ten-operation SPI of ADR 0016 §4. Every
@@ -147,11 +182,14 @@ type SandboxProvider interface {
 	Stage(ctx context.Context, request StageRequest) (*StageReport, error)
 
 	// Exec runs one workload command inside the allocation. Input:
-	// identity, allocation locator and the command. Output: a receipt whose
-	// status is a lifecycle guard only; conformance adjudication never
-	// reads the verdict from it. Fail closed: invalid identity, unknown or
-	// inactive allocation, or a stale generation, return an error and the
-	// command never executes.
+	// identity, allocation locator, the command and the optional ADR 0055
+	// workload envelope (WorkingDir/Environment/TranscriptPolicy/
+	// TimeoutSeconds), adjudicated fail closed against the closed
+	// Provision-time declarations. Output: a receipt whose status is a
+	// lifecycle guard only; conformance adjudication never reads the
+	// verdict from it. Fail closed: invalid identity, unknown or inactive
+	// allocation, a stale generation, or any envelope dimension outside the
+	// declared bindings, return an error and the command never executes.
 	Exec(ctx context.Context, request ExecRequest) (*ExecReceipt, error)
 
 	// Inspect returns the out-of-band observation of the allocation:
@@ -213,11 +251,24 @@ type ProbeReport struct {
 	SelfSignedConformanceClaim bool
 }
 
-// ProvisionRequest is the input of Provision.
+// ProvisionRequest is the input of Provision. WorkDirAllowlist and
+// EnvironmentAllowlist carry the optional ADR 0055 declarations of the
+// requesting attempt: the provider validates them fail closed (absolute
+// paths, closed key shape, no credential semantics) and records the granted
+// binding in the allocation record, and every later Exec envelope is
+// adjudicated against that closed declaration.
 type ProvisionRequest struct {
 	Identity        OperationIdentity
 	Requirements    domain.SandboxRequirements
 	AllowedStoreIds []string
+	// WorkDirAllowlist declares the closed set of absolute paths any later
+	// Exec WorkingDir of this attempt may bind to (ADR 0055 §1.1); an
+	// empty value keeps the ADR 0017 allocation-directory cwd only.
+	WorkDirAllowlist []string
+	// EnvironmentAllowlist declares the closed set of environment keys any
+	// later Exec Environment of this attempt may carry (ADR 0055 §2.2);
+	// credential-semantic keys are rejected at registration time.
+	EnvironmentAllowlist []string
 }
 
 // ProvisionReceipt observes the provisioned allocation. It is an
@@ -239,22 +290,249 @@ type StageReport struct {
 	Receipts []StageReceipt
 }
 
-// ExecRequest is the input of Exec.
+// TranscriptPolicy declares the bounded transcript sink of one Exec op
+// (ADR 0055 §3). The provider captures the op's stdout bounded by MaxBytes
+// in an append-only capture; the moment the capture exceeds MaxBytes the
+// workload is killed fail closed (ExecutionKilled plus the closed reason,
+// never a partial result reported as success). On clean completion the
+// provider writes the transcript as one content-addressed staged artifact
+// of the allocation under ArtifactId, recomputes its sha256 digest and
+// echoes it in the ExecReceipt; stderr follows the identical capture bound
+// but participates digest-only, without any artifact. Semantic
+// interpretation of the transcript never belongs to this SPI.
+type TranscriptPolicy struct {
+	MaxBytes   int64
+	ArtifactId string
+}
+
+// Absent reports whether the policy is unset (the zero value), which keeps
+// the ADR 0017 digest-only observation behavior exactly.
+func (policy TranscriptPolicy) Absent() bool {
+	return policy == TranscriptPolicy{}
+}
+
+// Validate fails closed unless MaxBytes is positive and ArtifactId is a
+// non-empty relative path without parent traversal.
+func (policy TranscriptPolicy) Validate() error {
+	if policy.MaxBytes <= 0 {
+		return fmt.Errorf("%w: MaxBytes must be a positive integer", ErrInvalidTranscriptPolicy)
+	}
+	if strings.TrimSpace(policy.ArtifactId) == "" {
+		return fmt.Errorf("%w: ArtifactId must be a non-empty string", ErrInvalidTranscriptPolicy)
+	}
+	if filepath.IsAbs(policy.ArtifactId) {
+		return fmt.Errorf("%w: ArtifactId must be a relative path inside the allocation", ErrInvalidTranscriptPolicy)
+	}
+	for _, part := range strings.Split(filepath.ToSlash(policy.ArtifactId), "/") {
+		if part == ".." {
+			return fmt.Errorf("%w: ArtifactId escapes the allocation directory", ErrInvalidTranscriptPolicy)
+		}
+	}
+	return nil
+}
+
+// ExecRequest is the input of Exec. The four optional envelope dimensions
+// of ADR 0055 (WorkingDir, Environment, TranscriptPolicy, TimeoutSeconds)
+// are strictly additive: the zero envelope keeps the ADR 0017 behavior
+// exactly — cwd bound to the allocation directory, the sanitized baseline
+// environment, digest-only output observation and the provider-internal
+// default timeout.
 type ExecRequest struct {
 	Identity     OperationIdentity
 	AllocationId string
 	Command      []string
 	Stdin        []byte
+	// WorkingDir is the optional absolute execution root (ADR 0055 §1): it
+	// must have been declared by the same attempt at Provision time and
+	// recorded in the allocation record (WorkDirAllowlist), it must exist
+	// provider side, and its symlink-resolved target must equal a declared
+	// target — any path rewrite or soft-link traversal into an undeclared
+	// target is rejected fail closed. A WorkingDir declares the execution
+	// root only; it grants no extra filesystem write authority.
+	WorkingDir string
+	// Environment carries the optional per-op allow-listed environment
+	// values (ADR 0055 §2): every key must be a member of the allocation's
+	// Provision-time EnvironmentAllowlist and must not carry credential
+	// semantics; all other keys keep the provider's sanitized baseline.
+	Environment map[string]string
+	// TranscriptPolicy is the optional bounded transcript sink declaration
+	// (ADR 0055 §3); the zero value disables raw capture and keeps the
+	// digest-only observation of ADR 0017.
+	TranscriptPolicy TranscriptPolicy
+	// TimeoutSeconds is the optional per-op timeout (ADR 0055 §4): a
+	// positive value takes effect as min(TimeoutSeconds, the provider cap)
+	// together with the context deadline, and any non-positive value keeps
+	// the provider default. A timeout kills the workload and observes
+	// ExecutionKilled, never the normal-completion branch.
+	TimeoutSeconds int64
+}
+
+// ValidateEnvelope validates the provider-independent shape of the optional
+// ADR 0055 envelope dimensions fail closed: WorkingDir must be absolute
+// when set, environment keys must be well-formed and free of credential
+// semantics, and the transcript policy — when present — must be
+// well-formed. The zero envelope validates clean. Providers run it after
+// resolving the allocation and adjudicate the declared bindings (allowlist
+// membership, provider-side existence, symlink-resolved target equality)
+// on top of it.
+func (request ExecRequest) ValidateEnvelope() error {
+	if request.WorkingDir != "" && !filepath.IsAbs(request.WorkingDir) {
+		return fmt.Errorf("%w: WorkingDir %q must be an absolute path", ErrInvalidWorkDir, request.WorkingDir)
+	}
+	for key := range request.Environment {
+		if err := validateEnvironmentKeyShape(key); err != nil {
+			return err
+		}
+		if IsCredentialEnvironmentKey(key) {
+			return fmt.Errorf("%w: environment key %q carries credential semantics", ErrCredentialKeyRejected, key)
+		}
+	}
+	if !request.TranscriptPolicy.Absent() {
+		if err := request.TranscriptPolicy.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// credentialEnvironmentSubstrings is the closed case-insensitive credential
+// semantics set of the environment channel (ADR 0055 §2.4, ADR 0018): any
+// environment key containing one of these substrings is treated as a
+// credential channel and is rejected both at allowlist registration and at
+// exec time. The freeze is verbatim case-insensitive substring containment,
+// so e.g. the key "MONKEY" matches through the substring "key".
+var credentialEnvironmentSubstrings = []string{"key", "token", "secret", "password"}
+
+// IsCredentialEnvironmentKey reports whether key carries credential
+// semantics under the frozen case-insensitive substring rule.
+func IsCredentialEnvironmentKey(key string) bool {
+	lowered := strings.ToLower(key)
+	for _, substring := range credentialEnvironmentSubstrings {
+		if strings.Contains(lowered, substring) {
+			return true
+		}
+	}
+	return false
+}
+
+// validateEnvironmentKeyShape rejects empty, blank, whitespace-padded or
+// '='-carrying environment keys with ErrInvalidRequest.
+func validateEnvironmentKeyShape(key string) error {
+	if strings.TrimSpace(key) == "" {
+		return fmt.Errorf("%w: environment keys must be non-empty strings", ErrInvalidRequest)
+	}
+	if key != strings.TrimSpace(key) {
+		return fmt.Errorf("%w: environment key %q must not carry surrounding whitespace", ErrInvalidRequest, key)
+	}
+	if strings.ContainsRune(key, '=') {
+		return fmt.Errorf("%w: environment key %q must not contain '='", ErrInvalidRequest, key)
+	}
+	return nil
+}
+
+// ValidateEnvironmentAllowlist validates the Provision-time closed
+// declaration of environment keys (ADR 0055 §2.2): every key must be
+// well-formed, unique and free of credential semantics.
+func ValidateEnvironmentAllowlist(allowlist []string) error {
+	seen := make(map[string]struct{}, len(allowlist))
+	for index, key := range allowlist {
+		if err := validateEnvironmentKeyShape(key); err != nil {
+			return fmt.Errorf("environmentAllowlist[%d]: %w", index, err)
+		}
+		if IsCredentialEnvironmentKey(key) {
+			return fmt.Errorf("%w: environmentAllowlist[%d] %q carries credential semantics", ErrCredentialKeyRejected, index, key)
+		}
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("%w: environmentAllowlist[%d] %q is declared twice", ErrInvalidRequest, index, key)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+// ResolveExecEnvironment validates the per-op environment of one Exec
+// against the allocation's closed Provision-time allowlist and returns the
+// allow-listed key=value pairs in deterministic sorted order, to overlay
+// onto the provider's sanitized baseline. An empty environment resolves to
+// no overlay; any key outside the closed allowlist or carrying credential
+// semantics fails closed and is never unioned into the execution
+// environment.
+func ResolveExecEnvironment(environment map[string]string, allowlist []string) ([]string, error) {
+	if len(environment) == 0 {
+		return nil, nil
+	}
+	allowed := make(map[string]struct{}, len(allowlist))
+	for _, key := range allowlist {
+		allowed[key] = struct{}{}
+	}
+	keys := make([]string, 0, len(environment))
+	for key := range environment {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	pairs := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if err := validateEnvironmentKeyShape(key); err != nil {
+			return nil, err
+		}
+		if IsCredentialEnvironmentKey(key) {
+			return nil, fmt.Errorf("%w: environment key %q carries credential semantics", ErrCredentialKeyRejected, key)
+		}
+		if _, ok := allowed[key]; !ok {
+			return nil, fmt.Errorf("%w: environment key %q is not declared in the allocation's environmentAllowlist", ErrEnvKeyNotAllowed, key)
+		}
+		pairs = append(pairs, key+"="+environment[key])
+	}
+	return pairs, nil
+}
+
+// ValidateWorkDirAllowlist validates the Provision-time closed declaration
+// of executable working roots (ADR 0055 §1): every entry must be an
+// absolute path. Provider-side existence and the symlink-resolved binding
+// are adjudicated by the provider at Exec time.
+func ValidateWorkDirAllowlist(allowlist []string) error {
+	for index, dir := range allowlist {
+		if strings.TrimSpace(dir) == "" {
+			return fmt.Errorf("%w: workDirAllowlist[%d] must be a non-empty absolute path", ErrInvalidWorkDir, index)
+		}
+		if !filepath.IsAbs(dir) {
+			return fmt.Errorf("%w: workDirAllowlist[%d] %q must be an absolute path", ErrInvalidWorkDir, index, dir)
+		}
+	}
+	return nil
+}
+
+// EffectiveTimeoutSeconds freezes the per-op timeout arithmetic of ADR 0055
+// §4: a positive request is honored as min(requested, the provider cap) and
+// any non-positive value keeps the provider cap. The computation is
+// integer-only and never overflows.
+func EffectiveTimeoutSeconds(requestedSeconds, providerCapSeconds int64) int64 {
+	if requestedSeconds <= 0 || requestedSeconds > providerCapSeconds {
+		return providerCapSeconds
+	}
+	return requestedSeconds
 }
 
 // ExecReceipt observes one executed command. It is a lifecycle guard only:
 // completed/failed/killed statuses gate subsequent operations, but no
-// conformance or fencing verdict is ever derived from this receipt.
+// conformance or fencing verdict is ever derived from this receipt. The
+// transcript digests are populated only under ADR 0055 §3: an op carrying a
+// TranscriptPolicy that completed its capture cleanly.
 type ExecReceipt struct {
 	Status       ExecutionStatus
 	ExitCode     int
 	StdoutSHA256 string
 	StderrSHA256 string
+	// TranscriptDigest echoes the provider-recomputed sha256 digest of the
+	// stdout transcript artifact staged under
+	// ExecRequest.TranscriptPolicy.ArtifactId (ADR 0055 §3.3); it is empty
+	// when no TranscriptPolicy was carried or the capture never completed
+	// (overflow kill, timeout, start failure).
+	TranscriptDigest string
+	// TranscriptStderrDigest echoes the provider-recomputed digest of the
+	// stderr captured under the identical policy bound (ADR 0055 §3.5); no
+	// stderr artifact is ever staged.
+	TranscriptStderrDigest string
 }
 
 // InspectRequest is the input of Inspect.

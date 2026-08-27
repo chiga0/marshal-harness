@@ -5,7 +5,11 @@
 // consumption (ADR 0017 §3), a scripted deterministic Fake provider, and a
 // provider-agnostic conformance suite whose adversarial probes execute
 // inside the target allocation that the provider under test provisions
-// itself.
+// itself. ADR 0055 extends the Exec workload envelope with four strictly
+// additive optional dimensions (WorkingDir / bounded Environment /
+// TranscriptPolicy / TimeoutSeconds), adjudicated fail closed against the
+// Provision-time WorkDirAllowlist and EnvironmentAllowlist declarations;
+// the zero envelope keeps the ADR 0017 behavior exactly, for every provider.
 //
 // M8 embedded scope only. This package contains no transport, no heartbeat,
 // no dispatcher, no persistent lease ledger, no typed-edge runtime and no

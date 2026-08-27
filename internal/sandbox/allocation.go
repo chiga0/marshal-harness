@@ -103,6 +103,12 @@ func (allocation SandboxAllocation) Validate() error {
 			return fmt.Errorf("%w: allocation.allowedStoreIds[%d]: %v", ErrInvalidAllocation, index, err)
 		}
 	}
+	if err := ValidateWorkDirAllowlist(allocation.WorkDirAllowlist); err != nil {
+		return fmt.Errorf("%w: allocation.workDirAllowlist: %v", ErrInvalidAllocation, err)
+	}
+	if err := ValidateEnvironmentAllowlist(allocation.EnvironmentAllowlist); err != nil {
+		return fmt.Errorf("%w: allocation.environmentAllowlist: %v", ErrInvalidAllocation, err)
+	}
 	return nil
 }
 
