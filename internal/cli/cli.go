@@ -129,6 +129,8 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return runServe(args[1:], stdout, stderr)
 	case "task":
 		return runTask(ctx, args[1:], stdin, stdout, stderr)
+	case "explain":
+		return runExplain(args[1:], stdout, stderr)
 	case "supervise":
 		return runSupervise(ctx, args[1:], stdout, stderr)
 	case "internal":
