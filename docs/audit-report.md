@@ -30,6 +30,23 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 
 该关闭只表示实现与部署口径已经明确，不升级任何 Milestone 或能力成熟度，也不表示 Goal、WorkflowTemplate、远程 Artifact/Knowledge Store 或 GC 已实现。此次修订不改变 trust boundary、持久化语义、生命周期或发布权限，因此不新增 ADR；未来若拆分引入新的权威写路径、持久对象或跨域授权，仍必须先新增或替代 ADR。
 
+## Composition root 纠偏审计（2026-08-27）
+
+本轮审计从真实 composition root 反查生产路径，发现 CLI 此前构造两个独立 `EmbeddedSandboxRuntime` 实例，导致 lease 和 agent registry 互不可见，admission 必然失败。已修复为单实例并补充 fail-closed 门禁。
+
+| Finding | 等级 | 状态 | 处置 |
+| --- | --- | --- | --- |
+| `V1-COMPOSITION-ROOT-SPLIT` | P0 | `CLOSED-FIX` | CLI 只构造一个 `EmbeddedSandboxRuntime`——同一实例同时承担 DispatchBinder + SandboxProvider + Authority + ResultIngressStore（`33bad5c`）。 |
+| `V1-AGENT-REGISTRY-EMPTY` | P0 | `CLOSED-FIX` | Adapter probe 后注册 agent 到 `sharedRuntime.agentRegistry`（`33bad5c`）。此前 agentRegistry 在生产路径始终为空，`AgentRegistrationActive` 总是返回 false。 |
+| `V1-FABRICATED-LEASE-EXPIRY` | P0 | `CLOSED-FIX` | 删除 execchain.go 的 `now+24h` lease fallback——lease 缺失直接 fail closed（`33bad5c`）。此前虚构的 expiry 被冻结进 AttemptBinding 文件，污染耐久记录。 |
+| `V1-ALLOCATION-RECORD-SILENT-FAIL` | P1 | `CLOSED-FIX` | Allocation record 写入失败从降级改为 fail closed——阻止 Exec（`33bad5c`）。 |
+| `V1-LEGACY-ADAPTER-SILENT-FALLBACK` | P1 | `CLOSED-FIX` | RunWorker 遇到非 LaunchCapable adapter 必须 fail closed——production profile 不允许静默退回宿主 legacy Run（`33bad5c`）。 |
+| `V1-CANARY-FAIL-AS-SUCCESS` | P1 | `CLOSED-FIX` | 严格 E2E 测试 `TestRealPiStrictE2E` 要求 `worker.completed`——`worker.failed` 直接 t.Fatal（`86e209a`）。canary 更新为提示运行严格 E2E。 |
+| `V1-SERVER-RESTART-404-ONLY` | P1 | `CLOSED-FIX` | marshal-server restart 测试改为创建真实 Run（非终态 Ready），验证跨进程恢复返回 200+Ready（`da8cccd`）。此前只断言 404。 |
+| `V1-LEASE-NOT-DURABLE` | P1 | `OPEN-IMPLEMENTATION` | lease 仍是内存态，进程重启即丢失。跨进程恢复需要耐久 lease ledger（参照 `provider.RegistrationStore` 模式）。 |
+| `V1-AGENT-SANDBOX-DIGEST-CONFLATED` | P1 | `OPEN-IMPLEMENTATION` | agent/sandbox capability digest 仍混用同一字段（`Facts.CapabilityDigest`）。变量已分离但完整双 binding 需要 Facts schema 扩展。 |
+| `V1-RESULTINGRESS-NOT-DURABLE` | P1 | `OPEN-IMPLEMENTATION` | ResultIngress replay/idempotency 状态是进程内 map，跨进程重放未覆盖。 |
+
 ## 行业协议收敛跟踪（2026-08-21 基线）
 
 外部背景（公开行业资料转述，未做在线核验）：agent 相关协议正沿三条轴在 Linux Foundation 轨道收敛——MCP（agent→工具/数据轴）进入 AAIF 并成为事实标准；A2A（agent↔agent 轴）由 Google 捐赠至 Linux Foundation 并获 100+ 背书；ACP（客户端↔agent 轴，LSP 式协议）已被 Gemini CLI、Neovim、JetBrains 等客户端采用。行业判断是自研私有 agent 协议的兼容性税持续上升。
