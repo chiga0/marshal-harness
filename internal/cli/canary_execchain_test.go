@@ -257,7 +257,8 @@ func TestRealPiExecChainCanary(t *testing.T) {
 			t.Errorf("admission anchor missing on completed path: %v", err)
 		}
 	} else {
-		t.Log("worker.failed: real pi agent did not write worker-result.json — exec-chain 基础设施正确，LLM 合规是外部约束")
+		t.Log("worker.failed: real pi agent did not write worker-result.json — exec-chain 基础设施正确，但 LLM 合规未通过")
+		t.Log("注意：本 canary 仅验证 exec-chain 基础设施。完整生产闭环验证请运行 TestRealPiStrictE2E（要求 worker.completed）。")
 		// 失败路径下 admission anchor 不落盘是正确的
 		if _, err := os.Stat(filepath.Join(attemptDir, "sandbox-binding-admission.json")); err == nil {
 			t.Errorf("admission anchor should not exist on failed path")
