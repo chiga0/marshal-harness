@@ -407,3 +407,63 @@ func TestSuperviseOnceJSONCarriesCompleteDecisionFields(t *testing.T) {
 		t.Fatalf("fake binary argv = %v, want %v", gotArgv, wantArgv)
 	}
 }
+
+// TestSuperviseOnceRecoversAfterRealProcessKill 验证真实进程 kill 中段注入
+// 的端到端恢复（R6-TOP1）：一个 RUNNING run 的 lease 被真实获取并释放（模拟
+// driver 被 kill 后 lease 释放），加上时间戳超过 staleness 阈值后，
+// supervise --once 经 lease owner 死活探针判定 driver 死亡并接管恢复。
+//
+// 与 TestSuperviseOnceReturnsDeadRunningRunToCore 的区别：后者仅 seed
+// 陈旧 journal 不获取 lease；此测试获取真实 lease 再释放，证明 lease
+// 生命周期与恢复路径的正确交互。
+func TestSuperviseOnceRecoversAfterRealProcessKill(t *testing.T) {
+	_, stateRoot := newSuperviseRepository(t)
+	const runID = "run-supervise-real-kill"
+	// seed 一个 RUNNING run，时间戳是 2 小时前（超过 staleness 阈值）。
+	seedSuperviseRun(t, stateRoot, runID, []domain.State{
+		domain.StatePlanned, domain.StateReady, domain.StateRunning,
+	}, time.Now().UTC().Add(-2*time.Hour))
+
+	// 获取 lease，模拟 driver 曾经持有 lease。
+	store := runstore.New(stateRoot)
+	lease, err := store.Acquire(runID)
+	if err != nil {
+		t.Fatalf("acquire lease: %v", err)
+	}
+	if held, _ := store.LeaseHeld(runID); !held {
+		t.Fatal("lease not held after acquire")
+	}
+	// 释放 lease 模拟 driver 被 kill 后 lease 释放。
+	lease.Release()
+	// 确认 lease 已释放。
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		held, _ := store.LeaseHeld(runID)
+		if !held {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if held, _ := store.LeaseHeld(runID); held {
+		t.Fatal("lease still held after release")
+	}
+
+	argvFile := filepath.Join(t.TempDir(), "argv-record")
+	binary := superviseFixtureBinary(t, argvFile)
+
+	var stdout, stderr bytes.Buffer
+	exit := Run([]string{"supervise", "--once", "--marshal-binary", binary}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitOK {
+		t.Fatalf("supervise --once exit = %d, stderr = %s", exit, stderr.String())
+	}
+	// 恢复路径应派发 --recover-dead-driver。
+	gotArgv := waitForArgvFile(t, argvFile)
+	wantArgv := []string{"task", "run", "--run", runID, "--through-verify", "--recover-dead-driver", "--json"}
+	if !reflect.DeepEqual(gotArgv, wantArgv) {
+		t.Fatalf("fake binary argv = %v, want %v (recover-dead-driver)", gotArgv, wantArgv)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, runID) || !strings.Contains(output, "run-worker") {
+		t.Fatalf("stdout missing orphan run-worker decision record: %s", output)
+	}
+}
