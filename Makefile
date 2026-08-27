@@ -11,7 +11,7 @@ LDFLAGS := -s -w \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.buildDate=$(BUILD_DATE) \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=$(SELF_PROFILE)
 
-.PHONY: format format-check architecture-check vet lint test build vuln check ci
+.PHONY: format format-check architecture-check vet lint test build dist vuln check ci
 
 format:
 	gofmt -w $(GO_FILES)
@@ -34,6 +34,35 @@ test:
 
 build:
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/marshal
+
+# 发布资产 target 矩阵，与 scripts/install.sh 平台检测口径一致。
+DIST_DIR ?= dist
+DIST_TARGETS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64
+
+# 交叉编译四个平台的静态二进制（CGO_ENABLED=0），输出 naming 与 SHA256SUMS 格式
+# 遵循 docs/development.md「Release 资产命名约定」，即 scripts/install.sh 的下载约定。
+# 资产与校验清单默认落在被 Git 忽略的 dist/；sha256sum 缺失时回退 shasum。
+dist:
+	@rm -rf "$(DIST_DIR)"
+	@mkdir -p "$(DIST_DIR)"
+	@set -e; for t in $(DIST_TARGETS); do \
+		os="$${t%/*}"; arch="$${t#*/}"; \
+		out="$(DIST_DIR)/marshal_$(VERSION)_$${os}_$${arch}"; \
+		echo "[dist] $$os/$$arch -> $$out"; \
+		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" \
+			$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$$out" ./cmd/marshal; \
+	done
+	@set -e; cd "$(DIST_DIR)"; \
+	files="$$(LC_ALL=C ls marshal_* 2>/dev/null)"; \
+	[ -n "$$files" ] || { echo "[dist] 错误: 未找到发布资产" >&2; exit 1; }; \
+	if command -v sha256sum >/dev/null 2>&1; then \
+		for f in $$files; do sha256sum "$$f"; done > SHA256SUMS; \
+	elif command -v shasum >/dev/null 2>&1; then \
+		for f in $$files; do shasum -a 256 "$$f"; done > SHA256SUMS; \
+	else \
+		echo "[dist] 错误: 缺少 sha256sum/shasum，无法生成 SHA256SUMS" >&2; exit 1; \
+	fi; \
+	echo "[dist] 已生成 $(DIST_DIR)/SHA256SUMS"
 
 vuln:
 	$(GO) tool govulncheck ./...

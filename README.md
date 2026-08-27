@@ -69,6 +69,8 @@ cd marshal-harness
 make build
 ```
 
+升级、回滚（固定旧版本重装）与卸载的完整说明见 [docs/install-and-upgrade.md](docs/install-and-upgrade.md)。
+
 ## 最小使用流程
 
 在准备交给 Coding Agent 的 Git 仓库中：

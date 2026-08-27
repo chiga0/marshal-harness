@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已存在的 v* tag（留空则取触发 ref）
+        required: false
+        type: string
+
+# 顶层默认只读；写权限仅在 release job 内授予。
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate release tag
+        run: |
+          case "$TAG_NAME" in
+            v[0-9]*) : ;;
+            *) echo "release tag '$TAG_NAME' 不符合 v* 约定" >&2; exit 1 ;;
+          esac
+
+      # 资产命名 marshal_<version>_<os>_<arch>：version 去掉 v 前缀，
+      # 与 scripts/install.sh 及 docs/development.md 的 Release 资产命名约定一致。
+      - name: Build dist assets
+        run: |
+          make dist \
+            VERSION="${TAG_NAME#v}" \
+            COMMIT="${GITHUB_SHA}" \
+            BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ls -l dist/
+
+      - name: Verify SHA256SUMS self-consistency
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+
+      # macOS 签名/notarization 门禁（占位实现）：
+      # Issue #212 解决前 secrets 未 provision，此时不得声称资产已签名；
+      # secrets 检测用 step env 完成（secrets 不能出现在 if 表达式中）。
+      - name: Detect macOS signing secrets
+        id: signing
+        env:
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARIZATION_KEY: ${{ secrets.MACOS_NOTARIZATION_KEY }}
+        run: |
+          if [ -n "$SIGNING_IDENTITY" ] && [ -n "$NOTARIZATION_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sign and notarize macOS assets
+        if: steps.signing.outputs.available == 'true'
+        run: |
+          echo "::notice::macOS 签名 secrets 已配置。签名/notarization 为占位实现，" \
+            "完整 protected build→sign→install 链跟随 ADR 0047/0048 与 Issue #212 落地前，" \
+            "release notes 仍按 unsigned 口径标注。"
+
+      - name: Generate release notes
+        env:
+          SIGNING_AVAILABLE: ${{ steps.signing.outputs.available }}
+        run: |
+          {
+            printf 'Marshal %s\n\n' "$TAG_NAME"
+            printf '预编译资产（darwin/linux × amd64/arm64，`make dist` 交叉编译，CGO_ENABLED=0），安装与升级见 docs/install-and-upgrade.md。\n\n'
+            if [ "$SIGNING_AVAILABLE" = "true" ]; then
+              printf -- '- macOS 签名 secrets 已配置，但签名/notarization 实现仍为占位步骤（ADR 0047/0048，Issue #212），本次资产按未签名口径处理。\n'
+            else
+              printf -- '- **unsigned build（Issue #212 未 provision）**：未配置 macOS 签名/notarization secrets，本 release 全部资产为未签名构建；darwin 用户可能需要在系统设置中放行未知来源二进制，详见 docs/install-and-upgrade.md。\n'
+            fi
+            printf -- '- 校验：安装脚本会自动下载并校验 `SHA256SUMS`；离线校验可在资产目录运行 `sha256sum -c SHA256SUMS`（macOS 用 `shasum -a 256 -c SHA256SUMS`）。\n'
+          } > release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$TAG_NAME" \
+            --verify-tag \
+            --title "Marshal $TAG_NAME" \
+            --notes-file release-notes.md \
+            dist/*

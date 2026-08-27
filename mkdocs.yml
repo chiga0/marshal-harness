@@ -80,6 +80,7 @@ nav:
       - 当前可用能力: current-status.md
       - 快速开始: getting-started.md
   - 使用 Marshal:
+      - 安装、升级与回滚: install-and-upgrade.md
       - 日常使用: usage.md
       - 在 Codex 中使用: marshal-skill.md
   - 了解设计:
