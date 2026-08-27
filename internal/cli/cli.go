@@ -41,6 +41,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/sandbox/local"
 	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/supervisor"
@@ -2397,6 +2398,18 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		if bridgeErr != nil {
 			fmt.Fprintln(stderr, "运行失败：sandbox executor bridge 初始化失败。")
 			return ExitFailure
+		}
+		// ADR 0052 §1.2 + ADR 0055：当 provider 是 Local runner 时注入
+		// staged transcript artifact 回读面，使实现 LaunchCapable 的 Adapter
+		// （当前为 pi）在 allocation 中被承载执行。
+		if runner, ok := embeddedRuntime.Provider().(*local.LocalRunner); ok {
+			bridge.WithTranscriptSource(func(allocationID, artifactID string) ([]byte, error) {
+				dir, err := runner.AllocationDirectory(allocationID)
+				if err != nil {
+					return nil, err
+				}
+				return os.ReadFile(filepath.Join(dir, filepath.FromSlash(artifactID)))
+			})
 		}
 		workerRunner = bridge.RunWorker
 	}

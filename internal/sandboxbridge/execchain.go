@@ -1,0 +1,296 @@
+package sandboxbridge
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/chiga0/marshal-harness/internal/adapter/pi"
+	"github.com/chiga0/marshal-harness/internal/agentruntime"
+	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/sandbox"
+)
+
+// LaunchCapable 是桥对接「Launch 可拆分 Adapter」的最小接口（ADR 0052
+// §1.2 + ADR 0055）：实现者提供不可变启动计划与由外部执行驱动的完成
+// 管线。未实现本接口的 Adapter 由桥自动回退 legacy Run 路径。
+type LaunchCapable interface {
+	PrepareLaunch(ctx context.Context, record domain.Record) (*pi.LaunchPlan, error)
+	CompleteLaunch(ctx context.Context, plan *pi.LaunchPlan, transcriptJSONL []byte, stdoutTruncated bool, stderrBytes []byte, started, completed time.Time, exitCode int, signal string, ctxErr error) (domain.Record, error)
+}
+
+// TranscriptSource 从 provider 形态读取 staged transcript artifact 的原始
+// bytes。v1.0 Local 形态由 CLI 注入基于 AllocationDirectory 的实现；
+// 测试注入等价闭包。返回错误 fail closed。
+type TranscriptSource func(allocationID, artifactID string) ([]byte, error)
+
+// runWorkerExecChain 是 ADR 0052 §1.2 的 allocation-carried 执行路径：
+// PrepareLaunch（Adapter 预计算）→ Provision（声明 WorkDir/Env 白名单快照）
+// → Stage（冻结工单与 prompt 内容寻址入账）→ Exec（agent 进程实际运行于
+// allocation，TranscriptPolicy 有界收成）→ transcript 回读并 digest 核对
+// → CompleteLaunch（同一 Adapter decode/finalize 管线接管 WorkerResult 与
+// 全部控制产物）。任何失败 fail closed；allocation 一定 Terminate。
+func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, request domain.Record, view workerRequestView) (domain.Record, error) {
+	if b.transcriptSource == nil {
+		return domain.Record{}, errors.New("sandboxbridge: exec-chain requires a transcript source")
+	}
+	plan, err := capable.PrepareLaunch(ctx, request)
+	if err != nil {
+		return domain.Record{}, fmt.Errorf("sandboxbridge: prepare launch: %w", err)
+	}
+
+	requirements, err := domain.SandboxRequirementsFromLegacy(view.ExecutionProfile)
+	if err != nil {
+		return domain.Record{}, fmt.Errorf("sandboxbridge: %w", err)
+	}
+	profileDigest, err := deriveProfileDigest(view)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	if err := validatePlanAgainstView(plan, view); err != nil {
+		return domain.Record{}, err
+	}
+
+	spec, err := newExecChainSpec(view, profileDigest)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	specDigest, err := spec.Digest()
+	if err != nil {
+		return domain.Record{}, fmt.Errorf("sandboxbridge: %w", err)
+	}
+	requestedAllocation := allocDigestOf(specDigest)
+	const attemptGeneration = int64(1)
+	fencingToken := fencingDigestOf(view.AdapterID, requestedAllocation, attemptGeneration)
+
+	provisionIdentity, err := identity(view, requestedAllocation, attemptGeneration, fencingToken, "command-provision")
+	if err != nil {
+		return domain.Record{}, err
+	}
+	provisionReceipt, err := b.provider.Provision(ctx, sandbox.ProvisionRequest{
+		Identity:             provisionIdentity,
+		Requirements:         requirements,
+		AllowedStoreIds:      []string{},
+		WorkDirAllowlist:     []string{plan.WorkingDirectory},
+		EnvironmentAllowlist: envKeyAllowlist(plan.Environment),
+	})
+	if err != nil {
+		return domain.Record{}, fmt.Errorf("sandboxbridge: provision failed: %w", err)
+	}
+	allocationID := provisionReceipt.Allocation.AllocationId
+	generation := provisionReceipt.Allocation.Generation
+
+	if controlRoot := controlRootOf(request.Data); controlRoot != "" {
+		rec := AllocationRecord{
+			Schema:              allocationRecordSchema,
+			TaskID:              view.TaskID,
+			RunID:               view.RunID,
+			AttemptID:           view.AttemptID,
+			AllocationID:        allocationID,
+			Generation:          generation,
+			FencingToken:        fencingToken,
+			RequirementsProfile: view.ExecutionProfile,
+			RecordedAt:          b.now().UTC().Format(time.RFC3339),
+			OwnerState:          "running",
+		}
+		if recErr := recordAllocation(controlRoot, rec); recErr == nil {
+			b.registry.add(filepath.Dir(controlRoot))
+		}
+	}
+	defer func() {
+		termIdentity, idErr := identity(view, allocationID, generation, fencingToken, "command-terminate")
+		if idErr != nil {
+			return
+		}
+		_, _ = b.provider.Terminate(ctx, sandbox.TerminateRequest{Identity: termIdentity, AllocationId: allocationID})
+	}()
+
+	if err := b.stageControlInputs(ctx, view, request, allocationID, generation, fencingToken, plan.ControlRoot); err != nil {
+		return domain.Record{}, err
+	}
+
+	// 与 legacy adapter.Run 相同的 attempt 级截止：外部 ctx 由 bridge 叠加，
+	// provider 侧 TimeoutSeconds 为同一数值的保底 kill。
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(plan.AttemptTimeoutSeconds)*time.Second)
+	defer cancel()
+
+	started := b.now().UTC()
+	execIdentity, err := identity(view, allocationID, generation, fencingToken, "command-exec")
+	if err != nil {
+		return domain.Record{}, err
+	}
+	execReceipt, execErr := b.provider.Exec(runCtx, sandbox.ExecRequest{
+		Identity:     execIdentity,
+		AllocationId: allocationID,
+		Command:      append([]string(nil), plan.ExecArgv...),
+		WorkingDir:   plan.WorkingDirectory,
+		Environment:  envMap(plan.Environment),
+		TranscriptPolicy: sandbox.TranscriptPolicy{
+			MaxBytes:   plan.MaxOutputBytes,
+			ArtifactId: transcriptArtifactID,
+		},
+		TimeoutSeconds: plan.AttemptTimeoutSeconds,
+	})
+	completed := b.now().UTC()
+	if execErr != nil && execReceipt == nil {
+		return domain.Record{}, fmt.Errorf("sandboxbridge: exec failed: %w", execErr)
+	}
+
+	transcript, err := b.readAndVerifyTranscript(allocationID, execReceipt)
+	if err != nil {
+		return domain.Record{}, err
+	}
+
+	exitCode := 0
+	signal := ""
+	if execReceipt != nil {
+		exitCode = execReceipt.ExitCode
+		if execReceipt.Status == sandbox.ExecutionKilled {
+			signal = "SIGKILL"
+		}
+	}
+	ctxErr := runCtx.Err()
+	if ctxErr != nil && signal == "" {
+		signal = "timeout"
+	}
+	return capable.CompleteLaunch(ctx, plan, transcript, false, nil, started, completed, exitCode, signal, ctxErr)
+}
+
+// readAndVerifyTranscript 读取 staged artifact 并与 provider 重算 digest
+// 核对（一次内容寻址往返；provider digest 为权威一侧，bytes 为读取一侧，
+// 不一致立刻 fail closed）。
+func (b *Bridge) readAndVerifyTranscript(allocationID string, receipt *sandbox.ExecReceipt) ([]byte, error) {
+	raw, err := b.transcriptSource(allocationID, transcriptArtifactID)
+	if err != nil {
+		return nil, fmt.Errorf("sandboxbridge: transcript readback: %w", err)
+	}
+	if receipt == nil || receipt.TranscriptDigest == "" {
+		return nil, errors.New("sandboxbridge: exec receipt lacks transcript digest")
+	}
+	if got := canonical.DigestBytes(raw); got != receipt.TranscriptDigest {
+		return nil, fmt.Errorf("sandboxbridge: transcript digest mismatch: readback %q, receipt %q", got, receipt.TranscriptDigest)
+	}
+	return raw, nil
+}
+
+// stageControlInputs 把 worker-request 与 controlRoot 内的冻结输入原样
+// 内容寻址入账（消费前后由 provider 重算 digest）。
+func (b *Bridge) stageControlInputs(ctx context.Context, view workerRequestView, request domain.Record, allocationID string, generation int64, fencingToken, controlRoot string) error {
+	stageIdentity, err := identity(view, allocationID, generation, fencingToken, "command-stage")
+	if err != nil {
+		return err
+	}
+	inputs := []sandbox.StageInput{{
+		InputId:        "worker-request",
+		DeclaredSHA256: canonical.DigestBytes(request.Data),
+		Inline:         append([]byte(nil), request.Data...),
+	}}
+	if controlRoot != "" {
+		for _, name := range []string{"input/task-spec.json", "input/prompt.md"} {
+			raw, readErr := os.ReadFile(filepath.Join(controlRoot, name))
+			if readErr != nil || len(raw) == 0 {
+				continue
+			}
+			inputs = append(inputs, sandbox.StageInput{
+				InputId:        name,
+				DeclaredSHA256: canonical.DigestBytes(raw),
+				Inline:         raw,
+			})
+		}
+	}
+	if _, err := b.provider.Stage(ctx, sandbox.StageRequest{
+		Identity:     stageIdentity,
+		AllocationId: allocationID,
+		Inputs:       inputs,
+	}); err != nil {
+		return fmt.Errorf("sandboxbridge: stage failed: %w", err)
+	}
+	return nil
+}
+
+// validatePlanAgainstView 复核 PrepareLaunch 的私有绑定与冻结请求一致
+// （不放行跨 attempt 复用的 plan）。
+func validatePlanAgainstView(plan *pi.LaunchPlan, view workerRequestView) error {
+	if plan == nil {
+		return errors.New("sandboxbridge: nil launch plan")
+	}
+	if len(plan.ExecArgv) == 0 {
+		return errors.New("sandboxbridge: launch plan has empty argv")
+	}
+	if plan.WorkingDirectory == "" || !filepath.IsAbs(plan.WorkingDirectory) {
+		return fmt.Errorf("sandboxbridge: launch plan working directory %q is not absolute", plan.WorkingDirectory)
+	}
+	if plan.AttemptTimeoutSeconds <= 0 {
+		return fmt.Errorf("sandboxbridge: launch plan timeout %d must be positive", plan.AttemptTimeoutSeconds)
+	}
+	if plan.MaxOutputBytes <= 0 {
+		return fmt.Errorf("sandboxbridge: launch plan max output bytes %d must be positive", plan.MaxOutputBytes)
+	}
+	if strings.TrimSpace(plan.ControlRoot) == "" || !filepath.IsAbs(plan.ControlRoot) {
+		return fmt.Errorf("sandboxbridge: launch plan control root %q is not absolute", plan.ControlRoot)
+	}
+	return nil
+}
+
+func envKeyAllowlist(environment []string) []string {
+	keys := make([]string, 0, len(environment))
+	for _, kv := range environment {
+		if i := strings.IndexByte(kv, '='); i > 0 && !credentialKey(kv[:i]) {
+			keys = append(keys, kv[:i])
+		}
+	}
+	return keys
+}
+
+// credentialKey 与 SPI 的凭据语义键一致判定（粗粒度子串）。
+func credentialKey(key string) bool {
+	l := strings.ToLower(key)
+	for _, token := range []string{"key", "token", "secret", "password", "passwd", "credential"} {
+		if strings.Contains(l, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func envMap(environment []string) map[string]string {
+	out := make(map[string]string, len(environment))
+	for _, kv := range environment {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			out[kv[:i]] = kv[i+1:]
+		}
+	}
+	return out
+}
+
+// newExecChainSpec 构造执行链的 AgentLaunchSpec（身份源与 legacy 路径
+// 一致：adapter 身份 + capability digest 作为 executable 绑定）。
+func newExecChainSpec(view workerRequestView, profileDigest string) (agentruntime.AgentLaunchSpec, error) {
+	spec, err := agentruntime.NewAgentLaunchSpec(
+		view.AdapterID, "capability-bound",
+		view.RunID, view.AttemptID,
+		view.AdapterID, view.CapabilityDigest,
+		view.WorktreePath,
+		nil, nil,
+		profileDigest, "",
+	)
+	if err != nil {
+		return agentruntime.AgentLaunchSpec{}, fmt.Errorf("sandboxbridge: %w", err)
+	}
+	return spec, nil
+}
+
+const transcriptArtifactID = "marshal-transcript"
+
+func allocDigestOf(specDigest string) string {
+	return canonical.DigestBytes([]byte("sandboxbridge:execchain:allocation:" + specDigest))
+}
+
+func fencingDigestOf(adapterID, allocationID string, generation int64) string {
+	return canonical.DigestBytes([]byte(adapterID + ":" + allocationID + ":" + fmt.Sprint(generation)))
+}

@@ -47,10 +47,13 @@ type Outcome struct {
 // Bridge 把 legacy WorkerAdapter 包在绑定 allocation/lease 身份的执行链中。
 // 每次 RunWorker 新建并终结一个 allocation；并发安全。registry 会进程内
 // 收集已 record 的 attempt 目录，供 SweepRegistered 对账孤儿。
+// transcriptSource 非空时，实现 LaunchCapable 的 Adapter 走 ADR 0052 §1.2
+// allocation-carried 执行路径。
 type Bridge struct {
-	provider sandbox.SandboxProvider
-	registry *allocRegistry
-	now      func() time.Time
+	provider         sandbox.SandboxProvider
+	registry         *allocRegistry
+	now              func() time.Time
+	transcriptSource TranscriptSource
 }
 
 // NewBridge 构造 Bridge；nil provider fail closed。
@@ -61,9 +64,20 @@ func NewBridge(provider sandbox.SandboxProvider) (*Bridge, error) {
 	return &Bridge{provider: provider, registry: &allocRegistry{}, now: time.Now}, nil
 }
 
+// WithTranscriptSource 注入 staged transcript artifact 的回读实现（v1.0
+// Local 形态基于 AllocationDirectory；测试注入等价闭包）。
+func (b *Bridge) WithTranscriptSource(source TranscriptSource) *Bridge {
+	b.transcriptSource = source
+	return b
+}
+
 // RunWorker 实现 execution.Input.WorkerRunner。成功时原样返回 adapter 的
 // WorkerResult 记录；失败时返回错误（execution 的既有失败归一化与
 // fail-closed 持久化链继续适用），且 allocation 一定被 Terminate。
+//
+// 路径选择：adapter 实现 LaunchCapable 且桥配置了 TranscriptSource →
+// allocation-carried 执行链（ADR 0052 §1.2）；否则 legacy 记账式路径
+// （R5 兼容形态：allocation 身份绑定 + adapter.Run）。
 func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error) {
 	if adapter == nil {
 		return domain.Record{}, errors.New("sandboxbridge: adapter must not be nil")
@@ -75,7 +89,14 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 	if view.AdapterID != "" && view.AdapterID != adapter.ID() {
 		return domain.Record{}, fmt.Errorf("sandboxbridge: request adapterId %q does not match injected adapter %q", view.AdapterID, adapter.ID())
 	}
+	if capable, ok := adapter.(LaunchCapable); ok && b.transcriptSource != nil {
+		return b.runWorkerExecChain(ctx, capable, request, view)
+	}
+	return b.runWorkerLegacy(ctx, adapter, request, view)
+}
 
+// runWorkerLegacy 是 R5 兼容形态的执行：allocation 身份绑定 + adapter.Run。
+func (b *Bridge) runWorkerLegacy(ctx context.Context, adapter port.WorkerAdapter, request domain.Record, view workerRequestView) (domain.Record, error) {
 	requirements, err := domain.SandboxRequirementsFromLegacy(view.ExecutionProfile)
 	if err != nil {
 		return domain.Record{}, fmt.Errorf("sandboxbridge: %w", err)
