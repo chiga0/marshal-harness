@@ -508,6 +508,31 @@ func TestAttemptAuthorityLaunchCrashProjectionAndReplay(t *testing.T) {
 	}
 }
 
+func TestSupervisorOutcomeReferenceProcessStartedExactReplay(t *testing.T) {
+	store, _ := OpenResultIngressStore(t.TempDir())
+	started := openFreshStartedAttempt(t, store)
+	owner, found, err := store.OpenOwner(started.Owner.Scope)
+	if err != nil || !found {
+		t.Fatalf("owner found=%v err=%v", found, err)
+	}
+	run := attemptTestRunAuthority(started.Identity)
+	transition := AttemptTransition{
+		Kind:                            AttemptTransitionProcessStarted,
+		Identity:                        started.Identity,
+		CommandID:                       started.CommandID,
+		ObservedAt:                      started.ObservedAt,
+		Process:                         started.Process,
+		LaunchMaterialsDigest:           started.LaunchMaterialsDigest,
+		AgentLaunchSpecDigest:           started.AgentLaunchSpecDigest,
+		SupervisorBindOutcomeFactDigest: started.ProcessStartedBindOutcomeDigest,
+		SupervisorOutcomeFactDigest:     started.ProcessStartedOutcomeDigest,
+	}
+	replay, err := store.AppendProcessStarted(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, 0, "", AttemptAuthorizationRequest{Identity: started.Identity, CurrentRunAuthority: run}, started.Owner, transition)
+	if err != nil || replay.Appended || replay.TransitionDigest != started.ProcessStartedDigest || replay.State.HeadDigest != started.HeadDigest {
+		t.Fatalf("process-started reference replay=%#v err=%v", replay, err)
+	}
+}
+
 func TestOpenedLaunchAndProcessFactsRequireHeldCurrentRunAuthority(t *testing.T) {
 	store, _ := OpenResultIngressStore(t.TempDir())
 	id := attemptTestIdentity()
@@ -1155,6 +1180,11 @@ func TestCleanupAuthorizationRejectsWrongTupleBindingOrchestratorAndRelease(t *t
 	replayedTerminal, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run, calls: &verifierCalls}, barrier.Revision, barrier.HeadDigest, request, terminalTransition)
 	if err != nil || replayedTerminal.Appended || replayedTerminal.State.HeadDigest != terminal.HeadDigest || replayedTerminal.TransitionDigest != terminal.ProcessTerminalDigest || verifierCalls != 1 {
 		t.Fatalf("exact cleanup replay=%#v calls=%d err=%v", replayedTerminal, verifierCalls, err)
+	}
+	forgedTerminal := terminalTransition
+	forgedTerminal.SupervisorOutcomeFactDigest = attemptTestDigest("wrong-terminal-outcome")
+	if _, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, barrier.Revision, barrier.HeadDigest, request, forgedTerminal); !errors.Is(err, ErrCleanupUnauthorized) {
+		t.Fatalf("cleanup replay with wrong supervisor outcome err=%v", err)
 	}
 	request.Operation = CleanupTerminate
 	terminal, terminateReceiptDigest := appendTestAcceptedTerminate(t, store, terminal)
