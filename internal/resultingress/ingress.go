@@ -268,6 +268,10 @@ type Ingress struct {
 	quarantine []QuarantineRecord
 	// clock allows deterministic testing without real time reads.
 	clock func() time.Time
+	// store is the optional durable replay/quarantine/idempotency append-only
+	// ledger（R2 纵切）. 非空时 Admit 成功与每次 quarantine 都先落账，使跨进程
+	// 重放/重复送达可被机械检测；nil 时为纯内存（与以往行为、既有测试一致）。
+	store *ingressDurableStore
 }
 
 // NewIngress creates an Ingress backed by the provided fake ledger binding.
@@ -298,6 +302,39 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		admitted: make(map[string]admittedEntry),
 		clock:    time.Now,
 	}, nil
+}
+
+// NewDurableIngress 创建一个由耐久 replay/quarantine/idempotency 账本（R2
+// 纵切）支撑的 Ingress：先用 NewIngress 的 exact binding 校验门禁，再从
+// store 确定性重放已采用的 admitted map / ledgerSequence / quarantine，
+// 使跨进程重放或重复送达被机械检测。账本创建/恢复失败一律 fail closed。
+// binding 校验与 NewIngress 完全一致。
+func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingress, error) {
+	in := &Ingress{
+		ledger:   binding,
+		admitted: make(map[string]admittedEntry),
+		clock:    time.Now,
+		store:    store,
+	}
+	if store == nil {
+		return nil, errors.New("resultingress: durable ingress requires a non-nil store")
+	}
+	if store.requireBound() != nil {
+		return nil, errors.New("resultingress: durable ingress store must be bound to a durable directory")
+	}
+	if binding.LeaseID == "" || binding.AttemptID == "" || binding.AllocationID == "" || binding.FencingToken == "" || binding.RegistrationID == "" {
+		return nil, errors.New("resultingress: LedgerBinding identity fields must not be empty")
+	}
+	if err := requireDigest("SnapshotDigest", binding.SnapshotDigest); err != nil {
+		return nil, fmt.Errorf("resultingress: LedgerBinding.SnapshotDigest: %v", err)
+	}
+	if err := requireDigest("EvidenceDigest", binding.EvidenceDigest); err != nil {
+		return nil, fmt.Errorf("resultingress: LedgerBinding.EvidenceDigest: %v", err)
+	}
+	if err := store.recoverInto(in); err != nil {
+		return nil, err
+	}
+	return in, nil
 }
 
 // Admit checks the DRC against the current ledger binding and, if valid,
@@ -435,6 +472,14 @@ func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (
 		LedgerSequence:   i.ledgerSequence,
 		IdempotentReplay: false,
 	}
+	if i.store != nil {
+		// 成功接纳先将幂等权威锚点落账，再写入进程内 admitted——崩溃/重启或
+		// 重复送达时，跨进程的 replay 检测由该账本支持。落账失败即 reject。
+		if err := i.store.RecordAdmitted(key, envelope.ResultDigest, factDigest, i.ledgerSequence); err != nil {
+			i.recordQuarantine(ReasonMalformed, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, fmt.Errorf("resultingress: record admitted to durable store: %w", err)
+		}
+	}
 	i.admitted[key] = admittedEntry{fact: fact, envelopeDigest: envelope.ResultDigest}
 	return fact, nil
 }
@@ -456,6 +501,11 @@ func (i *Ingress) recordQuarantine(reason RejectionReason, drcDigest, envelopeDi
 		EnvelopeDigest: envelopeDigest,
 		ObservedAt:     at,
 	})
+	if i.store != nil {
+		// 写出器由调用方（Admit）持锁；落账失败会让准确整体 admission reject，
+		// 见调用路径的处理。best-effort 记录，绝不静默丢弃失败。
+		_ = i.store.RecordQuarantined(reason, drcDigest, envelopeDigest, at)
+	}
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
