@@ -44,7 +44,7 @@ Marshal 把这些问题交给确定性的控制系统，而不是让 Agent 自�
 - 使用独立凭据创建 GitHub Draft PR；
 - 中断后的检查、恢复和安全清理。
 
-`marshal-server`、Sandbox SPI、ResultIngress 和恢复组件已经存在。2026-08-28 的候选链已用固定 Pi `0.84.3` 二进制在锁定 sourceHead `8df8b88` 上走到 ResultIngress、独立 `verify`、跨进程恢复和正式 ReviewPacket/`REVIEW_PENDING`；但它还没有导入独立 ReviewDecision 并进入 `ACCEPTED`，当前主线也仍待重跑同一 live canary。因此这是一条接近闭环的候选证据，不是 v1.0 集成或发布完成。详细状态见[当前可用能力](https://chiga0.github.io/marshal-harness/current-status/)。
+`marshal-server`、Sandbox SPI、ResultIngress 和恢复组件已经存在。2026-08-28 的前置 Pi `0.84.3` canary 在锁定 sourceHead `d4b9647` 上以单 Attempt 通过 9 项 Gate，到达正式 ReviewPacket/`REVIEW_PENDING`；它没有导入独立 ReviewDecision，也没有进入 `ACCEPTED`。因此这是发布前证据，不是 v1.0 集成或发布完成。详细状态见[当前可用能力](https://chiga0.github.io/marshal-harness/current-status/)。
 
 ## v1.0 发布目标
 
@@ -54,10 +54,10 @@ Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、全部 Prov
 
 ### 2026-08-28 发布检查点
 
-- Pi `0.84.3` fixed-bin strict E2E 的最新 live 证据绑定锁定 sourceHead `8df8b88`，已通过到 `REVIEW_PENDING`，证明真实 Agent result bytes 可经过 ResultIngress、独立验证、ReviewPacket 和跨进程恢复；相关实现已合入 `main@5d5c426`，R5 退出前须在当前主线重跑，并用现有 `task review --decision` 导入独立 ReviewDecision 到 `ACCEPTED`。
-- Qwen Code `0.22.0` 已通过 macOS ordinary-user workspace live adapter 验证，可作为本地兼容 Worker；它不是 `LaunchCapable`，不能满足 production profile 或 hardened authority 门禁。
-- durable agent authority、fixed-bin strict E2E 与 RC identity/install 聚合已由独立 reviewer 判定 P0/P1 为零，并于 `main@5d5c426` 合入、推送；`marshal-server` start/status/recovery controller 尚在聚合返工，ResultIngress 到 Run journal 的崩溃原子性仍在收口，因此 R2–R4 保持 `COMPONENT`。
-- RC artifact identity/install 切片已获独立 `APPROVED`，但尚未发布任何 RC。稳定 `v1.*` 仍由 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 的 macOS signing/notarization 和 Linux stable release gate 阻断；当前只允许证据完整的 unsigned prerelease。
+- Pi `0.84.3` fixed-bin canary 绑定 `sourceHead=d4b9647`，单 Attempt 通过 9 项 Gate 到 `REVIEW_PENDING`。该前置 canary 不是当前 `main` 终验，也不是 `ACCEPTED`。
+- durable server run controller 已于 `main@44ee8c9` 合入；受支持的 production selector 已于 `main@d4b9647` 收紧，production profile 只放行 `LaunchCapable` Provider，ordinary workspace Adapter 不再静默降级。
+- ResultIngress admission→worker-result→Run journal 的 crash-atomic 持久化与恢复已于 `main@912f659` 合入。[ADR 0056](docs/adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受，但 Darwin process observation/terminalization 实现仍开放，因此 R2–R5 保持 `COMPONENT`。
+- unsigned RC 的构建和验证路径可行，但尚未发布任何 RC。稳定 `v1.*` 仍由 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 的 macOS signing/notarization 和 Linux stable release gate 阻断。
 
 ## 安装
 
