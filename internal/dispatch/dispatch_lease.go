@@ -22,12 +22,13 @@ const (
 	LeaseStateActive    LeaseState = "active"
 	LeaseStateExpired   LeaseState = "expired"
 	LeaseStateCancelled LeaseState = "cancelled"
+	LeaseStateCompleted LeaseState = "completed"
 )
 
 // Validate rejects every value outside the closed enumeration.
 func (state LeaseState) Validate() error {
 	switch state {
-	case LeaseStateOffered, LeaseStateClaimed, LeaseStateActive, LeaseStateExpired, LeaseStateCancelled:
+	case LeaseStateOffered, LeaseStateClaimed, LeaseStateActive, LeaseStateExpired, LeaseStateCancelled, LeaseStateCompleted:
 		return nil
 	default:
 		return fmt.Errorf("dispatch: unknown leaseState %q", string(state))
@@ -37,7 +38,7 @@ func (state LeaseState) Validate() error {
 // IsTerminal reports whether the state ends the lease: expired and cancelled
 // leases never return to any in-flight state.
 func (state LeaseState) IsTerminal() bool {
-	return state == LeaseStateExpired || state == LeaseStateCancelled
+	return state == LeaseStateExpired || state == LeaseStateCancelled || state == LeaseStateCompleted
 }
 
 // CancelReason is the closed enumeration of machine-readable reasons that end
@@ -65,6 +66,26 @@ func (reason CancelReason) Validate() error {
 		return nil
 	default:
 		return fmt.Errorf("dispatch: unknown cancelReason %q", string(reason))
+	}
+}
+
+// CompletionReason is the closed normal eligibility terminal set. It is
+// deliberately disjoint from security/expiry CancelReason.
+type CompletionReason string
+
+const (
+	CompletionReasonAttemptCompleted CompletionReason = "attempt-completed"
+	CompletionReasonAttemptFailed    CompletionReason = "attempt-failed"
+	CompletionReasonAttemptAborted   CompletionReason = "attempt-aborted"
+	CompletionReasonOrphanReconciled CompletionReason = "orphan-reconciled"
+)
+
+func (reason CompletionReason) Validate() error {
+	switch reason {
+	case CompletionReasonAttemptCompleted, CompletionReasonAttemptFailed, CompletionReasonAttemptAborted, CompletionReasonOrphanReconciled:
+		return nil
+	default:
+		return fmt.Errorf("dispatch: unknown completionReason %q", string(reason))
 	}
 }
 
@@ -96,6 +117,7 @@ type DispatchLease struct {
 	ExpiresAt                        string                         `json:"expiresAt"`
 	LeaseState                       LeaseState                     `json:"leaseState"`
 	CancelReason                     CancelReason                   `json:"cancelReason"`
+	CompletionReason                 CompletionReason               `json:"completionReason,omitempty"`
 	CreatedAt                        string                         `json:"createdAt"`
 	LeaseDigest                      string                         `json:"leaseDigest"`
 }
@@ -182,6 +204,70 @@ func (lease DispatchLease) Expire(now time.Time) (DispatchLease, error) {
 		return DispatchLease{}, fmt.Errorf("dispatch: expire: %w", err)
 	}
 	return next, nil
+}
+
+// completeFromAttemptProjection is intentionally package-private: a caller
+// cannot independently decide normal eligibility completion. LeaseLedger may
+// derive it only while appending/replaying a bound Attempt authority
+// projection.
+func (lease DispatchLease) completeFromAttemptProjection(reason CompletionReason) (DispatchLease, error) {
+	if err := lease.Validate(); err != nil {
+		return DispatchLease{}, fmt.Errorf("dispatch: complete projection: %w", err)
+	}
+	if err := reason.Validate(); err != nil {
+		return DispatchLease{}, fmt.Errorf("dispatch: complete projection: %w", err)
+	}
+	if lease.LeaseState.IsTerminal() {
+		return DispatchLease{}, fmt.Errorf("dispatch: complete projection: a %s lease is terminal", lease.LeaseState)
+	}
+	next := lease
+	next.LeaseState = LeaseStateCompleted
+	next.CancelReason = ""
+	next.CompletionReason = reason
+	next.Generation++
+	if err := sealLease(&next); err != nil {
+		return DispatchLease{}, err
+	}
+	return next, nil
+}
+
+// terminalFromAttemptProjection derives exactly the terminal union already
+// authorized by the Attempt barrier. In particular expiry does not read the
+// clock again and cancellation cannot substitute a different reason.
+func (lease DispatchLease) terminalFromAttemptProjection(state LeaseState, completionReason CompletionReason, cancelReason CancelReason) (DispatchLease, error) {
+	if err := lease.Validate(); err != nil {
+		return DispatchLease{}, fmt.Errorf("dispatch: terminal projection: %w", err)
+	}
+	if lease.LeaseState.IsTerminal() {
+		return DispatchLease{}, fmt.Errorf("dispatch: terminal projection: a %s lease is terminal", lease.LeaseState)
+	}
+	switch state {
+	case LeaseStateCompleted:
+		if cancelReason != "" {
+			return DispatchLease{}, fmt.Errorf("dispatch: completed projection carries cancelReason")
+		}
+		return lease.completeFromAttemptProjection(completionReason)
+	case LeaseStateCancelled:
+		if completionReason != "" {
+			return DispatchLease{}, fmt.Errorf("dispatch: cancelled projection carries completionReason")
+		}
+		return lease.Cancel(cancelReason)
+	case LeaseStateExpired:
+		if completionReason != "" || cancelReason != "" {
+			return DispatchLease{}, fmt.Errorf("dispatch: expired projection carries a reason")
+		}
+		next := lease
+		next.LeaseState = LeaseStateExpired
+		next.CancelReason = ""
+		next.CompletionReason = ""
+		next.Generation++
+		if err := sealLease(&next); err != nil {
+			return DispatchLease{}, err
+		}
+		return next, nil
+	default:
+		return DispatchLease{}, fmt.Errorf("dispatch: projection state %q is not terminal", state)
+	}
 }
 
 // ValidateLeaseFencing is the isolated fencing adjudication point: generation
@@ -298,10 +384,22 @@ func (lease DispatchLease) validateContent() error {
 		if err := lease.CancelReason.Validate(); err != nil {
 			return fmt.Errorf("dispatch: a cancelled lease must carry a closed cancelReason: %w", err)
 		}
+		if lease.CompletionReason != "" {
+			return fmt.Errorf("dispatch: completionReason must stay empty on cancelled leaseState")
+		}
 		return nil
 	}
 	if lease.CancelReason != "" {
 		return fmt.Errorf("dispatch: cancelReason must stay empty outside the cancelled leaseState")
+	}
+	if lease.LeaseState == LeaseStateCompleted {
+		if err := lease.CompletionReason.Validate(); err != nil {
+			return fmt.Errorf("dispatch: a completed lease must carry a closed completionReason: %w", err)
+		}
+		return nil
+	}
+	if lease.CompletionReason != "" {
+		return fmt.Errorf("dispatch: completionReason must stay empty outside the completed leaseState")
 	}
 	return nil
 }

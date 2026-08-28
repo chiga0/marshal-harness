@@ -18,7 +18,7 @@
 
 ## Darwin ordinary-user 进程生命周期合同审计（2026-08-28）
 
-代码审计确认：crash-atomic ResultIngress transaction 已随 `main@912f659` 合入，durable DispatchLease ledger 与 server run controller 也已存在；但 Local allocation/process projection、Core-owned launch/handle、terminalization 对同一 admission CAS 的复用、eligibility terminal 与 cleanup completion 仍未形成同一耐久纵切。[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受；实现与生产接线保持开放，R2–R5 不升级。
+代码审计确认：crash-atomic ResultIngress transaction 已随 `main@912f659` 合入，durable DispatchLease ledger 与 server run controller 也已存在；但 Local allocation/process projection、Core-owned launch/handle、terminalization 对同一 admission CAS 的复用、eligibility terminal 与 cleanup completion 仍未形成同一耐久纵切。[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受；实现与生产接线保持开放，R2–R5 不升级。[ADR 0057](adr/0057-durable-local-allocation-recovery-and-production-composition.md) 已于 `main@9aff8cc` 接受，但只冻结 durable allocation recovery 与唯一 production composition 合同；RB3 尚未实现该合同，本次接受不把任何能力从 `COMPONENT` 升级为 `INTEGRATED`。
 
 | Finding | 等级 | 状态 | 处置 / 关闭条件 |
 | --- | --- | --- | --- |
@@ -28,6 +28,20 @@
 | `V1-LEASE-NORMAL-TERMINAL-FACT` | P1 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 将 Dispatch eligibility 与 cleanup completion 正交：normal `completed` 及既有 `cancelled|expired` 均立即 generation bump/fence；cleanup-only binding 保留到独立 `cleanup-completed`，之后 `lease-released` 只释放该 binding，不是 lease state。关闭实现须保持旧 ledger replay、终态/CAS 冲突 fail closed，并证明异常路径不会提前释放 cleanup authority。 |
 
 Mac ordinary-user 只证明在可信单用户宿主上的可恢复进程记账；它不证明恶意 workload 不逃逸，不替代 Linux/hardened authority，也不解除稳定发布的签名/notarization 门禁。
+
+### ADR 0056 RB1：单一 Attempt authority 组件 checkpoint（2026-08-28）
+
+RB1 在 `internal/resultingress` 的同一物理 append-only 文件中加入 per-Attempt `revision/head` CAS 链，将 `attempt-opened → launch-authorized → process-started → result-admitted|terminalization-barrier → cleanup` 收敛为单一权威序列。逻辑唯一键固定为 `AuthorityNamespaceID + taskId + runId + attemptId`；`attempt-opened` 冻结 DRC namespace ref、allocation/lease、dispatch generation、fencing token digest、当前 orchestrator 与 Run authority digest，以上任一漂移只能与既有逻辑 Attempt 冲突，不能创建 sibling chain。`attempt-opened`、`launch-authorized`、`process-started` 和 barrier 都要求 current Run authority verifier 在完整 replay/read/CAS 期间保持 authority，verifier 重复调用 callback 会 fail closed 且 callback 最多执行一次。`launch-authorized` 后、`process-started` 前的耐久投影明确为 `launch-uncertain`，不能把“未看到进程”解释成“确定未 launch”。
+
+本组件还使所有 ResultIngress kind（包括 `checkpoint`、`heartbeat`、`log`）在 barrier 后进入 quarantine；admission 与 barrier 通过同一 store lock、同一物理日志和同一 per-Attempt CAS 判序。barrier 只把已提交的 `WorkerResult` 视为业务结果，后续辅助 admission 不会覆盖它；没有 `WorkerResult` 时则明确关闭空的业务结果槽。barrier 同一 CAS 原子绑定业务 admission（或空 closure）、terminal generation bump、封闭的 `completed|cancelled|expired` eligibility union（`security-critical-revoke` 属于 `cancelled` 闭集）与非 bearer 的 cleanup binding fact，异常终态不会被伪装成 `completed`。
+
+governed DRC 必须逐字段匹配冻结 tuple 和 `process-started.commandId`；多候选、命令漂移或身份漂移都确定性拒绝，不能依赖 Go map 遍历选择。`ProcessObservation` 要求 cwd 为绝对规范目录、executable 为绝对规范普通文件，文件类型使用原始 POSIX `S_IFMT` 语义；`observedAt` 必须是 canonical UTC RFC3339Nano 且不早于 process birth。
+
+cleanup 使用时必须同时经过外部 current Run authority verifier、精确 tuple、terminal generation、closed operation allowlist 与未 release 状态；单独持有 binding digest 不构成权限。真实 side effect 必须放在 `WithAuthorizedCleanup` 的 held-authority callback 内，独立 `AuthorizeCleanup` 只是无授权效力的 preflight。权限按 phase 收窄：process terminal 前只允许对已确认进程 `Signal`；process terminal 后永久关闭 `Signal`，仅在 allocation terminal 前允许独立的 Provider `Terminate`；allocation terminal 后不再授权 Provider effect，只能追加/精确重放下一合法 cleanup fact；cleanup complete 后只进入 release；release 后所有 effect 永久拒绝，只允许在 current Run authority 与精确 tuple 下无副作用地重放同一 `cleanup-released` append。`AttemptStates`/`PendingAttemptStates` 从同一日志确定性重放，供重启恢复枚举使用，不引入第二身份索引。
+
+`LeaseLedger` 只接收带 Attempt authority head 的 `completed|cancelled|expired` 封闭投影，并保留 completion/cancel reason；它不能独立决定新 Attempt eligibility，新 Attempt terminal binding 也不能被新 lease 复活。这里必须明确：Attempt/Result 共用一个物理日志，而 `LeaseLedger` 仍是另一个物理 append-only read model，两者**没有**跨文件原子事务。既有 `AppendCancel`/`AppendExpire` 与历史事实格式仅为旧调用链兼容；RB3 必须使所有新 Attempt 只从 barrier 投影终态，并以 current authority verifier 在崩溃后幂等补投影。在该接线完成前，不能把两个 ledger 描述成物理原子或宣称 terminal eligibility 已 `INTEGRATED`。
+
+该 checkpoint 仍是 `COMPONENT`，不关闭上表 finding：RB1 没有修改 composition root、真实 Darwin launch/process control、Local/Sandbox bridge 或 execution recovery。关闭实现仍需要后续 RB2/RB3 把本 authority API 接入 Core-owned fixed-binary launch、真实 process observation、Provider terminal receipt 和 cleanup-before-unlock/successor 全链，并在最终固定 `marshal` 产物上执行负向矩阵。RB1 author 本地只做 compile-only、`vet`/`staticcheck`/结构与 secret 门禁，不把未执行的新 Mach-O 测试产物描述为运行证据。
 
 ## v1.0 生产可达性重置（2026-08-27）
 

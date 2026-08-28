@@ -65,6 +65,201 @@ func newTestLeaseLedger(t *testing.T) *LeaseLedger {
 	return ledger
 }
 
+type testAttemptEligibilityAuthority struct {
+	want  AttemptEligibilityProjection
+	err   error
+	calls *int
+}
+
+func (a testAttemptEligibilityAuthority) VerifyAttemptEligibilityProjection(got AttemptEligibilityProjection) error {
+	if a.calls != nil {
+		*a.calls = *a.calls + 1
+	}
+	if a.err != nil {
+		return a.err
+	}
+	if got != a.want {
+		return errors.New("projection does not match current Attempt authority")
+	}
+	return nil
+}
+
+func TestLeaseCompletedIsOnlyAttemptAuthorityProjectionAndNeverResurrects(t *testing.T) {
+	dir := t.TempDir()
+	ledger, err := NewLeaseLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := ledgerLease("attempt-projection")
+	if err := ledger.AppendClaim(lease); err != nil {
+		t.Fatal(err)
+	}
+	projection := AttemptEligibilityProjection{
+		LeaseId: lease.LeaseId, RunId: lease.RunId, AttemptId: lease.AttemptId,
+		AllocationId: lease.AllocationId, FromGeneration: lease.Generation,
+		TerminalGeneration:         lease.Generation + 1,
+		TerminalState:              LeaseStateCompleted,
+		CompletionReason:           CompletionReasonAttemptCompleted,
+		AttemptAuthorityHeadDigest: fixedDigest("attempt-authority-barrier"),
+	}
+	verifierCalls := 0
+	authority := testAttemptEligibilityAuthority{want: projection, calls: &verifierCalls}
+	if err := ledger.ProjectAttemptEligibility(authority, projection); err != nil {
+		t.Fatal(err)
+	}
+	current, state, generation, err := ledger.Current(lease.LeaseId)
+	if err != nil || state != LeaseStateCompleted || generation != 2 || current.CompletionReason != CompletionReasonAttemptCompleted {
+		t.Fatalf("current=%#v state=%q generation=%d err=%v", current, state, generation, err)
+	}
+	if err := ledger.ProjectAttemptEligibility(authority, projection); err != nil {
+		t.Fatalf("exact completed projection replay must be stable: %v", err)
+	}
+	if verifierCalls != 2 {
+		t.Fatalf("Attempt authority verifier calls=%d, want 2 including replay", verifierCalls)
+	}
+	if _, _, err := ledger.BumpGeneration(lease.LeaseId, generation); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("completed lease generation bump err=%v", err)
+	}
+	recovered, err := NewLeaseLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, recoveredState, recoveredGeneration, err := recovered.Current(lease.LeaseId)
+	if err != nil || recoveredState != LeaseStateCompleted || recoveredGeneration != generation {
+		t.Fatalf("recovered state=%q generation=%d err=%v", recoveredState, recoveredGeneration, err)
+	}
+	if active, err := recovered.ActiveLeases(); err != nil || len(active) != 0 {
+		t.Fatalf("completed lease appeared active: %#v err=%v", active, err)
+	}
+	replacement := rivalLease(lease, "attempt-projection-replacement")
+	if err := recovered.AppendClaim(replacement); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("terminal Attempt binding was resurrected by a new lease: %v", err)
+	}
+}
+
+func TestLeaseCompletedProjectionRejectsWrongTupleHeadAndGeneration(t *testing.T) {
+	ledger := newTestLeaseLedger(t)
+	lease := ledgerLease("projection-negative")
+	if err := ledger.AppendClaim(lease); err != nil {
+		t.Fatal(err)
+	}
+	base := AttemptEligibilityProjection{
+		LeaseId: lease.LeaseId, RunId: lease.RunId, AttemptId: lease.AttemptId,
+		AllocationId: lease.AllocationId, FromGeneration: lease.Generation,
+		TerminalGeneration: lease.Generation + 1, TerminalState: LeaseStateCompleted, CompletionReason: CompletionReasonAttemptFailed,
+		AttemptAuthorityHeadDigest: fixedDigest("attempt-authority-head"),
+	}
+	for _, mutate := range []func(*AttemptEligibilityProjection){
+		func(p *AttemptEligibilityProjection) { p.RunId = "wrong" },
+		func(p *AttemptEligibilityProjection) { p.AttemptId = "wrong" },
+		func(p *AttemptEligibilityProjection) { p.AllocationId = "wrong" },
+		func(p *AttemptEligibilityProjection) { p.TerminalGeneration++ },
+		func(p *AttemptEligibilityProjection) { p.TerminalState = LeaseStateActive },
+		func(p *AttemptEligibilityProjection) { p.AttemptAuthorityHeadDigest = "bad" },
+		func(p *AttemptEligibilityProjection) { p.CompletionReason = "unknown" },
+	} {
+		forged := base
+		mutate(&forged)
+		if err := ledger.ProjectAttemptEligibility(testAttemptEligibilityAuthority{want: forged}, forged); err == nil {
+			t.Fatal("forged Attempt eligibility projection accepted")
+		}
+	}
+	forgedHead := base
+	forgedHead.AttemptAuthorityHeadDigest = fixedDigest("forged-attempt-authority-head")
+	if err := ledger.ProjectAttemptEligibility(testAttemptEligibilityAuthority{want: base}, forgedHead); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("forged but well-formed authority head err=%v", err)
+	}
+	if err := ledger.ProjectAttemptEligibility(nil, base); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("nil Attempt authority verifier err=%v", err)
+	}
+	if err := ledger.ProjectAttemptEligibility(testAttemptEligibilityAuthority{want: base, err: errors.New("stale authority head")}, base); !errors.Is(err, ErrLeaseConflict) {
+		t.Fatalf("stale Attempt authority verifier err=%v", err)
+	}
+	if _, _, _, err := ledger.Current(lease.LeaseId); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAttemptAuthorityProjectionPreservesCancelledExpiredAndSecurityRevoke(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		state        LeaseState
+		cancelReason CancelReason
+	}{
+		{name: "cancelled", state: LeaseStateCancelled, cancelReason: CancelReasonDeadlineExceeded},
+		{name: "security-revoke", state: LeaseStateCancelled, cancelReason: CancelReasonSecurityCriticalRevoke},
+		{name: "expired", state: LeaseStateExpired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ledger, err := NewLeaseLedger(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lease := ledgerLease("attempt-terminal-" + tc.name)
+			if err := ledger.AppendClaim(lease); err != nil {
+				t.Fatal(err)
+			}
+			projection := AttemptEligibilityProjection{
+				LeaseId: lease.LeaseId, RunId: lease.RunId, AttemptId: lease.AttemptId, AllocationId: lease.AllocationId,
+				FromGeneration: lease.Generation, TerminalGeneration: lease.Generation + 1,
+				TerminalState: tc.state, CancelReason: tc.cancelReason,
+				AttemptAuthorityHeadDigest: fixedDigest("attempt-terminal-" + tc.name),
+			}
+			authority := testAttemptEligibilityAuthority{want: projection}
+			if err := ledger.ProjectAttemptEligibility(authority, projection); err != nil {
+				t.Fatal(err)
+			}
+			if err := ledger.ProjectAttemptEligibility(authority, projection); err != nil {
+				t.Fatalf("exact terminal projection replay: %v", err)
+			}
+			current, state, generation, err := ledger.Current(lease.LeaseId)
+			if err != nil || state != tc.state || generation != projection.TerminalGeneration || current.CancelReason != tc.cancelReason || current.CompletionReason != "" {
+				t.Fatalf("current=%#v state=%q generation=%d err=%v", current, state, generation, err)
+			}
+			recovered, err := NewLeaseLedger(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recoveredLease, recoveredState, _, err := recovered.Current(lease.LeaseId)
+			if err != nil || recoveredState != tc.state || recoveredLease.CancelReason != tc.cancelReason {
+				t.Fatalf("recovered=%#v state=%q err=%v", recoveredLease, recoveredState, err)
+			}
+		})
+	}
+}
+
+func TestAttemptAuthorityProjectionRejectsAmbiguousTerminalUnion(t *testing.T) {
+	ledger := newTestLeaseLedger(t)
+	lease := ledgerLease("ambiguous-terminal")
+	if err := ledger.AppendClaim(lease); err != nil {
+		t.Fatal(err)
+	}
+	base := AttemptEligibilityProjection{
+		LeaseId: lease.LeaseId, RunId: lease.RunId, AttemptId: lease.AttemptId, AllocationId: lease.AllocationId,
+		FromGeneration: lease.Generation, TerminalGeneration: lease.Generation + 1,
+		AttemptAuthorityHeadDigest: fixedDigest("ambiguous-terminal"),
+	}
+	for _, mutate := range []func(*AttemptEligibilityProjection){
+		func(p *AttemptEligibilityProjection) { p.TerminalState = LeaseStateCompleted },
+		func(p *AttemptEligibilityProjection) {
+			p.TerminalState, p.CompletionReason, p.CancelReason = LeaseStateCompleted, CompletionReasonAttemptCompleted, CancelReasonDeadlineExceeded
+		},
+		func(p *AttemptEligibilityProjection) {
+			p.TerminalState, p.CompletionReason = LeaseStateCancelled, CompletionReasonAttemptFailed
+		},
+		func(p *AttemptEligibilityProjection) {
+			p.TerminalState, p.CancelReason = LeaseStateExpired, CancelReasonDeadlineExceeded
+		},
+	} {
+		projection := base
+		mutate(&projection)
+		if err := ledger.ProjectAttemptEligibility(testAttemptEligibilityAuthority{want: projection}, projection); err == nil {
+			t.Fatalf("ambiguous terminal projection accepted: %#v", projection)
+		}
+	}
+}
+
 // TestLeaseLedgerClaimCurrentActive freezes requirement (1): an accepted
 // claim becomes visible as an active lease at generation 1 with the exact
 // claimed snapshot.

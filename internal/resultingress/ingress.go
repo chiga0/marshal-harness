@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -254,6 +255,7 @@ type QuarantineRecord struct {
 // digest so that replay detection can compare the incoming digest correctly.
 type admittedEntry struct {
 	fact                AdmissionFact
+	attemptKey          string
 	drcDigest           string
 	envelopeKind        EnvelopeKind
 	envelopeSequence    uint64
@@ -269,6 +271,7 @@ type Ingress struct {
 	ledgerSequence uint64
 	// admitted maps idempotencyKey → admittedEntry for replay detection.
 	admitted   map[string]admittedEntry
+	attempts   map[string]AttemptAuthorityState
 	quarantine []QuarantineRecord
 	// clock allows deterministic testing without real time reads.
 	clock func() time.Time
@@ -304,6 +307,7 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 	return &Ingress{
 		ledger:   binding,
 		admitted: make(map[string]admittedEntry),
+		attempts: make(map[string]AttemptAuthorityState),
 		clock:    time.Now,
 	}, nil
 }
@@ -317,6 +321,7 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 	in := &Ingress{
 		ledger:   binding,
 		admitted: make(map[string]admittedEntry),
+		attempts: make(map[string]AttemptAuthorityState),
 		clock:    time.Now,
 		store:    store,
 	}
@@ -390,6 +395,11 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 		i.recordQuarantine(ReasonMalformed, "", envelope.ResultDigest, now)
 		return AdmissionFact{}, fmt.Errorf("resultingress: DRC digest failed: %w", err)
 	}
+	authorityState, authorityKey, governed, authorityConflict := i.currentAttemptForDRC(drc)
+	if authorityConflict {
+		i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+		return AdmissionFact{}, fmt.Errorf("%w: DRC tuple conflicts with durable Attempt authority", ErrStaleLease)
+	}
 
 	// A committed delivery is an immutable effect. Exact replay is checked
 	// before current lease/registration freshness because restart recovery may
@@ -403,6 +413,10 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 				ErrDigestMismatch, replayKey)
 		}
 		if prior.drcDigest == drcDigest && prior.envelopeKind == envelope.Kind && prior.envelopeSequence == envelope.Sequence && prior.envelopeDigest == envelope.ResultDigest {
+			if governed && authorityState.BarrierDigest != "" && (prior.attemptKey != authorityKey || authorityState.BarrierAdmissionFactDigest != prior.fact.FactDigest) {
+				i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+				return AdmissionFact{}, fmt.Errorf("%w: terminalization barrier did not bind this admission", ErrStaleLease)
+			}
 			fact := prior.fact
 			fact.IdempotentReplay = true
 			return fact, nil
@@ -410,6 +424,23 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 		i.recordQuarantine(ReasonDigestMismatch, drcDigest, envelope.ResultDigest, now)
 		return AdmissionFact{}, fmt.Errorf("%w: idempotency key %q reused with different DRC or result digest",
 			ErrDigestMismatch, replayKey)
+	}
+	// Every result kind participates in the same Attempt barrier. Hot-path
+	// checkpoint/heartbeat/log traffic is not allowed to leak through after
+	// terminalization merely because it skips capability freshness checks.
+	if governed {
+		if authorityState.BarrierDigest != "" {
+			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, fmt.Errorf("%w: attempt admission is closed by terminalization barrier", ErrStaleLease)
+		}
+		if authorityState.ProcessStartedDigest == "" {
+			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, fmt.Errorf("%w: attempt has no process-started authority", ErrStaleLease)
+		}
+		if envelope.Kind == KindWorkerResult && authorityState.CommittedResultFactDigest != "" {
+			i.recordQuarantine(ReasonDigestMismatch, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, fmt.Errorf("%w: Attempt already has a committed WorkerResult", ErrDigestMismatch)
+		}
 	}
 
 	// ── 2. Kind→operation mapping check (ADR 0044 R2) ─────────────────────────
@@ -513,15 +544,33 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 		LedgerSequence:   nextLedgerSequence,
 		IdempotentReplay: false,
 	}
+	authorityHead := ""
 	if i.store != nil {
 		// 成功接纳先将幂等权威锚点落账，再写入进程内 admitted——崩溃/重启或
 		// 重复送达时，跨进程的 replay 检测由该账本支持。落账失败即 reject。
-		if err := i.store.recordAdmittedLocked(key, drcDigest, envelope, factDigest, nextLedgerSequence); err != nil {
+		var governedState *AttemptAuthorityState
+		if governed {
+			governedState = &authorityState
+		}
+		var err error
+		authorityHead, err = i.store.recordAdmittedLocked(key, governedState, drcDigest, envelope, factDigest, nextLedgerSequence)
+		if err != nil {
 			return AdmissionFact{}, fmt.Errorf("resultingress: record admitted to durable store: %w", err)
 		}
 	}
 	i.ledgerSequence = nextLedgerSequence
-	i.admitted[key] = admittedEntry{fact: fact, drcDigest: drcDigest, envelopeKind: envelope.Kind, envelopeSequence: envelope.Sequence, envelopeDigest: envelope.ResultDigest}
+	entry := admittedEntry{fact: fact, drcDigest: drcDigest, envelopeKind: envelope.Kind, envelopeSequence: envelope.Sequence, envelopeDigest: envelope.ResultDigest}
+	if governed {
+		entry.attemptKey = authorityKey
+		authorityState.Revision++
+		authorityState.HeadDigest = authorityHead
+		if envelope.Kind == KindWorkerResult {
+			authorityState.CommittedResultFactDigest = fact.FactDigest
+			authorityState.CommittedResultSequence = fact.LedgerSequence
+		}
+		i.attempts[authorityKey] = authorityState
+	}
+	i.admitted[key] = entry
 	return fact, nil
 }
 
@@ -558,6 +607,10 @@ func (i *Ingress) replayCommittedLocked(drc DRC, envelope ResultEnvelope) (Admis
 	if err != nil {
 		return AdmissionFact{}, false, err
 	}
+	authorityState, authorityKey, governed, authorityConflict := i.currentAttemptForDRC(drc)
+	if authorityConflict {
+		return AdmissionFact{}, false, fmt.Errorf("%w: DRC tuple conflicts with durable Attempt authority", ErrStaleLease)
+	}
 	prior, ok := i.admitted[drc.IdempotencyKey]
 	if !ok {
 		return AdmissionFact{}, false, nil
@@ -570,6 +623,9 @@ func (i *Ingress) replayCommittedLocked(drc DRC, envelope ResultEnvelope) (Admis
 		return AdmissionFact{}, false, fmt.Errorf("%w: idempotency key %q reused with different DRC or result digest",
 			ErrDigestMismatch, drc.IdempotencyKey)
 	}
+	if governed && authorityState.BarrierDigest != "" && (prior.attemptKey != authorityKey || authorityState.BarrierAdmissionFactDigest != prior.fact.FactDigest) {
+		return AdmissionFact{}, false, fmt.Errorf("%w: terminalization barrier did not bind this admission", ErrStaleLease)
+	}
 	fact := prior.fact
 	fact.IdempotentReplay = true
 	return fact, true, nil
@@ -578,7 +634,44 @@ func (i *Ingress) replayCommittedLocked(drc DRC, envelope ResultEnvelope) (Admis
 func (i *Ingress) resetDurableReplayState() {
 	i.ledgerSequence = 0
 	i.admitted = make(map[string]admittedEntry)
+	i.attempts = make(map[string]AttemptAuthorityState)
 	i.quarantine = nil
+}
+
+// currentAttemptForDRC resolves a governed logical Attempt by namespace,
+// task, run and attempt, then requires the entire frozen dispatch/process
+// tuple. Allocation, lease or command drift is a conflict, never a fallback
+// into the legacy admission path.
+func (i *Ingress) currentAttemptForDRC(drc DRC) (AttemptAuthorityState, string, bool, bool) {
+	fencingDigest := canonical.DigestBytes([]byte(drc.FencingToken))
+	relatedCandidates := 0
+	wireNamespaceCandidates := 0
+	exactMatches := 0
+	var matchedState AttemptAuthorityState
+	var matchedKey string
+	for key, state := range i.attempts {
+		id := state.Identity
+		if id.TaskID != drc.TaskID || id.RunID != drc.RunID || id.AttemptID != drc.AttemptID {
+			continue
+		}
+		relatedCandidates++
+		if id.AuthorityNamespaceRef != drc.AuthorityNamespaceID {
+			continue
+		}
+		wireNamespaceCandidates++
+		matches := drc.Generation <= math.MaxInt64 && id.AllocationID == drc.AllocationID && id.LeaseID == drc.LeaseID && id.DispatchGeneration == int64(drc.Generation) && id.FencingTokenDigest == fencingDigest && state.ProcessStartedDigest != "" && state.CommandID == drc.CommandID
+		if matches {
+			exactMatches++
+			matchedState, matchedKey = state, key
+		}
+	}
+	if relatedCandidates == 0 {
+		return AttemptAuthorityState{}, "", false, false
+	}
+	if wireNamespaceCandidates == 1 && exactMatches == 1 {
+		return matchedState, matchedKey, true, false
+	}
+	return AttemptAuthorityState{}, "", false, true
 }
 
 // Quarantine returns a read-only copy of all quarantine records.

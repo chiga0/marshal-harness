@@ -73,7 +73,7 @@ func validLease() DispatchLease {
 // TestLeaseStateValidateClosedEnumeration freezes the closed leaseState
 // enumeration.
 func TestLeaseStateValidateClosedEnumeration(t *testing.T) {
-	for _, state := range []LeaseState{LeaseStateOffered, LeaseStateClaimed, LeaseStateActive, LeaseStateExpired, LeaseStateCancelled} {
+	for _, state := range []LeaseState{LeaseStateOffered, LeaseStateClaimed, LeaseStateActive, LeaseStateExpired, LeaseStateCancelled, LeaseStateCompleted} {
 		if err := state.Validate(); err != nil {
 			t.Fatalf("Validate rejected the closed leaseState %q: %v", string(state), err)
 		}
@@ -240,6 +240,8 @@ func TestDispatchLeaseValidateRejectsMalformedContent(t *testing.T) {
 			l.CancelReason = CancelReason("drain")
 		}},
 		{"cancelReason outside cancelled", func(l *DispatchLease) { l.CancelReason = CancelReasonDeadlineExceeded }},
+		{"completed without completionReason", func(l *DispatchLease) { l.LeaseState = LeaseStateCompleted }},
+		{"completionReason outside completed", func(l *DispatchLease) { l.CompletionReason = CompletionReasonAttemptCompleted }},
 		{"zero value", func(l *DispatchLease) { *l = DispatchLease{} }},
 	}
 	for _, tc := range cases {

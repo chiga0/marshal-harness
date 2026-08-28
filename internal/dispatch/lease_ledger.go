@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,10 +23,11 @@ const leaseLedgerFileName = "leases.jsonl"
 // Closed fact types of the append-only lease ledger. Matching is case
 // sensitive.
 const (
-	leaseFactTypeClaimed   = "lease-claimed"
-	leaseFactTypeCancelled = "lease-cancelled"
-	leaseFactTypeExpired   = "lease-expired"
-	leaseFactTypeBumped    = "generation-bumped"
+	leaseFactTypeClaimed         = "lease-claimed"
+	leaseFactTypeCancelled       = "lease-cancelled"
+	leaseFactTypeExpired         = "lease-expired"
+	leaseFactTypeAttemptTerminal = "lease-attempt-terminal"
+	leaseFactTypeBumped          = "generation-bumped"
 )
 
 // ErrMemoryOnlyLeaseLedger is returned whenever a ledger that is not bound
@@ -62,7 +64,11 @@ type LeaseLedger struct {
 	dir            string
 	leases         map[string]DispatchLease
 	activeBindings map[string]string
-	nextSequence   int64
+	// closedAttemptBindings only contains new Attempt-authority projections.
+	// Legacy cancelled/expired history keeps its historical replay semantics.
+	closedAttemptBindings map[string]string
+	terminalAuthorities   map[string]string
+	nextSequence          int64
 }
 
 // leaseClaimFact is the append-only ledger fact recording one accepted
@@ -97,6 +103,25 @@ type leaseExpireFact struct {
 	Generation int64  `json:"generation"`
 	ExpiredAt  string `json:"expiredAt"`
 	Digest     string `json:"digest"`
+}
+
+// leaseAttemptTerminalFact is a read model projection of the single Attempt
+// authority barrier. Its closed terminal union prevents abnormal cancellation
+// or expiry from being mislabeled as normal completion.
+type leaseAttemptTerminalFact struct {
+	FactType                   string           `json:"factType"`
+	Sequence                   int64            `json:"sequence"`
+	LeaseId                    string           `json:"leaseId"`
+	RunId                      string           `json:"runId"`
+	AttemptId                  string           `json:"attemptId"`
+	AllocationId               string           `json:"allocationId"`
+	FromGeneration             int64            `json:"fromGeneration"`
+	TerminalGeneration         int64            `json:"terminalGeneration"`
+	TerminalState              LeaseState       `json:"terminalState"`
+	CompletionReason           CompletionReason `json:"completionReason,omitempty"`
+	CancelReason               CancelReason     `json:"cancelReason,omitempty"`
+	AttemptAuthorityHeadDigest string           `json:"attemptAuthorityHeadDigest"`
+	Digest                     string           `json:"digest"`
 }
 
 // leaseBumpFact is the append-only ledger fact recording one
@@ -145,6 +170,9 @@ func (fact *leaseExpireFact) setFactDigest(digest string) {
 	fact.Digest = digest
 }
 
+func (fact leaseAttemptTerminalFact) factDigest() string           { return fact.Digest }
+func (fact *leaseAttemptTerminalFact) setFactDigest(digest string) { fact.Digest = digest }
+
 func (fact leaseBumpFact) factDigest() string {
 	return fact.Digest
 }
@@ -177,10 +205,12 @@ func NewLeaseLedger(dir string) (*LeaseLedger, error) {
 		return nil, fmt.Errorf("dispatch: lease ledger path is not a directory")
 	}
 	ledger := &LeaseLedger{
-		dir:            dir,
-		leases:         map[string]DispatchLease{},
-		activeBindings: map[string]string{},
-		nextSequence:   1,
+		dir:                   dir,
+		leases:                map[string]DispatchLease{},
+		activeBindings:        map[string]string{},
+		closedAttemptBindings: map[string]string{},
+		terminalAuthorities:   map[string]string{},
+		nextSequence:          1,
 	}
 	if err := ledger.recover(); err != nil {
 		return nil, err
@@ -251,6 +281,9 @@ func (l *LeaseLedger) requireClaimable(lease DispatchLease) error {
 		return fmt.Errorf("%w: leaseId %s already exists in the lease ledger; the append-only ledger never rewrites or replaces an accepted claim", ErrLeaseConflict, lease.LeaseId)
 	}
 	binding := claimBindingKey(lease.RunId, lease.AttemptId)
+	if source, closed := l.closedAttemptBindings[binding]; closed {
+		return fmt.Errorf("%w: (runId, attemptId) is terminal in Attempt authority projection %s and can never be reclaimed", ErrLeaseConflict, source)
+	}
 	if existing, taken := l.activeBindings[binding]; taken {
 		return fmt.Errorf("%w: (runId, attemptId) already carries active lease %s; the single-active invariant never allows a second live claim of the identical attempt", ErrLeaseConflict, existing)
 	}
@@ -379,6 +412,115 @@ func (l *LeaseLedger) AppendExpire(leaseId string, expectedGeneration int64) err
 		return err
 	}
 	l.recordTerminal(next)
+	return nil
+}
+
+// AttemptEligibilityProjection is the exact closed terminal projection read
+// from the Attempt authority barrier. It carries no fencing token and grants
+// no cleanup permission. TerminalState is exactly completed, cancelled, or
+// expired and the two reason fields form a sealed union.
+type AttemptEligibilityProjection struct {
+	LeaseId                    string
+	RunId                      string
+	AttemptId                  string
+	AllocationId               string
+	FromGeneration             int64
+	TerminalGeneration         int64
+	TerminalState              LeaseState
+	CompletionReason           CompletionReason
+	CancelReason               CancelReason
+	AttemptAuthorityHeadDigest string
+}
+
+func (projection AttemptEligibilityProjection) validateTerminalUnion() error {
+	switch projection.TerminalState {
+	case LeaseStateCompleted:
+		if projection.CancelReason != "" {
+			return fmt.Errorf("dispatch: completed Attempt projection carries cancelReason")
+		}
+		return projection.CompletionReason.Validate()
+	case LeaseStateCancelled:
+		if projection.CompletionReason != "" {
+			return fmt.Errorf("dispatch: cancelled Attempt projection carries completionReason")
+		}
+		return projection.CancelReason.Validate()
+	case LeaseStateExpired:
+		if projection.CompletionReason != "" || projection.CancelReason != "" {
+			return fmt.Errorf("dispatch: expired Attempt projection carries a reason")
+		}
+		return nil
+	default:
+		return fmt.Errorf("dispatch: Attempt projection terminalState %q is not terminal", projection.TerminalState)
+	}
+}
+
+// AttemptEligibilityAuthority verifies that a projection was read from the
+// current single Attempt authority. LeaseLedger deliberately cannot implement
+// this interface itself: it is only a read-model sink and never decides normal
+// attempt eligibility independently.
+type AttemptEligibilityAuthority interface {
+	VerifyAttemptEligibilityProjection(AttemptEligibilityProjection) error
+}
+
+// ProjectAttemptEligibility appends a closed terminal read-model projection.
+// The source Attempt authority head is mandatory; eligibility authority
+// remains in the Attempt log and this ledger cannot independently choose the
+// terminal state or reason.
+func (l *LeaseLedger) ProjectAttemptEligibility(authority AttemptEligibilityAuthority, projection AttemptEligibilityProjection) error {
+	if err := l.requireBound(); err != nil {
+		return err
+	}
+	if authority == nil {
+		return fmt.Errorf("%w: Attempt authority verifier is required", ErrLeaseConflict)
+	}
+	if err := projection.validateTerminalUnion(); err != nil {
+		return err
+	}
+	if err := requireSHA256Digest("attemptAuthorityHeadDigest", projection.AttemptAuthorityHeadDigest); err != nil {
+		return err
+	}
+	if projection.TerminalGeneration != projection.FromGeneration+1 {
+		return fmt.Errorf("dispatch: terminalGeneration must advance fromGeneration exactly once")
+	}
+	if err := authority.VerifyAttemptEligibilityProjection(projection); err != nil {
+		return fmt.Errorf("%w: Attempt authority projection rejected: %v", ErrLeaseConflict, err)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if current, ok := l.leases[projection.LeaseId]; ok && current.LeaseState.IsTerminal() {
+		if current.RunId == projection.RunId && current.AttemptId == projection.AttemptId && current.AllocationId == projection.AllocationId && current.Generation == projection.TerminalGeneration && current.LeaseState == projection.TerminalState && current.CompletionReason == projection.CompletionReason && current.CancelReason == projection.CancelReason && l.terminalAuthorities[projection.LeaseId] == projection.AttemptAuthorityHeadDigest {
+			return nil
+		}
+		return fmt.Errorf("%w: conflicting terminal Attempt authority projection", ErrLeaseConflict)
+	}
+	current, err := l.currentForTransition(projection.LeaseId, projection.FromGeneration, "projected terminal")
+	if err != nil {
+		return err
+	}
+	if current.RunId != projection.RunId || current.AttemptId != projection.AttemptId || current.AllocationId != projection.AllocationId {
+		return fmt.Errorf("%w: Attempt authority projection tuple does not match lease", ErrLeaseConflict)
+	}
+	next, err := current.terminalFromAttemptProjection(projection.TerminalState, projection.CompletionReason, projection.CancelReason)
+	if err != nil {
+		return err
+	}
+	if next.Generation != projection.TerminalGeneration {
+		return ErrLeaseGenerationConflict
+	}
+	fact := leaseAttemptTerminalFact{
+		FactType: leaseFactTypeAttemptTerminal, Sequence: l.nextSequence,
+		LeaseId: projection.LeaseId, RunId: projection.RunId,
+		AttemptId: projection.AttemptId, AllocationId: projection.AllocationId,
+		FromGeneration: projection.FromGeneration, TerminalGeneration: projection.TerminalGeneration,
+		TerminalState: projection.TerminalState, CompletionReason: projection.CompletionReason, CancelReason: projection.CancelReason,
+		AttemptAuthorityHeadDigest: projection.AttemptAuthorityHeadDigest,
+	}
+	if err := l.appendFactLine(&fact); err != nil {
+		return err
+	}
+	l.recordTerminal(next)
+	l.terminalAuthorities[next.LeaseId] = projection.AttemptAuthorityHeadDigest
+	l.closedAttemptBindings[claimBindingKey(next.RunId, next.AttemptId)] = projection.AttemptAuthorityHeadDigest
 	return nil
 }
 
@@ -570,11 +712,48 @@ func (l *LeaseLedger) applyLedgerLine(line []byte) error {
 		return l.applyCancelFact(line)
 	case leaseFactTypeExpired:
 		return l.applyExpireFact(line)
+	case leaseFactTypeAttemptTerminal:
+		return l.applyAttemptTerminalFact(line)
 	case leaseFactTypeBumped:
 		return l.applyBumpFact(line)
 	default:
 		return fmt.Errorf("unknown lease ledger factType %q", envelope.FactType)
 	}
+}
+
+func (l *LeaseLedger) applyAttemptTerminalFact(line []byte) error {
+	var fact leaseAttemptTerminalFact
+	if err := decodeLeaseFact(line, &fact); err != nil {
+		return err
+	}
+	if err := verifyFactDigest(&fact); err != nil {
+		return err
+	}
+	projection := AttemptEligibilityProjection{TerminalState: fact.TerminalState, CompletionReason: fact.CompletionReason, CancelReason: fact.CancelReason}
+	if err := projection.validateTerminalUnion(); err != nil {
+		return err
+	}
+	if err := requireSHA256Digest("attemptAuthorityHeadDigest", fact.AttemptAuthorityHeadDigest); err != nil {
+		return err
+	}
+	if fact.TerminalGeneration != fact.FromGeneration+1 {
+		return fmt.Errorf("dispatch: invalid lease-attempt-terminal generation")
+	}
+	current, ok := l.leases[fact.LeaseId]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrUnknownLease, fact.LeaseId)
+	}
+	if current.RunId != fact.RunId || current.AttemptId != fact.AttemptId || current.AllocationId != fact.AllocationId || current.Generation != fact.FromGeneration {
+		return fmt.Errorf("%w: lease-attempt-terminal projection tuple/generation mismatch", ErrLeaseConflict)
+	}
+	next, err := current.terminalFromAttemptProjection(fact.TerminalState, fact.CompletionReason, fact.CancelReason)
+	if err != nil || next.Generation != fact.TerminalGeneration {
+		return fmt.Errorf("dispatch: invalid lease-attempt-terminal projection")
+	}
+	l.recordTerminal(next)
+	l.terminalAuthorities[next.LeaseId] = fact.AttemptAuthorityHeadDigest
+	l.closedAttemptBindings[claimBindingKey(next.RunId, next.AttemptId)] = fact.AttemptAuthorityHeadDigest
+	return nil
 }
 
 // decodeLeaseFact strictly decodes one canonical ledger line into fact,
@@ -584,6 +763,10 @@ func decodeLeaseFact(line []byte, fact any) error {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(fact); err != nil {
 		return fmt.Errorf("decode lease ledger fact: %w", err)
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("decode lease ledger fact: trailing JSON value")
 	}
 	return nil
 }
