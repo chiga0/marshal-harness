@@ -274,6 +274,10 @@ type Ingress struct {
 	admitted map[string]admittedEntry
 	attempts map[string]AttemptAuthorityState
 	effects  map[string]EffectAuthorityState
+	// allocations is rebuilt exclusively from the same durable Attempt log.
+	// It is the five-fact authority source projected into allocationcontrol;
+	// the Provider journal is never allowed to populate this map.
+	allocations map[string]allocationAuthorityState
 	// The three indexes are authority-namespace scoped. Command/idempotency map
 	// to an effect key; marker maps to its immutable logical Attempt key. They
 	// are rebuilt exclusively from the authority log on every transaction.
@@ -317,6 +321,7 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		admitted:          make(map[string]admittedEntry),
 		attempts:          make(map[string]AttemptAuthorityState),
 		effects:           make(map[string]EffectAuthorityState),
+		allocations:       make(map[string]allocationAuthorityState),
 		effectCommands:    make(map[string]string),
 		effectIdempotency: make(map[string]string),
 		effectMarkers:     make(map[string]string),
@@ -669,6 +674,7 @@ func (i *Ingress) resetDurableReplayState() {
 	i.admitted = make(map[string]admittedEntry)
 	i.attempts = make(map[string]AttemptAuthorityState)
 	i.effects = make(map[string]EffectAuthorityState)
+	i.allocations = make(map[string]allocationAuthorityState)
 	i.effectCommands = make(map[string]string)
 	i.effectIdempotency = make(map[string]string)
 	i.effectMarkers = make(map[string]string)

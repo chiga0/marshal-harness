@@ -375,6 +375,10 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		if err := applyEffectAuthorityLine(line, in, s.nextSequence); err != nil {
 			return err
 		}
+	case allocationFactTypePrepared:
+		if err := applyAllocationAuthorityLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
 	case resultFactTypeAdmitted:
 		if head.ProtocolRevision == "" {
 			return s.applyLegacyAdmittedLine(line, in)

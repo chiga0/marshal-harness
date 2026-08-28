@@ -242,6 +242,41 @@ func (store *Store) prepareProvision(intent AllocationProvisionIntentV1, intentF
 	return buildPrepared(intent, intentFactDigest, staging)
 }
 
+// provisionNeedsPreparationMutation distinguishes a fresh first Apply from a
+// restart that only needs to recover an already-created, exact staging object.
+// The latter must remain inspectable after the intent deadline; prepareProvision
+// will fsync and bind the existing object without creating a second one.
+func (store *Store) provisionNeedsPreparationMutation(intent AllocationProvisionIntentV1) (bool, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.objects == nil || intent.Validate() != nil || intent.ExpectedOwnerUID != store.uid || !store.scope.Matches(intent.Binding) {
+		return false, ErrInvalid
+	}
+	staging, err := store.inspectPreparedStaging(intent.StagingRelativeName, intent.MarkerRelativeName)
+	if err != nil {
+		return false, err
+	}
+	live, err := store.inspectAllocation(intent.LiveRelativeName, intent.MarkerRelativeName)
+	if err != nil {
+		return false, err
+	}
+	_, _, tombstoneName, _, _ := DeriveRelativeNames(intent.Binding.AllocationID)
+	tombstone, err := store.inspectAllocation(tombstoneName, intent.MarkerRelativeName)
+	if err != nil {
+		return false, err
+	}
+	if live.present || tombstone.present {
+		return false, ErrFilesystemConflict
+	}
+	if !staging.present {
+		return true, nil
+	}
+	if staging.marker != intent.Marker() {
+		return false, ErrFilesystemConflict
+	}
+	return false, nil
+}
+
 func (store *Store) syncPreparedStaging(name, markerName string, expected allocationObservation) (allocationObservation, error) {
 	directoryFD, err := unix.Openat(int(store.objects.Fd()), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
@@ -451,6 +486,38 @@ func (store *Store) completeTerminate(intent AllocationTerminateIntentV1, intent
 		return AllocationTerminateReceiptV1{}, err
 	}
 	return receipt, nil
+}
+
+func (store *Store) terminateNeedsMutation(intent AllocationTerminateIntentV1) (bool, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.objects == nil || intent.Validate() != nil || !store.scope.Matches(intent.Binding) {
+		return false, ErrInvalid
+	}
+	live, err := store.inspectAllocation(intent.LiveRelativeName, intent.MarkerRelativeName)
+	if err != nil {
+		return false, err
+	}
+	tombstone, err := store.inspectAllocation(intent.TombstoneRelativeName, intent.MarkerRelativeName)
+	if err != nil {
+		return false, err
+	}
+	if live.present && tombstone.present {
+		return false, ErrFilesystemConflict
+	}
+	if live.present {
+		if !matchesTerminate(live, intent) {
+			return false, ErrFilesystemConflict
+		}
+		return true, nil
+	}
+	if tombstone.present && matchesTerminate(tombstone, intent) {
+		return false, nil
+	}
+	if tombstone.present {
+		return false, ErrFilesystemConflict
+	}
+	return false, ErrFilesystemUnknown
 }
 
 // prepareTerminateIntent obtains the filesystem observation that is eligible

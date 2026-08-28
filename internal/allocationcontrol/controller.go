@@ -2,6 +2,7 @@ package allocationcontrol
 
 import (
 	"context"
+	"errors"
 )
 
 // AuthoritySnapshot is a read-only projection of allocation facts already
@@ -107,13 +108,44 @@ func sameDirectoryObject(left, right ObjectIdentityV1) bool {
 // append returns a fresh complete snapshot after the authority fsync.
 type AuthoritySession interface {
 	Snapshot() (AuthoritySnapshot, error)
+	// AuthorizeFirstMutation performs the deadline check immediately before the
+	// first Provider mutation.  Committed intent inspection, projection repair,
+	// and receipt/reconcile recovery deliberately do not consume this deadline.
+	AuthorizeFirstMutation(context.Context) error
 	AppendProvisionPrepared(context.Context, AllocationStagingPreparedV1) (AuthoritySnapshot, error)
 	AppendProvisionReceipt(context.Context, AllocationProvisionReceiptV1) (AuthoritySnapshot, error)
 	AppendTerminateReceipt(context.Context, AllocationTerminateReceiptV1) (AuthoritySnapshot, error)
+	// ProjectAndReconcile invokes project after the receipt authority fsync and
+	// before the reconcile authority fsync.  A nil project callback or a failed
+	// projection keeps the pending-effect barrier closed.
+	ProjectAndReconcile(context.Context, func(AuthoritySnapshot) error) (AuthoritySnapshot, error)
+	// RecordIntervention durably closes conflict/ambiguous/unknown outcomes
+	// without manufacturing a successful typed receipt.
+	RecordIntervention(context.Context, AuthorityFailureKind) error
 }
 
-// Authority serializes one effect under current business authority. A journal
-// or filesystem object can never implement this interface by itself.
+// AuthorityFailureKind is the closed, durable non-success terminal set for an
+// allocation effect.  It intentionally carries no Provider error text.
+type AuthorityFailureKind string
+
+const (
+	AuthorityFailureConflict  AuthorityFailureKind = "conflict"
+	AuthorityFailureAmbiguous AuthorityFailureKind = "ambiguous"
+	AuthorityFailureUnknown   AuthorityFailureKind = "unknown"
+)
+
+func (kind AuthorityFailureKind) Validate() error {
+	switch kind {
+	case AuthorityFailureConflict, AuthorityFailureAmbiguous, AuthorityFailureUnknown:
+		return nil
+	default:
+		return ErrInvalid
+	}
+}
+
+// Authority serializes one canonical namespace+effect key under current
+// business authority. A raw effect ID, journal, or filesystem object can never
+// implement or select this authority by itself.
 type Authority interface {
 	WithCurrentAllocation(context.Context, string, func(AuthoritySession) error) error
 }
@@ -132,12 +164,12 @@ func NewController(store *Store, authority Authority) (*Controller, error) {
 	return &Controller{store: store, authority: authority}, nil
 }
 
-func (controller *Controller) RecoverProvision(ctx context.Context, effectID string) (AllocationProvisionReceiptV1, error) {
-	if controller == nil || controller.store == nil || controller.authority == nil || !validText(effectID) {
+func (controller *Controller) RecoverProvision(ctx context.Context, canonicalEffectKey string) (AllocationProvisionReceiptV1, error) {
+	if controller == nil || controller.store == nil || controller.authority == nil || canonicalEffectKey == "" {
 		return AllocationProvisionReceiptV1{}, ErrInvalid
 	}
 	var result AllocationProvisionReceiptV1
-	err := controller.authority.WithCurrentAllocation(ctx, effectID, func(session AuthoritySession) error {
+	err := controller.authority.WithCurrentAllocation(ctx, canonicalEffectKey, func(session AuthoritySession) error {
 		if session == nil {
 			return ErrAuthorityConflict
 		}
@@ -152,7 +184,7 @@ func (controller *Controller) RecoverProvision(ctx context.Context, effectID str
 			return ErrAuthorityConflict
 		}
 		if snapshot.ProvisionReceipt != nil {
-			if err := controller.store.verifyProvisionReceipt(*snapshot.ProvisionIntent, *snapshot.ProvisionPrepared, *snapshot.ProvisionReceipt); err != nil {
+			if _, err := session.ProjectAndReconcile(ctx, controller.provisionProjectionCommitter()); err != nil {
 				return err
 			}
 			result = *snapshot.ProvisionReceipt
@@ -160,9 +192,18 @@ func (controller *Controller) RecoverProvision(ctx context.Context, effectID str
 		}
 
 		if snapshot.ProvisionPrepared == nil {
+			needsMutation, err := controller.store.provisionNeedsPreparationMutation(*snapshot.ProvisionIntent)
+			if err != nil {
+				return controller.recordProviderFailure(ctx, session, err)
+			}
+			if needsMutation {
+				if err := session.AuthorizeFirstMutation(ctx); err != nil {
+					return err
+				}
+			}
 			prepared, err := controller.store.prepareProvision(*snapshot.ProvisionIntent, snapshot.ProvisionIntentFactDigest)
 			if err != nil {
-				return err
+				return controller.recordProviderFailure(ctx, session, err)
 			}
 			snapshot, err = session.AppendProvisionPrepared(ctx, prepared)
 			if err != nil {
@@ -184,7 +225,7 @@ func (controller *Controller) RecoverProvision(ctx context.Context, effectID str
 		}
 		receipt, err := controller.store.completeProvision(*current.ProvisionIntent, *current.ProvisionPrepared, current.ProvisionPreparedFactDigest)
 		if err != nil {
-			return err
+			return controller.recordProviderFailure(ctx, session, err)
 		}
 		current, err = session.AppendProvisionReceipt(ctx, receipt)
 		if err != nil {
@@ -193,7 +234,7 @@ func (controller *Controller) RecoverProvision(ctx context.Context, effectID str
 		if current.Validate() != nil || current.ProvisionReceipt == nil || !equalCanonical(*current.ProvisionReceipt, receipt) {
 			return ErrAuthorityConflict
 		}
-		if err := controller.store.SyncAuthorityProjection(current.Facts); err != nil {
+		if _, err := session.ProjectAndReconcile(ctx, controller.provisionProjectionCommitter()); err != nil {
 			return err
 		}
 		result = receipt
@@ -202,12 +243,12 @@ func (controller *Controller) RecoverProvision(ctx context.Context, effectID str
 	return result, err
 }
 
-func (controller *Controller) RecoverTerminate(ctx context.Context, effectID string) (AllocationTerminateReceiptV1, error) {
-	if controller == nil || controller.store == nil || controller.authority == nil || !validText(effectID) {
+func (controller *Controller) RecoverTerminate(ctx context.Context, canonicalEffectKey string) (AllocationTerminateReceiptV1, error) {
+	if controller == nil || controller.store == nil || controller.authority == nil || canonicalEffectKey == "" {
 		return AllocationTerminateReceiptV1{}, ErrInvalid
 	}
 	var result AllocationTerminateReceiptV1
-	err := controller.authority.WithCurrentAllocation(ctx, effectID, func(session AuthoritySession) error {
+	err := controller.authority.WithCurrentAllocation(ctx, canonicalEffectKey, func(session AuthoritySession) error {
 		if session == nil {
 			return ErrAuthorityConflict
 		}
@@ -219,7 +260,7 @@ func (controller *Controller) RecoverTerminate(ctx context.Context, effectID str
 			return err
 		}
 		if snapshot.TerminateReceipt != nil {
-			if err := controller.store.verifyTerminateReceipt(*snapshot.TerminateIntent, *snapshot.TerminateReceipt); err != nil {
+			if _, err := session.ProjectAndReconcile(ctx, controller.terminateProjectionCommitter()); err != nil {
 				return err
 			}
 			result = *snapshot.TerminateReceipt
@@ -230,9 +271,18 @@ func (controller *Controller) RecoverTerminate(ctx context.Context, effectID str
 		if err != nil || current.Validate() != nil || current.TerminateIntent == nil || current.TerminateReceipt != nil || !equalCanonical(current.Facts, snapshot.Facts) {
 			return ErrAuthorityConflict
 		}
+		needsMutation, err := controller.store.terminateNeedsMutation(*current.TerminateIntent)
+		if err != nil {
+			return controller.recordProviderFailure(ctx, session, err)
+		}
+		if needsMutation {
+			if err := session.AuthorizeFirstMutation(ctx); err != nil {
+				return err
+			}
+		}
 		receipt, err := controller.store.completeTerminate(*current.TerminateIntent, current.TerminateIntentFactDigest)
 		if err != nil {
-			return err
+			return controller.recordProviderFailure(ctx, session, err)
 		}
 		current, err = session.AppendTerminateReceipt(ctx, receipt)
 		if err != nil {
@@ -241,13 +291,53 @@ func (controller *Controller) RecoverTerminate(ctx context.Context, effectID str
 		if current.Validate() != nil || current.TerminateReceipt == nil || !equalCanonical(*current.TerminateReceipt, receipt) {
 			return ErrAuthorityConflict
 		}
-		if err := controller.store.SyncAuthorityProjection(current.Facts); err != nil {
+		if _, err := session.ProjectAndReconcile(ctx, controller.terminateProjectionCommitter()); err != nil {
 			return err
 		}
 		result = receipt
 		return nil
 	})
 	return result, err
+}
+
+func (controller *Controller) provisionProjectionCommitter() func(AuthoritySnapshot) error {
+	return func(snapshot AuthoritySnapshot) error {
+		if snapshot.Validate() != nil || snapshot.ProvisionIntent == nil || snapshot.ProvisionPrepared == nil || snapshot.ProvisionReceipt == nil {
+			return ErrAuthorityConflict
+		}
+		if err := controller.store.SyncAuthorityProjection(snapshot.Facts); err != nil {
+			return err
+		}
+		return controller.store.verifyProvisionReceipt(*snapshot.ProvisionIntent, *snapshot.ProvisionPrepared, *snapshot.ProvisionReceipt)
+	}
+}
+
+func (controller *Controller) terminateProjectionCommitter() func(AuthoritySnapshot) error {
+	return func(snapshot AuthoritySnapshot) error {
+		if snapshot.Validate() != nil || snapshot.TerminateIntent == nil || snapshot.TerminateReceipt == nil {
+			return ErrAuthorityConflict
+		}
+		if err := controller.store.SyncAuthorityProjection(snapshot.Facts); err != nil {
+			return err
+		}
+		return controller.store.verifyTerminateReceipt(*snapshot.TerminateIntent, *snapshot.TerminateReceipt)
+	}
+}
+
+func (controller *Controller) recordProviderFailure(ctx context.Context, session AuthoritySession, cause error) error {
+	kind := AuthorityFailureKind("")
+	switch {
+	case errors.Is(cause, ErrFilesystemConflict), errors.Is(cause, ErrAuthorityConflict):
+		kind = AuthorityFailureConflict
+	case errors.Is(cause, ErrFilesystemUnknown):
+		kind = AuthorityFailureUnknown
+	default:
+		return cause
+	}
+	if err := session.RecordIntervention(ctx, kind); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
 }
 
 // PrepareTerminateIntent re-observes the live directory and identity marker
