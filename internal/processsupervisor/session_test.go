@@ -139,14 +139,15 @@ func TestReconnectRequiresAuthorityHeadAdvanceAndOwnerProof(t *testing.T) {
 func TestReconnectPendingStateIsClosedBeforeOwnerAdvance(t *testing.T) {
 	for _, state := range []ReconciliationState{ReconciliationUnchanged, ReconciliationIntentPending, ReconciliationReceiptCommitted} {
 		t.Run(string(state), func(t *testing.T) {
+			now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
 			bootstrap := validBootstrap()
 			journal, _ := testJournal(t)
-			session, err := NewSession(bootstrap, journal, fakeMechanics{}, time.Now)
+			session, err := NewSession(bootstrap, journal, fakeMechanics{}, func() time.Time { return now })
 			if err != nil {
 				t.Fatal(err)
 			}
 			commandSequence, commandHead, journalSequence, journalHead := session.Snapshot()
-			pending := commandRequest(t, bootstrap.SessionID, CommandAbortUnbound, "abort-reconnect", 1, commandHead, bootstrap.CurrentAuthorityHead, time.Now().UTC().Add(time.Minute), AbortUnboundPayload{OwnerEpoch: bootstrap.OwnerEpoch, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, AuthorityAbsenceProofDigest: digest("7")})
+			pending := commandRequest(t, bootstrap.SessionID, CommandAbortUnbound, "abort-reconnect", 1, commandHead, bootstrap.CurrentAuthorityHead, now.Add(20*time.Second), AbortUnboundPayload{OwnerEpoch: bootstrap.OwnerEpoch, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, AuthorityAbsenceProofDigest: digest("7")})
 			projection, _, err := projectRequest(pending)
 			if err != nil {
 				t.Fatal(err)
@@ -178,18 +179,19 @@ func TestReconnectPendingStateIsClosedBeforeOwnerAdvance(t *testing.T) {
 		})
 	}
 
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
 	bootstrap := validBootstrap()
 	journal, _ := testJournal(t)
-	session, err := NewSession(bootstrap, journal, fakeMechanics{}, time.Now)
+	session, err := NewSession(bootstrap, journal, fakeMechanics{}, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
 	commandSequence, commandHead, journalSequence, journalHead := session.Snapshot()
-	original := commandRequest(t, bootstrap.SessionID, CommandAbortUnbound, "abort-conflict", 1, commandHead, bootstrap.CurrentAuthorityHead, time.Now().UTC().Add(time.Minute), AbortUnboundPayload{OwnerEpoch: bootstrap.OwnerEpoch, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, AuthorityAbsenceProofDigest: digest("4")})
+	original := commandRequest(t, bootstrap.SessionID, CommandAbortUnbound, "abort-conflict", 1, commandHead, bootstrap.CurrentAuthorityHead, now.Add(20*time.Second), AbortUnboundPayload{OwnerEpoch: bootstrap.OwnerEpoch, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, AuthorityAbsenceProofDigest: digest("4")})
 	if response := session.Handle(mustCanonical(original)); response.Status != "ok" {
 		t.Fatal("fixture command rejected")
 	}
-	changed := commandRequest(t, bootstrap.SessionID, CommandAbortUnbound, "abort-conflict", 1, commandHead, bootstrap.CurrentAuthorityHead, time.Now().UTC().Add(time.Minute), AbortUnboundPayload{OwnerEpoch: bootstrap.OwnerEpoch, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, AuthorityAbsenceProofDigest: digest("5")})
+	changed := commandRequest(t, bootstrap.SessionID, CommandAbortUnbound, "abort-conflict", 1, commandHead, bootstrap.CurrentAuthorityHead, now.Add(20*time.Second), AbortUnboundPayload{OwnerEpoch: bootstrap.OwnerEpoch, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, AuthorityAbsenceProofDigest: digest("5")})
 	request := ReconnectRequest{
 		SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce,
 		PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 1, PreviousAuthorityHead: session.authorityHead, CurrentAuthorityHead: digest("8"), ControlOwnerAcquired: digest("9"), Core: bootstrap.Core,
@@ -312,9 +314,16 @@ func TestReconnectSeparatesA0JournalBaseFromAtRequestProjection(t *testing.T) {
 					t.Fatalf("resume response=%+v", response)
 				}
 			}
+			previousAuthorityHead := a0
+			if state == ReconciliationReceiptCommitted {
+				previousAuthorityHead = at
+			}
+			if session.authorityHead != previousAuthorityHead {
+				t.Fatalf("fixture current authority=%s want=%s", session.authorityHead, previousAuthorityHead)
+			}
 			request := ReconnectRequest{
 				SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce,
-				PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 1, PreviousAuthorityHead: at, CurrentAuthorityHead: digest("8"), ControlOwnerAcquired: digest("9"), Core: bootstrap.Core,
+				PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 1, PreviousAuthorityHead: previousAuthorityHead, CurrentAuthorityHead: digest("8"), ControlOwnerAcquired: digest("9"), Core: bootstrap.Core,
 				LastOwnerEpoch: bootstrap.OwnerEpoch, LastAuthorityHead: a0, LastCommandSequence: commandSequence, LastCommandHead: commandHead, LastJournalSequence: journalSequence, LastJournalHead: journalHead, PendingRequest: &pending,
 			}
 			resolution, err := session.Reconnect(request, bootstrap.Core)

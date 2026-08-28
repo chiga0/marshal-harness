@@ -14,6 +14,8 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 )
 
+const fixtureObservedAt = "2026-08-29T01:02:03Z"
+
 func TestClientDoValidatesExactResponseAndAllowsOnlyExactPendingReplay(t *testing.T) {
 	clientSide, serverSide := net.Pipe()
 	defer serverSide.Close()
@@ -60,6 +62,7 @@ func TestClientDoKeepsJournalBaseA0WhileOrdinaryCommandAdvancesToAt(t *testing.T
 	at := digest("d")
 	server := mustClientCodec(t, serverSide)
 	done := make(chan error, 1)
+	served := make(chan Response, 1)
 	go func() {
 		var request Request
 		if err := server.Read(&request); err != nil {
@@ -70,7 +73,9 @@ func TestClientDoKeepsJournalBaseA0WhileOrdinaryCommandAdvancesToAt(t *testing.T
 			done <- errors.New("request did not carry At")
 			return
 		}
-		done <- server.Write(clientResponse(t, request))
+		response := clientResponse(t, request)
+		served <- response
+		done <- server.Write(response)
 	}()
 	options := CommandOptions{Command: CommandResume, CommandID: "resume-authority-advance", Sequence: 1, PreviousCommandDigest: a0.CommandHead, CurrentAuthorityHead: at, Deadline: time.Now().UTC().Add(20 * time.Second)}
 	if _, err := client.Do(context.Background(), options, ResumePayload{ProcessStartedFactDigest: digest("e")}); err != nil {
@@ -87,7 +92,7 @@ func TestClientDoKeepsJournalBaseA0WhileOrdinaryCommandAdvancesToAt(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := clientResponse(t, request)
+	response := <-served
 	_, rightHead, err := expectedPendingJournalHeads(a0, request, &response)
 	if err != nil || got.JournalHead != rightHead {
 		t.Fatalf("A0 journal head=%s got=%s err=%v", rightHead, got.JournalHead, err)
@@ -569,7 +574,7 @@ func validClientHandshake() HandshakeResponse {
 	return HandshakeResponse{
 		SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready",
 		SessionID: bootstrap.SessionID, SessionNonceDigest: digest("1"), OwnerEpoch: bootstrap.OwnerEpoch, CurrentAuthorityHead: bootstrap.CurrentAuthorityHead,
-		CommandHead: CommandGenesisDigest, JournalSequence: 1, JournalHead: digest("2"), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		CommandHead: CommandGenesisDigest, JournalSequence: 1, JournalHead: digest("2"), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: fixtureObservedAt,
 		SupervisorProcess: bootstrap.Core.Process, SupervisorBinary: bootstrap.Core.Binary, ControlSocket: socket,
 	}
 }
@@ -627,7 +632,7 @@ func clientResponse(t *testing.T, request Request) Response {
 			state = "terminal"
 		}
 		reason = "process-observed"
-		report := ProcessReport{State: state, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Process: validBootstrap().Core.Process, RuntimeObjectDigest: digest("a"), WorkingObjectDigest: digest("b")}
+		report := ProcessReport{State: state, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: fixtureObservedAt, Process: validBootstrap().Core.Process, RuntimeObjectDigest: digest("a"), WorkingObjectDigest: digest("b")}
 		if request.Command == CommandCollect {
 			report.StdoutDigest, report.StderrDigest = digest("c"), digest("d")
 		}
