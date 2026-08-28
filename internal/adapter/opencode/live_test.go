@@ -56,7 +56,8 @@ func TestLiveOpenCode(t *testing.T) {
 	}
 	request := map[string]any{
 		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerRequest", "taskId": "TASK-LIVE", "runId": "run-live", "attemptId": "attempt-live", "attemptNumber": 1,
-		"specDigest": digest("a"), "policyDigest": digest("b"), "capabilityDigest": digest("c"), "baseSha": strings.Repeat("1", 40),
+		"specDigest": digest("a"), "policyDigest": digest("b"), "capabilityDigest": digest("c"),
+		"agentRegistrationId": "registration:aaaaaaaa", "agentCapabilitySnapshotDigest": digest("d"), "baseSha": strings.Repeat("1", 40),
 		"worktreePath": worktree, "controlRoot": controlRoot, "taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
 		"adapterId": "opencode", "executionProfile": "workspace-write", "sessionPolicy": "ephemeral", "attemptTimeoutSeconds": 180, "maxOutputBytes": 5 << 20, "reviewFindings": []any{},
 	}

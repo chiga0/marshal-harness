@@ -54,18 +54,6 @@ type agentSnapshotFact struct {
 	Digest   string                  `json:"digest"`
 }
 
-// agentSnapshotActivatedFact 显式记录历史 snapshot 再次成为 current 的
-// 单调 epoch。A→B→A 不是 capture 幂等重放；它必须追加新事实，避免 producer
-// 误以为 A 已恢复而 current 仍停在 B。
-type agentSnapshotActivatedFact struct {
-	FactType               string `json:"factType"`
-	Sequence               int64  `json:"sequence"`
-	RegistrationID         string `json:"registrationId"`
-	SnapshotDigest         string `json:"snapshotDigest"`
-	PreviousSnapshotDigest string `json:"previousSnapshotDigest"`
-	Digest                 string `json:"digest"`
-}
-
 // AgentLedger 是 agent registration + lifecycle + capability snapshot 的耐久 append-only 账本
 // （R2 纵切）。与 dispatch.LeaseLedger 同构：每条 fact 一行 RFC 8785 JCS
 // 规范 JSON + detached digest + 单调序列号；崩溃/重启由 NewAgentLedger
@@ -318,21 +306,9 @@ func (l *AgentLedger) AddSnapshot(snap AgentCapabilitySnapshot) (*AgentCapabilit
 		if existingErr != nil || incomingErr != nil || existingDigest != incomingDigest {
 			return nil, fmt.Errorf("agentregistry: SnapshotDigest %q reused with different content (conflict)", snap.SnapshotDigest)
 		}
-		if l.activeSnapshot[snap.RegistrationID] != snap.SnapshotDigest {
-			fact := &agentSnapshotActivatedFact{
-				FactType:               agentFactTypeActivated,
-				Sequence:               l.nextSequence,
-				RegistrationID:         snap.RegistrationID,
-				SnapshotDigest:         snap.SnapshotDigest,
-				PreviousSnapshotDigest: l.activeSnapshot[snap.RegistrationID],
-			}
-			if err := l.appendLine(fact,
-				func() string { return fact.Digest },
-				func(d string) error { fact.Digest = d; return nil }); err != nil {
-				return nil, err
-			}
-			l.activeSnapshot[snap.RegistrationID] = snap.SnapshotDigest
-			l.nextSequence++
+		if snap.SnapshotState == SnapshotStateActive && l.activeSnapshot[snap.RegistrationID] != snap.SnapshotDigest {
+			current := l.activeSnapshot[snap.RegistrationID]
+			return nil, fmt.Errorf("agentregistry: historical SnapshotDigest %q cannot be reactivated after current changed to %q", snap.SnapshotDigest, current)
 		}
 		copy := *existing
 		return &copy, nil
@@ -500,26 +476,7 @@ func (l *AgentLedger) applyLine(line []byte) error {
 			l.activeSnapshot[snap.RegistrationID] = snap.SnapshotDigest
 		}
 	case agentFactTypeActivated:
-		var fact agentSnapshotActivatedFact
-		if err := json.Unmarshal(line, &fact); err != nil {
-			return err
-		}
-		storedDigest := fact.Digest
-		fact.Digest = ""
-		if digest, err := digestOf(&fact); err != nil || digest != storedDigest {
-			return fmt.Errorf("digest mismatch on %s fact", agentFactTypeActivated)
-		}
-		if fact.RegistrationID == "" || fact.SnapshotDigest == "" || fact.PreviousSnapshotDigest == "" {
-			return fmt.Errorf("malformed %s fact", agentFactTypeActivated)
-		}
-		snap, ok := l.snapshots[fact.SnapshotDigest]
-		if !ok || snap.RegistrationID != fact.RegistrationID || snap.SnapshotState != SnapshotStateActive {
-			return fmt.Errorf("activation references unknown or ineligible snapshot %q", fact.SnapshotDigest)
-		}
-		if current := l.activeSnapshot[fact.RegistrationID]; current != fact.PreviousSnapshotDigest {
-			return fmt.Errorf("snapshot activation current mismatch: got %q want %q", current, fact.PreviousSnapshotDigest)
-		}
-		l.activeSnapshot[fact.RegistrationID] = fact.SnapshotDigest
+		return fmt.Errorf("historical %s fact is unsupported because it can revive stale attempt authority", agentFactTypeActivated)
 	default:
 		return fmt.Errorf("unknown agent ledger fact type %q", head.FactType)
 	}

@@ -511,6 +511,29 @@ func TestRegistry_ActiveSnapshot(t *testing.T) {
 	}
 }
 
+func TestRegistry_SnapshotABARejectsHistoricalReactivation(t *testing.T) {
+	r := NewRegistry()
+	reg := validReg()
+	if _, err := r.Register(reg); err != nil {
+		t.Fatal(err)
+	}
+	a := validSnap(reg.RegistrationID, validDigest)
+	b := validSnap(reg.RegistrationID, validDigest2)
+	if _, err := r.AddSnapshot(a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.AddSnapshot(b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.AddSnapshot(a); err == nil || !strings.Contains(err.Error(), "cannot be reactivated") {
+		t.Fatalf("A→B→A must fail closed, got %v", err)
+	}
+	current, err := r.ActiveSnapshot(reg.RegistrationID)
+	if err != nil || current.SnapshotDigest != b.SnapshotDigest {
+		t.Fatalf("rejected A reactivation changed current authority: snap=%+v err=%v", current, err)
+	}
+}
+
 func TestRegistry_ActiveSnapshot_BindingMismatch(t *testing.T) {
 	r := NewRegistry()
 	reg := validReg()

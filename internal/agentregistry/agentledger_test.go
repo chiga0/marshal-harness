@@ -187,7 +187,7 @@ func TestAgentLedgerCurrentAuthorityRefreshesAcrossOpenInstances(t *testing.T) {
 	}
 }
 
-func TestAgentLedgerSnapshotABAAppendsActivationEpoch(t *testing.T) {
+func TestAgentLedgerSnapshotABARejectsHistoricalReactivation(t *testing.T) {
 	dir := t.TempDir()
 	ledger, err := NewAgentLedger(dir)
 	if err != nil {
@@ -199,21 +199,24 @@ func TestAgentLedgerSnapshotABAAppendsActivationEpoch(t *testing.T) {
 	}
 	a := validSnap(reg.RegistrationID, validDigest)
 	b := validSnap(reg.RegistrationID, validDigest2)
-	for _, snap := range []AgentCapabilitySnapshot{a, b, a} {
+	for _, snap := range []AgentCapabilitySnapshot{a, b} {
 		if _, err := ledger.AddSnapshot(snap); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if _, err := ledger.AddSnapshot(a); err == nil || !strings.Contains(err.Error(), "cannot be reactivated") {
+		t.Fatalf("A→B→A must fail closed so an epoch-1 Attempt cannot revive, got %v", err)
+	}
 	_, current, err := ledger.CurrentAuthority(reg.RegistrationID)
-	if err != nil || current.SnapshotDigest != a.SnapshotDigest {
-		t.Fatalf("A→B→A did not restore A as current: snap=%+v err=%v", current, err)
+	if err != nil || current.SnapshotDigest != b.SnapshotDigest {
+		t.Fatalf("rejected A reactivation changed current authority: snap=%+v err=%v", current, err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, agentLedgerFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"factType":"agent-capability-snapshot-activated"`) {
-		t.Fatalf("A→B→A did not append an explicit activation epoch: %s", raw)
+	if strings.Contains(string(raw), `"factType":"agent-capability-snapshot-activated"`) {
+		t.Fatalf("rejected A reactivation appended an activation fact: %s", raw)
 	}
 }
 

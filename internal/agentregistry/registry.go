@@ -209,6 +209,19 @@ func (r *Registry) AddSnapshot(snap AgentCapabilitySnapshot) (*AgentCapabilitySn
 	if _, ok := r.registrations[snap.RegistrationID]; !ok {
 		return nil, fmt.Errorf("agentregistry: registration %q not found; cannot add snapshot", snap.RegistrationID)
 	}
+	if existing, ok := r.snapshots[snap.SnapshotDigest]; ok {
+		existingDigest, existingErr := existing.Digest()
+		incomingDigest, incomingErr := snap.Digest()
+		if existingErr != nil || incomingErr != nil || existingDigest != incomingDigest {
+			return nil, fmt.Errorf("agentregistry: SnapshotDigest %q reused with different content (conflict)", snap.SnapshotDigest)
+		}
+		if snap.SnapshotState == SnapshotStateActive && r.activeSnapshot[snap.RegistrationID] != snap.SnapshotDigest {
+			current := r.activeSnapshot[snap.RegistrationID]
+			return nil, fmt.Errorf("agentregistry: historical SnapshotDigest %q cannot be reactivated after current changed to %q", snap.SnapshotDigest, current)
+		}
+		stored := *existing
+		return &stored, nil
+	}
 	stored := snap
 	r.snapshots[snap.SnapshotDigest] = &stored
 	if snap.SnapshotState == SnapshotStateActive {

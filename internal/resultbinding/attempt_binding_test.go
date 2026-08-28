@@ -176,7 +176,7 @@ func TestOrdinaryUserAdmissionDoesNotForgeConformanceEvidence(t *testing.T) {
 		active:       true, agentActive: true,
 	}
 	admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{"kind":"WorkerResult"}`), auth, sandbox.AllocationActive)
-	if err != nil || admission == nil || !admission.Accepted || !admission.EvidenceOK {
+	if err != nil || admission == nil || !admission.Accepted || admission.EvidenceRequired || admission.EvidenceOK || admission.EvidenceReason != "not-required-for-ordinary-user" {
 		t.Fatalf("ordinary-user admission must rely on Core binding without forged conformance: admission=%+v err=%v", admission, err)
 	}
 }
@@ -189,7 +189,7 @@ func TestHardenedAdmissionRequiresIndependentConformanceEvidence(t *testing.T) {
 		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
 		active:       true, agentActive: true, facts: &facts,
 	}
-	if admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{"kind":"WorkerResult"}`), auth, sandbox.AllocationActive); err == nil || admission != nil {
+	if admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{"kind":"WorkerResult"}`), auth, sandbox.AllocationActive); err == nil || admission == nil || admission.Accepted || !admission.EvidenceRequired || admission.EvidenceOK {
 		t.Fatalf("hardened admission without independent evidence must fail closed: admission=%+v err=%v", admission, err)
 	}
 	reg, snap, err := auth.AgentAuthority(facts.AgentRegistrationID)
@@ -200,8 +200,8 @@ func TestHardenedAdmissionRequiresIndependentConformanceEvidence(t *testing.T) {
 	auth.agentReg = &reg
 	auth.agentSnap = &snap
 	admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{"kind":"WorkerResult"}`), auth, sandbox.AllocationActive)
-	if err != nil || admission == nil || !admission.Accepted || !admission.EvidenceOK {
-		t.Fatalf("hardened admission with independent evidence failed: admission=%+v err=%v", admission, err)
+	if err == nil || admission == nil || admission.Accepted || !admission.EvidenceRequired || admission.EvidenceOK || admission.EvidenceReason != "independent-conformance-authority-unavailable" {
+		t.Fatalf("snapshot-carried evidence must not self-authorize hardened admission: admission=%+v err=%v", admission, err)
 	}
 }
 

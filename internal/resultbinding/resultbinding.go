@@ -291,6 +291,7 @@ type Admission struct {
 	SandboxOK        bool     `json:"sandboxSideOk"`
 	AgentReasons     []string `json:"agentSideReasons,omitempty"`
 	SandboxReasons   []string `json:"sandboxSideReasons,omitempty"`
+	EvidenceRequired bool     `json:"evidenceRequired"`
 	EvidenceOK       bool     `json:"evidenceOk"`
 	EvidenceReason   string   `json:"evidenceReason,omitempty"`
 }

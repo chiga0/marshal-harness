@@ -299,40 +299,26 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 	if err != nil {
 		return nil, err
 	}
-	store := attemptgate.NewAttemptProfileStore()
-	if err := store.Bind(facts.AttemptID, profile); err != nil {
-		return nil, fmt.Errorf("resultbinding: bind attempt profile: %w", err)
-	}
-	gate, err := attemptgate.NewGate(store, checker, registry)
-	if err != nil {
-		return nil, fmt.Errorf("resultbinding: %w", err)
-	}
+	// 所有 profile 都先完成双 binding current-ledger recheck。ordinary-user
+	// 不要求 ConformanceEvidence（ADR 0051），但必须显式记录 N/A，不能把
+	// Core binding digest 冒充为 evidence 已验证。hardened 在独立、可撤销、
+	// 可过期的 ConformanceEvidence authority ledger 接线前一律 fail closed；
+	// Adapter CapabilitySnapshot 携带的字段不能自证。
+	recheck, recheckErr := checker.Recheck(profile)
 	var decision attemptgate.Decision
-	if facts.ExecutionProfile == "hardened" {
-		currentSnapshot, snapshotErr := registry.ActiveSnapshot(facts.EffectiveAgentRegistrationID())
-		if snapshotErr != nil || len(currentSnapshot.ConformanceEvidenceDigests) == 0 {
-			return nil, fmt.Errorf("resultbinding: %w: hardened result requires independent conformance evidence", ErrAdmissionRejected)
-		}
-		// 当前 schema 的 production producer 只投影一个 current evidence
-		// digest；它来自独立 conformance authority，而非 snapshot 自身。
-		presentedEvidence := currentSnapshot.ConformanceEvidenceDigests[0]
-		decision, err = gate.AdmitAttemptResult(facts.AttemptID, presentedEvidence)
-		authorityEvidenceDigest = presentedEvidence
+	if recheckErr != nil {
+		err = fmt.Errorf("resultbinding: binding recheck failed: %w", recheckErr)
 	} else {
-		// ADR 0051 ordinary-user 明确禁止 conformanceEvidenceDigest。该 profile
-		// 仍执行完整双 binding current-ledger recheck，但不伪造 hardened
-		// evidence；ResultIngress 的 EvidenceDigest 绑定 Core-owned immutable
-		// AttemptBinding digest。
-		recheck, recheckErr := checker.Recheck(profile)
-		if recheckErr != nil {
-			err = fmt.Errorf("resultbinding: binding recheck failed: %w", recheckErr)
-		} else {
-			decision = attemptgate.Decision{
-				AttemptID: facts.AttemptID, ProfileDigest: profile.ProfileDigest,
-				Agent: recheck.Agent, Sandbox: recheck.Sandbox,
-				EvidenceOK: true, Accepted: recheck.Accepted(),
-			}
+		decision = attemptgate.Decision{
+			AttemptID: facts.AttemptID, ProfileDigest: profile.ProfileDigest,
+			Agent: recheck.Agent, Sandbox: recheck.Sandbox,
+			EvidenceOK: false, Accepted: recheck.Accepted(),
 		}
+	}
+	evidenceRequired := facts.ExecutionProfile == "hardened"
+	if evidenceRequired {
+		decision.Accepted = false
+		err = fmt.Errorf("resultbinding: hardened result requires an independent current ConformanceEvidence authority; producer is not wired")
 	}
 	admission := &Admission{AttemptID: facts.AttemptID}
 	if decision.ProfileDigest != "" {
@@ -347,9 +333,12 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 	for _, r := range decision.Sandbox.Reasons {
 		admission.SandboxReasons = append(admission.SandboxReasons, string(r))
 	}
-	admission.EvidenceOK = decision.EvidenceOK
-	if decision.EvidenceReason != "" {
-		admission.EvidenceReason = string(decision.EvidenceReason)
+	admission.EvidenceRequired = evidenceRequired
+	admission.EvidenceOK = false
+	if evidenceRequired {
+		admission.EvidenceReason = "independent-conformance-authority-unavailable"
+	} else {
+		admission.EvidenceReason = "not-required-for-ordinary-user"
 	}
 	if err != nil {
 		admission.AdmissionReason = err.Error()

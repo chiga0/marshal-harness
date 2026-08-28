@@ -26,7 +26,8 @@ import (
 //
 // 启用方式（默认跳过）：
 //
-//	MARSHAL_RUN_PI_CANARY=1 MARSHAL_E2E_BINARY=<固定 bin/marshal> \
+//	MARSHAL_RUN_PI_CANARY=1 MARSHAL_EMBEDDED_SANDBOX=1 \
+//	MARSHAL_E2E_BINARY=<固定 bin/marshal> MARSHAL_E2E_EXPECTED_SOURCE_HEAD=<40hex> \
 //	MARSHAL_PI_PATH=<pi cli 真实路径> MARSHAL_E2E_PI_VERSION=<固定版本> \
 //	MARSHAL_E2E_PI_MODEL=<固定 provider/model> \
 //	  <固定 cli test binary> -test.run TestRealPiStrictE2E -test.count=1 -test.v
@@ -39,7 +40,7 @@ func TestRealPiStrictE2E(t *testing.T) {
 	// 而不是退回非生产的 seed 路径——非 embedded 缺 AttemptBinding 是门禁
 	// 降级，不得作为「成功」证据。
 	if os.Getenv("MARSHAL_EMBEDDED_SANDBOX") != "1" {
-		t.Skip("strict E2E requires MARSHAL_EMBEDDED_SANDBOX=1 (production durable-authority path)")
+		t.Fatal("strict E2E requires MARSHAL_EMBEDDED_SANDBOX=1 (production durable-authority path)")
 	}
 	piPath := os.Getenv("MARSHAL_PI_PATH")
 	if piPath == "" {
@@ -50,23 +51,27 @@ func TestRealPiStrictE2E(t *testing.T) {
 	}
 	piModel := strings.TrimSpace(os.Getenv("MARSHAL_E2E_PI_MODEL"))
 	if piModel == "" {
-		t.Skip("MARSHAL_E2E_PI_MODEL must freeze the exact provider/model")
+		t.Fatal("MARSHAL_E2E_PI_MODEL must freeze the exact provider/model")
 	}
 	piVersion := strings.TrimSpace(os.Getenv("MARSHAL_E2E_PI_VERSION"))
 	if piVersion == "" {
-		t.Skip("MARSHAL_E2E_PI_VERSION must freeze the exact Pi identity")
+		t.Fatal("MARSHAL_E2E_PI_VERSION must freeze the exact Pi identity")
+	}
+	expectedSourceHead := strings.TrimSpace(os.Getenv("MARSHAL_E2E_EXPECTED_SOURCE_HEAD"))
+	if len(expectedSourceHead) != 40 || strings.Trim(expectedSourceHead, "0123456789abcdef") != "" {
+		t.Fatal("MARSHAL_E2E_EXPECTED_SOURCE_HEAD must freeze the exact 40-hex source commit")
 	}
 	marshalPath := strings.TrimSpace(os.Getenv("MARSHAL_E2E_BINARY"))
 	if !filepath.IsAbs(marshalPath) || filepath.Clean(marshalPath) != marshalPath {
-		t.Skip("MARSHAL_E2E_BINARY must be an absolute clean path")
+		t.Fatal("MARSHAL_E2E_BINARY must be an absolute clean path")
 	}
 	resolvedMarshal, err := filepath.EvalSymlinks(marshalPath)
 	if err != nil || resolvedMarshal != marshalPath {
-		t.Skip("MARSHAL_E2E_BINARY must name a fixed non-symlink object")
+		t.Fatal("MARSHAL_E2E_BINARY must name a fixed non-symlink object")
 	}
 	marshalInfo, err := os.Stat(marshalPath)
 	if err != nil || !marshalInfo.Mode().IsRegular() || marshalInfo.Mode().Perm()&0o111 == 0 {
-		t.Skip("MARSHAL_E2E_BINARY must be an executable regular file")
+		t.Fatal("MARSHAL_E2E_BINARY must be an executable regular file")
 	}
 
 	repositoryRoot := t.TempDir()
@@ -92,7 +97,7 @@ func TestRealPiStrictE2E(t *testing.T) {
 		SelfProfile string `json:"selfProfile"`
 	}
 	if err := json.Unmarshal([]byte(versionJSON), &version); err != nil || version.SelfProfile != "darwin-local-dogfood" ||
-		len(version.Commit) != 40 || strings.Trim(version.Commit, "0123456789abcdef") != "" {
+		version.Commit != expectedSourceHead {
 		t.Fatalf("MARSHAL_E2E_BINARY lacks exact local-dogfood build identity: output=%s err=%v", versionJSON, err)
 	}
 	activationPath := filepath.Join(t.TempDir(), "local-dogfood-activation.json")
@@ -413,7 +418,7 @@ func TestRealPiStrictE2E(t *testing.T) {
 		t.Fatalf("ReviewPacket generation did not remain fail-closed at REVIEW_PENDING: output=%s err=%v", postPacketJSON, err)
 	}
 	t.Logf("✓ formal ReviewPacket generated and current: digest=%s", reviewResult.PacketDigest)
-	t.Skipf("strict production chain reached external independent-review boundary; no ReviewProvider/reviewer executor exists to create an attributable ReviewDecision for packet %s, so terminal Outcome remains fail-closed", reviewResult.PacketDigest)
+	t.Logf("✓ strict production chain reached the external independent-review boundary; no ReviewProvider/reviewer executor exists, so this canary intentionally passes at REVIEW_PENDING without claiming terminal ACCEPTED: packet=%s", reviewResult.PacketDigest)
 }
 
 type strictE2ECommandResult struct {

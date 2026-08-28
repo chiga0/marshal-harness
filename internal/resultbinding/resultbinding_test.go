@@ -42,7 +42,7 @@ func TestAdmitWorkerResultPositive(t *testing.T) {
 	if admission.AdmissionFact == "" || admission.DrcDigest == "" || admission.ProfileDigest == "" {
 		t.Errorf("anchor fields incomplete: %+v", admission)
 	}
-	if !admission.AgentOK || !admission.SandboxOK || !admission.EvidenceOK {
+	if !admission.AgentOK || !admission.SandboxOK || admission.EvidenceRequired || admission.EvidenceOK || admission.EvidenceReason != "not-required-for-ordinary-user" {
 		t.Errorf("side flags = %+v", admission)
 	}
 	if admission.RegistrationID == "" || !strings.HasPrefix(admission.RegistrationID, "registration:") {
