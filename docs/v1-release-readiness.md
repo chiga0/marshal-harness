@@ -11,7 +11,7 @@
 1. `main@44ee8c9` 合入 durable `marshal-server` start/status/recovery controller。
 2. `main@d4b9647` 合入 production selector 的组件门禁：production profile 只放行 `LaunchCapable` Provider，ordinary workspace Adapter 不得静默降级；但当前 release canary 仍通过 `MARSHAL_EMBEDDED_SANDBOX=1` 选择路径，ADR 0057 要求的唯一 `ProductionRuntime/PublicApplicationPort` composition 尚未收敛。
 3. `main@912f659` 合入 ResultIngress admission→worker-result→Run journal 的 crash-atomic 持久化和恢复；replay/idempotency 不再是进程内唯一真值。
-4. `main@ecee8d4` 接受 [ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md)，冻结 Darwin ordinary-user 的 Core-owned process observation 与 Attempt terminalization 合同；实现和 production composition-root 接线仍开放。
+4. `main@ecee8d4` 接受 [ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md)，冻结 Darwin ordinary-user 的 Core-owned process observation 与 Attempt terminalization 合同；RB2/B2 预审随后确认直接 `PT_TRACE_ME` 启动者无法把 wait right、held FD 与 pipe 转移给重启 Core，[ADR 0059](adr/0059-fixed-darwin-process-supervisor.md) 正提议固定 per-Attempt supervisor，提议未接受/实现前恢复门禁仍开放。
 5. `main@7651bc4` 合入 durable Attempt authority 与 ResultIngress eligibility barrier；`main@64ec359` 合入 durable effect intent/receipt/recovery authority。它们关闭了 component 级持久化缺口，但没有自动完成真实 process lifecycle/composition cutover。
 6. `main@94ba223` 接受 [ADR 0058](adr/0058-interpreted-agent-launch-identity.md)，冻结解释器真实 process image 与 provider materials closure 合同；Accepted 只表示设计冻结，`ExecutableGID`、`LaunchMaterialsDigest` 等字段和生产接线尚未实现。
 7. 前置 Pi `0.84.3` fixed-bin canary 绑定 `sourceHead=d4b9647`，单 Attempt 通过 9 项 Gate，到达 ReviewPacket/`REVIEW_PENDING`。它没有导入独立 ReviewDecision，没有进入 `ACCEPTED`，也不是当前 `main` 的最终发布证据。
@@ -28,7 +28,7 @@
 | 5 | 可判定 cancel、timeout、retry、terminal 与 Outcome 语义 | `COMPONENT` | 既有状态机与恢复决策可用；ADR 0056 实现未完成 eligibility terminal→process cleanup→unlock/successor 的唯一顺序。 |
 | 6 | 独立 Verification；发布仅 none / Draft PR，不 auto-merge | `INTEGRATED` | Local MVP 的独立 Verification 和发布权限分离已有生产路径；本次 Pi canary 仅到 `REVIEW_PENDING`，不是终态 Decision 证据。 |
 | 7 | loopback `marshal-server` 能 start/cancel/query/restore 真实 Run | `COMPONENT` | controller 已于 `44ee8c9` 合入且 production selector 已于 `d4b9647` fail closed；还需在 ADR 0056 实现后重跑 server crash/lost worker/failed worker 终验。 |
-| 8 | kill/restart/lost-response/stale/binding-drift 故障注入与恢复测试 | `COMPONENT` | 组件级 fixture 与 `912f659` 原子恢复回归已存在；尚缺 process identity conflict、detach、cross-orchestration zero-kill 及 cleanup crash 的真实 Darwin 纵切。 |
+| 8 | kill/restart/lost-response/stale/binding-drift 故障注入与恢复测试 | `COMPONENT` | 组件级 fixture 与 `912f659` 原子恢复回归已存在；直接 `PT_TRACE_ME` 不能跨 Core 转移 wait right/FD/pipe，尚须接受并实现 ADR 0059，且补 process identity conflict、supervisor crash、detach、cross-orchestration zero-kill 及 cleanup crash 的真实 Darwin 纵切。 |
 | 9 | macOS/Linux 稳定安装产物；macOS 须 signing/notarization/release identity 门禁 | `OPEN` | unsigned prerelease 路径可验证，但 RC 尚未发布。稳定版在 Issue #212 和 Linux stable gate 全绿前 fail closed。 |
 
 ## 现行阶段与最短剩余路径
@@ -38,7 +38,7 @@
 - `I186-R2–R5: IN_PROGRESS/COMPONENT`。
 - `I186-R6: PLANNED/DESIGN`。
 
-最短路径：以 `64ec359` 的 durable Attempt/effect authority 为当前基线，完成 ADR 0056/0057/0058 的 Core-owned process observation、terminalization、解释器 materials closure 与唯一 production composition，并接入 `44ee8c9` server controller → 从最终 `main` 生成确定性 `dist`，让固定 `bin/marshal` 使用待发布 Darwin arm64 资产的 exact bytes，重跑 Pi canary并导入独立 ReviewDecision到 `ACCEPTED` → 以 annotated tag 冻结 candidate manifest/asset SHA，由 release runner 对同 sourceHead 跨主机重建并逐 SHA fail-closed 对比 → 发布 unsigned RC → 关闭 Issue #212 与 Linux stable gate 后才发布稳定 `v1.*`。
+最短路径：以 durable Attempt/effect/allocation authority 为当前基线，先接受并实现 ADR 0059 的固定 supervisor 与 Core 重连，再完成 ADR 0056/0057/0058 的 process observation、terminalization、解释器 materials closure 与唯一 production composition，并接入 `44ee8c9` server controller → 从最终 `main` 生成确定性 `dist`，让固定 `bin/marshal` 使用待发布 Darwin arm64 资产的 exact bytes，重跑 Pi canary并导入独立 ReviewDecision到 `ACCEPTED` → 以 annotated tag 冻结 candidate manifest/asset SHA，由 release runner 对同 sourceHead 跨主机重建并逐 SHA fail-closed 对比 → 发布 unsigned RC → 关闭 Issue #212 与 Linux stable gate 后才发布稳定 `v1.*`。
 
 任一步都不能由“ADR 已接受”、“单次 canary 通过”或“可以构建 RC”推导为 lifecycle 已实现、`ACCEPTED` 已达成或 RC 已发布。
 
