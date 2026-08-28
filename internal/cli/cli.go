@@ -1999,13 +1999,20 @@ func runTaskPlan(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		fmt.Fprintln(stderr, "规划失败：Worker Runtime 初始化失败。")
 		return ExitFailure
 	}
+	selector := runtime.ProductionSelector()
+	// The host Adapter.Run path is compatibility-only and must be selected
+	// explicitly. It retains the complete adapter matrix for diagnostics and
+	// migration, while the default v1 path admits LaunchCapable adapters only.
+	if os.Getenv("MARSHAL_WORKER_EXECUTOR") == "legacy" {
+		selector = runtime.Selector()
+	}
 	result, err := planning.Plan(ctx, planning.Input{
 		StateRoot:         location.StateRoot,
 		RepositoryRoot:    location.RepositoryRoot,
 		RunID:             *runID,
 		TaskSpec:          taskData,
 		PolicySnapshot:    policyData,
-		Selector:          runtime.Selector(),
+		Selector:          selector,
 		Validator:         runtime.Validator(),
 		LocalSelfIdentity: localDogfoodObservation(ctx),
 	})
@@ -2448,12 +2455,11 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 				resultAdmissionReconciler = bridge
 			}
 		}
-		// v1.0 production gate：非 LaunchCapable adapter 在 production
-		// profile 中被拒绝（fail closed），不允许静默走 legacy Run。
-		// 通过 MARSHAL_PRODUCTION_GATE=1 显式启用，测试默认不启用。
-		if os.Getenv("MARSHAL_PRODUCTION_GATE") == "1" {
-			bridge.WithProductionGate()
-		}
+		// v1.0 supported production path is fail closed by construction:
+		// non-LaunchCapable adapters can never silently fall back to Adapter.Run.
+		// The only compatibility path is the explicit executor=legacy branch
+		// above, which does not construct this bridge.
+		bridge.WithProductionGate()
 		workerRunner = bridge.RunWorker
 	}
 	// R2/R3 纠偏：在 execution.Run 之前 probe adapter 并注册 agent 到

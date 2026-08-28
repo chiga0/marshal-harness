@@ -15,7 +15,11 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 )
 
-var defaultWorkerOrder = []string{"qoder", "codex", "qwen", "pi"}
+// defaultWorkerOrder is the v1 supported production order. Only adapters that
+// implement the allocation-carried LaunchCapable contract belong here. Qoder,
+// Qwen and Codex remain available through an explicit compatibility selection,
+// but must never be injected into a production TaskSpec by default.
+var defaultWorkerOrder = []string{"pi"}
 
 var (
 	ErrInvalidDraft       = errors.New("task scaffolding: invalid draft")
