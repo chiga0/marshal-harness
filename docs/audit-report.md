@@ -45,7 +45,7 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 | `V1-SERVER-RESTART-404-ONLY` | P1 | `CLOSED-FIX` | marshal-server restart 测试重写：创建真实非终态 Run（`run-restart-real`），验证跨进程恢复返回 200+Ready（`da8cccd`）。此前只断言 404。 |
 | `V1-FENCING-DOUBLE-WRITE` | P1 | `CLOSED-FIX` | exec-chain 在 embedded 模式下（`MARSHAL_EMBEDDED_SANDBOX=1`）复用 BindDispatch 已创建的 lease（含 fencingToken/AllocationId/Generation）而非独立计算 `fencingDigestOf` 做二次 Provision；修复后 embedded canary（`TestRealPiExecChainCanary`）首次跑通：pi 真实在 Local allocation 内执行（transcript 27KB，exitCode=0）（`634937b`）。 |
 | `V1-AGENT-SANDBOX-DIGEST-CONFLATED` | P1 | `CLOSED-FIX` | Facts 新增 `SandboxCapabilityDigest` 字段——agent digest 与 sandbox digest 分离（`686ee61`）。此前两者混用同一字段 `Facts.CapabilityDigest`。 |
-| `V1-ATTEMPT-BINDING-MISSING-EMBEDDED` | P1 | `CLOSED-FIX` | AttemptBinding 仅在 `MARSHAL_EMBEDDED_SANDBOX=1` 时写入（`fc8e6bd`）；embedded canary 通过带 AttemptBinding 的 exec-chain 闭环（`634937b`）。严格 E2E（`TestRealPiStrictE2E`）受 pi API rate limit 外部阻塞待重跑。 |
+| `V1-ATTEMPT-BINDING-MISSING-EMBEDDED` | P1 | `CLOSED-FIX` | AttemptBinding 仅在 `MARSHAL_EMBEDDED_SANDBOX=1` 时写入（`fc8e6bd`）；embedded canary 通过带 AttemptBinding 的 exec-chain 闭环（`634937b`）；**非嵌入式严格 E2E（`TestRealPiStrictE2E`）跑通**：真实 pi → `worker.completed` → admission anchor 落盘 → `REVIEW_PENDING`。 |
 | `V1-LEASE-NOT-DURABLE` | P1 | `OPEN-IMPLEMENTATION` | lease 仍是内存态，进程重启即丢失。跨进程恢复需要耐久 lease ledger（参照 `provider.RegistrationStore` 模式）。 |
 | `V1-RESULTINGRESS-NOT-DURABLE` | P1 | `OPEN-IMPLEMENTATION` | ResultIngress replay/idempotency 状态是进程内 map，跨进程重放未覆盖。 |
 
