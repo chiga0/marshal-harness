@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -97,7 +100,16 @@ func (id AttemptIdentity) Key() (string, error) {
 	if err := id.Validate(); err != nil {
 		return "", err
 	}
-	raw, err := json.Marshal(id)
+	// The index key is deliberately narrower than the immutable opened fact.
+	// Authority/lease/allocation drift must collide with the existing logical
+	// Attempt and fail closed, never create a sibling authority chain.
+	logical := struct {
+		AuthorityNamespaceID authority.AuthorityNamespaceId `json:"authorityNamespaceId"`
+		TaskID               string                         `json:"taskId"`
+		RunID                string                         `json:"runId"`
+		AttemptID            string                         `json:"attemptId"`
+	}{id.AuthorityNamespaceID, id.TaskID, id.RunID, id.AttemptID}
+	raw, err := json.Marshal(logical)
 	if err != nil {
 		return "", err
 	}
@@ -135,12 +147,25 @@ type ProcessObservation struct {
 	ObservationDigest      string `json:"observationDigest"`
 }
 
+const (
+	// POSIXFileTypeDirectory and POSIXFileTypeRegular are the raw st_mode
+	// S_IFMT values RB2 must persist, not Go fs.FileMode type bits.
+	POSIXFileTypeDirectory uint32 = 0o040000
+	POSIXFileTypeRegular   uint32 = 0o100000
+)
+
 func (p ProcessObservation) Validate() error {
 	if p.PID <= 0 || p.PGID != p.PID || p.BirthSeconds <= 0 || p.BirthMicroseconds < 0 || p.BirthMicroseconds >= 1_000_000 {
 		return fmt.Errorf("%w: invalid pid/pgid/birth observation", ErrAttemptAuthorityConflict)
 	}
-	if strings.TrimSpace(p.WorkingDirectory) == "" || strings.TrimSpace(p.ExecutablePath) == "" || strings.TrimSpace(p.ObserverIdentity) == "" || p.WorkingDirectoryInode == 0 || p.WorkingDirectoryType == 0 || p.WorkingDirectoryMode == 0 || p.ExecutableInode == 0 || p.ExecutableSize <= 0 || p.ExecutableType == 0 || p.ExecutableMode == 0 || p.ExecutableLinkCount == 0 {
+	if strings.TrimSpace(p.WorkingDirectory) == "" || strings.TrimSpace(p.ExecutablePath) == "" || strings.TrimSpace(p.ObserverIdentity) == "" || p.WorkingDirectoryInode == 0 || p.WorkingDirectoryMode == 0 || p.ExecutableInode == 0 || p.ExecutableSize <= 0 || p.ExecutableMode == 0 || p.ExecutableLinkCount == 0 {
 		return fmt.Errorf("%w: incomplete process/object observation", ErrAttemptAuthorityConflict)
+	}
+	if !filepath.IsAbs(p.WorkingDirectory) || filepath.Clean(p.WorkingDirectory) != p.WorkingDirectory || !filepath.IsAbs(p.ExecutablePath) || filepath.Clean(p.ExecutablePath) != p.ExecutablePath {
+		return fmt.Errorf("%w: process paths must be absolute and lexically canonical", ErrAttemptAuthorityConflict)
+	}
+	if p.WorkingDirectoryType != POSIXFileTypeDirectory || p.ExecutableType != POSIXFileTypeRegular {
+		return fmt.Errorf("%w: cwd must be a directory and executable must be a regular file", ErrAttemptAuthorityConflict)
 	}
 	if err := requireDigest("executableSha256", p.ExecutableSHA256); err != nil {
 		return fmt.Errorf("%w: %v", ErrAttemptAuthorityConflict, err)
@@ -150,6 +175,17 @@ func (p ProcessObservation) Validate() error {
 	digest, err := canonicalDigest(p)
 	if err != nil || stored == "" || digest != stored {
 		return fmt.Errorf("%w: observationDigest mismatch", ErrAttemptAuthorityConflict)
+	}
+	return nil
+}
+
+func validateObservedAt(value string, process ProcessObservation) error {
+	observed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || observed.UTC().Format(time.RFC3339Nano) != value {
+		return fmt.Errorf("%w: observedAt must be canonical UTC RFC3339Nano", ErrAttemptAuthorityConflict)
+	}
+	if observed.Unix() < process.BirthSeconds {
+		return fmt.Errorf("%w: observedAt precedes process birth", ErrAttemptAuthorityConflict)
 	}
 	return nil
 }
@@ -350,8 +386,10 @@ type attemptAuthorityFact struct {
 	Digest               string            `json:"digest"`
 }
 
-// CompareAndAppend performs the only public Attempt authority mutation. The
-// expected revision and head are both mandatory CAS inputs after attempt-opened.
+// CompareAndAppend is the unprivileged mutation surface. Authority-bearing
+// transitions are deliberately rejected in favor of their held-authority
+// entry points. The expected revision and head are mandatory CAS inputs after
+// attempt-opened.
 func (s *ingressDurableStore) CompareAndAppend(expectedRevision uint64, expectedHead string, transition AttemptTransition) (AttemptAppendResult, error) {
 	if transition.Kind == attemptTransitionResultAdmitted {
 		return AttemptAppendResult{}, fmt.Errorf("%w: result-admitted is reserved for Ingress", ErrAttemptAuthorityConflict)
@@ -362,7 +400,19 @@ func (s *ingressDurableStore) CompareAndAppend(expectedRevision uint64, expected
 	if transition.Kind == AttemptTransitionTerminalizationBarrier {
 		return AttemptAppendResult{}, fmt.Errorf("%w: terminalization barrier requires CompareAndAppendBarrier", ErrRunAuthorityUnauthorized)
 	}
+	if isRunAuthorizedTransition(transition.Kind) {
+		return AttemptAppendResult{}, fmt.Errorf("%w: %s requires CompareAndAppendAuthorized", ErrRunAuthorityUnauthorized, transition.Kind)
+	}
 	return s.compareAndAppend(expectedRevision, expectedHead, transition, false)
+}
+
+func isRunAuthorizedTransition(kind AttemptTransitionKind) bool {
+	switch kind {
+	case AttemptTransitionOpened, AttemptTransitionLaunchAuthorized, AttemptTransitionProcessStarted:
+		return true
+	default:
+		return false
+	}
 }
 
 func isCleanupTransition(kind AttemptTransitionKind) bool {
@@ -541,7 +591,7 @@ func validateTransitionShape(t AttemptTransition) error {
 			return fmt.Errorf("%w: launchAuthorizationId is empty", ErrAttemptAuthorityConflict)
 		}
 	case AttemptTransitionProcessStarted:
-		if strings.TrimSpace(t.CommandID) == "" || strings.TrimSpace(t.ObservedAt) == "" || t.Process.Validate() != nil || t.LaunchAuthorizationID != "" || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
+		if strings.TrimSpace(t.CommandID) == "" || t.Process.Validate() != nil || validateObservedAt(t.ObservedAt, t.Process) != nil || t.LaunchAuthorizationID != "" || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
 			return fmt.Errorf("%w: incomplete process-started transition", ErrAttemptAuthorityConflict)
 		}
 	case attemptTransitionResultAdmitted:
@@ -665,6 +715,13 @@ type RunAuthorityBinding struct {
 	RunAuthorityDigest   string                         `json:"runAuthorityDigest"`
 }
 
+// AttemptAuthorizationRequest binds an opened/launch/process identity mutation
+// to the held current Run authority. The request contains no bearer secret.
+type AttemptAuthorizationRequest struct {
+	Identity            AttemptIdentity
+	CurrentRunAuthority RunAuthorityBinding
+}
+
 type CurrentRunAuthorityVerifier interface {
 	// WithCurrentRunAuthority holds the verified current Run authority for the
 	// complete callback. Returning success without invoking fn is invalid. This
@@ -676,20 +733,64 @@ func withCurrentRunAuthority(ctx context.Context, verifier CurrentRunAuthorityVe
 	if verifier == nil {
 		return fmt.Errorf("%w: verifier is required", ErrRunAuthorityUnauthorized)
 	}
+	var callbackGate sync.Mutex
 	called := false
+	doubleCall := false
+	closed := false
 	var callbackErr error
 	verifierErr := verifier.WithCurrentRunAuthority(ctx, binding, func() error {
+		callbackGate.Lock()
+		defer callbackGate.Unlock()
+		if closed || called {
+			doubleCall = true
+			return ErrRunAuthorityUnauthorized
+		}
 		called = true
 		callbackErr = fn()
 		return callbackErr
 	})
-	if callbackErr != nil {
-		return callbackErr
+	callbackGate.Lock()
+	closed = true
+	calledOnce, invokedTwice, heldCallbackErr := called, doubleCall, callbackErr
+	callbackGate.Unlock()
+	if invokedTwice {
+		return fmt.Errorf("%w: verifier invoked held callback more than once", ErrRunAuthorityUnauthorized)
 	}
-	if verifierErr != nil || !called {
+	if heldCallbackErr != nil {
+		return heldCallbackErr
+	}
+	if verifierErr != nil || !calledOnce {
 		return fmt.Errorf("%w: verifier rejected or did not hold authority: %v", ErrRunAuthorityUnauthorized, verifierErr)
 	}
 	return nil
+}
+
+// CompareAndAppendAuthorized is the sole mutation path for attempt-opened,
+// launch-authorized and process-started. The held authority spans complete
+// replay/read/CAS, including exact replay, so a stale orchestrator never gets
+// a fresh Appended=true launch fact.
+func (s *ingressDurableStore) CompareAndAppendAuthorized(ctx context.Context, verifier CurrentRunAuthorityVerifier, expectedRevision uint64, expectedHead string, request AttemptAuthorizationRequest, transition AttemptTransition) (AttemptAppendResult, error) {
+	if !isRunAuthorizedTransition(transition.Kind) || transition.Identity != request.Identity {
+		return AttemptAppendResult{}, ErrRunAuthorityUnauthorized
+	}
+	if err := validateTransitionShape(transition); err != nil {
+		return AttemptAppendResult{}, err
+	}
+	wantRun := runAuthorityBindingFor(request.Identity)
+	if request.CurrentRunAuthority != wantRun {
+		return AttemptAppendResult{}, ErrRunAuthorityUnauthorized
+	}
+	var result AttemptAppendResult
+	err := withCurrentRunAuthority(ctx, verifier, request.CurrentRunAuthority, func() error {
+		var appendErr error
+		result, appendErr = s.compareAndAppend(expectedRevision, expectedHead, transition, false)
+		return appendErr
+	})
+	return result, err
+}
+
+func runAuthorityBindingFor(identity AttemptIdentity) RunAuthorityBinding {
+	return RunAuthorityBinding{AuthorityNamespaceID: identity.AuthorityNamespaceID, RunID: identity.RunID, OrchestratorID: identity.OrchestratorID, RunAuthorityDigest: identity.RunAuthorityDigest}
 }
 
 // BarrierAuthorizationRequest binds the held current Run authority to the
@@ -709,7 +810,7 @@ func (s *ingressDurableStore) CompareAndAppendBarrier(ctx context.Context, verif
 	if err := validateTransitionShape(transition); err != nil {
 		return AttemptAppendResult{}, err
 	}
-	wantRun := RunAuthorityBinding{AuthorityNamespaceID: request.Identity.AuthorityNamespaceID, RunID: request.Identity.RunID, OrchestratorID: request.Identity.OrchestratorID, RunAuthorityDigest: request.Identity.RunAuthorityDigest}
+	wantRun := runAuthorityBindingFor(request.Identity)
 	if request.CurrentRunAuthority != wantRun {
 		return AttemptAppendResult{}, ErrRunAuthorityUnauthorized
 	}
@@ -789,9 +890,7 @@ func (s *ingressDurableStore) WithAuthorizedCleanup(ctx context.Context, verifie
 		if !found || !cleanupRequestMatchesState(state, request) || state.CleanupReleasedDigest != "" {
 			return ErrCleanupUnauthorized
 		}
-		// launch-uncertain or an observed identity conflict can never authorize a
-		// guessed signal/kill. Only inspection/reconciliation remains legal.
-		if (state.LaunchState != LaunchStarted || state.ProcessTerminalKind == ProcessIdentityConflict) && request.Operation != CleanupInspect && request.Operation != CleanupReconcile {
+		if !cleanupEffectAllowed(state, request.Operation) {
 			return ErrCleanupUnauthorized
 		}
 		return fn(state)
@@ -800,6 +899,59 @@ func (s *ingressDurableStore) WithAuthorizedCleanup(ctx context.Context, verifie
 		return fmt.Errorf("%w: %v", ErrCleanupUnauthorized, err)
 	}
 	return err
+}
+
+func cleanupEffectAllowed(state AttemptAuthorityState, operation CleanupOperation) bool {
+	if state.CleanupReleasedDigest != "" || state.CleanupCompletedDigest != "" || state.AllocationTerminalDigest != "" {
+		return false
+	}
+	if state.ProcessTerminalDigest == "" {
+		switch operation {
+		case CleanupInspect, CleanupReconcile:
+			return true
+		case CleanupSignal:
+			return state.LaunchState == LaunchStarted
+		default:
+			// Provider/allocation termination is not legal until the exact process
+			// has a terminal authority fact.
+			return false
+		}
+	}
+	// After process terminal, process Signal is permanently closed. Provider
+	// termination is a distinct effect and is legal only until its receipt is
+	// appended; identity conflict remains inspect/reconcile-only.
+	if state.ProcessTerminalKind == ProcessIdentityConflict {
+		return operation == CleanupInspect || operation == CleanupReconcile
+	}
+	return operation == CleanupInspect || operation == CleanupReconcile || operation == CleanupTerminate
+}
+
+func cleanupAppendOperationAllowed(kind AttemptTransitionKind, operation CleanupOperation) bool {
+	switch kind {
+	case AttemptTransitionProcessTerminal:
+		return operation == CleanupInspect || operation == CleanupReconcile
+	case AttemptTransitionAllocationTerminated:
+		return operation == CleanupTerminate || operation == CleanupReconcile
+	case AttemptTransitionCleanupCompleted, AttemptTransitionCleanupReleased:
+		return operation == CleanupReconcile
+	default:
+		return false
+	}
+}
+
+func cleanupAppendAllowedInPhase(state AttemptAuthorityState, kind AttemptTransitionKind, exactReplay bool) bool {
+	switch {
+	case state.CleanupReleasedDigest != "":
+		return exactReplay && kind == AttemptTransitionCleanupReleased
+	case state.CleanupCompletedDigest != "":
+		return kind == AttemptTransitionCleanupReleased || exactReplay && kind == AttemptTransitionCleanupCompleted
+	case state.AllocationTerminalDigest != "":
+		return kind == AttemptTransitionCleanupCompleted || exactReplay && kind == AttemptTransitionAllocationTerminated
+	case state.ProcessTerminalDigest != "":
+		return kind == AttemptTransitionAllocationTerminated || exactReplay && kind == AttemptTransitionProcessTerminal
+	default:
+		return kind == AttemptTransitionProcessTerminal
+	}
 }
 
 func cleanupRequestMatchesState(state AttemptAuthorityState, request CleanupAuthorizationRequest) bool {
@@ -830,22 +982,18 @@ func (s *ingressDurableStore) CompareAndAppendCleanup(ctx context.Context, verif
 		if !found || !cleanupRequestMatchesState(state, request) {
 			return ErrCleanupUnauthorized
 		}
+		replay, exactReplay := exactTransitionReplay(state, true, transition)
+		if !cleanupAppendOperationAllowed(transition.Kind, request.Operation) || !cleanupAppendAllowedInPhase(state, transition.Kind, exactReplay) {
+			return ErrCleanupUnauthorized
+		}
 		if state.CleanupReleasedDigest != "" {
 			// Release revokes every future cleanup effect. The sole legal operation
 			// is a no-side-effect exact replay of the already durable release fact,
 			// still under current Run authority and exact tuple verification.
-			if transition.Kind == AttemptTransitionCleanupReleased {
-				if replay, ok := exactTransitionReplay(state, true, transition); ok {
-					result = AttemptAppendResult{State: replay, TransitionDigest: transitionDigest(replay, transition.Kind)}
-					return nil
-				}
-			}
-			return ErrCleanupUnauthorized
+			result = AttemptAppendResult{State: replay, TransitionDigest: transitionDigest(replay, transition.Kind)}
+			return nil
 		}
-		if (state.LaunchState != LaunchStarted || state.ProcessTerminalKind == ProcessIdentityConflict) && request.Operation != CleanupInspect && request.Operation != CleanupReconcile {
-			return ErrCleanupUnauthorized
-		}
-		if replay, ok := exactTransitionReplay(state, true, transition); ok {
+		if exactReplay {
 			result = AttemptAppendResult{State: replay, TransitionDigest: transitionDigest(replay, transition.Kind)}
 			return nil
 		}

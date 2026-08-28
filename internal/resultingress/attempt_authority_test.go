@@ -33,9 +33,9 @@ func attemptTestProcess(t *testing.T) ProcessObservation {
 	observation, err := SealProcessObservation(ProcessObservation{
 		PID: 1234, PGID: 1234, BirthSeconds: 100, BirthMicroseconds: 22,
 		WorkingDirectory: "/tmp/work", WorkingDirectoryDevice: 1, WorkingDirectoryInode: 2,
-		WorkingDirectoryType: 4, WorkingDirectoryOwner: 501, WorkingDirectoryMode: 0755,
+		WorkingDirectoryType: POSIXFileTypeDirectory, WorkingDirectoryOwner: 501, WorkingDirectoryMode: 0755,
 		ExecutablePath: "/fixed/marshal", ExecutableDevice: 1, ExecutableInode: 3,
-		ExecutableSize: 99, ExecutableType: 8, ExecutableOwner: 501,
+		ExecutableSize: 99, ExecutableType: POSIXFileTypeRegular, ExecutableOwner: 501,
 		ExecutableMode: 0755, ExecutableLinkCount: 1, ExecutableSHA256: attemptTestDigest("executable"),
 		ObserverIdentity: "core-darwin-observer/v1",
 	})
@@ -48,17 +48,17 @@ func attemptTestProcess(t *testing.T) ProcessObservation {
 func openStartedAttempt(t *testing.T, store *ingressDurableStore) AttemptAuthorityState {
 	t.Helper()
 	id := attemptTestIdentity()
-	openedResult, err := store.CompareAndAppend(0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	openedResult, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	if err != nil {
 		t.Fatal(err)
 	}
 	opened := openedResult.State
-	authorizedResult, err := store.CompareAndAppend(opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-1"})
+	authorizedResult, err := appendAuthorizedAttempt(store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	authorized := authorizedResult.State
-	startedResult, err := store.CompareAndAppend(authorized.Revision, authorized.HeadDigest, AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:00Z", Process: attemptTestProcess(t)})
+	startedResult, err := appendAuthorizedAttempt(store, authorized.Revision, authorized.HeadDigest, AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:00Z", Process: attemptTestProcess(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +90,11 @@ func attemptTestRunAuthority(id AttemptIdentity) RunAuthorityBinding {
 	return RunAuthorityBinding{AuthorityNamespaceID: id.AuthorityNamespaceID, RunID: id.RunID, OrchestratorID: id.OrchestratorID, RunAuthorityDigest: id.RunAuthorityDigest}
 }
 
+func appendAuthorizedAttempt(store *DurableStore, revision uint64, head string, transition AttemptTransition) (AttemptAppendResult, error) {
+	run := attemptTestRunAuthority(transition.Identity)
+	return store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run}, revision, head, AttemptAuthorizationRequest{Identity: transition.Identity, CurrentRunAuthority: run}, transition)
+}
+
 func appendTestBarrier(t *testing.T, store *DurableStore, state AttemptAuthorityState, terminalizationID string, reason TerminalReason) AttemptAppendResult {
 	t.Helper()
 	run := attemptTestRunAuthority(state.Identity)
@@ -106,12 +111,12 @@ func TestAttemptAuthorityLaunchCrashProjectionAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := attemptTestIdentity()
-	openedResult, err := store.CompareAndAppend(0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	openedResult, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	if err != nil || !openedResult.Appended || openedResult.State.LaunchState != LaunchNotAuthorized {
 		t.Fatalf("opened = %#v, err=%v", openedResult, err)
 	}
 	opened := openedResult.State
-	authorizedResult, err := store.CompareAndAppend(opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-1"})
+	authorizedResult, err := appendAuthorizedAttempt(store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-1"})
 	if err != nil || !authorizedResult.Appended || authorizedResult.State.LaunchState != LaunchUncertain || authorizedResult.TransitionDigest != authorizedResult.State.LaunchAuthorizedDigest {
 		t.Fatalf("authorized = %#v, err=%v", authorizedResult, err)
 	}
@@ -125,9 +130,129 @@ func TestAttemptAuthorityLaunchCrashProjectionAndReplay(t *testing.T) {
 		t.Fatalf("recovered = %#v, ok=%v, err=%v", recovered, ok, err)
 	}
 	// Exact open is a stable replay and never creates a second authority.
-	replay, err := reopened.CompareAndAppend(0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	replay, err := appendAuthorizedAttempt(reopened, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	if err != nil || replay.Appended || replay.State.HeadDigest != authorized.HeadDigest || replay.TransitionDigest != authorized.OpenedDigest {
 		t.Fatalf("open replay = %#v, err=%v", replay, err)
+	}
+}
+
+func TestOpenedLaunchAndProcessFactsRequireHeldCurrentRunAuthority(t *testing.T) {
+	store, _ := OpenResultIngressStore(t.TempDir())
+	id := attemptTestIdentity()
+	run := attemptTestRunAuthority(id)
+	openedTransition := AttemptTransition{Kind: AttemptTransitionOpened, Identity: id}
+	if _, err := store.CompareAndAppend(0, "", openedTransition); !errors.Is(err, ErrRunAuthorityUnauthorized) {
+		t.Fatalf("generic opened err=%v", err)
+	}
+	if _, err := store.CompareAndAppendAuthorized(context.Background(), nil, 0, "", AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, openedTransition); !errors.Is(err, ErrRunAuthorityUnauthorized) {
+		t.Fatalf("nil opened verifier err=%v", err)
+	}
+	wrong := run
+	wrong.OrchestratorID = "stale-orchestrator"
+	if _, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run}, 0, "", AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: wrong}, openedTransition); !errors.Is(err, ErrRunAuthorityUnauthorized) {
+		t.Fatalf("stale opened authority err=%v", err)
+	}
+	if states, err := store.AttemptStates(); err != nil || len(states) != 0 {
+		t.Fatalf("unauthorized opened appended state=%#v err=%v", states, err)
+	}
+	openedResult, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run}, 0, "", AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, openedTransition)
+	if err != nil || !openedResult.Appended {
+		t.Fatalf("opened=%#v err=%v", openedResult, err)
+	}
+	launch := AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-held"}
+	if _, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run, err: errors.New("authority drift")}, openedResult.State.Revision, openedResult.State.HeadDigest, AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, launch); !errors.Is(err, ErrRunAuthorityUnauthorized) {
+		t.Fatalf("stale launch authority err=%v", err)
+	}
+	current, _, _ := store.AttemptState(id)
+	if current.LaunchState != LaunchNotAuthorized {
+		t.Fatalf("stale authority appended launch: %#v", current)
+	}
+	launchResult, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run}, current.Revision, current.HeadDigest, AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, launch)
+	if err != nil || !launchResult.Appended {
+		t.Fatalf("launch=%#v err=%v", launchResult, err)
+	}
+	calls := 0
+	replay, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run, calls: &calls}, current.Revision, current.HeadDigest, AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, launch)
+	if err != nil || replay.Appended || calls != 1 || replay.TransitionDigest != launchResult.TransitionDigest {
+		t.Fatalf("launch replay=%#v calls=%d err=%v", replay, calls, err)
+	}
+	started := AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:00Z", Process: attemptTestProcess(t)}
+	if _, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run, err: errors.New("authority drift")}, launchResult.State.Revision, launchResult.State.HeadDigest, AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, started); !errors.Is(err, ErrRunAuthorityUnauthorized) {
+		t.Fatalf("stale process authority err=%v", err)
+	}
+	current, _, _ = store.AttemptState(id)
+	if current.ProcessStartedDigest != "" {
+		t.Fatalf("stale authority appended process: %#v", current)
+	}
+}
+
+func TestAttemptLogicalKeyRejectsSiblingAuthorityAndTupleDrift(t *testing.T) {
+	store, _ := OpenResultIngressStore(t.TempDir())
+	id := attemptTestIdentity()
+	if _, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id}); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*AttemptIdentity){
+		func(other *AttemptIdentity) { other.OrchestratorID = "other-orchestrator" },
+		func(other *AttemptIdentity) { other.RunAuthorityDigest = attemptTestDigest("other-run-authority") },
+		func(other *AttemptIdentity) { other.AllocationID = "other-allocation" },
+		func(other *AttemptIdentity) {
+			other.LeaseID, other.LeaseDigest = "other-lease", attemptTestDigest("other-lease")
+		},
+		func(other *AttemptIdentity) { other.AuthorityNamespaceRef = "authority:other-wire-ref" },
+	} {
+		other := id
+		mutate(&other)
+		if _, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: other}); !errors.Is(err, ErrAttemptAuthorityConflict) {
+			t.Fatalf("sibling identity accepted: %#v err=%v", other, err)
+		}
+	}
+	states, err := store.AttemptStates()
+	if err != nil || len(states) != 1 || states[0].Identity != id {
+		t.Fatalf("states=%#v err=%v", states, err)
+	}
+}
+
+func TestProcessObservationRejectsNonCanonicalPathsAndFileTypes(t *testing.T) {
+	base := attemptTestProcess(t)
+	for _, mutate := range []func(*ProcessObservation){
+		func(observation *ProcessObservation) { observation.WorkingDirectory = "relative/work" },
+		func(observation *ProcessObservation) { observation.WorkingDirectory = "/tmp/../work" },
+		func(observation *ProcessObservation) { observation.ExecutablePath = "relative/marshal" },
+		func(observation *ProcessObservation) { observation.ExecutablePath = "/fixed/../marshal" },
+		func(observation *ProcessObservation) { observation.WorkingDirectoryType = POSIXFileTypeRegular },
+		func(observation *ProcessObservation) { observation.ExecutableType = POSIXFileTypeDirectory },
+	} {
+		forged := base
+		mutate(&forged)
+		if _, err := SealProcessObservation(forged); err == nil {
+			t.Fatalf("forged process observation accepted: %#v", forged)
+		}
+	}
+}
+
+func TestProcessStartedRejectsNonCanonicalOrPreBirthObservedAt(t *testing.T) {
+	for _, observedAt := range []string{"not-a-time", "2026-08-28T00:00:00+00:00", "1970-01-01T00:00:01Z"} {
+		t.Run(observedAt, func(t *testing.T) {
+			store, _ := OpenResultIngressStore(t.TempDir())
+			id := attemptTestIdentity()
+			opened, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			authorized, err := appendAuthorizedAttempt(store, opened.State.Revision, opened.State.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-time"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			transition := AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: observedAt, Process: attemptTestProcess(t)}
+			if _, err := appendAuthorizedAttempt(store, authorized.State.Revision, authorized.State.HeadDigest, transition); !errors.Is(err, ErrAttemptAuthorityConflict) {
+				t.Fatalf("observedAt %q err=%v", observedAt, err)
+			}
+			current, _, _ := store.AttemptState(id)
+			if current.ProcessStartedDigest != "" {
+				t.Fatalf("invalid observedAt appended process: %#v", current)
+			}
+		})
 	}
 }
 
@@ -137,7 +262,7 @@ func TestAttemptAuthorityRejectsStaleRevisionAndHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := attemptTestIdentity()
-	openedResult, err := store.CompareAndAppend(0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	openedResult, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +275,7 @@ func TestAttemptAuthorityRejectsStaleRevisionAndHead(t *testing.T) {
 		"stale-head":     {revision: opened.Revision, head: attemptTestDigest("stale-head")},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := store.CompareAndAppend(stale.revision, stale.head, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-stale"})
+			_, err := appendAuthorizedAttempt(store, stale.revision, stale.head, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-stale"})
 			if !errors.Is(err, ErrAttemptAuthorityConflict) {
 				t.Fatalf("err=%v, want ErrAttemptAuthorityConflict", err)
 			}
@@ -166,7 +291,7 @@ func TestAttemptAuthorityTwoStoreCASCompetition(t *testing.T) {
 	dir := t.TempDir()
 	first, _ := OpenResultIngressStore(dir)
 	second, _ := OpenResultIngressStore(dir)
-	openedResult, err := first.CompareAndAppend(0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: attemptTestIdentity()})
+	openedResult, err := appendAuthorizedAttempt(first, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: attemptTestIdentity()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +308,7 @@ func TestAttemptAuthorityTwoStoreCASCompetition(t *testing.T) {
 			id    string
 		}) {
 			defer wg.Done()
-			_, err := candidate.store.CompareAndAppend(opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: attemptTestIdentity(), LaunchAuthorizationID: candidate.id})
+			_, err := appendAuthorizedAttempt(candidate.store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: attemptTestIdentity(), LaunchAuthorizationID: candidate.id})
 			errs <- err
 		}(candidate)
 	}
@@ -237,6 +362,44 @@ func TestAdmissionAndBarrierShareCASAndAllKindsClose(t *testing.T) {
 	quarantine := ingress.Quarantine()
 	if len(quarantine) < 8 {
 		t.Fatalf("quarantine len=%d, want >=8", len(quarantine))
+	}
+}
+
+func TestGovernedDRCRequiresPersistedProcessCommandAndNamespace(t *testing.T) {
+	store, _ := OpenResultIngressStore(t.TempDir())
+	started := openStartedAttempt(t, store)
+	ingress, _ := NewDurableIngress(attemptTestBinding(), store)
+	drc, envelope := attemptTestDRC(KindWorkerResult, 1)
+	drc.CommandID = "different-command"
+	if _, err := ingress.Admit(context.Background(), drc, envelope); !errors.Is(err, ErrStaleLease) {
+		t.Fatalf("mismatched process command admitted: %v", err)
+	}
+	drc, envelope = attemptTestDRC(KindWorkerResult, 1)
+	drc.AuthorityNamespaceID = "authority:drifted"
+	if _, err := ingress.Admit(context.Background(), drc, envelope); !errors.Is(err, ErrStaleLease) {
+		t.Fatalf("mismatched authority namespace fell back to legacy admission: %v", err)
+	}
+	current, ok, err := store.AttemptState(started.Identity)
+	if err != nil || !ok || current.CommittedResultFactDigest != "" || current.Revision != started.Revision {
+		t.Fatalf("mismatched command mutated authority: %#v ok=%v err=%v", current, ok, err)
+	}
+}
+
+func TestCurrentAttemptForDRCRejectsAmbiguousCandidatesDeterministically(t *testing.T) {
+	ingress, err := NewIngress(attemptTestBinding())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := AttemptAuthorityState{Identity: attemptTestIdentity(), ProcessStartedDigest: attemptTestDigest("started"), CommandID: "command-1"}
+	other := state
+	other.Identity.AuthorityNamespaceID.TenantNamespace = "tenant-2"
+	ingress.attempts = map[string]AttemptAuthorityState{"z": state, "a": other}
+	drc, _ := attemptTestDRC(KindWorkerResult, 1)
+	for range 20 {
+		_, _, governed, conflict := ingress.currentAttemptForDRC(drc)
+		if governed || !conflict {
+			t.Fatalf("ambiguous candidate selected: governed=%v conflict=%v", governed, conflict)
+		}
 	}
 }
 
@@ -462,6 +625,33 @@ type attemptRunVerifier struct {
 	skip  bool
 }
 
+type attemptDoubleRunVerifier struct {
+	want RunAuthorityBinding
+}
+
+type attemptDeferredRunVerifier struct {
+	want     RunAuthorityBinding
+	deferred *func() error
+}
+
+func (v attemptDeferredRunVerifier) WithCurrentRunAuthority(_ context.Context, got RunAuthorityBinding, fn func() error) error {
+	if got != v.want {
+		return errors.New("wrong current Run authority")
+	}
+	*v.deferred = fn
+	return nil
+}
+
+func (v attemptDoubleRunVerifier) WithCurrentRunAuthority(_ context.Context, got RunAuthorityBinding, fn func() error) error {
+	if got != v.want {
+		return errors.New("wrong current Run authority")
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	return fn()
+}
+
 func (v attemptRunVerifier) WithCurrentRunAuthority(_ context.Context, got RunAuthorityBinding, fn func() error) error {
 	if v.calls != nil {
 		*v.calls = *v.calls + 1
@@ -478,16 +668,57 @@ func (v attemptRunVerifier) WithCurrentRunAuthority(_ context.Context, got RunAu
 	return fn()
 }
 
+func TestCurrentRunVerifierCannotInvokeEffectCallbackTwice(t *testing.T) {
+	store, _ := OpenResultIngressStore(t.TempDir())
+	started := openStartedAttempt(t, store)
+	barrier := appendTestBarrier(t, store, started, "terminal-double-verifier", TerminalAttemptFailed).State
+	run := attemptTestRunAuthority(started.Identity)
+	request := CleanupAuthorizationRequest{Identity: started.Identity, CurrentRunAuthority: run, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest, Operation: CleanupSignal}
+	effectCalls := 0
+	err := store.WithAuthorizedCleanup(context.Background(), attemptDoubleRunVerifier{want: run}, request, func(AttemptAuthorityState) error {
+		effectCalls++
+		return nil
+	})
+	if !errors.Is(err, ErrCleanupUnauthorized) || effectCalls != 1 {
+		t.Fatalf("double verifier err=%v effectCalls=%d", err, effectCalls)
+	}
+}
+
+func TestCurrentRunVerifierCannotDeferEffectCallback(t *testing.T) {
+	store, _ := OpenResultIngressStore(t.TempDir())
+	started := openStartedAttempt(t, store)
+	barrier := appendTestBarrier(t, store, started, "terminal-deferred-verifier", TerminalAttemptFailed).State
+	run := attemptTestRunAuthority(started.Identity)
+	request := CleanupAuthorizationRequest{Identity: started.Identity, CurrentRunAuthority: run, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest, Operation: CleanupSignal}
+	var deferred func() error
+	effectCalls := 0
+	err := store.WithAuthorizedCleanup(context.Background(), attemptDeferredRunVerifier{want: run, deferred: &deferred}, request, func(AttemptAuthorityState) error {
+		effectCalls++
+		return nil
+	})
+	if !errors.Is(err, ErrCleanupUnauthorized) || deferred == nil || effectCalls != 0 {
+		t.Fatalf("deferred verifier err=%v callbackNil=%v effectCalls=%d", err, deferred == nil, effectCalls)
+	}
+	if err := deferred(); !errors.Is(err, ErrRunAuthorityUnauthorized) || effectCalls != 0 {
+		t.Fatalf("late callback err=%v effectCalls=%d", err, effectCalls)
+	}
+}
+
 func TestCleanupAuthorizationRejectsWrongTupleBindingOrchestratorAndRelease(t *testing.T) {
 	store, _ := OpenResultIngressStore(t.TempDir())
 	started := openStartedAttempt(t, store)
 	barrierResult := appendTestBarrier(t, store, started, "terminal-1", TerminalAttemptFailed)
 	barrier := barrierResult.State
 	run := RunAuthorityBinding{AuthorityNamespaceID: started.Identity.AuthorityNamespaceID, RunID: started.Identity.RunID, OrchestratorID: started.Identity.OrchestratorID, RunAuthorityDigest: started.Identity.RunAuthorityDigest}
-	request := CleanupAuthorizationRequest{Identity: started.Identity, CurrentRunAuthority: run, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest, Operation: CleanupTerminate}
+	request := CleanupAuthorizationRequest{Identity: started.Identity, CurrentRunAuthority: run, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest, Operation: CleanupSignal}
 	if err := store.AuthorizeCleanup(context.Background(), attemptRunVerifier{want: run}, request); err != nil {
 		t.Fatal(err)
 	}
+	request.Operation = CleanupTerminate
+	if err := store.AuthorizeCleanup(context.Background(), attemptRunVerifier{want: run}, request); !errors.Is(err, ErrCleanupUnauthorized) {
+		t.Fatalf("Provider terminate before process terminal err=%v", err)
+	}
+	request.Operation = CleanupReconcile
 	mutations := []func(*CleanupAuthorizationRequest){
 		func(r *CleanupAuthorizationRequest) { r.Identity.LeaseID = "wrong" },
 		func(r *CleanupAuthorizationRequest) { r.CleanupBindingDigest = attemptTestDigest("wrong") },
@@ -507,6 +738,15 @@ func TestCleanupAuthorizationRejectsWrongTupleBindingOrchestratorAndRelease(t *t
 		t.Fatal(err)
 	}
 	terminal := terminalResult.State
+	request.Operation = CleanupSignal
+	if err := store.AuthorizeCleanup(context.Background(), attemptRunVerifier{want: run}, request); !errors.Is(err, ErrCleanupUnauthorized) {
+		t.Fatalf("process terminal still authorized Signal: %v", err)
+	}
+	request.Operation = CleanupTerminate
+	if err := store.AuthorizeCleanup(context.Background(), attemptRunVerifier{want: run}, request); err != nil {
+		t.Fatalf("Provider terminate after process terminal rejected: %v", err)
+	}
+	request.Operation = CleanupReconcile
 	verifierCalls := 0
 	if _, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run, err: errors.New("run authority drifted"), calls: &verifierCalls}, barrier.Revision, barrier.HeadDigest, request, terminalTransition); !errors.Is(err, ErrCleanupUnauthorized) {
 		t.Fatalf("exact cleanup replay with authority drift err=%v", err)
@@ -519,16 +759,27 @@ func TestCleanupAuthorizationRejectsWrongTupleBindingOrchestratorAndRelease(t *t
 	if err != nil || replayedTerminal.Appended || replayedTerminal.State.HeadDigest != terminal.HeadDigest || replayedTerminal.TransitionDigest != terminal.ProcessTerminalDigest || verifierCalls != 1 {
 		t.Fatalf("exact cleanup replay=%#v calls=%d err=%v", replayedTerminal, verifierCalls, err)
 	}
+	request.Operation = CleanupTerminate
 	allocationResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, terminal.Revision, terminal.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionAllocationTerminated, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ReceiptDigest: attemptTestDigest("allocation")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	allocation := allocationResult.State
+	if err := store.AuthorizeCleanup(context.Background(), attemptRunVerifier{want: run}, request); !errors.Is(err, ErrCleanupUnauthorized) {
+		t.Fatalf("allocation terminal retained Provider effect: %v", err)
+	}
+	request.Operation = CleanupReconcile
+	if _, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, barrier.Revision, barrier.HeadDigest, request, terminalTransition); !errors.Is(err, ErrCleanupUnauthorized) {
+		t.Fatalf("allocation-terminal phase replayed old process terminal: %v", err)
+	}
 	cleanedResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, allocation.Revision, allocation.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionCleanupCompleted, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	cleaned := cleanedResult.State
+	if _, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, terminal.Revision, terminal.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionAllocationTerminated, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ReceiptDigest: attemptTestDigest("allocation")}); !errors.Is(err, ErrCleanupUnauthorized) {
+		t.Fatalf("cleanup-completed phase replayed old allocation terminal: %v", err)
+	}
 	releasedResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, cleaned.Revision, cleaned.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionCleanupReleased, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID})
 	if err != nil || releasedResult.State.CleanupReleasedDigest == "" {
 		t.Fatalf("released=%#v err=%v", releasedResult, err)
@@ -572,12 +823,12 @@ func TestLaunchUncertainCleanupOnlyAllowsInspectAndReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := attemptTestIdentity()
-	openedResult, err := store.CompareAndAppend(0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	openedResult, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	if err != nil {
 		t.Fatal(err)
 	}
 	opened := openedResult.State
-	authorizedResult, err := store.CompareAndAppend(opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-uncertain"})
+	authorizedResult, err := appendAuthorizedAttempt(store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-uncertain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +894,7 @@ func TestAttemptStateEnumerationIsDeterministicAcrossRestart(t *testing.T) {
 	second.AttemptID, second.AllocationID, second.LeaseID = "attempt-2", "allocation-2", "lease-2"
 	second.LeaseDigest = attemptTestDigest("lease-2")
 	for _, identity := range []AttemptIdentity{second, first} {
-		if _, err := store.CompareAndAppend(0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: identity}); err != nil {
+		if _, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: identity}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -676,7 +927,7 @@ func TestAttemptAuthorityCorruptTruncatedDuplicateAndReorderFailClosed(t *testin
 		dir := t.TempDir()
 		store, _ := OpenResultIngressStore(dir)
 		_ = func() error {
-			_, err := store.CompareAndAppend(0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: attemptTestIdentity()})
+			_, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: attemptTestIdentity()})
 			return err
 		}()
 		raw, err := os.ReadFile(filepath.Join(dir, resultIngressStoreFileName))

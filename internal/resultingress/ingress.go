@@ -638,24 +638,40 @@ func (i *Ingress) resetDurableReplayState() {
 	i.quarantine = nil
 }
 
-// currentAttemptForDRC resolves a new governed Attempt by the entire frozen
-// tuple. Reusing an attemptId under a different run/allocation/lease is a
-// conflict, never a fallback into the legacy admission path.
+// currentAttemptForDRC resolves a governed logical Attempt by namespace,
+// task, run and attempt, then requires the entire frozen dispatch/process
+// tuple. Allocation, lease or command drift is a conflict, never a fallback
+// into the legacy admission path.
 func (i *Ingress) currentAttemptForDRC(drc DRC) (AttemptAuthorityState, string, bool, bool) {
 	fencingDigest := canonical.DigestBytes([]byte(drc.FencingToken))
-	conflictingAttemptID := false
+	relatedCandidates := 0
+	wireNamespaceCandidates := 0
+	exactMatches := 0
+	var matchedState AttemptAuthorityState
+	var matchedKey string
 	for key, state := range i.attempts {
 		id := state.Identity
-		if id.AttemptID != drc.AttemptID {
+		if id.TaskID != drc.TaskID || id.RunID != drc.RunID || id.AttemptID != drc.AttemptID {
 			continue
 		}
-		conflictingAttemptID = true
-		matches := drc.Generation <= math.MaxInt64 && id.AuthorityNamespaceRef == drc.AuthorityNamespaceID && id.TaskID == drc.TaskID && id.RunID == drc.RunID && id.AllocationID == drc.AllocationID && id.LeaseID == drc.LeaseID && id.DispatchGeneration == int64(drc.Generation) && id.FencingTokenDigest == fencingDigest
+		relatedCandidates++
+		if id.AuthorityNamespaceRef != drc.AuthorityNamespaceID {
+			continue
+		}
+		wireNamespaceCandidates++
+		matches := drc.Generation <= math.MaxInt64 && id.AllocationID == drc.AllocationID && id.LeaseID == drc.LeaseID && id.DispatchGeneration == int64(drc.Generation) && id.FencingTokenDigest == fencingDigest && state.ProcessStartedDigest != "" && state.CommandID == drc.CommandID
 		if matches {
-			return state, key, true, false
+			exactMatches++
+			matchedState, matchedKey = state, key
 		}
 	}
-	return AttemptAuthorityState{}, "", false, conflictingAttemptID
+	if relatedCandidates == 0 {
+		return AttemptAuthorityState{}, "", false, false
+	}
+	if wireNamespaceCandidates == 1 && exactMatches == 1 {
+		return matchedState, matchedKey, true, false
+	}
+	return AttemptAuthorityState{}, "", false, true
 }
 
 // Quarantine returns a read-only copy of all quarantine records.
