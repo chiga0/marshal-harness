@@ -4,6 +4,7 @@ package allocationcontrol
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,6 +21,28 @@ const (
 	objectsDirectoryName = "objects"
 	markerReadLimit      = 64 << 10
 )
+
+func (scope AllocationStoreScopeV1) directoryName() (string, error) {
+	if scope.Validate() != nil {
+		return "", ErrInvalid
+	}
+	digest, err := digestValue(scope)
+	if err != nil {
+		return "", err
+	}
+	return "scope-" + strings.TrimPrefix(digest, "sha256:"), nil
+}
+
+func validRelativeName(value string) bool {
+	return validPrintableASCII(value, 255) && value != "." && value != ".." && !strings.ContainsAny(value, `/\\`)
+}
+
+func requireRelativeName(value string) error {
+	if !validRelativeName(value) {
+		return fmt.Errorf("%w: relative name", ErrInvalid)
+	}
+	return nil
+}
 
 // Store owns held descriptors for the complete Darwin allocation namespace.
 // After OpenStore, all mutation and observation is descriptor-relative; root
