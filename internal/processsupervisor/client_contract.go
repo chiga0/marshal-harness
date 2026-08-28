@@ -13,6 +13,7 @@ import (
 type HandshakeAnchor struct {
 	SessionID            string
 	SessionNonceDigest   string
+	Authority            AuthorityTuple
 	OwnerEpoch           uint64
 	CurrentAuthorityHead string
 	CommandSequence      uint64
@@ -88,6 +89,26 @@ func CanonicalProtocolMessage(value any) ([]byte, error) {
 func ValidateHandshakeResponse(response HandshakeResponse) error {
 	observedAt, err := time.Parse(time.RFC3339Nano, response.ObservedAt)
 	if err != nil || observedAt.Location() != time.UTC || observedAt.Format(time.RFC3339Nano) != response.ObservedAt || response.SchemaVersion != HandshakeSchema || response.ProtocolRevision != ProtocolRevision || response.Status != "ok" || !validID(response.ReasonCode) || !validID(response.SessionID) || !validDigest(response.SessionNonceDigest) || response.OwnerEpoch == 0 || response.OwnerEpoch > maxSafeJSONInteger || !validDigest(response.CurrentAuthorityHead) || response.CommandSequence > maxSafeJSONInteger || !validDigest(response.CommandHead) || response.JournalSequence == 0 || response.JournalSequence > maxSafeJSONInteger || !validDigest(response.JournalHead) || !validID(response.ObserverIdentity) || response.SupervisorProcess.validate() != nil || response.SupervisorBinary.validate() != nil || response.ControlSocket.validate() != nil {
+		return ErrInvalid
+	}
+	switch response.Reconciliation {
+	case "":
+		if response.ReplayedResponse != nil {
+			return ErrInvalid
+		}
+	case ReconciliationUnchanged:
+		if response.ReplayedResponse != nil && ValidateResponse(*response.ReplayedResponse) != nil {
+			return ErrInvalid
+		}
+	case ReconciliationIntentPending:
+		if response.ReplayedResponse != nil {
+			return ErrInvalid
+		}
+	case ReconciliationReceiptCommitted:
+		if response.ReplayedResponse == nil || ValidateResponse(*response.ReplayedResponse) != nil {
+			return ErrInvalid
+		}
+	default:
 		return ErrInvalid
 	}
 	return nil
