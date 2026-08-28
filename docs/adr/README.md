@@ -32,6 +32,8 @@
 
 2026-08-28，维护者接受 ADR 0056，并以唯一 aggregate rework 关闭五项 P1：Darwin ordinary-user 由 Core-owned launch coordinator 在 barrier 下负责 spawn/PGID/held FD/process handle 与 PID birth observation，Provider 只提供 claim；ResultIngress admission 与 terminalization/eligibility terminal 共用 authority transaction/CAS；Dispatch eligibility 立即终止并 fence，与 `cleanup-completed` 正交，cleanup binding 只在完成后由 `lease-released` 释放；v1 控制单元收窄为 cooperative/non-detaching process group，不承诺普通 Darwin 的全后代 containment；server controller 已合入但 R4 仍为 `COMPONENT`。未知 identity 与跨编排目标一律零 kill 并进入 intervention。接受只关闭合同缺口，不表示实现完成、不升级 R3–R5，也不把普通用户进程提升为 hardened sandbox。
 
+2026-08-29，真实 RB2/B2 预审确认 `PT_TRACE_ME` 的启动 Core 直接持有 wait right、held FD 与 pipe，Core crash 后新 Core 无法恢复这些 mechanics。维护者在候选 `69046fa177caa1563d40dba07446c4b2d9d9b4a0` 经独立复审确认 P0/P1/P2 均为 0 后接受 ADR 0059（Accepted）：以固定、已允许的 `marshal internal process-supervisor` 作为 per-Attempt mechanics owner，并用耐久、可重放的有界协议支持 Core 重连；Supervisor 不拥有业务 authority，Supervisor 自身崩溃仍 intervention。接受只冻结合同，尚未实现，也不升级 R2–R6。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -83,3 +85,4 @@
 | [0056](0056-darwin-process-observation-and-attempt-terminalization.md) | Darwin ordinary-user Core-owned launch/process-group observation、admission/terminalization CAS barrier、dispatch eligibility 与 `cleanup-completed` 正交、cleanup binding release 和单一恢复顺序 | 已接受（Accepted，2026-08-28；唯一 aggregate rework 五项 P1 已关闭；仅冻结合同，生产接线未实现，R3–R5 保持 `COMPONENT`，不提供 hardened assurance/全后代 containment） |
 | [0057](0057-durable-local-allocation-recovery-and-production-composition.md) | 本地 Allocation authority projection、descriptor-relative no-replace Provision/Terminate、tombstone 恢复与唯一 `ProductionRuntime`/`PublicApplicationPort` | 已接受（Accepted，2026-08-28；只冻结合同，RB3 实现与真实 Pi 纵切仍开放，不升级成熟度） |
 | [0058](0058-interpreted-agent-launch-identity.md) | 解释型 Agent 的真实 runtime executable、versioned material roots/held identity、启动双 barrier 与 ResultIngress current-authority 全量重验 | 已接受（Accepted，2026-08-28；合同已冻结，仍未实现且不升级 Pi production reachability） |
+| [0059](0059-fixed-darwin-process-supervisor.md) | 固定 Marshal per-Attempt process supervisor、Core 重连、命令 hash chain 与 supervisor crash intervention | 已接受（Accepted，2026-08-29；候选 `69046fa177caa1563d40dba07446c4b2d9d9b4a0`，独立复审 P0/P1/P2=0；未实现，不升级 R2–R6） |
