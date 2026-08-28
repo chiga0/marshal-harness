@@ -261,6 +261,64 @@ func AdmitWithDurableAuthority(ctx context.Context, binding *AttemptBinding, res
 	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger, binding.BindingDigest, authority.ResultIngressDir())
 }
 
+// ReplayCommittedWithDurableAuthority reopens only the durable ResultIngress
+// fact for an exact immutable AttemptBinding+result pair. It never creates a
+// new admission and deliberately does not require the old lease/allocation to
+// remain live: the effect was already committed before the crash. Callers must
+// fall back to AdmitWithDurableAuthority when found=false.
+func ReplayCommittedWithDurableAuthority(binding *AttemptBinding, resultBytes []byte, authority DurableAuthoritySource) (*Admission, bool, error) {
+	if binding == nil || authority == nil {
+		return nil, false, fmt.Errorf("resultbinding: %w: durable replay requires binding and authority", ErrAdmissionRejected)
+	}
+	if err := binding.Facts.validate(); err != nil {
+		return nil, false, err
+	}
+	dir := authority.ResultIngressDir()
+	if strings.TrimSpace(dir) == "" {
+		return nil, false, nil
+	}
+	facts := binding.Facts
+	requestDigest := canonical.DigestBytes(resultBytes)
+	ledgerBinding := resultingress.LedgerBinding{
+		LeaseID: facts.AllocationID, Generation: uint64(facts.AllocationGeneration),
+		FencingToken: facts.FencingToken, AttemptID: facts.AttemptID, AllocationID: facts.AllocationID,
+		Expiry: facts.LeaseExpiry, RegistrationID: facts.EffectiveAgentRegistrationID(),
+		SnapshotDigest: facts.EffectiveAgentCapabilitySnapshotDigest(), EvidenceDigest: binding.BindingDigest,
+	}
+	drc := resultingress.DRC{
+		AuthorityNamespaceID: AuthorityNamespaceID, TaskID: facts.TaskID, RunID: facts.RunID,
+		AttemptID: facts.AttemptID, AllocationID: facts.AllocationID, LeaseID: facts.AllocationID,
+		Generation: uint64(facts.AllocationGeneration), FencingToken: facts.FencingToken,
+		CommandID: "command-result", IdempotencyKey: "ingress:attempt:" + facts.AttemptID,
+		RequestDigest: requestDigest, Nonce: facts.FencingToken, Expiry: facts.LeaseExpiry,
+		Operation: resultingress.OpResult, RegistrationID: facts.EffectiveAgentRegistrationID(),
+		SnapshotDigest: facts.EffectiveAgentCapabilitySnapshotDigest(), EvidenceDigest: binding.BindingDigest,
+	}
+	drcDigest, err := drc.Digest()
+	if err != nil {
+		return nil, false, err
+	}
+	store, err := resultingress.OpenResultIngressStore(dir)
+	if err != nil {
+		return nil, false, err
+	}
+	ingress, err := resultingress.NewDurableIngress(ledgerBinding, store)
+	if err != nil {
+		return nil, false, err
+	}
+	fact, found, err := ingress.ReplayCommitted(drc, resultingress.ResultEnvelope{Kind: resultingress.KindWorkerResult, ResultDigest: requestDigest, Sequence: 1})
+	if err != nil || !found {
+		return nil, found, err
+	}
+	return &Admission{
+		Accepted: true, AttemptID: facts.AttemptID, RegistrationID: facts.EffectiveAgentRegistrationID(),
+		DrcDigest: drcDigest, EnvelopeDigest: requestDigest, AdmissionFact: fact.FactDigest,
+		IdempotentReplay: true, AgentOK: true, SandboxOK: true,
+		EvidenceRequired: facts.ExecutionProfile == "hardened",
+		EvidenceOK:       false, EvidenceReason: "committed-effect-replay",
+	}, true, nil
+}
+
 func projectAgentRegistry(reg agentregistry.AgentRegistration, snap agentregistry.AgentCapabilitySnapshot) (*agentregistry.Registry, error) {
 	registry := agentregistry.NewRegistry()
 	if _, err := registry.Register(reg); err != nil {

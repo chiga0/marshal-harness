@@ -1,8 +1,10 @@
 package sandboxbridge
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,6 +37,13 @@ func (b *Bridge) admitCompletedResult(ctx context.Context, view workerRequestVie
 	}
 
 	attemptDir := attemptDirFor(view, plan)
+	// The raw result is the durable outbox payload. It is installed before the
+	// ResultIngress fact so every committed admission can be replayed into the
+	// Run journal after a driver crash. Creation-once rejects ABA/conflicting
+	// bytes for the same attempt.
+	if err := persistWorkerResultOnce(attemptDir, resultBytes); err != nil {
+		return fmt.Errorf("sandboxbridge: stage worker result before admission: %w", err)
+	}
 
 	// R2/R3 纠偏：生产路径从 immutable AttemptBinding + 真实 durable
 	// authority 接纳；退化为 seed 路径仅在无 authority 注入时（测试兼容）。
@@ -73,6 +82,97 @@ func (b *Bridge) admitCompletedResult(ctx context.Context, view workerRequestVie
 		return fmt.Errorf("sandboxbridge: admission anchor persist failed: %w", writeErr)
 	}
 	return err
+}
+
+// ReconcileAdmittedWorkerResult completes the durable ResultIngress outbox
+// after a driver restart. It reopens the immutable AttemptBinding and exact
+// staged result, rechecks current authority for a new admission or returns the
+// already committed fact as an idempotent replay, then refreshes the audit
+// anchor. Execution owns the single worker.completed journal append.
+func (b *Bridge) ReconcileAdmittedWorkerResult(ctx context.Context, attemptDir string) ([]byte, *resultbinding.Admission, error) {
+	if b == nil || b.authority == nil {
+		return nil, nil, errors.New("sandboxbridge: durable result reconciliation requires authority")
+	}
+	raw, err := os.ReadFile(filepath.Join(attemptDir, "worker-result.json"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("sandboxbridge: read staged worker result: %w", err)
+	}
+	binding, err := resultbinding.ReadAttemptBinding(attemptDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sandboxbridge: reconcile admission: %w", err)
+	}
+	authSource := bridgeAuthoritySource{authority: b.authority}
+	if committed, found, replayErr := resultbinding.ReplayCommittedWithDurableAuthority(binding, raw, authSource); replayErr != nil {
+		return nil, nil, fmt.Errorf("sandboxbridge: reconcile committed admission: %w", replayErr)
+	} else if found {
+		if writeErr := writeAdmissionAnchor(attemptDir, committed); writeErr != nil {
+			return nil, nil, fmt.Errorf("sandboxbridge: recovery admission anchor persist failed: %w", writeErr)
+		}
+		return raw, committed, nil
+	}
+	facts := binding.Facts
+	view := workerRequestView{TaskID: facts.TaskID, RunID: facts.RunID, AttemptID: facts.AttemptID}
+	inspectIdentity, err := identity(view, facts.AllocationID, facts.AllocationGeneration, facts.FencingToken, "command-inspect-admission-recovery")
+	if err != nil {
+		return nil, nil, err
+	}
+	report, err := b.provider.Inspect(ctx, sandbox.InspectRequest{Identity: inspectIdentity, AllocationId: facts.AllocationID})
+	if err != nil {
+		return nil, nil, fmt.Errorf("sandboxbridge: recovery admission inspect failed: %w", err)
+	}
+	admission, admitErr := resultbinding.AdmitWithDurableAuthority(ctx, binding, raw, authSource, report.State)
+	if writeErr := writeAdmissionAnchor(attemptDir, admission); writeErr != nil {
+		return nil, nil, fmt.Errorf("sandboxbridge: recovery admission anchor persist failed: %w", writeErr)
+	}
+	if admitErr != nil {
+		return nil, admission, admitErr
+	}
+	return raw, admission, nil
+}
+
+func persistWorkerResultOnce(attemptDir string, resultBytes []byte) error {
+	if attemptDir == "" {
+		return nil
+	}
+	path := filepath.Join(attemptDir, "worker-result.json")
+	if existing, err := os.ReadFile(path); err == nil {
+		if !bytes.Equal(existing, resultBytes) {
+			return errors.New("worker-result creation-once violation")
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(attemptDir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(attemptDir, ".worker-result-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err = tmp.Write(resultBytes); err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(attemptDir)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 // bridgeAuthoritySource 适配 Bridge.DurableAuthority 到

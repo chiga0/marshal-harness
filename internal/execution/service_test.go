@@ -3991,6 +3991,12 @@ func (f dispatchBinderFunc) BindDispatch(ctx context.Context, taskID, runID, att
 	return f(ctx, taskID, runID, attemptID, requirements)
 }
 
+type resultAdmissionReconcilerFunc func(ctx context.Context, attemptDir string) ([]byte, *resultbinding.Admission, error)
+
+func (f resultAdmissionReconcilerFunc) ReconcileAdmittedWorkerResult(ctx context.Context, attemptDir string) ([]byte, *resultbinding.Admission, error) {
+	return f(ctx, attemptDir)
+}
+
 // sealedDispatchLease builds a canonically sealed lease binding the given
 // attempt identity, so dispatch.ValidateLeaseFencing adjudicates exactly the
 // presented generation and fencingToken.
@@ -4132,6 +4138,103 @@ func TestRunLocalMVPPathUnchangedWithoutDispatchBinder(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(fixture.runDir, "diagnostics")); !os.IsNotExist(statErr) {
 		t.Fatalf("the Local MVP path produced dispatch diagnostics: %v", statErr)
+	}
+}
+
+// TestAdmittedWorkerResultRecoveryClosesJournalOutbox proves the R2 crash
+// closure: a durable admitted result whose journal still ends at
+// worker.started is completed on the same attempt, never converted into an
+// orphan retry. A crash after the journal append is recovered by normal
+// snapshot+journal replay and cannot append a second business fact.
+func TestAdmittedWorkerResultRecoveryClosesJournalOutbox(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		crashAfterAppend bool
+	}{{name: "complete"}, {name: "journal-durable-snapshot-stale", crashAfterAppend: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newExecutionFixture(t, false)
+			fixture.input.OrphanStalenessThreshold = time.Second
+			const attemptID = "attempt-admitted-crash"
+			setupOrphanedRunningFixture(t, fixture, attemptID)
+			attemptDir := filepath.Join(fixture.runDir, "attempts", attemptID)
+			raw := mustJSON(t, map[string]any{
+				"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerResult",
+				"taskId": "TASK-1", "runId": fixture.input.RunID, "attemptId": attemptID,
+				"adapter":              map[string]any{"id": "fixture", "executable": "/fixture", "version": "1"},
+				"status":               "completed",
+				"summary":              "admitted before driver crash",
+				"declaredChangedFiles": []string{},
+				"declaredArtifacts":    []any{},
+				"declaredCommands":     []any{},
+				"declaredRisks":        []string{},
+				"startedAt":            "2026-08-04T00:00:00Z",
+				"completedAt":          "2026-08-04T00:00:01Z",
+			})
+			if err := os.WriteFile(filepath.Join(attemptDir, "worker-result.json"), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fixture.input.ResultAdmissionReconciler = resultAdmissionReconcilerFunc(func(_ context.Context, gotDir string) ([]byte, *resultbinding.Admission, error) {
+				if gotDir != attemptDir {
+					t.Fatalf("attempt dir = %q, want %q", gotDir, attemptDir)
+				}
+				return raw, &resultbinding.Admission{
+					Accepted: true, AttemptID: attemptID,
+					DrcDigest: canonical.DigestBytes([]byte("drc")), EnvelopeDigest: canonical.DigestBytes(raw),
+					AdmissionFact: canonical.DigestBytes([]byte("fact")), IdempotentReplay: true,
+				}, nil
+			})
+			if tc.crashAfterAppend {
+				fixture.input.AfterWorkerCompletedAppend = func() error { return errors.New("crash") }
+			}
+
+			result, err := Run(context.Background(), fixture.input)
+			if tc.crashAfterAppend {
+				if err == nil || result.State.State != domain.StateVerifying {
+					t.Fatalf("post-append crash = %+v, %v", result, err)
+				}
+			} else if err != nil || result.State.State != domain.StateVerifying {
+				t.Fatalf("recovery = %+v, %v", result, err)
+			}
+			if result.AttemptID != attemptID {
+				t.Fatalf("recovery changed attempt: %q", result.AttemptID)
+			}
+			state := inspectState(t, fixture)
+			if state.State != domain.StateVerifying {
+				t.Fatalf("journal replay state = %+v", state)
+			}
+			events, _, readErr := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			completed, failed := 0, 0
+			for _, event := range events {
+				if event.Type == "worker.completed" && event.AttemptID == attemptID {
+					completed++
+					if event.Payload["resultAdmissionFactDigest"] == "" || event.Payload["resultRecovery"] != true {
+						t.Fatalf("worker.completed lacks admission binding: %+v", event.Payload)
+					}
+				}
+				if event.Type == "worker.failed" && event.AttemptID == attemptID {
+					failed++
+				}
+			}
+			if completed != 1 || failed != 0 {
+				t.Fatalf("completed=%d failed=%d", completed, failed)
+			}
+			if _, secondErr := Run(context.Background(), fixture.input); secondErr == nil {
+				t.Fatal("VERIFYING run unexpectedly started a second attempt")
+			}
+			events, _, _ = runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+			completed = 0
+			for _, event := range events {
+				if event.Type == "worker.completed" && event.AttemptID == attemptID {
+					completed++
+				}
+			}
+			if completed != 1 {
+				t.Fatalf("duplicate recovery appended %d worker.completed events", completed)
+			}
+		})
 	}
 }
 

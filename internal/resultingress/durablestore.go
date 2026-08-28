@@ -34,6 +34,7 @@ type resultAdmittedFact struct {
 	FactType       string `json:"factType"`
 	Sequence       int64  `json:"sequence"`
 	IdempotencyKey string `json:"idempotencyKey"`
+	DRCDigest      string `json:"drcDigest"`
 	EnvelopeDigest string `json:"envelopeDigest"`
 	FactDigest     string `json:"envelopeFactDigest"`
 	LedgerSequence uint64 `json:"ledgerSequence"`
@@ -126,17 +127,18 @@ func (s *ingressDurableStore) appendLine(fact any, getDigest func() string, setD
 
 // RecordAdmitted 把一次成功接纳的幂等权威锚点持久化（在返回 fact 之前先落账，
 // 使后续重复送达或跨进程重放可被机械检测）。
-func (s *ingressDurableStore) RecordAdmitted(idempotencyKey, envelopeDigest, factDigest string, ledgerSequence uint64) error {
+func (s *ingressDurableStore) RecordAdmitted(idempotencyKey, drcDigest, envelopeDigest, factDigest string, ledgerSequence uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	fact := &resultAdmittedFact{
 		FactType:       resultFactTypeAdmitted,
 		Sequence:       s.nextSequence,
 		IdempotencyKey: idempotencyKey,
+		DRCDigest:      drcDigest,
 		EnvelopeDigest: envelopeDigest,
 		FactDigest:     factDigest,
 		LedgerSequence: ledgerSequence,
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := s.appendLine(fact,
 		func() string { return fact.Digest },
 		func(d string) { fact.Digest = d }); err != nil {
@@ -148,6 +150,8 @@ func (s *ingressDurableStore) RecordAdmitted(idempotencyKey, envelopeDigest, fac
 
 // RecordQuarantined 把一次拒绝投递的只读机械审计记录持久化。
 func (s *ingressDurableStore) RecordQuarantined(reason RejectionReason, drcDigest, envelopeDigest string, observedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	fact := &resultQuarantinedFact{
 		FactType:       resultFactTypeQuarantined,
 		Sequence:       s.nextSequence,
@@ -156,8 +160,6 @@ func (s *ingressDurableStore) RecordQuarantined(reason RejectionReason, drcDiges
 		EnvelopeDigest: envelopeDigest,
 		ObservedAt:     observedAt.UTC().Format(time.RFC3339),
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if err := s.appendLine(fact,
 		func() string { return fact.Digest },
 		func(d string) { fact.Digest = d }); err != nil {
@@ -206,6 +208,12 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		if err := json.Unmarshal(line, &fact); err != nil {
 			return err
 		}
+		if fact.Sequence != s.nextSequence {
+			return fmt.Errorf("admitted fact sequence %d, want %d", fact.Sequence, s.nextSequence)
+		}
+		if err := requireDigest("DRCDigest", fact.DRCDigest); err != nil {
+			return err
+		}
 		storeddigest := fact.Digest
 		fact.Digest = ""
 		rawJSON, _ := json.Marshal(&fact)
@@ -213,8 +221,15 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 			return errors.New("admitted fact digest mismatch")
 		}
 		fact.Digest = storeddigest
+		if _, exists := in.admitted[fact.IdempotencyKey]; exists {
+			return fmt.Errorf("duplicate admitted idempotency key %q", fact.IdempotencyKey)
+		}
+		if fact.LedgerSequence != in.ledgerSequence+1 {
+			return fmt.Errorf("admitted ledger sequence %d, want %d", fact.LedgerSequence, in.ledgerSequence+1)
+		}
 		in.admitted[fact.IdempotencyKey] = admittedEntry{
 			fact:           AdmissionFact{FactDigest: fact.FactDigest, LedgerSequence: fact.LedgerSequence, IdempotentReplay: false},
+			drcDigest:      fact.DRCDigest,
 			envelopeDigest: fact.EnvelopeDigest,
 		}
 		if fact.LedgerSequence > in.ledgerSequence {
@@ -224,6 +239,9 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		var fact resultQuarantinedFact
 		if err := json.Unmarshal(line, &fact); err != nil {
 			return err
+		}
+		if fact.Sequence != s.nextSequence {
+			return fmt.Errorf("quarantined fact sequence %d, want %d", fact.Sequence, s.nextSequence)
 		}
 		storeddigest := fact.Digest
 		fact.Digest = ""

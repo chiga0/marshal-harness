@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDurableIngressReplayDetectedAcrossReopen 锁定 R2 纵切的 durable
@@ -62,6 +63,54 @@ func TestDurableIngressReplayDetectedAcrossReopen(t *testing.T) {
 	}
 }
 
+// TestDurableIngressCommittedReplaySurvivesLeaseExpiry locks the recovery
+// rule needed by the admission outbox: an already committed, byte-identical
+// delivery remains replayable after restart even when recovery happens after
+// lease expiry. A different DRC cannot claim that effect.
+func TestDurableIngressCommittedReplaySurvivesLeaseExpiry(t *testing.T) {
+	dir := t.TempDir()
+	binding := validBinding()
+	now := time.Unix(1_900_000_000, 0).UTC()
+	binding.Expiry = now.Add(time.Minute)
+	digest := fixedDigest("committed-before-crash")
+	drc := validDRC(digest)
+	drc.Expiry = binding.Expiry
+
+	store, err := OpenResultIngressStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingress, err := NewDurableIngress(binding, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingress.clock = func() time.Time { return now }
+	first, err := ingress.Admit(context.Background(), drc, validEnvelope(digest, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reopenedStore, err := OpenResultIngressStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewDurableIngress(binding, reopenedStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened.clock = func() time.Time { return binding.Expiry.Add(time.Hour) }
+	replay, err := reopened.Admit(context.Background(), drc, validEnvelope(digest, 1))
+	if err != nil || !replay.IdempotentReplay || replay.FactDigest != first.FactDigest {
+		t.Fatalf("committed replay after expiry = %+v, %v", replay, err)
+	}
+
+	forged := drc
+	forged.Nonce = "different-binding"
+	if _, err := reopened.Admit(context.Background(), forged, validEnvelope(digest, 1)); !errors.Is(err, ErrDigestMismatch) {
+		t.Fatalf("different DRC must not claim committed effect, got %v", err)
+	}
+}
+
 // TestDurableIngressQuarantinePersistsAcrossReopen 锁定 quarantine 跨进程
 // 恢复：拒绝投递的机械审计记录也能在崩溃/重启后恢复。
 func TestDurableIngressQuarantinePersistsAcrossReopen(t *testing.T) {
@@ -102,7 +151,7 @@ func TestResultIngressMemoryOnlyFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordAdmitted("k", "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("a", 64), 1); !errors.Is(err, ErrMemoryOnlyResultIngress) {
+	if err := s.RecordAdmitted("k", "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("a", 64), 1); !errors.Is(err, ErrMemoryOnlyResultIngress) {
 		t.Fatalf("RecordAdmitted on memory-only store must fail closed, got %v", err)
 	}
 	if err := s.RecordQuarantined(ReasonMalformed, "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("a", 64), futureExpiry); !errors.Is(err, ErrMemoryOnlyResultIngress) {

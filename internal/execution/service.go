@@ -114,6 +114,18 @@ type Input struct {
 	// self-identity Outcome is durable but before its BLOCKED snapshot. The
 	// journal remains authoritative and restart compensation must converge.
 	AfterLocalIdentityOutcomeCommit func() error
+	// ResultAdmissionReconciler closes the durable ResultIngress outbox. The
+	// production sandbox bridge stages worker-result.json before committing an
+	// admission fact; execution calls this seam to obtain that exact fact for
+	// worker.completed and to recover an admitted result after a driver crash.
+	ResultAdmissionReconciler ResultAdmissionReconciler
+	// AfterWorkerCompletedAppend injects a crash after worker.completed is
+	// durable but before the snapshot projection is refreshed.
+	AfterWorkerCompletedAppend func() error
+}
+
+type ResultAdmissionReconciler interface {
+	ReconcileAdmittedWorkerResult(ctx context.Context, attemptDir string) ([]byte, *resultbinding.Admission, error)
 }
 
 type LocalSelfIdentityObserver func() (selfidentity.LocalSelfIdentityObservationV1, error)
@@ -484,6 +496,19 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if selectedAdapterID != input.Adapter.ID() {
 		return Result{}, errors.New("frozen capability snapshot does not match the selected adapter")
 	}
+	// A production bridge may have committed ResultIngress and then crashed
+	// before execution appended worker.completed. Reconcile that durable outbox
+	// before generic orphan handling so an accepted result is never quarantined
+	// as a retry and never produces a second business effect.
+	if state.State == domain.StateRunning && input.ResultAdmissionReconciler != nil {
+		recovered, found, recoverErr := recoverAdmittedWorkerResult(ctx, store, lease, runDir, state, task, selectedAdapterID, input, dispatchObservation)
+		if recoverErr != nil {
+			return recovered, recoverErr
+		}
+		if found {
+			return recovered, nil
+		}
+	}
 	// Orphan recovery hooks the early admission layer ahead of Probe: a
 	// RUNNING run whose current attempt shows no live driver evidence is
 	// fenced out and the run re-enters through the existing RETRY_PENDING
@@ -799,7 +824,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 			return Result{State: failedState, AttemptID: attemptID}, reportedErr
 		}
 	}
-	if err := atomicWrite(filepath.Join(attemptDir, "worker-result.json"), append(workerResult.Data, '\n'), 0o600); err != nil {
+	if err := persistWorkerResultOnce(attemptDir, workerResult.Data); err != nil {
 		return blockAfterWorker(store, lease, next, attemptID, err)
 	}
 	if err := worktreeLease.Validate(); err != nil {
@@ -822,6 +847,18 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	completed := time.Now().UTC()
 	completePayload := map[string]any{"snapshotDigest": observation.SnapshotDigest, "diffDigest": observation.DiffDigest}
+	if input.ResultAdmissionReconciler != nil {
+		reconciled, admission, reconcileErr := input.ResultAdmissionReconciler.ReconcileAdmittedWorkerResult(ctx, attemptDir)
+		if reconcileErr != nil {
+			return Result{State: next, AttemptID: attemptID}, fmt.Errorf("execution: reconcile result admission: %w", reconcileErr)
+		}
+		if !bytes.Equal(reconciled, workerResult.Data) {
+			return Result{State: next, AttemptID: attemptID}, errors.New("execution: reconciled worker result differs from active result")
+		}
+		if err := bindAdmissionPayload(completePayload, admission, workerResult.Data, attemptID); err != nil {
+			return Result{State: next, AttemptID: attemptID}, err
+		}
+	}
 	if dispatchObservation != nil && ingressObservation != nil {
 		completePayload["dispatchObservationDigest"] = dispatchObservation.ObservationDigest
 		completePayload["ingressObservationDigest"] = ingressObservation.ObservationDigest
@@ -833,6 +870,11 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if err := store.Append(lease, completeEvent, next.Sequence); err != nil {
 		return Result{}, err
 	}
+	if input.AfterWorkerCompletedAppend != nil {
+		if err := input.AfterWorkerCompletedAppend(); err != nil {
+			return Result{State: finalState, AttemptID: attemptID, WorkerResult: workerResult.Data}, fmt.Errorf("execution: injected post-worker.completed failure: %w", err)
+		}
+	}
 	if err := store.WriteSnapshot(lease, finalState); err != nil {
 		return Result{}, err
 	}
@@ -843,6 +885,175 @@ func Run(ctx context.Context, input Input) (Result, error) {
 // last journal event must be for a RUNNING run to count as driver-live when
 // Input.OrphanStalenessThreshold is unset.
 const defaultOrphanStalenessThreshold = lifecycle.DefaultDriverStalenessThreshold
+
+func persistWorkerResultOnce(attemptDir string, result []byte) error {
+	path := filepath.Join(attemptDir, "worker-result.json")
+	if existing, err := os.ReadFile(path); err == nil {
+		if !bytes.Equal(existing, result) {
+			return errors.New("worker-result creation-once violation")
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return atomicWrite(path, result, 0o600)
+}
+
+func bindAdmissionPayload(payload map[string]any, admission *resultbinding.Admission, result []byte, attemptID string) error {
+	if admission == nil || !admission.Accepted || admission.AttemptID != attemptID {
+		return errors.New("execution: result admission is absent, rejected, or bound to another attempt")
+	}
+	if admission.EnvelopeDigest != canonical.DigestBytes(result) {
+		return errors.New("execution: result admission envelope digest mismatch")
+	}
+	for name, digest := range map[string]string{
+		"admissionFactDigest": admission.AdmissionFact,
+		"drcDigest":           admission.DrcDigest,
+		"envelopeDigest":      admission.EnvelopeDigest,
+	} {
+		if !strings.HasPrefix(digest, "sha256:") || len(digest) != len("sha256:")+64 {
+			return fmt.Errorf("execution: result admission %s is invalid", name)
+		}
+	}
+	payload["resultAdmissionFactDigest"] = admission.AdmissionFact
+	payload["resultDRCDigest"] = admission.DrcDigest
+	payload["resultEnvelopeDigest"] = admission.EnvelopeDigest
+	payload["resultAdmissionReplay"] = admission.IdempotentReplay
+	return nil
+}
+
+func recoverAdmittedWorkerResult(ctx context.Context, store *runstore.Store, lease *runstore.Lease, runDir string, state domain.RunState, task domain.TaskSpec, selectedAdapterID string, input Input, currentIdentity *selfidentity.LocalSelfIdentityObservationV1) (Result, bool, error) {
+	attemptID := state.CurrentAttemptID
+	attemptDir := filepath.Join(runDir, "attempts", attemptID)
+	staged, err := os.ReadFile(filepath.Join(attemptDir, "worker-result.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return Result{}, false, nil
+	}
+	if err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, fmt.Errorf("execution: read staged WorkerResult: %w", err)
+	}
+	if input.Validator.Validate(domain.KindWorkerResult, staged) != nil {
+		return Result{State: state, AttemptID: attemptID}, false, errors.New("execution: recovered WorkerResult is invalid")
+	}
+	var identity struct {
+		TaskID    string `json:"taskId"`
+		RunID     string `json:"runId"`
+		AttemptID string `json:"attemptId"`
+		Adapter   struct {
+			ID string `json:"id"`
+		} `json:"adapter"`
+	}
+	if err := json.Unmarshal(staged, &identity); err != nil || identity.TaskID != state.TaskID || identity.RunID != state.RunID || identity.AttemptID != attemptID || identity.Adapter.ID != selectedAdapterID {
+		return Result{State: state, AttemptID: attemptID}, false, errors.New("execution: recovered WorkerResult identity mismatch")
+	}
+	raw, admission, err := input.ResultAdmissionReconciler.ReconcileAdmittedWorkerResult(ctx, attemptDir)
+	if err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, fmt.Errorf("execution: recover result admission: %w", err)
+	}
+	if !bytes.Equal(raw, staged) {
+		return Result{State: state, AttemptID: attemptID}, false, errors.New("execution: reconciled WorkerResult differs from staged result")
+	}
+
+	var ingressObservation *selfidentity.LocalSelfIdentityObservationV1
+	var dispatchObservationDigest string
+	if currentIdentity != nil {
+		authorityDir, openErr := runstore.OpenOrCreateDirectoryUnderLease(lease, "attempts", attemptID)
+		if openErr != nil {
+			return Result{State: state, AttemptID: attemptID}, false, openErr
+		}
+		defer authorityDir.Close()
+		persistedDispatch, readErr := selfidentity.ReadPhaseObservationIn(authorityDir, "local-self-identity-dispatch.json")
+		if readErr != nil || selfidentity.SameSubject(persistedDispatch, *currentIdentity) != nil {
+			return Result{State: state, AttemptID: attemptID}, false, errors.New("execution: recovered result local identity changed")
+		}
+		dispatchObservationDigest = persistedDispatch.ObservationDigest
+		fresh, observeErr := input.ObserveLocalSelfIdentity()
+		if observeErr != nil || selfidentity.SameSubject(persistedDispatch, fresh) != nil {
+			return Result{State: state, AttemptID: attemptID}, false, errors.New("execution: recovered result ingress identity changed")
+		}
+		policyData, readErr := runstore.ReadFileUnderLease(lease, 2<<20, "policy-snapshot.json")
+		if readErr != nil {
+			return Result{State: state, AttemptID: attemptID}, false, readErr
+		}
+		if _, writeErr := selfidentity.PersistPhaseObservationIn(authorityDir, "local-self-identity-ingress.json", fresh); writeErr != nil {
+			return Result{State: state, AttemptID: attemptID}, false, writeErr
+		}
+		dispatchLeaf, bindErr := runstore.BindLeaf(authorityDir, "local-self-identity-dispatch.json")
+		if bindErr != nil {
+			return Result{State: state, AttemptID: attemptID}, false, bindErr
+		}
+		defer dispatchLeaf.Close()
+		ingressLeaf, bindErr := runstore.BindLeaf(authorityDir, "local-self-identity-ingress.json")
+		if bindErr != nil {
+			return Result{State: state, AttemptID: attemptID}, false, bindErr
+		}
+		defer ingressLeaf.Close()
+		requestData, readErr := runstore.ReadFileInDirectory(authorityDir, "worker-request.json", 2<<20)
+		if readErr != nil {
+			return Result{State: state, AttemptID: attemptID}, false, readErr
+		}
+		admitted, admitErr := admitLocalSelfIdentityIngress(store, lease, authorityDir, dispatchLeaf, ingressLeaf, attemptID, policyData, bytes.TrimSuffix(requestData, []byte{'\n'}), input.Validator, persistedDispatch, fresh)
+		if admitErr != nil {
+			return Result{State: state, AttemptID: attemptID}, false, admitErr
+		}
+		ingressObservation = &admitted
+	}
+
+	repository, err := gitworktree.Open(input.RepositoryRoot)
+	if err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, err
+	}
+	if err := repository.UnlockManaged(input.StateRoot, state.WorktreePath); err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, fmt.Errorf("result recovery: unlock stale worktree: %w", err)
+	}
+	worktreeLease, err := repository.Acquire(input.StateRoot, state.TaskID, state.WorktreePath, state.BaseSHA)
+	if err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, err
+	}
+	defer worktreeLease.Release()
+	if err := worktreeLease.Validate(); err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, err
+	}
+	captureLimit := task.Scope.MaxDiffBytes + 1
+	if captureLimit <= 1 {
+		captureLimit = 64 << 20
+	}
+	observation, err := verification.ObserveContext(ctx, state.WorktreePath, state.BaseSHA, captureLimit)
+	if err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, err
+	}
+	observationData, err := json.MarshalIndent(observation, "", "  ")
+	if err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, err
+	}
+	if err := atomicWrite(filepath.Join(attemptDir, "worktree-snapshot.json"), append(observationData, '\n'), 0o600); err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, err
+	}
+	payload := map[string]any{"snapshotDigest": observation.SnapshotDigest, "diffDigest": observation.DiffDigest, "resultRecovery": true}
+	if err := bindAdmissionPayload(payload, admission, raw, attemptID); err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, err
+	}
+	if currentIdentity != nil && ingressObservation != nil {
+		payload["dispatchObservationDigest"] = dispatchObservationDigest
+		payload["ingressObservationDigest"] = ingressObservation.ObservationDigest
+	}
+	event, finalState, err := transition(state, attemptID, "worker.completed", domain.StateVerifying, time.Now().UTC(), payload, lifecycle.Guard{LeaseHeld: true, WorkerProtocolComplete: true, SnapshotRecorded: true})
+	if err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, err
+	}
+	if err := store.Append(lease, event, state.Sequence); err != nil {
+		return Result{State: state, AttemptID: attemptID}, false, err
+	}
+	if input.AfterWorkerCompletedAppend != nil {
+		if err := input.AfterWorkerCompletedAppend(); err != nil {
+			return Result{State: finalState, AttemptID: attemptID, WorkerResult: raw}, true, fmt.Errorf("execution: injected post-worker.completed failure: %w", err)
+		}
+	}
+	if err := store.WriteSnapshot(lease, finalState); err != nil {
+		return Result{State: finalState, AttemptID: attemptID, WorkerResult: raw}, true, err
+	}
+	return Result{State: finalState, AttemptID: attemptID, WorkerResult: raw}, true, nil
+}
 
 // recoverOrphanedRunningAttempt implements the fencing-capable re-entry for
 // an orphaned RUNNING attempt: the current attempt shows no live driver
