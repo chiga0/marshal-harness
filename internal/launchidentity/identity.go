@@ -155,7 +155,11 @@ type SpecInput struct {
 }
 
 func DigestMaterials(materials []LaunchMaterialV1) (string, error) {
-	copyOf := append([]LaunchMaterialV1(nil), materials...)
+	// Empty material collections are always represented by the closed JSON
+	// array [] (ADR 0058), never by null. In particular, append(nil, empty...)
+	// would collapse an explicitly empty slice back to nil and make the digest
+	// depend on an in-memory representation detail.
+	copyOf := append([]LaunchMaterialV1{}, materials...)
 	sort.Slice(copyOf, func(i, j int) bool { return copyOf[i].Role < copyOf[j].Role })
 	raw, err := json.Marshal(copyOf)
 	if err != nil {
@@ -169,6 +173,7 @@ func DigestMaterials(materials []LaunchMaterialV1) (string, error) {
 }
 
 func DigestSpec(input SpecInput) (string, error) {
+	input = normalizeSpecInput(input)
 	raw, err := json.Marshal(input)
 	if err != nil {
 		return "", err
@@ -178,6 +183,14 @@ func DigestSpec(input SpecInput) (string, error) {
 		return "", err
 	}
 	return canonical.DigestBytes(canon), nil
+}
+
+func normalizeSpecInput(input SpecInput) SpecInput {
+	input.MaterialRoots = append([]MaterialRootV1{}, input.MaterialRoots...)
+	input.LaunchMaterials = append([]LaunchMaterialV1{}, input.LaunchMaterials...)
+	input.Arguments = append([]string{}, input.Arguments...)
+	input.Environment = append([]string{}, input.Environment...)
+	return input
 }
 
 func (closure ClosureV1) Validate() error {
@@ -358,6 +371,7 @@ func validDigest(value string) bool {
 }
 
 func Seal(input SpecInput) (ClosureV1, error) {
+	input = normalizeSpecInput(input)
 	materialsDigest, err := DigestMaterials(input.LaunchMaterials)
 	if err != nil {
 		return ClosureV1{}, err
@@ -366,7 +380,7 @@ func Seal(input SpecInput) (ClosureV1, error) {
 	if err != nil {
 		return ClosureV1{}, err
 	}
-	closure := ClosureV1{RuntimeExecutable: input.RuntimeExecutable, ClosureProfileID: input.ClosureProfileID, MaterialRoots: append([]MaterialRootV1(nil), input.MaterialRoots...), LaunchMaterials: append([]LaunchMaterialV1(nil), input.LaunchMaterials...), LaunchMaterialsDigest: materialsDigest, AgentLaunchSpecDigest: specDigest, Arguments: append([]string(nil), input.Arguments...), Environment: append([]string(nil), input.Environment...), WorkingDirectory: input.WorkingDirectory}
+	closure := ClosureV1{RuntimeExecutable: input.RuntimeExecutable, ClosureProfileID: input.ClosureProfileID, MaterialRoots: input.MaterialRoots, LaunchMaterials: input.LaunchMaterials, LaunchMaterialsDigest: materialsDigest, AgentLaunchSpecDigest: specDigest, Arguments: input.Arguments, Environment: input.Environment, WorkingDirectory: input.WorkingDirectory}
 	if err := closure.Validate(); err != nil {
 		return ClosureV1{}, fmt.Errorf("%w: invalid sealed closure", ErrUnavailable)
 	}

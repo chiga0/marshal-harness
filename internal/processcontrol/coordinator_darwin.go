@@ -220,29 +220,36 @@ func (coordinator *darwinCoordinator) reconcile(ctx context.Context, ref Authori
 	if cleanup != (CleanupRef{}) {
 		operation = OperationCleanupReconcile
 	}
-	if err := coordinator.withAuthority(ctx, ref, operation, cleanup, observation.ObservationDigest, func() error {
+	authorityErr := coordinator.withAuthority(ctx, ref, operation, cleanup, observation.ObservationDigest, func() error {
 		state, inspectErr = coordinator.system.reconcile(observation)
-		return inspectErr
-	}); err != nil {
-		return Inspection{}, err
+		if inspectErr != nil || state != ProcessAbsent {
+			return inspectErr
+		}
+		// The second absence observation is part of the same current-authority
+		// effect. Splitting it across two callbacks both widens a ledger race and
+		// makes one logical inspection look like two mechanics operations.
+		confirmed, confirmErr := coordinator.system.reconcile(observation)
+		if confirmErr != nil || confirmed != ProcessAbsent {
+			state = ProcessIdentityConflict
+			inspectErr = ErrIdentityConflict
+			return inspectErr
+		}
+		return nil
+	})
+	if authorityErr != nil {
+		if inspectErr != nil && errors.Is(authorityErr, inspectErr) {
+			return Inspection{State: state, Observation: observation}, inspectErr
+		}
+		return Inspection{}, authorityErr
 	}
 	if inspectErr != nil {
-		return Inspection{State: ProcessIdentityConflict, Observation: observation}, inspectErr
+		return Inspection{State: ProcessIdentityConflict, Observation: observation}, ErrIdentityConflict
+	}
+	if state == ProcessLive {
+		state = ProcessLaunchUncertain
 	}
 	if state != ProcessAbsent {
-		if state == ProcessLive {
-			state = ProcessLaunchUncertain
-		}
 		return Inspection{State: state, Observation: observation}, stateError(state)
-	}
-	if err := coordinator.withAuthority(ctx, ref, operation, cleanup, observation.ObservationDigest, func() error {
-		state, inspectErr = coordinator.system.reconcile(observation)
-		return inspectErr
-	}); err != nil {
-		return Inspection{}, err
-	}
-	if inspectErr != nil || state != ProcessAbsent {
-		return Inspection{State: ProcessIdentityConflict, Observation: observation}, ErrIdentityConflict
 	}
 	return Inspection{State: ProcessAbsent, Observation: observation}, nil
 }
@@ -281,11 +288,15 @@ func (process *darwinProcess) inspectLocked(ctx context.Context, cleanup Cleanup
 	if cleanup != (CleanupRef{}) {
 		operation = OperationCleanupInspect
 	}
-	if err := process.withAuthority(ctx, operation, cleanup, func() error {
+	authorityErr := process.withAuthority(ctx, operation, cleanup, func() error {
 		state, inspectErr = process.unit.inspect()
 		return inspectErr
-	}); err != nil {
-		return Inspection{}, err
+	})
+	if authorityErr != nil {
+		if inspectErr != nil && errors.Is(authorityErr, inspectErr) {
+			return Inspection{State: state, Observation: process.observed}, inspectErr
+		}
+		return Inspection{}, authorityErr
 	}
 	if inspectErr != nil {
 		return Inspection{State: ProcessIdentityConflict, Observation: process.observed}, inspectErr
