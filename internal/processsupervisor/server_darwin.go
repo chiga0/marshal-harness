@@ -85,14 +85,32 @@ func runSupervisor(ctx context.Context) error {
 	if err != nil || len(entries) != 0 || revalidateControlDirectory(controlDirectory, directoryIdentity) != nil {
 		return ErrConflict
 	}
-	if err := writeOpenatExclusive(controlDirectory, nonceFileName, []byte(bootstrap.SessionNonce), 0o600); err != nil {
+	nonceFile, err := writeHeldOpenatExclusive(controlDirectory, nonceFileName, []byte(bootstrap.SessionNonce), 0o600)
+	if err != nil {
 		return ErrIntervention
 	}
+	defer nonceFile.Close()
 	journalFile, err := openatExclusive(controlDirectory, JournalFileName, 0o600)
 	if err != nil {
 		return ErrIntervention
 	}
 	if err := controlDirectory.Sync(); err != nil {
+		_ = journalFile.Close()
+		return ErrIntervention
+	}
+	nonceIdentity, nonceSize, err := observeControlFile(nonceFile)
+	if err != nil || nonceSize != nonceBytes {
+		_ = journalFile.Close()
+		return ErrIntervention
+	}
+	journalIdentity, _, err := observeControlFile(journalFile)
+	if err != nil {
+		_ = journalFile.Close()
+		return ErrIntervention
+	}
+	controlFiles := SessionControlFiles{Nonce: nonceIdentity, Journal: journalIdentity}
+	heldFiles := &heldSessionControlFiles{nonce: nonceFile, journal: journalFile, identity: controlFiles}
+	if controlFiles.validate() != nil || revalidateHeldSessionControlFiles(controlDirectory, heldFiles, controlFiles) != nil {
 		_ = journalFile.Close()
 		return ErrIntervention
 	}
@@ -126,6 +144,7 @@ func runSupervisor(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	boundary := sessionControlBoundary{directory: controlDirectory, directoryIdentity: directoryIdentity, socket: socketIdentity, heldFiles: heldFiles, controlFiles: controlFiles}
 	supervisorIdentity, err := observeSelfIdentity()
 	if err != nil {
 		return err
@@ -133,12 +152,18 @@ func runSupervisor(ctx context.Context) error {
 	var active atomic.Bool
 	active.Store(true)
 	incoming, acceptErrors := acceptConnections(ctx, listener, &active)
-	if observeControlSocketExact(controlDirectory, socketIdentity) != nil {
+	if observeControlSocketExact(controlDirectory, socketIdentity) != nil || revalidateHeldSessionControlFiles(controlDirectory, heldFiles, controlFiles) != nil {
 		return ErrConflict
 	}
-	if err := writeFrame(unixConnection, handshake(session, supervisorIdentity, socketIdentity, reconnectResolution{}), MaxWireFrameBytes); err == nil {
-		terminal, _ := serveConnection(unixConnection, reader, session)
-		if terminal {
+	if err := writeFrame(unixConnection, handshake(session, supervisorIdentity, socketIdentity, controlFiles, reconnectResolution{}), MaxWireFrameBytes); err == nil {
+		terminal, serveErr := serveConnection(unixConnection, reader, session, boundary)
+		if errors.Is(serveErr, ErrConflict) {
+			return serveErr
+		}
+		if serveErr == nil && terminal {
+			if revalidateHeldSessionControlFiles(controlDirectory, heldFiles, controlFiles) != nil || observeControlSocketExact(controlDirectory, socketIdentity) != nil {
+				return ErrConflict
+			}
 			return nil
 		}
 	}
@@ -170,15 +195,21 @@ func runSupervisor(ctx context.Context) error {
 		observed, observeErr := observePeer(connection)
 		reconnectReader := bufio.NewReaderSize(connection, MaxWireFrameBytes+frameHeaderBytes+1)
 		reconnectRaw, readErr := readFrame(reconnectReader, MaxWireFrameBytes)
-		var reconnect ReconnectRequest
+		var reconnect reconnectRequest
 		admitErr := strictCanonicalDecode(reconnectRaw, &reconnect)
-		preconditionErr := observeControlSocketExact(controlDirectory, socketIdentity)
+		preconditionErr := boundary.revalidate()
 		var resolution reconnectResolution
 		var reconnectErr error
 		if observeErr == nil && readErr == nil && admitErr == nil && preconditionErr == nil {
-			resolution, reconnectErr = session.Reconnect(reconnect, observed)
+			resolution, reconnectErr = session.reconnect(reconnect, observed)
 		}
-		if observeErr != nil || readErr != nil || admitErr != nil || preconditionErr != nil || reconnectErr != nil {
+		if preconditionErr != nil {
+			session.intervene()
+			_ = connection.Close()
+			active.Store(false)
+			return ErrConflict
+		}
+		if observeErr != nil || readErr != nil || admitErr != nil || reconnectErr != nil {
 			_ = writeFrame(connection, HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "rejected", ReasonCode: ErrConflict.ReasonCode}, MaxWireFrameBytes)
 			_ = connection.Close()
 			active.Store(false)
@@ -189,22 +220,31 @@ func runSupervisor(ctx context.Context) error {
 			active.Store(false)
 			continue
 		}
-		if err := writeFrame(connection, handshake(session, supervisorIdentity, socketIdentity, resolution), MaxWireFrameBytes); err != nil {
+		if err := writeFrame(connection, handshake(session, supervisorIdentity, socketIdentity, controlFiles, resolution), MaxWireFrameBytes); err != nil {
 			_ = connection.Close()
 			active.Store(false)
 			continue
 		}
 		if state := session.State(); state == string(sessionClosed) || state == string(sessionAborted) {
 			_ = connection.Close()
+			if revalidateHeldSessionControlFiles(controlDirectory, heldFiles, controlFiles) != nil || observeControlSocketExact(controlDirectory, socketIdentity) != nil {
+				return ErrConflict
+			}
 			return nil
 		}
-		terminal, serveErr := serveConnection(connection, reconnectReader, session)
+		terminal, serveErr := serveConnection(connection, reconnectReader, session, boundary)
 		_ = connection.Close()
 		active.Store(false)
 		if serveErr != nil {
+			if errors.Is(serveErr, ErrConflict) {
+				return serveErr
+			}
 			continue
 		}
 		if terminal {
+			if revalidateHeldSessionControlFiles(controlDirectory, heldFiles, controlFiles) != nil || observeControlSocketExact(controlDirectory, socketIdentity) != nil {
+				return ErrConflict
+			}
 			return nil
 		}
 	}
@@ -294,7 +334,25 @@ func acceptConnections(ctx context.Context, listener *net.UnixListener, active *
 	return incoming, errors
 }
 
-func serveConnection(connection net.Conn, reader *bufio.Reader, session *Session) (bool, error) {
+type sessionControlBoundary struct {
+	directory         *os.File
+	directoryIdentity ControlDirectoryIdentity
+	socket            ControlSocketIdentity
+	heldFiles         *heldSessionControlFiles
+	controlFiles      SessionControlFiles
+}
+
+func (boundary sessionControlBoundary) revalidate() error {
+	if boundary.directory == nil || boundary.directoryIdentity.validate() != nil || boundary.socket.validate() != nil || boundary.controlFiles.validate() != nil || boundary.heldFiles == nil {
+		return ErrInvalid
+	}
+	if revalidateControlDirectory(boundary.directory, boundary.directoryIdentity) != nil || observeControlSocketExact(boundary.directory, boundary.socket) != nil || revalidateHeldSessionControlFiles(boundary.directory, boundary.heldFiles, boundary.controlFiles) != nil {
+		return ErrConflict
+	}
+	return nil
+}
+
+func serveConnection(connection net.Conn, reader *bufio.Reader, session *Session, boundary sessionControlBoundary) (bool, error) {
 	for {
 		raw, err := readFrame(reader, MaxWireFrameBytes)
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
@@ -303,7 +361,10 @@ func serveConnection(connection net.Conn, reader *bufio.Reader, session *Session
 		if err != nil {
 			return false, err
 		}
-		response := session.Handle(raw)
+		response, err := handleSessionCommand(session, boundary, raw)
+		if err != nil {
+			return false, err
+		}
 		if err := writeFrame(connection, response, MaxWireFrameBytes); err != nil {
 			return false, err
 		}
@@ -314,9 +375,28 @@ func serveConnection(connection net.Conn, reader *bufio.Reader, session *Session
 	}
 }
 
-func handshake(session *Session, supervisor CoreIdentity, socket ControlSocketIdentity, resolution reconnectResolution) HandshakeResponse {
+func handleSessionCommand(session *Session, boundary sessionControlBoundary, raw []byte) (Response, error) {
+	if session == nil {
+		return Response{}, ErrInvalid
+	}
+	if err := boundary.revalidate(); err != nil {
+		session.intervene()
+		return Response{}, ErrConflict
+	}
+	response := session.Handle(raw)
+	// Session.Handle returns only after a command receipt is fsynced. Never let
+	// a success receipt cross the connection if any pathname/descriptor
+	// identity drifted during mechanics execution.
+	if err := boundary.revalidate(); err != nil {
+		session.intervene()
+		return Response{}, ErrConflict
+	}
+	return response, nil
+}
+
+func handshake(session *Session, supervisor CoreIdentity, socket ControlSocketIdentity, controlFiles SessionControlFiles, resolution reconnectResolution) HandshakeResponse {
 	commandSequence, commandHead, journalSequence, journalHead := session.Snapshot()
-	return HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: session.sessionID, SessionNonceDigest: session.nonceDigest, OwnerEpoch: session.ownerEpoch, CurrentAuthorityHead: session.authorityHead, CommandSequence: commandSequence, CommandHead: commandHead, JournalSequence: journalSequence, JournalHead: journalHead, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), SupervisorProcess: supervisor.Process, SupervisorBinary: supervisor.Binary, ControlSocket: socket, Reconciliation: resolution.State, ReplayedResponse: resolution.Response}
+	return HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: session.sessionID, SessionNonceDigest: session.nonceDigest, OwnerEpoch: session.ownerEpoch, CurrentAuthorityHead: session.authorityHead, CommandSequence: commandSequence, CommandHead: commandHead, JournalSequence: journalSequence, JournalHead: journalHead, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), SupervisorProcess: supervisor.Process, SupervisorBinary: supervisor.Binary, ControlSocket: socket, ControlFiles: controlFiles, Reconciliation: resolution.State, ReplayedResponse: resolution.Response}
 }
 
 func rejectBootstrapExtra(reader *bufio.Reader, connection *net.UnixConn) error {
@@ -527,14 +607,18 @@ func openatExclusive(directory *os.File, name string, mode uint32) (*os.File, er
 	return os.NewFile(uintptr(fd), "marshal-supervisor-owned-object"), nil
 }
 
-func writeOpenatExclusive(directory *os.File, name string, data []byte, mode uint32) error {
+func writeHeldOpenatExclusive(directory *os.File, name string, data []byte, mode uint32) (*os.File, error) {
 	file, err := openatExclusive(directory, name, mode)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer file.Close()
 	if validateJournalFile(file) != nil || writeAll(file, data) != nil || file.Sync() != nil || validateJournalFile(file) != nil {
-		return ErrIntervention
+		_ = file.Close()
+		return nil, ErrIntervention
 	}
-	return directory.Sync()
+	if err := directory.Sync(); err != nil {
+		_ = file.Close()
+		return nil, ErrIntervention
+	}
+	return file, nil
 }

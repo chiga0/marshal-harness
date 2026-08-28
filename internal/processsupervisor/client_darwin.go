@@ -118,6 +118,18 @@ func Start(ctx context.Context, options StartOptions) (*Client, error) {
 		if err := codec.Read(&handshake); err != nil {
 			return ErrIntervention
 		}
+		if handshake.ControlFiles.validate() != nil {
+			return ErrConflict
+		}
+		heldFiles, err := openHeldSessionControlFiles(options.ControlDirectory, handshake.ControlFiles)
+		if err != nil {
+			return ErrConflict
+		}
+		defer heldFiles.close()
+		nonce, err := readSessionNonce(heldFiles, canonical.DigestBytes([]byte(options.Bootstrap.SessionNonce)))
+		if err != nil || nonce != options.Bootstrap.SessionNonce {
+			return ErrConflict
+		}
 		socket, err := ObserveHeldControlSocket(options.ControlDirectory)
 		if err != nil || revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, socket) != nil {
 			return ErrConflict
@@ -134,9 +146,12 @@ func Start(ctx context.Context, options StartOptions) (*Client, error) {
 			SessionID: options.Bootstrap.SessionID, SessionNonceDigest: canonical.DigestBytes([]byte(options.Bootstrap.SessionNonce)), Authority: options.Bootstrap.Authority,
 			OwnerEpoch: options.Bootstrap.OwnerEpoch, CurrentAuthorityHead: options.Bootstrap.CurrentAuthorityHead,
 			CommandSequence: 0, CommandHead: CommandGenesisDigest, JournalSequence: 1, JournalHead: journalHead,
-			UID: core.UID, GID: core.GID, FixedBinary: core.Binary, ControlSocket: socket,
+			UID: core.UID, GID: core.GID, FixedBinary: core.Binary, ControlSocket: socket, ControlFiles: handshake.ControlFiles,
 		}
-		return ValidateHandshakeBinding(handshake, anchor, peer)
+		if ValidateHandshakeBinding(handshake, anchor, peer) != nil || revalidateHeldSessionControlFiles(options.ControlDirectory, heldFiles, handshake.ControlFiles) != nil {
+			return ErrConflict
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -163,16 +178,42 @@ func Reconnect(ctx context.Context, options ReconnectOptions) (*Client, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, ErrIntervention
 	}
-	if err := validateReconnectOptions(options); err != nil {
-		return nil, err
+	plan, previous := options.Plan, options.Anchor
+	if options.ControlDirectory == nil || !absoluteClean(options.FixedMarshalPath) || options.ControlDirectoryIdentity.validate() != nil || previous.ControlFiles.validate() != nil || plan.PreviousOwnerEpoch != previous.OwnerEpoch || plan.OwnerEpoch <= plan.PreviousOwnerEpoch || plan.OwnerEpoch > maxSafeJSONInteger || plan.PreviousAuthorityHead != previous.CurrentAuthorityHead || !validDigest(plan.CurrentAuthorityHead) || plan.CurrentAuthorityHead == plan.PreviousAuthorityHead || !validDigest(plan.ControlOwnerAcquired) {
+		return nil, ErrInvalid
 	}
-	core, err := observeSelfIdentity()
-	if err != nil || !sameCoreIdentity(options.Request.Core, core) || core.UID != options.Anchor.UID || core.GID != options.Anchor.GID || !sameBinaryObject(core.Binary, options.Anchor.FixedBinary) {
+	core, err := ObserveCurrentCore(options.FixedMarshalPath)
+	if err != nil || core.UID != previous.UID || core.GID != previous.GID || !sameBinaryObject(core.Binary, previous.FixedBinary) {
 		return nil, ErrConflict
 	}
 	directory, err := ObserveHeldControlDirectory(options.ControlDirectory)
-	if err != nil || directory != options.ControlDirectoryIdentity || revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, options.Anchor.ControlSocket) != nil {
+	if err != nil || directory != options.ControlDirectoryIdentity || revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, previous.ControlSocket) != nil {
 		return nil, ErrConflict
+	}
+	heldFiles, err := openHeldSessionControlFiles(options.ControlDirectory, previous.ControlFiles)
+	if err != nil {
+		return nil, ErrConflict
+	}
+	defer heldFiles.close()
+	nonce, err := readSessionNonce(heldFiles, previous.SessionNonceDigest)
+	if err != nil {
+		return nil, ErrConflict
+	}
+	request := reconnectRequest{SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: previous.SessionID, SessionNonce: nonce, PreviousOwnerEpoch: plan.PreviousOwnerEpoch, OwnerEpoch: plan.OwnerEpoch, PreviousAuthorityHead: plan.PreviousAuthorityHead, CurrentAuthorityHead: plan.CurrentAuthorityHead, ControlOwnerAcquired: plan.ControlOwnerAcquired, Core: core, LastOwnerEpoch: previous.OwnerEpoch, LastAuthorityHead: previous.CurrentAuthorityHead, LastCommandSequence: previous.CommandSequence, LastCommandHead: previous.CommandHead, LastJournalSequence: previous.JournalSequence, LastJournalHead: previous.JournalHead}
+	var pendingProjection *PendingReplayEvidence
+	if options.Pending != nil {
+		prepared := *options.Pending
+		if prepared.evidence.Validate() != nil || prepared.evidence.PreCommand != previous {
+			return nil, ErrConflict
+		}
+		pending := prepared.request
+		request.PendingRequest = &pending
+		evidence := pendingEvidenceForPrepared(prepared)
+		pendingProjection = &evidence
+	}
+	wire := reconnectWireOptions{ControlDirectory: options.ControlDirectory, ControlDirectoryIdentity: options.ControlDirectoryIdentity, Request: request, Anchor: previous, PendingEvidence: pendingProjection}
+	if err := validateReconnectWireOptions(wire); err != nil {
+		return nil, err
 	}
 	address := filepath.Join(directory.CanonicalPath, controlSocket)
 	connection, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: address, Net: "unix"})
@@ -191,24 +232,24 @@ func Reconnect(ctx context.Context, options ReconnectOptions) (*Client, error) {
 	}
 	var handshake HandshakeResponse
 	var replay *Response
-	var anchor HandshakeAnchor
+	var current HandshakeAnchor
 	var peer CoreIdentity
 	err = runBoundedTransport(ctx, connection, time.Now().Add(handshakeTimeout), func() error {
-		if revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, options.Anchor.ControlSocket) != nil {
+		if revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, previous.ControlSocket) != nil || revalidateHeldSessionControlFiles(options.ControlDirectory, heldFiles, previous.ControlFiles) != nil {
 			return ErrConflict
 		}
 		peer, err = ObserveFixedMarshalPeer(connection)
-		if err != nil || !sameBinaryObject(peer.Binary, options.Anchor.FixedBinary) {
+		if err != nil || !sameBinaryObject(peer.Binary, previous.FixedBinary) {
 			return ErrConflict
 		}
-		if err := codec.Write(options.Request); err != nil {
+		if err := codec.Write(request); err != nil {
 			return ErrIntervention
 		}
 		if err := codec.Read(&handshake); err != nil {
 			return ErrIntervention
 		}
-		replay, anchor, err = validateReconnectHandshake(handshake, options, peer)
-		if err != nil || revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, options.Anchor.ControlSocket) != nil {
+		replay, current, err = validateReconnectHandshake(handshake, wire, peer)
+		if err != nil || revalidateControlDirectory(options.ControlDirectory, directory) != nil || observeControlSocketExact(options.ControlDirectory, wire.Anchor.ControlSocket) != nil || revalidateHeldSessionControlFiles(options.ControlDirectory, heldFiles, wire.Anchor.ControlFiles) != nil {
 			return ErrConflict
 		}
 		return nil
@@ -218,36 +259,40 @@ func Reconnect(ctx context.Context, options ReconnectOptions) (*Client, error) {
 	}
 	var replayedOutcome *VerifiedCommandOutcome
 	if replay != nil {
-		if options.Request.PendingRequest == nil {
+		if request.PendingRequest == nil {
 			return nil, ErrConflict
 		}
-		postCommand, err := commandPostAnchor(options.Anchor, *options.Request.PendingRequest, *replay)
+		postCommand, err := commandPostAnchor(wire.Anchor, *request.PendingRequest, *replay)
 		if err != nil {
 			return nil, ErrConflict
 		}
-		outcome, err := verifiedCommandOutcome(*options.Request.PendingRequest, *replay, CommandRecoveryEvidence{Reconciliation: handshake.Reconciliation, Replayed: true, PreCommand: options.Anchor, PostCommand: postCommand})
+		outcome, err := verifiedCommandOutcome(*request.PendingRequest, *replay, CommandRecoveryEvidence{Reconciliation: handshake.Reconciliation, Replayed: true, PreCommand: wire.Anchor, PostCommand: postCommand})
 		if err != nil {
 			return nil, ErrConflict
 		}
 		replayedOutcome = &outcome
 	}
 	var pending *PendingReplayEvidence
-	if options.PendingEvidence != nil {
-		copy := *options.PendingEvidence
+	if pendingProjection != nil {
+		copy := *pendingProjection
 		pending = &copy
 	}
-	recovery := &SessionRecoveryEvidence{Reconciliation: handshake.Reconciliation, Previous: options.Anchor, Current: anchor, Pending: pending, MechanicsLocked: handshake.Reconciliation == ReconciliationIntentPending}
-	evidence := ConnectionEvidence{Core: core, ControlDirectory: directory, Handshake: handshake, Anchor: anchor, ReplayedOutcome: replayedOutcome, Recovery: recovery}
+	recovery := &SessionRecoveryEvidence{Reconciliation: handshake.Reconciliation, Previous: wire.Anchor, Current: current, Pending: pending, MechanicsLocked: handshake.Reconciliation == ReconciliationIntentPending}
+	evidence := ConnectionEvidence{Core: core, ControlDirectory: directory, Handshake: handshake, Anchor: current, ReplayedOutcome: replayedOutcome, Recovery: recovery}
 	client, err := newClient(connection, evidence, peer)
 	if err != nil {
 		return nil, err
 	}
-	if options.Request.PendingRequest != nil && replay == nil {
-		evidence := pendingEvidence(*options.Request.PendingRequest)
+	if request.PendingRequest != nil && replay == nil {
+		evidence := pendingEvidence(*request.PendingRequest)
 		client.pending = &evidence
 	}
 	succeeded = true
 	return client, nil
+}
+
+func pendingEvidenceForPrepared(prepared PreparedCommand) PendingReplayEvidence {
+	return pendingEvidence(prepared.request)
 }
 
 func initialJournalHead(bootstrap BootstrapRequest) (string, error) {

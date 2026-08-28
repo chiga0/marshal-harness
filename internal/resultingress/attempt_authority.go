@@ -724,7 +724,7 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 		if !historicalReplay && (prior.SupervisorBootstrapDigest == "" || !newSupervisorBinding) {
 			return ErrAttemptAuthorityOrder
 		}
-		if newSupervisorBinding && closed.SupervisorAbsence == (SupervisorAbsenceObservation{}) {
+		if newSupervisorBinding && closed.SupervisorAbsence == (SupervisorAbsenceObservation{}) && closed.AuthenticatedSupervisorAbsence == (processsupervisor.SupervisorAbsenceEvidence{}) {
 			return ErrAttemptAuthorityOrder
 		}
 		if newSupervisorBinding && (validateBusinessOutcomeReference(prior, t.SupervisorOutcomeFactDigest, processsupervisor.CommandClose, SupervisorSessionClosed) != nil || !zeroSupervisorCommandEvidence(closed.Mechanics) || len(t.SupervisorPrecedingEvidence) != 0 || !closedCheckpointMatches(prior, t)) {

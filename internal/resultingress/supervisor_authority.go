@@ -404,7 +404,7 @@ func NewProcessSupervisorStarted(owner CurrentOwnerBinding, launchAuthorizedFact
 // replay/source compatible for facts written before ADR 0060.
 func NewProcessSupervisorStartedFromBootstrap(preparedFactDigest string, prepared SupervisorBootstrapPrepared, response processsupervisor.HandshakeResponse, anchor processsupervisor.HandshakeAnchor, observed processsupervisor.CoreIdentity) (ProcessSupervisorStarted, error) {
 	request := prepared.Request
-	if requireDigest("bootstrapPreparedFactDigest", preparedFactDigest) != nil || prepared.Validate() != nil || response.SessionID != prepared.SessionID || response.SessionNonceDigest != prepared.SessionNonceDigest || response.SupervisorBinary != prepared.SupervisorBinary || anchor.SessionID != request.SessionID || anchor.SessionNonceDigest != request.SessionNonceDigest || anchor.Authority != request.Authority || anchor.OwnerEpoch != request.OwnerEpoch || anchor.CurrentAuthorityHead != request.CurrentAuthorityHead || anchor.UID != request.Core.UID || anchor.GID != request.Core.GID || anchor.FixedBinary != request.Core.Binary {
+	if requireDigest("bootstrapPreparedFactDigest", preparedFactDigest) != nil || prepared.Validate() != nil || processsupervisor.ValidateSessionControlFiles(response.ControlFiles) != nil || anchor.ControlFiles != response.ControlFiles || response.SessionID != prepared.SessionID || response.SessionNonceDigest != prepared.SessionNonceDigest || response.SupervisorBinary != prepared.SupervisorBinary || anchor.SessionID != request.SessionID || anchor.SessionNonceDigest != request.SessionNonceDigest || anchor.Authority != request.Authority || anchor.OwnerEpoch != request.OwnerEpoch || anchor.CurrentAuthorityHead != request.CurrentAuthorityHead || anchor.UID != request.Core.UID || anchor.GID != request.Core.GID || anchor.FixedBinary != request.Core.Binary {
 		return ProcessSupervisorStarted{}, fmt.Errorf("%w: handshake does not match prepared bootstrap", ErrAttemptAuthorityConflict)
 	}
 	started, err := NewProcessSupervisorStarted(prepared.Owner, prepared.LaunchAuthorizedFactDigest, prepared.ControlDirectory, response, anchor, observed)
@@ -422,24 +422,25 @@ func NewProcessSupervisorStartedFromBootstrap(preparedFactDigest string, prepare
 // command head to an absence observation for the started supervisor birth.
 // cleanup-completed must cite the resulting Attempt fact digest.
 type ProcessSupervisorClosed struct {
-	ProtocolRevision                   string                            `json:"protocolRevision"`
-	SessionID                          string                            `json:"sessionId"`
-	Owner                              CurrentOwnerBinding               `json:"owner"`
-	SupervisorStartedFactDigest        string                            `json:"supervisorStartedFactDigest"`
-	TerminalizationID                  string                            `json:"terminalizationId"`
-	CleanupBindingDigest               string                            `json:"cleanupBindingDigest"`
-	ProcessTerminalFactDigest          string                            `json:"processTerminalFactDigest"`
-	AllocationTerminatedFactDigest     string                            `json:"allocationTerminatedFactDigest"`
-	CloseIntentDigest                  string                            `json:"closeIntentDigest"`
-	CloseReceiptDigest                 string                            `json:"closeReceiptDigest"`
-	CloseObservationDigest             string                            `json:"closeObservationDigest,omitempty"`
-	FinalCommandHead                   string                            `json:"finalCommandHead"`
-	Mechanics                          SupervisorCommandEvidence         `json:"mechanics,omitempty,omitzero"`
-	SupervisorAbsenceObservationDigest string                            `json:"supervisorAbsenceObservationDigest"`
-	SupervisorProcess                  processsupervisor.ProcessIdentity `json:"supervisorProcess"`
-	ObserverIdentity                   string                            `json:"observerIdentity"`
-	ObservedAt                         string                            `json:"observedAt"`
-	SupervisorAbsence                  SupervisorAbsenceObservation      `json:"supervisorAbsence,omitempty,omitzero"`
+	ProtocolRevision                   string                                      `json:"protocolRevision"`
+	SessionID                          string                                      `json:"sessionId"`
+	Owner                              CurrentOwnerBinding                         `json:"owner"`
+	SupervisorStartedFactDigest        string                                      `json:"supervisorStartedFactDigest"`
+	TerminalizationID                  string                                      `json:"terminalizationId"`
+	CleanupBindingDigest               string                                      `json:"cleanupBindingDigest"`
+	ProcessTerminalFactDigest          string                                      `json:"processTerminalFactDigest"`
+	AllocationTerminatedFactDigest     string                                      `json:"allocationTerminatedFactDigest"`
+	CloseIntentDigest                  string                                      `json:"closeIntentDigest"`
+	CloseReceiptDigest                 string                                      `json:"closeReceiptDigest"`
+	CloseObservationDigest             string                                      `json:"closeObservationDigest,omitempty"`
+	FinalCommandHead                   string                                      `json:"finalCommandHead"`
+	Mechanics                          SupervisorCommandEvidence                   `json:"mechanics,omitempty,omitzero"`
+	SupervisorAbsenceObservationDigest string                                      `json:"supervisorAbsenceObservationDigest"`
+	SupervisorProcess                  processsupervisor.ProcessIdentity           `json:"supervisorProcess"`
+	ObserverIdentity                   string                                      `json:"observerIdentity"`
+	ObservedAt                         string                                      `json:"observedAt"`
+	SupervisorAbsence                  SupervisorAbsenceObservation                `json:"supervisorAbsence,omitempty,omitzero"`
+	AuthenticatedSupervisorAbsence     processsupervisor.SupervisorAbsenceEvidence `json:"authenticatedSupervisorAbsence,omitempty,omitzero"`
 }
 
 type SupervisorAbsenceObservation struct {
@@ -478,6 +479,9 @@ func (closed ProcessSupervisorClosed) Validate() error {
 		return fmt.Errorf("%w: invalid supervisor close observedAt", ErrAttemptAuthorityConflict)
 	}
 	if closed.SupervisorAbsence != (SupervisorAbsenceObservation{}) {
+		if closed.AuthenticatedSupervisorAbsence != (processsupervisor.SupervisorAbsenceEvidence{}) {
+			return fmt.Errorf("%w: duplicate supervisor absence projections", ErrAttemptAuthorityConflict)
+		}
 		if closed.SupervisorAbsence.Validate() != nil || closed.SupervisorAbsence.SupervisorProcess != closed.SupervisorProcess || closed.SupervisorAbsence.ObserverIdentity != closed.ObserverIdentity || closed.SupervisorAbsence.ObservedAt != closed.ObservedAt {
 			return fmt.Errorf("%w: supervisor absence projection mismatch", ErrAttemptAuthorityConflict)
 		}
@@ -486,12 +490,58 @@ func (closed ProcessSupervisorClosed) Validate() error {
 			return fmt.Errorf("%w: supervisor absence digest mismatch", ErrAttemptAuthorityConflict)
 		}
 	}
+	if absence := closed.AuthenticatedSupervisorAbsence; absence != (processsupervisor.SupervisorAbsenceEvidence{}) {
+		if absence.Validate() != nil || absence.Expected != closed.SupervisorProcess || absence.ObservedAt != closed.ObservedAt || absence.Observer.Binary.SelfProfile != closed.ObserverIdentity {
+			return fmt.Errorf("%w: authenticated supervisor absence projection mismatch", ErrAttemptAuthorityConflict)
+		}
+		digest, err := canonicalDigest(absence)
+		if err != nil || digest != closed.SupervisorAbsenceObservationDigest {
+			return fmt.Errorf("%w: authenticated supervisor absence digest mismatch", ErrAttemptAuthorityConflict)
+		}
+	}
 	if !zeroSupervisorCommandEvidence(closed.Mechanics) {
 		if closed.Mechanics.Validate() != nil || requireDigest("closeObservationDigest", closed.CloseObservationDigest) != nil || closed.Mechanics.Command != processsupervisor.CommandClose || closed.Mechanics.SessionID != closed.SessionID || closed.Mechanics.RequestDigest != closed.CloseIntentDigest || closed.Mechanics.ReceiptDigest != closed.CloseReceiptDigest || closed.Mechanics.CommandHead != closed.FinalCommandHead || closed.Mechanics.ObservationDigest != closed.CloseObservationDigest || closed.Mechanics.Outcome.State != SupervisorSessionClosed {
 			return fmt.Errorf("%w: invalid supervisor close mechanics binding", ErrAttemptAuthorityConflict)
 		}
 	}
 	return nil
+}
+
+// ProcessSupervisorCloseAuthority is the business authority surrounding one
+// already verified close recovery. It contains no mechanics response fields.
+type ProcessSupervisorCloseAuthority struct {
+	Owner                          CurrentOwnerBinding
+	SupervisorStartedFactDigest    string
+	TerminalizationID              string
+	CleanupBindingDigest           string
+	ProcessTerminalFactDigest      string
+	AllocationTerminatedFactDigest string
+}
+
+// NewProcessSupervisorClosedFromRecovery converts only producer-authenticated
+// committed-Close evidence into the business fact payload. The mechanics
+// outcome itself is first appended to the independent command recovery chain.
+func NewProcessSupervisorClosedFromRecovery(authority ProcessSupervisorCloseAuthority, recovery processsupervisor.CommittedCloseRecoveryEvidence) (ProcessSupervisorClosed, error) {
+	if recovery.Validate() != nil {
+		return ProcessSupervisorClosed{}, fmt.Errorf("%w: invalid committed close recovery", ErrAttemptAuthorityConflict)
+	}
+	absenceDigest, err := canonicalDigest(recovery.Absence)
+	if err != nil {
+		return ProcessSupervisorClosed{}, err
+	}
+	outcome := recovery.Outcome
+	closed := ProcessSupervisorClosed{
+		ProtocolRevision: processsupervisor.ProtocolRevision, SessionID: outcome.Recovery.PreCommand.SessionID, Owner: authority.Owner,
+		SupervisorStartedFactDigest: authority.SupervisorStartedFactDigest, TerminalizationID: authority.TerminalizationID, CleanupBindingDigest: authority.CleanupBindingDigest,
+		ProcessTerminalFactDigest: authority.ProcessTerminalFactDigest, AllocationTerminatedFactDigest: authority.AllocationTerminatedFactDigest,
+		CloseIntentDigest: outcome.RequestDigest, CloseReceiptDigest: outcome.ReceiptDigest, CloseObservationDigest: outcome.ObservationDigest, FinalCommandHead: outcome.CommandHead,
+		SupervisorAbsenceObservationDigest: absenceDigest, SupervisorProcess: recovery.Absence.Expected, ObserverIdentity: recovery.Absence.Observer.Binary.SelfProfile, ObservedAt: recovery.Absence.ObservedAt,
+		AuthenticatedSupervisorAbsence: recovery.Absence,
+	}
+	if err := closed.Validate(); err != nil {
+		return ProcessSupervisorClosed{}, err
+	}
+	return closed, nil
 }
 
 func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAuthorityState, exists bool, transition AttemptTransition, historicalReplay bool) error {

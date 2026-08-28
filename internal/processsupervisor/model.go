@@ -207,6 +207,42 @@ type ControlSocketIdentity struct {
 	LinkCount uint64 `json:"linkCount"`
 }
 
+// ControlFileIdentity freezes one descriptor-relative regular control object.
+// Size is deliberately excluded: the journal grows while its object identity
+// remains stable. Callers validate nonce and journal lengths separately.
+type ControlFileIdentity struct {
+	Device    uint64 `json:"device"`
+	Inode     uint64 `json:"inode"`
+	FileType  string `json:"fileType"`
+	UID       uint32 `json:"uid"`
+	GID       uint32 `json:"gid"`
+	Mode      uint32 `json:"mode"`
+	LinkCount uint64 `json:"linkCount"`
+}
+
+func (identity ControlFileIdentity) validate() error {
+	if identity.Device == 0 || identity.Inode == 0 || !safeUint64(identity.Device) || !safeUint64(identity.Inode) || identity.FileType != "regular" || identity.UID == 0 || identity.Mode&0o170000 != 0o100000 || identity.Mode&0o777 != 0o600 || identity.LinkCount != 1 {
+		return ErrInvalid
+	}
+	return nil
+}
+
+// SessionControlFiles binds the nonce and mechanics journal objects. Neither
+// identity contains the nonce bytes or journal contents.
+type SessionControlFiles struct {
+	Nonce   ControlFileIdentity `json:"nonce"`
+	Journal ControlFileIdentity `json:"journal"`
+}
+
+func (files SessionControlFiles) validate() error {
+	if files.Nonce.validate() != nil || files.Journal.validate() != nil || files.Nonce == files.Journal {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func ValidateSessionControlFiles(files SessionControlFiles) error { return files.validate() }
+
 func (identity ControlSocketIdentity) validate() error {
 	if identity.Device == 0 || identity.Inode == 0 || !safeUint64(identity.Device) || !safeUint64(identity.Inode) || identity.FileType != "socket" || identity.UID == 0 || identity.Mode&0o170000 != 0o140000 || identity.Mode&0o777 != 0o600 || identity.LinkCount != 1 {
 		return ErrInvalid
@@ -257,7 +293,9 @@ func (request BootstrapRequest) validate() error {
 	return request.Core.Binary.validate()
 }
 
-type ReconnectRequest struct {
+// reconnectRequest is the private wire-only reconnect shape. The raw nonce is
+// loaded from a held descriptor by Reconnect and never enters a public API.
+type reconnectRequest struct {
 	SchemaVersion         string       `json:"schemaVersion"`
 	ProtocolRevision      string       `json:"protocolRevision"`
 	SessionID             string       `json:"sessionId"`
@@ -297,6 +335,7 @@ type HandshakeResponse struct {
 	SupervisorProcess    ProcessIdentity       `json:"supervisorProcess"`
 	SupervisorBinary     BinaryIdentity        `json:"supervisorBinary"`
 	ControlSocket        ControlSocketIdentity `json:"controlSocket"`
+	ControlFiles         SessionControlFiles   `json:"controlFiles,omitempty,omitzero"`
 	Reconciliation       ReconciliationState   `json:"reconciliation,omitempty"`
 	ReplayedResponse     *Response             `json:"replayedResponse,omitempty"`
 }

@@ -56,7 +56,6 @@ func newBoundedCapture(limit int) *boundedCapture {
 func (capture *boundedCapture) Write(input []byte) (int, error) {
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
-	_, _ = capture.hash.Write(input)
 	if capture.total > uint64(MaxTranscriptBytes)-minUint64(uint64(len(input)), MaxTranscriptBytes) {
 		capture.total = uint64(MaxTranscriptBytes) + 1
 	} else {
@@ -67,6 +66,7 @@ func (capture *boundedCapture) Write(input []byte) (int, error) {
 		if remaining > len(input) {
 			remaining = len(input)
 		}
+		_, _ = capture.hash.Write(input[:remaining])
 		capture.data = append(capture.data, input[:remaining]...)
 	}
 	if len(input) > remaining {

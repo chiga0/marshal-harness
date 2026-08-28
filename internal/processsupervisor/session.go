@@ -87,6 +87,15 @@ func (session *Session) State() string {
 	return string(session.state)
 }
 
+func (session *Session) intervene() {
+	if session == nil {
+		return
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	session.state = sessionIntervention
+}
+
 func (session *Session) Snapshot() (uint64, string, uint64, string) {
 	session.mu.Lock()
 	defer session.mu.Unlock()
@@ -99,7 +108,7 @@ type reconnectResolution struct {
 	Response *Response
 }
 
-func (session *Session) Reconnect(request ReconnectRequest, observed CoreIdentity) (reconnectResolution, error) {
+func (session *Session) reconnect(request reconnectRequest, observed CoreIdentity) (reconnectResolution, error) {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if request.SchemaVersion != ReconnectSchema || request.ProtocolRevision != ProtocolRevision || request.SessionID != session.sessionID ||
@@ -145,7 +154,7 @@ func (session *Session) Reconnect(request ReconnectRequest, observed CoreIdentit
 	return resolution, nil
 }
 
-func (session *Session) reconcilePendingLocked(request ReconnectRequest) (reconnectResolution, error) {
+func (session *Session) reconcilePendingLocked(request reconnectRequest) (reconnectResolution, error) {
 	snapshot := session.journal.Snapshot()
 	// Classification is anchored exclusively in Last*/A0 plus the exact
 	// mechanics journal. session.authorityHead may already be the authority head
@@ -191,7 +200,7 @@ func (session *Session) reconcilePendingLocked(request ReconnectRequest) (reconn
 	return reconnectResolution{State: ReconciliationReceiptCommitted, Response: &response}, nil
 }
 
-func (session *Session) reconnectAnchor(request ReconnectRequest) HandshakeAnchor {
+func (session *Session) reconnectAnchor(request reconnectRequest) HandshakeAnchor {
 	return HandshakeAnchor{
 		SessionID: session.sessionID, SessionNonceDigest: session.nonceDigest, Authority: session.authority,
 		OwnerEpoch: request.LastOwnerEpoch, CurrentAuthorityHead: request.LastAuthorityHead,
@@ -382,6 +391,11 @@ func (session *Session) advance(command CommandName, payload any, result Mechani
 		session.terminalBarrier = value.TerminalizationBarrierDigest
 		session.terminalizationID = value.TerminalizationID
 		session.terminalGeneration = value.TerminalGeneration
+	case CommandCollect:
+		// ResultIngress advances the durable latest-observation checkpoint to
+		// the successful collect receipt. Keep supervisor admission identical so
+		// a later Inspect/Terminate after recovery accepts the same digest.
+		session.lastObservation = result.ObservationDigest
 	case CommandClose:
 		session.state = sessionClosed
 	}
