@@ -18,9 +18,10 @@
 
 - Go 版本以 `go.mod` 为准；`make check` 还需要 Python 3 运行仓库内的确定性架构检查（均不需要额外安装第三方包）；
 - 常用目标：
-  - `make check`：format-check + package-layer architecture-check + vet + staticcheck + 全仓 race 测试 + build（提交前必须通过）；
+  - `make check`：format-check + package-layer architecture-check + vet + staticcheck + 全仓 race 测试 + build；
   - `make vuln`：govulncheck；
   - `make test` / `make build`：单独执行。
+- 若企业 macOS 终端策略拦截新 Mach-O/CDHash，禁止在该机器运行 `go test`、`make test`、`make check` 或 `make ci`，也不得绕过安全软件。此时本地运行 format/architecture/vet/staticcheck/build/vuln/diff 门禁；命中 package 仅可 compile-only，产物不得执行且验证后删除。unit/race 由相同 sourceHead 的 required GitHub macOS + Linux CI 提供，详见 [开发指南](docs/development.md#本地命令)。
 - 仓库的本地运行态位于被 Git 忽略的 `.marshal/`，不会进入你的提交。
 
 ## 贡献流程
@@ -28,8 +29,8 @@
 1. **先开 Issue**（bug 或 feature），大改动先对齐方案；涉及信任边界、持久化契约、生命周期或发布权限的变更需要 ADR（见 `docs/adr/`）；
 2. Fork 并创建分支；
 3. 实现 + 测试。表驱动测试优先；失败路径与成功路径同等重要；
-4. 本地 `make check` 与 `make vuln` 通过；
-5. 提交 PR，填写模板。CI（Linux + macOS + secret scan）必须全绿；
+4. 在不受终端策略限制的平台运行本地 `make check` 与 `make vuln`；受限企业 Mac 按上一节运行静态/compile-only 门禁，不得声称本地 unit/race 已通过；
+5. 提交 PR，填写模板。相同 sourceHead 的 CI（Linux + macOS + secret scan）必须全绿；
 6. 审查标准：不变量不被破坏（见 [AGENTS.md](AGENTS.md)）、证据链完整、文档同步更新。
 
 ## 不可破坏的不变量（摘要）

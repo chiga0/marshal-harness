@@ -1,6 +1,6 @@
 # v1.0 Release Readiness 判定表（ADR 0052 §1 逐条对照）
 
-更新日期：2026-08-28（`main@d971b5b` checkpoint）
+更新日期：2026-08-28（`main@b639105` checkpoint）
 
 判定基准：[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md) 第 1 节（九条）与第 3 节（生产可达性成熟度）。
 
@@ -39,6 +39,12 @@
 最短路径：以 `912f659` 的 crash-atomic ResultIngress transaction 为唯一基线，实现 ADR 0056 的 Core-owned process observation/terminalization 并接入 `44ee8c9` server controller → 在最终 `main` 重跑 fixed-bin Pi canary、导入独立 ReviewDecision 并进入 `ACCEPTED` → 运行 release-contract/dist/install 终验并发布 unsigned RC → 关闭 Issue #212 与 Linux stable gate 后才发布稳定 `v1.*`。
 
 任一步都不能由“ADR 已接受”、“单次 canary 通过”或“可以构建 RC”推导为 lifecycle 已实现、`ACCEPTED` 已达成或 RC 已发布。
+
+## Mac 本地质量门禁边界
+
+当前开发机的企业终端策略会按新 Mach-O/CDHash 拦截未签名 Go test 二进制。即使把每个 package 的 test binary 复制到同一个固定路径，不同 package 和不同构建仍产生不同的 ad-hoc code identity；2026-08-28 的真实试跑在固定路径被 `SIGKILL`（退出码 137）。因此固定路径复制器不是可用的 Mac-first 方案，也不得要求维护者反复批准、移除安全属性或绕过企业安全软件。
+
+在 Issue #212 的 Developer ID/signing/notarization 能力具备前，本机只提供 `gofmt`、architecture check、`go vet`、`staticcheck`、compile-only、Schema/diff/secret/mergeability 和固定 `./bin/marshal` live canary 证据；Go unit/race 的执行证据来自 required GitHub macOS + Linux CI。compile-only 产物不得执行，并应在验证后删除。最终 RC 必须绑定同一 sourceHead 的 required CI 全绿；本地静态门禁不能被表述成 unit/race 已通过。
 
 ## Tag 前 Mac-first Pi release canary
 

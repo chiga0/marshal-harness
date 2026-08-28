@@ -26,7 +26,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
-	"github.com/chiga0/marshal-harness/internal/stablegotest"
 )
 
 const (
@@ -769,13 +768,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if err != nil {
 		return domain.Record{}, err
 	}
-	environment, err := stablegotest.WithEnvironment(workerEnvironment(worktree))
-	if err != nil {
-		return domain.Record{}, fmt.Errorf("stable Go test runner unavailable: %w", err)
-	}
 	command := exec.Command(a.executable, args...)
 	command.Dir = worktree
-	command.Env = environment
+	command.Env = workerEnvironment(worktree)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
