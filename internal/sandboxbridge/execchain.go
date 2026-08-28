@@ -102,6 +102,13 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	var allocationID string
 	var generation int64
 	var fencingToken string
+	var exactLease dispatch.DispatchLease
+	if exactAdmission != nil {
+		exactLease, err = b.requireExactLease(view, exactAdmission)
+		if err != nil {
+			return domain.Record{}, err
+		}
+	}
 
 	if b.authority != nil {
 		// Embedded authority 模式（dispatchBinder 已注入）：BindDispatch 在
@@ -109,9 +116,13 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		// lease（含 canonical fencingToken 与确定性 AllocationId）。exec-chain
 		// 不得二次 Provision allocation，直接复用 BindDispatch 已建立的 allocation
 		// 与 lease identity。LeaseState 非 claimed/active fail closed。
-		lease, leaseOK := b.authority.LeaseFor(view.RunID, view.AttemptID)
+		lease := exactLease
+		leaseOK := exactAdmission != nil
 		if !leaseOK {
-			return domain.Record{}, fmt.Errorf("sandboxbridge: dispatch lease not found for run=%s attempt=%s (fail closed: no fabricated expiry)", view.RunID, view.AttemptID)
+			lease, leaseOK = b.authority.LeaseFor(view.RunID, view.AttemptID)
+			if !leaseOK {
+				return domain.Record{}, fmt.Errorf("sandboxbridge: dispatch lease not found for run=%s attempt=%s (fail closed: no fabricated expiry)", view.RunID, view.AttemptID)
+			}
 		}
 		if lease.LeaseState != dispatch.LeaseStateClaimed && lease.LeaseState != dispatch.LeaseStateActive {
 			return domain.Record{}, fmt.Errorf("sandboxbridge: dispatch lease carries terminal state %q for run=%s attempt=%s (fail closed)", string(lease.LeaseState), view.RunID, view.AttemptID)
@@ -160,6 +171,11 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	}
 
 	if controlRoot := controlRootOf(request.Data); controlRoot != "" {
+		if exactAdmission != nil {
+			if _, err := b.requireExactLease(view, exactAdmission); err != nil {
+				return domain.Record{}, err
+			}
+		}
 		rec := AllocationRecord{
 			Schema:              allocationRecordSchema,
 			TaskID:              view.TaskID,
@@ -186,9 +202,16 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		// 未走 BindDispatch 路径或 runtime 实例不一致——这是不可接受的
 		// authority 断裂，必须 fail closed 而非虚构 expiry。
 		if b.authority != nil {
-			lease, leaseOK := b.authority.LeaseFor(view.RunID, view.AttemptID)
+			var lease dispatch.DispatchLease
+			var leaseOK bool
+			if exactAdmission != nil {
+				lease, err = b.requireExactLease(view, exactAdmission)
+				leaseOK = err == nil
+			} else {
+				lease, leaseOK = b.authority.LeaseFor(view.RunID, view.AttemptID)
+			}
 			if !leaseOK {
-				return domain.Record{}, fmt.Errorf("sandboxbridge: dispatch lease not found for run=%s attempt=%s (fail closed: no fabricated expiry)", view.RunID, view.AttemptID)
+				return domain.Record{}, fmt.Errorf("sandboxbridge: dispatch lease not found or changed for run=%s attempt=%s: %w", view.RunID, view.AttemptID, launchidentity.ErrUnavailable)
 			}
 			leaseExpiry, parseErr := time.Parse(time.RFC3339, lease.ExpiresAt)
 			if parseErr != nil || leaseExpiry.IsZero() {
@@ -250,6 +273,11 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		}()
 	}
 
+	if exactAdmission != nil {
+		if _, err := b.requireExactLease(view, exactAdmission); err != nil {
+			return domain.Record{}, err
+		}
+	}
 	if err := b.stageControlInputs(ctx, view, request, allocationID, generation, fencingToken, plan.ControlRootPath()); err != nil {
 		return domain.Record{}, fmt.Errorf("sandboxbridge: stage control inputs: %w", err)
 	}
@@ -267,6 +295,9 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	signal := ""
 	var execErr error
 	if plan.LaunchClosure().ClosureProfileID == launchidentity.Pi0843DarwinARM64Profile {
+		if _, err := b.requireExactLease(view, exactAdmission); err != nil {
+			return domain.Record{}, err
+		}
 		transcript, stderr, truncated, exitCode, signal, exactCompletion, execErr = b.runExactProcess(runCtx, plan, view, allocationID, generation, fencingToken, exactAdmission)
 	} else {
 		if b.productionGate {
@@ -316,6 +347,15 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	if ctxErr != nil && signal == "" {
 		signal = "timeout"
 	}
+	if exactCompletion != nil {
+		if _, leaseErr := b.requireExactLease(view, exactAdmission); leaseErr != nil {
+			exactCompletion.abort()
+			if finalErr := b.finalizeExactProcess(exactCompletion); finalErr != nil {
+				return domain.Record{}, fmt.Errorf("sandboxbridge: lease changed before complete launch: %v; finalization failed: %w", leaseErr, finalErr)
+			}
+			return domain.Record{}, leaseErr
+		}
+	}
 	record, err := capable.CompleteLaunch(ctx, plan, transcript, truncated, stderr, started, completed, exitCode, signal, ctxErr)
 	if err != nil {
 		if exactCompletion != nil {
@@ -330,6 +370,15 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	// admission（live allocation state 回读 + anchor 落盘）。任何拒绝以
 	// untyped 错误交给 execution 的 typed 归一化（protocol-invalid /
 	// do-not-retry 正台语义）。
+	if exactCompletion != nil {
+		if _, leaseErr := b.requireExactLease(view, exactAdmission); leaseErr != nil {
+			exactCompletion.abort()
+			if finalErr := b.finalizeExactProcess(exactCompletion); finalErr != nil {
+				return domain.Record{}, fmt.Errorf("sandboxbridge: lease changed before result admission: %v; finalization failed: %w", leaseErr, finalErr)
+			}
+			return domain.Record{}, leaseErr
+		}
+	}
 	if err := b.admitCompletedResult(ctx, view, plan, record.Data, allocationID, generation, fencingToken); err != nil {
 		if exactCompletion != nil {
 			exactCompletion.abort()
@@ -345,6 +394,29 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		}
 	}
 	return record, nil
+}
+
+// requireExactLease reopens the durable dispatch authority immediately before
+// a production mutation. It binds every DispatchLease identity field to the
+// already-resolved Attempt authority; no allocation or fencing fact is
+// derived locally.
+func (b *Bridge) requireExactLease(view workerRequestView, admission *exactProcessAdmission) (dispatch.DispatchLease, error) {
+	if b == nil || b.authority == nil || admission == nil {
+		return dispatch.DispatchLease{}, launchidentity.ErrUnavailable
+	}
+	lease, ok := b.authority.LeaseFor(view.RunID, view.AttemptID)
+	if !ok || lease.Validate() != nil || (lease.LeaseState != dispatch.LeaseStateClaimed && lease.LeaseState != dispatch.LeaseStateActive) {
+		return dispatch.DispatchLease{}, launchidentity.ErrUnavailable
+	}
+	identity := admission.authority.Identity
+	if identity.Validate() != nil || !lease.AuthorityNamespaceId.Equal(identity.AuthorityNamespaceID) ||
+		lease.TaskId != identity.TaskID || lease.RunId != identity.RunID || lease.AttemptId != identity.AttemptID ||
+		lease.AllocationId != identity.AllocationID || lease.LeaseId != identity.LeaseID || lease.LeaseDigest != identity.LeaseDigest ||
+		lease.Generation != identity.DispatchGeneration || canonical.DigestBytes([]byte(lease.FencingToken)) != identity.FencingTokenDigest ||
+		view.TaskID != lease.TaskId || view.RunID != lease.RunId || view.AttemptID != lease.AttemptId {
+		return dispatch.DispatchLease{}, launchidentity.ErrUnavailable
+	}
+	return lease, nil
 }
 
 // validateProductionLaunch runs before Provision, Stage, AttemptBinding, or

@@ -8,9 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/agentregistry"
+	"github.com/chiga0/marshal-harness/internal/authority"
+	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/processcontrol"
+	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
@@ -63,6 +68,25 @@ type countingProvider struct {
 	provisions int
 	stages     int
 	execs      int
+}
+
+type exactLeaseAuthority struct {
+	lease dispatch.DispatchLease
+	ok    bool
+}
+
+func (*exactLeaseAuthority) RegistrationStore() *provider.RegistrationStore { return nil }
+func (a *exactLeaseAuthority) LeaseFor(string, string) (dispatch.DispatchLease, bool) {
+	return a.lease, a.ok
+}
+func (*exactLeaseAuthority) CapabilitySnapshot() provider.ProviderCapabilitySnapshot {
+	return provider.ProviderCapabilitySnapshot{}
+}
+func (*exactLeaseAuthority) Registration() provider.ProviderRegistration {
+	return provider.ProviderRegistration{}
+}
+func (*exactLeaseAuthority) AgentAuthority(string) (agentregistry.AgentRegistration, agentregistry.AgentCapabilitySnapshot, error) {
+	return agentregistry.AgentRegistration{}, agentregistry.AgentCapabilitySnapshot{}, errors.New("unused")
 }
 
 func (p *countingProvider) Provision(ctx context.Context, request sandbox.ProvisionRequest) (*sandbox.ProvisionReceipt, error) {
@@ -152,6 +176,101 @@ func mustParseView(t *testing.T) workerRequestView {
 		t.Fatalf("mustParseView: %v", err)
 	}
 	return view
+}
+
+func sealExactLease(t *testing.T) dispatch.DispatchLease {
+	t.Helper()
+	digest := func(value string) string { return canonical.DigestBytes([]byte(value)) }
+	lease := dispatch.DispatchLease{
+		LeaseId: digest("lease"),
+		AuthorityNamespaceId: authority.AuthorityNamespaceId{
+			TenantNamespace: "tenant", ControlPlaneId: "control", AuthorityScopeId: "scope",
+		},
+		SecurityDomainId: authority.SecurityDomainId{
+			TenantNamespace: "tenant", TrustDomainKind: authority.TrustDomainKindExecution, IsolationDomainId: "isolation",
+		},
+		RegistrationId: "registration:local", ProviderCapabilitySnapshotDigest: digest("snapshot"),
+		ConformanceEvidenceDigests: []string{digest("evidence")},
+		Attestation:                provider.Attestation{ProviderInstanceId: "provider:local", ConfigDigest: digest("config"), TrustRootKeyId: "root", TrustRootAlgorithm: "ed25519"},
+		TaskId:                     "T1", RunId: "R1", AttemptId: "A1", AllocationId: "allocation-1", Generation: 1,
+		AckDeadlineAt: "2026-08-29T02:00:00Z", ExpiresAt: "2026-08-29T03:00:00Z", LeaseState: dispatch.LeaseStateClaimed, CreatedAt: "2026-08-29T01:00:00Z",
+	}
+	canonicalDigest := func(value any) string {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		canonicalRaw, err := canonical.JSON(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return canonical.DigestBytes(canonicalRaw)
+	}
+	detached := lease
+	detached.FencingToken = ""
+	detached.LeaseDigest = ""
+	lease.FencingToken = canonicalDigest(detached)
+	detached = lease
+	detached.LeaseDigest = ""
+	lease.LeaseDigest = canonicalDigest(detached)
+	if err := lease.Validate(); err != nil {
+		t.Fatalf("sealed lease invalid: %v", err)
+	}
+	return lease
+}
+
+func exactAttemptIdentity(lease dispatch.DispatchLease) resultingress.AttemptIdentity {
+	return resultingress.AttemptIdentity{
+		AuthorityNamespaceID: lease.AuthorityNamespaceId, AuthorityNamespaceRef: "authority:test",
+		TaskID: lease.TaskId, RunID: lease.RunId, AttemptID: lease.AttemptId, AllocationID: lease.AllocationId,
+		LeaseID: lease.LeaseId, LeaseDigest: lease.LeaseDigest, DispatchGeneration: lease.Generation,
+		FencingTokenDigest: canonical.DigestBytes([]byte(lease.FencingToken)), OrchestratorID: "orchestrator:test",
+		RunAuthorityDigest: canonical.DigestBytes([]byte("run-authority")),
+	}
+}
+
+func TestRequireExactLeaseRejectsEveryAttemptIdentityMismatchBeforeEffects(t *testing.T) {
+	lease := sealExactLease(t)
+	base := exactAttemptIdentity(lease)
+	digest := func(value string) string { return canonical.DigestBytes([]byte(value)) }
+	tests := []struct {
+		name   string
+		mutate func(*resultingress.AttemptIdentity)
+	}{
+		{name: "authority namespace", mutate: func(id *resultingress.AttemptIdentity) { id.AuthorityNamespaceID.AuthorityScopeId = "other" }},
+		{name: "task", mutate: func(id *resultingress.AttemptIdentity) { id.TaskID = "T2" }},
+		{name: "run", mutate: func(id *resultingress.AttemptIdentity) { id.RunID = "R2" }},
+		{name: "attempt", mutate: func(id *resultingress.AttemptIdentity) { id.AttemptID = "A2" }},
+		{name: "allocation", mutate: func(id *resultingress.AttemptIdentity) { id.AllocationID = "allocation-2" }},
+		{name: "lease id", mutate: func(id *resultingress.AttemptIdentity) { id.LeaseID = digest("other-lease") }},
+		{name: "lease digest", mutate: func(id *resultingress.AttemptIdentity) { id.LeaseDigest = digest("other-lease-digest") }},
+		{name: "generation", mutate: func(id *resultingress.AttemptIdentity) { id.DispatchGeneration++ }},
+		{name: "fencing digest", mutate: func(id *resultingress.AttemptIdentity) { id.FencingTokenDigest = digest("other-fencing") }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			identity := base
+			test.mutate(&identity)
+			providerCalls := &countingProvider{SandboxProvider: sandbox.NewFakeProvider(sandbox.FakeConfig{})}
+			worker := &fakeProductionAdapter{fakeAdapter: &fakeAdapter{id: "fake"}}
+			bridge, err := NewBridge(providerCalls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bridge.authority = &exactLeaseAuthority{lease: lease, ok: true}
+			_, err = bridge.requireExactLease(mustParseView(t), &exactProcessAdmission{authority: DurableProcessAuthority{Identity: identity}})
+			if !errors.Is(err, launchidentity.ErrUnavailable) {
+				t.Fatalf("error=%v", err)
+			}
+			if worker.preflights > 1 || worker.prepares != 0 || worker.calls != 0 || providerCalls.provisions != 0 || providerCalls.stages != 0 || providerCalls.execs != 0 {
+				t.Fatalf("side effects: preflight=%d prepare=%d run=%d provision=%d stage=%d exec=%d", worker.preflights, worker.prepares, worker.calls, providerCalls.provisions, providerCalls.stages, providerCalls.execs)
+			}
+		})
+	}
+	bridge, _ := NewBridge(sandbox.NewFakeProvider(sandbox.FakeConfig{}))
+	if _, err := bridge.requireExactLease(mustParseView(t), &exactProcessAdmission{authority: DurableProcessAuthority{Identity: base}}); !errors.Is(err, launchidentity.ErrUnavailable) {
+		t.Fatalf("nil durable authority error=%v", err)
+	}
 }
 
 func TestRunWorker_HappyPathAllocatesAndTerminates(t *testing.T) {
