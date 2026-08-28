@@ -50,6 +50,34 @@ func TestInternalLaunchIsHiddenAndFailClosed(t *testing.T) {
 	}
 }
 
+func TestInternalSandboxLaunchIsHiddenAndFailClosed(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if exit := Run([]string{"__sandbox-launch", "ordinary-argument"}, strings.NewReader(""), &stdout, &stderr); exit != ExitUsage {
+		t.Fatalf("argv-bearing helper exit = %d", exit)
+	}
+	if strings.Contains(stderr.String(), "ordinary-argument") {
+		t.Fatalf("sandbox helper leaked argv: %s", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"__sandbox-launch"}, strings.NewReader(""), &stdout, &stderr); exit != ExitFailure {
+		t.Fatalf("ordinary helper invocation exit = %d", exit)
+	}
+	if strings.Contains(stderr.String(), "fd") || strings.Contains(stderr.String(), "environment") {
+		t.Fatalf("sandbox helper leaked protocol detail: %s", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"help"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("help exit = %d", exit)
+	}
+	if strings.Contains(stdout.String(), "__sandbox-launch") {
+		t.Fatal("sandbox helper appeared in public help")
+	}
+}
+
 func TestDoctorReportsCompiledContracts(t *testing.T) {
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", "")

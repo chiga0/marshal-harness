@@ -45,6 +45,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/sandbox/local"
 	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
+	"github.com/chiga0/marshal-harness/internal/sandboxlaunch"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/supervisor"
 	"github.com/chiga0/marshal-harness/internal/taskgen"
@@ -139,6 +140,8 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 		return runInternal(args[1:], stdin, stdout, stderr)
 	case "__launch":
 		return runInternalLaunch(args[1:], stderr)
+	case "__sandbox-launch":
+		return runInternalSandboxLaunch(args[1:], stderr)
 	case "__detach":
 		return runInternalDetach(stderr)
 	default:
@@ -198,6 +201,12 @@ func localDogfoodBootstrapCommand(args []string, doctor *doctorOptions) bool {
 		return false
 	}
 	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" || args[0] == "version" {
+		return true
+	}
+	// The private sandbox helper receives authority only through its exact
+	// inherited-FD protocol. It must run with an empty environment, before a
+	// local profile gate could consume environment-backed activation state.
+	if len(args) == 1 && args[0] == "__sandbox-launch" {
 		return true
 	}
 	if localDogfoodBoundedInternalCommand(args) {
@@ -328,6 +337,20 @@ func runInternalLaunch(args []string, stderr io.Writer) int {
 		// Detailed errors may contain local paths. Terminal output remains terse;
 		// the Attempt keeps the authoritative diagnostic.
 		fmt.Fprintln(stderr, "内部 Worker 启动失败。")
+		return ExitFailure
+	}
+	return ExitOK
+}
+
+func runInternalSandboxLaunch(args []string, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "内部 Sandbox 启动调用无效。")
+		return ExitUsage
+	}
+	if err := sandboxlaunch.RunChild(); err != nil {
+		// Protocol errors are deliberately opaque: argv, environment, local
+		// paths, descriptor identities, and workload bytes never reach stderr.
+		fmt.Fprintln(stderr, "内部 Sandbox 启动失败。")
 		return ExitFailure
 	}
 	return ExitOK
