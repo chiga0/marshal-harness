@@ -1,6 +1,7 @@
 package resultingress
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,17 +37,20 @@ const (
 // 权威锚点，包含 replay 检测所需的原始 idempotencyKey 与 envelope digest。内容
 // 从不改写，只追加。
 type resultAdmittedFact struct {
-	ProtocolRevision string       `json:"protocolRevision"`
-	FactType         string       `json:"factType"`
-	Sequence         int64        `json:"sequence"`
-	IdempotencyKey   string       `json:"idempotencyKey"`
-	DRCDigest        string       `json:"drcDigest"`
-	EnvelopeKind     EnvelopeKind `json:"envelopeKind"`
-	EnvelopeSequence uint64       `json:"envelopeSequence"`
-	EnvelopeDigest   string       `json:"envelopeDigest"`
-	FactDigest       string       `json:"envelopeFactDigest"`
-	LedgerSequence   uint64       `json:"ledgerSequence"`
-	Digest           string       `json:"digest"`
+	ProtocolRevision    string       `json:"protocolRevision"`
+	FactType            string       `json:"factType"`
+	Sequence            int64        `json:"sequence"`
+	IdempotencyKey      string       `json:"idempotencyKey"`
+	AttemptKey          string       `json:"attemptKey,omitempty"`
+	AttemptRevision     uint64       `json:"attemptRevision,omitempty"`
+	PreviousAttemptHead string       `json:"previousAttemptHead,omitempty"`
+	DRCDigest           string       `json:"drcDigest"`
+	EnvelopeKind        EnvelopeKind `json:"envelopeKind"`
+	EnvelopeSequence    uint64       `json:"envelopeSequence"`
+	EnvelopeDigest      string       `json:"envelopeDigest"`
+	FactDigest          string       `json:"envelopeFactDigest"`
+	LedgerSequence      uint64       `json:"ledgerSequence"`
+	Digest              string       `json:"digest"`
 }
 
 // legacyResultAdmittedFactV1 is the exact unversioned format written before
@@ -86,28 +90,31 @@ type legacyResultQuarantinedFactV1 struct {
 	Digest         string          `json:"digest"`
 }
 
-// ingressDurableStore 是 ResultIngress 的 replay/quarantine/idempotency
-// append-only 耐久账本（R2 纵切）。崩溃/重启由 OpenResultIngressStore 确定性
-// 重放：恢复 admitted map（idempotencyKey → {fact,envelopeDigest}）、单调
-// ledgerSequence 与全部 quarantine 记录——使「同一 idempotencyKey 重复送达 /
-// 跨进程重放」可被机械检测（同 digest 幂等、不同 digest 即伪造 fail closed）。
-type ingressDurableStore struct {
+// DurableStore 是 ResultIngress 与 Attempt Authority 共用的唯一物理
+// append-only 耐久账本（R2/RB1 纵切）。导出名称允许 production
+// composition 持有同一 store，而不是为结果和 Attempt 生命周期各造一份
+// authority。崩溃/重启由 OpenResultIngressStore 确定性重放全部投影。
+type DurableStore struct {
 	dir          string
 	nextSequence int64
 	mu           sync.Mutex
 }
 
+// ingressDurableStore keeps existing package-internal call sites source
+// compatible while DurableStore is the public composition type.
+type ingressDurableStore = DurableStore
+
 // OpenResultIngressStore 打开（不存在则创建）耐久账本目录并重放全部 fact。
 // 空白目录保持可构造但所有写操作 fail closed（ErrMemoryOnlyResultIngress）。
 // 损坏/非规范/冲突行一律 fail closed，绝不静默跳过。
-func OpenResultIngressStore(dir string) (*ingressDurableStore, error) {
+func OpenResultIngressStore(dir string) (*DurableStore, error) {
 	if strings.TrimSpace(dir) == "" {
-		return &ingressDurableStore{}, nil
+		return &DurableStore{}, nil
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("resultingress: create result ingress store directory: %w", err)
 	}
-	return &ingressDurableStore{dir: dir, nextSequence: 1}, nil
+	return &DurableStore{dir: dir, nextSequence: 1}, nil
 }
 
 func (s *ingressDurableStore) requireBound() error {
@@ -202,7 +209,7 @@ func (s *ingressDurableStore) appendLine(fact any, getDigest func() string, setD
 
 // RecordAdmitted 把一次成功接纳的幂等权威锚点持久化（在返回 fact 之前先落账，
 // 使后续重复送达或跨进程重放可被机械检测）。
-func (s *ingressDurableStore) recordAdmittedLocked(idempotencyKey, drcDigest string, envelope ResultEnvelope, factDigest string, ledgerSequence uint64) error {
+func (s *ingressDurableStore) recordAdmittedLocked(idempotencyKey string, governed *AttemptAuthorityState, drcDigest string, envelope ResultEnvelope, factDigest string, ledgerSequence uint64) (string, error) {
 	fact := &resultAdmittedFact{
 		ProtocolRevision: resultIngressProtocolRevision,
 		FactType:         resultFactTypeAdmitted,
@@ -215,30 +222,43 @@ func (s *ingressDurableStore) recordAdmittedLocked(idempotencyKey, drcDigest str
 		FactDigest:       factDigest,
 		LedgerSequence:   ledgerSequence,
 	}
+	if governed != nil {
+		key, err := governed.Identity.Key()
+		if err != nil {
+			return "", err
+		}
+		if governed.ProcessStartedDigest == "" || governed.BarrierDigest != "" {
+			return "", ErrAttemptAuthorityOrder
+		}
+		fact.AttemptKey = key
+		fact.AttemptRevision = governed.Revision + 1
+		fact.PreviousAttemptHead = governed.HeadDigest
+	}
 	if err := s.appendLine(fact,
 		func() string { return fact.Digest },
 		func(d string) { fact.Digest = d }); err != nil {
-		return err
+		return "", err
 	}
 	s.nextSequence++
-	return nil
+	return fact.Digest, nil
 }
 
 func (s *ingressDurableStore) RecordAdmitted(idempotencyKey, drcDigest string, envelope ResultEnvelope, factDigest string, ledgerSequence uint64) error {
 	return s.withExclusive(func() error {
-		dummy := &Ingress{admitted: make(map[string]admittedEntry)}
+		dummy := newAuthorityProjection()
 		s.nextSequence = 1
 		if err := s.recoverIntoLocked(dummy); err != nil {
 			return err
 		}
-		return s.recordAdmittedLocked(idempotencyKey, drcDigest, envelope, factDigest, ledgerSequence)
+		_, err := s.recordAdmittedLocked(idempotencyKey, nil, drcDigest, envelope, factDigest, ledgerSequence)
+		return err
 	})
 }
 
 // RecordQuarantined 把一次拒绝投递的只读机械审计记录持久化。
 func (s *ingressDurableStore) RecordQuarantined(reason RejectionReason, drcDigest, envelopeDigest string, observedAt time.Time) error {
 	return s.withExclusive(func() error {
-		dummy := &Ingress{admitted: make(map[string]admittedEntry)}
+		dummy := newAuthorityProjection()
 		s.nextSequence = 1
 		if err := s.recoverIntoLocked(dummy); err != nil {
 			return err
@@ -280,6 +300,9 @@ func (s *ingressDurableStore) recoverIntoLocked(in *Ingress) error {
 	if err != nil {
 		return fmt.Errorf("resultingress: read store: %w", err)
 	}
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		return errors.New("resultingress: truncated ledger tail without newline")
+	}
 	for i, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -293,6 +316,10 @@ func (s *ingressDurableStore) recoverIntoLocked(in *Ingress) error {
 
 // applyLine 解析一行并落到 Ingress 状态。
 func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
+	canonicalLine, err := canonical.JSON(line)
+	if err != nil || !bytes.Equal(canonicalLine, line) {
+		return errors.New("resultingress: ledger line is not canonical JSON")
+	}
 	var head struct {
 		ProtocolRevision string `json:"protocolRevision"`
 		FactType         string `json:"factType"`
@@ -302,6 +329,10 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		return err
 	}
 	switch head.FactType {
+	case string(AttemptTransitionOpened), string(AttemptTransitionLaunchAuthorized), string(AttemptTransitionProcessStarted), string(AttemptTransitionTerminalizationBarrier), string(AttemptTransitionProcessTerminal), string(AttemptTransitionAllocationTerminated), string(AttemptTransitionCleanupCompleted), string(AttemptTransitionCleanupReleased):
+		if err := applyAttemptAuthorityLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
 	case resultFactTypeAdmitted:
 		if head.ProtocolRevision == "" {
 			return s.applyLegacyAdmittedLine(line, in)
@@ -310,7 +341,9 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 			return fmt.Errorf("unsupported result ingress protocol revision %q", head.ProtocolRevision)
 		}
 		var fact resultAdmittedFact
-		if err := json.Unmarshal(line, &fact); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&fact); err != nil {
 			return err
 		}
 		if fact.Sequence != s.nextSequence {
@@ -341,13 +374,36 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		if fact.LedgerSequence != in.ledgerSequence+1 {
 			return fmt.Errorf("admitted ledger sequence %d, want %d", fact.LedgerSequence, in.ledgerSequence+1)
 		}
-		in.admitted[fact.IdempotencyKey] = admittedEntry{
+		entry := admittedEntry{
 			fact:             AdmissionFact{FactDigest: fact.FactDigest, LedgerSequence: fact.LedgerSequence, IdempotentReplay: false},
+			attemptKey:       fact.AttemptKey,
 			drcDigest:        fact.DRCDigest,
 			envelopeKind:     fact.EnvelopeKind,
 			envelopeSequence: fact.EnvelopeSequence,
 			envelopeDigest:   fact.EnvelopeDigest,
 		}
+		if fact.AttemptKey != "" {
+			if err := requireDigest("attemptKey", fact.AttemptKey); err != nil {
+				return err
+			}
+			state, exists := in.attempts[fact.AttemptKey]
+			if !exists || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || fact.AttemptRevision != state.Revision+1 || fact.PreviousAttemptHead != state.HeadDigest {
+				return ErrAttemptAuthorityOrder
+			}
+			state.Revision = fact.AttemptRevision
+			state.HeadDigest = storeddigest
+			if fact.EnvelopeKind == KindWorkerResult {
+				if state.CommittedResultFactDigest != "" {
+					return ErrAttemptAuthorityConflict
+				}
+				state.CommittedResultFactDigest = fact.FactDigest
+				state.CommittedResultSequence = fact.LedgerSequence
+			}
+			in.attempts[fact.AttemptKey] = state
+		} else if fact.AttemptRevision != 0 || fact.PreviousAttemptHead != "" {
+			return ErrAttemptAuthorityConflict
+		}
+		in.admitted[fact.IdempotencyKey] = entry
 		if fact.LedgerSequence > in.ledgerSequence {
 			in.ledgerSequence = fact.LedgerSequence
 		}
