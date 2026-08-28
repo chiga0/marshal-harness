@@ -104,17 +104,32 @@ type ProcessStartedAuthorityRequest struct {
 type ControlOperation string
 
 const (
-	OperationInspect      ControlOperation = "inspect"
-	OperationReconcile    ControlOperation = "reconcile"
-	OperationSignalTERM   ControlOperation = "signal-term"
-	OperationSignalKILL   ControlOperation = "signal-kill"
-	OperationTerminalFact ControlOperation = "terminal-fact"
+	OperationInspect    ControlOperation = "inspect"
+	OperationReconcile  ControlOperation = "reconcile"
+	OperationSignalTERM ControlOperation = "signal-term"
+	OperationSignalKILL ControlOperation = "signal-kill"
 )
+
+// CleanupRef is non-bearer evidence from the durable terminalization barrier.
+// Signal operations are forbidden without this exact tuple.
+type CleanupRef struct {
+	TerminalizationID    string
+	TerminalGeneration   int64
+	CleanupBindingDigest string
+}
+
+func (ref CleanupRef) validate() error {
+	if strings.TrimSpace(ref.TerminalizationID) == "" || ref.TerminalGeneration < 1 || !validSHA256(ref.CleanupBindingDigest) {
+		return ErrAuthority
+	}
+	return nil
+}
 
 type ControlAuthorization struct {
 	Authority         AuthorityRef
 	Operation         ControlOperation
 	ObservationDigest string
+	Cleanup           CleanupRef
 }
 
 // AttemptAuthority is the sole authority seam. AuthorizeLaunch and
@@ -262,7 +277,7 @@ type platformCoordinator interface {
 type platformProcess interface {
 	inspect(context.Context) (Inspection, error)
 	wait(context.Context) (Inspection, error)
-	terminate(context.Context, time.Duration) (Inspection, error)
+	terminate(context.Context, CleanupRef, time.Duration) (Inspection, error)
 	close() error
 	observation() ProcessObservation
 }
@@ -286,6 +301,9 @@ func (coordinator *Coordinator) Launch(ctx context.Context, request LaunchReques
 	}
 	platform, err := coordinator.platform.launch(ctx, request)
 	if err != nil {
+		if platform != nil {
+			return &Process{platform: platform}, err
+		}
 		return nil, err
 	}
 	return &Process{platform: platform}, nil
@@ -324,14 +342,17 @@ func (process *Process) Wait(ctx context.Context) (Inspection, error) {
 	return process.platform.wait(ctx)
 }
 
-func (process *Process) Terminate(ctx context.Context, grace time.Duration) (Inspection, error) {
+func (process *Process) Terminate(ctx context.Context, cleanup CleanupRef, grace time.Duration) (Inspection, error) {
 	if process == nil || process.platform == nil {
 		return Inspection{}, ErrClosed
 	}
 	if grace < 0 {
 		return Inspection{}, fmt.Errorf("%w: negative grace", ErrStillRunning)
 	}
-	return process.platform.terminate(ctx, grace)
+	if err := cleanup.validate(); err != nil {
+		return Inspection{}, err
+	}
+	return process.platform.terminate(ctx, cleanup, grace)
 }
 
 func (process *Process) Close() error {

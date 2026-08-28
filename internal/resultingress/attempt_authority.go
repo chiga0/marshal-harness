@@ -582,7 +582,7 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 		if prior.BarrierDigest == "" || prior.ProcessTerminalDigest != "" || prior.CleanupReleasedDigest != "" {
 			return ErrAttemptAuthorityOrder
 		}
-		if prior.LaunchState == LaunchUncertain && t.ProcessTerminalKind != ProcessAbsent && t.ProcessTerminalKind != ProcessIdentityConflict {
+		if prior.LaunchState == LaunchUncertain && t.ProcessTerminalKind != ProcessAbsent && t.ProcessTerminalKind != ProcessTerminated && t.ProcessTerminalKind != ProcessIdentityConflict {
 			return ErrAttemptAuthorityOrder
 		}
 		if prior.LaunchState == LaunchNotAuthorized && t.ProcessTerminalKind != ProcessAbsent {
@@ -961,7 +961,11 @@ func cleanupEffectAllowed(state AttemptAuthorityState, operation CleanupOperatio
 		case CleanupInspect, CleanupReconcile:
 			return true
 		case CleanupSignal:
-			return state.LaunchState == LaunchStarted
+			// LaunchUncertain can still have an exact held child: launch-authorized
+			// precedes spawn and process-started CAS. The non-bearer cleanup tuple
+			// only authorizes the processcontrol handle that already owns that
+			// birth/FD/wait identity; restart never reconstructs a kill handle.
+			return state.LaunchState == LaunchStarted || state.LaunchState == LaunchUncertain
 		default:
 			// Provider/allocation termination is not legal until the exact process
 			// has a terminal authority fact.

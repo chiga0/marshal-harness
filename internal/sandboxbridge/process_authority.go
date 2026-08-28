@@ -4,9 +4,52 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/processcontrol"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
+
+func (authority DurableProcessAuthority) BeginTerminalization(ctx context.Context, eligibility resultingress.EligibilityTerminal) (processcontrol.CleanupRef, resultingress.AttemptAuthorityState, error) {
+	if authority.Store == nil || authority.Verifier == nil || eligibility.Validate() != nil {
+		return processcontrol.CleanupRef{}, resultingress.AttemptAuthorityState{}, resultingress.ErrCleanupUnauthorized
+	}
+	state, found, err := authority.Store.AttemptState(authority.Identity)
+	if err != nil || !found {
+		return processcontrol.CleanupRef{}, resultingress.AttemptAuthorityState{}, resultingress.ErrAttemptAuthorityUnknown
+	}
+	if state.BarrierDigest == "" {
+		key, keyErr := authority.Identity.Key()
+		if keyErr != nil {
+			return processcontrol.CleanupRef{}, resultingress.AttemptAuthorityState{}, keyErr
+		}
+		terminalizationID := canonical.DigestBytes([]byte("sandboxbridge:terminalization:" + key))
+		run := resultingress.RunAuthorityBinding{AuthorityNamespaceID: authority.Identity.AuthorityNamespaceID, RunID: authority.Identity.RunID, OrchestratorID: authority.Identity.OrchestratorID, RunAuthorityDigest: authority.Identity.RunAuthorityDigest}
+		result, appendErr := authority.Store.CompareAndAppendBarrier(ctx, authority.Verifier, state.Revision, state.HeadDigest,
+			resultingress.BarrierAuthorizationRequest{Identity: authority.Identity, CurrentRunAuthority: run},
+			resultingress.AttemptTransition{Kind: resultingress.AttemptTransitionTerminalizationBarrier, Identity: authority.Identity, TerminalizationID: terminalizationID, EligibilityTerminal: eligibility})
+		if appendErr != nil {
+			return processcontrol.CleanupRef{}, resultingress.AttemptAuthorityState{}, appendErr
+		}
+		state = result.State
+	} else if state.EligibilityTerminal != eligibility {
+		return processcontrol.CleanupRef{}, resultingress.AttemptAuthorityState{}, resultingress.ErrAttemptAuthorityConflict
+	}
+	if state.TerminalizationID == "" || state.TerminalGeneration < 1 || state.CleanupBindingDigest == "" {
+		return processcontrol.CleanupRef{}, resultingress.AttemptAuthorityState{}, resultingress.ErrCleanupUnauthorized
+	}
+	return processcontrol.CleanupRef{TerminalizationID: state.TerminalizationID, TerminalGeneration: state.TerminalGeneration, CleanupBindingDigest: state.CleanupBindingDigest}, state, nil
+}
+
+func (authority DurableProcessAuthority) RecordProcessTerminal(ctx context.Context, cleanup processcontrol.CleanupRef, kind resultingress.ProcessTerminalKind, observationDigest string) (resultingress.AttemptAuthorityState, error) {
+	state, found, err := authority.Store.AttemptState(authority.Identity)
+	if err != nil || !found {
+		return resultingress.AttemptAuthorityState{}, resultingress.ErrAttemptAuthorityUnknown
+	}
+	run := resultingress.RunAuthorityBinding{AuthorityNamespaceID: authority.Identity.AuthorityNamespaceID, RunID: authority.Identity.RunID, OrchestratorID: authority.Identity.OrchestratorID, RunAuthorityDigest: authority.Identity.RunAuthorityDigest}
+	request := resultingress.CleanupAuthorizationRequest{Identity: authority.Identity, CurrentRunAuthority: run, TerminalizationID: cleanup.TerminalizationID, TerminalGeneration: cleanup.TerminalGeneration, CleanupBindingDigest: cleanup.CleanupBindingDigest, Operation: resultingress.CleanupInspect}
+	result, err := authority.Store.CompareAndAppendCleanup(ctx, authority.Verifier, state.Revision, state.HeadDigest, request, resultingress.AttemptTransition{Kind: resultingress.AttemptTransitionProcessTerminal, Identity: authority.Identity, TerminalizationID: cleanup.TerminalizationID, ProcessTerminalKind: kind, ObservationDigest: observationDigest})
+	return result.State, err
+}
 
 // DurableProcessAuthority is the narrow composition adapter from RB1/RB3's
 // single durable Attempt ledger to RB2 process control. It does not discover
@@ -53,7 +96,25 @@ func (authority DurableProcessAuthority) WithCurrentAuthority(ctx context.Contex
 		return resultingress.ErrRunAuthorityUnauthorized
 	}
 	run := resultingress.RunAuthorityBinding{AuthorityNamespaceID: authority.Identity.AuthorityNamespaceID, RunID: authority.Identity.RunID, OrchestratorID: authority.Identity.OrchestratorID, RunAuthorityDigest: authority.Identity.RunAuthorityDigest}
-	return authority.Verifier.WithCurrentRunAuthority(ctx, run, effect)
+	switch request.Operation {
+	case processcontrol.OperationInspect, processcontrol.OperationReconcile:
+		if request.Cleanup != (processcontrol.CleanupRef{}) {
+			return resultingress.ErrCleanupUnauthorized
+		}
+		return authority.Verifier.WithCurrentRunAuthority(ctx, run, effect)
+	case processcontrol.OperationSignalTERM, processcontrol.OperationSignalKILL:
+		if authority.Store == nil {
+			return resultingress.ErrCleanupUnauthorized
+		}
+		cleanup := resultingress.CleanupAuthorizationRequest{
+			Identity: authority.Identity, CurrentRunAuthority: run,
+			TerminalizationID: request.Cleanup.TerminalizationID, TerminalGeneration: request.Cleanup.TerminalGeneration,
+			CleanupBindingDigest: request.Cleanup.CleanupBindingDigest, Operation: resultingress.CleanupSignal,
+		}
+		return authority.Store.WithAuthorizedCleanup(ctx, authority.Verifier, cleanup, func(resultingress.AttemptAuthorityState) error { return effect() })
+	default:
+		return resultingress.ErrCleanupUnauthorized
+	}
 }
 
 func processAppend(result resultingress.AttemptAppendResult) processcontrol.AppendResult {

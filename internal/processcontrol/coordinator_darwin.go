@@ -97,21 +97,20 @@ func (coordinator *darwinCoordinator) launch(ctx context.Context, request Launch
 
 	unit, err := coordinator.system.start(ctx, coordinator.fixedMarshalPath, coordinator.fixedMarshal, request)
 	if err != nil {
+		if unit != nil {
+			return &darwinProcess{authority: coordinator.authority, ref: request.Authority, unit: unit, observed: unit.observation()}, launchUncertain(err)
+		}
 		return nil, launchUncertain(err)
 	}
-	released := false
-	defer func() {
-		if !released {
-			unit.abort()
-		}
-	}()
+	process := &darwinProcess{authority: coordinator.authority, ref: request.Authority, unit: unit, observed: unit.observation()}
 	if err := unit.awaitReady(ctx); err != nil {
-		return nil, launchUncertain(err)
+		return process, launchUncertain(err)
 	}
 	observation := unit.observation()
+	process.observed = observation
 	observedAt := unit.observedAt().UTC()
 	if err := validateObservedAt(observation, observedAt); err != nil {
-		return nil, launchUncertain(err)
+		return process, launchUncertain(err)
 	}
 	started, err := coordinator.authority.RecordProcessStarted(ctx, ProcessStartedAuthorityRequest{
 		Authority:             request.Authority,
@@ -125,16 +124,15 @@ func (coordinator *darwinCoordinator) launch(ctx context.Context, request Launch
 		AgentLaunchSpecDigest: request.Closure.AgentLaunchSpecDigest,
 	})
 	if err != nil || !started.Appended {
-		return nil, launchUncertain(fmt.Errorf("%w: process-started transition", ErrAuthority))
+		return process, launchUncertain(fmt.Errorf("%w: process-started transition", ErrAuthority))
 	}
 	if err := validateFreshAppend(started, launchAuthorization.Revision); err != nil {
-		return nil, launchUncertain(fmt.Errorf("%w: incomplete process-started transition", ErrAuthority))
+		return process, launchUncertain(fmt.Errorf("%w: incomplete process-started transition", ErrAuthority))
 	}
 	if err := unit.release(); err != nil {
-		return nil, launchUncertain(err)
+		return process, launchUncertain(err)
 	}
-	released = true
-	return &darwinProcess{authority: coordinator.authority, ref: request.Authority, unit: unit, observed: observation}, nil
+	return process, nil
 }
 
 func launchUncertain(cause error) error {
@@ -169,7 +167,7 @@ func (coordinator *darwinCoordinator) reconcile(ctx context.Context, ref Authori
 		}
 		return Inspection{State: state, Observation: observation}, stateError(state)
 	}
-	if err := coordinator.withAuthority(ctx, ref, OperationTerminalFact, observation.ObservationDigest, func() error {
+	if err := coordinator.withAuthority(ctx, ref, OperationReconcile, observation.ObservationDigest, func() error {
 		state, inspectErr = coordinator.system.reconcile(observation)
 		return inspectErr
 	}); err != nil {
@@ -205,13 +203,13 @@ func (process *darwinProcess) inspect(ctx context.Context) (Inspection, error) {
 	return process.inspectLocked(ctx, true)
 }
 
-func (process *darwinProcess) inspectLocked(ctx context.Context, terminalFact bool) (Inspection, error) {
+func (process *darwinProcess) inspectLocked(ctx context.Context, _ bool) (Inspection, error) {
 	if process.closed {
 		return Inspection{}, ErrClosed
 	}
 	var state ProcessState
 	var inspectErr error
-	if err := process.withAuthority(ctx, OperationInspect, func() error {
+	if err := process.withAuthority(ctx, OperationInspect, CleanupRef{}, func() error {
 		state, inspectErr = process.unit.inspect()
 		return inspectErr
 	}); err != nil {
@@ -220,16 +218,7 @@ func (process *darwinProcess) inspectLocked(ctx context.Context, terminalFact bo
 	if inspectErr != nil {
 		return Inspection{State: ProcessIdentityConflict, Observation: process.observed}, inspectErr
 	}
-	if state == ProcessAbsent && terminalFact {
-		if err := process.withAuthority(ctx, OperationTerminalFact, func() error {
-			state, inspectErr = process.unit.inspect()
-			return inspectErr
-		}); err != nil {
-			return Inspection{}, err
-		}
-		if inspectErr != nil || state != ProcessAbsent {
-			return Inspection{State: ProcessIdentityConflict, Observation: process.observed}, ErrIdentityConflict
-		}
+	if state == ProcessAbsent {
 		process.terminal = true
 		exitCode, signal, resultErr := process.unit.result()
 		if resultErr != nil {
@@ -258,7 +247,7 @@ func (process *darwinProcess) wait(ctx context.Context) (Inspection, error) {
 	}
 }
 
-func (process *darwinProcess) terminate(ctx context.Context, grace time.Duration) (Inspection, error) {
+func (process *darwinProcess) terminate(ctx context.Context, cleanup CleanupRef, grace time.Duration) (Inspection, error) {
 	process.mu.Lock()
 	defer process.mu.Unlock()
 	inspection, err := process.inspectLocked(ctx, true)
@@ -267,7 +256,7 @@ func (process *darwinProcess) terminate(ctx context.Context, grace time.Duration
 	}
 	var state ProcessState
 	var signalErr error
-	if err := process.withAuthority(ctx, OperationSignalTERM, func() error {
+	if err := process.withAuthority(ctx, OperationSignalTERM, cleanup, func() error {
 		state, signalErr = process.unit.signal(syscall.SIGTERM)
 		return signalErr
 	}); err != nil {
@@ -282,7 +271,7 @@ func (process *darwinProcess) terminate(ctx context.Context, grace time.Duration
 		}
 		return inspection, stateError(inspection.State)
 	}
-	if err := process.withAuthority(ctx, OperationSignalKILL, func() error {
+	if err := process.withAuthority(ctx, OperationSignalKILL, cleanup, func() error {
 		state, signalErr = process.unit.signal(syscall.SIGKILL)
 		return signalErr
 	}); err != nil {
@@ -341,9 +330,9 @@ func (process *darwinProcess) close() error {
 	return nil
 }
 
-func (process *darwinProcess) withAuthority(ctx context.Context, operation ControlOperation, effect func() error) error {
+func (process *darwinProcess) withAuthority(ctx context.Context, operation ControlOperation, cleanup CleanupRef, effect func() error) error {
 	return guardedAuthorityEffect(operation, func(callback func() error) error {
-		return process.authority.WithCurrentAuthority(ctx, ControlAuthorization{Authority: process.ref, Operation: operation, ObservationDigest: process.observed.ObservationDigest}, callback)
+		return process.authority.WithCurrentAuthority(ctx, ControlAuthorization{Authority: process.ref, Operation: operation, ObservationDigest: process.observed.ObservationDigest, Cleanup: cleanup}, callback)
 	}, effect)
 }
 
@@ -589,40 +578,6 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 		return nil, err
 	}
 	closeFiles(specRead, readyWrite, releaseRead)
-	waitForPreWorkloadExit := func(processQueue int) bool {
-		_ = specWrite.Close()
-		_ = releaseWrite.Close()
-		done := make(chan struct{})
-		go func() {
-			_ = command.Wait()
-			close(done)
-		}()
-		cleanup := func() {
-			if processQueue >= 0 {
-				_ = unix.Close(processQueue)
-			}
-			closeFiles(readyRead, workingDirectory, executable, marshalImage)
-			guard.close()
-		}
-		return boundedOwnedWait(done, time.After(time.Second), cleanup)
-	}
-
-	pid := command.Process.Pid
-	processQueue, err := newProcessQueue(pid)
-	if err != nil {
-		if !waitForPreWorkloadExit(-1) {
-			return nil, ErrLaunchUncertain
-		}
-		return nil, ErrIdentityConflict
-	}
-	observation, sid, observedAt, err := observeProcess(pid, workingObservation, executableObservation)
-	if err != nil {
-		if !waitForPreWorkloadExit(processQueue) {
-			return nil, ErrLaunchUncertain
-		}
-		return nil, ErrIdentityConflict
-	}
-
 	unit := &realDarwinUnit{
 		command:               command,
 		readyRead:             readyRead,
@@ -634,21 +589,32 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 		executableObservation: executableObservation,
 		marshalObservation:    marshalObservation,
 		guard:                 guard,
-		processQueue:          processQueue,
-		observed:              observation,
-		sid:                   sid,
-		processObservedAt:     observedAt,
+		processQueue:          -1,
 		heldClosure:           heldClosure,
 	}
+	// From command.Start onward this unit is the sole process/FD/wait owner.
+	// Any setup error returns the handle for durable intervention; no helper
+	// goroutine or blind signal is allowed to consume ownership behind Core.
 	closureOwned = true
+	pid := command.Process.Pid
+	processQueue, err := newProcessQueue(pid)
+	if err != nil {
+		_ = specWrite.Close()
+		return unit, ErrLaunchUncertain
+	}
+	unit.processQueue = processQueue
+	observation, sid, observedAt, err := observeProcess(pid, workingObservation, executableObservation)
+	if err != nil {
+		_ = specWrite.Close()
+		return unit, ErrLaunchUncertain
+	}
+	unit.observed, unit.sid, unit.processObservedAt = observation, sid, observedAt
 	if err := writeAll(specWrite, rawSpec); err != nil {
 		_ = specWrite.Close()
-		unit.abort()
-		return nil, err
+		return unit, ErrLaunchUncertain
 	}
 	if err := specWrite.Close(); err != nil {
-		unit.abort()
-		return nil, err
+		return unit, ErrLaunchUncertain
 	}
 	return unit, nil
 }
@@ -803,11 +769,9 @@ func (unit *realDarwinUnit) abort() {
 	if unit.closed {
 		return
 	}
-	// Before process-started CAS the exact child is either blocked on G or held
-	// at the kernel exec-stop. The live coordinator owns its Process handle, so
-	// it may kill+wait without inventing recovery authority.
+	// start() calls abort only while the helper is still blocked before G. Close
+	// G and reap; never signal before a durable terminalization barrier exists.
 	_ = unit.releaseWrite.Close()
-	_ = unix.Kill(unit.command.Process.Pid, unix.SIGKILL)
 	done := make(chan struct{})
 	go func() {
 		_ = unit.command.Wait()
@@ -1374,9 +1338,13 @@ func observeFile(file *os.File, path string, kind uint32, hash bool) (ObjectObse
 		return ObjectObservation{}, ErrIdentityConflict
 	}
 	if hash {
-		digest, err := digestOpenFile(file)
+		digest, err := digestOpenFile(file, stat.Size)
 		if err != nil {
 			return ObjectObservation{}, err
+		}
+		var after unix.Stat_t
+		if err := unix.Fstat(int(file.Fd()), &after); err != nil || stat != after {
+			return ObjectObservation{}, ErrIdentityConflict
 		}
 		observation.SHA256 = digest
 	}
@@ -1409,13 +1377,14 @@ func sameObservedObject(actual, expected ObjectObservation, contentSensitive boo
 	return actual.Size == expected.Size && actual.Nlink == expected.Nlink && actual.SHA256 == expected.SHA256
 }
 
-func digestOpenFile(file *os.File) (string, error) {
+func digestOpenFile(file *os.File, expectedSize int64) (string, error) {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return "", err
 	}
 	digest := sha256.New()
-	if _, err := io.Copy(digest, file); err != nil {
-		return "", err
+	copied, err := io.Copy(digest, file)
+	if err != nil || copied != expectedSize {
+		return "", ErrIdentityConflict
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return "", err

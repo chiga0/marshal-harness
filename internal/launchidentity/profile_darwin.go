@@ -231,11 +231,15 @@ func openObject(path string, kind uint32, executable bool) (*os.File, ObjectV1, 
 			return nil, ObjectV1{}, ErrUnavailable
 		}
 		h := sha256.New()
-		if _, err := io.Copy(h, file); err != nil {
+		copied, err := io.Copy(h, file)
+		if err != nil || copied != before.Size {
 			file.Close()
-			return nil, ObjectV1{}, err
+			return nil, ObjectV1{}, ErrUnavailable
 		}
-		_, _ = file.Seek(0, io.SeekStart)
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			file.Close()
+			return nil, ObjectV1{}, ErrUnavailable
+		}
 		object.RawSHA256 = "sha256:" + hex.EncodeToString(h.Sum(nil))
 		if unix.Fstat(fd, &after) != nil || before != after {
 			file.Close()

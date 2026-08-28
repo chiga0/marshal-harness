@@ -54,10 +54,11 @@ func TestLaunchClosesGateWhenProcessStartedIsReplay(t *testing.T) {
 	authority := freshAuthority()
 	authority.started.Appended = false
 	coordinator := mustFakeCoordinator(t, authority, &fakeDarwinSystem{unit: unit})
-	if _, err := coordinator.launch(context.Background(), validLaunchRequest()); !errors.Is(err, ErrAuthority) {
+	process, err := coordinator.launch(context.Background(), validLaunchRequest())
+	if !errors.Is(err, ErrAuthority) {
 		t.Fatalf("launch error = %v", err)
 	}
-	if !unit.ready || unit.released || !unit.aborted {
+	if process == nil || !unit.ready || unit.released || unit.aborted {
 		t.Fatalf("unit lifecycle = ready:%v released:%v aborted:%v", unit.ready, unit.released, unit.aborted)
 	}
 }
@@ -140,14 +141,14 @@ func TestAuthorityRefRejectsNonRB1GenerationAndDigest(t *testing.T) {
 	}
 }
 
-func TestTerminateReauthorizesTermThenKillAndTerminalFact(t *testing.T) {
+func TestTerminateReauthorizesTermThenKillUnderCleanupBinding(t *testing.T) {
 	unit := &fakeDarwinUnit{
 		observed:      validObservation(),
 		inspectStates: []ProcessState{ProcessLive, ProcessLive, ProcessAbsent, ProcessAbsent},
 	}
 	authority := freshAuthority()
 	process := &darwinProcess{authority: authority, ref: validAuthorityRef(), unit: unit, observed: unit.observed}
-	inspection, err := process.terminate(context.Background(), 0)
+	inspection, err := process.terminate(context.Background(), validCleanupRef(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +159,7 @@ func TestTerminateReauthorizesTermThenKillAndTerminalFact(t *testing.T) {
 		t.Fatalf("signals = %v, want %v", got, want)
 	}
 	if got, want := authority.operations, []ControlOperation{
-		OperationInspect, OperationSignalTERM, OperationInspect, OperationSignalKILL, OperationInspect, OperationTerminalFact,
+		OperationInspect, OperationSignalTERM, OperationInspect, OperationSignalKILL, OperationInspect,
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("operations = %v, want %v", got, want)
 	}
@@ -178,7 +179,7 @@ func TestWaitDoesNotBlockConcurrentTerminate(t *testing.T) {
 	<-entered
 	close(release)
 	terminateDone := make(chan error, 1)
-	go func() { _, err := process.terminate(context.Background(), 0); terminateDone <- err }()
+	go func() { _, err := process.terminate(context.Background(), validCleanupRef(), 0); terminateDone <- err }()
 	select {
 	case err := <-terminateDone:
 		if err != nil {
@@ -201,7 +202,7 @@ func TestVnodeOrABATaintPreventsAnySignal(t *testing.T) {
 	unit := &fakeDarwinUnit{observed: validObservation(), inspectStates: []ProcessState{ProcessIdentityConflict}}
 	authority := freshAuthority()
 	process := &darwinProcess{authority: authority, ref: validAuthorityRef(), unit: unit, observed: unit.observed}
-	inspection, err := process.terminate(context.Background(), time.Second)
+	inspection, err := process.terminate(context.Background(), validCleanupRef(), time.Second)
 	if !errors.Is(err, ErrIdentityConflict) || inspection.State != ProcessIdentityConflict {
 		t.Fatalf("terminate = %+v, %v", inspection, err)
 	}
@@ -549,7 +550,7 @@ func TestRestartReconcileNeverReturnsKillCapableProcess(t *testing.T) {
 	if err != nil || inspection.State != ProcessAbsent {
 		t.Fatalf("absent reconcile = %+v, %v", inspection, err)
 	}
-	if got, want := authority.operations, []ControlOperation{OperationReconcile, OperationTerminalFact}; !reflect.DeepEqual(got, want) {
+	if got, want := authority.operations, []ControlOperation{OperationReconcile}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("operations = %v, want %v", got, want)
 	}
 }
@@ -571,6 +572,10 @@ func freshAuthority() *fakeAuthority {
 		launch:  AppendResult{Appended: true, Revision: 2, HeadDigest: testDigest('b'), TransitionDigest: testDigest('c')},
 		started: AppendResult{Appended: true, Revision: 3, HeadDigest: testDigest('d'), TransitionDigest: testDigest('e')},
 	}
+}
+
+func validCleanupRef() CleanupRef {
+	return CleanupRef{TerminalizationID: "terminalization-1", TerminalGeneration: 1, CleanupBindingDigest: testDigest('f')}
 }
 
 func (authority *fakeAuthority) AuthorizeLaunch(context.Context, LaunchAuthorityRequest) (AppendResult, error) {

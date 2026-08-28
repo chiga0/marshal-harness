@@ -836,7 +836,7 @@ func TestCleanupAuthorizationRejectsWrongTupleBindingOrchestratorAndRelease(t *t
 	}
 }
 
-func TestLaunchUncertainCleanupOnlyAllowsInspectAndReconcile(t *testing.T) {
+func TestLaunchUncertainCleanupAllowsHeldProcessSignalButNotProviderTerminate(t *testing.T) {
 	store, err := OpenResultIngressStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -857,13 +857,13 @@ func TestLaunchUncertainCleanupOnlyAllowsInspectAndReconcile(t *testing.T) {
 	barrier := barrierResult.State
 	run := RunAuthorityBinding{AuthorityNamespaceID: id.AuthorityNamespaceID, RunID: id.RunID, OrchestratorID: id.OrchestratorID, RunAuthorityDigest: id.RunAuthorityDigest}
 	request := CleanupAuthorizationRequest{Identity: id, CurrentRunAuthority: run, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest}
-	for _, operation := range []CleanupOperation{CleanupInspect, CleanupReconcile} {
+	for _, operation := range []CleanupOperation{CleanupInspect, CleanupReconcile, CleanupSignal} {
 		request.Operation = operation
 		if err := store.AuthorizeCleanup(context.Background(), attemptRunVerifier{want: run}, request); err != nil {
 			t.Fatalf("operation %q rejected: %v", operation, err)
 		}
 	}
-	for _, operation := range []CleanupOperation{CleanupSignal, CleanupTerminate} {
+	for _, operation := range []CleanupOperation{CleanupTerminate} {
 		request.Operation = operation
 		if err := store.AuthorizeCleanup(context.Background(), attemptRunVerifier{want: run}, request); !errors.Is(err, ErrCleanupUnauthorized) {
 			t.Fatalf("operation %q err=%v, want ErrCleanupUnauthorized", operation, err)

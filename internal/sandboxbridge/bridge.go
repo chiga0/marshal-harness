@@ -77,6 +77,10 @@ type Bridge struct {
 // RunWorker calls.
 type ExactProcessRuntime struct {
 	Resolve func(context.Context, ExactProcessAttempt) (*processcontrol.Coordinator, DurableProcessAuthority, error)
+	// Retain transfers an uncertain/live handle to the Attempt supervisor.
+	// It must persist intervention state; returning from Retain transfers
+	// ownership and sandboxbridge will never signal or close that handle.
+	Retain func(ExactProcessAttempt, *processcontrol.Process, error)
 }
 
 type ExactProcessAttempt struct {
@@ -89,7 +93,7 @@ type ExactProcessAttempt struct {
 }
 
 func (b *Bridge) WithExactProcessRuntime(runtime ExactProcessRuntime) *Bridge {
-	if runtime.Resolve != nil {
+	if runtime.Resolve != nil && runtime.Retain != nil {
 		b.exactProcess = &runtime
 	}
 	return b
