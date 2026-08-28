@@ -5,10 +5,11 @@ COMMIT ?= unknown
 BUILD_DATE ?= unknown
 SELF_PROFILE ?= unprofiled
 GO_FILES := $(shell find cmd internal schemas -type f -name '*.go')
-LDFLAGS := -s -w \
+LDFLAGS_BASE := -s -w \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.version=$(VERSION) \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(COMMIT) \
-	-X github.com/chiga0/marshal-harness/internal/buildinfo.buildDate=$(BUILD_DATE) \
+	-X github.com/chiga0/marshal-harness/internal/buildinfo.buildDate=$(BUILD_DATE)
+LDFLAGS := $(LDFLAGS_BASE) \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=$(SELF_PROFILE)
 
 .PHONY: format format-check architecture-check vet lint test build dist vuln check ci
@@ -47,10 +48,15 @@ dist:
 	@mkdir -p "$(DIST_DIR)"
 	@set -e; for t in $(DIST_TARGETS); do \
 		os="$${t%/*}"; arch="$${t#*/}"; \
+		case "$$os" in \
+			darwin) self_profile="darwin-local-dogfood" ;; \
+			linux) self_profile="unprofiled" ;; \
+			*) echo "[dist] 错误: 未配置 $$os 的 self profile" >&2; exit 1 ;; \
+		esac; \
 		out="$(DIST_DIR)/marshal_$(VERSION)_$${os}_$${arch}"; \
-		echo "[dist] $$os/$$arch -> $$out"; \
+		echo "[dist] $$os/$$arch ($$self_profile) -> $$out"; \
 		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" \
-			$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$$out" ./cmd/marshal; \
+			$(GO) build -trimpath -ldflags "$(LDFLAGS_BASE) -X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=$$self_profile" -o "$$out" ./cmd/marshal; \
 	done
 	@set -e; cd "$(DIST_DIR)"; \
 	files="$$(LC_ALL=C ls marshal_* 2>/dev/null)"; \

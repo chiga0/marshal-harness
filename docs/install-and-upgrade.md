@@ -16,8 +16,9 @@ marshal version
 1. 检测平台（`darwin|linux` × `amd64|arm64`）；
 2. 查询 latest release，存在平台匹配资产（`marshal_<version>_<os>_<arch>`）时用 `curl -fsSL` 下载预编译二进制；
 3. 强制下载并校验 `SHA256SUMS`；清单缺失、目标条目不是唯一一项或 sha256 不匹配时均 **fail closed**，不会安装已下载资产，也不会把该失败静默降级为源码构建；
-4. 无匹配资产或下载失败时回退源码构建（见下节）；
-5. 安装到 `~/.local/bin`（可用 `MARSHAL_INSTALL_DIR` 覆盖），完成后自动运行 `marshal version` 自检并输出下一步指引（`marshal init` / `marshal doctor`）。
+4. 无匹配资产或下载失败时回退源码构建（见下节）；若指定了 `MARSHAL_TAG`，源码 checkout 的 `HEAD` 必须精确等于该 tag 的 peeled commit，否则 fail closed，禁止把任意源码标记成请求版本；
+5. 安装到 `~/.local/bin`（可用 `MARSHAL_INSTALL_DIR` 覆盖）；复制前后都运行 `marshal version --json`，并核对 `version`、`commit`（源码路径）与 `selfProfile`，任一执行失败、字段缺失或身份漂移都 fail closed；
+6. Darwin 安装资产与源码回退固定 `selfProfile=darwin-local-dogfood`，Linux 固定 `selfProfile=unprofiled`。前者只是 ADR 0051 的 Mac ordinary-user/non-production 能力，不得描述成 hardened 或正式 production authority。
 
 二进制先写入安装目录下固定的 `.marshal-staging/marshal` 暂存路径，校验通过后复制为 `marshal` 并清理暂存目录，不会在随机路径生成匿名可执行文件。
 
@@ -44,7 +45,7 @@ cd marshal-harness
 make build      # 输出 bin/marshal
 ```
 
-安装脚本在以下情况自动走源码路径：无匹配 release 资产、release 下载失败、或设置 `MARSHAL_FORCE_SOURCE=1`；无本地 checkout 时会先浅克隆仓库（`MARSHAL_TAG` 已固定时克隆对应 tag）。
+安装脚本在以下情况自动走源码路径：无匹配 release 资产、release 下载失败、或设置 `MARSHAL_FORCE_SOURCE=1`；无本地 checkout 时会先浅克隆仓库（`MARSHAL_TAG` 已固定时克隆对应 tag）。源码路径要求无未提交修改、可验证的 Git checkout，并把精确 `HEAD`、构建时间和平台 profile 写入 build info；指定 `MARSHAL_TAG` 时还会要求 `HEAD == refs/tags/<tag>^{commit}`。
 
 ## 升级
 

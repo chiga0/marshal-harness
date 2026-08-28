@@ -45,6 +45,7 @@ jobs:
       - name: Test release and installer contracts
         run: |
           bash scripts/release-contract_test.sh
+          bash scripts/dist-profile_test.sh
           bash scripts/install_test.sh
 
       - name: Validate release source
