@@ -166,15 +166,12 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 				return domain.Record{}, fmt.Errorf("sandboxbridge: dispatch lease has invalid expiry %q (fail closed)", lease.ExpiresAt)
 			}
 			leaseExpiry = leaseExpiry.UTC()
+			// sandbox registration canonical ID 由 Provider registration 创建源头
+			// 统一携带 "registration:" 前缀（embeddedRegistrationID），此处直接
+			// 采用 durable authority 的 registrationId，不做消费端补前缀。
 			regID := sandboxProviderRegistrationID
 			if reg := b.authority.Registration(); reg.RegistrationId != "" {
 				regID = reg.RegistrationId
-			}
-			// runtimeprofile 要求 SandboxProviderRegistrationID 带
-			// "registration:" 前缀；durable authority 返回的原始 registrationId
-			//（如 "local-sandbox-provider"）不带前缀，此处规范化补齐。
-			if !strings.HasPrefix(regID, "registration:") {
-				regID = "registration:" + regID
 			}
 			// 分离 agent/sandbox capability digest：agent 侧用 adapter probe
 			// 的 CapabilitySnapshot digest（view.CapabilityDigest 来自

@@ -170,6 +170,21 @@ func AdmitWithDurableAuthority(ctx context.Context, binding *AttemptBinding, res
 	if err != nil {
 		return nil, fmt.Errorf("resultbinding: %w: durable registration lookup: %v", ErrAdmissionRejected, err)
 	}
+	// current-ledger binding 机械断言：AttemptBinding 冻结的
+	// SandboxProviderRegistrationID 必须与真实 durable ledger 当前的
+	// ProviderRegistrationID 逐字相等。二者不等说明绑定引用的 provider
+	// registration 已被替换/漂移，接纳 fail closed——不允许只靠消费端补前缀
+	// 或临时 seed ledger 满足格式检查。
+	if facts.SandboxProviderRegistrationID != reg.RegistrationId {
+		admission := &Admission{
+			AttemptID:       facts.AttemptID,
+			Accepted:        false,
+			SandboxOK:       false,
+			AgentOK:         true,
+			AdmissionReason: "attempt binding sandbox registration does not match current ledger",
+		}
+		return admission, fmt.Errorf("resultbinding: %w: AttemptBinding.SandboxProviderRegistrationID %q does not match current ledger ProviderRegistrationID %q", ErrAdmissionRejected, facts.SandboxProviderRegistrationID, reg.RegistrationId)
+	}
 	active, err := authority.ProviderRegistrationActive(reg.RegistrationId)
 	if err != nil {
 		return nil, fmt.Errorf("resultbinding: %w: durable registration active check: %v", ErrAdmissionRejected, err)

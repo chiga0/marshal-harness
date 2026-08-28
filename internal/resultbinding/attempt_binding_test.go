@@ -320,3 +320,51 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// stubAuthority 是 AdmitWithDurableAuthority 的最小 DurableAuthoritySource
+// 测试替身：返回预置的 provider registration 与 active 判定。
+type stubAuthority struct {
+	registration   provider.ProviderRegistration
+	providerActive bool
+	agentActive    bool
+}
+
+func (s *stubAuthority) ProviderRegistration() (provider.ProviderRegistration, error) {
+	return s.registration, nil
+}
+func (s *stubAuthority) ProviderRegistrationActive(string) (bool, error) {
+	return s.providerActive, nil
+}
+func (s *stubAuthority) AgentRegistrationActive(string) (bool, error) { return s.agentActive, nil }
+
+// TestAdmitWithDurableAuthorityRejectsSandboxRegistrationMismatch 锁定 P1-2
+// 的 current-ledger binding 机械断言：AttemptBinding 冻结的
+// SandboxProviderRegistrationID 与真实 durable ledger 当前
+// ProviderRegistrationID 不等时，接纳必须 fail closed（SandboxOK=false）。
+func TestAdmitWithDurableAuthorityRejectsSandboxRegistrationMismatch(t *testing.T) {
+	facts := testBindingFacts()
+	facts.AgentRegistrationID = "registration:agent-bind"
+	binding := &AttemptBinding{Schema: AttemptBindingSchema, Facts: facts}
+
+	auth := &stubAuthority{
+		// 真实 ledger 的 provider registration 与 binding 冻结值不同。
+		registration:   provider.ProviderRegistration{RegistrationId: "registration:different-provider"},
+		providerActive: true,
+		agentActive:    true,
+	}
+	admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{}`), auth, sandbox.AllocationActive)
+	if err == nil {
+		t.Fatalf("expected rejection for sandbox registration mismatch, got admission=%+v", admission)
+	}
+	if !errors.Is(err, ErrAdmissionRejected) {
+		t.Fatalf("expected ErrAdmissionRejected, got %v", err)
+	}
+	if admission == nil || admission.Accepted || admission.SandboxOK {
+		t.Fatalf("mismatched sandbox registration must be rejected with SandboxOK=false, got %+v", admission)
+	}
+	if !contains(admission.AdmissionReason, "does not match current ledger") {
+		t.Errorf("admission reason must mention ledger mismatch, got %q", admission.AdmissionReason)
+	}
+}
+
+func contains(s, sub string) bool { return indexOf(s, sub) >= 0 }

@@ -48,8 +48,8 @@ func EmbeddedSandboxEnabled(getenv func(string) string) bool {
 const (
 	embeddedTenantNamespace       = "local"
 	embeddedControlPlaneID        = "default"
-	embeddedRegistrationID        = "local-sandbox-provider"
-	embeddedIdempotencyKey        = "embedded" + ":local-sandbox-provider"
+	embeddedRegistrationID        = "registration:local-sandbox-provider"
+	embeddedIdempotencyKey        = "embedded" + ":registration:local-sandbox-provider"
 	embeddedProviderType          = "sandbox"
 	embeddedProviderName          = "local"
 	embeddedProviderVersion       = "m8-embedded"
@@ -70,7 +70,7 @@ const embeddedRepositoryIdentityKind = "RepositoryIdentity"
 // two-part concatenation keeps every Digest-family fixture value
 // gitleaks-safe.
 var (
-	embeddedRegistrationRequestDigest = sandbox.RecomputeSHA256([]byte("embedded-registration" + "\x00" + "local-sandbox-provider"))
+	embeddedRegistrationRequestDigest = sandbox.RecomputeSHA256([]byte("embedded-registration" + "\x00" + "registration:local-sandbox-provider"))
 	embeddedConfigDigest              = sandbox.RecomputeSHA256([]byte("embedded-sandbox" + "\x00" + "effective-config"))
 )
 
@@ -590,7 +590,7 @@ func (rt *EmbeddedSandboxRuntime) WorkerAllocationID(runID, attemptID string) st
 // registrationID 做 exact lookup；未注册或非 active 一律 fail closed。
 // 不存在「任意 active registration 即通过」的降级——那是门禁绕过。
 // registrationID 的稳定性由 capability identity digest 排除易变诊断字段
-//（probedAt）保证，见 resultbinding.StableCapabilityDigest。
+// （probedAt）保证，见 resultbinding.StableCapabilityDigest。
 func (rt *EmbeddedSandboxRuntime) AgentRegistrationActive(registrationID string) (bool, error) {
 	reg, err := rt.agentRegistry.Lookup(registrationID)
 	if err != nil {
