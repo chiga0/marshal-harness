@@ -1,6 +1,6 @@
 # ADR 0061：Supervisor Close 的 transcript disposition 与无结果证明
 
-- 状态：提议（Proposed，2026-08-29）。本 ADR 只冻结 `Close` 在“结果先接纳”与“terminalization barrier 先赢”两类路径上的封闭语义；未经独立复审和维护者接受不得修改 wire/persisted projection，也不升级 I186-R2–R6。
+- 状态：已接受（Accepted，2026-08-29）。候选 `742dbf0cc8c55971105710b5142f4c803e97e0f7` 经同一独立 reviewer 聚合复审确认 P0/P1/P2 均为 0；接受只冻结 `Close` 的三态封闭语义，尚未实现 wire/persisted projection，也不升级 I186-R2–R6。
 - 关联：[ADR 0044](0044-result-ingress-and-cold-hot-paths.md)、[ADR 0056](0056-darwin-process-observation-and-attempt-terminalization.md)、[ADR 0059](0059-fixed-darwin-process-supervisor.md)、[ADR 0060](0060-supervisor-mechanics-authority-binding-and-recovery.md)、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)。
 
 ## 背景

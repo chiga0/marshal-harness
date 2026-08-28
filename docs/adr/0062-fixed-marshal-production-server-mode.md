@@ -1,6 +1,6 @@
 # ADR 0062：固定 Marshal 的生产 server mode 与唯一 composition root
 
-- 状态：提议（Proposed，2026-08-29）。本 ADR 只冻结 v1 Mac-first 的生产二进制与入口拓扑；未经独立复审和维护者接受不得把独立 `marshal-server` 加入 trusted binary set，也不得据此宣称 production reachable。
+- 状态：已接受（Accepted，2026-08-29）。候选 `742dbf0cc8c55971105710b5142f4c803e97e0f7` 经同一独立 reviewer 聚合复审确认 P0/P1/P2 均为 0；接受只冻结 v1 Mac-first 的生产二进制与入口拓扑，尚未实现 fixed server mode，也不构成 production reachability 或发布授权。
 - 关联：[ADR 0047](0047-marshal-darwin-self-identity-and-release-signing.md)、[ADR 0052](0052-v1-release-scope-and-production-reachability.md)、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)、[ADR 0059](0059-fixed-darwin-process-supervisor.md)、[ADR 0060](0060-supervisor-mechanics-authority-binding-and-recovery.md)、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)。
 
 ## 背景
