@@ -26,6 +26,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
+	"github.com/chiga0/marshal-harness/internal/stablegotest"
 )
 
 const (
@@ -487,9 +488,13 @@ func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (sand
 	if err != nil {
 		return nil, err
 	}
+	environment, err := stablegotest.WithEnvironment(workerEnvironment(worktree))
+	if err != nil {
+		return nil, fmt.Errorf("stable Go test runner unavailable: %w", err)
+	}
 	return &LaunchPlan{
 		ExecArgv:              append([]string{identity.path}, args...),
-		Environment:           workerEnvironment(worktree),
+		Environment:           environment,
 		WorkingDirectory:      worktree,
 		AttemptTimeoutSeconds: int64(request.AttemptTimeoutSeconds),
 		ResultPath:            resultPath,

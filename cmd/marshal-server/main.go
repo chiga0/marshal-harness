@@ -42,6 +42,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/server"
+	"github.com/chiga0/marshal-harness/internal/stablegotest"
 )
 
 // Process exit codes are stable CLI contract, mirroring the embedded CLI.
@@ -66,6 +67,9 @@ const (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if handled, code := stablegotest.MaybeRun(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
 	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }
 

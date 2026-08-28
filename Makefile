@@ -30,8 +30,9 @@ vet:
 lint:
 	$(GO) tool staticcheck ./...
 
-test:
-	$(GO) test -race -p 2 ./...
+test: build
+	bash scripts/stable-go-test_test.sh
+	MARSHAL_RUNNER="$(abspath $(BINARY))" GO="$(GO)" bash scripts/stable-go-test.sh -race -p 2 ./...
 
 build:
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/marshal
