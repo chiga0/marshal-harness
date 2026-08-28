@@ -1,6 +1,6 @@
 # ADR 0059：固定 Darwin 进程 Supervisor 与 Core 重连
 
-- 状态：提议（Proposed，2026-08-29）。本 ADR 未经独立评审与维护者接受前不得实施，不改变 I186-R2–R6 的成熟度，也不授权发布稳定 `v1.*`。
+- 状态：已接受（Accepted，2026-08-29）。接受候选 `69046fa177caa1563d40dba07446c4b2d9d9b4a0` 经独立复审确认 P0/P1/P2 均为 0；接受只冻结本合同，不表示已实现，不改变 I186-R2–R6 的成熟度，也不授权发布稳定 `v1.*`。
 - 关联：[ADR 0018](0018-control-plane-and-provider-ports.md)（Core 业务权威）、[ADR 0051](0051-darwin-local-dogfood-profile.md)（Darwin ordinary-user 边界）、[ADR 0052](0052-v1-release-scope-and-production-reachability.md)（v1 可恢复纵切）、[ADR 0056](0056-darwin-process-observation-and-attempt-terminalization.md)（进程观察与终结事务）、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)（唯一生产装配）、[ADR 0058](0058-interpreted-agent-launch-identity.md)（解释型启动身份）、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)。
 
 ## 背景
