@@ -371,7 +371,7 @@ func TestProcessStartedRequiresSupervisorOnGovernedAttempt(t *testing.T) {
 	if _, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run}, bound.Revision, bound.HeadDigest, AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, transition); !errors.Is(err, ErrControlOwnerNotCurrent) {
 		t.Fatalf("owner-governed process-start through Run-only port err=%v", err)
 	}
-	if _, err := appendAuthorizedAttempt(t, store, bound.Revision, bound.HeadDigest, transition); !errors.Is(err, ErrAttemptAuthorityOrder) {
+	if _, err := appendAuthorizedAttempt(t, store, bound.Revision, bound.HeadDigest, transition); !errors.Is(err, ErrControlOwnerNotCurrent) {
 		t.Fatalf("governed process-start without supervisor err=%v", err)
 	}
 	if state, _, _ := store.AttemptState(id); state.ProcessStartedDigest != "" {
