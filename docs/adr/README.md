@@ -36,6 +36,8 @@
 
 2026-08-29，ResultIngress/ADR 0059 接缝审计发现：既有 Attempt fact 尚未持久化完整 `requestDigest/receiptDigest/observationDigest/commandHead`，且 Supervisor 启动前没有 RB1 recovery anchor。候选 `12996f87beb3b45b9267d4356875d9ebe257fcd2` 经独立终审确认 P0/P1/P2 均为 0 后，维护者接受 ADR 0060（Accepted）：在固定 Supervisor 外部副作用前新增 `process-supervisor-bootstrap-prepared`，并在同一 RB1 ledger 中建立不推进 Attempt head 的逐 command intent/outcome recovery 子链，让 process/admission/terminal/close fact 绑定 exact outcome。接受只冻结合同与 dormant authority implementation；Client prepared-command API、descriptor-relative nonce/journal recovery、lost-`Close` offline recovery 与 production composition 仍是生产前置，不升级 R2–R6，也不构成发布授权。
 
+2026-08-29，生产纵切预审发现两个必须先冻结的接缝：barrier 先赢的 cancel/timeout 路径不能 `collect`，而 Supervisor 又要求 collected 后才能 `close`；独立 `marshal-server` 也不能同时满足 fixed Marshal binary identity 与禁止 child `task run`。候选 `742dbf0cc8c55971105710b5142f4c803e97e0f7` 经同一独立 reviewer 聚合复审确认 P0/P1/P2 均为 0 后，维护者接受 ADR 0061/0062：分别冻结 `collected-admitted|collected-not-admitted|not-required` transcript disposition，以及把生产 loopback server收敛为 fixed `marshal control-plane serve`。真实 RC canary仍必须使用 exact managed-development signed/allowlisted或 notarized candidate；纯 unsigned只允许离线合同与诊断检查。接受只冻结合同，两项实现仍开放，不改变当前 `COMPONENT / INTEGRATION-OPEN` 状态。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -89,3 +91,5 @@
 | [0058](0058-interpreted-agent-launch-identity.md) | 解释型 Agent 的真实 runtime executable、versioned material roots/held identity、启动双 barrier 与 ResultIngress current-authority 全量重验 | 已接受（Accepted，2026-08-28；合同已冻结，仍未实现且不升级 Pi production reachability） |
 | [0059](0059-fixed-darwin-process-supervisor.md) | 固定 Marshal per-Attempt process supervisor、Core 重连、命令 hash chain 与 supervisor crash intervention | 已接受（Accepted，2026-08-29；候选 `69046fa177caa1563d40dba07446c4b2d9d9b4a0`，独立复审 P0/P1/P2=0；未实现，不升级 R2–R6） |
 | [0060](0060-supervisor-mechanics-authority-binding-and-recovery.md) | Supervisor bootstrap anchor、独立逐 command recovery 子链、exact mechanics outcome 与 unresolved-intent intervention | 已接受（Accepted，2026-08-29；候选 `12996f87beb3b45b9267d4356875d9ebe257fcd2` 经独立终审 P0/P1/P2=0；Client prepared API/nonce 与 lost-`Close` recovery仍开放，未接线 production composition，不升级 R2–R6） |
+| [0061](0061-supervisor-close-transcript-disposition.md) | Supervisor Close 的三态 transcript disposition 与 current-authority admission/non-admission resolution fact | 已接受（Accepted，2026-08-29；候选 `742dbf0cc8c55971105710b5142f4c803e97e0f7`，同一独立 reviewer 聚合复审 P0/P1/P2=0；未实现，不升级 R2–R6） |
+| [0062](0062-fixed-marshal-production-server-mode.md) | fixed Marshal 生产 server mode、唯一 composition root与独立 `marshal-server` 非生产边界 | 已接受（Accepted，2026-08-29；候选 `742dbf0cc8c55971105710b5142f4c803e97e0f7`，同一独立 reviewer 聚合复审 P0/P1/P2=0；未实现，不构成发布授权） |
