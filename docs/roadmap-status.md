@@ -9,6 +9,8 @@
 > **2026-08-28 embedded fencing 修复（随后更新）**：exec-chain 在 embedded 模式下（`MARSHAL_EMBEDDED_SANDBOX=1`）复用 BindDispatch 已创建的 lease 而非独立 Provision fencingToken；Embedded canary（`TestRealPiExecChainCanary`）在 embedded 模式下首次跑通：pi 真实在 Local allocation 内执行（transcript 27KB，exitCode=0），AttemptBinding 落盘（`634937b`）。marshal-server restart 测试重写为真实非终态 Run 跨进程恢复（`da8cccd`）。`TestRealPiStrictE2E` 跑通受 pi API rate limit（qwen3.8-max via idealab，10 次/60 分钟）外部阻塞，待窗口重置后重跑。
 >
 > **2026-08-28 fixed-bin checkpoint（当前权威增量）**：durable authority、strict E2E 实现与 RC identity/install 聚合已由独立 reviewer 判定 P0/P1 为零，并于 `main@5d5c426` 合入、推送。Pi `0.84.3` strict E2E 的最新 live 证据绑定锁定 sourceHead `8df8b88`，通过 fixed `marshal` binary、ResultIngress、独立 `verify`、跨进程 restore、ReviewPacket 到 `REVIEW_PENDING`；当前主线尚待重跑，并须通过现有 `task review --decision` 导入独立 ReviewDecision 到 `ACCEPTED`。Qwen Code `0.22.0` ordinary-user workspace live adapter 已通过，但不是 `LaunchCapable`。server controller 仍在聚合返工，ResultIngress 与 Run journal 的崩溃原子性仍在收口，RC 产物尚未发布。以下状态因此不升级：R2–R5 仍为 `COMPONENT`，R6 仍为 `PLANNED/DESIGN`。
+>
+> **2026-08-28 Darwin 进程生命周期合同 checkpoint**：[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已接受，冻结 Core-held PID birth/PGID/cwd/executable held-FD observation、Attempt terminalization transaction、正常 `lease-released` 与 ResultIngress-first/cleanup-before-unlock/successor 顺序。现有 `LocalRunner` 的 allocation/process projection 仍是内存态，合同尚未接入生产路径，因此本 checkpoint 不升级 R3–R5。
 
 ## v1.0 生产纵切
 
@@ -26,14 +28,14 @@ Milestone 状态与能力成熟度是两个维度：
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 与 baseline evidence 已完成。 |
 | `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Pi `0.84.3` 在锁定 sourceHead `8df8b88` 的 live canary 中由 Local allocation 承载并把真实 result bytes 送入 Core；实现已合入 `main@5d5c426`，当前主线重跑仍是发布前门禁。Qwen `0.22.0` ordinary workspace live 仅补充兼容性，不作为 production `LaunchCapable` 证据。 |
 | `I186-R2` | `IN_PROGRESS` | `COMPONENT` | `main@5d5c426` 已接入 file-backed ResultIngress replay store 和 durable agent registration/snapshot/current-ledger admission。退出前还须关闭 admission→worker-result→Run journal 崩溃窗口，证明 restart/replay/stale/lost-response 均从同一权威重验，且不存在第二真值。 |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | per-Attempt Agent/Sandbox identity 已随 `main@5d5c426` 合入；hardened evidence 必须由独立 authority 提供，ordinary-user 明确记为“不要求”而非伪造 `evidenceOk`。单侧 revoke/replace/expiry 的真实路径负测仍需随最终纵切复核。 |
-| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | strict E2E 候选已通过跨进程 restore；`marshal-server` start/status/recovery controller 仍在聚合返工且未合入。退出前须证明 server crash 后从 durable ledger 恢复、重复 start 幂等、lost/failed worker 得到唯一可回放结论。 |
-| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | fixed-bin strict E2E 已在锁定 sourceHead `8df8b88` 真实到 ResultIngress、`verify`、ReviewPacket/`REVIEW_PENDING`，修复了旧假阳性；但尚未在当前主线重跑并通过现有 `task review --decision` 导入独立 Decision 到 `ACCEPTED`，也未证明旧 bypass 全部退出 supported path。 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | per-Attempt Agent/Sandbox identity 已随 `main@5d5c426` 合入；hardened evidence 必须由独立 authority 提供，ordinary-user 明确记为“不要求”而非伪造 `evidenceOk`。ADR 0056 已冻结 Darwin Core-held process observation，但耐久事实、birth/FD identity 与单侧 revoke/replace/expiry 的真实路径负测仍待接线。 |
+| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | strict E2E 候选已通过跨进程 restore；`marshal-server` start/status/recovery controller 仍在聚合返工且未合入。退出前须按 ADR 0056 证明 server crash 后从耐久观察恢复、旧进程安全终结或 fence、重复 start 幂等、lost/failed worker 得到唯一可回放结论。 |
+| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | fixed-bin strict E2E 已在锁定 sourceHead `8df8b88` 真实到 ResultIngress、`verify`、ReviewPacket/`REVIEW_PENDING`，修复了旧假阳性；但尚未在当前主线重跑并通过现有 `task review --decision` 导入独立 Decision 到 `ACCEPTED`，也未完成 ADR 0056 的 allocation terminal receipt/`lease-released`/cleanup-before-unlock 并证明旧 bypass 全部退出 supported path。 |
 | `I186-R6` | `PLANNED` | `DESIGN` | RC identity/install 已获独立 `APPROVED` 并合入 `main@5d5c426`，但尚未发布产物；稳定 `v1.*` 仍由 Issue #212 的 macOS signing/notarization 与 Linux stable gate 阻断。unsigned 只允许 prerelease，不能升级为 `RELEASED`。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
-当前最短剩余路径是：关闭 ResultIngress→worker-result→Run journal 崩溃原子性（R2）→ 合入 server controller 并跑 crash/replay 矩阵（R4）→ 在当前主线重跑 fixed-bin E2E，由独立 reviewer 生成 ReviewDecision 并通过现有 `task review --decision` 到 `ACCEPTED`，同时收口 allocation/lease 回收（R5）→ 发布可验证 unsigned RC，再 provision macOS signing/notarization 并通过 Linux stable gate（R6）。任一候选分支、单次 live pass 或 reviewer verdict 都不能单独升级阶段。
+当前最短剩余路径是：关闭 ResultIngress→worker-result→Run journal 崩溃原子性（R2）→ 按 ADR 0056 接入 Darwin process observation/terminalization/`lease-released`，并与 server controller 共用 ResultIngress-first、cleanup-before-unlock/successor 恢复顺序（R3/R4）→ 在当前主线重跑 fixed-bin E2E，由独立 reviewer 生成 ReviewDecision 并通过现有 `task review --decision` 到 `ACCEPTED`，同时证明旧进程不会与 successor 双活（R5）→ 发布可验证 unsigned RC，再 provision macOS signing/notarization 并通过 Linux stable gate（R6）。任一候选分支、单次 live pass 或 reviewer verdict 都不能单独升级阶段。
 
 ## 快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
 

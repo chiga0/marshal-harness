@@ -16,6 +16,19 @@
 
 当前关键路径没有偏离 ADR 0052：R2/R3 authority → R4 server recovery → R5 terminal Decision/`ACCEPTED` → R6 RC/stable gates。任何单次 live pass、候选 commit 或 reviewer verdict 都只是对应门禁的输入，不等于阶段关闭。
 
+## Darwin ordinary-user 进程生命周期合同审计（2026-08-28）
+
+代码审计确认：durable ResultIngress 与 DispatchLease ledger 已存在，但 Local allocation/process projection、live process handle 和正常 lease release 仍未形成同一耐久终结事务。通用 orphan recovery 也尚未机械保证“先确认 ResultIngress，再终结旧进程，最后 unlock/retry/successor”。[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已接受并关闭合同缺口；实现与生产接线保持开放，R3–R5 不升级。
+
+| Finding | 等级 | 状态 | 处置 / 关闭条件 |
+| --- | --- | --- | --- |
+| `V1-LOCAL-PROCESS-AUTHORITY` | P0 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 冻结 Core-held PID birth/PGID/cwd/executable held-FD identity 与 `process-started` 耐久事实。关闭实现仍须让 Local Exec 向 Core observer 交付 live handle、重启从 authority facts 恢复 projection，并通过 PID/PGID reuse、path swap、FD mismatch 与伪造 claim 负测。 |
+| `V1-ATTEMPT-TERMINALIZATION-ORDER` | P0 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 冻结 ResultIngress-first、`termination-intent`、安全进程终点、Provider allocation terminal receipt、`lease-released`、最后 unlock/successor 的唯一顺序。关闭实现须覆盖每个 crash point、late result、lost response 和两次重启重放。 |
+| `V1-CROSS-ORCHESTRATION-KILL` | P0 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 明确未知不 kill：只有当前合法 orchestrator 且完整 authority/Attempt/allocation/lease/generation/进程 identity 匹配时才允许发信号；identity conflict、reparent/session escape、第二 orchestrator 均零副作用并 intervention。关闭实现须有真实 Darwin 负测。 |
+| `V1-LEASE-NORMAL-TERMINAL-FACT` | P1 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 新增 append-only `lease-released`/`released` 和正常释放原因，且只允许在安全进程终点与 allocation terminal receipt 后提交。关闭实现须保持旧 ledger replay、终态冲突 fail closed，并证明释放推进 generation。 |
+
+Mac ordinary-user 只证明在可信单用户宿主上的可恢复进程记账；它不证明恶意 workload 不逃逸，不替代 Linux/hardened authority，也不解除稳定发布的签名/notarization 门禁。
+
 ## v1.0 生产可达性重置（2026-08-27）
 
 本轮综合审计不再以 package、PR 或 historical milestone 数量衡量完成度，而是从真实 composition root 反查生产路径。当前真实写任务主链仍主要是 `cmd/marshal → internal/cli → execution.Run → Adapter.Run`；`spine`、`agentruntime`、`runtimeprofile`、`bindingcheck`、`revokedrain` 与 `resultingress` 等资产分别具有类型、纯核心或测试证据，但尚未共同承载一条真实 Agent-in-Sandbox Run。`spine` 的示例执行仍依赖 FakeAgent，部分 outbox/write-gate/authority 仍为内存形态。
@@ -61,7 +74,7 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 | `V1-AGENT-SANDBOX-DIGEST-CONFLATED` | P1 | `CLOSED-FIX` | Facts 新增 `SandboxCapabilityDigest` 字段——agent digest 与 sandbox digest 分离（`686ee61`）。此前两者混用同一字段 `Facts.CapabilityDigest`。 |
 | `V1-ATTEMPT-BINDING-MISSING-EMBEDDED` | P1 | `CLOSED-FIX` | AttemptBinding 仅在 `MARSHAL_EMBEDDED_SANDBOX=1` 时写入（`fc8e6bd`）。真实 pi 在 embedded + 非嵌入式两路径产出 `worker.completed` + admission anchor + allocation record + embedded AttemptBinding 落盘——但该证据来自尚未 fail-closed 的严格 E2E（见 `V1-STRICT-E2E-FALSE-POSITIVE`），属组件级执行链证明，不构成 R2 INTEGRATED 证据。 |
 | `V1-EMBEDDED-ADMISSION-REJECTED` | P1 | `SUPERSEDED` | 原以「任意-active fallback（`cad8773`）+ 消费端补 `registration:` 前缀（`3f8638d`）」修复 embedded admission 拒绝——该两处均为门禁降级，已被第二轮审计定性并移除，改由 `V1-AGENT-REG-ANY-ACTIVE-FALLBACK` 与 `V1-SANDBOX-REG-CONSUMER-PREFIX` 的根因修复取代。 |
-| `V1-LEASE-NOT-DURABLE` | P1 | `OPEN-IMPLEMENTATION` | lease 仍是内存态，进程重启即丢失。跨进程恢复需要耐久 lease ledger（参照 `provider.RegistrationStore` 模式）。 |
+| `V1-LEASE-NOT-DURABLE` | P1 | `SUPERSEDED-BY-ADR0056` | DispatchLease ledger 已耐久化，原“lease 全为内存态”描述已过时；真实缺口是 Local allocation/process projection 与正常 `lease-released` 未进入同一终结事务。由本报告顶部 `V1-LOCAL-PROCESS-AUTHORITY`、`V1-ATTEMPT-TERMINALIZATION-ORDER`、`V1-LEASE-NORMAL-TERMINAL-FACT` 跟踪。 |
 | `V1-RESULTINGRESS-NOT-DURABLE` | P1 | `CLOSED-FIX/INTEGRATION-PENDING` | `main@5d5c426` 已把 ResultIngress replay/idempotency 接到 `stateRoot` file-backed store，并合入 durable agent authority；strict E2E 也已通过跨进程 restore。这里只关闭 replay 存储缺口，admission→worker-result→Run journal 崩溃原子性仍开放，不据此升级 R2。 |
 
 ## 第二轮生产权威审计（2026-08-28）：门禁降级纠偏
