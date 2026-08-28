@@ -1024,7 +1024,12 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 					return ErrAttemptAuthorityOrder
 				}
 			case processsupervisor.CommandInspect, processsupervisor.CommandTerminate:
-				if state.ProcessTerminalDigest == "" {
+				// A successful Inspect can truthfully report that the process is
+				// still running or exec-stopped. That checkpoint closes the
+				// command, but is not a business terminal fact and must not block
+				// the following Terminate. Closed terminal outcomes remain gated
+				// until their exact process-terminal transition is committed.
+				if latest.Outcome.State != SupervisorProcessRunning && latest.Outcome.State != SupervisorProcessExecStopped && state.ProcessTerminalDigest == "" {
 					return ErrAttemptAuthorityOrder
 				}
 			case processsupervisor.CommandClose:
@@ -1050,7 +1055,7 @@ func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, in
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandResume:
-		if state.ProcessStartedDigest == "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest {
+		if state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.ProcessTerminalDigest != "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest {
 			return ErrAttemptAuthorityOrder
 		}
 	case processsupervisor.CommandCollect:

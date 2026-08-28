@@ -392,30 +392,78 @@ func NewSupervisorCommandEvidence(outcome processsupervisor.VerifiedCommandOutco
 		PostCommand:        projectSupervisorMechanicsAnchor(post),
 	}
 	if outcome.ProcessReport != nil {
-		report := *outcome.ProcessReport
-		evidence.Outcome = SupervisorProcessOutcome{MechanicsState: report.State, Process: report.Process, ObserverIdentity: report.ObserverIdentity, ObservedAt: report.ObservedAt, RuntimeObjectDigest: report.RuntimeObjectDigest, WorkingObjectDigest: report.WorkingObjectDigest, ExitCode: report.ExitCode, Signal: report.Signal, StdoutDigest: report.StdoutDigest, StderrDigest: report.StderrDigest, StdoutBytes: report.StdoutBytes, StderrBytes: report.StderrBytes, TranscriptTruncated: report.TranscriptTruncated, TranscriptDigest: outcome.TranscriptDigest}
-		switch report.State {
-		case "exec-stopped":
-			evidence.Outcome.State = SupervisorProcessExecStopped
-		case "running":
-			evidence.Outcome.State = SupervisorProcessRunning
-		case "terminal":
-			switch outcome.Command {
-			case processsupervisor.CommandCollect:
-				evidence.Outcome.State = SupervisorTranscriptCollected
-			case processsupervisor.CommandClose:
-				evidence.Outcome.State = SupervisorSessionClosed
-			case processsupervisor.CommandInspect:
-				evidence.Outcome.State = SupervisorProcessAbsent
-			default:
-				evidence.Outcome.State = SupervisorProcessExited
-			}
+		projected, err := projectVerifiedSupervisorProcessOutcome(outcome)
+		if err != nil {
+			return SupervisorCommandEvidence{}, err
 		}
+		evidence.Outcome = projected
 	}
 	if err := evidence.Validate(); err != nil {
 		return SupervisorCommandEvidence{}, err
 	}
 	return evidence, nil
+}
+
+// projectVerifiedSupervisorProcessOutcome preserves the distinction frozen by
+// ADR 0056: an Inspect terminal observation, or a Terminate that reports the
+// process was already terminal, proves absence but does not prove that this
+// command signalled the process group. Only process-terminal is projected as
+// ProcessTerminated. The authenticated report state alone is insufficient;
+// command and reason are part of the closed semantic union.
+func projectVerifiedSupervisorProcessOutcome(outcome processsupervisor.VerifiedCommandOutcome) (SupervisorProcessOutcome, error) {
+	report := *outcome.ProcessReport
+	projected := SupervisorProcessOutcome{MechanicsState: report.State, Process: report.Process, ObserverIdentity: report.ObserverIdentity, ObservedAt: report.ObservedAt, RuntimeObjectDigest: report.RuntimeObjectDigest, WorkingObjectDigest: report.WorkingObjectDigest, ExitCode: report.ExitCode, Signal: report.Signal, StdoutDigest: report.StdoutDigest, StderrDigest: report.StderrDigest, StdoutBytes: report.StdoutBytes, StderrBytes: report.StderrBytes, TranscriptTruncated: report.TranscriptTruncated, TranscriptDigest: outcome.TranscriptDigest}
+	switch outcome.Command {
+	case processsupervisor.CommandSpawn:
+		if outcome.ReasonCode != "process-exec-stopped" || report.State != "exec-stopped" {
+			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged spawn mechanics outcome", ErrAttemptAuthorityConflict)
+		}
+		projected.State = SupervisorProcessExecStopped
+	case processsupervisor.CommandResume:
+		if outcome.ReasonCode != "process-resumed" || report.State != "running" {
+			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged resume mechanics outcome", ErrAttemptAuthorityConflict)
+		}
+		projected.State = SupervisorProcessRunning
+	case processsupervisor.CommandInspect:
+		if outcome.ReasonCode != "process-inspected" {
+			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged inspect mechanics reason", ErrAttemptAuthorityConflict)
+		}
+		switch report.State {
+		case "exec-stopped":
+			projected.State = SupervisorProcessExecStopped
+		case "running":
+			projected.State = SupervisorProcessRunning
+		case "terminal":
+			projected.State = SupervisorProcessAbsent
+		default:
+			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged inspect mechanics state", ErrAttemptAuthorityConflict)
+		}
+	case processsupervisor.CommandTerminate:
+		if report.State != "terminal" {
+			return SupervisorProcessOutcome{}, fmt.Errorf("%w: terminate lacks terminal mechanics report", ErrAttemptAuthorityConflict)
+		}
+		switch outcome.ReasonCode {
+		case "process-already-terminal":
+			projected.State = SupervisorProcessAbsent
+		case "process-terminal":
+			projected.State = SupervisorProcessExited
+		default:
+			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged terminate mechanics reason", ErrAttemptAuthorityConflict)
+		}
+	case processsupervisor.CommandCollect:
+		if outcome.ReasonCode != "transcript-collected" || report.State != "terminal" {
+			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged collect mechanics outcome", ErrAttemptAuthorityConflict)
+		}
+		projected.State = SupervisorTranscriptCollected
+	case processsupervisor.CommandClose:
+		if outcome.ReasonCode != "mechanics-closed" || report.State != "terminal" {
+			return SupervisorProcessOutcome{}, fmt.Errorf("%w: forged close mechanics outcome", ErrAttemptAuthorityConflict)
+		}
+		projected.State = SupervisorSessionClosed
+	default:
+		return SupervisorProcessOutcome{}, fmt.Errorf("%w: command cannot carry a process report", ErrAttemptAuthorityConflict)
+	}
+	return projected, nil
 }
 
 // SupervisorBootstrapRequestProjection is the secret-free canonical image of

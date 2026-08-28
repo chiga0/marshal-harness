@@ -1,11 +1,14 @@
 package resultingress
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
 
@@ -56,6 +59,68 @@ func testCommandEvidence(t *testing.T, session string, command processsupervisor
 		t.Fatal(err)
 	}
 	return evidence
+}
+
+// verifiedSupervisorOutcome constructs the exact public client result shape
+// from the authenticated mechanics report and its receipt chain. Tests using
+// this helper exercise NewSupervisorCommandEvidence rather than bypassing the
+// constructor with a hand-authored SupervisorCommandEvidence.
+func verifiedSupervisorOutcome(t *testing.T, intent SupervisorCommandIntent, reason string, report processsupervisor.ProcessReport) processsupervisor.VerifiedCommandOutcome {
+	t.Helper()
+	payload, err := processsupervisor.CanonicalProtocolMessage(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation := canonical.DigestBytes(payload)
+	result := processsupervisor.MechanicsResult{Disposition: "ok", ReasonCode: reason, ObservationDigest: observation, Payload: payload}
+	receipt, err := canonicalDigest(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandHead, err := canonicalDigest(struct {
+		Previous string `json:"previousCommandDigest"`
+		Request  string `json:"requestDigest"`
+		Receipt  string `json:"receiptDigest"`
+	}{intent.PreviousCommandHead, intent.RequestDigest, receipt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre := supervisorHandshakeAnchor(intent.PreCommand)
+	post := pre
+	post.CommandSequence = intent.Sequence
+	post.CommandHead = commandHead
+	post.JournalSequence += 2
+	post.JournalHead = attemptTestDigest("verified-journal-" + intent.CommandID + "-" + reason)
+	return processsupervisor.VerifiedCommandOutcome{
+		Command: intent.Command, CommandID: intent.CommandID, Sequence: intent.Sequence,
+		Status: "ok", Disposition: "ok", ReasonCode: reason, RequestDigest: intent.RequestDigest,
+		ReceiptDigest: receipt, ObservationDigest: observation, CommandHead: commandHead,
+		ProcessReport: &report,
+		Recovery:      processsupervisor.CommandRecoveryEvidence{PreCommand: pre, PostCommand: post},
+	}
+}
+
+func appendVerifiedSupervisorCheckpoint(t *testing.T, store *DurableStore, state AttemptAuthorityState, intent SupervisorCommandIntent, verified processsupervisor.VerifiedCommandOutcome) AttemptAuthorityState {
+	t.Helper()
+	owner, found, err := store.OpenOwner(state.Owner.Scope)
+	if err != nil || !found {
+		t.Fatalf("current owner found=%v err=%v", found, err)
+	}
+	run := attemptTestRunAuthority(state.Identity)
+	request := AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}
+	intended, err := store.AppendSupervisorCommandIntent(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, state.Revision, state.HeadDigest, request, state.Owner, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := NewSupervisorCommandEvidence(verified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := store.AppendSupervisorCommandOutcome(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, intended.State.Revision, intended.State.HeadDigest, request, state.Owner, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return closed.State
 }
 
 func testPreparedSupervisor(t *testing.T, store *DurableStore, state AttemptAuthorityState, session string, directory processsupervisor.ControlDirectoryIdentity) (AttemptAuthorityState, ControlOwnerAcquisition) {
@@ -172,6 +237,136 @@ func TestSupervisorCommandEvidenceRejectsForgedChainAndAuthorityHead(t *testing.
 	_, err = store.AppendProcessStarted(context.Background(), attemptOwnerVerifier{want: owner}, attemptRunVerifier{want: run}, started.Revision, started.HeadDigest, AttemptAuthorizationRequest{Identity: started.Identity, CurrentRunAuthority: run}, started.Owner, transition)
 	if !errors.Is(err, ErrAttemptAuthorityOrder) {
 		t.Fatalf("wrong authority head must reject, got %v", err)
+	}
+}
+
+func TestNewSupervisorCommandEvidencePreservesInspectAndTerminateSemantics(t *testing.T) {
+	store, err := OpenResultIngressStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := openFreshStartedAttempt(t, store)
+	process := state.ProcessStartedEvidence.Outcome
+	base := processsupervisor.ProcessReport{
+		ObserverIdentity: process.ObserverIdentity, ObservedAt: "2026-08-28T00:00:04Z",
+		Process: process.Process, RuntimeObjectDigest: process.RuntimeObjectDigest, WorkingObjectDigest: process.WorkingObjectDigest,
+	}
+	for _, tc := range []struct {
+		name    string
+		command processsupervisor.CommandName
+		reason  string
+		state   string
+		want    SupervisorProcessState
+	}{
+		{name: "inspect-running", command: processsupervisor.CommandInspect, reason: "process-inspected", state: "running", want: SupervisorProcessRunning},
+		{name: "inspect-exec-stopped", command: processsupervisor.CommandInspect, reason: "process-inspected", state: "exec-stopped", want: SupervisorProcessExecStopped},
+		{name: "terminate-already-terminal-is-absent", command: processsupervisor.CommandTerminate, reason: "process-already-terminal", state: "terminal", want: SupervisorProcessAbsent},
+		{name: "terminate-after-group-signal", command: processsupervisor.CommandTerminate, reason: "process-terminal", state: "terminal", want: SupervisorProcessExited},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			intent := testSupervisorIntent(state, tc.command, SupervisorCommandRebuildProjection{})
+			report := base
+			report.State = tc.state
+			verified := verifiedSupervisorOutcome(t, intent, tc.reason, report)
+			evidence, err := NewSupervisorCommandEvidence(verified)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence.Outcome.State != tc.want {
+				t.Fatalf("semantic state=%q want=%q", evidence.Outcome.State, tc.want)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name    string
+		command processsupervisor.CommandName
+		reason  string
+		state   string
+	}{
+		{name: "inspect-forged-terminate-reason", command: processsupervisor.CommandInspect, reason: "process-terminal", state: "terminal"},
+		{name: "terminate-forged-inspect-reason", command: processsupervisor.CommandTerminate, reason: "process-inspected", state: "terminal"},
+		{name: "terminate-already-terminal-but-running", command: processsupervisor.CommandTerminate, reason: "process-already-terminal", state: "running"},
+		{name: "terminate-process-terminal-but-exec-stopped", command: processsupervisor.CommandTerminate, reason: "process-terminal", state: "exec-stopped"},
+	} {
+		t.Run("forged-"+tc.name, func(t *testing.T) {
+			intent := testSupervisorIntent(state, tc.command, SupervisorCommandRebuildProjection{})
+			report := base
+			report.State = tc.state
+			verified := verifiedSupervisorOutcome(t, intent, tc.reason, report)
+			if _, err := NewSupervisorCommandEvidence(verified); !errors.Is(err, ErrAttemptAuthorityConflict) {
+				t.Fatalf("forged reason/outcome accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestInspectOutcomeGatesTerminateIntentOnlyAfterTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		mechanicsState string
+		wantAllowed    bool
+	}{
+		{mechanicsState: "running", wantAllowed: true},
+		{mechanicsState: "exec-stopped", wantAllowed: true},
+		{mechanicsState: "terminal", wantAllowed: false},
+	} {
+		t.Run(tc.mechanicsState, func(t *testing.T) {
+			store, err := OpenResultIngressStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := openFreshStartedAttempt(t, store)
+			state = appendTestBarrier(t, store, state, "terminal-inspect-"+tc.mechanicsState, TerminalAttemptFailed).State
+			state = appendTestSupervisorReconnect(t, store, state)
+			cleanupRebuild := SupervisorCommandRebuildProjection{
+				TerminalizationBarrierDigest: state.BarrierDigest, TerminalizationID: state.TerminalizationID,
+				TerminalGeneration: uint64(state.TerminalGeneration), CleanupBindingDigest: state.CleanupBindingDigest,
+				ProcessStartedFactDigest: state.ProcessStartedDigest, LastObservationDigest: supervisorLastObservation(state),
+			}
+			inspect := testSupervisorIntent(state, processsupervisor.CommandInspect, cleanupRebuild)
+			started := state.ProcessStartedEvidence.Outcome
+			report := processsupervisor.ProcessReport{
+				State: tc.mechanicsState, ObserverIdentity: started.ObserverIdentity, ObservedAt: "2026-08-28T00:00:04Z",
+				Process: started.Process, RuntimeObjectDigest: started.RuntimeObjectDigest, WorkingObjectDigest: started.WorkingObjectDigest,
+			}
+			state = appendVerifiedSupervisorCheckpoint(t, store, state, inspect, verifiedSupervisorOutcome(t, inspect, "process-inspected", report))
+
+			cleanupRebuild.LastObservationDigest = supervisorLastObservation(state)
+			terminate := testSupervisorIntent(state, processsupervisor.CommandTerminate, cleanupRebuild)
+			owner, found, err := store.OpenOwner(state.Owner.Scope)
+			if err != nil || !found {
+				t.Fatalf("current owner found=%v err=%v", found, err)
+			}
+			run := attemptTestRunAuthority(state.Identity)
+			request := AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}
+			beforeLedger, err := os.ReadFile(store.ledgerPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeFactCount := bytes.Count(beforeLedger, []byte{'\n'})
+			resume := testSupervisorIntent(state, processsupervisor.CommandResume, SupervisorCommandRebuildProjection{ProcessStartedFactDigest: state.ProcessStartedDigest})
+			if _, err := store.AppendSupervisorCommandIntent(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, state.Revision, state.HeadDigest, request, state.Owner, resume); !errors.Is(err, ErrAttemptAuthorityOrder) {
+				t.Fatalf("resume after barrier and %s inspect was not rejected: %v", tc.mechanicsState, err)
+			}
+			afterLedger, err := os.ReadFile(store.ledgerPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, found, err := store.AttemptState(state.Identity)
+			if err != nil || !found {
+				t.Fatalf("attempt state found=%v err=%v", found, err)
+			}
+			if !bytes.Equal(beforeLedger, afterLedger) || bytes.Count(afterLedger, []byte{'\n'}) != beforeFactCount || current.Revision != state.Revision || current.HeadDigest != state.HeadDigest {
+				t.Fatalf("rejected resume mutated durable authority: facts=%d/%d revision=%d/%d head=%s/%s", beforeFactCount, bytes.Count(afterLedger, []byte{'\n'}), state.Revision, current.Revision, state.HeadDigest, current.HeadDigest)
+			}
+			_, err = store.AppendSupervisorCommandIntent(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, state.Revision, state.HeadDigest, request, state.Owner, terminate)
+			if tc.wantAllowed && err != nil {
+				t.Fatalf("terminate after %s inspect rejected: %v", tc.mechanicsState, err)
+			}
+			if !tc.wantAllowed && !errors.Is(err, ErrAttemptAuthorityOrder) {
+				t.Fatalf("terminal inspect did not require business process-terminal fact: %v", err)
+			}
+		})
 	}
 }
 
