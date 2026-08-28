@@ -156,6 +156,35 @@ func (r *Registry) Lookup(registrationID string) (*AgentRegistration, error) {
 	return reg, nil
 }
 
+// LookupByProviderName returns the active AgentRegistration whose ProviderName
+// matches. If multiple registrations share the same ProviderName, the first
+// active one is returned. This is a fallback for admission when the exact
+// RegistrationID derived from a frozen capability digest does not match any
+// registration (e.g. because Probe produces a non-deterministic timestamp
+// field that changes the digest between CLI-time registration and
+// execution.Run-time re-probe).
+func (r *Registry) LookupByProviderName(providerName string) (*AgentRegistration, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, reg := range r.registrations {
+		if reg.ProviderName == providerName && reg.LifecycleState == LifecycleStateActive {
+			return reg, nil
+		}
+	}
+	return nil, fmt.Errorf("agentregistry: no active registration for provider %q", providerName)
+}
+
+// List returns a snapshot of all registrations in the registry.
+func (r *Registry) List() []*AgentRegistration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*AgentRegistration, 0, len(r.registrations))
+	for _, reg := range r.registrations {
+		out = append(out, reg)
+	}
+	return out
+}
+
 // ── Snapshot management ───────────────────────────────────────────────────────
 
 // AddSnapshot stores a capability snapshot and, if the snapshot is active,
