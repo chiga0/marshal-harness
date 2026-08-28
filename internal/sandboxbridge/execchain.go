@@ -11,6 +11,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/agentruntime"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
@@ -68,24 +69,66 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	}
 	requestedAllocation := allocDigestOf(specDigest)
 	const attemptGeneration = int64(1)
-	fencingToken := fencingDigestOf(view.AdapterID, requestedAllocation, attemptGeneration)
 
-	provisionIdentity, err := identity(view, requestedAllocation, attemptGeneration, fencingToken, "command-provision")
-	if err != nil {
-		return domain.Record{}, err
+	var allocationID string
+	var generation int64
+	var fencingToken string
+
+	if b.authority != nil {
+		// Embedded authority 模式（dispatchBinder 已注入）：BindDispatch 在
+		// execution.Run 入口已向 durable LocalRunner 完成 Provision 并签发
+		// lease（含 canonical fencingToken 与确定性 AllocationId）。exec-chain
+		// 不得二次 Provision allocation，直接复用 BindDispatch 已建立的 allocation
+		// 与 lease identity。LeaseState 非 claimed/active fail closed。
+		lease, leaseOK := b.authority.LeaseFor(view.RunID, view.AttemptID)
+		if !leaseOK {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: dispatch lease not found for run=%s attempt=%s (fail closed: no fabricated expiry)", view.RunID, view.AttemptID)
+		}
+		if lease.LeaseState != dispatch.LeaseStateClaimed && lease.LeaseState != dispatch.LeaseStateActive {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: dispatch lease carries terminal state %q for run=%s attempt=%s (fail closed)", string(lease.LeaseState), view.RunID, view.AttemptID)
+		}
+		if err := dispatch.ValidateLeaseFencing(lease, lease.Generation, lease.FencingToken); err != nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: embedded authority lease fencing invalid (fail closed): %w", err)
+		}
+		// 补充 Provision 以写入 bridge 的 WorkDirAllowlist / EnvironmentAllowlist。
+		// AllocationProvider 幂等：同一 (runId, attemptId) 的二次 Provision 以
+		// identity+lease fencing 通过并刷新 envelope，不会产生新 allocation。
+		allocationID = lease.AllocationId
+		generation = lease.Generation
+		fencingToken = lease.FencingToken
+		provisionIdentity, idErr := identity(view, allocationID, generation, fencingToken, "command-env-enrich")
+		if idErr != nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: env-enrich identity: %w", idErr)
+		}
+		if _, provisionErr := b.provider.Provision(ctx, sandbox.ProvisionRequest{
+			Identity:             provisionIdentity,
+			Requirements:         requirements,
+			AllowedStoreIds:      []string{},
+			WorkDirAllowlist:     []string{plan.WorkDir()},
+			EnvironmentAllowlist: envKeyAllowlist(plan.EnvBlock()),
+		}); provisionErr != nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: env-enrich provision failed: %w", provisionErr)
+		}
+	} else {
+		fencingToken = fencingDigestOf(view.AdapterID, requestedAllocation, attemptGeneration)
+
+		provisionIdentity, idErr := identity(view, requestedAllocation, attemptGeneration, fencingToken, "command-provision")
+		if idErr != nil {
+			return domain.Record{}, idErr
+		}
+		provisionReceipt, provisionErr := b.provider.Provision(ctx, sandbox.ProvisionRequest{
+			Identity:             provisionIdentity,
+			Requirements:         requirements,
+			AllowedStoreIds:      []string{},
+			WorkDirAllowlist:     []string{plan.WorkDir()},
+			EnvironmentAllowlist: envKeyAllowlist(plan.EnvBlock()),
+		})
+		if provisionErr != nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: provision failed: %w", provisionErr)
+		}
+		allocationID = provisionReceipt.Allocation.AllocationId
+		generation = provisionReceipt.Allocation.Generation
 	}
-	provisionReceipt, err := b.provider.Provision(ctx, sandbox.ProvisionRequest{
-		Identity:             provisionIdentity,
-		Requirements:         requirements,
-		AllowedStoreIds:      []string{},
-		WorkDirAllowlist:     []string{plan.WorkDir()},
-		EnvironmentAllowlist: envKeyAllowlist(plan.EnvBlock()),
-	})
-	if err != nil {
-		return domain.Record{}, fmt.Errorf("sandboxbridge: provision failed: %w", err)
-	}
-	allocationID := provisionReceipt.Allocation.AllocationId
-	generation := provisionReceipt.Allocation.Generation
 
 	if controlRoot := controlRootOf(request.Data); controlRoot != "" {
 		rec := AllocationRecord{
@@ -159,16 +202,22 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 			}
 		}
 	}
-	defer func() {
-		termIdentity, idErr := identity(view, allocationID, generation, fencingToken, "command-terminate")
-		if idErr != nil {
-			return
-		}
-		_, _ = b.provider.Terminate(ctx, sandbox.TerminateRequest{Identity: termIdentity, AllocationId: allocationID})
-	}()
+	// Terminate 由 legacy Provision 路径 owner（本 bridge 创建）负责。
+	// Embedded authority 模式下 allocation 由 BindDispatch Provision 创建，
+	// lease /state 变更由 execution.Run 完成（ResultIngress/admission 后），
+	// bridge 不得 Terminate，否则宿主 runtime 在 result ingress 前提前释放。
+	if b.authority == nil {
+		defer func() {
+			termIdentity, idErr := identity(view, allocationID, generation, fencingToken, "command-terminate")
+			if idErr != nil {
+				return
+			}
+			_, _ = b.provider.Terminate(ctx, sandbox.TerminateRequest{Identity: termIdentity, AllocationId: allocationID})
+		}()
+	}
 
 	if err := b.stageControlInputs(ctx, view, request, allocationID, generation, fencingToken, plan.ControlRootPath()); err != nil {
-		return domain.Record{}, err
+		return domain.Record{}, fmt.Errorf("sandboxbridge: stage control inputs: %w", err)
 	}
 
 	// 与 legacy adapter.Run 相同的 attempt 级截止：外部 ctx 由 bridge 叠加，

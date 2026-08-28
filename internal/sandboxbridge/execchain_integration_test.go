@@ -257,6 +257,19 @@ type fakeDurableAuthority struct {
 	agentRegActive bool
 }
 
+// fakeExecChainLease 是一个通过 ValidateLeaseFencing 的最小 lease fixture
+//（generation=1 + 确定性 fencingToken + AllocationId）。
+func fakeExecChainLease() dispatch.DispatchLease {
+	fencingToken := canonical.DigestBytes([]byte("fake-execchain-fencing"))
+	return dispatch.DispatchLease{
+		Generation:   1,
+		FencingToken: fencingToken,
+		AllocationId: "alloc-fake-execchain-" + fencingToken[7:23],
+		ExpiresAt:    time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339),
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
 func (f *fakeDurableAuthority) RegistrationStore() *provider.RegistrationStore { return f.store }
 func (f *fakeDurableAuthority) LeaseFor(_, _ string) (dispatch.DispatchLease, bool) {
 	return f.lease, f.leaseOK
@@ -278,7 +291,7 @@ func TestExecChainAdmissionRejectsRevokedAgentRegistration(t *testing.T) {
 	f.bridge.WithDurableAuthority(&fakeDurableAuthority{
 		registration:   provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
 		snapshot:       provider.ProviderCapabilitySnapshot{ProviderCapabilitySnapshotDigest: canonical.DigestBytes([]byte("cap"))},
-		lease:          dispatch.DispatchLease{ExpiresAt: time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)},
+		lease:          fakeExecChainLease(),
 		leaseOK:        true,
 		agentRegActive: false, // revoked
 	})
