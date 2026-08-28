@@ -8,6 +8,10 @@ import (
 	"reflect"
 	"runtime"
 	"testing"
+
+	"github.com/chiga0/marshal-harness/internal/adapter"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 )
 
 // writeExecutable creates a regular executable file and returns its absolute
@@ -373,6 +377,57 @@ func TestNewWorkerRuntimeRegistersAllThree(t *testing.T) {
 		if _, err := runtime.Registry().Resolve(want); err != nil {
 			t.Errorf("resolve %q: %v", want, err)
 		}
+	}
+}
+
+func TestProductionSelectorRejectsPiWithoutExplicitNodeRuntimeBeforeProbe(t *testing.T) {
+	piPath := writeExecutable(t, "pi")
+	runtimeValue, err := NewWorkerRuntime(staticEnv(map[string]string{"MARSHAL_PI_PATH": piPath}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection, err := runtimeValue.ProductionSelector().Select(context.Background(), adapter.SelectionRequest{
+		PreferredAdapter: "pi",
+		AllowedAdapters:  []string{"pi"},
+	})
+	if err == nil {
+		t.Fatal("PATH-only Pi was admitted to the production selector")
+	}
+	if selection.Adapter != nil || len(selection.Attempts) != 1 || selection.Attempts[0].Outcome != adapter.OutcomeNotLaunchCapable {
+		t.Fatalf("selection = %+v", selection)
+	}
+	// Compatibility remains explicit and available; production rejection must
+	// not unregister the ordinary adapter.
+	if _, err := runtimeValue.Registry().Resolve("pi"); err != nil {
+		t.Fatalf("legacy Pi registration lost: %v", err)
+	}
+}
+
+func TestProductionCapabilityRequiresExactPiRuntimeProfile(t *testing.T) {
+	runtimeValue, err := NewWorkerRuntime(staticEnv(map[string]string{
+		"MARSHAL_PI_PATH":      writeExecutable(t, "pi"),
+		"MARSHAL_PI_NODE_PATH": writeExecutable(t, "node"),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := runtimeValue.Registry().Resolve("pi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capable, ok := worker.(sandboxbridge.ProductionLaunchCapable)
+	if !ok {
+		t.Fatalf("production capability = %T", worker)
+	}
+	profile := capable.ProductionLaunchProfileID()
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		if profile != "" {
+			t.Fatalf("non-Darwin production profile = %q", profile)
+		}
+		return
+	}
+	if profile != launchidentity.Pi0843DarwinARM64Profile {
+		t.Fatalf("production profile = %q", profile)
 	}
 }
 

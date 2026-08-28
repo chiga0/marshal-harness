@@ -5,17 +5,13 @@ package processcontrol
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/authority"
-	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 )
 
@@ -45,33 +41,6 @@ type AuthorityRef struct {
 	FencingTokenDigest    string
 	OrchestratorID        string
 	RunAuthorityDigest    string
-}
-
-func (ref AuthorityRef) validate() error {
-	if err := ref.AuthorityNamespaceID.Validate(); err != nil {
-		return ErrAuthority
-	}
-	for _, value := range []string{ref.AuthorityNamespaceRef, ref.AttemptKey, ref.TaskID, ref.RunID, ref.AttemptID, ref.AllocationID, ref.LeaseID, ref.OrchestratorID} {
-		if value == "" {
-			return ErrAuthority
-		}
-	}
-	if ref.DispatchGeneration == 0 || ref.DispatchGeneration > math.MaxInt64 {
-		return ErrAuthority
-	}
-	for _, digest := range []string{ref.LeaseDigest, ref.FencingTokenDigest, ref.RunAuthorityDigest} {
-		if !validSHA256(digest) {
-			return ErrAuthority
-		}
-	}
-	return nil
-}
-
-func validateFreshAppend(result AppendResult, expectedRevision uint64) error {
-	if !result.Appended || expectedRevision == math.MaxUint64 || result.Revision != expectedRevision+1 || !validSHA256(result.HeadDigest) || !validSHA256(result.TransitionDigest) {
-		return ErrAuthority
-	}
-	return nil
 }
 
 type AppendResult struct {
@@ -104,10 +73,12 @@ type ProcessStartedAuthorityRequest struct {
 type ControlOperation string
 
 const (
-	OperationInspect    ControlOperation = "inspect"
-	OperationReconcile  ControlOperation = "reconcile"
-	OperationSignalTERM ControlOperation = "signal-term"
-	OperationSignalKILL ControlOperation = "signal-kill"
+	OperationInspect          ControlOperation = "inspect"
+	OperationReconcile        ControlOperation = "reconcile"
+	OperationCleanupInspect   ControlOperation = "cleanup-inspect"
+	OperationCleanupReconcile ControlOperation = "cleanup-reconcile"
+	OperationSignalTERM       ControlOperation = "signal-term"
+	OperationSignalKILL       ControlOperation = "signal-kill"
 )
 
 // CleanupRef is non-bearer evidence from the durable terminalization barrier.
@@ -178,40 +149,6 @@ type ProcessObservation struct {
 	ObservationDigest      string `json:"observationDigest"`
 }
 
-func (observation ProcessObservation) sealed() (ProcessObservation, error) {
-	if observation.PID <= 1 || observation.PID != observation.PGID || observation.BirthSeconds <= 0 || observation.BirthMicroseconds < 0 || observation.BirthMicroseconds >= 1_000_000 || observation.ObserverIdentity == "" {
-		return ProcessObservation{}, ErrIdentityConflict
-	}
-	if !filepath.IsAbs(observation.WorkingDirectory) || filepath.Clean(observation.WorkingDirectory) != observation.WorkingDirectory ||
-		observation.WorkingDirectoryInode == 0 || observation.WorkingDirectoryType != 0o040000 || observation.WorkingDirectoryMode&0o170000 != observation.WorkingDirectoryType ||
-		!filepath.IsAbs(observation.ExecutablePath) || filepath.Clean(observation.ExecutablePath) != observation.ExecutablePath ||
-		observation.ExecutableInode == 0 || observation.ExecutableSize <= 0 || observation.ExecutableType != 0o100000 || observation.ExecutableMode&0o170000 != observation.ExecutableType || observation.ExecutableMode&0o111 == 0 || observation.ExecutableLinkCount != 1 || !validSHA256(observation.ExecutableSHA256) {
-		return ProcessObservation{}, ErrIdentityConflict
-	}
-	observation.ObservationDigest = ""
-	raw, err := json.Marshal(observation)
-	if err != nil {
-		return ProcessObservation{}, ErrIdentityConflict
-	}
-	digest, err := canonical.DigestJSON(raw)
-	if err != nil {
-		return ProcessObservation{}, ErrIdentityConflict
-	}
-	observation.ObservationDigest = digest
-	return observation, nil
-}
-
-func validateObservedAt(observation ProcessObservation, observedAt time.Time) error {
-	if observedAt.IsZero() {
-		return ErrIdentityConflict
-	}
-	birth := time.Unix(observation.BirthSeconds, observation.BirthMicroseconds*int64(time.Microsecond)).UTC()
-	if observedAt.UTC().Before(birth) {
-		return ErrIdentityConflict
-	}
-	return nil
-}
-
 func validSHA256(value string) bool {
 	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
 		return false
@@ -271,7 +208,7 @@ type Inspection struct {
 
 type platformCoordinator interface {
 	launch(context.Context, LaunchRequest) (platformProcess, error)
-	reconcile(context.Context, AuthorityRef, ProcessObservation) (Inspection, error)
+	reconcile(context.Context, AuthorityRef, ProcessObservation, CleanupRef) (Inspection, error)
 }
 
 type platformProcess interface {
@@ -316,7 +253,19 @@ func (coordinator *Coordinator) Reconcile(ctx context.Context, authority Authori
 	if coordinator == nil || coordinator.platform == nil {
 		return Inspection{}, ErrUnsupported
 	}
-	return coordinator.platform.reconcile(ctx, authority, observation)
+	return coordinator.platform.reconcile(ctx, authority, observation, CleanupRef{})
+}
+
+// ReconcileCleanup is the only post-barrier restart inspection. It remains
+// read-only and never recreates a signal-capable process handle.
+func (coordinator *Coordinator) ReconcileCleanup(ctx context.Context, authority AuthorityRef, observation ProcessObservation, cleanup CleanupRef) (Inspection, error) {
+	if coordinator == nil || coordinator.platform == nil {
+		return Inspection{}, ErrUnsupported
+	}
+	if err := cleanup.validate(); err != nil {
+		return Inspection{}, err
+	}
+	return coordinator.platform.reconcile(ctx, authority, observation, cleanup)
 }
 
 type Process struct{ platform platformProcess }

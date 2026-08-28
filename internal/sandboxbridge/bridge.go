@@ -15,6 +15,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/processcontrol"
 	"github.com/chiga0/marshal-harness/internal/provider"
@@ -175,12 +176,23 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 	if view.AdapterID != "" && view.AdapterID != adapter.ID() {
 		return domain.Record{}, fmt.Errorf("sandboxbridge: request adapterId %q does not match injected adapter %q", view.AdapterID, adapter.ID())
 	}
+	if b.productionGate {
+		if b.transcriptSource == nil || b.exactProcess == nil || b.exactProcess.Resolve == nil || b.exactProcess.Retain == nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: incomplete production runtime: %w", launchidentity.ErrUnavailable)
+		}
+		capable, ok := adapter.(ProductionLaunchCapable)
+		if !ok || capable.ProductionLaunchProfileID() != launchidentity.Pi0843DarwinARM64Profile {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q lacks the exact production launch profile: %w", adapter.ID(), launchidentity.ErrUnavailable)
+		}
+	}
 	if capable, ok := adapter.(LaunchCapable); ok && b.transcriptSource != nil {
 		return b.runWorkerExecChain(ctx, capable, request, view)
 	}
-	// productionGate 为 true 时，非 LaunchCapable adapter 必须 fail closed。
+	// productionGate 为 true时，上面的 closed capability checks make this
+	// branch unreachable; keep a typed fail-closed guard against composition
+	// changes.
 	if b.productionGate {
-		return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q does not implement LaunchCapable (production gate: non-LaunchCapable adapters are rejected)", adapter.ID())
+		return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q cannot enter the production launch chain: %w", adapter.ID(), launchidentity.ErrUnavailable)
 	}
 	return b.runWorkerLegacy(ctx, adapter, request, view)
 }

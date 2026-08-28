@@ -5,6 +5,7 @@ package processcontrol
 import (
 	"context"
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/sandboxlaunch"
 	"golang.org/x/sys/unix"
 )
 
@@ -159,9 +161,50 @@ func TestTerminateReauthorizesTermThenKillUnderCleanupBinding(t *testing.T) {
 		t.Fatalf("signals = %v, want %v", got, want)
 	}
 	if got, want := authority.operations, []ControlOperation{
-		OperationInspect, OperationSignalTERM, OperationInspect, OperationSignalKILL, OperationInspect,
+		OperationCleanupInspect, OperationSignalTERM, OperationCleanupInspect, OperationSignalKILL, OperationCleanupInspect,
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("operations = %v, want %v", got, want)
+	}
+	for index, cleanup := range authority.cleanups {
+		if cleanup != validCleanupRef() {
+			t.Fatalf("cleanup[%d] = %+v", index, cleanup)
+		}
+	}
+}
+
+func TestLaunchFDTableBindsRuntimeExactlyOnce(t *testing.T) {
+	newFile := func(name string) *os.File {
+		t.Helper()
+		file, err := os.CreateTemp(t.TempDir(), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = file.Close() })
+		return file
+	}
+	spec, ready, release := newFile("spec"), newFile("ready"), newFile("release")
+	cwd, runtime, marshal := newFile("cwd"), newFile("runtime"), newFile("marshal")
+	root, material := newFile("root"), newFile("material")
+	held := &launchidentity.HeldClosure{Runtime: runtime, Roots: []*os.File{root}, Materials: []*os.File{material}}
+	table, err := launchFDTable(spec, ready, release, cwd, marshal, held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if table[sandboxlaunch.ExecutableFD-3] != runtime {
+		t.Fatalf("ExecutableFD points to %v, want the held runtime", table[sandboxlaunch.ExecutableFD-3])
+	}
+	count := 0
+	for _, file := range table {
+		if file == runtime {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("runtime FD cardinality = %d", count)
+	}
+	held.Materials = append(held.Materials, runtime)
+	if _, err := launchFDTable(spec, ready, release, cwd, marshal, held); !errors.Is(err, ErrIdentityConflict) {
+		t.Fatalf("duplicate runtime role error = %v", err)
 	}
 }
 
@@ -536,7 +579,7 @@ func TestRestartReconcileNeverReturnsKillCapableProcess(t *testing.T) {
 	authority := freshAuthority()
 	system := &fakeDarwinSystem{reconcileStates: []ProcessState{ProcessLive}}
 	coordinator := mustFakeCoordinator(t, authority, system)
-	inspection, err := coordinator.reconcile(context.Background(), validAuthorityRef(), validObservation())
+	inspection, err := coordinator.reconcile(context.Background(), validAuthorityRef(), validObservation(), CleanupRef{})
 	if !errors.Is(err, ErrLaunchUncertain) || inspection.State != ProcessLaunchUncertain {
 		t.Fatalf("live reconcile = %+v, %v", inspection, err)
 	}
@@ -546,12 +589,23 @@ func TestRestartReconcileNeverReturnsKillCapableProcess(t *testing.T) {
 
 	authority.operations = nil
 	system.reconcileStates = []ProcessState{ProcessAbsent, ProcessAbsent}
-	inspection, err = coordinator.reconcile(context.Background(), validAuthorityRef(), validObservation())
+	inspection, err = coordinator.reconcile(context.Background(), validAuthorityRef(), validObservation(), CleanupRef{})
 	if err != nil || inspection.State != ProcessAbsent {
 		t.Fatalf("absent reconcile = %+v, %v", inspection, err)
 	}
 	if got, want := authority.operations, []ControlOperation{OperationReconcile}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("operations = %v, want %v", got, want)
+	}
+
+	authority.operations, authority.cleanups = nil, nil
+	system.reconcileStates = []ProcessState{ProcessAbsent, ProcessAbsent}
+	cleanup := validCleanupRef()
+	inspection, err = coordinator.reconcile(context.Background(), validAuthorityRef(), validObservation(), cleanup)
+	if err != nil || inspection.State != ProcessAbsent {
+		t.Fatalf("cleanup reconcile = %+v, %v", inspection, err)
+	}
+	if got, want := authority.operations, []ControlOperation{OperationCleanupReconcile}; !reflect.DeepEqual(got, want) || len(authority.cleanups) != 1 || authority.cleanups[0] != cleanup {
+		t.Fatalf("cleanup operations=%v refs=%+v", got, authority.cleanups)
 	}
 }
 
@@ -561,6 +615,7 @@ type fakeAuthority struct {
 	started        AppendResult
 	calls          []string
 	operations     []ControlOperation
+	cleanups       []CleanupRef
 	startedRequest ProcessStartedAuthorityRequest
 	launchErr      error
 	startedErr     error
@@ -596,6 +651,7 @@ func (authority *fakeAuthority) RecordProcessStarted(_ context.Context, request 
 func (authority *fakeAuthority) WithCurrentAuthority(_ context.Context, request ControlAuthorization, effect func() error) error {
 	authority.mu.Lock()
 	authority.operations = append(authority.operations, request.Operation)
+	authority.cleanups = append(authority.cleanups, request.Cleanup)
 	authority.mu.Unlock()
 	if authority.controlErr != nil {
 		return authority.controlErr

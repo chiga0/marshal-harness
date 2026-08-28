@@ -16,6 +16,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/adapter/qwen"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/darwin"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 )
@@ -236,8 +237,8 @@ func newWorkerRuntime(getenv func(string) string, qwenConstructor workerConstruc
 		return nil, port.Permanentf("worker runtime: initialize adapter selector")
 	}
 	productionSelector, err := adapter.NewEligibleSelector(registry, func(worker port.WorkerAdapter) bool {
-		_, ok := worker.(sandboxbridge.LaunchCapable)
-		return ok
+		capable, ok := worker.(sandboxbridge.ProductionLaunchCapable)
+		return ok && capable.ProductionLaunchProfileID() == launchidentity.Pi0843DarwinARM64Profile
 	})
 	if err != nil {
 		return nil, port.Permanentf("worker runtime: initialize production adapter selector")

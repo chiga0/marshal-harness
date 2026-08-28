@@ -250,9 +250,3 @@ func validDigest(value string) bool {
 	}
 	return true
 }
-
-func protocolError(_ string, _ ...any) error {
-	// Never include untrusted argv, environment, or filesystem data in the
-	// terminal-facing error. The parent stores its own authoritative detail.
-	return ErrProtocolRejected
-}

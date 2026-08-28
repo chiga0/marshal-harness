@@ -98,10 +98,35 @@ func (authority DurableProcessAuthority) WithCurrentAuthority(ctx context.Contex
 	run := resultingress.RunAuthorityBinding{AuthorityNamespaceID: authority.Identity.AuthorityNamespaceID, RunID: authority.Identity.RunID, OrchestratorID: authority.Identity.OrchestratorID, RunAuthorityDigest: authority.Identity.RunAuthorityDigest}
 	switch request.Operation {
 	case processcontrol.OperationInspect, processcontrol.OperationReconcile:
-		if request.Cleanup != (processcontrol.CleanupRef{}) {
+		if request.Cleanup != (processcontrol.CleanupRef{}) || authority.Store == nil {
 			return resultingress.ErrCleanupUnauthorized
 		}
-		return authority.Verifier.WithCurrentRunAuthority(ctx, run, effect)
+		// Hold current Run authority while reading the Attempt head. A barrier
+		// append takes the same outer authority, so it cannot race this check.
+		return authority.Verifier.WithCurrentRunAuthority(ctx, run, func() error {
+			state, found, err := authority.Store.AttemptState(authority.Identity)
+			if err != nil || !found {
+				return resultingress.ErrAttemptAuthorityUnknown
+			}
+			if state.BarrierDigest != "" {
+				return resultingress.ErrCleanupUnauthorized
+			}
+			return effect()
+		})
+	case processcontrol.OperationCleanupInspect, processcontrol.OperationCleanupReconcile:
+		if authority.Store == nil {
+			return resultingress.ErrCleanupUnauthorized
+		}
+		operation := resultingress.CleanupInspect
+		if request.Operation == processcontrol.OperationCleanupReconcile {
+			operation = resultingress.CleanupReconcile
+		}
+		cleanup := resultingress.CleanupAuthorizationRequest{
+			Identity: authority.Identity, CurrentRunAuthority: run,
+			TerminalizationID: request.Cleanup.TerminalizationID, TerminalGeneration: request.Cleanup.TerminalGeneration,
+			CleanupBindingDigest: request.Cleanup.CleanupBindingDigest, Operation: operation,
+		}
+		return authority.Store.WithAuthorizedCleanup(ctx, authority.Verifier, cleanup, func(resultingress.AttemptAuthorityState) error { return effect() })
 	case processcontrol.OperationSignalTERM, processcontrol.OperationSignalKILL:
 		if authority.Store == nil {
 			return resultingress.ErrCleanupUnauthorized

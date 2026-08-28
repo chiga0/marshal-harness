@@ -12,6 +12,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func protocolError(_ string, _ ...any) error {
+	// Never include untrusted argv, environment, or filesystem data in the
+	// terminal-facing error. The parent stores its own authoritative detail.
+	return ErrProtocolRejected
+}
+
 // RunChild executes the private inherited-FD protocol. It accepts no path,
 // identity, or authority through argv or environment. Every failure happens
 // before the release byte can reach a workload image.

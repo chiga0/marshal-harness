@@ -32,6 +32,14 @@ type LaunchCapable interface {
 	CompleteLaunch(ctx context.Context, plan LaunchPlan, transcriptJSONL []byte, stdoutTruncated bool, stderrBytes []byte, started, completed time.Time, exitCode int, signal string, ctxErr error) (domain.Record, error)
 }
 
+// ProductionLaunchCapable is the closed v1 production admission surface.
+// Merely implementing the split launch API is insufficient: the adapter must
+// explicitly advertise the exact Core-owned closure profile it can produce.
+type ProductionLaunchCapable interface {
+	LaunchCapable
+	ProductionLaunchProfileID() string
+}
+
 // TranscriptSource 从 provider 形态读取 staged transcript artifact 的原始
 // bytes。v1.0 Local 形态由 CLI 注入基于 AllocationDirectory 的实现；
 // 测试注入等价闭包。返回错误 fail closed。
@@ -64,6 +72,11 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		return domain.Record{}, err
 	}
 	defer plan.CloseLaunchClosure()
+	if b.productionGate {
+		if err := b.validateProductionLaunch(plan); err != nil {
+			return domain.Record{}, err
+		}
+	}
 
 	spec, err := newExecChainSpec(view, profileDigest)
 	if err != nil {
@@ -246,6 +259,9 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	if plan.LaunchClosure().ClosureProfileID == launchidentity.Pi0843DarwinARM64Profile {
 		transcript, stderr, truncated, exitCode, signal, exactCompletion, execErr = b.runExactProcess(runCtx, plan, view, allocationID, generation, fencingToken)
 	} else {
+		if b.productionGate {
+			return domain.Record{}, launchidentity.ErrUnavailable
+		}
 		execIdentity, idErr := identity(view, allocationID, generation, fencingToken, "command-exec")
 		if idErr != nil {
 			return domain.Record{}, idErr
@@ -319,6 +335,27 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		}
 	}
 	return record, nil
+}
+
+// validateProductionLaunch runs before Provision, Stage, AttemptBinding, or
+// allocation-record writes. It admits only the one exact v1 profile, requires
+// a complete attempt-scoped process runtime, and mechanically rebuilds the
+// Core-owned Pi closure. The held table is diagnostic only and is closed here;
+// processcontrol opens the sole launch-time FD table after launch authority.
+func (b *Bridge) validateProductionLaunch(plan LaunchPlan) error {
+	if b == nil || b.exactProcess == nil || b.exactProcess.Resolve == nil || b.exactProcess.Retain == nil {
+		return launchidentity.ErrUnavailable
+	}
+	closure := plan.LaunchClosure()
+	if closure.ClosureProfileID != launchidentity.Pi0843DarwinARM64Profile {
+		return launchidentity.ErrUnavailable
+	}
+	held, err := launchidentity.Reopen(closure)
+	if err != nil {
+		return launchidentity.ErrUnavailable
+	}
+	held.Close()
+	return nil
 }
 
 // runExactProcess is the closed RB2 production seam for the interpreted Pi
@@ -458,7 +495,7 @@ type exactProcessCompletion struct {
 }
 
 func (completion *exactProcessCompletion) abort() {
-	if completion != nil && completion.eligibility.Kind == resultingress.EligibilityTerminalCompleted {
+	if completion != nil && completion.eligibility.Kind == resultingress.EligibilityTerminalCompleted && completion.eligibility.CompletionReason == resultingress.TerminalAttemptCompleted {
 		completion.eligibility.CompletionReason = resultingress.TerminalAttemptAborted
 	}
 }

@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,10 +19,72 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/sandboxlaunch"
 	"golang.org/x/sys/unix"
 )
+
+func (ref AuthorityRef) validate() error {
+	if err := ref.AuthorityNamespaceID.Validate(); err != nil {
+		return ErrAuthority
+	}
+	for _, value := range []string{ref.AuthorityNamespaceRef, ref.AttemptKey, ref.TaskID, ref.RunID, ref.AttemptID, ref.AllocationID, ref.LeaseID, ref.OrchestratorID} {
+		if value == "" {
+			return ErrAuthority
+		}
+	}
+	if ref.DispatchGeneration == 0 || ref.DispatchGeneration > math.MaxInt64 {
+		return ErrAuthority
+	}
+	for _, digest := range []string{ref.LeaseDigest, ref.FencingTokenDigest, ref.RunAuthorityDigest} {
+		if !validSHA256(digest) {
+			return ErrAuthority
+		}
+	}
+	return nil
+}
+
+func validateFreshAppend(result AppendResult, expectedRevision uint64) error {
+	if !result.Appended || expectedRevision == math.MaxUint64 || result.Revision != expectedRevision+1 || !validSHA256(result.HeadDigest) || !validSHA256(result.TransitionDigest) {
+		return ErrAuthority
+	}
+	return nil
+}
+
+func (observation ProcessObservation) sealed() (ProcessObservation, error) {
+	if observation.PID <= 1 || observation.PID != observation.PGID || observation.BirthSeconds <= 0 || observation.BirthMicroseconds < 0 || observation.BirthMicroseconds >= 1_000_000 || observation.ObserverIdentity == "" {
+		return ProcessObservation{}, ErrIdentityConflict
+	}
+	if !filepath.IsAbs(observation.WorkingDirectory) || filepath.Clean(observation.WorkingDirectory) != observation.WorkingDirectory ||
+		observation.WorkingDirectoryInode == 0 || observation.WorkingDirectoryType != 0o040000 || observation.WorkingDirectoryMode&0o170000 != observation.WorkingDirectoryType ||
+		!filepath.IsAbs(observation.ExecutablePath) || filepath.Clean(observation.ExecutablePath) != observation.ExecutablePath ||
+		observation.ExecutableInode == 0 || observation.ExecutableSize <= 0 || observation.ExecutableType != 0o100000 || observation.ExecutableMode&0o170000 != observation.ExecutableType || observation.ExecutableMode&0o111 == 0 || observation.ExecutableLinkCount != 1 || !validSHA256(observation.ExecutableSHA256) {
+		return ProcessObservation{}, ErrIdentityConflict
+	}
+	observation.ObservationDigest = ""
+	raw, err := json.Marshal(observation)
+	if err != nil {
+		return ProcessObservation{}, ErrIdentityConflict
+	}
+	digest, err := canonical.DigestJSON(raw)
+	if err != nil {
+		return ProcessObservation{}, ErrIdentityConflict
+	}
+	observation.ObservationDigest = digest
+	return observation, nil
+}
+
+func validateObservedAt(observation ProcessObservation, observedAt time.Time) error {
+	if observedAt.IsZero() {
+		return ErrIdentityConflict
+	}
+	birth := time.Unix(observation.BirthSeconds, observation.BirthMicroseconds*int64(time.Microsecond)).UTC()
+	if observedAt.UTC().Before(birth) {
+		return ErrIdentityConflict
+	}
+	return nil
+}
 
 const (
 	processObserver         = "darwin-kqueue-v1"
@@ -142,7 +206,7 @@ func launchUncertain(cause error) error {
 	return errors.Join(ErrLaunchUncertain, cause)
 }
 
-func (coordinator *darwinCoordinator) reconcile(ctx context.Context, ref AuthorityRef, observation ProcessObservation) (Inspection, error) {
+func (coordinator *darwinCoordinator) reconcile(ctx context.Context, ref AuthorityRef, observation ProcessObservation, cleanup CleanupRef) (Inspection, error) {
 	if err := ref.validate(); err != nil {
 		return Inspection{}, err
 	}
@@ -152,7 +216,11 @@ func (coordinator *darwinCoordinator) reconcile(ctx context.Context, ref Authori
 	}
 	var state ProcessState
 	var inspectErr error
-	if err := coordinator.withAuthority(ctx, ref, OperationReconcile, observation.ObservationDigest, func() error {
+	operation := OperationReconcile
+	if cleanup != (CleanupRef{}) {
+		operation = OperationCleanupReconcile
+	}
+	if err := coordinator.withAuthority(ctx, ref, operation, cleanup, observation.ObservationDigest, func() error {
 		state, inspectErr = coordinator.system.reconcile(observation)
 		return inspectErr
 	}); err != nil {
@@ -167,7 +235,7 @@ func (coordinator *darwinCoordinator) reconcile(ctx context.Context, ref Authori
 		}
 		return Inspection{State: state, Observation: observation}, stateError(state)
 	}
-	if err := coordinator.withAuthority(ctx, ref, OperationReconcile, observation.ObservationDigest, func() error {
+	if err := coordinator.withAuthority(ctx, ref, operation, cleanup, observation.ObservationDigest, func() error {
 		state, inspectErr = coordinator.system.reconcile(observation)
 		return inspectErr
 	}); err != nil {
@@ -179,9 +247,9 @@ func (coordinator *darwinCoordinator) reconcile(ctx context.Context, ref Authori
 	return Inspection{State: ProcessAbsent, Observation: observation}, nil
 }
 
-func (coordinator *darwinCoordinator) withAuthority(ctx context.Context, ref AuthorityRef, operation ControlOperation, digest string, effect func() error) error {
+func (coordinator *darwinCoordinator) withAuthority(ctx context.Context, ref AuthorityRef, operation ControlOperation, cleanup CleanupRef, digest string, effect func() error) error {
 	return guardedAuthorityEffect(operation, func(callback func() error) error {
-		return coordinator.authority.WithCurrentAuthority(ctx, ControlAuthorization{Authority: ref, Operation: operation, ObservationDigest: digest}, callback)
+		return coordinator.authority.WithCurrentAuthority(ctx, ControlAuthorization{Authority: ref, Operation: operation, ObservationDigest: digest, Cleanup: cleanup}, callback)
 	}, effect)
 }
 
@@ -200,16 +268,20 @@ func (process *darwinProcess) observation() ProcessObservation { return process.
 func (process *darwinProcess) inspect(ctx context.Context) (Inspection, error) {
 	process.mu.Lock()
 	defer process.mu.Unlock()
-	return process.inspectLocked(ctx, true)
+	return process.inspectLocked(ctx, CleanupRef{})
 }
 
-func (process *darwinProcess) inspectLocked(ctx context.Context, _ bool) (Inspection, error) {
+func (process *darwinProcess) inspectLocked(ctx context.Context, cleanup CleanupRef) (Inspection, error) {
 	if process.closed {
 		return Inspection{}, ErrClosed
 	}
 	var state ProcessState
 	var inspectErr error
-	if err := process.withAuthority(ctx, OperationInspect, CleanupRef{}, func() error {
+	operation := OperationInspect
+	if cleanup != (CleanupRef{}) {
+		operation = OperationCleanupInspect
+	}
+	if err := process.withAuthority(ctx, operation, cleanup, func() error {
 		state, inspectErr = process.unit.inspect()
 		return inspectErr
 	}); err != nil {
@@ -250,7 +322,7 @@ func (process *darwinProcess) wait(ctx context.Context) (Inspection, error) {
 func (process *darwinProcess) terminate(ctx context.Context, cleanup CleanupRef, grace time.Duration) (Inspection, error) {
 	process.mu.Lock()
 	defer process.mu.Unlock()
-	inspection, err := process.inspectLocked(ctx, true)
+	inspection, err := process.inspectLocked(ctx, cleanup)
 	if inspection.State != ProcessLive || err != nil {
 		return inspection, err
 	}
@@ -265,7 +337,7 @@ func (process *darwinProcess) terminate(ctx context.Context, cleanup CleanupRef,
 	if signalErr != nil {
 		return Inspection{State: state, Observation: process.observed}, signalErr
 	}
-	if inspection, done, waitErr := process.waitBoundedLocked(ctx, grace); done {
+	if inspection, done, waitErr := process.waitBoundedLocked(ctx, cleanup, grace); done {
 		if waitErr != nil {
 			return inspection, waitErr
 		}
@@ -280,7 +352,7 @@ func (process *darwinProcess) terminate(ctx context.Context, cleanup CleanupRef,
 	if signalErr != nil {
 		return Inspection{State: state, Observation: process.observed}, signalErr
 	}
-	inspection, done, waitErr := process.waitBoundedLocked(ctx, postKillObservationTime)
+	inspection, done, waitErr := process.waitBoundedLocked(ctx, cleanup, postKillObservationTime)
 	if waitErr != nil {
 		return inspection, waitErr
 	}
@@ -290,10 +362,10 @@ func (process *darwinProcess) terminate(ctx context.Context, cleanup CleanupRef,
 	return inspection, stateError(inspection.State)
 }
 
-func (process *darwinProcess) waitBoundedLocked(ctx context.Context, duration time.Duration) (Inspection, bool, error) {
+func (process *darwinProcess) waitBoundedLocked(ctx context.Context, cleanup CleanupRef, duration time.Duration) (Inspection, bool, error) {
 	deadline := time.Now().Add(duration)
 	for {
-		inspection, err := process.inspectLocked(ctx, true)
+		inspection, err := process.inspectLocked(ctx, cleanup)
 		if inspection.State != ProcessLive || err != nil {
 			return inspection, true, err
 		}
@@ -465,31 +537,29 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 	if err != nil {
 		return nil, ErrIdentityConflict
 	}
-	executable, executableObservation, err := openObserved(request.ExecutablePath, unix.S_IFREG, true)
-	if err != nil {
+	// Reopen already re-enumerated the exact Core profile and holds the one
+	// runtime FD used for revalidation, helper ExecutableFD, and live ownership.
+	// Opening request.ExecutablePath again would split one role across two FDs.
+	executable := heldClosure.Runtime
+	executableObservation := closureObjectObservation(request.Closure.RuntimeExecutable)
+	if executable == nil || executableObservation.Path != request.ExecutablePath || executableObservation.SHA256 != request.ExpectedExecutableSHA256 {
 		_ = workingDirectory.Close()
-		return nil, ErrIdentityConflict
-	}
-	if executableObservation.SHA256 != request.ExpectedExecutableSHA256 {
-		closeFiles(workingDirectory, executable)
 		return nil, ErrIdentityConflict
 	}
 	marshalImage, marshalObservation, err := openObserved(fixedMarshalPath, unix.S_IFREG, true)
 	if err != nil {
 		_ = workingDirectory.Close()
-		_ = executable.Close()
 		return nil, ErrIdentityConflict
 	}
 	if !sameObservedObject(marshalObservation, frozenMarshal, true) {
-		closeFiles(workingDirectory, executable, marshalImage)
+		closeFiles(workingDirectory, marshalImage)
 		return nil, ErrIdentityConflict
 	}
 	watches := []vnodeWatch{
 		vnodeWatch{file: workingDirectory, contentSensitive: false},
-		vnodeWatch{file: executable, contentSensitive: true},
+		vnodeWatch{file: heldClosure.Runtime, contentSensitive: true},
 		vnodeWatch{file: marshalImage, contentSensitive: true},
 	}
-	watches = append(watches, vnodeWatch{file: heldClosure.Runtime, contentSensitive: true})
 	for _, file := range heldClosure.Roots {
 		// Directory entry changes alter the closed profile even when every
 		// already-enumerated material remains unchanged.
@@ -500,28 +570,28 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 	}
 	guard, err := newVnodeGuard(watches...)
 	if err != nil {
-		closeFiles(workingDirectory, executable, marshalImage)
+		closeFiles(workingDirectory, marshalImage)
 		return nil, ErrIdentityConflict
 	}
 
 	specRead, specWrite, err := os.Pipe()
 	if err != nil {
 		guard.close()
-		closeFiles(workingDirectory, executable, marshalImage)
+		closeFiles(workingDirectory, marshalImage)
 		return nil, err
 	}
 	readyRead, readyWrite, err := os.Pipe()
 	if err != nil {
 		closeFiles(specRead, specWrite)
 		guard.close()
-		closeFiles(workingDirectory, executable, marshalImage)
+		closeFiles(workingDirectory, marshalImage)
 		return nil, err
 	}
 	releaseRead, releaseWrite, err := os.Pipe()
 	if err != nil {
 		closeFiles(specRead, specWrite, readyRead, readyWrite)
 		guard.close()
-		closeFiles(workingDirectory, executable, marshalImage)
+		closeFiles(workingDirectory, marshalImage)
 		return nil, err
 	}
 
@@ -556,7 +626,7 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 	if err != nil {
 		closeFiles(specRead, specWrite, readyRead, readyWrite, releaseRead, releaseWrite)
 		guard.close()
-		closeFiles(workingDirectory, executable, marshalImage)
+		closeFiles(workingDirectory, marshalImage)
 		return nil, ErrIdentityConflict
 	}
 
@@ -567,14 +637,18 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 	command.Stdin = request.Stdin
 	command.Stdout = request.Stdout
 	command.Stderr = request.Stderr
-	command.ExtraFiles = []*os.File{specRead, readyWrite, releaseRead, workingDirectory, executable, marshalImage}
-	command.ExtraFiles = append(command.ExtraFiles, heldClosure.Roots...)
-	command.ExtraFiles = append(command.ExtraFiles, heldClosure.Materials...)
+	command.ExtraFiles, err = launchFDTable(specRead, readyWrite, releaseRead, workingDirectory, marshalImage, heldClosure)
+	if err != nil {
+		closeFiles(specRead, specWrite, readyRead, readyWrite, releaseRead, releaseWrite)
+		guard.close()
+		closeFiles(workingDirectory, marshalImage)
+		return nil, ErrIdentityConflict
+	}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := command.Start(); err != nil {
 		closeFiles(specRead, specWrite, readyRead, readyWrite, releaseRead, releaseWrite)
 		guard.close()
-		closeFiles(workingDirectory, executable, marshalImage)
+		closeFiles(workingDirectory, marshalImage)
 		return nil, err
 	}
 	closeFiles(specRead, readyWrite, releaseRead)
@@ -617,6 +691,34 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 		return unit, ErrLaunchUncertain
 	}
 	return unit, nil
+}
+
+func closureObjectObservation(object launchidentity.ObjectV1) ObjectObservation {
+	return ObjectObservation{Path: object.CanonicalPath, Device: object.Device, Inode: object.Inode, Mode: object.Mode, UID: object.UID, GID: object.GID, Size: object.Size, Nlink: object.LinkCount, SHA256: object.RawSHA256}
+}
+
+func launchFDTable(specRead, readyWrite, releaseRead, workingDirectory, marshalImage *os.File, held *launchidentity.HeldClosure) ([]*os.File, error) {
+	if held == nil || held.Runtime == nil {
+		return nil, ErrIdentityConflict
+	}
+	files := []*os.File{specRead, readyWrite, releaseRead, workingDirectory, held.Runtime, marshalImage}
+	files = append(files, held.Roots...)
+	files = append(files, held.Materials...)
+	seen := make(map[uintptr]struct{}, len(files))
+	for _, file := range files {
+		if file == nil {
+			return nil, ErrIdentityConflict
+		}
+		fd := file.Fd()
+		if fd == ^uintptr(0) {
+			return nil, ErrIdentityConflict
+		}
+		if _, duplicate := seen[fd]; duplicate {
+			return nil, ErrIdentityConflict
+		}
+		seen[fd] = struct{}{}
+	}
+	return files, nil
 }
 
 func (realDarwinSystem) reconcile(observation ProcessObservation) (ProcessState, error) {
@@ -923,7 +1025,9 @@ func (unit *realDarwinUnit) closeLocked() error {
 		}
 		unit.waited = true
 	}
-	closeFiles(unit.readyRead, unit.releaseWrite, unit.workingDirectory, unit.executable, unit.marshalImage)
+	// heldClosure is the sole owner of executable/runtime, roots, and
+	// materials. Do not close the executable alias through a second owner.
+	closeFiles(unit.readyRead, unit.releaseWrite, unit.workingDirectory, unit.marshalImage)
 	if unit.heldClosure != nil {
 		unit.heldClosure.Close()
 		unit.heldClosure = nil

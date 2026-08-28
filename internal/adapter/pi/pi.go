@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -159,6 +160,17 @@ func (a *Adapter) startCommand(command *exec.Cmd) error {
 }
 
 var _ port.TerminalLaunchAdapter = (*Adapter)(nil)
+var _ sandboxbridge.ProductionLaunchCapable = (*Adapter)(nil)
+
+// ProductionLaunchProfileID is non-empty only when the caller explicitly
+// configured the closed Node runtime. A PATH-only Pi remains available to the
+// explicit legacy/non-production selector but is never production-eligible.
+func (a *Adapter) ProductionLaunchProfileID() string {
+	if a == nil || a.nodeRuntime == "" || a.frozenVersion != supportedBinary843 || runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		return ""
+	}
+	return launchidentity.Pi0843DarwinARM64Profile
+}
 
 // New requires an exact absolute executable path. Marshal never resolves a
 // provider executable by a similar name or by an implicit fallback.

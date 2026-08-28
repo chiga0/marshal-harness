@@ -6,8 +6,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/processcontrol"
+	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
 
@@ -16,6 +20,72 @@ type fakeAdapter struct {
 	calls   int
 	failErr error
 	lastReq domain.Record
+}
+
+type fakeProductionAdapter struct {
+	*fakeAdapter
+	plan     LaunchPlan
+	prepares int
+}
+
+func (a *fakeProductionAdapter) ProductionLaunchProfileID() string {
+	return launchidentity.Pi0843DarwinARM64Profile
+}
+func (a *fakeProductionAdapter) PrepareLaunch(context.Context, domain.Record) (LaunchPlan, error) {
+	a.prepares++
+	return a.plan, nil
+}
+func (a *fakeProductionAdapter) CompleteLaunch(context.Context, LaunchPlan, []byte, bool, []byte, time.Time, time.Time, int, string, error) (domain.Record, error) {
+	return domain.Record{}, errors.New("must not complete")
+}
+
+type fakeLaunchPlan struct{ closure launchidentity.ClosureV1 }
+
+func (p fakeLaunchPlan) Argv() []string                          { return append([]string(nil), p.closure.Arguments...) }
+func (p fakeLaunchPlan) EnvBlock() []string                      { return append([]string(nil), p.closure.Environment...) }
+func (p fakeLaunchPlan) WorkDir() string                         { return p.closure.WorkingDirectory }
+func (fakeLaunchPlan) TimeoutSeconds() int64                     { return 30 }
+func (fakeLaunchPlan) ResultFilePath() string                    { return "/fixed/control/result.json" }
+func (fakeLaunchPlan) ControlRootPath() string                   { return "/fixed/control" }
+func (fakeLaunchPlan) SessionPolicyName() string                 { return "ephemeral" }
+func (fakeLaunchPlan) MaxOutput() int64                          { return 4096 }
+func (fakeLaunchPlan) ProviderVersion() string                   { return "0.84.3" }
+func (p fakeLaunchPlan) LaunchClosure() launchidentity.ClosureV1 { return p.closure }
+func (fakeLaunchPlan) CloseLaunchClosure()                       {}
+
+type countingProvider struct {
+	sandbox.SandboxProvider
+	provisions int
+	stages     int
+	execs      int
+}
+
+func (p *countingProvider) Provision(ctx context.Context, request sandbox.ProvisionRequest) (*sandbox.ProvisionReceipt, error) {
+	p.provisions++
+	return p.SandboxProvider.Provision(ctx, request)
+}
+func (p *countingProvider) Stage(ctx context.Context, request sandbox.StageRequest) (*sandbox.StageReport, error) {
+	p.stages++
+	return p.SandboxProvider.Stage(ctx, request)
+}
+func (p *countingProvider) Exec(ctx context.Context, request sandbox.ExecRequest) (*sandbox.ExecReceipt, error) {
+	p.execs++
+	return p.SandboxProvider.Exec(ctx, request)
+}
+
+func nonExactLaunchPlan(t *testing.T) LaunchPlan {
+	t.Helper()
+	input := launchidentity.SpecInput{
+		RuntimeExecutable: launchidentity.ObjectV1{CanonicalPath: "/fixed/runtime", Device: 1, Inode: 2, FileType: 0o100000, Mode: 0o100700, UID: 501, GID: 20, Size: 10, LinkCount: 1, RawSHA256: "sha256:" + strings.Repeat("a", 64)},
+		ClosureProfileID:  launchidentity.NativeProfile,
+		MaterialRoots:     []launchidentity.MaterialRootV1{}, LaunchMaterials: []launchidentity.LaunchMaterialV1{},
+		Arguments: []string{"/fixed/runtime"}, Environment: []string{"LANG=C"}, WorkingDirectory: "/fixed/worktree",
+	}
+	closure, err := launchidentity.Seal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fakeLaunchPlan{closure: closure}
 }
 
 func (a *fakeAdapter) ID() string { return a.id }
@@ -138,9 +208,16 @@ func TestRunWorker_ProductionGateRejectsLegacyBeforeAllocationOrRun(t *testing.T
 		t.Fatal(err)
 	}
 	bridge.WithProductionGate()
+	bridge.WithTranscriptSource(func(string, string) ([]byte, error) { return nil, nil })
+	bridge.WithExactProcessRuntime(ExactProcessRuntime{
+		Resolve: func(context.Context, ExactProcessAttempt) (*processcontrol.Coordinator, DurableProcessAuthority, error) {
+			return nil, DurableProcessAuthority{}, launchidentity.ErrUnavailable
+		},
+		Retain: func(ExactProcessAttempt, *processcontrol.Process, error) {},
+	})
 	worker := &fakeAdapter{id: "fake"}
 	_, err = bridge.RunWorker(context.Background(), worker, validRequest(t))
-	if err == nil || !strings.Contains(err.Error(), "does not implement LaunchCapable") {
+	if err == nil || !strings.Contains(err.Error(), "exact production launch profile") {
 		t.Fatalf("production gate error = %v", err)
 	}
 	if worker.calls != 0 {
@@ -150,6 +227,64 @@ func TestRunWorker_ProductionGateRejectsLegacyBeforeAllocationOrRun(t *testing.T
 	// for the explicitly invoked compatibility implementation.
 	if _, err := bridge.runWorkerLegacy(context.Background(), worker, validRequest(t), mustParseView(t)); err != nil {
 		t.Fatalf("production rejection left an allocation side effect: %v", err)
+	}
+}
+
+func TestProductionGateRejectsBeforeProviderSideEffects(t *testing.T) {
+	tests := []struct {
+		name         string
+		withRuntime  bool
+		wantPrepares int
+	}{
+		{name: "missing exact runtime"},
+		{name: "non-exact closure", withRuntime: true, wantPrepares: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &countingProvider{SandboxProvider: sandbox.NewFakeProvider(sandbox.FakeConfig{})}
+			bridge, err := NewBridge(provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			bridge.WithProductionGate().WithTranscriptSource(func(string, string) ([]byte, error) { return nil, nil })
+			if test.withRuntime {
+				bridge.WithExactProcessRuntime(ExactProcessRuntime{
+					Resolve: func(context.Context, ExactProcessAttempt) (*processcontrol.Coordinator, DurableProcessAuthority, error) {
+						return nil, DurableProcessAuthority{}, launchidentity.ErrUnavailable
+					},
+					Retain: func(ExactProcessAttempt, *processcontrol.Process, error) {},
+				})
+			}
+			worker := &fakeProductionAdapter{fakeAdapter: &fakeAdapter{id: "fake"}, plan: nonExactLaunchPlan(t)}
+			if _, err := bridge.RunWorker(context.Background(), worker, validRequest(t)); !errors.Is(err, launchidentity.ErrUnavailable) {
+				t.Fatalf("error = %v", err)
+			}
+			if worker.prepares != test.wantPrepares || provider.provisions != 0 || provider.stages != 0 || provider.execs != 0 {
+				t.Fatalf("prepares=%d provision=%d stage=%d exec=%d", worker.prepares, provider.provisions, provider.stages, provider.execs)
+			}
+		})
+	}
+}
+
+func TestAbortPreservesEstablishedTerminalReason(t *testing.T) {
+	tests := []struct {
+		name string
+		in   resultingress.EligibilityTerminal
+		want resultingress.EligibilityTerminal
+	}{
+		{name: "normal admission failure becomes aborted", in: resultingress.EligibilityTerminal{Kind: resultingress.EligibilityTerminalCompleted, CompletionReason: resultingress.TerminalAttemptCompleted}, want: resultingress.EligibilityTerminal{Kind: resultingress.EligibilityTerminalCompleted, CompletionReason: resultingress.TerminalAttemptAborted}},
+		{name: "failed preserved", in: resultingress.EligibilityTerminal{Kind: resultingress.EligibilityTerminalCompleted, CompletionReason: resultingress.TerminalAttemptFailed}, want: resultingress.EligibilityTerminal{Kind: resultingress.EligibilityTerminalCompleted, CompletionReason: resultingress.TerminalAttemptFailed}},
+		{name: "expired preserved", in: resultingress.EligibilityTerminal{Kind: resultingress.EligibilityTerminalExpired}, want: resultingress.EligibilityTerminal{Kind: resultingress.EligibilityTerminalExpired}},
+		{name: "cancelled preserved", in: resultingress.EligibilityTerminal{Kind: resultingress.EligibilityTerminalCancelled, CancelReason: resultingress.EligibilityCancelDeadlineExceeded}, want: resultingress.EligibilityTerminal{Kind: resultingress.EligibilityTerminalCancelled, CancelReason: resultingress.EligibilityCancelDeadlineExceeded}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			completion := &exactProcessCompletion{eligibility: test.in}
+			completion.abort()
+			if completion.eligibility != test.want {
+				t.Fatalf("eligibility=%+v, want %+v", completion.eligibility, test.want)
+			}
+		})
 	}
 }
 
