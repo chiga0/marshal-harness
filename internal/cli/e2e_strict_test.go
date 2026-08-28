@@ -3,7 +3,9 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,8 +28,25 @@ import (
 //	MARSHAL_RUN_PI_CANARY=1 MARSHAL_PI_PATH=<pi cli 真实路径> \
 //	  go test ./internal/cli/ -run TestRealPiStrictE2E -count=1 -v
 func TestRealPiStrictE2E(t *testing.T) {
+	// 子进程分支：仅做跨进程 restore 查询，绝不再跑 pi worker。由父测试以
+	// STRICT_E2E_QUERY_STATE=1 重新 spawn 本测试触发。
+	if os.Getenv("STRICT_E2E_QUERY_STATE") == "1" {
+		strictE2EQueryStateHelper(
+			os.Getenv("STRICT_E2E_STATE_ROOT"),
+			os.Getenv("STRICT_E2E_REPO_DIR"),
+			os.Getenv("STRICT_E2E_RUN_ID"),
+		)
+		return
+	}
 	if os.Getenv("MARSHAL_RUN_PI_CANARY") == "" {
 		t.Skip("set MARSHAL_RUN_PI_CANARY=1 to enable the strict E2E test")
+	}
+	// 生产权威路径 fail-closed：本测试只断言 embedded/durable authority 闭环
+	// （AttemptBinding + exact lookup + admission）。不在 embedded 模式就跳过
+	// 而不是退回非生产的 seed 路径——非 embedded 缺 AttemptBinding 是门禁
+	// 降级，不得作为「成功」证据。
+	if os.Getenv("MARSHAL_EMBEDDED_SANDBOX") != "1" {
+		t.Skip("strict E2E requires MARSHAL_EMBEDDED_SANDBOX=1 (production durable-authority path)")
 	}
 	piPath := os.Getenv("MARSHAL_PI_PATH")
 	if piPath == "" {
@@ -81,7 +100,7 @@ func TestRealPiStrictE2E(t *testing.T) {
 		},
 		"acceptance": map[string]any{"allowNoChange": false, "commands": []map[string]any{{
 			"id":   "strict-e2e-check",
-			"argv": []string{"python3", "-B", "-c", "from pathlib import Path; s=Path('" + markerRel + "').read_text(); assert s == " + pyEscape(marker+"\\n") + ", repr(s)"},
+			"argv": []string{"python3", "-B", "-c", "from pathlib import Path; s=Path('" + markerRel + "').read_text(); assert s == " + pyEscape(marker+"\n") + ", repr(s)"},
 			"cwd":  ".", "timeoutSeconds": 30, "maxLogBytes": 10000, "required": true, "baselinePolicy": "none",
 		}}},
 		"budgets":      map[string]any{"attemptTimeoutSeconds": 900, "runTimeoutSeconds": 1800, "maxAttempts": 2, "maxOperationalRetries": 0, "maxReworkRounds": 1, "maxOutputBytes": 8388608},
@@ -97,12 +116,6 @@ func TestRealPiStrictE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := func(args ...string) (string, int) {
-		t.Helper()
-		var stdout, stderr bytes.Buffer
-		exit := Run(args, strings.NewReader(""), &stdout, &stderr)
-		return stdout.String(), exit
-	}
 	mustRun := func(args ...string) string {
 		t.Helper()
 		stdout, stderr := bytes.Buffer{}, bytes.Buffer{}
@@ -251,19 +264,39 @@ func TestRealPiStrictE2E(t *testing.T) {
 	}
 	t.Logf("✓ allocation record: allocationID=%s generation=%d", rec.AllocationID, rec.Generation)
 
-	// 验证 AttemptBinding 文件存在且 digest 有效
-	// AttemptBinding 仅在 MARSHAL_EMBEDDED_SANDBOX=1（dispatchBinder 可用）时写入。
-	// 不带 EMBEDDED_SANDBOX 时 exec-chain 不注入 durableAuthority，binding 不写入——
-	// 这是已知的 composition root 限制，不影响 worker.completed 的有效性。
+	// AttemptBinding 必填（embedded 已强制）：它是 dispatch 时冻结的 durable
+	// authority 锚点，缺失即门禁降级，不得作「成功」证据。
 	bindingPath := filepath.Join(attemptDir, "attempt-binding.json")
 	if _, err := os.Stat(bindingPath); err != nil {
-		if os.Getenv("MARSHAL_EMBEDDED_SANDBOX") == "1" {
-			t.Fatalf("AttemptBinding file missing with EMBEDDED_SANDBOX=1: %v", err)
-		}
-		t.Logf("⚠️ AttemptBinding not written (MARSHAL_EMBEDDED_SANDBOX not enabled) — known limitation")
-	} else {
-		t.Logf("✓ AttemptBinding file present")
+		t.Fatalf("AttemptBinding file missing (production durable-authority path): %v", err)
 	}
+	t.Logf("✓ AttemptBinding file present")
+
+	// AttemptBinding 内容必须冻结精确 taskId/runId/attemptId 与稳定派生的
+	// agent registration id。
+	bindingRaw, err := os.ReadFile(bindingPath)
+	if err != nil {
+		t.Fatalf("read AttemptBinding: %v", err)
+	}
+	var binding struct {
+		Facts struct {
+			TaskID              string `json:"taskId"`
+			RunID               string `json:"runId"`
+			AttemptID           string `json:"attemptId"`
+			AgentRegistrationID string `json:"agentRegistrationId"`
+		} `json:"facts"`
+	}
+	if err := json.Unmarshal(bindingRaw, &binding); err != nil {
+		t.Fatalf("decode AttemptBinding: %v", err)
+	}
+	if binding.Facts.TaskID != "STRICT-E2E" || binding.Facts.RunID != runID || binding.Facts.AttemptID != attemptID {
+		t.Fatalf("AttemptBinding identity mismatch: got taskId=%q runId=%q attemptId=%q, want STRICT-E2E/%s/%s",
+			binding.Facts.TaskID, binding.Facts.RunID, binding.Facts.AttemptID, runID, attemptID)
+	}
+	if !strings.HasPrefix(binding.Facts.AgentRegistrationID, "registration:") {
+		t.Fatalf("AttemptBinding agentRegistrationId must carry registration: prefix, got %q", binding.Facts.AgentRegistrationID)
+	}
+	t.Logf("✓ AttemptBinding identity exact: registration=%s", binding.Facts.AgentRegistrationID)
 
 	// verify
 	verifyStdout, verifyStderr := bytes.Buffer{}, bytes.Buffer{}
@@ -271,34 +304,86 @@ func TestRealPiStrictE2E(t *testing.T) {
 	t.Logf("verify stdout: %s", verifyStdout.String())
 	t.Logf("verify stderr: %s", verifyStderr.String())
 	if verifyExit != ExitOK {
-		// verify 失败不阻塞测试——worker.completed + admission anchor 已证明
-		// exec-chain 闭环成功。verify 失败可能是 acceptance command 环境问题
-		// （如 python3 不可用）。记录但不 fatal。
-		t.Logf("⚠️ task verify failed: exit=%d — acceptance command may need environment fix", verifyExit)
-	} else {
-		t.Logf("✓ task verify passed")
+		// 独立 Verification 必须 fail-closed：acceptance command 失败（即意外
+		// 行为）不得记为「成功」。verify 失败即整个闭环失败。
+		t.Fatalf("task verify failed: exit=%d stdout=%s stderr=%s", verifyExit, verifyStdout.String(), verifyStderr.String())
 	}
+	t.Logf("✓ task verify passed (independent acceptance command asserts deliverable bytes)")
 
-	// 检查 terminal outcome
-	stateJSON, _ := run("task", "status", "--run", runID, "--json")
-	if stateJSON == "" {
-		// 非 JSON 输出也可以接受——status 命令可能不返回 JSON
-		stateJSON, _ = run("task", "status", "--run", runID)
+	// status 必须解析为结构化 RunState，且身份与状态字段精确匹配——不允许
+	// 只打印不解析、把任意输出当「terminal Outcome」。
+	statusJSON := mustRun("task", "status", "--run", runID, "--json")
+	var st struct {
+		RunID            string `json:"runId"`
+		TaskID           string `json:"taskId"`
+		State            string `json:"state"`
+		CurrentAttemptID string `json:"currentAttemptId"`
+		AttemptsUsed     int    `json:"attemptsUsed"`
 	}
-	t.Logf("✓ task status: %s", stateJSON)
+	if err := json.Unmarshal([]byte(statusJSON), &st); err != nil {
+		t.Fatalf("decode task status JSON: %v (raw: %s)", err, statusJSON)
+	}
+	if st.RunID != runID || st.TaskID != "STRICT-E2E" {
+		t.Fatalf("status identity mismatch: got runId=%q taskId=%q, want %s/STRICT-E2E", st.RunID, st.TaskID, runID)
+	}
+	if st.CurrentAttemptID != attemptID || st.AttemptsUsed < 1 {
+		t.Fatalf("status attempt mismatch: got currentAttemptId=%q attemptsUsed=%d, want %s/>=1", st.CurrentAttemptID, st.AttemptsUsed, attemptID)
+	}
+	t.Logf("✓ status exact: state=%s currentAttemptId=%s attemptsUsed=%d", st.State, st.CurrentAttemptID, st.AttemptsUsed)
 
-	// server restart → query/restore
-	// 启动 marshal-server，查询 run state，验证可恢复
-	serverStdout := bytes.Buffer{}
-	serverStderr := bytes.Buffer{}
-	socketPath := filepath.Join(t.TempDir(), "marshal-e2e.sock")
-	go func() {
-		Run([]string{"serve", "--socket", socketPath, "--state-root", stateRoot}, strings.NewReader(""), &serverStdout, &serverStderr)
-	}()
-
-	// 简单验证 server 能启动并查询（如果 server 不支持 --socket 或不可用，跳过）
-	// 这个部分在真实环境验证，不阻塞测试结果
-	t.Logf("✓ strict E2E full cycle completed: plan→approve→run→WorkerResult→ResultIngress→verify→terminal Outcome")
+	// 真实跨进程恢复：spawn 一个全新子进程（Go test binary）在全新的 Go
+	// runtime 里重新打开持久化 state root 并查询同一 Run——这证明 durable
+	// journal 在无共享内存的独立进程间可恢复。子进程在 STRICT_E2E_QUERY_STATE
+	// 下只读不写。
+	selfBin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test binary for cross-process query: %v", err)
+	}
+	var queryOut bytes.Buffer
+	var queryErrOut bytes.Buffer
+	sub := exec.Command(selfBin, "-test.run=TestRealPiStrictE2E", "-count=1")
+	sub.Env = append(os.Environ(),
+		"STRICT_E2E_QUERY_STATE=1",
+		"STRICT_E2E_STATE_ROOT="+stateRoot,
+		"STRICT_E2E_REPO_DIR="+repositoryRoot,
+		"STRICT_E2E_RUN_ID="+runID,
+	)
+	sub.Stdout = &queryOut
+	sub.Stderr = &queryErrOut
+	if err := sub.Run(); err != nil {
+		t.Fatalf("cross-process status query failed: %v\nstdout=%s\nstderr=%s", err, queryOut.String(), queryErrOut.String())
+	}
+	var restored struct {
+		RunID            string `json:"runId"`
+		TaskID           string `json:"taskId"`
+		State            string `json:"state"`
+		CurrentAttemptID string `json:"currentAttemptId"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(queryOut.Bytes()), &restored); err != nil {
+		t.Fatalf("cross-process status output not a RunState JSON: %v (raw: %s)", err, queryOut.String())
+	}
+	if restored.RunID != st.RunID || restored.CurrentAttemptID != st.CurrentAttemptID || restored.State != st.State {
+		t.Fatalf("cross-process restored state mismatch: got %+v, want same as in-process %+v", restored, st)
+	}
+	t.Logf("✓ cross-process restore exact: state=%s currentAttemptId=%s", restored.State, restored.CurrentAttemptID)
 
 	_ = location
+}
+
+// strictE2EQueryStateHelper 是 TestRealPiStrictE2E 的子进程分支：在独立的全新
+// go runtime 里重新打开持久化 state root 查询 Run，证明 durable journal 的
+// 跨进程 restore。由 STRICT_E2E_QUERY_STATE=1 触发；只读，绝不写。
+func strictE2EQueryStateHelper(stateRoot, repoDir, runID string) {
+	localDogfoodGateTestBypass = func(buildinfo.Info) bool { return true }
+	if repoDir != "" {
+		_ = os.Chdir(repoDir)
+	}
+	var stdout, stderr bytes.Buffer
+	exit := Run([]string{"task", "status", "--run", runID, "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if exit != ExitOK {
+		fmt.Fprintf(os.Stderr, "query-state failed: exit=%d stderr=%s", exit, stderr.String())
+		os.Exit(1)
+	}
+	// 只把 RunState JSON 写到自身 stdout（父进程读取它做精确断言）。
+	fmt.Print(stdout.String())
 }
