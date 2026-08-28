@@ -2362,6 +2362,12 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "运行失败：冻结 Worker Adapter 当前未配置或不可用。")
 		return ExitUnavailable
 	}
+	if os.Getenv("MARSHAL_WORKER_EXECUTOR") != "legacy" {
+		if err := runtime.CheckProductionAdmission(worker); err != nil {
+			fmt.Fprintln(stderr, "运行失败：精确 production runtime 当前不可用。")
+			return ExitUnavailable
+		}
+	}
 	state, err := runstore.New(location.StateRoot).Inspect(*runID)
 	if err != nil {
 		fmt.Fprintln(stderr, "运行失败：无法核验当前 Run 状态。")

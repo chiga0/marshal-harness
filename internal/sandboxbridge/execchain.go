@@ -38,6 +38,10 @@ type LaunchCapable interface {
 type ProductionLaunchCapable interface {
 	LaunchCapable
 	ProductionLaunchProfileID() string
+	// PreflightLaunch is the side-effect-free production plan constructor. It
+	// may inspect frozen files but must not execute a provider or write state.
+	// Production Bridge never calls PrepareLaunch.
+	PreflightLaunch(ctx context.Context, record domain.Record) (LaunchPlan, error)
 }
 
 // TranscriptSource 从 provider 形态读取 staged transcript artifact 的原始
@@ -51,13 +55,19 @@ type TranscriptSource func(allocationID, artifactID string) ([]byte, error)
 // allocation，TranscriptPolicy 有界收成）→ transcript 回读并 digest 核对
 // → CompleteLaunch（同一 Adapter decode/finalize 管线接管 WorkerResult 与
 // 全部控制产物）。任何失败 fail closed；allocation 一定 Terminate。
-func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, request domain.Record, view workerRequestView) (domain.Record, error) {
+func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, request domain.Record, view workerRequestView, exactAdmission *exactProcessAdmission) (domain.Record, error) {
 	if b.transcriptSource == nil {
 		return domain.Record{}, errors.New("sandboxbridge: exec-chain requires a transcript source")
 	}
-	plan, err := capable.PrepareLaunch(ctx, request)
-	if err != nil {
-		return domain.Record{}, fmt.Errorf("sandboxbridge: prepare launch: %w", err)
+	var plan LaunchPlan
+	var err error
+	if exactAdmission != nil && exactAdmission.plan != nil {
+		plan = exactAdmission.plan
+	} else {
+		plan, err = capable.PrepareLaunch(ctx, request)
+		if err != nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: prepare launch: %w", err)
+		}
 	}
 
 	requirements, err := domain.SandboxRequirementsFromLegacy(view.ExecutionProfile)
@@ -257,7 +267,7 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	signal := ""
 	var execErr error
 	if plan.LaunchClosure().ClosureProfileID == launchidentity.Pi0843DarwinARM64Profile {
-		transcript, stderr, truncated, exitCode, signal, exactCompletion, execErr = b.runExactProcess(runCtx, plan, view, allocationID, generation, fencingToken)
+		transcript, stderr, truncated, exitCode, signal, exactCompletion, execErr = b.runExactProcess(runCtx, plan, view, allocationID, generation, fencingToken, exactAdmission)
 	} else {
 		if b.productionGate {
 			return domain.Record{}, launchidentity.ErrUnavailable
@@ -361,8 +371,8 @@ func (b *Bridge) validateProductionLaunch(plan LaunchPlan) error {
 // runExactProcess is the closed RB2 production seam for the interpreted Pi
 // profile. The provider may still own allocation and staging, but it cannot
 // replace or bypass the exact launch-authority/process-started barriers.
-func (b *Bridge) runExactProcess(ctx context.Context, plan LaunchPlan, view workerRequestView, allocationID string, generation int64, fencingToken string) ([]byte, []byte, bool, int, string, *exactProcessCompletion, error) {
-	if b.exactProcess == nil || b.exactProcess.Resolve == nil || b.exactProcess.Retain == nil {
+func (b *Bridge) runExactProcess(ctx context.Context, plan LaunchPlan, view workerRequestView, allocationID string, generation int64, fencingToken string, admission *exactProcessAdmission) ([]byte, []byte, bool, int, string, *exactProcessCompletion, error) {
+	if b.exactProcess == nil || b.exactProcess.Resolve == nil || b.exactProcess.Retain == nil || admission == nil || admission.coordinator == nil || admission.authority.Store == nil {
 		return nil, nil, false, 0, "", nil, launchidentity.ErrUnavailable
 	}
 	closure := plan.LaunchClosure()
@@ -370,15 +380,17 @@ func (b *Bridge) runExactProcess(ctx context.Context, plan LaunchPlan, view work
 		return nil, nil, false, 0, "", nil, launchidentity.ErrUnavailable
 	}
 	attempt := ExactProcessAttempt{TaskID: view.TaskID, RunID: view.RunID, AttemptID: view.AttemptID, AllocationID: allocationID, Generation: generation, FencingTokenDigest: canonical.DigestBytes([]byte(fencingToken))}
-	coordinator, authority, err := b.exactProcess.Resolve(ctx, attempt)
-	if err != nil || coordinator == nil || authority.Store == nil || authority.Identity.TaskID != attempt.TaskID || authority.Identity.RunID != attempt.RunID ||
-		authority.Identity.AttemptID != attempt.AttemptID || authority.Identity.AllocationID != attempt.AllocationID || authority.Identity.DispatchGeneration != attempt.Generation ||
-		authority.Identity.FencingTokenDigest != attempt.FencingTokenDigest {
+	if admission.attempt != attempt || admission.authority.Identity.TaskID != attempt.TaskID || admission.authority.Identity.RunID != attempt.RunID ||
+		admission.authority.Identity.AttemptID != attempt.AttemptID || admission.authority.Identity.AllocationID != attempt.AllocationID ||
+		admission.authority.Identity.DispatchGeneration != attempt.Generation || admission.authority.Identity.FencingTokenDigest != attempt.FencingTokenDigest {
 		return nil, nil, false, 0, "", nil, launchidentity.ErrUnavailable
 	}
-	state, found, err := authority.Store.AttemptState(authority.Identity)
-	if err != nil || !found || state.Revision == 0 || state.HeadDigest == "" || state.LaunchState != resultingress.LaunchNotAuthorized ||
-		state.PendingEffectID != "" || state.AllocationProvisionEffectDigest == "" || state.AllocationProvisionReceiptDigest == "" {
+	coordinator, authority := admission.coordinator, admission.authority
+	if err := validateProductionAttemptState(authority); err != nil {
+		return nil, nil, false, 0, "", nil, launchidentity.ErrUnavailable
+	}
+	state, _, err := authority.Store.AttemptState(authority.Identity)
+	if err != nil {
 		return nil, nil, false, 0, "", nil, launchidentity.ErrUnavailable
 	}
 	ref, err := ProcessAuthorityRef(authority.Identity)
@@ -479,6 +491,18 @@ func (b *Bridge) runExactProcess(ctx context.Context, plan LaunchPlan, view work
 		return transcript, stderrBytes, truncated, inspection.ExitCode, signal, completion, waitErr
 	}
 	return transcript, stderrBytes, truncated, inspection.ExitCode, signal, completion, nil
+}
+
+func validateProductionAttemptState(authority DurableProcessAuthority) error {
+	if authority.Store == nil || authority.Verifier == nil || authority.Identity.Validate() != nil {
+		return launchidentity.ErrUnavailable
+	}
+	state, found, err := authority.Store.AttemptState(authority.Identity)
+	if err != nil || !found || state.Revision == 0 || state.HeadDigest == "" || state.LaunchState != resultingress.LaunchNotAuthorized ||
+		state.PendingEffectID != "" || state.AllocationProvisionEffectDigest == "" || state.AllocationProvisionReceiptDigest == "" {
+		return launchidentity.ErrUnavailable
+	}
+	return nil
 }
 
 type exactProcessCompletion struct {

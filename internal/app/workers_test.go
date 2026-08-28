@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -393,6 +394,9 @@ func TestProductionSelectorRejectsPiWithoutExplicitNodeRuntimeBeforeProbe(t *tes
 	if err == nil {
 		t.Fatal("PATH-only Pi was admitted to the production selector")
 	}
+	if !errors.Is(err, launchidentity.ErrUnavailable) {
+		t.Fatalf("selection error = %v, want typed unavailable", err)
+	}
 	if selection.Adapter != nil || len(selection.Attempts) != 1 || selection.Attempts[0].Outcome != adapter.OutcomeNotLaunchCapable {
 		t.Fatalf("selection = %+v", selection)
 	}
@@ -400,6 +404,32 @@ func TestProductionSelectorRejectsPiWithoutExplicitNodeRuntimeBeforeProbe(t *tes
 	// not unregister the ordinary adapter.
 	if _, err := runtimeValue.Registry().Resolve("pi"); err != nil {
 		t.Fatalf("legacy Pi registration lost: %v", err)
+	}
+}
+
+func TestProductionSelectorRejectsExactPiUntilAttemptRuntimeIsComposedWithoutProbe(t *testing.T) {
+	dir := t.TempDir()
+	probeSentinel := filepath.Join(dir, "probe-ran")
+	piPath := filepath.Join(dir, "pi")
+	if err := os.WriteFile(piPath, []byte("#!/bin/sh\ntouch "+probeSentinel+"\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runtimeValue, err := NewWorkerRuntime(staticEnv(map[string]string{
+		"MARSHAL_PI_PATH":      piPath,
+		"MARSHAL_PI_NODE_PATH": writeExecutable(t, "node"),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection, err := runtimeValue.ProductionSelector().Select(context.Background(), adapter.SelectionRequest{
+		PreferredAdapter: "pi",
+		AllowedAdapters:  []string{"pi"},
+	})
+	if !errors.Is(err, launchidentity.ErrUnavailable) || selection.Adapter != nil {
+		t.Fatalf("selection=%+v error=%v", selection, err)
+	}
+	if _, statErr := os.Stat(probeSentinel); !os.IsNotExist(statErr) {
+		t.Fatalf("production selector executed Probe before exact Attempt runtime admission: %v", statErr)
 	}
 }
 

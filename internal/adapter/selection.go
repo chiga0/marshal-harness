@@ -64,6 +64,23 @@ type Selection struct {
 type Selector struct {
 	registry    *Registry
 	eligibility func(port.WorkerAdapter) bool
+	admission   func(port.WorkerAdapter) error
+}
+
+// NewAdmissionSelector is the typed form of NewEligibleSelector. The
+// composition root supplies a side-effect-free admission check; a rejected
+// candidate is never probed and the final aggregate error preserves the first
+// typed admission error through errors.Is.
+func NewAdmissionSelector(registry *Registry, admit func(port.WorkerAdapter) error) (*Selector, error) {
+	if admit == nil {
+		return nil, port.Permanentf("select adapter: nil admission predicate")
+	}
+	selector, err := NewSelector(registry)
+	if err != nil {
+		return nil, err
+	}
+	selector.admission = admit
+	return selector, nil
 }
 
 // NewSelector returns a Selector bound to the given exact-ID registry. A nil
@@ -118,6 +135,7 @@ func (s *Selector) Select(ctx context.Context, request SelectionRequest) (Select
 		}
 	}
 	selection := Selection{Attempts: []SelectionAttempt{}}
+	var admissionErr error
 	for _, id := range candidates {
 		if !allowed[id] {
 			selection.Attempts = append(selection.Attempts, SelectionAttempt{AdapterID: id, Outcome: OutcomePolicyDenied})
@@ -131,6 +149,15 @@ func (s *Selector) Select(ctx context.Context, request SelectionRequest) (Select
 		if s.eligibility != nil && !s.eligibility(worker) {
 			selection.Attempts = append(selection.Attempts, SelectionAttempt{AdapterID: id, Outcome: OutcomeNotLaunchCapable})
 			continue
+		}
+		if s.admission != nil {
+			if err := s.admission(worker); err != nil {
+				selection.Attempts = append(selection.Attempts, SelectionAttempt{AdapterID: id, Outcome: OutcomeNotLaunchCapable})
+				if admissionErr == nil {
+					admissionErr = err
+				}
+				continue
+			}
 		}
 		if err := ctx.Err(); err != nil {
 			return selection, err
@@ -164,7 +191,7 @@ func (s *Selector) Select(ctx context.Context, request SelectionRequest) (Select
 		selection.Attempts = append(selection.Attempts, SelectionAttempt{AdapterID: id, Outcome: OutcomeSelected})
 		return selection, nil
 	}
-	return selection, selectionError(selection.Attempts)
+	return selection, selectionError(selection.Attempts, admissionErr)
 }
 
 func validateCandidates(request SelectionRequest) ([]string, error) {
@@ -207,7 +234,7 @@ func decodeCapabilitySnapshot(record domain.Record) (adapterID, status string, e
 
 // selectionError aggregates failures using only fixed outcome codes and counts,
 // never provider output or environment content.
-func selectionError(attempts []SelectionAttempt) error {
+func selectionError(attempts []SelectionAttempt, admissionErr error) error {
 	counts := make(map[string]int, len(outcomeOrder))
 	for _, attempt := range attempts {
 		counts[attempt.Outcome]++
@@ -218,5 +245,9 @@ func selectionError(attempts []SelectionAttempt) error {
 			parts = append(parts, fmt.Sprintf("%s:%d", outcome, counts[outcome]))
 		}
 	}
-	return fmt.Errorf("no explicit adapter candidate produced a supported capability snapshot (%s)", strings.Join(parts, ", "))
+	message := fmt.Sprintf("no explicit adapter candidate produced a supported capability snapshot (%s)", strings.Join(parts, ", "))
+	if admissionErr != nil {
+		return fmt.Errorf("%s: %w", message, admissionErr)
+	}
+	return errors.New(message)
 }

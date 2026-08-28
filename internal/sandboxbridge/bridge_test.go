@@ -24,8 +24,9 @@ type fakeAdapter struct {
 
 type fakeProductionAdapter struct {
 	*fakeAdapter
-	plan     LaunchPlan
-	prepares int
+	plan       LaunchPlan
+	prepares   int
+	preflights int
 }
 
 func (a *fakeProductionAdapter) ProductionLaunchProfileID() string {
@@ -33,6 +34,10 @@ func (a *fakeProductionAdapter) ProductionLaunchProfileID() string {
 }
 func (a *fakeProductionAdapter) PrepareLaunch(context.Context, domain.Record) (LaunchPlan, error) {
 	a.prepares++
+	return a.plan, nil
+}
+func (a *fakeProductionAdapter) PreflightLaunch(context.Context, domain.Record) (LaunchPlan, error) {
+	a.preflights++
 	return a.plan, nil
 }
 func (a *fakeProductionAdapter) CompleteLaunch(context.Context, LaunchPlan, []byte, bool, []byte, time.Time, time.Time, int, string, error) (domain.Record, error) {
@@ -232,12 +237,11 @@ func TestRunWorker_ProductionGateRejectsLegacyBeforeAllocationOrRun(t *testing.T
 
 func TestProductionGateRejectsBeforeProviderSideEffects(t *testing.T) {
 	tests := []struct {
-		name         string
-		withRuntime  bool
-		wantPrepares int
+		name        string
+		withRuntime bool
 	}{
 		{name: "missing exact runtime"},
-		{name: "non-exact closure", withRuntime: true, wantPrepares: 1},
+		{name: "attempt resolver unavailable", withRuntime: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -259,8 +263,8 @@ func TestProductionGateRejectsBeforeProviderSideEffects(t *testing.T) {
 			if _, err := bridge.RunWorker(context.Background(), worker, validRequest(t)); !errors.Is(err, launchidentity.ErrUnavailable) {
 				t.Fatalf("error = %v", err)
 			}
-			if worker.prepares != test.wantPrepares || provider.provisions != 0 || provider.stages != 0 || provider.execs != 0 {
-				t.Fatalf("prepares=%d provision=%d stage=%d exec=%d", worker.prepares, provider.provisions, provider.stages, provider.execs)
+			if worker.prepares != 0 || worker.preflights != 0 || worker.calls != 0 || provider.provisions != 0 || provider.stages != 0 || provider.execs != 0 {
+				t.Fatalf("prepares=%d preflights=%d provision=%d stage=%d exec=%d", worker.prepares, worker.preflights, provider.provisions, provider.stages, provider.execs)
 			}
 		})
 	}

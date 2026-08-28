@@ -93,6 +93,13 @@ type ExactProcessAttempt struct {
 	FencingTokenDigest string
 }
 
+type exactProcessAdmission struct {
+	attempt     ExactProcessAttempt
+	coordinator *processcontrol.Coordinator
+	authority   DurableProcessAuthority
+	plan        LaunchPlan
+}
+
 func (b *Bridge) WithExactProcessRuntime(runtime ExactProcessRuntime) *Bridge {
 	if runtime.Resolve != nil && runtime.Retain != nil {
 		b.exactProcess = &runtime
@@ -176,6 +183,7 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 	if view.AdapterID != "" && view.AdapterID != adapter.ID() {
 		return domain.Record{}, fmt.Errorf("sandboxbridge: request adapterId %q does not match injected adapter %q", view.AdapterID, adapter.ID())
 	}
+	var exactAdmission *exactProcessAdmission
 	if b.productionGate {
 		if b.transcriptSource == nil || b.exactProcess == nil || b.exactProcess.Resolve == nil || b.exactProcess.Retain == nil {
 			return domain.Record{}, fmt.Errorf("sandboxbridge: incomplete production runtime: %w", launchidentity.ErrUnavailable)
@@ -184,9 +192,20 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 		if !ok || capable.ProductionLaunchProfileID() != launchidentity.Pi0843DarwinARM64Profile {
 			return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q lacks the exact production launch profile: %w", adapter.ID(), launchidentity.ErrUnavailable)
 		}
+		exactAdmission, err = b.resolveProductionAttempt(ctx, view)
+		if err != nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: exact production attempt unavailable: %w", err)
+		}
+		exactAdmission.plan, err = capable.PreflightLaunch(ctx, request)
+		if err != nil || ValidateLaunchPlan(exactAdmission.plan) != nil || b.validateProductionLaunch(exactAdmission.plan) != nil {
+			if exactAdmission.plan != nil {
+				exactAdmission.plan.CloseLaunchClosure()
+			}
+			return domain.Record{}, fmt.Errorf("sandboxbridge: exact production closure unavailable: %w", launchidentity.ErrUnavailable)
+		}
 	}
 	if capable, ok := adapter.(LaunchCapable); ok && b.transcriptSource != nil {
-		return b.runWorkerExecChain(ctx, capable, request, view)
+		return b.runWorkerExecChain(ctx, capable, request, view, exactAdmission)
 	}
 	// productionGate 为 true时，上面的 closed capability checks make this
 	// branch unreachable; keep a typed fail-closed guard against composition
@@ -195,6 +214,31 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 		return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q cannot enter the production launch chain: %w", adapter.ID(), launchidentity.ErrUnavailable)
 	}
 	return b.runWorkerLegacy(ctx, adapter, request, view)
+}
+
+// resolveProductionAttempt runs before Adapter.PrepareLaunch and before every
+// provider/file effect owned by Bridge. Resolve receives only the immutable
+// logical Attempt tuple; B2 must return the already-durable full allocation
+// identity. RB2 never fabricates the missing tuple from a later Provision.
+func (b *Bridge) resolveProductionAttempt(ctx context.Context, view workerRequestView) (*exactProcessAdmission, error) {
+	if b == nil || b.exactProcess == nil || b.exactProcess.Resolve == nil || b.exactProcess.Retain == nil {
+		return nil, launchidentity.ErrUnavailable
+	}
+	logical := ExactProcessAttempt{TaskID: view.TaskID, RunID: view.RunID, AttemptID: view.AttemptID}
+	coordinator, authority, err := b.exactProcess.Resolve(ctx, logical)
+	if err != nil || coordinator == nil || authority.Store == nil || authority.Verifier == nil || authority.Identity.Validate() != nil ||
+		authority.Identity.TaskID != logical.TaskID || authority.Identity.RunID != logical.RunID || authority.Identity.AttemptID != logical.AttemptID {
+		return nil, launchidentity.ErrUnavailable
+	}
+	attempt := ExactProcessAttempt{
+		TaskID: authority.Identity.TaskID, RunID: authority.Identity.RunID, AttemptID: authority.Identity.AttemptID,
+		AllocationID: authority.Identity.AllocationID, Generation: authority.Identity.DispatchGeneration,
+		FencingTokenDigest: authority.Identity.FencingTokenDigest,
+	}
+	if err := validateProductionAttemptState(authority); err != nil {
+		return nil, err
+	}
+	return &exactProcessAdmission{attempt: attempt, coordinator: coordinator, authority: authority}, nil
 }
 
 // runWorkerLegacy 是 R5 兼容形态的执行：allocation 身份绑定 + adapter.Run。

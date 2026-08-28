@@ -488,6 +488,17 @@ type LaunchPlan struct {
 // environment. It never starts the worker process: Run's spawn seam is only
 // consumed after a plan is returned.
 func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (sandboxbridge.LaunchPlan, error) {
+	return a.prepareLaunch(ctx, record)
+}
+
+// PreflightLaunch is the production-only, side-effect-free plan constructor.
+// Keeping it distinct lets Core prove exact closure before any legacy Prepare
+// callback, provider operation, or durable write.
+func (a *Adapter) PreflightLaunch(ctx context.Context, record domain.Record) (sandboxbridge.LaunchPlan, error) {
+	return a.prepareLaunch(ctx, record)
+}
+
+func (a *Adapter) prepareLaunch(ctx context.Context, record domain.Record) (sandboxbridge.LaunchPlan, error) {
 	if record.Kind != domain.KindWorkerRequest {
 		return nil, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
 	}
