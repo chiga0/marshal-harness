@@ -583,6 +583,17 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if err := sameCapabilityIdentity(capabilityData, currentCapability.Data); err != nil {
 		return Result{}, err
 	}
+	frozenAuthoritySnapshot, err := resultbinding.StableCapabilitySnapshotDigest(capabilityData)
+	if err != nil {
+		return Result{}, fmt.Errorf("execution: derive frozen agent authority snapshot: %w", err)
+	}
+	currentAuthoritySnapshot, err := resultbinding.StableCapabilitySnapshotDigest(currentCapability.Data)
+	if err != nil {
+		return Result{}, fmt.Errorf("execution: derive current agent authority snapshot: %w", err)
+	}
+	if currentAuthoritySnapshot != frozenAuthoritySnapshot {
+		return Result{}, errors.New("current agent capability/authority snapshot does not match frozen run")
+	}
 	if uint(state.AttemptsUsed) >= uint(task.Budgets.MaxAttempts) {
 		return Result{}, errors.New("attempt budget exhausted")
 	}
@@ -624,6 +635,17 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	if err := atomicWrite(filepath.Join(controlRoot, "input", "prompt.md"), []byte(prompt), 0o400); err != nil {
 		return Result{}, err
 	}
+	// R2 authority binding：registration identity 与 capability snapshot identity
+	// 分离并在 dispatch 前确定性冻结。任何稳定摘要无法计算都必须在 Worker
+	// 启动前 fail closed，不得省略字段回退到临时派生。
+	stableCapIdentityDigest, err := resultbinding.StableCapabilityDigest(capabilityData)
+	if err != nil {
+		return Result{}, fmt.Errorf("execution: derive stable agent registration identity: %w", err)
+	}
+	stableCapSnapshotDigest, err := resultbinding.StableCapabilitySnapshotDigest(capabilityData)
+	if err != nil {
+		return Result{}, fmt.Errorf("execution: derive stable agent capability snapshot identity: %w", err)
+	}
 	requestMap := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindWorkerRequest),
 		"taskId": state.TaskID, "runId": state.RunID, "attemptId": attemptID, "attemptNumber": attemptNumber,
@@ -632,20 +654,15 @@ func Run(ctx context.Context, input Input) (Result, error) {
 		"taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
 		"adapterId": selectedAdapterID, "executionProfile": task.Worker.ExecutionProfile, "sessionPolicy": task.Worker.SessionPolicy,
 		"attemptTimeoutSeconds": task.Budgets.AttemptTimeoutSeconds, "maxOutputBytes": task.Budgets.MaxOutputBytes,
-		"reviewFindings": reviewFindings,
+		"reviewFindings":                reviewFindings,
+		"agentRegistrationId":           resultbinding.AgentRegistrationID(stableCapIdentityDigest),
+		"agentCapabilitySnapshotDigest": stableCapSnapshotDigest,
 	}
 	if supersededAttemptID != "" {
 		requestMap["previousAttemptId"] = supersededAttemptID
 	}
 	if dispatchBinding != nil {
 		requestMap["localSelfIdentityBinding"] = dispatchBinding
-	}
-	// R2 纠偏：把稳定 capability identity 派生的精确 AgentRegistrationID 冻结
-	// 进 WorkerRequest，供 execchain 写入 AttemptBinding，接纳端对其做 exact
-	// lookup。稳定 digest 排除 probedAt 等易变字段，跨「注册期 probe」与
-	// 「冻结期快照」严格一致。无法计算时省略该字段（向后兼容旧派生）。
-	if stableCapDigest, stableErr := resultbinding.StableCapabilityDigest(capabilityData); stableErr == nil {
-		requestMap["agentRegistrationId"] = resultbinding.AgentRegistrationID(stableCapDigest)
 	}
 	requestData, err := json.Marshal(requestMap)
 	if err != nil {

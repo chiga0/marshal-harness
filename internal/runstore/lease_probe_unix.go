@@ -347,7 +347,7 @@ func openRunAuthority(root, runID string) (int, int, int, error) {
 // probes the lock on that same descriptor. This removes the Lstat -> reopen
 // pathname window in which an attacker could replace either a directory or
 // the lock inode (ABA).
-func probeLeaseHeld(root, runID string) (bool, error) {
+func probeLeaseHeld(root, runID string) (held bool, resultErr error) {
 	rootFD, runsFD, runFD, err := openRunAuthority(root, runID)
 	if err != nil {
 		return false, err
@@ -367,21 +367,30 @@ func probeLeaseHeld(root, runID string) (bool, error) {
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
 		return false, errors.New("inspect run lease: lock descriptor is not a single-link regular file")
 	}
+	if err := unix.Flock(leaseFD, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
+			// A held lock on the exact canonical descriptor is authoritative.
+			// Do not read lease.lock.owner here: its atomic handoff can unlink
+			// the previously opened record while the successor owner holds this
+			// lock, which must remain a live (not unknown/dead) observation.
+			return true, nil
+		}
+		return false, fmt.Errorf("probe run lease: %w", err)
+	}
+	defer func() {
+		if err := unix.Flock(leaseFD, unix.LOCK_UN); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("release run lease probe: %w", err))
+		}
+	}()
+	// Once the probe lock is held, owner installation cannot race this read.
+	// The free-lock result is valid only when the durable owner record still
+	// binds the exact descriptor that was probed.
 	owner, err := readLeaseOwnerAt(runFD)
 	if err != nil {
 		return false, fmt.Errorf("inspect run lease owner: %w", err)
 	}
 	if owner.Device == 0 || owner.Inode == 0 || owner.Device != uint64(stat.Dev) || owner.Inode != uint64(stat.Ino) {
 		return false, errors.New("inspect run lease: owner identity does not bind the opened lock descriptor")
-	}
-	if err := unix.Flock(leaseFD, unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return true, nil
-		}
-		return false, fmt.Errorf("probe run lease: %w", err)
-	}
-	if err := unix.Flock(leaseFD, unix.LOCK_UN); err != nil {
-		return false, fmt.Errorf("release run lease probe: %w", err)
 	}
 	return false, nil
 }

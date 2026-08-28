@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/agentregistry"
@@ -145,10 +146,9 @@ type DurableAuthoritySource interface {
 	// ProviderRegistrationActive 验证 registration 在 durable ledger 中
 	// 仍为 active（未 revoked/expired）。
 	ProviderRegistrationActive(registrationID string) (bool, error)
-	// AgentRegistrationActive 验证 agent adapter registration 在当前
-	// authority 中仍为 active（R2/R3 纠偏：agent 侧 current-ledger recheck，
-	// 替代 seedRegistry 总是构造 active registration 的临时自洽验证）。
-	AgentRegistrationActive(registrationID string) (bool, error)
+	// AgentAuthority 返回 exact registration 与 current active capability
+	// snapshot 的一致耐久视图。结果接纳不得用结果携带字段临时构造 authority。
+	AgentAuthority(registrationID string) (agentregistry.AgentRegistration, agentregistry.AgentCapabilitySnapshot, error)
 	// ResultIngressDir 返回 ResultIngress replay/quarantine/idempotency 的
 	// 耐久 append-only 账本目录（R2 纵切）。生产（embedded runtime）必须提供：
 	// admission 在该目录打开 durable store、用 NewDurableIngress 执行跨进程
@@ -170,6 +170,13 @@ func AdmitWithDurableAuthority(ctx context.Context, binding *AttemptBinding, res
 		return nil, fmt.Errorf("resultbinding: %w: nil durable authority", ErrAdmissionRejected)
 	}
 	facts := binding.Facts
+	if err := facts.validate(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(facts.AgentRegistrationID) == "" || strings.TrimSpace(facts.AgentCapabilitySnapshotDigest) == "" {
+		admission := &Admission{AttemptID: facts.AttemptID, SandboxOK: true, AgentOK: false, AdmissionReason: "durable admission requires frozen agent registration and snapshot identity"}
+		return admission, fmt.Errorf("resultbinding: %w: durable admission requires explicit AgentRegistrationID and AgentCapabilitySnapshotDigest", ErrAdmissionRejected)
+	}
 
 	// sandbox 侧：从真实 durable ledger 验证 provider registration 仍 active。
 	reg, err := authority.ProviderRegistration()
@@ -206,38 +213,44 @@ func AdmitWithDurableAuthority(ctx context.Context, binding *AttemptBinding, res
 		return admission, fmt.Errorf("resultbinding: %w: provider registration %s not active", ErrAdmissionRejected, reg.RegistrationId)
 	}
 
-	// agent 侧 current-ledger recheck（R2/R3 纠偏）：从 durable authority
-	// 验证 agent adapter registration 当前仍为 active，替代 seedRegistry
-	// 总是构造 active registration 的临时自洽验证。registration 被撤销
-	// 的 agent 不得接纳结果。
+	// agent 侧 current-ledger recheck：一次读取 exact registration + current
+	// active snapshot，并逐项核对 AttemptBinding 冻结的身份。不得先检查一个
+	// registration ID、再用 capability digest 临时派生另一个 registry。
 	agentRegID := facts.EffectiveAgentRegistrationID()
-	agentActive, err := authority.AgentRegistrationActive(agentRegID)
+	agentReg, agentSnap, err := authority.AgentAuthority(agentRegID)
 	if err != nil {
-		return nil, fmt.Errorf("resultbinding: %w: agent registration active check: %v", ErrAdmissionRejected, err)
+		admission := &Admission{AttemptID: facts.AttemptID, SandboxOK: true, AgentOK: false, AdmissionReason: "agent authority missing or has no active snapshot"}
+		return admission, fmt.Errorf("resultbinding: %w: agent authority lookup: %v", ErrAdmissionRejected, err)
 	}
-	if !agentActive {
+	if agentReg.RegistrationID != agentRegID ||
+		agentReg.LifecycleState != agentregistry.LifecycleStateActive ||
+		agentReg.ProviderType != agentregistry.ProviderTypeAgent ||
+		agentReg.ProviderName != facts.AgentAdapterID ||
+		agentReg.ProviderVersion != facts.AgentProviderVersion ||
+		agentReg.ProtocolVersion != ProtocolVersion ||
+		agentSnap.RegistrationID != agentRegID ||
+		agentSnap.SnapshotState != agentregistry.SnapshotStateActive ||
+		agentSnap.SnapshotDigest != facts.EffectiveAgentCapabilitySnapshotDigest() ||
+		agentSnap.ProviderName != facts.AgentAdapterID ||
+		agentSnap.ProviderVersion != facts.AgentProviderVersion ||
+		agentSnap.ProtocolVersion != ProtocolVersion {
 		admission := &Admission{
 			AttemptID:       facts.AttemptID,
 			Accepted:        false,
 			SandboxOK:       true,
 			AgentOK:         false,
-			AdmissionReason: "agent registration revoked or expired in durable authority",
+			AdmissionReason: "attempt binding agent authority does not match current ledger",
 		}
-		return admission, fmt.Errorf("resultbinding: %w: agent registration %s not active", ErrAdmissionRejected, agentRegID)
+		return admission, fmt.Errorf("resultbinding: %w: agent registration/snapshot %s does not match current ledger", ErrAdmissionRejected, agentRegID)
 	}
 
 	// 用 binding 文件冻结的 facts（而非结果携带的临时值）构建 admission。
 	// liveState 来自 ingress 时刻的 Inspect。
 	facts.LiveAllocationState = liveState
 
-	// bindingcheck 的 registry/ledger 是结构化校验的进程内投影，不是
-	// authority 来源。registration 的 active 状态已从 durable authority
-	// 验证（上面的 AgentRegistrationActive + ProviderRegistrationActive），
-	// allocation 的 live state 已从 Inspect 读取。seedRegistry/
-	// seedSandboxLedger 仅用于 bindingcheck 的 snapshot/generation 一致性
-	// 校验——验证 binding 冻结的 capability digest 与 allocation
-	// generation 是否自洽。authority 判定不依赖这些临时构造。
-	registry, err := seedRegistry(facts)
+	// bindingcheck 使用上面从 durable authority 读出的 exact 事实投影；不再
+	// 由 AttemptBinding 自己 seed 一个永远 active 的 agent registry。
+	registry, err := projectAgentRegistry(agentReg, agentSnap)
 	if err != nil {
 		return nil, err
 	}
@@ -245,16 +258,30 @@ func AdmitWithDurableAuthority(ctx context.Context, binding *AttemptBinding, res
 	if err != nil {
 		return nil, err
 	}
-	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger, authority.ResultIngressDir())
+	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger, binding.BindingDigest, authority.ResultIngressDir())
+}
+
+func projectAgentRegistry(reg agentregistry.AgentRegistration, snap agentregistry.AgentCapabilitySnapshot) (*agentregistry.Registry, error) {
+	registry := agentregistry.NewRegistry()
+	if _, err := registry.Register(reg); err != nil {
+		return nil, fmt.Errorf("resultbinding: project durable agent registration: %w", err)
+	}
+	if _, err := registry.AddSnapshot(snap); err != nil {
+		return nil, fmt.Errorf("resultbinding: project durable agent snapshot: %w", err)
+	}
+	return registry, nil
 }
 
 // admitWithRegistryLedger 是共享的 admission 核心逻辑（seed 与 durable
 // 路径共用 bindingcheck/attemptgate/resultingress 验证）。ingressDir 为空
 // 时 admission 使用进程内存 ingress（测试/seed）；非空时打开耐久 replay
 // 账本（跨进程/重复送达 replay 检测，R2 纵切）。
-func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byte, registry *agentregistry.Registry, ledger *bindingcheck.SandboxLedger, ingressDir string) (*Admission, error) {
+func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byte, registry *agentregistry.Registry, ledger *bindingcheck.SandboxLedger, authorityEvidenceDigest, ingressDir string) (*Admission, error) {
 	if err := facts.validate(); err != nil {
 		return nil, err
+	}
+	if err := requireDigest("authorityEvidenceDigest", authorityEvidenceDigest); err != nil {
+		return nil, fmt.Errorf("resultbinding: %w: %v", ErrMalformedFacts, err)
 	}
 	checker, err := bindingcheck.NewChecker(registry, ledger)
 	if err != nil {
@@ -272,15 +299,27 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 	if err != nil {
 		return nil, err
 	}
-	store := attemptgate.NewAttemptProfileStore()
-	if err := store.Bind(facts.AttemptID, profile); err != nil {
-		return nil, fmt.Errorf("resultbinding: bind attempt profile: %w", err)
+	// 所有 profile 都先完成双 binding current-ledger recheck。ordinary-user
+	// 不要求 ConformanceEvidence（ADR 0051），但必须显式记录 N/A，不能把
+	// Core binding digest 冒充为 evidence 已验证。hardened 在独立、可撤销、
+	// 可过期的 ConformanceEvidence authority ledger 接线前一律 fail closed；
+	// Adapter CapabilitySnapshot 携带的字段不能自证。
+	recheck, recheckErr := checker.Recheck(profile)
+	var decision attemptgate.Decision
+	if recheckErr != nil {
+		err = fmt.Errorf("resultbinding: binding recheck failed: %w", recheckErr)
+	} else {
+		decision = attemptgate.Decision{
+			AttemptID: facts.AttemptID, ProfileDigest: profile.ProfileDigest,
+			Agent: recheck.Agent, Sandbox: recheck.Sandbox,
+			EvidenceOK: false, Accepted: recheck.Accepted(),
+		}
 	}
-	gate, err := attemptgate.NewGate(store, checker, registry)
-	if err != nil {
-		return nil, fmt.Errorf("resultbinding: %w", err)
+	evidenceRequired := facts.ExecutionProfile == "hardened"
+	if evidenceRequired {
+		decision.Accepted = false
+		err = fmt.Errorf("resultbinding: hardened result requires an independent current ConformanceEvidence authority; producer is not wired")
 	}
-	decision, err := gate.AdmitAttemptResult(facts.AttemptID, facts.CapabilityDigest)
 	admission := &Admission{AttemptID: facts.AttemptID}
 	if decision.ProfileDigest != "" {
 		admission.ProfileDigest = decision.ProfileDigest
@@ -294,9 +333,12 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 	for _, r := range decision.Sandbox.Reasons {
 		admission.SandboxReasons = append(admission.SandboxReasons, string(r))
 	}
-	admission.EvidenceOK = decision.EvidenceOK
-	if decision.EvidenceReason != "" {
-		admission.EvidenceReason = string(decision.EvidenceReason)
+	admission.EvidenceRequired = evidenceRequired
+	admission.EvidenceOK = false
+	if evidenceRequired {
+		admission.EvidenceReason = "independent-conformance-authority-unavailable"
+	} else {
+		admission.EvidenceReason = "not-required-for-ordinary-user"
 	}
 	if err != nil {
 		admission.AdmissionReason = err.Error()
@@ -320,8 +362,8 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 		Expiry:         facts.LeaseExpiry,
 		Revoked:        false,
 		RegistrationID: facts.EffectiveAgentRegistrationID(),
-		SnapshotDigest: facts.CapabilityDigest,
-		EvidenceDigest: facts.CapabilityDigest,
+		SnapshotDigest: facts.EffectiveAgentCapabilitySnapshotDigest(),
+		EvidenceDigest: authorityEvidenceDigest,
 	}
 	// R2 纵切：ingressDir 非空时 admission 用耐久 replay 账本 +
 	// NewDurableIngress（跨进程/重复送达 replay 检测）；为空（测试/seed）时
@@ -358,8 +400,8 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 		Expiry:               facts.LeaseExpiry,
 		Operation:            resultingress.OpResult,
 		RegistrationID:       facts.EffectiveAgentRegistrationID(),
-		SnapshotDigest:       facts.CapabilityDigest,
-		EvidenceDigest:       facts.CapabilityDigest,
+		SnapshotDigest:       facts.EffectiveAgentCapabilitySnapshotDigest(),
+		EvidenceDigest:       authorityEvidenceDigest,
 	}
 	drcDigest, err := drc.Digest()
 	if err != nil {

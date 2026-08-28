@@ -61,9 +61,11 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 面向用户的两条安装路径（一行脚本与源码构建）见 [README](https://github.com/chiga0/marshal-harness#安装)，对应脚本为 [`scripts/install.sh`](https://github.com/chiga0/marshal-harness/blob/main/scripts/install.sh)：
 
 - 检测平台（`darwin|linux` × `amd64|arm64`）；
-- 存在 `v*` tag 的 GitHub release 且含平台匹配资产时，用 `curl -fsSL` 下载预编译二进制；release 附带 `SHA256SUMS` 时强制校验 sha256（校验失败即中止），未附带时告警跳过；
+- 存在 `v*` tag 的 GitHub release 且含平台匹配资产时，用 `curl -fsSL` 下载预编译二进制；随后必须下载 `SHA256SUMS`，并要求目标资产恰有一条校验记录且 sha256 匹配；清单缺失、重复、格式错误或摘要不匹配均 fail closed；
 - 否则回退源码构建 `go build -trimpath ./cmd/marshal`（Go 版本须满足 `go.mod` 的 `go` 指令）；无本地 checkout 时先浅克隆 `https://github.com/chiga0/marshal-harness.git`（release tag 已知时克隆该 tag）；
 - 安装到 `~/.local/bin`（默认），全程不请求 sudo，完成后输出下一步指引（`marshal init` / `marshal doctor`）。
+
+源码回退不是弱身份旁路：源码目录必须是无未提交修改、可验证的 Git checkout；指定 `MARSHAL_TAG` 时，当前 `HEAD` 必须精确等于该 tag 的 peeled commit。构建会嵌入精确 commit，并按平台冻结 `selfProfile`（Darwin=`darwin-local-dogfood`，Linux=`unprofiled`）。暂存二进制与安装后的二进制都必须通过 `version --json` 身份自检，否则安装 fail closed。
 
 安装阶段的二进制只写入安装目录下固定的 `.marshal-staging/marshal`，校验后复制到目标 `marshal` 并清理暂存文件；不会在随机 `/tmp` 路径生成或执行匿名 Marshal 可执行文件。
 
@@ -76,9 +78,13 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 - `marshal_<version>_<os>_<arch>`：预编译二进制。`version` 为去掉 `v` 前缀的 release tag，`os`/`arch` 取 Go 风格 `darwin|linux` × `amd64|arm64`（如 `marshal_0.1.0_darwin_arm64`）；
 - `SHA256SUMS`：全部资产的校验清单，`sha256sum` 格式（`<hash>  <文件名>`）。
 
+release workflow 只接受精确的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rcN` tag。前者在 Issue #212 的真实签名/notarization 链落地前保持 fail closed；后者可发布明确标注为 unsigned 的 prerelease。`scripts/release-contract.sh` 会在上传前校验 tag、四个平台资产的封闭集合、可执行位、唯一 checksum 条目与实际摘要；任何额外/缺失/重复/漂移均拒绝发布。
+
+`make dist` 对四个平台显式区分自身份：Darwin 资产固定为 ADR 0051 的 `darwin-local-dogfood` ordinary-user/non-production profile，Linux 资产保持 `unprofiled`。`scripts/dist-profile_test.sh` 以确定性 fake compiler 记录并断言四个 target 的 linker profile，防止 release workflow 再次产出不可启动的 Darwin `unprofiled` 资产。
+
 ### 手工验证
 
-安装脚本暂未纳入 `make check`（shellcheck 不是本仓库的冻结依赖）。修改 `scripts/install.sh` 后按以下步骤手工验证：
+安装脚本暂未纳入 `make check`（shellcheck 不是本仓库的冻结依赖）。release workflow 会先运行 `scripts/release-contract_test.sh` 与 `scripts/install_test.sh` 的确定性 fixture；修改 release/installer 后还应按以下步骤手工验证：
 
 1. 干净 checkout 内运行 `bash scripts/install.sh`（本地源码构建路径）；
 2. `MARSHAL_INSTALL_DIR=<空目录> bash scripts/install.sh` 验证自定义安装目录；

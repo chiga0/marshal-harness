@@ -4,11 +4,11 @@
 //
 // 组成（全部为确定性、无随机源）：
 //
-//   - AgentSide：从冻结 CapabilitySnapshot digest 与 adapter 身份种子重建
-//     agentregistry（ProviderType=agent、ProtocolVersion=marshal-worker/v1alpha1、
-//     SnapshotState=active、证据集合=自身 capability digest——Local
-//     ordinary-user 的 admission evidence 即当前冻结能力快照）；capability
-//     facts 是 Marshal scaffold 阶段冻结的持久身份。
+//   - AgentSide：生产路径从耐久 agent registry 读取 exact registration 与
+//     current active snapshot；测试兼容路径才从冻结 identity 构造临时 registry。
+//     CapabilitySnapshot 不是独立 ConformanceEvidence authority，禁止用自身
+//     digest 自证。ordinary-user 将 evidence 明确记为 N/A；hardened 在独立
+//     evidence ledger 接线前 fail closed。
 //   - SandboxSide：以 provision receipt + admission 时刻 Inspect 读回的
 //     live allocation state 种子 bindingcheck SandboxLedger——live 检查让
 //     accepted result 只在 allocation 仍 active 且 generation 未漂移时接纳。

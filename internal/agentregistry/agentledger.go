@@ -14,6 +14,7 @@ import (
 
 // agentLedgerFileName 是 agent registry 的 append-only 账本文件名。
 const agentLedgerFileName = "agents.jsonl"
+const agentLedgerLockFileName = "agents.lock"
 
 // ErrMemoryOnlyAgentLedger 在账本未绑定耐久目录时返回：memory-only 的 agent
 // 注册账本在生产权威路径中不被接受（与 LeaseLedger 的等价约束一致）。
@@ -22,6 +23,8 @@ var ErrMemoryOnlyAgentLedger = errors.New("agentregistry: memory-only agent ledg
 const (
 	agentFactTypeRegistered   = "agent-registered"
 	agentFactTypeTransitioned = "agent-lifecycle-transitioned"
+	agentFactTypeSnapshot     = "agent-capability-snapshot-captured"
+	agentFactTypeActivated    = "agent-capability-snapshot-activated"
 )
 
 // agentRegisterFact 是 append-only 账本的一条注册事实：完整登记快照 + 序列号 +
@@ -42,16 +45,27 @@ type agentTransitionFact struct {
 	Digest       string            `json:"digest"`
 }
 
-// AgentLedger 是 agent registration + lifecycle 的耐久 append-only 账本
+// agentSnapshotFact 是不可变 capability snapshot 的 append-only capture
+// 事实。相同 digest + 相同内容幂等；相同 digest + 不同内容冲突 fail closed。
+type agentSnapshotFact struct {
+	FactType string                  `json:"factType"`
+	Sequence int64                   `json:"sequence"`
+	Snapshot AgentCapabilitySnapshot `json:"snapshot"`
+	Digest   string                  `json:"digest"`
+}
+
+// AgentLedger 是 agent registration + lifecycle + capability snapshot 的耐久 append-only 账本
 // （R2 纵切）。与 dispatch.LeaseLedger 同构：每条 fact 一行 RFC 8785 JCS
 // 规范 JSON + detached digest + 单调序列号；崩溃/重启由 NewAgentLedger
-// 确定性重放重建索引。快照内容（capability snapshot）由 adapter Probe 稳定
-// 派生，不重复落账——只有注册身份 + 生命周期（active/revoked/…）属于
-// 权威状态需要耐久。
+// 确定性重放重建索引。registration、snapshot capture/supersede 与 lifecycle
+// 都是 current-ledger eligibility 的权威事实，禁止在重启后从临时 Probe
+// 静默重建或用结果携带字段自证。
 type AgentLedger struct {
 	dir              string
 	registrations    map[string]*AgentRegistration
 	byIdempotencyKey map[string]string
+	snapshots        map[string]*AgentCapabilitySnapshot
+	activeSnapshot   map[string]string
 	nextSequence     int64
 	mu               sync.Mutex
 }
@@ -70,11 +84,15 @@ func NewAgentLedger(dir string) (*AgentLedger, error) {
 		dir:              dir,
 		registrations:    map[string]*AgentRegistration{},
 		byIdempotencyKey: map[string]string{},
+		snapshots:        map[string]*AgentCapabilitySnapshot{},
+		activeSnapshot:   map[string]string{},
 		nextSequence:     1,
 	}
-	if err := ledger.recover(); err != nil {
+	release, err := ledger.lockAndRefresh()
+	if err != nil {
 		return nil, err
 	}
+	release()
 	return ledger, nil
 }
 
@@ -86,6 +104,41 @@ func (l *AgentLedger) requireBound() error {
 }
 
 func (l *AgentLedger) ledgerPath() string { return filepath.Join(l.dir, agentLedgerFileName) }
+
+func (l *AgentLedger) lockPath() string { return filepath.Join(l.dir, agentLedgerLockFileName) }
+
+// lockAndRefresh 先取得进程内锁，再取得固定路径 OS 锁，并在该锁下从完整
+// 账本重建 current view。所有读写都走这里，确保长期存活的 CLI/Server 不会
+// 使用另一进程写入前的陈旧 map；writer 的 sequence 也由同一 OS 锁串行化。
+func (l *AgentLedger) lockAndRefresh() (func(), error) {
+	if err := l.requireBound(); err != nil {
+		return nil, err
+	}
+	l.mu.Lock()
+	lock, err := acquireAgentLedgerLock(l.lockPath())
+	if err != nil {
+		l.mu.Unlock()
+		return nil, err
+	}
+	release := func() {
+		_ = releaseAgentLedgerLock(lock)
+		l.mu.Unlock()
+	}
+	if err := l.refreshLocked(); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
+func (l *AgentLedger) refreshLocked() error {
+	l.registrations = map[string]*AgentRegistration{}
+	l.byIdempotencyKey = map[string]string{}
+	l.snapshots = map[string]*AgentCapabilitySnapshot{}
+	l.activeSnapshot = map[string]string{}
+	l.nextSequence = 1
+	return l.recover()
+}
 
 // appendLine 给 fact 计算 detached digest、canonical 化并追加一行+sync。
 func (l *AgentLedger) appendLine(fact any, getDigest func() string, setDigest func(string) error) error {
@@ -128,12 +181,16 @@ func (l *AgentLedger) Register(reg AgentRegistration) (*AgentRegistration, error
 	if err := reg.Validate(); err != nil {
 		return nil, err
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	release, err := l.lockAndRefresh()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if existingID, ok := l.byIdempotencyKey[reg.IdempotencyKey]; ok {
 		existing := l.registrations[existingID]
 		if existing.RequestDigest == reg.RequestDigest {
-			return existing, nil // 幂等重放，不追加新行
+			copy := *existing
+			return &copy, nil // 幂等重放，不追加新行
 		}
 		return nil, fmt.Errorf("agentregistry: idempotency key %q reused with different RequestDigest (conflict)", reg.IdempotencyKey)
 	}
@@ -152,7 +209,8 @@ func (l *AgentLedger) Register(reg AgentRegistration) (*AgentRegistration, error
 	l.registrations[reg.RegistrationID] = &stored
 	l.byIdempotencyKey[reg.IdempotencyKey] = reg.RegistrationID
 	l.nextSequence++
-	return &stored, nil
+	copy := stored
+	return &copy, nil
 }
 
 func (l *AgentLedger) appendRegisterFact(fact *agentRegisterFact) error {
@@ -171,8 +229,11 @@ func (l *AgentLedger) Transition(registrationID string, target LifecycleState) (
 	if err := target.validate(); err != nil {
 		return nil, err
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	release, err := l.lockAndRefresh()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	reg, ok := l.registrations[registrationID]
 	if !ok {
 		return nil, fmt.Errorf("agentregistry: registration %q not found", registrationID)
@@ -199,7 +260,8 @@ func (l *AgentLedger) Transition(registrationID string, target LifecycleState) (
 	}
 	reg.LifecycleState = target
 	l.nextSequence++
-	return reg, nil
+	copy := *reg
+	return &copy, nil
 }
 
 // Lookup 按 RegistrationID 查注册（exact；未注册报错）。
@@ -207,13 +269,117 @@ func (l *AgentLedger) Lookup(registrationID string) (*AgentRegistration, error) 
 	if err := l.requireBound(); err != nil {
 		return nil, err
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	release, err := l.lockAndRefresh()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	reg, ok := l.registrations[registrationID]
 	if !ok {
 		return nil, fmt.Errorf("agentregistry: registration %q not found", registrationID)
 	}
-	return reg, nil
+	copy := *reg
+	return &copy, nil
+}
+
+// AddSnapshot 持久化不可变 capability snapshot。active snapshot 的后续
+// capture 会成为该 registration 的 current snapshot；旧 snapshot 保留为历史
+// 事实但不再 eligible。未注册引用、digest 冲突或落账失败均 fail closed。
+func (l *AgentLedger) AddSnapshot(snap AgentCapabilitySnapshot) (*AgentCapabilitySnapshot, error) {
+	if err := l.requireBound(); err != nil {
+		return nil, err
+	}
+	if err := snap.Validate(); err != nil {
+		return nil, err
+	}
+	release, err := l.lockAndRefresh()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if _, ok := l.registrations[snap.RegistrationID]; !ok {
+		return nil, fmt.Errorf("agentregistry: registration %q not found; cannot add snapshot", snap.RegistrationID)
+	}
+	if existing, ok := l.snapshots[snap.SnapshotDigest]; ok {
+		existingDigest, existingErr := existing.Digest()
+		incomingDigest, incomingErr := snap.Digest()
+		if existingErr != nil || incomingErr != nil || existingDigest != incomingDigest {
+			return nil, fmt.Errorf("agentregistry: SnapshotDigest %q reused with different content (conflict)", snap.SnapshotDigest)
+		}
+		if snap.SnapshotState == SnapshotStateActive && l.activeSnapshot[snap.RegistrationID] != snap.SnapshotDigest {
+			current := l.activeSnapshot[snap.RegistrationID]
+			return nil, fmt.Errorf("agentregistry: historical SnapshotDigest %q cannot be reactivated after current changed to %q", snap.SnapshotDigest, current)
+		}
+		copy := *existing
+		return &copy, nil
+	}
+	fact := &agentSnapshotFact{
+		FactType: agentFactTypeSnapshot,
+		Sequence: l.nextSequence,
+		Snapshot: snap,
+	}
+	if err := l.appendLine(fact,
+		func() string { return fact.Digest },
+		func(d string) error { fact.Digest = d; return nil }); err != nil {
+		return nil, err
+	}
+	stored := snap
+	l.snapshots[snap.SnapshotDigest] = &stored
+	if snap.SnapshotState == SnapshotStateActive {
+		l.activeSnapshot[snap.RegistrationID] = snap.SnapshotDigest
+	}
+	l.nextSequence++
+	copy := stored
+	return &copy, nil
+}
+
+// ActiveSnapshot 返回 registration 当前唯一 eligible 的 active snapshot。
+func (l *AgentLedger) ActiveSnapshot(registrationID string) (*AgentCapabilitySnapshot, error) {
+	if err := l.requireBound(); err != nil {
+		return nil, err
+	}
+	release, err := l.lockAndRefresh()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return l.activeSnapshotLocked(registrationID)
+}
+
+func (l *AgentLedger) activeSnapshotLocked(registrationID string) (*AgentCapabilitySnapshot, error) {
+	digest, ok := l.activeSnapshot[registrationID]
+	if !ok {
+		return nil, fmt.Errorf("agentregistry: no active snapshot for registration %q", registrationID)
+	}
+	snap, ok := l.snapshots[digest]
+	if !ok || snap.SnapshotState != SnapshotStateActive {
+		return nil, fmt.Errorf("agentregistry: active snapshot for registration %q is no longer active", registrationID)
+	}
+	copy := *snap
+	return &copy, nil
+}
+
+// CurrentAuthority 在一次 ledger 临界区内返回 registration 与 current active
+// snapshot 的一致视图，供 result ingress 做 current-ledger recheck。
+func (l *AgentLedger) CurrentAuthority(registrationID string) (*AgentRegistration, *AgentCapabilitySnapshot, error) {
+	if err := l.requireBound(); err != nil {
+		return nil, nil, err
+	}
+	release, err := l.lockAndRefresh()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer release()
+	reg, ok := l.registrations[registrationID]
+	if !ok {
+		return nil, nil, fmt.Errorf("agentregistry: registration %q not found", registrationID)
+	}
+	snap, err := l.activeSnapshotLocked(registrationID)
+	if err != nil {
+		return nil, nil, err
+	}
+	regCopy := *reg
+	return &regCopy, snap, nil
 }
 
 // recover 重放账本文件重建索引。损坏/非规范/冲突行一律 fail closed。
@@ -240,10 +406,14 @@ func (l *AgentLedger) recover() error {
 func (l *AgentLedger) applyLine(line []byte) error {
 	var head struct {
 		FactType string `json:"factType"`
+		Sequence int64  `json:"sequence"`
 		Digest   string `json:"digest"`
 	}
 	if err := json.Unmarshal(line, &head); err != nil {
 		return err
+	}
+	if head.Sequence != l.nextSequence {
+		return fmt.Errorf("non-monotonic agent ledger sequence: got %d want %d", head.Sequence, l.nextSequence)
 	}
 	switch head.FactType {
 	case agentFactTypeRegistered:
@@ -276,6 +446,37 @@ func (l *AgentLedger) applyLine(line []byte) error {
 		reg := fact.Registration
 		l.registrations[reg.RegistrationID] = &reg
 		l.byIdempotencyKey[reg.IdempotencyKey] = reg.RegistrationID
+	case agentFactTypeSnapshot:
+		var fact agentSnapshotFact
+		if err := json.Unmarshal(line, &fact); err != nil {
+			return err
+		}
+		storedDigest := fact.Digest
+		fact.Digest = ""
+		if digest, err := digestOf(&fact); err != nil || digest != storedDigest {
+			return fmt.Errorf("digest mismatch on %s fact", agentFactTypeSnapshot)
+		}
+		snap := fact.Snapshot
+		if err := snap.Validate(); err != nil {
+			return err
+		}
+		if _, ok := l.registrations[snap.RegistrationID]; !ok {
+			return fmt.Errorf("snapshot references unknown registration %q", snap.RegistrationID)
+		}
+		if existing, ok := l.snapshots[snap.SnapshotDigest]; ok {
+			existingDigest, existingErr := existing.Digest()
+			incomingDigest, incomingErr := snap.Digest()
+			if existingErr != nil || incomingErr != nil || existingDigest != incomingDigest {
+				return fmt.Errorf("SnapshotDigest %q reused with different content", snap.SnapshotDigest)
+			}
+		} else {
+			l.snapshots[snap.SnapshotDigest] = &snap
+		}
+		if snap.SnapshotState == SnapshotStateActive {
+			l.activeSnapshot[snap.RegistrationID] = snap.SnapshotDigest
+		}
+	case agentFactTypeActivated:
+		return fmt.Errorf("historical %s fact is unsupported because it can revive stale attempt authority", agentFactTypeActivated)
 	default:
 		return fmt.Errorf("unknown agent ledger fact type %q", head.FactType)
 	}

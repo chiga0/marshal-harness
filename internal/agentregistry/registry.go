@@ -12,7 +12,7 @@ import (
 type Registry struct {
 	mu sync.Mutex
 
-	// ledger is the durable append-only store of registrations + lifecycle
+	// ledger is the durable append-only store of registrations + lifecycle + snapshots
 	// （R2 纵切）. 非空时 register/transition/Lookup 直接委托给账本——账本是
 	// 唯一真相，不与 in-memory registrations 双写；崩溃/重启由 ledger 确定性
 	// 重放恢复。nil 时为纯内存（测试与轻量场景）。
@@ -43,10 +43,8 @@ func NewRegistry() *Registry {
 }
 
 // OpenDurableRegistry 打开一个由耐久 append-only 账本支撑（R2 纵切）的
-// Registry：register/transition/Lookup 直接落到账本并回收恢复（崩溃/重启后
+// Registry：register/transition/Lookup/AddSnapshot/ActiveSnapshot 直接落到账本并恢复（崩溃/重启后
 // 由 NewAgentLedger 确定性重放）。账本目录创建或恢复失败一律 fail closed。
-// 快照（capability snapshot）由 adapter Probe 稳定派生，仍保留在内存并在
-// re-AddSnapshot 时重建，不重复落账。
 func OpenDurableRegistry(dir string) (*Registry, error) {
 	ledger, err := NewAgentLedger(dir)
 	if err != nil {
@@ -202,11 +200,27 @@ func (r *Registry) AddSnapshot(snap AgentCapabilitySnapshot) (*AgentCapabilitySn
 	if err := snap.Validate(); err != nil {
 		return nil, err
 	}
+	if r.ledger != nil {
+		return r.ledger.AddSnapshot(snap)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if _, ok := r.registrations[snap.RegistrationID]; !ok {
 		return nil, fmt.Errorf("agentregistry: registration %q not found; cannot add snapshot", snap.RegistrationID)
+	}
+	if existing, ok := r.snapshots[snap.SnapshotDigest]; ok {
+		existingDigest, existingErr := existing.Digest()
+		incomingDigest, incomingErr := snap.Digest()
+		if existingErr != nil || incomingErr != nil || existingDigest != incomingDigest {
+			return nil, fmt.Errorf("agentregistry: SnapshotDigest %q reused with different content (conflict)", snap.SnapshotDigest)
+		}
+		if snap.SnapshotState == SnapshotStateActive && r.activeSnapshot[snap.RegistrationID] != snap.SnapshotDigest {
+			current := r.activeSnapshot[snap.RegistrationID]
+			return nil, fmt.Errorf("agentregistry: historical SnapshotDigest %q cannot be reactivated after current changed to %q", snap.SnapshotDigest, current)
+		}
+		stored := *existing
+		return &stored, nil
 	}
 	stored := snap
 	r.snapshots[snap.SnapshotDigest] = &stored
@@ -219,6 +233,9 @@ func (r *Registry) AddSnapshot(snap AgentCapabilitySnapshot) (*AgentCapabilitySn
 // ActiveSnapshot returns the active AgentCapabilitySnapshot for the given
 // RegistrationID, or an error if none exists or if the snapshot is not active.
 func (r *Registry) ActiveSnapshot(registrationID string) (*AgentCapabilitySnapshot, error) {
+	if r.ledger != nil {
+		return r.ledger.ActiveSnapshot(registrationID)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -231,4 +248,30 @@ func (r *Registry) ActiveSnapshot(registrationID string) (*AgentCapabilitySnapsh
 		return nil, fmt.Errorf("agentregistry: active snapshot for registration %q is no longer active", registrationID)
 	}
 	return snap, nil
+}
+
+// CurrentAuthority 返回 registration 与 current active snapshot 的一致视图。
+// durable 模式委托给 append-only ledger 的单一临界区；内存模式在 Registry
+// 锁内完成，用于测试和轻量场景。
+func (r *Registry) CurrentAuthority(registrationID string) (*AgentRegistration, *AgentCapabilitySnapshot, error) {
+	if r.ledger != nil {
+		return r.ledger.CurrentAuthority(registrationID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	reg, ok := r.registrations[registrationID]
+	if !ok {
+		return nil, nil, fmt.Errorf("agentregistry: registration %q not found", registrationID)
+	}
+	digest, ok := r.activeSnapshot[registrationID]
+	if !ok {
+		return nil, nil, fmt.Errorf("agentregistry: no active snapshot for registration %q", registrationID)
+	}
+	snap, ok := r.snapshots[digest]
+	if !ok || snap.SnapshotState != SnapshotStateActive {
+		return nil, nil, fmt.Errorf("agentregistry: active snapshot for registration %q is no longer active", registrationID)
+	}
+	regCopy := *reg
+	snapCopy := *snap
+	return &regCopy, &snapCopy, nil
 }

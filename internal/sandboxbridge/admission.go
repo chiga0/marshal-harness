@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/agentregistry"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
@@ -100,8 +101,8 @@ func (s bridgeAuthoritySource) ProviderRegistrationActive(registrationID string)
 	return reg.LifecycleState == provider.LifecycleStateActive, nil
 }
 
-func (s bridgeAuthoritySource) AgentRegistrationActive(registrationID string) (bool, error) {
-	return s.authority.AgentRegistrationActive(registrationID)
+func (s bridgeAuthoritySource) AgentAuthority(registrationID string) (agentregistry.AgentRegistration, agentregistry.AgentCapabilitySnapshot, error) {
+	return s.authority.AgentAuthority(registrationID)
 }
 
 // ResultIngressDir 给 resultbinding 提供 ResultIngress 耐久 replay 账本目录：

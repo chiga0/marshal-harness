@@ -588,7 +588,7 @@ func TestEmbeddedLeasePersistsAcrossRestart(t *testing.T) {
 // agent registry：注册 + 撤销落账后，同一 stateRoot 的全新 runtime 在
 // 崩溃/重启后确定性重放——active 注册跨进程保持可 exact lookup，撤销的注册
 // 在重启后仍保持 revoked（不得被重新注册回 active）。admission 的
-// AgentRegistrationActive 跨进程不依赖易失内存。
+// AgentAuthority 跨进程不依赖易失内存。
 func TestEmbeddedAgentRegistrationPersistsAcrossRestart(t *testing.T) {
 	runtime, clock, stateRoot, _ := newEmbeddedRuntimeFixture(t)
 	reg := agentregistry.AgentRegistration{
@@ -610,8 +610,18 @@ func TestEmbeddedAgentRegistrationPersistsAcrossRestart(t *testing.T) {
 	if err := runtime.RegisterAgent(reg); err != nil {
 		t.Fatalf("RegisterAgent: %v", err)
 	}
-	if active, err := runtime.AgentRegistrationActive(reg.RegistrationID); err != nil || !active {
-		t.Fatalf("in-process registration must be active, active=%v err=%v", active, err)
+	snap := agentregistry.AgentCapabilitySnapshot{
+		SnapshotDigest: "sha256:" + strings.Repeat("b", 64), RegistrationID: reg.RegistrationID,
+		ProtocolVersion: reg.ProtocolVersion, ProviderName: reg.ProviderName, ProviderVersion: reg.ProviderVersion,
+		Capabilities:               []agentregistry.Capability{agentregistry.CapabilityExecutionProfileWorkspaceWrite},
+		ConformanceEvidenceDigests: []string{"sha256:" + strings.Repeat("c", 64)},
+		SnapshotState:              agentregistry.SnapshotStateActive,
+	}
+	if err := runtime.RegisterAgentSnapshot(snap); err != nil {
+		t.Fatalf("RegisterAgentSnapshot: %v", err)
+	}
+	if gotReg, gotSnap, err := runtime.AgentAuthority(reg.RegistrationID); err != nil || gotReg.LifecycleState != agentregistry.LifecycleStateActive || gotSnap.SnapshotDigest != snap.SnapshotDigest {
+		t.Fatalf("in-process authority must be active and exact, reg=%+v snap=%+v err=%v", gotReg, gotSnap, err)
 	}
 
 	// 崩溃/重启（第一个 runtime 仍 active 时）：同一 ID 跨进程恢复为 active。
@@ -619,8 +629,8 @@ func TestEmbeddedAgentRegistrationPersistsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconstruction over the durable agent registry rejected: %v", err)
 	}
-	if active, err := restarted.AgentRegistrationActive(reg.RegistrationID); err != nil || !active {
-		t.Fatalf("restarted runtime must recover the registration as active, active=%v err=%v", active, err)
+	if gotReg, gotSnap, err := restarted.AgentAuthority(reg.RegistrationID); err != nil || gotReg.LifecycleState != agentregistry.LifecycleStateActive || gotSnap.SnapshotDigest != snap.SnapshotDigest {
+		t.Fatalf("restarted runtime must recover exact active authority, reg=%+v snap=%+v err=%v", gotReg, gotSnap, err)
 	}
 
 	// 撤销落账后崩溃/重启：revoked 在恢复后仍保持 revoked，且不能重新注册回 active。
@@ -631,8 +641,8 @@ func TestEmbeddedAgentRegistrationPersistsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconstruction after revoke rejected: %v", err)
 	}
-	if active, err := revokedRuntime.AgentRegistrationActive(reg.RegistrationID); err != nil || active {
-		t.Fatalf("revocation must persist across restart, active=%v err=%v", active, err)
+	if gotReg, gotSnap, err := revokedRuntime.AgentAuthority(reg.RegistrationID); err != nil || gotReg.LifecycleState != agentregistry.LifecycleStateRevoked || gotSnap.SnapshotDigest != snap.SnapshotDigest {
+		t.Fatalf("revocation and snapshot must persist across restart, reg=%+v snap=%+v err=%v", gotReg, gotSnap, err)
 	}
 	// 终态注册不得被重新注册回 active。
 	if _, err := revokedRuntime.agentRegistry.Reactivate(reg.RegistrationID); err == nil {

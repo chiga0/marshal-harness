@@ -55,7 +55,8 @@ func TestLiveQwen(t *testing.T) {
 	}
 	request := map[string]any{
 		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerRequest", "taskId": "TASK-LIVE", "runId": "run-live", "attemptId": "attempt-live", "attemptNumber": 1,
-		"specDigest": digest("a"), "policyDigest": digest("b"), "capabilityDigest": digest("c"), "baseSha": strings.Repeat("1", 40),
+		"specDigest": digest("a"), "policyDigest": digest("b"), "capabilityDigest": digest("c"),
+		"agentRegistrationId": "registration:aaaaaaaa", "agentCapabilitySnapshotDigest": digest("d"), "baseSha": strings.Repeat("1", 40),
 		"worktreePath": worktree, "controlRoot": controlRoot, "taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
 		"adapterId": "qwen", "executionProfile": "workspace-write", "sessionPolicy": "ephemeral", "attemptTimeoutSeconds": 180, "maxOutputBytes": 5 << 20, "reviewFindings": []any{},
 	}
@@ -257,12 +258,12 @@ func TestLiveProbeGateExemption(t *testing.T) {
 	})
 	t.Run("exemption-never-widens-range-boundary", func(t *testing.T) {
 		t.Setenv(liveProbeExemptionEnv, "1")
-		for _, version := range []string{"0.21.5", "0.21.10", "0.21.11"} {
+		for _, version := range []string{"0.21.5", "0.21.10", "0.21.11", "0.22.0"} {
 			if !isSupportedBinary(version) {
 				t.Fatalf("supported version %s lost membership under exemption", version)
 			}
 		}
-		for _, version := range []string{"0.21.4", "0.22.0", "9.9.9"} {
+		for _, version := range []string{"0.21.4", "0.22.1", "0.22.0-rc.1", "9.9.9"} {
 			if isSupportedBinary(version) {
 				t.Fatalf("version %s must stay outside the supported range under exemption", version)
 			}

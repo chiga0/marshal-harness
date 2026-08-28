@@ -41,7 +41,13 @@ type Facts struct {
 	// 只允许对该 id 做 exact lookup，不再从 CapabilityDigest 现场重新派生，
 	// 也不允许「任意 active registration」降级。为空时（旧绑定）回退到从
 	// 稳定 digest 派生，但生产新绑定必须显式冻结。
-	AgentRegistrationID           string
+	AgentRegistrationID string
+	// AgentCapabilitySnapshotDigest 是 dispatch 时冻结的稳定 agent authority
+	// snapshot digest。它覆盖 CapabilitySnapshot 除 probedAt 外的完整内容，
+	// 因而同一能力的重复 probe 不会互相 supersede，并与上面的完整
+	// CapabilityDigest（证据内容摘要）保持分离。旧绑定为空时回退到
+	// CapabilityDigest；生产新绑定必须显式冻结。
+	AgentCapabilitySnapshotDigest string
 	SandboxCapabilityDigest       string // 冻结 sandbox provider capability snapshot digest（双 binding 分离）
 	ExecutionProfile              string
 	SandboxProviderRegistrationID string
@@ -68,6 +74,11 @@ func (f Facts) validate() error {
 	}
 	if err := requireDigest("CapabilityDigest", f.CapabilityDigest); err != nil {
 		return fmt.Errorf("resultbinding: %w: %v", ErrMalformedFacts, err)
+	}
+	if f.AgentCapabilitySnapshotDigest != "" {
+		if err := requireDigest("AgentCapabilitySnapshotDigest", f.AgentCapabilitySnapshotDigest); err != nil {
+			return fmt.Errorf("resultbinding: %w: %v", ErrMalformedFacts, err)
+		}
 	}
 	// SandboxCapabilityDigest 如果为空，回退到 CapabilityDigest（向后兼容）。
 	// 生产路径必须分离设置——execchain.go 在 dispatch 时分别填充。
@@ -109,6 +120,16 @@ func (f Facts) EffectiveAgentRegistrationID() string {
 		return f.AgentRegistrationID
 	}
 	return AgentRegistrationID(f.CapabilityDigest)
+}
+
+// EffectiveAgentCapabilitySnapshotDigest 返回本 Attempt 冻结的 agent authority
+// snapshot digest。旧绑定没有该字段时回退到完整 CapabilityDigest；新生产
+// 请求始终显式冻结稳定 snapshot digest。
+func (f Facts) EffectiveAgentCapabilitySnapshotDigest() string {
+	if strings.TrimSpace(f.AgentCapabilitySnapshotDigest) != "" {
+		return f.AgentCapabilitySnapshotDigest
+	}
+	return f.CapabilityDigest
 }
 
 // StableCapabilityDigest 计算 capability snapshot 的**稳定身份 digest**：只
@@ -157,8 +178,38 @@ func StableCapabilityDigest(rawSnapshot []byte) (string, error) {
 	return digest, nil
 }
 
+// StableCapabilitySnapshotDigest 计算 agent authority snapshot 的稳定内容
+// digest。CapabilitySnapshot.probedAt 只描述本次探测时间，不改变能力或
+// eligibility；将它排除可避免同一二进制的并发/后续 Run 互相 supersede。
+// 其余字段（含 capabilities、可执行身份、conformance/authority 元数据）
+// 全部参与摘要，任何真实能力或权威变化都会产生新 snapshot identity。
+func StableCapabilitySnapshotDigest(rawSnapshot []byte) (string, error) {
+	decoder := json.NewDecoder(strings.NewReader(string(rawSnapshot)))
+	decoder.UseNumber()
+	var snapshot map[string]any
+	if err := decoder.Decode(&snapshot); err != nil {
+		return "", fmt.Errorf("resultbinding: stable capability snapshot digest: %w", err)
+	}
+	if snapshot == nil {
+		return "", errors.New("resultbinding: stable capability snapshot digest: snapshot must be an object")
+	}
+	if adapterID, _ := snapshot["adapterId"].(string); strings.TrimSpace(adapterID) == "" {
+		return "", errors.New("resultbinding: stable capability snapshot digest: adapterId must not be empty")
+	}
+	delete(snapshot, "probedAt")
+	stableJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", fmt.Errorf("resultbinding: stable capability snapshot digest: %w", err)
+	}
+	digest, err := canonical.DigestJSON(stableJSON)
+	if err != nil {
+		return "", fmt.Errorf("resultbinding: stable capability snapshot digest: %w", err)
+	}
+	return digest, nil
+}
+
 func seedRegistry(facts Facts) (*agentregistry.Registry, error) {
-	registrationID := AgentRegistrationID(facts.CapabilityDigest)
+	registrationID := facts.EffectiveAgentRegistrationID()
 	registry := agentregistry.NewRegistry()
 	now := time.Unix(1, 0).UTC()
 	registration := agentregistry.AgentRegistration{
@@ -171,8 +222,8 @@ func seedRegistry(facts Facts) (*agentregistry.Registry, error) {
 		ProviderVersion:      facts.AgentProviderVersion,
 		ProtocolVersion:      ProtocolVersion,
 		Scope:                "worker",
-		IdempotencyKey:       "cap:" + facts.CapabilityDigest,
-		RequestDigest:        facts.CapabilityDigest,
+		IdempotencyKey:       "cap:" + facts.EffectiveAgentCapabilitySnapshotDigest(),
+		RequestDigest:        facts.EffectiveAgentCapabilitySnapshotDigest(),
 		LifecycleState:       agentregistry.LifecycleStateActive,
 		CreatedAt:            now,
 		UpdatedAt:            now,
@@ -181,13 +232,13 @@ func seedRegistry(facts Facts) (*agentregistry.Registry, error) {
 		return nil, fmt.Errorf("resultbinding: seed agent registration: %w", err)
 	}
 	snap := agentregistry.AgentCapabilitySnapshot{
-		SnapshotDigest:             facts.CapabilityDigest,
+		SnapshotDigest:             facts.EffectiveAgentCapabilitySnapshotDigest(),
 		RegistrationID:             registrationID,
 		ProtocolVersion:            ProtocolVersion,
 		ProviderName:               facts.AgentAdapterID,
 		ProviderVersion:            facts.AgentProviderVersion,
 		Capabilities:               []agentregistry.Capability{agentregistry.CapabilityExecutionProfileWorkspaceWrite},
-		ConformanceEvidenceDigests: []string{facts.CapabilityDigest},
+		ConformanceEvidenceDigests: []string{},
 		SnapshotState:              agentregistry.SnapshotStateActive,
 	}
 	if _, err := registry.AddSnapshot(snap); err != nil {
@@ -240,6 +291,7 @@ type Admission struct {
 	SandboxOK        bool     `json:"sandboxSideOk"`
 	AgentReasons     []string `json:"agentSideReasons,omitempty"`
 	SandboxReasons   []string `json:"sandboxSideReasons,omitempty"`
+	EvidenceRequired bool     `json:"evidenceRequired"`
 	EvidenceOK       bool     `json:"evidenceOk"`
 	EvidenceReason   string   `json:"evidenceReason,omitempty"`
 }
@@ -249,7 +301,7 @@ type Admission struct {
 // ResultIngress 接纳。accepted=false 时返回带细节的档案化拒绝，绝不放行。
 //
 // 生产路径应使用 AdmitWithDurableAuthority（从 immutable AttemptBinding +
-// 真实 durable authority 读取：agent 侧 AgentRegistrationActive current-ledger
+// 真实 durable authority 读取：agent 侧 registration + active snapshot current-ledger
 // recheck，sandbox 侧 ProviderRegistrationActive + Inspect live state）。
 // 本函数保留为测试兼容路径（seedRegistry/seedSandboxLedger 以输入 Facts
 // 临时构造，不检查 registration 当前 lifecycle 状态）。
@@ -266,11 +318,11 @@ func AdmitWorkerResult(ctx context.Context, facts Facts, resultBytes []byte) (*A
 		return nil, err
 	}
 	// seed 路径使用进程内存 ingress（ingressDir 为空）。
-	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger, "")
+	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger, facts.CapabilityDigest, "")
 }
 
 func newAgentBinding(facts Facts) (runtimeprofile.AgentBinding, error) {
-	return runtimeprofile.NewAgentBinding(AgentRegistrationID(facts.CapabilityDigest), facts.CapabilityDigest, facts.AgentAdapterID, facts.AgentProviderVersion, ProtocolVersion)
+	return runtimeprofile.NewAgentBinding(facts.EffectiveAgentRegistrationID(), facts.EffectiveAgentCapabilitySnapshotDigest(), facts.AgentAdapterID, facts.AgentProviderVersion, ProtocolVersion)
 }
 
 func newSandboxBinding(facts Facts) (runtimeprofile.SandboxBinding, error) {
@@ -282,7 +334,7 @@ func newProfile(agent runtimeprofile.AgentBinding, sandbox runtimeprofile.Sandbo
 }
 
 func compatibilityDigest(facts Facts) string {
-	raw, err := canonical.DigestJSON([]byte(facts.CapabilityDigest + "|" + facts.SandboxCapabilityDigest + "|" + facts.SandboxProviderRegistrationID + "|" + ProtocolVersion))
+	raw, err := canonical.DigestJSON([]byte(facts.EffectiveAgentCapabilitySnapshotDigest() + "|" + facts.CapabilityDigest + "|" + facts.SandboxCapabilityDigest + "|" + facts.SandboxProviderRegistrationID + "|" + ProtocolVersion))
 	if err != nil {
 		return facts.CapabilityDigest
 	}

@@ -14,6 +14,7 @@ import (
 type Capability string
 
 const (
+	CapabilityExecutionProfileReadOnly       Capability = "execution-profile:read-only"
 	CapabilityExecutionProfileWorkspaceWrite Capability = "execution-profile:workspace-write"
 	CapabilitySessionPolicyEphemeral         Capability = "session-policy:ephemeral"
 	CapabilityNetworkPolicyUnenforced        Capability = "network-policy:unenforced"
@@ -23,6 +24,7 @@ const (
 
 // knownCapabilities is the authoritative closed set; unknown values fail closed.
 var knownCapabilities = map[Capability]struct{}{
+	CapabilityExecutionProfileReadOnly:       {},
 	CapabilityExecutionProfileWorkspaceWrite: {},
 	CapabilitySessionPolicyEphemeral:         {},
 	CapabilityNetworkPolicyUnenforced:        {},

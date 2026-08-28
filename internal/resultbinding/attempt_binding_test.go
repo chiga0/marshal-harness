@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/agentregistry"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
@@ -21,6 +23,8 @@ func testBindingFacts() Facts {
 		AgentExecutable:               "/usr/local/bin/pi",
 		AgentProviderVersion:          "0.84.3",
 		CapabilityDigest:              "sha256:" + "a1b2c3d4" + "00000000000000000000000000000000000000000000000000000000",
+		AgentRegistrationID:           "registration:" + "a1b2c3d4" + "000000000000000000000000",
+		AgentCapabilitySnapshotDigest: "sha256:" + strings.Repeat("b", 64),
 		ExecutionProfile:              "workspace-write",
 		SandboxProviderRegistrationID: "registration:local-runner",
 		AllocationID:                  "alloc-bind-1",
@@ -110,6 +114,9 @@ type fakeAuthoritySource struct {
 	getErr       error
 	agentActive  bool
 	ingressDir   string
+	facts        *Facts
+	agentReg     *agentregistry.AgentRegistration
+	agentSnap    *agentregistry.AgentCapabilitySnapshot
 }
 
 func (f fakeAuthoritySource) ProviderRegistration() (provider.ProviderRegistration, error) {
@@ -123,11 +130,79 @@ func (f fakeAuthoritySource) ProviderRegistrationActive(string) (bool, error) {
 	return f.active, nil
 }
 
-func (f fakeAuthoritySource) AgentRegistrationActive(string) (bool, error) {
+func (f fakeAuthoritySource) AgentAuthority(registrationID string) (agentregistry.AgentRegistration, agentregistry.AgentCapabilitySnapshot, error) {
 	if f.getErr != nil {
-		return false, f.getErr
+		return agentregistry.AgentRegistration{}, agentregistry.AgentCapabilitySnapshot{}, f.getErr
 	}
-	return f.agentActive, nil
+	facts := testBindingFacts()
+	if f.facts != nil {
+		facts = *f.facts
+	}
+	state := agentregistry.LifecycleStateActive
+	if !f.agentActive {
+		state = agentregistry.LifecycleStateRevoked
+	}
+	reg := agentregistry.AgentRegistration{
+		RegistrationID: registrationID, AuthorityNamespaceID: AuthorityNamespaceID,
+		SecurityDomainID: "default/execution/test", Principal: "principal:agent:test",
+		ProviderType: agentregistry.ProviderTypeAgent, ProviderName: facts.AgentAdapterID,
+		ProviderVersion: facts.AgentProviderVersion, ProtocolVersion: ProtocolVersion,
+		Scope: "worker", IdempotencyKey: "cap:" + facts.EffectiveAgentCapabilitySnapshotDigest(),
+		RequestDigest: facts.EffectiveAgentCapabilitySnapshotDigest(), LifecycleState: state,
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
+	}
+	snap := agentregistry.AgentCapabilitySnapshot{
+		SnapshotDigest: facts.EffectiveAgentCapabilitySnapshotDigest(), RegistrationID: registrationID,
+		ProtocolVersion: ProtocolVersion, ProviderName: facts.AgentAdapterID,
+		ProviderVersion:            facts.AgentProviderVersion,
+		Capabilities:               []agentregistry.Capability{agentregistry.CapabilityExecutionProfileWorkspaceWrite},
+		ConformanceEvidenceDigests: []string{},
+		SnapshotState:              agentregistry.SnapshotStateActive,
+	}
+	if f.agentReg != nil {
+		reg = *f.agentReg
+	}
+	if f.agentSnap != nil {
+		snap = *f.agentSnap
+	}
+	return reg, snap, nil
+}
+
+func TestOrdinaryUserAdmissionDoesNotForgeConformanceEvidence(t *testing.T) {
+	facts := testBindingFacts()
+	binding := bindingFor(t, facts)
+	auth := fakeAuthoritySource{
+		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
+		active:       true, agentActive: true,
+	}
+	admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{"kind":"WorkerResult"}`), auth, sandbox.AllocationActive)
+	if err != nil || admission == nil || !admission.Accepted || admission.EvidenceRequired || admission.EvidenceOK || admission.EvidenceReason != "not-required-for-ordinary-user" {
+		t.Fatalf("ordinary-user admission must rely on Core binding without forged conformance: admission=%+v err=%v", admission, err)
+	}
+}
+
+func TestHardenedAdmissionRequiresIndependentConformanceEvidence(t *testing.T) {
+	facts := testBindingFacts()
+	facts.ExecutionProfile = "hardened"
+	binding := bindingFor(t, facts)
+	auth := fakeAuthoritySource{
+		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
+		active:       true, agentActive: true, facts: &facts,
+	}
+	if admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{"kind":"WorkerResult"}`), auth, sandbox.AllocationActive); err == nil || admission == nil || admission.Accepted || !admission.EvidenceRequired || admission.EvidenceOK {
+		t.Fatalf("hardened admission without independent evidence must fail closed: admission=%+v err=%v", admission, err)
+	}
+	reg, snap, err := auth.AgentAuthority(facts.AgentRegistrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.ConformanceEvidenceDigests = []string{"sha256:" + strings.Repeat("c", 64)}
+	auth.agentReg = &reg
+	auth.agentSnap = &snap
+	admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{"kind":"WorkerResult"}`), auth, sandbox.AllocationActive)
+	if err == nil || admission == nil || admission.Accepted || !admission.EvidenceRequired || admission.EvidenceOK || admission.EvidenceReason != "independent-conformance-authority-unavailable" {
+		t.Fatalf("snapshot-carried evidence must not self-authorize hardened admission: admission=%+v err=%v", admission, err)
+	}
 }
 
 func (f fakeAuthoritySource) ResultIngressDir() string { return f.ingressDir }
@@ -179,6 +254,53 @@ func TestAdmitWithDurableAuthorityRejectsRevokedAgentRegistration(t *testing.T) 
 	}
 	if admission != nil && (admission.AgentOK || admission.Accepted) {
 		t.Errorf("revoked agent must not be AgentOK or Accepted: %+v", admission)
+	}
+}
+
+func TestAdmitWithDurableAuthorityRejectsSupersededAgentSnapshot(t *testing.T) {
+	facts := testBindingFacts()
+	facts.AgentRegistrationID = "registration:" + strings.Repeat("b", 32)
+	facts.AgentCapabilitySnapshotDigest = "sha256:" + strings.Repeat("c", 64)
+	current := fakeAuthoritySource{agentActive: true, facts: &facts}
+	_, snap, err := current.AgentAuthority(facts.AgentRegistrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.SnapshotDigest = "sha256:" + strings.Repeat("d", 64)
+	current.registration = provider.ProviderRegistration{RegistrationId: facts.SandboxProviderRegistrationID}
+	current.active = true
+	current.agentSnap = &snap
+
+	admission, err := AdmitWithDurableAuthority(context.Background(), bindingFor(t, facts), []byte(`{"kind":"WorkerResult"}`), current, sandbox.AllocationActive)
+	if err == nil || !errors.Is(err, ErrAdmissionRejected) {
+		t.Fatalf("superseded agent snapshot must be rejected, admission=%+v err=%v", admission, err)
+	}
+	if admission == nil || admission.AgentOK || admission.Accepted || !contains(admission.AdmissionReason, "current ledger") {
+		t.Fatalf("superseded snapshot rejection must identify agent current-ledger mismatch: %+v", admission)
+	}
+}
+
+func TestAdmitWithDurableAuthorityRejectsAgentProviderIdentityDrift(t *testing.T) {
+	facts := testBindingFacts()
+	facts.AgentRegistrationID = "registration:" + strings.Repeat("b", 32)
+	facts.AgentCapabilitySnapshotDigest = "sha256:" + strings.Repeat("c", 64)
+	current := fakeAuthoritySource{
+		registration: provider.ProviderRegistration{RegistrationId: facts.SandboxProviderRegistrationID},
+		active:       true, agentActive: true, facts: &facts,
+	}
+	reg, _, err := current.AgentAuthority(facts.AgentRegistrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.ProviderVersion = "9.9.9"
+	current.agentReg = &reg
+
+	admission, err := AdmitWithDurableAuthority(context.Background(), bindingFor(t, facts), []byte(`{"kind":"WorkerResult"}`), current, sandbox.AllocationActive)
+	if err == nil || !errors.Is(err, ErrAdmissionRejected) {
+		t.Fatalf("provider identity drift must be rejected, admission=%+v err=%v", admission, err)
+	}
+	if admission == nil || admission.AgentOK || admission.Accepted {
+		t.Fatalf("provider drift must fail the agent side: %+v", admission)
 	}
 }
 
@@ -338,8 +460,11 @@ func (s *stubAuthority) ProviderRegistration() (provider.ProviderRegistration, e
 func (s *stubAuthority) ProviderRegistrationActive(string) (bool, error) {
 	return s.providerActive, nil
 }
-func (s *stubAuthority) AgentRegistrationActive(string) (bool, error) { return s.agentActive, nil }
-func (s *stubAuthority) ResultIngressDir() string                     { return "" }
+func (s *stubAuthority) AgentAuthority(registrationID string) (agentregistry.AgentRegistration, agentregistry.AgentCapabilitySnapshot, error) {
+	f := fakeAuthoritySource{agentActive: s.agentActive}
+	return f.AgentAuthority(registrationID)
+}
+func (s *stubAuthority) ResultIngressDir() string { return "" }
 
 // TestAdmitWithDurableAuthorityRejectsSandboxRegistrationMismatch 锁定 P1-2
 // 的 current-ledger binding 机械断言：AttemptBinding 冻结的

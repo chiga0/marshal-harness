@@ -25,6 +25,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	marshalrepo "github.com/chiga0/marshal-harness/internal/repository"
+	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 )
@@ -1271,13 +1272,30 @@ func TestRunSelectsFallbackAdapterFromFrozenCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	var request struct {
-		AdapterID string `json:"adapterId"`
+		AdapterID                     string `json:"adapterId"`
+		AgentRegistrationID           string `json:"agentRegistrationId"`
+		AgentCapabilitySnapshotDigest string `json:"agentCapabilitySnapshotDigest"`
 	}
 	if err := json.Unmarshal(requestData, &request); err != nil {
 		t.Fatal(err)
 	}
 	if request.AdapterID != "fixture" {
 		t.Fatalf("worker-request adapterId = %q", request.AdapterID)
+	}
+	fixtureWorker, ok := fixture.input.Adapter.(*fixtureAdapter)
+	if !ok {
+		t.Fatalf("fixture adapter type = %T", fixture.input.Adapter)
+	}
+	stableIdentity, err := resultbinding.StableCapabilityDigest(fixtureWorker.capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stableSnapshot, err := resultbinding.StableCapabilitySnapshotDigest(fixtureWorker.capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.AgentRegistrationID != resultbinding.AgentRegistrationID(stableIdentity) || request.AgentCapabilitySnapshotDigest != stableSnapshot {
+		t.Fatalf("worker-request did not freeze exact agent authority identity: %+v", request)
 	}
 	promptData, err := os.ReadFile(filepath.Join(fixture.runDir, "attempts", result.AttemptID, "control", "input", "prompt.md"))
 	if err != nil {

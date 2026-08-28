@@ -1853,7 +1853,8 @@ func newRunFixture(t *testing.T, versionOutput, body string) runFixture {
 	}
 	requestData := map[string]any{
 		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerRequest", "taskId": "TASK-1", "runId": "run-1", "attemptId": "attempt-1", "attemptNumber": 1,
-		"specDigest": specDigest, "policyDigest": digest("b"), "capabilityDigest": digest("c"), "baseSha": strings.Repeat("1", 40),
+		"specDigest": specDigest, "policyDigest": digest("b"), "capabilityDigest": digest("c"),
+		"agentRegistrationId": "registration:aaaaaaaa", "agentCapabilitySnapshotDigest": digest("d"), "baseSha": strings.Repeat("1", 40),
 		"worktreePath": resolvedWorktree, "controlRoot": resolvedControlRoot, "taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
 		"adapterId": "codex", "executionProfile": "workspace-write", "sessionPolicy": "ephemeral", "attemptTimeoutSeconds": 5, "maxOutputBytes": 65536, "reviewFindings": []any{},
 	}
