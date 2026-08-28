@@ -227,7 +227,7 @@ func (s *ingressDurableStore) recordAdmittedLocked(idempotencyKey string, govern
 		if err != nil {
 			return "", err
 		}
-		if governed.ProcessStartedDigest == "" || governed.BarrierDigest != "" {
+		if governed.ProcessStartedDigest == "" || governed.BarrierDigest != "" || governed.PendingEffectIntentFactDigest != "" {
 			return "", ErrAttemptAuthorityOrder
 		}
 		fact.AttemptKey = key
@@ -333,6 +333,10 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		if err := applyAttemptAuthorityLine(line, in, s.nextSequence); err != nil {
 			return err
 		}
+	case effectFactTypeIntent, effectFactTypeReceipt, effectFactTypeReconcile:
+		if err := applyEffectAuthorityLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
 	case resultFactTypeAdmitted:
 		if head.ProtocolRevision == "" {
 			return s.applyLegacyAdmittedLine(line, in)
@@ -387,7 +391,7 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 				return err
 			}
 			state, exists := in.attempts[fact.AttemptKey]
-			if !exists || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || fact.AttemptRevision != state.Revision+1 || fact.PreviousAttemptHead != state.HeadDigest {
+			if !exists || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.PendingEffectIntentFactDigest != "" || fact.AttemptRevision != state.Revision+1 || fact.PreviousAttemptHead != state.HeadDigest {
 				return ErrAttemptAuthorityOrder
 			}
 			state.Revision = fact.AttemptRevision

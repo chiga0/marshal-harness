@@ -270,9 +270,16 @@ type Ingress struct {
 	ledger         LedgerBinding
 	ledgerSequence uint64
 	// admitted maps idempotencyKey → admittedEntry for replay detection.
-	admitted   map[string]admittedEntry
-	attempts   map[string]AttemptAuthorityState
-	quarantine []QuarantineRecord
+	admitted map[string]admittedEntry
+	attempts map[string]AttemptAuthorityState
+	effects  map[string]EffectAuthorityState
+	// The three indexes are authority-namespace scoped. Command/idempotency map
+	// to an effect key; marker maps to its immutable logical Attempt key. They
+	// are rebuilt exclusively from the authority log on every transaction.
+	effectCommands    map[string]string
+	effectIdempotency map[string]string
+	effectMarkers     map[string]string
+	quarantine        []QuarantineRecord
 	// clock allows deterministic testing without real time reads.
 	clock func() time.Time
 	// store is the optional durable replay/quarantine/idempotency append-only
@@ -305,10 +312,14 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		return nil, fmt.Errorf("resultingress: LedgerBinding.EvidenceDigest: %v", err)
 	}
 	return &Ingress{
-		ledger:   binding,
-		admitted: make(map[string]admittedEntry),
-		attempts: make(map[string]AttemptAuthorityState),
-		clock:    time.Now,
+		ledger:            binding,
+		admitted:          make(map[string]admittedEntry),
+		attempts:          make(map[string]AttemptAuthorityState),
+		effects:           make(map[string]EffectAuthorityState),
+		effectCommands:    make(map[string]string),
+		effectIdempotency: make(map[string]string),
+		effectMarkers:     make(map[string]string),
+		clock:             time.Now,
 	}, nil
 }
 
@@ -319,11 +330,15 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 // binding 校验与 NewIngress 完全一致。
 func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingress, error) {
 	in := &Ingress{
-		ledger:   binding,
-		admitted: make(map[string]admittedEntry),
-		attempts: make(map[string]AttemptAuthorityState),
-		clock:    time.Now,
-		store:    store,
+		ledger:            binding,
+		admitted:          make(map[string]admittedEntry),
+		attempts:          make(map[string]AttemptAuthorityState),
+		effects:           make(map[string]EffectAuthorityState),
+		effectCommands:    make(map[string]string),
+		effectIdempotency: make(map[string]string),
+		effectMarkers:     make(map[string]string),
+		clock:             time.Now,
+		store:             store,
 	}
 	if store == nil {
 		return nil, errors.New("resultingress: durable ingress requires a non-nil store")
@@ -429,6 +444,10 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 	// checkpoint/heartbeat/log traffic is not allowed to leak through after
 	// terminalization merely because it skips capability freshness checks.
 	if governed {
+		if authorityState.PendingEffectIntentFactDigest != "" {
+			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, fmt.Errorf("%w: attempt admission is closed by pending effect authority", ErrStaleLease)
+		}
 		if authorityState.BarrierDigest != "" {
 			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
 			return AdmissionFact{}, fmt.Errorf("%w: attempt admission is closed by terminalization barrier", ErrStaleLease)
@@ -635,6 +654,10 @@ func (i *Ingress) resetDurableReplayState() {
 	i.ledgerSequence = 0
 	i.admitted = make(map[string]admittedEntry)
 	i.attempts = make(map[string]AttemptAuthorityState)
+	i.effects = make(map[string]EffectAuthorityState)
+	i.effectCommands = make(map[string]string)
+	i.effectIdempotency = make(map[string]string)
+	i.effectMarkers = make(map[string]string)
 	i.quarantine = nil
 }
 
