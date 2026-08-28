@@ -407,6 +407,37 @@ func TestEmbeddedClaimRejectsSecondActiveAllocation(t *testing.T) {
 	})
 }
 
+func TestProductionDispatchBinderPersistsLeaseWithoutProviderAllocation(t *testing.T) {
+	runtime, _, _, _ := newEmbeddedRuntimeFixture(t)
+	requirements := workspaceWriteRequirementsFixture(t)
+	request := embeddedClaimRequestFixture("run-stage2-claim", "attempt-stage2-claim", sandbox.WorkloadRoleWorker, embeddedWorkerPrincipal, requirements)
+	lease, err := runtime.ClaimDispatchLease(context.Background(), request)
+	if err != nil {
+		t.Fatalf("ClaimDispatchLease: %v", err)
+	}
+	if lease.AllocationId != request.AllocationId || lease.Validate() != nil {
+		t.Fatalf("claim-only lease is not exact: %+v", lease)
+	}
+	directorySource, ok := runtime.Provider().(interface {
+		AllocationDirectory(string) (string, error)
+	})
+	if !ok {
+		t.Fatal("Local provider does not expose the test-only allocation observation")
+	}
+	if _, err := directorySource.AllocationDirectory(request.AllocationId); !errors.Is(err, sandbox.ErrAllocationNotFound) {
+		t.Fatalf("claim-only binder caused a provider allocation: %v", err)
+	}
+	if replay, ok := runtime.LeaseFor(request.RunId, request.AttemptId); !ok || replay.LeaseDigest != lease.LeaseDigest {
+		t.Fatal("claim-only lease was not durable/current")
+	}
+	if _, err := runtime.ClaimDispatchLease(context.Background(), request); err == nil || !strings.Contains(err.Error(), "single-allocation invariant") {
+		t.Fatalf("unprovable claim replay was not rejected before a second effect: %v", err)
+	}
+	if _, err := directorySource.AllocationDirectory(request.AllocationId); !errors.Is(err, sandbox.ErrAllocationNotFound) {
+		t.Fatalf("rejected replay caused a provider allocation: %v", err)
+	}
+}
+
 // TestEmbeddedClaimWorkerVerifierSeparation freezes negative fixture 5 and
 // the worker/verifier wiring assertions: the two roles must claim under
 // distinct principals and distinct allocations, the verifier reuses the

@@ -3,6 +3,8 @@
 package allocationcontrol
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/sandbox"
 	"golang.org/x/sys/unix"
 )
 
@@ -53,8 +56,12 @@ type Store struct {
 	objects *os.File
 	journal *RecoveryJournal
 	scope   AllocationStoreScopeV1
-	uid     uint32
-	gid     uint32
+	// objectsIdentity freezes the descriptor identity opened by OpenStore.
+	// Production staging rechecks both the held descriptor and its name under
+	// base before every operation; no caller-supplied path can replace it.
+	objectsIdentity ObjectIdentityV1
+	uid             uint32
+	gid             uint32
 }
 
 type allocationObservation struct {
@@ -107,7 +114,17 @@ func OpenStore(root string, scope AllocationStoreScopeV1) (*Store, error) {
 		base.Close()
 		return nil, err
 	}
-	return &Store{base: base, objects: objects, journal: journal, scope: scope, uid: uint32(unix.Geteuid()), gid: uint32(unix.Getegid())}, nil
+	var objectsStat unix.Stat_t
+	if err := unix.Fstat(int(objects.Fd()), &objectsStat); err != nil {
+		journal.Close()
+		objects.Close()
+		base.Close()
+		return nil, err
+	}
+	return &Store{
+		base: base, objects: objects, journal: journal, scope: scope,
+		objectsIdentity: objectIdentity(objectsStat), uid: uint32(unix.Geteuid()), gid: uint32(unix.Getegid()),
+	}, nil
 }
 
 func (store *Store) Close() error {
@@ -705,12 +722,23 @@ func sameStat(left, right unix.Stat_t) bool {
 	return left.Size == right.Size && left.Nlink == right.Nlink
 }
 
+// sameNamedDirectoryStat is used only for a held descriptor versus its
+// immediately re-read parent entry. Unlike the durable receipt identity, this
+// same-time comparison includes link count so an unlinked/detached directory
+// cannot pass the final staging/readback lineage proof. Directory size remains
+// excluded because APFS may update it independently of entry replacement.
+func sameNamedDirectoryStat(left, right unix.Stat_t) bool {
+	return left.Mode&unix.S_IFMT == unix.S_IFDIR && right.Mode&unix.S_IFMT == unix.S_IFDIR &&
+		left.Dev == right.Dev && left.Ino == right.Ino && left.Mode == right.Mode && left.Uid == right.Uid && left.Gid == right.Gid &&
+		left.Nlink > 0 && left.Nlink == right.Nlink
+}
+
 func verifyPrivateDirectory(fd int, uid uint32) error {
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		return err
 	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 || stat.Uid != uid {
+	if stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 || stat.Uid != uid || stat.Nlink < 1 {
 		return ErrFilesystemConflict
 	}
 	return nil
@@ -834,4 +862,392 @@ func openExistingDirectoryPath(path string) (int, error) {
 		fd = next
 	}
 	return fd, nil
+}
+
+func (store *Store) heldObjectsRootIdentity() (ObjectIdentityV1, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.verifyHeldObjectsRoot(store.objectsIdentity); err != nil {
+		return ObjectIdentityV1{}, err
+	}
+	return store.objectsIdentity, nil
+}
+
+func (store *Store) currentLiveIdentity(snapshot AuthoritySnapshot, expectedRoot ObjectIdentityV1) (ObjectIdentityV1, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	live, identity, err := store.openCurrentLive(snapshot, expectedRoot)
+	if live != nil {
+		_ = live.Close()
+	}
+	return identity, err
+}
+
+func (store *Store) stageCurrentLive(ctx context.Context, snapshot AuthoritySnapshot, expectedRoot ObjectIdentityV1, inputs []sandbox.StageInput) (*sandbox.StageReport, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if snapshot.ProvisionIntent == nil || sandbox.ValidateStageRequest(inputs, snapshot.ProvisionIntent.AllowedStoreIDs) != nil {
+		return nil, ErrInvalid
+	}
+	// The v1 durable local facade deliberately has no artifact-store path
+	// resolver. A locator is rejected before any directory or file mutation;
+	// future store integration must itself be descriptor/capability based.
+	for _, input := range inputs {
+		if input.Locator != nil {
+			return nil, sandbox.ErrLocatorUnresolved
+		}
+		if sandbox.RecomputeSHA256(input.Inline) != input.DeclaredSHA256 {
+			return nil, fmt.Errorf("%w: input %q", sandbox.ErrStageInputMismatch, input.InputId)
+		}
+		if _, err := durableStageComponents(input.InputId); err != nil {
+			return nil, err
+		}
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	live, _, err := store.openCurrentLive(snapshot, expectedRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer live.Close()
+	report := &sandbox.StageReport{Receipts: make([]sandbox.StageReceipt, 0, len(inputs))}
+	for _, input := range inputs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		components, _ := durableStageComponents(input.InputId)
+		if len(components) == 1 && components[0] == snapshot.ProvisionReceipt.MarkerRelativeName {
+			return nil, ErrFilesystemConflict
+		}
+		parentFD, target, err := store.openOrCreateStageParent(int(live.Fd()), components)
+		if err != nil {
+			return nil, err
+		}
+		writeErr := store.installExactStageFile(parentFD, target, input.InputId, input.Inline)
+		unix.Close(parentFD)
+		if writeErr != nil {
+			return nil, writeErr
+		}
+		digest := sandbox.RecomputeSHA256(input.Inline)
+		report.Receipts = append(report.Receipts, sandbox.StageReceipt{
+			InputId: input.InputId, RecomputedSHA256: digest,
+			PostConsumptionSHA256: digest, SizeBytes: int64(len(input.Inline)),
+		})
+	}
+	if err := live.Sync(); err != nil {
+		return nil, err
+	}
+	if err := store.objects.Sync(); err != nil {
+		return nil, err
+	}
+	// Success is projected only after a fresh descriptor-relative rewalk from
+	// the held objects root through live and every staged path component. A
+	// rename/replacement that detached the inode used above cannot be mistaken
+	// for a successful current Stage2 projection.
+	for _, input := range inputs {
+		components, _ := durableStageComponents(input.InputId)
+		if err := store.verifyCurrentStageFileLocked(snapshot, expectedRoot, components, input.Inline); err != nil {
+			return nil, err
+		}
+	}
+	return report, nil
+}
+
+func (store *Store) readCurrentLiveArtifact(ctx context.Context, snapshot AuthoritySnapshot, expectedRoot ObjectIdentityV1, artifactID string, maxBytes int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	components, err := durableStageComponents(artifactID)
+	if err != nil || maxBytes < 1 || maxBytes > sandbox.MaxStageRequestBytes {
+		return nil, ErrInvalid
+	}
+	if len(components) == 1 && snapshot.ProvisionReceipt != nil && components[0] == snapshot.ProvisionReceipt.MarkerRelativeName {
+		return nil, ErrFilesystemConflict
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	live, _, err := store.openCurrentLive(snapshot, expectedRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer live.Close()
+	parentFD, target, err := store.openExistingStageParent(int(live.Fd()), components)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(parentFD)
+	raw, present, err := store.readExactRegularAt(parentFD, target, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, ErrFilesystemUnknown
+	}
+	// Readback has the same completion rule as Stage: reopen from the held root
+	// and prove that the bytes came from the still-named current lineage.
+	if err := store.verifyCurrentStageFileLocked(snapshot, expectedRoot, components, raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+// verifyCurrentStageFileLocked must be called with store.mu held. It performs
+// a new root→live→parent→file traversal and verifies the exact expected bytes;
+// no descriptor opened by the earlier Stage/Read traversal is reused.
+func (store *Store) verifyCurrentStageFileLocked(snapshot AuthoritySnapshot, expectedRoot ObjectIdentityV1, components []string, expected []byte) error {
+	live, _, err := store.openCurrentLive(snapshot, expectedRoot)
+	if err != nil {
+		return err
+	}
+	defer live.Close()
+	parentFD, target, err := store.openExistingStageParent(int(live.Fd()), components)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(parentFD)
+	raw, present, err := store.readExactRegularAt(parentFD, target, int64(len(expected)))
+	if err != nil {
+		return err
+	}
+	if !present || !bytes.Equal(raw, expected) {
+		return ErrFilesystemConflict
+	}
+	return store.verifyHeldObjectsRoot(expectedRoot)
+}
+
+// openCurrentLive must be called with store.mu held. It verifies the complete
+// authority snapshot, the held root and the receipt-bound live inode/marker,
+// then returns a newly held live-directory descriptor.
+func (store *Store) openCurrentLive(snapshot AuthoritySnapshot, expectedRoot ObjectIdentityV1) (*os.File, ObjectIdentityV1, error) {
+	if store.objects == nil || snapshot.Validate() != nil || snapshot.ProvisionIntent == nil || snapshot.ProvisionPrepared == nil || snapshot.ProvisionReceipt == nil || snapshot.TerminateIntent != nil || snapshot.TerminateReceipt != nil || !store.scope.Matches(snapshot.ProvisionReceipt.Binding) {
+		return nil, ObjectIdentityV1{}, ErrAuthorityConflict
+	}
+	if !sameDirectoryObject(expectedRoot, store.objectsIdentity) || store.verifyHeldObjectsRoot(expectedRoot) != nil {
+		return nil, ObjectIdentityV1{}, ErrFilesystemConflict
+	}
+	receipt := snapshot.ProvisionReceipt
+	observation, err := store.inspectAllocation(receipt.LiveRelativeName, receipt.MarkerRelativeName)
+	if err != nil || !observation.present || !sameDirectoryObject(observation.objectIdentity, receipt.LiveIdentity) || observation.markerIdentity != receipt.MarkerIdentity || observation.marker != receipt.Marker || observation.markerDigest != receipt.MarkerDigest {
+		if err != nil {
+			return nil, ObjectIdentityV1{}, err
+		}
+		return nil, ObjectIdentityV1{}, ErrFilesystemConflict
+	}
+	fd, err := unix.Openat(int(store.objects.Fd()), receipt.LiveRelativeName, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, ObjectIdentityV1{}, ErrFilesystemConflict
+	}
+	var held, named unix.Stat_t
+	if err := unix.Fstat(fd, &held); err != nil || !sameDirectoryObject(objectIdentity(held), receipt.LiveIdentity) || verifyPrivateDirectory(fd, store.uid) != nil ||
+		unix.Fstatat(int(store.objects.Fd()), receipt.LiveRelativeName, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !sameNamedDirectoryStat(held, named) {
+		unix.Close(fd)
+		return nil, ObjectIdentityV1{}, ErrFilesystemConflict
+	}
+	return os.NewFile(uintptr(fd), receipt.LiveRelativeName), receipt.LiveIdentity, nil
+}
+
+func (store *Store) verifyHeldObjectsRoot(expected ObjectIdentityV1) error {
+	if store.base == nil || store.objects == nil || expected.Validate(ObjectTypeDirectory) != nil || !sameDirectoryObject(expected, store.objectsIdentity) {
+		return ErrFilesystemConflict
+	}
+	var held, named, baseStat unix.Stat_t
+	if err := unix.Fstat(int(store.objects.Fd()), &held); err != nil || !sameDirectoryObject(objectIdentity(held), expected) || verifyPrivateDirectory(int(store.objects.Fd()), store.uid) != nil {
+		return ErrFilesystemConflict
+	}
+	if err := unix.Fstat(int(store.base.Fd()), &baseStat); err != nil || held.Dev != baseStat.Dev {
+		return ErrFilesystemConflict
+	}
+	if err := unix.Fstatat(int(store.base.Fd()), objectsDirectoryName, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil || !sameNamedDirectoryStat(held, named) {
+		return ErrFilesystemConflict
+	}
+	return nil
+}
+
+func durableStageComponents(inputID string) ([]string, error) {
+	if strings.TrimSpace(inputID) == "" || inputID != strings.TrimSpace(inputID) || strings.ContainsAny(inputID, "\\\x00") || strings.HasPrefix(inputID, "/") || strings.HasSuffix(inputID, "/") {
+		return nil, sandbox.ErrInvalidRequest
+	}
+	components := strings.Split(inputID, "/")
+	for _, component := range components {
+		// .stage-* is the private deterministic crash-recovery namespace used
+		// by installExactStageFile. User-controlled IDs may not alias it and
+		// rename an earlier staged target away during a later recovery.
+		if component == "" || component == "." || component == ".." || strings.HasPrefix(component, ".stage-") || !validPrintableASCII(component, 255) {
+			return nil, sandbox.ErrInvalidRequest
+		}
+	}
+	return components, nil
+}
+
+func (store *Store) openOrCreateStageParent(liveFD int, components []string) (int, string, error) {
+	if len(components) == 0 {
+		return -1, "", ErrInvalid
+	}
+	current, err := unix.Dup(liveFD)
+	if err != nil {
+		return -1, "", err
+	}
+	unix.CloseOnExec(current)
+	for _, component := range components[:len(components)-1] {
+		created := false
+		if err := unix.Mkdirat(current, component, 0o700); err == nil {
+			created = true
+		} else if !errors.Is(err, unix.EEXIST) {
+			unix.Close(current)
+			return -1, "", err
+		}
+		next, err := unix.Openat(current, component, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if err != nil || verifyPrivateDirectory(next, store.uid) != nil {
+			if next >= 0 {
+				unix.Close(next)
+			}
+			unix.Close(current)
+			return -1, "", ErrFilesystemConflict
+		}
+		var currentStat, nextStat, namedStat unix.Stat_t
+		if unix.Fstat(current, &currentStat) != nil || unix.Fstat(next, &nextStat) != nil || currentStat.Dev != nextStat.Dev ||
+			unix.Fstatat(current, component, &namedStat, unix.AT_SYMLINK_NOFOLLOW) != nil || !sameNamedDirectoryStat(nextStat, namedStat) {
+			unix.Close(next)
+			unix.Close(current)
+			return -1, "", ErrFilesystemConflict
+		}
+		if created {
+			if err := unix.Fsync(next); err != nil {
+				unix.Close(next)
+				unix.Close(current)
+				return -1, "", err
+			}
+			if err := unix.Fsync(current); err != nil {
+				unix.Close(next)
+				unix.Close(current)
+				return -1, "", err
+			}
+		}
+		unix.Close(current)
+		current = next
+	}
+	return current, components[len(components)-1], nil
+}
+
+func (store *Store) openExistingStageParent(liveFD int, components []string) (int, string, error) {
+	if len(components) == 0 {
+		return -1, "", ErrInvalid
+	}
+	current, err := unix.Dup(liveFD)
+	if err != nil {
+		return -1, "", err
+	}
+	unix.CloseOnExec(current)
+	for _, component := range components[:len(components)-1] {
+		next, err := unix.Openat(current, component, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if err != nil || verifyPrivateDirectory(next, store.uid) != nil {
+			if next >= 0 {
+				unix.Close(next)
+			}
+			unix.Close(current)
+			return -1, "", ErrFilesystemConflict
+		}
+		var currentStat, nextStat, namedStat unix.Stat_t
+		if unix.Fstat(current, &currentStat) != nil || unix.Fstat(next, &nextStat) != nil || currentStat.Dev != nextStat.Dev ||
+			unix.Fstatat(current, component, &namedStat, unix.AT_SYMLINK_NOFOLLOW) != nil || !sameNamedDirectoryStat(nextStat, namedStat) {
+			unix.Close(next)
+			unix.Close(current)
+			return -1, "", ErrFilesystemConflict
+		}
+		unix.Close(current)
+		current = next
+	}
+	return current, components[len(components)-1], nil
+}
+
+func (store *Store) installExactStageFile(parentFD int, target, inputID string, content []byte) error {
+	if raw, present, err := store.readExactRegularAt(parentFD, target, int64(len(content))); err != nil {
+		return err
+	} else if present {
+		if !bytes.Equal(raw, content) {
+			return ErrFilesystemConflict
+		}
+		return nil
+	}
+	temp := ".stage-" + strings.TrimPrefix(canonical.DigestBytes([]byte(inputID+"\x00"+sandbox.RecomputeSHA256(content))), "sha256:")
+	if raw, present, err := store.readExactRegularAt(parentFD, temp, int64(len(content))); err != nil {
+		return err
+	} else if present && !bytes.Equal(raw, content) {
+		return ErrFilesystemConflict
+	} else if !present {
+		fd, err := unix.Openat(parentFD, temp, unix.O_WRONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_EXCL, 0o600)
+		if err != nil {
+			return err
+		}
+		file := os.NewFile(uintptr(fd), temp)
+		writeErr := writeAll(file, content)
+		if writeErr == nil {
+			writeErr = file.Sync()
+		}
+		closeErr := file.Close()
+		if writeErr != nil {
+			return writeErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	if err := unix.RenameatxNp(parentFD, temp, parentFD, target, unix.RENAME_EXCL); err != nil {
+		if !errors.Is(err, unix.EEXIST) {
+			return err
+		}
+		raw, present, readErr := store.readExactRegularAt(parentFD, target, int64(len(content)))
+		if readErr != nil || !present || !bytes.Equal(raw, content) {
+			return ErrFilesystemConflict
+		}
+		if err := unix.Unlinkat(parentFD, temp, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+			return err
+		}
+	}
+	if err := unix.Fsync(parentFD); err != nil {
+		return err
+	}
+	raw, present, err := store.readExactRegularAt(parentFD, target, int64(len(content)))
+	if err != nil || !present || !bytes.Equal(raw, content) {
+		return ErrFilesystemConflict
+	}
+	return nil
+}
+
+func (store *Store) readExactRegularAt(parentFD int, name string, maxBytes int64) ([]byte, bool, error) {
+	if requireRelativeName(name) != nil || maxBytes < 0 || maxBytes > sandbox.MaxStageRequestBytes {
+		return nil, false, ErrInvalid
+	}
+	var named unix.Stat_t
+	if err := unix.Fstatat(parentFD, name, &named, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, false, ErrFilesystemConflict
+	}
+	file := os.NewFile(uintptr(fd), name)
+	defer file.Close()
+	var before unix.Stat_t
+	if err := unix.Fstat(fd, &before); err != nil || !sameStat(named, before) || verifyPrivateRegular(before, store.uid) != nil || before.Size > maxBytes {
+		return nil, false, ErrFilesystemConflict
+	}
+	var parentStat unix.Stat_t
+	if err := unix.Fstat(parentFD, &parentStat); err != nil || before.Dev != parentStat.Dev {
+		return nil, false, ErrFilesystemConflict
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil || int64(len(raw)) > maxBytes {
+		return nil, false, ErrFilesystemConflict
+	}
+	var after, renamed unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil || !sameStat(before, after) || unix.Fstatat(parentFD, name, &renamed, unix.AT_SYMLINK_NOFOLLOW) != nil || !sameStat(after, renamed) {
+		return nil, false, ErrFilesystemConflict
+	}
+	return raw, true, nil
 }

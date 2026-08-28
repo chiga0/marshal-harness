@@ -12,6 +12,8 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/agentregistry"
 	"github.com/chiga0/marshal-harness/internal/agentruntime"
+	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -19,6 +21,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/processcontrol"
 	"github.com/chiga0/marshal-harness/internal/provider"
+	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
 
@@ -70,6 +73,7 @@ type Bridge struct {
 	authority        DurableAuthority
 	productionGate   bool
 	exactProcess     *ExactProcessRuntime
+	exactAllocation  *ExactAllocationRuntime
 }
 
 // ExactProcessRuntime is the only interpreted-agent execution route admitted
@@ -98,11 +102,49 @@ type exactProcessAdmission struct {
 	coordinator *processcontrol.Coordinator
 	authority   DurableProcessAuthority
 	plan        LaunchPlan
+	allocation  ProductionAllocation
+}
+
+// ProductionAllocation is an Attempt-bound, non-path staging/readback
+// authority. Implementations must re-open current Stage2 authority on every
+// method; Current is an observation, never a bearer capability.
+type ProductionAllocation interface {
+	Current(context.Context) (allocationcontrol.CurrentLiveAllocationV1, error)
+	Stage(context.Context, []sandbox.StageInput) (*sandbox.StageReport, error)
+	ReadArtifact(context.Context, string, int64) ([]byte, error)
+}
+
+// ExactAllocationResolution binds one concrete facade, its held
+// ResultIngress AllocationAuthority, and the exact provision effect. The
+// Bridge independently reloads that effect from DurableProcessAuthority.Store;
+// none of these fields is accepted as a bearer assertion.
+type ExactAllocationResolution struct {
+	Facade    *allocationcontrol.DurableLocalFacade
+	Authority *resultingress.AllocationAuthority
+	EffectID  string
+}
+
+// ExactAllocationRuntime resolves the already-created Stage2 allocation for
+// one exact Attempt. It cannot Provision or Terminate and is deliberately not
+// wired by the current CLI/server composition.
+type ExactAllocationRuntime struct {
+	Resolve func(context.Context, ExactProcessAttempt) (ExactAllocationResolution, error)
 }
 
 func (b *Bridge) WithExactProcessRuntime(runtime ExactProcessRuntime) *Bridge {
 	if runtime.Resolve != nil && runtime.Retain != nil {
 		b.exactProcess = &runtime
+	}
+	return b
+}
+
+// WithExactAllocationRuntime installs the future production-only Stage2
+// staging facade. Merely configuring this seam does not enable production;
+// productionGate still requires all exact authorities and the current CLI
+// intentionally does not compose it.
+func (b *Bridge) WithExactAllocationRuntime(runtime ExactAllocationRuntime) *Bridge {
+	if runtime.Resolve != nil {
+		b.exactAllocation = &runtime
 	}
 	return b
 }
@@ -135,8 +177,9 @@ func NewBridge(provider sandbox.SandboxProvider) (*Bridge, error) {
 	return &Bridge{provider: provider, registry: &allocRegistry{}, now: time.Now}, nil
 }
 
-// WithTranscriptSource 注入 staged transcript artifact 的回读实现（v1.0
-// Local 形态基于 AllocationDirectory；测试注入等价闭包）。
+// WithTranscriptSource 注入 legacy/non-production staged transcript artifact
+// 回读实现（Local 形态基于 AllocationDirectory；测试注入等价闭包）。
+// Production uses ProductionAllocation.ReadArtifact and rejects this path.
 func (b *Bridge) WithTranscriptSource(source TranscriptSource) *Bridge {
 	b.transcriptSource = source
 	return b
@@ -166,12 +209,9 @@ func (b *Bridge) WithProductionGate() *Bridge {
 // allocation-carried 执行链（ADR 0052 §1.2）；否则 legacy 记账式路径
 // （allocation 身份绑定 + adapter.Run）。
 //
-// v1.0 production 门禁：CLI production profile 在构造 bridge 时注入
-// transcriptSource + durableAuthority，使 LaunchCapable adapter 走
-// allocation-carried exec-chain。未实现 LaunchCapable 的 adapter 走
-// legacy 路径（不经 admission anchor / ResultIngress 接纳）——这是
-// compatibility/non-production 形态，CLI production profile 通过
-// productionGate 标记区分。
+// v1.0 production 门禁要求 durableAuthority + ExactProcessRuntime +
+// ExactAllocationRuntime；path transcriptSource is non-production only.
+// 当前 CLI 没有装配 ExactAllocationRuntime，因此 production 仍不可达。
 func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error) {
 	if adapter == nil {
 		return domain.Record{}, errors.New("sandboxbridge: adapter must not be nil")
@@ -185,7 +225,7 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 	}
 	var exactAdmission *exactProcessAdmission
 	if b.productionGate {
-		if b.transcriptSource == nil || b.exactProcess == nil || b.exactProcess.Resolve == nil || b.exactProcess.Retain == nil {
+		if b.authority == nil || b.exactProcess == nil || b.exactProcess.Resolve == nil || b.exactProcess.Retain == nil || b.exactAllocation == nil || b.exactAllocation.Resolve == nil {
 			return domain.Record{}, fmt.Errorf("sandboxbridge: incomplete production runtime: %w", launchidentity.ErrUnavailable)
 		}
 		capable, ok := adapter.(ProductionLaunchCapable)
@@ -196,6 +236,10 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 		if err != nil {
 			return domain.Record{}, fmt.Errorf("sandboxbridge: exact production attempt unavailable: %w", err)
 		}
+		exactAdmission.allocation, err = b.resolveProductionAllocation(ctx, view, exactAdmission)
+		if err != nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: exact Stage2 allocation unavailable: %w", err)
+		}
 		exactAdmission.plan, err = capable.PreflightLaunch(ctx, request)
 		if err != nil || ValidateLaunchPlan(exactAdmission.plan) != nil || b.validateProductionLaunch(exactAdmission.plan) != nil {
 			if exactAdmission.plan != nil {
@@ -204,7 +248,7 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 			return domain.Record{}, fmt.Errorf("sandboxbridge: exact production closure unavailable: %w", launchidentity.ErrUnavailable)
 		}
 	}
-	if capable, ok := adapter.(LaunchCapable); ok && b.transcriptSource != nil {
+	if capable, ok := adapter.(LaunchCapable); ok && (b.transcriptSource != nil || exactAdmission != nil) {
 		return b.runWorkerExecChain(ctx, capable, request, view, exactAdmission)
 	}
 	// productionGate 为 true时，上面的 closed capability checks make this
@@ -214,6 +258,91 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 		return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q cannot enter the production launch chain: %w", adapter.ID(), launchidentity.ErrUnavailable)
 	}
 	return b.runWorkerLegacy(ctx, adapter, request, view)
+}
+
+func (b *Bridge) resolveProductionAllocation(ctx context.Context, view workerRequestView, admission *exactProcessAdmission) (ProductionAllocation, error) {
+	if b == nil || b.exactAllocation == nil || b.exactAllocation.Resolve == nil || admission == nil {
+		return nil, launchidentity.ErrUnavailable
+	}
+	lease, err := b.requireExactLease(view, admission)
+	if err != nil {
+		return nil, err
+	}
+	resolution, err := b.exactAllocation.Resolve(ctx, admission.attempt)
+	if err != nil {
+		return nil, errors.Join(launchidentity.ErrUnavailable, err)
+	}
+	if err := validateProductionAllocationResolution(admission, resolution); err != nil {
+		return nil, errors.Join(launchidentity.ErrUnavailable, err)
+	}
+	effect, found, err := admission.authority.Store.EffectState(admission.authority.Identity.AuthorityNamespaceID, resolution.EffectID)
+	if err != nil || !found {
+		return nil, errors.Join(launchidentity.ErrUnavailable, err)
+	}
+	current, err := resolution.Facade.Current(ctx)
+	if err != nil {
+		return nil, errors.Join(launchidentity.ErrUnavailable, err)
+	}
+	if err := validateProductionAllocationCurrent(current, admission, lease); err != nil {
+		return nil, errors.Join(launchidentity.ErrUnavailable, err)
+	}
+	if err := validateProductionAllocationEffect(current, admission, resolution.EffectID, effect); err != nil {
+		return nil, errors.Join(launchidentity.ErrUnavailable, err)
+	}
+	return resolution.Facade, nil
+}
+
+func validateProductionAllocationResolution(admission *exactProcessAdmission, resolution ExactAllocationResolution) error {
+	if admission == nil || admission.authority.Store == nil || resolution.Facade == nil || resolution.Authority == nil {
+		return resultingress.ErrAllocationAuthorityConflict
+	}
+	allocationAuthority := admission.authority.AllocationAuthority
+	if allocationAuthority == nil || resolution.Authority != allocationAuthority || !allocationAuthority.BoundToStore(admission.authority.Store) {
+		return resultingress.ErrAllocationAuthorityConflict
+	}
+	canonicalEffectKey, err := resultingress.CanonicalAllocationEffectKey(admission.authority.Identity.AuthorityNamespaceID, resolution.EffectID)
+	if err != nil || !resolution.Facade.BoundTo(allocationAuthority, canonicalEffectKey) {
+		return errors.Join(resultingress.ErrAllocationAuthorityConflict, err)
+	}
+	return nil
+}
+
+func validateProductionAllocationCurrent(current allocationcontrol.CurrentLiveAllocationV1, admission *exactProcessAdmission, lease dispatch.DispatchLease) error {
+	if current.Validate() != nil || admission == nil || admission.authority.Identity.Validate() != nil || lease.Validate() != nil {
+		return launchidentity.ErrUnavailable
+	}
+	namespaceDigest, err := admission.authority.Identity.AuthorityNamespaceID.Digest()
+	if err != nil {
+		return launchidentity.ErrUnavailable
+	}
+	binding := current.Binding
+	if binding.AuthorityNamespaceID != namespaceDigest || binding.TaskID != admission.attempt.TaskID || binding.RunID != admission.attempt.RunID ||
+		binding.AttemptID != admission.attempt.AttemptID || binding.AllocationID != admission.attempt.AllocationID || binding.LeaseID != lease.LeaseId ||
+		binding.Generation != admission.attempt.Generation || binding.FencingTokenDigest != admission.attempt.FencingTokenDigest {
+		return launchidentity.ErrUnavailable
+	}
+	return nil
+}
+
+func validateProductionAllocationEffect(current allocationcontrol.CurrentLiveAllocationV1, admission *exactProcessAdmission, effectID string, effect resultingress.EffectAuthorityState) error {
+	providerResourceIdentity, resourceErr := resultingress.CanonicalAllocationProviderResourceIdentity(current.Binding.AllocationID, current.LiveIdentity, current.MarkerDigest)
+	intentDigest, intentErr := effect.Intent.Digest()
+	receiptDigest, receiptErr := effect.Receipt.Digest()
+	reconcileDigest, reconcileErr := effect.Reconcile.Digest()
+	if current.Validate() != nil || admission == nil || admission.authority.Identity.Validate() != nil || strings.TrimSpace(effectID) == "" ||
+		effect.Binding.Validate() != nil || effect.Intent.Validate() != nil || effect.Receipt.Validate() != nil || effect.Reconcile.Validate() != nil ||
+		resourceErr != nil || intentErr != nil || receiptErr != nil || reconcileErr != nil ||
+		effect.Binding.Identity != admission.authority.Identity || effect.Binding.Phase != resultingress.EffectPhaseAllocationProvision ||
+		effect.Intent.EffectId != effectID || effect.Intent.CommandId != current.Binding.CommandID || effect.Intent.IdempotencyKey != current.Binding.IdempotencyKey ||
+		effect.Intent.RequestDigest != current.ProvisionRequestDigest || effect.IntentRecordDigest != intentDigest || effect.IntentFactDigest != current.ProvisionIntentFactDigest ||
+		effect.Binding.MarkerDigest != current.MarkerNonceDigest || effect.ReceiptFactDigest != current.ProvisionReceiptFactDigest ||
+		effect.Receipt.IntentDigest != effect.IntentRecordDigest || effect.ReceiptRecordDigest != receiptDigest || effect.Receipt.Disposition != authority.DispositionApplied ||
+		effect.Receipt.ProviderResourceIdentity != providerResourceIdentity || effect.Receipt.ObservedDigest != current.ProvisionReceiptDigest ||
+		effect.Reconcile.IntentDigest != effect.IntentRecordDigest || effect.Reconcile.ReceiptDigest != effect.ReceiptRecordDigest ||
+		effect.ReconcileRecordDigest != reconcileDigest || effect.ReconcileFactDigest == "" || effect.Reconcile.Decision != authority.DecisionAccept {
+		return resultingress.ErrAllocationAuthorityConflict
+	}
+	return nil
 }
 
 // resolveProductionAttempt runs before Adapter.PrepareLaunch and before every

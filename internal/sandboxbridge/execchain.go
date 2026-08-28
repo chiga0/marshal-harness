@@ -56,7 +56,10 @@ type TranscriptSource func(allocationID, artifactID string) ([]byte, error)
 // → CompleteLaunch（同一 Adapter decode/finalize 管线接管 WorkerResult 与
 // 全部控制产物）。任何失败 fail closed；allocation 一定 Terminate。
 func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, request domain.Record, view workerRequestView, exactAdmission *exactProcessAdmission) (domain.Record, error) {
-	if b.transcriptSource == nil {
+	// The exact interpreted production path captures the held child stdout
+	// directly and does not authorize the legacy AllocationDirectory callback.
+	// Provider Exec paths still require that explicit non-production source.
+	if exactAdmission == nil && b.transcriptSource == nil {
 		return domain.Record{}, errors.New("sandboxbridge: exec-chain requires a transcript source")
 	}
 	var plan LaunchPlan
@@ -110,7 +113,15 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		}
 	}
 
-	if b.authority != nil {
+	if exactAdmission != nil {
+		// Production allocation identity and envelope come exclusively from the
+		// current Stage2 provision receipt. The bridge neither calls Provision a
+		// second time nor adopts a LocalRunner directory by allocationId.
+		allocationID, generation, fencingToken, err = b.currentProductionExecAllocation(ctx, view, requirements, plan, exactAdmission, exactLease)
+		if err != nil {
+			return domain.Record{}, err
+		}
+	} else if b.authority != nil {
 		// Embedded authority 模式（dispatchBinder 已注入）：BindDispatch 在
 		// execution.Run 入口已向 durable LocalRunner 完成 Provision 并签发
 		// lease（含 canonical fencingToken 与确定性 AllocationId）。exec-chain
@@ -130,7 +141,9 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		if err := dispatch.ValidateLeaseFencing(lease, lease.Generation, lease.FencingToken); err != nil {
 			return domain.Record{}, fmt.Errorf("sandboxbridge: embedded authority lease fencing invalid (fail closed): %w", err)
 		}
-		// 补充 Provision 以写入 bridge 的 WorkDirAllowlist / EnvironmentAllowlist。
+		// Explicit non-production compatibility: supplement Provision to write
+		// bridge WorkDirAllowlist / EnvironmentAllowlist. Production is handled
+		// by the branch above and can never reach this provider call.
 		// AllocationProvider 幂等：同一 (runId, attemptId) 的二次 Provision 以
 		// identity+lease fencing 通过并刷新 envelope，不会产生新 allocation。
 		allocationID = lease.AllocationId
@@ -278,7 +291,7 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 			return domain.Record{}, err
 		}
 	}
-	if err := b.stageControlInputs(ctx, view, request, allocationID, generation, fencingToken, plan.ControlRootPath()); err != nil {
+	if err := b.stageControlInputs(ctx, view, request, allocationID, generation, fencingToken, plan.ControlRootPath(), exactAdmission); err != nil {
 		return domain.Record{}, fmt.Errorf("sandboxbridge: stage control inputs: %w", err)
 	}
 
@@ -394,6 +407,22 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		}
 	}
 	return record, nil
+}
+
+func (b *Bridge) currentProductionExecAllocation(ctx context.Context, view workerRequestView, requirements domain.SandboxRequirements, plan LaunchPlan, admission *exactProcessAdmission, lease dispatch.DispatchLease) (string, int64, string, error) {
+	if b == nil || admission == nil || admission.allocation == nil {
+		return "", 0, "", launchidentity.ErrUnavailable
+	}
+	current, err := admission.allocation.Current(ctx)
+	if err != nil {
+		return "", 0, "", errors.Join(launchidentity.ErrUnavailable, err)
+	}
+	if err := validateProductionAllocationCurrent(current, admission, lease); err != nil ||
+		current.Requirements.AccessMode != string(requirements.AccessMode) || current.Requirements.MinimumAssuranceLevel != string(requirements.MinimumAssuranceLevel) ||
+		!containsExact(current.WorkDirAllowlist, plan.WorkDir()) || !containsAllExact(current.EnvironmentAllowlist, envKeyAllowlist(plan.EnvBlock())) {
+		return "", 0, "", errors.Join(launchidentity.ErrUnavailable, err)
+	}
+	return lease.AllocationId, lease.Generation, lease.FencingToken, nil
 }
 
 // requireExactLease reopens the durable dispatch authority immediately before
@@ -691,6 +720,9 @@ func boundedBytes(raw []byte, limit int64) ([]byte, bool) {
 // 核对（一次内容寻址往返；provider digest 为权威一侧，bytes 为读取一侧，
 // 不一致立刻 fail closed）。
 func (b *Bridge) readAndVerifyTranscript(allocationID string, receipt *sandbox.ExecReceipt) ([]byte, error) {
+	if b.productionGate {
+		return nil, fmt.Errorf("sandboxbridge: path transcript source is non-production: %w", launchidentity.ErrUnavailable)
+	}
 	raw, err := b.transcriptSource(allocationID, transcriptArtifactID)
 	if err != nil {
 		return nil, fmt.Errorf("sandboxbridge: transcript readback: %w", err)
@@ -706,7 +738,7 @@ func (b *Bridge) readAndVerifyTranscript(allocationID string, receipt *sandbox.E
 
 // stageControlInputs 把 worker-request 与 controlRoot 内的冻结输入原样
 // 内容寻址入账（消费前后由 provider 重算 digest）。
-func (b *Bridge) stageControlInputs(ctx context.Context, view workerRequestView, request domain.Record, allocationID string, generation int64, fencingToken, controlRoot string) error {
+func (b *Bridge) stageControlInputs(ctx context.Context, view workerRequestView, request domain.Record, allocationID string, generation int64, fencingToken, controlRoot string, exactAdmission *exactProcessAdmission) error {
 	stageIdentity, err := identity(view, allocationID, generation, fencingToken, "command-stage")
 	if err != nil {
 		return err
@@ -729,6 +761,15 @@ func (b *Bridge) stageControlInputs(ctx context.Context, view workerRequestView,
 			})
 		}
 	}
+	if exactAdmission != nil {
+		if exactAdmission.allocation == nil {
+			return launchidentity.ErrUnavailable
+		}
+		if _, err := exactAdmission.allocation.Stage(ctx, inputs); err != nil {
+			return fmt.Errorf("sandboxbridge: Stage2 stage failed: %w", err)
+		}
+		return nil
+	}
 	if _, err := b.provider.Stage(ctx, sandbox.StageRequest{
 		Identity:     stageIdentity,
 		AllocationId: allocationID,
@@ -737,6 +778,24 @@ func (b *Bridge) stageControlInputs(ctx context.Context, view workerRequestView,
 		return fmt.Errorf("sandboxbridge: stage failed: %w", err)
 	}
 	return nil
+}
+
+func containsExact(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAllExact(values, wanted []string) bool {
+	for _, candidate := range wanted {
+		if !containsExact(values, candidate) {
+			return false
+		}
+	}
+	return true
 }
 
 func envKeyAllowlist(environment []string) []string {

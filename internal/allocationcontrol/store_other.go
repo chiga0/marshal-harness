@@ -2,6 +2,12 @@
 
 package allocationcontrol
 
+import (
+	"context"
+
+	"github.com/chiga0/marshal-harness/internal/sandbox"
+)
+
 // Store is deliberately inert off Darwin. ADR 0057 does not permit the
 // production allocation profile to degrade to path-based or memory behavior.
 type Store struct{}
@@ -46,4 +52,20 @@ func (store *Store) prepareTerminateIntent(TerminateRequestV1) (AllocationTermin
 
 func (store *Store) verifyTerminateReceipt(AllocationTerminateIntentV1, AllocationTerminateReceiptV1) error {
 	return ErrPlatformUnavailable
+}
+
+func (store *Store) heldObjectsRootIdentity() (ObjectIdentityV1, error) {
+	return ObjectIdentityV1{}, ErrPlatformUnavailable
+}
+
+func (store *Store) currentLiveIdentity(AuthoritySnapshot, ObjectIdentityV1) (ObjectIdentityV1, error) {
+	return ObjectIdentityV1{}, ErrPlatformUnavailable
+}
+
+func (store *Store) stageCurrentLive(context.Context, AuthoritySnapshot, ObjectIdentityV1, []sandbox.StageInput) (*sandbox.StageReport, error) {
+	return nil, ErrPlatformUnavailable
+}
+
+func (store *Store) readCurrentLiveArtifact(context.Context, AuthoritySnapshot, ObjectIdentityV1, string, int64) ([]byte, error) {
+	return nil, ErrPlatformUnavailable
 }

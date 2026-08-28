@@ -426,8 +426,10 @@ type EmbeddedClaimRequest struct {
 	Requirements domain.SandboxRequirements
 }
 
-// EmbeddedClaim is the accepted claim outcome: the dispatch lease issued by
-// the gate-6 Matcher plus the Local provider allocation granted under it.
+// EmbeddedClaim is the accepted legacy/non-production claim outcome: the
+// dispatch lease issued by the gate-6 Matcher plus the provider allocation
+// granted under it. Production composition must use ClaimDispatchLease and
+// let Stage2 allocationcontrol own Provision/Terminate.
 type EmbeddedClaim struct {
 	Lease      dispatch.DispatchLease
 	Allocation sandbox.SandboxAllocation
@@ -458,43 +460,9 @@ func (rt *EmbeddedSandboxRuntime) ClaimExecution(ctx context.Context, request Em
 	if err := rt.adjudicateRoleBookkeeping(scope, request); err != nil {
 		return EmbeddedClaim{}, err
 	}
-	now := rt.now().UTC()
-	var lease dispatch.DispatchLease
-	switch request.WorkloadRole {
-	case sandbox.WorkloadRoleWorker:
-		claimed, err := rt.matcher.Claim(dispatch.ClaimRequest{
-			AuthorityNamespaceId: rt.namespace,
-			RegistrationId:       rt.registration.RegistrationId,
-			Snapshot:             rt.snapshot,
-			Evidences:            []provider.ConformanceEvidence{},
-			Requirements:         request.Requirements,
-			TargetActor:          rt.resultIngress,
-			TaskId:               request.TaskId,
-			RunId:                request.RunId,
-			AttemptId:            request.AttemptId,
-			AllocationId:         request.AllocationId,
-			AckDeadlineAt:        now.Add(embeddedAckWindow).Format(time.RFC3339),
-			ExpiresAt:            now.Add(embeddedLeaseWindow).Format(time.RFC3339),
-		}, now)
-		if err != nil {
-			return EmbeddedClaim{}, fmt.Errorf("app: embedded claim: %w", err)
-		}
-		lease = claimed
-	case sandbox.WorkloadRoleVerifier:
-		workerLease, claimed := rt.claims[scope]
-		if !claimed {
-			return EmbeddedClaim{}, errors.New("app: embedded claim: the verifier sandbox requires an accepted worker claim in the identical scope")
-		}
-		stored, err := rt.store.Get(rt.registration.RegistrationId)
-		if err != nil {
-			return EmbeddedClaim{}, fmt.Errorf("app: embedded claim: current-ledger recheck: %w", err)
-		}
-		if err := rt.matcher.Match(stored, rt.snapshot, []provider.ConformanceEvidence{}, request.Requirements, now); err != nil {
-			return EmbeddedClaim{}, fmt.Errorf("app: embedded claim: %w", err)
-		}
-		lease = workerLease
-	default:
-		return EmbeddedClaim{}, fmt.Errorf("app: embedded claim: %w", sandbox.ErrInvalidWorkloadRole)
+	lease, err := rt.issueDispatchLeaseLocked(request)
+	if err != nil {
+		return EmbeddedClaim{}, err
 	}
 	// The fencing guard re-adjudicates the lease the claim path is about to
 	// spend: no provider allocation is ever granted under a lease whose
@@ -541,10 +509,99 @@ func (rt *EmbeddedSandboxRuntime) ClaimExecution(ctx context.Context, request Em
 	return EmbeddedClaim{Lease: lease, Allocation: receipt.Allocation}, nil
 }
 
-// BindDispatch implements execution.DispatchBinder for the embedded runtime:
-// the attempt's frozen two-dimensional requirements are claimed against the
-// durable registration ledger under the embedded worker principal, granting
-// the Local provider allocation that carries the worker attempt.
+// ClaimDispatchLease performs only dispatch admission and durable lease
+// persistence. It is the production predecessor of the Stage2 allocation
+// effect: success reserves the exact allocation identity but causes no
+// provider or filesystem mutation. ProductionRuntime will append and recover
+// AllocationProvisionIntentV1 separately; it must never call ClaimExecution.
+func (rt *EmbeddedSandboxRuntime) ClaimDispatchLease(ctx context.Context, request EmbeddedClaimRequest) (dispatch.DispatchLease, error) {
+	if err := ctx.Err(); err != nil {
+		return dispatch.DispatchLease{}, err
+	}
+	if err := rt.validateClaimRequest(request); err != nil {
+		return dispatch.DispatchLease{}, err
+	}
+	if request.WorkloadRole != sandbox.WorkloadRoleWorker {
+		return dispatch.DispatchLease{}, fmt.Errorf("app: dispatch lease claim: %w", sandbox.ErrInvalidWorkloadRole)
+	}
+	if err := rt.adjudicateAssurance(request.Requirements); err != nil {
+		return dispatch.DispatchLease{}, err
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	scope := embeddedScopeKey(request.RunId, request.AttemptId)
+	if request.Principal != embeddedWorkerPrincipal {
+		return dispatch.DispatchLease{}, errors.New("app: dispatch lease claim: production worker principal does not match the fixed composition identity")
+	}
+	if err := rt.adjudicateRoleBookkeeping(scope, request); err != nil {
+		return dispatch.DispatchLease{}, err
+	}
+	lease, err := rt.issueDispatchLeaseLocked(request)
+	if err != nil {
+		return dispatch.DispatchLease{}, err
+	}
+	if err := dispatch.ValidateLeaseFencing(lease, lease.Generation, lease.FencingToken); err != nil {
+		return dispatch.DispatchLease{}, fmt.Errorf("app: dispatch lease claim: %w", err)
+	}
+	// Persist before any Stage2 allocation intent may be constructed. Because
+	// DispatchLease does not persist the original requirements, a repeated
+	// claim cannot prove exact request replay and is rejected by the durable
+	// scope index above. Recovery reads LeaseFor; it never reclaims, issues a
+	// second allocation effect, or repairs by directory adopt.
+	if err := rt.leaseLedger.AppendClaim(lease); err != nil {
+		return dispatch.DispatchLease{}, fmt.Errorf("app: dispatch lease claim: persist durable lease: %w", err)
+	}
+	rt.recordClaim(scope, request, lease)
+	return lease, nil
+}
+
+// issueDispatchLeaseLocked performs the claim/match calculation without
+// provider mutation or durable bookkeeping. The caller holds rt.mu and is
+// responsible for persisting/recording the returned lease exactly once.
+func (rt *EmbeddedSandboxRuntime) issueDispatchLeaseLocked(request EmbeddedClaimRequest) (dispatch.DispatchLease, error) {
+	now := rt.now().UTC()
+	switch request.WorkloadRole {
+	case sandbox.WorkloadRoleWorker:
+		claimed, err := rt.matcher.Claim(dispatch.ClaimRequest{
+			AuthorityNamespaceId: rt.namespace,
+			RegistrationId:       rt.registration.RegistrationId,
+			Snapshot:             rt.snapshot,
+			Evidences:            []provider.ConformanceEvidence{},
+			Requirements:         request.Requirements,
+			TargetActor:          rt.resultIngress,
+			TaskId:               request.TaskId,
+			RunId:                request.RunId,
+			AttemptId:            request.AttemptId,
+			AllocationId:         request.AllocationId,
+			AckDeadlineAt:        now.Add(embeddedAckWindow).Format(time.RFC3339),
+			ExpiresAt:            now.Add(embeddedLeaseWindow).Format(time.RFC3339),
+		}, now)
+		if err != nil {
+			return dispatch.DispatchLease{}, fmt.Errorf("app: embedded claim: %w", err)
+		}
+		return claimed, nil
+	case sandbox.WorkloadRoleVerifier:
+		workerLease, claimed := rt.claims[embeddedScopeKey(request.RunId, request.AttemptId)]
+		if !claimed {
+			return dispatch.DispatchLease{}, errors.New("app: embedded claim: the verifier sandbox requires an accepted worker claim in the identical scope")
+		}
+		stored, err := rt.store.Get(rt.registration.RegistrationId)
+		if err != nil {
+			return dispatch.DispatchLease{}, fmt.Errorf("app: embedded claim: current-ledger recheck: %w", err)
+		}
+		if err := rt.matcher.Match(stored, rt.snapshot, []provider.ConformanceEvidence{}, request.Requirements, now); err != nil {
+			return dispatch.DispatchLease{}, fmt.Errorf("app: embedded claim: %w", err)
+		}
+		return workerLease, nil
+	default:
+		return dispatch.DispatchLease{}, fmt.Errorf("app: embedded claim: %w", sandbox.ErrInvalidWorkloadRole)
+	}
+}
+
+// BindDispatch implements the explicit legacy/non-production embedded flow:
+// it claims the lease and immediately grants a Local provider allocation.
+// ProductionRuntime must use ProductionDispatchBinder so Stage2 remains the
+// only Provision/Terminate owner.
 func (rt *EmbeddedSandboxRuntime) BindDispatch(ctx context.Context, taskID, runID, attemptID string, requirements domain.SandboxRequirements) (*execution.DispatchBinding, error) {
 	claim, err := rt.ClaimExecution(ctx, EmbeddedClaimRequest{
 		TaskId:       taskID,
@@ -563,6 +620,31 @@ func (rt *EmbeddedSandboxRuntime) BindDispatch(ctx context.Context, taskID, runI
 		Generation:   claim.Lease.Generation,
 		FencingToken: claim.Lease.FencingToken,
 	}, nil
+}
+
+type stage2DispatchBinder struct{ runtime *EmbeddedSandboxRuntime }
+
+// ProductionDispatchBinder returns the claim-only execution binder intended
+// for the future ProductionRuntime composition root. The existing embedded
+// CLI does not call it, so this slice cannot make production reachable.
+func (rt *EmbeddedSandboxRuntime) ProductionDispatchBinder() execution.DispatchBinder {
+	return stage2DispatchBinder{runtime: rt}
+}
+
+func (binder stage2DispatchBinder) BindDispatch(ctx context.Context, taskID, runID, attemptID string, requirements domain.SandboxRequirements) (*execution.DispatchBinding, error) {
+	if binder.runtime == nil {
+		return nil, errors.New("app: Stage2 dispatch binder is unavailable")
+	}
+	lease, err := binder.runtime.ClaimDispatchLease(ctx, EmbeddedClaimRequest{
+		TaskId: taskID, RunId: runID, AttemptId: attemptID,
+		AllocationId: embeddedAllocationID(runID, attemptID, sandbox.WorkloadRoleWorker),
+		WorkloadRole: sandbox.WorkloadRoleWorker, Principal: embeddedWorkerPrincipal,
+		Requirements: requirements,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &execution.DispatchBinding{Lease: lease, Generation: lease.Generation, FencingToken: lease.FencingToken}, nil
 }
 
 // RevalidateLease re-adjudicates one in-flight lease against the current
@@ -724,6 +806,11 @@ func (rt *EmbeddedSandboxRuntime) validateClaimRequest(request EmbeddedClaimRequ
 // workload role, distinct principals across roles and distinct allocations.
 // The caller must hold rt.mu.
 func (rt *EmbeddedSandboxRuntime) adjudicateRoleBookkeeping(scope string, request EmbeddedClaimRequest) error {
+	if request.WorkloadRole == sandbox.WorkloadRoleWorker {
+		if _, durable := rt.claims[scope]; durable {
+			return errors.New("app: embedded claim: this scope already carries a durable worker DispatchLease; the single-allocation invariant requires a new attempt")
+		}
+	}
 	roles := rt.principals[scope]
 	if bound, taken := roles[request.WorkloadRole]; taken {
 		if bound != request.Principal {

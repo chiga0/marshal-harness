@@ -56,9 +56,10 @@ func (authority DurableProcessAuthority) RecordProcessTerminal(ctx context.Conte
 // or fabricate identity: ProductionRuntime must supply the already-opened
 // exact AttemptIdentity and the current Run verifier.
 type DurableProcessAuthority struct {
-	Store    *resultingress.DurableStore
-	Verifier resultingress.CurrentRunAuthorityVerifier
-	Identity resultingress.AttemptIdentity
+	Store               *resultingress.DurableStore
+	Verifier            resultingress.CurrentRunAuthorityVerifier
+	Identity            resultingress.AttemptIdentity
+	AllocationAuthority *resultingress.AllocationAuthority
 }
 
 func (authority DurableProcessAuthority) AuthorizeLaunch(ctx context.Context, request processcontrol.LaunchAuthorityRequest) (processcontrol.AppendResult, error) {
