@@ -20,6 +20,7 @@ const (
 	ProvisionSchema        = "AllocationProvisionIntentV1"
 	PreparedSchema         = "AllocationStagingPreparedV1"
 	ProvisionReceiptSchema = "AllocationProvisionReceiptV1"
+	TerminateRequestSchema = "TerminateRequestV1"
 	TerminateSchema        = "AllocationTerminateIntentV1"
 	TerminateReceiptSchema = "AllocationTerminateReceiptV1"
 
@@ -221,9 +222,7 @@ func (intent AllocationProvisionIntentV1) Validate() error {
 }
 
 func (intent AllocationProvisionIntentV1) digest() (string, error) {
-	unsigned := intent
-	unsigned.RequestDigest = ""
-	return digestValue(unsigned)
+	return digestValueWithoutField(intent, "requestDigest")
 }
 
 func (intent *AllocationProvisionIntentV1) Seal() error {
@@ -345,8 +344,58 @@ func (receipt *AllocationProvisionReceiptV1) Seal() error {
 	return nil
 }
 
-// AllocationTerminateIntentV1 binds cleanup authority and the exact live
-// object before any rename into the permanent tombstone namespace.
+// TerminateRequestV1 is the caller-controlled, closed cleanup request. Its
+// digest deliberately excludes every filesystem observation made later by
+// Core under held descriptors.
+type TerminateRequestV1 struct {
+	SchemaVersion              string              `json:"schemaVersion"`
+	ProtocolRevision           string              `json:"protocolRevision"`
+	Binding                    AllocationBindingV1 `json:"binding"`
+	TerminalizationID          string              `json:"terminalizationId"`
+	CleanupBindingDigest       string              `json:"cleanupBindingDigest"`
+	ProcessTerminalFactDigest  string              `json:"processTerminalFactDigest"`
+	OrchestratorID             string              `json:"orchestratorId"`
+	ExpectedAttemptSequence    uint64              `json:"expectedAttemptSequence"`
+	AttemptAuthorityFactDigest string              `json:"attemptAuthorityFactDigest"`
+	LiveRelativeName           string              `json:"liveRelativeName"`
+	TombstoneRelativeName      string              `json:"tombstoneRelativeName"`
+	RequestDigest              string              `json:"requestDigest"`
+}
+
+func (request TerminateRequestV1) Validate() error {
+	if request.SchemaVersion != TerminateRequestSchema || request.ProtocolRevision != ProtocolRevision || request.Binding.Validate() != nil || !validText(request.TerminalizationID) || !validText(request.OrchestratorID) || !validDigest(request.CleanupBindingDigest) || !validDigest(request.ProcessTerminalFactDigest) || request.ExpectedAttemptSequence == 0 || request.ExpectedAttemptSequence > maxSafeJSONInteger || !validDigest(request.AttemptAuthorityFactDigest) {
+		return ErrInvalid
+	}
+	_, wantLive, wantTombstone, _, err := DeriveRelativeNames(request.Binding.AllocationID)
+	if err != nil || request.LiveRelativeName != wantLive || request.TombstoneRelativeName != wantTombstone {
+		return ErrInvalid
+	}
+	want, err := request.digest()
+	if err != nil || request.RequestDigest != want {
+		return ErrInvalid
+	}
+	return nil
+}
+
+func (request TerminateRequestV1) digest() (string, error) {
+	return digestValueWithoutField(request, "requestDigest")
+}
+
+func (request *TerminateRequestV1) Seal() error {
+	if request == nil {
+		return ErrInvalid
+	}
+	digest, err := request.digest()
+	if err != nil {
+		return err
+	}
+	request.RequestDigest = digest
+	return request.Validate()
+}
+
+// AllocationTerminateIntentV1 binds one already sealed caller request to the
+// exact live object observed under held descriptors before any tombstone
+// rename. RequestDigest is copied, never recomputed from these observations.
 type AllocationTerminateIntentV1 struct {
 	SchemaVersion              string                     `json:"schemaVersion"`
 	ProtocolRevision           string                     `json:"protocolRevision"`
@@ -368,7 +417,7 @@ type AllocationTerminateIntentV1 struct {
 }
 
 func (intent AllocationTerminateIntentV1) Validate() error {
-	if intent.SchemaVersion != TerminateSchema || intent.ProtocolRevision != ProtocolRevision || intent.Binding.Validate() != nil || !validText(intent.TerminalizationID) || !validText(intent.OrchestratorID) || !validDigest(intent.CleanupBindingDigest) || !validDigest(intent.ProcessTerminalFactDigest) || intent.ExpectedAttemptSequence == 0 || intent.ExpectedAttemptSequence > maxSafeJSONInteger || !validDigest(intent.AttemptAuthorityFactDigest) || intent.LiveIdentity.Validate(ObjectTypeDirectory) != nil || intent.MarkerIdentity.Validate(ObjectTypeRegular) != nil || intent.Marker.Validate() != nil || !validDigest(intent.MarkerDigest) {
+	if intent.SchemaVersion != TerminateSchema || intent.ProtocolRevision != ProtocolRevision || intent.Request().Validate() != nil || intent.LiveIdentity.Validate(ObjectTypeDirectory) != nil || intent.MarkerIdentity.Validate(ObjectTypeRegular) != nil || intent.Marker.Validate() != nil || !validDigest(intent.MarkerDigest) {
 		return ErrInvalid
 	}
 	_, wantLive, wantTombstone, wantMarker, err := DeriveRelativeNames(intent.Binding.AllocationID)
@@ -382,29 +431,41 @@ func (intent AllocationTerminateIntentV1) Validate() error {
 	if err != nil || canonical.DigestBytes(markerBytes) != intent.MarkerDigest {
 		return ErrInvalid
 	}
-	want, err := intent.digest()
-	if err != nil || intent.RequestDigest != want {
-		return ErrInvalid
-	}
 	return nil
 }
 
-func (intent AllocationTerminateIntentV1) digest() (string, error) {
-	unsigned := intent
-	unsigned.RequestDigest = ""
-	return digestValue(unsigned)
+func (intent AllocationTerminateIntentV1) Request() TerminateRequestV1 {
+	return TerminateRequestV1{
+		SchemaVersion: TerminateRequestSchema, ProtocolRevision: ProtocolRevision, Binding: intent.Binding,
+		TerminalizationID: intent.TerminalizationID, CleanupBindingDigest: intent.CleanupBindingDigest,
+		ProcessTerminalFactDigest: intent.ProcessTerminalFactDigest, OrchestratorID: intent.OrchestratorID,
+		ExpectedAttemptSequence: intent.ExpectedAttemptSequence, AttemptAuthorityFactDigest: intent.AttemptAuthorityFactDigest,
+		LiveRelativeName: intent.LiveRelativeName, TombstoneRelativeName: intent.TombstoneRelativeName,
+		RequestDigest: intent.RequestDigest,
+	}
 }
 
-func (intent *AllocationTerminateIntentV1) Seal() error {
-	if intent == nil {
-		return ErrInvalid
+func bindTerminateIntent(request TerminateRequestV1, liveIdentity, markerIdentity ObjectIdentityV1, marker AllocationIdentityMarkerV1, markerDigest string) (AllocationTerminateIntentV1, error) {
+	if request.Validate() != nil {
+		return AllocationTerminateIntentV1{}, ErrInvalid
 	}
-	digest, err := intent.digest()
+	_, _, _, markerName, err := DeriveRelativeNames(request.Binding.AllocationID)
 	if err != nil {
-		return err
+		return AllocationTerminateIntentV1{}, err
 	}
-	intent.RequestDigest = digest
-	return intent.Validate()
+	intent := AllocationTerminateIntentV1{
+		SchemaVersion: TerminateSchema, ProtocolRevision: ProtocolRevision, Binding: request.Binding,
+		TerminalizationID: request.TerminalizationID, CleanupBindingDigest: request.CleanupBindingDigest,
+		ProcessTerminalFactDigest: request.ProcessTerminalFactDigest, OrchestratorID: request.OrchestratorID,
+		ExpectedAttemptSequence: request.ExpectedAttemptSequence, AttemptAuthorityFactDigest: request.AttemptAuthorityFactDigest,
+		LiveRelativeName: request.LiveRelativeName, TombstoneRelativeName: request.TombstoneRelativeName,
+		MarkerRelativeName: markerName, LiveIdentity: liveIdentity, MarkerIdentity: markerIdentity,
+		Marker: marker, MarkerDigest: markerDigest, RequestDigest: request.RequestDigest,
+	}
+	if intent.Validate() != nil {
+		return AllocationTerminateIntentV1{}, ErrInvalid
+	}
+	return intent, nil
 }
 
 // AllocationTerminateReceiptV1 proves the exact live object was atomically
@@ -491,6 +552,22 @@ func digestValue(value any) (string, error) {
 		return "", err
 	}
 	return canonical.DigestBytes(data), nil
+}
+
+func digestValueWithoutField(value any, field string) (string, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", ErrInvalid
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return "", ErrInvalid
+	}
+	if _, present := object[field]; !present {
+		return "", ErrInvalid
+	}
+	delete(object, field)
+	return digestValue(object)
 }
 
 func validText(value string) bool {

@@ -32,6 +32,10 @@ func (store *Store) completeTerminate(AllocationTerminateIntentV1, string) (Allo
 	return AllocationTerminateReceiptV1{}, ErrPlatformUnavailable
 }
 
+func (store *Store) prepareTerminateIntent(TerminateRequestV1) (AllocationTerminateIntentV1, error) {
+	return AllocationTerminateIntentV1{}, ErrPlatformUnavailable
+}
+
 func (store *Store) verifyTerminateReceipt(AllocationTerminateIntentV1, AllocationTerminateReceiptV1) error {
 	return ErrPlatformUnavailable
 }

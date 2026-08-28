@@ -162,9 +162,7 @@ func (record JournalRecord) Validate() error {
 }
 
 func (record JournalRecord) digest() (string, error) {
-	unsigned := record
-	unsigned.RecordDigest = ""
-	return digestValue(unsigned)
+	return digestValueWithoutField(record, "recordDigest")
 }
 
 func (record JournalRecord) canonical() ([]byte, error) {

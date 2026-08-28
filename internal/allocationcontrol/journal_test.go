@@ -305,3 +305,132 @@ func TestJournalRecordsDoNotExposeMutableAuthorityBytes(t *testing.T) {
 		t.Fatal("caller mutated journal-owned authority bytes")
 	}
 }
+
+func TestDetachedRequestAndRecordDigestGoldens(t *testing.T) {
+	staging, live, tombstone, markerName, err := DeriveRelativeNames("allocation-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := AllocationBindingV1{
+		AuthorityNamespaceID: "local/default", TaskID: "task-1", RunID: "run-1", AttemptID: "attempt-1",
+		AllocationID: "allocation-1", LeaseID: "lease-1", Generation: 1,
+		FencingTokenDigest: testDigest("fence"), CommandID: "command-provision-1", IdempotencyKey: "idempotency-provision-1",
+	}
+	provision := AllocationProvisionIntentV1{
+		SchemaVersion: ProvisionSchema, ProtocolRevision: ProtocolRevision, Binding: binding,
+		Requirements:    SandboxRequirementsV1{AccessMode: "workspace-write", MinimumAssuranceLevel: "workspace-write"},
+		AllowedStoreIDs: []string{}, WorkDirAllowlist: []string{"/tmp/worktree"}, EnvironmentAllowlist: []string{"PATH"},
+		ExpectedOwnerUID: 501, ExpectedDirectoryMode: 0o700, ExpectedMarkerMode: 0o600,
+		StagingRelativeName: staging, LiveRelativeName: live, MarkerRelativeName: markerName,
+		MarkerNonceDigest: testDigest("nonce"), ExpectedAttemptSequence: 7, AttemptAuthorityFactDigest: testDigest("attempt-head"),
+	}
+	if err := provision.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	const provisionGolden = "sha256:7dfb104918f2c35c029ac5739d7fa9d4c6faf81ec91bb22f95cccfbfbc6f5774"
+	if provision.RequestDigest != provisionGolden {
+		t.Fatal("AllocationProvisionIntentV1 digest is not the JCS object with requestDigest absent")
+	}
+
+	terminateBinding := binding
+	terminateBinding.CommandID = "command-terminate-1"
+	terminateBinding.IdempotencyKey = "idempotency-terminate-1"
+	request := TerminateRequestV1{
+		SchemaVersion: TerminateRequestSchema, ProtocolRevision: ProtocolRevision, Binding: terminateBinding,
+		TerminalizationID: "terminalization-1", CleanupBindingDigest: testDigest("cleanup"),
+		ProcessTerminalFactDigest: testDigest("process-terminal"), OrchestratorID: "orchestrator-1",
+		ExpectedAttemptSequence: 10, AttemptAuthorityFactDigest: testDigest("terminate-head"),
+		LiveRelativeName: live, TombstoneRelativeName: tombstone,
+	}
+	if err := request.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	const terminateGolden = "sha256:cbfabda87511dbb8071a5d06e1c748f1be1ae11bfcfa66be9a6a48c058370fd2"
+	if request.RequestDigest != terminateGolden {
+		t.Fatal("TerminateRequestV1 digest is not the JCS object with requestDigest absent")
+	}
+
+	payload, err := EncodeFactPayload(provision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact := CommittedAuthorityFact{
+		RecordKind: RecordProvisionIntent, RecordID: "fact-1", RecordedAt: "2026-08-28T12:00:00Z",
+		Binding: binding, ExpectedAttemptSequence: 7, AttemptAuthorityFactDigest: testDigest("fact-fact-1"),
+		RequestDigest: provision.RequestDigest, AuthorityFact: payload,
+	}
+	record, err := journalRecordForFact(1, JournalGenesisDigest, fact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const recordGolden = "sha256:76b8e2ef7dfc0fd5529affcdec60fea625f3451dc738bae6fe03426a0be93728"
+	if record.RecordDigest != recordGolden {
+		t.Fatal("JournalRecord digest is not the JCS object with recordDigest absent")
+	}
+}
+
+func TestTerminateRequestDigestExcludesObservationButIntentBindsIt(t *testing.T) {
+	provision := testProvisionIntent(t)
+	marker := provision.Marker()
+	markerBytes, err := marker.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, live, tombstone, _, err := DeriveRelativeNames(provision.Binding.AllocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := provision.Binding
+	binding.CommandID = "command-terminate-1"
+	binding.IdempotencyKey = "idempotency-terminate-1"
+	request := TerminateRequestV1{
+		SchemaVersion: TerminateRequestSchema, ProtocolRevision: ProtocolRevision, Binding: binding,
+		TerminalizationID: "terminalization-1", CleanupBindingDigest: testDigest("cleanup"),
+		ProcessTerminalFactDigest: testDigest("process-terminal"), OrchestratorID: "orchestrator-1",
+		ExpectedAttemptSequence: 10, AttemptAuthorityFactDigest: testDigest("terminate-head"),
+		LiveRelativeName: live, TombstoneRelativeName: tombstone,
+	}
+	if err := request.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	markerIdentity := ObjectIdentityV1{Device: "1", Inode: "3", Mode: 0o100600, UID: 501, GID: 20, Size: int64(len(markerBytes)), Nlink: 1, Type: ObjectTypeRegular}
+	firstLive := ObjectIdentityV1{Device: "1", Inode: "2", Mode: 0o40700, UID: 501, GID: 20, Size: 64, Nlink: 2, Type: ObjectTypeDirectory}
+	secondLive := firstLive
+	secondLive.Inode = "4"
+	first, err := bindTerminateIntent(request, firstLive, markerIdentity, marker, canonical.DigestBytes(markerBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := bindTerminateIntent(request, secondLive, markerIdentity, marker, canonical.DigestBytes(markerBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.RequestDigest != request.RequestDigest || second.RequestDigest != request.RequestDigest {
+		t.Fatal("held observation changed the sealed caller request digest")
+	}
+	if equalCanonical(first, second) {
+		t.Fatal("different held observations produced the same terminate intent")
+	}
+	firstPayload, _ := EncodeFactPayload(first)
+	fact := committedFactForTerminateTest(first, firstPayload)
+	snapshot := AuthoritySnapshot{Facts: []CommittedAuthorityFact{fact}}
+	if snapshot.hasExactFact(RecordTerminateIntent, fact.AttemptAuthorityFactDigest, request.RequestDigest, second) {
+		t.Fatal("authority fact for one observation accepted a conflicting terminate intent")
+	}
+	changed := request
+	changed.TerminalizationID = "terminalization-2"
+	changed.RequestDigest = ""
+	if err := changed.Seal(); err != nil || changed.RequestDigest == request.RequestDigest {
+		t.Fatal("caller-controlled terminate tuple change did not change requestDigest")
+	}
+}
+
+func committedFactForTerminateTest(intent AllocationTerminateIntentV1, payload json.RawMessage) CommittedAuthorityFact {
+	return CommittedAuthorityFact{
+		RecordKind: RecordTerminateIntent, RecordID: "terminate-intent", RecordedAt: "2026-08-28T12:00:00Z",
+		Binding: intent.Binding, ExpectedAttemptSequence: intent.ExpectedAttemptSequence,
+		AttemptAuthorityFactDigest: testDigest("terminate-intent-fact"), RequestDigest: intent.RequestDigest,
+		TerminalizationID: intent.TerminalizationID, CleanupBindingDigest: intent.CleanupBindingDigest,
+		ProcessTerminalFactDigest: intent.ProcessTerminalFactDigest, AuthorityFact: payload,
+	}
+}

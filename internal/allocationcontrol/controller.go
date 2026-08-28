@@ -250,6 +250,17 @@ func (controller *Controller) RecoverTerminate(ctx context.Context, effectID str
 	return result, err
 }
 
+// PrepareTerminateIntent re-observes the live directory and identity marker
+// under Store-held descriptors. The returned intent is only a candidate: the
+// stage-2 caller must append it under the same current authority session before
+// invoking RecoverTerminate. External callers never supply object identities.
+func (controller *Controller) PrepareTerminateIntent(request TerminateRequestV1) (AllocationTerminateIntentV1, error) {
+	if controller == nil || controller.store == nil {
+		return AllocationTerminateIntentV1{}, ErrInvalid
+	}
+	return controller.store.prepareTerminateIntent(request)
+}
+
 func (controller *Controller) Close() error {
 	if controller == nil || controller.store == nil {
 		return nil

@@ -36,7 +36,6 @@ type Store struct {
 
 type allocationObservation struct {
 	present        bool
-	markerMissing  bool
 	objectIdentity ObjectIdentityV1
 	markerIdentity ObjectIdentityV1
 	marker         AllocationIdentityMarkerV1
@@ -139,7 +138,7 @@ func (store *Store) prepareProvision(intent AllocationProvisionIntentV1, intentF
 	if store.objects == nil || intent.Validate() != nil || intent.ExpectedOwnerUID != store.uid || !store.scope.Matches(intent.Binding) || !validDigest(intentFactDigest) {
 		return AllocationStagingPreparedV1{}, ErrInvalid
 	}
-	staging, err := store.inspectRecoverableStaging(intent.StagingRelativeName, intent.MarkerRelativeName)
+	staging, err := store.inspectPreparedStaging(intent.StagingRelativeName, intent.MarkerRelativeName)
 	if err != nil {
 		return AllocationStagingPreparedV1{}, err
 	}
@@ -156,7 +155,7 @@ func (store *Store) prepareProvision(intent AllocationProvisionIntentV1, intentF
 		return AllocationStagingPreparedV1{}, ErrFilesystemConflict
 	}
 	marker := intent.Marker()
-	if staging.present && !staging.markerMissing {
+	if staging.present {
 		if staging.marker != marker {
 			return AllocationStagingPreparedV1{}, ErrFilesystemConflict
 		}
@@ -210,7 +209,7 @@ func (store *Store) prepareProvision(intent AllocationProvisionIntentV1, intentF
 	if err := store.objects.Sync(); err != nil {
 		return AllocationStagingPreparedV1{}, err
 	}
-	staging, err = store.inspectRecoverableStaging(intent.StagingRelativeName, intent.MarkerRelativeName)
+	staging, err = store.inspectPreparedStaging(intent.StagingRelativeName, intent.MarkerRelativeName)
 	if err != nil || !staging.present || staging.marker != marker {
 		if err != nil {
 			return AllocationStagingPreparedV1{}, err
@@ -245,11 +244,11 @@ func (store *Store) syncPreparedStaging(name, markerName string, expected alloca
 	if err := store.objects.Sync(); err != nil {
 		return allocationObservation{}, err
 	}
-	current, err := store.inspectRecoverableStaging(name, markerName)
+	current, err := store.inspectPreparedStaging(name, markerName)
 	if err != nil {
 		return allocationObservation{}, err
 	}
-	if current.markerMissing || !matchesObservation(current, expected) {
+	if !matchesObservation(current, expected) {
 		return allocationObservation{}, ErrFilesystemConflict
 	}
 	return current, nil
@@ -282,7 +281,7 @@ func (store *Store) completeProvision(intent AllocationProvisionIntentV1, prepar
 	if store.objects == nil || prepared.Validate(intent) != nil || !store.scope.Matches(intent.Binding) || !validDigest(preparedFactDigest) {
 		return AllocationProvisionReceiptV1{}, ErrInvalid
 	}
-	staging, err := store.inspectRecoverableStaging(intent.StagingRelativeName, intent.MarkerRelativeName)
+	staging, err := store.inspectPreparedStaging(intent.StagingRelativeName, intent.MarkerRelativeName)
 	if err != nil {
 		return AllocationProvisionReceiptV1{}, err
 	}
@@ -319,7 +318,7 @@ func (store *Store) completeProvision(intent AllocationProvisionIntentV1, prepar
 		return AllocationProvisionReceiptV1{}, err
 	}
 
-	staging, err = store.inspectRecoverableStaging(intent.StagingRelativeName, intent.MarkerRelativeName)
+	staging, err = store.inspectPreparedStaging(intent.StagingRelativeName, intent.MarkerRelativeName)
 	if err != nil {
 		return AllocationProvisionReceiptV1{}, err
 	}
@@ -431,6 +430,44 @@ func (store *Store) completeTerminate(intent AllocationTerminateIntentV1, intent
 	return receipt, nil
 }
 
+// prepareTerminateIntent obtains the filesystem observation that is eligible
+// to be appended as a terminate intent. It is deliberately read-only: the
+// caller must still append the returned value while holding current authority
+// before RecoverTerminate may mutate the allocation.
+func (store *Store) prepareTerminateIntent(request TerminateRequestV1) (AllocationTerminateIntentV1, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.objects == nil || request.Validate() != nil || !store.scope.Matches(request.Binding) {
+		return AllocationTerminateIntentV1{}, ErrInvalid
+	}
+	stagingName, _, _, markerName, err := DeriveRelativeNames(request.Binding.AllocationID)
+	if err != nil {
+		return AllocationTerminateIntentV1{}, err
+	}
+	staging, err := store.inspectPreparedStaging(stagingName, markerName)
+	if err != nil {
+		return AllocationTerminateIntentV1{}, err
+	}
+	live, err := store.inspectAllocation(request.LiveRelativeName, markerName)
+	if err != nil {
+		return AllocationTerminateIntentV1{}, err
+	}
+	tombstone, err := store.inspectAllocation(request.TombstoneRelativeName, markerName)
+	if err != nil {
+		return AllocationTerminateIntentV1{}, err
+	}
+	if staging.present || tombstone.present {
+		return AllocationTerminateIntentV1{}, ErrFilesystemConflict
+	}
+	if !live.present {
+		return AllocationTerminateIntentV1{}, ErrFilesystemUnknown
+	}
+	if !sameAllocationScope(live.marker.Binding, request.Binding) {
+		return AllocationTerminateIntentV1{}, ErrFilesystemConflict
+	}
+	return bindTerminateIntent(request, live.objectIdentity, live.markerIdentity, live.marker, live.markerDigest)
+}
+
 func (store *Store) verifyTerminateReceipt(intent AllocationTerminateIntentV1, receipt AllocationTerminateReceiptV1) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -455,14 +492,14 @@ func (store *Store) inspectAllocation(name, markerName string) (allocationObserv
 	return store.inspectAllocationState(name, markerName, false)
 }
 
-// inspectRecoverableStaging accepts exactly one pre-marker crash artifact: a
-// same-device, owner-only, empty deterministic staging directory. This is the
-// only state in which recovery may create the still-missing O_EXCL marker.
-func (store *Store) inspectRecoverableStaging(name, markerName string) (allocationObservation, error) {
+// inspectPreparedStaging additionally requires the marker to be the only
+// directory entry. A pre-existing directory without a marker is never adopted:
+// ADR 0057's O_EXCL/no-clobber rule makes that state an intervention conflict.
+func (store *Store) inspectPreparedStaging(name, markerName string) (allocationObservation, error) {
 	return store.inspectAllocationState(name, markerName, true)
 }
 
-func (store *Store) inspectAllocationState(name, markerName string, allowMissingMarker bool) (allocationObservation, error) {
+func (store *Store) inspectAllocationState(name, markerName string, requireOnlyMarker bool) (allocationObservation, error) {
 	if requireRelativeName(name) != nil || requireRelativeName(markerName) != nil {
 		return allocationObservation{}, ErrInvalid
 	}
@@ -493,20 +530,6 @@ func (store *Store) inspectAllocationState(name, markerName string, allowMissing
 
 	markerFD, err := unix.Openat(directoryFD, markerName, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		if errors.Is(err, unix.ENOENT) && allowMissingMarker {
-			names, readErr := directory.Readdirnames(1)
-			if len(names) != 0 || !errors.Is(readErr, io.EOF) {
-				return allocationObservation{}, ErrFilesystemConflict
-			}
-			var directoryAfter, directoryNamed unix.Stat_t
-			if err := unix.Fstat(directoryFD, &directoryAfter); err != nil || !sameStat(held, directoryAfter) {
-				return allocationObservation{}, ErrFilesystemConflict
-			}
-			if err := unix.Fstatat(int(store.objects.Fd()), name, &directoryNamed, unix.AT_SYMLINK_NOFOLLOW); err != nil || !sameStat(held, directoryNamed) {
-				return allocationObservation{}, ErrFilesystemConflict
-			}
-			return allocationObservation{present: true, markerMissing: true, objectIdentity: objectIdentity(held)}, nil
-		}
 		return allocationObservation{}, ErrFilesystemConflict
 	}
 	markerFile := os.NewFile(uintptr(markerFD), markerName)
@@ -532,7 +555,7 @@ func (store *Store) inspectAllocationState(name, markerName string, allowMissing
 	if err := unix.Fstatat(int(store.objects.Fd()), name, &directoryNamed, unix.AT_SYMLINK_NOFOLLOW); err != nil || !sameStat(held, directoryNamed) {
 		return allocationObservation{}, ErrFilesystemConflict
 	}
-	if allowMissingMarker {
+	if requireOnlyMarker {
 		names, readErr := directory.Readdirnames(2)
 		if len(names) != 1 || names[0] != markerName || !errors.Is(readErr, io.EOF) {
 			return allocationObservation{}, ErrFilesystemConflict

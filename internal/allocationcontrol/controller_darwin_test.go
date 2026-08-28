@@ -17,7 +17,7 @@ type fakeAllocationAuthority struct {
 	session *fakeAllocationSession
 }
 
-func TestControllerRecoversCrashAfterStagingMkdirBeforeMarker(t *testing.T) {
+func TestControllerRejectsPreexistingEmptyStagingWithoutMarker(t *testing.T) {
 	root := t.TempDir()
 	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 	controller, store := openController(t, root, session)
@@ -29,11 +29,15 @@ func TestControllerRecoversCrashAfterStagingMkdirBeforeMarker(t *testing.T) {
 	if err := store.objects.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := controller.RecoverProvision(context.Background(), "effect-provision"); err != nil {
-		t.Fatal("empty private pre-marker staging did not converge after restart boundary", err)
+	if _, err := controller.RecoverProvision(context.Background(), "effect-provision"); !errors.Is(err, ErrFilesystemConflict) {
+		t.Fatal("pre-existing empty staging without the O_EXCL marker was adopted")
 	}
-	if len(store.JournalRecords()) != 3 {
-		t.Fatal("pre-marker recovery did not project the complete authority sequence")
+	if len(store.JournalRecords()) != 1 || session.snapshot.ProvisionPrepared != nil || session.snapshot.ProvisionReceipt != nil {
+		t.Fatal("pre-marker conflict produced prepared or receipt authority")
+	}
+	markerPath := filepath.Join(testObjectsPath(t, root, intent.Binding), intent.StagingRelativeName, intent.MarkerRelativeName)
+	if _, err := os.Lstat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("pre-marker conflict still created an identity marker")
 	}
 }
 
@@ -260,27 +264,80 @@ func TestControllerProvisionTerminateAndReplay(t *testing.T) {
 	}
 }
 
+func TestControllerPrepareTerminateIntentReobservesLiveAndRejectsMarkerSwap(t *testing.T) {
+	root := t.TempDir()
+	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
+	controller, _ := openController(t, root, session)
+	defer controller.Close()
+	provisioned, err := controller.RecoverProvision(context.Background(), "effect-provision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := testTerminateRequest(t, provisioned)
+	intent, err := controller.PrepareTerminateIntent(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.LiveIdentity != provisioned.LiveIdentity || intent.MarkerIdentity != provisioned.MarkerIdentity || intent.Marker != provisioned.Marker || intent.MarkerDigest != provisioned.MarkerDigest {
+		t.Fatal("terminate preparation did not use the current held live observation")
+	}
+	fact := committedFactForValue(RecordTerminateIntent, "terminate-intent", intent.Binding, intent.RequestDigest, intent)
+	session.snapshot.TerminateIntent = &intent
+	session.snapshot.TerminateIntentFactDigest = fact.AttemptAuthorityFactDigest
+	session.snapshot.Facts = append(session.snapshot.Facts, fact)
+	session.snapshotReads = 0
+
+	objects := testObjectsPath(t, root, intent.Binding)
+	markerPath := filepath.Join(objects, intent.LiveRelativeName, intent.MarkerRelativeName)
+	oldMarkerPath := filepath.Join(root, "marker-before-swap")
+	if err := os.Rename(markerPath, oldMarkerPath); err != nil {
+		t.Fatal(err)
+	}
+	markerBytes, err := provisioned.Marker.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(markerPath, markerBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.RecoverTerminate(context.Background(), "effect-terminate"); !errors.Is(err, ErrFilesystemConflict) {
+		t.Fatal("marker pathname swap after authority append was not rejected")
+	}
+	if session.snapshot.TerminateReceipt != nil {
+		t.Fatal("marker swap produced a terminate receipt")
+	}
+}
+
 func testTerminateIntent(t *testing.T, receipt AllocationProvisionReceiptV1) AllocationTerminateIntentV1 {
 	t.Helper()
-	_, live, tombstone, marker, err := DeriveRelativeNames(receipt.Binding.AllocationID)
+	request := testTerminateRequest(t, receipt)
+	intent, err := bindTerminateIntent(request, receipt.LiveIdentity, receipt.MarkerIdentity, receipt.Marker, receipt.MarkerDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return intent
+}
+
+func testTerminateRequest(t *testing.T, receipt AllocationProvisionReceiptV1) TerminateRequestV1 {
+	t.Helper()
+	_, live, tombstone, _, err := DeriveRelativeNames(receipt.Binding.AllocationID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	binding := receipt.Binding
 	binding.CommandID = "command-terminate-1"
 	binding.IdempotencyKey = "idempotency-terminate-1"
-	intent := AllocationTerminateIntentV1{
-		SchemaVersion: TerminateSchema, ProtocolRevision: ProtocolRevision, Binding: binding,
+	request := TerminateRequestV1{
+		SchemaVersion: TerminateRequestSchema, ProtocolRevision: ProtocolRevision, Binding: binding,
 		TerminalizationID: "terminalization-1", CleanupBindingDigest: testDigest("cleanup"),
 		ProcessTerminalFactDigest: testDigest("process-terminal"), OrchestratorID: "orchestrator-1",
 		ExpectedAttemptSequence: 10, AttemptAuthorityFactDigest: testDigest("terminate-head"),
-		LiveRelativeName: live, TombstoneRelativeName: tombstone, MarkerRelativeName: marker,
-		LiveIdentity: receipt.LiveIdentity, MarkerIdentity: receipt.MarkerIdentity, Marker: receipt.Marker, MarkerDigest: receipt.MarkerDigest,
+		LiveRelativeName: live, TombstoneRelativeName: tombstone,
 	}
-	if err := intent.Seal(); err != nil {
+	if err := request.Seal(); err != nil {
 		t.Fatal(err)
 	}
-	return intent
+	return request
 }
 
 func TestControllerRecoversEveryProvisionCommitBoundary(t *testing.T) {
