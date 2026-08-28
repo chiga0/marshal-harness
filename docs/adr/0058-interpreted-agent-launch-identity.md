@@ -1,6 +1,6 @@
 # ADR 0058：解释型 Agent 启动身份与材料闭包
 
-- 状态：提议（Proposed，2026-08-28）；只登记候选合同，不表示实现完成，不升级 Pi 或任何能力的生产可达性
+- 状态：已接受（Accepted，2026-08-28；candidate sourceHead `2e338273c1fad796e418b089617608829a846e37` 经独立 reviewer 审查，P0/P1/P2 均为 0）；接受只冻结合同，不表示实现完成，不升级 Pi 或任何能力的生产可达性
 - 关联：[ADR 0043](0043-worker-executor-profile-and-dual-binding.md)（`AgentLaunchSpec`）、[ADR 0051](0051-darwin-local-dogfood-profile.md)（Darwin ordinary-user 边界）、[ADR 0052](0052-v1-release-scope-and-production-reachability.md)（生产可达性）、[ADR 0055](0055-sandbox-exec-workload-envelope.md)（allocation-carried Exec）、[ADR 0056](0056-darwin-process-observation-and-attempt-terminalization.md)（真实进程观察）、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)（唯一生产装配）、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)
 
 ## 背景
