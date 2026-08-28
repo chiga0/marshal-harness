@@ -637,18 +637,14 @@ func (rt *EmbeddedSandboxRuntime) WorkerAllocationID(runID, attemptID string) st
 	return embeddedAllocationID(runID, attemptID, sandbox.WorkloadRoleWorker)
 }
 
-// AgentRegistrationActive 验证 agent adapter registration 当前仍为 active
-// （R2/R3 纠偏：agent 侧 current-ledger recheck）。只对精确的
-// registrationID 做 exact lookup；未注册或非 active 一律 fail closed。
-// 不存在「任意 active registration 即通过」的降级——那是门禁绕过。
-// registrationID 的稳定性由 capability identity digest 排除易变诊断字段
-// （probedAt）保证，见 resultbinding.StableCapabilityDigest。
-func (rt *EmbeddedSandboxRuntime) AgentRegistrationActive(registrationID string) (bool, error) {
-	reg, err := rt.agentRegistry.Lookup(registrationID)
+// AgentAuthority 返回 exact registration + current active capability snapshot
+// 的耐久一致视图。未注册、无 active snapshot 或重放损坏均 fail closed。
+func (rt *EmbeddedSandboxRuntime) AgentAuthority(registrationID string) (agentregistry.AgentRegistration, agentregistry.AgentCapabilitySnapshot, error) {
+	reg, snap, err := rt.agentRegistry.CurrentAuthority(registrationID)
 	if err != nil {
-		return false, nil
+		return agentregistry.AgentRegistration{}, agentregistry.AgentCapabilitySnapshot{}, err
 	}
-	return reg.LifecycleState == agentregistry.LifecycleStateActive, nil
+	return *reg, *snap, nil
 }
 
 // RegisterAgent 注册一个 agent adapter 到进程内确定性 ledger。在 adapter
@@ -656,6 +652,15 @@ func (rt *EmbeddedSandboxRuntime) AgentRegistrationActive(registrationID string)
 func (rt *EmbeddedSandboxRuntime) RegisterAgent(reg agentregistry.AgentRegistration) error {
 	if _, err := rt.agentRegistry.Register(reg); err != nil {
 		return fmt.Errorf("app: embedded sandbox runtime: register agent: %w", err)
+	}
+	return nil
+}
+
+// RegisterAgentSnapshot 把 adapter 的稳定 authority snapshot 落入同一 durable
+// agent ledger。snapshot 必须引用已注册的 exact RegistrationID。
+func (rt *EmbeddedSandboxRuntime) RegisterAgentSnapshot(snap agentregistry.AgentCapabilitySnapshot) error {
+	if _, err := rt.agentRegistry.AddSnapshot(snap); err != nil {
+		return fmt.Errorf("app: embedded sandbox runtime: register agent snapshot: %w", err)
 	}
 	return nil
 }

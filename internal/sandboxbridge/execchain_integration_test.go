@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/adapter/pi"
+	"github.com/chiga0/marshal-harness/internal/agentregistry"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/provider"
+	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/sandbox/local"
 	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 )
@@ -92,6 +94,7 @@ func newBridgePiFixture(t *testing.T) bridgePiFixture {
 	raw, err := json.Marshal(map[string]any{
 		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerRequest", "taskId": "T1", "runId": "R1", "attemptId": "A1", "attemptNumber": 1,
 		"specDigest": canonical.DigestBytes([]byte("spec")), "policyDigest": canonical.DigestBytes([]byte("policy")), "capabilityDigest": canonical.DigestBytes([]byte("cap")),
+		"agentRegistrationId": resultbinding.AgentRegistrationID(canonical.DigestBytes([]byte("cap"))), "agentCapabilitySnapshotDigest": canonical.DigestBytes([]byte("cap")),
 		"baseSha":      strings.Repeat("1", 40),
 		"worktreePath": worktree, "controlRoot": controlRoot, "taskSpecPath": "input/task-spec.json", "promptPath": "input/prompt.md", "resultPath": "output/worker-result.json",
 		"adapterId": "pi", "executionProfile": "workspace-write", "sessionPolicy": "ephemeral", "attemptTimeoutSeconds": 30, "maxOutputBytes": 1048576, "reviewFindings": []any{},
@@ -278,8 +281,27 @@ func (f *fakeDurableAuthority) CapabilitySnapshot() provider.ProviderCapabilityS
 	return f.snapshot
 }
 func (f *fakeDurableAuthority) Registration() provider.ProviderRegistration { return f.registration }
-func (f *fakeDurableAuthority) AgentRegistrationActive(string) (bool, error) {
-	return f.agentRegActive, nil
+func (f *fakeDurableAuthority) AgentAuthority(registrationID string) (agentregistry.AgentRegistration, agentregistry.AgentCapabilitySnapshot, error) {
+	state := agentregistry.LifecycleStateActive
+	if !f.agentRegActive {
+		state = agentregistry.LifecycleStateRevoked
+	}
+	reg := agentregistry.AgentRegistration{
+		RegistrationID: registrationID, AuthorityNamespaceID: "authority:marshal-local",
+		SecurityDomainID: "default/execution/test", Principal: "principal:agent:test",
+		ProviderType: agentregistry.ProviderTypeAgent, ProviderName: "pi", ProviderVersion: "0.84.3",
+		ProtocolVersion: "marshal-worker/v1alpha1", Scope: "worker",
+		IdempotencyKey: "cap:" + canonical.DigestBytes([]byte("cap")), RequestDigest: canonical.DigestBytes([]byte("cap")),
+		LifecycleState: state, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
+	}
+	snap := agentregistry.AgentCapabilitySnapshot{
+		SnapshotDigest: canonical.DigestBytes([]byte("cap")), RegistrationID: registrationID,
+		ProtocolVersion: "marshal-worker/v1alpha1", ProviderName: "pi", ProviderVersion: "0.84.3",
+		Capabilities:               []agentregistry.Capability{agentregistry.CapabilityExecutionProfileWorkspaceWrite},
+		ConformanceEvidenceDigests: []string{canonical.DigestBytes([]byte("cap"))},
+		SnapshotState:              agentregistry.SnapshotStateActive,
+	}
+	return reg, snap, nil
 }
 
 // TestExecChainAdmissionRejectsRevokedAgentRegistration 验证当 durable

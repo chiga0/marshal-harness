@@ -2454,7 +2454,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 	// R2/R3 纠偏：在 execution.Run 之前 probe adapter 并注册 agent 到
 	// sharedRuntime 的 agentRegistry。此前 agentRegistry 在生产路径始终
-	// 为空，admission 的 AgentRegistrationActive 总是返回 false，导致
+	// 为空，admission 的 AgentAuthority exact lookup 总是失败，导致
 	// 真实 agent 产出的结果在 admission 阶段被拒绝。
 	// 仅在 dispatchBinder 可用时执行——否则 lease 不会签发，admission
 	// 不会触发，注册 agent 无意义。
@@ -2474,13 +2474,37 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 			fmt.Fprintf(stderr, "运行失败：稳定 capability digest 派生失败：%v\n", stableErr)
 			return ExitFailure
 		}
+		frozenStableCapDigest, frozenStableErr := resultbinding.StableCapabilityDigest(snapshotData)
+		if frozenStableErr != nil || frozenStableCapDigest != stableCapDigest {
+			fmt.Fprintln(stderr, "运行失败：当前 adapter 身份与冻结 CapabilitySnapshot 不一致。")
+			return ExitFailure
+		}
+		stableSnapshotDigest, stableSnapshotErr := resultbinding.StableCapabilitySnapshotDigest(snapshotData)
+		if stableSnapshotErr != nil {
+			fmt.Fprintf(stderr, "运行失败：稳定 capability snapshot digest 派生失败：%v\n", stableSnapshotErr)
+			return ExitFailure
+		}
+		liveSnapshotDigest, liveSnapshotErr := resultbinding.StableCapabilitySnapshotDigest(probeRecord.Data)
+		if liveSnapshotErr != nil || liveSnapshotDigest != stableSnapshotDigest {
+			fmt.Fprintln(stderr, "运行失败：当前 adapter 能力/权威快照与冻结 CapabilitySnapshot 不一致。")
+			return ExitFailure
+		}
 		registrationID := resultbinding.AgentRegistrationID(stableCapDigest)
-		// 提取 adapter 版本用于 registration。
+		// 从冻结 snapshot 提取版本与 closed capability vocabulary；current probe
+		// 已在上面与它做稳定内容逐项摘要核对。
 		var capSnap struct {
+			AdapterID      string `json:"adapterId"`
 			AdapterVersion string `json:"adapterVersion"`
 			BinaryVersion  string `json:"binaryVersion"`
+			Capabilities   struct {
+				ExecutionProfiles []string `json:"executionProfiles"`
+				SessionPolicies   []string `json:"sessionPolicies"`
+			} `json:"capabilities"`
 		}
-		_ = json.Unmarshal(probeRecord.Data, &capSnap)
+		if err := json.Unmarshal(snapshotData, &capSnap); err != nil || capSnap.AdapterID == "" {
+			fmt.Fprintln(stderr, "运行失败：冻结 CapabilitySnapshot 无法投影到 agent authority。")
+			return ExitFailure
+		}
 		agentVersion := capSnap.BinaryVersion
 		if agentVersion == "" {
 			agentVersion = capSnap.AdapterVersion
@@ -2504,6 +2528,34 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}
 		if regErr := sharedRuntime.RegisterAgent(agentReg); regErr != nil {
 			fmt.Fprintf(stderr, "运行失败：agent registration 失败：%v\n", regErr)
+			return ExitFailure
+		}
+		registryCaps := make([]agentregistry.Capability, 0, len(capSnap.Capabilities.ExecutionProfiles)+len(capSnap.Capabilities.SessionPolicies))
+		for _, profile := range capSnap.Capabilities.ExecutionProfiles {
+			switch profile {
+			case "read-only":
+				registryCaps = append(registryCaps, agentregistry.CapabilityExecutionProfileReadOnly)
+			case "workspace-write":
+				registryCaps = append(registryCaps, agentregistry.CapabilityExecutionProfileWorkspaceWrite)
+			}
+		}
+		for _, policy := range capSnap.Capabilities.SessionPolicies {
+			if policy == "ephemeral" {
+				registryCaps = append(registryCaps, agentregistry.CapabilitySessionPolicyEphemeral)
+			}
+		}
+		agentSnap := agentregistry.AgentCapabilitySnapshot{
+			SnapshotDigest:             stableSnapshotDigest,
+			RegistrationID:             registrationID,
+			ProtocolVersion:            resultbinding.ProtocolVersion,
+			ProviderName:               capSnap.AdapterID,
+			ProviderVersion:            agentVersion,
+			Capabilities:               registryCaps,
+			ConformanceEvidenceDigests: []string{stableSnapshotDigest},
+			SnapshotState:              agentregistry.SnapshotStateActive,
+		}
+		if snapErr := sharedRuntime.RegisterAgentSnapshot(agentSnap); snapErr != nil {
+			fmt.Fprintf(stderr, "运行失败：agent capability snapshot 落账失败：%v\n", snapErr)
 			return ExitFailure
 		}
 	}

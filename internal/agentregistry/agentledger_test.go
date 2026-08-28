@@ -37,6 +37,41 @@ func TestAgentLedgerRegisterRecoversAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestAgentLedgerSnapshotSupersedeRecoversAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	ledger, err := NewAgentLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := ledger.Register(validReg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := validSnap(reg.RegistrationID, validDigest)
+	second := validSnap(reg.RegistrationID, validDigest2)
+	if _, err := ledger.AddSnapshot(first); err != nil {
+		t.Fatalf("AddSnapshot first: %v", err)
+	}
+	if _, err := ledger.AddSnapshot(second); err != nil {
+		t.Fatalf("AddSnapshot second: %v", err)
+	}
+
+	restarted, err := NewAgentLedger(dir)
+	if err != nil {
+		t.Fatalf("NewAgentLedger reopen: %v", err)
+	}
+	gotReg, gotSnap, err := restarted.CurrentAuthority(reg.RegistrationID)
+	if err != nil {
+		t.Fatalf("CurrentAuthority after reopen: %v", err)
+	}
+	if gotReg.RegistrationID != reg.RegistrationID || gotSnap.SnapshotDigest != second.SnapshotDigest {
+		t.Fatalf("current authority did not recover the latest snapshot: reg=%+v snap=%+v", gotReg, gotSnap)
+	}
+	if gotSnap.SnapshotDigest == first.SnapshotDigest {
+		t.Fatal("the superseded snapshot must not remain current after restart")
+	}
+}
+
 // TestAgentLedgerIdempotentReplayAcrossReopen 锁定幂等：同一 (key,digest)
 // 跨进程重复注册不追加重复事实、也不与落账冲突。
 func TestAgentLedgerIdempotentReplayAcrossReopen(t *testing.T) {

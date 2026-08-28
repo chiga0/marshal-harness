@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/agentregistry"
 	"github.com/chiga0/marshal-harness/internal/agentruntime"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
@@ -34,10 +35,13 @@ type workerRequestView struct {
 	// AgentRegistrationID 是 execution.Run 从稳定 capability identity 派生并
 	// 冻结的精确 agent registration id（可空——旧请求缺失时 execchain 回退）。
 	AgentRegistrationID string `json:"agentRegistrationId"`
-	WorktreePath        string `json:"worktreePath"`
-	ExecutionProfile    string `json:"executionProfile"`
-	SessionPolicy       string `json:"sessionPolicy"`
-	AdapterID           string `json:"adapterId"`
+	// AgentCapabilitySnapshotDigest 是排除 probedAt、包含其余完整能力与
+	// authority 元数据的稳定 snapshot identity。
+	AgentCapabilitySnapshotDigest string `json:"agentCapabilitySnapshotDigest"`
+	WorktreePath                  string `json:"worktreePath"`
+	ExecutionProfile              string `json:"executionProfile"`
+	SessionPolicy                 string `json:"sessionPolicy"`
+	AdapterID                     string `json:"adapterId"`
 }
 
 // Outcome 是一次桥执行的执行链观察：allocation 身份、generation 与
@@ -80,9 +84,9 @@ type DurableAuthority interface {
 	CapabilitySnapshot() provider.ProviderCapabilitySnapshot
 	// Registration 返回当前 provider 的 durable registration。
 	Registration() provider.ProviderRegistration
-	// AgentRegistrationActive 验证 agent adapter registration 当前仍为
-	// active（R2/R3 纠偏：agent 侧 current-ledger recheck）。
-	AgentRegistrationActive(registrationID string) (bool, error)
+	// AgentAuthority 返回 exact registration 与 current active capability
+	// snapshot 的耐久一致视图（R2/R3 current-ledger recheck）。
+	AgentAuthority(registrationID string) (agentregistry.AgentRegistration, agentregistry.AgentCapabilitySnapshot, error)
 }
 
 // NewBridge 构造 Bridge；nil provider fail closed。

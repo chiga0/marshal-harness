@@ -166,6 +166,31 @@ func TestStableCapabilityDigestRejectsMissingAdapterID(t *testing.T) {
 	}
 }
 
+func TestStableCapabilitySnapshotDigestExcludesOnlyProbeTime(t *testing.T) {
+	base := `{"apiVersion":"marshal.dev/v1alpha1","kind":"CapabilitySnapshot","adapterId":"pi","adapterVersion":"1.2.3","executable":"/opt/pi","executableDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","binaryVersion":"0.84.3","probeStatus":"supported","capabilities":{"executionProfiles":["workspace-write"]},"probedAt":"2026-08-28T00:00:00Z"}`
+	later := strings.Replace(base, "2026-08-28T00:00:00Z", "2026-08-28T23:59:59Z", 1)
+	changedCapabilities := strings.Replace(base, `["workspace-write"]`, `["read-only"]`, 1)
+
+	d1, err := StableCapabilitySnapshotDigest([]byte(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := StableCapabilitySnapshotDigest([]byte(later))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1 != d2 {
+		t.Fatalf("probedAt-only change must keep one authority snapshot: %q != %q", d1, d2)
+	}
+	d3, err := StableCapabilitySnapshotDigest([]byte(changedCapabilities))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1 == d3 {
+		t.Fatal("capability change must create a new authority snapshot digest")
+	}
+}
+
 // TestEffectiveAgentRegistrationID 锁定：冻结了 AgentRegistrationID 的 Facts
 // 必须精确返回该值（不再从含 probedAt 的完整 CapabilityDigest 派生）；未冻结
 // 时回退兼容派生。两种情况都返回唯一确定的 id 供 exact lookup。
