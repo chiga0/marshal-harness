@@ -586,29 +586,17 @@ func (rt *EmbeddedSandboxRuntime) WorkerAllocationID(runID, attemptID string) st
 }
 
 // AgentRegistrationActive 验证 agent adapter registration 当前仍为 active
-// （R2/R3 纠偏：agent 侧 current-ledger recheck）。未注册的 registrationID
-// fail closed（返回 false）。
-//
-// 当 registrationID 精确查找失败时，fallback 按 ProviderName 查找 active
-// registration。这是因为 pi adapter 的 Probe() 输出含 probedAt 时间戳，
-// 导致 CLI 注册时的 digest 与 execution.Run 冻结的 digest 不一致——
-// 两者通过 sameCapabilityIdentity（结构字段比较）但产生不同 sha256 digest，
-// 从而派生出不同 RegistrationID。fallback 确保同 adapter 的 active
-// registration 仍可通过 ProviderName 匹配。
+// （R2/R3 纠偏：agent 侧 current-ledger recheck）。只对精确的
+// registrationID 做 exact lookup；未注册或非 active 一律 fail closed。
+// 不存在「任意 active registration 即通过」的降级——那是门禁绕过。
+// registrationID 的稳定性由 capability identity digest 排除易变诊断字段
+//（probedAt）保证，见 resultbinding.StableCapabilityDigest。
 func (rt *EmbeddedSandboxRuntime) AgentRegistrationActive(registrationID string) (bool, error) {
 	reg, err := rt.agentRegistry.Lookup(registrationID)
-	if err == nil {
-		return reg.LifecycleState == agentregistry.LifecycleStateActive, nil
+	if err != nil {
+		return false, nil
 	}
-	// Fallback: registrationID 可能因 probe digest 不一致而不同，
-	// 遍历所有 active registration 看是否有任意一个 active（单 adapter 场景）。
-	// production 多 adapter 场景需要 ProviderName 传递，当前 v1.0 单 adapter 足够。
-	for _, r := range rt.agentRegistry.List() {
-		if r.LifecycleState == agentregistry.LifecycleStateActive {
-			return true, nil
-		}
-	}
-	return false, nil
+	return reg.LifecycleState == agentregistry.LifecycleStateActive, nil
 }
 
 // RegisterAgent 注册一个 agent adapter 到进程内确定性 ledger。在 adapter

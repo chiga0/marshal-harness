@@ -2464,8 +2464,17 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 			fmt.Fprintf(stderr, "运行失败：adapter probe 失败：%v\n", probeErr)
 			return ExitFailure
 		}
-		capDigest := canonical.DigestBytes(probeRecord.Data)
-		registrationID := resultbinding.AgentRegistrationID(capDigest)
+		// 稳定 capability identity digest（排除 probedAt 等易变诊断字段）：
+		// registrationID、IdempotencyKey、RequestDigest 全部由它派生，保证同一
+		// 二进制的多次 probe 注册幂等，且与 execution.Run 冻结进 AttemptBinding
+		// 的 AgentRegistrationID 严格一致（接纳端只对它做 exact lookup，不存在
+		// 任意-active 降级）。
+		stableCapDigest, stableErr := resultbinding.StableCapabilityDigest(probeRecord.Data)
+		if stableErr != nil {
+			fmt.Fprintf(stderr, "运行失败：稳定 capability digest 派生失败：%v\n", stableErr)
+			return ExitFailure
+		}
+		registrationID := resultbinding.AgentRegistrationID(stableCapDigest)
 		// 提取 adapter 版本用于 registration。
 		var capSnap struct {
 			AdapterVersion string `json:"adapterVersion"`
@@ -2487,8 +2496,8 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 			ProviderVersion:      agentVersion,
 			ProtocolVersion:      resultbinding.ProtocolVersion,
 			Scope:                "worker",
-			IdempotencyKey:       "cap:" + capDigest,
-			RequestDigest:        capDigest,
+			IdempotencyKey:       "cap:" + stableCapDigest,
+			RequestDigest:        stableCapDigest,
 			LifecycleState:       agentregistry.LifecycleStateActive,
 			CreatedAt:            now,
 			UpdatedAt:            now,

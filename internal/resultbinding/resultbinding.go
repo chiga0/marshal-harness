@@ -2,6 +2,7 @@ package resultbinding
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -35,6 +36,12 @@ type Facts struct {
 	AgentExecutable               string // 审计字段（不参与门禁）
 	AgentProviderVersion          string
 	CapabilityDigest              string // 冻结 agent capability snapshot digest + 本 Attempt 的 admission evidence
+	// AgentRegistrationID 是 dispatch 时从稳定 capability identity digest
+	// 派生并冻结进 AttemptBinding 的精确 registration id。ingress/admission
+	// 只允许对该 id 做 exact lookup，不再从 CapabilityDigest 现场重新派生，
+	// 也不允许「任意 active registration」降级。为空时（旧绑定）回退到从
+	// 稳定 digest 派生，但生产新绑定必须显式冻结。
+	AgentRegistrationID           string
 	SandboxCapabilityDigest       string // 冻结 sandbox provider capability snapshot digest（双 binding 分离）
 	ExecutionProfile              string
 	SandboxProviderRegistrationID string
@@ -89,6 +96,65 @@ func AgentRegistrationID(capabilityDigest string) string {
 		trimmed = trimmed[:32]
 	}
 	return "registration:" + trimmed
+}
+
+// EffectiveAgentRegistrationID 返回本 Attempt 接纳时用于 exact lookup 的精确
+// agent registration id。生产新绑定在 dispatch 时已把稳定派生的
+// AgentRegistrationID 冻结进 Facts，直接返回；旧绑定（未冻结）回退到从完整
+// CapabilityDigest 派生以保持兼容。两种情况下返回的都是**唯一确定的 id**，
+// 接纳端只对它做 exact lookup——不存在「任意 active registration 即通过」
+// 的降级。
+func (f Facts) EffectiveAgentRegistrationID() string {
+	if strings.TrimSpace(f.AgentRegistrationID) != "" {
+		return f.AgentRegistrationID
+	}
+	return AgentRegistrationID(f.CapabilityDigest)
+}
+
+// StableCapabilityDigest 计算 capability snapshot 的**稳定身份 digest**：只
+// 投影与 `execution.sameCapabilityIdentity` 一致的身份字段（adapterId、
+// adapterVersion、executable、executableDigest、binaryVersion、probeStatus），
+// 显式排除 `probedAt` 等每次 probe 都会变化的诊断字段。
+//
+// 不变量：对同一可执行二进制，无论何时、何种顺序触发 Probe()，
+// StableCapabilityDigest 恒定；两次 probe 的稳定 digest 相等 ⟺ 它们的
+// 身份字段完全一致。因此由它派生的 AgentRegistrationID 跨「CLI 注册期
+// probe」与「dispatch 期冻结」严格一致，无需任何降级匹配。
+//
+// Fail closed：无法解析或身份字段缺失时返回错误，不允许回退到原始
+// 完整 digest（那会重新引入 probedAt 漂移）。
+func StableCapabilityDigest(rawSnapshot []byte) (string, error) {
+	var snap struct {
+		AdapterID        string `json:"adapterId"`
+		AdapterVersion   string `json:"adapterVersion"`
+		Executable       string `json:"executable"`
+		ExecutableDigest string `json:"executableDigest"`
+		BinaryVersion    string `json:"binaryVersion"`
+		ProbeStatus      string `json:"probeStatus"`
+	}
+	if err := json.Unmarshal(rawSnapshot, &snap); err != nil {
+		return "", fmt.Errorf("resultbinding: stable capability digest: %w", err)
+	}
+	if strings.TrimSpace(snap.AdapterID) == "" {
+		return "", errors.New("resultbinding: stable capability digest: adapterId must not be empty")
+	}
+	identity := map[string]string{
+		"adapterId":        snap.AdapterID,
+		"adapterVersion":   snap.AdapterVersion,
+		"executable":       snap.Executable,
+		"executableDigest": snap.ExecutableDigest,
+		"binaryVersion":    snap.BinaryVersion,
+		"probeStatus":      snap.ProbeStatus,
+	}
+	identityJSON, err := json.Marshal(identity)
+	if err != nil {
+		return "", fmt.Errorf("resultbinding: stable capability digest: %w", err)
+	}
+	digest, err := canonical.DigestJSON(identityJSON)
+	if err != nil {
+		return "", fmt.Errorf("resultbinding: stable capability digest: %w", err)
+	}
+	return digest, nil
 }
 
 func seedRegistry(facts Facts) (*agentregistry.Registry, error) {

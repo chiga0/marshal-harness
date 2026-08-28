@@ -31,10 +31,13 @@ type workerRequestView struct {
 	SpecDigest       string `json:"specDigest"`
 	PolicyDigest     string `json:"policyDigest"`
 	CapabilityDigest string `json:"capabilityDigest"`
-	WorktreePath     string `json:"worktreePath"`
-	ExecutionProfile string `json:"executionProfile"`
-	SessionPolicy    string `json:"sessionPolicy"`
-	AdapterID        string `json:"adapterId"`
+	// AgentRegistrationID 是 execution.Run 从稳定 capability identity 派生并
+	// 冻结的精确 agent registration id（可空——旧请求缺失时 execchain 回退）。
+	AgentRegistrationID string `json:"agentRegistrationId"`
+	WorktreePath        string `json:"worktreePath"`
+	ExecutionProfile    string `json:"executionProfile"`
+	SessionPolicy       string `json:"sessionPolicy"`
+	AdapterID           string `json:"adapterId"`
 }
 
 // Outcome 是一次桥执行的执行链观察：allocation 身份、generation 与

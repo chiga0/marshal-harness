@@ -33,6 +33,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/review"
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
@@ -638,6 +639,13 @@ func Run(ctx context.Context, input Input) (Result, error) {
 	}
 	if dispatchBinding != nil {
 		requestMap["localSelfIdentityBinding"] = dispatchBinding
+	}
+	// R2 纠偏：把稳定 capability identity 派生的精确 AgentRegistrationID 冻结
+	// 进 WorkerRequest，供 execchain 写入 AttemptBinding，接纳端对其做 exact
+	// lookup。稳定 digest 排除 probedAt 等易变字段，跨「注册期 probe」与
+	// 「冻结期快照」严格一致。无法计算时省略该字段（向后兼容旧派生）。
+	if stableCapDigest, stableErr := resultbinding.StableCapabilityDigest(capabilityData); stableErr == nil {
+		requestMap["agentRegistrationId"] = resultbinding.AgentRegistrationID(stableCapDigest)
 	}
 	requestData, err := json.Marshal(requestMap)
 	if err != nil {

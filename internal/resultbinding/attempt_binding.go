@@ -189,7 +189,7 @@ func AdmitWithDurableAuthority(ctx context.Context, binding *AttemptBinding, res
 	// 验证 agent adapter registration 当前仍为 active，替代 seedRegistry
 	// 总是构造 active registration 的临时自洽验证。registration 被撤销
 	// 的 agent 不得接纳结果。
-	agentRegID := AgentRegistrationID(facts.CapabilityDigest)
+	agentRegID := facts.EffectiveAgentRegistrationID()
 	agentActive, err := authority.AgentRegistrationActive(agentRegID)
 	if err != nil {
 		return nil, fmt.Errorf("resultbinding: %w: agent registration active check: %v", ErrAdmissionRejected, err)
@@ -262,7 +262,7 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 	if decision.ProfileDigest != "" {
 		admission.ProfileDigest = decision.ProfileDigest
 	}
-	admission.RegistrationID = AgentRegistrationID(facts.CapabilityDigest)
+	admission.RegistrationID = facts.EffectiveAgentRegistrationID()
 	admission.AgentOK = decision.Agent.OK
 	admission.SandboxOK = decision.Sandbox.OK
 	for _, r := range decision.Agent.Reasons {
@@ -296,7 +296,7 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 		AllocationID:   facts.AllocationID,
 		Expiry:         facts.LeaseExpiry,
 		Revoked:        false,
-		RegistrationID: AgentRegistrationID(facts.CapabilityDigest),
+		RegistrationID: facts.EffectiveAgentRegistrationID(),
 		SnapshotDigest: facts.CapabilityDigest,
 		EvidenceDigest: facts.CapabilityDigest,
 	}
@@ -319,7 +319,7 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 		Nonce:                facts.FencingToken,
 		Expiry:               facts.LeaseExpiry,
 		Operation:            resultingress.OpResult,
-		RegistrationID:       AgentRegistrationID(facts.CapabilityDigest),
+		RegistrationID:       facts.EffectiveAgentRegistrationID(),
 		SnapshotDigest:       facts.CapabilityDigest,
 		EvidenceDigest:       facts.CapabilityDigest,
 	}
