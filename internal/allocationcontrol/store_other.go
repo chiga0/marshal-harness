@@ -20,6 +20,10 @@ func (store *Store) prepareProvision(AllocationProvisionIntentV1, string) (Alloc
 	return AllocationStagingPreparedV1{}, ErrPlatformUnavailable
 }
 
+func (store *Store) provisionNeedsPreparationMutation(AllocationProvisionIntentV1) (bool, error) {
+	return false, ErrPlatformUnavailable
+}
+
 func (store *Store) completeProvision(AllocationProvisionIntentV1, AllocationStagingPreparedV1, string) (AllocationProvisionReceiptV1, error) {
 	return AllocationProvisionReceiptV1{}, ErrPlatformUnavailable
 }
@@ -30,6 +34,10 @@ func (store *Store) verifyProvisionReceipt(AllocationProvisionIntentV1, Allocati
 
 func (store *Store) completeTerminate(AllocationTerminateIntentV1, string) (AllocationTerminateReceiptV1, error) {
 	return AllocationTerminateReceiptV1{}, ErrPlatformUnavailable
+}
+
+func (store *Store) terminateNeedsMutation(AllocationTerminateIntentV1) (bool, error) {
+	return false, ErrPlatformUnavailable
 }
 
 func (store *Store) prepareTerminateIntent(TerminateRequestV1) (AllocationTerminateIntentV1, error) {

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 )
@@ -229,18 +230,19 @@ func (request EffectUseRequest) validate() error {
 // EffectAuthorityState is a deterministic replay projection. A non-empty
 // ReconcileFactDigest means the pending barrier is closed.
 type EffectAuthorityState struct {
-	Binding               EffectBinding               `json:"binding"`
-	Intent                authority.SideEffectIntent  `json:"intent"`
-	IntentRecordDigest    string                      `json:"intentRecordDigest"`
-	IntentFactDigest      string                      `json:"intentFactDigest"`
-	Receipt               authority.SideEffectReceipt `json:"receipt,omitempty"`
-	ReceiptRecordDigest   string                      `json:"receiptRecordDigest,omitempty"`
-	ReceiptFactDigest     string                      `json:"receiptFactDigest,omitempty"`
-	Reconcile             authority.ReconcileRecord   `json:"reconcile,omitempty"`
-	ReconcileRecordDigest string                      `json:"reconcileRecordDigest,omitempty"`
-	ReconcileFactDigest   string                      `json:"reconcileFactDigest,omitempty"`
-	ReconcileInspection   EffectInspection            `json:"reconcileInspection,omitempty"`
-	InspectionDigest      string                      `json:"inspectionDigest,omitempty"`
+	Binding               EffectBinding                          `json:"binding"`
+	Intent                authority.SideEffectIntent             `json:"intent"`
+	IntentRecordDigest    string                                 `json:"intentRecordDigest"`
+	IntentFactDigest      string                                 `json:"intentFactDigest"`
+	Receipt               authority.SideEffectReceipt            `json:"receipt,omitempty"`
+	ReceiptRecordDigest   string                                 `json:"receiptRecordDigest,omitempty"`
+	ReceiptFactDigest     string                                 `json:"receiptFactDigest,omitempty"`
+	Reconcile             authority.ReconcileRecord              `json:"reconcile,omitempty"`
+	ReconcileRecordDigest string                                 `json:"reconcileRecordDigest,omitempty"`
+	ReconcileFactDigest   string                                 `json:"reconcileFactDigest,omitempty"`
+	ReconcileInspection   EffectInspection                       `json:"reconcileInspection,omitempty"`
+	InspectionDigest      string                                 `json:"inspectionDigest,omitempty"`
+	AllocationFailureKind allocationcontrol.AuthorityFailureKind `json:"allocationFailureKind,omitempty"`
 }
 
 // EffectAppendResult distinguishes a fresh append from an exact replay.
@@ -251,25 +253,33 @@ type EffectAppendResult struct {
 }
 
 type effectAuthorityFact struct {
-	ProtocolRevision      string                       `json:"protocolRevision"`
-	FactType              string                       `json:"factType"`
-	Sequence              int64                        `json:"sequence"`
-	AttemptKey            string                       `json:"attemptKey"`
-	AttemptRevision       uint64                       `json:"attemptRevision"`
-	PreviousAttemptHead   string                       `json:"previousAttemptHead"`
-	Binding               EffectBinding                `json:"binding"`
-	EffectID              string                       `json:"effectId"`
-	Intent                *authority.SideEffectIntent  `json:"intent,omitempty"`
-	IntentRecordDigest    string                       `json:"intentRecordDigest"`
-	IntentFactDigest      string                       `json:"intentFactDigest,omitempty"`
-	Receipt               *authority.SideEffectReceipt `json:"receipt,omitempty"`
-	ReceiptRecordDigest   string                       `json:"receiptRecordDigest,omitempty"`
-	ReceiptFactDigest     string                       `json:"receiptFactDigest,omitempty"`
-	Reconcile             *authority.ReconcileRecord   `json:"reconcile,omitempty"`
-	ReconcileRecordDigest string                       `json:"reconcileRecordDigest,omitempty"`
-	Inspection            *EffectInspection            `json:"inspection,omitempty"`
-	InspectionDigest      string                       `json:"inspectionDigest,omitempty"`
-	Digest                string                       `json:"digest"`
+	ProtocolRevision      string                                 `json:"protocolRevision"`
+	FactType              string                                 `json:"factType"`
+	Sequence              int64                                  `json:"sequence"`
+	AttemptKey            string                                 `json:"attemptKey"`
+	AttemptRevision       uint64                                 `json:"attemptRevision"`
+	PreviousAttemptHead   string                                 `json:"previousAttemptHead"`
+	Binding               EffectBinding                          `json:"binding"`
+	EffectID              string                                 `json:"effectId"`
+	Intent                *authority.SideEffectIntent            `json:"intent,omitempty"`
+	IntentRecordDigest    string                                 `json:"intentRecordDigest"`
+	IntentFactDigest      string                                 `json:"intentFactDigest,omitempty"`
+	Receipt               *authority.SideEffectReceipt           `json:"receipt,omitempty"`
+	ReceiptRecordDigest   string                                 `json:"receiptRecordDigest,omitempty"`
+	ReceiptFactDigest     string                                 `json:"receiptFactDigest,omitempty"`
+	Reconcile             *authority.ReconcileRecord             `json:"reconcile,omitempty"`
+	ReconcileRecordDigest string                                 `json:"reconcileRecordDigest,omitempty"`
+	Inspection            *EffectInspection                      `json:"inspection,omitempty"`
+	InspectionDigest      string                                 `json:"inspectionDigest,omitempty"`
+	AllocationFailureKind allocationcontrol.AuthorityFailureKind `json:"allocationFailureKind,omitempty"`
+	// AllocationRecordKind/AllocationAuthorityFact/AllocationRecordedAt are
+	// present only on the four allocation intent/receipt facts. Keeping the
+	// typed payload on the generic effect line makes one Attempt revision and
+	// one fsync establish both the pending-effect barrier and its exact B1 fact.
+	AllocationRecordKind    allocationcontrol.RecordKind `json:"allocationRecordKind,omitempty"`
+	AllocationAuthorityFact json.RawMessage              `json:"allocationAuthorityFact,omitempty"`
+	AllocationRecordedAt    string                       `json:"allocationRecordedAt,omitempty"`
+	Digest                  string                       `json:"digest"`
 }
 
 // CompareAndAppendEffectIntent holds current Run authority across the complete
@@ -279,24 +289,11 @@ func (s *ingressDurableStore) CompareAndAppendEffectIntent(ctx context.Context, 
 	if err := validateEffectIntentRequest(request); err != nil {
 		return EffectAppendResult{}, err
 	}
-	now, err := s.currentEffectTime(request.Intent.Deadline)
-	if err != nil {
-		return EffectAppendResult{}, err
-	}
-	check := effectAuthorityCheck(request.Binding, now)
-	var result EffectAppendResult
-	err = withCurrentEffectAuthority(ctx, verifier, check, func() error {
-		if _, err := s.currentEffectTime(request.Intent.Deadline); err != nil {
-			return err
-		}
-		projection := newAuthorityProjection()
-		return s.transact(projection, func() error {
-			var err error
-			result, err = s.appendEffectIntentLocked(projection, request)
-			return err
-		})
-	})
-	return result, err
+	// The closed v1 union contains allocation effects only. Fresh allocation
+	// authority must carry its typed B1 payload and therefore enters through
+	// AllocationAuthority. Historical generic facts remain replayable from the
+	// ledger, but this admission API can never create or re-admit one.
+	return EffectAppendResult{}, ErrEffectAuthorityConflict
 }
 
 func effectAuthorityCheck(binding EffectBinding, now time.Time) CurrentEffectAuthorityCheck {
@@ -455,12 +452,47 @@ func (s *ingressDurableStore) RecoverPendingEffect(ctx context.Context, verifier
 	}
 	var result EffectAppendResult
 	err = s.withEffectFlight(key, func() error {
-		now, err := s.currentEffectTime(request.IntentDeadline)
-		if err != nil {
+		projection := newAuthorityProjection()
+		legacyUntyped := false
+		if err := s.transact(projection, func() error {
+			state, ok := projection.effects[key]
+			if !ok {
+				return ErrEffectAuthorityUnknown
+			}
+			attemptKey := mustAttemptKey(state.Binding.Identity)
+			allocationState, exists := projection.allocations[attemptKey]
+			typedEffect := exists && (state.Binding.Phase == EffectPhaseAllocationProvision && allocationState.ProvisionEffectID == state.Intent.EffectId || state.Binding.Phase == EffectPhaseAllocationTerminate && allocationState.TerminateEffectID == state.Intent.EffectId)
+			legacyUntyped = !typedEffect && (state.Binding.Phase == EffectPhaseAllocationProvision || state.Binding.Phase == EffectPhaseAllocationTerminate)
+			return nil
+		}); err != nil {
 			return err
 		}
+		now := s.authorityNow()
 		check := effectAuthorityCheck(request.Binding, now)
 		return withCurrentEffectAuthority(ctx, verifier, check, func() error {
+			if legacyUntyped {
+				current, _, err := s.loadEffectForUse(request)
+				if err != nil {
+					return err
+				}
+				if current.ReconcileFactDigest != "" {
+					result = EffectAppendResult{State: current, FactDigest: current.ReconcileFactDigest}
+					return ErrAllocationIntervention
+				}
+				providerDomain := authority.SecurityDomainId{
+					TenantNamespace:   request.Binding.Identity.AuthorityNamespaceID.TenantNamespace,
+					TrustDomainKind:   authority.TrustDomainKindExecution,
+					IsolationDomainId: allocationLocalIsolationDomain,
+				}
+				if err := s.appendAllocationIntervention(key, providerDomain, allocationcontrol.AuthorityFailureConflict); err != nil {
+					return err
+				}
+				closed, _, err := s.loadEffectForUse(request)
+				if err == nil {
+					result = EffectAppendResult{State: closed, FactDigest: closed.ReconcileFactDigest}
+				}
+				return ErrAllocationIntervention
+			}
 			current, _, err := s.loadEffectForUse(request)
 			if err != nil {
 				return err
@@ -469,10 +501,6 @@ func (s *ingressDurableStore) RecoverPendingEffect(ctx context.Context, verifier
 				result = EffectAppendResult{State: current, FactDigest: current.ReconcileFactDigest}
 				return nil
 			}
-			if _, err := s.currentEffectTime(current.Intent.Deadline); err != nil {
-				return err
-			}
-
 			inspection, err := operator.inspect(ctx, current)
 			if err != nil {
 				return err
@@ -697,6 +725,12 @@ func pendingEffectForUse(projection *Ingress, request EffectUseRequest) (EffectA
 	if !exists || attempt.Identity != request.Binding.Identity {
 		return EffectAuthorityState{}, AttemptAuthorityState{}, ErrAttemptAuthorityUnknown
 	}
+	if allocation, exists := projection.allocations[attemptKey]; exists && (state.Binding.Phase == EffectPhaseAllocationProvision && allocation.ProvisionEffectID == request.EffectID || state.Binding.Phase == EffectPhaseAllocationTerminate && allocation.TerminateEffectID == request.EffectID) {
+		// A typed allocation effect may only be advanced by AllocationAuthority.
+		// Letting the generic recovery seam append a receipt would close the
+		// pending barrier without one of the exact five B1 facts.
+		return EffectAuthorityState{}, AttemptAuthorityState{}, ErrEffectAuthorityConflict
+	}
 	if state.ReconcileFactDigest == "" {
 		if attempt.PendingEffectID != request.EffectID || attempt.PendingEffectIntentFactDigest != request.IntentFactDigest || attempt.PendingEffectRecordDigest != state.IntentRecordDigest || attempt.PendingEffectMarkerDigest != request.Binding.MarkerDigest || attempt.PendingEffectPhase != request.Binding.Phase {
 			return EffectAuthorityState{}, AttemptAuthorityState{}, ErrEffectAuthorityConflict
@@ -761,6 +795,10 @@ func validateEffectReconcile(state EffectAuthorityState, record authority.Reconc
 		}
 	case EffectInspectionConflict:
 		if record.Observation != authority.ObservationConflict || record.Decision != authority.DecisionBlock {
+			return ErrEffectAuthorityConflict
+		}
+	case EffectInspectionAmbiguous, EffectInspectionUnknown:
+		if record.Observation != authority.ObservationUnknown || record.Decision != authority.DecisionBlock {
 			return ErrEffectAuthorityConflict
 		}
 	default:
@@ -861,7 +899,7 @@ func applyEffectAuthorityFactValue(fact effectAuthorityFact, in *Ingress) error 
 	effectKey := mustEffectKey(fact.Binding.Identity.AuthorityNamespaceID, fact.EffectID)
 	switch fact.FactType {
 	case effectFactTypeIntent:
-		if fact.Intent == nil || fact.Intent.EffectId != fact.EffectID || fact.Receipt != nil || fact.Reconcile != nil || fact.Inspection != nil || fact.InspectionDigest != "" || fact.IntentFactDigest != "" || fact.ReceiptRecordDigest != "" || fact.ReceiptFactDigest != "" || fact.ReconcileRecordDigest != "" {
+		if fact.Intent == nil || fact.Intent.EffectId != fact.EffectID || fact.Receipt != nil || fact.Reconcile != nil || fact.Inspection != nil || fact.InspectionDigest != "" || fact.IntentFactDigest != "" || fact.ReceiptRecordDigest != "" || fact.ReceiptFactDigest != "" || fact.ReconcileRecordDigest != "" || fact.AllocationFailureKind != "" {
 			return ErrEffectAuthorityConflict
 		}
 		request := EffectIntentRequest{Binding: fact.Binding, Intent: *fact.Intent}
@@ -903,24 +941,52 @@ func applyEffectAuthorityFactValue(fact effectAuthorityFact, in *Ingress) error 
 		if err := validateEffectReceipt(state, *fact.Receipt); err != nil {
 			return err
 		}
+		if fact.AllocationFailureKind != "" {
+			if fact.AllocationFailureKind.Validate() != nil || !allocationFailureDispositionMatches(fact.AllocationFailureKind, fact.Receipt.Disposition) || fact.AllocationRecordKind != "" || len(fact.AllocationAuthorityFact) != 0 || fact.AllocationRecordedAt != "" {
+				return ErrEffectAuthorityConflict
+			}
+		}
 		digest, err := fact.Receipt.Digest()
 		if err != nil || digest != fact.ReceiptRecordDigest {
 			return ErrEffectAuthorityConflict
 		}
 		state.Receipt, state.ReceiptRecordDigest, state.ReceiptFactDigest = *fact.Receipt, digest, fact.Digest
+		state.AllocationFailureKind = fact.AllocationFailureKind
 		in.effects[effectKey] = state
 	case effectFactTypeReconcile:
 		if fact.Intent != nil || fact.Receipt != nil || fact.Reconcile == nil || fact.Inspection == nil || fact.InspectionDigest == "" {
 			return ErrEffectAuthorityConflict
 		}
 		state, exists := in.effects[effectKey]
-		if !exists || state.Intent.EffectId != fact.EffectID || state.Binding != fact.Binding || state.IntentRecordDigest != fact.IntentRecordDigest || state.IntentFactDigest != fact.IntentFactDigest || state.ReceiptRecordDigest != fact.ReceiptRecordDigest || state.ReceiptFactDigest != fact.ReceiptFactDigest || state.ReceiptFactDigest == "" || state.ReconcileFactDigest != "" {
+		allocationState, hasTypedAllocation := in.allocations[attemptKey]
+		typedAllocationEffect := hasTypedAllocation && (state.Binding.Phase == EffectPhaseAllocationProvision && allocationState.ProvisionEffectID == fact.EffectID || state.Binding.Phase == EffectPhaseAllocationTerminate && allocationState.TerminateEffectID == fact.EffectID)
+		typedAppliedReceipt := hasTypedAllocation && (state.Binding.Phase == EffectPhaseAllocationProvision && allocationState.ProvisionEffectID == fact.EffectID && allocationState.Snapshot.ProvisionReceipt != nil || state.Binding.Phase == EffectPhaseAllocationTerminate && allocationState.TerminateEffectID == fact.EffectID && allocationState.Snapshot.TerminateReceipt != nil)
+		projectionFailure := typedAppliedReceipt && state.AllocationFailureKind == "" && fact.AllocationFailureKind.Validate() == nil && state.Receipt.Disposition == authority.DispositionApplied
+		legacyReceiptIntervention := !typedAllocationEffect && (state.Binding.Phase == EffectPhaseAllocationProvision || state.Binding.Phase == EffectPhaseAllocationTerminate) && state.AllocationFailureKind == "" && fact.AllocationFailureKind.Validate() == nil
+		if !exists || state.Intent.EffectId != fact.EffectID || state.Binding != fact.Binding || state.IntentRecordDigest != fact.IntentRecordDigest || state.IntentFactDigest != fact.IntentFactDigest || state.ReceiptRecordDigest != fact.ReceiptRecordDigest || state.ReceiptFactDigest != fact.ReceiptFactDigest || state.ReceiptFactDigest == "" || state.ReconcileFactDigest != "" || state.AllocationFailureKind != fact.AllocationFailureKind && !projectionFailure && !legacyReceiptIntervention {
 			return ErrEffectAuthorityOrder
 		}
 		if prior.PendingEffectID != state.Intent.EffectId || prior.PendingEffectIntentFactDigest != state.IntentFactDigest {
 			return ErrEffectAuthorityConflict
 		}
-		if err := validateEffectReconcile(state, *fact.Reconcile, *fact.Inspection, fact.InspectionDigest); err != nil {
+		if projectionFailure || legacyReceiptIntervention {
+			failureObservation := allocationFailureObservation(fact.AllocationFailureKind)
+			wantInspection := EffectInspectionApplied
+			if legacyReceiptIntervention {
+				var ok bool
+				wantInspection, ok = effectInspectionOutcomeForReceipt(state.Receipt.Disposition)
+				if !ok {
+					return ErrEffectAuthorityConflict
+				}
+			}
+			if failureObservation == "" || fact.Reconcile.Validate() != nil || fact.Inspection.Outcome != wantInspection || fact.Inspection.Receipt != state.Receipt || fact.Reconcile.Observation != failureObservation || fact.Reconcile.Decision != authority.DecisionBlock || fact.Reconcile.AuthorityNamespaceId != state.Binding.Identity.AuthorityNamespaceID || fact.Reconcile.IntentDigest != state.IntentRecordDigest || fact.Reconcile.ReceiptDigest != state.ReceiptRecordDigest {
+				return ErrEffectAuthorityConflict
+			}
+			inspectionDigest, err := canonicalDigest(*fact.Inspection)
+			if err != nil || inspectionDigest != fact.InspectionDigest {
+				return ErrEffectAuthorityConflict
+			}
+		} else if err := validateEffectReconcile(state, *fact.Reconcile, *fact.Inspection, fact.InspectionDigest); err != nil {
 			return err
 		}
 		digest, err := fact.Reconcile.Digest()
@@ -929,13 +995,14 @@ func applyEffectAuthorityFactValue(fact effectAuthorityFact, in *Ingress) error 
 		}
 		state.Reconcile, state.ReconcileRecordDigest, state.ReconcileFactDigest = *fact.Reconcile, digest, fact.Digest
 		state.ReconcileInspection, state.InspectionDigest = *fact.Inspection, fact.InspectionDigest
+		state.AllocationFailureKind = fact.AllocationFailureKind
 		in.effects[effectKey] = state
 		prior.PendingEffectID = ""
 		prior.PendingEffectIntentFactDigest = ""
 		prior.PendingEffectRecordDigest = ""
 		prior.PendingEffectMarkerDigest = ""
 		prior.PendingEffectPhase = ""
-		accepted := state.ReconcileInspection.Outcome == EffectInspectionApplied && state.Reconcile.Observation == authority.ObservationApplied && state.Reconcile.Decision == authority.DecisionAccept
+		accepted := typedAllocationEffect && state.ReconcileInspection.Outcome == EffectInspectionApplied && state.Reconcile.Observation == authority.ObservationApplied && state.Reconcile.Decision == authority.DecisionAccept
 		if accepted {
 			switch state.Binding.Phase {
 			case EffectPhaseAllocationProvision:
@@ -957,7 +1024,21 @@ func applyEffectAuthorityFactValue(fact effectAuthorityFact, in *Ingress) error 
 	prior.Revision = fact.AttemptRevision
 	prior.HeadDigest = fact.Digest
 	in.attempts[attemptKey] = prior
+	if err := applyAllocationProjectionFromEffectFact(fact, in); err != nil {
+		return err
+	}
 	return nil
+}
+
+func allocationFailureDispositionMatches(kind allocationcontrol.AuthorityFailureKind, disposition authority.Disposition) bool {
+	switch kind {
+	case allocationcontrol.AuthorityFailureConflict:
+		return disposition == authority.DispositionConflict
+	case allocationcontrol.AuthorityFailureAmbiguous, allocationcontrol.AuthorityFailureUnknown:
+		return disposition == authority.DispositionAmbiguous
+	default:
+		return false
+	}
 }
 
 func indexEffect(in *Ingress, effectKey string, state EffectAuthorityState) {

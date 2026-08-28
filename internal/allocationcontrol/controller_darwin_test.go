@@ -85,6 +85,14 @@ type fakeAllocationSession struct {
 	afterPreparedCommit    func()
 	mutateBeforeSecondRead func(*AuthoritySnapshot)
 	snapshotReads          int
+	authorizeError         error
+	authorizations         int
+	interventions          []AuthorityFailureKind
+}
+
+func (session *fakeAllocationSession) AuthorizeFirstMutation(context.Context) error {
+	session.authorizations++
+	return session.authorizeError
 }
 
 func (session *fakeAllocationSession) Snapshot() (AuthoritySnapshot, error) {
@@ -148,6 +156,34 @@ func (session *fakeAllocationSession) AppendTerminateReceipt(_ context.Context, 
 	}
 	appendFact()
 	return cloneAuthoritySnapshot(session.snapshot), nil
+}
+
+func (session *fakeAllocationSession) ProjectAndReconcile(_ context.Context, project func(AuthoritySnapshot) error) (AuthoritySnapshot, error) {
+	snapshot := cloneAuthoritySnapshot(session.snapshot)
+	if project == nil {
+		return snapshot, ErrAuthorityConflict
+	}
+	if err := project(snapshot); err != nil {
+		return snapshot, err
+	}
+	return snapshot, nil
+}
+
+func (session *fakeAllocationSession) RecordIntervention(_ context.Context, kind AuthorityFailureKind) error {
+	if err := kind.Validate(); err != nil {
+		return err
+	}
+	session.interventions = append(session.interventions, kind)
+	return nil
+}
+
+func TestControllerTransientProviderFailureRemainsPending(t *testing.T) {
+	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
+	transient := errors.New("transient projection I/O")
+	controller := &Controller{}
+	if err := controller.recordProviderFailure(context.Background(), session, transient); !errors.Is(err, transient) || len(session.interventions) != 0 {
+		t.Fatalf("transient failure err=%v interventions=%v", err, session.interventions)
+	}
 }
 
 func cloneAuthoritySnapshot(snapshot AuthoritySnapshot) AuthoritySnapshot {
@@ -369,9 +405,15 @@ func TestControllerRecoversEveryProvisionCommitBoundary(t *testing.T) {
 			if err := controller.Close(); err != nil {
 				t.Fatal(err)
 			}
+			// The first call was the only fresh Apply. Once any crash boundary
+			// exists, expiry may stop new mutation but cannot stop exact recovery.
+			if session.authorizations != 1 {
+				t.Fatalf("fresh provision authorized %d applies", session.authorizations)
+			}
 			session.preparedError = nil
 			session.provisionReceiptError = nil
 			session.commitBeforeError = false
+			session.authorizeError = errors.New("expired intent must not block recovery")
 			session.snapshotReads = 0
 			restarted, store := openController(t, root, session)
 			if _, err := restarted.RecoverProvision(context.Background(), "effect-provision"); err != nil {
@@ -388,6 +430,9 @@ func TestControllerRecoversEveryProvisionCommitBoundary(t *testing.T) {
 			defer secondRestart.Close()
 			if _, err := secondRestart.RecoverProvision(context.Background(), "effect-provision"); err != nil || len(secondStore.JournalRecords()) != 3 {
 				t.Fatal("second restart did not replay the same provision receipt")
+			}
+			if session.authorizations != 1 {
+				t.Fatalf("crash recovery authorized a second Apply: %d", session.authorizations)
 			}
 		})
 	}
@@ -421,16 +466,57 @@ func TestControllerRecoversTerminateRenameAndReceiptBoundaries(t *testing.T) {
 			if err := controller.Close(); err != nil {
 				t.Fatal(err)
 			}
+			beforeRecoveryAuthorizations := session.authorizations
 			session.terminateReceiptError = nil
 			session.commitBeforeError = false
+			session.authorizeError = errors.New("expired intent must not block recovery")
 			session.snapshotReads = 0
 			restarted, store := openController(t, root, session)
-			defer restarted.Close()
 			receipt, err := restarted.RecoverTerminate(context.Background(), "effect-terminate")
 			if err != nil || !receipt.LiveAbsent || !receipt.TombstonePresent || len(store.JournalRecords()) != 5 {
 				t.Fatal("restart did not converge the exact permanent tombstone", err)
 			}
+			if session.authorizations != beforeRecoveryAuthorizations {
+				t.Fatal("terminate crash recovery authorized a second Apply")
+			}
+			if err := restarted.Close(); err != nil {
+				t.Fatal(err)
+			}
+			session.snapshotReads = 0
+			secondRestart, secondStore := openController(t, root, session)
+			defer secondRestart.Close()
+			replayed, err := secondRestart.RecoverTerminate(context.Background(), "effect-terminate")
+			if err != nil || replayed.ReceiptDigest != receipt.ReceiptDigest || len(secondStore.JournalRecords()) != 5 {
+				t.Fatal("second restart did not replay the same terminate receipt", err)
+			}
+			if session.authorizations != beforeRecoveryAuthorizations {
+				t.Fatal("second terminate restart authorized another Apply")
+			}
 		})
+	}
+}
+
+func TestControllerDeadlineStopsOnlyFreshProvisionMutation(t *testing.T) {
+	root := canonicalTempDir(t)
+	session := &fakeAllocationSession{
+		snapshot:       initialAuthoritySnapshot(t),
+		authorizeError: errors.New("expired fresh apply"),
+	}
+	controller, store := openController(t, root, session)
+	defer controller.Close()
+	if _, err := controller.RecoverProvision(context.Background(), "effect-provision"); err == nil {
+		t.Fatal("expired fresh provision mutation was admitted")
+	}
+	if session.authorizations != 1 {
+		t.Fatalf("fresh mutation deadline checks=%d", session.authorizations)
+	}
+	intent := *session.snapshot.ProvisionIntent
+	objects := testObjectsPath(t, root, intent.Binding)
+	if _, err := os.Lstat(filepath.Join(objects, intent.StagingRelativeName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("deadline rejection created a staging object")
+	}
+	if len(store.JournalRecords()) != 1 {
+		t.Fatal("deadline rejection advanced Provider authority projection")
 	}
 }
 

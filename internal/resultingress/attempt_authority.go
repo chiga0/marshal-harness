@@ -1067,6 +1067,7 @@ func newAuthorityProjection() *Ingress {
 		admitted:          make(map[string]admittedEntry),
 		attempts:          make(map[string]AttemptAuthorityState),
 		effects:           make(map[string]EffectAuthorityState),
+		allocations:       make(map[string]allocationAuthorityState),
 		effectCommands:    make(map[string]string),
 		effectIdempotency: make(map[string]string),
 		effectMarkers:     make(map[string]string),
