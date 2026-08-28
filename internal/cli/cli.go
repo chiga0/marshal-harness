@@ -2415,6 +2415,7 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	// 只涉 gate 方向，无状态迁移；两条路径的 journal/verification/review/
 	// publication 语义经端到端等价测试证明相同。
 	var workerRunner func(ctx context.Context, adapter port.WorkerAdapter, request domain.Record) (domain.Record, error)
+	var resultAdmissionReconciler execution.ResultAdmissionReconciler
 	if os.Getenv("MARSHAL_WORKER_EXECUTOR") != "legacy" {
 		if sharedRuntime == nil {
 			// embedded sandbox 未启用时仍需一个 runtime 实例承载 bridge。
@@ -2450,6 +2451,9 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		// execchain.go 的 fail-closed 会正确拒绝执行。
 		if dispatchBinder != nil {
 			bridge.WithDurableAuthority(sharedRuntime)
+			if _, launchCapable := worker.(sandboxbridge.LaunchCapable); launchCapable {
+				resultAdmissionReconciler = bridge
+			}
 		}
 		// v1.0 supported production path is fail closed by construction:
 		// non-LaunchCapable adapters can never silently fall back to Adapter.Run.
@@ -2571,8 +2575,9 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 	result, err := execution.Run(ctx, execution.Input{
 		StateRoot: location.StateRoot, RepositoryRoot: location.RepositoryRoot, RunID: *runID,
 		Adapter: worker, Validator: runtime.Validator(), WorkerRunner: workerRunner, DispatchBinder: dispatchBinder,
-		OrphanStalenessThreshold: orphanStalenessThreshold,
-		EntryLocalSelfIdentity:   entryObservation, ObserveLocalSelfIdentity: observeLocalSelfIdentity,
+		OrphanStalenessThreshold:  orphanStalenessThreshold,
+		ResultAdmissionReconciler: resultAdmissionReconciler,
+		EntryLocalSelfIdentity:    entryObservation, ObserveLocalSelfIdentity: observeLocalSelfIdentity,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "运行失败（Attempt %s，状态 %s）：%v\n", result.AttemptID, result.State.State, err)

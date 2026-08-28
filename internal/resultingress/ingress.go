@@ -253,8 +253,12 @@ type QuarantineRecord struct {
 // admittedEntry bundles the recorded AdmissionFact with the original envelope
 // digest so that replay detection can compare the incoming digest correctly.
 type admittedEntry struct {
-	fact           AdmissionFact
-	envelopeDigest string
+	fact                AdmissionFact
+	drcDigest           string
+	envelopeKind        EnvelopeKind
+	envelopeSequence    uint64
+	envelopeDigest      string
+	legacyReplayBlocked bool
 }
 
 // Ingress is the single admission gate for external results (ADR 0044 decision 1).
@@ -349,7 +353,21 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (AdmissionFact, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.store != nil {
+		var fact AdmissionFact
+		var admitErr error
+		if err := i.store.transact(i, func() error {
+			fact, admitErr = i.admitLocked(ctx, drc, envelope)
+			return nil
+		}); err != nil {
+			return AdmissionFact{}, err
+		}
+		return fact, admitErr
+	}
+	return i.admitLocked(ctx, drc, envelope)
+}
 
+func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelope) (AdmissionFact, error) {
 	now := i.clock()
 
 	// ── 1. Structural validation (fail closed for malformed input) ────────────
@@ -371,6 +389,27 @@ func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (
 	if err != nil {
 		i.recordQuarantine(ReasonMalformed, "", envelope.ResultDigest, now)
 		return AdmissionFact{}, fmt.Errorf("resultingress: DRC digest failed: %w", err)
+	}
+
+	// A committed delivery is an immutable effect. Exact replay is checked
+	// before current lease/registration freshness because restart recovery may
+	// happen after the dispatch lease expires. The stored DRC digest prevents a
+	// differently bound credential from claiming an old effect.
+	replayKey := drc.IdempotencyKey
+	if prior, ok := i.admitted[replayKey]; ok {
+		if prior.legacyReplayBlocked {
+			i.recordQuarantine(ReasonDigestMismatch, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, fmt.Errorf("%w: idempotency key %q belongs to an unversioned legacy admission whose missing DRC/envelope authority cannot be synthesized",
+				ErrDigestMismatch, replayKey)
+		}
+		if prior.drcDigest == drcDigest && prior.envelopeKind == envelope.Kind && prior.envelopeSequence == envelope.Sequence && prior.envelopeDigest == envelope.ResultDigest {
+			fact := prior.fact
+			fact.IdempotentReplay = true
+			return fact, nil
+		}
+		i.recordQuarantine(ReasonDigestMismatch, drcDigest, envelope.ResultDigest, now)
+		return AdmissionFact{}, fmt.Errorf("%w: idempotency key %q reused with different DRC or result digest",
+			ErrDigestMismatch, replayKey)
 	}
 
 	// ── 2. Kind→operation mapping check (ADR 0044 R2) ─────────────────────────
@@ -446,7 +485,7 @@ func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (
 	// ── 9. Idempotent replay detection ────────────────────────────────────────
 	key := drc.IdempotencyKey
 	if prior, ok := i.admitted[key]; ok {
-		if prior.envelopeDigest == envelope.ResultDigest {
+		if !prior.legacyReplayBlocked && prior.drcDigest == drcDigest && prior.envelopeKind == envelope.Kind && prior.envelopeSequence == envelope.Sequence && prior.envelopeDigest == envelope.ResultDigest {
 			// Same digest: idempotent replay — return existing fact unchanged.
 			fact := prior.fact
 			fact.IdempotentReplay = true
@@ -459,29 +498,87 @@ func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (
 	}
 
 	// ── 10. Admit ─────────────────────────────────────────────────────────────
-	i.ledgerSequence++
+	nextLedgerSequence := i.ledgerSequence + 1
 	factInput, _ := json.Marshal(struct {
-		DRCDigest      string `json:"drcDigest"`
-		EnvelopeDigest string `json:"envelopeDigest"`
-		Sequence       uint64 `json:"sequence"`
-	}{drcDigest, envelope.ResultDigest, i.ledgerSequence})
+		DRCDigest        string       `json:"drcDigest"`
+		EnvelopeKind     EnvelopeKind `json:"envelopeKind"`
+		EnvelopeSequence uint64       `json:"envelopeSequence"`
+		EnvelopeDigest   string       `json:"envelopeDigest"`
+		LedgerSequence   uint64       `json:"ledgerSequence"`
+	}{drcDigest, envelope.Kind, envelope.Sequence, envelope.ResultDigest, nextLedgerSequence})
 	factDigest := canonical.DigestBytes(factInput)
 
 	fact := AdmissionFact{
 		FactDigest:       factDigest,
-		LedgerSequence:   i.ledgerSequence,
+		LedgerSequence:   nextLedgerSequence,
 		IdempotentReplay: false,
 	}
 	if i.store != nil {
 		// 成功接纳先将幂等权威锚点落账，再写入进程内 admitted——崩溃/重启或
 		// 重复送达时，跨进程的 replay 检测由该账本支持。落账失败即 reject。
-		if err := i.store.RecordAdmitted(key, envelope.ResultDigest, factDigest, i.ledgerSequence); err != nil {
-			i.recordQuarantine(ReasonMalformed, drcDigest, envelope.ResultDigest, now)
+		if err := i.store.recordAdmittedLocked(key, drcDigest, envelope, factDigest, nextLedgerSequence); err != nil {
 			return AdmissionFact{}, fmt.Errorf("resultingress: record admitted to durable store: %w", err)
 		}
 	}
-	i.admitted[key] = admittedEntry{fact: fact, envelopeDigest: envelope.ResultDigest}
+	i.ledgerSequence = nextLedgerSequence
+	i.admitted[key] = admittedEntry{fact: fact, drcDigest: drcDigest, envelopeKind: envelope.Kind, envelopeSequence: envelope.Sequence, envelopeDigest: envelope.ResultDigest}
 	return fact, nil
+}
+
+// ReplayCommitted performs a lookup-only replay of an already committed
+// delivery. It never creates a new admission. This is the crash-recovery path
+// for an outbox whose authority may be stale by the time the driver restarts.
+// Exact DRC and result digests are required; a conflicting reuse fails closed.
+func (i *Ingress) ReplayCommitted(drc DRC, envelope ResultEnvelope) (AdmissionFact, bool, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.store != nil {
+		var fact AdmissionFact
+		var found bool
+		var replayErr error
+		if err := i.store.transact(i, func() error {
+			fact, found, replayErr = i.replayCommittedLocked(drc, envelope)
+			return nil
+		}); err != nil {
+			return AdmissionFact{}, false, err
+		}
+		return fact, found, replayErr
+	}
+	return i.replayCommittedLocked(drc, envelope)
+}
+
+func (i *Ingress) replayCommittedLocked(drc DRC, envelope ResultEnvelope) (AdmissionFact, bool, error) {
+	if err := drc.Validate(); err != nil {
+		return AdmissionFact{}, false, err
+	}
+	if err := envelope.Validate(); err != nil {
+		return AdmissionFact{}, false, err
+	}
+	drcDigest, err := drc.Digest()
+	if err != nil {
+		return AdmissionFact{}, false, err
+	}
+	prior, ok := i.admitted[drc.IdempotencyKey]
+	if !ok {
+		return AdmissionFact{}, false, nil
+	}
+	if prior.legacyReplayBlocked {
+		return AdmissionFact{}, false, fmt.Errorf("%w: idempotency key %q belongs to an unversioned legacy admission whose missing authority cannot be replayed",
+			ErrDigestMismatch, drc.IdempotencyKey)
+	}
+	if prior.drcDigest != drcDigest || prior.envelopeKind != envelope.Kind || prior.envelopeSequence != envelope.Sequence || prior.envelopeDigest != envelope.ResultDigest {
+		return AdmissionFact{}, false, fmt.Errorf("%w: idempotency key %q reused with different DRC or result digest",
+			ErrDigestMismatch, drc.IdempotencyKey)
+	}
+	fact := prior.fact
+	fact.IdempotentReplay = true
+	return fact, true, nil
+}
+
+func (i *Ingress) resetDurableReplayState() {
+	i.ledgerSequence = 0
+	i.admitted = make(map[string]admittedEntry)
+	i.quarantine = nil
 }
 
 // Quarantine returns a read-only copy of all quarantine records.
@@ -504,7 +601,7 @@ func (i *Ingress) recordQuarantine(reason RejectionReason, drcDigest, envelopeDi
 	if i.store != nil {
 		// 写出器由调用方（Admit）持锁；落账失败会让准确整体 admission reject，
 		// 见调用路径的处理。best-effort 记录，绝不静默丢弃失败。
-		_ = i.store.RecordQuarantined(reason, drcDigest, envelopeDigest, at)
+		_ = i.store.recordQuarantinedLocked(reason, drcDigest, envelopeDigest, at)
 	}
 }
 
