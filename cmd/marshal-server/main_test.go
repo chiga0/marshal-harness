@@ -41,6 +41,16 @@ func testRepository(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("marshal-server test base\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Server startup freezes this path but these tests never execute it; Run
+	// controller behavior is exercised against execution.Run in
+	// internal/server. Keeping it a plain script avoids anonymous test binary
+	// execution on macOS.
+	if err := os.WriteFile(filepath.Join(root, "bin", "marshal"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	git("add", "README.md")
 	git("commit", "-q", "-m", "base")
 	canonicalRoot, err := filepath.EvalSymlinks(root)

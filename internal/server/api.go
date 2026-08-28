@@ -179,6 +179,7 @@ type requestIdentity struct {
 	RequestID string
 	Principal string
 	Scope     string
+	Deadline  time.Time
 }
 
 // Config assembles one marshal-server Public API surface. Selector,
@@ -199,6 +200,14 @@ type Config struct {
 	// Getenv is the environment lookup for the default Worker runtime; nil
 	// selects os.Getenv.
 	Getenv func(string) string
+	// RunExecutor invokes the single production execution composition root for
+	// an existing durable Run. marshal-server injects the fixed CLI task-run
+	// application boundary so the HTTP Port does not recreate sandbox,
+	// authority, result-ingress or lifecycle wiring. Tests may inject the same
+	// execution.Service seam directly. A nil executor leaves Task planning and
+	// read/control endpoints available but makes /runs/{runId}/start fail
+	// closed.
+	RunExecutor func(context.Context, string) error
 	// EventWatchInterval bounds how long a journaled event may remain
 	// unprojected without a notify wake; zero selects the default.
 	EventWatchInterval time.Duration
@@ -227,6 +236,7 @@ type Server struct {
 	now            func() time.Time
 	validator      *contract.Validator
 	selector       *adapter.Selector
+	runExecutor    func(context.Context, string) error
 	store          *runstore.Store
 	idempotency    *Store
 
@@ -311,6 +321,7 @@ func New(config Config) (*Server, error) {
 		now:                  now,
 		validator:            validator,
 		selector:             selector,
+		runExecutor:          config.RunExecutor,
 		store:                store,
 		idempotency:          NewIdempotencyStore(filepath.Join(config.StateRoot, "idempotency"), now),
 		events:               newProjection(config.StateRoot, namespace, store, watchInterval),
@@ -342,6 +353,9 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writer.Header().Set(HeaderRequestID, identity.RequestID)
+	requestContext, cancel := context.WithTimeout(request.Context(), identity.Deadline.Sub(s.now()))
+	defer cancel()
+	request = request.WithContext(requestContext)
 
 	segments, apiErr := routeSegments(request.URL.Path)
 	if apiErr != nil {
@@ -373,6 +387,12 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		s.handleRunApproval(writer, request, identity, segments[1])
+	case len(segments) == 3 && segments[0] == "runs" && segments[2] == "start":
+		if request.Method != http.MethodPost {
+			methodNotAllowed(writer, identity.RequestID, http.MethodPost)
+			return
+		}
+		s.handleRunStart(writer, request, identity, segments[1])
 	case len(segments) == 3 && segments[0] == "runs" && segments[2] == "status":
 		if request.Method != http.MethodGet {
 			methodNotAllowed(writer, identity.RequestID, http.MethodGet)
@@ -492,6 +512,7 @@ func (s *Server) authenticate(request *http.Request) (requestIdentity, *APIError
 		return requestIdentity{}, apiError(CodeInvalidRequest, "deadline-exceeded",
 			"the request deadline has passed")
 	}
+	identity.Deadline = parsed
 	return identity, nil
 }
 
@@ -761,6 +782,20 @@ type TaskCancellation struct {
 	TerminalReason       string                         `json:"terminalReason"`
 	Actor                string                         `json:"actor"`
 	Sequence             uint64                         `json:"sequence"`
+}
+
+// RunExecution is the durable result projection returned after the one
+// production execution composition root finishes a bounded Worker attempt.
+// It deliberately carries no Worker-authored claims: State is re-read from
+// the authoritative Run journal/snapshot after execution returns.
+type RunExecution struct {
+	APIVersion           domain.APIVersion              `json:"apiVersion"`
+	Kind                 string                         `json:"kind"`
+	AuthorityNamespaceId authority.AuthorityNamespaceId `json:"authorityNamespaceId"`
+	TaskID               string                         `json:"taskId"`
+	RunID                string                         `json:"runId"`
+	AttemptID            string                         `json:"attemptId"`
+	State                domain.RunState                `json:"state"`
 }
 
 func (s *Server) handleTaskCreate(writer http.ResponseWriter, request *http.Request, identity requestIdentity) {
@@ -1217,6 +1252,110 @@ func commitAbortResult(runDirectory string) error {
 
 func removeAbortResult(runDirectory string) {
 	_ = os.Remove(filepath.Join(runDirectory, "result.md.pending"))
+}
+
+// handleRunStart starts or resumes one existing Run through the injected
+// production composition root. The endpoint is idempotent at the Public API
+// boundary; a lost response can be replayed after server restart without
+// launching a second Attempt.
+func (s *Server) handleRunStart(writer http.ResponseWriter, request *http.Request, identity requestIdentity, runID string) {
+	if err := domain.ValidateID(runID); err != nil {
+		writeError(writer, identity.RequestID, apiError(CodeInvalidRequest, "invalid-id", "the runId is not a valid Marshal ID"))
+		return
+	}
+	body, apiErr := readMutationBody(writer, request)
+	if apiErr != nil {
+		writeError(writer, identity.RequestID, apiErr)
+		return
+	}
+	env, apiErr := decodeEnvelope(body)
+	if apiErr != nil {
+		writeError(writer, identity.RequestID, apiErr)
+		return
+	}
+	executor := func(ctx context.Context, payload json.RawMessage) (json.RawMessage, int, *APIError) {
+		return s.executeRunStart(ctx, runID, payload)
+	}
+	result, status, apiErr := s.submit(request.Context(), env, executor)
+	if apiErr != nil {
+		writeError(writer, identity.RequestID, apiErr)
+		return
+	}
+	writeJSON(writer, status, result)
+}
+
+func (s *Server) executeRunStart(ctx context.Context, runID string, payload json.RawMessage) (json.RawMessage, int, *APIError) {
+	// v1 deliberately exposes no execution options here. Runtime profile,
+	// adapter, budgets and verification boundaries are frozen by the existing
+	// Task/Policy/Capability snapshots; accepting caller-selected knobs would
+	// create a second policy surface.
+	members, apiErr := strictObject(payload)
+	if apiErr != nil {
+		return nil, 0, apiErr
+	}
+	// encoding/json accepts the literal null into a nil map. The wire
+	// contract is intentionally an empty object, not an absent value, so keep
+	// that representation distinction fail closed.
+	if members == nil {
+		return nil, 0, apiError(CodeInvalidRequest, "malformed-json", "the document is not a JSON object")
+	}
+	before, err := s.store.Inspect(runID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, 0, apiError(CodeNotFound, "run-not-found", "the Run does not exist")
+		}
+		return nil, 0, apiError(CodeRejected, "run-inspect-failed", "the Run state could not be inspected")
+	}
+	if before.State.Terminal() {
+		return nil, 0, apiError(CodeInvalidState, "run-terminal", "the Run is already terminal")
+	}
+	// A crash can occur after execution durably commits worker.completed but
+	// before the HTTP idempotency result is renamed into place. In that exact
+	// window the authoritative Run is already VERIFYING. Reconstruct the
+	// response from the journal/snapshot instead of invoking task run again;
+	// the reconstructed response is then committed as this submission's
+	// idempotency result. This is recovery from Core authority, not a second
+	// controller state machine.
+	if before.State == domain.StateVerifying && before.CurrentAttemptID != "" {
+		return s.encodeRunExecution(before)
+	}
+	if s.runExecutor == nil {
+		return nil, 0, apiError(CodeRejected, "run-executor-unavailable",
+			"the server has no production Run executor configured")
+	}
+	if err := s.runExecutor(ctx, runID); err != nil {
+		// The durable journal remains the authority for any partial progress.
+		// Do not expose adapter/host paths or provider diagnostics through the
+		// public protocol; callers inspect status/events and may safely retry a
+		// request that never committed an idempotency result.
+		return nil, 0, apiError(CodeRejected, "run-execution-failed", "the Run execution attempt failed")
+	}
+	after, err := s.store.Inspect(runID)
+	if err != nil {
+		return nil, 0, apiError(CodeRejected, "run-inspect-failed", "the Run state could not be inspected after execution")
+	}
+	if after.TaskID != before.TaskID || after.RunID != runID || after.Sequence <= before.Sequence || after.CurrentAttemptID == "" {
+		return nil, 0, apiError(CodeRejected, "run-execution-not-observed",
+			"the production executor returned without durable Run progress")
+	}
+	return s.encodeRunExecution(after)
+}
+
+func (s *Server) encodeRunExecution(state domain.RunState) (json.RawMessage, int, *APIError) {
+	result := RunExecution{
+		APIVersion:           domain.APIVersionV1Alpha1,
+		Kind:                 "RunExecution",
+		AuthorityNamespaceId: s.namespace,
+		TaskID:               state.TaskID,
+		RunID:                state.RunID,
+		AttemptID:            state.CurrentAttemptID,
+		State:                state,
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, 0, apiError(CodeInternal, "internal", "encode Run execution result")
+	}
+	return data, http.StatusAccepted, nil
 }
 
 func (s *Server) handleRunApproval(writer http.ResponseWriter, request *http.Request, identity requestIdentity, runID string) {

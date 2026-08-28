@@ -29,7 +29,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -74,11 +76,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	tlsKey := flags.String("tls-key", "", "TLS 服务端私钥（PEM）：非 loopback 监听强制要求；loopback 显式启用 TLS 时使用")
 	tlsClientCA := flags.String("tls-client-ca", "", "双向身份校验的客户端 CA（PEM）：非 loopback 监听强制要求；loopback 显式启用 TLS 时使用")
 	trustRoots := flags.String("trust-roots", "", "注册信任根 key id 列表（逗号分隔）；为空时注册请求一律 fail closed")
+	marshalExecutable := flags.String("marshal-executable", "", "固定 marshal CLI 可执行文件；缺省使用仓库 bin/marshal，Run start 始终复用其 production task-run composition")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "用法：marshal-server [--listen HOST:PORT] [--dir PATH] [--tls-cert PEM --tls-key PEM --tls-client-ca PEM] [--trust-roots ID,...]")
+		fmt.Fprintln(stderr, "用法：marshal-server [--listen HOST:PORT] [--dir PATH] [--marshal-executable PATH] [--tls-cert PEM --tls-key PEM --tls-client-ca PEM] [--trust-roots ID,...]")
 		return exitUsage
 	}
 	loopback, err := server.ClassifyListen(*listen)
@@ -104,9 +107,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "marshal-server: 仓库身份无效：%v（请先执行 marshal init）\n", err)
 		return exitFailure
 	}
+	executable, err := resolveMarshalExecutable(location.RepositoryRoot, *marshalExecutable)
+	if err != nil {
+		fmt.Fprintln(stderr, "marshal-server: 固定 marshal CLI 不可用；请构建 bin/marshal 或显式传入 --marshal-executable。")
+		return exitFailure
+	}
 	apiServer, err := server.New(server.Config{
 		StateRoot:      location.StateRoot,
 		RepositoryRoot: location.RepositoryRoot,
+		RunExecutor: func(ctx context.Context, runID string) error {
+			return executeRunThroughFixedCLI(ctx, executable, location.RepositoryRoot, runID)
+		},
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "marshal-server: 组装 Public API 失败：%v\n", err)
@@ -178,6 +189,52 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		return exitOK
 	}
+}
+
+// resolveMarshalExecutable freezes one canonical executable path at server
+// startup. The child CLI's Mac-first self-identity gate reopens and verifies
+// the exact path object, digest, sourceHead and activation on every task run;
+// resolving here prevents PATH lookup and random temporary executable use.
+func resolveMarshalExecutable(repositoryRoot, configured string) (string, error) {
+	path := strings.TrimSpace(configured)
+	if path == "" {
+		path = filepath.Join(repositoryRoot, "bin", "marshal")
+	} else if !filepath.IsAbs(path) {
+		path = filepath.Join(repositoryRoot, path)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", errors.New("marshal executable is not an executable regular file")
+	}
+	return resolved, nil
+}
+
+// executeRunThroughFixedCLI delegates to the exact existing production
+// composition root. No lifecycle, sandbox, authority or result-ingress logic
+// is duplicated in marshal-server. Presentation streams are discarded at the
+// trust boundary; durable Run status/events carry the safe diagnostics.
+func executeRunThroughFixedCLI(ctx context.Context, executable, repositoryRoot, runID string) error {
+	command := exec.CommandContext(ctx, executable, "task", "run", "--run", runID, "--json")
+	command.Dir = repositoryRoot
+	command.Env = os.Environ()
+	command.Stdin = strings.NewReader("")
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	command.WaitDelay = shutdownTimeout
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return os.ErrProcessDone
+		}
+		return command.Process.Signal(os.Interrupt)
+	}
+	return command.Run()
 }
 
 // splitList splits a comma-separated flag value, trimming blanks.

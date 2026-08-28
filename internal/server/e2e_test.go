@@ -501,7 +501,7 @@ func advanceToRetryPending(t *testing.T, stateRoot, runID string) {
 // TestOpenAPIDocumentFrozen proves the openapi.json freeze tracks the
 // implemented surface: identical paths and methods, the complete frozen
 // error-code/status table, the full identity matrix and every response
-// schema of the five endpoints.
+// schema of the frozen endpoints.
 func TestOpenAPIDocumentFrozen(t *testing.T) {
 	data, err := os.ReadFile("openapi.json")
 	if err != nil {
@@ -536,6 +536,7 @@ func TestOpenAPIDocumentFrozen(t *testing.T) {
 		APIPrefix + "/tasks":                 http.MethodPost,
 		APIPrefix + "/tasks/{taskId}":        http.MethodGet,
 		APIPrefix + "/tasks/{taskId}/cancel": http.MethodPost,
+		APIPrefix + "/runs/{runId}/start":    http.MethodPost,
 		APIPrefix + "/runs/{runId}/approval": http.MethodPost,
 		APIPrefix + "/runs/{runId}/status":   http.MethodGet,
 		APIPrefix + "/events":                http.MethodGet,

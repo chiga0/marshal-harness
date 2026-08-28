@@ -19,11 +19,14 @@ import (
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/execution"
+	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/repository"
+	"github.com/chiga0/marshal-harness/internal/runstore"
 )
 
 const (
-	fixtureAdapterID = "server-fixture"
+	fixtureAdapterID = "fake"
 	fixtureTaskID    = "task-server-fixture"
 	fixtureRunID     = "run-server-fixture"
 	// fixtureDeadline is one hour after the frozen fixture clock.
@@ -39,6 +42,7 @@ var fixtureClock = time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 type fixtureAdapter struct {
 	id         string
 	capability []byte
+	run        func(context.Context, domain.Record) (domain.Record, error)
 }
 
 func (a *fixtureAdapter) ID() string { return a.id }
@@ -47,7 +51,10 @@ func (a *fixtureAdapter) Probe(ctx context.Context) (domain.Record, error) {
 	return domain.Record{Kind: domain.KindCapabilitySnapshot, Data: a.capability}, nil
 }
 
-func (a *fixtureAdapter) Run(context.Context, domain.Record) (domain.Record, error) {
+func (a *fixtureAdapter) Run(ctx context.Context, request domain.Record) (domain.Record, error) {
+	if a.run != nil {
+		return a.run(ctx, request)
+	}
 	return domain.Record{}, fmt.Errorf("fixture adapter: the public API must never execute a Worker")
 }
 
@@ -207,6 +214,8 @@ func sealPolicy(t *testing.T, policy map[string]any) []byte {
 type serverFixture struct {
 	t              *testing.T
 	server         *Server
+	adapter        *fixtureAdapter
+	selector       *adapter.Selector
 	repositoryRoot string
 	stateRoot      string
 	baseSHA        string
@@ -221,7 +230,8 @@ func newServerFixture(t *testing.T) *serverFixture {
 		t.Fatalf("bind the fixture repository identity: %v", err)
 	}
 	registry := adapter.NewRegistry()
-	if err := registry.Register(&fixtureAdapter{id: fixtureAdapterID, capability: fixtureCapability(fixtureAdapterID)}); err != nil {
+	worker := &fixtureAdapter{id: fixtureAdapterID, capability: fixtureCapability(fixtureAdapterID)}
+	if err := registry.Register(worker); err != nil {
 		t.Fatalf("register the fixture adapter: %v", err)
 	}
 	selector, err := adapter.NewSelector(registry)
@@ -240,6 +250,8 @@ func newServerFixture(t *testing.T) *serverFixture {
 	return &serverFixture{
 		t:              t,
 		server:         server,
+		adapter:        worker,
+		selector:       selector,
 		repositoryRoot: root,
 		stateRoot:      stateRoot,
 		baseSHA:        fixtureBaseSHA(t, root),
@@ -710,4 +722,234 @@ func TestServerBindsAuthorityNamespace(t *testing.T) {
 	if err := namespace.Validate(); err != nil {
 		t.Fatalf("the derived authority namespace is invalid: %v", err)
 	}
+}
+
+// TestRunStartExecutesThroughCoreAndReplaysAcrossServerRestart proves the
+// missing ADR 0052 server vertical slice without manufacturing a second state
+// machine: the injected composition invokes execution.Run, Core journals the
+// Attempt to VERIFYING, a fresh Server rebuilds status from disk, and replay
+// of the same submission returns the durable result without a second Attempt.
+func TestRunStartExecutesThroughCoreAndReplaysAcrossServerRestart(t *testing.T) {
+	fixture := newServerFixture(t)
+	fixture.adapter.run = successfulServerWorker
+	executions := 0
+	runExecutor := func(ctx context.Context, runID string) error {
+		executions++
+		_, err := execution.Run(ctx, execution.Input{
+			StateRoot:      fixture.stateRoot,
+			RepositoryRoot: fixture.repositoryRoot,
+			RunID:          runID,
+			Adapter:        fixture.adapter,
+			Validator:      fixture.server.validator,
+		})
+		return err
+	}
+	fixture.server.runExecutor = runExecutor
+
+	createAndApproveServerRun(t, fixture)
+	startBody := mutationBody(t, "key-start-real", map[string]any{})
+	response := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+		withContentType(fixture.identityHeaders("req-start-real")), startBody)
+	if response.status != http.StatusAccepted {
+		t.Fatalf("start status = %d, body: %s", response.status, response.body)
+	}
+	var started RunExecution
+	if err := json.Unmarshal(response.body, &started); err != nil {
+		t.Fatalf("decode RunExecution: %v", err)
+	}
+	if started.Kind != "RunExecution" || started.RunID != fixtureRunID || started.TaskID != fixtureTaskID ||
+		started.AttemptID == "" || started.State.State != domain.StateVerifying {
+		t.Fatalf("RunExecution = %+v", started)
+	}
+	if executions != 1 {
+		t.Fatalf("executions = %d, want 1", executions)
+	}
+
+	// Rebuild the entire HTTP adapter over the same durable state root. The
+	// status projection and idempotency result must survive the restart.
+	restarted, err := New(Config{
+		StateRoot:      fixture.stateRoot,
+		RepositoryRoot: fixture.repositoryRoot,
+		Selector:       fixture.selector,
+		Now:            func() time.Time { return fixtureClock },
+		RunExecutor:    runExecutor,
+	})
+	if err != nil {
+		t.Fatalf("restart server: %v", err)
+	}
+	fixture.server = restarted
+	status := fixture.do(http.MethodGet, APIPrefix+"/runs/"+fixtureRunID+"/status",
+		fixture.identityHeaders("req-status-after-restart"), nil)
+	if status.status != http.StatusOK {
+		t.Fatalf("restart status query = %d, body: %s", status.status, status.body)
+	}
+	var restored domain.RunState
+	if err := json.Unmarshal(status.body, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.State != domain.StateVerifying || restored.CurrentAttemptID != started.AttemptID {
+		t.Fatalf("restored state = %+v", restored)
+	}
+
+	replay := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+		withContentType(fixture.identityHeaders("req-start-replay")), startBody)
+	if replay.status != http.StatusOK {
+		t.Fatalf("restart replay = %d, body: %s", replay.status, replay.body)
+	}
+	var replayed RunExecution
+	if err := json.Unmarshal(replay.body, &replayed); err != nil {
+		t.Fatal(err)
+	}
+	if replayed.AttemptID != started.AttemptID || replayed.State.Sequence != started.State.Sequence || executions != 1 {
+		t.Fatalf("replay launched another Attempt: first=%+v replay=%+v executions=%d", started, replayed, executions)
+	}
+
+	// Fault injection: model a crash in the narrow window after Core commits
+	// worker.completed but before the HTTP idempotency result is durable. The
+	// next submission must reconstruct from VERIFYING and must not execute a
+	// second Attempt.
+	recordPath, _ := fixture.server.idempotency.recordPaths(Identity{
+		Namespace: fixture.server.namespace,
+		Scope:     fixture.server.namespace.AuthorityScopeId,
+		Key:       "key-start-real",
+	})
+	if err := os.Remove(recordPath); err != nil {
+		t.Fatalf("inject lost idempotency response: %v", err)
+	}
+	recovered := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+		withContentType(fixture.identityHeaders("req-start-lost-response")), startBody)
+	if recovered.status != http.StatusAccepted {
+		t.Fatalf("lost-response recovery = %d, body: %s", recovered.status, recovered.body)
+	}
+	var recoveredExecution RunExecution
+	if err := json.Unmarshal(recovered.body, &recoveredExecution); err != nil {
+		t.Fatal(err)
+	}
+	if recoveredExecution.AttemptID != started.AttemptID || executions != 1 {
+		t.Fatalf("lost-response recovery launched another Attempt: recovered=%+v executions=%d", recoveredExecution, executions)
+	}
+}
+
+// TestRunStartFailureCanBeCancelledIdempotently proves controller failure does
+// not hide Core progress: an actual failed execution reaches RETRY_PENDING,
+// the existing explicit-abort path closes it, and cancel replay adds no second
+// terminal transition.
+func TestRunStartFailureCanBeCancelledIdempotently(t *testing.T) {
+	fixture := newServerFixture(t)
+	fixture.adapter.run = func(context.Context, domain.Record) (domain.Record, error) {
+		failure, err := port.NewAdapterFailure(port.AdapterIDFake, port.FailureKindConnectionFailure,
+			port.RetryDispositionRetryable, nil, nil, fixtureClock)
+		if err != nil {
+			return domain.Record{}, err
+		}
+		return domain.Record{}, failure
+	}
+	fixture.server.runExecutor = func(ctx context.Context, runID string) error {
+		_, err := execution.Run(ctx, execution.Input{
+			StateRoot:      fixture.stateRoot,
+			RepositoryRoot: fixture.repositoryRoot,
+			RunID:          runID,
+			Adapter:        fixture.adapter,
+			Validator:      fixture.server.validator,
+		})
+		return err
+	}
+	createAndApproveServerRun(t, fixture)
+
+	start := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+		withContentType(fixture.identityHeaders("req-start-failure")), mutationBody(t, "key-start-failure", map[string]any{}))
+	if start.status != http.StatusUnprocessableEntity {
+		t.Fatalf("failed start status = %d, body: %s", start.status, start.body)
+	}
+	if body := start.decodeError(t); body.Reason != "run-execution-failed" {
+		t.Fatalf("failed start error = %+v", body)
+	}
+	state, err := runstore.New(fixture.stateRoot).Inspect(fixtureRunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.State != domain.StateRetryPending {
+		t.Fatalf("failed execution state = %s, want RETRY_PENDING", state.State)
+	}
+
+	cancelPayload := map[string]any{"actor": "server-operator", "reason": "stop after failed attempt", "runId": fixtureRunID}
+	cancelBody := mutationBody(t, "key-cancel-after-start", cancelPayload)
+	cancel := fixture.do(http.MethodPost, APIPrefix+"/tasks/"+fixtureTaskID+"/cancel",
+		withContentType(fixture.identityHeaders("req-cancel-after-start")), cancelBody)
+	if cancel.status != http.StatusOK {
+		t.Fatalf("cancel status = %d, body: %s", cancel.status, cancel.body)
+	}
+	replay := fixture.do(http.MethodPost, APIPrefix+"/tasks/"+fixtureTaskID+"/cancel",
+		withContentType(fixture.identityHeaders("req-cancel-after-start-replay")), cancelBody)
+	if replay.status != http.StatusOK || !bytes.Equal(bytes.TrimSpace(replay.body), bytes.TrimSpace(cancel.body)) {
+		t.Fatalf("cancel replay diverged: first=%d %s replay=%d %s", cancel.status, cancel.body, replay.status, replay.body)
+	}
+}
+
+func TestRunStartRejectsNullPayloadBeforeExecution(t *testing.T) {
+	fixture := newServerFixture(t)
+	executions := 0
+	fixture.server.runExecutor = func(context.Context, string) error {
+		executions++
+		return nil
+	}
+	createAndApproveServerRun(t, fixture)
+
+	response := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+		withContentType(fixture.identityHeaders("req-start-null")), mutationBody(t, "key-start-null", nil))
+	if response.status != http.StatusBadRequest {
+		t.Fatalf("null payload status = %d, body: %s", response.status, response.body)
+	}
+	if body := response.decodeError(t); body.Reason != "malformed-json" {
+		t.Fatalf("null payload error = %+v", body)
+	}
+	if executions != 0 {
+		t.Fatalf("null payload reached production executor %d times", executions)
+	}
+}
+
+func createAndApproveServerRun(t *testing.T, fixture *serverFixture) {
+	t.Helper()
+	createPayload := map[string]any{
+		"runId":          fixtureRunID,
+		"taskSpec":       fixtureTask(fixture.repositoryRoot, fixtureTaskID, fixtureAdapterID, fixture.baseSHA),
+		"policySnapshot": json.RawMessage(sealPolicy(t, fixturePolicy(fixtureTaskID, fixtureRunID, fixtureAdapterID))),
+	}
+	created := fixture.do(http.MethodPost, APIPrefix+"/tasks",
+		withContentType(fixture.identityHeaders("req-controller-create")), mutationBody(t, "key-controller-create", createPayload))
+	if created.status != http.StatusCreated {
+		t.Fatalf("create status = %d, body: %s", created.status, created.body)
+	}
+	approved := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/approval",
+		withContentType(fixture.identityHeaders("req-controller-approve")), mutationBody(t, "key-controller-approve", map[string]any{
+			"gate": domain.ApprovalGatePlan, "actor": "server-operator",
+		}))
+	if approved.status != http.StatusCreated {
+		t.Fatalf("approval status = %d, body: %s", approved.status, approved.body)
+	}
+}
+
+func successfulServerWorker(_ context.Context, request domain.Record) (domain.Record, error) {
+	var input struct {
+		TaskID       string `json:"taskId"`
+		RunID        string `json:"runId"`
+		AttemptID    string `json:"attemptId"`
+		WorktreePath string `json:"worktreePath"`
+	}
+	if err := json.Unmarshal(request.Data, &input); err != nil {
+		return domain.Record{}, err
+	}
+	if err := os.WriteFile(filepath.Join(input.WorktreePath, "change.txt"), []byte("server worker change\n"), 0o600); err != nil {
+		return domain.Record{}, err
+	}
+	data, err := json.Marshal(map[string]any{
+		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerResult",
+		"taskId": input.TaskID, "runId": input.RunID, "attemptId": input.AttemptID,
+		"adapter": map[string]any{"id": fixtureAdapterID, "executable": "/fixture/adapter", "version": "1"},
+		"status":  "completed", "summary": "done",
+		"declaredChangedFiles": []string{"change.txt"}, "declaredArtifacts": []any{},
+		"declaredCommands": []any{}, "declaredRisks": []string{},
+		"startedAt": "2026-08-13T12:00:00Z", "completedAt": "2026-08-13T12:00:01Z",
+	})
+	return domain.Record{Kind: domain.KindWorkerResult, Data: data}, err
 }
