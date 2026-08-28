@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 )
@@ -131,9 +133,15 @@ var (
 )
 
 type Adapter struct {
-	executable string
-	validator  *contract.Validator
-	now        func() time.Time
+	executable  string
+	nodeRuntime string
+	// frozenVersion is configuration authority, not provider output. The
+	// production Pi profile is closed over 0.84.3 and PrepareLaunch must not
+	// execute the provider merely to rediscover that fact before Core has
+	// appended launch-authorized.
+	frozenVersion string
+	validator     *contract.Validator
+	now           func() time.Time
 	// spawn starts the prepared worker process. It is an injectable seam used
 	// only by Run: tests replace it to prove PrepareLaunch and every
 	// fail-closed gate complete without ever starting a process. The
@@ -152,10 +160,37 @@ func (a *Adapter) startCommand(command *exec.Cmd) error {
 }
 
 var _ port.TerminalLaunchAdapter = (*Adapter)(nil)
+var _ sandboxbridge.ProductionLaunchCapable = (*Adapter)(nil)
+
+// ProductionLaunchProfileID is non-empty only when the caller explicitly
+// configured the closed Node runtime. A PATH-only Pi remains available to the
+// explicit legacy/non-production selector but is never production-eligible.
+func (a *Adapter) ProductionLaunchProfileID() string {
+	if a == nil || a.nodeRuntime == "" || a.frozenVersion != supportedBinary843 || runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		return ""
+	}
+	return launchidentity.Pi0843DarwinARM64Profile
+}
 
 // New requires an exact absolute executable path. Marshal never resolves a
 // provider executable by a similar name or by an implicit fallback.
 func New(executable string, validator *contract.Validator) (*Adapter, error) {
+	return newAdapter(executable, "", validator)
+}
+
+// NewWithRuntime freezes the explicit Node runtime required by the Pi 0.84.3
+// production closure. The configured Pi entrypoint remains provider material;
+// it is never used as the kernel executable.
+func NewWithRuntime(executable, nodeRuntime string, validator *contract.Validator) (*Adapter, error) {
+	adapter, err := newAdapter(executable, nodeRuntime, validator)
+	if err != nil {
+		return nil, err
+	}
+	adapter.frozenVersion = supportedBinary843
+	return adapter, nil
+}
+
+func newAdapter(executable, nodeRuntime string, validator *contract.Validator) (*Adapter, error) {
 	if validator == nil {
 		return nil, errors.New("contract validator is required")
 	}
@@ -173,7 +208,20 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("pi executable must be an executable regular file")
 	}
-	return &Adapter{executable: realPath, validator: validator, now: time.Now}, nil
+	if nodeRuntime != "" {
+		if !filepath.IsAbs(nodeRuntime) || filepath.Clean(nodeRuntime) != nodeRuntime {
+			return nil, errors.New("pi Node runtime must be an absolute clean path")
+		}
+		resolvedNode, resolveErr := filepath.EvalSymlinks(nodeRuntime)
+		if resolveErr != nil || resolvedNode != nodeRuntime {
+			return nil, errors.New("pi Node runtime must be a canonical non-symlink path")
+		}
+		nodeInfo, statErr := os.Lstat(nodeRuntime)
+		if statErr != nil || !nodeInfo.Mode().IsRegular() || nodeInfo.Mode().Perm()&0o111 == 0 {
+			return nil, errors.New("pi Node runtime must be an executable regular file")
+		}
+	}
+	return &Adapter{executable: realPath, nodeRuntime: nodeRuntime, validator: validator, now: time.Now}, nil
 }
 
 func (a *Adapter) ID() string { return adapterID }
@@ -302,6 +350,21 @@ func (a *Adapter) inspect(ctx context.Context) (executableIdentity, error) {
 	return executableIdentity{a.executable, digest, version}, nil
 }
 
+// inspectFrozen pins the configured provider material without running it.
+// The version comes from the closed production profile; the coordinator will
+// subsequently re-open and re-hash the exact material after launch authority.
+func (a *Adapter) inspectFrozen() (executableIdentity, error) {
+	info, err := os.Stat(a.executable)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 || a.frozenVersion == "" {
+		return executableIdentity{}, errors.New("configured pi executable is unavailable")
+	}
+	digest, err := digestFile(a.executable)
+	if err != nil {
+		return executableIdentity{}, err
+	}
+	return executableIdentity{path: a.executable, digest: digest, version: a.frozenVersion}, nil
+}
+
 // readBinaryVersion runs `<executable> --version` inside the sanitized probe
 // environment and parses the version string reported by the binary.
 func readBinaryVersion(ctx context.Context, executable string) (string, error) {
@@ -412,6 +475,7 @@ type LaunchPlan struct {
 	model           string
 	identity        executableIdentity
 	attemptDeadline time.Time
+	closure         launchidentity.ClosureV1
 }
 
 // PrepareLaunch performs every precompute Run performed before starting the
@@ -424,6 +488,17 @@ type LaunchPlan struct {
 // environment. It never starts the worker process: Run's spawn seam is only
 // consumed after a plan is returned.
 func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (sandboxbridge.LaunchPlan, error) {
+	return a.prepareLaunch(ctx, record)
+}
+
+// PreflightLaunch is the production-only, side-effect-free plan constructor.
+// Keeping it distinct lets Core prove exact closure before any legacy Prepare
+// callback, provider operation, or durable write.
+func (a *Adapter) PreflightLaunch(ctx context.Context, record domain.Record) (sandboxbridge.LaunchPlan, error) {
+	return a.prepareLaunch(ctx, record)
+}
+
+func (a *Adapter) prepareLaunch(ctx context.Context, record domain.Record) (sandboxbridge.LaunchPlan, error) {
 	if record.Kind != domain.KindWorkerRequest {
 		return nil, fmt.Errorf("expected WorkerRequest, got %s", record.Kind)
 	}
@@ -446,9 +521,14 @@ func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (sand
 	// inspect), so Run's context.WithDeadline reproduces the legacy
 	// context.WithTimeout coverage byte-for-byte.
 	attemptDeadline := time.Now().Add(time.Duration(request.AttemptTimeoutSeconds) * time.Second)
-	inspectCtx, cancel := context.WithDeadline(ctx, attemptDeadline)
-	defer cancel()
-	identity, err := a.inspect(inspectCtx)
+	var identity executableIdentity
+	if a.nodeRuntime != "" {
+		identity, err = a.inspectFrozen()
+	} else {
+		inspectCtx, cancel := context.WithDeadline(ctx, attemptDeadline)
+		defer cancel()
+		identity, err = a.inspect(inspectCtx)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -487,9 +567,33 @@ func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (sand
 	if err != nil {
 		return nil, err
 	}
+	environment := workerEnvironment(worktree)
+	if a.nodeRuntime == "" {
+		// Legacy/non-production Pi keeps the existing direct executable plan.
+		// Only NewWithRuntime selects the closed interpreted-agent profile.
+		return &LaunchPlan{
+			ExecArgv: append([]string{identity.path}, args...), Environment: environment, WorkingDirectory: worktree,
+			AttemptTimeoutSeconds: int64(request.AttemptTimeoutSeconds), ResultPath: resultPath, ControlRoot: controlRoot,
+			SessionPolicy: request.SessionPolicy, MaxOutputBytes: int64(request.MaxOutputBytes), request: request,
+			model: model, identity: identity, attemptDeadline: attemptDeadline,
+		}, nil
+	}
+	if identity.version != supportedBinary843 {
+		return nil, fmt.Errorf("%w: Pi production launch requires 0.84.3 and an explicit canonical Node runtime", launchidentity.ErrUnavailable)
+	}
+	argv := append([]string{a.nodeRuntime, identity.path}, args...)
+	heldClosure, err := launchidentity.OpenPi0843(a.nodeRuntime, identity.path, argv, environment, worktree)
+	if err != nil {
+		return nil, err
+	}
+	// PrepareLaunch only computes the immutable manifest. It does not retain a
+	// second FD table: after launch-authorized, processcontrol is the sole
+	// owner and re-opens the exact closure before spawn.
+	closure := heldClosure.Closure
+	heldClosure.Close()
 	return &LaunchPlan{
-		ExecArgv:              append([]string{identity.path}, args...),
-		Environment:           workerEnvironment(worktree),
+		ExecArgv:              argv,
+		Environment:           environment,
 		WorkingDirectory:      worktree,
 		AttemptTimeoutSeconds: int64(request.AttemptTimeoutSeconds),
 		ResultPath:            resultPath,
@@ -500,6 +604,7 @@ func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (sand
 		model:                 model,
 		identity:              identity,
 		attemptDeadline:       attemptDeadline,
+		closure:               closure,
 	}, nil
 }
 
@@ -523,6 +628,15 @@ func (p *LaunchPlan) ControlRootPath() string   { return p.ControlRoot }
 func (p *LaunchPlan) SessionPolicyName() string { return p.SessionPolicy }
 func (p *LaunchPlan) MaxOutput() int64          { return p.MaxOutputBytes }
 func (p *LaunchPlan) ProviderVersion() string   { return p.BinaryVersion() }
+func (p *LaunchPlan) LaunchClosure() launchidentity.ClosureV1 {
+	if p == nil {
+		return launchidentity.ClosureV1{}
+	}
+	return p.closure
+}
+func (p *LaunchPlan) CloseLaunchClosure() {
+	// No retained descriptors: processcontrol owns the sole LaunchFDTable.
+}
 
 // executionOutcome carries every observation of one executed attempt that the
 // completion pipeline consumes, independent of how the process was executed:
@@ -614,7 +728,12 @@ func validateCompletionInput(plan *LaunchPlan, started, completed time.Time, exi
 	if plan.attemptDeadline.IsZero() || plan.identity.path == "" || plan.request.AttemptID == "" {
 		return errors.New("LaunchPlan was not produced by PrepareLaunch")
 	}
-	if len(plan.ExecArgv) == 0 || !filepath.IsAbs(plan.ExecArgv[0]) || plan.ExecArgv[0] != plan.identity.path {
+	if plan.closure.ClosureProfileID != "" {
+		closure := plan.closure
+		if len(plan.ExecArgv) < 2 || !filepath.IsAbs(plan.ExecArgv[0]) || plan.ExecArgv[0] != closure.RuntimeExecutable.CanonicalPath || plan.ExecArgv[1] != plan.identity.path || closure.Arguments[0] != plan.ExecArgv[0] {
+			return errors.New("LaunchPlan argv does not match the held runtime closure")
+		}
+	} else if len(plan.ExecArgv) == 0 || !filepath.IsAbs(plan.ExecArgv[0]) || plan.ExecArgv[0] != plan.identity.path {
 		return errors.New("LaunchPlan argv does not match the inspected executable")
 	}
 	if !filepath.IsAbs(plan.WorkingDirectory) || !filepath.IsAbs(plan.ControlRoot) || !filepath.IsAbs(plan.ResultPath) {
@@ -746,6 +865,9 @@ func (a *Adapter) completeAttempt(plan *LaunchPlan, outcome executionOutcome) (d
 // Provider/process/protocol failures are returned as errors so Core can apply
 // the operational retry budget.
 func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record, error) {
+	if a.nodeRuntime != "" {
+		return domain.Record{}, fmt.Errorf("%w: production Pi attempts require the exact process runtime", launchidentity.ErrUnavailable)
+	}
 	planIface, err := a.PrepareLaunch(ctx, record)
 	if err != nil {
 		return domain.Record{}, err
@@ -754,6 +876,7 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	if !ok || plan == nil {
 		return domain.Record{}, errors.New("pi: PrepareLaunch returned a non-pi LaunchPlan")
 	}
+	defer plan.CloseLaunchClosure()
 	runCtx, cancel := context.WithDeadline(ctx, plan.attemptDeadline)
 	defer cancel()
 	command := exec.Command(plan.ExecArgv[0], plan.ExecArgv[1:]...)

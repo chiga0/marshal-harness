@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 )
 
 // ── Sentinel errors (typed, fail-closed) ─────────────────────────────────────
@@ -455,6 +456,19 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 		if authorityState.ProcessStartedDigest == "" {
 			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
 			return AdmissionFact{}, fmt.Errorf("%w: attempt has no process-started authority", ErrStaleLease)
+		}
+		closure, closureErr := authorityState.LaunchClosure.Closure()
+		if closureErr != nil || authorityState.LaunchMaterialsDigest != closure.LaunchMaterialsDigest || authorityState.AgentLaunchSpecDigest != closure.AgentLaunchSpecDigest || !processMatchesRuntime(authorityState.Process, closure.RuntimeExecutable) {
+			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, fmt.Errorf("%w: launch closure/process authority mismatch", ErrStaleLease)
+		}
+		if closure.ClosureProfileID == launchidentity.Pi0843DarwinARM64Profile {
+			held, reopenErr := launchidentity.Reopen(closure)
+			if reopenErr != nil {
+				i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+				return AdmissionFact{}, fmt.Errorf("%w: current launch closure cannot be re-opened", ErrStaleLease)
+			}
+			held.Close()
 		}
 		if envelope.Kind == KindWorkerResult && authorityState.CommittedResultFactDigest != "" {
 			i.recordQuarantine(ReasonDigestMismatch, drcDigest, envelope.ResultDigest, now)

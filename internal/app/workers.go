@@ -16,6 +16,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/adapter/qwen"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/darwin"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 )
@@ -136,7 +137,10 @@ var workerBindings = []workerBinding{
 		environmentVariable: "MARSHAL_PI_PATH",
 		binaryNames:         []string{"pi"},
 		identify:            pi.Identify,
-		construct: func(executable string, validator *contract.Validator, _ func(string) string) (port.WorkerAdapter, error) {
+		construct: func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error) {
+			if runtime := getenv("MARSHAL_PI_NODE_PATH"); runtime != "" {
+				return pi.NewWithRuntime(executable, runtime, validator)
+			}
 			return pi.New(executable, validator)
 		},
 	},
@@ -148,11 +152,12 @@ var workerBindings = []workerBinding{
 // writes files. Qoder/Codex authority configuration remains fail-closed; an
 // explicit ordinary-user mode is a separate, visibly downgraded constructor.
 type WorkerRuntime struct {
-	validator          *contract.Validator
-	registry           *adapter.Registry
-	selector           *adapter.Selector
-	productionSelector *adapter.Selector
-	configurations     []WorkerConfiguration
+	validator           *contract.Validator
+	registry            *adapter.Registry
+	selector            *adapter.Selector
+	productionSelector  *adapter.Selector
+	productionAdmission func(port.WorkerAdapter) error
+	configurations      []WorkerConfiguration
 }
 
 // NewWorkerRuntime builds the shared runtime from the caller-provided
@@ -232,19 +237,27 @@ func newWorkerRuntime(getenv func(string) string, qwenConstructor workerConstruc
 	if err != nil {
 		return nil, port.Permanentf("worker runtime: initialize adapter selector")
 	}
-	productionSelector, err := adapter.NewEligibleSelector(registry, func(worker port.WorkerAdapter) bool {
-		_, ok := worker.(sandboxbridge.LaunchCapable)
-		return ok
-	})
+	productionAdmission := func(worker port.WorkerAdapter) error {
+		capable, ok := worker.(sandboxbridge.ProductionLaunchCapable)
+		if !ok || capable.ProductionLaunchProfileID() != launchidentity.Pi0843DarwinARM64Profile {
+			return launchidentity.ErrUnavailable
+		}
+		// RB2 deliberately does not compose the per-Attempt supervisor here.
+		// Until B2 provides that authority, planning must not Probe a provider
+		// and then discover the missing production runtime after side effects.
+		return launchidentity.ErrUnavailable
+	}
+	productionSelector, err := adapter.NewAdmissionSelector(registry, productionAdmission)
 	if err != nil {
 		return nil, port.Permanentf("worker runtime: initialize production adapter selector")
 	}
 	return &WorkerRuntime{
-		validator:          validator,
-		registry:           registry,
-		selector:           selector,
-		productionSelector: productionSelector,
-		configurations:     configurations,
+		validator:           validator,
+		registry:            registry,
+		selector:            selector,
+		productionSelector:  productionSelector,
+		productionAdmission: productionAdmission,
+		configurations:      configurations,
 	}, nil
 }
 
@@ -260,6 +273,16 @@ func (r *WorkerRuntime) Selector() *adapter.Selector { return r.selector }
 // ProductionSelector returns the fail-closed v1 selector. It mechanically
 // excludes adapters without the allocation-carried LaunchCapable contract.
 func (r *WorkerRuntime) ProductionSelector() *adapter.Selector { return r.productionSelector }
+
+// CheckProductionAdmission is the side-effect-free composition gate shared by
+// selection and task execution. RB2 has no B2 per-Attempt supervisor wiring,
+// so even an exact Pi closure is typed-unavailable before Probe or Run.
+func (r *WorkerRuntime) CheckProductionAdmission(worker port.WorkerAdapter) error {
+	if r == nil || r.productionAdmission == nil || worker == nil {
+		return launchidentity.ErrUnavailable
+	}
+	return r.productionAdmission(worker)
+}
 
 // Configurations returns a clone of the structured binding outcomes in the
 // frozen order. Mutating the returned slice cannot affect the runtime.

@@ -13,6 +13,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 )
 
 func attemptTestDigest(seed string) string { return canonical.DigestBytes([]byte(seed)) }
@@ -35,7 +36,7 @@ func attemptTestProcess(t *testing.T) ProcessObservation {
 		WorkingDirectory: "/tmp/work", WorkingDirectoryDevice: 1, WorkingDirectoryInode: 2,
 		WorkingDirectoryType: POSIXFileTypeDirectory, WorkingDirectoryOwner: 501, WorkingDirectoryMode: 0755,
 		ExecutablePath: "/fixed/marshal", ExecutableDevice: 1, ExecutableInode: 3,
-		ExecutableSize: 99, ExecutableType: POSIXFileTypeRegular, ExecutableOwner: 501,
+		ExecutableSize: 99, ExecutableType: POSIXFileTypeRegular, ExecutableOwner: 501, ExecutableGroup: 20,
 		ExecutableMode: 0755, ExecutableLinkCount: 1, ExecutableSHA256: attemptTestDigest("executable"),
 		ObserverIdentity: "core-darwin-observer/v1",
 	})
@@ -43,6 +44,11 @@ func attemptTestProcess(t *testing.T) ProcessObservation {
 		t.Fatal(err)
 	}
 	return observation
+}
+
+func attemptTestClosure() launchidentity.ClosureV1 {
+	closure, _ := launchidentity.Seal(launchidentity.SpecInput{RuntimeExecutable: launchidentity.ObjectV1{CanonicalPath: "/fixed/marshal", Device: 1, Inode: 3, FileType: POSIXFileTypeRegular, Mode: 0755, UID: 501, GID: 20, Size: 99, LinkCount: 1, RawSHA256: attemptTestDigest("executable")}, ClosureProfileID: launchidentity.NativeProfile, MaterialRoots: []launchidentity.MaterialRootV1{}, LaunchMaterials: []launchidentity.LaunchMaterialV1{}, Arguments: []string{"/fixed/marshal"}, Environment: []string{}, WorkingDirectory: "/tmp/work"})
+	return closure
 }
 
 func openStartedAttempt(t *testing.T, store *ingressDurableStore) AttemptAuthorityState {
@@ -92,6 +98,14 @@ func attemptTestRunAuthority(id AttemptIdentity) RunAuthorityBinding {
 }
 
 func appendAuthorizedAttempt(store *DurableStore, revision uint64, head string, transition AttemptTransition) (AttemptAppendResult, error) {
+	if transition.Kind == AttemptTransitionLaunchAuthorized && zeroLaunchClosure(transition.LaunchClosure) {
+		transition.LaunchClosure = attemptTestClosure()
+	}
+	if transition.Kind == AttemptTransitionProcessStarted && transition.LaunchMaterialsDigest == "" {
+		closure := attemptTestClosure()
+		transition.LaunchMaterialsDigest = closure.LaunchMaterialsDigest
+		transition.AgentLaunchSpecDigest = closure.AgentLaunchSpecDigest
+	}
 	run := attemptTestRunAuthority(transition.Identity)
 	return store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run}, revision, head, AttemptAuthorizationRequest{Identity: transition.Identity, CurrentRunAuthority: run}, transition)
 }
@@ -822,7 +836,7 @@ func TestCleanupAuthorizationRejectsWrongTupleBindingOrchestratorAndRelease(t *t
 	}
 }
 
-func TestLaunchUncertainCleanupOnlyAllowsInspectAndReconcile(t *testing.T) {
+func TestLaunchUncertainCleanupAllowsHeldProcessSignalButNotProviderTerminate(t *testing.T) {
 	store, err := OpenResultIngressStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -843,13 +857,13 @@ func TestLaunchUncertainCleanupOnlyAllowsInspectAndReconcile(t *testing.T) {
 	barrier := barrierResult.State
 	run := RunAuthorityBinding{AuthorityNamespaceID: id.AuthorityNamespaceID, RunID: id.RunID, OrchestratorID: id.OrchestratorID, RunAuthorityDigest: id.RunAuthorityDigest}
 	request := CleanupAuthorizationRequest{Identity: id, CurrentRunAuthority: run, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest}
-	for _, operation := range []CleanupOperation{CleanupInspect, CleanupReconcile} {
+	for _, operation := range []CleanupOperation{CleanupInspect, CleanupReconcile, CleanupSignal} {
 		request.Operation = operation
 		if err := store.AuthorizeCleanup(context.Background(), attemptRunVerifier{want: run}, request); err != nil {
 			t.Fatalf("operation %q rejected: %v", operation, err)
 		}
 	}
-	for _, operation := range []CleanupOperation{CleanupSignal, CleanupTerminate} {
+	for _, operation := range []CleanupOperation{CleanupTerminate} {
 		request.Operation = operation
 		if err := store.AuthorizeCleanup(context.Background(), attemptRunVerifier{want: run}, request); !errors.Is(err, ErrCleanupUnauthorized) {
 			t.Fatalf("operation %q err=%v, want ErrCleanupUnauthorized", operation, err)

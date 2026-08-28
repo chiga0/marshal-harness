@@ -15,7 +15,9 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"github.com/chiga0/marshal-harness/internal/processcontrol"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
@@ -67,6 +69,42 @@ type Bridge struct {
 	transcriptSource TranscriptSource
 	authority        DurableAuthority
 	productionGate   bool
+	exactProcess     *ExactProcessRuntime
+}
+
+// ExactProcessRuntime is the only interpreted-agent execution route admitted
+// by the production bridge. Resolve must return a fresh attempt-bound
+// coordinator/authority pair; a global identity may never be reused across
+// RunWorker calls.
+type ExactProcessRuntime struct {
+	Resolve func(context.Context, ExactProcessAttempt) (*processcontrol.Coordinator, DurableProcessAuthority, error)
+	// Retain transfers an uncertain/live handle to the Attempt supervisor.
+	// It must persist intervention state; returning from Retain transfers
+	// ownership and sandboxbridge will never signal or close that handle.
+	Retain func(ExactProcessAttempt, *processcontrol.Process, error)
+}
+
+type ExactProcessAttempt struct {
+	TaskID             string
+	RunID              string
+	AttemptID          string
+	AllocationID       string
+	Generation         int64
+	FencingTokenDigest string
+}
+
+type exactProcessAdmission struct {
+	attempt     ExactProcessAttempt
+	coordinator *processcontrol.Coordinator
+	authority   DurableProcessAuthority
+	plan        LaunchPlan
+}
+
+func (b *Bridge) WithExactProcessRuntime(runtime ExactProcessRuntime) *Bridge {
+	if runtime.Resolve != nil && runtime.Retain != nil {
+		b.exactProcess = &runtime
+	}
+	return b
 }
 
 // DurableAuthority 是 Bridge 在 admission 时读取真实 durable authority 的
@@ -145,14 +183,62 @@ func (b *Bridge) RunWorker(ctx context.Context, adapter port.WorkerAdapter, requ
 	if view.AdapterID != "" && view.AdapterID != adapter.ID() {
 		return domain.Record{}, fmt.Errorf("sandboxbridge: request adapterId %q does not match injected adapter %q", view.AdapterID, adapter.ID())
 	}
-	if capable, ok := adapter.(LaunchCapable); ok && b.transcriptSource != nil {
-		return b.runWorkerExecChain(ctx, capable, request, view)
-	}
-	// productionGate 为 true 时，非 LaunchCapable adapter 必须 fail closed。
+	var exactAdmission *exactProcessAdmission
 	if b.productionGate {
-		return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q does not implement LaunchCapable (production gate: non-LaunchCapable adapters are rejected)", adapter.ID())
+		if b.transcriptSource == nil || b.exactProcess == nil || b.exactProcess.Resolve == nil || b.exactProcess.Retain == nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: incomplete production runtime: %w", launchidentity.ErrUnavailable)
+		}
+		capable, ok := adapter.(ProductionLaunchCapable)
+		if !ok || capable.ProductionLaunchProfileID() != launchidentity.Pi0843DarwinARM64Profile {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q lacks the exact production launch profile: %w", adapter.ID(), launchidentity.ErrUnavailable)
+		}
+		exactAdmission, err = b.resolveProductionAttempt(ctx, view)
+		if err != nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: exact production attempt unavailable: %w", err)
+		}
+		exactAdmission.plan, err = capable.PreflightLaunch(ctx, request)
+		if err != nil || ValidateLaunchPlan(exactAdmission.plan) != nil || b.validateProductionLaunch(exactAdmission.plan) != nil {
+			if exactAdmission.plan != nil {
+				exactAdmission.plan.CloseLaunchClosure()
+			}
+			return domain.Record{}, fmt.Errorf("sandboxbridge: exact production closure unavailable: %w", launchidentity.ErrUnavailable)
+		}
+	}
+	if capable, ok := adapter.(LaunchCapable); ok && b.transcriptSource != nil {
+		return b.runWorkerExecChain(ctx, capable, request, view, exactAdmission)
+	}
+	// productionGate 为 true时，上面的 closed capability checks make this
+	// branch unreachable; keep a typed fail-closed guard against composition
+	// changes.
+	if b.productionGate {
+		return domain.Record{}, fmt.Errorf("sandboxbridge: adapter %q cannot enter the production launch chain: %w", adapter.ID(), launchidentity.ErrUnavailable)
 	}
 	return b.runWorkerLegacy(ctx, adapter, request, view)
+}
+
+// resolveProductionAttempt runs before Adapter.PrepareLaunch and before every
+// provider/file effect owned by Bridge. Resolve receives only the immutable
+// logical Attempt tuple; B2 must return the already-durable full allocation
+// identity. RB2 never fabricates the missing tuple from a later Provision.
+func (b *Bridge) resolveProductionAttempt(ctx context.Context, view workerRequestView) (*exactProcessAdmission, error) {
+	if b == nil || b.exactProcess == nil || b.exactProcess.Resolve == nil || b.exactProcess.Retain == nil {
+		return nil, launchidentity.ErrUnavailable
+	}
+	logical := ExactProcessAttempt{TaskID: view.TaskID, RunID: view.RunID, AttemptID: view.AttemptID}
+	coordinator, authority, err := b.exactProcess.Resolve(ctx, logical)
+	if err != nil || coordinator == nil || authority.Store == nil || authority.Verifier == nil || authority.Identity.Validate() != nil ||
+		authority.Identity.TaskID != logical.TaskID || authority.Identity.RunID != logical.RunID || authority.Identity.AttemptID != logical.AttemptID {
+		return nil, launchidentity.ErrUnavailable
+	}
+	attempt := ExactProcessAttempt{
+		TaskID: authority.Identity.TaskID, RunID: authority.Identity.RunID, AttemptID: authority.Identity.AttemptID,
+		AllocationID: authority.Identity.AllocationID, Generation: authority.Identity.DispatchGeneration,
+		FencingTokenDigest: authority.Identity.FencingTokenDigest,
+	}
+	if err := validateProductionAttemptState(authority); err != nil {
+		return nil, err
+	}
+	return &exactProcessAdmission{attempt: attempt, coordinator: coordinator, authority: authority}, nil
 }
 
 // runWorkerLegacy 是 R5 兼容形态的执行：allocation 身份绑定 + adapter.Run。
