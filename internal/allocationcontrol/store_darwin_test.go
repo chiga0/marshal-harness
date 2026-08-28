@@ -8,7 +8,43 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
+
+func TestSameStatTreatsAPFSDirectoryAccountingAsNonAuthoritative(t *testing.T) {
+	directory := unix.Stat_t{Dev: 1, Ino: 2, Mode: unix.S_IFDIR | 0o700, Uid: 501, Gid: 20, Size: 64, Nlink: 2}
+	changedAccounting := directory
+	changedAccounting.Size = 160
+	changedAccounting.Nlink = 1
+	if !sameStat(directory, changedAccounting) {
+		t.Fatal("directory accounting drift replaced stable object identity")
+	}
+	replaced := changedAccounting
+	replaced.Ino++
+	if sameStat(directory, replaced) {
+		t.Fatal("directory inode replacement was accepted")
+	}
+	ownerDrift := changedAccounting
+	ownerDrift.Uid++
+	if sameStat(directory, ownerDrift) {
+		t.Fatal("directory owner drift was accepted")
+	}
+}
+
+func TestSameStatKeepsRegularFileSizeAndLinkCountAuthoritative(t *testing.T) {
+	regular := unix.Stat_t{Dev: 1, Ino: 2, Mode: unix.S_IFREG | 0o600, Uid: 501, Gid: 20, Size: 64, Nlink: 1}
+	sizeDrift := regular
+	sizeDrift.Size++
+	if sameStat(regular, sizeDrift) {
+		t.Fatal("regular file size drift was accepted")
+	}
+	linkDrift := regular
+	linkDrift.Nlink++
+	if sameStat(regular, linkDrift) {
+		t.Fatal("regular file link-count drift was accepted")
+	}
+}
 
 // canonicalTempDir resolves macOS runner aliases such as /var -> /private/var.
 // OpenStore intentionally rejects symlinked path components, so its fixtures
