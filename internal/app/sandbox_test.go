@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/agentregistry"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
@@ -580,5 +581,61 @@ func TestEmbeddedLeasePersistsAcrossRestart(t *testing.T) {
 	}
 	if fresh.Lease.LeaseId == claim.Lease.LeaseId {
 		t.Fatal("the fresh attempt must carry a new leaseId")
+	}
+}
+
+// TestEmbeddedAgentRegistrationPersistsAcrossRestart 锁定 R2 纵切的 durable
+// agent registry：注册 + 撤销落账后，同一 stateRoot 的全新 runtime 在
+// 崩溃/重启后确定性重放——active 注册跨进程保持可 exact lookup，撤销的注册
+// 在重启后仍保持 revoked（不得被重新注册回 active）。admission 的
+// AgentRegistrationActive 跨进程不依赖易失内存。
+func TestEmbeddedAgentRegistrationPersistsAcrossRestart(t *testing.T) {
+	runtime, clock, stateRoot, _ := newEmbeddedRuntimeFixture(t)
+	reg := agentregistry.AgentRegistration{
+		RegistrationID:       "registration:durable-agent",
+		AuthorityNamespaceID: "authority:marshal-local",
+		SecurityDomainID:     "default/execution/embedded-pi",
+		Principal:            "principal:agent:pi",
+		ProviderType:         agentregistry.ProviderTypeAgent,
+		ProviderName:         "pi",
+		ProviderVersion:      "0.84.3",
+		ProtocolVersion:      "marshal-worker/v1alpha1",
+		Scope:                "worker",
+		IdempotencyKey:       "cap:sha256:" + strings.Repeat("a", 64),
+		RequestDigest:        "sha256:" + strings.Repeat("a", 64),
+		LifecycleState:       agentregistry.LifecycleStateActive,
+		CreatedAt:            clock.Now().UTC(),
+		UpdatedAt:            clock.Now().UTC(),
+	}
+	if err := runtime.RegisterAgent(reg); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	if active, err := runtime.AgentRegistrationActive(reg.RegistrationID); err != nil || !active {
+		t.Fatalf("in-process registration must be active, active=%v err=%v", active, err)
+	}
+
+	// 崩溃/重启（第一个 runtime 仍 active 时）：同一 ID 跨进程恢复为 active。
+	restarted, err := NewEmbeddedSandboxRuntime(stateRoot, clock.Now)
+	if err != nil {
+		t.Fatalf("reconstruction over the durable agent registry rejected: %v", err)
+	}
+	if active, err := restarted.AgentRegistrationActive(reg.RegistrationID); err != nil || !active {
+		t.Fatalf("restarted runtime must recover the registration as active, active=%v err=%v", active, err)
+	}
+
+	// 撤销落账后崩溃/重启：revoked 在恢复后仍保持 revoked，且不能重新注册回 active。
+	if err := runtime.RevokeAgent(reg.RegistrationID); err != nil {
+		t.Fatalf("RevokeAgent: %v", err)
+	}
+	revokedRuntime, err := NewEmbeddedSandboxRuntime(stateRoot, clock.Now)
+	if err != nil {
+		t.Fatalf("reconstruction after revoke rejected: %v", err)
+	}
+	if active, err := revokedRuntime.AgentRegistrationActive(reg.RegistrationID); err != nil || active {
+		t.Fatalf("revocation must persist across restart, active=%v err=%v", active, err)
+	}
+	// 终态注册不得被重新注册回 active。
+	if _, err := revokedRuntime.agentRegistry.Reactivate(reg.RegistrationID); err == nil {
+		t.Fatal("a revoked (terminal) registration must not be reactivated")
 	}
 }

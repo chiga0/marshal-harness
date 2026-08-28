@@ -253,6 +253,13 @@ func NewEmbeddedSandboxRuntime(stateRoot string, now func() time.Time, options .
 	if err != nil {
 		return nil, fmt.Errorf("app: embedded sandbox runtime: recover active leases: %w", err)
 	}
+	// R2 纵切：打开耐久 agent registry（stateRoot/agents/ 的 append-only 账本），
+	// 注册 + 生命周期跨进程可恢复——崩溃/重启后 admission 的 agent recheck 不
+	// 依赖易失内存，撤销的注册在重启后保持撤销。创建或恢复失败一律 fail closed。
+	agentRegistry, err := agentregistry.OpenDurableRegistry(filepath.Join(stateRoot, "agents"))
+	if err != nil {
+		return nil, fmt.Errorf("app: embedded sandbox runtime: durable agent registry: %w", err)
+	}
 	runtime := &EmbeddedSandboxRuntime{
 		stateRoot:      stateRoot,
 		now:            now,
@@ -262,7 +269,7 @@ func NewEmbeddedSandboxRuntime(stateRoot string, now func() time.Time, options .
 		store:          store,
 		edgeRuntime:    edgeRuntime,
 		provider:       sandboxProvider,
-		agentRegistry:  agentregistry.NewRegistry(),
+		agentRegistry:  agentRegistry,
 		leaseLedger:    leaseLedger,
 		claims:         recoveredClaims,
 		principals:     map[string]map[sandbox.WorkloadRole]string{},

@@ -12,6 +12,12 @@ import (
 type Registry struct {
 	mu sync.Mutex
 
+	// ledger is the durable append-only store of registrations + lifecycle
+	// （R2 纵切）. 非空时 register/transition/Lookup 直接委托给账本——账本是
+	// 唯一真相，不与 in-memory registrations 双写；崩溃/重启由 ledger 确定性
+	// 重放恢复。nil 时为纯内存（测试与轻量场景）。
+	ledger *AgentLedger
+
 	// registrations is keyed by RegistrationID.
 	registrations map[string]*AgentRegistration
 
@@ -36,6 +42,25 @@ func NewRegistry() *Registry {
 	}
 }
 
+// OpenDurableRegistry 打开一个由耐久 append-only 账本支撑（R2 纵切）的
+// Registry：register/transition/Lookup 直接落到账本并回收恢复（崩溃/重启后
+// 由 NewAgentLedger 确定性重放）。账本目录创建或恢复失败一律 fail closed。
+// 快照（capability snapshot）由 adapter Probe 稳定派生，仍保留在内存并在
+// re-AddSnapshot 时重建，不重复落账。
+func OpenDurableRegistry(dir string) (*Registry, error) {
+	ledger, err := NewAgentLedger(dir)
+	if err != nil {
+		return nil, err
+	}
+	return &Registry{
+		ledger:           ledger,
+		registrations:    make(map[string]*AgentRegistration),
+		byIdempotencyKey: make(map[string]string),
+		snapshots:        make(map[string]*AgentCapabilitySnapshot),
+		activeSnapshot:   make(map[string]string),
+	}, nil
+}
+
 // ── Register (idempotent) ─────────────────────────────────────────────────────
 
 // Register records a new AgentRegistration in the ledger, enforcing idempotency
@@ -48,6 +73,10 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(reg AgentRegistration) (*AgentRegistration, error) {
 	if err := reg.Validate(); err != nil {
 		return nil, err
+	}
+	if r.ledger != nil {
+		// 耐久账本路径：幂等、crash-recovery 由 AgentLedger 承担。
+		return r.ledger.Register(reg)
 	}
 
 	r.mu.Lock()
@@ -98,6 +127,10 @@ func (r *Registry) transition(registrationID string, target LifecycleState) (*Ag
 	if err := target.validate(); err != nil {
 		return nil, err
 	}
+	if r.ledger != nil {
+		// 耐久账本路径：生命周期迁移落账，终态/非法迁移一致 fail closed。
+		return r.ledger.Transition(registrationID, target)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -146,6 +179,10 @@ func (r *Registry) Reactivate(registrationID string) (*AgentRegistration, error)
 // Lookup returns the AgentRegistration for the given RegistrationID, or an
 // error if not found.
 func (r *Registry) Lookup(registrationID string) (*AgentRegistration, error) {
+	if r.ledger != nil {
+		// 耐久账本路径：exact lookup，可直接读取跨进程恢复的注册。
+		return r.ledger.Lookup(registrationID)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
