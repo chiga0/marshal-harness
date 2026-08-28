@@ -8,17 +8,17 @@
 
 | 审计项 | 当前证据 | 判定 | 剩余退出门禁 |
 | --- | --- | --- | --- |
-| Pi fixed-bin strict E2E | Pi `0.84.3` 已经由固定 `marshal` binary 在锁定 sourceHead `8df8b88` 上走过真实 Local allocation、ResultIngress、独立 `verify`、跨进程 restore，并生成正式 ReviewPacket 进入 `REVIEW_PENDING`；实现已随 `main@5d5c426` 合入。 | `PARTIAL-INTEGRATION/PASS`；旧假阳性测试的关键缺陷已修复，但当前主线尚未重跑，也没有导入独立 ReviewDecision，不能宣称全链通过。 | 在当前主线重跑；由独立 reviewer 产生绑定精确证据的 Decision；通过现有 `task review --decision` 进入 `ACCEPTED`；重跑故障矩阵。 |
+| Pi fixed-bin strict E2E | Pi `0.84.3` 前置 canary 绑定 `sourceHead=d4b9647`，单 Attempt 通过 9 项 Gate，生成正式 ReviewPacket 并进入 `REVIEW_PENDING`。 | `PARTIAL-INTEGRATION/PASS`；它没有导入独立 ReviewDecision、没有进入 `ACCEPTED`，也不是当前 `main` 终验。 | 在最终主线重跑；由独立 reviewer 产生绑定精确证据的 Decision；通过 `task review --decision` 进入 `ACCEPTED`；重跑故障矩阵。 |
 | Qwen workspace live | Qwen Code `0.22.0` ordinary-user workspace live adapter 已通过。 | `COMPATIBLE-ORDINARY`；不是 `LaunchCapable`，不能替代 Pi 的 production reachability 证据。 | 若未来升级 production profile，必须另行提供 Sandbox/authority 证据；当前不阻塞 v1。 |
-| durable authority | ResultIngress file-backed replay/current-ledger admission 已于 `main@5d5c426` 合入；admission→worker-result→Run journal 的 crash-atomic 持久化/恢复已随 `main@912f659` 合入。 | R2/R3 仍保持 `COMPONENT`：ADR 0056 terminalization barrier 尚未复用同一 authority transaction，当前主线 canary 也未覆盖 cleanup/restart 全矩阵。 | 把 terminalization CAS 接到 `912f659` 的唯一 transaction；补 restart/replay/stale/revoke/replace/expiry/cleanup 真实路径负测；证明无第二真值。 |
-| server controller | durable start/status/recovery controller 已随 `main@44ee8c9` 合入。 | transport/controller 层已接线，但 ADR 0056 的 launch/process observation、admission/terminalization CAS 与 cleanup transaction 未接入，R4 保持 `COMPONENT`。 | 重复 start 幂等；server crash/lost worker/failed worker 跨进程恢复必须在 eligibility 立即 fence 后保留 cleanup binding，直到 `cleanup-completed`，并产生唯一 durable receipt/recovery decision。 |
-| RC 与 stable release | RC identity/install 切片已获独立 `APPROVED`，尚未发布。 | 可以准备 unsigned prerelease；不能标 `RELEASED`。 | 发布并验证 RC checksum/version/source identity/安装升级回滚；稳定 `v1.*` 还必须关闭 Issue #212 signing/notarization，并通过 Linux stable gate。 |
+| durable authority | ResultIngress admission→worker-result→Run journal 的 crash-atomic 持久化/恢复已随 `main@912f659` 合入。 | R2/R3 仍保持 `COMPONENT`：ADR 0056 terminalization barrier 尚未复用同一 authority transaction，当前主线 canary 也未覆盖 cleanup/restart 全矩阵。 | 把 terminalization CAS 接到 `912f659` 的唯一 transaction；补 restart/replay/stale/revoke/replace/expiry/cleanup 真实路径负测；证明无第二真值。 |
+| server/controller selector | durable start/status/recovery controller 已随 `main@44ee8c9` 合入；production selector 已随 `main@d4b9647` 收紧到 `LaunchCapable`。 | controller 层已接线，但 ADR 0056 的 launch/process observation、admission/terminalization CAS 与 cleanup transaction 未接入，R4 保持 `COMPONENT`。 | server crash/lost worker/failed worker 跨进程恢复必须在 eligibility 立即 fence 后保留 cleanup binding，直到 `cleanup-completed`，并产生唯一 durable receipt/recovery decision。 |
+| RC 与 stable release | unsigned RC 的 build/dist/install/release-contract 路径可行，尚未发布任何 RC。 | 可以准备 unsigned prerelease；不能标 `RELEASED`。 | 发布并验证 RC checksum/version/source identity/安装升级回滚；稳定 `v1.*` 还必须关闭 Issue #212 signing/notarization，并通过 Linux stable gate。 |
 
 当前关键路径没有偏离 ADR 0052：R2/R3 authority → R4 server recovery → R5 terminal Decision/`ACCEPTED` → R6 RC/stable gates。任何单次 live pass、候选 commit 或 reviewer verdict 都只是对应门禁的输入，不等于阶段关闭。
 
 ## Darwin ordinary-user 进程生命周期合同审计（2026-08-28）
 
-代码审计确认：crash-atomic ResultIngress transaction 已随 `main@912f659` 合入，durable DispatchLease ledger 与 server run controller 也已存在；但 Local allocation/process projection、Core-owned launch/handle、terminalization 对同一 admission CAS 的复用、eligibility terminal 与 cleanup completion 仍未形成同一耐久纵切。通用 orphan recovery 也尚未机械保证“CAS 固定 ResultIngress 结论并立即 fence，再终结旧 process group，最后 unlock/retry/successor”。[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已接受并经唯一 aggregate rework 关闭五项合同 P1；实现与生产接线保持开放，R2–R5 不升级。
+代码审计确认：crash-atomic ResultIngress transaction 已随 `main@912f659` 合入，durable DispatchLease ledger 与 server run controller 也已存在；但 Local allocation/process projection、Core-owned launch/handle、terminalization 对同一 admission CAS 的复用、eligibility terminal 与 cleanup completion 仍未形成同一耐久纵切。[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受；实现与生产接线保持开放，R2–R5 不升级。
 
 | Finding | 等级 | 状态 | 处置 / 关闭条件 |
 | --- | --- | --- | --- |
@@ -42,7 +42,7 @@ Mac ordinary-user 只证明在可信单用户宿主上的可恢复进程记账�
 | `V1-CUTOVER-NONDETERMINISM` | P1 | `CLOSED-CONTRACT` | ADR 0052 部分取代 ADR 0045 §1 第 1 项：Fake 比较 exact digest，真实 Agent 比较 authority invariants，内容仍逐次独立验证。 |
 | `V1-SCOPE-UNBOUNDED` | P1 | `CLOSED-CONTRACT` | ADR 0052 把 Cloudflare 完整生产拓扑、HA、多用户、完整 Provider/SDK 矩阵与 Goal DAG 延期到 1.x。 |
 
-Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLANNED/COMPONENT`；R4–R6 `PLANNED/DESIGN`。R3 已有纯核心代码保留并等待依赖满足，不回滚代码，也不提前宣称集成。M10–M13 作为 1.x 候选池，不再阻塞首个正式版本。
+该 2026-08-27 重置仅作历史纠偏记录。当前权威状态为：R0 `PASSED/DESIGN`；R1 `IN_PROGRESS/INTEGRATED`；R2–R5 `IN_PROGRESS/COMPONENT`；R6 `PLANNED/DESIGN`。M10–M13 作为 1.x 候选池，不再阻塞首个正式版本。
 
 本修订不降低任何 universal 不变量；Local ordinary-user 的 Core-held process observation 只支持 trusted single-user v1 profile，不能关闭 cloud/hardened 的 location attestation finding。生产 cutover、故障 conformance、签名/notarization 与 release identity 仍必须在 R5/R6 完成。
 
@@ -72,10 +72,10 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 | `V1-SERVER-RESTART-404-ONLY` | P1 | `CLOSED-FIX` | marshal-server restart 测试重写：创建真实非终态 Run（`run-restart-real`），验证跨进程恢复返回 200+Ready（`da8cccd`）。此前只断言 404。 |
 | `V1-FENCING-DOUBLE-WRITE` | P1 | `CLOSED-FIX` | exec-chain 在 embedded 模式下（`MARSHAL_EMBEDDED_SANDBOX=1`）复用 BindDispatch 已创建的 lease（含 fencingToken/AllocationId/Generation）而非独立计算 `fencingDigestOf` 做二次 Provision；修复后 embedded canary（`TestRealPiExecChainCanary`）首次跑通：pi 真实在 Local allocation 内执行（transcript 27KB，exitCode=0）（`634937b`）。 |
 | `V1-AGENT-SANDBOX-DIGEST-CONFLATED` | P1 | `CLOSED-FIX` | Facts 新增 `SandboxCapabilityDigest` 字段——agent digest 与 sandbox digest 分离（`686ee61`）。此前两者混用同一字段 `Facts.CapabilityDigest`。 |
-| `V1-ATTEMPT-BINDING-MISSING-EMBEDDED` | P1 | `CLOSED-FIX` | AttemptBinding 仅在 `MARSHAL_EMBEDDED_SANDBOX=1` 时写入（`fc8e6bd`）。真实 pi 在 embedded + 非嵌入式两路径产出 `worker.completed` + admission anchor + allocation record + embedded AttemptBinding 落盘——但该证据来自尚未 fail-closed 的严格 E2E（见 `V1-STRICT-E2E-FALSE-POSITIVE`），属组件级执行链证明，不构成 R2 INTEGRATED 证据。 |
+| `V1-ATTEMPT-BINDING-MISSING-EMBEDDED` | P1 | `CLOSED-FIX` | AttemptBinding 缺失已关闭；现行前置 Pi canary 绑定 `sourceHead=d4b9647`，单 Attempt/9 Gate 到 `REVIEW_PENDING`。该证据仍不构成 R2/R5 终态，因为 ADR 0056 实现、最终主线重跑和独立 Decision/`ACCEPTED` 尚未闭环。 |
 | `V1-EMBEDDED-ADMISSION-REJECTED` | P1 | `SUPERSEDED` | 原以「任意-active fallback（`cad8773`）+ 消费端补 `registration:` 前缀（`3f8638d`）」修复 embedded admission 拒绝——该两处均为门禁降级，已被第二轮审计定性并移除，改由 `V1-AGENT-REG-ANY-ACTIVE-FALLBACK` 与 `V1-SANDBOX-REG-CONSUMER-PREFIX` 的根因修复取代。 |
 | `V1-LEASE-NOT-DURABLE` | P1 | `SUPERSEDED-BY-ADR0056` | DispatchLease ledger 已耐久化，原“lease 全为内存态”描述已过时；真实缺口是 Local allocation/process projection、立即 eligibility terminal、独立 `cleanup-completed` 与 cleanup binding release 未进入同一 authority transaction。由本报告顶部 ADR0056 findings 跟踪。 |
-| `V1-RESULTINGRESS-NOT-DURABLE` | P1 | `CLOSED-FIX/ADR0056-INTEGRATION-PENDING` | `main@5d5c426` 已接入 ResultIngress replay/durable authority，`main@912f659` 已关闭 admission→worker-result→Run journal 的 crash-atomic 持久化/恢复缺口。ADR 0056 terminalization barrier 仍须复用同一 authority transaction，不能另建 check-then-act 路径；在该接线和当前主线 canary 前不升级 R2。 |
+| `V1-RESULTINGRESS-NOT-DURABLE` | P1 | `CLOSED-FIX/ADR0056-INTEGRATION-PENDING` | `main@912f659` 已关闭 ResultIngress admission→worker-result→Run journal 的 crash-atomic 持久化/恢复缺口。ADR 0056 terminalization barrier 仍须复用同一 authority transaction，不能另建 check-then-act 路径；在该接线和最终主线 canary 前不升级 R2。 |
 
 ## 第二轮生产权威审计（2026-08-28）：门禁降级纠偏
 
@@ -85,11 +85,11 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 | --- | --- | --- | --- |
 | `V1-AGENT-REG-ANY-ACTIVE-FALLBACK` | P1 | `CLOSED-FIX` | `AgentRegistrationActive` 曾降级为「精确查找失败则任意 active registration 即通过」——门禁绕过。已删除该 fallback 及配套 `LookupByProviderName`/`List`；根因改为稳定能力身份：`StableCapabilityDigest` 排除 `probedAt` 等易变诊断字段，dispatch 时冻结精确 `AgentRegistrationID` 进 AttemptBinding，ingress 只对其 exact lookup（`b7509c8`）。 |
 | `V1-SANDBOX-REG-CONSUMER-PREFIX` | P1 | `CLOSED-FIX` | sandbox registrationId 曾只在消费端临时补 `registration:` 前缀，接纳不验证 binding 与真实 ledger 精确相等。已从源头统一 canonical ID（`embeddedRegistrationID` 带前缀），删除消费端 hack，并在 `AdmitWithDurableAuthority` 机械断言 `AttemptBinding.SandboxProviderRegistrationID == 当前 ledger ProviderRegistrationID`，不等即 fail closed（`0ae6640`）。 |
-| `V1-STRICT-E2E-FALSE-POSITIVE` | P1 | `CLOSED-FIX/TERMINAL-PENDING` | strict E2E 已绑定 fixed marshal source identity，强制 `verify` fail closed，并在锁定 sourceHead `8df8b88` 真实覆盖 ResultIngress、跨进程 restore、ReviewPacket/`REVIEW_PENDING`；实现随 `main@5d5c426` 合入。当前主线尚未重跑，也未通过现有 `task review --decision` 导入独立 ReviewDecision 到 `ACCEPTED`，因此不能关闭 R5。 |
+| `V1-STRICT-E2E-FALSE-POSITIVE` | P1 | `CLOSED-FIX/TERMINAL-PENDING` | 前置 fixed-bin canary 已绑定 `sourceHead=d4b9647`，单 Attempt 通过 9 项 Gate，到达 ReviewPacket/`REVIEW_PENDING`。最终主线尚未重跑，也未导入独立 ReviewDecision 到 `ACCEPTED`，因此不能关闭 R5。 |
 | `V1-R5-INTEGRATED-PREMATURE` | P1 | `CLOSED-DOCS` | R5 曾被标 `INTEGRATED` 但同时承认 cutover 未开始；且 `MARSHAL_WORKER_EXECUTOR=legacy` 仍在、production gate 需额外环境变量、默认非 embedded 走 seed admission。已撤回为 `COMPONENT`（`82e0c9f`）。 |
 | `V1-DOCS-STATE-CONFLICT` | P1 | `CLOSED-DOCS` | AGENTS/Roadmap/Readiness/Implementation Plan 的 R2–R6 状态互相冲突（R6 一处 IN_PROGRESS 多处 PLANNED、R1 成熟度不一致、R2–R5 状态不一）。已统一为权威口径：R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R5 IN_PROGRESS/COMPONENT、R6 PLANNED/DESIGN（`82e0c9f` + 本次）。 |
 
-纠正后真实进展以本报告顶部 2026-08-28 checkpoint 为准：ResultIngress replay/durable authority 已合入，crash-atomic ResultIngress→Run journal 已随 `main@912f659` 合入，durable server run controller 已随 `main@44ee8c9` 合入，Pi strict E2E 的最新 live 证据在锁定 sourceHead `8df8b88` 到达 `REVIEW_PENDING`；但 controller 与 terminalization 尚未复用 ResultIngress 的同一 authority CAS，当前主线上的 cleanup 矩阵和独立 Decision/`ACCEPTED` canary 尚未闭环，因此 R2–R5 继续为 `COMPONENT`。
+纠正后真实进展以本报告顶部 2026-08-28 checkpoint 为准：ResultIngress crash-atomic transaction 已随 `main@912f659` 合入，durable server run controller 已随 `main@44ee8c9` 合入，production selector 已随 `main@d4b9647` 收紧，Pi canary 在 `sourceHead=d4b9647` 以单 Attempt/9 Gate 到达 `REVIEW_PENDING`；但 `main@ecee8d4` 只接受 ADR 0056 合同，实现、cleanup 矩阵和独立 Decision/`ACCEPTED` canary 尚未闭环，因此 R2–R5 继续为 `COMPONENT`。
 
 ## 行业协议收敛跟踪（2026-08-21 基线）
 

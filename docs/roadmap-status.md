@@ -1,16 +1,12 @@
 # Roadmap 状态
 
-更新时间：2026-08-28（fixed-bin strict E2E + authority/release 候选审查口径）
+更新时间：2026-08-28（`main@ecee8d4` 发布前 checkpoint）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
-> **2026-08-27 composition root 纠偏（维护者结论，取代此前抢跑口径）**：审计发现 CLI 此前构造两个独立 `EmbeddedSandboxRuntime` 实例，导致 lease 和 agent registry 互不可见，admission 必然失败。已修复为单实例（`33bad5c`）：同一 runtime 同时承担 DispatchBinder + SandboxProvider + Authority + ResultIngressStore；adapter probe 后注册 agent；删除 `now+24h` lease fallback；非 LaunchCapable adapter 在 production profile 中被拒绝。**v1.0 当前不应进入 RC**——composition root 刚修复，真实 pi 全闭环（`TestRealPiStrictE2E`）尚未验证。此前 R2–R5 的 INTEGRATED 口径全部撤回为 COMPONENT。稳定 v1.\* 正式发布对签名/公证 fail-closed（Issue #212 未 provision 前仅允许 unsigned prerelease）。M0–M9 历史 `PASSED` 与代码资产保留；M10–M13 不阻塞 v1.0。
+> **2026-08-28 当前权威 checkpoint**：`main@44ee8c9` 已合入 durable server run controller；`main@d4b9647` 已收紧受支持的 production selector；`main@912f659` 已合入 ResultIngress admission→worker-result→Run journal crash-atomic 持久化/恢复。前置 Pi `0.84.3` canary 绑定 `sourceHead=d4b9647`，单 Attempt 通过 9 项 Gate 到 ReviewPacket/`REVIEW_PENDING`，但尚未导入独立 ReviewDecision、未进入 `ACCEPTED`，不是当前 `main` 终验。unsigned RC 路径可行但尚未发布；stable `v1.*` 仍被 Issue #212 与 Linux stable gate 阻断。R1 保持 `INTEGRATED`，R2–R5 保持 `COMPONENT`，R6 保持 `PLANNED/DESIGN`。
 >
-> **2026-08-28 embedded fencing 修复（随后更新）**：exec-chain 在 embedded 模式下（`MARSHAL_EMBEDDED_SANDBOX=1`）复用 BindDispatch 已创建的 lease 而非独立 Provision fencingToken；Embedded canary（`TestRealPiExecChainCanary`）在 embedded 模式下首次跑通：pi 真实在 Local allocation 内执行（transcript 27KB，exitCode=0），AttemptBinding 落盘（`634937b`）。marshal-server restart 测试重写为真实非终态 Run 跨进程恢复（`da8cccd`）。`TestRealPiStrictE2E` 跑通受 pi API rate limit（qwen3.8-max via idealab，10 次/60 分钟）外部阻塞，待窗口重置后重跑。
->
-> **2026-08-28 fixed-bin checkpoint（当前权威增量）**：durable authority、strict E2E 实现与 RC identity/install 聚合已于 `main@5d5c426` 合入；durable server run controller 已随 `main@44ee8c9` 合入；ResultIngress admission→worker-result→Run journal 的 crash-atomic 持久化/恢复已随 `main@912f659` 合入。Pi `0.84.3` strict E2E 的最新 live 证据绑定锁定 sourceHead `8df8b88`，通过 fixed `marshal` binary、ResultIngress、独立 `verify`、跨进程 restore、ReviewPacket 到 `REVIEW_PENDING`；当前主线尚待重跑，并须通过现有 `task review --decision` 导入独立 ReviewDecision 到 `ACCEPTED`。Qwen Code `0.22.0` ordinary-user workspace live adapter 已通过，但不是 `LaunchCapable`。server controller 与 ResultIngress 尚未接入 ADR 0056 的共同 terminalization CAS/cleanup transaction，RC 产物尚未发布。以下状态因此不升级：R2–R5 仍为 `COMPONENT`，R6 仍为 `PLANNED/DESIGN`。
->
-> **2026-08-28 Darwin 进程生命周期合同 checkpoint**：[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已接受并完成唯一 aggregate rework，冻结 Core-owned launch coordinator、admission/terminalization authority CAS、立即终止 dispatch eligibility、独立 `cleanup-completed` 与 cleanup binding release，以及 cooperative/non-detaching process-group 控制边界。现有 `LocalRunner` 的 allocation/process projection 仍是内存态，合同尚未接入生产路径，因此本 checkpoint 不升级 R3–R5。
+> **2026-08-28 Darwin 进程生命周期合同 checkpoint**：[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受，冻结 Core-owned launch coordinator、admission/terminalization authority CAS、立即终止 dispatch eligibility、独立 `cleanup-completed` 与 cleanup binding release，以及 cooperative/non-detaching process-group 控制边界。实现与 production 接线仍开放，因此本 checkpoint 不升级 R3–R5。
 
 ## v1.0 生产纵切
 
@@ -26,12 +22,12 @@ Milestone 状态与能力成熟度是两个维度：
 | 阶段 | 状态 | 成熟度 | 当前结论 |
 | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 与 baseline evidence 已完成。 |
-| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Pi `0.84.3` 在锁定 sourceHead `8df8b88` 的 live canary 中由 Local allocation 承载并把真实 result bytes 送入 Core；实现已合入 `main@5d5c426`，当前主线重跑仍是发布前门禁。Qwen `0.22.0` ordinary workspace live 仅补充兼容性，不作为 production `LaunchCapable` 证据。 |
-| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | file-backed ResultIngress replay/current-ledger admission 已于 `main@5d5c426` 接入，admission→worker-result→Run journal crash-atomic 持久化/恢复已于 `main@912f659` 合入。R2 仍不升级：该 transaction 尚须被 ADR 0056 的 terminalization barrier 复用同一 authority CAS，并在当前主线 canary 证明无第二真值。 |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | per-Attempt Agent/Sandbox identity 已随 `main@5d5c426` 合入；hardened evidence 必须由独立 authority 提供，ordinary-user 明确记为“不要求”而非伪造 `evidenceOk`。ADR 0056 已冻结 Darwin Core-owned launch/process-group observation，但耐久事实、birth/FD identity、cooperative/non-detaching 门禁与单侧 revoke/replace/expiry 的真实路径负测仍待接线。 |
+| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Pi `0.84.3` 在 `sourceHead=d4b9647` 的前置 canary 中由 Local allocation 承载并把真实 result bytes 送入 Core；当前主线重跑仍是发布前门禁。 |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | ResultIngress admission→worker-result→Run journal crash-atomic 持久化/恢复已于 `main@912f659` 合入。R2 仍不升级：该 transaction 尚须被 ADR 0056 terminalization barrier 复用同一 authority CAS，并在当前主线证明无第二真值。 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | production selector 已于 `main@d4b9647` fail closed；[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受，但 Darwin Core-owned process observation/terminalization 的耐久事实、birth/FD identity 和真实路径负测仍待实现。 |
 | `I186-R4` | `IN_PROGRESS` | `COMPONENT` | durable server run controller 已随 `main@44ee8c9` 合入，strict E2E 候选也已通过跨进程 restore；但 controller 尚未接入 ADR 0056 的 authority CAS/cleanup transaction。退出前须证明 server crash 后从耐久观察恢复、eligibility 立即 fence、旧控制单元安全终结或 intervention、重复 start 幂等、lost/failed worker 得到唯一可回放结论。 |
-| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | fixed-bin strict E2E 已在锁定 sourceHead `8df8b88` 真实到 ResultIngress、`verify`、ReviewPacket/`REVIEW_PENDING`，修复了旧假阳性；但尚未在当前主线重跑并通过现有 `task review --decision` 导入独立 Decision 到 `ACCEPTED`，也未完成 ADR 0056 的 eligibility terminal、allocation terminal receipt、`cleanup-completed`/cleanup binding release 并证明旧 bypass 全部退出 supported path。 |
-| `I186-R6` | `PLANNED` | `DESIGN` | RC identity/install 已获独立 `APPROVED` 并合入 `main@5d5c426`，但尚未发布产物；稳定 `v1.*` 仍由 Issue #212 的 macOS signing/notarization 与 Linux stable gate 阻断。unsigned 只允许 prerelease，不能升级为 `RELEASED`。 |
+| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | fixed-bin canary 已在 `sourceHead=d4b9647` 以单 Attempt/9 Gate 真实到 ReviewPacket/`REVIEW_PENDING`；但尚未导入独立 Decision 到 `ACCEPTED`，也未完成 ADR 0056 implementation 和最终主线终验。 |
+| `I186-R6` | `PLANNED` | `DESIGN` | unsigned RC 的 identity/dist/install/release-contract 路径可行，但尚未发布任何产物；稳定 `v1.*` 仍由 Issue #212 与 Linux stable gate 阻断。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
