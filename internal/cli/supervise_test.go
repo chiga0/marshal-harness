@@ -456,6 +456,7 @@ func TestSuperviseOnceRecoversAfterRealProcessKill(t *testing.T) {
 	if exit != ExitOK {
 		t.Fatalf("supervise --once exit = %d, stderr = %s", exit, stderr.String())
 	}
+	waitForLeaseReleased(t, stateRoot, runID)
 	// 恢复路径应派发 --recover-dead-driver。
 	gotArgv := waitForArgvFile(t, argvFile)
 	wantArgv := []string{"task", "run", "--run", runID, "--through-verify", "--recover-dead-driver", "--json"}
