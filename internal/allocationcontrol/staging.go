@@ -107,9 +107,9 @@ func (facade *DurableLocalFacade) Current(ctx context.Context) (CurrentLiveAlloc
 			HeldObjectsRootIdentity: facade.objectsRoot, LiveIdentity: identity,
 			MarkerIdentity: receipt.MarkerIdentity, MarkerDigest: receipt.MarkerDigest,
 			Requirements:         intent.Requirements,
-			AllowedStoreIDs:      append([]string(nil), intent.AllowedStoreIDs...),
-			WorkDirAllowlist:     append([]string(nil), intent.WorkDirAllowlist...),
-			EnvironmentAllowlist: append([]string(nil), intent.EnvironmentAllowlist...),
+			AllowedStoreIDs:      append([]string{}, intent.AllowedStoreIDs...),
+			WorkDirAllowlist:     append([]string{}, intent.WorkDirAllowlist...),
+			EnvironmentAllowlist: append([]string{}, intent.EnvironmentAllowlist...),
 		}
 		return current.Validate()
 	})

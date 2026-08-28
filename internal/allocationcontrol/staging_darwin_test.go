@@ -57,6 +57,13 @@ func openProvisionedFacade(t *testing.T) (*DurableLocalFacade, *Controller, *Sto
 func TestDurableLocalFacadeStagesAndReplaysWithoutAllocationEffects(t *testing.T) {
 	facade, controller, store, session, _ := openProvisionedFacade(t)
 	defer controller.Close()
+	initial, err := facade.Current(context.Background())
+	if err != nil {
+		t.Fatalf("Current before Stage: %v", err)
+	}
+	if initial.AllowedStoreIDs == nil || initial.WorkDirAllowlist == nil || initial.EnvironmentAllowlist == nil {
+		t.Fatalf("Current collapsed closed arrays to nil: %+v", initial)
+	}
 	beforeJournal := store.JournalRecords()
 	request := []byte(`{"kind":"WorkerRequest"}`)
 	prompt := []byte("inspect only\n")
