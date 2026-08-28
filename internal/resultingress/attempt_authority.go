@@ -533,7 +533,7 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 	case AttemptTransitionOpened:
 		return nil
 	case AttemptTransitionLaunchAuthorized:
-		if prior.LaunchState != LaunchNotAuthorized || prior.BarrierDigest != "" || (prior.AllocationProvisionReceiptDigest != "" && prior.AllocationProvisionEffectDigest == "") {
+		if prior.LaunchState != LaunchNotAuthorized || prior.BarrierDigest != "" || prior.AllocationProvisionEffectDigest == "" || prior.AllocationProvisionReceiptDigest == "" {
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionProcessStarted:
@@ -577,7 +577,7 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionAllocationTerminated:
-		if prior.ProcessTerminalKind != ProcessAbsent && prior.ProcessTerminalKind != ProcessTerminated || prior.AllocationTerminalDigest != "" || (prior.AllocationTerminateEffectDigest != "" && t.ReceiptDigest != prior.AllocationTerminateReceiptDigest) {
+		if prior.ProcessTerminalKind != ProcessAbsent && prior.ProcessTerminalKind != ProcessTerminated || prior.AllocationTerminalDigest != "" || prior.AllocationTerminateEffectDigest == "" || prior.AllocationTerminateReceiptDigest == "" || t.ReceiptDigest != prior.AllocationTerminateReceiptDigest {
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionCleanupCompleted:
@@ -925,9 +925,9 @@ func cleanupEffectAllowed(state AttemptAuthorityState, operation CleanupOperatio
 		return false
 	}
 	if state.PendingEffectIntentFactDigest != "" || state.EffectInterventionDigest != "" {
-		// Read-only inspection remains available for diagnosis. Reconciliation of
-		// this effect must use ReconcilePendingEffect so it is captured by the same
-		// authority chain; the legacy cleanup callback cannot bypass that ledger.
+		// Read-only inspection remains available for diagnosis. Recovery of this
+		// effect must use RecoverPendingEffect so it is captured by the same
+		// authority chain; the cleanup callback cannot bypass that ledger.
 		return operation == CleanupInspect
 	}
 	if state.ProcessTerminalDigest == "" {

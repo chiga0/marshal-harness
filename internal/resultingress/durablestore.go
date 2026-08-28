@@ -28,6 +28,11 @@ const (
 // registry 耐久约束一致）。
 var ErrMemoryOnlyResultIngress = errors.New("resultingress: memory-only result ingress store not allowed: the store is not bound to a durable directory")
 
+// ErrLegacyAdmissionMutationDisabled marks the former ungoverned result
+// mutation API as replay-only. Production admission must flow through Ingress
+// so it is chained to an exact Attempt authority head.
+var ErrLegacyAdmissionMutationDisabled = errors.New("resultingress: legacy ungoverned result admission mutation is disabled")
+
 const (
 	resultFactTypeAdmitted    = "result-admitted"
 	resultFactTypeQuarantined = "result-quarantined"
@@ -98,7 +103,10 @@ type DurableStore struct {
 	dir          string
 	nextSequence int64
 	mu           sync.Mutex
+	clock        func() time.Time
 }
+
+var processEffectFlights sync.Map
 
 // ingressDurableStore keeps existing package-internal call sites source
 // compatible while DurableStore is the public composition type.
@@ -108,13 +116,46 @@ type ingressDurableStore = DurableStore
 // 空白目录保持可构造但所有写操作 fail closed（ErrMemoryOnlyResultIngress）。
 // 损坏/非规范/冲突行一律 fail closed，绝不静默跳过。
 func OpenResultIngressStore(dir string) (*DurableStore, error) {
+	return openResultIngressStoreWithClock(dir, time.Now)
+}
+
+// openResultIngressStoreWithClock injects the canonical authority clock for
+// deterministic deadline tests without creating a caller-controlled deadline
+// verdict in the public production API.
+func openResultIngressStoreWithClock(dir string, clock func() time.Time) (*DurableStore, error) {
+	if clock == nil {
+		return nil, errors.New("resultingress: authority clock is required")
+	}
+	store := &DurableStore{clock: clock}
 	if strings.TrimSpace(dir) == "" {
-		return &DurableStore{}, nil
+		return store, nil
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("resultingress: create result ingress store directory: %w", err)
 	}
-	return &DurableStore{dir: dir, nextSequence: 1}, nil
+	store.dir = dir
+	store.nextSequence = 1
+	return store, nil
+}
+
+func (s *ingressDurableStore) authorityNow() time.Time {
+	if s != nil && s.clock != nil {
+		return s.clock().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (s *ingressDurableStore) withEffectFlight(key string, fn func() error) error {
+	root, err := filepath.Abs(s.dir)
+	if err != nil {
+		return fmt.Errorf("resultingress: resolve effect authority root: %w", err)
+	}
+	flightKey := filepath.Clean(root) + "\x00" + key
+	value, _ := processEffectFlights.LoadOrStore(flightKey, &sync.Mutex{})
+	flight := value.(*sync.Mutex)
+	flight.Lock()
+	defer flight.Unlock()
+	return fn()
 }
 
 func (s *ingressDurableStore) requireBound() error {
@@ -207,8 +248,8 @@ func (s *ingressDurableStore) appendLine(fact any, getDigest func() string, setD
 	return dir.Sync()
 }
 
-// RecordAdmitted 把一次成功接纳的幂等权威锚点持久化（在返回 fact 之前先落账，
-// 使后续重复送达或跨进程重放可被机械检测）。
+// recordAdmittedLocked persists admission only for the governed Ingress path;
+// it is never a public authority bypass.
 func (s *ingressDurableStore) recordAdmittedLocked(idempotencyKey string, governed *AttemptAuthorityState, drcDigest string, envelope ResultEnvelope, factDigest string, ledgerSequence uint64) (string, error) {
 	fact := &resultAdmittedFact{
 		ProtocolRevision: resultIngressProtocolRevision,
@@ -243,16 +284,13 @@ func (s *ingressDurableStore) recordAdmittedLocked(idempotencyKey string, govern
 	return fact.Digest, nil
 }
 
+// RecordAdmitted is retained only for source compatibility with legacy replay
+// callers. It never mutates a bound or memory-only store.
 func (s *ingressDurableStore) RecordAdmitted(idempotencyKey, drcDigest string, envelope ResultEnvelope, factDigest string, ledgerSequence uint64) error {
-	return s.withExclusive(func() error {
-		dummy := newAuthorityProjection()
-		s.nextSequence = 1
-		if err := s.recoverIntoLocked(dummy); err != nil {
-			return err
-		}
-		_, err := s.recordAdmittedLocked(idempotencyKey, nil, drcDigest, envelope, factDigest, ledgerSequence)
+	if err := s.requireBound(); err != nil {
 		return err
-	})
+	}
+	return ErrLegacyAdmissionMutationDisabled
 }
 
 // RecordQuarantined 把一次拒绝投递的只读机械审计记录持久化。

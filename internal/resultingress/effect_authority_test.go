@@ -7,10 +7,117 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 )
+
+type effectAuthorityVerifier struct {
+	wantIdentity AttemptIdentity
+	wantRun      RunAuthorityBinding
+	err          error
+	calls        *int
+	skip         bool
+	double       bool
+	deferred     *func() error
+}
+
+func (v effectAuthorityVerifier) WithCurrentEffectAuthority(_ context.Context, got CurrentEffectAuthorityCheck, fn func() error) error {
+	if v.calls != nil {
+		(*v.calls)++
+	}
+	if v.err != nil {
+		return v.err
+	}
+	if got.Identity != v.wantIdentity || got.CurrentRunAuthority != v.wantRun || got.Now == "" {
+		return errors.New("wrong current effect authority")
+	}
+	if v.skip {
+		return nil
+	}
+	if v.deferred != nil {
+		*v.deferred = fn
+		return nil
+	}
+	err := fn()
+	if v.double {
+		_ = fn()
+	}
+	return err
+}
+
+func effectVerifier(binding EffectBinding) effectAuthorityVerifier {
+	return effectAuthorityVerifier{wantIdentity: binding.Identity, wantRun: binding.CurrentRunAuthority}
+}
+
+func effectTestIntent(binding EffectBinding, effectID, commandID, idempotencyKey, requestDigest string) authority.SideEffectIntent {
+	return authority.SideEffectIntent{
+		AuthorityNamespaceId: binding.Identity.AuthorityNamespaceID,
+		EffectId:             effectID,
+		OwnerIdentity:        binding.Identity.OrchestratorID,
+		Port:                 "sandbox",
+		Operation:            string(binding.Phase),
+		TargetRef:            binding.Identity.AllocationID,
+		TargetDigest:         attemptTestDigest("allocation-target"),
+		RequestDigest:        requestDigest,
+		CommandId:            commandID,
+		IdempotencyKey:       idempotencyKey,
+		PolicyDigest:         attemptTestDigest("policy"),
+		AuthorizationDigest:  binding.AdmissionAuthorityDigest,
+		Purpose:              "durable allocation effect",
+		Deadline:             "2099-08-29T00:00:00Z",
+		DispositionClass: map[EffectPhase]authority.DispositionClass{
+			EffectPhaseAllocationProvision: authority.DispositionClassSandboxProvision,
+			EffectPhaseAllocationTerminate: authority.DispositionClassSandboxTerminate,
+		}[binding.Phase],
+	}
+}
+
+func effectTestReceipt(state EffectAuthorityState, disposition authority.Disposition) authority.SideEffectReceipt {
+	return authority.SideEffectReceipt{
+		AuthorityNamespaceId:     state.Binding.Identity.AuthorityNamespaceID,
+		IntentDigest:             state.IntentRecordDigest,
+		Disposition:              disposition,
+		ProviderResourceIdentity: state.Binding.MarkerDigest,
+		ObservedDigest:           attemptTestDigest("observed-" + string(disposition)),
+		ActorProvenance: authority.ActorProvenance{SecurityDomainId: authority.SecurityDomainId{
+			TenantNamespace: "tenant-1", TrustDomainKind: authority.TrustDomainKindExecution, IsolationDomainId: "local-provider-1",
+		}},
+		ReconcileIdentity: "reconcile-1",
+	}
+}
+
+func effectUse(result EffectAppendResult) EffectUseRequest {
+	return EffectUseRequest{Binding: result.State.Binding, EffectID: result.State.Intent.EffectId, IntentFactDigest: result.State.IntentFactDigest, IntentDeadline: result.State.Intent.Deadline}
+}
+
+func effectOperator(inspectOutcome EffectInspectionOutcome, applyDisposition authority.Disposition, inspectCalls, applyCalls *int) EffectOperator {
+	op, err := NewEffectOperator(
+		func(_ context.Context, state EffectAuthorityState) (EffectInspection, error) {
+			if inspectCalls != nil {
+				(*inspectCalls)++
+			}
+			disposition := map[EffectInspectionOutcome]authority.Disposition{
+				EffectInspectionApplied: authority.DispositionApplied, EffectInspectionNotApplied: authority.DispositionNotApplied,
+				EffectInspectionAmbiguous: authority.DispositionAmbiguous, EffectInspectionUnknown: authority.DispositionAmbiguous,
+				EffectInspectionConflict: authority.DispositionConflict,
+			}[inspectOutcome]
+			return EffectInspection{Outcome: inspectOutcome, Receipt: effectTestReceipt(state, disposition)}, nil
+		},
+		func(_ context.Context, state EffectAuthorityState) (authority.SideEffectReceipt, error) {
+			if applyCalls != nil {
+				(*applyCalls)++
+			}
+			return effectTestReceipt(state, applyDisposition), nil
+		},
+	)
+	if err != nil {
+		panic(err)
+	}
+	return op
+}
 
 func effectTestProvision(t *testing.T, store *DurableStore) (AttemptAuthorityState, EffectIntentRequest, EffectAppendResult) {
 	t.Helper()
@@ -26,329 +133,301 @@ func effectTestProvision(t *testing.T, store *DurableStore) (AttemptAuthoritySta
 		Phase: EffectPhaseAllocationProvision, MarkerDigest: attemptTestDigest("allocation-marker"),
 	}
 	request := EffectIntentRequest{Binding: binding, Intent: effectTestIntent(binding, "provision-effect", "provision-command", "provision-key", attemptTestDigest("provision-request"))}
-	result, err := store.CompareAndAppendEffectIntent(context.Background(), attemptRunVerifier{want: binding.CurrentRunAuthority}, request)
+	result, err := store.CompareAndAppendEffectIntent(context.Background(), effectVerifier(binding), request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return opened, request, result
 }
 
-func effectTestIntent(binding EffectBinding, effectID, commandID, idempotencyKey, requestDigest string) authority.SideEffectIntent {
-	return authority.SideEffectIntent{
-		AuthorityNamespaceId: binding.Identity.AuthorityNamespaceID,
-		EffectId:             effectID, OwnerIdentity: binding.Identity.OrchestratorID,
-		Port: "sandbox", Operation: string(binding.Phase), TargetRef: binding.Identity.AllocationID,
-		TargetDigest: attemptTestDigest("allocation-target"), RequestDigest: requestDigest,
-		CommandId: commandID, IdempotencyKey: idempotencyKey,
-		PolicyDigest: attemptTestDigest("policy"), AuthorizationDigest: binding.AdmissionAuthorityDigest,
-		Purpose: "durable allocation effect", Deadline: "2026-08-29T00:00:00Z",
-		DispositionClass: map[EffectPhase]authority.DispositionClass{
-			EffectPhaseAllocationProvision: authority.DispositionClassSandboxProvision,
-			EffectPhaseAllocationTerminate: authority.DispositionClassSandboxTerminate,
-		}[binding.Phase],
+func appendTestAcceptedProvision(t *testing.T, store *DurableStore, opened AttemptAuthorityState) AttemptAuthorityState {
+	t.Helper()
+	binding := EffectBinding{
+		Identity: opened.Identity, CurrentRunAuthority: attemptTestRunAuthority(opened.Identity),
+		AdmissionAttemptRevision: opened.Revision, AdmissionAuthorityDigest: opened.HeadDigest,
+		Phase: EffectPhaseAllocationProvision, MarkerDigest: attemptTestDigest("allocation-marker-" + opened.Identity.AttemptID),
 	}
-}
-
-func effectTestReceipt(state EffectAuthorityState, disposition authority.Disposition) authority.SideEffectReceipt {
-	return authority.SideEffectReceipt{
-		AuthorityNamespaceId: state.Binding.Identity.AuthorityNamespaceID,
-		IntentDigest:         state.IntentRecordDigest, Disposition: disposition,
-		ProviderResourceIdentity: "allocation-object-1", ObservedDigest: attemptTestDigest("provider-observation"),
-		ActorProvenance: authority.ActorProvenance{SecurityDomainId: authority.SecurityDomainId{
-			TenantNamespace: "tenant-1", TrustDomainKind: authority.TrustDomainKindExecution, IsolationDomainId: "local-provider-1",
-		}},
-		ReconcileIdentity: "reconcile-1",
-	}
-}
-
-func effectTestReconcile(state EffectAuthorityState, observation authority.Observation, decision authority.Decision) authority.ReconcileRecord {
-	return authority.ReconcileRecord{
-		AuthorityNamespaceId: state.Binding.Identity.AuthorityNamespaceID,
-		Observation:          observation, Decision: decision,
-		IntentDigest: state.IntentRecordDigest, ReceiptDigest: state.ReceiptRecordDigest,
-	}
-}
-
-func effectUse(result EffectAppendResult) EffectUseRequest {
-	return EffectUseRequest{Binding: result.State.Binding, EffectID: result.State.Intent.EffectId, IntentFactDigest: result.State.IntentFactDigest}
-}
-
-func TestEffectAuthorityIntentReceiptReconcileRestartAndResponseLoss(t *testing.T) {
-	dir := t.TempDir()
-	store, _ := OpenResultIngressStore(dir)
-	opened, request, intentResult := effectTestProvision(t, store)
-	if !intentResult.Appended || intentResult.State.IntentRecordDigest == "" || intentResult.State.IntentFactDigest != intentResult.FactDigest {
-		t.Fatalf("intent=%#v", intentResult)
-	}
-	attempt, found, err := store.AttemptState(opened.Identity)
-	if err != nil || !found || attempt.Revision != opened.Revision+1 || attempt.HeadDigest != intentResult.FactDigest || attempt.PendingEffectIntentFactDigest != intentResult.FactDigest {
-		t.Fatalf("attempt=%#v found=%v err=%v", attempt, found, err)
-	}
-	if _, err := appendAuthorizedAttempt(store, attempt.Revision, attempt.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: opened.Identity, LaunchAuthorizationID: "premature-launch"}); !errors.Is(err, ErrAttemptAuthorityOrder) {
-		t.Fatalf("pending effect allowed launch: %v", err)
-	}
-	replay, err := store.CompareAndAppendEffectIntent(context.Background(), attemptRunVerifier{want: request.Binding.CurrentRunAuthority}, request)
-	if err != nil || replay.Appended || replay.FactDigest != intentResult.FactDigest {
-		t.Fatalf("intent replay=%#v err=%v", replay, err)
-	}
-
-	use := effectUse(intentResult)
-	effectCalls := 0
-	receiptResult, err := store.ExecutePendingEffect(context.Background(), attemptRunVerifier{want: request.Binding.CurrentRunAuthority}, use, func(state EffectAuthorityState) (authority.SideEffectReceipt, error) {
-		effectCalls++
-		// This nested replay would deadlock if the Provider callback ran while
-		// the ResultIngress flock/mutex was held.
-		if pending, nestedErr := store.PendingEffects(); nestedErr != nil || len(pending) != 1 {
-			t.Fatalf("nested pending=%#v err=%v", pending, nestedErr)
-		}
-		return effectTestReceipt(state, authority.DispositionApplied), nil
-	})
-	if err != nil || !receiptResult.Appended || effectCalls != 1 || receiptResult.State.ReceiptFactDigest == "" {
-		t.Fatalf("receipt=%#v calls=%d err=%v", receiptResult, effectCalls, err)
-	}
-	// Lost response across a process restart returns the durable receipt and
-	// never invokes the Provider again.
-	receiptStore, _ := OpenResultIngressStore(dir)
-	receiptReplay, err := receiptStore.ExecutePendingEffect(context.Background(), attemptRunVerifier{want: request.Binding.CurrentRunAuthority}, use, func(EffectAuthorityState) (authority.SideEffectReceipt, error) {
-		effectCalls++
-		return authority.SideEffectReceipt{}, errors.New("must not run")
-	})
-	if err != nil || receiptReplay.Appended || receiptReplay.FactDigest != receiptResult.FactDigest || effectCalls != 1 {
-		t.Fatalf("receipt replay=%#v calls=%d err=%v", receiptReplay, effectCalls, err)
-	}
-
-	reconcileCalls := 0
-	store = receiptStore
-	reconcileResult, err := store.ReconcilePendingEffect(context.Background(), attemptRunVerifier{want: request.Binding.CurrentRunAuthority}, use, func(state EffectAuthorityState) (authority.ReconcileRecord, error) {
-		reconcileCalls++
-		if pending, nestedErr := store.PendingEffects(); nestedErr != nil || len(pending) != 1 {
-			t.Fatalf("nested reconcile pending=%#v err=%v", pending, nestedErr)
-		}
-		return effectTestReconcile(state, authority.ObservationApplied, authority.DecisionAccept), nil
-	})
-	if err != nil || !reconcileResult.Appended || reconcileCalls != 1 || reconcileResult.State.ReconcileFactDigest == "" {
-		t.Fatalf("reconcile=%#v calls=%d err=%v", reconcileResult, reconcileCalls, err)
-	}
-	if pending, err := store.PendingEffects(); err != nil || len(pending) != 0 {
-		t.Fatalf("closed pending=%#v err=%v", pending, err)
-	}
-	current, _, _ := store.AttemptState(opened.Identity)
-	if current.PendingEffectIntentFactDigest != "" || current.AllocationProvisionEffectDigest != reconcileResult.FactDigest || current.AllocationProvisionReceiptDigest != receiptResult.State.ReceiptRecordDigest {
-		t.Fatalf("closed attempt=%#v", current)
-	}
-
-	reopened, _ := OpenResultIngressStore(dir)
-	recovered, ok, err := reopened.EffectState(opened.Identity.AuthorityNamespaceID, request.Intent.EffectId)
-	if err != nil || !ok || recovered != reconcileResult.State {
-		t.Fatalf("recovered=%#v ok=%v err=%v", recovered, ok, err)
-	}
-	reconcileReplay, err := reopened.ReconcilePendingEffect(context.Background(), attemptRunVerifier{want: request.Binding.CurrentRunAuthority}, use, func(EffectAuthorityState) (authority.ReconcileRecord, error) {
-		reconcileCalls++
-		return authority.ReconcileRecord{}, errors.New("must not run")
-	})
-	if err != nil || reconcileReplay.Appended || reconcileReplay.FactDigest != reconcileResult.FactDigest || reconcileCalls != 1 {
-		t.Fatalf("reconcile replay=%#v calls=%d err=%v", reconcileReplay, reconcileCalls, err)
-	}
-	current, _, _ = reopened.AttemptState(opened.Identity)
-	launch, err := appendAuthorizedAttempt(reopened, current.Revision, current.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: opened.Identity, LaunchAuthorizationID: "launch-after-provision"})
-	if err != nil || !launch.Appended {
-		t.Fatalf("launch=%#v err=%v", launch, err)
-	}
-}
-
-func TestEffectAuthorityRejectsForgeryABAAndConflictingIdentity(t *testing.T) {
-	store, _ := OpenResultIngressStore(t.TempDir())
-	opened, request, intentResult := effectTestProvision(t, store)
-	run := request.Binding.CurrentRunAuthority
-
-	for name, mutate := range map[string]func(*EffectIntentRequest){
-		"attempt-head": func(r *EffectIntentRequest) {
-			r.Binding.AdmissionAuthorityDigest = attemptTestDigest("aba-head")
-			r.Intent.AuthorizationDigest = r.Binding.AdmissionAuthorityDigest
-		},
-		"revision": func(r *EffectIntentRequest) { r.Binding.AdmissionAttemptRevision++ },
-		"run-authority": func(r *EffectIntentRequest) {
-			r.Binding.CurrentRunAuthority.RunAuthorityDigest = attemptTestDigest("stale-run")
-		},
-		"namespace":     func(r *EffectIntentRequest) { r.Intent.AuthorityNamespaceId.AuthorityScopeId = "forged" },
-		"authorization": func(r *EffectIntentRequest) { r.Intent.AuthorizationDigest = attemptTestDigest("forged-auth") },
-		"marker":        func(r *EffectIntentRequest) { r.Binding.MarkerDigest = attemptTestDigest("other-marker") },
-	} {
-		t.Run(name, func(t *testing.T) {
-			forged := request
-			mutate(&forged)
-			if _, err := store.CompareAndAppendEffectIntent(context.Background(), attemptRunVerifier{want: run}, forged); err == nil {
-				t.Fatal("forged intent accepted")
-			}
-		})
-	}
-
-	current, _, _ := store.AttemptState(opened.Identity)
-	conflictBinding := request.Binding
-	conflictBinding.AdmissionAttemptRevision, conflictBinding.AdmissionAuthorityDigest = current.Revision, current.HeadDigest
-	for _, conflicting := range []authority.SideEffectIntent{
-		effectTestIntent(conflictBinding, "other-effect", request.Intent.CommandId, "other-key", attemptTestDigest("different-request")),
-		effectTestIntent(conflictBinding, "other-effect", "other-command", request.Intent.IdempotencyKey, attemptTestDigest("different-request")),
-	} {
-		if _, err := store.CompareAndAppendEffectIntent(context.Background(), attemptRunVerifier{want: run}, EffectIntentRequest{Binding: conflictBinding, Intent: conflicting}); !errors.Is(err, ErrEffectAuthorityConflict) && !errors.Is(err, ErrAttemptAuthorityConflict) {
-			t.Fatalf("command/idempotency conflict err=%v", err)
-		}
-	}
-
-	use := effectUse(intentResult)
-	wrongUse := use
-	wrongUse.IntentFactDigest = attemptTestDigest("other-intent-fact")
-	calls := 0
-	if _, err := store.ExecutePendingEffect(context.Background(), attemptRunVerifier{want: run}, wrongUse, func(EffectAuthorityState) (authority.SideEffectReceipt, error) {
-		calls++
-		return authority.SideEffectReceipt{}, nil
-	}); !errors.Is(err, ErrEffectAuthorityConflict) || calls != 0 {
-		t.Fatalf("forged use err=%v calls=%d", err, calls)
-	}
-	unknown := use
-	unknown.EffectID = "unknown-effect"
-	if _, err := store.ExecutePendingEffect(context.Background(), attemptRunVerifier{want: run}, unknown, func(EffectAuthorityState) (authority.SideEffectReceipt, error) {
-		calls++
-		return authority.SideEffectReceipt{}, nil
-	}); !errors.Is(err, ErrEffectAuthorityUnknown) || calls != 0 {
-		t.Fatalf("zero-match use err=%v calls=%d", err, calls)
-	}
-	if _, err := store.ExecutePendingEffect(context.Background(), attemptRunVerifier{want: run}, use, func(state EffectAuthorityState) (authority.SideEffectReceipt, error) {
-		calls++
-		receipt := effectTestReceipt(state, authority.DispositionApplied)
-		receipt.IntentDigest = attemptTestDigest("forged-intent")
-		return receipt, nil
-	}); !errors.Is(err, ErrEffectAuthorityConflict) || calls != 1 {
-		t.Fatalf("forged receipt err=%v calls=%d", err, calls)
-	}
-	state, _, _ := store.EffectState(opened.Identity.AuthorityNamespaceID, request.Intent.EffectId)
-	if state.ReceiptFactDigest != "" {
-		t.Fatalf("forged receipt became durable: %#v", state)
-	}
-}
-
-func TestEffectAuthorityCallbackFailureAndVerifierAbuseRemainPending(t *testing.T) {
-	store, _ := OpenResultIngressStore(t.TempDir())
-	_, request, intentResult := effectTestProvision(t, store)
-	use := effectUse(intentResult)
-	calls := 0
-	if _, err := store.ExecutePendingEffect(context.Background(), attemptRunVerifier{want: request.Binding.CurrentRunAuthority}, use, func(EffectAuthorityState) (authority.SideEffectReceipt, error) {
-		calls++
-		return authority.SideEffectReceipt{}, errors.New("provider failed")
-	}); err == nil || calls != 1 {
-		t.Fatalf("provider failure err=%v calls=%d", err, calls)
-	}
-	pending, _ := store.PendingEffects()
-	if len(pending) != 1 || pending[0].ReceiptFactDigest != "" {
-		t.Fatalf("pending after provider failure=%#v", pending)
-	}
-	if _, err := store.ExecutePendingEffect(context.Background(), attemptDeferredRunVerifier{want: request.Binding.CurrentRunAuthority, deferred: new(func() error)}, use, func(EffectAuthorityState) (authority.SideEffectReceipt, error) {
-		calls++
-		return authority.SideEffectReceipt{}, nil
-	}); !errors.Is(err, ErrEffectAuthorityConflict) || calls != 1 {
-		t.Fatalf("deferred verifier err=%v calls=%d", err, calls)
-	}
-	if _, err := store.ExecutePendingEffect(context.Background(), attemptDoubleRunVerifier{want: request.Binding.CurrentRunAuthority}, use, func(state EffectAuthorityState) (authority.SideEffectReceipt, error) {
-		calls++
-		return effectTestReceipt(state, authority.DispositionApplied), nil
-	}); !errors.Is(err, ErrEffectAuthorityConflict) || calls != 2 {
-		t.Fatalf("double verifier err=%v calls=%d", err, calls)
-	}
-	state, _, _ := store.EffectState(request.Binding.Identity.AuthorityNamespaceID, request.Intent.EffectId)
-	if state.ReceiptFactDigest == "" {
-		t.Fatal("first, sole callback receipt was not durable")
-	}
-}
-
-func TestTerminateEffectRequiresProvisionMarkerAndExactCleanupReceipt(t *testing.T) {
-	store, _ := OpenResultIngressStore(t.TempDir())
-	_, provisionRequest, provisionIntent := effectTestProvision(t, store)
-	provisionUse := effectUse(provisionIntent)
-	provisionReceipt, err := store.ExecutePendingEffect(context.Background(), attemptRunVerifier{want: provisionRequest.Binding.CurrentRunAuthority}, provisionUse, func(state EffectAuthorityState) (authority.SideEffectReceipt, error) {
-		return effectTestReceipt(state, authority.DispositionApplied), nil
-	})
+	request := EffectIntentRequest{Binding: binding, Intent: effectTestIntent(binding, "provision-"+opened.Identity.AttemptID, "provision-command-"+opened.Identity.AttemptID, "provision-key-"+opened.Identity.AttemptID, attemptTestDigest("provision-request-"+opened.Identity.AttemptID))}
+	intent, err := store.CompareAndAppendEffectIntent(context.Background(), effectVerifier(binding), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ReconcilePendingEffect(context.Background(), attemptRunVerifier{want: provisionRequest.Binding.CurrentRunAuthority}, provisionUse, func(state EffectAuthorityState) (authority.ReconcileRecord, error) {
-		return effectTestReconcile(state, authority.ObservationApplied, authority.DecisionAccept), nil
-	}); err != nil {
+	if _, err := store.RecoverPendingEffect(context.Background(), effectVerifier(binding), effectUse(intent), effectOperator(EffectInspectionNotApplied, authority.DispositionApplied, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
-	current, _, _ := store.AttemptState(provisionRequest.Binding.Identity)
-	launch, _ := appendAuthorizedAttempt(store, current.Revision, current.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: current.Identity, LaunchAuthorizationID: "launch-terminate-test"})
-	started, _ := appendAuthorizedAttempt(store, launch.State.Revision, launch.State.HeadDigest, AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: current.Identity, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:00Z", Process: attemptTestProcess(t)})
-	barrier := appendTestBarrier(t, store, started.State, "terminal-effect-test", TerminalAttemptFailed).State
-	cleanup := CleanupAuthorizationRequest{Identity: current.Identity, CurrentRunAuthority: provisionRequest.Binding.CurrentRunAuthority, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest, Operation: CleanupReconcile}
-	terminalResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: cleanup.CurrentRunAuthority}, barrier.Revision, barrier.HeadDigest, cleanup, AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: current.Identity, TerminalizationID: barrier.TerminalizationID, ProcessTerminalKind: ProcessTerminated, ObservationDigest: attemptTestDigest("process-terminal")})
+	state, _, err := store.AttemptState(opened.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state
+}
+
+func appendTestAcceptedTerminate(t *testing.T, store *DurableStore, terminal AttemptAuthorityState) (AttemptAuthorityState, string) {
+	t.Helper()
+	provision, ok, err := store.EffectState(terminal.Identity.AuthorityNamespaceID, "provision-"+terminal.Identity.AttemptID)
+	if err != nil || !ok {
+		t.Fatalf("provision effect missing: %#v %v", provision, err)
+	}
+	binding := EffectBinding{
+		Identity: terminal.Identity, CurrentRunAuthority: attemptTestRunAuthority(terminal.Identity),
+		AdmissionAttemptRevision: terminal.Revision, AdmissionAuthorityDigest: terminal.HeadDigest,
+		Phase: EffectPhaseAllocationTerminate, MarkerDigest: provision.Binding.MarkerDigest,
+		TerminalizationID: terminal.TerminalizationID, TerminalGeneration: terminal.TerminalGeneration,
+		CleanupBindingDigest: terminal.CleanupBindingDigest, ProcessTerminalFactDigest: terminal.ProcessTerminalDigest,
+	}
+	request := EffectIntentRequest{Binding: binding, Intent: effectTestIntent(binding, "terminate-"+terminal.Identity.AttemptID, "terminate-command-"+terminal.Identity.AttemptID, "terminate-key-"+terminal.Identity.AttemptID, attemptTestDigest("terminate-request-"+terminal.Identity.AttemptID))}
+	intent, err := store.CompareAndAppendEffectIntent(context.Background(), effectVerifier(binding), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed, err := store.RecoverPendingEffect(context.Background(), effectVerifier(binding), effectUse(intent), effectOperator(EffectInspectionNotApplied, authority.DispositionApplied, nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := store.AttemptState(terminal.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return current, closed.State.ReceiptRecordDigest
+}
+
+func TestEffectRecoveryInspectFirstRestartAndDirectLaunchBarrier(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := OpenResultIngressStore(dir)
+	opened, request, intent := effectTestProvision(t, store)
+	current, _, _ := store.AttemptState(opened.Identity)
+	launch := AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: opened.Identity, LaunchAuthorizationID: "direct"}
+	if _, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: request.Binding.CurrentRunAuthority}, current.Revision, current.HeadDigest, AttemptAuthorizationRequest{Identity: opened.Identity, CurrentRunAuthority: request.Binding.CurrentRunAuthority}, launch); !errors.Is(err, ErrAttemptAuthorityOrder) {
+		t.Fatalf("direct launch without accepted effect err=%v", err)
+	}
+	intentReplay, err := store.CompareAndAppendEffectIntent(context.Background(), effectVerifier(request.Binding), request)
+	if err != nil || intentReplay.Appended || intentReplay.FactDigest != intent.FactDigest {
+		t.Fatalf("intent replay=%#v err=%v", intentReplay, err)
+	}
+	inspectCalls, applyCalls := 0, 0
+	closed, err := store.RecoverPendingEffect(context.Background(), effectVerifier(request.Binding), effectUse(intent), effectOperator(EffectInspectionNotApplied, authority.DispositionApplied, &inspectCalls, &applyCalls))
+	if err != nil || inspectCalls != 1 || applyCalls != 1 || closed.State.ReconcileFactDigest == "" {
+		t.Fatalf("closed=%#v inspect=%d apply=%d err=%v", closed, inspectCalls, applyCalls, err)
+	}
+	reopened, _ := OpenResultIngressStore(dir)
+	replay, err := reopened.RecoverPendingEffect(context.Background(), effectVerifier(request.Binding), effectUse(intent), effectOperator(EffectInspectionConflict, authority.DispositionConflict, &inspectCalls, &applyCalls))
+	if err != nil || replay.Appended || replay.FactDigest != closed.FactDigest || inspectCalls != 1 || applyCalls != 1 {
+		t.Fatalf("replay=%#v inspect=%d apply=%d err=%v", replay, inspectCalls, applyCalls, err)
+	}
+	state, _, _ := reopened.AttemptState(opened.Identity)
+	if _, err := appendAuthorizedAttempt(reopened, state.Revision, state.HeadDigest, launch); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEffectRecoveryLostApplyResponseInspectsAndRecovers(t *testing.T) {
+	store, _ := OpenResultIngressStore(t.TempDir())
+	_, request, intent := effectTestProvision(t, store)
+	inspectCalls, applyCalls, applied := 0, 0, false
+	lost, _ := NewEffectOperator(
+		func(_ context.Context, state EffectAuthorityState) (EffectInspection, error) {
+			inspectCalls++
+			return EffectInspection{Outcome: EffectInspectionNotApplied, Receipt: effectTestReceipt(state, authority.DispositionNotApplied)}, nil
+		},
+		func(_ context.Context, _ EffectAuthorityState) (authority.SideEffectReceipt, error) {
+			applyCalls++
+			applied = true
+			return authority.SideEffectReceipt{}, errors.New("response lost after mutation")
+		},
+	)
+	if _, err := store.RecoverPendingEffect(context.Background(), effectVerifier(request.Binding), effectUse(intent), lost); err == nil || !applied {
+		t.Fatalf("lost response err=%v applied=%v", err, applied)
+	}
+	recoverOp, _ := NewEffectOperator(
+		func(_ context.Context, state EffectAuthorityState) (EffectInspection, error) {
+			inspectCalls++
+			return EffectInspection{Outcome: EffectInspectionApplied, Receipt: effectTestReceipt(state, authority.DispositionApplied)}, nil
+		},
+		func(context.Context, EffectAuthorityState) (authority.SideEffectReceipt, error) {
+			applyCalls++
+			return authority.SideEffectReceipt{}, errors.New("must not apply")
+		},
+	)
+	closed, err := store.RecoverPendingEffect(context.Background(), effectVerifier(request.Binding), effectUse(intent), recoverOp)
+	if err != nil || closed.State.ReconcileFactDigest == "" || inspectCalls != 2 || applyCalls != 1 {
+		t.Fatalf("recovery=%#v inspect=%d apply=%d err=%v", closed, inspectCalls, applyCalls, err)
+	}
+}
+
+func TestEffectRecoveryAmbiguousThenAppliedClosesLegally(t *testing.T) {
+	store, _ := OpenResultIngressStore(t.TempDir())
+	_, request, intent := effectTestProvision(t, store)
+	first, err := store.RecoverPendingEffect(context.Background(), effectVerifier(request.Binding), effectUse(intent), effectOperator(EffectInspectionNotApplied, authority.DispositionAmbiguous, nil, nil))
+	if err != nil || first.State.Receipt.Disposition != authority.DispositionAmbiguous || first.State.ReconcileFactDigest != "" {
+		t.Fatalf("ambiguous=%#v err=%v", first, err)
+	}
+	second, err := store.RecoverPendingEffect(context.Background(), effectVerifier(request.Binding), effectUse(intent), effectOperator(EffectInspectionApplied, authority.DispositionConflict, nil, nil))
+	if err != nil || second.State.ReconcileFactDigest == "" || second.State.ReconcileInspection.Outcome != EffectInspectionApplied {
+		t.Fatalf("recovered=%#v err=%v", second, err)
+	}
+	current, _, _ := store.AttemptState(request.Binding.Identity)
+	if current.AllocationProvisionEffectDigest != second.FactDigest || current.EffectInterventionDigest != "" {
+		t.Fatalf("attempt=%#v", current)
+	}
+}
+
+func TestEffectRecoveryConflictEntersInterventionWithoutApply(t *testing.T) {
+	store, _ := OpenResultIngressStore(t.TempDir())
+	opened, request, intent := effectTestProvision(t, store)
+	applyCalls := 0
+	blocked, err := store.RecoverPendingEffect(context.Background(), effectVerifier(request.Binding), effectUse(intent), effectOperator(EffectInspectionConflict, authority.DispositionApplied, nil, &applyCalls))
+	if err != nil || applyCalls != 0 || blocked.State.Reconcile.Decision != authority.DecisionBlock {
+		t.Fatalf("blocked=%#v apply=%d err=%v", blocked, applyCalls, err)
+	}
+	current, _, _ := store.AttemptState(opened.Identity)
+	if current.EffectInterventionDigest != blocked.FactDigest || current.AllocationProvisionEffectDigest != "" {
+		t.Fatalf("attempt=%#v", current)
+	}
+}
+
+func TestEffectRecoveryConcurrentSingleFlightAppliesOnce(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := OpenResultIngressStore(dir)
+	secondStore, _ := OpenResultIngressStore(dir)
+	_, request, intent := effectTestProvision(t, store)
+	var mu sync.Mutex
+	inspectCalls, applyCalls := 0, 0
+	op, _ := NewEffectOperator(
+		func(_ context.Context, state EffectAuthorityState) (EffectInspection, error) {
+			mu.Lock()
+			inspectCalls++
+			mu.Unlock()
+			return EffectInspection{Outcome: EffectInspectionNotApplied, Receipt: effectTestReceipt(state, authority.DispositionNotApplied)}, nil
+		},
+		func(_ context.Context, state EffectAuthorityState) (authority.SideEffectReceipt, error) {
+			mu.Lock()
+			applyCalls++
+			mu.Unlock()
+			return effectTestReceipt(state, authority.DispositionApplied), nil
+		},
+	)
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, candidate := range []*DurableStore{store, secondStore} {
+		wg.Add(1)
+		go func(candidate *DurableStore) {
+			defer wg.Done()
+			_, err := candidate.RecoverPendingEffect(context.Background(), effectVerifier(request.Binding), effectUse(intent), op)
+			errs <- err
+		}(candidate)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if inspectCalls != 1 || applyCalls != 1 {
+		t.Fatalf("inspect=%d apply=%d", inspectCalls, applyCalls)
+	}
+}
+
+func TestEffectRecoveryRejectsExpiredCancelledAndVerifierAbuse(t *testing.T) {
+	clock := time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC)
+	expiredAdmissionStore, _ := openResultIngressStoreWithClock(t.TempDir(), func() time.Time { return clock })
+	id := attemptTestIdentity()
+	openedResult, _ := appendAuthorizedAttempt(expiredAdmissionStore, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	expiredBinding := EffectBinding{Identity: id, CurrentRunAuthority: attemptTestRunAuthority(id), AdmissionAttemptRevision: openedResult.State.Revision, AdmissionAuthorityDigest: openedResult.State.HeadDigest, Phase: EffectPhaseAllocationProvision, MarkerDigest: attemptTestDigest("expired-marker")}
+	expiredIntent := effectTestIntent(expiredBinding, "expired-effect", "expired-command", "expired-key", attemptTestDigest("expired-request"))
+	expiredIntent.Deadline = clock.Format(time.RFC3339Nano)
+	verifierCalls := 0
+	expiredVerifier := effectVerifier(expiredBinding)
+	expiredVerifier.calls = &verifierCalls
+	if _, err := expiredAdmissionStore.CompareAndAppendEffectIntent(context.Background(), expiredVerifier, EffectIntentRequest{Binding: expiredBinding, Intent: expiredIntent}); !errors.Is(err, ErrEffectAuthorityExpired) || verifierCalls != 0 {
+		t.Fatalf("expired admission err=%v verifierCalls=%d", err, verifierCalls)
+	}
+
+	store, _ := openResultIngressStoreWithClock(t.TempDir(), func() time.Time { return clock })
+	_, request, intent := effectTestProvision(t, store)
+	use := effectUse(intent)
+	calls := 0
+	rejected := effectVerifier(request.Binding)
+	rejected.err = errors.New("lease cancelled or revoked")
+	if _, err := store.RecoverPendingEffect(context.Background(), rejected, use, effectOperator(EffectInspectionNotApplied, authority.DispositionApplied, &calls, &calls)); !errors.Is(err, ErrEffectAuthorityConflict) || calls != 0 {
+		t.Fatalf("cancelled err=%v calls=%d", err, calls)
+	}
+	var deferred func() error
+	abuse := effectVerifier(request.Binding)
+	abuse.deferred = &deferred
+	if _, err := store.RecoverPendingEffect(context.Background(), abuse, use, effectOperator(EffectInspectionNotApplied, authority.DispositionApplied, &calls, &calls)); !errors.Is(err, ErrEffectAuthorityConflict) || calls != 0 {
+		t.Fatalf("deferred err=%v calls=%d", err, calls)
+	}
+	if err := deferred(); !errors.Is(err, ErrEffectAuthorityConflict) || calls != 0 {
+		t.Fatalf("late callback err=%v calls=%d", err, calls)
+	}
+	double := effectVerifier(request.Binding)
+	double.double = true
+	if _, err := store.RecoverPendingEffect(context.Background(), double, use, effectOperator(EffectInspectionNotApplied, authority.DispositionApplied, &calls, &calls)); !errors.Is(err, ErrEffectAuthorityConflict) || calls != 2 {
+		t.Fatalf("double err=%v calls=%d", err, calls)
+	}
+
+	expiredStore, _ := openResultIngressStoreWithClock(t.TempDir(), func() time.Time { return clock })
+	opened, _, _ := effectTestProvision(t, expiredStore)
+	expiredStore.clock = func() time.Time { return time.Date(2099, 8, 29, 0, 0, 0, 0, time.UTC) }
+	pending, _ := expiredStore.PendingEffects()
+	if len(pending) != 1 {
+		t.Fatalf("pending=%#v opened=%#v", pending, opened)
+	}
+	expiredUse := EffectUseRequest{Binding: pending[0].Binding, EffectID: pending[0].Intent.EffectId, IntentFactDigest: pending[0].IntentFactDigest, IntentDeadline: pending[0].Intent.Deadline}
+	if _, err := expiredStore.RecoverPendingEffect(context.Background(), effectVerifier(pending[0].Binding), expiredUse, effectOperator(EffectInspectionNotApplied, authority.DispositionApplied, &calls, &calls)); !errors.Is(err, ErrEffectAuthorityExpired) {
+		t.Fatalf("deadline err=%v", err)
+	}
+}
+
+func TestTerminateEffectRequiresAcceptedReceiptBeforeTerminalTransition(t *testing.T) {
+	store, _ := OpenResultIngressStore(t.TempDir())
+	started := openStartedAttempt(t, store)
+	barrier := appendTestBarrier(t, store, started, "terminal-effect", TerminalAttemptFailed).State
+	run := attemptTestRunAuthority(started.Identity)
+	cleanup := CleanupAuthorizationRequest{Identity: started.Identity, CurrentRunAuthority: run, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest, Operation: CleanupReconcile}
+	terminalResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, barrier.Revision, barrier.HeadDigest, cleanup, AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ProcessTerminalKind: ProcessTerminated, ObservationDigest: attemptTestDigest("terminal")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	terminal := terminalResult.State
-	binding := EffectBinding{
-		Identity: current.Identity, CurrentRunAuthority: cleanup.CurrentRunAuthority,
-		AdmissionAttemptRevision: terminal.Revision, AdmissionAuthorityDigest: terminal.HeadDigest,
-		Phase: EffectPhaseAllocationTerminate, MarkerDigest: provisionRequest.Binding.MarkerDigest,
-		TerminalizationID: terminal.TerminalizationID, TerminalGeneration: terminal.TerminalGeneration,
-		CleanupBindingDigest: terminal.CleanupBindingDigest, ProcessTerminalFactDigest: terminal.ProcessTerminalDigest,
-	}
-	terminateRequest := EffectIntentRequest{Binding: binding, Intent: effectTestIntent(binding, "terminate-effect", "terminate-command", "terminate-key", attemptTestDigest("terminate-request"))}
-	wrongMarker := terminateRequest
-	wrongMarker.Binding.MarkerDigest = attemptTestDigest("unknown-marker")
-	if _, err := store.CompareAndAppendEffectIntent(context.Background(), attemptRunVerifier{want: binding.CurrentRunAuthority}, wrongMarker); !errors.Is(err, ErrEffectAuthorityConflict) {
-		t.Fatalf("unknown marker terminate err=%v", err)
-	}
-	terminateIntent, err := store.CompareAndAppendEffectIntent(context.Background(), attemptRunVerifier{want: binding.CurrentRunAuthority}, terminateRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	terminateUse := effectUse(terminateIntent)
-	terminateReceipt, err := store.ExecutePendingEffect(context.Background(), attemptRunVerifier{want: binding.CurrentRunAuthority}, terminateUse, func(state EffectAuthorityState) (authority.SideEffectReceipt, error) {
-		return effectTestReceipt(state, authority.DispositionApplied), nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	terminateReconcile, err := store.ReconcilePendingEffect(context.Background(), attemptRunVerifier{want: binding.CurrentRunAuthority}, terminateUse, func(state EffectAuthorityState) (authority.ReconcileRecord, error) {
-		return effectTestReconcile(state, authority.ObservationApplied, authority.DecisionAccept), nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	current, _, _ = store.AttemptState(current.Identity)
 	cleanup.Operation = CleanupTerminate
-	wrongReceipt := AttemptTransition{Kind: AttemptTransitionAllocationTerminated, Identity: current.Identity, TerminalizationID: current.TerminalizationID, ReceiptDigest: provisionReceipt.State.ReceiptRecordDigest}
-	if _, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: cleanup.CurrentRunAuthority}, current.Revision, current.HeadDigest, cleanup, wrongReceipt); !errors.Is(err, ErrAttemptAuthorityOrder) {
-		t.Fatalf("wrong terminate receipt err=%v", err)
+	direct := AttemptTransition{Kind: AttemptTransitionAllocationTerminated, Identity: started.Identity, TerminalizationID: terminal.TerminalizationID, ReceiptDigest: attemptTestDigest("forged")}
+	if _, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, terminal.Revision, terminal.HeadDigest, cleanup, direct); !errors.Is(err, ErrCleanupUnauthorized) && !errors.Is(err, ErrAttemptAuthorityOrder) {
+		t.Fatalf("direct terminal err=%v", err)
 	}
-	correct := AttemptTransition{Kind: AttemptTransitionAllocationTerminated, Identity: current.Identity, TerminalizationID: current.TerminalizationID, ReceiptDigest: terminateReceipt.State.ReceiptRecordDigest}
-	allocation, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: cleanup.CurrentRunAuthority}, current.Revision, current.HeadDigest, cleanup, correct)
-	if err != nil || !allocation.Appended || current.AllocationTerminateEffectDigest != terminateReconcile.FactDigest {
-		t.Fatalf("allocation=%#v current=%#v err=%v", allocation, current, err)
+	current, receiptDigest := appendTestAcceptedTerminate(t, store, terminal)
+	direct.ReceiptDigest = receiptDigest
+	if _, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, current.Revision, current.HeadDigest, cleanup, direct); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestNonAcceptedReconcileEntersInterventionAndBlocksLifecycle(t *testing.T) {
+func TestLegacyAdmissionAndEffectForgeryFailClosed(t *testing.T) {
 	store, _ := OpenResultIngressStore(t.TempDir())
+	if err := store.RecordAdmitted("legacy", attemptTestDigest("drc"), validEnvelope(attemptTestDigest("result"), 1), attemptTestDigest("fact"), 1); !errors.Is(err, ErrLegacyAdmissionMutationDisabled) {
+		t.Fatalf("legacy admission err=%v", err)
+	}
 	opened, request, intent := effectTestProvision(t, store)
-	use := effectUse(intent)
-	if _, err := store.ExecutePendingEffect(context.Background(), attemptRunVerifier{want: request.Binding.CurrentRunAuthority}, use, func(state EffectAuthorityState) (authority.SideEffectReceipt, error) {
-		return effectTestReceipt(state, authority.DispositionConflict), nil
-	}); err != nil {
-		t.Fatal(err)
+	aba := request
+	aba.Binding.AdmissionAttemptRevision++
+	if _, err := store.CompareAndAppendEffectIntent(context.Background(), effectVerifier(aba.Binding), aba); !errors.Is(err, ErrEffectAuthorityConflict) {
+		t.Fatalf("ABA intent err=%v", err)
 	}
-	reconciled, err := store.ReconcilePendingEffect(context.Background(), attemptRunVerifier{want: request.Binding.CurrentRunAuthority}, use, func(state EffectAuthorityState) (authority.ReconcileRecord, error) {
-		return effectTestReconcile(state, authority.ObservationConflict, authority.DecisionBlock), nil
-	})
-	if err != nil {
-		t.Fatal(err)
+	wrong := effectUse(intent)
+	wrong.IntentFactDigest = attemptTestDigest("forged")
+	calls := 0
+	if _, err := store.RecoverPendingEffect(context.Background(), effectVerifier(request.Binding), wrong, effectOperator(EffectInspectionNotApplied, authority.DispositionApplied, &calls, &calls)); !errors.Is(err, ErrEffectAuthorityConflict) || calls != 0 {
+		t.Fatalf("forged use err=%v calls=%d", err, calls)
 	}
-	current, _, _ := store.AttemptState(opened.Identity)
-	if current.EffectInterventionDigest != reconciled.FactDigest || current.PendingEffectIntentFactDigest != "" {
-		t.Fatalf("intervention state=%#v", current)
+	unknown := effectUse(intent)
+	unknown.EffectID = "unknown"
+	if _, err := store.RecoverPendingEffect(context.Background(), effectVerifier(request.Binding), unknown, effectOperator(EffectInspectionNotApplied, authority.DispositionApplied, &calls, &calls)); !errors.Is(err, ErrEffectAuthorityUnknown) || calls != 0 {
+		t.Fatalf("unknown use err=%v calls=%d", err, calls)
 	}
-	if _, err := appendAuthorizedAttempt(store, current.Revision, current.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: opened.Identity, LaunchAuthorizationID: "unsafe-launch"}); !errors.Is(err, ErrAttemptAuthorityOrder) {
-		t.Fatalf("intervention allowed launch: %v", err)
+	state, _, _ := store.AttemptState(opened.Identity)
+	if state.PendingEffectIntentFactDigest == "" {
+		t.Fatal("forgery changed pending barrier")
 	}
 }
 
