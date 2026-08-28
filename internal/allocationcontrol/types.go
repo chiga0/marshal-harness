@@ -279,9 +279,7 @@ func (prepared AllocationStagingPreparedV1) Validate(intent AllocationProvisionI
 }
 
 func (prepared AllocationStagingPreparedV1) digest() (string, error) {
-	unsigned := prepared
-	unsigned.PreparedDigest = ""
-	return digestValue(unsigned)
+	return digestValueWithoutField(prepared, "preparedDigest")
 }
 
 func (prepared *AllocationStagingPreparedV1) Seal() error {
@@ -327,9 +325,7 @@ func (receipt AllocationProvisionReceiptV1) Validate(intent AllocationProvisionI
 }
 
 func (receipt AllocationProvisionReceiptV1) digest() (string, error) {
-	unsigned := receipt
-	unsigned.ReceiptDigest = ""
-	return digestValue(unsigned)
+	return digestValueWithoutField(receipt, "receiptDigest")
 }
 
 func (receipt *AllocationProvisionReceiptV1) Seal() error {
@@ -507,9 +503,7 @@ func (receipt AllocationTerminateReceiptV1) Validate(intent AllocationTerminateI
 }
 
 func (receipt AllocationTerminateReceiptV1) digest() (string, error) {
-	unsigned := receipt
-	unsigned.ReceiptDigest = ""
-	return digestValue(unsigned)
+	return digestValueWithoutField(receipt, "receiptDigest")
 }
 
 func (receipt *AllocationTerminateReceiptV1) Seal() error {

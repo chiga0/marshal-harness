@@ -367,6 +367,92 @@ func TestDetachedRequestAndRecordDigestGoldens(t *testing.T) {
 	if record.RecordDigest != recordGolden {
 		t.Fatal("JournalRecord digest is not the JCS object with recordDigest absent")
 	}
+
+	marker := provision.Marker()
+	markerBytes, err := marker.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagingIdentity := ObjectIdentityV1{Device: "1", Inode: "2", Mode: 0o40700, UID: 501, GID: 20, Size: 64, Nlink: 2, Type: ObjectTypeDirectory}
+	markerIdentity := ObjectIdentityV1{Device: "1", Inode: "3", Mode: 0o100600, UID: 501, GID: 20, Size: int64(len(markerBytes)), Nlink: 1, Type: ObjectTypeRegular}
+	prepared := AllocationStagingPreparedV1{
+		SchemaVersion: PreparedSchema, ProtocolRevision: ProtocolRevision, Binding: binding,
+		IntentFactDigest: testDigest("provision-intent-fact"), RequestDigest: provision.RequestDigest,
+		StagingRelativeName: staging, LiveRelativeName: live, MarkerRelativeName: markerName,
+		StagingIdentity: stagingIdentity, MarkerIdentity: markerIdentity, Marker: marker,
+		MarkerDigest: canonical.DigestBytes(markerBytes),
+	}
+	if err := prepared.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	const preparedGolden = "sha256:7f8e3a2fb749b5815dd219039b84761c76047427306af62461007282d6137ffd"
+	if prepared.PreparedDigest != preparedGolden {
+		t.Fatal("AllocationStagingPreparedV1 digest is not the JCS object with preparedDigest absent")
+	}
+	preparedWithEmptyField := prepared
+	preparedWithEmptyField.PreparedDigest = ""
+	preparedEmptyDigest, err := digestValue(preparedWithEmptyField)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const preparedEmptyGolden = "sha256:0de6bd7376cac412823151514b1daad402af2acc79276a4e168cee2bb68e2825"
+	if preparedEmptyDigest != preparedEmptyGolden || preparedEmptyDigest == prepared.PreparedDigest {
+		t.Fatal("preparedDigest empty-field encoding was treated as field absence")
+	}
+
+	provisionReceipt := AllocationProvisionReceiptV1{
+		SchemaVersion: ProvisionReceiptSchema, ProtocolRevision: ProtocolRevision, Binding: binding,
+		IntentFactDigest: prepared.IntentFactDigest, PreparedFactDigest: testDigest("prepared-fact"),
+		RequestDigest: provision.RequestDigest, LiveRelativeName: live, LiveIdentity: stagingIdentity,
+		MarkerRelativeName: markerName, MarkerIdentity: markerIdentity, Marker: marker,
+		MarkerDigest: canonical.DigestBytes(markerBytes), Disposition: DispositionApplied,
+	}
+	if err := provisionReceipt.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	const provisionReceiptGolden = "sha256:7f60e784ad7f0cbd928bf418d61519f7a0a1b1444d2d2fdc3b8f1a5c9613b2ea"
+	if provisionReceipt.ReceiptDigest != provisionReceiptGolden {
+		t.Fatal("AllocationProvisionReceiptV1 digest is not the JCS object with receiptDigest absent")
+	}
+	provisionReceiptWithEmptyField := provisionReceipt
+	provisionReceiptWithEmptyField.ReceiptDigest = ""
+	provisionReceiptEmptyDigest, err := digestValue(provisionReceiptWithEmptyField)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const provisionReceiptEmptyGolden = "sha256:f30e2b5d4c5a72a17774960742101fcbe6ebf5d00c7ae1369bd2cc0d937e67fe"
+	if provisionReceiptEmptyDigest != provisionReceiptEmptyGolden || provisionReceiptEmptyDigest == provisionReceipt.ReceiptDigest {
+		t.Fatal("provision receipt empty-field encoding was treated as field absence")
+	}
+
+	terminateReceipt := AllocationTerminateReceiptV1{
+		SchemaVersion: TerminateReceiptSchema, ProtocolRevision: ProtocolRevision, Binding: terminateBinding,
+		TerminalizationID: request.TerminalizationID, CleanupBindingDigest: request.CleanupBindingDigest,
+		ProcessTerminalFactDigest: request.ProcessTerminalFactDigest, OrchestratorID: request.OrchestratorID,
+		ExpectedAttemptSequence: request.ExpectedAttemptSequence, AttemptAuthorityFactDigest: request.AttemptAuthorityFactDigest,
+		IntentFactDigest: testDigest("terminate-intent-fact"), RequestDigest: request.RequestDigest,
+		LiveRelativeName: live, TombstoneRelativeName: tombstone, TombstoneIdentity: stagingIdentity,
+		MarkerRelativeName: markerName, MarkerIdentity: markerIdentity, Marker: marker,
+		MarkerDigest: canonical.DigestBytes(markerBytes), LiveAbsent: true, TombstonePresent: true,
+		Disposition: DispositionApplied,
+	}
+	if err := terminateReceipt.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	const terminateReceiptGolden = "sha256:e979ceee97a62696d38a2f21b9388d2c1fa9c9d073be98608730cd1219f2d0bb"
+	if terminateReceipt.ReceiptDigest != terminateReceiptGolden {
+		t.Fatal("AllocationTerminateReceiptV1 digest is not the JCS object with receiptDigest absent")
+	}
+	terminateReceiptWithEmptyField := terminateReceipt
+	terminateReceiptWithEmptyField.ReceiptDigest = ""
+	terminateReceiptEmptyDigest, err := digestValue(terminateReceiptWithEmptyField)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const terminateReceiptEmptyGolden = "sha256:f0f4ac572d1323179d0fa3f555efc4b19f7819e7c3442aa4f6c0653a2409d65d"
+	if terminateReceiptEmptyDigest != terminateReceiptEmptyGolden || terminateReceiptEmptyDigest == terminateReceipt.ReceiptDigest {
+		t.Fatal("terminate receipt empty-field encoding was treated as field absence")
+	}
 }
 
 func TestTerminateRequestDigestExcludesObservationButIntentBindsIt(t *testing.T) {
