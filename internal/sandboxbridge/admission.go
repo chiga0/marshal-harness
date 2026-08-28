@@ -104,6 +104,18 @@ func (s bridgeAuthoritySource) AgentRegistrationActive(registrationID string) (b
 	return s.authority.AgentRegistrationActive(registrationID)
 }
 
+// ResultIngressDir 给 resultbinding 提供 ResultIngress 耐久 replay 账本目录：
+// 若 durable authority 实现了 ResultIngressDir()（EmbeddedSandboxRuntime 提供
+// stateRoot/resultingress），直接返回其值；否则（测试 fake）返回空字符串，
+// admission 回退进程内存 ingress 保持向后兼容。
+func (s bridgeAuthoritySource) ResultIngressDir() string {
+	type ingressDirer interface{ ResultIngressDir() string }
+	if d, ok := s.authority.(ingressDirer); ok {
+		return d.ResultIngressDir()
+	}
+	return ""
+}
+
 func attemptDirFor(view workerRequestView, plan LaunchPlan) string {
 	if plan != nil && plan.ControlRootPath() != "" {
 		return filepath.Dir(filepath.Clean(plan.ControlRootPath()))

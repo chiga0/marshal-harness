@@ -585,6 +585,14 @@ func (rt *EmbeddedSandboxRuntime) Registration() provider.ProviderRegistration {
 	return rt.registration
 }
 
+// ResultIngressDir 返回 ResultIngress replay/quarantine/idempotency 耐久
+// append-only 账本目录（R2 纵切），位于本 runtime 的 stateRoot。生产 admission
+// 在此打开 durable store 并执行跨进程 replay 检测（bridgeAuthoritySource 经
+// type-assert 读取）。
+func (rt *EmbeddedSandboxRuntime) ResultIngressDir() string {
+	return filepath.Join(rt.stateRoot, "resultingress")
+}
+
 // CapabilitySnapshot returns the captured capability snapshot of the Local
 // provider.
 func (rt *EmbeddedSandboxRuntime) CapabilitySnapshot() provider.ProviderCapabilitySnapshot {

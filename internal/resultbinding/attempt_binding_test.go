@@ -109,6 +109,7 @@ type fakeAuthoritySource struct {
 	active       bool
 	getErr       error
 	agentActive  bool
+	ingressDir   string
 }
 
 func (f fakeAuthoritySource) ProviderRegistration() (provider.ProviderRegistration, error) {
@@ -128,6 +129,8 @@ func (f fakeAuthoritySource) AgentRegistrationActive(string) (bool, error) {
 	}
 	return f.agentActive, nil
 }
+
+func (f fakeAuthoritySource) ResultIngressDir() string { return f.ingressDir }
 
 func TestAdmitWithDurableAuthorityRejectsRevokedRegistration(t *testing.T) {
 	dir := t.TempDir()
@@ -336,6 +339,7 @@ func (s *stubAuthority) ProviderRegistrationActive(string) (bool, error) {
 	return s.providerActive, nil
 }
 func (s *stubAuthority) AgentRegistrationActive(string) (bool, error) { return s.agentActive, nil }
+func (s *stubAuthority) ResultIngressDir() string                     { return "" }
 
 // TestAdmitWithDurableAuthorityRejectsSandboxRegistrationMismatch 锁定 P1-2
 // 的 current-ledger binding 机械断言：AttemptBinding 冻结的
@@ -368,3 +372,62 @@ func TestAdmitWithDurableAuthorityRejectsSandboxRegistrationMismatch(t *testing.
 }
 
 func contains(s, sub string) bool { return indexOf(s, sub) >= 0 }
+
+// TestAdmitWithDurableAuthorityDurableIngressDetectsCrossProcessReplay 锁定
+// R2 纵切的 durable ingress 生产接线：authority 提供 ResultIngressDir 时，
+// admission 用耐久 replay 账本。首次接纳落账（IdempotentReplay=false）；同
+// binding + 同 worker-result bytes 的二次送达跨调用被理赔为
+// IdempotentReplay=true（admission 再次构造的 durable ingress 从账本重放
+// 重复有效负载）。对比内存路径（ingressDir 为空）在同样重复送达下返回 false。
+func TestAdmitWithDurableAuthorityDurableIngressDetectsCrossProcessReplay(t *testing.T) {
+	facts := testBindingFacts()
+	result := []byte(`{"kind":"WorkerResult","status":"completed"}`)
+	auth := fakeAuthoritySource{
+		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
+		active:       true,
+		agentActive:  true,
+		ingressDir:   t.TempDir(),
+	}
+	first, err := AdmitWithDurableAuthority(context.Background(), bindingFor(t, facts), result, auth, sandbox.AllocationActive)
+	if err != nil || !first.Accepted {
+		t.Fatalf("first admit must succeed, err=%v", err)
+	}
+	if first.IdempotentReplay {
+		t.Fatal("first admit must not be flagged as replay")
+	}
+	second, err := AdmitWithDurableAuthority(context.Background(), bindingFor(t, facts), result, auth, sandbox.AllocationActive)
+	if err != nil {
+		t.Fatalf("idempotent replay must not be an error: %v", err)
+	}
+	if !second.Accepted {
+		t.Fatalf("idempotent replay must be accepted: %+v", second)
+	}
+	if !second.IdempotentReplay {
+		t.Fatalf("duplicate delivery across durable store must be flagged IdempotentReplay, got %+v", second)
+	}
+	// 对比：内存路径（ingressDir 空）不可区分真实 replay，两次仍各返回 false。
+	memAuth := fakeAuthoritySource{
+		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
+		active:       true,
+		agentActive:  true,
+	}
+	m1, _ := AdmitWithDurableAuthority(context.Background(), bindingFor(t, facts), result, memAuth, sandbox.AllocationActive)
+	m2, _ := AdmitWithDurableAuthority(context.Background(), bindingFor(t, facts), result, memAuth, sandbox.AllocationActive)
+	if m1.IdempotentReplay || m2.IdempotentReplay {
+		t.Fatal("in-memory path must not flag cross-process replay (no durable state)")
+	}
+}
+
+// bindingFor 构造当前目录内冻结的 AttemptBinding（ReadAttemptBinding 回放）。
+func bindingFor(t *testing.T, facts Facts) *AttemptBinding {
+	t.Helper()
+	dir := t.TempDir()
+	if err := WriteAttemptBinding(dir, facts); err != nil {
+		t.Fatal(err)
+	}
+	b, err := ReadAttemptBinding(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}

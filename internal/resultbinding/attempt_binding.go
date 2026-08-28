@@ -149,6 +149,12 @@ type DurableAuthoritySource interface {
 	// authority 中仍为 active（R2/R3 纠偏：agent 侧 current-ledger recheck，
 	// 替代 seedRegistry 总是构造 active registration 的临时自洽验证）。
 	AgentRegistrationActive(registrationID string) (bool, error)
+	// ResultIngressDir 返回 ResultIngress replay/quarantine/idempotency 的
+	// 耐久 append-only 账本目录（R2 纵切）。生产（embedded runtime）必须提供：
+	// admission 在该目录打开 durable store、用 NewDurableIngress 执行跨进程
+	// replay 检测。返回空字符串时 admission 退化为进程内存 ingress（仅测试
+	// 或轻量场景）。
+	ResultIngressDir() string
 }
 
 // AdmitWithDurableAuthority 从 immutable AttemptBinding（dispatch 时冻结）
@@ -239,12 +245,14 @@ func AdmitWithDurableAuthority(ctx context.Context, binding *AttemptBinding, res
 	if err != nil {
 		return nil, err
 	}
-	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger)
+	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger, authority.ResultIngressDir())
 }
 
 // admitWithRegistryLedger 是共享的 admission 核心逻辑（seed 与 durable
-// 路径共用 bindingcheck/attemptgate/resultingress 验证）。
-func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byte, registry *agentregistry.Registry, ledger *bindingcheck.SandboxLedger) (*Admission, error) {
+// 路径共用 bindingcheck/attemptgate/resultingress 验证）。ingressDir 为空
+// 时 admission 使用进程内存 ingress（测试/seed）；非空时打开耐久 replay
+// 账本（跨进程/重复送达 replay 检测，R2 纵切）。
+func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byte, registry *agentregistry.Registry, ledger *bindingcheck.SandboxLedger, ingressDir string) (*Admission, error) {
 	if err := facts.validate(); err != nil {
 		return nil, err
 	}
@@ -315,9 +323,24 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 		SnapshotDigest: facts.CapabilityDigest,
 		EvidenceDigest: facts.CapabilityDigest,
 	}
-	ingress, err := resultingress.NewIngress(ledgerBinding)
-	if err != nil {
-		return nil, fmt.Errorf("resultbinding: construct ingress: %w", err)
+	// R2 纵切：ingressDir 非空时 admission 用耐久 replay 账本 +
+	// NewDurableIngress（跨进程/重复送达 replay 检测）；为空（测试/seed）时
+	// 回退进程内存 ingress，保持既有行为不变。
+	var ingress *resultingress.Ingress
+	if ingressDir != "" {
+		store, storeErr := resultingress.OpenResultIngressStore(ingressDir)
+		if storeErr != nil {
+			return nil, fmt.Errorf("resultbinding: open durable result ingress store (fail closed): %v", storeErr)
+		}
+		ingress, err = resultingress.NewDurableIngress(ledgerBinding, store)
+		if err != nil {
+			return nil, fmt.Errorf("resultbinding: construct durable ingress: %w", err)
+		}
+	} else {
+		ingress, err = resultingress.NewIngress(ledgerBinding)
+		if err != nil {
+			return nil, fmt.Errorf("resultbinding: construct ingress: %w", err)
+		}
 	}
 	drc := resultingress.DRC{
 		AuthorityNamespaceID: AuthorityNamespaceID,
@@ -354,5 +377,6 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 	admission.DrcDigest = drcDigest
 	admission.EnvelopeDigest = requestDigest
 	admission.AdmissionFact = fact.FactDigest
+	admission.IdempotentReplay = fact.IdempotentReplay
 	return admission, nil
 }

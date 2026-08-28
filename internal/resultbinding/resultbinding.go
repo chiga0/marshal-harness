@@ -222,20 +222,26 @@ func seedSandboxLedger(facts Facts) (*bindingcheck.SandboxLedger, error) {
 // Admission 是一次双 binding + ResultIngress 接纳的全部锚点（仅审计面，
 // 控制权只在 Admission.Accepted）。
 type Admission struct {
-	Accepted        bool     `json:"accepted"`
-	AttemptID       string   `json:"attemptId"`
-	ProfileDigest   string   `json:"profileDigest,omitempty"`
-	RegistrationID  string   `json:"agentRegistrationId,omitempty"`
-	DrcDigest       string   `json:"drcDigest,omitempty"`
-	EnvelopeDigest  string   `json:"envelopeDigest,omitempty"`
-	AdmissionFact   string   `json:"admissionFactDigest,omitempty"`
-	AdmissionReason string   `json:"admissionReason,omitempty"`
-	AgentOK         bool     `json:"agentSideOk"`
-	SandboxOK       bool     `json:"sandboxSideOk"`
-	AgentReasons    []string `json:"agentSideReasons,omitempty"`
-	SandboxReasons  []string `json:"sandboxSideReasons,omitempty"`
-	EvidenceOK      bool     `json:"evidenceOk"`
-	EvidenceReason  string   `json:"evidenceReason,omitempty"`
+	Accepted       bool   `json:"accepted"`
+	AttemptID      string `json:"attemptId"`
+	ProfileDigest  string `json:"profileDigest,omitempty"`
+	RegistrationID string `json:"agentRegistrationId,omitempty"`
+	DrcDigest      string `json:"drcDigest,omitempty"`
+	EnvelopeDigest string `json:"envelopeDigest,omitempty"`
+	AdmissionFact  string `json:"admissionFactDigest,omitempty"`
+	// IdempotentReplay 表示 ResultIngress 的 durable replay 侦测把本次送达判定
+	// 为幂等重放（同 idempotencyKey + 同 delivery digest 已落账）——权威不计重复
+	// 效果。内存 ingress 路径为 false（每次新建空 ingress，不区分真实 replay）；
+	// 耐久 ingress（authority 提供 ResultIngressDir）跨进程/重复送达能真实设置为
+	// true（R2 纵切）。
+	IdempotentReplay bool     `json:"idempotentReplay,omitempty"`
+	AdmissionReason  string   `json:"admissionReason,omitempty"`
+	AgentOK          bool     `json:"agentSideOk"`
+	SandboxOK        bool     `json:"sandboxSideOk"`
+	AgentReasons     []string `json:"agentSideReasons,omitempty"`
+	SandboxReasons   []string `json:"sandboxSideReasons,omitempty"`
+	EvidenceOK       bool     `json:"evidenceOk"`
+	EvidenceReason   string   `json:"evidenceReason,omitempty"`
 }
 
 // AdmitWorkerResult 对一个 attempt 的真实 WorkerResult bytes 执行双
@@ -259,7 +265,8 @@ func AdmitWorkerResult(ctx context.Context, facts Facts, resultBytes []byte) (*A
 	if err != nil {
 		return nil, err
 	}
-	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger)
+	// seed 路径使用进程内存 ingress（ingressDir 为空）。
+	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger, "")
 }
 
 func newAgentBinding(facts Facts) (runtimeprofile.AgentBinding, error) {
