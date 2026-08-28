@@ -3,41 +3,34 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/chiga0/marshal-harness/internal/buildinfo"
-	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 )
 
 // TestRealPiStrictE2E 是严格的端到端测试：plan→approve→run→WorkerResult→
-// ResultIngress→verify→terminal Outcome→server restart→query/restore。
+// ResultIngress→verify→ReviewPacket，并由每条固定 bin/marshal 子进程重开
+// durable state，证明真实 Darwin local-dogfood identity gate 与跨进程恢复。
 //
-// 与 canary 的关键区别：
+// 与基础 canary 的关键区别：
+// - 只接受固定 MARSHAL_E2E_BINARY，不调用 package 内 Run，也不 bypass self gate
 // - worker.failed 直接 t.Fatal（不允许"失败也算通过"）
-// - 必须走完整 verify → review → terminal outcome 路径
-// - 验证 server restart 后 run state 可恢复
+// - verify 必须 pass，并生成绑定当前 Evidence 的 ReviewPacket
+// - 缺少外部独立 ReviewDecision 时 fail-closed skip，不伪造 reviewer/terminal Outcome
 //
 // 启用方式（默认跳过）：
 //
-//	MARSHAL_RUN_PI_CANARY=1 MARSHAL_PI_PATH=<pi cli 真实路径> \
-//	  go test ./internal/cli/ -run TestRealPiStrictE2E -count=1 -v
+//	MARSHAL_RUN_PI_CANARY=1 MARSHAL_E2E_BINARY=<固定 bin/marshal> \
+//	MARSHAL_PI_PATH=<pi cli 真实路径> MARSHAL_E2E_PI_VERSION=<固定版本> \
+//	MARSHAL_E2E_PI_MODEL=<固定 provider/model> \
+//	  <固定 cli test binary> -test.run TestRealPiStrictE2E -test.count=1 -test.v
 func TestRealPiStrictE2E(t *testing.T) {
-	// 子进程分支：仅做跨进程 restore 查询，绝不再跑 pi worker。由父测试以
-	// STRICT_E2E_QUERY_STATE=1 重新 spawn 本测试触发。
-	if os.Getenv("STRICT_E2E_QUERY_STATE") == "1" {
-		strictE2EQueryStateHelper(
-			os.Getenv("STRICT_E2E_STATE_ROOT"),
-			os.Getenv("STRICT_E2E_REPO_DIR"),
-			os.Getenv("STRICT_E2E_RUN_ID"),
-		)
-		return
-	}
 	if os.Getenv("MARSHAL_RUN_PI_CANARY") == "" {
 		t.Skip("set MARSHAL_RUN_PI_CANARY=1 to enable the strict E2E test")
 	}
@@ -55,12 +48,32 @@ func TestRealPiStrictE2E(t *testing.T) {
 	if _, err := os.Stat(piPath); err != nil {
 		t.Skipf("pi executable unavailable: %v", err)
 	}
-
-	restore := localDogfoodGateTestBypass
-	localDogfoodGateTestBypass = func(buildinfo.Info) bool { return true }
-	t.Cleanup(func() { localDogfoodGateTestBypass = restore })
+	piModel := strings.TrimSpace(os.Getenv("MARSHAL_E2E_PI_MODEL"))
+	if piModel == "" {
+		t.Skip("MARSHAL_E2E_PI_MODEL must freeze the exact provider/model")
+	}
+	piVersion := strings.TrimSpace(os.Getenv("MARSHAL_E2E_PI_VERSION"))
+	if piVersion == "" {
+		t.Skip("MARSHAL_E2E_PI_VERSION must freeze the exact Pi identity")
+	}
+	marshalPath := strings.TrimSpace(os.Getenv("MARSHAL_E2E_BINARY"))
+	if !filepath.IsAbs(marshalPath) || filepath.Clean(marshalPath) != marshalPath {
+		t.Skip("MARSHAL_E2E_BINARY must be an absolute clean path")
+	}
+	resolvedMarshal, err := filepath.EvalSymlinks(marshalPath)
+	if err != nil || resolvedMarshal != marshalPath {
+		t.Skip("MARSHAL_E2E_BINARY must name a fixed non-symlink object")
+	}
+	marshalInfo, err := os.Stat(marshalPath)
+	if err != nil || !marshalInfo.Mode().IsRegular() || marshalInfo.Mode().Perm()&0o111 == 0 {
+		t.Skip("MARSHAL_E2E_BINARY must be an executable regular file")
+	}
 
 	repositoryRoot := t.TempDir()
+	repositoryRoot, err = filepath.EvalSymlinks(repositoryRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runGit(t, repositoryRoot, "init", "-q", "-b", "main")
 	runGit(t, repositoryRoot, "config", "user.email", "marshal@example.invalid")
 	runGit(t, repositoryRoot, "config", "user.name", "Marshal Test")
@@ -71,14 +84,57 @@ func TestRealPiStrictE2E(t *testing.T) {
 	runGit(t, repositoryRoot, "commit", "-q", "-m", "fixture")
 	runGit(t, repositoryRoot, "remote", "add", "origin", "git@example.invalid:strict-e2e/repo.git")
 
-	if err := os.Chdir(repositoryRoot); err != nil {
+	bootstrap := strictE2ERunner{binary: marshalPath, directory: repositoryRoot,
+		environment: strictE2EEnvironment(map[string]string{"MARSHAL_LOCAL_DOGFOOD_ACTIVATION": ""})}
+	versionJSON := bootstrap.mustRun(t, "version", "--json")
+	var version struct {
+		Commit      string `json:"commit"`
+		SelfProfile string `json:"selfProfile"`
+	}
+	if err := json.Unmarshal([]byte(versionJSON), &version); err != nil || version.SelfProfile != "darwin-local-dogfood" ||
+		len(version.Commit) != 40 || strings.Trim(version.Commit, "0123456789abcdef") != "" {
+		t.Fatalf("MARSHAL_E2E_BINARY lacks exact local-dogfood build identity: output=%s err=%v", versionJSON, err)
+	}
+	activationPath := filepath.Join(t.TempDir(), "local-dogfood-activation.json")
+	activation := bootstrap.mustRun(t, "doctor", "--self", "--repository-root", repositoryRoot,
+		"--activation-id", "strict-e2e", "--valid-for", "2h")
+	if err := os.WriteFile(activationPath, []byte(activation), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	originalDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
+	runner := strictE2ERunner{binary: marshalPath, directory: repositoryRoot, environment: strictE2EEnvironment(map[string]string{
+		"MARSHAL_LOCAL_DOGFOOD_ACTIVATION": activationPath,
+		"MARSHAL_EMBEDDED_SANDBOX":         "1",
+		"MARSHAL_PI_PATH":                  piPath,
+		"MARSHAL_OPENCODE_PATH":            "",
+		"MARSHAL_QWEN_PATH":                "",
+		"MARSHAL_QODER_PATH":               "",
+		"MARSHAL_CODEX_PATH":               "",
+	})}
+	doctorJSON := runner.mustRun(t, "doctor", "--json")
+	var doctor struct {
+		Status                   string         `json:"status"`
+		PolicyEnvironmentBinding map[string]any `json:"policyEnvironmentBinding"`
+		Workers                  []struct {
+			AdapterID     string `json:"adapterId"`
+			Outcome       string `json:"outcome"`
+			Compatibility string `json:"compatibility"`
+			BinaryVersion string `json:"binaryVersion"`
+			AuthorityMode string `json:"authorityMode"`
+		} `json:"workers"`
 	}
-	t.Cleanup(func() { _ = os.Chdir(originalDir) })
+	if err := json.Unmarshal([]byte(doctorJSON), &doctor); err != nil || doctor.Status != "ok" || doctor.PolicyEnvironmentBinding == nil {
+		t.Fatalf("fixed marshal doctor did not produce local binding: output=%s err=%v", doctorJSON, err)
+	}
+	piReady := false
+	for _, worker := range doctor.Workers {
+		if worker.AdapterID == "pi" && worker.Outcome == "registered" && worker.Compatibility == "supported" &&
+			worker.BinaryVersion == piVersion && worker.AuthorityMode == "ordinary-user" {
+			piReady = true
+		}
+	}
+	if !piReady {
+		t.Fatalf("fixed marshal doctor did not admit exact Pi %s ordinary-user profile: %s", piVersion, doctorJSON)
+	}
 
 	const marker = "marshal-strict-e2e-2026-08-27"
 	specPath := filepath.Join(t.TempDir(), "strict-e2e-task.json")
@@ -105,7 +161,7 @@ func TestRealPiStrictE2E(t *testing.T) {
 		}}},
 		"budgets":      map[string]any{"attemptTimeoutSeconds": 900, "runTimeoutSeconds": 1800, "maxAttempts": 2, "maxOperationalRetries": 0, "maxReworkRounds": 1, "maxOutputBytes": 8388608},
 		"deliverables": []map[string]any{{"id": "marker", "kind": "documentation", "pathGlob": markerRel, "minimumCount": 1, "required": true}},
-		"worker":       map[string]any{"preferredAdapter": "pi", "fallbackAdapters": []string{}, "sessionPolicy": "ephemeral", "executionProfile": "workspace-write"},
+		"worker":       map[string]any{"preferredAdapter": "pi", "fallbackAdapters": []string{}, "model": piModel, "sessionPolicy": "ephemeral", "executionProfile": "workspace-write"},
 		"publication":  map[string]any{"required": false, "provider": "none", "mode": "none", "remote": "origin", "baseBranch": "main", "mergePolicy": "never", "requiredChecks": []string{}},
 	}
 	specBytes, err := json.Marshal(spec)
@@ -116,40 +172,25 @@ func TestRealPiStrictE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mustRun := func(args ...string) string {
-		t.Helper()
-		stdout, stderr := bytes.Buffer{}, bytes.Buffer{}
-		exit := Run(args, strings.NewReader(""), &stdout, &stderr)
-		if exit != ExitOK {
-			t.Fatalf("%v failed: exit=%d stderr=%s", args, exit, stderr.String())
-		}
-		return stdout.String()
-	}
-
 	runID := "run-strict-e2e"
-	mustRun("init")
-	scaffoldStdout := mustRun("task", "scaffold", "--draft", specPath, "--preferred-adapter", "pi")
-	taskPath := filepath.Join(repositoryRoot, ".marshal", "runs", runID, "task-spec.json")
-	if err := os.MkdirAll(filepath.Dir(taskPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	runner.mustRun(t, "init")
+	scaffoldStdout := runner.mustRun(t, "task", "scaffold", "--draft", specPath, "--preferred-adapter", "pi")
+	taskPath := filepath.Join(t.TempDir(), "task-spec.json")
 	if err := os.WriteFile(taskPath, []byte(scaffoldStdout), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	policyPath := filepath.Join(repositoryRoot, ".marshal", "policy-strict-e2e.json")
-	if err := os.MkdirAll(filepath.Dir(policyPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	policyPath := filepath.Join(t.TempDir(), "policy-strict-e2e.json")
 	policy := map[string]any{
-		"apiVersion":  "marshal.dev/v1alpha1",
-		"kind":        "PolicySnapshot",
-		"taskId":      "STRICT-E2E",
-		"runId":       runID,
-		"sources":     []map[string]any{{"scope": "builtin", "digest": "sha256:" + strings.Repeat("b", 64), "required": true}},
-		"generatedAt": "2026-08-27T10:00:00Z",
+		"apiVersion":         "marshal.dev/v1alpha1",
+		"kind":               "PolicySnapshot",
+		"taskId":             "STRICT-E2E",
+		"runId":              runID,
+		"sources":            []map[string]any{{"scope": "builtin", "digest": "sha256:" + strings.Repeat("b", 64), "required": true}},
+		"generatedAt":        time.Now().UTC().Format(time.RFC3339),
+		"environmentBinding": doctor.PolicyEnvironmentBinding,
 		"control": map[string]any{
 			"autonomyProfile":       "supervised",
-			"requiredApprovals":     []string{"plan", "publish"},
+			"requiredApprovals":     []string{"plan"},
 			"allowMediatedSteering": false,
 			"directPtyPolicy":       "deny",
 			"maxSteeringRounds":     0,
@@ -186,48 +227,41 @@ func TestRealPiStrictE2E(t *testing.T) {
 	}
 
 	// plan → approve
-	mustRun("task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID)
-	mustRun("task", "approve", "--run", runID, "--gate", "plan", "--actor", "strict-e2e")
+	runner.mustRun(t, "task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID)
+	runner.mustRun(t, "task", "approve", "--run", runID, "--gate", "plan", "--actor", "strict-e2e")
 
 	// run — 严格：非零退出直接 fatal
 	{
-		var stdout, stderr bytes.Buffer
-		exit := Run([]string{"task", "run", "--run", runID}, strings.NewReader(""), &stdout, &stderr)
-		if exit != ExitOK {
+		result := runner.run("task", "run", "--run", runID)
+		if result.err != nil {
 			// 打印 attempt 目录内容以辅助诊断
-			loc, locErr := repository.Discover(".")
-			if locErr == nil {
-				attemptsDir := filepath.Join(loc.StateRoot, "runs", runID, "attempts")
-				entries, _ := os.ReadDir(attemptsDir)
-				for _, e := range entries {
-					attemptDir := filepath.Join(attemptsDir, e.Name())
-					controlOutput := filepath.Join(attemptDir, "control", "output")
-					files, _ := os.ReadDir(controlOutput)
-					for _, f := range files {
-						t.Logf("attempt file: %s/%s", e.Name(), f.Name())
-					}
-					// 打印 transcript 如果存在
-					transcriptPath := filepath.Join(controlOutput, "pi-transcript.jsonl")
-					if raw, err := os.ReadFile(transcriptPath); err == nil {
-						t.Logf("transcript (full): %s", string(raw))
-					}
-					// 打印 stderr log
-					stderrPath := filepath.Join(controlOutput, "pi-stderr.log")
-					if raw, err := os.ReadFile(stderrPath); err == nil {
-						t.Logf("pi stderr: %s", string(raw))
-					}
+			stateRoot := filepath.Join(repositoryRoot, ".marshal")
+			attemptsDir := filepath.Join(stateRoot, "runs", runID, "attempts")
+			entries, _ := os.ReadDir(attemptsDir)
+			for _, e := range entries {
+				attemptDir := filepath.Join(attemptsDir, e.Name())
+				controlOutput := filepath.Join(attemptDir, "control", "output")
+				files, _ := os.ReadDir(controlOutput)
+				for _, f := range files {
+					t.Logf("attempt file: %s/%s", e.Name(), f.Name())
+				}
+				// 打印 transcript 如果存在
+				transcriptPath := filepath.Join(controlOutput, "pi-transcript.jsonl")
+				if raw, err := os.ReadFile(transcriptPath); err == nil {
+					t.Logf("transcript (full): %s", string(raw))
+				}
+				// 打印 stderr log
+				stderrPath := filepath.Join(controlOutput, "pi-stderr.log")
+				if raw, err := os.ReadFile(stderrPath); err == nil {
+					t.Logf("pi stderr: %s", string(raw))
 				}
 			}
-			t.Fatalf("task run failed: exit=%d\nstdout=%s\nstderr=%s", exit, stdout.String(), stderr.String())
+			t.Fatalf("task run failed: %v\nstdout=%s\nstderr=%s", result.err, result.stdout, result.stderr)
 		}
 	}
 
 	// 验证 worker.completed（严格：worker.failed 直接 fatal）
-	location, err := repository.Discover(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	stateRoot := location.StateRoot
+	stateRoot := filepath.Join(repositoryRoot, ".marshal")
 	events, err := eventsForRun(t, stateRoot, runID)
 	if err != nil {
 		t.Fatalf("read run evidence: %v", err)
@@ -299,20 +333,19 @@ func TestRealPiStrictE2E(t *testing.T) {
 	t.Logf("✓ AttemptBinding identity exact: registration=%s", binding.Facts.AgentRegistrationID)
 
 	// verify
-	verifyStdout, verifyStderr := bytes.Buffer{}, bytes.Buffer{}
-	verifyExit := Run([]string{"task", "verify", "--run", runID}, strings.NewReader(""), &verifyStdout, &verifyStderr)
-	t.Logf("verify stdout: %s", verifyStdout.String())
-	t.Logf("verify stderr: %s", verifyStderr.String())
-	if verifyExit != ExitOK {
+	verifyResult := runner.run("task", "verify", "--run", runID)
+	t.Logf("verify stdout: %s", verifyResult.stdout)
+	t.Logf("verify stderr: %s", verifyResult.stderr)
+	if verifyResult.err != nil {
 		// 独立 Verification 必须 fail-closed：acceptance command 失败（即意外
 		// 行为）不得记为「成功」。verify 失败即整个闭环失败。
-		t.Fatalf("task verify failed: exit=%d stdout=%s stderr=%s", verifyExit, verifyStdout.String(), verifyStderr.String())
+		t.Fatalf("task verify failed: %v stdout=%s stderr=%s", verifyResult.err, verifyResult.stdout, verifyResult.stderr)
 	}
 	t.Logf("✓ task verify passed (independent acceptance command asserts deliverable bytes)")
 
 	// status 必须解析为结构化 RunState，且身份与状态字段精确匹配——不允许
 	// 只打印不解析、把任意输出当「terminal Outcome」。
-	statusJSON := mustRun("task", "status", "--run", runID, "--json")
+	statusJSON := runner.mustRun(t, "task", "status", "--run", runID, "--json")
 	var st struct {
 		RunID            string `json:"runId"`
 		TaskID           string `json:"taskId"`
@@ -331,68 +364,109 @@ func TestRealPiStrictE2E(t *testing.T) {
 	}
 	t.Logf("✓ status exact: state=%s currentAttemptId=%s attemptsUsed=%d", st.State, st.CurrentAttemptID, st.AttemptsUsed)
 
-	// 真实跨进程恢复：spawn 一个全新子进程（Go test binary）在全新的 Go
-	// runtime 里重新打开持久化 state root 并查询同一 Run——这证明 durable
-	// journal 在无共享内存的独立进程间可恢复。子进程在 STRICT_E2E_QUERY_STATE
-	// 下只读不写。
-	selfBin, err := os.Executable()
-	if err != nil {
-		t.Fatalf("resolve test binary for cross-process query: %v", err)
-	}
-	var queryOut bytes.Buffer
-	var queryErrOut bytes.Buffer
-	sub := exec.Command(selfBin, "-test.run=TestRealPiStrictE2E", "-test.count=1")
-	sub.Env = append(os.Environ(),
-		"STRICT_E2E_QUERY_STATE=1",
-		"STRICT_E2E_STATE_ROOT="+stateRoot,
-		"STRICT_E2E_REPO_DIR="+repositoryRoot,
-		"STRICT_E2E_RUN_ID="+runID,
-	)
-	sub.Stdout = &queryOut
-	sub.Stderr = &queryErrOut
-	if err := sub.Run(); err != nil {
-		t.Fatalf("cross-process status query failed: %v\nstdout=%s\nstderr=%s", err, queryOut.String(), queryErrOut.String())
-	}
+	// runner 的每次调用都是固定 bin/marshal 的全新进程。再次查询同一 Run，
+	// 证明 durable journal 在无共享内存的独立进程间可恢复。
+	restoredJSON := runner.mustRun(t, "task", "status", "--run", runID, "--json")
 	var restored struct {
 		RunID            string `json:"runId"`
 		TaskID           string `json:"taskId"`
 		State            string `json:"state"`
 		CurrentAttemptID string `json:"currentAttemptId"`
 	}
-	// A directly executed Go test binary appends the testing package's exact
-	// PASS trailer after the helper's JSON. Strip only that fixed trailer;
-	// anything else remains invalid JSON and fails closed below.
-	queryJSON := bytes.TrimSpace(queryOut.Bytes())
-	testProcessTrailer := []byte("\nPASS")
-	if !bytes.HasSuffix(queryJSON, testProcessTrailer) {
-		t.Fatalf("cross-process test binary omitted PASS trailer (raw: %s)", queryOut.String())
-	}
-	queryJSON = bytes.TrimSpace(bytes.TrimSuffix(queryJSON, testProcessTrailer))
-	if err := json.Unmarshal(queryJSON, &restored); err != nil {
-		t.Fatalf("cross-process status output not a RunState JSON: %v (raw: %s)", err, queryOut.String())
+	if err := json.Unmarshal([]byte(restoredJSON), &restored); err != nil {
+		t.Fatalf("cross-process status output not a RunState JSON: %v (raw: %s)", err, restoredJSON)
 	}
 	if restored.RunID != st.RunID || restored.CurrentAttemptID != st.CurrentAttemptID || restored.State != st.State {
 		t.Fatalf("cross-process restored state mismatch: got %+v, want same as in-process %+v", restored, st)
 	}
 	t.Logf("✓ cross-process restore exact: state=%s currentAttemptId=%s", restored.State, restored.CurrentAttemptID)
 
-	_ = location
+	// ReviewPacket 必须由正式 CLI 基于冻结 Verification/ArtifactManifest 和
+	// 当前 local self identity 生成。此处只接纳 packet，不在测试内冒充独立
+	// reviewer 构造 accept Decision。
+	reviewJSON := runner.mustRun(t, "task", "review", "--run", runID, "--json")
+	var reviewResult struct {
+		Status       string `json:"status"`
+		PacketDigest string `json:"packetDigest"`
+		Packet       *struct {
+			TaskID                   string         `json:"taskId"`
+			RunID                    string         `json:"runId"`
+			SpecDigest               string         `json:"specDigest"`
+			VerificationDigest       string         `json:"verificationDigest"`
+			ArtifactManifestDigest   string         `json:"artifactManifestDigest"`
+			EvidenceDigest           string         `json:"evidenceDigest"`
+			LocalSelfIdentityBinding map[string]any `json:"localSelfIdentityBinding"`
+		} `json:"packet"`
+	}
+	if err := json.Unmarshal([]byte(reviewJSON), &reviewResult); err != nil || reviewResult.Status != "generated" ||
+		reviewResult.Packet == nil || reviewResult.Packet.TaskID != "STRICT-E2E" || reviewResult.Packet.RunID != runID ||
+		!strings.HasPrefix(reviewResult.PacketDigest, "sha256:") || reviewResult.Packet.SpecDigest == "" ||
+		reviewResult.Packet.VerificationDigest == "" || reviewResult.Packet.ArtifactManifestDigest == "" ||
+		reviewResult.Packet.EvidenceDigest == "" || reviewResult.Packet.LocalSelfIdentityBinding == nil {
+		t.Fatalf("formal ReviewPacket incomplete: output=%s err=%v", reviewJSON, err)
+	}
+	postPacketJSON := runner.mustRun(t, "task", "status", "--run", runID, "--json")
+	var postPacket struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(postPacketJSON), &postPacket); err != nil || postPacket.State != "REVIEW_PENDING" {
+		t.Fatalf("ReviewPacket generation did not remain fail-closed at REVIEW_PENDING: output=%s err=%v", postPacketJSON, err)
+	}
+	t.Logf("✓ formal ReviewPacket generated and current: digest=%s", reviewResult.PacketDigest)
+	t.Skipf("strict production chain reached external independent-review boundary; no ReviewProvider/reviewer executor exists to create an attributable ReviewDecision for packet %s, so terminal Outcome remains fail-closed", reviewResult.PacketDigest)
 }
 
-// strictE2EQueryStateHelper 是 TestRealPiStrictE2E 的子进程分支：在独立的全新
-// go runtime 里重新打开持久化 state root 查询 Run，证明 durable journal 的
-// 跨进程 restore。由 STRICT_E2E_QUERY_STATE=1 触发；只读，绝不写。
-func strictE2EQueryStateHelper(stateRoot, repoDir, runID string) {
-	localDogfoodGateTestBypass = func(buildinfo.Info) bool { return true }
-	if repoDir != "" {
-		_ = os.Chdir(repoDir)
-	}
+type strictE2ECommandResult struct {
+	stdout string
+	stderr string
+	err    error
+}
+
+type strictE2ERunner struct {
+	binary      string
+	directory   string
+	environment []string
+}
+
+func (runner strictE2ERunner) run(args ...string) strictE2ECommandResult {
+	command := exec.Command(runner.binary, args...)
+	command.Dir = runner.directory
+	command.Env = append([]string(nil), runner.environment...)
+	command.Stdin = strings.NewReader("")
 	var stdout, stderr bytes.Buffer
-	exit := Run([]string{"task", "status", "--run", runID, "--json"}, strings.NewReader(""), &stdout, &stderr)
-	if exit != ExitOK {
-		fmt.Fprintf(os.Stderr, "query-state failed: exit=%d stderr=%s", exit, stderr.String())
-		os.Exit(1)
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err := command.Run()
+	return strictE2ECommandResult{stdout: stdout.String(), stderr: stderr.String(), err: err}
+}
+
+func (runner strictE2ERunner) mustRun(t *testing.T, args ...string) string {
+	t.Helper()
+	result := runner.run(args...)
+	if result.err != nil {
+		t.Fatalf("fixed marshal %v failed: %v\nstdout=%s\nstderr=%s", args, result.err, result.stdout, result.stderr)
 	}
-	// 只把 RunState JSON 写到自身 stdout（父进程读取它做精确断言）。
-	fmt.Print(stdout.String())
+	return result.stdout
+}
+
+func strictE2EEnvironment(overrides map[string]string) []string {
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	environment := make([]string, 0, len(os.Environ())+len(keys))
+	for _, item := range os.Environ() {
+		key, _, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		if _, overridden := overrides[key]; !overridden {
+			environment = append(environment, item)
+		}
+	}
+	for _, key := range keys {
+		environment = append(environment, key+"="+overrides[key])
+	}
+	return environment
 }
