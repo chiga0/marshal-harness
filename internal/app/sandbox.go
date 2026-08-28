@@ -97,6 +97,11 @@ type EmbeddedSandboxRuntime struct {
 	registration   provider.ProviderRegistration
 	snapshot       provider.ProviderCapabilitySnapshot
 	agentRegistry  *agentregistry.Registry
+	// leaseLedger 是 worker DispatchLease 的耐久 append-only 账本（R2 纵切）。
+	// 每个 worker claim 在 Provision 成功后落账；崩溃/重启后由 NewLeaseLedger
+	// 确定性重放，rt.claims 从其 ActiveLeases 重建，使跨进程的 admission
+	// recheck 与恢复语义不依赖易失内存。
+	leaseLedger *dispatch.LeaseLedger
 
 	// mu guards claims, principals and allocations.
 	mu sync.Mutex
@@ -236,6 +241,18 @@ func NewEmbeddedSandboxRuntime(stateRoot string, now func() time.Time, options .
 		}
 		sandboxProvider = runner
 	}
+	// R2 纵切：打开 worker DispatchLease 的耐久 append-only 账本（崩溃/重启后
+	// 由 NewLeaseLedger 确定性重放），并用其 ActiveLeases 重建 rt.claims 的
+	// scope 索引——使跨进程 admission recheck 不依赖易失内存。账本目录创建或
+	// 恢复失败一律 fail closed，不允许退回内存态。
+	leaseLedger, err := dispatch.NewLeaseLedger(filepath.Join(stateRoot, "leases"))
+	if err != nil {
+		return nil, fmt.Errorf("app: embedded sandbox runtime: durable lease ledger: %w", err)
+	}
+	recoveredClaims, err := leaseLedger.ActiveLeases()
+	if err != nil {
+		return nil, fmt.Errorf("app: embedded sandbox runtime: recover active leases: %w", err)
+	}
 	runtime := &EmbeddedSandboxRuntime{
 		stateRoot:      stateRoot,
 		now:            now,
@@ -246,7 +263,8 @@ func NewEmbeddedSandboxRuntime(stateRoot string, now func() time.Time, options .
 		edgeRuntime:    edgeRuntime,
 		provider:       sandboxProvider,
 		agentRegistry:  agentregistry.NewRegistry(),
-		claims:         map[string]dispatch.DispatchLease{},
+		leaseLedger:    leaseLedger,
+		claims:         recoveredClaims,
 		principals:     map[string]map[sandbox.WorkloadRole]string{},
 		allocations:    map[string][]string{},
 	}
@@ -492,6 +510,25 @@ func (rt *EmbeddedSandboxRuntime) ClaimExecution(ctx context.Context, request Em
 	})
 	if err != nil {
 		return EmbeddedClaim{}, fmt.Errorf("app: embedded claim: local allocation: %w", err)
+	}
+	// R2 纵切：worker claim 在 allocation 落成后即持久化进 append-only 账本
+	// （崩溃/重启后确定性重放）。落账失败一律 fail closed，并清理已创建的
+	// allocation——不得留下「allocation 已建但 lease 未落账」的生产孤儿。
+	if request.WorkloadRole == sandbox.WorkloadRoleWorker {
+		if persistErr := rt.leaseLedger.AppendClaim(lease); persistErr != nil {
+			termIdentity := sandbox.OperationIdentity{
+				TaskId:       request.TaskId,
+				RunId:        request.RunId,
+				AttemptId:    request.AttemptId,
+				WorkloadRole: request.WorkloadRole,
+				AllocationId: request.AllocationId,
+				Generation:   lease.Generation,
+				FencingToken: lease.FencingToken,
+				CommandId:    "command-terminate-persist-failure",
+			}
+			_, _ = rt.provider.Terminate(ctx, sandbox.TerminateRequest{Identity: termIdentity, AllocationId: receipt.Allocation.AllocationId})
+			return EmbeddedClaim{}, fmt.Errorf("app: embedded claim: persist lease to durable ledger (fail closed): %w", persistErr)
+		}
 	}
 	rt.recordClaim(scope, request, lease)
 	return EmbeddedClaim{Lease: lease, Allocation: receipt.Allocation}, nil

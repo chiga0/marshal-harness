@@ -487,6 +487,29 @@ func (l *LeaseLedger) Current(leaseId string) (DispatchLease, LeaseState, int64,
 	return lease, lease.LeaseState, lease.Generation, nil
 }
 
+// ActiveLeases returns a snapshot of every currently non-terminal lease,
+// keyed by its (runId, attemptId) binding. The embedded runtime recomposes
+// its scope → lease index from this on construction (crash recovery): an
+// identical ledger always rebuilds the identical active set, terminally
+// cancelled/expired leases are excluded, and a memory-only ledger fails
+// closed.
+func (l *LeaseLedger) ActiveLeases() (map[string]DispatchLease, error) {
+	if err := l.requireBound(); err != nil {
+		return nil, err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make(map[string]DispatchLease, len(l.activeBindings))
+	for binding, leaseId := range l.activeBindings {
+		lease, ok := l.leases[leaseId]
+		if !ok || lease.LeaseState.IsTerminal() {
+			continue
+		}
+		out[binding] = lease
+	}
+	return out, nil
+}
+
 // recover replays the ledger file (when present) and rebuilds the
 // in-memory indexes deterministically: the identical ledger bytes always
 // rebuild the identical state. Any malformed, non canonical, conflicting

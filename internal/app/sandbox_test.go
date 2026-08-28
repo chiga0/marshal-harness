@@ -531,3 +531,54 @@ func TestEmbeddedLeaseExpiryRevalidateRequiresNewAttempt(t *testing.T) {
 		t.Fatalf("the fencing guard rejected the renewed lease: %v", err)
 	}
 }
+
+// TestEmbeddedLeasePersistsAcrossRestart 锁定 R2 纵切的 durable lease：worker
+// claim 在 Provision 成功后写入 append-only 账本（`stateRoot/leases`），
+// 崩溃/重启后由全新的 EmbeddedSandboxRuntime 在同一 stateRoot 确定性重放，
+// `LeaseFor` 必须恢复同一份 DispatchLease（fencing token、generation、expiry、
+// leaseId 逐字相等）——admission 的跨进程 recheck 不再依赖易失内存。
+func TestEmbeddedLeasePersistsAcrossRestart(t *testing.T) {
+	runtime, clock, stateRoot, _ := newEmbeddedRuntimeFixture(t)
+	requirements := workspaceWriteRequirementsFixture(t)
+	claim, err := runtime.ClaimExecution(context.Background(), embeddedClaimRequestFixture("run-durable", "attempt-durable", sandbox.WorkloadRoleWorker, "principal-durable", requirements))
+	if err != nil {
+		t.Fatalf("claim rejected: %v", err)
+	}
+	if _, ok := runtime.LeaseFor("run-durable", "attempt-durable"); !ok {
+		t.Fatal("in-process LeaseFor must return the freshly claimed worker lease")
+	}
+
+	// 崩溃/重启：同一 stateRoot 的全新 runtime（进程内内存态全空）必须
+	// 从 append-only 账本重建 scope 索引并恢复同一份 lease。
+	restarted, err := NewEmbeddedSandboxRuntime(stateRoot, clock.Now)
+	if err != nil {
+		t.Fatalf("reconstruction over the durable lease ledger rejected: %v", err)
+	}
+	recovered, ok := restarted.LeaseFor("run-durable", "attempt-durable")
+	if !ok {
+		t.Fatal("restarted runtime failed to recover the durable worker lease")
+	}
+	if recovered.LeaseId != claim.Lease.LeaseId ||
+		recovered.Generation != claim.Lease.Generation ||
+		recovered.FencingToken != claim.Lease.FencingToken ||
+		recovered.ExpiresAt != claim.Lease.ExpiresAt ||
+		recovered.AllocationId != claim.Lease.AllocationId {
+		t.Fatalf("recovered lease diverges from the durable ledger: got %+v, want identity of %+v", recovered, claim.Lease)
+	}
+	if err := dispatch.ValidateLeaseFencing(recovered, recovered.Generation, recovered.FencingToken); err != nil {
+		t.Fatalf("the fencing guard rejected the recovered lease: %v", err)
+	}
+
+	// 崩溃/重启后单活不变量仍成立：同一 (runId, attemptId) 不得二次 claim；
+	// 全新 attempt 仍可在原 runtime 与新 runtime 上各自独立 claim。
+	if _, err := restarted.ClaimExecution(context.Background(), embeddedClaimRequestFixture("run-durable", "attempt-durable", sandbox.WorkloadRoleWorker, "principal-durable", requirements)); err == nil {
+		t.Fatal("the recovered identical attempt was reissued instead of failing closed")
+	}
+	fresh, err := restarted.ClaimExecution(context.Background(), embeddedClaimRequestFixture("run-durable-2", "attempt-durable-2", sandbox.WorkloadRoleWorker, "principal-durable-2", requirements))
+	if err != nil {
+		t.Fatalf("claiming a fresh attempt over the recovered runtime rejected: %v", err)
+	}
+	if fresh.Lease.LeaseId == claim.Lease.LeaseId {
+		t.Fatal("the fresh attempt must carry a new leaseId")
+	}
+}
