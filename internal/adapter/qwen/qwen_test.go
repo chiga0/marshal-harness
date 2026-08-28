@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -205,8 +206,9 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 		{"0.21.11", "supported", false},
 		{"0.21.15", "supported", false},
 		{"0.21.99", "supported", false},
+		{"0.22.0", "supported", false},
 		{"0.21.4", "unsupported", true},
-		{"0.22.0", "unsupported", true},
+		{"0.22.1", "unsupported", true},
 		{"9.9.9", "unsupported", true},
 	} {
 		t.Run(test.version, func(t *testing.T) {
@@ -277,16 +279,66 @@ func TestProbeFreezesSupportedAndUnsupportedBinary(t *testing.T) {
 			t.Fatal("schema accepted corrupted snapshot")
 		}
 	})
-	t.Run("unrecognized-version", func(t *testing.T) {
-		adapter, err := New(fakeExecutable(t, "garbage-output", "", "", "exit 0"), newValidator(t))
-		if err != nil {
-			t.Fatal(err)
-		}
-		setAuthSettingsPaths(adapter, settingsPath)
-		if _, err := adapter.Probe(context.Background()); err == nil || !strings.Contains(err.Error(), "unrecognized version") {
-			t.Fatalf("err = %v", err)
-		}
-	})
+	for _, version := range []string{"garbage-output", "0.22.0-rc.1", "qwen 0.22.0", "0.22.0.1"} {
+		t.Run("unrecognized-version-"+strings.ReplaceAll(version, " ", "-"), func(t *testing.T) {
+			adapter, err := New(fakeExecutable(t, version, "", "", "exit 0"), newValidator(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			setAuthSettingsPaths(adapter, settingsPath)
+			if _, err := adapter.Probe(context.Background()); err == nil || !strings.Contains(err.Error(), "unrecognized version") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
+func TestProbeScopesQwen022ToWorkspaceWrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	settingsPath := filepath.Join(home, ".qwen", "settings.json")
+	writeJSON(t, settingsPath, map[string]any{"security": map[string]any{"auth": map[string]any{"selectedType": "qwen-oauth"}}})
+	for _, test := range []struct {
+		version  string
+		profiles []any
+	}{
+		{"0.21.5", []any{"workspace-write", "read-only"}},
+		{"0.22.0", []any{"workspace-write"}},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			adapter, err := New(fakeExecutable(t, test.version, "", "", "exit 0"), newValidator(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			setAuthSettingsPaths(adapter, settingsPath)
+			record, err := adapter.Probe(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var snapshot struct {
+				Capabilities struct {
+					ExecutionProfiles []any `json:"executionProfiles"`
+				} `json:"capabilities"`
+			}
+			if err := json.Unmarshal(record.Data, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(snapshot.Capabilities.ExecutionProfiles, test.profiles) {
+				t.Fatalf("executionProfiles = %#v, want %#v", snapshot.Capabilities.ExecutionProfiles, test.profiles)
+			}
+		})
+	}
+}
+
+func TestRunRejectsQwen022ReadOnlyBeforeWorkerLaunch(t *testing.T) {
+	fixture := newRunFixture(t, "0.22.0", "exit 99")
+	_, err := fixture.adapter.Run(context.Background(), fixture.requestWith(map[string]any{"executionProfile": "read-only"}))
+	if !errors.Is(err, ErrUnsupportedProfile) {
+		t.Fatalf("err = %v, want ErrUnsupportedProfile", err)
+	}
+	if _, statErr := os.Stat(fixture.argsPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("worker argv log exists after pre-launch rejection: %v", statErr)
+	}
 }
 
 func TestProbeFailsClosedWhenNonInteractiveAuthTypeIsMissing(t *testing.T) {

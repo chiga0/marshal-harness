@@ -257,12 +257,12 @@ func TestLiveProbeGateExemption(t *testing.T) {
 	})
 	t.Run("exemption-never-widens-range-boundary", func(t *testing.T) {
 		t.Setenv(liveProbeExemptionEnv, "1")
-		for _, version := range []string{"0.21.5", "0.21.10", "0.21.11"} {
+		for _, version := range []string{"0.21.5", "0.21.10", "0.21.11", "0.22.0"} {
 			if !isSupportedBinary(version) {
 				t.Fatalf("supported version %s lost membership under exemption", version)
 			}
 		}
-		for _, version := range []string{"0.21.4", "0.22.0", "9.9.9"} {
+		for _, version := range []string{"0.21.4", "0.22.1", "0.22.0-rc.1", "9.9.9"} {
 			if isSupportedBinary(version) {
 				t.Fatalf("version %s must stay outside the supported range under exemption", version)
 			}

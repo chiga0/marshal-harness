@@ -30,7 +30,7 @@ import (
 
 const (
 	adapterID        = "qwen"
-	adapterVersion   = "0.1.0"
+	adapterVersion   = "0.1.1"
 	maxPromptBytes   = 256 << 10
 	maxResultBytes   = 4 << 20
 	maxSettingsBytes = 4 << 20
@@ -41,20 +41,24 @@ const (
 )
 
 // supportedBinaryRange is the semver range admitted by this adapter.
-// 0.21.x patch line is protocol-stable; minor boundary 0.22.0 and above
-// remain fail closed pending independent evidence.
-const supportedBinaryRange = ">=0.21.5 <0.22.0"
+// 0.21.x patch line is protocol-stable. Qwen Code 0.22.0 is admitted as one
+// independently measured boundary release; later 0.22.x patches remain fail
+// closed until their stream-json/argv contract is measured.
+const supportedBinaryRange = ">=0.21.5 <=0.22.0"
 
 // isSupportedBinary reports whether the probed version falls within the
 // supported range. Non-three-segment or unparseable input fails closed.
-// 0.21.x patch line is protocol-stable; minor boundary (0.22.0) and above
-// remain fail closed.
+// 0.21.x patch line is protocol-stable; only the independently measured
+// 0.22.0 boundary release is admitted from the next minor line.
 func isSupportedBinary(version string) bool {
 	var major, minor, patch int
 	if _, err := fmt.Sscanf(version, "%d.%d.%d", &major, &minor, &patch); err != nil {
 		return false
 	}
-	return major == 0 && minor == 21 && patch >= 5
+	if fmt.Sprintf("%d.%d.%d", major, minor, patch) != version {
+		return false
+	}
+	return major == 0 && (minor == 21 && patch >= 5 || minor == 22 && patch == 0)
 }
 
 // liveProbeExemptionEnv names the environment variable that deterministically
@@ -241,9 +245,10 @@ var (
 	ErrPermissionDenied   = errors.New("qwen permission denied")
 	ErrProcessFailed      = errors.New("qwen process failed")
 	ErrAuthNotReady       = errors.New("qwen non-interactive auth type is not selected")
+	ErrUnsupportedProfile = errors.New("unsupported qwen execution profile")
 )
 
-var versionPattern = regexp.MustCompile(`\d+\.\d+\.\d+`)
+var versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 
 type Adapter struct {
 	executable        string
@@ -333,6 +338,9 @@ func (a *Adapter) PrepareTerminal(ctx context.Context, record domain.Record) (po
 	if !isSupportedBinary(identity.version) {
 		return port.TerminalLaunchSpec{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
 	}
+	if err := ensureExecutionProfile(identity.version, request.ExecutionProfile); err != nil {
+		return port.TerminalLaunchSpec{}, err
+	}
 	worktree, controlRoot, prompt, err := resolveTerminalInput(request)
 	if err != nil {
 		return port.TerminalLaunchSpec{}, err
@@ -392,6 +400,15 @@ func (a *Adapter) Probe(ctx context.Context) (domain.Record, error) {
 }
 
 func (a *Adapter) capabilitySnapshot(identity executableIdentity, status string, probeErrors []string) (domain.Record, error) {
+	notes := []string{
+		"由 Marshal 实施 wall-time 与输出字节数上限。",
+		"safe-mode + auto-edit + exclude-tools 不构成恶意代码隔离。",
+		"shell、sub-agent、sub-session、web/network 与 computer-use 工具被按名排除。",
+		"read-only 画像额外排除源码编辑类工具，写域由 Marshal scope 门禁兜底。",
+	}
+	if identity.version == "0.22.0" {
+		notes = append(notes, "Qwen Code 0.22.0 的 read-only 结果传输尚未通过，当前只声明 workspace-write。")
+	}
 	snapshot := map[string]any{
 		"apiVersion": string(domain.APIVersionV1Alpha1), "kind": string(domain.KindCapabilitySnapshot),
 		"adapterId": adapterID, "adapterVersion": adapterVersion,
@@ -400,15 +417,10 @@ func (a *Adapter) capabilitySnapshot(identity executableIdentity, status string,
 		"capabilities": map[string]any{
 			"structuredOutput": []string{"jsonl"}, "nonInteractiveEdit": true,
 			"sessionPolicies": []string{"ephemeral", "persist", "resume"}, "modelSelection": true,
-			"executionProfiles":       []string{"workspace-write", "read-only"},
+			"executionProfiles":       executionProfilesFor(identity.version),
 			"nativeBudgets":           []string{"wall-time", "tool-calls", "turns"},
 			"processTreeCancellation": true,
-			"notes": []string{
-				"由 Marshal 实施 wall-time 与输出字节数上限。",
-				"safe-mode + auto-edit + exclude-tools 不构成恶意代码隔离。",
-				"shell、sub-agent、sub-session、web/network 与 computer-use 工具被按名排除。",
-				"read-only 画像额外排除源码编辑类工具，写域由 Marshal scope 门禁兜底。",
-			},
+			"notes":                   notes,
 		},
 		"probeErrors": probeErrors, "probedAt": a.now().UTC().Format(time.RFC3339Nano),
 	}
@@ -423,6 +435,29 @@ func (a *Adapter) capabilitySnapshot(identity executableIdentity, status string,
 		return domain.Record{}, fmt.Errorf("validate CapabilitySnapshot: %w", err)
 	}
 	return domain.Record{Kind: domain.KindCapabilitySnapshot, Data: data}, nil
+}
+
+func executionProfilesFor(version string) []string {
+	profiles := []string{"workspace-write"}
+	if supportsReadOnlyProfile(version) {
+		profiles = append(profiles, "read-only")
+	}
+	return profiles
+}
+
+func supportsReadOnlyProfile(version string) bool {
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(version, "%d.%d.%d", &major, &minor, &patch); err != nil || fmt.Sprintf("%d.%d.%d", major, minor, patch) != version {
+		return false
+	}
+	return major == 0 && minor == 21 && patch >= 5
+}
+
+func ensureExecutionProfile(version, profile string) error {
+	if profile == "workspace-write" || profile == "read-only" && supportsReadOnlyProfile(version) {
+		return nil
+	}
+	return fmt.Errorf("%w: profile=%s binary=%s", ErrUnsupportedProfile, profile, version)
 }
 
 // defaultAuthSettingsPaths freezes Qwen's Mac ordinary-user precedence. The
@@ -599,8 +634,8 @@ func readBinaryVersion(ctx context.Context, executable string) (string, error) {
 		}
 		return "", fmt.Errorf("probe qwen version: %w", err)
 	}
-	version := versionPattern.FindString(string(output))
-	if version == "" {
+	version := strings.TrimSpace(string(output))
+	if !versionPattern.MatchString(version) {
 		return "", fmt.Errorf("qwen returned an unrecognized version: %q", strings.TrimSpace(string(output)))
 	}
 	return version, nil
@@ -694,6 +729,9 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	if !isSupportedBinary(identity.version) {
 		return domain.Record{}, fmt.Errorf("%w: %s", ErrUnsupportedVersion, identity.version)
+	}
+	if err := ensureExecutionProfile(identity.version, request.ExecutionProfile); err != nil {
+		return domain.Record{}, err
 	}
 	worktree, err := filepath.EvalSymlinks(request.WorktreePath)
 	if err != nil {
@@ -952,7 +990,7 @@ type captureResult struct {
 	missingTerminal bool
 }
 
-// captureStreamJSONL enforces the measured Qwen Code 0.21.5 stream-json
+// captureStreamJSONL enforces the measured Qwen Code 0.21.5/0.22.0 stream-json
 // contract: a successful stream starts with system/init bound to this
 // worktree and ends with result/success. Qwen may instead emit type=error or
 // exactly result/error_during_execution before init when provider startup fails.
@@ -1047,7 +1085,7 @@ func captureStreamJSONL(reader io.Reader, worktree string, limit int64, onLimit 
 						fail(qwenProtocolInvalid("init event is missing session_id, cwd or qwen_code_version", now()))
 						continue
 					}
-					if versionPattern.FindString(event.QwenCodeVersion) != binaryVersion {
+					if event.QwenCodeVersion != binaryVersion {
 						fail(qwenProtocolInvalid("init qwen_code_version does not match binary", now()))
 						continue
 					}
