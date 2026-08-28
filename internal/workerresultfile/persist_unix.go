@@ -41,7 +41,7 @@ func PersistOnce(attemptDir string, data []byte) error {
 	}
 	defer unix.Close(dirFD)
 
-	lockFD, err := unix.Openat(dirFD, coordinationName, unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	lockFD, err := openCoordinationLock(dirFD)
 	if err != nil {
 		return fmt.Errorf("workerresultfile: open coordination lock: %w", err)
 	}
@@ -122,7 +122,7 @@ func compareExisting(dirFD int, expected []byte) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		return true, fmt.Errorf("workerresultfile: open existing payload: %w", err)
+		return true, fmt.Errorf("workerresultfile: open existing payload: %v: %w", err, ErrCreationOnceViolation)
 	}
 	file := os.NewFile(uintptr(fd), workerResultName)
 	defer file.Close()
@@ -154,6 +154,30 @@ func compareExisting(dirFD int, expected []byte) (bool, error) {
 		return true, ErrCreationOnceViolation
 	}
 	return true, nil
+}
+
+func openCoordinationLock(dirFD int) (int, error) {
+	for attempts := 0; attempts < 16; attempts++ {
+		fd, err := unix.Openat(dirFD, coordinationName, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err == nil {
+			return fd, nil
+		}
+		if !errors.Is(err, unix.ENOENT) {
+			return -1, err
+		}
+		fd, err = unix.Openat(dirFD, coordinationName, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+		if err == nil {
+			if syncErr := unix.Fsync(dirFD); syncErr != nil {
+				_ = unix.Close(fd)
+				return -1, syncErr
+			}
+			return fd, nil
+		}
+		if !errors.Is(err, unix.EEXIST) {
+			return -1, err
+		}
+	}
+	return -1, errors.New("coordination lock creation race budget exhausted")
 }
 
 func createTemporary(dirFD int) (string, int, error) {

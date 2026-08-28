@@ -319,6 +319,12 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		if err := requireDigest("DRCDigest", fact.DRCDigest); err != nil {
 			return err
 		}
+		if strings.TrimSpace(fact.IdempotencyKey) == "" {
+			return errors.New("admitted fact idempotency key is empty")
+		}
+		if err := requireDigest("FactDigest", fact.FactDigest); err != nil {
+			return err
+		}
 		if err := (ResultEnvelope{Kind: fact.EnvelopeKind, ResultDigest: fact.EnvelopeDigest, Sequence: fact.EnvelopeSequence}).Validate(); err != nil {
 			return err
 		}
@@ -366,7 +372,10 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 			return errors.New("quarantined fact digest mismatch")
 		}
 		fact.Digest = storeddigest
-		at, _ := time.Parse(time.RFC3339, fact.ObservedAt)
+		at, err := time.Parse(time.RFC3339, fact.ObservedAt)
+		if err != nil {
+			return fmt.Errorf("quarantined observedAt: %w", err)
+		}
 		in.quarantine = append(in.quarantine, QuarantineRecord{
 			Reason:         fact.Reason,
 			DRCDigest:      fact.DRCDigest,
@@ -396,6 +405,15 @@ func (s *ingressDurableStore) applyLegacyAdmittedLine(line []byte, in *Ingress) 
 	}
 	if _, exists := in.admitted[fact.IdempotencyKey]; exists {
 		return fmt.Errorf("duplicate admitted idempotency key %q", fact.IdempotencyKey)
+	}
+	if strings.TrimSpace(fact.IdempotencyKey) == "" {
+		return errors.New("legacy admitted fact idempotency key is empty")
+	}
+	if err := requireDigest("legacy EnvelopeDigest", fact.EnvelopeDigest); err != nil {
+		return err
+	}
+	if err := requireDigest("legacy FactDigest", fact.FactDigest); err != nil {
+		return err
 	}
 	if fact.LedgerSequence != in.ledgerSequence+1 {
 		return fmt.Errorf("legacy admitted ledger sequence %d, want %d", fact.LedgerSequence, in.ledgerSequence+1)

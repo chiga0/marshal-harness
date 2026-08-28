@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/agentregistry"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/contract"
@@ -27,7 +28,10 @@ import (
 	marshalrepo "github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/runstore"
+	"github.com/chiga0/marshal-harness/internal/sandbox"
+	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
+	"github.com/chiga0/marshal-harness/internal/workerresultfile"
 )
 
 type fixtureAdapter struct {
@@ -4237,6 +4241,127 @@ func TestAdmittedWorkerResultRecoveryClosesJournalOutbox(t *testing.T) {
 		})
 	}
 }
+
+// TestBridgeCommittedResultCrashReachesExecutionJournal exercises the actual
+// recovery producer chain: the same no-replace raw outbox used by Bridge is
+// fsynced, durable ResultIngress commits it, a fresh Bridge lookup-only replays
+// the exact fact, and execution appends worker.completed before an injected
+// snapshot crash. Journal recovery must still expose exactly one completion.
+func TestBridgeCommittedResultCrashReachesExecutionJournal(t *testing.T) {
+	fixture := newExecutionFixture(t, false)
+	fixture.input.OrphanStalenessThreshold = time.Second
+	const attemptID = "attempt-bridge-committed-crash"
+	setupOrphanedRunningFixture(t, fixture, attemptID)
+	attemptDir := filepath.Join(fixture.runDir, "attempts", attemptID)
+	raw := mustJSON(t, map[string]any{
+		"apiVersion": "marshal.dev/v1alpha1", "kind": "WorkerResult",
+		"taskId": "TASK-1", "runId": fixture.input.RunID, "attemptId": attemptID,
+		"adapter": map[string]any{"id": "fixture", "executable": "/fixture", "version": "1"},
+		"status":  "completed", "summary": "bridge durable recovery",
+		"declaredChangedFiles": []string{}, "declaredArtifacts": []any{}, "declaredCommands": []any{}, "declaredRisks": []string{},
+		"startedAt": "2026-08-04T00:00:00Z", "completedAt": "2026-08-04T00:00:01Z",
+	})
+	if err := workerresultfile.PersistOnce(attemptDir, raw); err != nil {
+		t.Fatal(err)
+	}
+	capabilityDigest := canonical.DigestBytes([]byte("bridge-capability"))
+	facts := resultbinding.Facts{
+		TaskID: "TASK-1", RunID: fixture.input.RunID, AttemptID: attemptID,
+		AgentAdapterID: "fixture", AgentExecutable: "/fixture", AgentProviderVersion: "1",
+		CapabilityDigest: capabilityDigest, AgentRegistrationID: resultbinding.AgentRegistrationID(capabilityDigest),
+		AgentCapabilitySnapshotDigest: capabilityDigest, SandboxCapabilityDigest: canonical.DigestBytes([]byte("sandbox-capability")),
+		ExecutionProfile: "workspace-write", SandboxProviderRegistrationID: "registration:local-runner",
+		AllocationID: "allocation-bridge-crash", AllocationGeneration: 1, LiveAllocationState: sandbox.AllocationActive,
+		FencingToken: "fence-bridge-crash", LeaseExpiry: time.Now().UTC().Add(time.Hour),
+	}
+	if err := resultbinding.WriteAttemptBinding(attemptDir, facts); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := resultbinding.ReadAttemptBinding(attemptDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ingressDir := filepath.Join(fixture.input.StateRoot, "resultingress-producer-test")
+	authoritySource := producerAuthoritySource{facts: facts, ingressDir: ingressDir}
+	if admission, admitErr := resultbinding.AdmitWithDurableAuthority(context.Background(), binding, raw, authoritySource, sandbox.AllocationActive); admitErr != nil || admission == nil || !admission.Accepted {
+		t.Fatalf("durable producer admission = %+v, %v", admission, admitErr)
+	}
+	bridge, err := sandboxbridge.NewBridge(sandbox.NewFakeProvider(sandbox.FakeConfig{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge.WithDurableAuthority(producerBridgeAuthority{ingressDir: ingressDir})
+	fixture.input.ResultAdmissionReconciler = bridge
+	fixture.input.AfterWorkerCompletedAppend = func() error { return errors.New("injected snapshot crash") }
+	result, runErr := Run(context.Background(), fixture.input)
+	if runErr == nil || result.State.State != domain.StateVerifying {
+		t.Fatalf("post-journal crash = %+v, %v", result, runErr)
+	}
+	events, _, err := runstore.New(fixture.input.StateRoot).ReadEvents(fixture.input.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := 0
+	for _, event := range events {
+		if event.Type == "worker.completed" && event.AttemptID == attemptID {
+			completed++
+			if event.Payload["resultAdmissionReplay"] != true || event.Payload["resultAdmissionFactDigest"] == "" {
+				t.Fatalf("completion lacks exact durable replay binding: %+v", event.Payload)
+			}
+		}
+	}
+	if completed != 1 {
+		t.Fatalf("worker.completed count = %d", completed)
+	}
+}
+
+type producerAuthoritySource struct {
+	facts      resultbinding.Facts
+	ingressDir string
+}
+
+func (p producerAuthoritySource) ProviderRegistration() (provider.ProviderRegistration, error) {
+	return provider.ProviderRegistration{RegistrationId: p.facts.SandboxProviderRegistrationID}, nil
+}
+func (producerAuthoritySource) ProviderRegistrationActive(string) (bool, error) { return true, nil }
+func (p producerAuthoritySource) ResultIngressDir() string                      { return p.ingressDir }
+func (p producerAuthoritySource) AgentAuthority(registrationID string) (agentregistry.AgentRegistration, agentregistry.AgentCapabilitySnapshot, error) {
+	now := time.Unix(1, 0).UTC()
+	reg := agentregistry.AgentRegistration{
+		RegistrationID: registrationID, AuthorityNamespaceID: resultbinding.AuthorityNamespaceID,
+		SecurityDomainID: "default/execution/test", Principal: "principal:agent:test",
+		ProviderType: agentregistry.ProviderTypeAgent, ProviderName: p.facts.AgentAdapterID,
+		ProviderVersion: p.facts.AgentProviderVersion, ProtocolVersion: resultbinding.ProtocolVersion,
+		Scope: "worker", IdempotencyKey: "cap:" + p.facts.AgentCapabilitySnapshotDigest,
+		RequestDigest: p.facts.AgentCapabilitySnapshotDigest, LifecycleState: agentregistry.LifecycleStateActive,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	snapshot := agentregistry.AgentCapabilitySnapshot{
+		SnapshotDigest: p.facts.AgentCapabilitySnapshotDigest, RegistrationID: registrationID,
+		ProtocolVersion: resultbinding.ProtocolVersion, ProviderName: p.facts.AgentAdapterID,
+		ProviderVersion: p.facts.AgentProviderVersion,
+		Capabilities:    []agentregistry.Capability{agentregistry.CapabilityExecutionProfileWorkspaceWrite},
+		SnapshotState:   agentregistry.SnapshotStateActive,
+	}
+	return reg, snapshot, nil
+}
+
+type producerBridgeAuthority struct{ ingressDir string }
+
+func (producerBridgeAuthority) RegistrationStore() *provider.RegistrationStore { return nil }
+func (producerBridgeAuthority) LeaseFor(string, string) (dispatch.DispatchLease, bool) {
+	return dispatch.DispatchLease{}, false
+}
+func (producerBridgeAuthority) CapabilitySnapshot() provider.ProviderCapabilitySnapshot {
+	return provider.ProviderCapabilitySnapshot{}
+}
+func (producerBridgeAuthority) Registration() provider.ProviderRegistration {
+	return provider.ProviderRegistration{}
+}
+func (producerBridgeAuthority) AgentAuthority(string) (agentregistry.AgentRegistration, agentregistry.AgentCapabilitySnapshot, error) {
+	return agentregistry.AgentRegistration{}, agentregistry.AgentCapabilitySnapshot{}, errors.New("unexpected authority lookup during committed replay")
+}
+func (p producerBridgeAuthority) ResultIngressDir() string { return p.ingressDir }
 
 // TestLostResponseWorkerResultDurableButJournalIncomplete 验证 lost-response
 // 场景的安全恢复行为（R6-TOP2）：worker-result.json 已 durable 但
