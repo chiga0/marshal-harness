@@ -31,6 +31,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # workflow_dispatch 必须构建输入 tag，而不是触发时所在的默认分支。
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -38,12 +42,29 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Validate release tag
+      - name: Test release and installer contracts
         run: |
-          case "$TAG_NAME" in
-            v[0-9]*) : ;;
-            *) echo "release tag '$TAG_NAME' 不符合 v* 约定" >&2; exit 1 ;;
-          esac
+          bash scripts/release-contract_test.sh
+          bash scripts/install_test.sh
+
+      - name: Validate release source
+        id: release
+        run: |
+          kind="$(bash scripts/release-contract.sh classify "$TAG_NAME")"
+          release_commit="$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")" \
+            || { echo "::error::release tag ${TAG_NAME} 不存在或不指向 commit" >&2; exit 1; }
+          checkout_commit="$(git rev-parse HEAD)"
+          if [ "$checkout_commit" != "$release_commit" ]; then
+            echo "::error::checkout ${checkout_commit} 与 tag ${TAG_NAME} 指向 ${release_commit} 不一致" >&2
+            exit 1
+          fi
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+          if [ "$kind" = "prerelease" ]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "RELEASE_COMMIT=$release_commit" >> "$GITHUB_ENV"
 
       # 资产命名 marshal_<version>_<os>_<arch>：version 去掉 v 前缀，
       # 与 scripts/install.sh 及 docs/development.md 的 Release 资产命名约定一致。
@@ -51,14 +72,12 @@ jobs:
         run: |
           make dist \
             VERSION="${TAG_NAME#v}" \
-            COMMIT="${GITHUB_SHA}" \
+            COMMIT="${RELEASE_COMMIT}" \
             BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           ls -l dist/
 
-      - name: Verify SHA256SUMS self-consistency
-        run: |
-          cd dist
-          sha256sum -c SHA256SUMS
+      - name: Verify release asset contract
+        run: bash scripts/release-contract.sh verify-dist dist "$TAG_NAME"
 
       # macOS 签名/notarization 门禁：
       # ADR 0052 §1.9 要求 macOS 正式产物签名/notarization/release identity。
@@ -77,13 +96,9 @@ jobs:
           else
             echo "available=false" >> "$GITHUB_OUTPUT"
           fi
-          case "$TAG_NAME" in
-            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
-            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
-          esac
 
       - name: Enforce signing gate for stable releases
-        if: steps.signing.outputs.available != 'true' && steps.signing.outputs.prerelease != 'true'
+        if: steps.signing.outputs.available != 'true' && steps.release.outputs.prerelease != 'true'
         run: |
           echo "::error::稳定 release $TAG_NAME 要求 macOS 签名/notarization secrets（Issue #212 未 provision）。unsigned 构建仅允许 prerelease tag（如 v1.0.0-rc1）。" >&2
           exit 1
@@ -92,7 +107,7 @@ jobs:
       # ADR 0047/0048 与 Issue #212 落地。在真实签名链实现前，即使 secrets
       # 已配置，仍一律 fail closed——占位输出不得通过为 signed stable release。
       - name: Block stable release until real signing is implemented
-        if: steps.signing.outputs.prerelease != 'true'
+        if: steps.release.outputs.prerelease != 'true'
         run: |
           echo "::error::稳定 release $TAG_NAME 要求真实 codesign + notarization + spctl 验证（ADR 0047/0048）。当前签名步骤仍为占位，不得发布 stable。请使用 prerelease tag（如 v1.0.0-rc1）。" >&2
           exit 1
@@ -100,7 +115,7 @@ jobs:
       - name: Generate release notes
         env:
           SIGNING_AVAILABLE: ${{ steps.signing.outputs.available }}
-          IS_PRERELEASE: ${{ steps.signing.outputs.prerelease }}
+          IS_PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
           {
             printf 'Marshal %s\n\n' "$TAG_NAME"
@@ -119,7 +134,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IS_PRERELEASE: ${{ steps.signing.outputs.prerelease }}
+          IS_PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
           args=()
           if [ "$IS_PRERELEASE" = "true" ]; then

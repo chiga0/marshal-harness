@@ -15,7 +15,7 @@ marshal version
 
 1. 检测平台（`darwin|linux` × `amd64|arm64`）；
 2. 查询 latest release，存在平台匹配资产（`marshal_<version>_<os>_<arch>`）时用 `curl -fsSL` 下载预编译二进制；
-3. release 附带 `SHA256SUMS` 时强制校验 sha256，**校验失败即中止安装**；未附带时告警并跳过校验；
+3. 强制下载并校验 `SHA256SUMS`；清单缺失、目标条目不是唯一一项或 sha256 不匹配时均 **fail closed**，不会安装已下载资产，也不会把该失败静默降级为源码构建；
 4. 无匹配资产或下载失败时回退源码构建（见下节）；
 5. 安装到 `~/.local/bin`（可用 `MARSHAL_INSTALL_DIR` 覆盖），完成后自动运行 `marshal version` 自检并输出下一步指引（`marshal init` / `marshal doctor`）。
 
@@ -53,6 +53,14 @@ make build      # 输出 bin/marshal
 ```bash
 MARSHAL_TAG=v0.2.0 bash scripts/install.sh
 ```
+
+GitHub 的 `latest` API 不返回 prerelease；安装 unsigned RC 必须显式固定精确 tag，且仍执行同一套 fail-closed checksum 门禁：
+
+```bash
+MARSHAL_TAG=v1.0.0-rc1 bash scripts/install.sh
+```
+
+RC 是候选/预览资产，不代表已满足 Issue #212 的 macOS 签名/notarization 或 v1.0 `RELEASED` 门禁。
 
 升级后用 `marshal version` 确认实际生效的版本号。升级前建议确认没有进行中的 Run（见「`.marshal/` 状态目录与版本兼容」）。
 

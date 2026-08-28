@@ -3,7 +3,7 @@
 #
 # 策略：
 #   1. 存在 v* tag 的 GitHub release 且含当前平台匹配资产时，用 curl -fsSL 下载预编译二进制；
-#      release 附带 SHA256SUMS 时校验 sha256（校验失败即中止）；
+#      必须下载 SHA256SUMS 并校验 sha256（清单缺失或校验失败均中止）；
 #   2. 否则源码构建 go build -trimpath ./cmd/marshal（Go 版本须满足 go.mod 的 go 指令；
 #      无本地 checkout 时先浅克隆仓库）；
 #   3. 安装到 ~/.local/bin（可用 MARSHAL_INSTALL_DIR 覆盖），并输出下一步指引。
@@ -105,8 +105,36 @@ sha256_of() {
 }
 
 verify_sha256() {
-  local asset="$1" line expected actual
-  line="$(grep -E "^[0-9A-Fa-f]{64}[[:space:]].*${asset}[[:space:]]*\$" "${TMP_DIR}/SHA256SUMS" | sed -n 1p || true)"
+  local asset="$1" prefix line expected actual
+  prefix="${asset%_${OS}_${ARCH}}"
+  line="$(awk -v want="$asset" -v prefix="$prefix" '
+    {
+      if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9A-Fa-f]/) {
+        invalid=1
+        next
+      }
+      name=$2
+      if (name != prefix "_darwin_amd64" &&
+          name != prefix "_darwin_arm64" &&
+          name != prefix "_linux_amd64" &&
+          name != prefix "_linux_arm64") {
+        invalid=1
+        next
+      }
+      seen[name]++
+      count++
+      if (name == want) hash=$1
+    }
+    END {
+      if (invalid || count != 4 ||
+          seen[prefix "_darwin_amd64"] != 1 ||
+          seen[prefix "_darwin_arm64"] != 1 ||
+          seen[prefix "_linux_amd64"] != 1 ||
+          seen[prefix "_linux_arm64"] != 1 ||
+          seen[want] != 1) exit 1
+      print tolower(hash)
+    }
+  ' "${TMP_DIR}/SHA256SUMS")" || fatal "SHA256SUMS 必须且只能包含当前 tag 的四个平台资产，每项恰好一次"
   if [ -z "$line" ]; then
     fatal "SHA256SUMS 缺少 ${asset} 的校验项，中止安装"
   fi
@@ -138,11 +166,9 @@ try_release() {
     warn "release 无 ${OS}/${ARCH} 匹配资产，回退源码构建"
     return 1
   fi
-  if curl -fsSL -o "${TMP_DIR}/SHA256SUMS" "${base}/SHA256SUMS"; then
-    verify_sha256 "$asset"
-  else
-    warn "release 未附带 SHA256SUMS，跳过校验和验证"
-  fi
+  curl -fsSL -o "${TMP_DIR}/SHA256SUMS" "${base}/SHA256SUMS" \
+    || fatal "release ${TAG} 缺少或无法下载 SHA256SUMS；拒绝安装已下载资产"
+  verify_sha256 "$asset"
   return 0
 }
 
