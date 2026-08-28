@@ -18,15 +18,16 @@ ADR 0056 冻结了 Attempt admission、terminalization、DispatchLease eligibili
 
 1. 本合同只覆盖 v1.0 的单节点、单用户、可信仓库与 Darwin `darwin-local-dogfood` ordinary-user profile。它不提供恶意代码隔离、跨用户 containment、hardened assurance、远程 Sandbox authority 或稳定发布身份。
 2. ADR 0056 的单一 Attempt authority store/CAS 仍是业务权威。ResultIngress admission、launch/terminalization、DispatchLease eligibility、current Run authority、cleanup binding、unlock 与 successor 的判定都只能来自该 store。
-3. 本文新增 `AllocationRecoveryJournalV1` 是 Core-owned、authority-scoped 的 **Provider recovery projection**：它耐久记录已经获 Attempt authority 授权的 Provision/Terminate 外部副作用意图与观察结果，但不能创建 Attempt、终止 eligibility、签发 cleanup binding、宣布 Run terminal 或推进 lifecycle。
-4. recovery journal 的每条记录必须绑定精确 Attempt authority sequence 与 fact digest。projection 缺失、落后、损坏或与当前 Attempt authority 冲突时 fail closed；不得反向用 projection 修补、覆盖或推进 Attempt authority。
-5. 每次 Provision/Terminate mutation 前必须持有当前 Run authority。Terminate 还必须持有 ADR 0056 签发且仍 current 的 `cleanupBinding`，并绑定已提交的安全进程终点。仅凭 Provider map、路径存在性、Run snapshot、PID、环境变量或调用者声明均不授权副作用。
+3. Provision/Terminate 的 `SideEffectIntentV1`、`SideEffectReceiptV1` 与 `ReconcileDecisionV1` 必须是该单一 Attempt authority store 内 closed/versioned 的 authority subledger facts，并沿既有 `intent → receipt → reconcile` 状态机提交。只有已耐久提交且仍 current 的 exact intent 才授权一次对应外部副作用；receipt 是 Core 接纳的外部观察，reconcile decision 只能由 Core 依据当前 authority 与 receipt 产生。
+4. 本文新增 `AllocationRecoveryJournalV1` 只是 Core-owned、authority-scoped 的 **Provider 文件系统恢复 projection**。它只能从已提交的 authority subledger facts 重建，不能创建 intent、授权副作用、创建 Attempt、终止 eligibility、签发 cleanup binding、宣布 Run terminal 或推进 lifecycle。projection 缺失或落后时，Core 必须先从 authority facts 重建并重验文件系统；无法重建、损坏或与 authority 冲突时 fail closed，不得反向用 projection 修补或覆盖 authority。
+5. authority intent 的 admission 必须在同一 authority transaction/CAS 中完成 current Run、exact Attempt sequence、request digest、command/idempotency conflict 与生命周期条件检查，并 compare-and-append 后 fsync authority subledger；禁止 `check → 解锁 → append`。Provision 还要求 DispatchLease eligibility 为 active、无 terminalization/recovery barrier；Terminate 要求 ADR 0056 的 terminal cleanup phase、仍 current 的 `cleanupBinding` 与已提交的安全进程终点。transaction 只有在 intent 已耐久且为该 scope 建立排斥冲突 mutation 的 pending-effect barrier 后才释放。
+6. Provider 每次 mutation 前必须重新取得上述已提交 intent 并匹配当前 Run authority、exact tuple 与 pending-effect barrier；journal record、Provider map、路径存在性、Run snapshot、PID、环境变量或调用者声明均不能授权副作用。receipt/reconcile 提交或 intervention 关闭该 barrier；不得在同一 scope 并行 admission 第二个冲突 effect。
 
 ### 2. Allocation recovery journal
 
-`AllocationRecoveryJournalV1` 使用 append-only RFC 8785 JCS 记录，并形成单调 canonical hash-chain。每条记录至少包含：
+`AllocationRecoveryJournalV1` 使用 append-only RFC 8785 JCS 记录，并形成单调 canonical hash-chain。每个 frame 固定为：8 个 ASCII 小写十六进制数字（payload byte length，左侧补 `0`）、单字节 `:`、精确的 JCS payload bytes、单字节 LF；长度受固定上限约束，payload 内不得包含 JCS 对象之外的尾随内容。每条记录至少包含：
 
-- `schemaVersion`、`recordKind`、`recordId` 与 `recordedAt`；
+- `schemaVersion`、`journalSequence`、`recordKind`、`recordId` 与 `recordedAt`；
 - `authorityNamespaceId`、`taskId`、`runId`、`attemptId`、`allocationId`；
 - `leaseId`、`generation`、`fencingTokenDigest`、`commandId`、`idempotencyKey`；
 - `expectedAttemptSequence`、`attemptAuthorityFactDigest`；
@@ -35,81 +36,92 @@ ADR 0056 冻结了 Attempt admission、terminalization、DispatchLease eligibili
 
 冻结规则：
 
-1. `recordDigest = sha256(JCS(recordWithoutRecordDigest))`；第一条记录使用封闭 genesis digest，此后 `previousRecordDigest` 必须精确等于上一条已提交记录的 `recordDigest`。
-2. journal 解析拒绝重复/未知字段、尾随 bytes、非法时间、非 canonical digest、sequence 回退、断链、截断中间记录与同 `recordId` 不同内容。末尾仅允许识别为「未提交的截断 append」并截去该不完整尾部；任何已提交链内损坏都阻断该 authority scope 的新副作用。
-3. 同 `(authorityNamespaceId, commandId, requestDigest)` 同内容重放返回既有结果，零追加、零文件系统副作用；同 command 或 idempotency key 携带不同 request digest 固定 conflict。
-4. journal 文件、allocation parent directory 与 tombstone parent directory 必须由 Core 以 owner-only 权限、nofollow held directory descriptor 打开。路径字符串只作诊断；所有创建、stat、rename 与 fsync 都相对已验证 descriptor 执行。
-5. journal、Attempt authority store 与 Run journal 可以物理分文件，但只能由一个 `ProductionRuntime` 打开和串行化。任何实现若无法证明 mutation admission 与 authority CAS 的顺序，必须拒绝运行，不能退回内存锁。
+1. `journalSequence` 从 `1` 开始且每个完整 frame 精确递增 `1`。`recordDigest = sha256(JCS(recordWithoutRecordDigest))`；第一条记录使用封闭 genesis digest，此后 `previousRecordDigest` 必须精确等于上一条完整记录的 `recordDigest`。
+2. 解析器先读满 8 个小写十六进制长度 bytes 与 `:`，再读满声明长度的 payload 和唯一终止 `\n`，之后才解析 strict JCS。重复/未知字段、payload 尾随 bytes、非法时间、超长 frame、sequence 非连续、非 canonical digest、断链、同 `recordId` 不同内容或任何完整 frame 内容错误都固定为 corruption。
+3. 只有 EOF 落在最后一个 frame 的长度 header、payload 或终止 LF 内、已读取 header bytes 都是上述 framing grammar 的合法前缀，且此前所有 frame 完整有效时，该 EOF suffix 才是可截去的 partial tail；截到上一完整 frame 后必须 fsync journal。完整 frame 后出现不构成下一个合法 frame 前缀的 bytes 是 trailing garbage，不能按 partial tail 忽略；中间截断、完整但非法的末帧、断链与 trailing garbage 都阻断该 authority scope 的新副作用并进入 intervention。
+4. 同 `(authorityNamespaceId, commandId, requestDigest)` 同内容重放返回既有结果，零追加、零文件系统副作用；同 command 或 idempotency key 携带不同 request digest 固定 conflict。
+5. journal 文件、allocation parent directory 与 tombstone parent directory 必须由 Core 以 owner-only 权限、nofollow held directory descriptor 打开。journal 首次创建后必须先 fsync 文件并 fsync 其 held parent directory，才可追加第一个 frame。路径字符串只作诊断；所有创建、stat、rename 与 fsync 都相对已验证 descriptor 执行。
+6. journal 与 authority store 可以物理分文件，但 journal frame 必须逐项投影已提交 authority fact，并回显该 fact digest/sequence；journal 自身不能使未提交 intent 生效。只有一个 `ProductionRuntime` 可以打开和串行化两者，任何实现若无法证明 authority fact → projection 的顺序与可重建性，必须拒绝运行，不能退回内存锁。
 
 ### 3. Provision：intent-first 与耐久可见性
 
 Provision 的唯一成功序列为：
 
 ```text
-current Run/Attempt authority recheck
-  → append provision-intent + journal fsync
-  → 在 held parent 下创建私有 staging directory
-  → descriptor-relative rename staging → live allocation name
+authority CAS append provision-intent + authority fsync
+  → project intent frame + journal fsync
+  → 在 held parent 下 no-clobber 创建私有 staging directory 和 identity marker
+  → marker file、staging directory、parent directory fsync
+  → authority append staging-prepared observation + authority fsync
+  → project observation frame + journal fsync
+  → descriptor-relative no-replace rename staging → live allocation name
   → parent directory fsync
-  → append provision-receipt + journal fsync
+  → authority append provision-receipt + authority fsync
+  → project receipt frame + journal fsync
   → 返回 receipt
 ```
 
-1. `AllocationProvisionIntentV1` 精确绑定完整 authority/Attempt/allocation/lease/generation tuple、冻结 requirements、workdir/env allowlist、staged/live 相对名、对象 identity 预期、request digest 与 Attempt authority fact。
-2. staging 与 live 名只能由 Core 从 allocation identity 机械派生，必须是单一 parent 下的普通目录项；禁止绝对删除目标、`..`、symlink、mount/device 漂移、调用 shell 或以路径再解析替代 held descriptor。
-3. `AllocationProvisionReceiptV1` 只在 live rename 已完成且 parent directory fsync 成功后追加；它回显 intent digest、request digest、精确 tuple、live directory device/inode/type/owner/mode observation 与 receipt digest。
-4. `ProvisionReceipt` 是 observation，不签发 authority。只有 Attempt authority 中相邻的 launch authorization/process fact 才能允许后续 Exec。
-5. 如果 intent 已提交而 receipt 未提交，调用方不得创建第二个 allocation；必须按第 6 节 Inspect/Reconcile 收敛同一 command。
+1. `AllocationProvisionIntentV1` authority fact 精确绑定完整 authority/Attempt/allocation/lease/generation tuple、冻结 requirements、workdir/env allowlist、staged/live/marker 相对名、对象 identity 预期、request digest、expected authority sequence 与 admission fact digest。
+2. staging、live 与 marker 名只能由 Core 从 allocation identity 机械派生，必须位于 held parent 下；创建 staging 必须使用 nofollow/no-clobber primitive，已存在即 conflict。禁止绝对删除目标、`..`、symlink、mount/device 漂移、调用 shell 或以路径再解析替代 held descriptor。
+3. staging 创建后，Core 必须用 descriptor-relative `O_CREAT|O_EXCL|O_NOFOLLOW` 或等价 no-clobber primitive 在其中创建 owner-only、closed JCS identity marker；marker target 已存在即 conflict。marker 绑定 intent/request digest、完整 tuple、staging relative name 与 nonce。marker file fsync、staging directory fsync、parent directory fsync 后，Core 重新以 held descriptors 读取 marker，并把 marker digest 与 staging 的 device/inode/type/owner/mode 作为 `AllocationStagingPreparedV1` authority observation 耐久提交；该 identity 未进入 authority subledger 和 recovery projection 前不得 rename。
+4. staging → live 必须使用 descriptor-relative no-replace primitive；Darwin 使用 `renameatx_np(..., RENAME_EXCL)` 或语义等价的 no-clobber 实现。发起 rename 时 target 已存在固定 conflict，不得覆盖、交换或删除；同 intent crash recovery 若观察到 staging 缺失且 live 已是 prepared fact 的 exact inode/marker，只能把它作为「rename 可能已完成」进入 parent fsync/reconcile，不能再次 rename。rename 前 staging identity/marker 必须与 prepared fact 相同，rename 后 live 必须仍是同一 device/inode/type 与 marker。
+5. `AllocationProvisionReceiptV1` authority fact 只在 live rename 已完成且 parent directory fsync 成功后提交；它回显 intent/prepared digest、request digest、精确 tuple、live directory device/inode/type/owner/mode、marker digest 与 receipt digest。projection receipt frame journal-fsync 完成前不得向调用者返回成功。
+6. `ProvisionReceipt` 是被 Core 接纳的 observation，不签发后续 Exec authority。只有 Attempt authority 中相邻的 launch authorization/process fact 才能允许 Exec。
+7. 如果 intent 已提交而 receipt 未提交，调用方不得创建第二个 allocation；必须按第 6 节 Inspect/Reconcile 收敛同一 command。
 
 ### 4. Terminate：进程终点、tombstone 与 receipt
 
 Terminate 的唯一成功序列为：
 
 ```text
-current Run authority + cleanupBinding recheck
-  → 精确绑定 ADR 0056 process-absent | process-terminated fact
-  → append terminate-intent + journal fsync
-  → descriptor-relative rename live allocation → tombstone
+authority CAS recheck current Run + cleanupBinding + exact process terminal fact
+  → append terminate-intent（绑定 live inode/marker）+ authority fsync
+  → project intent frame + journal fsync
+  → descriptor-relative no-replace rename live allocation → tombstone
   → parent directory fsync
-  → append terminate-receipt + journal fsync
+  → authority append terminate-receipt + authority fsync
+  → project receipt frame + journal fsync
   → 返回 receipt
 ```
 
 1. `TerminateRequestV1` 必须是 closed/versioned 对象，精确包含：`authorityNamespaceId`、`taskId/runId/attemptId`、`allocationId`、`leaseId/generation/fencingTokenDigest`、`terminalizationId`、`cleanupBindingDigest`、`processTerminalFactDigest`、`orchestratorId`、`commandId/idempotencyKey`、`expectedAttemptSequence/attemptAuthorityFactDigest`、`liveRelativeName/tombstoneRelativeName` 与 `requestDigest`。
 2. `requestDigest = sha256(JCS(requestWithoutRequestDigest))`。任一字段缺失、未知、跨 scope、跨 generation、非 current、digest 不可重算或与 intent 不同都必须在 mutation 前拒绝。
-3. `AllocationTerminateIntentV1` 在任何 rename/delete 前追加并 fsync，精确绑定 request digest 与当时 current 的 authority/cleanup/process-terminal facts。intent 不等于已终止。
+3. `AllocationTerminateIntentV1` authority fact 在任何 rename/delete 前追加并 fsync，精确绑定 request digest、当时 current 的 authority/cleanup/process-terminal facts，以及由 held descriptor 观察的 live device/inode/type/owner/mode 和 identity marker digest。intent 不等于已终止，projection intent frame 也不授权终止。
 4. 只有 ADR 0056 的精确控制单元已由 Core 证明 absent/terminated 后才可 rename。PID/PGID/path 不确定、detached descendant、process identity conflict 或 `not found` 均不能替代 process terminal fact。
-5. 终止使用同一 held parent descriptor 下的 `renameat`（或等价 descriptor-relative primitive）把 live 目录原子移到 deterministic tombstone。禁止直接 `RemoveAll(livePath)`，禁止跟随 symlink，禁止在未知对象上扩大删除范围。
-6. `AllocationTerminateReceiptV1` 只在 tombstone rename 与 parent fsync 完成后追加；它精确回显 request/intent digest、完整 tuple、live-absent+tombstone-present 的 descriptor-relative observation、tombstone object identity、`disposition=applied` 与 `receiptDigest`。journal fsync 完成前不得返回成功。
+5. 终止必须使用同一 held parent descriptor 下的 descriptor-relative no-replace primitive；Darwin 使用 `renameatx_np(..., RENAME_EXCL)` 或语义等价实现，把 live 原子移到 deterministic tombstone。发起 rename 前必须证明 live 与 intent 的 device/inode/type/marker 相同且 tombstone 不存在；target 已存在固定 conflict，不得覆盖、交换或删除。同 intent crash recovery 若观察到 live 缺失且 tombstone 已是 intent 的 exact inode/marker，只能把它作为「rename 可能已完成」进入 parent fsync/reconcile，不能再次 rename。rename 后 tombstone 必须仍是同一 inode/type/marker，live 必须缺失。禁止直接 `RemoveAll(livePath)`、跟随 symlink 或在未知对象上扩大删除范围。
+6. `AllocationTerminateReceiptV1` authority fact 只在 no-replace tombstone rename 与 parent fsync 完成后提交；它精确回显 request/intent digest、完整 tuple、live-absent+tombstone-present 的 descriptor-relative observation、与 intent 相同的 tombstone device/inode/type/marker identity、`disposition=applied` 与 `receiptDigest`。projection receipt frame journal-fsync 完成前不得返回成功。
 7. receipt 本身仍是 Provider effect observation。Core 只有在重新校验 receipt digest、当前 terminalization/cleanup binding 与 Attempt authority 后，才可 append ADR 0056 的 `allocation-terminated`；`cleanup-completed` 和 `lease-released` 继续按 ADR 0056 的顺序分别提交。
-8. tombstone bytes 默认保守保留；物理回收属于后续独立、可失败且可审计的 GC effect，不是本 ADR 的 Terminate 成功条件。GC 不得删除 journal、Outcome、Evidence 或当前 cleanup 所需对象。
+8. 当前 v1 未实现 allocation tombstone GC，因此 tombstone 必须永久保留，任何 production path 都不得删除它。未来若引入物理回收，必须先用独立 ADR 冻结 closed GC intent/receipt、authority、retention 与恢复合同；它不是本 ADR 的 Terminate 成功条件，也不得删除 journal、Outcome 或 Evidence。
 
 ### 5. `not found` 与终止判定
 
 1. Provider/文件系统返回 `not found` 只表示当前一次查找未观察到对象，**不等于** `terminated`、`not_applied`、`cleanup-completed` 或可解锁。
 2. 只有以下条件同时满足时，Core 才可把 Local allocation 判为已终止：同一 request 的 valid terminate intent；live 名缺失；exact tombstone object 存在且 identity 与 intent/receipt 一致；parent fsync 已完成；valid terminate receipt 已 journal-fsync；当前 Attempt authority 仍绑定该 terminalization/cleanup tuple。
-3. 若 receipt 已耐久提交而 tombstone 后续因已授权 GC 缺失，receipt + GC receipt 可以证明已终止；孤立的「live 与 tombstone 都不存在」永远只能得到 `unknown`。
-4. live 与 tombstone 同时存在、二者都不存在且无 GC receipt、对象 identity 漂移、路径交换或 journal/authority 不一致时，结论固定为 conflict/unknown：零删除、零 release、零 unlock、零 successor，并进入 intervention。
+3. 当前合同不接受 tombstone 缺失作为成功证明。即使 receipt 已耐久提交，tombstone 缺失或与 intent inode/marker 不同也必须得到 conflict/unknown；孤立的「live 与 tombstone 都不存在」永远只能得到 `unknown`。
+4. live 与 tombstone 同时存在、二者都不存在、对象 identity 漂移、路径交换或 projection/authority 不一致时，结论固定为 conflict/unknown：零删除、零 release、零 unlock、零 successor，并进入 intervention。
 
 ### 6. Lost response、restart 与 crash 矩阵
 
 | crash / replay 点 | 唯一恢复结论 |
 | --- | --- |
-| Provision intent 前 | 零副作用；fresh request 可重新 admission。 |
-| Provision intent 后、staging/live rename 前 | current authority 与 exact staging identity 均匹配时续作同一 command；未知对象或漂移则 conflict。 |
-| Provision rename 后、parent fsync 前 | 重新以 descriptor 观察 exact live；匹配时补 parent fsync，再追加 receipt；不得创建第二个 allocation。 |
-| Provision parent fsync 后、receipt 前 | exact live 匹配时追加同一 receipt；不匹配则 conflict。 |
-| Provision receipt 后响应丢失 | 同 request digest 返回既有 receipt；零追加、零新目录。 |
+| Provision authority intent 前 | 零副作用；fresh request 可重新 admission。 |
+| Provision intent 后、staging 创建前 | 从 authority intent 重建 projection 后续作同一 command；不得生成新 intent。 |
+| staging/marker 创建后、prepared fact 前 | 只有 marker/dir/parent 可重验并补 fsync、exact identity 可耐久提交时才补同一 prepared fact；未知对象、target 已存在或漂移则 conflict。 |
+| prepared fact 后、staging→live rename 前 | 重验 current intent/barrier、exact staging inode/marker 且 live 缺失后，才可发起同一 no-replace rename。 |
+| Provision rename 后、parent fsync 前 | staging 缺失且 exact live inode/marker 匹配时补 parent fsync，再提交 receipt；不得再次 rename或创建第二个 allocation。 |
+| Provision parent fsync 后、receipt 前 | exact live 匹配时提交同一 authority receipt 并投影；不匹配则 conflict。 |
+| Provision receipt 后响应丢失 | 同 request digest 返回既有 authority receipt；零追加 authority fact、零新目录。 |
 | `process-started` 前 launch 不确定 | 沿 ADR 0056 进入 fence/intervention；不得凭 allocation journal 猜测 kill 或终止。 |
-| Terminate intent 前 | 零 allocation mutation；必须重新取得 current authority、cleanup binding 与 process terminal fact。 |
-| Terminate intent 后、rename 前 | 重新验证 exact process terminal fact、live identity 与 cleanup binding；匹配才续作。 |
-| Terminate rename 后、parent fsync 前 | exact tombstone present 且 live absent时补 parent fsync；两者同时/均不确定则 conflict。 |
-| Terminate parent fsync 后、receipt 前 | exact tombstone 匹配时追加同一 receipt；不得把 `not found` 推断为成功。 |
-| Terminate receipt 后响应丢失 | 同 request digest 返回既有 receipt；零追加、零 signal、零 rename。 |
+| Terminate authority intent 前 | 零 allocation mutation；必须重新取得 current authority、cleanup binding 与 process terminal fact。 |
+| Terminate intent 后、rename 前 | 重验 current intent/barrier、exact process terminal fact、live inode/marker 与 cleanup binding；tombstone 缺失才可发起同一 no-replace rename。 |
+| Terminate rename 后、parent fsync 前 | live 缺失且 exact tombstone inode/marker 与 intent 相同时补 parent fsync；不得再次 rename；两者同时或 identity 不确定则 conflict。 |
+| Terminate parent fsync 后、receipt 前 | exact tombstone 匹配时提交同一 authority receipt 并投影；不得把 `not found` 推断为成功。 |
+| Terminate receipt 后响应丢失 | 同 request digest 返回既有 authority receipt；零追加 authority fact、零 signal、零 rename。 |
 | receipt 后、`allocation-terminated` 前 | Core 重验 receipt/current tuple 后补 Attempt authority fact。 |
 | `allocation-terminated` 后、`cleanup-completed` 前 | 按 ADR 0056 补 cleanup fact；journal 不得自行解锁。 |
-| Runtime restart | 先验证 Attempt authority、allocation journal 全链与 parent/tombstone observation，再恢复 projection；任何缺口 fail closed。 |
-| journal 截断/断链、同 command 不同 digest | 截断未提交尾部仅可回到上一完整 record；断链/conflict 阻断副作用并 intervention。 |
+| Runtime restart | 先验证 Attempt authority subledger，再从 authority facts 验证/重建 projection，并重验 parent/live/tombstone identity；任何不可收敛缺口 fail closed。 |
+| journal partial tail | 仅按第 2 节截到上一完整 frame 并 fsync，再从 authority facts 重建缺失 projection；不得从 partial bytes 推断 effect。 |
+| journal trailing garbage/断链、同 command 不同 digest | 固定 corruption/conflict，阻断副作用并 intervention；不得静默 truncate 或重试。 |
 
 所有恢复都复用原 `commandId/idempotencyKey/requestDigest`，不得以 delivery retry 创建新业务 intent。无法取得当前 Run authority、cleanup binding 或精确对象 identity 时，唯一结论是等待/人工介入，不是 blind retry。
 
@@ -134,12 +146,13 @@ current Run authority + cleanupBinding recheck
 
 本 ADR 接受后，最小实现必须作为一个纵切完成，不得只新增孤立 package 后声称 `INTEGRATED`：
 
-1. 先实现 `AllocationRecoveryJournalV1` canonical/hash-chain 与 request/receipt closed types，覆盖 corrupt/truncated/replay/conflict 负测；
-2. 在 Local Provider 中实现 descriptor-relative Provision/Terminate、intent-first、parent/journal fsync 与 tombstone；移除直接 `RemoveAll(livePath)` 成功路径；
-3. 将 journal 接到 RB1 Attempt authority 与 RB2 process unit；覆盖第 6 节全部 crash points、两次 restart、ABA/path swap、symlink、lost response、not-found、跨 orchestrator 与 cleanup binding 漂移；
-4. 建立唯一 `ProductionRuntime`/`PublicApplicationPort`，让 CLI 与 server 同进程调用；删除 server child CLI 和 production 环境选择器，确保 legacy/direct execution 从 production import graph 不可达；
-5. 在最终 composition root 上用真实 Pi 完成：durable Run → allocation-carried Agent → ResultIngress → independent Verification/ReviewDecision → `ACCEPTED`，并执行 restart/late result/terminate lost-response canary；
-6. Darwin required conformance、静态检查、跨平台编译、release contract 与安装验证通过后，能力才可从 `COMPONENT` 升为 `INTEGRATED`；稳定版签名/notarization 与 Linux authority 仍按各自独立门禁，不得由本 ADR 冒充关闭。
+1. 先在 RB1 单一 authority store 内实现 closed SideEffectIntent/Receipt/ReconcileDecision subledger、pending-effect barrier 与原子 admission；覆盖 stale sequence、check-then-append、重复 command 和冲突 effect 负测；
+2. 实现 `AllocationRecoveryJournalV1` exact framing/sequence/canonical hash-chain、authority-fact projection/rebuild 与 request/receipt closed types，覆盖 partial-tail、trailing-garbage、corrupt/replay/conflict 负测；
+3. 在 Local Provider 中实现 marker-bound identity、descriptor-relative no-replace Provision/Terminate、file/dir/parent/journal fsync 与 tombstone 永不删除；移除直接 `RemoveAll(livePath)` 成功路径；
+4. 将 authority subledger/projection 接到 RB2 process unit；覆盖第 6 节全部 crash points、两次 restart、target-exists、ABA/path swap、inode/marker 漂移、symlink、lost response、not-found、跨 orchestrator 与 cleanup binding 漂移；
+5. 建立唯一 `ProductionRuntime`/`PublicApplicationPort`，让 CLI 与 server 同进程调用；删除 server child CLI 和 production 环境选择器，确保 legacy/direct execution 从 production import graph 不可达；
+6. 在最终 composition root 上用真实 Pi 完成：durable Run → allocation-carried Agent → ResultIngress → independent Verification/ReviewDecision → `ACCEPTED`，并执行 restart/late result/terminate lost-response canary；
+7. Darwin required conformance、静态检查、跨平台编译、release contract 与安装验证通过后，能力才可从 `COMPONENT` 升为 `INTEGRATED`；稳定版签名/notarization 与 Linux authority 仍按各自独立门禁，不得由本 ADR 冒充关闭。
 
 ## 后果
 
