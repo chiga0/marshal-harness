@@ -3,7 +3,7 @@
   "info": {
     "title": "Marshal Public API",
     "version": "v1alpha1",
-    "description": "Versioned HTTP/JSON Public API of the resident marshal-server Control Plane (ADR 0018 §1/§3/§16). Protocol family marshal-public-api, version v1alpha1. Core is the only business authority: Task create delegates to planning, Task cancel to the frozen explicit-abort lifecycle path, Run approval to the human approval gate, Run status to the Run store projection. Requests carrying providerType are rejected outright; requests carrying workloadRole, allocationId, generation, fencingToken or DispatchLease identity fail closed. The SSE read-only event projection (/events) with its cursor/resync semantics (ADR 0018 §4/§14) and its polling fallback (/events/poll) are part of this frozen surface; evidence retrieval, remote provider registration and TLS belong to later protocol revisions and are not part of this frozen surface."
+    "description": "Versioned HTTP/JSON Public API of the resident marshal-server Control Plane (ADR 0018 §1/§3/§16 and ADR 0052 §1.7). Protocol family marshal-public-api, version v1alpha1. Core is the only business authority: Task create delegates to planning, Run start to the same production task-run composition root as the CLI, Task cancel to the frozen explicit-abort lifecycle path, Run approval to the human approval gate, and Run status to the durable Run store projection. Requests carrying providerType are rejected outright; requests carrying workloadRole, allocationId, generation, fencingToken or DispatchLease identity fail closed. The SSE read-only event projection (/events) with its cursor/resync semantics (ADR 0018 §4/§14) and its polling fallback (/events/poll) are part of this frozen surface."
   },
   "servers": [
     {
@@ -17,7 +17,7 @@
       "post": {
         "operationId": "createTask",
         "summary": "Create one Task and its first Run",
-        "description": "Idempotent submission under the frozen identity quadruple (authorityNamespaceId, scope, idempotencyKey, requestDigest): authorityNamespaceId is derived from the bound repository identity and owns the durable submission record (IdempotencyRecord). Validates the TaskSpec and PolicySnapshot against the durable contracts, then plans the Run to READY through the existing planning business path. The requestDigest must equal the RFC 8785 canonical digest of the payload. The identical quadruple merges into the stored result (HTTP 200, no second Run); the identical (authorityNamespaceId, scope, idempotencyKey) with a different requestDigest conflicts fail closed (HTTP 409).",
+        "description": "Idempotent submission under an operation/resource-bound authority identity: authorityNamespaceId is derived from the bound repository identity and owns the durable IdempotencyRecord. Validates the TaskSpec and PolicySnapshot against the durable contracts, then plans the Run to READY through the existing planning business path. The requestDigest must equal the RFC 8785 canonical digest of the payload. An identical lookup identity and digest merges into the stored result; the identical lookup identity with a different digest conflicts fail closed.",
         "parameters": [
           {"$ref": "#/components/parameters/RequestId"},
           {"$ref": "#/components/parameters/ProtocolVersion"},
@@ -129,6 +129,60 @@
             "content": {
               "application/json": {
                 "schema": {"$ref": "#/components/schemas/TaskCancellation"}
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "403": {"$ref": "#/components/responses/ForbiddenIdentity"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/MethodNotAllowed"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "422": {"$ref": "#/components/responses/Rejected"},
+          "500": {"$ref": "#/components/responses/Internal"}
+        }
+      }
+    },
+    "/v1alpha1/runs/{runId}/start": {
+      "post": {
+        "operationId": "startRun",
+        "summary": "Start or resume one existing durable Run",
+        "description": "Idempotent submission into the single production task-run composition root. Runtime profile, adapter, budgets and verification boundaries remain frozen by the TaskSpec, PolicySnapshot and CapabilitySnapshot; the payload accepts no caller-selected execution knobs. Before execution, marshal-server durably records an operation/run-bound pending command intent carrying the initial Run sequence and Attempt. Success, RETRY_PENDING/BLOCKED failure, and response-loss recovery from RUNNING/VERIFYING become a completed RunExecution receipt; replay never consumes a second Attempt. Worker success stops at VERIFYING; this endpoint never fabricates independent verification or ReviewDecision evidence.",
+        "parameters": [
+          {"$ref": "#/components/parameters/RequestId"},
+          {"$ref": "#/components/parameters/ProtocolVersion"},
+          {"$ref": "#/components/parameters/Principal"},
+          {"$ref": "#/components/parameters/Audience"},
+          {"$ref": "#/components/parameters/Scope"},
+          {"$ref": "#/components/parameters/Deadline"},
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "schema": {"$ref": "#/components/schemas/MarshalId"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/RunStartRequest"}
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The production executor completed one bounded attempt and durable Run progress was observed.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/RunExecution"}
+              }
+            }
+          },
+          "200": {
+            "description": "Idempotent replay merged; the stored RunExecution is returned and no second Attempt starts.",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/RunExecution"}
               }
             }
           },
@@ -588,6 +642,36 @@
           "sequence": {"type": "integer", "minimum": 0}
         }
       },
+      "RunStartRequest": {
+        "allOf": [
+          {"$ref": "#/components/schemas/IdempotencyEnvelope"},
+          {
+            "type": "object",
+            "properties": {
+              "payload": {"$ref": "#/components/schemas/RunStartPayload"}
+            }
+          }
+        ]
+      },
+      "RunStartPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Empty by design. Execution inputs and policy are frozen by the durable Run."
+      },
+      "RunExecution": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["apiVersion", "kind", "authorityNamespaceId", "taskId", "runId", "attemptId", "state"],
+        "properties": {
+          "apiVersion": {"const": "marshal.dev/v1alpha1"},
+          "kind": {"const": "RunExecution"},
+          "authorityNamespaceId": {"$ref": "#/components/schemas/AuthorityNamespaceId"},
+          "taskId": {"type": "string"},
+          "runId": {"type": "string"},
+          "attemptId": {"type": "string"},
+          "state": {"$ref": "#/components/schemas/RunState"}
+        }
+      },
       "RunApprovalRequest": {
         "allOf": [
           {"$ref": "#/components/schemas/IdempotencyEnvelope"},
@@ -767,11 +851,11 @@
     }
   },
   "x-idempotent-submission": {
-    "description": "Frozen idempotent submission identity of the public-api Port (ADR 0018 §3): (authorityNamespaceId, scope, idempotencyKey, requestDigest). The submission record is an authority object owned by authorityNamespaceId, never by an actor-side securityDomainId. The identical quadruple merges into the stored result without re-executing the business operation; the identical lookup key with a different requestDigest conflicts fail closed; a failed business operation stores nothing and stays retryable.",
-    "identity": ["authorityNamespaceId", "scope", "idempotencyKey", "requestDigest"],
-    "lookupKey": ["authorityNamespaceId", "scope", "idempotencyKey"],
+    "description": "Operation/resource-bound idempotent submission authority. The client envelope still supplies scope, idempotencyKey and requestDigest, while the authenticated route contributes operation and resource so two Runs can never share one receipt accidentally. A pending intent is durable before execution; completed receipts merge without re-execution. Returned failures retain only stable code/reason identity on the retryable pending intent, while a crash leaves the same intent for deterministic recovery from current Run authority.",
+    "identity": ["authorityNamespaceId", "scope", "operation", "resource", "idempotencyKey", "requestDigest"],
+    "lookupKey": ["authorityNamespaceId", "scope", "operation", "resource", "idempotencyKey"],
     "recordKind": "IdempotencyRecord",
-    "recordSchema": ["apiVersion", "kind", "authorityNamespaceId", "scope", "idempotencyKey", "requestDigest", "status", "result", "createdAt"]
+    "recordSchema": ["apiVersion", "kind", "authorityNamespaceId", "scope", "operation", "resource", "idempotencyKey", "requestDigest", "phase", "intent", "status", "result", "createdAt", "completedAt", "lastFailureCode", "lastFailureReason", "lastFailureAt"]
   },
   "x-forbidden-identity": {
     "description": "ADR 0018 §3 identity matrix of the public-api Port. Requests carrying any of these fields fail closed in body (any depth), query or headers.",
@@ -792,8 +876,8 @@
     "SCOPE_MISMATCH": {"status": 400, "reasons": ["scope-mismatch"]},
     "NOT_FOUND": {"status": 404, "reasons": ["unknown-route", "task-not-found", "run-not-found"]},
     "IDEMPOTENCY_CONFLICT": {"status": 409, "reasons": ["idempotency-key-conflict"]},
-    "INVALID_STATE": {"status": 409, "reasons": ["run-lease-held", "run-already-exists", "invalid-lifecycle-transition", "run-terminal", "no-cancelable-run", "journal-conflict", "approval-gate-unavailable", "approval-stale"]},
-    "REJECTED": {"status": 422, "reasons": ["task-spec-invalid", "policy-snapshot-invalid", "planning-rejected", "approval-not-required", "control-input-invalid", "approval-rejected", "journal-truncated", "run-inspect-failed", "run-state-conflict", "ambiguous-run", "outcome-unavailable", "abort-staging-failed", "journal-append-failed", "abort-commit-failed", "outcome-commit-failed", "snapshot-write-failed", "run-lease-unavailable", "request-cancelled"]},
+    "INVALID_STATE": {"status": 409, "reasons": ["run-lease-held", "run-already-exists", "invalid-lifecycle-transition", "run-terminal", "run-start-progress-conflict", "no-cancelable-run", "journal-conflict", "approval-gate-unavailable", "approval-stale"]},
+    "REJECTED": {"status": 422, "reasons": ["task-spec-invalid", "policy-snapshot-invalid", "planning-rejected", "approval-not-required", "control-input-invalid", "approval-rejected", "journal-truncated", "run-inspect-failed", "run-state-conflict", "run-start-intent-invalid", "run-start-intent-drift", "run-executor-unavailable", "run-execution-failed", "run-execution-not-observed", "ambiguous-run", "outcome-unavailable", "abort-staging-failed", "journal-append-failed", "abort-commit-failed", "outcome-commit-failed", "snapshot-write-failed", "run-lease-unavailable", "request-cancelled"]},
     "INTERNAL": {"status": 500, "reasons": ["internal"]}
   }
 }

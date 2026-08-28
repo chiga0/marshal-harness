@@ -568,7 +568,7 @@ func registrationSubmitIdentityKey(protocolVersion, idempotencyKey string) strin
 }
 
 // submit runs one idempotent registration submission under the
-// (authorityNamespaceId, scope, idempotencyKey, requestDigest) discipline,
+// operation/resource-bound idempotency discipline,
 // kept in the Port-private idempotency store: idempotencyKey is the
 // caller-supplied composite of the request's exact protocol version
 // spelling and the envelope idempotencyKey, so two submissions that differ
@@ -580,6 +580,8 @@ func (p *RegistrationPort) submit(ctx context.Context, env envelope, idempotency
 	outcome, err := p.idempotency.Submit(Identity{
 		Namespace: p.namespace,
 		Scope:     p.namespace.AuthorityScopeId,
+		Operation: "provider.registration.submit",
+		Resource:  "registrations",
 		Key:       idempotencyKey,
 	}, env.RequestDigest, func() (json.RawMessage, int, error) {
 		result, status, apiErr := execute(ctx, env.Payload)

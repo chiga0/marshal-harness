@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/repository"
 	"github.com/chiga0/marshal-harness/internal/runstore"
@@ -39,6 +41,37 @@ func testRepository(t *testing.T) string {
 	git("config", "user.name", "Marshal Server Test")
 	git("config", "user.email", "server-test@example.invalid")
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("marshal-server test base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The stable shell fixture exposes the exact version JSON identity and
+	// task-run argv needed by the process seam without compiling/executing an
+	// anonymous temporary Go helper binary on macOS.
+	fixtureCLI := `#!/bin/sh
+set -eu
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ "${1:-}" = "version" ] && [ "${2:-}" = "--json" ]; then
+  head=$(git -C "$root" rev-parse --verify HEAD)
+  printf '{"version":"fixture","commit":"%s","buildDate":"fixture","goVersion":"fixture","os":"darwin","arch":"arm64","selfProfile":"darwin-local-dogfood"}\n' "$head"
+  exit 0
+fi
+if [ "${1:-}" = "task" ] && [ "${2:-}" = "run" ]; then
+  printf '%s\n' "$@" > "$root/.marshal/fixed-cli-invocation"
+  printf 'embedded=%s\n' "${MARSHAL_EMBEDDED_SANDBOX:-}" >> "$root/.marshal/fixed-cli-invocation"
+  printf 'production=%s\n' "${MARSHAL_PRODUCTION_GATE:-}" >> "$root/.marshal/fixed-cli-invocation"
+  if [ "${MARSHAL_WORKER_EXECUTOR+x}" = x ]; then
+    printf 'worker=%s\n' "$MARSHAL_WORKER_EXECUTOR" >> "$root/.marshal/fixed-cli-invocation"
+  else
+    printf 'worker=absent\n' >> "$root/.marshal/fixed-cli-invocation"
+  fi
+  if [ -n "${UNRELATED_SECRET:-}" ]; then printf 'leaked\n' >> "$root/.marshal/fixed-cli-invocation"; fi
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(filepath.Join(root, "bin", "marshal"), []byte(fixtureCLI), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	git("add", "README.md")
@@ -168,6 +201,182 @@ func TestRunUsage(t *testing.T) {
 	}
 	if code := run(context.Background(), []string{"positional"}, &stdout, &stderr); code != exitUsage {
 		t.Fatalf("positional argument exit = %d, want %d", code, exitUsage)
+	}
+}
+
+func TestFixedMarshalIdentityRechecksObjectAndFiltersEnvironment(t *testing.T) {
+	root := testRepository(t)
+	environment := marshalChildEnvironment(append(os.Environ(), "UNRELATED_SECRET=must-not-cross"))
+	identity, err := bindMarshalExecutable(root, "", environment)
+	if err != nil {
+		t.Fatalf("bind fixed marshal: %v", err)
+	}
+	if err := executeRunThroughFixedCLI(context.Background(), identity, root, "run-identity", environment); err != nil {
+		t.Fatalf("execute admitted fixed marshal: %v", err)
+	}
+	marker := filepath.Join(root, ".marshal", "fixed-cli-invocation")
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "leaked") || strings.Contains(string(data), "must-not-cross") {
+		t.Fatalf("unrelated environment crossed the fixed CLI boundary: %q", data)
+	}
+	if !strings.Contains(string(data), "embedded=1\n") || !strings.Contains(string(data), "production=1\n") ||
+		!strings.Contains(string(data), "worker=absent\n") {
+		t.Fatalf("fixed CLI did not observe the locked production composition: %q", data)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(identity.Path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("# drift\n"); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeRunThroughFixedCLI(context.Background(), identity, root, "run-drift", environment); err == nil {
+		t.Fatal("fixed marshal execution accepted object drift")
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("drifted executable reached task run: %v", err)
+	}
+}
+
+func TestMarshalChildEnvironmentLocksProductionComposition(t *testing.T) {
+	cases := []struct {
+		name   string
+		parent []string
+	}{
+		{name: "legacy-and-disabled", parent: []string{"MARSHAL_WORKER_EXECUTOR=legacy", "MARSHAL_EMBEDDED_SANDBOX=0"}},
+		{name: "legacy-and-production-disabled", parent: []string{"MARSHAL_WORKER_EXECUTOR=legacy", "MARSHAL_PRODUCTION_GATE=0"}},
+		{name: "malicious-values", parent: []string{"MARSHAL_WORKER_EXECUTOR=/tmp/evil", "MARSHAL_EMBEDDED_SANDBOX=evil", "MARSHAL_PRODUCTION_GATE=evil"}},
+		{name: "all-unset"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := testRepository(t)
+			parent := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+			parent = append(parent, testCase.parent...)
+			environment := marshalChildEnvironment(parent)
+			identity, err := bindMarshalExecutable(root, "", environment)
+			if err != nil {
+				t.Fatalf("bind fixed marshal: %v", err)
+			}
+			if err := executeRunThroughFixedCLI(context.Background(), identity, root, "run-env", environment); err != nil {
+				t.Fatalf("execute fixed marshal: %v", err)
+			}
+			data, err := os.ReadFile(filepath.Join(root, ".marshal", "fixed-cli-invocation"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			observed := string(data)
+			if !strings.Contains(observed, "embedded=1\n") || !strings.Contains(observed, "production=1\n") ||
+				!strings.Contains(observed, "worker=absent\n") || strings.Contains(observed, "legacy") || strings.Contains(observed, "/tmp/evil") {
+				t.Fatalf("parent execution environment crossed the server lock: %q", observed)
+			}
+		})
+	}
+}
+
+// TestLoopbackRunStartReachesFixedCLI exercises the real process seam from a
+// loopback HTTP request through marshal-server to the startup-bound CLI. The
+// stable shell fixture records argv but deliberately writes no Run authority,
+// so the server must both prove the invocation and reject success when Core
+// progress is absent.
+func TestLoopbackRunStartReachesFixedCLI(t *testing.T) {
+	root := testRepository(t)
+	t.Setenv("UNRELATED_SECRET", "must-not-cross")
+	const runID = "run-fixed-cli-seam"
+	store := runstore.New(filepath.Join(root, ".marshal"))
+	lease, err := store.Acquire(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WriteSnapshot(lease, domain.RunState{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: domain.KindRunState,
+		TaskID: "task-fixed-cli-seam", RunID: runID, State: domain.StateReady,
+	}); err != nil {
+		lease.Release()
+		t.Fatal(err)
+	}
+	if err := lease.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stdoutReader, stdoutWriter := io.Pipe()
+	var stderr bytes.Buffer
+	exitCode := make(chan int, 1)
+	go func() {
+		exitCode <- run(ctx, []string{"--listen", "127.0.0.1:0", "--dir", root}, stdoutWriter, &stderr)
+	}()
+	scanner := bufio.NewScanner(stdoutReader)
+	if !scanner.Scan() {
+		t.Fatalf("no listen banner: %v (%s)", scanner.Err(), stderr.String())
+	}
+	var banner struct {
+		Listen string `json:"listen"`
+	}
+	if err := json.Unmarshal(scanner.Bytes(), &banner); err != nil {
+		t.Fatal(err)
+	}
+	payload := json.RawMessage(`{}`)
+	digest, err := canonical.DigestJSON(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"idempotencyKey": "fixed-cli-seam", "requestDigest": digest, "payload": payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, banner.Listen+"/v1alpha1/runs/"+runID+"/start", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Marshal-Request-Id", "req-fixed-cli-seam")
+	request.Header.Set("Marshal-Protocol-Version", "marshal-public-api/v1alpha1")
+	request.Header.Set("Marshal-Principal", "main-test-operator")
+	request.Header.Set("Marshal-Audience", "marshal-public-api")
+	request.Header.Set("Marshal-Scope", "repo:"+filepath.ToSlash(root))
+	request.Header.Set("Marshal-Deadline", time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseData, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if response.StatusCode != http.StatusUnprocessableEntity || !bytes.Contains(responseData, []byte("run-execution-not-observed")) {
+		t.Fatalf("start without Core progress = %d %s", response.StatusCode, responseData)
+	}
+	invocation, err := os.ReadFile(filepath.Join(root, ".marshal", "fixed-cli-invocation"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "task\nrun\n--run\n" + runID + "\n--json\nembedded=1\nproduction=1\nworker=absent\n"
+	if string(invocation) != want {
+		t.Fatalf("fixed CLI invocation = %q, want %q", invocation, want)
+	}
+	cancel()
+	select {
+	case code := <-exitCode:
+		if code != exitOK {
+			t.Fatalf("server exit=%d stderr=%s", code, stderr.String())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("server did not stop")
 	}
 }
 
