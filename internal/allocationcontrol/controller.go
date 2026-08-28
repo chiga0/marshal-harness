@@ -177,9 +177,6 @@ func (controller *Controller) RecoverProvision(ctx context.Context, canonicalEff
 		if err != nil || snapshot.Validate() != nil {
 			return ErrAuthorityConflict
 		}
-		if err := controller.store.SyncAuthorityProjection(snapshot.Facts); err != nil {
-			return err
-		}
 		if snapshot.TerminateIntent != nil {
 			return ErrAuthorityConflict
 		}
@@ -189,6 +186,9 @@ func (controller *Controller) RecoverProvision(ctx context.Context, canonicalEff
 			}
 			result = *snapshot.ProvisionReceipt
 			return nil
+		}
+		if err := controller.store.SyncAuthorityProjection(snapshot.Facts); err != nil {
+			return controller.recordProviderFailure(ctx, session, err)
 		}
 
 		if snapshot.ProvisionPrepared == nil {
@@ -213,7 +213,7 @@ func (controller *Controller) RecoverProvision(ctx context.Context, canonicalEff
 				return ErrAuthorityConflict
 			}
 			if err := controller.store.SyncAuthorityProjection(snapshot.Facts); err != nil {
-				return err
+				return controller.recordProviderFailure(ctx, session, err)
 			}
 		}
 
@@ -256,15 +256,15 @@ func (controller *Controller) RecoverTerminate(ctx context.Context, canonicalEff
 		if err != nil || snapshot.Validate() != nil || snapshot.TerminateIntent == nil {
 			return ErrAuthorityConflict
 		}
-		if err := controller.store.SyncAuthorityProjection(snapshot.Facts); err != nil {
-			return err
-		}
 		if snapshot.TerminateReceipt != nil {
 			if _, err := session.ProjectAndReconcile(ctx, controller.terminateProjectionCommitter()); err != nil {
 				return err
 			}
 			result = *snapshot.TerminateReceipt
 			return nil
+		}
+		if err := controller.store.SyncAuthorityProjection(snapshot.Facts); err != nil {
+			return controller.recordProviderFailure(ctx, session, err)
 		}
 
 		current, err := session.Snapshot()
@@ -305,6 +305,10 @@ func (controller *Controller) provisionProjectionCommitter() func(AuthoritySnaps
 		if snapshot.Validate() != nil || snapshot.ProvisionIntent == nil || snapshot.ProvisionPrepared == nil || snapshot.ProvisionReceipt == nil {
 			return ErrAuthorityConflict
 		}
+		// This callback runs inside ProjectAndReconcile, which converts only a
+		// deterministic Provider conflict/unknown outcome into durable intervention.
+		// Transient I/O is returned unchanged so the receipt remains pending and
+		// retryable.
 		if err := controller.store.SyncAuthorityProjection(snapshot.Facts); err != nil {
 			return err
 		}
@@ -317,6 +321,8 @@ func (controller *Controller) terminateProjectionCommitter() func(AuthoritySnaps
 		if snapshot.Validate() != nil || snapshot.TerminateIntent == nil || snapshot.TerminateReceipt == nil {
 			return ErrAuthorityConflict
 		}
+		// See provisionProjectionCommitter: ProjectAndReconcile owns the durable
+		// classification for this post-receipt projection boundary.
 		if err := controller.store.SyncAuthorityProjection(snapshot.Facts); err != nil {
 			return err
 		}

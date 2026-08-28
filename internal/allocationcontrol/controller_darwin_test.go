@@ -87,6 +87,7 @@ type fakeAllocationSession struct {
 	snapshotReads          int
 	authorizeError         error
 	authorizations         int
+	interventions          []AuthorityFailureKind
 }
 
 func (session *fakeAllocationSession) AuthorizeFirstMutation(context.Context) error {
@@ -169,7 +170,20 @@ func (session *fakeAllocationSession) ProjectAndReconcile(_ context.Context, pro
 }
 
 func (session *fakeAllocationSession) RecordIntervention(_ context.Context, kind AuthorityFailureKind) error {
-	return kind.Validate()
+	if err := kind.Validate(); err != nil {
+		return err
+	}
+	session.interventions = append(session.interventions, kind)
+	return nil
+}
+
+func TestControllerTransientProviderFailureRemainsPending(t *testing.T) {
+	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
+	transient := errors.New("transient projection I/O")
+	controller := &Controller{}
+	if err := controller.recordProviderFailure(context.Background(), session, transient); !errors.Is(err, transient) || len(session.interventions) != 0 {
+		t.Fatalf("transient failure err=%v interventions=%v", err, session.interventions)
+	}
 }
 
 func cloneAuthoritySnapshot(snapshot AuthoritySnapshot) AuthoritySnapshot {
