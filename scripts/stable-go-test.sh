@@ -8,12 +8,21 @@ if [[ "$(/usr/bin/uname -s)" != "Darwin" ]]; then
   exec "$GO_COMMAND" test "$@"
 fi
 
-MARSHAL_RUNNER="$REPOSITORY_ROOT/bin/marshal"
-SLOT_ROOT="$REPOSITORY_ROOT/bin/test"
+MARSHAL_RUNNER="${MARSHAL_RUNNER:-$REPOSITORY_ROOT/bin/marshal}"
+case "$MARSHAL_RUNNER" in
+  /*) ;;
+  *)
+    printf '%s\n' '[stable-go-test] MARSHAL_RUNNER 必须是绝对路径。' >&2
+    exit 3
+    ;;
+esac
 if [[ ! -f "$MARSHAL_RUNNER" || ! -x "$MARSHAL_RUNNER" || -L "$MARSHAL_RUNNER" ]]; then
-  printf '%s\n' '[stable-go-test] 固定 bin/marshal 不可用；请先运行 make build。' >&2
+  printf '%s\n' '[stable-go-test] 指定的固定 Marshal 不可用；请先运行 make build。' >&2
   exit 3
 fi
+RUNNER_DIRECTORY="$(cd "$(dirname "$MARSHAL_RUNNER")" && pwd -P)"
+MARSHAL_RUNNER="$RUNNER_DIRECTORY/$(basename "$MARSHAL_RUNNER")"
+SLOT_ROOT="$RUNNER_DIRECTORY/test"
 case "${GOFLAGS:-}" in
   *-exec*)
     printf '%s\n' '[stable-go-test] GOFLAGS 已包含 -exec；拒绝覆盖固定执行器。' >&2

@@ -44,7 +44,11 @@ const (
 	activeEnvironment = "MARSHAL_STABLE_GO_TEST_ACTIVE"
 )
 
-var errUnsupportedPlatform = errors.New("stable_go_test_unsupported_platform")
+var (
+	errUnsupportedPlatform = errors.New("stable_go_test_unsupported_platform")
+	errLockCanceled        = errors.New("stable_go_test_lock_canceled")
+	errLockDeadline        = errors.New("stable_go_test_lock_deadline_exceeded")
+)
 
 // MaybeRun recognizes and runs the internal stable Go test entry point.
 func MaybeRun(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (bool, int) {
@@ -104,6 +108,10 @@ func WithEnvironment(environment []string) ([]string, error) {
 // into a business repository.
 func DefaultRoot() (string, error) {
 	home, err := os.UserHomeDir()
+	if err != nil || !filepath.IsAbs(home) {
+		return "", errors.New("stable go test: user home unavailable")
+	}
+	home, err = filepath.EvalSymlinks(home)
 	if err != nil || !filepath.IsAbs(home) {
 		return "", errors.New("stable go test: user home unavailable")
 	}
@@ -173,11 +181,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		writeFailure(stderr, errors.New("stable_go_test_self_identity_mismatch"))
 		return exitUnavailable
 	}
-	if err := ensurePrivateRoot(root); err != nil {
+	defaultRoot, err := DefaultRoot()
+	if err != nil {
 		writeFailure(stderr, errors.New("stable_go_test_root_invalid"))
 		return exitUnavailable
 	}
-	directory, err := openRoot(root)
+	directory, err := openValidatedRoot(root, self, defaultRoot, nil)
 	if err != nil {
 		writeFailure(stderr, errors.New("stable_go_test_root_invalid"))
 		return exitUnavailable
@@ -190,8 +199,15 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return exitUnavailable
 	}
 	defer lock.Close()
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
-		writeFailure(stderr, errors.New("stable_go_test_lock_failed"))
+	if err := acquireLock(ctx, lock); err != nil {
+		switch {
+		case errors.Is(err, errLockDeadline):
+			writeFailure(stderr, errLockDeadline)
+		case errors.Is(err, errLockCanceled):
+			writeFailure(stderr, errLockCanceled)
+		default:
+			writeFailure(stderr, errors.New("stable_go_test_lock_failed"))
+		}
 		return exitUnavailable
 	}
 	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN) //nolint:errcheck -- process exit also releases the lock
@@ -239,37 +255,77 @@ func parseArgs(args []string) (string, string, string, []string, error) {
 	return root, args[3], filepath.Clean(args[4]), append([]string(nil), args[5:]...), nil
 }
 
-func ensurePrivateRoot(root string) error {
-	if !filepath.IsAbs(root) {
-		return errors.New("not absolute")
+func validateRoot(root, self, defaultRoot string) error {
+	if !filepath.IsAbs(root) || !filepath.IsAbs(self) || !filepath.IsAbs(defaultRoot) {
+		return errors.New("root identity is not absolute")
 	}
-	volume := filepath.VolumeName(root)
-	current := volume + string(filepath.Separator)
-	remainder := strings.TrimPrefix(root, current)
-	for _, component := range strings.Split(remainder, string(filepath.Separator)) {
-		if component == "" || component == "." || component == ".." {
-			return errors.New("invalid component")
-		}
-		current = filepath.Join(current, component)
-		info, err := os.Lstat(current)
-		if os.IsNotExist(err) {
-			if err := os.Mkdir(current, 0o700); err != nil && !os.IsExist(err) {
-				return err
-			}
-			info, err = os.Lstat(current)
-		}
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return errors.New("non-directory component")
-		}
-	}
-	if err := os.Chmod(root, 0o700); err != nil {
-		return err
-	}
-	info, err := os.Lstat(root)
-	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || !ownedByCurrentUser(info) {
-		return errors.New("root ownership or mode mismatch")
+	root = filepath.Clean(root)
+	defaultRoot = filepath.Clean(defaultRoot)
+	developmentRoot := filepath.Join(filepath.Dir(filepath.Clean(self)), "test")
+	if root != defaultRoot && root != developmentRoot {
+		return errors.New("root is not an allowed stable slot")
 	}
 	return nil
+}
+
+func openValidatedRoot(root, self, defaultRoot string, beforeOpen func()) (*os.File, error) {
+	if err := validateRoot(root, self, defaultRoot); err != nil {
+		return nil, err
+	}
+	return openOrCreatePrivateRoot(root, beforeOpen)
+}
+
+// openOrCreatePrivateRoot creates only the final component. The caller must
+// validate the exact root against the verified Marshal image before calling
+// this function. Existing directories are observed, never chmod'd.
+func openOrCreatePrivateRoot(root string, beforeOpen func()) (*os.File, error) {
+	parentPath, base := filepath.Dir(root), filepath.Base(root)
+	parentFD, err := unix.Open(parentPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	parent := os.NewFile(uintptr(parentFD), "stable-go-test-parent")
+	defer parent.Close()
+	parentInfo, err := parent.Stat()
+	pathParentInfo, pathErr := os.Lstat(parentPath)
+	if err != nil || pathErr != nil || !parentInfo.IsDir() || !ownedByCurrentUser(parentInfo) || !os.SameFile(parentInfo, pathParentInfo) {
+		return nil, errors.New("root parent identity mismatch")
+	}
+	created := false
+	if err := unix.Mkdirat(parentFD, base, 0o700); err == nil {
+		created = true
+		if err := parent.Sync(); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, unix.EEXIST) {
+		return nil, err
+	}
+	if beforeOpen != nil {
+		beforeOpen()
+	}
+	fd, err := unix.Openat(parentFD, base, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	directory := os.NewFile(uintptr(fd), "stable-go-test-root")
+	info, err := directory.Stat()
+	pathInfo, pathErr := os.Lstat(root)
+	if err != nil || pathErr != nil || !info.IsDir() || !ownedByCurrentUser(info) || !os.SameFile(info, pathInfo) {
+		directory.Close()
+		return nil, errors.New("root identity mismatch")
+	}
+	if created {
+		if err := directory.Chmod(0o700); err != nil {
+			directory.Close()
+			return nil, err
+		}
+		info, err = directory.Stat()
+	}
+	if err != nil || info.Mode().Perm() != 0o700 {
+		directory.Close()
+		return nil, errors.New("root ownership or mode mismatch")
+	}
+	return directory, nil
 }
 
 func openRoot(root string) (*os.File, error) {
@@ -298,6 +354,46 @@ func openLock(directory *os.File) (*os.File, error) {
 		return nil, errors.New("lock identity mismatch")
 	}
 	return file, nil
+}
+
+func acquireLock(ctx context.Context, lock *os.File) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	const retryInterval = 10 * time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			return lockContextError(ctx.Err())
+		default:
+		}
+		err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			return err
+		}
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return lockContextError(ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func lockContextError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w", errLockDeadline, context.DeadlineExceeded)
+	}
+	return fmt.Errorf("%w: %w", errLockCanceled, context.Canceled)
 }
 
 func install(directory *os.File, sourcePath string) ([sha256.Size]byte, *os.File, error) {

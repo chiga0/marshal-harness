@@ -31,7 +31,8 @@ lint:
 	$(GO) tool staticcheck ./...
 
 test: build
-	GO="$(GO)" bash scripts/stable-go-test.sh -race -p 2 ./...
+	bash scripts/stable-go-test_test.sh
+	MARSHAL_RUNNER="$(abspath $(BINARY))" GO="$(GO)" bash scripts/stable-go-test.sh -race -p 2 ./...
 
 build:
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/marshal

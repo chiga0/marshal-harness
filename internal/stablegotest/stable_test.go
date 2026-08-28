@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestMergeGOFLAGSPreservesExistingAndAddsOneStableExec(t *testing.T) {
@@ -122,6 +124,132 @@ func TestParseArgsRequiresFixedAbsoluteRootAndInput(t *testing.T) {
 		if _, _, _, _, err := parseArgs(args); err == nil {
 			t.Fatalf("parseArgs(%#v) unexpectedly passed", args)
 		}
+	}
+}
+
+func TestValidateRootAllowsOnlyDefaultOrVerifiedSelfDirectory(t *testing.T) {
+	base := t.TempDir()
+	self := filepath.Join(base, "bin", "marshal")
+	defaultRoot := filepath.Join(base, "home", ".marshal", "test-exec")
+	if err := os.MkdirAll(filepath.Dir(self), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(defaultRoot), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{defaultRoot, filepath.Join(filepath.Dir(self), "test")} {
+		directory, err := openValidatedRoot(root, self, defaultRoot, nil)
+		if err != nil {
+			t.Fatalf("legal root %q was not created: %v", root, err)
+		}
+		directory.Close()
+	}
+	for _, root := range []string{
+		filepath.Join(base, "other"),
+		filepath.Join(filepath.Dir(self), "test", "nested"),
+	} {
+		if err := validateRoot(root, self, defaultRoot); err == nil {
+			t.Fatalf("illegal root %q accepted", root)
+		}
+		if _, err := os.Lstat(root); !os.IsNotExist(err) {
+			t.Fatalf("illegal root %q changed before rejection: %v", root, err)
+		}
+	}
+}
+
+func TestOpenOrCreatePrivateRootDoesNotRepairExistingMode(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "test")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	self := filepath.Join(parent, "marshal")
+	if directory, err := openValidatedRoot(root, self, filepath.Join(parent, "unused-default"), nil); err == nil {
+		directory.Close()
+		t.Fatal("existing wrong-mode root was repaired instead of rejected")
+	}
+	info, err := os.Lstat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("existing root mode changed: mode=%v", info.Mode().Perm())
+	}
+}
+
+func TestOpenOrCreatePrivateRootRejectsSymlinkABA(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "test")
+	external := filepath.Join(t.TempDir(), "external")
+	if err := os.Mkdir(external, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	self := filepath.Join(parent, "marshal")
+	directory, err := openValidatedRoot(root, self, filepath.Join(parent, "unused-default"), func() {
+		if removeErr := os.Remove(root); removeErr != nil {
+			t.Fatal(removeErr)
+		}
+		if linkErr := os.Symlink(external, root); linkErr != nil {
+			t.Fatal(linkErr)
+		}
+	})
+	if err == nil {
+		directory.Close()
+		t.Fatal("symlink ABA root unexpectedly accepted")
+	}
+}
+
+func TestAcquireLockHonorsPreCanceledContext(t *testing.T) {
+	root := privateRoot(t)
+	directory, err := openRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	lock, err := openLock(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := acquireLock(ctx, lock); !errors.Is(err, errLockCanceled) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-canceled lock result = %v", err)
+	}
+}
+
+func TestAcquireLockHonorsDeadlineWhileHeld(t *testing.T) {
+	root := privateRoot(t)
+	directory, err := openRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.Close()
+	held, err := openLock(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := unix.Flock(int(held.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Flock(int(held.Fd()), unix.LOCK_UN) //nolint:errcheck -- test cleanup
+	waiter, err := openLock(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer waiter.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if err := acquireLock(ctx, waiter); !errors.Is(err, errLockDeadline) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("held-lock deadline result = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("held-lock cancellation took %s", elapsed)
 	}
 }
 
