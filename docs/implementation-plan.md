@@ -4,6 +4,8 @@
 
 > **当前权威路线（2026-08-28）**：实施顺序以仓库根目录 `AGENTS.md`、[Roadmap 状态](roadmap-status.md)、[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md) 与 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 为准，按纵切优先的 `I186-R0→R6` 收敛。Milestone 0–9 的历史结论与代码资产保留，但历史 `PASSED` 不自动等于 v1.0 production integration。当前 `I186-R0: PASSED`、`I186-R1: IN_PROGRESS（INTEGRATED）`、`I186-R2–R5: IN_PROGRESS（COMPONENT，production 语义未收敛）`、`I186-R6: PLANNED（DESIGN）`。M10–M13 不再阻塞 v1.0，作为 1.x 候选在 R6 后重新排期。本文后续 M0–M13 章节保留历史目标，不得据此提前升级实现状态。
 
+> **2026-08-28 执行 checkpoint**：durable authority、strict E2E 实现与 RC identity/install 聚合已由独立 reviewer 判定 P0/P1 为零，并于 `main@5d5c426` 合入、推送；Pi `0.84.3` fixed-bin strict E2E 的最新 live 证据绑定锁定 sourceHead `8df8b88`，到达 ResultIngress、独立 `verify`、跨进程 restore 与 ReviewPacket/`REVIEW_PENDING`，当前主线尚待重跑并导入独立 ReviewDecision 到 `ACCEPTED`。Qwen `0.22.0` ordinary workspace live 已通过但不是 `LaunchCapable`。server controller 待聚合返工，RC 产物尚未发布。上述事实只缩短退出门禁，不升级 R2–R6。
+
 ## v1.0 权威实施表
 
 能力成熟度独立于 Milestone 状态：`DESIGN` 表示只有合同，`COMPONENT` 表示实现/测试存在但 production root 不可达，`INTEGRATED` 表示真实 composition root 与真实 Agent/result bytes 穿过该路径，`RELEASED` 表示 release gate 通过。任何阶段都不得只凭 Fake、package test 或独立 API/transport 测试关闭。
@@ -12,11 +14,11 @@
 | --- | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 0043–0045、baseline report 与 golden trace | 历史证据保留，不重复实施 |
 | `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 在现有 `execution.Service` 唯一 seam 接通真实 Agent-in-Local/Container allocation | `cmd/marshal` 或 loopback server 可达；Agent 实际在 allocation；真实 result bytes 返回 Core |
-| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | command/result authority 收敛到现有 durable journal；ResultIngress 事务化接纳 | 重启可恢复；无平行内存真值；stale/replay/lost response fixture 通过 |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | per-Attempt Agent/Sandbox 双 binding；Core-held local process observation；立即 revoke/fence/terminate | 任一 binding 漂移均拒绝；Provider claim 不能放宽 gate；真实路径负测通过 |
-| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | 单一 recovery decision 与 `marshal explain` | kill/restart/cancel/timeout/retry 只有一个可回放结论 |
-| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | canary/cutover；旧 host Adapter bypass 退出 supported path | Fake exact digest；真实 Agent authority invariants 等价；无重复副作用；旧 bypass 删除或机械拒绝 |
-| `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、稳定安装、签名/notarization、升级/回滚、release | macOS/Linux 发布门禁全绿；能力成熟度升级为 `RELEASED` |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | command/result authority 收敛到现有 durable journal；ResultIngress 事务化接纳 | 已合入 durable authority；继续关闭 ResultIngress→worker-result→Run journal 崩溃窗口，并证明重启后 current-ledger recheck、stale/replay/lost response 全部通过且无第二真值 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | per-Attempt Agent/Sandbox 双 binding；Core-held local process observation；立即 revoke/fence/terminate | hardened evidence 独立产生；ordinary-user 明确 N/A；任一 binding 漂移均拒绝；真实路径负测通过 |
+| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | 单一 recovery decision 与 `marshal explain`；loopback server controller 复用固定 CLI authority | server controller 合入；kill/restart/cancel/timeout/retry 和重复 start 只有一个可回放结论 |
+| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | fixed-bin canary/cutover；通过现有 `task review --decision` 接纳独立 ReviewDecision；旧 host Adapter bypass 退出 supported path | Pi strict E2E 从 ResultIngress/`REVIEW_PENDING` 继续到 Decision/`ACCEPTED`；无重复副作用；旧 bypass 删除或机械拒绝 |
+| `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、稳定安装、签名/notarization、升级/回滚、release | 先发布身份可验证的 unsigned RC；再关闭 Issue #212 并通过 macOS/Linux stable gate，能力成熟度才升级为 `RELEASED` |
 
 v1.0 的唯一支持链是：
 
@@ -32,6 +34,13 @@ marshal / loopback marshal-server
 ```
 
 Cloudflare 完整生产拓扑、多节点 HA、多用户/多租户、完整 Provider/SDK 矩阵、Web UI 与复杂 Goal DAG 均延期到 1.x。
+
+当前交付顺序固定为四个聚合闭环，禁止再横向铺组件：
+
+1. 关闭 ResultIngress→worker-result→Run journal 的崩溃原子性窗口，完成 R2 的事务化/可恢复接纳；
+2. 合入 server controller，完成 R4 的跨进程 start/status/recovery 幂等矩阵；
+3. 由独立 reviewer 为当前主线 live canary 生成 ReviewDecision，通过现有 `task review --decision` 从 `REVIEW_PENDING` 到 `ACCEPTED`，并收口 allocation/lease 终态回收；
+4. 发布 unsigned RC 收集安装/升级证据；stable release 仅在 Issue #212 signing/notarization 和 Linux stable gate 全绿后执行。
 
 ### v1.0 复杂度预算
 

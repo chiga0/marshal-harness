@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/domain"
 )
 
 // testIdentity builds one valid idempotency identity bound to a fixed
@@ -23,8 +25,10 @@ func testIdentity(key string) Identity {
 			ControlPlaneId:   "default",
 			AuthorityScopeId: "repo:/fixture/repository",
 		},
-		Scope: "repo:/fixture/repository",
-		Key:   key,
+		Scope:     "repo:/fixture/repository",
+		Operation: "fixture.create",
+		Resource:  "fixture-1",
+		Key:       key,
 	}
 }
 
@@ -79,7 +83,8 @@ func TestSubmitRecordsAndMergesReplay(t *testing.T) {
 		t.Fatalf("record kind = %q, want %q", record.Kind, idempotencyRecordKind)
 	}
 	if !record.AuthorityNamespaceId.Equal(identity.Namespace) || record.Scope != identity.Scope ||
-		record.IdempotencyKey != identity.Key || record.RequestDigest != digest {
+		record.Operation != identity.Operation || record.Resource != identity.Resource ||
+		record.IdempotencyKey != identity.Key || record.RequestDigest != digest || record.Phase != idempotencyPhaseCompleted {
 		t.Fatalf("the durable record lost the frozen submission identity quadruple: %+v", record)
 	}
 }
@@ -141,6 +146,26 @@ func TestSubmitSeparateKeys(t *testing.T) {
 	}
 }
 
+func TestSubmitSameClientKeySeparatesOperationAndResource(t *testing.T) {
+	store := NewIdempotencyStore(filepath.Join(t.TempDir(), "idempotency"), nil)
+	digest := testDigest("same-request")
+	first := testIdentity("shared-client-key")
+	first.Operation, first.Resource = "run.start", "run-one"
+	second := first
+	second.Resource = "run-two"
+	third := first
+	third.Operation = "run.approval"
+	count := 0
+	for _, identity := range []Identity{first, second, third} {
+		if _, err := store.Submit(identity, digest, countingExecutor(&count, `{"accepted":true}`)); err != nil {
+			t.Fatalf("Submit %+v: %v", identity, err)
+		}
+	}
+	if count != 3 {
+		t.Fatalf("operation/resource identities collapsed into %d executions, want 3", count)
+	}
+}
+
 // TestSubmitRejectsInvalidIdentity fails closed on every malformed identity
 // before any executor could run.
 func TestSubmitRejectsInvalidIdentity(t *testing.T) {
@@ -151,6 +176,10 @@ func TestSubmitRejectsInvalidIdentity(t *testing.T) {
 	blankNamespace.Namespace.TenantNamespace = "  "
 	mismatchedScope := testIdentity("key-mismatched-scope")
 	mismatchedScope.Scope = "repo:/other/repository"
+	blankOperation := testIdentity("key-blank-operation")
+	blankOperation.Operation = ""
+	blankResource := testIdentity("key-blank-resource")
+	blankResource.Resource = ""
 
 	cases := []struct {
 		name     string
@@ -160,6 +189,8 @@ func TestSubmitRejectsInvalidIdentity(t *testing.T) {
 		{"blank namespace member", blankNamespace, validDigest},
 		{"empty key", testIdentity(""), validDigest},
 		{"scope mismatch", mismatchedScope, validDigest},
+		{"blank operation", blankOperation, validDigest},
+		{"blank resource", blankResource, validDigest},
 		{"digest without prefix", testIdentity("key-digest"), "md5:deadbeef"},
 		{"digest too short", testIdentity("key-digest"), "sha256:abc"},
 	}
@@ -175,9 +206,10 @@ func TestSubmitRejectsInvalidIdentity(t *testing.T) {
 	}
 }
 
-// TestSubmitFailedExecutorStoresNothing proves a failed business operation
-// leaves no idempotency record, so the identical request stays retryable.
-func TestSubmitFailedExecutorStoresNothing(t *testing.T) {
+// TestSubmitFailedExecutorPreservesPendingIntent proves a failed business
+// operation keeps one durable, retryable intent without storing sensitive
+// error text.
+func TestSubmitFailedExecutorPreservesPendingIntent(t *testing.T) {
 	store := NewIdempotencyStore(filepath.Join(t.TempDir(), "idempotency"), nil)
 	identity := testIdentity("key-retry")
 	digest := testDigest("request-retry")
@@ -189,8 +221,12 @@ func TestSubmitFailedExecutorStoresNothing(t *testing.T) {
 	if !errors.Is(err, businessErr) {
 		t.Fatalf("Submit must surface the executor error, got %v", err)
 	}
-	if _, found, err := store.Get(identity); err != nil || found {
-		t.Fatalf("a failed submission must not persist a record: found=%v err=%v", found, err)
+	record, found, getErr := store.Get(identity)
+	if getErr != nil || !found || record.Phase != idempotencyPhasePending || record.LastFailureReason != "executor-failed" {
+		t.Fatalf("failed submission intent: found=%v record=%+v err=%v", found, record, getErr)
+	}
+	if strings.Contains(string(record.Intent), businessErr.Error()) || record.LastFailureCode != "INTERNAL" {
+		t.Fatalf("failed intent leaked diagnostics or lost stable code: %+v", record)
 	}
 
 	count := 0
@@ -285,6 +321,78 @@ func TestSubmitConcurrentSameKeySerializes(t *testing.T) {
 	}
 	if replays != len(results)-1 {
 		t.Fatalf("expected %d merged replays, got %d", len(results)-1, replays)
+	}
+}
+
+func TestLongCommandDoesNotBlockDifferentIdentity(t *testing.T) {
+	store := NewIdempotencyStore(filepath.Join(t.TempDir(), "idempotency"), nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := store.Submit(testIdentity("key-long"), testDigest("long"), func() (json.RawMessage, int, error) {
+			close(started)
+			<-release
+			return json.RawMessage(`{"long":true}`), http.StatusCreated, nil
+		})
+		firstDone <- err
+	}()
+	<-started
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := store.Submit(testIdentity("key-short"), testDigest("short"), countingExecutor(new(int), `{"short":true}`))
+		secondDone <- err
+	}()
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("different identity failed while long command ran: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("different identity was blocked by the long command")
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("long command failed: %v", err)
+	}
+}
+
+func TestPendingCommandRecoversFromDurableIntent(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "idempotency")
+	store := NewIdempotencyStore(root, nil)
+	identity := testIdentity("key-pending")
+	digest := testDigest("pending")
+	intent := json.RawMessage(`{"sequence":7}`)
+	path, _ := store.recordPaths(identity)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeRecord(path, Record{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: idempotencyRecordKind,
+		AuthorityNamespaceId: identity.Namespace, Scope: identity.Scope,
+		Operation: identity.Operation, Resource: identity.Resource,
+		IdempotencyKey: identity.Key, RequestDigest: digest,
+		Phase: idempotencyPhasePending, Intent: intent, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prepared := 0
+	outcome, err := store.SubmitCommand(identity, digest, func() (json.RawMessage, error) {
+		prepared++
+		return nil, errors.New("must not replace durable intent")
+	}, func(recovery bool, got json.RawMessage) (json.RawMessage, int, error) {
+		if !recovery || string(got) != string(intent) {
+			t.Fatalf("recovery=%v intent=%s", recovery, got)
+		}
+		return json.RawMessage(`{"recovered":true}`), http.StatusAccepted, nil
+	})
+	if err != nil || prepared != 0 || outcome.Replayed || outcome.Status != http.StatusAccepted {
+		t.Fatalf("pending recovery outcome=%+v prepared=%d err=%v", outcome, prepared, err)
+	}
+	replay, err := store.Submit(identity, digest, countingExecutor(new(int), `{"wrong":true}`))
+	if err != nil || !replay.Replayed || string(replay.Result) != `{"recovered":true}` {
+		t.Fatalf("completed recovery replay=%+v err=%v", replay, err)
 	}
 }
 
