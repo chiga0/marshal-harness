@@ -15,16 +15,16 @@ marshal version
 
 1. 检测平台（`darwin|linux` × `amd64|arm64`）；
 2. 查询 latest release，存在平台匹配资产（`marshal_<version>_<os>_<arch>`）时用 `curl -fsSL` 下载预编译二进制；
-3. 强制下载并校验 `SHA256SUMS`；清单缺失、目标条目不是唯一一项或 sha256 不匹配时均 **fail closed**，不会安装已下载资产，也不会把该失败静默降级为源码构建；
+3. release tag 必须是 annotated tag；脚本从 canonical Git remote 解析唯一 tag object/peeled commit 并获取 canonical tag message，再下载 `RELEASE-MANIFEST` 与 `SHA256SUMS`；tag message 冻结的 sourceHead、manifest SHA 与 Darwin arm64 candidate SHA 必须和下载内容对账，manifest 的 repository/tag/sourceHead/buildDate/toolchain/flags/四平台资产集合也必须精确；任一缺失、重复、尾随字段、资产整组替换或漂移均 **fail closed**；
 4. 无匹配资产或下载失败时回退源码构建（见下节）；若指定了 `MARSHAL_TAG`，源码 checkout 的 `HEAD` 必须精确等于该 tag 的 peeled commit，否则 fail closed，禁止把任意源码标记成请求版本；
-5. 安装到 `~/.local/bin`（可用 `MARSHAL_INSTALL_DIR` 覆盖）；复制前后都运行 `marshal version --json`，并核对 `version`、`commit`（源码路径）与 `selfProfile`，任一执行失败、字段缺失或身份漂移都 fail closed；
+5. 安装到 `~/.local/bin`（可用 `MARSHAL_INSTALL_DIR` 覆盖）；复制前后都运行 `marshal version --json`，release 路径精确核对 `version`、peeled `commit`、manifest `buildDate/goVersion` 与 `selfProfile`，源码路径核对自身 `HEAD`；任一执行失败、字段缺失或身份漂移都 fail closed；
 6. Darwin 安装资产与源码回退固定 `selfProfile=darwin-local-dogfood`，Linux 固定 `selfProfile=unprofiled`。前者只是 ADR 0051 的 Mac ordinary-user/non-production 能力，不得描述成 hardened 或正式 production authority。
 
 二进制先写入安装目录下固定的 `.marshal-staging/marshal` 暂存路径，校验通过后复制为 `marshal` 并清理暂存目录，不会在随机路径生成匿名可执行文件。
 
 ### 离线校验 release 资产
 
-从 GitHub release 手动下载资产时，请同时下载 `SHA256SUMS` 并在资产目录执行：
+从 GitHub release 手动下载资产时，请同时下载 `RELEASE-MANIFEST` 与 `SHA256SUMS` 并在资产目录执行：
 
 ```bash
 # Linux
@@ -33,7 +33,7 @@ sha256sum -c SHA256SUMS
 shasum -a 256 -c SHA256SUMS
 ```
 
-校验失败即不要使用该二进制。资产命名与校验清单格式的权威约定见 docs/development.md「Release 资产命名约定」。
+该命令只验证 bytes；安装脚本还会验证 annotated tag peeled commit 与二进制内嵌身份。任一校验失败即不要使用该二进制。资产命名与 manifest 约定见 docs/development.md「Release 资产命名约定」。
 
 ### 源码构建
 

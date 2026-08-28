@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 MOCK_BIN="${TMP_ROOT}/mock-bin"
+FIXTURE_COMMIT="0123456789abcdef0123456789abcdef01234567"
 mkdir -p "$MOCK_BIN"
 
 fail() {
@@ -38,10 +39,67 @@ write_asset() {
   if [ "$FIXTURE_MODE" = badprofile ]; then
     profile='unprofiled'
   fi
+  commit="$FIXTURE_PEELED_COMMIT"
+  if [ "$FIXTURE_MODE" = badbinarycommit ]; then
+    commit='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  fi
+  build_date='2026-08-28T00:00:00Z'
+  [ "$FIXTURE_MODE" != badbuilddate ] || build_date='2026-08-29T00:00:00Z'
+  go_version='go1.26.6'
+  [ "$FIXTURE_MODE" != badgoversion ] || go_version='go1.26.7'
+  [ "$FIXTURE_MODE" != replacedrelease ] || printf '# replacement asset set\n'
   cat <<PAYLOAD
 #!/bin/sh
-printf '%s\\n' '{"version":"${version}","commit":"fixture-commit","buildDate":"fixture-date","goVersion":"fixture-go","os":"darwin","arch":"arm64","selfProfile":"${profile}"}'
+printf '%s\\n' '{"version":"${version}","commit":"${commit}","buildDate":"${build_date}","goVersion":"${go_version}","os":"darwin","arch":"arm64","selfProfile":"${profile}"}'
 PAYLOAD
+}
+sha256_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+write_manifest() {
+  version="${FIXTURE_TAG#v}"
+  commit="$FIXTURE_PEELED_COMMIT"
+  [ "$FIXTURE_MODE" != badmanifestcommit ] || commit='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+  digest="$(write_asset | sha256_stream)"
+  size="$(write_asset | wc -c | tr -d '[:space:]')"
+  printf 'schemaVersion marshal.release-manifest.v1\n'
+  printf 'repository https://github.com/%s.git\n' "$FIXTURE_REPO"
+  printf 'tag %s\n' "$FIXTURE_TAG"
+  printf 'sourceHead %s\n' "$commit"
+  printf 'buildDate 2026-08-28T00:00:00Z\n'
+  printf 'goVersion go1.26.6\n'
+  printf 'buildFlags -trimpath,-buildvcs=false,-mod=readonly,-buildid=\n'
+  for tuple in \
+    "darwin amd64 darwin-local-dogfood" \
+    "darwin arm64 darwin-local-dogfood" \
+    "linux amd64 unprofiled" \
+    "linux arm64 unprofiled"; do
+    set -- $tuple
+    current_digest="$digest"
+    if [ "$FIXTURE_MODE" = badmanifestasset ] && [ "$1/$2" = darwin/arm64 ]; then
+      current_digest='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
+    fi
+    printf 'asset %s %s marshal_%s_%s_%s %s %s %s\n' \
+      "$current_digest" "$size" "$version" "$1" "$2" "$1" "$2" "$3"
+  done
+}
+write_tag_message() {
+  frozen_mode="$FIXTURE_MODE"
+  [ "$frozen_mode" != replacedrelease ] || frozen_mode=valid
+  manifest_digest="$(FIXTURE_MODE="$frozen_mode" write_manifest | sha256_stream)"
+  candidate_digest="$(FIXTURE_MODE="$frozen_mode" write_asset | sha256_stream)"
+  cat <<MESSAGE
+Marshal ${FIXTURE_TAG} candidate
+
+marshal-candidate-schema: v1
+marshal-candidate-source-head: ${FIXTURE_PEELED_COMMIT}
+marshal-candidate-manifest-sha256: ${manifest_digest}
+marshal-candidate-darwin-arm64-sha256: ${candidate_digest}
+MESSAGE
 }
 dest=''
 url=''
@@ -57,18 +115,22 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -n "$dest" ] && [ -n "$url" ] || exit 2
+write_tag_message >"$(dirname "$dest")/FIXTURE-TAG-MESSAGE"
 case "$url" in
+  */RELEASE-MANIFEST)
+    [ "$FIXTURE_MODE" != missingmanifest ] || exit 22
+    write_manifest >"$dest"
+    ;;
   */SHA256SUMS)
     case "$FIXTURE_MODE" in
       missing) exit 22 ;;
-      mismatch|valid|badexec|badversion|badprofile)
-        if command -v sha256sum >/dev/null 2>&1; then
-          digest="$(write_asset | sha256sum | awk '{print $1}')"
-        else
-          digest="$(write_asset | shasum -a 256 | awk '{print $1}')"
-        fi
+      mismatch|valid|badexec|badversion|badprofile|badbinarycommit|badbuilddate|badgoversion|badmanifestcommit|badmanifestasset|badmanifestchecksum|missingmanifest|replacedrelease)
+        digest="$(write_asset | sha256_stream)"
+        manifest_digest="$(write_manifest | sha256_stream)"
+        [ "$FIXTURE_MODE" != badmanifestchecksum ] || manifest_digest='dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'
         prefix="${FIXTURE_ASSET%_darwin_arm64}"
         : >"$dest"
+        printf '%s  RELEASE-MANIFEST\n' "$manifest_digest" >>"$dest"
         for name in \
           "${prefix}_darwin_amd64" \
           "${prefix}_darwin_arm64" \
@@ -92,6 +154,42 @@ esac
 EOF
 chmod 0755 "${MOCK_BIN}/uname" "${MOCK_BIN}/curl"
 
+cat >"${MOCK_BIN}/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = ls-remote ]; then
+  tag="${FIXTURE_TAG:?}"
+  printf '%040d\trefs/tags/%s\n' 1 "$tag"
+  if [ "${FIXTURE_MODE:-}" != lightweighttag ]; then
+    printf '%s\trefs/tags/%s^{}\n' "${FIXTURE_PEELED_COMMIT:?}" "$tag"
+  fi
+  exit 0
+fi
+if [[ " $* " == *" release-tag.git "* ]] || [[ " $* " == *"/release-tag.git "* ]]; then
+  case " $* " in
+    *" fetch "*) exit 0 ;;
+    *" cat-file -t "*)
+      [ "${FIXTURE_MODE:-}" != lightweighttag ] && printf 'tag\n' || printf 'commit\n'
+      exit 0
+      ;;
+    *" rev-parse --verify refs/tags/"*"^{commit}"*) printf '%s\n' "${FIXTURE_PEELED_COMMIT:?}"; exit 0 ;;
+    *" rev-parse --verify refs/tags/"*) printf '%040d\n' 1; exit 0 ;;
+    *" for-each-ref "*)
+      repo=''
+      while [ "$#" -gt 0 ]; do
+        if [ "$1" = -C ]; then repo="$2"; break; fi
+        shift
+      done
+      [ -n "$repo" ] || exit 2
+      cat "$(dirname "$repo")/FIXTURE-TAG-MESSAGE"
+      exit 0
+      ;;
+  esac
+fi
+exec /usr/bin/git "$@"
+EOF
+chmod 0755 "${MOCK_BIN}/git"
+
 cat >"${MOCK_BIN}/go" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -114,6 +212,15 @@ done
 version='dev'
 commit='unknown'
 profile='unprofiled'
+output_os="${GOOS:-}"
+output_arch="${GOARCH:-arm64}"
+if [ -z "$output_os" ]; then
+  case "${MOCK_KERNEL:-Darwin}" in
+    Darwin) output_os='darwin' ;;
+    Linux) output_os='linux' ;;
+    *) exit 2 ;;
+  esac
+fi
 for token in $ldflags; do
   case "$token" in
     *.version=*) version="${token#*=}" ;;
@@ -125,7 +232,7 @@ printf 'GOOS=%s GOARCH=%s version=%s commit=%s selfProfile=%s\n' \
   "${GOOS:-}" "${GOARCH:-}" "$version" "$commit" "$profile" >>"${FAKE_GO_LOG:?}"
 cat >"$out" <<PAYLOAD
 #!/bin/sh
-printf '%s\\n' '{"version":"${version}","commit":"${commit}","buildDate":"fixture-date","goVersion":"fixture-go","os":"${GOOS:-darwin}","arch":"${GOARCH:-arm64}","selfProfile":"${profile}"}'
+printf '%s\\n' '{"version":"${version}","commit":"${commit}","buildDate":"fixture-date","goVersion":"fixture-go","os":"${output_os}","arch":"${output_arch}","selfProfile":"${profile}"}'
 PAYLOAD
 chmod 0755 "$out"
 EOF
@@ -146,6 +253,8 @@ run_failure_case() {
     FIXTURE_MODE="$mode" \
     FIXTURE_ASSET="$asset" \
     FIXTURE_TAG="$tag" \
+    FIXTURE_REPO='fixture/repo' \
+    FIXTURE_PEELED_COMMIT="$FIXTURE_COMMIT" \
     bash "${ROOT}/scripts/install.sh" 2>&1
   )"
   status=$?
@@ -171,6 +280,8 @@ run_success_case() {
     FIXTURE_MODE=valid \
     FIXTURE_ASSET="$asset" \
     FIXTURE_TAG="$tag" \
+    FIXTURE_REPO='fixture/repo' \
+    FIXTURE_PEELED_COMMIT="$FIXTURE_COMMIT" \
     bash "${ROOT}/scripts/install.sh" 2>&1
   )"
   [ -x "${case_dir}/install/marshal" ] || fail "${tag}/valid 未安装可执行文件"
@@ -284,6 +395,15 @@ done
 run_failure_case v1.0.0-rc1 badexec '无法通过 version --json 自检'
 run_failure_case v1.0.0-rc1 badversion 'version=9.9.9，期望 1.0.0-rc1'
 run_failure_case v1.0.0-rc1 badprofile 'selfProfile=unprofiled，期望 darwin-local-dogfood'
+run_failure_case v1.0.0-rc1 badbinarycommit "commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa，期望 ${FIXTURE_COMMIT}"
+run_failure_case v1.0.0-rc1 badbuilddate 'buildDate=2026-08-29T00:00:00Z，期望 2026-08-28T00:00:00Z'
+run_failure_case v1.0.0-rc1 badgoversion 'goVersion=go1.26.7，期望 go1.26.6'
+run_failure_case v1.0.0-rc1 badmanifestcommit 'RELEASE-MANIFEST 非 canonical、与 tag/peeled commit/checksum 不一致或资产集合不封闭'
+run_failure_case v1.0.0-rc1 badmanifestasset 'RELEASE-MANIFEST 非 canonical、与 tag/peeled commit/checksum 不一致或资产集合不封闭'
+run_failure_case v1.0.0-rc1 badmanifestchecksum 'RELEASE-MANIFEST sha256 校验失败'
+run_failure_case v1.0.0-rc1 missingmanifest '缺少或无法下载 RELEASE-MANIFEST'
+run_failure_case v1.0.0-rc1 lightweighttag '必须是唯一 annotated tag 且可解析唯一 peeled commit'
+run_failure_case v1.0.0-rc1 replacedrelease 'RELEASE-MANIFEST 与 annotated tag 冻结摘要不一致'
 run_success_case v1.0.0-rc1
 run_source_success_case Darwin darwin-local-dogfood
 run_source_success_case Linux unprofiled

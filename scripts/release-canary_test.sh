@@ -42,11 +42,13 @@ mkdir -p "${FIXTURE_ROOT}/scripts" "${FIXTURE_ROOT}/bin" \
   "${FIXTURE_ROOT}/schemas/examples/happy-path" "${FIXTURE_ROOT}/empty-hooks" \
   "$(dirname "$PI_BIN")" "$(dirname "$PI_BUNDLE")"
 cp "$DRIVER_SOURCE" "${FIXTURE_ROOT}/scripts/release-canary.sh"
+cp "${SCRIPT_DIR}/release-contract.sh" "${FIXTURE_ROOT}/scripts/release-contract.sh"
+cp "${SCRIPT_DIR}/../go.mod" "${FIXTURE_ROOT}/go.mod"
 cp "${SCRIPT_DIR}/../schemas/examples/happy-path/task-spec.json" \
   "${FIXTURE_ROOT}/schemas/examples/happy-path/task-spec.json"
 cp "${SCRIPT_DIR}/../schemas/examples/happy-path/policy-snapshot.json" \
   "${FIXTURE_ROOT}/schemas/examples/happy-path/policy-snapshot.json"
-chmod 0755 "${FIXTURE_ROOT}/scripts/release-canary.sh"
+chmod 0755 "${FIXTURE_ROOT}/scripts/release-canary.sh" "${FIXTURE_ROOT}/scripts/release-contract.sh"
 
 cat >"$PI_BUNDLE" <<'EOF'
 #!/usr/bin/env bash
@@ -232,16 +234,32 @@ chmod 0755 "${FIXTURE_ROOT}/bin/marshal"
 cat >"${FIXTURE_ROOT}/.gitignore" <<'EOF'
 .marshal/
 bin/
+dist/
 EOF
 "/usr/bin/git" -C "$FIXTURE_ROOT" init -q -b main
 "/usr/bin/git" -C "$FIXTURE_ROOT" config core.hooksPath "${FIXTURE_ROOT}/empty-hooks"
 "/usr/bin/git" -C "$FIXTURE_ROOT" config user.email release-canary-test@example.invalid
 "/usr/bin/git" -C "$FIXTURE_ROOT" config user.name "Release Canary Test"
-"/usr/bin/git" -C "$FIXTURE_ROOT" add .gitignore scripts/release-canary.sh schemas/examples/happy-path
+"/usr/bin/git" -C "$FIXTURE_ROOT" add .gitignore go.mod scripts schemas/examples/happy-path
 "/usr/bin/git" -C "$FIXTURE_ROOT" commit -q -m "fixture: release canary driver"
 "/usr/bin/git" -C "$FIXTURE_ROOT" remote add origin https://github.com/chiga0/marshal-harness.git
 EXPECTED_HEAD="$("/usr/bin/git" -C "$FIXTURE_ROOT" rev-parse HEAD)"
 "/usr/bin/git" -C "$FIXTURE_ROOT" update-ref refs/remotes/origin/main "$EXPECTED_HEAD"
+mkdir -p "${FIXTURE_ROOT}/dist"
+for name in \
+  marshal_1.0.0-rc1_darwin_amd64 marshal_1.0.0-rc1_darwin_arm64 \
+  marshal_1.0.0-rc1_linux_amd64 marshal_1.0.0-rc1_linux_arm64; do
+  cp "${FIXTURE_ROOT}/bin/marshal" "${FIXTURE_ROOT}/dist/${name}"
+done
+bash "${FIXTURE_ROOT}/scripts/release-contract.sh" create-manifest \
+  "${FIXTURE_ROOT}/dist" v1.0.0-rc1 "$EXPECTED_HEAD" 2026-08-28T00:00:00Z go1.26.6
+(
+  cd "${FIXTURE_ROOT}/dist"
+  : >SHA256SUMS
+  for name in RELEASE-MANIFEST marshal_*; do
+    printf '%s  %s\n' "$(sha256_file "$name")" "$name" >>SHA256SUMS
+  done
+)
 
 run_driver() {
   MARSHAL_RELEASE_CANARY_TEST_MODE=1 \
@@ -310,6 +328,14 @@ expect_fail 'legacy executor 污染' run_driver run --run-id "$LEGACY_RUN" --exp
 unset MARSHAL_WORKER_EXECUTOR
 [ ! -e "${FIXTURE_ROOT}/.marshal/release-canary/${LEGACY_RUN}" ] || fail 'legacy 拒绝后创建了 canary 状态'
 [ "$(fake_log_lines)" = "$LEGACY_LOG_BEFORE" ] || fail 'legacy 拒绝前调用了 Marshal'
+
+CANDIDATE_BYTES_RUN="rc1-candidate-bytes-drift"
+cp "${FIXTURE_ROOT}/bin/marshal" "${TMP_ROOT}/marshal.saved"
+printf '# fixed-bin drift\n' >>"${FIXTURE_ROOT}/bin/marshal"
+expect_fail '固定 Marshal 与 candidate bytes 不同' run_driver run --run-id "$CANDIDATE_BYTES_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION"
+[ ! -e "${FIXTURE_ROOT}/.marshal/release-canary/${CANDIDATE_BYTES_RUN}" ] || fail 'candidate bytes 拒绝后创建了 canary 状态'
+cp "${TMP_ROOT}/marshal.saved" "${FIXTURE_ROOT}/bin/marshal"
+chmod 0755 "${FIXTURE_ROOT}/bin/marshal"
 
 MAIN_RUN="rc1-main"
 run_driver run --run-id "$MAIN_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" >/dev/null

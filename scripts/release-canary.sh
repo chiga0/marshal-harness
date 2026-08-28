@@ -7,6 +7,8 @@ umask 077
 
 SOURCE_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 MARSHAL_BIN="${SOURCE_ROOT}/bin/marshal"
+RELEASE_CHECKER="${SOURCE_ROOT}/scripts/release-contract.sh"
+RELEASE_DIST_ROOT="${SOURCE_ROOT}/dist"
 CANONICAL_REMOTE="https://github.com/chiga0/marshal-harness.git"
 CANARY_REMOTE="https://example.invalid/marshal-release-canary.git"
 PI_VERSION="0.84.3"
@@ -186,7 +188,7 @@ PY
 }
 
 assert_source_identity() {
-  local root head branch remote remote_head version_json marshal_sha
+  local root head branch remote remote_head version_json marshal_sha candidate_asset candidate_sha manifest_sha
   root="$($GIT_BIN -C "$SOURCE_ROOT" rev-parse --show-toplevel 2>/dev/null)" || die "脚本不在 Git 仓库内"
   [ "$(canonical_path "$root")" = "$SOURCE_ROOT" ] || die "源仓库根身份漂移"
   head="$($GIT_BIN -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -202,6 +204,23 @@ assert_source_identity() {
   [ -f "$MARSHAL_BIN" ] && [ -x "$MARSHAL_BIN" ] || die "缺少固定可执行文件：$MARSHAL_BIN"
   [ ! -L "$MARSHAL_BIN" ] || die "固定 Marshal 不得是符号链接"
   [ "$(canonical_path "$MARSHAL_BIN")" = "$MARSHAL_BIN" ] || die "Marshal 路径不是固定 canonical path"
+  [ -f "$RELEASE_CHECKER" ] && [ ! -L "$RELEASE_CHECKER" ] \
+    || die "缺少固定 release contract checker"
+  "$RELEASE_CHECKER" verify-dist "$RELEASE_DIST_ROOT" "v${EXPECTED_VERSION}" "$EXPECTED_HEAD" >/dev/null \
+    || die "待发布 dist/RELEASE-MANIFEST 不满足当前 sourceHead 合同"
+  candidate_asset="${RELEASE_DIST_ROOT}/marshal_${EXPECTED_VERSION}_darwin_arm64"
+  candidate_sha="$(sha256_file "$candidate_asset")"
+  marshal_sha="$(sha256_file "$MARSHAL_BIN")"
+  [ "$marshal_sha" = "$candidate_sha" ] \
+    || die "固定 Marshal 不是待发布 Darwin arm64 candidate 的 exact bytes"
+  manifest_sha="$(sha256_file "${RELEASE_DIST_ROOT}/RELEASE-MANIFEST")"
+  if [ -f "$IDENTITY_PATH" ]; then
+    [ "$candidate_sha" = "$(json_field "$IDENTITY_PATH" releaseCandidateSha256)" ] || die "待发布 Darwin arm64 candidate 在 Run 后发生漂移"
+    [ "$manifest_sha" = "$(json_field "$IDENTITY_PATH" releaseManifestSha256)" ] || die "待发布 RELEASE-MANIFEST 在 Run 后发生漂移"
+  fi
+  RELEASE_CANDIDATE_ASSET="$candidate_asset"
+  RELEASE_CANDIDATE_SHA256="$candidate_sha"
+  RELEASE_MANIFEST_SHA256="$manifest_sha"
   version_json="$($MARSHAL_BIN version --json)" || die "固定 Marshal version 失败"
   VERSION_JSON="$version_json" "$PYTHON_BIN" -I -B - "$EXPECTED_HEAD" "$EXPECTED_VERSION" <<'PY' || die "Marshal build identity 漂移"
 import json, os, sys
@@ -211,7 +230,6 @@ assert value.get("version") == sys.argv[2]
 assert value.get("selfProfile") == "darwin-local-dogfood"
 assert value.get("os") == "darwin"
 PY
-  marshal_sha="$(sha256_file "$MARSHAL_BIN")"
   if [ -f "$IDENTITY_PATH" ]; then
     [ "$marshal_sha" = "$(json_field "$IDENTITY_PATH" marshalSha256)" ] || die "固定 Marshal bytes 在 Run 后发生漂移"
   fi
@@ -318,6 +336,9 @@ expected = {
 for key, wanted in expected.items():
     assert value.get(key) == wanted
 assert value.get("phase") in {"review-pending", "accepted"}
+assert value.get("releaseCandidateAsset", "").endswith("/dist/marshal_" + sys.argv[5] + "_darwin_arm64")
+assert len(value.get("releaseCandidateSha256", "")) == 64
+assert len(value.get("releaseManifestSha256", "")) == 64
 PY
 }
 
@@ -434,10 +455,11 @@ PY
 
 write_identity() {
   local phase="$1" canary_base="$2" task_id="$3" packet_digest="${4:-}"
-  "$PYTHON_BIN" -I -B - "$IDENTITY_PATH" "$phase" "$SOURCE_ROOT" "$RUN_ID" "$EXPECTED_HEAD" "$EXPECTED_VERSION" "$MARSHAL_BIN" "$MARSHAL_SHA256" "$PI_BIN" "$PI_BUNDLE" "$PI_BUNDLE_SHA256" "$PI_MODEL" "$REPOSITORY_ROOT" "$canary_base" "$task_id" "$packet_digest" <<'PY'
+  "$PYTHON_BIN" -I -B - "$IDENTITY_PATH" "$phase" "$SOURCE_ROOT" "$RUN_ID" "$EXPECTED_HEAD" "$EXPECTED_VERSION" "$MARSHAL_BIN" "$MARSHAL_SHA256" "$RELEASE_CANDIDATE_ASSET" "$RELEASE_CANDIDATE_SHA256" "$RELEASE_MANIFEST_SHA256" "$PI_BIN" "$PI_BUNDLE" "$PI_BUNDLE_SHA256" "$PI_MODEL" "$REPOSITORY_ROOT" "$canary_base" "$task_id" "$packet_digest" <<'PY'
 import json, sys
 keys = ("phase", "sourceRoot", "runId", "expectedHead", "expectedVersion",
-        "marshalPath", "marshalSha256", "piPath", "piBundlePath",
+        "marshalPath", "marshalSha256", "releaseCandidateAsset",
+        "releaseCandidateSha256", "releaseManifestSha256", "piPath", "piBundlePath",
         "piBundleSha256", "piModel", "repositoryRoot", "canaryBaseSha", "taskId",
         "reviewPacketDigest")
 value = {"schemaVersion": "marshal.release-canary.v1"}

@@ -17,6 +17,7 @@ fail() {
 cat >"$FAKE_GO" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
+[ "${1:-}" != env ] || { [ "${2:-}" = GOVERSION ] && printf '%s\n' "${FAKE_GO_VERSION:-go1.26.6}"; exit; }
 [ "${1:-}" = build ] || exit 2
 shift
 out=''
@@ -57,7 +58,14 @@ for target in linux/amd64 linux/arm64; do
   grep -Fx "${target} selfProfile=unprofiled" "$LOG" >/dev/null \
     || fail "${target} 未冻结 unprofiled"
 done
-[ "$(find "$DIST" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 5 ] \
+[ "$(find "$DIST" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" = 6 ] \
   || fail 'dist 产物集合不封闭'
+
+if FAKE_GO_VERSION=go1.26.7 DIST_PROFILE_TEST_LOG="$LOG" make -C "$ROOT" dist \
+  GO="$FAKE_GO" DIST_DIR="${TMP_ROOT}/wrong-toolchain" VERSION=1.0.0-rc1 \
+  COMMIT=0123456789abcdef0123456789abcdef01234567 \
+  BUILD_DATE=2026-08-28T00:00:00Z >/dev/null 2>&1; then
+  fail 'release toolchain 漂移应 fail closed'
+fi
 
 printf '[dist-profile-test] PASS\n'

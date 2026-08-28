@@ -5,7 +5,8 @@ COMMIT ?= unknown
 BUILD_DATE ?= unknown
 SELF_PROFILE ?= unprofiled
 GO_FILES := $(shell find cmd internal schemas -type f -name '*.go')
-LDFLAGS_BASE := -s -w \
+GO_BUILD_FLAGS := -trimpath -buildvcs=false -mod=readonly
+LDFLAGS_BASE := -s -w -buildid= \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.version=$(VERSION) \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.commit=$(COMMIT) \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.buildDate=$(BUILD_DATE)
@@ -34,7 +35,7 @@ test:
 	$(GO) test -race -p 2 ./...
 
 build:
-	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/marshal
+	$(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/marshal
 
 # 发布资产 target 矩阵，与 scripts/install.sh 平台检测口径一致。
 DIST_DIR ?= dist
@@ -44,6 +45,11 @@ DIST_TARGETS := darwin/arm64 darwin/amd64 linux/amd64 linux/arm64
 # 遵循 docs/development.md「Release 资产命名约定」，即 scripts/install.sh 的下载约定。
 # 资产与校验清单默认落在被 Git 忽略的 dist/；sha256sum 缺失时回退 shasum。
 dist:
+	@required="$$(sed -n -E 's/^toolchain[[:space:]]+(go[0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$$/\1/p' go.mod)"; \
+	actual="$$($(GO) env GOVERSION)"; \
+	[ -n "$$required" ] && [ "$$actual" = "$$required" ] || { \
+		echo "[dist] 错误: release Go toolchain 漂移：期望 $$required，实际 $$actual" >&2; exit 1; \
+	}
 	@rm -rf "$(DIST_DIR)"
 	@mkdir -p "$(DIST_DIR)"
 	@set -e; for t in $(DIST_TARGETS); do \
@@ -56,10 +62,11 @@ dist:
 		out="$(DIST_DIR)/marshal_$(VERSION)_$${os}_$${arch}"; \
 		echo "[dist] $$os/$$arch ($$self_profile) -> $$out"; \
 		CGO_ENABLED=0 GOOS="$$os" GOARCH="$$arch" \
-			$(GO) build -trimpath -ldflags "$(LDFLAGS_BASE) -X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=$$self_profile" -o "$$out" ./cmd/marshal; \
+			$(GO) build $(GO_BUILD_FLAGS) -ldflags "$(LDFLAGS_BASE) -X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=$$self_profile" -o "$$out" ./cmd/marshal; \
 	done
+	@bash scripts/release-contract.sh create-manifest "$(DIST_DIR)" "v$(VERSION)" "$(COMMIT)" "$(BUILD_DATE)" "$$($(GO) env GOVERSION)"
 	@set -e; cd "$(DIST_DIR)"; \
-	files="$$(LC_ALL=C ls marshal_* 2>/dev/null)"; \
+	files="$$(LC_ALL=C ls RELEASE-MANIFEST marshal_* 2>/dev/null)"; \
 	[ -n "$$files" ] || { echo "[dist] 错误: 未找到发布资产" >&2; exit 1; }; \
 	if command -v sha256sum >/dev/null 2>&1; then \
 		for f in $$files; do sha256sum "$$f"; done > SHA256SUMS; \

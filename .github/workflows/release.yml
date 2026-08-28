@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
+      actions: read
       contents: write
     env:
       TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
@@ -39,14 +40,17 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # 必须与 go.mod 的 toolchain 行精确一致；Makefile dist 会再次机械核对。
+          go-version: '1.26.6'
           cache: true
 
       - name: Test release and installer contracts
         run: |
           bash scripts/release-contract_test.sh
+          bash scripts/release-ci-gate_test.sh
           bash scripts/dist-profile_test.sh
           bash scripts/install_test.sh
+          bash scripts/release-canary_test.sh
 
       - name: Validate release source
         id: release
@@ -66,6 +70,13 @@ jobs:
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
           echo "RELEASE_COMMIT=$release_commit" >> "$GITHUB_ENV"
+          build_date="$(bash scripts/release-contract.sh build-date . "$release_commit")"
+          echo "RELEASE_BUILD_DATE=$build_date" >> "$GITHUB_ENV"
+
+      - name: Require exact-head CI success
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/release-ci-gate.sh "${{ github.repository }}" "$RELEASE_COMMIT"
 
       # 资产命名 marshal_<version>_<os>_<arch>：version 去掉 v 前缀，
       # 与 scripts/install.sh 及 docs/development.md 的 Release 资产命名约定一致。
@@ -74,11 +85,13 @@ jobs:
           make dist \
             VERSION="${TAG_NAME#v}" \
             COMMIT="${RELEASE_COMMIT}" \
-            BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            BUILD_DATE="${RELEASE_BUILD_DATE}"
           ls -l dist/
 
       - name: Verify release asset contract
-        run: bash scripts/release-contract.sh verify-dist dist "$TAG_NAME"
+        run: |
+          bash scripts/release-contract.sh verify-dist dist "$TAG_NAME" "$RELEASE_COMMIT"
+          bash scripts/release-contract.sh verify-candidate-tag . dist "$TAG_NAME"
 
       # macOS 签名/notarization 门禁：
       # ADR 0052 §1.9 要求 macOS 正式产物签名/notarization/release identity。
@@ -129,7 +142,7 @@ jobs:
             if [ "$IS_PRERELEASE" = "true" ]; then
               printf -- '- 本 release 为 prerelease（候选/预览），不按 v1.0 正式发布承诺支持（ADR 0052）。\n'
             fi
-            printf -- '- 校验：安装脚本会自动下载并校验 `SHA256SUMS`；离线校验可在资产目录运行 `sha256sum -c SHA256SUMS`（macOS 用 `shasum -a 256 -c SHA256SUMS`）。\n'
+            printf -- '- 校验：安装脚本会解析 annotated tag 的 peeled commit，并校验 `RELEASE-MANIFEST`、`SHA256SUMS` 与二进制内嵌 version/commit/profile；离线校验可在资产目录运行 `sha256sum -c SHA256SUMS`（macOS 用 `shasum -a 256 -c SHA256SUMS`）。\n'
           } > release-notes.md
 
       - name: Create GitHub Release
