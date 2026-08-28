@@ -18,7 +18,7 @@ type fakeAllocationAuthority struct {
 }
 
 func TestControllerRejectsPreexistingEmptyStagingWithoutMarker(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 	controller, store := openController(t, root, session)
 	defer controller.Close()
@@ -42,7 +42,7 @@ func TestControllerRejectsPreexistingEmptyStagingWithoutMarker(t *testing.T) {
 }
 
 func TestControllerRejectsNonemptyPreMarkerStaging(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 	controller, store := openController(t, root, session)
 	defer controller.Close()
@@ -218,7 +218,7 @@ func testObjectsPath(t *testing.T, root string, binding AllocationBindingV1) str
 }
 
 func TestControllerProvisionTerminateAndReplay(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 	controller, store := openController(t, root, session)
 	receipt, err := controller.RecoverProvision(context.Background(), "effect-provision")
@@ -265,7 +265,7 @@ func TestControllerProvisionTerminateAndReplay(t *testing.T) {
 }
 
 func TestControllerPrepareTerminateIntentReobservesLiveAndRejectsMarkerSwap(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 	controller, _ := openController(t, root, session)
 	defer controller.Close()
@@ -354,7 +354,7 @@ func TestControllerRecoversEveryProvisionCommitBoundary(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := canonicalTempDir(t)
 			session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t), commitBeforeError: tc.commitResponse}
 			if tc.preparedError {
 				session.preparedError = errors.New("injected prepared append failure")
@@ -400,7 +400,7 @@ func TestControllerRecoversTerminateRenameAndReceiptBoundaries(t *testing.T) {
 			name = "receipt-commit-response-lost"
 		}
 		t.Run(name, func(t *testing.T) {
-			root := t.TempDir()
+			root := canonicalTempDir(t)
 			session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 			controller, _ := openController(t, root, session)
 			provisioned, err := controller.RecoverProvision(context.Background(), "effect-provision")
@@ -435,7 +435,7 @@ func TestControllerRecoversTerminateRenameAndReceiptBoundaries(t *testing.T) {
 }
 
 func TestControllerNeverClobbersExistingTombstoneTarget(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 	controller, _ := openController(t, root, session)
 	defer controller.Close()
@@ -462,7 +462,7 @@ func TestControllerNeverClobbersExistingTombstoneTarget(t *testing.T) {
 }
 
 func TestControllerNeverClobbersExistingLiveTarget(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 	objects := testObjectsPath(t, root, session.snapshot.ProvisionIntent.Binding)
 	session.afterPreparedCommit = func() {
@@ -477,7 +477,7 @@ func TestControllerNeverClobbersExistingLiveTarget(t *testing.T) {
 }
 
 func TestControllerRejectsHardlinkedMarkerBeforeRename(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 	objects := testObjectsPath(t, root, session.snapshot.ProvisionIntent.Binding)
 	session.afterPreparedCommit = func() {
@@ -493,7 +493,7 @@ func TestControllerRejectsHardlinkedMarkerBeforeRename(t *testing.T) {
 }
 
 func TestControllerRejectsPathSwapBeforeRename(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 	objects := testObjectsPath(t, root, session.snapshot.ProvisionIntent.Binding)
 	session.afterPreparedCommit = func() {
@@ -513,7 +513,7 @@ func TestControllerRejectsPathSwapBeforeRename(t *testing.T) {
 }
 
 func TestControllerRejectsAuthorityDriftAdjacentToRename(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 	session.mutateBeforeSecondRead = func(snapshot *AuthoritySnapshot) {
 		snapshot.Facts[0].AttemptAuthorityFactDigest = testDigest("drifted-current-head")
@@ -525,7 +525,7 @@ func TestControllerRejectsAuthorityDriftAdjacentToRename(t *testing.T) {
 }
 
 func TestTerminateNotFoundNeverBecomesSuccess(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	session := &fakeAllocationSession{snapshot: initialAuthoritySnapshot(t)}
 	controller, _ := openController(t, root, session)
 	receipt, err := controller.RecoverProvision(context.Background(), "effect-provision")

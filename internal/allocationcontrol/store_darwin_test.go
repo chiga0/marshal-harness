@@ -10,8 +10,20 @@ import (
 	"testing"
 )
 
+// canonicalTempDir resolves macOS runner aliases such as /var -> /private/var.
+// OpenStore intentionally rejects symlinked path components, so its fixtures
+// must pass the physical directory rather than the runner-provided alias.
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 func TestStoreCreatesOnlyOwnerBoundDurableNamespace(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := testStoreScope(t)
 	store, err := OpenStore(root, scope)
 	if err != nil {
@@ -38,7 +50,7 @@ func TestStoreCreatesOnlyOwnerBoundDurableNamespace(t *testing.T) {
 
 func TestStoreRejectsJournalSymlinkAndHardlink(t *testing.T) {
 	t.Run("symlink", func(t *testing.T) {
-		root := t.TempDir()
+		root := canonicalTempDir(t)
 		scope := testStoreScope(t)
 		scopeName, _ := scope.directoryName()
 		base := filepath.Join(root, storeDirectoryName, scopeName)
@@ -60,7 +72,7 @@ func TestStoreRejectsJournalSymlinkAndHardlink(t *testing.T) {
 		}
 	})
 	t.Run("hardlink", func(t *testing.T) {
-		root := t.TempDir()
+		root := canonicalTempDir(t)
 		scope := testStoreScope(t)
 		scopeName, _ := scope.directoryName()
 		store, err := OpenStore(root, scope)
@@ -81,7 +93,7 @@ func TestStoreRejectsJournalSymlinkAndHardlink(t *testing.T) {
 }
 
 func TestStoreRejectsIntermediateRootSymlink(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	real := filepath.Join(root, "real")
 	if err := os.MkdirAll(filepath.Join(real, "child"), 0o700); err != nil {
 		t.Fatal(err)
@@ -115,7 +127,7 @@ func TestImplementationContainsNoRecursiveDelete(t *testing.T) {
 }
 
 func TestStoreRejectsAuthorityFactsOutsideBoundScope(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := testStoreScope(t)
 	store, err := OpenStore(root, scope)
 	if err != nil {
@@ -133,7 +145,7 @@ func TestStoreRejectsAuthorityFactsOutsideBoundScope(t *testing.T) {
 }
 
 func TestDifferentAllocationScopesUseDistinctStableNamespaces(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	first := testStoreScope(t)
 	second := first
 	second.AllocationID = "allocation-2"
@@ -162,7 +174,7 @@ func TestDifferentAllocationScopesUseDistinctStableNamespaces(t *testing.T) {
 }
 
 func TestSameAllocationScopeHasSingleOpenStoreOwner(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	scope := testStoreScope(t)
 	first, err := OpenStore(root, scope)
 	if err != nil {
