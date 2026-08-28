@@ -2,7 +2,7 @@
 
 本计划用于把当前 embedded/local 先行实现逐步收敛到[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Milestone 是交付顺序，不是产品定位。
 
-> **当前权威路线（2026-08-27）**：实施顺序以仓库根目录 `AGENTS.md`、[Roadmap 状态](roadmap-status.md)、[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md) 与 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 为准，按纵切优先的 `I186-R0→R6` 收敛。Milestone 0–9 的历史结论与代码资产保留，但历史 `PASSED` 不自动等于 v1.0 production integration。当前 `I186-R0: PASSED`、`I186-R1: IN_PROGRESS`、`I186-R2–R6: PLANNED`。M10–M13 不再阻塞 v1.0，作为 1.x 候选在 R6 后重新排期。本文后续 M0–M13 章节保留历史目标，不得据此提前升级实现状态。
+> **当前权威路线（2026-08-28）**：实施顺序以仓库根目录 `AGENTS.md`、[Roadmap 状态](roadmap-status.md)、[ADR 0052](adr/0052-v1-release-scope-and-production-reachability.md) 与 [Issue #186](https://github.com/chiga0/marshal-harness/issues/186) 为准，按纵切优先的 `I186-R0→R6` 收敛。Milestone 0–9 的历史结论与代码资产保留，但历史 `PASSED` 不自动等于 v1.0 production integration。当前 `I186-R0: PASSED`、`I186-R1: IN_PROGRESS（INTEGRATED）`、`I186-R2–R5: IN_PROGRESS（COMPONENT，production 语义未收敛）`、`I186-R6: PLANNED（DESIGN）`。M10–M13 不再阻塞 v1.0，作为 1.x 候选在 R6 后重新排期。本文后续 M0–M13 章节保留历史目标，不得据此提前升级实现状态。
 
 ## v1.0 权威实施表
 
@@ -11,11 +11,11 @@
 | 阶段 | 状态 | 当前成熟度 | 必须交付的最短纵切 | 退出条件 |
 | --- | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 0043–0045、baseline report 与 golden trace | 历史证据保留，不重复实施 |
-| `I186-R1` | `IN_PROGRESS` | `COMPONENT` | 在现有 `execution.Service` 唯一 seam 接通真实 Agent-in-Local/Container allocation | `cmd/marshal` 或 loopback server 可达；Agent 实际在 allocation；真实 result bytes 返回 Core |
-| `I186-R2` | `PLANNED` | `COMPONENT` | command/result authority 收敛到现有 durable journal；ResultIngress 事务化接纳 | 重启可恢复；无平行内存真值；stale/replay/lost response fixture 通过 |
-| `I186-R3` | `PLANNED` | `COMPONENT` | per-Attempt Agent/Sandbox 双 binding；Core-held local process observation；立即 revoke/fence/terminate | 任一 binding 漂移均拒绝；Provider claim 不能放宽 gate；真实路径负测通过 |
-| `I186-R4` | `PLANNED` | `DESIGN` | 单一 recovery decision 与 `marshal explain` | kill/restart/cancel/timeout/retry 只有一个可回放结论 |
-| `I186-R5` | `PLANNED` | `DESIGN` | canary/cutover；旧 host Adapter bypass 退出 supported path | Fake exact digest；真实 Agent authority invariants 等价；无重复副作用；旧 bypass 删除或机械拒绝 |
+| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 在现有 `execution.Service` 唯一 seam 接通真实 Agent-in-Local/Container allocation | `cmd/marshal` 或 loopback server 可达；Agent 实际在 allocation；真实 result bytes 返回 Core |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | command/result authority 收敛到现有 durable journal；ResultIngress 事务化接纳 | 重启可恢复；无平行内存真值；stale/replay/lost response fixture 通过 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | per-Attempt Agent/Sandbox 双 binding；Core-held local process observation；立即 revoke/fence/terminate | 任一 binding 漂移均拒绝；Provider claim 不能放宽 gate；真实路径负测通过 |
+| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | 单一 recovery decision 与 `marshal explain` | kill/restart/cancel/timeout/retry 只有一个可回放结论 |
+| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | canary/cutover；旧 host Adapter bypass 退出 supported path | Fake exact digest；真实 Agent authority invariants 等价；无重复副作用；旧 bypass 删除或机械拒绝 |
 | `I186-R6` | `PLANNED` | `DESIGN` | failure conformance、稳定安装、签名/notarization、升级/回滚、release | macOS/Linux 发布门禁全绿；能力成熟度升级为 `RELEASED` |
 
 v1.0 的唯一支持链是：

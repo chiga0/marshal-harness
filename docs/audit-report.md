@@ -45,10 +45,24 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 | `V1-SERVER-RESTART-404-ONLY` | P1 | `CLOSED-FIX` | marshal-server restart 测试重写：创建真实非终态 Run（`run-restart-real`），验证跨进程恢复返回 200+Ready（`da8cccd`）。此前只断言 404。 |
 | `V1-FENCING-DOUBLE-WRITE` | P1 | `CLOSED-FIX` | exec-chain 在 embedded 模式下（`MARSHAL_EMBEDDED_SANDBOX=1`）复用 BindDispatch 已创建的 lease（含 fencingToken/AllocationId/Generation）而非独立计算 `fencingDigestOf` 做二次 Provision；修复后 embedded canary（`TestRealPiExecChainCanary`）首次跑通：pi 真实在 Local allocation 内执行（transcript 27KB，exitCode=0）（`634937b`）。 |
 | `V1-AGENT-SANDBOX-DIGEST-CONFLATED` | P1 | `CLOSED-FIX` | Facts 新增 `SandboxCapabilityDigest` 字段——agent digest 与 sandbox digest 分离（`686ee61`）。此前两者混用同一字段 `Facts.CapabilityDigest`。 |
-| `V1-ATTEMPT-BINDING-MISSING-EMBEDDED` | P1 | `CLOSED-FIX` | AttemptBinding 仅在 `MARSHAL_EMBEDDED_SANDBOX=1` 时写入（`fc8e6bd`）；**`TestRealPiStrictE2E` embedded + 非嵌入式双路径全闭环通过**：真实 pi → `worker.completed` → admission anchor 落盘 → allocation record → embedded AttemptBinding 落盘 → `REVIEW_PENDING`。 |
-| `V1-EMBEDDED-ADMISSION-REJECTED` | P1 | `CLOSED-FIX` | embedded 模式 `AdmitWithDurableAuthority` 此前拒绝接纳——两处缺陷：(1) pi Probe() 含 `probedAt` 时间戳导致 CLI 注册 digest 与 execution.Run 冻结 digest 不一致，`AgentRegistrationActive` 精确查找失败——已加 fallback 遍历 active registration（`cad8773`）；(2) sandbox registrationId（`local-sandbox-provider`）缺 `registration:` 前缀，`runtimeprofile` 拒绝——execchain 构建 binding facts 时规范化补齐（`3f8638d`）。修复后 embedded 严格 E2E 首次全闭环通过。 |
+| `V1-ATTEMPT-BINDING-MISSING-EMBEDDED` | P1 | `CLOSED-FIX` | AttemptBinding 仅在 `MARSHAL_EMBEDDED_SANDBOX=1` 时写入（`fc8e6bd`）。真实 pi 在 embedded + 非嵌入式两路径产出 `worker.completed` + admission anchor + allocation record + embedded AttemptBinding 落盘——但该证据来自尚未 fail-closed 的严格 E2E（见 `V1-STRICT-E2E-FALSE-POSITIVE`），属组件级执行链证明，不构成 R2 INTEGRATED 证据。 |
+| `V1-EMBEDDED-ADMISSION-REJECTED` | P1 | `SUPERSEDED` | 原以「任意-active fallback（`cad8773`）+ 消费端补 `registration:` 前缀（`3f8638d`）」修复 embedded admission 拒绝——该两处均为门禁降级，已被第二轮审计定性并移除，改由 `V1-AGENT-REG-ANY-ACTIVE-FALLBACK` 与 `V1-SANDBOX-REG-CONSUMER-PREFIX` 的根因修复取代。 |
 | `V1-LEASE-NOT-DURABLE` | P1 | `OPEN-IMPLEMENTATION` | lease 仍是内存态，进程重启即丢失。跨进程恢复需要耐久 lease ledger（参照 `provider.RegistrationStore` 模式）。 |
 | `V1-RESULTINGRESS-NOT-DURABLE` | P1 | `OPEN-IMPLEMENTATION` | ResultIngress replay/idempotency 状态是进程内 map，跨进程重放未覆盖。 |
+
+## 第二轮生产权威审计（2026-08-28）：门禁降级纠偏
+
+第二轮维护者审计发现：最新提交为跑绿 E2E 引入了两处权威校验降级，并提前升级里程碑。均属「把测试跑通误当成生产权威闭环」的偏航，现逐项纠正。
+
+| Finding | 等级 | 状态 | 处置 |
+| --- | --- | --- | --- |
+| `V1-AGENT-REG-ANY-ACTIVE-FALLBACK` | P1 | `CLOSED-FIX` | `AgentRegistrationActive` 曾降级为「精确查找失败则任意 active registration 即通过」——门禁绕过。已删除该 fallback 及配套 `LookupByProviderName`/`List`；根因改为稳定能力身份：`StableCapabilityDigest` 排除 `probedAt` 等易变诊断字段，dispatch 时冻结精确 `AgentRegistrationID` 进 AttemptBinding，ingress 只对其 exact lookup（`b7509c8`）。 |
+| `V1-SANDBOX-REG-CONSUMER-PREFIX` | P1 | `CLOSED-FIX` | sandbox registrationId 曾只在消费端临时补 `registration:` 前缀，接纳不验证 binding 与真实 ledger 精确相等。已从源头统一 canonical ID（`embeddedRegistrationID` 带前缀），删除消费端 hack，并在 `AdmitWithDurableAuthority` 机械断言 `AttemptBinding.SandboxProviderRegistrationID == 当前 ledger ProviderRegistrationID`，不等即 fail closed（`0ae6640`）。 |
+| `V1-STRICT-E2E-FALSE-POSITIVE` | P1 | `OPEN-IMPLEMENTATION` | `TestRealPiStrictE2E` 当前是假阳性：未强制生产 profile、`verify` 失败不 fail、未真实断言终态、未真实进程重启/query/restore、非 embedded 缺 AttemptBinding 不失败。只能证明「真实 Pi 曾完成任务并写出结果」，不能证明 verification→review→Outcome→restart→query/restore 全链。待改为真 fail-closed。 |
+| `V1-R5-INTEGRATED-PREMATURE` | P1 | `CLOSED-DOCS` | R5 曾被标 `INTEGRATED` 但同时承认 cutover 未开始；且 `MARSHAL_WORKER_EXECUTOR=legacy` 仍在、production gate 需额外环境变量、默认非 embedded 走 seed admission。已撤回为 `COMPONENT`（`82e0c9f`）。 |
+| `V1-DOCS-STATE-CONFLICT` | P1 | `CLOSED-DOCS` | AGENTS/Roadmap/Readiness/Implementation Plan 的 R2–R6 状态互相冲突（R6 一处 IN_PROGRESS 多处 PLANNED、R1 成熟度不一致、R2–R5 状态不一）。已统一为权威口径：R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R5 IN_PROGRESS/COMPONENT、R6 PLANNED/DESIGN（`82e0c9f` + 本次）。 |
+
+纠正后真实进展（不作 INTEGRATED 证据）：真实 pi 在 embedded 路径（`MARSHAL_EMBEDDED_SANDBOX=1`）产出 `worker.completed` + admission anchor + allocation record + AttemptBinding，接纳走 exact lookup（无降级）。但 durable authority 仍仅门控注入、默认路径退回 seed、lease/agent-registry/ResultIngress replay 仍内存态、admission 与 journal 非同事务——R2 纵切仍 `COMPONENT`，未达 `INTEGRATED`。
 
 ## 行业协议收敛跟踪（2026-08-21 基线）
 
