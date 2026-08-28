@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
 
 func attemptTestDigest(seed string) string { return canonical.DigestBytes([]byte(seed)) }
@@ -69,11 +71,90 @@ func openStartedAttempt(t *testing.T, store *ingressDurableStore) AttemptAuthori
 		t.Fatal(err)
 	}
 	authorized := authorizedResult.State
-	startedResult, err := appendAuthorizedAttempt(t, store, authorized.Revision, authorized.HeadDigest, AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:00Z", Process: attemptTestProcess(t)})
+	authorized = appendTestSupervisorStarted(t, store, authorized)
+	startedResult, err := appendAuthorizedAttempt(t, store, authorized.Revision, authorized.HeadDigest, AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:02Z", Process: attemptTestProcess(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return startedResult.State
+}
+
+func attemptTestOwnerScope(id AttemptIdentity) ControlOwnerScope {
+	return ControlOwnerScope{AuthorityNamespaceID: id.AuthorityNamespaceID, RepositoryIdentityDigest: attemptTestDigest("repository-identity")}
+}
+
+func attemptTestBinary() processsupervisor.BinaryIdentity {
+	return processsupervisor.BinaryIdentity{CanonicalPath: "/fixed/marshal", Device: 1, Inode: 41, FileType: "regular", UID: 501, GID: 20, Mode: POSIXFileTypeRegular | 0o755, LinkCount: 1, Size: 4096, RawSHA256: attemptTestDigest("fixed-marshal"), CDHash: strings.Repeat("a", 40), SourceHead: strings.Repeat("b", 40), SelfProfile: "darwin-local-dogfood"}
+}
+
+func appendTestSupervisorStarted(t *testing.T, store *DurableStore, state AttemptAuthorityState) AttemptAuthorityState {
+	t.Helper()
+	scope := attemptTestOwnerScope(state.Identity)
+	prior, found, err := store.OpenOwner(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	epoch, previousDigest := uint64(1), ""
+	if found {
+		epoch, previousDigest = prior.Acquisition.OwnerEpoch+1, prior.FactDigest
+	}
+	binary := attemptTestBinary()
+	ownerProcess := processsupervisor.ProcessIdentity{PID: 8001 + int(epoch), BirthSeconds: 1_700_000_000, BirthMicroseconds: 11, SessionID: 8001 + int(epoch), ProcessGroupID: 8001 + int(epoch)}
+	acquisition := ControlOwnerAcquisition{Scope: scope, OwnerEpoch: epoch, OwnerUID: 501, OwnerGID: 20, OwnerProcess: ownerProcess, OwnerBinary: binary, ObserverIdentity: "darwin-owner-observer/v1", ObservedAt: "2026-08-28T00:00:00Z"}
+	ownerResult, err := store.AcquireOwner(context.Background(), attemptOwnerVerifier{want: acquisition}, epoch-1, previousDigest, acquisition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := CurrentOwnerBinding{Scope: scope, OwnerEpoch: epoch, ControlOwnerAcquiredFactDigest: ownerResult.State.FactDigest}
+	run := attemptTestRunAuthority(state.Identity)
+	bound, err := store.BindOwnerToAttempt(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, state.Revision, state.HeadDigest, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlDirectory := processsupervisor.ControlDirectoryIdentity{CanonicalPath: "/tmp/marshal-control-" + state.Identity.AttemptID, Device: 2, Inode: 100 + epoch, FileType: "directory", UID: 501, GID: 20, Mode: POSIXFileTypeDirectory | 0o700, LinkCount: 2}
+	socket := processsupervisor.ControlSocketIdentity{Device: 2, Inode: 200 + epoch, FileType: "socket", UID: 501, GID: 20, Mode: 0o140000 | 0o600, LinkCount: 1}
+	supervisorProcess := processsupervisor.ProcessIdentity{PID: 9001 + int(epoch), BirthSeconds: 1_700_000_001, BirthMicroseconds: 12, SessionID: 9001 + int(epoch), ProcessGroupID: 9001 + int(epoch)}
+	handshake := processsupervisor.HandshakeResponse{SchemaVersion: processsupervisor.HandshakeSchema, ProtocolRevision: processsupervisor.ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: "supervisor-" + state.Identity.AttemptID + "-" + fmt.Sprint(epoch), SessionNonceDigest: attemptTestDigest("session-nonce-" + fmt.Sprint(epoch)), OwnerEpoch: epoch, CurrentAuthorityHead: bound.State.HeadDigest, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: attemptTestDigest("journal-head-" + fmt.Sprint(epoch)), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: "2026-08-28T00:00:01Z", SupervisorProcess: supervisorProcess, SupervisorBinary: binary, ControlSocket: socket}
+	anchor := processsupervisor.HandshakeAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, OwnerEpoch: epoch, CurrentAuthorityHead: bound.State.HeadDigest, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: handshake.JournalHead, UID: 501, GID: 20, FixedBinary: binary, ControlSocket: socket}
+	started, err := NewProcessSupervisorStarted(owner, bound.State.LaunchAuthorizedDigest, controlDirectory, handshake, anchor, processsupervisor.CoreIdentity{UID: 501, GID: 20, Process: supervisorProcess, Binary: binary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.AppendSupervisorStarted(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, bound.State.Revision, bound.State.HeadDigest, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result.State
+}
+
+func appendTestSupervisorClosed(t *testing.T, store *DurableStore, state AttemptAuthorityState, request CleanupAuthorizationRequest) AttemptAuthorityState {
+	t.Helper()
+	owner, found, err := store.OpenOwner(state.Owner.Scope)
+	if err != nil || !found {
+		t.Fatalf("current owner found=%v err=%v", found, err)
+	}
+	closed := ProcessSupervisorClosed{
+		ProtocolRevision:                   processsupervisor.ProtocolRevision,
+		SessionID:                          state.SupervisorStarted.Handshake.SessionID,
+		Owner:                              state.Owner,
+		SupervisorStartedFactDigest:        state.SupervisorStartedDigest,
+		TerminalizationID:                  state.TerminalizationID,
+		CleanupBindingDigest:               state.CleanupBindingDigest,
+		ProcessTerminalFactDigest:          state.ProcessTerminalDigest,
+		AllocationTerminatedFactDigest:     state.AllocationTerminalDigest,
+		CloseIntentDigest:                  attemptTestDigest("supervisor-close-intent"),
+		CloseReceiptDigest:                 attemptTestDigest("supervisor-close-receipt"),
+		FinalCommandHead:                   attemptTestDigest("supervisor-final-command-head"),
+		SupervisorAbsenceObservationDigest: attemptTestDigest("supervisor-absence"),
+		SupervisorProcess:                  state.SupervisorStarted.Handshake.SupervisorProcess,
+		ObserverIdentity:                   "darwin-supervisor-absence-observer/v1",
+		ObservedAt:                         "2026-08-29T00:00:02Z",
+	}
+	result, err := store.AppendSupervisorClosed(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: request.CurrentRunAuthority}, state.Revision, state.HeadDigest, request, closed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result.State
 }
 
 func attemptTestBinding() LedgerBinding {
@@ -112,6 +193,22 @@ func appendAuthorizedAttempt(t *testing.T, store *DurableStore, revision uint64,
 		transition.AgentLaunchSpecDigest = closure.AgentLaunchSpecDigest
 	}
 	run := attemptTestRunAuthority(transition.Identity)
+	if transition.Kind == AttemptTransitionProcessStarted {
+		state, found, stateErr := store.AttemptState(transition.Identity)
+		if stateErr != nil {
+			return AttemptAppendResult{}, stateErr
+		}
+		if found && state.ControlOwnerBindingDigest != "" {
+			owner, ownerFound, ownerErr := store.OpenOwner(state.Owner.Scope)
+			if ownerErr != nil {
+				return AttemptAppendResult{}, ownerErr
+			}
+			if !ownerFound {
+				return AttemptAppendResult{}, ErrControlOwnerUnknown
+			}
+			return store.AppendProcessStarted(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, revision, head, AttemptAuthorizationRequest{Identity: transition.Identity, CurrentRunAuthority: run}, state.Owner, transition)
+		}
+	}
 	return store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run}, revision, head, AttemptAuthorizationRequest{Identity: transition.Identity, CurrentRunAuthority: run}, transition)
 }
 
@@ -656,6 +753,21 @@ type attemptRunVerifier struct {
 	skip  bool
 }
 
+type attemptOwnerVerifier struct {
+	want ControlOwnerAcquisition
+	err  error
+}
+
+func (v attemptOwnerVerifier) WithCurrentOwnerLock(_ context.Context, got ControlOwnerAcquisition, fn func() error) error {
+	if v.err != nil {
+		return v.err
+	}
+	if got != v.want {
+		return errors.New("wrong current control owner")
+	}
+	return fn()
+}
+
 type attemptDoubleRunVerifier struct {
 	want RunAuthorityBinding
 }
@@ -804,7 +916,8 @@ func TestCleanupAuthorizationRejectsWrongTupleBindingOrchestratorAndRelease(t *t
 	if _, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, barrier.Revision, barrier.HeadDigest, request, terminalTransition); !errors.Is(err, ErrCleanupUnauthorized) {
 		t.Fatalf("allocation-terminal phase replayed old process terminal: %v", err)
 	}
-	cleanedResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, allocation.Revision, allocation.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionCleanupCompleted, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID})
+	closed := appendTestSupervisorClosed(t, store, allocation, request)
+	cleanedResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, closed.Revision, closed.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionCleanupCompleted, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, SupervisorClosedFactDigest: closed.SupervisorClosedDigest})
 	if err != nil {
 		t.Fatal(err)
 	}

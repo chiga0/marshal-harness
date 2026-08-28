@@ -502,6 +502,7 @@ func allocationAdvanceToProcessTerminal(t *testing.T, store *DurableStore, state
 	if err != nil {
 		t.Fatal(err)
 	}
+	authorized.State = appendTestSupervisorStarted(t, store, authorized.State)
 	started, err := appendAuthorizedAttempt(t, store, authorized.State.Revision, authorized.State.HeadDigest, AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: state.Identity, CommandID: "allocation-agent-command", ObservedAt: "2026-08-29T00:00:00Z", Process: attemptTestProcess(t)})
 	if err != nil {
 		t.Fatal(err)
