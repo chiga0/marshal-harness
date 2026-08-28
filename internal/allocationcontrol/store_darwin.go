@@ -278,7 +278,7 @@ func (store *Store) syncPreparedStaging(name, markerName string, expected alloca
 }
 
 func matchesObservation(left, right allocationObservation) bool {
-	return left.present && right.present && left.objectIdentity == right.objectIdentity && left.markerIdentity == right.markerIdentity && left.marker == right.marker && left.markerDigest == right.markerDigest
+	return left.present && right.present && sameDirectoryObject(left.objectIdentity, right.objectIdentity) && left.markerIdentity == right.markerIdentity && left.marker == right.marker && left.markerDigest == right.markerDigest
 }
 
 func buildPrepared(intent AllocationProvisionIntentV1, intentFactDigest string, observation allocationObservation) (AllocationStagingPreparedV1, error) {
@@ -355,7 +355,7 @@ func (store *Store) completeProvision(intent AllocationProvisionIntentV1, prepar
 	receipt := AllocationProvisionReceiptV1{
 		SchemaVersion: ProvisionReceiptSchema, ProtocolRevision: ProtocolRevision, Binding: intent.Binding,
 		IntentFactDigest: prepared.IntentFactDigest, PreparedFactDigest: preparedFactDigest,
-		RequestDigest: intent.RequestDigest, LiveRelativeName: intent.LiveRelativeName, LiveIdentity: live.objectIdentity,
+		RequestDigest: intent.RequestDigest, LiveRelativeName: intent.LiveRelativeName, LiveIdentity: prepared.StagingIdentity,
 		MarkerRelativeName: intent.MarkerRelativeName, MarkerIdentity: live.markerIdentity,
 		Marker: live.marker, MarkerDigest: live.markerDigest, Disposition: DispositionApplied,
 	}
@@ -440,7 +440,7 @@ func (store *Store) completeTerminate(intent AllocationTerminateIntentV1, intent
 		ExpectedAttemptSequence: intent.ExpectedAttemptSequence, AttemptAuthorityFactDigest: intent.AttemptAuthorityFactDigest,
 		IntentFactDigest: intentFactDigest, RequestDigest: intent.RequestDigest,
 		LiveRelativeName: intent.LiveRelativeName, TombstoneRelativeName: intent.TombstoneRelativeName,
-		TombstoneIdentity: tombstone.objectIdentity, MarkerRelativeName: intent.MarkerRelativeName,
+		TombstoneIdentity: intent.LiveIdentity, MarkerRelativeName: intent.MarkerRelativeName,
 		MarkerIdentity: tombstone.markerIdentity, Marker: tombstone.marker, MarkerDigest: tombstone.markerDigest,
 		LiveAbsent: true, TombstonePresent: true, Disposition: DispositionApplied,
 	}
@@ -505,7 +505,7 @@ func (store *Store) verifyTerminateReceipt(intent AllocationTerminateIntentV1, r
 	if err != nil {
 		return err
 	}
-	if live.present || !tombstone.present || tombstone.objectIdentity != receipt.TombstoneIdentity || tombstone.markerIdentity != receipt.MarkerIdentity || tombstone.marker != receipt.Marker || tombstone.markerDigest != receipt.MarkerDigest {
+	if live.present || !tombstone.present || !sameDirectoryObject(tombstone.objectIdentity, receipt.TombstoneIdentity) || tombstone.markerIdentity != receipt.MarkerIdentity || tombstone.marker != receipt.Marker || tombstone.markerDigest != receipt.MarkerDigest {
 		return ErrFilesystemConflict
 	}
 	return nil
@@ -595,11 +595,11 @@ func (store *Store) inspectAllocationState(name, markerName string, requireOnlyM
 }
 
 func matchesPrepared(observation allocationObservation, prepared AllocationStagingPreparedV1) bool {
-	return observation.present && observation.objectIdentity == prepared.StagingIdentity && observation.markerIdentity == prepared.MarkerIdentity && observation.marker == prepared.Marker && observation.markerDigest == prepared.MarkerDigest
+	return observation.present && sameDirectoryObject(observation.objectIdentity, prepared.StagingIdentity) && observation.markerIdentity == prepared.MarkerIdentity && observation.marker == prepared.Marker && observation.markerDigest == prepared.MarkerDigest
 }
 
 func matchesTerminate(observation allocationObservation, intent AllocationTerminateIntentV1) bool {
-	return observation.present && observation.objectIdentity == intent.LiveIdentity && observation.markerIdentity == intent.MarkerIdentity && observation.marker == intent.Marker && observation.markerDigest == intent.MarkerDigest
+	return observation.present && sameDirectoryObject(observation.objectIdentity, intent.LiveIdentity) && observation.markerIdentity == intent.MarkerIdentity && observation.marker == intent.Marker && observation.markerDigest == intent.MarkerDigest
 }
 
 func objectIdentity(stat unix.Stat_t) ObjectIdentityV1 {
@@ -617,7 +617,18 @@ func objectIdentity(stat unix.Stat_t) ObjectIdentityV1 {
 }
 
 func sameStat(left, right unix.Stat_t) bool {
-	return left.Dev == right.Dev && left.Ino == right.Ino && left.Mode == right.Mode && left.Uid == right.Uid && left.Gid == right.Gid && left.Size == right.Size && left.Nlink == right.Nlink
+	if left.Dev != right.Dev || left.Ino != right.Ino || left.Mode != right.Mode || left.Uid != right.Uid || left.Gid != right.Gid {
+		return false
+	}
+	// APFS does not expose directory size/link count as stable authority
+	// attributes: fsync and entry mutations can change them without replacing
+	// the directory object. Device+inode+type/mode+owner remain the binding.
+	// Regular files keep exact size/link checks because their content and
+	// single-link identity are part of the authority observation.
+	if left.Mode&unix.S_IFMT == unix.S_IFDIR {
+		return true
+	}
+	return left.Size == right.Size && left.Nlink == right.Nlink
 }
 
 func verifyPrivateDirectory(fd int, uid uint32) error {
