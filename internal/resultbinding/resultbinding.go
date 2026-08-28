@@ -31,11 +31,11 @@ const (
 
 // Facts 是一个 Attempt 接收期的冻结绑定事实。
 type Facts struct {
-	TaskID, RunID, AttemptID      string
-	AgentAdapterID                string // == ProviderName（adapter id 即 provider 名）
-	AgentExecutable               string // 审计字段（不参与门禁）
-	AgentProviderVersion          string
-	CapabilityDigest              string // 冻结 agent capability snapshot digest + 本 Attempt 的 admission evidence
+	TaskID, RunID, AttemptID string
+	AgentAdapterID           string // == ProviderName（adapter id 即 provider 名）
+	AgentExecutable          string // 审计字段（不参与门禁）
+	AgentProviderVersion     string
+	CapabilityDigest         string // 冻结 agent capability snapshot digest + 本 Attempt 的 admission evidence
 	// AgentRegistrationID 是 dispatch 时从稳定 capability identity digest
 	// 派生并冻结进 AttemptBinding 的精确 registration id。ingress/admission
 	// 只允许对该 id 做 exact lookup，不再从 CapabilityDigest 现场重新派生，
