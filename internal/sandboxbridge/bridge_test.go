@@ -131,6 +131,28 @@ func TestRunWorker_AdapterMismatch(t *testing.T) {
 	}
 }
 
+func TestRunWorker_ProductionGateRejectsLegacyBeforeAllocationOrRun(t *testing.T) {
+	provider := sandbox.NewFakeProvider(sandbox.FakeConfig{})
+	bridge, err := NewBridge(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge.WithProductionGate()
+	worker := &fakeAdapter{id: "fake"}
+	_, err = bridge.RunWorker(context.Background(), worker, validRequest(t))
+	if err == nil || !strings.Contains(err.Error(), "does not implement LaunchCapable") {
+		t.Fatalf("production gate error = %v", err)
+	}
+	if worker.calls != 0 {
+		t.Fatalf("legacy adapter ran %d times", worker.calls)
+	}
+	// No allocation was created: the same deterministic identity remains free
+	// for the explicitly invoked compatibility implementation.
+	if _, err := bridge.runWorkerLegacy(context.Background(), worker, validRequest(t), mustParseView(t)); err != nil {
+		t.Fatalf("production rejection left an allocation side effect: %v", err)
+	}
+}
+
 func TestRunWorker_MalformedRequests(t *testing.T) {
 	bridge, _ := NewBridge(sandbox.NewFakeProvider(sandbox.FakeConfig{}))
 	adapter := &fakeAdapter{id: "fake"}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -333,6 +334,54 @@ func TestSelectNeverLeavesExplicitCandidateList(t *testing.T) {
 	}
 	if supported.calls != 0 {
 		t.Fatalf("Probe(pi) called %d times, want 0", supported.calls)
+	}
+}
+
+func TestEligibleSelectorRejectsBeforeProbeAndKeepsCompatibilitySelector(t *testing.T) {
+	t.Parallel()
+
+	ordinary := &probeSpy{id: "qwen", record: capabilityRecord("qwen", "supported")}
+	launch := &probeSpy{id: "pi", record: capabilityRecord("pi", "supported")}
+	registry := registryWith(t, ordinary, launch)
+	production, err := NewEligibleSelector(registry, func(worker port.WorkerAdapter) bool {
+		return worker.ID() == "pi"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection, err := production.Select(context.Background(), SelectionRequest{
+		PreferredAdapter: "qwen",
+		FallbackAdapters: []string{"pi"},
+		AllowedAdapters:  []string{"qwen", "pi"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.Adapter != launch || ordinary.calls != 0 || launch.calls != 1 {
+		t.Fatalf("production selection=%+v ordinaryCalls=%d launchCalls=%d", selection, ordinary.calls, launch.calls)
+	}
+	want := []SelectionAttempt{{AdapterID: "qwen", Outcome: OutcomeNotLaunchCapable}, {AdapterID: "pi", Outcome: OutcomeSelected}}
+	if !reflect.DeepEqual(selection.Attempts, want) {
+		t.Fatalf("production attempts=%+v, want %+v", selection.Attempts, want)
+	}
+
+	compatibility, err := NewSelector(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection, err = compatibility.Select(context.Background(), SelectionRequest{
+		PreferredAdapter: "qwen", AllowedAdapters: []string{"qwen"},
+	})
+	if err != nil || selection.Adapter != ordinary || ordinary.calls != 1 {
+		t.Fatalf("compatibility selection=%+v err=%v calls=%d", selection, err, ordinary.calls)
+	}
+}
+
+func TestNewEligibleSelectorRejectsNilPredicate(t *testing.T) {
+	t.Parallel()
+	selector, err := NewEligibleSelector(NewRegistry(), nil)
+	if selector != nil || err == nil || !port.IsPermanent(err) {
+		t.Fatalf("selector=%+v err=%v, want permanent fail-closed error", selector, err)
 	}
 }
 

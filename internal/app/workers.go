@@ -17,6 +17,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/darwin"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 )
 
 // Worker configuration outcomes are fixed, structured codes. They never embed
@@ -147,10 +148,11 @@ var workerBindings = []workerBinding{
 // writes files. Qoder/Codex authority configuration remains fail-closed; an
 // explicit ordinary-user mode is a separate, visibly downgraded constructor.
 type WorkerRuntime struct {
-	validator      *contract.Validator
-	registry       *adapter.Registry
-	selector       *adapter.Selector
-	configurations []WorkerConfiguration
+	validator          *contract.Validator
+	registry           *adapter.Registry
+	selector           *adapter.Selector
+	productionSelector *adapter.Selector
+	configurations     []WorkerConfiguration
 }
 
 // NewWorkerRuntime builds the shared runtime from the caller-provided
@@ -230,11 +232,19 @@ func newWorkerRuntime(getenv func(string) string, qwenConstructor workerConstruc
 	if err != nil {
 		return nil, port.Permanentf("worker runtime: initialize adapter selector")
 	}
+	productionSelector, err := adapter.NewEligibleSelector(registry, func(worker port.WorkerAdapter) bool {
+		_, ok := worker.(sandboxbridge.LaunchCapable)
+		return ok
+	})
+	if err != nil {
+		return nil, port.Permanentf("worker runtime: initialize production adapter selector")
+	}
 	return &WorkerRuntime{
-		validator:      validator,
-		registry:       registry,
-		selector:       selector,
-		configurations: configurations,
+		validator:          validator,
+		registry:           registry,
+		selector:           selector,
+		productionSelector: productionSelector,
+		configurations:     configurations,
 	}, nil
 }
 
@@ -246,6 +256,10 @@ func (r *WorkerRuntime) Registry() *adapter.Registry { return r.registry }
 
 // Selector returns the adapter selector bound to the shared registry.
 func (r *WorkerRuntime) Selector() *adapter.Selector { return r.selector }
+
+// ProductionSelector returns the fail-closed v1 selector. It mechanically
+// excludes adapters without the allocation-carried LaunchCapable contract.
+func (r *WorkerRuntime) ProductionSelector() *adapter.Selector { return r.productionSelector }
 
 // Configurations returns a clone of the structured binding outcomes in the
 // frozen order. Mutating the returned slice cannot affect the runtime.

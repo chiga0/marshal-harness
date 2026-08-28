@@ -21,6 +21,7 @@ const (
 	OutcomeProbeFailed      = "probe-failed"
 	OutcomeInvalidSnapshot  = "invalid-snapshot"
 	OutcomeIdentityMismatch = "identity-mismatch"
+	OutcomeNotLaunchCapable = "not-launch-capable"
 	OutcomeUnsupported      = "unsupported"
 )
 
@@ -30,6 +31,7 @@ var outcomeOrder = []string{
 	OutcomeProbeFailed,
 	OutcomeInvalidSnapshot,
 	OutcomeIdentityMismatch,
+	OutcomeNotLaunchCapable,
 	OutcomeUnsupported,
 	OutcomeSelected,
 }
@@ -60,7 +62,8 @@ type Selection struct {
 // Selector resolves Worker adapters strictly from explicit candidate lists and
 // never performs implicit fallback.
 type Selector struct {
-	registry *Registry
+	registry    *Registry
+	eligibility func(port.WorkerAdapter) bool
 }
 
 // NewSelector returns a Selector bound to the given exact-ID registry. A nil
@@ -71,6 +74,22 @@ func NewSelector(registry *Registry) (*Selector, error) {
 		return nil, port.Permanentf("select adapter: nil registry")
 	}
 	return &Selector{registry: registry}, nil
+}
+
+// NewEligibleSelector returns a selector that rejects registered adapters for
+// which eligible returns false before Probe. The predicate is injected by the
+// composition root so this provider-neutral package does not depend on a
+// concrete runtime capability interface.
+func NewEligibleSelector(registry *Registry, eligible func(port.WorkerAdapter) bool) (*Selector, error) {
+	if eligible == nil {
+		return nil, port.Permanentf("select adapter: nil eligibility predicate")
+	}
+	selector, err := NewSelector(registry)
+	if err != nil {
+		return nil, err
+	}
+	selector.eligibility = eligible
+	return selector, nil
 }
 
 // Select resolves and probes candidates only in the frozen explicit order:
@@ -107,6 +126,10 @@ func (s *Selector) Select(ctx context.Context, request SelectionRequest) (Select
 		worker, err := s.registry.Resolve(id)
 		if err != nil {
 			selection.Attempts = append(selection.Attempts, SelectionAttempt{AdapterID: id, Outcome: OutcomeUnavailable})
+			continue
+		}
+		if s.eligibility != nil && !s.eligibility(worker) {
+			selection.Attempts = append(selection.Attempts, SelectionAttempt{AdapterID: id, Outcome: OutcomeNotLaunchCapable})
 			continue
 		}
 		if err := ctx.Err(); err != nil {
