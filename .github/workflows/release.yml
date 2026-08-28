@@ -28,6 +28,7 @@ jobs:
       contents: read
     outputs:
       source-head: ${{ steps.release.outputs.source-head }}
+      tag-object: ${{ steps.release.outputs.tag-object }}
       prerelease: ${{ steps.release.outputs.prerelease }}
       payload-sha256: ${{ steps.payload.outputs.sha256 }}
     env:
@@ -62,6 +63,16 @@ jobs:
             exit 1
           }
           kind="$(bash scripts/release-contract.sh classify "$TAG_NAME")"
+          test "$(git cat-file -t "refs/tags/${TAG_NAME}")" = tag || {
+            echo "::error::release tag ${TAG_NAME} 必须是 annotated tag" >&2
+            exit 1
+          }
+          release_tag_object="$(git rev-parse --verify "refs/tags/${TAG_NAME}")" \
+            || { echo "::error::release tag ${TAG_NAME} 缺少 tag object" >&2; exit 1; }
+          [[ "$release_tag_object" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::release tag object ${release_tag_object} 非 canonical SHA" >&2
+            exit 1
+          }
           release_commit="$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")" \
             || { echo "::error::release tag ${TAG_NAME} 不存在或不指向 commit" >&2; exit 1; }
           checkout_commit="$(git rev-parse HEAD)"
@@ -76,6 +87,7 @@ jobs:
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
           echo "source-head=$release_commit" >> "$GITHUB_OUTPUT"
+          echo "tag-object=$release_tag_object" >> "$GITHUB_OUTPUT"
           echo "RELEASE_COMMIT=$release_commit" >> "$GITHUB_ENV"
           build_date="$(bash scripts/release-contract.sh build-date . "$release_commit")"
           echo "RELEASE_BUILD_DATE=$build_date" >> "$GITHUB_ENV"
@@ -135,6 +147,7 @@ jobs:
     env:
       TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
       EXPECTED_SOURCE_HEAD: ${{ needs.build.outputs.source-head }}
+      EXPECTED_TAG_OBJECT: ${{ needs.build.outputs.tag-object }}
       EXPECTED_PAYLOAD_SHA256: ${{ needs.build.outputs.payload-sha256 }}
       IS_PRERELEASE: ${{ needs.build.outputs.prerelease }}
     steps:
@@ -156,8 +169,10 @@ jobs:
           set -euo pipefail
           test "${{ github.repository }}" = "chiga0/marshal-harness"
           [[ "$EXPECTED_SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_TAG_OBJECT" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_PAYLOAD_SHA256" =~ ^[0-9a-f]{64}$ ]]
           test "$(git cat-file -t "refs/tags/${TAG_NAME}")" = tag
+          test "$(git rev-parse --verify "refs/tags/${TAG_NAME}")" = "$EXPECTED_TAG_OBJECT"
           test "$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")" = "$EXPECTED_SOURCE_HEAD"
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_HEAD"
           test "$(sha256sum release-artifact/release-payload.tar | awk '{print $1}')" = "$EXPECTED_PAYLOAD_SHA256"
@@ -174,6 +189,35 @@ jobs:
           tar -tf release-artifact/release-payload.tar | LC_ALL=C sort > actual-tar-files
           LC_ALL=C sort expected-tar-files -o expected-tar-files
           diff -u expected-tar-files actual-tar-files
+          python3 -I -B - release-artifact/release-payload.tar "$TAG_NAME" <<'PY'
+          import sys
+          import tarfile
+
+          archive, tag = sys.argv[1:]
+          version = tag.removeprefix("v")
+          expected = {
+              "dist": ("directory", 0o755),
+              "dist/RELEASE-MANIFEST": ("regular", 0o644),
+              "dist/SHA256SUMS": ("regular", 0o644),
+              f"dist/marshal_{version}_darwin_amd64": ("regular", 0o755),
+              f"dist/marshal_{version}_darwin_arm64": ("regular", 0o755),
+              f"dist/marshal_{version}_linux_amd64": ("regular", 0o755),
+              f"dist/marshal_{version}_linux_arm64": ("regular", 0o755),
+          }
+          with tarfile.open(archive, mode="r:") as payload:
+              members = payload.getmembers()
+          if len(members) != 7 or {member.name for member in members} != set(expected):
+              raise SystemExit("release payload must contain exactly seven canonical members")
+          for member in members:
+              expected_type, expected_mode = expected[member.name]
+              actual_type = "directory" if member.isdir() else "regular" if member.isfile() else "other"
+              if actual_type != expected_type or member.mode != expected_mode:
+                  raise SystemExit(
+                      f"unsafe payload member {member.name}: type={actual_type} mode={member.mode:o}"
+                  )
+              if expected_type == "regular" and (member.issym() or member.islnk() or member.linkname):
+                  raise SystemExit(f"linked payload member rejected: {member.name}")
+          PY
           mkdir release-payload
           tar -xf release-artifact/release-payload.tar -C release-payload
           (cd release-payload/dist && sha256sum -c SHA256SUMS)

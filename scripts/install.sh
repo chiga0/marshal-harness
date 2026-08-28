@@ -214,6 +214,10 @@ detect_platform() {
 validate_release_tag() {
   [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc([1-9][0-9]*))?$ ]] \
     || fatal "release tag ${1} 不符合 vMAJOR.MINOR.PATCH 或 vMAJOR.MINOR.PATCH-rcN"
+  case "$1" in
+    v1.*-rc*) ;;
+    v1.*) fatal "稳定 v1 release ${1} 尚未实现 codesign/notarization，拒绝安装；请使用明确的 prerelease tag" ;;
+  esac
 }
 
 self_profile_for_os() {
@@ -661,13 +665,14 @@ main() {
   [ -z "${MARSHAL_REPO+x}" ] || fatal "MARSHAL_REPO authority override 已禁用；只允许 canonical ${REPO}"
   trap cleanup EXIT
   detect_platform
+  if [ -n "$PIN_TAG" ]; then
+    TAG="$PIN_TAG"
+    validate_release_tag "$TAG"
+  fi
   prepare_install_layout
   TMP_DIR="$(mktemp -d)"
 
   local mode="source"
-  if [ -n "$PIN_TAG" ]; then
-    TAG="$PIN_TAG"
-  fi
   if [ -n "$FORCE_SOURCE" ]; then
     info "MARSHAL_FORCE_SOURCE 已设置，跳过 release 下载"
   elif try_release; then

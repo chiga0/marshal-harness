@@ -349,6 +349,10 @@ run_failure_case() {
     || fail "${tag}/${mode} 未返回预期错误: ${expected}"
   [ ! -e "${case_dir}/install/marshal" ] \
     || fail "${tag}/${mode} 失败后仍安装了 marshal"
+  if [ "$tag" = v1.0.0 ] && [ "$mode" = valid ]; then
+    [ ! -e "${case_dir}/install/.marshal-staging" ] \
+      || fail "${tag}/${mode} stable 拒绝前不应创建 staging"
+  fi
 }
 
 run_success_case() {
@@ -590,10 +594,37 @@ run_source_dirty_case() {
   [ ! -e "${install_dir}/marshal" ] || fail 'dirty source checkout 仍安装了 marshal'
 }
 
-for tag in v1.0.0 v1.0.0-rc1; do
-  run_failure_case "$tag" missing '缺少或无法下载 SHA256SUMS'
-  run_failure_case "$tag" mismatch 'sha256 校验失败'
-done
+run_source_stable_rejection_case() {
+  local case_dir repo install_dir output status
+  case_dir="${TMP_ROOT}/source-stable-rejected"
+  repo="${case_dir}/repo"
+  install_dir="${case_dir}/install"
+  mkdir -p "$repo" "$install_dir"
+  make_source_repo "$repo" v1.0.0
+  set +e
+  output="$({
+    cd "$repo"
+    HOME="${case_dir}/home" \
+    PATH="${MOCK_BIN}:/usr/bin:/bin" \
+    MOCK_KERNEL=Darwin \
+    FAKE_GO_LOG="${case_dir}/go.log" \
+    MARSHAL_INSTALL_DIR="$install_dir" \
+    MARSHAL_TAG=v1.0.0 \
+    MARSHAL_FORCE_SOURCE=1 \
+    bash "${ROOT}/scripts/install.sh"
+  } 2>&1)"
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || fail 'stable v1 source install 应 fail closed'
+  printf '%s\n' "$output" | grep -F '稳定 v1 release v1.0.0 尚未实现 codesign/notarization，拒绝安装' >/dev/null \
+    || fail 'stable v1 source install 未返回确定性原因'
+  [ ! -e "${install_dir}/marshal" ] || fail 'stable v1 source install 仍安装了 marshal'
+  [ ! -e "${case_dir}/go.log" ] || fail 'stable v1 source install 在拒绝前启动了构建'
+}
+
+run_failure_case v1.0.0 valid '稳定 v1 release v1.0.0 尚未实现 codesign/notarization，拒绝安装'
+run_failure_case v1.0.0-rc1 missing '缺少或无法下载 SHA256SUMS'
+run_failure_case v1.0.0-rc1 mismatch 'sha256 校验失败'
 run_failure_case v1.0.0-rc1 badexec '无法通过 version --json 自检'
 run_failure_case v1.0.0-rc1 badversion 'version=9.9.9，期望 1.0.0-rc1'
 run_failure_case v1.0.0-rc1 badprofile 'selfProfile=unprofiled，期望 darwin-local-dogfood'
@@ -629,5 +660,6 @@ run_source_success_case Darwin darwin-local-dogfood
 run_source_success_case Linux unprofiled
 run_source_head_mismatch_case
 run_source_dirty_case
+run_source_stable_rejection_case
 
 printf '[install-test] PASS\n'
