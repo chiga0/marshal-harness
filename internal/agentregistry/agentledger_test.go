@@ -2,6 +2,11 @@ package agentregistry
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -141,5 +146,118 @@ func TestAgentLedgerMemoryOnlyFailsClosed(t *testing.T) {
 	}
 	if _, err := l.Lookup("registration:0001"); !errors.Is(err, ErrMemoryOnlyAgentLedger) {
 		t.Fatalf("Lookup on memory-only ledger must fail closed, got %v", err)
+	}
+}
+
+func TestAgentLedgerCurrentAuthorityRefreshesAcrossOpenInstances(t *testing.T) {
+	dir := t.TempDir()
+	first, err := NewAgentLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewAgentLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := first.Register(validReg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.AddSnapshot(validSnap(reg.RegistrationID, validDigest)); err != nil {
+		t.Fatal(err)
+	}
+	if _, snap, err := second.CurrentAuthority(reg.RegistrationID); err != nil || snap.SnapshotDigest != validDigest {
+		t.Fatalf("second instance did not refresh first snapshot: snap=%+v err=%v", snap, err)
+	}
+	if _, err := first.AddSnapshot(validSnap(reg.RegistrationID, validDigest2)); err != nil {
+		t.Fatal(err)
+	}
+	if gotReg, snap, err := second.CurrentAuthority(reg.RegistrationID); err != nil || gotReg.LifecycleState != LifecycleStateActive || snap.SnapshotDigest != validDigest2 {
+		t.Fatalf("second instance admitted stale authority after supersede: reg=%+v snap=%+v err=%v", gotReg, snap, err)
+	}
+	if _, err := first.Transition(reg.RegistrationID, LifecycleStateRevoked); err != nil {
+		t.Fatal(err)
+	}
+	gotReg, _, err := second.CurrentAuthority(reg.RegistrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotReg.LifecycleState != LifecycleStateRevoked {
+		t.Fatalf("second instance retained stale lifecycle %q", gotReg.LifecycleState)
+	}
+}
+
+func TestAgentLedgerSnapshotABAAppendsActivationEpoch(t *testing.T) {
+	dir := t.TempDir()
+	ledger, err := NewAgentLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := ledger.Register(validReg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := validSnap(reg.RegistrationID, validDigest)
+	b := validSnap(reg.RegistrationID, validDigest2)
+	for _, snap := range []AgentCapabilitySnapshot{a, b, a} {
+		if _, err := ledger.AddSnapshot(snap); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, current, err := ledger.CurrentAuthority(reg.RegistrationID)
+	if err != nil || current.SnapshotDigest != a.SnapshotDigest {
+		t.Fatalf("A→B→A did not restore A as current: snap=%+v err=%v", current, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, agentLedgerFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"factType":"agent-capability-snapshot-activated"`) {
+		t.Fatalf("A→B→A did not append an explicit activation epoch: %s", raw)
+	}
+}
+
+func TestAgentLedgerConcurrentWritersHaveStrictSequence(t *testing.T) {
+	dir := t.TempDir()
+	left, err := NewAgentLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := NewAgentLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgers := []*AgentLedger{left, right}
+	const writers = 12
+	errs := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			reg := validReg()
+			reg.RegistrationID = fmt.Sprintf("registration:%08x", i+10)
+			reg.IdempotencyKey = fmt.Sprintf("register-%d", i)
+			reg.RequestDigest = fmt.Sprintf("sha256:%064x", i+10)
+			_, err := ledgers[i%len(ledgers)].Register(reg)
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent register: %v", err)
+		}
+	}
+	restarted, err := NewAgentLedger(dir)
+	if err != nil {
+		t.Fatalf("strict replay after concurrent writers: %v", err)
+	}
+	for i := 0; i < writers; i++ {
+		id := fmt.Sprintf("registration:%08x", i+10)
+		if _, err := restarted.Lookup(id); err != nil {
+			t.Fatalf("missing concurrent registration %s: %v", id, err)
+		}
 	}
 }

@@ -51,16 +51,18 @@ func (a *fakeAdapter) Run(_ context.Context, request domain.Record) (domain.Reco
 func validRequest(t *testing.T) domain.Record {
 	t.Helper()
 	raw, err := json.Marshal(map[string]any{
-		"taskId":           "T1",
-		"runId":            "R1",
-		"attemptId":        "A1",
-		"specDigest":       "sha256:" + strings.Repeat("1", 64),
-		"policyDigest":     "sha256:" + strings.Repeat("2", 64),
-		"capabilityDigest": "sha256:" + strings.Repeat("3", 64),
-		"worktreePath":     "/tmp/worktree",
-		"executionProfile": "workspace-write",
-		"sessionPolicy":    "ephemeral",
-		"adapterId":        "fake",
+		"taskId":                        "T1",
+		"runId":                         "R1",
+		"attemptId":                     "A1",
+		"specDigest":                    "sha256:" + strings.Repeat("1", 64),
+		"policyDigest":                  "sha256:" + strings.Repeat("2", 64),
+		"capabilityDigest":              "sha256:" + strings.Repeat("3", 64),
+		"agentRegistrationId":           "registration:" + strings.Repeat("3", 32),
+		"agentCapabilitySnapshotDigest": "sha256:" + strings.Repeat("4", 64),
+		"worktreePath":                  "/tmp/worktree",
+		"executionProfile":              "workspace-write",
+		"sessionPolicy":                 "ephemeral",
+		"adapterId":                     "fake",
 	})
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)

@@ -156,7 +156,7 @@ func (f fakeAuthoritySource) AgentAuthority(registrationID string) (agentregistr
 		ProtocolVersion: ProtocolVersion, ProviderName: facts.AgentAdapterID,
 		ProviderVersion:            facts.AgentProviderVersion,
 		Capabilities:               []agentregistry.Capability{agentregistry.CapabilityExecutionProfileWorkspaceWrite},
-		ConformanceEvidenceDigests: []string{facts.EffectiveAgentCapabilitySnapshotDigest()},
+		ConformanceEvidenceDigests: []string{},
 		SnapshotState:              agentregistry.SnapshotStateActive,
 	}
 	if f.agentReg != nil {
@@ -166,6 +166,43 @@ func (f fakeAuthoritySource) AgentAuthority(registrationID string) (agentregistr
 		snap = *f.agentSnap
 	}
 	return reg, snap, nil
+}
+
+func TestOrdinaryUserAdmissionDoesNotForgeConformanceEvidence(t *testing.T) {
+	facts := testBindingFacts()
+	binding := bindingFor(t, facts)
+	auth := fakeAuthoritySource{
+		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
+		active:       true, agentActive: true,
+	}
+	admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{"kind":"WorkerResult"}`), auth, sandbox.AllocationActive)
+	if err != nil || admission == nil || !admission.Accepted || !admission.EvidenceOK {
+		t.Fatalf("ordinary-user admission must rely on Core binding without forged conformance: admission=%+v err=%v", admission, err)
+	}
+}
+
+func TestHardenedAdmissionRequiresIndependentConformanceEvidence(t *testing.T) {
+	facts := testBindingFacts()
+	facts.ExecutionProfile = "hardened"
+	binding := bindingFor(t, facts)
+	auth := fakeAuthoritySource{
+		registration: provider.ProviderRegistration{RegistrationId: "registration:local-runner"},
+		active:       true, agentActive: true, facts: &facts,
+	}
+	if admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{"kind":"WorkerResult"}`), auth, sandbox.AllocationActive); err == nil || admission != nil {
+		t.Fatalf("hardened admission without independent evidence must fail closed: admission=%+v err=%v", admission, err)
+	}
+	reg, snap, err := auth.AgentAuthority(facts.AgentRegistrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap.ConformanceEvidenceDigests = []string{"sha256:" + strings.Repeat("c", 64)}
+	auth.agentReg = &reg
+	auth.agentSnap = &snap
+	admission, err := AdmitWithDurableAuthority(context.Background(), binding, []byte(`{"kind":"WorkerResult"}`), auth, sandbox.AllocationActive)
+	if err != nil || admission == nil || !admission.Accepted || !admission.EvidenceOK {
+		t.Fatalf("hardened admission with independent evidence failed: admission=%+v err=%v", admission, err)
+	}
 }
 
 func (f fakeAuthoritySource) ResultIngressDir() string { return f.ingressDir }

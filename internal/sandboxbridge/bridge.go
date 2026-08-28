@@ -33,7 +33,7 @@ type workerRequestView struct {
 	PolicyDigest     string `json:"policyDigest"`
 	CapabilityDigest string `json:"capabilityDigest"`
 	// AgentRegistrationID 是 execution.Run 从稳定 capability identity 派生并
-	// 冻结的精确 agent registration id（可空——旧请求缺失时 execchain 回退）。
+	// 冻结的精确 agent registration id；缺失时 launch 前 fail closed。
 	AgentRegistrationID string `json:"agentRegistrationId"`
 	// AgentCapabilitySnapshotDigest 是排除 probedAt、包含其余完整能力与
 	// authority 元数据的稳定 snapshot identity。
@@ -280,13 +280,15 @@ func parseRequest(request domain.Record) (workerRequestView, error) {
 		return workerRequestView{}, fmt.Errorf("%w: %v", ErrMalformedRequest, err)
 	}
 	for field, value := range map[string]string{
-		"taskId":           view.TaskID,
-		"runId":            view.RunID,
-		"attemptId":        view.AttemptID,
-		"capabilityDigest": view.CapabilityDigest,
-		"worktreePath":     view.WorktreePath,
-		"executionProfile": view.ExecutionProfile,
-		"adapterId":        view.AdapterID,
+		"taskId":                        view.TaskID,
+		"runId":                         view.RunID,
+		"attemptId":                     view.AttemptID,
+		"capabilityDigest":              view.CapabilityDigest,
+		"worktreePath":                  view.WorktreePath,
+		"executionProfile":              view.ExecutionProfile,
+		"adapterId":                     view.AdapterID,
+		"agentRegistrationId":           view.AgentRegistrationID,
+		"agentCapabilitySnapshotDigest": view.AgentCapabilitySnapshotDigest,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return workerRequestView{}, fmt.Errorf("%w: %s must not be empty", ErrMalformedRequest, field)

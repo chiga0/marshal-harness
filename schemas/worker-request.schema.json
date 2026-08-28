@@ -14,6 +14,8 @@
     "specDigest",
     "policyDigest",
     "capabilityDigest",
+    "agentRegistrationId",
+    "agentCapabilitySnapshotDigest",
     "baseSha",
     "worktreePath",
     "controlRoot",
@@ -41,11 +43,11 @@
     "agentRegistrationId": {
       "type": "string",
       "pattern": "^registration:[0-9a-f]{8,64}$",
-      "description": "稳定 capability identity 派生的精确 agent registration id；接纳端对其做 exact lookup。可选——旧请求缺失时回退兼容派生。"
+      "description": "稳定 capability identity 派生的精确 agent registration id；production launch 前必须存在，接纳端对其做 exact lookup。"
     },
     "agentCapabilitySnapshotDigest": {
       "$ref": "#/$defs/digest",
-      "description": "排除 probedAt 后的稳定 agent authority snapshot digest；与完整 capabilityDigest 证据摘要分离。可选仅用于读取旧请求，新生产请求必须冻结。"
+      "description": "排除 probedAt 后的稳定 agent authority snapshot digest；与完整 capabilityDigest 分离，production launch 前必须冻结。"
     },
     "baseSha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
     "worktreePath": { "type": "string", "minLength": 1, "maxLength": 4096 },

@@ -238,7 +238,7 @@ func seedRegistry(facts Facts) (*agentregistry.Registry, error) {
 		ProviderName:               facts.AgentAdapterID,
 		ProviderVersion:            facts.AgentProviderVersion,
 		Capabilities:               []agentregistry.Capability{agentregistry.CapabilityExecutionProfileWorkspaceWrite},
-		ConformanceEvidenceDigests: []string{facts.EffectiveAgentCapabilitySnapshotDigest()},
+		ConformanceEvidenceDigests: []string{},
 		SnapshotState:              agentregistry.SnapshotStateActive,
 	}
 	if _, err := registry.AddSnapshot(snap); err != nil {
@@ -317,7 +317,7 @@ func AdmitWorkerResult(ctx context.Context, facts Facts, resultBytes []byte) (*A
 		return nil, err
 	}
 	// seed 路径使用进程内存 ingress（ingressDir 为空）。
-	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger, "")
+	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger, facts.CapabilityDigest, "")
 }
 
 func newAgentBinding(facts Facts) (runtimeprofile.AgentBinding, error) {

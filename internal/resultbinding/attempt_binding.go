@@ -258,7 +258,7 @@ func AdmitWithDurableAuthority(ctx context.Context, binding *AttemptBinding, res
 	if err != nil {
 		return nil, err
 	}
-	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger, authority.ResultIngressDir())
+	return admitWithRegistryLedger(ctx, facts, resultBytes, registry, ledger, binding.BindingDigest, authority.ResultIngressDir())
 }
 
 func projectAgentRegistry(reg agentregistry.AgentRegistration, snap agentregistry.AgentCapabilitySnapshot) (*agentregistry.Registry, error) {
@@ -276,9 +276,12 @@ func projectAgentRegistry(reg agentregistry.AgentRegistration, snap agentregistr
 // 路径共用 bindingcheck/attemptgate/resultingress 验证）。ingressDir 为空
 // 时 admission 使用进程内存 ingress（测试/seed）；非空时打开耐久 replay
 // 账本（跨进程/重复送达 replay 检测，R2 纵切）。
-func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byte, registry *agentregistry.Registry, ledger *bindingcheck.SandboxLedger, ingressDir string) (*Admission, error) {
+func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byte, registry *agentregistry.Registry, ledger *bindingcheck.SandboxLedger, authorityEvidenceDigest, ingressDir string) (*Admission, error) {
 	if err := facts.validate(); err != nil {
 		return nil, err
+	}
+	if err := requireDigest("authorityEvidenceDigest", authorityEvidenceDigest); err != nil {
+		return nil, fmt.Errorf("resultbinding: %w: %v", ErrMalformedFacts, err)
 	}
 	checker, err := bindingcheck.NewChecker(registry, ledger)
 	if err != nil {
@@ -304,7 +307,33 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 	if err != nil {
 		return nil, fmt.Errorf("resultbinding: %w", err)
 	}
-	decision, err := gate.AdmitAttemptResult(facts.AttemptID, facts.EffectiveAgentCapabilitySnapshotDigest())
+	var decision attemptgate.Decision
+	if facts.ExecutionProfile == "hardened" {
+		currentSnapshot, snapshotErr := registry.ActiveSnapshot(facts.EffectiveAgentRegistrationID())
+		if snapshotErr != nil || len(currentSnapshot.ConformanceEvidenceDigests) == 0 {
+			return nil, fmt.Errorf("resultbinding: %w: hardened result requires independent conformance evidence", ErrAdmissionRejected)
+		}
+		// 当前 schema 的 production producer 只投影一个 current evidence
+		// digest；它来自独立 conformance authority，而非 snapshot 自身。
+		presentedEvidence := currentSnapshot.ConformanceEvidenceDigests[0]
+		decision, err = gate.AdmitAttemptResult(facts.AttemptID, presentedEvidence)
+		authorityEvidenceDigest = presentedEvidence
+	} else {
+		// ADR 0051 ordinary-user 明确禁止 conformanceEvidenceDigest。该 profile
+		// 仍执行完整双 binding current-ledger recheck，但不伪造 hardened
+		// evidence；ResultIngress 的 EvidenceDigest 绑定 Core-owned immutable
+		// AttemptBinding digest。
+		recheck, recheckErr := checker.Recheck(profile)
+		if recheckErr != nil {
+			err = fmt.Errorf("resultbinding: binding recheck failed: %w", recheckErr)
+		} else {
+			decision = attemptgate.Decision{
+				AttemptID: facts.AttemptID, ProfileDigest: profile.ProfileDigest,
+				Agent: recheck.Agent, Sandbox: recheck.Sandbox,
+				EvidenceOK: true, Accepted: recheck.Accepted(),
+			}
+		}
+	}
 	admission := &Admission{AttemptID: facts.AttemptID}
 	if decision.ProfileDigest != "" {
 		admission.ProfileDigest = decision.ProfileDigest
@@ -345,7 +374,7 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 		Revoked:        false,
 		RegistrationID: facts.EffectiveAgentRegistrationID(),
 		SnapshotDigest: facts.EffectiveAgentCapabilitySnapshotDigest(),
-		EvidenceDigest: facts.EffectiveAgentCapabilitySnapshotDigest(),
+		EvidenceDigest: authorityEvidenceDigest,
 	}
 	// R2 纵切：ingressDir 非空时 admission 用耐久 replay 账本 +
 	// NewDurableIngress（跨进程/重复送达 replay 检测）；为空（测试/seed）时
@@ -383,7 +412,7 @@ func admitWithRegistryLedger(ctx context.Context, facts Facts, resultBytes []byt
 		Operation:            resultingress.OpResult,
 		RegistrationID:       facts.EffectiveAgentRegistrationID(),
 		SnapshotDigest:       facts.EffectiveAgentCapabilitySnapshotDigest(),
-		EvidenceDigest:       facts.EffectiveAgentCapabilitySnapshotDigest(),
+		EvidenceDigest:       authorityEvidenceDigest,
 	}
 	drcDigest, err := drc.Digest()
 	if err != nil {

@@ -2493,10 +2493,11 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 		// 从冻结 snapshot 提取版本与 closed capability vocabulary；current probe
 		// 已在上面与它做稳定内容逐项摘要核对。
 		var capSnap struct {
-			AdapterID      string `json:"adapterId"`
-			AdapterVersion string `json:"adapterVersion"`
-			BinaryVersion  string `json:"binaryVersion"`
-			Capabilities   struct {
+			AdapterID                 string `json:"adapterId"`
+			AdapterVersion            string `json:"adapterVersion"`
+			BinaryVersion             string `json:"binaryVersion"`
+			ConformanceEvidenceDigest string `json:"conformanceEvidenceDigest"`
+			Capabilities              struct {
 				ExecutionProfiles []string `json:"executionProfiles"`
 				SessionPolicies   []string `json:"sessionPolicies"`
 			} `json:"capabilities"`
@@ -2544,14 +2545,21 @@ func runTaskWorker(ctx context.Context, args []string, stdout, stderr io.Writer)
 				registryCaps = append(registryCaps, agentregistry.CapabilitySessionPolicyEphemeral)
 			}
 		}
+		conformanceEvidenceDigests := []string{}
+		if capSnap.ConformanceEvidenceDigest != "" {
+			conformanceEvidenceDigests = append(conformanceEvidenceDigests, capSnap.ConformanceEvidenceDigest)
+		}
 		agentSnap := agentregistry.AgentCapabilitySnapshot{
-			SnapshotDigest:             stableSnapshotDigest,
-			RegistrationID:             registrationID,
-			ProtocolVersion:            resultbinding.ProtocolVersion,
-			ProviderName:               capSnap.AdapterID,
-			ProviderVersion:            agentVersion,
-			Capabilities:               registryCaps,
-			ConformanceEvidenceDigests: []string{stableSnapshotDigest},
+			SnapshotDigest:  stableSnapshotDigest,
+			RegistrationID:  registrationID,
+			ProtocolVersion: resultbinding.ProtocolVersion,
+			ProviderName:    capSnap.AdapterID,
+			ProviderVersion: agentVersion,
+			Capabilities:    registryCaps,
+			// ordinary-user CapabilitySnapshot 按 schema 明确不携带独立
+			// conformance evidence；只有真实 authority producer 给出的 digest
+			// 才进入此集合，绝不以 snapshot 自身 digest 冒充证据。
+			ConformanceEvidenceDigests: conformanceEvidenceDigests,
 			SnapshotState:              agentregistry.SnapshotStateActive,
 		}
 		if snapErr := sharedRuntime.RegisterAgentSnapshot(agentSnap); snapErr != nil {
