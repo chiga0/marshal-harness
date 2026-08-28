@@ -36,6 +36,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
 	"github.com/chiga0/marshal-harness/internal/planning"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/chiga0/marshal-harness/internal/publication"
 	githubpublisher "github.com/chiga0/marshal-harness/internal/publisher/github"
 	"github.com/chiga0/marshal-harness/internal/reconciliation"
@@ -137,7 +138,7 @@ func RunContext(ctx context.Context, args []string, stdin io.Reader, stdout, std
 	case "supervise":
 		return runSupervise(ctx, args[1:], stdout, stderr)
 	case "internal":
-		return runInternal(args[1:], stdin, stdout, stderr)
+		return runInternal(ctx, args[1:], stdin, stdout, stderr)
 	case "__launch":
 		return runInternalLaunch(args[1:], stderr)
 	case "__sandbox-launch":
@@ -203,10 +204,14 @@ func localDogfoodBootstrapCommand(args []string, doctor *doctorOptions) bool {
 	if args[0] == "help" || args[0] == "-h" || args[0] == "--help" || args[0] == "version" {
 		return true
 	}
-	// The private sandbox helper receives authority only through its exact
-	// inherited-FD protocol. It must run with an empty environment, before a
-	// local profile gate could consume environment-backed activation state.
+	// The private sandbox helper and process supervisor receive authority only
+	// through their exact inherited-FD protocols. They must run with an empty
+	// environment, before a local profile gate could consume environment-backed
+	// activation state.
 	if len(args) == 1 && args[0] == "__sandbox-launch" {
+		return true
+	}
+	if len(args) == 2 && args[0] == "internal" && args[1] == "process-supervisor" {
 		return true
 	}
 	if localDogfoodBoundedInternalCommand(args) {
@@ -304,12 +309,25 @@ func localDogfoodApprovalGate(args []string) (string, bool) {
 	return gate, count == 1
 }
 
-func runInternal(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+func runInternal(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "内部调用无效。")
 		return ExitUsage
 	}
 	switch args[0] {
+	case "process-supervisor":
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "process-supervisor-protocol-invalid")
+			return ExitUsage
+		}
+		if err := processsupervisor.RunInherited(ctx); err != nil {
+			fmt.Fprintln(stderr, processsupervisor.ReasonCode(err))
+			if errors.Is(err, processsupervisor.ErrUnavailable) {
+				return ExitUnavailable
+			}
+			return ExitFailure
+		}
+		return ExitOK
 	case "artifact-attestation-check":
 		return runInternalArtifactAttestationCheck(args[1:], stdin, stdout, stderr)
 	case "qoder-transcript-check":
