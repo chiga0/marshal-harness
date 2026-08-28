@@ -87,7 +87,7 @@ func WithEnvironment(environment []string) ([]string, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
 		return nil, errors.New("stable go test: Marshal image is not a regular executable")
 	}
-	root, err := DefaultRoot()
+	root, err := rootForExecutable(executable)
 	if err != nil {
 		return nil, err
 	}
@@ -103,19 +103,11 @@ func WithEnvironment(environment []string) ([]string, error) {
 	return replaceEnvironmentValue(result, "GOFLAGS", merged), nil
 }
 
-// DefaultRoot returns the single per-user production slot. It is intentionally
-// independent of a task worktree, so workers never write executable artifacts
-// into a business repository.
-func DefaultRoot() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || !filepath.IsAbs(home) {
-		return "", errors.New("stable go test: user home unavailable")
+func rootForExecutable(executable string) (string, error) {
+	if !filepath.IsAbs(executable) {
+		return "", errors.New("stable go test: marshal identity unavailable")
 	}
-	home, err = filepath.EvalSymlinks(home)
-	if err != nil || !filepath.IsAbs(home) {
-		return "", errors.New("stable go test: user home unavailable")
-	}
-	return filepath.Join(home, ".marshal", "test-exec"), nil
+	return filepath.Join(filepath.Dir(filepath.Clean(executable)), "test"), nil
 }
 
 // MergeGOFLAGS preserves all existing flags but refuses another -exec value.
@@ -181,12 +173,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		writeFailure(stderr, errors.New("stable_go_test_self_identity_mismatch"))
 		return exitUnavailable
 	}
-	defaultRoot, err := DefaultRoot()
-	if err != nil {
-		writeFailure(stderr, errors.New("stable_go_test_root_invalid"))
-		return exitUnavailable
-	}
-	directory, err := openValidatedRoot(root, self, defaultRoot, nil)
+	directory, err := openValidatedRoot(root, self, nil)
 	if err != nil {
 		writeFailure(stderr, errors.New("stable_go_test_root_invalid"))
 		return exitUnavailable
@@ -255,111 +242,23 @@ func parseArgs(args []string) (string, string, string, []string, error) {
 	return root, args[3], filepath.Clean(args[4]), append([]string(nil), args[5:]...), nil
 }
 
-func validateRoot(root, self, defaultRoot string) error {
-	if !filepath.IsAbs(root) || !filepath.IsAbs(self) || !filepath.IsAbs(defaultRoot) {
+func validateRoot(root, self string) error {
+	if !filepath.IsAbs(root) || !filepath.IsAbs(self) {
 		return errors.New("root identity is not absolute")
 	}
 	root = filepath.Clean(root)
-	defaultRoot = filepath.Clean(defaultRoot)
-	developmentRoot := filepath.Join(filepath.Dir(filepath.Clean(self)), "test")
-	if root != defaultRoot && root != developmentRoot {
+	expectedRoot, err := rootForExecutable(self)
+	if err != nil || root != expectedRoot {
 		return errors.New("root is not an allowed stable slot")
 	}
 	return nil
 }
 
-func openValidatedRoot(root, self, defaultRoot string, beforeOpen func()) (*os.File, error) {
-	if err := validateRoot(root, self, defaultRoot); err != nil {
+func openValidatedRoot(root, self string, beforeOpen func()) (*os.File, error) {
+	if err := validateRoot(root, self); err != nil {
 		return nil, err
-	}
-	if filepath.Clean(root) == filepath.Clean(defaultRoot) {
-		return openDefaultRoot(defaultRoot, beforeOpen)
 	}
 	return openOrCreatePrivateRoot(root, beforeOpen)
-}
-
-func openDefaultRoot(defaultRoot string, beforeFinalOpen func()) (*os.File, error) {
-	marshalPath := filepath.Dir(defaultRoot)
-	homePath := filepath.Dir(marshalPath)
-	home, err := openOwnedDirectory(homePath, false)
-	if err != nil {
-		return nil, err
-	}
-	defer home.Close()
-	marshalDirectory, err := openOrCreateChildDirectory(home, homePath, filepath.Base(marshalPath), false)
-	if err != nil {
-		return nil, err
-	}
-	defer marshalDirectory.Close()
-	if beforeFinalOpen != nil {
-		beforeFinalOpen()
-	}
-	if err := verifyOwnedDirectory(marshalDirectory, marshalPath, false); err != nil {
-		return nil, err
-	}
-	return openOrCreateChildDirectory(marshalDirectory, marshalPath, filepath.Base(defaultRoot), true)
-}
-
-func openOwnedDirectory(path string, exactPrivateMode bool) (*os.File, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	directory := os.NewFile(uintptr(fd), "stable-go-test-owned-directory")
-	if err := verifyOwnedDirectory(directory, path, exactPrivateMode); err != nil {
-		directory.Close()
-		return nil, err
-	}
-	return directory, nil
-}
-
-func openOrCreateChildDirectory(parent *os.File, parentPath, name string, exactExistingMode bool) (*os.File, error) {
-	created := false
-	if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err == nil {
-		created = true
-		if err := parent.Sync(); err != nil {
-			return nil, err
-		}
-	} else if !errors.Is(err, unix.EEXIST) {
-		return nil, err
-	}
-	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	directory := os.NewFile(uintptr(fd), "stable-go-test-child-directory")
-	path := filepath.Join(parentPath, name)
-	if created {
-		if err := directory.Chmod(0o700); err != nil {
-			directory.Close()
-			return nil, err
-		}
-		exactExistingMode = true
-	}
-	if err := verifyOwnedDirectory(directory, path, exactExistingMode); err != nil {
-		directory.Close()
-		return nil, err
-	}
-	return directory, nil
-}
-
-func verifyOwnedDirectory(directory *os.File, path string, exactPrivateMode bool) error {
-	info, err := directory.Stat()
-	pathInfo, pathErr := os.Lstat(path)
-	if err != nil || pathErr != nil || !info.IsDir() || !ownedByCurrentUser(info) || !os.SameFile(info, pathInfo) {
-		return errors.New("owned directory identity mismatch")
-	}
-	mode := info.Mode().Perm()
-	if exactPrivateMode {
-		if mode != 0o700 {
-			return errors.New("private directory mode mismatch")
-		}
-		return nil
-	}
-	if mode&0o022 != 0 || mode&0o300 != 0o300 {
-		return errors.New("owned directory mode is writable by others or unusable by owner")
-	}
-	return nil
 }
 
 // openOrCreatePrivateRoot creates only the final component. The caller must

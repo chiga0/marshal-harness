@@ -16,11 +16,11 @@ import (
 
 func TestMergeGOFLAGSPreservesExistingAndAddsOneStableExec(t *testing.T) {
 	digest := strings.Repeat("a", 64)
-	got, err := MergeGOFLAGS("-count=1 -p=2", "/opt/marshal/bin/marshal", "/Users/test/.marshal/test-exec", digest)
+	got, err := MergeGOFLAGS("-count=1 -p=2", "/opt/marshal/bin/marshal", "/opt/marshal/bin/test", digest)
 	if err != nil {
 		t.Fatalf("MergeGOFLAGS: %v", err)
 	}
-	wantSuffix := `"-exec='/opt/marshal/bin/marshal' __go-test-exec --slot-root '/Users/test/.marshal/test-exec' --marshal-sha256 ` + digest + `"`
+	wantSuffix := `"-exec='/opt/marshal/bin/marshal' __go-test-exec --slot-root '/opt/marshal/bin/test' --marshal-sha256 ` + digest + `"`
 	if got != "-count=1 -p=2 "+wantSuffix {
 		t.Fatalf("GOFLAGS = %q", got)
 	}
@@ -32,7 +32,7 @@ func TestMergeGOFLAGSPreservesExistingAndAddsOneStableExec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inner split: %v", err)
 	}
-	want := []string{"/opt/marshal/bin/marshal", InternalCommand, "--slot-root", "/Users/test/.marshal/test-exec", "--marshal-sha256", digest}
+	want := []string{"/opt/marshal/bin/marshal", InternalCommand, "--slot-root", "/opt/marshal/bin/test", "--marshal-sha256", digest}
 	if len(execCommand) != len(want) {
 		t.Fatalf("exec command = %#v", execCommand)
 	}
@@ -127,32 +127,41 @@ func TestParseArgsRequiresFixedAbsoluteRootAndInput(t *testing.T) {
 	}
 }
 
-func TestValidateRootAllowsOnlyDefaultOrVerifiedSelfDirectory(t *testing.T) {
+func TestRootForVerifiedExecutableIgnoresParentAndChildHOME(t *testing.T) {
 	base := t.TempDir()
 	self := filepath.Join(base, "bin", "marshal")
-	defaultRoot := filepath.Join(base, "home", ".marshal", "test-exec")
 	if err := os.MkdirAll(filepath.Dir(self), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(defaultRoot), 0o700); err != nil {
+	want := filepath.Join(filepath.Dir(self), "test")
+	var roots []string
+	for _, home := range []string{filepath.Join(base, "parent-home"), filepath.Join(base, "child-home"), filepath.Join(base, "verifier-home")} {
+		t.Setenv("HOME", home)
+		root, err := rootForExecutable(self)
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots = append(roots, root)
+		if root != want || validateRoot(root, self) != nil {
+			t.Fatalf("HOME=%q root=%q want=%q", home, root, want)
+		}
+	}
+	for _, root := range roots[1:] {
+		if root != roots[0] {
+			t.Fatalf("HOME changed stable root: %q != %q", root, roots[0])
+		}
+	}
+	directory, err := openValidatedRoot(want, self, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	for _, root := range []string{defaultRoot, filepath.Join(filepath.Dir(self), "test")} {
-		directory, err := openValidatedRoot(root, self, defaultRoot, nil)
-		if err != nil {
-			t.Fatalf("legal root %q was not created: %v", root, err)
-		}
-		directory.Close()
-	}
-	for _, root := range []string{
-		filepath.Join(base, "other"),
-		filepath.Join(filepath.Dir(self), "test", "nested"),
-	} {
-		if err := validateRoot(root, self, defaultRoot); err == nil {
-			t.Fatalf("illegal root %q accepted", root)
+	directory.Close()
+	for _, root := range []string{filepath.Join(base, "other"), filepath.Join(want, "nested")} {
+		if err := validateRoot(root, self); err == nil {
+			t.Fatalf("foreign root %q accepted", root)
 		}
 		if _, err := os.Lstat(root); !os.IsNotExist(err) {
-			t.Fatalf("illegal root %q changed before rejection: %v", root, err)
+			t.Fatalf("foreign root %q changed before rejection: %v", root, err)
 		}
 	}
 }
@@ -167,7 +176,7 @@ func TestOpenOrCreatePrivateRootDoesNotRepairExistingMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	self := filepath.Join(parent, "marshal")
-	if directory, err := openValidatedRoot(root, self, filepath.Join(parent, "unused-default"), nil); err == nil {
+	if directory, err := openValidatedRoot(root, self, nil); err == nil {
 		directory.Close()
 		t.Fatal("existing wrong-mode root was repaired instead of rejected")
 	}
@@ -188,7 +197,7 @@ func TestOpenOrCreatePrivateRootRejectsSymlinkABA(t *testing.T) {
 		t.Fatal(err)
 	}
 	self := filepath.Join(parent, "marshal")
-	directory, err := openValidatedRoot(root, self, filepath.Join(parent, "unused-default"), func() {
+	directory, err := openValidatedRoot(root, self, func() {
 		if removeErr := os.Remove(root); removeErr != nil {
 			t.Fatal(removeErr)
 		}
@@ -199,133 +208,6 @@ func TestOpenOrCreatePrivateRootRejectsSymlinkABA(t *testing.T) {
 	if err == nil {
 		directory.Close()
 		t.Fatal("symlink ABA root unexpectedly accepted")
-	}
-}
-
-func TestOpenDefaultRootCreatesAbsentMarshalParent(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "home")
-	if err := os.Mkdir(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	defaultRoot := filepath.Join(home, ".marshal", "test-exec")
-	directory, err := openValidatedRoot(defaultRoot, filepath.Join(t.TempDir(), "marshal"), defaultRoot, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	directory.Close()
-	for _, path := range []string{filepath.Join(home, ".marshal"), defaultRoot} {
-		info, err := os.Lstat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !info.IsDir() || info.Mode().Perm() != 0o700 {
-			t.Fatalf("created directory %q = mode %v", path, info.Mode().Perm())
-		}
-	}
-}
-
-func TestOpenDefaultRootAllowsLegacyParentWithoutChmod(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "home")
-	marshalPath := filepath.Join(home, ".marshal")
-	if err := os.Mkdir(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(marshalPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(marshalPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	defaultRoot := filepath.Join(marshalPath, "test-exec")
-	directory, err := openValidatedRoot(defaultRoot, filepath.Join(t.TempDir(), "marshal"), defaultRoot, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	directory.Close()
-	info, err := os.Lstat(marshalPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o755 {
-		t.Fatalf("legacy parent was silently chmod'd: mode=%v", info.Mode().Perm())
-	}
-}
-
-func TestOpenDefaultRootRejectsUnsafeParentShapesWithoutExternalWrites(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		setup func(t *testing.T, marshalPath, external string)
-	}{
-		{name: "symlink", setup: func(t *testing.T, marshalPath, external string) {
-			if err := os.Symlink(external, marshalPath); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "non-directory", setup: func(t *testing.T, marshalPath, _ string) {
-			if err := os.WriteFile(marshalPath, []byte("not-a-directory"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "group-writable", setup: func(t *testing.T, marshalPath, _ string) {
-			if err := os.Mkdir(marshalPath, 0o770); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chmod(marshalPath, 0o770); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			home := filepath.Join(t.TempDir(), "home")
-			if err := os.Mkdir(home, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			marshalPath := filepath.Join(home, ".marshal")
-			external := filepath.Join(t.TempDir(), "external")
-			if err := os.Mkdir(external, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			test.setup(t, marshalPath, external)
-			defaultRoot := filepath.Join(marshalPath, "test-exec")
-			if directory, err := openValidatedRoot(defaultRoot, filepath.Join(t.TempDir(), "marshal"), defaultRoot, nil); err == nil {
-				directory.Close()
-				t.Fatal("unsafe parent unexpectedly accepted")
-			}
-			if _, err := os.Lstat(filepath.Join(external, "test-exec")); !os.IsNotExist(err) {
-				t.Fatalf("unsafe parent caused an external write: %v", err)
-			}
-		})
-	}
-}
-
-func TestOpenDefaultRootRejectsParentABAWithoutExternalWrites(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "home")
-	marshalPath := filepath.Join(home, ".marshal")
-	if err := os.Mkdir(home, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(marshalPath, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	external := filepath.Join(t.TempDir(), "external")
-	if err := os.Mkdir(external, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	defaultRoot := filepath.Join(marshalPath, "test-exec")
-	directory, err := openValidatedRoot(defaultRoot, filepath.Join(t.TempDir(), "marshal"), defaultRoot, func() {
-		if removeErr := os.Remove(marshalPath); removeErr != nil {
-			t.Fatal(removeErr)
-		}
-		if linkErr := os.Symlink(external, marshalPath); linkErr != nil {
-			t.Fatal(linkErr)
-		}
-	})
-	if err == nil {
-		directory.Close()
-		t.Fatal("parent ABA unexpectedly accepted")
-	}
-	if _, err := os.Lstat(filepath.Join(external, "test-exec")); !os.IsNotExist(err) {
-		t.Fatalf("parent ABA caused an external write: %v", err)
 	}
 }
 

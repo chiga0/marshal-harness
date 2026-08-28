@@ -27,7 +27,24 @@ printf '#!/bin/sh\nexit 99\n' >"$FIXTURE/repository/bin/marshal"
 printf '#!/bin/sh\nexit 98\n' >"$FIXTURE/custom/marshal-custom"
 chmod 700 "$FIXTURE/repository/bin/marshal" "$FIXTURE/custom/marshal-custom"
 source "$ROOT/scripts/stable-go-test.sh"
-stable_go_test_prepare_darwin "$FIXTURE/repository" "$FIXTURE/custom/marshal-custom" ./internal/stablegotest
+for LEGAL_GOFLAGS in '-tags=contains-exec -count=1' '-ldflags=-X=example/path-exec -p=2' "'-tags=quoted-exec' -v"; do
+  if ! stable_go_test_validate_goflags "$LEGAL_GOFLAGS"; then
+    printf '%s\n' "legal GOFLAGS was rejected: $LEGAL_GOFLAGS" >&2
+    exit 1
+  fi
+done
+for CONFLICTING_GOFLAGS in '-exec=/tmp/other' '--exec /tmp/other' '"-exec=/tmp/quoted helper"'; do
+  if stable_go_test_validate_goflags "$CONFLICTING_GOFLAGS" 2>/dev/null; then
+    printf '%s\n' "conflicting GOFLAGS was accepted: $CONFLICTING_GOFLAGS" >&2
+    exit 1
+  fi
+done
+if stable_go_test_validate_goflags '"unterminated' 2>/dev/null; then
+  printf '%s\n' 'malformed GOFLAGS quote was accepted' >&2
+  exit 1
+fi
+
+GOFLAGS='-tags=contains-exec' stable_go_test_prepare_darwin "$FIXTURE/repository" "$FIXTURE/custom/marshal-custom" ./internal/stablegotest
 /usr/bin/printf '%s\n' "${STABLE_GO_TEST_ARGV[@]}" >"$FIXTURE/arguments"
 
 CUSTOM_DIRECTORY="$(cd "$FIXTURE/custom" && pwd -P)"
