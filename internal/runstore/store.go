@@ -127,12 +127,12 @@ func (s *Store) LeaseHeld(runID string) (bool, error) {
 	return probeLeaseHeld(s.root, runID)
 }
 
-// LeaseOwnerProcessAlive reports whether the process recorded in the current
-// lease owner record still exists. It is an advisory liveness signal for the
-// supervisor: the OS flock remains authoritative for ownership, while a
-// dead recorded PID lets recovery proceed immediately instead of waiting for
-// the journal-age grace window. A missing or malformed owner record fails
-// closed with an error.
+// LeaseOwnerProcessAlive reports whether the exact canonical lease is held or
+// the process recorded in its current owner record still exists. It is an
+// advisory liveness signal for the supervisor: the OS flock remains
+// authoritative for ownership and wins during owner handoff, while a dead
+// recorded PID is returned only under a temporarily held probe lock. A missing,
+// malformed or descriptor-mismatched owner record fails closed with an error.
 func (s *Store) LeaseOwnerProcessAlive(runID string) (bool, error) {
 	if _, err := s.runDir(runID); err != nil {
 		return false, err
