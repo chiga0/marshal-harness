@@ -356,7 +356,7 @@ func testJournal(t *testing.T) (*Journal, string) {
 
 func validBootstrap() BootstrapRequest {
 	return BootstrapRequest{
-		SchemaVersion: BootstrapSchema, ProtocolRevision: ProtocolRevision, SessionID: "session-1", SessionNonce: strings.Repeat("a", 64), OwnerEpoch: 1,
+		SchemaVersion: BootstrapSchema, ProtocolRevision: ProtocolRevision, SessionID: "session-1", SessionNonce: strings.Repeat("0123456789abcdef", 4), OwnerEpoch: 1,
 		Authority:            AuthorityTuple{AuthorityNamespaceID: "namespace-1", TaskID: "task-1", RunID: "run-1", AttemptID: "attempt-1", AllocationID: "allocation-1", LeaseID: "lease-1", LeaseDigest: digest("1"), Generation: 1, FencingTokenDigest: digest("2"), OrchestratorID: "orchestrator-1"},
 		LaunchAuthorizedFact: digest("3"), CurrentAuthorityHead: digest("a"),
 		ControlDirectoryIdentity: ControlDirectoryIdentity{CanonicalPath: "/private/control", Device: 1, Inode: 2, FileType: "directory", UID: 501, GID: 20, Mode: 0o040700, LinkCount: 2},
