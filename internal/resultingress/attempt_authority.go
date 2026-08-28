@@ -1188,6 +1188,22 @@ func closedCheckpointMatches(state AttemptAuthorityState, transition AttemptTran
 	return found && evidence.Command == processsupervisor.CommandClose && evidence.RequestDigest == closed.CloseIntentDigest && evidence.ReceiptDigest == closed.CloseReceiptDigest && evidence.ObservationDigest == closed.CloseObservationDigest && evidence.CommandHead == closed.FinalCommandHead && terminalReportsEquivalent(state.ProcessTerminalEvidence, evidence)
 }
 
+func exactSupervisorOutcomeReplay(storedDigest string, storedPreceding []SupervisorCommandEvidence, storedEvidence SupervisorCommandEvidence, transition AttemptTransition) bool {
+	if storedDigest != transition.SupervisorOutcomeFactDigest {
+		return false
+	}
+	if transition.SupervisorOutcomeFactDigest != "" {
+		// Current supervisor-backed transitions carry only the exact durable
+		// outcome-fact reference. Projection materializes the referenced evidence
+		// into AttemptAuthorityState, so comparing that materialized value with the
+		// intentionally empty transport fields would make an exact replay fail.
+		// Keep the replay strict: reference-mode transport evidence must remain
+		// empty and the referenced digest must match byte-for-byte.
+		return len(transition.SupervisorPrecedingEvidence) == 0 && zeroSupervisorCommandEvidence(transition.SupervisorEvidence)
+	}
+	return reflect.DeepEqual(storedPreceding, transition.SupervisorPrecedingEvidence) && storedEvidence == transition.SupervisorEvidence
+}
+
 func exactTransitionReplay(state AttemptAuthorityState, exists bool, t AttemptTransition) (AttemptAuthorityState, bool) {
 	if !exists || state.Identity != t.Identity {
 		return AttemptAuthorityState{}, false
@@ -1205,13 +1221,13 @@ func exactTransitionReplay(state AttemptAuthorityState, exists bool, t AttemptTr
 	case AttemptTransitionProcessSupervisorStarted:
 		return state, state.SupervisorStartedDigest != "" && state.SupervisorStarted == t.SupervisorStarted
 	case AttemptTransitionProcessStarted:
-		return state, state.ProcessStartedDigest != "" && state.CommandID == t.CommandID && state.ObservedAt == t.ObservedAt && state.Process == t.Process && state.LaunchMaterialsDigest == t.LaunchMaterialsDigest && state.AgentLaunchSpecDigest == t.AgentLaunchSpecDigest && state.ProcessStartedBindOutcomeDigest == t.SupervisorBindOutcomeFactDigest && state.ProcessStartedOutcomeDigest == t.SupervisorOutcomeFactDigest && state.SupervisorBindEvidence == t.SupervisorBindEvidence && reflect.DeepEqual(state.ProcessStartedPreceding, t.SupervisorPrecedingEvidence) && state.ProcessStartedEvidence == t.SupervisorEvidence
+		return state, state.ProcessStartedDigest != "" && state.CommandID == t.CommandID && state.ObservedAt == t.ObservedAt && state.Process == t.Process && state.LaunchMaterialsDigest == t.LaunchMaterialsDigest && state.AgentLaunchSpecDigest == t.AgentLaunchSpecDigest && state.ProcessStartedBindOutcomeDigest == t.SupervisorBindOutcomeFactDigest && state.SupervisorBindEvidence == t.SupervisorBindEvidence && exactSupervisorOutcomeReplay(state.ProcessStartedOutcomeDigest, state.ProcessStartedPreceding, state.ProcessStartedEvidence, t)
 	case attemptTransitionResultAdmitted:
-		return state, state.CommittedResultFactDigest == t.AdmissionFactDigest && state.CommittedResultSequence == t.AdmissionSequence && state.CommittedResultOutcomeDigest == t.SupervisorOutcomeFactDigest && reflect.DeepEqual(state.CommittedResultPreceding, t.SupervisorPrecedingEvidence) && state.CommittedResultCollect == t.SupervisorEvidence
+		return state, state.CommittedResultFactDigest == t.AdmissionFactDigest && state.CommittedResultSequence == t.AdmissionSequence && exactSupervisorOutcomeReplay(state.CommittedResultOutcomeDigest, state.CommittedResultPreceding, state.CommittedResultCollect, t)
 	case AttemptTransitionTerminalizationBarrier:
 		return state, state.BarrierDigest != "" && state.TerminalizationID == t.TerminalizationID && state.EligibilityTerminal == t.EligibilityTerminal
 	case AttemptTransitionProcessTerminal:
-		return state, state.ProcessTerminalDigest != "" && state.TerminalizationID == t.TerminalizationID && state.ProcessTerminalKind == t.ProcessTerminalKind && state.ProcessTerminalObservation == t.ObservationDigest && state.ProcessTerminalOutcomeDigest == t.SupervisorOutcomeFactDigest && reflect.DeepEqual(state.ProcessTerminalPreceding, t.SupervisorPrecedingEvidence) && state.ProcessTerminalEvidence == t.SupervisorEvidence
+		return state, state.ProcessTerminalDigest != "" && state.TerminalizationID == t.TerminalizationID && state.ProcessTerminalKind == t.ProcessTerminalKind && state.ProcessTerminalObservation == t.ObservationDigest && exactSupervisorOutcomeReplay(state.ProcessTerminalOutcomeDigest, state.ProcessTerminalPreceding, state.ProcessTerminalEvidence, t)
 	case AttemptTransitionAllocationTerminated:
 		return state, state.AllocationTerminalDigest != "" && state.TerminalizationID == t.TerminalizationID && state.AllocationReceiptDigest == t.ReceiptDigest
 	case AttemptTransitionProcessSupervisorClosed:
