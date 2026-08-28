@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -82,17 +81,6 @@ func StoreScopeForBinding(binding AllocationBindingV1) (AllocationStoreScopeV1, 
 		return AllocationStoreScopeV1{}, ErrInvalid
 	}
 	return scope, nil
-}
-
-func (scope AllocationStoreScopeV1) directoryName() (string, error) {
-	if scope.Validate() != nil {
-		return "", ErrInvalid
-	}
-	digest, err := digestValue(scope)
-	if err != nil {
-		return "", err
-	}
-	return "scope-" + strings.TrimPrefix(digest, "sha256:"), nil
 }
 
 func (binding AllocationBindingV1) Validate() error {
@@ -576,10 +564,6 @@ func validText(value string) bool {
 	return true
 }
 
-func validRelativeName(value string) bool {
-	return validPrintableASCII(value, 255) && value != "." && value != ".." && !strings.ContainsAny(value, `/\\`)
-}
-
 func validDigest(value string) bool {
 	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
 		return false
@@ -678,11 +662,4 @@ func equalCanonical(left, right any) bool {
 	a, errA := canonicalValue(left)
 	b, errB := canonicalValue(right)
 	return errA == nil && errB == nil && bytes.Equal(a, b)
-}
-
-func requireRelativeName(value string) error {
-	if !validRelativeName(value) {
-		return fmt.Errorf("%w: relative name", ErrInvalid)
-	}
-	return nil
 }
