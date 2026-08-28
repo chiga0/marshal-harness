@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/agentregistry"
+	"github.com/chiga0/marshal-harness/internal/allocationcontrol"
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
@@ -59,6 +60,62 @@ type countingProvider struct {
 type exactLeaseAuthority struct {
 	lease dispatch.DispatchLease
 	ok    bool
+}
+
+type fakeProductionAllocation struct {
+	current     allocationcontrol.CurrentLiveAllocationV1
+	currentErr  error
+	stageCalls  int
+	readCalls   int
+	stagedInput []sandbox.StageInput
+}
+
+func (allocation *fakeProductionAllocation) Current(context.Context) (allocationcontrol.CurrentLiveAllocationV1, error) {
+	return allocation.current, allocation.currentErr
+}
+
+func (allocation *fakeProductionAllocation) Stage(_ context.Context, inputs []sandbox.StageInput) (*sandbox.StageReport, error) {
+	allocation.stageCalls++
+	allocation.stagedInput = append([]sandbox.StageInput(nil), inputs...)
+	return &sandbox.StageReport{}, nil
+}
+
+func (allocation *fakeProductionAllocation) ReadArtifact(context.Context, string, int64) ([]byte, error) {
+	allocation.readCalls++
+	return nil, errors.New("unused")
+}
+
+type exactTestLaunchPlan struct {
+	workDir, controlRoot string
+	environment          []string
+}
+
+func (plan exactTestLaunchPlan) Argv() []string { return []string{"/fixed/runtime"} }
+func (plan exactTestLaunchPlan) EnvBlock() []string {
+	return append([]string(nil), plan.environment...)
+}
+func (plan exactTestLaunchPlan) WorkDir() string       { return plan.workDir }
+func (plan exactTestLaunchPlan) TimeoutSeconds() int64 { return 30 }
+func (plan exactTestLaunchPlan) ResultFilePath() string {
+	return plan.controlRoot + "/worker-result.json"
+}
+func (plan exactTestLaunchPlan) ControlRootPath() string   { return plan.controlRoot }
+func (plan exactTestLaunchPlan) SessionPolicyName() string { return "ephemeral" }
+func (plan exactTestLaunchPlan) MaxOutput() int64          { return 4096 }
+func (plan exactTestLaunchPlan) ProviderVersion() string   { return "test" }
+func (plan exactTestLaunchPlan) LaunchClosure() launchidentity.ClosureV1 {
+	return launchidentity.ClosureV1{}
+}
+func (plan exactTestLaunchPlan) CloseLaunchClosure() {}
+
+type rejectingAllocationVerifier struct{}
+
+func (rejectingAllocationVerifier) WithCurrentAllocationProvision(context.Context, resultingress.AllocationAuthorityCheck, func(authority.SecurityDomainId) error) error {
+	return resultingress.ErrAllocationAuthorityConflict
+}
+
+func (rejectingAllocationVerifier) WithCurrentAllocationCleanup(context.Context, resultingress.AllocationAuthorityCheck, func(authority.SecurityDomainId) error) error {
+	return resultingress.ErrAllocationAuthorityConflict
 }
 
 func (*exactLeaseAuthority) RegistrationStore() *provider.RegistrationStore { return nil }
@@ -200,6 +257,208 @@ func exactAttemptIdentity(lease dispatch.DispatchLease) resultingress.AttemptIde
 	}
 }
 
+func exactCurrentAllocation(t *testing.T, lease dispatch.DispatchLease) allocationcontrol.CurrentLiveAllocationV1 {
+	t.Helper()
+	namespaceDigest, err := lease.AuthorityNamespaceId.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := func(value string) string { return canonical.DigestBytes([]byte(value)) }
+	return allocationcontrol.CurrentLiveAllocationV1{
+		Binding: allocationcontrol.AllocationBindingV1{
+			AuthorityNamespaceID: namespaceDigest, TaskID: lease.TaskId, RunID: lease.RunId, AttemptID: lease.AttemptId,
+			AllocationID: lease.AllocationId, LeaseID: lease.LeaseId, Generation: lease.Generation,
+			FencingTokenDigest: canonical.DigestBytes([]byte(lease.FencingToken)), CommandID: "allocation-command", IdempotencyKey: "allocation-idempotency",
+		},
+		ProvisionIntentFactDigest: digest("intent-fact"), ProvisionRequestDigest: digest("request"),
+		ProvisionReceiptFactDigest: digest("receipt-fact"), ProvisionReceiptDigest: digest("receipt"), MarkerNonceDigest: digest("nonce"),
+		HeldObjectsRootIdentity: allocationcontrol.ObjectIdentityV1{Device: "1", Inode: "10", Mode: 0o040700, UID: 501, GID: 20, Size: 64, Nlink: 2, Type: allocationcontrol.ObjectTypeDirectory},
+		LiveIdentity:            allocationcontrol.ObjectIdentityV1{Device: "1", Inode: "11", Mode: 0o040700, UID: 501, GID: 20, Size: 64, Nlink: 2, Type: allocationcontrol.ObjectTypeDirectory},
+		MarkerIdentity:          allocationcontrol.ObjectIdentityV1{Device: "1", Inode: "12", Mode: 0o100600, UID: 501, GID: 20, Size: 64, Nlink: 1, Type: allocationcontrol.ObjectTypeRegular},
+		MarkerDigest:            digest("marker"), Requirements: allocationcontrol.SandboxRequirementsV1{AccessMode: "workspace-write", MinimumAssuranceLevel: "workspace-write"},
+		AllowedStoreIDs: []string{}, WorkDirAllowlist: []string{"/tmp/worktree"}, EnvironmentAllowlist: []string{"TOKEN"},
+	}
+}
+
+func exactAllocationEffect(t *testing.T, current allocationcontrol.CurrentLiveAllocationV1, identity resultingress.AttemptIdentity, effectID string) resultingress.EffectAuthorityState {
+	t.Helper()
+	digest := func(value string) string { return canonical.DigestBytes([]byte(value)) }
+	binding := resultingress.EffectBinding{
+		Identity: identity,
+		CurrentRunAuthority: resultingress.RunAuthorityBinding{
+			AuthorityNamespaceID: identity.AuthorityNamespaceID, RunID: identity.RunID,
+			OrchestratorID: identity.OrchestratorID, RunAuthorityDigest: identity.RunAuthorityDigest,
+		},
+		AdmissionAttemptRevision: 1, AdmissionAuthorityDigest: digest("attempt-head"),
+		Phase: resultingress.EffectPhaseAllocationProvision, MarkerDigest: current.MarkerNonceDigest,
+	}
+	intent := authority.SideEffectIntent{
+		AuthorityNamespaceId: identity.AuthorityNamespaceID, EffectId: effectID, OwnerIdentity: identity.AttemptID,
+		Port: "sandbox-provider", Operation: string(resultingress.EffectPhaseAllocationProvision), TargetRef: identity.AllocationID,
+		TargetDigest: digest("target"), RequestDigest: current.ProvisionRequestDigest, CommandId: current.Binding.CommandID,
+		IdempotencyKey: current.Binding.IdempotencyKey, PolicyDigest: digest("policy"), AuthorizationDigest: digest("authorization"),
+		Purpose: "provision allocation", DispositionClass: authority.DispositionClassSandboxProvision, Deadline: "2099-08-29T00:00:00Z",
+	}
+	intentRecordDigest, err := intent.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerResourceIdentity, err := resultingress.CanonicalAllocationProviderResourceIdentity(identity.AllocationID, current.LiveIdentity, current.MarkerDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := authority.SideEffectReceipt{
+		AuthorityNamespaceId: identity.AuthorityNamespaceID, IntentDigest: intentRecordDigest,
+		Disposition: authority.DispositionApplied, ProviderResourceIdentity: providerResourceIdentity, ObservedDigest: current.ProvisionReceiptDigest,
+		ActorProvenance: authority.ActorProvenance{SecurityDomainId: authority.SecurityDomainId{
+			TenantNamespace: identity.AuthorityNamespaceID.TenantNamespace, TrustDomainKind: authority.TrustDomainKindExecution, IsolationDomainId: "host-process",
+		}},
+		ReconcileIdentity: "marshal-core/allocation-control/v1",
+	}
+	receiptRecordDigest, err := receipt.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconcile := authority.ReconcileRecord{
+		AuthorityNamespaceId: identity.AuthorityNamespaceID, Observation: authority.ObservationApplied, Decision: authority.DecisionAccept,
+		IntentDigest: intentRecordDigest, ReceiptDigest: receiptRecordDigest,
+	}
+	reconcileRecordDigest, err := reconcile.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resultingress.EffectAuthorityState{
+		Binding: binding, Intent: intent, IntentRecordDigest: intentRecordDigest, IntentFactDigest: current.ProvisionIntentFactDigest,
+		Receipt: receipt, ReceiptRecordDigest: receiptRecordDigest, ReceiptFactDigest: current.ProvisionReceiptFactDigest,
+		Reconcile: reconcile, ReconcileRecordDigest: reconcileRecordDigest, ReconcileFactDigest: digest("reconcile-fact"),
+	}
+}
+
+func TestProductionAllocationEffectBindsExactTypedAndGenericReceipt(t *testing.T) {
+	lease := sealExactLease(t)
+	identity := exactAttemptIdentity(lease)
+	current := exactCurrentAllocation(t, lease)
+	admission := &exactProcessAdmission{attempt: ExactProcessAttempt{TaskID: lease.TaskId, RunID: lease.RunId, AttemptID: lease.AttemptId, AllocationID: lease.AllocationId, Generation: lease.Generation, FencingTokenDigest: current.Binding.FencingTokenDigest}, authority: DurableProcessAuthority{Identity: identity}}
+	effectID := "allocation-provision-effect"
+	effect := exactAllocationEffect(t, current, identity, effectID)
+	if err := validateProductionAllocationEffect(current, admission, effectID, effect); err != nil {
+		t.Fatalf("exact allocation effect rejected: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*resultingress.EffectAuthorityState)
+	}{
+		{name: "other typed receipt fact", mutate: func(state *resultingress.EffectAuthorityState) {
+			state.ReceiptFactDigest = canonical.DigestBytes([]byte("other-receipt-fact"))
+		}},
+		{name: "other observed receipt", mutate: func(state *resultingress.EffectAuthorityState) {
+			state.Receipt.ObservedDigest = canonical.DigestBytes([]byte("other-receipt"))
+		}},
+		{name: "other provider resource", mutate: func(state *resultingress.EffectAuthorityState) {
+			state.Receipt.ProviderResourceIdentity = "allocation-object:" + canonical.DigestBytes([]byte("other-resource"))
+		}},
+		{name: "other receipt record", mutate: func(state *resultingress.EffectAuthorityState) {
+			state.ReceiptRecordDigest = canonical.DigestBytes([]byte("other-receipt-record"))
+		}},
+		{name: "other command", mutate: func(state *resultingress.EffectAuthorityState) { state.Intent.CommandId = "other-command" }},
+		{name: "other idempotency", mutate: func(state *resultingress.EffectAuthorityState) { state.Intent.IdempotencyKey = "other-idempotency" }},
+		{name: "other effect", mutate: func(state *resultingress.EffectAuthorityState) { state.Intent.EffectId = "other-effect" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changed := effect
+			test.mutate(&changed)
+			if err := validateProductionAllocationEffect(current, admission, effectID, changed); !errors.Is(err, resultingress.ErrAllocationAuthorityConflict) {
+				t.Fatalf("cross authority accepted: %v", err)
+			}
+		})
+	}
+	otherCurrent := current
+	otherCurrent.ProvisionReceiptDigest = canonical.DigestBytes([]byte("other-current-receipt"))
+	if err := validateProductionAllocationEffect(otherCurrent, admission, effectID, effect); !errors.Is(err, resultingress.ErrAllocationAuthorityConflict) {
+		t.Fatalf("Current receipt digest not bound to generic receipt: %v", err)
+	}
+}
+
+func TestProductionAllocationResolutionRejectsDifferentResultIngressStore(t *testing.T) {
+	first, err := resultingress.OpenResultIngressStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := resultingress.OpenResultIngressStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := rejectingAllocationVerifier{}
+	secondAuthority, err := resultingress.NewAllocationAuthority(second, verifier, verifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission := &exactProcessAdmission{authority: DurableProcessAuthority{Store: first, AllocationAuthority: secondAuthority, Identity: exactAttemptIdentity(sealExactLease(t))}}
+	resolution := ExactAllocationResolution{Facade: &allocationcontrol.DurableLocalFacade{}, Authority: secondAuthority, EffectID: "allocation-provision-effect"}
+	if err := validateProductionAllocationResolution(admission, resolution); !errors.Is(err, resultingress.ErrAllocationAuthorityConflict) {
+		t.Fatalf("cross-store allocation authority accepted: %v", err)
+	}
+	firstAuthority, err := resultingress.NewAllocationAuthority(first, verifier, verifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherFirstAuthority, err := resultingress.NewAllocationAuthority(first, verifier, verifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission.authority.AllocationAuthority = firstAuthority
+	resolution.Authority = otherFirstAuthority
+	if err := validateProductionAllocationResolution(admission, resolution); !errors.Is(err, resultingress.ErrAllocationAuthorityConflict) {
+		t.Fatalf("parallel same-store allocation authority accepted: %v", err)
+	}
+}
+
+func TestProductionExecUsesStage2FacadeWithoutProviderProvisionStageOrFallback(t *testing.T) {
+	lease := sealExactLease(t)
+	current := exactCurrentAllocation(t, lease)
+	allocation := &fakeProductionAllocation{current: current}
+	providerCalls := &countingProvider{SandboxProvider: sandbox.NewFakeProvider(sandbox.FakeConfig{})}
+	bridge, err := NewBridge(providerCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge.authority = &exactLeaseAuthority{lease: lease, ok: true}
+	legacyTranscriptCalls := 0
+	bridge.transcriptSource = func(string, string) ([]byte, error) {
+		legacyTranscriptCalls++
+		return nil, errors.New("legacy fallback")
+	}
+	view := mustParseView(t)
+	plan := exactTestLaunchPlan{workDir: "/tmp/worktree", controlRoot: t.TempDir(), environment: []string{"TOKEN=value"}}
+	requirements, err := domain.SandboxRequirementsFromLegacy(view.ExecutionProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission := &exactProcessAdmission{
+		attempt:   ExactProcessAttempt{TaskID: lease.TaskId, RunID: lease.RunId, AttemptID: lease.AttemptId, AllocationID: lease.AllocationId, Generation: lease.Generation, FencingTokenDigest: current.Binding.FencingTokenDigest},
+		authority: DurableProcessAuthority{Identity: exactAttemptIdentity(lease)}, allocation: allocation,
+	}
+	allocationID, generation, fencing, err := bridge.currentProductionExecAllocation(context.Background(), view, requirements, plan, admission, lease)
+	if err != nil || allocationID != lease.AllocationId || generation != lease.Generation || fencing != lease.FencingToken {
+		t.Fatalf("current production allocation: id=%q generation=%d err=%v", allocationID, generation, err)
+	}
+	if err := bridge.stageControlInputs(context.Background(), view, validRequest(t), allocationID, generation, fencing, plan.controlRoot, admission); err != nil {
+		t.Fatal(err)
+	}
+	if allocation.stageCalls != 1 || providerCalls.provisions != 0 || providerCalls.stages != 0 || providerCalls.execs != 0 || legacyTranscriptCalls != 0 {
+		t.Fatalf("facade=%d provider provision/stage/exec=%d/%d/%d legacy transcript=%d", allocation.stageCalls, providerCalls.provisions, providerCalls.stages, providerCalls.execs, legacyTranscriptCalls)
+	}
+	sentinel := errors.New("current Stage2 authority lost")
+	allocation.currentErr = sentinel
+	if _, _, _, err := bridge.currentProductionExecAllocation(context.Background(), view, requirements, plan, admission, lease); !errors.Is(err, sentinel) || !errors.Is(err, launchidentity.ErrUnavailable) {
+		t.Fatalf("typed current error chain lost: %v", err)
+	}
+	if providerCalls.provisions != 0 || providerCalls.stages != 0 || legacyTranscriptCalls != 0 {
+		t.Fatal("unavailable Stage2 authority fell back to provider/path source")
+	}
+}
+
 func TestRequireExactLeaseRejectsEveryAttemptIdentityMismatchBeforeEffects(t *testing.T) {
 	lease := sealExactLease(t)
 	base := exactAttemptIdentity(lease)
@@ -303,6 +562,7 @@ func TestRunWorker_ProductionGateRejectsLegacyBeforeAllocationOrRun(t *testing.T
 		t.Fatal(err)
 	}
 	bridge.WithProductionGate()
+	bridge.authority = &exactLeaseAuthority{}
 	bridge.WithTranscriptSource(func(string, string) ([]byte, error) { return nil, nil })
 	bridge.WithExactProcessRuntime(ExactProcessRuntime{
 		Resolve: func(context.Context, ExactProcessAttempt) (*processcontrol.Coordinator, DurableProcessAuthority, error) {
@@ -310,6 +570,9 @@ func TestRunWorker_ProductionGateRejectsLegacyBeforeAllocationOrRun(t *testing.T
 		},
 		Retain: func(ExactProcessAttempt, *processcontrol.Process, error) {},
 	})
+	bridge.WithExactAllocationRuntime(ExactAllocationRuntime{Resolve: func(context.Context, ExactProcessAttempt) (ExactAllocationResolution, error) {
+		return ExactAllocationResolution{}, launchidentity.ErrUnavailable
+	}})
 	worker := &fakeAdapter{id: "fake"}
 	_, err = bridge.RunWorker(context.Background(), worker, validRequest(t))
 	if err == nil || !strings.Contains(err.Error(), "exact production launch profile") {

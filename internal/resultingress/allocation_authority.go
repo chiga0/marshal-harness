@@ -82,6 +82,40 @@ func NewAllocationAuthority(store *DurableStore, provision ProvisionAuthorityVer
 	return &AllocationAuthority{store: store, provision: provision, cleanup: cleanup}, nil
 }
 
+// BoundToStore is the production composition identity check shared with the
+// process authority. Pointer identity is intentional: independently reopened
+// ledgers, even with byte-identical projections, are not the same held
+// ResultIngress authority for an in-flight Attempt.
+func (authorityPort *AllocationAuthority) BoundToStore(store *DurableStore) bool {
+	return authorityPort != nil && store != nil && authorityPort.store == store
+}
+
+// CanonicalAllocationEffectKey returns the single key derivation used by the
+// durable allocation controller and staging facade. Callers may use the key
+// only as a lookup coordinate; it is never authority by itself.
+func CanonicalAllocationEffectKey(namespace authority.AuthorityNamespaceId, effectID string) (string, error) {
+	return effectKey(namespace, effectID)
+}
+
+// CanonicalAllocationProviderResourceIdentity derives the generic receipt
+// resource identity from the exact typed allocation receipt identity. This
+// lets a production composition prove that both projections describe the same
+// provider object without exporting a path or treating the digest as a bearer.
+func CanonicalAllocationProviderResourceIdentity(allocationID string, object allocationcontrol.ObjectIdentityV1, markerDigest string) (string, error) {
+	if strings.TrimSpace(allocationID) == "" || object.Validate(allocationcontrol.ObjectTypeDirectory) != nil || requireDigest("markerDigest", markerDigest) != nil {
+		return "", ErrAllocationAuthorityConflict
+	}
+	digest, err := canonicalDigest(struct {
+		AllocationID string                             `json:"allocationId"`
+		Object       allocationcontrol.ObjectIdentityV1 `json:"object"`
+		MarkerDigest string                             `json:"markerDigest"`
+	}{allocationID, object, markerDigest})
+	if err != nil {
+		return "", ErrAllocationAuthorityConflict
+	}
+	return "allocation-object:" + digest, nil
+}
+
 type AllocationIntentAppendResult struct {
 	Effect           EffectAuthorityState
 	Snapshot         allocationcontrol.AuthoritySnapshot
@@ -872,12 +906,8 @@ func genericAllocationReceipt(effect EffectAuthorityState, typed any, providerDo
 }
 
 func allocationObjectIdentity(allocationID string, object allocationcontrol.ObjectIdentityV1, markerDigest string) string {
-	digest, _ := canonicalDigest(struct {
-		AllocationID string                             `json:"allocationId"`
-		Object       allocationcontrol.ObjectIdentityV1 `json:"object"`
-		MarkerDigest string                             `json:"markerDigest"`
-	}{allocationID, object, markerDigest})
-	return "allocation-object:" + digest
+	identity, _ := CanonicalAllocationProviderResourceIdentity(allocationID, object, markerDigest)
+	return identity
 }
 
 func (s *ingressDurableStore) appendAllocationIntervention(canonicalEffectKey string, providerDomain authority.SecurityDomainId, kind allocationcontrol.AuthorityFailureKind) error {
