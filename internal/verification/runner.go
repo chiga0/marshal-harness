@@ -12,8 +12,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/chiga0/marshal-harness/internal/stablegotest"
 )
 
 type Runner struct {
@@ -37,10 +35,7 @@ func (r Runner) Run(ctx context.Context, worktree string, spec CommandSpec) Comm
 	if err != nil {
 		return finishCommand(result, nil, err, started)
 	}
-	environment, err := stablegotest.WithEnvironment(verifierEnvironment(r.Environment))
-	if err != nil {
-		return finishCommand(result, nil, err, started)
-	}
+	environment := verifierEnvironment(r.Environment)
 	executable, err := lookPath(spec.Argv[0], cwd, worktree, environment)
 	if err != nil {
 		return finishCommand(result, nil, err, started)

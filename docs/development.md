@@ -41,6 +41,8 @@ Core Domain 与 Contract Package 不得导入 Provider-specific Package。CLI �
 
 ## 本地命令
 
+未受企业终端策略限制的 Linux/macOS 环境可运行完整门禁：
+
 ```bash
 make format
 make vet
@@ -52,9 +54,21 @@ make vuln
 make ci
 ```
 
-`make check` 执行 Format Check、Vet、Staticcheck、Race Test 与 Build；`make ci` 在此基础上执行 `govulncheck`。实际耗时取决于宿主负载、Go 缓存和目标平台，不承诺未经当次测量的固定时长。构建结果默认位于 `bin/marshal`，该目录被 Git 忽略。
+`make check` 执行 Format Check、Vet、Staticcheck、Race Test 与 Build；`make ci` 在此基础上执行 `govulncheck`。构建结果默认位于 `bin/marshal`，该目录被 Git 忽略。
 
-macOS 上不要直接执行 `go test`：Go 会在随机 `go-build` 路径直接启动临时测试二进制，容易被企业端点策略反复拦截。先运行 `make build`，再用 `bash scripts/stable-go-test.sh ./internal/<包>/...` 做定向测试；`make test` 与 `make check` 已自动走同一入口，并把绝对 `MARSHAL_RUNNER=$(BINARY)` 显式传给脚本。Go 仍可在临时目录编译测试文件，但这些文件只作为输入，由指定的固定 Marshal `__go-test-exec` 校验并复制到该 verified executable 同目录唯一允许的 `test/current` 后执行；父进程、child 与 verifier 的 `$HOME` 均不参与路径选择。锁覆盖完整测试进程生命周期；输入、`incoming` 与 `current` 的类型、权限、所有者和 SHA-256 不一致时 fail closed。测试进程内再次启动 `go test` 会经同一固定 Marshal 提前拒绝，避免递归争用单一锁或绕回匿名执行；需要子级测试时应把它提升为顶层显式 Gate。`GOFLAGS` 按普通用户工具兼容配置继承，调用者可显式覆盖普通 Go flag；仅当解析后的 flag name 精确为 `-exec` 或 `--exec` 时拒绝，含有 `-exec` 文本的合法 tag/path 不受影响，坏引号 fail closed。该注入不是强制 authority，也不构成安全证明；这只是 Mac ordinary-user 兼容机制，不是 hardened sandbox。
+当前维护者 Mac 的企业终端策略会按新 Mach-O/CDHash 拦截未签名 Go test binary。在这类环境中禁止运行 `go test`、`make test`、`make check` 或 `make ci`，也不得移除安全属性或逐个批准临时二进制。允许的本地门禁是：
+
+```bash
+make format-check
+make architecture-check
+make vet
+make lint
+make build
+make vuln
+git diff --check
+```
+
+需要编译反馈时，可对命中的 package 使用 `go test -race -c -o <临时路径> <package>`；该产物只作为 compile-only 证据，不得执行，并须在验证后删除。本机固定 `./bin/marshal` 可用于 live canary，但不能把上述静态/compile-only 结果表述为 unit/race 已通过。unit/race 的权威执行证据来自相同 sourceHead 的 required GitHub macOS + Linux CI。
 
 GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，并使用独立 Job 执行 Secret Scan。外部 Action 固定到完整 Commit SHA，工作流默认只有 `contents: read` 权限。
 

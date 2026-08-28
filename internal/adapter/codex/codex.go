@@ -26,7 +26,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
-	"github.com/chiga0/marshal-harness/internal/stablegotest"
 )
 
 const (
@@ -780,12 +779,8 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 	}
 	launcherArgs := []string{codexLauncherArgument, target, a.launcherTestGate, closeMode}
 	launcherArgs = append(launcherArgs, buildArgs(inheritedFilePath(0), inheritedFilePath(1), projection.model)...)
-	environment, err := stablegotest.WithEnvironment(workerEnvironment())
-	if err != nil {
-		return domain.Record{}, fmt.Errorf("stable Go test runner unavailable: %w", err)
-	}
 	command := exec.CommandContext(processCtx, launcher, launcherArgs...)
-	command.Env = environment
+	command.Env = workerEnvironment()
 	command.Stdin = bytes.NewReader(prompt)
 	command.ExtraFiles = extraFiles
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
