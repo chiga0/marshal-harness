@@ -634,7 +634,7 @@ func TestTaskCreateInputRejections(t *testing.T) {
 	}
 }
 
-func TestDefaultServerSelectorRejectsCompatibilityAdapterWithoutRunAndAdmitsPi(t *testing.T) {
+func TestDefaultServerSelectorRejectsUncomposedProductionAdaptersWithoutRun(t *testing.T) {
 	root := fixtureRepository(t)
 	stateRoot := filepath.Join(root, ".marshal")
 	if err := (repository.State{RepositoryRoot: root, StateRoot: stateRoot}).Init(); err != nil {
@@ -703,18 +703,20 @@ func TestDefaultServerSelectorRejectsCompatibilityAdapterWithoutRunAndAdmitsPi(t
 			"taskSpec":       fixtureTask(root, piTaskID, "pi", fixture.baseSHA),
 			"policySnapshot": json.RawMessage(sealPolicy(t, fixturePolicy(piTaskID, piRunID, "pi"))),
 		}))
-	if created.status != http.StatusCreated {
+	if created.status != http.StatusUnprocessableEntity {
 		t.Fatalf("pi production status=%d body=%s", created.status, created.body)
 	}
-	var submission TaskSubmission
-	if err := json.Unmarshal(created.body, &submission); err != nil {
-		t.Fatal(err)
+	if body := created.decodeError(t); body.Code != CodeRejected || body.Reason != "planning-rejected" {
+		t.Fatalf("pi production error=%+v", body)
 	}
-	if submission.AdapterID != "pi" || submission.State.State != domain.StateReady {
-		t.Fatalf("pi production submission=%+v", submission)
+	if _, err := runstore.New(stateRoot).Inspect(piRunID); !os.IsNotExist(err) {
+		t.Fatalf("uncomposed Pi runtime left Run state: %v", err)
 	}
-	if _, err := os.Stat(piMarker); err != nil {
-		t.Fatalf("production selector did not probe Pi: %v", err)
+	if _, err := os.Lstat(filepath.Join(stateRoot, "runs", piRunID)); !os.IsNotExist(err) {
+		t.Fatalf("uncomposed Pi runtime left Run directory: %v", err)
+	}
+	if _, err := os.Lstat(piMarker); !os.IsNotExist(err) {
+		t.Fatalf("production selector probed Pi before supervisor composition: %v", err)
 	}
 }
 

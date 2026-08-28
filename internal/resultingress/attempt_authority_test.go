@@ -34,10 +34,10 @@ func attemptTestProcess(t *testing.T) ProcessObservation {
 	observation, err := SealProcessObservation(ProcessObservation{
 		PID: 1234, PGID: 1234, BirthSeconds: 100, BirthMicroseconds: 22,
 		WorkingDirectory: "/tmp/work", WorkingDirectoryDevice: 1, WorkingDirectoryInode: 2,
-		WorkingDirectoryType: POSIXFileTypeDirectory, WorkingDirectoryOwner: 501, WorkingDirectoryMode: 0755,
+		WorkingDirectoryType: POSIXFileTypeDirectory, WorkingDirectoryOwner: 501, WorkingDirectoryMode: POSIXFileTypeDirectory | 0755,
 		ExecutablePath: "/fixed/marshal", ExecutableDevice: 1, ExecutableInode: 3,
 		ExecutableSize: 99, ExecutableType: POSIXFileTypeRegular, ExecutableOwner: 501, ExecutableGroup: 20,
-		ExecutableMode: 0755, ExecutableLinkCount: 1, ExecutableSHA256: attemptTestDigest("executable"),
+		ExecutableMode: POSIXFileTypeRegular | 0755, ExecutableLinkCount: 1, ExecutableSHA256: attemptTestDigest("executable"),
 		ObserverIdentity: "core-darwin-observer/v1",
 	})
 	if err != nil {
@@ -47,7 +47,7 @@ func attemptTestProcess(t *testing.T) ProcessObservation {
 }
 
 func attemptTestClosure() launchidentity.ClosureV1 {
-	closure, _ := launchidentity.Seal(launchidentity.SpecInput{RuntimeExecutable: launchidentity.ObjectV1{CanonicalPath: "/fixed/marshal", Device: 1, Inode: 3, FileType: POSIXFileTypeRegular, Mode: 0755, UID: 501, GID: 20, Size: 99, LinkCount: 1, RawSHA256: attemptTestDigest("executable")}, ClosureProfileID: launchidentity.NativeProfile, MaterialRoots: []launchidentity.MaterialRootV1{}, LaunchMaterials: []launchidentity.LaunchMaterialV1{}, Arguments: []string{"/fixed/marshal"}, Environment: []string{}, WorkingDirectory: "/tmp/work"})
+	closure, _ := launchidentity.Seal(launchidentity.SpecInput{RuntimeExecutable: launchidentity.ObjectV1{CanonicalPath: "/fixed/marshal", Device: 1, Inode: 3, FileType: POSIXFileTypeRegular, Mode: POSIXFileTypeRegular | 0755, UID: 501, GID: 20, Size: 99, LinkCount: 1, RawSHA256: attemptTestDigest("executable")}, ClosureProfileID: launchidentity.NativeProfile, MaterialRoots: []launchidentity.MaterialRootV1{}, LaunchMaterials: []launchidentity.LaunchMaterialV1{}, Arguments: []string{"/fixed/marshal"}, Environment: []string{}, WorkingDirectory: "/tmp/work"})
 	return closure
 }
 
