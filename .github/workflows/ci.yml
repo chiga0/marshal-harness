@@ -26,6 +26,41 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Release authority runs before any candidate Make target, script, toolchain
+      # setup or GITHUB_ENV write. Keep all executables and environment explicit.
+      - name: Run release contract gate
+        if: matrix.os == 'ubuntu-latest'
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        env:
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          MAKEFLAGS: ''
+          PATH: /usr/bin:/bin
+          PYTHONHOME: ''
+          PYTHONPATH: ''
+        run: |
+          checker="$GITHUB_WORKSPACE/scripts/release-ci-contract.py"
+          run_checker() {
+            /usr/bin/env -i \
+              LC_ALL=C \
+              PATH=/usr/bin:/bin \
+              /usr/bin/python3 -I -B "$checker" "$GITHUB_WORKSPACE"
+          }
+          run_checker
+          for test_path in \
+            scripts/release-contract_test.sh \
+            scripts/release-ci-gate_test.sh \
+            scripts/dist-profile_test.sh \
+            scripts/install_test.sh \
+            scripts/release-canary_test.sh; do
+            run_checker
+            /usr/bin/env -i \
+              LC_ALL=C \
+              PATH=/usr/bin:/bin \
+              /bin/bash --noprofile --norc "$GITHUB_WORKSPACE/$test_path"
+          done
+          run_checker
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
