@@ -18,6 +18,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"github.com/chiga0/marshal-harness/internal/stablegotest"
 )
 
 const (
@@ -900,7 +901,11 @@ func (a *Adapter) Run(ctx context.Context, record domain.Record) (domain.Record,
 			return a.ordinaryIdentityDrift(stableExecutable.verify())
 		}
 	}
-	observation, err := a.runLocalAttempt(runCtx, launchExecutable, buildArgs(task.model, configDir, worktree, task.disableAllTools), prompt, worktree, workerEnvironment(worktree, configDir), int64(request.MaxOutputBytes), launchGuard, postStartGuard)
+	environment, err := stablegotest.WithEnvironment(workerEnvironment(worktree, configDir))
+	if err != nil {
+		return domain.Record{}, fmt.Errorf("stable Go test runner unavailable: %w", err)
+	}
+	observation, err := a.runLocalAttempt(runCtx, launchExecutable, buildArgs(task.model, configDir, worktree, task.disableAllTools), prompt, worktree, environment, int64(request.MaxOutputBytes), launchGuard, postStartGuard)
 	if err != nil {
 		return domain.Record{}, err
 	}

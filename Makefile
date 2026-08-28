@@ -30,8 +30,8 @@ vet:
 lint:
 	$(GO) tool staticcheck ./...
 
-test:
-	$(GO) test -race -p 2 ./...
+test: build
+	GO="$(GO)" bash scripts/stable-go-test.sh -race -p 2 ./...
 
 build:
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/marshal
