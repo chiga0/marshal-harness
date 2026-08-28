@@ -10,8 +10,6 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 )
 
-const handshakeTimeout = 30 * time.Second
-
 type StartOptions struct {
 	FixedMarshalPath string
 	ControlDirectory *os.File

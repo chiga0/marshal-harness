@@ -14,6 +14,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const handshakeTimeout = 30 * time.Second
+
 // ObserveCurrentCore returns the kernel-adjacent identity that must be bound by
 // the caller's current durable control-owner-acquired fact. fixedMarshalPath is
 // exact: aliases, PATH lookup and a different Marshal image are rejected.
