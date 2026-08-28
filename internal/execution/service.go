@@ -38,6 +38,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/runstore"
 	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/verification"
+	"github.com/chiga0/marshal-harness/internal/workerresultfile"
 	"golang.org/x/sys/unix"
 )
 
@@ -887,16 +888,7 @@ func Run(ctx context.Context, input Input) (Result, error) {
 const defaultOrphanStalenessThreshold = lifecycle.DefaultDriverStalenessThreshold
 
 func persistWorkerResultOnce(attemptDir string, result []byte) error {
-	path := filepath.Join(attemptDir, "worker-result.json")
-	if existing, err := os.ReadFile(path); err == nil {
-		if !bytes.Equal(existing, result) {
-			return errors.New("worker-result creation-once violation")
-		}
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return atomicWrite(path, result, 0o600)
+	return workerresultfile.PersistOnce(attemptDir, result)
 }
 
 func bindAdmissionPayload(payload map[string]any, admission *resultbinding.Admission, result []byte, attemptID string) error {

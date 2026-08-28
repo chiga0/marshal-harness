@@ -151,7 +151,7 @@ func TestResultIngressMemoryOnlyFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordAdmitted("k", "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("a", 64), 1); !errors.Is(err, ErrMemoryOnlyResultIngress) {
+	if err := s.RecordAdmitted("k", "sha256:"+strings.Repeat("a", 64), validEnvelope("sha256:"+strings.Repeat("a", 64), 1), "sha256:"+strings.Repeat("a", 64), 1); !errors.Is(err, ErrMemoryOnlyResultIngress) {
 		t.Fatalf("RecordAdmitted on memory-only store must fail closed, got %v", err)
 	}
 	if err := s.RecordQuarantined(ReasonMalformed, "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("a", 64), futureExpiry); !errors.Is(err, ErrMemoryOnlyResultIngress) {

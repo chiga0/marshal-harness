@@ -1,7 +1,6 @@
 package sandboxbridge
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +13,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/resultbinding"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
+	"github.com/chiga0/marshal-harness/internal/workerresultfile"
 )
 
 const admissionAnchorName = "sandbox-binding-admission.json"
@@ -131,48 +131,7 @@ func (b *Bridge) ReconcileAdmittedWorkerResult(ctx context.Context, attemptDir s
 }
 
 func persistWorkerResultOnce(attemptDir string, resultBytes []byte) error {
-	if attemptDir == "" {
-		return nil
-	}
-	path := filepath.Join(attemptDir, "worker-result.json")
-	if existing, err := os.ReadFile(path); err == nil {
-		if !bytes.Equal(existing, resultBytes) {
-			return errors.New("worker-result creation-once violation")
-		}
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.MkdirAll(attemptDir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(attemptDir, ".worker-result-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err = tmp.Write(resultBytes); err == nil {
-		err = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	dir, err := os.Open(attemptDir)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
+	return workerresultfile.PersistOnce(attemptDir, resultBytes)
 }
 
 // bridgeAuthoritySource 适配 Bridge.DurableAuthority 到
