@@ -53,6 +53,7 @@ func openStartedAttempt(t *testing.T, store *ingressDurableStore) AttemptAuthori
 		t.Fatal(err)
 	}
 	opened := openedResult.State
+	opened = appendTestAcceptedProvision(t, store, opened)
 	authorizedResult, err := appendAuthorizedAttempt(store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-1"})
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +117,7 @@ func TestAttemptAuthorityLaunchCrashProjectionAndReplay(t *testing.T) {
 		t.Fatalf("opened = %#v, err=%v", openedResult, err)
 	}
 	opened := openedResult.State
+	opened = appendTestAcceptedProvision(t, store, opened)
 	authorizedResult, err := appendAuthorizedAttempt(store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-1"})
 	if err != nil || !authorizedResult.Appended || authorizedResult.State.LaunchState != LaunchUncertain || authorizedResult.TransitionDigest != authorizedResult.State.LaunchAuthorizedDigest {
 		t.Fatalf("authorized = %#v, err=%v", authorizedResult, err)
@@ -167,6 +169,7 @@ func TestOpenedLaunchAndProcessFactsRequireHeldCurrentRunAuthority(t *testing.T)
 	if current.LaunchState != LaunchNotAuthorized {
 		t.Fatalf("stale authority appended launch: %#v", current)
 	}
+	current = appendTestAcceptedProvision(t, store, current)
 	launchResult, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run}, current.Revision, current.HeadDigest, AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, launch)
 	if err != nil || !launchResult.Appended {
 		t.Fatalf("launch=%#v err=%v", launchResult, err)
@@ -240,7 +243,8 @@ func TestProcessStartedRejectsNonCanonicalOrPreBirthObservedAt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			authorized, err := appendAuthorizedAttempt(store, opened.State.Revision, opened.State.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-time"})
+			provisioned := appendTestAcceptedProvision(t, store, opened.State)
+			authorized, err := appendAuthorizedAttempt(store, provisioned.Revision, provisioned.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-time"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -295,7 +299,7 @@ func TestAttemptAuthorityTwoStoreCASCompetition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opened := openedResult.State
+	opened := appendTestAcceptedProvision(t, first, openedResult.State)
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	for _, candidate := range []struct {
@@ -760,7 +764,8 @@ func TestCleanupAuthorizationRejectsWrongTupleBindingOrchestratorAndRelease(t *t
 		t.Fatalf("exact cleanup replay=%#v calls=%d err=%v", replayedTerminal, verifierCalls, err)
 	}
 	request.Operation = CleanupTerminate
-	allocationResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, terminal.Revision, terminal.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionAllocationTerminated, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ReceiptDigest: attemptTestDigest("allocation")})
+	terminal, terminateReceiptDigest := appendTestAcceptedTerminate(t, store, terminal)
+	allocationResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, terminal.Revision, terminal.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionAllocationTerminated, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ReceiptDigest: terminateReceiptDigest})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -828,6 +833,7 @@ func TestLaunchUncertainCleanupOnlyAllowsInspectAndReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 	opened := openedResult.State
+	opened = appendTestAcceptedProvision(t, store, opened)
 	authorizedResult, err := appendAuthorizedAttempt(store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-uncertain"})
 	if err != nil {
 		t.Fatal(err)
@@ -854,7 +860,9 @@ func TestLaunchUncertainCleanupOnlyAllowsInspectAndReconcile(t *testing.T) {
 	if err != nil || absentResult.State.ProcessTerminalKind != ProcessAbsent {
 		t.Fatalf("reconciled absence=%#v err=%v", absentResult, err)
 	}
-	if _, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, absentResult.State.Revision, absentResult.State.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionAllocationTerminated, Identity: id, TerminalizationID: barrier.TerminalizationID, ReceiptDigest: attemptTestDigest("launch-uncertain-allocation")}); err != nil {
+	terminated, terminateReceiptDigest := appendTestAcceptedTerminate(t, store, absentResult.State)
+	request.Operation = CleanupTerminate
+	if _, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, terminated.Revision, terminated.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionAllocationTerminated, Identity: id, TerminalizationID: barrier.TerminalizationID, ReceiptDigest: terminateReceiptDigest}); err != nil {
 		t.Fatalf("launch-uncertain absence did not unblock allocation cleanup: %v", err)
 	}
 }

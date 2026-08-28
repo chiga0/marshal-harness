@@ -359,6 +359,19 @@ type AttemptAuthorityState struct {
 	AllocationReceiptDigest    string              `json:"allocationReceiptDigest,omitempty"`
 	CleanupCompletedDigest     string              `json:"cleanupCompletedDigest,omitempty"`
 	CleanupReleasedDigest      string              `json:"cleanupReleasedDigest,omitempty"`
+	// PendingEffect* is the durable exclusion barrier established by an
+	// effect-intent fact. It is cleared only by the matching reconcile fact;
+	// receipt alone remains an observation and cannot unlock the Attempt.
+	PendingEffectID                  string      `json:"pendingEffectId,omitempty"`
+	PendingEffectIntentFactDigest    string      `json:"pendingEffectIntentFactDigest,omitempty"`
+	PendingEffectRecordDigest        string      `json:"pendingEffectRecordDigest,omitempty"`
+	PendingEffectMarkerDigest        string      `json:"pendingEffectMarkerDigest,omitempty"`
+	PendingEffectPhase               EffectPhase `json:"pendingEffectPhase,omitempty"`
+	AllocationProvisionEffectDigest  string      `json:"allocationProvisionEffectDigest,omitempty"`
+	AllocationProvisionReceiptDigest string      `json:"allocationProvisionReceiptDigest,omitempty"`
+	AllocationTerminateEffectDigest  string      `json:"allocationTerminateEffectDigest,omitempty"`
+	AllocationTerminateReceiptDigest string      `json:"allocationTerminateReceiptDigest,omitempty"`
+	EffectInterventionDigest         string      `json:"effectInterventionDigest,omitempty"`
 }
 
 // AttemptAppendResult distinguishes a fresh authority append from an exact
@@ -510,11 +523,17 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 	if err := validateTransitionShape(t); err != nil {
 		return err
 	}
+	if exists && (prior.PendingEffectIntentFactDigest != "" || prior.EffectInterventionDigest != "") {
+		// An admitted effect owns the Attempt head until a matching receipt and
+		// reconcile decision close it. Exact transition replays are handled before
+		// this function and remain read-only.
+		return ErrAttemptAuthorityOrder
+	}
 	switch t.Kind {
 	case AttemptTransitionOpened:
 		return nil
 	case AttemptTransitionLaunchAuthorized:
-		if prior.LaunchState != LaunchNotAuthorized || prior.BarrierDigest != "" {
+		if prior.LaunchState != LaunchNotAuthorized || prior.BarrierDigest != "" || prior.AllocationProvisionEffectDigest == "" || prior.AllocationProvisionReceiptDigest == "" {
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionProcessStarted:
@@ -558,7 +577,7 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionAllocationTerminated:
-		if prior.ProcessTerminalKind != ProcessAbsent && prior.ProcessTerminalKind != ProcessTerminated || prior.AllocationTerminalDigest != "" {
+		if prior.ProcessTerminalKind != ProcessAbsent && prior.ProcessTerminalKind != ProcessTerminated || prior.AllocationTerminalDigest != "" || prior.AllocationTerminateEffectDigest == "" || prior.AllocationTerminateReceiptDigest == "" || t.ReceiptDigest != prior.AllocationTerminateReceiptDigest {
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionCleanupCompleted:
@@ -905,6 +924,12 @@ func cleanupEffectAllowed(state AttemptAuthorityState, operation CleanupOperatio
 	if state.CleanupReleasedDigest != "" || state.CleanupCompletedDigest != "" || state.AllocationTerminalDigest != "" {
 		return false
 	}
+	if state.PendingEffectIntentFactDigest != "" || state.EffectInterventionDigest != "" {
+		// Read-only inspection remains available for diagnosis. Recovery of this
+		// effect must use RecoverPendingEffect so it is captured by the same
+		// authority chain; the cleanup callback cannot bypass that ledger.
+		return operation == CleanupInspect
+	}
 	if state.ProcessTerminalDigest == "" {
 		switch operation {
 		case CleanupInspect, CleanupReconcile:
@@ -1008,7 +1033,14 @@ func (s *ingressDurableStore) CompareAndAppendCleanup(ctx context.Context, verif
 }
 
 func newAuthorityProjection() *Ingress {
-	return &Ingress{admitted: make(map[string]admittedEntry), attempts: make(map[string]AttemptAuthorityState)}
+	return &Ingress{
+		admitted:          make(map[string]admittedEntry),
+		attempts:          make(map[string]AttemptAuthorityState),
+		effects:           make(map[string]EffectAuthorityState),
+		effectCommands:    make(map[string]string),
+		effectIdempotency: make(map[string]string),
+		effectMarkers:     make(map[string]string),
+	}
 }
 
 func applyAttemptAuthorityLine(line []byte, in *Ingress, wantSequence int64) error {
