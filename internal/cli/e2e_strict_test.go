@@ -341,7 +341,7 @@ func TestRealPiStrictE2E(t *testing.T) {
 	}
 	var queryOut bytes.Buffer
 	var queryErrOut bytes.Buffer
-	sub := exec.Command(selfBin, "-test.run=TestRealPiStrictE2E", "-count=1")
+	sub := exec.Command(selfBin, "-test.run=TestRealPiStrictE2E", "-test.count=1")
 	sub.Env = append(os.Environ(),
 		"STRICT_E2E_QUERY_STATE=1",
 		"STRICT_E2E_STATE_ROOT="+stateRoot,
@@ -359,7 +359,16 @@ func TestRealPiStrictE2E(t *testing.T) {
 		State            string `json:"state"`
 		CurrentAttemptID string `json:"currentAttemptId"`
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(queryOut.Bytes()), &restored); err != nil {
+	// A directly executed Go test binary appends the testing package's exact
+	// PASS trailer after the helper's JSON. Strip only that fixed trailer;
+	// anything else remains invalid JSON and fails closed below.
+	queryJSON := bytes.TrimSpace(queryOut.Bytes())
+	testProcessTrailer := []byte("\nPASS")
+	if !bytes.HasSuffix(queryJSON, testProcessTrailer) {
+		t.Fatalf("cross-process test binary omitted PASS trailer (raw: %s)", queryOut.String())
+	}
+	queryJSON = bytes.TrimSpace(bytes.TrimSuffix(queryJSON, testProcessTrailer))
+	if err := json.Unmarshal(queryJSON, &restored); err != nil {
 		t.Fatalf("cross-process status output not a RunState JSON: %v (raw: %s)", err, queryOut.String())
 	}
 	if restored.RunID != st.RunID || restored.CurrentAttemptID != st.CurrentAttemptID || restored.State != st.State {
