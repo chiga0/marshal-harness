@@ -29,8 +29,8 @@
 | --- | --- | --- | --- |
 | 1 | 唯一真实可恢复生产执行链 | `COMPONENT` | 真实 pi 经 `sandboxbridge` exec-chain 在 Local allocation 内执行（R1 纵切）；composition root 单实例修复后 lease/registration 可在同进程内可查，但跨进程恢复未验证。 |
 | 2 | 真实 AgentProvider + 真实 Local/Container SandboxProvider，Agent 进程实际在 allocation 内 | `INTEGRATED` | 真实 pi 经 `PrepareLaunch→CompleteLaunch` 在 Local allocation 内执行，`sandboxbridge` 集成测试与 canary 双向锚定 allocation record。 |
-| 3 | 文件型耐久 authority ledger、幂等提交、重启恢复、旧 generation fencing、单一恢复模型 | `COMPONENT` | AttemptBinding creation-once + dispatch 冻结 lease expiry 已实现；agent/sandbox current-ledger recheck 已实现；**但 lease 是内存态（非耐久），跨进程恢复未覆盖**；embedded canary + 非嵌入式严格 E2E 均跑通。 |
-| 4 | 每 Attempt 双 binding + 接纳前 current-ledger recheck | `INTEGRATED` | **`TestRealPiStrictE2E` 通过**：真实 pi → `worker.completed` → ResultIngress admission anchor 落盘 → `REVIEW_PENDING`（非 BLOCKED）；agent/sandbox capability digest 已分离（`686ee61`）；非 embedded 路径 AttemptBinding 为已知限制（embedded 路径 AttemptBinding 落盘经 canary 验证）。 |
+| 3 | 文件型耐久 authority ledger、幂等提交、重启恢复、旧 generation fencing、单一恢复模型 | `COMPONENT` | AttemptBinding creation-once + dispatch 冻结 lease expiry 已实现；agent/sandbox current-ledger recheck 已实现；**但 lease 是内存态（非耐久），跨进程恢复未覆盖**；embedded + 非嵌入式严格 E2E 均全闭环跑通。 |
+| 4 | 每 Attempt 双 binding + 接纳前 current-ledger recheck | `INTEGRATED` | **`TestRealPiStrictE2E` 双路径通过**：真实 pi → `worker.completed` → ResultIngress admission anchor 落盘 → `REVIEW_PENDING`（非 BLOCKED）；embedded（`MARSHAL_EMBEDDED_SANDBOX=1`）路径 AttemptBinding 落盘 + agent/sandbox 双 digest 分离（`686ee61`）+ registration ID 前缀规范化（`3f8638d`）+ agent registration fallback（`cad8773`）。 |
 | 5 | 可判定 cancel、timeout、retry、terminal 与 Outcome 语义 | `INTEGRATED` | 既有 runstore/cli/execution 回归覆盖。 |
 | 6 | 独立 Verification；发布仅 none / Draft PR，不 auto-merge | `INTEGRATED` | 既有产线路径；merge 默认禁用属 universal 不变量。 |
 | 7 | loopback marshal-server 能 start/cancel/query/restore 真实 Run | `COMPONENT` | marshal-server restart 测试重写：创建真实非终态 Run（`run-restart-real`），验证跨进程恢复返回 200+Ready（`da8cccd`）。 |
@@ -43,9 +43,9 @@
 - 任何状态切换的条件：真实 composition root 可达 + 证据可复跑；gate-绕过的 test 证据只能支撑 `COMPONENT`，不支撑 `INTEGRATED`。
 - 本表与 `docs/roadmap-status.md` 的 R6 行互为指针；composition root 纠偏结论为当前权威基线。
 
-## 当前结论（2026-08-28，`TestRealPiStrictE2E` 通过后）
+## 当前结论（2026-08-28，embedded + 非嵌入式严格 E2E 双路径全闭环通过）
 
-- `R0: PASSED`；`R1: IN_PROGRESS（INTEGRATED，real Agent in allocation 纵切）`；`R2/R3: IN_PROGRESS（COMPONENT，composition root 修复 + embedded canary 通过 + 非嵌入式严格 E2E 通过）`；`R4: IN_PROGRESS（COMPONENT）`；`R5: IN_PROGRESS（COMPONENT→INTEGRATED 临界：非 embedded 严格 E2E 通过 worker.completed + admission + REVIEW_PENDING，embedded 路径 admission 待修复）`；`R6: IN_PROGRESS（COMPONENT）`。
-- 重大进展：`TestRealPiStrictE2E` 首次跑通——真实 pi → `worker.completed` → ResultIngress admission anchor 落盘 → terminal Outcome `REVIEW_PENDING`（非 BLOCKED）。
-- 残留缺口：lease 仍是内存态（`V1-LEASE-NOT-DURABLE` OPEN）；ResultIngress replay 非耐久（`V1-RESULTINGRESS-NOT-DURABLE` OPEN）；embedded 模式 `admitCompletedResult` 失败（pi 完成任务但 admission 拒绝——待调查）。
-- 外部阻塞：Issue #212（macOS 签名身份，企业策略，仅影响 stable 通道）。
+- `R0: PASSED`；`R1: IN_PROGRESS（INTEGRATED，real Agent in allocation 纵切）`；`R2/R3: IN_PROGRESS（COMPONENT，composition root 修复 + 严格 E2E 双路径全闭环，但跨进程恢复未覆盖）`；`R4: IN_PROGRESS（COMPONENT）`；`R5: IN_PROGRESS（INTEGRATED 达成：`TestRealPiStrictE2E` embedded + 非嵌入式双路径均通过 `worker.completed` + admission + AttemptBinding + `REVIEW_PENDING`）`；`R6: IN_PROGRESS（COMPONENT）`。
+- 重大进展：`TestRealPiStrictE2E` **双路径全闭环通过**——真实 pi → `worker.completed` → ResultIngress admission anchor 落盘 → allocation record → embedded 路径 AttemptBinding 落盘 → terminal Outcome `REVIEW_PENDING`（非 BLOCKED）。
+- 残留缺口：lease 仍是内存态（`V1-LEASE-NOT-DURABLE` OPEN，跨进程恢复需耐久 lease ledger）；ResultIngress replay 非耐久（`V1-RESULTINGRESS-NOT-DURABLE` OPEN）。
+- 外部阻塞：Issue #212（macOS 签名身份，企业策略，仅影响 stable 通道，不阻塞 prerelease）。
