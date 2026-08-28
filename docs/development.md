@@ -8,7 +8,7 @@ Marshal 的产品目标是[整体架构](architecture.md)定义的长寿命确�
 
 - Module：`github.com/chiga0/marshal-harness`；
 - Language Version：Go `1.26.0`；
-- Toolchain：Go `1.26.5`；
+- Toolchain：Go `1.26.6`；
 - JSON Schema：Draft 2020-12；
 - Glob：`doublestar/v4`，`**` 表示跨目录递归；
 - 静态检查：`go vet` 与固定版本的 `staticcheck`（经 `go.mod` 的 `tool` 指令固定，Go 1.24+ 特性；请勿自行 `go install` 其他版本，以免结果不一致）；
@@ -77,24 +77,25 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 面向用户的两条安装路径（一行脚本与源码构建）见 [README](https://github.com/chiga0/marshal-harness#安装)，对应脚本为 [`scripts/install.sh`](https://github.com/chiga0/marshal-harness/blob/main/scripts/install.sh)：
 
 - 检测平台（`darwin|linux` × `amd64|arm64`）；
-- 存在 `v*` tag 的 GitHub release 且含平台匹配资产时，用 `curl -fsSL` 下载预编译二进制；随后必须下载 `SHA256SUMS`，并要求目标资产恰有一条校验记录且 sha256 匹配；清单缺失、重复、格式错误或摘要不匹配均 fail closed；
+- 存在 `v*` annotated tag 的 GitHub release 且含平台匹配资产时，用 `curl -fsSL` 下载预编译二进制；随后解析 tag 的唯一 tag object/peeled commit 与 canonical candidate trailers，下载 `RELEASE-MANIFEST` 与 `SHA256SUMS`，并要求 tag 冻结摘要、manifest/目标资产摘要、sourceHead、内嵌 version/commit/buildDate/goVersion/profile 全部精确；缺失、重复、尾随字段、资产整组替换或漂移均 fail closed；
 - 否则回退源码构建 `go build -trimpath ./cmd/marshal`（Go 版本须满足 `go.mod` 的 `go` 指令）；无本地 checkout 时先浅克隆 `https://github.com/chiga0/marshal-harness.git`（release tag 已知时克隆该 tag）；
 - 安装到 `~/.local/bin`（默认），全程不请求 sudo，完成后输出下一步指引（`marshal init` / `marshal doctor`）。
 
 源码回退不是弱身份旁路：源码目录必须是无未提交修改、可验证的 Git checkout；指定 `MARSHAL_TAG` 时，当前 `HEAD` 必须精确等于该 tag 的 peeled commit。构建会嵌入精确 commit，并按平台冻结 `selfProfile`（Darwin=`darwin-local-dogfood`，Linux=`unprofiled`）。暂存二进制与安装后的二进制都必须通过 `version --json` 身份自检，否则安装 fail closed。
 
-安装阶段的二进制只写入安装目录下固定的 `.marshal-staging/marshal`，校验后复制到目标 `marshal` 并清理暂存文件；不会在随机 `/tmp` 路径生成或执行匿名 Marshal 可执行文件。
+安装阶段先把 bytes 写入安装目录下固定、`0644` 且不可执行的 `.marshal-staging/marshal.candidate`；tag/manifest/checksum 闭合后才通过 no-clobber hardlink 激活固定 `.marshal-staging/marshal`，验证身份后原子替换目标并清理本次拥有的对象。路径每一段、staging 与既有 target 都必须满足 owner/mode/non-symlink/hardlink 门禁；不会在随机 `/tmp` 路径生成或执行匿名 Marshal 可执行文件。
 
-环境变量：`MARSHAL_INSTALL_DIR`（安装目录）、`MARSHAL_REPO`（默认 `chiga0/marshal-harness`）、`MARSHAL_TAG`（固定 release tag，跳过 latest release 查询）、`MARSHAL_FORCE_SOURCE=1`（跳过 release 直接源码构建）。
+环境变量：`MARSHAL_INSTALL_DIR`（安装目录）、`MARSHAL_TAG`（固定 release tag，跳过 latest release 查询）、`MARSHAL_FORCE_SOURCE=1`（跳过 release 直接源码构建）。release/source remote authority 固定为 canonical `chiga0/marshal-harness`，`MARSHAL_REPO` 覆盖被显式拒绝，fixture 只能通过测试进程中的 fake `git`/`curl` 模拟网络响应。
 
 ### Release 资产命名约定
 
 `scripts/install.sh` 依赖的 release 资产约定（后续 release 工具链必须遵守）：
 
 - `marshal_<version>_<os>_<arch>`：预编译二进制。`version` 为去掉 `v` 前缀的 release tag，`os`/`arch` 取 Go 风格 `darwin|linux` × `amd64|arm64`（如 `marshal_0.1.0_darwin_arm64`）；
-- `SHA256SUMS`：全部资产的校验清单，`sha256sum` 格式（`<hash>  <文件名>`）。
+- `RELEASE-MANIFEST`：canonical 11 行 closed manifest，绑定 canonical repository、tag、peeled `sourceHead`、commit UTC `buildDate`、精确 Go toolchain/build flags，以及四个平台资产的 SHA-256、size 与 profile；
+- `SHA256SUMS`：四个平台资产与 `RELEASE-MANIFEST` 的校验清单，`sha256sum` 格式（`<hash>  <文件名>`）。
 
-release workflow 只接受精确的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rcN` tag。前者在 Issue #212 的真实签名/notarization 链落地前保持 fail closed；后者可发布明确标注为 unsigned 的 prerelease。`scripts/release-contract.sh` 会在上传前校验 tag、四个平台资产的封闭集合、可执行位、唯一 checksum 条目与实际摘要；任何额外/缺失/重复/漂移均拒绝发布。
+release workflow 只接受精确的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rcN` annotated tag。tag message 必须由 `scripts/release-contract.sh candidate-tag-message` 生成并冻结 canary 的 sourceHead、manifest SHA 与 Darwin arm64 asset SHA。read-only build job 先要求同 sourceHead 的主分支 CI 三个 job 全绿，再用 commit 的 canonical UTC timestamp、`go.mod` 精确 toolchain、`CGO_ENABLED=0`、`-trimpath -buildvcs=false -mod=readonly` 与空 build ID 重建；跨主机 manifest/asset SHA 任一不等即 fail closed。该 job 只上传 payload SHA 绑定的短期 artifact，不持有 `contents:write`。独立 publish job 重新 checkout/peel tag、核对 payload SHA、封闭 tar member、内部 SHA256SUMS、manifest 与 exact 6-line tag message 后才获得发布动作。稳定 tag 在 Issue #212 的真实签名/notarization 链落地前保持 fail closed；RC 可发布明确标注为 unsigned 的 prerelease。unsigned tag 只防同一 tag object 下的资产替换，不提供签名、remote-ref anti-rollback 或整体 tag retarget 防护。
 
 `make dist` 对四个平台显式区分自身份：Darwin 资产固定为 ADR 0051 的 `darwin-local-dogfood` ordinary-user/non-production profile，Linux 资产保持 `unprofiled`。`scripts/dist-profile_test.sh` 以确定性 fake compiler 记录并断言四个 target 的 linker profile，防止 release workflow 再次产出不可启动的 Darwin `unprofiled` 资产。
 
