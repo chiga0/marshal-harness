@@ -11,7 +11,6 @@ on:
         required: false
         type: string
 
-# 顶层默认只读；写权限仅在 release job 内授予。
 permissions:
   contents: read
 
@@ -20,27 +19,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build & publish release
+  build:
+    name: Build & verify release candidate
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       actions: read
-      contents: write
+      contents: read
+    outputs:
+      source-head: ${{ steps.release.outputs.source-head }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      payload-sha256: ${{ steps.payload.outputs.sha256 }}
     env:
       TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # workflow_dispatch 必须构建输入 tag，而不是触发时所在的默认分支。
           ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # 必须与 go.mod 的 toolchain 行精确一致；Makefile dist 会再次机械核对。
           go-version: '1.26.6'
           cache: true
 
@@ -55,20 +57,25 @@ jobs:
       - name: Validate release source
         id: release
         run: |
+          test "${{ github.repository }}" = "chiga0/marshal-harness" || {
+            echo "::error::release workflow 只允许 canonical chiga0/marshal-harness" >&2
+            exit 1
+          }
           kind="$(bash scripts/release-contract.sh classify "$TAG_NAME")"
           release_commit="$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")" \
             || { echo "::error::release tag ${TAG_NAME} 不存在或不指向 commit" >&2; exit 1; }
           checkout_commit="$(git rev-parse HEAD)"
-          if [ "$checkout_commit" != "$release_commit" ]; then
+          test "$checkout_commit" = "$release_commit" || {
             echo "::error::checkout ${checkout_commit} 与 tag ${TAG_NAME} 指向 ${release_commit} 不一致" >&2
             exit 1
-          fi
+          }
           echo "kind=$kind" >> "$GITHUB_OUTPUT"
           if [ "$kind" = "prerelease" ]; then
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
           else
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "source-head=$release_commit" >> "$GITHUB_OUTPUT"
           echo "RELEASE_COMMIT=$release_commit" >> "$GITHUB_ENV"
           build_date="$(bash scripts/release-contract.sh build-date . "$release_commit")"
           echo "RELEASE_BUILD_DATE=$build_date" >> "$GITHUB_ENV"
@@ -78,77 +85,132 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/release-ci-gate.sh "${{ github.repository }}" "$RELEASE_COMMIT"
 
-      # 资产命名 marshal_<version>_<os>_<arch>：version 去掉 v 前缀，
-      # 与 scripts/install.sh 及 docs/development.md 的 Release 资产命名约定一致。
       - name: Build dist assets
         run: |
           make dist \
             VERSION="${TAG_NAME#v}" \
             COMMIT="${RELEASE_COMMIT}" \
             BUILD_DATE="${RELEASE_BUILD_DATE}"
-          ls -l dist/
 
       - name: Verify release asset contract
         run: |
           bash scripts/release-contract.sh verify-dist dist "$TAG_NAME" "$RELEASE_COMMIT"
           bash scripts/release-contract.sh verify-candidate-tag . dist "$TAG_NAME"
 
-      # macOS 签名/notarization 门禁：
-      # ADR 0052 §1.9 要求 macOS 正式产物签名/notarization/release identity。
-      # Issue #212 未 provision 期间：稳定 tag（v1.* 无 - 后缀）一律 fail
-      # closed；仅含 - 后缀的 prerelease tag（如 v1.0.0-rc1）可产出 unsigned
-      # prerelease，且 release notes 必须明示 unsigned。
-      # secrets 检测用 step env 完成（secrets 不能出现在 if 表达式中）。
-      - name: Detect macOS signing secrets
-        id: signing
-        env:
-          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-          NOTARIZATION_KEY: ${{ secrets.MACOS_NOTARIZATION_KEY }}
-        run: |
-          if [ -n "$SIGNING_IDENTITY" ] && [ -n "$NOTARIZATION_KEY" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Enforce signing gate for stable releases
-        if: steps.signing.outputs.available != 'true' && steps.release.outputs.prerelease != 'true'
-        run: |
-          echo "::error::稳定 release $TAG_NAME 要求 macOS 签名/notarization secrets（Issue #212 未 provision）。unsigned 构建仅允许 prerelease tag（如 v1.0.0-rc1）。" >&2
-          exit 1
-
-      # 签名/notarization 真实实现（codesign + notarytool + spctl 验证）跟随
-      # ADR 0047/0048 与 Issue #212 落地。在真实签名链实现前，即使 secrets
-      # 已配置，仍一律 fail closed——占位输出不得通过为 signed stable release。
+      # Issue #212 未关闭前，stable 一律 fail closed；build job 不读取任何
+      # signing/publish secret，仅允许 unsigned RC 进入跨 job artifact。
       - name: Block stable release until real signing is implemented
         if: steps.release.outputs.prerelease != 'true'
         run: |
-          echo "::error::稳定 release $TAG_NAME 要求真实 codesign + notarization + spctl 验证（ADR 0047/0048）。当前签名步骤仍为占位，不得发布 stable。请使用 prerelease tag（如 v1.0.0-rc1）。" >&2
+          echo "::error::稳定 release $TAG_NAME 要求真实 codesign + notarization + spctl 验证（Issue #212）。请使用 prerelease tag。" >&2
           exit 1
 
+      - name: Freeze verified release payload
+        id: payload
+        run: |
+          tar -cf release-payload.tar dist
+          payload_sha="$(sha256sum release-payload.tar | awk '{print $1}')"
+          printf '%s  release-payload.tar\n' "$payload_sha" > RELEASE-PAYLOAD.sha256
+          echo "sha256=$payload_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload digest-bound release payload
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-payload-${{ steps.release.outputs.source-head }}
+          path: |
+            release-payload.tar
+            RELEASE-PAYLOAD.sha256
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    name: Publish verified release candidate
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+      EXPECTED_SOURCE_HEAD: ${{ needs.build.outputs.source-head }}
+      EXPECTED_PAYLOAD_SHA256: ${{ needs.build.outputs.payload-sha256 }}
+      IS_PRERELEASE: ${{ needs.build.outputs.prerelease }}
+    steps:
+      - name: Checkout exact release tag without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download verified build artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-payload-${{ needs.build.outputs.source-head }}
+          path: release-artifact
+
+      - name: Recheck tag and exact payload
+        run: |
+          set -euo pipefail
+          test "${{ github.repository }}" = "chiga0/marshal-harness"
+          [[ "$EXPECTED_SOURCE_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_PAYLOAD_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test "$(git cat-file -t "refs/tags/${TAG_NAME}")" = tag
+          test "$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")" = "$EXPECTED_SOURCE_HEAD"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_HEAD"
+          test "$(sha256sum release-artifact/release-payload.tar | awk '{print $1}')" = "$EXPECTED_PAYLOAD_SHA256"
+          (cd release-artifact && sha256sum -c RELEASE-PAYLOAD.sha256)
+          cat > expected-tar-files <<EOF
+          dist/
+          dist/RELEASE-MANIFEST
+          dist/SHA256SUMS
+          dist/marshal_${TAG_NAME#v}_darwin_amd64
+          dist/marshal_${TAG_NAME#v}_darwin_arm64
+          dist/marshal_${TAG_NAME#v}_linux_amd64
+          dist/marshal_${TAG_NAME#v}_linux_arm64
+          EOF
+          tar -tf release-artifact/release-payload.tar | LC_ALL=C sort > actual-tar-files
+          LC_ALL=C sort expected-tar-files -o expected-tar-files
+          diff -u expected-tar-files actual-tar-files
+          mkdir release-payload
+          tar -xf release-artifact/release-payload.tar -C release-payload
+          (cd release-payload/dist && sha256sum -c SHA256SUMS)
+          manifest_sha="$(sha256sum release-payload/dist/RELEASE-MANIFEST | awk '{print $1}')"
+          candidate_sha="$(sha256sum "release-payload/dist/marshal_${TAG_NAME#v}_darwin_arm64" | awk '{print $1}')"
+          git for-each-ref --format='%(contents)%1e' "refs/tags/${TAG_NAME}" > candidate-tag-message.raw
+          test "$(wc -c < candidate-tag-message.raw | tr -d '[:space:]')" -le 65538
+          marker="$(printf '\036')"
+          awk -v tag="$TAG_NAME" -v commit="$EXPECTED_SOURCE_HEAD" -v manifest="$manifest_sha" -v candidate="$candidate_sha" -v marker="$marker" '
+            NR == 1 { if ($0 != "Marshal " tag " candidate") exit 1; next }
+            NR == 2 { if ($0 != "") exit 1; next }
+            NR == 3 { if ($0 != "marshal-candidate-schema: v1") exit 1; next }
+            NR == 4 { if ($0 != "marshal-candidate-source-head: " commit) exit 1; next }
+            NR == 5 { if ($0 != "marshal-candidate-manifest-sha256: " manifest) exit 1; next }
+            NR == 6 { if ($0 != "marshal-candidate-darwin-arm64-sha256: " candidate) exit 1; next }
+            NR == 7 { if ($0 != marker) exit 1; seen_marker=1; next }
+            { exit 1 }
+            END { if (NR != 7 || !seen_marker) exit 1 }
+          ' candidate-tag-message.raw
+          awk -v tag="$TAG_NAME" -v commit="$EXPECTED_SOURCE_HEAD" '
+            NR == 3 { if ($0 != "tag " tag) exit 1 }
+            NR == 4 { if ($0 != "sourceHead " commit) exit 1 }
+            END { if (NR != 11) exit 1 }
+          ' release-payload/dist/RELEASE-MANIFEST
+
       - name: Generate release notes
-        env:
-          SIGNING_AVAILABLE: ${{ steps.signing.outputs.available }}
-          IS_PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
           {
             printf 'Marshal %s\n\n' "$TAG_NAME"
-            printf '预编译资产（darwin/linux × amd64/arm64，`make dist` 交叉编译，CGO_ENABLED=0），安装与升级见 docs/install-and-upgrade.md。\n\n'
-            if [ "$SIGNING_AVAILABLE" = "true" ]; then
-              printf -- '- macOS 签名 secrets 已配置，但签名/notarization 实现仍为占位步骤（ADR 0047/0048，Issue #212），本次资产按未签名口径处理。\n'
-            else
-              printf -- '- **unsigned build（Issue #212 未 provision）**：未配置 macOS 签名/notarization secrets，本 release 全部资产为未签名构建；darwin 用户可能需要在系统设置中放行未知来源二进制，详见 docs/install-and-upgrade.md。\n'
-            fi
-            if [ "$IS_PRERELEASE" = "true" ]; then
-              printf -- '- 本 release 为 prerelease（候选/预览），不按 v1.0 正式发布承诺支持（ADR 0052）。\n'
-            fi
-            printf -- '- 校验：安装脚本会解析 annotated tag 的 peeled commit，并校验 `RELEASE-MANIFEST`、`SHA256SUMS` 与二进制内嵌 version/commit/profile；离线校验可在资产目录运行 `sha256sum -c SHA256SUMS`（macOS 用 `shasum -a 256 -c SHA256SUMS`）。\n'
+            printf '预编译资产（darwin/linux × amd64/arm64，CGO_ENABLED=0）。\n\n'
+            printf -- '- **unsigned prerelease（Issue #212）**：macOS 签名/notarization 尚未落地，本资产不是稳定 v1 发布。\n'
+            printf -- '- 安装脚本会对账 annotated tag、`RELEASE-MANIFEST`、`SHA256SUMS` 与二进制内嵌身份。\n'
           } > release-notes.md
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IS_PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
           args=()
           if [ "$IS_PRERELEASE" = "true" ]; then
@@ -159,4 +221,4 @@ jobs:
             --title "Marshal $TAG_NAME" \
             --notes-file release-notes.md \
             "${args[@]}" \
-            dist/*
+            release-payload/dist/*

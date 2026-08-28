@@ -4,6 +4,14 @@
 set -euo pipefail
 
 RELEASE_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+RELEASE_TEMP_MESSAGE=""
+
+cleanup_release_temp() {
+  if [ -n "$RELEASE_TEMP_MESSAGE" ]; then
+    rm -f "$RELEASE_TEMP_MESSAGE"
+  fi
+}
+trap cleanup_release_temp EXIT
 
 release_fatal() {
   printf '[release-check] 错误: %s\n' "$*" >&2
@@ -145,17 +153,33 @@ marshal-candidate-darwin-arm64-sha256: ${candidate_digest}
 EOF
 }
 
-candidate_trailer() {
-  local message="$1" key="$2"
-  printf '%s\n' "$message" | awk -v key="$key" '
-    index($0, key ": ") == 1 { count++; value=substr($0, length(key)+3) }
-    END { if (count != 1 || value == "") exit 1; print value }
-  '
+parse_candidate_message() {
+  local message_file="$1" tag="$2" source_head="$3" marker
+  marker="$(printf '\036')"
+  awk -v tag="$tag" -v commit="$source_head" -v marker="$marker" '
+    NR == 1 { if ($0 != "Marshal " tag " candidate") exit 1; next }
+    NR == 2 { if ($0 != "") exit 1; next }
+    NR == 3 { if ($0 != "marshal-candidate-schema: v1") exit 1; next }
+    NR == 4 { if ($0 != "marshal-candidate-source-head: " commit) exit 1; next }
+    NR == 5 {
+      if ($0 !~ /^marshal-candidate-manifest-sha256: [0-9a-f]{64}$/) exit 1
+      manifest=substr($0, length("marshal-candidate-manifest-sha256: ")+1)
+      next
+    }
+    NR == 6 {
+      if ($0 !~ /^marshal-candidate-darwin-arm64-sha256: [0-9a-f]{64}$/) exit 1
+      candidate=substr($0, length("marshal-candidate-darwin-arm64-sha256: ")+1)
+      next
+    }
+    NR == 7 { if ($0 != marker) exit 1; seen_marker=1; next }
+    { exit 1 }
+    END { if (NR != 7 || !seen_marker || manifest == "" || candidate == "") exit 1; print manifest " " candidate }
+  ' "$message_file"
 }
 
 verify_candidate_tag() {
   local repository="$1" dist_dir="$2" tag="$3"
-  local tag_type source_head message schema declared_head declared_manifest declared_candidate
+  local tag_type source_head metadata declared_manifest declared_candidate message_size
   local actual_manifest actual_candidate version
   validate_release_tag "$tag"
   tag_type="$(git -C "$repository" cat-file -t "refs/tags/${tag}" 2>/dev/null)" \
@@ -164,27 +188,17 @@ verify_candidate_tag() {
   source_head="$(git -C "$repository" rev-parse --verify "refs/tags/${tag}^{commit}" 2>/dev/null)" \
     || release_fatal "release tag ${tag} 无法 peel 到 commit"
   validate_source_head "$source_head"
-  message="$(git -C "$repository" for-each-ref --format='%(contents)' "refs/tags/${tag}")"
-  if printf '%s\n' "$message" | awk '
-    /^marshal-candidate-/ && $0 !~ /^marshal-candidate-(schema|source-head|manifest-sha256|darwin-arm64-sha256): / { exit 1 }
-  '; then :; else
-    release_fatal "annotated tag 包含未知 candidate trailer"
-  fi
-  schema="$(candidate_trailer "$message" marshal-candidate-schema)" \
-    || release_fatal "candidate schema trailer 缺失或重复"
-  declared_head="$(candidate_trailer "$message" marshal-candidate-source-head)" \
-    || release_fatal "candidate source-head trailer 缺失或重复"
-  declared_manifest="$(candidate_trailer "$message" marshal-candidate-manifest-sha256)" \
-    || release_fatal "candidate manifest trailer 缺失或重复"
-  declared_candidate="$(candidate_trailer "$message" marshal-candidate-darwin-arm64-sha256)" \
-    || release_fatal "candidate darwin-arm64 trailer 缺失或重复"
-  [ "$schema" = v1 ] || release_fatal "candidate schema 不是 v1"
-  [ "$declared_head" = "$source_head" ] \
-    || release_fatal "candidate sourceHead 与 peeled tag commit 不一致"
-  [[ "$declared_manifest" =~ ^[0-9a-f]{64}$ ]] \
-    || release_fatal "candidate manifest SHA256 非法"
-  [[ "$declared_candidate" =~ ^[0-9a-f]{64}$ ]] \
-    || release_fatal "candidate Darwin arm64 SHA256 非法"
+  RELEASE_TEMP_MESSAGE="$(mktemp "${TMPDIR:-/tmp}/marshal-candidate-message.XXXXXX")" \
+    || release_fatal "无法创建 candidate tag message 临时数据对象"
+  git -C "$repository" for-each-ref --format='%(contents)%1e' "refs/tags/${tag}" >"$RELEASE_TEMP_MESSAGE" \
+    || release_fatal "无法读取 annotated tag message"
+  message_size="$(wc -c <"$RELEASE_TEMP_MESSAGE" | tr -d '[:space:]')"
+  [ "$message_size" -le 65538 ] || release_fatal "annotated tag message 超过 64 KiB"
+  metadata="$(parse_candidate_message "$RELEASE_TEMP_MESSAGE" "$tag" "$source_head")" \
+    || release_fatal "annotated tag candidate message 必须是 exact 6-line closed 格式"
+  rm -f "$RELEASE_TEMP_MESSAGE"
+  RELEASE_TEMP_MESSAGE=""
+  read -r declared_manifest declared_candidate <<<"$metadata"
   verify_dist "$dist_dir" "$tag" "$source_head"
   version="${tag#v}"
   actual_manifest="$(sha256_file "${dist_dir}/RELEASE-MANIFEST")"

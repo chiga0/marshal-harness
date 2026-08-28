@@ -139,6 +139,19 @@ bash "$CHECKER" candidate-tag-message "$TAG_DIST" v1.0.0-rc1 "$TAG_HEAD" >"${TMP
 git -C "$TAG_REPO" tag -a v1.0.0-rc1 -F "${TMP_ROOT}/tag-message"
 bash "$CHECKER" verify-candidate-tag "$TAG_REPO" "$TAG_DIST" v1.0.0-rc1
 
+replace_candidate_tag_with_raw_message() {
+  local message_file="$1" tag_object
+  git -C "$TAG_REPO" update-ref -d refs/tags/v1.0.0-rc1 >/dev/null 2>&1 || true
+  tag_object="$({
+    printf 'object %s\n' "$TAG_HEAD"
+    printf 'type commit\n'
+    printf 'tag v1.0.0-rc1\n'
+    printf 'tagger Release Contract Test <release-contract@example.invalid> 1787880000 +0000\n\n'
+    cat "$message_file"
+  } | git -C "$TAG_REPO" hash-object -t tag -w --stdin)"
+  git -C "$TAG_REPO" update-ref refs/tags/v1.0.0-rc1 "$tag_object"
+}
+
 git -C "$TAG_REPO" tag -d v1.0.0-rc1 >/dev/null
 git -C "$TAG_REPO" tag v1.0.0-rc1
 expect_fail 'lightweight candidate tag' bash "$CHECKER" verify-candidate-tag "$TAG_REPO" "$TAG_DIST" v1.0.0-rc1
@@ -148,6 +161,28 @@ sed -n '/^marshal-candidate-source-head:/p' "${TMP_ROOT}/tag-message" >>"${TMP_R
 git -C "$TAG_REPO" tag -a v1.0.0-rc1 -F "${TMP_ROOT}/duplicate-tag-message"
 expect_fail 'candidate trailer 重复' bash "$CHECKER" verify-candidate-tag "$TAG_REPO" "$TAG_DIST" v1.0.0-rc1
 git -C "$TAG_REPO" tag -d v1.0.0-rc1 >/dev/null
+
+cp "${TMP_ROOT}/tag-message" "${TMP_ROOT}/extra-tag-message"
+printf 'unexpected tag note\n' >>"${TMP_ROOT}/extra-tag-message"
+replace_candidate_tag_with_raw_message "${TMP_ROOT}/extra-tag-message"
+expect_fail 'candidate tag 未知额外行' bash "$CHECKER" verify-candidate-tag "$TAG_REPO" "$TAG_DIST" v1.0.0-rc1
+
+awk 'NR == 6 { print "" } { print }' "${TMP_ROOT}/tag-message" >"${TMP_ROOT}/interior-blank-tag-message"
+replace_candidate_tag_with_raw_message "${TMP_ROOT}/interior-blank-tag-message"
+expect_fail 'candidate tag 内部空行' bash "$CHECKER" verify-candidate-tag "$TAG_REPO" "$TAG_DIST" v1.0.0-rc1
+
+cp "${TMP_ROOT}/tag-message" "${TMP_ROOT}/trailing-blank-tag-message"
+printf '\n' >>"${TMP_ROOT}/trailing-blank-tag-message"
+replace_candidate_tag_with_raw_message "${TMP_ROOT}/trailing-blank-tag-message"
+expect_fail 'candidate tag 尾随空行' bash "$CHECKER" verify-candidate-tag "$TAG_REPO" "$TAG_DIST" v1.0.0-rc1
+
+sed -n '1,5p' "${TMP_ROOT}/tag-message" >"${TMP_ROOT}/nul-tag-message"
+printf '\000' >>"${TMP_ROOT}/nul-tag-message"
+sed -n '6p' "${TMP_ROOT}/tag-message" >>"${TMP_ROOT}/nul-tag-message"
+replace_candidate_tag_with_raw_message "${TMP_ROOT}/nul-tag-message"
+expect_fail 'candidate tag NUL byte' bash "$CHECKER" verify-candidate-tag "$TAG_REPO" "$TAG_DIST" v1.0.0-rc1
+
+git -C "$TAG_REPO" update-ref -d refs/tags/v1.0.0-rc1
 git -C "$TAG_REPO" tag -a v1.0.0-rc1 -F "${TMP_ROOT}/tag-message"
 printf 'cross-host drift\n' >>"${TAG_DIST}/marshal_1.0.0-rc1_darwin_arm64"
 bash "$CHECKER" create-manifest "$TAG_DIST" v1.0.0-rc1 "$TAG_HEAD" 2026-08-28T00:00:00Z go1.26.6

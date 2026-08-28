@@ -17,10 +17,10 @@ marshal version
 2. 查询 latest release，存在平台匹配资产（`marshal_<version>_<os>_<arch>`）时用 `curl -fsSL` 下载预编译二进制；
 3. release tag 必须是 annotated tag；脚本从 canonical Git remote 解析唯一 tag object/peeled commit 并获取 canonical tag message，再下载 `RELEASE-MANIFEST` 与 `SHA256SUMS`；tag message 冻结的 sourceHead、manifest SHA 与 Darwin arm64 candidate SHA 必须和下载内容对账，manifest 的 repository/tag/sourceHead/buildDate/toolchain/flags/四平台资产集合也必须精确；任一缺失、重复、尾随字段、资产整组替换或漂移均 **fail closed**；
 4. 无匹配资产或下载失败时回退源码构建（见下节）；若指定了 `MARSHAL_TAG`，源码 checkout 的 `HEAD` 必须精确等于该 tag 的 peeled commit，否则 fail closed，禁止把任意源码标记成请求版本；
-5. 安装到 `~/.local/bin`（可用 `MARSHAL_INSTALL_DIR` 覆盖）；复制前后都运行 `marshal version --json`，release 路径精确核对 `version`、peeled `commit`、manifest `buildDate/goVersion` 与 `selfProfile`，源码路径核对自身 `HEAD`；任一执行失败、字段缺失或身份漂移都 fail closed；
+5. 安装到 `~/.local/bin`（可用 `MARSHAL_INSTALL_DIR` 覆盖）；首次写入前逐段验证安装路径、staging 和既有 target 的 owner/mode/non-symlink/hardlink 边界。下载对象保持 `0644` 且不可执行，只有 tag/manifest/checksum 全部闭合后才通过 no-clobber hardlink 激活固定 `.marshal-staging/marshal`，再运行 `marshal version --json`；release 路径精确核对 `version`、peeled `commit`、manifest `buildDate/goVersion` 与 `selfProfile`，源码路径核对自身 `HEAD`；任一执行失败、字段缺失或身份漂移都 fail closed；
 6. Darwin 安装资产与源码回退固定 `selfProfile=darwin-local-dogfood`，Linux 固定 `selfProfile=unprofiled`。前者只是 ADR 0051 的 Mac ordinary-user/non-production 能力，不得描述成 hardened 或正式 production authority。
 
-二进制先写入安装目录下固定的 `.marshal-staging/marshal` 暂存路径，校验通过后复制为 `marshal` 并清理暂存目录，不会在随机路径生成匿名可执行文件。
+二进制 bytes 先写入安装目录下固定且不可执行的 `.marshal-staging/marshal.candidate`；校验通过后以 no-clobber hardlink 激活固定 `.marshal-staging/marshal`，再原子替换目标 `marshal` 并清理本次拥有的暂存对象。脚本不会在随机路径生成或执行匿名可执行文件，也不会跟随安装路径、staging 或目标 symlink；不安全 owner、group/world 可写路径、stale staging 与 hardlink target 都会被拒绝。
 
 ### 离线校验 release 资产
 
@@ -63,6 +63,8 @@ MARSHAL_TAG=v1.0.0-rc1 bash scripts/install.sh
 
 RC 是候选/预览资产，不代表已满足 Issue #212 的 macOS 签名/notarization 或 v1.0 `RELEASED` 门禁。
 
+RC 的 annotated tag 目前是 unsigned。封闭 tag message 能在 **同一 tag object 未变化** 时发现 release assets、manifest 或候选摘要被替换，但它不是签名、透明日志或 anti-rollback authority；若 canonical remote ref 连同 tag object 被整体重指，普通安装器没有外部高水位可据此识别降级或历史替换。使用者必须显式固定期望 tag，并在需要强 anti-rollback 时等待 Issue #212 的受保护签名/发布链，不能把当前 RC 门禁表述为稳定分发保证。
+
 升级后用 `marshal version` 确认实际生效的版本号。升级前建议确认没有进行中的 Run（见「`.marshal/` 状态目录与版本兼容」）。
 
 ## 回滚
@@ -101,7 +103,7 @@ Marshal 不写其他系统路径，无后台常驻进程需要停止（`marshal-
 
 在 [Issue #212](https://github.com/chiga0/marshal-harness/issues/212) 解决、签名身份与 notarization 凭据完成 provision 之前，release 的 darwin 资产为未签名构建（release notes 会明确标注 unsigned build）：
 
-- Gatekeeper 可能拦截未签名二进制；经浏览器下载的文件会带 `com.apple.quarantine` 属性，确认来源与校验和可信后可执行 `xattr -d com.apple.quarantine <文件>` 放行。
-- 经安装脚本（curl）下载的文件一般不带 quarantine 属性；若仍无法执行，先运行 `sha256sum -c SHA256SUMS` 确认完整性，再用 `marshal doctor --json` 做只读诊断。
+- Gatekeeper 或企业 EDR 可能拦截未签名二进制；经浏览器下载的文件还可能带 quarantine 属性。先核对 canonical tag、manifest 与 checksum，再通过 macOS「系统设置」中的显式批准流程或企业管理员针对稳定路径/身份配置 allowlist；若策略仍拒绝，安装保持 blocked。
+- 不要关闭 Gatekeeper/SIP/企业安全软件，也不要用删除 quarantine/xattr 等命令绕过策略。经安装脚本（curl）下载的文件若仍无法执行，保留失败、固定路径和摘要证据，由系统/企业安全策略明确批准后再重试；批准前不能用 `marshal doctor` 的执行失败冒充可用。
 
 签名/notarization 链路（ADR 0047/0048）落地后本节会同步更新。

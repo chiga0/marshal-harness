@@ -83,9 +83,9 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 
 源码回退不是弱身份旁路：源码目录必须是无未提交修改、可验证的 Git checkout；指定 `MARSHAL_TAG` 时，当前 `HEAD` 必须精确等于该 tag 的 peeled commit。构建会嵌入精确 commit，并按平台冻结 `selfProfile`（Darwin=`darwin-local-dogfood`，Linux=`unprofiled`）。暂存二进制与安装后的二进制都必须通过 `version --json` 身份自检，否则安装 fail closed。
 
-安装阶段的二进制只写入安装目录下固定的 `.marshal-staging/marshal`，校验后复制到目标 `marshal` 并清理暂存文件；不会在随机 `/tmp` 路径生成或执行匿名 Marshal 可执行文件。
+安装阶段先把 bytes 写入安装目录下固定、`0644` 且不可执行的 `.marshal-staging/marshal.candidate`；tag/manifest/checksum 闭合后才通过 no-clobber hardlink 激活固定 `.marshal-staging/marshal`，验证身份后原子替换目标并清理本次拥有的对象。路径每一段、staging 与既有 target 都必须满足 owner/mode/non-symlink/hardlink 门禁；不会在随机 `/tmp` 路径生成或执行匿名 Marshal 可执行文件。
 
-环境变量：`MARSHAL_INSTALL_DIR`（安装目录）、`MARSHAL_REPO`（默认 `chiga0/marshal-harness`）、`MARSHAL_TAG`（固定 release tag，跳过 latest release 查询）、`MARSHAL_FORCE_SOURCE=1`（跳过 release 直接源码构建）。
+环境变量：`MARSHAL_INSTALL_DIR`（安装目录）、`MARSHAL_TAG`（固定 release tag，跳过 latest release 查询）、`MARSHAL_FORCE_SOURCE=1`（跳过 release 直接源码构建）。release/source remote authority 固定为 canonical `chiga0/marshal-harness`，`MARSHAL_REPO` 覆盖被显式拒绝，fixture 只能通过测试进程中的 fake `git`/`curl` 模拟网络响应。
 
 ### Release 资产命名约定
 
@@ -95,7 +95,7 @@ GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，
 - `RELEASE-MANIFEST`：canonical 11 行 closed manifest，绑定 canonical repository、tag、peeled `sourceHead`、commit UTC `buildDate`、精确 Go toolchain/build flags，以及四个平台资产的 SHA-256、size 与 profile；
 - `SHA256SUMS`：四个平台资产与 `RELEASE-MANIFEST` 的校验清单，`sha256sum` 格式（`<hash>  <文件名>`）。
 
-release workflow 只接受精确的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rcN` annotated tag。tag message 必须由 `scripts/release-contract.sh candidate-tag-message` 生成并冻结 canary 的 sourceHead、manifest SHA 与 Darwin arm64 asset SHA。workflow 在上传前先要求同 sourceHead 的主分支 CI 三个 job 全绿，再用 commit 的 canonical UTC timestamp、`go.mod` 精确 toolchain、`CGO_ENABLED=0`、`-trimpath -buildvcs=false -mod=readonly` 与空 build ID 重建；跨主机 manifest/asset SHA 任一不等即 fail closed。稳定 tag 在 Issue #212 的真实签名/notarization 链落地前保持 fail closed；RC 可发布明确标注为 unsigned 的 prerelease。
+release workflow 只接受精确的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rcN` annotated tag。tag message 必须由 `scripts/release-contract.sh candidate-tag-message` 生成并冻结 canary 的 sourceHead、manifest SHA 与 Darwin arm64 asset SHA。read-only build job 先要求同 sourceHead 的主分支 CI 三个 job 全绿，再用 commit 的 canonical UTC timestamp、`go.mod` 精确 toolchain、`CGO_ENABLED=0`、`-trimpath -buildvcs=false -mod=readonly` 与空 build ID 重建；跨主机 manifest/asset SHA 任一不等即 fail closed。该 job 只上传 payload SHA 绑定的短期 artifact，不持有 `contents:write`。独立 publish job 重新 checkout/peel tag、核对 payload SHA、封闭 tar member、内部 SHA256SUMS、manifest 与 exact 6-line tag message 后才获得发布动作。稳定 tag 在 Issue #212 的真实签名/notarization 链落地前保持 fail closed；RC 可发布明确标注为 unsigned 的 prerelease。unsigned tag 只防同一 tag object 下的资产替换，不提供签名、remote-ref anti-rollback 或整体 tag retarget 防护。
 
 `make dist` 对四个平台显式区分自身份：Darwin 资产固定为 ADR 0051 的 `darwin-local-dogfood` ordinary-user/non-production profile，Linux 资产保持 `unprofiled`。`scripts/dist-profile_test.sh` 以确定性 fake compiler 记录并断言四个 target 的 linker profile，防止 release workflow 再次产出不可启动的 Darwin `unprofiled` 资产。
 

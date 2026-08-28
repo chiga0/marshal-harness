@@ -16,14 +16,13 @@
 #
 # 可选环境变量:
 #   MARSHAL_INSTALL_DIR   安装目录（默认 $HOME/.local/bin）
-#   MARSHAL_REPO          GitHub owner/name（默认 chiga0/marshal-harness）
 #   MARSHAL_TAG           固定 release tag（如 v0.1.0），跳过 latest release 查询
 #   MARSHAL_FORCE_SOURCE  非空时跳过 release 下载，强制源码构建
 
 set -euo pipefail
 
 BIN_NAME="marshal"
-REPO="${MARSHAL_REPO:-chiga0/marshal-harness}"
+REPO="chiga0/marshal-harness"
 INSTALL_DIR="${MARSHAL_INSTALL_DIR:-$HOME/.local/bin}"
 PIN_TAG="${MARSHAL_TAG:-}"
 FORCE_SOURCE="${MARSHAL_FORCE_SOURCE:-}"
@@ -35,6 +34,12 @@ TAG=""
 TMP_DIR=""
 STABLE_STAGE_DIR=""
 STABLE_STAGE_BIN=""
+CANDIDATE_OBJECT=""
+INSTALL_TEMP=""
+OWN_STAGE_DIR=""
+OWN_STAGE_BIN=""
+OWN_CANDIDATE=""
+OWN_INSTALL_TEMP=""
 EXPECTED_VERSION=""
 EXPECTED_COMMIT=""
 EXPECTED_TAG_OBJECT=""
@@ -50,6 +55,143 @@ fatal() { printf '[install] 错误: %s\n' "$*" >&2; exit 1; }
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fatal "缺少依赖: $1（请安装后重试）"
+}
+
+stat_fields() {
+  local path="$1" owner raw_mode links mode
+  case "$OS" in
+    darwin)
+      read -r owner raw_mode links <<<"$(stat -f '%u %p %l' "$path")" || return 1
+      mode="${raw_mode: -4}"
+      mode="${mode#0}"
+      printf '%s %s %s\n' "$owner" "$mode" "$links"
+      ;;
+    linux) stat -c '%u %a %h' "$path" ;;
+    *) fatal "无法为平台 ${OS} 读取文件身份" ;;
+  esac
+}
+
+mode_is_safe_ancestor() {
+  local owner="$1" mode="$2" numeric
+  numeric=$((8#$mode))
+  if [ $((numeric & 8#022)) -eq 0 ]; then
+    return 0
+  fi
+  [ "$owner" = 0 ] && [ $((numeric & 8#1000)) -ne 0 ]
+}
+
+assert_secure_directory() {
+  local path="$1" require_current_owner="$2" exact_mode="${3:-}" owner mode links uid
+  [ -d "$path" ] && [ ! -L "$path" ] || fatal "目录缺失、非目录或为符号链接: ${path}"
+  read -r owner mode links <<<"$(stat_fields "$path")" || fatal "无法读取目录身份: ${path}"
+  uid="$(id -u)"
+  if [ "$require_current_owner" = yes ]; then
+    [ "$owner" = "$uid" ] || fatal "目录不归当前用户所有: ${path}"
+  else
+    [ "$owner" = "$uid" ] || [ "$owner" = 0 ] || fatal "路径段 owner 非 root/当前用户: ${path}"
+  fi
+  if [ -n "$exact_mode" ]; then
+    [ "$mode" = "$exact_mode" ] || fatal "目录权限 ${mode} 不是要求的 ${exact_mode}: ${path}"
+  else
+    mode_is_safe_ancestor "$owner" "$mode" || fatal "路径段存在不安全的 group/world 写权限: ${path}"
+  fi
+  [ "$links" -ge 1 ] || fatal "目录 link count 非法: ${path}"
+}
+
+assert_secure_regular() {
+  local path="$1" expected_mode="$2" owner mode links uid
+  [ -f "$path" ] && [ ! -L "$path" ] || fatal "文件缺失、非普通文件或为符号链接: ${path}"
+  read -r owner mode links <<<"$(stat_fields "$path")" || fatal "无法读取文件身份: ${path}"
+  uid="$(id -u)"
+  [ "$owner" = "$uid" ] || fatal "文件不归当前用户所有: ${path}"
+  [ "$links" = 1 ] || fatal "文件 hardlink count 必须为 1: ${path}"
+  if [ -n "$expected_mode" ]; then
+    [ "$mode" = "$expected_mode" ] || fatal "文件权限 ${mode} 不是要求的 ${expected_mode}: ${path}"
+  elif [ $(((8#$mode) & 8#022)) -ne 0 ]; then
+    fatal "文件存在不安全的 group/world 写权限: ${path}"
+  fi
+}
+
+assert_target_safe() {
+  local target="${INSTALL_DIR}/${BIN_NAME}"
+  if [ -L "$target" ]; then
+    fatal "安装目标不得是符号链接: ${target}"
+  fi
+  if [ -e "$target" ]; then
+    assert_secure_regular "$target" ""
+  fi
+}
+
+prepare_install_layout() {
+  local remainder part current='' owner mode links uid
+  case "$INSTALL_DIR" in
+    /*) ;;
+    *) fatal "MARSHAL_INSTALL_DIR 必须是绝对路径" ;;
+  esac
+  case "$INSTALL_DIR" in
+    /|*/../*|*/..|*/./*|*/.|*//*|*$'\n'*) fatal "MARSHAL_INSTALL_DIR 含非 canonical 路径段" ;;
+  esac
+  remainder="${INSTALL_DIR#/}"
+  IFS='/' read -r -a install_parts <<<"$remainder"
+  for part in "${install_parts[@]}"; do
+    [ -n "$part" ] || fatal "MARSHAL_INSTALL_DIR 含空路径段"
+    current="${current}/${part}"
+    if [ -e "$current" ] || [ -L "$current" ]; then
+      assert_secure_directory "$current" no
+    else
+      mkdir -m 0700 "$current" || fatal "无法安全创建安装路径段 ${current}"
+      assert_secure_directory "$current" yes 700
+    fi
+  done
+  assert_secure_directory "$INSTALL_DIR" yes
+  assert_target_safe
+
+  STABLE_STAGE_DIR="${INSTALL_DIR}/.marshal-staging"
+  STABLE_STAGE_BIN="${STABLE_STAGE_DIR}/${BIN_NAME}"
+  CANDIDATE_OBJECT="${STABLE_STAGE_DIR}/${BIN_NAME}.candidate"
+  INSTALL_TEMP="${INSTALL_DIR}/.${BIN_NAME}.install"
+  if [ -e "$STABLE_STAGE_DIR" ] || [ -L "$STABLE_STAGE_DIR" ]; then
+    assert_secure_directory "$STABLE_STAGE_DIR" yes 700
+  else
+    mkdir -m 0700 "$STABLE_STAGE_DIR" || fatal "无法创建稳定暂存目录 ${STABLE_STAGE_DIR}"
+    OWN_STAGE_DIR=1
+    assert_secure_directory "$STABLE_STAGE_DIR" yes 700
+  fi
+  for path in "$STABLE_STAGE_BIN" "$CANDIDATE_OBJECT" "$INSTALL_TEMP"; do
+    [ ! -e "$path" ] && [ ! -L "$path" ] || fatal "固定安装暂存对象已存在，拒绝覆盖: ${path}"
+  done
+  (umask 0022; set -o noclobber; : >"$CANDIDATE_OBJECT") \
+    || fatal "无法 no-clobber 创建 candidate 对象"
+  OWN_CANDIDATE=1
+  assert_secure_regular "$CANDIDATE_OBJECT" 644
+}
+
+reset_candidate_object() {
+  [ "$OWN_CANDIDATE" = 1 ] || fatal "candidate 对象不归本次安装拥有"
+  assert_secure_regular "$CANDIDATE_OBJECT" 644
+  rm "$CANDIDATE_OBJECT" || fatal "无法清理失败的 candidate 对象"
+  OWN_CANDIDATE=''
+  (umask 0022; set -o noclobber; : >"$CANDIDATE_OBJECT") \
+    || fatal "无法重新创建 candidate 对象"
+  OWN_CANDIDATE=1
+  assert_secure_regular "$CANDIDATE_OBJECT" 644
+}
+
+activate_candidate() {
+  local before after
+  assert_secure_regular "$CANDIDATE_OBJECT" ""
+  before="$(sha256_of "$CANDIDATE_OBJECT")" || fatal "无法读取 candidate 摘要"
+  chmod 0644 "$CANDIDATE_OBJECT" || fatal "无法把 candidate 固定为非可执行权限"
+  assert_secure_regular "$CANDIDATE_OBJECT" 644
+  ln "$CANDIDATE_OBJECT" "$STABLE_STAGE_BIN" || fatal "无法 no-clobber 激活固定 staging 对象"
+  OWN_STAGE_BIN=1
+  rm "$CANDIDATE_OBJECT" || fatal "无法移除 candidate 临时名称"
+  OWN_CANDIDATE=''
+  assert_secure_regular "$STABLE_STAGE_BIN" 644
+  after="$(sha256_of "$STABLE_STAGE_BIN")" || fatal "无法读取 staging 摘要"
+  [ "$before" = "$after" ] || fatal "candidate 激活时 bytes 漂移"
+  chmod 0755 "$STABLE_STAGE_BIN" || fatal "无法激活已验证的固定 staging executable"
+  assert_secure_regular "$STABLE_STAGE_BIN" 755
 }
 
 detect_platform() {
@@ -164,7 +306,7 @@ verify_sha256() {
   fi
   expected="${line%%[[:space:]]*}"
   expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
-  if ! actual="$(sha256_of "${STABLE_STAGE_BIN}")"; then
+  if ! actual="$(sha256_of "${CANDIDATE_OBJECT}")"; then
     fatal "缺少 sha256sum/shasum，无法完成校验"
   fi
   if [ "$actual" != "$expected" ]; then
@@ -200,7 +342,7 @@ resolve_release_tag_commit() {
 }
 
 verify_release_tag_candidate() {
-  local asset="$1" tag_repo fetched_object fetched_commit message metadata
+  local asset="$1" tag_repo fetched_object fetched_commit message_file message_size metadata marker
   local actual_manifest actual_asset manifest_darwin_arm64
   tag_repo="${TMP_DIR}/release-tag.git"
   git init --bare -q "$tag_repo" || fatal "无法初始化 release tag 校验目录"
@@ -218,10 +360,13 @@ verify_release_tag_candidate() {
     || fatal "release tag object 在解析与获取之间发生漂移"
   [ "$fetched_commit" = "$EXPECTED_COMMIT" ] \
     || fatal "release tag peeled commit 在解析与获取之间发生漂移"
-  message="$(git -C "$tag_repo" for-each-ref --format='%(contents)' "refs/tags/${TAG}")" \
+  message_file="${TMP_DIR}/candidate-tag-message.raw"
+  git -C "$tag_repo" for-each-ref --format='%(contents)%1e' "refs/tags/${TAG}" >"$message_file" \
     || fatal "无法读取 annotated tag message"
-  [ "${#message}" -le 65536 ] || fatal "annotated tag message 超过 64 KiB"
-  metadata="$(printf '%s\n' "$message" | awk -v tag="$TAG" -v commit="$EXPECTED_COMMIT" '
+  message_size="$(wc -c <"$message_file" | tr -d '[:space:]')"
+  [ "$message_size" -le 65538 ] || fatal "annotated tag message 超过 64 KiB"
+  marker="$(printf '\036')"
+  metadata="$(awk -v tag="$TAG" -v commit="$EXPECTED_COMMIT" -v marker="$marker" '
     NR == 1 { if ($0 != "Marshal " tag " candidate") exit 1; next }
     NR == 2 { if ($0 != "") exit 1; next }
     NR == 3 { if ($0 != "marshal-candidate-schema: v1") exit 1; next }
@@ -236,9 +381,10 @@ verify_release_tag_candidate() {
       candidate=substr($0, length("marshal-candidate-darwin-arm64-sha256: ")+1)
       next
     }
+    NR == 7 { if ($0 != marker) exit 1; seen_marker=1; next }
     { exit 1 }
-    END { if (NR != 6 || manifest == "" || candidate == "") exit 1; print manifest " " candidate }
-  ')" || fatal "annotated tag candidate message 非 canonical 或字段重复/漂移"
+    END { if (NR != 7 || !seen_marker || manifest == "" || candidate == "") exit 1; print manifest " " candidate }
+  ' "$message_file")" || fatal "annotated tag candidate message 必须是 exact 6-line closed 格式"
   read -r EXPECTED_MANIFEST_SHA256 EXPECTED_DARWIN_ARM64_SHA256 <<<"$metadata"
   actual_manifest="$(sha256_of "${TMP_DIR}/RELEASE-MANIFEST")" \
     || fatal "缺少 sha256sum/shasum，无法核对 candidate manifest"
@@ -248,7 +394,7 @@ verify_release_tag_candidate() {
     || fatal "RELEASE-MANIFEST 缺少唯一 Darwin arm64 candidate"
   [ "$manifest_darwin_arm64" = "$EXPECTED_DARWIN_ARM64_SHA256" ] \
     || fatal "RELEASE-MANIFEST 的 Darwin arm64 资产与 annotated tag 冻结摘要不一致"
-  actual_asset="$(sha256_of "$STABLE_STAGE_BIN")" \
+  actual_asset="$(sha256_of "$CANDIDATE_OBJECT")" \
     || fatal "缺少 sha256sum/shasum，无法核对当前平台资产"
   if [ "$asset" = "marshal_${TAG#v}_darwin_arm64" ]; then
     [ "$actual_asset" = "$EXPECTED_DARWIN_ARM64_SHA256" ] \
@@ -291,7 +437,7 @@ verify_release_manifest() {
     || fatal "RELEASE-MANIFEST 非 canonical、与 tag/peeled commit/checksum 不一致或资产集合不封闭"
   [ -n "$manifest_asset_record" ] || fatal "RELEASE-MANIFEST 缺少当前平台资产 ${asset}"
   read -r manifest_asset_digest manifest_asset_size <<<"$manifest_asset_record"
-  actual_asset_size="$(wc -c <"$STABLE_STAGE_BIN" | tr -d '[:space:]')"
+  actual_asset_size="$(wc -c <"$CANDIDATE_OBJECT" | tr -d '[:space:]')"
   [ "$manifest_asset_size" = "$actual_asset_size" ] \
     || fatal "RELEASE-MANIFEST 中 ${asset} 的 size 与下载资产不一致"
   EXPECTED_BUILD_DATE="$(awk 'NR == 5 { print $2 }' "${TMP_DIR}/RELEASE-MANIFEST")"
@@ -315,10 +461,13 @@ try_release() {
   EXPECTED_SELF_PROFILE="$(self_profile_for_os "$OS")"
   asset="marshal_${version_no_v}_${OS}_${ARCH}"
   info "下载 release 资产 ${asset} ..."
-  if ! curl -fsSL -o "${STABLE_STAGE_BIN}" "${base}/${asset}"; then
+  assert_secure_regular "$CANDIDATE_OBJECT" 644
+  if ! curl -fsSL -o "${CANDIDATE_OBJECT}" "${base}/${asset}"; then
     warn "release 无 ${OS}/${ARCH} 匹配资产，回退源码构建"
+    reset_candidate_object
     return 1
   fi
+  assert_secure_regular "$CANDIDATE_OBJECT" 644
   curl -fsSL -o "${TMP_DIR}/SHA256SUMS" "${base}/SHA256SUMS" \
     || fatal "release ${TAG} 缺少或无法下载 SHA256SUMS；拒绝安装已下载资产"
   curl -fsSL -o "${TMP_DIR}/RELEASE-MANIFEST" "${base}/RELEASE-MANIFEST" \
@@ -383,9 +532,11 @@ build_source() {
   go_version_ok "$root"
   info "源码构建: ${root}（commit=${head}, selfProfile=${self_profile}）"
   ldflags="-s -w -X ${BUILDINFO_PKG}.version=${source_version} -X ${BUILDINFO_PKG}.commit=${head} -X ${BUILDINFO_PKG}.buildDate=${build_date} -X ${BUILDINFO_PKG}.selfProfile=${self_profile}"
-  if ! ( cd "$root" && go build -trimpath -ldflags "$ldflags" -o "${STABLE_STAGE_BIN}" ./cmd/marshal ); then
+  if ! ( cd "$root" && go build -trimpath -ldflags "$ldflags" -o "${CANDIDATE_OBJECT}" ./cmd/marshal ); then
     fatal "go build 失败；构建需联网下载模块，受限环境请先 go mod download（见 docs/development.md）"
   fi
+  [ -f "$CANDIDATE_OBJECT" ] && [ ! -L "$CANDIDATE_OBJECT" ] \
+    || fatal "源码构建未产出固定 candidate 普通文件"
 }
 
 clone_build() {
@@ -402,8 +553,20 @@ clone_build() {
 }
 
 install_binary() {
-  install -m 0755 "${STABLE_STAGE_BIN}" "${INSTALL_DIR}/${BIN_NAME}" \
-    || fatal "安装到 ${INSTALL_DIR} 失败"
+  local target="${INSTALL_DIR}/${BIN_NAME}"
+  assert_secure_directory "$INSTALL_DIR" yes
+  assert_secure_directory "$STABLE_STAGE_DIR" yes 700
+  assert_secure_regular "$STABLE_STAGE_BIN" 755
+  assert_target_safe
+  [ ! -e "$INSTALL_TEMP" ] && [ ! -L "$INSTALL_TEMP" ] \
+    || fatal "安装临时对象已存在，拒绝覆盖: ${INSTALL_TEMP}"
+  ln "$STABLE_STAGE_BIN" "$INSTALL_TEMP" || fatal "无法创建 no-clobber 安装对象"
+  OWN_INSTALL_TEMP=1
+  mv -f "$INSTALL_TEMP" "$target" || fatal "无法原子安装到 ${target}"
+  OWN_INSTALL_TEMP=''
+  rm "$STABLE_STAGE_BIN" || fatal "无法释放 staging hardlink"
+  OWN_STAGE_BIN=''
+  assert_secure_regular "$target" 755
   info "已安装 ${INSTALL_DIR}/${BIN_NAME}"
 }
 
@@ -453,10 +616,16 @@ cleanup() {
   if [ -n "$TMP_DIR" ]; then
     rm -rf "$TMP_DIR"
   fi
-  if [ -n "$STABLE_STAGE_BIN" ]; then
+  if [ "$OWN_INSTALL_TEMP" = 1 ] && [ -n "$INSTALL_TEMP" ]; then
+    rm -f "$INSTALL_TEMP"
+  fi
+  if [ "$OWN_CANDIDATE" = 1 ] && [ -n "$CANDIDATE_OBJECT" ]; then
+    rm -f "$CANDIDATE_OBJECT"
+  fi
+  if [ "$OWN_STAGE_BIN" = 1 ] && [ -n "$STABLE_STAGE_BIN" ]; then
     rm -f "$STABLE_STAGE_BIN"
   fi
-  if [ -n "$STABLE_STAGE_DIR" ]; then
+  if [ "$OWN_STAGE_DIR" = 1 ] && [ -n "$STABLE_STAGE_DIR" ]; then
     rmdir "$STABLE_STAGE_DIR" 2>/dev/null || true
   fi
 }
@@ -489,13 +658,11 @@ EOF
 }
 
 main() {
-  detect_platform
-  TMP_DIR="$(mktemp -d)"
-  mkdir -p "$INSTALL_DIR" || fatal "无法创建安装目录 ${INSTALL_DIR}"
-  STABLE_STAGE_DIR="${INSTALL_DIR}/.marshal-staging"
-  STABLE_STAGE_BIN="${STABLE_STAGE_DIR}/${BIN_NAME}"
-  mkdir -p "$STABLE_STAGE_DIR" || fatal "无法创建稳定构建暂存目录 ${STABLE_STAGE_DIR}"
+  [ -z "${MARSHAL_REPO+x}" ] || fatal "MARSHAL_REPO authority override 已禁用；只允许 canonical ${REPO}"
   trap cleanup EXIT
+  detect_platform
+  prepare_install_layout
+  TMP_DIR="$(mktemp -d)"
 
   local mode="source"
   if [ -n "$PIN_TAG" ]; then
@@ -514,6 +681,7 @@ main() {
       clone_build
     fi
   fi
+  activate_candidate
   verify_binary "$STABLE_STAGE_BIN" "暂存"
   install_binary
   verify_binary "${INSTALL_DIR}/${BIN_NAME}" "安装后"
