@@ -2,6 +2,20 @@
 
 - 审计日期：2026-08-04（2026-08-10 增补 Runtime 架构重置记录、首次 Sandbox SPI dogfood reject 增补记录与 Round 2 关闭记录；2026-08-11 增补 Control Plane 与 Provider Port 边界冻结记录，含 Round 4 独立评审八项 P1 关闭记录、Round 5 复核四项残留关闭记录、Round 6 复核两项残留——Control Plane authority namespace 与 Provider actor 域分离、typed cross-domain edge——关闭记录与 Round 7 复核三项残留——双键空间残留清除（权威对象 authorityNamespaceId 独占拥有、registration/snapshot/evidence authority ledger 事实、接纳关系归 authority ledger、controlPlaneId 逻辑权威身份）、Core-only typed edge 生命周期细化（issuer/source/target/operation/expiry/digest/revocation/replay/current-ledger recheck，issuer 恒为 Core 且不等于业务流 sourceActor、sourceActor/targetActor 按 edge 类型绑定，派生 token/handle 不得成为第二权威）、Public API 幂等/SSE/对象 key 修正为 authorityNamespaceId——关闭记录与 Round 8 复核一项残留——typed edge 跨域例外与适用范围（三类 typed edge 明确为 Provider actor 跨信任域访问默认拒绝的唯一 allowlist 例外，Public API/SSE 与 Core 内部权威引用无需 Provider typed edge）——与 Round 9 复核两项残留——跨域 fail closed 表述精确化（删除会无条件拒绝 MaterialAccessGrant 等合法 typed edge 的宽泛表述）、非 edge Port 与同域不自动授权（provider-registration/control 经 transport identity/该 Port AuthN/AuthZ/registration protocol 由 Core 写 authority ledger；securityDomainId 相同只是 provenance/partition 条件，不构成授权）——关闭记录；2026-08-12 增补 Issue #25 发布合并后 head reconcile 审计记录；2026-08-13 该 finding 随 typed reconciliation 实现合入关闭；2026-08-14 增补 Issue #53 CI 失败 rework 注入设计缺口审计记录，目标契约由 [ADR 0030](adr/0030-ci-failure-rework-evidence-and-injection.md)（Proposed，草案已提出/待接受）给出（接受后方冻结），实现待后续 implementation successor）
 
+## v1.0 候选链审计 checkpoint（2026-08-28）
+
+本 checkpoint 取代本文较早章节对“当前状态”的描述；旧记录保留用于解释偏航与修复历史，不得用其中曾经的 `DONE` 结论升级现行 Roadmap。
+
+| 审计项 | 当前证据 | 判定 | 剩余退出门禁 |
+| --- | --- | --- | --- |
+| Pi fixed-bin strict E2E | Pi `0.84.3` 已经由固定 `marshal` binary 在锁定 sourceHead `8df8b88` 上走过真实 Local allocation、ResultIngress、独立 `verify`、跨进程 restore，并生成正式 ReviewPacket 进入 `REVIEW_PENDING`；实现已随 `main@5d5c426` 合入。 | `PARTIAL-INTEGRATION/PASS`；旧假阳性测试的关键缺陷已修复，但当前主线尚未重跑，也没有导入独立 ReviewDecision，不能宣称全链通过。 | 在当前主线重跑；由独立 reviewer 产生绑定精确证据的 Decision；通过现有 `task review --decision` 进入 `ACCEPTED`；重跑故障矩阵。 |
+| Qwen workspace live | Qwen Code `0.22.0` ordinary-user workspace live adapter 已通过。 | `COMPATIBLE-ORDINARY`；不是 `LaunchCapable`，不能替代 Pi 的 production reachability 证据。 | 若未来升级 production profile，必须另行提供 Sandbox/authority 证据；当前不阻塞 v1。 |
+| durable authority | ResultIngress file-backed replay 与 durable agent registration/snapshot/current-ledger admission 已由独立 reviewer 判定 P0/P1 为零并合入 `main@5d5c426`。 | R2/R3 仍保持 `COMPONENT`：hardened 模式不得消费 Adapter 自带 evidence 自证，ordinary-user 明确记录为“不要求”；ResultIngress 与 Run journal 尚未形成崩溃原子闭环。 | 关闭 admission→worker-result→Run journal 崩溃窗口；补 restart/replay/stale/revoke/replace/expiry 真实路径负测；证明无第二真值。 |
+| server controller | start/status/recovery controller 已有候选实现，但正在聚合返工，未合入。 | R4 保持 `COMPONENT`。 | 固定 CLI authority；重复 start 幂等；server crash/lost worker/failed worker 跨进程恢复产生唯一 durable receipt 与 recovery decision。 |
+| RC 与 stable release | RC identity/install 切片已获独立 `APPROVED`，尚未发布。 | 可以准备 unsigned prerelease；不能标 `RELEASED`。 | 发布并验证 RC checksum/version/source identity/安装升级回滚；稳定 `v1.*` 还必须关闭 Issue #212 signing/notarization，并通过 Linux stable gate。 |
+
+当前关键路径没有偏离 ADR 0052：R2/R3 authority → R4 server recovery → R5 terminal Decision/`ACCEPTED` → R6 RC/stable gates。任何单次 live pass、候选 commit 或 reviewer verdict 都只是对应门禁的输入，不等于阶段关闭。
+
 ## v1.0 生产可达性重置（2026-08-27）
 
 本轮综合审计不再以 package、PR 或 historical milestone 数量衡量完成度，而是从真实 composition root 反查生产路径。当前真实写任务主链仍主要是 `cmd/marshal → internal/cli → execution.Run → Adapter.Run`；`spine`、`agentruntime`、`runtimeprofile`、`bindingcheck`、`revokedrain` 与 `resultingress` 等资产分别具有类型、纯核心或测试证据，但尚未共同承载一条真实 Agent-in-Sandbox Run。`spine` 的示例执行仍依赖 FakeAgent，部分 outbox/write-gate/authority 仍为内存形态。
@@ -48,7 +62,7 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 | `V1-ATTEMPT-BINDING-MISSING-EMBEDDED` | P1 | `CLOSED-FIX` | AttemptBinding 仅在 `MARSHAL_EMBEDDED_SANDBOX=1` 时写入（`fc8e6bd`）。真实 pi 在 embedded + 非嵌入式两路径产出 `worker.completed` + admission anchor + allocation record + embedded AttemptBinding 落盘——但该证据来自尚未 fail-closed 的严格 E2E（见 `V1-STRICT-E2E-FALSE-POSITIVE`），属组件级执行链证明，不构成 R2 INTEGRATED 证据。 |
 | `V1-EMBEDDED-ADMISSION-REJECTED` | P1 | `SUPERSEDED` | 原以「任意-active fallback（`cad8773`）+ 消费端补 `registration:` 前缀（`3f8638d`）」修复 embedded admission 拒绝——该两处均为门禁降级，已被第二轮审计定性并移除，改由 `V1-AGENT-REG-ANY-ACTIVE-FALLBACK` 与 `V1-SANDBOX-REG-CONSUMER-PREFIX` 的根因修复取代。 |
 | `V1-LEASE-NOT-DURABLE` | P1 | `OPEN-IMPLEMENTATION` | lease 仍是内存态，进程重启即丢失。跨进程恢复需要耐久 lease ledger（参照 `provider.RegistrationStore` 模式）。 |
-| `V1-RESULTINGRESS-NOT-DURABLE` | P1 | `OPEN-IMPLEMENTATION` | ResultIngress replay/idempotency 状态是进程内 map，跨进程重放未覆盖。 |
+| `V1-RESULTINGRESS-NOT-DURABLE` | P1 | `CLOSED-FIX/INTEGRATION-PENDING` | `main@5d5c426` 已把 ResultIngress replay/idempotency 接到 `stateRoot` file-backed store，并合入 durable agent authority；strict E2E 也已通过跨进程 restore。这里只关闭 replay 存储缺口，admission→worker-result→Run journal 崩溃原子性仍开放，不据此升级 R2。 |
 
 ## 第二轮生产权威审计（2026-08-28）：门禁降级纠偏
 
@@ -58,11 +72,11 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 | --- | --- | --- | --- |
 | `V1-AGENT-REG-ANY-ACTIVE-FALLBACK` | P1 | `CLOSED-FIX` | `AgentRegistrationActive` 曾降级为「精确查找失败则任意 active registration 即通过」——门禁绕过。已删除该 fallback 及配套 `LookupByProviderName`/`List`；根因改为稳定能力身份：`StableCapabilityDigest` 排除 `probedAt` 等易变诊断字段，dispatch 时冻结精确 `AgentRegistrationID` 进 AttemptBinding，ingress 只对其 exact lookup（`b7509c8`）。 |
 | `V1-SANDBOX-REG-CONSUMER-PREFIX` | P1 | `CLOSED-FIX` | sandbox registrationId 曾只在消费端临时补 `registration:` 前缀，接纳不验证 binding 与真实 ledger 精确相等。已从源头统一 canonical ID（`embeddedRegistrationID` 带前缀），删除消费端 hack，并在 `AdmitWithDurableAuthority` 机械断言 `AttemptBinding.SandboxProviderRegistrationID == 当前 ledger ProviderRegistrationID`，不等即 fail closed（`0ae6640`）。 |
-| `V1-STRICT-E2E-FALSE-POSITIVE` | P1 | `OPEN-IMPLEMENTATION` | `TestRealPiStrictE2E` 当前是假阳性：未强制生产 profile、`verify` 失败不 fail、未真实断言终态、未真实进程重启/query/restore、非 embedded 缺 AttemptBinding 不失败。只能证明「真实 Pi 曾完成任务并写出结果」，不能证明 verification→review→Outcome→restart→query/restore 全链。待改为真 fail-closed。 |
+| `V1-STRICT-E2E-FALSE-POSITIVE` | P1 | `CLOSED-FIX/TERMINAL-PENDING` | strict E2E 已绑定 fixed marshal source identity，强制 `verify` fail closed，并在锁定 sourceHead `8df8b88` 真实覆盖 ResultIngress、跨进程 restore、ReviewPacket/`REVIEW_PENDING`；实现随 `main@5d5c426` 合入。当前主线尚未重跑，也未通过现有 `task review --decision` 导入独立 ReviewDecision 到 `ACCEPTED`，因此不能关闭 R5。 |
 | `V1-R5-INTEGRATED-PREMATURE` | P1 | `CLOSED-DOCS` | R5 曾被标 `INTEGRATED` 但同时承认 cutover 未开始；且 `MARSHAL_WORKER_EXECUTOR=legacy` 仍在、production gate 需额外环境变量、默认非 embedded 走 seed admission。已撤回为 `COMPONENT`（`82e0c9f`）。 |
 | `V1-DOCS-STATE-CONFLICT` | P1 | `CLOSED-DOCS` | AGENTS/Roadmap/Readiness/Implementation Plan 的 R2–R6 状态互相冲突（R6 一处 IN_PROGRESS 多处 PLANNED、R1 成熟度不一致、R2–R5 状态不一）。已统一为权威口径：R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R5 IN_PROGRESS/COMPONENT、R6 PLANNED/DESIGN（`82e0c9f` + 本次）。 |
 
-纠正后真实进展（不作 INTEGRATED 证据）：真实 pi 在 embedded 路径（`MARSHAL_EMBEDDED_SANDBOX=1`）产出 `worker.completed` + admission anchor + allocation record + AttemptBinding，接纳走 exact lookup（无降级）。但 durable authority 仍仅门控注入、默认路径退回 seed、lease/agent-registry/ResultIngress replay 仍内存态、admission 与 journal 非同事务——R2 纵切仍 `COMPONENT`，未达 `INTEGRATED`。
+纠正后真实进展以本报告顶部 2026-08-28 checkpoint 为准：ResultIngress replay 与 durable agent authority 已合入，Pi strict E2E 的最新 live 证据在锁定 sourceHead `8df8b88` 到达 `REVIEW_PENDING`；server controller、ResultIngress→Run journal 崩溃原子性以及当前主线上的独立 Decision/`ACCEPTED` canary 尚未闭环，因此 R2–R5 继续为 `COMPONENT`。
 
 ## 行业协议收敛跟踪（2026-08-21 基线）
 
@@ -742,7 +756,7 @@ R6 由快速收敛治理交付；范围是 conformance/性能基线/soak/文档 
 
 R6 期间的实质修复（不是文档动作）：recovery 决策表两处副作用歧义缺口（partial-artifact/binding-lost 绕过 reconcile 横切、duplicate 幂等 resume 缺副作用歧义例外——soak iteration 69/148 驱动，含回归测试）；sandboxbridge 对真实 LocalRunner 的 allocation record + Sweep 孤儿对账。
 
-按上述证据 I186-R6 于 2026-08-27 记为 `DONE`（除明确标注归后续的四项 honest gaps：wall-clock 24h soak、Push/Pull 生产接线、双 binding ResultIngress 接线、CLI explain wiring）。
+按当时口径 I186-R6 于 2026-08-27 曾记为 `DONE`；该结论已由 ADR 0052 生产可达性纠偏撤回，现行状态为 `PLANNED/DESIGN`。当时明确保留的四项 honest gaps 为 wall-clock 24h soak、Push/Pull 生产接线、双 binding ResultIngress 接线与 CLI explain wiring。
 
 ## I186-R5 收口：strangler cutover 收敛（2026-08-27）
 
@@ -757,7 +771,7 @@ R5 由快速收敛治理交付，[ADR 0054](adr/0054-cutover-equivalence-and-eff
 
 Exit Gate 对照：**新路径默认启用**（20c5609）；**回滚演练通过**（TestRunWorkerRunnerRollbackDrill）；**Local MVP 零回退**（全仓 `go test ./...` 唯一已知失败为 opencode live probe 宿主版本漂移，dogfood 沉淀项）；**cutover 判定**（golden 等价 + execution 端到端等价 + 白名单 diff 全入账）。范围标注：**旧路径不再服务 production** 的语义边界——本机 Local MVP 不存在 production assurance 运行（ADR 0042 ordinary-user），production profile 由 `agentruntime.ErrHostBypassDenied` fail closed 兜底，legacy 路径降级为 explicit local-nonproduction compatibility profile；real-real Agent canary 多轮对比、Cloudflare/远程 trace、host bypass 代码删除归 R6/后续治理。诚实缺口（继承自接缝测绘并经治理确认）：spine `FakeAgent` 桩、workerRuntimeProfile 的双 binding 接线、ResultIngress→runstore 证据桥三项在 R5 均未宣称完成，归 R6 或后续 milestone。
 
-按上述证据 I186-R5 于 2026-08-27 记为 `DONE`（本地纵切片 + 判定/回滚证据层）。
+按当时 component checkpoint 口径 I186-R5 于 2026-08-27 曾记为 `DONE`；该结论已撤回，现行状态为 `IN_PROGRESS/COMPONENT`，以本报告顶部 checkpoint 为准。
 
 **R5 真实 Agent canary 补证（2026-08-27，`3e6ed10`）**：`TestRealPiExecChainCanary`（`MARSHAL_RUN_PI_CANARY=1`/`MARSHAL_PI_PATH` 双门控、默认跳过）以标准 `scaffold→plan→approve→task run` CLI 纵切驱动真实 pi CLI 经 worker executor 默认 exec-chain 执行，断言 `worker.completed` 恰好入账一次、allocation record 锚点与尝试目录一致、`sandbox-binding-admission.json`（ADR 0052 §1.4 双 binding 接纳锚点）持久化存在、标记文件内容由 acceptance 权威校验通过；随测修复三处测试侧 policy 文档合规缺口（`generatedAt` 必填、control 块五子字段齐全、非 dogfood supervised 双批准门），生产代码零改动。范围标注不变：real-real Agent canary **多轮**对比与 Cloudflare/远程 trace 仍归 R6/后续治理，单轮 canary 不宣称生产 cutover 完成。
 
@@ -777,7 +791,7 @@ Pre-R4 contract gate 四项与 R4 单一恢复模型均由快速收敛治理交�
 
 范围标注：ADR 0045 R4 交付清单中「Inspect/Reconcile/Cancel/Terminate 与不可绕过的 current lease resolver」的 Provider 侧接线、`marshal explain run` CLI wiring 与真实 ledger 装配归 I186-R5/R6（本收口以 ADR 0053 决策 5 「等价 API」口径冻结恢复语义与渲染模型）；`I186-ARCH-EFFECT-SINK-FENCING` 与 `I186-ARCH-CUTOVER-EQUIVALENCE` 归 R5，不随 R4 关闭。
 
-按上述证据 I186-R4 于 2026-08-27 记为 `DONE`（收敛域合同+决策语义层）。
+按当时收敛域合同与决策语义口径 I186-R4 于 2026-08-27 曾记为 `DONE`；该结论已撤回，现行状态为 `IN_PROGRESS/COMPONENT`，以本报告顶部 checkpoint 为准。
 
 **R4 真实装配与恢复路径消费补证（2026-08-27）**：范围标注中的「`marshal explain run` CLI wiring 与真实 ledger 装配」已由 `6a26012` 交付（`internal/explain` 从权威 journal/snapshot/attempt anchor 装配 `recovery.RecoveryInput`，`marshal explain run RUN_ID [--json]` 渲染恢复时间线/decision/next action，只读不改写状态）；「恢复路径消费单一恢复模型」已由 `2bf4f3e` 交付：`explain.AssembleWithStaleness` 开放 staleness 注入，supervisor 死 driver 分派以自身 driver 死亡窗口装配 `recovery.Decide`，仅 new-attempt 且免幂等键对账才派生 driver；`task run --recover-dead-driver` 逃生舱在 owner 死亡耐用记录证明后走同一 `recoverTakeoverAdmission`（staleness≈0），需对账的 ambiguous side effect 一律 fail closed 并指向 `marshal explain run`。新增 supervisor 分派矩阵与 cli admission 三分矩阵测试；既有 `TestSupervise*` 全量保持绿色。剩余 Provider 侧 Inspect/Reconcile/Cancel/Terminate 接线与 `I186-ARCH-EFFECT-SINK-FENCING`/`I186-ARCH-CUTOVER-EQUIVALENCE` 仍归 R5/R6，不随本补证关闭。
 
@@ -799,7 +813,7 @@ R3 Exit Gate 技术条件与证据对照：
 
 落地提交：`ec13ee7`（revokedrain）、`0a9b3b6`（attemptgate）、`c47b4c2`（locationattest）、`d89c65e`（failureclass）、`8590c4e`（ADR 0049 + 0043 §5 修订标注）。验收命令：`go test ./internal/revokedrain/... ./internal/attemptgate/... ./internal/locationattest/... ./internal/failureclass/... ./internal/agentregistry/... ./internal/runtimeprofile/... ./internal/bindingcheck/... -count=1` 全绿；`go build ./...` 干净。全仓 `go test ./...` 唯一失败为 `internal/adapter/opencode` 的 live probe（宿主 opencode 1.18.20 超出 adapter 版本表 [1.18.13/1.18.16/1.18.18]），属 dogfood 环境漂移，另行沉淀不阻塞主线。Local MVP 零回退：纯新增包，未修改任何既有包或信任边界目录行为。
 
-按上述证据 I186-R3 于 2026-08-27 记为 `DONE`（收敛域合同+负测层；生产接线归 R5）。Pre-R4 contract gate 四项（hot-path authority、JIT admission、protocol migration、Candidate identity）仍按 #186 在 R4 启动前补齐，不随 R3 关闭。
+按当时收敛域合同与负测口径 I186-R3 于 2026-08-27 曾记为 `DONE`；该结论已撤回，现行状态为 `IN_PROGRESS/COMPONENT`，生产接线不再转嫁给已撤回的 R5 结论。Pre-R4 contract gate 四项（hot-path authority、JIT admission、protocol migration、Candidate identity）的历史实现证据继续保留。
 
 ## Issue #186：架构复审 Finding 稳定登记（2026-08-25）
 

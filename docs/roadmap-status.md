@@ -1,12 +1,14 @@
 # Roadmap 状态
 
-更新时间：2026-08-28（composition root 纠偏 + embedded fencing 修复后口径）
+更新时间：2026-08-28（fixed-bin strict E2E + authority/release 候选审查口径）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
 > **2026-08-27 composition root 纠偏（维护者结论，取代此前抢跑口径）**：审计发现 CLI 此前构造两个独立 `EmbeddedSandboxRuntime` 实例，导致 lease 和 agent registry 互不可见，admission 必然失败。已修复为单实例（`33bad5c`）：同一 runtime 同时承担 DispatchBinder + SandboxProvider + Authority + ResultIngressStore；adapter probe 后注册 agent；删除 `now+24h` lease fallback；非 LaunchCapable adapter 在 production profile 中被拒绝。**v1.0 当前不应进入 RC**——composition root 刚修复，真实 pi 全闭环（`TestRealPiStrictE2E`）尚未验证。此前 R2–R5 的 INTEGRATED 口径全部撤回为 COMPONENT。稳定 v1.\* 正式发布对签名/公证 fail-closed（Issue #212 未 provision 前仅允许 unsigned prerelease）。M0–M9 历史 `PASSED` 与代码资产保留；M10–M13 不阻塞 v1.0。
 >
 > **2026-08-28 embedded fencing 修复（随后更新）**：exec-chain 在 embedded 模式下（`MARSHAL_EMBEDDED_SANDBOX=1`）复用 BindDispatch 已创建的 lease 而非独立 Provision fencingToken；Embedded canary（`TestRealPiExecChainCanary`）在 embedded 模式下首次跑通：pi 真实在 Local allocation 内执行（transcript 27KB，exitCode=0），AttemptBinding 落盘（`634937b`）。marshal-server restart 测试重写为真实非终态 Run 跨进程恢复（`da8cccd`）。`TestRealPiStrictE2E` 跑通受 pi API rate limit（qwen3.8-max via idealab，10 次/60 分钟）外部阻塞，待窗口重置后重跑。
+>
+> **2026-08-28 fixed-bin checkpoint（当前权威增量）**：durable authority、strict E2E 实现与 RC identity/install 聚合已由独立 reviewer 判定 P0/P1 为零，并于 `main@5d5c426` 合入、推送。Pi `0.84.3` strict E2E 的最新 live 证据绑定锁定 sourceHead `8df8b88`，通过 fixed `marshal` binary、ResultIngress、独立 `verify`、跨进程 restore、ReviewPacket 到 `REVIEW_PENDING`；当前主线尚待重跑，并须通过现有 `task review --decision` 导入独立 ReviewDecision 到 `ACCEPTED`。Qwen Code `0.22.0` ordinary-user workspace live adapter 已通过，但不是 `LaunchCapable`。server controller 仍在聚合返工，ResultIngress 与 Run journal 的崩溃原子性仍在收口，RC 产物尚未发布。以下状态因此不升级：R2–R5 仍为 `COMPONENT`，R6 仍为 `PLANNED/DESIGN`。
 
 ## v1.0 生产纵切
 
@@ -22,14 +24,16 @@ Milestone 状态与能力成熟度是两个维度：
 | 阶段 | 状态 | 成熟度 | 当前结论 |
 | --- | --- | --- | --- |
 | `I186-R0` | `PASSED` | `DESIGN` | rebaseline、ADR 与 baseline evidence 已完成。 |
-| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Agent（pi）由 Local allocation 承载执行（`sandboxbridge` exec-chain + cli 测试链真实可达）。口径保留：该纵切在纠偏结论中被认定为**实质进展**；来源于 gate-绕过 test 之外的下游 authority 语义完成度见 R2/R3。 |
-| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | durable journal/lease 与 ResultIngress 组件均可复用；结果接纳的 recheck 尚未打开真实 durable authority（主线纠偏发现，优先级最高未完成项）。 |
-| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | bridge/admission/attempt-anchor 接线已接通，但“current-ledger recheck”在当前实现中是输入-facts 临时自洽验证（`seedRegistry`/`seedSandboxLedger`），不构成 authority 证明；lease expiry 未冻结 dispatch 时的权威值。原始 INTEGRATED 口径撤回，production admission 待重做。 |
-| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | `marshal explain run`（`6a26012`）与 supervisor/CLI 恢复消费接线（`2bf4f3e`）已落地，但该链路依赖 R2/R3 的 durable authority 语义成立才构成生产恢复能力；INTEGRATED 口径撤回。 |
-| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | **严格 E2E 为假阳性，INTEGRATED 口径撤回**：`TestRealPiStrictE2E` 未强制生产 profile、`verify` 失败不 fail、未真实断言终态、未真实进程重启。真实事实：真实 pi 在 embedded + 非嵌入式两路径均产出 `worker.completed` + admission anchor + allocation record + embedded AttemptBinding 落盘（修复链 `634937b`/`686ee61`/`cad8773`/`3f8638d`），但属组件级执行链证明，须待 R2 纵切 + fail-closed E2E 方能升级。 |
-| `I186-R6` | `PLANNED` | `DESIGN` | failure conformance 审计已落盘（`docs/research/i186-r6-fault-conformance-audit.md`）；release workflow 已具备 unsigned-fail-closed 门禁（稳定 v1.\* 阻止，prerelease 允许，`a06189c`）；TOP5 故障缺口（真实 kill/lost-response/server restart/ResultIngress 接入/gate 故障域扩展）未闭合。 |
+| `I186-R1` | `IN_PROGRESS` | `INTEGRATED` | 真实 Pi `0.84.3` 在锁定 sourceHead `8df8b88` 的 live canary 中由 Local allocation 承载并把真实 result bytes 送入 Core；实现已合入 `main@5d5c426`，当前主线重跑仍是发布前门禁。Qwen `0.22.0` ordinary workspace live 仅补充兼容性，不作为 production `LaunchCapable` 证据。 |
+| `I186-R2` | `IN_PROGRESS` | `COMPONENT` | `main@5d5c426` 已接入 file-backed ResultIngress replay store 和 durable agent registration/snapshot/current-ledger admission。退出前还须关闭 admission→worker-result→Run journal 崩溃窗口，证明 restart/replay/stale/lost-response 均从同一权威重验，且不存在第二真值。 |
+| `I186-R3` | `IN_PROGRESS` | `COMPONENT` | per-Attempt Agent/Sandbox identity 已随 `main@5d5c426` 合入；hardened evidence 必须由独立 authority 提供，ordinary-user 明确记为“不要求”而非伪造 `evidenceOk`。单侧 revoke/replace/expiry 的真实路径负测仍需随最终纵切复核。 |
+| `I186-R4` | `IN_PROGRESS` | `COMPONENT` | strict E2E 候选已通过跨进程 restore；`marshal-server` start/status/recovery controller 仍在聚合返工且未合入。退出前须证明 server crash 后从 durable ledger 恢复、重复 start 幂等、lost/failed worker 得到唯一可回放结论。 |
+| `I186-R5` | `IN_PROGRESS` | `COMPONENT` | fixed-bin strict E2E 已在锁定 sourceHead `8df8b88` 真实到 ResultIngress、`verify`、ReviewPacket/`REVIEW_PENDING`，修复了旧假阳性；但尚未在当前主线重跑并通过现有 `task review --decision` 导入独立 Decision 到 `ACCEPTED`，也未证明旧 bypass 全部退出 supported path。 |
+| `I186-R6` | `PLANNED` | `DESIGN` | RC identity/install 已获独立 `APPROVED` 并合入 `main@5d5c426`，但尚未发布产物；稳定 `v1.*` 仍由 Issue #212 的 macOS signing/notarization 与 Linux stable gate 阻断。unsigned 只允许 prerelease，不能升级为 `RELEASED`。 |
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
+
+当前最短剩余路径是：关闭 ResultIngress→worker-result→Run journal 崩溃原子性（R2）→ 合入 server controller 并跑 crash/replay 矩阵（R4）→ 在当前主线重跑 fixed-bin E2E，由独立 reviewer 生成 ReviewDecision 并通过现有 `task review --decision` 到 `ACCEPTED`，同时收口 allocation/lease 回收（R5）→ 发布可验证 unsigned RC，再 provision macOS signing/notarization 并通过 Linux stable gate（R6）。任一候选分支、单次 live pass 或 reviewer verdict 都不能单独升级阶段。
 
 ## 快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
 
@@ -67,7 +71,8 @@ embedded/local 先行实现的 Local MVP 定义达成：标记 `USABLE`。
 | Qoder CLI `1.1.27` | `marshal doctor` 在 macOS ordinary-user profile 下报告 `configured=true`、`registered=true`、`compatibility=supported`、`adapterVersion=0.1.7`；conformanceEventContract 保持 `v7`；固定 executable `/Users/gawain/.qoder/bin/qodercli/qodercli-1.1.27`，digest `sha256:fd36420ae0e740f7f3fb7f62e9df23aa70df400aad55fc7e7e48e0edc0ce8e2`。 | 该证据身份已被 ADPT-03（adapterVersion `0.1.8`）替代失效，仅作历史记录；不得复用为新派发证据。 |
 | Qoder CLI `1.1.28`（ADPT-03） | 2026-08-24：adapter `0.1.8`（argv 含 `--allowed-tools Bash`、版本下限 `1.1.27`）以显式 `MARSHAL_QODER_PATH` 指向 qodercli `1.1.28`（digest `sha256:14b5aa00198986c2299084e5d87479d648db47fc4b85aaecb572e1cff3a1c4aa`）、`MARSHAL_QODER_MODE=ordinary-user`，`marshal doctor` 报告 `configured=true`、`registered=true`、`compatibility=supported`、`authorityMode=ordinary-user`，并通过了 Run `run-m10-wire-02-r2` planning selection 的真实 version/capability probe（CapabilitySnapshot digest `sha256:52c5c45b16e8e6bcc390772e869de9ede48d9ea5cd6469e86b2632fffe68fba9`）。 | 已完成晋升阶梯“真实只读 live probe”级证据并进入首个低风险写任务；仍需 fresh live Worker smoke、transcript attestation 与独立只读 conformance，未宣称 production authority。 |
 | Codex `0.145.0` | `mac-codex-ordinary-smoke-r19-20260821` 与 `mac-codex-ordinary-smoke-r20-20260821` 各由唯一独立 reviewer 审查并进入 `ACCEPTED`；路径 `/opt/homebrew/Caskroom/codex/0.145.0/codex-aarch64-apple-darwin`，digest `sha256:1da3f4e0e96028b8a771814293c3033dafd1971f943f6c7e79b0897fe705f590`。 | Mac ordinary-user 运行证据已收敛；两个 smoke 仅为诊断任务，不产生产品代码 diff、发布或合并。 |
-| Qwen Code `0.21.15` | `marshal doctor` 报告 `configured=true`、`registered=true`、`compatibility=supported`、`adapterVersion=0.1.0`、`binaryVersion=0.21.15`；版本策略为 semver 范围 `>=0.21.5 <0.22.0`，`0.21.15` 命中范围即 supported，minor 边界 `0.22.0` 及以上仍 fail closed。 | 范围准入证据已闭环，可调度普通 Worker；不升级为 hardened authority。 |
+| Qwen Code `0.21.15` | `marshal doctor` 报告 `configured=true`、`registered=true`、`compatibility=supported`、`adapterVersion=0.1.0`、`binaryVersion=0.21.15`；当时版本策略为 semver 范围 `>=0.21.5 <0.22.0`。 | 原范围准入证据已闭环，可调度普通 Worker；0.22 边界现由下一行候选替代验证，二者都不升级为 hardened authority。 |
+| Qwen Code `0.22.0`（2026-08-28 候选） | macOS ordinary-user workspace live adapter 已通过，输出与 workspace 写入受有界协议校验。 | 可作为 ordinary workspace 兼容 Worker；不是 `LaunchCapable`，不得用于 production profile 或 hardened authority，也不改变 R1–R6 状态。 |
 
 当前阶段的非阻断问题是两个 Codex smoke TaskSpec 文案仍引用 `r15` 路径，且 Markdown 产物声明为 `application/json`；后续 successor 应一次性修正文案，不为此逐项轮转 rework。普通用户模式不等于 hardened authority、APAP、sandbox 或 Linux authority。
 
