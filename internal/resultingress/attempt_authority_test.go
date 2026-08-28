@@ -198,7 +198,15 @@ func TestOpenedLaunchAndProcessFactsRequireHeldCurrentRunAuthority(t *testing.T)
 	if err != nil || replay.Appended || calls != 1 || replay.TransitionDigest != launchResult.TransitionDigest {
 		t.Fatalf("launch replay=%#v calls=%d err=%v", replay, calls, err)
 	}
-	started := AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:00Z", Process: attemptTestProcess(t)}
+	started := AttemptTransition{
+		Kind:                  AttemptTransitionProcessStarted,
+		Identity:              id,
+		CommandID:             "command-1",
+		ObservedAt:            "2026-08-28T00:00:00Z",
+		Process:               attemptTestProcess(t),
+		LaunchMaterialsDigest: launch.LaunchClosure.LaunchMaterialsDigest,
+		AgentLaunchSpecDigest: launch.LaunchClosure.AgentLaunchSpecDigest,
+	}
 	if _, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run, err: errors.New("authority drift")}, launchResult.State.Revision, launchResult.State.HeadDigest, AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, started); !errors.Is(err, ErrRunAuthorityUnauthorized) {
 		t.Fatalf("stale process authority err=%v", err)
 	}
