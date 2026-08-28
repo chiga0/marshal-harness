@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 	"github.com/gofrs/flock"
 )
 
@@ -42,20 +43,22 @@ const (
 // 权威锚点，包含 replay 检测所需的原始 idempotencyKey 与 envelope digest。内容
 // 从不改写，只追加。
 type resultAdmittedFact struct {
-	ProtocolRevision    string       `json:"protocolRevision"`
-	FactType            string       `json:"factType"`
-	Sequence            int64        `json:"sequence"`
-	IdempotencyKey      string       `json:"idempotencyKey"`
-	AttemptKey          string       `json:"attemptKey,omitempty"`
-	AttemptRevision     uint64       `json:"attemptRevision,omitempty"`
-	PreviousAttemptHead string       `json:"previousAttemptHead,omitempty"`
-	DRCDigest           string       `json:"drcDigest"`
-	EnvelopeKind        EnvelopeKind `json:"envelopeKind"`
-	EnvelopeSequence    uint64       `json:"envelopeSequence"`
-	EnvelopeDigest      string       `json:"envelopeDigest"`
-	FactDigest          string       `json:"envelopeFactDigest"`
-	LedgerSequence      uint64       `json:"ledgerSequence"`
-	Digest              string       `json:"digest"`
+	ProtocolRevision            string                    `json:"protocolRevision"`
+	FactType                    string                    `json:"factType"`
+	Sequence                    int64                     `json:"sequence"`
+	IdempotencyKey              string                    `json:"idempotencyKey"`
+	AttemptKey                  string                    `json:"attemptKey,omitempty"`
+	AttemptRevision             uint64                    `json:"attemptRevision,omitempty"`
+	PreviousAttemptHead         string                    `json:"previousAttemptHead,omitempty"`
+	DRCDigest                   string                    `json:"drcDigest"`
+	EnvelopeKind                EnvelopeKind              `json:"envelopeKind"`
+	EnvelopeSequence            uint64                    `json:"envelopeSequence"`
+	EnvelopeDigest              string                    `json:"envelopeDigest"`
+	FactDigest                  string                    `json:"envelopeFactDigest"`
+	LedgerSequence              uint64                    `json:"ledgerSequence"`
+	SupervisorCollect           SupervisorCommandEvidence `json:"supervisorCollect,omitempty,omitzero"`
+	SupervisorOutcomeFactDigest string                    `json:"supervisorOutcomeFactDigest,omitempty"`
+	Digest                      string                    `json:"digest"`
 }
 
 // legacyResultAdmittedFactV1 is the exact unversioned format written before
@@ -250,26 +253,35 @@ func (s *ingressDurableStore) appendLine(fact any, getDigest func() string, setD
 
 // recordAdmittedLocked persists admission only for the governed Ingress path;
 // it is never a public authority bypass.
-func (s *ingressDurableStore) recordAdmittedLocked(idempotencyKey string, governed *AttemptAuthorityState, drcDigest string, envelope ResultEnvelope, factDigest string, ledgerSequence uint64) (string, error) {
+func (s *ingressDurableStore) recordAdmittedLocked(idempotencyKey string, governed *AttemptAuthorityState, drcDigest string, envelope ResultEnvelope, factDigest string, ledgerSequence uint64, collect SupervisorCommandEvidence, outcomeFactDigest string) (string, error) {
 	fact := &resultAdmittedFact{
-		ProtocolRevision: resultIngressProtocolRevision,
-		FactType:         resultFactTypeAdmitted,
-		Sequence:         s.nextSequence,
-		IdempotencyKey:   idempotencyKey,
-		DRCDigest:        drcDigest,
-		EnvelopeKind:     envelope.Kind,
-		EnvelopeSequence: envelope.Sequence,
-		EnvelopeDigest:   envelope.ResultDigest,
-		FactDigest:       factDigest,
-		LedgerSequence:   ledgerSequence,
+		ProtocolRevision:            resultIngressProtocolRevision,
+		FactType:                    resultFactTypeAdmitted,
+		Sequence:                    s.nextSequence,
+		IdempotencyKey:              idempotencyKey,
+		DRCDigest:                   drcDigest,
+		EnvelopeKind:                envelope.Kind,
+		EnvelopeSequence:            envelope.Sequence,
+		EnvelopeDigest:              envelope.ResultDigest,
+		FactDigest:                  factDigest,
+		LedgerSequence:              ledgerSequence,
+		SupervisorCollect:           collect,
+		SupervisorOutcomeFactDigest: outcomeFactDigest,
 	}
 	if governed != nil {
 		key, err := governed.Identity.Key()
 		if err != nil {
 			return "", err
 		}
-		if governed.ProcessStartedDigest == "" || governed.BarrierDigest != "" || governed.PendingEffectIntentFactDigest != "" {
+		if governed.ProcessStartedDigest == "" || governed.BarrierDigest != "" || governed.PendingEffectIntentFactDigest != "" || governed.SupervisorPendingIntentDigest != "" {
 			return "", ErrAttemptAuthorityOrder
+		}
+		if governed.SupervisorBootstrapDigest != "" && envelope.Kind == KindWorkerResult {
+			if validateBusinessOutcomeReference(*governed, outcomeFactDigest, processsupervisor.CommandCollect, SupervisorTranscriptCollected) != nil || !zeroSupervisorCommandEvidence(collect) {
+				return "", ErrAttemptAuthorityConflict
+			}
+		} else if !zeroSupervisorCommandEvidence(collect) || outcomeFactDigest != "" {
+			return "", ErrAttemptAuthorityConflict
 		}
 		fact.AttemptKey = key
 		fact.AttemptRevision = governed.Revision + 1
@@ -371,7 +383,11 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		if err := applyControlOwnerLine(line, in, s.nextSequence); err != nil {
 			return err
 		}
-	case string(AttemptTransitionOpened), string(AttemptTransitionControlOwnerBound), string(AttemptTransitionLaunchAuthorized), string(AttemptTransitionProcessSupervisorStarted), string(AttemptTransitionProcessStarted), string(AttemptTransitionTerminalizationBarrier), string(AttemptTransitionProcessTerminal), string(AttemptTransitionAllocationTerminated), string(AttemptTransitionProcessSupervisorClosed), string(AttemptTransitionCleanupCompleted), string(AttemptTransitionCleanupReleased):
+	case supervisorCommandIntentFactType, supervisorCommandOutcomeFactType, supervisorReconnectFactType:
+		if err := applySupervisorCommandLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
+	case string(AttemptTransitionOpened), string(AttemptTransitionControlOwnerBound), string(AttemptTransitionLaunchAuthorized), string(AttemptTransitionSupervisorBootstrap), string(AttemptTransitionProcessSupervisorStarted), string(AttemptTransitionProcessStarted), string(AttemptTransitionTerminalizationBarrier), string(AttemptTransitionProcessTerminal), string(AttemptTransitionAllocationTerminated), string(AttemptTransitionProcessSupervisorClosed), string(AttemptTransitionCleanupCompleted), string(AttemptTransitionCleanupReleased), string(AttemptTransitionSupervisorIntervention):
 		if err := applyAttemptAuthorityLine(line, in, s.nextSequence); err != nil {
 			return err
 		}
@@ -411,6 +427,12 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		if err := (ResultEnvelope{Kind: fact.EnvelopeKind, ResultDigest: fact.EnvelopeDigest, Sequence: fact.EnvelopeSequence}).Validate(); err != nil {
 			return err
 		}
+		if !zeroSupervisorCommandEvidence(fact.SupervisorCollect) && (fact.SupervisorCollect.Validate() != nil || fact.SupervisorCollect.Command != processsupervisor.CommandCollect || fact.SupervisorCollect.Outcome.State != SupervisorTranscriptCollected) {
+			return ErrAttemptAuthorityConflict
+		}
+		if fact.SupervisorOutcomeFactDigest != "" && requireDigest("supervisorOutcomeFactDigest", fact.SupervisorOutcomeFactDigest) != nil {
+			return ErrAttemptAuthorityConflict
+		}
 		storeddigest := fact.Digest
 		fact.Digest = ""
 		rawJSON, _ := json.Marshal(&fact)
@@ -437,8 +459,19 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 				return err
 			}
 			state, exists := in.attempts[fact.AttemptKey]
-			if !exists || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.PendingEffectIntentFactDigest != "" || fact.AttemptRevision != state.Revision+1 || fact.PreviousAttemptHead != state.HeadDigest {
+			if !exists || state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.PendingEffectIntentFactDigest != "" || state.SupervisorPendingIntentDigest != "" || state.SupervisorInterventionDigest != "" || fact.AttemptRevision != state.Revision+1 || fact.PreviousAttemptHead != state.HeadDigest {
 				return ErrAttemptAuthorityOrder
+			}
+			if state.SupervisorBootstrapDigest != "" && fact.EnvelopeKind == KindWorkerResult {
+				if fact.SupervisorOutcomeFactDigest != "" {
+					if !zeroSupervisorCommandEvidence(fact.SupervisorCollect) || validateBusinessOutcomeReference(state, fact.SupervisorOutcomeFactDigest, processsupervisor.CommandCollect, SupervisorTranscriptCollected) != nil {
+						return ErrAttemptAuthorityConflict
+					}
+				} else if zeroSupervisorCommandEvidence(fact.SupervisorCollect) || fact.SupervisorCollect.SessionID != state.SupervisorStarted.Handshake.SessionID || fact.SupervisorCollect.Outcome.Process != state.ProcessStartedEvidence.Outcome.Process {
+					return ErrAttemptAuthorityConflict
+				}
+			} else if !zeroSupervisorCommandEvidence(fact.SupervisorCollect) || fact.SupervisorOutcomeFactDigest != "" {
+				return ErrAttemptAuthorityConflict
 			}
 			state.Revision = fact.AttemptRevision
 			state.HeadDigest = storeddigest
@@ -448,6 +481,12 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 				}
 				state.CommittedResultFactDigest = fact.FactDigest
 				state.CommittedResultSequence = fact.LedgerSequence
+				state.CommittedResultOutcomeDigest = fact.SupervisorOutcomeFactDigest
+				state.CommittedResultCollect = fact.SupervisorCollect
+				if fact.SupervisorOutcomeFactDigest != "" {
+					state.CommittedResultCollect, _ = supervisorCheckpointEvidence(state, fact.SupervisorOutcomeFactDigest)
+					state.SupervisorMechanicsAuthorityHead = storeddigest
+				}
 			}
 			in.attempts[fact.AttemptKey] = state
 		} else if fact.AttemptRevision != 0 || fact.PreviousAttemptHead != "" {

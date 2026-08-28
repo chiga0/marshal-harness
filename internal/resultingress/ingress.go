@@ -12,6 +12,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
 
 // ── Sentinel errors (typed, fail-closed) ─────────────────────────────────────
@@ -384,23 +385,42 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 //
 // All rejection paths fail closed and write a QuarantineRecord.
 func (i *Ingress) Admit(ctx context.Context, drc DRC, envelope ResultEnvelope) (AdmissionFact, error) {
+	return i.admitWithSupervisorCollect(ctx, drc, envelope, SupervisorCommandEvidence{}, "")
+}
+
+// AdmitWithSupervisorCollect preserves source compatibility for historical
+// embedded-evidence replay. A fresh bootstrap-prepared Attempt rejects this
+// path and must cite an independently durable outcome fact instead.
+func (i *Ingress) AdmitWithSupervisorCollect(ctx context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence) (AdmissionFact, error) {
+	return i.admitWithSupervisorCollect(ctx, drc, envelope, collect, "")
+}
+
+// AdmitWithSupervisorCollectOutcome co-commits one WorkerResult with an exact
+// already-durable collect outcome checkpoint. It does not extract transcript
+// payloads; production composition must obtain the VerifiedCommandOutcome
+// from processsupervisor.Client and checkpoint it first.
+func (i *Ingress) AdmitWithSupervisorCollectOutcome(ctx context.Context, drc DRC, envelope ResultEnvelope, outcomeFactDigest string) (AdmissionFact, error) {
+	return i.admitWithSupervisorCollect(ctx, drc, envelope, SupervisorCommandEvidence{}, outcomeFactDigest)
+}
+
+func (i *Ingress) admitWithSupervisorCollect(ctx context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string) (AdmissionFact, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.store != nil {
 		var fact AdmissionFact
 		var admitErr error
 		if err := i.store.transact(i, func() error {
-			fact, admitErr = i.admitLocked(ctx, drc, envelope)
+			fact, admitErr = i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest)
 			return nil
 		}); err != nil {
 			return AdmissionFact{}, err
 		}
 		return fact, admitErr
 	}
-	return i.admitLocked(ctx, drc, envelope)
+	return i.admitLocked(ctx, drc, envelope, collect, outcomeFactDigest)
 }
 
-func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelope) (AdmissionFact, error) {
+func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelope, collect SupervisorCommandEvidence, outcomeFactDigest string) (AdmissionFact, error) {
 	now := i.clock()
 
 	// ── 1. Structural validation (fail closed for malformed input) ────────────
@@ -457,7 +477,7 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 	// checkpoint/heartbeat/log traffic is not allowed to leak through after
 	// terminalization merely because it skips capability freshness checks.
 	if governed {
-		if authorityState.PendingEffectIntentFactDigest != "" {
+		if authorityState.PendingEffectIntentFactDigest != "" || authorityState.SupervisorPendingIntentDigest != "" || authorityState.SupervisorInterventionDigest != "" {
 			i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
 			return AdmissionFact{}, fmt.Errorf("%w: attempt admission is closed by pending effect authority", ErrStaleLease)
 		}
@@ -486,6 +506,18 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 			i.recordQuarantine(ReasonDigestMismatch, drcDigest, envelope.ResultDigest, now)
 			return AdmissionFact{}, fmt.Errorf("%w: Attempt already has a committed WorkerResult", ErrDigestMismatch)
 		}
+		if envelope.Kind == KindWorkerResult && authorityState.SupervisorBootstrapDigest != "" {
+			if validateBusinessOutcomeReference(authorityState, outcomeFactDigest, processsupervisor.CommandCollect, SupervisorTranscriptCollected) != nil || !zeroSupervisorCommandEvidence(collect) {
+				i.recordQuarantine(ReasonStaleLease, drcDigest, envelope.ResultDigest, now)
+				return AdmissionFact{}, fmt.Errorf("%w: WorkerResult is not bound to a durable current supervisor collect outcome", ErrStaleLease)
+			}
+		} else if !zeroSupervisorCommandEvidence(collect) || outcomeFactDigest != "" {
+			i.recordQuarantine(ReasonMalformed, drcDigest, envelope.ResultDigest, now)
+			return AdmissionFact{}, fmt.Errorf("%w: supervisor collect evidence on unrelated admission", ErrMalformedEnvelope)
+		}
+	} else if !zeroSupervisorCommandEvidence(collect) || outcomeFactDigest != "" {
+		i.recordQuarantine(ReasonMalformed, drcDigest, envelope.ResultDigest, now)
+		return AdmissionFact{}, fmt.Errorf("%w: supervisor collect evidence on ungoverned admission", ErrMalformedEnvelope)
 	}
 
 	// ── 2. Kind→operation mapping check (ADR 0044 R2) ─────────────────────────
@@ -598,7 +630,7 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 			governedState = &authorityState
 		}
 		var err error
-		authorityHead, err = i.store.recordAdmittedLocked(key, governedState, drcDigest, envelope, factDigest, nextLedgerSequence)
+		authorityHead, err = i.store.recordAdmittedLocked(key, governedState, drcDigest, envelope, factDigest, nextLedgerSequence, collect, outcomeFactDigest)
 		if err != nil {
 			return AdmissionFact{}, fmt.Errorf("resultingress: record admitted to durable store: %w", err)
 		}
@@ -612,6 +644,12 @@ func (i *Ingress) admitLocked(_ context.Context, drc DRC, envelope ResultEnvelop
 		if envelope.Kind == KindWorkerResult {
 			authorityState.CommittedResultFactDigest = fact.FactDigest
 			authorityState.CommittedResultSequence = fact.LedgerSequence
+			authorityState.CommittedResultOutcomeDigest = outcomeFactDigest
+			authorityState.CommittedResultCollect = collect
+			if outcomeFactDigest != "" {
+				authorityState.CommittedResultCollect, _ = supervisorCheckpointEvidence(authorityState, outcomeFactDigest)
+				authorityState.SupervisorMechanicsAuthorityHead = authorityHead
+			}
 		}
 		i.attempts[authorityKey] = authorityState
 	}

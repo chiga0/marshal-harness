@@ -34,6 +34,8 @@
 
 2026-08-29，真实 RB2/B2 预审确认 `PT_TRACE_ME` 的启动 Core 直接持有 wait right、held FD 与 pipe，Core crash 后新 Core 无法恢复这些 mechanics。维护者在候选 `69046fa177caa1563d40dba07446c4b2d9d9b4a0` 经独立复审确认 P0/P1/P2 均为 0 后接受 ADR 0059（Accepted）：以固定、已允许的 `marshal internal process-supervisor` 作为 per-Attempt mechanics owner，并用耐久、可重放的有界协议支持 Core 重连；Supervisor 不拥有业务 authority，Supervisor 自身崩溃仍 intervention。接受只冻结合同，尚未实现，也不升级 R2–R6。
 
+2026-08-29，ResultIngress/ADR 0059 接缝审计发现：既有 Attempt fact 尚未持久化完整 `requestDigest/receiptDigest/observationDigest/commandHead`，且 Supervisor 启动前没有 RB1 recovery anchor。候选 `12996f87beb3b45b9267d4356875d9ebe257fcd2` 经独立终审确认 P0/P1/P2 均为 0 后，维护者接受 ADR 0060（Accepted）：在固定 Supervisor 外部副作用前新增 `process-supervisor-bootstrap-prepared`，并在同一 RB1 ledger 中建立不推进 Attempt head 的逐 command intent/outcome recovery 子链，让 process/admission/terminal/close fact 绑定 exact outcome。接受只冻结合同与 dormant authority implementation；Client prepared-command API、descriptor-relative nonce/journal recovery、lost-`Close` offline recovery 与 production composition 仍是生产前置，不升级 R2–R6，也不构成发布授权。
+
 | ADR | 决策 | 状态 |
 | --- | --- | --- |
 | [0001](0001-cli-first-modular-monolith.md) | CLI-first 模块化单体 | 已接受（Accepted） |
@@ -86,3 +88,4 @@
 | [0057](0057-durable-local-allocation-recovery-and-production-composition.md) | 本地 Allocation authority projection、descriptor-relative no-replace Provision/Terminate、tombstone 恢复与唯一 `ProductionRuntime`/`PublicApplicationPort` | 已接受（Accepted，2026-08-28；只冻结合同，RB3 实现与真实 Pi 纵切仍开放，不升级成熟度） |
 | [0058](0058-interpreted-agent-launch-identity.md) | 解释型 Agent 的真实 runtime executable、versioned material roots/held identity、启动双 barrier 与 ResultIngress current-authority 全量重验 | 已接受（Accepted，2026-08-28；合同已冻结，仍未实现且不升级 Pi production reachability） |
 | [0059](0059-fixed-darwin-process-supervisor.md) | 固定 Marshal per-Attempt process supervisor、Core 重连、命令 hash chain 与 supervisor crash intervention | 已接受（Accepted，2026-08-29；候选 `69046fa177caa1563d40dba07446c4b2d9d9b4a0`，独立复审 P0/P1/P2=0；未实现，不升级 R2–R6） |
+| [0060](0060-supervisor-mechanics-authority-binding-and-recovery.md) | Supervisor bootstrap anchor、独立逐 command recovery 子链、exact mechanics outcome 与 unresolved-intent intervention | 已接受（Accepted，2026-08-29；候选 `12996f87beb3b45b9267d4356875d9ebe257fcd2` 经独立终审 P0/P1/P2=0；Client prepared API/nonce 与 lost-`Close` recovery仍开放，未接线 production composition，不升级 R2–R6） |

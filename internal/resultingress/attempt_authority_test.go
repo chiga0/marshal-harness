@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -57,7 +58,7 @@ func attemptTestClosure(t *testing.T) launchidentity.ClosureV1 {
 	return closure
 }
 
-func openStartedAttempt(t *testing.T, store *ingressDurableStore) AttemptAuthorityState {
+func openFreshStartedAttempt(t *testing.T, store *ingressDurableStore) AttemptAuthorityState {
 	t.Helper()
 	id := attemptTestIdentity()
 	openedResult, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
@@ -77,6 +78,26 @@ func openStartedAttempt(t *testing.T, store *ingressDurableStore) AttemptAuthori
 		t.Fatal(err)
 	}
 	return startedResult.State
+}
+
+// openStartedAttempt preserves the pre-ADR0060 historical fixture used by
+// broad ResultIngress regression tests. Fresh supervisor-bearing mutation is
+// covered by openFreshStartedAttempt and must always use bootstrap plus the
+// independent command recovery sub-chain.
+func openStartedAttempt(t *testing.T, store *ingressDurableStore) AttemptAuthorityState {
+	t.Helper()
+	id := attemptTestIdentity()
+	opened, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provisioned := appendTestAcceptedProvision(t, store, opened.State)
+	authorized, err := appendAuthorizedAttempt(t, store, provisioned.Revision, provisioned.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "historical-launch-auth-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	process := attemptTestProcess(t)
+	return appendHistoricalAttemptTransition(t, store, authorized.State, AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "historical-command-1", ObservedAt: "2026-08-28T00:00:02Z", Process: process, LaunchMaterialsDigest: authorized.State.LaunchMaterialsDigest, AgentLaunchSpecDigest: authorized.State.AgentLaunchSpecDigest})
 }
 
 func attemptTestOwnerScope(id AttemptIdentity) ControlOwnerScope {
@@ -114,13 +135,28 @@ func appendTestSupervisorStarted(t *testing.T, store *DurableStore, state Attemp
 	controlDirectory := processsupervisor.ControlDirectoryIdentity{CanonicalPath: "/tmp/marshal-control-" + state.Identity.AttemptID, Device: 2, Inode: 100 + epoch, FileType: "directory", UID: 501, GID: 20, Mode: POSIXFileTypeDirectory | 0o700, LinkCount: 2}
 	socket := processsupervisor.ControlSocketIdentity{Device: 2, Inode: 200 + epoch, FileType: "socket", UID: 501, GID: 20, Mode: 0o140000 | 0o600, LinkCount: 1}
 	supervisorProcess := processsupervisor.ProcessIdentity{PID: 9001 + int(epoch), BirthSeconds: 1_700_000_001, BirthMicroseconds: 12, SessionID: 9001 + int(epoch), ProcessGroupID: 9001 + int(epoch)}
-	handshake := processsupervisor.HandshakeResponse{SchemaVersion: processsupervisor.HandshakeSchema, ProtocolRevision: processsupervisor.ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: "supervisor-" + state.Identity.AttemptID + "-" + fmt.Sprint(epoch), SessionNonceDigest: attemptTestDigest("session-nonce-" + fmt.Sprint(epoch)), OwnerEpoch: epoch, CurrentAuthorityHead: bound.State.HeadDigest, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: attemptTestDigest("journal-head-" + fmt.Sprint(epoch)), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: "2026-08-28T00:00:01Z", SupervisorProcess: supervisorProcess, SupervisorBinary: binary, ControlSocket: socket}
-	anchor := processsupervisor.HandshakeAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, OwnerEpoch: epoch, CurrentAuthorityHead: bound.State.HeadDigest, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: handshake.JournalHead, UID: 501, GID: 20, FixedBinary: binary, ControlSocket: socket}
-	started, err := NewProcessSupervisorStarted(owner, bound.State.LaunchAuthorizedDigest, controlDirectory, handshake, anchor, processsupervisor.CoreIdentity{UID: 501, GID: 20, Process: supervisorProcess, Binary: binary})
+	core := processsupervisor.CoreIdentity{UID: 501, GID: 20, Process: ownerProcess, Binary: binary}
+	request := processsupervisor.BootstrapRequest{
+		SchemaVersion: processsupervisor.BootstrapSchema, ProtocolRevision: processsupervisor.ProtocolRevision,
+		SessionID: "supervisor-" + state.Identity.AttemptID + "-" + fmt.Sprint(epoch), SessionNonce: strings.Repeat("1", 64),
+		OwnerEpoch: epoch, Authority: supervisorAuthorityTuple(state.Identity), LaunchAuthorizedFact: bound.State.LaunchAuthorizedDigest,
+		CurrentAuthorityHead: bound.State.HeadDigest, ControlDirectoryIdentity: controlDirectory, Core: core,
+	}
+	prepared, err := NewSupervisorBootstrapPrepared(owner, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := store.AppendSupervisorStarted(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, bound.State.Revision, bound.State.HeadDigest, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, started)
+	bootstrap, err := store.AppendSupervisorBootstrap(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, bound.State.Revision, bound.State.HeadDigest, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handshake := processsupervisor.HandshakeResponse{SchemaVersion: processsupervisor.HandshakeSchema, ProtocolRevision: processsupervisor.ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: request.SessionID, SessionNonceDigest: prepared.SessionNonceDigest, OwnerEpoch: epoch, CurrentAuthorityHead: request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: attemptTestDigest("journal-head-" + fmt.Sprint(epoch)), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: "2026-08-28T00:00:01Z", SupervisorProcess: supervisorProcess, SupervisorBinary: binary, ControlSocket: socket}
+	anchor := processsupervisor.HandshakeAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: request.Authority, OwnerEpoch: epoch, CurrentAuthorityHead: request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: handshake.JournalHead, UID: 501, GID: 20, FixedBinary: binary, ControlSocket: socket}
+	started, err := NewProcessSupervisorStartedFromBootstrap(bootstrap.State.SupervisorBootstrapDigest, prepared, handshake, anchor, processsupervisor.CoreIdentity{UID: 501, GID: 20, Process: supervisorProcess, Binary: binary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.AppendSupervisorStarted(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, bootstrap.State.Revision, bootstrap.State.HeadDigest, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, started)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,9 +165,22 @@ func appendTestSupervisorStarted(t *testing.T, store *DurableStore, state Attemp
 
 func appendTestSupervisorClosed(t *testing.T, store *DurableStore, state AttemptAuthorityState, request CleanupAuthorizationRequest) AttemptAuthorityState {
 	t.Helper()
+	state = appendTestSupervisorReconnect(t, store, state)
 	owner, found, err := store.OpenOwner(state.Owner.Scope)
 	if err != nil || !found {
 		t.Fatalf("current owner found=%v err=%v", found, err)
+	}
+	closeIntent := testSupervisorIntent(state, processsupervisor.CommandClose, SupervisorCommandRebuildProjection{
+		ProcessTerminalFactDigest: state.ProcessTerminalDigest, AllocationTerminatedFactDigest: state.AllocationTerminalDigest,
+		CleanupBindingDigest: state.CleanupBindingDigest,
+	})
+	closeOutcome := state.ProcessTerminalEvidence.Outcome
+	closeOutcome.State = SupervisorSessionClosed
+	state, outcomeFactDigest := appendTestSupervisorCheckpoint(t, store, state, closeIntent, closeOutcome, "ok")
+	absence := SupervisorAbsenceObservation{State: "absent", SupervisorProcess: state.SupervisorStarted.Handshake.SupervisorProcess, ObserverIdentity: "darwin-supervisor-absence-observer/v1", ObservedAt: "2026-08-29T00:00:02Z"}
+	absenceDigest, err := canonicalDigest(absence)
+	if err != nil {
+		t.Fatal(err)
 	}
 	closed := ProcessSupervisorClosed{
 		ProtocolRevision:                   processsupervisor.ProtocolRevision,
@@ -142,15 +191,17 @@ func appendTestSupervisorClosed(t *testing.T, store *DurableStore, state Attempt
 		CleanupBindingDigest:               state.CleanupBindingDigest,
 		ProcessTerminalFactDigest:          state.ProcessTerminalDigest,
 		AllocationTerminatedFactDigest:     state.AllocationTerminalDigest,
-		CloseIntentDigest:                  attemptTestDigest("supervisor-close-intent"),
-		CloseReceiptDigest:                 attemptTestDigest("supervisor-close-receipt"),
-		FinalCommandHead:                   attemptTestDigest("supervisor-final-command-head"),
-		SupervisorAbsenceObservationDigest: attemptTestDigest("supervisor-absence"),
+		CloseIntentDigest:                  closeIntent.RequestDigest,
+		CloseReceiptDigest:                 state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1].Evidence.ReceiptDigest,
+		CloseObservationDigest:             state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1].Evidence.ObservationDigest,
+		FinalCommandHead:                   state.SupervisorCommandHead,
+		SupervisorAbsenceObservationDigest: absenceDigest,
 		SupervisorProcess:                  state.SupervisorStarted.Handshake.SupervisorProcess,
 		ObserverIdentity:                   "darwin-supervisor-absence-observer/v1",
 		ObservedAt:                         "2026-08-29T00:00:02Z",
+		SupervisorAbsence:                  absence,
 	}
-	result, err := store.AppendSupervisorClosed(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: request.CurrentRunAuthority}, state.Revision, state.HeadDigest, request, closed)
+	result, err := store.AppendSupervisorClosed(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: request.CurrentRunAuthority}, state.Revision, state.HeadDigest, request, closed, outcomeFactDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +233,192 @@ func attemptTestRunAuthority(id AttemptIdentity) RunAuthorityBinding {
 	return RunAuthorityBinding{AuthorityNamespaceID: id.AuthorityNamespaceID, RunID: id.RunID, OrchestratorID: id.OrchestratorID, RunAuthorityDigest: id.RunAuthorityDigest}
 }
 
+func testSupervisorIntent(state AttemptAuthorityState, command processsupervisor.CommandName, rebuild SupervisorCommandRebuildProjection) SupervisorCommandIntent {
+	sequence := state.SupervisorCommandSequence + 1
+	commandID := fmt.Sprintf("test-%s-%d", command, sequence)
+	pre := state.SupervisorMechanicsAnchor
+	return SupervisorCommandIntent{
+		ProtocolRevision: processsupervisor.ProtocolRevision,
+		SessionID:        state.SupervisorStarted.Handshake.SessionID, Command: command, CommandID: commandID,
+		Sequence: sequence, PreviousCommandHead: state.SupervisorCommandHead, CurrentAuthorityHead: pre.CurrentAuthorityHead,
+		Deadline: "2026-08-29T00:02:00Z", RequestDigest: attemptTestDigest("request-" + commandID),
+		PayloadDigest: attemptTestDigest("payload-" + commandID), Rebuild: rebuild, PreCommand: pre,
+	}
+}
+
+func appendTestSupervisorReconnect(t *testing.T, store *DurableStore, state AttemptAuthorityState) AttemptAuthorityState {
+	t.Helper()
+	if state.SupervisorMechanicsAnchor.OwnerEpoch == state.Owner.OwnerEpoch && state.SupervisorMechanicsAnchor.CurrentAuthorityHead == state.HeadDigest {
+		return state
+	}
+	prior, found, err := store.OpenOwner(state.Owner.Scope)
+	if err != nil || !found {
+		t.Fatalf("current owner found=%v err=%v", found, err)
+	}
+	epoch := prior.Acquisition.OwnerEpoch + 1
+	process := processsupervisor.ProcessIdentity{PID: 12000 + int(epoch), BirthSeconds: 1_700_000_010, BirthMicroseconds: int64(epoch), SessionID: 12000 + int(epoch), ProcessGroupID: 12000 + int(epoch)}
+	acquisition := prior.Acquisition
+	acquisition.OwnerEpoch = epoch
+	acquisition.OwnerProcess = process
+	acquisition.ObservedAt = "2026-08-29T00:00:10Z"
+	ownerResult, err := store.AcquireOwner(context.Background(), attemptOwnerVerifier{want: acquisition}, prior.Acquisition.OwnerEpoch, prior.FactDigest, acquisition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := CurrentOwnerBinding{Scope: state.Owner.Scope, OwnerEpoch: epoch, ControlOwnerAcquiredFactDigest: ownerResult.State.FactDigest}
+	run := attemptTestRunAuthority(state.Identity)
+	bound, err := store.BindOwnerToAttempt(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, state.Revision, state.HeadDigest, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := supervisorHandshakeAnchor(state.SupervisorMechanicsAnchor)
+	current := previous
+	current.OwnerEpoch = epoch
+	current.CurrentAuthorityHead = bound.State.HeadDigest
+	recovery := processsupervisor.SessionRecoveryEvidence{Reconciliation: processsupervisor.ReconciliationUnchanged, Previous: previous, Current: current}
+	result, err := store.AppendSupervisorReconnect(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, bound.State.Revision, bound.State.HeadDigest, AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}, owner, recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result.State
+}
+
+func appendTestSupervisorCheckpoint(t *testing.T, store *DurableStore, state AttemptAuthorityState, intent SupervisorCommandIntent, outcome SupervisorProcessOutcome, disposition string) (AttemptAuthorityState, string) {
+	t.Helper()
+	owner, found, err := store.OpenOwner(state.Owner.Scope)
+	if err != nil || !found {
+		t.Fatalf("current owner found=%v err=%v", found, err)
+	}
+	run := attemptTestRunAuthority(state.Identity)
+	request := AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}
+	intended, err := store.AppendSupervisorCommandIntent(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, state.Revision, state.HeadDigest, request, state.Owner, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := testSupervisorEvidence(t, intent, outcome, disposition)
+	checkpoint, err := store.AppendSupervisorCommandOutcome(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, intended.State.Revision, intended.State.HeadDigest, request, state.Owner, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return checkpoint.State, checkpoint.TransitionDigest
+}
+
+func testSupervisorEvidence(t *testing.T, intent SupervisorCommandIntent, outcome SupervisorProcessOutcome, disposition string) SupervisorCommandEvidence {
+	t.Helper()
+	evidence := SupervisorCommandEvidence{
+		ProtocolRevision: processsupervisor.ProtocolRevision,
+		SessionID:        intent.SessionID, Command: intent.Command, CommandID: intent.CommandID,
+		Sequence: intent.Sequence, PreviousCommandHead: intent.PreviousCommandHead, CurrentAuthorityHead: intent.CurrentAuthorityHead,
+		RequestDigest: intent.RequestDigest, Disposition: disposition, ReasonCode: "process-supervisor-" + string(intent.Command) + "-" + disposition,
+		Outcome: outcome, PreCommand: intent.PreCommand,
+	}
+	if disposition == "rejected" {
+		evidence.Outcome = SupervisorProcessOutcome{}
+	}
+	if intent.Command == processsupervisor.CommandBindAuthority && disposition == "ok" {
+		evidence.BoundAuthorityHead = intent.Rebuild.AuthorityHead
+	}
+	observationDigest, receiptDigest, err := evidence.boundMechanicsDigests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence.ObservationDigest, evidence.ReceiptDigest = observationDigest, receiptDigest
+	evidence.CommandHead, err = canonicalDigest(struct {
+		Previous string `json:"previousCommandDigest"`
+		Request  string `json:"requestDigest"`
+		Receipt  string `json:"receiptDigest"`
+	}{intent.PreviousCommandHead, intent.RequestDigest, evidence.ReceiptDigest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence.PostCommand = intent.PreCommand
+	evidence.PostCommand.CommandSequence = evidence.Sequence
+	evidence.PostCommand.CommandHead = evidence.CommandHead
+	evidence.PostCommand.JournalSequence += 2
+	evidence.PostCommand.JournalHead = attemptTestDigest("journal-" + intent.CommandID)
+	if intent.Command == processsupervisor.CommandBindAuthority && disposition == "ok" {
+		evidence.PostCommand.CurrentAuthorityHead = evidence.BoundAuthorityHead
+	}
+	return evidence
+}
+
+func appendTestProcessStartedCheckpoints(t *testing.T, store *DurableStore, state AttemptAuthorityState, transition *AttemptTransition) AttemptAuthorityState {
+	t.Helper()
+	bind := testSupervisorIntent(state, processsupervisor.CommandBindAuthority, SupervisorCommandRebuildProjection{
+		SupervisorStartedFactDigest: state.SupervisorStartedDigest, OwnerEpoch: state.Owner.OwnerEpoch,
+		PreviousAuthorityHead: state.SupervisorStarted.Handshake.CurrentAuthorityHead, AuthorityHead: state.SupervisorStartedDigest,
+	})
+	state, transition.SupervisorBindOutcomeFactDigest = appendTestSupervisorCheckpoint(t, store, state, bind, SupervisorProcessOutcome{}, "ok")
+	runtimeDigest := attemptTestDigest("runtime-object-" + state.Identity.AttemptID)
+	workingDigest := attemptTestDigest("working-object-" + state.Identity.AttemptID)
+	spawn := testSupervisorIntent(state, processsupervisor.CommandSpawn, SupervisorCommandRebuildProjection{
+		SupervisorStartedFactDigest: state.SupervisorStartedDigest, LaunchAuthorizedFactDigest: state.LaunchAuthorizedDigest,
+		LaunchMaterialsDigest: state.LaunchMaterialsDigest, AgentLaunchSpecDigest: state.AgentLaunchSpecDigest,
+		RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest,
+		ArgvDigest: attemptTestDigest("argv-" + state.Identity.AttemptID), EnvironmentDigest: attemptTestDigest("env-" + state.Identity.AttemptID), StdinDigest: attemptTestDigest("stdin-" + state.Identity.AttemptID),
+	})
+	outcome := SupervisorProcessOutcome{
+		State: SupervisorProcessExecStopped, MechanicsState: "exec-stopped",
+		Process:          processsupervisor.ProcessIdentity{PID: transition.Process.PID, BirthSeconds: transition.Process.BirthSeconds, BirthMicroseconds: transition.Process.BirthMicroseconds, SessionID: transition.Process.PID, ProcessGroupID: transition.Process.PGID},
+		ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: transition.ObservedAt,
+		RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest,
+	}
+	state, transition.SupervisorOutcomeFactDigest = appendTestSupervisorCheckpoint(t, store, state, spawn, outcome, "ok")
+	return state
+}
+
+func appendTestTerminalCheckpoint(t *testing.T, store *DurableStore, state AttemptAuthorityState, transition *AttemptTransition) AttemptAuthorityState {
+	t.Helper()
+	state = appendTestSupervisorReconnect(t, store, state)
+	command := processsupervisor.CommandInspect
+	outcomeState := SupervisorProcessAbsent
+	if transition.ProcessTerminalKind == ProcessTerminated {
+		command, outcomeState = processsupervisor.CommandTerminate, SupervisorProcessExited
+	} else if transition.ProcessTerminalKind == ProcessIdentityConflict {
+		outcomeState = SupervisorProcessIdentityConflict
+	}
+	intent := testSupervisorIntent(state, command, SupervisorCommandRebuildProjection{
+		TerminalizationBarrierDigest: state.BarrierDigest, TerminalizationID: state.TerminalizationID,
+		TerminalGeneration: uint64(state.TerminalGeneration), CleanupBindingDigest: state.CleanupBindingDigest,
+		ProcessStartedFactDigest: state.ProcessStartedDigest, LastObservationDigest: supervisorLastObservation(state),
+	})
+	spawn := state.ProcessStartedEvidence.Outcome
+	spawn.State, spawn.MechanicsState = outcomeState, "terminal"
+	state, transition.SupervisorOutcomeFactDigest = appendTestSupervisorCheckpoint(t, store, state, intent, spawn, "ok")
+	transition.ObservationDigest = state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1].Evidence.ObservationDigest
+	return state
+}
+
+func appendTestProcessTerminal(t *testing.T, store *DurableStore, state AttemptAuthorityState, request CleanupAuthorizationRequest, transition AttemptTransition) (AttemptAppendResult, AttemptTransition, error) {
+	t.Helper()
+	if state.SupervisorBootstrapDigest != "" && transition.SupervisorOutcomeFactDigest == "" {
+		state = appendTestTerminalCheckpoint(t, store, state, &transition)
+	}
+	result, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: request.CurrentRunAuthority}, state.Revision, state.HeadDigest, request, transition)
+	return result, transition, err
+}
+
+func appendHistoricalAttemptTransition(t *testing.T, store *DurableStore, state AttemptAuthorityState, transition AttemptTransition) AttemptAuthorityState {
+	t.Helper()
+	key, err := transition.Identity.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact := &attemptAuthorityFact{ProtocolRevision: attemptAuthorityProtocolRevision, FactType: string(transition.Kind), Sequence: store.nextSequence, AttemptKey: key, Revision: state.Revision + 1, PreviousDigest: state.HeadDigest, Transition: transition}
+	if err := prepareAttemptFact(state, true, fact, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
+		t.Fatal(err)
+	}
+	store.nextSequence++
+	replayed, found, err := store.AttemptState(transition.Identity)
+	if err != nil || !found {
+		t.Fatalf("historical transition replay found=%v err=%v", found, err)
+	}
+	return replayed
+}
+
 func appendAuthorizedAttempt(t *testing.T, store *DurableStore, revision uint64, head string, transition AttemptTransition) (AttemptAppendResult, error) {
 	t.Helper()
 	if transition.Kind == AttemptTransitionLaunchAuthorized && zeroLaunchClosure(transition.LaunchClosure) {
@@ -199,6 +436,10 @@ func appendAuthorizedAttempt(t *testing.T, store *DurableStore, revision uint64,
 			return AttemptAppendResult{}, stateErr
 		}
 		if found && state.ControlOwnerBindingDigest != "" {
+			if state.SupervisorBootstrapDigest != "" && transition.SupervisorOutcomeFactDigest == "" {
+				state = appendTestProcessStartedCheckpoints(t, store, state, &transition)
+				revision, head = state.Revision, state.HeadDigest
+			}
 			owner, ownerFound, ownerErr := store.OpenOwner(state.Owner.Scope)
 			if ownerErr != nil {
 				return AttemptAppendResult{}, ownerErr
@@ -876,7 +1117,7 @@ func TestCleanupAuthorizationRejectsWrongTupleBindingOrchestratorAndRelease(t *t
 		}
 	}
 	terminalTransition := AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ProcessTerminalKind: ProcessAbsent, ObservationDigest: attemptTestDigest("absent")}
-	terminalResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, barrier.Revision, barrier.HeadDigest, request, terminalTransition)
+	terminalResult, terminalTransition, err := appendTestProcessTerminal(t, store, barrier, request, terminalTransition)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1017,7 +1258,7 @@ func TestProcessIdentityConflictPermanentlyBlocksKillAndCompletion(t *testing.T)
 	barrier := barrierResult.State
 	run := RunAuthorityBinding{AuthorityNamespaceID: started.Identity.AuthorityNamespaceID, RunID: started.Identity.RunID, OrchestratorID: started.Identity.OrchestratorID, RunAuthorityDigest: started.Identity.RunAuthorityDigest}
 	request := CleanupAuthorizationRequest{Identity: started.Identity, CurrentRunAuthority: run, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest, Operation: CleanupInspect}
-	conflictResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, barrier.Revision, barrier.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ProcessTerminalKind: ProcessIdentityConflict, ObservationDigest: attemptTestDigest("identity-conflict")})
+	conflictResult, _, err := appendTestProcessTerminal(t, store, barrier, request, AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ProcessTerminalKind: ProcessIdentityConflict, ObservationDigest: attemptTestDigest("identity-conflict")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1064,7 +1305,7 @@ func TestAttemptStateEnumerationIsDeterministicAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	recovered, err := reopened.PendingAttemptStates()
-	if err != nil || len(recovered) != len(states) || recovered[0] != states[0] || recovered[1] != states[1] {
+	if err != nil || len(recovered) != len(states) || !reflect.DeepEqual(recovered[0], states[0]) || !reflect.DeepEqual(recovered[1], states[1]) {
 		t.Fatalf("recovered=%#v states=%#v err=%v", recovered, states, err)
 	}
 }

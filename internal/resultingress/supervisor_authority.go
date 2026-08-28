@@ -21,6 +21,10 @@ import (
 const (
 	controlOwnerAuthorityProtocolRevision = "control-owner-authority/v1"
 	controlOwnerFactType                  = "control-owner-acquired"
+	supervisorCommandProtocolRevision     = "process-supervisor-command-recovery/v1"
+	supervisorCommandIntentFactType       = "process-supervisor-command-intent"
+	supervisorCommandOutcomeFactType      = "process-supervisor-command-outcome"
+	supervisorReconnectFactType           = "process-supervisor-session-reconnected"
 	maxExactJSONInteger                   = uint64(1<<53 - 1)
 )
 
@@ -247,6 +251,24 @@ type CurrentOwnerBinding struct {
 	ControlOwnerAcquiredFactDigest string            `json:"controlOwnerAcquiredFactDigest"`
 }
 
+// supervisorCommandFact is a recovery sub-chain in the one RB1 ledger. It
+// deliberately does not mutate Attempt revision/head: an intent cites the
+// already-current business authority and a later business fact cites the
+// closed outcome fact, avoiding a request/current-head digest cycle.
+type supervisorCommandFact struct {
+	ProtocolRevision           string                      `json:"protocolRevision"`
+	FactType                   string                      `json:"factType"`
+	Sequence                   int64                       `json:"sequence"`
+	AttemptKey                 string                      `json:"attemptKey"`
+	AttemptRevision            uint64                      `json:"attemptRevision"`
+	AttemptAuthorityHead       string                      `json:"attemptAuthorityHead"`
+	PreviousRecoveryFactDigest string                      `json:"previousRecoveryFactDigest,omitempty"`
+	Intent                     SupervisorCommandIntent     `json:"intent,omitempty,omitzero"`
+	Outcome                    SupervisorCommandEvidence   `json:"outcome,omitempty,omitzero"`
+	Reconnect                  SupervisorReconnectEvidence `json:"reconnect,omitempty,omitzero"`
+	Digest                     string                      `json:"digest"`
+}
+
 func (binding CurrentOwnerBinding) Validate() error {
 	if binding.Scope.Validate() != nil || binding.OwnerEpoch == 0 || binding.OwnerEpoch > maxExactJSONInteger || requireDigest("controlOwnerAcquiredFactDigest", binding.ControlOwnerAcquiredFactDigest) != nil {
 		return ErrControlOwnerConflict
@@ -339,15 +361,19 @@ func validateAuthorityObservedAt(value string, birth processsupervisor.ProcessId
 // after a passive fixed-binary supervisor handshake. It contains no raw nonce,
 // argv, environment value, stdin, or transcript bytes.
 type ProcessSupervisorStarted struct {
-	Owner                      CurrentOwnerBinding                        `json:"owner"`
-	LaunchAuthorizedFactDigest string                                     `json:"launchAuthorizedFactDigest"`
-	ControlDirectory           processsupervisor.ControlDirectoryIdentity `json:"controlDirectory"`
-	Handshake                  processsupervisor.HandshakeResponse        `json:"handshake"`
+	Owner                       CurrentOwnerBinding                        `json:"owner"`
+	LaunchAuthorizedFactDigest  string                                     `json:"launchAuthorizedFactDigest"`
+	BootstrapPreparedFactDigest string                                     `json:"bootstrapPreparedFactDigest,omitempty"`
+	ControlDirectory            processsupervisor.ControlDirectoryIdentity `json:"controlDirectory"`
+	Handshake                   processsupervisor.HandshakeResponse        `json:"handshake"`
 }
 
 func (started ProcessSupervisorStarted) Validate() error {
 	if started.Owner.Validate() != nil || requireDigest("launchAuthorizedFactDigest", started.LaunchAuthorizedFactDigest) != nil || validateControlDirectoryIdentity(started.ControlDirectory) != nil || processsupervisor.ValidateHandshakeResponse(started.Handshake) != nil || started.Handshake.OwnerEpoch != started.Owner.OwnerEpoch {
 		return fmt.Errorf("%w: invalid process-supervisor-started payload", ErrAttemptAuthorityConflict)
+	}
+	if started.BootstrapPreparedFactDigest != "" && requireDigest("bootstrapPreparedFactDigest", started.BootstrapPreparedFactDigest) != nil {
+		return fmt.Errorf("%w: invalid bootstrap prepared fact digest", ErrAttemptAuthorityConflict)
 	}
 	if started.ControlDirectory.UID != started.Handshake.ControlSocket.UID || started.ControlDirectory.GID != started.Handshake.ControlSocket.GID || validateControlSocketIdentity(started.Handshake.ControlSocket) != nil {
 		return fmt.Errorf("%w: supervisor control owner mismatch", ErrAttemptAuthorityConflict)
@@ -373,6 +399,25 @@ func NewProcessSupervisorStarted(owner CurrentOwnerBinding, launchAuthorizedFact
 	return started, nil
 }
 
+// NewProcessSupervisorStartedFromBootstrap additionally binds the handshake
+// to the durable pre-launch recovery anchor. The legacy constructor remains
+// replay/source compatible for facts written before ADR 0060.
+func NewProcessSupervisorStartedFromBootstrap(preparedFactDigest string, prepared SupervisorBootstrapPrepared, response processsupervisor.HandshakeResponse, anchor processsupervisor.HandshakeAnchor, observed processsupervisor.CoreIdentity) (ProcessSupervisorStarted, error) {
+	request := prepared.Request
+	if requireDigest("bootstrapPreparedFactDigest", preparedFactDigest) != nil || prepared.Validate() != nil || response.SessionID != prepared.SessionID || response.SessionNonceDigest != prepared.SessionNonceDigest || response.SupervisorBinary != prepared.SupervisorBinary || anchor.SessionID != request.SessionID || anchor.SessionNonceDigest != request.SessionNonceDigest || anchor.Authority != request.Authority || anchor.OwnerEpoch != request.OwnerEpoch || anchor.CurrentAuthorityHead != request.CurrentAuthorityHead || anchor.UID != request.Core.UID || anchor.GID != request.Core.GID || anchor.FixedBinary != request.Core.Binary {
+		return ProcessSupervisorStarted{}, fmt.Errorf("%w: handshake does not match prepared bootstrap", ErrAttemptAuthorityConflict)
+	}
+	started, err := NewProcessSupervisorStarted(prepared.Owner, prepared.LaunchAuthorizedFactDigest, prepared.ControlDirectory, response, anchor, observed)
+	if err != nil {
+		return ProcessSupervisorStarted{}, err
+	}
+	started.BootstrapPreparedFactDigest = preparedFactDigest
+	if err := started.Validate(); err != nil {
+		return ProcessSupervisorStarted{}, err
+	}
+	return started, nil
+}
+
 // ProcessSupervisorClosed binds the exact close intent/receipt and final
 // command head to an absence observation for the started supervisor birth.
 // cleanup-completed must cite the resulting Attempt fact digest.
@@ -387,11 +432,28 @@ type ProcessSupervisorClosed struct {
 	AllocationTerminatedFactDigest     string                            `json:"allocationTerminatedFactDigest"`
 	CloseIntentDigest                  string                            `json:"closeIntentDigest"`
 	CloseReceiptDigest                 string                            `json:"closeReceiptDigest"`
+	CloseObservationDigest             string                            `json:"closeObservationDigest,omitempty"`
 	FinalCommandHead                   string                            `json:"finalCommandHead"`
+	Mechanics                          SupervisorCommandEvidence         `json:"mechanics,omitempty,omitzero"`
 	SupervisorAbsenceObservationDigest string                            `json:"supervisorAbsenceObservationDigest"`
 	SupervisorProcess                  processsupervisor.ProcessIdentity `json:"supervisorProcess"`
 	ObserverIdentity                   string                            `json:"observerIdentity"`
 	ObservedAt                         string                            `json:"observedAt"`
+	SupervisorAbsence                  SupervisorAbsenceObservation      `json:"supervisorAbsence,omitempty,omitzero"`
+}
+
+type SupervisorAbsenceObservation struct {
+	State             string                            `json:"state"`
+	SupervisorProcess processsupervisor.ProcessIdentity `json:"supervisorProcess"`
+	ObserverIdentity  string                            `json:"observerIdentity"`
+	ObservedAt        string                            `json:"observedAt"`
+}
+
+func (observation SupervisorAbsenceObservation) Validate() error {
+	if observation.State != "absent" || validateSupervisorProcessIdentity(observation.SupervisorProcess) != nil || strings.TrimSpace(observation.ObserverIdentity) == "" || validateAuthorityObservedAt(observation.ObservedAt, observation.SupervisorProcess) != nil {
+		return ErrAttemptAuthorityConflict
+	}
+	return nil
 }
 
 func (closed ProcessSupervisorClosed) Validate() error {
@@ -414,6 +476,20 @@ func (closed ProcessSupervisorClosed) Validate() error {
 	}
 	if err := validateAuthorityObservedAt(closed.ObservedAt, closed.SupervisorProcess); err != nil {
 		return fmt.Errorf("%w: invalid supervisor close observedAt", ErrAttemptAuthorityConflict)
+	}
+	if closed.SupervisorAbsence != (SupervisorAbsenceObservation{}) {
+		if closed.SupervisorAbsence.Validate() != nil || closed.SupervisorAbsence.SupervisorProcess != closed.SupervisorProcess || closed.SupervisorAbsence.ObserverIdentity != closed.ObserverIdentity || closed.SupervisorAbsence.ObservedAt != closed.ObservedAt {
+			return fmt.Errorf("%w: supervisor absence projection mismatch", ErrAttemptAuthorityConflict)
+		}
+		digest, err := canonicalDigest(closed.SupervisorAbsence)
+		if err != nil || digest != closed.SupervisorAbsenceObservationDigest {
+			return fmt.Errorf("%w: supervisor absence digest mismatch", ErrAttemptAuthorityConflict)
+		}
+	}
+	if !zeroSupervisorCommandEvidence(closed.Mechanics) {
+		if closed.Mechanics.Validate() != nil || requireDigest("closeObservationDigest", closed.CloseObservationDigest) != nil || closed.Mechanics.Command != processsupervisor.CommandClose || closed.Mechanics.SessionID != closed.SessionID || closed.Mechanics.RequestDigest != closed.CloseIntentDigest || closed.Mechanics.ReceiptDigest != closed.CloseReceiptDigest || closed.Mechanics.CommandHead != closed.FinalCommandHead || closed.Mechanics.ObservationDigest != closed.CloseObservationDigest || closed.Mechanics.Outcome.State != SupervisorSessionClosed {
+			return fmt.Errorf("%w: invalid supervisor close mechanics binding", ErrAttemptAuthorityConflict)
+		}
 	}
 	return nil
 }
@@ -446,7 +522,15 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 		if err != nil {
 			return err
 		}
-		if !exists || prior.Owner != started.Owner || prior.ControlOwnerBindingDigest == "" || transition.Identity.AuthorityNamespaceID != started.Owner.Scope.AuthorityNamespaceID || started.Handshake.CurrentAuthorityHead != prior.HeadDigest || started.Handshake.CommandSequence != 0 || started.Handshake.CommandHead != processsupervisor.CommandGenesisDigest || started.Handshake.JournalSequence != 1 || owner.Acquisition.OwnerBinary != started.Handshake.SupervisorBinary || owner.Acquisition.OwnerUID != started.ControlDirectory.UID || owner.Acquisition.OwnerGID != started.ControlDirectory.GID || sameSupervisorProcess(owner.Acquisition.OwnerProcess, started.Handshake.SupervisorProcess) {
+		expectedHandshakeHead := prior.HeadDigest
+		typedBootstrap := prior.SupervisorBootstrap.Request != (SupervisorBootstrapRequestProjection{})
+		if prior.SupervisorBootstrapDigest != "" && typedBootstrap {
+			expectedHandshakeHead = prior.SupervisorBootstrap.Request.CurrentAuthorityHead
+		}
+		if !exists || prior.Owner != started.Owner || prior.ControlOwnerBindingDigest == "" || transition.Identity.AuthorityNamespaceID != started.Owner.Scope.AuthorityNamespaceID || started.Handshake.CurrentAuthorityHead != expectedHandshakeHead || started.Handshake.CommandSequence != 0 || started.Handshake.CommandHead != processsupervisor.CommandGenesisDigest || started.Handshake.JournalSequence != 1 || owner.Acquisition.OwnerBinary != started.Handshake.SupervisorBinary || owner.Acquisition.OwnerUID != started.ControlDirectory.UID || owner.Acquisition.OwnerGID != started.ControlDirectory.GID || sameSupervisorProcess(owner.Acquisition.OwnerProcess, started.Handshake.SupervisorProcess) {
+			return ErrAttemptAuthorityConflict
+		}
+		if prior.SupervisorBootstrapDigest != "" && (started.BootstrapPreparedFactDigest != prior.SupervisorBootstrapDigest || started.Owner != prior.SupervisorBootstrap.Owner || started.LaunchAuthorizedFactDigest != prior.SupervisorBootstrap.LaunchAuthorizedFactDigest || started.Handshake.SessionID != prior.SupervisorBootstrap.SessionID || started.Handshake.SessionNonceDigest != prior.SupervisorBootstrap.SessionNonceDigest || started.ControlDirectory != prior.SupervisorBootstrap.ControlDirectory || started.Handshake.SupervisorBinary != prior.SupervisorBootstrap.SupervisorBinary || typedBootstrap && started.Handshake.OwnerEpoch != prior.SupervisorBootstrap.Request.OwnerEpoch) {
 			return ErrAttemptAuthorityConflict
 		}
 		attemptKey, err := transition.Identity.Key()
@@ -462,6 +546,37 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 			// authority projection. Device/inode reuse is therefore fail-closed
 			// across history until a future ADR defines bounded authority-aware GC.
 			if other.Handshake.SessionID == started.Handshake.SessionID || sameSupervisorProcess(other.Handshake.SupervisorProcess, started.Handshake.SupervisorProcess) || sameControlObject(other.ControlDirectory.Device, other.ControlDirectory.Inode, started.ControlDirectory.Device, started.ControlDirectory.Inode) || sameControlObject(other.Handshake.ControlSocket.Device, other.Handshake.ControlSocket.Inode, started.Handshake.ControlSocket.Device, started.Handshake.ControlSocket.Inode) {
+				return ErrAttemptAuthorityConflict
+			}
+		}
+		return nil
+	case AttemptTransitionSupervisorBootstrap:
+		prepared := transition.SupervisorBootstrap
+		owner, err := currentOwner(prepared.Owner)
+		if err != nil {
+			return err
+		}
+		request := prepared.Request
+		requestOmitted := request == (SupervisorBootstrapRequestProjection{})
+		if requestOmitted && !historicalReplay {
+			return ErrAttemptAuthorityConflict
+		}
+		if !exists || prior.Owner != prepared.Owner || prior.ControlOwnerBindingDigest == "" || prepared.LaunchAuthorizedFactDigest != prior.LaunchAuthorizedDigest || transition.Identity.AuthorityNamespaceID != prepared.Owner.Scope.AuthorityNamespaceID {
+			return ErrAttemptAuthorityConflict
+		}
+		if !requestOmitted && (request.Authority != supervisorAuthorityTuple(transition.Identity) || request.CurrentAuthorityHead != prior.HeadDigest || request.Core.Process != owner.Acquisition.OwnerProcess || request.Core.Binary != owner.Acquisition.OwnerBinary || request.Core.UID != owner.Acquisition.OwnerUID || request.Core.GID != owner.Acquisition.OwnerGID) {
+			return ErrAttemptAuthorityConflict
+		}
+		attemptKey, err := transition.Identity.Key()
+		if err != nil {
+			return err
+		}
+		for key, state := range in.attempts {
+			if key == attemptKey || state.SupervisorBootstrapDigest == "" {
+				continue
+			}
+			other := state.SupervisorBootstrap
+			if other.SessionID == prepared.SessionID || sameControlObject(other.ControlDirectory.Device, other.ControlDirectory.Inode, prepared.ControlDirectory.Device, prepared.ControlDirectory.Inode) {
 				return ErrAttemptAuthorityConflict
 			}
 		}
@@ -489,6 +604,12 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 		if !exists || prior.Owner != closed.Owner || prior.SupervisorStartedDigest == "" || closed.SessionID != prior.SupervisorStarted.Handshake.SessionID || closed.SupervisorProcess != prior.SupervisorStarted.Handshake.SupervisorProcess || closed.FinalCommandHead == prior.SupervisorStarted.Handshake.CommandHead {
 			return ErrAttemptAuthorityConflict
 		}
+		if prior.SupervisorBootstrapDigest != "" && transition.SupervisorOutcomeFactDigest != "" && !zeroSupervisorCommandEvidence(closed.Mechanics) {
+			return ErrAttemptAuthorityConflict
+		}
+		if prior.SupervisorBootstrapDigest != "" && transition.SupervisorOutcomeFactDigest == "" && (zeroSupervisorCommandEvidence(closed.Mechanics) || closed.Mechanics.CurrentAuthorityHead != prior.HeadDigest || closed.Mechanics.Outcome.Process != prior.ProcessStartedEvidence.Outcome.Process) {
+			return ErrAttemptAuthorityConflict
+		}
 		startedAt, startedErr := time.Parse(time.RFC3339Nano, prior.SupervisorStarted.Handshake.ObservedAt)
 		closedAt, closedErr := time.Parse(time.RFC3339Nano, closed.ObservedAt)
 		if startedErr != nil || closedErr != nil || closedAt.Before(startedAt) {
@@ -498,6 +619,14 @@ func validateSupervisorTransitionAgainstProjection(in *Ingress, prior AttemptAut
 	case AttemptTransitionCleanupCompleted:
 		if !exists || prior.SupervisorClosedDigest == "" && (!historicalReplay || prior.ControlOwnerBindingDigest != "") || prior.SupervisorClosedDigest != "" && transition.SupervisorClosedFactDigest != prior.SupervisorClosedDigest {
 			return ErrAttemptAuthorityOrder
+		}
+		return nil
+	case AttemptTransitionSupervisorIntervention:
+		if _, err := currentOwner(transition.SupervisorIntervention.Owner); err != nil {
+			return err
+		}
+		if !exists || prior.SupervisorBootstrapDigest == "" || transition.SupervisorIntervention.SessionID != prior.SupervisorBootstrap.SessionID || transition.SupervisorIntervention.Owner != prior.Owner {
+			return ErrAttemptAuthorityConflict
 		}
 		return nil
 	default:
@@ -536,6 +665,28 @@ func (s *ingressDurableStore) BindOwnerToAttempt(ctx context.Context, ownerVerif
 	return result, err
 }
 
+// AppendSupervisorBootstrap records the recovery anchor before the fixed
+// supervisor executable is started. It stores only digests and identities;
+// the raw session nonce and bootstrap payload are never persisted.
+func (s *ingressDurableStore) AppendSupervisorBootstrap(ctx context.Context, ownerVerifier CurrentOwnerLockVerifier, runVerifier CurrentRunAuthorityVerifier, expectedRevision uint64, expectedHead string, request AttemptAuthorizationRequest, prepared SupervisorBootstrapPrepared) (AttemptAppendResult, error) {
+	if request.Identity.AuthorityNamespaceID != prepared.Owner.Scope.AuthorityNamespaceID || request.CurrentRunAuthority != runAuthorityBindingFor(request.Identity) {
+		return AttemptAppendResult{}, ErrControlOwnerNotCurrent
+	}
+	transition := AttemptTransition{Kind: AttemptTransitionSupervisorBootstrap, Identity: request.Identity, SupervisorBootstrap: prepared}
+	if err := validateTransitionShape(transition); err != nil {
+		return AttemptAppendResult{}, err
+	}
+	var result AttemptAppendResult
+	err := s.WithCurrentOwner(ctx, ownerVerifier, prepared.Owner, func(ControlOwnerState) error {
+		return withCurrentRunAuthority(ctx, runVerifier, request.CurrentRunAuthority, func() error {
+			var appendErr error
+			result, appendErr = s.compareAndAppend(expectedRevision, expectedHead, transition, false)
+			return appendErr
+		})
+	})
+	return result, err
+}
+
 // AppendSupervisorStarted serializes the passive supervisor handshake into
 // the exact Attempt chain under both current owner and current Run authority.
 func (s *ingressDurableStore) AppendSupervisorStarted(ctx context.Context, ownerVerifier CurrentOwnerLockVerifier, runVerifier CurrentRunAuthorityVerifier, expectedRevision uint64, expectedHead string, request AttemptAuthorizationRequest, started ProcessSupervisorStarted) (AttemptAppendResult, error) {
@@ -555,6 +706,222 @@ func (s *ingressDurableStore) AppendSupervisorStarted(ctx context.Context, owner
 		})
 	})
 	return result, err
+}
+
+// AppendSupervisorReconnect persists the authenticated Previous→Current
+// mechanics reanchor before any caller may use a new owner epoch / Attempt
+// head. It shares the command recovery chain but never advances Attempt
+// revision/head itself.
+func (s *ingressDurableStore) AppendSupervisorReconnect(ctx context.Context, ownerVerifier CurrentOwnerLockVerifier, runVerifier CurrentRunAuthorityVerifier, expectedRevision uint64, expectedHead string, request AttemptAuthorizationRequest, owner CurrentOwnerBinding, recovery processsupervisor.SessionRecoveryEvidence) (AttemptAppendResult, error) {
+	reconnect, err := newSupervisorReconnectEvidence(recovery)
+	if request.Identity.AuthorityNamespaceID != owner.Scope.AuthorityNamespaceID || request.CurrentRunAuthority != runAuthorityBindingFor(request.Identity) || err != nil {
+		return AttemptAppendResult{}, ErrControlOwnerNotCurrent
+	}
+	var result AttemptAppendResult
+	err = s.WithCurrentOwner(ctx, ownerVerifier, owner, func(ControlOwnerState) error {
+		return withCurrentRunAuthority(ctx, runVerifier, request.CurrentRunAuthority, func() error {
+			projection := newAuthorityProjection()
+			return s.transact(projection, func() error {
+				key, keyErr := request.Identity.Key()
+				if keyErr != nil {
+					return keyErr
+				}
+				state, found := projection.attempts[key]
+				if !found || state.Identity != request.Identity || state.Owner != owner || state.Revision != expectedRevision || state.HeadDigest != expectedHead || state.SupervisorStartedDigest == "" || state.SupervisorInterventionDigest != "" {
+					return ErrAttemptAuthorityConflict
+				}
+				if state.SupervisorReconnect == reconnect && state.SupervisorReconnectFactDigest != "" && state.SupervisorCommandRecoveryHead == state.SupervisorReconnectFactDigest {
+					result = AttemptAppendResult{State: state, TransitionDigest: state.SupervisorReconnectFactDigest}
+					return nil
+				}
+				if validateSupervisorReconnectAgainstState(state, owner, reconnect) != nil {
+					return ErrAttemptAuthorityOrder
+				}
+				fact := &supervisorCommandFact{ProtocolRevision: supervisorCommandProtocolRevision, FactType: supervisorReconnectFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Reconnect: reconnect}
+				if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
+					return err
+				}
+				s.nextSequence++
+				if err := applySupervisorCommandFactValue(*fact, projection); err != nil {
+					return fmt.Errorf("resultingress: appended supervisor reconnect failed projection: %w", err)
+				}
+				result = AttemptAppendResult{State: projection.attempts[key], Appended: true, TransitionDigest: fact.Digest}
+				return nil
+			})
+		})
+	})
+	return result, err
+}
+
+// AppendSupervisorCommandIntent persists one creation-once, secret-free
+// command request projection before Client.Do. The held owner and Run
+// authority span the complete RB1 CAS; no side effect is executed here.
+func (s *ingressDurableStore) AppendSupervisorCommandIntent(ctx context.Context, ownerVerifier CurrentOwnerLockVerifier, runVerifier CurrentRunAuthorityVerifier, expectedRevision uint64, expectedHead string, request AttemptAuthorizationRequest, owner CurrentOwnerBinding, intent SupervisorCommandIntent) (AttemptAppendResult, error) {
+	if request.Identity.AuthorityNamespaceID != owner.Scope.AuthorityNamespaceID || request.CurrentRunAuthority != runAuthorityBindingFor(request.Identity) {
+		return AttemptAppendResult{}, ErrControlOwnerNotCurrent
+	}
+	if err := intent.Validate(); err != nil {
+		return AttemptAppendResult{}, err
+	}
+	var result AttemptAppendResult
+	err := s.WithCurrentOwner(ctx, ownerVerifier, owner, func(ControlOwnerState) error {
+		return withCurrentRunAuthority(ctx, runVerifier, request.CurrentRunAuthority, func() error {
+			projection := newAuthorityProjection()
+			return s.transact(projection, func() error {
+				key, keyErr := request.Identity.Key()
+				if keyErr != nil {
+					return keyErr
+				}
+				state, found := projection.attempts[key]
+				if !found || state.Identity != request.Identity || state.Owner != owner || state.Revision != expectedRevision || state.HeadDigest != expectedHead || state.SupervisorInterventionDigest != "" {
+					return ErrAttemptAuthorityConflict
+				}
+				if state.SupervisorPendingIntentDigest != "" {
+					if state.SupervisorPendingIntent == intent {
+						result = AttemptAppendResult{State: state, TransitionDigest: state.SupervisorPendingIntentDigest}
+						return nil
+					}
+					return ErrAttemptAuthorityOrder
+				}
+				if validateSupervisorCommandIntentAgainstState(state, intent) != nil {
+					return ErrAttemptAuthorityOrder
+				}
+				fact := &supervisorCommandFact{ProtocolRevision: supervisorCommandProtocolRevision, FactType: supervisorCommandIntentFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Intent: intent}
+				if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
+					return err
+				}
+				s.nextSequence++
+				if err := applySupervisorCommandFactValue(*fact, projection); err != nil {
+					return fmt.Errorf("resultingress: appended supervisor intent failed projection: %w", err)
+				}
+				result = AttemptAppendResult{State: projection.attempts[key], Appended: true, TransitionDigest: fact.Digest}
+				return nil
+			})
+		})
+	})
+	return result, err
+}
+
+// AppendSupervisorCommandOutcome closes exactly the currently pending intent
+// with one already authenticated Client outcome. Rejected mechanics receipts
+// are checkpoints too: they advance sequence/head and make a later retry
+// continuous instead of leaving a hidden command gap.
+func (s *ingressDurableStore) AppendSupervisorCommandOutcome(ctx context.Context, ownerVerifier CurrentOwnerLockVerifier, runVerifier CurrentRunAuthorityVerifier, expectedRevision uint64, expectedHead string, request AttemptAuthorizationRequest, owner CurrentOwnerBinding, outcome SupervisorCommandEvidence) (AttemptAppendResult, error) {
+	if request.Identity.AuthorityNamespaceID != owner.Scope.AuthorityNamespaceID || request.CurrentRunAuthority != runAuthorityBindingFor(request.Identity) {
+		return AttemptAppendResult{}, ErrControlOwnerNotCurrent
+	}
+	if err := outcome.Validate(); err != nil {
+		return AttemptAppendResult{}, err
+	}
+	var result AttemptAppendResult
+	err := s.WithCurrentOwner(ctx, ownerVerifier, owner, func(ControlOwnerState) error {
+		return withCurrentRunAuthority(ctx, runVerifier, request.CurrentRunAuthority, func() error {
+			projection := newAuthorityProjection()
+			return s.transact(projection, func() error {
+				key, keyErr := request.Identity.Key()
+				if keyErr != nil {
+					return keyErr
+				}
+				state, found := projection.attempts[key]
+				if !found || state.Identity != request.Identity || state.Owner != owner || state.Revision != expectedRevision || state.HeadDigest != expectedHead || state.SupervisorInterventionDigest != "" {
+					return ErrAttemptAuthorityConflict
+				}
+				if state.SupervisorPendingIntentDigest == "" {
+					if len(state.SupervisorCommandCheckpoints) != 0 && state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1].Evidence == outcome {
+						checkpoint := state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1]
+						result = AttemptAppendResult{State: state, TransitionDigest: checkpoint.FactDigest}
+						return nil
+					}
+					return ErrAttemptAuthorityOrder
+				}
+				if validateSupervisorCommandOutcomeAgainstIntent(state, outcome) != nil {
+					return ErrAttemptAuthorityOrder
+				}
+				fact := &supervisorCommandFact{ProtocolRevision: supervisorCommandProtocolRevision, FactType: supervisorCommandOutcomeFactType, Sequence: s.nextSequence, AttemptKey: key, AttemptRevision: state.Revision, AttemptAuthorityHead: state.HeadDigest, PreviousRecoveryFactDigest: state.SupervisorCommandRecoveryHead, Outcome: outcome}
+				if err := s.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
+					return err
+				}
+				s.nextSequence++
+				if err := applySupervisorCommandFactValue(*fact, projection); err != nil {
+					return fmt.Errorf("resultingress: appended supervisor outcome failed projection: %w", err)
+				}
+				result = AttemptAppendResult{State: projection.attempts[key], Appended: true, TransitionDigest: fact.Digest}
+				return nil
+			})
+		})
+	})
+	return result, err
+}
+
+func applySupervisorCommandLine(line []byte, in *Ingress, wantSequence int64) error {
+	canonicalLine, err := canonical.JSON(line)
+	if err != nil || !bytes.Equal(canonicalLine, line) {
+		return fmt.Errorf("%w: supervisor command line is not canonical", ErrAttemptAuthorityConflict)
+	}
+	var fact supervisorCommandFact
+	decoder := json.NewDecoder(bytes.NewReader(line))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&fact); err != nil {
+		return fmt.Errorf("%w: %v", ErrAttemptAuthorityConflict, err)
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("%w: trailing supervisor command value", ErrAttemptAuthorityConflict)
+	}
+	if fact.ProtocolRevision != supervisorCommandProtocolRevision || fact.Sequence != wantSequence || fact.FactType != supervisorCommandIntentFactType && fact.FactType != supervisorCommandOutcomeFactType && fact.FactType != supervisorReconnectFactType {
+		return ErrAttemptAuthorityConflict
+	}
+	stored := fact.Digest
+	fact.Digest = ""
+	digest, err := canonicalDigest(fact)
+	if err != nil || stored == "" || digest != stored {
+		return ErrAttemptAuthorityConflict
+	}
+	fact.Digest = stored
+	return applySupervisorCommandFactValue(fact, in)
+}
+
+func applySupervisorCommandFactValue(fact supervisorCommandFact, in *Ingress) error {
+	state, found := in.attempts[fact.AttemptKey]
+	if !found || state.Revision != fact.AttemptRevision || state.HeadDigest != fact.AttemptAuthorityHead || state.SupervisorStartedDigest == "" || state.SupervisorInterventionDigest != "" {
+		return ErrAttemptAuthorityOrder
+	}
+	switch fact.FactType {
+	case supervisorCommandIntentFactType:
+		if fact.Outcome != (SupervisorCommandEvidence{}) || fact.Reconnect != (SupervisorReconnectEvidence{}) || state.SupervisorPendingIntentDigest != "" || fact.PreviousRecoveryFactDigest != state.SupervisorCommandRecoveryHead || validateSupervisorCommandIntentAgainstState(state, fact.Intent) != nil {
+			return ErrAttemptAuthorityConflict
+		}
+		state.SupervisorPendingIntent = fact.Intent
+		state.SupervisorPendingIntentDigest = fact.Digest
+		state.SupervisorCommandRecoveryHead = fact.Digest
+	case supervisorCommandOutcomeFactType:
+		if fact.Intent != (SupervisorCommandIntent{}) || fact.Reconnect != (SupervisorReconnectEvidence{}) || state.SupervisorPendingIntentDigest == "" || fact.PreviousRecoveryFactDigest != state.SupervisorCommandRecoveryHead || validateSupervisorCommandOutcomeAgainstIntent(state, fact.Outcome) != nil {
+			return ErrAttemptAuthorityConflict
+		}
+		state.SupervisorCommandCheckpoints = append(state.SupervisorCommandCheckpoints, SupervisorCommandCheckpoint{FactDigest: fact.Digest, Evidence: fact.Outcome})
+		advanceSupervisorCommandState(&state, fact.Outcome)
+		state.SupervisorMechanicsAnchor = fact.Outcome.PostCommand
+		if fact.Outcome.Command == processsupervisor.CommandBindAuthority && fact.Outcome.Disposition == "ok" {
+			state.SupervisorBoundAuthorityHead = fact.Outcome.BoundAuthorityHead
+			state.SupervisorMechanicsAuthorityHead = fact.Outcome.BoundAuthorityHead
+		}
+		state.SupervisorPendingIntent = SupervisorCommandIntent{}
+		state.SupervisorPendingIntentDigest = ""
+		state.SupervisorCommandRecoveryHead = fact.Digest
+	case supervisorReconnectFactType:
+		if fact.Intent != (SupervisorCommandIntent{}) || fact.Outcome != (SupervisorCommandEvidence{}) || fact.PreviousRecoveryFactDigest != state.SupervisorCommandRecoveryHead || validateSupervisorReconnectAgainstState(state, state.Owner, fact.Reconnect) != nil {
+			return ErrAttemptAuthorityConflict
+		}
+		state.SupervisorReconnect = fact.Reconnect
+		state.SupervisorReconnectFactDigest = fact.Digest
+		state.SupervisorMechanicsAnchor = fact.Reconnect.Current
+		state.SupervisorMechanicsAuthorityHead = fact.Reconnect.Current.CurrentAuthorityHead
+		state.SupervisorCommandRecoveryHead = fact.Digest
+	default:
+		return ErrAttemptAuthorityConflict
+	}
+	in.attempts[fact.AttemptKey] = state
+	return nil
 }
 
 // AppendProcessStarted closes the stale-owner gap between a durable
@@ -590,11 +957,11 @@ func (s *ingressDurableStore) AppendProcessStarted(ctx context.Context, ownerVer
 // allocation-terminated facts under the still-current cleanup binding. It does
 // not execute close mechanics; it records the already verified receipt and
 // absence observation.
-func (s *ingressDurableStore) AppendSupervisorClosed(ctx context.Context, ownerVerifier CurrentOwnerLockVerifier, runVerifier CurrentRunAuthorityVerifier, expectedRevision uint64, expectedHead string, request CleanupAuthorizationRequest, closed ProcessSupervisorClosed) (AttemptAppendResult, error) {
+func (s *ingressDurableStore) AppendSupervisorClosed(ctx context.Context, ownerVerifier CurrentOwnerLockVerifier, runVerifier CurrentRunAuthorityVerifier, expectedRevision uint64, expectedHead string, request CleanupAuthorizationRequest, closed ProcessSupervisorClosed, outcomeFactDigest string) (AttemptAppendResult, error) {
 	if request.Identity.AuthorityNamespaceID != closed.Owner.Scope.AuthorityNamespaceID || request.CurrentRunAuthority != runAuthorityBindingFor(request.Identity) || request.TerminalizationID != closed.TerminalizationID || request.CleanupBindingDigest != closed.CleanupBindingDigest || request.Operation != CleanupReconcile {
 		return AttemptAppendResult{}, ErrCleanupUnauthorized
 	}
-	transition := AttemptTransition{Kind: AttemptTransitionProcessSupervisorClosed, Identity: request.Identity, TerminalizationID: request.TerminalizationID, SupervisorClosed: closed}
+	transition := AttemptTransition{Kind: AttemptTransitionProcessSupervisorClosed, Identity: request.Identity, TerminalizationID: request.TerminalizationID, SupervisorClosed: closed, SupervisorOutcomeFactDigest: outcomeFactDigest}
 	if err := validateTransitionShape(transition); err != nil {
 		return AttemptAppendResult{}, err
 	}
@@ -603,6 +970,28 @@ func (s *ingressDurableStore) AppendSupervisorClosed(ctx context.Context, ownerV
 		var appendErr error
 		result, appendErr = s.compareAndAppendCleanup(ctx, runVerifier, expectedRevision, expectedHead, request, transition, true)
 		return appendErr
+	})
+	return result, err
+}
+
+// AppendSupervisorIntervention permanently fences a prepared supervisor
+// session whose bootstrap or command intent cannot be resolved. Exact replay
+// remains read-only; every later lifecycle mutation is rejected.
+func (s *ingressDurableStore) AppendSupervisorIntervention(ctx context.Context, ownerVerifier CurrentOwnerLockVerifier, runVerifier CurrentRunAuthorityVerifier, expectedRevision uint64, expectedHead string, request AttemptAuthorizationRequest, intervention SupervisorIntervention) (AttemptAppendResult, error) {
+	if request.Identity.AuthorityNamespaceID != intervention.Owner.Scope.AuthorityNamespaceID || request.CurrentRunAuthority != runAuthorityBindingFor(request.Identity) {
+		return AttemptAppendResult{}, ErrControlOwnerNotCurrent
+	}
+	transition := AttemptTransition{Kind: AttemptTransitionSupervisorIntervention, Identity: request.Identity, SupervisorIntervention: intervention}
+	if err := validateTransitionShape(transition); err != nil {
+		return AttemptAppendResult{}, err
+	}
+	var result AttemptAppendResult
+	err := s.WithCurrentOwner(ctx, ownerVerifier, intervention.Owner, func(ControlOwnerState) error {
+		return withCurrentRunAuthority(ctx, runVerifier, request.CurrentRunAuthority, func() error {
+			var appendErr error
+			result, appendErr = s.compareAndAppend(expectedRevision, expectedHead, transition, false)
+			return appendErr
+		})
 	})
 	return result, err
 }

@@ -510,7 +510,7 @@ func allocationAdvanceToProcessTerminal(t *testing.T, store *DurableStore, state
 	barrier := appendTestBarrier(t, store, started.State, "allocation-terminalization-1", TerminalAttemptCompleted).State
 	run := attemptTestRunAuthority(state.Identity)
 	request := CleanupAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest, Operation: CleanupReconcile}
-	terminal, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, barrier.Revision, barrier.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: state.Identity, TerminalizationID: barrier.TerminalizationID, ProcessTerminalKind: ProcessAbsent, ObservationDigest: attemptTestDigest("allocation-process-absent")})
+	terminal, _, err := appendTestProcessTerminal(t, store, barrier, request, AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: state.Identity, TerminalizationID: barrier.TerminalizationID, ProcessTerminalKind: ProcessAbsent, ObservationDigest: attemptTestDigest("allocation-process-absent")})
 	if err != nil {
 		t.Fatal(err)
 	}
