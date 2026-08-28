@@ -70,7 +70,7 @@ git diff --check
 
 需要编译反馈时，可对命中的 package 使用 `go test -race -c -o <临时路径> <package>`；该产物只作为 compile-only 证据，不得执行，并须在验证后删除。本机固定 `./bin/marshal` 可用于 live canary，但不能把上述静态/compile-only 结果表述为 unit/race 已通过。unit/race 的权威执行证据来自相同 sourceHead 的 required GitHub macOS + Linux CI。
 
-GitHub Actions 在 Linux 与 macOS 上执行同一质量门禁和漏洞扫描，并使用独立 Job 执行 Secret Scan。外部 Action 固定到完整 Commit SHA，工作流默认只有 `contents: read` 权限。
+GitHub Actions 的主线 CI 固定展开为三个 job：`Quality (ubuntu-latest)`、`Quality (macos-latest)` 与 `Secret scan`。Linux/macOS 执行同一质量门禁和漏洞扫描；只有 Ubuntu quality runtime 在 checkout 后、任何候选 Make/script/toolchain 或 `GITHUB_ENV` 写入前，以固定 `/bin/bash`、`/usr/bin/env -i`、`/usr/bin/python3 -I -B` 和封闭 `PATH` 直接执行 release authority checker。checker 先绑定完整 workflow、Makefile、自身与五个发布/安装 fixture，再由同一受限 step 直接逐项执行五个 fixture，并在每项前后重新校验 source binding。`make release-check` 只是本地便利入口，不是 CI authority。checker 对 absolute repository root、固定 path 的 non-symlink regular object、held-fd bytes 与 Git `HEAD` tree mode/blob 做精确绑定；随后对已审查的完整 workflow source 和 `release-check` recipe 做字节级 fail-closed 校验。flow-style/重复 key、额外 matrix 维度/include、Windows、第四 job、gate 迁移/注释、`continue-on-error`、Make shell/ignore/include 改写或环境污染都必须显式更新合同并重新审查。外部 Action 固定到完整 Commit SHA，工作流默认只有 `contents: read` 权限。
 
 ## 安装
 
@@ -101,7 +101,7 @@ release workflow 只接受精确的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH
 
 ### 手工验证
 
-安装脚本暂未纳入 `make check`（shellcheck 不是本仓库的冻结依赖）。release workflow 会先运行 `scripts/release-contract_test.sh` 与 `scripts/install_test.sh` 的确定性 fixture；修改 release/installer 后还应按以下步骤手工验证：
+安装脚本不直接纳入跨平台 `make check`（shellcheck 不是本仓库的冻结依赖）；它的确定性 fixture 由 release workflow 和本地便利入口 `make release-check` 执行。修改 release/installer 后还应按以下步骤手工验证：
 
 1. 干净 checkout 内运行 `bash scripts/install.sh`（本地源码构建路径）；
 2. `MARSHAL_INSTALL_DIR=<空目录> bash scripts/install.sh` 验证自定义安装目录；

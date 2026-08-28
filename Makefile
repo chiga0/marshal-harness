@@ -13,7 +13,7 @@ LDFLAGS_BASE := -s -w -buildid= \
 LDFLAGS := $(LDFLAGS_BASE) \
 	-X github.com/chiga0/marshal-harness/internal/buildinfo.selfProfile=$(SELF_PROFILE)
 
-.PHONY: format format-check architecture-check vet lint test build dist vuln check ci
+.PHONY: format format-check architecture-check vet lint test build dist vuln release-check check ci
 
 format:
 	gofmt -w $(GO_FILES)
@@ -79,6 +79,15 @@ dist:
 
 vuln:
 	$(GO) tool govulncheck ./...
+
+# Local convenience only. CI release authority invokes the fixed Python checker
+# before any candidate Make/script execution and does not trust this target.
+release-check:
+	bash scripts/release-contract_test.sh
+	bash scripts/release-ci-gate_test.sh
+	bash scripts/dist-profile_test.sh
+	bash scripts/install_test.sh
+	bash scripts/release-canary_test.sh
 
 check: format-check architecture-check vet lint test build
 

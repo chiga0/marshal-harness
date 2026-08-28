@@ -4,7 +4,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORKFLOW="${ROOT}/.github/workflows/release.yml"
-TMP_ROOT="$(mktemp -d)"
+CI_WORKFLOW="${ROOT}/.github/workflows/ci.yml"
+MAKEFILE="${ROOT}/Makefile"
+CI_CONTRACT="${ROOT}/scripts/release-ci-contract.py"
+TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 FAKE_GH="${TMP_ROOT}/gh"
 HEAD_SHA=0123456789abcdef0123456789abcdef01234567
@@ -90,6 +93,234 @@ check_workflow() {
 }
 
 check_workflow "$WORKFLOW" || fail 'release workflow 未保持 read-only build / exact payload / write-only publish 分权合同'
+
+make_contract_fixture() {
+  local name="$1" workflow="$2" makefile="$3" root
+  root="${TMP_ROOT}/contract-${name}"
+  mkdir -p "${root}/.github/workflows" "${root}/scripts"
+  cp "$workflow" "${root}/.github/workflows/ci.yml"
+  cp "$makefile" "${root}/Makefile"
+  cp "$CI_CONTRACT" "${root}/scripts/release-ci-contract.py"
+  for fixed_test in \
+    release-contract_test.sh \
+    release-ci-gate_test.sh \
+    dist-profile_test.sh \
+    install_test.sh \
+    release-canary_test.sh; do
+    cp "${ROOT}/scripts/${fixed_test}" "${root}/scripts/${fixed_test}"
+  done
+  git init -q "$root"
+  git -C "$root" config core.hooksPath /dev/null
+  git -C "$root" config user.name 'Release Contract Test'
+  git -C "$root" config user.email 'release-contract@example.invalid'
+  git -C "$root" add .github/workflows/ci.yml Makefile scripts
+  git -C "$root" commit -qm fixture
+  printf '%s\n' "$root"
+}
+
+check_main_ci_contract() {
+  local root="$1" argument_root="${2:-$1}"
+  /usr/bin/env -i LC_ALL=C PATH=/usr/bin:/bin \
+    /usr/bin/python3 -I -B "${root}/scripts/release-ci-contract.py" \
+    "$argument_root" >/dev/null
+}
+
+expect_main_ci_contract_fail() {
+  local description="$1" workflow="$2" makefile="$3" root
+  root="$(make_contract_fixture "hostile-$FIXTURE_SEQUENCE" "$workflow" "$makefile")"
+  FIXTURE_SEQUENCE=$((FIXTURE_SEQUENCE + 1))
+  if check_main_ci_contract "$root" 2>/dev/null; then
+    fail "$description 应 fail closed"
+  fi
+}
+
+FIXTURE_SEQUENCE=1
+VALID_CONTRACT_ROOT="$(make_contract_fixture valid "$CI_WORKFLOW" "$MAKEFILE")"
+BASH_ENV="${TMP_ROOT}/poison-bash-env" PATH=/nonexistent MAKEFLAGS='--silent --ignore-errors' \
+  PYTHONHOME=/nonexistent PYTHONPATH=/nonexistent \
+  check_main_ci_contract "$VALID_CONTRACT_ROOT" \
+  || fail 'main/PR CI 未保持三个 job、Ubuntu-only release-check 与五 recipe 封闭合同'
+
+awk '
+  /^      - name: Run release contract gate$/ { skip=1; next }
+  skip && /^      - name: Set up Go$/ { skip=0 }
+  !skip { print }
+' "$CI_WORKFLOW" \
+  >"${TMP_ROOT}/hostile-ci-no-release-check.yml"
+expect_main_ci_contract_fail '删除 release-check gate' \
+  "${TMP_ROOT}/hostile-ci-no-release-check.yml" "$MAKEFILE"
+
+sed 's/os: \[ubuntu-latest, macos-latest\]/os: [ubuntu-latest, macos-latest, windows-latest]/' \
+  "$CI_WORKFLOW" >"${TMP_ROOT}/hostile-ci-windows.yml"
+expect_main_ci_contract_fail '加入 Windows runtime' \
+  "${TMP_ROOT}/hostile-ci-windows.yml" "$MAKEFILE"
+
+awk '
+  { print }
+  /os: \[ubuntu-latest, macos-latest\]/ && !added { print "        go: [go1.26.6]"; added=1 }
+' "$CI_WORKFLOW" >"${TMP_ROOT}/hostile-ci-extra-dimension.yml"
+expect_main_ci_contract_fail '加入额外 matrix dimension' \
+  "${TMP_ROOT}/hostile-ci-extra-dimension.yml" "$MAKEFILE"
+
+awk '
+  { print }
+  /os: \[ubuntu-latest, macos-latest\]/ && !added {
+    print "        include:"
+    print "          - os: windows-latest"
+    added=1
+  }
+' "$CI_WORKFLOW" >"${TMP_ROOT}/hostile-ci-matrix-include.yml"
+expect_main_ci_contract_fail '加入 matrix include' \
+  "${TMP_ROOT}/hostile-ci-matrix-include.yml" "$MAKEFILE"
+
+sed 's|^              /usr/bin/python3 -I -B|              # /usr/bin/python3 -I -B|' \
+  "$CI_WORKFLOW" >"${TMP_ROOT}/hostile-ci-commented-gate.yml"
+expect_main_ci_contract_fail '注释 release-check gate' \
+  "${TMP_ROOT}/hostile-ci-commented-gate.yml" "$MAKEFILE"
+
+sed "s/matrix.os == 'ubuntu-latest'/matrix.os == 'macos-latest'/" \
+  "$CI_WORKFLOW" >"${TMP_ROOT}/hostile-ci-moved-gate.yml"
+expect_main_ci_contract_fail '把 gate 迁移到 macOS' \
+  "${TMP_ROOT}/hostile-ci-moved-gate.yml" "$MAKEFILE"
+
+awk '
+  { print }
+  /^        shell: \/bin\/bash --noprofile/ && !added {
+    print "        continue-on-error: true"
+    added=1
+  }
+' "$CI_WORKFLOW" >"${TMP_ROOT}/hostile-ci-continue-on-error.yml"
+expect_main_ci_contract_fail 'gate 设置 continue-on-error' \
+  "${TMP_ROOT}/hostile-ci-continue-on-error.yml" "$MAKEFILE"
+
+awk '
+  /^  secrets:/ && !added {
+    print "  diagnostic:"
+    print "    name: Diagnostic"
+    print "    runs-on: ubuntu-latest"
+    print "    steps: []"
+    added=1
+  }
+  { print }
+' "$CI_WORKFLOW" >"${TMP_ROOT}/hostile-ci-fourth-job.yml"
+expect_main_ci_contract_fail '加入第四个 block-style job' \
+  "${TMP_ROOT}/hostile-ci-fourth-job.yml" "$MAKEFILE"
+
+awk '
+  /^  secrets:/ && !added {
+    print "  diagnostic: {name: Diagnostic, runs-on: ubuntu-latest, steps: []}"
+    added=1
+  }
+  { print }
+' "$CI_WORKFLOW" >"${TMP_ROOT}/hostile-ci-flow-job.yml"
+expect_main_ci_contract_fail '加入 flow-style 第四 job' \
+  "${TMP_ROOT}/hostile-ci-flow-job.yml" "$MAKEFILE"
+
+awk '
+  { print }
+  /uses: actions\/checkout@/ && !added {
+    print ""
+    print "      - name: Poison later release gate environment"
+    print "        run: |"
+    print "          echo BASH_ENV=/tmp/poison >> \"$GITHUB_ENV\""
+    print "          echo PATH=/tmp/poison >> \"$GITHUB_ENV\""
+    print "          echo MAKEFLAGS=--ignore-errors >> \"$GITHUB_ENV\""
+    added=1
+  }
+' "$CI_WORKFLOW" >"${TMP_ROOT}/hostile-ci-environment-pollution.yml"
+expect_main_ci_contract_fail '在 authority gate 前污染环境' \
+  "${TMP_ROOT}/hostile-ci-environment-pollution.yml" "$MAKEFILE"
+
+sed '/^\tbash scripts\/release-canary_test.sh$/d' "$MAKEFILE" \
+  >"${TMP_ROOT}/hostile-make-missing-recipe"
+expect_main_ci_contract_fail '删除 release-check recipe' \
+  "$CI_WORKFLOW" "${TMP_ROOT}/hostile-make-missing-recipe"
+
+sed 's/^\tbash scripts\/release-canary_test.sh$/\t# bash scripts\/release-canary_test.sh/' \
+  "$MAKEFILE" >"${TMP_ROOT}/hostile-make-commented-recipe"
+expect_main_ci_contract_fail '注释 release-check recipe' \
+  "$CI_WORKFLOW" "${TMP_ROOT}/hostile-make-commented-recipe"
+
+sed 's/^\tbash scripts\/release-canary_test.sh$/\tbash scripts\/release-canary_test.sh --moved/' \
+  "$MAKEFILE" >"${TMP_ROOT}/hostile-make-moved-recipe"
+expect_main_ci_contract_fail '迁移 release-check recipe' \
+  "$CI_WORKFLOW" "${TMP_ROOT}/hostile-make-moved-recipe"
+
+sed 's/^\.PHONY: \(.*\) release-check \(.*\)$/.PHONY: \1 \2/' \
+  "$MAKEFILE" >"${TMP_ROOT}/hostile-make-not-phony"
+expect_main_ci_contract_fail 'release-check 不再是 phony target' \
+  "$CI_WORKFLOW" "${TMP_ROOT}/hostile-make-not-phony"
+
+awk '
+  { print }
+  /^release-check:$/ && !added { print "release-check: bypass"; added=1 }
+' "$MAKEFILE" >"${TMP_ROOT}/hostile-make-second-rule"
+expect_main_ci_contract_fail '加入第二个 release-check rule' \
+  "$CI_WORKFLOW" "${TMP_ROOT}/hostile-make-second-rule"
+
+for directive in \
+  '.IGNORE: release-check' \
+  '.ONESHELL:' \
+  'SHELL := /usr/bin/true' \
+  '.SHELLFLAGS := -c' \
+  'include scripts/override-release.mk'; do
+  printf '\n%s\n' "$directive" >"${TMP_ROOT}/hostile-make-directive"
+  cat "$MAKEFILE" >>"${TMP_ROOT}/hostile-make-directive"
+  expect_main_ci_contract_fail "Make directive ${directive}" \
+    "$CI_WORKFLOW" "${TMP_ROOT}/hostile-make-directive"
+done
+
+printf '\357\273\277' >"${TMP_ROOT}/hostile-ci-bom.yml"
+cat "$CI_WORKFLOW" >>"${TMP_ROOT}/hostile-ci-bom.yml"
+expect_main_ci_contract_fail 'workflow UTF-8 BOM' \
+  "${TMP_ROOT}/hostile-ci-bom.yml" "$MAKEFILE"
+
+awk 'NR == 1 { printf "%s\r\n", $0; next } { print }' \
+  "$CI_WORKFLOW" >"${TMP_ROOT}/hostile-ci-cr.yml"
+expect_main_ci_contract_fail 'workflow CR byte' \
+  "${TMP_ROOT}/hostile-ci-cr.yml" "$MAKEFILE"
+
+cp "$CI_WORKFLOW" "${TMP_ROOT}/hostile-ci-nul.yml"
+printf '\0' >>"${TMP_ROOT}/hostile-ci-nul.yml"
+expect_main_ci_contract_fail 'workflow NUL byte' \
+  "${TMP_ROOT}/hostile-ci-nul.yml" "$MAKEFILE"
+
+SYMLINK_CONTRACT_ROOT="$(make_contract_fixture symlink "$CI_WORKFLOW" "$MAKEFILE")"
+mv "${SYMLINK_CONTRACT_ROOT}/.github/workflows/ci.yml" \
+  "${SYMLINK_CONTRACT_ROOT}/.github/workflows/ci.real.yml"
+ln -s ci.real.yml "${SYMLINK_CONTRACT_ROOT}/.github/workflows/ci.yml"
+git -C "$SYMLINK_CONTRACT_ROOT" add .github/workflows/ci.yml .github/workflows/ci.real.yml
+git -C "$SYMLINK_CONTRACT_ROOT" commit -qm symlink
+if check_main_ci_contract "$SYMLINK_CONTRACT_ROOT" 2>/dev/null; then
+  fail 'fixed workflow symlink 应 fail closed'
+fi
+
+MODE_CONTRACT_ROOT="$(make_contract_fixture mode "$CI_WORKFLOW" "$MAKEFILE")"
+chmod 0755 "${MODE_CONTRACT_ROOT}/Makefile"
+git -C "$MODE_CONTRACT_ROOT" add Makefile
+git -C "$MODE_CONTRACT_ROOT" commit -qm mode
+if check_main_ci_contract "$MODE_CONTRACT_ROOT" 2>/dev/null; then
+  fail 'fixed path Git tree executable mode 应 fail closed'
+fi
+
+DIRTY_CONTRACT_ROOT="$(make_contract_fixture dirty "$CI_WORKFLOW" "$MAKEFILE")"
+printf '\n# dirty bytes\n' >>"${DIRTY_CONTRACT_ROOT}/.github/workflows/ci.yml"
+if check_main_ci_contract "$DIRTY_CONTRACT_ROOT" 2>/dev/null; then
+  fail 'fixed path bytes 与 HEAD tree blob 漂移应 fail closed'
+fi
+
+if check_main_ci_contract "$VALID_CONTRACT_ROOT" . 2>/dev/null; then
+  fail 'relative repository root 应 fail closed'
+fi
+if check_main_ci_contract "$VALID_CONTRACT_ROOT" "${VALID_CONTRACT_ROOT}/scripts" 2>/dev/null; then
+  fail '非 repository root 的绝对 path 应 fail closed'
+fi
+ln -s "$VALID_CONTRACT_ROOT" "${TMP_ROOT}/contract-root-symlink"
+if /usr/bin/python3 -I -B \
+  "${TMP_ROOT}/contract-root-symlink/scripts/release-ci-contract.py" \
+  "${TMP_ROOT}/contract-root-symlink" >/dev/null 2>&1; then
+  fail 'symlink repository root 应 fail closed'
+fi
 
 awk '
   /^  build:/ { build=1 }
