@@ -23,7 +23,7 @@ func TestGenerateDefaultsAndPreservesExplicitOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertWorkerOrder(t, generated, "qoder", []string{"codex", "qwen", "pi"})
+	assertWorkerOrder(t, generated, "pi", []string{})
 
 	draft = taskDraft(t)
 	worker = draft["worker"].(map[string]any)

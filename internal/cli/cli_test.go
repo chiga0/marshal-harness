@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/adapter"
 	"github.com/chiga0/marshal-harness/internal/app"
 	"github.com/chiga0/marshal-harness/internal/buildinfo"
 	"github.com/chiga0/marshal-harness/internal/canonical"
@@ -721,10 +722,9 @@ func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
 	}
 }
 
-// TestTaskPlanProductionDefaultOrder pins the production task-generation
-// contract at the real CLI boundary. Planning itself remains deliberately
-// explicit: the generated TaskSpec carries qoder -> codex -> qwen -> pi, and
-// the Selector attempts that exact order without adding configured OpenCode.
+// TestTaskPlanProductionDefaultOrder pins the v1 supported production
+// contract at the real CLI boundary. A generated TaskSpec carries only Pi;
+// configured ordinary compatibility adapters are not production fallbacks.
 func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 	originalDirectory, err := os.Getwd()
 	if err != nil {
@@ -767,6 +767,7 @@ func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 	// OpenCode is configured to prove it is never injected into the explicit
 	// production candidate chain.
 	configureQwenAuthFixture(t)
+	t.Setenv("MARSHAL_WORKER_EXECUTOR", "")
 	t.Setenv("MARSHAL_QODER_PATH", writeVersionExecutable("qodercli", "1.1.23"))
 	t.Setenv("MARSHAL_QODER_CONFORMANCE_CONFIG", "")
 	t.Setenv("MARSHAL_CODEX_PATH", writeVersionExecutable("codex", "0.145.0"))
@@ -808,7 +809,7 @@ func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 		runID  = "cli-default-order-run"
 	)
 	taskPath, generated := scaffold(taskID)
-	assertCLITaskWorkerOrder(t, generated, "qoder", []string{"codex", "qwen", "pi"})
+	assertCLITaskWorkerOrder(t, generated, "pi", []string{})
 	policyPath := filepath.Join(t.TempDir(), "policy.json")
 	writeCLIFixture(t, policyPath, cliPlanningPolicyWithWorkers(t, taskID, runID, true, []any{"qoder", "codex", "qwen", "pi", "opencode"}))
 
@@ -831,11 +832,7 @@ func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 	if result.State.State != domain.StateReady {
 		t.Fatalf("planning state = %+v", result.State)
 	}
-	want := []struct{ adapterID, outcome string }{
-		{"qoder", "unsupported"},
-		{"codex", "unsupported"},
-		{"qwen", "selected"},
-	}
+	want := []struct{ adapterID, outcome string }{{"pi", "selected"}}
 	if len(result.SelectionAttempts) != len(want) {
 		t.Fatalf("selection attempts = %+v, want %d attempts", result.SelectionAttempts, len(want))
 	}
@@ -862,8 +859,27 @@ func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 		"--fallback-adapter", "qoder",
 	)
 	assertCLITaskWorkerOrder(t, customGenerated, "pi", []string{"qwen", "codex", "qoder"})
-	_, singleGenerated := scaffold("cli-single-worker-task", "--preferred-adapter", "qwen")
+	singleTaskPath, singleGenerated := scaffold("cli-single-worker-task", "--preferred-adapter", "qwen")
 	assertCLITaskWorkerOrder(t, singleGenerated, "qwen", []string{})
+	singlePolicyPath := filepath.Join(t.TempDir(), "policy.json")
+	writeCLIFixture(t, singlePolicyPath, cliPlanningPolicyWithWorkers(t, "cli-single-worker-task", "cli-single-worker-run", true, []any{"qwen"}))
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"task", "plan", "--task", singleTaskPath, "--policy", singlePolicyPath, "--run", "cli-single-worker-run", "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitFailure || !strings.Contains(stderr.String(), adapter.OutcomeNotLaunchCapable) {
+		t.Fatalf("production qwen selection exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(repositoryRoot, ".marshal", "runs", "cli-single-worker-run")); !os.IsNotExist(err) {
+		t.Fatalf("rejected compatibility adapter created run state: %v", err)
+	}
+	// The same adapter remains available through the explicit compatibility
+	// executor and is never represented as production-capable.
+	t.Setenv("MARSHAL_WORKER_EXECUTOR", "legacy")
+	stdout.Reset()
+	stderr.Reset()
+	if exit := Run([]string{"task", "plan", "--task", singleTaskPath, "--policy", singlePolicyPath, "--run", "cli-single-worker-run", "--json"}, strings.NewReader(""), &stdout, &stderr); exit != ExitOK {
+		t.Fatalf("legacy qwen selection exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
+	}
+	t.Setenv("MARSHAL_WORKER_EXECUTOR", "")
 	customPolicyPath := filepath.Join(t.TempDir(), "policy.json")
 	writeCLIFixture(t, customPolicyPath, cliPlanningPolicyWithWorkers(t, customTaskID, customRunID, true, []any{"qoder", "codex", "qwen", "pi", "opencode"}))
 	stdout.Reset()
@@ -1140,6 +1156,7 @@ func writeCLIFixture(t *testing.T, path string, value any) {
 
 func configureQwenAuthFixture(t *testing.T) *atomic.Bool {
 	t.Helper()
+	t.Setenv("MARSHAL_WORKER_EXECUTOR", "legacy")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	settingsPath := filepath.Join(home, ".qwen", "settings.json")
