@@ -634,6 +634,90 @@ func TestTaskCreateInputRejections(t *testing.T) {
 	}
 }
 
+func TestDefaultServerSelectorRejectsCompatibilityAdapterWithoutRunAndAdmitsPi(t *testing.T) {
+	root := fixtureRepository(t)
+	stateRoot := filepath.Join(root, ".marshal")
+	if err := (repository.State{RepositoryRoot: root, StateRoot: stateRoot}).Init(); err != nil {
+		t.Fatalf("bind identity: %v", err)
+	}
+	writeVersionExecutable := func(name, version string) (string, string) {
+		t.Helper()
+		marker := filepath.Join(t.TempDir(), name+"-invoked")
+		path := filepath.Join(t.TempDir(), name)
+		script := fmt.Sprintf("#!/bin/sh\n: > %q\nprintf '%%s\\n' %q\n", marker, version)
+		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path, marker
+	}
+	qoderPath, qoderMarker := writeVersionExecutable("qodercli", "1.1.27")
+	piPath, piMarker := writeVersionExecutable("pi", "0.84.3")
+	env := map[string]string{
+		"MARSHAL_QODER_PATH": qoderPath,
+		"MARSHAL_QODER_MODE": "ordinary-user",
+		"MARSHAL_PI_PATH":    piPath,
+	}
+	server, err := New(Config{
+		StateRoot: stateRoot, RepositoryRoot: root, Selector: nil,
+		Getenv: func(name string) string { return env[name] },
+		Now:    func() time.Time { return fixtureClock },
+	})
+	if err != nil {
+		t.Fatalf("assemble default server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	fixture := &serverFixture{
+		t: t, server: server, repositoryRoot: root, stateRoot: stateRoot,
+		baseSHA: fixtureBaseSHA(t, root), scope: "repo:" + filepath.ToSlash(root),
+	}
+
+	const rejectedTaskID, rejectedRunID = "task-qoder-production-rejected", "run-qoder-production-rejected"
+	rejected := fixture.do(http.MethodPost, APIPrefix+"/tasks",
+		withContentType(fixture.identityHeaders("req-qoder-production-rejected")),
+		mutationBody(t, "key-qoder-production-rejected", map[string]any{
+			"runId":          rejectedRunID,
+			"taskSpec":       fixtureTask(root, rejectedTaskID, "qoder", fixture.baseSHA),
+			"policySnapshot": json.RawMessage(sealPolicy(t, fixturePolicy(rejectedTaskID, rejectedRunID, "qoder"))),
+		}))
+	if rejected.status != http.StatusUnprocessableEntity {
+		t.Fatalf("qoder production status=%d body=%s", rejected.status, rejected.body)
+	}
+	if body := rejected.decodeError(t); body.Code != CodeRejected || body.Reason != "planning-rejected" {
+		t.Fatalf("qoder production error=%+v", body)
+	}
+	if _, err := runstore.New(stateRoot).Inspect(rejectedRunID); !os.IsNotExist(err) {
+		t.Fatalf("rejected qoder left Run state: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(stateRoot, "runs", rejectedRunID)); !os.IsNotExist(err) {
+		t.Fatalf("rejected qoder left Run directory: %v", err)
+	}
+	if _, err := os.Lstat(qoderMarker); !os.IsNotExist(err) {
+		t.Fatalf("production selector probed non-LaunchCapable qoder: %v", err)
+	}
+
+	const piTaskID, piRunID = "task-pi-production", "run-pi-production"
+	created := fixture.do(http.MethodPost, APIPrefix+"/tasks",
+		withContentType(fixture.identityHeaders("req-pi-production")),
+		mutationBody(t, "key-pi-production", map[string]any{
+			"runId":          piRunID,
+			"taskSpec":       fixtureTask(root, piTaskID, "pi", fixture.baseSHA),
+			"policySnapshot": json.RawMessage(sealPolicy(t, fixturePolicy(piTaskID, piRunID, "pi"))),
+		}))
+	if created.status != http.StatusCreated {
+		t.Fatalf("pi production status=%d body=%s", created.status, created.body)
+	}
+	var submission TaskSubmission
+	if err := json.Unmarshal(created.body, &submission); err != nil {
+		t.Fatal(err)
+	}
+	if submission.AdapterID != "pi" || submission.State.State != domain.StateReady {
+		t.Fatalf("pi production submission=%+v", submission)
+	}
+	if _, err := os.Stat(piMarker); err != nil {
+		t.Fatalf("production selector did not probe Pi: %v", err)
+	}
+}
+
 func TestRunApprovalInputRejections(t *testing.T) {
 	fixture := newServerFixture(t)
 	headers := withContentType(fixture.identityHeaders("req-approve-invalid"))

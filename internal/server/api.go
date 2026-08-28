@@ -191,7 +191,8 @@ type Config struct {
 	StateRoot      string
 	RepositoryRoot string
 	// Selector overrides the Worker adapter selector. When nil the server
-	// builds app.NewWorkerRuntime(Getenv) exactly like the embedded CLI.
+	// builds app.NewWorkerRuntime(Getenv) and uses its fail-closed production
+	// selector. Compatibility selectors remain an explicit injection seam.
 	Selector *adapter.Selector
 	// Validator overrides the contract validator.
 	Validator *contract.Validator
@@ -279,7 +280,7 @@ func New(config Config) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("server: initialize worker runtime: %w", err)
 		}
-		selector = runtime.Selector()
+		selector = runtime.ProductionSelector()
 	}
 	now := config.Now
 	if now == nil {
