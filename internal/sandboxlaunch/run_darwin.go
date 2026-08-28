@@ -38,7 +38,6 @@ func RunChild() error {
 	defer workingDirectory.Close()
 	defer executable.Close()
 	defer marshalImage.Close()
-
 	raw, err := io.ReadAll(io.LimitReader(specFile, MaxSpecBytes+1))
 	if err != nil || len(raw) > MaxSpecBytes {
 		return protocolError("spec read")
@@ -46,6 +45,23 @@ func RunChild() error {
 	spec, err := Decode(raw)
 	if err != nil || spec.ParentPID != os.Getppid() {
 		return protocolError("spec")
+	}
+	var closureFiles []*os.File
+	for _, root := range spec.Roots {
+		file := inheritedFile(uintptr(root.FD), "marshal-root")
+		if file == nil {
+			return protocolError("root fd")
+		}
+		closureFiles = append(closureFiles, file)
+		defer file.Close()
+	}
+	for _, material := range spec.Materials {
+		file := inheritedFile(uintptr(material.FD), "marshal-material")
+		if file == nil {
+			return protocolError("material fd")
+		}
+		closureFiles = append(closureFiles, file)
+		defer file.Close()
 	}
 
 	checks := []struct {
@@ -63,6 +79,19 @@ func RunChild() error {
 	}
 	for _, check := range checks {
 		if err := verifyFile(check.file, check.binding, check.kind, check.requireSHA); err != nil {
+			return err
+		}
+	}
+	for index, root := range spec.Roots {
+		if err := verifyFile(closureFiles[index], root.Object, unix.S_IFDIR, false); err != nil {
+			return err
+		}
+	}
+	for index, material := range spec.Materials {
+		if err := verifyFile(closureFiles[len(spec.Roots)+index], material.Object, unix.S_IFREG, true); err != nil {
+			return err
+		}
+		if err := verifyPath(material.Path, material.Object); err != nil {
 			return err
 		}
 	}
@@ -99,6 +128,19 @@ func RunChild() error {
 			return err
 		}
 	}
+	for index, root := range spec.Roots {
+		if err := verifyFile(closureFiles[index], root.Object, unix.S_IFDIR, false); err != nil {
+			return err
+		}
+	}
+	for index, material := range spec.Materials {
+		if err := verifyFile(closureFiles[len(spec.Roots)+index], material.Object, unix.S_IFREG, true); err != nil {
+			return err
+		}
+		if err := verifyPath(material.Path, material.Object); err != nil {
+			return err
+		}
+	}
 	if err := verifyPath(spec.ExecutablePath, spec.Executable); err != nil {
 		return err
 	}
@@ -111,6 +153,17 @@ func RunChild() error {
 	_ = workingDirectory.Close()
 	_ = marshalImage.Close()
 	unix.CloseOnExec(ExecutableFD)
+	for _, file := range closureFiles {
+		_ = file.Close()
+	}
+
+	// Darwin exec-stop is the post-exec barrier. PT_TRACE_ME causes the kernel
+	// to stop this exact child on the following exec, after the Node image is
+	// installed but before its first userspace instruction (and therefore
+	// before the provider entrypoint) can run.
+	if _, _, errno := syscall.RawSyscall6(syscall.SYS_PTRACE, uintptr(syscall.PT_TRACE_ME), 0, 0, 0, 0, 0); errno != 0 {
+		return protocolError("exec barrier")
+	}
 
 	if err := syscall.Exec(spec.ExecutablePath, spec.Arguments, spec.Environment); err != nil {
 		return protocolError("exec")

@@ -136,7 +136,10 @@ var workerBindings = []workerBinding{
 		environmentVariable: "MARSHAL_PI_PATH",
 		binaryNames:         []string{"pi"},
 		identify:            pi.Identify,
-		construct: func(executable string, validator *contract.Validator, _ func(string) string) (port.WorkerAdapter, error) {
+		construct: func(executable string, validator *contract.Validator, getenv func(string) string) (port.WorkerAdapter, error) {
+			if runtime := getenv("MARSHAL_PI_NODE_PATH"); runtime != "" {
+				return pi.NewWithRuntime(executable, runtime, validator)
+			}
 			return pi.New(executable, validator)
 		},
 	},

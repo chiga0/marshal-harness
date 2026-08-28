@@ -24,6 +24,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/adapter/denials"
 	"github.com/chiga0/marshal-harness/internal/contract"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/port"
 	"github.com/chiga0/marshal-harness/internal/sandboxbridge"
 )
@@ -131,9 +132,10 @@ var (
 )
 
 type Adapter struct {
-	executable string
-	validator  *contract.Validator
-	now        func() time.Time
+	executable  string
+	nodeRuntime string
+	validator   *contract.Validator
+	now         func() time.Time
 	// spawn starts the prepared worker process. It is an injectable seam used
 	// only by Run: tests replace it to prove PrepareLaunch and every
 	// fail-closed gate complete without ever starting a process. The
@@ -156,6 +158,17 @@ var _ port.TerminalLaunchAdapter = (*Adapter)(nil)
 // New requires an exact absolute executable path. Marshal never resolves a
 // provider executable by a similar name or by an implicit fallback.
 func New(executable string, validator *contract.Validator) (*Adapter, error) {
+	return newAdapter(executable, "", validator)
+}
+
+// NewWithRuntime freezes the explicit Node runtime required by the Pi 0.84.3
+// production closure. The configured Pi entrypoint remains provider material;
+// it is never used as the kernel executable.
+func NewWithRuntime(executable, nodeRuntime string, validator *contract.Validator) (*Adapter, error) {
+	return newAdapter(executable, nodeRuntime, validator)
+}
+
+func newAdapter(executable, nodeRuntime string, validator *contract.Validator) (*Adapter, error) {
 	if validator == nil {
 		return nil, errors.New("contract validator is required")
 	}
@@ -173,7 +186,20 @@ func New(executable string, validator *contract.Validator) (*Adapter, error) {
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("pi executable must be an executable regular file")
 	}
-	return &Adapter{executable: realPath, validator: validator, now: time.Now}, nil
+	if nodeRuntime != "" {
+		if !filepath.IsAbs(nodeRuntime) || filepath.Clean(nodeRuntime) != nodeRuntime {
+			return nil, errors.New("pi Node runtime must be an absolute clean path")
+		}
+		resolvedNode, resolveErr := filepath.EvalSymlinks(nodeRuntime)
+		if resolveErr != nil || resolvedNode != nodeRuntime {
+			return nil, errors.New("pi Node runtime must be a canonical non-symlink path")
+		}
+		nodeInfo, statErr := os.Lstat(nodeRuntime)
+		if statErr != nil || !nodeInfo.Mode().IsRegular() || nodeInfo.Mode().Perm()&0o111 == 0 {
+			return nil, errors.New("pi Node runtime must be an executable regular file")
+		}
+	}
+	return &Adapter{executable: realPath, nodeRuntime: nodeRuntime, validator: validator, now: time.Now}, nil
 }
 
 func (a *Adapter) ID() string { return adapterID }
@@ -412,6 +438,7 @@ type LaunchPlan struct {
 	model           string
 	identity        executableIdentity
 	attemptDeadline time.Time
+	heldClosure     *launchidentity.HeldClosure
 }
 
 // PrepareLaunch performs every precompute Run performed before starting the
@@ -487,9 +514,18 @@ func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (sand
 	if err != nil {
 		return nil, err
 	}
+	if identity.version != supportedBinary843 || a.nodeRuntime == "" {
+		return nil, fmt.Errorf("%w: Pi production launch requires 0.84.3 and an explicit canonical Node runtime", launchidentity.ErrUnavailable)
+	}
+	argv := append([]string{a.nodeRuntime, identity.path}, args...)
+	environment := workerEnvironment(worktree)
+	heldClosure, err := launchidentity.OpenPi0843(a.nodeRuntime, identity.path, argv, environment, worktree)
+	if err != nil {
+		return nil, err
+	}
 	return &LaunchPlan{
-		ExecArgv:              append([]string{identity.path}, args...),
-		Environment:           workerEnvironment(worktree),
+		ExecArgv:              argv,
+		Environment:           environment,
 		WorkingDirectory:      worktree,
 		AttemptTimeoutSeconds: int64(request.AttemptTimeoutSeconds),
 		ResultPath:            resultPath,
@@ -500,6 +536,7 @@ func (a *Adapter) PrepareLaunch(ctx context.Context, record domain.Record) (sand
 		model:                 model,
 		identity:              identity,
 		attemptDeadline:       attemptDeadline,
+		heldClosure:           heldClosure,
 	}, nil
 }
 
@@ -523,6 +560,18 @@ func (p *LaunchPlan) ControlRootPath() string   { return p.ControlRoot }
 func (p *LaunchPlan) SessionPolicyName() string { return p.SessionPolicy }
 func (p *LaunchPlan) MaxOutput() int64          { return p.MaxOutputBytes }
 func (p *LaunchPlan) ProviderVersion() string   { return p.BinaryVersion() }
+func (p *LaunchPlan) LaunchClosure() launchidentity.ClosureV1 {
+	if p == nil || p.heldClosure == nil {
+		return launchidentity.ClosureV1{}
+	}
+	return p.heldClosure.Closure
+}
+func (p *LaunchPlan) CloseLaunchClosure() {
+	if p != nil && p.heldClosure != nil {
+		p.heldClosure.Close()
+		p.heldClosure = nil
+	}
+}
 
 // executionOutcome carries every observation of one executed attempt that the
 // completion pipeline consumes, independent of how the process was executed:
@@ -614,7 +663,12 @@ func validateCompletionInput(plan *LaunchPlan, started, completed time.Time, exi
 	if plan.attemptDeadline.IsZero() || plan.identity.path == "" || plan.request.AttemptID == "" {
 		return errors.New("LaunchPlan was not produced by PrepareLaunch")
 	}
-	if len(plan.ExecArgv) == 0 || !filepath.IsAbs(plan.ExecArgv[0]) || plan.ExecArgv[0] != plan.identity.path {
+	if plan.heldClosure != nil {
+		closure := plan.heldClosure.Closure
+		if len(plan.ExecArgv) < 2 || !filepath.IsAbs(plan.ExecArgv[0]) || plan.ExecArgv[0] != closure.RuntimeExecutable.CanonicalPath || plan.ExecArgv[1] != plan.identity.path || closure.Arguments[0] != plan.ExecArgv[0] {
+			return errors.New("LaunchPlan argv does not match the held runtime closure")
+		}
+	} else if len(plan.ExecArgv) == 0 || !filepath.IsAbs(plan.ExecArgv[0]) || plan.ExecArgv[0] != plan.identity.path {
 		return errors.New("LaunchPlan argv does not match the inspected executable")
 	}
 	if !filepath.IsAbs(plan.WorkingDirectory) || !filepath.IsAbs(plan.ControlRoot) || !filepath.IsAbs(plan.ResultPath) {

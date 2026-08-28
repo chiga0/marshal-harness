@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 )
 
 // attemptAuthorityProtocolRevision is deliberately separate from the legacy
@@ -140,6 +142,7 @@ type ProcessObservation struct {
 	ExecutableSize         int64  `json:"executableSize"`
 	ExecutableType         uint32 `json:"executableFileType"`
 	ExecutableOwner        uint32 `json:"executableOwner"`
+	ExecutableGroup        uint32 `json:"executableGroup"`
 	ExecutableMode         uint32 `json:"executableMode"`
 	ExecutableLinkCount    uint64 `json:"executableLinkCount"`
 	ExecutableSHA256       string `json:"executableSha256"`
@@ -315,19 +318,22 @@ const (
 // AttemptTransition is a sealed union. Only fields required by Kind may be
 // populated; strict fact decoding and transition validation reject ambiguity.
 type AttemptTransition struct {
-	Kind                  AttemptTransitionKind `json:"kind"`
-	Identity              AttemptIdentity       `json:"identity"`
-	LaunchAuthorizationID string                `json:"launchAuthorizationId,omitempty"`
-	CommandID             string                `json:"commandId,omitempty"`
-	ObservedAt            string                `json:"observedAt,omitempty"`
-	Process               ProcessObservation    `json:"process,omitempty"`
-	TerminalizationID     string                `json:"terminalizationId,omitempty"`
-	EligibilityTerminal   EligibilityTerminal   `json:"eligibilityTerminal,omitempty"`
-	ProcessTerminalKind   ProcessTerminalKind   `json:"processTerminalKind,omitempty"`
-	ObservationDigest     string                `json:"terminalObservationDigest,omitempty"`
-	ReceiptDigest         string                `json:"receiptDigest,omitempty"`
-	AdmissionFactDigest   string                `json:"admissionFactDigest,omitempty"`
-	AdmissionSequence     uint64                `json:"admissionSequence,omitempty"`
+	Kind                  AttemptTransitionKind    `json:"kind"`
+	Identity              AttemptIdentity          `json:"identity"`
+	LaunchAuthorizationID string                   `json:"launchAuthorizationId,omitempty"`
+	CommandID             string                   `json:"commandId,omitempty"`
+	ObservedAt            string                   `json:"observedAt,omitempty"`
+	Process               ProcessObservation       `json:"process,omitempty"`
+	TerminalizationID     string                   `json:"terminalizationId,omitempty"`
+	EligibilityTerminal   EligibilityTerminal      `json:"eligibilityTerminal,omitempty"`
+	ProcessTerminalKind   ProcessTerminalKind      `json:"processTerminalKind,omitempty"`
+	ObservationDigest     string                   `json:"terminalObservationDigest,omitempty"`
+	ReceiptDigest         string                   `json:"receiptDigest,omitempty"`
+	AdmissionFactDigest   string                   `json:"admissionFactDigest,omitempty"`
+	AdmissionSequence     uint64                   `json:"admissionSequence,omitempty"`
+	LaunchClosure         launchidentity.ClosureV1 `json:"launchClosure,omitempty"`
+	LaunchMaterialsDigest string                   `json:"launchMaterialsDigest,omitempty"`
+	AgentLaunchSpecDigest string                   `json:"agentLaunchSpecDigest,omitempty"`
 }
 
 type AttemptAuthorityState struct {
@@ -362,16 +368,19 @@ type AttemptAuthorityState struct {
 	// PendingEffect* is the durable exclusion barrier established by an
 	// effect-intent fact. It is cleared only by the matching reconcile fact;
 	// receipt alone remains an observation and cannot unlock the Attempt.
-	PendingEffectID                  string      `json:"pendingEffectId,omitempty"`
-	PendingEffectIntentFactDigest    string      `json:"pendingEffectIntentFactDigest,omitempty"`
-	PendingEffectRecordDigest        string      `json:"pendingEffectRecordDigest,omitempty"`
-	PendingEffectMarkerDigest        string      `json:"pendingEffectMarkerDigest,omitempty"`
-	PendingEffectPhase               EffectPhase `json:"pendingEffectPhase,omitempty"`
-	AllocationProvisionEffectDigest  string      `json:"allocationProvisionEffectDigest,omitempty"`
-	AllocationProvisionReceiptDigest string      `json:"allocationProvisionReceiptDigest,omitempty"`
-	AllocationTerminateEffectDigest  string      `json:"allocationTerminateEffectDigest,omitempty"`
-	AllocationTerminateReceiptDigest string      `json:"allocationTerminateReceiptDigest,omitempty"`
-	EffectInterventionDigest         string      `json:"effectInterventionDigest,omitempty"`
+	PendingEffectID                  string                         `json:"pendingEffectId,omitempty"`
+	PendingEffectIntentFactDigest    string                         `json:"pendingEffectIntentFactDigest,omitempty"`
+	PendingEffectRecordDigest        string                         `json:"pendingEffectRecordDigest,omitempty"`
+	PendingEffectMarkerDigest        string                         `json:"pendingEffectMarkerDigest,omitempty"`
+	PendingEffectPhase               EffectPhase                    `json:"pendingEffectPhase,omitempty"`
+	AllocationProvisionEffectDigest  string                         `json:"allocationProvisionEffectDigest,omitempty"`
+	AllocationProvisionReceiptDigest string                         `json:"allocationProvisionReceiptDigest,omitempty"`
+	AllocationTerminateEffectDigest  string                         `json:"allocationTerminateEffectDigest,omitempty"`
+	AllocationTerminateReceiptDigest string                         `json:"allocationTerminateReceiptDigest,omitempty"`
+	EffectInterventionDigest         string                         `json:"effectInterventionDigest,omitempty"`
+	LaunchClosure                    launchidentity.StoredClosureV1 `json:"launchClosure,omitempty"`
+	LaunchMaterialsDigest            string                         `json:"launchMaterialsDigest,omitempty"`
+	AgentLaunchSpecDigest            string                         `json:"agentLaunchSpecDigest,omitempty"`
 }
 
 // AttemptAppendResult distinguishes a fresh authority append from an exact
@@ -540,6 +549,9 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 		if prior.LaunchState != LaunchUncertain || prior.BarrierDigest != "" {
 			return ErrAttemptAuthorityOrder
 		}
+		if t.LaunchMaterialsDigest != prior.LaunchMaterialsDigest || t.AgentLaunchSpecDigest != prior.AgentLaunchSpecDigest || !processMatchesRuntime(t.Process, prior.LaunchClosure.RuntimeExecutable) {
+			return ErrAttemptAuthorityOrder
+		}
 	case attemptTransitionResultAdmitted:
 		if prior.ProcessStartedDigest == "" || prior.BarrierDigest != "" {
 			return ErrAttemptAuthorityOrder
@@ -599,6 +611,9 @@ func validateTransitionShape(t AttemptTransition) error {
 	if err := t.Identity.Validate(); err != nil {
 		return err
 	}
+	if t.Kind != AttemptTransitionLaunchAuthorized && t.Kind != AttemptTransitionProcessStarted && (!zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "") {
+		return fmt.Errorf("%w: launch identity on unrelated transition", ErrAttemptAuthorityConflict)
+	}
 	switch t.Kind {
 	case AttemptTransitionOpened:
 		if transitionHasAnyPayload(t) {
@@ -606,11 +621,11 @@ func validateTransitionShape(t AttemptTransition) error {
 		}
 		return nil
 	case AttemptTransitionLaunchAuthorized:
-		if strings.TrimSpace(t.LaunchAuthorizationID) == "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
+		if strings.TrimSpace(t.LaunchAuthorizationID) == "" || t.LaunchClosure.Validate() != nil || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
 			return fmt.Errorf("%w: launchAuthorizationId is empty", ErrAttemptAuthorityConflict)
 		}
 	case AttemptTransitionProcessStarted:
-		if strings.TrimSpace(t.CommandID) == "" || t.Process.Validate() != nil || validateObservedAt(t.ObservedAt, t.Process) != nil || t.LaunchAuthorizationID != "" || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
+		if strings.TrimSpace(t.CommandID) == "" || t.Process.Validate() != nil || validateObservedAt(t.ObservedAt, t.Process) != nil || !validLaunchDigest(t.LaunchMaterialsDigest) || !validLaunchDigest(t.AgentLaunchSpecDigest) || !zeroLaunchClosure(t.LaunchClosure) || t.LaunchAuthorizationID != "" || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
 			return fmt.Errorf("%w: incomplete process-started transition", ErrAttemptAuthorityConflict)
 		}
 	case attemptTransitionResultAdmitted:
@@ -646,7 +661,17 @@ func validateTransitionShape(t AttemptTransition) error {
 }
 
 func transitionHasAnyPayload(t AttemptTransition) bool {
-	return t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0
+	return t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 || !zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != ""
+}
+
+func zeroLaunchClosure(closure launchidentity.ClosureV1) bool {
+	return reflect.DeepEqual(closure, launchidentity.ClosureV1{})
+}
+
+func validLaunchDigest(value string) bool { return requireDigest("launchDigest", value) == nil }
+
+func processMatchesRuntime(process ProcessObservation, runtime launchidentity.ObjectV1) bool {
+	return process.ExecutablePath == runtime.CanonicalPath && process.ExecutableDevice == runtime.Device && process.ExecutableInode == runtime.Inode && process.ExecutableSize == runtime.Size && process.ExecutableType == runtime.FileType && process.ExecutableOwner == runtime.UID && process.ExecutableGroup == runtime.GID && process.ExecutableMode == runtime.Mode && process.ExecutableLinkCount == runtime.LinkCount && process.ExecutableSHA256 == runtime.RawSHA256
 }
 
 func exactTransitionReplay(state AttemptAuthorityState, exists bool, t AttemptTransition) (AttemptAuthorityState, bool) {
@@ -657,9 +682,10 @@ func exactTransitionReplay(state AttemptAuthorityState, exists bool, t AttemptTr
 	case AttemptTransitionOpened:
 		return state, state.OpenedDigest != ""
 	case AttemptTransitionLaunchAuthorized:
-		return state, state.LaunchAuthorizationID == t.LaunchAuthorizationID && state.LaunchAuthorizedDigest != ""
+		stored, err := t.LaunchClosure.Stored()
+		return state, err == nil && state.LaunchAuthorizationID == t.LaunchAuthorizationID && state.LaunchAuthorizedDigest != "" && state.LaunchClosure == stored
 	case AttemptTransitionProcessStarted:
-		return state, state.ProcessStartedDigest != "" && state.CommandID == t.CommandID && state.ObservedAt == t.ObservedAt && state.Process == t.Process
+		return state, state.ProcessStartedDigest != "" && state.CommandID == t.CommandID && state.ObservedAt == t.ObservedAt && state.Process == t.Process && state.LaunchMaterialsDigest == t.LaunchMaterialsDigest && state.AgentLaunchSpecDigest == t.AgentLaunchSpecDigest
 	case attemptTransitionResultAdmitted:
 		return state, state.CommittedResultFactDigest == t.AdmissionFactDigest && state.CommittedResultSequence == t.AdmissionSequence
 	case AttemptTransitionTerminalizationBarrier:
@@ -1107,6 +1133,13 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress) erro
 		state.LaunchState = LaunchUncertain
 		state.LaunchAuthorizationID = t.LaunchAuthorizationID
 		state.LaunchAuthorizedDigest = fact.Digest
+		stored, err := t.LaunchClosure.Stored()
+		if err != nil {
+			return ErrAttemptAuthorityConflict
+		}
+		state.LaunchClosure = stored
+		state.LaunchMaterialsDigest = t.LaunchClosure.LaunchMaterialsDigest
+		state.AgentLaunchSpecDigest = t.LaunchClosure.AgentLaunchSpecDigest
 	case AttemptTransitionProcessStarted:
 		state.LaunchState = LaunchStarted
 		state.CommandID, state.ObservedAt, state.Process = t.CommandID, t.ObservedAt, t.Process

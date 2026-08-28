@@ -5,6 +5,7 @@ package processcontrol
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"github.com/chiga0/marshal-harness/internal/sandboxlaunch"
 	"golang.org/x/sys/unix"
 )
@@ -38,6 +40,7 @@ type darwinUnit interface {
 	abort()
 	inspect() (ProcessState, error)
 	signal(syscall.Signal) (ProcessState, error)
+	result() (int, string, error)
 	close() error
 	observation() ProcessObservation
 	observedAt() time.Time
@@ -77,6 +80,7 @@ func (coordinator *darwinCoordinator) launch(ctx context.Context, request Launch
 		ExpectedRevision: request.ExpectedRevision,
 		ExpectedHead:     request.ExpectedHead,
 		LaunchID:         request.LaunchID,
+		Closure:          request.Closure,
 	})
 	if err != nil {
 		return nil, launchUncertain(fmt.Errorf("%w: launch authorization", ErrAuthority))
@@ -110,13 +114,15 @@ func (coordinator *darwinCoordinator) launch(ctx context.Context, request Launch
 		return nil, launchUncertain(err)
 	}
 	started, err := coordinator.authority.RecordProcessStarted(ctx, ProcessStartedAuthorityRequest{
-		Authority:        request.Authority,
-		ExpectedRevision: launchAuthorization.Revision,
-		ExpectedHead:     launchAuthorization.HeadDigest,
-		LaunchTransition: launchAuthorization.TransitionDigest,
-		CommandID:        request.CommandID,
-		ObservedAt:       observedAt.Format(time.RFC3339Nano),
-		Observation:      observation,
+		Authority:             request.Authority,
+		ExpectedRevision:      launchAuthorization.Revision,
+		ExpectedHead:          launchAuthorization.HeadDigest,
+		LaunchTransition:      launchAuthorization.TransitionDigest,
+		CommandID:             request.CommandID,
+		ObservedAt:            observedAt.Format(time.RFC3339Nano),
+		Observation:           observation,
+		LaunchMaterialsDigest: request.Closure.LaunchMaterialsDigest,
+		AgentLaunchSpecDigest: request.Closure.AgentLaunchSpecDigest,
 	})
 	if err != nil || !started.Appended {
 		return nil, launchUncertain(fmt.Errorf("%w: process-started transition", ErrAuthority))
@@ -225,6 +231,11 @@ func (process *darwinProcess) inspectLocked(ctx context.Context, terminalFact bo
 			return Inspection{State: ProcessIdentityConflict, Observation: process.observed}, ErrIdentityConflict
 		}
 		process.terminal = true
+		exitCode, signal, resultErr := process.unit.result()
+		if resultErr != nil {
+			return Inspection{State: ProcessIdentityConflict, Observation: process.observed}, resultErr
+		}
+		return Inspection{State: state, Observation: process.observed, ExitKnown: true, ExitCode: exitCode, Signal: signal}, nil
 	} else if state == ProcessLive {
 		process.terminal = false
 	}
@@ -409,6 +420,13 @@ func validateLaunchRequest(request LaunchRequest) error {
 	if len(request.Materials) != 0 {
 		return ErrUnsupported
 	}
+	if err := request.Closure.Validate(); err != nil || request.ExecutablePath != request.Closure.RuntimeExecutable.CanonicalPath || request.ExpectedExecutableSHA256 != request.Closure.RuntimeExecutable.RawSHA256 {
+		return ErrUnsupported
+	}
+	digest, err := launchidentity.DigestSpec(launchidentity.SpecInput{RuntimeExecutable: request.Closure.RuntimeExecutable, ClosureProfileID: request.Closure.ClosureProfileID, MaterialRoots: request.Closure.MaterialRoots, LaunchMaterials: request.Closure.LaunchMaterials, Arguments: request.Arguments, Environment: request.Environment, WorkingDirectory: request.WorkingDirectory})
+	if err != nil || digest != request.Closure.AgentLaunchSpecDigest {
+		return ErrIdentityConflict
+	}
 	if err := sandboxlaunch.ValidatePayload(request.Arguments, request.Environment); err != nil {
 		return ErrIdentityConflict
 	}
@@ -444,6 +462,16 @@ func (realDarwinSystem) validateFixed(path string) (ObjectObservation, error) {
 
 func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, frozenMarshal ObjectObservation, request LaunchRequest) (darwinUnit, error) {
 	_ = ctx
+	heldClosure, err := launchidentity.Reopen(request.Closure)
+	if err != nil {
+		return nil, ErrIdentityConflict
+	}
+	closureOwned := false
+	defer func() {
+		if !closureOwned {
+			heldClosure.Close()
+		}
+	}()
 	workingDirectory, workingObservation, err := openObserved(request.WorkingDirectory, unix.S_IFDIR, false)
 	if err != nil {
 		return nil, ErrIdentityConflict
@@ -467,11 +495,21 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 		closeFiles(workingDirectory, executable, marshalImage)
 		return nil, ErrIdentityConflict
 	}
-	guard, err := newVnodeGuard(
+	watches := []vnodeWatch{
 		vnodeWatch{file: workingDirectory, contentSensitive: false},
 		vnodeWatch{file: executable, contentSensitive: true},
 		vnodeWatch{file: marshalImage, contentSensitive: true},
-	)
+	}
+	watches = append(watches, vnodeWatch{file: heldClosure.Runtime, contentSensitive: true})
+	for _, file := range heldClosure.Roots {
+		// Directory entry changes alter the closed profile even when every
+		// already-enumerated material remains unchanged.
+		watches = append(watches, vnodeWatch{file: file, contentSensitive: true})
+	}
+	for _, file := range heldClosure.Materials {
+		watches = append(watches, vnodeWatch{file: file, contentSensitive: true})
+	}
+	guard, err := newVnodeGuard(watches...)
 	if err != nil {
 		closeFiles(workingDirectory, executable, marshalImage)
 		return nil, ErrIdentityConflict
@@ -498,6 +536,17 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 		return nil, err
 	}
 
+	rootBindings := make([]sandboxlaunch.RootBinding, 0, len(request.Closure.MaterialRoots))
+	materialBindings := make([]sandboxlaunch.MaterialBinding, 0, len(request.Closure.LaunchMaterials))
+	nextFD := sandboxlaunch.MaterialFDBase
+	for _, root := range request.Closure.MaterialRoots {
+		rootBindings = append(rootBindings, sandboxlaunch.RootBinding{Name: root.Name, Path: root.CanonicalPath, FD: nextFD, Object: identityBinding(root.Object)})
+		nextFD++
+	}
+	for _, material := range request.Closure.LaunchMaterials {
+		materialBindings = append(materialBindings, sandboxlaunch.MaterialBinding{Role: material.Role, Path: material.Object.CanonicalPath, FD: nextFD, Object: identityBinding(material.Object)})
+		nextFD++
+	}
 	spec := sandboxlaunch.Spec{
 		ProtocolRevision: sandboxlaunch.ProtocolRevision,
 		LaunchID:         request.LaunchID,
@@ -505,7 +554,8 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 		Arguments:        append([]string(nil), request.Arguments...),
 		Environment:      append([]string(nil), request.Environment...),
 		ExecutablePath:   request.ExecutablePath,
-		Materials:        []sandboxlaunch.MaterialBinding{},
+		Roots:            rootBindings,
+		Materials:        materialBindings,
 		SpecPipe:         pipeBinding(specRead),
 		ReadyPipe:        pipeBinding(readyWrite),
 		ReleasePipe:      pipeBinding(releaseRead),
@@ -529,6 +579,8 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 	command.Stdout = request.Stdout
 	command.Stderr = request.Stderr
 	command.ExtraFiles = []*os.File{specRead, readyWrite, releaseRead, workingDirectory, executable, marshalImage}
+	command.ExtraFiles = append(command.ExtraFiles, heldClosure.Roots...)
+	command.ExtraFiles = append(command.ExtraFiles, heldClosure.Materials...)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := command.Start(); err != nil {
 		closeFiles(specRead, specWrite, readyRead, readyWrite, releaseRead, releaseWrite)
@@ -586,7 +638,9 @@ func (realDarwinSystem) start(ctx context.Context, fixedMarshalPath string, froz
 		observed:              observation,
 		sid:                   sid,
 		processObservedAt:     observedAt,
+		heldClosure:           heldClosure,
 	}
+	closureOwned = true
 	if err := writeAll(specWrite, rawSpec); err != nil {
 		_ = specWrite.Close()
 		unit.abort()
@@ -638,7 +692,7 @@ func samePersistedWorkingDirectory(current ObjectObservation, observation Proces
 
 func samePersistedExecutable(current ObjectObservation, observation ProcessObservation) bool {
 	return current.Path == observation.ExecutablePath && current.Device == observation.ExecutableDevice && current.Inode == observation.ExecutableInode && current.Size == observation.ExecutableSize &&
-		current.Mode&unix.S_IFMT == observation.ExecutableType && current.UID == observation.ExecutableOwner && current.Mode == observation.ExecutableMode &&
+		current.Mode&unix.S_IFMT == observation.ExecutableType && current.UID == observation.ExecutableOwner && current.GID == observation.ExecutableGroup && current.Mode == observation.ExecutableMode &&
 		current.Nlink == observation.ExecutableLinkCount && current.SHA256 == observation.ExecutableSHA256
 }
 
@@ -657,6 +711,7 @@ type realDarwinUnit struct {
 	observed              ProcessObservation
 	sid                   int
 	processObservedAt     time.Time
+	heldClosure           *launchidentity.HeldClosure
 	trackedDescendants    map[int]descendantObservation
 	released              bool
 	leaderExited          bool
@@ -692,6 +747,37 @@ func (unit *realDarwinUnit) awaitReady(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := unit.revalidate(); err != nil {
+		return err
+	}
+	count, err := unit.releaseWrite.Write([]byte{sandboxlaunch.ReleaseByte})
+	if count != 1 || err != nil {
+		return ErrIdentityConflict
+	}
+	_ = unit.releaseWrite.Close()
+	var status syscall.WaitStatus
+	waited := make(chan error, 1)
+	go func() {
+		_, waitErr := syscall.Wait4(unit.command.Process.Pid, &status, syscall.WUNTRACED, nil)
+		waited <- waitErr
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case waitErr := <-waited:
+		if waitErr != nil || !status.Stopped() || status.StopSignal() != syscall.SIGTRAP {
+			return ErrIdentityConflict
+		}
+	}
+	path, err := processExecutablePath(unit.command.Process.Pid)
+	if err != nil || path != unit.executableObservation.Path {
+		return ErrIdentityConflict
+	}
+	observation, sid, observedAt, err := observeProcess(unit.command.Process.Pid, unit.workingObservation, unit.executableObservation)
+	if err != nil || sid != unit.sid {
+		return ErrIdentityConflict
+	}
+	unit.observed, unit.processObservedAt = observation, observedAt
 	return unit.revalidate()
 }
 
@@ -704,17 +790,9 @@ func (unit *realDarwinUnit) release() error {
 	if err := unit.revalidate(); err != nil {
 		return err
 	}
-	count, err := unit.releaseWrite.Write([]byte{sandboxlaunch.ReleaseByte})
-	if count != 1 {
-		_ = unit.releaseWrite.Close()
-		if err == nil {
-			err = io.ErrShortWrite
-		}
-		return err
+	if err := syscall.PtraceDetach(unit.observed.PID); err != nil {
+		return ErrIdentityConflict
 	}
-	// Once the single atomic byte is written the workload is released. close(2)
-	// errors do not make it safe to discard the held process handle.
-	_ = unit.releaseWrite.Close()
 	unit.released = true
 	return nil
 }
@@ -725,9 +803,11 @@ func (unit *realDarwinUnit) abort() {
 	if unit.closed {
 		return
 	}
-	// Closing without G makes the helper exit before exec. This is safer than
-	// signaling a process whose process-started transition was not appended.
+	// Before process-started CAS the exact child is either blocked on G or held
+	// at the kernel exec-stop. The live coordinator owns its Process handle, so
+	// it may kill+wait without inventing recovery authority.
 	_ = unit.releaseWrite.Close()
+	_ = unix.Kill(unit.command.Process.Pid, unix.SIGKILL)
 	done := make(chan struct{})
 	go func() {
 		_ = unit.command.Wait()
@@ -840,6 +920,33 @@ func (unit *realDarwinUnit) close() error {
 	return unit.closeLocked()
 }
 
+func (unit *realDarwinUnit) result() (int, string, error) {
+	unit.mu.Lock()
+	defer unit.mu.Unlock()
+	if unit.closed || !unit.leaderExited || unit.command == nil {
+		return 0, "", ErrStillRunning
+	}
+	if !unit.waited {
+		// A non-zero exit is the workload result, not a process-control error.
+		_ = unit.command.Wait()
+		unit.waited = true
+	}
+	if unit.command.ProcessState == nil {
+		return 0, "", ErrIdentityConflict
+	}
+	status, ok := unit.command.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok {
+		return 0, "", ErrIdentityConflict
+	}
+	if status.Signaled() {
+		return -1, status.Signal().String(), nil
+	}
+	if !status.Exited() {
+		return 0, "", ErrIdentityConflict
+	}
+	return status.ExitStatus(), "", nil
+}
+
 func (unit *realDarwinUnit) closeLocked() error {
 	if unit.closed {
 		return nil
@@ -853,6 +960,10 @@ func (unit *realDarwinUnit) closeLocked() error {
 		unit.waited = true
 	}
 	closeFiles(unit.readyRead, unit.releaseWrite, unit.workingDirectory, unit.executable, unit.marshalImage)
+	if unit.heldClosure != nil {
+		unit.heldClosure.Close()
+		unit.heldClosure = nil
+	}
 	unit.guard.close()
 	if unit.processQueue >= 0 {
 		_ = unix.Close(unit.processQueue)
@@ -1192,6 +1303,7 @@ func observeProcess(pid int, working, executable ObjectObservation) (ProcessObse
 		ExecutableSize:         executable.Size,
 		ExecutableType:         executable.Mode & unix.S_IFMT,
 		ExecutableOwner:        executable.UID,
+		ExecutableGroup:        executable.GID,
 		ExecutableMode:         executable.Mode,
 		ExecutableLinkCount:    executable.Nlink,
 		ExecutableSHA256:       executable.SHA256,
@@ -1205,6 +1317,27 @@ func observeProcess(pid int, working, executable ObjectObservation) (ProcessObse
 		return ProcessObservation{}, 0, time.Time{}, err
 	}
 	return observation, sid, observedAt, nil
+}
+
+func processExecutablePath(pid int) (string, error) {
+	raw, err := unix.SysctlRaw("kern.procargs2", pid)
+	if err != nil || len(raw) < 5 {
+		return "", ErrIdentityConflict
+	}
+	_ = binary.LittleEndian.Uint32(raw[:4])
+	rest := raw[4:]
+	end := 0
+	for end < len(rest) && rest[end] != 0 {
+		end++
+	}
+	if end == 0 || end == len(rest) {
+		return "", ErrIdentityConflict
+	}
+	path := string(rest[:end])
+	if !absoluteClean(path) {
+		return "", ErrIdentityConflict
+	}
+	return path, nil
 }
 
 func openObserved(path string, kind uint32, hash bool) (*os.File, ObjectObservation, error) {
@@ -1300,6 +1433,10 @@ func pipeBinding(file *os.File) sandboxlaunch.ObjectBinding {
 
 func launchBinding(observation ObjectObservation) sandboxlaunch.ObjectBinding {
 	return sandboxlaunch.ObjectBinding{Device: observation.Device, Inode: observation.Inode, Mode: observation.Mode, UID: observation.UID, GID: observation.GID, Size: observation.Size, Nlink: observation.Nlink, SHA256: observation.SHA256}
+}
+
+func identityBinding(object launchidentity.ObjectV1) sandboxlaunch.ObjectBinding {
+	return sandboxlaunch.ObjectBinding{Device: object.Device, Inode: object.Inode, Mode: object.Mode, UID: object.UID, GID: object.GID, Size: object.Size, Nlink: object.LinkCount, SHA256: object.RawSHA256}
 }
 
 func absoluteClean(path string) bool {

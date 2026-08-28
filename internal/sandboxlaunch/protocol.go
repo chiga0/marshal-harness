@@ -71,7 +71,15 @@ type Spec struct {
 	WorkingDirectory ObjectBinding     `json:"workingDirectory"`
 	Executable       ObjectBinding     `json:"executable"`
 	Marshal          ObjectBinding     `json:"marshal"`
+	Roots            []RootBinding     `json:"roots"`
 	Materials        []MaterialBinding `json:"materials"`
+}
+
+type RootBinding struct {
+	Name   string        `json:"name"`
+	Path   string        `json:"path"`
+	FD     int           `json:"fd"`
+	Object ObjectBinding `json:"object"`
 }
 
 type MaterialBinding struct {
@@ -132,11 +140,6 @@ func (spec Spec) Validate() error {
 	if !filepath.IsAbs(spec.ExecutablePath) || filepath.Clean(spec.ExecutablePath) != spec.ExecutablePath || spec.Arguments[0] != spec.ExecutablePath {
 		return ErrProtocolRejected
 	}
-	if len(spec.Materials) != 0 {
-		// Enabling materials requires a durable LaunchMaterialsDigest. Keeping
-		// the wire field now prevents another implicit argv[0] contract later.
-		return ErrProtocolRejected
-	}
 	for _, binding := range []ObjectBinding{spec.SpecPipe, spec.ReadyPipe, spec.ReleasePipe} {
 		if binding.Inode == 0 || binding.Mode&modeTypeMask != modeFIFO || binding.Size < 0 || binding.SHA256 != "" {
 			return ErrProtocolRejected
@@ -149,6 +152,24 @@ func (spec Spec) Validate() error {
 		if binding.Inode == 0 || binding.Size <= 0 || !validDigest(binding.SHA256) || binding.Mode&modeTypeMask != modeRegular || binding.Mode&0o111 == 0 || binding.Nlink != 1 {
 			return ErrProtocolRejected
 		}
+	}
+	nextFD := MaterialFDBase
+	seenNames := map[string]bool{}
+	seenRoles := map[string]bool{}
+	for _, root := range spec.Roots {
+		if !boundedToken(root.Name, 128) || !filepath.IsAbs(root.Path) || filepath.Clean(root.Path) != root.Path || root.FD != nextFD || root.Object.Inode == 0 || root.Object.Mode&modeTypeMask != modeDirectory || root.Object.SHA256 != "" || seenNames[root.Name] {
+			return ErrProtocolRejected
+		}
+		seenNames[root.Name] = true
+		nextFD++
+	}
+	for _, material := range spec.Materials {
+		root, _, ok := strings.Cut(material.Role, "/")
+		if !ok || !seenNames[root] || !boundedToken(material.Role, 512) || strings.Contains(material.Role, "\\") || !filepath.IsAbs(material.Path) || filepath.Clean(material.Path) != material.Path || material.FD != nextFD || material.Object.Inode == 0 || material.Object.Mode&modeTypeMask != modeRegular || material.Object.Nlink != 1 || !validDigest(material.Object.SHA256) || seenRoles[material.Role] {
+			return ErrProtocolRejected
+		}
+		seenRoles[material.Role] = true
+		nextFD++
 	}
 	pipeIdentities := [][2]uint64{{spec.SpecPipe.Device, spec.SpecPipe.Inode}, {spec.ReadyPipe.Device, spec.ReadyPipe.Inode}, {spec.ReleasePipe.Device, spec.ReleasePipe.Inode}}
 	for left := range pipeIdentities {

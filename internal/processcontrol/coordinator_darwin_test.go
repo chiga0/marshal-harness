@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/authority"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 	"golang.org/x/sys/unix"
 )
 
@@ -658,7 +659,8 @@ func (unit *fakeDarwinUnit) observedAt() time.Time {
 	}
 	return time.Unix(unit.observed.BirthSeconds, unit.observed.BirthMicroseconds*int64(time.Microsecond)).UTC()
 }
-func (unit *fakeDarwinUnit) close() error { unit.closed = true; return nil }
+func (unit *fakeDarwinUnit) close() error                 { unit.closed = true; return nil }
+func (unit *fakeDarwinUnit) result() (int, string, error) { return 0, "", nil }
 func (unit *fakeDarwinUnit) inspect() (ProcessState, error) {
 	unit.mu.Lock()
 	unit.inspectCalls++
@@ -695,11 +697,14 @@ func mustFakeCoordinator(t *testing.T, authority AttemptAuthority, system darwin
 }
 
 func validLaunchRequest() LaunchRequest {
-	return LaunchRequest{
+	request := LaunchRequest{
 		Authority: validAuthorityRef(), ExpectedRevision: 1, ExpectedHead: testDigest('a'), LaunchID: "launch-1",
 		CommandID: "command-1", Arguments: []string{"/fixed/workload", "argument"}, Environment: []string{"LANG=C"}, WorkingDirectory: "/fixed/worktree",
 		ExecutablePath: "/fixed/workload", ExpectedExecutableSHA256: testDigest('a'), Materials: []LaunchMaterial{},
 	}
+	input := launchidentity.SpecInput{RuntimeExecutable: launchidentity.ObjectV1{CanonicalPath: "/fixed/workload", Device: 1, Inode: 3, FileType: 0o100000, Mode: 0o100700, UID: 501, GID: 20, Size: 42, LinkCount: 1, RawSHA256: testDigest('a')}, ClosureProfileID: launchidentity.NativeProfile, MaterialRoots: []launchidentity.MaterialRootV1{}, LaunchMaterials: []launchidentity.LaunchMaterialV1{}, Arguments: request.Arguments, Environment: request.Environment, WorkingDirectory: request.WorkingDirectory}
+	request.Closure, _ = launchidentity.Seal(input)
+	return request
 }
 
 func validAuthorityRef() AuthorityRef {
@@ -727,7 +732,7 @@ func validObservation() ProcessObservation {
 		WorkingDirectory: "/fixed/worktree", WorkingDirectoryDevice: 1, WorkingDirectoryInode: 2,
 		WorkingDirectoryType: 0o040000, WorkingDirectoryOwner: 501, WorkingDirectoryMode: 0o040700,
 		ExecutablePath: "/fixed/workload", ExecutableDevice: 1, ExecutableInode: 3, ExecutableSize: 42,
-		ExecutableType: 0o100000, ExecutableOwner: 501, ExecutableMode: 0o100700, ExecutableLinkCount: 1,
+		ExecutableType: 0o100000, ExecutableOwner: 501, ExecutableGroup: 20, ExecutableMode: 0o100700, ExecutableLinkCount: 1,
 		ExecutableSHA256: digest, ObserverIdentity: processObserver,
 	}).sealed()
 	if err != nil {

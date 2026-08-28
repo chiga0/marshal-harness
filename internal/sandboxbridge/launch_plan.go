@@ -3,6 +3,8 @@ package sandboxbridge
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 )
 
 // LaunchPlan 是 provider-neutral 启动计划接缝（ADR 0052 §1.2 + ADR 0055）：
@@ -30,6 +32,11 @@ type LaunchPlan interface {
 	MaxOutput() int64
 	// ProviderVersion 返回 adapter provider 的二进制版本（审计字段）。
 	ProviderVersion() string
+	// LaunchClosure is the Core-computed, complete interpreted-runtime closure.
+	LaunchClosure() launchidentity.ClosureV1
+	// CloseLaunchClosure releases every held descriptor after result admission
+	// or a failed launch. It is idempotent.
+	CloseLaunchClosure()
 }
 
 // ValidateLaunchPlan 复核 PrepareLaunch 的输出与冻结请求一致（不放行
@@ -54,6 +61,9 @@ func ValidateLaunchPlan(plan LaunchPlan) error {
 	if strings.TrimSpace(plan.ControlRootPath()) == "" || !filepath.IsAbs(plan.ControlRootPath()) {
 		return errLaunchPlanBadControlRoot
 	}
+	if err := plan.LaunchClosure().Validate(); err != nil {
+		return errLaunchPlanBadClosure
+	}
 	return nil
 }
 
@@ -64,6 +74,7 @@ var (
 	errLaunchPlanBadTimeout     = strErr("sandboxbridge: launch plan timeout must be positive")
 	errLaunchPlanBadMaxOutput   = strErr("sandboxbridge: launch plan max output bytes must be positive")
 	errLaunchPlanBadControlRoot = strErr("sandboxbridge: launch plan control root is not absolute")
+	errLaunchPlanBadClosure     = strErr("sandboxbridge: launch plan closure is unavailable")
 )
 
 type strErr string

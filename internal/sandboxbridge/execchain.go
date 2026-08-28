@@ -1,6 +1,7 @@
 package sandboxbridge
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,7 +14,10 @@ import (
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/processcontrol"
 	"github.com/chiga0/marshal-harness/internal/resultbinding"
+	"github.com/chiga0/marshal-harness/internal/resultingress"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
 
@@ -58,6 +62,7 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	if err := ValidateLaunchPlan(plan); err != nil {
 		return domain.Record{}, err
 	}
+	defer plan.CloseLaunchClosure()
 
 	spec, err := newExecChainSpec(view, profileDigest)
 	if err != nil {
@@ -231,45 +236,53 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 	defer cancel()
 
 	started := b.now().UTC()
-	execIdentity, err := identity(view, allocationID, generation, fencingToken, "command-exec")
-	if err != nil {
-		return domain.Record{}, err
-	}
-	execReceipt, execErr := b.provider.Exec(runCtx, sandbox.ExecRequest{
-		Identity:     execIdentity,
-		AllocationId: allocationID,
-		Command:      append([]string(nil), plan.Argv()...),
-		WorkingDir:   plan.WorkDir(),
-		Environment:  envMap(plan.EnvBlock()),
-		TranscriptPolicy: sandbox.TranscriptPolicy{
-			MaxBytes:   plan.MaxOutput(),
-			ArtifactId: transcriptArtifactID,
-		},
-		TimeoutSeconds: plan.TimeoutSeconds(),
-	})
-	completed := b.now().UTC()
-	if execErr != nil && execReceipt == nil {
-		return domain.Record{}, fmt.Errorf("sandboxbridge: exec failed: %w", execErr)
-	}
-
-	transcript, err := b.readAndVerifyTranscript(allocationID, execReceipt)
-	if err != nil {
-		return domain.Record{}, err
-	}
-
+	var transcript, stderr []byte
+	var truncated bool
 	exitCode := 0
 	signal := ""
-	if execReceipt != nil {
-		exitCode = execReceipt.ExitCode
-		if execReceipt.Status == sandbox.ExecutionKilled {
-			signal = "SIGKILL"
+	var execErr error
+	if plan.LaunchClosure().ClosureProfileID == launchidentity.Pi0843DarwinARM64Profile {
+		transcript, stderr, truncated, exitCode, signal, execErr = b.runExactProcess(runCtx, plan, view, allocationID, generation, fencingToken)
+	} else {
+		execIdentity, idErr := identity(view, allocationID, generation, fencingToken, "command-exec")
+		if idErr != nil {
+			return domain.Record{}, idErr
+		}
+		execReceipt, providerErr := b.provider.Exec(runCtx, sandbox.ExecRequest{
+			Identity:     execIdentity,
+			AllocationId: allocationID,
+			Command:      append([]string(nil), plan.Argv()...),
+			WorkingDir:   plan.WorkDir(),
+			Environment:  envMap(plan.EnvBlock()),
+			TranscriptPolicy: sandbox.TranscriptPolicy{
+				MaxBytes:   plan.MaxOutput(),
+				ArtifactId: transcriptArtifactID,
+			},
+			TimeoutSeconds: plan.TimeoutSeconds(),
+		})
+		if providerErr != nil && execReceipt == nil {
+			return domain.Record{}, fmt.Errorf("sandboxbridge: exec failed: %w", providerErr)
+		}
+		transcript, err = b.readAndVerifyTranscript(allocationID, execReceipt)
+		if err != nil {
+			return domain.Record{}, err
+		}
+		if execReceipt != nil {
+			exitCode = execReceipt.ExitCode
+			if execReceipt.Status == sandbox.ExecutionKilled {
+				signal = "SIGKILL"
+			}
 		}
 	}
+	completed := b.now().UTC()
 	ctxErr := runCtx.Err()
+	if execErr != nil && ctxErr == nil {
+		return domain.Record{}, fmt.Errorf("sandboxbridge: exact exec failed: %w", execErr)
+	}
 	if ctxErr != nil && signal == "" {
 		signal = "timeout"
 	}
-	record, err := capable.CompleteLaunch(ctx, plan, transcript, false, nil, started, completed, exitCode, signal, ctxErr)
+	record, err := capable.CompleteLaunch(ctx, plan, transcript, truncated, stderr, started, completed, exitCode, signal, ctxErr)
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -281,6 +294,115 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 		return domain.Record{}, err
 	}
 	return record, nil
+}
+
+// runExactProcess is the closed RB2 production seam for the interpreted Pi
+// profile. The provider may still own allocation and staging, but it cannot
+// replace or bypass the exact launch-authority/process-started barriers.
+func (b *Bridge) runExactProcess(ctx context.Context, plan LaunchPlan, view workerRequestView, allocationID string, generation int64, fencingToken string) ([]byte, []byte, bool, int, string, error) {
+	if b.exactProcess == nil || b.exactProcess.Resolve == nil {
+		return nil, nil, false, 0, "", launchidentity.ErrUnavailable
+	}
+	closure := plan.LaunchClosure()
+	if closure.ClosureProfileID != launchidentity.Pi0843DarwinARM64Profile {
+		return nil, nil, false, 0, "", launchidentity.ErrUnavailable
+	}
+	attempt := ExactProcessAttempt{TaskID: view.TaskID, RunID: view.RunID, AttemptID: view.AttemptID, AllocationID: allocationID, Generation: generation, FencingTokenDigest: canonical.DigestBytes([]byte(fencingToken))}
+	coordinator, authority, err := b.exactProcess.Resolve(ctx, attempt)
+	if err != nil || coordinator == nil || authority.Store == nil || authority.Identity.TaskID != attempt.TaskID || authority.Identity.RunID != attempt.RunID ||
+		authority.Identity.AttemptID != attempt.AttemptID || authority.Identity.AllocationID != attempt.AllocationID || authority.Identity.DispatchGeneration != attempt.Generation ||
+		authority.Identity.FencingTokenDigest != attempt.FencingTokenDigest {
+		return nil, nil, false, 0, "", launchidentity.ErrUnavailable
+	}
+	state, found, err := authority.Store.AttemptState(authority.Identity)
+	if err != nil || !found || state.Revision == 0 || state.HeadDigest == "" || state.LaunchState != resultingress.LaunchNotAuthorized ||
+		state.PendingEffectID != "" || state.AllocationProvisionEffectDigest == "" || state.AllocationProvisionReceiptDigest == "" {
+		return nil, nil, false, 0, "", launchidentity.ErrUnavailable
+	}
+	ref, err := ProcessAuthorityRef(authority.Identity)
+	if err != nil {
+		return nil, nil, false, 0, "", err
+	}
+	stdout := &cappedBuffer{limit: plan.MaxOutput() + 1}
+	stderrLimit := plan.MaxOutput()
+	if stderrLimit > 64*1024 {
+		stderrLimit = 64 * 1024
+	}
+	stderrWriter := &cappedBuffer{limit: stderrLimit + 1}
+	process, err := coordinator.Launch(ctx, processcontrol.LaunchRequest{
+		Authority:                ref,
+		ExpectedRevision:         state.Revision,
+		ExpectedHead:             state.HeadDigest,
+		LaunchID:                 canonical.DigestBytes([]byte("sandboxbridge:launch:" + closure.AgentLaunchSpecDigest)),
+		CommandID:                canonical.DigestBytes([]byte("sandboxbridge:command:" + closure.AgentLaunchSpecDigest)),
+		Arguments:                plan.Argv(),
+		Environment:              plan.EnvBlock(),
+		WorkingDirectory:         plan.WorkDir(),
+		ExecutablePath:           closure.RuntimeExecutable.CanonicalPath,
+		ExpectedExecutableSHA256: closure.RuntimeExecutable.RawSHA256,
+		Closure:                  closure,
+		Stdout:                   stdout,
+		Stderr:                   stderrWriter,
+	})
+	if err != nil {
+		return nil, nil, false, 0, "", err
+	}
+	signal := ""
+	inspection, waitErr := process.Wait(ctx)
+	if ctx.Err() != nil {
+		signal = "timeout"
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		inspection, waitErr = process.Terminate(cleanupCtx, time.Second)
+		cancel()
+	}
+	if inspection.State != processcontrol.ProcessAbsent {
+		if waitErr == nil {
+			waitErr = processcontrol.ErrStillRunning
+		}
+		return nil, nil, false, 0, signal, waitErr
+	}
+	if !inspection.ExitKnown {
+		return nil, nil, false, 0, signal, processcontrol.ErrIdentityConflict
+	}
+	if closeErr := process.Close(); closeErr != nil {
+		return nil, nil, false, 0, signal, closeErr
+	}
+	if waitErr != nil && ctx.Err() == nil {
+		return nil, nil, false, 0, signal, waitErr
+	}
+	if inspection.Signal != "" {
+		signal = inspection.Signal
+	}
+	transcript, truncated := boundedBytes(stdout.Bytes(), plan.MaxOutput())
+	stderrBytes, _ := boundedBytes(stderrWriter.Bytes(), stderrLimit)
+	return transcript, stderrBytes, truncated, inspection.ExitCode, signal, nil
+}
+
+type cappedBuffer struct {
+	buffer bytes.Buffer
+	limit  int64
+}
+
+func (buffer *cappedBuffer) Write(raw []byte) (int, error) {
+	written := len(raw)
+	remaining := buffer.limit - int64(buffer.buffer.Len())
+	if remaining <= 0 {
+		return written, nil
+	}
+	if int64(len(raw)) > remaining {
+		raw = raw[:remaining]
+	}
+	_, _ = buffer.buffer.Write(raw)
+	return written, nil
+}
+
+func (buffer *cappedBuffer) Bytes() []byte { return buffer.buffer.Bytes() }
+
+func boundedBytes(raw []byte, limit int64) ([]byte, bool) {
+	if int64(len(raw)) <= limit {
+		return append([]byte(nil), raw...), false
+	}
+	return append([]byte(nil), raw[:limit]...), true
 }
 
 // readAndVerifyTranscript 读取 staged artifact 并与 provider 重算 digest

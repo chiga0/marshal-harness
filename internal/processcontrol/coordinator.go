@@ -16,6 +16,7 @@ import (
 
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 )
 
 var (
@@ -85,16 +86,19 @@ type LaunchAuthorityRequest struct {
 	ExpectedRevision uint64
 	ExpectedHead     string
 	LaunchID         string
+	Closure          launchidentity.ClosureV1
 }
 
 type ProcessStartedAuthorityRequest struct {
-	Authority        AuthorityRef
-	ExpectedRevision uint64
-	ExpectedHead     string
-	LaunchTransition string
-	CommandID        string
-	ObservedAt       string
-	Observation      ProcessObservation
+	Authority             AuthorityRef
+	ExpectedRevision      uint64
+	ExpectedHead          string
+	LaunchTransition      string
+	CommandID             string
+	ObservedAt            string
+	Observation           ProcessObservation
+	LaunchMaterialsDigest string
+	AgentLaunchSpecDigest string
 }
 
 type ControlOperation string
@@ -151,6 +155,7 @@ type ProcessObservation struct {
 	ExecutableSize         int64  `json:"executableSize"`
 	ExecutableType         uint32 `json:"executableFileType"`
 	ExecutableOwner        uint32 `json:"executableOwner"`
+	ExecutableGroup        uint32 `json:"executableGroup"`
 	ExecutableMode         uint32 `json:"executableMode"`
 	ExecutableLinkCount    uint64 `json:"executableLinkCount"`
 	ExecutableSHA256       string `json:"executableSha256"`
@@ -215,9 +220,8 @@ type LaunchRequest struct {
 	WorkingDirectory         string
 	ExecutablePath           string
 	ExpectedExecutableSHA256 string
-	// Materials reserves the full code-closure binding required by
-	// interpreter-based Providers. Non-empty materials remain fail-closed until
-	// RB1 persists LaunchMaterialsDigest under an accepted contract change.
+	Closure                  launchidentity.ClosureV1
+	// Materials is the rejected pre-ADR0058 partial-manifest seam.
 	Materials []LaunchMaterial
 	Stdin     io.Reader
 	Stdout    io.Writer
@@ -242,6 +246,12 @@ const (
 type Inspection struct {
 	State       ProcessState
 	Observation ProcessObservation
+	// ExitKnown is true only for the live coordinator that retained the exact
+	// leader wait right. Restart reconciliation deliberately cannot invent an
+	// exit disposition.
+	ExitKnown bool
+	ExitCode  int
+	Signal    string
 }
 
 type platformCoordinator interface {

@@ -16,6 +16,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/dispatch"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/port"
+	"github.com/chiga0/marshal-harness/internal/processcontrol"
 	"github.com/chiga0/marshal-harness/internal/provider"
 	"github.com/chiga0/marshal-harness/internal/sandbox"
 )
@@ -67,6 +68,31 @@ type Bridge struct {
 	transcriptSource TranscriptSource
 	authority        DurableAuthority
 	productionGate   bool
+	exactProcess     *ExactProcessRuntime
+}
+
+// ExactProcessRuntime is the only interpreted-agent execution route admitted
+// by the production bridge. Resolve must return a fresh attempt-bound
+// coordinator/authority pair; a global identity may never be reused across
+// RunWorker calls.
+type ExactProcessRuntime struct {
+	Resolve func(context.Context, ExactProcessAttempt) (*processcontrol.Coordinator, DurableProcessAuthority, error)
+}
+
+type ExactProcessAttempt struct {
+	TaskID             string
+	RunID              string
+	AttemptID          string
+	AllocationID       string
+	Generation         int64
+	FencingTokenDigest string
+}
+
+func (b *Bridge) WithExactProcessRuntime(runtime ExactProcessRuntime) *Bridge {
+	if runtime.Resolve != nil {
+		b.exactProcess = &runtime
+	}
+	return b
 }
 
 // DurableAuthority 是 Bridge 在 admission 时读取真实 durable authority 的
