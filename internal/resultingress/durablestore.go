@@ -367,7 +367,11 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		return err
 	}
 	switch head.FactType {
-	case string(AttemptTransitionOpened), string(AttemptTransitionLaunchAuthorized), string(AttemptTransitionProcessStarted), string(AttemptTransitionTerminalizationBarrier), string(AttemptTransitionProcessTerminal), string(AttemptTransitionAllocationTerminated), string(AttemptTransitionCleanupCompleted), string(AttemptTransitionCleanupReleased):
+	case controlOwnerFactType:
+		if err := applyControlOwnerLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
+	case string(AttemptTransitionOpened), string(AttemptTransitionControlOwnerBound), string(AttemptTransitionLaunchAuthorized), string(AttemptTransitionProcessSupervisorStarted), string(AttemptTransitionProcessStarted), string(AttemptTransitionTerminalizationBarrier), string(AttemptTransitionProcessTerminal), string(AttemptTransitionAllocationTerminated), string(AttemptTransitionProcessSupervisorClosed), string(AttemptTransitionCleanupCompleted), string(AttemptTransitionCleanupReleased):
 		if err := applyAttemptAuthorityLine(line, in, s.nextSequence); err != nil {
 			return err
 		}

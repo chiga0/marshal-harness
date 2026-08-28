@@ -25,15 +25,18 @@ import (
 const attemptAuthorityProtocolRevision = "attempt-authority/v1"
 
 const (
-	AttemptTransitionOpened                 AttemptTransitionKind = "attempt-opened"
-	AttemptTransitionLaunchAuthorized       AttemptTransitionKind = "launch-authorized"
-	AttemptTransitionProcessStarted         AttemptTransitionKind = "process-started"
-	attemptTransitionResultAdmitted         AttemptTransitionKind = "result-admitted"
-	AttemptTransitionTerminalizationBarrier AttemptTransitionKind = "terminalization-barrier"
-	AttemptTransitionProcessTerminal        AttemptTransitionKind = "process-terminal"
-	AttemptTransitionAllocationTerminated   AttemptTransitionKind = "allocation-terminated"
-	AttemptTransitionCleanupCompleted       AttemptTransitionKind = "cleanup-completed"
-	AttemptTransitionCleanupReleased        AttemptTransitionKind = "cleanup-released"
+	AttemptTransitionOpened                   AttemptTransitionKind = "attempt-opened"
+	AttemptTransitionControlOwnerBound        AttemptTransitionKind = "control-owner-bound"
+	AttemptTransitionLaunchAuthorized         AttemptTransitionKind = "launch-authorized"
+	AttemptTransitionProcessSupervisorStarted AttemptTransitionKind = "process-supervisor-started"
+	AttemptTransitionProcessStarted           AttemptTransitionKind = "process-started"
+	attemptTransitionResultAdmitted           AttemptTransitionKind = "result-admitted"
+	AttemptTransitionTerminalizationBarrier   AttemptTransitionKind = "terminalization-barrier"
+	AttemptTransitionProcessTerminal          AttemptTransitionKind = "process-terminal"
+	AttemptTransitionAllocationTerminated     AttemptTransitionKind = "allocation-terminated"
+	AttemptTransitionProcessSupervisorClosed  AttemptTransitionKind = "process-supervisor-closed"
+	AttemptTransitionCleanupCompleted         AttemptTransitionKind = "cleanup-completed"
+	AttemptTransitionCleanupReleased          AttemptTransitionKind = "cleanup-released"
 )
 
 var (
@@ -318,53 +321,63 @@ const (
 // AttemptTransition is a sealed union. Only fields required by Kind may be
 // populated; strict fact decoding and transition validation reject ambiguity.
 type AttemptTransition struct {
-	Kind                  AttemptTransitionKind    `json:"kind"`
-	Identity              AttemptIdentity          `json:"identity"`
-	LaunchAuthorizationID string                   `json:"launchAuthorizationId,omitempty"`
-	CommandID             string                   `json:"commandId,omitempty"`
-	ObservedAt            string                   `json:"observedAt,omitempty"`
-	Process               ProcessObservation       `json:"process,omitempty"`
-	TerminalizationID     string                   `json:"terminalizationId,omitempty"`
-	EligibilityTerminal   EligibilityTerminal      `json:"eligibilityTerminal,omitempty"`
-	ProcessTerminalKind   ProcessTerminalKind      `json:"processTerminalKind,omitempty"`
-	ObservationDigest     string                   `json:"terminalObservationDigest,omitempty"`
-	ReceiptDigest         string                   `json:"receiptDigest,omitempty"`
-	AdmissionFactDigest   string                   `json:"admissionFactDigest,omitempty"`
-	AdmissionSequence     uint64                   `json:"admissionSequence,omitempty"`
-	LaunchClosure         launchidentity.ClosureV1 `json:"launchClosure,omitempty"`
-	LaunchMaterialsDigest string                   `json:"launchMaterialsDigest,omitempty"`
-	AgentLaunchSpecDigest string                   `json:"agentLaunchSpecDigest,omitempty"`
+	Kind                       AttemptTransitionKind    `json:"kind"`
+	Identity                   AttemptIdentity          `json:"identity"`
+	LaunchAuthorizationID      string                   `json:"launchAuthorizationId,omitempty"`
+	CommandID                  string                   `json:"commandId,omitempty"`
+	ObservedAt                 string                   `json:"observedAt,omitempty"`
+	Process                    ProcessObservation       `json:"process,omitempty"`
+	TerminalizationID          string                   `json:"terminalizationId,omitempty"`
+	EligibilityTerminal        EligibilityTerminal      `json:"eligibilityTerminal,omitempty"`
+	ProcessTerminalKind        ProcessTerminalKind      `json:"processTerminalKind,omitempty"`
+	ObservationDigest          string                   `json:"terminalObservationDigest,omitempty"`
+	ReceiptDigest              string                   `json:"receiptDigest,omitempty"`
+	AdmissionFactDigest        string                   `json:"admissionFactDigest,omitempty"`
+	AdmissionSequence          uint64                   `json:"admissionSequence,omitempty"`
+	LaunchClosure              launchidentity.ClosureV1 `json:"launchClosure,omitempty"`
+	LaunchMaterialsDigest      string                   `json:"launchMaterialsDigest,omitempty"`
+	AgentLaunchSpecDigest      string                   `json:"agentLaunchSpecDigest,omitempty"`
+	Owner                      CurrentOwnerBinding      `json:"owner,omitempty,omitzero"`
+	SupervisorStarted          ProcessSupervisorStarted `json:"supervisorStarted,omitempty,omitzero"`
+	SupervisorClosed           ProcessSupervisorClosed  `json:"supervisorClosed,omitempty,omitzero"`
+	SupervisorClosedFactDigest string                   `json:"supervisorClosedFactDigest,omitempty"`
 }
 
 type AttemptAuthorityState struct {
-	Identity                   AttemptIdentity     `json:"identity"`
-	Revision                   uint64              `json:"revision"`
-	HeadDigest                 string              `json:"headDigest"`
-	OpenedDigest               string              `json:"openedDigest"`
-	LaunchState                LaunchState         `json:"launchState"`
-	LaunchAuthorizationID      string              `json:"launchAuthorizationId,omitempty"`
-	LaunchAuthorizedDigest     string              `json:"launchAuthorizedDigest,omitempty"`
-	CommandID                  string              `json:"commandId,omitempty"`
-	ObservedAt                 string              `json:"observedAt,omitempty"`
-	Process                    ProcessObservation  `json:"process,omitempty"`
-	ProcessStartedDigest       string              `json:"processStartedDigest,omitempty"`
-	CommittedResultFactDigest  string              `json:"committedResultFactDigest,omitempty"`
-	CommittedResultSequence    uint64              `json:"committedResultSequence,omitempty"`
-	BarrierDigest              string              `json:"barrierDigest,omitempty"`
-	TerminalizationID          string              `json:"terminalizationId,omitempty"`
-	EligibilityTerminal        EligibilityTerminal `json:"eligibilityTerminal,omitempty"`
-	AdmissionClosed            bool                `json:"admissionClosed"`
-	BarrierAdmissionFactDigest string              `json:"barrierAdmissionFactDigest,omitempty"`
-	BarrierAdmissionSequence   uint64              `json:"barrierAdmissionSequence,omitempty"`
-	TerminalGeneration         int64               `json:"terminalGeneration,omitempty"`
-	CleanupBindingDigest       string              `json:"cleanupBindingDigest,omitempty"`
-	ProcessTerminalDigest      string              `json:"processTerminalDigest,omitempty"`
-	ProcessTerminalKind        ProcessTerminalKind `json:"processTerminalKind,omitempty"`
-	ProcessTerminalObservation string              `json:"processTerminalObservationDigest,omitempty"`
-	AllocationTerminalDigest   string              `json:"allocationTerminalDigest,omitempty"`
-	AllocationReceiptDigest    string              `json:"allocationReceiptDigest,omitempty"`
-	CleanupCompletedDigest     string              `json:"cleanupCompletedDigest,omitempty"`
-	CleanupReleasedDigest      string              `json:"cleanupReleasedDigest,omitempty"`
+	Identity                   AttemptIdentity          `json:"identity"`
+	Revision                   uint64                   `json:"revision"`
+	HeadDigest                 string                   `json:"headDigest"`
+	OpenedDigest               string                   `json:"openedDigest"`
+	Owner                      CurrentOwnerBinding      `json:"owner,omitempty,omitzero"`
+	ControlOwnerBindingDigest  string                   `json:"controlOwnerBindingDigest,omitempty"`
+	LaunchState                LaunchState              `json:"launchState"`
+	LaunchAuthorizationID      string                   `json:"launchAuthorizationId,omitempty"`
+	LaunchAuthorizedDigest     string                   `json:"launchAuthorizedDigest,omitempty"`
+	SupervisorStarted          ProcessSupervisorStarted `json:"supervisorStarted,omitempty,omitzero"`
+	SupervisorStartedDigest    string                   `json:"supervisorStartedDigest,omitempty"`
+	CommandID                  string                   `json:"commandId,omitempty"`
+	ObservedAt                 string                   `json:"observedAt,omitempty"`
+	Process                    ProcessObservation       `json:"process,omitempty"`
+	ProcessStartedDigest       string                   `json:"processStartedDigest,omitempty"`
+	CommittedResultFactDigest  string                   `json:"committedResultFactDigest,omitempty"`
+	CommittedResultSequence    uint64                   `json:"committedResultSequence,omitempty"`
+	BarrierDigest              string                   `json:"barrierDigest,omitempty"`
+	TerminalizationID          string                   `json:"terminalizationId,omitempty"`
+	EligibilityTerminal        EligibilityTerminal      `json:"eligibilityTerminal,omitempty"`
+	AdmissionClosed            bool                     `json:"admissionClosed"`
+	BarrierAdmissionFactDigest string                   `json:"barrierAdmissionFactDigest,omitempty"`
+	BarrierAdmissionSequence   uint64                   `json:"barrierAdmissionSequence,omitempty"`
+	TerminalGeneration         int64                    `json:"terminalGeneration,omitempty"`
+	CleanupBindingDigest       string                   `json:"cleanupBindingDigest,omitempty"`
+	ProcessTerminalDigest      string                   `json:"processTerminalDigest,omitempty"`
+	ProcessTerminalKind        ProcessTerminalKind      `json:"processTerminalKind,omitempty"`
+	ProcessTerminalObservation string                   `json:"processTerminalObservationDigest,omitempty"`
+	AllocationTerminalDigest   string                   `json:"allocationTerminalDigest,omitempty"`
+	AllocationReceiptDigest    string                   `json:"allocationReceiptDigest,omitempty"`
+	SupervisorClosed           ProcessSupervisorClosed  `json:"supervisorClosed,omitempty,omitzero"`
+	SupervisorClosedDigest     string                   `json:"supervisorClosedDigest,omitempty"`
+	CleanupCompletedDigest     string                   `json:"cleanupCompletedDigest,omitempty"`
+	CleanupReleasedDigest      string                   `json:"cleanupReleasedDigest,omitempty"`
 	// PendingEffect* is the durable exclusion barrier established by an
 	// effect-intent fact. It is cleared only by the matching reconcile fact;
 	// receipt alone remains an observation and cannot unlock the Attempt.
@@ -419,6 +432,9 @@ func (s *ingressDurableStore) CompareAndAppend(expectedRevision uint64, expected
 	if isCleanupTransition(transition.Kind) {
 		return AttemptAppendResult{}, fmt.Errorf("%w: cleanup transitions require CompareAndAppendCleanup", ErrCleanupUnauthorized)
 	}
+	if transition.Kind == AttemptTransitionControlOwnerBound || transition.Kind == AttemptTransitionProcessSupervisorStarted {
+		return AttemptAppendResult{}, fmt.Errorf("%w: %s requires current control owner authority", ErrControlOwnerNotCurrent, transition.Kind)
+	}
 	if transition.Kind == AttemptTransitionTerminalizationBarrier {
 		return AttemptAppendResult{}, fmt.Errorf("%w: terminalization barrier requires CompareAndAppendBarrier", ErrRunAuthorityUnauthorized)
 	}
@@ -439,7 +455,7 @@ func isRunAuthorizedTransition(kind AttemptTransitionKind) bool {
 
 func isCleanupTransition(kind AttemptTransitionKind) bool {
 	switch kind {
-	case AttemptTransitionProcessTerminal, AttemptTransitionAllocationTerminated, AttemptTransitionCleanupCompleted, AttemptTransitionCleanupReleased:
+	case AttemptTransitionProcessTerminal, AttemptTransitionAllocationTerminated, AttemptTransitionProcessSupervisorClosed, AttemptTransitionCleanupCompleted, AttemptTransitionCleanupReleased:
 		return true
 	default:
 		return false
@@ -447,6 +463,10 @@ func isCleanupTransition(kind AttemptTransitionKind) bool {
 }
 
 func (s *ingressDurableStore) compareAndAppend(expectedRevision uint64, expectedHead string, transition AttemptTransition, internalAdmission bool) (AttemptAppendResult, error) {
+	return s.compareAndAppendWithOwner(expectedRevision, expectedHead, transition, internalAdmission, false)
+}
+
+func (s *ingressDurableStore) compareAndAppendWithOwner(expectedRevision uint64, expectedHead string, transition AttemptTransition, internalAdmission, currentOwnerHeld bool) (AttemptAppendResult, error) {
 	projection := newAuthorityProjection()
 	var result AttemptAppendResult
 	err := s.transact(projection, func() error {
@@ -461,6 +481,9 @@ func (s *ingressDurableStore) compareAndAppend(expectedRevision uint64, expected
 			return err
 		}
 		prior, exists := projection.attempts[key]
+		if transition.Kind == AttemptTransitionProcessStarted && exists && prior.ControlOwnerBindingDigest != "" && !currentOwnerHeld {
+			return ErrControlOwnerNotCurrent
+		}
 		if replay, ok := exactTransitionReplay(prior, exists, transition); ok {
 			result = AttemptAppendResult{State: replay, TransitionDigest: transitionDigest(replay, transition.Kind)}
 			return nil
@@ -473,6 +496,9 @@ func (s *ingressDurableStore) compareAndAppend(expectedRevision uint64, expected
 			return ErrAttemptAuthorityUnknown
 		} else if prior.Revision != expectedRevision || prior.HeadDigest != expectedHead {
 			return ErrAttemptAuthorityConflict
+		}
+		if err := validateSupervisorTransitionAgainstProjection(projection, prior, exists, transition, false); err != nil {
+			return err
 		}
 		if transition.Kind == attemptTransitionResultAdmitted && !internalAdmission {
 			return ErrAttemptAuthorityConflict
@@ -506,8 +532,12 @@ func transitionDigest(state AttemptAuthorityState, kind AttemptTransitionKind) s
 	switch kind {
 	case AttemptTransitionOpened:
 		return state.OpenedDigest
+	case AttemptTransitionControlOwnerBound:
+		return state.ControlOwnerBindingDigest
 	case AttemptTransitionLaunchAuthorized:
 		return state.LaunchAuthorizedDigest
+	case AttemptTransitionProcessSupervisorStarted:
+		return state.SupervisorStartedDigest
 	case AttemptTransitionProcessStarted:
 		return state.ProcessStartedDigest
 	case attemptTransitionResultAdmitted:
@@ -518,6 +548,8 @@ func transitionDigest(state AttemptAuthorityState, kind AttemptTransitionKind) s
 		return state.ProcessTerminalDigest
 	case AttemptTransitionAllocationTerminated:
 		return state.AllocationTerminalDigest
+	case AttemptTransitionProcessSupervisorClosed:
+		return state.SupervisorClosedDigest
 	case AttemptTransitionCleanupCompleted:
 		return state.CleanupCompletedDigest
 	case AttemptTransitionCleanupReleased:
@@ -541,6 +573,10 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 	switch t.Kind {
 	case AttemptTransitionOpened:
 		return nil
+	case AttemptTransitionControlOwnerBound:
+		if prior.CleanupReleasedDigest != "" || t.Owner.OwnerEpoch <= prior.Owner.OwnerEpoch {
+			return ErrAttemptAuthorityOrder
+		}
 	case AttemptTransitionLaunchAuthorized:
 		if prior.LaunchState != LaunchNotAuthorized || prior.BarrierDigest != "" || prior.AllocationProvisionEffectDigest == "" || prior.AllocationProvisionReceiptDigest == "" {
 			return ErrAttemptAuthorityOrder
@@ -550,6 +586,10 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 			return ErrAttemptAuthorityOrder
 		}
 		if t.LaunchMaterialsDigest != prior.LaunchMaterialsDigest || t.AgentLaunchSpecDigest != prior.AgentLaunchSpecDigest || !processMatchesRuntime(t.Process, prior.LaunchClosure.RuntimeExecutable) {
+			return ErrAttemptAuthorityOrder
+		}
+	case AttemptTransitionProcessSupervisorStarted:
+		if prior.LaunchState != LaunchUncertain || prior.BarrierDigest != "" || prior.SupervisorStartedDigest != "" || prior.ControlOwnerBindingDigest == "" || t.SupervisorStarted.Owner != prior.Owner || t.SupervisorStarted.LaunchAuthorizedFactDigest != prior.LaunchAuthorizedDigest {
 			return ErrAttemptAuthorityOrder
 		}
 	case attemptTransitionResultAdmitted:
@@ -592,6 +632,11 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 		if prior.ProcessTerminalKind != ProcessAbsent && prior.ProcessTerminalKind != ProcessTerminated || prior.AllocationTerminalDigest != "" || prior.AllocationTerminateEffectDigest == "" || prior.AllocationTerminateReceiptDigest == "" || t.ReceiptDigest != prior.AllocationTerminateReceiptDigest {
 			return ErrAttemptAuthorityOrder
 		}
+	case AttemptTransitionProcessSupervisorClosed:
+		closed := t.SupervisorClosed
+		if prior.ProcessTerminalDigest == "" || prior.AllocationTerminalDigest == "" || prior.SupervisorStartedDigest == "" || prior.SupervisorClosedDigest != "" || closed.SupervisorStartedFactDigest != prior.SupervisorStartedDigest || closed.ProcessTerminalFactDigest != prior.ProcessTerminalDigest || closed.AllocationTerminatedFactDigest != prior.AllocationTerminalDigest || closed.CleanupBindingDigest != prior.CleanupBindingDigest || closed.TerminalizationID != prior.TerminalizationID || closed.SessionID != prior.SupervisorStarted.Handshake.SessionID || closed.SupervisorProcess != prior.SupervisorStarted.Handshake.SupervisorProcess || closed.Owner != prior.Owner {
+			return ErrAttemptAuthorityOrder
+		}
 	case AttemptTransitionCleanupCompleted:
 		if prior.AllocationTerminalDigest == "" || prior.CleanupCompletedDigest != "" {
 			return ErrAttemptAuthorityOrder
@@ -614,15 +659,26 @@ func validateTransitionShape(t AttemptTransition) error {
 	if t.Kind != AttemptTransitionLaunchAuthorized && t.Kind != AttemptTransitionProcessStarted && (!zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "") {
 		return fmt.Errorf("%w: launch identity on unrelated transition", ErrAttemptAuthorityConflict)
 	}
+	if t.Kind != AttemptTransitionControlOwnerBound && t.Owner != (CurrentOwnerBinding{}) || t.Kind != AttemptTransitionProcessSupervisorStarted && t.SupervisorStarted != (ProcessSupervisorStarted{}) || t.Kind != AttemptTransitionProcessSupervisorClosed && t.SupervisorClosed != (ProcessSupervisorClosed{}) || t.Kind != AttemptTransitionCleanupCompleted && t.SupervisorClosedFactDigest != "" {
+		return fmt.Errorf("%w: supervisor authority payload on unrelated transition", ErrAttemptAuthorityConflict)
+	}
 	switch t.Kind {
 	case AttemptTransitionOpened:
 		if transitionHasAnyPayload(t) {
 			return fmt.Errorf("%w: attempt-opened carries unrelated payload", ErrAttemptAuthorityConflict)
 		}
 		return nil
+	case AttemptTransitionControlOwnerBound:
+		if t.Owner.Validate() != nil || transitionHasPayloadExceptSupervisor(t) {
+			return fmt.Errorf("%w: invalid control-owner-bound transition", ErrAttemptAuthorityConflict)
+		}
 	case AttemptTransitionLaunchAuthorized:
 		if strings.TrimSpace(t.LaunchAuthorizationID) == "" || t.LaunchClosure.Validate() != nil || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
 			return fmt.Errorf("%w: launchAuthorizationId is empty", ErrAttemptAuthorityConflict)
+		}
+	case AttemptTransitionProcessSupervisorStarted:
+		if t.SupervisorStarted.Validate() != nil || transitionHasPayloadExceptSupervisor(t) {
+			return fmt.Errorf("%w: invalid process-supervisor-started transition", ErrAttemptAuthorityConflict)
 		}
 	case AttemptTransitionProcessStarted:
 		if strings.TrimSpace(t.CommandID) == "" || t.Process.Validate() != nil || validateObservedAt(t.ObservedAt, t.Process) != nil || !validLaunchDigest(t.LaunchMaterialsDigest) || !validLaunchDigest(t.AgentLaunchSpecDigest) || !zeroLaunchClosure(t.LaunchClosure) || t.LaunchAuthorizationID != "" || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
@@ -650,9 +706,16 @@ func validateTransitionShape(t AttemptTransition) error {
 		if err := requireDigest("receiptDigest", t.ReceiptDigest); err != nil {
 			return fmt.Errorf("%w: %v", ErrAttemptAuthorityConflict, err)
 		}
+	case AttemptTransitionProcessSupervisorClosed:
+		if t.SupervisorClosed.Validate() != nil || t.TerminalizationID != t.SupervisorClosed.TerminalizationID || t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
+			return fmt.Errorf("%w: invalid process-supervisor-closed transition", ErrAttemptAuthorityConflict)
+		}
 	case AttemptTransitionCleanupCompleted, AttemptTransitionCleanupReleased:
 		if strings.TrimSpace(t.TerminalizationID) == "" || t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
 			return fmt.Errorf("%w: terminalizationId is empty", ErrAttemptAuthorityConflict)
+		}
+		if t.Kind == AttemptTransitionCleanupCompleted && t.SupervisorClosedFactDigest != "" && requireDigest("supervisorClosedFactDigest", t.SupervisorClosedFactDigest) != nil {
+			return fmt.Errorf("%w: invalid supervisorClosedFactDigest", ErrAttemptAuthorityConflict)
 		}
 	default:
 		return fmt.Errorf("%w: unknown transition %q", ErrAttemptAuthorityConflict, t.Kind)
@@ -661,7 +724,11 @@ func validateTransitionShape(t AttemptTransition) error {
 }
 
 func transitionHasAnyPayload(t AttemptTransition) bool {
-	return t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 || !zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != ""
+	return t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 || !zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "" || t.Owner != (CurrentOwnerBinding{}) || t.SupervisorStarted != (ProcessSupervisorStarted{}) || t.SupervisorClosed != (ProcessSupervisorClosed{}) || t.SupervisorClosedFactDigest != ""
+}
+
+func transitionHasPayloadExceptSupervisor(t AttemptTransition) bool {
+	return t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 || !zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "" || t.SupervisorClosedFactDigest != ""
 }
 
 func zeroLaunchClosure(closure launchidentity.ClosureV1) bool {
@@ -681,9 +748,13 @@ func exactTransitionReplay(state AttemptAuthorityState, exists bool, t AttemptTr
 	switch t.Kind {
 	case AttemptTransitionOpened:
 		return state, state.OpenedDigest != ""
+	case AttemptTransitionControlOwnerBound:
+		return state, state.ControlOwnerBindingDigest != "" && state.Owner == t.Owner
 	case AttemptTransitionLaunchAuthorized:
 		stored, err := t.LaunchClosure.Stored()
 		return state, err == nil && state.LaunchAuthorizationID == t.LaunchAuthorizationID && state.LaunchAuthorizedDigest != "" && state.LaunchClosure == stored
+	case AttemptTransitionProcessSupervisorStarted:
+		return state, state.SupervisorStartedDigest != "" && state.SupervisorStarted == t.SupervisorStarted
 	case AttemptTransitionProcessStarted:
 		return state, state.ProcessStartedDigest != "" && state.CommandID == t.CommandID && state.ObservedAt == t.ObservedAt && state.Process == t.Process && state.LaunchMaterialsDigest == t.LaunchMaterialsDigest && state.AgentLaunchSpecDigest == t.AgentLaunchSpecDigest
 	case attemptTransitionResultAdmitted:
@@ -694,8 +765,10 @@ func exactTransitionReplay(state AttemptAuthorityState, exists bool, t AttemptTr
 		return state, state.ProcessTerminalDigest != "" && state.TerminalizationID == t.TerminalizationID && state.ProcessTerminalKind == t.ProcessTerminalKind && state.ProcessTerminalObservation == t.ObservationDigest
 	case AttemptTransitionAllocationTerminated:
 		return state, state.AllocationTerminalDigest != "" && state.TerminalizationID == t.TerminalizationID && state.AllocationReceiptDigest == t.ReceiptDigest
+	case AttemptTransitionProcessSupervisorClosed:
+		return state, state.SupervisorClosedDigest != "" && state.SupervisorClosed == t.SupervisorClosed
 	case AttemptTransitionCleanupCompleted:
-		return state, state.CleanupCompletedDigest != "" && state.TerminalizationID == t.TerminalizationID
+		return state, state.CleanupCompletedDigest != "" && state.TerminalizationID == t.TerminalizationID && (t.SupervisorClosedFactDigest == "" || t.SupervisorClosedFactDigest == state.SupervisorClosedDigest)
 	case AttemptTransitionCleanupReleased:
 		return state, state.CleanupReleasedDigest != "" && state.TerminalizationID == t.TerminalizationID
 	default:
@@ -987,6 +1060,8 @@ func cleanupAppendOperationAllowed(kind AttemptTransitionKind, operation Cleanup
 		return operation == CleanupInspect || operation == CleanupReconcile
 	case AttemptTransitionAllocationTerminated:
 		return operation == CleanupTerminate || operation == CleanupReconcile
+	case AttemptTransitionProcessSupervisorClosed:
+		return operation == CleanupReconcile
 	case AttemptTransitionCleanupCompleted, AttemptTransitionCleanupReleased:
 		return operation == CleanupReconcile
 	default:
@@ -1000,8 +1075,10 @@ func cleanupAppendAllowedInPhase(state AttemptAuthorityState, kind AttemptTransi
 		return exactReplay && kind == AttemptTransitionCleanupReleased
 	case state.CleanupCompletedDigest != "":
 		return kind == AttemptTransitionCleanupReleased || exactReplay && kind == AttemptTransitionCleanupCompleted
+	case state.SupervisorClosedDigest != "":
+		return kind == AttemptTransitionCleanupCompleted || exactReplay && kind == AttemptTransitionProcessSupervisorClosed
 	case state.AllocationTerminalDigest != "":
-		return kind == AttemptTransitionCleanupCompleted || exactReplay && kind == AttemptTransitionAllocationTerminated
+		return kind == AttemptTransitionProcessSupervisorClosed || exactReplay && kind == AttemptTransitionAllocationTerminated
 	case state.ProcessTerminalDigest != "":
 		return kind == AttemptTransitionAllocationTerminated || exactReplay && kind == AttemptTransitionProcessTerminal
 	default:
@@ -1019,6 +1096,10 @@ func cleanupRequestMatchesState(state AttemptAuthorityState, request CleanupAuth
 // Attempt revision/head, so a concurrent barrier/release cannot reuse the
 // authorization decision.
 func (s *ingressDurableStore) CompareAndAppendCleanup(ctx context.Context, verifier CurrentRunAuthorityVerifier, expectedRevision uint64, expectedHead string, request CleanupAuthorizationRequest, transition AttemptTransition) (AttemptAppendResult, error) {
+	return s.compareAndAppendCleanup(ctx, verifier, expectedRevision, expectedHead, request, transition, false)
+}
+
+func (s *ingressDurableStore) compareAndAppendCleanup(ctx context.Context, verifier CurrentRunAuthorityVerifier, expectedRevision uint64, expectedHead string, request CleanupAuthorizationRequest, transition AttemptTransition, ownerAuthorized bool) (AttemptAppendResult, error) {
 	if !isCleanupTransition(transition.Kind) || transition.Identity != request.Identity || transition.TerminalizationID != request.TerminalizationID {
 		return AttemptAppendResult{}, ErrCleanupUnauthorized
 	}
@@ -1037,7 +1118,21 @@ func (s *ingressDurableStore) CompareAndAppendCleanup(ctx context.Context, verif
 		if !found || !cleanupRequestMatchesState(state, request) {
 			return ErrCleanupUnauthorized
 		}
+		if transition.Kind == AttemptTransitionProcessSupervisorClosed && !ownerAuthorized {
+			return ErrControlOwnerNotCurrent
+		}
+		if transition.Kind == AttemptTransitionCleanupCompleted && (state.SupervisorClosedDigest == "" || transition.SupervisorClosedFactDigest != state.SupervisorClosedDigest) {
+			return ErrCleanupUnauthorized
+		}
 		replay, exactReplay := exactTransitionReplay(state, true, transition)
+		if !exactReplay && (state.PendingEffectIntentFactDigest != "" || state.EffectInterventionDigest != "") {
+			// Pending/intervention effect authority closes every new cleanup
+			// successor. Preserve read-only exact replay, but reject before the
+			// lower-level transition-order checker so callers receive the cleanup
+			// port's stable unauthorized result and cannot mistake it for a
+			// retryable sequencing gap.
+			return ErrCleanupUnauthorized
+		}
 		if !cleanupAppendOperationAllowed(transition.Kind, request.Operation) || !cleanupAppendAllowedInPhase(state, transition.Kind, exactReplay) {
 			return ErrCleanupUnauthorized
 		}
@@ -1066,6 +1161,7 @@ func newAuthorityProjection() *Ingress {
 	return &Ingress{
 		admitted:          make(map[string]admittedEntry),
 		attempts:          make(map[string]AttemptAuthorityState),
+		controlOwners:     make(map[string]ControlOwnerState),
 		effects:           make(map[string]EffectAuthorityState),
 		allocations:       make(map[string]allocationAuthorityState),
 		effectCommands:    make(map[string]string),
@@ -1118,6 +1214,9 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress) erro
 	} else if !exists || prior.Identity != fact.Transition.Identity || fact.Revision != prior.Revision+1 || fact.PreviousDigest != prior.HeadDigest {
 		return ErrAttemptAuthorityOrder
 	}
+	if err := validateSupervisorTransitionAgainstProjection(in, prior, exists, fact.Transition, true); err != nil {
+		return err
+	}
 	prepared := fact
 	if err := prepareAttemptFact(prior, exists, &prepared); err != nil {
 		return err
@@ -1134,6 +1233,9 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress) erro
 	case AttemptTransitionOpened:
 		state.OpenedDigest = fact.Digest
 		state.LaunchState = LaunchNotAuthorized
+	case AttemptTransitionControlOwnerBound:
+		state.Owner = t.Owner
+		state.ControlOwnerBindingDigest = fact.Digest
 	case AttemptTransitionLaunchAuthorized:
 		state.LaunchState = LaunchUncertain
 		state.LaunchAuthorizationID = t.LaunchAuthorizationID
@@ -1145,6 +1247,9 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress) erro
 		state.LaunchClosure = stored
 		state.LaunchMaterialsDigest = t.LaunchClosure.LaunchMaterialsDigest
 		state.AgentLaunchSpecDigest = t.LaunchClosure.AgentLaunchSpecDigest
+	case AttemptTransitionProcessSupervisorStarted:
+		state.SupervisorStarted = t.SupervisorStarted
+		state.SupervisorStartedDigest = fact.Digest
 	case AttemptTransitionProcessStarted:
 		state.LaunchState = LaunchStarted
 		state.CommandID, state.ObservedAt, state.Process = t.CommandID, t.ObservedAt, t.Process
@@ -1170,8 +1275,16 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress) erro
 			return ErrAttemptAuthorityConflict
 		}
 		state.AllocationTerminalDigest, state.AllocationReceiptDigest = fact.Digest, t.ReceiptDigest
+	case AttemptTransitionProcessSupervisorClosed:
+		if t.TerminalizationID != state.TerminalizationID {
+			return ErrAttemptAuthorityConflict
+		}
+		state.SupervisorClosed, state.SupervisorClosedDigest = t.SupervisorClosed, fact.Digest
 	case AttemptTransitionCleanupCompleted:
 		if t.TerminalizationID != state.TerminalizationID {
+			return ErrAttemptAuthorityConflict
+		}
+		if state.SupervisorClosedDigest != "" && t.SupervisorClosedFactDigest != state.SupervisorClosedDigest {
 			return ErrAttemptAuthorityConflict
 		}
 		state.CleanupCompletedDigest = fact.Digest

@@ -273,7 +273,12 @@ type Ingress struct {
 	// admitted maps idempotencyKey → admittedEntry for replay detection.
 	admitted map[string]admittedEntry
 	attempts map[string]AttemptAuthorityState
-	effects  map[string]EffectAuthorityState
+	// controlOwners is the repository/authority-scope owner projection rebuilt
+	// from control-owner-acquired facts in this same physical ledger. It is not
+	// a second lifecycle ledger and never authorizes an Attempt without an exact
+	// per-Attempt owner binding fact.
+	controlOwners map[string]ControlOwnerState
+	effects       map[string]EffectAuthorityState
 	// allocations is rebuilt exclusively from the same durable Attempt log.
 	// It is the five-fact authority source projected into allocationcontrol;
 	// the Provider journal is never allowed to populate this map.
@@ -320,6 +325,7 @@ func NewIngress(binding LedgerBinding) (*Ingress, error) {
 		ledger:            binding,
 		admitted:          make(map[string]admittedEntry),
 		attempts:          make(map[string]AttemptAuthorityState),
+		controlOwners:     make(map[string]ControlOwnerState),
 		effects:           make(map[string]EffectAuthorityState),
 		allocations:       make(map[string]allocationAuthorityState),
 		effectCommands:    make(map[string]string),
@@ -339,6 +345,7 @@ func NewDurableIngress(binding LedgerBinding, store *ingressDurableStore) (*Ingr
 		ledger:            binding,
 		admitted:          make(map[string]admittedEntry),
 		attempts:          make(map[string]AttemptAuthorityState),
+		controlOwners:     make(map[string]ControlOwnerState),
 		effects:           make(map[string]EffectAuthorityState),
 		effectCommands:    make(map[string]string),
 		effectIdempotency: make(map[string]string),
@@ -673,6 +680,7 @@ func (i *Ingress) resetDurableReplayState() {
 	i.ledgerSequence = 0
 	i.admitted = make(map[string]admittedEntry)
 	i.attempts = make(map[string]AttemptAuthorityState)
+	i.controlOwners = make(map[string]ControlOwnerState)
 	i.effects = make(map[string]EffectAuthorityState)
 	i.allocations = make(map[string]allocationAuthorityState)
 	i.effectCommands = make(map[string]string)
