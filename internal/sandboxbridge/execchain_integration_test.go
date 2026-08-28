@@ -258,7 +258,7 @@ type fakeDurableAuthority struct {
 }
 
 // fakeExecChainLease 是一个通过 ValidateLeaseFencing 的最小 lease fixture
-//（generation=1 + 确定性 fencingToken + AllocationId）。
+// （generation=1 + 确定性 fencingToken + AllocationId）。
 func fakeExecChainLease() dispatch.DispatchLease {
 	fencingToken := canonical.DigestBytes([]byte("fake-execchain-fencing"))
 	return dispatch.DispatchLease{

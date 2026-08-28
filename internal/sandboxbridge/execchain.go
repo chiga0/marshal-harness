@@ -170,6 +170,12 @@ func (b *Bridge) runWorkerExecChain(ctx context.Context, capable LaunchCapable, 
 			if reg := b.authority.Registration(); reg.RegistrationId != "" {
 				regID = reg.RegistrationId
 			}
+			// runtimeprofile 要求 SandboxProviderRegistrationID 带
+			// "registration:" 前缀；durable authority 返回的原始 registrationId
+			//（如 "local-sandbox-provider"）不带前缀，此处规范化补齐。
+			if !strings.HasPrefix(regID, "registration:") {
+				regID = "registration:" + regID
+			}
 			// 分离 agent/sandbox capability digest：agent 侧用 adapter probe
 			// 的 CapabilitySnapshot digest（view.CapabilityDigest 来自
 			// dispatch 时冻结的 adapter probe），sandbox 侧用 provider
