@@ -10,22 +10,22 @@
 | --- | --- | --- | --- |
 | Pi fixed-bin strict E2E | Pi `0.84.3` 已经由固定 `marshal` binary 在锁定 sourceHead `8df8b88` 上走过真实 Local allocation、ResultIngress、独立 `verify`、跨进程 restore，并生成正式 ReviewPacket 进入 `REVIEW_PENDING`；实现已随 `main@5d5c426` 合入。 | `PARTIAL-INTEGRATION/PASS`；旧假阳性测试的关键缺陷已修复，但当前主线尚未重跑，也没有导入独立 ReviewDecision，不能宣称全链通过。 | 在当前主线重跑；由独立 reviewer 产生绑定精确证据的 Decision；通过现有 `task review --decision` 进入 `ACCEPTED`；重跑故障矩阵。 |
 | Qwen workspace live | Qwen Code `0.22.0` ordinary-user workspace live adapter 已通过。 | `COMPATIBLE-ORDINARY`；不是 `LaunchCapable`，不能替代 Pi 的 production reachability 证据。 | 若未来升级 production profile，必须另行提供 Sandbox/authority 证据；当前不阻塞 v1。 |
-| durable authority | ResultIngress file-backed replay 与 durable agent registration/snapshot/current-ledger admission 已由独立 reviewer 判定 P0/P1 为零并合入 `main@5d5c426`。 | R2/R3 仍保持 `COMPONENT`：hardened 模式不得消费 Adapter 自带 evidence 自证，ordinary-user 明确记录为“不要求”；ResultIngress 与 Run journal 尚未形成崩溃原子闭环。 | 关闭 admission→worker-result→Run journal 崩溃窗口；补 restart/replay/stale/revoke/replace/expiry 真实路径负测；证明无第二真值。 |
-| server controller | start/status/recovery controller 已有候选实现，但正在聚合返工，未合入。 | R4 保持 `COMPONENT`。 | 固定 CLI authority；重复 start 幂等；server crash/lost worker/failed worker 跨进程恢复产生唯一 durable receipt 与 recovery decision。 |
+| durable authority | ResultIngress file-backed replay/current-ledger admission 已于 `main@5d5c426` 合入；admission→worker-result→Run journal 的 crash-atomic 持久化/恢复已随 `main@912f659` 合入。 | R2/R3 仍保持 `COMPONENT`：ADR 0056 terminalization barrier 尚未复用同一 authority transaction，当前主线 canary 也未覆盖 cleanup/restart 全矩阵。 | 把 terminalization CAS 接到 `912f659` 的唯一 transaction；补 restart/replay/stale/revoke/replace/expiry/cleanup 真实路径负测；证明无第二真值。 |
+| server controller | durable start/status/recovery controller 已随 `main@44ee8c9` 合入。 | transport/controller 层已接线，但 ADR 0056 的 launch/process observation、admission/terminalization CAS 与 cleanup transaction 未接入，R4 保持 `COMPONENT`。 | 重复 start 幂等；server crash/lost worker/failed worker 跨进程恢复必须在 eligibility 立即 fence 后保留 cleanup binding，直到 `cleanup-completed`，并产生唯一 durable receipt/recovery decision。 |
 | RC 与 stable release | RC identity/install 切片已获独立 `APPROVED`，尚未发布。 | 可以准备 unsigned prerelease；不能标 `RELEASED`。 | 发布并验证 RC checksum/version/source identity/安装升级回滚；稳定 `v1.*` 还必须关闭 Issue #212 signing/notarization，并通过 Linux stable gate。 |
 
 当前关键路径没有偏离 ADR 0052：R2/R3 authority → R4 server recovery → R5 terminal Decision/`ACCEPTED` → R6 RC/stable gates。任何单次 live pass、候选 commit 或 reviewer verdict 都只是对应门禁的输入，不等于阶段关闭。
 
 ## Darwin ordinary-user 进程生命周期合同审计（2026-08-28）
 
-代码审计确认：durable ResultIngress 与 DispatchLease ledger 已存在，但 Local allocation/process projection、live process handle 和正常 lease release 仍未形成同一耐久终结事务。通用 orphan recovery 也尚未机械保证“先确认 ResultIngress，再终结旧进程，最后 unlock/retry/successor”。[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已接受并关闭合同缺口；实现与生产接线保持开放，R3–R5 不升级。
+代码审计确认：crash-atomic ResultIngress transaction 已随 `main@912f659` 合入，durable DispatchLease ledger 与 server run controller 也已存在；但 Local allocation/process projection、Core-owned launch/handle、terminalization 对同一 admission CAS 的复用、eligibility terminal 与 cleanup completion 仍未形成同一耐久纵切。通用 orphan recovery 也尚未机械保证“CAS 固定 ResultIngress 结论并立即 fence，再终结旧 process group，最后 unlock/retry/successor”。[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已接受并经唯一 aggregate rework 关闭五项合同 P1；实现与生产接线保持开放，R2–R5 不升级。
 
 | Finding | 等级 | 状态 | 处置 / 关闭条件 |
 | --- | --- | --- | --- |
-| `V1-LOCAL-PROCESS-AUTHORITY` | P0 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 冻结 Core-held PID birth/PGID/cwd/executable held-FD identity 与 `process-started` 耐久事实。关闭实现仍须让 Local Exec 向 Core observer 交付 live handle、重启从 authority facts 恢复 projection，并通过 PID/PGID reuse、path swap、FD mismatch 与伪造 claim 负测。 |
-| `V1-ATTEMPT-TERMINALIZATION-ORDER` | P0 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 冻结 ResultIngress-first、`termination-intent`、安全进程终点、Provider allocation terminal receipt、`lease-released`、最后 unlock/successor 的唯一顺序。关闭实现须覆盖每个 crash point、late result、lost response 和两次重启重放。 |
-| `V1-CROSS-ORCHESTRATION-KILL` | P0 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 明确未知不 kill：只有当前合法 orchestrator 且完整 authority/Attempt/allocation/lease/generation/进程 identity 匹配时才允许发信号；identity conflict、reparent/session escape、第二 orchestrator 均零副作用并 intervention。关闭实现须有真实 Darwin 负测。 |
-| `V1-LEASE-NORMAL-TERMINAL-FACT` | P1 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 新增 append-only `lease-released`/`released` 和正常释放原因，且只允许在安全进程终点与 allocation terminal receipt 后提交。关闭实现须保持旧 ledger replay、终态冲突 fail closed，并证明释放推进 generation。 |
+| `V1-LOCAL-PROCESS-AUTHORITY` | P0 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 冻结 Core-owned launch coordinator：它在放行 workload 前负责 spawn/process-group、PID birth、cwd/executable held-FD、process handle 与 `process-started` authority fact；Provider 只能出 claim。关闭实现须从 authority facts 恢复 projection，并通过 PID/PGID reuse、path swap、FD mismatch、伪造 claim 与 launch-barrier crash 负测。 |
+| `V1-ATTEMPT-TERMINALIZATION-ORDER` | P0 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 冻结 ResultIngress admission 与 terminalization/eligibility terminal 共用 authority transaction/CAS；CAS 固定业务结论并立即 fence，随后安全终结 process group、Provider allocation terminal receipt、`cleanup-completed`，最后才 unlock/successor。关闭实现须覆盖 CAS race、每个 crash point、late result、lost response 和两次重启重放。 |
+| `V1-CROSS-ORCHESTRATION-KILL` | P0 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 把 v1 控制单元收窄为 Core 创建/观察的 cooperative/non-detaching process group；普通 Darwin 不承诺全后代 containment。只有当前合法 orchestrator 且完整 authority/Attempt/allocation/lease/generation/root birth/PGID 匹配时才允许 group signal；detach、identity conflict、第二 orchestrator 均零扩大 kill 并 intervention。关闭实现须有真实 Darwin 负测。 |
+| `V1-LEASE-NORMAL-TERMINAL-FACT` | P1 | `CLOSED-CONTRACT/OPEN-IMPLEMENTATION` | ADR 0056 将 Dispatch eligibility 与 cleanup completion 正交：normal `completed` 及既有 `cancelled|expired` 均立即 generation bump/fence；cleanup-only binding 保留到独立 `cleanup-completed`，之后 `lease-released` 只释放该 binding，不是 lease state。关闭实现须保持旧 ledger replay、终态/CAS 冲突 fail closed，并证明异常路径不会提前释放 cleanup authority。 |
 
 Mac ordinary-user 只证明在可信单用户宿主上的可恢复进程记账；它不证明恶意 workload 不逃逸，不替代 Linux/hardened authority，也不解除稳定发布的签名/notarization 门禁。
 
@@ -74,8 +74,8 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 | `V1-AGENT-SANDBOX-DIGEST-CONFLATED` | P1 | `CLOSED-FIX` | Facts 新增 `SandboxCapabilityDigest` 字段——agent digest 与 sandbox digest 分离（`686ee61`）。此前两者混用同一字段 `Facts.CapabilityDigest`。 |
 | `V1-ATTEMPT-BINDING-MISSING-EMBEDDED` | P1 | `CLOSED-FIX` | AttemptBinding 仅在 `MARSHAL_EMBEDDED_SANDBOX=1` 时写入（`fc8e6bd`）。真实 pi 在 embedded + 非嵌入式两路径产出 `worker.completed` + admission anchor + allocation record + embedded AttemptBinding 落盘——但该证据来自尚未 fail-closed 的严格 E2E（见 `V1-STRICT-E2E-FALSE-POSITIVE`），属组件级执行链证明，不构成 R2 INTEGRATED 证据。 |
 | `V1-EMBEDDED-ADMISSION-REJECTED` | P1 | `SUPERSEDED` | 原以「任意-active fallback（`cad8773`）+ 消费端补 `registration:` 前缀（`3f8638d`）」修复 embedded admission 拒绝——该两处均为门禁降级，已被第二轮审计定性并移除，改由 `V1-AGENT-REG-ANY-ACTIVE-FALLBACK` 与 `V1-SANDBOX-REG-CONSUMER-PREFIX` 的根因修复取代。 |
-| `V1-LEASE-NOT-DURABLE` | P1 | `SUPERSEDED-BY-ADR0056` | DispatchLease ledger 已耐久化，原“lease 全为内存态”描述已过时；真实缺口是 Local allocation/process projection 与正常 `lease-released` 未进入同一终结事务。由本报告顶部 `V1-LOCAL-PROCESS-AUTHORITY`、`V1-ATTEMPT-TERMINALIZATION-ORDER`、`V1-LEASE-NORMAL-TERMINAL-FACT` 跟踪。 |
-| `V1-RESULTINGRESS-NOT-DURABLE` | P1 | `CLOSED-FIX/INTEGRATION-PENDING` | `main@5d5c426` 已把 ResultIngress replay/idempotency 接到 `stateRoot` file-backed store，并合入 durable agent authority；strict E2E 也已通过跨进程 restore。这里只关闭 replay 存储缺口，admission→worker-result→Run journal 崩溃原子性仍开放，不据此升级 R2。 |
+| `V1-LEASE-NOT-DURABLE` | P1 | `SUPERSEDED-BY-ADR0056` | DispatchLease ledger 已耐久化，原“lease 全为内存态”描述已过时；真实缺口是 Local allocation/process projection、立即 eligibility terminal、独立 `cleanup-completed` 与 cleanup binding release 未进入同一 authority transaction。由本报告顶部 ADR0056 findings 跟踪。 |
+| `V1-RESULTINGRESS-NOT-DURABLE` | P1 | `CLOSED-FIX/ADR0056-INTEGRATION-PENDING` | `main@5d5c426` 已接入 ResultIngress replay/durable authority，`main@912f659` 已关闭 admission→worker-result→Run journal 的 crash-atomic 持久化/恢复缺口。ADR 0056 terminalization barrier 仍须复用同一 authority transaction，不能另建 check-then-act 路径；在该接线和当前主线 canary 前不升级 R2。 |
 
 ## 第二轮生产权威审计（2026-08-28）：门禁降级纠偏
 
@@ -89,7 +89,7 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 | `V1-R5-INTEGRATED-PREMATURE` | P1 | `CLOSED-DOCS` | R5 曾被标 `INTEGRATED` 但同时承认 cutover 未开始；且 `MARSHAL_WORKER_EXECUTOR=legacy` 仍在、production gate 需额外环境变量、默认非 embedded 走 seed admission。已撤回为 `COMPONENT`（`82e0c9f`）。 |
 | `V1-DOCS-STATE-CONFLICT` | P1 | `CLOSED-DOCS` | AGENTS/Roadmap/Readiness/Implementation Plan 的 R2–R6 状态互相冲突（R6 一处 IN_PROGRESS 多处 PLANNED、R1 成熟度不一致、R2–R5 状态不一）。已统一为权威口径：R0 PASSED、R1 IN_PROGRESS/INTEGRATED、R2–R5 IN_PROGRESS/COMPONENT、R6 PLANNED/DESIGN（`82e0c9f` + 本次）。 |
 
-纠正后真实进展以本报告顶部 2026-08-28 checkpoint 为准：ResultIngress replay 与 durable agent authority 已合入，Pi strict E2E 的最新 live 证据在锁定 sourceHead `8df8b88` 到达 `REVIEW_PENDING`；server controller、ResultIngress→Run journal 崩溃原子性以及当前主线上的独立 Decision/`ACCEPTED` canary 尚未闭环，因此 R2–R5 继续为 `COMPONENT`。
+纠正后真实进展以本报告顶部 2026-08-28 checkpoint 为准：ResultIngress replay/durable authority 已合入，crash-atomic ResultIngress→Run journal 已随 `main@912f659` 合入，durable server run controller 已随 `main@44ee8c9` 合入，Pi strict E2E 的最新 live 证据在锁定 sourceHead `8df8b88` 到达 `REVIEW_PENDING`；但 controller 与 terminalization 尚未复用 ResultIngress 的同一 authority CAS，当前主线上的 cleanup 矩阵和独立 Decision/`ACCEPTED` canary 尚未闭环，因此 R2–R5 继续为 `COMPONENT`。
 
 ## 行业协议收敛跟踪（2026-08-21 基线）
 
