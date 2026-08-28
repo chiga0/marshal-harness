@@ -1,6 +1,6 @@
 # ADR 0060：Supervisor mechanics 权威绑定与崩溃恢复锚点
 
-- 状态：提议（Proposed，2026-08-29）。本提交同时提供 dormant contract implementation 与 hostile fixtures，尚未获得独立 ReviewDecision；在维护者接受本 ADR、生产 composition 接线及真实故障矩阵完成前，不升级 I186-R2–R6，也不构成发布授权。
+- 状态：已接受（Accepted，2026-08-29）。候选 `12996f87beb3b45b9267d4356875d9ebe257fcd2` 经独立终审确认 P0/P1/P2 均为 0；接受只冻结 mechanics authority binding 与恢复合同。`processsupervisor.Client` prepared-command API、descriptor-relative nonce/journal recovery、lost-`Close` offline recovery、生产 composition 接线与真实故障矩阵仍未完成，不升级 I186-R2–R6，也不构成发布授权。
 - 关联：[ADR 0044](0044-result-ingress-and-cold-hot-paths.md)、[ADR 0052](0052-v1-release-scope-and-production-reachability.md)、[ADR 0056](0056-darwin-process-observation-and-attempt-terminalization.md)、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)、[ADR 0059](0059-fixed-darwin-process-supervisor.md)、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)。
 
 ## 背景
