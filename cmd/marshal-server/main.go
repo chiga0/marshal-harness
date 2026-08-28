@@ -395,17 +395,20 @@ func marshalChildEnvironment(environ []string) []string {
 		"MARSHAL_CODEX_PATH": true, "MARSHAL_PI_PATH": true, "MARSHAL_QODER_MODE": true,
 		"MARSHAL_QODER_CONFORMANCE_CONFIG": true, "MARSHAL_CODEX_MODE": true,
 		"MARSHAL_CODEX_AUTHORITY_CONFIG": true, "MARSHAL_APAP_ENDPOINT": true,
-		"MARSHAL_DARWIN_LAUNCHD_CONFIG": true, "MARSHAL_EMBEDDED_SANDBOX": true,
-		"MARSHAL_WORKER_EXECUTOR": true, "MARSHAL_PRODUCTION_GATE": true,
-		"MARSHAL_QODER_DISABLE_SEARCH": true,
+		"MARSHAL_DARWIN_LAUNCHD_CONFIG": true,
+		"MARSHAL_QODER_DISABLE_SEARCH":  true,
 	}
-	result := make([]string, 0, len(environ))
+	result := make([]string, 0, len(environ)+2)
 	for _, entry := range environ {
 		name, _, ok := strings.Cut(entry, "=")
 		if ok && (allowed[name] || strings.HasPrefix(name, "LC_")) {
 			result = append(result, entry)
 		}
 	}
+	// marshal-server owns the production execution composition. Parent values
+	// cannot select the legacy Worker executor or disable the embedded Sandbox
+	// and production gates for the child CLI.
+	result = append(result, "MARSHAL_EMBEDDED_SANDBOX=1", "MARSHAL_PRODUCTION_GATE=1")
 	return result
 }
 

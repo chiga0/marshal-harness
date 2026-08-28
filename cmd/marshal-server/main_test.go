@@ -59,6 +59,13 @@ if [ "${1:-}" = "version" ] && [ "${2:-}" = "--json" ]; then
 fi
 if [ "${1:-}" = "task" ] && [ "${2:-}" = "run" ]; then
   printf '%s\n' "$@" > "$root/.marshal/fixed-cli-invocation"
+  printf 'embedded=%s\n' "${MARSHAL_EMBEDDED_SANDBOX:-}" >> "$root/.marshal/fixed-cli-invocation"
+  printf 'production=%s\n' "${MARSHAL_PRODUCTION_GATE:-}" >> "$root/.marshal/fixed-cli-invocation"
+  if [ "${MARSHAL_WORKER_EXECUTOR+x}" = x ]; then
+    printf 'worker=%s\n' "$MARSHAL_WORKER_EXECUTOR" >> "$root/.marshal/fixed-cli-invocation"
+  else
+    printf 'worker=absent\n' >> "$root/.marshal/fixed-cli-invocation"
+  fi
   if [ -n "${UNRELATED_SECRET:-}" ]; then printf 'leaked\n' >> "$root/.marshal/fixed-cli-invocation"; fi
   exit 0
 fi
@@ -215,6 +222,10 @@ func TestFixedMarshalIdentityRechecksObjectAndFiltersEnvironment(t *testing.T) {
 	if strings.Contains(string(data), "leaked") || strings.Contains(string(data), "must-not-cross") {
 		t.Fatalf("unrelated environment crossed the fixed CLI boundary: %q", data)
 	}
+	if !strings.Contains(string(data), "embedded=1\n") || !strings.Contains(string(data), "production=1\n") ||
+		!strings.Contains(string(data), "worker=absent\n") {
+		t.Fatalf("fixed CLI did not observe the locked production composition: %q", data)
+	}
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +245,42 @@ func TestFixedMarshalIdentityRechecksObjectAndFiltersEnvironment(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("drifted executable reached task run: %v", err)
+	}
+}
+
+func TestMarshalChildEnvironmentLocksProductionComposition(t *testing.T) {
+	cases := []struct {
+		name   string
+		parent []string
+	}{
+		{name: "legacy-and-disabled", parent: []string{"MARSHAL_WORKER_EXECUTOR=legacy", "MARSHAL_EMBEDDED_SANDBOX=0"}},
+		{name: "legacy-and-production-disabled", parent: []string{"MARSHAL_WORKER_EXECUTOR=legacy", "MARSHAL_PRODUCTION_GATE=0"}},
+		{name: "malicious-values", parent: []string{"MARSHAL_WORKER_EXECUTOR=/tmp/evil", "MARSHAL_EMBEDDED_SANDBOX=evil", "MARSHAL_PRODUCTION_GATE=evil"}},
+		{name: "all-unset"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := testRepository(t)
+			parent := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+			parent = append(parent, testCase.parent...)
+			environment := marshalChildEnvironment(parent)
+			identity, err := bindMarshalExecutable(root, "", environment)
+			if err != nil {
+				t.Fatalf("bind fixed marshal: %v", err)
+			}
+			if err := executeRunThroughFixedCLI(context.Background(), identity, root, "run-env", environment); err != nil {
+				t.Fatalf("execute fixed marshal: %v", err)
+			}
+			data, err := os.ReadFile(filepath.Join(root, ".marshal", "fixed-cli-invocation"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			observed := string(data)
+			if !strings.Contains(observed, "embedded=1\n") || !strings.Contains(observed, "production=1\n") ||
+				!strings.Contains(observed, "worker=absent\n") || strings.Contains(observed, "legacy") || strings.Contains(observed, "/tmp/evil") {
+				t.Fatalf("parent execution environment crossed the server lock: %q", observed)
+			}
+		})
 	}
 }
 
@@ -318,7 +365,7 @@ func TestLoopbackRunStartReachesFixedCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "task\nrun\n--run\n" + runID + "\n--json\n"
+	want := "task\nrun\n--run\n" + runID + "\n--json\nembedded=1\nproduction=1\nworker=absent\n"
 	if string(invocation) != want {
 		t.Fatalf("fixed CLI invocation = %q, want %q", invocation, want)
 	}
