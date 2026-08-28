@@ -42,9 +42,11 @@ Roadmap 据此重置为：R0 `PASSED`；R1 `IN_PROGRESS/COMPONENT`；R2/R3 `PLAN
 | `V1-ALLOCATION-RECORD-SILENT-FAIL` | P1 | `CLOSED-FIX` | Allocation record 写入失败从降级改为 fail closed——阻止 Exec（`33bad5c`）。 |
 | `V1-LEGACY-ADAPTER-SILENT-FALLBACK` | P1 | `CLOSED-FIX` | RunWorker 遇到非 LaunchCapable adapter 必须 fail closed——production profile 不允许静默退回宿主 legacy Run（`33bad5c`）。 |
 | `V1-CANARY-FAIL-AS-SUCCESS` | P1 | `CLOSED-FIX` | 严格 E2E 测试 `TestRealPiStrictE2E` 要求 `worker.completed`——`worker.failed` 直接 t.Fatal（`86e209a`）。canary 更新为提示运行严格 E2E。 |
-| `V1-SERVER-RESTART-404-ONLY` | P1 | `CLOSED-FIX` | marshal-server restart 测试改为创建真实 Run（非终态 Ready），验证跨进程恢复返回 200+Ready（`da8cccd`）。此前只断言 404。 |
+| `V1-SERVER-RESTART-404-ONLY` | P1 | `CLOSED-FIX` | marshal-server restart 测试重写：创建真实非终态 Run（`run-restart-real`），验证跨进程恢复返回 200+Ready（`da8cccd`）。此前只断言 404。 |
+| `V1-FENCING-DOUBLE-WRITE` | P1 | `CLOSED-FIX` | exec-chain 在 embedded 模式下（`MARSHAL_EMBEDDED_SANDBOX=1`）复用 BindDispatch 已创建的 lease（含 fencingToken/AllocationId/Generation）而非独立计算 `fencingDigestOf` 做二次 Provision；修复后 embedded canary（`TestRealPiExecChainCanary`）首次跑通：pi 真实在 Local allocation 内执行（transcript 27KB，exitCode=0）（`634937b`）。 |
+| `V1-AGENT-SANDBOX-DIGEST-CONFLATED` | P1 | `CLOSED-FIX` | Facts 新增 `SandboxCapabilityDigest` 字段——agent digest 与 sandbox digest 分离（`686ee61`）。此前两者混用同一字段 `Facts.CapabilityDigest`。 |
+| `V1-ATTEMPT-BINDING-MISSING-EMBEDDED` | P1 | `CLOSED-FIX` | AttemptBinding 仅在 `MARSHAL_EMBEDDED_SANDBOX=1` 时写入（`fc8e6bd`）；embedded canary 通过带 AttemptBinding 的 exec-chain 闭环（`634937b`）。严格 E2E（`TestRealPiStrictE2E`）受 pi API rate limit 外部阻塞待重跑。 |
 | `V1-LEASE-NOT-DURABLE` | P1 | `OPEN-IMPLEMENTATION` | lease 仍是内存态，进程重启即丢失。跨进程恢复需要耐久 lease ledger（参照 `provider.RegistrationStore` 模式）。 |
-| `V1-AGENT-SANDBOX-DIGEST-CONFLATED` | P1 | `OPEN-IMPLEMENTATION` | agent/sandbox capability digest 仍混用同一字段（`Facts.CapabilityDigest`）。变量已分离但完整双 binding 需要 Facts schema 扩展。 |
 | `V1-RESULTINGRESS-NOT-DURABLE` | P1 | `OPEN-IMPLEMENTATION` | ResultIngress replay/idempotency 状态是进程内 map，跨进程重放未覆盖。 |
 
 ## 行业协议收敛跟踪（2026-08-21 基线）
