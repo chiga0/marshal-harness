@@ -8,6 +8,8 @@
   "specDigest": "sha256:1af177ba34fa85845c3363d0cc06b1b6d4c8a689183c1866b2241c96aa6d0048",
   "policyDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "capabilityDigest": "sha256:ceb275651802ddd41d1cbcf9e2b9ef8860b8ba2c4f99062872a36489f57a327d",
+  "agentRegistrationId": "registration:aaaaaaaa",
+  "agentCapabilitySnapshotDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "baseSha": "1eb476f7e323fe590534b7ee8b533f077424db2d",
   "worktreePath": "/fixture/repository",
   "controlRoot": "/fixture/control",

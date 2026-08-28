@@ -212,20 +212,25 @@ func TestRunWorkerExecChainCarriesAgentInAllocation(t *testing.T) {
 		t.Fatalf("admission anchor missing: %v", err)
 	}
 	var anchor struct {
-		Accepted    bool   `json:"accepted"`
-		AttemptID   string `json:"attemptId"`
-		FactDigest  string `json:"admissionFactDigest"`
-		DrcDigest   string `json:"drcDigest"`
-		AgentOK     bool   `json:"agentSideOk"`
-		SandboxOK   bool   `json:"sandboxSideOk"`
-		EvidenceOK  bool   `json:"evidenceOk"`
-		ReasonField string `json:"admissionReason"`
+		Accepted         bool   `json:"accepted"`
+		AttemptID        string `json:"attemptId"`
+		FactDigest       string `json:"admissionFactDigest"`
+		DrcDigest        string `json:"drcDigest"`
+		AgentOK          bool   `json:"agentSideOk"`
+		SandboxOK        bool   `json:"sandboxSideOk"`
+		EvidenceRequired bool   `json:"evidenceRequired"`
+		EvidenceOK       bool   `json:"evidenceOk"`
+		EvidenceReason   string `json:"evidenceReason"`
+		ReasonField      string `json:"admissionReason"`
 	}
 	if err := json.Unmarshal(anchorRaw, &anchor); err != nil {
 		t.Fatalf("admission anchor unreadable: %v", err)
 	}
-	if !anchor.Accepted || !anchor.AgentOK || !anchor.SandboxOK || !anchor.EvidenceOK {
+	if !anchor.Accepted || !anchor.AgentOK || !anchor.SandboxOK {
 		t.Errorf("admission anchor rejected: %s", string(anchorRaw))
+	}
+	if anchor.EvidenceRequired || anchor.EvidenceOK || anchor.EvidenceReason != "not-required-for-ordinary-user" {
+		t.Errorf("ordinary-user evidence must be explicit N/A, got: %s", string(anchorRaw))
 	}
 	if anchor.FactDigest == "" || anchor.DrcDigest == "" || anchor.AttemptID != "A1" {
 		t.Errorf("anchor fields incomplete: %s", string(anchorRaw))

@@ -220,6 +220,48 @@ func TestAgentLedgerSnapshotABARejectsHistoricalReactivation(t *testing.T) {
 	}
 }
 
+func TestAgentLedgerLegacyActivationFactFailsClosedOnRecovery(t *testing.T) {
+	dir := t.TempDir()
+	ledger, err := NewAgentLedger(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := ledger.Register(validReg())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := validSnap(reg.RegistrationID, validDigest)
+	b := validSnap(reg.RegistrationID, validDigest2)
+	if _, err := ledger.AddSnapshot(a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.AddSnapshot(b); err != nil {
+		t.Fatal(err)
+	}
+	legacy := struct {
+		FactType               string `json:"factType"`
+		Sequence               int64  `json:"sequence"`
+		RegistrationID         string `json:"registrationId"`
+		SnapshotDigest         string `json:"snapshotDigest"`
+		PreviousSnapshotDigest string `json:"previousSnapshotDigest"`
+		Digest                 string `json:"digest"`
+	}{
+		FactType:               agentFactTypeActivated,
+		Sequence:               4,
+		RegistrationID:         reg.RegistrationID,
+		SnapshotDigest:         a.SnapshotDigest,
+		PreviousSnapshotDigest: b.SnapshotDigest,
+	}
+	if err := ledger.appendLine(&legacy,
+		func() string { return legacy.Digest },
+		func(d string) error { legacy.Digest = d; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewAgentLedger(dir); err == nil || !strings.Contains(err.Error(), "can revive stale attempt authority") {
+		t.Fatalf("legacy activation fact must fail closed during recovery, got %v", err)
+	}
+}
+
 func TestAgentLedgerConcurrentWritersHaveStrictSequence(t *testing.T) {
 	dir := t.TempDir()
 	left, err := NewAgentLedger(dir)
