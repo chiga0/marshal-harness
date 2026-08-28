@@ -692,19 +692,20 @@ func decodeEnvelope(body []byte) (envelope, *APIError) {
 
 // mutationExecutor performs one business operation for an idempotent
 // submission. Executors return the frozen result document and its status, or
-// an *APIError; business failures are never recorded as idempotency facts.
+// an *APIError; only its stable code/reason may be attached to a durable
+// pending intent, never its path- or provider-derived diagnostics.
 type mutationExecutor func(ctx context.Context, payload json.RawMessage) (json.RawMessage, int, *APIError)
 
 // submit runs one idempotent mutation under the complete ADR 0018 §3
-// submission identity quadruple (authorityNamespaceId, scope, idempotencyKey,
-// requestDigest): the identical quadruple merges into the stored result
-// without re-executing the business operation; the identical
-// (authorityNamespaceId, scope, idempotencyKey) with a different
-// requestDigest conflicts fail closed.
-func (s *Server) submit(ctx context.Context, env envelope, execute mutationExecutor) (json.RawMessage, int, *APIError) {
+// operation/resource-bound submission identity. The client envelope retains
+// the ADR 0018 scope/key/digest fields while the authenticated route prevents
+// keys from collapsing across operations or business resources.
+func (s *Server) submit(ctx context.Context, env envelope, operation, resource string, execute mutationExecutor) (json.RawMessage, int, *APIError) {
 	outcome, err := s.idempotency.Submit(Identity{
 		Namespace: s.namespace,
 		Scope:     s.namespace.AuthorityScopeId,
+		Operation: operation,
+		Resource:  resource,
 		Key:       env.IdempotencyKey,
 	}, env.RequestDigest, func() (json.RawMessage, int, error) {
 		result, status, apiErr := execute(ctx, env.Payload)
@@ -798,6 +799,16 @@ type RunExecution struct {
 	State                domain.RunState                `json:"state"`
 }
 
+type runStartIntent struct {
+	APIVersion       domain.APIVersion `json:"apiVersion"`
+	Kind             string            `json:"kind"`
+	TaskID           string            `json:"taskId"`
+	RunID            string            `json:"runId"`
+	Sequence         uint64            `json:"sequence"`
+	State            domain.State      `json:"state"`
+	CurrentAttemptID string            `json:"currentAttemptId,omitempty"`
+}
+
 func (s *Server) handleTaskCreate(writer http.ResponseWriter, request *http.Request, identity requestIdentity) {
 	body, apiErr := readMutationBody(writer, request)
 	if apiErr != nil {
@@ -809,7 +820,7 @@ func (s *Server) handleTaskCreate(writer http.ResponseWriter, request *http.Requ
 		writeError(writer, identity.RequestID, apiErr)
 		return
 	}
-	result, status, apiErr := s.submit(request.Context(), env, s.executeTaskCreate)
+	result, status, apiErr := s.submit(request.Context(), env, "task.create", "tasks", s.executeTaskCreate)
 	if apiErr != nil {
 		writeError(writer, identity.RequestID, apiErr)
 		return
@@ -1014,7 +1025,7 @@ func (s *Server) handleTaskCancel(writer http.ResponseWriter, request *http.Requ
 	executor := func(ctx context.Context, payload json.RawMessage) (json.RawMessage, int, *APIError) {
 		return s.executeTaskCancel(ctx, taskID, payload)
 	}
-	result, status, apiErr := s.submit(request.Context(), env, executor)
+	result, status, apiErr := s.submit(request.Context(), env, "task.cancel", taskID, executor)
 	if apiErr != nil {
 		writeError(writer, identity.RequestID, apiErr)
 		return
@@ -1273,75 +1284,159 @@ func (s *Server) handleRunStart(writer http.ResponseWriter, request *http.Reques
 		writeError(writer, identity.RequestID, apiErr)
 		return
 	}
-	executor := func(ctx context.Context, payload json.RawMessage) (json.RawMessage, int, *APIError) {
-		return s.executeRunStart(ctx, runID, payload)
-	}
-	result, status, apiErr := s.submit(request.Context(), env, executor)
-	if apiErr != nil {
+	if apiErr := validateRunStartPayload(env.Payload); apiErr != nil {
 		writeError(writer, identity.RequestID, apiErr)
 		return
 	}
-	writeJSON(writer, status, result)
+	outcome, err := s.idempotency.SubmitCommand(Identity{
+		Namespace: s.namespace,
+		Scope:     s.namespace.AuthorityScopeId,
+		Operation: "run.start",
+		Resource:  runID,
+		Key:       env.IdempotencyKey,
+	}, env.RequestDigest, func() (json.RawMessage, error) {
+		return s.prepareRunStartIntent(runID)
+	}, func(recovery bool, intent json.RawMessage) (json.RawMessage, int, error) {
+		result, status, apiErr := s.executeRunStart(request.Context(), runID, env.Payload, recovery, intent)
+		if apiErr != nil {
+			return nil, 0, apiErr
+		}
+		return result, status, nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrIdempotencyConflict) {
+			writeError(writer, identity.RequestID, apiError(CodeIdempotencyConflict, "idempotency-key-conflict",
+				"the idempotency key already belongs to a different request digest"))
+			return
+		}
+		var commandErr *APIError
+		if errors.As(err, &commandErr) {
+			writeError(writer, identity.RequestID, commandErr)
+			return
+		}
+		writeError(writer, identity.RequestID, apiError(CodeInternal, "internal", "the idempotent Run start failed"))
+		return
+	}
+	status := outcome.Status
+	if outcome.Replayed {
+		status = http.StatusOK
+	}
+	writeJSON(writer, status, outcome.Result)
 }
 
-func (s *Server) executeRunStart(ctx context.Context, runID string, payload json.RawMessage) (json.RawMessage, int, *APIError) {
+func validateRunStartPayload(payload json.RawMessage) *APIError {
 	// v1 deliberately exposes no execution options here. Runtime profile,
 	// adapter, budgets and verification boundaries are frozen by the existing
 	// Task/Policy/Capability snapshots; accepting caller-selected knobs would
 	// create a second policy surface.
 	members, apiErr := strictObject(payload)
 	if apiErr != nil {
-		return nil, 0, apiErr
+		return apiErr
 	}
 	// encoding/json accepts the literal null into a nil map. The wire
 	// contract is intentionally an empty object, not an absent value, so keep
 	// that representation distinction fail closed.
 	if members == nil {
-		return nil, 0, apiError(CodeInvalidRequest, "malformed-json", "the document is not a JSON object")
+		return apiError(CodeInvalidRequest, "malformed-json", "the document is not a JSON object")
 	}
+	return nil
+}
+
+func (s *Server) prepareRunStartIntent(runID string) (json.RawMessage, error) {
 	before, err := s.store.Inspect(runID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, 0, apiError(CodeNotFound, "run-not-found", "the Run does not exist")
+			return nil, apiError(CodeNotFound, "run-not-found", "the Run does not exist")
 		}
-		return nil, 0, apiError(CodeRejected, "run-inspect-failed", "the Run state could not be inspected")
+		return nil, apiError(CodeRejected, "run-inspect-failed", "the Run state could not be inspected")
 	}
-	if before.State.Terminal() {
-		return nil, 0, apiError(CodeInvalidState, "run-terminal", "the Run is already terminal")
-	}
-	// A crash can occur after execution durably commits worker.completed but
-	// before the HTTP idempotency result is renamed into place. In that exact
-	// window the authoritative Run is already VERIFYING. Reconstruct the
-	// response from the journal/snapshot instead of invoking task run again;
-	// the reconstructed response is then committed as this submission's
-	// idempotency result. This is recovery from Core authority, not a second
-	// controller state machine.
-	if before.State == domain.StateVerifying && before.CurrentAttemptID != "" {
-		return s.encodeRunExecution(before)
+	if !runStartableState(before.State) {
+		if before.State.Terminal() {
+			return nil, apiError(CodeInvalidState, "run-terminal", "the Run is already terminal")
+		}
+		return nil, apiError(CodeInvalidState, "invalid-lifecycle-transition", "the Run state cannot start a Worker attempt")
 	}
 	if s.runExecutor == nil {
-		return nil, 0, apiError(CodeRejected, "run-executor-unavailable",
-			"the server has no production Run executor configured")
+		return nil, apiError(CodeRejected, "run-executor-unavailable", "the server has no production Run executor configured")
 	}
-	if err := s.runExecutor(ctx, runID); err != nil {
-		// The durable journal remains the authority for any partial progress.
-		// Do not expose adapter/host paths or provider diagnostics through the
-		// public protocol; callers inspect status/events and may safely retry a
-		// request that never committed an idempotency result.
-		return nil, 0, apiError(CodeRejected, "run-execution-failed", "the Run execution attempt failed")
+	intent := runStartIntent{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: "RunStartIntent",
+		TaskID: before.TaskID, RunID: before.RunID, Sequence: before.Sequence,
+		State: before.State, CurrentAttemptID: before.CurrentAttemptID,
 	}
-	after, err := s.store.Inspect(runID)
+	data, err := json.Marshal(intent)
 	if err != nil {
+		return nil, apiError(CodeInternal, "internal", "encode Run start intent")
+	}
+	return data, nil
+}
+
+func (s *Server) executeRunStart(ctx context.Context, runID string, payload json.RawMessage, recovery bool, intentData json.RawMessage) (json.RawMessage, int, *APIError) {
+	if apiErr := validateRunStartPayload(payload); apiErr != nil {
+		return nil, 0, apiErr
+	}
+	var intent runStartIntent
+	if err := json.Unmarshal(intentData, &intent); err != nil || intent.APIVersion != domain.APIVersionV1Alpha1 ||
+		intent.Kind != "RunStartIntent" || intent.RunID != runID || intent.TaskID == "" || !runStartableState(intent.State) {
+		return nil, 0, apiError(CodeRejected, "run-start-intent-invalid", "the durable Run start intent is invalid")
+	}
+	before, err := s.store.Inspect(runID)
+	if err != nil {
+		return nil, 0, apiError(CodeRejected, "run-inspect-failed", "the Run state could not be inspected")
+	}
+	if before.TaskID != intent.TaskID || before.RunID != intent.RunID || before.Sequence < intent.Sequence {
+		return nil, 0, apiError(CodeRejected, "run-start-intent-drift", "the Run no longer matches the durable start intent")
+	}
+	if before.Sequence > intent.Sequence {
+		if !recovery || !runStartReceiptState(before.State) || before.CurrentAttemptID == "" ||
+			before.CurrentAttemptID == intent.CurrentAttemptID {
+			return nil, 0, apiError(CodeInvalidState, "run-start-progress-conflict", "the Run progressed outside this start intent")
+		}
+		return s.encodeRunExecution(before)
+	}
+	if before.State != intent.State || before.CurrentAttemptID != intent.CurrentAttemptID || !runStartableState(before.State) {
+		return nil, 0, apiError(CodeInvalidState, "run-start-progress-conflict", "the Run no longer matches the startable intent state")
+	}
+	if s.runExecutor == nil {
+		return nil, 0, apiError(CodeRejected, "run-executor-unavailable", "the server has no production Run executor configured")
+	}
+	executionErr := s.runExecutor(ctx, runID)
+	after, inspectErr := s.store.Inspect(runID)
+	if inspectErr != nil {
 		return nil, 0, apiError(CodeRejected, "run-inspect-failed", "the Run state could not be inspected after execution")
 	}
-	if after.TaskID != before.TaskID || after.RunID != runID || after.Sequence <= before.Sequence || after.CurrentAttemptID == "" {
+	progressed := after.TaskID == intent.TaskID && after.RunID == intent.RunID && after.Sequence > intent.Sequence &&
+		after.CurrentAttemptID != "" && after.CurrentAttemptID != intent.CurrentAttemptID
+	if executionErr != nil {
+		// The durable journal remains the authority for any partial progress.
+		// Do not expose adapter/host paths or provider diagnostics through the
+		// public protocol. A consumed Attempt is an accepted command result even
+		// when it ends RETRY_PENDING/BLOCKED; persisting that receipt prevents a
+		// lost HTTP response from consuming another Attempt on replay.
+		if progressed && runStartReceiptState(after.State) {
+			return s.encodeRunExecution(after)
+		}
+		return nil, 0, apiError(CodeRejected, "run-execution-failed", "the Run execution attempt failed")
+	}
+	if !progressed || after.State != domain.StateVerifying {
 		return nil, 0, apiError(CodeRejected, "run-execution-not-observed",
-			"the production executor returned without durable Run progress")
+			"the production executor returned without one new VERIFYING Attempt")
 	}
 	return s.encodeRunExecution(after)
 }
 
+func runStartableState(state domain.State) bool {
+	return state == domain.StateReady || state == domain.StateRetryPending || state == domain.StateReworkRequested
+}
+
+func runStartReceiptState(state domain.State) bool {
+	return state == domain.StateRunning || state == domain.StateRetryPending || state == domain.StateBlocked || state == domain.StateVerifying
+}
+
 func (s *Server) encodeRunExecution(state domain.RunState) (json.RawMessage, int, *APIError) {
+	if !runStartReceiptState(state.State) || state.CurrentAttemptID == "" {
+		return nil, 0, apiError(CodeRejected, "run-execution-not-observed", "the Run has no receipt-bearing Attempt state")
+	}
 	result := RunExecution{
 		APIVersion:           domain.APIVersionV1Alpha1,
 		Kind:                 "RunExecution",
@@ -1376,7 +1471,7 @@ func (s *Server) handleRunApproval(writer http.ResponseWriter, request *http.Req
 	executor := func(ctx context.Context, payload json.RawMessage) (json.RawMessage, int, *APIError) {
 		return s.executeRunApproval(ctx, runID, payload)
 	}
-	result, status, apiErr := s.submit(request.Context(), env, executor)
+	result, status, apiErr := s.submit(request.Context(), env, "run.approval", runID, executor)
 	if apiErr != nil {
 		writeError(writer, identity.RequestID, apiErr)
 		return

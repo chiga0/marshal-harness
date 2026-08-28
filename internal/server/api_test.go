@@ -804,17 +804,25 @@ func TestRunStartExecutesThroughCoreAndReplaysAcrossServerRestart(t *testing.T) 
 		t.Fatalf("replay launched another Attempt: first=%+v replay=%+v executions=%d", started, replayed, executions)
 	}
 
-	// Fault injection: model a crash in the narrow window after Core commits
-	// worker.completed but before the HTTP idempotency result is durable. The
-	// next submission must reconstruct from VERIFYING and must not execute a
-	// second Attempt.
-	recordPath, _ := fixture.server.idempotency.recordPaths(Identity{
+	// Fault injection: put the accepted record back into its durable pending
+	// intent phase, modelling a crash after Core commits worker.completed but
+	// before the HTTP result receipt is renamed into place. The next submission
+	// must reconcile that intent from VERIFYING without a second Attempt.
+	commandIdentity := Identity{
 		Namespace: fixture.server.namespace,
 		Scope:     fixture.server.namespace.AuthorityScopeId,
+		Operation: "run.start",
+		Resource:  fixtureRunID,
 		Key:       "key-start-real",
-	})
-	if err := os.Remove(recordPath); err != nil {
-		t.Fatalf("inject lost idempotency response: %v", err)
+	}
+	record, found, err := fixture.server.idempotency.Get(commandIdentity)
+	if err != nil || !found {
+		t.Fatalf("read completed command receipt: found=%v err=%v", found, err)
+	}
+	record.Phase, record.Result, record.Status, record.CompletedAt = idempotencyPhasePending, nil, 0, nil
+	recordPath, _ := fixture.server.idempotency.recordPaths(commandIdentity)
+	if err := fixture.server.idempotency.writeRecord(recordPath, record); err != nil {
+		t.Fatalf("inject lost command receipt: %v", err)
 	}
 	recovered := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
 		withContentType(fixture.identityHeaders("req-start-lost-response")), startBody)
@@ -827,6 +835,16 @@ func TestRunStartExecutesThroughCoreAndReplaysAcrossServerRestart(t *testing.T) 
 	}
 	if recoveredExecution.AttemptID != started.AttemptID || executions != 1 {
 		t.Fatalf("lost-response recovery launched another Attempt: recovered=%+v executions=%d", recoveredExecution, executions)
+	}
+
+	newCommand := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+		withContentType(fixture.identityHeaders("req-start-new-after-verifying")),
+		mutationBody(t, "key-start-new-after-verifying", map[string]any{}))
+	if newCommand.status != http.StatusConflict {
+		t.Fatalf("new start in VERIFYING = %d, body: %s", newCommand.status, newCommand.body)
+	}
+	if executions != 1 {
+		t.Fatalf("non-startable VERIFYING Run reached executor: %d", executions)
 	}
 }
 
@@ -844,7 +862,9 @@ func TestRunStartFailureCanBeCancelledIdempotently(t *testing.T) {
 		}
 		return domain.Record{}, failure
 	}
+	executions := 0
 	fixture.server.runExecutor = func(ctx context.Context, runID string) error {
+		executions++
 		_, err := execution.Run(ctx, execution.Input{
 			StateRoot:      fixture.stateRoot,
 			RepositoryRoot: fixture.repositoryRoot,
@@ -858,11 +878,20 @@ func TestRunStartFailureCanBeCancelledIdempotently(t *testing.T) {
 
 	start := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
 		withContentType(fixture.identityHeaders("req-start-failure")), mutationBody(t, "key-start-failure", map[string]any{}))
-	if start.status != http.StatusUnprocessableEntity {
+	if start.status != http.StatusAccepted {
 		t.Fatalf("failed start status = %d, body: %s", start.status, start.body)
 	}
-	if body := start.decodeError(t); body.Reason != "run-execution-failed" {
-		t.Fatalf("failed start error = %+v", body)
+	var failureReceipt RunExecution
+	if err := json.Unmarshal(start.body, &failureReceipt); err != nil {
+		t.Fatalf("decode failed Attempt receipt: %v", err)
+	}
+	if failureReceipt.State.State != domain.StateRetryPending || failureReceipt.AttemptID == "" {
+		t.Fatalf("failed Attempt receipt = %+v", failureReceipt)
+	}
+	replayedStart := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+		withContentType(fixture.identityHeaders("req-start-failure-replay")), mutationBody(t, "key-start-failure", map[string]any{}))
+	if replayedStart.status != http.StatusOK || executions != 1 {
+		t.Fatalf("failed Attempt replay status=%d executions=%d body=%s", replayedStart.status, executions, replayedStart.body)
 	}
 	state, err := runstore.New(fixture.stateRoot).Inspect(fixtureRunID)
 	if err != nil {
@@ -905,6 +934,121 @@ func TestRunStartRejectsNullPayloadBeforeExecution(t *testing.T) {
 	}
 	if executions != 0 {
 		t.Fatalf("null payload reached production executor %d times", executions)
+	}
+}
+
+func TestRunStartPendingIntentRecoversAuthorityStates(t *testing.T) {
+	for _, target := range []domain.State{
+		domain.StateRunning, domain.StateRetryPending, domain.StateBlocked, domain.StateVerifying,
+	} {
+		t.Run(string(target), func(t *testing.T) {
+			fixture := newServerFixture(t)
+			var workerRelease chan struct{}
+			workerStarted := make(chan struct{})
+			if target == domain.StateRunning {
+				workerRelease = make(chan struct{})
+				fixture.adapter.run = func(ctx context.Context, request domain.Record) (domain.Record, error) {
+					close(workerStarted)
+					select {
+					case <-workerRelease:
+						return successfulServerWorker(ctx, request)
+					case <-ctx.Done():
+						return domain.Record{}, ctx.Err()
+					}
+				}
+			} else if target == domain.StateVerifying {
+				fixture.adapter.run = successfulServerWorker
+			} else {
+				fixture.adapter.run = func(context.Context, domain.Record) (domain.Record, error) {
+					failure, err := port.NewAdapterFailure(port.AdapterIDFake, port.FailureKindConnectionFailure,
+						port.RetryDispositionRetryable, nil, nil, fixtureClock)
+					if err != nil {
+						return domain.Record{}, err
+					}
+					return domain.Record{}, failure
+				}
+			}
+			executions := 0
+			fixture.server.runExecutor = func(ctx context.Context, runID string) error {
+				executions++
+				_, err := execution.Run(ctx, execution.Input{
+					StateRoot: fixture.stateRoot, RepositoryRoot: fixture.repositoryRoot,
+					RunID: runID, Adapter: fixture.adapter, Validator: fixture.server.validator,
+				})
+				return err
+			}
+			createAndApproveServerRun(t, fixture)
+			body := mutationBody(t, "key-start-recovery", map[string]any{})
+			persistPendingRunStart(t, fixture, "key-start-recovery", body)
+
+			executionDone := make(chan error, 1)
+			if target == domain.StateRunning {
+				go func() { executionDone <- fixture.server.runExecutor(context.Background(), fixtureRunID) }()
+				<-workerStarted
+			} else {
+				err := fixture.server.runExecutor(context.Background(), fixtureRunID)
+				if target == domain.StateVerifying && err != nil {
+					t.Fatalf("successful execution: %v", err)
+				}
+				if target != domain.StateVerifying && err == nil {
+					t.Fatal("failure execution unexpectedly succeeded")
+				}
+				if target == domain.StateBlocked {
+					state, inspectErr := fixture.server.store.Inspect(fixtureRunID)
+					if inspectErr != nil {
+						t.Fatal(inspectErr)
+					}
+					if _, _, apiErr := fixture.server.abortRun(context.Background(), state, "server-operator", "stop failed attempt"); apiErr != nil {
+						t.Fatalf("abort retry-pending Run: %v", apiErr)
+					}
+				}
+			}
+
+			response := fixture.do(http.MethodPost, APIPrefix+"/runs/"+fixtureRunID+"/start",
+				withContentType(fixture.identityHeaders("req-start-recovery")), body)
+			if response.status != http.StatusAccepted {
+				t.Fatalf("recovery status=%d body=%s", response.status, response.body)
+			}
+			var receipt RunExecution
+			if err := json.Unmarshal(response.body, &receipt); err != nil {
+				t.Fatal(err)
+			}
+			if receipt.State.State != target || receipt.AttemptID == "" || executions != 1 {
+				t.Fatalf("receipt=%+v executions=%d", receipt, executions)
+			}
+			if target == domain.StateRunning {
+				close(workerRelease)
+				if err := <-executionDone; err != nil {
+					t.Fatalf("release running execution: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func persistPendingRunStart(t *testing.T, fixture *serverFixture, key string, body []byte) {
+	t.Helper()
+	var env envelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatal(err)
+	}
+	intent, err := fixture.server.prepareRunStartIntent(fixtureRunID)
+	if err != nil {
+		t.Fatalf("prepare pending Run start: %v", err)
+	}
+	identity := Identity{
+		Namespace: fixture.server.namespace, Scope: fixture.server.namespace.AuthorityScopeId,
+		Operation: "run.start", Resource: fixtureRunID, Key: key,
+	}
+	path, _ := fixture.server.idempotency.recordPaths(identity)
+	if err := fixture.server.idempotency.writeRecord(path, Record{
+		APIVersion: domain.APIVersionV1Alpha1, Kind: idempotencyRecordKind,
+		AuthorityNamespaceId: identity.Namespace, Scope: identity.Scope,
+		Operation: identity.Operation, Resource: identity.Resource,
+		IdempotencyKey: key, RequestDigest: env.RequestDigest,
+		Phase: idempotencyPhasePending, Intent: intent, CreatedAt: fixtureClock,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

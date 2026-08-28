@@ -21,7 +21,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -37,6 +40,7 @@ import (
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/repository"
+	"github.com/chiga0/marshal-harness/internal/selfidentity"
 	"github.com/chiga0/marshal-harness/internal/server"
 )
 
@@ -52,6 +56,12 @@ const defaultListen = "127.0.0.1:7718"
 
 // shutdownTimeout bounds the graceful shutdown after the stop signal.
 const shutdownTimeout = 10 * time.Second
+
+const (
+	marshalIdentityTimeout = 10 * time.Second
+	marshalIdentityMaxJSON = 64 << 10
+	marshalExecutableMax   = 256 << 20
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -107,7 +117,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "marshal-server: 仓库身份无效：%v（请先执行 marshal init）\n", err)
 		return exitFailure
 	}
-	executable, err := resolveMarshalExecutable(location.RepositoryRoot, *marshalExecutable)
+	childEnvironment := marshalChildEnvironment(os.Environ())
+	executable, err := bindMarshalExecutable(location.RepositoryRoot, *marshalExecutable, childEnvironment)
 	if err != nil {
 		fmt.Fprintln(stderr, "marshal-server: 固定 marshal CLI 不可用；请构建 bin/marshal 或显式传入 --marshal-executable。")
 		return exitFailure
@@ -116,7 +127,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		StateRoot:      location.StateRoot,
 		RepositoryRoot: location.RepositoryRoot,
 		RunExecutor: func(ctx context.Context, runID string) error {
-			return executeRunThroughFixedCLI(ctx, executable, location.RepositoryRoot, runID)
+			return executeRunThroughFixedCLI(ctx, executable, location.RepositoryRoot, runID, childEnvironment)
 		},
 	})
 	if err != nil {
@@ -191,11 +202,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// resolveMarshalExecutable freezes one canonical executable path at server
+// bindMarshalExecutable freezes one canonical executable identity at server
 // startup. The child CLI's Mac-first self-identity gate reopens and verifies
 // the exact path object, digest, sourceHead and activation on every task run;
 // resolving here prevents PATH lookup and random temporary executable use.
-func resolveMarshalExecutable(repositoryRoot, configured string) (string, error) {
+type marshalExecutableIdentity struct {
+	Path       string
+	RawSHA256  string
+	Device     uint64
+	Inode      uint64
+	Size       int64
+	Version    string
+	SourceHead string
+	Profile    string
+}
+
+func bindMarshalExecutable(repositoryRoot, configured string, environment []string) (marshalExecutableIdentity, error) {
 	path := strings.TrimSpace(configured)
 	if path == "" {
 		path = filepath.Join(repositoryRoot, "bin", "marshal")
@@ -204,26 +226,40 @@ func resolveMarshalExecutable(repositoryRoot, configured string) (string, error)
 	}
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return "", err
+		return marshalExecutableIdentity{}, err
 	}
-	info, err := os.Stat(resolved)
+	identity, err := observeMarshalExecutable(resolved)
 	if err != nil {
-		return "", err
+		return marshalExecutableIdentity{}, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return "", errors.New("marshal executable is not an executable regular file")
+	version, err := inspectMarshalVersion(repositoryRoot, resolved, environment)
+	if err != nil {
+		return marshalExecutableIdentity{}, err
 	}
-	return resolved, nil
+	head, err := repositorySourceHead(repositoryRoot, environment)
+	if err != nil || version.Commit != head || version.SelfProfile != selfidentity.LocalProfile ||
+		version.OS != "darwin" || strings.TrimSpace(version.Version) == "" {
+		return marshalExecutableIdentity{}, errors.New("marshal executable build identity is not the active Mac ordinary-local source")
+	}
+	after, err := observeMarshalExecutable(resolved)
+	if err != nil || !identity.sameObject(after) {
+		return marshalExecutableIdentity{}, errors.New("marshal executable changed during startup identity admission")
+	}
+	identity.Version, identity.SourceHead, identity.Profile = version.Version, version.Commit, version.SelfProfile
+	return identity, nil
 }
 
 // executeRunThroughFixedCLI delegates to the exact existing production
 // composition root. No lifecycle, sandbox, authority or result-ingress logic
 // is duplicated in marshal-server. Presentation streams are discarded at the
 // trust boundary; durable Run status/events carry the safe diagnostics.
-func executeRunThroughFixedCLI(ctx context.Context, executable, repositoryRoot, runID string) error {
-	command := exec.CommandContext(ctx, executable, "task", "run", "--run", runID, "--json")
+func executeRunThroughFixedCLI(ctx context.Context, executable marshalExecutableIdentity, repositoryRoot, runID string, environment []string) error {
+	if err := executable.recheck(repositoryRoot, environment); err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, executable.Path, "task", "run", "--run", runID, "--json")
 	command.Dir = repositoryRoot
-	command.Env = os.Environ()
+	command.Env = environment
 	command.Stdin = strings.NewReader("")
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
@@ -235,6 +271,142 @@ func executeRunThroughFixedCLI(ctx context.Context, executable, repositoryRoot, 
 		return command.Process.Signal(os.Interrupt)
 	}
 	return command.Run()
+}
+
+type marshalVersion struct {
+	Version     string `json:"version"`
+	Commit      string `json:"commit"`
+	BuildDate   string `json:"buildDate"`
+	GoVersion   string `json:"goVersion"`
+	OS          string `json:"os"`
+	Arch        string `json:"arch"`
+	SelfProfile string `json:"selfProfile"`
+}
+
+func (identity marshalExecutableIdentity) recheck(repositoryRoot string, environment []string) error {
+	observed, err := observeMarshalExecutable(identity.Path)
+	if err != nil || !identity.sameObject(observed) {
+		return errors.New("marshal executable object identity drifted")
+	}
+	version, err := inspectMarshalVersion(repositoryRoot, identity.Path, environment)
+	if err != nil || version.Version != identity.Version || version.Commit != identity.SourceHead ||
+		version.SelfProfile != identity.Profile || version.OS != "darwin" {
+		return errors.New("marshal executable build identity drifted")
+	}
+	head, err := repositorySourceHead(repositoryRoot, environment)
+	if err != nil || head != identity.SourceHead {
+		return errors.New("repository source head drifted from the fixed marshal build")
+	}
+	after, err := observeMarshalExecutable(identity.Path)
+	if err != nil || !identity.sameObject(after) {
+		return errors.New("marshal executable changed during execution admission")
+	}
+	return nil
+}
+
+func (identity marshalExecutableIdentity) sameObject(other marshalExecutableIdentity) bool {
+	return identity.Path == other.Path && identity.RawSHA256 == other.RawSHA256 && identity.Device == other.Device &&
+		identity.Inode == other.Inode && identity.Size == other.Size
+}
+
+func observeMarshalExecutable(path string) (marshalExecutableIdentity, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return marshalExecutableIdentity{}, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 || info.Size() <= 0 || info.Size() > marshalExecutableMax {
+		return marshalExecutableIdentity{}, errors.New("marshal executable is not a bounded executable regular file")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return marshalExecutableIdentity{}, errors.New("marshal executable object identity is unavailable")
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return marshalExecutableIdentity{}, err
+	}
+	return marshalExecutableIdentity{
+		Path: path, RawSHA256: hex.EncodeToString(hash.Sum(nil)),
+		Device: uint64(stat.Dev), Inode: uint64(stat.Ino), Size: info.Size(),
+	}, nil
+}
+
+func inspectMarshalVersion(repositoryRoot, executable string, environment []string) (marshalVersion, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), marshalIdentityTimeout)
+	defer cancel()
+	var output boundedBuffer
+	output.limit = marshalIdentityMaxJSON
+	command := exec.CommandContext(ctx, executable, "version", "--json")
+	command.Dir, command.Env, command.Stdin, command.Stdout, command.Stderr = repositoryRoot, environment, strings.NewReader(""), &output, io.Discard
+	if err := command.Run(); err != nil {
+		return marshalVersion{}, errors.New("marshal version identity probe failed")
+	}
+	var version marshalVersion
+	decoder := json.NewDecoder(bytes.NewReader(output.Bytes()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&version); err != nil {
+		return marshalVersion{}, errors.New("marshal version identity is invalid")
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return marshalVersion{}, errors.New("marshal version identity carries trailing content")
+	}
+	return version, nil
+}
+
+type boundedBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (buffer *boundedBuffer) Write(data []byte) (int, error) {
+	if buffer.Len()+len(data) > buffer.limit {
+		return 0, errors.New("bounded output exceeded")
+	}
+	return buffer.Buffer.Write(data)
+}
+
+func repositorySourceHead(repositoryRoot string, environment []string) (string, error) {
+	// The Mac-first profile binds the repository observation to the platform
+	// Git executable instead of trusting a caller-controlled PATH lookup.
+	command := exec.Command("/usr/bin/git", "-C", repositoryRoot, "rev-parse", "--verify", "HEAD")
+	command.Env = environment
+	output, err := command.Output()
+	if err != nil {
+		return "", err
+	}
+	head := strings.TrimSpace(string(output))
+	if len(head) != 40 {
+		return "", errors.New("repository source head is invalid")
+	}
+	return head, nil
+}
+
+func marshalChildEnvironment(environ []string) []string {
+	allowed := map[string]bool{
+		"HOME": true, "PATH": true, "LANG": true, "USER": true, "LOGNAME": true, "SHELL": true, "TERM": true,
+		"TMP": true, "TEMP": true, "TMPDIR": true, "XDG_CACHE_HOME": true, "XDG_CONFIG_HOME": true,
+		"XDG_DATA_HOME": true, "XDG_STATE_HOME": true, "CODEX_HOME": true, "QWEN_HOME": true, "FNM_DIR": true,
+		"SSL_CERT_FILE": true, "SSL_CERT_DIR": true, "HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true,
+		"http_proxy": true, "https_proxy": true, "all_proxy": true, "no_proxy": true,
+		"MARSHAL_LOCAL_DOGFOOD_ACTIVATION": true,
+		"MARSHAL_OPENCODE_PATH":            true, "MARSHAL_QWEN_PATH": true, "MARSHAL_QODER_PATH": true,
+		"MARSHAL_CODEX_PATH": true, "MARSHAL_PI_PATH": true, "MARSHAL_QODER_MODE": true,
+		"MARSHAL_QODER_CONFORMANCE_CONFIG": true, "MARSHAL_CODEX_MODE": true,
+		"MARSHAL_CODEX_AUTHORITY_CONFIG": true, "MARSHAL_APAP_ENDPOINT": true,
+		"MARSHAL_DARWIN_LAUNCHD_CONFIG": true, "MARSHAL_EMBEDDED_SANDBOX": true,
+		"MARSHAL_WORKER_EXECUTOR": true, "MARSHAL_PRODUCTION_GATE": true,
+		"MARSHAL_QODER_DISABLE_SEARCH": true,
+	}
+	result := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && (allowed[name] || strings.HasPrefix(name, "LC_")) {
+			result = append(result, entry)
+		}
+	}
+	return result
 }
 
 // splitList splits a comma-separated flag value, trimming blanks.

@@ -319,14 +319,23 @@ func TestPublicAPILoopbackE2E(t *testing.T) {
 
 	// Step 14 — the idempotency authority records are durable under the
 	// state root and every record carries the complete frozen submission
-	// identity quadruple owned by the server's authority namespace: exactly
-	// one record per accepted submission (create, approve, cancel) and none
-	// for the failed or conflicting submissions.
+	// identity tuple owned by the server's authority namespace: successful
+	// submissions complete, rejected commands retain their durable pending
+	// intent and stable failure identity, and a digest conflict cannot create a
+	// second record for the same operation/resource/key.
 	records, err := os.ReadDir(filepath.Join(fixture.stateRoot, "idempotency"))
 	if err != nil || len(records) == 0 {
 		t.Fatalf("no durable idempotency records: err=%v", err)
 	}
-	recordFiles := 0
+	expectedRecords := map[string]string{
+		"key-e2e-create":          idempotencyPhaseCompleted,
+		"key-e2e-approve":         idempotencyPhaseCompleted,
+		"key-e2e-cancel-early":    idempotencyPhasePending,
+		"key-e2e-cancel":          idempotencyPhaseCompleted,
+		"key-e2e-cancel-terminal": idempotencyPhasePending,
+		"key-e2e-cancel-explicit": idempotencyPhasePending,
+	}
+	seenRecords := make(map[string]bool, len(expectedRecords))
 	for _, entry := range records {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -346,12 +355,28 @@ func TestPublicAPILoopbackE2E(t *testing.T) {
 			t.Fatalf("idempotency record %s is not owned by the server authority namespace: %+v", entry.Name(), record.AuthorityNamespaceId)
 		}
 		if record.Scope != fixture.scope || record.IdempotencyKey == "" || !strings.HasPrefix(record.RequestDigest, "sha256:") {
-			t.Fatalf("idempotency record %s lost the frozen quadruple: %+v", entry.Name(), record)
+			t.Fatalf("idempotency record %s lost the frozen identity: %+v", entry.Name(), record)
 		}
-		recordFiles++
+		wantPhase, ok := expectedRecords[record.IdempotencyKey]
+		if !ok {
+			t.Fatalf("unexpected idempotency record %s: %+v", entry.Name(), record)
+		}
+		if seenRecords[record.IdempotencyKey] {
+			t.Fatalf("duplicate idempotency record for %q", record.IdempotencyKey)
+		}
+		seenRecords[record.IdempotencyKey] = true
+		if record.Phase != wantPhase {
+			t.Fatalf("idempotency record %q phase = %q, want %q", record.IdempotencyKey, record.Phase, wantPhase)
+		}
+		if record.Operation == "" || record.Resource == "" {
+			t.Fatalf("idempotency record %q lost its route identity: %+v", record.IdempotencyKey, record)
+		}
+		if wantPhase == idempotencyPhasePending && (record.LastFailureCode == "" || record.LastFailureReason == "") {
+			t.Fatalf("pending idempotency record %q lost its stable failure receipt: %+v", record.IdempotencyKey, record)
+		}
 	}
-	if recordFiles != 3 {
-		t.Fatalf("durable idempotency records = %d, want exactly 3 (create, approve, cancel)", recordFiles)
+	if len(seenRecords) != len(expectedRecords) {
+		t.Fatalf("durable idempotency records = %d, want %d: %+v", len(seenRecords), len(expectedRecords), seenRecords)
 	}
 }
 
@@ -583,6 +608,7 @@ func TestOpenAPIDocumentFrozen(t *testing.T) {
 		"TaskCreateRequest", "TaskCreatePayload", "TaskSubmission",
 		"TaskView", "RunSummary",
 		"TaskCancelRequest", "TaskCancelPayload", "TaskCancellation",
+		"RunStartRequest", "RunStartPayload", "RunExecution",
 		"RunApprovalRequest", "RunApprovalPayload", "ApprovalRecord", "ControlSource", "ApprovalBinding",
 		"RunState", "RunLifecycleState", "RunPublication",
 		"EventProjection", "EventPage", "EventResync",
@@ -594,7 +620,7 @@ func TestOpenAPIDocumentFrozen(t *testing.T) {
 
 	// The submission result documents freeze the owning authorityNamespaceId
 	// of the ADR 0018 §3 quadruple as a required member.
-	for _, schemaName := range []string{"TaskSubmission", "TaskCancellation"} {
+	for _, schemaName := range []string{"TaskSubmission", "TaskCancellation", "RunExecution"} {
 		var schema struct {
 			Required   []string                   `json:"required"`
 			Properties map[string]json.RawMessage `json:"properties"`
@@ -616,24 +642,33 @@ func TestOpenAPIDocumentFrozen(t *testing.T) {
 		}
 	}
 
-	// The frozen idempotent submission identity is the complete quadruple
-	// (authorityNamespaceId, scope, idempotencyKey, requestDigest).
+	// The frozen idempotent submission identity includes the authenticated
+	// route operation/resource in addition to the client envelope binding.
 	var idempotentSubmission struct {
-		Identity   []string `json:"identity"`
-		LookupKey  []string `json:"lookupKey"`
-		RecordKind string   `json:"recordKind"`
+		Identity     []string `json:"identity"`
+		LookupKey    []string `json:"lookupKey"`
+		RecordKind   string   `json:"recordKind"`
+		RecordSchema []string `json:"recordSchema"`
 	}
 	if err := json.Unmarshal(document.XIdempotentSubmission, &idempotentSubmission); err != nil {
 		t.Fatalf("decode x-idempotent-submission: %v", err)
 	}
-	if !reflect.DeepEqual(idempotentSubmission.Identity, []string{"authorityNamespaceId", "scope", "idempotencyKey", "requestDigest"}) {
-		t.Fatalf("x-idempotent-submission identity = %v, want the frozen quadruple", idempotentSubmission.Identity)
+	if !reflect.DeepEqual(idempotentSubmission.Identity, []string{"authorityNamespaceId", "scope", "operation", "resource", "idempotencyKey", "requestDigest"}) {
+		t.Fatalf("x-idempotent-submission identity = %v, want the operation/resource-bound identity", idempotentSubmission.Identity)
 	}
-	if !reflect.DeepEqual(idempotentSubmission.LookupKey, []string{"authorityNamespaceId", "scope", "idempotencyKey"}) {
+	if !reflect.DeepEqual(idempotentSubmission.LookupKey, []string{"authorityNamespaceId", "scope", "operation", "resource", "idempotencyKey"}) {
 		t.Fatalf("x-idempotent-submission lookupKey = %v", idempotentSubmission.LookupKey)
 	}
 	if idempotentSubmission.RecordKind != idempotencyRecordKind {
 		t.Fatalf("x-idempotent-submission recordKind = %q, want %q", idempotentSubmission.RecordKind, idempotencyRecordKind)
+	}
+	wantRecordSchema := []string{
+		"apiVersion", "kind", "authorityNamespaceId", "scope", "operation", "resource",
+		"idempotencyKey", "requestDigest", "phase", "intent", "status", "result", "createdAt",
+		"completedAt", "lastFailureCode", "lastFailureReason", "lastFailureAt",
+	}
+	if !reflect.DeepEqual(idempotentSubmission.RecordSchema, wantRecordSchema) {
+		t.Fatalf("x-idempotent-submission recordSchema = %v, want %v", idempotentSubmission.RecordSchema, wantRecordSchema)
 	}
 
 	for _, code := range []ErrorCode{
