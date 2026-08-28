@@ -75,7 +75,7 @@ scripts/release-canary.sh status \
 
 脚本只调用绝对路径 `$PWD/bin/marshal`，并冻结本机 Pi 入口、Pi `0.84.3` bundle 路径及 SHA-256，以及已在 `main@d4b9647` fixed-bin canary 完成 WorkerResult 的 `qwen-token-plan-cn/qwen3.6-flash` 模型。Task draft 从仓库 happy-path example 派生，再由当前固定 Marshal 的 `task scaffold` 生成并验证 TaskSpec；PolicySnapshot 同样从仓库 example 派生，按 Core 的 detached `policyDigest` 规则封口，并由 `task plan` 再做 Schema、digest 和 capability admission。
 
-状态边界是固定且分离的：operator control root 为源仓库的 `.marshal/release-canary/$RUN_ID/control/`；disposable Git repository 为 `.marshal/release-canary/$RUN_ID/repository/`；Core 的权威 Run/Attempt journal 位于该 disposable repository 自己的 `.marshal/runs/$RUN_ID/`。三者都落在源仓库已忽略的 `.marshal/` 下，但 control 文件不是 Core authority，不得用来改写 nested repository 的 `.marshal`。脚本退出或启动新 shell 后仍可用 `status` 从 Core journal 恢复同一 Run。任一 source HEAD、branch、canonical remote、dirty tree、Marshal version/profile/bytes、Pi path/version/bundle 摘要、WorkerResult model 或 Run 身份漂移都会 fail closed。
+状态边界是固定且分离的：operator control root 为源仓库的 `.marshal/release-canary/$RUN_ID/control/`；disposable Git repository 为 `.marshal/release-canary/$RUN_ID/repository/`；Core 的权威 Run/Attempt journal 位于该 disposable repository 自己的 `.marshal/runs/$RUN_ID/`。三者都落在源仓库已忽略的 `.marshal/` 下，但 control 文件不是 Core authority，不得用来改写 nested repository 的 `.marshal`。脚本退出或启动新 shell 后仍可用 `status` 从 Core journal 恢复同一 Run。脚本不隐式 fetch，要求本地 `refs/remotes/origin/main` 精确等于 `--expected-head`；非空 `MARSHAL_WORKER_EXECUTOR` 也会在任何 Marshal 调用及状态创建前被拒绝，随后显式 unset，production composition 仍只由固定 final binary 决定。任一 source HEAD、branch、canonical remote、dirty tree、Marshal version/profile/bytes、Pi path/version/bundle 摘要、WorkerResult model 或 Run 身份漂移都会 fail closed。
 
 `run` 必须停在 `REVIEW_PENDING`。Lead 在另一个独立审查上下文中读取 `.marshal/release-canary/$RUN_ID/control/review-packet-output.json`，生成逐字段绑定当前 packet、Verification、ArtifactManifest、evidence 与 local self identity binding 的 `verdict=accept` ReviewDecision；canary driver 不生成 Decision，也不允许 Worker 自评。随后单独导入：
 
@@ -93,4 +93,4 @@ scripts/release-canary.sh status \
   --expect ACCEPTED
 ```
 
-只有 `finalize` 导入独立 Decision 后两次全新 Marshal 进程都恢复为 `ACCEPTED`，才允许继续 `release-contract`、`dist`、安装验证和创建 tag。任何失败均停止发布；不得改写 `.marshal`、复用旧 packet、调用 `task accept` 或把 `REVIEW_PENDING` 记作通过。脚本契约回归使用 `bash scripts/release-canary_test.sh`，该测试只运行固定路径 fake Marshal，不启动真实 Pi。
+只有 `finalize` 导入独立 Decision 后两次全新 Marshal 进程都恢复为 `ACCEPTED`，才允许继续 `release-contract`、`dist`、安装验证和创建 tag。对同一 Decision 重跑 `finalize` 会再次核对 source/Pi/Run/Decision 身份与两次 Core `ACCEPTED`，但不会重复导入；传入不同 Decision 必须失败。任何失败均停止发布；不得改写 `.marshal`、复用旧 packet、调用 `task accept` 或把 `REVIEW_PENDING` 记作通过。脚本契约回归使用 `bash scripts/release-canary_test.sh`，该测试只运行固定路径 fake Marshal，不启动真实 Pi。

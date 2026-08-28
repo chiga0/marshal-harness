@@ -39,7 +39,8 @@ sha256_file() {
 }
 
 mkdir -p "${FIXTURE_ROOT}/scripts" "${FIXTURE_ROOT}/bin" \
-  "${FIXTURE_ROOT}/schemas/examples/happy-path" "$(dirname "$PI_BIN")" "$(dirname "$PI_BUNDLE")"
+  "${FIXTURE_ROOT}/schemas/examples/happy-path" "${FIXTURE_ROOT}/empty-hooks" \
+  "$(dirname "$PI_BIN")" "$(dirname "$PI_BUNDLE")"
 cp "$DRIVER_SOURCE" "${FIXTURE_ROOT}/scripts/release-canary.sh"
 cp "${SCRIPT_DIR}/../schemas/examples/happy-path/task-spec.json" \
   "${FIXTURE_ROOT}/schemas/examples/happy-path/task-spec.json"
@@ -148,6 +149,7 @@ policy["policyDigest"] = ""
 encoded = json.dumps(policy, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 assert recorded == "sha256:" + hashlib.sha256(encoded).hexdigest()
 PY
+    printf '%s\n' "$4" >"${state_path}.task-path"
     printf 'READY\n' >"$state_path"
     printf '{"status":"planned"}\n'
     ;;
@@ -169,12 +171,37 @@ PY
     ;;
   "task verify")
     [ "$#" -eq 5 ] && [ "$3" = --run ] && [ "$4" = "$run_id" ] && [ "$5" = --json ] || unexpected "$@"
+    /usr/bin/python3 -I -B - "$(cat "${state_path}.task-path")" \
+      "$MARSHAL_RELEASE_CANARY_FAKE_STATE/${run_id}.acceptance" "$FAKE_EXPECTED_HEAD" <<'PY'
+import json, pathlib, subprocess, sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    task = json.load(handle)
+command = task["acceptance"]["commands"][0]
+argv = command["argv"]
+marker = "marshal-release-canary:" + sys.argv[3]
+root = pathlib.Path(sys.argv[2])
+real_lf = root / "real-lf"
+literal_backslash_n = root / "literal-backslash-n"
+real_lf.mkdir(parents=True, exist_ok=True)
+literal_backslash_n.mkdir(parents=True, exist_ok=True)
+(real_lf / "release-canary.txt").write_text(marker + "\n", encoding="utf-8")
+(literal_backslash_n / "release-canary.txt").write_text(marker + "\\n", encoding="utf-8")
+passed = subprocess.run(argv, cwd=real_lf, stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+rejected = subprocess.run(argv, cwd=literal_backslash_n, stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+assert passed.returncode == 0, passed.stderr
+assert rejected.returncode != 0
+PY
     printf 'REVIEW_PENDING\n' >"$state_path"
     printf '{"status":"pass"}\n'
     ;;
   "task review")
     if [ "$#" -eq 7 ] && [ "$3" = --run ] && [ "$4" = "$run_id" ] && \
       [ "$5" = --decision ] && [ "$7" = --json ]; then
+      mkdir -p "$PWD/.marshal/runs/$run_id/decisions"
+      cp "$6" "$PWD/.marshal/runs/$run_id/decisions/decision-001.json"
       printf 'ACCEPTED\n' >"$state_path"
       printf '{"status":"applied","verdict":"accept","targetState":"ACCEPTED","decisionDigest":"%s"}\n' "$digest8"
     elif [ "$#" -eq 5 ] && [ "$3" = --run ] && [ "$4" = "$run_id" ] && [ "$5" = --json ]; then
@@ -207,12 +234,14 @@ cat >"${FIXTURE_ROOT}/.gitignore" <<'EOF'
 bin/
 EOF
 "/usr/bin/git" -C "$FIXTURE_ROOT" init -q -b main
+"/usr/bin/git" -C "$FIXTURE_ROOT" config core.hooksPath "${FIXTURE_ROOT}/empty-hooks"
 "/usr/bin/git" -C "$FIXTURE_ROOT" config user.email release-canary-test@example.invalid
 "/usr/bin/git" -C "$FIXTURE_ROOT" config user.name "Release Canary Test"
 "/usr/bin/git" -C "$FIXTURE_ROOT" add .gitignore scripts/release-canary.sh schemas/examples/happy-path
 "/usr/bin/git" -C "$FIXTURE_ROOT" commit -q -m "fixture: release canary driver"
 "/usr/bin/git" -C "$FIXTURE_ROOT" remote add origin https://github.com/chiga0/marshal-harness.git
 EXPECTED_HEAD="$("/usr/bin/git" -C "$FIXTURE_ROOT" rev-parse HEAD)"
+"/usr/bin/git" -C "$FIXTURE_ROOT" update-ref refs/remotes/origin/main "$EXPECTED_HEAD"
 
 run_driver() {
   MARSHAL_RELEASE_CANARY_TEST_MODE=1 \
@@ -266,6 +295,22 @@ PY
   printf '%s\n' "$decision_path"
 }
 
+fake_log_lines() {
+  if [ -f "$FAKE_LOG" ]; then
+    wc -l <"$FAKE_LOG" | tr -d ' '
+  else
+    printf '0\n'
+  fi
+}
+
+LEGACY_RUN="rc1-legacy-rejected"
+LEGACY_LOG_BEFORE="$(fake_log_lines)"
+export MARSHAL_WORKER_EXECUTOR=legacy
+expect_fail 'legacy executor 污染' run_driver run --run-id "$LEGACY_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION"
+unset MARSHAL_WORKER_EXECUTOR
+[ ! -e "${FIXTURE_ROOT}/.marshal/release-canary/${LEGACY_RUN}" ] || fail 'legacy 拒绝后创建了 canary 状态'
+[ "$(fake_log_lines)" = "$LEGACY_LOG_BEFORE" ] || fail 'legacy 拒绝前调用了 Marshal'
+
 MAIN_RUN="rc1-main"
 run_driver run --run-id "$MAIN_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" >/dev/null
 [ "$(cat "${FAKE_STATE}/${MAIN_RUN}.state")" = REVIEW_PENDING ] || fail 'run 子命令没有停在 REVIEW_PENDING'
@@ -274,6 +319,25 @@ MAIN_DECISION="$(make_accept_decision "$MAIN_RUN")"
 run_driver finalize --run-id "$MAIN_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --decision "$MAIN_DECISION" >/dev/null
 [ "$(cat "${FAKE_STATE}/${MAIN_RUN}.state")" = ACCEPTED ] || fail 'finalize 没有到达 ACCEPTED'
 run_driver status --run-id "$MAIN_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --expect ACCEPTED >/dev/null
+FINALIZE_IMPORTS_BEFORE="$(grep -Fxc "task review --run $MAIN_RUN --decision $MAIN_DECISION --json" "$FAKE_LOG")"
+run_driver finalize --run-id "$MAIN_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --decision "$MAIN_DECISION" >/dev/null
+FINALIZE_IMPORTS_AFTER="$(grep -Fxc "task review --run $MAIN_RUN --decision $MAIN_DECISION --json" "$FAKE_LOG")"
+[ "$FINALIZE_IMPORTS_BEFORE" = 1 ] && [ "$FINALIZE_IMPORTS_AFTER" = 1 ] || fail '第二次 finalize 重复导入了 Decision'
+[ "$(cat "${FAKE_STATE}/${MAIN_RUN}.state")" = ACCEPTED ] || fail '第二次 finalize 改变了 ACCEPTED'
+MAIN_DIFFERENT_DECISION="$(dirname "$MAIN_DECISION")/different-review-decision.json"
+cp "$MAIN_DECISION" "$MAIN_DIFFERENT_DECISION"
+/usr/bin/python3 -I -B - "$MAIN_DIFFERENT_DECISION" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    value = json.load(handle)
+value["summary"] = "这不是 Core 已接纳的同一 Decision。"
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(value, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    handle.write("\n")
+PY
+expect_fail 'ACCEPTED 后替换 Decision' run_driver finalize --run-id "$MAIN_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --decision "$MAIN_DIFFERENT_DECISION"
+[ "$(grep -Fxc "task review --run $MAIN_RUN --decision $MAIN_DECISION --json" "$FAKE_LOG")" = 1 ] || fail '替换 Decision 后重复导入了已接纳 Decision'
+[ "$(cat "${FAKE_STATE}/${MAIN_RUN}.state")" = ACCEPTED ] || fail '替换 Decision 改变了 ACCEPTED'
 
 expect_fail 'fake Marshal 接受未知 flag' env \
   MARSHAL_RELEASE_CANARY_FAKE_STATE="$FAKE_STATE" \
@@ -339,6 +403,15 @@ STATE_DRIFT_RUN="rc1-state-drift"
 run_driver run --run-id "$STATE_DRIFT_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" >/dev/null
 printf 'ACCEPTED\n' >"${FAKE_STATE}/${STATE_DRIFT_RUN}.state"
 expect_fail 'Run 状态漂移' run_driver status --run-id "$STATE_DRIFT_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --expect REVIEW_PENDING
+
+REMOTE_REF_DRIFT_RUN="rc1-remote-ref-drift"
+run_driver run --run-id "$REMOTE_REF_DRIFT_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" >/dev/null
+REMOTE_REF_DRIFT_DECISION="$(make_accept_decision "$REMOTE_REF_DRIFT_RUN")"
+REMOTE_REF_DRIFT_COMMIT="$(printf 'fixture remote ref drift\n' | "/usr/bin/git" -C "$FIXTURE_ROOT" commit-tree "${EXPECTED_HEAD}^{tree}" -p "$EXPECTED_HEAD")"
+"/usr/bin/git" -C "$FIXTURE_ROOT" update-ref refs/remotes/origin/main "$REMOTE_REF_DRIFT_COMMIT"
+expect_fail 'origin/main ref 漂移' run_driver finalize --run-id "$REMOTE_REF_DRIFT_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" --decision "$REMOTE_REF_DRIFT_DECISION"
+[ "$(cat "${FAKE_STATE}/${REMOTE_REF_DRIFT_RUN}.state")" = REVIEW_PENDING ] || fail 'origin/main 漂移产生了状态副作用'
+"/usr/bin/git" -C "$FIXTURE_ROOT" update-ref refs/remotes/origin/main "$EXPECTED_HEAD"
 
 HEAD_DRIFT_RUN="rc1-head-drift"
 run_driver run --run-id "$HEAD_DRIFT_RUN" --expected-head "$EXPECTED_HEAD" --expected-version "$VERSION" >/dev/null

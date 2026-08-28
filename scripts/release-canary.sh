@@ -110,6 +110,13 @@ case "$COMMAND" in
     ;;
 esac
 
+# 兼容用 legacy executor 会绕过 final binary 的 production composition。
+# 空值与未设置等价；随后显式 unset，实际 composition 仍完全由固定 binary 决定。
+if [ -n "${MARSHAL_WORKER_EXECUTOR:-}" ]; then
+  die "拒绝继承 MARSHAL_WORKER_EXECUTOR；release canary 必须使用 final binary 的 production composition"
+fi
+unset MARSHAL_WORKER_EXECUTOR
+
 TEST_MODE="${MARSHAL_RELEASE_CANARY_TEST_MODE:-0}"
 if [ "$TEST_MODE" = 1 ]; then
   case "$SOURCE_ROOT" in
@@ -179,7 +186,7 @@ PY
 }
 
 assert_source_identity() {
-  local root head branch remote version_json marshal_sha
+  local root head branch remote remote_head version_json marshal_sha
   root="$($GIT_BIN -C "$SOURCE_ROOT" rev-parse --show-toplevel 2>/dev/null)" || die "脚本不在 Git 仓库内"
   [ "$(canonical_path "$root")" = "$SOURCE_ROOT" ] || die "源仓库根身份漂移"
   head="$($GIT_BIN -C "$SOURCE_ROOT" rev-parse HEAD)"
@@ -188,6 +195,8 @@ assert_source_identity() {
   [ "$branch" = main ] || die "源仓库分支漂移：要求 main，实际 $branch"
   remote="$($GIT_BIN -C "$SOURCE_ROOT" config --get remote.origin.url)"
   [ "$remote" = "$CANONICAL_REMOTE" ] || die "origin 不是 canonical 仓库：$remote"
+  remote_head="$($GIT_BIN -C "$SOURCE_ROOT" rev-parse --verify refs/remotes/origin/main 2>/dev/null)" || die "缺少本地 refs/remotes/origin/main；脚本不会隐式 fetch"
+  [ "$remote_head" = "$EXPECTED_HEAD" ] || die "本地 origin/main 漂移：期望 $EXPECTED_HEAD，实际 $remote_head；脚本不会隐式 fetch"
   [ -z "$($GIT_BIN -C "$SOURCE_ROOT" status --porcelain --untracked-files=all)" ] || die "源仓库不是 clean final HEAD"
 
   [ -f "$MARSHAL_BIN" ] && [ -x "$MARSHAL_BIN" ] || die "缺少固定可执行文件：$MARSHAL_BIN"
@@ -366,7 +375,7 @@ task.update({
         "id": "release-canary-marker",
         "argv": ["/usr/bin/python3", "-I", "-B", "-c",
                  "from pathlib import Path; s=Path('release-canary.txt').read_text(); "
-                 + "assert s == " + repr(marker + "\\n") + ", repr(s)"],
+                 + "assert s == " + repr(marker + "\n") + ", repr(s)"],
         "cwd": ".", "timeoutSeconds": 30, "maxLogBytes": 10000,
         "required": True, "baselinePolicy": "none",
     }]},
@@ -590,10 +599,41 @@ assert reviewer.get("id")
 PY
 }
 
+assert_same_applied_decision() {
+  local review_round authority_decision
+  review_round="$(json_field "$REVIEW_OUTPUT_PATH" packet.reviewRound)"
+  authority_decision="$(printf '%s/.marshal/runs/%s/decisions/decision-%03d.json' "$REPOSITORY_ROOT" "$RUN_ID" "$review_round")"
+  [ -f "$authority_decision" ] || die "ACCEPTED Run 缺少 Core authority Decision：$authority_decision"
+  "$PYTHON_BIN" -I -B - "$authority_decision" "$DECISION_PATH" <<'PY' || die "finalize 传入的不是 Core 已接纳的同一 Decision"
+import copy, datetime, json, sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    applied = json.load(handle)
+with open(sys.argv[2], encoding="utf-8") as handle:
+    supplied = json.load(handle)
+
+def split_time(value):
+    document = copy.deepcopy(value)
+    raw = document.pop("decidedAt")
+    parsed = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None
+    return document, parsed.astimezone(datetime.timezone.utc)
+
+applied_document, applied_time = split_time(applied)
+supplied_document, supplied_time = split_time(supplied)
+assert applied_document == supplied_document
+assert applied_time == supplied_time
+PY
+}
+
 finalize_canary() {
-  local pre_finalize_state
+  local phase pre_finalize_state
   load_existing_canary
-  [ "$(json_field "$IDENTITY_PATH" phase)" = review-pending ] || die "只有 REVIEW_PENDING canary 可以 finalize"
+  phase="$(json_field "$IDENTITY_PATH" phase)"
+  case "$phase" in
+    review-pending|accepted) ;;
+    *) die "只有 review-pending/accepted canary 可以 finalize" ;;
+  esac
   [ -f "$DECISION_PATH" ] || die "Decision 文件不存在：$DECISION_PATH"
   [ ! -L "$DECISION_PATH" ] || die "Decision 文件不得是符号链接"
   [ "$(canonical_path "$DECISION_PATH")" = "$DECISION_PATH" ] || die "--decision 必须是 canonical absolute path"
@@ -613,11 +653,16 @@ PY
   # Decision 已由 Core 原子接纳、但 shell 在更新 identity phase 前退出时，
   # 重跑 finalize 只恢复并核对 ACCEPTED，不重复导入 Decision。
   if [ "$pre_finalize_state" = ACCEPTED ]; then
+    assert_same_applied_decision
     run_fixed_marshal task status --run "$RUN_ID" --json >"$CONTROL_ROOT/accepted-first.json"
     run_fixed_marshal task status --run "$RUN_ID" --json >"$CONTROL_ROOT/accepted-restarted.json"
     assert_status_files "$CONTROL_ROOT/accepted-first.json" "$CONTROL_ROOT/accepted-restarted.json" ACCEPTED
-    update_identity_phase accepted
-    note "PASS：恢复了已由 Core 接纳的独立 Decision，Run 为 ACCEPTED"
+    if [ "$phase" = review-pending ]; then
+      update_identity_phase accepted
+      note "PASS：恢复了已由 Core 接纳的独立 Decision，Run 为 ACCEPTED"
+    else
+      note "PASS：同一独立 Decision 已接纳；两次 Core status 均为 ACCEPTED，finalize no-op"
+    fi
     return
   fi
 
@@ -635,6 +680,7 @@ PY
   run_fixed_marshal task status --run "$RUN_ID" --json >"$CONTROL_ROOT/accepted-first.json"
   run_fixed_marshal task status --run "$RUN_ID" --json >"$CONTROL_ROOT/accepted-restarted.json"
   assert_status_files "$CONTROL_ROOT/accepted-first.json" "$CONTROL_ROOT/accepted-restarted.json" ACCEPTED
+  assert_same_applied_decision
   update_identity_phase accepted
   note "PASS：独立 ReviewDecision 已导入，Run 已持久到达 ACCEPTED"
 }
