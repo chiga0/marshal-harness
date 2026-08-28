@@ -49,20 +49,6 @@ func (a *fakeProductionAdapter) CompleteLaunch(context.Context, LaunchPlan, []by
 	return domain.Record{}, errors.New("must not complete")
 }
 
-type fakeLaunchPlan struct{ closure launchidentity.ClosureV1 }
-
-func (p fakeLaunchPlan) Argv() []string                          { return append([]string(nil), p.closure.Arguments...) }
-func (p fakeLaunchPlan) EnvBlock() []string                      { return append([]string(nil), p.closure.Environment...) }
-func (p fakeLaunchPlan) WorkDir() string                         { return p.closure.WorkingDirectory }
-func (fakeLaunchPlan) TimeoutSeconds() int64                     { return 30 }
-func (fakeLaunchPlan) ResultFilePath() string                    { return "/fixed/control/result.json" }
-func (fakeLaunchPlan) ControlRootPath() string                   { return "/fixed/control" }
-func (fakeLaunchPlan) SessionPolicyName() string                 { return "ephemeral" }
-func (fakeLaunchPlan) MaxOutput() int64                          { return 4096 }
-func (fakeLaunchPlan) ProviderVersion() string                   { return "0.84.3" }
-func (p fakeLaunchPlan) LaunchClosure() launchidentity.ClosureV1 { return p.closure }
-func (fakeLaunchPlan) CloseLaunchClosure()                       {}
-
 type countingProvider struct {
 	sandbox.SandboxProvider
 	provisions int
@@ -100,21 +86,6 @@ func (p *countingProvider) Stage(ctx context.Context, request sandbox.StageReque
 func (p *countingProvider) Exec(ctx context.Context, request sandbox.ExecRequest) (*sandbox.ExecReceipt, error) {
 	p.execs++
 	return p.SandboxProvider.Exec(ctx, request)
-}
-
-func nonExactLaunchPlan(t *testing.T) LaunchPlan {
-	t.Helper()
-	input := launchidentity.SpecInput{
-		RuntimeExecutable: launchidentity.ObjectV1{CanonicalPath: "/fixed/runtime", Device: 1, Inode: 2, FileType: 0o100000, Mode: 0o100700, UID: 501, GID: 20, Size: 10, LinkCount: 1, RawSHA256: "sha256:" + strings.Repeat("a", 64)},
-		ClosureProfileID:  launchidentity.NativeProfile,
-		MaterialRoots:     []launchidentity.MaterialRootV1{}, LaunchMaterials: []launchidentity.LaunchMaterialV1{},
-		Arguments: []string{"/fixed/runtime"}, Environment: []string{"LANG=C"}, WorkingDirectory: "/fixed/worktree",
-	}
-	closure, err := launchidentity.Seal(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return fakeLaunchPlan{closure: closure}
 }
 
 func (a *fakeAdapter) ID() string { return a.id }
@@ -378,7 +349,10 @@ func TestProductionGateRejectsBeforeProviderSideEffects(t *testing.T) {
 					Retain: func(ExactProcessAttempt, *processcontrol.Process, error) {},
 				})
 			}
-			worker := &fakeProductionAdapter{fakeAdapter: &fakeAdapter{id: "fake"}, plan: nonExactLaunchPlan(t)}
+			// The resolver must reject before Adapter preflight, so the plan is
+			// deliberately nil; constructing a closure here would test the wrong
+			// boundary.
+			worker := &fakeProductionAdapter{fakeAdapter: &fakeAdapter{id: "fake"}}
 			if _, err := bridge.RunWorker(context.Background(), worker, validRequest(t)); !errors.Is(err, launchidentity.ErrUnavailable) {
 				t.Fatalf("error = %v", err)
 			}

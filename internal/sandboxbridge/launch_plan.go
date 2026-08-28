@@ -61,9 +61,6 @@ func ValidateLaunchPlan(plan LaunchPlan) error {
 	if strings.TrimSpace(plan.ControlRootPath()) == "" || !filepath.IsAbs(plan.ControlRootPath()) {
 		return errLaunchPlanBadControlRoot
 	}
-	if err := plan.LaunchClosure().Validate(); err != nil {
-		return errLaunchPlanBadClosure
-	}
 	return nil
 }
 
@@ -74,7 +71,6 @@ var (
 	errLaunchPlanBadTimeout     = strErr("sandboxbridge: launch plan timeout must be positive")
 	errLaunchPlanBadMaxOutput   = strErr("sandboxbridge: launch plan max output bytes must be positive")
 	errLaunchPlanBadControlRoot = strErr("sandboxbridge: launch plan control root is not absolute")
-	errLaunchPlanBadClosure     = strErr("sandboxbridge: launch plan closure is unavailable")
 )
 
 type strErr string

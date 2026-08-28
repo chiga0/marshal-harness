@@ -699,6 +699,9 @@ func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
 	t.Setenv("MARSHAL_OPENCODE_PATH", "")
 	t.Setenv("MARSHAL_QWEN_PATH", "")
 	t.Setenv("MARSHAL_PI_PATH", executable)
+	// This test exercises the explicit compatibility executor. Production
+	// planning remains fail closed until the per-Attempt supervisor is wired.
+	t.Setenv("MARSHAL_WORKER_EXECUTOR", "legacy")
 
 	const (
 		taskID = "cli-run-fallback-task"
@@ -750,10 +753,10 @@ func TestTaskRunUsesFrozenFallbackAdapter(t *testing.T) {
 	}
 }
 
-// TestTaskPlanProductionDefaultOrder pins the v1 supported production
-// contract at the real CLI boundary. A generated TaskSpec carries only Pi;
-// configured ordinary compatibility adapters are not production fallbacks.
-func TestTaskPlanProductionDefaultOrder(t *testing.T) {
+// TestTaskPlanProductionRequiresComposedRuntime pins the v1 production
+// fail-closed boundary. Scaffolding still freezes the requested order, but
+// planning cannot Probe even Pi until the exact per-Attempt runtime exists.
+func TestTaskPlanProductionRequiresComposedRuntime(t *testing.T) {
 	originalDirectory, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -844,36 +847,11 @@ func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	exit := Run([]string{"task", "plan", "--task", taskPath, "--policy", policyPath, "--run", runID, "--json"}, strings.NewReader(""), &stdout, &stderr)
-	if exit != ExitOK {
-		t.Fatalf("task plan exit = %d, stderr = %s", exit, stderr.String())
+	if exit != ExitFailure || !strings.Contains(stderr.String(), adapter.OutcomeNotLaunchCapable) {
+		t.Fatalf("uncomposed production task plan exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
 	}
-	var result struct {
-		State             domain.RunState `json:"state"`
-		SelectionAttempts []struct {
-			AdapterID string `json:"adapterId"`
-			Outcome   string `json:"outcome"`
-		} `json:"selectionAttempts"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("decode planning result: %v", err)
-	}
-	if result.State.State != domain.StateReady {
-		t.Fatalf("planning state = %+v", result.State)
-	}
-	want := []struct{ adapterID, outcome string }{{"pi", "selected"}}
-	if len(result.SelectionAttempts) != len(want) {
-		t.Fatalf("selection attempts = %+v, want %d attempts", result.SelectionAttempts, len(want))
-	}
-	for index, expected := range want {
-		actual := result.SelectionAttempts[index]
-		if actual.AdapterID != expected.adapterID || actual.Outcome != expected.outcome {
-			t.Fatalf("selectionAttempts[%d] = %+v, want adapter=%q outcome=%q", index, actual, expected.adapterID, expected.outcome)
-		}
-	}
-	for _, attempt := range result.SelectionAttempts {
-		if attempt.AdapterID == "opencode" {
-			t.Fatalf("OpenCode entered the production candidate chain: %+v", result.SelectionAttempts)
-		}
+	if _, err := os.Stat(filepath.Join(repositoryRoot, ".marshal", "runs", runID)); !os.IsNotExist(err) {
+		t.Fatalf("uncomposed production runtime created run state: %v", err)
 	}
 
 	const (
@@ -913,21 +891,11 @@ func TestTaskPlanProductionDefaultOrder(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	exit = Run([]string{"task", "plan", "--task", customTaskPath, "--policy", customPolicyPath, "--run", customRunID, "--json"}, strings.NewReader(""), &stdout, &stderr)
-	if exit != ExitOK {
-		t.Fatalf("custom task plan exit = %d, stderr = %s", exit, stderr.String())
+	if exit != ExitFailure || !strings.Contains(stderr.String(), adapter.OutcomeNotLaunchCapable) {
+		t.Fatalf("custom uncomposed production task plan exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
 	}
-	result = struct {
-		State             domain.RunState `json:"state"`
-		SelectionAttempts []struct {
-			AdapterID string `json:"adapterId"`
-			Outcome   string `json:"outcome"`
-		} `json:"selectionAttempts"`
-	}{}
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("decode custom planning result: %v", err)
-	}
-	if len(result.SelectionAttempts) != 1 || result.SelectionAttempts[0].AdapterID != "pi" || result.SelectionAttempts[0].Outcome != "selected" {
-		t.Fatalf("custom selection attempts = %+v, want pi selected", result.SelectionAttempts)
+	if _, err := os.Stat(filepath.Join(repositoryRoot, ".marshal", "runs", customRunID)); !os.IsNotExist(err) {
+		t.Fatalf("custom uncomposed production runtime created run state: %v", err)
 	}
 
 	openCodeDraft := cliProductionTaskDraftFromTemplate(t, templateData, repositoryRoot, "cli-opencode-rejected-task", remoteURL)
