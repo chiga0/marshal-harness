@@ -27,6 +27,16 @@ func writeExecutable(t *testing.T, name string) string {
 	return path
 }
 
+func writeCanonicalExecutable(t *testing.T, name string) string {
+	t.Helper()
+	path := writeExecutable(t, name)
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
+}
+
 // staticEnv builds a getenv backed by a fixed map; absent keys return "".
 func staticEnv(values map[string]string) func(string) string {
 	return func(key string) string { return values[key] }
@@ -416,7 +426,7 @@ func TestProductionSelectorRejectsExactPiUntilAttemptRuntimeIsComposedWithoutPro
 	}
 	runtimeValue, err := NewWorkerRuntime(staticEnv(map[string]string{
 		"MARSHAL_PI_PATH":      piPath,
-		"MARSHAL_PI_NODE_PATH": writeExecutable(t, "node"),
+		"MARSHAL_PI_NODE_PATH": writeCanonicalExecutable(t, "node"),
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -436,7 +446,7 @@ func TestProductionSelectorRejectsExactPiUntilAttemptRuntimeIsComposedWithoutPro
 func TestProductionCapabilityRequiresExactPiRuntimeProfile(t *testing.T) {
 	runtimeValue, err := NewWorkerRuntime(staticEnv(map[string]string{
 		"MARSHAL_PI_PATH":      writeExecutable(t, "pi"),
-		"MARSHAL_PI_NODE_PATH": writeExecutable(t, "node"),
+		"MARSHAL_PI_NODE_PATH": writeCanonicalExecutable(t, "node"),
 	}))
 	if err != nil {
 		t.Fatal(err)

@@ -46,26 +46,30 @@ func attemptTestProcess(t *testing.T) ProcessObservation {
 	return observation
 }
 
-func attemptTestClosure() launchidentity.ClosureV1 {
-	closure, _ := launchidentity.Seal(launchidentity.SpecInput{RuntimeExecutable: launchidentity.ObjectV1{CanonicalPath: "/fixed/marshal", Device: 1, Inode: 3, FileType: POSIXFileTypeRegular, Mode: POSIXFileTypeRegular | 0755, UID: 501, GID: 20, Size: 99, LinkCount: 1, RawSHA256: attemptTestDigest("executable")}, ClosureProfileID: launchidentity.NativeProfile, MaterialRoots: []launchidentity.MaterialRootV1{}, LaunchMaterials: []launchidentity.LaunchMaterialV1{}, Arguments: []string{"/fixed/marshal"}, Environment: []string{}, WorkingDirectory: "/tmp/work"})
+func attemptTestClosure(t *testing.T) launchidentity.ClosureV1 {
+	t.Helper()
+	closure, err := launchidentity.Seal(launchidentity.SpecInput{RuntimeExecutable: launchidentity.ObjectV1{CanonicalPath: "/fixed/marshal", Device: 1, Inode: 3, FileType: POSIXFileTypeRegular, Mode: POSIXFileTypeRegular | 0755, UID: 501, GID: 20, Size: 99, LinkCount: 1, RawSHA256: attemptTestDigest("executable")}, ClosureProfileID: launchidentity.NativeProfile, MaterialRoots: []launchidentity.MaterialRootV1{}, LaunchMaterials: []launchidentity.LaunchMaterialV1{}, Arguments: []string{"/fixed/marshal"}, Environment: []string{}, WorkingDirectory: "/tmp/work"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return closure
 }
 
 func openStartedAttempt(t *testing.T, store *ingressDurableStore) AttemptAuthorityState {
 	t.Helper()
 	id := attemptTestIdentity()
-	openedResult, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	openedResult, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	if err != nil {
 		t.Fatal(err)
 	}
 	opened := openedResult.State
 	opened = appendTestAcceptedProvision(t, store, opened)
-	authorizedResult, err := appendAuthorizedAttempt(store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-1"})
+	authorizedResult, err := appendAuthorizedAttempt(t, store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	authorized := authorizedResult.State
-	startedResult, err := appendAuthorizedAttempt(store, authorized.Revision, authorized.HeadDigest, AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:00Z", Process: attemptTestProcess(t)})
+	startedResult, err := appendAuthorizedAttempt(t, store, authorized.Revision, authorized.HeadDigest, AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:00Z", Process: attemptTestProcess(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,12 +101,13 @@ func attemptTestRunAuthority(id AttemptIdentity) RunAuthorityBinding {
 	return RunAuthorityBinding{AuthorityNamespaceID: id.AuthorityNamespaceID, RunID: id.RunID, OrchestratorID: id.OrchestratorID, RunAuthorityDigest: id.RunAuthorityDigest}
 }
 
-func appendAuthorizedAttempt(store *DurableStore, revision uint64, head string, transition AttemptTransition) (AttemptAppendResult, error) {
+func appendAuthorizedAttempt(t *testing.T, store *DurableStore, revision uint64, head string, transition AttemptTransition) (AttemptAppendResult, error) {
+	t.Helper()
 	if transition.Kind == AttemptTransitionLaunchAuthorized && zeroLaunchClosure(transition.LaunchClosure) {
-		transition.LaunchClosure = attemptTestClosure()
+		transition.LaunchClosure = attemptTestClosure(t)
 	}
 	if transition.Kind == AttemptTransitionProcessStarted && transition.LaunchMaterialsDigest == "" {
-		closure := attemptTestClosure()
+		closure := attemptTestClosure(t)
 		transition.LaunchMaterialsDigest = closure.LaunchMaterialsDigest
 		transition.AgentLaunchSpecDigest = closure.AgentLaunchSpecDigest
 	}
@@ -126,13 +131,13 @@ func TestAttemptAuthorityLaunchCrashProjectionAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := attemptTestIdentity()
-	openedResult, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	openedResult, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	if err != nil || !openedResult.Appended || openedResult.State.LaunchState != LaunchNotAuthorized {
 		t.Fatalf("opened = %#v, err=%v", openedResult, err)
 	}
 	opened := openedResult.State
 	opened = appendTestAcceptedProvision(t, store, opened)
-	authorizedResult, err := appendAuthorizedAttempt(store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-1"})
+	authorizedResult, err := appendAuthorizedAttempt(t, store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-1"})
 	if err != nil || !authorizedResult.Appended || authorizedResult.State.LaunchState != LaunchUncertain || authorizedResult.TransitionDigest != authorizedResult.State.LaunchAuthorizedDigest {
 		t.Fatalf("authorized = %#v, err=%v", authorizedResult, err)
 	}
@@ -146,7 +151,7 @@ func TestAttemptAuthorityLaunchCrashProjectionAndReplay(t *testing.T) {
 		t.Fatalf("recovered = %#v, ok=%v, err=%v", recovered, ok, err)
 	}
 	// Exact open is a stable replay and never creates a second authority.
-	replay, err := appendAuthorizedAttempt(reopened, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	replay, err := appendAuthorizedAttempt(t, reopened, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	if err != nil || replay.Appended || replay.State.HeadDigest != authorized.HeadDigest || replay.TransitionDigest != authorized.OpenedDigest {
 		t.Fatalf("open replay = %#v, err=%v", replay, err)
 	}
@@ -175,7 +180,7 @@ func TestOpenedLaunchAndProcessFactsRequireHeldCurrentRunAuthority(t *testing.T)
 	if err != nil || !openedResult.Appended {
 		t.Fatalf("opened=%#v err=%v", openedResult, err)
 	}
-	launch := AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-held"}
+	launch := AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-held", LaunchClosure: attemptTestClosure(t)}
 	if _, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run, err: errors.New("authority drift")}, openedResult.State.Revision, openedResult.State.HeadDigest, AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, launch); !errors.Is(err, ErrRunAuthorityUnauthorized) {
 		t.Fatalf("stale launch authority err=%v", err)
 	}
@@ -193,7 +198,15 @@ func TestOpenedLaunchAndProcessFactsRequireHeldCurrentRunAuthority(t *testing.T)
 	if err != nil || replay.Appended || calls != 1 || replay.TransitionDigest != launchResult.TransitionDigest {
 		t.Fatalf("launch replay=%#v calls=%d err=%v", replay, calls, err)
 	}
-	started := AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:00Z", Process: attemptTestProcess(t)}
+	started := AttemptTransition{
+		Kind:                  AttemptTransitionProcessStarted,
+		Identity:              id,
+		CommandID:             "command-1",
+		ObservedAt:            "2026-08-28T00:00:00Z",
+		Process:               attemptTestProcess(t),
+		LaunchMaterialsDigest: launch.LaunchClosure.LaunchMaterialsDigest,
+		AgentLaunchSpecDigest: launch.LaunchClosure.AgentLaunchSpecDigest,
+	}
 	if _, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run, err: errors.New("authority drift")}, launchResult.State.Revision, launchResult.State.HeadDigest, AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, started); !errors.Is(err, ErrRunAuthorityUnauthorized) {
 		t.Fatalf("stale process authority err=%v", err)
 	}
@@ -206,7 +219,7 @@ func TestOpenedLaunchAndProcessFactsRequireHeldCurrentRunAuthority(t *testing.T)
 func TestAttemptLogicalKeyRejectsSiblingAuthorityAndTupleDrift(t *testing.T) {
 	store, _ := OpenResultIngressStore(t.TempDir())
 	id := attemptTestIdentity()
-	if _, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id}); err != nil {
+	if _, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id}); err != nil {
 		t.Fatal(err)
 	}
 	for _, mutate := range []func(*AttemptIdentity){
@@ -220,7 +233,7 @@ func TestAttemptLogicalKeyRejectsSiblingAuthorityAndTupleDrift(t *testing.T) {
 	} {
 		other := id
 		mutate(&other)
-		if _, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: other}); !errors.Is(err, ErrAttemptAuthorityConflict) {
+		if _, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: other}); !errors.Is(err, ErrAttemptAuthorityConflict) {
 			t.Fatalf("sibling identity accepted: %#v err=%v", other, err)
 		}
 	}
@@ -253,17 +266,17 @@ func TestProcessStartedRejectsNonCanonicalOrPreBirthObservedAt(t *testing.T) {
 		t.Run(observedAt, func(t *testing.T) {
 			store, _ := OpenResultIngressStore(t.TempDir())
 			id := attemptTestIdentity()
-			opened, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+			opened, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 			if err != nil {
 				t.Fatal(err)
 			}
 			provisioned := appendTestAcceptedProvision(t, store, opened.State)
-			authorized, err := appendAuthorizedAttempt(store, provisioned.Revision, provisioned.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-time"})
+			authorized, err := appendAuthorizedAttempt(t, store, provisioned.Revision, provisioned.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-time"})
 			if err != nil {
 				t.Fatal(err)
 			}
 			transition := AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: observedAt, Process: attemptTestProcess(t)}
-			if _, err := appendAuthorizedAttempt(store, authorized.State.Revision, authorized.State.HeadDigest, transition); !errors.Is(err, ErrAttemptAuthorityConflict) {
+			if _, err := appendAuthorizedAttempt(t, store, authorized.State.Revision, authorized.State.HeadDigest, transition); !errors.Is(err, ErrAttemptAuthorityConflict) {
 				t.Fatalf("observedAt %q err=%v", observedAt, err)
 			}
 			current, _, _ := store.AttemptState(id)
@@ -280,7 +293,7 @@ func TestAttemptAuthorityRejectsStaleRevisionAndHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := attemptTestIdentity()
-	openedResult, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	openedResult, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +306,7 @@ func TestAttemptAuthorityRejectsStaleRevisionAndHead(t *testing.T) {
 		"stale-head":     {revision: opened.Revision, head: attemptTestDigest("stale-head")},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := appendAuthorizedAttempt(store, stale.revision, stale.head, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-stale"})
+			_, err := appendAuthorizedAttempt(t, store, stale.revision, stale.head, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-auth-stale"})
 			if !errors.Is(err, ErrAttemptAuthorityConflict) {
 				t.Fatalf("err=%v, want ErrAttemptAuthorityConflict", err)
 			}
@@ -309,7 +322,7 @@ func TestAttemptAuthorityTwoStoreCASCompetition(t *testing.T) {
 	dir := t.TempDir()
 	first, _ := OpenResultIngressStore(dir)
 	second, _ := OpenResultIngressStore(dir)
-	openedResult, err := appendAuthorizedAttempt(first, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: attemptTestIdentity()})
+	openedResult, err := appendAuthorizedAttempt(t, first, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: attemptTestIdentity()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +339,7 @@ func TestAttemptAuthorityTwoStoreCASCompetition(t *testing.T) {
 			id    string
 		}) {
 			defer wg.Done()
-			_, err := appendAuthorizedAttempt(candidate.store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: attemptTestIdentity(), LaunchAuthorizationID: candidate.id})
+			_, err := appendAuthorizedAttempt(t, candidate.store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: attemptTestIdentity(), LaunchAuthorizationID: candidate.id})
 			errs <- err
 		}(candidate)
 	}
@@ -842,13 +855,13 @@ func TestLaunchUncertainCleanupAllowsHeldProcessSignalButNotProviderTerminate(t 
 		t.Fatal(err)
 	}
 	id := attemptTestIdentity()
-	openedResult, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	openedResult, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	if err != nil {
 		t.Fatal(err)
 	}
 	opened := openedResult.State
 	opened = appendTestAcceptedProvision(t, store, opened)
-	authorizedResult, err := appendAuthorizedAttempt(store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-uncertain"})
+	authorizedResult, err := appendAuthorizedAttempt(t, store, opened.Revision, opened.HeadDigest, AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-uncertain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -916,7 +929,7 @@ func TestAttemptStateEnumerationIsDeterministicAcrossRestart(t *testing.T) {
 	second.AttemptID, second.AllocationID, second.LeaseID = "attempt-2", "allocation-2", "lease-2"
 	second.LeaseDigest = attemptTestDigest("lease-2")
 	for _, identity := range []AttemptIdentity{second, first} {
-		if _, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: identity}); err != nil {
+		if _, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: identity}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -949,7 +962,7 @@ func TestAttemptAuthorityCorruptTruncatedDuplicateAndReorderFailClosed(t *testin
 		dir := t.TempDir()
 		store, _ := OpenResultIngressStore(dir)
 		_ = func() error {
-			_, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: attemptTestIdentity()})
+			_, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: attemptTestIdentity()})
 			return err
 		}()
 		raw, err := os.ReadFile(filepath.Join(dir, resultIngressStoreFileName))

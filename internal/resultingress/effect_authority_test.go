@@ -122,7 +122,7 @@ func effectOperator(inspectOutcome EffectInspectionOutcome, applyDisposition aut
 func effectTestProvision(t *testing.T, store *DurableStore) (AttemptAuthorityState, EffectIntentRequest, EffectAppendResult) {
 	t.Helper()
 	id := attemptTestIdentity()
-	openedResult, err := appendAuthorizedAttempt(store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	openedResult, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestEffectRecoveryInspectFirstRestartAndDirectLaunchBarrier(t *testing.T) {
 	store, _ := OpenResultIngressStore(dir)
 	opened, request, intent := effectTestProvision(t, store)
 	current, _, _ := store.AttemptState(opened.Identity)
-	launch := AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: opened.Identity, LaunchAuthorizationID: "direct"}
+	launch := AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: opened.Identity, LaunchAuthorizationID: "direct", LaunchClosure: attemptTestClosure(t)}
 	if _, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: request.Binding.CurrentRunAuthority}, current.Revision, current.HeadDigest, AttemptAuthorizationRequest{Identity: opened.Identity, CurrentRunAuthority: request.Binding.CurrentRunAuthority}, launch); !errors.Is(err, ErrAttemptAuthorityOrder) {
 		t.Fatalf("direct launch without accepted effect err=%v", err)
 	}
@@ -215,7 +215,7 @@ func TestEffectRecoveryInspectFirstRestartAndDirectLaunchBarrier(t *testing.T) {
 		t.Fatalf("replay=%#v inspect=%d apply=%d err=%v", replay, inspectCalls, applyCalls, err)
 	}
 	state, _, _ := reopened.AttemptState(opened.Identity)
-	if _, err := appendAuthorizedAttempt(reopened, state.Revision, state.HeadDigest, launch); err != nil {
+	if _, err := appendAuthorizedAttempt(t, reopened, state.Revision, state.HeadDigest, launch); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -332,7 +332,7 @@ func TestEffectRecoveryRejectsExpiredCancelledAndVerifierAbuse(t *testing.T) {
 	clock := time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC)
 	expiredAdmissionStore, _ := openResultIngressStoreWithClock(t.TempDir(), func() time.Time { return clock })
 	id := attemptTestIdentity()
-	openedResult, _ := appendAuthorizedAttempt(expiredAdmissionStore, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	openedResult, _ := appendAuthorizedAttempt(t, expiredAdmissionStore, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
 	expiredBinding := EffectBinding{Identity: id, CurrentRunAuthority: attemptTestRunAuthority(id), AdmissionAttemptRevision: openedResult.State.Revision, AdmissionAuthorityDigest: openedResult.State.HeadDigest, Phase: EffectPhaseAllocationProvision, MarkerDigest: attemptTestDigest("expired-marker")}
 	expiredIntent := effectTestIntent(expiredBinding, "expired-effect", "expired-command", "expired-key", attemptTestDigest("expired-request"))
 	expiredIntent.Deadline = clock.Format(time.RFC3339Nano)

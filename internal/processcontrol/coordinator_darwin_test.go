@@ -565,7 +565,7 @@ func TestFrozenMarshalAndPersistedObjectsRejectDriftAndABA(t *testing.T) {
 	if samePersistedWorkingDirectory(working, observation) {
 		t.Fatal("restart cwd ABA was accepted")
 	}
-	executable := ObjectObservation{Path: observation.ExecutablePath, Device: observation.ExecutableDevice, Inode: observation.ExecutableInode, Mode: observation.ExecutableMode, UID: observation.ExecutableOwner, Size: observation.ExecutableSize, Nlink: observation.ExecutableLinkCount, SHA256: observation.ExecutableSHA256}
+	executable := ObjectObservation{Path: observation.ExecutablePath, Device: observation.ExecutableDevice, Inode: observation.ExecutableInode, Mode: observation.ExecutableMode, UID: observation.ExecutableOwner, GID: observation.ExecutableGroup, Size: observation.ExecutableSize, Nlink: observation.ExecutableLinkCount, SHA256: observation.ExecutableSHA256}
 	if !samePersistedExecutable(executable, observation) {
 		t.Fatal("exact persisted executable was rejected")
 	}
@@ -764,7 +764,11 @@ func validLaunchRequest() LaunchRequest {
 		ExecutablePath: "/fixed/workload", ExpectedExecutableSHA256: testDigest('a'), Materials: []LaunchMaterial{},
 	}
 	input := launchidentity.SpecInput{RuntimeExecutable: launchidentity.ObjectV1{CanonicalPath: "/fixed/workload", Device: 1, Inode: 3, FileType: 0o100000, Mode: 0o100700, UID: 501, GID: 20, Size: 42, LinkCount: 1, RawSHA256: testDigest('a')}, ClosureProfileID: launchidentity.NativeProfile, MaterialRoots: []launchidentity.MaterialRootV1{}, LaunchMaterials: []launchidentity.LaunchMaterialV1{}, Arguments: request.Arguments, Environment: request.Environment, WorkingDirectory: request.WorkingDirectory}
-	request.Closure, _ = launchidentity.Seal(input)
+	closure, err := launchidentity.Seal(input)
+	if err != nil {
+		panic(err)
+	}
+	request.Closure = closure
 	return request
 }
 
