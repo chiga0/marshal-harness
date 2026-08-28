@@ -235,7 +235,7 @@ func TestSupervisorCommandEvidenceRejectsForgedChainAndAuthorityHead(t *testing.
 	transition := AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: started.Identity, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:02Z", Process: process, LaunchMaterialsDigest: started.LaunchMaterialsDigest, AgentLaunchSpecDigest: started.AgentLaunchSpecDigest, SupervisorEvidence: evidence}
 	run := attemptTestRunAuthority(started.Identity)
 	_, err = store.AppendProcessStarted(context.Background(), attemptOwnerVerifier{want: owner}, attemptRunVerifier{want: run}, started.Revision, started.HeadDigest, AttemptAuthorizationRequest{Identity: started.Identity, CurrentRunAuthority: run}, started.Owner, transition)
-	if !errors.Is(err, ErrAttemptAuthorityOrder) {
+	if !errors.Is(err, ErrAttemptAuthorityConflict) {
 		t.Fatalf("wrong authority head must reject, got %v", err)
 	}
 }

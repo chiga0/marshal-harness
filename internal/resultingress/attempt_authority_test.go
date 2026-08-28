@@ -229,6 +229,19 @@ func attemptTestDRC(kind EnvelopeKind, sequence uint64) (DRC, ResultEnvelope) {
 	}, ResultEnvelope{Kind: kind, ResultDigest: digest, Sequence: sequence}
 }
 
+func attemptTestDRCForState(state AttemptAuthorityState, kind EnvelopeKind, sequence uint64) (DRC, ResultEnvelope) {
+	drc, envelope := attemptTestDRC(kind, sequence)
+	drc.AuthorityNamespaceID = state.Identity.AuthorityNamespaceRef
+	drc.TaskID = state.Identity.TaskID
+	drc.RunID = state.Identity.RunID
+	drc.AttemptID = state.Identity.AttemptID
+	drc.AllocationID = state.Identity.AllocationID
+	drc.LeaseID = state.Identity.LeaseID
+	drc.Generation = uint64(state.Identity.DispatchGeneration)
+	drc.CommandID = state.CommandID
+	return drc, envelope
+}
+
 func attemptTestRunAuthority(id AttemptIdentity) RunAuthorityBinding {
 	return RunAuthorityBinding{AuthorityNamespaceID: id.AuthorityNamespaceID, RunID: id.RunID, OrchestratorID: id.OrchestratorID, RunAuthorityDigest: id.RunAuthorityDigest}
 }
@@ -706,7 +719,7 @@ func TestAdmissionAndBarrierShareCASAndAllKindsClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	drc, envelope := attemptTestDRC(KindWorkerResult, 1)
+	drc, envelope := attemptTestDRCForState(started, KindWorkerResult, 1)
 	admission, err := ingress.Admit(context.Background(), drc, envelope)
 	if err != nil {
 		t.Fatal(err)
@@ -722,7 +735,7 @@ func TestAdmissionAndBarrierShareCASAndAllKindsClose(t *testing.T) {
 	}
 
 	for sequence, kind := range []EnvelopeKind{KindWorkerResult, KindCandidate, KindEvidenceRef, KindCheckpoint, KindHeartbeat, KindReceipt, KindLog, KindAssessment} {
-		drc, envelope := attemptTestDRC(kind, uint64(sequence+2))
+		drc, envelope := attemptTestDRCForState(current, kind, uint64(sequence+2))
 		drc.IdempotencyKey += "-late"
 		if _, err := ingress.Admit(context.Background(), drc, envelope); !errors.Is(err, ErrStaleLease) {
 			t.Errorf("late %s err=%v, want ErrStaleLease", kind, err)
@@ -928,7 +941,7 @@ func TestBarrierBindsBusinessResultNotLaterAuxiliaryAdmissions(t *testing.T) {
 	store, _ := OpenResultIngressStore(t.TempDir())
 	started := openStartedAttempt(t, store)
 	ingress, _ := NewDurableIngress(attemptTestBinding(), store)
-	resultDRC, resultEnvelope := attemptTestDRC(KindWorkerResult, 1)
+	resultDRC, resultEnvelope := attemptTestDRCForState(started, KindWorkerResult, 1)
 	resultFact, err := ingress.Admit(context.Background(), resultDRC, resultEnvelope)
 	if err != nil {
 		t.Fatal(err)
@@ -939,7 +952,7 @@ func TestBarrierBindsBusinessResultNotLaterAuxiliaryAdmissions(t *testing.T) {
 		fact     AdmissionFact
 	}
 	for sequence, kind := range []EnvelopeKind{KindLog, KindHeartbeat} {
-		drc, envelope := attemptTestDRC(kind, uint64(sequence+2))
+		drc, envelope := attemptTestDRCForState(started, kind, uint64(sequence+2))
 		fact, err := ingress.Admit(context.Background(), drc, envelope)
 		if err != nil {
 			t.Fatal(err)
@@ -973,7 +986,7 @@ func TestBarrierWithoutBusinessResultClosesEmptySlot(t *testing.T) {
 	store, _ := OpenResultIngressStore(t.TempDir())
 	started := openStartedAttempt(t, store)
 	ingress, _ := NewDurableIngress(attemptTestBinding(), store)
-	drc, envelope := attemptTestDRC(KindLog, 1)
+	drc, envelope := attemptTestDRCForState(started, KindLog, 1)
 	if _, err := ingress.Admit(context.Background(), drc, envelope); err != nil {
 		t.Fatal(err)
 	}
@@ -1090,7 +1103,7 @@ func TestCurrentRunVerifierCannotDeferEffectCallback(t *testing.T) {
 
 func TestCleanupAuthorizationRejectsWrongTupleBindingOrchestratorAndRelease(t *testing.T) {
 	store, _ := OpenResultIngressStore(t.TempDir())
-	started := openStartedAttempt(t, store)
+	started := openFreshStartedAttempt(t, store)
 	barrierResult := appendTestBarrier(t, store, started, "terminal-1", TerminalAttemptFailed)
 	barrier := barrierResult.State
 	run := RunAuthorityBinding{AuthorityNamespaceID: started.Identity.AuthorityNamespaceID, RunID: started.Identity.RunID, OrchestratorID: started.Identity.OrchestratorID, RunAuthorityDigest: started.Identity.RunAuthorityDigest}
