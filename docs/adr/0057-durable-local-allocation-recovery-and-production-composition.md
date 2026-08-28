@@ -1,6 +1,6 @@
 # ADR 0057：本地 Allocation 耐久恢复与唯一生产装配
 
-- 状态：提议（Proposed，2026-08-28）；接受只冻结合同，不表示实现完成，不升级 I186-R3–R6 的成熟度，也不授权稳定版发布
+- 状态：已接受（Accepted，2026-08-28；candidate sourceHead `4fe46c96134e5e72f72fb60c1682753bd7a72a41` 经同一独立 reviewer aggregate re-review，P0/P1/P2 均为 0）；接受只冻结合同，不表示实现完成，不升级 I186-R3–R6 的成熟度，也不授权稳定版发布
 - 关联：[ADR 0018](0018-control-plane-and-provider-ports.md)（唯一 authority ledger 与 Provider Port）、[ADR 0045](0045-strangler-cutover-and-single-recovery.md)（单一恢复模型与 cutover）、[ADR 0049](0049-location-attestation-and-failure-classification-authority.md)（位置事实分权）、[ADR 0051](0051-darwin-local-dogfood-profile.md)（Darwin ordinary-user 边界）、[ADR 0052](0052-v1-release-scope-and-production-reachability.md)（v1.0 生产可达性）、[ADR 0053](0053-pre-r4-contract-gates-and-single-recovery-model.md)（恢复决策）、[ADR 0055](0055-sandbox-exec-workload-envelope.md)（allocation-carried Exec）、[ADR 0056](0056-darwin-process-observation-and-attempt-terminalization.md)（单 Attempt authority 与精确进程控制）、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)
 
 ## 背景
