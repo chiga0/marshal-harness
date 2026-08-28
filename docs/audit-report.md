@@ -18,7 +18,7 @@
 
 ## Darwin ordinary-user 进程生命周期合同审计（2026-08-28）
 
-代码审计确认：crash-atomic ResultIngress transaction 已随 `main@912f659` 合入，durable DispatchLease ledger 与 server run controller 也已存在；但 Local allocation/process projection、Core-owned launch/handle、terminalization 对同一 admission CAS 的复用、eligibility terminal 与 cleanup completion 仍未形成同一耐久纵切。[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受；实现与生产接线保持开放，R2–R5 不升级。[ADR 0057](adr/0057-durable-local-allocation-recovery-and-production-composition.md) 已于 `main@9aff8cc` 接受，但只冻结 durable allocation recovery 与唯一 production composition 合同；RB3 尚未实现该合同，本次接受不把任何能力从 `COMPONENT` 升级为 `INTEGRATED`。
+代码审计确认：crash-atomic ResultIngress transaction 已随 `main@912f659` 合入，durable DispatchLease ledger 与 server run controller 也已存在；但 Local allocation/process projection、Core-owned launch/handle、terminalization 对同一 admission CAS 的复用、eligibility terminal 与 cleanup completion 仍未形成同一耐久纵切。[ADR 0056](adr/0056-darwin-process-observation-and-attempt-terminalization.md) 已于 `main@ecee8d4` 接受；实现与生产接线保持开放，R2–R5 不升级。[ADR 0057](adr/0057-durable-local-allocation-recovery-and-production-composition.md) 已于 `main@9aff8cc` 接受，但只冻结 durable allocation recovery 与唯一 production composition 合同；RB3 尚未实现该合同，本次接受不把任何能力从 `COMPONENT` 升级为 `INTEGRATED`。[ADR 0058](adr/0058-interpreted-agent-launch-identity.md) 已于 2026-08-28 接受，冻结 Pi 0.84.3 的显式 Node runtime、两个 versioned material roots、held-FD/双 barrier 和 ResultIngress 最终接纳前的 current-authority 全量重验；在实现、故障矩阵和最终 fixed-bin 真实 Pi canary 完成前，Pi 仍不是 production reachable。
 
 | Finding | 等级 | 状态 | 处置 / 关闭条件 |
 | --- | --- | --- | --- |
