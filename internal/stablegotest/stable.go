@@ -272,7 +272,94 @@ func openValidatedRoot(root, self, defaultRoot string, beforeOpen func()) (*os.F
 	if err := validateRoot(root, self, defaultRoot); err != nil {
 		return nil, err
 	}
+	if filepath.Clean(root) == filepath.Clean(defaultRoot) {
+		return openDefaultRoot(defaultRoot, beforeOpen)
+	}
 	return openOrCreatePrivateRoot(root, beforeOpen)
+}
+
+func openDefaultRoot(defaultRoot string, beforeFinalOpen func()) (*os.File, error) {
+	marshalPath := filepath.Dir(defaultRoot)
+	homePath := filepath.Dir(marshalPath)
+	home, err := openOwnedDirectory(homePath, false)
+	if err != nil {
+		return nil, err
+	}
+	defer home.Close()
+	marshalDirectory, err := openOrCreateChildDirectory(home, homePath, filepath.Base(marshalPath), false)
+	if err != nil {
+		return nil, err
+	}
+	defer marshalDirectory.Close()
+	if beforeFinalOpen != nil {
+		beforeFinalOpen()
+	}
+	if err := verifyOwnedDirectory(marshalDirectory, marshalPath, false); err != nil {
+		return nil, err
+	}
+	return openOrCreateChildDirectory(marshalDirectory, marshalPath, filepath.Base(defaultRoot), true)
+}
+
+func openOwnedDirectory(path string, exactPrivateMode bool) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	directory := os.NewFile(uintptr(fd), "stable-go-test-owned-directory")
+	if err := verifyOwnedDirectory(directory, path, exactPrivateMode); err != nil {
+		directory.Close()
+		return nil, err
+	}
+	return directory, nil
+}
+
+func openOrCreateChildDirectory(parent *os.File, parentPath, name string, exactExistingMode bool) (*os.File, error) {
+	created := false
+	if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err == nil {
+		created = true
+		if err := parent.Sync(); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, unix.EEXIST) {
+		return nil, err
+	}
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	directory := os.NewFile(uintptr(fd), "stable-go-test-child-directory")
+	path := filepath.Join(parentPath, name)
+	if created {
+		if err := directory.Chmod(0o700); err != nil {
+			directory.Close()
+			return nil, err
+		}
+		exactExistingMode = true
+	}
+	if err := verifyOwnedDirectory(directory, path, exactExistingMode); err != nil {
+		directory.Close()
+		return nil, err
+	}
+	return directory, nil
+}
+
+func verifyOwnedDirectory(directory *os.File, path string, exactPrivateMode bool) error {
+	info, err := directory.Stat()
+	pathInfo, pathErr := os.Lstat(path)
+	if err != nil || pathErr != nil || !info.IsDir() || !ownedByCurrentUser(info) || !os.SameFile(info, pathInfo) {
+		return errors.New("owned directory identity mismatch")
+	}
+	mode := info.Mode().Perm()
+	if exactPrivateMode {
+		if mode != 0o700 {
+			return errors.New("private directory mode mismatch")
+		}
+		return nil
+	}
+	if mode&0o022 != 0 || mode&0o300 != 0o300 {
+		return errors.New("owned directory mode is writable by others or unusable by owner")
+	}
+	return nil
 }
 
 // openOrCreatePrivateRoot creates only the final component. The caller must
