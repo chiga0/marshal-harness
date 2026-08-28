@@ -580,7 +580,14 @@ func (store *Store) inspectAllocationState(name, markerName string, requireOnlyM
 	}
 	if requireOnlyMarker {
 		names, readErr := directory.Readdirnames(2)
-		if len(names) != 1 || names[0] != markerName || !errors.Is(readErr, io.EOF) {
+		if len(names) != 1 || names[0] != markerName || readErr != nil && !errors.Is(readErr, io.EOF) {
+			return allocationObservation{}, ErrFilesystemConflict
+		}
+		// Readdirnames only promises io.EOF for an empty result. Darwin returns
+		// one final name with a nil error, so an explicit second read is required
+		// to prove that the marker was the sole directory entry.
+		trailing, trailingErr := directory.Readdirnames(1)
+		if len(trailing) != 0 || !errors.Is(trailingErr, io.EOF) {
 			return allocationObservation{}, ErrFilesystemConflict
 		}
 	}
