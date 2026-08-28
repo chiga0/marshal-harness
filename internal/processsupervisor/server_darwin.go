@@ -136,7 +136,7 @@ func runSupervisor(ctx context.Context) error {
 	if observeControlSocketExact(controlDirectory, socketIdentity) != nil {
 		return ErrConflict
 	}
-	if err := writeFrame(unixConnection, handshake(session, supervisorIdentity, socketIdentity), MaxWireFrameBytes); err == nil {
+	if err := writeFrame(unixConnection, handshake(session, supervisorIdentity, socketIdentity, reconnectResolution{}), MaxWireFrameBytes); err == nil {
 		terminal, _ := serveConnection(unixConnection, reader, session)
 		if terminal {
 			return nil
@@ -162,23 +162,41 @@ func runSupervisor(ctx context.Context) error {
 				return ErrIntervention
 			}
 		}
-		_ = connection.SetDeadline(time.Now().Add(30 * time.Second))
+		if connection.SetDeadline(time.Now().Add(30*time.Second)) != nil {
+			_ = connection.Close()
+			active.Store(false)
+			continue
+		}
 		observed, observeErr := observePeer(connection)
 		reconnectReader := bufio.NewReaderSize(connection, MaxWireFrameBytes+frameHeaderBytes+1)
 		reconnectRaw, readErr := readFrame(reconnectReader, MaxWireFrameBytes)
 		var reconnect ReconnectRequest
 		admitErr := strictCanonicalDecode(reconnectRaw, &reconnect)
-		if observeErr != nil || readErr != nil || admitErr != nil || observeControlSocketExact(controlDirectory, socketIdentity) != nil || session.Reconnect(reconnect, observed) != nil {
+		preconditionErr := observeControlSocketExact(controlDirectory, socketIdentity)
+		var resolution reconnectResolution
+		var reconnectErr error
+		if observeErr == nil && readErr == nil && admitErr == nil && preconditionErr == nil {
+			resolution, reconnectErr = session.Reconnect(reconnect, observed)
+		}
+		if observeErr != nil || readErr != nil || admitErr != nil || preconditionErr != nil || reconnectErr != nil {
 			_ = writeFrame(connection, HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "rejected", ReasonCode: ErrConflict.ReasonCode}, MaxWireFrameBytes)
 			_ = connection.Close()
 			active.Store(false)
 			continue
 		}
-		_ = connection.SetDeadline(time.Time{})
-		if err := writeFrame(connection, handshake(session, supervisorIdentity, socketIdentity), MaxWireFrameBytes); err != nil {
+		if connection.SetDeadline(time.Time{}) != nil {
 			_ = connection.Close()
 			active.Store(false)
 			continue
+		}
+		if err := writeFrame(connection, handshake(session, supervisorIdentity, socketIdentity, resolution), MaxWireFrameBytes); err != nil {
+			_ = connection.Close()
+			active.Store(false)
+			continue
+		}
+		if state := session.State(); state == string(sessionClosed) || state == string(sessionAborted) {
+			_ = connection.Close()
+			return nil
 		}
 		terminal, serveErr := serveConnection(connection, reconnectReader, session)
 		_ = connection.Close()
@@ -296,9 +314,9 @@ func serveConnection(connection net.Conn, reader *bufio.Reader, session *Session
 	}
 }
 
-func handshake(session *Session, supervisor CoreIdentity, socket ControlSocketIdentity) HandshakeResponse {
+func handshake(session *Session, supervisor CoreIdentity, socket ControlSocketIdentity, resolution reconnectResolution) HandshakeResponse {
 	commandSequence, commandHead, journalSequence, journalHead := session.Snapshot()
-	return HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: session.sessionID, SessionNonceDigest: session.nonceDigest, OwnerEpoch: session.ownerEpoch, CurrentAuthorityHead: session.authorityHead, CommandSequence: commandSequence, CommandHead: commandHead, JournalSequence: journalSequence, JournalHead: journalHead, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), SupervisorProcess: supervisor.Process, SupervisorBinary: supervisor.Binary, ControlSocket: socket}
+	return HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: session.sessionID, SessionNonceDigest: session.nonceDigest, OwnerEpoch: session.ownerEpoch, CurrentAuthorityHead: session.authorityHead, CommandSequence: commandSequence, CommandHead: commandHead, JournalSequence: journalSequence, JournalHead: journalHead, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), SupervisorProcess: supervisor.Process, SupervisorBinary: supervisor.Binary, ControlSocket: socket, Reconciliation: resolution.State, ReplayedResponse: resolution.Response}
 }
 
 func rejectBootstrapExtra(reader *bufio.Reader, connection *net.UnixConn) error {

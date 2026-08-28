@@ -22,22 +22,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type processReport struct {
-	State               string          `json:"state"`
-	ObserverIdentity    string          `json:"observerIdentity"`
-	ObservedAt          string          `json:"observedAt"`
-	Process             ProcessIdentity `json:"process"`
-	RuntimeObjectDigest string          `json:"runtimeObjectDigest"`
-	WorkingObjectDigest string          `json:"workingObjectDigest"`
-	ExitCode            int             `json:"exitCode,omitempty"`
-	Signal              string          `json:"signal,omitempty"`
-	StdoutDigest        string          `json:"stdoutDigest,omitempty"`
-	StderrDigest        string          `json:"stderrDigest,omitempty"`
-	StdoutBytes         uint64          `json:"stdoutBytes,omitempty"`
-	StderrBytes         uint64          `json:"stderrBytes,omitempty"`
-	TranscriptTruncated bool            `json:"transcriptTruncated,omitempty"`
-}
-
 type waitOutcome struct {
 	exitCode   int
 	signal     string
@@ -172,7 +156,7 @@ type darwinMechanics struct {
 	terminal       bool
 	collected      bool
 	closed         bool
-	lastReport     processReport
+	lastReport     ProcessReport
 	transcriptHash string
 	supervisorPID  int
 	expectedSID    int
@@ -621,17 +605,17 @@ func (mechanics *darwinMechanics) proveTerminalLocked() error {
 	return nil
 }
 
-func (mechanics *darwinMechanics) report(state string, outcome *waitOutcome) processReport {
+func (mechanics *darwinMechanics) report(state string, outcome *waitOutcome) ProcessReport {
 	runtimeDigest, _ := digestHeldSpec(mechanics.runtimeSpec)
 	workingDigest, _ := digestHeldSpec(mechanics.workingSpec)
-	report := processReport{State: state, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Process: mechanics.process, RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest}
+	report := ProcessReport{State: state, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), Process: mechanics.process, RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest}
 	if outcome != nil {
 		report.ExitCode, report.Signal = outcome.exitCode, outcome.signal
 	}
 	return report
 }
 
-func resultForReport(reason string, report processReport) MechanicsResult {
+func resultForReport(reason string, report ProcessReport) MechanicsResult {
 	payload := mustCanonical(report)
 	return MechanicsResult{Disposition: "ok", ReasonCode: reason, ObservationDigest: canonical.DigestBytes(payload), Payload: payload}
 }

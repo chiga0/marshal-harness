@@ -204,15 +204,23 @@ func validateStoredResponse(response Response, request requestProjection) error 
 }
 
 type replayedCommand struct {
-	Projection requestProjection
-	Response   Response
+	Projection          requestProjection
+	Response            Response
+	OwnerEpoch          uint64
+	AuthorityHead       string
+	PreviousJournalHead string
 }
 
 type JournalSnapshot struct {
-	Sequence uint64
-	Head     string
-	commands map[string]replayedCommand
-	pending  *requestProjection
+	Sequence             uint64
+	Head                 string
+	currentOwnerEpoch    uint64
+	currentAuthorityHead string
+	commands             map[string]replayedCommand
+	pending              *requestProjection
+	pendingOwnerEpoch    uint64
+	pendingAuthorityHead string
+	pendingPreviousHead  string
 }
 
 // ResponseForCommand exposes a safe, immutable copy of one durable receipt to
@@ -318,15 +326,17 @@ func (journal *Journal) applyReplay(records []journalRecord) error {
 			if _, ok := journal.commands[record.Request.CommandID]; ok {
 				return ErrIntervention
 			}
-			journal.commands[record.Request.CommandID] = replayedCommand{Projection: *record.Request, Response: *record.Response}
+			journal.commands[record.Request.CommandID] = replayedCommand{Projection: *record.Request, Response: *record.Response, OwnerEpoch: record.OwnerEpoch, AuthorityHead: record.CurrentAuthorityHead, PreviousJournalHead: pendingRecord.PreviousRecordDigest}
 			journal.pending = nil
 			journal.pendingBase = nil
 			pendingRecord = nil
 			commandSequence = record.Request.Sequence
 			commandHead = record.Response.CommandHead
 			lastOwnerEpoch = record.OwnerEpoch
-			if record.Request.Command == CommandBindAuthority {
+			if record.Request.Command == CommandBindAuthority && record.Response.Status == "ok" {
 				expectedAuthorityHead = record.Request.NextAuthorityHead
+			} else if record.Request.Command == CommandBindAuthority {
+				expectedAuthorityHead = record.CurrentAuthorityHead
 			} else {
 				expectedAuthorityHead = record.Request.CurrentAuthorityHead
 			}
@@ -346,15 +356,25 @@ func (journal *Journal) Snapshot() JournalSnapshot {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	commands := make(map[string]replayedCommand, len(journal.commands))
+	currentOwnerEpoch, currentAuthorityHead, currentCommandSequence := journal.created.OwnerEpoch, journal.created.CurrentAuthorityHead, uint64(0)
 	for key, command := range journal.commands {
 		commands[key] = command
+		if command.Projection.Sequence > currentCommandSequence {
+			currentCommandSequence = command.Projection.Sequence
+			currentOwnerEpoch = command.OwnerEpoch
+			currentAuthorityHead = commandPostAuthorityHead(command.AuthorityHead, Request{Command: command.Projection.Command, CurrentAuthorityHead: command.Projection.CurrentAuthorityHead}, command.Response, command.Projection)
+		}
 	}
 	var pending *requestProjection
 	if journal.pending != nil {
 		copy := *journal.pending
 		pending = &copy
 	}
-	return JournalSnapshot{Sequence: journal.sequence, Head: journal.head, commands: commands, pending: pending}
+	pendingOwnerEpoch, pendingAuthorityHead, pendingPreviousHead := uint64(0), "", ""
+	if journal.pendingBase != nil {
+		pendingOwnerEpoch, pendingAuthorityHead, pendingPreviousHead = journal.pendingBase.OwnerEpoch, journal.pendingBase.CurrentAuthorityHead, journal.pendingBase.PreviousRecordDigest
+	}
+	return JournalSnapshot{Sequence: journal.sequence, Head: journal.head, currentOwnerEpoch: currentOwnerEpoch, currentAuthorityHead: currentAuthorityHead, commands: commands, pending: pending, pendingOwnerEpoch: pendingOwnerEpoch, pendingAuthorityHead: pendingAuthorityHead, pendingPreviousHead: pendingPreviousHead}
 }
 
 func (journal *Journal) AppendSessionCreated(sessionID, nonceDigest string, authority AuthorityTuple, ownerEpoch uint64, authorityHead string) error {
@@ -398,7 +418,7 @@ func (journal *Journal) AppendReceipt(base journalRecord, projection requestProj
 	if err := journal.appendLocked(&base); err != nil {
 		return err
 	}
-	journal.commands[projection.CommandID] = replayedCommand{Projection: projection, Response: response}
+	journal.commands[projection.CommandID] = replayedCommand{Projection: projection, Response: response, OwnerEpoch: base.OwnerEpoch, AuthorityHead: base.CurrentAuthorityHead, PreviousJournalHead: journal.pendingBase.PreviousRecordDigest}
 	journal.pending = nil
 	journal.pendingBase = nil
 	return nil

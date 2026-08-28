@@ -94,22 +94,124 @@ func (session *Session) Snapshot() (uint64, string, uint64, string) {
 	return session.commandSequence, session.commandHead, snapshot.Sequence, snapshot.Head
 }
 
-func (session *Session) Reconnect(request ReconnectRequest, observed CoreIdentity) error {
+type reconnectResolution struct {
+	State    ReconciliationState
+	Response *Response
+}
+
+func (session *Session) Reconnect(request ReconnectRequest, observed CoreIdentity) (reconnectResolution, error) {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if request.SchemaVersion != ReconnectSchema || request.ProtocolRevision != ProtocolRevision || request.SessionID != session.sessionID ||
 		canonical.DigestBytes([]byte(request.SessionNonce)) != session.nonceDigest || request.PreviousOwnerEpoch != session.ownerEpoch || request.OwnerEpoch <= request.PreviousOwnerEpoch || request.OwnerEpoch > maxSafeJSONInteger ||
-		request.PreviousAuthorityHead != session.authorityHead || !validDigest(request.CurrentAuthorityHead) || request.CurrentAuthorityHead == request.PreviousAuthorityHead || !validDigest(request.ControlOwnerAcquired) || !sameCoreIdentity(request.Core, observed) || session.state == sessionIntervention {
-		return ErrConflict
+		request.PreviousAuthorityHead != session.authorityHead || !validDigest(request.PreviousAuthorityHead) || !validDigest(request.CurrentAuthorityHead) || request.CurrentAuthorityHead == request.PreviousAuthorityHead || !validDigest(request.ControlOwnerAcquired) || !sameCoreIdentity(request.Core, observed) ||
+		request.LastOwnerEpoch == 0 || request.LastOwnerEpoch > request.PreviousOwnerEpoch || !validDigest(request.LastAuthorityHead) ||
+		request.LastCommandSequence > maxSafeJSONInteger || !validDigest(request.LastCommandHead) || request.LastJournalSequence == 0 || request.LastJournalSequence > maxSafeJSONInteger || !validDigest(request.LastJournalHead) || session.state == sessionIntervention {
+		return reconnectResolution{}, ErrConflict
+	}
+	resolution, err := session.reconcilePendingLocked(request)
+	if err != nil {
+		return reconnectResolution{}, err
+	}
+	if resolution.State == ReconciliationUnchanged && request.PendingRequest != nil {
+		raw, err := CanonicalProtocolMessage(*request.PendingRequest)
+		if err != nil {
+			return reconnectResolution{}, ErrConflict
+		}
+		response := session.handleLocked(raw)
+		if ValidateResponseBinding(response, *request.PendingRequest) != nil {
+			session.state = sessionIntervention
+			return reconnectResolution{}, ErrIntervention
+		}
+		a0 := session.reconnectAnchor(request)
+		_, receiptHead, err := expectedPendingJournalHeads(a0, *request.PendingRequest, &response)
+		commandSequence, commandHead, journalSequence, journalHead := session.snapshotLocked()
+		_, _, projectErr := projectRequest(*request.PendingRequest)
+		if err != nil || projectErr != nil || commandSequence != request.PendingRequest.Sequence || commandHead != response.CommandHead || journalSequence != request.LastJournalSequence+2 || journalHead != receiptHead {
+			session.state = sessionIntervention
+			return reconnectResolution{}, ErrIntervention
+		}
+		response.Payload = append([]byte(nil), response.Payload...)
+		resolution.Response = &response
 	}
 	session.ownerEpoch = request.OwnerEpoch
 	session.authorityHead = request.CurrentAuthorityHead
-	return nil
+	if resolution.State == ReconciliationIntentPending {
+		// A durable intent without a receipt cannot be retried blindly. The
+		// exact new owner may inspect the closed evidence, but mechanics remain
+		// locked until an external intervention resolves the side effect.
+		session.state = sessionIntervention
+	}
+	return resolution, nil
+}
+
+func (session *Session) reconcilePendingLocked(request ReconnectRequest) (reconnectResolution, error) {
+	snapshot := session.journal.Snapshot()
+	// Classification is anchored exclusively in Last*/A0 plus the exact
+	// mechanics journal. session.authorityHead may already be the authority head
+	// installed by an earlier reconnect whose handshake was lost.
+	var projection requestProjection
+	if request.PendingRequest != nil {
+		pending := *request.PendingRequest
+		pending.Payload = append([]byte(nil), request.PendingRequest.Payload...)
+		value, _, err := projectRequest(pending)
+		if err != nil || pending.SessionID != session.sessionID || pending.Sequence != request.LastCommandSequence+1 || pending.PreviousCommandDigest != request.LastCommandHead {
+			return reconnectResolution{}, ErrConflict
+		}
+		projection = value
+	}
+	if snapshot.Sequence == request.LastJournalSequence && snapshot.Head == request.LastJournalHead && snapshot.currentOwnerEpoch == request.LastOwnerEpoch && snapshot.currentAuthorityHead == request.LastAuthorityHead && session.commandSequence == request.LastCommandSequence && session.commandHead == request.LastCommandHead && snapshot.pending == nil {
+		return reconnectResolution{State: ReconciliationUnchanged}, nil
+	}
+	if request.PendingRequest == nil {
+		return reconnectResolution{}, ErrConflict
+	}
+	pending := *request.PendingRequest
+	pending.Payload = append([]byte(nil), request.PendingRequest.Payload...)
+	intentHead, _, headErr := expectedPendingJournalHeads(session.reconnectAnchor(request), pending, nil)
+	if headErr != nil {
+		return reconnectResolution{}, ErrConflict
+	}
+	if snapshot.Sequence == request.LastJournalSequence+1 && snapshot.Head == intentHead && session.commandSequence == request.LastCommandSequence && session.commandHead == request.LastCommandHead && snapshot.pending != nil && snapshot.pendingOwnerEpoch == request.LastOwnerEpoch && snapshot.pendingAuthorityHead == request.LastAuthorityHead && snapshot.pendingPreviousHead == request.LastJournalHead && equalProjection(*snapshot.pending, projection) {
+		return reconnectResolution{State: ReconciliationIntentPending}, nil
+	}
+	if snapshot.Sequence != request.LastJournalSequence+2 || snapshot.pending != nil || session.commandSequence != pending.Sequence {
+		return reconnectResolution{}, ErrConflict
+	}
+	stored, ok := snapshot.commands[pending.CommandID]
+	if !ok || stored.OwnerEpoch != request.LastOwnerEpoch || stored.AuthorityHead != request.LastAuthorityHead || stored.PreviousJournalHead != request.LastJournalHead || !equalProjection(stored.Projection, projection) || session.commandHead != stored.Response.CommandHead || ValidateResponseBinding(stored.Response, pending) != nil {
+		return reconnectResolution{}, ErrConflict
+	}
+	_, receiptHead, headErr := expectedPendingJournalHeads(session.reconnectAnchor(request), pending, &stored.Response)
+	if headErr != nil || snapshot.Head != receiptHead {
+		return reconnectResolution{}, ErrConflict
+	}
+	response := stored.Response
+	response.Payload = append([]byte(nil), stored.Response.Payload...)
+	return reconnectResolution{State: ReconciliationReceiptCommitted, Response: &response}, nil
+}
+
+func (session *Session) reconnectAnchor(request ReconnectRequest) HandshakeAnchor {
+	return HandshakeAnchor{
+		SessionID: session.sessionID, SessionNonceDigest: session.nonceDigest, Authority: session.authority,
+		OwnerEpoch: request.LastOwnerEpoch, CurrentAuthorityHead: request.LastAuthorityHead,
+		CommandSequence: request.LastCommandSequence, CommandHead: request.LastCommandHead,
+		JournalSequence: request.LastJournalSequence, JournalHead: request.LastJournalHead,
+	}
+}
+
+func (session *Session) snapshotLocked() (uint64, string, uint64, string) {
+	snapshot := session.journal.Snapshot()
+	return session.commandSequence, session.commandHead, snapshot.Sequence, snapshot.Head
 }
 
 func (session *Session) Handle(raw []byte) Response {
 	session.mu.Lock()
 	defer session.mu.Unlock()
+	return session.handleLocked(raw)
+}
+
+func (session *Session) handleLocked(raw []byte) Response {
 	var request Request
 	if err := strictCanonicalDecode(raw, &request); err != nil {
 		return rejectedResponse(Request{}, ReasonCode(err))
@@ -523,6 +625,41 @@ func validateMechanicsResult(result MechanicsResult) error {
 		return ErrInvalid
 	}
 	return nil
+}
+
+// ValidateProcessReport applies the exact v1 typed observation contract used
+// by the client before any report reaches a production adapter.
+func ValidateProcessReport(report ProcessReport) error {
+	observedAt, err := time.Parse(time.RFC3339Nano, report.ObservedAt)
+	birth := time.Unix(report.Process.BirthSeconds, report.Process.BirthMicroseconds*int64(time.Microsecond)).UTC()
+	if err != nil || observedAt.Location() != time.UTC || observedAt.Format(time.RFC3339Nano) != report.ObservedAt || observedAt.Before(birth) ||
+		report.ObserverIdentity != "darwin-fixed-process-supervisor-v1" || report.Process.validate() != nil || !validDigest(report.RuntimeObjectDigest) || !validDigest(report.WorkingObjectDigest) ||
+		report.ExitCode < -1 || uint64(maxInt(report.ExitCode, 0)) > maxSafeJSONInteger || report.StdoutBytes > uint64(MaxStdoutBytes) || report.StderrBytes > uint64(MaxStderrBytes) || report.StdoutBytes+report.StderrBytes > uint64(MaxTranscriptBytes) {
+		return ErrInvalid
+	}
+	switch report.State {
+	case "exec-stopped", "running":
+		if report.ExitCode != 0 || report.Signal != "" || report.StdoutDigest != "" || report.StderrDigest != "" || report.StdoutBytes != 0 || report.StderrBytes != 0 || report.TranscriptTruncated {
+			return ErrInvalid
+		}
+	case "terminal":
+		if report.Signal != "" && !validID(report.Signal) {
+			return ErrInvalid
+		}
+		if (report.StdoutDigest == "") != (report.StderrDigest == "") || report.StdoutDigest == "" && (report.StdoutBytes != 0 || report.StderrBytes != 0 || report.TranscriptTruncated) || report.StdoutDigest != "" && (!validDigest(report.StdoutDigest) || !validDigest(report.StderrDigest)) {
+			return ErrInvalid
+		}
+	default:
+		return ErrInvalid
+	}
+	return nil
+}
+
+func maxInt(value, minimum int) int {
+	if value < minimum {
+		return minimum
+	}
+	return value
 }
 
 func successResult(reason, observation string) MechanicsResult {

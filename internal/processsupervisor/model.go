@@ -42,6 +42,14 @@ const (
 	maxSafeJSONInteger = uint64(1<<53 - 1)
 )
 
+type ReconciliationState string
+
+const (
+	ReconciliationUnchanged        ReconciliationState = "unchanged"
+	ReconciliationIntentPending    ReconciliationState = "exact-intent-pending"
+	ReconciliationReceiptCommitted ReconciliationState = "exact-receipt-committed"
+)
+
 type CommandName string
 
 const (
@@ -260,6 +268,13 @@ type ReconnectRequest struct {
 	CurrentAuthorityHead  string       `json:"currentAuthorityHead"`
 	ControlOwnerAcquired  string       `json:"controlOwnerAcquiredFactDigest"`
 	Core                  CoreIdentity `json:"core"`
+	LastOwnerEpoch        uint64       `json:"lastOwnerEpoch"`
+	LastAuthorityHead     string       `json:"lastAuthorityHead"`
+	LastCommandSequence   uint64       `json:"lastCommandSequence"`
+	LastCommandHead       string       `json:"lastCommandHead"`
+	LastJournalSequence   uint64       `json:"lastJournalSequence"`
+	LastJournalHead       string       `json:"lastJournalHead"`
+	PendingRequest        *Request     `json:"pendingRequest,omitempty"`
 }
 
 // HandshakeResponse is safe for the authenticated control socket. It contains
@@ -282,6 +297,8 @@ type HandshakeResponse struct {
 	SupervisorProcess    ProcessIdentity       `json:"supervisorProcess"`
 	SupervisorBinary     BinaryIdentity        `json:"supervisorBinary"`
 	ControlSocket        ControlSocketIdentity `json:"controlSocket"`
+	Reconciliation       ReconciliationState   `json:"reconciliation,omitempty"`
+	ReplayedResponse     *Response             `json:"replayedResponse,omitempty"`
 }
 
 type Request struct {
@@ -409,6 +426,26 @@ type MechanicsResult struct {
 	StderrBytes       uint64          `json:"stderrBytes,omitempty"`
 	Truncated         bool            `json:"truncated,omitempty"`
 	Payload           json.RawMessage `json:"payload"`
+}
+
+// ProcessReport is the one typed, secret-free mechanics observation exposed
+// to Core composition. Keeping this wire shape in processsupervisor prevents
+// adapters from re-declaring private JSON and accidentally weakening exact
+// response/observation binding.
+type ProcessReport struct {
+	State               string          `json:"state"`
+	ObserverIdentity    string          `json:"observerIdentity"`
+	ObservedAt          string          `json:"observedAt"`
+	Process             ProcessIdentity `json:"process"`
+	RuntimeObjectDigest string          `json:"runtimeObjectDigest"`
+	WorkingObjectDigest string          `json:"workingObjectDigest"`
+	ExitCode            int             `json:"exitCode,omitempty"`
+	Signal              string          `json:"signal,omitempty"`
+	StdoutDigest        string          `json:"stdoutDigest,omitempty"`
+	StderrDigest        string          `json:"stderrDigest,omitempty"`
+	StdoutBytes         uint64          `json:"stdoutBytes,omitempty"`
+	StderrBytes         uint64          `json:"stderrBytes,omitempty"`
+	TranscriptTruncated bool            `json:"transcriptTruncated,omitempty"`
 }
 
 // Mechanics is the next-slice integration seam. Implementations must own the
