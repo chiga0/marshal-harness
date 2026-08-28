@@ -22,6 +22,7 @@ type HandshakeAnchor struct {
 	UID                  uint32
 	GID                  uint32
 	FixedBinary          BinaryIdentity
+	ControlSocket        ControlSocketIdentity
 }
 
 // NewRequest builds the one canonical request shape accepted by the
@@ -86,7 +87,7 @@ func CanonicalProtocolMessage(value any) ([]byte, error) {
 
 func ValidateHandshakeResponse(response HandshakeResponse) error {
 	observedAt, err := time.Parse(time.RFC3339Nano, response.ObservedAt)
-	if err != nil || observedAt.Location() != time.UTC || observedAt.Format(time.RFC3339Nano) != response.ObservedAt || response.SchemaVersion != HandshakeSchema || response.ProtocolRevision != ProtocolRevision || response.Status != "ok" || !validID(response.ReasonCode) || !validID(response.SessionID) || !validDigest(response.SessionNonceDigest) || response.OwnerEpoch == 0 || response.OwnerEpoch > maxSafeJSONInteger || !validDigest(response.CurrentAuthorityHead) || response.CommandSequence > maxSafeJSONInteger || !validDigest(response.CommandHead) || response.JournalSequence == 0 || response.JournalSequence > maxSafeJSONInteger || !validDigest(response.JournalHead) || !validID(response.ObserverIdentity) || response.SupervisorProcess.validate() != nil || response.SupervisorBinary.validate() != nil {
+	if err != nil || observedAt.Location() != time.UTC || observedAt.Format(time.RFC3339Nano) != response.ObservedAt || response.SchemaVersion != HandshakeSchema || response.ProtocolRevision != ProtocolRevision || response.Status != "ok" || !validID(response.ReasonCode) || !validID(response.SessionID) || !validDigest(response.SessionNonceDigest) || response.OwnerEpoch == 0 || response.OwnerEpoch > maxSafeJSONInteger || !validDigest(response.CurrentAuthorityHead) || response.CommandSequence > maxSafeJSONInteger || !validDigest(response.CommandHead) || response.JournalSequence == 0 || response.JournalSequence > maxSafeJSONInteger || !validDigest(response.JournalHead) || !validID(response.ObserverIdentity) || response.SupervisorProcess.validate() != nil || response.SupervisorBinary.validate() != nil || response.ControlSocket.validate() != nil {
 		return ErrInvalid
 	}
 	return nil
@@ -96,10 +97,10 @@ func ValidateHandshakeResponse(response HandshakeResponse) error {
 // authentication. observed must come from kernel peer credentials and process
 // observation on the same connected Unix socket, never from response fields.
 func ValidateHandshakeBinding(response HandshakeResponse, anchor HandshakeAnchor, observed CoreIdentity) error {
-	if ValidateHandshakeResponse(response) != nil || !validID(anchor.SessionID) || !validDigest(anchor.SessionNonceDigest) || anchor.OwnerEpoch == 0 || anchor.OwnerEpoch > maxSafeJSONInteger || !validDigest(anchor.CurrentAuthorityHead) || anchor.CommandSequence > maxSafeJSONInteger || !validDigest(anchor.CommandHead) || anchor.JournalSequence == 0 || anchor.JournalSequence > maxSafeJSONInteger || !validDigest(anchor.JournalHead) || anchor.UID == 0 || anchor.FixedBinary.validate() != nil {
+	if ValidateHandshakeResponse(response) != nil || !validID(anchor.SessionID) || !validDigest(anchor.SessionNonceDigest) || anchor.OwnerEpoch == 0 || anchor.OwnerEpoch > maxSafeJSONInteger || !validDigest(anchor.CurrentAuthorityHead) || anchor.CommandSequence > maxSafeJSONInteger || !validDigest(anchor.CommandHead) || anchor.JournalSequence == 0 || anchor.JournalSequence > maxSafeJSONInteger || !validDigest(anchor.JournalHead) || anchor.UID == 0 || anchor.FixedBinary.validate() != nil || anchor.ControlSocket.validate() != nil {
 		return ErrInvalid
 	}
-	if response.SessionID != anchor.SessionID || response.SessionNonceDigest != anchor.SessionNonceDigest || response.OwnerEpoch != anchor.OwnerEpoch || response.CurrentAuthorityHead != anchor.CurrentAuthorityHead || response.CommandSequence != anchor.CommandSequence || response.CommandHead != anchor.CommandHead || response.JournalSequence != anchor.JournalSequence || response.JournalHead != anchor.JournalHead {
+	if response.SessionID != anchor.SessionID || response.SessionNonceDigest != anchor.SessionNonceDigest || response.OwnerEpoch != anchor.OwnerEpoch || response.CurrentAuthorityHead != anchor.CurrentAuthorityHead || response.CommandSequence != anchor.CommandSequence || response.CommandHead != anchor.CommandHead || response.JournalSequence != anchor.JournalSequence || response.JournalHead != anchor.JournalHead || response.ControlSocket != anchor.ControlSocket {
 		return ErrConflict
 	}
 	if observed.UID != anchor.UID || observed.GID != anchor.GID || observed.Process != response.SupervisorProcess || observed.Binary != response.SupervisorBinary || !sameBinaryObject(observed.Binary, anchor.FixedBinary) {

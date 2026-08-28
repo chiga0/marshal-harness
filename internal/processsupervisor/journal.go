@@ -38,6 +38,7 @@ type requestProjection struct {
 	Deadline                     string      `json:"deadline"`
 	LaunchMaterialsDigest        string      `json:"launchMaterialsDigest,omitempty"`
 	AgentLaunchSpecDigest        string      `json:"agentLaunchSpecDigest,omitempty"`
+	ClosureProfileID             string      `json:"closureProfileId,omitempty"`
 	ArgvDigest                   string      `json:"argvDigest,omitempty"`
 	EnvironmentDigest            string      `json:"environmentDigest,omitempty"`
 	StdinDigest                  string      `json:"stdinDigest,omitempty"`
@@ -126,7 +127,7 @@ func validateProjection(request requestProjection) error {
 		}
 		options.AuthorityAbsenceProofDigest = ""
 	case CommandSpawn:
-		if !validDigest(options.LaunchMaterialsDigest) || !validDigest(options.AgentLaunchSpecDigest) || !validDigest(options.ArgvDigest) || !validDigest(options.EnvironmentDigest) || !validDigest(options.StdinDigest) || len(options.EnvironmentKeys) > MaxEnvironmentKeys {
+		if !validDigest(options.LaunchMaterialsDigest) || !validDigest(options.AgentLaunchSpecDigest) || !validID(options.ClosureProfileID) || !validDigest(options.ArgvDigest) || !validDigest(options.EnvironmentDigest) || !validDigest(options.StdinDigest) || len(options.EnvironmentKeys) > MaxEnvironmentKeys {
 			return ErrIntervention
 		}
 		for index, key := range options.EnvironmentKeys {
@@ -134,7 +135,7 @@ func validateProjection(request requestProjection) error {
 				return ErrIntervention
 			}
 		}
-		options.LaunchMaterialsDigest, options.AgentLaunchSpecDigest, options.ArgvDigest, options.EnvironmentDigest, options.StdinDigest = "", "", "", "", ""
+		options.LaunchMaterialsDigest, options.AgentLaunchSpecDigest, options.ClosureProfileID, options.ArgvDigest, options.EnvironmentDigest, options.StdinDigest = "", "", "", "", "", ""
 		options.EnvironmentKeys = nil
 	case CommandResume:
 		if !validDigest(options.ProcessStartedFactDigest) {

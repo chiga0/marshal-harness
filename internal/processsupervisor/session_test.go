@@ -113,6 +113,45 @@ func TestSessionAdvancesAuthenticatedAuthorityAnchorAndRejectsSupervisorRestart(
 	}
 }
 
+func TestReconnectRequiresAuthorityHeadAdvanceAndOwnerProof(t *testing.T) {
+	bootstrap := validBootstrap()
+	journal, _ := testJournal(t)
+	session, err := NewSession(bootstrap, journal, fakeMechanics{}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ReconnectRequest{SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce, PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 1, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, CurrentAuthorityHead: bootstrap.CurrentAuthorityHead, ControlOwnerAcquired: digest("7"), Core: bootstrap.Core}
+	if err := session.Reconnect(request, bootstrap.Core); !errors.Is(err, ErrConflict) {
+		t.Fatalf("same-head owner epoch advance error=%v", err)
+	}
+	request.CurrentAuthorityHead = digest("8")
+	request.ControlOwnerAcquired = ""
+	if err := session.Reconnect(request, bootstrap.Core); !errors.Is(err, ErrConflict) {
+		t.Fatalf("missing owner-acquired proof error=%v", err)
+	}
+	request.ControlOwnerAcquired = digest("7")
+	if err := session.Reconnect(request, bootstrap.Core); err != nil {
+		t.Fatalf("valid owner advance error=%v", err)
+	}
+}
+
+func TestHandshakeBindsFrozenControlSocketIdentity(t *testing.T) {
+	bootstrap := validBootstrap()
+	socket := ControlSocketIdentity{Device: 9, Inode: 10, FileType: "socket", UID: 501, GID: 20, Mode: 0o140600, LinkCount: 1}
+	process := ProcessIdentity{PID: 200, BirthSeconds: 2, BirthMicroseconds: 3, SessionID: 99, ProcessGroupID: 99}
+	binary := bootstrap.Core.Binary
+	response := HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: bootstrap.SessionID, SessionNonceDigest: canonical.DigestBytes([]byte(bootstrap.SessionNonce)), OwnerEpoch: 1, CurrentAuthorityHead: bootstrap.CurrentAuthorityHead, CommandHead: CommandGenesisDigest, JournalSequence: 1, JournalHead: digest("8"), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC).Format(time.RFC3339Nano), SupervisorProcess: process, SupervisorBinary: binary, ControlSocket: socket}
+	anchor := HandshakeAnchor{SessionID: response.SessionID, SessionNonceDigest: response.SessionNonceDigest, OwnerEpoch: response.OwnerEpoch, CurrentAuthorityHead: response.CurrentAuthorityHead, CommandSequence: response.CommandSequence, CommandHead: response.CommandHead, JournalSequence: response.JournalSequence, JournalHead: response.JournalHead, UID: 501, GID: 20, FixedBinary: binary, ControlSocket: socket}
+	observed := CoreIdentity{UID: 501, GID: 20, Process: process, Binary: binary}
+	if err := ValidateHandshakeBinding(response, anchor, observed); err != nil {
+		t.Fatalf("valid handshake binding error=%v", err)
+	}
+	response.ControlSocket.Inode++
+	if err := ValidateHandshakeBinding(response, anchor, observed); !errors.Is(err, ErrConflict) {
+		t.Fatalf("socket ABA error=%v", err)
+	}
+}
+
 func TestJournalNeverStoresRawSpawnSecrets(t *testing.T) {
 	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
 	bootstrap := validBootstrap()
@@ -140,6 +179,19 @@ func TestJournalNeverStoresRawSpawnSecrets(t *testing.T) {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("journal contains raw secret/path %q", forbidden)
 		}
+	}
+}
+
+func TestSpawnRejectsClosureDigestMismatchBeforeMechanics(t *testing.T) {
+	payload := validSpawnPayload()
+	payload.AgentLaunchSpecDigest = digest("f")
+	if err := validateSpawnPayload(payload); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("closure digest mismatch error=%v", err)
+	}
+	payload = validSpawnPayload()
+	payload.ClosureProfileID = launchidentity.Pi0843DarwinARM64Profile
+	if err := validateSpawnPayload(payload); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("closure profile mismatch error=%v", err)
 	}
 }
 
@@ -316,22 +368,22 @@ func validSpawnPayload() SpawnPayload {
 	argv := []string{"/secret/runtime", "secret-argument"}
 	environment := []string{"TOKEN=credential-value"}
 	stdin := []byte("stdin-secret")
+	runtime := HeldObjectSpec{Role: "runtime", CanonicalPath: "/secret/runtime", Device: 1, Inode: 10, FileType: "regular", UID: 501, GID: 20, Mode: 0o100755, LinkCount: 1, Size: 100, RawSHA256: digest("4")}
+	closure, err := launchidentity.Seal(launchidentity.SpecInput{RuntimeExecutable: launchObject(runtime), ClosureProfileID: launchidentity.NativeProfile, MaterialRoots: []launchidentity.MaterialRootV1{}, LaunchMaterials: []launchidentity.LaunchMaterialV1{}, Arguments: argv, Environment: environment, WorkingDirectory: "/secret/repository"})
+	if err != nil {
+		panic(err)
+	}
 	return SpawnPayload{
 		LaunchAuthorizedFactDigest: digest("3"), SupervisorStartedFactDigest: digest("c"),
-		Runtime:          HeldObjectSpec{Role: "runtime", CanonicalPath: "/secret/runtime", Device: 1, Inode: 10, FileType: "regular", UID: 501, GID: 20, Mode: 0o100755, LinkCount: 1, Size: 100, RawSHA256: digest("4")},
+		Runtime:          runtime,
 		WorkingDirectory: HeldObjectSpec{Role: "working-directory", CanonicalPath: "/secret/repository", Device: 1, Inode: 11, FileType: "directory", UID: 501, GID: 20, Mode: 0o040755, LinkCount: 2, Size: 64},
-		MaterialRoots:    []HeldObjectSpec{}, LaunchMaterials: []HeldObjectSpec{}, LaunchMaterialsDigest: mustLaunchMaterialsDigest(nil), AgentLaunchSpecDigest: digest("6"),
+		ClosureProfileID: closure.ClosureProfileID, MaterialRoots: closure.MaterialRoots, LaunchMaterials: closure.LaunchMaterials, LaunchMaterialsDigest: closure.LaunchMaterialsDigest, AgentLaunchSpecDigest: closure.AgentLaunchSpecDigest,
 		ArgvDigest: mustDigestValue(argv), EnvironmentDigest: mustDigestValue(environment), StdinDigest: canonical.DigestBytes(stdin), EnvironmentKeys: []string{"TOKEN"}, Argv: argv, Environment: environment, Stdin: stdin,
 	}
 }
 
 func mustDigestValue(value any) string {
 	digest, _ := digestValue(value)
-	return digest
-}
-
-func mustLaunchMaterialsDigest(materials []launchidentity.LaunchMaterialV1) string {
-	digest, _ := launchidentity.DigestMaterials(materials)
 	return digest
 }
 

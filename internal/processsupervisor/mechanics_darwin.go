@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"golang.org/x/sys/unix"
@@ -38,8 +39,16 @@ type processReport struct {
 }
 
 type waitOutcome struct {
-	exitCode int
-	signal   string
+	exitCode   int
+	signal     string
+	waitFailed bool
+}
+
+type descendantObservation struct {
+	PID               int
+	ParentPID         int
+	BirthSeconds      int64
+	BirthMicroseconds int64
 }
 
 type boundedCapture struct {
@@ -165,6 +174,9 @@ type darwinMechanics struct {
 	closed         bool
 	lastReport     processReport
 	transcriptHash string
+	supervisorPID  int
+	expectedSID    int
+	descendants    map[int]descendantObservation
 }
 
 func NewPlatformMechanics(controlDirectory *os.File) (Mechanics, error) {
@@ -314,6 +326,9 @@ func (mechanics *darwinMechanics) Spawn(ctx context.Context, payload SpawnPayloa
 	}
 	mechanics.command = command
 	mechanics.process = process
+	mechanics.supervisorPID = os.Getpid()
+	mechanics.expectedSID = process.SessionID
+	mechanics.descendants = make(map[int]descendantObservation)
 	mechanics.runtimeSpec = payload.Runtime
 	mechanics.workingSpec = payload.WorkingDirectory
 	mechanics.heldFiles = held
@@ -357,10 +372,12 @@ func (mechanics *darwinMechanics) Inspect(ctx context.Context, payload CleanupPa
 		return MechanicsResult{}, ErrConflict
 	}
 	mechanics.refreshWaitLocked()
-	if !mechanics.terminal && mechanics.revalidateLocked() != nil {
-		if !mechanics.awaitWaitLocked(ctx, 50*time.Millisecond) {
-			return MechanicsResult{}, ErrConflict
+	if mechanics.waitResult != nil {
+		if err := mechanics.proveTerminalLocked(); err != nil {
+			return MechanicsResult{}, err
 		}
+	} else if err := mechanics.revalidateLocked(); err != nil {
+		return MechanicsResult{}, err
 	}
 	state := "running"
 	if mechanics.stopped {
@@ -380,16 +397,15 @@ func (mechanics *darwinMechanics) Terminate(ctx context.Context, payload Cleanup
 		return MechanicsResult{}, ErrConflict
 	}
 	mechanics.refreshWaitLocked()
-	if mechanics.terminal {
-		mechanics.lastReport = mechanics.report("terminal", mechanics.waitResult)
-		return resultForReport("process-already-terminal", mechanics.lastReport), nil
-	}
-	if mechanics.revalidateLocked() != nil {
-		if !mechanics.awaitWaitLocked(ctx, 50*time.Millisecond) {
-			return MechanicsResult{}, ErrConflict
+	if mechanics.waitResult != nil {
+		if err := mechanics.proveTerminalLocked(); err != nil {
+			return MechanicsResult{}, err
 		}
 		mechanics.lastReport = mechanics.report("terminal", mechanics.waitResult)
 		return resultForReport("process-already-terminal", mechanics.lastReport), nil
+	}
+	if err := mechanics.revalidateLocked(); err != nil {
+		return MechanicsResult{}, err
 	}
 	if mechanics.stopped {
 		// A pre-resume exec-stopped runtime must never be detached: detach would
@@ -400,13 +416,14 @@ func (mechanics *darwinMechanics) Terminate(ctx context.Context, payload Cleanup
 		}
 		mechanics.stopped = false
 		mechanics.startWaitLocked()
-		for !mechanics.awaitWaitLocked(ctx, 20*time.Millisecond) {
+		for mechanics.waitResult == nil {
+			mechanics.awaitWaitLocked(ctx, 20*time.Millisecond)
 			if ctx.Err() != nil {
 				return MechanicsResult{}, ErrIntervention
 			}
 		}
-		if err := groupAbsent(mechanics.process.ProcessGroupID); err != nil {
-			return MechanicsResult{}, ErrIntervention
+		if err := mechanics.proveTerminalLocked(); err != nil {
+			return MechanicsResult{}, err
 		}
 		mechanics.lastReport = mechanics.report("terminal", mechanics.waitResult)
 		return resultForReport("process-terminal", mechanics.lastReport), nil
@@ -418,9 +435,9 @@ func (mechanics *darwinMechanics) Terminate(ctx context.Context, payload Cleanup
 	defer grace.Stop()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
-	for !mechanics.terminal {
+	for mechanics.waitResult == nil {
 		mechanics.refreshWaitLocked()
-		if mechanics.terminal {
+		if mechanics.waitResult != nil {
 			break
 		}
 		select {
@@ -428,11 +445,8 @@ func (mechanics *darwinMechanics) Terminate(ctx context.Context, payload Cleanup
 			return MechanicsResult{}, ErrIntervention
 		case <-ticker.C:
 		case <-grace.C:
-			if mechanics.revalidateLocked() != nil {
-				if mechanics.awaitWaitLocked(ctx, 50*time.Millisecond) {
-					break
-				}
-				return MechanicsResult{}, ErrIntervention
+			if err := mechanics.revalidateLocked(); err != nil {
+				return MechanicsResult{}, err
 			}
 			if err := unix.Kill(-mechanics.process.ProcessGroupID, unix.SIGKILL); err != nil && !errors.Is(err, unix.ESRCH) {
 				return MechanicsResult{}, ErrIntervention
@@ -440,8 +454,8 @@ func (mechanics *darwinMechanics) Terminate(ctx context.Context, payload Cleanup
 			grace.Reset(2 * time.Second)
 		}
 	}
-	if err := groupAbsent(mechanics.process.ProcessGroupID); err != nil {
-		return MechanicsResult{}, ErrIntervention
+	if err := mechanics.proveTerminalLocked(); err != nil {
+		return MechanicsResult{}, err
 	}
 	mechanics.lastReport = mechanics.report("terminal", mechanics.waitResult)
 	return resultForReport("process-terminal", mechanics.lastReport), nil
@@ -454,8 +468,11 @@ func (mechanics *darwinMechanics) Collect(ctx context.Context, payload CollectPa
 		return MechanicsResult{}, ErrConflict
 	}
 	mechanics.refreshWaitLocked()
-	if !mechanics.terminal {
+	if mechanics.waitResult == nil {
 		return MechanicsResult{}, ErrConflict
+	}
+	if err := mechanics.proveTerminalLocked(); err != nil {
+		return MechanicsResult{}, err
 	}
 	stdoutData, stdoutDigest, stdoutBytes, stdoutTruncated := mechanics.stdout.snapshot()
 	stderrData, stderrDigest, stderrBytes, stderrTruncated := mechanics.stderr.snapshot()
@@ -488,6 +505,9 @@ func (mechanics *darwinMechanics) Close(ctx context.Context, payload ClosePayloa
 	if ctx.Err() != nil || !validDigest(payload.ProcessTerminalFactDigest) || !validDigest(payload.AllocationTerminatedDigest) || !validDigest(payload.CleanupBindingDigest) || !mechanics.terminal || !mechanics.collected || mechanics.closed {
 		return MechanicsResult{}, ErrConflict
 	}
+	if err := mechanics.proveTerminalLocked(); err != nil {
+		return MechanicsResult{}, err
+	}
 	report := mechanics.lastReport
 	closeFiles(mechanics.heldFiles...)
 	mechanics.heldFiles = nil
@@ -500,13 +520,12 @@ func (mechanics *darwinMechanics) Close(ctx context.Context, payload ClosePayloa
 }
 
 func (mechanics *darwinMechanics) refreshWaitLocked() {
-	if mechanics.terminal || mechanics.waited == nil {
+	if mechanics.waitResult != nil || mechanics.waited == nil {
 		return
 	}
 	select {
 	case result := <-mechanics.waited:
 		mechanics.waitResult = &result
-		mechanics.terminal = true
 	default:
 	}
 }
@@ -517,7 +536,7 @@ func (mechanics *darwinMechanics) startWaitLocked() {
 	}
 	mechanics.waited = make(chan waitOutcome, 1)
 	go func(command *exec.Cmd, result chan<- waitOutcome) {
-		_ = command.Wait()
+		waitErr := command.Wait()
 		outcome := waitOutcome{}
 		if state := command.ProcessState; state != nil {
 			outcome.exitCode = state.ExitCode()
@@ -525,13 +544,15 @@ func (mechanics *darwinMechanics) startWaitLocked() {
 				outcome.signal = status.Signal().String()
 			}
 		}
+		var exitError *exec.ExitError
+		outcome.waitFailed = command.ProcessState == nil || waitErr != nil && !errors.As(waitErr, &exitError)
 		result <- outcome
 	}(mechanics.command, mechanics.waited)
 }
 
 func (mechanics *darwinMechanics) awaitWaitLocked(ctx context.Context, limit time.Duration) bool {
 	mechanics.refreshWaitLocked()
-	if mechanics.terminal {
+	if mechanics.waitResult != nil {
 		return true
 	}
 	if mechanics.waited == nil {
@@ -542,7 +563,6 @@ func (mechanics *darwinMechanics) awaitWaitLocked(ctx context.Context, limit tim
 	select {
 	case result := <-mechanics.waited:
 		mechanics.waitResult = &result
-		mechanics.terminal = true
 		return true
 	case <-ctx.Done():
 		return false
@@ -567,10 +587,37 @@ func (mechanics *darwinMechanics) revalidateLocked() error {
 	if err != nil || !sameProcessBirth(observed, mechanics.process) {
 		return ErrConflict
 	}
+	process, err := unix.SysctlKinfoProc("kern.proc.pid", mechanics.process.PID)
+	if err != nil || process == nil || int(process.Eproc.Ppid) != mechanics.supervisorPID {
+		return ErrConflict
+	}
 	path, err := processExecutablePath(mechanics.process.PID)
 	if err != nil || path != mechanics.runtimeSpec.CanonicalPath {
 		return ErrConflict
 	}
+	if err := observeProcessWorkingDirectory(mechanics.process.PID, mechanics.workingSpec); err != nil {
+		return err
+	}
+	return mechanics.refreshDescendantsLocked()
+}
+
+func (mechanics *darwinMechanics) proveTerminalLocked() error {
+	if mechanics.waitResult == nil {
+		return ErrConflict
+	}
+	if mechanics.waitResult.waitFailed {
+		return ErrIntervention
+	}
+	if err := mechanics.refreshDescendantsLocked(); err != nil {
+		return err
+	}
+	if len(mechanics.descendants) != 0 {
+		return ErrIntervention
+	}
+	if err := exactProcessGroupAbsent(mechanics.process, mechanics.expectedSID); err != nil {
+		return err
+	}
+	mechanics.terminal = true
 	return nil
 }
 
@@ -592,11 +639,13 @@ func resultForReport(reason string, report processReport) MechanicsResult {
 func buildChildSpec(payload SpawnPayload, marshal HeldObjectSpec) (childSpec, error) {
 	spec := childSpec{ProtocolRevision: ProtocolRevision, ParentPID: os.Getpid(), Runtime: childObject{FD: int(childRuntimeFD), Object: payload.Runtime}, WorkingDirectory: childObject{FD: int(childCwdFD), Object: payload.WorkingDirectory}, Marshal: childObject{FD: int(childMarshalFD), Object: marshal}, Argv: append([]string(nil), payload.Argv...), Environment: append([]string(nil), payload.Environment...)}
 	next := childClosureFD
-	for _, object := range payload.MaterialRoots {
+	for _, root := range payload.MaterialRoots {
+		object := heldMaterialRoot(root)
 		spec.MaterialRoots = append(spec.MaterialRoots, childObject{FD: next, Object: object})
 		next++
 	}
-	for _, object := range payload.LaunchMaterials {
+	for _, material := range payload.LaunchMaterials {
+		object := heldLaunchMaterial(material)
 		spec.LaunchMaterials = append(spec.LaunchMaterials, childObject{FD: next, Object: object})
 		next++
 	}
@@ -631,8 +680,14 @@ func revalidateHeldSet(files []*os.File, payload SpawnPayload) error {
 }
 
 func spawnObjects(payload SpawnPayload) []HeldObjectSpec {
-	objects := append([]HeldObjectSpec{payload.WorkingDirectory, payload.Runtime}, payload.MaterialRoots...)
-	return append(objects, payload.LaunchMaterials...)
+	objects := []HeldObjectSpec{payload.WorkingDirectory, payload.Runtime}
+	for _, root := range payload.MaterialRoots {
+		objects = append(objects, heldMaterialRoot(root))
+	}
+	for _, material := range payload.LaunchMaterials {
+		objects = append(objects, heldLaunchMaterial(material))
+	}
+	return objects
 }
 
 func openObservedSpec(role, path, kind string) (*os.File, HeldObjectSpec, error) {
@@ -835,12 +890,184 @@ func writeOwnerObject(directory *os.File, name string, data []byte) error {
 	return directory.Sync()
 }
 
-func groupAbsent(pgid int) error {
-	err := unix.Kill(-pgid, 0)
+// refreshDescendantsLocked implements the observable boundary of ADR 0051's
+// ordinary-user profile. It snapshots only the supervisor UID, records exact
+// births and parents, and fail-closes on visible reparent, PGID migration or a
+// new session. A descendant that double-forks and disappears between two
+// snapshots is not claimable as hardened containment; callers therefore never
+// turn an observed escape into success and surface every observed drift as
+// identity conflict/intervention.
+func (mechanics *darwinMechanics) refreshDescendantsLocked() error {
+	processes, err := unix.SysctlKinfoProcSlice("kern.proc.uid", os.Geteuid())
+	if err != nil {
+		return ErrIntervention
+	}
+	byPID := make(map[int]*unix.KinfoProc, len(processes))
+	for index := range processes {
+		process := &processes[index]
+		byPID[int(process.Proc.P_pid)] = process
+	}
+	next := make(map[int]descendantObservation, len(mechanics.descendants))
+	for pid, prior := range mechanics.descendants {
+		process := byPID[pid]
+		if process == nil {
+			continue
+		}
+		sid, sidErr := unix.Getsid(pid)
+		if errors.Is(sidErr, unix.ESRCH) {
+			continue
+		}
+		if sidErr != nil || validateTrackedDescendant(process, prior, mechanics.process.ProcessGroupID, mechanics.expectedSID, sid) != nil {
+			return ErrConflict
+		}
+		next[pid] = prior
+	}
+	if root := byPID[mechanics.process.PID]; root != nil && sameRootBirth(root, mechanics.process) {
+		for pid, process := range byPID {
+			if pid == mechanics.process.PID || !descendsFromRoot(pid, mechanics.process.PID, byPID) {
+				continue
+			}
+			if int(process.Eproc.Pgid) != mechanics.process.ProcessGroupID {
+				return ErrConflict
+			}
+			sid, sidErr := unix.Getsid(pid)
+			if errors.Is(sidErr, unix.ESRCH) {
+				continue
+			}
+			if sidErr != nil || sid != mechanics.expectedSID {
+				return ErrConflict
+			}
+			if _, exists := next[pid]; !exists {
+				next[pid] = descendantObservation{PID: pid, ParentPID: int(process.Eproc.Ppid), BirthSeconds: process.Proc.P_starttime.Sec, BirthMicroseconds: int64(process.Proc.P_starttime.Usec)}
+			}
+		}
+	}
+	mechanics.descendants = next
+	return nil
+}
+
+func sameRootBirth(process *unix.KinfoProc, identity ProcessIdentity) bool {
+	return process != nil && int(process.Proc.P_pid) == identity.PID && process.Proc.P_starttime.Sec == identity.BirthSeconds && int64(process.Proc.P_starttime.Usec) == identity.BirthMicroseconds
+}
+
+func sameDescendantBirth(process *unix.KinfoProc, identity descendantObservation) bool {
+	return process != nil && int(process.Proc.P_pid) == identity.PID && process.Proc.P_starttime.Sec == identity.BirthSeconds && int64(process.Proc.P_starttime.Usec) == identity.BirthMicroseconds
+}
+
+func validateTrackedDescendant(process *unix.KinfoProc, prior descendantObservation, expectedPGID, expectedSID, observedSID int) error {
+	if !sameDescendantBirth(process, prior) || int(process.Eproc.Ppid) != prior.ParentPID || int(process.Eproc.Pgid) != expectedPGID || observedSID != expectedSID {
+		return ErrConflict
+	}
+	return nil
+}
+
+func descendsFromRoot(pid, root int, processes map[int]*unix.KinfoProc) bool {
+	seen := make(map[int]struct{})
+	for pid > 1 && pid != root {
+		if _, duplicate := seen[pid]; duplicate {
+			return false
+		}
+		seen[pid] = struct{}{}
+		process := processes[pid]
+		if process == nil {
+			return false
+		}
+		pid = int(process.Eproc.Ppid)
+	}
+	return pid == root
+}
+
+func exactProcessGroupAbsent(identity ProcessIdentity, expectedSID int) error {
+	processes, err := unix.SysctlKinfoProcSlice("kern.proc.pgrp", identity.ProcessGroupID)
 	if errors.Is(err, unix.ESRCH) {
 		return nil
 	}
-	return ErrIntervention
+	if err != nil {
+		return ErrIntervention
+	}
+	if len(processes) != 0 {
+		process := &processes[0]
+		pid := int(process.Proc.P_pid)
+		sid, sidErr := unix.Getsid(pid)
+		if sidErr != nil || sid != expectedSID || int(process.Eproc.Pgid) != identity.ProcessGroupID {
+			return ErrConflict
+		}
+		// Any exact member, including a surviving descendant or unreaped exact
+		// root, means absence has not been proved.
+		return ErrIntervention
+	}
+	return nil
+}
+
+const (
+	procInfoCallPIDInfo   = 2
+	procPIDVnodePathInfo  = 9
+	procVnodePathInfoSize = 2352
+	procVnodePathMaximum  = 1024
+)
+
+type procVinfoStat struct {
+	Dev                      uint32
+	Mode, Nlink              uint16
+	Ino                      uint64
+	UID, GID                 uint32
+	Atime, AtimeNsec         int64
+	Mtime, MtimeNsec         int64
+	Ctime, CtimeNsec         int64
+	Birthtime, BirthtimeNsec int64
+	Size, Blocks             int64
+	BlockSize                int32
+	Flags, Gen, Rdev         uint32
+	Qspare                   [2]int64
+}
+
+type procVnodeInfo struct {
+	Stat procVinfoStat
+	Type int32
+	Pad  int32
+	FSID [2]int32
+}
+
+type procVnodeInfoPath struct {
+	Info procVnodeInfo
+	Path [procVnodePathMaximum]byte
+}
+
+type procVnodePathInfo struct {
+	Current procVnodeInfoPath
+	Root    procVnodeInfoPath
+}
+
+func observeProcessWorkingDirectory(pid int, expected HeldObjectSpec) error {
+	var info procVnodePathInfo
+	if unsafe.Sizeof(info) != procVnodePathInfoSize {
+		return ErrIntervention
+	}
+	//lint:ignore SA1019 x/sys/unix exposes no proc_pidinfo wrapper; this fixed Darwin ABI call observes the live process cwd.
+	written, _, errno := syscall.RawSyscall6(unix.SYS_PROC_INFO, procInfoCallPIDInfo, uintptr(pid), procPIDVnodePathInfo, 0, uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Sizeof(info)))
+	if errno != 0 || written != uintptr(unsafe.Sizeof(info)) {
+		return ErrConflict
+	}
+	end := 0
+	for end < len(info.Current.Path) && info.Current.Path[end] != 0 {
+		end++
+	}
+	if end == 0 || end == len(info.Current.Path) {
+		return ErrConflict
+	}
+	return validateProcessWorkingDirectory(info.Current, expected)
+}
+
+func validateProcessWorkingDirectory(observed procVnodeInfoPath, expected HeldObjectSpec) error {
+	end := 0
+	for end < len(observed.Path) && observed.Path[end] != 0 {
+		end++
+	}
+	stat := observed.Info.Stat
+	if end == 0 || end == len(observed.Path) || string(observed.Path[:end]) != expected.CanonicalPath || uint64(stat.Dev) != expected.Device || stat.Ino != expected.Inode || uint32(stat.Mode) != expected.Mode || stat.UID != expected.UID || stat.GID != expected.GID {
+		return ErrConflict
+	}
+	return nil
 }
 
 func abortStartedChild(command *exec.Cmd, process ProcessIdentity, release *os.File) {

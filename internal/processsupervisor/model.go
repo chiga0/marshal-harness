@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"time"
+
+	"github.com/chiga0/marshal-harness/internal/launchidentity"
 )
 
 const (
@@ -183,6 +185,27 @@ type ControlDirectoryIdentity struct {
 	LinkCount     uint64 `json:"linkCount"`
 }
 
+// ControlSocketIdentity freezes the descriptor-relative rendezvous object
+// created by the supervisor. The listening descriptor keeps the object live;
+// Core binds this complete fstatat observation into the started fact and every
+// reconnect handshake so a pathname ABA cannot silently acquire authority.
+type ControlSocketIdentity struct {
+	Device    uint64 `json:"device"`
+	Inode     uint64 `json:"inode"`
+	FileType  string `json:"fileType"`
+	UID       uint32 `json:"uid"`
+	GID       uint32 `json:"gid"`
+	Mode      uint32 `json:"mode"`
+	LinkCount uint64 `json:"linkCount"`
+}
+
+func (identity ControlSocketIdentity) validate() error {
+	if identity.Device == 0 || identity.Inode == 0 || !safeUint64(identity.Device) || !safeUint64(identity.Inode) || identity.FileType != "socket" || identity.UID == 0 || identity.Mode&0o170000 != 0o140000 || identity.Mode&0o777 != 0o600 || identity.LinkCount != 1 {
+		return ErrInvalid
+	}
+	return nil
+}
+
 func (identity ControlDirectoryIdentity) validate() error {
 	if !filepath.IsAbs(identity.CanonicalPath) || filepath.Clean(identity.CanonicalPath) != identity.CanonicalPath || identity.Device == 0 || identity.Inode == 0 || !safeUint64(identity.Device) || !safeUint64(identity.Inode) || identity.FileType != "directory" || identity.LinkCount < 2 || !safeUint64(identity.LinkCount) || identity.Mode&0o170000 != 0o040000 || identity.Mode&0o077 != 0 {
 		return ErrInvalid
@@ -231,31 +254,34 @@ type ReconnectRequest struct {
 	ProtocolRevision      string       `json:"protocolRevision"`
 	SessionID             string       `json:"sessionId"`
 	SessionNonce          string       `json:"sessionNonce"`
+	PreviousOwnerEpoch    uint64       `json:"previousOwnerEpoch"`
 	OwnerEpoch            uint64       `json:"ownerEpoch"`
 	PreviousAuthorityHead string       `json:"previousAuthorityHead"`
 	CurrentAuthorityHead  string       `json:"currentAuthorityHead"`
+	ControlOwnerAcquired  string       `json:"controlOwnerAcquiredFactDigest"`
 	Core                  CoreIdentity `json:"core"`
 }
 
 // HandshakeResponse is safe for the authenticated control socket. It contains
 // no raw nonce or command payload.
 type HandshakeResponse struct {
-	SchemaVersion        string          `json:"schemaVersion"`
-	ProtocolRevision     string          `json:"protocolRevision"`
-	Status               string          `json:"status"`
-	ReasonCode           string          `json:"reasonCode"`
-	SessionID            string          `json:"sessionId"`
-	SessionNonceDigest   string          `json:"sessionNonceDigest"`
-	OwnerEpoch           uint64          `json:"ownerEpoch"`
-	CurrentAuthorityHead string          `json:"currentAuthorityHead"`
-	CommandSequence      uint64          `json:"commandSequence"`
-	CommandHead          string          `json:"commandHead"`
-	JournalSequence      uint64          `json:"journalSequence"`
-	JournalHead          string          `json:"journalHead"`
-	ObserverIdentity     string          `json:"observerIdentity"`
-	ObservedAt           string          `json:"observedAt"`
-	SupervisorProcess    ProcessIdentity `json:"supervisorProcess"`
-	SupervisorBinary     BinaryIdentity  `json:"supervisorBinary"`
+	SchemaVersion        string                `json:"schemaVersion"`
+	ProtocolRevision     string                `json:"protocolRevision"`
+	Status               string                `json:"status"`
+	ReasonCode           string                `json:"reasonCode"`
+	SessionID            string                `json:"sessionId"`
+	SessionNonceDigest   string                `json:"sessionNonceDigest"`
+	OwnerEpoch           uint64                `json:"ownerEpoch"`
+	CurrentAuthorityHead string                `json:"currentAuthorityHead"`
+	CommandSequence      uint64                `json:"commandSequence"`
+	CommandHead          string                `json:"commandHead"`
+	JournalSequence      uint64                `json:"journalSequence"`
+	JournalHead          string                `json:"journalHead"`
+	ObserverIdentity     string                `json:"observerIdentity"`
+	ObservedAt           string                `json:"observedAt"`
+	SupervisorProcess    ProcessIdentity       `json:"supervisorProcess"`
+	SupervisorBinary     BinaryIdentity        `json:"supervisorBinary"`
+	ControlSocket        ControlSocketIdentity `json:"controlSocket"`
 }
 
 type Request struct {
@@ -313,21 +339,22 @@ type AbortUnboundPayload struct {
 }
 
 type SpawnPayload struct {
-	LaunchAuthorizedFactDigest  string           `json:"launchAuthorizedFactDigest"`
-	SupervisorStartedFactDigest string           `json:"supervisorStartedFactDigest"`
-	Runtime                     HeldObjectSpec   `json:"runtime"`
-	WorkingDirectory            HeldObjectSpec   `json:"workingDirectory"`
-	MaterialRoots               []HeldObjectSpec `json:"materialRoots"`
-	LaunchMaterials             []HeldObjectSpec `json:"launchMaterials"`
-	LaunchMaterialsDigest       string           `json:"launchMaterialsDigest"`
-	AgentLaunchSpecDigest       string           `json:"agentLaunchSpecDigest"`
-	ArgvDigest                  string           `json:"argvDigest"`
-	EnvironmentDigest           string           `json:"environmentDigest"`
-	StdinDigest                 string           `json:"stdinDigest"`
-	EnvironmentKeys             []string         `json:"environmentKeys"`
-	Argv                        []string         `json:"argv"`
-	Environment                 []string         `json:"environment"`
-	Stdin                       []byte           `json:"stdin"`
+	LaunchAuthorizedFactDigest  string                            `json:"launchAuthorizedFactDigest"`
+	SupervisorStartedFactDigest string                            `json:"supervisorStartedFactDigest"`
+	Runtime                     HeldObjectSpec                    `json:"runtime"`
+	WorkingDirectory            HeldObjectSpec                    `json:"workingDirectory"`
+	ClosureProfileID            string                            `json:"closureProfileId"`
+	MaterialRoots               []launchidentity.MaterialRootV1   `json:"materialRoots"`
+	LaunchMaterials             []launchidentity.LaunchMaterialV1 `json:"launchMaterials"`
+	LaunchMaterialsDigest       string                            `json:"launchMaterialsDigest"`
+	AgentLaunchSpecDigest       string                            `json:"agentLaunchSpecDigest"`
+	ArgvDigest                  string                            `json:"argvDigest"`
+	EnvironmentDigest           string                            `json:"environmentDigest"`
+	StdinDigest                 string                            `json:"stdinDigest"`
+	EnvironmentKeys             []string                          `json:"environmentKeys"`
+	Argv                        []string                          `json:"argv"`
+	Environment                 []string                          `json:"environment"`
+	Stdin                       []byte                            `json:"stdin"`
 }
 
 // HeldObjectSpec is the exact nofollow identity that the supervisor must open

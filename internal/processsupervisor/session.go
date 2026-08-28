@@ -98,8 +98,8 @@ func (session *Session) Reconnect(request ReconnectRequest, observed CoreIdentit
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if request.SchemaVersion != ReconnectSchema || request.ProtocolRevision != ProtocolRevision || request.SessionID != session.sessionID ||
-		canonical.DigestBytes([]byte(request.SessionNonce)) != session.nonceDigest || request.OwnerEpoch <= session.ownerEpoch || request.OwnerEpoch > maxSafeJSONInteger ||
-		request.PreviousAuthorityHead != session.authorityHead || !validDigest(request.CurrentAuthorityHead) || !sameCoreIdentity(request.Core, observed) || session.state == sessionIntervention {
+		canonical.DigestBytes([]byte(request.SessionNonce)) != session.nonceDigest || request.PreviousOwnerEpoch != session.ownerEpoch || request.OwnerEpoch <= request.PreviousOwnerEpoch || request.OwnerEpoch > maxSafeJSONInteger ||
+		request.PreviousAuthorityHead != session.authorityHead || !validDigest(request.CurrentAuthorityHead) || request.CurrentAuthorityHead == request.PreviousAuthorityHead || !validDigest(request.ControlOwnerAcquired) || !sameCoreIdentity(request.Core, observed) || session.state == sessionIntervention {
 		return ErrConflict
 	}
 	session.ownerEpoch = request.OwnerEpoch
@@ -316,6 +316,7 @@ func decodePayload(command CommandName, raw json.RawMessage, projection *request
 		}
 		projection.LaunchMaterialsDigest = value.LaunchMaterialsDigest
 		projection.AgentLaunchSpecDigest = value.AgentLaunchSpecDigest
+		projection.ClosureProfileID = value.ClosureProfileID
 		projection.ArgvDigest = value.ArgvDigest
 		projection.EnvironmentDigest = value.EnvironmentDigest
 		projection.StdinDigest = value.StdinDigest
@@ -368,7 +369,7 @@ func validateSpawnPayload(value SpawnPayload) error {
 			return ErrInvalid
 		}
 	}
-	if value.Runtime.validate("runtime", "regular") != nil || value.WorkingDirectory.validate("working-directory", "directory") != nil || len(value.Argv) == 0 || len(value.Argv) > MaxArgvEntries || value.Argv[0] != value.Runtime.CanonicalPath || value.Environment == nil || value.EnvironmentKeys == nil || value.MaterialRoots == nil || value.LaunchMaterials == nil || value.Stdin == nil || len(value.Environment) > MaxEnvironmentKeys || len(value.Stdin) > MaxStdinBytes {
+	if value.Runtime.validate("runtime", "regular") != nil || value.WorkingDirectory.validate("working-directory", "directory") != nil || len(value.Argv) == 0 || len(value.Argv) > MaxArgvEntries || value.Argv[0] != value.Runtime.CanonicalPath || value.Environment == nil || value.EnvironmentKeys == nil || value.MaterialRoots == nil || value.LaunchMaterials == nil || value.Stdin == nil || len(value.Environment) > MaxEnvironmentKeys || len(value.Stdin) > MaxStdinBytes || !validID(value.ClosureProfileID) {
 		return ErrInvalid
 	}
 	argvBytes := 0
@@ -407,7 +408,8 @@ func validateSpawnPayload(value SpawnPayload) error {
 	}
 	seen := map[[2]uint64]struct{}{{value.Runtime.Device, value.Runtime.Inode}: {}, {value.WorkingDirectory.Device, value.WorkingDirectory.Inode}: {}}
 	roles := map[string]struct{}{"runtime": {}, "working-directory": {}, "marshal": {}}
-	for _, object := range value.MaterialRoots {
+	for _, root := range value.MaterialRoots {
+		object := heldMaterialRoot(root)
 		if !validMaterialRole(object.Role) || object.validate(object.Role, "directory") != nil {
 			return ErrInvalid
 		}
@@ -421,7 +423,8 @@ func validateSpawnPayload(value SpawnPayload) error {
 		}
 		seen[identity] = struct{}{}
 	}
-	for _, object := range value.LaunchMaterials {
+	for _, material := range value.LaunchMaterials {
+		object := heldLaunchMaterial(material)
 		if !validMaterialRole(object.Role) || object.validate(object.Role, "regular") != nil {
 			return ErrInvalid
 		}
@@ -435,15 +438,38 @@ func validateSpawnPayload(value SpawnPayload) error {
 		}
 		seen[identity] = struct{}{}
 	}
-	materials := make([]launchidentity.LaunchMaterialV1, 0, len(value.LaunchMaterials))
-	for _, object := range value.LaunchMaterials {
-		materials = append(materials, launchidentity.LaunchMaterialV1{Role: object.Role, Object: launchidentity.ObjectV1{CanonicalPath: object.CanonicalPath, Device: object.Device, Inode: object.Inode, FileType: 0o100000, Mode: object.Mode, UID: object.UID, GID: object.GID, Size: object.Size, LinkCount: object.LinkCount, RawSHA256: object.RawSHA256}})
+	closure := launchidentity.ClosureV1{
+		RuntimeExecutable:     launchObject(value.Runtime),
+		ClosureProfileID:      value.ClosureProfileID,
+		MaterialRoots:         append([]launchidentity.MaterialRootV1{}, value.MaterialRoots...),
+		LaunchMaterials:       append([]launchidentity.LaunchMaterialV1{}, value.LaunchMaterials...),
+		LaunchMaterialsDigest: value.LaunchMaterialsDigest,
+		AgentLaunchSpecDigest: value.AgentLaunchSpecDigest,
+		Arguments:             append([]string{}, value.Argv...),
+		Environment:           append([]string{}, value.Environment...),
+		WorkingDirectory:      value.WorkingDirectory.CanonicalPath,
 	}
-	materialsDigest, err := launchidentity.DigestMaterials(materials)
-	if err != nil || materialsDigest != value.LaunchMaterialsDigest {
+	if closure.Validate() != nil {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func launchObject(object HeldObjectSpec) launchidentity.ObjectV1 {
+	fileType := uint32(0o100000)
+	if object.FileType == "directory" {
+		fileType = 0o040000
+	}
+	return launchidentity.ObjectV1{CanonicalPath: object.CanonicalPath, Device: object.Device, Inode: object.Inode, FileType: fileType, Mode: object.Mode, UID: object.UID, GID: object.GID, Size: object.Size, LinkCount: object.LinkCount, RawSHA256: object.RawSHA256}
+}
+
+func heldMaterialRoot(root launchidentity.MaterialRootV1) HeldObjectSpec {
+	return HeldObjectSpec{Role: root.Name, CanonicalPath: root.CanonicalPath, Device: root.Object.Device, Inode: root.Object.Inode, FileType: "directory", UID: root.Object.UID, GID: root.Object.GID, Mode: root.Object.Mode, LinkCount: root.Object.LinkCount, Size: root.Object.Size, RawSHA256: root.Object.RawSHA256}
+}
+
+func heldLaunchMaterial(material launchidentity.LaunchMaterialV1) HeldObjectSpec {
+	object := material.Object
+	return HeldObjectSpec{Role: material.Role, CanonicalPath: object.CanonicalPath, Device: object.Device, Inode: object.Inode, FileType: "regular", UID: object.UID, GID: object.GID, Mode: object.Mode, LinkCount: object.LinkCount, Size: object.Size, RawSHA256: object.RawSHA256}
 }
 
 func validMaterialRole(role string) bool {

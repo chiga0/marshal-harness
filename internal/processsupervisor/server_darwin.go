@@ -66,6 +66,9 @@ func runSupervisor(ctx context.Context) error {
 	if err != nil {
 		return ErrInvalid
 	}
+	if rejectBootstrapExtra(reader, unixConnection) != nil {
+		return ErrInvalid
+	}
 	var bootstrap BootstrapRequest
 	if strictCanonicalDecode(raw, &bootstrap) != nil || bootstrap.validate() != nil {
 		return ErrInvalid
@@ -119,6 +122,10 @@ func runSupervisor(ctx context.Context) error {
 	if err := unix.Fchmodat(int(controlDirectory.Fd()), controlSocket, 0o600, 0); err != nil || controlDirectory.Sync() != nil {
 		return ErrIntervention
 	}
+	socketIdentity, err := observeControlSocket(controlDirectory)
+	if err != nil {
+		return err
+	}
 	supervisorIdentity, err := observeSelfIdentity()
 	if err != nil {
 		return err
@@ -126,7 +133,10 @@ func runSupervisor(ctx context.Context) error {
 	var active atomic.Bool
 	active.Store(true)
 	incoming, acceptErrors := acceptConnections(ctx, listener, &active)
-	if err := writeFrame(unixConnection, handshake(session, supervisorIdentity), MaxWireFrameBytes); err == nil {
+	if observeControlSocketExact(controlDirectory, socketIdentity) != nil {
+		return ErrConflict
+	}
+	if err := writeFrame(unixConnection, handshake(session, supervisorIdentity, socketIdentity), MaxWireFrameBytes); err == nil {
 		terminal, _ := serveConnection(unixConnection, reader, session)
 		if terminal {
 			return nil
@@ -158,14 +168,14 @@ func runSupervisor(ctx context.Context) error {
 		reconnectRaw, readErr := readFrame(reconnectReader, MaxWireFrameBytes)
 		var reconnect ReconnectRequest
 		admitErr := strictCanonicalDecode(reconnectRaw, &reconnect)
-		if observeErr != nil || readErr != nil || admitErr != nil || session.Reconnect(reconnect, observed) != nil {
+		if observeErr != nil || readErr != nil || admitErr != nil || observeControlSocketExact(controlDirectory, socketIdentity) != nil || session.Reconnect(reconnect, observed) != nil {
 			_ = writeFrame(connection, HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "rejected", ReasonCode: ErrConflict.ReasonCode}, MaxWireFrameBytes)
 			_ = connection.Close()
 			active.Store(false)
 			continue
 		}
 		_ = connection.SetDeadline(time.Time{})
-		if err := writeFrame(connection, handshake(session, supervisorIdentity), MaxWireFrameBytes); err != nil {
+		if err := writeFrame(connection, handshake(session, supervisorIdentity, socketIdentity), MaxWireFrameBytes); err != nil {
 			_ = connection.Close()
 			active.Store(false)
 			continue
@@ -286,9 +296,51 @@ func serveConnection(connection net.Conn, reader *bufio.Reader, session *Session
 	}
 }
 
-func handshake(session *Session, supervisor CoreIdentity) HandshakeResponse {
+func handshake(session *Session, supervisor CoreIdentity, socket ControlSocketIdentity) HandshakeResponse {
 	commandSequence, commandHead, journalSequence, journalHead := session.Snapshot()
-	return HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: session.sessionID, SessionNonceDigest: session.nonceDigest, OwnerEpoch: session.ownerEpoch, CurrentAuthorityHead: session.authorityHead, CommandSequence: commandSequence, CommandHead: commandHead, JournalSequence: journalSequence, JournalHead: journalHead, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), SupervisorProcess: supervisor.Process, SupervisorBinary: supervisor.Binary}
+	return HandshakeResponse{SchemaVersion: HandshakeSchema, ProtocolRevision: ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: session.sessionID, SessionNonceDigest: session.nonceDigest, OwnerEpoch: session.ownerEpoch, CurrentAuthorityHead: session.authorityHead, CommandSequence: commandSequence, CommandHead: commandHead, JournalSequence: journalSequence, JournalHead: journalHead, ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), SupervisorProcess: supervisor.Process, SupervisorBinary: supervisor.Binary, ControlSocket: socket}
+}
+
+func rejectBootstrapExtra(reader *bufio.Reader, connection *net.UnixConn) error {
+	if reader == nil || connection == nil || reader.Buffered() != 0 {
+		return ErrInvalid
+	}
+	if err := connection.SetReadDeadline(time.Now()); err != nil {
+		return ErrInvalid
+	}
+	_, err := reader.Peek(1)
+	_ = connection.SetReadDeadline(time.Time{})
+	if err == nil || reader.Buffered() != 0 {
+		return ErrInvalid
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() || errors.Is(err, io.EOF) {
+		return nil
+	}
+	return ErrInvalid
+}
+
+func observeControlSocket(directory *os.File) (ControlSocketIdentity, error) {
+	if directory == nil {
+		return ControlSocketIdentity{}, ErrInvalid
+	}
+	var stat unix.Stat_t
+	if unix.Fstatat(int(directory.Fd()), controlSocket, &stat, unix.AT_SYMLINK_NOFOLLOW) != nil {
+		return ControlSocketIdentity{}, ErrConflict
+	}
+	identity := ControlSocketIdentity{Device: uint64(stat.Dev), Inode: stat.Ino, FileType: "socket", UID: stat.Uid, GID: stat.Gid, Mode: uint32(stat.Mode), LinkCount: uint64(stat.Nlink)}
+	if identity.UID != uint32(os.Geteuid()) || identity.GID != uint32(os.Getegid()) || identity.validate() != nil {
+		return ControlSocketIdentity{}, ErrConflict
+	}
+	return identity, nil
+}
+
+func observeControlSocketExact(directory *os.File, expected ControlSocketIdentity) error {
+	observed, err := observeControlSocket(directory)
+	if err != nil || observed != expected {
+		return ErrConflict
+	}
+	return nil
 }
 
 func observePeer(connection *net.UnixConn) (CoreIdentity, error) {
