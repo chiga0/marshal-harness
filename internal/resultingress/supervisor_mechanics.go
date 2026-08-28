@@ -1,0 +1,771 @@
+package resultingress
+
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/chiga0/marshal-harness/internal/canonical"
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
+)
+
+var supervisorEvidenceID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$`)
+
+// SupervisorMechanicsAnchor is the complete secret-free client anchor around
+// one authenticated command. It includes the mechanics journal position;
+// command sequence/head alone cannot distinguish a lost receipt from a
+// journal intent that never closed.
+type SupervisorMechanicsAnchor struct {
+	SessionID            string                                  `json:"sessionId"`
+	SessionNonceDigest   string                                  `json:"sessionNonceDigest"`
+	Authority            processsupervisor.AuthorityTuple        `json:"authority"`
+	OwnerEpoch           uint64                                  `json:"ownerEpoch"`
+	CurrentAuthorityHead string                                  `json:"currentAuthorityHead"`
+	CommandSequence      uint64                                  `json:"commandSequence"`
+	CommandHead          string                                  `json:"commandHead"`
+	JournalSequence      uint64                                  `json:"journalSequence"`
+	JournalHead          string                                  `json:"journalHead"`
+	UID                  uint32                                  `json:"uid"`
+	GID                  uint32                                  `json:"gid"`
+	FixedBinary          processsupervisor.BinaryIdentity        `json:"fixedBinary"`
+	ControlSocket        processsupervisor.ControlSocketIdentity `json:"controlSocket"`
+}
+
+func supervisorHandshakeAnchor(anchor SupervisorMechanicsAnchor) processsupervisor.HandshakeAnchor {
+	return processsupervisor.HandshakeAnchor{SessionID: anchor.SessionID, SessionNonceDigest: anchor.SessionNonceDigest, Authority: anchor.Authority, OwnerEpoch: anchor.OwnerEpoch, CurrentAuthorityHead: anchor.CurrentAuthorityHead, CommandSequence: anchor.CommandSequence, CommandHead: anchor.CommandHead, JournalSequence: anchor.JournalSequence, JournalHead: anchor.JournalHead, UID: anchor.UID, GID: anchor.GID, FixedBinary: anchor.FixedBinary, ControlSocket: anchor.ControlSocket}
+}
+
+func projectSupervisorMechanicsAnchor(anchor processsupervisor.HandshakeAnchor) SupervisorMechanicsAnchor {
+	return SupervisorMechanicsAnchor{SessionID: anchor.SessionID, SessionNonceDigest: anchor.SessionNonceDigest, Authority: anchor.Authority, OwnerEpoch: anchor.OwnerEpoch, CurrentAuthorityHead: anchor.CurrentAuthorityHead, CommandSequence: anchor.CommandSequence, CommandHead: anchor.CommandHead, JournalSequence: anchor.JournalSequence, JournalHead: anchor.JournalHead, UID: anchor.UID, GID: anchor.GID, FixedBinary: anchor.FixedBinary, ControlSocket: anchor.ControlSocket}
+}
+
+func (anchor SupervisorMechanicsAnchor) Validate() error {
+	if !supervisorEvidenceID.MatchString(anchor.SessionID) || requireDigest("sessionNonceDigest", anchor.SessionNonceDigest) != nil || validateSupervisorAuthorityTuple(anchor.Authority) != nil || anchor.OwnerEpoch == 0 || anchor.OwnerEpoch > maxExactJSONInteger || requireDigest("currentAuthorityHead", anchor.CurrentAuthorityHead) != nil || anchor.CommandSequence > maxExactJSONInteger || requireDigest("commandHead", anchor.CommandHead) != nil || anchor.JournalSequence == 0 || anchor.JournalSequence > maxExactJSONInteger || requireDigest("journalHead", anchor.JournalHead) != nil || anchor.UID == 0 || validateFixedMarshalBinaryIdentity(anchor.FixedBinary) != nil || validateControlSocketIdentity(anchor.ControlSocket) != nil {
+		return ErrAttemptAuthorityConflict
+	}
+	return nil
+}
+
+// SupervisorReconnectEvidence is the secret-free projection of an already
+// authenticated Client reconnect. It is the only authority allowed to move a
+// persisted mechanics anchor to a new owner epoch / Attempt head.
+type SupervisorReconnectEvidence struct {
+	Reconciliation  processsupervisor.ReconciliationState   `json:"reconciliation"`
+	Previous        SupervisorMechanicsAnchor               `json:"previous"`
+	Current         SupervisorMechanicsAnchor               `json:"current"`
+	Pending         processsupervisor.PendingReplayEvidence `json:"pending,omitempty,omitzero"`
+	MechanicsLocked bool                                    `json:"mechanicsLocked,omitempty"`
+}
+
+func newSupervisorReconnectEvidence(recovery processsupervisor.SessionRecoveryEvidence) (SupervisorReconnectEvidence, error) {
+	evidence := SupervisorReconnectEvidence{Reconciliation: recovery.Reconciliation, Previous: projectSupervisorMechanicsAnchor(recovery.Previous), Current: projectSupervisorMechanicsAnchor(recovery.Current), MechanicsLocked: recovery.MechanicsLocked}
+	if recovery.Pending != nil {
+		evidence.Pending = *recovery.Pending
+	}
+	if err := evidence.Validate(); err != nil {
+		return SupervisorReconnectEvidence{}, err
+	}
+	return evidence, nil
+}
+
+func (evidence SupervisorReconnectEvidence) Validate() error {
+	previous, current := evidence.Previous, evidence.Current
+	if previous.Validate() != nil || current.Validate() != nil || previous.SessionID != current.SessionID || previous.SessionNonceDigest != current.SessionNonceDigest || previous.Authority != current.Authority || previous.UID != current.UID || previous.GID != current.GID || previous.FixedBinary != current.FixedBinary || previous.ControlSocket != current.ControlSocket || current.OwnerEpoch <= previous.OwnerEpoch || current.CurrentAuthorityHead == previous.CurrentAuthorityHead {
+		return fmt.Errorf("%w: reconnect mechanics identity mismatch", ErrAttemptAuthorityConflict)
+	}
+	pending := evidence.Pending
+	hasPending := pending != (processsupervisor.PendingReplayEvidence{})
+	if hasPending {
+		deadline, err := time.Parse(time.RFC3339Nano, pending.Deadline)
+		if err != nil || deadline.Location() != time.UTC || deadline.Format(time.RFC3339Nano) != pending.Deadline || pending.ProtocolRevision != processsupervisor.ProtocolRevision || pending.SessionID != previous.SessionID || !validSupervisorCommand(pending.Command) || !supervisorEvidenceID.MatchString(pending.CommandID) || pending.Sequence != previous.CommandSequence+1 || pending.PreviousCommandDigest != previous.CommandHead || requireDigest("pendingCurrentAuthorityHead", pending.CurrentAuthorityHead) != nil || requireDigest("pendingRequestDigest", pending.RequestDigest) != nil {
+			return fmt.Errorf("%w: invalid reconnect pending projection", ErrAttemptAuthorityConflict)
+		}
+	}
+	switch evidence.Reconciliation {
+	case processsupervisor.ReconciliationUnchanged:
+		if evidence.MechanicsLocked {
+			return ErrAttemptAuthorityConflict
+		}
+		if !hasPending {
+			if current.CommandSequence != previous.CommandSequence || current.CommandHead != previous.CommandHead || current.JournalSequence != previous.JournalSequence || current.JournalHead != previous.JournalHead {
+				return ErrAttemptAuthorityConflict
+			}
+		} else if current.CommandSequence != pending.Sequence || current.CommandHead == previous.CommandHead || current.JournalSequence != previous.JournalSequence+2 || current.JournalHead == previous.JournalHead {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.ReconciliationIntentPending:
+		if !hasPending || !evidence.MechanicsLocked || current.CommandSequence != previous.CommandSequence || current.CommandHead != previous.CommandHead || current.JournalSequence != previous.JournalSequence+1 || current.JournalHead == previous.JournalHead {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.ReconciliationReceiptCommitted:
+		if !hasPending || evidence.MechanicsLocked || current.CommandSequence != pending.Sequence || current.CommandHead == previous.CommandHead || current.JournalSequence != previous.JournalSequence+2 || current.JournalHead == previous.JournalHead {
+			return ErrAttemptAuthorityConflict
+		}
+	default:
+		return ErrAttemptAuthorityConflict
+	}
+	return nil
+}
+
+// SupervisorCommandEvidence is the secret-free, durable projection of one
+// response already authenticated and validated by the process-supervisor
+// client. It intentionally stores neither request payload nor response
+// payload: argv, environment values, stdin and transcript bytes never enter
+// the RB1 authority ledger.
+type SupervisorCommandEvidence struct {
+	ProtocolRevision     string                        `json:"protocolRevision"`
+	SessionID            string                        `json:"sessionId"`
+	Command              processsupervisor.CommandName `json:"command"`
+	CommandID            string                        `json:"commandId"`
+	Sequence             uint64                        `json:"sequence"`
+	PreviousCommandHead  string                        `json:"previousCommandHead"`
+	CurrentAuthorityHead string                        `json:"currentAuthorityHead"`
+	RequestDigest        string                        `json:"requestDigest"`
+	ReceiptDigest        string                        `json:"receiptDigest"`
+	ObservationDigest    string                        `json:"observationDigest"`
+	CommandHead          string                        `json:"commandHead"`
+	Disposition          string                        `json:"disposition"`
+	ReasonCode           string                        `json:"reasonCode"`
+	BoundAuthorityHead   string                        `json:"boundAuthorityHead,omitempty"`
+	Outcome              SupervisorProcessOutcome      `json:"outcome,omitempty,omitzero"`
+	PreCommand           SupervisorMechanicsAnchor     `json:"preCommand,omitempty,omitzero"`
+	PostCommand          SupervisorMechanicsAnchor     `json:"postCommand,omitempty,omitzero"`
+}
+
+// SupervisorProcessOutcome is the Core-owned typed projection of mechanics
+// output. The process-supervisor client must derive it from an authenticated,
+// closed response; ResultIngress never decodes the supervisor's raw payload.
+type SupervisorProcessOutcome struct {
+	State               SupervisorProcessState            `json:"state"`
+	MechanicsState      string                            `json:"mechanicsState"`
+	Process             processsupervisor.ProcessIdentity `json:"process,omitempty,omitzero"`
+	ObserverIdentity    string                            `json:"observerIdentity,omitempty"`
+	ObservedAt          string                            `json:"observedAt,omitempty"`
+	RuntimeObjectDigest string                            `json:"runtimeObjectDigest,omitempty"`
+	WorkingObjectDigest string                            `json:"workingObjectDigest,omitempty"`
+	ExitCode            int                               `json:"exitCode,omitempty"`
+	Signal              string                            `json:"signal,omitempty"`
+	StdoutDigest        string                            `json:"stdoutDigest,omitempty"`
+	StderrDigest        string                            `json:"stderrDigest,omitempty"`
+	TranscriptDigest    string                            `json:"transcriptDigest,omitempty"`
+	StdoutBytes         uint64                            `json:"stdoutBytes,omitempty"`
+	StderrBytes         uint64                            `json:"stderrBytes,omitempty"`
+	TranscriptTruncated bool                              `json:"transcriptTruncated,omitempty"`
+}
+
+// supervisorMechanicsReport mirrors the secret-free process report carried in
+// MechanicsResult.Payload. Keeping this private prevents ResultIngress from
+// becoming another wire protocol owner while still letting replay recompute
+// observationDigest and receiptDigest from the durable projection.
+type supervisorMechanicsReport struct {
+	State               string                            `json:"state"`
+	ObserverIdentity    string                            `json:"observerIdentity"`
+	ObservedAt          string                            `json:"observedAt"`
+	Process             processsupervisor.ProcessIdentity `json:"process"`
+	RuntimeObjectDigest string                            `json:"runtimeObjectDigest"`
+	WorkingObjectDigest string                            `json:"workingObjectDigest"`
+	ExitCode            int                               `json:"exitCode,omitempty"`
+	Signal              string                            `json:"signal,omitempty"`
+	StdoutDigest        string                            `json:"stdoutDigest,omitempty"`
+	StderrDigest        string                            `json:"stderrDigest,omitempty"`
+	StdoutBytes         uint64                            `json:"stdoutBytes,omitempty"`
+	StderrBytes         uint64                            `json:"stderrBytes,omitempty"`
+	TranscriptTruncated bool                              `json:"transcriptTruncated,omitempty"`
+}
+
+type SupervisorProcessState string
+
+const (
+	SupervisorProcessExecStopped      SupervisorProcessState = "exec-stopped"
+	SupervisorProcessRunning          SupervisorProcessState = "running"
+	SupervisorProcessExited           SupervisorProcessState = "exited"
+	SupervisorProcessAbsent           SupervisorProcessState = "absent"
+	SupervisorProcessIdentityConflict SupervisorProcessState = "identity-conflict"
+	SupervisorTranscriptCollected     SupervisorProcessState = "transcript-collected"
+	SupervisorSessionClosed           SupervisorProcessState = "supervisor-closed"
+)
+
+func validSupervisorCommand(command processsupervisor.CommandName) bool {
+	switch command {
+	case processsupervisor.CommandBindAuthority, processsupervisor.CommandAbortUnbound, processsupervisor.CommandSpawn, processsupervisor.CommandResume, processsupervisor.CommandInspect, processsupervisor.CommandTerminate, processsupervisor.CommandCollect, processsupervisor.CommandClose:
+		return true
+	default:
+		return false
+	}
+}
+
+func (e SupervisorCommandEvidence) Validate() error {
+	if e.ProtocolRevision != processsupervisor.ProtocolRevision || !supervisorEvidenceID.MatchString(e.SessionID) || !validSupervisorCommand(e.Command) || !supervisorEvidenceID.MatchString(e.CommandID) || e.Sequence == 0 || e.Sequence > maxExactJSONInteger || e.Disposition != "ok" && e.Disposition != "rejected" || !supervisorEvidenceID.MatchString(e.ReasonCode) {
+		return fmt.Errorf("%w: invalid supervisor command identity", ErrAttemptAuthorityConflict)
+	}
+	for name, digest := range map[string]string{
+		"previousCommandHead":  e.PreviousCommandHead,
+		"currentAuthorityHead": e.CurrentAuthorityHead,
+		"requestDigest":        e.RequestDigest,
+		"receiptDigest":        e.ReceiptDigest,
+		"observationDigest":    e.ObservationDigest,
+		"commandHead":          e.CommandHead,
+	} {
+		if err := requireDigest(name, digest); err != nil {
+			return fmt.Errorf("%w: %v", ErrAttemptAuthorityConflict, err)
+		}
+	}
+	anchorsOmitted := e.PreCommand == (SupervisorMechanicsAnchor{}) && e.PostCommand == (SupervisorMechanicsAnchor{})
+	if !anchorsOmitted && (e.PreCommand.Validate() != nil || e.PostCommand.Validate() != nil || e.PreCommand.SessionID != e.SessionID || e.PostCommand.SessionID != e.SessionID || e.PreCommand.Authority != e.PostCommand.Authority || e.PreCommand.SessionNonceDigest != e.PostCommand.SessionNonceDigest || e.PreCommand.OwnerEpoch != e.PostCommand.OwnerEpoch || e.PreCommand.UID != e.PostCommand.UID || e.PreCommand.GID != e.PostCommand.GID || e.PreCommand.FixedBinary != e.PostCommand.FixedBinary || e.PreCommand.ControlSocket != e.PostCommand.ControlSocket || e.PreCommand.CommandSequence+1 != e.Sequence || e.PreCommand.CommandHead != e.PreviousCommandHead || e.PreCommand.CurrentAuthorityHead != e.CurrentAuthorityHead || e.PostCommand.CommandSequence != e.Sequence || e.PostCommand.CommandHead != e.CommandHead || e.PostCommand.JournalSequence != e.PreCommand.JournalSequence+2 || e.PostCommand.JournalHead == e.PreCommand.JournalHead) {
+		return fmt.Errorf("%w: supervisor mechanics anchors are not continuous", ErrAttemptAuthorityConflict)
+	}
+	if (e.PreCommand == (SupervisorMechanicsAnchor{})) != (e.PostCommand == (SupervisorMechanicsAnchor{})) {
+		return fmt.Errorf("%w: partial supervisor mechanics anchors", ErrAttemptAuthorityConflict)
+	}
+	if e.Disposition == "rejected" {
+		if e.BoundAuthorityHead != "" || e.Outcome != (SupervisorProcessOutcome{}) {
+			return fmt.Errorf("%w: rejected supervisor command carries success projection", ErrAttemptAuthorityConflict)
+		}
+	} else if e.Command == processsupervisor.CommandBindAuthority {
+		if requireDigest("boundAuthorityHead", e.BoundAuthorityHead) != nil || e.BoundAuthorityHead == e.CurrentAuthorityHead || !anchorsOmitted && e.PostCommand.CurrentAuthorityHead != e.BoundAuthorityHead || e.Outcome != (SupervisorProcessOutcome{}) {
+			return fmt.Errorf("%w: invalid authority-bind projection", ErrAttemptAuthorityConflict)
+		}
+	} else if e.BoundAuthorityHead != "" {
+		return fmt.Errorf("%w: bound authority on unrelated command", ErrAttemptAuthorityConflict)
+	} else if !anchorsOmitted && e.PostCommand.CurrentAuthorityHead != e.CurrentAuthorityHead {
+		return fmt.Errorf("%w: non-bind authority anchor changed", ErrAttemptAuthorityConflict)
+	}
+	wantObservation, wantReceipt, err := e.boundMechanicsDigests()
+	if err != nil || wantObservation != e.ObservationDigest || wantReceipt != e.ReceiptDigest {
+		return fmt.Errorf("%w: supervisor typed outcome is not receipt-bound", ErrAttemptAuthorityConflict)
+	}
+	wantHead, err := canonicalDigest(struct {
+		Previous string `json:"previousCommandDigest"`
+		Request  string `json:"requestDigest"`
+		Receipt  string `json:"receiptDigest"`
+	}{e.PreviousCommandHead, e.RequestDigest, e.ReceiptDigest})
+	if err != nil || wantHead != e.CommandHead {
+		return fmt.Errorf("%w: supervisor command head mismatch", ErrAttemptAuthorityConflict)
+	}
+	return nil
+}
+
+func (e SupervisorCommandEvidence) boundMechanicsDigests() (string, string, error) {
+	if e.Disposition == "rejected" {
+		observation := canonical.DigestBytes([]byte(e.ReasonCode))
+		result := processsupervisor.MechanicsResult{Disposition: e.Disposition, ReasonCode: e.ReasonCode, ObservationDigest: observation, Payload: json.RawMessage("{}")}
+		receipt, err := canonicalDigest(result)
+		return observation, receipt, err
+	}
+	if e.Command == processsupervisor.CommandBindAuthority {
+		payload := json.RawMessage("{}")
+		result := processsupervisor.MechanicsResult{Disposition: e.Disposition, ReasonCode: e.ReasonCode, ObservationDigest: e.BoundAuthorityHead, Payload: payload}
+		receipt, err := canonicalDigest(result)
+		return e.BoundAuthorityHead, receipt, err
+	}
+	if err := e.Outcome.Validate(); err != nil {
+		return "", "", err
+	}
+	report := supervisorMechanicsReport{
+		State: e.Outcome.MechanicsState, ObserverIdentity: e.Outcome.ObserverIdentity, ObservedAt: e.Outcome.ObservedAt,
+		Process: e.Outcome.Process, RuntimeObjectDigest: e.Outcome.RuntimeObjectDigest, WorkingObjectDigest: e.Outcome.WorkingObjectDigest,
+		ExitCode: e.Outcome.ExitCode, Signal: e.Outcome.Signal, StdoutDigest: e.Outcome.StdoutDigest, StderrDigest: e.Outcome.StderrDigest,
+		StdoutBytes: e.Outcome.StdoutBytes, StderrBytes: e.Outcome.StderrBytes, TranscriptTruncated: e.Outcome.TranscriptTruncated,
+	}
+	payload, err := processsupervisor.CanonicalProtocolMessage(report)
+	if err != nil {
+		return "", "", err
+	}
+	observation := canonical.DigestBytes(payload)
+	result := processsupervisor.MechanicsResult{Disposition: e.Disposition, ReasonCode: e.ReasonCode, ObservationDigest: observation, Payload: payload}
+	if e.Command == processsupervisor.CommandCollect {
+		result.TranscriptDigest, result.StdoutBytes, result.StderrBytes, result.Truncated = e.Outcome.TranscriptDigest, e.Outcome.StdoutBytes, e.Outcome.StderrBytes, e.Outcome.TranscriptTruncated
+	}
+	receipt, err := canonicalDigest(result)
+	return observation, receipt, err
+}
+
+func (outcome SupervisorProcessOutcome) Validate() error {
+	switch outcome.State {
+	case SupervisorProcessExecStopped, SupervisorProcessRunning, SupervisorProcessExited, SupervisorTranscriptCollected:
+		if validateSupervisorProcessIdentity(outcome.Process) != nil {
+			return fmt.Errorf("%w: invalid supervisor child identity", ErrAttemptAuthorityConflict)
+		}
+	case SupervisorProcessIdentityConflict:
+		// Identity conflict still cites the previously frozen identity. It must
+		// never degrade to PID-only or an empty diagnostic.
+		if validateSupervisorProcessIdentity(outcome.Process) != nil {
+			return fmt.Errorf("%w: identity conflict lacks frozen child identity", ErrAttemptAuthorityConflict)
+		}
+	case SupervisorProcessAbsent:
+		// A supervised Attempt has already frozen a child identity. "Absent"
+		// means that exact birth was proved absent, not that the process field is
+		// unknown or that a PID scan found no match.
+		if validateSupervisorProcessIdentity(outcome.Process) != nil {
+			return fmt.Errorf("%w: absent outcome lacks frozen child identity", ErrAttemptAuthorityConflict)
+		}
+	case SupervisorSessionClosed:
+		if validateSupervisorProcessIdentity(outcome.Process) != nil {
+			return fmt.Errorf("%w: closed outcome lacks exact terminal child identity", ErrAttemptAuthorityConflict)
+		}
+	default:
+		return fmt.Errorf("%w: unknown supervisor outcome %q", ErrAttemptAuthorityConflict, outcome.State)
+	}
+	wantMechanicsState := string(outcome.State)
+	switch outcome.State {
+	case SupervisorProcessExited, SupervisorProcessAbsent, SupervisorProcessIdentityConflict, SupervisorTranscriptCollected, SupervisorSessionClosed:
+		wantMechanicsState = "terminal"
+	}
+	if outcome.MechanicsState != wantMechanicsState {
+		return fmt.Errorf("%w: supervisor semantic outcome is not mechanics-bound", ErrAttemptAuthorityConflict)
+	}
+	if strings.TrimSpace(outcome.ObserverIdentity) == "" {
+		return fmt.Errorf("%w: supervisor outcome observer is empty", ErrAttemptAuthorityConflict)
+	}
+	observed, err := time.Parse(time.RFC3339Nano, outcome.ObservedAt)
+	if err != nil || observed.Location() != time.UTC || observed.Format(time.RFC3339Nano) != outcome.ObservedAt {
+		return fmt.Errorf("%w: supervisor outcome observedAt is not canonical UTC", ErrAttemptAuthorityConflict)
+	}
+	for name, digest := range map[string]string{
+		"runtimeObjectDigest": outcome.RuntimeObjectDigest,
+		"workingObjectDigest": outcome.WorkingObjectDigest,
+		"stdoutDigest":        outcome.StdoutDigest,
+		"stderrDigest":        outcome.StderrDigest,
+		"transcriptDigest":    outcome.TranscriptDigest,
+	} {
+		if digest != "" && requireDigest(name, digest) != nil {
+			return fmt.Errorf("%w: invalid %s", ErrAttemptAuthorityConflict, name)
+		}
+	}
+	if outcome.RuntimeObjectDigest == "" || outcome.WorkingObjectDigest == "" {
+		return fmt.Errorf("%w: supervisor child object identity is incomplete", ErrAttemptAuthorityConflict)
+	}
+	if outcome.State == SupervisorProcessExecStopped && (outcome.RuntimeObjectDigest == "" || outcome.WorkingObjectDigest == "" || outcome.ExitCode != 0 || outcome.Signal != "" || outcome.StdoutDigest != "" || outcome.StderrDigest != "" || outcome.TranscriptDigest != "") {
+		return fmt.Errorf("%w: invalid exec-stopped outcome", ErrAttemptAuthorityConflict)
+	}
+	if outcome.State == SupervisorTranscriptCollected && (outcome.TranscriptDigest == "" || outcome.StdoutDigest == "" || outcome.StderrDigest == "") {
+		return fmt.Errorf("%w: incomplete transcript outcome", ErrAttemptAuthorityConflict)
+	}
+	if outcome.State != SupervisorTranscriptCollected && outcome.TranscriptDigest != "" {
+		return fmt.Errorf("%w: transcript receipt on unrelated outcome", ErrAttemptAuthorityConflict)
+	}
+	if outcome.StdoutBytes > processsupervisor.MaxStdoutBytes || outcome.StderrBytes > processsupervisor.MaxStderrBytes || outcome.StdoutBytes+outcome.StderrBytes > processsupervisor.MaxTranscriptBytes {
+		return fmt.Errorf("%w: supervisor transcript projection exceeds protocol bounds", ErrAttemptAuthorityConflict)
+	}
+	return nil
+}
+
+func zeroSupervisorCommandEvidence(evidence SupervisorCommandEvidence) bool {
+	return evidence == (SupervisorCommandEvidence{})
+}
+
+func commandEvidenceMatchesProcess(evidence SupervisorCommandEvidence, process ProcessObservation) bool {
+	identity := evidence.Outcome.Process
+	return identity.PID == process.PID && identity.ProcessGroupID == process.PGID && identity.BirthSeconds == process.BirthSeconds && identity.BirthMicroseconds == process.BirthMicroseconds
+}
+
+// NewSupervisorCommandEvidence closes the protocol-to-ledger seam. It accepts
+// only an already authenticated response bound to the exact request, then
+// persists the closed, secret-free projection supplied by the client.
+func NewSupervisorCommandEvidence(outcome processsupervisor.VerifiedCommandOutcome) (SupervisorCommandEvidence, error) {
+	pre, post := outcome.Recovery.PreCommand, outcome.Recovery.PostCommand
+	if pre.SessionID == "" || pre.SessionID != post.SessionID || pre.CommandSequence+1 != outcome.Sequence || post.CommandSequence != outcome.Sequence || post.CommandHead != outcome.CommandHead || outcome.Status != outcome.Disposition {
+		return SupervisorCommandEvidence{}, fmt.Errorf("%w: invalid verified command recovery anchors", ErrAttemptAuthorityConflict)
+	}
+	currentAuthorityHead := pre.CurrentAuthorityHead
+	boundAuthorityHead := ""
+	if outcome.Command == processsupervisor.CommandBindAuthority && outcome.Disposition == "ok" {
+		boundAuthorityHead = post.CurrentAuthorityHead
+	} else if post.CurrentAuthorityHead != pre.CurrentAuthorityHead {
+		// Non-bind commands may only be projected after composition has
+		// reconnected/anchored the Client to the exact current RB1 head. This
+		// prevents the post-command authority update from being mistaken for
+		// the request's pre-command authority.
+		return SupervisorCommandEvidence{}, fmt.Errorf("%w: command authority was not pre-anchored", ErrAttemptAuthorityConflict)
+	}
+	evidence := SupervisorCommandEvidence{
+		ProtocolRevision: processsupervisor.ProtocolRevision,
+		SessionID:        pre.SessionID, Command: outcome.Command, CommandID: outcome.CommandID,
+		Sequence: outcome.Sequence, PreviousCommandHead: pre.CommandHead,
+		CurrentAuthorityHead: currentAuthorityHead, RequestDigest: outcome.RequestDigest,
+		ReceiptDigest: outcome.ReceiptDigest, ObservationDigest: outcome.ObservationDigest,
+		CommandHead: outcome.CommandHead, Disposition: outcome.Disposition, ReasonCode: outcome.ReasonCode,
+		BoundAuthorityHead: boundAuthorityHead,
+		PreCommand:         projectSupervisorMechanicsAnchor(pre),
+		PostCommand:        projectSupervisorMechanicsAnchor(post),
+	}
+	if outcome.ProcessReport != nil {
+		report := *outcome.ProcessReport
+		evidence.Outcome = SupervisorProcessOutcome{MechanicsState: report.State, Process: report.Process, ObserverIdentity: report.ObserverIdentity, ObservedAt: report.ObservedAt, RuntimeObjectDigest: report.RuntimeObjectDigest, WorkingObjectDigest: report.WorkingObjectDigest, ExitCode: report.ExitCode, Signal: report.Signal, StdoutDigest: report.StdoutDigest, StderrDigest: report.StderrDigest, StdoutBytes: report.StdoutBytes, StderrBytes: report.StderrBytes, TranscriptTruncated: report.TranscriptTruncated, TranscriptDigest: outcome.TranscriptDigest}
+		switch report.State {
+		case "exec-stopped":
+			evidence.Outcome.State = SupervisorProcessExecStopped
+		case "running":
+			evidence.Outcome.State = SupervisorProcessRunning
+		case "terminal":
+			switch outcome.Command {
+			case processsupervisor.CommandCollect:
+				evidence.Outcome.State = SupervisorTranscriptCollected
+			case processsupervisor.CommandClose:
+				evidence.Outcome.State = SupervisorSessionClosed
+			case processsupervisor.CommandInspect:
+				evidence.Outcome.State = SupervisorProcessAbsent
+			default:
+				evidence.Outcome.State = SupervisorProcessExited
+			}
+		}
+	}
+	if err := evidence.Validate(); err != nil {
+		return SupervisorCommandEvidence{}, err
+	}
+	return evidence, nil
+}
+
+// SupervisorBootstrapRequestProjection is the secret-free canonical image of
+// the real BootstrapRequest. BootstrapRequestDigest is derived from this exact
+// value; it is never an arbitrary digest echo. Only SessionNonceDigest is
+// retained, never the raw nonce.
+type SupervisorBootstrapRequestProjection struct {
+	SchemaVersion            string                                     `json:"schemaVersion"`
+	ProtocolRevision         string                                     `json:"protocolRevision"`
+	SessionID                string                                     `json:"sessionId"`
+	SessionNonceDigest       string                                     `json:"sessionNonceDigest"`
+	OwnerEpoch               uint64                                     `json:"ownerEpoch"`
+	Authority                processsupervisor.AuthorityTuple           `json:"authority"`
+	LaunchAuthorizedFact     string                                     `json:"launchAuthorizedFactDigest"`
+	CurrentAuthorityHead     string                                     `json:"currentAuthorityHead"`
+	ControlDirectoryIdentity processsupervisor.ControlDirectoryIdentity `json:"controlDirectoryIdentity"`
+	Core                     processsupervisor.CoreIdentity             `json:"core"`
+}
+
+func projectSupervisorBootstrapRequest(request processsupervisor.BootstrapRequest) (SupervisorBootstrapRequestProjection, string, error) {
+	projection := SupervisorBootstrapRequestProjection{SchemaVersion: request.SchemaVersion, ProtocolRevision: request.ProtocolRevision, SessionID: request.SessionID, SessionNonceDigest: canonical.DigestBytes([]byte(request.SessionNonce)), OwnerEpoch: request.OwnerEpoch, Authority: request.Authority, LaunchAuthorizedFact: request.LaunchAuthorizedFact, CurrentAuthorityHead: request.CurrentAuthorityHead, ControlDirectoryIdentity: request.ControlDirectoryIdentity, Core: request.Core}
+	if projection.SchemaVersion != processsupervisor.BootstrapSchema || projection.ProtocolRevision != processsupervisor.ProtocolRevision || !supervisorEvidenceID.MatchString(projection.SessionID) || projection.OwnerEpoch == 0 || projection.OwnerEpoch > maxExactJSONInteger || validateSupervisorAuthorityTuple(projection.Authority) != nil || requireDigest("sessionNonceDigest", projection.SessionNonceDigest) != nil || requireDigest("launchAuthorizedFactDigest", projection.LaunchAuthorizedFact) != nil || requireDigest("currentAuthorityHead", projection.CurrentAuthorityHead) != nil || validateControlDirectoryIdentity(projection.ControlDirectoryIdentity) != nil || projection.Core.UID == 0 || validateSupervisorProcessIdentity(projection.Core.Process) != nil || validateFixedMarshalBinaryIdentity(projection.Core.Binary) != nil {
+		return SupervisorBootstrapRequestProjection{}, "", fmt.Errorf("%w: invalid bootstrap request projection", ErrAttemptAuthorityConflict)
+	}
+	digest, err := canonicalDigest(projection)
+	return projection, digest, err
+}
+
+func validateSupervisorAuthorityTuple(tuple processsupervisor.AuthorityTuple) error {
+	for _, value := range []string{tuple.AuthorityNamespaceID, tuple.TaskID, tuple.RunID, tuple.AttemptID, tuple.AllocationID, tuple.LeaseID, tuple.OrchestratorID} {
+		if !supervisorEvidenceID.MatchString(value) {
+			return ErrAttemptAuthorityConflict
+		}
+	}
+	if tuple.Generation == 0 || tuple.Generation > maxExactJSONInteger || requireDigest("leaseDigest", tuple.LeaseDigest) != nil || requireDigest("fencingTokenDigest", tuple.FencingTokenDigest) != nil {
+		return ErrAttemptAuthorityConflict
+	}
+	return nil
+}
+
+func supervisorAuthorityTuple(identity AttemptIdentity) processsupervisor.AuthorityTuple {
+	return processsupervisor.AuthorityTuple{
+		AuthorityNamespaceID: identity.AuthorityNamespaceRef,
+		TaskID:               identity.TaskID, RunID: identity.RunID, AttemptID: identity.AttemptID,
+		AllocationID: identity.AllocationID, LeaseID: identity.LeaseID, LeaseDigest: identity.LeaseDigest,
+		Generation: uint64(identity.DispatchGeneration), FencingTokenDigest: identity.FencingTokenDigest,
+		OrchestratorID: identity.OrchestratorID,
+	}
+}
+
+type SupervisorBootstrapPrepared struct {
+	ProtocolRevision           string                                     `json:"protocolRevision"`
+	Owner                      CurrentOwnerBinding                        `json:"owner"`
+	LaunchAuthorizedFactDigest string                                     `json:"launchAuthorizedFactDigest"`
+	SessionID                  string                                     `json:"sessionId"`
+	SessionNonceDigest         string                                     `json:"sessionNonceDigest"`
+	ControlDirectory           processsupervisor.ControlDirectoryIdentity `json:"controlDirectory"`
+	SupervisorBinary           processsupervisor.BinaryIdentity           `json:"supervisorBinary"`
+	Request                    SupervisorBootstrapRequestProjection       `json:"request,omitempty,omitzero"`
+	BootstrapRequestDigest     string                                     `json:"bootstrapRequestDigest"`
+}
+
+// SupervisorCommandRebuildProjection is the non-secret portion of a command
+// payload needed to reconstruct the exact request from authority plus held
+// descriptors after restart. Paths, argv, environment values, stdin and raw
+// nonce are deliberately absent; their canonical payload digest remains
+// frozen by SupervisorCommandIntent.
+type SupervisorCommandRebuildProjection struct {
+	SupervisorStartedFactDigest    string `json:"supervisorStartedFactDigest,omitempty"`
+	OwnerEpoch                     uint64 `json:"ownerEpoch,omitempty"`
+	PreviousAuthorityHead          string `json:"previousAuthorityHead,omitempty"`
+	AuthorityHead                  string `json:"authorityHead,omitempty"`
+	LaunchAuthorizedFactDigest     string `json:"launchAuthorizedFactDigest,omitempty"`
+	LaunchMaterialsDigest          string `json:"launchMaterialsDigest,omitempty"`
+	AgentLaunchSpecDigest          string `json:"agentLaunchSpecDigest,omitempty"`
+	RuntimeObjectDigest            string `json:"runtimeObjectDigest,omitempty"`
+	WorkingObjectDigest            string `json:"workingObjectDigest,omitempty"`
+	ArgvDigest                     string `json:"argvDigest,omitempty"`
+	EnvironmentDigest              string `json:"environmentDigest,omitempty"`
+	StdinDigest                    string `json:"stdinDigest,omitempty"`
+	ProcessStartedFactDigest       string `json:"processStartedFactDigest,omitempty"`
+	TerminalizationBarrierDigest   string `json:"terminalizationBarrierDigest,omitempty"`
+	TerminalizationID              string `json:"terminalizationId,omitempty"`
+	TerminalGeneration             uint64 `json:"terminalGeneration,omitempty"`
+	CleanupBindingDigest           string `json:"cleanupBindingDigest,omitempty"`
+	LastObservationDigest          string `json:"lastObservationDigest,omitempty"`
+	ProcessTerminalFactDigest      string `json:"processTerminalFactDigest,omitempty"`
+	AllocationTerminatedFactDigest string `json:"allocationTerminatedFactDigest,omitempty"`
+}
+
+// SupervisorCommandIntent is creation-once durable intent. It is appended
+// before Client.Do and contains no executable payload or bearer material.
+type SupervisorCommandIntent struct {
+	ProtocolRevision     string                             `json:"protocolRevision"`
+	SessionID            string                             `json:"sessionId"`
+	Command              processsupervisor.CommandName      `json:"command"`
+	CommandID            string                             `json:"commandId"`
+	Sequence             uint64                             `json:"sequence"`
+	PreviousCommandHead  string                             `json:"previousCommandHead"`
+	CurrentAuthorityHead string                             `json:"currentAuthorityHead"`
+	Deadline             string                             `json:"deadline"`
+	RequestDigest        string                             `json:"requestDigest"`
+	PayloadDigest        string                             `json:"payloadDigest"`
+	Rebuild              SupervisorCommandRebuildProjection `json:"rebuild"`
+	PreCommand           SupervisorMechanicsAnchor          `json:"preCommand"`
+}
+
+func NewSupervisorCommandIntent(request processsupervisor.Request, payload any, pre processsupervisor.HandshakeAnchor) (SupervisorCommandIntent, error) {
+	raw, err := processsupervisor.CanonicalProtocolMessage(payload)
+	if err != nil || !jsonEqual(raw, request.Payload) {
+		return SupervisorCommandIntent{}, fmt.Errorf("%w: supervisor intent payload mismatch", ErrAttemptAuthorityConflict)
+	}
+	deadline, err := time.Parse(time.RFC3339Nano, request.Deadline)
+	if err != nil {
+		return SupervisorCommandIntent{}, fmt.Errorf("%w: invalid supervisor intent deadline", ErrAttemptAuthorityConflict)
+	}
+	rebuilt, err := processsupervisor.NewRequest(request.SessionID, request.Command, request.CommandID, request.Sequence, request.PreviousCommandDigest, request.CurrentAuthorityHead, deadline, payload)
+	if err != nil || rebuilt.RequestDigest != request.RequestDigest {
+		return SupervisorCommandIntent{}, fmt.Errorf("%w: supervisor intent request digest mismatch", ErrAttemptAuthorityConflict)
+	}
+	rebuild, err := projectSupervisorCommandPayload(request.Command, payload)
+	if err != nil {
+		return SupervisorCommandIntent{}, err
+	}
+	intent := SupervisorCommandIntent{
+		ProtocolRevision: request.ProtocolRevision, SessionID: request.SessionID, Command: request.Command,
+		CommandID: request.CommandID, Sequence: request.Sequence, PreviousCommandHead: request.PreviousCommandDigest,
+		CurrentAuthorityHead: request.CurrentAuthorityHead, Deadline: request.Deadline, RequestDigest: request.RequestDigest,
+		PayloadDigest: canonical.DigestBytes(raw), Rebuild: rebuild, PreCommand: projectSupervisorMechanicsAnchor(pre),
+	}
+	if err := intent.Validate(); err != nil {
+		return SupervisorCommandIntent{}, err
+	}
+	return intent, nil
+}
+
+func jsonEqual(left, right []byte) bool {
+	leftCanonical, leftErr := canonical.JSON(left)
+	rightCanonical, rightErr := canonical.JSON(right)
+	return leftErr == nil && rightErr == nil && string(leftCanonical) == string(rightCanonical)
+}
+
+func projectSupervisorCommandPayload(command processsupervisor.CommandName, payload any) (SupervisorCommandRebuildProjection, error) {
+	var projection SupervisorCommandRebuildProjection
+	switch value := payload.(type) {
+	case processsupervisor.BindAuthorityPayload:
+		if command != processsupervisor.CommandBindAuthority {
+			return projection, ErrAttemptAuthorityConflict
+		}
+		projection.SupervisorStartedFactDigest, projection.OwnerEpoch, projection.PreviousAuthorityHead, projection.AuthorityHead = value.SupervisorStartedFactDigest, value.OwnerEpoch, value.PreviousAuthorityHead, value.AuthorityHead
+	case processsupervisor.SpawnPayload:
+		if command != processsupervisor.CommandSpawn {
+			return projection, ErrAttemptAuthorityConflict
+		}
+		runtime := value.Runtime
+		runtime.CanonicalPath = ""
+		working := value.WorkingDirectory
+		working.CanonicalPath = ""
+		var err error
+		projection.RuntimeObjectDigest, err = canonicalDigest(runtime)
+		if err != nil {
+			return projection, err
+		}
+		projection.WorkingObjectDigest, err = canonicalDigest(working)
+		if err != nil {
+			return projection, err
+		}
+		projection.SupervisorStartedFactDigest, projection.LaunchAuthorizedFactDigest = value.SupervisorStartedFactDigest, value.LaunchAuthorizedFactDigest
+		projection.LaunchMaterialsDigest, projection.AgentLaunchSpecDigest = value.LaunchMaterialsDigest, value.AgentLaunchSpecDigest
+		projection.ArgvDigest, projection.EnvironmentDigest, projection.StdinDigest = value.ArgvDigest, value.EnvironmentDigest, value.StdinDigest
+	case processsupervisor.ResumePayload:
+		if command != processsupervisor.CommandResume {
+			return projection, ErrAttemptAuthorityConflict
+		}
+		projection.ProcessStartedFactDigest = value.ProcessStartedFactDigest
+	case processsupervisor.CleanupPayload:
+		if command != processsupervisor.CommandInspect && command != processsupervisor.CommandTerminate {
+			return projection, ErrAttemptAuthorityConflict
+		}
+		projection.TerminalizationBarrierDigest, projection.TerminalizationID, projection.TerminalGeneration = value.TerminalizationBarrierDigest, value.TerminalizationID, value.TerminalGeneration
+		projection.CleanupBindingDigest, projection.ProcessStartedFactDigest, projection.LastObservationDigest = value.CleanupBindingDigest, value.ProcessStartedFactDigest, value.LastObservationDigest
+	case processsupervisor.CollectPayload:
+		if command != processsupervisor.CommandCollect {
+			return projection, ErrAttemptAuthorityConflict
+		}
+		projection.ProcessStartedFactDigest, projection.LastObservationDigest = value.ProcessStartedFactDigest, value.LastObservationDigest
+	case processsupervisor.ClosePayload:
+		if command != processsupervisor.CommandClose {
+			return projection, ErrAttemptAuthorityConflict
+		}
+		projection.ProcessTerminalFactDigest, projection.AllocationTerminatedFactDigest, projection.CleanupBindingDigest = value.ProcessTerminalFactDigest, value.AllocationTerminatedDigest, value.CleanupBindingDigest
+	default:
+		return projection, fmt.Errorf("%w: unsupported supervisor intent payload", ErrAttemptAuthorityConflict)
+	}
+	return projection, nil
+}
+
+func (intent SupervisorCommandIntent) Validate() error {
+	deadline, err := time.Parse(time.RFC3339Nano, intent.Deadline)
+	if err != nil || deadline.Location() != time.UTC || deadline.Format(time.RFC3339Nano) != intent.Deadline || intent.ProtocolRevision != processsupervisor.ProtocolRevision || !supervisorEvidenceID.MatchString(intent.SessionID) || !validSupervisorCommand(intent.Command) || !supervisorEvidenceID.MatchString(intent.CommandID) || intent.Sequence == 0 || intent.Sequence > maxExactJSONInteger {
+		return fmt.Errorf("%w: invalid supervisor command intent identity", ErrAttemptAuthorityConflict)
+	}
+	for name, digest := range map[string]string{"previousCommandHead": intent.PreviousCommandHead, "currentAuthorityHead": intent.CurrentAuthorityHead, "requestDigest": intent.RequestDigest, "payloadDigest": intent.PayloadDigest} {
+		if requireDigest(name, digest) != nil {
+			return fmt.Errorf("%w: invalid supervisor command intent %s", ErrAttemptAuthorityConflict, name)
+		}
+	}
+	if intent.PreCommand.Validate() != nil || intent.PreCommand.SessionID != intent.SessionID || intent.PreCommand.CommandSequence+1 != intent.Sequence || intent.PreCommand.CommandHead != intent.PreviousCommandHead || intent.PreCommand.CurrentAuthorityHead != intent.CurrentAuthorityHead {
+		return fmt.Errorf("%w: supervisor intent pre-command anchor mismatch", ErrAttemptAuthorityConflict)
+	}
+	return validateSupervisorRebuildProjection(intent.Command, intent.Rebuild)
+}
+
+func validateSupervisorRebuildProjection(command processsupervisor.CommandName, projection SupervisorCommandRebuildProjection) error {
+	require := func(values ...string) bool {
+		for _, value := range values {
+			if requireDigest("supervisorRebuildDigest", value) != nil {
+				return false
+			}
+		}
+		return true
+	}
+	switch command {
+	case processsupervisor.CommandBindAuthority:
+		if projection.OwnerEpoch == 0 || projection.OwnerEpoch > maxExactJSONInteger || !require(projection.SupervisorStartedFactDigest, projection.PreviousAuthorityHead, projection.AuthorityHead) {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.CommandSpawn:
+		if !require(projection.SupervisorStartedFactDigest, projection.LaunchAuthorizedFactDigest, projection.LaunchMaterialsDigest, projection.AgentLaunchSpecDigest, projection.RuntimeObjectDigest, projection.WorkingObjectDigest, projection.ArgvDigest, projection.EnvironmentDigest, projection.StdinDigest) {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.CommandResume:
+		if !require(projection.ProcessStartedFactDigest) {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.CommandInspect, processsupervisor.CommandTerminate:
+		if projection.TerminalGeneration == 0 || strings.TrimSpace(projection.TerminalizationID) == "" || !require(projection.TerminalizationBarrierDigest, projection.CleanupBindingDigest, projection.ProcessStartedFactDigest, projection.LastObservationDigest) {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.CommandCollect:
+		if !require(projection.ProcessStartedFactDigest, projection.LastObservationDigest) {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.CommandClose:
+		if !require(projection.ProcessTerminalFactDigest, projection.AllocationTerminatedFactDigest, projection.CleanupBindingDigest) {
+			return ErrAttemptAuthorityConflict
+		}
+	default:
+		return ErrAttemptAuthorityConflict
+	}
+	return nil
+}
+
+type SupervisorCommandCheckpoint struct {
+	FactDigest string                    `json:"factDigest"`
+	Evidence   SupervisorCommandEvidence `json:"evidence"`
+}
+
+func NewSupervisorBootstrapPrepared(owner CurrentOwnerBinding, request processsupervisor.BootstrapRequest) (SupervisorBootstrapPrepared, error) {
+	projection, digest, err := projectSupervisorBootstrapRequest(request)
+	if err != nil {
+		return SupervisorBootstrapPrepared{}, err
+	}
+	prepared := SupervisorBootstrapPrepared{ProtocolRevision: processsupervisor.ProtocolRevision, Owner: owner, LaunchAuthorizedFactDigest: request.LaunchAuthorizedFact, SessionID: request.SessionID, SessionNonceDigest: projection.SessionNonceDigest, ControlDirectory: request.ControlDirectoryIdentity, SupervisorBinary: request.Core.Binary, Request: projection, BootstrapRequestDigest: digest}
+	if err := prepared.Validate(); err != nil {
+		return SupervisorBootstrapPrepared{}, err
+	}
+	return prepared, nil
+}
+
+func (prepared SupervisorBootstrapPrepared) Validate() error {
+	if prepared.ProtocolRevision != processsupervisor.ProtocolRevision || prepared.Owner.Validate() != nil || !supervisorEvidenceID.MatchString(prepared.SessionID) || validateControlDirectoryIdentity(prepared.ControlDirectory) != nil || validateFixedMarshalBinaryIdentity(prepared.SupervisorBinary) != nil {
+		return fmt.Errorf("%w: invalid supervisor bootstrap identity", ErrAttemptAuthorityConflict)
+	}
+	for name, digest := range map[string]string{"launchAuthorizedFactDigest": prepared.LaunchAuthorizedFactDigest, "sessionNonceDigest": prepared.SessionNonceDigest, "bootstrapRequestDigest": prepared.BootstrapRequestDigest} {
+		if requireDigest(name, digest) != nil {
+			return fmt.Errorf("%w: invalid %s", ErrAttemptAuthorityConflict, name)
+		}
+	}
+	if prepared.Request == (SupervisorBootstrapRequestProjection{}) {
+		// Historical prepared facts predate the typed request projection. Replay
+		// accepts their exact bytes, while fresh mutation rejects them in the
+		// authority projection because no request/current-head binding exists.
+		return nil
+	}
+	wantDigest, err := canonicalDigest(prepared.Request)
+	if err != nil || wantDigest != prepared.BootstrapRequestDigest || prepared.Request.ProtocolRevision != prepared.ProtocolRevision || prepared.Request.SessionID != prepared.SessionID || prepared.Request.SessionNonceDigest != prepared.SessionNonceDigest || prepared.Request.OwnerEpoch != prepared.Owner.OwnerEpoch || prepared.Request.LaunchAuthorizedFact != prepared.LaunchAuthorizedFactDigest || prepared.Request.ControlDirectoryIdentity != prepared.ControlDirectory || prepared.Request.Core.Binary != prepared.SupervisorBinary {
+		return fmt.Errorf("%w: bootstrap request projection mismatch", ErrAttemptAuthorityConflict)
+	}
+	// Binary validation remains centralized in the process-supervisor
+	// handshake. Requiring a self-consistent handshake before started prevents
+	// this prepared fact from becoming an executable-path bearer.
+	return nil
+}
+
+type SupervisorPendingCommand struct {
+	SessionID            string                        `json:"sessionId"`
+	Command              processsupervisor.CommandName `json:"command"`
+	CommandID            string                        `json:"commandId"`
+	Sequence             uint64                        `json:"sequence"`
+	PreviousCommandHead  string                        `json:"previousCommandHead"`
+	CurrentAuthorityHead string                        `json:"currentAuthorityHead"`
+	RequestDigest        string                        `json:"requestDigest"`
+}
+
+func (pending SupervisorPendingCommand) Validate() error {
+	if !supervisorEvidenceID.MatchString(pending.SessionID) || !validSupervisorCommand(pending.Command) || !supervisorEvidenceID.MatchString(pending.CommandID) || pending.Sequence == 0 || pending.Sequence > maxExactJSONInteger {
+		return fmt.Errorf("%w: invalid unresolved supervisor command", ErrAttemptAuthorityConflict)
+	}
+	for name, digest := range map[string]string{"previousCommandHead": pending.PreviousCommandHead, "currentAuthorityHead": pending.CurrentAuthorityHead, "requestDigest": pending.RequestDigest} {
+		if requireDigest(name, digest) != nil {
+			return fmt.Errorf("%w: invalid unresolved %s", ErrAttemptAuthorityConflict, name)
+		}
+	}
+	return nil
+}
+
+type SupervisorInterventionReason string
+
+const (
+	SupervisorInterventionBootstrapUnresolved SupervisorInterventionReason = "bootstrap-unresolved"
+	SupervisorInterventionCommandUnresolved   SupervisorInterventionReason = "command-intent-unresolved"
+	SupervisorInterventionIdentityConflict    SupervisorInterventionReason = "supervisor-identity-conflict"
+	SupervisorInterventionUnavailable         SupervisorInterventionReason = "supervisor-unavailable"
+)
+
+type SupervisorIntervention struct {
+	ProtocolRevision string                       `json:"protocolRevision"`
+	Owner            CurrentOwnerBinding          `json:"owner"`
+	SessionID        string                       `json:"sessionId"`
+	Reason           SupervisorInterventionReason `json:"reason"`
+	EvidenceDigest   string                       `json:"evidenceDigest"`
+	Pending          SupervisorPendingCommand     `json:"pending,omitempty,omitzero"`
+}
+
+func (intervention SupervisorIntervention) Validate() error {
+	if intervention.ProtocolRevision != processsupervisor.ProtocolRevision || intervention.Owner.Validate() != nil || !supervisorEvidenceID.MatchString(intervention.SessionID) || requireDigest("evidenceDigest", intervention.EvidenceDigest) != nil {
+		return fmt.Errorf("%w: invalid supervisor intervention", ErrAttemptAuthorityConflict)
+	}
+	switch intervention.Reason {
+	case SupervisorInterventionBootstrapUnresolved, SupervisorInterventionIdentityConflict, SupervisorInterventionUnavailable:
+		if intervention.Pending != (SupervisorPendingCommand{}) {
+			return fmt.Errorf("%w: intervention reason carries unrelated pending command", ErrAttemptAuthorityConflict)
+		}
+	case SupervisorInterventionCommandUnresolved:
+		if intervention.Pending.Validate() != nil || intervention.Pending.SessionID != intervention.SessionID {
+			return fmt.Errorf("%w: unresolved intervention lacks exact command", ErrAttemptAuthorityConflict)
+		}
+	default:
+		return fmt.Errorf("%w: unknown supervisor intervention reason", ErrAttemptAuthorityConflict)
+	}
+	return nil
+}

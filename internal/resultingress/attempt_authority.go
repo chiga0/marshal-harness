@@ -17,6 +17,7 @@ import (
 	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/launchidentity"
+	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
 
 // attemptAuthorityProtocolRevision is deliberately separate from the legacy
@@ -28,6 +29,7 @@ const (
 	AttemptTransitionOpened                   AttemptTransitionKind = "attempt-opened"
 	AttemptTransitionControlOwnerBound        AttemptTransitionKind = "control-owner-bound"
 	AttemptTransitionLaunchAuthorized         AttemptTransitionKind = "launch-authorized"
+	AttemptTransitionSupervisorBootstrap      AttemptTransitionKind = "process-supervisor-bootstrap-prepared"
 	AttemptTransitionProcessSupervisorStarted AttemptTransitionKind = "process-supervisor-started"
 	AttemptTransitionProcessStarted           AttemptTransitionKind = "process-started"
 	attemptTransitionResultAdmitted           AttemptTransitionKind = "result-admitted"
@@ -37,6 +39,7 @@ const (
 	AttemptTransitionProcessSupervisorClosed  AttemptTransitionKind = "process-supervisor-closed"
 	AttemptTransitionCleanupCompleted         AttemptTransitionKind = "cleanup-completed"
 	AttemptTransitionCleanupReleased          AttemptTransitionKind = "cleanup-released"
+	AttemptTransitionSupervisorIntervention   AttemptTransitionKind = "process-supervisor-intervention-required"
 )
 
 var (
@@ -321,63 +324,99 @@ const (
 // AttemptTransition is a sealed union. Only fields required by Kind may be
 // populated; strict fact decoding and transition validation reject ambiguity.
 type AttemptTransition struct {
-	Kind                       AttemptTransitionKind    `json:"kind"`
-	Identity                   AttemptIdentity          `json:"identity"`
-	LaunchAuthorizationID      string                   `json:"launchAuthorizationId,omitempty"`
-	CommandID                  string                   `json:"commandId,omitempty"`
-	ObservedAt                 string                   `json:"observedAt,omitempty"`
-	Process                    ProcessObservation       `json:"process,omitempty"`
-	TerminalizationID          string                   `json:"terminalizationId,omitempty"`
-	EligibilityTerminal        EligibilityTerminal      `json:"eligibilityTerminal,omitempty"`
-	ProcessTerminalKind        ProcessTerminalKind      `json:"processTerminalKind,omitempty"`
-	ObservationDigest          string                   `json:"terminalObservationDigest,omitempty"`
-	ReceiptDigest              string                   `json:"receiptDigest,omitempty"`
-	AdmissionFactDigest        string                   `json:"admissionFactDigest,omitempty"`
-	AdmissionSequence          uint64                   `json:"admissionSequence,omitempty"`
-	LaunchClosure              launchidentity.ClosureV1 `json:"launchClosure,omitempty"`
-	LaunchMaterialsDigest      string                   `json:"launchMaterialsDigest,omitempty"`
-	AgentLaunchSpecDigest      string                   `json:"agentLaunchSpecDigest,omitempty"`
-	Owner                      CurrentOwnerBinding      `json:"owner,omitempty,omitzero"`
-	SupervisorStarted          ProcessSupervisorStarted `json:"supervisorStarted,omitempty,omitzero"`
-	SupervisorClosed           ProcessSupervisorClosed  `json:"supervisorClosed,omitempty,omitzero"`
-	SupervisorClosedFactDigest string                   `json:"supervisorClosedFactDigest,omitempty"`
+	Kind                            AttemptTransitionKind       `json:"kind"`
+	Identity                        AttemptIdentity             `json:"identity"`
+	LaunchAuthorizationID           string                      `json:"launchAuthorizationId,omitempty"`
+	CommandID                       string                      `json:"commandId,omitempty"`
+	ObservedAt                      string                      `json:"observedAt,omitempty"`
+	Process                         ProcessObservation          `json:"process,omitempty"`
+	TerminalizationID               string                      `json:"terminalizationId,omitempty"`
+	EligibilityTerminal             EligibilityTerminal         `json:"eligibilityTerminal,omitempty"`
+	ProcessTerminalKind             ProcessTerminalKind         `json:"processTerminalKind,omitempty"`
+	ObservationDigest               string                      `json:"terminalObservationDigest,omitempty"`
+	ReceiptDigest                   string                      `json:"receiptDigest,omitempty"`
+	AdmissionFactDigest             string                      `json:"admissionFactDigest,omitempty"`
+	AdmissionSequence               uint64                      `json:"admissionSequence,omitempty"`
+	LaunchClosure                   launchidentity.ClosureV1    `json:"launchClosure,omitempty"`
+	LaunchMaterialsDigest           string                      `json:"launchMaterialsDigest,omitempty"`
+	AgentLaunchSpecDigest           string                      `json:"agentLaunchSpecDigest,omitempty"`
+	Owner                           CurrentOwnerBinding         `json:"owner,omitempty,omitzero"`
+	SupervisorBootstrap             SupervisorBootstrapPrepared `json:"supervisorBootstrap,omitempty,omitzero"`
+	SupervisorStarted               ProcessSupervisorStarted    `json:"supervisorStarted,omitempty,omitzero"`
+	SupervisorBindOutcomeFactDigest string                      `json:"supervisorBindOutcomeFactDigest,omitempty"`
+	SupervisorOutcomeFactDigest     string                      `json:"supervisorOutcomeFactDigest,omitempty"`
+	SupervisorBindEvidence          SupervisorCommandEvidence   `json:"supervisorBindEvidence,omitempty,omitzero"`
+	SupervisorPrecedingEvidence     []SupervisorCommandEvidence `json:"supervisorPrecedingEvidence,omitempty"`
+	SupervisorEvidence              SupervisorCommandEvidence   `json:"supervisorEvidence,omitempty,omitzero"`
+	SupervisorClosed                ProcessSupervisorClosed     `json:"supervisorClosed,omitempty,omitzero"`
+	SupervisorIntervention          SupervisorIntervention      `json:"supervisorIntervention,omitempty,omitzero"`
+	SupervisorClosedFactDigest      string                      `json:"supervisorClosedFactDigest,omitempty"`
 }
 
 type AttemptAuthorityState struct {
-	Identity                   AttemptIdentity          `json:"identity"`
-	Revision                   uint64                   `json:"revision"`
-	HeadDigest                 string                   `json:"headDigest"`
-	OpenedDigest               string                   `json:"openedDigest"`
-	Owner                      CurrentOwnerBinding      `json:"owner,omitempty,omitzero"`
-	ControlOwnerBindingDigest  string                   `json:"controlOwnerBindingDigest,omitempty"`
-	LaunchState                LaunchState              `json:"launchState"`
-	LaunchAuthorizationID      string                   `json:"launchAuthorizationId,omitempty"`
-	LaunchAuthorizedDigest     string                   `json:"launchAuthorizedDigest,omitempty"`
-	SupervisorStarted          ProcessSupervisorStarted `json:"supervisorStarted,omitempty,omitzero"`
-	SupervisorStartedDigest    string                   `json:"supervisorStartedDigest,omitempty"`
-	CommandID                  string                   `json:"commandId,omitempty"`
-	ObservedAt                 string                   `json:"observedAt,omitempty"`
-	Process                    ProcessObservation       `json:"process,omitempty"`
-	ProcessStartedDigest       string                   `json:"processStartedDigest,omitempty"`
-	CommittedResultFactDigest  string                   `json:"committedResultFactDigest,omitempty"`
-	CommittedResultSequence    uint64                   `json:"committedResultSequence,omitempty"`
-	BarrierDigest              string                   `json:"barrierDigest,omitempty"`
-	TerminalizationID          string                   `json:"terminalizationId,omitempty"`
-	EligibilityTerminal        EligibilityTerminal      `json:"eligibilityTerminal,omitempty"`
-	AdmissionClosed            bool                     `json:"admissionClosed"`
-	BarrierAdmissionFactDigest string                   `json:"barrierAdmissionFactDigest,omitempty"`
-	BarrierAdmissionSequence   uint64                   `json:"barrierAdmissionSequence,omitempty"`
-	TerminalGeneration         int64                    `json:"terminalGeneration,omitempty"`
-	CleanupBindingDigest       string                   `json:"cleanupBindingDigest,omitempty"`
-	ProcessTerminalDigest      string                   `json:"processTerminalDigest,omitempty"`
-	ProcessTerminalKind        ProcessTerminalKind      `json:"processTerminalKind,omitempty"`
-	ProcessTerminalObservation string                   `json:"processTerminalObservationDigest,omitempty"`
-	AllocationTerminalDigest   string                   `json:"allocationTerminalDigest,omitempty"`
-	AllocationReceiptDigest    string                   `json:"allocationReceiptDigest,omitempty"`
-	SupervisorClosed           ProcessSupervisorClosed  `json:"supervisorClosed,omitempty,omitzero"`
-	SupervisorClosedDigest     string                   `json:"supervisorClosedDigest,omitempty"`
-	CleanupCompletedDigest     string                   `json:"cleanupCompletedDigest,omitempty"`
-	CleanupReleasedDigest      string                   `json:"cleanupReleasedDigest,omitempty"`
+	Identity                         AttemptIdentity               `json:"identity"`
+	Revision                         uint64                        `json:"revision"`
+	HeadDigest                       string                        `json:"headDigest"`
+	OpenedDigest                     string                        `json:"openedDigest"`
+	Owner                            CurrentOwnerBinding           `json:"owner,omitempty,omitzero"`
+	ControlOwnerBindingDigest        string                        `json:"controlOwnerBindingDigest,omitempty"`
+	LaunchState                      LaunchState                   `json:"launchState"`
+	LaunchAuthorizationID            string                        `json:"launchAuthorizationId,omitempty"`
+	LaunchAuthorizedDigest           string                        `json:"launchAuthorizedDigest,omitempty"`
+	SupervisorBootstrap              SupervisorBootstrapPrepared   `json:"supervisorBootstrap,omitempty,omitzero"`
+	SupervisorBootstrapDigest        string                        `json:"supervisorBootstrapDigest,omitempty"`
+	SupervisorStarted                ProcessSupervisorStarted      `json:"supervisorStarted,omitempty,omitzero"`
+	SupervisorStartedDigest          string                        `json:"supervisorStartedDigest,omitempty"`
+	SupervisorPendingIntent          SupervisorCommandIntent       `json:"supervisorPendingIntent,omitempty,omitzero"`
+	SupervisorPendingIntentDigest    string                        `json:"supervisorPendingIntentDigest,omitempty"`
+	SupervisorCommandCheckpoints     []SupervisorCommandCheckpoint `json:"supervisorCommandCheckpoints,omitempty"`
+	SupervisorCommandRecoveryHead    string                        `json:"supervisorCommandRecoveryHead,omitempty"`
+	SupervisorReconnect              SupervisorReconnectEvidence   `json:"supervisorReconnect,omitempty,omitzero"`
+	SupervisorReconnectFactDigest    string                        `json:"supervisorReconnectFactDigest,omitempty"`
+	SupervisorMechanicsAnchor        SupervisorMechanicsAnchor     `json:"supervisorMechanicsAnchor,omitempty,omitzero"`
+	SupervisorMechanicsAuthorityHead string                        `json:"supervisorMechanicsAuthorityHead,omitempty"`
+	SupervisorBoundAuthorityHead     string                        `json:"supervisorBoundAuthorityHead,omitempty"`
+	SupervisorBindEvidence           SupervisorCommandEvidence     `json:"supervisorBindEvidence,omitempty,omitzero"`
+	SupervisorCommandSequence        uint64                        `json:"supervisorCommandSequence,omitempty"`
+	SupervisorCommandHead            string                        `json:"supervisorCommandHead,omitempty"`
+	SupervisorCommandIDs             []string                      `json:"supervisorCommandIds,omitempty"`
+	ProcessStartedPreceding          []SupervisorCommandEvidence   `json:"processStartedPreceding,omitempty"`
+	CommandID                        string                        `json:"commandId,omitempty"`
+	ObservedAt                       string                        `json:"observedAt,omitempty"`
+	Process                          ProcessObservation            `json:"process,omitempty"`
+	ProcessStartedEvidence           SupervisorCommandEvidence     `json:"processStartedEvidence,omitempty,omitzero"`
+	ProcessStartedBindOutcomeDigest  string                        `json:"processStartedBindOutcomeDigest,omitempty"`
+	ProcessStartedOutcomeDigest      string                        `json:"processStartedOutcomeDigest,omitempty"`
+	ProcessStartedDigest             string                        `json:"processStartedDigest,omitempty"`
+	CommittedResultFactDigest        string                        `json:"committedResultFactDigest,omitempty"`
+	CommittedResultSequence          uint64                        `json:"committedResultSequence,omitempty"`
+	CommittedResultPreceding         []SupervisorCommandEvidence   `json:"committedResultPreceding,omitempty"`
+	CommittedResultCollect           SupervisorCommandEvidence     `json:"committedResultCollect,omitempty,omitzero"`
+	CommittedResultOutcomeDigest     string                        `json:"committedResultOutcomeDigest,omitempty"`
+	BarrierDigest                    string                        `json:"barrierDigest,omitempty"`
+	TerminalizationID                string                        `json:"terminalizationId,omitempty"`
+	EligibilityTerminal              EligibilityTerminal           `json:"eligibilityTerminal,omitempty"`
+	AdmissionClosed                  bool                          `json:"admissionClosed"`
+	BarrierAdmissionFactDigest       string                        `json:"barrierAdmissionFactDigest,omitempty"`
+	BarrierAdmissionSequence         uint64                        `json:"barrierAdmissionSequence,omitempty"`
+	TerminalGeneration               int64                         `json:"terminalGeneration,omitempty"`
+	CleanupBindingDigest             string                        `json:"cleanupBindingDigest,omitempty"`
+	ProcessTerminalDigest            string                        `json:"processTerminalDigest,omitempty"`
+	ProcessTerminalKind              ProcessTerminalKind           `json:"processTerminalKind,omitempty"`
+	ProcessTerminalObservation       string                        `json:"processTerminalObservationDigest,omitempty"`
+	ProcessTerminalPreceding         []SupervisorCommandEvidence   `json:"processTerminalPreceding,omitempty"`
+	ProcessTerminalEvidence          SupervisorCommandEvidence     `json:"processTerminalEvidence,omitempty,omitzero"`
+	ProcessTerminalOutcomeDigest     string                        `json:"processTerminalOutcomeDigest,omitempty"`
+	AllocationTerminalDigest         string                        `json:"allocationTerminalDigest,omitempty"`
+	AllocationReceiptDigest          string                        `json:"allocationReceiptDigest,omitempty"`
+	SupervisorClosed                 ProcessSupervisorClosed       `json:"supervisorClosed,omitempty,omitzero"`
+	SupervisorClosedPreceding        []SupervisorCommandEvidence   `json:"supervisorClosedPreceding,omitempty"`
+	SupervisorClosedDigest           string                        `json:"supervisorClosedDigest,omitempty"`
+	SupervisorClosedOutcomeDigest    string                        `json:"supervisorClosedOutcomeDigest,omitempty"`
+	CleanupCompletedDigest           string                        `json:"cleanupCompletedDigest,omitempty"`
+	CleanupReleasedDigest            string                        `json:"cleanupReleasedDigest,omitempty"`
+	SupervisorIntervention           SupervisorIntervention        `json:"supervisorIntervention,omitempty,omitzero"`
+	SupervisorInterventionDigest     string                        `json:"supervisorInterventionDigest,omitempty"`
 	// PendingEffect* is the durable exclusion barrier established by an
 	// effect-intent fact. It is cleared only by the matching reconcile fact;
 	// receipt alone remains an observation and cannot unlock the Attempt.
@@ -432,7 +471,7 @@ func (s *ingressDurableStore) CompareAndAppend(expectedRevision uint64, expected
 	if isCleanupTransition(transition.Kind) {
 		return AttemptAppendResult{}, fmt.Errorf("%w: cleanup transitions require CompareAndAppendCleanup", ErrCleanupUnauthorized)
 	}
-	if transition.Kind == AttemptTransitionControlOwnerBound || transition.Kind == AttemptTransitionProcessSupervisorStarted {
+	if transition.Kind == AttemptTransitionControlOwnerBound || transition.Kind == AttemptTransitionSupervisorBootstrap || transition.Kind == AttemptTransitionProcessSupervisorStarted || transition.Kind == AttemptTransitionSupervisorIntervention {
 		return AttemptAppendResult{}, fmt.Errorf("%w: %s requires current control owner authority", ErrControlOwnerNotCurrent, transition.Kind)
 	}
 	if transition.Kind == AttemptTransitionTerminalizationBarrier {
@@ -512,14 +551,14 @@ func (s *ingressDurableStore) compareAndAppendWithOwner(expectedRevision uint64,
 			PreviousDigest:   expectedHead,
 			Transition:       transition,
 		}
-		if err := prepareAttemptFact(prior, exists, fact); err != nil {
+		if err := prepareAttemptFact(prior, exists, fact, false); err != nil {
 			return err
 		}
 		if err := s.appendLine(fact, func() string { return fact.Digest }, func(d string) { fact.Digest = d }); err != nil {
 			return err
 		}
 		s.nextSequence++
-		if err := applyAttemptAuthorityFactValue(*fact, projection); err != nil {
+		if err := applyAttemptAuthorityFactValue(*fact, projection, false); err != nil {
 			return fmt.Errorf("resultingress: appended attempt fact failed projection: %w", err)
 		}
 		result = AttemptAppendResult{State: projection.attempts[key], Appended: true, TransitionDigest: fact.Digest}
@@ -536,6 +575,8 @@ func transitionDigest(state AttemptAuthorityState, kind AttemptTransitionKind) s
 		return state.ControlOwnerBindingDigest
 	case AttemptTransitionLaunchAuthorized:
 		return state.LaunchAuthorizedDigest
+	case AttemptTransitionSupervisorBootstrap:
+		return state.SupervisorBootstrapDigest
 	case AttemptTransitionProcessSupervisorStarted:
 		return state.SupervisorStartedDigest
 	case AttemptTransitionProcessStarted:
@@ -554,20 +595,25 @@ func transitionDigest(state AttemptAuthorityState, kind AttemptTransitionKind) s
 		return state.CleanupCompletedDigest
 	case AttemptTransitionCleanupReleased:
 		return state.CleanupReleasedDigest
+	case AttemptTransitionSupervisorIntervention:
+		return state.SupervisorInterventionDigest
 	default:
 		return ""
 	}
 }
 
-func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptAuthorityFact) error {
+func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptAuthorityFact, historicalReplay bool) error {
 	t := fact.Transition
 	if err := validateTransitionShape(t); err != nil {
 		return err
 	}
-	if exists && (prior.PendingEffectIntentFactDigest != "" || prior.EffectInterventionDigest != "") {
+	if exists && (prior.PendingEffectIntentFactDigest != "" || prior.EffectInterventionDigest != "" || prior.SupervisorInterventionDigest != "") {
 		// An admitted effect owns the Attempt head until a matching receipt and
 		// reconcile decision close it. Exact transition replays are handled before
 		// this function and remain read-only.
+		return ErrAttemptAuthorityOrder
+	}
+	if exists && prior.SupervisorPendingIntentDigest != "" && t.Kind != AttemptTransitionControlOwnerBound && t.Kind != AttemptTransitionSupervisorIntervention {
 		return ErrAttemptAuthorityOrder
 	}
 	switch t.Kind {
@@ -581,19 +627,46 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 		if prior.LaunchState != LaunchNotAuthorized || prior.BarrierDigest != "" || prior.AllocationProvisionEffectDigest == "" || prior.AllocationProvisionReceiptDigest == "" {
 			return ErrAttemptAuthorityOrder
 		}
+	case AttemptTransitionSupervisorBootstrap:
+		if prior.LaunchState != LaunchUncertain || prior.BarrierDigest != "" || prior.SupervisorBootstrapDigest != "" || prior.SupervisorStartedDigest != "" || prior.ControlOwnerBindingDigest == "" || t.SupervisorBootstrap.Owner != prior.Owner || t.SupervisorBootstrap.LaunchAuthorizedFactDigest != prior.LaunchAuthorizedDigest {
+			return ErrAttemptAuthorityOrder
+		}
 	case AttemptTransitionProcessStarted:
 		if prior.LaunchState != LaunchUncertain || prior.BarrierDigest != "" {
+			return ErrAttemptAuthorityOrder
+		}
+		newSupervisorBinding := t.SupervisorBindOutcomeFactDigest != "" || t.SupervisorOutcomeFactDigest != ""
+		if !historicalReplay && (!newSupervisorBinding || prior.SupervisorBootstrapDigest == "" || prior.SupervisorStartedDigest == "") {
+			return ErrAttemptAuthorityOrder
+		}
+		if newSupervisorBinding && (validateProcessStartedOutcomeReferences(prior, t) != nil || !zeroSupervisorCommandEvidence(t.SupervisorBindEvidence) || len(t.SupervisorPrecedingEvidence) != 0 || !zeroSupervisorCommandEvidence(t.SupervisorEvidence)) {
 			return ErrAttemptAuthorityOrder
 		}
 		if t.LaunchMaterialsDigest != prior.LaunchMaterialsDigest || t.AgentLaunchSpecDigest != prior.AgentLaunchSpecDigest || !processMatchesRuntime(t.Process, prior.LaunchClosure.RuntimeExecutable) {
 			return ErrAttemptAuthorityOrder
 		}
+		if historicalReplay && !newSupervisorBinding && prior.SupervisorBootstrapDigest != "" && (validateProcessStartedCommandChain(prior, t) != nil || t.SupervisorEvidence.Outcome.State != SupervisorProcessExecStopped || !commandEvidenceMatchesProcess(t.SupervisorEvidence, t.Process)) {
+			return ErrAttemptAuthorityOrder
+		}
 	case AttemptTransitionProcessSupervisorStarted:
-		if prior.LaunchState != LaunchUncertain || prior.BarrierDigest != "" || prior.SupervisorStartedDigest != "" || prior.ControlOwnerBindingDigest == "" || t.SupervisorStarted.Owner != prior.Owner || t.SupervisorStarted.LaunchAuthorizedFactDigest != prior.LaunchAuthorizedDigest {
+		if prior.LaunchState != LaunchUncertain || prior.BarrierDigest != "" || prior.SupervisorStartedDigest != "" || prior.ControlOwnerBindingDigest == "" || t.SupervisorStarted.Owner != prior.Owner || t.SupervisorStarted.LaunchAuthorizedFactDigest != prior.LaunchAuthorizedDigest || prior.SupervisorBootstrapDigest != "" && t.SupervisorStarted.BootstrapPreparedFactDigest != prior.SupervisorBootstrapDigest {
+			return ErrAttemptAuthorityOrder
+		}
+		if !historicalReplay && prior.SupervisorBootstrapDigest == "" {
 			return ErrAttemptAuthorityOrder
 		}
 	case attemptTransitionResultAdmitted:
 		if prior.ProcessStartedDigest == "" || prior.BarrierDigest != "" {
+			return ErrAttemptAuthorityOrder
+		}
+		newSupervisorBinding := t.SupervisorOutcomeFactDigest != ""
+		if !historicalReplay && (!newSupervisorBinding || prior.SupervisorBootstrapDigest == "") {
+			return ErrAttemptAuthorityOrder
+		}
+		if newSupervisorBinding && (validateBusinessOutcomeReference(prior, t.SupervisorOutcomeFactDigest, processsupervisor.CommandCollect, SupervisorTranscriptCollected) != nil || !zeroSupervisorCommandEvidence(t.SupervisorEvidence) || len(t.SupervisorPrecedingEvidence) != 0) {
+			return ErrAttemptAuthorityOrder
+		}
+		if historicalReplay && !newSupervisorBinding && prior.SupervisorBootstrapDigest != "" && (t.SupervisorEvidence.Command != processsupervisor.CommandCollect || t.SupervisorEvidence.Outcome.State != SupervisorTranscriptCollected || !sameSupervisorChildEvidence(prior.ProcessStartedEvidence, t.SupervisorEvidence)) {
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionTerminalizationBarrier:
@@ -628,6 +701,16 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 		if prior.LaunchState == LaunchNotAuthorized && t.ProcessTerminalKind != ProcessAbsent {
 			return ErrAttemptAuthorityOrder
 		}
+		newSupervisorBinding := t.SupervisorOutcomeFactDigest != ""
+		if !historicalReplay && prior.SupervisorBootstrapDigest != "" && !newSupervisorBinding {
+			return ErrAttemptAuthorityOrder
+		}
+		if newSupervisorBinding && (validateBusinessOutcomeReference(prior, t.SupervisorOutcomeFactDigest, "", "") != nil || !zeroSupervisorCommandEvidence(t.SupervisorEvidence) || len(t.SupervisorPrecedingEvidence) != 0 || !terminalCheckpointMatches(prior, t)) {
+			return ErrAttemptAuthorityOrder
+		}
+		if historicalReplay && !newSupervisorBinding && prior.SupervisorBootstrapDigest != "" && !terminalEvidenceMatches(prior, t) {
+			return ErrAttemptAuthorityOrder
+		}
 	case AttemptTransitionAllocationTerminated:
 		if prior.ProcessTerminalKind != ProcessAbsent && prior.ProcessTerminalKind != ProcessTerminated || prior.AllocationTerminalDigest != "" || prior.AllocationTerminateEffectDigest == "" || prior.AllocationTerminateReceiptDigest == "" || t.ReceiptDigest != prior.AllocationTerminateReceiptDigest {
 			return ErrAttemptAuthorityOrder
@@ -637,12 +720,38 @@ func prepareAttemptFact(prior AttemptAuthorityState, exists bool, fact *attemptA
 		if prior.ProcessTerminalDigest == "" || prior.AllocationTerminalDigest == "" || prior.SupervisorStartedDigest == "" || prior.SupervisorClosedDigest != "" || closed.SupervisorStartedFactDigest != prior.SupervisorStartedDigest || closed.ProcessTerminalFactDigest != prior.ProcessTerminalDigest || closed.AllocationTerminatedFactDigest != prior.AllocationTerminalDigest || closed.CleanupBindingDigest != prior.CleanupBindingDigest || closed.TerminalizationID != prior.TerminalizationID || closed.SessionID != prior.SupervisorStarted.Handshake.SessionID || closed.SupervisorProcess != prior.SupervisorStarted.Handshake.SupervisorProcess || closed.Owner != prior.Owner {
 			return ErrAttemptAuthorityOrder
 		}
+		newSupervisorBinding := t.SupervisorOutcomeFactDigest != ""
+		if !historicalReplay && (prior.SupervisorBootstrapDigest == "" || !newSupervisorBinding) {
+			return ErrAttemptAuthorityOrder
+		}
+		if newSupervisorBinding && closed.SupervisorAbsence == (SupervisorAbsenceObservation{}) {
+			return ErrAttemptAuthorityOrder
+		}
+		if newSupervisorBinding && (validateBusinessOutcomeReference(prior, t.SupervisorOutcomeFactDigest, processsupervisor.CommandClose, SupervisorSessionClosed) != nil || !zeroSupervisorCommandEvidence(closed.Mechanics) || len(t.SupervisorPrecedingEvidence) != 0 || !closedCheckpointMatches(prior, t)) {
+			return ErrAttemptAuthorityOrder
+		}
+		if historicalReplay && !newSupervisorBinding && prior.SupervisorBootstrapDigest != "" && (validateSupervisorCommandChain(prior, appendSupervisorEvidence(t.SupervisorPrecedingEvidence, closed.Mechanics), prior.HeadDigest) != nil || !terminalReportsEquivalent(prior.ProcessTerminalEvidence, closed.Mechanics)) {
+			return ErrAttemptAuthorityOrder
+		}
 	case AttemptTransitionCleanupCompleted:
 		if prior.AllocationTerminalDigest == "" || prior.CleanupCompletedDigest != "" {
 			return ErrAttemptAuthorityOrder
 		}
 	case AttemptTransitionCleanupReleased:
 		if prior.CleanupCompletedDigest == "" || prior.CleanupReleasedDigest != "" {
+			return ErrAttemptAuthorityOrder
+		}
+	case AttemptTransitionSupervisorIntervention:
+		if prior.SupervisorBootstrapDigest == "" || prior.CleanupReleasedDigest != "" || prior.SupervisorInterventionDigest != "" || t.SupervisorIntervention.Owner != prior.Owner || t.SupervisorIntervention.SessionID != prior.SupervisorBootstrap.SessionID {
+			return ErrAttemptAuthorityOrder
+		}
+		if prior.SupervisorPendingIntentDigest != "" {
+			intent := prior.SupervisorPendingIntent
+			pending := t.SupervisorIntervention.Pending
+			if t.SupervisorIntervention.Reason != SupervisorInterventionCommandUnresolved || pending.SessionID != intent.SessionID || pending.Command != intent.Command || pending.CommandID != intent.CommandID || pending.Sequence != intent.Sequence || pending.PreviousCommandHead != intent.PreviousCommandHead || pending.CurrentAuthorityHead != intent.CurrentAuthorityHead || pending.RequestDigest != intent.RequestDigest {
+				return ErrAttemptAuthorityOrder
+			}
+		} else if t.SupervisorIntervention.Reason == SupervisorInterventionCommandUnresolved {
 			return ErrAttemptAuthorityOrder
 		}
 	default:
@@ -659,8 +768,20 @@ func validateTransitionShape(t AttemptTransition) error {
 	if t.Kind != AttemptTransitionLaunchAuthorized && t.Kind != AttemptTransitionProcessStarted && (!zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "") {
 		return fmt.Errorf("%w: launch identity on unrelated transition", ErrAttemptAuthorityConflict)
 	}
-	if t.Kind != AttemptTransitionControlOwnerBound && t.Owner != (CurrentOwnerBinding{}) || t.Kind != AttemptTransitionProcessSupervisorStarted && t.SupervisorStarted != (ProcessSupervisorStarted{}) || t.Kind != AttemptTransitionProcessSupervisorClosed && t.SupervisorClosed != (ProcessSupervisorClosed{}) || t.Kind != AttemptTransitionCleanupCompleted && t.SupervisorClosedFactDigest != "" {
+	if t.Kind != AttemptTransitionControlOwnerBound && t.Owner != (CurrentOwnerBinding{}) || t.Kind != AttemptTransitionSupervisorBootstrap && t.SupervisorBootstrap != (SupervisorBootstrapPrepared{}) || t.Kind != AttemptTransitionProcessSupervisorStarted && t.SupervisorStarted != (ProcessSupervisorStarted{}) || t.Kind != AttemptTransitionProcessSupervisorClosed && t.SupervisorClosed != (ProcessSupervisorClosed{}) || t.Kind != AttemptTransitionSupervisorIntervention && t.SupervisorIntervention != (SupervisorIntervention{}) || t.Kind != AttemptTransitionCleanupCompleted && t.SupervisorClosedFactDigest != "" {
 		return fmt.Errorf("%w: supervisor authority payload on unrelated transition", ErrAttemptAuthorityConflict)
+	}
+	if t.Kind != AttemptTransitionProcessStarted && t.Kind != attemptTransitionResultAdmitted && t.Kind != AttemptTransitionProcessTerminal && !zeroSupervisorCommandEvidence(t.SupervisorEvidence) {
+		return fmt.Errorf("%w: supervisor command evidence on unrelated transition", ErrAttemptAuthorityConflict)
+	}
+	if t.Kind != AttemptTransitionProcessStarted && !zeroSupervisorCommandEvidence(t.SupervisorBindEvidence) {
+		return fmt.Errorf("%w: supervisor bind evidence on unrelated transition", ErrAttemptAuthorityConflict)
+	}
+	if t.Kind != AttemptTransitionProcessStarted && t.SupervisorBindOutcomeFactDigest != "" || t.Kind != AttemptTransitionProcessStarted && t.Kind != attemptTransitionResultAdmitted && t.Kind != AttemptTransitionProcessTerminal && t.Kind != AttemptTransitionProcessSupervisorClosed && t.SupervisorOutcomeFactDigest != "" {
+		return fmt.Errorf("%w: supervisor outcome reference on unrelated transition", ErrAttemptAuthorityConflict)
+	}
+	if t.Kind != AttemptTransitionProcessStarted && t.Kind != attemptTransitionResultAdmitted && t.Kind != AttemptTransitionProcessTerminal && t.Kind != AttemptTransitionProcessSupervisorClosed && len(t.SupervisorPrecedingEvidence) != 0 {
+		return fmt.Errorf("%w: supervisor preceding evidence on unrelated transition", ErrAttemptAuthorityConflict)
 	}
 	switch t.Kind {
 	case AttemptTransitionOpened:
@@ -676,6 +797,10 @@ func validateTransitionShape(t AttemptTransition) error {
 		if strings.TrimSpace(t.LaunchAuthorizationID) == "" || t.LaunchClosure.Validate() != nil || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
 			return fmt.Errorf("%w: launchAuthorizationId is empty", ErrAttemptAuthorityConflict)
 		}
+	case AttemptTransitionSupervisorBootstrap:
+		if t.SupervisorBootstrap.Validate() != nil || transitionHasPayloadExceptSupervisor(t) {
+			return fmt.Errorf("%w: invalid process-supervisor-bootstrap-prepared transition", ErrAttemptAuthorityConflict)
+		}
 	case AttemptTransitionProcessSupervisorStarted:
 		if t.SupervisorStarted.Validate() != nil || transitionHasPayloadExceptSupervisor(t) {
 			return fmt.Errorf("%w: invalid process-supervisor-started transition", ErrAttemptAuthorityConflict)
@@ -684,9 +809,18 @@ func validateTransitionShape(t AttemptTransition) error {
 		if strings.TrimSpace(t.CommandID) == "" || t.Process.Validate() != nil || validateObservedAt(t.ObservedAt, t.Process) != nil || !validLaunchDigest(t.LaunchMaterialsDigest) || !validLaunchDigest(t.AgentLaunchSpecDigest) || !zeroLaunchClosure(t.LaunchClosure) || t.LaunchAuthorizationID != "" || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
 			return fmt.Errorf("%w: incomplete process-started transition", ErrAttemptAuthorityConflict)
 		}
+		if !zeroSupervisorCommandEvidence(t.SupervisorBindEvidence) && (t.SupervisorBindEvidence.Validate() != nil || t.SupervisorBindEvidence.Command != processsupervisor.CommandBindAuthority || t.SupervisorBindEvidence.Disposition != "ok") {
+			return fmt.Errorf("%w: invalid process-started bind evidence", ErrAttemptAuthorityConflict)
+		}
+		if validateSupervisorPrecedingEvidence(t.SupervisorPrecedingEvidence, processsupervisor.CommandSpawn, false) != nil || !zeroSupervisorCommandEvidence(t.SupervisorEvidence) && (t.SupervisorEvidence.Validate() != nil || t.SupervisorEvidence.Command != processsupervisor.CommandSpawn || t.SupervisorEvidence.Disposition != "ok" || t.SupervisorEvidence.Outcome.State != SupervisorProcessExecStopped || !commandEvidenceMatchesProcess(t.SupervisorEvidence, t.Process)) {
+			return fmt.Errorf("%w: invalid process-started supervisor evidence", ErrAttemptAuthorityConflict)
+		}
 	case attemptTransitionResultAdmitted:
 		if err := requireDigest("admissionFactDigest", t.AdmissionFactDigest); err != nil || t.AdmissionSequence == 0 || t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" {
 			return fmt.Errorf("%w: invalid result admission binding", ErrAttemptAuthorityConflict)
+		}
+		if validateSupervisorPrecedingEvidence(t.SupervisorPrecedingEvidence, processsupervisor.CommandCollect, false) != nil || !zeroSupervisorCommandEvidence(t.SupervisorEvidence) && (t.SupervisorEvidence.Validate() != nil || t.SupervisorEvidence.Command != processsupervisor.CommandCollect || t.SupervisorEvidence.Disposition != "ok" || t.SupervisorEvidence.Outcome.State != SupervisorTranscriptCollected) {
+			return fmt.Errorf("%w: invalid result collect evidence", ErrAttemptAuthorityConflict)
 		}
 	case AttemptTransitionTerminalizationBarrier:
 		if strings.TrimSpace(t.TerminalizationID) == "" || t.EligibilityTerminal.Validate() != nil || t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" {
@@ -699,6 +833,9 @@ func validateTransitionShape(t AttemptTransition) error {
 		if err := requireDigest("terminalObservationDigest", t.ObservationDigest); err != nil {
 			return fmt.Errorf("%w: %v", ErrAttemptAuthorityConflict, err)
 		}
+		if validateSupervisorPrecedingEvidence(t.SupervisorPrecedingEvidence, "", true) != nil || !zeroSupervisorCommandEvidence(t.SupervisorEvidence) && (t.SupervisorEvidence.Validate() != nil || t.SupervisorEvidence.Disposition != "ok" || t.SupervisorEvidence.Command != processsupervisor.CommandInspect && t.SupervisorEvidence.Command != processsupervisor.CommandTerminate) {
+			return fmt.Errorf("%w: invalid process-terminal supervisor evidence", ErrAttemptAuthorityConflict)
+		}
 	case AttemptTransitionAllocationTerminated:
 		if strings.TrimSpace(t.TerminalizationID) == "" || t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
 			return fmt.Errorf("%w: terminalizationId is empty", ErrAttemptAuthorityConflict)
@@ -710,12 +847,19 @@ func validateTransitionShape(t AttemptTransition) error {
 		if t.SupervisorClosed.Validate() != nil || t.TerminalizationID != t.SupervisorClosed.TerminalizationID || t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
 			return fmt.Errorf("%w: invalid process-supervisor-closed transition", ErrAttemptAuthorityConflict)
 		}
+		if validateSupervisorPrecedingEvidence(t.SupervisorPrecedingEvidence, processsupervisor.CommandClose, false) != nil {
+			return fmt.Errorf("%w: invalid supervisor-close preceding evidence", ErrAttemptAuthorityConflict)
+		}
 	case AttemptTransitionCleanupCompleted, AttemptTransitionCleanupReleased:
 		if strings.TrimSpace(t.TerminalizationID) == "" || t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 {
 			return fmt.Errorf("%w: terminalizationId is empty", ErrAttemptAuthorityConflict)
 		}
 		if t.Kind == AttemptTransitionCleanupCompleted && t.SupervisorClosedFactDigest != "" && requireDigest("supervisorClosedFactDigest", t.SupervisorClosedFactDigest) != nil {
 			return fmt.Errorf("%w: invalid supervisorClosedFactDigest", ErrAttemptAuthorityConflict)
+		}
+	case AttemptTransitionSupervisorIntervention:
+		if t.SupervisorIntervention.Validate() != nil || transitionHasPayloadExceptSupervisor(t) {
+			return fmt.Errorf("%w: invalid process-supervisor-intervention-required transition", ErrAttemptAuthorityConflict)
 		}
 	default:
 		return fmt.Errorf("%w: unknown transition %q", ErrAttemptAuthorityConflict, t.Kind)
@@ -724,11 +868,30 @@ func validateTransitionShape(t AttemptTransition) error {
 }
 
 func transitionHasAnyPayload(t AttemptTransition) bool {
-	return t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 || !zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "" || t.Owner != (CurrentOwnerBinding{}) || t.SupervisorStarted != (ProcessSupervisorStarted{}) || t.SupervisorClosed != (ProcessSupervisorClosed{}) || t.SupervisorClosedFactDigest != ""
+	return t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 || !zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "" || t.Owner != (CurrentOwnerBinding{}) || t.SupervisorBootstrap != (SupervisorBootstrapPrepared{}) || t.SupervisorStarted != (ProcessSupervisorStarted{}) || t.SupervisorBindOutcomeFactDigest != "" || t.SupervisorOutcomeFactDigest != "" || !zeroSupervisorCommandEvidence(t.SupervisorBindEvidence) || len(t.SupervisorPrecedingEvidence) != 0 || !zeroSupervisorCommandEvidence(t.SupervisorEvidence) || t.SupervisorClosed != (ProcessSupervisorClosed{}) || t.SupervisorIntervention != (SupervisorIntervention{}) || t.SupervisorClosedFactDigest != ""
 }
 
 func transitionHasPayloadExceptSupervisor(t AttemptTransition) bool {
-	return t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 || !zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "" || t.SupervisorClosedFactDigest != ""
+	return t.LaunchAuthorizationID != "" || t.CommandID != "" || t.ObservedAt != "" || t.Process != (ProcessObservation{}) || t.TerminalizationID != "" || t.EligibilityTerminal != (EligibilityTerminal{}) || t.ProcessTerminalKind != "" || t.ObservationDigest != "" || t.ReceiptDigest != "" || t.AdmissionFactDigest != "" || t.AdmissionSequence != 0 || !zeroLaunchClosure(t.LaunchClosure) || t.LaunchMaterialsDigest != "" || t.AgentLaunchSpecDigest != "" || t.SupervisorBindOutcomeFactDigest != "" || t.SupervisorOutcomeFactDigest != "" || !zeroSupervisorCommandEvidence(t.SupervisorBindEvidence) || len(t.SupervisorPrecedingEvidence) != 0 || !zeroSupervisorCommandEvidence(t.SupervisorEvidence) || t.SupervisorClosedFactDigest != ""
+}
+
+func validateSupervisorPrecedingEvidence(evidence []SupervisorCommandEvidence, command processsupervisor.CommandName, allowTerminalCommands bool) error {
+	for _, item := range evidence {
+		if item.Validate() != nil {
+			return ErrAttemptAuthorityConflict
+		}
+		if allowTerminalCommands {
+			if item.Command != processsupervisor.CommandInspect && item.Command != processsupervisor.CommandTerminate {
+				return ErrAttemptAuthorityConflict
+			}
+			if item.Disposition == "ok" && item.Outcome.State != SupervisorProcessRunning && item.Outcome.State != SupervisorProcessExecStopped {
+				return ErrAttemptAuthorityConflict
+			}
+		} else if item.Command != command || item.Disposition != "rejected" {
+			return ErrAttemptAuthorityConflict
+		}
+	}
+	return nil
 }
 
 func zeroLaunchClosure(closure launchidentity.ClosureV1) bool {
@@ -739,6 +902,285 @@ func validLaunchDigest(value string) bool { return requireDigest("launchDigest",
 
 func processMatchesRuntime(process ProcessObservation, runtime launchidentity.ObjectV1) bool {
 	return process.ExecutablePath == runtime.CanonicalPath && process.ExecutableDevice == runtime.Device && process.ExecutableInode == runtime.Inode && process.ExecutableSize == runtime.Size && process.ExecutableType == runtime.FileType && process.ExecutableOwner == runtime.UID && process.ExecutableGroup == runtime.GID && process.ExecutableMode == runtime.Mode && process.ExecutableLinkCount == runtime.LinkCount && process.ExecutableSHA256 == runtime.RawSHA256
+}
+
+func terminalEvidenceMatches(prior AttemptAuthorityState, transition AttemptTransition) bool {
+	evidence := transition.SupervisorEvidence
+	if evidence.Validate() != nil || evidence.SessionID != prior.SupervisorStarted.Handshake.SessionID || evidence.CurrentAuthorityHead != prior.HeadDigest || evidence.ObservationDigest != transition.ObservationDigest || !sameSupervisorChildEvidence(prior.ProcessStartedEvidence, evidence) || !zeroSupervisorCommandEvidence(prior.CommittedResultCollect) && !sameSupervisorChildEvidence(prior.CommittedResultCollect, evidence) {
+		return false
+	}
+	switch transition.ProcessTerminalKind {
+	case ProcessAbsent:
+		return evidence.Outcome.State == SupervisorProcessAbsent
+	case ProcessTerminated:
+		return evidence.Outcome.State == SupervisorProcessExited
+	case ProcessIdentityConflict:
+		return evidence.Outcome.State == SupervisorProcessIdentityConflict
+	default:
+		return false
+	}
+}
+
+func appendSupervisorEvidence(prefix []SupervisorCommandEvidence, final SupervisorCommandEvidence) []SupervisorCommandEvidence {
+	chain := make([]SupervisorCommandEvidence, 0, len(prefix)+1)
+	chain = append(chain, prefix...)
+	return append(chain, final)
+}
+
+func validateProcessStartedCommandChain(prior AttemptAuthorityState, transition AttemptTransition) error {
+	bind := transition.SupervisorBindEvidence
+	if bind.Validate() != nil || bind.Command != processsupervisor.CommandBindAuthority || bind.SessionID != prior.SupervisorStarted.Handshake.SessionID || bind.Sequence != prior.SupervisorStarted.Handshake.CommandSequence+1 || bind.PreviousCommandHead != prior.SupervisorStarted.Handshake.CommandHead || bind.CurrentAuthorityHead != prior.SupervisorStarted.Handshake.CurrentAuthorityHead || bind.BoundAuthorityHead != prior.HeadDigest {
+		return ErrAttemptAuthorityOrder
+	}
+	anchor := prior
+	anchor.SupervisorCommandSequence, anchor.SupervisorCommandHead = bind.Sequence, bind.CommandHead
+	anchor.SupervisorCommandIDs = []string{bind.CommandID}
+	return validateSupervisorCommandChain(anchor, appendSupervisorEvidence(transition.SupervisorPrecedingEvidence, transition.SupervisorEvidence), prior.HeadDigest)
+}
+
+func validateSupervisorCommandChain(prior AttemptAuthorityState, chain []SupervisorCommandEvidence, authorityHead string) error {
+	if len(chain) == 0 || requireDigest("supervisorCommandHead", prior.SupervisorCommandHead) != nil {
+		return ErrAttemptAuthorityOrder
+	}
+	sequence, head := prior.SupervisorCommandSequence, prior.SupervisorCommandHead
+	seen := make(map[string]struct{}, len(prior.SupervisorCommandIDs)+len(chain))
+	for _, commandID := range prior.SupervisorCommandIDs {
+		if !supervisorEvidenceID.MatchString(commandID) {
+			return ErrAttemptAuthorityConflict
+		}
+		seen[commandID] = struct{}{}
+	}
+	for _, evidence := range chain {
+		if evidence.Validate() != nil || evidence.SessionID != prior.SupervisorStarted.Handshake.SessionID || evidence.Sequence != sequence+1 || evidence.PreviousCommandHead != head || evidence.CurrentAuthorityHead != authorityHead {
+			return ErrAttemptAuthorityOrder
+		}
+		if _, duplicate := seen[evidence.CommandID]; duplicate {
+			return ErrAttemptAuthorityConflict
+		}
+		seen[evidence.CommandID] = struct{}{}
+		sequence, head = evidence.Sequence, evidence.CommandHead
+	}
+	return nil
+}
+
+func sameSupervisorChildEvidence(left, right SupervisorCommandEvidence) bool {
+	return left.Outcome.Process == right.Outcome.Process && left.Outcome.RuntimeObjectDigest == right.Outcome.RuntimeObjectDigest && left.Outcome.WorkingObjectDigest == right.Outcome.WorkingObjectDigest
+}
+
+func terminalReportsEquivalent(terminal, closed SupervisorCommandEvidence) bool {
+	left, right := terminal.Outcome, closed.Outcome
+	return left.Process == right.Process && left.MechanicsState == right.MechanicsState && left.ObserverIdentity == right.ObserverIdentity && left.ObservedAt == right.ObservedAt && left.RuntimeObjectDigest == right.RuntimeObjectDigest && left.WorkingObjectDigest == right.WorkingObjectDigest && left.ExitCode == right.ExitCode && left.Signal == right.Signal && left.StdoutDigest == right.StdoutDigest && left.StderrDigest == right.StderrDigest && left.StdoutBytes == right.StdoutBytes && left.StderrBytes == right.StderrBytes && left.TranscriptTruncated == right.TranscriptTruncated
+}
+
+func advanceSupervisorCommandState(state *AttemptAuthorityState, chain ...SupervisorCommandEvidence) {
+	for _, evidence := range chain {
+		state.SupervisorCommandSequence = evidence.Sequence
+		state.SupervisorCommandHead = evidence.CommandHead
+		state.SupervisorCommandIDs = append(state.SupervisorCommandIDs, evidence.CommandID)
+	}
+}
+
+func validateSupervisorReconnectAgainstState(state AttemptAuthorityState, owner CurrentOwnerBinding, evidence SupervisorReconnectEvidence) error {
+	if evidence.Validate() != nil || owner != state.Owner || evidence.Previous != state.SupervisorMechanicsAnchor || evidence.Current.OwnerEpoch != owner.OwnerEpoch || evidence.Current.CurrentAuthorityHead != state.HeadDigest || evidence.Current.Authority != supervisorAuthorityTuple(state.Identity) {
+		return ErrAttemptAuthorityConflict
+	}
+	pending := evidence.Pending
+	if state.SupervisorPendingIntentDigest == "" {
+		if pending != (processsupervisor.PendingReplayEvidence{}) || evidence.Reconciliation != processsupervisor.ReconciliationUnchanged || evidence.MechanicsLocked {
+			return ErrAttemptAuthorityOrder
+		}
+		return nil
+	}
+	intent := state.SupervisorPendingIntent
+	if pending.ProtocolRevision != intent.ProtocolRevision || pending.SessionID != intent.SessionID || pending.Command != intent.Command || pending.CommandID != intent.CommandID || pending.Sequence != intent.Sequence || pending.PreviousCommandDigest != intent.PreviousCommandHead || pending.CurrentAuthorityHead != intent.CurrentAuthorityHead || pending.RequestDigest != intent.RequestDigest || pending.Deadline != intent.Deadline || evidence.Previous != intent.PreCommand {
+		return ErrAttemptAuthorityConflict
+	}
+	return nil
+}
+
+func validateSupervisorCommandIntentAgainstState(state AttemptAuthorityState, intent SupervisorCommandIntent) error {
+	if intent.Validate() != nil || intent.SessionID != state.SupervisorStarted.Handshake.SessionID || intent.Sequence != state.SupervisorCommandSequence+1 || intent.PreviousCommandHead != state.SupervisorCommandHead {
+		return ErrAttemptAuthorityOrder
+	}
+	pre, prior := intent.PreCommand, state.SupervisorMechanicsAnchor
+	if prior.Validate() != nil || pre != prior || pre.OwnerEpoch != state.Owner.OwnerEpoch {
+		return ErrAttemptAuthorityOrder
+	}
+	for _, commandID := range state.SupervisorCommandIDs {
+		if commandID == intent.CommandID {
+			return ErrAttemptAuthorityConflict
+		}
+	}
+	if len(state.SupervisorCommandCheckpoints) != 0 {
+		latest := state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1].Evidence
+		if latest.Disposition == "ok" {
+			switch latest.Command {
+			case processsupervisor.CommandSpawn:
+				if state.ProcessStartedDigest == "" {
+					return ErrAttemptAuthorityOrder
+				}
+			case processsupervisor.CommandCollect:
+				if state.CommittedResultFactDigest == "" && state.BarrierDigest == "" {
+					return ErrAttemptAuthorityOrder
+				}
+			case processsupervisor.CommandInspect, processsupervisor.CommandTerminate:
+				if state.ProcessTerminalDigest == "" {
+					return ErrAttemptAuthorityOrder
+				}
+			case processsupervisor.CommandClose:
+				if state.SupervisorClosedDigest == "" {
+					return ErrAttemptAuthorityOrder
+				}
+			}
+		}
+	}
+	rebuild := intent.Rebuild
+	if intent.Command == processsupervisor.CommandBindAuthority {
+		if state.SupervisorBoundAuthorityHead != "" || pre.CurrentAuthorityHead != state.SupervisorStarted.Handshake.CurrentAuthorityHead || intent.CurrentAuthorityHead != pre.CurrentAuthorityHead || rebuild.OwnerEpoch != state.Owner.OwnerEpoch || rebuild.PreviousAuthorityHead != state.SupervisorStarted.Handshake.CurrentAuthorityHead || rebuild.AuthorityHead != state.SupervisorStartedDigest || rebuild.SupervisorStartedFactDigest != state.SupervisorStartedDigest {
+			return ErrAttemptAuthorityOrder
+		}
+		return nil
+	}
+	if state.SupervisorBoundAuthorityHead != state.SupervisorStartedDigest || intent.CurrentAuthorityHead != state.HeadDigest || pre.CurrentAuthorityHead != state.HeadDigest {
+		return ErrAttemptAuthorityOrder
+	}
+	switch intent.Command {
+	case processsupervisor.CommandSpawn:
+		if state.ProcessStartedDigest != "" || rebuild.SupervisorStartedFactDigest != state.SupervisorStartedDigest || rebuild.LaunchAuthorizedFactDigest != state.LaunchAuthorizedDigest || rebuild.LaunchMaterialsDigest != state.LaunchMaterialsDigest || rebuild.AgentLaunchSpecDigest != state.AgentLaunchSpecDigest {
+			return ErrAttemptAuthorityOrder
+		}
+	case processsupervisor.CommandResume:
+		if state.ProcessStartedDigest == "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest {
+			return ErrAttemptAuthorityOrder
+		}
+	case processsupervisor.CommandCollect:
+		if state.ProcessStartedDigest == "" || state.BarrierDigest != "" || state.CommittedResultFactDigest != "" || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || rebuild.LastObservationDigest != supervisorLastObservation(state) {
+			return ErrAttemptAuthorityOrder
+		}
+	case processsupervisor.CommandInspect, processsupervisor.CommandTerminate:
+		if state.BarrierDigest == "" || state.ProcessTerminalDigest != "" || rebuild.TerminalizationBarrierDigest != state.BarrierDigest || rebuild.TerminalizationID != state.TerminalizationID || rebuild.TerminalGeneration != uint64(state.TerminalGeneration) || rebuild.CleanupBindingDigest != state.CleanupBindingDigest || rebuild.ProcessStartedFactDigest != state.ProcessStartedDigest || rebuild.LastObservationDigest != supervisorLastObservation(state) {
+			return ErrAttemptAuthorityOrder
+		}
+	case processsupervisor.CommandClose:
+		if state.ProcessTerminalDigest == "" || state.AllocationTerminalDigest == "" || state.SupervisorClosedDigest != "" || rebuild.ProcessTerminalFactDigest != state.ProcessTerminalDigest || rebuild.AllocationTerminatedFactDigest != state.AllocationTerminalDigest || rebuild.CleanupBindingDigest != state.CleanupBindingDigest {
+			return ErrAttemptAuthorityOrder
+		}
+	default:
+		return ErrAttemptAuthorityOrder
+	}
+	return nil
+}
+
+func validateSupervisorCommandOutcomeAgainstIntent(state AttemptAuthorityState, evidence SupervisorCommandEvidence) error {
+	intent := state.SupervisorPendingIntent
+	if evidence.Validate() != nil || evidence.SessionID != intent.SessionID || evidence.Command != intent.Command || evidence.CommandID != intent.CommandID || evidence.Sequence != intent.Sequence || evidence.PreviousCommandHead != intent.PreviousCommandHead || evidence.CurrentAuthorityHead != intent.CurrentAuthorityHead || evidence.RequestDigest != intent.RequestDigest || evidence.PreCommand != intent.PreCommand {
+		return ErrAttemptAuthorityConflict
+	}
+	if state.SupervisorReconnectFactDigest != "" && state.SupervisorCommandRecoveryHead == state.SupervisorReconnectFactDigest && state.SupervisorReconnect.Pending != (processsupervisor.PendingReplayEvidence{}) {
+		if state.SupervisorReconnect.MechanicsLocked || evidence.PostCommand != state.SupervisorReconnect.Current || evidence.PreCommand != state.SupervisorReconnect.Previous {
+			return ErrAttemptAuthorityConflict
+		}
+	}
+	if evidence.Disposition == "rejected" {
+		return nil
+	}
+	switch intent.Command {
+	case processsupervisor.CommandBindAuthority:
+		if evidence.BoundAuthorityHead != intent.Rebuild.AuthorityHead {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.CommandSpawn:
+		if evidence.Outcome.State != SupervisorProcessExecStopped || evidence.Outcome.RuntimeObjectDigest != intent.Rebuild.RuntimeObjectDigest || evidence.Outcome.WorkingObjectDigest != intent.Rebuild.WorkingObjectDigest {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.CommandResume:
+		if evidence.Outcome.State != SupervisorProcessRunning || !sameSupervisorChildEvidence(state.ProcessStartedEvidence, evidence) {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.CommandCollect:
+		if evidence.Outcome.State != SupervisorTranscriptCollected || !sameSupervisorChildEvidence(state.ProcessStartedEvidence, evidence) {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.CommandInspect, processsupervisor.CommandTerminate:
+		if evidence.Outcome.State != SupervisorProcessRunning && evidence.Outcome.State != SupervisorProcessExecStopped && evidence.Outcome.State != SupervisorProcessExited && evidence.Outcome.State != SupervisorProcessAbsent && evidence.Outcome.State != SupervisorProcessIdentityConflict || !sameSupervisorChildEvidence(state.ProcessStartedEvidence, evidence) {
+			return ErrAttemptAuthorityConflict
+		}
+	case processsupervisor.CommandClose:
+		if evidence.Outcome.State != SupervisorSessionClosed || !sameSupervisorChildEvidence(state.ProcessStartedEvidence, evidence) {
+			return ErrAttemptAuthorityConflict
+		}
+	default:
+		return ErrAttemptAuthorityConflict
+	}
+	return nil
+}
+
+func supervisorLastObservation(state AttemptAuthorityState) string {
+	for index := len(state.SupervisorCommandCheckpoints) - 1; index >= 0; index-- {
+		evidence := state.SupervisorCommandCheckpoints[index].Evidence
+		if evidence.Disposition == "ok" && evidence.Outcome != (SupervisorProcessOutcome{}) {
+			return evidence.ObservationDigest
+		}
+	}
+	return ""
+}
+
+func supervisorCheckpointEvidence(state AttemptAuthorityState, digest string) (SupervisorCommandEvidence, bool) {
+	for _, checkpoint := range state.SupervisorCommandCheckpoints {
+		if checkpoint.FactDigest == digest {
+			return checkpoint.Evidence, true
+		}
+	}
+	return SupervisorCommandEvidence{}, false
+}
+
+func validateBusinessOutcomeReference(state AttemptAuthorityState, digest string, command processsupervisor.CommandName, outcome SupervisorProcessState) error {
+	if requireDigest("supervisorOutcomeFactDigest", digest) != nil || len(state.SupervisorCommandCheckpoints) == 0 {
+		return ErrAttemptAuthorityConflict
+	}
+	latest := state.SupervisorCommandCheckpoints[len(state.SupervisorCommandCheckpoints)-1]
+	if latest.FactDigest != digest || latest.Evidence.Disposition != "ok" || command != "" && latest.Evidence.Command != command || outcome != "" && latest.Evidence.Outcome.State != outcome {
+		return ErrAttemptAuthorityConflict
+	}
+	return nil
+}
+
+func validateProcessStartedOutcomeReferences(state AttemptAuthorityState, transition AttemptTransition) error {
+	bind, found := supervisorCheckpointEvidence(state, transition.SupervisorBindOutcomeFactDigest)
+	if !found || bind.Command != processsupervisor.CommandBindAuthority || bind.Disposition != "ok" || bind.BoundAuthorityHead != state.SupervisorStartedDigest {
+		return ErrAttemptAuthorityConflict
+	}
+	if validateBusinessOutcomeReference(state, transition.SupervisorOutcomeFactDigest, processsupervisor.CommandSpawn, SupervisorProcessExecStopped) != nil {
+		return ErrAttemptAuthorityConflict
+	}
+	spawn, _ := supervisorCheckpointEvidence(state, transition.SupervisorOutcomeFactDigest)
+	if !commandEvidenceMatchesProcess(spawn, transition.Process) {
+		return ErrAttemptAuthorityConflict
+	}
+	return nil
+}
+
+func terminalCheckpointMatches(state AttemptAuthorityState, transition AttemptTransition) bool {
+	evidence, found := supervisorCheckpointEvidence(state, transition.SupervisorOutcomeFactDigest)
+	if !found || evidence.ObservationDigest != transition.ObservationDigest || !sameSupervisorChildEvidence(state.ProcessStartedEvidence, evidence) {
+		return false
+	}
+	switch transition.ProcessTerminalKind {
+	case ProcessTerminated:
+		return evidence.Outcome.State == SupervisorProcessExited
+	case ProcessAbsent:
+		return evidence.Outcome.State == SupervisorProcessAbsent
+	case ProcessIdentityConflict:
+		return evidence.Outcome.State == SupervisorProcessIdentityConflict
+	default:
+		return false
+	}
+}
+
+func closedCheckpointMatches(state AttemptAuthorityState, transition AttemptTransition) bool {
+	evidence, found := supervisorCheckpointEvidence(state, transition.SupervisorOutcomeFactDigest)
+	closed := transition.SupervisorClosed
+	return found && evidence.Command == processsupervisor.CommandClose && evidence.RequestDigest == closed.CloseIntentDigest && evidence.ReceiptDigest == closed.CloseReceiptDigest && evidence.ObservationDigest == closed.CloseObservationDigest && evidence.CommandHead == closed.FinalCommandHead && terminalReportsEquivalent(state.ProcessTerminalEvidence, evidence)
 }
 
 func exactTransitionReplay(state AttemptAuthorityState, exists bool, t AttemptTransition) (AttemptAuthorityState, bool) {
@@ -753,24 +1195,28 @@ func exactTransitionReplay(state AttemptAuthorityState, exists bool, t AttemptTr
 	case AttemptTransitionLaunchAuthorized:
 		stored, err := t.LaunchClosure.Stored()
 		return state, err == nil && state.LaunchAuthorizationID == t.LaunchAuthorizationID && state.LaunchAuthorizedDigest != "" && state.LaunchClosure == stored
+	case AttemptTransitionSupervisorBootstrap:
+		return state, state.SupervisorBootstrapDigest != "" && state.SupervisorBootstrap == t.SupervisorBootstrap
 	case AttemptTransitionProcessSupervisorStarted:
 		return state, state.SupervisorStartedDigest != "" && state.SupervisorStarted == t.SupervisorStarted
 	case AttemptTransitionProcessStarted:
-		return state, state.ProcessStartedDigest != "" && state.CommandID == t.CommandID && state.ObservedAt == t.ObservedAt && state.Process == t.Process && state.LaunchMaterialsDigest == t.LaunchMaterialsDigest && state.AgentLaunchSpecDigest == t.AgentLaunchSpecDigest
+		return state, state.ProcessStartedDigest != "" && state.CommandID == t.CommandID && state.ObservedAt == t.ObservedAt && state.Process == t.Process && state.LaunchMaterialsDigest == t.LaunchMaterialsDigest && state.AgentLaunchSpecDigest == t.AgentLaunchSpecDigest && state.ProcessStartedBindOutcomeDigest == t.SupervisorBindOutcomeFactDigest && state.ProcessStartedOutcomeDigest == t.SupervisorOutcomeFactDigest && state.SupervisorBindEvidence == t.SupervisorBindEvidence && reflect.DeepEqual(state.ProcessStartedPreceding, t.SupervisorPrecedingEvidence) && state.ProcessStartedEvidence == t.SupervisorEvidence
 	case attemptTransitionResultAdmitted:
-		return state, state.CommittedResultFactDigest == t.AdmissionFactDigest && state.CommittedResultSequence == t.AdmissionSequence
+		return state, state.CommittedResultFactDigest == t.AdmissionFactDigest && state.CommittedResultSequence == t.AdmissionSequence && state.CommittedResultOutcomeDigest == t.SupervisorOutcomeFactDigest && reflect.DeepEqual(state.CommittedResultPreceding, t.SupervisorPrecedingEvidence) && state.CommittedResultCollect == t.SupervisorEvidence
 	case AttemptTransitionTerminalizationBarrier:
 		return state, state.BarrierDigest != "" && state.TerminalizationID == t.TerminalizationID && state.EligibilityTerminal == t.EligibilityTerminal
 	case AttemptTransitionProcessTerminal:
-		return state, state.ProcessTerminalDigest != "" && state.TerminalizationID == t.TerminalizationID && state.ProcessTerminalKind == t.ProcessTerminalKind && state.ProcessTerminalObservation == t.ObservationDigest
+		return state, state.ProcessTerminalDigest != "" && state.TerminalizationID == t.TerminalizationID && state.ProcessTerminalKind == t.ProcessTerminalKind && state.ProcessTerminalObservation == t.ObservationDigest && state.ProcessTerminalOutcomeDigest == t.SupervisorOutcomeFactDigest && reflect.DeepEqual(state.ProcessTerminalPreceding, t.SupervisorPrecedingEvidence) && state.ProcessTerminalEvidence == t.SupervisorEvidence
 	case AttemptTransitionAllocationTerminated:
 		return state, state.AllocationTerminalDigest != "" && state.TerminalizationID == t.TerminalizationID && state.AllocationReceiptDigest == t.ReceiptDigest
 	case AttemptTransitionProcessSupervisorClosed:
-		return state, state.SupervisorClosedDigest != "" && state.SupervisorClosed == t.SupervisorClosed
+		return state, state.SupervisorClosedDigest != "" && state.SupervisorClosedOutcomeDigest == t.SupervisorOutcomeFactDigest && reflect.DeepEqual(state.SupervisorClosedPreceding, t.SupervisorPrecedingEvidence) && state.SupervisorClosed == t.SupervisorClosed
 	case AttemptTransitionCleanupCompleted:
 		return state, state.CleanupCompletedDigest != "" && state.TerminalizationID == t.TerminalizationID && (t.SupervisorClosedFactDigest == "" || t.SupervisorClosedFactDigest == state.SupervisorClosedDigest)
 	case AttemptTransitionCleanupReleased:
 		return state, state.CleanupReleasedDigest != "" && state.TerminalizationID == t.TerminalizationID
+	case AttemptTransitionSupervisorIntervention:
+		return state, state.SupervisorInterventionDigest != "" && state.SupervisorIntervention == t.SupervisorIntervention
 	default:
 		return AttemptAuthorityState{}, false
 	}
@@ -1023,7 +1469,7 @@ func cleanupEffectAllowed(state AttemptAuthorityState, operation CleanupOperatio
 	if state.CleanupReleasedDigest != "" || state.CleanupCompletedDigest != "" || state.AllocationTerminalDigest != "" {
 		return false
 	}
-	if state.PendingEffectIntentFactDigest != "" || state.EffectInterventionDigest != "" {
+	if state.PendingEffectIntentFactDigest != "" || state.EffectInterventionDigest != "" || state.SupervisorPendingIntentDigest != "" || state.SupervisorInterventionDigest != "" {
 		// Read-only inspection remains available for diagnosis. Recovery of this
 		// effect must use RecoverPendingEffect so it is captured by the same
 		// authority chain; the cleanup callback cannot bypass that ledger.
@@ -1125,7 +1571,7 @@ func (s *ingressDurableStore) compareAndAppendCleanup(ctx context.Context, verif
 			return ErrCleanupUnauthorized
 		}
 		replay, exactReplay := exactTransitionReplay(state, true, transition)
-		if !exactReplay && (state.PendingEffectIntentFactDigest != "" || state.EffectInterventionDigest != "") {
+		if !exactReplay && (state.PendingEffectIntentFactDigest != "" || state.EffectInterventionDigest != "" || state.SupervisorInterventionDigest != "") {
 			// Pending/intervention effect authority closes every new cleanup
 			// successor. Preserve read-only exact replay, but reject before the
 			// lower-level transition-order checker so callers receive the cleanup
@@ -1195,10 +1641,10 @@ func applyAttemptAuthorityLine(line []byte, in *Ingress, wantSequence int64) err
 		return ErrAttemptAuthorityConflict
 	}
 	fact.Digest = stored
-	return applyAttemptAuthorityFactValue(fact, in)
+	return applyAttemptAuthorityFactValue(fact, in, true)
 }
 
-func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress) error {
+func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress, historicalReplay bool) error {
 	if err := fact.Transition.Identity.Validate(); err != nil {
 		return err
 	}
@@ -1218,7 +1664,7 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress) erro
 		return err
 	}
 	prepared := fact
-	if err := prepareAttemptFact(prior, exists, &prepared); err != nil {
+	if err := prepareAttemptFact(prior, exists, &prepared, historicalReplay); err != nil {
 		return err
 	}
 	if prepared.AdmissionClosed != fact.AdmissionClosed || prepared.TerminalGeneration != fact.TerminalGeneration || prepared.CleanupBindingDigest != fact.CleanupBindingDigest || prepared.Transition.AdmissionFactDigest != fact.Transition.AdmissionFactDigest || prepared.Transition.AdmissionSequence != fact.Transition.AdmissionSequence {
@@ -1247,16 +1693,50 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress) erro
 		state.LaunchClosure = stored
 		state.LaunchMaterialsDigest = t.LaunchClosure.LaunchMaterialsDigest
 		state.AgentLaunchSpecDigest = t.LaunchClosure.AgentLaunchSpecDigest
+	case AttemptTransitionSupervisorBootstrap:
+		state.SupervisorBootstrap = t.SupervisorBootstrap
+		state.SupervisorBootstrapDigest = fact.Digest
 	case AttemptTransitionProcessSupervisorStarted:
 		state.SupervisorStarted = t.SupervisorStarted
 		state.SupervisorStartedDigest = fact.Digest
+		if state.SupervisorBootstrapDigest != "" {
+			state.SupervisorCommandSequence = t.SupervisorStarted.Handshake.CommandSequence
+			state.SupervisorCommandHead = t.SupervisorStarted.Handshake.CommandHead
+			state.SupervisorCommandIDs = nil
+			state.SupervisorMechanicsAuthorityHead = fact.Digest
+			request := state.SupervisorBootstrap.Request
+			handshake := t.SupervisorStarted.Handshake
+			state.SupervisorMechanicsAnchor = SupervisorMechanicsAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: request.Authority, OwnerEpoch: handshake.OwnerEpoch, CurrentAuthorityHead: handshake.CurrentAuthorityHead, CommandSequence: handshake.CommandSequence, CommandHead: handshake.CommandHead, JournalSequence: handshake.JournalSequence, JournalHead: handshake.JournalHead, UID: request.Core.UID, GID: request.Core.GID, FixedBinary: handshake.SupervisorBinary, ControlSocket: handshake.ControlSocket}
+		}
 	case AttemptTransitionProcessStarted:
 		state.LaunchState = LaunchStarted
 		state.CommandID, state.ObservedAt, state.Process = t.CommandID, t.ObservedAt, t.Process
+		state.ProcessStartedBindOutcomeDigest, state.ProcessStartedOutcomeDigest = t.SupervisorBindOutcomeFactDigest, t.SupervisorOutcomeFactDigest
+		state.SupervisorBindEvidence = t.SupervisorBindEvidence
+		state.ProcessStartedPreceding = append([]SupervisorCommandEvidence(nil), t.SupervisorPrecedingEvidence...)
+		state.ProcessStartedEvidence = t.SupervisorEvidence
+		if state.SupervisorBootstrapDigest != "" && t.SupervisorOutcomeFactDigest != "" {
+			state.ProcessStartedEvidence, _ = supervisorCheckpointEvidence(state, t.SupervisorOutcomeFactDigest)
+			state.SupervisorMechanicsAuthorityHead = fact.Digest
+		} else if state.SupervisorBootstrapDigest != "" {
+			advanceSupervisorCommandState(&state, t.SupervisorBindEvidence)
+			advanceSupervisorCommandState(&state, t.SupervisorPrecedingEvidence...)
+			advanceSupervisorCommandState(&state, t.SupervisorEvidence)
+		}
 		state.ProcessStartedDigest = fact.Digest
 	case attemptTransitionResultAdmitted:
 		state.CommittedResultFactDigest = t.AdmissionFactDigest
 		state.CommittedResultSequence = t.AdmissionSequence
+		state.CommittedResultOutcomeDigest = t.SupervisorOutcomeFactDigest
+		state.CommittedResultPreceding = append([]SupervisorCommandEvidence(nil), t.SupervisorPrecedingEvidence...)
+		state.CommittedResultCollect = t.SupervisorEvidence
+		if state.SupervisorBootstrapDigest != "" && t.SupervisorOutcomeFactDigest != "" {
+			state.CommittedResultCollect, _ = supervisorCheckpointEvidence(state, t.SupervisorOutcomeFactDigest)
+			state.SupervisorMechanicsAuthorityHead = fact.Digest
+		} else if state.SupervisorBootstrapDigest != "" {
+			advanceSupervisorCommandState(&state, t.SupervisorPrecedingEvidence...)
+			advanceSupervisorCommandState(&state, t.SupervisorEvidence)
+		}
 	case AttemptTransitionTerminalizationBarrier:
 		if fact.TerminalGeneration != t.Identity.DispatchGeneration+1 || fact.CleanupBindingDigest == "" || !fact.AdmissionClosed || t.AdmissionFactDigest != state.CommittedResultFactDigest || t.AdmissionSequence != state.CommittedResultSequence {
 			return ErrAttemptAuthorityConflict
@@ -1265,21 +1745,43 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress) erro
 		state.AdmissionClosed = fact.AdmissionClosed
 		state.BarrierAdmissionFactDigest, state.BarrierAdmissionSequence = t.AdmissionFactDigest, t.AdmissionSequence
 		state.TerminalGeneration, state.CleanupBindingDigest = fact.TerminalGeneration, fact.CleanupBindingDigest
+		if state.SupervisorBootstrapDigest != "" {
+			state.SupervisorMechanicsAuthorityHead = fact.Digest
+		}
 	case AttemptTransitionProcessTerminal:
 		if t.TerminalizationID != state.TerminalizationID {
 			return ErrAttemptAuthorityConflict
 		}
 		state.ProcessTerminalDigest, state.ProcessTerminalKind, state.ProcessTerminalObservation = fact.Digest, t.ProcessTerminalKind, t.ObservationDigest
+		state.ProcessTerminalOutcomeDigest = t.SupervisorOutcomeFactDigest
+		state.ProcessTerminalPreceding = append([]SupervisorCommandEvidence(nil), t.SupervisorPrecedingEvidence...)
+		state.ProcessTerminalEvidence = t.SupervisorEvidence
+		if state.SupervisorBootstrapDigest != "" && t.SupervisorOutcomeFactDigest != "" {
+			state.ProcessTerminalEvidence, _ = supervisorCheckpointEvidence(state, t.SupervisorOutcomeFactDigest)
+			state.SupervisorMechanicsAuthorityHead = fact.Digest
+		} else if state.SupervisorBootstrapDigest != "" {
+			advanceSupervisorCommandState(&state, t.SupervisorPrecedingEvidence...)
+			advanceSupervisorCommandState(&state, t.SupervisorEvidence)
+		}
 	case AttemptTransitionAllocationTerminated:
 		if t.TerminalizationID != state.TerminalizationID {
 			return ErrAttemptAuthorityConflict
 		}
 		state.AllocationTerminalDigest, state.AllocationReceiptDigest = fact.Digest, t.ReceiptDigest
+		if state.SupervisorBootstrapDigest != "" {
+			state.SupervisorMechanicsAuthorityHead = fact.Digest
+		}
 	case AttemptTransitionProcessSupervisorClosed:
 		if t.TerminalizationID != state.TerminalizationID {
 			return ErrAttemptAuthorityConflict
 		}
+		state.SupervisorClosedPreceding = append([]SupervisorCommandEvidence(nil), t.SupervisorPrecedingEvidence...)
+		state.SupervisorClosedOutcomeDigest = t.SupervisorOutcomeFactDigest
 		state.SupervisorClosed, state.SupervisorClosedDigest = t.SupervisorClosed, fact.Digest
+		if state.SupervisorBootstrapDigest != "" && t.SupervisorOutcomeFactDigest == "" {
+			advanceSupervisorCommandState(&state, t.SupervisorPrecedingEvidence...)
+			advanceSupervisorCommandState(&state, t.SupervisorClosed.Mechanics)
+		}
 	case AttemptTransitionCleanupCompleted:
 		if t.TerminalizationID != state.TerminalizationID {
 			return ErrAttemptAuthorityConflict
@@ -1293,6 +1795,9 @@ func applyAttemptAuthorityFactValue(fact attemptAuthorityFact, in *Ingress) erro
 			return ErrAttemptAuthorityConflict
 		}
 		state.CleanupReleasedDigest = fact.Digest
+	case AttemptTransitionSupervisorIntervention:
+		state.SupervisorIntervention = t.SupervisorIntervention
+		state.SupervisorInterventionDigest = fact.Digest
 	default:
 		return ErrAttemptAuthorityConflict
 	}

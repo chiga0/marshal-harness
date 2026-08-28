@@ -883,3 +883,7 @@ R2（#189）已关闭，不得把上表中原先口头指派给 R2 的 finding �
 | `I186-DOC-HUMAN-MODEL` | P1 | `OPEN-DOCS` | 需要一份人类友好的分层导读，解释“当前能力 / Accepted 目标合同 / Proposed 演进”三种状态，并说明前期研讨、复盘记录和不实施 mailbox 的原因。文档合入且链接/构建检查通过后可关闭为 `CLOSED-DOCS`，但不升级任何产品能力状态。 |
 
 优先级冻结为：`前期研讨 Stage 0 >> 复盘记录 > 复盘学习 >> Worker mailbox`。其中只有 Stage 0 与轻量 closeout 可在 R3–R6 期间作为操作约定试行；其余不得抢占主执行链 P0/P1，不新增 required production path。所有 pilot 都应记录成本、等待时间、finding 质量、返工变化和人工分钟数，R6 后再基于证据决定保留、修改或删除。
+
+## 2026-08-29：Supervisor mechanics receipt binding checkpoint
+
+`I186-ARCH-SUPERVISOR-RECEIPT-BINDING` 当前状态为 `CONTRACT-PROPOSED / INTEGRATION-OPEN`。ResultIngress 的单一 RB1 ledger/projection 已增加 `process-supervisor-bootstrap-prepared` 恢复锚点，以及不推进 Attempt head 的逐 command intent/outcome recovery 子链；每个 outcome 绑定完整 mechanics/journal pre/post anchor，business fact 只引用 exact successful outcome fact，intent-only 可耐久进入 intervention。旧 ledger 省略新字段时仍按原 digest 和状态序列回放。提议合同见 [ADR 0060](adr/0060-supervisor-mechanics-authority-binding-and-recovery.md)。该 checkpoint **没有**接入 production composition，也没有独立 ReviewDecision；`processsupervisor.Client` 的 deterministic prepared-command API、descriptor-relative nonce/journal object recovery、lost `Close` receipt 后的 offline absence recovery仍开放。在真实 spawn/collect/terminal/close 调用链与重启 reconcile 通过前，不得把它标记为 `INTEGRATED` 或关闭 R2/R3 production reachability finding。

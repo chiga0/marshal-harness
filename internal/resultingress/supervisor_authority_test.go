@@ -230,7 +230,7 @@ func TestAuthorityObservedAtRejectsSameSecondBeforeFullBirth(t *testing.T) {
 	}
 
 	store, _ := OpenResultIngressStore(t.TempDir())
-	state := openStartedAttempt(t, store)
+	state := openFreshStartedAttempt(t, store)
 	started := state.SupervisorStarted
 	started.Handshake.ObservedAt = time.Unix(started.Handshake.SupervisorProcess.BirthSeconds, (started.Handshake.SupervisorProcess.BirthMicroseconds-1)*int64(time.Microsecond)).UTC().Format(time.RFC3339Nano)
 	if err := started.Validate(); err == nil {
@@ -246,7 +246,7 @@ func TestAuthorityObservedAtRejectsSameSecondBeforeFullBirth(t *testing.T) {
 
 func TestSupervisorStartedRejectsEachCrossAttemptIdentityABA(t *testing.T) {
 	store, _ := OpenResultIngressStore(t.TempDir())
-	first := openStartedAttempt(t, store)
+	first := openFreshStartedAttempt(t, store)
 
 	secondID := attemptTestIdentity()
 	secondID.AttemptID = "attempt-aba"
@@ -311,11 +311,11 @@ func TestSupervisorStartedRejectsEachCrossAttemptIdentityABA(t *testing.T) {
 func TestSupervisorClosedPredecessorAndCleanupBinding(t *testing.T) {
 	dir := t.TempDir()
 	store, _ := OpenResultIngressStore(dir)
-	started := openStartedAttempt(t, store)
+	started := openFreshStartedAttempt(t, store)
 	barrier := appendTestBarrier(t, store, started, "terminal-supervisor-close", TerminalAttemptFailed).State
 	run := attemptTestRunAuthority(started.Identity)
 	request := CleanupAuthorizationRequest{Identity: started.Identity, CurrentRunAuthority: run, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest, Operation: CleanupReconcile}
-	terminal, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, barrier.Revision, barrier.HeadDigest, request, AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ProcessTerminalKind: ProcessAbsent, ObservationDigest: attemptTestDigest("supervisor-close-process-absent")})
+	terminal, _, err := appendTestProcessTerminal(t, store, barrier, request, AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ProcessTerminalKind: ProcessAbsent, ObservationDigest: attemptTestDigest("supervisor-close-process-absent")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestSupervisorClosedPredecessorAndCleanupBinding(t *testing.T) {
 	}
 	closed := appendTestSupervisorClosed(t, store, allocation.State, request)
 	owner, _, _ := store.OpenOwner(closed.Owner.Scope)
-	replay, err := store.AppendSupervisorClosed(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, allocation.State.Revision, allocation.State.HeadDigest, request, closed.SupervisorClosed)
+	replay, err := store.AppendSupervisorClosed(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, allocation.State.Revision, allocation.State.HeadDigest, request, closed.SupervisorClosed, closed.SupervisorClosedOutcomeDigest)
 	if err != nil || replay.Appended || replay.TransitionDigest != closed.SupervisorClosedDigest {
 		t.Fatalf("closed replay=%#v err=%v", replay, err)
 	}
@@ -399,8 +399,7 @@ func TestProcessStartedRequiresCurrentAttemptOwnerBinding(t *testing.T) {
 		t.Fatalf("new global owner without Attempt binding appended process-started: %v", err)
 	}
 	rebound := supervisorTestBindOwner(t, store, supervised, owner2, verifier2)
-	started, err := store.AppendProcessStarted(context.Background(), verifier2, attemptRunVerifier{want: run}, rebound.Revision, rebound.HeadDigest, request, binding2, transition)
-	if err != nil || !started.Appended || started.State.ProcessStartedDigest == "" {
-		t.Fatalf("current rebound owner process-started=%#v err=%v", started, err)
+	if _, err := store.AppendProcessStarted(context.Background(), verifier2, attemptRunVerifier{want: run}, rebound.Revision, rebound.HeadDigest, request, binding2, transition); !errors.Is(err, ErrAttemptAuthorityOrder) {
+		t.Fatalf("rebound owner without a matching supervisor recovery chain err=%v", err)
 	}
 }

@@ -417,7 +417,7 @@ func checkEffectIndexes(projection *Ingress, effectKey string, request EffectInt
 }
 
 func validateIntentPhase(prior AttemptAuthorityState, binding EffectBinding) error {
-	if prior.Identity != binding.Identity || prior.Revision != binding.AdmissionAttemptRevision || prior.HeadDigest != binding.AdmissionAuthorityDigest || prior.PendingEffectIntentFactDigest != "" || prior.EffectInterventionDigest != "" {
+	if prior.Identity != binding.Identity || prior.Revision != binding.AdmissionAttemptRevision || prior.HeadDigest != binding.AdmissionAuthorityDigest || prior.PendingEffectIntentFactDigest != "" || prior.EffectInterventionDigest != "" || prior.SupervisorPendingIntentDigest != "" || prior.SupervisorInterventionDigest != "" {
 		return ErrAttemptAuthorityConflict
 	}
 	switch binding.Phase {

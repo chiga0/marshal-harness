@@ -366,6 +366,69 @@ func TestHistoricalGenericTerminateCannotHideBehindTypedProvision(t *testing.T) 
 	}
 }
 
+func TestAllocationEffectIntentRejectsPendingSupervisorRecoveryWithoutLedgerMutation(t *testing.T) {
+	store, err := OpenResultIngressStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := attemptTestIdentity()
+	opened, err := appendAuthorizedAttempt(t, store, 0, "", AttemptTransition{Kind: AttemptTransitionOpened, Identity: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provisioned := appendTestAcceptedProvision(t, store, opened.State)
+	terminal := allocationAdvanceToProcessTerminal(t, store, provisioned)
+	provisionEffect, ok, err := store.EffectState(id.AuthorityNamespaceID, "provision-"+id.AttemptID)
+	if err != nil || !ok {
+		t.Fatalf("typed provision effect=%#v ok=%v err=%v", provisionEffect, ok, err)
+	}
+	binding := EffectBinding{
+		Identity: id, CurrentRunAuthority: attemptTestRunAuthority(id),
+		AdmissionAttemptRevision: terminal.Revision, AdmissionAuthorityDigest: terminal.HeadDigest,
+		Phase: EffectPhaseAllocationTerminate, MarkerDigest: provisionEffect.Binding.MarkerDigest,
+		TerminalizationID: terminal.TerminalizationID, TerminalGeneration: terminal.TerminalGeneration,
+		CleanupBindingDigest: terminal.CleanupBindingDigest, ProcessTerminalFactDigest: terminal.ProcessTerminalDigest,
+	}
+	request := EffectIntentRequest{Binding: binding, Intent: effectTestIntent(binding, "pending-supervisor-terminate", "pending-supervisor-command", "pending-supervisor-key", attemptTestDigest("pending-supervisor-request"))}
+	before, err := os.ReadFile(store.ledgerPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*AttemptAuthorityState){
+		"command-intent": func(state *AttemptAuthorityState) {
+			state.SupervisorPendingIntentDigest = attemptTestDigest("pending-supervisor-intent")
+		},
+		"intervention": func(state *AttemptAuthorityState) {
+			state.SupervisorInterventionDigest = attemptTestDigest("supervisor-intervention")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			projection := newAuthorityProjection()
+			err := store.transact(projection, func() error {
+				key, keyErr := id.Key()
+				if keyErr != nil {
+					return keyErr
+				}
+				state := projection.attempts[key]
+				mutate(&state)
+				projection.attempts[key] = state
+				_, appendErr := store.appendEffectIntentLocked(projection, request)
+				return appendErr
+			})
+			if !errors.Is(err, ErrAttemptAuthorityConflict) {
+				t.Fatalf("pending supervisor recovery admitted allocation effect: %v", err)
+			}
+			after, readErr := os.ReadFile(store.ledgerPath())
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("rejected allocation effect mutated ledger")
+			}
+		})
+	}
+}
+
 func TestEffectRecoveryRejectsExpiredCancelledAndVerifierAbuse(t *testing.T) {
 	clock := time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC)
 	expiredAdmissionStore, _ := openResultIngressStoreWithClock(t.TempDir(), func() time.Time { return clock })
@@ -424,7 +487,7 @@ func TestTerminateEffectRequiresAcceptedReceiptBeforeTerminalTransition(t *testi
 	barrier := appendTestBarrier(t, store, started, "terminal-effect", TerminalAttemptFailed).State
 	run := attemptTestRunAuthority(started.Identity)
 	cleanup := CleanupAuthorizationRequest{Identity: started.Identity, CurrentRunAuthority: run, TerminalizationID: barrier.TerminalizationID, TerminalGeneration: barrier.TerminalGeneration, CleanupBindingDigest: barrier.CleanupBindingDigest, Operation: CleanupReconcile}
-	terminalResult, err := store.CompareAndAppendCleanup(context.Background(), attemptRunVerifier{want: run}, barrier.Revision, barrier.HeadDigest, cleanup, AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ProcessTerminalKind: ProcessTerminated, ObservationDigest: attemptTestDigest("terminal")})
+	terminalResult, _, err := appendTestProcessTerminal(t, store, barrier, cleanup, AttemptTransition{Kind: AttemptTransitionProcessTerminal, Identity: started.Identity, TerminalizationID: barrier.TerminalizationID, ProcessTerminalKind: ProcessTerminated, ObservationDigest: attemptTestDigest("terminal")})
 	if err != nil {
 		t.Fatal(err)
 	}
