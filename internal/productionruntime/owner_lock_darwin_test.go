@@ -3,6 +3,7 @@
 package productionruntime
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -70,6 +71,52 @@ func openOwnerStore(t *testing.T, fixture ownerLockFixture) *resultingress.Durab
 		t.Fatal(err)
 	}
 	return store
+}
+
+func ownerLedgerBytes(t *testing.T, fixture ownerLockFixture) []byte {
+	t.Helper()
+	value, err := os.ReadFile(filepath.Join(fixture.base, "result-ingress", "result-ingress.jsonl"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func renameAwayAndBackSameObject(t *testing.T, path, moved string) {
+	t.Helper()
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(moved, path); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("rename roundtrip did not preserve the exact filesystem object")
+	}
+}
+
+func requirePhysicalRecheckBeforeCallback(t *testing.T, phase repositoryOwnerScopeLock) {
+	t.Helper()
+	concrete := phase.(*darwinRepositoryOwnerScopeLock)
+	called := false
+	err := concrete.physical.withHeld(context.Background(), false, func() error {
+		called = true
+		return nil
+	})
+	if !application.HasReason(err, application.ReasonOwnerNotCurrent) || called {
+		t.Fatalf("mutated physical lock recheck err=%v called=%t", err, called)
+	}
 }
 
 func acquisitionAtEpoch(epoch uint64) resultingress.ControlOwnerAcquisition {
@@ -284,6 +331,56 @@ func TestRepositoryOwnerScopeLockRejectsConcurrentAcquire(t *testing.T) {
 }
 
 func TestRepositoryOwnerScopeLockRejectsDirectoryAndEntryABA(t *testing.T) {
+	t.Run("directory-same-object-roundtrip", func(t *testing.T) {
+		fixture := newOwnerLockFixture(t)
+		store := openOwnerStore(t, fixture)
+		acquisition := acquisitionAtEpoch(1)
+		phase, err := openRepositoryOwnerScopeLock(fixture.directory, acquisition.Scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer phase.Close()
+		before := ownerLedgerBytes(t, fixture)
+		moved := fixture.ownerPath + "-roundtrip"
+		renameAwayAndBackSameObject(t, fixture.ownerPath, moved)
+		requirePhysicalRecheckBeforeCallback(t, phase)
+		if _, err := phase.acquireOwner(context.Background(), store, 0, "", acquisition); err == nil {
+			t.Fatal("same owner directory rename roundtrip admitted owner append")
+		}
+		if after := ownerLedgerBytes(t, fixture); !bytes.Equal(before, after) {
+			t.Fatalf("directory rename roundtrip wrote ledger: before=%q after=%q", before, after)
+		}
+		if _, found, err := store.OpenOwner(acquisition.Scope); err != nil || found {
+			t.Fatalf("directory rename roundtrip mutated owner authority: found=%t err=%v", found, err)
+		}
+	})
+
+	t.Run("lock-entry-same-object-roundtrip", func(t *testing.T) {
+		fixture := newOwnerLockFixture(t)
+		store := openOwnerStore(t, fixture)
+		acquisition := acquisitionAtEpoch(1)
+		phase, err := openRepositoryOwnerScopeLock(fixture.directory, acquisition.Scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer phase.Close()
+		concrete := phase.(*darwinRepositoryOwnerScopeLock)
+		path := filepath.Join(fixture.ownerPath, concrete.physical.name)
+		moved := path + ".roundtrip"
+		before := ownerLedgerBytes(t, fixture)
+		renameAwayAndBackSameObject(t, path, moved)
+		requirePhysicalRecheckBeforeCallback(t, phase)
+		if _, err := phase.acquireOwner(context.Background(), store, 0, "", acquisition); err == nil {
+			t.Fatal("same lock entry rename roundtrip admitted owner append")
+		}
+		if after := ownerLedgerBytes(t, fixture); !bytes.Equal(before, after) {
+			t.Fatalf("entry rename roundtrip wrote ledger: before=%q after=%q", before, after)
+		}
+		if _, found, err := store.OpenOwner(acquisition.Scope); err != nil || found {
+			t.Fatalf("entry rename roundtrip mutated owner authority: found=%t err=%v", found, err)
+		}
+	})
+
 	t.Run("directory-current-name", func(t *testing.T) {
 		fixture := newOwnerLockFixture(t)
 		store := openOwnerStore(t, fixture)
@@ -339,6 +436,57 @@ func TestRepositoryOwnerScopeLockRejectsDirectoryAndEntryABA(t *testing.T) {
 		}
 		if _, found, err := store.OpenOwner(acquisition.Scope); err != nil || found {
 			t.Fatalf("entry ABA mutated owner authority: found=%t err=%v", found, err)
+		}
+	})
+}
+
+func TestRepositoryOwnerLockRejectsRoundtripDuringBindAndBoundCallback(t *testing.T) {
+	t.Run("directory-before-bind", func(t *testing.T) {
+		fixture := newOwnerLockFixture(t)
+		store := openOwnerStore(t, fixture)
+		acquisition := acquisitionAtEpoch(1)
+		phase, err := openRepositoryOwnerScopeLock(fixture.directory, acquisition.Scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer phase.Close()
+		_ = acquireAndReplay(t, phase, store, 0, "", acquisition)
+		before := ownerLedgerBytes(t, fixture)
+		moved := fixture.ownerPath + "-before-bind"
+		renameAwayAndBackSameObject(t, fixture.ownerPath, moved)
+		if _, err := phase.bindAcquisition(store); !application.HasReason(err, application.ReasonOwnerNotCurrent) {
+			t.Fatalf("directory roundtrip bind err=%v", err)
+		}
+		if after := ownerLedgerBytes(t, fixture); !bytes.Equal(before, after) {
+			t.Fatalf("failed bind wrote ledger: before=%q after=%q", before, after)
+		}
+	})
+
+	t.Run("lock-entry-after-bind", func(t *testing.T) {
+		fixture := newOwnerLockFixture(t)
+		store := openOwnerStore(t, fixture)
+		acquisition := acquisitionAtEpoch(1)
+		phase, err := openRepositoryOwnerScopeLock(fixture.directory, acquisition.Scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = acquireAndReplay(t, phase, store, 0, "", acquisition)
+		bound, err := phase.bindAcquisition(store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer bound.Close()
+		if err := bound.claimRuntime(); err != nil {
+			t.Fatal(err)
+		}
+		concrete := bound.(*darwinRepositoryOwnerLock)
+		path := filepath.Join(fixture.ownerPath, concrete.physical.name)
+		moved := path + ".after-bind"
+		renameAwayAndBackSameObject(t, path, moved)
+		called := false
+		err = bound.WithCurrentOwnerLock(context.Background(), acquisition, func() error { called = true; return nil })
+		if !application.HasReason(err, application.ReasonOwnerNotCurrent) || called {
+			t.Fatalf("lock roundtrip callback err=%v called=%t", err, called)
 		}
 	})
 }

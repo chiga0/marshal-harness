@@ -13,6 +13,7 @@ from architecture_check import (
     architecture_layer_inversions,
     production_dependency_inversions,
     production_source_inversions,
+    provisional_owner_ast_inversions,
 )
 
 
@@ -39,6 +40,85 @@ def production_graph(imports: dict[str, list[str]]) -> list[dict[str, object]]:
 
 
 class ArchitectureCheckTest(unittest.TestCase):
+
+    def owner_provisional_fixture(self, root: Path, mutation: str = "") -> None:
+        source = root / "internal/productionruntime/owner_lock_darwin.go"
+        source.parent.mkdir(parents=True)
+        body = (
+            "package productionruntime\n"
+            "type darwinProvisionalOwnerVerifier struct{}\n"
+            "func (lock *darwinRepositoryOwnerScopeLock) acquireOwner() {\n"
+            "  physical.withHeld(ctx, false, func() error {\n"
+            "    verifier := &darwinProvisionalOwnerVerifier{candidate: candidate}\n"
+            "    " + mutation + "\n"
+            "    result, acquireErr = store.AcquireOwner(ctx, verifier, expectedEpoch, expectedFactDigest, candidate)\n"
+            "    return acquireErr\n"
+            "  })\n"
+            "}\n"
+            "func (verifier *darwinProvisionalOwnerVerifier) WithCurrentOwnerLock() {}\n"
+        )
+        source.write_text(body, encoding="utf-8")
+
+    def test_owner_provisional_ast_accepts_exact_one_shot_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.owner_provisional_fixture(root)
+            self.assertEqual(provisional_owner_ast_inversions(root), [])
+
+    def test_owner_provisional_ast_rejects_escape_and_reuse_fixtures(self) -> None:
+        mutations = {
+            "interface-assignment": "escaped = verifier",
+            "return": "return verifier",
+            "setter": "lock.setVerifier(verifier)",
+            "with-current-reuse": "verifier.WithCurrentOwnerLock()",
+        }
+        for name, mutation in mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.owner_provisional_fixture(root, mutation)
+                self.assertIn(
+                    "owner-provisional-ast:verifier-escape",
+                    provisional_owner_ast_inversions(root),
+                )
+
+    def test_owner_provisional_ast_rejects_constructor_field_and_callsite_fixtures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.owner_provisional_fixture(root)
+            source = root / "internal/productionruntime/owner_lock_darwin.go"
+            source.write_text(
+                source.read_text(encoding="utf-8")
+                + "type holder struct { verifier *darwinProvisionalOwnerVerifier }\n",
+                encoding="utf-8",
+            )
+            self.assertIn(
+                "owner-provisional-ast:type-shape",
+                provisional_owner_ast_inversions(root),
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.owner_provisional_fixture(root)
+            extra = root / "internal/productionruntime/other.go"
+            extra.write_text(
+                "package productionruntime\nfunc other() { store.AcquireOwner(ctx, verifier, expectedEpoch, expectedFactDigest, candidate) }\n",
+                encoding="utf-8",
+            )
+            self.assertIn(
+                "owner-provisional-ast:acquire-call-shape",
+                provisional_owner_ast_inversions(root),
+            )
+
+    def test_owner_provisional_ast_rejects_wrong_store_or_candidate(self) -> None:
+        for old, new in (("store.AcquireOwner", "other.AcquireOwner"), (", candidate)", ", sibling)")):
+            with self.subTest(replacement=new), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.owner_provisional_fixture(root)
+                source = root / "internal/productionruntime/owner_lock_darwin.go"
+                source.write_text(source.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+                self.assertIn(
+                    "owner-provisional-ast:acquire-call-shape",
+                    provisional_owner_ast_inversions(root),
+                )
     def test_allows_domain_primitives(self) -> None:
         imports = [
             "encoding/json",

@@ -359,6 +359,168 @@ def process_spawn_fingerprints(tokens: list[tuple[str, str]]) -> list[str]:
     return fingerprints
 
 
+def matching_delimiter(
+    tokens: list[tuple[str, str]], start: int, opening: str, closing: str
+) -> int | None:
+    values = [value for _, value in tokens]
+    if start >= len(values) or values[start] != opening:
+        return None
+    depth = 0
+    for index in range(start, len(values)):
+        if values[index] == opening:
+            depth += 1
+        elif values[index] == closing:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def go_function_nodes(tokens: list[tuple[str, str]]) -> list[dict[str, object]]:
+    """Build the narrow function AST needed by the production shape gates."""
+    values = [value for _, value in tokens]
+    functions: list[dict[str, object]] = []
+    for index, value in enumerate(values):
+        if value != "func" or index + 1 >= len(values):
+            continue
+        cursor = index + 1
+        receiver = ""
+        if values[cursor] == "(":
+            close = matching_delimiter(tokens, cursor, "(", ")")
+            if close is None:
+                continue
+            identifiers = [
+                token_value
+                for kind, token_value in tokens[cursor + 1:close]
+                if kind == "ident"
+            ]
+            if not identifiers:
+                # Anonymous functions have no receiver or declaration name.
+                continue
+            receiver = identifiers[-1]
+            cursor = close + 1
+        if cursor >= len(tokens) or tokens[cursor][0] != "ident":
+            continue
+        name = values[cursor]
+        body_start = cursor + 1
+        while body_start < len(values) and values[body_start] != "{":
+            body_start += 1
+        if body_start == len(values):
+            continue
+        body_end = matching_delimiter(tokens, body_start, "{", "}")
+        if body_end is None:
+            continue
+        functions.append(
+            {
+                "receiver": receiver,
+                "name": name,
+                "tokens": tokens[index:body_end + 1],
+            }
+        )
+    return functions
+
+
+def method_calls(
+    tokens: list[tuple[str, str]], method: str
+) -> list[tuple[str, list[list[str]]]]:
+    values = [value for _, value in tokens]
+    calls: list[tuple[str, list[list[str]]]] = []
+    for index in range(2, len(values) - 1):
+        if values[index - 1:index + 2] != [".", method, "("]:
+            continue
+        end = matching_delimiter(tokens, index + 1, "(", ")")
+        if end is None:
+            calls.append((values[index - 2], [["<unclosed>"]]))
+            continue
+        arguments: list[list[str]] = []
+        current: list[str] = []
+        parens = brackets = braces = 0
+        for value in values[index + 2:end]:
+            if value == "(":
+                parens += 1
+            elif value == ")":
+                parens -= 1
+            elif value == "[":
+                brackets += 1
+            elif value == "]":
+                brackets -= 1
+            elif value == "{":
+                braces += 1
+            elif value == "}":
+                braces -= 1
+            if value == "," and parens == brackets == braces == 0:
+                arguments.append(current)
+                current = []
+            else:
+                current.append(value)
+        if current or arguments:
+            arguments.append(current)
+        calls.append((values[index - 2], arguments))
+    return calls
+
+
+def sequence_count(tokens: list[tuple[str, str]], sequence: tuple[str, ...]) -> int:
+    values = [value for _, value in tokens]
+    width = len(sequence)
+    return sum(
+        tuple(values[index:index + width]) == sequence
+        for index in range(len(values) - width + 1)
+    )
+
+
+def provisional_owner_ast_inversions(root: Path) -> list[str]:
+    """Freeze ADR 0066's one-shot provisional verifier as a closed Go AST shape."""
+    source = root / "internal/productionruntime/owner_lock_darwin.go"
+    if not source.is_file():
+        return ["owner-provisional-ast:missing-source"]
+    tokens = go_tokens(source.read_text(encoding="utf-8"))
+    functions = go_function_nodes(tokens)
+    acquire = [
+        node for node in functions
+        if node["receiver"] == "darwinRepositoryOwnerScopeLock"
+        and node["name"] == "acquireOwner"
+    ]
+    verifier_method = [
+        node for node in functions
+        if node["receiver"] == "darwinProvisionalOwnerVerifier"
+        and node["name"] == "WithCurrentOwnerLock"
+    ]
+    violations: list[str] = []
+    type_occurrences = sum(
+        1
+        for kind, value in tokens
+        if kind == "ident" and value == "darwinProvisionalOwnerVerifier"
+    )
+    if type_occurrences != 3 or len(verifier_method) != 1:
+        violations.append("owner-provisional-ast:type-shape")
+    constructor = (
+        "verifier", ":", "=", "&", "darwinProvisionalOwnerVerifier", "{",
+        "candidate", ":", "candidate", "}",
+    )
+    if sequence_count(tokens, constructor) != 1 or len(acquire) != 1 or sequence_count(acquire[0]["tokens"], constructor) != 1:
+        violations.append("owner-provisional-ast:constructor-shape")
+    all_calls: list[tuple[str, list[list[str]]]] = []
+    production_root = root / "internal/productionruntime"
+    for candidate_source in sorted(production_root.glob("*.go")):
+        if candidate_source.name.endswith("_test.go"):
+            continue
+        all_calls.extend(method_calls(go_tokens(candidate_source.read_text(encoding="utf-8")), "AcquireOwner"))
+    expected_call = (
+        "store",
+        [["ctx"], ["verifier"], ["expectedEpoch"], ["expectedFactDigest"], ["candidate"]],
+    )
+    acquire_calls = method_calls(acquire[0]["tokens"], "AcquireOwner") if len(acquire) == 1 else []
+    if all_calls != [expected_call] or acquire_calls != [expected_call]:
+        violations.append("owner-provisional-ast:acquire-call-shape")
+    if len(acquire) != 1 or sum(
+        1
+        for kind, value in acquire[0]["tokens"]
+        if kind == "ident" and value == "verifier"
+    ) != 2:
+        violations.append("owner-provisional-ast:verifier-escape")
+    return sorted(set(violations))
+
+
 def production_source_inversions(root: Path) -> list[str]:
     occurrences: dict[tuple[str, str], int] = {}
     process_spawns: dict[tuple[str, str], int] = {}
@@ -476,7 +638,7 @@ def main() -> int:
         inversions = architecture_layer_inversions(package)
         production_inversions = production_dependency_inversions(
             production_packages(root, arguments.go)
-        ) + production_source_inversions(root)
+        ) + production_source_inversions(root) + provisional_owner_ast_inversions(root)
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired):
         emit({"status": "fail", "reasonCode": "architecture-check-unavailable"}, sys.stderr)
         return 1

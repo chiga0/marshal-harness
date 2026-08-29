@@ -25,6 +25,16 @@ const (
 )
 
 type ownerDirectoryIdentity struct {
+	Path     string
+	Device   uint64
+	Inode    uint64
+	Mode     uint32
+	UID      uint32
+	GID      uint32
+	Mutation ownerMutationIdentity
+}
+
+type ownerParentIdentity struct {
 	Path   string
 	Device uint64
 	Inode  uint64
@@ -33,16 +43,37 @@ type ownerDirectoryIdentity struct {
 	GID    uint32
 }
 
+type ownerMutationIdentity struct {
+	ChangeSeconds int64
+	ChangeNanos   int64
+	BirthSeconds  int64
+	BirthNanos    int64
+	Generation    uint32
+}
+
+type ownerFileIdentity struct {
+	Object    ownerLockIdentity
+	Mode      uint32
+	UID       uint32
+	GID       uint32
+	LinkCount uint64
+	Size      int64
+	Mutation  ownerMutationIdentity
+}
+
 // darwinRepositoryOwnerPhysicalLock owns the duplicate of the factory-held
 // owner-directory descriptor and the locked entry. No security-sensitive
 // operation reopens the directory by pathname.
 type darwinRepositoryOwnerPhysicalLock struct {
 	mu             sync.Mutex
+	parent         *os.File
+	parentID       ownerParentIdentity
 	directory      *os.File
 	directoryID    ownerDirectoryIdentity
+	directoryName  string
 	file           *os.File
 	name           string
-	lockIdentity   ownerLockIdentity
+	lockIdentity   ownerFileIdentity
 	runtimeClaimed bool
 	closed         bool
 }
@@ -119,35 +150,67 @@ func openRepositoryOwnerScopeLock(ownerDirectory *os.File, scope resultingress.C
 		_ = unix.Close(directoryFD)
 		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
-	directoryID, err := observeOwnerDirectory(directoryFD)
+	preCreateDirectoryID, err := observeOwnerDirectory(directoryFD)
 	if err != nil {
 		_ = directory.Close()
 		return nil, err
 	}
+	parentFD, err := unix.Openat(directoryFD, "..", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		_ = directory.Close()
+		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
+	}
+	parent := os.NewFile(uintptr(parentFD), "marshal-repository-owner-parent")
+	if parent == nil {
+		_ = unix.Close(parentFD)
+		_ = directory.Close()
+		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
+	}
+	parentID, err := observeOwnerParent(parentFD)
+	directoryName := filepath.Base(preCreateDirectoryID.Path)
+	if err != nil || directoryName == "." || directoryName == string(filepath.Separator) || filepath.Join(parentID.Path, directoryName) != preCreateDirectoryID.Path || validateOwnerDirectory(parentFD, directoryFD, directoryName, parentID, preCreateDirectoryID) != nil {
+		_ = parent.Close()
+		_ = directory.Close()
+		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
+	}
 	fileFD, err := openOwnerFile(directoryFD, name)
 	if err != nil {
+		_ = parent.Close()
 		_ = directory.Close()
 		return nil, err
 	}
 	file := os.NewFile(uintptr(fileFD), name)
 	if file == nil {
 		_ = unix.Close(fileFD)
+		_ = parent.Close()
 		_ = directory.Close()
 		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
 	if err := unix.Flock(fileFD, unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = file.Close()
+		_ = parent.Close()
 		_ = directory.Close()
 		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
-	identity, err := validateOwnerFile(directoryFD, fileFD, name)
+	identity, err := observeOwnerFile(directoryFD, fileFD, name)
 	if err != nil {
 		_ = unix.Flock(fileFD, unix.LOCK_UN)
 		_ = file.Close()
+		_ = parent.Close()
 		_ = directory.Close()
 		return nil, err
 	}
-	physical := &darwinRepositoryOwnerPhysicalLock{directory: directory, directoryID: directoryID, file: file, name: name, lockIdentity: identity}
+	// Creating a fresh lock entry legitimately changes the owner directory.
+	// Freeze directory mutation evidence only after the entry is stable.
+	directoryID, err := observeOwnerDirectory(directoryFD)
+	if err != nil || !sameOwnerDirectoryObject(preCreateDirectoryID, directoryID) || validateOwnerDirectory(parentFD, directoryFD, directoryName, parentID, directoryID) != nil {
+		_ = unix.Flock(fileFD, unix.LOCK_UN)
+		_ = file.Close()
+		_ = parent.Close()
+		_ = directory.Close()
+		return nil, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
+	}
+	physical := &darwinRepositoryOwnerPhysicalLock{parent: parent, parentID: parentID, directory: directory, directoryID: directoryID, directoryName: directoryName, file: file, name: name, lockIdentity: identity}
 	return &darwinRepositoryOwnerScopeLock{physical: physical, ownerScope: scope}, nil
 }
 
@@ -162,12 +225,16 @@ func openOwnerFile(directoryFD int, name string) (int, error) {
 	return fd, nil
 }
 
-func validateOwnerFile(directoryFD, fileFD int, name string) (ownerLockIdentity, error) {
+func mutationIdentity(stat unix.Stat_t) ownerMutationIdentity {
+	return ownerMutationIdentity{ChangeSeconds: stat.Ctim.Sec, ChangeNanos: stat.Ctim.Nsec, BirthSeconds: stat.Btim.Sec, BirthNanos: stat.Btim.Nsec, Generation: stat.Gen}
+}
+
+func observeOwnerFile(directoryFD, fileFD int, name string) (ownerFileIdentity, error) {
 	var held, named unix.Stat_t
-	if unix.Fstat(fileFD, &held) != nil || unix.Fstatat(directoryFD, name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || held.Dev != named.Dev || held.Ino != named.Ino || held.Mode != named.Mode || held.Uid != named.Uid || held.Gid != named.Gid || held.Nlink != named.Nlink || held.Mode&unix.S_IFMT != unix.S_IFREG || held.Mode&0o777 != 0o600 || held.Uid != uint32(os.Getuid()) || held.Gid != uint32(os.Getgid()) || held.Nlink != 1 || held.Size != 0 {
-		return ownerLockIdentity{}, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
+	if unix.Fstat(fileFD, &held) != nil || unix.Fstatat(directoryFD, name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || held.Dev != named.Dev || held.Ino != named.Ino || held.Mode != named.Mode || held.Uid != named.Uid || held.Gid != named.Gid || held.Nlink != named.Nlink || held.Size != named.Size || held.Ctim != named.Ctim || held.Btim != named.Btim || held.Gen != named.Gen || held.Mode&unix.S_IFMT != unix.S_IFREG || held.Mode&0o777 != 0o600 || held.Uid != uint32(os.Getuid()) || held.Gid != uint32(os.Getgid()) || held.Nlink != 1 || held.Size != 0 {
+		return ownerFileIdentity{}, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
-	return ownerLockIdentity{Device: uint64(held.Dev), Inode: held.Ino}, nil
+	return ownerFileIdentity{Object: ownerLockIdentity{Device: uint64(held.Dev), Inode: held.Ino}, Mode: uint32(held.Mode), UID: held.Uid, GID: held.Gid, LinkCount: uint64(held.Nlink), Size: held.Size, Mutation: mutationIdentity(held)}, nil
 }
 
 func descriptorCurrentPath(fd int) (string, error) {
@@ -196,13 +263,31 @@ func observeOwnerDirectory(fd int) (ownerDirectoryIdentity, error) {
 	if err != nil || unix.Fstat(fd, &stat) != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Uid != uint32(os.Getuid()) || stat.Gid != uint32(os.Getgid()) || stat.Mode&0o777 != 0o700 || stat.Nlink < 2 {
 		return ownerDirectoryIdentity{}, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
-	return ownerDirectoryIdentity{Path: path, Device: uint64(stat.Dev), Inode: stat.Ino, Mode: uint32(stat.Mode), UID: stat.Uid, GID: stat.Gid}, nil
+	return ownerDirectoryIdentity{Path: path, Device: uint64(stat.Dev), Inode: stat.Ino, Mode: uint32(stat.Mode), UID: stat.Uid, GID: stat.Gid, Mutation: mutationIdentity(stat)}, nil
 }
 
-func validateOwnerDirectory(heldFD int, identity ownerDirectoryIdentity) error {
-	path, err := descriptorCurrentPath(heldFD)
-	var held unix.Stat_t
-	if err != nil || unix.Fstat(heldFD, &held) != nil || path != identity.Path || uint64(held.Dev) != identity.Device || held.Ino != identity.Inode || uint32(held.Mode) != identity.Mode || held.Uid != identity.UID || held.Gid != identity.GID || held.Mode&unix.S_IFMT != unix.S_IFDIR || held.Mode&0o777 != 0o700 || held.Nlink < 2 {
+func observeOwnerParent(fd int) (ownerParentIdentity, error) {
+	path, err := descriptorCurrentPath(fd)
+	var stat unix.Stat_t
+	if err != nil || unix.Fstat(fd, &stat) != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Uid != uint32(os.Getuid()) || stat.Mode&0o777 != 0o700 || stat.Nlink < 2 {
+		return ownerParentIdentity{}, application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
+	}
+	return ownerParentIdentity{Path: path, Device: uint64(stat.Dev), Inode: stat.Ino, Mode: uint32(stat.Mode), UID: stat.Uid, GID: stat.Gid}, nil
+}
+
+func sameOwnerDirectoryObject(left, right ownerDirectoryIdentity) bool {
+	return left.Path == right.Path && left.Device == right.Device && left.Inode == right.Inode && left.Mode == right.Mode && left.UID == right.UID && left.GID == right.GID
+}
+
+func namedOwnerDirectoryMatches(stat unix.Stat_t, identity ownerDirectoryIdentity) bool {
+	return uint64(stat.Dev) == identity.Device && stat.Ino == identity.Inode && uint32(stat.Mode) == identity.Mode && stat.Uid == identity.UID && stat.Gid == identity.GID && stat.Mode&unix.S_IFMT == unix.S_IFDIR && stat.Mode&0o777 == 0o700 && stat.Nlink >= 2 && mutationIdentity(stat) == identity.Mutation
+}
+
+func validateOwnerDirectory(parentFD, heldFD int, name string, parentIdentity ownerParentIdentity, identity ownerDirectoryIdentity) error {
+	parent, err := observeOwnerParent(parentFD)
+	held, heldErr := observeOwnerDirectory(heldFD)
+	var named unix.Stat_t
+	if err != nil || heldErr != nil || parent != parentIdentity || held != identity || filepath.Base(identity.Path) != name || filepath.Join(parentIdentity.Path, name) != identity.Path || unix.Fstatat(parentFD, name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !namedOwnerDirectoryMatches(named, identity) {
 		return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
 	}
 	return nil
@@ -234,7 +319,7 @@ func (lock *darwinRepositoryOwnerScopeLock) identity() ownerLockIdentity {
 	if lock.physical == nil {
 		return ownerLockIdentity{}
 	}
-	return lock.physical.lockIdentity
+	return lock.physical.lockIdentity.Object
 }
 
 func (lock *darwinRepositoryOwnerScopeLock) acquireOwner(ctx context.Context, store *resultingress.DurableStore, expectedEpoch uint64, expectedFactDigest string, candidate resultingress.ControlOwnerAcquisition) (resultingress.ControlOwnerAppendResult, error) {
@@ -328,13 +413,13 @@ func (verifier *darwinProvisionalOwnerVerifier) WithCurrentOwnerLock(ctx context
 }
 
 func (physical *darwinRepositoryOwnerPhysicalLock) revalidateLocked() error {
-	if physical == nil || physical.closed || physical.file == nil || physical.directory == nil {
+	if physical == nil || physical.closed || physical.parent == nil || physical.file == nil || physical.directory == nil {
 		return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
 	}
-	if err := validateOwnerDirectory(int(physical.directory.Fd()), physical.directoryID); err != nil {
+	if err := validateOwnerDirectory(int(physical.parent.Fd()), int(physical.directory.Fd()), physical.directoryName, physical.parentID, physical.directoryID); err != nil {
 		return err
 	}
-	identity, err := validateOwnerFile(int(physical.directory.Fd()), int(physical.file.Fd()), physical.name)
+	identity, err := observeOwnerFile(int(physical.directory.Fd()), int(physical.file.Fd()), physical.name)
 	if err != nil || identity != physical.lockIdentity {
 		return application.NewError("repository-owner-lock", application.ReasonOwnerNotCurrent)
 	}
@@ -387,6 +472,12 @@ func (physical *darwinRepositoryOwnerPhysicalLock) close() error {
 		}
 		physical.directory = nil
 	}
+	if physical.parent != nil {
+		if physical.parent.Close() != nil {
+			failed = true
+		}
+		physical.parent = nil
+	}
 	if failed {
 		return application.NewError("repository-owner-lock", application.ReasonOwnerUnavailable)
 	}
@@ -404,7 +495,7 @@ func (lock *darwinRepositoryOwnerLock) identity() ownerLockIdentity {
 	if lock == nil || lock.physical == nil {
 		return ownerLockIdentity{}
 	}
-	return lock.physical.lockIdentity
+	return lock.physical.lockIdentity.Object
 }
 
 func (lock *darwinRepositoryOwnerLock) WithCurrentOwnerLock(ctx context.Context, acquisition resultingress.ControlOwnerAcquisition, fn func() error) error {
