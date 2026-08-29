@@ -12,7 +12,7 @@ import (
 
 func TestRepositoryOwnerLockIsUnavailableBeforeFilesystemMutation(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "must-not-exist")
-	if _, err := openRepositoryOwnerLock(root, testAcquisition()); !application.HasReason(err, application.ReasonPlatformProfileUnavailable) {
+	if _, err := openRepositoryOwnerScopeLock(nil, testAcquisition().Scope); !application.HasReason(err, application.ReasonPlatformProfileUnavailable) {
 		t.Fatalf("reason=%v", err)
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {

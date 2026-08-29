@@ -3,10 +3,12 @@
 package productionruntime
 
 import (
+	"os"
+
 	"github.com/chiga0/marshal-harness/internal/application"
 	"github.com/chiga0/marshal-harness/internal/resultingress"
 )
 
-func openRepositoryOwnerLock(string, resultingress.ControlOwnerAcquisition) (repositoryOwnerLock, error) {
+func openRepositoryOwnerScopeLock(*os.File, resultingress.ControlOwnerScope) (repositoryOwnerScopeLock, error) {
 	return nil, application.NewError("repository-owner-lock", application.ReasonPlatformProfileUnavailable)
 }
