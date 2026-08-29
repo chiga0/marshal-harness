@@ -42,7 +42,7 @@ func newPreparedRunStartFixture(t *testing.T) preparedRunStartFixture {
 	worktreePath := "/tmp/marshal-prepared-worktree"
 	ready.Payload = map[string]any{
 		"specDigest": specDigest, "policyDigest": policyDigest, "capabilityDigest": capabilityDigest,
-		"baseSha": baseSHA, "worktreePath": worktreePath,
+		"baseSha": baseSHA, "worktreePath": worktreePath, "maxAttempts": 3,
 	}
 	if err := store.Append(lease, planned, 0); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,6 @@ func newPreparedRunStartFixture(t *testing.T) preparedRunStartFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.CurrentAttemptID = "attempt:prepared-start"
 	state.SpecDigest = specDigest
 	state.PolicyDigest = policyDigest
 	state.CapabilityDigest = capabilityDigest
@@ -81,8 +80,10 @@ func newPreparedRunStartFixture(t *testing.T) preparedRunStartFixture {
 		t.Fatal(err)
 	}
 	preparation := canonical.DigestBytes([]byte("prepared"))
-	prepared := application.PreparedRunStart{ProtocolRevision: application.ProtocolRevision, TaskID: state.TaskID, RunID: state.RunID, AttemptID: state.CurrentAttemptID, State: domain.StateReady, Sequence: 2, AuthorityHead: records[1].digest, PreparationDigest: preparation}
-	return preparedRunStartFixture{store: store, lease: lease, prepared: prepared, claim: resultingress.CommittedRunStartClaim{TaskID: prepared.TaskID, RunID: prepared.RunID, AttemptID: prepared.AttemptID, PreparationDigest: preparation, ProcessStartedFactDigest: canonical.DigestBytes([]byte("process-started")), ResumeOutcomeFactDigest: canonical.DigestBytes([]byte("resume"))}}
+	reservationDigest := canonical.DigestBytes([]byte("reservation"))
+	openedDigest := canonical.DigestBytes([]byte("opened"))
+	prepared := application.PreparedRunStart{ProtocolRevision: application.PreparedRunStartProtocolRevision, TaskID: state.TaskID, RunID: state.RunID, AttemptID: "attempt:prepared-start", ReservationFactDigest: reservationDigest, AttemptOpenedFactDigest: openedDigest, AttemptOrdinal: 1, AttemptsUsedBefore: 0, MaxAttempts: 3, State: domain.StateReady, Sequence: 2, AuthorityHead: records[1].digest, PreparationDigest: preparation}
+	return preparedRunStartFixture{store: store, lease: lease, prepared: prepared, claim: resultingress.CommittedRunStartClaim{TaskID: prepared.TaskID, RunID: prepared.RunID, AttemptID: prepared.AttemptID, ReservationFactDigest: reservationDigest, AttemptOpenedFactDigest: openedDigest, AttemptOrdinal: 1, AttemptsUsedBefore: 0, MaxAttempts: 3, ReadySequence: 2, ReadyAuthorityHead: records[1].digest, PreparationDigest: preparation, ProcessStartedFactDigest: canonical.DigestBytes([]byte("process-started")), ResumeOutcomeFactDigest: canonical.DigestBytes([]byte("resume"))}}
 }
 
 func appendPreparedClaim(t *testing.T, fixture preparedRunStartFixture, claim resultingress.CommittedRunStartClaim) application.RunProjection {
@@ -174,6 +175,23 @@ func TestGenericAppendCannotBypassPreparedRunStart(t *testing.T) {
 	}
 }
 
+func TestRunStartOutcomeV1RemainsStrictReplayOnly(t *testing.T) {
+	legacy := runStartOutcomePayload{ProtocolRevision: runStartOutcomeProtocolV1, TaskID: "task:legacy-run-start", PreparationDigest: canonical.DigestBytes([]byte("legacy-prepared")), ProcessStartedFactDigest: canonical.DigestBytes([]byte("legacy-started")), ResumeOutcomeFactDigest: canonical.DigestBytes([]byte("legacy-resume"))}
+	if err := legacy.validate(); err != nil {
+		t.Fatalf("legacy payload no longer replays: %v", err)
+	}
+	mixed := legacy
+	mixed.ReservationFactDigest = canonical.DigestBytes([]byte("forged-reservation"))
+	if err := mixed.validate(); !errors.Is(err, ErrConflict) {
+		t.Fatalf("legacy payload accepted v2 field: %v", err)
+	}
+	fresh := legacy
+	fresh.ProtocolRevision = runStartOutcomeProtocolV2
+	if err := fresh.validate(); !errors.Is(err, ErrConflict) {
+		t.Fatalf("fresh v2 payload omitted reservation/budget: %v", err)
+	}
+}
+
 func TestPreparedRunStartRejectsZeroProofAndLeavesJournalUntouched(t *testing.T) {
 	fixture := newPreparedRunStartFixture(t)
 	before, _, err := fixture.store.ReadEvents(fixture.prepared.RunID)
@@ -212,6 +230,46 @@ func TestPreparedRunStartRejectsZeroProofAndLeavesJournalUntouched(t *testing.T)
 	after, _, readErr := fixture.store.ReadEvents(fixture.prepared.RunID)
 	if readErr != nil || !bytes.Equal(mustJSON(t, before), mustJSON(t, after)) {
 		t.Fatalf("failed proof changed journal: %v", readErr)
+	}
+}
+
+func TestPreparedRunStartGuardSerializesReleaseBeforeLeaseFieldRead(t *testing.T) {
+	fixture := newPreparedRunStartFixture(t)
+	entered := make(chan struct{})
+	unblock := make(chan struct{})
+	completed := make(chan error, 1)
+	go func() {
+		_, err := fixture.store.WithPreparedRunStartAuthority(context.Background(), fixture.lease, fixture.prepared, func(resultingress.RunStartProjector) error {
+			close(entered)
+			<-unblock
+			return errors.New("stop before projection")
+		})
+		completed <- err
+	}()
+	<-entered
+	released := make(chan error, 1)
+	go func() { released <- fixture.lease.Release() }()
+	select {
+	case err := <-released:
+		t.Fatalf("Release escaped prepared authority guard: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(unblock)
+	select {
+	case err := <-completed:
+		if err == nil {
+			t.Fatal("borrower failure disappeared")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("prepared authority did not finish")
+	}
+	select {
+	case err := <-released:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Release did not resume after prepared authority returned")
 	}
 }
 

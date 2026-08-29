@@ -9,10 +9,12 @@ import (
 	"io"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/chiga0/marshal-harness/internal/application"
+	"github.com/chiga0/marshal-harness/internal/authority"
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/domain"
 	"github.com/chiga0/marshal-harness/internal/lifecycle"
@@ -20,8 +22,9 @@ import (
 )
 
 const (
-	runStartOutcomeEventType        = "run.start-outcome"
-	runStartOutcomeProtocolRevision = "run-start-outcome/v1"
+	runStartOutcomeEventType  = "run.start-outcome"
+	runStartOutcomeProtocolV1 = "run-start-outcome/v1"
+	runStartOutcomeProtocolV2 = "run-start-outcome/v2"
 )
 
 var (
@@ -35,14 +38,35 @@ type runStartOutcomePayload struct {
 	PreparationDigest        string `json:"preparationDigest"`
 	ProcessStartedFactDigest string `json:"processStartedFactDigest"`
 	ResumeOutcomeFactDigest  string `json:"resumeOutcomeFactDigest"`
+	ReservationFactDigest    string `json:"reservationFactDigest,omitempty"`
+	AttemptOpenedFactDigest  string `json:"attemptOpenedFactDigest,omitempty"`
+	AttemptOrdinal           uint64 `json:"attemptOrdinal,omitempty"`
+	AttemptsUsedBefore       uint64 `json:"attemptsUsedBefore,omitempty"`
+	MaxAttempts              uint64 `json:"maxAttempts,omitempty"`
+	ReadySequence            uint64 `json:"readySequence,omitempty"`
+	ReadyAuthorityHead       string `json:"readyAuthorityHead,omitempty"`
 }
 
 func (payload runStartOutcomePayload) validate() error {
-	if payload.ProtocolRevision != runStartOutcomeProtocolRevision || domain.ValidateID(payload.TaskID) != nil {
+	if payload.ProtocolRevision != runStartOutcomeProtocolV1 && payload.ProtocolRevision != runStartOutcomeProtocolV2 || domain.ValidateID(payload.TaskID) != nil {
 		return ErrConflict
 	}
 	for _, digest := range []string{payload.PreparationDigest, payload.ProcessStartedFactDigest, payload.ResumeOutcomeFactDigest} {
 		if !runStartDigestPattern.MatchString(digest) {
+			return ErrConflict
+		}
+	}
+	if payload.ProtocolRevision == runStartOutcomeProtocolV1 {
+		if payload.ReservationFactDigest != "" || payload.AttemptOpenedFactDigest != "" || payload.AttemptOrdinal != 0 || payload.AttemptsUsedBefore != 0 || payload.MaxAttempts != 0 || payload.ReadySequence != 0 || payload.ReadyAuthorityHead != "" {
+			return ErrConflict
+		}
+	} else {
+		for _, digest := range []string{payload.ReservationFactDigest, payload.AttemptOpenedFactDigest, payload.ReadyAuthorityHead} {
+			if !runStartDigestPattern.MatchString(digest) {
+				return ErrConflict
+			}
+		}
+		if payload.AttemptOrdinal != payload.AttemptsUsedBefore+1 || payload.MaxAttempts == 0 || payload.AttemptOrdinal > payload.MaxAttempts || payload.ReadySequence == 0 {
 			return ErrConflict
 		}
 	}
@@ -63,6 +87,8 @@ type strictRunRecord struct {
 // digest/SHA/path validation.
 type RunStartAuthorityProjection struct {
 	Run               application.RunProjection
+	AttemptsUsed      uint64
+	MaxAttempts       uint64
 	PreparationDigest string
 	SpecDigest        string
 	PolicyDigest      string
@@ -76,7 +102,7 @@ type RunStartAuthorityProjection struct {
 // an empty PreparationDigest; RUNNING is accepted only when its exact head is
 // the sealed Run-start successor.
 func (s *Store) ReadRunStartAuthorityUnderLease(ctx context.Context, lease *Lease) (RunStartAuthorityProjection, error) {
-	if s == nil || ctx == nil || !leaseHeldBySelf(lease) || lease.root != s.root {
+	if s == nil || ctx == nil || !leaseOwnerMatches(lease) {
 		return RunStartAuthorityProjection{}, ErrConflict
 	}
 	if err := ctx.Err(); err != nil {
@@ -87,9 +113,17 @@ func (s *Store) ReadRunStartAuthorityUnderLease(ctx context.Context, lease *Leas
 	}
 	lease.guard.mu.RLock()
 	defer lease.guard.mu.RUnlock()
+	if !leaseHeldBySelfLocked(lease) || lease.root != s.root || lease.guard.preparedBorrowed.Load() {
+		return RunStartAuthorityProjection{}, ErrConflict
+	}
 	if err := ctx.Err(); err != nil {
 		return RunStartAuthorityProjection{}, err
 	}
+	return s.readRunStartAuthorityLocked(lease)
+}
+
+// readRunStartAuthorityLocked requires guard.mu's read or write lock.
+func (s *Store) readRunStartAuthorityLocked(lease *Lease) (RunStartAuthorityProjection, error) {
 	records, err := strictRunJournalAt(int(lease.runDir.Fd()))
 	if err != nil {
 		return RunStartAuthorityProjection{}, err
@@ -103,11 +137,20 @@ func (s *Store) ReadRunStartAuthorityUnderLease(ctx context.Context, lease *Leas
 		TaskID: state.TaskID, RunID: state.RunID, AttemptID: state.CurrentAttemptID,
 		State: state.State, Sequence: state.Sequence, AuthorityHead: head.digest,
 	}}
+	projection.AttemptsUsed = uint64(state.AttemptsUsed)
 	if projection.Run.Validate() != nil {
 		return RunStartAuthorityProjection{}, ErrConflict
 	}
 	if state.State == domain.StateReady || state.State == domain.StateRunning {
-		frozen, err := runStartFrozenInputs(records)
+		requireBudget := true
+		if state.State == domain.StateRunning && head.event.Type == runStartOutcomeEventType {
+			legacyPayload, payloadErr := runStartPayload(head.event)
+			if payloadErr != nil {
+				return RunStartAuthorityProjection{}, ErrConflict
+			}
+			requireBudget = legacyPayload.ProtocolRevision != runStartOutcomeProtocolV1
+		}
+		frozen, err := runStartFrozenInputs(records, requireBudget)
 		if err != nil || frozen.SpecDigest != state.SpecDigest || frozen.PolicyDigest != state.PolicyDigest || frozen.CapabilityDigest != state.CapabilityDigest || frozen.BaseSHA != state.BaseSHA || frozen.WorktreePath != state.WorktreePath {
 			return RunStartAuthorityProjection{}, ErrConflict
 		}
@@ -116,6 +159,10 @@ func (s *Store) ReadRunStartAuthorityUnderLease(ctx context.Context, lease *Leas
 		projection.CapabilityDigest = frozen.CapabilityDigest
 		projection.BaseSHA = frozen.BaseSHA
 		projection.WorktreePath = frozen.WorktreePath
+		projection.MaxAttempts = frozen.MaxAttempts
+		if requireBudget && (projection.AttemptsUsed > projection.MaxAttempts || state.State == domain.StateReady && (state.CurrentAttemptID != "" || projection.AttemptsUsed >= projection.MaxAttempts)) {
+			return RunStartAuthorityProjection{}, ErrConflict
+		}
 	}
 	if state.State == domain.StateRunning {
 		if head.event.Type != runStartOutcomeEventType || head.event.StateFrom != domain.StateReady || head.event.StateTo != domain.StateRunning || head.event.AttemptID != state.CurrentAttemptID {
@@ -130,15 +177,85 @@ func (s *Store) ReadRunStartAuthorityUnderLease(ctx context.Context, lease *Leas
 	return projection, nil
 }
 
+// AttemptRunAuthorityVerifier holds the exact Run Lease across the RB1
+// transaction. It is constructed only from an already-acquired Lease and
+// carries repository-scope identity without exposing the Lease descriptor.
+type AttemptRunAuthorityVerifier struct {
+	store          *Store
+	lease          *Lease
+	namespace      authority.AuthorityNamespaceId
+	orchestratorID string
+}
+
+func NewAttemptRunAuthorityVerifier(store *Store, lease *Lease, namespace authority.AuthorityNamespaceId, orchestratorID string) (*AttemptRunAuthorityVerifier, error) {
+	if store == nil || !leaseOwnerMatches(lease) || namespace.Validate() != nil || strings.TrimSpace(orchestratorID) == "" {
+		return nil, ErrConflict
+	}
+	return &AttemptRunAuthorityVerifier{store: store, lease: lease, namespace: namespace, orchestratorID: orchestratorID}, nil
+}
+
+func (verifier *AttemptRunAuthorityVerifier) WithCurrentReadyRunAuthority(ctx context.Context, want resultingress.ReadyRunAuthority, fn func() error) error {
+	if verifier == nil || ctx == nil || fn == nil || want.Validate() != nil || !leaseOwnerMatches(verifier.lease) {
+		return ErrConflict
+	}
+	verifier.lease.guard.mu.Lock()
+	defer verifier.lease.guard.mu.Unlock()
+	if !leaseHeldBySelfLocked(verifier.lease) || verifier.lease.guard.preparedBorrowed.Load() || verifier.lease.root != verifier.store.root || ctx.Err() != nil {
+		return ErrConflict
+	}
+	projection, err := verifier.store.readRunStartAuthorityLocked(verifier.lease)
+	if err != nil || projection.Run.State != domain.StateReady || projection.Run.AttemptID != "" {
+		return ErrConflict
+	}
+	got := resultingress.ReadyRunAuthority{AuthorityNamespaceID: verifier.namespace, TaskID: projection.Run.TaskID, RunID: projection.Run.RunID, OrchestratorID: verifier.orchestratorID, ReadySequence: projection.Run.Sequence, ReadyAuthorityHead: projection.Run.AuthorityHead, AttemptsUsed: projection.AttemptsUsed, MaxAttempts: projection.MaxAttempts, SpecDigest: projection.SpecDigest, PolicyDigest: projection.PolicyDigest, CapabilityDigest: projection.CapabilityDigest, BaseSHA: projection.BaseSHA, WorktreePath: projection.WorktreePath}
+	if got != want {
+		return ErrConflict
+	}
+	return fn()
+}
+
+func (verifier *AttemptRunAuthorityVerifier) WithCurrentSealedRunSuccessor(ctx context.Context, want resultingress.SealedRunSuccessorAuthority, fn func() error) error {
+	if verifier == nil || ctx == nil || fn == nil || want.Validate() != nil || !leaseOwnerMatches(verifier.lease) {
+		return ErrConflict
+	}
+	verifier.lease.guard.mu.Lock()
+	defer verifier.lease.guard.mu.Unlock()
+	if !leaseHeldBySelfLocked(verifier.lease) || verifier.lease.guard.preparedBorrowed.Load() || verifier.lease.root != verifier.store.root || ctx.Err() != nil {
+		return ErrConflict
+	}
+	projection, err := verifier.store.readRunStartAuthorityLocked(verifier.lease)
+	if err != nil || projection.Run.State != domain.StateRunning || projection.Run.AttemptID != want.AttemptID || projection.Run.Sequence != want.RunSuccessorSequence || projection.Run.AuthorityHead != want.RunSuccessorHead || projection.AttemptsUsed != want.AttemptsUsedAfter || projection.MaxAttempts != want.Ready.MaxAttempts {
+		return ErrConflict
+	}
+	records, err := strictRunJournalAt(int(verifier.lease.runDir.Fd()))
+	if err != nil || want.Ready.ReadySequence == 0 || want.Ready.ReadySequence >= uint64(len(records)) {
+		return ErrConflict
+	}
+	payload, err := runStartPayload(records[want.Ready.ReadySequence].event)
+	if err != nil || payload.ReservationFactDigest != want.ReservationFactDigest || payload.AttemptOpenedFactDigest != want.AttemptOpenedFactDigest || payload.AttemptOrdinal != want.AttemptOrdinal || payload.AttemptsUsedBefore != want.Ready.AttemptsUsed || payload.MaxAttempts != want.Ready.MaxAttempts || payload.ReadySequence != want.Ready.ReadySequence || payload.ReadyAuthorityHead != want.Ready.ReadyAuthorityHead {
+		return ErrConflict
+	}
+	frozen, err := runStartFrozenInputs(records, true)
+	if err != nil || records[want.Ready.ReadySequence-1].digest != want.Ready.ReadyAuthorityHead {
+		return ErrConflict
+	}
+	gotReady := resultingress.ReadyRunAuthority{AuthorityNamespaceID: verifier.namespace, TaskID: projection.Run.TaskID, RunID: projection.Run.RunID, OrchestratorID: verifier.orchestratorID, ReadySequence: want.Ready.ReadySequence, ReadyAuthorityHead: records[want.Ready.ReadySequence-1].digest, AttemptsUsed: payload.AttemptsUsedBefore, MaxAttempts: frozen.MaxAttempts, SpecDigest: frozen.SpecDigest, PolicyDigest: frozen.PolicyDigest, CapabilityDigest: frozen.CapabilityDigest, BaseSHA: frozen.BaseSHA, WorktreePath: frozen.WorktreePath}
+	if gotReady != want.Ready {
+		return ErrConflict
+	}
+	return fn()
+}
+
 type runStartFrozenProjection struct {
 	SpecDigest       string
 	PolicyDigest     string
 	CapabilityDigest string
 	BaseSHA          string
 	WorktreePath     string
+	MaxAttempts      uint64
 }
 
-func runStartFrozenInputs(records []strictRunRecord) (runStartFrozenProjection, error) {
+func runStartFrozenInputs(records []strictRunRecord, requireBudget bool) (runStartFrozenProjection, error) {
 	var result runStartFrozenProjection
 	found := false
 	for _, record := range records {
@@ -169,6 +286,13 @@ func runStartFrozenInputs(records []strictRunRecord) (runStartFrozenProjection, 
 		result.WorktreePath, ok = record.event.Payload["worktreePath"].(string)
 		if !ok {
 			return runStartFrozenProjection{}, ErrConflict
+		}
+		maxAttempts, ok := record.event.Payload["maxAttempts"].(float64)
+		if requireBudget || ok {
+			if !ok || maxAttempts < 1 || maxAttempts > float64(1<<53-1) || maxAttempts != float64(uint64(maxAttempts)) {
+				return runStartFrozenProjection{}, ErrConflict
+			}
+			result.MaxAttempts = uint64(maxAttempts)
 		}
 	}
 	if !found || !runStartDigestPattern.MatchString(result.SpecDigest) || !runStartDigestPattern.MatchString(result.PolicyDigest) || !runStartDigestPattern.MatchString(result.CapabilityDigest) || !runStartGitObjectPattern.MatchString(result.BaseSHA) || !filepath.IsAbs(result.WorktreePath) || filepath.Clean(result.WorktreePath) != result.WorktreePath {
@@ -328,7 +452,7 @@ func (guard *borrowedRunStartGuard) deactivateAndWait() (application.RunProjecti
 // It borrows the exact lease descriptor and holds its mutation guard through
 // the ResultIngress continuation, append/fsync and post-CAS projection.
 func (s *Store) WithPreparedRunStartAuthority(ctx context.Context, lease *Lease, prepared application.PreparedRunStart, fn func(resultingress.RunStartProjector) error) (application.RunProjection, error) {
-	if s == nil || ctx == nil || fn == nil || prepared.Validate() != nil || !leaseHeldBySelf(lease) || lease.root != s.root || lease.runID != prepared.RunID {
+	if s == nil || ctx == nil || fn == nil || prepared.Validate() != nil || !leaseOwnerMatches(lease) {
 		return application.RunProjection{}, ErrConflict
 	}
 	if err := ctx.Err(); err != nil {
@@ -336,6 +460,9 @@ func (s *Store) WithPreparedRunStartAuthority(ctx context.Context, lease *Lease,
 	}
 	lease.guard.mu.Lock()
 	defer lease.guard.mu.Unlock()
+	if !leaseHeldBySelfLocked(lease) || lease.root != s.root || lease.runID != prepared.RunID || lease.guard.preparedBorrowed.Load() {
+		return application.RunProjection{}, ErrConflict
+	}
 	// Acquire already bound and retained this exact Run directory descriptor.
 	// The sealed outer borrow must never reopen the Run by pathname.
 	runFD := int(lease.runDir.Fd())
@@ -384,14 +511,15 @@ func validatePreparedRunStartCurrentAt(runFD int, prepared application.PreparedR
 	if err != nil {
 		return err
 	}
-	if state.TaskID != prepared.TaskID || state.RunID != prepared.RunID || state.CurrentAttemptID != prepared.AttemptID || state.State != domain.StateReady || state.Sequence != prepared.Sequence {
-		return fmt.Errorf("%w: prepared Run no longer binds current READY Attempt", ErrConflict)
+	frozen, frozenErr := runStartFrozenInputs(records, true)
+	if frozenErr != nil || state.TaskID != prepared.TaskID || state.RunID != prepared.RunID || state.CurrentAttemptID != "" || state.State != domain.StateReady || state.Sequence != prepared.Sequence || uint64(state.AttemptsUsed) != prepared.AttemptsUsedBefore || frozen.MaxAttempts != prepared.MaxAttempts || prepared.AttemptOrdinal != uint64(state.AttemptsUsed)+1 {
+		return fmt.Errorf("%w: prepared Run no longer binds current READY reservation", ErrConflict)
 	}
 	return nil
 }
 
 func appendPreparedRunStartClaim(guard *borrowedRunStartGuard, claim resultingress.CommittedRunStartClaim) (application.RunProjection, error) {
-	if guard == nil || guard.runFD < 0 || claim.TaskID != guard.prepared.TaskID || claim.RunID != guard.prepared.RunID || claim.AttemptID != guard.prepared.AttemptID || claim.PreparationDigest != guard.prepared.PreparationDigest || !runStartDigestPattern.MatchString(claim.ProcessStartedFactDigest) || !runStartDigestPattern.MatchString(claim.ResumeOutcomeFactDigest) {
+	if guard == nil || guard.runFD < 0 || claim.TaskID != guard.prepared.TaskID || claim.RunID != guard.prepared.RunID || claim.AttemptID != guard.prepared.AttemptID || claim.ReservationFactDigest != guard.prepared.ReservationFactDigest || claim.AttemptOpenedFactDigest != guard.prepared.AttemptOpenedFactDigest || claim.AttemptOrdinal != guard.prepared.AttemptOrdinal || claim.AttemptsUsedBefore != guard.prepared.AttemptsUsedBefore || claim.MaxAttempts != guard.prepared.MaxAttempts || claim.ReadySequence != guard.prepared.Sequence || claim.ReadyAuthorityHead != guard.prepared.AuthorityHead || claim.PreparationDigest != guard.prepared.PreparationDigest || !runStartDigestPattern.MatchString(claim.ProcessStartedFactDigest) || !runStartDigestPattern.MatchString(claim.ResumeOutcomeFactDigest) {
 		return application.RunProjection{}, fmt.Errorf("%w: committed Run-start claim mismatch", ErrConflict)
 	}
 	records, err := strictRunJournalAt(guard.runFD)
@@ -409,7 +537,7 @@ func appendPreparedRunStartClaim(guard *borrowedRunStartGuard, claim resultingre
 	if err := validatePreparedRunStartCurrentAt(guard.runFD, guard.prepared, records); err != nil {
 		return application.RunProjection{}, err
 	}
-	payload := runStartOutcomePayload{ProtocolRevision: runStartOutcomeProtocolRevision, TaskID: claim.TaskID, PreparationDigest: claim.PreparationDigest, ProcessStartedFactDigest: claim.ProcessStartedFactDigest, ResumeOutcomeFactDigest: claim.ResumeOutcomeFactDigest}
+	payload := runStartOutcomePayload{ProtocolRevision: runStartOutcomeProtocolV2, TaskID: claim.TaskID, PreparationDigest: claim.PreparationDigest, ProcessStartedFactDigest: claim.ProcessStartedFactDigest, ResumeOutcomeFactDigest: claim.ResumeOutcomeFactDigest, ReservationFactDigest: claim.ReservationFactDigest, AttemptOpenedFactDigest: claim.AttemptOpenedFactDigest, AttemptOrdinal: claim.AttemptOrdinal, AttemptsUsedBefore: claim.AttemptsUsedBefore, MaxAttempts: claim.MaxAttempts, ReadySequence: claim.ReadySequence, ReadyAuthorityHead: claim.ReadyAuthorityHead}
 	eventID, err := domain.NewID("event")
 	if err != nil {
 		return application.RunProjection{}, err
@@ -425,6 +553,13 @@ func appendPreparedRunStartClaim(guard *borrowedRunStartGuard, claim resultingre
 			"preparationDigest":        payload.PreparationDigest,
 			"processStartedFactDigest": payload.ProcessStartedFactDigest,
 			"resumeOutcomeFactDigest":  payload.ResumeOutcomeFactDigest,
+			"reservationFactDigest":    payload.ReservationFactDigest,
+			"attemptOpenedFactDigest":  payload.AttemptOpenedFactDigest,
+			"attemptOrdinal":           payload.AttemptOrdinal,
+			"attemptsUsedBefore":       payload.AttemptsUsedBefore,
+			"maxAttempts":              payload.MaxAttempts,
+			"readySequence":            payload.ReadySequence,
+			"readyAuthorityHead":       payload.ReadyAuthorityHead,
 		},
 	}
 	if err := lifecycle.ValidateTransition(domain.StateReady, event.RunID, guard.prepared.Sequence, event); err != nil {
@@ -449,6 +584,11 @@ func appendPreparedRunStartClaim(guard *borrowedRunStartGuard, claim resultingre
 	if err != nil || !found || stored != payload {
 		return application.RunProjection{}, fmt.Errorf("%w: Run-start post-CAS replay mismatch", ErrConflict)
 	}
+	state, err := inspectAt(guard.runFD)
+	if err != nil || state.State != domain.StateRunning || state.CurrentAttemptID != claim.AttemptID || uint64(state.AttemptsUsed) != claim.AttemptOrdinal || state.Sequence != guard.prepared.Sequence+1 {
+		return application.RunProjection{}, fmt.Errorf("%w: Run-start budget projection mismatch", ErrConflict)
+	}
+	notifyStateTransition(false, []domain.RunEvent{after[guard.prepared.Sequence].event})
 	return projection, nil
 }
 
@@ -462,7 +602,7 @@ func findPreparedRunStartOutcome(prepared application.PreparedRunStart, records 
 		return application.RunProjection{}, runStartOutcomePayload{}, false, fmt.Errorf("%w: prepared successor has another producer", ErrConflict)
 	}
 	payload, err := runStartPayload(record.event)
-	if err != nil || payload.PreparationDigest != prepared.PreparationDigest || payload.TaskID != prepared.TaskID || record.event.RunID != prepared.RunID || record.event.AttemptID != prepared.AttemptID || record.event.StateFrom != domain.StateReady || record.event.StateTo != domain.StateRunning || records[prepared.Sequence-1].digest != prepared.AuthorityHead {
+	if err != nil || payload.PreparationDigest != prepared.PreparationDigest || payload.TaskID != prepared.TaskID || payload.ReservationFactDigest != prepared.ReservationFactDigest || payload.AttemptOpenedFactDigest != prepared.AttemptOpenedFactDigest || payload.AttemptOrdinal != prepared.AttemptOrdinal || payload.AttemptsUsedBefore != prepared.AttemptsUsedBefore || payload.MaxAttempts != prepared.MaxAttempts || payload.ReadySequence != prepared.Sequence || payload.ReadyAuthorityHead != prepared.AuthorityHead || record.event.RunID != prepared.RunID || record.event.AttemptID != prepared.AttemptID || record.event.StateFrom != domain.StateReady || record.event.StateTo != domain.StateRunning || records[prepared.Sequence-1].digest != prepared.AuthorityHead {
 		return application.RunProjection{}, runStartOutcomePayload{}, false, fmt.Errorf("%w: conflicting Run-start outcome", ErrConflict)
 	}
 	projection := application.RunProjection{TaskID: prepared.TaskID, RunID: prepared.RunID, AttemptID: prepared.AttemptID, State: domain.StateRunning, Sequence: target, AuthorityHead: record.digest}

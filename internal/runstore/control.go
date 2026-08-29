@@ -105,14 +105,19 @@ func (s *Store) controlDir(runID string) (string, error) {
 }
 
 func (s *Store) appendControlRecord(lease *Lease, validator ControlValidator, entry controlEntry, payload any, maxJournalBytes int64) error {
-	if !leaseHeldBySelf(lease) {
+	if !leaseOwnerMatches(lease) {
 		return errors.New("control append requires held run lease")
 	}
 	if lease.guard.preparedBorrowed.Load() {
 		return fmt.Errorf("%w: prepared Run-start authority is borrowed", ErrConflict)
 	}
-	lease.guard.mu.Lock()
-	defer lease.guard.mu.Unlock()
+	lease.guard.mu.RLock()
+	defer lease.guard.mu.RUnlock()
+	if !leaseHeldBySelfLocked(lease) || lease.guard.preparedBorrowed.Load() {
+		return fmt.Errorf("%w: control append requires current unborrowed run lease", ErrConflict)
+	}
+	lease.guard.mutation.Lock()
+	defer lease.guard.mutation.Unlock()
 	if validator == nil {
 		return errors.New("control append requires a validator")
 	}
@@ -127,7 +132,7 @@ func (s *Store) appendControlRecord(lease *Lease, validator ControlValidator, en
 			return fmt.Errorf("control mutation hook: %w", err)
 		}
 	}
-	authority, err := OpenRunAuthority(lease)
+	authority, err := openRunAuthorityLocked(lease)
 	if err != nil {
 		return fmt.Errorf("control mutation authority: %w", err)
 	}

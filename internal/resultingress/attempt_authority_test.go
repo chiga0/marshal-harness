@@ -32,6 +32,43 @@ func attemptTestIdentity() AttemptIdentity {
 	}
 }
 
+type attemptReadyVerifier struct{ want ReadyRunAuthority }
+
+func (verifier attemptReadyVerifier) WithCurrentReadyRunAuthority(_ context.Context, got ReadyRunAuthority, fn func() error) error {
+	if got != verifier.want || fn == nil {
+		return ErrRunAuthorityUnauthorized
+	}
+	return fn()
+}
+
+func appendFreshReservedAttempt(t *testing.T, store *DurableStore, id AttemptIdentity) AttemptAuthorityState {
+	t.Helper()
+	ready := ReadyRunAuthority{AuthorityNamespaceID: id.AuthorityNamespaceID, TaskID: id.TaskID, RunID: id.RunID, OrchestratorID: id.OrchestratorID, ReadySequence: 2, ReadyAuthorityHead: id.RunAuthorityDigest, AttemptsUsed: 0, MaxAttempts: 3, SpecDigest: attemptTestDigest("spec"), PolicyDigest: attemptTestDigest("policy"), CapabilityDigest: attemptTestDigest("capability"), BaseSHA: strings.Repeat("a", 40), WorktreePath: "/tmp/marshal-reserved-worktree"}
+	var reservationDigest string
+	projection := newAuthorityProjection()
+	err := store.transact(projection, func() error {
+		reservation := AttemptReservationV1{SchemaRevision: attemptReservationSchemaV1, Ready: ready, AttemptID: id.AttemptID, AttemptOrdinal: 1, ReservationKeyDigest: reservationKey(ready)}
+		fact := &attemptReservationFact{ProtocolRevision: attemptAuthorityProtocolV2, FactType: attemptReservedFactType, Sequence: store.nextSequence, Reservation: reservation}
+		if err := store.appendLine(fact, func() string { return fact.Digest }, func(value string) { fact.Digest = value }); err != nil {
+			return err
+		}
+		store.nextSequence++
+		if err := applyAttemptReservationFactValue(*fact, projection); err != nil {
+			return err
+		}
+		reservationDigest = fact.Digest
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := store.OpenReservedAttempt(context.Background(), attemptReadyVerifier{want: ready}, reservationDigest, id)
+	if err != nil || !opened.Appended {
+		t.Fatalf("fresh reserved open=%+v err=%v", opened, err)
+	}
+	return opened.State
+}
+
 func attemptTestProcess(t *testing.T) ProcessObservation {
 	t.Helper()
 	observation, err := SealProcessObservation(ProcessObservation{
@@ -464,6 +501,12 @@ func appendHistoricalAttemptTransition(t *testing.T, store *DurableStore, state 
 
 func appendAuthorizedAttempt(t *testing.T, store *DurableStore, revision uint64, head string, transition AttemptTransition) (AttemptAppendResult, error) {
 	t.Helper()
+	// Most historical authority tests exercise post-open lifecycle mechanics.
+	// Keep their fixture as explicit legacy replay; fresh v2 open is covered by
+	// attempt_reservation_test and cannot use this helper.
+	if transition.Kind == AttemptTransitionOpened {
+		return store.compareAndAppend(revision, head, transition, false)
+	}
 	if transition.Kind == AttemptTransitionLaunchAuthorized && zeroLaunchClosure(transition.LaunchClosure) {
 		transition.LaunchClosure = attemptTestClosure(t)
 	}
@@ -582,9 +625,12 @@ func TestOpenedLaunchAndProcessFactsRequireHeldCurrentRunAuthority(t *testing.T)
 	if states, err := store.AttemptStates(); err != nil || len(states) != 0 {
 		t.Fatalf("unauthorized opened appended state=%#v err=%v", states, err)
 	}
-	openedResult, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run}, 0, "", AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, openedTransition)
+	if _, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run}, 0, "", AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, openedTransition); !errors.Is(err, ErrAttemptAuthorityConflict) {
+		t.Fatalf("fresh legacy opened err=%v", err)
+	}
+	openedResult, err := appendAuthorizedAttempt(t, store, 0, "", openedTransition)
 	if err != nil || !openedResult.Appended {
-		t.Fatalf("opened=%#v err=%v", openedResult, err)
+		t.Fatalf("historical opened=%#v err=%v", openedResult, err)
 	}
 	launch := AttemptTransition{Kind: AttemptTransitionLaunchAuthorized, Identity: id, LaunchAuthorizationID: "launch-held", LaunchClosure: attemptTestClosure(t)}
 	if _, err := store.CompareAndAppendAuthorized(context.Background(), attemptRunVerifier{want: run, err: errors.New("authority drift")}, openedResult.State.Revision, openedResult.State.HeadDigest, AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, launch); !errors.Is(err, ErrRunAuthorityUnauthorized) {

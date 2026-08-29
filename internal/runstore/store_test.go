@@ -165,6 +165,70 @@ func TestAcquireExistingUsesDescriptorBoundLeaseAndReleaseIsNonMutating(t *testi
 	}
 }
 
+func TestRunAuthorityBorrowBlocksReleaseUntilClose(t *testing.T) {
+	root := t.TempDir()
+	store := New(root)
+	lease, err := store.Acquire("run:guarded-authority")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority, err := OpenRunAuthority(lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan error, 1)
+	go func() { released <- lease.Release() }()
+	select {
+	case err := <-released:
+		t.Fatalf("Release escaped live authority borrow: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := authority.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-released:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Release did not resume after authority Close")
+	}
+	if _, err := OpenRunAuthority(lease); err == nil {
+		t.Fatal("released Lease reopened authority")
+	}
+}
+
+func TestBoundDirectoryBorrowBlocksReleaseUntilClose(t *testing.T) {
+	store := New(t.TempDir())
+	lease, err := store.Acquire("run:guarded-directory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := OpenOrCreateDirectoryUnderLease(lease, "attempts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan error, 1)
+	go func() { released <- lease.Release() }()
+	select {
+	case err := <-released:
+		t.Fatalf("Release escaped BoundDirectory borrow: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := directory.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-released:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Release did not resume after BoundDirectory Close")
+	}
+}
+
 func TestAcquireExistingLeaseBusyDoesNotRewriteOwner(t *testing.T) {
 	root := t.TempDir()
 	store := New(root)

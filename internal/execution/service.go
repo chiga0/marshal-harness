@@ -355,7 +355,7 @@ func failLocalSelfIdentityIngress(store *runstore.Store, lease *runstore.Lease, 
 	if err != nil {
 		return Result{State: state, AttemptID: attemptID}, errors.Join(closed, err)
 	}
-	prepared, err := review.PrepareOutcomeAt(authority, outcome)
+	prepared, err := review.PrepareOutcomeAt(authority.File, outcome)
 	_ = authority.Close()
 	if err != nil {
 		return Result{State: state, AttemptID: attemptID}, errors.Join(closed, err)
@@ -374,7 +374,7 @@ func failLocalSelfIdentityIngress(store *runstore.Store, lease *runstore.Lease, 
 		prepared.Abort()
 		return Result{State: next, AttemptID: attemptID}, errors.Join(closed, err)
 	}
-	err = prepared.CommitAt(authority)
+	err = prepared.CommitAt(authority.File)
 	_ = authority.Close()
 	if err != nil {
 		return Result{State: next, AttemptID: attemptID}, errors.Join(closed, err)
@@ -1165,7 +1165,7 @@ func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir stri
 	if err != nil {
 		return domain.RunState{}, "", fmt.Errorf("orphan recovery: open terminal outcome authority: %w", err)
 	}
-	prepared, err := review.PrepareOutcomeAt(outcomeAuthority, outcome)
+	prepared, err := review.PrepareOutcomeAt(outcomeAuthority.File, outcome)
 	_ = outcomeAuthority.Close()
 	if err != nil {
 		return domain.RunState{}, "", fmt.Errorf("orphan recovery: prepare terminal outcome: %w", err)
@@ -1184,7 +1184,7 @@ func closeOrphanBudget(store *runstore.Store, lease *runstore.Lease, runDir stri
 		prepared.Abort()
 		return next, orphanAttemptID, fmt.Errorf("orphan recovery: reopen terminal outcome authority: %w", err)
 	}
-	err = prepared.CommitAt(commitAuthority)
+	err = prepared.CommitAt(commitAuthority.File)
 	_ = commitAuthority.Close()
 	if err != nil {
 		return next, orphanAttemptID, fmt.Errorf("orphan recovery: commit terminal outcome: %w", err)
@@ -1259,7 +1259,7 @@ func recoverWorkerTerminalOutcome(store *runstore.Store, lease *runstore.Lease, 
 	if err != nil {
 		return false, fmt.Errorf("worker terminal recovery: open terminal outcome authority: %w", err)
 	}
-	err = review.EnsureOutcomeAt(outcomeAuthority, outcome)
+	err = review.EnsureOutcomeAt(outcomeAuthority.File, outcome)
 	_ = outcomeAuthority.Close()
 	if err != nil {
 		return false, fmt.Errorf("worker terminal recovery: compensate terminal outcome: %w", err)
@@ -1296,7 +1296,7 @@ func recoverLocalSelfIdentityTerminalOutcome(store *runstore.Store, lease *runst
 	if err != nil {
 		return false, fmt.Errorf("local self-identity terminal recovery: open Outcome authority: %w", err)
 	}
-	err = review.EnsureOutcomeAt(authority, outcome)
+	err = review.EnsureOutcomeAt(authority.File, outcome)
 	_ = authority.Close()
 	if err != nil {
 		return false, fmt.Errorf("local self-identity terminal recovery: compensate Outcome: %w", err)
@@ -3027,7 +3027,7 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 		if authorityErr != nil {
 			return state, classification.reportedCause, authorityErr
 		}
-		prepared, err = review.PrepareOutcomeAt(outcomeAuthority, outcome)
+		prepared, err = review.PrepareOutcomeAt(outcomeAuthority.File, outcome)
 		_ = outcomeAuthority.Close()
 		if err != nil {
 			return state, classification.reportedCause, err
@@ -3050,7 +3050,7 @@ func recordFailure(store *runstore.Store, lease *runstore.Lease, runDir string, 
 			prepared.Abort()
 			return next, classification.reportedCause, err
 		}
-		err = prepared.CommitAt(commitAuthority)
+		err = prepared.CommitAt(commitAuthority.File)
 		_ = commitAuthority.Close()
 		if err != nil {
 			return next, classification.reportedCause, err

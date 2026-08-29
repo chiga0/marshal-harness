@@ -18,22 +18,18 @@ import (
 )
 
 const (
-	PreparedExecutionSchema            = "PreparedExecutionV1"
-	PreparedExecutionProtocol          = "prepared-execution/v1"
-	preparedExecutionAuthorityProtocol = "prepared-execution-authority/v1"
+	PreparedExecutionSchema            = "PreparedExecutionV2"
+	PreparedExecutionProtocol          = "prepared-execution/v2"
+	preparedExecutionAuthorityProtocol = "prepared-execution-authority/v2"
+	legacyPreparedExecutionSchema      = "PreparedExecutionV1"
+	legacyPreparedExecutionProtocol    = "prepared-execution/v1"
+	legacyPreparedAuthorityProtocol    = "prepared-execution-authority/v1"
 	preparedExecutionCreatedFactType   = "prepared-execution-created"
 )
 
-var (
-	ErrPreparedExecutionConflict    = errors.New("resultingress: prepared execution authority conflict")
-	ErrPreparedExecutionUnavailable = errors.New("resultingress: prepared execution unavailable")
-	ErrCommittedRunStartProof       = errors.New("resultingress: committed Run-start proof violation")
-)
-
-// PreparedExecutionV1 is a creation-once, secret-safe index into authority
-// facts held by this same ResultIngress ledger. It deliberately contains no
-// path, argv, environment, stdin, nonce, handle or transcript bytes.
-type PreparedExecutionV1 struct {
+// legacyPreparedExecutionV1 is replay-only. It preserves exact historical
+// bytes without allowing a v1 object to enter Create/Resolve/Start.
+type legacyPreparedExecutionV1 struct {
 	SchemaVersion                        string              `json:"schemaVersion"`
 	ProtocolRevision                     string              `json:"protocolRevision"`
 	AttemptIdentity                      AttemptIdentity     `json:"attemptIdentity"`
@@ -54,9 +50,71 @@ type PreparedExecutionV1 struct {
 	PreparationDigest                    string              `json:"preparationDigest"`
 }
 
+func (prepared legacyPreparedExecutionV1) validate() error {
+	if prepared.SchemaVersion != legacyPreparedExecutionSchema || prepared.ProtocolRevision != legacyPreparedExecutionProtocol || prepared.AttemptIdentity.Validate() != nil || prepared.RunAuthorityBinding != runAuthorityBindingFor(prepared.AttemptIdentity) || prepared.ExpectedRunSequence == 0 || prepared.ExpectedRunSequence > maxExactJSONInteger || prepared.CurrentOwnerBinding.Validate() != nil || strings.TrimSpace(prepared.LaunchAuthorizationID) == "" || prepared.AttemptAuthorityHeadAtPreparation != prepared.LaunchAuthorizedFactDigest {
+		return ErrPreparedExecutionConflict
+	}
+	for _, digest := range []string{prepared.ExpectedRunAuthorityHead, prepared.ControlOwnerBoundFactDigest, prepared.AttemptAuthorityHeadAtPreparation, prepared.AllocationProvisionReceiptFactDigest, prepared.AllocationProvisionReceiptDigest, prepared.LaunchAuthorizedFactDigest, prepared.StoredClosureDigest, prepared.LaunchMaterialsDigest, prepared.AgentLaunchSpecDigest, prepared.Pi0843IdentityDigest, prepared.PreparationDigest} {
+		if requireDigest("legacyPreparedDigest", digest) != nil {
+			return ErrPreparedExecutionConflict
+		}
+	}
+	stored := prepared.PreparationDigest
+	prepared.PreparationDigest = ""
+	digest, err := canonicalDigest(prepared)
+	if err != nil || digest != stored {
+		return ErrPreparedExecutionConflict
+	}
+	return nil
+}
+
+type legacyPreparedExecutionFact struct {
+	ProtocolRevision string                    `json:"protocolRevision"`
+	FactType         string                    `json:"factType"`
+	Sequence         int64                     `json:"sequence"`
+	Prepared         legacyPreparedExecutionV1 `json:"prepared"`
+	Digest           string                    `json:"digest"`
+}
+
+var (
+	ErrPreparedExecutionConflict    = errors.New("resultingress: prepared execution authority conflict")
+	ErrPreparedExecutionUnavailable = errors.New("resultingress: prepared execution unavailable")
+	ErrCommittedRunStartProof       = errors.New("resultingress: committed Run-start proof violation")
+)
+
+// PreparedExecutionV1 is a creation-once, secret-safe index into authority
+// facts held by this same ResultIngress ledger. It deliberately contains no
+// path, argv, environment, stdin, nonce, handle or transcript bytes.
+type PreparedExecutionV1 struct {
+	SchemaVersion                        string              `json:"schemaVersion"`
+	ProtocolRevision                     string              `json:"protocolRevision"`
+	AttemptIdentity                      AttemptIdentity     `json:"attemptIdentity"`
+	ReservationFactDigest                string              `json:"reservationFactDigest"`
+	AttemptOpenedFactDigest              string              `json:"attemptOpenedFactDigest"`
+	AttemptOrdinal                       uint64              `json:"attemptOrdinal"`
+	AttemptsUsedBefore                   uint64              `json:"attemptsUsedBefore"`
+	MaxAttempts                          uint64              `json:"maxAttempts"`
+	RunAuthorityBinding                  RunAuthorityBinding `json:"runAuthorityBinding"`
+	ExpectedRunSequence                  uint64              `json:"expectedRunSequence"`
+	ExpectedRunAuthorityHead             string              `json:"expectedRunAuthorityHead"`
+	CurrentOwnerBinding                  CurrentOwnerBinding `json:"currentOwnerBinding"`
+	ControlOwnerBoundFactDigest          string              `json:"controlOwnerBoundFactDigest"`
+	AttemptAuthorityHeadAtPreparation    string              `json:"attemptAuthorityHeadAtPreparation"`
+	AllocationProvisionReceiptFactDigest string              `json:"allocationProvisionReceiptFactDigest"`
+	AllocationProvisionReceiptDigest     string              `json:"allocationProvisionReceiptDigest"`
+	LaunchAuthorizationID                string              `json:"launchAuthorizationId"`
+	LaunchAuthorizedFactDigest           string              `json:"launchAuthorizedFactDigest"`
+	StoredClosureDigest                  string              `json:"storedClosureDigest"`
+	LaunchMaterialsDigest                string              `json:"launchMaterialsDigest"`
+	AgentLaunchSpecDigest                string              `json:"agentLaunchSpecDigest"`
+	Pi0843IdentityDigest                 string              `json:"pi0843IdentityDigest"`
+	PreparationDigest                    string              `json:"preparationDigest"`
+}
+
 func (prepared PreparedExecutionV1) Validate() error {
 	if prepared.SchemaVersion != PreparedExecutionSchema || prepared.ProtocolRevision != PreparedExecutionProtocol ||
 		prepared.AttemptIdentity.Validate() != nil || prepared.RunAuthorityBinding != runAuthorityBindingFor(prepared.AttemptIdentity) ||
+		prepared.AttemptOrdinal != prepared.AttemptsUsedBefore+1 || prepared.MaxAttempts == 0 || prepared.AttemptOrdinal > prepared.MaxAttempts ||
 		prepared.ExpectedRunSequence == 0 || prepared.ExpectedRunSequence > maxExactJSONInteger || prepared.CurrentOwnerBinding.Validate() != nil ||
 		prepared.CurrentOwnerBinding.Scope.AuthorityNamespaceID != prepared.AttemptIdentity.AuthorityNamespaceID ||
 		strings.TrimSpace(prepared.LaunchAuthorizationID) == "" ||
@@ -64,7 +122,7 @@ func (prepared PreparedExecutionV1) Validate() error {
 		return ErrPreparedExecutionConflict
 	}
 	for _, digest := range []string{
-		prepared.ExpectedRunAuthorityHead, prepared.ControlOwnerBoundFactDigest,
+		prepared.ReservationFactDigest, prepared.AttemptOpenedFactDigest, prepared.ExpectedRunAuthorityHead, prepared.ControlOwnerBoundFactDigest,
 		prepared.AttemptAuthorityHeadAtPreparation, prepared.AllocationProvisionReceiptFactDigest,
 		prepared.AllocationProvisionReceiptDigest, prepared.LaunchAuthorizedFactDigest,
 		prepared.StoredClosureDigest, prepared.LaunchMaterialsDigest,
@@ -148,6 +206,13 @@ type CommittedRunStartClaim struct {
 	TaskID                   string
 	RunID                    string
 	AttemptID                string
+	ReservationFactDigest    string
+	AttemptOpenedFactDigest  string
+	AttemptOrdinal           uint64
+	AttemptsUsedBefore       uint64
+	MaxAttempts              uint64
+	ReadySequence            uint64
+	ReadyAuthorityHead       string
 	PreparationDigest        string
 	ProcessStartedFactDigest string
 	ResumeOutcomeFactDigest  string
@@ -329,6 +394,9 @@ func (s *DurableStore) StartPreparedExecution(ctx context.Context, verifier Curr
 			}
 			proof := newCommittedRunStartProof(CommittedRunStartClaim{
 				TaskID: identity.TaskID, RunID: identity.RunID, AttemptID: identity.AttemptID,
+				ReservationFactDigest: prepared.ReservationFactDigest, AttemptOpenedFactDigest: prepared.AttemptOpenedFactDigest,
+				AttemptOrdinal: prepared.AttemptOrdinal, AttemptsUsedBefore: prepared.AttemptsUsedBefore, MaxAttempts: prepared.MaxAttempts,
+				ReadySequence: prepared.ExpectedRunSequence, ReadyAuthorityHead: prepared.ExpectedRunAuthorityHead,
 				PreparationDigest: preparationDigest, ProcessStartedFactDigest: freshState.ProcessStartedDigest,
 				ResumeOutcomeFactDigest: freshResume,
 			})
@@ -356,7 +424,11 @@ func preparedCreationMatches(prepared PreparedExecutionV1, creation PreparedExec
 }
 
 func derivePreparedExecution(projection *Ingress, state AttemptAuthorityState, creation PreparedExecutionCreation) (PreparedExecutionV1, error) {
-	if state.Identity != creation.Identity || state.HeadDigest != state.LaunchAuthorizedDigest || state.ControlOwnerBindingDigest == "" || state.Owner.Validate() != nil || state.LaunchState != LaunchUncertain || state.PendingEffectIntentFactDigest != "" || state.EffectInterventionDigest != "" || state.SupervisorInterventionDigest != "" || state.SupervisorBootstrapDigest != "" || state.ProcessStartedDigest != "" {
+	if state.ProtocolRevision != attemptAuthorityProtocolV2 || state.OpenedSchemaRevision != attemptOpenedSchemaV2 || state.Identity != creation.Identity || state.HeadDigest != state.LaunchAuthorizedDigest || state.ControlOwnerBindingDigest == "" || state.Owner.Validate() != nil || state.LaunchState != LaunchUncertain || state.PendingEffectIntentFactDigest != "" || state.EffectInterventionDigest != "" || state.SupervisorInterventionDigest != "" || state.SupervisorBootstrapDigest != "" || state.ProcessStartedDigest != "" {
+		return PreparedExecutionV1{}, ErrPreparedExecutionConflict
+	}
+	reservation, ok := projection.reservations[state.ReservationFactDigest]
+	if !ok || reservation.Status != AttemptReservationActive || reservation.Reservation.AttemptID != state.Identity.AttemptID || reservation.Reservation.AttemptOrdinal != state.AttemptOrdinal || reservation.Reservation.Ready.ReadyAuthorityHead != creation.ExpectedRunAuthorityHead || reservation.Reservation.Ready.ReadySequence != creation.ExpectedRunSequence {
 		return PreparedExecutionV1{}, ErrPreparedExecutionConflict
 	}
 	ownerKey, err := state.Owner.Scope.key()
@@ -386,6 +458,8 @@ func derivePreparedExecution(projection *Ingress, state AttemptAuthorityState, c
 	return sealPreparedExecution(PreparedExecutionV1{
 		SchemaVersion: PreparedExecutionSchema, ProtocolRevision: PreparedExecutionProtocol,
 		AttemptIdentity: state.Identity, RunAuthorityBinding: runAuthorityBindingFor(state.Identity),
+		ReservationFactDigest: state.ReservationFactDigest, AttemptOpenedFactDigest: state.OpenedDigest,
+		AttemptOrdinal: state.AttemptOrdinal, AttemptsUsedBefore: reservation.Reservation.Ready.AttemptsUsed, MaxAttempts: reservation.Reservation.Ready.MaxAttempts,
 		ExpectedRunSequence: creation.ExpectedRunSequence, ExpectedRunAuthorityHead: creation.ExpectedRunAuthorityHead,
 		CurrentOwnerBinding: state.Owner, ControlOwnerBoundFactDigest: state.ControlOwnerBindingDigest,
 		AttemptAuthorityHeadAtPreparation:    state.HeadDigest,
@@ -439,7 +513,7 @@ func resolvePreparedCurrent(projection *Ingress, acquisition ControlOwnerAcquisi
 		return PreparedExecutionV1{}, AttemptAuthorityState{}, ErrPreparedExecutionConflict
 	}
 	state, ok := projection.attempts[attemptKey]
-	if !ok || state.Identity != prepared.AttemptIdentity || state.Owner.OwnerEpoch != acquisition.OwnerEpoch || state.Owner.Scope != acquisition.Scope || !currentOwnerMatches(owner, state.Owner) || state.LaunchAuthorizationID != prepared.LaunchAuthorizationID || state.LaunchAuthorizedDigest != prepared.LaunchAuthorizedFactDigest || state.LaunchMaterialsDigest != prepared.LaunchMaterialsDigest || state.AgentLaunchSpecDigest != prepared.AgentLaunchSpecDigest || state.PendingEffectIntentFactDigest != "" || state.EffectInterventionDigest != "" || state.SupervisorInterventionDigest != "" || state.BarrierDigest != "" {
+	if !ok || state.Identity != prepared.AttemptIdentity || state.ReservationFactDigest != prepared.ReservationFactDigest || state.OpenedDigest != prepared.AttemptOpenedFactDigest || state.AttemptOrdinal != prepared.AttemptOrdinal || state.Owner.OwnerEpoch != acquisition.OwnerEpoch || state.Owner.Scope != acquisition.Scope || !currentOwnerMatches(owner, state.Owner) || state.LaunchAuthorizationID != prepared.LaunchAuthorizationID || state.LaunchAuthorizedDigest != prepared.LaunchAuthorizedFactDigest || state.LaunchMaterialsDigest != prepared.LaunchMaterialsDigest || state.AgentLaunchSpecDigest != prepared.AgentLaunchSpecDigest || state.PendingEffectIntentFactDigest != "" || state.EffectInterventionDigest != "" || state.SupervisorInterventionDigest != "" || state.BarrierDigest != "" {
 		return PreparedExecutionV1{}, AttemptAuthorityState{}, ErrPreparedExecutionConflict
 	}
 	closureDigest, err := canonicalDigest(state.LaunchClosure)
@@ -469,6 +543,42 @@ func applyPreparedExecutionLine(line []byte, in *Ingress, wantSequence int64) er
 	canonicalLine, err := canonical.JSON(line)
 	if err != nil || !bytes.Equal(canonicalLine, line) {
 		return ErrPreparedExecutionConflict
+	}
+	var head struct {
+		ProtocolRevision string `json:"protocolRevision"`
+	}
+	if json.Unmarshal(line, &head) != nil {
+		return ErrPreparedExecutionConflict
+	}
+	if head.ProtocolRevision == legacyPreparedAuthorityProtocol {
+		var legacy legacyPreparedExecutionFact
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&legacy) != nil {
+			return ErrPreparedExecutionConflict
+		}
+		var trailing json.RawMessage
+		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) || legacy.FactType != preparedExecutionCreatedFactType || legacy.Sequence != wantSequence || legacy.Prepared.validate() != nil {
+			return ErrPreparedExecutionConflict
+		}
+		stored := legacy.Digest
+		legacy.Digest = ""
+		digest, err := canonicalDigest(legacy)
+		if err != nil || digest != stored {
+			return ErrPreparedExecutionConflict
+		}
+		key, err := legacy.Prepared.AttemptIdentity.Key()
+		if err != nil {
+			return ErrPreparedExecutionConflict
+		}
+		if _, exists := in.legacyPreparedExecutionKeys[key]; exists {
+			return ErrPreparedExecutionConflict
+		}
+		if _, exists := in.preparedExecutionKeys[key]; exists {
+			return ErrPreparedExecutionConflict
+		}
+		in.legacyPreparedExecutionKeys[key] = legacy.Prepared.PreparationDigest
+		return nil
 	}
 	var fact preparedExecutionFact
 	decoder := json.NewDecoder(bytes.NewReader(line))
@@ -507,6 +617,9 @@ func applyPreparedExecutionFactValue(fact preparedExecutionFact, in *Ingress) er
 		return ErrPreparedExecutionConflict
 	}
 	if _, duplicate := in.preparedExecutionKeys[key]; duplicate {
+		return ErrPreparedExecutionConflict
+	}
+	if _, duplicate := in.legacyPreparedExecutionKeys[key]; duplicate {
 		return ErrPreparedExecutionConflict
 	}
 	if _, duplicate := in.preparedExecutions[fact.Prepared.PreparationDigest]; duplicate {

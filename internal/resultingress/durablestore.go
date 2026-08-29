@@ -486,6 +486,10 @@ func (s *ingressDurableStore) applyLine(line []byte, in *Ingress) error {
 		return err
 	}
 	switch head.FactType {
+	case attemptReservedFactType, attemptReservationConsumedType, attemptReservationCancelledType:
+		if err := applyAttemptReservationLine(line, in, s.nextSequence); err != nil {
+			return err
+		}
 	case preparedExecutionCreatedFactType:
 		if err := applyPreparedExecutionLine(line, in, s.nextSequence); err != nil {
 			return err

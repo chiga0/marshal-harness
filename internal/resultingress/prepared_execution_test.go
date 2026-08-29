@@ -29,7 +29,7 @@ func newPreparedExecutionFixture(t *testing.T) preparedExecutionFixture {
 		t.Fatal(err)
 	}
 	id := attemptTestIdentity()
-	opened := supervisorTestOpened(t, store, id)
+	opened := appendFreshReservedAttempt(t, store, id)
 	owner, verifier := supervisorTestAcquireOwner(t, store, id)
 	bound := supervisorTestBindOwner(t, store, opened, owner, verifier)
 	provisioned := appendTestAcceptedProvision(t, store, bound)
@@ -38,7 +38,7 @@ func newPreparedExecutionFixture(t *testing.T) preparedExecutionFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := store.CreatePreparedExecution(context.Background(), verifier, owner.Acquisition, PreparedExecutionCreation{Identity: launch.State.Identity, ExpectedRunSequence: 2, ExpectedRunAuthorityHead: attemptTestDigest("ready-head")})
+	prepared, err := store.CreatePreparedExecution(context.Background(), verifier, owner.Acquisition, PreparedExecutionCreation{Identity: launch.State.Identity, ExpectedRunSequence: 2, ExpectedRunAuthorityHead: id.RunAuthorityDigest})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestPreparedExecutionCreationOnceResolveAndSecretBoundary(t *testing.T) {
 
 func TestCommittedRunStartProofIsNarrowSharedAndSynchronous(t *testing.T) {
 	typeOfClaim := reflect.TypeOf(CommittedRunStartClaim{})
-	want := []string{"TaskID", "RunID", "AttemptID", "PreparationDigest", "ProcessStartedFactDigest", "ResumeOutcomeFactDigest"}
+	want := []string{"TaskID", "RunID", "AttemptID", "ReservationFactDigest", "AttemptOpenedFactDigest", "AttemptOrdinal", "AttemptsUsedBefore", "MaxAttempts", "ReadySequence", "ReadyAuthorityHead", "PreparationDigest", "ProcessStartedFactDigest", "ResumeOutcomeFactDigest"}
 	if typeOfClaim.NumField() != len(want) {
 		t.Fatalf("claim has %d fields", typeOfClaim.NumField())
 	}
@@ -195,6 +195,47 @@ func TestCommittedRunStartProofIsNarrowSharedAndSynchronous(t *testing.T) {
 	}
 	if err := <-deactivated; !errors.Is(err, ErrCommittedRunStartProof) {
 		t.Fatalf("escaped callback accepted: %v", err)
+	}
+}
+
+func TestLegacyPreparedExecutionReplaysWithoutEnteringFreshAuthority(t *testing.T) {
+	fixture := newPreparedExecutionFixture(t)
+	current := fixture.prepared
+	legacy := legacyPreparedExecutionV1{
+		SchemaVersion: legacyPreparedExecutionSchema, ProtocolRevision: legacyPreparedExecutionProtocol,
+		AttemptIdentity: current.AttemptIdentity, RunAuthorityBinding: current.RunAuthorityBinding,
+		ExpectedRunSequence: current.ExpectedRunSequence, ExpectedRunAuthorityHead: current.ExpectedRunAuthorityHead,
+		CurrentOwnerBinding: current.CurrentOwnerBinding, ControlOwnerBoundFactDigest: current.ControlOwnerBoundFactDigest,
+		AttemptAuthorityHeadAtPreparation:    current.AttemptAuthorityHeadAtPreparation,
+		AllocationProvisionReceiptFactDigest: current.AllocationProvisionReceiptFactDigest,
+		AllocationProvisionReceiptDigest:     current.AllocationProvisionReceiptDigest,
+		LaunchAuthorizationID:                current.LaunchAuthorizationID, LaunchAuthorizedFactDigest: current.LaunchAuthorizedFactDigest,
+		StoredClosureDigest: current.StoredClosureDigest, LaunchMaterialsDigest: current.LaunchMaterialsDigest,
+		AgentLaunchSpecDigest: current.AgentLaunchSpecDigest, Pi0843IdentityDigest: current.Pi0843IdentityDigest,
+	}
+	legacy.PreparationDigest, _ = canonicalDigest(legacy)
+	if legacy.validate() != nil {
+		t.Fatal("legacy fixture is invalid")
+	}
+	fact := legacyPreparedExecutionFact{ProtocolRevision: legacyPreparedAuthorityProtocol, FactType: preparedExecutionCreatedFactType, Sequence: 1, Prepared: legacy}
+	fact.Digest, _ = canonicalDigest(fact)
+	raw, _ := json.Marshal(fact)
+	raw, _ = canonical.JSON(raw)
+	projection := newAuthorityProjection()
+	if err := applyPreparedExecutionLine(raw, projection, 1); err != nil {
+		t.Fatalf("legacy replay: %v", err)
+	}
+	key, _ := legacy.AttemptIdentity.Key()
+	if projection.legacyPreparedExecutionKeys[key] != legacy.PreparationDigest || len(projection.preparedExecutions) != 0 || len(projection.preparedExecutionKeys) != 0 {
+		t.Fatalf("legacy record entered fresh authority: %+v", projection)
+	}
+	mixed := current
+	mixed.SchemaVersion = legacyPreparedExecutionSchema
+	mixed.ProtocolRevision = legacyPreparedExecutionProtocol
+	raw, _ = json.Marshal(mixed)
+	raw, _ = canonical.JSON(raw)
+	if _, err := DecodePreparedExecution(raw); !errors.Is(err, ErrPreparedExecutionConflict) {
+		t.Fatalf("legacy/v2 mixed PreparedExecution decoded as fresh: %v", err)
 	}
 }
 
