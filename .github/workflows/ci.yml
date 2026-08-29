@@ -48,9 +48,7 @@ jobs:
           }
           run_checker
           for test_path in \
-            scripts/release-contract_test.sh \
             scripts/release-ci-gate_test.sh \
-            scripts/dist-profile_test.sh \
             scripts/install_test.sh \
             scripts/release-canary_test.sh; do
             run_checker
@@ -78,6 +76,29 @@ jobs:
 
       - name: Verify modules
         run: go mod verify
+
+      # This test cross-compiles the real Darwin/arm64 RC1 candidate and then
+      # inspects it without executing it. It must run only after setup-go has
+      # installed the exact go.mod toolchain; the pre-toolchain gate above is
+      # deliberately limited to checked-in source and deterministic fixtures.
+      - name: Run distribution contracts
+        if: matrix.os == 'ubuntu-latest'
+        shell: /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          checker="$GITHUB_WORKSPACE/scripts/release-ci-contract.py"
+          run_checker() {
+            /usr/bin/env -i \
+              LC_ALL=C \
+              PATH=/usr/bin:/bin \
+              /usr/bin/python3 -I -B "$checker" "$GITHUB_WORKSPACE"
+          }
+          for test_path in \
+            scripts/release-contract_test.sh \
+            scripts/dist-profile_test.sh; do
+            run_checker
+            /bin/bash --noprofile --norc "$GITHUB_WORKSPACE/$test_path"
+          done
+          run_checker
 
       - name: Run quality gate
         run: make check
