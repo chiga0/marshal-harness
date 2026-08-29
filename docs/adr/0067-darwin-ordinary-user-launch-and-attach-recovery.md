@@ -51,11 +51,29 @@ source gate 分为两个明确阶段，不再由 Core 与 Supervisor 跨阶段�
 
 `processsupervisor.Client` 增加只读 `Attach`，用于连接仍存活的同一 Supervisor；它不是 reconnect authority fact，也不能在成功返回时改变任何 durable state。
 
-1. `Attach` 必须从 RB1 pending state定位 exact session，验证 held control root、nonce challenge、peer UID/PID/birth、fixed binary path/SHA-256/CDHash/sourceHead/protocol、Supervisor session/child identity、journal sequence/head、command sequence/head与调用者提供的 exact previous authority anchor。
-2. `Attach` 不追加 Supervisor mechanics journal，不改变 owner epoch、authority head、command head、pending request或 child state；失败必须保证 authority ledger、mechanics journal与control objects逐字节不变。
-3. owner/head 重锚只能通过已有 prepared-command模式完成：Core 先在 RB1 creation-once追加 exact `bind-authority` command intent，再通过已 Attach 的连接执行该命令，最后立即追加 authenticated outcome。`bind-authority` 增加封闭的 `initial|owner-successor` mode；`owner-successor` 只允许 session 已 bound、无 pending command、exact previous anchor匹配且 new owner acquisition已在 RB1耐久时执行。
-4. 新生产路径不再追加 `process-supervisor-session-reconnected`。历史 reconnect facts继续逐字节 decode/replay和投影，但不得成为新 Run 的 production evidence。
-5. `Attach` 与 `bind-authority(owner-successor)` 均不得重建 child、重新打开另一组 pipe、重发已完成 command或把 absence/identity conflict猜作正常退出。
+新 owner 恢复已启动进程的唯一顺序冻结为：
+
+```text
+Acquire 并持续持有 repository owner
+  → RB1 exact current Attempt head + no-pending 重验
+  → append/fsync/replay control-owner-bound successor
+     (exact previous Attempt head + exact new acquisition)
+  → read-only Attach
+     (previous Supervisor anchor + current acquisition + held owner)
+  → append bind-authority(owner-successor) intent
+     (exact control-owner-bound successor fact)
+  → execute 同一 prepared command
+  → append authenticated outcome
+```
+
+1. recovery process 必须先按 ADR 0066 取得并在整条恢复链内持续持有 exact repository physical owner lock 及其 acquisition-bound `CurrentOwnerLockVerifier`。释放、更换或重取 owner 会使当次链立即失效，不得继续 `Attach` 或 command。
+2. 在任何 `Attach`、control object 变更或 Supervisor command 前，Core 必须从 RB1 重放 exact current Attempt revision/head，证明 `process-started` 已耐久、无 pending command、无 intervention，并以同一 held-owner verifier 对 exact predecessor head 追加、fsync 和重放唯一 `control-owner-bound` successor。该 fact 必须同时绑定 predecessor Attempt fact digest/revision/head 与 new `ControlOwnerAcquisition` fact digest/epoch；sibling successor、旧 head、旧 acquisition 或未 replay 的 append 均拒绝。
+3. `Attach` 只能在 acquisition-bound borrowed callback 内构造与使用。它同时认证 held control root、nonce challenge、peer UID/PID/birth、fixed binary path/SHA-256/CDHash/sourceHead/protocol、Supervisor session/child identity、journal sequence/head、command sequence/head、exact previous Supervisor authority anchor，以及刚重放的 current acquisition/`control-owner-bound` fact 与仍在持有的 repository owner。任一边不符即拒绝。
+4. `Attach` 返回的 connection/client 是同一 callback 内的同步 borrowed value；不得返回、保存到 struct/interface、跨 goroutine、跨 callback 或在 owner verifier 失活后使用。architecture test 必须机械锁定零逃逸与唯一 production callsite。
+5. `Attach` 本身不追加 Supervisor mechanics journal，不改变 owner epoch、authority head、command head、pending request或 child state；失败必须保证 mechanics journal与 control objects 逐字节不变，并且除已先行耐久的唯一 `control-owner-bound` successor 外不得新增任何 RB1 fact。
+6. owner/head 重锚只能通过已有 prepared-command模式完成：Core 在同一 borrowed callback 内 creation-once 追加 exact `bind-authority(owner-successor)` command intent，该 intent 必须引用第 2 项的 exact `control-owner-bound` successor fact digest、current acquisition 与 authenticated Attach observation；随后执行同一 prepared command并立即追加 authenticated outcome。session 必须已 bound，且 previous anchor/current acquisition/current Attempt head 逐项匹配；调用者不得自选 post-anchor。
+7. 新生产路径不再追加 `process-supervisor-session-reconnected`。历史 reconnect facts继续逐字节 decode/replay和投影，但不得成为新 Run 的 production evidence。
+8. `Attach` 与 `bind-authority(owner-successor)` 均不得重建 child、重新打开另一组 pipe、重发已完成 command或把 absence/identity conflict猜作正常退出。
 
 ### 5. response-loss、owner change 与恢复分型
 
@@ -65,26 +83,29 @@ source gate 分为两个明确阶段，不再由 Core 与 Supervisor 跨阶段�
 | --- | --- | --- |
 | exact command outcome/RB1 business fact 已耐久 | 只从所属 ledger replay；无需 reconnect | 重发 command、创建第二 fact |
 | 同一 owner 的短暂 transport loss，exact pending intent存在，原 Supervisor/session/anchor可 Attach | 仅以相同 command ID、request digest与pre-anchor replay一次；由 Supervisor journal判定并补同一 outcome | 新 command ID、不同 bytes、第二副作用 |
-| owner已变化且存在 pending command | typed intervention | 跨 owner replay、rebind 后猜测执行结果 |
-| owner已变化、`process-started` 尚未耐久 | typed intervention；保持 child suspended或按已证实的无 child/cleanup路径收口 | 自动 launch recovery、第二 Supervisor、第二 child |
-| `process-started` 已耐久、无 pending command、同一 Supervisor/child可 Attach | `Attach → bind-authority(owner-successor) intent/outcome →` 继续 exact inspect/collect/terminalization | 伪造 reconnect fact、重建 child、重复 resume |
-| Supervisor/session/child/source/control identity不唯一 | typed intervention | PID/path扫描、跨编排 signal、以“不存在”补 terminal fact |
+| owner已变化且存在 pending command | 耐久 permanent typed intervention | 跨 owner replay、rebind 后猜测执行结果、cleanup/release/successor |
+| owner已变化、`process-started` 尚未耐久，且在任何 intervention 前能 exact 证明无 Supervisor、无 child、无 command/mechanics 副作用 | 追加封闭 `no-effect-aborted → cleanup-completed(no-effect) → lease-released` 链；全链耐久后才可依既有预算创建新 Attempt | 先写 intervention、自动 launch recovery、第二 Supervisor/child |
+| owner已变化、`process-started` 尚未耐久，但上述零副作用证明缺失或失败 | 耐久 permanent typed intervention | 任何 signal/terminate/close/cleanup/release/successor或新 Attempt |
+| `process-started` 已耐久、无 pending command、同一 Supervisor/child可 Attach | 持续 held owner 下严格执行「RB1 no-pending → `control-owner-bound` successor → read-only `Attach` → exact bind intent/execute/outcome」，再继续 exact inspect/collect/terminalization | 伪造 reconnect fact、先 Attach 后绑 owner、重建 child、重复 resume |
+| Supervisor/session/child/source/control identity不唯一 | 耐久 permanent typed intervention | PID/path扫描、跨编排 signal、以“不存在”补 terminal fact、cleanup/release/successor |
 
 Run-start response-loss继续遵守 ADR 0065：ResultIngress只查自己的 Attempt ledger；runstore只查自己的 Run journal。exact resume outcome已耐久时可以重新完成 final current-ledger recheck并 mint新的一次性 proof；Run successor已耐久时只从runstore replay，绝不再次调用Supervisor。
 
 ### 6. intervention 与新 Attempt
 
-1. intervention 必须保存 secret-safe reason code、exact session/command/source/owner evidence digest与最后可证事实；不删除、不改写历史。
-2. 只有能够从 current authority 与真实 mechanics证明“外部副作用从未发生”，或已按 exact identity完成 terminalization/cleanup并耐久 `cleanup-completed → lease-released`，Core才可依既有预算创建新 Attempt。
-3. pending command、未知 child、未知 Supervisor、无法闭合的 source/control identity或跨 owner ambiguous state不得直接创建 successor Attempt。操作者可以选择终止旧 Run并创建关联新 Run，但不能复活或改写旧 Run。
+1. Core 只能在写入任何 intervention 之前，持有 current repository owner acquisition 并重放 exact Attempt head 的同一临界区内，尝试一次无副作用判定。允许走 no-effect 路径的充分且必要条件是：RB1 中无 `process-supervisor-started`、`process-started`、command intent/outcome、result admission与 intervention；ADR 0064 exact control set 证明无 Supervisor session/socket/nonce/mechanics journal；Core-held process/allocation observation 证明无 child/PID/birth/PGID/wait right/pipe；且无任何已发出或 unknown 的 Supervisor command/mechanics 副作用。“没找到”、PID/path 扫描或单一 ledger 空缺都不足以证明。
+2. 上述证明成功时，Core 必须以封闭 creation-once fact 链收口：`no-effect-aborted → cleanup-completed(mode=no-effect) → lease-released`。`no-effect-aborted` 绑定 exact Attempt revision/head、current owner acquisition/fact digest、全部 negative-observation digest 与封闭 reason；后两个 fact 各自引用 exact predecessor digest、Attempt/allocation/lease/generation。如果已有 exact allocation provision receipt，只能先经既有 Provider close intent/receipt 安全收口并绑入 `cleanup-completed`；这不允许任何 Supervisor/process cleanup command。全链 fsync/replay 前不得解锁、释放 binding 或创建新 Attempt。
+3. 只有第 2 项链完整耐久且既有 retry/budget policy 仍允许时，Core 才可创建一个新 Attempt；新 Attempt 必须引用 exact `lease-released` predecessor 并重走全部 admission。no-effect 结论不得在 intervention 后补造，也不得为原 Attempt 重建 Supervisor/child。
+4. 任一无副作用前提缺失、不可唯一或校验失败时，Core 必须追加 permanent typed intervention。它保存 secret-safe reason code、exact session/command/source/owner evidence digest与最后可证事实，不删除、不改写历史；一经耐久，该 Attempt 永久禁止 signal、terminate、close、`cleanup-completed`、`lease-released`、unlock、successor 和新 Attempt。后续只允许读取/explain/exact replay。
+5. pending command、未知 child、未知 Supervisor、无法闭合的 source/control identity或跨 owner ambiguous state 一律走第 4 项，不得用“先 intervention、再 cleanup”绕过。操作者可以另行终止旧 Run 的产品层处置并创建关联新 Run，但不能复活、改写或解锁该 intervention Attempt。
 
 ### 7. 精确取代与修订范围
 
 本 ADR 若被接受，将按以下范围生效：
 
-1. **部分取代 ADR 0059 §6**：`process-started` 前的 Core restart不再承诺自动重连并推进启动；owner变化固定 intervention。`process-started` 后、无 pending command且exact session/child仍可证时保留恢复。
-2. **部分取代 ADR 0060 §3、§5**：新生产路径不写 `process-supervisor-session-reconnected`；改为只读 `Attach` 后通过已耐久 `bind-authority(owner-successor) intent → execute → outcome`重锚。跨 owner pending command固定 intervention；同 owner exact pending replay保留。
-3. **部分取代 ADR 0063 §4.4、§5.3–§5.5及§6对应 response-loss 行**：Core不跨 bootstrap持有完整 source/material FD表，也不承担第二次 mutation-adjacent source authority；pre-bootstrap只做无副作用 current closure admission，Supervisor `spawn`承担唯一 mutation-adjacent exact-set gate。owner在`process-started`前变化固定 intervention。
+1. **部分取代 ADR 0059 §6**：`process-started` 前的 Core restart不再承诺自动重连并推进启动；owner变化时，只有在 intervention 前 exact 证明无 Supervisor、无 child、无 command/mechanics 副作用才可走封闭 no-effect abort/cleanup 链，否则固定 permanent intervention。`process-started` 后、无 pending command且exact session/child仍可证时保留恢复。
+2. **部分取代 ADR 0060 §3、§5**：新生产路径不写 `process-supervisor-session-reconnected`；改为持续持有 repository owner/acquisition，从 exact RB1 no-pending 开始，先追加并重放绑定 predecessor Attempt head 与 new acquisition 的 `control-owner-bound` successor，再执行只读 `Attach → bind-authority(owner-successor) intent → execute → outcome`。跨 owner pending command固定 permanent intervention；同 owner exact pending replay保留。
+3. **部分取代 ADR 0063 §4.4、§5.3–§5.5及§6对应 response-loss 行**：Core不跨 bootstrap持有完整 source/material FD表，也不承担第二次 mutation-adjacent source authority；pre-bootstrap只做无副作用 current closure admission，Supervisor `spawn`承担唯一 mutation-adjacent exact-set gate。owner 在 `process-started` 前变化时只允许上述 no-effect 链或 permanent intervention，不得恢复 launch。
 4. **澄清 ADR 0065 §9、§10**：sealed proof、单向依赖、generic Append拒绝与Run response-loss合同不变；S1不实现通用 reconnect state machine。
 5. ADR 0064、ADR 0066保持不变。ADR 0061 transcript disposition和ADR 0056 terminalization顺序保持不变，但其恢复入口使用本 ADR 的 `Attach` 分型。
 
@@ -104,10 +125,12 @@ Run-start response-loss继续遵守 ADR 0065：ResultIngress只查自己的 Atte
 
 - `Attach`成功与失败前后mechanics journal、authority ledger、nonce/socket/control entries逐字节相等；
 - peer、PID birth、binary、CDHash/sourceHead、nonce、session、child、journal/command head或previous authority anchor任一替换：Attach拒绝；
-- owner successor、无pending、`process-started`已耐久：必须先有RB1 `bind-authority` intent，再有Supervisor receipt/outcome，之后才能执行下一command；
+- owner successor、无pending、`process-started`已耐久：`control-owner-bound` successor 与 read-only `Attach` 完成后，必须先有引用 exact successor fact 的RB1 `bind-authority` intent，再有Supervisor receipt/outcome，之后才能执行下一command；
+- owner successor 恢复必须严格为 held owner/acquisition → exact RB1 no-pending → 唯一 `control-owner-bound` successor → read-only `Attach` → 引用 exact successor fact 的 bind intent/execute/outcome；任一乱序、旧 head/acquisition、sibling successor 或 client/verifier 逃逸均拒绝；
 - owner successor且存在pending intent：intervention，零bind、零command replay；
 - 同owner same ID/same digest exact replay只产生一个effect与一个outcome；same ID different digest固定conflict；
-- bootstrap已发生但`process-started`未耐久时owner变化：intervention，零第二Supervisor/child；
+- `process-started`未耐久且 owner 变化：只有在 intervention 前同时证明零 Supervisor/session/control object、零 child/process handle、零 command intent/outcome/mechanics 副作用，才允许唯一 `no-effect-aborted → cleanup-completed(no-effect) → lease-released` 链；少任一证明必须 permanent intervention；
+- no-effect 链的旧 head、缺/duplicate fact、跳过 exact allocation close receipt、链未耐久即新建 Attempt、预算超限或 intervention 后补造全部拒绝；permanent intervention 后 signal/terminate/close/cleanup/release/unlock/successor 调用计数均为零；
 - 历史`process-supervisor-session-reconnected`可replay，但新Run producer计数必须为零。
 
 ### proof、Run 与response-loss
@@ -135,25 +158,28 @@ Run-start response-loss继续遵守 ADR 0065：ResultIngress只查自己的 Atte
 2. `internal/launchidentity`：无副作用current closure verifier与cwd/Allocation `LiveIdentity`闭合；验证完成即释放Core临时FD；
 3. `internal/processsupervisor/mechanics_darwin.go`：补齐exact root enumeration、keyed role/record/file pairing，并让同一held FD组贯穿spawn/post-exec barrier；
 4. `internal/runstore/prepared_run_start_authority.go`：直接建立在当前`Store`、`Lease`和descriptor-bound authority之上，实现private projector、唯一successor和generic Append拒绝；
-5. 包级hostile/crash/replay/race与单向依赖检查。
+5. runstore 内部允许一个窄的 lease shared-guard/borrow、descriptor-bound strict journal 与read-only projection seam，仅用于在同一 held lease 下完成 self-only CAS；唯一 exported mutation seam 仍是 `WithPreparedRunStartAuthority`，borrow/projector 不得返回、保存、跨 callback 或扩展为通用 mutation API；
+6. 包级hostile/crash/replay/race、单向依赖、exported API/AST 形状与borrow 零逃逸检查。
 
-S1′明确不得引入`506a647`的typed mutation substrate，不修改`internal/execution`、`internal/review`、`internal/selfidentity`或CLI，不实现通用reconnect/terminalization/factory。
+S1′明确不得引入`506a647`的通用 Attempt/Outcome/review/execution/selfidentity typed mutation substrate，不修改`internal/execution`、`internal/review`、`internal/selfidentity`或CLI，不实现通用reconnect/terminalization/factory。上述 runstore 窄 seam 是 S1 shared-guard 的封闭内部机械，不是对`506a647`的回引。
 
 ### S2′：fixed local composition
 
 S1′后立即完成：
 
 1. 按ADR 0066实现两阶段owner、canonical`.marshal`与唯一Darwin arm64 production factory；
-2. 在controller唯一组合点接入S1′，fixed`cmd/marshal`本地mutation/inspect只持有`PublicApplicationPort`；
-3. 真实Pi fresh Run证明exact resume后唯一`RUNNING`，覆盖ResultIngress outcome与Run append两类response-loss；
-4. `Status`诚实区分available、production-composition-incomplete、recovery-required与platform-profile-unavailable；
-5. legacy `execution.Run`、child CLI、Fake seam、第二authority root与独立`marshal-server`从S2′ production graph不可达。
+2. concrete authority 必须在 bounded `PrepareRunStart` producer chain 内，使用现有 authority API 真实产生 `attempt-opened → control-owner-bound/current Attempt binding → allocation provision intent/receipt → launch-authorized/StoredClosure → PreparedExecution`；每一步绑定 exact predecessor/head并可幂等重放，不得从 component-test fixture/seed、调用者 DTO 或内存对象补造；
+3. 上述 producer 只允许放在 `internal/productionruntime/authority.go` 及为调用现有 authority API 必需的窄 adapter；不得引入通用 workflow/service 层，也不得调用 legacy `execution.Run`。S1′完成后必须立即相邻进入 S2′，不允许在两者之间插入新的 substrate/component 切片；
+4. 在controller唯一组合点接入S1′，fixed`cmd/marshal`本地mutation/inspect只持有`PublicApplicationPort`；
+5. 真实Pi fresh Run必须从 fixed CLI 亲历第 2 项全 producer chain，证明exact resume后唯一`RUNNING`，覆盖每一 producer fact、ResultIngress outcome与Run append的response-loss；
+6. `Status`诚实区分available、production-composition-incomplete、recovery-required与platform-profile-unavailable；
+7. architecture/negative test 机械证明 producer 唯一 callsite、无 seed/Fake/memory-only fact 注入，且 legacy `execution.Run`、child CLI、Fake seam、第二authority root与独立`marshal-server`从S2′ production graph不可达。
 
 ### S2′后、release前
 
 按以下顺序单独交付，不回塞S1′/S2′：
 
-1. 本ADR的只读`Attach`、`bind-authority(owner-successor)`和`process-started`后无pending恢复；
+1. 本ADR的 held-owner 恢复链：exact RB1 no-pending、`control-owner-bound` successor、只读`Attach`、`bind-authority(owner-successor)`与`process-started`后无pending恢复；同切片实现 pre-start no-effect abort/cleanup 与 permanent intervention 二分；
 2. ADR 0056/0061 terminalization、transcript disposition、cleanup与successor；
 3. ADR 0062 authenticated`marshal control-plane serve` transport与durable delivery ledger；
 4. 最终fixed-bin真实Run、故障矩阵、独立Decision与RC gate。
@@ -162,4 +188,4 @@ S1′后立即完成：
 
 正面结果是v1只实现ordinary-user能够诚实证明的边界：Core负责无副作用准入，Supervisor负责mutation-adjacent source与真实process mechanics，ResultIngress负责Attempt currentness，runstore负责Run successor；未知状态明确转intervention。S1代码面回到当前Store与既有mechanics，不再为一个Run-start引入横跨execution/review/selfidentity的通用substrate。
 
-代价是`process-started`前的Core owner变化不再自动恢复，跨owner pending command也不能透明继续；这些场景需要人工处置或在已证明无副作用/已完成cleanup后创建新Attempt。该降级是Mac ordinary-user产品边界的诚实表达，不影响未来hardened Linux/Container/VM profile以更强内核authority另行实现自动恢复。
+代价是`process-started`前的Core owner变化不再自动恢复，跨owner pending command也不能透明继续；只有在任何 intervention 前 exact 证明无 Supervisor、无 child、无 command/mechanics 副作用时，才能经封闭 no-effect abort/cleanup 链收口并在预算内创建新 Attempt；其余场景永久 intervention 且禁止 cleanup/release/successor。该降级是Mac ordinary-user产品边界的诚实表达，不影响未来hardened Linux/Container/VM profile以更强内核authority另行实现自动恢复。
