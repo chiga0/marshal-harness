@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,24 +34,40 @@ type existingWorktreeTestAuthority struct {
 	filesystemRoot   *os.File
 	repositoryParent *os.File
 	repositoryRoot   *os.File
+	repositoryCommon *os.File
 	repositoryName   string
 	current          ExistingWorktreeCurrentAuthorityV1
-	facts            []ExistingWorktreeAuthorityFactV1
+	attemptRevision  uint64
+	attemptHead      string
+	facts            []ExistingWorktreeAttemptFactV1
 	failAfter        map[ExistingWorktreeFactKind]int
 	rejectBind       bool
 	rejectRelease    bool
+	beforeTarget     func()
 }
 
 func (authority *existingWorktreeTestAuthority) Close() {
 	authority.filesystemRoot.Close()
 	authority.repositoryParent.Close()
 	authority.repositoryRoot.Close()
+	authority.repositoryCommon.Close()
 }
 
-func (authority *existingWorktreeTestAuthority) WithExistingWorktreeSession(_ context.Context, run DescriptorBoundRunV1, callback func(ExistingWorktreeAuthoritySession) error) error {
+func (authority *existingWorktreeTestAuthority) WithCurrentExistingWorktreeBind(_ context.Context, run DescriptorBoundRunV1, request ExistingWorktreeBindRequestV1, callback func(ExistingWorktreeAuthoritySession) error) error {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
-	if validateDescriptorBoundRun(run) != nil {
+	authority.current.AttemptAuthorityHeadDigest = authority.attemptHead
+	if validateDescriptorBoundRun(run) != nil || authority.rejectBind || authority.current.validateBind(request, run) != nil {
+		return ErrAuthorityConflict
+	}
+	return callback(authority)
+}
+
+func (authority *existingWorktreeTestAuthority) WithCurrentExistingWorktreeRelease(_ context.Context, run DescriptorBoundRunV1, request ExistingWorktreeReleaseRequestV1, callback func(ExistingWorktreeAuthoritySession) error) error {
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	authority.current.AttemptAuthorityHeadDigest = authority.attemptHead
+	if validateDescriptorBoundRun(run) != nil || authority.rejectRelease || authority.current.validateRelease(request, run) != nil {
 		return ErrAuthorityConflict
 	}
 	return callback(authority)
@@ -65,23 +82,30 @@ func (authority *existingWorktreeTestAuthority) DescriptorGraph() (ExistingWorkt
 	if unix.Fstat(int(authority.filesystemRoot.Fd()), &rootStat) != nil {
 		return ExistingWorktreeDescriptorGraphV1{}, ErrFilesystemConflict
 	}
-	return ExistingWorktreeDescriptorGraphV1{FilesystemRoot: authority.filesystemRoot, FilesystemRootIdentity: objectIdentity(rootStat), RepositoryParent: authority.repositoryParent, RepositoryRoot: authority.repositoryRoot, RepositoryCurrentName: current}, nil
-}
-
-func (authority *existingWorktreeTestAuthority) ObserveExistingWorktree(ctx context.Context, request ExistingWorktreeBindRequestV1) (ExistingWorktreeObservationV1, error) {
-	graph, err := authority.DescriptorGraph()
+	common, err := observeDirectoryEdge(int(authority.repositoryRoot.Fd()), int(authority.repositoryCommon.Fd()), ".git")
 	if err != nil {
-		return ExistingWorktreeObservationV1{}, err
+		return ExistingWorktreeDescriptorGraphV1{}, err
 	}
-	return ObserveExistingWorktreeFromGraph(ctx, graph, request)
+	return ExistingWorktreeDescriptorGraphV1{FilesystemRoot: authority.filesystemRoot, FilesystemRootIdentity: objectIdentity(rootStat), RepositoryParent: authority.repositoryParent, RepositoryRoot: authority.repositoryRoot, RepositoryCurrentName: current, RepositoryCommonGitDirectory: authority.repositoryCommon, RepositoryCommonGitCurrentName: common}, nil
 }
 
-func (authority *existingWorktreeTestAuthority) VerifyExistingWorktreeTarget(_ context.Context, request ExistingWorktreeBindRequestV1, expected ExistingWorktreeObservationV1) error {
+func (authority *existingWorktreeTestAuthority) CurrentAuthority() ExistingWorktreeCurrentAuthorityV1 {
+	return authority.current
+}
+
+func (authority *existingWorktreeTestAuthority) WithExistingWorktreeTarget(ctx context.Context, request ExistingWorktreeBindRequestV1, expected *ExistingWorktreeObservationV1, callback func(ExistingWorktreeTargetSession) error) error {
 	graph, err := authority.DescriptorGraph()
 	if err != nil {
 		return err
 	}
-	return VerifyExistingWorktreeTargetFromGraph(graph, request, expected)
+	return WithExistingWorktreeTargetFromGraph(ctx, graph, request, expected, func(target ExistingWorktreeTargetSession) error {
+		if authority.beforeTarget != nil {
+			hook := authority.beforeTarget
+			authority.beforeTarget = nil
+			hook()
+		}
+		return callback(target)
+	})
 }
 
 func (authority *existingWorktreeTestAuthority) SyncExistingWorktreeProjection(_ context.Context, snapshot ExistingWorktreeAuthoritySnapshotV1) error {
@@ -92,35 +116,36 @@ func (authority *existingWorktreeTestAuthority) SyncExistingWorktreeProjection(_
 	return SyncExistingWorktreeProjectionFromGraph(graph, snapshot)
 }
 
-func (authority *existingWorktreeTestAuthority) VerifyCurrentBind(_ context.Context, request ExistingWorktreeBindRequestV1, run DescriptorBoundRunV1) (ExistingWorktreeCurrentAuthorityV1, error) {
-	if authority.rejectBind || authority.current.validateBind(request, run) != nil {
-		return ExistingWorktreeCurrentAuthorityV1{}, ErrAuthorityConflict
-	}
-	return authority.current, nil
-}
-
-func (authority *existingWorktreeTestAuthority) VerifyCurrentRelease(_ context.Context, request ExistingWorktreeReleaseRequestV1, run DescriptorBoundRunV1) (ExistingWorktreeCurrentAuthorityV1, error) {
-	if authority.rejectRelease || authority.current.validateRelease(request, run) != nil {
-		return ExistingWorktreeCurrentAuthorityV1{}, ErrAuthorityConflict
-	}
-	return authority.current, nil
-}
-
 func (authority *existingWorktreeTestAuthority) Snapshot() (ExistingWorktreeAuthoritySnapshotV1, error) {
-	return ExistingWorktreeAuthoritySnapshotV1{Facts: append([]ExistingWorktreeAuthorityFactV1(nil), authority.facts...)}, nil
+	return ExistingWorktreeAuthoritySnapshotV1{CurrentAttemptRevision: authority.attemptRevision, CurrentAttemptHeadDigest: authority.attemptHead, Facts: append([]ExistingWorktreeAttemptFactV1(nil), authority.facts...)}, nil
 }
 
 func (authority *existingWorktreeTestAuthority) append(kind ExistingWorktreeFactKind, value any) (ExistingWorktreeAuthoritySnapshotV1, error) {
 	snapshot, _ := authority.Snapshot()
-	fact, err := newExistingWorktreeFact(uint64(len(snapshot.Facts)+1), kind, snapshot.HeadDigest(), value)
+	raw, err := canonicalValue(value)
 	if err != nil {
 		return ExistingWorktreeAuthoritySnapshotV1{}, err
 	}
-	candidate := ExistingWorktreeAuthoritySnapshotV1{Facts: append(snapshot.Facts, fact)}
+	attemptKey := testExistingDigest(authority.current.RunID + "\x00" + authority.current.AttemptID)
+	authority.attemptRevision++
+	material := struct {
+		AttemptKey    string                   `json:"attemptKey"`
+		Revision      uint64                   `json:"revision"`
+		Kind          ExistingWorktreeFactKind `json:"kind"`
+		Previous      string                   `json:"previous"`
+		PayloadDigest string                   `json:"payloadDigest"`
+	}{attemptKey, authority.attemptRevision, kind, authority.attemptHead, digestBytes(raw)}
+	factDigest, err := digestValue(material)
+	if err != nil {
+		return ExistingWorktreeAuthoritySnapshotV1{}, err
+	}
+	fact := ExistingWorktreeAttemptFactV1{AttemptKey: attemptKey, AttemptRevision: authority.attemptRevision, Kind: kind, PreviousAttemptHeadDigest: authority.attemptHead, Payload: raw, PayloadDigest: digestBytes(raw), AttemptFactDigest: factDigest}
+	candidate := ExistingWorktreeAuthoritySnapshotV1{CurrentAttemptRevision: authority.attemptRevision, CurrentAttemptHeadDigest: factDigest, Facts: append(snapshot.Facts, fact)}
 	if candidate.Validate() != nil {
 		return ExistingWorktreeAuthoritySnapshotV1{}, ErrAuthorityConflict
 	}
 	authority.facts = append(authority.facts, fact)
+	authority.attemptHead = factDigest
 	if authority.failAfter[kind] > 0 {
 		authority.failAfter[kind]--
 		return ExistingWorktreeAuthoritySnapshotV1{}, errors.New("simulated response loss")
@@ -144,7 +169,8 @@ func (authority *existingWorktreeTestAuthority) AppendReleaseReceipt(_ context.C
 func TestExistingWorktreeBindReleaseReplayAndProjectionRebuild(t *testing.T) {
 	fixture := newExistingWorktreeFixture(t)
 	defer fixture.Close()
-	trackedBefore := mustReadFile(t, filepath.Join(fixture.worktree, "tracked.txt"))
+	targetBefore := snapshotFilesystemTree(t, fixture.worktree)
+	adminBefore := snapshotFilesystemTree(t, mustExistingWorktreeAdminPath(t, fixture.worktree))
 	receipt, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request)
 	if err != nil {
 		t.Fatal(err)
@@ -158,8 +184,12 @@ func TestExistingWorktreeBindReleaseReplayAndProjectionRebuild(t *testing.T) {
 	if bytes.Contains(projection, []byte(fixture.worktree)) || bytes.Count(projection, []byte{'\n'}) != 2 {
 		t.Fatal("projection leaked locator or did not contain exact bind prefix")
 	}
+	assertFilesystemTreeEqual(t, "bind target", targetBefore, snapshotFilesystemTree(t, fixture.worktree))
+	assertFilesystemTreeEqual(t, "bind git admin", adminBefore, snapshotFilesystemTree(t, mustExistingWorktreeAdminPath(t, fixture.worktree)))
 
 	releaseRun, releaseRequest := fixture.releaseRequest(receipt)
+	releaseTargetBefore := snapshotFilesystemTree(t, fixture.worktree)
+	releaseAdminBefore := snapshotFilesystemTree(t, mustExistingWorktreeAdminPath(t, fixture.worktree))
 	released, err := fixture.controller.Release(context.Background(), releaseRun, releaseRequest)
 	if err != nil {
 		t.Fatal(err)
@@ -175,9 +205,8 @@ func TestExistingWorktreeBindReleaseReplayAndProjectionRebuild(t *testing.T) {
 	if bytes.Contains(projection, []byte(fixture.worktree)) || bytes.Count(projection, []byte{'\n'}) != 4 {
 		t.Fatal("missing projection was not rebuilt from the four RB1 facts")
 	}
-	if !bytes.Equal(trackedBefore, mustReadFile(t, filepath.Join(fixture.worktree, "tracked.txt"))) || len(gitOutput(t, fixture.worktree, "status", "--porcelain=v1", "-z", "--untracked-files=all")) != 0 {
-		t.Fatal("bind/release modified the existing worktree")
-	}
+	assertFilesystemTreeEqual(t, "release target", releaseTargetBefore, snapshotFilesystemTree(t, fixture.worktree))
+	assertFilesystemTreeEqual(t, "release git admin", releaseAdminBefore, snapshotFilesystemTree(t, mustExistingWorktreeAdminPath(t, fixture.worktree)))
 }
 
 func TestExistingWorktreeReleasePreservesCompletedTaskChanges(t *testing.T) {
@@ -193,14 +222,24 @@ func TestExistingWorktreeReleasePreservesCompletedTaskChanges(t *testing.T) {
 	}
 	gitOutput(t, fixture.worktree, "add", "tracked.txt")
 	gitOutput(t, fixture.worktree, "commit", "-q", "-m", "completed task")
+	if err := os.WriteFile(filepath.Join(fixture.worktree, "untracked-output"), []byte("preserve me\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("tracked.txt", filepath.Join(fixture.worktree, "task-link")); err != nil {
+		t.Fatal(err)
+	}
 	completedHead := strings.TrimSpace(string(gitOutput(t, fixture.worktree, "rev-parse", "HEAD")))
 	if completedHead == fixture.baseSHA {
 		t.Fatal("task fixture did not advance HEAD")
 	}
 	releaseRun, releaseRequest := fixture.releaseRequest(receipt)
+	targetBefore := snapshotFilesystemTree(t, fixture.worktree)
+	adminBefore := snapshotFilesystemTree(t, mustExistingWorktreeAdminPath(t, fixture.worktree))
 	if _, err := fixture.controller.Release(context.Background(), releaseRun, releaseRequest); err != nil {
 		t.Fatal(err)
 	}
+	assertFilesystemTreeEqual(t, "release task target", targetBefore, snapshotFilesystemTree(t, fixture.worktree))
+	assertFilesystemTreeEqual(t, "release task git admin", adminBefore, snapshotFilesystemTree(t, mustExistingWorktreeAdminPath(t, fixture.worktree)))
 	if got := mustReadFile(t, filepath.Join(fixture.worktree, "tracked.txt")); !bytes.Equal(got, completed) {
 		t.Fatal("release rewrote completed task output")
 	}
@@ -304,6 +343,53 @@ func TestExistingWorktreeHostileInputsFailBeforeAuthorityWrite(t *testing.T) {
 			t.Fatal("symlink target reached RB1")
 		}
 	})
+	t.Run("foreign-repository-common-dir", func(t *testing.T) {
+		fixture := newExistingWorktreeFixture(t)
+		defer fixture.Close()
+		foreignRepository := filepath.Join(filepath.Dir(fixture.repository), "foreign-repository")
+		foreignWorktree := filepath.Join(filepath.Dir(fixture.repository), "foreign-worktree")
+		if err := os.Mkdir(foreignRepository, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		gitOutput(t, foreignRepository, "init", "-q")
+		gitOutput(t, foreignRepository, "config", "user.email", "marshal@example.invalid")
+		gitOutput(t, foreignRepository, "config", "user.name", "Marshal Test")
+		if err := os.WriteFile(filepath.Join(foreignRepository, "tracked.txt"), []byte("foreign\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		gitOutput(t, foreignRepository, "add", "tracked.txt")
+		gitOutput(t, foreignRepository, "commit", "-q", "-m", "foreign base")
+		base := strings.TrimSpace(string(gitOutput(t, foreignRepository, "rev-parse", "HEAD")))
+		gitOutput(t, foreignRepository, "worktree", "add", "-q", "--detach", foreignWorktree, base)
+		fixture.request.WorktreePath = foreignWorktree
+		fixture.request.ExpectedWorktreeIdentity = identityForPath(t, foreignWorktree)
+		fixture.request.ExpectedBaseSHA = base
+		fixture.request.RequestDigest = ""
+		if err := fixture.request.Seal(); err != nil {
+			t.Fatal(err)
+		}
+		fixture.authority.current = currentAuthorityForRequest(fixture.request, fixture.run)
+		if _, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request); err == nil || len(fixture.authority.facts) != 0 {
+			t.Fatal("worktree backed by another repository common-dir reached RB1")
+		}
+	})
+}
+
+func TestExistingWorktreeHeldTargetRejectsRenameAwayAndSameObjectBackBeforeAppend(t *testing.T) {
+	fixture := newExistingWorktreeFixture(t)
+	defer fixture.Close()
+	fixture.authority.beforeTarget = func() {
+		moved := fixture.worktree + "-moved"
+		if err := os.Rename(fixture.worktree, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(moved, fixture.worktree); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request); err == nil || len(fixture.authority.facts) != 0 {
+		t.Fatal("rename-away/back ABA reached RB1 append")
+	}
 }
 
 func TestExistingWorktreeBindRechecksExactCurrentAuthorityBeforeWrite(t *testing.T) {
@@ -551,7 +637,7 @@ func TestExistingWorktreeProjectionCorruptionFailsClosed(t *testing.T) {
 	}
 }
 
-func TestExistingWorktreePartialProjectionTailIsRecoveredOnlyAsExactPrefix(t *testing.T) {
+func TestExistingWorktreePartialProjectionTailFailsClosedWithoutRepair(t *testing.T) {
 	fixture := newExistingWorktreeFixture(t)
 	defer fixture.Close()
 	receipt, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request)
@@ -566,12 +652,81 @@ func TestExistingWorktreePartialProjectionTailIsRecoveredOnlyAsExactPrefix(t *te
 	if err := os.Truncate(path, int64(len(raw)-8)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request); err != nil {
+	partial := mustReadFile(t, path)
+	if _, err := fixture.controller.Bind(context.Background(), fixture.run, fixture.request); err == nil || len(fixture.authority.facts) != 2 {
+		t.Fatal("partial projection tail was repaired or changed authority")
+	}
+	if after := mustReadFile(t, path); !bytes.Equal(after, partial) {
+		t.Fatal("partial projection tail was truncated or overwritten")
+	}
+}
+
+type filesystemSnapshotEntry struct {
+	Mode       fs.FileMode
+	Size       int64
+	Device     uint64
+	Inode      uint64
+	LinkCount  uint64
+	LinkTarget string
+	Digest     string
+}
+
+func snapshotFilesystemTree(t *testing.T, root string) map[string]filesystemSnapshotEntry {
+	t.Helper()
+	result := make(map[string]filesystemSnapshotEntry)
+	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		value := filesystemSnapshotEntry{Mode: info.Mode(), Size: info.Size()}
+		if stat, ok := info.Sys().(*unix.Stat_t); ok {
+			value.Device, value.Inode, value.LinkCount = uint64(stat.Dev), stat.Ino, uint64(stat.Nlink)
+		}
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			value.LinkTarget, err = os.Readlink(path)
+		case info.Mode().IsRegular():
+			var raw []byte
+			raw, err = os.ReadFile(path)
+			value.Digest = digestBytes(raw)
+		}
+		if err != nil {
+			return err
+		}
+		result[relative] = value
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if rebuilt := mustReadFile(t, path); !bytes.Equal(rebuilt, raw) {
-		t.Fatal("matching partial tail did not converge to exact authority projection")
+	return result
+}
+
+func assertFilesystemTreeEqual(t *testing.T, label string, before, after map[string]filesystemSnapshotEntry) {
+	t.Helper()
+	if !equalCanonical(before, after) {
+		t.Fatalf("%s changed: before=%v after=%v", label, before, after)
 	}
+}
+
+func mustExistingWorktreeAdminPath(t *testing.T, worktree string) string {
+	t.Helper()
+	raw := strings.TrimSpace(string(mustReadFile(t, filepath.Join(worktree, ".git"))))
+	if !strings.HasPrefix(raw, "gitdir: ") {
+		t.Fatal("worktree .git did not contain gitdir")
+	}
+	path := strings.TrimSpace(strings.TrimPrefix(raw, "gitdir: "))
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		t.Fatal("worktree gitdir was not canonical absolute")
+	}
+	return path
 }
 
 func newExistingWorktreeFixture(t *testing.T) *existingWorktreeFixture {
@@ -605,6 +760,10 @@ func newExistingWorktreeFixture(t *testing.T) *existingWorktreeFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	repositoryCommon, err := os.Open(filepath.Join(repository, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	runPath := filepath.Join(root, "run")
 	if err := os.Mkdir(runPath, 0o700); err != nil {
 		t.Fatal(err)
@@ -624,7 +783,7 @@ func newExistingWorktreeFixture(t *testing.T) *existingWorktreeFixture {
 	if err := request.Seal(); err != nil {
 		t.Fatal(err)
 	}
-	authority := &existingWorktreeTestAuthority{filesystemRoot: filesystemRoot, repositoryParent: repositoryParent, repositoryRoot: repositoryRoot, repositoryName: filepath.Base(repository), current: currentAuthorityForRequest(request, run), failAfter: make(map[ExistingWorktreeFactKind]int)}
+	authority := &existingWorktreeTestAuthority{filesystemRoot: filesystemRoot, repositoryParent: repositoryParent, repositoryRoot: repositoryRoot, repositoryCommon: repositoryCommon, repositoryName: filepath.Base(repository), current: currentAuthorityForRequest(request, run), attemptRevision: binding.ExpectedAttemptSequence, attemptHead: binding.AttemptOpenedFactDigest, failAfter: make(map[ExistingWorktreeFactKind]int)}
 	controller, err := NewExistingWorktreeController(authority)
 	if err != nil {
 		t.Fatal(err)
@@ -654,6 +813,10 @@ func (fixture *existingWorktreeFixture) releaseRequest(receipt ExistingWorktreeB
 	current.ProcessTerminalFactDigest = request.ProcessTerminalFactDigest
 	current.CleanupDisposition = request.CleanupDisposition
 	fixture.authority.current = current
+	// Terminalization facts between bind and release advance the same Attempt
+	// head before RB1 release begins.
+	fixture.authority.attemptRevision++
+	fixture.authority.attemptHead = request.AttemptAuthorityHeadDigest
 	return releaseRun, request
 }
 

@@ -49,8 +49,8 @@ func NewDescriptorBoundRunV1(runID string, directory *os.File, authorityHeadDige
 // NewExistingWorktreeDescriptorGraph binds already-held filesystem and
 // repository descriptors to the exact repository parent/name edge. It never
 // opens a path and does not take ownership of the supplied files.
-func NewExistingWorktreeDescriptorGraph(filesystemRoot, repositoryParent, repositoryRoot *os.File, repositoryName string) (ExistingWorktreeDescriptorGraphV1, error) {
-	if filesystemRoot == nil || repositoryParent == nil || repositoryRoot == nil || !validExistingRelativeName(repositoryName) {
+func NewExistingWorktreeDescriptorGraph(filesystemRoot, repositoryParent, repositoryRoot, repositoryCommonGitDirectory *os.File, repositoryName string) (ExistingWorktreeDescriptorGraphV1, error) {
+	if filesystemRoot == nil || repositoryParent == nil || repositoryRoot == nil || repositoryCommonGitDirectory == nil || !validExistingRelativeName(repositoryName) {
 		return ExistingWorktreeDescriptorGraphV1{}, ErrInvalid
 	}
 	var rootStat unix.Stat_t
@@ -61,7 +61,11 @@ func NewExistingWorktreeDescriptorGraph(filesystemRoot, repositoryParent, reposi
 	if err != nil {
 		return ExistingWorktreeDescriptorGraphV1{}, err
 	}
-	graph := ExistingWorktreeDescriptorGraphV1{FilesystemRoot: filesystemRoot, FilesystemRootIdentity: objectIdentity(rootStat), RepositoryParent: repositoryParent, RepositoryRoot: repositoryRoot, RepositoryCurrentName: current}
+	commonCurrent, err := observeDirectoryEdge(int(repositoryRoot.Fd()), int(repositoryCommonGitDirectory.Fd()), ".git")
+	if err != nil {
+		return ExistingWorktreeDescriptorGraphV1{}, err
+	}
+	graph := ExistingWorktreeDescriptorGraphV1{FilesystemRoot: filesystemRoot, FilesystemRootIdentity: objectIdentity(rootStat), RepositoryParent: repositoryParent, RepositoryRoot: repositoryRoot, RepositoryCurrentName: current, RepositoryCommonGitDirectory: repositoryCommonGitDirectory, RepositoryCommonGitCurrentName: commonCurrent}
 	if validateExistingWorktreeDescriptorGraph(graph) != nil {
 		return ExistingWorktreeDescriptorGraphV1{}, ErrFilesystemConflict
 	}
@@ -77,7 +81,7 @@ func validateDescriptorBoundRun(run DescriptorBoundRunV1) error {
 }
 
 func validateExistingWorktreeDescriptorGraph(graph ExistingWorktreeDescriptorGraphV1) error {
-	if graph.FilesystemRoot == nil || graph.RepositoryParent == nil || graph.RepositoryRoot == nil || graph.FilesystemRootIdentity.Validate(ObjectTypeDirectory) != nil || graph.RepositoryCurrentName.Validate(ObjectTypeDirectory) != nil {
+	if graph.FilesystemRoot == nil || graph.RepositoryParent == nil || graph.RepositoryRoot == nil || graph.RepositoryCommonGitDirectory == nil || graph.FilesystemRootIdentity.Validate(ObjectTypeDirectory) != nil || graph.RepositoryCurrentName.Validate(ObjectTypeDirectory) != nil || graph.RepositoryCommonGitCurrentName.Validate(ObjectTypeDirectory) != nil {
 		return ErrInvalid
 	}
 	var filesystemRoot unix.Stat_t
@@ -88,7 +92,359 @@ func validateExistingWorktreeDescriptorGraph(graph ExistingWorktreeDescriptorGra
 	if err != nil || !equalCanonical(currentName, graph.RepositoryCurrentName) {
 		return ErrFilesystemConflict
 	}
+	commonCurrent, err := observeDirectoryEdge(int(graph.RepositoryRoot.Fd()), int(graph.RepositoryCommonGitDirectory.Fd()), ".git")
+	if err != nil || !equalCanonical(commonCurrent, graph.RepositoryCommonGitCurrentName) {
+		return ErrFilesystemConflict
+	}
 	return nil
+}
+
+// existingWorktreeHeldPath keeps every descriptor and current-name edge from
+// the already-held filesystem root to the final directory.  No pathname is
+// reopened after construction; revalidation is entirely descriptor-relative.
+type existingWorktreeHeldPath struct {
+	fds   []int
+	edges []CurrentNameIdentityV1
+}
+
+func openExistingWorktreeHeldPath(root *os.File, absolutePath string) (*existingWorktreeHeldPath, error) {
+	if root == nil || !validCanonicalAbsolutePath(absolutePath) {
+		return nil, ErrInvalid
+	}
+	rootFD, err := unix.Dup(int(root.Fd()))
+	if err != nil {
+		return nil, err
+	}
+	unix.CloseOnExec(rootFD)
+	held := &existingWorktreeHeldPath{fds: []int{rootFD}}
+	for _, component := range strings.Split(strings.TrimPrefix(absolutePath, string(filepath.Separator)), string(filepath.Separator)) {
+		if component == "" {
+			continue
+		}
+		if !validExistingRelativeName(component) {
+			held.Close()
+			return nil, ErrInvalid
+		}
+		parent := held.fds[len(held.fds)-1]
+		child, openErr := unix.Openat(parent, component, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if openErr != nil {
+			held.Close()
+			return nil, ErrFilesystemConflict
+		}
+		edge, edgeErr := observeLocatorDirectoryEdge(parent, child, component)
+		if edgeErr != nil {
+			unix.Close(child)
+			held.Close()
+			return nil, ErrFilesystemConflict
+		}
+		held.fds = append(held.fds, child)
+		held.edges = append(held.edges, edge)
+	}
+	if len(held.edges) == 0 {
+		held.Close()
+		return nil, ErrInvalid
+	}
+	return held, nil
+}
+
+func (held *existingWorktreeHeldPath) FD() int {
+	if held == nil || len(held.fds) == 0 {
+		return -1
+	}
+	return held.fds[len(held.fds)-1]
+}
+
+func (held *existingWorktreeHeldPath) locatorDigest() (string, error) {
+	if held == nil || len(held.edges) == 0 {
+		return "", ErrInvalid
+	}
+	return digestValue(held.edges)
+}
+
+func (held *existingWorktreeHeldPath) Revalidate() error {
+	if held == nil || len(held.fds) != len(held.edges)+1 {
+		return ErrFilesystemConflict
+	}
+	for index, expected := range held.edges {
+		current, err := observeLocatorDirectoryEdge(held.fds[index], held.fds[index+1], expected.RelativeName)
+		if err != nil || !equalCanonical(current, expected) {
+			return ErrFilesystemConflict
+		}
+	}
+	return nil
+}
+
+func (held *existingWorktreeHeldPath) Close() error {
+	if held == nil {
+		return nil
+	}
+	var result error
+	for index := len(held.fds) - 1; index >= 0; index-- {
+		result = errors.Join(result, unix.Close(held.fds[index]))
+	}
+	held.fds = nil
+	held.edges = nil
+	return result
+}
+
+type existingWorktreeTargetGuard struct {
+	graph       ExistingWorktreeDescriptorGraphV1
+	request     ExistingWorktreeBindRequestV1
+	target      *existingWorktreeHeldPath
+	admin       *existingWorktreeHeldPath
+	common      *existingWorktreeHeldPath
+	observation ExistingWorktreeObservationV1
+	expected    *ExistingWorktreeObservationV1
+}
+
+var _ ExistingWorktreeTargetSession = (*existingWorktreeTargetGuard)(nil)
+
+// WithExistingWorktreeTargetFromGraph opens the complete descriptor graph
+// once and keeps it live through callback.  expected=nil performs clean bind
+// admission; non-nil performs release anchoring while allowing task output,
+// HEAD and index to differ from bind time.
+func WithExistingWorktreeTargetFromGraph(ctx context.Context, graph ExistingWorktreeDescriptorGraphV1, request ExistingWorktreeBindRequestV1, expected *ExistingWorktreeObservationV1, callback func(ExistingWorktreeTargetSession) error) error {
+	if callback == nil || request.Validate() != nil || validateExistingWorktreeDescriptorGraph(graph) != nil {
+		return ErrAuthorityConflict
+	}
+	guard, err := openExistingWorktreeTargetGuard(ctx, graph, request, expected)
+	if err != nil {
+		return err
+	}
+	defer guard.Close()
+	if err := callback(guard); err != nil {
+		return err
+	}
+	return guard.Revalidate()
+}
+
+func openExistingWorktreeTargetGuard(ctx context.Context, graph ExistingWorktreeDescriptorGraphV1, request ExistingWorktreeBindRequestV1, expected *ExistingWorktreeObservationV1) (*existingWorktreeTargetGuard, error) {
+	target, err := openExistingWorktreeHeldPath(graph.FilesystemRoot, request.WorktreePath)
+	if err != nil {
+		return nil, err
+	}
+	closeTarget := true
+	defer func() {
+		if closeTarget {
+			target.Close()
+		}
+	}()
+	if !sameDirectoryObject(target.edges[len(target.edges)-1].ObjectIdentity, request.ExpectedWorktreeIdentity) {
+		return nil, ErrFilesystemConflict
+	}
+	dotGit, _, _, err := readObservedRegularAt(target.FD(), ".git", 16<<10)
+	if err != nil {
+		return nil, err
+	}
+	adminPath, err := parseGitdir(dotGit, request.WorktreePath)
+	if err != nil {
+		return nil, err
+	}
+	admin, err := openExistingWorktreeHeldPath(graph.FilesystemRoot, adminPath)
+	if err != nil {
+		return nil, err
+	}
+	closeAdmin := true
+	defer func() {
+		if closeAdmin {
+			admin.Close()
+		}
+	}()
+	commonRaw, _, _, err := readObservedRegularAt(admin.FD(), "commondir", 16<<10)
+	if err != nil {
+		return nil, err
+	}
+	commonRelative := strings.TrimSpace(string(commonRaw))
+	if commonRelative == "" || filepath.IsAbs(commonRelative) || strings.ContainsRune(commonRelative, 0) {
+		return nil, ErrFilesystemConflict
+	}
+	commonPath := filepath.Clean(filepath.Join(adminPath, commonRelative))
+	common, err := openExistingWorktreeHeldPath(graph.FilesystemRoot, commonPath)
+	if err != nil {
+		return nil, err
+	}
+	closeCommon := true
+	defer func() {
+		if closeCommon {
+			common.Close()
+		}
+	}()
+	if !sameHeldDirectoryFD(common.FD(), int(graph.RepositoryCommonGitDirectory.Fd())) {
+		return nil, ErrFilesystemConflict
+	}
+	guard := &existingWorktreeTargetGuard{graph: graph, request: request, target: target, admin: admin, common: common, expected: expected}
+	observation, err := guard.observeMaterial(ctx, expected == nil)
+	if err != nil {
+		return nil, err
+	}
+	if expected != nil {
+		if expected.Validate() != nil || !sameExistingWorktreeImmutableAnchors(observation, *expected) {
+			return nil, ErrFilesystemConflict
+		}
+	} else {
+		guard.observation = observation
+	}
+	closeTarget, closeAdmin, closeCommon = false, false, false
+	return guard, nil
+}
+
+func sameHeldDirectoryFD(left, right int) bool {
+	var a, b unix.Stat_t
+	return unix.Fstat(left, &a) == nil && unix.Fstat(right, &b) == nil && sameDirectoryObject(objectIdentity(a), objectIdentity(b))
+}
+
+func (guard *existingWorktreeTargetGuard) Close() error {
+	if guard == nil {
+		return nil
+	}
+	return errors.Join(guard.common.Close(), guard.admin.Close(), guard.target.Close())
+}
+
+func (guard *existingWorktreeTargetGuard) Observation() (ExistingWorktreeObservationV1, error) {
+	if guard == nil || guard.expected != nil || guard.observation.Validate() != nil || guard.Revalidate() != nil {
+		return ExistingWorktreeObservationV1{}, ErrFilesystemConflict
+	}
+	return guard.observation, nil
+}
+
+func (guard *existingWorktreeTargetGuard) Revalidate() error {
+	if guard == nil || validateExistingWorktreeDescriptorGraph(guard.graph) != nil || guard.target.Revalidate() != nil || guard.admin.Revalidate() != nil || guard.common.Revalidate() != nil || !sameHeldDirectoryFD(guard.common.FD(), int(guard.graph.RepositoryCommonGitDirectory.Fd())) {
+		return ErrFilesystemConflict
+	}
+	current, err := guard.observeMaterial(context.Background(), false)
+	if err != nil {
+		return err
+	}
+	if guard.expected != nil {
+		if !sameExistingWorktreeImmutableAnchors(current, *guard.expected) {
+			return ErrFilesystemConflict
+		}
+		return nil
+	}
+	// Git query-derived fields are stable because no task is allowed to run
+	// during bind. Material identity/digest/mutation equality catches ABA of
+	// HEAD/index/admin bytes between admission and durable append.
+	current.Git.HeadSHA = guard.observation.Git.HeadSHA
+	current.Git.CleanStatusDigest = guard.observation.Git.CleanStatusDigest
+	if err := current.Seal(); err != nil || !equalCanonical(current, guard.observation) {
+		return ErrFilesystemConflict
+	}
+	return nil
+}
+
+func (guard *existingWorktreeTargetGuard) observeMaterial(ctx context.Context, queryGit bool) (ExistingWorktreeObservationV1, error) {
+	if guard == nil || guard.target.Revalidate() != nil || guard.admin.Revalidate() != nil || guard.common.Revalidate() != nil {
+		return ExistingWorktreeObservationV1{}, ErrFilesystemConflict
+	}
+	targetEdge := guard.target.edges[len(guard.target.edges)-1]
+	adminEdge := guard.admin.edges[len(guard.admin.edges)-1]
+	targetLocator, err := guard.target.locatorDigest()
+	if err != nil {
+		return ExistingWorktreeObservationV1{}, err
+	}
+	adminLocator, err := guard.admin.locatorDigest()
+	if err != nil {
+		return ExistingWorktreeObservationV1{}, err
+	}
+	commonLocator, err := guard.common.locatorDigest()
+	if err != nil {
+		return ExistingWorktreeObservationV1{}, err
+	}
+	dotGit, dotGitIdentity, dotGitMutation, err := readObservedRegularAt(guard.target.FD(), ".git", 16<<10)
+	if err != nil {
+		return ExistingWorktreeObservationV1{}, err
+	}
+	adminGitdir, adminGitdirIdentity, adminGitdirMutation, err := readObservedRegularAt(guard.admin.FD(), "gitdir", 16<<10)
+	if err != nil || filepath.Clean(strings.TrimSpace(string(adminGitdir))) != filepath.Join(guard.request.WorktreePath, ".git") {
+		return ExistingWorktreeObservationV1{}, ErrFilesystemConflict
+	}
+	commonRaw, commonFileIdentity, commonFileMutation, err := readObservedRegularAt(guard.admin.FD(), "commondir", 16<<10)
+	if err != nil {
+		return ExistingWorktreeObservationV1{}, err
+	}
+	commonIdentity, commonMutation, err := observedHeldDirectoryIdentity(guard.common.FD())
+	if err != nil || !sameHeldDirectoryFD(guard.common.FD(), int(guard.graph.RepositoryCommonGitDirectory.Fd())) {
+		return ExistingWorktreeObservationV1{}, ErrFilesystemConflict
+	}
+	headRaw, headIdentity, headMutation, err := readObservedRegularAt(guard.admin.FD(), "HEAD", 64<<10)
+	if err != nil {
+		return ExistingWorktreeObservationV1{}, err
+	}
+	indexRaw, indexIdentity, indexMutation, err := readObservedRegularAt(guard.admin.FD(), "index", existingWorktreeGitReadLimit)
+	if err != nil {
+		return ExistingWorktreeObservationV1{}, err
+	}
+	observation := ExistingWorktreeObservationV1{
+		TargetCurrentName: targetEdge, TargetLocatorDigest: targetLocator,
+		Git: ExistingGitWorktreeIdentityV1{
+			DotGitIdentity: dotGitIdentity, DotGitDigest: digestBytes(dotGit), DotGitMutationDigest: dotGitMutation,
+			AdminCurrentName: adminEdge, AdminLocatorDigest: adminLocator,
+			AdminGitdirIdentity: adminGitdirIdentity, AdminGitdirDigest: digestBytes(adminGitdir), AdminGitdirMutationDigest: adminGitdirMutation,
+			CommonDirFileIdentity: commonFileIdentity, CommonDirFileDigest: digestBytes(commonRaw), CommonDirFileMutationDigest: commonFileMutation,
+			CommonDirectoryIdentity: commonIdentity, CommonDirectoryMutationDigest: commonMutation, CommonDirectoryLocatorDigest: commonLocator,
+			HeadIdentity: headIdentity, HeadDigest: digestBytes(headRaw), HeadMutationDigest: headMutation,
+			IndexIdentity: indexIdentity, IndexDigest: digestBytes(indexRaw), IndexMutationDigest: indexMutation,
+			HeadSHA: guard.request.ExpectedBaseSHA, CleanStatusDigest: digestBytes(nil),
+		},
+	}
+	if queryGit {
+		head, status, err := runReadOnlyGitOnHeldTarget(ctx, guard.target.FD())
+		if err != nil || head != guard.request.ExpectedBaseSHA || len(status) != 0 {
+			return ExistingWorktreeObservationV1{}, ErrFilesystemConflict
+		}
+		observation.Git.HeadSHA = head
+		observation.Git.CleanStatusDigest = digestBytes(status)
+	}
+	if guard.target.Revalidate() != nil || guard.admin.Revalidate() != nil || guard.common.Revalidate() != nil || observation.Seal() != nil {
+		return ExistingWorktreeObservationV1{}, ErrFilesystemConflict
+	}
+	return observation, nil
+}
+
+func sameExistingWorktreeImmutableAnchors(current, expected ExistingWorktreeObservationV1) bool {
+	return current.TargetCurrentName.ParentIdentity == expected.TargetCurrentName.ParentIdentity && current.TargetCurrentName.RelativeName == expected.TargetCurrentName.RelativeName && sameDirectoryObject(current.TargetCurrentName.ObjectIdentity, expected.TargetCurrentName.ObjectIdentity) &&
+		current.Git.DotGitIdentity == expected.Git.DotGitIdentity && current.Git.DotGitDigest == expected.Git.DotGitDigest && current.Git.DotGitMutationDigest == expected.Git.DotGitMutationDigest &&
+		current.Git.AdminCurrentName.ParentIdentity == expected.Git.AdminCurrentName.ParentIdentity && current.Git.AdminCurrentName.RelativeName == expected.Git.AdminCurrentName.RelativeName && sameDirectoryObject(current.Git.AdminCurrentName.ObjectIdentity, expected.Git.AdminCurrentName.ObjectIdentity) &&
+		current.Git.AdminGitdirIdentity == expected.Git.AdminGitdirIdentity && current.Git.AdminGitdirDigest == expected.Git.AdminGitdirDigest && current.Git.AdminGitdirMutationDigest == expected.Git.AdminGitdirMutationDigest &&
+		current.Git.CommonDirFileIdentity == expected.Git.CommonDirFileIdentity && current.Git.CommonDirFileDigest == expected.Git.CommonDirFileDigest && current.Git.CommonDirFileMutationDigest == expected.Git.CommonDirFileMutationDigest &&
+		sameDirectoryObject(current.Git.CommonDirectoryIdentity, expected.Git.CommonDirectoryIdentity) && current.Git.CommonDirectoryLocatorDigest == expected.Git.CommonDirectoryLocatorDigest
+}
+
+func runReadOnlyGitOnHeldTarget(ctx context.Context, targetFD int) (string, []byte, error) {
+	dup, err := unix.Dup(targetFD)
+	if err != nil {
+		return "", nil, err
+	}
+	target := os.NewFile(uintptr(dup), "held-worktree")
+	defer target.Close()
+	run := func(arguments ...string) ([]byte, error) {
+		bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		prefix := []string{"--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "core.hooksPath=/dev/null"}
+		launcherArguments := []string{"-e", existingWorktreeHeldDirectoryLauncher, "--"}
+		launcherArguments = append(launcherArguments, prefix...)
+		launcherArguments = append(launcherArguments, arguments...)
+		command := exec.CommandContext(bounded, "/usr/bin/perl", launcherArguments...)
+		command.Env = []string{"HOME=/dev/null", "LC_ALL=C", "PATH=/usr/bin:/bin", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0"}
+		command.ExtraFiles = []*os.File{target}
+		var stdout cappedCommandOutput
+		stdout.limit = existingWorktreeGitReadLimit
+		command.Stdout, command.Stderr = &stdout, io.Discard
+		if err := command.Run(); err != nil {
+			return nil, ErrFilesystemConflict
+		}
+		return stdout.data, nil
+	}
+	headRaw, err := run("rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return "", nil, err
+	}
+	head := strings.TrimSpace(string(headRaw))
+	if !validGitObjectID(head) || string(headRaw) != head+"\n" {
+		return "", nil, ErrFilesystemConflict
+	}
+	status, err := run("status", "--porcelain=v1", "-z", "--untracked-files=all")
+	return head, status, err
 }
 
 // ObserveExistingWorktreeFromGraph is the reference session mechanic. It may
@@ -230,8 +586,8 @@ func observeExistingWorktreeBindingAnchors(graph ExistingWorktreeDescriptorGraph
 	}
 	defer unix.Close(commonFD)
 	commonIdentity, _, err := observedHeldDirectoryIdentity(commonFD)
-	if err != nil {
-		return existingWorktreeBindingAnchors{}, err
+	if err != nil || !sameHeldDirectoryFD(commonFD, int(graph.RepositoryCommonGitDirectory.Fd())) {
+		return existingWorktreeBindingAnchors{}, ErrFilesystemConflict
 	}
 	if current, edgeErr := observeDirectoryEdge(parentFD, targetFD, leaf); edgeErr != nil || !equalCanonical(current, targetCurrentName) {
 		return existingWorktreeBindingAnchors{}, ErrFilesystemConflict
@@ -328,8 +684,8 @@ func observeExistingWorktreeMaterial(graph ExistingWorktreeDescriptorGraphV1, re
 	}
 	defer unix.Close(commonFD)
 	commonIdentity, commonMutation, err := observedHeldDirectoryIdentity(commonFD)
-	if err != nil {
-		return ExistingWorktreeObservationV1{}, err
+	if err != nil || !sameHeldDirectoryFD(commonFD, int(graph.RepositoryCommonGitDirectory.Fd())) {
+		return ExistingWorktreeObservationV1{}, ErrFilesystemConflict
 	}
 
 	headRaw, headIdentity, headMutation, err := readObservedRegularAt(adminFD, "HEAD", 64<<10)
@@ -434,7 +790,7 @@ func observeLocatorDirectoryEdge(parentFD, childFD int, name string) (CurrentNam
 	// churn. Bind their current-name chain to stable object identity plus inode
 	// generation, while the final target/admin edges below additionally bind
 	// mutation time to catch rename-away/back ABA of the actual authority object.
-	return CurrentNameIdentityV1{ParentIdentity: stableDirectoryIdentity(parent), ParentMutationDigest: statGenerationDigest(parent), RelativeName: name, ObjectIdentity: stableDirectoryIdentity(held), ObjectMutationDigest: statGenerationDigest(held)}, nil
+	return CurrentNameIdentityV1{ParentIdentity: stableDirectoryIdentity(parent), ParentMutationDigest: statGenerationDigest(parent), RelativeName: name, ObjectIdentity: stableDirectoryIdentity(held), ObjectMutationDigest: statMutationDigest(held)}, nil
 }
 
 func extendDirectoryLocatorDigest(parentDigest string, edge CurrentNameIdentityV1) (string, error) {
@@ -602,8 +958,10 @@ func runReadOnlyGit(ctx context.Context, graph ExistingWorktreeDescriptorGraphV1
 }
 
 type existingWorktreeProjection struct {
-	directory *os.File
-	lock      *os.File
+	parent               *os.File
+	directory            *os.File
+	directoryCurrentName CurrentNameIdentityV1
+	lock                 *os.File
 }
 
 // SyncExistingWorktreeProjectionFromGraph is the reference session projection
@@ -645,7 +1003,21 @@ func openExistingWorktreeProjection(graph ExistingWorktreeDescriptorGraphV1) (*e
 		bindings.Close()
 		return nil, ErrFilesystemConflict
 	}
-	return &existingWorktreeProjection{directory: bindings, lock: lock}, nil
+	parentFD, err := unix.Dup(int(runtimeDir.Fd()))
+	if err != nil {
+		lock.Close()
+		bindings.Close()
+		return nil, err
+	}
+	parent := os.NewFile(uintptr(parentFD), existingWorktreeRuntimeDirectory)
+	current, err := observeDirectoryEdge(int(parent.Fd()), int(bindings.Fd()), ExistingWorktreeProjectionDirectory)
+	if err != nil {
+		parent.Close()
+		lock.Close()
+		bindings.Close()
+		return nil, err
+	}
+	return &existingWorktreeProjection{parent: parent, directory: bindings, directoryCurrentName: current, lock: lock}, nil
 }
 
 func (projection *existingWorktreeProjection) Close() error {
@@ -660,6 +1032,10 @@ func (projection *existingWorktreeProjection) Close() error {
 	if projection.directory != nil {
 		result = errors.Join(result, projection.directory.Close())
 		projection.directory = nil
+	}
+	if projection.parent != nil {
+		result = errors.Join(result, projection.parent.Close())
+		projection.parent = nil
 	}
 	return result
 }
@@ -758,7 +1134,14 @@ func (projection *existingWorktreeProjection) Sync(snapshot ExistingWorktreeAuth
 		}
 		seen[name] = true
 	}
-	return projection.directory.Sync()
+	if err := projection.directory.Sync(); err != nil {
+		return err
+	}
+	current, err := observeDirectoryEdge(int(projection.parent.Fd()), int(projection.directory.Fd()), ExistingWorktreeProjectionDirectory)
+	if err != nil || !equalCanonical(current, projection.directoryCurrentName) {
+		return ErrFilesystemConflict
+	}
+	return nil
 }
 
 func projectionRecords(snapshot ExistingWorktreeAuthoritySnapshotV1) (map[string][]ExistingWorktreeProjectionRecordV1, error) {
@@ -797,11 +1180,11 @@ func projectionRecords(snapshot ExistingWorktreeAuthoritySnapshotV1) (map[string
 			return nil, ErrAuthorityConflict
 		}
 		name := strings.TrimPrefix(targetDigest, "sha256:") + ".jsonl"
-		previous := ExistingWorktreeProjectionGenesis
+		previous := fact.PreviousAttemptHeadDigest
 		if records := result[name]; len(records) > 0 {
 			previous = records[len(records)-1].ProjectionDigest
 		}
-		record := ExistingWorktreeProjectionRecordV1{AuthoritySequence: fact.Sequence, Kind: fact.Kind, AuthorityFactDigest: fact.FactDigest, AuthorityPayloadDigest: fact.PayloadDigest, BindingDigest: bindingDigest, TargetIdentityDigest: targetDigest, RequestDigest: requestDigest, PreviousProjectionDigest: previous}
+		record := ExistingWorktreeProjectionRecordV1{AttemptRevision: fact.AttemptRevision, Kind: fact.Kind, AttemptFactDigest: fact.AttemptFactDigest, AuthorityPayloadDigest: fact.PayloadDigest, BindingDigest: bindingDigest, TargetIdentityDigest: targetDigest, RequestDigest: requestDigest, PreviousProjectionDigest: previous}
 		if err := record.Seal(); err != nil {
 			return nil, err
 		}
@@ -816,6 +1199,12 @@ func (projection *existingWorktreeProjection) syncEntry(name string, expected []
 		return err
 	}
 	defer file.Close()
+	// Creating the entry legitimately mutates its parent. Re-anchor only after
+	// the nofollow open+named identity check and before any content write.
+	projection.directoryCurrentName, err = observeDirectoryEdge(int(projection.parent.Fd()), int(projection.directory.Fd()), ExistingWorktreeProjectionDirectory)
+	if err != nil {
+		return ErrFilesystemConflict
+	}
 	stat, err := file.Stat()
 	if err != nil || stat.Size() < 0 || stat.Size() > existingWorktreeProjectionLimit {
 		return ErrFilesystemConflict
@@ -824,19 +1213,12 @@ func (projection *existingWorktreeProjection) syncEntry(name string, expected []
 	if err != nil {
 		return err
 	}
-	complete := raw
-	partial := []byte(nil)
 	if len(raw) > 0 && raw[len(raw)-1] != '\n' {
-		index := bytes.LastIndexByte(raw, '\n')
-		if index < 0 {
-			complete = nil
-			partial = raw
-		} else {
-			complete = raw[:index+1]
-			partial = raw[index+1:]
-		}
+		// A partial tail is corrupt authority projection, not recoverable
+		// evidence. Never truncate/overwrite it.
+		return ErrAuthorityConflict
 	}
-	lines := bytes.Split(complete, []byte{'\n'})
+	lines := bytes.Split(raw, []byte{'\n'})
 	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
 		lines = lines[:len(lines)-1]
 	}
@@ -849,21 +1231,6 @@ func (projection *existingWorktreeProjection) syncEntry(name string, expected []
 			return ErrAuthorityConflict
 		}
 	}
-	if len(partial) > 0 {
-		if len(lines) >= len(expected) {
-			return ErrAuthorityConflict
-		}
-		want, _ := canonicalValue(expected[len(lines)])
-		if !bytes.HasPrefix(want, partial) {
-			return ErrAuthorityConflict
-		}
-		if err := file.Truncate(int64(len(complete))); err != nil || file.Sync() != nil {
-			return ErrFilesystemUnknown
-		}
-		if _, err := file.Seek(0, io.SeekEnd); err != nil {
-			return err
-		}
-	}
 	for _, record := range expected[len(lines):] {
 		payload, _ := canonicalValue(record)
 		payload = append(payload, '\n')
@@ -871,5 +1238,16 @@ func (projection *existingWorktreeProjection) syncEntry(name string, expected []
 			return err
 		}
 	}
-	return file.Sync()
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	var held, named unix.Stat_t
+	if unix.Fstat(int(file.Fd()), &held) != nil || unix.Fstatat(int(projection.directory.Fd()), name, &named, unix.AT_SYMLINK_NOFOLLOW) != nil || !sameStat(held, named) || verifyPrivateRegular(held, uint32(unix.Geteuid())) != nil {
+		return ErrFilesystemConflict
+	}
+	current, err := observeDirectoryEdge(int(projection.parent.Fd()), int(projection.directory.Fd()), ExistingWorktreeProjectionDirectory)
+	if err != nil || !equalCanonical(current, projection.directoryCurrentName) {
+		return ErrFilesystemConflict
+	}
+	return nil
 }

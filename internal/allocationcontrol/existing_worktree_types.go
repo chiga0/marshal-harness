@@ -25,7 +25,6 @@ const (
 	ExistingWorktreeFactReleaseReceipt ExistingWorktreeFactKind = "release-receipt"
 
 	ExistingWorktreeProjectionDirectory = "existing-worktree-bindings"
-	ExistingWorktreeProjectionGenesis   = "sha256:04d5c445f623bfa2d2e126cfc748b62cc97d54ca86aab5ef8c75596564162da4"
 )
 
 type ExistingWorktreeFactKind string
@@ -119,17 +118,28 @@ func (current ExistingWorktreeCurrentAuthorityV1) validateBinding(binding Existi
 }
 
 func (current ExistingWorktreeCurrentAuthorityV1) validateBind(request ExistingWorktreeBindRequestV1, run DescriptorBoundRunV1) error {
-	if request.Validate() != nil || current.validateBinding(request.Binding, run) != nil || current.AttemptAuthorityHeadDigest != request.Binding.AttemptOpenedFactDigest || current.WorktreePath != request.WorktreePath || !sameDirectoryObject(current.ExpectedWorktreeIdentity, request.ExpectedWorktreeIdentity) || current.ExpectedBaseSHA != request.ExpectedBaseSHA || current.TerminalizationID != "" || current.CleanupBindingDigest != "" || current.ProcessTerminalFactDigest != "" || current.CleanupDisposition != "" {
+	if request.Validate() != nil || current.validateBinding(request.Binding, run) != nil || current.WorktreePath != request.WorktreePath || !sameDirectoryObject(current.ExpectedWorktreeIdentity, request.ExpectedWorktreeIdentity) || current.ExpectedBaseSHA != request.ExpectedBaseSHA || current.TerminalizationID != "" || current.CleanupBindingDigest != "" || current.ProcessTerminalFactDigest != "" || current.CleanupDisposition != "" {
 		return ErrAuthorityConflict
 	}
 	return nil
 }
 
 func (current ExistingWorktreeCurrentAuthorityV1) validateRelease(request ExistingWorktreeReleaseRequestV1, run DescriptorBoundRunV1) error {
-	if request.Validate() != nil || current.validateBinding(request.Binding, run) != nil || current.RunAuthorityHeadDigest != request.RunAuthorityHeadDigest || current.AttemptAuthorityHeadDigest != request.AttemptAuthorityHeadDigest || current.TerminalizationID != request.TerminalizationID || current.CleanupBindingDigest != request.CleanupBindingDigest || current.ProcessTerminalFactDigest != request.ProcessTerminalFactDigest || current.CleanupDisposition != request.CleanupDisposition {
+	if request.Validate() != nil || current.validateBinding(request.Binding, run) != nil || current.RunAuthorityHeadDigest != request.RunAuthorityHeadDigest || current.TerminalizationID != request.TerminalizationID || current.CleanupBindingDigest != request.CleanupBindingDigest || current.ProcessTerminalFactDigest != request.ProcessTerminalFactDigest || current.CleanupDisposition != request.CleanupDisposition {
 		return ErrAuthorityConflict
 	}
 	return nil
+}
+
+// ValidateExistingWorktreeCurrentBind/Release are narrow composition helpers
+// for ResultIngress. They expose no authority: the caller must already be
+// inside the held current-owner/Run/reservation verifier callback.
+func ValidateExistingWorktreeCurrentBind(current ExistingWorktreeCurrentAuthorityV1, request ExistingWorktreeBindRequestV1, run DescriptorBoundRunV1) error {
+	return current.validateBind(request, run)
+}
+
+func ValidateExistingWorktreeCurrentRelease(current ExistingWorktreeCurrentAuthorityV1, request ExistingWorktreeReleaseRequestV1, run DescriptorBoundRunV1) error {
+	return current.validateRelease(request, run)
 }
 
 // ExistingWorktreeDescriptorGraphV1 is borrowed from the RB1 session while
@@ -137,11 +147,13 @@ func (current ExistingWorktreeCurrentAuthorityV1) validateRelease(request Existi
 // descriptor-relative from FilesystemRoot. RepositoryRoot and its current
 // parent/name edge are used for the fixed projection graph.
 type ExistingWorktreeDescriptorGraphV1 struct {
-	FilesystemRoot         *os.File
-	FilesystemRootIdentity ObjectIdentityV1
-	RepositoryParent       *os.File
-	RepositoryRoot         *os.File
-	RepositoryCurrentName  CurrentNameIdentityV1
+	FilesystemRoot                 *os.File
+	FilesystemRootIdentity         ObjectIdentityV1
+	RepositoryParent               *os.File
+	RepositoryRoot                 *os.File
+	RepositoryCurrentName          CurrentNameIdentityV1
+	RepositoryCommonGitDirectory   *os.File
+	RepositoryCommonGitCurrentName CurrentNameIdentityV1
 }
 
 func (run DescriptorBoundRunV1) validate(binding ExistingWorktreeBindingV1) error {
@@ -472,13 +484,18 @@ func (receipt *ExistingWorktreeReleaseReceiptV1) Seal() error {
 	return nil
 }
 
-type ExistingWorktreeAuthorityFactV1 struct {
-	Sequence           uint64                   `json:"sequence"`
-	Kind               ExistingWorktreeFactKind `json:"kind"`
-	PreviousFactDigest string                   `json:"previousFactDigest"`
-	Payload            json.RawMessage          `json:"payload"`
-	PayloadDigest      string                   `json:"payloadDigest"`
-	FactDigest         string                   `json:"factDigest"`
+// ExistingWorktreeAttemptFactV1 is a read-only projection of one fact from
+// the shared ResultIngress Attempt ledger.  It deliberately has no private
+// sequence or genesis: AttemptRevision/PreviousAttemptHeadDigest and the
+// outer AttemptFactDigest are the only authority chain.
+type ExistingWorktreeAttemptFactV1 struct {
+	AttemptKey                string                   `json:"attemptKey"`
+	AttemptRevision           uint64                   `json:"attemptRevision"`
+	Kind                      ExistingWorktreeFactKind `json:"kind"`
+	PreviousAttemptHeadDigest string                   `json:"previousAttemptHeadDigest"`
+	Payload                   json.RawMessage          `json:"payload"`
+	PayloadDigest             string                   `json:"payloadDigest"`
+	AttemptFactDigest         string                   `json:"attemptFactDigest"`
 }
 
 // ExistingWorktreeProjectionRecordV1 is intentionally path-free. It contains
@@ -486,9 +503,9 @@ type ExistingWorktreeAuthorityFactV1 struct {
 type ExistingWorktreeProjectionRecordV1 struct {
 	SchemaVersion            string                   `json:"schemaVersion"`
 	ProtocolRevision         string                   `json:"protocolRevision"`
-	AuthoritySequence        uint64                   `json:"authoritySequence"`
+	AttemptRevision          uint64                   `json:"attemptRevision"`
 	Kind                     ExistingWorktreeFactKind `json:"kind"`
-	AuthorityFactDigest      string                   `json:"authorityFactDigest"`
+	AttemptFactDigest        string                   `json:"attemptFactDigest"`
 	AuthorityPayloadDigest   string                   `json:"authorityPayloadDigest"`
 	BindingDigest            string                   `json:"bindingDigest"`
 	TargetIdentityDigest     string                   `json:"targetIdentityDigest"`
@@ -498,7 +515,7 @@ type ExistingWorktreeProjectionRecordV1 struct {
 }
 
 func (record ExistingWorktreeProjectionRecordV1) Validate() error {
-	if record.SchemaVersion != ExistingWorktreeProjectionSchema || record.ProtocolRevision != ExistingWorktreeProtocolRevision || record.AuthoritySequence == 0 || record.AuthoritySequence > maxSafeJSONInteger || !validExistingWorktreeFactKind(record.Kind) || !validDigest(record.AuthorityFactDigest) || !validDigest(record.AuthorityPayloadDigest) || !validDigest(record.BindingDigest) || !validDigest(record.TargetIdentityDigest) || !validDigest(record.RequestDigest) || !validDigest(record.PreviousProjectionDigest) || !validDigest(record.ProjectionDigest) {
+	if record.SchemaVersion != ExistingWorktreeProjectionSchema || record.ProtocolRevision != ExistingWorktreeProtocolRevision || record.AttemptRevision == 0 || record.AttemptRevision > maxSafeJSONInteger || !validExistingWorktreeFactKind(record.Kind) || !validDigest(record.AttemptFactDigest) || !validDigest(record.AuthorityPayloadDigest) || !validDigest(record.BindingDigest) || !validDigest(record.TargetIdentityDigest) || !validDigest(record.RequestDigest) || !validDigest(record.PreviousProjectionDigest) || !validDigest(record.ProjectionDigest) {
 		return ErrInvalid
 	}
 	want, err := digestValueWithoutField(record, "projectionDigest")
@@ -522,8 +539,8 @@ func (record *ExistingWorktreeProjectionRecordV1) Seal() error {
 	return record.Validate()
 }
 
-func (fact ExistingWorktreeAuthorityFactV1) Validate() error {
-	if fact.Sequence == 0 || fact.Sequence > maxSafeJSONInteger || !validExistingWorktreeFactKind(fact.Kind) || !validDigest(fact.PreviousFactDigest) || len(fact.Payload) == 0 || !validDigest(fact.PayloadDigest) || !validDigest(fact.FactDigest) {
+func (fact ExistingWorktreeAttemptFactV1) Validate() error {
+	if !validDigest(fact.AttemptKey) || fact.AttemptRevision == 0 || fact.AttemptRevision > maxSafeJSONInteger || !validExistingWorktreeFactKind(fact.Kind) || !validDigest(fact.PreviousAttemptHeadDigest) || len(fact.Payload) == 0 || !validDigest(fact.PayloadDigest) || !validDigest(fact.AttemptFactDigest) {
 		return ErrInvalid
 	}
 	canonicalPayload, err := canonicalValue(json.RawMessage(fact.Payload))
@@ -534,25 +551,7 @@ func (fact ExistingWorktreeAuthorityFactV1) Validate() error {
 	if string(canonicalPayload) != string(fact.Payload) || digestBytes(fact.Payload) != fact.PayloadDigest {
 		return ErrInvalid
 	}
-	want, err := digestValueWithoutField(fact, "factDigest")
-	if err != nil || want != fact.FactDigest {
-		return ErrInvalid
-	}
 	return nil
-}
-
-func newExistingWorktreeFact(sequence uint64, kind ExistingWorktreeFactKind, previous string, payload any) (ExistingWorktreeAuthorityFactV1, error) {
-	raw, err := canonicalValue(payload)
-	if err != nil {
-		return ExistingWorktreeAuthorityFactV1{}, err
-	}
-	fact := ExistingWorktreeAuthorityFactV1{Sequence: sequence, Kind: kind, PreviousFactDigest: previous, Payload: raw, PayloadDigest: digestBytes(raw)}
-	digest, err := digestValueWithoutField(fact, "factDigest")
-	if err != nil {
-		return ExistingWorktreeAuthorityFactV1{}, err
-	}
-	fact.FactDigest = digest
-	return fact, fact.Validate()
 }
 
 func validExistingWorktreeFactKind(kind ExistingWorktreeFactKind) bool {
