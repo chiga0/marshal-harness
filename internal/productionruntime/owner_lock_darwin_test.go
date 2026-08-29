@@ -41,6 +41,12 @@ func TestRepositoryOwnerLockRejectsCompetitorAndPathABA(t *testing.T) {
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// Darwin inherits the parent directory group. /private/tmp is commonly
+	// group wheel, but the production owner-file identity is intentionally
+	// bound to the ordinary user's effective group.
+	if err := os.Chown(root, -1, os.Getgid()); err != nil {
+		t.Fatalf("set owner lock root group: %v", err)
+	}
 	acquisition := currentProcessAcquisition()
 	first, err := openRepositoryOwnerLock(root, acquisition)
 	if err != nil {

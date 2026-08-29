@@ -72,10 +72,22 @@ func openFreshStartedAttempt(t *testing.T, store *ingressDurableStore) AttemptAu
 		t.Fatal(err)
 	}
 	authorized := authorizedResult.State
-	authorized = appendTestSupervisorStarted(t, store, authorized)
-	startedResult, err := appendAuthorizedAttempt(t, store, authorized.Revision, authorized.HeadDigest, AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:02Z", Process: attemptTestProcess(t)})
+	control := processsupervisor.ControlDirectoryIdentity{CanonicalPath: "/tmp/fresh-supervisor-" + id.AttemptID, Device: 2, Inode: 101, FileType: "directory", UID: 501, GID: 20, Mode: POSIXFileTypeDirectory | 0o700, LinkCount: 2}
+	prepared, acquisition := testPreparedSupervisor(t, store, authorized, "supervisor-"+id.AttemptID+"-1", control)
+	authorized = testStartPreparedSupervisor(t, store, prepared, acquisition)
+	transition := AttemptTransition{Kind: AttemptTransitionProcessStarted, Identity: id, CommandID: "command-1", ObservedAt: "2026-08-28T00:00:02Z", Process: attemptTestProcess(t), LaunchMaterialsDigest: authorized.LaunchMaterialsDigest, AgentLaunchSpecDigest: authorized.AgentLaunchSpecDigest}
+	authorized = appendTestProcessStartedCheckpoints(t, store, authorized, &transition)
+	if transition.SupervisorBindOutcomeFactDigest == "" || transition.SupervisorOutcomeFactDigest == "" {
+		t.Fatal("fresh process-started fixture omitted supervisor command outcome references")
+	}
+	owner, found, err := store.OpenOwner(authorized.Owner.Scope)
+	if err != nil || !found {
+		t.Fatalf("fresh process-started fixture current owner found=%v err=%v", found, err)
+	}
+	run := attemptTestRunAuthority(id)
+	startedResult, err := store.AppendProcessStarted(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, authorized.Revision, authorized.HeadDigest, AttemptAuthorizationRequest{Identity: id, CurrentRunAuthority: run}, authorized.Owner, transition)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("append fresh process-started from supervisor outcomes: %v", err)
 	}
 	return startedResult.State
 }
@@ -317,12 +329,12 @@ func appendTestSupervisorCheckpoint(t *testing.T, store *DurableStore, state Att
 	request := AttemptAuthorizationRequest{Identity: state.Identity, CurrentRunAuthority: run}
 	intended, err := store.AppendSupervisorCommandIntent(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, state.Revision, state.HeadDigest, request, state.Owner, intent)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("append supervisor %s intent: %v", intent.Command, err)
 	}
 	evidence := testSupervisorEvidence(t, intent, outcome, disposition)
 	checkpoint, err := store.AppendSupervisorCommandOutcome(context.Background(), attemptOwnerVerifier{want: owner.Acquisition}, attemptRunVerifier{want: run}, intended.State.Revision, intended.State.HeadDigest, request, state.Owner, evidence)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("append supervisor %s outcome: %v", intent.Command, err)
 	}
 	return checkpoint.State, checkpoint.TransitionDigest
 }
@@ -378,7 +390,7 @@ func appendTestProcessStartedCheckpoints(t *testing.T, store *DurableStore, stat
 	spawn := testSupervisorIntent(state, processsupervisor.CommandSpawn, SupervisorCommandRebuildProjection{
 		SupervisorStartedFactDigest: state.SupervisorStartedDigest, LaunchAuthorizedFactDigest: state.LaunchAuthorizedDigest,
 		LaunchMaterialsDigest: state.LaunchMaterialsDigest, AgentLaunchSpecDigest: state.AgentLaunchSpecDigest,
-		RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest,
+		RuntimeObjectDigest: runtimeDigest, WorkingObjectDigest: workingDigest, ClosureProfileID: state.LaunchClosure.ClosureProfileID,
 		ArgvDigest: attemptTestDigest("argv-" + state.Identity.AttemptID), EnvironmentDigest: attemptTestDigest("env-" + state.Identity.AttemptID), StdinDigest: attemptTestDigest("stdin-" + state.Identity.AttemptID),
 	})
 	outcome := SupervisorProcessOutcome{
