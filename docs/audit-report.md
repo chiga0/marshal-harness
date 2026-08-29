@@ -53,6 +53,18 @@ ADR 0065 已于 2026-08-29 接受，提案基线为 `main@40fa493d1955fd6d039169
 
 ADR 0066 提案 `69574533fd7c7e0e91b4ef45a2c902885c2eeb4c` 经独立 reviewer 复审 `APPROVE`（P0=0、P1=0）后于 2026-08-29 接受。接受只解除 S2 的治理 blocker，不表示实现完成；S1 后仍须立即进入该 S2 边界。ADR 0066 不改变 ADR 0062 的 fixed binary、loopback authentication 或禁止 child CLI 信任模型。
 
+### S1 mechanics 重复 P1 与 Mac-first 减法审计（2026-08-29）
+
+对第二轮候选的 exact diff 与当前 `main@84d2dcd6bb78cb7fa47ed1d3040a1f3bea5a0f11` 重新比较后，结论不是继续补丁，而是合同过度：`a6a0d638f45d6902b9c453b1e600b5f798380d82` 在 Core 与 Supervisor 两处重复 source currentness，仍无法在 ordinary-user 边界证明两次观察之间的 same-UID pathname连续性；`6298eaebebb9ec705e74903cdf2a32dda0b6a62c` 又依赖 `506a6470767f187290df08b1060834ed59aeabdb` 的大范围 runstore substrate，把 Run currentness扩成第二套Attempt/owner/generation authority。三份候选均冻结为审计/测试输入，不直接合入，也不在原分支上进入第三轮同类rework。
+
+| Finding | 等级 | 状态 | 处置 / 关闭条件 |
+| --- | --- | --- | --- |
+| `I186-ARCH-ORDINARY-SOURCE-GATE-DUPLICATION` | P1 | `ADR-PROPOSED/IMPLEMENTATION-FROZEN` | [ADR 0067](adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 提议把Core收窄为pre-bootstrap无副作用current closure admission，随后释放临时FD；fixed Supervisor的`spawn`成为唯一mutation-adjacent exact role/record/file set gate，并保持同一FD组贯穿post-exec barrier。关闭须覆盖Core检查后pathname替换、material增删/换位、cwd与Allocation `LiveIdentity`不等，且不得宣称fully controlled same-UID防护。 |
+| `I186-ARCH-RECONNECT-AUTHORITY-AMPLIFICATION` | P1 | `ADR-PROPOSED/IMPLEMENTATION-FROZEN` | ADR0067提议停止新`process-supervisor-session-reconnected` producer，以零持久化mutation的只读`Attach`认证同一session，再通过RB1已耐久`bind-authority(owner-successor) intent→execute→outcome`重锚。跨owner pending command、pre-`process-started` owner变化和identity不唯一固定typed intervention；exact durable outcome仍从所属ledger replay。 |
+| `I186-ARCH-RUNSTORE-SUBSTRATE-OVERREACH` | P1 | `ADR-PROPOSED/IMPLEMENTATION-FROZEN` | `506a647`跨24文件修改execution/review/selfidentity/runstore，`6298eae`堆叠其上；该基线不合入。S1′必须直接建立在当前descriptor-bound `runstore.Store`/`Lease`/open authority上，只新增private projector、唯一successor和generic Append拒绝；不得复制ResultIngress owner/Attempt/generation。 |
+
+提案保留的硬门禁是current-ledger recheck、exact successful resume、ADR0065 sealed proof、唯一Run successor、fixed Supervisor mechanics、ADR0064 control-directory identity、ADR0066 canonical factory。降级项只有Mac ordinary-user无法诚实自动恢复的ambiguous窗口；它们转intervention或在已证明零副作用/完成cleanup后创建新Attempt，不转成silent fallback。ADR0067仍为Proposed，接受前不改变现行ADR状态；实现不得以提案名义提前绕过0059/0060/0063。
+
 ### Darwin 控制目录阶段化身份审计（2026-08-29）
 
 exact-head macOS CI 证明，APFS 在 Supervisor 合法创建 nonce、journal、socket 与输出对象时可能改变目录 `st_nlink`；既有全字段 runtime equality 因此会把同一目录对象误判为 ABA，并让本应在 receipt `fsync` 后拒绝的 post-command drift 提前停在 journal sequence `1`。这不是测试断言问题，也不能通过删除 link-count hostile gate、跳过目录枚举或放宽 control object identity解决。
