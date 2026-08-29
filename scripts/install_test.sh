@@ -22,7 +22,7 @@ cat >"${MOCK_BIN}/uname" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
   -s) printf '%s\n' "${MOCK_KERNEL:-Darwin}" ;;
-  -m) printf 'arm64\n' ;;
+  -m) printf '%s\n' "${MOCK_MACHINE:-arm64}" ;;
   *) exit 2 ;;
 esac
 EOF
@@ -125,7 +125,15 @@ while [ "$#" -gt 0 ]; do
     *) url="$1"; shift ;;
   esac
 done
-[ -n "$dest" ] && [ -n "$url" ] || exit 2
+[ -n "$url" ] || exit 2
+if [ -z "$dest" ]; then
+  [ "$url" = https://api.github.com/repos/chiga0/marshal-harness/releases/latest ] || exit 2
+  printf '{\n  "tag_name": "%s"\n}\n' "${FIXTURE_TAG:?}"
+  exit 0
+fi
+if [ -n "${FIXTURE_CURL_URL_LOG:-}" ]; then
+  printf '%s\n' "$url" >>"$FIXTURE_CURL_URL_LOG"
+fi
 case "$url" in
   https://github.com/chiga0/marshal-harness/releases/download/*|https://github.com/chiga0/marshal-harness/releases/latest/download/*) ;;
   *) printf 'non-canonical release URL: %s\n' "$url" >&2; exit 91 ;;
@@ -162,6 +170,9 @@ case "$url" in
     esac
     ;;
   *)
+    case "$FIXTURE_MODE" in
+      missingasset|downloadfailure) exit 22 ;;
+    esac
     write_asset >"$dest"
     chmod 0644 "$dest"
     if [ -n "${FIXTURE_CURL_MODE_LOG:-}" ]; then
@@ -326,9 +337,10 @@ EOF
 chmod 0755 "${MOCK_BIN}/go"
 
 run_failure_case() {
-  local tag="$1" mode="$2" expected="$3" case_dir output status asset
+  local tag="$1" mode="$2" expected="$3" case_dir output status asset go_log
   case_dir="${TMP_ROOT}/${tag}-${mode}"
   asset="marshal_${tag#v}_darwin_arm64"
+  go_log="${case_dir}/go.log"
   mkdir -p "${case_dir}/home" "${case_dir}/install"
   set +e
   output="$(
@@ -336,6 +348,8 @@ run_failure_case() {
     PATH="${MOCK_BIN}:/usr/bin:/bin" \
     MARSHAL_INSTALL_DIR="${case_dir}/install" \
     MARSHAL_TAG="$tag" \
+    MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 \
+    FAKE_GO_LOG="$go_log" \
     FIXTURE_MODE="$mode" \
     FIXTURE_ASSET="$asset" \
     FIXTURE_TAG="$tag" \
@@ -349,6 +363,11 @@ run_failure_case() {
     || fail "${tag}/${mode} 未返回预期错误: ${expected}"
   [ ! -e "${case_dir}/install/marshal" ] \
     || fail "${tag}/${mode} 失败后仍安装了 marshal"
+  case "$mode" in
+    missingasset|downloadfailure)
+      [ ! -e "$go_log" ] || fail "${tag}/${mode} 错误回退到源码构建"
+      ;;
+  esac
   if [ "$tag" = v1.0.0 ] && [ "$mode" = valid ]; then
     [ ! -e "${case_dir}/install/.marshal-staging" ] \
       || fail "${tag}/${mode} stable 拒绝前不应创建 staging"
@@ -356,17 +375,20 @@ run_failure_case() {
 }
 
 run_success_case() {
-  local tag="$1" case_dir asset output installed_mode installed_links
+  local tag="$1" case_dir asset output installed_mode installed_links curl_url_log
   case_dir="${TMP_ROOT}/${tag}-valid"
   asset="marshal_${tag#v}_darwin_arm64"
+  curl_url_log="${case_dir}/curl-urls"
   mkdir -p "${case_dir}/home" "${case_dir}/install"
   output="$(
     HOME="${case_dir}/home" \
     PATH="${MOCK_BIN}:/usr/bin:/bin" \
     MARSHAL_INSTALL_DIR="${case_dir}/install" \
     MARSHAL_TAG="$tag" \
+    MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 \
     FIXTURE_MODE=valid \
     FIXTURE_CURL_MODE_LOG="${case_dir}/curl-mode" \
+    FIXTURE_CURL_URL_LOG="$curl_url_log" \
     FIXTURE_ASSET="$asset" \
     FIXTURE_TAG="$tag" \
     FIXTURE_PEELED_COMMIT="$FIXTURE_COMMIT" \
@@ -391,6 +413,18 @@ run_success_case() {
     || fail "${tag}/valid staging executable 未清理"
   printf '%s\n' "$output" | grep -F 'sha256 校验通过' >/dev/null \
     || fail "${tag}/valid 未记录 checksum 成功"
+  [ "$(wc -l <"$curl_url_log" | tr -d '[:space:]')" = 3 ] \
+    || fail "${tag}/valid 未且仅下载 binary/manifest/checksum 三个精确资产"
+  if grep -v -E "^https://github.com/chiga0/marshal-harness/releases/download/${tag}/(marshal_${tag#v}_darwin_arm64|RELEASE-MANIFEST|SHA256SUMS)$" "$curl_url_log" >/dev/null; then
+    fail "${tag}/valid 使用了 latest、其它 tag 或其它资产"
+  fi
+  printf '%s\n' "$output" | grep -F '安装器未生成 activation' >/dev/null \
+    || fail "${tag}/valid 未输出显式 activation 边界"
+  printf '%s\n' "$output" | grep -F 'doctor --self --repository-root' >/dev/null \
+    || fail "${tag}/valid 未输出 doctor --self 指引"
+  if find "$case_dir" -name '*activation*' -print -quit | grep . >/dev/null; then
+    fail "${tag}/valid 安装器自动创建了 activation"
+  fi
 }
 
 run_layout_failure_case() {
@@ -457,6 +491,7 @@ run_layout_failure_case() {
     PATH="${MOCK_BIN}:/usr/bin:/bin" \
     MARSHAL_INSTALL_DIR="$install_dir" \
     MARSHAL_TAG=v1.0.0-rc1 \
+    MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 \
     FIXTURE_MODE=valid \
     FIXTURE_FS_MODE="$mode" \
     FIXTURE_INSTALL_DIR="$install_dir" \
@@ -478,6 +513,28 @@ run_layout_failure_case() {
       || [ "$mode" = target-wide ] || [ "$mode" = nonowner-target ] \
       || fail "layout/${mode} 失败后仍安装 marshal" ;;
   esac
+}
+
+run_preview_request_failure_case() {
+  local name="$1" expected="$2" case_dir output status
+  shift 2
+  case_dir="${TMP_ROOT}/preview-${name}"
+  mkdir -p "${case_dir}/home" "${case_dir}/install"
+  set +e
+  output="$(env -u MARSHAL_LOCAL_DOGFOOD_PREVIEW -u MARSHAL_TAG -u MARSHAL_FORCE_SOURCE \
+    HOME="${case_dir}/home" PATH="${MOCK_BIN}:/usr/bin:/bin" \
+    MARSHAL_INSTALL_DIR="${case_dir}/install" \
+    FIXTURE_MODE=valid FIXTURE_ASSET=marshal_1.0.0-rc1_darwin_arm64 \
+    FIXTURE_TAG=v1.0.0-rc1 FIXTURE_PEELED_COMMIT="$FIXTURE_COMMIT" \
+    "$@" bash "${ROOT}/scripts/install.sh" 2>&1)"
+  status=$?
+  set -e
+  [ "$status" -ne 0 ] || fail "preview/${name} 应 fail closed"
+  printf '%s\n' "$output" | grep -F "$expected" >/dev/null \
+    || fail "preview/${name} 未返回预期错误 ${expected}: ${output}"
+  [ ! -e "${case_dir}/install/marshal" ] || fail "preview/${name} 失败后仍安装 marshal"
+  [ ! -e "${case_dir}/install/.marshal-staging" ] \
+    || fail "preview/${name} 准入拒绝前已创建 staging"
 }
 
 run_repo_override_failure_case() {
@@ -516,7 +573,7 @@ run_source_success_case() {
   install_dir="${case_dir}/install"
   log="${case_dir}/go.log"
   mkdir -p "$repo" "$install_dir"
-  make_source_repo "$repo" v1.0.0-rc1
+  make_source_repo "$repo" v0.9.0
   head="$(git -C "$repo" rev-parse HEAD)"
   output="$({
     cd "$repo"
@@ -525,7 +582,7 @@ run_source_success_case() {
     MOCK_KERNEL="$kernel" \
     FAKE_GO_LOG="$log" \
     MARSHAL_INSTALL_DIR="$install_dir" \
-    MARSHAL_TAG=v1.0.0-rc1 \
+    MARSHAL_TAG=v0.9.0 \
     MARSHAL_FORCE_SOURCE=1 \
     bash "${ROOT}/scripts/install.sh"
   } 2>&1)"
@@ -542,7 +599,7 @@ run_source_head_mismatch_case() {
   repo="${case_dir}/repo"
   install_dir="${case_dir}/install"
   mkdir -p "$repo" "$install_dir"
-  make_source_repo "$repo" v1.0.0-rc1
+  make_source_repo "$repo" v0.9.0
   printf '// drift\n' >>"${repo}/cmd/marshal/main.go"
   git -C "$repo" add cmd/marshal/main.go
   git -C "$repo" commit -qm 'drift after tag'
@@ -554,14 +611,14 @@ run_source_head_mismatch_case() {
     MOCK_KERNEL=Darwin \
     FAKE_GO_LOG="${case_dir}/go.log" \
     MARSHAL_INSTALL_DIR="$install_dir" \
-    MARSHAL_TAG=v1.0.0-rc1 \
+    MARSHAL_TAG=v0.9.0 \
     MARSHAL_FORCE_SOURCE=1 \
     bash "${ROOT}/scripts/install.sh"
   } 2>&1)"
   status=$?
   set -e
   [ "$status" -ne 0 ] || fail '请求 tag 与 HEAD 漂移时应 fail closed'
-  printf '%s\n' "$output" | grep -F '与请求 tag v1.0.0-rc1 指向' >/dev/null \
+  printf '%s\n' "$output" | grep -F '与请求 tag v0.9.0 指向' >/dev/null \
     || fail 'HEAD/tag 漂移未返回确定性原因'
   [ ! -e "${install_dir}/marshal" ] || fail 'HEAD/tag 漂移后仍安装了 marshal'
 }
@@ -572,7 +629,7 @@ run_source_dirty_case() {
   repo="${case_dir}/repo"
   install_dir="${case_dir}/install"
   mkdir -p "$repo" "$install_dir"
-  make_source_repo "$repo" v1.0.0-rc1
+  make_source_repo "$repo" v0.9.0
   printf '// uncommitted drift\n' >>"${repo}/cmd/marshal/main.go"
   set +e
   output="$({
@@ -582,7 +639,7 @@ run_source_dirty_case() {
     MOCK_KERNEL=Darwin \
     FAKE_GO_LOG="${case_dir}/go.log" \
     MARSHAL_INSTALL_DIR="$install_dir" \
-    MARSHAL_TAG=v1.0.0-rc1 \
+    MARSHAL_TAG=v0.9.0 \
     MARSHAL_FORCE_SOURCE=1 \
     bash "${ROOT}/scripts/install.sh"
   } 2>&1)"
@@ -623,6 +680,29 @@ run_source_stable_rejection_case() {
 }
 
 run_failure_case v1.0.0 valid '稳定 v1 release v1.0.0 尚未实现 codesign/notarization，拒绝安装'
+run_preview_request_failure_case no-opt-in \
+  'v1.0.0-rc1 要求显式设置 MARSHAL_LOCAL_DOGFOOD_PREVIEW=1' \
+  MARSHAL_TAG=v1.0.0-rc1
+run_preview_request_failure_case wrong-opt-in \
+  'MARSHAL_LOCAL_DOGFOOD_PREVIEW 只接受精确值 1' \
+  MARSHAL_TAG=v1.0.0-rc1 MARSHAL_LOCAL_DOGFOOD_PREVIEW=0
+run_preview_request_failure_case opt-in-without-exact-tag \
+  'MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 只能与 MARSHAL_TAG=v1.0.0-rc1 同时使用' \
+  MARSHAL_LOCAL_DOGFOOD_PREVIEW=1
+run_preview_request_failure_case implicit-latest \
+  'v1.0.0-rc1 不得由 latest 或隐式选择进入' \
+  FIXTURE_MODE=latestrc1
+run_preview_request_failure_case linux \
+  'v1.0.0-rc1 只支持 Darwin arm64 local-dogfood preview，当前为 linux/arm64' \
+  MOCK_KERNEL=Linux MARSHAL_TAG=v1.0.0-rc1 MARSHAL_LOCAL_DOGFOOD_PREVIEW=1
+run_preview_request_failure_case amd64 \
+  'v1.0.0-rc1 只支持 Darwin arm64 local-dogfood preview，当前为 darwin/amd64' \
+  MOCK_MACHINE=x86_64 MARSHAL_TAG=v1.0.0-rc1 MARSHAL_LOCAL_DOGFOOD_PREVIEW=1
+run_preview_request_failure_case force-source \
+  'v1.0.0-rc1 禁止 MARSHAL_FORCE_SOURCE 和任何源码回退' \
+  MARSHAL_TAG=v1.0.0-rc1 MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 MARSHAL_FORCE_SOURCE=1
+run_failure_case v1.0.0-rc1 missingasset '精确资产 marshal_1.0.0-rc1_darwin_arm64 缺失或下载失败'
+run_failure_case v1.0.0-rc1 downloadfailure '精确资产 marshal_1.0.0-rc1_darwin_arm64 缺失或下载失败'
 run_failure_case v1.0.0-rc1 missing '缺少或无法下载 SHA256SUMS'
 run_failure_case v1.0.0-rc1 mismatch 'sha256 校验失败'
 run_failure_case v1.0.0-rc1 badexec '无法通过 version --json 自检'

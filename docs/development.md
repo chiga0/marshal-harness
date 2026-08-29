@@ -74,7 +74,7 @@ GitHub Actions 的主线 CI 固定展开为三个 job：`Quality (ubuntu-latest)
 
 ## 安装
 
-> **尚未实现的 RC1 installer guard**：[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受，但 `v1.0.0-rc1` 尚未发布。RC1 只能在 Darwin arm64 上通过精确 tag + 显式 local-dogfood preview opt-in 安装；精确资产缺失、平台不符或 opt-in 缺失时必须 fail closed，禁止进入下述通用源码回退，安装器也不得自动生成或激活 `LocalDogfoodActivationV1`。该 guard 属后续独立实现切片，当前 `scripts/install.sh` 的通用行为不能被表述成已经满足 RC1 合同。
+> **RC1 installer guard**：[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 的 guard 已实现，但 `v1.0.0-rc1` 尚未发布。RC1 只能在 Darwin arm64 上通过 `MARSHAL_TAG=v1.0.0-rc1` + `MARSHAL_LOCAL_DOGFOOD_PREVIEW=1` 安装；精确资产缺失、网络失败、平台不符或 opt-in 缺失时 fail closed，禁止进入下述通用源码回退，安装器也不得自动生成或激活 `LocalDogfoodActivationV1`。
 
 面向用户的两条安装路径（一行脚本与源码构建）见 [README](https://github.com/chiga0/marshal-harness#安装)，对应脚本为 [`scripts/install.sh`](https://github.com/chiga0/marshal-harness/blob/main/scripts/install.sh)：
 
@@ -87,7 +87,7 @@ GitHub Actions 的主线 CI 固定展开为三个 job：`Quality (ubuntu-latest)
 
 安装阶段先把 bytes 写入安装目录下固定、`0644` 且不可执行的 `.marshal-staging/marshal.candidate`；tag/manifest/checksum 闭合后才通过 no-clobber hardlink 激活固定 `.marshal-staging/marshal`，验证身份后原子替换目标并清理本次拥有的对象。路径每一段、staging 与既有 target 都必须满足 owner/mode/non-symlink/hardlink 门禁；不会在随机 `/tmp` 路径生成或执行匿名 Marshal 可执行文件。
 
-环境变量：`MARSHAL_INSTALL_DIR`（安装目录）、`MARSHAL_TAG`（固定 release tag，跳过 latest release 查询）、`MARSHAL_FORCE_SOURCE=1`（跳过 release 直接源码构建）。release/source remote authority 固定为 canonical `chiga0/marshal-harness`，`MARSHAL_REPO` 覆盖被显式拒绝，fixture 只能通过测试进程中的 fake `git`/`curl` 模拟网络响应。
+环境变量：`MARSHAL_INSTALL_DIR`（安装目录）、`MARSHAL_TAG`（固定 release tag，跳过 latest release 查询）、`MARSHAL_FORCE_SOURCE=1`（跳过 release 直接源码构建）、`MARSHAL_LOCAL_DOGFOOD_PREVIEW=1`（仅能与 exact `v1.0.0-rc1` 同时使用的封闭 opt-in）。RC1 禁止 `MARSHAL_FORCE_SOURCE`、latest/stable/源码/其它平台 fallback，并在执行前和安装后重验同一 SHA-256、size 和 build identity。release/source remote authority 固定为 canonical `chiga0/marshal-harness`，`MARSHAL_REPO` 覆盖被显式拒绝，fixture 只能通过测试进程中的 fake `git`/`curl` 模拟网络响应。
 
 ### Release 资产命名约定
 
@@ -111,6 +111,8 @@ release workflow 只接受精确的 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH
 2. `MARSHAL_INSTALL_DIR=<空目录> bash scripts/install.sh` 验证自定义安装目录；
 3. `MARSHAL_FORCE_SOURCE=1 bash scripts/install.sh` 验证强制源码构建路径；
 4. 安装后运行 `marshal version` 与 `marshal doctor --json` 确认二进制可用。
+
+RC1 另外必须运行 `bash scripts/install_test.sh`，该 fixture 覆盖无 opt-in、错值、未精确指定 tag、非 Darwin arm64、missing/download failure、manifest/SHA 漂移、禁止源码 fallback/自动 activation 与 exact positive asset。安装器只输出固定二进制的 `version --json`→`doctor --self`→操作者显式 activation 指引；不执行后两步，不修改 Gatekeeper/SIP/EDR/用户 `PATH`。
 
 ## 当前 CLI
 

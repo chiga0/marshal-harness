@@ -5,8 +5,9 @@
 #   1. 存在 v* tag 的 GitHub release 且含当前平台匹配资产时，用 curl -fsSL 下载预编译二进制；
 #      必须下载 RELEASE-MANIFEST 与 SHA256SUMS，解析 annotated tag 的 peeled
 #      commit，并校验 manifest、资产 sha256 与二进制 build identity；
-#   2. 否则源码构建 go build -trimpath ./cmd/marshal（Go 版本须满足 go.mod 的 go 指令；
+#   2. 除 v1.0.0-rc1 外，否则源码构建 go build -trimpath ./cmd/marshal（Go 版本须满足 go.mod 的 go 指令；
 #      无本地 checkout 时先浅克隆仓库）；
+#      v1.0.0-rc1 只允许精确 tag 的 Darwin arm64 release asset，不得回退源码；
 #   3. 安装到 ~/.local/bin（可用 MARSHAL_INSTALL_DIR 覆盖），并输出下一步指引。
 #   全程不请求 sudo。
 #
@@ -18,6 +19,9 @@
 #   MARSHAL_INSTALL_DIR   安装目录（默认 $HOME/.local/bin）
 #   MARSHAL_TAG           固定 release tag（如 v0.1.0），跳过 latest release 查询
 #   MARSHAL_FORCE_SOURCE  非空时跳过 release 下载，强制源码构建
+#   MARSHAL_LOCAL_DOGFOOD_PREVIEW
+#                         仅接受 1；与 MARSHAL_TAG=v1.0.0-rc1 同时设置时显式选择
+#                         unsigned Darwin arm64 local-dogfood preview
 
 set -euo pipefail
 
@@ -26,7 +30,10 @@ REPO="chiga0/marshal-harness"
 INSTALL_DIR="${MARSHAL_INSTALL_DIR:-$HOME/.local/bin}"
 PIN_TAG="${MARSHAL_TAG:-}"
 FORCE_SOURCE="${MARSHAL_FORCE_SOURCE:-}"
+PREVIEW_OPT_IN="${MARSHAL_LOCAL_DOGFOOD_PREVIEW:-}"
+PREVIEW_OPT_IN_SET="${MARSHAL_LOCAL_DOGFOOD_PREVIEW+x}"
 BUILDINFO_PKG="github.com/chiga0/marshal-harness/internal/buildinfo"
+RC1_TAG="v1.0.0-rc1"
 
 OS=""
 ARCH=""
@@ -48,6 +55,9 @@ EXPECTED_BUILD_DATE=""
 EXPECTED_GO_VERSION=""
 EXPECTED_MANIFEST_SHA256=""
 EXPECTED_DARWIN_ARM64_SHA256=""
+EXPECTED_ASSET_SHA256=""
+EXPECTED_ASSET_SIZE=""
+RC1_MODE=""
 
 info()  { printf '[install] %s\n' "$*"; }
 warn()  { printf '[install] 警告: %s\n' "$*" >&2; }
@@ -211,6 +221,25 @@ detect_platform() {
   info "平台 ${OS}/${ARCH}"
 }
 
+validate_preview_request() {
+  if [ -n "$PREVIEW_OPT_IN_SET" ] && [ "$PREVIEW_OPT_IN" != 1 ]; then
+    fatal "MARSHAL_LOCAL_DOGFOOD_PREVIEW 只接受精确值 1"
+  fi
+  if [ "$PIN_TAG" = "$RC1_TAG" ]; then
+    [ "$PREVIEW_OPT_IN_SET" = x ] && [ "$PREVIEW_OPT_IN" = 1 ] \
+      || fatal "${RC1_TAG} 要求显式设置 MARSHAL_LOCAL_DOGFOOD_PREVIEW=1"
+    [ "$OS" = darwin ] && [ "$ARCH" = arm64 ] \
+      || fatal "${RC1_TAG} 只支持 Darwin arm64 local-dogfood preview，当前为 ${OS}/${ARCH}"
+    [ -z "$FORCE_SOURCE" ] \
+      || fatal "${RC1_TAG} 禁止 MARSHAL_FORCE_SOURCE 和任何源码回退"
+    RC1_MODE=1
+    return 0
+  fi
+  if [ -n "$PREVIEW_OPT_IN_SET" ]; then
+    fatal "MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 只能与 MARSHAL_TAG=${RC1_TAG} 同时使用"
+  fi
+}
+
 validate_release_tag() {
   [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc([1-9][0-9]*))?$ ]] \
     || fatal "release tag ${1} 不符合 vMAJOR.MINOR.PATCH 或 vMAJOR.MINOR.PATCH-rcN"
@@ -316,6 +345,7 @@ verify_sha256() {
   if [ "$actual" != "$expected" ]; then
     fatal "sha256 校验失败: ${asset} 期望 ${expected}，实际 ${actual}"
   fi
+  EXPECTED_ASSET_SHA256="$expected"
   manifest_expected="$(awk '$2 == "RELEASE-MANIFEST" { print tolower($1) }' "${TMP_DIR}/SHA256SUMS")"
   if ! manifest_actual="$(sha256_of "${TMP_DIR}/RELEASE-MANIFEST")"; then
     fatal "缺少 sha256sum/shasum，无法校验 RELEASE-MANIFEST"
@@ -444,13 +474,20 @@ verify_release_manifest() {
   actual_asset_size="$(wc -c <"$CANDIDATE_OBJECT" | tr -d '[:space:]')"
   [ "$manifest_asset_size" = "$actual_asset_size" ] \
     || fatal "RELEASE-MANIFEST 中 ${asset} 的 size 与下载资产不一致"
+  [ "$manifest_asset_digest" = "$EXPECTED_ASSET_SHA256" ] \
+    || fatal "RELEASE-MANIFEST 与 SHA256SUMS 的 ${asset} 摘要不一致"
+  EXPECTED_ASSET_SIZE="$manifest_asset_size"
   EXPECTED_BUILD_DATE="$(awk 'NR == 5 { print $2 }' "${TMP_DIR}/RELEASE-MANIFEST")"
   EXPECTED_GO_VERSION="$(awk 'NR == 6 { print $2 }' "${TMP_DIR}/RELEASE-MANIFEST")"
 }
 
 try_release() {
   local base version_no_v asset
-  command -v curl >/dev/null 2>&1 || { warn "缺少 curl，回退源码构建"; return 1; }
+  if ! command -v curl >/dev/null 2>&1; then
+    [ "$RC1_MODE" != 1 ] || fatal "${RC1_TAG} 缺少 curl，禁止回退源码"
+    warn "缺少 curl，回退源码构建"
+    return 1
+  fi
   if [ -n "$PIN_TAG" ]; then
     TAG="$PIN_TAG"
     base="https://github.com/${REPO}/releases/download/${TAG}"
@@ -460,6 +497,8 @@ try_release() {
   fi
   version_no_v="${TAG#v}"
   validate_release_tag "$TAG"
+  [ "$TAG" != "$RC1_TAG" ] || [ "$RC1_MODE" = 1 ] \
+    || fatal "${RC1_TAG} 不得由 latest 或隐式选择进入；必须使用精确 tag 与显式 preview opt-in"
   EXPECTED_VERSION="$version_no_v"
   resolve_release_tag_commit
   EXPECTED_SELF_PROFILE="$(self_profile_for_os "$OS")"
@@ -467,6 +506,8 @@ try_release() {
   info "下载 release 资产 ${asset} ..."
   assert_secure_regular "$CANDIDATE_OBJECT" 644
   if ! curl -fsSL -o "${CANDIDATE_OBJECT}" "${base}/${asset}"; then
+    [ "$RC1_MODE" != 1 ] \
+      || fatal "${RC1_TAG} 精确资产 ${asset} 缺失或下载失败；禁止源码或其它资产回退"
     warn "release 无 ${OS}/${ARCH} 匹配资产，回退源码构建"
     reset_candidate_object
     return 1
@@ -480,6 +521,20 @@ try_release() {
   verify_release_manifest "$asset" "$version_no_v"
   verify_release_tag_candidate "$asset"
   return 0
+}
+
+verify_exact_release_object() {
+  local path="$1" phase="$2" actual_sha actual_size
+  [ -n "$EXPECTED_ASSET_SHA256" ] && [ -n "$EXPECTED_ASSET_SIZE" ] \
+    || fatal "${phase} release object 缺少已冻结的 sha256/size"
+  [ -f "$path" ] && [ ! -L "$path" ] \
+    || fatal "${phase} release object 缺失、非普通文件或为符号链接: ${path}"
+  actual_sha="$(sha256_of "$path")" || fatal "${phase} 无法读取 release object 摘要"
+  actual_size="$(wc -c <"$path" | tr -d '[:space:]')"
+  [ "$actual_sha" = "$EXPECTED_ASSET_SHA256" ] \
+    || fatal "${phase} release object sha256 漂移"
+  [ "$actual_size" = "$EXPECTED_ASSET_SIZE" ] \
+    || fatal "${phase} release object size 漂移"
 }
 
 find_local_root() {
@@ -635,10 +690,29 @@ cleanup() {
 }
 
 print_next_steps() {
-  local mode="$1" ver
+  local mode="$1" ver marshal_path marshal_cmd
+  marshal_path="${INSTALL_DIR}/${BIN_NAME}"
+  printf -v marshal_cmd '%q' "$marshal_path"
   ver="$("${INSTALL_DIR}/${BIN_NAME}" version 2>/dev/null)" \
     || fatal "安装后的 marshal 无法执行 version 自检"
   info "版本确认: ${ver}"
+  if [ "$RC1_MODE" = 1 ]; then
+    cat <<EOF
+[install] 完成（unsigned ${RC1_TAG} Darwin arm64 CLI-only local-dogfood preview）
+安装器未生成 activation，也未修改 Gatekeeper、SIP、EDR、PATH 或符号链接。
+请在受信任的 canonical repository 内按顺序显式执行：
+  ${marshal_cmd} version --json
+  ${marshal_cmd} doctor --self --repository-root "\$(pwd -P)"   # 先在 stdout 检查 activation
+  install -d -m 700 .marshal/bootstrap
+  umask 077
+  ${marshal_cmd} doctor --self --repository-root "\$(pwd -P)" > .marshal/bootstrap/local-dogfood-activation.json
+  chmod 600 .marshal/bootstrap/local-dogfood-activation.json
+  export MARSHAL_LOCAL_DOGFOOD_ACTIVATION="\$(pwd -P)/.marshal/bootstrap/local-dogfood-activation.json"
+  ${marshal_cmd} doctor --json
+上述 activation 是操作者的显式本地选择；RC1 不是 production、managed、notarized、hardened、server 或 Linux release。
+EOF
+    return 0
+  fi
   case ":${PATH}:" in
     *":${INSTALL_DIR}:"*)
       cat <<EOF
@@ -669,6 +743,7 @@ main() {
     TAG="$PIN_TAG"
     validate_release_tag "$TAG"
   fi
+  validate_preview_request
   prepare_install_layout
   TMP_DIR="$(mktemp -d)"
 
@@ -677,6 +752,9 @@ main() {
     info "MARSHAL_FORCE_SOURCE 已设置，跳过 release 下载"
   elif try_release; then
     mode="release"
+  fi
+  if [ "$mode" = release ]; then
+    verify_exact_release_object "$CANDIDATE_OBJECT" "下载后"
   fi
   if [ "$mode" = "source" ]; then
     local root
@@ -687,8 +765,14 @@ main() {
     fi
   fi
   activate_candidate
+  if [ "$mode" = release ]; then
+    verify_exact_release_object "$STABLE_STAGE_BIN" "执行前"
+  fi
   verify_binary "$STABLE_STAGE_BIN" "暂存"
   install_binary
+  if [ "$mode" = release ]; then
+    verify_exact_release_object "${INSTALL_DIR}/${BIN_NAME}" "安装后"
+  fi
   verify_binary "${INSTALL_DIR}/${BIN_NAME}" "安装后"
   print_next_steps "$mode"
 }
