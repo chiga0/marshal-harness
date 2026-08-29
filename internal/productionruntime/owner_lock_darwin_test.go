@@ -25,7 +25,22 @@ func currentProcessAcquisition() resultingress.ControlOwnerAcquisition {
 }
 
 func TestRepositoryOwnerLockRejectsCompetitorAndPathABA(t *testing.T) {
-	root := t.TempDir()
+	// O_NOFOLLOW_ANY intentionally rejects a symlink in any path component.
+	// GitHub-hosted macOS runners may place testing.T.TempDir below a symlinked
+	// runner workspace, so use Darwin's real private temporary root. This keeps
+	// the production path boundary intact while exercising the lock semantics.
+	root, err := os.MkdirTemp("/private/tmp", "marshal-owner-lock-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove owner lock root: %v", err)
+		}
+	})
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	acquisition := currentProcessAcquisition()
 	first, err := openRepositoryOwnerLock(root, acquisition)
 	if err != nil {
