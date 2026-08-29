@@ -199,12 +199,8 @@ func testPreparedSupervisor(t *testing.T, store *DurableStore, state AttemptAuth
 func testStartPreparedSupervisor(t *testing.T, store *DurableStore, state AttemptAuthorityState, acquisition ControlOwnerAcquisition) AttemptAuthorityState {
 	t.Helper()
 	prepared := state.SupervisorBootstrap
-	socket := processsupervisor.ControlSocketIdentity{Device: prepared.ControlDirectory.Device, Inode: prepared.ControlDirectory.Inode + 100, FileType: "socket", UID: 501, GID: 20, Mode: 0o140000 | 0o600, LinkCount: 1}
-	controlFiles := attemptTestControlFiles(socket.Device, socket.Inode+1)
-	supervisorProcess := processsupervisor.ProcessIdentity{PID: 9200 + int(prepared.Owner.OwnerEpoch), BirthSeconds: 1_700_000_001, BirthMicroseconds: 32, SessionID: 9200 + int(prepared.Owner.OwnerEpoch), ProcessGroupID: 9200 + int(prepared.Owner.OwnerEpoch)}
-	handshake := processsupervisor.HandshakeResponse{SchemaVersion: processsupervisor.HandshakeSchema, ProtocolRevision: processsupervisor.ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: prepared.SessionID, SessionNonceDigest: prepared.SessionNonceDigest, OwnerEpoch: prepared.Owner.OwnerEpoch, CurrentAuthorityHead: prepared.Request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: attemptTestDigest("journal-" + prepared.SessionID), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: "2026-08-28T00:00:01Z", SupervisorProcess: supervisorProcess, SupervisorBinary: prepared.SupervisorBinary, ControlSocket: socket, ControlFiles: controlFiles}
-	anchor := processsupervisor.HandshakeAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: prepared.Request.Authority, OwnerEpoch: handshake.OwnerEpoch, CurrentAuthorityHead: prepared.Request.CurrentAuthorityHead, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: handshake.JournalHead, UID: 501, GID: 20, FixedBinary: prepared.SupervisorBinary, ControlSocket: socket, ControlFiles: controlFiles}
-	started, err := NewProcessSupervisorStartedFromBootstrap(state.SupervisorBootstrapDigest, prepared, handshake, anchor, processsupervisor.CoreIdentity{UID: 501, GID: 20, Process: supervisorProcess, Binary: prepared.SupervisorBinary})
+	connection, observed := testSupervisorConnection(prepared)
+	started, err := NewProcessSupervisorStartedFromBootstrap(state.SupervisorBootstrapDigest, prepared, connection, observed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +209,72 @@ func testStartPreparedSupervisor(t *testing.T, store *DurableStore, state Attemp
 	if err != nil {
 		t.Fatal(err)
 	}
+	if result.State.SupervisorStarted.ControlDirectory != connection.ControlDirectory {
+		t.Fatalf("started fact did not preserve final control directory: got=%+v want=%+v", result.State.SupervisorStarted.ControlDirectory, connection.ControlDirectory)
+	}
 	return result.State
+}
+
+func testSupervisorConnection(prepared SupervisorBootstrapPrepared) (processsupervisor.ConnectionEvidence, processsupervisor.CoreIdentity) {
+	socket := processsupervisor.ControlSocketIdentity{Device: prepared.ControlDirectory.Device, Inode: prepared.ControlDirectory.Inode + 100, FileType: "socket", UID: 501, GID: 20, Mode: 0o140000 | 0o600, LinkCount: 1}
+	controlFiles := attemptTestControlFiles(socket.Device, socket.Inode+1)
+	supervisorProcess := processsupervisor.ProcessIdentity{PID: 9200 + int(prepared.Owner.OwnerEpoch), BirthSeconds: 1_700_000_001, BirthMicroseconds: 32, SessionID: 9200 + int(prepared.Owner.OwnerEpoch), ProcessGroupID: 9200 + int(prepared.Owner.OwnerEpoch)}
+	handshake := processsupervisor.HandshakeResponse{SchemaVersion: processsupervisor.HandshakeSchema, ProtocolRevision: processsupervisor.ProtocolRevision, Status: "ok", ReasonCode: "process-supervisor-ready", SessionID: prepared.SessionID, SessionNonceDigest: prepared.SessionNonceDigest, OwnerEpoch: prepared.Owner.OwnerEpoch, CurrentAuthorityHead: prepared.Request.CurrentAuthorityHead, CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: attemptTestDigest("journal-" + prepared.SessionID), ObserverIdentity: "darwin-fixed-process-supervisor-v1", ObservedAt: "2026-08-28T00:00:01Z", SupervisorProcess: supervisorProcess, SupervisorBinary: prepared.SupervisorBinary, ControlSocket: socket, ControlFiles: controlFiles}
+	anchor := processsupervisor.HandshakeAnchor{SessionID: handshake.SessionID, SessionNonceDigest: handshake.SessionNonceDigest, Authority: prepared.Request.Authority, OwnerEpoch: handshake.OwnerEpoch, CurrentAuthorityHead: prepared.Request.CurrentAuthorityHead, CommandHead: processsupervisor.CommandGenesisDigest, JournalSequence: 1, JournalHead: handshake.JournalHead, UID: 501, GID: 20, FixedBinary: prepared.SupervisorBinary, ControlSocket: socket, ControlFiles: controlFiles}
+	finalDirectory := prepared.ControlDirectory
+	finalDirectory.LinkCount++
+	connection := processsupervisor.ConnectionEvidence{Core: prepared.Request.Core, ControlDirectory: finalDirectory, Handshake: handshake, Anchor: anchor}
+	observed := processsupervisor.CoreIdentity{UID: 501, GID: 20, Process: supervisorProcess, Binary: prepared.SupervisorBinary}
+	return connection, observed
+}
+
+func TestProcessSupervisorStartedConsumesFinalControlDirectoryEvidence(t *testing.T) {
+	store, err := OpenResultIngressStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorized := testOpenedAuthorizedAttempt(t, store, attemptTestIdentity())
+	initial := processsupervisor.ControlDirectoryIdentity{CanonicalPath: "/tmp/final-control-directory", Device: 37, Inode: 47, FileType: "directory", UID: 501, GID: 20, Mode: POSIXFileTypeDirectory | 0o700, LinkCount: 2}
+	preparedState, acquisition := testPreparedSupervisor(t, store, authorized, "session-final-directory", initial)
+	prepared := preparedState.SupervisorBootstrap
+	connection, observed := testSupervisorConnection(prepared)
+	if connection.ControlDirectory.LinkCount == initial.LinkCount {
+		t.Fatal("fixture did not model legal setup link-count growth")
+	}
+	started, err := NewProcessSupervisorStartedFromBootstrap(preparedState.SupervisorBootstrapDigest, prepared, connection, observed)
+	if err != nil {
+		t.Fatalf("link-count-only setup growth rejected: %v", err)
+	}
+	if started.ControlDirectory != connection.ControlDirectory {
+		t.Fatalf("constructor stored initial instead of final snapshot: got=%+v want=%+v", started.ControlDirectory, connection.ControlDirectory)
+	}
+	run := attemptTestRunAuthority(preparedState.Identity)
+	result, err := store.AppendSupervisorStarted(context.Background(), attemptOwnerVerifier{want: acquisition}, attemptRunVerifier{want: run}, preparedState.Revision, preparedState.HeadDigest, AttemptAuthorizationRequest{Identity: preparedState.Identity, CurrentRunAuthority: run}, started)
+	if err != nil {
+		t.Fatalf("transition rejected link-count-only setup growth: %v", err)
+	}
+	if result.State.SupervisorStarted.ControlDirectory != connection.ControlDirectory {
+		t.Fatalf("durable started fact lost final snapshot: got=%+v want=%+v", result.State.SupervisorStarted.ControlDirectory, connection.ControlDirectory)
+	}
+
+	mutations := map[string]func(*processsupervisor.ControlDirectoryIdentity){
+		"path":   func(value *processsupervisor.ControlDirectoryIdentity) { value.CanonicalPath += "-other" },
+		"device": func(value *processsupervisor.ControlDirectoryIdentity) { value.Device++ },
+		"inode":  func(value *processsupervisor.ControlDirectoryIdentity) { value.Inode++ },
+		"type":   func(value *processsupervisor.ControlDirectoryIdentity) { value.FileType = "regular" },
+		"uid":    func(value *processsupervisor.ControlDirectoryIdentity) { value.UID++ },
+		"gid":    func(value *processsupervisor.ControlDirectoryIdentity) { value.GID++ },
+		"mode":   func(value *processsupervisor.ControlDirectoryIdentity) { value.Mode = POSIXFileTypeDirectory | 0o755 },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			forged := connection
+			mutate(&forged.ControlDirectory)
+			if _, err := NewProcessSupervisorStartedFromBootstrap(preparedState.SupervisorBootstrapDigest, prepared, forged, observed); !errors.Is(err, ErrAttemptAuthorityConflict) {
+				t.Fatalf("stable %s drift err=%v", name, err)
+			}
+		})
+	}
 }
 
 func testOpenedAuthorizedAttempt(t *testing.T, store *DurableStore, id AttemptIdentity) AttemptAuthorityState {

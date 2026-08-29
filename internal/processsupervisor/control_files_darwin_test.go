@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -438,129 +439,267 @@ func TestRejectedPartialCollectKeepsReceiptAndReturnsNoResponse(t *testing.T) {
 	}
 }
 
-func TestReconnectReceiptReplayPostBoundaryDriftIntervenesWithZeroWireResponse(t *testing.T) {
-	boundary, journal, bootstrap, _ := commandBoundaryFixture(t)
-	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
-	session, err := NewSession(bootstrap, journal, fakeMechanics{}, func() time.Time { return now })
-	if err != nil {
-		t.Fatal(err)
-	}
-	commandSequence, commandHead, journalSequence, journalHead := session.Snapshot()
-	pending := commandRequest(t, bootstrap.SessionID, CommandAbortUnbound, "abort-reconnect-boundary", 1, commandHead, bootstrap.CurrentAuthorityHead, now.Add(20*time.Second), AbortUnboundPayload{OwnerEpoch: bootstrap.OwnerEpoch, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, AuthorityAbsenceProofDigest: digest("7")})
-	if response := session.Handle(mustCanonical(pending)); response.Status != "ok" {
-		t.Fatalf("pending response=%+v", response)
-	}
-	reconnect := reconnectRequest{
-		SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce,
-		PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 1, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, CurrentAuthorityHead: digest("8"), ControlOwnerAcquired: digest("9"), Core: bootstrap.Core,
-		LastOwnerEpoch: bootstrap.OwnerEpoch, LastAuthorityHead: bootstrap.CurrentAuthorityHead,
-		LastCommandSequence: commandSequence, LastCommandHead: commandHead, LastJournalSequence: journalSequence, LastJournalHead: journalHead, PendingRequest: &pending,
-	}
-	if err := boundary.revalidate(session.journal.Snapshot()); err != nil {
-		t.Fatalf("pre-replay boundary: %v", err)
-	}
-	attempt := session.reconnectAttempt(reconnect, bootstrap.Core)
-	if attempt.disposition != reconnectResolvedWithoutMechanics || attempt.err != nil || attempt.resolution.State != ReconciliationReceiptCommitted || attempt.resolution.Response == nil {
-		t.Fatalf("attempt=%+v", attempt)
-	}
-	if err := writeOwnerObject(boundary.directory, stdoutObjectName, []byte("post-replay-drift")); err != nil {
-		t.Fatal(err)
-	}
-	decision := decideReconnectWireAfterAttempt(session, boundary, attempt)
-	if decision.disposition != reconnectWireSilentClose || !errors.Is(decision.err, ErrConflict) || session.State() != string(sessionIntervention) {
-		t.Fatalf("decision=%+v state=%s", decision, session.State())
-	}
-	if session.ownerEpoch != reconnect.OwnerEpoch || session.authorityHead != reconnect.CurrentAuthorityHead {
-		t.Fatalf("post-replay owner/head=%d/%s", session.ownerEpoch, session.authorityHead)
-	}
-	snapshot := journal.Snapshot()
-	replayed, ok := snapshot.commands[pending.CommandID]
-	if snapshot.Sequence != 3 || snapshot.pending != nil || !ok || replayed.Response.Status != "ok" {
-		t.Fatalf("durable replay changed: sequence=%d pending=%+v replay=%+v ok=%v", snapshot.Sequence, snapshot.pending, replayed, ok)
-	}
-	assertZeroReconnectWire(t, decision, session, boundary)
+type supervisorLoopHarness struct {
+	root           string
+	bootstrap      BootstrapRequest
+	handshake      HandshakeResponse
+	codec          *ProtocolCodec
+	bootstrapConn  *net.UnixConn
+	directory      *os.File
+	bootstrapFile  *os.File
+	session        *Session
+	reconnectReady <-chan struct{}
+	cancel         context.CancelFunc
+	done           <-chan error
+	waitOnce       sync.Once
+	doneErr        error
 }
 
-func TestReconnectMechanicsInterventionPersistsReceiptAndClosesWithZeroWireResponse(t *testing.T) {
-	boundary, journal, bootstrap, _ := commandBoundaryFixture(t)
-	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
-	session, err := NewSession(bootstrap, journal, interventionReplayMechanics{}, func() time.Time { return now })
+func newSupervisorLoopHarness(t *testing.T, options supervisorLoopOptions) *supervisorLoopHarness {
+	t.Helper()
+	root, err := os.MkdirTemp("/private/tmp", "marshal-ps-loop-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	session.state = sessionBound
-	session.supervisorStartedFact = digest("c")
-	commandSequence, commandHead, journalSequence, journalHead := session.Snapshot()
-	pending := commandRequest(t, bootstrap.SessionID, CommandSpawn, "spawn-reconnect-intervention", 1, commandHead, bootstrap.CurrentAuthorityHead, now.Add(time.Minute), validSpawnPayload())
-	reconnect := reconnectRequest{
+	if err := os.Chmod(root, 0o700); err != nil {
+		_ = os.RemoveAll(root)
+		t.Fatal(err)
+	}
+	if err := os.Chown(root, -1, os.Getegid()); err != nil {
+		_ = os.RemoveAll(root)
+		t.Fatal(err)
+	}
+	directory, err := os.Open(root)
+	if err != nil {
+		_ = os.RemoveAll(root)
+		t.Fatal(err)
+	}
+	_, identity, err := observeControlDirectory(directory)
+	if err != nil {
+		_ = directory.Close()
+		_ = os.RemoveAll(root)
+		t.Fatal(err)
+	}
+	bootstrap := validBootstrap()
+	bootstrap.ControlDirectoryIdentity = identity
+	options.observePeer = func(*net.UnixConn) (CoreIdentity, error) { return bootstrap.Core, nil }
+	options.observeSelf = func() (CoreIdentity, error) { return bootstrap.Core, nil }
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
+	if err != nil {
+		_ = directory.Close()
+		_ = os.RemoveAll(root)
+		t.Fatal(err)
+	}
+	clientFile := os.NewFile(uintptr(fds[0]), "marshal-supervisor-loop-client")
+	bootstrapFile := os.NewFile(uintptr(fds[1]), "marshal-supervisor-loop-server")
+	clientConnection, err := net.FileConn(clientFile)
+	_ = clientFile.Close()
+	if err != nil {
+		_ = bootstrapFile.Close()
+		_ = directory.Close()
+		_ = os.RemoveAll(root)
+		t.Fatal(err)
+	}
+	bootstrapConn, ok := clientConnection.(*net.UnixConn)
+	if !ok {
+		_ = clientConnection.Close()
+		_ = bootstrapFile.Close()
+		_ = directory.Close()
+		_ = os.RemoveAll(root)
+		t.Fatal("bootstrap socket is not Unix")
+	}
+	sessionReady := make(chan *Session, 1)
+	reconnectReady := make(chan struct{})
+	configure := options.configureSession
+	options.configureSession = func(session *Session) {
+		if configure != nil {
+			configure(session)
+		}
+		sessionReady <- session
+	}
+	options.reconnectReady = func() { close(reconnectReady) }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runSupervisorLoop(ctx, bootstrapFile, directory, options) }()
+	codec, err := NewProtocolCodec(bootstrapConn)
+	if err != nil || codec.Write(bootstrap) != nil {
+		cancel()
+		_ = bootstrapConn.Close()
+		_ = bootstrapFile.Close()
+		_ = directory.Close()
+		_ = os.RemoveAll(root)
+		t.Fatalf("bootstrap codec: %v", err)
+	}
+	var handshake HandshakeResponse
+	if err := codec.Read(&handshake); err != nil || handshake.Status != "ok" {
+		cancel()
+		_ = bootstrapConn.Close()
+		_ = bootstrapFile.Close()
+		_ = directory.Close()
+		_ = os.RemoveAll(root)
+		t.Fatalf("bootstrap handshake=%+v err=%v", handshake, err)
+	}
+	harness := &supervisorLoopHarness{root: root, bootstrap: bootstrap, handshake: handshake, codec: codec, bootstrapConn: bootstrapConn, directory: directory, bootstrapFile: bootstrapFile, session: <-sessionReady, reconnectReady: reconnectReady, cancel: cancel, done: done}
+	t.Cleanup(func() {
+		harness.cancel()
+		_ = harness.bootstrapConn.Close()
+		_ = harness.wait()
+		_ = harness.bootstrapFile.Close()
+		_ = harness.directory.Close()
+		if err := os.RemoveAll(harness.root); err != nil {
+			t.Errorf("remove supervisor loop root: %v", err)
+		}
+	})
+	return harness
+}
+
+func (harness *supervisorLoopHarness) wait() error {
+	harness.waitOnce.Do(func() {
+		select {
+		case harness.doneErr = <-harness.done:
+		case <-time.After(5 * time.Second):
+			harness.doneErr = errors.New("supervisor loop did not stop")
+		}
+	})
+	return harness.doneErr
+}
+
+func (harness *supervisorLoopHarness) beginReconnect(t *testing.T) *net.UnixConn {
+	t.Helper()
+	_ = harness.bootstrapConn.Close()
+	select {
+	case <-harness.reconnectReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor did not enter reconnect loop")
+	}
+	connection, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: filepath.Join(harness.root, controlSocket), Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return connection
+}
+
+func reconnectFromHandshake(bootstrap BootstrapRequest, handshake HandshakeResponse, pending *Request) reconnectRequest {
+	return reconnectRequest{
 		SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce,
 		PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 1, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, CurrentAuthorityHead: digest("8"), ControlOwnerAcquired: digest("9"), Core: bootstrap.Core,
 		LastOwnerEpoch: bootstrap.OwnerEpoch, LastAuthorityHead: bootstrap.CurrentAuthorityHead,
-		LastCommandSequence: commandSequence, LastCommandHead: commandHead, LastJournalSequence: journalSequence, LastJournalHead: journalHead, PendingRequest: &pending,
+		LastCommandSequence: handshake.CommandSequence, LastCommandHead: handshake.CommandHead, LastJournalSequence: handshake.JournalSequence, LastJournalHead: handshake.JournalHead, PendingRequest: pending,
 	}
-	decision := decideReconnectWire(session, boundary, reconnect, bootstrap.Core)
-	if decision.disposition != reconnectWireSilentClose || !errors.Is(decision.err, ErrIntervention) || session.State() != string(sessionIntervention) {
-		t.Fatalf("decision=%+v state=%s", decision, session.State())
+}
+
+func writeReconnectAndReadAll(t *testing.T, connection *net.UnixConn, request reconnectRequest) []byte {
+	t.Helper()
+	if err := connection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
 	}
-	if session.ownerEpoch != bootstrap.OwnerEpoch || session.authorityHead != bootstrap.CurrentAuthorityHead {
-		t.Fatalf("failed replay changed owner/head=%d/%s", session.ownerEpoch, session.authorityHead)
+	if err := writeFrame(connection, mustCanonical(request), MaxWireFrameBytes); err != nil {
+		t.Fatal(err)
 	}
-	snapshot := journal.Snapshot()
+	wire, err := io.ReadAll(connection)
+	_ = connection.Close()
+	if err != nil {
+		t.Fatalf("read reconnect EOF: %v", err)
+	}
+	return wire
+}
+
+func TestRunSupervisorReceiptReplayPostBoundaryDriftIntervenesWithZeroWireResponse(t *testing.T) {
+	hookErr := make(chan error, 1)
+	harness := newSupervisorLoopHarness(t, supervisorLoopOptions{
+		mechanics: fakeMechanics{},
+		configureSession: func(session *Session) {
+			session.state = sessionBound
+			session.supervisorStartedFact = digest("c")
+		},
+		afterReconnectAttempt: func(_ *Session, attempt reconnectAttemptResult, boundary sessionControlBoundary) {
+			if attempt.disposition != reconnectResolvedWithoutMechanics || attempt.resolution.State != ReconciliationReceiptCommitted || attempt.resolution.Response == nil {
+				hookErr <- ErrIntervention
+				return
+			}
+			hookErr <- writeOwnerObject(boundary.directory, stdoutObjectName, []byte("post-replay-drift"))
+		},
+	})
+	pending := commandRequest(t, harness.bootstrap.SessionID, CommandSpawn, "spawn-reconnect-boundary", 1, harness.handshake.CommandHead, harness.bootstrap.CurrentAuthorityHead, time.Now().Add(time.Minute), validSpawnPayload())
+	if err := harness.codec.Write(pending); err != nil {
+		t.Fatal(err)
+	}
+	var original Response
+	if err := harness.codec.Read(&original); err != nil || original.Status != "ok" {
+		t.Fatalf("original response=%+v err=%v", original, err)
+	}
+	connection := harness.beginReconnect(t)
+	reconnect := reconnectFromHandshake(harness.bootstrap, harness.handshake, &pending)
+	if wire := writeReconnectAndReadAll(t, connection, reconnect); len(wire) != 0 {
+		t.Fatalf("post-receipt boundary drift wrote %q", wire)
+	}
+	if err := <-hookErr; err != nil {
+		t.Fatalf("post-replay hook: %v", err)
+	}
+	if err := harness.wait(); !errors.Is(err, ErrConflict) {
+		t.Fatalf("supervisor error=%v", err)
+	}
+	if harness.session.State() != string(sessionIntervention) || harness.session.ownerEpoch != reconnect.OwnerEpoch || harness.session.authorityHead != reconnect.CurrentAuthorityHead {
+		t.Fatalf("state/owner/head=%s/%d/%s", harness.session.State(), harness.session.ownerEpoch, harness.session.authorityHead)
+	}
+	snapshot := harness.session.journal.Snapshot()
+	replayed, ok := snapshot.commands[pending.CommandID]
+	if snapshot.Sequence != 3 || snapshot.pending != nil || !ok || replayed.Response.Status != "ok" || replayed.Response.ReceiptDigest != original.ReceiptDigest {
+		t.Fatalf("durable replay changed: sequence=%d pending=%+v replay=%+v ok=%v", snapshot.Sequence, snapshot.pending, replayed, ok)
+	}
+}
+
+func TestRunSupervisorMechanicsReplayInterventionPersistsReceiptAndClosesWithZeroWireResponse(t *testing.T) {
+	harness := newSupervisorLoopHarness(t, supervisorLoopOptions{
+		mechanics: interventionReplayMechanics{},
+		configureSession: func(session *Session) {
+			session.state = sessionBound
+			session.supervisorStartedFact = digest("c")
+		},
+	})
+	pending := commandRequest(t, harness.bootstrap.SessionID, CommandSpawn, "spawn-reconnect-intervention", 1, harness.handshake.CommandHead, harness.bootstrap.CurrentAuthorityHead, time.Now().Add(time.Minute), validSpawnPayload())
+	connection := harness.beginReconnect(t)
+	reconnect := reconnectFromHandshake(harness.bootstrap, harness.handshake, &pending)
+	if wire := writeReconnectAndReadAll(t, connection, reconnect); len(wire) != 0 {
+		t.Fatalf("mechanics replay intervention wrote %q", wire)
+	}
+	if err := harness.wait(); !errors.Is(err, ErrIntervention) {
+		t.Fatalf("supervisor error=%v", err)
+	}
+	if harness.session.State() != string(sessionIntervention) || harness.session.ownerEpoch != harness.bootstrap.OwnerEpoch || harness.session.authorityHead != harness.bootstrap.CurrentAuthorityHead {
+		t.Fatalf("state/owner/head=%s/%d/%s", harness.session.State(), harness.session.ownerEpoch, harness.session.authorityHead)
+	}
+	snapshot := harness.session.journal.Snapshot()
 	replayed, ok := snapshot.commands[pending.CommandID]
 	if snapshot.Sequence != 3 || snapshot.pending != nil || !ok || replayed.Response.Status != "rejected" || replayed.Response.ReasonCode != ErrIntervention.ReasonCode {
 		t.Fatalf("durable intervention changed: sequence=%d pending=%+v replay=%+v ok=%v", snapshot.Sequence, snapshot.pending, replayed, ok)
 	}
-	assertZeroReconnectWire(t, decision, session, boundary)
 }
 
-func TestReconnectAdmissionConflictMayEmitRejectedHandshake(t *testing.T) {
-	boundary, journal, bootstrap, _ := commandBoundaryFixture(t)
-	session, err := NewSession(bootstrap, journal, fakeMechanics{}, time.Now)
-	if err != nil {
+func TestRunSupervisorAdmissionConflictEmitsRejectedHandshake(t *testing.T) {
+	harness := newSupervisorLoopHarness(t, supervisorLoopOptions{mechanics: fakeMechanics{}})
+	connection := harness.beginReconnect(t)
+	reconnect := reconnectFromHandshake(harness.bootstrap, harness.handshake, nil)
+	reconnect.OwnerEpoch = reconnect.PreviousOwnerEpoch
+	if err := connection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	commandSequence, commandHead, journalSequence, journalHead := session.Snapshot()
-	reconnect := reconnectRequest{
-		SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce,
-		PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, CurrentAuthorityHead: digest("8"), ControlOwnerAcquired: digest("9"), Core: bootstrap.Core,
-		LastOwnerEpoch: bootstrap.OwnerEpoch, LastAuthorityHead: bootstrap.CurrentAuthorityHead,
-		LastCommandSequence: commandSequence, LastCommandHead: commandHead, LastJournalSequence: journalSequence, LastJournalHead: journalHead,
+	if err := writeFrame(connection, mustCanonical(reconnect), MaxWireFrameBytes); err != nil {
+		t.Fatal(err)
 	}
-	decision := decideReconnectWire(session, boundary, reconnect, bootstrap.Core)
-	if decision.disposition != reconnectWireRejected || !errors.Is(decision.err, ErrConflict) || session.State() == string(sessionIntervention) || journal.Snapshot().Sequence != 1 {
-		t.Fatalf("decision=%+v state=%s sequence=%d", decision, session.State(), journal.Snapshot().Sequence)
-	}
-	server, peer := net.Pipe()
-	done := make(chan error, 1)
-	go func() {
-		done <- emitReconnectHandshake(server, decision, session, CoreIdentity{}, boundary.socket, boundary.controlFiles)
-		_ = server.Close()
-	}()
-	reader := bufio.NewReaderSize(peer, MaxWireFrameBytes+frameHeaderBytes+1)
-	raw, readErr := readFrame(reader, MaxWireFrameBytes)
-	_ = peer.Close()
-	if emitErr := <-done; emitErr != nil || readErr != nil {
-		t.Fatalf("emit=%v read=%v", emitErr, readErr)
+	raw, err := readFrame(bufio.NewReaderSize(connection, MaxWireFrameBytes+frameHeaderBytes+1), MaxWireFrameBytes)
+	_ = connection.Close()
+	if err != nil {
+		t.Fatal(err)
 	}
 	var response HandshakeResponse
 	if strictCanonicalDecode(raw, &response) != nil || response.Status != "rejected" || response.ReasonCode != ErrConflict.ReasonCode {
 		t.Fatalf("response=%+v raw=%q", response, raw)
 	}
-}
-
-func assertZeroReconnectWire(t *testing.T, decision reconnectWireDecision, session *Session, boundary sessionControlBoundary) {
-	t.Helper()
-	server, peer := net.Pipe()
-	done := make(chan error, 1)
-	go func() {
-		done <- emitReconnectHandshake(server, decision, session, CoreIdentity{}, boundary.socket, boundary.controlFiles)
-		_ = server.Close()
-	}()
-	wire, readErr := io.ReadAll(peer)
-	_ = peer.Close()
-	if emitErr := <-done; emitErr != nil || readErr != nil || len(wire) != 0 {
-		t.Fatalf("emit=%v read=%v wire=%q", emitErr, readErr, wire)
+	if harness.session.State() == string(sessionIntervention) || harness.session.journal.Snapshot().Sequence != 1 {
+		t.Fatalf("admission conflict mutated session: state=%s sequence=%d", harness.session.State(), harness.session.journal.Snapshot().Sequence)
 	}
+	harness.cancel()
 }
 
 func TestReadHeldJournalSnapshotRejectsPartialAndTornTail(t *testing.T) {

@@ -52,6 +52,27 @@ func runSupervisor(ctx context.Context) error {
 	}
 	defer bootstrapFile.Close()
 	defer controlDirectory.Close()
+	return runSupervisorLoop(ctx, bootstrapFile, controlDirectory, supervisorLoopOptions{})
+}
+
+// supervisorLoopOptions is an internal fault-injection seam for exercising the
+// complete inherited bootstrap, listener, reconnect and wire loop. Production
+// always supplies the zero value and therefore constructs platform mechanics.
+// Tests may substitute mechanics or mutate a boundary only at the explicit
+// post-replay point; they do not bypass admission, replay or wire emission.
+type supervisorLoopOptions struct {
+	mechanics             Mechanics
+	configureSession      func(*Session)
+	afterReconnectAttempt func(*Session, reconnectAttemptResult, sessionControlBoundary)
+	reconnectReady        func()
+	observePeer           func(*net.UnixConn) (CoreIdentity, error)
+	observeSelf           func() (CoreIdentity, error)
+}
+
+func runSupervisorLoop(ctx context.Context, bootstrapFile, controlDirectory *os.File, options supervisorLoopOptions) error {
+	if ctx == nil || bootstrapFile == nil || controlDirectory == nil {
+		return ErrInvalid
+	}
 	bootstrapConnection, err := net.FileConn(bootstrapFile)
 	if err != nil {
 		return ErrInvalid
@@ -73,7 +94,15 @@ func runSupervisor(ctx context.Context) error {
 	if strictCanonicalDecode(raw, &bootstrap) != nil || bootstrap.validate() != nil {
 		return ErrInvalid
 	}
-	observedCore, err := observePeer(unixConnection)
+	peerObserver := options.observePeer
+	if peerObserver == nil {
+		peerObserver = observePeer
+	}
+	selfObserver := options.observeSelf
+	if selfObserver == nil {
+		selfObserver = observeSelfIdentity
+	}
+	observedCore, err := peerObserver(unixConnection)
 	if err != nil || !sameCoreIdentity(bootstrap.Core, observedCore) {
 		return ErrConflict
 	}
@@ -119,13 +148,19 @@ func runSupervisor(ctx context.Context) error {
 		return err
 	}
 	defer journal.Close()
-	mechanics, err := NewPlatformMechanics(controlDirectory)
-	if err != nil {
-		return err
+	mechanics := options.mechanics
+	if mechanics == nil {
+		mechanics, err = NewPlatformMechanics(controlDirectory)
+		if err != nil {
+			return err
+		}
 	}
 	session, err := NewSession(bootstrap, journal, mechanics, nil)
 	if err != nil {
 		return err
+	}
+	if options.configureSession != nil {
+		options.configureSession(session)
 	}
 	if revalidateControlDirectoryEntries(controlDirectory, directoryIdentity, false, controlDirectorySetupFiles) != nil {
 		return ErrConflict
@@ -152,7 +187,7 @@ func runSupervisor(ctx context.Context) error {
 		return ErrConflict
 	}
 	boundary := sessionControlBoundary{directory: controlDirectory, directoryIdentity: finalDirectoryIdentity, socket: socketIdentity, heldFiles: heldFiles, controlFiles: controlFiles}
-	supervisorIdentity, err := observeSelfIdentity()
+	supervisorIdentity, err := selfObserver()
 	if err != nil {
 		return err
 	}
@@ -176,6 +211,9 @@ func runSupervisor(ctx context.Context) error {
 	}
 	_ = unixConnection.Close()
 	active.Store(false)
+	if options.reconnectReady != nil {
+		options.reconnectReady()
+	}
 	if revalidateControlDirectoryForSnapshot(controlDirectory, finalDirectoryIdentity, session.journal.Snapshot()) != nil {
 		return ErrConflict
 	}
@@ -199,7 +237,7 @@ func runSupervisor(ctx context.Context) error {
 			active.Store(false)
 			continue
 		}
-		observed, observeErr := observePeer(connection)
+		observed, observeErr := peerObserver(connection)
 		reconnectReader := bufio.NewReaderSize(connection, MaxWireFrameBytes+frameHeaderBytes+1)
 		reconnectRaw, readErr := readFrame(reconnectReader, MaxWireFrameBytes)
 		var reconnect reconnectRequest
@@ -218,7 +256,11 @@ func runSupervisor(ctx context.Context) error {
 			active.Store(false)
 			continue
 		}
-		decision := decideReconnectWire(session, boundary, reconnect, observed)
+		attempt := session.reconnectAttempt(reconnect, observed)
+		if options.afterReconnectAttempt != nil {
+			options.afterReconnectAttempt(session, attempt, boundary)
+		}
+		decision := decideReconnectWireAfterAttempt(session, boundary, attempt)
 		if decision.disposition == reconnectWireSilentClose {
 			_ = connection.Close()
 			active.Store(false)
@@ -290,17 +332,6 @@ type reconnectWireDecision struct {
 // run, every failure first rechecks the post-replay boundary and then forces a
 // silent close, preserving any durable intent/receipt without exposing a
 // response that Core could mistake for a side-effect-free admission failure.
-func decideReconnectWire(session *Session, boundary sessionControlBoundary, request reconnectRequest, observed CoreIdentity) reconnectWireDecision {
-	if session == nil || boundary.revalidate(session.journal.Snapshot()) != nil {
-		if session != nil {
-			session.intervene()
-		}
-		return reconnectWireDecision{disposition: reconnectWireSilentClose, err: ErrConflict}
-	}
-	attempt := session.reconnectAttempt(request, observed)
-	return decideReconnectWireAfterAttempt(session, boundary, attempt)
-}
-
 func decideReconnectWireAfterAttempt(session *Session, boundary sessionControlBoundary, attempt reconnectAttemptResult) reconnectWireDecision {
 	if session == nil {
 		return reconnectWireDecision{disposition: reconnectWireSilentClose, err: ErrInvalid}
