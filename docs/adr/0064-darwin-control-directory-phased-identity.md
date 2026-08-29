@@ -1,6 +1,6 @@
 # ADR 0064：Darwin 控制目录阶段化身份与 APFS `LinkCount` 语义
 
-- 状态：提议（Proposed，2026-08-29；未经维护者接受不得启用对应生产实现）
+- 状态：已接受（Accepted，2026-08-29）。接受只冻结 Darwin ordinary-user 控制目录的阶段化身份合同；候选实现仍须补齐 phase-aware exact-set gate，且不授权 Linux/hardened/stable release。
 - 关联：[ADR 0051](0051-darwin-local-dogfood-profile.md)（Darwin ordinary-user 边界）、[ADR 0059](0059-fixed-darwin-process-supervisor.md)（固定 Supervisor 与控制目录）、[ADR 0060](0060-supervisor-mechanics-authority-binding-and-recovery.md)（bootstrap recovery anchor 与 started fact）、[ADR 0063](0063-prepared-execution-authority-and-production-chain.md)（唯一生产者链）、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)。
 
 ## 背景
@@ -115,4 +115,4 @@ v1 protocol/authority fact不持久化三个输出文件的 inode identity，因
 
 该决策保留 bootstrap 的完整空目录门禁和每个控制/输出对象的精确身份，只把 APFS 目录级 `LinkCount` 从 runtime authorization降为阶段 observation。代价是 initial/final 两份 secret-free directory observation与每次边界一次 descriptor-relative有界枚举；v1最多六个 entry，成本固定且不需要新服务、Schema或store。
 
-本 ADR 处于 Proposed。对应实现候选必须保持冻结，直到维护者接受本合同并由独立 reviewer确认真实 diff 的 P0/P1清零。候选 `765617c20ea3faee71af980d70a35ecd06e3462a` 已实现稳定字段比较、final observation、closed name拒绝与post-receipt sequence测试，但其通用六名称子集检查尚未实现本 ADR要求的 phase-aware exact set，因此不是可直接接纳的完整实现。接受也只授权 Darwin control-directory 局部语义，不表示 ADR 0059/0060/0063 全链已实现，不升级 I186-R2–R6，不授权 Linux/hardened profile，也不解除 macOS签名/notarization或稳定 `v1.*` 发布门禁。
+本 ADR 已接受。候选 `765617c20ea3faee71af980d70a35ecd06e3462a` 已实现稳定字段比较、final observation、closed name拒绝与post-receipt sequence测试，但其通用六名称子集检查尚未实现本 ADR要求的 phase-aware exact set，因此不是可直接接纳的完整实现。接受只授权 Darwin control-directory 局部语义，不表示 ADR 0059/0060/0063 全链已实现，不升级 I186-R2–R6，不授权 Linux/hardened profile，也不解除 macOS签名/notarization或稳定 `v1.*` 发布门禁。
