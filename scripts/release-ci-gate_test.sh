@@ -58,7 +58,9 @@ for mode in no-run wrong-head failed-run failed-job duplicate-job wrong-job-head
 done
 
 check_workflow() {
-  local workflow="$1" build="${TMP_ROOT}/build-job" publish="${TMP_ROOT}/publish-job"
+  local workflow="$1" guard="${TMP_ROOT}/publication-guard-job"
+  local build="${TMP_ROOT}/build-job" publish="${TMP_ROOT}/publish-job"
+  local guard_line build_line setup_go_line contract_test_line dist_line publish_line
   local type_gate_line extract_line
   python3 -I -B - "$workflow" "$RELEASE_WORKFLOW_DIGEST" <<'PY' || return 1
 import hashlib
@@ -73,8 +75,32 @@ if match is None or hashlib.sha256(workflow.read_bytes()).hexdigest() != match.g
 PY
   # The exact-byte digest above is authoritative. These positive assertions
   # remain only as localized diagnostics for an explicitly reviewed update.
+  awk '/^  publication_guard:/{copy=1} /^  build:/{copy=0} copy' "$workflow" >"$guard"
   awk '/^  build:/{copy=1} /^  publish:/{copy=0} copy' "$workflow" >"$build"
   awk '/^  publish:/{copy=1} copy' "$workflow" >"$publish"
+  grep -F 'name: Block v1 publication pending ADR 0068 RC1 evidence' "$guard" >/dev/null || return 1
+  grep -F 'runs-on: ubuntu-latest' "$guard" >/dev/null || return 1
+  grep -F 'permissions: {}' "$guard" >/dev/null || return 1
+  grep -F 'shell: /bin/bash --noprofile --norc -euo pipefail {0}' "$guard" >/dev/null || return 1
+  grep -F 'case "$TAG_NAME" in' "$guard" >/dev/null || return 1
+  grep -F '            v1.*)' "$guard" >/dev/null || return 1
+  grep -F 'ADR 0068 live canary receipt, same-bytes release, and install verification slice' "$guard" >/dev/null || return 1
+  grep -F 'must remain protected by GitHub-side immutable-tag and rerun controls.' "$guard" >/dev/null || return 1
+  [ "$(grep -Fc 'exit 1' "$guard")" -eq 1 ] || return 1
+  ! grep -E '(^|[[:space:]])(uses:|scripts/|make([[:space:]]|$)|go([[:space:]]|$)|gh([[:space:]]|$))' "$guard" >/dev/null || return 1
+  grep -F 'needs: publication_guard' "$build" >/dev/null || return 1
+  [ "$(grep -Fc 'needs: publication_guard' "$workflow")" -eq 1 ] || return 1
+  guard_line="$(grep -nF '  publication_guard:' "$workflow" | cut -d: -f1)"
+  build_line="$(grep -nF '  build:' "$workflow" | cut -d: -f1)"
+  setup_go_line="$(grep -nF '      - name: Set up Go' "$workflow" | cut -d: -f1)"
+  contract_test_line="$(grep -nF '      - name: Test release and installer contracts' "$workflow" | cut -d: -f1)"
+  dist_line="$(grep -nF '          make dist \' "$workflow" | cut -d: -f1)"
+  publish_line="$(grep -nF '  publish:' "$workflow" | cut -d: -f1)"
+  [ -n "$guard_line" ] && [ -n "$build_line" ] && [ -n "$setup_go_line" ] \
+    && [ -n "$contract_test_line" ] && [ -n "$dist_line" ] && [ -n "$publish_line" ] \
+    && [ "$guard_line" -lt "$build_line" ] && [ "$build_line" -lt "$setup_go_line" ] \
+    && [ "$build_line" -lt "$contract_test_line" ] && [ "$build_line" -lt "$dist_line" ] \
+    && [ "$build_line" -lt "$publish_line" ] || return 1
   grep -F 'actions: read' "$build" >/dev/null || return 1
   grep -F 'contents: read' "$build" >/dev/null || return 1
   grep -F 'runs-on: macos-14' "$build" >/dev/null || return 1
@@ -472,6 +498,21 @@ awk '
 ' "$WORKFLOW" >"${TMP_ROOT}/hostile-build-write.yml"
 if check_workflow "${TMP_ROOT}/hostile-build-write.yml"; then
   fail 'build job 获得 contents:write 时 workflow contract 应失败'
+fi
+sed '/^  publication_guard:/,/^  build:/ { /^  build:/!d; }' \
+  "$WORKFLOW" >"${TMP_ROOT}/hostile-no-publication-guard.yml"
+if check_workflow "${TMP_ROOT}/hostile-no-publication-guard.yml"; then
+  fail '删除 v1 publication guard 时 workflow contract 应失败'
+fi
+sed 's/            v1\.\*)/            v1.0.0-rc1)/' \
+  "$WORKFLOW" >"${TMP_ROOT}/hostile-rc1-only-publication-guard.yml"
+if check_workflow "${TMP_ROOT}/hostile-rc1-only-publication-guard.yml"; then
+  fail '把 publication guard 收窄为单个 rc1 tag 时 workflow contract 应失败'
+fi
+sed '/    needs: publication_guard/d' \
+  "$WORKFLOW" >"${TMP_ROOT}/hostile-unordered-publication-guard.yml"
+if check_workflow "${TMP_ROOT}/hostile-unordered-publication-guard.yml"; then
+  fail 'build 未依赖 publication guard 时 workflow contract 应失败'
 fi
 sed '/tar -tf "${artifact_dir}\/release-payload.tar"/d' "$WORKFLOW" >"${TMP_ROOT}/hostile-no-tar-list.yml"
 if check_workflow "${TMP_ROOT}/hostile-no-tar-list.yml"; then
