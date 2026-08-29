@@ -478,7 +478,3 @@ func validateExistingWorktreeFact(fact existingWorktreeAuthorityFact, in *Ingres
 	}
 	return nil
 }
-
-func isExistingWorktreeFactType(value string) bool {
-	return value == existingWorktreeBindIntentFactType || value == existingWorktreeBindReceiptFactType || value == existingWorktreeReleaseIntentFactType || value == existingWorktreeReleaseReceiptFactType
-}
