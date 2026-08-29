@@ -136,6 +136,14 @@ func writeSnapshotAt(runFD int, data []byte) error {
 }
 
 func acquireLeaseFile(root, runID string) (*os.File, *os.File, uint64, uint64, bool, error) {
+	return acquireLeaseFileMode(root, runID, true)
+}
+
+func acquireExistingLeaseFile(root, runID string) (*os.File, *os.File, uint64, uint64, bool, error) {
+	return acquireLeaseFileMode(root, runID, false)
+}
+
+func acquireLeaseFileMode(root, runID string, createLock bool) (*os.File, *os.File, uint64, uint64, bool, error) {
 	rootFD, runsFD, runFD, err := openRunAuthority(root, runID)
 	if err != nil {
 		return nil, nil, 0, 0, false, err
@@ -145,7 +153,7 @@ func acquireLeaseFile(root, runID string) (*os.File, *os.File, uint64, uint64, b
 	defer unix.Close(runFD)
 	created := false
 	leaseFD, err := unix.Openat(runFD, "lease.lock", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if errors.Is(err, unix.ENOENT) {
+	if createLock && errors.Is(err, unix.ENOENT) {
 		leaseFD, err = unix.Openat(runFD, "lease.lock", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_CREAT|unix.O_EXCL, 0o600)
 		created = err == nil
 	}
@@ -189,6 +197,61 @@ func acquireLeaseFile(root, runID string) (*os.File, *os.File, uint64, uint64, b
 	}
 	unix.CloseOnExec(boundRunFD)
 	return os.NewFile(uintptr(leaseFD), "lease.lock"), os.NewFile(uintptr(boundRunFD), "run-authority"), uint64(stat.Dev), uint64(stat.Ino), true, nil
+}
+
+// validateAcquiredLeaseCurrent reopens the canonical Run pathname after an
+// existing-only caller has obtained the lock and immediately before it writes
+// a new owner record. This prevents a rename/replacement window from causing
+// owner bytes to be installed in a detached or newly substituted Run object.
+func validateAcquiredLeaseCurrent(root, runID string, boundRun, heldLease *os.File, device, inode uint64) error {
+	if boundRun == nil || heldLease == nil {
+		return errors.New("existing Run acquisition lacks bound descriptors")
+	}
+	rootFD, runsFD, currentRunFD, err := openRunAuthority(root, runID)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(rootFD)
+	defer unix.Close(runsFD)
+	defer unix.Close(currentRunFD)
+
+	var boundRunStat, currentRunStat unix.Stat_t
+	if err := unix.Fstat(int(boundRun.Fd()), &boundRunStat); err != nil {
+		return err
+	}
+	if err := unix.Fstat(currentRunFD, &currentRunStat); err != nil {
+		return err
+	}
+	if boundRunStat.Dev != currentRunStat.Dev || boundRunStat.Ino != currentRunStat.Ino {
+		return errors.New("run authority pathname no longer binds the acquired directory")
+	}
+
+	currentLeaseFD, err := unix.Openat(currentRunFD, "lease.lock", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(currentLeaseFD)
+	var currentLeaseStat, heldLeaseStat unix.Stat_t
+	if err := unix.Fstat(currentLeaseFD, &currentLeaseStat); err != nil {
+		return err
+	}
+	if err := unix.Fstat(int(heldLease.Fd()), &heldLeaseStat); err != nil {
+		return err
+	}
+	if currentLeaseStat.Mode&unix.S_IFMT != unix.S_IFREG || currentLeaseStat.Nlink != 1 {
+		return errors.New("canonical lease is not a single-link regular file")
+	}
+	if uint64(currentLeaseStat.Dev) != device || uint64(currentLeaseStat.Ino) != inode || uint64(heldLeaseStat.Dev) != device || uint64(heldLeaseStat.Ino) != inode {
+		return errors.New("lease pathname no longer binds the acquired descriptor")
+	}
+	owner, err := readLeaseOwnerAt(currentRunFD)
+	if err != nil && !errors.Is(err, errLegacyLeaseOwner) {
+		return fmt.Errorf("validate existing lease owner: %w", err)
+	}
+	if err == nil && (owner.Device != device || owner.Inode != inode) {
+		return errors.New("existing lease owner no longer binds the acquired descriptor")
+	}
+	return nil
 }
 
 func releaseLeaseFile(file *os.File) error {

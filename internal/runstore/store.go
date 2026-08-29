@@ -30,7 +30,13 @@ var (
 	errLegacyLeaseOwner = errors.New("lease owner record lacks descriptor identity")
 )
 
-type Store struct{ root string }
+type Store struct {
+	root string
+	// beforeAcquireExistingOwnerWrite is a deterministic test seam for the
+	// current-name check immediately before an existing-only acquisition
+	// installs its owner record. Production stores leave it nil.
+	beforeAcquireExistingOwnerWrite func() error
+}
 
 type Lease struct {
 	file   *os.File
@@ -83,15 +89,43 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 	if err != nil {
 		return nil, fmt.Errorf("acquire run lease: %w", err)
 	}
+	return s.finishAcquire(runID, leaseFile, runDirectory, device, inode, locked, false)
+}
+
+// AcquireExisting acquires the descriptor-bound lease for an already
+// initialized Run without creating the state root, runs directory, Run
+// directory, or lease file. Unknown and identity-unsafe paths are rejected
+// before an owner record, journal, or snapshot can be written. It is the
+// production mutation entry for callers that must not turn an unknown Run
+// identifier into durable state.
+//
+// A successful acquisition returns the same Lease authority used by Acquire,
+// so descriptor-relative readers and mutations retain their existing
+// semantics. The ordinary Acquire creation path remains unchanged.
+func (s *Store) AcquireExisting(runID string) (*Lease, error) {
+	if _, err := s.runDir(runID); err != nil {
+		return nil, err
+	}
+	leaseFile, runDirectory, device, inode, locked, err := acquireExistingLeaseFile(s.root, runID)
+	if err != nil {
+		return nil, fmt.Errorf("acquire existing run lease: %w", err)
+	}
+	return s.finishAcquire(runID, leaseFile, runDirectory, device, inode, locked, true)
+}
+
+func (s *Store) finishAcquire(runID string, leaseFile, runDirectory *os.File, device, inode uint64, locked, existingOnly bool) (*Lease, error) {
 	if !locked {
 		return nil, ErrLeaseHeld
 	}
-	var tokenBytes [16]byte
-	if _, err := rand.Read(tokenBytes[:]); err != nil {
+	release := func() {
 		_ = releaseLeaseFile(leaseFile)
 		if runDirectory != nil {
 			_ = runDirectory.Close()
 		}
+	}
+	var tokenBytes [16]byte
+	if _, err := rand.Read(tokenBytes[:]); err != nil {
+		release()
 		return nil, fmt.Errorf("generate lease token: %w", err)
 	}
 	now := time.Now().UTC()
@@ -100,16 +134,24 @@ func (s *Store) Acquire(runID string) (*Lease, error) {
 		AcquiredAt: now, HeartbeatAt: now, Device: device, Inode: inode,
 	}, "", "  ")
 	if err != nil {
-		_ = releaseLeaseFile(leaseFile)
-		if runDirectory != nil {
-			_ = runDirectory.Close()
-		}
+		release()
 		return nil, err
 	}
 	record = append(record, '\n')
+	if existingOnly {
+		if s.beforeAcquireExistingOwnerWrite != nil {
+			if err := s.beforeAcquireExistingOwnerWrite(); err != nil {
+				release()
+				return nil, fmt.Errorf("acquire existing run lease check: %w", err)
+			}
+		}
+		if err := validateAcquiredLeaseCurrent(s.root, runID, runDirectory, leaseFile, device, inode); err != nil {
+			release()
+			return nil, fmt.Errorf("acquire existing run lease authority: %w", err)
+		}
+	}
 	if err := writeLeaseOwnerAt(int(runDirectory.Fd()), record); err != nil {
-		_ = releaseLeaseFile(leaseFile)
-		_ = runDirectory.Close()
+		release()
 		return nil, fmt.Errorf("write lease owner: %w", err)
 	}
 	return &Lease{file: leaseFile, runDir: runDirectory, held: true, root: s.root, dev: device, inode: inode, runID: runID}, nil
