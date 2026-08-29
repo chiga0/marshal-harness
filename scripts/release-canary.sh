@@ -12,8 +12,11 @@ RELEASE_DIST_ROOT="${SOURCE_ROOT}/dist"
 CANONICAL_REMOTE="https://github.com/chiga0/marshal-harness.git"
 CANARY_REMOTE="https://example.invalid/marshal-release-canary.git"
 PI_VERSION="0.84.3"
+PI_NODE_VERSION="v24.15.0"
 PI_MODEL="qwen-token-plan-cn/qwen3.6-flash"
 PI_BIN_DEFAULT="/Users/gawain/.local/share/fnm/node-versions/v24.15.0/installation/bin/pi"
+PI_NODE_DEFAULT="/Users/gawain/.local/share/fnm/node-versions/v24.15.0/installation/bin/node"
+PI_NODE_SHA256_DEFAULT="3200fbd9f7fd4410426dd541e10d1ab829d3472f270d743c7fabd1696c03fe32"
 PI_BUNDLE_DEFAULT="/Users/gawain/.local/share/fnm/node-versions/v24.15.0/installation/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
 PI_BUNDLE_SHA256_DEFAULT="1c3a5094b54aae9ae98c66516ce8c6578140363d081471ca7e91f9cb8c23dc8a"
 PYTHON_BIN="/usr/bin/python3"
@@ -126,16 +129,22 @@ if [ "$TEST_MODE" = 1 ]; then
     *) die "测试模式仅允许在 release-canary-test.* fixture 根运行" ;;
   esac
   PI_BIN="${MARSHAL_RELEASE_CANARY_PI_BIN:?测试模式缺少 MARSHAL_RELEASE_CANARY_PI_BIN}"
+  PI_NODE="${MARSHAL_RELEASE_CANARY_PI_NODE:?测试模式缺少 MARSHAL_RELEASE_CANARY_PI_NODE}"
+  PI_NODE_SHA256="${MARSHAL_RELEASE_CANARY_PI_NODE_SHA256:?测试模式缺少 MARSHAL_RELEASE_CANARY_PI_NODE_SHA256}"
   PI_BUNDLE="${MARSHAL_RELEASE_CANARY_PI_BUNDLE:?测试模式缺少 MARSHAL_RELEASE_CANARY_PI_BUNDLE}"
   PI_BUNDLE_SHA256="${MARSHAL_RELEASE_CANARY_PI_BUNDLE_SHA256:?测试模式缺少 MARSHAL_RELEASE_CANARY_PI_BUNDLE_SHA256}"
 else
   [ "$TEST_MODE" = 0 ] || die "MARSHAL_RELEASE_CANARY_TEST_MODE 非法"
   [ -z "${MARSHAL_RELEASE_CANARY_PI_BIN+x}" ] && \
+    [ -z "${MARSHAL_RELEASE_CANARY_PI_NODE+x}" ] && \
+    [ -z "${MARSHAL_RELEASE_CANARY_PI_NODE_SHA256+x}" ] && \
     [ -z "${MARSHAL_RELEASE_CANARY_PI_BUNDLE+x}" ] && \
     [ -z "${MARSHAL_RELEASE_CANARY_PI_BUNDLE_SHA256+x}" ] || \
     die "生产 canary 禁止覆盖冻结的 Pi 路径或摘要"
   [ "$(uname -s)" = Darwin ] || die "该 release canary 仅允许在 macOS 运行"
   PI_BIN="$PI_BIN_DEFAULT"
+  PI_NODE="$PI_NODE_DEFAULT"
+  PI_NODE_SHA256="$PI_NODE_SHA256_DEFAULT"
   PI_BUNDLE="$PI_BUNDLE_DEFAULT"
   PI_BUNDLE_SHA256="$PI_BUNDLE_SHA256_DEFAULT"
 fi
@@ -240,6 +249,7 @@ set_runtime_environment() {
   export PATH="$(dirname "$PI_BIN"):/usr/bin:/bin:/usr/sbin:/sbin"
   export LANG="en_US.UTF-8"
   export MARSHAL_PI_PATH="$PI_BIN"
+  export MARSHAL_PI_NODE_PATH="$PI_NODE"
   export MARSHAL_EMBEDDED_SANDBOX=1
   export MARSHAL_OPENCODE_PATH=""
   export MARSHAL_QWEN_PATH=""
@@ -248,7 +258,14 @@ set_runtime_environment() {
 }
 
 assert_pi_identity() {
-  local resolved digest version
+  local resolved digest version node_digest node_version
+  [ "$PI_NODE" = "$(canonical_path "$PI_NODE")" ] || die "Node runtime 必须是固定 canonical path"
+  [ -f "$PI_NODE" ] && [ -x "$PI_NODE" ] && [ ! -L "$PI_NODE" ] \
+    || die "Node runtime 不是固定 regular executable：$PI_NODE"
+  node_digest="$(sha256_file "$PI_NODE")"
+  [ "$node_digest" = "$PI_NODE_SHA256" ] || die "Node runtime SHA-256 漂移"
+  node_version="$($PI_NODE --version)" || die "Node --version 失败"
+  [ "$node_version" = "$PI_NODE_VERSION" ] || die "Node 版本漂移：期望 $PI_NODE_VERSION，实际 $node_version"
   [ "$PI_BIN" = "$(canonical_path "$PI_BIN")" ] && die "Pi 入口必须是冻结的符号链接，而不是直接 bundle 路径"
   [ -L "$PI_BIN" ] && [ -x "$PI_BIN" ] || die "Pi 入口不是可执行符号链接：$PI_BIN"
   [ -f "$PI_BUNDLE" ] && [ -x "$PI_BUNDLE" ] || die "Pi bundle 不可执行：$PI_BUNDLE"
@@ -259,6 +276,8 @@ assert_pi_identity() {
   version="$($PI_BIN --version)" || die "Pi --version 失败"
   [ "$version" = "$PI_VERSION" ] || die "Pi 版本漂移：期望 $PI_VERSION，实际 $version"
   if [ -f "$IDENTITY_PATH" ]; then
+    [ "$PI_NODE" = "$(json_field "$IDENTITY_PATH" piNodePath)" ] || die "Node runtime 路径与冻结 Run 不一致"
+    [ "$node_digest" = "$(json_field "$IDENTITY_PATH" piNodeSha256)" ] || die "Node runtime 与冻结 Run 不一致"
     [ "$PI_BIN" = "$(json_field "$IDENTITY_PATH" piPath)" ] || die "Pi 入口路径与冻结 Run 不一致"
     [ "$PI_BUNDLE" = "$(json_field "$IDENTITY_PATH" piBundlePath)" ] || die "Pi bundle 路径与冻结 Run 不一致"
     [ "$digest" = "$(json_field "$IDENTITY_PATH" piBundleSha256)" ] || die "Pi bundle 与冻结 Run 不一致"
@@ -319,7 +338,7 @@ PY
 
 assert_identity_record() {
   [ -f "$IDENTITY_PATH" ] || die "缺少持久 canary identity：$IDENTITY_PATH"
-  "$PYTHON_BIN" -I -B - "$IDENTITY_PATH" "$SOURCE_ROOT" "$RUN_ID" "$EXPECTED_HEAD" "$EXPECTED_VERSION" "$MARSHAL_BIN" "$REPOSITORY_ROOT" "$PI_MODEL" <<'PY' || die "canary identity 与请求不一致"
+  "$PYTHON_BIN" -I -B - "$IDENTITY_PATH" "$SOURCE_ROOT" "$RUN_ID" "$EXPECTED_HEAD" "$EXPECTED_VERSION" "$MARSHAL_BIN" "$REPOSITORY_ROOT" "$PI_MODEL" "$PI_NODE" "$PI_NODE_SHA256" <<'PY' || die "canary identity 与请求不一致"
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     value = json.load(handle)
@@ -332,6 +351,8 @@ expected = {
     "marshalPath": sys.argv[6],
     "repositoryRoot": sys.argv[7],
     "piModel": sys.argv[8],
+    "piNodePath": sys.argv[9],
+    "piNodeSha256": sys.argv[10],
 }
 for key, wanted in expected.items():
     assert value.get(key) == wanted
@@ -455,12 +476,12 @@ PY
 
 write_identity() {
   local phase="$1" canary_base="$2" task_id="$3" packet_digest="${4:-}"
-  "$PYTHON_BIN" -I -B - "$IDENTITY_PATH" "$phase" "$SOURCE_ROOT" "$RUN_ID" "$EXPECTED_HEAD" "$EXPECTED_VERSION" "$MARSHAL_BIN" "$MARSHAL_SHA256" "$RELEASE_CANDIDATE_ASSET" "$RELEASE_CANDIDATE_SHA256" "$RELEASE_MANIFEST_SHA256" "$PI_BIN" "$PI_BUNDLE" "$PI_BUNDLE_SHA256" "$PI_MODEL" "$REPOSITORY_ROOT" "$canary_base" "$task_id" "$packet_digest" <<'PY'
+  "$PYTHON_BIN" -I -B - "$IDENTITY_PATH" "$phase" "$SOURCE_ROOT" "$RUN_ID" "$EXPECTED_HEAD" "$EXPECTED_VERSION" "$MARSHAL_BIN" "$MARSHAL_SHA256" "$RELEASE_CANDIDATE_ASSET" "$RELEASE_CANDIDATE_SHA256" "$RELEASE_MANIFEST_SHA256" "$PI_BIN" "$PI_NODE" "$PI_NODE_SHA256" "$PI_BUNDLE" "$PI_BUNDLE_SHA256" "$PI_MODEL" "$REPOSITORY_ROOT" "$canary_base" "$task_id" "$packet_digest" <<'PY'
 import json, sys
 keys = ("phase", "sourceRoot", "runId", "expectedHead", "expectedVersion",
         "marshalPath", "marshalSha256", "releaseCandidateAsset",
-        "releaseCandidateSha256", "releaseManifestSha256", "piPath", "piBundlePath",
-        "piBundleSha256", "piModel", "repositoryRoot", "canaryBaseSha", "taskId",
+        "releaseCandidateSha256", "releaseManifestSha256", "piPath", "piNodePath",
+        "piNodeSha256", "piBundlePath", "piBundleSha256", "piModel", "repositoryRoot", "canaryBaseSha", "taskId",
         "reviewPacketDigest")
 value = {"schemaVersion": "marshal.release-canary.v1"}
 value.update(dict(zip(keys, sys.argv[2:])))
