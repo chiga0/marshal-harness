@@ -2,7 +2,7 @@
 
 本文覆盖 Marshal CLI 面向用户的生命周期操作：安装、升级、回滚与卸载。支持平台为 `darwin|linux` × `amd64|arm64`，全程不请求 sudo。安装脚本自身的契约与手工验证步骤（面向维护者）见 [docs/development.md「安装」](https://github.com/chiga0/marshal-harness/blob/main/docs/development.md#安装)。
 
-> **RC1 状态（2026-08-29）**：[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受，但 `v1.0.0-rc1` 尚未实现或发布。它只允许 Darwin arm64、精确 tag、显式 local-dogfood preview opt-in；缺少精确 RC1 资产时必须 fail closed，不得回退源码、其它平台资产或 stable/latest，也不得由安装器自动生成或激活 `LocalDogfoodActivationV1`。这些是待实现合同，不是当前 `scripts/install.sh` 已具备的行为。
+> **RC1 状态（2026-08-29）**：[ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 的 installer guard 已实现，但 `v1.0.0-rc1` 仍尚未发布。它只允许 Darwin arm64、精确 tag 和显式 `MARSHAL_LOCAL_DOGFOOD_PREVIEW=1`；缺少精确 RC1 资产时必须 fail closed，不得回退源码、其它平台资产或 stable/latest，也不得由安装器自动生成或激活 `LocalDogfoodActivationV1`。安装命令只在 release 真实存在后才能成功。
 
 ## 安装
 
@@ -17,12 +17,28 @@ marshal version
 
 1. 检测平台（`darwin|linux` × `amd64|arm64`）；
 2. 查询 latest release，存在平台匹配资产（`marshal_<version>_<os>_<arch>`）时用 `curl -fsSL` 下载预编译二进制；
-3. release tag 必须是 annotated tag；脚本从 canonical Git remote 解析唯一 tag object/peeled commit 并获取 canonical tag message，再下载 `RELEASE-MANIFEST` 与 `SHA256SUMS`；tag message 冻结的 sourceHead、manifest SHA 与 Darwin arm64 candidate SHA 必须和下载内容对账，manifest 的 repository/tag/sourceHead/buildDate/toolchain/flags/四平台资产集合也必须精确；任一缺失、重复、尾随字段、资产整组替换或漂移均 **fail closed**；
-4. 无匹配资产或下载失败时回退源码构建（见下节）；若指定了 `MARSHAL_TAG`，源码 checkout 的 `HEAD` 必须精确等于该 tag 的 peeled commit，否则 fail closed，禁止把任意源码标记成请求版本；
-5. 安装到 `~/.local/bin`（可用 `MARSHAL_INSTALL_DIR` 覆盖）；首次写入前逐段验证安装路径、staging 和既有 target 的 owner/mode/non-symlink/hardlink 边界。下载对象保持 `0644` 且不可执行，只有 tag/manifest/checksum 全部闭合后才通过 no-clobber hardlink 激活固定 `.marshal-staging/marshal`，再运行 `marshal version --json`；release 路径精确核对 `version`、peeled `commit`、manifest `buildDate/goVersion` 与 `selfProfile`，源码路径核对自身 `HEAD`；任一执行失败、字段缺失或身份漂移都 fail closed；
+3. release tag 必须是 annotated tag；脚本从 canonical Git remote 解析唯一 tag object/peeled commit 并获取 canonical tag message，再下载 `RELEASE-MANIFEST` 与 `SHA256SUMS`；tag message 冻结的 sourceHead、manifest SHA 与 Darwin arm64 candidate SHA 必须和下载内容对账。通用 release manifest 的四平台集合，以及 RC1 的精确 8 行单资产 manifest 和固定顺序、两个空格分隔、两个小写 SHA-256 项都必须封闭；任一缺失、重复、尾随字段、非 canonical 空白、资产整组替换或漂移均 **fail closed**；
+4. 非 RC1 安装在无匹配资产或下载失败时回退源码构建（见下节）；若指定了 `MARSHAL_TAG`，源码 checkout 的 `HEAD` 必须精确等于该 tag 的 peeled commit，否则 fail closed，禁止把任意源码标记成请求版本。`v1.0.0-rc1` 不得进入这条回退路径；
+5. 安装到 `~/.local/bin`（可用 `MARSHAL_INSTALL_DIR` 覆盖）；首次写入前逐段验证安装路径、staging 和既有 target 的 owner/mode/non-symlink/hardlink 边界。下载对象保持 `0644` 且不可执行，只有 tag/manifest/checksum 全部闭合后才通过 no-clobber hardlink 激活固定 `.marshal-staging/marshal`。非 RC1 路径继续运行 `marshal version --json` 核对 build identity；RC1 的 Mach-O/buildinfo 已由 release admission 对外部 expected values 完成非执行式校验，安装器只消费其同一 payload，并且不会执行 RC1 candidate 或要求本机安装 Go toolchain；
 6. Darwin 安装资产与源码回退固定 `selfProfile=darwin-local-dogfood`，Linux 固定 `selfProfile=unprofiled`。前者只是 ADR 0051 的 Mac ordinary-user/non-production 能力，不得描述成 hardened 或正式 production authority。
 
 二进制 bytes 先写入安装目录下固定且不可执行的 `.marshal-staging/marshal.candidate`；校验通过后以 no-clobber hardlink 激活固定 `.marshal-staging/marshal`，再原子替换目标 `marshal` 并清理本次拥有的暂存对象。脚本不会在随机路径生成或执行匿名可执行文件，也不会跟随安装路径、staging 或目标 symlink；不安全 owner、group/world 可写路径、stale staging 与 hardlink target 都会被拒绝。
+
+### `v1.0.0-rc1` 显式预览安装
+
+RC1 发布后，只能在 Darwin arm64 上使用以下精确命令：
+
+```bash
+MARSHAL_TAG=v1.0.0-rc1 \
+MARSHAL_LOCAL_DOGFOOD_PREVIEW=1 \
+bash scripts/install.sh
+```
+
+`MARSHAL_LOCAL_DOGFOOD_PREVIEW` 只接受精确值 `1`，且只能与 `MARSHAL_TAG=v1.0.0-rc1` 同时使用。缺少 opt-in、任意其它值、未显式指定 tag、非 Darwin arm64、`MARSHAL_FORCE_SOURCE`、资产或网络失败以及 manifest/bytes 漂移全部 fail closed。安装器只下载该 tag 的精确 Darwin arm64 binary、`RELEASE-MANIFEST` 和 `SHA256SUMS`，并在下载后、执行前（固定 staging 激活后）与安装后重验同一 SHA-256 和 size；candidate 大于 256 MiB、为 symlink 或出现任何字节漂移都会被拒绝。
+
+Mach-O、Go build settings 与内嵌 buildinfo 的非执行式解析属于候选构建/发布 admission，由固定 `GO_BIN` 和 `scripts/release-rc1-binary-check.py` 对外部 expected values 完成；安装器不下载该 checker、不把它加入三项 dist，也不执行 candidate 来重复该门禁。安装成功仅表示已安装与 annotated tag/manifest/checksum 绑定的同一 payload，操作者仍须显式执行下述 `version --json` 与 `doctor --self`。
+
+安装器不创建 activation，不修改 Gatekeeper、SIP、EDR、`PATH` 或符号链接。成功后它会输出固定绝对路径的 `version --json`、`doctor --self` 与操作者显式写入/selection activation 的指引；必须在当前受信任 canonical repository 内按顺序执行。`$PATH` 命中和 convenience symlink 都不是 trust anchor。
 
 ### 离线校验 release 资产
 
@@ -47,7 +63,7 @@ cd marshal-harness
 make build      # 输出 bin/marshal
 ```
 
-安装脚本在以下情况自动走源码路径：无匹配 release 资产、release 下载失败、或设置 `MARSHAL_FORCE_SOURCE=1`；无本地 checkout 时会先浅克隆仓库（`MARSHAL_TAG` 已固定时克隆对应 tag）。源码路径要求无未提交修改、可验证的 Git checkout，并把精确 `HEAD`、构建时间和平台 profile 写入 build info；指定 `MARSHAL_TAG` 时还会要求 `HEAD == refs/tags/<tag>^{commit}`。
+非 RC1 安装脚本在以下情况自动走源码路径：无匹配 release 资产、release 下载失败、或设置 `MARSHAL_FORCE_SOURCE=1`；无本地 checkout 时会先浅克隆仓库（`MARSHAL_TAG` 已固定时克隆对应 tag）。源码路径要求无未提交修改、可验证的 Git checkout，并把精确 `HEAD`、构建时间和平台 profile 写入 build info；指定 `MARSHAL_TAG` 时还会要求 `HEAD == refs/tags/<tag>^{commit}`。`v1.0.0-rc1` 明确禁止源码构建和这条 fallback。
 
 ## 升级
 
@@ -57,7 +73,7 @@ make build      # 输出 bin/marshal
 MARSHAL_TAG=v0.2.0 bash scripts/install.sh
 ```
 
-GitHub 的 `latest` API 不返回 prerelease。`v1.0.0-rc1` 当前尚未发布，RC1 的显式 preview selector 也尚未实现，因此本文暂不提供可执行的 RC1 安装命令，避免把未冻结的 CLI/环境变量名称冒充现有接口。后续 guard 必须同时要求精确 tag 与显式 local-dogfood preview opt-in，并且只接受 exact Darwin arm64 RC1 asset；资产缺失、平台不符或未显式 opt-in 时 fail closed，不得进入现有源码回退，也不得自动 activation。RC 是候选/预览资产，不代表已满足 Issue #212 的 macOS 签名/notarization 或 v1.0 `RELEASED` 门禁。
+GitHub 的 `latest` API 不返回 prerelease。`v1.0.0-rc1` 当前尚未发布；发布后必须使用上文的精确 tag + preview opt-in 命令，不会由 latest/stable channel 自动获得。RC 是候选/预览资产，不代表已满足 Issue #212 的 macOS 签名/notarization 或 v1.0 `RELEASED` 门禁。
 
 RC 的 annotated tag 目前是 unsigned。封闭 tag message 能在 **同一 tag object 未变化** 时发现 release assets、manifest 或候选摘要被替换，但它不是签名、透明日志或 anti-rollback authority；若 canonical remote ref 连同 tag object 被整体重指，普通安装器没有外部高水位可据此识别降级或历史替换。使用者必须显式固定期望 tag，并在需要强 anti-rollback 时等待 Issue #212 的受保护签名/发布链，不能把当前 RC 门禁表述为稳定分发保证。
 
