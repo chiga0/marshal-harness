@@ -1,9 +1,10 @@
 # ADR 0069：Attempt reservation 与 existing-worktree allocation
 
-- 状态：提议（Proposed）
+- 状态：已接受（Accepted）
 - 日期：2026-08-29
 - 提议基线：`main@e1e81f8f4fe9438b54444ade8fca039964205d89`
 - 返工记录：`ebbfd86d60fad748e180e900e835bd3361392cdd` 的独立审查为 `P0=3`、`P1=4`；`1adf20c6b11a3047067a0bf574a89278c0bda700` 的 aggregate 复审只剩 `P0=1`、`P1=1`，本版仅关闭这两个已知窗口，不扩展范围
+- 接受依据：定向修订 sourceHead `e2af17931e123fca1c10d565cceae6dc03ef4d5a` 经独立 reviewer `APPROVE`，`P0=0`、`P1=0`，且五份变更文档的 `git diff --check` 与相对链接检查通过
 - 影响范围：ResultIngress/RB1、Run start、Attempt budget、Local allocation、S1′/S2′ producer chain
 - 关联：[ADR 0029](0029-pre-attempt-abort.md)、[ADR 0051](0051-darwin-local-dogfood-profile.md)、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)、[ADR 0063](0063-prepared-execution-authority-and-production-chain.md)、[ADR 0065](0065-sealed-run-start-proof-and-one-way-composition.md)、[ADR 0066](0066-production-composition-owner-acquisition.md)、[ADR 0067](0067-darwin-ordinary-user-launch-and-attach-recovery.md)、[ADR 0068](0068-mac-first-cli-only-lifecycle-preview-rc1.md)、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)
 
@@ -222,4 +223,4 @@ raw absolute `WorktreePath`只允许存在于owner-private Run frozen inputs与R
 
 ## 10. 接受条件
 
-本ADR保持Proposed。只有独立reviewer对本次aggregate rework的exact sourceHead确认`P0=0`、`P1=0`，维护者完成接受同步后才能标记Accepted。接受也只冻结合同；schema、实现、hostile matrix、fixed CLI真实Pi与独立Decision完成前，不得宣称S1′/S2′、RC1、hardened或Linux authority已完成。
+本ADR已基于 sourceHead `e2af17931e123fca1c10d565cceae6dc03ef4d5a` 的独立 `APPROVE`（`P0=0`、`P1=0`）由维护者接受。接受只冻结合同；schema、实现、hostile matrix、fixed CLI真实Pi与独立Decision完成前，不得宣称S1′/S2′、RC1、hardened或Linux authority已完成。

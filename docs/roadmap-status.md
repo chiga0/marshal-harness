@@ -14,7 +14,7 @@
 >
 > **2026-08-29 Mac-first 合同接受**：[ADR 0067](adr/0067-darwin-ordinary-user-launch-and-attach-recovery.md) 与 [ADR 0068](adr/0068-mac-first-cli-only-lifecycle-preview-rc1.md) 已接受；提案 sourceHead 分别为 `1e05fb831c04a1c87e7f4ecdc677c97beb9d88e6`、`9cfa1b65275d2e23f18b958a05d027adec6af8fd`，唯一独立 reviewer 均确认 `P0=0`、`P1=0`。旧候选`a6a0d63`/`506a647`/`6298eae`继续冻结、不直接合入；权威顺序固定为S1′→S2′→Attach/rebind→terminalization→fixed CLI真实Pi+独立Decision `ACCEPTED`→same-bytes RC1。RC1仍是尚未实现、尚未发布的unsigned Darwin arm64 CLI-only local-dogfood preview；server、managed signing/notarization与Linux stable转为RC1后继。接受不改变当前R2–R6成熟度。
 
-> **2026-08-29 producer P0 提案**：[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md)保持Proposed；首版`ebbfd86`独立审查为`P0=3/P1=4`，`1adf20c` aggregate复审只剩`P0=1/P1=1`，当前仅对dispatch response-loss与release exact binding做定向修订。`attempt-reserved`只是RB1 creation-once reservation；dispatch lookup-before-claim、full Attempt与`attempt-opened`随后产生，sealed Run successor才写Attempt/计budget。Existing-worktree Bind/Receipt/Release的唯一authority同样是RB1；固定sidecar仅为可重建projection，锁序owner→Run→RB1→projection，release绑定current terminalization/cleanup/process-terminal链。ResultIngress pathname reopen和`OpenOwner`后才可`ObserveCurrentCore`仍是ADR0066实施P0。修订尚待复审、接受或实现，不升级阶段。
+> **2026-08-29 producer P0 合同**：[ADR 0069](adr/0069-attempt-reservation-and-existing-worktree-allocation.md)已在定向修订 sourceHead `e2af179` 经独立 reviewer `APPROVE`（`P0=0/P1=0`）后由维护者接受。`attempt-reserved`只是RB1 creation-once reservation；dispatch lookup-before-claim、full Attempt与`attempt-opened`随后产生，sealed Run successor才写Attempt/计budget。Existing-worktree Bind/Receipt/Release的唯一authority同样是RB1；固定sidecar仅为可重建projection，锁序owner→Run→RB1→projection，release绑定current terminalization/cleanup/process-terminal链。ResultIngress pathname reopen和`OpenOwner`后才可`ObserveCurrentCore`仍是ADR0066实施P0。接受只冻结合同，实现尚未完成，不升级阶段。
 
 ## v1.0 生产纵切
 
@@ -39,7 +39,7 @@ Milestone 状态与能力成熟度是两个维度：
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
-当前最短剩余路径是：复审并接受ADR0069 aggregate rework→RB1 `attempt-reserved` lookup-before-mint→dispatch lease/full AttemptIdentity→`attempt-opened`→BindOwnerToAttempt→RB1 existing-worktree bind intent→projection/effect→RB1 receipt→launch/Prepared→S1 sealed start（此时才写Attempt/计budget），同时修复ADR0066 held descriptor与`OpenOwner`后观察→Attach/rebind→terminalization/cleanup（RB1 release唯一释放binding，永不删除用户worktree）→fixed CLI真实Pi经独立Decision进入`ACCEPTED`→同一最终Darwin arm64 bytes发布unsigned CLI-only RC1。sidecar不是authority；ADR0069仍为Proposed，不能升级阶段。
+当前最短剩余路径是：按已接受ADR0069实现RB1 `attempt-reserved` lookup-before-mint→dispatch lookup-before-claim + lease/full AttemptIdentity→`attempt-opened`→BindOwnerToAttempt→RB1 existing-worktree bind intent→projection/effect→RB1 receipt→launch/Prepared→S1 sealed start（此时才写Attempt/计budget），同时修复ADR0066 held descriptor与`OpenOwner`后观察→Attach/rebind→terminalization/cleanup（RB1 release唯一释放binding，永不删除用户worktree）→fixed CLI真实Pi经独立Decision进入`ACCEPTED`→同一最终Darwin arm64 bytes发布unsigned CLI-only RC1。sidecar不是authority；合同接受不等于实现完成，不能升级阶段。
 
 ## 快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
 
