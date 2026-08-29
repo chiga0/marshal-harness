@@ -121,17 +121,17 @@ func TestReconnectRequiresAuthorityHeadAdvanceAndOwnerProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	commandSequence, commandHead, journalSequence, journalHead := session.Snapshot()
-	request := ReconnectRequest{SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce, PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 1, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, CurrentAuthorityHead: bootstrap.CurrentAuthorityHead, ControlOwnerAcquired: digest("7"), Core: bootstrap.Core, LastOwnerEpoch: bootstrap.OwnerEpoch, LastAuthorityHead: bootstrap.CurrentAuthorityHead, LastCommandSequence: commandSequence, LastCommandHead: commandHead, LastJournalSequence: journalSequence, LastJournalHead: journalHead}
-	if _, err := session.Reconnect(request, bootstrap.Core); !errors.Is(err, ErrConflict) {
+	request := reconnectRequest{SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce, PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 1, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, CurrentAuthorityHead: bootstrap.CurrentAuthorityHead, ControlOwnerAcquired: digest("7"), Core: bootstrap.Core, LastOwnerEpoch: bootstrap.OwnerEpoch, LastAuthorityHead: bootstrap.CurrentAuthorityHead, LastCommandSequence: commandSequence, LastCommandHead: commandHead, LastJournalSequence: journalSequence, LastJournalHead: journalHead}
+	if _, err := session.reconnect(request, bootstrap.Core); !errors.Is(err, ErrConflict) {
 		t.Fatalf("same-head owner epoch advance error=%v", err)
 	}
 	request.CurrentAuthorityHead = digest("8")
 	request.ControlOwnerAcquired = ""
-	if _, err := session.Reconnect(request, bootstrap.Core); !errors.Is(err, ErrConflict) {
+	if _, err := session.reconnect(request, bootstrap.Core); !errors.Is(err, ErrConflict) {
 		t.Fatalf("missing owner-acquired proof error=%v", err)
 	}
 	request.ControlOwnerAcquired = digest("7")
-	if _, err := session.Reconnect(request, bootstrap.Core); err != nil {
+	if _, err := session.reconnect(request, bootstrap.Core); err != nil {
 		t.Fatalf("valid owner advance error=%v", err)
 	}
 }
@@ -162,13 +162,13 @@ func TestReconnectPendingStateIsClosedBeforeOwnerAdvance(t *testing.T) {
 					t.Fatalf("pending command response=%+v", response)
 				}
 			}
-			request := ReconnectRequest{
+			request := reconnectRequest{
 				SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce,
 				PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 1, PreviousAuthorityHead: session.authorityHead, CurrentAuthorityHead: digest("8"), ControlOwnerAcquired: digest("9"), Core: bootstrap.Core,
 				LastOwnerEpoch: bootstrap.OwnerEpoch, LastAuthorityHead: bootstrap.CurrentAuthorityHead,
 				LastCommandSequence: commandSequence, LastCommandHead: commandHead, LastJournalSequence: journalSequence, LastJournalHead: journalHead, PendingRequest: &pending,
 			}
-			resolution, err := session.Reconnect(request, bootstrap.Core)
+			resolution, err := session.reconnect(request, bootstrap.Core)
 			if err != nil || resolution.State != state || session.ownerEpoch != request.OwnerEpoch {
 				t.Fatalf("resolution=%+v err=%v ownerEpoch=%d", resolution, err, session.ownerEpoch)
 			}
@@ -192,14 +192,63 @@ func TestReconnectPendingStateIsClosedBeforeOwnerAdvance(t *testing.T) {
 		t.Fatal("fixture command rejected")
 	}
 	changed := commandRequest(t, bootstrap.SessionID, CommandAbortUnbound, "abort-conflict", 1, commandHead, bootstrap.CurrentAuthorityHead, now.Add(20*time.Second), AbortUnboundPayload{OwnerEpoch: bootstrap.OwnerEpoch, PreviousAuthorityHead: bootstrap.CurrentAuthorityHead, AuthorityAbsenceProofDigest: digest("5")})
-	request := ReconnectRequest{
+	request := reconnectRequest{
 		SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce,
 		PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 1, PreviousAuthorityHead: session.authorityHead, CurrentAuthorityHead: digest("8"), ControlOwnerAcquired: digest("9"), Core: bootstrap.Core,
 		LastOwnerEpoch: bootstrap.OwnerEpoch, LastAuthorityHead: bootstrap.CurrentAuthorityHead,
 		LastCommandSequence: commandSequence, LastCommandHead: commandHead, LastJournalSequence: journalSequence, LastJournalHead: journalHead, PendingRequest: &changed,
 	}
-	if _, err := session.Reconnect(request, bootstrap.Core); !errors.Is(err, ErrConflict) || session.ownerEpoch != bootstrap.OwnerEpoch {
+	if _, err := session.reconnect(request, bootstrap.Core); !errors.Is(err, ErrConflict) || session.ownerEpoch != bootstrap.OwnerEpoch {
 		t.Fatalf("different digest err=%v ownerEpoch=%d", err, session.ownerEpoch)
+	}
+}
+
+func TestCollectAdvancesObservationForNextCleanupAndDurableCoreRestart(t *testing.T) {
+	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+	bootstrap := validBootstrap()
+	journal, path := testJournal(t)
+	session, err := NewSession(bootstrap, journal, fakeMechanics{}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This fixture starts at the production-relevant terminal mechanics
+	// checkpoint. Earlier lifecycle commands are covered independently; the
+	// invariant under test is the Collect receipt becoming the shared latest
+	// observation for both supervisor admission and durable Core replay.
+	session.state = sessionBound
+	session.startedFact = digest("4")
+	session.lastObservation = digest("5")
+
+	collectPayload := CollectPayload{ProcessStartedFactDigest: session.startedFact, LastObservationDigest: session.lastObservation}
+	collect := commandRequest(t, bootstrap.SessionID, CommandCollect, "collect-observation", 1, CommandGenesisDigest, bootstrap.CurrentAuthorityHead, now.Add(time.Minute), collectPayload)
+	collectResponse := session.Handle(mustCanonical(collect))
+	if collectResponse.Status != "ok" || session.lastObservation != collectResponse.ObservationDigest {
+		t.Fatalf("collect response=%+v lastObservation=%s", collectResponse, session.lastObservation)
+	}
+	cleanup := CleanupPayload{
+		TerminalizationBarrierDigest: digest("6"), TerminalizationID: "terminal-1", TerminalGeneration: 1,
+		CleanupBindingDigest: digest("7"), ProcessStartedFactDigest: session.startedFact, LastObservationDigest: collectResponse.ObservationDigest,
+	}
+	inspect := commandRequest(t, bootstrap.SessionID, CommandInspect, "inspect-after-collect", 2, collectResponse.CommandHead, bootstrap.CurrentAuthorityHead, now.Add(20*time.Second), cleanup)
+	if response := session.Handle(mustCanonical(inspect)); response.Status != "ok" {
+		t.Fatalf("post-collect cleanup rejected: %+v", response)
+	}
+
+	if err := journal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenJournal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	replayed, ok := reopened.Snapshot().ResponseForCommand(collect.CommandID)
+	if !ok || replayed.ObservationDigest != collectResponse.ObservationDigest {
+		t.Fatalf("durable collect receipt ok=%v replayed=%+v", ok, replayed)
 	}
 }
 
@@ -234,13 +283,13 @@ func TestReconnectRecoversAfterInstalledOwnerHandshakeIsLost(t *testing.T) {
 			}
 
 			// E1 is installed by the supervisor, but its handshake is discarded.
-			first := ReconnectRequest{
+			first := reconnectRequest{
 				SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce,
 				PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 3, PreviousAuthorityHead: session.authorityHead, CurrentAuthorityHead: digest("7"), ControlOwnerAcquired: digest("8"), Core: bootstrap.Core,
 				LastOwnerEpoch: bootstrap.OwnerEpoch, LastAuthorityHead: lastAuthorityHead,
 				LastCommandSequence: lastCommandSequence, LastCommandHead: lastCommandHead, LastJournalSequence: lastJournalSequence, LastJournalHead: lastJournalHead, PendingRequest: pending,
 			}
-			firstResolution, err := session.Reconnect(first, bootstrap.Core)
+			firstResolution, err := session.reconnect(first, bootstrap.Core)
 			if err != nil || firstResolution.State == ReconciliationIntentPending || session.ownerEpoch != first.OwnerEpoch || session.authorityHead != first.CurrentAuthorityHead {
 				t.Fatalf("first resolution=%+v err=%v owner=%d authority=%s", firstResolution, err, session.ownerEpoch, session.authorityHead)
 			}
@@ -254,23 +303,23 @@ func TestReconnectRecoversAfterInstalledOwnerHandshakeIsLost(t *testing.T) {
 			// The client still authenticates journal base E0, not installed fence E1.
 			second.LastOwnerEpoch = bootstrap.OwnerEpoch
 
-			for hostileName, mutate := range map[string]func(*ReconnectRequest){
-				"stale previous fence":   func(value *ReconnectRequest) { value.PreviousOwnerEpoch = bootstrap.OwnerEpoch },
-				"wrong previous head":    func(value *ReconnectRequest) { value.PreviousAuthorityHead = digest("d") },
-				"replayed owner epoch":   func(value *ReconnectRequest) { value.OwnerEpoch = value.PreviousOwnerEpoch },
-				"future historical base": func(value *ReconnectRequest) { value.LastOwnerEpoch = value.PreviousOwnerEpoch + 1 },
-				"wrong historical A0":    func(value *ReconnectRequest) { value.LastAuthorityHead = digest("e") },
+			for hostileName, mutate := range map[string]func(*reconnectRequest){
+				"stale previous fence":   func(value *reconnectRequest) { value.PreviousOwnerEpoch = bootstrap.OwnerEpoch },
+				"wrong previous head":    func(value *reconnectRequest) { value.PreviousAuthorityHead = digest("d") },
+				"replayed owner epoch":   func(value *reconnectRequest) { value.OwnerEpoch = value.PreviousOwnerEpoch },
+				"future historical base": func(value *reconnectRequest) { value.LastOwnerEpoch = value.PreviousOwnerEpoch + 1 },
+				"wrong historical A0":    func(value *reconnectRequest) { value.LastAuthorityHead = digest("e") },
 			} {
 				t.Run(hostileName, func(t *testing.T) {
 					candidate := second
 					mutate(&candidate)
-					if _, err := session.Reconnect(candidate, bootstrap.Core); !errors.Is(err, ErrConflict) || session.ownerEpoch != first.OwnerEpoch {
+					if _, err := session.reconnect(candidate, bootstrap.Core); !errors.Is(err, ErrConflict) || session.ownerEpoch != first.OwnerEpoch {
 						t.Fatalf("hostile reconnect err=%v owner=%d", err, session.ownerEpoch)
 					}
 				})
 			}
 
-			resolution, err := session.Reconnect(second, bootstrap.Core)
+			resolution, err := session.reconnect(second, bootstrap.Core)
 			wantState := ReconciliationUnchanged
 			if withPendingReceipt {
 				wantState = ReconciliationReceiptCommitted
@@ -321,12 +370,12 @@ func TestReconnectSeparatesA0JournalBaseFromAtRequestProjection(t *testing.T) {
 			if session.authorityHead != previousAuthorityHead {
 				t.Fatalf("fixture current authority=%s want=%s", session.authorityHead, previousAuthorityHead)
 			}
-			request := ReconnectRequest{
+			request := reconnectRequest{
 				SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce,
 				PreviousOwnerEpoch: bootstrap.OwnerEpoch, OwnerEpoch: bootstrap.OwnerEpoch + 1, PreviousAuthorityHead: previousAuthorityHead, CurrentAuthorityHead: digest("8"), ControlOwnerAcquired: digest("9"), Core: bootstrap.Core,
 				LastOwnerEpoch: bootstrap.OwnerEpoch, LastAuthorityHead: a0, LastCommandSequence: commandSequence, LastCommandHead: commandHead, LastJournalSequence: journalSequence, LastJournalHead: journalHead, PendingRequest: &pending,
 			}
-			resolution, err := session.Reconnect(request, bootstrap.Core)
+			resolution, err := session.reconnect(request, bootstrap.Core)
 			if err != nil || resolution.State != state || session.ownerEpoch != request.OwnerEpoch || session.authorityHead != request.CurrentAuthorityHead {
 				t.Fatalf("resolution=%+v err=%v owner=%d authority=%s", resolution, err, session.ownerEpoch, session.authorityHead)
 			}

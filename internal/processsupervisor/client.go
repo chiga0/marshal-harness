@@ -17,9 +17,29 @@ type StartOptions struct {
 }
 
 type ReconnectOptions struct {
+	FixedMarshalPath         string
 	ControlDirectory         *os.File
 	ControlDirectoryIdentity ControlDirectoryIdentity
-	Request                  ReconnectRequest
+	Plan                     ReconnectPlan
+	Anchor                   HandshakeAnchor
+	Pending                  *PreparedCommand
+}
+
+// ReconnectPlan is the durable owner/head transition. Previous mechanics
+// values and current Core identity are derived from Anchor/kernel observation;
+// raw nonce and request bytes are internal only.
+type ReconnectPlan struct {
+	PreviousOwnerEpoch    uint64
+	OwnerEpoch            uint64
+	PreviousAuthorityHead string
+	CurrentAuthorityHead  string
+	ControlOwnerAcquired  string
+}
+
+type reconnectWireOptions struct {
+	ControlDirectory         *os.File
+	ControlDirectoryIdentity ControlDirectoryIdentity
+	Request                  reconnectRequest
 	Anchor                   HandshakeAnchor
 	PendingEvidence          *PendingReplayEvidence
 }
@@ -214,9 +234,22 @@ func (client *Client) ReplayedOutcome() (VerifiedCommandOutcome, bool) {
 	return *cloneVerifiedOutcome(client.replayed), true
 }
 
-// Do sends one canonical command and validates the exact response binding.
-// Any write/read/validation ambiguity poisons this connection. Only
-// secret-free replay evidence remains for a new authenticated Reconnect.
+// Prepare creates the exact private request without mutating connection state.
+// Its secret-free Evidence must be durably committed before DoPrepared.
+func (client *Client) Prepare(options CommandOptions, payload any) (PreparedCommand, error) {
+	if client == nil {
+		return PreparedCommand{}, ErrUnavailable
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.poisoned || client.stream == nil || client.codec == nil || client.state == ReconciliationIntentPending {
+		return PreparedCommand{}, ErrUnavailable
+	}
+	return PrepareCommand(client.anchor, options, payload)
+}
+
+// Do remains a source-compatible, non-production convenience. Production
+// composition must call Prepare, persist Evidence, then call DoPrepared.
 func (client *Client) Do(ctx context.Context, options CommandOptions, payload any) (VerifiedCommandOutcome, error) {
 	if client == nil {
 		return VerifiedCommandOutcome{}, ErrUnavailable
@@ -238,9 +271,48 @@ func (client *Client) Do(ctx context.Context, options CommandOptions, payload an
 	if options.Sequence != client.anchor.CommandSequence+1 || options.PreviousCommandDigest != client.anchor.CommandHead {
 		return VerifiedCommandOutcome{}, ErrConflict
 	}
-	request, err := NewRequest(client.handshake.SessionID, options.Command, options.CommandID, options.Sequence, options.PreviousCommandDigest, options.CurrentAuthorityHead, options.Deadline, payload)
+	prepared, err := prepareCommand(client.anchor, options, payload, false)
 	if err != nil {
 		return VerifiedCommandOutcome{}, err
+	}
+	return client.doPreparedLocked(ctx, prepared)
+}
+
+// DoPrepared executes exactly the private request frozen by Prepare. A
+// prepared command for a different session/pre-anchor or a second execution
+// after the anchor advances is rejected before transport.
+func (client *Client) DoPrepared(ctx context.Context, prepared PreparedCommand) (VerifiedCommandOutcome, error) {
+	if client == nil {
+		return VerifiedCommandOutcome{}, ErrUnavailable
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if prepared.evidence.Validate() != nil || prepared.evidence.PreCommand != client.anchor {
+		return VerifiedCommandOutcome{}, ErrConflict
+	}
+	return client.doPreparedLocked(ctx, prepared)
+}
+
+func (client *Client) doPreparedLocked(ctx context.Context, prepared PreparedCommand) (VerifiedCommandOutcome, error) {
+	if client.poisoned || client.stream == nil || client.codec == nil {
+		return VerifiedCommandOutcome{}, ErrUnavailable
+	}
+	if client.state == ReconciliationIntentPending {
+		return VerifiedCommandOutcome{}, ErrIntervention
+	}
+	if ctx == nil {
+		return VerifiedCommandOutcome{}, ErrInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return VerifiedCommandOutcome{}, ErrIntervention
+	}
+	request := prepared.request
+	if request.SessionID != client.anchor.SessionID || request.Sequence != client.anchor.CommandSequence+1 || request.PreviousCommandDigest != client.anchor.CommandHead {
+		return VerifiedCommandOutcome{}, ErrConflict
+	}
+	deadline, err := parseDeadline(request.Deadline)
+	if err != nil {
+		return VerifiedCommandOutcome{}, ErrInvalid
 	}
 	evidence := pendingEvidence(request)
 	if client.pending != nil {
@@ -251,7 +323,7 @@ func (client *Client) Do(ctx context.Context, options CommandOptions, payload an
 		client.pending = &evidence
 	}
 	var response Response
-	err = runBoundedTransport(ctx, client.stream, options.Deadline, func() error {
+	err = runBoundedTransport(ctx, client.stream, deadline, func() error {
 		if err := client.codec.Write(request); err != nil {
 			return ErrIntervention
 		}
@@ -439,7 +511,7 @@ func (client *Client) poisonLocked() {
 	client.poisoned = true
 }
 
-func validateReconnectOptions(options ReconnectOptions) error {
+func validateReconnectWireOptions(options reconnectWireOptions) error {
 	request, anchor := options.Request, options.Anchor
 	if options.ControlDirectory == nil || options.ControlDirectoryIdentity.validate() != nil ||
 		request.SchemaVersion != ReconnectSchema || request.ProtocolRevision != ProtocolRevision || !validID(request.SessionID) || !hex64Pattern.MatchString(request.SessionNonce) ||
@@ -476,7 +548,7 @@ func projectRequestInvalid(request Request) bool {
 	return err != nil
 }
 
-func validateReconnectHandshake(response HandshakeResponse, options ReconnectOptions, observed CoreIdentity) (*Response, HandshakeAnchor, error) {
+func validateReconnectHandshake(response HandshakeResponse, options reconnectWireOptions, observed CoreIdentity) (*Response, HandshakeAnchor, error) {
 	expected := options.Anchor
 	expected.OwnerEpoch = options.Request.OwnerEpoch
 	expected.CurrentAuthorityHead = options.Request.CurrentAuthorityHead

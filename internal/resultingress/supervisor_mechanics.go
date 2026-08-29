@@ -31,18 +31,19 @@ type SupervisorMechanicsAnchor struct {
 	GID                  uint32                                  `json:"gid"`
 	FixedBinary          processsupervisor.BinaryIdentity        `json:"fixedBinary"`
 	ControlSocket        processsupervisor.ControlSocketIdentity `json:"controlSocket"`
+	ControlFiles         processsupervisor.SessionControlFiles   `json:"controlFiles,omitempty,omitzero"`
 }
 
 func supervisorHandshakeAnchor(anchor SupervisorMechanicsAnchor) processsupervisor.HandshakeAnchor {
-	return processsupervisor.HandshakeAnchor{SessionID: anchor.SessionID, SessionNonceDigest: anchor.SessionNonceDigest, Authority: anchor.Authority, OwnerEpoch: anchor.OwnerEpoch, CurrentAuthorityHead: anchor.CurrentAuthorityHead, CommandSequence: anchor.CommandSequence, CommandHead: anchor.CommandHead, JournalSequence: anchor.JournalSequence, JournalHead: anchor.JournalHead, UID: anchor.UID, GID: anchor.GID, FixedBinary: anchor.FixedBinary, ControlSocket: anchor.ControlSocket}
+	return processsupervisor.HandshakeAnchor{SessionID: anchor.SessionID, SessionNonceDigest: anchor.SessionNonceDigest, Authority: anchor.Authority, OwnerEpoch: anchor.OwnerEpoch, CurrentAuthorityHead: anchor.CurrentAuthorityHead, CommandSequence: anchor.CommandSequence, CommandHead: anchor.CommandHead, JournalSequence: anchor.JournalSequence, JournalHead: anchor.JournalHead, UID: anchor.UID, GID: anchor.GID, FixedBinary: anchor.FixedBinary, ControlSocket: anchor.ControlSocket, ControlFiles: anchor.ControlFiles}
 }
 
 func projectSupervisorMechanicsAnchor(anchor processsupervisor.HandshakeAnchor) SupervisorMechanicsAnchor {
-	return SupervisorMechanicsAnchor{SessionID: anchor.SessionID, SessionNonceDigest: anchor.SessionNonceDigest, Authority: anchor.Authority, OwnerEpoch: anchor.OwnerEpoch, CurrentAuthorityHead: anchor.CurrentAuthorityHead, CommandSequence: anchor.CommandSequence, CommandHead: anchor.CommandHead, JournalSequence: anchor.JournalSequence, JournalHead: anchor.JournalHead, UID: anchor.UID, GID: anchor.GID, FixedBinary: anchor.FixedBinary, ControlSocket: anchor.ControlSocket}
+	return SupervisorMechanicsAnchor{SessionID: anchor.SessionID, SessionNonceDigest: anchor.SessionNonceDigest, Authority: anchor.Authority, OwnerEpoch: anchor.OwnerEpoch, CurrentAuthorityHead: anchor.CurrentAuthorityHead, CommandSequence: anchor.CommandSequence, CommandHead: anchor.CommandHead, JournalSequence: anchor.JournalSequence, JournalHead: anchor.JournalHead, UID: anchor.UID, GID: anchor.GID, FixedBinary: anchor.FixedBinary, ControlSocket: anchor.ControlSocket, ControlFiles: anchor.ControlFiles}
 }
 
 func (anchor SupervisorMechanicsAnchor) Validate() error {
-	if !supervisorEvidenceID.MatchString(anchor.SessionID) || requireDigest("sessionNonceDigest", anchor.SessionNonceDigest) != nil || validateSupervisorAuthorityTuple(anchor.Authority) != nil || anchor.OwnerEpoch == 0 || anchor.OwnerEpoch > maxExactJSONInteger || requireDigest("currentAuthorityHead", anchor.CurrentAuthorityHead) != nil || anchor.CommandSequence > maxExactJSONInteger || requireDigest("commandHead", anchor.CommandHead) != nil || anchor.JournalSequence == 0 || anchor.JournalSequence > maxExactJSONInteger || requireDigest("journalHead", anchor.JournalHead) != nil || anchor.UID == 0 || validateFixedMarshalBinaryIdentity(anchor.FixedBinary) != nil || validateControlSocketIdentity(anchor.ControlSocket) != nil {
+	if !supervisorEvidenceID.MatchString(anchor.SessionID) || requireDigest("sessionNonceDigest", anchor.SessionNonceDigest) != nil || validateSupervisorAuthorityTuple(anchor.Authority) != nil || anchor.OwnerEpoch == 0 || anchor.OwnerEpoch > maxExactJSONInteger || requireDigest("currentAuthorityHead", anchor.CurrentAuthorityHead) != nil || anchor.CommandSequence > maxExactJSONInteger || requireDigest("commandHead", anchor.CommandHead) != nil || anchor.JournalSequence == 0 || anchor.JournalSequence > maxExactJSONInteger || requireDigest("journalHead", anchor.JournalHead) != nil || anchor.UID == 0 || validateFixedMarshalBinaryIdentity(anchor.FixedBinary) != nil || validateControlSocketIdentity(anchor.ControlSocket) != nil || anchor.ControlFiles != (processsupervisor.SessionControlFiles{}) && processsupervisor.ValidateSessionControlFiles(anchor.ControlFiles) != nil {
 		return ErrAttemptAuthorityConflict
 	}
 	return nil
@@ -72,7 +73,7 @@ func newSupervisorReconnectEvidence(recovery processsupervisor.SessionRecoveryEv
 
 func (evidence SupervisorReconnectEvidence) Validate() error {
 	previous, current := evidence.Previous, evidence.Current
-	if previous.Validate() != nil || current.Validate() != nil || previous.SessionID != current.SessionID || previous.SessionNonceDigest != current.SessionNonceDigest || previous.Authority != current.Authority || previous.UID != current.UID || previous.GID != current.GID || previous.FixedBinary != current.FixedBinary || previous.ControlSocket != current.ControlSocket || current.OwnerEpoch <= previous.OwnerEpoch || current.CurrentAuthorityHead == previous.CurrentAuthorityHead {
+	if previous.Validate() != nil || current.Validate() != nil || previous.SessionID != current.SessionID || previous.SessionNonceDigest != current.SessionNonceDigest || previous.Authority != current.Authority || previous.UID != current.UID || previous.GID != current.GID || previous.FixedBinary != current.FixedBinary || previous.ControlSocket != current.ControlSocket || previous.ControlFiles != current.ControlFiles || current.OwnerEpoch <= previous.OwnerEpoch || current.CurrentAuthorityHead == previous.CurrentAuthorityHead {
 		return fmt.Errorf("%w: reconnect mechanics identity mismatch", ErrAttemptAuthorityConflict)
 	}
 	pending := evidence.Pending
@@ -213,7 +214,7 @@ func (e SupervisorCommandEvidence) Validate() error {
 		}
 	}
 	anchorsOmitted := e.PreCommand == (SupervisorMechanicsAnchor{}) && e.PostCommand == (SupervisorMechanicsAnchor{})
-	if !anchorsOmitted && (e.PreCommand.Validate() != nil || e.PostCommand.Validate() != nil || e.PreCommand.SessionID != e.SessionID || e.PostCommand.SessionID != e.SessionID || e.PreCommand.Authority != e.PostCommand.Authority || e.PreCommand.SessionNonceDigest != e.PostCommand.SessionNonceDigest || e.PreCommand.OwnerEpoch != e.PostCommand.OwnerEpoch || e.PreCommand.UID != e.PostCommand.UID || e.PreCommand.GID != e.PostCommand.GID || e.PreCommand.FixedBinary != e.PostCommand.FixedBinary || e.PreCommand.ControlSocket != e.PostCommand.ControlSocket || e.PreCommand.CommandSequence+1 != e.Sequence || e.PreCommand.CommandHead != e.PreviousCommandHead || e.PreCommand.CurrentAuthorityHead != e.CurrentAuthorityHead || e.PostCommand.CommandSequence != e.Sequence || e.PostCommand.CommandHead != e.CommandHead || e.PostCommand.JournalSequence != e.PreCommand.JournalSequence+2 || e.PostCommand.JournalHead == e.PreCommand.JournalHead) {
+	if !anchorsOmitted && (e.PreCommand.Validate() != nil || e.PostCommand.Validate() != nil || e.PreCommand.SessionID != e.SessionID || e.PostCommand.SessionID != e.SessionID || e.PreCommand.Authority != e.PostCommand.Authority || e.PreCommand.SessionNonceDigest != e.PostCommand.SessionNonceDigest || e.PreCommand.OwnerEpoch != e.PostCommand.OwnerEpoch || e.PreCommand.UID != e.PostCommand.UID || e.PreCommand.GID != e.PostCommand.GID || e.PreCommand.FixedBinary != e.PostCommand.FixedBinary || e.PreCommand.ControlSocket != e.PostCommand.ControlSocket || e.PreCommand.ControlFiles != e.PostCommand.ControlFiles || e.PreCommand.CommandSequence+1 != e.Sequence || e.PreCommand.CommandHead != e.PreviousCommandHead || e.PreCommand.CurrentAuthorityHead != e.CurrentAuthorityHead || e.PostCommand.CommandSequence != e.Sequence || e.PostCommand.CommandHead != e.CommandHead || e.PostCommand.JournalSequence != e.PreCommand.JournalSequence+2 || e.PostCommand.JournalHead == e.PreCommand.JournalHead) {
 		return fmt.Errorf("%w: supervisor mechanics anchors are not continuous", ErrAttemptAuthorityConflict)
 	}
 	if (e.PreCommand == (SupervisorMechanicsAnchor{})) != (e.PostCommand == (SupervisorMechanicsAnchor{})) {
@@ -531,28 +532,7 @@ type SupervisorBootstrapPrepared struct {
 // descriptors after restart. Paths, argv, environment values, stdin and raw
 // nonce are deliberately absent; their canonical payload digest remains
 // frozen by SupervisorCommandIntent.
-type SupervisorCommandRebuildProjection struct {
-	SupervisorStartedFactDigest    string `json:"supervisorStartedFactDigest,omitempty"`
-	OwnerEpoch                     uint64 `json:"ownerEpoch,omitempty"`
-	PreviousAuthorityHead          string `json:"previousAuthorityHead,omitempty"`
-	AuthorityHead                  string `json:"authorityHead,omitempty"`
-	LaunchAuthorizedFactDigest     string `json:"launchAuthorizedFactDigest,omitempty"`
-	LaunchMaterialsDigest          string `json:"launchMaterialsDigest,omitempty"`
-	AgentLaunchSpecDigest          string `json:"agentLaunchSpecDigest,omitempty"`
-	RuntimeObjectDigest            string `json:"runtimeObjectDigest,omitempty"`
-	WorkingObjectDigest            string `json:"workingObjectDigest,omitempty"`
-	ArgvDigest                     string `json:"argvDigest,omitempty"`
-	EnvironmentDigest              string `json:"environmentDigest,omitempty"`
-	StdinDigest                    string `json:"stdinDigest,omitempty"`
-	ProcessStartedFactDigest       string `json:"processStartedFactDigest,omitempty"`
-	TerminalizationBarrierDigest   string `json:"terminalizationBarrierDigest,omitempty"`
-	TerminalizationID              string `json:"terminalizationId,omitempty"`
-	TerminalGeneration             uint64 `json:"terminalGeneration,omitempty"`
-	CleanupBindingDigest           string `json:"cleanupBindingDigest,omitempty"`
-	LastObservationDigest          string `json:"lastObservationDigest,omitempty"`
-	ProcessTerminalFactDigest      string `json:"processTerminalFactDigest,omitempty"`
-	AllocationTerminatedFactDigest string `json:"allocationTerminatedFactDigest,omitempty"`
-}
+type SupervisorCommandRebuildProjection = processsupervisor.PreparedCommandProjection
 
 // SupervisorCommandIntent is creation-once durable intent. It is appended
 // before Client.Do and contains no executable payload or bearer material.
@@ -571,94 +551,20 @@ type SupervisorCommandIntent struct {
 	PreCommand           SupervisorMechanicsAnchor          `json:"preCommand"`
 }
 
-func NewSupervisorCommandIntent(request processsupervisor.Request, payload any, pre processsupervisor.HandshakeAnchor) (SupervisorCommandIntent, error) {
-	raw, err := processsupervisor.CanonicalProtocolMessage(payload)
-	if err != nil || !jsonEqual(raw, request.Payload) {
-		return SupervisorCommandIntent{}, fmt.Errorf("%w: supervisor intent payload mismatch", ErrAttemptAuthorityConflict)
-	}
-	deadline, err := time.Parse(time.RFC3339Nano, request.Deadline)
-	if err != nil {
-		return SupervisorCommandIntent{}, fmt.Errorf("%w: invalid supervisor intent deadline", ErrAttemptAuthorityConflict)
-	}
-	rebuilt, err := processsupervisor.NewRequest(request.SessionID, request.Command, request.CommandID, request.Sequence, request.PreviousCommandDigest, request.CurrentAuthorityHead, deadline, payload)
-	if err != nil || rebuilt.RequestDigest != request.RequestDigest {
-		return SupervisorCommandIntent{}, fmt.Errorf("%w: supervisor intent request digest mismatch", ErrAttemptAuthorityConflict)
-	}
-	rebuild, err := projectSupervisorCommandPayload(request.Command, payload)
-	if err != nil {
-		return SupervisorCommandIntent{}, err
+func NewSupervisorCommandIntent(evidence processsupervisor.PreparedCommandEvidence) (SupervisorCommandIntent, error) {
+	if evidence.Validate() != nil {
+		return SupervisorCommandIntent{}, fmt.Errorf("%w: invalid prepared supervisor command", ErrAttemptAuthorityConflict)
 	}
 	intent := SupervisorCommandIntent{
-		ProtocolRevision: request.ProtocolRevision, SessionID: request.SessionID, Command: request.Command,
-		CommandID: request.CommandID, Sequence: request.Sequence, PreviousCommandHead: request.PreviousCommandDigest,
-		CurrentAuthorityHead: request.CurrentAuthorityHead, Deadline: request.Deadline, RequestDigest: request.RequestDigest,
-		PayloadDigest: canonical.DigestBytes(raw), Rebuild: rebuild, PreCommand: projectSupervisorMechanicsAnchor(pre),
+		ProtocolRevision: evidence.ProtocolRevision, SessionID: evidence.SessionID, Command: evidence.Command,
+		CommandID: evidence.CommandID, Sequence: evidence.Sequence, PreviousCommandHead: evidence.PreviousCommandDigest,
+		CurrentAuthorityHead: evidence.CurrentAuthorityHead, Deadline: evidence.Deadline, RequestDigest: evidence.RequestDigest,
+		PayloadDigest: evidence.PayloadDigest, Rebuild: evidence.Projection, PreCommand: projectSupervisorMechanicsAnchor(evidence.PreCommand),
 	}
 	if err := intent.Validate(); err != nil {
 		return SupervisorCommandIntent{}, err
 	}
 	return intent, nil
-}
-
-func jsonEqual(left, right []byte) bool {
-	leftCanonical, leftErr := canonical.JSON(left)
-	rightCanonical, rightErr := canonical.JSON(right)
-	return leftErr == nil && rightErr == nil && string(leftCanonical) == string(rightCanonical)
-}
-
-func projectSupervisorCommandPayload(command processsupervisor.CommandName, payload any) (SupervisorCommandRebuildProjection, error) {
-	var projection SupervisorCommandRebuildProjection
-	switch value := payload.(type) {
-	case processsupervisor.BindAuthorityPayload:
-		if command != processsupervisor.CommandBindAuthority {
-			return projection, ErrAttemptAuthorityConflict
-		}
-		projection.SupervisorStartedFactDigest, projection.OwnerEpoch, projection.PreviousAuthorityHead, projection.AuthorityHead = value.SupervisorStartedFactDigest, value.OwnerEpoch, value.PreviousAuthorityHead, value.AuthorityHead
-	case processsupervisor.SpawnPayload:
-		if command != processsupervisor.CommandSpawn {
-			return projection, ErrAttemptAuthorityConflict
-		}
-		runtime := value.Runtime
-		runtime.CanonicalPath = ""
-		working := value.WorkingDirectory
-		working.CanonicalPath = ""
-		var err error
-		projection.RuntimeObjectDigest, err = canonicalDigest(runtime)
-		if err != nil {
-			return projection, err
-		}
-		projection.WorkingObjectDigest, err = canonicalDigest(working)
-		if err != nil {
-			return projection, err
-		}
-		projection.SupervisorStartedFactDigest, projection.LaunchAuthorizedFactDigest = value.SupervisorStartedFactDigest, value.LaunchAuthorizedFactDigest
-		projection.LaunchMaterialsDigest, projection.AgentLaunchSpecDigest = value.LaunchMaterialsDigest, value.AgentLaunchSpecDigest
-		projection.ArgvDigest, projection.EnvironmentDigest, projection.StdinDigest = value.ArgvDigest, value.EnvironmentDigest, value.StdinDigest
-	case processsupervisor.ResumePayload:
-		if command != processsupervisor.CommandResume {
-			return projection, ErrAttemptAuthorityConflict
-		}
-		projection.ProcessStartedFactDigest = value.ProcessStartedFactDigest
-	case processsupervisor.CleanupPayload:
-		if command != processsupervisor.CommandInspect && command != processsupervisor.CommandTerminate {
-			return projection, ErrAttemptAuthorityConflict
-		}
-		projection.TerminalizationBarrierDigest, projection.TerminalizationID, projection.TerminalGeneration = value.TerminalizationBarrierDigest, value.TerminalizationID, value.TerminalGeneration
-		projection.CleanupBindingDigest, projection.ProcessStartedFactDigest, projection.LastObservationDigest = value.CleanupBindingDigest, value.ProcessStartedFactDigest, value.LastObservationDigest
-	case processsupervisor.CollectPayload:
-		if command != processsupervisor.CommandCollect {
-			return projection, ErrAttemptAuthorityConflict
-		}
-		projection.ProcessStartedFactDigest, projection.LastObservationDigest = value.ProcessStartedFactDigest, value.LastObservationDigest
-	case processsupervisor.ClosePayload:
-		if command != processsupervisor.CommandClose {
-			return projection, ErrAttemptAuthorityConflict
-		}
-		projection.ProcessTerminalFactDigest, projection.AllocationTerminatedFactDigest, projection.CleanupBindingDigest = value.ProcessTerminalFactDigest, value.AllocationTerminatedDigest, value.CleanupBindingDigest
-	default:
-		return projection, fmt.Errorf("%w: unsupported supervisor intent payload", ErrAttemptAuthorityConflict)
-	}
-	return projection, nil
 }
 
 func (intent SupervisorCommandIntent) Validate() error {
@@ -678,40 +584,7 @@ func (intent SupervisorCommandIntent) Validate() error {
 }
 
 func validateSupervisorRebuildProjection(command processsupervisor.CommandName, projection SupervisorCommandRebuildProjection) error {
-	require := func(values ...string) bool {
-		for _, value := range values {
-			if requireDigest("supervisorRebuildDigest", value) != nil {
-				return false
-			}
-		}
-		return true
-	}
-	switch command {
-	case processsupervisor.CommandBindAuthority:
-		if projection.OwnerEpoch == 0 || projection.OwnerEpoch > maxExactJSONInteger || !require(projection.SupervisorStartedFactDigest, projection.PreviousAuthorityHead, projection.AuthorityHead) {
-			return ErrAttemptAuthorityConflict
-		}
-	case processsupervisor.CommandSpawn:
-		if !require(projection.SupervisorStartedFactDigest, projection.LaunchAuthorizedFactDigest, projection.LaunchMaterialsDigest, projection.AgentLaunchSpecDigest, projection.RuntimeObjectDigest, projection.WorkingObjectDigest, projection.ArgvDigest, projection.EnvironmentDigest, projection.StdinDigest) {
-			return ErrAttemptAuthorityConflict
-		}
-	case processsupervisor.CommandResume:
-		if !require(projection.ProcessStartedFactDigest) {
-			return ErrAttemptAuthorityConflict
-		}
-	case processsupervisor.CommandInspect, processsupervisor.CommandTerminate:
-		if projection.TerminalGeneration == 0 || strings.TrimSpace(projection.TerminalizationID) == "" || !require(projection.TerminalizationBarrierDigest, projection.CleanupBindingDigest, projection.ProcessStartedFactDigest, projection.LastObservationDigest) {
-			return ErrAttemptAuthorityConflict
-		}
-	case processsupervisor.CommandCollect:
-		if !require(projection.ProcessStartedFactDigest, projection.LastObservationDigest) {
-			return ErrAttemptAuthorityConflict
-		}
-	case processsupervisor.CommandClose:
-		if !require(projection.ProcessTerminalFactDigest, projection.AllocationTerminatedFactDigest, projection.CleanupBindingDigest) {
-			return ErrAttemptAuthorityConflict
-		}
-	default:
+	if processsupervisor.ValidatePreparedCommandProjection(command, projection) != nil {
 		return ErrAttemptAuthorityConflict
 	}
 	return nil

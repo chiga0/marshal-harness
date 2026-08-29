@@ -187,14 +187,14 @@ func TestReconnectHandshakeReconcilesOnlyClosedPendingStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reconnect := ReconnectRequest{
+	reconnect := reconnectRequest{
 		SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: anchor.SessionID,
 		PreviousOwnerEpoch: anchor.OwnerEpoch, OwnerEpoch: anchor.OwnerEpoch + 1, PreviousAuthorityHead: anchor.CurrentAuthorityHead, CurrentAuthorityHead: digest("8"), ControlOwnerAcquired: digest("9"), Core: bootstrap.Core,
 		LastOwnerEpoch: anchor.OwnerEpoch, LastAuthorityHead: anchor.CurrentAuthorityHead,
 		LastCommandSequence: anchor.CommandSequence, LastCommandHead: anchor.CommandHead, LastJournalSequence: anchor.JournalSequence, LastJournalHead: anchor.JournalHead, PendingRequest: &pending,
 	}
 	evidence := pendingEvidence(pending)
-	options := ReconnectOptions{Request: reconnect, Anchor: anchor, PendingEvidence: &evidence}
+	options := reconnectWireOptions{Request: reconnect, Anchor: anchor, PendingEvidence: &evidence}
 	observed := CoreIdentity{UID: anchor.UID, GID: anchor.GID, Process: response.SupervisorProcess, Binary: anchor.FixedBinary}
 	for _, state := range []ReconciliationState{ReconciliationUnchanged, ReconciliationIntentPending, ReconciliationReceiptCommitted} {
 		t.Run(string(state), func(t *testing.T) {
@@ -291,12 +291,12 @@ func TestReconnectHandshakeRejectsAtAsJournalRecordBaseAndWrongReplayBindings(t 
 		t.Fatal(err)
 	}
 	evidence := pendingEvidence(pending)
-	request := ReconnectRequest{
+	request := reconnectRequest{
 		SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: a0.SessionID, SessionNonce: bootstrap.SessionNonce,
 		PreviousOwnerEpoch: a0.OwnerEpoch, OwnerEpoch: a0.OwnerEpoch + 1, PreviousAuthorityHead: at, CurrentAuthorityHead: digest("8"), ControlOwnerAcquired: digest("9"), Core: bootstrap.Core,
 		LastOwnerEpoch: a0.OwnerEpoch, LastAuthorityHead: a0.CurrentAuthorityHead, LastCommandSequence: a0.CommandSequence, LastCommandHead: a0.CommandHead, LastJournalSequence: a0.JournalSequence, LastJournalHead: a0.JournalHead, PendingRequest: &pending,
 	}
-	options := ReconnectOptions{Request: request, Anchor: a0, PendingEvidence: &evidence}
+	options := reconnectWireOptions{Request: request, Anchor: a0, PendingEvidence: &evidence}
 	observed := CoreIdentity{UID: a0.UID, GID: a0.GID, Process: response.SupervisorProcess, Binary: a0.FixedBinary}
 	replay := clientResponse(t, pending)
 	_, receiptHead, err := expectedPendingJournalHeads(a0, pending, &replay)
@@ -514,12 +514,12 @@ func TestAbortUnboundCannotAliasAnotherCommand(t *testing.T) {
 	}
 }
 
-func TestValidateReconnectOptionsRejectsAuthorityAndIdentityDrift(t *testing.T) {
+func TestValidateReconnectWireOptionsRejectsAuthorityAndIdentityDrift(t *testing.T) {
 	bootstrap := validBootstrap()
 	bootstrap.SessionNonce = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	directory := bootstrap.ControlDirectoryIdentity
 	socket := ControlSocketIdentity{Device: 8, Inode: 9, FileType: "socket", UID: bootstrap.Core.UID, GID: bootstrap.Core.GID, Mode: 0o140600, LinkCount: 1}
-	request := ReconnectRequest{
+	request := reconnectRequest{
 		SchemaVersion: ReconnectSchema, ProtocolRevision: ProtocolRevision, SessionID: bootstrap.SessionID, SessionNonce: bootstrap.SessionNonce,
 		PreviousOwnerEpoch: 1, OwnerEpoch: 2, PreviousAuthorityHead: digest("a"), CurrentAuthorityHead: digest("b"), ControlOwnerAcquired: digest("c"), Core: bootstrap.Core,
 		LastOwnerEpoch: 1, LastAuthorityHead: digest("a"),
@@ -534,34 +534,34 @@ func TestValidateReconnectOptionsRejectsAuthorityAndIdentityDrift(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer file.Close()
-	base := ReconnectOptions{ControlDirectory: file, ControlDirectoryIdentity: directory, Request: request, Anchor: anchor}
+	base := reconnectWireOptions{ControlDirectory: file, ControlDirectoryIdentity: directory, Request: request, Anchor: anchor}
 	gap := base
 	gap.Request.PreviousOwnerEpoch = 4
 	gap.Request.OwnerEpoch = 9
 	gap.Request.LastOwnerEpoch = anchor.OwnerEpoch
-	if err := validateReconnectOptions(gap); err != nil {
+	if err := validateReconnectWireOptions(gap); err != nil {
 		t.Fatalf("CAS owner epoch gap with historical anchor rejected: %v", err)
 	}
-	for name, mutate := range map[string]func(*ReconnectOptions){
-		"raw nonce shape": func(value *ReconnectOptions) { value.Request.SessionNonce = "not-a-nonce" },
-		"nonce digest":    func(value *ReconnectOptions) { value.Anchor.SessionNonceDigest = digest("f") },
-		"owner epoch":     func(value *ReconnectOptions) { value.Anchor.OwnerEpoch++ },
-		"authority head":  func(value *ReconnectOptions) { value.Anchor.CurrentAuthorityHead = digest("f") },
-		"owner proof":     func(value *ReconnectOptions) { value.Request.ControlOwnerAcquired = "" },
-		"owner replay": func(value *ReconnectOptions) {
+	for name, mutate := range map[string]func(*reconnectWireOptions){
+		"raw nonce shape": func(value *reconnectWireOptions) { value.Request.SessionNonce = "not-a-nonce" },
+		"nonce digest":    func(value *reconnectWireOptions) { value.Anchor.SessionNonceDigest = digest("f") },
+		"owner epoch":     func(value *reconnectWireOptions) { value.Anchor.OwnerEpoch++ },
+		"authority head":  func(value *reconnectWireOptions) { value.Anchor.CurrentAuthorityHead = digest("f") },
+		"owner proof":     func(value *reconnectWireOptions) { value.Request.ControlOwnerAcquired = "" },
+		"owner replay": func(value *reconnectWireOptions) {
 			value.Request.OwnerEpoch = value.Request.PreviousOwnerEpoch
 		},
-		"historical owner ahead": func(value *ReconnectOptions) {
+		"historical owner ahead": func(value *reconnectWireOptions) {
 			value.Request.LastOwnerEpoch = value.Request.PreviousOwnerEpoch + 1
 		},
-		"binary source": func(value *ReconnectOptions) {
+		"binary source": func(value *reconnectWireOptions) {
 			value.Anchor.FixedBinary.SourceHead = "1111111111111111111111111111111111111111"
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := base
 			mutate(&candidate)
-			if err := validateReconnectOptions(candidate); err == nil {
+			if err := validateReconnectWireOptions(candidate); err == nil {
 				t.Fatal("drift admitted")
 			}
 		})

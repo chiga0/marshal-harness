@@ -7,10 +7,42 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chiga0/marshal-harness/internal/canonical"
 	"github.com/chiga0/marshal-harness/internal/processsupervisor"
 )
+
+func TestSupervisorCommandIntentConsumesProducerPreparedEvidence(t *testing.T) {
+	pre := processsupervisor.HandshakeAnchor{
+		SessionID: "prepared-session", SessionNonceDigest: attemptTestDigest("prepared-nonce"), Authority: supervisorAuthorityTuple(attemptTestIdentity()),
+		OwnerEpoch: 1, CurrentAuthorityHead: attemptTestDigest("prepared-authority"), CommandSequence: 0, CommandHead: processsupervisor.CommandGenesisDigest,
+		JournalSequence: 1, JournalHead: attemptTestDigest("prepared-journal"), UID: 501, GID: 20, FixedBinary: attemptTestBinary(),
+		ControlSocket: processsupervisor.ControlSocketIdentity{Device: 8, Inode: 9, FileType: "socket", UID: 501, GID: 20, Mode: 0o140600, LinkCount: 1},
+		ControlFiles: processsupervisor.SessionControlFiles{
+			Nonce:   processsupervisor.ControlFileIdentity{Device: 8, Inode: 10, FileType: "regular", UID: 501, GID: 20, Mode: 0o100600, LinkCount: 1},
+			Journal: processsupervisor.ControlFileIdentity{Device: 8, Inode: 11, FileType: "regular", UID: 501, GID: 20, Mode: 0o100600, LinkCount: 1},
+		},
+	}
+	payload := processsupervisor.BindAuthorityPayload{SupervisorStartedFactDigest: attemptTestDigest("supervisor-started"), OwnerEpoch: 1, PreviousAuthorityHead: pre.CurrentAuthorityHead, AuthorityHead: attemptTestDigest("bound-authority")}
+	prepared, err := processsupervisor.PrepareCommand(pre, processsupervisor.CommandOptions{Command: processsupervisor.CommandBindAuthority, CommandID: "bind-prepared", Sequence: 1, PreviousCommandDigest: processsupervisor.CommandGenesisDigest, CurrentAuthorityHead: pre.CurrentAuthorityHead, Deadline: time.Date(2026, 8, 29, 4, 5, 6, 0, time.UTC)}, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := prepared.Evidence()
+	intent, err := NewSupervisorCommandIntent(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intent.RequestDigest != evidence.RequestDigest || intent.PayloadDigest != evidence.PayloadDigest || intent.Rebuild != evidence.Projection || intent.PreCommand.ControlFiles != pre.ControlFiles {
+		t.Fatalf("intent does not preserve producer projection: %+v", intent)
+	}
+	forged := evidence
+	forged.Projection.AuthorityHead = attemptTestDigest("forged-authority")
+	if _, err := NewSupervisorCommandIntent(forged); err == nil {
+		t.Fatal("consumer accepted projection drift from producer evidence")
+	}
+}
 
 func testCommandEvidence(t *testing.T, session string, command processsupervisor.CommandName, currentHead string, outcome SupervisorProcessOutcome) SupervisorCommandEvidence {
 	t.Helper()
