@@ -373,6 +373,9 @@ func (m *Matcher) ClaimReserved(request ReservedClaimRequest, now time.Time) (Re
 	if err != nil {
 		return ReservedClaimResult{}, fmt.Errorf("dispatch: reserved claim registration lookup: %w", err)
 	}
+	if !m.edgeRuntime.Issuer().Equal(stored.AuthorityNamespaceId) {
+		return ReservedClaimResult{}, fmt.Errorf("%w: typed-edge runtime issuer does not match the canonical registration authority", ErrLeaseConflict)
+	}
 	input := reservedClaimInput{
 		ReservationFactDigest: request.ReservationFactDigest,
 		RunId:                 request.RunId, ReservedAttemptId: request.ReservedAttemptId,
@@ -475,7 +478,27 @@ func (m *Matcher) buildReservedClaimCandidate(stored provider.ProviderRegistrati
 	if err := edge.Validate(); err != nil {
 		return DispatchLease{}, authority.DispatchResultCapability{}, fmt.Errorf("dispatch: reserved claim typed-edge validation: %w", err)
 	}
+	preview, _, err := m.edgeRuntime.PreviewDispatchResultCapability(reservedDispatchResultIssuance(lease, request.TargetActor))
+	if err != nil {
+		return DispatchLease{}, authority.DispatchResultCapability{}, fmt.Errorf("dispatch: reserved claim typed-edge preflight: %w", err)
+	}
+	if preview != edge {
+		return DispatchLease{}, authority.DispatchResultCapability{}, fmt.Errorf("%w: typed-edge preflight did not reproduce the exact unrevoked capability", ErrLeaseConflict)
+	}
 	return lease, edge, nil
+}
+
+func reservedDispatchResultIssuance(lease DispatchLease, target authority.SecurityDomainId) authority.DispatchResultIssuance {
+	return authority.DispatchResultIssuance{
+		SourceActor: lease.SecurityDomainId, TargetActor: target,
+		Operation:      authority.DispatchResultOperationAccept,
+		BoundAttemptId: lease.AttemptId, BoundAllocationId: lease.AllocationId,
+		Expiry: lease.ExpiresAt,
+		LeaseBinding: authority.EdgeLeaseBinding{
+			LeaseId: lease.LeaseId, AttemptId: lease.AttemptId, AllocationId: lease.AllocationId,
+			Generation: lease.Generation, FencingToken: lease.FencingToken,
+		},
+	}
 }
 
 // reissueReservedCapability restores the typed-edge runtime projection from
@@ -483,16 +506,7 @@ func (m *Matcher) buildReservedClaimCandidate(stored provider.ProviderRegistrati
 // the persisted edge byte-for-byte. Current eligibility is deliberately not
 // decided here; callers must still invoke Revalidate before downstream work.
 func (m *Matcher) reissueReservedCapability(fact ReservedClaimResult, input reservedClaimInput, now time.Time) error {
-	edge, err := m.edgeRuntime.IssueDispatchResultCapability(authority.DispatchResultIssuance{
-		SourceActor: fact.Lease.SecurityDomainId, TargetActor: input.Claim.TargetActor,
-		Operation:      authority.DispatchResultOperationAccept,
-		BoundAttemptId: fact.Lease.AttemptId, BoundAllocationId: fact.Lease.AllocationId,
-		Expiry: fact.Lease.ExpiresAt,
-		LeaseBinding: authority.EdgeLeaseBinding{
-			LeaseId: fact.Lease.LeaseId, AttemptId: fact.Lease.AttemptId, AllocationId: fact.Lease.AllocationId,
-			Generation: fact.Lease.Generation, FencingToken: fact.Lease.FencingToken,
-		},
-	}, now)
+	edge, err := m.edgeRuntime.IssueDispatchResultCapability(reservedDispatchResultIssuance(fact.Lease, input.Claim.TargetActor), now)
 	if err != nil {
 		return fmt.Errorf("dispatch: reserved claim replay typed-edge issuance: %w", err)
 	}

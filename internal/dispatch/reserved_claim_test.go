@@ -57,6 +57,20 @@ func reopenReservedClaimFixture(t *testing.T, root string) (*Matcher, *LeaseLedg
 	return NewMatcherWithReservedClaimLedger(store, newClaimEdgeRuntime(t), ledger), ledger
 }
 
+func requireNoLeaseLedgerWrite(t *testing.T, ledger *LeaseLedger) {
+	t.Helper()
+	raw, err := os.ReadFile(ledger.ledgerPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 0 {
+		t.Fatalf("reserved claim failure wrote %d durable lease-ledger bytes", len(raw))
+	}
+}
+
 func TestClaimReservedResponseLossReplayReturnsExactDurableIdentity(t *testing.T) {
 	root := t.TempDir()
 	matcher, ledger, _, request := newReservedClaimFixture(t, root)
@@ -339,6 +353,46 @@ func TestClaimReservedRequiresFreshDurablePath(t *testing.T) {
 	if _, err := matcher.ClaimReserved(request, dispatchTestNow); err == nil {
 		t.Fatal("fresh reserved claim silently fell back without a durable lease ledger")
 	}
+}
+
+func TestClaimReservedPreflightRejectsIssuerAndKnownBindingBeforeDurableWrite(t *testing.T) {
+	t.Run("issuer mismatch", func(t *testing.T) {
+		root := t.TempDir()
+		matcher, ledger, _, request := newReservedClaimFixture(t, root)
+		foreignNamespace := testAuthorityNamespace()
+		foreignNamespace.AuthorityScopeId = "repository:foreign"
+		foreignRuntime, err := authority.NewEdgeRuntime(foreignNamespace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		matcher.edgeRuntime = foreignRuntime
+		if _, err := matcher.ClaimReserved(request, dispatchTestNow); !errors.Is(err, ErrLeaseConflict) {
+			t.Fatalf("issuer mismatch err=%v", err)
+		}
+		requireNoLeaseLedgerWrite(t, ledger)
+	})
+
+	t.Run("hostile preseed old binding", func(t *testing.T) {
+		root := t.TempDir()
+		matcher, ledger, registration, request := newReservedClaimFixture(t, root)
+		if _, err := matcher.edgeRuntime.IssueDispatchResultCapability(authority.DispatchResultIssuance{
+			SourceActor: registration.SecurityDomainId, TargetActor: request.Claim.TargetActor,
+			Operation:      authority.DispatchResultOperationAccept,
+			BoundAttemptId: request.ReservedAttemptId, BoundAllocationId: request.Claim.AllocationId,
+			Expiry: request.Claim.ExpiresAt,
+			LeaseBinding: authority.EdgeLeaseBinding{
+				LeaseId: "lease-hostile-preseed", AttemptId: request.ReservedAttemptId,
+				AllocationId: request.Claim.AllocationId, Generation: 9,
+				FencingToken: fixedDigest("hostile-preseed-fencing"),
+			},
+		}, dispatchTestNow); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := matcher.ClaimReserved(request, dispatchTestNow); !errors.Is(err, authority.ErrEdgeBindingMismatch) {
+			t.Fatalf("known edge binding collision err=%v", err)
+		}
+		requireNoLeaseLedgerWrite(t, ledger)
+	})
 }
 
 func TestReservedClaimRecoveryRejectsGenerationAndFencingForgery(t *testing.T) {
