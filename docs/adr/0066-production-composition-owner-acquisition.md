@@ -1,8 +1,9 @@
 # ADR 0066：生产组合的两阶段 owner acquisition 与 S2 边界纠正
 
-- 状态：提议（Proposed）
+- 状态：已接受（Accepted）
 - 日期：2026-08-29
 - 提议基线：`main@7de2a70cec112df5fbf2b36f85ce5878f227c40c`
+- 接受证据：提案 `69574533fd7c7e0e91b4ef45a2c902885c2eeb4c` 经独立 reviewer 复审 `APPROVE`（P0=0、P1=0）；接受只冻结本 ADR 的合同与 S2 修改边界，不表示实现完成或成熟度升级。
 - 关联：[ADR 0052](0052-v1-release-scope-and-production-reachability.md)（v1.0 生产可达性）、[ADR 0057](0057-durable-local-allocation-recovery-and-production-composition.md)（唯一 `ProductionRuntime`）、[ADR 0062](0062-fixed-marshal-production-server-mode.md)（fixed Marshal server mode）、[ADR 0063](0063-prepared-execution-authority-and-production-chain.md)（PreparedExecution producer chain）、[ADR 0065](0065-sealed-run-start-proof-and-one-way-composition.md)（sealed proof 与 S1/S2）、[Issue #186](https://github.com/chiga0/marshal-harness/issues/186)
 
 ## 背景
@@ -21,9 +22,9 @@ ADR 0065 正确冻结了 ResultIngress → runstore 的单向 proof、锁序和 
 ### 1. 关系、范围与状态
 
 1. 本 ADR 是 ADR 0065 的 **S2 implementation successor**，并精确部分取代 ADR 0065 §10 第 2 项及 §7 中“production 组合只需新增单一 composition 文件”的实现文件边界。ADR 0065 的 S1/S2 顺序、shared-guard proof、ResultIngress → runstore 单向依赖、固定锁序、generic `Append READY → RUNNING` 禁止和 hostile/replay 门禁全部保留。
-2. 本提议不取代或放宽 ADR 0062 的信任模型：生产身份仍只有 fixed `marshal`；独立 `marshal-server` 仍非生产；owner-only AF_UNIX、peer credential、binary/path/SHA-256/CDHash/sourceHead/profile recheck、禁止 child CLI/legacy selector/匿名 Mach-O 的规则不变。
-3. 本提议不新增 authority store、owner 事实类型、Run 状态、Provider、发布权限或 fallback。它只冻结现有 owner fact 的安全构造顺序、确定性目录布局、唯一 factory 与 S2 的必要接线范围。
-4. 本 ADR 未接受前只记录治理修正，不能授权 S2 实现或升级成熟度。提议、独立审查和维护者接受属于 S2 的治理前置，不算在 S1/S2 之间插入第二个 component；S1 完成后仍必须立即进入经接受合同约束的 S2。
+2. 本决策不取代或放宽 ADR 0062 的信任模型：生产身份仍只有 fixed `marshal`；独立 `marshal-server` 仍非生产；owner-only AF_UNIX、peer credential、binary/path/SHA-256/CDHash/sourceHead/profile recheck、禁止 child CLI/legacy selector/匿名 Mach-O 的规则不变。
+3. 本决策不新增 authority store、owner 事实类型、Run 状态、Provider、发布权限或 fallback。它只冻结现有 owner fact 的安全构造顺序、确定性目录布局、唯一 factory 与 S2 的必要接线范围。
+4. 本 ADR 的接受只授权按本合同实施 S2，不升级成熟度。提议、独立审查和维护者接受属于 S2 的治理前置，不算在 S1/S2 之间插入第二个 component；S1 完成后仍必须立即进入本合同约束的 S2。
 
 ### 2. 两阶段、descriptor-bound repository owner lock
 
@@ -123,7 +124,7 @@ fixed `marshal control-plane serve` 明确不属于 S2。它必须在 S2 之后�
 
 正面结果是 owner epoch 不再被预先猜测，provisional verifier 不会获得 Attempt authority，同一 repository 也不能通过外部 StateRoot 形成 split-brain；单一 factory 能从 canonical `.marshal` 构造真实 production graph，ADR 0065 的 proof 也有一个可执行且机械唯一的 controller callsite。代价是 S2 比原先“一个 composition 文件”多触及 owner lock、factory、controller 与 fixed `cmd/marshal` 的窄 application adapter/routing，但仍局限于当前阻塞纵切。
 
-本提议不使 S1/S2 自动完成，不改变 R2–R5 的 `COMPONENT`，也不授权真实 Pi、terminalization、Linux或发布。只有独立审查后由维护者接受，S2 才能按本边界实施。
+本决策不使 S1/S2 自动完成，不改变 R2–R5 的 `COMPONENT`，也不授权真实 Pi、terminalization、Linux或发布。S2 只能按本边界实施，完成后仍须用真实纵切证据升级成熟度。
 
 ## 拒绝的替代方案
 

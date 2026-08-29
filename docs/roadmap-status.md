@@ -1,6 +1,6 @@
 # Roadmap 状态
 
-更新时间：2026-08-28（`main@ecee8d4` 发布前 checkpoint）
+更新时间：2026-08-29（ADR 0066 接受 checkpoint）
 
 本 Roadmap 交付[整体架构](architecture.md)定义的长寿命、可自托管、确定性 Control Plane。Local MVP 是已经可用的 embedded/local 先行实现与持续回归基线，不是 Marshal 的最终产品范围。
 
@@ -10,7 +10,7 @@
 >
 > **2026-08-29 Run-start proof 纠偏**：[ADR 0065](adr/0065-sealed-run-start-proof-and-one-way-composition.md) 已接受，基于 `main@40fa493` 冻结 ResultIngress 的 owner/Attempt/generation 重验与 runstore 的 Run lease/head/state CAS 绝对分离，并以 shared-guard proof 和精确 composition AST gate 衔接。接受只冻结合同，S1/S2 尚未实现，不升级 R2–R5；旧实现候选不构成当前进展。
 >
-> **2026-08-29 S2 production factory 提议**：[ADR 0066](adr/0066-production-composition-owner-acquisition.md) 为 `Proposed`。当前没有 fixed `./bin/marshal` production factory，`Runtime.Status` 仍为 `production-composition-incomplete`，owner lock 存在“acquisition 先于锁、successor acquisition 又必须锁内产生”的构造环，任意 `MARSHAL_STATE_DIR` 还允许同 repository 两锁两 ledger。提议只纠正 S2 为 scope-only lock → one-shot provisional `AcquireOwner` → exact replay 后 current verifier、canonical repository `.marshal`、唯一 Darwin arm64 factory/controller composition，以及 fixed `cmd/marshal` 本地 CLI mutation/inspect 只持有 `PublicApplicationPort`；`marshal control-plane serve` 后移为 S2 之后、release 之前的独立 ADR 0062 transport slice。未接受前不授权实现、不改变 R2–R6 状态或 ADR 0062 信任模型。
+> **2026-08-29 S2 production factory 合同**：[ADR 0066](adr/0066-production-composition-owner-acquisition.md) 已接受。当前没有 fixed `./bin/marshal` production factory，`Runtime.Status` 仍为 `production-composition-incomplete`，owner lock 存在“acquisition 先于锁、successor acquisition 又必须锁内产生”的构造环，任意 `MARSHAL_STATE_DIR` 还允许同 repository 两锁两 ledger。接受合同只纠正 S2 为 scope-only lock → one-shot provisional `AcquireOwner` → exact replay 后 current verifier、canonical repository `.marshal`、唯一 Darwin arm64 factory/controller composition，以及 fixed `cmd/marshal` 本地 CLI mutation/inspect 只持有 `PublicApplicationPort`；`marshal control-plane serve` 后移为 S2 之后、release 之前的独立 ADR 0062 transport slice。接受不表示实现完成，不改变 R2–R6 状态或 ADR 0062 信任模型。
 
 ## v1.0 生产纵切
 
@@ -35,7 +35,7 @@ Milestone 状态与能力成熟度是两个维度：
 
 v1.0 仅支持单节点、单用户、可信仓库、至少一个真实 AgentProvider 和一个真实 Local/Container SandboxProvider。Cloudflare 完整生产拓扑、HA、多用户/多租户、全部 Provider hardened 矩阵、完整 SDK/Web UI 与 Goal DAG 延期到 1.x。
 
-当前最短剩余路径是：按已接受 ADR 0065 实施 S1 sealed proof component，同时完成 ADR 0066 独立审查/维护者接受 → 立即相邻 S2 fixed `cmd/marshal` 本地 CLI composition（两边 response-loss 只查自身 ledger，exact successful resume 后唯一 Run successor；不得用未接受提议扩面）→ 独立 ADR 0056 terminalization/cleanup 切片接入现有 controller（R2/R3/R4）→ 在 release 前以独立 ADR 0062 transport slice 接入 authenticated `marshal control-plane serve` 与 durable delivery ledger → 当前主线 fixed-bin E2E 经独立 Decision 进入 `ACCEPTED` 并证明无 successor 双活（R5）→ 发布可验证 unsigned RC，再 provision macOS signing/notarization 并通过 Linux stable gate（R6）。合同接受本身、候选分支、单次 live pass 或 reviewer verdict 都不能单独升级阶段。
+当前最短剩余路径是：按已接受 ADR 0065/0066 实施 S1 sealed proof component → 立即相邻 S2 fixed `cmd/marshal` 本地 CLI composition（两边 response-loss 只查自身 ledger，exact successful resume 后唯一 Run successor）→ 独立 ADR 0056 terminalization/cleanup 切片接入现有 controller（R2/R3/R4）→ 在 release 前以独立 ADR 0062 transport slice 接入 authenticated `marshal control-plane serve` 与 durable delivery ledger → 当前主线 fixed-bin E2E 经独立 Decision 进入 `ACCEPTED` 并证明无 successor 双活（R5）→ 发布可验证 unsigned RC，再 provision macOS signing/notarization 并通过 Linux stable gate（R6）。合同接受本身、候选分支、单次 live pass 或 reviewer verdict 都不能单独升级阶段。
 
 ## 快速收敛线路交付记录（component checkpoint，路线重置前 2026-08-27 交付）
 
